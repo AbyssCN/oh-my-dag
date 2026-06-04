@@ -1,8 +1,8 @@
 /**
  * src/memory/safeguards/namespaces —— **装配 facade** (P1#1, R5, phase-2b 完成)。
  *
- * **valar core 编译零 domain** (phase-2b): 本 facade 只 import universal 装配, 不再 import a sibling project。
- * 默认装配 = `DEFAULT_SAFEGUARD` (= `UNIVERSAL_SAFEGUARD`: user.* 与 valar.*, **零 domain**)。
+ * **wright core 编译零 domain** (phase-2b): 本 facade 只 import universal 装配, 不再 import a sibling project。
+ * 默认装配 = `DEFAULT_SAFEGUARD` (= `UNIVERSAL_SAFEGUARD`: user.* 与 wright.*, **零 domain**)。
  * 不传 safeguard 的 caller/测试用它 → 默认只收用户/自身 fact, 拒一切 domain namespace。
  *
  * a sibling project (会计 domain + 辖区 ban 含 GDPR) 由 **调用边界注入** (`a sibling project` @ domain/a sibling project/
@@ -32,7 +32,7 @@ export type FactNamespace = string;
 // ---- 可注入装配 ----
 export { UNIVERSAL_SAFEGUARD };
 /** 默认装配 (= UNIVERSAL, **零 domain**)。不传 safeguard 的 caller/测试用它 —— 只收 user 与
- *  valar 两族 universal namespace, 拒一切 domain namespace。a sibling project 行为需调用边界显式注入
+ *  wright 两族 universal namespace, 拒一切 domain namespace。a sibling project 行为需调用边界显式注入
  *  a sibling project。 */
 export const DEFAULT_SAFEGUARD: AssembledSafeguard = UNIVERSAL_SAFEGUARD;
 

@@ -1,10 +1,10 @@
 /**
- * src/memory/safeguards/universal-namespaces —— valar **通用默认记忆 pack** (P1#1, 面向所有人)。
+ * src/memory/safeguards/universal-namespaces —— wright **通用默认记忆 pack** (P1#1, 面向所有人)。
  *
- * 跟 a sibling project domain pack (会计) 平行, 但这套**任何 valar instance 都自带** (开源打开即有):
+ * 跟 a sibling project domain pack (会计) 平行, 但这套**任何 wright instance 都自带** (开源打开即有):
  *   - `user.*` (6 facet): 记住**用户**的方方面面 (喜欢/在意/关注/会什么/是谁/要什么)。克制的 facet
  *     类型 + category/value 半结构字段 → 覆盖广而不堆 namespace ("太多数据"是失败模式, the owner 锁)。
- *   - `valar.*` (3 facet): valar 记住**自己** (擅长什么/什么打法管用/受什么限) —— 自我进化的底座。
+ *   - `wright.*` (3 facet): wright 记住**自己** (擅长什么/什么打法管用/受什么限) —— 自我进化的底座。
  *     刻意**不**镜像 live 工具/skill 注册表 (那能自省, memorize 冗余); 只记靠经验才知道的自评胜任度。
  *
  * 每条 fact 仍走 kernel 机制 (source anchor + 3 级 confidence + supersede + dream curate)。
@@ -76,13 +76,13 @@ const USER_BRANCHES = [
 ];
 
 // ---------------------------------------------------------------------------
-// valar.* —— valar 记住自己 (3 facet)。自评 learned 自我认知, 非工具清单镜像。
+// wright.* —— wright 记住自己 (3 facet)。自评 learned 自我认知, 非工具清单镜像。
 // ---------------------------------------------------------------------------
 
-const VALAR_BRANCHES = [
+const WRIGHT_BRANCHES = [
   // 我擅长什么 (领域 + 自评熟练度 spectrum: expert→weak)。
   z.object({
-    namespace: z.literal('valar.capability'),
+    namespace: z.literal('wright.capability'),
     area: z.string().min(1),
     level: z.enum(['expert', 'proficient', 'weak']),
     note: z.string().min(1).optional(),
@@ -91,7 +91,7 @@ const VALAR_BRANCHES = [
   }),
   // 什么打法在什么情况管用/失败 (程序性学习, 自我进化核心燃料)。
   z.object({
-    namespace: z.literal('valar.pattern'),
+    namespace: z.literal('wright.pattern'),
     situation: z.string().min(1),
     approach: z.string().min(1),
     outcome: z.enum(['worked', 'failed']),
@@ -100,7 +100,7 @@ const VALAR_BRANCHES = [
   }),
   // 我的硬约束/边界/盲区 (预算/不可做/已知弱点)。
   z.object({
-    namespace: z.literal('valar.limit'),
+    namespace: z.literal('wright.limit'),
     kind: z.enum(['budget', 'boundary', 'blindspot']),
     statement: z.string().min(1),
     ...sourceAnchor,
@@ -121,10 +121,10 @@ export const USER_NAMESPACE_IDENTITY_FIELDS: Record<string, readonly string[]> =
   'user.goal': ['goal'],
 };
 
-export const VALAR_NAMESPACE_IDENTITY_FIELDS: Record<string, readonly string[]> = {
-  'valar.capability': ['area'],
-  'valar.pattern': ['situation', 'approach'],
-  'valar.limit': ['kind', 'statement'],
+export const WRIGHT_NAMESPACE_IDENTITY_FIELDS: Record<string, readonly string[]> = {
+  'wright.capability': ['area'],
+  'wright.pattern': ['situation', 'approach'],
+  'wright.limit': ['kind', 'statement'],
 };
 
 const namespaceLiterals = (branches: readonly z.ZodObject<z.ZodRawShape>[]): string[] =>
@@ -138,22 +138,22 @@ export const USER_NAMESPACE_PACK: NamespacePack = {
   banGlobs: [],
 };
 
-/** 通用 valar.* pack (valar 记住自己)。无 banGlobs。 */
-export const VALAR_NAMESPACE_PACK: NamespacePack = {
-  branches: VALAR_BRANCHES,
-  allowedNamespaces: namespaceLiterals(VALAR_BRANCHES),
-  identityFields: VALAR_NAMESPACE_IDENTITY_FIELDS,
+/** 通用 wright.* pack (wright 记住自己)。无 banGlobs。 */
+export const WRIGHT_NAMESPACE_PACK: NamespacePack = {
+  branches: WRIGHT_BRANCHES,
+  allowedNamespaces: namespaceLiterals(WRIGHT_BRANCHES),
+  identityFields: WRIGHT_NAMESPACE_IDENTITY_FIELDS,
   banGlobs: [],
 };
 
 // 精确 per-namespace 类型不导出 (消费者只用共享字段; 单一 loose ValidatedFact 在 facade 定义)。
 
 /**
- * 纯通用装配 (user.* + valar.*, **零 domain**)。任何 valar instance 都自带; domain-free 的前端
- * (TUI valar 自我记忆) 注入它 → 只收用户/自身 fact, 拒一切 domain (会计 client.* 等) namespace。
+ * 纯通用装配 (user.* + wright.*, **零 domain**)。任何 wright instance 都自带; domain-free 的前端
+ * (TUI wright 自我记忆) 注入它 → 只收用户/自身 fact, 拒一切 domain (会计 client.* 等) namespace。
  * 无 banGlobs (GDPR 等 ban 属辖区/domain pack, 见 a sibling project)。
  */
 export const UNIVERSAL_SAFEGUARD: AssembledSafeguard = assembleSafeguard([
   USER_NAMESPACE_PACK,
-  VALAR_NAMESPACE_PACK,
+  WRIGHT_NAMESPACE_PACK,
 ]);

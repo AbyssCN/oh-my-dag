@@ -16,7 +16,7 @@
  *   5. no-source-anchor— neither source_event_id nor source_doc_id present
  *   6. confidence       — confidence missing/invalid (Zod covers it; asserted)
  *
- * 密钥脱敏闸 (步骤 3, opt-in, 研究稿 valar-compounding-self-learning-v2 §闸门 I, the owner 2026-06-03):
+ * 密钥脱敏闸 (步骤 3, opt-in, 研究稿 wright-compounding-self-learning-v2 §闸门 I, the owner 2026-06-03):
  *   只拦真正的 secrets (API key / token / password / 私钥 PEM) —— 泄漏即损失。命中即 REJECT。
  *   **仅自动学习路径** (opts.scanSecrets=true, dream consolidation): agent 偶遇的密钥不该被当事实
  *   持久化。**显式 remember 不开此闸** = 用户主权 (用户明示要记的含密钥, 系统不替他决定)。
@@ -36,7 +36,7 @@ export type ValidateResult = ValidateOk | ValidateErr;
 
 /**
  * 密钥类正则 (仅 secrets, 不含任何 PII)。每条高信噪比 prefix/结构锚定, 避免误伤普通文本。
- * 排序无关 (任一命中即拒)。新增前自检: 会不会命中合法 user / valar 族 fact 的散文?
+ * 排序无关 (任一命中即拒)。新增前自检: 会不会命中合法 user / wright 族 fact 的散文?
  *
  * ⚠ 明确 OUT-OF-SCOPE (正则根本边界, 不假装覆盖 — 防"看起来全拦"的假安全感):
  *   1. **裸 context-free 高熵密钥** (无关键字/前缀锚的 40字符 AWS secret access key、裸 64-hex、
@@ -155,7 +155,7 @@ export function validateFactWrite(
 
   // 4. Allowlist schema — an unlisted namespace fails the discriminatedUnion
   //    ("No matching discriminator") and is rejected here. safeguard 注入决定
-  //    哪些 namespace 在 allowlist (universal user.*/valar.* / +a sibling project domain)。
+  //    哪些 namespace 在 allowlist (universal user.*/wright.* / +a sibling project domain)。
   const parsed = safeguard.schema.safeParse(fact);
   if (!parsed.success) {
     // Keep the message terse; the structured issues live in the Zod error.
