@@ -7,7 +7,7 @@
  *
  * R5 SPLIT (mirrors the safeguard): the **universal** base lives here in core and
  * is domain-free — it only knows how to learn about the USER (user.*) and the
- * agent ITSELF (valar.*). Domain extraction guidance (e.g. the a sibling project accountant's
+ * agent ITSELF (wright.*). Domain extraction guidance (e.g. the a sibling project accountant's
  * intuition: Kirjanpitolaki / VAT / GDPR Art 9) is a **pack** the deployment
  * composes on at the boundary via {@link composeConsolidationPrompt}, exactly as
  * a sibling project is assembled onto the universal namespaces. A domain-free
@@ -35,7 +35,7 @@ EXTRACT about the user (user.* namespaces):
 - Traits — values, working style, identity ("decides on evidence, not seniority")
 - Goals — what they are trying to achieve, and the horizon
 
-EXTRACT about yourself (valar.* namespaces):
+EXTRACT about yourself (wright.* namespaces):
 - Capability — what you are good or weak at, self-assessed by experience (NOT a tool list)
 - Pattern — what approach worked or failed in what situation (procedural learning)
 - Limit — your hard constraints, boundaries, blind spots
@@ -54,7 +54,7 @@ accumulates drift you'll have to clean up later.`;
  * Compose the universal base with zero or more domain overlays into the single
  * prompt the live adapter prepends. The deployment passes its domain pack's
  * consolidation prompt (e.g. a sibling project) — parallel to
- * assembleSafeguard([USER, VALAR, a sibling project]). With no overlays the base stands alone.
+ * assembleSafeguard([USER, WRIGHT, a sibling project]). With no overlays the base stands alone.
  */
 export function composeConsolidationPrompt(
   base: string,

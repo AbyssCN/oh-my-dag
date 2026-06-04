@@ -15,11 +15,11 @@ export type LeafFn<T> = () => Promise<T>;
 
 /**
  * Max leaves in flight at once (INV-7). 「leaf 开大」旋钮 (契约 D72 VAL-DAG-7):
- * env `VALAR_MAX_FANOUT` (正整数) 覆盖 → 否则 CPU 默认 min(16, cores−2), 至少 1。
+ * env `XIHE_MAX_FANOUT` (正整数) 覆盖 → 否则 CPU 默认 min(16, cores−2), 至少 1。
  * 调用方仍可经 `parallel(thunks, {concurrency})` / leaf `fanout.max` per-call 覆盖。
  */
 function resolveDefaultConcurrency(): number {
-  const raw = process.env.VALAR_MAX_FANOUT;
+  const raw = process.env.XIHE_MAX_FANOUT;
   const env = raw ? Number.parseInt(raw, 10) : NaN;
   if (Number.isFinite(env) && env > 0) return env;
   return Math.max(1, Math.min(16, availableParallelism() - 2));

@@ -1,7 +1,7 @@
 /**
- * src/env — minimal runtime env for the valar agent (valinor).
+ * src/env — minimal runtime env for the wright agent (xihe).
  *
- * The agent reads its model/provider/path config directly from `process.env.VALAR_*`
+ * The agent reads its model/provider/path config directly from `process.env.XIHE_*`
  * at the call sites (see tui.ts). This module only validates the two values the logger
  * needs, both with safe defaults — so a fresh checkout boots with zero env set.
  */

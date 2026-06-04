@@ -1,5 +1,5 @@
 /**
- * cost-ledger.ts — V2-ECON 账本核心 (valar leaf, 2026-06-03).
+ * cost-ledger.ts — V2-ECON 账本核心 (wright leaf, 2026-06-03).
  *
  * ComputeCost + DEFAULT_PRICES. FROZEN CONTRACT in econ-types.ts.
  *
@@ -25,7 +25,7 @@ export const DEFAULT_PRICES: PriceTable = {
   'mimo:mimo-v2.5-pro': { inputRate: 0.50, outputRate: 2.00, cacheHitRate: 0.10 },
   'mimo:mimo-v2.5': { inputRate: 0.50, outputRate: 2.00, cacheHitRate: 0.10 },
 
-  // ── Anthropic Claude (valar 设计大脑 / conductor 可升级档) ──
+  // ── Anthropic Claude (wright 设计大脑 / conductor 可升级档) ──
   'anthropic:claude-opus-4-8': { inputRate: 15, outputRate: 75, cacheHitRate: 1.50 },
   'anthropic:claude-sonnet-4-6': { inputRate: 3, outputRate: 15, cacheHitRate: 0.30 },
   'anthropic:claude-haiku-4-5': { inputRate: 0.80, outputRate: 4, cacheHitRate: 0.08 },
