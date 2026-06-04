@@ -14,7 +14,7 @@
  *
  * dryRun: 只算不写盘 (报告文件数/字节), 给 the owner 预览导出规模。
  */
-import { cpSync, mkdirSync, writeFileSync, existsSync, readdirSync, statSync, copyFileSync, readFileSync } from 'node:fs';
+import { cpSync, mkdirSync, writeFileSync, existsSync, readdirSync, statSync, copyFileSync, readFileSync, rmSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { SkillRegistry, type SkillRow } from './registry';
 import { syncSkillsToRegistry } from './scanner';
@@ -252,6 +252,14 @@ export function exportBundle(opts: ExportOptions): ExportReport {
       const dest = join(outDir, layout.perSkillDir(name));
       mkdirSync(dest, { recursive: true });
       cpSync(src, dest, { recursive: true, filter: copyFilter });
+      // i18n (OSS default = English): the source SKILL.md stays Chinese (the owner's daily harness);
+      // a committed SKILL.en.md (English body + bilingual trigger frontmatter) becomes the
+      // exported SKILL.md. Collapse to one file so the OSS bundle ships a single SKILL.md.
+      const enBody = join(src, 'SKILL.en.md');
+      if (existsSync(enBody)) {
+        copyFileSync(enBody, join(dest, 'SKILL.md'));
+        rmSync(join(dest, 'SKILL.en.md'), { force: true });
+      }
       wrote.push(layout.perSkillDir(name) + '/');
     }
   }
