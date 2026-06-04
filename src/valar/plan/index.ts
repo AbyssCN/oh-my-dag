@@ -52,11 +52,16 @@ export {
   bestOfNPlan,
   DEFAULT_PLAN_LENSES,
   BESTOFN_DEFAULT_MODEL,
+  councilDeepPlan,
+  DEFAULT_COUNCIL_DEEP_LENSES,
+  DEFAULT_COUNCIL_DEEP_FRAMINGS,
+  DEFAULT_COUNCIL_DEEP_CRITERIA,
   type PlanLens,
   type PlanCandidate,
   type BestOfNVerdict,
   type BestOfNResult,
   type BestOfNOpts,
+  type CouncilDeepOpts,
 } from './best-of-n';
 export {
   classifyTaskComplexity,
