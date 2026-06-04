@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Valinor — a model-agnostic agent runtime. Valar is its first agent: a terminal coding agent with plan mode, code mode, multi-perspective fan-out, a self-consolidating memory, an MCP router, and a curated skill bundle.",
   "type": "module",
-  "license": "MIT",
+  "license": "UNLICENSED",
   "engines": {
     "bun": ">=1.3.0"
   },
