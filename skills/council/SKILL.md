@@ -30,8 +30,8 @@ metadata:
 
 ## 两档机制 (valar 已实装)
 
-### 轻量档 — `/bestof` (plan mode)
-plan mode 内 `/bestof`: 当前审议 context → **3 个 default lens** 并行出方案 → 多视角 judge 评分 → cherry-pick 合成注入下轮。适合**一次设计抉择**。
+### 轻量档 — `/council` (plan mode, 底层 best-of-N)
+plan mode 内 `/council`: 当前审议 context → **3 个 default lens** 并行出方案 → 多视角 judge 评分 → cherry-pick 合成注入下轮。适合**一次设计抉择**。(底层算法 = `bestOfNPlan`。)
 
 3 个 default lens(`DEFAULT_PLAN_LENSES`,每个 = persona + angle + 采样调制):
 | lens | persona | angle | temp/topP |

@@ -42,7 +42,7 @@ what lets a weak or cheap model run work you'd normally reserve for a frontier o
 not discouraged — the model can only think, discuss, ingest the links you paste, and
 stress-test the plan until it's aligned, then emit an SDD + TDD skeleton. A ledger
 re-injects the decisions every turn so it can't quietly drift.
-`/grill` adversarial questioning · `/bestof` multi-perspective synthesis · `/sdd` canonical plan doc.
+`/grill` adversarial questioning · `/council` multi-perspective synthesis · `/sdd` canonical plan doc.
 
 ### ⚡ Code mode — multi-tool work in one round-trip
 Instead of N tool calls each round-tripping their results through the context window, the
