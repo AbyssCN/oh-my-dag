@@ -34,6 +34,7 @@ export {
   listProviders,
   clearProviders,
   registerProvidersFromEnv,
+  registerCustomApis,
 } from './providers';
 
 export type ModelErrorKind = 'config' | 'transport' | 'http' | 'parse' | 'validation' | 'truncation';
