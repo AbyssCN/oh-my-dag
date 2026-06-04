@@ -118,7 +118,7 @@ SCOPE LOCK: src/dag/dispatcher.ts + src/dag/
 | 5 | 配置漂移 | 本地 OK / NAS 挂 | env 变量、`.env`、NAS docker compose、feature flag |
 | 6 | 缓存 | 旧数据、刷新后正常 | client-context LRU=5、dispatcher in-flight guard、WS pub/sub stale |
 | 7 | **RLS / tenant 泄漏** | 租户数据串门、权限异常 | RLS deny-all 缺失、tenant/scope 过滤缺失、multi-app router 误路由 |
-| 8 | **Drizzle schema 漂移** | 类型不匹配、迁移失败 | `sql/` ↔ `src/schema.ts` 不同步、migration 顺序错、temporal generated 列非 IMMUTABLE (TKG-1)、`z.string().uuid()` 拒 the sibling project UUID |
+| 8 | **Drizzle schema 漂移** | 类型不匹配、迁移失败 | `sql/` ↔ `src/schema.ts` 不同步、migration 顺序错、temporal generated 列非 IMMUTABLE (TKG-1)、`z.string().uuid()` 拒 a sibling project UUID |
 
 **匹配流程:**
 1. 症状与模式特征对照，匹配 1-2 个最可能模式

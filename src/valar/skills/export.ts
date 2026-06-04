@@ -270,7 +270,7 @@ export function exportBundle(opts: ExportOptions): ExportReport {
     writeFileSync(join(outDir, layout.umbrellaPath), buildUmbrella(reg), 'utf8');
     const rows = reg.listSkills();
     writeFileSync(join(outDir, 'manifest.json'), buildManifest(rows, layout), 'utf8');
-    // bundle 文档落 skills/README.md (非 outDir 根 README.md) — 不覆盖项目 README。
+    // bundle 文档落 skills/README.md (非 outDir 根 README.md) — 不覆盖 repo 项目 README。
     writeFileSync(join(outDir, layout.skillsRoot, 'README.md'), buildReadme(rows, layout), 'utf8');
     wrote.push(layout.umbrellaPath, 'manifest.json', `${layout.skillsRoot}/README.md`);
   }

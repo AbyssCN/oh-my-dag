@@ -13,7 +13,7 @@ metadata:
 
 > 单一 Fast Path, 目标 ≤ 4 tool calls. Body 精简; 模板/内部原理在 `references/` 按需读.
 >
-> **v8 (2026-06-01)**: 对齐 valinor 真实 infra — 去掉 the sibling project 移植残留的 6 个不存在脚本
+> **v8 (2026-06-01)**: 对齐 valinor 真实 infra — 去掉 a sibling project 移植残留的 6 个不存在脚本
 > (`handoff-write-router`/`force-capture`/`gen-sessions-manifest`/`codex-scan`/`append-journal`/`graphify`)
 > + abort-on-fail 地雷。`_NEXT.md` 是 prose 块 (非 router_v6 yaml fence) → 直接 Edit 顶部块.
 > 唯一存活脚本 = `.claude/memory/scripts/flush.ts`. 见 §Ship History.
@@ -76,7 +76,7 @@ echo "=DIFF_STAT=" && git diff --stat "$(git rev-parse origin/main 2>/dev/null |
 ```bash
 cd "$(git rev-parse --show-toplevel)" && ( npx tsx .claude/memory/scripts/flush.ts > /dev/null 2>&1 & disown )
 ```
-pending 空 = no-op (~50ms). 永不阻断 handoff. (the sibling project 的 force-capture/manifest/graphify 在 valinor 不存在 → 不调.)
+pending 空 = no-op (~50ms). 永不阻断 handoff. (a sibling project 的 force-capture/manifest/graphify 在 valinor 不存在 → 不调.)
 
 ### Step 5: Report (≤ 15 行)
 

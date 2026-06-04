@@ -32,7 +32,7 @@ metadata:
 
 `--with-codex` 是 modifier flag。在 dream-team specialist 之外同消息并行加 **Codex** (cross-model GPT independence, 唯一非 Anthropic 模型族)。
 
-**调用** (valinor 用 `/codex:*` slash commands — 无 the sibling project 的 codex-dispatch.mjs/codex-plugin scripts):
+**调用** (valinor 用 `/codex:*` slash commands — 无 a sibling project 的 codex-dispatch.mjs/codex-plugin scripts):
 
 | Gate | Codex command | Max 轮 (硬上限) | BLOCK 兜底 |
 |---|---|---|---|
@@ -84,7 +84,7 @@ metadata:
 
 扫 untrusted 入口 (`src/routes/*` body / channel callback / `src/routes/inbox.ts`):
 - PROTECTED: 有 Zod safeParse | UNPROTECTED: 接受外部输入但无 Zod
-- 注: `z.string().uuid()` 对 the sibling project UUID 太严 → hex regex (已知 gotcha)
+- 注: `z.string().uuid()` 对 a sibling project UUID 太严 → hex regex (已知 gotcha)
 - 输出: 覆盖率表 + 未保护入口 + 建议 schema
 
 ## Gate Mode (--gate)
@@ -203,4 +203,4 @@ diff 对 `docs/` 影响: 代码变但文档没更 → flag (INFORMATIONAL)。
 - 每个 mode 独立可用; --gate 全部并行; --release-gate 交付审核
 - 频率: Phase 完成 / Gate 前 / 安全事件后 (非日常)
 - 输出 `docs/reports/audit-report-{date}.md` 或 `release-gate-{date}.md`
-- **不引用 the sibling project 死 infra**: `scripts/codex-dispatch.mjs` / `.claude/codex-plugin/` / `harness-ingest-review-finding.mjs` / `graphify-probe.py` / `check:*` / dead feature-team agent — valinor 全无
+- **不引用 a sibling project 死 infra**: `scripts/codex-dispatch.mjs` / `.claude/codex-plugin/` / `harness-ingest-review-finding.mjs` / `graphify-probe.py` / `check:*` / dead feature-team agent — valinor 全无

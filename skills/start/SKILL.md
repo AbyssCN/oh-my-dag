@@ -51,7 +51,7 @@ Pending 为空时 no-op（<50ms）。`|| true` 保证不阻断 /start，**但 st
 cd "$(git rev-parse --show-toplevel)" && \
 echo "=LOG=" && git log --oneline -5 && \
 echo "=STATUS=" && git status --short --branch && \
-echo "=SPEC=" && wc -l .claude/CLAUDE.md 2>/dev/null; wc -l "$HOME/.claude/projects/c--the sibling project/memory/MEMORY.md" 2>/dev/null && \
+echo "=SPEC=" && wc -l .claude/CLAUDE.md 2>/dev/null; wc -l "$HOME/.claude/projects/c--a sibling project/memory/MEMORY.md" 2>/dev/null && \
 echo "=SESSIONS=" && ls -t .claude/sessions/*.md 2>/dev/null | head -3
 ```
 

@@ -12,7 +12,7 @@ metadata:
 # /verify — 验证统一入口 (valinor)
 
 > **Zone→Check 映射**: 见 `_shared/CHECK-ROUTING.md`（与 /commit 共享）。
-> **valinor 验证三件套** (真实, 无 the sibling project npm script): `bunx tsc --noEmit` + `bun test` + `bun build src/index.ts`。无 eslint (无 config) / 无 vitest (用 `bun test`) / 无 `check:*` / `gen:*` 脚本 (那些是 the sibling project)。`bun test` 走 **HAS_DB gate** — 无 valinor PG 的 dev box 优雅 skip DB 测试。
+> **valinor 验证三件套** (真实, 无 a sibling project npm script): `bunx tsc --noEmit` + `bun test` + `bun build src/index.ts`。无 eslint (无 config) / 无 vitest (用 `bun test`) / 无 `check:*` / `gen:*` 脚本 (那些是 a sibling project)。`bun test` 走 **HAS_DB gate** — 无 valinor PG 的 dev box 优雅 skip DB 测试。
 
 ## 模式
 
@@ -86,7 +86,7 @@ Changed files: {N} | Checks selected: {M}
 | `bun test <file>` | 单测试文件 (diff-based 子集) |
 | `bun build src/index.ts` | 打包 (module resolution / 入口完整性) |
 
-> migration 安全 / RLS / 不变量 = **人工核 + dream-team review** (data-layer-architect), valinor 无 the sibling project 的 `check:rls`/`check:migration-safety`/`check:invariants` 自动脚本。
+> migration 安全 / RLS / 不变量 = **人工核 + dream-team review** (data-layer-architect), valinor 无 a sibling project 的 `check:rls`/`check:migration-safety`/`check:invariants` 自动脚本。
 
 ---
 
@@ -209,4 +209,4 @@ tsc + bun test + bun build 全跑，跳过智能选择。
 - Never auto-fix — only diagnose（smart 模式 Fix-First 除外）
 - 报告含并行节省时间统计
 - **Health 模式**: 纯诊断，不改文件（除 health-history.jsonl）
-- **不引用 the sibling project npm script** (check:*, gen:*, eslint, vitest, npm run build) — valinor 不存在
+- **不引用 a sibling project npm script** (check:*, gen:*, eslint, vitest, npm run build) — valinor 不存在

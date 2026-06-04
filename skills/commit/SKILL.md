@@ -14,7 +14,7 @@ metadata:
 > 智能提交：根据变更类型自动选择检查项，生成规范 commit message。
 > **`--ship` 模式**: 一条龙 — 合并 base → 全量验证 → PR 创建。
 > **Zone→Check 映射**: 见 `_shared/CHECK-ROUTING.md`（与 /verify 共享）。
-> **valinor 验证** (真实): `bunx tsc --noEmit` + `bun test` + `bun build src/index.ts`。**无 eslint / vitest / check:* / gen:* npm script** (那些是 the sibling project)。
+> **valinor 验证** (真实): `bunx tsc --noEmit` + `bun test` + `bun build src/index.ts`。**无 eslint / vitest / check:* / gen:* npm script** (那些是 a sibling project)。
 
 ## Trigger
 
@@ -105,7 +105,7 @@ EOF
 ### Step 6: Post-Commit
 
 - `git log -1 --oneline` 确认
-- valinor **无** `gen:index`/`gen:doc-nav` 自动索引脚本 (那是 the sibling project)。DOC_NAV 若存在为手维护; 索引真相 = `src/schema.ts` + Glob。
+- valinor **无** `gen:index`/`gen:doc-nav` 自动索引脚本 (那是 a sibling project)。DOC_NAV 若存在为手维护; 索引真相 = `src/schema.ts` + Glob。
 
 ## Examples
 
