@@ -124,4 +124,5 @@ difference. Put the model inside a reliable system; don't bury reliability insid
 
 ## License
 
-MIT
+Proprietary — all rights reserved. See [LICENSE](LICENSE). The *methodology* is shared via articles/docs; the source is not open for copy or reuse.
+
