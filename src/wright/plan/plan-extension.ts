@@ -2,8 +2,10 @@
  * plan/plan-extension —— 把 plan mode 接进 pi 终端 TUI 的 ExtensionFactory (P1 脊柱)。
  *
  * 一处闭包持有单个 PlanModeState, 所有 handler 共享:
- *   - registerShortcut('shift+tab')  → 切 mode (源码确证可抢占内置 thinking-cycle: keybindings.js
- *     的 app.thinking.cycle 无 restrictOverride → getShortcuts 不跳过; handleInput 最先查扩展 shortcut 早返 shadow)
+ *   - registerShortcut('shift+tab')  → 切 mode。**前提**: pi 0.77 把 shift+tab(=app.thinking.cycle)
+ *     列入 RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS → getShortcuts 会静默 skip 撞保留键的扩展
+ *     shortcut。故 tui boot 前调 ensurePlanToggleKeyFree() 把 thinking-cycle 从 shift+tab 让路
+ *     (keybindings-setup.ts), 释放该键; 之后 handleInput 最先查扩展 shortcut (custom-editor.js:26) 早返 shadow。
  *   - registerCommand('plan')        → 显式 toggle (可发现性, shift+tab 同效)
  *   - registerCommand('model')       → 模型座舱: 列 pi provider/model + setModel 切换
  *   - registerCommand('note')        → 记决策进 ledger (台账真实写路径)
@@ -158,7 +160,7 @@ export function createPlanExtension(opts: PlanExtensionOpts = {}): ExtensionFact
       }
     };
 
-    // shift+tab 切 mode (抢占内置 thinking-cycle)。
+    // shift+tab 切 mode (抢占内置 thinking-cycle; 需 tui boot 前 ensurePlanToggleKeyFree() 让路, 见 header)。
     pi.registerShortcut(toggleKey as Parameters<typeof pi.registerShortcut>[0], {
       description: 'Toggle wright plan mode (只读审议座舱)',
       handler: toggle,
