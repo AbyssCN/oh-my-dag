@@ -1,16 +1,16 @@
 ---
-name: fanout
+name: council
 tier: capability
 runtime: on-demand
 trigger: mention
-description: "多视角并行生成 + 评判择优: 面对宽解空间的设计/决策, 派 N 个不同 persona+angle 并行出方案 → 多 lens judge → 择优合成 (嫁接亚军亮点), 而非一次性给平均答案. Trigger: 多个方案 / 对比方案 / best of n / bestof / fanout / 并行探索 / 多视角 / 给我几个选项 / 哪种方案好 / 方案对比 / explore options / 拿不准选哪个. Skip: 单一明确解 (直接做) / 纯执行无需择优 / 代码审查 (/review) / 根因调试 (/investigate)."
+description: "多视角并行生成 + 评判择优 (一组专家'开会'审议出冠军): 面对宽解空间的设计/决策, 派 N 个不同 persona+angle 并行出方案 → 多 lens judge → 择优合成 (嫁接亚军亮点), 而非一次性给平均答案. Trigger: 多个方案 / 对比方案 / best of n / bestof / fanout / council / 并行探索 / 多视角 / 给我几个选项 / 哪种方案好 / 方案对比 / explore options / 拿不准选哪个. Skip: 单一明确解 (直接做) / 纯执行无需择优 / 代码审查 (/review) / 根因调试 (/investigate)."
 metadata:
   source: valar (plan/best-of-n + research/fanout)
   version: "1.0.0"
   methodology: "diversity>volume + persona conditioning + multi-judge panel + graft runners-up"
 ---
 
-# /fanout — 多视角并行生成 + 评判择优
+# /council — 多视角并行生成 + 评判择优
 
 > 解空间宽时,一次性答案 = 落在概率分布的**平庸中心**。fanout 用**多样化 persona** 把生成拉进不同专家区,**多 lens judge** 抵单评判者偏见,**择优 + 嫁接**取各方案精华。
 > 这不是"重采样 N 遍"——那是边际递减的体积堆叠。fanout 的核心是 **diversity > volume**。

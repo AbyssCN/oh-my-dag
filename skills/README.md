@@ -17,8 +17,8 @@ valar 开源 curated skill bundle —— 一套经机械排除法选出的 **12 
 |---|---|
 | `caveman` | Ultra-compressed communication mode |
 | `commit` | 智能 git commit: 分析改动 + zone 检查 (tsc/test/build) + 中文 conventional message + git commit |
+| `council` | 多视角并行生成 + 评判择优 (一组专家'开会'审议出冠军): 面对宽解空间的设计/决策, 派 N 个不同 persona+angle 并行出方案 → 多 lens judge → |
 | `dream` | 手动触发 valinor Dream consolidation: 把 agent 的 raw events 提炼成 L0-L6 记忆 (经 Memory Restraint 3- |
-| `fanout` | 多视角并行生成 + 评判择优: 面对宽解空间的设计/决策, 派 N 个不同 persona+angle 并行出方案 → 多 lens judge → 择优合成 (嫁接亚军亮点),  |
 | `handoff` | Session 收尾仪式: 更新 _NEXT |
 | `investigate` | 系统化 debug 根因调查: 8 阶段 history search / reproduce / scope lock / pattern match / hypothesis  |
 | `recall` | Memory layer 主动召回: 推理/写作/决策卡住时 Valar 主动查 8734 chunks 库, 不靠 hook 触发 |

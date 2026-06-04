@@ -31,6 +31,18 @@
       "upstream_commit": null
     },
     {
+      "name": "council",
+      "id": "sk_council",
+      "version": 1,
+      "tier": "core",
+      "description": "多视角并行生成 + 评判择优 (一组专家'开会'审议出冠军): 面对宽解空间的设计/决策, 派 N 个不同 persona+angle 并行出方案 → 多 lens judge → 择优合成 (嫁接亚军亮点), 而非一次性给平均答案. Trigger: 多个方案 / 对比方案 / best of n / bestof / fanout / council / 并行探索 / 多视角 / 给我几个选项 / 哪种方案好 / 方案对比 / explore options / 拿不准选哪个. Skip: 单一明确解 (直接做) / 纯执行无需择优 / 代码审查 (/review) / 根因调试 (/investigate).",
+      "has_eval": false,
+      "dir": "skills/council",
+      "origin": "valar-skills",
+      "license": null,
+      "upstream_commit": null
+    },
+    {
       "name": "dream",
       "id": "sk_dream",
       "version": 1,
@@ -38,18 +50,6 @@
       "description": "手动触发 valinor Dream consolidation: 把 agent 的 raw events 提炼成 L0-L6 记忆 (经 Memory Restraint 3-gate + validateFactWrite)。跑全层, 最大预算 ~10k token。Trigger: /dream / 做梦 / 整理记忆 / consolidate memory / dream run / 跑一次 dream / 记忆整理. Skip: 日常验证 (/verify) / 提交 (/commit) / 历史召回 (/recall).",
       "has_eval": false,
       "dir": "skills/dream",
-      "origin": "valar-skills",
-      "license": null,
-      "upstream_commit": null
-    },
-    {
-      "name": "fanout",
-      "id": "sk_fanout",
-      "version": 1,
-      "tier": "core",
-      "description": "多视角并行生成 + 评判择优: 面对宽解空间的设计/决策, 派 N 个不同 persona+angle 并行出方案 → 多 lens judge → 择优合成 (嫁接亚军亮点), 而非一次性给平均答案. Trigger: 多个方案 / 对比方案 / best of n / bestof / fanout / 并行探索 / 多视角 / 给我几个选项 / 哪种方案好 / 方案对比 / explore options / 拿不准选哪个. Skip: 单一明确解 (直接做) / 纯执行无需择优 / 代码审查 (/review) / 根因调试 (/investigate).",
-      "has_eval": false,
-      "dir": "skills/fanout",
       "origin": "valar-skills",
       "license": null,
       "upstream_commit": null
