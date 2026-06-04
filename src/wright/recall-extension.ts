@@ -13,15 +13,19 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import type { WrightMemory } from './memory';
 import type { MemoryHit } from './memory/types';
+import { m } from './i18n';
 
 const RECALL_SCHEMA = Type.Object({
   query: Type.String({
-    description: '检索查询 (自然语言片段, 词越多越准)',
+    description: m({
+      en: 'Search query (natural-language fragment, more words = more precise)',
+      zh: '检索查询 (自然语言片段, 词越多越准)',
+    }),
     minLength: 1,
   }),
   k: Type.Optional(
     Type.Integer({
-      description: '返多少条 (默认 5, 上限 50)',
+      description: m({ en: 'How many to return (default 5, max 50)', zh: '返多少条 (默认 5, 上限 50)' }),
       minimum: 1,
       maximum: 50,
       default: 5,
@@ -63,11 +67,18 @@ export function createRecallExtension(opts: RecallExtensionOpts): ExtensionFacto
       defineTool({
         name: 'recall',
         label: 'Recall',
-        description:
-          '从 wright 自身长期记忆 (SQLite, 混合检索) 检索相关事实。适合查已知 user preference / ' +
-          'capability / pattern / goal / interest / limit。',
-        promptSnippet:
-          'recall(query, k?) — 混合检索 wright 记忆, 返 top-k 事实摘要。',
+        description: m({
+          en:
+            'Retrieve relevant facts from wright long-term memory (SQLite, hybrid search). Good for known user preference / ' +
+            'capability / pattern / goal / interest / limit.',
+          zh:
+            '从 wright 自身长期记忆 (SQLite, 混合检索) 检索相关事实。适合查已知 user preference / ' +
+            'capability / pattern / goal / interest / limit。',
+        }),
+        promptSnippet: m({
+          en: 'recall(query, k?) — hybrid-search wright memory, returns top-k fact summaries.',
+          zh: 'recall(query, k?) — 混合检索 wright 记忆, 返 top-k 事实摘要。',
+        }),
         parameters: RECALL_SCHEMA,
         executionMode: 'sequential',
         async execute(
@@ -82,10 +93,10 @@ export function createRecallExtension(opts: RecallExtensionOpts): ExtensionFacto
 
           if (hits.length === 0) {
             try { opts.onMiss?.(params.query); } catch { /* recall_miss 信号失败不阻断工具 */ }
-            return textResult('(无匹配记忆)', { query: params.query, hits: [] });
+            return textResult(m({ en: '(no matching memory)', zh: '(无匹配记忆)' }), { query: params.query, hits: [] });
           }
 
-          const lines = [`记忆检索 (${hits.length} 条):`];
+          const lines = [m({ en: `Memory search (${hits.length} hits):`, zh: `记忆检索 (${hits.length} 条):` })];
           for (const [i, hit] of hits.entries()) {
             lines.push(formatHit(hit, i));
           }

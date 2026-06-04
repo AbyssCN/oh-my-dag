@@ -4,29 +4,29 @@ tier: foundation
 runtime: on-demand
 trigger: mention
 argument-hint: "(optional) 下个 session 的 focus — 据此裁剪 next_3_steps + Suggested Skills"
-description: "Session 收尾仪式: 更新 _NEXT.md active plan + 写 session log + memory capture. 跳过 = 下次 session 丢 context. Trigger: 结束 / 收工 / handoff / 交接 / 保存进度 / 今天到这 / session结束. Skip: 提交代码 (/commit) / 开新 session (/start)."
+description: "Session wrap-up ritual: update _NEXT.md active plan + write session log + memory capture. Skipping = the next session loses context. Trigger: end / wrap up / handoff / hand over / save progress / call it for today / session end / 结束 / 收工 / 交接 / 保存进度 / 今天到这 / session结束. Skip: commit code (/commit) / start a new session (/start)."
 metadata:
   source: claude-skills
   version: "8.0.0"
 ---
 # /handoff — Session Wrap-Up v8 (xihe-real)
 
-> 单一 Fast Path, 目标 ≤ 4 tool calls. Body 精简; 模板/内部原理在 `references/` 按需读.
+> Single Fast Path, target ≤ 4 tool calls. Body trimmed; templates/internals in `references/`, read on demand.
 >
-> **v8 (2026-06-01)**: 对齐 xihe 真实 infra — 去掉 a sibling project 移植残留的 6 个不存在脚本
+> **v8 (2026-06-01)**: aligned to xihe's real infra — removed the 6 non-existent scripts left over from the a sibling project port
 > (`handoff-write-router`/`force-capture`/`gen-sessions-manifest`/`codex-scan`/`append-journal`/`graphify`)
-> + abort-on-fail 地雷。`_NEXT.md` 是 prose 块 (非 router_v6 yaml fence) → 直接 Edit 顶部块.
-> 唯一存活脚本 = `.claude/memory/scripts/flush.ts`. 见 §Ship History.
+> + the abort-on-fail landmine. `_NEXT.md` is a prose block (not a router_v6 yaml fence) → Edit the top block directly.
+> The only surviving script = `.claude/memory/scripts/flush.ts`. See §Ship History.
 
 ## Trigger / Input
 
-`/handoff` 或 `/handoff <focus>`. `<focus>` = 下个 session 重点 → 据此裁剪 next_3_steps + Suggested Skills. 无参 → 从 session 活动 auto-generate.
+`/handoff` or `/handoff <focus>`. `<focus>` = the next session's focus → trim next_3_steps + Suggested Skills accordingly. No arg → auto-generate from session activity.
 
-## 三条贯穿原则 (mattpocock-merge — 直接降 token)
+## Three threading principles (mattpocock-merge — directly lowers tokens)
 
-1. **Reference, don't duplicate** — session log / `_NEXT.md` 引用已有 artifact (commit sha / plan path / ADR / diff / 上个 session log) 的 **path/URL**, 绝不内联复制其内容. 写 **why**, git diff 已有 **what**.
-2. **Redact** — session log 里遮掉 secrets / API key / token / HMAC / PII (xihe 涉 WeCom/Lark/MiMo key). 命中写 `<redacted:kind>`.
-3. **Suggested Skills** — 报告含一段: 下个 agent 该先 invoke 哪些 skill (依 `<focus>` + 当前 gate).
+1. **Reference, don't duplicate** — session log / `_NEXT.md` references the **path/URL** of an existing artifact (commit sha / plan path / ADR / diff / previous session log), never inlines its content. Write **why**, git diff already has the **what**.
+2. **Redact** — in the session log, mask secrets / API key / token / HMAC / PII (xihe touches WeCom/Lark/MiMo keys). On a hit write `<redacted:kind>`.
+3. **Suggested Skills** — the report contains a section: which skills the next agent should invoke first (per `<focus>` + current gate).
 
 ---
 
@@ -40,18 +40,18 @@ echo "=LOG=" && git log --oneline -5 && \
 echo "=STATUS=" && git status --short --branch && \
 echo "=DIFF_STAT=" && git diff --stat "$(git rev-parse origin/main 2>/dev/null || echo HEAD~1)"..HEAD
 ```
-\+ Read `_NEXT.md` 顶部块 (worktree 下读 `_NEXT.wt-<slug>.md`). `_NEXT.md` = prose `##` 块按 `---` 分隔, **无 yaml router fence** — 当前态在最上面那块.
+\+ Read the top block of `_NEXT.md` (under a worktree read `_NEXT.wt-<slug>.md`). `_NEXT.md` = prose `##` blocks separated by `---`, **no yaml router fence** — the current state is the topmost block.
 
-### Step 2: Analyze (纯推理, 0 IO)
+### Step 2: Analyze (pure reasoning, 0 IO)
 
-- **2a Summary**: feature / last_session_summary (1-2 句) / blocked_on / next_3_steps (动词+宾语; 有 `<focus>` 则对齐它)
-- **2b Gap**: _NEXT 原 next_3_steps vs 实际 → DONE / PARTIAL / SKIPPED / UNPLANNED
-- **2c Wisdom 候选**: 仅扫 session 中显式 `wisdom: <title>` 标记 (命中才记, 默认 0 条; 协议见 references)
-- **2d Slug**: feature → 小写连字符
+- **2a Summary**: feature / last_session_summary (1-2 sentences) / blocked_on / next_3_steps (verb+object; if there is a `<focus>`, align to it)
+- **2b Gap**: _NEXT's original next_3_steps vs actual → DONE / PARTIAL / SKIPPED / UNPLANNED
+- **2c Wisdom candidates**: only scan for explicit `wisdom: <title>` markers in the session (record only on a hit, default 0; protocol in references)
+- **2d Slug**: feature → lowercase-hyphenated
 
-### Step 3: Write (2 calls — _NEXT 先, log 后)
+### Step 3: Write (2 calls — _NEXT first, log second)
 
-**3a `_NEXT.md` 当前态块 (Edit, 先成功)** — 在文件顶部 (第一个 `## ` 块之上) prepend 一个新块:
+**3a `_NEXT.md` current-state block (Edit, succeed first)** — prepend a new block at the top of the file (above the first `## ` block):
 ```markdown
 ## {emoji} {date} session ({phase}) — {title} (下次从这读)
 
@@ -63,22 +63,22 @@ echo "=DIFF_STAT=" && git diff --stat "$(git rev-parse origin/main 2>/dev/null |
 
 ---
 ```
-保留下方旧块 (FIFO, 不删历史; 太长时最旧块手动移 `docs/session/_JOURNAL.md`). 应用原则 1+2.
+Keep the old blocks below (FIFO, do not delete history; when too long, manually move the oldest block to `docs/session/_JOURNAL.md`). Apply principles 1+2.
 
-**3b Session Log (Write)** — `.claude/sessions/{date}-{slug}.md`. 模板 (4 必填 + 6 可选) 见 `references/session-log-template.md`. 引用不复制 + redact.
+**3b Session Log (Write)** — `.claude/sessions/{date}-{slug}.md`. Template (4 required + 6 optional) in `references/session-log-template.md`. Reference-don't-duplicate + redact.
 
-### Step 3.4 Claim-Evidence Gate (纯推理, 不重跑 test, 无脚本)
+### Step 3.4 Claim-Evidence Gate (pure reasoning, no test re-run, no script)
 
-扫完成声明关键词 (完成/合并/删除/修复/通过 · done/merged/deleted/fixed/passed) 对照 Step 1 git diff-stat. 不匹配 → Step 5 标 `⚠ CLAIM-UNVERIFIED: {claim}`. 无关键词 → 跳过. 规则表见 references.
+Scan completion-claim keywords (完成/合并/删除/修复/通过 · done/merged/deleted/fixed/passed) against Step 1's git diff-stat. No match → mark `⚠ CLAIM-UNVERIFIED: {claim}` in Step 5. No keywords → skip. Rules table in references.
 
 ### Step 4: Memory flush (1 message, background)
 
 ```bash
 cd "$(git rev-parse --show-toplevel)" && ( npx tsx .claude/memory/scripts/flush.ts > /dev/null 2>&1 & disown )
 ```
-pending 空 = no-op (~50ms). 永不阻断 handoff. (a sibling project 的 force-capture/manifest/graphify 在 xihe 不存在 → 不调.)
+Empty pending = no-op (~50ms). Never blocks handoff. (a sibling project's force-capture/manifest/graphify do not exist in xihe → not called.)
 
-### Step 5: Report (≤ 15 行)
+### Step 5: Report (≤ 15 lines)
 
 ```
 ## Session Handoff — {date}
@@ -91,23 +91,23 @@ pending 空 = no-op (~50ms). 永不阻断 handoff. (a sibling project 的 force-
 ### Claim-Evidence (仅 ⚠ unverified)
 ### {clean / 建议 /commit / /verify / /review}
 ```
-**Gate**: ≥3 src 文件变更 → 建议 `/review --sweep`; ≥5 文件 + 跨层/迁移 → `/review --release-gate`.
+**Gate**: ≥3 src files changed → suggest `/review --sweep`; ≥5 files + cross-layer/migration → `/review --release-gate`.
 
 ---
 
 ## Constraints
 
-- Tool calls ≤ 4 (gather 1 + write 2 + flush 1); 报告 ≤ 15 行
-- **永远不 auto-commit** — 例外: the owner 本轮显式说 "push"/"提交" 时, 提交 session log (docs commit) 并 push 是 owner 指令, 不算 auto
-- Wisdom 仅 session 中显式 `wisdom:` 标记触发, handoff 不主动决定
-- Worktree: 只写 `_NEXT.wt-<slug>.md`, 禁碰 master `_NEXT.md`
-- Memory flush 永不阻断 (flush.ts 内部处理 pending 空 / embed 失败)
-- **无 abort-on-fail**: `_NEXT` Edit 与 log Write 都是原生工具, 失败即报错, 不会留 partial state
-- 应用三原则 (reference-not-duplicate / redact / suggested-skills) 是降 token 的核心
+- Tool calls ≤ 4 (gather 1 + write 2 + flush 1); report ≤ 15 lines
+- **Never auto-commit** — exception: when the owner explicitly says "push"/"commit" this turn, committing the session log (docs commit) and pushing is an owner instruction, not auto
+- Wisdom is triggered only by an explicit `wisdom:` marker in the session; handoff does not decide on its own
+- Worktree: only write `_NEXT.wt-<slug>.md`, never touch master `_NEXT.md`
+- Memory flush never blocks (flush.ts handles empty pending / embed failure internally)
+- **No abort-on-fail**: both the `_NEXT` Edit and the log Write are native tools, they error on failure and never leave partial state
+- Applying the three principles (reference-not-duplicate / redact / suggested-skills) is the core of lowering tokens
 
 ---
 
-## References (按需读)
+## References (read on demand)
 
-- `references/session-log-template.md` — Step 3b 写 log 时读 (4 必填 + 6 可选 + 判断表)
-- `references/handoff-internals.md` — claim-evidence 规则表 / wisdom 协议 / 调试 / ship history
+- `references/session-log-template.md` — read when writing the log in Step 3b (4 required + 6 optional + decision table)
+- `references/handoff-internals.md` — claim-evidence rules table / wisdom protocol / debugging / ship history

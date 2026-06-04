@@ -3,33 +3,33 @@ name: retro
 tier: capability
 runtime: manual
 trigger: mention
-description: "Engineering retrospective from git history: analyzes commit patterns, type mix (feat/fix/refactor), focus score, test discipline, and productivity trends. Use for Sprint/weekly reviews. Users may say: \"复盘\", \"retro\", \"回顾\", \"Sprint总结\", \"这周做了什么\", \"工作分析\". Do NOT use for session wrap-up (use /handoff) or code review (use /review)."
+description: "Engineering retrospective from git history: analyzes commit patterns, type mix (feat/fix/refactor), focus score, test discipline, and productivity trends. Use for Sprint/weekly reviews. Users may say: \"retro\", \"retrospective\", \"review\", \"sprint summary\", \"what did I do this week\", \"work analysis\", \"复盘\", \"回顾\", \"Sprint总结\", \"这周做了什么\", \"工作分析\". Do NOT use for session wrap-up (use /handoff) or code review (use /review)."
 metadata:
   source: claude-skills
   version: "1.0.0"
   methodology: "gstack retro + git analytics"
 ---
 
-# /retro — 工程复盘
+# /retro — Engineering Retrospective
 
-> 从 git 历史自动生成工程复盘。不靠记忆，靠数据。
+> Auto-generate an engineering retrospective from git history. Not from memory — from data.
 
 ## Input
 
 ```
-/retro              → 默认: 最近 7 天 git 工程复盘
-/retro 24h          → 最近 24 小时
-/retro 14d          → 最近 14 天
-/retro 30d          → 最近 30 天
-/retro compare      → 本周 vs 上周对比
-/retro --learning   → Learning Loop 仪表盘（6-Layer K1-K6，见 §Learning Mode）
-/retro --learning --write      → 生成 docs/session/learning-retro-YYYY-MM.md
-/retro --learning --month 2026-04   → 指定月份报告
+/retro              → default: engineering retro over the last 7 days of git
+/retro 24h          → last 24 hours
+/retro 14d          → last 14 days
+/retro 30d          → last 30 days
+/retro compare      → this week vs last week comparison
+/retro --learning   → Learning Loop dashboard (6-Layer K1-K6, see §Learning Mode)
+/retro --learning --write      → generate docs/session/learning-retro-YYYY-MM.md
+/retro --learning --month 2026-04   → report for a specific month
 ```
 
 ## Workflow
 
-### Step 1: 数据采集（1 条消息，3 并行 Bash）
+### Step 1: Data collection (1 message, 3 parallel Bash)
 
 ```bash
 # 1. Commits with stats
@@ -42,23 +42,23 @@ git log --since="{window_start}" --name-only --format="" | sort | uniq -c | sort
 git log --since="{window_start}" --format="%at|%ai|%s" | sort -n
 ```
 
-### Step 2: 分析（纯推理）
+### Step 2: Analysis (pure reasoning)
 
 #### 2a. Commit Type Mix
 
-从 commit message 的 type prefix 分类：
+Classify by the type prefix of each commit message:
 
-| Type | 含义 | 健康指标 |
+| Type | Meaning | Health indicator |
 |------|------|---------|
-| `feat` | 新功能 | 主要产出 |
-| `fix` | 修复 | < 30% 为健康 |
-| `refactor` | 重构 | 有意识的改善 |
-| `chore` | 杂务 | 必要但非核心 |
-| `docs` | 文档 | 知识沉淀 |
-| `perf` | 性能 | 优化投资 |
-| `test` | 测试 | 质量投资 |
+| `feat` | new feature | primary output |
+| `fix` | fix | < 30% is healthy |
+| `refactor` | refactor | deliberate improvement |
+| `chore` | chore | necessary but non-core |
+| `docs` | docs | knowledge capture |
+| `perf` | performance | optimization investment |
+| `test` | tests | quality investment |
 
-**健康信号**: feat > 40% + fix < 30% = 建设模式。fix > 50% = 救火模式。
+**Health signal**: feat > 40% + fix < 30% = building mode. fix > 50% = firefighting mode.
 
 #### 2b. Focus Score
 
@@ -66,37 +66,37 @@ git log --since="{window_start}" --format="%at|%ai|%s" | sort -n
 focus = 1 - (unique_directories_touched / total_commits)
 ```
 
-| Score | 含义 |
+| Score | Meaning |
 |-------|------|
-| > 0.7 | 高度集中（好：深度工作） |
-| 0.4-0.7 | 适度分散（正常：多任务） |
-| < 0.4 | 过度分散（警告：上下文切换过多） |
+| > 0.7 | highly concentrated (good: deep work) |
+| 0.4-0.7 | moderately spread (normal: multitasking) |
+| < 0.4 | over-spread (warning: too much context switching) |
 
 #### 2c. Session Detection
 
-commit 间隔 > 2 小时 → 新 session。统计：
-- Session 数量 / 平均时长
-- Peak hours（commit 最密集的时段）
-- 最长连续工作段
+Commit gap > 2 hours → new session. Stats:
+- Session count / average duration
+- Peak hours (the densest commit window)
+- Longest continuous work stretch
 
 #### 2d. Hotspots
 
-文件变更频率 top 10。高频变更文件 = 潜在不稳定区域或活跃开发区。
+File change frequency top 10. High-frequency files = potential instability zones or active development zones.
 
-#### 2e. Sprint 进度对照（如 PROGRESS-MAP.md 存在）
+#### 2e. Sprint Progress Check (if PROGRESS-MAP.md exists)
 
-读 `docs/session/PROGRESS-MAP.md` → 对比本周期计划 vs 实际完成。
+Read `docs/session/PROGRESS-MAP.md` → compare this cycle's plan vs actual completion.
 
 <!-- 2f. Standards Drift Check 已删 (2026-06-01): 依赖 a sibling project `scripts/check-standards-drift.mjs`, xihe 不存在。
      orphan-ref / HOOK-REGISTRY 差异 / 陈旧检查的概念有价值, 待真 port 一个 xihe 版再加回 (GP-9 不留死步骤)。 -->
 
-### Step 3: 输出报告
+### Step 3: Output report
 
 ```
 ## Engineering Retro — {window} ({start} ~ {end})
 
 ### Summary
-{1-2 句: 本周期最大成就}
+{1-2 sentences: the biggest achievement of this cycle}
 Commits: {N} | Sessions: {M} | Focus: {score}
 
 ### Commit Mix
@@ -105,9 +105,9 @@ Commits: {N} | Sessions: {M} | Focus: {score}
 feat/fix/refactor/...
 
 ### Health Signals
-- {建设模式 | 救火模式 | 均衡}
-- Fix 占比: {N}% {健康 | 注意 | 警告}
-- Test 占比: {N}% {足够 | 不足}
+- {building mode | firefighting mode | balanced}
+- Fix share: {N}% {healthy | watch | warning}
+- Test share: {N}% {sufficient | insufficient}
 
 ### Hotspots (Top 5 Most Changed Files)
 | File | Changes | Type |
@@ -129,9 +129,9 @@ feat/fix/refactor/...
 - **Try**: {1 experiment for next sprint}
 ```
 
-### Step 4: Compare 模式（`/retro compare`）
+### Step 4: Compare mode (`/retro compare`)
 
-并排对比两个窗口：
+Compare two windows side by side:
 
 ```
 | Metric | This Week | Last Week | Delta |
@@ -149,9 +149,9 @@ feat/fix/refactor/...
 
 ## Constraints
 
-- **Read-only** — 不修改任何文件
-- 输出直接给用户，不写文件
-- 用 `origin/` 分支查 git（本地 main 可能过期）
-- 时间戳用用户本地时区
-- 窗口内 0 commits → 报告并建议换窗口
-- 自包含 skill — 不读 CLAUDE.md 或其他 docs
+- **Read-only** — does not modify any file
+- Output goes directly to the user, no file written
+- Use `origin/` branches for git queries (local main may be stale)
+- Use the user's local timezone for timestamps
+- 0 commits in the window → report and suggest a different window
+- Self-contained skill — does not read CLAUDE.md or other docs

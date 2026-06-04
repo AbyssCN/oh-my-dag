@@ -22,6 +22,7 @@
 import { z } from 'zod';
 import { callModel, listProviders, assertModelResolvable } from '../model';
 import { resolveRoleModel } from '../model/role-models';
+import { logger } from '../logger';
 import type { ModelUsage } from '../model/types';
 import type { ConductorPlan } from './conductor-plan';
 import type { LeafResult } from './executor-dag';
@@ -159,9 +160,18 @@ export function resolveVerification(opts: ResolveVerificationOpts = {}): Verific
   if (opts.enabled === false) return {};
   const env = opts.env ?? process.env;
   const verifierModel = opts.verifierModel ?? resolveRoleModel('verifier', env);
-  // fail-fast: verifier 必被 DAG 跑完后调用。坐标坏 (裸 provider 无 defaultModel 等) 现在就抛,
-  // 别等 leaves 全跑完才在 verify 处崩 (本 session 实测的 footgun: clobber 掉 defaultModel)。
-  assertModelResolvable(verifierModel, 'verifier');
+  // verifier 是**可选增强** (cross-model skeptic), 不是致命依赖。坐标解析不了 (provider 没配 key /
+  // 没 defaultModel 等) → **优雅降级到"验证禁用" + warn, 绝不崩 boot** (对齐"没配 SOTA 维持弱"哲学)。
+  // 仍在 boot 早 detect (非等 leaves 跑完才在 verify 处崩, 那才是 footgun) — 只是从 throw 改成 disable。
+  try {
+    assertModelResolvable(verifierModel, 'verifier');
+  } catch (err) {
+    logger.warn(
+      { verifierModel, err: (err as Error).message },
+      '[wright/verifier] verifier 模型无法解析 → 验证已禁用 (设 XIHE_VERIFIER_MODEL 为完整 provider:model, 或 XIHE_VERIFY=0 显式关)',
+    );
+    return {};
+  }
   const verifier = createDefaultVerifier({
     verifierModel,
     thinkingLevel: opts.thinkingLevel,

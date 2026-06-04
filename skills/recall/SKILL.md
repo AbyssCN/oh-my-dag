@@ -3,86 +3,86 @@ name: recall
 tier: capability
 runtime: on-demand
 trigger: mention
-description: "Memory layer 主动召回: 推理/写作/决策卡住时 Wright 主动查 8734 chunks 库, 不靠 hook 触发. 补 R1-R3 被动消费的盲点. Trigger: /recall / 查历史 / 翻一下记忆 / recall / 以前怎么做的 / there should be precedent. Skip: 文件 grep (Grep) / 调用链 (/graph) / 库文档 (mcp__context7) / git 历史 (git log)."
+description: "Memory layer active recall: when reasoning/writing/decisions stall, Wright proactively queries the 8734-chunk store rather than relying on hook triggers. Fills the blind spots left by R1-R3 passive consumption. Trigger: /recall / recall / there should be precedent / 查历史 / 翻一下记忆 / 以前怎么做的. Skip: file grep (Grep) / call chains (/graph) / library docs (mcp__context7) / git history (git log)."
 metadata:
   source: memory-layer-routing
   version: "1.0.0"
   routing: R10
 ---
 
-# /recall — Memory Layer 主动召回
+# /recall — Memory Layer active recall
 
-> Phase 1 Memory Layer Routing R10 — 主动消费,补 hook 被动触发盲点。
+> Phase 1 Memory Layer Routing R10 — active consumption, filling the blind spots of hook passive triggers.
 
 ## When to use
 
-R10 触发时机(主动型,非 hook 触发):
-- **写 plan/PRD 中卡住** — 想"以前类似怎么决策的"
-- **设计抉择** — "该用 X 还是 Y" 想看历史依据
-- **跨模块复用** — "以前哪个模块解决过类似问题"
-- **方法论查询** — "我们的标准是什么"
-- **历史教训查询** — "这个坑以前踩过吗"
+When R10 fires (active, not hook-triggered):
+- **Stuck while writing a plan/PRD** — wondering "how did we decide similar cases before"
+- **Design choice** — "X or Y" and want to see the historical rationale
+- **Cross-module reuse** — "which module solved a similar problem before"
+- **Methodology query** — "what is our standard"
+- **Historical lesson query** — "have we hit this pitfall before"
 
-不用于:
-- 文件内字面量搜索 → Grep
-- 函数调用链 → /graph what-uses / refs
-- 第三方库文档 → mcp__context7
-- git 提交历史 → git log
+Not for:
+- Literal in-file search → Grep
+- Function call chains → /graph what-uses / refs
+- Third-party library docs → mcp__context7
+- Git commit history → git log
 
 ## Input
 
 ```
 /recall <topic>
-/recall <topic> --k 5            # default k=5, 高于 hook 路由的 3
+/recall <topic> --k 5            # default k=5, higher than the hook route's 3
 /recall <topic> --kind decision  # filter sourceKind
 /recall <topic> --path docs/plan # path filter (R13)
 ```
 
-`<topic>` 可以是:
-- 自然语言 query: `RLS policy auth.uid 跨租户隔离`
-- 关键词: `Procountor 报表 G3`
-- 文件名 + 关键词: `dashboard-overview.ts feature flag`
+`<topic>` can be:
+- A natural-language query: `RLS policy auth.uid cross-tenant isolation`
+- Keywords: `Procountor report G3`
+- Filename + keywords: `dashboard-overview.ts feature flag`
 
 ## Workflow
 
-### Step 1 — 选 K 和 filter
+### Step 1 — Pick K and filter
 
-K 默认 5(高于 hook 路由的 3 — 主动召回时 Wright 想看更全)。
+K defaults to 5 (higher than the hook route's 3 — on active recall Wright wants a fuller view).
 
-如果 `<topic>` 涉及:
-- 决策/方案 → 加 `--kind decision`
-- 标准/规范 → 加 `--kind standards`
-- 失败/坑 → 加 `--kind error,journal`
-- 文件历史 → 加 `--path <prefix>`
+If `<topic>` involves:
+- decision/proposal → add `--kind decision`
+- standard/spec → add `--kind standards`
+- failure/pitfall → add `--kind error,journal`
+- file history → add `--path <prefix>`
 
-### Step 2 — 调 retrieve.ts CLI
+### Step 2 — Call the retrieve.ts CLI
 
 ```bash
 npx tsx .claude/memory/scripts/retrieve.ts "<topic>" --k 5 --format briefing
 ```
 
-如有 `--kind` filter:
+With a `--kind` filter:
 ```bash
-# retrieve.ts 不支持 sourceKind filter 但支持 path filter
-# sourceKind=decision 一般在 docs/plan/ 或 docs/prd/
+# retrieve.ts does not support sourceKind filter but supports path filter
+# sourceKind=decision generally lives in docs/plan/ or docs/prd/
 npx tsx .claude/memory/scripts/retrieve.ts "<topic>" --k 5 --format briefing --path-filter "docs/(plan|prd)/"
 ```
 
-如有 `--path` filter:
+With a `--path` filter:
 ```bash
 npx tsx .claude/memory/scripts/retrieve.ts "<topic>" --k 5 --format briefing --path-filter "<regex>"
 ```
 
-### Step 3 — 展示 + 自评
+### Step 3 — Present + self-assess
 
-输出 retrieve briefing 给 the owner 看 (top-5 sourcePath + breadcrumb + 100 字 preview)。
+Output the retrieve briefing for the owner to see (top-5 sourcePath + breadcrumb + 100-char preview).
 
-然后 Wright **自评相关性**:
-- 哪条直接回答 topic
-- 哪条只是边角相关
-- 哪条无关 (R14 反馈: 响应内附 [Memory-Echo-Ack: applied|irrelevant|ignore])
+Then Wright **self-assesses relevance**:
+- which one directly answers the topic
+- which one is only tangentially related
+- which one is irrelevant (R14 feedback: append `[Memory-Echo-Ack: applied|irrelevant|ignore]` in the response)
 
-## 输出格式
+## Output format
 
 ```
 ### 💾 Relevant Memory (top-5)
@@ -90,33 +90,33 @@ npx tsx .claude/memory/scripts/retrieve.ts "<topic>" --k 5 --format briefing --p
 1. **[decision]** PLAN-stage2-dashboard-overview-materials.md — Stage 2 dashboard overview RPC...
    `docs/plan/PLAN-stage2-dashboard-overview-materials.md` · 0d old
 
-2. **[standards]** ACCOUNTING-ENGINEERING-STANDARD.md — 会计级业务不变量 + 状态机...
+2. **[standards]** ACCOUNTING-ENGINEERING-STANDARD.md — accounting-grade business invariants + state machine...
    `docs/standards/ACCOUNTING-ENGINEERING-STANDARD.md` · 7d old
 
 ...
 
 [Memory-Echo-Ack: applied|irrelevant|ignore]
-(本次召回是否用上, 写到响应末尾, R14 反馈学习)
+(whether this recall was used, written at the end of the response, R14 feedback learning)
 ```
 
-## R5 Domain-First 自检
+## R5 Domain-First self-check
 
-Memory layer 是 meta-layer 不是 domain。`/recall` 用法限制:
-- ✅ Plan/PRD 写作前/中: 高价值, 防重复造轮子
-- ✅ 决策时刻: 历史决策依据
-- ⚠️ 不要用于探索性闲查 — 8 秒 retrieve 不省比 grep
-- ❌ 不要做 /retro 替代 — /retro 看 git 不看 chunks
+The memory layer is a meta-layer, not a domain. `/recall` usage limits:
+- ✅ Before/during plan/PRD writing: high value, prevents reinventing the wheel
+- ✅ At decision moments: historical decision rationale
+- ⚠️ Don't use it for exploratory idle browsing — an 8-second retrieve doesn't beat grep
+- ❌ Don't use it as a /retro substitute — /retro reads git, not chunks
 
-## 与其他 R 路由的关系
+## Relationship to other R routes
 
-| 路由 | 触发 | Query | K |
+| Route | Trigger | Query | K |
 |---|---|---|---|
-| R1 failure-recovery | 命令失败 (hook) | tool + stderr | 3 |
-| R2 patch-detector | Edit 文件 (hook) | file path + context | 3 |
-| R3 cognitive-trigger | 挫败关键词 (hook) | feature + recent calls | 3 |
-| R8 pre-plan-write | 写 plan (hook) | filename + feature | 5 |
-| R9 pre-prd-write | 写 PRD (hook) | filename + feature | 5 |
-| R10 /recall | **主动调** (本 skill) | 任意 topic | 5 |
+| R1 failure-recovery | command failure (hook) | tool + stderr | 3 |
+| R2 patch-detector | Edit file (hook) | file path + context | 3 |
+| R3 cognitive-trigger | frustration keywords (hook) | feature + recent calls | 3 |
+| R8 pre-plan-write | writing a plan (hook) | filename + feature | 5 |
+| R9 pre-prd-write | writing a PRD (hook) | filename + feature | 5 |
+| R10 /recall | **active call** (this skill) | any topic | 5 |
 | R11 pre-dispatch-gate | dispatch agent (hook) | subagent + feature | 3 |
 
-R10 是补 R1-R3 被动 + R8/R9 写文档前 + R11 agent dispatch 之外的**主动消费**盲点。
+R10 fills the **active consumption** blind spot beyond R1-R3 passive + R8/R9 pre-document-write + R11 agent dispatch.

@@ -8,6 +8,7 @@
 import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
 import { createCostLedger, attachLedger, type CostLedger } from '../model/accounting';
 import { logger } from '../logger';
+import { m } from './i18n';
 
 export interface CostExtensionResult {
   extension: ExtensionFactory;
@@ -21,18 +22,21 @@ export function createCostExtension(opts: { limitUsd?: number } = {}): CostExten
     attachLedger(ledger); // 订阅 callModel usage → 自动记账
 
     pi.registerCommand('cost', {
-      description: '本 session 子编排模型花费/token (conductor/leaf/fanout/cg-audit)',
+      description: m({
+        en: 'This session sub-orchestration model spend/token (conductor/leaf/fanout/cg-audit)',
+        zh: '本 session 子编排模型花费/token (conductor/leaf/fanout/cg-audit)',
+      }),
       handler: async (_args: string, ctx) => {
         const s = ledger.state();
         const byModel = Object.entries(s.byModel)
           .map(([m, x]) => `  ${m}: ${x.calls} call · $${x.costUsd.toFixed(4)} · ${x.in}in/${x.out}out`)
           .join('\n');
         const limit = s.budget.limitUsd > 0 ? `/$${s.budget.limitUsd.toFixed(2)} [${s.budget.level}]` : '';
-        const cache = s.cacheSavingsUsd > 0 ? ` · cache 省 $${s.cacheSavingsUsd.toFixed(4)}` : '';
+        const cache = s.cacheSavingsUsd > 0 ? m({ en: ` · cache saved $${s.cacheSavingsUsd.toFixed(4)}`, zh: ` · cache 省 $${s.cacheSavingsUsd.toFixed(4)}` }) : '';
         const unpriced = s.unpriced > 0 ? ` · ${s.unpriced} unpriced` : '';
         const level = s.budget.level === 'exhausted' ? 'error' : s.budget.level === 'warn' ? 'warning' : 'info';
         ctx.ui.notify(
-          `💰 ${s.calls} call · $${s.spentUsd.toFixed(4)}${limit}${cache}${unpriced}\n${byModel || '  (本 session 无子编排调用)'}`,
+          `💰 ${s.calls} call · $${s.spentUsd.toFixed(4)}${limit}${cache}${unpriced}\n${byModel || m({ en: '  (no sub-orchestration calls this session)', zh: '  (本 session 无子编排调用)' })}`,
           level,
         );
       },

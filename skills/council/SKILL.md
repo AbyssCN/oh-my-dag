@@ -3,58 +3,58 @@ name: council
 tier: capability
 runtime: on-demand
 trigger: mention
-description: "多视角并行生成 + 评判择优 (一组专家'开会'审议出冠军): 面对宽解空间的设计/决策, 派 N 个不同 persona+angle 并行出方案 → 多 lens judge → 择优合成 (嫁接亚军亮点), 而非一次性给平均答案. Trigger: 多个方案 / 对比方案 / best of n / bestof / fanout / council / 并行探索 / 多视角 / 给我几个选项 / 哪种方案好 / 方案对比 / explore options / 拿不准选哪个. Skip: 单一明确解 (直接做) / 纯执行无需择优 / 代码审查 (/review) / 根因调试 (/investigate)."
+description: "Multi-perspective parallel generation + judge-and-select (a panel of experts 'meets' to deliberate a winner): facing a wide solution space for a design/decision, dispatch N different persona+angle in parallel to produce candidates → multi-lens judge → select-and-synthesize (graft the runners-up's highlights), instead of giving one averaged answer in a single shot. Trigger: multiple options / compare options / best of n / bestof / fanout / council / parallel exploration / multiple perspectives / give me a few options / which option is better / option comparison / explore options / not sure which to pick / 多个方案 / 对比方案 / 并行探索 / 多视角 / 给我几个选项 / 哪种方案好 / 方案对比 / 拿不准选哪个. Skip: a single clear solution (just do it) / pure execution needing no selection / code review (/review) / root-cause debugging (/investigate)."
 metadata:
   source: wright (plan/best-of-n + research/fanout)
   version: "1.0.0"
   methodology: "diversity>volume + persona conditioning + multi-judge panel + graft runners-up"
 ---
 
-# /council — 多视角并行生成 + 评判择优
+# /council — Multi-Perspective Parallel Generation + Judge-and-Select
 
-> 解空间宽时,一次性答案 = 落在概率分布的**平庸中心**。fanout 用**多样化 persona** 把生成拉进不同专家区,**多 lens judge** 抵单评判者偏见,**择优 + 嫁接**取各方案精华。
-> 这不是"重采样 N 遍"——那是边际递减的体积堆叠。fanout 的核心是 **diversity > volume**。
+> When the solution space is wide, a one-shot answer = landing on the **mediocre center** of the probability distribution. fanout uses **diversified personas** to pull generation into different expert regions, **multi-lens judge** to counter single-judge bias, and **select + graft** to take the best of each candidate.
+> This is not "resample N times" — that is diminishing-returns volume stacking. The core of fanout is **diversity > volume**.
 
-## 何时用
+## When to use
 
-- **架构/设计抉择**: 多个站得住的方向,取舍真实(性能 vs 简洁 vs 可逆)。
-- **难逆决策**: 选错代价高,值得多视角对抗后再定。
-- **方案对比请求**: 用户明说"给我几个选项 / 哪种好 / 拿不准"。
-- **深度研究**: 一个问题需多专家视角 + 子角度覆盖(用深度档)。
+- **Architecture/design choices**: multiple defensible directions with real tradeoffs (performance vs simplicity vs reversibility).
+- **Hard-to-reverse decisions**: high cost of being wrong, worth adversarial multi-perspective vetting before committing.
+- **Option-comparison requests**: the user explicitly says "give me a few options / which is better / not sure".
+- **Deep research**: a single question needing multiple expert perspectives + sub-angle coverage (use the deep tier).
 
-## 何时不用 (anti-slop)
+## When not to use (anti-slop)
 
-- 单一明确解 → 直接做,别为仪式感 fan out。
-- 纯执行(已定方案的实装)→ execute,不择优。
-- 代码审查 → `/review`;根因调试 → `/investigate`。
+- A single clear solution → just do it, don't fan out for ceremony.
+- Pure execution (implementing an already-decided plan) → execute, no selection.
+- Code review → `/review`; root-cause debugging → `/investigate`.
 
-## 两档机制 (wright 已实装)
+## Two-tier mechanism (already implemented in wright)
 
-### 轻量档 — `/council` (plan mode, 底层 best-of-N)
-plan mode 内 `/council`: 当前审议 context → **3 个 default lens** 并行出方案 → 多视角 judge 评分 → cherry-pick 合成注入下轮。适合**一次设计抉择**。(底层算法 = `bestOfNPlan`。)
+### Light tier — `/council` (plan mode, underlying best-of-N)
+`/council` inside plan mode: current deliberation context → **3 default lenses** produce candidates in parallel → multi-perspective judge scores → cherry-pick synthesis injected into the next round. Suited to **a single design choice**. (Underlying algorithm = `bestOfNPlan`.)
 
-3 个 default lens(`DEFAULT_PLAN_LENSES`,每个 = persona + angle + 采样调制):
+The 3 default lenses (`DEFAULT_PLAN_LENSES`, each = persona + angle + sampling modulation):
 | lens | persona | angle | temp/topP |
 |---|---|---|---|
-| `mvp` | 务实交付型工程主管 | 最小可行切口, 最快验证闭环, 砍非核心 | 0.4 / 0.85 |
-| `risk` | 资深 SRE + 安全工程师 | 从失败模式/边界/不可逆点倒推, 先堵风险 | 0.5 / 0.9 |
-| `first-principles` | 第一性原理思考者 | 重构问题本质, 质疑前提, 找最简结构 | 0.75 / 0.95 |
+| `mvp` | pragmatic delivery-oriented engineering lead | smallest viable cut, fastest verification loop, cut the non-core | 0.4 / 0.85 |
+| `risk` | senior SRE + security engineer | reason backward from failure modes/boundaries/irreversible points, plug risks first | 0.5 / 0.9 |
+| `first-principles` | first-principles thinker | reframe the essence of the problem, question premises, find the simplest structure | 0.75 / 0.95 |
 
-### 深度档 — `/council deep` (plan mode, researchFanout at scale)
-plan mode 内 `/council deep`: **L lens × V sub-angle 变体** → per-lens reduce 成冠军 → M framing 综合 → **K-judge panel + graft** → 最终方案。每 leaf 注 persona + 高阶领域抽象框架 + groundTruth。适合 foundational / 难逆决策(量任务驱动,L=真实专家视角数,V=该 lens 真实 sub-angle 数)。底层 = `researchFanout` (`src/wright/research/fanout.ts`)。
+### Deep tier — `/council deep` (plan mode, researchFanout at scale)
+`/council deep` inside plan mode: **L lens × V sub-angle variants** → per-lens reduce to a champion → M framing synthesis → **K-judge panel + graft** → final solution. Each leaf is injected with persona + a high-level domain abstraction framework + groundTruth. Suited to foundational / hard-to-reverse decisions (driven by the task's mass, L = the real number of expert perspectives, V = that lens's real number of sub-angles). Underlying = `researchFanout` (`src/wright/research/fanout.ts`).
 
-## 核心纪律 (照搬这 4 条,无 code path 时手动 fan out 也守)
+## Core discipline (copy these 4, hold them even when fanning out manually with no code path)
 
-1. **多样性 > 体积**: lens 内是 V 个**不同 sub-angle**,不是同一 prompt 重采样 V 遍(后者边际递减)。
-2. **persona conditioning**: 每 leaf 注一行 ROLE + 视角/第一性 lens,把(弱)模型从通用区搬进专家区——搬概率质量逃平庸。低 temp = 忠实,高 temp = 探长尾。
-3. **多 judge panel**: foundational 决策单 judge 有系统偏见 → K 个**不同评判维度**(正确性/简洁/风险)各评一遍,adversarial-verify。
-4. **嫁接亚军 (graft)**: 不是选一个丢其余——从冠军合成,但把亚军的亮点 cherry-pick 进来。
+1. **Diversity > volume**: within a lens there are V **different sub-angles**, not the same prompt resampled V times (the latter has diminishing returns).
+2. **persona conditioning**: each leaf is injected with one line of ROLE + perspective/first-principles lens, moving the (weak) model from the generic region into the expert region — moving probability mass to escape mediocrity. Low temp = faithful, high temp = explore the long tail.
+3. **multi-judge panel**: for foundational decisions a single judge has systemic bias → K **different judging dimensions** (correctness/simplicity/risk) each score once, adversarial-verify.
+4. **graft runners-up (graft)**: not "pick one and discard the rest" — synthesize from the champion, but cherry-pick the runners-up's highlights into it.
 
-## 手动 fan out (无 plan mode / 大规模时)
+## Manual fan out (no plan mode / at scale)
 
-1. 定 N 个**真正不同**的视角(默认 mvp/risk/first-principles,或按任务定专家角色)。
-2. 每视角注 persona + angle,**并行**各出一个完整方案(独立, 不互看)。
-3. 用 ≥2 个不同 lens 各 judge 一遍(别用单一标准)。
-4. 从最高分合成,嫁接其余方案的独特优点 → 一个最终方案 + 取舍理由。
+1. Define N **genuinely different** perspectives (default mvp/risk/first-principles, or task-specific expert roles).
+2. Inject persona + angle per perspective, **in parallel** each producing a complete candidate (independent, no peeking at each other).
+3. Judge with ≥2 different lenses each (don't use a single standard).
+4. Synthesize from the highest score, graft the unique strengths of the rest → one final solution + tradeoff rationale.
 
-> 收尾必给:**冠军方案 + 为何胜 + 从亚军嫁接了什么**(不是 N 选 1 的裸结论)。
+> The wrap-up must give: **the champion solution + why it won + what was grafted from the runners-up** (not a bare N-pick-1 conclusion).

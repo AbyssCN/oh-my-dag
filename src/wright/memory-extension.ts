@@ -19,24 +19,41 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import type { WrightMemory } from './memory';
 import { logger } from '../logger';
+import { m } from './i18n';
 
 const REMEMBER_SCHEMA = Type.Object({
   fact: Type.Record(Type.String(), Type.Unknown(), {
-    description:
-      '要记的 fact 对象。namespace 限 user.*(记用户) / wright.*(记自己): ' +
-      'user.preference{category,value} · user.interest{topic,note?} · user.focus{focus,started_at} · ' +
-      'user.expertise{domain,level:expert|proficient|familiar} · user.trait{category,statement} · ' +
-      'user.goal{goal,status:active|paused|done,horizon:now|quarter|year} · ' +
-      'wright.capability{area,level:expert|proficient|weak,note?} · wright.pattern{situation,approach,outcome:worked|failed} · ' +
-      'wright.limit{kind:budget|boundary|blindspot,statement}。' +
-      '必带 source_event_id 或 source_doc_id + confidence (默认 {level:"agent_tentative",source_event_ids:["<ev>"],created_at:"<iso>"}; ≥3 源用 agent_confident)。',
+    description: m({
+      en:
+        'The fact object to remember. namespace limited to user.*(about user) / wright.*(about self): ' +
+        'user.preference{category,value} · user.interest{topic,note?} · user.focus{focus,started_at} · ' +
+        'user.expertise{domain,level:expert|proficient|familiar} · user.trait{category,statement} · ' +
+        'user.goal{goal,status:active|paused|done,horizon:now|quarter|year} · ' +
+        'wright.capability{area,level:expert|proficient|weak,note?} · wright.pattern{situation,approach,outcome:worked|failed} · ' +
+        'wright.limit{kind:budget|boundary|blindspot,statement}. ' +
+        'Must carry source_event_id or source_doc_id + confidence (default {level:"agent_tentative",source_event_ids:["<ev>"],created_at:"<iso>"}; use agent_confident for ≥3 sources).',
+      zh:
+        '要记的 fact 对象。namespace 限 user.*(记用户) / wright.*(记自己): ' +
+        'user.preference{category,value} · user.interest{topic,note?} · user.focus{focus,started_at} · ' +
+        'user.expertise{domain,level:expert|proficient|familiar} · user.trait{category,statement} · ' +
+        'user.goal{goal,status:active|paused|done,horizon:now|quarter|year} · ' +
+        'wright.capability{area,level:expert|proficient|weak,note?} · wright.pattern{situation,approach,outcome:worked|failed} · ' +
+        'wright.limit{kind:budget|boundary|blindspot,statement}。' +
+        '必带 source_event_id 或 source_doc_id + confidence (默认 {level:"agent_tentative",source_event_ids:["<ev>"],created_at:"<iso>"}; ≥3 源用 agent_confident)。',
+    }),
   }),
   verify: Type.Optional(
     Type.Union([Type.Literal('user'), Type.Literal('ask')], {
-      description:
-        "记忆的人验意图: 'user' = 用户**明确说**要记住 → 直接存 human_verified, **不弹窗** (用户的话就是确认); " +
-        "'ask' = wright **主动提议**永久锁定(用户没明说) → **弹窗**请用户确认, 确认才 human_verified; " +
-        '省略 = wright 自己的观察 → 按 fact 自带 agent confidence 记, 不弹窗。三种都会写入并显示 💾。',
+      description: m({
+        en:
+          "Human-verification intent for the memory: 'user' = user **explicitly said** to remember → save human_verified directly, **no prompt** (the user's word is the confirmation); " +
+          "'ask' = wright **proactively proposes** permanent lock (user didn't say so) → **prompt** the user to confirm, human_verified only on confirm; " +
+          'omitted = wright own observation → recorded at the fact\'s own agent confidence, no prompt. All three write and show 💾.',
+        zh:
+          "记忆的人验意图: 'user' = 用户**明确说**要记住 → 直接存 human_verified, **不弹窗** (用户的话就是确认); " +
+          "'ask' = wright **主动提议**永久锁定(用户没明说) → **弹窗**请用户确认, 确认才 human_verified; " +
+          '省略 = wright 自己的观察 → 按 fact 自带 agent confidence 记, 不弹窗。三种都会写入并显示 💾。',
+      }),
     }),
   ),
 });
@@ -79,8 +96,14 @@ export function createMemoryExtension(opts: MemoryExtensionOpts): ExtensionFacto
       defineTool({
         name: 'remember',
         label: 'Remember',
-        description: '把一条关于用户(user.*)或自己(wright.*)的 fact 写入长期记忆 (SQLite, 经 validateFactWrite 闸)。',
-        promptSnippet: 'remember(fact, verify?) — 记一条 user.*/wright.* fact 进长期记忆。',
+        description: m({
+          en: 'Write a fact about the user (user.*) or self (wright.*) into long-term memory (SQLite, via the validateFactWrite gate).',
+          zh: '把一条关于用户(user.*)或自己(wright.*)的 fact 写入长期记忆 (SQLite, 经 validateFactWrite 闸)。',
+        }),
+        promptSnippet: m({
+          en: 'remember(fact, verify?) — record a user.*/wright.* fact into long-term memory.',
+          zh: 'remember(fact, verify?) — 记一条 user.*/wright.* fact 进长期记忆。',
+        }),
         parameters: REMEMBER_SCHEMA,
         executionMode: 'sequential',
         async execute(_id: string, params: RememberParams, _signal, _onUpdate, ctx: ExtensionContext) {
@@ -96,19 +119,22 @@ export function createMemoryExtension(opts: MemoryExtensionOpts): ExtensionFacto
             markVerified();
           } else if (params.verify === 'ask') {
             // wright 主动提议永久锁定 → 弹窗请用户确认 (the owner #1); 无交互 ui 则不升人验。
-            if (await ctx?.ui?.confirm?.('确认永久记住?', summarize(fact))) markVerified();
+            if (await ctx?.ui?.confirm?.(m({ en: 'Confirm to remember permanently?', zh: '确认永久记住?' }), summarize(fact))) markVerified();
           }
           // 省略 verify → 保 fact 自带 agent confidence (wright 自己的观察)。
 
           const res = await opts.memory.writeFact(fact);
           if (res.status === 'rejected') {
-            ctx?.ui?.notify?.(`记忆被拒: ${res.reason}`, 'error');
+            ctx?.ui?.notify?.(m({ en: `Memory rejected: ${res.reason}`, zh: `记忆被拒: ${res.reason}` }), 'error');
             logger.warn({ ns: fact.namespace, reason: res.reason }, '[wright/remember] rejected');
             return textResult(`rejected: ${res.reason}`, { ok: false, reason: res.reason });
           }
           // 存储 emoji (the owner #4): 每次成功写入可见提醒。
           ctx?.ui?.notify?.(
-            `💾 已记 ${String(fact.namespace)}${humanVerified ? ' ✅human-verified' : ''} (${res.action})`,
+            m({
+              en: `💾 saved ${String(fact.namespace)}${humanVerified ? ' ✅human-verified' : ''} (${res.action})`,
+              zh: `💾 已记 ${String(fact.namespace)}${humanVerified ? ' ✅human-verified' : ''} (${res.action})`,
+            }),
             'info',
           );
           logger.debug({ ns: fact.namespace, action: res.action, humanVerified }, '[wright/remember] written');

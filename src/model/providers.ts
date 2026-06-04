@@ -43,7 +43,9 @@ export function registerProvidersFromEnv(
       baseUrl: env.MIMO_BASE_URL,
       apiKey: env.MIMO_API_KEY,
       api: 'openai-compatible',
-      defaultModel: env.MIMO_MODEL,
+      // defaultModel 兜底: 裸 provider 坐标 (如 role fallback 'mimo') 靠它解析。env 未设 → 用稳健默认,
+      // 避免 "provider 'mimo' has no defaultModel" 崩 boot (非 bake runtime 模型, 仅 bare-coord 兜底)。
+      defaultModel: env.MIMO_MODEL ?? 'mimo-v2.5-pro',
     });
     registered.push('mimo');
   }
@@ -52,7 +54,8 @@ export function registerProvidersFromEnv(
       baseUrl: env.DEEPSEEK_BASE_URL,
       apiKey: env.DEEPSEEK_API_KEY,
       api: 'openai-compatible',
-      defaultModel: env.DEEPSEEK_MODEL,
+      // defaultModel 兜底 (同 mimo): 裸 'deepseek' 坐标 (verifier role fallback) 靠它解析, 不崩 boot。
+      defaultModel: env.DEEPSEEK_MODEL ?? 'deepseek-v4-flash',
     });
     registered.push('deepseek');
   }

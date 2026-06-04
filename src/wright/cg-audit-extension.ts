@@ -86,7 +86,7 @@ export function createCgAuditExtension(
               recorder.record(res, { question: trimmed });
             },
           });
-          const answer = r.results['synth']?.output ?? '(无 synth 结果)';
+          const answer = r.results['synth']?.output ?? m({ en: '(no synth result)', zh: '(无 synth 结果)' });
           ctx.ui.notify(answer, 'info');
         } catch (e) {
           ctx.ui.notify(m({ en: 'Retrieve failed: ', zh: '检索失败: ' }) + String(e), 'error');
@@ -97,10 +97,13 @@ export function createCgAuditExtension(
     });
 
     pi.registerCommand('audit', {
-      description: '多 lens 并行安全审计 + 结构化报告。用法: /audit [目标路径]',
+      description: m({
+        en: 'Multi-lens parallel security audit + structured report. Usage: /audit [target path]',
+        zh: '多 lens 并行安全审计 + 结构化报告。用法: /audit [目标路径]',
+      }),
       handler: async (args: string, ctx) => {
         const target = args.trim() || (opts.cwd ?? ctx.cwd);
-        ctx.ui.setStatus('audit', '审计中…');
+        ctx.ui.setStatus('audit', m({ en: 'auditing…', zh: '审计中…' }));
         try {
           const r = await (deps?.secAudit ?? secAudit)(target, {
             conductorModel: opts.conductorModel,
@@ -113,10 +116,10 @@ export function createCgAuditExtension(
               recorder.record(res, { question: 'audit ' + target });
             },
           });
-          const report = r.results['report']?.output ?? '(无 report 结果)';
+          const report = r.results['report']?.output ?? m({ en: '(no report result)', zh: '(无 report 结果)' });
           ctx.ui.notify(report, 'info');
         } catch (e) {
-          ctx.ui.notify('审计失败: ' + String(e), 'error');
+          ctx.ui.notify(m({ en: 'Audit failed: ', zh: '审计失败: ' }) + String(e), 'error');
         } finally {
           ctx.ui.setStatus('audit', undefined);
         }
@@ -124,10 +127,13 @@ export function createCgAuditExtension(
     });
 
     pi.registerCommand('sast', {
-      description: '确定性 semgrep 静态扫描 (SAST) + 结构化报告。用法: /sast [目标路径]',
+      description: m({
+        en: 'Deterministic semgrep static scan (SAST) + structured report. Usage: /sast [target path]',
+        zh: '确定性 semgrep 静态扫描 (SAST) + 结构化报告。用法: /sast [目标路径]',
+      }),
       handler: async (args: string, ctx) => {
         const target = args.trim() || (opts.cwd ?? ctx.cwd);
-        ctx.ui.setStatus('sast', '扫描中…');
+        ctx.ui.setStatus('sast', m({ en: 'scanning…', zh: '扫描中…' }));
         try {
           const r = await (deps?.sastScan ?? sastScan)(target, {
             conductorModel: opts.conductorModel,
@@ -137,10 +143,10 @@ export function createCgAuditExtension(
               recorder.record(res, { question: 'sast ' + target });
             },
           });
-          const report = r.results['report']?.output ?? '(无 report 结果)';
+          const report = r.results['report']?.output ?? m({ en: '(no report result)', zh: '(无 report 结果)' });
           ctx.ui.notify(report, 'info');
         } catch (e) {
-          ctx.ui.notify('扫描失败: ' + String(e), 'error');
+          ctx.ui.notify(m({ en: 'Scan failed: ', zh: '扫描失败: ' }) + String(e), 'error');
         } finally {
           ctx.ui.setStatus('sast', undefined);
         }

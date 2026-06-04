@@ -37,6 +37,7 @@ import {
 import { type Static, Type } from 'typebox';
 import { defineTool, type ExtensionFactory, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { logger } from '../logger';
+import { m } from './i18n';
 
 /** 弱模型用法守则 (prompt.md <rules> 浓缩) —— 经 promptGuidelines 自动注入 leaf 系统提示。 */
 export const HASHLINE_GUIDELINES: string[] = [
@@ -50,20 +51,22 @@ export const HASHLINE_GUIDELINES: string[] = [
 ];
 
 const READ_SCHEMA = Type.Object({
-  path: Type.String({ description: '要读的文件路径 (相对工作根或绝对)。' }),
+  path: Type.String({ description: m({ en: 'File path to read (relative to working root, or absolute).', zh: '要读的文件路径 (相对工作根或绝对)。' }) }),
   offset: Type.Optional(
-    Type.Number({ description: '起始行号 (1-indexed)。省略 = 从第 1 行。大文件用它配 limit 切片, 行号仍是真实文件行号。' }),
+    Type.Number({ description: m({ en: 'Start line number (1-indexed). Omit = from line 1. For large files use it with limit to slice; line numbers stay the real file line numbers.', zh: '起始行号 (1-indexed)。省略 = 从第 1 行。大文件用它配 limit 切片, 行号仍是真实文件行号。' }) }),
   ),
   limit: Type.Optional(
-    Type.Number({ description: '渲染行数上限。省略 = 渲染到文件末尾。' }),
+    Type.Number({ description: m({ en: 'Max number of lines to render. Omit = render to end of file.', zh: '渲染行数上限。省略 = 渲染到文件末尾。' }) }),
   ),
 });
 type ReadParams = Static<typeof READ_SCHEMA>;
 
 const EDIT_SCHEMA = Type.Object({
   patch: Type.String({
-    description:
-      'hashline patch 文本。以 `¶PATH#TAG` 头开始 (TAG = 最近 hashline_read 回的 4-hex 标签), 下接 `replace N..M:` / `delete N` / `insert before N:` 等操作, body 行为 `+TEXT`。可含多个 section (各自一个 `¶` 头)。',
+    description: m({
+      en: 'hashline patch text. Begins with a `¶PATH#TAG` header (TAG = the 4-hex tag returned by the latest hashline_read), followed by operations like `replace N..M:` / `delete N` / `insert before N:`, with body lines as `+TEXT`. May contain multiple sections (each with its own `¶` header).',
+      zh: 'hashline patch 文本。以 `¶PATH#TAG` 头开始 (TAG = 最近 hashline_read 回的 4-hex 标签), 下接 `replace N..M:` / `delete N` / `insert before N:` 等操作, body 行为 `+TEXT`。可含多个 section (各自一个 `¶` 头)。',
+    }),
   }),
 });
 type EditParams = Static<typeof EDIT_SCHEMA>;
@@ -138,8 +141,10 @@ export function createHashlineTools(opts: HashlineToolsOpts = {}): HashlineTools
   const readTool = defineTool({
     name: 'hashline_read',
     label: 'Hashline Read',
-    description:
-      '读取文件并以 hashline 格式渲染: `¶PATH#TAG` 头 (4-hex 快照标签) + 每行 `LINE:TEXT`。改文件前用它接地, 标签喂给 hashline_edit。',
+    description: m({
+      en: 'Read a file and render it in hashline format: a `¶PATH#TAG` header (4-hex snapshot tag) + each line as `LINE:TEXT`. Use it to ground before editing a file; feed the tag to hashline_edit.',
+      zh: '读取文件并以 hashline 格式渲染: `¶PATH#TAG` 头 (4-hex 快照标签) + 每行 `LINE:TEXT`。改文件前用它接地, 标签喂给 hashline_edit。',
+    }),
     promptSnippet: 'hashline_read(path) — 读文件返 `¶PATH#TAG` + `LINE:TEXT`, 改文件前必读。',
     promptGuidelines: HASHLINE_GUIDELINES,
     parameters: READ_SCHEMA,
@@ -192,8 +197,10 @@ export function createHashlineTools(opts: HashlineToolsOpts = {}): HashlineTools
   const editTool = defineTool({
     name: 'hashline_edit',
     label: 'Hashline Edit',
-    description:
-      '对已存在文件应用 hashline patch。patch 须含 `¶PATH#TAG` 头 (TAG 来自最近 hashline_read) + 操作行。成功返每个 section 的新 `¶PATH#TAG` 头 + 首个改动行号, 凭它链式继续编辑。',
+    description: m({
+      en: 'Apply a hashline patch to an existing file. The patch must include a `¶PATH#TAG` header (TAG from the latest hashline_read) + operation lines. On success returns each section\'s new `¶PATH#TAG` header + the first changed line number, which you chain to keep editing.',
+      zh: '对已存在文件应用 hashline patch。patch 须含 `¶PATH#TAG` 头 (TAG 来自最近 hashline_read) + 操作行。成功返每个 section 的新 `¶PATH#TAG` 头 + 首个改动行号, 凭它链式继续编辑。',
+    }),
     promptSnippet: 'hashline_edit(patch) — 应用 `¶PATH#TAG` + 操作行的 patch, 改已存在文件。',
     promptGuidelines: HASHLINE_GUIDELINES,
     parameters: EDIT_SCHEMA,
