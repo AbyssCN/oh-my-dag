@@ -431,16 +431,17 @@ export function createPlanExtension(opts: PlanExtensionOpts = {}): ExtensionFact
       },
     });
 
-    // /bestof (G): 当前方案 context → N 视角推理 leaf 出方案 → 多视角 judge → cherry-pick 合成注下轮。
-    pi.registerCommand('bestof', {
-      description: 'best-of-N: N 视角 deepseek-pro 出方案 → 多视角 judge 评分对比 → cherry-pick 合成',
+    // /council (G): 一组视角"开会"审议择优 — 当前方案 context → N 视角推理 leaf 出方案 →
+    // 多视角 judge → cherry-pick 合成注下轮。底层算法 = best-of-N (bestOfNPlan)。
+    pi.registerCommand('council', {
+      description: 'council 多视角择优: N 视角 deepseek-pro 出方案 → 多视角 judge 评分对比 → cherry-pick 合成 (底层 best-of-N)',
       handler: async (_args: string, ctx: Ctx) => {
         if (state.status !== 'plan') {
-          ctx.ui.notify('bestof 仅在 plan mode 内', 'warning');
+          ctx.ui.notify('council 仅在 plan mode 内', 'warning');
           return;
         }
         const planContext = `目标: ${state.ledger.goal || '(见下方台账/讨论)'}\n\n${state.ledger.render()}`;
-        ctx.ui.setStatus('bestof', 'N 视角生成+评判 (deepseek-pro)…');
+        ctx.ui.setStatus('council', 'N 视角生成+评判 (deepseek-pro)…');
         try {
           const r = await bestOfN(planContext);
           if (!r.verdict) {
@@ -457,7 +458,7 @@ export function createPlanExtension(opts: PlanExtensionOpts = {}): ExtensionFact
         } catch (e) {
           ctx.ui.notify(`best-of-N 失败: ${String(e)}`, 'error');
         } finally {
-          ctx.ui.setStatus('bestof', undefined);
+          ctx.ui.setStatus('council', undefined);
         }
       },
     });
