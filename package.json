@@ -4,9 +4,45 @@
   "description": "Xihe — a model-agnostic multi-agent runtime. Wright is its first agent: a terminal coding agent with plan mode, code mode, multi-perspective fan-out, a self-consolidating memory, an MCP router, and a curated skill bundle.",
   "type": "module",
   "license": "MIT",
+  "homepage": "https://xihe.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AbyssCN/xihe.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AbyssCN/xihe/issues"
+  },
+  "keywords": [
+    "agent",
+    "coding-agent",
+    "llm",
+    "multi-agent",
+    "orchestration",
+    "harness",
+    "model-agnostic",
+    "deepseek",
+    "mcp",
+    "bun"
+  ],
   "engines": {
     "bun": ">=1.3.0"
   },
+  "bin": {
+    "xihe": "src/wright/tui.ts",
+    "wright": "src/wright/tui.ts"
+  },
+  "files": [
+    "src",
+    "skills",
+    "substrate",
+    "assets",
+    "umbrella.md",
+    "manifest.json",
+    "tsconfig.json",
+    ".env.example",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "wright": "bun run src/wright/tui.ts",
     "typecheck": "tsc --noEmit",
