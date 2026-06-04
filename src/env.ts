@@ -19,7 +19,6 @@ let cached: Env | null = null;
 export function loadEnv(): Env {
   if (cached) return cached;
   const parsed = EnvSchema.safeParse(process.env);
-  // both fields default → parse never fails; fall back defensively just in case.
   cached = parsed.success ? parsed.data : { LOG_LEVEL: 'info', NODE_ENV: 'development' };
   return cached;
 }
