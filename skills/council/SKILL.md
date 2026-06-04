@@ -40,8 +40,8 @@ plan mode 内 `/council`: 当前审议 context → **3 个 default lens** 并行
 | `risk` | 资深 SRE + 安全工程师 | 从失败模式/边界/不可逆点倒推, 先堵风险 | 0.5 / 0.9 |
 | `first-principles` | 第一性原理思考者 | 重构问题本质, 质疑前提, 找最简结构 | 0.75 / 0.95 |
 
-### 深度档 — `researchFanout` (at scale)
-`src/valar/research/fanout.ts`: **L lens × V sub-angle 变体** → per-lens judge reduce 成冠军 → M framing 综合 → **K-judge panel + graft** → 最终方案。每 leaf 注 persona + 高阶领域抽象框架 + groundTruth。适合 foundational 决策 / 深度调研(量任务驱动,L=真实专家视角数,V=该 lens 真实 sub-angle 数)。
+### 深度档 — `/council deep` (plan mode, researchFanout at scale)
+plan mode 内 `/council deep`: **L lens × V sub-angle 变体** → per-lens reduce 成冠军 → M framing 综合 → **K-judge panel + graft** → 最终方案。每 leaf 注 persona + 高阶领域抽象框架 + groundTruth。适合 foundational / 难逆决策(量任务驱动,L=真实专家视角数,V=该 lens 真实 sub-angle 数)。底层 = `researchFanout` (`src/valar/research/fanout.ts`)。
 
 ## 核心纪律 (照搬这 4 条,无 code path 时手动 fan out 也守)
 

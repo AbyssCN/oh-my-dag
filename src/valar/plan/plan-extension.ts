@@ -25,7 +25,7 @@ import { extractUrls, stripUrls } from './url-detect';
 import { createDefaultWebRetriever, type WebRetriever } from './web-retriever';
 import { createDistiller, type DistillFn } from './distill';
 import { contextStageNote, contextStage, COMPACT_PRESERVE_INSTRUCTIONS } from './context-monitor';
-import { bestOfNPlan } from './best-of-n';
+import { bestOfNPlan, councilDeepPlan } from './best-of-n';
 import { createSessionStore, type SessionStore } from './session-store';
 import { join } from 'node:path';
 
@@ -48,6 +48,8 @@ export interface PlanExtensionOpts {
   distill?: DistillFn;
   /** best-of-N (G): 省略 = 默认 bestOfNPlan (deepseek-v4-pro N 视角 + judge)。测试注入桩。 */
   bestOfN?: typeof bestOfNPlan;
+  /** 深度 council (researchFanout at scale)。省略 = 默认 councilDeepPlan。测试注入桩。 */
+  councilDeep?: typeof councilDeepPlan;
   /** session 结晶库 (F crystallize 跨-session 持久层)。省略 = 默认 .valar/session-crystals.db。测试注入 :memory:。 */
   sessionStore?: SessionStore;
   /** carve-out 路径解析基准 (gate 判 docs/plan|.valar 写放行)。省略 = process.cwd()。测试注入临时 cwd。 */
@@ -76,6 +78,7 @@ export function createPlanExtension(opts: PlanExtensionOpts = {}): ExtensionFact
       opts.retriever ?? createDefaultWebRetriever((cmd, args, o) => pi.exec(cmd, args, o));
     const distill: DistillFn = opts.distill ?? createDistiller();
     const bestOfN = opts.bestOfN ?? bestOfNPlan;
+    const councilDeep = opts.councilDeep ?? councilDeepPlan;
     let sessionStoreInst: SessionStore | undefined = opts.sessionStore;
     const getSessionStore = (): SessionStore => (sessionStoreInst ??= createSessionStore());
 
@@ -431,16 +434,36 @@ export function createPlanExtension(opts: PlanExtensionOpts = {}): ExtensionFact
       },
     });
 
-    // /council (G): 一组视角"开会"审议择优 — 当前方案 context → N 视角推理 leaf 出方案 →
-    // 多视角 judge → cherry-pick 合成注下轮。底层算法 = best-of-N (bestOfNPlan)。
+    // /council [deep] (G): 一组视角"开会"审议择优 — 当前方案 context → N 视角推理 leaf 出方案 →
+    // 多视角 judge → cherry-pick 合成注下轮。轻量 = best-of-N (bestOfNPlan);
+    // `/council deep` = researchFanout at scale (L×V + reduce + framing + K-judge panel + graft)。
     pi.registerCommand('council', {
-      description: 'council 多视角择优: N 视角 deepseek-pro 出方案 → 多视角 judge 评分对比 → cherry-pick 合成 (底层 best-of-N)',
-      handler: async (_args: string, ctx: Ctx) => {
+      description: 'council 多视角择优: N 视角出方案 → 多视角 judge → cherry-pick 合成 (底层 best-of-N)。`/council deep` 走深度档 (researchFanout at scale)',
+      handler: async (args: string, ctx: Ctx) => {
         if (state.status !== 'plan') {
           ctx.ui.notify('council 仅在 plan mode 内', 'warning');
           return;
         }
         const planContext = `目标: ${state.ledger.goal || '(见下方台账/讨论)'}\n\n${state.ledger.render()}`;
+        // 深度档: /council deep — researchFanout at scale。
+        if (/^(deep|research|深度)$/i.test(args.trim())) {
+          ctx.ui.setStatus('council', '深度 council (L×V → reduce → framing → judge panel → graft)…');
+          try {
+            const r = await councilDeep(planContext, {
+              onStage: (s, d) => ctx.ui.setStatus('council', `深度 council: ${s} ${d}`.slice(0, 60)),
+            });
+            state.ledger.pushPending(`<council-deep leaves="${r.leafCount}">\n${r.final}\n</council-deep>`);
+            ctx.ui.notify(
+              `🏛️ 深度 council: ${r.leafCount} leaf, 合成方案注入下轮 context ($${r.costStats.totalUsd.toFixed(3)})`,
+              'info',
+            );
+          } catch (e) {
+            ctx.ui.notify(`深度 council 失败: ${String(e)}`, 'error');
+          } finally {
+            ctx.ui.setStatus('council', undefined);
+          }
+          return;
+        }
         ctx.ui.setStatus('council', 'N 视角生成+评判 (deepseek-pro)…');
         try {
           const r = await bestOfN(planContext);
