@@ -16,6 +16,7 @@
  */
 import { getModel } from '@earendil-works/pi-ai';
 import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
+import { resolveRoleModel } from '../../model/role-models';
 import type { ThinkingLevel } from '../../runtime/types';
 import { logger } from '../../logger';
 import { parseModelRef } from '../fleet';
@@ -65,7 +66,8 @@ function resolvePiModel(ref: string): unknown {
 }
 
 export function createPlanExtension(opts: PlanExtensionOpts = {}): ExtensionFactory {
-  const planModelStr = opts.planModel ?? PLAN_DEFAULT_MODEL;
+  // plan 模型纳入统一 config 中心: opts 注入 > resolveRoleModel('plan') (file/env/默认 PLAN_DEFAULT_MODEL)。
+  const planModelStr = opts.planModel ?? resolveRoleModel('plan');
   const planModelRef = parseModelRef(planModelStr);
   const planThinking = opts.planThinking ?? PLAN_DEFAULT_THINKING;
   const toggleKey = opts.toggleKey ?? 'shift+tab';

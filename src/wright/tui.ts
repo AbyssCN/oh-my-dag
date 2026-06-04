@@ -30,7 +30,8 @@ import { CleaningFetchProvider } from './web/clean';
 import { createCodeExtension, type ToolMap } from './code';
 import { createCostExtension } from './cost-extension';
 import { logger } from '../logger';
-import { registerProvidersFromEnv } from '../model/providers';
+import { registerProvidersFromEnv, registerCustomApis } from '../model/providers';
+import { listCustomApis } from '../model/role-models';
 import { resolveHashlineEdit } from './tui-config';
 import { readUserProfile, DEFAULT_USER_PROFILE_PATH } from './user-profile';
 import { createWrightMemory } from './memory';
@@ -121,6 +122,10 @@ ensureMimoApiKey(ctrl.provider);
 
 // 注册 callModel 的 provider (mimo + deepseek from env) → /cg /audit 的 conductor/inproc-leaf 可解析。
 registerProvidersFromEnv();
+// 叠加用户自定 API (config.apis, /setup 页"添加 API" 写入) → 角色/多模态池可从同一池选。
+// key 从各自 keyEnv (默认 ID_API_KEY) 读 .env; 无 key 静默跳过 (/setup 提示补)。
+const customApis = registerCustomApis(listCustomApis());
+if (customApis.length) logger.info({ apis: customApis }, '[wright/config] 已注册自定 API provider');
 
 // 跨模型校验 + conductor 静默升级 (verifier.ts)。verifier 默认 resolveRoleModel('verifier')=deepseek
 // (跨 conductor 避盲点); 升级模型 = XIHE_CONDUCTOR_ESCALATION_MODEL (没设 / provider 未注册 → 不升级,
@@ -165,9 +170,9 @@ if (planKeyFix.changed) {
     '[wright/plan] 无法自动让出 shift+tab (keybindings.json 异常); plan mode 经 /plan 命令仍可进',
   );
 }
-const planExt = createPlanExtension({
-  planModel: process.env.XIHE_PLAN_MODEL ?? 'deepseek:deepseek-v4-pro',
-});
+// plan 模型走统一 config 中心 (resolveRoleModel('plan') = config.json / XIHE_PLAN_MODEL / 默认),
+// 故此处不再传 planModel — 让 plan-extension 自己 resolve, /setup·/config 改 plan 角色即生效。
+const planExt = createPlanExtension({});
 
 // 默认 Xihe theme (朱砂金太阳): boot 前写 themes/xihe.json + (用户没显式选别的主题时) 设为默认。
 // 幂等 + 非破坏性 (用户 /theme 选过别的则只保证文件在, 不抢)。失败不阻断 boot。
