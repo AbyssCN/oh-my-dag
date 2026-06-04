@@ -167,7 +167,7 @@ bun run wright -p "..."    # one-shot, non-interactive
 ### Option B — global install (run from anywhere)
 
 ```bash
-bun add -g xihe            # or:  npm i -g xihe   (Bun ≥ 1.3 must be on your PATH)
+bun add -g xihe-agent      # or:  npm i -g xihe-agent   (Bun ≥ 1.3 must be on your PATH)
 
 export XIHE_RUNTIME_PROVIDER=deepseek
 export XIHE_RUNTIME_MODEL=deepseek-v4-pro
@@ -373,7 +373,7 @@ bun run wright -p "..."    # 单发、非交互
 ### 方式 B — 全局安装(任意目录直接跑)
 
 ```bash
-bun add -g xihe            # 或:  npm i -g xihe   (PATH 上需有 Bun ≥ 1.3)
+bun add -g xihe-agent      # 或:  npm i -g xihe-agent   (PATH 上需有 Bun ≥ 1.3)
 
 export XIHE_RUNTIME_PROVIDER=deepseek
 export XIHE_RUNTIME_MODEL=deepseek-v4-pro
