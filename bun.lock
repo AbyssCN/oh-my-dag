@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "valinor",
+      "name": "xihe",
       "dependencies": {
         "@earendil-works/pi-ai": "^0.77.0",
         "@earendil-works/pi-coding-agent": "^0.77.0",
