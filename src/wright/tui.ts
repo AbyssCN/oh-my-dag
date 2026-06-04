@@ -1,3 +1,4 @@
+#!/usr/bin/env bun
 /**
  * wright 终端前端 (V2.0 ControllerSkeleton 交付物) —— 交互式 wright on MiMo, 带灵魂。
  *

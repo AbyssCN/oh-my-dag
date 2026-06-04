@@ -146,16 +146,53 @@ Same models, different outcomes. The difference is **method**, made first-class:
 
 ## Quick start
 
+Pick a backend, give it the key, run Wright. Three ways to install:
+
+### Option A — from source (recommended)
+
 ```bash
+git clone https://github.com/AbyssCN/xihe.git
+cd xihe
 bun install
 
 # point it at any supported / OpenAI-compatible backend
 export XIHE_RUNTIME_PROVIDER=deepseek
 export XIHE_RUNTIME_MODEL=deepseek-v4-pro
+export DEEPSEEK_API_KEY=sk-...          # the key for whichever backend you picked
 
 bun run wright             # interactive terminal agent
 bun run wright -p "..."    # one-shot, non-interactive
 ```
+
+### Option B — global install (run from anywhere)
+
+```bash
+bun add -g xihe            # or:  npm i -g xihe   (Bun ≥ 1.3 must be on your PATH)
+
+export XIHE_RUNTIME_PROVIDER=deepseek
+export XIHE_RUNTIME_MODEL=deepseek-v4-pro
+export DEEPSEEK_API_KEY=sk-...
+
+xihe                       # runs in the current directory; add  -p "<task>"  for one-shot
+```
+
+### Option C — Docker (no local Bun)
+
+```bash
+docker build -t xihe .     # or pull a tagged release: docker pull ghcr.io/abysscn/xihe:latest
+
+# mount the project you want Wright to operate on at /work
+docker run --rm -it \
+  -e XIHE_RUNTIME_PROVIDER=deepseek \
+  -e XIHE_RUNTIME_MODEL=deepseek-v4-pro \
+  -e DEEPSEEK_API_KEY=sk-... \
+  -v "$PWD:/work" -w /work \
+  xihe                     # add  -p "<task>"  for one-shot
+```
+
+> **Config:** copy [`.env.example`](.env.example) to `.env` and fill in your backend +
+> key, or export the `XIHE_RUNTIME_*` vars in your shell. Per-role model overrides and the
+> optional web stack live in the same file.
 
 Requires [Bun](https://bun.sh) ≥ 1.3. Built on the [pi](https://pi.dev) coding-agent runtime.
 
@@ -315,16 +352,52 @@ confident 事实下一次落地为行为。TTL 清扫保持有界。每次写入
 
 ## 快速开始
 
+选一个后端、给它 key、跑 Wright。三种安装方式:
+
+### 方式 A — 从源码(推荐)
+
 ```bash
+git clone https://github.com/AbyssCN/xihe.git
+cd xihe
 bun install
 
 # 指向任何受支持 / OpenAI 兼容的后端
 export XIHE_RUNTIME_PROVIDER=deepseek
 export XIHE_RUNTIME_MODEL=deepseek-v4-pro
+export DEEPSEEK_API_KEY=sk-...          # 你选的那个后端的 key
 
 bun run wright             # 交互式终端 agent
 bun run wright -p "..."    # 单发、非交互
 ```
+
+### 方式 B — 全局安装(任意目录直接跑)
+
+```bash
+bun add -g xihe            # 或:  npm i -g xihe   (PATH 上需有 Bun ≥ 1.3)
+
+export XIHE_RUNTIME_PROVIDER=deepseek
+export XIHE_RUNTIME_MODEL=deepseek-v4-pro
+export DEEPSEEK_API_KEY=sk-...
+
+xihe                       # 在当前目录运行; 加  -p "<任务>"  单发非交互
+```
+
+### 方式 C — Docker(本地无需 Bun)
+
+```bash
+docker build -t xihe .     # 或拉取已发布镜像: docker pull ghcr.io/abysscn/xihe:latest
+
+# 把你要 Wright 操作的项目挂到 /work
+docker run --rm -it \
+  -e XIHE_RUNTIME_PROVIDER=deepseek \
+  -e XIHE_RUNTIME_MODEL=deepseek-v4-pro \
+  -e DEEPSEEK_API_KEY=sk-... \
+  -v "$PWD:/work" -w /work \
+  xihe                     # 加  -p "<任务>"  单发非交互
+```
+
+> **配置:** 把 [`.env.example`](.env.example) 复制成 `.env` 填好后端 + key,或在 shell 里
+> export `XIHE_RUNTIME_*` 变量。按角色覆盖模型、可选 web 栈都在同一个文件里。
 
 需要 [Bun](https://bun.sh) ≥ 1.3。构建于 [pi](https://pi.dev) coding-agent 运行时。
 

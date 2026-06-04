@@ -1,0 +1,20 @@
+# deps — reinstalled inside the image
+node_modules
+
+# local runtime state (sqlite stores) — must never bake into the image
+.valar
+.wright
+*.db
+*.db-shm
+*.db-wal
+
+# vcs / build output
+.git
+.github
+dist
+*.log
+
+# env / secrets — pass at runtime via -e / --env-file
+.env
+.env.*
+!.env.example
