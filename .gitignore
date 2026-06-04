@@ -2,7 +2,7 @@
 node_modules/
 
 # runtime state (sqlite stores, configs)
-.valar/
+.wright/
 *.db
 *.db-shm
 *.db-wal
