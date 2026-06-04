@@ -2,7 +2,7 @@
  * callModel — provider-agnostic single-shot inference (mimo-leaf contract piece 1).
  *
  * One request → one response (INV-1). No tool loop, no multi-turn: an agentic
- * leaf goes through executor='agent' (valar own-loop), not here. When a
+ * leaf goes through executor='agent' (wright own-loop), not here. When a
  * `responseSchema` is given the reply is JSON-parsed + Zod-validated and only a
  * validated object is returned; transport, parse and validation failures share a
  * single bounded retry budget (INV-3), validation/parse failures re-prompt with

@@ -6,14 +6,14 @@ trigger: mention
 description: "按需审计: 安全 / 覆盖度 / 技术债 / 全量 Gate / PR 代码审查 (派 dream-team specialist + Codex). Phase/Gate milestone, 安全事件后, pre-merge PR review. Trigger: 审计 / audit / 安全扫描 / 全量检查 / Gate检查 / review --security / review --gate / 技术债盘点 / security audit / review PR / code review / 代码审查 / PR审查. Skip: 日常验证 (/verify) / 提交 (/commit)."
 metadata:
   source: claude-skills
-  version: "5.0.0-valinor"
-  methodology: "valinor audit + dream-team specialist + Codex G2/G3"
+  version: "5.0.0-xihe"
+  methodology: "xihe audit + dream-team specialist + Codex G2/G3"
 ---
 
-# /review — On-Demand Audit (valinor)
+# /review — On-Demand Audit (xihe)
 
 > 按需全量扫描，用于 Phase 完成 / Gate 前 / 安全事件后。日常改动用 `/verify` → `/commit`。
-> **valinor 审查模型**: 无 RW feature-team review agent。审查 = **dream-team RO** (Plan 前方法论 lens) + **Codex G2/G3** (post-write cross-model) + **Valar judgment** (裁决, taste 不被 finding 绑架)。真实 check = `bunx tsc --noEmit` / `bun test` / `bun build`。
+> **xihe 审查模型**: 无 RW feature-team review agent。审查 = **dream-team RO** (Plan 前方法论 lens) + **Codex G2/G3** (post-write cross-model) + **Wright judgment** (裁决, taste 不被 finding 绑架)。真实 check = `bunx tsc --noEmit` / `bun test` / `bun build`。
 
 ## Modes
 
@@ -32,28 +32,28 @@ metadata:
 
 `--with-codex` 是 modifier flag。在 dream-team specialist 之外同消息并行加 **Codex** (cross-model GPT independence, 唯一非 Anthropic 模型族)。
 
-**调用** (valinor 用 `/codex:*` slash commands — 无 a sibling project 的 codex-dispatch.mjs/codex-plugin scripts):
+**调用** (xihe 用 `/codex:*` slash commands — 无 a sibling project 的 codex-dispatch.mjs/codex-plugin scripts):
 
 | Gate | Codex command | Max 轮 (硬上限) | BLOCK 兜底 |
 |---|---|---|---|
-| `--gate` (G2 Phase) | `/codex:review --base <last-gate-commit>` | **1** per phase end (CLAUDE.md: fix 顺带下一 phase, 不 spawn r2) | Valar judgment |
+| `--gate` (G2 Phase) | `/codex:review --base <last-gate-commit>` | **1** per phase end (CLAUDE.md: fix 顺带下一 phase, 不 spawn r2) | Wright judgment |
 | `--release-gate` (G3) | `/codex:review --base main` | **1 + max 1 修复 = 2** | the owner |
-| `--pr` | `/codex:adversarial-review` | 1 | Valar |
+| `--pr` | `/codex:adversarial-review` | 1 | Wright |
 
 **anti-slop** (CLAUDE.md): Codex finding ≠ ground truth。必拒 niche/theoretical/telemetry/tests-for-tests/style/doc-completeness; 必接 P0/P1 reproducible bug (file:line+steps) + contract violation + ship-blocker + mechanism-level boundary failure。
 
-**Finding → fix 路由** (valinor 真实 roster — 无 feature-team RW agent):
+**Finding → fix 路由** (xihe 真实 roster — 无 feature-team RW agent):
 
 | Finding 类型 | 路由到 |
 |---|---|
-| PG schema / migration / temporal / RLS | dream-team **data-layer-architect** (RO 诊断) → **Valar** 主写修 |
-| RAG / memory / SAFEGUARD / Dream | **ai-pipeline-reviewer** (RO) → **Valar** 修 |
-| Hono API / WS / 类型契约 | **interface-architect** (RO) → **Valar** 修 |
-| agent/skill/hook / DAG 节点 / MCP | **agent-protocol-architect** (RO) → **Valar** 修 |
-| daemon 架构 / 性能 | **stack-architect** (RO) → **Valar** 修 |
-| Type error / typo (≤3 行) | **Valar** 主线直接修 |
+| PG schema / migration / temporal / RLS | dream-team **data-layer-architect** (RO 诊断) → **Wright** 主写修 |
+| RAG / memory / SAFEGUARD / Dream | **ai-pipeline-reviewer** (RO) → **Wright** 修 |
+| Hono API / WS / 类型契约 | **interface-architect** (RO) → **Wright** 修 |
+| agent/skill/hook / DAG 节点 / MCP | **agent-protocol-architect** (RO) → **Wright** 修 |
+| daemon 架构 / 性能 | **stack-architect** (RO) → **Wright** 修 |
+| Type error / typo (≤3 行) | **Wright** 主线直接修 |
 
-> valinor 是 daemon, execution 走 Valar Hybrid 主写 (pet 模式); dream-team 只给 RO 诊断, 不 write。
+> xihe 是 daemon, execution 走 Wright Hybrid 主写 (pet 模式); dream-team 只给 RO 诊断, 不 write。
 
 ---
 
@@ -63,7 +63,7 @@ metadata:
 
 ## Security Mode (--security)
 
-派 dream-team **agent-protocol-architect** + **data-layer-architect** (RO) 或 Valar 直扫:
+派 dream-team **agent-protocol-architect** + **data-layer-architect** (RO) 或 Wright 直扫:
 - 扫描范围: `src/routes/` + `src/ws/` + `src/integrations/` + `sql/`
 - 检查: 信任边界验签 (HMAC/timingSafeEqual, 标杆 `src/routes/inbox.ts`) / 认证 gap / 注入 / fail-open (`catch { return null }` 吞错) / GET 只读 / 无存在性泄露 / 输入 Zod 校验 / RLS deny-all
 - 输出: P0/P1/P2 + verdict (PASS/BLOCK)
@@ -109,7 +109,7 @@ dispatch 前先 Read `.claude/skills/_modules/quality-gates/EXECUTION-REVIEW.md`
 读取 .claude/skills/_modules/quality-gates/EXECUTION-REVIEW.md 获取审查指令 + Mandatory Reads。
 按清单读完后开始评审。你的 lens: {data-layer | ai-pipeline | interface | agent-protocol | stack}
 审查作用域: git diff $(git merge-base HEAD main)..HEAD
-二元 PASS/FAIL + valinor 特化检查项 (Bun/Hono/Drizzle/temporal/SAFEGUARD)。
+二元 PASS/FAIL + xihe 特化检查项 (Bun/Hono/Drizzle/temporal/SAFEGUARD)。
 ```
 
 ---
@@ -203,4 +203,4 @@ diff 对 `docs/` 影响: 代码变但文档没更 → flag (INFORMATIONAL)。
 - 每个 mode 独立可用; --gate 全部并行; --release-gate 交付审核
 - 频率: Phase 完成 / Gate 前 / 安全事件后 (非日常)
 - 输出 `docs/reports/audit-report-{date}.md` 或 `release-gate-{date}.md`
-- **不引用 a sibling project 死 infra**: `scripts/codex-dispatch.mjs` / `.claude/codex-plugin/` / `harness-ingest-review-finding.mjs` / `graphify-probe.py` / `check:*` / dead feature-team agent — valinor 全无
+- **不引用 a sibling project 死 infra**: `scripts/codex-dispatch.mjs` / `.claude/codex-plugin/` / `harness-ingest-review-finding.mjs` / `graphify-probe.py` / `check:*` / dead feature-team agent — xihe 全无

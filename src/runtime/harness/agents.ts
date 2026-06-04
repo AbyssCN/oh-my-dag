@@ -1,5 +1,5 @@
 /**
- * Valar 子代理迁移 (harness 迁移 C 档)。
+ * Wright 子代理迁移 (harness 迁移 C 档)。
  *
  * Pi 无原生 subagent/Task 机制 → 用 `defineTool` 造 `spawn_agent` 工具:
  *   - `parseAgentDef` / `discoverAgents`: 读 .claude/agents/*.md (frontmatter+body) → AgentDef (纯, 可测)
@@ -101,7 +101,7 @@ export function validateDispatch(agent: string, known: Map<string, AgentDef>): D
 
 /** 子代理 system prompt = 身份头 + def 正文。 */
 export function buildAgentSystemPrompt(def: AgentDef): string {
-  return `你是 Valar Dream Team 的 sub-agent「${def.name}」。\n${def.description}\n\n---\n${def.systemPrompt}`;
+  return `你是 Wright Dream Team 的 sub-agent「${def.name}」。\n${def.description}\n\n---\n${def.systemPrompt}`;
 }
 
 /**
@@ -147,7 +147,7 @@ export function createSpawnAgentTool(opts: {
   return defineTool({
     name: 'spawn_agent',
     label: 'Spawn Agent',
-    description: `派一个 scoped 只读子代理 (Valar scouts / Dream Team review)。可用: ${names}`,
+    description: `派一个 scoped 只读子代理 (Wright scouts / Dream Team review)。可用: ${names}`,
     parameters: Type.Object({
       agent: Type.String({ description: `子代理名, 之一: ${names}` }),
       prompt: Type.String({ description: '给子代理的任务描述 (含足够 context, 子代理无主对话记忆)' }),

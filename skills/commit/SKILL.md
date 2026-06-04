@@ -6,15 +6,15 @@ trigger: mention
 description: "智能 git commit: 分析改动 + zone 检查 (tsc/test/build) + 中文 conventional message + git commit. --ship mode: merge base + full tests + PR. Trigger: 提交 / commit / 保存变更 / git commit / 提交代码 / 帮我提交 / ship / 发布 / 创建PR / ship it. Skip: 仅验证不提交 (/verify) / 代码质量 review (/review)."
 metadata:
   source: claude-skills
-  version: "3.0.0-valinor"
-  methodology: "valinor commit (Bun) + ship release pipeline"
+  version: "3.0.0-xihe"
+  methodology: "xihe commit (Bun) + ship release pipeline"
 ---
-# /commit — Smart Commit & Ship (valinor)
+# /commit — Smart Commit & Ship (xihe)
 
 > 智能提交：根据变更类型自动选择检查项，生成规范 commit message。
 > **`--ship` 模式**: 一条龙 — 合并 base → 全量验证 → PR 创建。
 > **Zone→Check 映射**: 见 `_shared/CHECK-ROUTING.md`（与 /verify 共享）。
-> **valinor 验证** (真实): `bunx tsc --noEmit` + `bun test` + `bun build src/index.ts`。**无 eslint / vitest / check:* / gen:* npm script** (那些是 a sibling project)。
+> **xihe 验证** (真实): `bunx tsc --noEmit` + `bun test` + `bun build src/index.ts`。**无 eslint / vitest / check:* / gen:* npm script** (那些是 a sibling project)。
 
 ## Trigger
 
@@ -105,7 +105,7 @@ EOF
 ### Step 6: Post-Commit
 
 - `git log -1 --oneline` 确认
-- valinor **无** `gen:index`/`gen:doc-nav` 自动索引脚本 (那是 a sibling project)。DOC_NAV 若存在为手维护; 索引真相 = `src/schema.ts` + Glob。
+- xihe **无** `gen:index`/`gen:doc-nav` 自动索引脚本 (那是 a sibling project)。DOC_NAV 若存在为手维护; 索引真相 = `src/schema.ts` + Glob。
 
 ## Examples
 
@@ -113,7 +113,7 @@ EOF
 User: /commit
 → Detects: sql/ migration + src/schema.ts
 → Runs: bunx tsc --noEmit + bun test (全量)
-→ Message: "feat(db): valinor_inbox 表 + HMAC 幂等 schema"
+→ Message: "feat(db): xihe_inbox 表 + HMAC 幂等 schema"
 
 User: /commit 修复 DAG 重复派发
 → Detects: src/dag/dispatcher.ts + test/dag.test.ts
@@ -140,7 +140,7 @@ User: /commit
 
 ### Ship Step 0: Pre-flight
 
-1. 当前分支是 `main` → AskUserQuestion 确认 (valinor 1-dev 常直接 main; 真要 PR 流程才分支)
+1. 当前分支是 `main` → AskUserQuestion 确认 (xihe 1-dev 常直接 main; 真要 PR 流程才分支)
 2. `git status` — 有未提交变更 → 先走 Step 0-6
 3. Readiness Dashboard: `Branch | Base: main | Commits: N | Files: M | tsc ✅/❌ | tests ✅/❌`
 

@@ -22,11 +22,11 @@ import type { DreamLayer } from './types';
 
 /**
  * One raw event handed to the model for consolidation. A thin projection of
- * valinor_events (id / type / payload) — the model never sees the whole table,
+ * xihe_events (id / type / payload) — the model never sees the whole table,
  * only the window the engine selected (id > last_dream_event_id).
  */
 export interface DreamEvent {
-  /** valinor_events.id — bigint as number (mirrors the schema). The model never
+  /** xihe_events.id — bigint as number (mirrors the schema). The model never
    *  uses this as a cursor; it is provenance for the candidate's source anchor. */
   event_id: number;
   type: string;
@@ -35,7 +35,7 @@ export interface DreamEvent {
 
 /** Everything the model needs for one consolidation pass over one agent. */
 export interface ConsolidationInput {
-  /** The agent whose events are being consolidated (Valar / Ratia / …). */
+  /** The agent whose events are being consolidated (Wright / Ratia / …). */
   agent_id: string;
   /** The event window: events WHERE id > last_dream_event_id, ascending. */
   events: DreamEvent[];

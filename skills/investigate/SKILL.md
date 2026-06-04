@@ -107,7 +107,7 @@ SCOPE LOCK: src/dag/dispatcher.ts + src/dag/
 
 建立宏观诊断框架后，再用框架缩小具体模式匹配范围。这避免了直接跳到最"像"的模式而忽略更深层原因。
 
-对照 8 种已知 bug 模式（core-rules-full.md §10.4 的 6 种 + 2 种 valinor PG/daemon 特有）:
+对照 8 种已知 bug 模式（core-rules-full.md §10.4 的 6 种 + 2 种 xihe PG/daemon 特有）:
 
 | # | 模式 | 特征 | 排查方向 |
 |---|------|------|----------|

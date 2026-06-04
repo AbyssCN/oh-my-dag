@@ -87,8 +87,8 @@ commit 间隔 > 2 小时 → 新 session。统计：
 
 读 `docs/session/PROGRESS-MAP.md` → 对比本周期计划 vs 实际完成。
 
-<!-- 2f. Standards Drift Check 已删 (2026-06-01): 依赖 a sibling project `scripts/check-standards-drift.mjs`, valinor 不存在。
-     orphan-ref / HOOK-REGISTRY 差异 / 陈旧检查的概念有价值, 待真 port 一个 valinor 版再加回 (GP-9 不留死步骤)。 -->
+<!-- 2f. Standards Drift Check 已删 (2026-06-01): 依赖 a sibling project `scripts/check-standards-drift.mjs`, xihe 不存在。
+     orphan-ref / HOOK-REGISTRY 差异 / 陈旧检查的概念有价值, 待真 port 一个 xihe 版再加回 (GP-9 不留死步骤)。 -->
 
 ### Step 3: 输出报告
 
@@ -144,8 +144,8 @@ feat/fix/refactor/...
 ```
 
 <!-- ## Learning Mode (--learning) 已删 (2026-06-01): 依赖 a sibling project `scripts/harness-learning-retro.mjs`
-     + `harness-rule-decay.mjs` (valinor 不存在) + a sibling project learning-loop 概念 (/evolve --promote / L3 crystallized
-     / gene 库)。valinor 无此 6-Layer Learning Loop 机制 → 整段删 (GP-9)。valar 的学习闭环走 CLEAR (SDD §11.6, 待 adopt)。 -->
+     + `harness-rule-decay.mjs` (xihe 不存在) + a sibling project learning-loop 概念 (/evolve --promote / L3 crystallized
+     / gene 库)。xihe 无此 6-Layer Learning Loop 机制 → 整段删 (GP-9)。wright 的学习闭环走 CLEAR (SDD §11.6, 待 adopt)。 -->
 
 ## Constraints
 

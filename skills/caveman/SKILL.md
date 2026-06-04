@@ -7,7 +7,7 @@ description: >
   "less tokens", "be brief", or invokes /caveman.
 metadata:
   source: mattpocock/skills (productivity/caveman)
-  adopted: "2026-05-29 (valinor autonomous-run token frugality)"
+  adopted: "2026-05-29 (xihe autonomous-run token frugality)"
 ---
 
 Respond terse like smart caveman. All technical substance stay. Only fluff die.
@@ -51,7 +51,7 @@ Example -- destructive op:
 >
 > Caveman resume. Verify backup exist first.
 
-## Loop / Agent-Context Safety (valinor · 2026-05-29)
+## Loop / Agent-Context Safety (xihe · 2026-05-29)
 
 In long autonomous loops your own terse output re-enters context next turn. Two effects:
 - **Good**: fewer tokens/turn -> longer runway -> autocompact later -> long-task memory more intact.

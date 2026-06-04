@@ -9,11 +9,11 @@ metadata:
   source: claude-skills
   version: "8.0.0"
 ---
-# /handoff — Session Wrap-Up v8 (valinor-real)
+# /handoff — Session Wrap-Up v8 (xihe-real)
 
 > 单一 Fast Path, 目标 ≤ 4 tool calls. Body 精简; 模板/内部原理在 `references/` 按需读.
 >
-> **v8 (2026-06-01)**: 对齐 valinor 真实 infra — 去掉 a sibling project 移植残留的 6 个不存在脚本
+> **v8 (2026-06-01)**: 对齐 xihe 真实 infra — 去掉 a sibling project 移植残留的 6 个不存在脚本
 > (`handoff-write-router`/`force-capture`/`gen-sessions-manifest`/`codex-scan`/`append-journal`/`graphify`)
 > + abort-on-fail 地雷。`_NEXT.md` 是 prose 块 (非 router_v6 yaml fence) → 直接 Edit 顶部块.
 > 唯一存活脚本 = `.claude/memory/scripts/flush.ts`. 见 §Ship History.
@@ -25,7 +25,7 @@ metadata:
 ## 三条贯穿原则 (mattpocock-merge — 直接降 token)
 
 1. **Reference, don't duplicate** — session log / `_NEXT.md` 引用已有 artifact (commit sha / plan path / ADR / diff / 上个 session log) 的 **path/URL**, 绝不内联复制其内容. 写 **why**, git diff 已有 **what**.
-2. **Redact** — session log 里遮掉 secrets / API key / token / HMAC / PII (valinor 涉 WeCom/Lark/MiMo key). 命中写 `<redacted:kind>`.
+2. **Redact** — session log 里遮掉 secrets / API key / token / HMAC / PII (xihe 涉 WeCom/Lark/MiMo key). 命中写 `<redacted:kind>`.
 3. **Suggested Skills** — 报告含一段: 下个 agent 该先 invoke 哪些 skill (依 `<focus>` + 当前 gate).
 
 ---
@@ -76,7 +76,7 @@ echo "=DIFF_STAT=" && git diff --stat "$(git rev-parse origin/main 2>/dev/null |
 ```bash
 cd "$(git rev-parse --show-toplevel)" && ( npx tsx .claude/memory/scripts/flush.ts > /dev/null 2>&1 & disown )
 ```
-pending 空 = no-op (~50ms). 永不阻断 handoff. (a sibling project 的 force-capture/manifest/graphify 在 valinor 不存在 → 不调.)
+pending 空 = no-op (~50ms). 永不阻断 handoff. (a sibling project 的 force-capture/manifest/graphify 在 xihe 不存在 → 不调.)
 
 ### Step 5: Report (≤ 15 行)
 
@@ -87,7 +87,7 @@ pending 空 = no-op (~50ms). 永不阻断 handoff. (a sibling project 的 force-
 ### Next  1. … 2. … 3. …
 ### Suggested Skills   (依 <focus> + gate)
 - 下个 session 先: {/start, 然后 X}
-### Wisdom (如有) — [{type}] {title}  (valinor 无 append-journal → 手动 Edit error-journal.json 或交下个 session)
+### Wisdom (如有) — [{type}] {title}  (xihe 无 append-journal → 手动 Edit error-journal.json 或交下个 session)
 ### Claim-Evidence (仅 ⚠ unverified)
 ### {clean / 建议 /commit / /verify / /review}
 ```

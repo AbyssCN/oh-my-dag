@@ -40,7 +40,7 @@ commits: [<sha1>, <sha2>, ...]
 ## (optional) Plan Status Table — 多 phase plan 的 phase × commit × 状态表
 ## (optional) Test Outputs      — 验证密集 (RAG eval / E2E / benchmark) 引用 stdout 关键数字
 ## (optional) Drift Events      — A real_drift 出现时引用 rewind anchor + 失败分类
-## (optional) Valar 教训        — 反思密集 session 抽象层教训 (跨 session 复用价值高)
+## (optional) Wright 教训        — 反思密集 session 抽象层教训 (跨 session 复用价值高)
 ```
 
 ## 判断规则
@@ -48,7 +48,7 @@ commits: [<sha1>, <sha2>, ...]
 | Session 性质 | 必加可选段 | 预期总行数 |
 |---|---|---|
 | 普通 feature dev | 仅 4 必填 | 30-50 |
-| harness / standards / cognitive-arch | + Evidence + Valar 教训 | 80-120 |
+| harness / standards / cognitive-arch | + Evidence + Wright 教训 | 80-120 |
 | 多 phase 大重构 | + Plan Status + Files Produced | 100-150 |
 | 验证 / RAG eval / benchmark | + Test Outputs | 60-100 |
 | 全要素 sprint 收尾 | 全 10 段 | 150-200 |

@@ -5,7 +5,7 @@ runtime: on-demand
 trigger: mention
 description: "多视角并行生成 + 评判择优 (一组专家'开会'审议出冠军): 面对宽解空间的设计/决策, 派 N 个不同 persona+angle 并行出方案 → 多 lens judge → 择优合成 (嫁接亚军亮点), 而非一次性给平均答案. Trigger: 多个方案 / 对比方案 / best of n / bestof / fanout / council / 并行探索 / 多视角 / 给我几个选项 / 哪种方案好 / 方案对比 / explore options / 拿不准选哪个. Skip: 单一明确解 (直接做) / 纯执行无需择优 / 代码审查 (/review) / 根因调试 (/investigate)."
 metadata:
-  source: valar (plan/best-of-n + research/fanout)
+  source: wright (plan/best-of-n + research/fanout)
   version: "1.0.0"
   methodology: "diversity>volume + persona conditioning + multi-judge panel + graft runners-up"
 ---
@@ -28,7 +28,7 @@ metadata:
 - 纯执行(已定方案的实装)→ execute,不择优。
 - 代码审查 → `/review`;根因调试 → `/investigate`。
 
-## 两档机制 (valar 已实装)
+## 两档机制 (wright 已实装)
 
 ### 轻量档 — `/council` (plan mode, 底层 best-of-N)
 plan mode 内 `/council`: 当前审议 context → **3 个 default lens** 并行出方案 → 多视角 judge 评分 → cherry-pick 合成注入下轮。适合**一次设计抉择**。(底层算法 = `bestOfNPlan`。)
@@ -41,7 +41,7 @@ plan mode 内 `/council`: 当前审议 context → **3 个 default lens** 并行
 | `first-principles` | 第一性原理思考者 | 重构问题本质, 质疑前提, 找最简结构 | 0.75 / 0.95 |
 
 ### 深度档 — `/council deep` (plan mode, researchFanout at scale)
-plan mode 内 `/council deep`: **L lens × V sub-angle 变体** → per-lens reduce 成冠军 → M framing 综合 → **K-judge panel + graft** → 最终方案。每 leaf 注 persona + 高阶领域抽象框架 + groundTruth。适合 foundational / 难逆决策(量任务驱动,L=真实专家视角数,V=该 lens 真实 sub-angle 数)。底层 = `researchFanout` (`src/valar/research/fanout.ts`)。
+plan mode 内 `/council deep`: **L lens × V sub-angle 变体** → per-lens reduce 成冠军 → M framing 综合 → **K-judge panel + graft** → 最终方案。每 leaf 注 persona + 高阶领域抽象框架 + groundTruth。适合 foundational / 难逆决策(量任务驱动,L=真实专家视角数,V=该 lens 真实 sub-angle 数)。底层 = `researchFanout` (`src/wright/research/fanout.ts`)。
 
 ## 核心纪律 (照搬这 4 条,无 code path 时手动 fan out 也守)
 

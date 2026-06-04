@@ -1,10 +1,10 @@
 /**
- * src/model/econ-types.ts — V2-ECON 经济层 FROZEN CONTRACT (Valar orchestrator artifact, 2026-06-03).
+ * src/model/econ-types.ts — V2-ECON 经济层 FROZEN CONTRACT (Wright orchestrator artifact, 2026-06-03).
  *
- * valar 经济层 (SDD PLAN-2026-06-01-valar-agent-landing §5) 的共享类型契约。并行 agent-leaf 各实现
+ * wright 经济层 (SDD PLAN-2026-06-01-wright-agent-landing §5) 的共享类型契约。并行 agent-leaf 各实现
  * 一个模块, 全 import 此文件 → 类型对齐, 编译即拼得上 (这是并行弱模型 leaf 能 compose 的前提)。
  *
- * impl 模块 (valar leaf 写, 一文件一 leaf):
+ * impl 模块 (wright leaf 写, 一文件一 leaf):
  *   - usage-normalise.ts : NormaliseUsage  —— 三形 (MiMo 嵌套 / DeepSeek 顶层 / Anthropic cache_read) → ModelUsage
  *   - cost-ledger.ts     : ComputeCost + DEFAULT_PRICES —— 账本核心 (cost / cacheSavings)
  *   - budget.ts          : EvaluateBudget —— 预算状态机 (ok / warn / exhausted)

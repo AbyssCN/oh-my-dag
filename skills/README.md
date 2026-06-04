@@ -1,6 +1,6 @@
-# valar-skills
+# wright-skills
 
-valar 开源 curated skill bundle —— 一套经机械排除法选出的 **12 个通用核心技能**,
+wright 开源 curated skill bundle —— 一套经机械排除法选出的 **12 个通用核心技能**,
 配一层 sqlite 复利 substrate。装进任意 Claude Code / pi harness 即用。
 
 ## 内容
@@ -18,10 +18,10 @@ valar 开源 curated skill bundle —— 一套经机械排除法选出的 **12 
 | `caveman` | Ultra-compressed communication mode |
 | `commit` | 智能 git commit: 分析改动 + zone 检查 (tsc/test/build) + 中文 conventional message + git commit |
 | `council` | 多视角并行生成 + 评判择优 (一组专家'开会'审议出冠军): 面对宽解空间的设计/决策, 派 N 个不同 persona+angle 并行出方案 → 多 lens judge → |
-| `dream` | 手动触发 valinor Dream consolidation: 把 agent 的 raw events 提炼成 L0-L6 记忆 (经 Memory Restraint 3- |
+| `dream` | 手动触发 xihe Dream consolidation: 把 agent 的 raw events 提炼成 L0-L6 记忆 (经 Memory Restraint 3-gat |
 | `handoff` | Session 收尾仪式: 更新 _NEXT |
 | `investigate` | 系统化 debug 根因调查: 8 阶段 history search / reproduce / scope lock / pattern match / hypothesis  |
-| `recall` | Memory layer 主动召回: 推理/写作/决策卡住时 Valar 主动查 8734 chunks 库, 不靠 hook 触发 |
+| `recall` | Memory layer 主动召回: 推理/写作/决策卡住时 Wright 主动查 8734 chunks 库, 不靠 hook 触发 |
 | `retro` | Engineering retrospective from git history: analyzes commit patterns, type mix (feat/fix/r |
 | `review` | 按需审计: 安全 / 覆盖度 / 技术债 / 全量 Gate / PR 代码审查 (派 dream-team specialist + Codex) |
 | `skill-creator` | Create new skills, modify and improve existing skills, and measure skill performance |
@@ -35,7 +35,7 @@ valar 开源 curated skill bundle —— 一套经机械排除法选出的 **12 
 cp -r skills/* ~/.claude/skills/
 ```
 
-substrate (`schema.sql` + `gene-library.json`) 供 valar 风格的 skill 进化/复用飞轮使用,
+substrate (`schema.sql` + `gene-library.json`) 供 wright 风格的 skill 进化/复用飞轮使用,
 非必需即可用 —— 纯当 skill 包也成立。
 
-> 生成自 `src/valar/skills/export.ts`。勿手改导出物,改源后重跑导出。
+> 生成自 `src/wright/skills/export.ts`。勿手改导出物,改源后重跑导出。

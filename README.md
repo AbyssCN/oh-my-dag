@@ -1,16 +1,16 @@
 <div align="center">
 
-# Valinor
+# Xihe
 
 ### The system around the model.
 
 **Most agents are a prompt wrapped around one frontier model.**
-Valinor makes the opposite bet: reliability lives in the *code around* the model —
+Xihe makes the opposite bet: reliability lives in the *code around* the model —
 gates, validators, deterministic orchestration, a memory that consolidates itself —
 **not in the prompt.** Give it any LLM, even a small or cheap one, and the harness
 makes it behave like a disciplined engineer.
 
-> The model is the engine. Valinor is the chassis.
+> The model is the engine. Xihe is the chassis.
 
 </div>
 
@@ -22,7 +22,7 @@ An LLM alone forgets last session, charges ahead without a plan, trusts its own
 formatting, and hands you the average answer. A frontier model papers over this with
 raw capability — expensively, and only for that one model.
 
-Valinor treats the model as **leverage** and the harness as the **fulcrum**. Everywhere
+Xihe treats the model as **leverage** and the harness as the **fulcrum**. Everywhere
 an LLM is unreliable, there is code *outside* the model holding the invariant:
 
 - It **can't** write code until the plan is aligned — a read-only gate enforces it, not a polite instruction.
@@ -94,20 +94,20 @@ miner that drafts new ones from what actually worked.
 bun install
 
 # point it at any supported / OpenAI-compatible backend
-export VALAR_RUNTIME_PROVIDER=deepseek
-export VALAR_RUNTIME_MODEL=deepseek-v4-pro
+export XIHE_RUNTIME_PROVIDER=deepseek
+export XIHE_RUNTIME_MODEL=deepseek-v4-pro
 
-bun run valar             # interactive terminal agent
-bun run valar -p "..."    # one-shot, non-interactive
+bun run wright             # interactive terminal agent
+bun run wright -p "..."    # one-shot, non-interactive
 ```
 
 Requires [Bun](https://bun.sh) ≥ 1.3. Built on the [pi](https://pi.dev) coding-agent runtime.
 
 ---
 
-## Meet Valar
+## Meet Wright
 
-**Valinor** is the runtime. **Valar** is its first agent — a terminal coding agent. More
+**Xihe** is the runtime. **Wright** is its first agent — a terminal coding agent. More
 agents will live on the same chassis: the plan-before-act discipline, the self-consolidating
 memory, the deterministic fan-out, and the model-agnostic spine are the platform, not the agent.
 
@@ -118,7 +118,7 @@ memory, the deterministic fan-out, and the model-agnostic spine are the platform
 > Reliability comes from outside the model, not inside it.
 > The model decides; the system keeps it correct.
 
-Valinor is built as a harness that arms a single developer with the leverage of a frontier
+Xihe is built as a harness that arms a single developer with the leverage of a frontier
 model and the discipline of a real engineering system — and the taste to tell the
 difference. Put the model inside a reliable system; don't bury reliability inside a prompt.
 

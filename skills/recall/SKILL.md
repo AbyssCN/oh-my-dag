@@ -3,7 +3,7 @@ name: recall
 tier: capability
 runtime: on-demand
 trigger: mention
-description: "Memory layer 主动召回: 推理/写作/决策卡住时 Valar 主动查 8734 chunks 库, 不靠 hook 触发. 补 R1-R3 被动消费的盲点. Trigger: /recall / 查历史 / 翻一下记忆 / recall / 以前怎么做的 / there should be precedent. Skip: 文件 grep (Grep) / 调用链 (/graph) / 库文档 (mcp__context7) / git 历史 (git log)."
+description: "Memory layer 主动召回: 推理/写作/决策卡住时 Wright 主动查 8734 chunks 库, 不靠 hook 触发. 补 R1-R3 被动消费的盲点. Trigger: /recall / 查历史 / 翻一下记忆 / recall / 以前怎么做的 / there should be precedent. Skip: 文件 grep (Grep) / 调用链 (/graph) / 库文档 (mcp__context7) / git 历史 (git log)."
 metadata:
   source: memory-layer-routing
   version: "1.0.0"
@@ -47,7 +47,7 @@ R10 触发时机(主动型,非 hook 触发):
 
 ### Step 1 — 选 K 和 filter
 
-K 默认 5(高于 hook 路由的 3 — 主动召回时 Valar 想看更全)。
+K 默认 5(高于 hook 路由的 3 — 主动召回时 Wright 想看更全)。
 
 如果 `<topic>` 涉及:
 - 决策/方案 → 加 `--kind decision`
@@ -77,7 +77,7 @@ npx tsx .claude/memory/scripts/retrieve.ts "<topic>" --k 5 --format briefing --p
 
 输出 retrieve briefing 给 the owner 看 (top-5 sourcePath + breadcrumb + 100 字 preview)。
 
-然后 Valar **自评相关性**:
+然后 Wright **自评相关性**:
 - 哪条直接回答 topic
 - 哪条只是边角相关
 - 哪条无关 (R14 反馈: 响应内附 [Memory-Echo-Ack: applied|irrelevant|ignore])

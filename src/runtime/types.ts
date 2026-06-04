@@ -1,7 +1,7 @@
 /**
- * AgentRuntime port — valinor 控制平面与具体 agent runtime(数据平面)之间的隔离阀。
+ * AgentRuntime port — xihe 控制平面与具体 agent runtime(数据平面)之间的隔离阀。
  *
- * 战略依据: docs/knowledge/research/valinor-runtime-sandbox-hosting-strategy-2026-05-29.md §4
+ * 战略依据: docs/knowledge/research/xihe-runtime-sandbox-hosting-strategy-2026-05-29.md §4
  * (候选 ADR D61). dispatcher / DAG / event-stream 只认这个接口, 不认具体 runtime。
  *
  *   今天可有的实现:
@@ -9,12 +9,12 @@
  *     - ClaudeCodeRCRuntime(包现有 rc-client, plan-B 双 adapter) ← 后续 step
  *
  * 设计约束 (M2 first-principles, 保持最小):
- *   - 零依赖: 本文件不 import 任何 runtime, 这样只引用接口的 valinor 代码不会强拉 Pi。
+ *   - 零依赖: 本文件不 import 任何 runtime, 这样只引用接口的 xihe 代码不会强拉 Pi。
  *   - taskId 贯穿每个事件 → 多任务时调用方按 taskId 路由到 event-stream / DB。
  *   - 单事件总线 (onEvent) + 解订阅闭包, 跟 Pi `session.subscribe` 同形状, 映射零摩擦。
  */
 
-/** 规整后的运行时事件 —— valinor 内部只认这套, 与具体 runtime 解耦。 */
+/** 规整后的运行时事件 —— xihe 内部只认这套, 与具体 runtime 解耦。 */
 export type RuntimeEvent =
   | { type: 'text'; taskId: string; delta: string }
   | { type: 'tool_start'; taskId: string; tool: string; args: unknown }

@@ -1,14 +1,14 @@
 {
-  "name": "valinor",
+  "name": "xihe",
   "version": "0.1.0",
-  "description": "Valinor — a model-agnostic agent runtime. Valar is its first agent: a terminal coding agent with plan mode, code mode, multi-perspective fan-out, a self-consolidating memory, an MCP router, and a curated skill bundle.",
+  "description": "Xihe — a model-agnostic multi-agent runtime. Wright is its first agent: a terminal coding agent with plan mode, code mode, multi-perspective fan-out, a self-consolidating memory, an MCP router, and a curated skill bundle.",
   "type": "module",
   "license": "MIT",
   "engines": {
     "bun": ">=1.3.0"
   },
   "scripts": {
-    "valar": "bun run src/valar/tui.ts",
+    "wright": "bun run src/wright/tui.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },

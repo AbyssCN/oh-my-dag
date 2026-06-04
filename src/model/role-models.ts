@@ -1,18 +1,18 @@
 /**
- * src/model/role-models.ts — the role→model resolver (D60 · valar config seam).
+ * src/model/role-models.ts — the role→model resolver (D60 · wright config seam).
  *
  * callModel 的 provider registry 已是 config-driven (provider:modelId 经注册解析);
  * 缺的是"哪个 daemon 角色用哪个 model"的绑定。这一层补上 — dream / conductor / leaf
  * 各解析到一个坐标, 4 级优先:
  *
  *   in-memory override (CLI/test, 非持久)
- *     → file (.valar/config.json, 持久 + 跨进程, TUI /config 写它)
- *       → per-role env (VALAR_DREAM_MODEL / …)
+ *     → file (.wright/config.json, 持久 + 跨进程, TUI /config 写它)
+ *       → per-role env (XIHE_DREAM_MODEL / …)
  *         → 出厂默认
  *
- * 文件层 = valar 既有落盘约定 (.valar/* cwd-相对, 同 memory.db / session-crystals.db),
- * 经 VALAR_CONFIG_PATH 覆盖路径。daemon (bun start) 与 TUI (bun run valar) 同从 repo root
- * 跑, 共享同一 .valar/config.json; daemon 下次 resolve 时 mtime 重读即捡到 TUI 的改动, 不重启。
+ * 文件层 = wright 既有落盘约定 (.wright/* cwd-相对, 同 memory.db / session-crystals.db),
+ * 经 XIHE_CONFIG_PATH 覆盖路径。daemon (bun start) 与 TUI (bun run wright) 同从 repo root
+ * 跑, 共享同一 .wright/config.json; daemon 下次 resolve 时 mtime 重读即捡到 TUI 的改动, 不重启。
  *
  * 本轮只 WIRE dream (LiveDreamModel 读 resolveRoleModel('dream'));conductor/leaf 在此声明
  * 以便 TUI 枚举, 调用点本轮不改。INV: 永不返硬编码 URL — 只返 'provider' / 'provider:modelId'
@@ -21,10 +21,10 @@
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-/** Daemon roles that drive callModel. (valar coding-agent 的脑子走 pi /model + models.json, 不在此。) */
-export type ModelRole = 'dream' | 'conductor' | 'leaf';
+/** Daemon roles that drive callModel. (wright coding-agent 的脑子走 pi /model + models.json, 不在此。) */
+export type ModelRole = 'dream' | 'conductor' | 'leaf' | 'verifier';
 
-export const MODEL_ROLES: readonly ModelRole[] = ['dream', 'conductor', 'leaf'];
+export const MODEL_ROLES: readonly ModelRole[] = ['dream', 'conductor', 'leaf', 'verifier'];
 
 interface RoleSpec {
   /** per-role env override (在 file 之下、出厂默认之上)。 */
@@ -35,11 +35,13 @@ interface RoleSpec {
 
 const ROLE_SPECS: Record<ModelRole, RoleSpec> = {
   // Dream consolidation = 抽取推理。默认 'deepseek' → provider default → DEEPSEEK_MODEL (v4-pro)。
-  dream: { envVar: 'VALAR_DREAM_MODEL', fallback: 'deepseek' },
-  // Conductor 分解。默认镜像现有 VALAR_CONDUCTOR_FALLBACK_MODEL 行为 (本轮不重接 conductor)。
-  conductor: { envVar: 'VALAR_CONDUCTOR_MODEL', fallback: 'mimo' },
+  dream: { envVar: 'XIHE_DREAM_MODEL', fallback: 'deepseek' },
+  // Conductor 分解。默认镜像现有 XIHE_CONDUCTOR_FALLBACK_MODEL 行为 (本轮不重接 conductor)。
+  conductor: { envVar: 'XIHE_CONDUCTOR_MODEL', fallback: 'mimo' },
   // Leaf 执行 = 单发廉价档。
-  leaf: { envVar: 'VALAR_LEAF_MODEL', fallback: 'mimo' },
+  leaf: { envVar: 'XIHE_LEAF_MODEL', fallback: 'mimo' },
+  // Verifier 跨模型校验 = 对抗式审查。默认 'deepseek' (≠ mimo conductor/leaf, 故意跨模型避盲点)。
+  verifier: { envVar: 'XIHE_VERIFIER_MODEL', fallback: 'deepseek' },
 };
 
 export type RoleModelSource = 'override' | 'file' | 'env' | 'default';
@@ -51,13 +53,13 @@ export type RoleModelSource = 'override' | 'file' | 'env' | 'default';
 const overrides = new Map<ModelRole, string>();
 
 // ---------------------------------------------------------------------------
-// file layer — .valar/config.json (cwd-relative; VALAR_CONFIG_PATH override).
+// file layer — .wright/config.json (cwd-relative; XIHE_CONFIG_PATH override).
 // ---------------------------------------------------------------------------
-const DEFAULT_CONFIG_PATH = '.valar/config.json';
+const DEFAULT_CONFIG_PATH = '.wright/config.json';
 
-/** Resolved config-file path: VALAR_CONFIG_PATH or .valar/config.json (cwd-relative). */
+/** Resolved config-file path: XIHE_CONFIG_PATH or .wright/config.json (cwd-relative). */
 export function configPath(): string {
-  return process.env.VALAR_CONFIG_PATH ?? DEFAULT_CONFIG_PATH;
+  return process.env.XIHE_CONFIG_PATH ?? DEFAULT_CONFIG_PATH;
 }
 
 interface ConfigFile {
@@ -135,7 +137,7 @@ export function clearRoleModelOverrides(): void {
 }
 
 /**
- * Durably set a role's model — writes the `models` section of .valar/config.json. Cross-process:
+ * Durably set a role's model — writes the `models` section of .wright/config.json. Cross-process:
  * the daemon picks it up on its next resolve (mtime reload, no restart). This is what TUI `/config`
  * calls. Preserves any other sections / roles already in the file.
  */

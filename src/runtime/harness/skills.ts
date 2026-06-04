@@ -1,5 +1,5 @@
 /**
- * Valar 技能加载 (harness 迁移 A 档)。
+ * Wright 技能加载 (harness 迁移 A 档)。
  * .claude/skills/<name>/SKILL.md (Agent Skills 标准) → Pi `loadSkillsFromDir` 原生消费。
  * 近 drop-in: SKILL.md frontmatter (name/description) 两套格式一致。
  */
@@ -13,9 +13,9 @@ import {
 
 export const SKILLS_DIR = join('.claude', 'skills');
 
-/** 从 .claude/skills 加载全部 SKILL.md。source='valar' 用于溯源诊断。 */
-export function loadValarSkills(cwd: string = process.cwd()): LoadSkillsResult {
-  return loadSkillsFromDir({ dir: join(cwd, SKILLS_DIR), source: 'valar' });
+/** 从 .claude/skills 加载全部 SKILL.md。source='wright' 用于溯源诊断。 */
+export function loadWrightSkills(cwd: string = process.cwd()): LoadSkillsResult {
+  return loadSkillsFromDir({ dir: join(cwd, SKILLS_DIR), source: 'wright' });
 }
 
 export { formatSkillsForPrompt };

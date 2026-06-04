@@ -41,7 +41,7 @@
 
 ## G) Next.js & Vercel Best Practices — ⚠ Phase 4+ Web UI ONLY (dormant)
 
-> **valinor 是 Bun/Hono daemon, 无 Next.js/React/Vercel** — 本节仅在 Phase 4+ `ai.example.com` Web UI 真建时激活 (D52, 大概率 Next.js)。当前 daemon review 用 §A-F + stack-architect daemon lens (loop 阻塞 / tick CAS / WS 生命周期)。**无 `npm run check:vercel`** (valinor 不存在该 script)。
+> **xihe 是 Bun/Hono daemon, 无 Next.js/React/Vercel** — 本节仅在 Phase 4+ `ai.example.com` Web UI 真建时激活 (D52, 大概率 Next.js)。当前 daemon review 用 §A-F + stack-architect daemon lens (loop 阻塞 / tick CAS / WS 生命周期)。**无 `npm run check:vercel`** (xihe 不存在该 script)。
 
 ### 5 Critical Rules (enforced by automated checker)
 
@@ -87,13 +87,13 @@
 | TBT    | <= 300ms |
 | CLS    | <= 0.1  |
 
-<!-- References (check-vercel-best-practices.mjs / npm run check:vercel) 已删 2026-06-01: valinor 无该 script (a sibling project webapp only)。本节 dormant, 激活时再补 checker。 -->
+<!-- References (check-vercel-best-practices.mjs / npm run check:vercel) 已删 2026-06-01: xihe 无该 script (a sibling project webapp only)。本节 dormant, 激活时再补 checker。 -->
 
 ---
 
-## H) Cross-layer Contract Verification (B1-B4) — ⚠ a sibling project 形态, valinor daemon 部分适用
+## H) Cross-layer Contract Verification (B1-B4) — ⚠ a sibling project 形态, xihe daemon 部分适用
 
-> **valinor 校正 (2026-06-01)**: 本节 B1-B4 是 a sibling project SaaS-webapp 契约框架 (RLS / Supabase `.from().select()`/`.rpc()` Action / Next.js Frontend consume)。**无 `check-contracts.mjs` / `npm run check:contracts`** (valinor 不存在, 且用 Bun)。daemon 侧仅 **B1 Schema↔RLS 一致性** 部分适用 (valinor 有 Drizzle+PG RLS, 见 sql/*.sql + tenant_id); B2/B3/B4 (Action/Frontend) 不适用。跨层契约**概念**仍是 Core4 §3 方法论核心, 但下方自动化 checker 是 a sibling project, valinor 走人工 + Codex G2 review。
+> **xihe 校正 (2026-06-01)**: 本节 B1-B4 是 a sibling project SaaS-webapp 契约框架 (RLS / Supabase `.from().select()`/`.rpc()` Action / Next.js Frontend consume)。**无 `check-contracts.mjs` / `npm run check:contracts`** (xihe 不存在, 且用 Bun)。daemon 侧仅 **B1 Schema↔RLS 一致性** 部分适用 (xihe 有 Drizzle+PG RLS, 见 sql/*.sql + tenant_id); B2/B3/B4 (Action/Frontend) 不适用。跨层契约**概念**仍是 Core4 §3 方法论核心, 但下方自动化 checker 是 a sibling project, xihe 走人工 + Codex G2 review。
 
 跨架构层边界的 identifier 验证 (INV-1 ~ INV-4) — 概念参考, 自动化未移植。
 
@@ -146,7 +146,7 @@
 
 ### H References
 
-- ⚠ CI script `scripts/check-contracts.mjs` — a sibling project, valinor 不存在 (跨层契约走人工 + Codex G2)
+- ⚠ CI script `scripts/check-contracts.mjs` — a sibling project, xihe 不存在 (跨层契约走人工 + Codex G2)
 - Framework: `docs/standards/cognitive-architecture/FRAMEWORK.md` (INV-1..8 概念)
 
 ---
