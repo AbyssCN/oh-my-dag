@@ -14,7 +14,7 @@
  *
  * plan mode 是**交互-TUI 专属** (键盘/UI), daemon(PiRuntime) 无键盘 → 接在 tui.ts 而非 controller。
  */
-import { getModel, getProviders, getModels } from '@earendil-works/pi-ai';
+import { getModel } from '@earendil-works/pi-ai';
 import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
 import type { ThinkingLevel } from '../../runtime/types';
 import { logger } from '../../logger';
@@ -174,35 +174,8 @@ export function createPlanExtension(opts: PlanExtensionOpts = {}): ExtensionFact
       },
     });
 
-    // /model 模型座舱: 列 pi provider/model 并切换当前模型 (terminal 内切 plan 模型)。
-    pi.registerCommand('model', {
-      description: '列 pi provider/model 并切换当前模型',
-      handler: async (_args: string, ctx: Ctx) => {
-        const providers = getProviders();
-        const provider = await ctx.ui.select('选 provider', [...providers]);
-        if (!provider) return;
-        const models = getModels(provider as Parameters<typeof getModels>[0]).map((m) => m.id);
-        if (models.length === 0) {
-          ctx.ui.notify(`${provider} 无可用 model`, 'warning');
-          return;
-        }
-        const modelId = await ctx.ui.select(`选 model (${provider})`, models);
-        if (!modelId) return;
-        const ok = await pi.setModel(
-          getModel(provider as Parameters<typeof getModel>[0], modelId as never) as Parameters<
-            typeof pi.setModel
-          >[0],
-        );
-        // G2 P1-2: plan mode 内 /model 改模型后, badge 同步刷新 (否则显示 stale 的 plan model)。
-        if (ok && state.status === 'plan') {
-          ctx.ui.setStatus('plan', `◇ PLAN · ${provider}:${modelId} · ${pi.getThinkingLevel()}`);
-        }
-        ctx.ui.notify(
-          ok ? `模型 → ${provider}:${modelId}` : `切换失败 (缺 ${provider} API key)`,
-          ok ? 'info' : 'error',
-        );
-      },
-    });
+    // 注: /model 模型座舱命令已移除 —— pi 0.77 有内置 /model (扩展同名命令被 reserved 冲突 skip,
+    // 见 [[keybindings-setup]] 同类坑)。切模型走 pi 原生 /model; 选默认模型走 init wizard / .env。
 
     // /note: 记一条决策进台账 (plan ledger 真实写路径)。
     pi.registerCommand('note', {

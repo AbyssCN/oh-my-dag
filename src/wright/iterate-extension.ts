@@ -12,6 +12,7 @@
 import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
 import { iterateExecutorDag, summarizeDagResult } from './plan/iterate';
 import { createDagRecorder } from './dag-record';
+import { m } from './i18n';
 
 export interface IterateExtensionOpts {
   /** conductor 模型 'provider:modelId'。 */
@@ -58,14 +59,17 @@ export function createIterateExtension(
   return (pi) => {
     // 注: registerCommand 名不带前导斜杠 (pi agent-session 已 slice(1) 去斜杠后按 name 匹配)。
     pi.registerCommand('iterate', {
-      description: '外层 fixpoint 迭代执行 (跑→评→重画 直到收敛)。用法: /iterate <任务>',
+      description: m({
+        en: 'Outer fixpoint iteration (run→judge→redraw until convergence). Usage: /iterate <task>',
+        zh: '外层 fixpoint 迭代执行 (跑→评→重画 直到收敛)。用法: /iterate <任务>',
+      }),
       handler: async (args: string, ctx) => {
         const task = args.trim();
         if (!task) {
-          ctx.ui.notify('用法: /iterate <任务>', 'warning');
+          ctx.ui.notify(m({ en: 'Usage: /iterate <task>', zh: '用法: /iterate <任务>' }), 'warning');
           return;
         }
-        ctx.ui.setStatus('iterate', '迭代中…');
+        ctx.ui.setStatus('iterate', m({ en: 'iterating…', zh: '迭代中…' }));
         try {
           const r = await iterate(task, {
             conductorModel: opts.conductorModel,
@@ -79,11 +83,16 @@ export function createIterateExtension(
               recorder.record(res, { question: 'iterate ' + task });
             },
           });
-          const head = `[${r.status}] ${r.rounds.length} 轮 · 收敛=${r.converged}`;
-          const body = r.finalRound ? summarizeDagResult(r.finalRound.result, 600) : '(无产出)';
+          const head = m({
+            en: `[${r.status}] ${r.rounds.length} rounds · converged=${r.converged}`,
+            zh: `[${r.status}] ${r.rounds.length} 轮 · 收敛=${r.converged}`,
+          });
+          const body = r.finalRound
+            ? summarizeDagResult(r.finalRound.result, 600)
+            : m({ en: '(no output)', zh: '(无产出)' });
           ctx.ui.notify(`${head}\n\n${body}`, r.converged ? 'info' : 'warning');
         } catch (e) {
-          ctx.ui.notify('迭代失败: ' + String(e), 'error');
+          ctx.ui.notify(m({ en: 'Iteration failed: ', zh: '迭代失败: ' }) + String(e), 'error');
         } finally {
           ctx.ui.setStatus('iterate', undefined);
         }

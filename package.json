@@ -44,6 +44,8 @@
     "LICENSE"
   ],
   "scripts": {
+    "xihe": "bun run src/wright/tui.ts",
+    "init": "bun run src/wright/tui.ts init",
     "wright": "bun run src/wright/tui.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test"

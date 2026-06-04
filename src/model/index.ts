@@ -107,6 +107,21 @@ function resolveModel(req: ModelRequest): { cfg: ProviderConfig; modelId: string
   return { cfg, modelId, resolved: `${providerName}:${modelId}` };
 }
 
+/**
+ * 纯解析校验: 坐标能否解析成可调模型 (有 model id 或裸 provider 有 defaultModel)。
+ * 解析规则单一真理源 = resolveModel。不能解析 → 抛 ModelError('config')。无网络副作用。
+ * 用途: wiring 层 (如 resolveVerification) fail-fast —— 把"DAG 跑完才崩"提到"DAG 跑前崩"。
+ * `label` 进错误信息, 点名是哪个角色坐标坏 (如 'verifier')。
+ */
+export function assertModelResolvable(coord: string, label = 'model'): void {
+  try {
+    resolveModel({ messages: [], model: coord });
+  } catch (err) {
+    const msg = err instanceof ModelError ? err.message : String(err);
+    throw new ModelError('config', `${label} 坐标无法解析: ${msg}`);
+  }
+}
+
 async function postJson(
   cfg: ProviderConfig,
   path: string,

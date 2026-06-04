@@ -20,7 +20,7 @@
  *  VER-3 信 verifier 的 pass 布尔 (任务要求逐条对照已进 prompt); reason 必带 (fail 时点名缺啥)。
  */
 import { z } from 'zod';
-import { callModel, listProviders } from '../model';
+import { callModel, listProviders, assertModelResolvable } from '../model';
 import { resolveRoleModel } from '../model/role-models';
 import type { ModelUsage } from '../model/types';
 import type { ConductorPlan } from './conductor-plan';
@@ -159,6 +159,9 @@ export function resolveVerification(opts: ResolveVerificationOpts = {}): Verific
   if (opts.enabled === false) return {};
   const env = opts.env ?? process.env;
   const verifierModel = opts.verifierModel ?? resolveRoleModel('verifier', env);
+  // fail-fast: verifier 必被 DAG 跑完后调用。坐标坏 (裸 provider 无 defaultModel 等) 现在就抛,
+  // 别等 leaves 全跑完才在 verify 处崩 (本 session 实测的 footgun: clobber 掉 defaultModel)。
+  assertModelResolvable(verifierModel, 'verifier');
   const verifier = createDefaultVerifier({
     verifierModel,
     thinkingLevel: opts.thinkingLevel,

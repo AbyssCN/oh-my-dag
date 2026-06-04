@@ -1,4 +1,3 @@
-#!/usr/bin/env bun
 /**
  * wright 终端前端 (V2.0 ControllerSkeleton 交付物) —— 交互式 wright on MiMo, 带灵魂。
  *
@@ -20,6 +19,8 @@ import { createIterateExtension } from './iterate-extension';
 import { resolveVerification } from './verifier';
 import { createModelRouterFromEnv } from './model-router';
 import { createPlanExtension, ensurePlanToggleKeyFree } from './plan';
+import { createBannerExtension, ensureXiheTheme } from './branding';
+import { detectRuntimeConfig, runInitWizard, createReadlineIO } from './init';
 import { createHashlineExtension } from './hashline';
 import { createConfigExtension } from './config-extension';
 import { createMcpStackFromConfig, createOutputSandboxExtension, createOutputStore } from './mcp';
@@ -55,15 +56,36 @@ import { UNIVERSAL_SAFEGUARD } from '../memory/safeguards/namespaces';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-// wright 的对话模型 (= 你在 TUI 里对话的主 agent / 设计大脑, **不是** executor leaf —— leaf 模型
-// per-dispatch 在 fleet/executor-dag 选)。**不 bake 任何模型** (the owner 锁): 纯跟 env (XIHE_RUNTIME_*)
-// 走; 缺则 WrightController 构造抛错 (fail-fast, 提示设 env)。OUR 部署默认落 .env (照 .env.example 设)。
-const envProvider = process.env.XIHE_RUNTIME_PROVIDER;
-const envModel = process.env.XIHE_RUNTIME_MODEL;
-
 // 用户没显式选模型 (--model / --provider) 才注入 env 默认 flags; 否则尊重用户覆盖。
 const userArgs = process.argv.slice(2);
 const userPickedModel = userArgs.includes('--model') || userArgs.includes('--provider');
+
+// xihe 首次配置向导 (boot 前, controller 构造前): `xihe init` 显式重配, 或缺 runtime 配置时自动进
+// (替代旧 WrightController fail-fast 崩 — 新用户零配置启动 = 引导而非报错)。wizard 写 .env +
+// 注入 process.env → 本次 boot 立即可用, 无需重启。已配 (.env 预置, Bun 自动加载) → detect ok 跳过。
+{
+  const wantsInit = userArgs[0] === 'init';
+  if (wantsInit || !detectRuntimeConfig().ok) {
+    // headless/RC (无 TTY) 缺配置 → 不进交互 wizard (readline 会 hang), 回退 fail-fast 提示。
+    if (!wantsInit && !process.stdin.isTTY) {
+      logger.error('[wright/init] 缺 runtime 配置且非交互终端 — 设 .env (XIHE_RUNTIME_PROVIDER/MODEL + provider key) 或在终端跑 `xihe init`');
+      process.exit(1);
+    }
+    if (!wantsInit) logger.info('[wright/init] 未检测到 runtime 配置 → 进首次配置向导');
+    const res = await runInitWizard({ io: createReadlineIO() });
+    if (wantsInit) process.exit(res ? 0 : 1); // 显式 init: 配完即退出, 用户再正常启动
+    if (!res) {
+      logger.error('[wright/init] 未完成配置 — 请填 .env (照 .env.example) 或重跑 `xihe init`');
+      process.exit(1);
+    }
+  }
+}
+
+// wright 的对话模型 (= 你在 TUI 里对话的主 agent / 设计大脑, **不是** executor leaf —— leaf 模型
+// per-dispatch 在 fleet/executor-dag 选)。**不 bake 任何模型** (the owner 锁): 纯跟 env (XIHE_RUNTIME_*);
+// wizard 已确保配置齐 (或用户预置 .env)。在 wizard 之后读 → 拿到 wizard 注入的值。
+const envProvider = process.env.XIHE_RUNTIME_PROVIDER;
+const envModel = process.env.XIHE_RUNTIME_MODEL;
 
 // 用户静态档案 (user.md): 部署入口读文件, 传 controller 整段注入 (controller 保持纯不读盘)。
 const userProfile = readUserProfile(process.env.XIHE_USER_PROFILE ?? DEFAULT_USER_PROFILE_PATH);
@@ -146,6 +168,15 @@ if (planKeyFix.changed) {
 const planExt = createPlanExtension({
   planModel: process.env.XIHE_PLAN_MODEL ?? 'deepseek:deepseek-v4-pro',
 });
+
+// 默认 Xihe theme (朱砂金太阳): boot 前写 themes/xihe.json + (用户没显式选别的主题时) 设为默认。
+// 幂等 + 非破坏性 (用户 /theme 选过别的则只保证文件在, 不抢)。失败不阻断 boot。
+const themeFix = ensureXiheTheme();
+if (themeFix.reason === 'applied') {
+  logger.info({ themePath: themeFix.themePath }, '[wright/branding] 已应用 Xihe 默认主题');
+} else if (themeFix.reason === 'write-error') {
+  logger.warn({ themePath: themeFix.themePath }, '[wright/branding] Xihe 主题写入失败 (沿用 pi 默认主题)');
+}
 
 // hashline-in-TUI (V2-TOOLS): 注入 hashline_read/hashline_edit + block 原生 edit。**默认全开**
 // (不按模型门控): hashline 改文件是 model-independent 净赢 (省 token + 防 mismatch/腐烂 + 链式连编)。
@@ -281,10 +312,32 @@ const { extension: costExt } = createCostExtension({
   limitUsd: process.env.XIHE_BUDGET_USD ? Number(process.env.XIHE_BUDGET_USD) : undefined,
 });
 
+// Xihe 启动 banner (setHeader 替换 pi 内置 logo header): 字标 + 日轮 + 后端行 + 工作流教程 + 指令速查。
+// 版本从 package.json 防御式读 (失败 → 不显版本号, 不崩)。后端/thinking 取当前会话静态值。
+const xiheVersion = await (async () => {
+  try {
+    const pkg = (await import('../../package.json')) as unknown as {
+      version?: string;
+      default?: { version?: string };
+    };
+    return pkg.version ?? pkg.default?.version;
+  } catch {
+    return undefined;
+  }
+})();
+const bannerExt = createBannerExtension({
+  version: xiheVersion,
+  provider: ctrl.provider,
+  model: ctrl.model,
+  thinking: 'high',
+  webEnabled: webStack !== null,
+});
+
 const args = userPickedModel ? userArgs : [...ctrl.toModelArgs(), ...userArgs];
 
 await main(args, {
   extensionFactories: [
+    bannerExt,
     ...ctrl.toExtensionFactories(),
     cgAuditExt,
     iterateExt,
