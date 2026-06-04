@@ -1,0 +1,20 @@
+# deps
+node_modules/
+
+# runtime state (sqlite stores, configs)
+.valar/
+*.db
+*.db-shm
+*.db-wal
+
+# env / secrets
+.env
+.env.*
+!.env.example
+
+# build output
+dist/
+*.log
+
+# os
+.DS_Store

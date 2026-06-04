@@ -1,0 +1,9 @@
+{
+  "upstream_repo": "anthropics/skills",
+  "upstream_path": "skills/skill-creator",
+  "license": "Apache-2.0",
+  "upstream_commit": "3d59511518591fa82e6cfcf0438d68dd5dad3e76",
+  "upstream_head_seen": "b9e19e6f44773509fbdd7001d77ff41a49a486c1",
+  "last_checked": "2026-06-04",
+  "note": "Vendored snapshot (本地化: frontmatter +tier/runtime/trigger, desc update vs edit)。upstream_commit 经 git-archaeology 回填 (2026-06-04): 唯一匹配我方快照特征签名 (含 'with extended thinking' + 无 'Updating an existing skill') 的上游 commit = 3d5951151859 ('chore: export latest skills', 2026-02-25, 路径 skills/skill-creator/SKILL.md, body 32188B vs 我方 32414B = 本地 frontmatter/desc 差)。下一个 commit b0cbd3df (2026-03-06) 才加 'Updating an existing skill' + 去 'with extended thinking' → 确证我方 vendored 点 = 3d5951。upstream_head_seen = 2026-06-03 观测到的 repo HEAD (我方落后它 ~3 个月)。下次 sync 上游可拉回 'Updating an existing skill' 指引。"
+}
