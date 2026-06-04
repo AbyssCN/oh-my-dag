@@ -164,6 +164,10 @@ bun run wright             # interactive terminal agent
 bun run wright -p "..."    # one-shot, non-interactive
 ```
 
+> **Prefer typing `xihe` instead of `bun run wright`?** Run `bun link` once in the repo —
+> it puts the `xihe` and `wright` commands on your `PATH`, pointed at this working copy
+> (edits go live immediately). Then just `xihe` from anywhere. `bun unlink` to undo.
+
 ### Option B — global install (run from anywhere)
 
 ```bash
@@ -369,6 +373,10 @@ export DEEPSEEK_API_KEY=sk-...          # 你选的那个后端的 key
 bun run wright             # 交互式终端 agent
 bun run wright -p "..."    # 单发、非交互
 ```
+
+> **想直接敲 `xihe` 而不是 `bun run wright`?** 在 repo 里跑一次 `bun link` ——
+> 它把 `xihe` 和 `wright` 两个命令挂到你的 `PATH` 上、指向这份源码工作副本(改代码即时生效)。
+> 之后任意目录敲 `xihe` 即可。撤销用 `bun unlink`。
 
 ### 方式 B — 全局安装(任意目录直接跑)
 
