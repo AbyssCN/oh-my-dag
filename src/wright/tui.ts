@@ -1,4 +1,3 @@
-#!/usr/bin/env bun
 /**
  * wright 终端前端 (V2.0 ControllerSkeleton 交付物) —— 交互式 wright on MiMo, 带灵魂。
  *
@@ -19,7 +18,7 @@ import { createCgAuditExtension } from './cg-audit-extension';
 import { createIterateExtension } from './iterate-extension';
 import { resolveVerification } from './verifier';
 import { createModelRouterFromEnv } from './model-router';
-import { createPlanExtension } from './plan';
+import { createPlanExtension, ensurePlanToggleKeyFree } from './plan';
 import { createHashlineExtension } from './hashline';
 import { createConfigExtension } from './config-extension';
 import { createMcpStackFromConfig, createOutputSandboxExtension, createOutputStore } from './mcp';
@@ -128,6 +127,21 @@ const iterateExt = createIterateExtension({
 });
 
 // plan mode (P1 脊柱): shift+tab 进只读审议座舱, 默认 deepseek-v4-pro xhigh (env 可覆盖)。交互-TUI 专属。
+// pi 0.77 把 shift+tab(=app.thinking.cycle) 列为扩展冲突保留键 → 扩展 shortcut 被静默 skip,
+// shift+tab 进不去 plan mode。boot 前把 thinking-cycle 从 shift+tab 让路 (写 pi keybindings.json),
+// 释放该键给 plan mode 扩展。幂等 + 非破坏性; 失败则降级到 /plan 命令 (不阻断 boot)。
+const planKeyFix = ensurePlanToggleKeyFree();
+if (planKeyFix.changed) {
+  logger.info(
+    { path: planKeyFix.path, fallback: planKeyFix.fallbackKey, reason: planKeyFix.reason },
+    `[wright/plan] 已让出 shift+tab 给 plan mode (thinking-cycle → ${planKeyFix.fallbackKey}); 本次 boot 即生效`,
+  );
+} else if (planKeyFix.reason === 'parse-error' || planKeyFix.reason === 'write-error') {
+  logger.warn(
+    { path: planKeyFix.path, reason: planKeyFix.reason },
+    '[wright/plan] 无法自动让出 shift+tab (keybindings.json 异常); plan mode 经 /plan 命令仍可进',
+  );
+}
 const planExt = createPlanExtension({
   planModel: process.env.XIHE_PLAN_MODEL ?? 'deepseek:deepseek-v4-pro',
 });

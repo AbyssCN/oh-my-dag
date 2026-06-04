@@ -9,6 +9,12 @@ export {
   type PlanExtensionOpts,
 } from './plan-extension';
 export { createPlanModeState, type PlanModeState, type PlanModeStatus } from './mode';
+export {
+  ensurePlanToggleKeyFree,
+  type EnsurePlanKeyOpts,
+  type EnsurePlanKeyResult,
+  type EnsurePlanKeyReason,
+} from './keybindings-setup';
 export { PlanLedger, type PlanRef, type PlanLedgerInit } from './ledger';
 export { PLAN_MODE_OVERLAY, GRILL_OVERLAY } from './overlay';
 export {
