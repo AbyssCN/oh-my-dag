@@ -1,8 +1,15 @@
 <div align="center">
 
+<img src="assets/xihe-mark.png" alt="Xihe" width="190" />
+
 # Xihe · 羲和
 
 ### The system around the model.
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-c9a227?style=flat-square&labelColor=140f0a)](LICENSE)
+[![Runtime: Bun ≥ 1.3](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.3-b3382a?style=flat-square&labelColor=140f0a)](https://bun.sh)
+[![Built on pi](https://img.shields.io/badge/built%20on-pi-6f9488?style=flat-square&labelColor=140f0a)](https://pi.dev)
+[![GitHub stars](https://img.shields.io/github/stars/AbyssCN/xihe?style=flat-square&color=c9a227&labelColor=140f0a)](https://github.com/AbyssCN/xihe/stargazers)
 
 **Most agents are a prompt wrapped around one frontier model.**
 Xihe makes the opposite bet: reliability lives in the *code around* the model —
@@ -12,7 +19,7 @@ even a small or cheap one, and the harness makes it behave like a disciplined en
 
 > The model is the engine. Xihe is the chassis.
 
-**English** · [中文](#中文)
+🌐 **[xihe.dev](https://xihe.dev)**  ·  **English** · [中文](#中文)
 
 [Quickstart](#quick-start) · [What's inside](#whats-inside) · [Meet Wright](#meet-wright) · [Philosophy](#philosophy)
 
@@ -155,6 +162,8 @@ Requires [Bun](https://bun.sh) ≥ 1.3. Built on the [pi](https://pi.dev) coding
 ---
 
 ## Meet Wright
+
+<img src="assets/wright.png" alt="Wright — the maker" width="150" align="right" />
 
 **Xihe** is the platform. **Wright** is its first agent — a terminal coding agent. More
 agents will live on the same chassis: the plan-before-act discipline, the self-consolidating
