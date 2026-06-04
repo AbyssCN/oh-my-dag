@@ -1,5 +1,5 @@
 {
-  "name": "xihe",
+  "name": "xihe-agent",
   "version": "0.1.0",
   "description": "Xihe — a model-agnostic multi-agent runtime. Wright is its first agent: a terminal coding agent with plan mode, code mode, multi-perspective fan-out, a self-consolidating memory, an MCP router, and a curated skill bundle.",
   "type": "module",
