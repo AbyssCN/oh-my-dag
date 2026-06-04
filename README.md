@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/xihe-mark.png" alt="Xihe" width="190" />
+<img src="assets/banner.png" alt="Xihe · 羲和" width="100%" />
 
 # Xihe · 羲和
 
