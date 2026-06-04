@@ -17,6 +17,7 @@ import { sastScan } from './sast-scan';
 import { createDagRecorder } from './dag-record';
 import type { VerificationConfig } from './verifier';
 import type { LeafModelRouter } from './model-router';
+import { m } from './i18n';
 
 export interface CgAuditExtensionOpts {
   /** conductor 模型 'provider:modelId', 透传给 cgRetrieve / secAudit。 */
@@ -63,14 +64,17 @@ export function createCgAuditExtension(
     // 注: registerCommand 名**不带**前导斜杠 — pi 解析用户输入时已 slice(1) 去斜杠后按 name 匹配
     // (agent-session.js: `text.slice(1)`)。注册 '/cg' 会变 invocationName='/cg', 永不命中 'cg'。
     pi.registerCommand('cg', {
-      description: 'codegraph 并行代码检索 + 综合答案。用法: /cg <代码问题>',
+      description: m({
+        en: 'codegraph parallel code retrieve + synthesized answer. Usage: /cg <code question>',
+        zh: 'codegraph 并行代码检索 + 综合答案。用法: /cg <代码问题>',
+      }),
       handler: async (args: string, ctx) => {
         const trimmed = args.trim();
         if (!trimmed) {
-          ctx.ui.notify('用法: /cg <代码问题>', 'warning');
+          ctx.ui.notify(m({ en: 'Usage: /cg <code question>', zh: '用法: /cg <代码问题>' }), 'warning');
           return;
         }
-        ctx.ui.setStatus('cg', '检索中…');
+        ctx.ui.setStatus('cg', m({ en: 'retrieving…', zh: '检索中…' }));
         try {
           const r = await (deps?.cgRetrieve ?? cgRetrieve)(trimmed, {
             conductorModel: opts.conductorModel,
@@ -85,7 +89,7 @@ export function createCgAuditExtension(
           const answer = r.results['synth']?.output ?? '(无 synth 结果)';
           ctx.ui.notify(answer, 'info');
         } catch (e) {
-          ctx.ui.notify('检索失败: ' + String(e), 'error');
+          ctx.ui.notify(m({ en: 'Retrieve failed: ', zh: '检索失败: ' }) + String(e), 'error');
         } finally {
           ctx.ui.setStatus('cg', undefined);
         }
