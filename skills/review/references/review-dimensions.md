@@ -1,14 +1,14 @@
 # Code Review Dimensions (A-I) -- Full Reference
 
-> Extracted from code-review-board for detailed dimension checklists.
-> Summary table is in the main `/review` SKILL.md.
+> Extracted from the code-review board for detailed dimension checklists.
+> The summary table is in the main `/review` SKILL.md.
 
 ---
 
 ## A) Multi-tenant isolation (company boundary)
 
 - Every query path is tenant-scoped
-- No cross-company read/write
+- No cross-tenant read/write
 - Service role usage justified and guarded
 
 ## B) RLS & authorization correctness
@@ -19,8 +19,8 @@
 
 ## C) Domain invariants
 
-- attendance != work entry != billing insight
-- Edits/overrides do not corrupt audit trail
+- Distinct domain concepts are not conflated (e.g. raw event != derived record != billable insight)
+- Edits/overrides do not corrupt the audit trail
 
 ## D) Auditability & traceability
 
@@ -31,17 +31,17 @@
 ## E) Data migrations & backwards compatibility
 
 - Migrations are safe (expand/contract strategy)
-- Old app version should not break during rollout
+- An old app version should not break during rollout
 
 ## F) Reliability & UX states
 
-- Handles empty/loading/error/offline/permission denied states
+- Handles empty/loading/error/offline/permission-denied states
 
 ---
 
-## G) Next.js & Vercel Best Practices — ⚠ Phase 4+ Web UI ONLY (dormant)
+## G) Next.js & Vercel Best Practices — ⚠ Web UI ONLY (dormant for daemon-only projects)
 
-> **xihe 是 Bun/Hono daemon, 无 Next.js/React/Vercel** — 本节仅在 Phase 4+ `ai.example.com` Web UI 真建时激活 (D52, 大概率 Next.js)。当前 daemon review 用 §A-F + stack-architect daemon lens (loop 阻塞 / tick CAS / WS 生命周期)。**无 `npm run check:vercel`** (xihe 不存在该 script)。
+> This section applies only when a project has a Next.js/React/Vercel web UI. For a Bun/Hono (or similar) daemon with no web frontend, skip it and use §A-F plus a daemon-architect lens (loop blocking / tick CAS / WS lifecycle).
 
 ### 5 Critical Rules (enforced by automated checker)
 
@@ -71,7 +71,7 @@
 - Dynamic imports for heavy components
 - Check: Recharts, @tanstack/react-table, react-pdf?
 
-### Next.js 2026 Features (verify in new code)
+### Next.js Features (verify in new code)
 
 - [ ] Uses `after()` for non-blocking side effects (audit logs, analytics)
 - [ ] Implements Partial Prerendering (PPR) where applicable
@@ -87,48 +87,46 @@
 | TBT    | <= 300ms |
 | CLS    | <= 0.1  |
 
-<!-- References (check-vercel-best-practices.mjs / npm run check:vercel) 已删 2026-06-01: xihe 无该 script (a sibling project webapp only)。本节 dormant, 激活时再补 checker。 -->
-
 ---
 
-## H) Cross-layer Contract Verification (B1-B4) — ⚠ a sibling project 形态, xihe daemon 部分适用
+## H) Cross-layer Contract Verification (B1-B4) — ⚠ web-app shape; partially applies to a daemon
 
-> **xihe 校正 (2026-06-01)**: 本节 B1-B4 是 a sibling project SaaS-webapp 契约框架 (RLS / Supabase `.from().select()`/`.rpc()` Action / Next.js Frontend consume)。**无 `check-contracts.mjs` / `npm run check:contracts`** (xihe 不存在, 且用 Bun)。daemon 侧仅 **B1 Schema↔RLS 一致性** 部分适用 (xihe 有 Drizzle+PG RLS, 见 sql/*.sql + tenant_id); B2/B3/B4 (Action/Frontend) 不适用。跨层契约**概念**仍是 Core4 §3 方法论核心, 但下方自动化 checker 是 a sibling project, xihe 走人工 + Codex G2 review。
+> This section's B1-B4 is a SaaS web-app contract framework (RLS / DB query/RPC actions / frontend consume). A daemon side typically only needs **B1 Schema↔RLS consistency** if it has an ORM + PG RLS; B2/B3/B4 (Action/Frontend) don't apply. The cross-layer contract **concept** stays a methodology core, but the automated checkers below are web-app-only — a daemon relies on manual review + cross-model adversarial review.
 
-跨架构层边界的 identifier 验证 (INV-1 ~ INV-4) — 概念参考, 自动化未移植。
+Identifier verification across architecture-layer boundaries (INV-1 ~ INV-4) — conceptual reference; automation not ported.
 
 ### B1: Schema -> RLS (INV-1 Ref-Resolution)
 
-- RLS USING/WITH CHECK expressions reference columns that exist in table schema
+- RLS USING/WITH CHECK expressions reference columns that exist in the table schema
 - RLS policies cover all required CRUD operations
 - Portal vs internal policy isolation correct
-- CI: `check:contracts` B1 check (blocking)
+- CI: contract B1 check (blocking)
 
 ### B2: Schema/View -> Action (INV-1 + INV-4)
 
-- `.from('table').select('fields')` fields exist in table/view schema
-- `.rpc()` parameter names and types match SQL definition
-- View/RPC return structure matches Action consumption
-- CI: `check:contracts` B2 check (advisory -- Supabase relation queries cause false positives)
+- `.from('table').select('fields')` fields exist in the table/view schema
+- `.rpc()` parameter names and types match the SQL definition
+- View/RPC return structure matches action consumption
+- CI: contract B2 check (advisory -- relation queries cause false positives)
 
 ### B3: Action -> Frontend (INV-4 Produce->Consume)
 
 - Handler return fields match consumer (channel/WS/event) destructuring (`data.fieldName`)
-- Status enum values aligned between Action and UI
+- Status enum values aligned between action and UI
 - Error handling path covers `ActionResponse.success === false`
-- Agent: `boundary-b3-checker` (semantic verification)
+- Agent: boundary-b3-checker (semantic verification)
 
 ### B4: Frontend -> Action (INV-2 Path-Completeness)
 
-- All write functions have Zod input validation
+- All write functions have schema input validation
 - No `...input` spread without field whitelist
-- Drag/batch/form operations all pass same validation path
-- CI: `check:contracts` B4 check (advisory)
+- Drag/batch/form operations all pass the same validation path
+- CI: contract B4 check (advisory)
 
 ### INV-3: Constraint Consistency (cross-cutting)
 
-- DB CHECK constraints consistent with Zod validation rules
-- State machine transitions (`state-machine.ts`) match DB/RLS constraints
+- DB CHECK constraints consistent with validation rules
+- State machine transitions match DB/RLS constraints
 - FK CASCADE does not silently delete business-critical data
 
 ### INV References
@@ -146,16 +144,16 @@
 
 ### H References
 
-- ⚠ CI script `scripts/check-contracts.mjs` — a sibling project, xihe 不存在 (跨层契约走人工 + Codex G2)
-- Framework: `docs/standards/cognitive-architecture/FRAMEWORK.md` (INV-1..8 概念)
+- ⚠ The contract-check CI script is web-app-only — a daemon does cross-layer contracts via manual + adversarial review
+- Framework: the cognitive-architecture INV-1..8 concepts
 
 ---
 
 ## I) Test Sufficiency
 
-Checks that tests cover critical boundaries, not just happy-path:
+Checks that tests cover critical boundaries, not just the happy path:
 
-- [ ] Every new/modified action has corresponding `*.test.ts`?
+- [ ] Every new/modified action has a corresponding `*.test.ts`?
 - [ ] Tests cover error paths (no permission / invalid input / DB failure)?
 - [ ] Tests cover boundary values (empty list / single / large dataset)?
 - [ ] New RPC/migration has corresponding integration verification?
@@ -179,8 +177,8 @@ Any of these findings results in a **stop-ship** verdict:
 3. Service role used from client / exposed
 4. Audit trail broken for status changes
 5. Migration can cause data loss
-6. Vercel checker reports **errors** (not warnings/info)
+6. Web best-practices checker reports **errors** (not warnings/info)
 7. Missing `'use server'` in action files
 8. Performance regression >10% from baseline
-9. `check:contracts` B1 check fails (RLS references non-existent columns)
-10. Write function lacks Zod validation with no justification
+9. Contract B1 check fails (RLS references non-existent columns)
+10. Write function lacks input validation with no justification

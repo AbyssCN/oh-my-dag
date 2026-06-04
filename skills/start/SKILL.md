@@ -3,86 +3,86 @@ name: start
 tier: foundation
 runtime: always
 trigger: mention
-description: "Session initialization ritual: read _NEXT.md + git status in parallel to restore the previous context, output a Briefing with the current task + suggested next step. The first command of every new session to prevent context loss. Trigger: start / 开始 / 恢复进度 / 继续上次的 / 新session / 从哪里继续. Skip: save progress (/handoff) / commit (/commit)."
+description: "Session initialization ritual: read the project's next-steps file + git status in parallel to restore the previous context, output a Briefing with the current task + suggested next step. The first command of every new session to prevent context loss. Trigger: start / 开始 / 恢复进度 / 继续上次的 / 新session / 从哪里继续. Skip: save progress (/handoff) / commit (/commit)."
 metadata:
-  source: claude-skills
+  source: xihe
   version: "3.1.0"
 ---
 # /start — Session Initialization
 
 > The first command of every new session. Restore context, output a briefing, suggest the next step.
-> **Design principles**: minimal IO (2 calls), minimal tokens (partial reads), ≤30 lines of output.
+> **Design principles**: minimal IO, minimal tokens (partial reads), ≤30 lines of output.
 
 ## Input
 
-- Optional: feature hint (e.g., `/start G5残留`) — focus on a specific module
+- Optional: feature hint (e.g., `/start auth-refactor`) — focus on a specific module
 - Optional: `--scope <dirs>` — declare the file range for multi-session isolation
-- Without a hint, derive the focus from `active_plan` in `_NEXT.md`
+- Without a hint, derive the focus from the active plan in the project's next-steps file
+
+> **Project files referenced below** (adapt the names to your project's conventions):
+> - **next-steps file** — the single source of current state (active plan, next 3 steps, backlog). Default `~/.xihe/NEXT.md` or a project-local `NEXT.md`.
+> - **session notes** — per-session handoff summaries written by `/handoff` (decisions, dead ends, remaining work).
+> - **error journal** — a record of known bugs + fixes, read on demand.
 
 ## Workflow
 
-### Step 0.5: Memory Layer pre-flush (crash safety net, runs unconditionally)
+### Step 0.5: Memory pre-flush (crash safety net, runs unconditionally)
 
-If the previous session crashed unexpectedly without going through `/handoff`, `.claude/memory/index/pending.jsonl` may still hold un-embedded captured entries. Drain them before the briefing:
+If the previous session crashed unexpectedly without going through `/handoff`, the memory layer may still hold un-embedded captured entries. Drain them before the briefing (if your project has a memory flush command):
 
 ```bash
-npx tsx .claude/memory/scripts/flush.ts || true
+xihe memory flush || true
 ```
 
-When pending is empty it's a no-op (<50ms). `|| true` guarantees it won't block /start, **but stderr stays visible** (on non-zero exit Claude sees the provider error/drift signal).
+When pending is empty it's a no-op. `|| true` guarantees it won't block /start, **but stderr stays visible** (on non-zero exit you see the provider error / drift signal).
 
-**Non-zero exit handling**: if flush exits non-zero (e.g. model drift, provider auth failure, corrupted pending), inject at the very top of the Step 3 Briefing (the line right under the `## Session Briefing` title):
+**Non-zero exit handling**: if flush exits non-zero (e.g. provider auth failure, corrupted pending), inject a warning at the very top of the Step 3 Briefing:
 ```
 ⚠️ Memory flush failed (exit {code}) — check stderr; memory may not be updated
 ```
-This session still runs the full flow, but mark the 💾 Relevant Memory section in the briefing as `(stale — flush failed)`.
+This session still runs the full flow, but mark the Relevant Memory section in the briefing as `(stale — flush failed)`.
 
-### Step 1: Parallel reads (3 calls, emitted in the same message)
+### Step 1: Parallel reads (emitted in the same message)
 
 | # | Tool | Args | Extract |
 |---|------|------|----------|
-| 1 | Read | `docs/session/session-state.json` | **v5 schema (state-arch-v2)**: only last_session + cognitive.class_distribution. Current-state fields have migrated to _NEXT.md ROUTER_V6 (parse strictly with the active-task-v2 helper). |
-| 2 | Read | `_NEXT.md` **offset=60, limit=100** | strategic context + completed_modules + backlog (strategic info not in the JSON) |
-| 3 | Bash | *(see git command below)* | git + spec size + sessions fetched in one shot |
-| 4 | Read | `docs/knowledge/_INDEX.md` | Domain knowledge registry (used for domain matching) |
+| 1 | Read | the **next-steps file** | active plan + next 3 steps + completed modules + backlog |
+| 2 | Bash | *(see git command below)* | git + spec size + recent session notes, fetched in one shot |
+| 3 | Read | the project's domain-knowledge registry (if one exists) | domain knowledge (used for domain matching) |
 
 **Step 1 Bash command** (combines the checks into 1 call):
 ```bash
 cd "$(git rev-parse --show-toplevel)" && \
 echo "=LOG=" && git log --oneline -5 && \
 echo "=STATUS=" && git status --short --branch && \
-echo "=SPEC=" && wc -l .claude/CLAUDE.md 2>/dev/null; wc -l "$HOME/.claude/projects/c--a sibling project/memory/MEMORY.md" 2>/dev/null && \
-echo "=SESSIONS=" && ls -t .claude/sessions/*.md 2>/dev/null | head -3
+echo "=SESSIONS=" && ls -t .xihe/sessions/*.md 2>/dev/null | head -3
 ```
 
 Parsing rules (extract from the `=TAG=` delimiters):
 - `=LOG=` → last 5 commits
 - `=STATUS=` → branch + uncommitted files
-- `=SPEC=` → CLAUDE.md line count + MEMORY.md line count
-- `=SESSIONS=` → paths of the 3 most recent session summary files (L1 data source)
+- `=SESSIONS=` → paths of the 3 most recent session notes
 
-### Step 1.7: L1 Session Memory (conditional read)
+### Step 1.7: Session Memory (conditional read)
 
 **Only when** `=SESSIONS=` output file paths (at most 1 extra Read):
-- Pick the single most recent session file → Read it in full
+- Pick the single most recent session note → Read it in full
 - Extract the YAML frontmatter (status, task, commit_range, next_session_hint)
 - Extract the `## Decisions` + `## Dead Ends` + `## Remaining` sections
-- Token budget: L1 data ≤ 500 tokens (truncate an over-long Decisions to the first 5)
-- **L2 traces** (`.claude/traces/`) are not auto-loaded — only searched on demand via `trace-search.sh`
+- Token budget: ≤ 500 tokens (truncate an over-long Decisions list to the first 5)
 
 ### Step 2: Context restoration (extract from data already read in Step 1, no extra IO)
 
-**2a. Active Task restoration** (v5: the single source of current state = _NEXT.md ROUTER_V6, cumulative state = session-state.json):
-- **Current state**: extract from the `_NEXT.md` ROUTER_V6 yaml fence (use the active-task-v2 helper or grep directly):
+**2a. Active Task restoration**:
+- **Current state**: extract from the next-steps file:
   - `active_plan.feature` → null = IDLE, non-null = active plan
   - `active_plan.{plan_file, complexity, blocked_on}` → current posture
   - `next_3_steps[]` → next 3 steps
-- **Cumulative state**: read `last_session.{date,session_id,summary}` from `session-state.json` (v5 schema, only this section)
-- **status derivation**: `active_plan.feature` non-null = ACTIVE, otherwise IDLE (no longer reads a status field from the JSON)
+- **status derivation**: `active_plan.feature` non-null = ACTIVE, otherwise IDLE
 
 **2a-fallback. Backlog fallback recommendation** (auto-triggers when IDLE):
-- Condition: `_NEXT.md` `active_plan.feature` is null (derived status === IDLE)
-- Action: Read `docs/session/_BACKLOG.md` → line-by-line match `/\*\*\[(P[0-1])\/([SMLX]+)\]\s*(.+?)\*\*/` to extract P0/P1 items
+- Condition: `active_plan.feature` is null (derived status === IDLE)
+- Action: read the backlog (if a separate backlog file exists, else the backlog section of the next-steps file) → extract P0/P1 items
 - Sort: P0 before P1, same priority in document order
 - Take the first 3 → fill the Briefing "next 3 steps" section:
   ```
@@ -91,65 +91,47 @@ Parsing rules (extract from the `=TAG=` delimiters):
   3. [Backlog P1/M] {title}
   ```
 - Extra hint: `💡 Run /start <feature-hint> to activate a backlog item`
-- If `_BACKLOG.md` does not exist or has no P0/P1 items → show "Backlog empty" + suggest `AskUserQuestion` to ask for the goal
+- If the backlog is empty → show "Backlog empty" + ask the developer for the goal
 
-**2b. Domain Knowledge Matching** (match from Step 1 Read #5 `_INDEX.md`):
+**2b. Domain Knowledge Matching** (from the domain-knowledge registry, if one exists):
 
-Collect 4 kinds of signals and match each domain in _INDEX.md:
+Collect signals and match each registered domain:
 
-1. **file_touched**: from the changed file paths in `=STATUS=` → match the `match_signals.file_touched` globs
-2. **feature**: from `active_task.feature` (JSON) or `active_plan.feature` (YAML) → match the `match_signals.feature_pattern` regex
-3. **plan_file**: from the `context_pointers.plan_file` path string → match the `match_signals.plan_ref_contains` keywords (v4: plan_ref merged → plan_file, the path already contains the PLAN slug keywords)
+1. **file_touched**: from the changed file paths in `=STATUS=` → match the domain's file globs
+2. **feature**: from `active_plan.feature` → match the domain's feature pattern
+3. **plan_file**: from the active plan's file path → match the domain's plan-ref keywords
 4. **explicit**: `/start --domain <name>` → direct hit
 
 Matching rules:
-- `/start --domain X` → directly load X's invariants + dead-ends (Read the corresponding files)
+- `/start --domain X` → directly load X's invariants + dead-ends
 - 2+ auto signals hit → auto-load domain invariants + dead-ends
 - 1 auto signal hit → mention it in the briefing, do not auto-load
 - 0 hits → skip the domain knowledge section
 
-On load, execute: Read `docs/knowledge/{domain}/invariants.md` + Read `docs/knowledge/{domain}/dead-ends.md` (at most 2 extra Read calls). Record the invariant count + dead-end count + latest experiment champion in the briefing.
+On load, Read the domain's invariants + dead-ends files (at most 2 extra Read calls). Record the invariant count + dead-end count in the briefing.
 
-**2c. L1 Session Memory** (extract from the data read in Step 1.7):
+**2c. Session Memory** (extract from the data read in Step 1.7):
 - YAML frontmatter `task` + `next_session_hint` → last focus + suggested handoff point
 - `## Decisions` → decision list (first 5, each a 1-line summary)
-- `## Dead Ends` → dead-end list (highlight a reminder when related to the current active_task)
-- `## Remaining` → validate consistency against `_NEXT.md` `next_3_steps` (v5: no longer reads session-state.progress.remaining_steps)
-- No session file → skip the L1 section
+- `## Dead Ends` → dead-end list (highlight a reminder when related to the current active task)
+- `## Remaining` → validate consistency against the next-steps file's `next_3_steps`
+- No session note → skip this section
 
-**2d. Drift Events display** (v5 state-arch-v2: read from .claude/telemetry/drift-events.jsonl):
+### Step 2.5: Memory Retrieval (top-K semantic recall injected into the briefing)
 
-Reverse-tail the last N lines from the end of `.claude/telemetry/drift-events.jsonl` (state-arch-v2 commit C: drift_events is now JSONL append-only, no longer in session-state.json). Or call the `cognitive-state.mjs:readDriftEvents(lookbackDays)` API.
-Rules:
-- JSONL missing or empty → don't display
-- Non-empty → show the most recent 3 (by ts desc), format per the Step 3 briefing template `### ⚠️ Prior Drifts`
-- **Do not automatically** treat drift_events as a framing premise for the current session. Only **show them to the owner**, and let the owner decide whether to raise `/ceo` to re-review the direction or proactively avoid them
+If your project has a semantic memory layer, retrieve the most relevant prior entries for the current focus and embed them into the briefing.
 
-Note: drift_events is **content** knowledge (topic + anchor), not a **state label** (L<N> count). The hook layer no longer injects any cross-session cognitive state (see `session-cognitive-inject.mjs` v3 + core-rules-full §10.5.1).
-
-### Step 2.5: Memory Layer Retrieval (top-K semantic recall injected into the briefing)
-
-**Query construction** — produced **deterministically** by the `retrieve.ts` code layer (S1.1: the LLM no longer assembles the query string).
-
-**Bash**:
 ```bash
 # user /start <hint>: positional argument takes priority
-npx tsx .claude/memory/scripts/retrieve.ts "<hint>" --k 3 --format briefing
+xihe memory retrieve "<hint>" --k 3 --format briefing
 
-# no hint: --from-state auto-constructs from the state files (internal priority below)
-npx tsx .claude/memory/scripts/retrieve.ts --from-state --k 3 --format briefing
+# no hint: auto-construct the query from the active plan / next step
+xihe memory retrieve --from-state --k 3 --format briefing
 ```
 
-`--from-state` fixed priority (not adjustable):
-1. `session-state.json` `active_task.feature`
-2. any `_NEXT.wt-*.md` active_plan.feature (worktree mode)
-3. `_NEXT.md` active_plan.feature
-4. `_NEXT.md` next_3_steps[0] first 80 chars (IDLE fallback)
-5. `session-state.json` progress.remaining_steps[0]
+**Output spec**: stdout = a markdown block embedded directly into the briefing; stderr carries the query + source so it's visible without polluting the render. All empty → `_(no active task — skipping retrieval)_`, no error.
 
-**Output spec**: stdout = markdown block (`### 💾 Relevant Memory` header) embedded directly into the briefing; stderr carries `[retrieve] query="..." (source: ...)` so Claude sees the source without polluting the render. All empty → stdout `_(no active task — skipping retrieval)_`, no error. 
-
-**Failure semantics**: a non-zero exit does not block /start; inject `⚠️ Memory retrieve failed (exit N)` at the top of the briefing. Cost ~5KB × ~10 sessions/day ≈ $0.75/day.
+**Failure semantics**: a non-zero exit does not block /start; inject `⚠️ Memory retrieve failed (exit N)` at the top of the briefing.
 
 ### Step 3: Output the Session Briefing
 
@@ -173,46 +155,37 @@ npx tsx .claude/memory/scripts/retrieve.ts --from-state --k 3 --format briefing
 Branch: {branch} | Uncommitted: {N} | Ahead: {N}
 Commits: {commit1} / {commit2} / {commit3}
 
-### 💾 Session Memory (L1)
-{shown only when Step 1.7 read a session file, otherwise omit the whole section}
+### 💾 Session Memory
+{shown only when Step 1.7 read a session note, otherwise omit the whole section}
 - Last: {session_id} — {task first 50 chars}
 - Decisions: {top 2-3 decisions, comma-separated}
 - Dead Ends: {count} items{, ⚠️ related to the current task: "{dead_end_title}" — if any}
 
-### ⚠️ Prior Drifts (2d tier B)
-{shown only when session-state.json.cognitive.drift_events[] is non-empty, otherwise omit the whole section}
-{show the most recent 3, each formatted as:}
-- {session_id_short} — {topic}
-  Rewind-Anchor: {rewind_anchor}
-{trailing hint:}
-_Nick decides whether to relate it to the current task — the hook does not auto-inject_
-
-{Step 2.5 retrieve.ts --format briefing output embedded as-is (with the "### 💾 Relevant Memory (top-3)" header); omit the whole section when skipped}
+{Step 2.5 retrieval output embedded as-is (with a "### 💾 Relevant Memory (top-3)" header); omit the whole section when skipped}
 
 ### 🧠 Domain Knowledge ({domain})
 {shown only when Step 2b matched a domain, otherwise omit the whole section}
 - {N} invariants loaded (last updated: {freshness})
-- {N} experiments recorded (champion: {latest_champion_id})
 - {N} dead-ends flagged
-- Active plan: {crystallized_plan_path or "none"}
+- Active plan: {plan_path or "none"}
 
 ### 💡 Suggestion
 {best next skill + a one-sentence reason}
 ```
 
 **Suggestion recommendation logic** (by priority):
-1. uncommitted + CODE_REVIEW=PASS → `/commit`
-2. modified files → `/verify --smart`
-3. `_NEXT.md` contains `blocked_on` → prompt to read `.claude/knowledge/error-journal.json`
+1. uncommitted + review passed → `/commit`
+2. modified files → `/verify`
+3. active plan contains `blocked_on` → prompt to read the error journal
 4. commits ahead of origin → remind to `git push`
-5. IDLE + no hint → `AskUserQuestion` to ask for today's goal
+5. IDLE + no hint → ask the developer for today's goal
 
 ### Step 4: Feature Hint search (only when the user provides a hint)
 
-Glob + Grep for files in `docs/plan/` and `docs/prd/exec/` matching the hint.
+Glob + Grep for files in the project's plan / spec directories matching the hint.
 If found, append to the briefing:
 ```
-### 🔎 Matched Plan/PRD
+### 🔎 Matched Plan/Spec
 - {filename}: {first heading}
 ```
 
@@ -220,26 +193,25 @@ If found, append to the briefing:
 
 Append one line at the end of the briefing, formatted:
 ```
-{✅|⚠️} Spec: {CLAUDE_lines+MEMORY_lines} lines
+{✅|⚠️} Spec: {project rules + memory line count} lines
 ```
 
 Judgment:
 - Spec > 300 lines → ⚠️, append `— needs slimming`
 - Otherwise → ✅ healthy
 
-### Step 6: Disambiguation hints
+### Step 6: Disambiguation hint
 
 ```
 > Routing: Vibe(single file) | Lite(2-5 files) | Full(cross-layer/Plan Mode)
-> skill: commit↔verify | verify --smart↔--full | design --spec↔--review
+> skill: commit↔verify | verify↔verify --full
 ```
 
 ## Constraints
 
 - Read-only — modifying files is forbidden
-- **The 2 calls in Step 1 must be emitted in parallel in the same message** (no dependency, must not be serial)
-- **Total output ≤ 30 lines (hard limit)** — count the lines before output, cut the longest section if over. DO NOT add sections outside the template (no extra "health metrics"/"test coverage"/"disambiguation" sections, etc.). The output contains only: Session Briefing title + Last/Phase + Active Plan + Next 3 steps + Git + Suggestion + Spec health line + the one disambiguation line. Each `###` section's content is limited to 1-3 lines; commits list only hash + scope, not the full message.
+- **Step 1's reads must be emitted in parallel in the same message** (no dependency, must not be serial)
+- **Total output ≤ 30 lines (hard limit)** — count the lines before output, cut the longest section if over. DO NOT add sections outside the template. Each `###` section's content is limited to 1-3 lines; commits list only hash + scope, not the full message.
 - Target completion < 5 seconds
-- `_NEXT.md` missing or corrupted → **immediately** output the `⚠️ _NEXT.md missing` warning + suggest `/handoff` to rebuild or create it manually. DO NOT use Glob/Grep to try other paths to recover the file. Just output a shortened briefing (Git + Suggestion sections only)
-- error-journal no longer injected — only prompt to read it on demand when `_NEXT.md` contains `blocked_on`
-- **VF-2.3 Recurrence Check**: when reading error-journal on demand, additionally scan `status: crystallized` entries. If this session's work area (inferred from `active_plan.feature`) touches the module of some crystallized entry, hint in the suggestion: `⚠ crystallized pattern [{title}] — confirm the corresponding rule still holds`. Do not proactively read the journal, only check incidentally when a read has already been triggered
+- The next-steps file missing or corrupted → **immediately** output a `⚠️ next-steps file missing` warning + suggest `/handoff` to rebuild or create it manually. DO NOT try other paths to recover the file. Just output a shortened briefing (Git + Suggestion sections only)
+- The error journal is not auto-injected — only prompt to read it on demand when the active plan contains `blocked_on`

@@ -25,6 +25,7 @@ import { Database } from 'bun:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { logger } from '../logger';
+import { resolveMultimodalPool } from '../model/role-models';
 
 /** executor-dag 注入式接口 (executor-dag 保持纯净, 不知道 SQLite/bandit 实现)。 */
 export interface LeafModelRouter {
@@ -163,6 +164,11 @@ export function createModelRouterFromEnv(
       if (arms.length) pools[bucket] = arms;
     }
   }
+  // 多模态 leaf 池 (config.multimodalPool, onboard 页多选): bucket 'multimodal'。runtime hook —
+  // 多模态 leaf 派发时以 bucket='multimodal' 调 router.select() 即从此池 ε-greedy 选 (mimo/gemini/kimi…)。
+  // 单元素/空 → no-op = 静态 (同 inproc/agent 的 ship 安全语义)。
+  const mmPool = resolveMultimodalPool();
+  if (mmPool.length) pools.multimodal = mmPool;
   const epsilon = env.XIHE_ROUTER_EPSILON ? Number.parseFloat(env.XIHE_ROUTER_EPSILON) : undefined;
   if (Object.keys(pools).length) {
     logger.info({ pools, epsilon }, '[wright/model-router] bandit 选型启用 (env pool 已配)');

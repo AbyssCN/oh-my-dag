@@ -3,11 +3,11 @@ name: retro
 tier: capability
 runtime: manual
 trigger: mention
-description: "Engineering retrospective from git history: analyzes commit patterns, type mix (feat/fix/refactor), focus score, test discipline, and productivity trends. Use for Sprint/weekly reviews. Users may say: \"retro\", \"retrospective\", \"review\", \"sprint summary\", \"what did I do this week\", \"work analysis\", \"复盘\", \"回顾\", \"Sprint总结\", \"这周做了什么\", \"工作分析\". Do NOT use for session wrap-up (use /handoff) or code review (use /review)."
+description: "Engineering retrospective from git history: analyzes commit patterns, type mix (feat/fix/refactor), focus score, test discipline, and productivity trends. Use for Sprint/weekly reviews. Users may say: \"retro\", \"retrospective\", \"sprint summary\", \"what did I do this week\", \"work analysis\", \"复盘\", \"回顾\", \"Sprint总结\", \"这周做了什么\", \"工作分析\". Do NOT use for session wrap-up (use /handoff) or code review (use /review)."
 metadata:
-  source: claude-skills
+  source: xihe
   version: "1.0.0"
-  methodology: "gstack retro + git analytics"
+  methodology: "git analytics retrospective"
 ---
 
 # /retro — Engineering Retrospective
@@ -22,9 +22,6 @@ metadata:
 /retro 14d          → last 14 days
 /retro 30d          → last 30 days
 /retro compare      → this week vs last week comparison
-/retro --learning   → Learning Loop dashboard (6-Layer K1-K6, see §Learning Mode)
-/retro --learning --write      → generate docs/session/learning-retro-YYYY-MM.md
-/retro --learning --month 2026-04   → report for a specific month
 ```
 
 ## Workflow
@@ -83,12 +80,9 @@ Commit gap > 2 hours → new session. Stats:
 
 File change frequency top 10. High-frequency files = potential instability zones or active development zones.
 
-#### 2e. Sprint Progress Check (if PROGRESS-MAP.md exists)
+#### 2e. Sprint Progress Check (if a progress map exists)
 
-Read `docs/session/PROGRESS-MAP.md` → compare this cycle's plan vs actual completion.
-
-<!-- 2f. Standards Drift Check 已删 (2026-06-01): 依赖 a sibling project `scripts/check-standards-drift.mjs`, xihe 不存在。
-     orphan-ref / HOOK-REGISTRY 差异 / 陈旧检查的概念有价值, 待真 port 一个 xihe 版再加回 (GP-9 不留死步骤)。 -->
+If your project keeps a sprint/progress map, read it → compare this cycle's plan vs actual completion.
 
 ### Step 3: Output report
 
@@ -143,10 +137,6 @@ Compare two windows side by side:
 | Sessions | ... | ... | +/- |
 ```
 
-<!-- ## Learning Mode (--learning) 已删 (2026-06-01): 依赖 a sibling project `scripts/harness-learning-retro.mjs`
-     + `harness-rule-decay.mjs` (xihe 不存在) + a sibling project learning-loop 概念 (/evolve --promote / L3 crystallized
-     / gene 库)。xihe 无此 6-Layer Learning Loop 机制 → 整段删 (GP-9)。wright 的学习闭环走 CLEAR (SDD §11.6, 待 adopt)。 -->
-
 ## Constraints
 
 - **Read-only** — does not modify any file
@@ -154,4 +144,4 @@ Compare two windows side by side:
 - Use `origin/` branches for git queries (local main may be stale)
 - Use the user's local timezone for timestamps
 - 0 commits in the window → report and suggest a different window
-- Self-contained skill — does not read CLAUDE.md or other docs
+- Self-contained skill — does not read other docs

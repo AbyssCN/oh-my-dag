@@ -1,30 +1,32 @@
 /**
- * src/model/role-models.ts — the role→model resolver (D60 · wright config seam).
+ * src/model/role-models.ts — the role→model resolver + unified config center (D60 · wright config seam).
  *
  * callModel 的 provider registry 已是 config-driven (provider:modelId 经注册解析);
- * 缺的是"哪个 daemon 角色用哪个 model"的绑定。这一层补上 — dream / conductor / leaf
- * 各解析到一个坐标, 4 级优先:
+ * 这一层补"哪个 daemon 角色用哪个 model"的绑定 + 多模态池 + 用户自定 API。每个角色解析到
+ * 一个坐标, 4 级优先:
  *
  *   in-memory override (CLI/test, 非持久)
- *     → file (.wright/config.json, 持久 + 跨进程, TUI /config 写它)
- *       → per-role env (XIHE_DREAM_MODEL / …)
+ *     → file (.wright/config.json, 持久 + 跨进程, TUI /config·/setup 写它)
+ *       → per-role env (XIHE_PLAN_MODEL / XIHE_CONDUCTOR_MODEL / …)
  *         → 出厂默认
  *
- * 文件层 = wright 既有落盘约定 (.wright/* cwd-相对, 同 memory.db / session-crystals.db),
- * 经 XIHE_CONFIG_PATH 覆盖路径。daemon (bun start) 与 TUI (bun run wright) 同从 repo root
- * 跑, 共享同一 .wright/config.json; daemon 下次 resolve 时 mtime 重读即捡到 TUI 的改动, 不重启。
+ * config.json schema v2 (向后兼容 v1):
+ *   { version, models: {role→coord}, multimodalPool: [coord…], apis: [{id,baseUrl,keyEnv?,multimodal?}] }
+ * multimodalPool = 多模态 leaf 的候选池 (从 provider 池里挑有多模态能力的, 如 mimo/gemini/kimi 多选);
+ * apis = 用户自定 OpenAI-兼容端点, boot 时 registerProvidersFromConfig 注册进 callModel registry。
  *
- * 本轮只 WIRE dream (LiveDreamModel 读 resolveRoleModel('dream'));conductor/leaf 在此声明
- * 以便 TUI 枚举, 调用点本轮不改。INV: 永不返硬编码 URL — 只返 'provider' / 'provider:modelId'
- * 坐标, callModel 再经注册 provider 解析 (model/types INV-2);未注册 provider 由 callModel 抛。
+ * 文件层 = wright 既有落盘约定 (.wright/* cwd-相对, 经 XIHE_CONFIG_PATH 覆盖)。daemon 与 TUI 同从
+ * repo root 跑, 共享同一 .wright/config.json; 下次 resolve 时 mtime 重读即捡到改动, 不重启。
+ * INV: 永不返硬编码 URL — 只返 'provider' / 'provider:modelId' 坐标, callModel 经注册 provider 解析。
  */
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-/** Daemon roles that drive callModel. (wright coding-agent 的脑子走 pi /model + models.json, 不在此。) */
-export type ModelRole = 'dream' | 'conductor' | 'leaf' | 'verifier';
+/** Daemon roles that drive callModel. plan = 审议座舱模型 (wright 对话脑子仍走 pi /model)。 */
+export type ModelRole = 'plan' | 'conductor' | 'leaf' | 'verifier' | 'dream';
 
-export const MODEL_ROLES: readonly ModelRole[] = ['dream', 'conductor', 'leaf', 'verifier'];
+/** UX 顺序 (config 列表 / onboard 页展示): 规划 → 执行 → 校验 → 做梦。 */
+export const MODEL_ROLES: readonly ModelRole[] = ['plan', 'conductor', 'leaf', 'verifier', 'dream'];
 
 interface RoleSpec {
   /** per-role env override (在 file 之下、出厂默认之上)。 */
@@ -34,21 +36,36 @@ interface RoleSpec {
 }
 
 const ROLE_SPECS: Record<ModelRole, RoleSpec> = {
-  // Dream consolidation = 抽取推理。默认 'deepseek' → provider default → DEEPSEEK_MODEL (v4-pro)。
-  dream: { envVar: 'XIHE_DREAM_MODEL', fallback: 'deepseek' },
-  // Conductor 分解。默认镜像现有 XIHE_CONDUCTOR_FALLBACK_MODEL 行为 (本轮不重接 conductor)。
+  // Plan 审议座舱 = 强推理。默认 deepseek-v4-pro (完整坐标, 不依赖 provider defaultModel)。
+  plan: { envVar: 'XIHE_PLAN_MODEL', fallback: 'deepseek:deepseek-v4-pro' },
+  // Conductor 分解。默认 mimo (provider 裸名 → provider defaultModel)。
   conductor: { envVar: 'XIHE_CONDUCTOR_MODEL', fallback: 'mimo' },
   // Leaf 执行 = 单发廉价档。
   leaf: { envVar: 'XIHE_LEAF_MODEL', fallback: 'mimo' },
   // Verifier 跨模型校验 = 对抗式审查。默认 'deepseek' (≠ mimo conductor/leaf, 故意跨模型避盲点)。
   verifier: { envVar: 'XIHE_VERIFIER_MODEL', fallback: 'deepseek' },
+  // Dream consolidation = 抽取推理。默认 'deepseek'。
+  dream: { envVar: 'XIHE_DREAM_MODEL', fallback: 'deepseek' },
 };
 
 export type RoleModelSource = 'override' | 'file' | 'env' | 'default';
 
+/** 用户自定 OpenAI-兼容 API (config.apis)。boot 时注册进 callModel registry。 */
+export interface ApiDef {
+  /** provider 名 (坐标前半, 如 'gemini' / 'kimi')。 */
+  id: string;
+  /** OpenAI-兼容 base URL。 */
+  baseUrl: string;
+  /** 读 key 的 env 变量名 (如 'GEMINI_API_KEY')。省略 = id 大写 + _API_KEY。 */
+  keyEnv?: string;
+  /** 默认模型 id (坐标省略 model 半时用)。 */
+  defaultModel?: string;
+  /** 是否有多模态能力 (供 onboard 页过滤多模态池候选)。 */
+  multimodal?: boolean;
+}
+
 // ---------------------------------------------------------------------------
-// in-memory override (highest, non-durable: CLI / test). Use persistRoleModel
-// for durable cross-process config.
+// in-memory override (highest, non-durable: CLI / test).
 // ---------------------------------------------------------------------------
 const overrides = new Map<ModelRole, string>();
 
@@ -66,13 +83,16 @@ interface ConfigFile {
   version?: number;
   /** role → 'provider:modelId' coordinate. Absent role = fall to env / default. */
   models?: Record<string, string>;
+  /** 多模态 leaf 候选池 (坐标列表)。 */
+  multimodalPool?: string[];
+  /** 用户自定 OpenAI-兼容 API 端点。 */
+  apis?: ApiDef[];
 }
 
-let fileCache: { path: string; mtimeMs: number; models: Record<string, string> } | null = null;
+let fileCache: { path: string; mtimeMs: number; config: ConfigFile } | null = null;
 
-/** Read the `models` section, mtime-cached. Missing / unreadable / malformed → {} (silent,
- *  like user-profile's null — a broken config never throws into a resolve). */
-function fileModels(path = configPath()): Record<string, string> {
+/** Read the whole config, mtime-cached. Missing / unreadable / malformed → {} (silent, never throws). */
+function fileConfig(path = configPath()): ConfigFile {
   let mtimeMs: number;
   try {
     mtimeMs = statSync(path).mtimeMs;
@@ -81,19 +101,23 @@ function fileModels(path = configPath()): Record<string, string> {
     return {};
   }
   if (fileCache && fileCache.path === path && fileCache.mtimeMs === mtimeMs) {
-    return fileCache.models;
+    return fileCache.config;
   }
-  let models: Record<string, string> = {};
+  let config: ConfigFile = {};
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as ConfigFile;
-    if (parsed.models && typeof parsed.models === 'object') {
-      models = parsed.models as Record<string, string>;
-    }
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) config = parsed;
   } catch {
-    models = {};
+    config = {};
   }
-  fileCache = { path, mtimeMs, models };
-  return models;
+  fileCache = { path, mtimeMs, config };
+  return config;
+}
+
+/** Models section of the config (mtime-cached, derived from fileConfig). */
+function fileModels(path = configPath()): Record<string, string> {
+  const m = fileConfig(path).models;
+  return m && typeof m === 'object' ? m : {};
 }
 
 /** Drop the mtime cache — test hook + after an out-of-band file write. */
@@ -101,8 +125,27 @@ export function resetConfigCache(): void {
   fileCache = null;
 }
 
+/**
+ * Read-modify-write the config file, preserving all sections. Shared by every persist*.
+ * New / unreadable file → start fresh (do not clobber beyond the mutated section).
+ */
+function mutateConfig(mutator: (cfg: ConfigFile) => void, path = configPath()): void {
+  let cfg: ConfigFile = { version: 2 };
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as ConfigFile;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) cfg = parsed;
+  } catch {
+    /* fresh */
+  }
+  if (cfg.version === undefined || cfg.version < 2) cfg.version = 2;
+  mutator(cfg);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(cfg, null, 2)}\n`);
+  fileCache = null; // invalidate so THIS process sees the write immediately
+}
+
 // ---------------------------------------------------------------------------
-// resolution + mutation
+// role resolution + mutation
 // ---------------------------------------------------------------------------
 
 /** Resolve a role's model coordinate. Priority: override → file → env → default. */
@@ -119,7 +162,7 @@ export function resolveRoleModel(
   return ROLE_SPECS[role].fallback;
 }
 
-/** In-memory (non-durable) override — CLI / test. For durable cross-process, use persistRoleModel. */
+/** In-memory (non-durable) override — CLI / test. */
 export function setRoleModel(role: ModelRole, coord: string): void {
   const c = coord.trim();
   if (!c) throw new Error(`setRoleModel(${role}): coord required`);
@@ -138,25 +181,15 @@ export function clearRoleModelOverrides(): void {
 
 /**
  * Durably set a role's model — writes the `models` section of .wright/config.json. Cross-process:
- * the daemon picks it up on its next resolve (mtime reload, no restart). This is what TUI `/config`
- * calls. Preserves any other sections / roles already in the file.
+ * daemon picks it up on next resolve (mtime reload). Preserves other sections / roles.
  */
 export function persistRoleModel(role: ModelRole, coord: string, path = configPath()): void {
   const c = coord.trim();
   if (!c) throw new Error(`persistRoleModel(${role}): coord required`);
-  let cfg: ConfigFile = { version: 1, models: {} };
-  try {
-    const parsed = JSON.parse(readFileSync(path, 'utf8')) as ConfigFile;
-    if (parsed && typeof parsed === 'object') cfg = parsed;
-  } catch {
-    // new / unreadable file — start fresh, do not clobber silently-on-parse beyond this role.
-  }
-  if (!cfg.models || typeof cfg.models !== 'object') cfg.models = {};
-  if (cfg.version === undefined) cfg.version = 1;
-  cfg.models[role] = c;
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(cfg, null, 2)}\n`);
-  fileCache = null; // invalidate so THIS process sees the write immediately
+  mutateConfig((cfg) => {
+    if (!cfg.models || typeof cfg.models !== 'object') cfg.models = {};
+    cfg.models[role] = c;
+  }, path);
 }
 
 export interface RoleModelEntry {
@@ -165,7 +198,7 @@ export interface RoleModelEntry {
   source: RoleModelSource;
 }
 
-/** Per-role current resolution + source — feeds the TUI /config list. */
+/** Per-role current resolution + source — feeds the TUI /config·/setup list. */
 export function listRoleModels(
   env: Record<string, string | undefined> = process.env,
 ): RoleModelEntry[] {
@@ -179,4 +212,58 @@ export function listRoleModels(
     if (e) return { role, resolved: e, source: 'env' };
     return { role, resolved: ROLE_SPECS[role].fallback, source: 'default' };
   });
+}
+
+// ---------------------------------------------------------------------------
+// multimodal leaf pool — config.multimodalPool (坐标列表)
+// ---------------------------------------------------------------------------
+
+/** 解析多模态 leaf 候选池 (config.multimodalPool)。无 → []。 */
+export function resolveMultimodalPool(path = configPath()): string[] {
+  const pool = fileConfig(path).multimodalPool;
+  return Array.isArray(pool)
+    ? pool.filter((c): c is string => typeof c === 'string' && c.trim().length > 0)
+    : [];
+}
+
+/** 持久化多模态 leaf 池 (整体替换)。空数组 = 清空池。 */
+export function persistMultimodalPool(coords: string[], path = configPath()): void {
+  const clean = coords.map((c) => c.trim()).filter(Boolean);
+  mutateConfig((cfg) => {
+    cfg.multimodalPool = clean;
+  }, path);
+}
+
+// ---------------------------------------------------------------------------
+// custom APIs — config.apis (用户随意添加, boot 注册进 callModel registry)
+// ---------------------------------------------------------------------------
+
+/** 列用户自定 API。无 → []。 */
+export function listCustomApis(path = configPath()): ApiDef[] {
+  const apis = fileConfig(path).apis;
+  if (!Array.isArray(apis)) return [];
+  return apis.filter(
+    (a): a is ApiDef =>
+      !!a && typeof a === 'object' && typeof a.id === 'string' && typeof a.baseUrl === 'string',
+  );
+}
+
+/** 增/改一个 API (按 id upsert)。 */
+export function persistCustomApi(def: ApiDef, path = configPath()): void {
+  const id = def.id.trim();
+  if (!id) throw new Error('persistCustomApi: id required');
+  if (!def.baseUrl.trim()) throw new Error('persistCustomApi: baseUrl required');
+  mutateConfig((cfg) => {
+    const apis = Array.isArray(cfg.apis) ? cfg.apis : [];
+    const next = apis.filter((a) => a && a.id !== id);
+    next.push({ ...def, id, baseUrl: def.baseUrl.trim() });
+    cfg.apis = next;
+  }, path);
+}
+
+/** 删一个 API (按 id)。 */
+export function removeCustomApi(id: string, path = configPath()): void {
+  mutateConfig((cfg) => {
+    if (Array.isArray(cfg.apis)) cfg.apis = cfg.apis.filter((a) => a && a.id !== id);
+  }, path);
 }

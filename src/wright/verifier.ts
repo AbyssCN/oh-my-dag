@@ -21,7 +21,7 @@
  */
 import { z } from 'zod';
 import { callModel, listProviders, assertModelResolvable } from '../model';
-import { resolveRoleModel } from '../model/role-models';
+import { resolveRoleModel, listRoleModels } from '../model/role-models';
 import { logger } from '../logger';
 import type { ModelUsage } from '../model/types';
 import type { ConductorPlan } from './conductor-plan';
@@ -43,11 +43,25 @@ export type VerifierFn = (req: {
   results: Record<string, LeafResult>;
 }) => Promise<VerifierVerdict>;
 
+/** 校验启停状态标 (让"校验已禁用"可见, 防静默丢护栏)。供 boot log / TUI / 状态行读。 */
+export type VerifierStatusReason =
+  | 'on' // 校验启用
+  | 'off:flag' // XIHE_VERIFY=0 显式关
+  | 'off:unresolved'; // 默认 verifier 模型坐标解析不了 → 降级关 (非 explicit)
+export interface VerifierStatus {
+  enabled: boolean;
+  reason: VerifierStatusReason;
+  /** enabled 时的 verifier 坐标 (off 时 undefined)。 */
+  verifierModel?: string;
+}
+
 /** verifier / escalation 的配置片段 (wiring 层经 resolveVerification 产, spread 进 dag config)。 */
 export interface VerificationConfig {
   verifier?: VerifierFn;
   conductorEscalationModel?: string;
   maxEscalations?: number;
+  /** 校验启停状态标 (始终给, 每条返回路径都设 — off 状态可见)。executor-dag 不读, 供状态层展示。 */
+  status: VerifierStatus;
 }
 
 export const VERIFIER_VERDICT_SCHEMA = z.object({
@@ -157,20 +171,33 @@ export interface ResolveVerificationOpts {
  * executor-dag 保持纯净 (不读 env / role-models, 设计锁); 这层负责"默认走哪个模型 + 升级模型从哪来"。
  */
 export function resolveVerification(opts: ResolveVerificationOpts = {}): VerificationConfig {
-  if (opts.enabled === false) return {};
+  if (opts.enabled === false) {
+    logger.info('[wright/verifier] 跨模型校验: OFF (XIHE_VERIFY=0 显式关)');
+    return { status: { enabled: false, reason: 'off:flag' } };
+  }
   const env = opts.env ?? process.env;
+  // **中间版** (fail-fast vs 优雅降级 的折中): 坐标坏时的行为分两种 ——
+  //   · explicit (opts.verifierModel / XIHE_VERIFIER_MODEL / file / override 指定过) → 用户明确要 verifier,
+  //     坐标坏 = typo, **fail-fast throw** (别让他以为开着其实没开)。
+  //   · 仅出厂 default 兜底 (没人显式配) 解析不了 → verifier 是可选增强, **优雅降级关闭**, 不砖 boot。
+  // 两路都在 boot 早 detect (非等 leaves 跑完才在 verify 处崩, 那才是原始 footgun)。
+  const verifierSource = listRoleModels(env).find((e) => e.role === 'verifier')?.source ?? 'default';
+  const explicit = !!opts.verifierModel || verifierSource !== 'default';
   const verifierModel = opts.verifierModel ?? resolveRoleModel('verifier', env);
-  // verifier 是**可选增强** (cross-model skeptic), 不是致命依赖。坐标解析不了 (provider 没配 key /
-  // 没 defaultModel 等) → **优雅降级到"验证禁用" + warn, 绝不崩 boot** (对齐"没配 SOTA 维持弱"哲学)。
-  // 仍在 boot 早 detect (非等 leaves 跑完才在 verify 处崩, 那才是 footgun) — 只是从 throw 改成 disable。
   try {
     assertModelResolvable(verifierModel, 'verifier');
   } catch (err) {
+    if (explicit) {
+      throw new Error(
+        `[wright/verifier] 显式指定的 verifier 模型 '${verifierModel}' 无法解析: ${(err as Error).message} ` +
+          `— 修正 XIHE_VERIFIER_MODEL 为完整 provider:model, 或设 XIHE_VERIFY=0 显式关。`,
+      );
+    }
     logger.warn(
       { verifierModel, err: (err as Error).message },
-      '[wright/verifier] verifier 模型无法解析 → 验证已禁用 (设 XIHE_VERIFIER_MODEL 为完整 provider:model, 或 XIHE_VERIFY=0 显式关)',
+      '[wright/verifier] 跨模型校验: OFF (默认 verifier 模型无法解析 → 降级; 设 XIHE_VERIFIER_MODEL 启用)',
     );
-    return {};
+    return { status: { enabled: false, reason: 'off:unresolved' } };
   }
   const verifier = createDefaultVerifier({
     verifierModel,
@@ -178,10 +205,15 @@ export function resolveVerification(opts: ResolveVerificationOpts = {}): Verific
     callModelFn: opts.callModelFn,
   });
   const escalationModel = (opts.escalationModel ?? env.XIHE_CONDUCTOR_ESCALATION_MODEL)?.trim();
+  logger.info(
+    { verifierModel, escalationModel: escalationModel || undefined },
+    '[wright/verifier] 跨模型校验: ON',
+  );
   return {
     verifier,
     conductorEscalationModel: escalationModel || undefined,
     maxEscalations: opts.maxEscalations,
+    status: { enabled: true, reason: 'on', verifierModel },
   };
 }
 

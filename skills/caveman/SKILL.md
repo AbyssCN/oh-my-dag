@@ -6,8 +6,8 @@ description: >
   Use when user says "caveman mode", "talk like caveman", "use caveman",
   "less tokens", "be brief", or invokes /caveman.
 metadata:
-  source: mattpocock/skills (productivity/caveman)
-  adopted: "2026-05-29 (xihe autonomous-run token frugality)"
+  source: xihe
+  adopted: "for autonomous-run token frugality"
 ---
 
 Respond terse like smart caveman. All technical substance stay. Only fluff die.
@@ -51,7 +51,7 @@ Example -- destructive op:
 >
 > Caveman resume. Verify backup exist first.
 
-## Loop / Agent-Context Safety (xihe · 2026-05-29)
+## Loop / Agent-Context Safety
 
 In long autonomous loops your own terse output re-enters context next turn. Two effects:
 - **Good**: fewer tokens/turn -> longer runway -> autocompact later -> long-task memory more intact.
@@ -61,4 +61,4 @@ Rules:
 - **Compress the report, never the reasoning.** Thinking/scratchpad stays full prose. Caveman is an output-format directive, not a thinking directive.
 - **Mechanical loops** (status polling, batch transforms, low reasoning/turn) -> caveman ON, safe.
 - **Reasoning-heavy loops** (debug/design/tradeoff inside the loop) -> caveman OFF, contagion bites reasoning.
-- **Never inject caveman into Workflow sub-agent prompts.** They already return raw data / schema-locked output; caveman risks bleeding into task *execution* (agent does less work, not just terser report), and a one-shot agent can't be course-corrected mid-run.
+- **Never inject caveman into sub-agent prompts.** They already return raw data / schema-locked output; caveman risks bleeding into task *execution* (agent does less work, not just terser report), and a one-shot agent can't be course-corrected mid-run.

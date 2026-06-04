@@ -5,16 +5,16 @@ runtime: on-demand
 trigger: mention
 description: "Smart git commit: analyze changes + zone checks (tsc/test/build) + conventional message (Chinese) + git commit. --ship mode: merge base + full tests + PR. Trigger: /commit / save changes / git commit / ship / ship it / create PR / 提交 / 保存变更 / 提交代码 / 帮我提交 / 发布 / 创建PR. Skip: verify only without committing (/verify) / code quality review (/review)."
 metadata:
-  source: claude-skills
-  version: "3.0.0-xihe"
-  methodology: "xihe commit (Bun) + ship release pipeline"
+  source: xihe
+  version: "3.0.0"
+  methodology: "Bun commit + ship release pipeline"
 ---
-# /commit — Smart Commit & Ship (xihe)
+# /commit — Smart Commit & Ship
 
 > Smart commit: auto-selects checks by change type, generates a conventional commit message.
 > **`--ship` mode**: one-shot pipeline — merge base → full verify → PR creation.
 > **Zone→Check mapping**: see `_shared/CHECK-ROUTING.md` (shared with /verify).
-> **xihe verification** (real): `bunx tsc --noEmit` + `bun test` + `bun build src/index.ts`. **No eslint / vitest / check:* / gen:* npm script** (those are a sibling project).
+> **Verification** (TypeScript/Bun projects): `bunx tsc --noEmit` + `bun test` + `bun build <entry>`. Adapt to your project's actual toolchain.
 
 ## Trigger
 
@@ -24,10 +24,10 @@ metadata:
 
 ### Step 0: Scope Drift Check (before checks)
 
-1. Read the `active_plan` field in `_NEXT.md`
+1. Read the active-plan field in your current-state file (e.g. `_NEXT.md`)
 2. `git diff --stat` to view changed files
-3. Changed files outside active_plan scope → warn (non-blocking): `⚠️ Scope drift: {file} not in [{plan}] scope`
-4. No active_plan or `_NEXT.md` missing → silently skip
+3. Changed files outside active-plan scope → warn (non-blocking): `⚠️ Scope drift: {file} not in [{plan}] scope`
+4. No active plan or no current-state file → silently skip
 
 ### Step 1: Analyze Changes
 
@@ -41,10 +41,10 @@ Categorize ALL changed files into zones:
 | Zone | Pattern | Required Checks |
 |------|---------|-----------------|
 | 📦 `src` | `src/**/*.ts` | `bunx tsc --noEmit` + `bun test <related>` |
-| 🗃️ `schema/migration` | `src/schema.ts`, `sql/**` | `bunx tsc --noEmit` + `bun test` (full) + manual migration safety review |
+| 🗃️ `schema/migration` | schema source + migration files | `bunx tsc --noEmit` + `bun test` (full) + manual migration safety review |
 | 🧪 `test` | `test/**/*.test.ts` | `bun test <that file>` |
-| 📄 `docs` | `docs/**`, `.claude/**` | _(none)_ |
-| ⚙️ `config` | `package.json`, `tsconfig.json`, `drizzle.config.ts`, Dockerfile | `bunx tsc --noEmit` |
+| 📄 `docs` | docs / config-only | _(none)_ |
+| ⚙️ `config` | `package.json`, `tsconfig.json`, build config | `bunx tsc --noEmit` |
 | 🔀 `mixed` | src + anything else | Union of all applicable checks |
 
 ### Step 2: Run Checks (parallel)
@@ -54,9 +54,9 @@ Based on zone detection, **issue all Bash calls in parallel in the same message*
 | Zone contains | Required check | Parallel? |
 |-----------|-------------|-------|
 | `src` / `config` / `schema` | `bunx tsc --noEmit` | ✓ |
-| `src` (changed `.ts`) | `bun test <related test>` (e.g. `src/dag/*` → `test/dag.test.ts`) | ✓ |
-| `src/schema.ts` / `sql/**` | `bun test` (full, schema ripples widely) | ✓ |
-| `docs` / `.claude` only | none — skip | — |
+| `src` (changed `.ts`) | `bun test <related test>` | ✓ |
+| schema / migration | `bun test` (full, schema ripples widely) | ✓ |
+| `docs` / config only | none — skip | — |
 
 **Short-circuit rule** (reduces redundant `bun test`): if the most recent `/verify` within this conversation PASSed within 5 minutes + no new source-file changes since + it covers this zone → **skip Step 2's bun test** (tsc still runs). If any condition fails → run full. Safe default: run full.
 
@@ -64,27 +64,27 @@ Based on zone detection, **issue all Bash calls in parallel in the same message*
 
 #### Step 2.1: Violation attribution (when a check fails)
 
-1. Collect the file paths from the failure output (e.g. `[FAIL] test/dag.test.ts → CAS double-claim returns empty`)
+1. Collect the file paths from the failure output (e.g. `[FAIL] test/queue.test.ts → double-claim returns empty`)
 2. Compare against `git diff --name-only` (this set of changes)
 3. Classify:
 ```
-🔴 Introduced by this change (must fix before commit): [FAIL] src/dag/dispatcher.ts → CAS race
+🔴 Introduced by this change (must fix before commit): [FAIL] src/queue/dispatch.ts → race
 🟡 Pre-existing (not from this session, still blocking): [FAIL] test/foo.test.ts — pre-existing
 ```
-4. **Both classes must be fixed** (no downgrade). Pre-existing → additionally log to `.claude/knowledge/error-journal.json` tagged `[pre-existing]`, surfaced at the next `/start`.
+4. **Both classes must be fixed** (no downgrade). Pre-existing → additionally log to your error journal tagged `[pre-existing]`, surfaced at the next session start.
 
 ### Step 3: Stage Files
 
 - User-specified files → stage those; otherwise stage all modified/untracked
-- **NEVER stage**: `.env*`, `node_modules/`, `.claude/memory/index/**`, `.claude/traces/**`, `.claude/worktrees/**`
-- **WARN + confirm** before staging: `.claude/settings.json`, `drizzle.config.ts`
+- **NEVER stage**: `.env*`, `node_modules/`, generated index/cache dirs, trace dirs, worktree dirs
+- **WARN + confirm** before staging: harness settings files, build/ORM config
 
 ### Step 4: Generate Commit Message
 
 Format: `type(scope): description (Chinese)`
 
 **Type**: new file→`feat` / modify existing→`fix`/`refactor`/`chore` / schema·migration→`feat(db)`·`fix(db)` / docs→`docs` / harness config→`chore(harness)`
-**Scope**: `src/routes/**`→`routes` / `src/dag/**`→`dag` / `src/memory/**`→`memory` / `src/integrations/**`→channel name / `sql/**`·`src/schema.ts`→`db` / `docs/**`→`docs` / `.claude/**`→`harness` / multiple scopes→the most important one
+**Scope**: derive from the top-level module path (e.g. `src/routes/**`→`routes`, `src/queue/**`→`queue`, schema/migration→`db`, `docs/**`→`docs`, harness config→`harness`); multiple scopes → the most important one
 
 Append co-author:
 ```
@@ -105,20 +105,19 @@ EOF
 ### Step 6: Post-Commit
 
 - `git log -1 --oneline` to confirm
-- xihe has **no** `gen:index`/`gen:doc-nav` auto-indexing scripts (those are a sibling project). DOC_NAV, if present, is hand-maintained; the index source of truth = `src/schema.ts` + Glob.
 
 ## Examples
 
 ```
 User: /commit
-→ Detects: sql/ migration + src/schema.ts
+→ Detects: migration + schema source
 → Runs: bunx tsc --noEmit + bun test (full)
-→ Message: "feat(db): xihe_inbox 表 + HMAC 幂等 schema"
+→ Message: "feat(db): inbox 表 + HMAC 幂等 schema"
 
-User: /commit 修复 DAG 重复派发
-→ Detects: src/dag/dispatcher.ts + test/dag.test.ts
-→ Runs: bunx tsc --noEmit + bun test test/dag.test.ts
-→ Message: "fix(dag): ready→running CAS 原子抢占防双派发"
+User: /commit 修复重复派发
+→ Detects: src/queue/dispatch.ts + test/queue.test.ts
+→ Runs: bunx tsc --noEmit + bun test test/queue.test.ts
+→ Message: "fix(queue): ready→running CAS 原子抢占防双派发"
 
 User: /commit
 → Detects: docs/ only
@@ -127,9 +126,9 @@ User: /commit
 
 ## Safety Rules
 
-1. **NEVER commit** `.env`, credentials, secrets, `.claude/memory/index/**`
+1. **NEVER commit** `.env`, credentials, secrets, generated index/cache dirs
 2. **NEVER amend** unless user says `--amend`
-3. **NEVER force push** — only local commit (push requires the owner present or explicit request, see CLAUDE.md physical-destruction baseline)
+3. **NEVER force push** — only local commit (push requires explicit user request)
 4. If checks fail, report + STOP — do not retry automatically
 
 ---
@@ -140,7 +139,7 @@ User: /commit
 
 ### Ship Step 0: Pre-flight
 
-1. Current branch is `main` → AskUserQuestion to confirm (xihe 1-dev often commits straight to main; branch only when a real PR flow is wanted)
+1. Current branch is `main` → AskUserQuestion to confirm (solo projects often commit straight to main; branch only when a real PR flow is wanted)
 2. `git status` — uncommitted changes present → run Step 0-6 first
 3. Readiness Dashboard: `Branch | Base: main | Commits: N | Files: M | tsc ✅/❌ | tests ✅/❌`
 
@@ -157,9 +156,9 @@ Conflicts → report conflicting files → AskUserQuestion (resolve/abort)
 |---|------|------|
 | 1 | `bunx tsc --noEmit` | 60s |
 | 2 | `bun test 2>&1 \| tail -20` | 180s |
-| 3 | `bun build src/index.ts` | 60s |
+| 3 | `bun build <entry>` | 60s |
 
-**Failure Ownership Triage**: `git diff main...HEAD --name-only` → introduced by this branch=must fix STOP; already exists in base=tag `[pre-existing]`, log to error-journal, non-blocking.
+**Failure Ownership Triage**: `git diff main...HEAD --name-only` → introduced by this branch=must fix STOP; already exists in base=tag `[pre-existing]`, log to error journal, non-blocking.
 
 ### Ship Step 3: Test Coverage Audit
 
@@ -167,7 +166,7 @@ Conflicts → report conflicting files → AskUserQuestion (resolve/abort)
 
 ### Ship Step 4: Plan Completion Audit
 
-Read `_NEXT.md` `active_plan` commitments vs `git diff main...HEAD` actual delivery: DONE / PARTIAL / NOT DONE / EXTRA. NOT DONE → AskUserQuestion (continue/next time/cancel ship).
+Read your current-state file's active-plan commitments vs `git diff main...HEAD` actual delivery: DONE / PARTIAL / NOT DONE / EXTRA. NOT DONE → AskUserQuestion (continue/next time/cancel ship).
 
 ### Ship Step 5: Push & PR
 
@@ -197,7 +196,7 @@ Output the PR URL.
 ## Ship Report — {date}
 | Step | Status | Details |
 | Merge Base | ✅ | No conflicts |
-| Verify | ✅ | tsc 0, 203 pass, build clean |
+| Verify | ✅ | tsc 0, all pass, build clean |
 | Coverage | ⚠️ | {N} new files without tests |
 | Plan Audit | ✅ | {n}/{m} DONE |
 | PR | ✅ | #N created |

@@ -5,14 +5,14 @@ runtime: on-demand
 trigger: mention
 description: "Unified verification gate: runs tsc/test/build based on changed files. 5 modes: --smart (default diff-based) / --quick (tsc only) / --full (full suite before push) / --all (everything) / --health (composite quality score + trend). Trigger: /verify / run tests / health check / 验证 / 跑测试 / 检查一下 / 预检 / 提交前检查 / 健康度 / 代码质量. Skip: code review feedback (/review) / commit (/commit)."
 metadata:
-  source: claude-skills
-  version: "5.0.0-xihe"
-  methodology: "xihe verify (Bun) + composite scoring"
+  source: xihe
+  version: "5.0.0"
+  methodology: "Bun verify + composite scoring"
 ---
-# /verify — Unified verification entry (xihe)
+# /verify — Unified verification entry
 
 > **Zone→Check mapping**: see `_shared/CHECK-ROUTING.md` (shared with /commit).
-> **xihe verification trio** (real, no a sibling project npm script): `bunx tsc --noEmit` + `bun test` + `bun build src/index.ts`. No eslint (no config) / no vitest (use `bun test`) / no `check:*` / `gen:*` scripts (those are a sibling project). `bun test` runs behind the **HAS_DB gate** — dev boxes without xihe PG gracefully skip DB tests.
+> **Verification trio** (TypeScript/Bun projects): `bunx tsc --noEmit` + `bun test` + `bun build <entry>`. Adapt to your project's actual toolchain. If tests require a database, gate them so dev boxes without one skip gracefully rather than failing.
 
 ## Modes
 
@@ -34,11 +34,11 @@ Analyzes changed files from `git diff --name-only HEAD`, auto-selecting the mini
 
 | File Pattern | Required Checks | Notes |
 |-------------|----------------|------|
-| `sql/*.sql` | `bunx tsc --noEmit` + sync against `src/schema.ts` | migration safety reviewed manually (no check script): RLS / FK indexes / CONCURRENTLY / temporal IMMUTABLE |
-| `src/schema.ts` | `bunx tsc --noEmit` + `bun test` (full) | schema changes ripple widely → run the full suite |
-| `src/**/*.ts` | `bunx tsc --noEmit` + `bun test <related>` | run the related tests per module (e.g. `src/dag/*` → `test/dag.test.ts`) |
+| schema / migration files | `bunx tsc --noEmit` + sync against the schema definition | migration safety reviewed manually: indexes / constraints / reversibility |
+| schema source | `bunx tsc --noEmit` + `bun test` (full) | schema changes ripple widely → run the full suite |
+| `src/**/*.ts` | `bunx tsc --noEmit` + `bun test <related>` | run the related tests per module |
 | `test/**/*.test.ts` | `bun test <that file>` | — |
-| `.claude/**`, `docs/**` | — | docs/harness config, no check |
+| docs / config-only | — | no check |
 
 > **Authoritative source**: this table is synced with `_shared/CHECK-ROUTING.md`. On conflict, CHECK-ROUTING.md wins.
 
@@ -47,7 +47,7 @@ Build union of all required checks from matched zones. Do NOT add checks beyond 
 ### Step 0: Pre-check
 
 `git diff --name-only HEAD` empty → "No changes detected." Terminate.
-Changes only in `docs/` / `.claude/` (no check zone) → "Changed files: {N} (docs/config only) — no checks required." Terminate.
+Changes only in docs/config (no check zone) → "Changed files: {N} (docs/config only) — no checks required." Terminate.
 
 ### Step 2: Parallel execution
 
@@ -77,16 +77,16 @@ Changed files: {N} | Checks selected: {M}
 🛑 Blocking: [{check}] {file}:{line} — {description}
 ```
 
-### xihe real check reference
+### Real check reference
 
 | Command | Verifies |
 |---------|----------|
-| `bunx tsc --noEmit` | TypeScript types (incl. cross-module contracts, Drizzle inferred types) |
-| `bun test` | full bun:test (203 pass, HAS_DB gate) — DAO / DAG CAS / memory SAFEGUARD / temporal / route |
+| `bunx tsc --noEmit` | TypeScript types (incl. cross-module contracts, inferred ORM types) |
+| `bun test` | full bun:test — data access / state machines / safeguards / routes |
 | `bun test <file>` | single test file (diff-based subset) |
-| `bun build src/index.ts` | bundle (module resolution / entry integrity) |
+| `bun build <entry>` | bundle (module resolution / entry integrity) |
 
-> migration safety / RLS / invariants = **manual review + dream-team review** (data-layer-architect); xihe has none of a sibling project's `check:rls`/`check:migration-safety`/`check:invariants` auto scripts.
+> migration safety / access policies / invariants = **manual review** (and an adversarial review pass for high-risk seams) when there is no automated script for them.
 
 ---
 
@@ -124,18 +124,18 @@ Parse: tsc → group errors by file | bun test → pass/fail/skip counts
 
 ### Step 3: Build Check
 
-`bun build src/index.ts` (depends on tsc passing; tsc FAIL → skip build). Classify failures: module resolution / import / other.
+`bun build <entry>` (depends on tsc passing; tsc FAIL → skip build). Classify failures: module resolution / import / other.
 
 ### Step 4: Staged Files Audit
 
 `git diff --cached --name-only` + `git diff --name-only`:
 - Staged files unrelated to the current feature?
 - `.env*` / credentials / secrets?
-- Generated files (`.claude/memory/index/*`, `bun.lockb` as appropriate) that shouldn't be committed?
+- Generated files that shouldn't be committed?
 
 ### Step 5: Known Failures Check
 
-Read unresolved P0/P1 in `.claude/knowledge/error-journal.json`. If any, BLOCK.
+Read unresolved P0/P1 entries from your error journal. If any, BLOCK.
 
 ```
 ## Preflight Report — {timestamp}
@@ -166,7 +166,7 @@ Runs tsc + bun test + bun build in full, skipping smart selection.
 |---|------|------|------|
 | 1 | TypeScript | `bunx tsc --noEmit` | 35% |
 | 2 | Tests | `bun test` | 45% |
-| 3 | Build | `bun build src/index.ts` | 20% |
+| 3 | Build | `bun build <entry>` | 20% |
 
 ### Step 2: Scoring (0-10 per category)
 
@@ -181,7 +181,7 @@ Runs tsc + bun test + bun build in full, skipping smart selection.
 
 ### Step 3: Trend tracking
 
-Save to `.claude/telemetry/health-history.jsonl`:
+Save to a health-history log (one JSON line per run):
 ```json
 {"date": "2026-05-29", "composite": 9.4, "types": 10, "tests": 10, "build": 8, "details": {...}}
 ```
@@ -194,7 +194,7 @@ Compare against the last 10: a category drops ≥2 → 🔴; rises ≥2 → 🟢
 ## Health Dashboard — {date}
 | Category | Score | Δ | Status | Details |
 | TypeScript | 10/10 | — | 🟢 | 0 errors |
-| Tests | 10/10 | — | 🟢 | 203 pass, 0 fail |
+| Tests | 10/10 | — | 🟢 | all pass, 0 fail |
 | Build | 10/10 | — | 🟢 | clean |
 **Composite: 9.x/10**
 ```
@@ -208,5 +208,5 @@ Compare against the last 10: a category drops ≥2 → 🔴; rises ≥2 → 🟢
 - tsc / bun test run in parallel without conflict
 - Never auto-fix — only diagnose (except Smart mode Fix-First)
 - Report includes parallel time-saved stats
-- **Health mode**: pure diagnosis, no file changes (except health-history.jsonl)
-- **Do not reference a sibling project npm scripts** (check:*, gen:*, eslint, vitest, npm run build) — they don't exist in xihe
+- **Health mode**: pure diagnosis, no file changes (except the health-history log)
+- **Only reference checks that actually exist in your project** — don't invent scripts the toolchain doesn't have

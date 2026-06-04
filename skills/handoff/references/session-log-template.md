@@ -1,9 +1,9 @@
-# Session Log Template (v6 弹性版本)
+# Session Log Template (elastic version)
 
-> 4 必填 + 6 可选 by judgment. 模型按 session 性质选保留哪些 evidence anchor.
-> **核心原则 (mattpocock-merge)**: 不重复已有 artifact (PRD/plan/ADR/commit/diff/_NEXT.md) — 引用 path/URL, 不内联复制. 写 **why**, 不写 **what** (git diff 已有 what).
+> 4 required + 6 optional by judgment. The model picks which evidence anchors to keep based on the nature of the session.
+> **Core principle**: don't duplicate an existing artifact (PRD/plan/ADR/commit/diff/_NEXT.md) — reference the path/URL, don't inline a copy. Write the **why**, not the **what** (git diff already has the what).
 
-## 必填 4 段 (任何 session)
+## 4 required sections (any session)
 
 ```yaml
 ---
@@ -11,44 +11,44 @@ date: YYYY-MM-DD
 session_id: s-YYYY-MM-DD-<slug>
 feature: <slug>
 parent_plan: <docs/plan/... or null>
-keywords: [<5-10 召回锚词 — frontmatter array 在 BM25 直接 boost>]
+keywords: [<5-10 recall anchors — a frontmatter array is boosted directly in BM25>]
 commits: [<sha1>, <sha2>, ...]
 ---
 
 # Session: <feature>
 
-## Why (必填)
-1-3 段, 每决策的 why + 拒绝备选 + 触发证据. 不写 what, 写 why (语义召回杠杆).
+## Why (required)
+1-3 paragraphs: the why behind each decision + rejected alternatives + triggering evidence. Don't write what, write why (the semantic-recall lever).
 
-## Dead Ends + Rewind (必填; 无则写"无")
-- {走错路径 1 句}
-  - Root cause: {真正问题}
-  - rewind_target: {下次跳到哪里直接出答案}
+## Dead Ends + Rewind (required; write "none" if none)
+- {wrong path, one line}
+  - Root cause: {the real problem}
+  - rewind_target: {where to jump next time to land the answer directly}
 
-## Wisdom (必填; 无则"无")
-- ej-<id> [type] — <title>
+## Wisdom (required; "none" if none)
+- <id> [type] — <title>
 
-## Open Threads (必填)
-- {next_3_steps 的语义层补充, 不重复 _NEXT.md 当前态}
+## Open Threads (required)
+- {semantic-layer supplement to next_3_steps, don't duplicate the current state in _NEXT.md}
 ```
 
-## 可选 6 段 (by judgment)
+## 6 optional sections (by judgment)
 
 ```markdown
-## (optional) Evidence          — harness/standards/复杂调试: file:line / commit / test stdout 关键数字
-## (optional) Files Produced    — 重大架构改动 (≥10 文件) 列产出 + 行数
-## (optional) Plan Status Table — 多 phase plan 的 phase × commit × 状态表
-## (optional) Test Outputs      — 验证密集 (RAG eval / E2E / benchmark) 引用 stdout 关键数字
-## (optional) Drift Events      — A real_drift 出现时引用 rewind anchor + 失败分类
-## (optional) Wright 教训        — 反思密集 session 抽象层教训 (跨 session 复用价值高)
+## (optional) Evidence          — harness/standards/complex debugging: file:line / commit / key numbers from test stdout
+## (optional) Files Produced    — major architectural change (≥10 files): list outputs + line counts
+## (optional) Plan Status Table — phase × commit × status table for a multi-phase plan
+## (optional) Test Outputs      — verification-heavy (RAG eval / E2E / benchmark): cite key numbers from stdout
+## (optional) Drift Events      — when a real drift occurs, cite the rewind anchor + failure classification
+## (optional) Agent Lessons     — abstract lessons from a reflection-heavy session (high cross-session reuse value)
 ```
 
-## 判断规则
+## Decision rules
 
-| Session 性质 | 必加可选段 | 预期总行数 |
+| Session nature | Optional sections to add | Expected total lines |
 |---|---|---|
-| 普通 feature dev | 仅 4 必填 | 30-50 |
-| harness / standards / cognitive-arch | + Evidence + Wright 教训 | 80-120 |
-| 多 phase 大重构 | + Plan Status + Files Produced | 100-150 |
-| 验证 / RAG eval / benchmark | + Test Outputs | 60-100 |
-| 全要素 sprint 收尾 | 全 10 段 | 150-200 |
+| ordinary feature dev | only the 4 required | 30-50 |
+| harness / standards / cognitive-arch | + Evidence + Agent Lessons | 80-120 |
+| multi-phase large refactor | + Plan Status + Files Produced | 100-150 |
+| verification / RAG eval / benchmark | + Test Outputs | 60-100 |
+| full-element sprint wrap-up | all 10 sections | 150-200 |

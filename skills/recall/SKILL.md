@@ -3,51 +3,50 @@ name: recall
 tier: capability
 runtime: on-demand
 trigger: mention
-description: "Memory layer active recall: when reasoning/writing/decisions stall, Wright proactively queries the 8734-chunk store rather than relying on hook triggers. Fills the blind spots left by R1-R3 passive consumption. Trigger: /recall / recall / there should be precedent / 查历史 / 翻一下记忆 / 以前怎么做的. Skip: file grep (Grep) / call chains (/graph) / library docs (mcp__context7) / git history (git log)."
+description: "Memory layer active recall: when reasoning/writing/decisions stall, the agent proactively queries the memory store instead of waiting for a hook to fire. Fills the blind spots left by passive (hook-triggered) consumption. Trigger: /recall / recall / there should be precedent / 查历史 / 翻一下记忆 / 以前怎么做的. Skip: file grep / call chains (/graph) / library docs (context7) / git history (git log)."
 metadata:
-  source: memory-layer-routing
+  source: xihe
   version: "1.0.0"
-  routing: R10
 ---
 
 # /recall — Memory Layer active recall
 
-> Phase 1 Memory Layer Routing R10 — active consumption, filling the blind spots of hook passive triggers.
+> Active consumption of the memory layer, filling the blind spots of hook-triggered passive recall.
 
 ## When to use
 
-When R10 fires (active, not hook-triggered):
-- **Stuck while writing a plan/PRD** — wondering "how did we decide similar cases before"
+When you proactively want past context (not a hook firing automatically):
+- **Stuck while writing a plan/spec** — wondering "how did we decide similar cases before"
 - **Design choice** — "X or Y" and want to see the historical rationale
 - **Cross-module reuse** — "which module solved a similar problem before"
-- **Methodology query** — "what is our standard"
+- **Methodology query** — "what is our standard here"
 - **Historical lesson query** — "have we hit this pitfall before"
 
 Not for:
-- Literal in-file search → Grep
+- Literal in-file search → grep
 - Function call chains → /graph what-uses / refs
-- Third-party library docs → mcp__context7
+- Third-party library docs → context7
 - Git commit history → git log
 
 ## Input
 
 ```
 /recall <topic>
-/recall <topic> --k 5            # default k=5, higher than the hook route's 3
-/recall <topic> --kind decision  # filter sourceKind
-/recall <topic> --path docs/plan # path filter (R13)
+/recall <topic> --k 5            # default k=5
+/recall <topic> --kind decision  # filter by source kind
+/recall <topic> --path docs/plan # path filter
 ```
 
 `<topic>` can be:
-- A natural-language query: `RLS policy auth.uid cross-tenant isolation`
-- Keywords: `Procountor report G3`
+- A natural-language query: `auth cross-tenant isolation`
+- Keywords: `report pipeline release gate`
 - Filename + keywords: `dashboard-overview.ts feature flag`
 
 ## Workflow
 
 ### Step 1 — Pick K and filter
 
-K defaults to 5 (higher than the hook route's 3 — on active recall Wright wants a fuller view).
+K defaults to 5 (a fuller view on active recall).
 
 If `<topic>` involves:
 - decision/proposal → add `--kind decision`
@@ -55,68 +54,49 @@ If `<topic>` involves:
 - failure/pitfall → add `--kind error,journal`
 - file history → add `--path <prefix>`
 
-### Step 2 — Call the retrieve.ts CLI
+### Step 2 — Call the retrieve CLI
 
 ```bash
 npx tsx .claude/memory/scripts/retrieve.ts "<topic>" --k 5 --format briefing
 ```
 
-With a `--kind` filter:
+With a path filter (decisions generally live under `docs/plan/` or `docs/spec/`):
 ```bash
-# retrieve.ts does not support sourceKind filter but supports path filter
-# sourceKind=decision generally lives in docs/plan/ or docs/prd/
-npx tsx .claude/memory/scripts/retrieve.ts "<topic>" --k 5 --format briefing --path-filter "docs/(plan|prd)/"
+npx tsx .claude/memory/scripts/retrieve.ts "<topic>" --k 5 --format briefing --path-filter "docs/(plan|spec)/"
 ```
 
-With a `--path` filter:
+With an arbitrary path filter:
 ```bash
 npx tsx .claude/memory/scripts/retrieve.ts "<topic>" --k 5 --format briefing --path-filter "<regex>"
 ```
 
 ### Step 3 — Present + self-assess
 
-Output the retrieve briefing for the owner to see (top-5 sourcePath + breadcrumb + 100-char preview).
+Output the retrieve briefing (top-5 source path + breadcrumb + short preview).
 
-Then Wright **self-assesses relevance**:
+Then self-assess relevance:
 - which one directly answers the topic
 - which one is only tangentially related
-- which one is irrelevant (R14 feedback: append `[Memory-Echo-Ack: applied|irrelevant|ignore]` in the response)
+- which one is irrelevant
 
 ## Output format
 
 ```
 ### 💾 Relevant Memory (top-5)
 
-1. **[decision]** PLAN-stage2-dashboard-overview-materials.md — Stage 2 dashboard overview RPC...
-   `docs/plan/PLAN-stage2-dashboard-overview-materials.md` · 0d old
+1. **[decision]** PLAN-dashboard-overview.md — dashboard overview pipeline...
+   `docs/plan/PLAN-dashboard-overview.md` · 0d old
 
-2. **[standards]** ACCOUNTING-ENGINEERING-STANDARD.md — accounting-grade business invariants + state machine...
-   `docs/standards/ACCOUNTING-ENGINEERING-STANDARD.md` · 7d old
+2. **[standards]** ENGINEERING-STANDARD.md — engineering invariants + state machine...
+   `docs/standards/ENGINEERING-STANDARD.md` · 7d old
 
 ...
-
-[Memory-Echo-Ack: applied|irrelevant|ignore]
-(whether this recall was used, written at the end of the response, R14 feedback learning)
 ```
 
-## R5 Domain-First self-check
+## Domain-first self-check
 
 The memory layer is a meta-layer, not a domain. `/recall` usage limits:
-- ✅ Before/during plan/PRD writing: high value, prevents reinventing the wheel
+- ✅ Before/during plan/spec writing: high value, prevents reinventing the wheel
 - ✅ At decision moments: historical decision rationale
-- ⚠️ Don't use it for exploratory idle browsing — an 8-second retrieve doesn't beat grep
-- ❌ Don't use it as a /retro substitute — /retro reads git, not chunks
-
-## Relationship to other R routes
-
-| Route | Trigger | Query | K |
-|---|---|---|---|
-| R1 failure-recovery | command failure (hook) | tool + stderr | 3 |
-| R2 patch-detector | Edit file (hook) | file path + context | 3 |
-| R3 cognitive-trigger | frustration keywords (hook) | feature + recent calls | 3 |
-| R8 pre-plan-write | writing a plan (hook) | filename + feature | 5 |
-| R9 pre-prd-write | writing a PRD (hook) | filename + feature | 5 |
-| R10 /recall | **active call** (this skill) | any topic | 5 |
-| R11 pre-dispatch-gate | dispatch agent (hook) | subagent + feature | 3 |
-
-R10 fills the **active consumption** blind spot beyond R1-R3 passive + R8/R9 pre-document-write + R11 agent dispatch.
+- ⚠️ Don't use it for exploratory idle browsing — a slow retrieve doesn't beat grep
+- ❌ Don't use it as a retrospective substitute — a retro reads git, not memory chunks

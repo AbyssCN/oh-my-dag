@@ -1,66 +1,31 @@
 /**
- * src/wright/config-extension —— /config slash 命令: 键盘选 daemon 角色模型 (dream/conductor/leaf)。
+ * src/wright/config-extension —— `/setup` + `/config` slash 命令: 统一配置中心入口。
  *
- * 选择持久化到 .wright/config.json (经 persistRoleModel), 跨进程: daemon 下次 resolveRoleModel
- * 时 mtime 重读即生效, 不重启。与 pi 原生 /model (wright 自己对话的脑子, session 内即焚) 互不干扰。
+ * 一处配齐角色模型 / 多模态池 / 自定 API / Web key / 能力 / 语言 (见 config-center.ts)。
+ * 落盘: 角色·池·API → .wright/config.json (跨进程 mtime 重读, 不重启); key·开关 → .env。
+ * 与 pi 原生 /model (wright 对话脑子, session 内即焚) 互不干扰。挂交互前端 tui.ts, 不挂 headless leaf。
  *
- * UX = wright 既有的 ctx.ui.select 两步选 (镜像 plan-extension 的 /model), 不引入 pi SettingsList/
- * custom widget (wright 从未用)。挂交互前端 tui.ts, 不挂 headless agent-leaf (无头 leaf 不该有 /config)。
+ * `/setup` 与 `/config` 同效 (别名) — /setup 偏首次/全量, /config 是熟手快捷词。
  */
 import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
-import { listProviders } from '../model';
-import { listRoleModels, persistRoleModel, type ModelRole } from '../model/role-models';
+import { runConfigCenter, type ConfigUi } from './config-center';
 import { m } from './i18n';
-
-const ROLE_LABELS: Record<ModelRole, string> = {
-  dream: 'Dreaming Model',
-  conductor: 'Conductor Model',
-  leaf: 'Leaf Model',
-  verifier: 'Verifier Model',
-};
 
 export function createConfigExtension(): ExtensionFactory {
   // 注: registerCommand 名**不带**前导斜杠 (pi slice(1) 约定, 见 cg-audit-extension)。
   return (pi) => {
-    pi.registerCommand('config', {
-      description: m({
-        en: 'Keyboard-pick daemon role models (dream/conductor/leaf/verifier) — saved to .wright/config.json',
-        zh: '键盘选 daemon 角色模型 (dream/conductor/leaf/verifier) — 存 .wright/config.json',
-      }),
-      handler: async (_args: string, ctx) => {
-        // 1. 列当前态 + 选要改的角色。
-        const current = listRoleModels();
-        const roleItems = current.map((e) => `${ROLE_LABELS[e.role]}: ${e.resolved} (${e.source})`);
-        const pickedRole = await ctx.ui.select(m({ en: 'Pick a role to change', zh: '选要改的角色' }), roleItems);
-        if (!pickedRole) return; // esc / 取消
-        const role = current[roleItems.indexOf(pickedRole)]!.role;
-
-        // 2. 从已注册 provider 选 model 坐标 (provider 裸名 → 各自 defaultModel)。
-        const providers = listProviders();
-        if (providers.length === 0) {
-          ctx.ui.notify(m({
-            en: 'No registered provider — check DEEPSEEK_* / MIMO_* env',
-            zh: '无已注册 provider — 检查 DEEPSEEK_* / MIMO_* env',
-          }), 'warning');
-          return;
-        }
-        const pickedModel = await ctx.ui.select(m({
-          en: `${ROLE_LABELS[role]} → pick model`,
-          zh: `${ROLE_LABELS[role]} → 选 model`,
-        }), providers);
-        if (!pickedModel) return;
-
-        // 3. 持久化 + 回执。
-        try {
-          persistRoleModel(role, pickedModel);
-          ctx.ui.notify(m({
-            en: `${ROLE_LABELS[role]} → ${pickedModel} (saved to .wright/config.json)`,
-            zh: `${ROLE_LABELS[role]} → ${pickedModel} (已存 .wright/config.json)`,
-          }), 'info');
-        } catch (e) {
-          ctx.ui.notify(m({ en: `Save failed: ${String(e)}`, zh: `保存失败: ${String(e)}` }), 'error');
-        }
-      },
+    const run = async (_args: string, ctx: { ui: ConfigUi; cwd?: string }) => {
+      try {
+        await runConfigCenter(ctx.ui, { cwd: ctx.cwd });
+      } catch (e) {
+        ctx.ui.notify(m({ en: `Config center error: ${String(e)}`, zh: `配置中心出错: ${String(e)}` }), 'error');
+      }
+    };
+    const description = m({
+      en: 'Unified config center — role models / multimodal pool / custom APIs / web keys / capabilities / language',
+      zh: '统一配置中心 — 角色模型 / 多模态池 / 自定 API / Web key / 能力 / 语言',
     });
+    pi.registerCommand('setup', { description, handler: run });
+    pi.registerCommand('config', { description, handler: run });
   };
 }
