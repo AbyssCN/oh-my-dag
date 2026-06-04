@@ -24,7 +24,7 @@ export const CORE_BUNDLE = [
   'review',       // 按需审计 / PR review
   'dream',        // memory consolidation
   'skill-creator', // 元技能: 造/改/测 skill
-  'fanout',       // 多视角并行生成 + 评判择优 (best-of-n + research fanout)
+  'council',      // 多视角并行生成 + 评判择优 (best-of-n + research fanout)
 ] as const;
 
 export type CoreSkillName = (typeof CORE_BUNDLE)[number];
