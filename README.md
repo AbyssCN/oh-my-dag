@@ -124,5 +124,5 @@ difference. Put the model inside a reliable system; don't bury reliability insid
 
 ## License
 
-Proprietary — all rights reserved. See [LICENSE](LICENSE). The *methodology* is shared via articles/docs; the source is not open for copy or reuse.
+MIT — see [LICENSE](LICENSE). The code is open; fork it, learn from it, build on it. The *methodology* that calibrates this harness — the task decompositions, the dead-ends, the judgment that compounds over time — is what the articles and docs are about.
 
