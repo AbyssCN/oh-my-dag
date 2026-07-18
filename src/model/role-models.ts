@@ -1,13 +1,13 @@
 /**
- * src/model/role-models.ts — the role→model resolver + unified config center (D60 · wright config seam).
+ * src/model/role-models.ts — the role→model resolver + unified config center (D60 · omd config seam).
  *
  * callModel 的 provider registry 已是 config-driven (provider:modelId 经注册解析);
  * 这一层补"哪个 daemon 角色用哪个 model"的绑定 + 多模态池 + 用户自定 API。每个角色解析到
  * 一个坐标, 4 级优先:
  *
  *   in-memory override (CLI/test, 非持久)
- *     → file (.wright/config.json, 持久 + 跨进程, TUI /config·/setup 写它)
- *       → per-role env (XIHE_PLAN_MODEL / XIHE_CONDUCTOR_MODEL / …)
+ *     → file (.omd/config.json, 持久 + 跨进程, TUI /config·/setup 写它)
+ *       → per-role env (OMD_PLAN_MODEL / OMD_CONDUCTOR_MODEL / …)
  *         → 出厂默认
  *
  * config.json schema v2 (向后兼容 v1):
@@ -15,14 +15,14 @@
  * multimodalPool = 多模态 leaf 的候选池 (从 provider 池里挑有多模态能力的, 如 mimo/gemini/kimi 多选);
  * apis = 用户自定 OpenAI-兼容端点, boot 时 registerProvidersFromConfig 注册进 callModel registry。
  *
- * 文件层 = wright 既有落盘约定 (.wright/* cwd-相对, 经 XIHE_CONFIG_PATH 覆盖)。daemon 与 TUI 同从
- * repo root 跑, 共享同一 .wright/config.json; 下次 resolve 时 mtime 重读即捡到改动, 不重启。
+ * 文件层 = omd 既有落盘约定 (.omd/* cwd-相对, 经 OMD_CONFIG_PATH 覆盖)。daemon 与 TUI 同从
+ * repo root 跑, 共享同一 .omd/config.json; 下次 resolve 时 mtime 重读即捡到改动, 不重启。
  * INV: 永不返硬编码 URL — 只返 'provider' / 'provider:modelId' 坐标, callModel 经注册 provider 解析。
  */
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-/** Daemon roles that drive callModel. plan = 审议座舱模型 (wright 对话脑子仍走 pi /model)。 */
+/** Daemon roles that drive callModel. plan = 审议座舱模型 (omd 对话脑子仍走 pi /model)。 */
 export type ModelRole = 'plan' | 'conductor' | 'leaf' | 'verifier' | 'dream';
 
 /** UX 顺序 (config 列表 / onboard 页展示): 规划 → 执行 → 校验 → 做梦。 */
@@ -37,15 +37,15 @@ interface RoleSpec {
 
 const ROLE_SPECS: Record<ModelRole, RoleSpec> = {
   // Plan 审议座舱 = 强推理。默认 deepseek-v4-pro (完整坐标, 不依赖 provider defaultModel)。
-  plan: { envVar: 'XIHE_PLAN_MODEL', fallback: 'deepseek:deepseek-v4-pro' },
+  plan: { envVar: 'OMD_PLAN_MODEL', fallback: 'deepseek:deepseek-v4-pro' },
   // Conductor 分解。默认 mimo (provider 裸名 → provider defaultModel)。
-  conductor: { envVar: 'XIHE_CONDUCTOR_MODEL', fallback: 'mimo' },
+  conductor: { envVar: 'OMD_CONDUCTOR_MODEL', fallback: 'mimo' },
   // Leaf 执行 = 单发廉价档。
-  leaf: { envVar: 'XIHE_LEAF_MODEL', fallback: 'mimo' },
+  leaf: { envVar: 'OMD_LEAF_MODEL', fallback: 'mimo' },
   // Verifier 跨模型校验 = 对抗式审查。默认 'deepseek' (≠ mimo conductor/leaf, 故意跨模型避盲点)。
-  verifier: { envVar: 'XIHE_VERIFIER_MODEL', fallback: 'deepseek' },
+  verifier: { envVar: 'OMD_VERIFIER_MODEL', fallback: 'deepseek' },
   // Dream consolidation = 抽取推理。默认 'deepseek'。
-  dream: { envVar: 'XIHE_DREAM_MODEL', fallback: 'deepseek' },
+  dream: { envVar: 'OMD_DREAM_MODEL', fallback: 'deepseek' },
 };
 
 export type RoleModelSource = 'override' | 'file' | 'env' | 'default';
@@ -70,13 +70,13 @@ export interface ApiDef {
 const overrides = new Map<ModelRole, string>();
 
 // ---------------------------------------------------------------------------
-// file layer — .wright/config.json (cwd-relative; XIHE_CONFIG_PATH override).
+// file layer — .omd/config.json (cwd-relative; OMD_CONFIG_PATH override).
 // ---------------------------------------------------------------------------
-const DEFAULT_CONFIG_PATH = '.wright/config.json';
+const DEFAULT_CONFIG_PATH = '.omd/config.json';
 
-/** Resolved config-file path: XIHE_CONFIG_PATH or .wright/config.json (cwd-relative). */
+/** Resolved config-file path: OMD_CONFIG_PATH or .omd/config.json (cwd-relative). */
 export function configPath(): string {
-  return process.env.XIHE_CONFIG_PATH ?? DEFAULT_CONFIG_PATH;
+  return process.env.OMD_CONFIG_PATH ?? DEFAULT_CONFIG_PATH;
 }
 
 interface ConfigFile {
@@ -180,7 +180,7 @@ export function clearRoleModelOverrides(): void {
 }
 
 /**
- * Durably set a role's model — writes the `models` section of .wright/config.json. Cross-process:
+ * Durably set a role's model — writes the `models` section of .omd/config.json. Cross-process:
  * daemon picks it up on next resolve (mtime reload). Preserves other sections / roles.
  */
 export function persistRoleModel(role: ModelRole, coord: string, path = configPath()): void {

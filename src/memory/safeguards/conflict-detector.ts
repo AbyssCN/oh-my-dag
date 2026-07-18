@@ -17,7 +17,7 @@ import type { ValidatedFact } from './namespaces';
 
 /**
  * Payload handed to the caller to raise into the cloud-routine inbox
- * (xihe_inbox). Shaped to drop straight into an inbox row's payload column.
+ * (omd_inbox). Shaped to drop straight into an inbox row's payload column.
  */
 export interface InboxPayload {
   kind: 'memory.fact_conflict';
@@ -106,7 +106,7 @@ function fnv1a36(s: string): string {
  * where digest is a bounded hash of the supersession IDENTITY key. The namespace
  * stays readable in the key; the identity is digested so the key never exceeds the
  * HostAdapter's 512-char cap even when the identity carries free-text fields
- * (wright.pattern situation+approach, wright.limit statement, user.trait …) that the
+ * (omd.pattern situation+approach, omd.limit statement, user.trait …) that the
  * raw identityKeyOf string could blow past. Deterministic → the same logical fact
  * upserts rather than duplicating.
  */

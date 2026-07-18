@@ -1,8 +1,8 @@
 /**
  * PiRuntime — in-process agent runtime backed by the Pi SDK (own the loop).
  *
- * 战略依据: xihe-runtime-sandbox-hosting-strategy-2026-05-29.md §2 §4 (候选 ADR D61)。
- * 把 agent loop 收进 xihe 的 Bun 进程内 —— 无 tmux、无反向工程、无私有端点。
+ * 战略依据: omd-runtime-sandbox-hosting-strategy-2026-05-29.md §2 §4 (候选 ADR D61)。
+ * 把 agent loop 收进 omd 的 Bun 进程内 —— 无 tmux、无反向工程、无私有端点。
  * 取代 src/rc-client/ 那套逆向 Conductor 协议 (后者迁完即退役)。
  *
  * 实测对齐 (照 node_modules/@earendil-works/*.d.ts 写, 非文档摘要):
@@ -15,6 +15,7 @@
  * 范围 (M2, 保持最小): 单 AgentSession = 一次跑一条 task。多任务并发 = session 池
  * (Pi 的 createAgentSessionRuntime newSession/switchSession), 留作后续 step, 不在 keystone。
  */
+import '../env-alias';
 import { join } from 'node:path';
 import {
   createAgentSession,
@@ -27,18 +28,18 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import { getModel } from '@earendil-works/pi-ai';
 import { logger } from '../logger';
-import type { WrightController } from '../wright/controller';
+import type { OmdController } from '../harness/controller';
 import type { AgentRuntime, DispatchOptions, RuntimeEvent, ThinkingLevel } from './types';
 import {
-  installWrightHarness,
+  installOmdHarness,
   buildAgentSystemPrompt,
   ccToolsToAllowlist,
-  type WrightHarness,
+  type OmdHarness,
   type AgentDef,
 } from './harness';
 
 /**
- * 默认 Opus 模型 id。可经构造参数 / XIHE_RUNTIME_MODEL 覆盖。
+ * 默认 Opus 模型 id。可经构造参数 / OMD_RUNTIME_MODEL 覆盖。
  * 注: 这里不硬编最新档, 由部署侧 (NAS) 设 env 选具体 Opus (如 claude-opus-4-8)。
  */
 const DEFAULT_MODEL = 'claude-opus-4-5';
@@ -58,25 +59,25 @@ function resolveModel(provider: string, modelId: string) {
 export interface PiRuntimeOptions {
   /** 工作目录 (项目级 skill/extension/context 发现根)。默认 process.cwd()。 */
   cwd?: string;
-  /** 模型 id。默认 DEFAULT_MODEL, 或 XIHE_RUNTIME_MODEL。 */
+  /** 模型 id。默认 DEFAULT_MODEL, 或 OMD_RUNTIME_MODEL。 */
   model?: string;
-  /** provider (pi-ai 31 内建之一, 如 'anthropic' | 'xiaomi-token-plan-ams')。默认 anthropic, 或 XIHE_RUNTIME_PROVIDER。 */
+  /** provider (pi-ai 31 内建之一, 如 'anthropic' | 'xiaomi-token-plan-ams')。默认 anthropic, 或 OMD_RUNTIME_PROVIDER。 */
   provider?: string;
   /** thinking 档位。默认 medium。 */
   thinkingLevel?: ThinkingLevel;
-  /** 启用 Wright harness (技能/身份/子代理 spawn_agent/hook 桥)。默认 false。 */
+  /** 启用 omd harness (技能/身份/子代理 spawn_agent/hook 桥)。默认 false。 */
   harness?: boolean;
   /**
-   * wright 本体 (灵魂 = code)。提供则此 runtime 作 controller 的 **daemon adapter** (SDD §4 V2.0):
+   * omd 本体 (灵魂 = code)。提供则此 runtime 作 controller 的 **daemon adapter** (SDD §4 V2.0):
    *   - provider / model / thinkingLevel 缺省取自 controller (而非 anthropic 默认)。
    *   - controller.toExtensionFactories() (含灵魂注入 extension) 经 DefaultResourceLoader 挂入 session。
    * 不提供则保持 V0/V1 行为 (anthropic 默认, 仅 harness 路径注入)。
    */
-  controller?: WrightController;
+  controller?: OmdController;
 }
 
 /**
- * 纯函数: 把一个 Pi 事件映射成 xihe 的 RuntimeEvent (无副作用, 单测入口)。
+ * 纯函数: 把一个 Pi 事件映射成 omd 的 RuntimeEvent (无副作用, 单测入口)。
  * 不关心的事件返回 null (由调用方丢弃)。
  */
 export function mapPiEvent(event: AgentSessionEvent, taskId: string): RuntimeEvent | null {
@@ -224,7 +225,7 @@ export class PiRuntime implements AgentRuntime {
 
   private readonly opts: PiRuntimeOptions;
   private session: AgentSession | null = null;
-  private harness: WrightHarness | null = null;
+  private harness: OmdHarness | null = null;
   private unsubSession: (() => void) | null = null;
   private currentTaskId: string | null = null;
   private readonly listeners = new Set<(e: RuntimeEvent) => void>();
@@ -233,22 +234,22 @@ export class PiRuntime implements AgentRuntime {
     this.opts = opts;
   }
 
-  /** provider 解析: 构造参数 > controller > XIHE_RUNTIME_PROVIDER env > 默认 anthropic。 */
+  /** provider 解析: 构造参数 > controller > OMD_RUNTIME_PROVIDER env > 默认 anthropic。 */
   private resolveProvider(): string {
     return (
       this.opts.provider ??
       this.opts.controller?.provider ??
-      process.env.XIHE_RUNTIME_PROVIDER ??
+      process.env.OMD_RUNTIME_PROVIDER ??
       DEFAULT_PROVIDER
     );
   }
 
-  /** model 解析: 构造参数 > controller > XIHE_RUNTIME_MODEL env > 默认 Opus。 */
+  /** model 解析: 构造参数 > controller > OMD_RUNTIME_MODEL env > 默认 Opus。 */
   private resolveModelId(): string {
     return (
       this.opts.model ??
       this.opts.controller?.model ??
-      process.env.XIHE_RUNTIME_MODEL ??
+      process.env.OMD_RUNTIME_MODEL ??
       DEFAULT_MODEL
     );
   }
@@ -264,16 +265,16 @@ export class PiRuntime implements AgentRuntime {
 
     const cwd = this.opts.cwd ?? controller?.cwd ?? process.cwd();
 
-    // extensionFactories 来源: controller (灵魂注入 + wright 原生 fail-closed 闸)。
+    // extensionFactories 来源: controller (灵魂注入 + omd 原生 fail-closed 闸)。
     // harness (技能/身份/子代理) 不贡献 extensionFactory —— hook 子进程桥已删 (V2-HOOK), 改原生经 controller。
     const extensionFactories: ExtensionFactory[] = [];
     if (controller) extensionFactories.push(...controller.toExtensionFactories());
     if (this.opts.harness && !this.harness) {
-      this.harness = installWrightHarness({ cwd, spawn: (def, prompt) => this.spawnSubAgent(def, prompt) });
+      this.harness = installOmdHarness({ cwd, spawn: (def, prompt) => this.spawnSubAgent(def, prompt) });
     }
 
     // 身份注入两条互补路径, 不重复:
-    //   - controller present → 灵魂经 extensionFactories (before_agent_start) 注入 baked WRIGHT_IDENTITY。
+    //   - controller present → 灵魂经 extensionFactories (before_agent_start) 注入 baked OMD_IDENTITY。
     //   - 仅 harness          → 项目 CLAUDE.md 经 appendSystemPrompt 注入 (legacy, V0/V1 行为)。
     const appendCLAUDEmd = this.opts.harness && !controller && this.harness?.identity;
 
@@ -343,7 +344,7 @@ export class PiRuntime implements AgentRuntime {
 
   /** 嵌套 sub-agent: 独立 in-memory session, def 指令前置到 prompt。(live, NAS 验) */
   private async spawnSubAgent(def: AgentDef, prompt: string): Promise<string> {
-    const modelId = this.opts.model ?? process.env.XIHE_RUNTIME_MODEL ?? DEFAULT_MODEL;
+    const modelId = this.opts.model ?? process.env.OMD_RUNTIME_MODEL ?? DEFAULT_MODEL;
     const model = resolveModel(this.resolveProvider(), modelId);
     // def.tools (CC frontmatter allowlist) → pi tools allowlist; undefined = 继承全部。
     const tools = ccToolsToAllowlist(def.tools);
