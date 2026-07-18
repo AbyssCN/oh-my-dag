@@ -1,26 +1,30 @@
 {
-  "name": "xihe-agent",
-  "version": "0.1.0",
-  "description": "Xihe — a model-agnostic multi-agent runtime. Wright is its first agent: a terminal coding agent with plan mode, code mode, multi-perspective fan-out, a self-consolidating memory, an MCP router, and a curated skill bundle.",
+  "name": "oh-my-dag",
+  "version": "0.2.0",
+  "description": "oh-my-dag — a complete harness for the pi coding-agent runtime, in the oh-my-* tradition. A self-consolidating memory layer, a DAG execution engine (conductor → typed nodes → concurrent fan-out → cross-model verify → escalate on failure), plan mode with a read-only gate, an edit→verify tool gate, an MCP router, and a 17-skill bundle. Ships a bundled terminal agent; any OpenAI-compatible backend plugs in.",
   "type": "module",
   "license": "MIT",
-  "homepage": "https://xihe.dev",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AbyssCN/xihe.git"
+    "url": "git+https://github.com/AbyssCN/oh-my-dag.git"
   },
   "bugs": {
-    "url": "https://github.com/AbyssCN/xihe/issues"
+    "url": "https://github.com/AbyssCN/oh-my-dag/issues"
   },
   "keywords": [
+    "pi",
+    "pi-extension",
+    "harness",
+    "oh-my",
+    "dag",
+    "workflow",
+    "orchestration",
     "agent",
     "coding-agent",
+    "memory",
     "llm",
     "multi-agent",
-    "orchestration",
-    "harness",
     "model-agnostic",
-    "deepseek",
     "mcp",
     "bun"
   ],
@@ -28,8 +32,8 @@
     "bun": ">=1.3.0"
   },
   "bin": {
-    "xihe": "src/wright/tui.ts",
-    "wright": "src/wright/tui.ts"
+    "oh-my-dag": "src/harness/tui.ts",
+    "omd": "src/harness/tui.ts"
   },
   "files": [
     "src",
@@ -44,9 +48,13 @@
     "LICENSE"
   ],
   "scripts": {
-    "xihe": "bun run src/wright/tui.ts",
-    "init": "bun run src/wright/tui.ts init",
-    "wright": "bun run src/wright/tui.ts",
+    "omd": "bun run src/harness/tui.ts",
+    "init": "bun run src/harness/tui.ts init",
+    "dag-research": "bun run scripts/dag-research.ts",
+    "dag-council": "bun run scripts/dag-council.ts",
+    "dag-fanout": "bun run scripts/dag-fanout.ts",
+    "dag-review": "bun run scripts/dag-review.ts",
+    "dag-build": "bun run scripts/dag-build.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
