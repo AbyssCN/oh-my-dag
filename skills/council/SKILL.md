@@ -3,11 +3,11 @@ name: council
 tier: capability
 runtime: on-demand
 trigger: mention
-description: "Multi-perspective parallel generation + judge-and-select (a panel of experts 'meets' to deliberate a winner): facing a wide solution space for a design/decision, dispatch N different persona+angle in parallel to produce candidates → multi-lens judge → select-and-synthesize (graft the runners-up's highlights), instead of giving one averaged answer in a single shot. Trigger: multiple options / compare options / best of n / bestof / fanout / council / parallel exploration / multiple perspectives / give me a few options / which option is better / option comparison / explore options / not sure which to pick / 多个方案 / 对比方案 / 并行探索 / 多视角 / 给我几个选项 / 哪种方案好 / 方案对比 / 拿不准选哪个. Skip: a single clear solution (just do it) / pure execution needing no selection / code review (/review) / root-cause debugging (/investigate)."
+description: "Multi-perspective parallel generation + judge-and-select (a panel of experts 'meets' to deliberate a winner): facing a wide solution space for a design/decision, dispatch N different persona+angle in parallel to produce candidates → multi-lens judge → select-and-synthesize (graft the runners-up's highlights), instead of giving one averaged answer in a single shot. Trigger: multiple options / compare options / best of n / bestof / fanout / council / parallel exploration / multiple perspectives / give me a few options / which option is better / option comparison / explore options / not sure which to pick / domain fork / grounded / anti-happy-path decision / 多个方案 / 对比方案 / 并行探索 / 多视角 / 给我几个选项 / 哪种方案好 / 方案对比 / 拿不准选哪个. Skip: a single clear solution (just do it) / pure execution needing no selection / code review (/review) / root-cause debugging (/investigate)."
 metadata:
-  source: xihe
-  version: "1.0.0"
-  methodology: "diversity>volume + persona conditioning + multi-judge panel + graft runners-up"
+  source: oh-my-dag
+  version: "1.1.0"
+  methodology: "diversity>volume + persona conditioning + multi-judge panel + graft runners-up + grounded (market-first + domain-role persona + anti-happy-path axis)"
 ---
 
 # /council — Multi-Perspective Parallel Generation + Judge-and-Select
@@ -21,6 +21,7 @@ metadata:
 - **Hard-to-reverse decisions**: high cost of being wrong, worth adversarial multi-perspective vetting before committing.
 - **Option-comparison requests**: the user explicitly says "give me a few options / which is better / not sure".
 - **Deep research**: a single question needing multiple expert perspectives + sub-angle coverage (use the deep tier).
+- **Domain-correctness fork (grounded)**: domains where being wrong is expensive and reality is messy (accounting/legal/ops: data won't reconcile, partial failure, lifecycle-end) + hard to reverse -> use the grounded tier.
 
 ## When not to use (anti-slop)
 
@@ -42,6 +43,14 @@ The 3 default lenses (each = persona + angle + sampling modulation):
 
 ### Deep tier — `/council deep`
 **L lens × V sub-angle variants** → per-lens reduce to a champion → M framing synthesis → **K-judge panel + graft** → final solution. Each leaf is injected with persona + a high-level domain abstraction framework + ground truth. Suited to foundational / hard-to-reverse decisions (driven by the task's mass: L = the real number of expert perspectives, V = that lens's real number of sub-angles).
+
+### Grounded tier — `/council grounded` (domain fork · structural anti-happy-path)
+**When to auto-upgrade**: a domain-correctness fork (accounting/legal/ops) + real-world messiness + a hard-to-reverse decision. The default lenses (mvp/risk/first-principles) are too generic there — swap in **domain roles + an anti-happy-path judging axis + market-first evidence**. Four steps (orthogonal to light/deep tiers):
+
+1. **Market-first (don't assume)**: research what competitors / real-world practice **actually** do first (e.g. via `/dag-research`) — that becomes the **hard-evidence baseline** fed to every persona. Keep search queries short and focused.
+2. **Domain-role personas (not generic lenses)**: swap to the real roles of the problem — the **operator** who does this daily / **compliance & audit** / **automation first-principles** / **lifecycle-end** (e.g. year-end close). Each role judges independently in parallel, no peeking, all fed the step-1 evidence baseline (argue from facts, not vibes).
+3. **Judging axis = anti-happy-path scenarios**: explicitly prompt each persona to judge every option against dirty data / concurrency / partial failure / cross-boundary / lifecycle-end / scale-balloon — otherwise personas quietly answer for the happy path too.
+4. **Judge + graft**: check **consensus** (unanimous = strong signal); pick the champion and graft **orthogonal highlights** from runners-up. Domain red lines are not delegated to the fleet — council output is input; the lead agent + owner render the final call.
 
 ## Core discipline (copy these 4, hold them even when fanning out manually)
 

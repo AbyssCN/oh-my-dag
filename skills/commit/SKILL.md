@@ -5,7 +5,7 @@ runtime: on-demand
 trigger: mention
 description: "Smart git commit: analyze changes + zone checks (tsc/test/build) + conventional message (Chinese) + git commit. --ship mode: merge base + full tests + PR. Trigger: /commit / save changes / git commit / ship / ship it / create PR / 提交 / 保存变更 / 提交代码 / 帮我提交 / 发布 / 创建PR. Skip: verify only without committing (/verify) / code quality review (/review)."
 metadata:
-  source: xihe
+  source: oh-my-dag
   version: "3.0.0"
   methodology: "Bun commit + ship release pipeline"
 ---

@@ -1,5 +1,5 @@
--- wright-skills substrate schema (从 SkillRegistry 实例 dump, 真理源)
--- 改 src/wright/skills/registry.ts 的 CREATE TABLE → 重跑导出自动同步。
+-- oh-my-dag skills substrate schema (从 SkillRegistry 实例 dump, 真理源)
+-- 改 src/harness/skills/registry.ts 的 CREATE TABLE → 重跑导出自动同步。
 
 CREATE TABLE gene_fact_links (
         gene_id  INTEGER NOT NULL,

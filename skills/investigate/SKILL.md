@@ -5,7 +5,7 @@ runtime: on-demand
 trigger: mention
 description: "Systematic root-cause debugging: 8 phases — history search / reproduce / scope lock / pattern match / hypothesis test / fix / verify / report. Iron Law: no fix without a root cause. Trigger: investigate / debug / 调查 / 排查 / 为什么挂了 / 这个bug / 根因分析 / 错误报错 / 500 / stack trace / 昨天还好的. Skip: general code review (/review) / verification (/verify) / planned refactor (/implement)."
 metadata:
-  source: xihe
+  source: oh-my-dag
   version: "1.0.0"
 ---
 # /investigate -- Systematic Debugging

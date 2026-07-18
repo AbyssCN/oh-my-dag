@@ -5,7 +5,7 @@ runtime: on-demand
 trigger: mention
 description: "Manually trigger Dream consolidation: distill an agent's raw events into durable memory facts, with safeguards. Runs all layers, budget cap ~10k tokens. Trigger: /dream / consolidate memory / dream run / 做梦 / 整理记忆 / 跑一次 dream / 记忆整理. Skip: routine verification (/verify) / commit (/commit) / history recall (/recall)."
 metadata:
-  source: xihe
+  source: oh-my-dag
   version: "1.0.0"
 ---
 # /dream — Manual Dream consolidation

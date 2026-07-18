@@ -6,7 +6,7 @@ description: >
   Use when user says "caveman mode", "talk like caveman", "use caveman",
   "less tokens", "be brief", or invokes /caveman.
 metadata:
-  source: xihe
+  source: oh-my-dag
   adopted: "for autonomous-run token frugality"
 ---
 

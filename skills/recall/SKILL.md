@@ -5,7 +5,7 @@ runtime: on-demand
 trigger: mention
 description: "Memory layer active recall: when reasoning/writing/decisions stall, the agent proactively queries the memory store instead of waiting for a hook to fire. Fills the blind spots left by passive (hook-triggered) consumption. Trigger: /recall / recall / there should be precedent / 查历史 / 翻一下记忆 / 以前怎么做的. Skip: file grep / call chains (/graph) / library docs (context7) / git history (git log)."
 metadata:
-  source: xihe
+  source: oh-my-dag
   version: "1.0.0"
 ---
 

@@ -5,7 +5,7 @@ runtime: on-demand
 trigger: mention
 description: "On-demand audit: security / coverage / tech-debt / full Gate / PR code review (dispatch specialist lenses + optional cross-model review). For Phase/Gate milestones, after a security incident, pre-merge PR review. Trigger: audit / security scan / full check / Gate check / review --security / review --gate / tech-debt inventory / security audit / review PR / code review / 审计 / 安全扫描 / 全量检查 / Gate检查 / 技术债盘点 / 代码审查 / PR审查. Skip: routine verification (/verify) / commit (/commit)."
 metadata:
-  source: xihe
+  source: oh-my-dag
   version: "5.0.0"
   methodology: "on-demand audit + specialist lenses + optional cross-model review"
 ---

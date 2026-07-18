@@ -6,7 +6,7 @@ trigger: mention
 argument-hint: "(optional) focus for the next session — used to trim next_3_steps + Suggested Skills"
 description: "Session wrap-up ritual: update the active plan / next-state file + write a session log + capture memory. Skipping = the next session loses context. Trigger: end / wrap up / handoff / hand over / save progress / call it for today / session end / 结束 / 收工 / 交接 / 保存进度 / 今天到这 / session结束. Skip: commit code (/commit) / start a new session (/start)."
 metadata:
-  source: xihe
+  source: oh-my-dag
   version: "8.0.0"
 ---
 # /handoff — Session Wrap-Up

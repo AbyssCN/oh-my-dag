@@ -5,7 +5,7 @@ runtime: always
 trigger: mention
 description: "Session initialization ritual: read the project's next-steps file + git status in parallel to restore the previous context, output a Briefing with the current task + suggested next step. The first command of every new session to prevent context loss. Trigger: start / 开始 / 恢复进度 / 继续上次的 / 新session / 从哪里继续. Skip: save progress (/handoff) / commit (/commit)."
 metadata:
-  source: xihe
+  source: oh-my-dag
   version: "3.1.0"
 ---
 # /start — Session Initialization
@@ -20,7 +20,7 @@ metadata:
 - Without a hint, derive the focus from the active plan in the project's next-steps file
 
 > **Project files referenced below** (adapt the names to your project's conventions):
-> - **next-steps file** — the single source of current state (active plan, next 3 steps, backlog). Default `~/.xihe/NEXT.md` or a project-local `NEXT.md`.
+> - **next-steps file** — the single source of current state (active plan, next 3 steps, backlog). Default `~/.omd/NEXT.md` or a project-local `NEXT.md`.
 > - **session notes** — per-session handoff summaries written by `/handoff` (decisions, dead ends, remaining work).
 > - **error journal** — a record of known bugs + fixes, read on demand.
 
@@ -31,7 +31,7 @@ metadata:
 If the previous session crashed unexpectedly without going through `/handoff`, the memory layer may still hold un-embedded captured entries. Drain them before the briefing (if your project has a memory flush command):
 
 ```bash
-xihe memory flush || true
+omd memory flush || true
 ```
 
 When pending is empty it's a no-op. `|| true` guarantees it won't block /start, **but stderr stays visible** (on non-zero exit you see the provider error / drift signal).
@@ -55,7 +55,7 @@ This session still runs the full flow, but mark the Relevant Memory section in t
 cd "$(git rev-parse --show-toplevel)" && \
 echo "=LOG=" && git log --oneline -5 && \
 echo "=STATUS=" && git status --short --branch && \
-echo "=SESSIONS=" && ls -t .xihe/sessions/*.md 2>/dev/null | head -3
+echo "=SESSIONS=" && ls -t .omd/sessions/*.md 2>/dev/null | head -3
 ```
 
 Parsing rules (extract from the `=TAG=` delimiters):
@@ -123,10 +123,10 @@ If your project has a semantic memory layer, retrieve the most relevant prior en
 
 ```bash
 # user /start <hint>: positional argument takes priority
-xihe memory retrieve "<hint>" --k 3 --format briefing
+omd memory retrieve "<hint>" --k 3 --format briefing
 
 # no hint: auto-construct the query from the active plan / next step
-xihe memory retrieve --from-state --k 3 --format briefing
+omd memory retrieve --from-state --k 3 --format briefing
 ```
 
 **Output spec**: stdout = a markdown block embedded directly into the briefing; stderr carries the query + source so it's visible without polluting the render. All empty → `_(no active task — skipping retrieval)_`, no error.

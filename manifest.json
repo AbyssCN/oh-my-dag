@@ -1,10 +1,10 @@
 {
-  "repo": "wright-skills",
-  "note": "machine-readable bundle manifest — 由 src/wright/skills/export.ts 生成, 勿手改",
+  "repo": "oh-my-dag-skills",
+  "note": "machine-readable bundle manifest — 由 src/harness/skills/export.ts 生成, 勿手改",
   "skillsRoot": "skills",
   "substrateDir": "substrate",
   "umbrella": "umbrella.md",
-  "count": 12,
+  "count": 17,
   "skills": [
     {
       "name": "caveman",
@@ -14,7 +14,7 @@
       "description": "Ultra-compressed communication mode. Cuts token usage ~75% by dropping filler, articles, and pleasantries while keeping full technical accuracy. Use when user says \"caveman mode\", \"talk like caveman\", \"use caveman\", \"less tokens\", \"be brief\", or invokes /caveman.",
       "has_eval": false,
       "dir": "skills/caveman",
-      "origin": "wright-skills",
+      "origin": "oh-my-dag-skills",
       "license": null,
       "upstream_commit": null
     },
@@ -26,19 +26,19 @@
       "description": "智能 git commit: 分析改动 + zone 检查 (tsc/test/build) + 中文 conventional message + git commit. --ship mode: merge base + full tests + PR. Trigger: 提交 / commit / 保存变更 / git commit / 提交代码 / 帮我提交 / ship / 发布 / 创建PR / ship it. Skip: 仅验证不提交 (/verify) / 代码质量 review (/review).",
       "has_eval": false,
       "dir": "skills/commit",
-      "origin": "wright-skills",
+      "origin": "oh-my-dag-skills",
       "license": null,
       "upstream_commit": null
     },
     {
       "name": "council",
       "id": "sk_council",
-      "version": 1,
+      "version": 2,
       "tier": "core",
-      "description": "多视角并行生成 + 评判择优 (一组专家'开会'审议出冠军): 面对宽解空间的设计/决策, 派 N 个不同 persona+angle 并行出方案 → 多 lens judge → 择优合成 (嫁接亚军亮点), 而非一次性给平均答案. Trigger: 多个方案 / 对比方案 / best of n / bestof / fanout / council / 并行探索 / 多视角 / 给我几个选项 / 哪种方案好 / 方案对比 / explore options / 拿不准选哪个. Skip: 单一明确解 (直接做) / 纯执行无需择优 / 代码审查 (/review) / 根因调试 (/investigate).",
+      "description": "多视角并行生成 + 评判择优 (一组专家'开会'审议出冠军): 面对宽解空间的设计/决策, 派 N 个不同 persona+angle 并行出方案 → 多 lens judge → 择优合成 (嫁接亚军亮点), 而非一次性给平均答案. Trigger: 多个方案 / 对比方案 / best of n / bestof / fanout / council / 并行探索 / 多视角 / 给我几个选项 / 哪种方案好 / 方案对比 / explore options / 拿不准选哪个 / domain fork / grounded / 反 happy-path 决策. Skip: 单一明确解 (直接做) / 纯执行无需择优 / 代码审查 (/review) / 根因调试 (/investigate).",
       "has_eval": false,
       "dir": "skills/council",
-      "origin": "wright-skills",
+      "origin": "oh-my-dag-skills",
       "license": null,
       "upstream_commit": null
     },
@@ -47,10 +47,10 @@
       "id": "sk_dream",
       "version": 1,
       "tier": "core",
-      "description": "手动触发 xihe Dream consolidation: 把 agent 的 raw events 提炼成 L0-L6 记忆 (经 Memory Restraint 3-gate + validateFactWrite)。跑全层, 最大预算 ~10k token。Trigger: /dream / 做梦 / 整理记忆 / consolidate memory / dream run / 跑一次 dream / 记忆整理. Skip: 日常验证 (/verify) / 提交 (/commit) / 历史召回 (/recall).",
+      "description": "手动触发 Dream consolidation: 把 agent 的 raw events 提炼成 L0-L6 记忆 (经 Memory Restraint 3-gate + validateFactWrite)。跑全层, 最大预算 ~10k token。Trigger: /dream / 做梦 / 整理记忆 / consolidate memory / dream run / 跑一次 dream / 记忆整理. Skip: 日常验证 (/verify) / 提交 (/commit) / 历史召回 (/recall).",
       "has_eval": false,
       "dir": "skills/dream",
-      "origin": "wright-skills",
+      "origin": "oh-my-dag-skills",
       "license": null,
       "upstream_commit": null
     },
@@ -62,7 +62,7 @@
       "description": "Session 收尾仪式: 更新 _NEXT.md active plan + 写 session log + memory capture. 跳过 = 下次 session 丢 context. Trigger: 结束 / 收工 / handoff / 交接 / 保存进度 / 今天到这 / session结束. Skip: 提交代码 (/commit) / 开新 session (/start).",
       "has_eval": false,
       "dir": "skills/handoff",
-      "origin": "wright-skills",
+      "origin": "oh-my-dag-skills",
       "license": null,
       "upstream_commit": null
     },
@@ -74,7 +74,7 @@
       "description": "系统化 debug 根因调查: 8 阶段 history search / reproduce / scope lock / pattern match / hypothesis test / fix / verify / report. Iron Law: 无根因不修. Trigger: 调查 / debug / 排查 / 为什么挂了 / 这个bug / investigate / 根因分析 / 错误报错 / 500 / stack trace / 昨天还好的. Skip: 通用代码审查 (/review) / 验证 (/verify) / 计划重构 (/implement).",
       "has_eval": false,
       "dir": "skills/investigate",
-      "origin": "wright-skills",
+      "origin": "oh-my-dag-skills",
       "license": null,
       "upstream_commit": null
     },
@@ -83,10 +83,10 @@
       "id": "sk_recall",
       "version": 1,
       "tier": "core",
-      "description": "Memory layer 主动召回: 推理/写作/决策卡住时 Wright 主动查 8734 chunks 库, 不靠 hook 触发. 补 R1-R3 被动消费的盲点. Trigger: /recall / 查历史 / 翻一下记忆 / recall / 以前怎么做的 / there should be precedent. Skip: 文件 grep (Grep) / 调用链 (/graph) / 库文档 (mcp__context7) / git 历史 (git log).",
+      "description": "Memory layer 主动召回: 推理/写作/决策卡住时 omd 主动查 8734 chunks 库, 不靠 hook 触发. 补 R1-R3 被动消费的盲点. Trigger: /recall / 查历史 / 翻一下记忆 / recall / 以前怎么做的 / there should be precedent. Skip: 文件 grep (Grep) / 调用链 (/graph) / 库文档 (mcp__context7) / git 历史 (git log).",
       "has_eval": false,
       "dir": "skills/recall",
-      "origin": "wright-skills",
+      "origin": "oh-my-dag-skills",
       "license": null,
       "upstream_commit": null
     },
@@ -98,7 +98,7 @@
       "description": "Engineering retrospective from git history: analyzes commit patterns, type mix (feat/fix/refactor), focus score, test discipline, and productivity trends. Use for Sprint/weekly reviews. Users may say: \"复盘\", \"retro\", \"回顾\", \"Sprint总结\", \"这周做了什么\", \"工作分析\". Do NOT use for session wrap-up (use /handoff) or code review (use /review).",
       "has_eval": false,
       "dir": "skills/retro",
-      "origin": "wright-skills",
+      "origin": "oh-my-dag-skills",
       "license": null,
       "upstream_commit": null
     },
@@ -110,7 +110,7 @@
       "description": "按需审计: 安全 / 覆盖度 / 技术债 / 全量 Gate / PR 代码审查 (派 dream-team specialist + Codex). Phase/Gate milestone, 安全事件后, pre-merge PR review. Trigger: 审计 / audit / 安全扫描 / 全量检查 / Gate检查 / review --security / review --gate / 技术债盘点 / security audit / review PR / code review / 代码审查 / PR审查. Skip: 日常验证 (/verify) / 提交 (/commit).",
       "has_eval": false,
       "dir": "skills/review",
-      "origin": "wright-skills",
+      "origin": "oh-my-dag-skills",
       "license": null,
       "upstream_commit": null
     },
@@ -134,7 +134,7 @@
       "description": "Session 初始化仪式: 并行读 _NEXT.md + git status 恢复上次 context, 输出 Briefing 含当前任务 + 建议下一步. 每个新 session 第一条命令防 context 丢失. Trigger: 开始 / start / 恢复进度 / 继续上次的 / 新session / 从哪里继续. Skip: 保存进度 (/handoff) / 提交 (/commit).",
       "has_eval": false,
       "dir": "skills/start",
-      "origin": "wright-skills",
+      "origin": "oh-my-dag-skills",
       "license": null,
       "upstream_commit": null
     },
@@ -146,7 +146,67 @@
       "description": "统一验证 gate: 按改动文件跑 tsc/test/build. 5 modes: --smart (default diff-based) / --quick (仅 tsc) / --full (push 前全套) / --all (everything) / --health (复合质量分 + 趋势). Trigger: 验证 / 跑测试 / 检查一下 / verify / run tests / 预检 / 提交前检查 / 健康度 / health check / 代码质量. Skip: 代码 review 反馈 (/review) / 提交 (/commit).",
       "has_eval": false,
       "dir": "skills/verify",
-      "origin": "wright-skills",
+      "origin": "oh-my-dag-skills",
+      "license": null,
+      "upstream_commit": null
+    },
+    {
+      "name": "dag-research",
+      "id": "sk_dag_research",
+      "version": 1,
+      "tier": "core",
+      "description": "Web research as a DAG: retrieve (multi-query search + tiered crawl) → multi-lens fanout → judged synthesis, one command, zero-loss corpus artifact. Trigger: research this / what is X and which is better / grounded answer from the web / 调研 / 查一下X怎么做 / 综合网上说法 / dag-research. Skip: you only need raw page content (fetch directly) / question answerable from the codebase (read code) / wide design decision without web grounding (/dag-council).",
+      "has_eval": false,
+      "dir": "skills/dag-research",
+      "origin": "oh-my-dag-skills",
+      "license": null,
+      "upstream_commit": null
+    },
+    {
+      "name": "dag-council",
+      "id": "sk_dag_council",
+      "version": 2,
+      "tier": "core",
+      "description": "Auto-authored expert council as a DAG: give it a goal + ground truth, the conductor authors N distinct personas, they produce candidates concurrently, a multi-lens judge selects and grafts a winner. Grounded tier for domain-correctness forks. Trigger: multiple options / which approach / best of n / council / 多个方案 / 哪种方案好 / 拿不准选哪个 / domain fork / grounded / anti-happy-path decision / dag-council. Skip: single clear solution (just do it) / you want to hand-write the lens spec yourself (/dag-fanout) / needs web evidence first (/dag-research feeds this).",
+      "has_eval": false,
+      "dir": "skills/dag-council",
+      "origin": "oh-my-dag-skills",
+      "license": null,
+      "upstream_commit": null
+    },
+    {
+      "name": "dag-fanout",
+      "id": "sk_dag_fanout",
+      "version": 1,
+      "tier": "core",
+      "description": "Hand-written lens-spec fanout: you author the lenses (persona + sub-angles), the engine runs them concurrently and judges. Manual gearbox of dag-council. Trigger: fanout with my own lenses / 手写 lens / 我已明确要哪几个视角 / dag-fanout. Skip: want the conductor to author lenses automatically (/dag-council, the default) / web research (/dag-research).",
+      "has_eval": false,
+      "dir": "skills/dag-fanout",
+      "origin": "oh-my-dag-skills",
+      "license": null,
+      "upstream_commit": null
+    },
+    {
+      "name": "dag-review",
+      "id": "sk_dag_review",
+      "version": 1,
+      "tier": "core",
+      "description": "Adversarial multi-dimension diff review as a DAG: correctness/security/boundary/contract lenses review the diff concurrently, then a verify/refute layer converges findings (kills plausible-but-wrong ones). Trigger: review this diff / PR review / 审查这组改动 / 提交前对抗审查 / find P0s before merge / dag-review. Skip: root-cause debugging of a known bug (investigate directly) / building code (/dag-build embeds its own gated review).",
+      "has_eval": false,
+      "dir": "skills/dag-review",
+      "origin": "oh-my-dag-skills",
+      "license": null,
+      "upstream_commit": null
+    },
+    {
+      "name": "dag-build",
+      "id": "sk_dag_build",
+      "version": 1,
+      "tier": "core",
+      "description": "Decomposable coding task as a DAG: conductor plans, agent leaves build files concurrently, a deterministic oracle command gates, a heal fixpoint retries with failure context, halt-judge stops unproductive loops, checkpoints make runs resumable. Trigger: build this module across N files / 实装这个可分解任务 / parallel implementation with a test gate / dag-build. Skip: small single-file change (edit directly — dispatch overhead loses) / root-cause unknown (investigate first) / frontend visual work (needs a human eye).",
+      "has_eval": false,
+      "dir": "skills/dag-build",
+      "origin": "oh-my-dag-skills",
       "license": null,
       "upstream_commit": null
     }

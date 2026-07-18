@@ -5,7 +5,7 @@ runtime: on-demand
 trigger: mention
 description: "Unified verification gate: runs tsc/test/build based on changed files. 5 modes: --smart (default diff-based) / --quick (tsc only) / --full (full suite before push) / --all (everything) / --health (composite quality score + trend). Trigger: /verify / run tests / health check / 验证 / 跑测试 / 检查一下 / 预检 / 提交前检查 / 健康度 / 代码质量. Skip: code review feedback (/review) / commit (/commit)."
 metadata:
-  source: xihe
+  source: oh-my-dag
   version: "5.0.0"
   methodology: "Bun verify + composite scoring"
 ---

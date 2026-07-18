@@ -5,7 +5,7 @@ runtime: manual
 trigger: mention
 description: "Engineering retrospective from git history: analyzes commit patterns, type mix (feat/fix/refactor), focus score, test discipline, and productivity trends. Use for Sprint/weekly reviews. Users may say: \"retro\", \"retrospective\", \"sprint summary\", \"what did I do this week\", \"work analysis\", \"复盘\", \"回顾\", \"Sprint总结\", \"这周做了什么\", \"工作分析\". Do NOT use for session wrap-up (use /handoff) or code review (use /review)."
 metadata:
-  source: xihe
+  source: oh-my-dag
   version: "1.0.0"
   methodology: "git analytics retrospective"
 ---

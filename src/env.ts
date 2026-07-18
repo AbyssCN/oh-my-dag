@@ -1,7 +1,7 @@
 /**
- * src/env — minimal runtime env for the wright agent (xihe).
+ * src/env — minimal runtime env for the omd agent (omd).
  *
- * The agent reads its model/provider/path config directly from `process.env.XIHE_*`
+ * The agent reads its model/provider/path config directly from `process.env.OMD_*`
  * at the call sites (see tui.ts). This module only validates the two values the logger
  * needs, both with safe defaults — so a fresh checkout boots with zero env set.
  */

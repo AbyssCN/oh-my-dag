@@ -2,7 +2,7 @@
  * src/memory/safeguards/namespace-kernel —— SAFEGUARD-2 的**通用机制层** (domain-free, P1#1 R5 分离)。
  *
  * 这里只有"如何安全地记 L3 fact"的机制, **零 domain 内容**:
- *   - 信任级 (Confidence) + source anchor + confidence 字段 = 任何 wright instance 的 L3 都要。
+ *   - 信任级 (Confidence) + source anchor + confidence 字段 = 任何 omd instance 的 L3 都要。
  *   - reject-by-default / ban-glob 编译 / identity-key 计算 = 机制, 与"记什么"无关。
  *   - **通用 GDPR 特殊类别 ban** (健康/政治/宗教 = EU Art 9 法, 跨 instance 恒禁) = baseline。
  *
@@ -92,8 +92,8 @@ export interface AssembledSafeguard {
 }
 
 /**
- * 装配多个 {@link NamespacePack} (通用 user/wright pack + domain pack) 成一套 reject-by-default 闸料。
- * **无通用 ban baseline** (the owner 校准: GDPR 等是辖区/domain 的事, 不入 wright 通用层) —— ban 全来自各
+ * 装配多个 {@link NamespacePack} (通用 user/omd pack + domain pack) 成一套 reject-by-default 闸料。
+ * **无通用 ban baseline** (the owner 校准: GDPR 等是辖区/domain 的事, 不入 omd 通用层) —— ban 全来自各
  * pack 的 banGlobs 合并。
  */
 export function assembleSafeguard(packs: readonly NamespacePack[]): AssembledSafeguard {

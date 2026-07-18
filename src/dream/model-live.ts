@@ -45,7 +45,7 @@ Reply with ONLY a JSON object of this exact shape — no prose, no code fences:
 { "candidates": [ { "layer": "L2", "fact": { ... }, "source_event_ids": [<event id>, ...] } ] }
 - "layer": which memory layer the insight targets (one of L0 L1 L2 L3 L4 L5 L6).
 - "fact": the insight payload. For an L2 durable fact it MUST carry a "namespace"
-  (user.* or wright.*), a "source_event_id", and a "confidence" — a fact missing these
+  (user.* or omd.*), a "source_event_id", and a "confidence" — a fact missing these
   is rejected downstream.
 - "source_event_ids": the ids of the events that back this candidate.
 If nothing is worth keeping, reply { "candidates": [] }.`;
