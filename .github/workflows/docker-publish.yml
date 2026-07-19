@@ -1,6 +1,6 @@
 name: Publish Docker image
 
-# Builds and pushes ghcr.io/<owner>/xihe on every semver tag (v0.1.0, v1.2.3, …).
+# Builds and pushes ghcr.io/<owner>/oh-my-dag on every semver tag (v0.1.0, v1.2.3, …).
 # Uses the built-in GITHUB_TOKEN — no extra secrets to configure.
 on:
   push:
