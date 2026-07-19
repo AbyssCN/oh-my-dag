@@ -17,6 +17,7 @@ import {
   type OAuthCredentials,
   type OAuthLoginCallbacks,
 } from '@earendil-works/pi-ai/oauth';
+import { getProviders as piGetProviders, getEnvApiKey as piGetEnvApiKey } from '@earendil-works/pi-ai';
 import { bold, dim, fg } from '../branding/palette';
 import {
   persistCustomApi,
@@ -156,6 +157,58 @@ export async function probeProvider(
 /** pi auth.json 默认路径。 */
 export function defaultPiAuthPath(): string {
   return join(homedir(), '.pi', 'agent', 'auth.json');
+}
+
+/** provider 总览步的注入面 (测试换假目录/假 env)。 */
+export interface ProviderOverviewDeps {
+  getProviders?: () => string[];
+  getEnvApiKey?: (provider: string) => string | undefined;
+}
+
+/**
+ * ⓪ pi 目录 provider 总览 (向导开场, 纯展示零交互): 列出 pi-ai 目录全部 provider (~32 家) +
+ * 就绪标记 — ✓oauth (auth.json 有凭证) / ✓key (对应 env key 已设)。让用户一眼看到"pi 认识哪些家、
+ * 我已经能用哪些家", 而不是只看到 omd 一线支持的两家。目录不可用 fail-open 跳过。
+ */
+export function runProviderOverviewStep(
+  io: WizardIO,
+  piReady: string[],
+  deps: ProviderOverviewDeps = {},
+): void {
+  let provs: string[] = [];
+  try {
+    provs = (deps.getProviders ?? (piGetProviders as () => string[]))();
+  } catch {
+    return; // 目录不可用不砖向导
+  }
+  if (!provs.length) return;
+  const keyOf = deps.getEnvApiKey ?? piGetEnvApiKey;
+  const ready: string[] = [];
+  const rest: string[] = [];
+  for (const p of provs) {
+    if (piReady.includes(p)) {
+      ready.push(`${p} ✓oauth`);
+      continue;
+    }
+    let k: string | undefined;
+    try {
+      k = keyOf(p);
+    } catch {
+      k = undefined;
+    }
+    if (k) ready.push(`${p} ✓key`);
+    else rest.push(p);
+  }
+  io.note(
+    [
+      bold(fg('gold', `pi 目录 provider (${provs.length} 家)`)),
+      ready.length ? `  ${fg('success', '已就绪:')} ${fg('rice', ready.join(' · '))}` : '',
+      `  ${dim(fg('riceMuted', `可配: ${rest.join(' ')}`))}`,
+      `  ${dim(fg('riceMuted', '任一家配好 env key 或 pi OAuth 后, 即可用 provider:model 坐标挂到任何角色'))}`,
+    ]
+      .filter(Boolean)
+      .join('\n'),
+  );
 }
 
 /**
@@ -302,6 +355,8 @@ export interface InitWizardDeps {
   persist?: PresetPersistDeps;
   /** pi OAuth 步骤注入面 (测试换假 auth.json / 假登录件)。 */
   piAuth?: PiAuthDeps;
+  /** provider 总览步注入面 (测试换假目录)。 */
+  providerCatalog?: ProviderOverviewDeps;
 }
 
 export interface InitWizardResult {
@@ -398,13 +453,39 @@ export async function applyRolePreset(
   );
 }
 
-/** 逐角色微调步可配的 config 角色 (role-models 的 5 角色)。 */
-export const TUNABLE_ROLES: readonly ModelRole[] = ['plan', 'conductor', 'leaf', 'verifier', 'dream'];
+/** 'provider:model' 坐标格式 (排除 URL 与逗号列表)。 */
+export const COORD_RE = /^[a-z0-9._-]+:(?!\/\/)[^\s,]+$/i;
+
+/**
+ * 逐角色微调面 = **真实的节点角色 env 面** (ROLE_ENV_ALLOWLIST 有消费方的子集) + 2 个 config 角色。
+ * 注意不含 config:plan / config:conductor —— 二者当前无消费方 (plan 工具箱跑在对话里 = runtime 模型;
+ * /execute 分解器默认 = runtime, 覆盖点是 OMD_ITER_CONDUCTOR_MODEL env, 见 resolveConductorDefault)。
+ */
+export const TUNABLE_ENV_ROLES: readonly { env: string; label: string }[] = [
+  { env: 'OMD_ITER_CONDUCTOR_MODEL', label: 'DAG 分解器 (/execute·/iterate; 默认=runtime 模型)' },
+  { env: 'OMD_ITER_LEAF_MODEL', label: 'DAG inproc 叶子 (单发生成/判断)' },
+  { env: 'OMD_ITER_AGENT_MODEL', label: 'DAG agent 叶子 (带工具改文件)' },
+  { env: 'OMD_CONDUCTOR_ESCALATION_MODEL', label: '升级分解器 (校验失败才买的强模型)' },
+  { env: 'OMD_CG_CONDUCTOR_MODEL', label: '检索图分解器 (/cg·/audit)' },
+  { env: 'OMD_CG_LEAF_MODEL', label: '检索图叶子' },
+  { env: 'OMD_CG_AGENT_MODEL', label: '检索图 agent 叶子' },
+  { env: 'OMD_LENS_MODEL', label: '研究镜头 (dag-research 扇出)' },
+  { env: 'OMD_REDUCE_MODEL', label: '研究归并 (镜头内 V→1 合成)' },
+  { env: 'OMD_JUDGE_MODEL', label: '研究评判 (K-judge)' },
+  { env: 'OMD_REASON_MODEL', label: '研究推理 (终稿)' },
+  { env: 'OMD_REVIEW_SPEC_MODEL', label: '审查 Spec 轴 (dag-review 双轴)' },
+  { env: 'OMD_LEAF_OVERFLOW_MODEL', label: '叶子溢出兜底 (超长上下文)' },
+];
+export const TUNABLE_CONFIG_ROLES: readonly { role: ModelRole; label: string }[] = [
+  { role: 'verifier', label: '跨模型校验 skeptic (建议 ≠ 主力家族)' },
+  { role: 'dream', label: '记忆整理 (dream/skill-miner, 便宜档即可)' },
+];
 
 /**
  * 逐角色微调步 (④): 配了多 provider/网关 (opencode-go 一把 key 多家族 · pi OAuth 多后端) 时,
- * 5 个 config 角色可各挂不同模型。回车跳过 = 保持 preset/出厂默认。写 config.json (persistRoleModel,
- * 4 层优先级里高于出厂默认低于 env) — 不污染 env 文件。导出便于测试直驱。
+ * 各节点角色可挂不同模型。select 循环 (选角色 → 填坐标 → 重复, '完成'退出) — 不逐项轰炸。
+ * env 角色写 updates (随 env 落盘); config 角色走 persistRoleModel。坐标格式校验 (COORD_RE),
+ * 'kimi-k3' 这类缺 provider 前缀的输入被拒并提示。导出便于测试直驱。
  */
 export async function runRoleTuneStep(
   io: WizardIO,
@@ -412,14 +493,30 @@ export async function runRoleTuneStep(
   persist: PresetPersistDeps = REAL_PERSIST,
   piReady: string[] = [],
 ): Promise<void> {
-  if (!(await io.confirm('逐角色微调模型? (plan/conductor/leaf/verifier/dream 各挂不同模型; 可跳过)', false))) return;
-  // 坐标提示: 本次配置里出现过的 provider:model + pi OAuth 就绪 provider。排除 URL 与列表值。
-  const coords = [...new Set(Object.values(updates).filter((v) => /^[a-z0-9._-]+:(?!\/\/)[^\s,]+$/i.test(v)))];
+  if (!(await io.confirm('逐角色微调模型? (各节点角色可挂不同模型; 可跳过)', false))) return;
+  // 坐标提示: 本次配置里出现过的 provider:model + pi OAuth 就绪 provider。
+  const coords = [...new Set(Object.values(updates).filter((v) => COORD_RE.test(v)))];
   const hints = [...coords, ...piReady.map((p) => `${p}:<model>`)];
   if (hints.length) io.note(dim(fg('riceMuted', `可用坐标: ${hints.join(' · ')}`)));
-  for (const role of TUNABLE_ROLES) {
-    const v = (await io.ask(`${role} → provider:model (回车跳过)`)).trim();
-    if (v) persist.persistRoleModel(role, v);
+  for (;;) {
+    const options = [
+      ...TUNABLE_ENV_ROLES.map((r) => ({
+        id: r.env,
+        label: `${r.label}${updates[r.env] ? ` = ${updates[r.env]}` : ''}`,
+      })),
+      ...TUNABLE_CONFIG_ROLES.map((r) => ({ id: `config:${r.role}`, label: `${r.label} — config:${r.role}` })),
+      { id: 'done', label: '完成' },
+    ];
+    const pick = await io.select('改哪个角色?', options);
+    if (!pick || pick === 'done') return;
+    const v = (await io.ask('provider:model 坐标 (如 kimi-coding:k3, 回车取消)')).trim();
+    if (!v) continue;
+    if (!COORD_RE.test(v)) {
+      io.note(fg('error', `坐标格式应为 provider:model (输入的 "${v}" 缺 provider 前缀, 如 kimi-coding:k3)`));
+      continue;
+    }
+    if (pick.startsWith('config:')) persist.persistRoleModel(pick.slice('config:'.length) as ModelRole, v);
+    else updates[pick] = v;
   }
 }
 
@@ -441,9 +538,12 @@ export async function runInitWizard(deps: InitWizardDeps): Promise<InitWizardRes
   const envPath = existsSync(localEnvPath) ? localEnvPath : globalEnvPath();
   const persist = deps.persist ?? REAL_PERSIST;
 
-  io.note(`${bold(fg('cinnabar', '◉ omd 初始化向导'))}  ${dim(fg('riceMuted', '登录/检测 · 选档 · 角色微调 · 校验'))}`);
+  io.note(`${bold(fg('cinnabar', '◉ omd 初始化向导'))}  ${dim(fg('riceMuted', '目录总览 · 登录/检测 · 选档 · 角色微调 · 校验'))}`);
 
-  // ① pi OAuth 先行: 就绪 provider 免 key, 后续 preset/微调直接可用其坐标。
+  // ⓪ pi 目录 provider 总览: 全部 ~32 家 + 就绪标记 (✓oauth/✓key), 开场即知可用面。
+  runProviderOverviewStep(io, listPiAuthReady(deps.piAuth?.authPath ?? defaultPiAuthPath()), deps.providerCatalog ?? {});
+
+  // ① pi OAuth: 就绪 provider 免 key, 后续 preset/微调直接可用其坐标。
   const piReady = await runPiOAuthStep(io, deps.piAuth ?? {});
 
   // ② 选档 (preset-first): 三档 = 完整方案 (角色矩阵+多模态池+跨家族 verifier), 极简 = 单 provider。

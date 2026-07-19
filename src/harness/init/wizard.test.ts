@@ -7,11 +7,13 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { WizardIO, PresetPersistDeps } from './wizard';
-import { runInitWizard, applyRolePreset, upsertEnv, listPiAuthReady, runPiOAuthStep, runRoleTuneStep } from './wizard';
+import { runInitWizard, applyRolePreset, upsertEnv, listPiAuthReady, runPiOAuthStep, runRoleTuneStep, runProviderOverviewStep } from './wizard';
 import { ROLE_PRESETS } from './role-presets';
 
 /** 隔离真实 ~/.pi/agent/auth.json (本机可能已登录) 的空 piAuth 注入。 */
 const NO_PI_AUTH = { authPath: '/nonexistent/auth.json' };
+/** 隔离真实 pi 目录/env key 的空目录注入 (总览步确定性)。 */
+const NO_CATALOG = { getProviders: () => [] as string[] };
 
 /** 脚本化 IO: select/ask/confirm 按队列出答案, note 收集。 */
 function scriptedIO(script: {
@@ -89,6 +91,7 @@ describe('runInitWizard · preset-first 主流程', () => {
       fetchImpl: okFetch,
       persist,
       piAuth: NO_PI_AUTH,
+      providerCatalog: NO_CATALOG,
     });
 
     expect(result).not.toBeNull();
@@ -134,6 +137,7 @@ describe('runInitWizard · preset-first 主流程', () => {
       fetchImpl: okFetch,
       persist,
       piAuth: NO_PI_AUTH,
+      providerCatalog: NO_CATALOG,
     });
     expect(result!.provider).toBe('deepseek');
     expect(result!.model).toBe('deepseek-v4-pro');
@@ -143,17 +147,47 @@ describe('runInitWizard · preset-first 主流程', () => {
     expect(calls.roles).toEqual([]); // 极简不动角色 config
   });
 
-  test('④ 逐角色微调: 确认后逐角色问, 非空写 persistRoleModel', async () => {
-    const { io, notes } = scriptedIO({ selects: [], asks: ['deepseek:deepseek-v4-pro', '', '', 'kimi-coding:k3', ''], confirms: [true] });
+  test('④ 逐角色微调: select 循环选角色→填坐标; env 角色进 updates, config 角色走 persistRoleModel', async () => {
+    const { io, notes } = scriptedIO({
+      selects: ['OMD_ITER_CONDUCTOR_MODEL', 'config:verifier', 'done'],
+      asks: ['deepseek:deepseek-v4-pro', 'kimi-coding:k3'],
+      confirms: [true],
+    });
     const { persist, calls } = fakePersist();
-    await runRoleTuneStep(io, { OMD_PLAN_MODEL: 'opencode-go:deepseek-v4-pro' }, persist, ['kimi-coding']);
-    // 5 角色顺序 plan/conductor/leaf/verifier/dream: 填了 plan 和 verifier
-    expect(calls.roles).toEqual([
-      ['plan', 'deepseek:deepseek-v4-pro'],
-      ['verifier', 'kimi-coding:k3'],
-    ]);
-    // 坐标提示含 preset 坐标 + pi 就绪 provider
+    const updates: Record<string, string> = { OMD_PLAN_MODEL: 'opencode-go:deepseek-v4-pro' };
+    await runRoleTuneStep(io, updates, persist, ['kimi-coding']);
+    expect(updates.OMD_ITER_CONDUCTOR_MODEL).toBe('deepseek:deepseek-v4-pro'); // env 角色 → updates
+    expect(calls.roles).toEqual([['verifier', 'kimi-coding:k3']]); // config 角色 → persist
+    // 坐标提示含已配坐标 + pi 就绪 provider
     expect(notes.some((n) => n.includes('opencode-go:deepseek-v4-pro') && n.includes('kimi-coding:<model>'))).toBe(true);
+  });
+
+  test('④ 坐标格式校验: "kimi-k3" 缺 provider 前缀 → 拒 + 提示, 不写入', async () => {
+    const { io, notes } = scriptedIO({
+      selects: ['OMD_ITER_CONDUCTOR_MODEL', 'done'],
+      asks: ['kimi-k3'],
+      confirms: [true],
+    });
+    const { persist, calls } = fakePersist();
+    const updates: Record<string, string> = {};
+    await runRoleTuneStep(io, updates, persist);
+    expect(updates.OMD_ITER_CONDUCTOR_MODEL).toBeUndefined();
+    expect(calls.roles).toEqual([]);
+    expect(notes.some((n) => n.includes('provider:model') && n.includes('kimi-k3'))).toBe(true);
+  });
+
+  test('⓪ provider 总览: 全目录列出 + ✓oauth/✓key 就绪标记', () => {
+    const { io, notes } = scriptedIO({ selects: [], asks: [], confirms: [] });
+    runProviderOverviewStep(io, ['kimi-coding'], {
+      getProviders: () => ['anthropic', 'deepseek', 'kimi-coding', 'groq'],
+      getEnvApiKey: (p) => (p === 'deepseek' ? 'sk-x' : undefined),
+    });
+    const overview = notes.find((n) => n.includes('pi 目录 provider'))!;
+    expect(overview).toContain('(4 家)');
+    expect(overview).toContain('kimi-coding ✓oauth');
+    expect(overview).toContain('deepseek ✓key');
+    expect(overview).toContain('anthropic'); // 未就绪 → 可配区
+    expect(overview).toContain('groq');
   });
 });
 
