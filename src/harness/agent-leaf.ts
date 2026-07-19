@@ -10,8 +10,6 @@
  *
  * ⚠ usage(in/out)pi AgentSession 当前不向上吐 → 暂记 {0,0}(V2-ECON 账本缺口, 与 PiRuntime 同)。
  */
-import { createRequire } from 'node:module';
-import { dirname } from 'node:path';
 import {
   createAgentSession,
   SessionManager,
@@ -30,50 +28,31 @@ import type { ModelUsage } from '../model/types';
 import type { ThinkingLevel } from '../runtime/types';
 
 /**
- * 默认嵌入的 pi 扩展:
- *   - **pi-rtk-optimizer**: bash→rtk 重写 + tool 输出压缩管道 (/rtk → 压 read/grep/build/test 输出,
- *     缩短 agent loop 上下文 → 省 token + 让 MiMo agent leaf 不 hang)。
- *   - **pi-lsp**: LSP 导航工具 (lsp_symbols/lsp_definition/lsp_references/lsp_hover/lsp_diagnostics)
- *     + write/edit 后自动追加 diagnostics 给模型 = 弱模型改文件的结构化地面真值 (治瞎改)。
- *     语言服务器经 ~/.pi/agent/lsp.json (全局自动信任, agent leaf 非交互必走全局) 配置, 本 repo = typescript-language-server。
- * **确定性, model 无关, 永远开**。
+ * 默认零嵌入扩展 (2026-07-19 删 pi-rtk-optimizer/pi-lsp: 二者非依赖, 每次 spawn 都 WARN 未装;
+ * 输出压缩由 caveman 路由承担, 符号导航由 codegraph 承担 — 均已在编)。
+ * 要挂 pi 扩展包的宿主经 opts.extensionDirs 显式传目录。
  *
  * 注: caveman (输出压缩) **不在这里** —— 它要 per-leaf 路由 (创意节点关/干活节点开, 全局扩展做不到),
  * 故走 executor-dag 的 caveman 路由 (per-leaf prompt 注入, src/harness/caveman.ts)。pi-caveman 扩展只给
  * 交互式 omd TUI (/caveman 命令 + 全局 config)。
- * 用 require.resolve 取绝对包目录 (不依赖 cwd)。缺失则跳过 (不阻断)。
  */
-const require = createRequire(import.meta.url);
-function resolveExtensionDirs(): string[] {
-  const dirs: string[] = [];
-  for (const pkg of ['pi-rtk-optimizer', 'pi-lsp']) {
-    try {
-      dirs.push(dirname(require.resolve(`${pkg}/package.json`)));
-    } catch {
-      logger.warn({ pkg }, '[omd/agent-leaf] 嵌入扩展未装, 跳过');
-    }
-  }
-  return dirs;
-}
-const DEFAULT_EXTENSION_DIRS = resolveExtensionDirs();
+const DEFAULT_EXTENSION_DIRS: string[] = [];
 
 /**
  * Tool-routing guideline (TR-INV-5, docs/plan/omd-tool-routing-contract.md) —— 治弱模型 matching:
- * 重叠区 (查代码 read/bash/lsp · 改文件 write/edit/hashline) 选错 = 烧 token + 易幻觉。
+ * 重叠区 (查代码 read/bash/codegraph · 改文件 write/edit/hashline) 选错 = 烧 token + 易幻觉。
  * 双段 (用于X / 不要用于Y) + 两步法。字节稳定 (prepend prompt, cache 友好)。
  */
 const TOOL_ROUTING_GUIDELINE = `<tool-routing weak-model="true">
 选工具前先一句话说"用 X 因为 Y"(两步法)。重叠区按下表选, 选错=烧 token+易幻觉:
-- 查符号定义/类型/签名 → lsp_* (不要用 bash grep 找符号: 漏命名变体+长回显会编)
-- 查调用链/谁引用/impact/跨文件结构 → codegraph (bash: \`codegraph query|context|callers|impact <sym>\`, 结构化抗幻觉, 比 grep 准)
-- 查字面字符串/配置值/任意文本 → bash ugrep (不要用 lsp/codegraph: 它们只懂符号不懂任意文本)
+- 查符号定义/调用链/谁引用/impact/跨文件结构 → codegraph (bash: \`codegraph query|context|callers|impact <sym>\`, 结构化抗幻觉, 比 grep 准)
+- 查字面字符串/配置值/任意文本 → bash ugrep (不要用 codegraph: 它只懂符号不懂任意文本)
 - 理解一段逻辑 → read 按行号段 (不要整文件读进 context: 烧 token)
 - 新建文件 → write; 改已存在文件 → hashline_edit(若有)/edit (不要用 write 覆写已存在文件: 最高腐烂风险)
-- 改完先看返回里 LSP 自动追加的 diagnostics 就地修 (不要盲跑全量 tsc)
 </tool-routing>
 <evidence-grounding weak-model="true">
 R6 铁律 (写代码前的事实核验, 与 omd 同纪律): 任何 repo-specific identifier —— 模型坐标 (provider:model) /
-表名·列名 / 函数·类·类型名 / env 变量 / 枚举·常量值 —— 写进代码前**必须**先用 codegraph / lsp / ugrep
+表名·列名 / 函数·类·类型名 / env 变量 / 枚举·常量值 —— 写进代码前**必须**先用 codegraph / ugrep
 对**本仓**核实"确实存在 + 拼写准确", 禁止凭"看起来合理"猜。即便你以为知道也要查: 你的训练记忆 ≠ 这个仓库的
 真实命名。猜错 identifier 会**编译通过但运行时静默失效** (如价表用错模型坐标 → 永远 unpriced)。
 </evidence-grounding>`;
@@ -109,8 +88,8 @@ export interface AgentLeafRunnerOpts {
    */
   tools?: string[];
   /**
-   * 嵌入的 pi 扩展包目录 (经 additionalExtensionPaths 加载)。默认 = pi-caveman + pi-rtk-optimizer
-   * (省 token + 治碎话)。传 `[]` 关闭 (测试/纯净 leaf)。
+   * 嵌入的 pi 扩展包目录 (经 additionalExtensionPaths 加载)。默认 `[]` 零嵌入 —— 宿主要挂
+   * pi 扩展包时显式传绝对目录数组。
    */
   extensionDirs?: string[];
   /**
@@ -186,7 +165,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           cwd,
           agentDir: getAgentDir(),
           additionalExtensionPaths: extensionDirs,
-          // drift-detector 经 in-code extensionFactories 注入 (与 pi-rtk/pi-lsp 包并存)。
+          // drift-detector 经 in-code extensionFactories 注入 (与 opts.extensionDirs 的扩展包并存)。
           extensionFactories: driftFactory ? [driftFactory] : [],
         });
         await rl.reload();

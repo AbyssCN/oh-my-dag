@@ -27,6 +27,7 @@ import {
   type ModelRole,
 } from '../../model/role-models';
 import { ROLE_PRESETS, ROLE_ENV_ALLOWLIST, coordProvider, type RolePreset } from './role-presets';
+import { globalEnvPath } from '../../env-alias';
 
 /** 一线支持的后端 (= registerProvidersFromEnv 认识的)。 */
 export interface ProviderDef {
@@ -213,13 +214,14 @@ function saveCredentialToAuthJson(authPath: string, provider: string, creds: OAu
 }
 
 /**
- * pi OAuth 登录步 (runInitWizard ⑤′): ① auth.json 已就绪清单 (纯展示, 零交互消耗)
+ * pi OAuth 登录步 (runInitWizard ① — 先登录后配置): ① auth.json 已就绪清单 (纯展示)
  * ② confirm (默认否 — 既有脚本化测试队列不受扰) → select 登录件 → 内联跑 device/browser flow
  *    (URL/代码经 io.note, 输入经 io.ask/io.select) → 凭证写回 auth.json。
  * ③ kimi-coding 等无内置登录件的 → 打印精确指引 (pi CLI /login → 重跑 omd init)。
+ * 返回**就绪 provider 清单** (含本次新登录的) — 下游 preset 用它免 key, 角色微调用它出坐标提示。
  * 导出便于测试直驱。永不抛 (登录失败 note 后继续 wizard)。
  */
-export async function runPiOAuthStep(io: WizardIO, piAuth: PiAuthDeps = {}): Promise<void> {
+export async function runPiOAuthStep(io: WizardIO, piAuth: PiAuthDeps = {}): Promise<string[]> {
   const authPath = piAuth.authPath ?? defaultPiAuthPath();
   const ready = listPiAuthReady(authPath);
   if (ready.length) {
@@ -228,14 +230,14 @@ export async function runPiOAuthStep(io: WizardIO, piAuth: PiAuthDeps = {}): Pro
     );
   }
   const wantLogin = await io.confirm('跑 pi OAuth 登录? (Claude Pro/Max · GitHub Copilot · ChatGPT Codex; 可跳过)', false);
-  if (!wantLogin) return;
+  if (!wantLogin) return ready;
 
   const providers = (piAuth.oauthProviders ?? realOAuthProviders)();
   const choice = await io.select('选 OAuth provider', [
     ...providers.map((p) => ({ id: p.id, label: p.name })),
     { id: 'kimi-coding', label: 'Kimi For Coding (无内置登录件 — 出指引)' },
   ]);
-  if (!choice) return;
+  if (!choice) return ready;
   const provider = providers.find((p) => p.id === choice);
   if (!provider) {
     // 无内置登录件 (kimi-coding 及未知): 精确指引 — pi CLI 登录后重跑 init。
@@ -248,7 +250,7 @@ export async function runPiOAuthStep(io: WizardIO, piAuth: PiAuthDeps = {}): Pro
         `  ${dim(fg('riceMuted', `凭证会落 ${authPath}, omd 的 pi 通道即自动可用`))}`,
       ].join('\n'),
     );
-    return;
+    return ready;
   }
   try {
     const callbacks: OAuthLoginCallbacks = {
@@ -267,6 +269,8 @@ export async function runPiOAuthStep(io: WizardIO, piAuth: PiAuthDeps = {}): Pro
   } catch (e) {
     io.note(`${fg('error', '✗')} ${provider.name} 登录失败: ${(e as Error).message} ${dim(fg('riceMuted', '(可稍后在 pi CLI 里 /login)'))}`);
   }
+  // 重读: 本次登录成功的 provider 一并计入就绪清单。
+  return listPiAuthReady(authPath);
 }
 
 /** wizard 的 IO 抽象 (默认 readline; 测试注入脚本化)。 */
@@ -329,12 +333,18 @@ export async function applyRolePreset(
   io: WizardIO,
   env: Record<string, string | undefined>,
   persist: PresetPersistDeps = REAL_PERSIST,
+  piReady: string[] = [],
 ): Promise<void> {
   Object.assign(updates, preset.env);
 
   // 缺的 key 逐个提示 (已在 env 或本次 updates 里的跳过)。跳过 → 该 provider 的 pool/config 角色不写。
   const missingProviders = new Set<string>();
   for (const kp of preset.keyPrompts ?? []) {
+    // pi OAuth 已就绪的 provider 免 key (统一模型层: 认证走 pi auth.json, 不走 env key)。
+    if (kp.provider && piReady.includes(kp.provider)) {
+      io.note(`${fg('success', '✓')} ${kp.provider} 经 pi OAuth 已就绪 — 免 key`);
+      continue;
+    }
     if (env[kp.env]?.trim() || updates[kp.env]?.trim()) continue;
     const v = await io.ask(`${kp.label} — ${kp.env} (回车跳过)`, { secret: true });
     if (v.trim()) updates[kp.env] = v.trim();
@@ -388,8 +398,37 @@ export async function applyRolePreset(
   );
 }
 
+/** 逐角色微调步可配的 config 角色 (role-models 的 5 角色)。 */
+export const TUNABLE_ROLES: readonly ModelRole[] = ['plan', 'conductor', 'leaf', 'verifier', 'dream'];
+
 /**
- * 跑首次配置向导: 选 provider → 配 key/base/model → (可选) web key → 写 .env → 探针校验 → 健检总结。
+ * 逐角色微调步 (④): 配了多 provider/网关 (opencode-go 一把 key 多家族 · pi OAuth 多后端) 时,
+ * 5 个 config 角色可各挂不同模型。回车跳过 = 保持 preset/出厂默认。写 config.json (persistRoleModel,
+ * 4 层优先级里高于出厂默认低于 env) — 不污染 env 文件。导出便于测试直驱。
+ */
+export async function runRoleTuneStep(
+  io: WizardIO,
+  updates: Record<string, string>,
+  persist: PresetPersistDeps = REAL_PERSIST,
+  piReady: string[] = [],
+): Promise<void> {
+  if (!(await io.confirm('逐角色微调模型? (plan/conductor/leaf/verifier/dream 各挂不同模型; 可跳过)', false))) return;
+  // 坐标提示: 本次配置里出现过的 provider:model + pi OAuth 就绪 provider。排除 URL 与列表值。
+  const coords = [...new Set(Object.values(updates).filter((v) => /^[a-z0-9._-]+:(?!\/\/)[^\s,]+$/i.test(v)))];
+  const hints = [...coords, ...piReady.map((p) => `${p}:<model>`)];
+  if (hints.length) io.note(dim(fg('riceMuted', `可用坐标: ${hints.join(' · ')}`)));
+  for (const role of TUNABLE_ROLES) {
+    const v = (await io.ask(`${role} → provider:model (回车跳过)`)).trim();
+    if (v) persist.persistRoleModel(role, v);
+  }
+}
+
+/**
+ * 跑首次配置向导 (2026-07-19 重排, preset-first):
+ *   ① pi OAuth 先行 (就绪检测 + 可选内联登录 — 就绪 provider 后续免 key)
+ *   ② 选档: 三档 preset 一键配全套角色矩阵, 或极简单 provider (旧四问)
+ *   ③ web 搜索可选 → ④ 逐角色微调 (多 provider 时各角色挂不同模型)
+ *   → 写 env (项目有 .env 则写项目, 否则写全局 ~/.omd/env — 任何目录起 omd 都可用) → 健检。
  * 返回结果供 tui.ts 决定下一步 (写完即可继续 boot, env 已就绪)。
  */
 export async function runInitWizard(deps: InitWizardDeps): Promise<InitWizardResult | null> {
@@ -397,47 +436,70 @@ export async function runInitWizard(deps: InitWizardDeps): Promise<InitWizardRes
   const env = deps.env ?? process.env;
   const cwd = deps.cwd ?? process.cwd();
   const writeEnv = deps.writeEnv ?? ((p, c) => Bun.write(p, c).then(() => undefined));
-  const envPath = `${cwd}/.env`;
+  // 写入点: 项目已有 .env → 项目级; 否则全局 (修"全局命令无全局配置"的按目录碎片化)。
+  const localEnvPath = `${cwd}/.env`;
+  const envPath = existsSync(localEnvPath) ? localEnvPath : globalEnvPath();
+  const persist = deps.persist ?? REAL_PERSIST;
 
-  io.note(`${bold(fg('cinnabar', '◉ omd 初始化向导'))}  ${dim(fg('riceMuted', '配后端 · 选 model · 校验可达'))}`);
+  io.note(`${bold(fg('cinnabar', '◉ omd 初始化向导'))}  ${dim(fg('riceMuted', '登录/检测 · 选档 · 角色微调 · 校验'))}`);
 
-  // ① provider
-  const providerId = await io.select(
-    '选 LLM 后端 provider',
-    PROVIDERS.map((p) => ({ id: p.id, label: p.label })),
-  );
-  const def = providerById(providerId);
-  if (!def) {
+  // ① pi OAuth 先行: 就绪 provider 免 key, 后续 preset/微调直接可用其坐标。
+  const piReady = await runPiOAuthStep(io, deps.piAuth ?? {});
+
+  // ② 选档 (preset-first): 三档 = 完整方案 (角色矩阵+多模态池+跨家族 verifier), 极简 = 单 provider。
+  const planChoice = await io.select('配置方案', [
+    ...ROLE_PRESETS.map((p) => ({ id: p.id, label: p.label })),
+    { id: 'single', label: '极简 — 只配一个 provider (角色走出厂默认, 可稍后 omd init 升档)' },
+  ]);
+  if (!planChoice) {
     io.note(fg('warning', '已取消 — 可手动 cp .env.example .env 后填 key'));
     return null;
   }
 
-  // ② API key (必填)
-  const key = await io.ask(`粘 ${def.label} 的 API key`, { secret: true });
-  if (!key.trim()) {
-    io.note(fg('error', '未输入 key — 取消'));
-    return null;
+  const updates: Record<string, string> = {};
+  let probe: ProbeResult | null = null;
+  const preset = ROLE_PRESETS.find((p) => p.id === planChoice);
+  if (preset) {
+    await applyRolePreset(preset, updates, io, env, persist, piReady);
+  } else {
+    // 极简: provider → key → base → model (旧四问) + 探针。
+    const providerId = await io.select(
+      '选 LLM 后端 provider',
+      PROVIDERS.map((p) => ({ id: p.id, label: p.label })),
+    );
+    const def = providerById(providerId);
+    if (!def) {
+      io.note(fg('warning', '已取消 — 可手动 cp .env.example .env 后填 key'));
+      return null;
+    }
+    const key = await io.ask(`粘 ${def.label} 的 API key`, { secret: true });
+    if (!key.trim()) {
+      io.note(fg('error', '未输入 key — 取消'));
+      return null;
+    }
+    const base = (await io.ask(`base URL`, { defaultValue: def.defaultBase })).trim() || def.defaultBase;
+    const model =
+      (await io.select(
+        '选默认 model',
+        def.models.map((m) => ({ id: m, label: m })),
+      )) ?? def.models[0]!;
+    Object.assign(updates, {
+      OMD_RUNTIME_PROVIDER: def.id,
+      OMD_RUNTIME_MODEL: model,
+      [def.keyEnv]: key.trim(),
+      [def.baseEnv]: base,
+      [def.modelEnv]: model,
+    });
+    io.note(dim(fg('riceMuted', `探针校验 ${def.id} 可达…`)));
+    probe = await probeProvider(base, key.trim(), deps.fetchImpl ?? fetch);
+    io.note(
+      probe.ok
+        ? `${fg('success', '✓')} ${def.id} 可达 (${probe.detail})`
+        : `${fg('error', '✗')} ${def.id} 不可达: ${probe.detail} ${dim(fg('riceMuted', '(key 照写, 可稍后改)'))}`,
+    );
   }
 
-  // ③ base URL (默认值可回车跳过)
-  const base = (await io.ask(`base URL`, { defaultValue: def.defaultBase })).trim() || def.defaultBase;
-
-  // ④ model
-  const model =
-    (await io.select(
-      '选默认 model',
-      def.models.map((m) => ({ id: m, label: m })),
-    )) ?? def.models[0]!;
-
-  const updates: Record<string, string> = {
-    OMD_RUNTIME_PROVIDER: def.id,
-    OMD_RUNTIME_MODEL: model,
-    [def.keyEnv]: key.trim(),
-    [def.baseEnv]: base,
-    [def.modelEnv]: model,
-  };
-
-  // ⑤ web 搜索 (可选)
+  // ③ web 搜索 (可选)
   if (await io.confirm('配置 web 搜索? (Tavily / Anysearch, 可跳过)', false)) {
     const tavily = await io.ask('TAVILY_API_KEY (回车跳过)', { secret: true });
     if (tavily.trim()) updates.TAVILY_API_KEY = tavily.trim();
@@ -445,47 +507,26 @@ export async function runInitWizard(deps: InitWizardDeps): Promise<InitWizardRes
     if (anysearch.trim()) updates.ANYSEARCH_API_KEY = anysearch.trim();
   }
 
-  // ⑤′ pi OAuth: auth.json 就绪检测 + 可选内联登录 (kimi-coding 等无登录件的出指引)。
-  await runPiOAuthStep(io, deps.piAuth ?? {});
+  // ④ 逐角色微调 (多 provider/网关时各角色挂不同模型; 默认跳过)。
+  await runRoleTuneStep(io, updates, persist, piReady);
 
-  // ⑥ 角色模型矩阵: preset 一键配全套, 或手动两问 (旧行为), 或跳过。
-  const presetChoice = await io.select('角色模型矩阵 (conductor/leaf/plan/…)', [
-    ...ROLE_PRESETS.map((p) => ({ id: p.id, label: p.label })),
-    { id: 'manual', label: '手动逐项 / 跳过' },
-  ]);
-  const preset = ROLE_PRESETS.find((p) => p.id === presetChoice);
-  if (preset) {
-    await applyRolePreset(preset, updates, io, env, deps.persist ?? REAL_PERSIST);
-  } else if (presetChoice === 'manual') {
-    // 旧两问行为: 逐项覆盖 (回车跳过 = 走统一 runtime model)。
-    const conductor = await io.ask('OMD_CG_CONDUCTOR_MODEL (provider:model, 回车跳过)');
-    if (conductor.trim()) updates.OMD_CG_CONDUCTOR_MODEL = conductor.trim();
-    const plan = await io.ask('OMD_PLAN_MODEL (provider:model, 回车跳过)');
-    if (plan.trim()) updates.OMD_PLAN_MODEL = plan.trim();
-  }
-
-  // 写 .env (非破坏性 upsert)
+  // 写 env (非破坏性 upsert)
   const existing = existsSync(envPath) ? readFileSync(envPath, 'utf8') : '';
   await writeEnv(envPath, upsertEnv(existing, updates));
   // 同步进 process.env, 使本次 boot 立即可用 (不必重启)。
   for (const [k, v] of Object.entries(updates)) (env as Record<string, string>)[k] = v;
 
-  // ⑦ 探针校验
-  io.note(dim(fg('riceMuted', `探针校验 ${def.id} 可达…`)));
-  const probe = await probeProvider(base, key.trim(), deps.fetchImpl ?? fetch);
+  // 健检总结 (runtime 坐标来自本次写入或既有 env)。
+  const rtProvider = updates.OMD_RUNTIME_PROVIDER ?? env.OMD_RUNTIME_PROVIDER ?? '';
+  const rtModel = updates.OMD_RUNTIME_MODEL ?? env.OMD_RUNTIME_MODEL ?? '';
   io.note(
-    probe.ok
-      ? `${fg('success', '✓')} ${def.id} 可达 (${probe.detail})`
-      : `${fg('error', '✗')} ${def.id} 不可达: ${probe.detail} ${dim(fg('riceMuted', '(key 已写入 .env, 可稍后改)'))}`,
+    `${bold(fg('gold', '已就绪'))}  ${fg('rice', `${rtProvider}:${rtModel}`)} → ${envPath}  ${dim(fg('riceMuted', 'shift+tab 进 pathfinder · /cg 检索 · /audit 审计'))}`,
   );
-
-  // 健检总结
-  io.note(`${bold(fg('gold', '已就绪'))}  ${fg('rice', `${def.id}:${model}`)} → .env  ${dim(fg('riceMuted', 'shift+tab 进 plan · /cg 检索 · /audit 审计'))}`);
 
   return {
     writtenKeys: Object.keys(updates),
-    provider: def.id,
-    model,
+    provider: rtProvider,
+    model: rtModel,
     probe,
     envPath,
   };
