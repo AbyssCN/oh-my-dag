@@ -1,6 +1,7 @@
 # SDD — Pathfinder Mode（渐进散雾式规划）
 
-> 状态：契约草案，待 owner 确认接缝后开工。
+> 状态：已实装（`a44accd` feat + `5e23e0c` review 修复批，2026-07-19）。本文档保留为设计记录；
+> 数据模型 `delivered` 终态由 D-14 追认（2026-07-20）。
 > 说明：本该用 pathfinder 自己画地图（dogfood），但 pathfinder 尚不存在，且经过多轮对话
 > 迷雾已散尽（决策全部裁决 = 见 D-numbers），故直接落为 SDD spec 而非决策地图。
 
@@ -34,6 +35,7 @@
 | D-10 | 票自我展开：research 票用 **map 节点**原语运行时发现子票 | 引擎原生，Matt 原版无此 |
 | D-11 | 出口：区域散尽→票编译 slice→/execute；填不出契约=有票没解=回地图（升级阀 `?`） | 只组装不发明，防地图偏移 |
 | D-12 | `/sdd`(spec,小活) 与 pathfinder(大活) 并存不合并；plan mode 零件(gate/ledger/overlay/best-of-n)搬进 pathfinder 复用 | 各尺度合身入口，非单一入口 |
+| D-14 | `TicketStatus` 增 **`delivered`** 终态（slice 已交付；实装先行，owner 2026-07-20 追认） | `/deliver` 交付闭环需要终态，承 D-11 区域 delivered 语义；原四值模型漏列 |
 
 ## 架构
 
@@ -55,7 +57,7 @@
 
 ```ts
 type TicketType = 'research' | 'grill' | 'prototype' | 'task';
-type TicketStatus = 'open' | 'blocked' | 'ruled' | 'escalated'; // escalated = ? 上报 owner
+type TicketStatus = 'open' | 'blocked' | 'ruled' | 'delivered' | 'escalated'; // delivered = slice 已交付终态(D-14); escalated = ? 上报 owner
 interface Ticket {
   id: string;              // 稳定 id
   type: TicketType;
