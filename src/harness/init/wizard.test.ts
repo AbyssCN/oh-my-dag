@@ -241,29 +241,44 @@ describe('applyRolePreset · key 跳过闸', () => {
     expect(calls.roles).toEqual([['verifier', 'mimo:mimo-2.5']]);
   });
 
-  test('档③ (cn-ultimate) 注册 kimi/qwen/zhipu + ZHIPU key 跳过 → premium 剔除 zhipu 剩 kimi', async () => {
+  test('档③ (cn-ultimate) 掌舵走 pi OAuth: kimi-coding 就绪免 key + ZHIPU 跳过 → premium 剩 kimi-coding', async () => {
     const ultimate = ROLE_PRESETS[2]!;
     expect(ultimate.id).toBe('cn-ultimate');
-    // keyPrompts 顺序: KIMI / QWEN / ZHIPU / DEEPSEEK / MIMO — ZHIPU 回车跳过
-    const { io } = scriptedIO({
+    // keyPrompts 顺序: QWEN / ZHIPU / DEEPSEEK / MIMO — ZHIPU 回车跳过; kimi-coding 走 piReady 免 key
+    const { io, notes } = scriptedIO({
       selects: [],
-      asks: ['kimi-key', 'qwen-key', '', 'ds-key', 'mimo-key'],
+      asks: ['qwen-key', '', 'ds-key', 'mimo-key'],
       confirms: [],
     });
     const { persist, calls } = fakePersist();
     const updates: Record<string, string> = {};
 
-    await applyRolePreset(ultimate, updates, io, {}, persist);
+    await applyRolePreset(ultimate, updates, io, {}, persist, ['kimi-coding']);
 
-    expect(calls.apis).toEqual(['kimi', 'qwen', 'zhipu']);
+    // 掌舵坐标 = pi OAuth 通道
+    expect(updates.OMD_RUNTIME_PROVIDER).toBe('kimi-coding');
+    expect(updates.OMD_ITER_CONDUCTOR_MODEL).toBe('kimi-coding:k3');
+    expect(notes.some((n) => n.includes('kimi-coding') && n.includes('免 key'))).toBe(true);
+    expect(calls.apis).toEqual(['qwen', 'zhipu']); // kimi 开放平台 API 不再注册
     // env 不受 key 闸影响: review Spec 轴坐标 + router 池照写
     expect(updates.OMD_REVIEW_SPEC_MODEL).toBe('zhipu:glm-5.2');
     expect(updates.OMD_ROUTER_POOL_INPROC).toBe('qwen:qwen3.7-plus,mimo:mimo-2.5-pro-ultraspeed');
     expect(updates.OMD_ROUTER_POOL_AGENT).toBe('qwen:qwen3.7-plus,qwen:qwen3.7-max');
-    // 便宜层全保留; 贵层剔除 zhipu (key 跳过) 剩 kimi
+    // 便宜层全保留; 贵层剔除 zhipu (key 跳过) 剩 kimi-coding
     expect(calls.pools).toEqual([['qwen:qwen3.7-plus', 'mimo:mimo-2.5-pro-ultraspeed']]);
-    expect(calls.premiums).toEqual([['kimi:kimi-k3']]);
+    expect(calls.premiums).toEqual([['kimi-coding:k3']]);
     expect(calls.roles).toEqual([['verifier', 'qwen:qwen3.7-max']]);
+  });
+
+  test('档③ kimi-coding 未登录 → /login 指引 (不指向外部 CLI) + 掌舵坐标剔除出 premium', async () => {
+    const ultimate = ROLE_PRESETS[2]!;
+    const { io, notes } = scriptedIO({ selects: [], asks: ['qwen-key', 'zhipu-key', 'ds-key', 'mimo-key'], confirms: [] });
+    const { persist, calls } = fakePersist();
+    await applyRolePreset(ultimate, {}, io, {}, persist, []); // piReady 空 = 未登录
+    const guide = notes.find((n) => n.includes('kimi-coding') && n.includes('/login'))!;
+    expect(guide).toContain('omd'); // 指引指向 omd 内置 pi, 非外部 CLI
+    expect(guide).not.toContain('bunx');
+    expect(calls.premiums).toEqual([['zhipu:glm-5.2']]); // kimi-coding 剔除
   });
 });
 
@@ -314,7 +329,7 @@ describe('pi OAuth 步骤 (⑤′)', () => {
     expect(notes.some((n) => n.includes('登录成功'))).toBe(true);
   });
 
-  test('kimi-coding (无内置登录件) → 出 pi CLI /login 精确指引, 不调 saveCredential', async () => {
+  test('kimi-coding (无内置登录件) → omd 内置 /login 指引 (非外部 CLI), 不调 saveCredential', async () => {
     const saved: string[] = [];
     const { io, notes } = scriptedIO({ selects: ['kimi-coding'], asks: [], confirms: [true] });
     await runPiOAuthStep(io, {
@@ -322,8 +337,21 @@ describe('pi OAuth 步骤 (⑤′)', () => {
       oauthProviders: () => [],
       saveCredential: (prov) => saved.push(prov),
     });
-    expect(notes.some((n) => n.includes('/login') && n.includes('pi-coding-agent'))).toBe(true);
+    const guide = notes.find((n) => n.includes('/login'))!;
+    expect(guide).toContain('omd'); // omd 即 pi runtime
+    expect(guide).not.toContain('bunx'); // 不再指向外部 CLI
     expect(saved).toEqual([]);
+  });
+
+  test('已就绪 provider 不进登录菜单; 全就绪 → 直接返回', async () => {
+    const p = fakeAuthJson({ 'kimi-coding': { type: 'oauth', access: 'tok' }, anthropic: { type: 'oauth', access: 't2' } });
+    const { io, notes } = scriptedIO({ selects: [], asks: [], confirms: [true] }); // 确认要登录, 但无可登项
+    const ready = await runPiOAuthStep(io, {
+      authPath: p,
+      oauthProviders: () => [{ id: 'anthropic', name: 'Anthropic', login: async () => ({ access: 'x', refresh: 'r', expires: 1 }) }],
+    });
+    expect(ready.sort()).toEqual(['anthropic', 'kimi-coding']);
+    expect(notes.some((n) => n.includes('全部 OAuth provider 已就绪'))).toBe(true);
   });
 
   test('登录抛错 → note 失败不抛出 (wizard 不砖)', async () => {
