@@ -52,6 +52,7 @@
   "scripts": {
     "omd": "bun run src/harness/tui.ts",
     "init": "bun run src/harness/tui.ts init",
+    "mcp": "bun run src/harness/tui.ts mcp",
     "dag-research": "bun run scripts/dag-research.ts",
     "dag-council": "bun run scripts/dag-council.ts",
     "dag-fanout": "bun run scripts/dag-fanout.ts",
