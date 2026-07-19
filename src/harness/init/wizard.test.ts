@@ -344,13 +344,19 @@ describe('pi OAuth 步骤 (⑤′)', () => {
   });
 
   test('已就绪 provider 不进登录菜单; 全就绪 → 直接返回', async () => {
-    const p = fakeAuthJson({ 'kimi-coding': { type: 'oauth', access: 'tok' }, anthropic: { type: 'oauth', access: 't2' } });
+    // 全就绪 = 内联件 (kimi-coding) + KNOWN_TUI_LOGIN 三家 (anthropic/copilot/codex) 都在 auth.json
+    const p = fakeAuthJson({
+      'kimi-coding': { type: 'oauth', access: 'tok' },
+      anthropic: { type: 'oauth', access: 't2' },
+      'github-copilot': { type: 'oauth', access: 't3' },
+      'openai-codex': { type: 'oauth', access: 't4' },
+    });
     const { io, notes } = scriptedIO({ selects: [], asks: [], confirms: [true] }); // 确认要登录, 但无可登项
     const ready = await runPiOAuthStep(io, {
       authPath: p,
       oauthProviders: () => [{ id: 'anthropic', name: 'Anthropic', login: async () => ({ access: 'x', refresh: 'r', expires: 1 }) }],
     });
-    expect(ready.sort()).toEqual(['anthropic', 'kimi-coding']);
+    expect(ready.sort()).toEqual(['anthropic', 'github-copilot', 'kimi-coding', 'openai-codex']);
     expect(notes.some((n) => n.includes('全部 OAuth provider 已就绪'))).toBe(true);
   });
 

@@ -12,13 +12,11 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
-import {
-  getOAuthProviders,
-  type OAuthCredentials,
-  type OAuthLoginCallbacks,
-} from '@earendil-works/pi-ai/oauth';
-import { getProviders as piGetProviders, getEnvApiKey as piGetEnvApiKey } from '@earendil-works/pi-ai';
-import { registerKimiCodingOAuth } from '../../model/kimi-oauth';
+import type { OAuthCredentials, OAuthLoginCallbacks } from '@earendil-works/pi-ai/oauth';
+// 0.80: 目录读挪 /compat (deprecated shim); getEnvApiKey 不再导出 → 本仓 piEnvApiKey (pi-transport)。
+import { getProviders as piGetProviders } from '@earendil-works/pi-ai/compat';
+import { piEnvApiKey } from '../../model/pi-transport';
+import { createKimiCodingOAuthProvider } from '../../model/kimi-oauth';
 import { bold, dim, fg } from '../branding/palette';
 import {
   persistCustomApi,
@@ -183,7 +181,7 @@ export function runProviderOverviewStep(
     return; // 目录不可用不砖向导
   }
   if (!provs.length) return;
-  const keyOf = deps.getEnvApiKey ?? piGetEnvApiKey;
+  const keyOf = deps.getEnvApiKey ?? ((p: string) => piEnvApiKey(p));
   const ready: string[] = [];
   const rest: string[] = [];
   for (const p of provs) {
@@ -251,13 +249,19 @@ export interface PiAuthDeps {
 }
 
 function realOAuthProviders(): PiOAuthLoginProvider[] {
-  registerKimiCodingOAuth(); // 防加载顺序: 未经 model/index 也保证 kimi-coding 登录件在场
-  return getOAuthProviders().map((p) => ({
-    id: p.id,
-    name: p.name,
-    login: (cb) => p.login(cb),
-  }));
+  // 0.80: pi-ai 全局 OAuth 注册表已删。内联登录件 = 本仓 kimi-coding device flow;
+  // anthropic/copilot/codex 的 flow 在 pi 0.80 provider 定义内 (AuthPrompt 事件模型) —
+  // 经 omd TUI /login 使用, 菜单以指引项呈现 (KNOWN_TUI_LOGIN)。
+  const kimi = createKimiCodingOAuthProvider();
+  return [{ id: kimi.id, name: kimi.name, login: (cb) => kimi.login(cb) }];
 }
+
+/** 无内联登录件、但 omd TUI /login 可登的 pi 内置 flow (选中 → 指引分支)。 */
+const KNOWN_TUI_LOGIN: readonly { id: string; label: string }[] = [
+  { id: 'anthropic', label: 'Anthropic Claude Pro/Max (经 omd /login)' },
+  { id: 'github-copilot', label: 'GitHub Copilot (经 omd /login)' },
+  { id: 'openai-codex', label: 'ChatGPT Codex (经 omd /login)' },
+];
 
 function saveCredentialToAuthJson(authPath: string, provider: string, creds: OAuthCredentials): void {
   const all = existsSync(authPath)
@@ -289,9 +293,10 @@ export async function runPiOAuthStep(io: WizardIO, piAuth: PiAuthDeps = {}): Pro
 
   const providers = (piAuth.oauthProviders ?? realOAuthProviders)();
   // 已就绪的 provider 不进登录菜单 (再登一遍无意义); 全就绪 → 直接返回。
-  // kimi-coding 正常已在注册表 (kimi-oauth.ts) — 手动兜底项仅在缺席且未就绪时出现。
+  // 内联件 (kimi-coding 等) 在前; pi 内置 TUI flow 以指引项跟随 (选中 → 出 /login 指引)。
   const loginOptions = [
     ...providers.filter((p) => !ready.includes(p.id)).map((p) => ({ id: p.id, label: p.name })),
+    ...KNOWN_TUI_LOGIN.filter((k) => !ready.includes(k.id) && !providers.some((p) => p.id === k.id)),
     ...(ready.includes('kimi-coding') || providers.some((p) => p.id === 'kimi-coding')
       ? []
       : [{ id: 'kimi-coding', label: 'Kimi For Coding (device flow 经 omd 内置 pi)' }]),

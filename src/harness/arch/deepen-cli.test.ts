@@ -21,7 +21,7 @@ describe('dag-deepen CLI', () => {
     expect(out).toContain('dag-deepen');
     expect(out).toContain('--commits');
     expect(out).toContain('--hotspots');
-  });
+  }, 20_000); // pi 0.80 依赖图更重, 冷启动贴 5s 默认时限 → 放宽
 
   test('坏数字旗标 fail-fast (exit 1 + 明确报错, 防 NaN 透传)', () => {
     const proc = Bun.spawnSync([process.execPath, 'scripts/dag-deepen.ts', '--commits', 'abc'], {
@@ -32,5 +32,5 @@ describe('dag-deepen CLI', () => {
     });
     expect(proc.exitCode).toBe(1);
     expect(proc.stderr.toString()).toContain('--commits');
-  });
+  }, 20_000);
 });
