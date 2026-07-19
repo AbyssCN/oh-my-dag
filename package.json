@@ -57,7 +57,10 @@
     "dag-build": "bun run scripts/dag-build.ts",
     "omd-path": "bun run scripts/omd-path.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "dag-deepen": "bun run scripts/dag-deepen.ts",
+    "dag-slim": "bun run scripts/dag-slim.ts",
+    "omd-debt": "bun run scripts/omd-debt.ts"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.77.0",
