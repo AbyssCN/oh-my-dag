@@ -17,8 +17,6 @@ import type { ModelRole } from '../../model/role-models';
 
 /** opencode go 网关默认 base URL (常量易改)。 */
 export const OPENCODE_GO_BASE_URL = 'https://api.opencode.ai/v1';
-/** Kimi (Moonshot) OpenAI 兼容端点。 */
-export const KIMI_BASE_URL = 'https://api.moonshot.cn/v1';
 /** Qwen (DashScope) OpenAI 兼容端点。 */
 export const QWEN_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
 /** Zhipu (bigmodel) OpenAI 兼容端点。 */
@@ -29,7 +27,8 @@ const DS_FLASH = 'deepseek:deepseek-v4-flash';
 const DS_PRO = 'deepseek:deepseek-v4-pro';
 const MIMO_25 = 'mimo:mimo-2.5';
 const MIMO_ULTRASPEED = 'mimo:mimo-2.5-pro-ultraspeed';
-const KIMI_K3 = 'kimi:kimi-k3';
+// kimi-coding = pi OAuth 通道 (baf1295 统一模型层): 免 API key, 凭证走 ~/.pi/agent/auth.json。
+const KIMI_CODING_K3 = 'kimi-coding:k3';
 const QWEN_PLUS = 'qwen:qwen3.7-plus';
 const QWEN_MAX = 'qwen:qwen3.7-max';
 const ZHIPU_GLM = 'zhipu:glm-5.2';
@@ -98,6 +97,11 @@ export interface RolePreset {
   customApis?: RolePresetCustomApi[];
   /** 缺则提示粘贴的 key (回车跳过)。 */
   keyPrompts?: RolePresetKeyPrompt[];
+  /**
+   * 依赖 pi OAuth 的 provider (如 kimi-coding): 免 API key, 就绪判定走 auth.json (piReady)。
+   * 未登录 → wizard 出 /login 指引 + 该 provider 坐标从池/config 写入剔除 (同 key 跳过语义)。
+   */
+  oauthProviders?: string[];
   /** config.json 角色写入 (如 verifier 跨家族)。 */
   configRoles?: RolePresetConfigRole[];
 }
@@ -166,15 +170,15 @@ export const ROLE_PRESETS: readonly RolePreset[] = [
   },
   {
     id: 'cn-ultimate',
-    label: '顶配档 (kimi k3 掌舵 + deepseek 评判 + qwen 干活 + zhipu 审查 + mimo 极速多模态)',
+    label: '顶配档 (kimi k3 掌舵[pi OAuth 免 key] + deepseek 评判 + qwen 干活 + zhipu 审查 + mimo 极速多模态)',
     env: {
-      // kimi k3 掌舵: runtime + 规划 + 分解 + 升级
-      OMD_RUNTIME_PROVIDER: 'kimi',
-      OMD_RUNTIME_MODEL: 'kimi-k3',
-      OMD_PLAN_MODEL: KIMI_K3,
-      OMD_CG_CONDUCTOR_MODEL: KIMI_K3,
-      OMD_ITER_CONDUCTOR_MODEL: KIMI_K3,
-      OMD_CONDUCTOR_ESCALATION_MODEL: KIMI_K3,
+      // kimi-coding k3 掌舵 (pi OAuth, 免 key): runtime + 规划 + 分解 + 升级
+      OMD_RUNTIME_PROVIDER: 'kimi-coding',
+      OMD_RUNTIME_MODEL: 'k3',
+      OMD_PLAN_MODEL: KIMI_CODING_K3,
+      OMD_CG_CONDUCTOR_MODEL: KIMI_CODING_K3,
+      OMD_ITER_CONDUCTOR_MODEL: KIMI_CODING_K3,
+      OMD_CONDUCTOR_ESCALATION_MODEL: KIMI_CODING_K3,
       // deepseek pro 评判/终审/合成
       OMD_JUDGE_MODEL: DS_PRO,
       OMD_REASON_MODEL: DS_PRO,
@@ -192,16 +196,16 @@ export const ROLE_PRESETS: readonly RolePreset[] = [
       OMD_ROUTER_POOL_AGENT: `${QWEN_PLUS},${QWEN_MAX}`,
     },
     multimodalPool: [QWEN_PLUS, MIMO_ULTRASPEED],
-    multimodalPoolPremium: [ZHIPU_GLM, KIMI_K3],
+    multimodalPoolPremium: [ZHIPU_GLM, KIMI_CODING_K3],
     // verifier 跨家族 → qwen max (≠ kimi 掌舵 / deepseek 评判)
     configRoles: [{ role: 'verifier', coord: QWEN_MAX }],
+    // 掌舵走 pi OAuth (免 key; 未登录 → wizard 出 /login 指引并剔除 kimi-coding 坐标)。
+    oauthProviders: ['kimi-coding'],
     customApis: [
-      { id: 'kimi', baseUrl: KIMI_BASE_URL, keyEnv: 'KIMI_API_KEY' },
       { id: 'qwen', baseUrl: QWEN_BASE_URL, keyEnv: 'QWEN_API_KEY' },
       { id: 'zhipu', baseUrl: ZHIPU_BASE_URL, keyEnv: 'ZHIPU_API_KEY' },
     ],
     keyPrompts: [
-      { env: 'KIMI_API_KEY', label: 'Kimi (Moonshot) API key (掌舵 + premium 多模态)', provider: 'kimi' },
       { env: 'QWEN_API_KEY', label: 'Qwen (DashScope) API key (干活 + verifier + 多模态)', provider: 'qwen' },
       { env: 'ZHIPU_API_KEY', label: 'Zhipu API key (review Spec 轴 + premium 多模态)', provider: 'zhipu' },
       { env: 'DEEPSEEK_API_KEY', label: 'DeepSeek API key (评判 + 合成)', provider: 'deepseek' },

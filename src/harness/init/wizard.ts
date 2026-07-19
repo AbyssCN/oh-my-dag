@@ -18,6 +18,7 @@ import {
   type OAuthLoginCallbacks,
 } from '@earendil-works/pi-ai/oauth';
 import { getProviders as piGetProviders, getEnvApiKey as piGetEnvApiKey } from '@earendil-works/pi-ai';
+import { registerKimiCodingOAuth } from '../../model/kimi-oauth';
 import { bold, dim, fg } from '../branding/palette';
 import {
   persistCustomApi,
@@ -250,6 +251,7 @@ export interface PiAuthDeps {
 }
 
 function realOAuthProviders(): PiOAuthLoginProvider[] {
+  registerKimiCodingOAuth(); // 防加载顺序: 未经 model/index 也保证 kimi-coding 登录件在场
   return getOAuthProviders().map((p) => ({
     id: p.id,
     name: p.name,
@@ -286,21 +288,28 @@ export async function runPiOAuthStep(io: WizardIO, piAuth: PiAuthDeps = {}): Pro
   if (!wantLogin) return ready;
 
   const providers = (piAuth.oauthProviders ?? realOAuthProviders)();
-  const choice = await io.select('选 OAuth provider', [
-    ...providers.map((p) => ({ id: p.id, label: p.name })),
-    { id: 'kimi-coding', label: 'Kimi For Coding (无内置登录件 — 出指引)' },
-  ]);
+  // 已就绪的 provider 不进登录菜单 (再登一遍无意义); 全就绪 → 直接返回。
+  // kimi-coding 正常已在注册表 (kimi-oauth.ts) — 手动兜底项仅在缺席且未就绪时出现。
+  const loginOptions = [
+    ...providers.filter((p) => !ready.includes(p.id)).map((p) => ({ id: p.id, label: p.name })),
+    ...(ready.includes('kimi-coding') || providers.some((p) => p.id === 'kimi-coding')
+      ? []
+      : [{ id: 'kimi-coding', label: 'Kimi For Coding (device flow 经 omd 内置 pi)' }]),
+  ];
+  if (!loginOptions.length) {
+    io.note(`${fg('success', '✓')} 全部 OAuth provider 已就绪, 无需登录`);
+    return ready;
+  }
+  const choice = await io.select('选 OAuth provider', loginOptions);
   if (!choice) return ready;
   const provider = providers.find((p) => p.id === choice);
   if (!provider) {
-    // 无内置登录件 (kimi-coding 及未知): 精确指引 — pi CLI 登录后重跑 init。
+    // 无 pi-ai 内置登录件 (kimi-coding 及未知)。omd 自带 pi runtime — 不需要任何外部 CLI:
     io.note(
       [
-        fg('warning', `${choice} 的登录件不在 pi-ai 内置 OAuth (anthropic/github-copilot/openai-codex) 里。`),
-        `请在 pi CLI 里登录后重跑 omd init:`,
-        `  ${fg('rice', 'bunx @earendil-works/pi-coding-agent')}   ${dim(fg('riceMuted', '# 或已装的 `pi`'))}`,
-        `  ${fg('rice', `/login`)}                                ${dim(fg('riceMuted', `# 选 ${choice}, 完成 device flow`))}`,
-        `  ${dim(fg('riceMuted', `凭证会落 ${authPath}, omd 的 pi 通道即自动可用`))}`,
+        fg('warning', `${choice} 的登录件在 pi 扩展层 (非 pi-ai 内置 OAuth), 向导内联跑不了 — 但 omd 就是 pi runtime:`),
+        `  ${fg('rice', '启动 omd 后输 /login')}   ${dim(fg('riceMuted', `# 选 ${choice}, 完成 device flow`))}`,
+        `  ${dim(fg('riceMuted', `凭证落 ${authPath}, 之后任何时候重跑 omd init 即显示 ✓ 就绪`))}`,
       ].join('\n'),
     );
     return ready;
@@ -394,6 +403,18 @@ export async function applyRolePreset(
 
   // 缺的 key 逐个提示 (已在 env 或本次 updates 里的跳过)。跳过 → 该 provider 的 pool/config 角色不写。
   const missingProviders = new Set<string>();
+  // pi OAuth 依赖的 provider (如 kimi-coding): 就绪判定走 auth.json, 免 key。
+  // 未登录 → 指引 (omd 即 pi runtime, TUI 里 /login 即可, 不需要外部 CLI) + 同 key 跳过语义剔除坐标。
+  for (const p of preset.oauthProviders ?? []) {
+    if (piReady.includes(p)) {
+      io.note(`${fg('success', '✓')} ${p} 经 pi OAuth 已就绪 — 免 key`);
+    } else {
+      io.note(
+        fg('warning', `${p} 未登录 — omd 内置 pi runtime: 启动 omd 后输 /login 选 ${p} 完成 device flow, 再跑 omd init 即就绪。本次先剔除其坐标。`),
+      );
+      missingProviders.add(p);
+    }
+  }
   for (const kp of preset.keyPrompts ?? []) {
     // pi OAuth 已就绪的 provider 免 key (统一模型层: 认证走 pi auth.json, 不走 env key)。
     if (kp.provider && piReady.includes(kp.provider)) {

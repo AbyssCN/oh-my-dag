@@ -48,12 +48,12 @@ describe('ROLE_PRESETS 形状', () => {
     }
   });
 
-  test('multimodalPool (便宜层+贵层) 坐标合法且 provider 有对应 keyPrompt (可提示补 key)', () => {
+  test('multimodalPool (便宜层+贵层) 坐标合法且 provider 有就绪通道 (keyPrompt 或 pi OAuth)', () => {
     for (const p of ROLE_PRESETS) {
-      const promptProviders = (p.keyPrompts ?? []).map((k) => k.provider);
+      const gated = [...(p.keyPrompts ?? []).map((k) => k.provider), ...(p.oauthProviders ?? [])];
       for (const c of [...(p.multimodalPool ?? []), ...(p.multimodalPoolPremium ?? [])]) {
         expect(c).toMatch(COORD_RE);
-        expect(promptProviders).toContain(coordProvider(c));
+        expect(gated).toContain(coordProvider(c));
       }
     }
   });
@@ -62,7 +62,7 @@ describe('ROLE_PRESETS 形状', () => {
     const [base, standard, ultimate] = ROLE_PRESETS;
     expect(base!.multimodalPoolPremium).toEqual(['opencode-go:glm-5.2']);
     expect(standard!.multimodalPoolPremium ?? []).toEqual([]);
-    expect(ultimate!.multimodalPoolPremium).toEqual(['zhipu:glm-5.2', 'kimi:kimi-k3']);
+    expect(ultimate!.multimodalPoolPremium).toEqual(['zhipu:glm-5.2', 'kimi-coding:k3']);
   });
 
   test('customApis 形状: id 非空 / https baseUrl / keyEnv 大写 *_API_KEY', () => {
@@ -75,10 +75,10 @@ describe('ROLE_PRESETS 形状', () => {
     }
   });
 
-  test('env 里引用的自定 provider 必有 customApis 注册 (坐标能解析)', () => {
+  test('env 里引用的 provider 必可解析 (内置 env / customApis 注册 / pi OAuth 通道)', () => {
     const builtin = new Set(['deepseek', 'mimo']);
     for (const p of ROLE_PRESETS) {
-      const registered = new Set([...builtin, ...(p.customApis ?? []).map((a) => a.id)]);
+      const registered = new Set([...builtin, ...(p.customApis ?? []).map((a) => a.id), ...(p.oauthProviders ?? [])]);
       for (const [key, value] of Object.entries(p.env)) {
         if (key === 'OMD_RUNTIME_PROVIDER') {
           expect(registered).toContain(value);
