@@ -8,7 +8,14 @@ export {
   PLAN_DEFAULT_THINKING,
   type PlanExtensionOpts,
 } from './plan-extension';
-export { createPlanModeState, type PlanModeState, type PlanModeStatus } from './mode';
+export {
+  createPlanModeState,
+  createPathfinderModeState,
+  type PlanModeState,
+  type PlanModeStatus,
+  type PathfinderModeState,
+  type PathfinderModeStatus,
+} from './mode';
 export {
   ensurePlanToggleKeyFree,
   type EnsurePlanKeyOpts,
@@ -17,13 +24,7 @@ export {
 } from './keybindings-setup';
 export { PlanLedger, type PlanRef, type PlanLedgerInit } from './ledger';
 export { PLAN_MODE_OVERLAY, GRILL_OVERLAY } from './overlay';
-export {
-  isWriteTool,
-  isBashMutation,
-  isDocWritePath,
-  writeTargetPath,
-  DEFAULT_DOC_WRITE_DIRS,
-} from './readonly-gate';
+// readonly-gate 已退役 (D-5 开放 src): 写闸判定删除, 无 re-export。
 export { extractUrls, stripUrls } from './url-detect';
 export {
   createDefaultWebRetriever,

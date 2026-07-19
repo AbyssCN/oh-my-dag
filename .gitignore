@@ -19,3 +19,7 @@ dist/
 
 # os
 .DS_Store
+
+# 本地运行时态 (SQLite 索引 / pi 配置) — 不入库; pathfinder 真相在 docs/plan/pathfinder/*.md
+.omd/
+.pi/

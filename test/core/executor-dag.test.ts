@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { runExecutorDag, topoLevels, type GenerateFn } from '../../src/harness/executor-dag';
+import { runExecutorDag, runExecutorDagWithPlan, topoLevels, type GenerateFn } from '../../src/harness/executor-dag';
 import type { AgentLeafInput } from '../../src/harness/leaf-runners';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
 
@@ -251,6 +251,48 @@ describe('omd executor-dag (in-process, fake model)', () => {
     await expect(
       runExecutorDag('t', { conductorModel: CONDUCTOR, leafModel: LEAF, generate: gen, maxPlanRetries: 1 }),
     ).rejects.toThrow(/未产出有效 plan/);
+  });
+
+  // ── D-7 预构造入口 (runExecutorDagWithPlan): 跳过 conductor, 下游机器一致 ──
+  test('D-7 预构造入口: 跳过 conductor LLM 步 (conductor fn 不被调用), 下游正常执行', async () => {
+    const { gen, calls } = makeFake(PLAN_JSON);
+    const prebuilt = { name: 'prebuilt-plan', nodes: JSON.parse(PLAN_JSON).nodes } as ConductorPlan;
+    const res = await runExecutorDagWithPlan(prebuilt, { conductorModel: CONDUCTOR, leafModel: LEAF, generate: gen, maxFanout: 4 });
+
+    // 关键: conductor 模型**从未**被调用 (预构造 plan 直执, 零 conductor LLM 步)。
+    expect(calls.filter((c) => c.model === CONDUCTOR).length).toBe(0);
+    // 下游 ready-set 调度 / 叶子 fan-out 与 conductor 路径一致: 4 节点全 done + fan-in 传递。
+    expect(Object.keys(res.results).sort()).toEqual(['a', 'b', 'c', 'd']);
+    expect(Object.values(res.results).every((r) => r.status === 'done')).toBe(true);
+    expect(calls.filter((c) => c.model === LEAF).length).toBe(4);
+    const bCall = calls.find((c) => c.model === LEAF && c.prompt.includes('[omd leaf: b]'));
+    expect(bCall?.prompt).toContain('OUT:a'); // fan-in: b 见前驱 a 输出
+    // 预构造路径 conductor 用量记 0 (无规划调用)。
+    expect(res.usage.conductor).toEqual({ in: 0, out: 0 });
+    // 返回的 plan = 传入的预构造 plan (接缝: 下游零感知来源)。
+    expect(res.plan.name).toBe('prebuilt-plan');
+  });
+
+  test('D-7 预构造入口: leafModel 仍必填 (conductorModel 可省)', async () => {
+    const prebuilt = { name: 'p', nodes: { a: { agent: 'x', goal: 'do' } } } as ConductorPlan;
+    await expect(runExecutorDagWithPlan(prebuilt, { conductorModel: '', leafModel: '' })).rejects.toThrow(/leafModel 必填/);
+    // conductorModel 省略但 leafModel 有 → 不抛 (纯预构造执行不需 conductor)。
+    const gen: GenerateFn = async () => ({ text: 'ok', usage: { in: 1, out: 1 } });
+    const res = await runExecutorDagWithPlan(prebuilt, { conductorModel: '', leafModel: LEAF, generate: gen });
+    expect(res.results.a!.status).toBe('done');
+  });
+
+  test('D-7 预构造入口: verifier 通过 → 不触 escalation (仍零 conductor 调用)', async () => {
+    const { gen, calls } = makeFake(PLAN_JSON);
+    const prebuilt = { name: 'verified', nodes: JSON.parse(PLAN_JSON).nodes } as ConductorPlan;
+    const res = await runExecutorDagWithPlan(prebuilt, {
+      conductorModel: CONDUCTOR,
+      leafModel: LEAF,
+      generate: gen,
+      verifier: async () => ({ pass: true, reason: 'ok', usage: { in: 2, out: 1 } }),
+    });
+    expect(res.verification?.pass).toBe(true);
+    expect(calls.filter((c) => c.model === CONDUCTOR).length).toBe(0); // verify pass → 无重规划
   });
 
   test('thinking 档传下去: conductor=high 默认 / inproc leaf=high / config 可覆盖', async () => {

@@ -182,8 +182,6 @@ export {
   PlanLedger,
   PLAN_MODE_OVERLAY,
   GRILL_OVERLAY,
-  isWriteTool,
-  isBashMutation,
   extractUrls,
   stripUrls,
   createDefaultWebRetriever,
