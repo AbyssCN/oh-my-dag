@@ -60,12 +60,8 @@ export function registerProvidersFromEnv(
     });
     registered.push('deepseek');
   }
-  // pi OAuth 桥: ~/.pi/agent/auth.json 有 kimi-coding 授权 → 注册进引擎层 (k3 全角色可用)。
-  // 动态 import 防环 (pi-auth-bridge 依赖本模块的 registerProvider)。失败静默 — OAuth 是可选增强。
-  try {
-    const { registerKimiCodingFromPiAuth } = require('./pi-auth-bridge') as typeof import('./pi-auth-bridge');
-    if (registerKimiCodingFromPiAuth()) registered.push('kimi-coding');
-  } catch { /* 桥不可用 → 跳过 */ }
+  // (旧 pi-auth-bridge 已删, 2026-07-19 统一模型层): kimi-coding 等 pi OAuth provider 不再桥进本
+  // registry — callModel 的 pi-ai 目录后备通道 (pi-transport) 原生解析 + 认证 (auth.json / env 映射)。
   return registered;
 }
 
