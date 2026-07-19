@@ -55,6 +55,7 @@
     "dag-fanout": "bun run scripts/dag-fanout.ts",
     "dag-review": "bun run scripts/dag-review.ts",
     "dag-build": "bun run scripts/dag-build.ts",
+    "omd-path": "bun run scripts/omd-path.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
