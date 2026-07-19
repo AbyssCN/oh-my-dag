@@ -1,12 +1,12 @@
 /**
  * kimi-oauth —— kimi-coding (Kimi For Coding) 的 pi OAuth 登录件 (device flow + 刷新), omd 自包含。
  *
- * pi-ai 内置 OAuth 只有 anthropic / github-copilot / openai-codex; kimi-coding 此前依赖外部工具写
- * auth.json (过期即 401, 无人刷新)。本模块把登录件注册进 pi-ai **全局 OAuth 注册表**
- * (registerOAuthProvider) → 三条链全部自包含, 不需要任何外部 CLI:
- *   ① wizard 内联登录 (getOAuthProviders 自动可见)
- *   ② pi 会话层 AuthStorage.getApiKey 的过期自动刷新 (锁内走注册表 refreshToken)
- *   ③ pi-transport 的 getOAuthApiKey 同上 (401 快照天花板随之消失)
+ * pi 0.80 的 kimi-coding provider 只带 env key 认证 (KIMI_API_KEY), 无 OAuth flow; 此前订阅
+ * 凭证依赖外部工具写 auth.json (过期即 401, 无人刷新)。本模块自实现 device flow + 刷新,
+ * 三条链全部自包含, 不需要任何外部 CLI:
+ *   ① pi 会话 (交互 TUI / agent-leaf): createKimiOAuthExtension 走扩展正门 registerProvider
+ *   ② wizard 内联登录: 直接消费 createKimiCodingOAuthProvider
+ *   ③ pi-transport 过期刷新: 同上直接消费 (401 快照天花板随之消失)
  *
  * 端点/协议对齐官方 kimi-cli (MoonshotAI/kimi-cli, MIT · src/kimi_cli/auth/oauth.py):
  *   POST {host}/api/oauth/device_authorization   form{client_id}
@@ -14,14 +14,20 @@
  *   POST {host}/api/oauth/token   form{client_id, grant_type=refresh_token, refresh_token}
  * client_id 为 kimi-cli 公开发布的 device-flow 公共客户端 id (device flow 无 secret)。
  */
-import {
-  getOAuthProvider,
-  registerOAuthProvider,
-  type OAuthCredentials,
-  type OAuthLoginCallbacks,
-  type OAuthProviderInterface,
-} from '@earendil-works/pi-ai/oauth';
+import type { OAuthCredentials, OAuthLoginCallbacks } from '@earendil-works/pi-ai/oauth';
 import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
+
+/**
+ * 登录件形状 (0.80: pi-ai 的 OAuthProviderInterface 与全局注册表一并移除; 扩展正门
+ * ProviderConfig.oauth 与 wizard 消费的就是这个结构面)。
+ */
+export interface KimiOAuthFlow {
+  readonly id: 'kimi-coding';
+  readonly name: string;
+  login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials>;
+  refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials>;
+  getApiKey(credentials: OAuthCredentials): string;
+}
 
 const KIMI_OAUTH_HOST = (): string => process.env.KIMI_OAUTH_HOST?.trim() || 'https://auth.kimi.com';
 const KIMI_CODE_CLIENT_ID = '17e5f671-d194-4dfb-9706-5516cb48c098';
@@ -57,7 +63,7 @@ function toCredentials(data: Record<string, unknown>): OAuthCredentials {
 }
 
 /** 造登录件 (fetch 注入便于测试)。 */
-export function createKimiCodingOAuthProvider(fetchImpl: typeof fetch = fetch): OAuthProviderInterface {
+export function createKimiCodingOAuthProvider(fetchImpl: typeof fetch = fetch): KimiOAuthFlow {
   return {
     id: 'kimi-coding',
     name: 'Kimi For Coding',
@@ -119,24 +125,11 @@ export function createKimiCodingOAuthProvider(fetchImpl: typeof fetch = fetch): 
 }
 
 /**
- * 幂等注册进 pi-ai 全局 OAuth 注册表。已有同 id 注册 (宿主/pi 扩展先到) → 尊重不覆盖。
- * 调用点: model/index (进程内所有链路共享同一注册表) + wizard realOAuthProviders (防加载顺序)。
- *
- * ⚠ 覆盖面天花板: pi 的 ModelRegistry.refresh() 会 resetOAuthProviders() **清空全局注册表**
- * (pi session 创建/reload 时必发) → 全局注册在 pi 会话里活不过 boot。pi 会话路径必须走正门
- * createKimiOAuthExtension (registerProvider 进 registeredProviders, refresh 后重放)。
- * 本函数只兜非 pi-session 链路 (wizard 内联登录 / pi-transport 在无 pi 会话的脚本进程里)。
- */
-export function registerKimiCodingOAuth(fetchImpl: typeof fetch = fetch): void {
-  if (getOAuthProvider('kimi-coding')) return;
-  registerOAuthProvider(createKimiCodingOAuthProvider(fetchImpl));
-}
-
-/**
  * pi 扩展 (正门注册): `pi.registerProvider('kimi-coding', { oauth })` — 进 ModelRegistry 的
- * registeredProviders, 每次 refresh (启动/reload) 由 applyProviderConfig 重放, 并顺带把登录件
- * 重新写回 pi-ai 全局注册表 → 交互主会话 / agent-leaf 会话的 AuthStorage 过期自动刷新 + /login
- * 菜单项都由此而来。挂载点: tui main() · agent-leaf · pi-runtime 的 extensionFactories。
+ * registeredProviders, 每次 refresh (启动/reload) 重放 → 交互主会话 / agent-leaf 会话的
+ * 过期自动刷新 + /login 菜单项都由此而来。挂载点: tui main() · agent-leaf · pi-runtime 的
+ * extensionFactories。(0.77 时代的 pi-ai 全局注册表已在 0.80 移除 — 正门是唯一注册路径;
+ * 非 pi-session 链路 [wizard 内联登录 / pi-transport 刷新] 直接消费 createKimiCodingOAuthProvider。)
  */
 export function createKimiOAuthExtension(fetchImpl: typeof fetch = fetch): ExtensionFactory {
   const p = createKimiCodingOAuthProvider(fetchImpl);

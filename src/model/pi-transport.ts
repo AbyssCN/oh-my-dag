@@ -19,25 +19,25 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import type {
+  Api,
+  AssistantMessage,
+  Context,
+  Message,
+  Model,
+  SimpleStreamOptions,
+  ThinkingLevel,
+  Usage,
+} from '@earendil-works/pi-ai';
+// 0.80: 目录读/completeSimple 挪进 /compat (deprecated shim, 行为等价; 深迁移 Models API 另行);
+// oauth 子路径变纯类型入口, 全局 OAuth 注册表已删 — kimi-coding 刷新走本仓 kimi-oauth 登录件。
 import {
   completeSimple as piCompleteSimple,
-  getEnvApiKey as piGetEnvApiKey,
   getModel as piGetModel,
   getModels as piGetModels,
-  type Api,
-  type AssistantMessage,
-  type Context,
-  type Message,
-  type Model,
-  type SimpleStreamOptions,
-  type ThinkingLevel,
-  type Usage,
-} from '@earendil-works/pi-ai';
-import {
-  getOAuthApiKey as piGetOAuthApiKey,
-  getOAuthProvider as piGetOAuthProvider,
-  type OAuthCredentials,
-} from '@earendil-works/pi-ai/oauth';
+} from '@earendil-works/pi-ai/compat';
+import type { OAuthCredentials } from '@earendil-works/pi-ai/oauth';
+import { createKimiCodingOAuthProvider } from './kimi-oauth';
 import type { ContentPart, ModelMessage, ModelRequest, ModelUsage } from './types';
 import { ModelError } from './index';
 import { logger } from '../logger';
@@ -73,15 +73,53 @@ export interface PiTransportDeps {
   now: () => number;
 }
 
+/**
+ * provider → env key 映射 (对齐 pi-ai 0.80 env-api-keys.js 的表; 0.80 不再从入口导出该函数,
+ * 表本身是稳定公开事实)。未知 provider → undefined (与 pi 同语义)。
+ */
+const PI_ENV_KEY_MAP: Record<string, string> = {
+  openai: 'OPENAI_API_KEY', 'azure-openai-responses': 'AZURE_OPENAI_API_KEY', deepseek: 'DEEPSEEK_API_KEY',
+  google: 'GEMINI_API_KEY', 'google-vertex': 'GOOGLE_CLOUD_API_KEY', groq: 'GROQ_API_KEY',
+  cerebras: 'CEREBRAS_API_KEY', xai: 'XAI_API_KEY', openrouter: 'OPENROUTER_API_KEY',
+  'vercel-ai-gateway': 'AI_GATEWAY_API_KEY', zai: 'ZAI_API_KEY', mistral: 'MISTRAL_API_KEY',
+  minimax: 'MINIMAX_API_KEY', 'minimax-cn': 'MINIMAX_CN_API_KEY', moonshotai: 'MOONSHOT_API_KEY',
+  'moonshotai-cn': 'MOONSHOT_API_KEY', huggingface: 'HF_TOKEN', fireworks: 'FIREWORKS_API_KEY',
+  together: 'TOGETHER_API_KEY', opencode: 'OPENCODE_API_KEY', 'opencode-go': 'OPENCODE_API_KEY',
+  'kimi-coding': 'KIMI_API_KEY', 'cloudflare-workers-ai': 'CLOUDFLARE_API_KEY',
+  'cloudflare-ai-gateway': 'CLOUDFLARE_API_KEY', xiaomi: 'XIAOMI_API_KEY',
+  'xiaomi-token-plan-cn': 'XIAOMI_TOKEN_PLAN_CN_API_KEY', 'xiaomi-token-plan-ams': 'XIAOMI_TOKEN_PLAN_AMS_API_KEY',
+  'xiaomi-token-plan-sgp': 'XIAOMI_TOKEN_PLAN_SGP_API_KEY',
+};
+
+/** env key 解析 (anthropic 双名/copilot 特例 + 上表)。导出供 wizard provider 总览复用。 */
+export function piEnvApiKey(provider: string, env: Record<string, string | undefined> = process.env): string | undefined {
+  const names =
+    provider === 'anthropic' ? ['ANTHROPIC_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']
+    : provider === 'github-copilot' ? ['COPILOT_GITHUB_TOKEN']
+    : PI_ENV_KEY_MAP[provider] ? [PI_ENV_KEY_MAP[provider]!] : [];
+  for (const n of names) {
+    const v = env[n]?.trim();
+    if (v) return v;
+  }
+  return undefined;
+}
+
 /** 真实现 (静态 import: pi-ai 是 ESM-only export map, Bun require 解析不到 import 条件)。 */
 function realDeps(): PiTransportDeps {
+  // kimi-coding 刷新件 = 本仓 kimi-oauth (0.80 无全局 OAuth 注册表; 其余 oauth provider 无刷新件,
+  // 走过期快照 + 响亮警告的旧语义)。
+  const kimi = createKimiCodingOAuthProvider();
   return {
     getModel: piGetModel as unknown as PiTransportDeps['getModel'],
     getModels: piGetModels as unknown as PiTransportDeps['getModels'],
     completeSimple: piCompleteSimple,
-    getEnvApiKey: piGetEnvApiKey,
-    getOAuthProvider: piGetOAuthProvider,
-    getOAuthApiKey: piGetOAuthApiKey,
+    getEnvApiKey: (p) => piEnvApiKey(p),
+    getOAuthProvider: (id) => (id === kimi.id ? { getApiKey: (c) => kimi.getApiKey(c) } : undefined),
+    getOAuthApiKey: async (id, creds) => {
+      if (id !== kimi.id || !creds[id]) return null;
+      const next = await kimi.refreshToken(creds[id]!);
+      return { newCredentials: next, apiKey: kimi.getApiKey(next) };
+    },
     authPath: join(homedir(), '.pi', 'agent', 'auth.json'),
     now: () => Date.now(),
   };
