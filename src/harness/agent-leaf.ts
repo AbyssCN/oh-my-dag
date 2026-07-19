@@ -24,6 +24,7 @@ import { parseModelRef } from './fleet';
 import { createHashlineCustomTools } from './hashline';
 import { createDriftDetectorHook, type DriftDetectorConfig } from './hooks/drift-detector';
 import { logger } from '../logger';
+import { createKimiOAuthExtension } from '../model/kimi-oauth';
 import type { ModelUsage } from '../model/types';
 import type { ThinkingLevel } from '../runtime/types';
 
@@ -166,7 +167,8 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           agentDir: getAgentDir(),
           additionalExtensionPaths: extensionDirs,
           // drift-detector 经 in-code extensionFactories 注入 (与 opts.extensionDirs 的扩展包并存)。
-          extensionFactories: driftFactory ? [driftFactory] : [],
+          // kimi-coding OAuth 恒挂 (正门注册, 会话 ModelRegistry.refresh 清全局注册表后由它重放)。
+          extensionFactories: [createKimiOAuthExtension(), ...(driftFactory ? [driftFactory] : [])],
         });
         await rl.reload();
         return rl;

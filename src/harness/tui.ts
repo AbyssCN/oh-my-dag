@@ -13,6 +13,11 @@
  * 灵魂 + tool 闸 + 经济层 hooks 后续都挂在 OmdController 字段上, 此前端不变。
  */
 import '../env-alias';
+// kimi-coding OAuth 登录件: 必须在 pi main() 的 AuthStorage 之前注册 (交互主会话的过期刷新走
+// pi-ai 全局注册表 getOAuthProvider — 缺席即 "No API key", 见 kimi-oauth.ts)。boot 入口显式钉死,
+// 不依赖 model/index 恰好被 import 的运气。
+import { registerKimiCodingOAuth, createKimiOAuthExtension } from '../model/kimi-oauth';
+registerKimiCodingOAuth();
 import { main } from '@earendil-works/pi-coding-agent';
 import { setCoreLogger } from './logger';
 import { createVerifyGateExtension } from './verify-gate-extension';
@@ -394,6 +399,8 @@ const args = userPickedModel ? userArgs : [...ctrl.toModelArgs(), ...userArgs];
 
 await main(args, {
   extensionFactories: [
+    // kimi-coding OAuth 正门注册 (最先挂: ModelRegistry.refresh 会清全局注册表, 见 kimi-oauth.ts)
+    createKimiOAuthExtension(),
     bannerExt,
     ...ctrl.toExtensionFactories(),
     cgAuditExt,
