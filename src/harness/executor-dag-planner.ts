@@ -25,13 +25,21 @@ export function topoLevels(plan: ConductorPlan): string[][] {
   return levels;
 }
 
-/** 单个 leaf 的执行 prompt: 节点目标/skill/args + 已完成前驱的输出 (fan-in context)。 */
+/**
+ * 单个 leaf 的执行 prompt: [模板卡] + 节点目标/skill/args + 已完成前驱的输出 (fan-in context)。
+ * 模板卡 (node.template 命中注册表时) 置于最前 — 早于 [omd leaf: id]: 同模板 sibling 共享
+ * (system前缀+模板body) 的字节稳定前奏 → warmThenFanout 暖发后跨 sibling 命中 prompt-cache
+ * (id 行在前会让前缀在 ~12 字符处分叉, 白丢整段模板的 cache 面)。
+ */
 export function buildLeafPrompt(
   id: string,
   node: ConductorPlan['nodes'][string],
   depResults: Record<string, string>,
+  template?: { name: string; body: string },
 ): string {
-  const parts: string[] = [`[omd leaf: ${id}]`];
+  const parts: string[] = [];
+  if (template) parts.push(`<agent-template name="${template.name}">\n${template.body.trim()}\n</agent-template>`);
+  parts.push(`[omd leaf: ${id}]`);
   // 专家框定前置 (persona conditioning, 同 fanout 技法): 把弱 executor 拉进专家区。conductor 仅对吃
   // 专家视角的 leaf 设 (research/judgement/design/drafting), 缺省则无 (机械/file/command 节点不需)。
   if (node.persona) parts.push(`<persona>${node.persona}</persona>`);
