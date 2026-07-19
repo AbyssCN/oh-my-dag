@@ -247,6 +247,50 @@ skill proposals.
 - **Registry over regeneration** — anything a model would re-derive per run (role
   cards, lens structures, control flow) is frozen once and referenced by name.
 
+
+## Claude Code integration
+
+omd exposes an MCP server over stdio. Use it in Claude Code by adding to your `.claude/settings.json`:
+
+```jsonc
+// ~/.claude/settings.json (global) or .claude/settings.json (project)
+{
+  "mcpServers": {
+    "omd": {
+      "command": "bun",
+      "args": ["run", "omd", "mcp"],
+      "cwd": "/path/to/oh-my-dag"
+    }
+  }
+}
+```
+
+Or if you ran `bun link`:
+
+```jsonc
+{
+  "mcpServers": {
+    "omd": {
+      "command": "omd",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+This gives Claude Code access to omd's tool surface (DAG engine, skill router, memory, verification) as MCP tools.
+
+### Skills for Claude Code
+
+Install all 22 skills into `.claude/skills/`:
+
+```bash
+mkdir -p .claude/skills
+for skill in skills/*/; do name=$(basename "$skill"); ln -sf "../../skills/$name" ".claude/skills/$name"; done
+```
+
+See [docs/examples/claude-code/](docs/examples/claude-code/) for the full setup: skill install guide, CLAUDE.md template, and PreToolUse hooks (verify-after-edit + dangerous-cmd classifier).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
