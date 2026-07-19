@@ -8,6 +8,7 @@ metadata:
   source: oh-my-dag
   version: "1.0.0"
   methodology: "explicit lens spec + diversity>volume + multi-judge panel"
+disable-model-invocation: true
 ---
 # /dag-fanout — hand-written lens fanout
 

@@ -4,7 +4,7 @@
   "skillsRoot": "skills",
   "substrateDir": "substrate",
   "umbrella": "umbrella.md",
-  "count": 17,
+  "count": 22,
   "skills": [
     {
       "name": "caveman",
@@ -206,6 +206,66 @@
       "description": "Decomposable coding task as a DAG: conductor plans, agent leaves build files concurrently, a deterministic oracle command gates, a heal fixpoint retries with failure context, halt-judge stops unproductive loops, checkpoints make runs resumable. Trigger: build this module across N files / 实装这个可分解任务 / parallel implementation with a test gate / dag-build. Skip: small single-file change (edit directly — dispatch overhead loses) / root-cause unknown (investigate first) / frontend visual work (needs a human eye).",
       "has_eval": false,
       "dir": "skills/dag-build",
+      "origin": "oh-my-dag-skills",
+      "license": null,
+      "upstream_commit": null
+    },
+    {
+      "name": "codebase-design",
+      "id": "sk_codebase_design",
+      "version": 1,
+      "tier": "core",
+      "description": "Shared vocabulary for designing deep modules — module / interface / depth / seam / adapter / leverage / locality, the deletion test, deep-vs-shallow. Use when designing or improving a module's interface, deciding where a seam goes, making code testable or AI-navigable, or when another skill (dag-deepen / dag-slim) needs the design vocabulary. Trigger: design this module / where should the seam go / is this module too shallow / deep module / deletion test / codebase-design. Skip: finding what to refactor (/dag-deepen) / finding what to delete (/dag-slim) / reviewing a diff (/dag-review).",
+      "has_eval": false,
+      "dir": "skills/codebase-design",
+      "origin": "oh-my-dag-skills",
+      "license": null,
+      "upstream_commit": null
+    },
+    {
+      "name": "dag-deepen",
+      "id": "sk_dag_deepen",
+      "version": 1,
+      "tier": "core",
+      "description": "Architecture-deepening scan as a DAG: deterministic git-hotspot discovery picks the highest-friction modules, one agent leaf per hotspot concurrently hunts shallow modules (deletion test, deep-interface sketches), a synthesis leaf dedups cross-hotspot repetition and ranks by leverage, HTML report of candidates. Trigger: improve architecture / 找重构机会 / deepen modules / architecture report / dag-deepen. Skip: what to delete (/dag-slim) / diff review (/dag-review) / design vocabulary only (/codebase-design).",
+      "has_eval": false,
+      "dir": "skills/dag-deepen",
+      "origin": "oh-my-dag-skills",
+      "license": null,
+      "upstream_commit": null
+    },
+    {
+      "name": "dag-slim",
+      "id": "sk_dag_slim",
+      "version": 1,
+      "tier": "core",
+      "description": "Whole-repo slimming as a DAG: find over-engineering — reinvented standard library, speculative abstractions, dead flexibility — and propose deletion targets.",
+      "has_eval": false,
+      "dir": "skills/dag-slim",
+      "origin": "oh-my-dag-skills",
+      "license": null,
+      "upstream_commit": null
+    },
+    {
+      "name": "ponytail",
+      "id": "sk_ponytail",
+      "version": 1,
+      "tier": "core",
+      "description": "Forces the laziest solution that actually works — simplest, shortest, most minimal. YAGNI first, standard library before custom code, native platform features before dependencies, one line before fifty. Intensity levels: lite, full (default), ultra. Trigger: ponytail / be lazy / lazy mode / simplest solution / yagni / do less / shortest path / complaints about over-engineering, bloat, boilerplate, or unnecessary deps.",
+      "has_eval": false,
+      "dir": "skills/ponytail",
+      "origin": "oh-my-dag-skills",
+      "license": null,
+      "upstream_commit": null
+    },
+    {
+      "name": "omd",
+      "id": "sk_omd",
+      "version": 1,
+      "tier": "core",
+      "description": "One table of every routed oh-my-dag skill: name → when to use. The one name to remember. Trigger: /omd / list skills / which skill / 有哪些技能 / 该用哪个技能.",
+      "has_eval": false,
+      "dir": "skills/omd",
       "origin": "oh-my-dag-skills",
       "license": null,
       "upstream_commit": null

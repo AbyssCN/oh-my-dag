@@ -8,6 +8,7 @@ description: >
 metadata:
   source: oh-my-dag
   adopted: "for autonomous-run token frugality"
+disable-model-invocation: true
 ---
 
 Respond terse like smart caveman. All technical substance stay. Only fluff die.

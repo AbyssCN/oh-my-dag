@@ -7,6 +7,7 @@ description: "Manually trigger Dream consolidation: distill an agent's raw event
 metadata:
   source: oh-my-dag
   version: "1.0.0"
+disable-model-invocation: true
 ---
 # /dream — Manual Dream consolidation
 

@@ -13,7 +13,7 @@ import { resolve, join, dirname } from 'node:path';
 import { writeFileSync, existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { SkillRegistry, type EvolutionEventType } from './registry';
 import { scanSkillsDir, syncSkillsToRegistry } from './scanner';
-import { isCoreSkill } from './bundle';
+import { isResidentSkill } from './bundle';
 import { setDmiInFile, skillMdPath, readDmi } from './dmi';
 import { buildUmbrella } from './umbrella';
 import { exportBundle } from './export';
@@ -85,8 +85,8 @@ function cmdSetDmi(args: string[]): number {
     process.stderr.write('usage: set-dmi <name> <on|off>\n');
     return 2;
   }
-  if (value === true && isCoreSkill(name)) {
-    process.stderr.write(`✗ '${name}' 是 core bundle 成员, 拒绝 disable (bundle 契约: core 永远进 prompt)。\n`);
+  if (value === true && isResidentSkill(name)) {
+    process.stderr.write(`✗ '${name}' 是 resident 常驻成员, 拒绝 disable (Smart Zone 契约: resident 永远进 prompt)。\n`);
     return 1;
   }
   const root = resolveRoot(args);
@@ -112,8 +112,8 @@ function cmdTidy(args: string[]): number {
   for (const s of skills) {
     const path = skillMdPath(root, s.name)!;
     const onDisk = readDmi(path);
-    if (isCoreSkill(s.name) && onDisk) coreViolations.push(s.name);
-    if (!isCoreSkill(s.name) && !onDisk) hideCandidates.push(s.name);
+    if (isResidentSkill(s.name) && onDisk) coreViolations.push(s.name);
+    if (!isResidentSkill(s.name) && !onDisk) hideCandidates.push(s.name);
   }
 
   process.stdout.write(`\ntidy report (root: ${root})\n`);

@@ -16,7 +16,7 @@ import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import yaml from 'js-yaml';
 import { SkillRegistry, type SkillTier } from './registry';
-import { isCoreSkill } from './bundle';
+import { isCoreSkill, isResidentSkill } from './bundle';
 
 /** 解析后的单个 skill 描述 (落 registry 前的中间态)。 */
 export interface ScannedSkill {
@@ -72,8 +72,10 @@ function parseSkillDir(skillsRoot: string, dir: string): ScannedSkill {
   const description = typeof fm.description === 'string' ? fm.description.trim() : '';
   // DMI: frontmatter disable-model-invocation:true → 不进 prompt (dmi=1)。缺省 = 可被模型调 (dmi=0)。
   const dmi: 0 | 1 = fm['disable-model-invocation'] === true ? 1 : 0;
-  // core 永远 dmi=0 (进 prompt) — bundle 契约硬覆盖, 防误把核心藏起来。
+  // 分层契约 (Smart Zone): tier=core 表示"在 shipped bundle 里"; 但 dmi 硬覆盖只对 **resident**
+  // 子集生效 (≤5 常驻进 prompt), routed 成员的 disable-model-invocation:true 必须尊重。
   const core = isCoreSkill(name);
+  const resident = isResidentSkill(name);
   const evalsDir = join(skillsRoot, dir, 'evals');
   const has_eval: 0 | 1 = existsSync(evalsDir) && statSync(evalsDir).isDirectory() ? 1 : 0;
 
@@ -92,7 +94,7 @@ function parseSkillDir(skillsRoot: string, dir: string): ScannedSkill {
     name,
     description,
     tier: core ? 'core' : 'on-demand',
-    dmi: core ? 0 : dmi,
+    dmi: resident ? 0 : dmi,
     has_body: body.trim().length > 0 ? 1 : 0,
     has_eval,
     upstream_repo: typeof prov.upstream_repo === 'string' ? prov.upstream_repo : null,

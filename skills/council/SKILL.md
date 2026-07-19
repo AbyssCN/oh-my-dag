@@ -8,6 +8,7 @@ metadata:
   source: oh-my-dag
   version: "1.1.0"
   methodology: "diversity>volume + persona conditioning + multi-judge panel + graft runners-up + grounded (market-first + domain-role persona + anti-happy-path axis)"
+disable-model-invocation: true
 ---
 
 # /council — Multi-Perspective Parallel Generation + Judge-and-Select

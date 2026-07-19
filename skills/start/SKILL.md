@@ -7,6 +7,7 @@ description: "Session initialization ritual: read the project's next-steps file 
 metadata:
   source: oh-my-dag
   version: "3.1.0"
+disable-model-invocation: true
 ---
 # /start — Session Initialization
 

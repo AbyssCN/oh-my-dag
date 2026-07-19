@@ -8,6 +8,7 @@ metadata:
   source: oh-my-dag
   version: "1.0.0"
   methodology: "retrieve → lens fanout → judge; corpus fed to every lens; zero-loss artifact appendix"
+disable-model-invocation: true
 ---
 # /dag-research — grounded web research pipeline
 

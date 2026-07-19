@@ -8,6 +8,7 @@ metadata:
   source: oh-my-dag
   version: "2.0.0"
   methodology: "conductor-authored personas + diversity>volume + multi-judge + graft runners-up + grounded (market-first + domain-role persona + anti-happy-path axis)"
+disable-model-invocation: true
 ---
 # /dag-council — auto-authored expert council
 

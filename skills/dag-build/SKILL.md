@@ -8,6 +8,7 @@ metadata:
   source: oh-my-dag
   version: "1.0.0"
   methodology: "conductor decompose + agent-leaf fanout + oracle gate + heal fixpoint + halt-judge + checkpoint resume"
+disable-model-invocation: true
 ---
 # /dag-build — parallel build with a hard oracle
 

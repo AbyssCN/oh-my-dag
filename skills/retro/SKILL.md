@@ -8,6 +8,7 @@ metadata:
   source: oh-my-dag
   version: "1.0.0"
   methodology: "git analytics retrospective"
+disable-model-invocation: true
 ---
 
 # /retro — Engineering Retrospective

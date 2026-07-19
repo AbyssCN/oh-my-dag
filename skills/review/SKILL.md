@@ -8,6 +8,7 @@ metadata:
   source: oh-my-dag
   version: "5.0.0"
   methodology: "on-demand audit + specialist lenses + optional cross-model review"
+disable-model-invocation: true
 ---
 
 # /review — On-Demand Audit

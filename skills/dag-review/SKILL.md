@@ -8,6 +8,7 @@ metadata:
   source: oh-my-dag
   version: "1.0.0"
   methodology: "dimension fanout + adversarial verify/refute convergence + gate levels"
+disable-model-invocation: true
 ---
 # /dag-review — adversarial diff review
 

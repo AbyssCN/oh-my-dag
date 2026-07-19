@@ -8,6 +8,7 @@ description: "Session wrap-up ritual: update the active plan / next-state file +
 metadata:
   source: oh-my-dag
   version: "8.0.0"
+disable-model-invocation: true
 ---
 # /handoff — Session Wrap-Up
 

@@ -8,6 +8,7 @@ metadata:
   source: oh-my-dag
   version: "3.0.0"
   methodology: "Bun commit + ship release pipeline"
+disable-model-invocation: true
 ---
 # /commit — Smart Commit & Ship
 
