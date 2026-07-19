@@ -16,13 +16,17 @@ import '../env-alias';
 import { main } from '@earendil-works/pi-coding-agent';
 import { setCoreLogger } from './logger';
 import { createVerifyGateExtension } from './verify-gate-extension';
+import { createTierAdvisoryExtension } from './tier-advisory-extension';
 import { OmdController } from './controller';
 import { ensureMimoApiKey } from './mimo-env';
 import { createCgAuditExtension } from './cg-audit-extension';
 import { createIterateExtension } from './iterate-extension';
 import { resolveVerification } from './verifier';
 import { createModelRouterFromEnv } from './model-router';
-import { createPlanExtension, ensurePlanToggleKeyFree } from './plan';
+import { createPlanExtension, createPlanModeState, createPathfinderModeState, ensurePlanToggleKeyFree } from './plan';
+import { createExecuteExtension } from './execute-extension';
+import { createPathfinderExtension } from './pathfinder-extension';
+import { createMultimodalRouteExtension } from './multimodal-route-extension';
 import { createBannerExtension, ensureOmdTheme } from './branding';
 import { detectRuntimeConfig, runInitWizard, createReadlineIO } from './init';
 import { createHashlineExtension } from './hashline';
@@ -179,7 +183,30 @@ if (planKeyFix.changed) {
 }
 // plan 模型走统一 config 中心 (resolveRoleModel('plan') = config.json / OMD_PLAN_MODEL / 默认),
 // 故此处不再传 planModel — 让 plan-extension 自己 resolve, /setup·/config 改 plan 角色即生效。
-const planExt = createPlanExtension({});
+// plan mode 状态共享给 /execute (交接协议: plan 里说"开始执行" → /execute 干净退出 plan 再跑 DAG)。
+const planState = createPlanModeState();
+const planExt = createPlanExtension({ state: planState });
+// plan→DAG→runtime 交接: /execute 把 SDD 丢给 conductor 分解执行, 跑完发验收简报给 runtime 模型。
+const executeExt = createExecuteExtension({
+  conductorModel: process.env.OMD_ITER_CONDUCTOR_MODEL ?? 'deepseek:deepseek-v4-flash',
+  leafModel: process.env.OMD_ITER_LEAF_MODEL ?? 'deepseek:deepseek-v4-flash',
+  agentLeafModel: process.env.OMD_ITER_AGENT_MODEL ?? 'deepseek:deepseek-v4-flash',
+  conductorEscalationModel: process.env.OMD_CONDUCTOR_ESCALATION_MODEL,
+  planState,
+});
+
+// pathfinder 模式 (shift+tab, D-1): 决策地图 → 前沿按 type 分派 → 区域散尽编译 slice → executeSlice。
+// planKeyFix (上方 ensurePlanToggleKeyFree) 已让出 shift+tab 供本扩展抢占。
+// onRegionClear 省略 → 默认 wire: compileSlice → executeSlice → 报告 + 标记已交付。
+const pathfinderState = createPathfinderModeState();
+const pathfinderExt = createPathfinderExtension({
+  cwd: process.cwd(),
+  state: pathfinderState,
+  leafModel: process.env.OMD_ITER_LEAF_MODEL ?? 'deepseek:deepseek-v4-flash',
+  agentLeafModel: process.env.OMD_ITER_AGENT_MODEL ?? 'deepseek:deepseek-v4-flash',
+  finalize: process.env.OMD_PATH_FINALIZE === '1',
+  autoPrefetch: process.env.OMD_PATH_PREFETCH === '1',
+});
 
 // 默认 omd theme (朱砂金太阳): boot 前写 themes/omd.json + (用户没显式选别的主题时) 设为默认。
 // 幂等 + 非破坏性 (用户 /theme 选过别的则只保证文件在, 不抢)。失败不阻断 boot。
@@ -354,6 +381,10 @@ await main(args, {
     cgAuditExt,
     iterateExt,
     planExt,
+    executeExt,
+    pathfinderExt,
+    // 多模态路由: 媒体一律走多模态池模型分析, 文本结果回注当前模型 (池空 = no-op)。
+    ...(process.env.OMD_MULTIMODAL_ROUTE !== '0' ? [createMultimodalRouteExtension()] : []),
     ...hashlineExt,
     memoryExt,
     recallExt,
@@ -374,5 +405,7 @@ await main(args, {
     costExt,
     // verify-gate: 写后必验闸 (私有上游 harness 泛化)。默认开; OMD_VERIFY_GATE=0 逃生关。
     ...(process.env.OMD_VERIFY_GATE !== '0' ? [createVerifyGateExtension()] : []),
+    // tier-advisory: 连续失败 → 注入升级建议 (advisory, 永不 block)。
+    ...(process.env.OMD_TIER_ADVISORY !== '0' ? [createTierAdvisoryExtension()] : []),
   ],
 });

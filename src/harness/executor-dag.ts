@@ -86,9 +86,26 @@ async function planAndExecute(
   }
   if (!plan) throw new Error(`executor-dag: conductor (${conductorModel}) 未产出有效 plan: ${lastErr}`);
 
+  // conductor 之后, 下游执行机器与 plan 来源无关 → 交 executePlan (D-7 预构造入口共用同一机器)。
+  return executePlan(plan, task, config, generate, conductorUsage);
+}
+
+/**
+ * 执行一张**已定** plan (conductor 路径 ∨ D-7 预构造入口共用): topo 分层 → ready-set 现场 fan-out
+ * (map/primitive/command/agent/inproc + checkpoint) → results。**纯下游执行机器**, 与 plan 从哪来无关
+ * (ConductorPlan = 接缝, 下游零感知)。conductorUsage 由 caller 传入 (conductor 路径=累加规划用量;
+ * 预构造路径={in:0,out:0}) → 账本一致。
+ */
+async function executePlan(
+  plan: ConductorPlan,
+  task: string,
+  config: ExecutorDagConfig,
+  generate: GenerateFn,
+  conductorUsage: ModelUsage,
+): Promise<ExecOnce> {
   const levels = topoLevels(plan);
   logger.info(
-    { conductorModel, leafModel: config.leafModel, nodes: Object.keys(plan.nodes).length, levels: levels.length },
+    { plan: plan.name, leafModel: config.leafModel, nodes: Object.keys(plan.nodes).length, levels: levels.length },
     '[omd/executor-dag] planned',
   );
 
@@ -540,6 +557,34 @@ export async function runExecutorDag(
 ): Promise<ExecutorDagResult> {
   if (!config.conductorModel) throw new Error('executor-dag: conductorModel 必填 (无硬默认, 形如 provider:modelId)');
   if (!config.leafModel) throw new Error('executor-dag: leafModel 必填 (无硬默认, 形如 provider:modelId)');
+  return runDagInternal(task, config, null);
+}
+
+/**
+ * D-7 预构造入口: 接受一张**预构造 ConductorPlan** (pathfinder slice-compiler 的产物), **跳过 conductor
+ * LLM 步**, 直接把 plan 交下游执行机器 (ready-set 调度 / 叶子 / verify / escalate) —— 下游行为与 conductor
+ * 路径**完全一致** (ConductorPlan = 接缝, 下游零感知 plan 来源; D-7「执行机器不变」)。
+ * conductorModel 对纯预构造执行**非必填** —— 仅当 verifier fail 且升级模型就绪时, escalate 才用 conductor
+ * 重规划 (那时需 conductorEscalationModel)。leafModel 仍必填 (叶子执行要它)。
+ */
+export async function runExecutorDagWithPlan(
+  plan: ConductorPlan,
+  config: ExecutorDagConfig,
+): Promise<ExecutorDagResult> {
+  if (!config.leafModel) throw new Error('executor-dag: leafModel 必填 (无硬默认, 形如 provider:modelId)');
+  return runDagInternal(deriveTaskFromPlan(plan), config, plan);
+}
+
+/** 预构造 plan → escalation 重规划的种子 task (仅 verify fail 升级时喂 conductor; 正常执行不触及)。 */
+function deriveTaskFromPlan(plan: ConductorPlan): string {
+  return plan.description?.trim() || plan.name;
+}
+
+async function runDagInternal(
+  task: string,
+  config: ExecutorDagConfig,
+  prebuiltPlan: ConductorPlan | null,
+): Promise<ExecutorDagResult> {
   // sessionId: 本次 run 的 conductor+leaf 全部经 send → 同一 Langfuse session (B2)。
   // 可注入 (config.sessionId): 调用方传则跨平面关联 (派活飞轮 dispatchId ↔ Langfuse session); 省略 → 自生成。
   const sessionId = config.sessionId ?? randomUUID();
@@ -547,8 +592,11 @@ export async function runExecutorDag(
   const maxPlanRetries = config.maxPlanRetries ?? 2;
   const maxEscalations = config.maxEscalations ?? 1;
 
-  let conductorModel = config.conductorModel;
-  let exec = await planAndExecute(task, config, conductorModel, generate, maxPlanRetries);
+  let conductorModel = config.conductorModel ?? '';
+  // D-7: 预构造 plan → executePlan 直执 (跳过 conductor); 否则 conductor 规划 → 执行。二者下游同一机器。
+  let exec = prebuiltPlan
+    ? await executePlan(prebuiltPlan, task, config, generate, { in: 0, out: 0 })
+    : await planAndExecute(task, config, conductorModel, generate, maxPlanRetries);
   let conductorUsage = exec.conductorUsage;
   let leavesIn = exec.leavesIn;
   let leavesOut = exec.leavesOut;
