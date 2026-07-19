@@ -201,14 +201,35 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // 承重纪律核 (默认开) 走 tool-routing 之前 (元规则 → 工具细则 → 任务)。
     const disciplined = (opts.disciplineCore ?? true) ? `${DISCIPLINE_CORE}\n\n${tooled}` : tooled;
     const routedPrompt = opts.persona ? `<persona>\n${opts.persona}\n</persona>\n\n${disciplined}` : disciplined;
+    // filesTouched 采集 (2026-07-20 修产物闸冤杀): 并挂第二个监听收集**成功落盘**的写路径 —
+    // start 记 toolCallId→path 候选, end 且 !isError 才计入 (失败的写不算产物)。
+    // 此前 runner 从不填 filesTouched → executor-dag 产物闸把真交付的文件节点全判 failed (恒空 = "谎报完工")。
+    const FILE_WRITE_TOOLS = new Set(['write', 'edit', 'hashline_edit']);
+    const touched = new Set<string>();
+    const pathByCall = new Map<string, string>();
+    const unsubTouch = (session as { subscribe: (l: (e: { type: string; toolCallId?: string; toolName?: string; args?: { path?: unknown }; isError?: boolean }) => void) => () => void }).subscribe((e) => {
+      if (e.type === 'tool_execution_start' && e.toolName && FILE_WRITE_TOOLS.has(e.toolName)) {
+        if (typeof e.args?.path === 'string' && e.args.path.trim() && e.toolCallId) {
+          pathByCall.set(e.toolCallId, e.args.path);
+        }
+      } else if (e.type === 'tool_execution_end' && e.isError === false && e.toolCallId) {
+        const p = pathByCall.get(e.toolCallId);
+        if (p) touched.add(p);
+      }
+    });
     // 有界中止 (默认 4min): 治弱模型 loop 写完空转不退出 → 外部 SIGKILL 的 bug。
-    const text = await runScopedSession(
-      session as unknown as Parameters<typeof runScopedSession>[0],
-      routedPrompt,
-      { timeoutMs: opts.leafTimeoutMs ?? 240_000 },
-    );
+    let text: string;
+    try {
+      text = await runScopedSession(
+        session as unknown as Parameters<typeof runScopedSession>[0],
+        routedPrompt,
+        { timeoutMs: opts.leafTimeoutMs ?? 240_000 },
+      );
+    } finally {
+      unsubTouch();
+    }
     // usage 暂不可见(pi 不向上吐 token 计数, = V2-ECON 缺口)。
-    return { text, usage: { in: 0, out: 0 } };
+    return { text, usage: { in: 0, out: 0 }, filesTouched: [...touched] };
   };
 }
 
