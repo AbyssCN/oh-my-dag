@@ -7,8 +7,11 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { WizardIO, PresetPersistDeps } from './wizard';
-import { runInitWizard, applyRolePreset, upsertEnv, listPiAuthReady, runPiOAuthStep } from './wizard';
+import { runInitWizard, applyRolePreset, upsertEnv, listPiAuthReady, runPiOAuthStep, runRoleTuneStep } from './wizard';
 import { ROLE_PRESETS } from './role-presets';
+
+/** 隔离真实 ~/.pi/agent/auth.json (本机可能已登录) 的空 piAuth 注入。 */
+const NO_PI_AUTH = { authPath: '/nonexistent/auth.json' };
 
 /** 脚本化 IO: select/ask/confirm 按队列出答案, note 收集。 */
 function scriptedIO(script: {
@@ -61,16 +64,16 @@ function fakePersist(): {
 
 const okFetch = (async () => new Response('{}', { status: 200 })) as unknown as typeof fetch;
 
-describe('runInitWizard · preset 档① (base-opencode-go)', () => {
-  test('写全套角色矩阵 env + 网关双层多模态池 + verifier config 角色', async () => {
+describe('runInitWizard · preset-first 主流程', () => {
+  test('档① (base-opencode-go): 首问即选档 → 角色矩阵 env + 双层池 + verifier config', async () => {
     const base = ROLE_PRESETS[0]!;
     expect(base.id).toBe('base-opencode-go');
     const { io, notes } = scriptedIO({
-      // ① provider=deepseek → ④ model 选 → ⑥ preset 档①
-      selects: ['deepseek', 'deepseek-v4-pro', base.id],
-      // ② key → ③ base(回车默认) → keyPrompt: OPENCODE_API_KEY
-      asks: ['ds-key', '', 'oc-key'],
-      confirms: [false], // ⑤ web 搜索跳过
+      // ② 配置方案 = 档① (preset-first: 第一个 select 就是选档)
+      selects: [base.id],
+      // 档① keyPrompt: OPENCODE_API_KEY
+      asks: ['oc-key'],
+      confirms: [false, false, false], // ① OAuth 登录跳过 → ③ web 跳过 → ④ 角色微调跳过
     });
     const { persist, calls } = fakePersist();
     let written = '';
@@ -85,13 +88,19 @@ describe('runInitWizard · preset 档① (base-opencode-go)', () => {
       },
       fetchImpl: okFetch,
       persist,
+      piAuth: NO_PI_AUTH,
     });
 
     expect(result).not.toBeNull();
+    // runtime 坐标来自 preset env
+    expect(result!.provider).toBe('opencode-go');
+    expect(result!.model).toBe('deepseek-v4-pro');
+    // cwd 无 .env → 写全局 ~/.omd/env
+    expect(result!.envPath.endsWith('/.omd/env')).toBe(true);
     // 角色矩阵 env 全写入
     for (const key of Object.keys(base.env)) expect(result!.writtenKeys).toContain(key);
     expect(result!.writtenKeys).toContain('OPENCODE_API_KEY');
-    // .env 内容含 preset 值 (一把网关 key, 多家族坐标)
+    // env 内容含 preset 值 (一把网关 key, 多家族坐标)
     expect(written).toContain('OMD_CG_CONDUCTOR_MODEL=opencode-go:deepseek-v4-flash');
     expect(written).toContain('OMD_PLAN_MODEL=opencode-go:deepseek-v4-pro');
     expect(written).toContain('OMD_CG_AGENT_MODEL=opencode-go:qwen3.7-plus');
@@ -105,6 +114,46 @@ describe('runInitWizard · preset 档① (base-opencode-go)', () => {
     // 汇总表出现
     expect(notes.some((n) => n.includes('角色矩阵'))).toBe(true);
     expect(notes.some((n) => n.includes('multimodalPoolPremium'))).toBe(true);
+  });
+
+  test('极简档: provider 四问 + 探针, 角色走默认', async () => {
+    const { io } = scriptedIO({
+      selects: ['single', 'deepseek', 'deepseek-v4-pro'],
+      asks: ['ds-key', ''], // key → base 回车默认
+      confirms: [false, false, false],
+    });
+    const { persist, calls } = fakePersist();
+    let written = '';
+    const result = await runInitWizard({
+      io,
+      env: {},
+      cwd: '/tmp/fake',
+      writeEnv: (_p, c) => {
+        written = c;
+      },
+      fetchImpl: okFetch,
+      persist,
+      piAuth: NO_PI_AUTH,
+    });
+    expect(result!.provider).toBe('deepseek');
+    expect(result!.model).toBe('deepseek-v4-pro');
+    expect(result!.probe).toEqual({ ok: true, detail: 'HTTP 200' });
+    expect(written).toContain('OMD_RUNTIME_PROVIDER=deepseek');
+    expect(written).toContain('DEEPSEEK_API_KEY=ds-key');
+    expect(calls.roles).toEqual([]); // 极简不动角色 config
+  });
+
+  test('④ 逐角色微调: 确认后逐角色问, 非空写 persistRoleModel', async () => {
+    const { io, notes } = scriptedIO({ selects: [], asks: ['deepseek:deepseek-v4-pro', '', '', 'kimi-coding:k3', ''], confirms: [true] });
+    const { persist, calls } = fakePersist();
+    await runRoleTuneStep(io, { OMD_PLAN_MODEL: 'opencode-go:deepseek-v4-pro' }, persist, ['kimi-coding']);
+    // 5 角色顺序 plan/conductor/leaf/verifier/dream: 填了 plan 和 verifier
+    expect(calls.roles).toEqual([
+      ['plan', 'deepseek:deepseek-v4-pro'],
+      ['verifier', 'kimi-coding:k3'],
+    ]);
+    // 坐标提示含 preset 坐标 + pi 就绪 provider
+    expect(notes.some((n) => n.includes('opencode-go:deepseek-v4-pro') && n.includes('kimi-coding:<model>'))).toBe(true);
   });
 });
 
@@ -122,6 +171,23 @@ describe('applyRolePreset · key 跳过闸', () => {
     expect(calls.pools).toEqual([]);
     expect(calls.premiums).toEqual([]);
     expect(calls.roles).toEqual([]);
+  });
+
+  test('pi OAuth 就绪 provider 免 key: keyPrompt 跳过且不计 missing (池/config 照写)', async () => {
+    const base = ROLE_PRESETS[0]!;
+    const { io, notes, askLog } = scriptedIO({ selects: [], asks: [], confirms: [] });
+    const { persist, calls } = fakePersist();
+    const updates: Record<string, string> = {};
+
+    await applyRolePreset(base, updates, io, {}, persist, ['opencode-go']);
+
+    expect(askLog).toEqual([]); // 不问 key
+    expect(updates.OPENCODE_API_KEY).toBeUndefined();
+    expect(notes.some((n) => n.includes('opencode-go') && n.includes('免 key'))).toBe(true);
+    // 不算 missing → 池与 verifier config 照写
+    expect(calls.pools).toEqual([['opencode-go:qwen3.7-plus']]);
+    expect(calls.premiums).toEqual([['opencode-go:glm-5.2']]);
+    expect(calls.roles).toEqual([['verifier', 'opencode-go:glm-5.2']]);
   });
 
   test('档② (cn-standard) 无贵层池 → premium 不调用, mimo 池 + verifier 写入', async () => {
