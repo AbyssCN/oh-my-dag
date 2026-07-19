@@ -11,6 +11,15 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { bold, dim, fg } from '../branding/palette';
+import {
+  persistCustomApi,
+  persistMultimodalPool,
+  persistMultimodalPoolPremium,
+  persistRoleModel,
+  type ApiDef,
+  type ModelRole,
+} from '../../model/role-models';
+import { ROLE_PRESETS, ROLE_ENV_ALLOWLIST, coordProvider, type RolePreset } from './role-presets';
 
 /** 一线支持的后端 (= registerProvidersFromEnv 认识的)。 */
 export interface ProviderDef {
@@ -139,6 +148,14 @@ export interface WizardIO {
   note(message: string): void;
 }
 
+/** preset 落 config.json 的写入口 (注入便于测试; 默认 role-models 真实现)。 */
+export interface PresetPersistDeps {
+  persistCustomApi: (def: ApiDef) => void;
+  persistMultimodalPool: (coords: string[]) => void;
+  persistMultimodalPoolPremium: (coords: string[]) => void;
+  persistRoleModel: (role: ModelRole, coord: string) => void;
+}
+
 export interface InitWizardDeps {
   io: WizardIO;
   env?: Record<string, string | undefined>;
@@ -146,6 +163,8 @@ export interface InitWizardDeps {
   /** 写 .env (注入便于测试; 默认 Bun.write)。 */
   writeEnv?: (path: string, content: string) => Promise<void> | void;
   fetchImpl?: typeof fetch;
+  /** preset 的 config.json 写入口 (注入便于测试)。 */
+  persist?: PresetPersistDeps;
 }
 
 export interface InitWizardResult {
@@ -155,6 +174,85 @@ export interface InitWizardResult {
   model: string;
   probe: ProbeResult | null;
   envPath: string;
+}
+
+const REAL_PERSIST: PresetPersistDeps = {
+  persistCustomApi: (def) => persistCustomApi(def),
+  persistMultimodalPool: (coords) => persistMultimodalPool(coords),
+  persistMultimodalPoolPremium: (coords) => persistMultimodalPoolPremium(coords),
+  persistRoleModel: (role, coord) => persistRoleModel(role, coord),
+};
+
+/**
+ * 应用一个角色矩阵 preset (纯泛化消费, 模型字符串只在 role-presets.ts):
+ * ① env 合并进 updates ② 缺 key 提示粘贴 (回车跳过) ③ persistCustomApi 注册自定端点
+ * ④ persistMultimodalPool / persistMultimodalPoolPremium 写多模态双层池 (对应 key 跳过则不写)
+ * ⑤ persistRoleModel 写 config 角色
+ * ⑥ io.note 汇总表。导出便于测试直驱。
+ */
+export async function applyRolePreset(
+  preset: RolePreset,
+  updates: Record<string, string>,
+  io: WizardIO,
+  env: Record<string, string | undefined>,
+  persist: PresetPersistDeps = REAL_PERSIST,
+): Promise<void> {
+  Object.assign(updates, preset.env);
+
+  // 缺的 key 逐个提示 (已在 env 或本次 updates 里的跳过)。跳过 → 该 provider 的 pool/config 角色不写。
+  const missingProviders = new Set<string>();
+  for (const kp of preset.keyPrompts ?? []) {
+    if (env[kp.env]?.trim() || updates[kp.env]?.trim()) continue;
+    const v = await io.ask(`${kp.label} — ${kp.env} (回车跳过)`, { secret: true });
+    if (v.trim()) updates[kp.env] = v.trim();
+    else if (kp.provider) missingProviders.add(kp.provider);
+  }
+
+  // 自定 OpenAI 兼容端点 → config.json apis 段 (key 可后补, 端点元数据先落)。
+  for (const api of preset.customApis ?? []) {
+    persist.persistCustomApi({ id: api.id, baseUrl: api.baseUrl, keyEnv: api.keyEnv });
+  }
+
+  // 多模态池 (便宜层 + 贵层): 对应 provider key 跳过的坐标剔除; 全空则不写。
+  let writtenPool: string[] = [];
+  if (preset.multimodalPool?.length) {
+    writtenPool = preset.multimodalPool.filter((c) => !missingProviders.has(coordProvider(c)));
+    if (writtenPool.length) persist.persistMultimodalPool(writtenPool);
+    else io.note(dim(fg('riceMuted', '多模态池未写 (对应 key 跳过, 可稍后 /config 补)')));
+  }
+  let writtenPremium: string[] = [];
+  if (preset.multimodalPoolPremium?.length) {
+    writtenPremium = preset.multimodalPoolPremium.filter((c) => !missingProviders.has(coordProvider(c)));
+    if (writtenPremium.length) persist.persistMultimodalPoolPremium(writtenPremium);
+    else io.note(dim(fg('riceMuted', '多模态贵层池未写 (对应 key 跳过, 可稍后 /config 补)')));
+  }
+
+  // config.json 角色写入 (如 verifier 跨家族) — provider key 跳过的同样不写。
+  const writtenRoles: Array<{ role: string; coord: string }> = [];
+  for (const cr of preset.configRoles ?? []) {
+    if (missingProviders.has(coordProvider(cr.coord))) continue;
+    persist.persistRoleModel(cr.role, cr.coord);
+    writtenRoles.push({ role: cr.role, coord: cr.coord });
+  }
+
+  // 汇总表: 本次写入的角色矩阵。
+  const rows: Array<[string, string]> = ROLE_ENV_ALLOWLIST.filter((k) => k in updates).map((k) => [
+    k,
+    updates[k]!,
+  ]);
+  for (const r of writtenRoles) rows.push([`config:${r.role}`, r.coord]);
+  if (writtenPool.length) rows.push(['config:multimodalPool', writtenPool.join(', ')]);
+  if (writtenPremium.length) rows.push(['config:multimodalPoolPremium', writtenPremium.join(', ')]);
+  for (const api of preset.customApis ?? []) {
+    rows.push([`config:api:${api.id}`, `${api.baseUrl} (key: ${api.keyEnv})`]);
+  }
+  const width = Math.max(...rows.map(([k]) => k.length));
+  io.note(
+    [
+      bold(fg('gold', `角色矩阵 · ${preset.label}`)),
+      ...rows.map(([k, v]) => `  ${fg('rice', k.padEnd(width))}  ${dim(fg('riceMuted', v))}`),
+    ].join('\n'),
+  );
 }
 
 /**
@@ -214,8 +312,16 @@ export async function runInitWizard(deps: InitWizardDeps): Promise<InitWizardRes
     if (anysearch.trim()) updates.ANYSEARCH_API_KEY = anysearch.trim();
   }
 
-  // ⑥ 角色模型覆盖 (可选, 默认走统一 runtime model)
-  if (await io.confirm('自定义角色模型 (conductor/leaf/plan)? 默认全走 runtime model', false)) {
+  // ⑥ 角色模型矩阵: preset 一键配全套, 或手动两问 (旧行为), 或跳过。
+  const presetChoice = await io.select('角色模型矩阵 (conductor/leaf/plan/…)', [
+    ...ROLE_PRESETS.map((p) => ({ id: p.id, label: p.label })),
+    { id: 'manual', label: '手动逐项 / 跳过' },
+  ]);
+  const preset = ROLE_PRESETS.find((p) => p.id === presetChoice);
+  if (preset) {
+    await applyRolePreset(preset, updates, io, env, deps.persist ?? REAL_PERSIST);
+  } else if (presetChoice === 'manual') {
+    // 旧两问行为: 逐项覆盖 (回车跳过 = 走统一 runtime model)。
     const conductor = await io.ask('OMD_CG_CONDUCTOR_MODEL (provider:model, 回车跳过)');
     if (conductor.trim()) updates.OMD_CG_CONDUCTOR_MODEL = conductor.trim();
     const plan = await io.ask('OMD_PLAN_MODEL (provider:model, 回车跳过)');

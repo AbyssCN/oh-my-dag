@@ -48,7 +48,8 @@ export type VerifierFn = (req: {
 export type VerifierStatusReason =
   | 'on' // 校验启用
   | 'off:flag' // OMD_VERIFY=0 显式关
-  | 'off:unresolved'; // 默认 verifier 模型坐标解析不了 → 降级关 (非 explicit)
+  | 'off:unresolved' // 默认 verifier 模型坐标解析不了 → 降级关 (非 explicit)
+  | 'off:invalid-explicit'; // 显式配的 verifier 坐标坏 → 响亮警告 + 降级关 (boot 永不砖)
 export interface VerifierStatus {
   enabled: boolean;
   reason: VerifierStatusReason;
@@ -191,11 +192,15 @@ export function resolveVerification(opts: ResolveVerificationOpts = {}): Verific
   try {
     assertModelResolvable(verifierModel, 'verifier');
   } catch (err) {
+    // boot 永不砖 (owner 锁 2026-07-19): 配错 ≠ 不能启动 —— 用户必须能进 TUI/`omd init` 修配置。
+    // explicit 配错时用 error 级响亮警告 (别让他以为开着) + 状态带 'off:invalid-explicit' 供 /config 展示。
     if (explicit) {
-      throw new Error(
-        `[omd/verifier] 显式指定的 verifier 模型 '${verifierModel}' 无法解析: ${(err as Error).message} ` +
-          `— 修正 OMD_VERIFIER_MODEL 为完整 provider:model, 或设 OMD_VERIFY=0 显式关。`,
+      logger.error(
+        { verifierModel, err: (err as Error).message },
+        `[omd/verifier] 跨模型校验: OFF — 显式指定的 verifier 模型无法解析 (typo? provider 未注册/缺 key?) ` +
+          `— 修正 OMD_VERIFIER_MODEL / config.json 的 verifier 为完整 provider:model, 或跑 omd init 重配。`,
       );
+      return { status: { enabled: false, reason: 'off:invalid-explicit' } };
     }
     logger.warn(
       { verifierModel, err: (err as Error).message },
