@@ -6,6 +6,7 @@ import {
   prototypeBranch,
   prototypeDir,
   researchResultPath,
+  researchScriptPath,
   type DispatchDeps,
 } from './dispatch';
 import type { PathMap, Ticket } from './types';
@@ -43,10 +44,14 @@ describe('dispatch — dispatchTicket routes by type', () => {
     expect(r.ticketId).toBe('r1');
     expect(r.resultPath).toBe(researchResultPath('/repo', 'ship-x', 'r1'));
     expect(r.pid).toBe(4242);
-    // 命令: bun run scripts/dag-research.ts "<title>" --out <resultPath>
+    // 命令: bun run <包内 scripts/dag-research.ts 绝对路径> "<title>" --out <resultPath>
+    // (按包安装位置解析, 不依赖 ctx.cwd — 安装到别的 repo 也找得到脚本)
     expect(d.spawns).toHaveLength(1);
     const cmd = d.spawns[0]!;
-    expect(cmd.slice(0, 4)).toEqual(['bun', 'run', 'scripts/dag-research.ts', 'which store?']);
+    expect(cmd.slice(0, 2)).toEqual(['bun', 'run']);
+    expect(cmd[2]).toBe(researchScriptPath());
+    expect(cmd[2]!.endsWith('scripts/dag-research.ts')).toBe(true);
+    expect(cmd[3]).toBe('which store?');
     expect(cmd[cmd.indexOf('--out') + 1]).toBe(r.resultPath);
     expect(d.gits).toHaveLength(0);
   });

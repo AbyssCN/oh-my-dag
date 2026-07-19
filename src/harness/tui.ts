@@ -26,6 +26,8 @@ import { createModelRouterFromEnv } from './model-router';
 import { createPlanExtension, createPlanModeState, createPathfinderModeState, ensurePlanToggleKeyFree } from './plan';
 import { createExecuteExtension } from './execute-extension';
 import { createPathfinderExtension } from './pathfinder-extension';
+import { createAgentLeafRunner } from './agent-leaf';
+import { createCommandLeafRunner } from './command-leaf';
 import { createMultimodalRouteExtension } from './multimodal-route-extension';
 import { createBannerExtension, ensureOmdTheme } from './branding';
 import { detectRuntimeConfig, runInitWizard, createReadlineIO } from './init';
@@ -187,11 +189,23 @@ if (planKeyFix.changed) {
 const planState = createPlanModeState();
 const planExt = createPlanExtension({ state: planState });
 // plan→DAG→runtime 交接: /execute 把 SDD 丢给 conductor 分解执行, 跑完发验收简报给 runtime 模型。
+// 真改文件的叶子执行器 (executeExt + pathfinderExt 共享): 不接 = agent 节点降级纯文本 (空转交付)。
+const agentRunner = createAgentLeafRunner({ cwd: process.cwd(), hashlineEdit: true });
+/** pathfinder leaf 模型: 显式 env > (deepseek key 在 → flash 兜底) > 不配 (引导语可达)。 */
+function resolvePathfinderLeafModel(explicit: string | undefined): { leafModel?: string } {
+  if (explicit) return { leafModel: explicit };
+  if (process.env.DEEPSEEK_BASE_URL && process.env.DEEPSEEK_API_KEY) return { leafModel: 'deepseek:deepseek-v4-flash' };
+  return {};
+}
+const commandRunner = createCommandLeafRunner({ allowlist: ['bun', 'tsc', 'npx'], cwd: process.cwd(), timeoutMs: 180_000 });
 const executeExt = createExecuteExtension({
-  conductorModel: process.env.OMD_ITER_CONDUCTOR_MODEL ?? 'deepseek:deepseek-v4-flash',
+  // conductorModel 不传: resolveConductorDefault 自会走 OMD_ITER_CONDUCTOR_MODEL > runtime 坐标 (D-8)。
+  // 此处硬编码兜底会让"conductor = runtime 同款"永远不生效 (identity 承诺 vs 实际行为背离)。
   leafModel: process.env.OMD_ITER_LEAF_MODEL ?? 'deepseek:deepseek-v4-flash',
   agentLeafModel: process.env.OMD_ITER_AGENT_MODEL ?? 'deepseek:deepseek-v4-flash',
   conductorEscalationModel: process.env.OMD_CONDUCTOR_ESCALATION_MODEL,
+  agentRunner,
+  commandRunner,
   planState,
 });
 
@@ -202,8 +216,12 @@ const pathfinderState = createPathfinderModeState();
 const pathfinderExt = createPathfinderExtension({
   cwd: process.cwd(),
   state: pathfinderState,
-  leafModel: process.env.OMD_ITER_LEAF_MODEL ?? 'deepseek:deepseek-v4-flash',
-  agentLeafModel: process.env.OMD_ITER_AGENT_MODEL ?? 'deepseek:deepseek-v4-flash',
+  // leafModel: 显式 env 优先; deepseek 兜底只在 key 真的在时给 —— 无 key 时留空,
+  // 让"未配 leafModel"的引导语可达 (否则用户只会看到 raw 的 provider 未注册错误)。
+  ...(resolvePathfinderLeafModel(process.env.OMD_ITER_LEAF_MODEL)),
+  ...(process.env.OMD_ITER_AGENT_MODEL ? { agentLeafModel: process.env.OMD_ITER_AGENT_MODEL } : {}),
+  agentRunner,
+  commandRunner,
   finalize: process.env.OMD_PATH_FINALIZE === '1',
   autoPrefetch: process.env.OMD_PATH_PREFETCH === '1',
 });
