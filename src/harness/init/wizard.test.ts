@@ -3,8 +3,11 @@
  * 断言写入的 env key 矩阵 + persistMultimodalPool(Premium) / persistRoleModel 落 config 调用。
  */
 import { describe, expect, test } from 'bun:test';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { WizardIO, PresetPersistDeps } from './wizard';
-import { runInitWizard, applyRolePreset, upsertEnv } from './wizard';
+import { runInitWizard, applyRolePreset, upsertEnv, listPiAuthReady, runPiOAuthStep } from './wizard';
 import { ROLE_PRESETS } from './role-presets';
 
 /** 脚本化 IO: select/ask/confirm 按队列出答案, note 收集。 */
@@ -161,6 +164,77 @@ describe('applyRolePreset · key 跳过闸', () => {
     expect(calls.pools).toEqual([['qwen:qwen3.7-plus', 'mimo:mimo-2.5-pro-ultraspeed']]);
     expect(calls.premiums).toEqual([['kimi:kimi-k3']]);
     expect(calls.roles).toEqual([['verifier', 'qwen:qwen3.7-max']]);
+  });
+});
+
+describe('pi OAuth 步骤 (⑤′)', () => {
+  function fakeAuthJson(content: unknown): string {
+    const dir = mkdtempSync(join(tmpdir(), 'wizard-pi-auth-'));
+    const p = join(dir, 'auth.json');
+    writeFileSync(p, JSON.stringify(content));
+    return p;
+  }
+
+  test('listPiAuthReady: api_key 有 key / oauth 有 access 算就绪; 空值/坏文件过滤', () => {
+    const p = fakeAuthJson({
+      'kimi-coding': { type: 'oauth', access: 'tok', refresh: 'r', expires: 9 },
+      openai: { type: 'api_key', key: 'sk-x' },
+      empty: { type: 'oauth', access: '' },
+    });
+    expect(listPiAuthReady(p).sort()).toEqual(['kimi-coding', 'openai']);
+    expect(listPiAuthReady('/nonexistent/auth.json')).toEqual([]);
+  });
+
+  test('检测: 就绪条目 note 列出; confirm 否 → 不进登录流', async () => {
+    const p = fakeAuthJson({ 'kimi-coding': { type: 'oauth', access: 'tok', expires: 9 } });
+    const { io, notes } = scriptedIO({ selects: [], asks: [], confirms: [false] });
+    await runPiOAuthStep(io, { authPath: p, oauthProviders: () => [] });
+    expect(notes.some((n) => n.includes('pi OAuth 已就绪') && n.includes('kimi-coding'))).toBe(true);
+  });
+
+  test('内联登录: device code 经 note 展示, 凭证经 saveCredential 落盘', async () => {
+    const saved: Array<[string, Record<string, unknown>]> = [];
+    const { io, notes } = scriptedIO({ selects: ['github-copilot'], asks: [], confirms: [true] });
+    await runPiOAuthStep(io, {
+      authPath: '/nonexistent/auth.json',
+      oauthProviders: () => [
+        {
+          id: 'github-copilot',
+          name: 'GitHub Copilot',
+          login: async (cb) => {
+            cb.onDeviceCode({ userCode: 'AB-12', verificationUri: 'https://github.com/login/device' });
+            return { access: 'gh-tok', refresh: 'gh-r', expires: 99 };
+          },
+        },
+      ],
+      saveCredential: (prov, creds) => saved.push([prov, creds]),
+    });
+    expect(notes.some((n) => n.includes('github.com/login/device') && n.includes('AB-12'))).toBe(true);
+    expect(saved).toEqual([['github-copilot', { access: 'gh-tok', refresh: 'gh-r', expires: 99 }]]);
+    expect(notes.some((n) => n.includes('登录成功'))).toBe(true);
+  });
+
+  test('kimi-coding (无内置登录件) → 出 pi CLI /login 精确指引, 不调 saveCredential', async () => {
+    const saved: string[] = [];
+    const { io, notes } = scriptedIO({ selects: ['kimi-coding'], asks: [], confirms: [true] });
+    await runPiOAuthStep(io, {
+      authPath: '/nonexistent/auth.json',
+      oauthProviders: () => [],
+      saveCredential: (prov) => saved.push(prov),
+    });
+    expect(notes.some((n) => n.includes('/login') && n.includes('pi-coding-agent'))).toBe(true);
+    expect(saved).toEqual([]);
+  });
+
+  test('登录抛错 → note 失败不抛出 (wizard 不砖)', async () => {
+    const { io, notes } = scriptedIO({ selects: ['anthropic'], asks: [], confirms: [true] });
+    await runPiOAuthStep(io, {
+      authPath: '/nonexistent/auth.json',
+      oauthProviders: () => [
+        { id: 'anthropic', name: 'Anthropic', login: async () => { throw new Error('boom'); } },
+      ],
+    });
+    expect(notes.some((n) => n.includes('登录失败') && n.includes('boom'))).toBe(true);
   });
 });
 

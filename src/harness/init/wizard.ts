@@ -9,7 +9,14 @@
  *
  * env 命名: 源码 OMD_ 前缀 (sync scrub → OMD_); provider key (DEEPSEEK_ / MIMO_ 前缀) 第三方名不 scrub。
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { homedir } from 'node:os';
+import {
+  getOAuthProviders,
+  type OAuthCredentials,
+  type OAuthLoginCallbacks,
+} from '@earendil-works/pi-ai/oauth';
 import { bold, dim, fg } from '../branding/palette';
 import {
   persistCustomApi,
@@ -138,6 +145,130 @@ export async function probeProvider(
   }
 }
 
+// ── pi OAuth (统一模型层, 2026-07-19): auth.json 检测 + 可选内联登录 ────────────────
+//
+// grounding (pi-ai 0.77.0 oauth.d.ts 实测): 内置 OAuthProviderInterface 只有 anthropic /
+// github-copilot / openai-codex, 三者的 login(callbacks) 均可编程调用 (onAuth/onDeviceCode/
+// onPrompt/onSelect 回调) → 可内联跑。kimi-coding **无**内置登录件 (pi 侧 extension 注册) →
+// 只能指引去 pi CLI 里 /login 后重跑 omd init。已登录检测 = 读 ~/.pi/agent/auth.json。
+
+/** pi auth.json 默认路径。 */
+export function defaultPiAuthPath(): string {
+  return join(homedir(), '.pi', 'agent', 'auth.json');
+}
+
+/**
+ * 检测 auth.json 里已就绪的 provider (api_key 有 key, 或 oauth 有 access)。
+ * 缺文件/坏 JSON → [] (检测永不砖 wizard)。纯函数可测 (注入路径)。
+ */
+export function listPiAuthReady(authPath = defaultPiAuthPath()): string[] {
+  try {
+    if (!existsSync(authPath)) return [];
+    const all = JSON.parse(readFileSync(authPath, 'utf8')) as Record<
+      string,
+      { type?: unknown; key?: unknown; access?: unknown } | undefined
+    >;
+    return Object.entries(all)
+      .filter(([, v]) =>
+        (typeof v?.key === 'string' && v.key.trim()) ||
+        (typeof v?.access === 'string' && v.access.trim()),
+      )
+      .map(([k]) => k);
+  } catch {
+    return [];
+  }
+}
+
+/** 内联可跑的 pi OAuth 登录件 (pi-ai OAuthProviderInterface 子集)。 */
+export interface PiOAuthLoginProvider {
+  id: string;
+  name: string;
+  login: (callbacks: OAuthLoginCallbacks) => Promise<OAuthCredentials>;
+}
+
+/** pi OAuth 步骤的注入面 (测试换假 auth.json / 假登录件)。 */
+export interface PiAuthDeps {
+  authPath?: string;
+  /** 内联登录件列表。默认 = pi-ai oauth getOAuthProviders() (懒 require)。 */
+  oauthProviders?: () => PiOAuthLoginProvider[];
+  /** 登录成功后把凭证写回 auth.json。默认 = 读-改-写 authPath。 */
+  saveCredential?: (provider: string, creds: OAuthCredentials) => void;
+}
+
+function realOAuthProviders(): PiOAuthLoginProvider[] {
+  return getOAuthProviders().map((p) => ({
+    id: p.id,
+    name: p.name,
+    login: (cb) => p.login(cb),
+  }));
+}
+
+function saveCredentialToAuthJson(authPath: string, provider: string, creds: OAuthCredentials): void {
+  const all = existsSync(authPath)
+    ? (JSON.parse(readFileSync(authPath, 'utf8')) as Record<string, unknown>)
+    : {};
+  all[provider] = { type: 'oauth', ...creds };
+  mkdirSync(dirname(authPath), { recursive: true });
+  writeFileSync(authPath, `${JSON.stringify(all, null, 2)}\n`, 'utf8');
+}
+
+/**
+ * pi OAuth 登录步 (runInitWizard ⑤′): ① auth.json 已就绪清单 (纯展示, 零交互消耗)
+ * ② confirm (默认否 — 既有脚本化测试队列不受扰) → select 登录件 → 内联跑 device/browser flow
+ *    (URL/代码经 io.note, 输入经 io.ask/io.select) → 凭证写回 auth.json。
+ * ③ kimi-coding 等无内置登录件的 → 打印精确指引 (pi CLI /login → 重跑 omd init)。
+ * 导出便于测试直驱。永不抛 (登录失败 note 后继续 wizard)。
+ */
+export async function runPiOAuthStep(io: WizardIO, piAuth: PiAuthDeps = {}): Promise<void> {
+  const authPath = piAuth.authPath ?? defaultPiAuthPath();
+  const ready = listPiAuthReady(authPath);
+  if (ready.length) {
+    io.note(
+      `${fg('success', '✓')} pi OAuth 已就绪: ${fg('rice', ready.join(', '))} ${dim(fg('riceMuted', `(来自 ${authPath} — 可直接用作 provider:model 坐标, 如 kimi-coding:k3)`))}`,
+    );
+  }
+  const wantLogin = await io.confirm('跑 pi OAuth 登录? (Claude Pro/Max · GitHub Copilot · ChatGPT Codex; 可跳过)', false);
+  if (!wantLogin) return;
+
+  const providers = (piAuth.oauthProviders ?? realOAuthProviders)();
+  const choice = await io.select('选 OAuth provider', [
+    ...providers.map((p) => ({ id: p.id, label: p.name })),
+    { id: 'kimi-coding', label: 'Kimi For Coding (无内置登录件 — 出指引)' },
+  ]);
+  if (!choice) return;
+  const provider = providers.find((p) => p.id === choice);
+  if (!provider) {
+    // 无内置登录件 (kimi-coding 及未知): 精确指引 — pi CLI 登录后重跑 init。
+    io.note(
+      [
+        fg('warning', `${choice} 的登录件不在 pi-ai 内置 OAuth (anthropic/github-copilot/openai-codex) 里。`),
+        `请在 pi CLI 里登录后重跑 omd init:`,
+        `  ${fg('rice', 'bunx @earendil-works/pi-coding-agent')}   ${dim(fg('riceMuted', '# 或已装的 `pi`'))}`,
+        `  ${fg('rice', `/login`)}                                ${dim(fg('riceMuted', `# 选 ${choice}, 完成 device flow`))}`,
+        `  ${dim(fg('riceMuted', `凭证会落 ${authPath}, omd 的 pi 通道即自动可用`))}`,
+      ].join('\n'),
+    );
+    return;
+  }
+  try {
+    const callbacks: OAuthLoginCallbacks = {
+      onAuth: (info) =>
+        io.note(`打开浏览器授权: ${fg('rice', info.url)}${info.instructions ? `\n${dim(fg('riceMuted', info.instructions))}` : ''}`),
+      onDeviceCode: (info) =>
+        io.note(`打开 ${fg('rice', info.verificationUri)} 输入代码 ${bold(fg('gold', info.userCode))} (轮询等待授权…)`),
+      onPrompt: (prompt) => io.ask(prompt.message),
+      onManualCodeInput: () => io.ask('粘贴回调 code'),
+      onSelect: (prompt) => io.select(prompt.message, prompt.options),
+      onProgress: (m) => io.note(dim(fg('riceMuted', m))),
+    };
+    const creds = await provider.login(callbacks);
+    (piAuth.saveCredential ?? ((pid, c) => saveCredentialToAuthJson(authPath, pid, c)))(provider.id, creds);
+    io.note(`${fg('success', '✓')} ${provider.name} 登录成功 — 凭证已写 ${authPath}`);
+  } catch (e) {
+    io.note(`${fg('error', '✗')} ${provider.name} 登录失败: ${(e as Error).message} ${dim(fg('riceMuted', '(可稍后在 pi CLI 里 /login)'))}`);
+  }
+}
+
 /** wizard 的 IO 抽象 (默认 readline; 测试注入脚本化)。 */
 export interface WizardIO {
   /** 单选: 返回选中项 id (或 undefined = 取消)。 */
@@ -165,6 +296,8 @@ export interface InitWizardDeps {
   fetchImpl?: typeof fetch;
   /** preset 的 config.json 写入口 (注入便于测试)。 */
   persist?: PresetPersistDeps;
+  /** pi OAuth 步骤注入面 (测试换假 auth.json / 假登录件)。 */
+  piAuth?: PiAuthDeps;
 }
 
 export interface InitWizardResult {
@@ -311,6 +444,9 @@ export async function runInitWizard(deps: InitWizardDeps): Promise<InitWizardRes
     const anysearch = await io.ask('ANYSEARCH_API_KEY (回车跳过)', { secret: true });
     if (anysearch.trim()) updates.ANYSEARCH_API_KEY = anysearch.trim();
   }
+
+  // ⑤′ pi OAuth: auth.json 就绪检测 + 可选内联登录 (kimi-coding 等无登录件的出指引)。
+  await runPiOAuthStep(io, deps.piAuth ?? {});
 
   // ⑥ 角色模型矩阵: preset 一键配全套, 或手动两问 (旧行为), 或跳过。
   const presetChoice = await io.select('角色模型矩阵 (conductor/leaf/plan/…)', [

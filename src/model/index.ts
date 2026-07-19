@@ -17,6 +17,7 @@ import type {
 } from './types';
 import { getProvider } from './providers';
 import { emitModelUsage } from './accounting';
+import { resolvePiModel, piRequest, type PiModel } from './pi-transport';
 
 export type {
   ContentPart,
@@ -87,7 +88,16 @@ function normalizeFinish(raw: string | undefined | null): string | undefined {
   }
 }
 
-function resolveModel(req: ModelRequest): { cfg: ProviderConfig; modelId: string; resolved: string } {
+/**
+ * 解析目标的判别联合 (统一模型层, 2026-07-19):
+ *   own = 自有 registry 命中 (自定网关 / env 注册 provider) — 走本文件 openai/anthropic 直连 (零回归);
+ *   pi  = registry 未注册但 pi-ai 目录认识 — 走 pi-transport (协议/env key 映射全交 pi)。
+ */
+type ResolvedTarget =
+  | { kind: 'own'; cfg: ProviderConfig; modelId: string; resolved: string }
+  | { kind: 'pi'; piModel: PiModel; resolved: string };
+
+function resolveModel(req: ModelRequest): ResolvedTarget {
   const raw = req.model;
   if (!raw) {
     throw new ModelError('config', 'callModel: req.model required (format "provider:modelId")');
@@ -95,22 +105,31 @@ function resolveModel(req: ModelRequest): { cfg: ProviderConfig; modelId: string
   const sep = raw.indexOf(':');
   const providerName = sep === -1 ? raw : raw.slice(0, sep);
   const cfg = getProvider(providerName);
-  if (!cfg) {
-    throw new ModelError('config', `callModel: provider '${providerName}' not registered`);
+  if (cfg) {
+    const modelId = sep === -1 ? cfg.defaultModel ?? '' : raw.slice(sep + 1);
+    if (!modelId) {
+      throw new ModelError(
+        'config',
+        `callModel: no model id in '${raw}' and provider '${providerName}' has no defaultModel`,
+      );
+    }
+    return { kind: 'own', cfg, modelId, resolved: `${providerName}:${modelId}` };
   }
-  const modelId = sep === -1 ? cfg.defaultModel ?? '' : raw.slice(sep + 1);
-  if (!modelId) {
-    throw new ModelError(
-      'config',
-      `callModel: no model id in '${raw}' and provider '${providerName}' has no defaultModel`,
-    );
+  // ② pi-ai 目录后备 (新默认): registry 不认识 → 探 pi 目录 (纯目录查询无网络)。
+  // 裸 provider 坐标 (无 ':model') 不走 pi — pi 路必须显式 model id, 保持旧错误语义。
+  const modelId = sep === -1 ? '' : raw.slice(sep + 1);
+  if (modelId) {
+    const piModel = resolvePiModel(providerName, modelId);
+    if (piModel) return { kind: 'pi', piModel, resolved: `${providerName}:${modelId}` };
   }
-  return { cfg, modelId, resolved: `${providerName}:${modelId}` };
+  // ③ 都不认 → 既有清晰错误 (文案保持不变, 附 pi 提示)。
+  throw new ModelError('config', `callModel: provider '${providerName}' not registered`);
 }
 
 /**
  * 纯解析校验: 坐标能否解析成可调模型 (有 model id 或裸 provider 有 defaultModel)。
- * 解析规则单一真理源 = resolveModel。不能解析 → 抛 ModelError('config')。无网络副作用。
+ * 解析规则单一真理源 = resolveModel — **两路都查**: 自有 registry 优先, miss 再探 pi-ai 目录
+ * (getModel/getModels 纯查表)。不能解析 → 抛 ModelError('config')。无网络副作用。
  * 用途: wiring 层 (如 resolveVerification) fail-fast —— 把"DAG 跑完才崩"提到"DAG 跑前崩"。
  * `label` 进错误信息, 点名是哪个角色坐标坏 (如 'verifier')。
  */
@@ -256,14 +275,17 @@ async function anthropicRequest(
 }
 
 function doRequest(
-  cfg: ProviderConfig,
-  modelId: string,
+  target: ResolvedTarget,
   messages: ModelMessage[],
   req: ModelRequest,
 ): Promise<RawResult> {
-  return cfg.api === 'anthropic-messages'
-    ? anthropicRequest(cfg, modelId, messages, req)
-    : openaiRequest(cfg, modelId, messages, req);
+  if (target.kind === 'pi') {
+    // pi-transport 的 PiCallResult 与 RawResult 结构同形 (text/usage/raw/finishReason)。
+    return piRequest(target.piModel, messages, req);
+  }
+  return target.cfg.api === 'anthropic-messages'
+    ? anthropicRequest(target.cfg, target.modelId, messages, req)
+    : openaiRequest(target.cfg, target.modelId, messages, req);
 }
 
 /** Strip a ```json … ``` fence if the model wrapped its JSON in one. */
@@ -295,7 +317,8 @@ export async function callModel(req: ModelRequest): Promise<ModelResponse> {
   if (!req.messages || req.messages.length === 0) {
     throw new ModelError('config', 'callModel: messages required');
   }
-  const { cfg, modelId, resolved } = resolveModel(req);
+  const target = resolveModel(req);
+  const resolved = target.resolved;
   const maxRetries = req.maxRetries ?? 2;
   const baseDelay = req.retryDelayMs ?? 250;
 
@@ -314,7 +337,7 @@ export async function callModel(req: ModelRequest): Promise<ModelResponse> {
     }
     let result: RawResult;
     try {
-      result = await doRequest(cfg, modelId, messages, req);
+      result = await doRequest(target, messages, req);
     } catch (e) {
       if (req.signal?.aborted) {
         const aborted = new ModelError('transport', 'callModel: aborted', { cause: e });
