@@ -226,9 +226,15 @@ export function resolveVerification(opts: ResolveVerificationOpts = {}): Verific
   };
 }
 
-/** escalation 模型的 provider 是否已注册 (= 是否配了对应 API key)。未配 → 不升级, 维持弱模型。 */
+/** escalation 模型是否可解析 (= 配了 key 或 pi 目录后备可达)。不可达 → 不升级, 维持弱模型。
+ *  走完整解析链 (自有注册表 + pi-ai 目录后备) — 仅查 listProviders 会漏掉 kimi-coding 等
+ *  OAuth provider (统一模型层后它们只在 pi 后备通道可达), 把 K3 挡在 escalation 位外。 */
 export function escalationProviderReady(coord: string | undefined): coord is string {
   if (!coord) return false;
-  const provider = coord.split(':')[0];
-  return !!provider && listProviders().includes(provider);
+  try {
+    assertModelResolvable(coord, 'escalation');
+    return true;
+  } catch {
+    return false;
+  }
 }
