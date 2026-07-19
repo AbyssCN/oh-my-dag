@@ -1,7 +1,7 @@
 {
   "name": "oh-my-dag",
-  "version": "0.2.0",
-  "description": "oh-my-dag — a complete harness for the pi coding-agent runtime, in the oh-my-* tradition. A self-consolidating memory layer, a DAG execution engine (conductor → typed nodes → concurrent fan-out → cross-model verify → escalate on failure), plan mode with a read-only gate, an edit→verify tool gate, an MCP router, and a 17-skill bundle. Ships a bundled terminal agent; any OpenAI-compatible backend plugs in.",
+  "version": "0.3.0",
+  "description": "oh-my-dag — a complete harness for the pi coding-agent runtime, in the oh-my-* tradition. A DAG execution engine (typed nodes → concurrent fan-out → cross-model verify → escalate on failure), pathfinder mode (persistent decision maps for multi-session work), an agent-template registry, a self-consolidating memory layer, an edit→verify tool gate, an MCP router, and a 22-skill bundle. Ships a bundled terminal agent; any OpenAI-compatible backend plugs in, plus OAuth providers via the pi-ai catalog.",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -37,10 +37,11 @@
   },
   "files": [
     "src",
+    "!src/**/*.test.ts",
     "scripts",
+    "!scripts/**/*.test.ts",
     "skills",
     "substrate",
-    "assets",
     "umbrella.md",
     "manifest.json",
     "tsconfig.json",
