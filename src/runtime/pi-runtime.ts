@@ -26,7 +26,7 @@ import {
   type AgentSessionEvent,
   type ExtensionFactory,
 } from '@earendil-works/pi-coding-agent';
-import { getModel } from '@earendil-works/pi-ai';
+import { getModel } from '@earendil-works/pi-ai/compat'; // 0.80: 目录读挪 /compat
 import { logger } from '../logger';
 import { createKimiOAuthExtension } from '../model/kimi-oauth';
 import type { OmdController } from '../harness/controller';

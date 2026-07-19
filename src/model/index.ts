@@ -18,11 +18,6 @@ import type {
 import { getProvider } from './providers';
 import { emitModelUsage } from './accounting';
 import { resolvePiModel, piRequest, type PiModel } from './pi-transport';
-import { registerKimiCodingOAuth } from './kimi-oauth';
-
-// kimi-coding OAuth 登录件注册 (进程级全局注册表): wizard 内联登录 + AuthStorage/pi-transport
-// 过期自动刷新全部自包含 (见 kimi-oauth.ts)。幂等, 宿主先注册则尊重。
-registerKimiCodingOAuth();
 
 export type {
   ContentPart,

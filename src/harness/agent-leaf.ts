@@ -18,7 +18,7 @@ import {
   type AgentSession,
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
-import { getModel } from '@earendil-works/pi-ai';
+import { getModel } from '@earendil-works/pi-ai/compat'; // 0.80: 目录读挪 /compat
 import { runScopedSession } from '../runtime/pi-runtime';
 import { parseModelRef } from './fleet';
 import { createHashlineCustomTools } from './hashline';
