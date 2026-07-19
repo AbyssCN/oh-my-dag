@@ -17,8 +17,10 @@ export {
 export {
   buildReviewPrompt,
   buildGateReview,
+  buildSpecReviewPrompt,
   type ReviewDimension,
   type ReviewPromptOpts,
+  type SpecReviewPromptOpts,
 } from './templates';
 export {
   reviewActivates,
@@ -31,7 +33,9 @@ export {
 export {
   runReview,
   DIMS_BY_GATE,
+  SPEC_SKIPPED_NOTE,
   type ReviewFinding,
   type RunReviewResult,
   type RunReviewOpts,
+  type RunReviewDeps,
 } from './run';

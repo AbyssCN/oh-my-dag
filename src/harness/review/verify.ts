@@ -10,6 +10,9 @@
 import { $ } from 'bun';
 import { send } from '../../model/gateway';
 
+/** 可注入的模型调用 (测试 fake generate 用; 默认 gateway send)。 */
+export type ReviewSendFn = typeof send;
+
 export interface ExtractedFinding {
   severity: 'P0' | 'P1';
   file: string;
@@ -49,11 +52,12 @@ function findingKey(f: ExtractedFinding): string {
 export async function extractFindings(
   dimensionTexts: { dimension: string; text: string }[],
   model: string,
+  sendFn: ReviewSendFn = send,
 ): Promise<ExtractedFinding[]> {
   const perDim = await Promise.all(
     dimensionTexts.map(async (d): Promise<ExtractedFinding[]> => {
       if (!d.text?.trim()) return [];
-      const res = await send({
+      const res = await sendFn({
         model,
         messages: [{
           role: 'user',
@@ -122,10 +126,11 @@ async function verifyOne(
   cwd: string,
   model: string,
   verdictEffort?: 'off' | 'low' | 'medium' | 'high' | 'xhigh',
+  sendFn: ReviewSendFn = send,
 ): Promise<VerifiedFinding> {
   try {
     const evidence = await gatherEvidence(f, cwd);
-    const res = await send({
+    const res = await sendFn({
       model,
       thinkingLevel: verdictEffort,
       messages: [{
@@ -164,11 +169,18 @@ ${evidence}
 /** 收敛层入口:extract → 并发取证+裁决。findings 为空 → []。 */
 export async function verifyFindings(
   dimensionTexts: { dimension: string; text: string }[],
-  opts: { model: string; cwd?: string; verdictEffort?: 'off' | 'low' | 'medium' | 'high' | 'xhigh' },
+  opts: {
+    model: string;
+    cwd?: string;
+    verdictEffort?: 'off' | 'low' | 'medium' | 'high' | 'xhigh';
+    /** 注入模型调用 (测试用; 默认 gateway send)。 */
+    send?: ReviewSendFn;
+  },
 ): Promise<VerifiedFinding[]> {
   const cwd = opts.cwd ?? process.cwd();
+  const sendFn = opts.send ?? send;
   // extract = 纯结构化(JSON 抽取), 不吃 effort; 只有 verdict 判决焚推理 (verdictEffort)。
-  const extracted = await extractFindings(dimensionTexts, opts.model);
+  const extracted = await extractFindings(dimensionTexts, opts.model, sendFn);
   if (extracted.length === 0) return [];
-  return Promise.all(extracted.map((f) => verifyOne(f, cwd, opts.model, opts.verdictEffort)));
+  return Promise.all(extracted.map((f) => verifyOne(f, cwd, opts.model, opts.verdictEffort, sendFn)));
 }

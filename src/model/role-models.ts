@@ -234,6 +234,22 @@ export function persistMultimodalPool(coords: string[], path = configPath()): vo
   }, path);
 }
 
+/** 解析多模态**贵层**池 (config.multimodalPoolPremium) — 便宜层分析置信不足/显式深读时升级。无 → []。 */
+export function resolveMultimodalPoolPremium(path = configPath()): string[] {
+  const pool = (fileConfig(path) as { multimodalPoolPremium?: unknown }).multimodalPoolPremium;
+  return Array.isArray(pool)
+    ? pool.filter((c): c is string => typeof c === 'string' && c.trim().length > 0)
+    : [];
+}
+
+/** 持久化多模态贵层池 (整体替换)。空数组 = 清空。 */
+export function persistMultimodalPoolPremium(coords: string[], path = configPath()): void {
+  const clean = coords.map((c) => c.trim()).filter(Boolean);
+  mutateConfig((cfg) => {
+    (cfg as { multimodalPoolPremium?: string[] }).multimodalPoolPremium = clean;
+  }, path);
+}
+
 // ---------------------------------------------------------------------------
 // custom APIs — config.apis (用户随意添加, boot 注册进 callModel registry)
 // ---------------------------------------------------------------------------

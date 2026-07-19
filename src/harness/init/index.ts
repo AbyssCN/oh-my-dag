@@ -14,5 +14,17 @@ export {
   type InitWizardDeps,
   type InitWizardResult,
   type ProbeResult,
+  applyRolePreset,
+  type PresetPersistDeps,
 } from './wizard';
+export {
+  ROLE_PRESETS,
+  ROLE_ENV_ALLOWLIST,
+  coordProvider,
+  OPENCODE_GO_BASE_URL,
+  type RolePreset,
+  type RolePresetCustomApi,
+  type RolePresetKeyPrompt,
+  type RolePresetConfigRole,
+} from './role-presets';
 export { createReadlineIO } from './readline-io';
