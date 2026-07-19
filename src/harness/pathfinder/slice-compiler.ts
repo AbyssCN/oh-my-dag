@@ -109,7 +109,8 @@ export function compileSlice(map: PathMap, regionTicketIds: string[]): Conductor
  */
 export function regionIsClear(map: PathMap, regionTicketIds: string[]): { clear: boolean; reason?: string } {
   const byId = new Map(map.tickets.map((t) => [t.id, t]));
-  const ruled = new Set(map.tickets.filter((t) => t.status === 'ruled').map((t) => t.id));
+  // 前置满足 = ruled ∨ delivered (delivered 是"已裁且已交付"的终态, 不能反而挡住后续区域)。
+  const ruled = new Set(map.tickets.filter((t) => t.status === 'ruled' || t.status === 'delivered').map((t) => t.id));
   if (regionTicketIds.length === 0) return { clear: false, reason: 'region 为空' };
   for (const id of regionTicketIds) {
     const t = byId.get(id);

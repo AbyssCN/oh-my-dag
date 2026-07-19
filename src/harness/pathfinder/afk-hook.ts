@@ -9,65 +9,17 @@
  *     → applyAfkResult → deps.saveMap 持久 → deps.onReflow 通知 (extension 用来重新 surface 前沿)。
  *     可注入间隔/once-mode 供测试; **单张坏结果不掀桌** (逐票 try/catch 隔离)。
  *
- * AFK 结果契约 (dag-research --out 的 md): 正文 = 综合 (distill 取首段); 可选 `## children` 段 →
- *   每行 `- [type] 子问题` (type 缺省 research), 子票 blockedBy = 母票 (D-10)。
+ * AFK 结果契约: 见 result-format.ts (生产者 dag-research / 消费者本模块**共享同一契约模块**,
+ *   distill 取 `## 终稿` 段, 可选 `## children` 段 → 子票 blockedBy = 母票, D-10)。
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { computeFrontier } from './frontier';
 import { researchResultPath } from './dispatch';
-import type { PathMap, Ticket, TicketType } from './types';
+import { distill, MAX_CHILDREN_PER_TICKET, parseChildren } from './result-format';
+import type { PathMap, Ticket } from './types';
 
-// ── distill / children 解析 (纯) ───────────────────────────────────────────────
-
-const CHILDREN_HEADING = /^##\s+children\s*$/i;
-const VALID_TYPES: ReadonlySet<string> = new Set(['research', 'grill', 'prototype', 'task']);
-
-/**
- * 从结果正文蒸馏一句 ruling: 取 `## children` 段之前的**首个非空段落** (到空行止), 折成单行, 截 ~280 字。
- * 空结果 → 占位串 (票仍 ruled, 但标注结果为空)。
- */
-export function distill(resultText: string): string {
-  const beforeChildren = resultText.split(/\n##\s+children\s*$/im)[0] ?? resultText;
-  const paras = beforeChildren
-    .split(/\n\s*\n/)
-    .map((p) => p.trim())
-    .filter((p) => p.length > 0 && !p.startsWith('#')); // 跳过 markdown 标题行
-  const first = paras[0] ?? '';
-  const oneLine = first.replace(/\s+/g, ' ').trim();
-  if (oneLine === '') return '(AFK 研究结果为空)';
-  return oneLine.length > 280 ? oneLine.slice(0, 277) + '…' : oneLine;
-}
-
-/** 解析出的一条子票草案 (id 由 applyAfkResult 分配)。 */
-interface ChildDraft {
-  type: TicketType;
-  title: string;
-}
-
-/**
- * 解析 `## children` 段 (D-10 自展开): 段内每行 `- [type] 标题` 或 `- 标题` (type 缺省 research)。
- * 遇下一个 `## ` 标题即止。非法 type 回退 research。无该段 → []。
- */
-export function parseChildren(resultText: string): ChildDraft[] {
-  const lines = resultText.split('\n');
-  const out: ChildDraft[] = [];
-  let inSection = false;
-  for (const line of lines) {
-    if (CHILDREN_HEADING.test(line)) {
-      inSection = true;
-      continue;
-    }
-    if (!inSection) continue;
-    if (/^##\s+/.test(line)) break; // 下一段标题 → children 段结束
-    const m = line.match(/^\s*[-*]\s+(?:\[([a-zA-Z]+)\]\s*)?(.+?)\s*$/);
-    if (!m) continue;
-    const rawType = (m[1] ?? 'research').toLowerCase();
-    const type = (VALID_TYPES.has(rawType) ? rawType : 'research') as TicketType;
-    const title = m[2]!.trim();
-    if (title) out.push({ type, title });
-  }
-  return out;
-}
+// distill / parseChildren 的真身在 result-format.ts (双端共享契约); 这里 re-export 兼容既有 import。
+export { distill, parseChildren } from './result-format';
 
 // ── applyAfkResult (纯) ─────────────────────────────────────────────────────────
 
@@ -78,6 +30,8 @@ export interface AfkReflow {
   newChildren: Ticket[];
   /** 因母票裁决刚进入前沿的票 id (frontier delta, 不含母票自身)。 */
   unblocked: string[];
+  /** 被护栏丢弃的子票草案数 (超上限截断 / 超深度整段丢弃); 0 省略。 */
+  droppedChildren?: number;
 }
 
 /** applyAfkResult 返回: 更新后的地图 + 本次变化 (新子票 + 刚解锁)。 */
@@ -115,8 +69,15 @@ export function applyAfkResult(map: PathMap, ticketId: string, resultText: strin
   parent.status = 'ruled';
   parent.ruling = distill(resultText);
 
-  // 自展开子票 (D-10)。
-  const drafts = parseChildren(resultText);
+  // 自展开子票 (D-10)。深度不设限 (地图深度 = 知识结构, 成本边界在派发预算);
+  // 单票截断到 MAX_CHILDREN_PER_TICKET = 契约兜底 (生产端指令本就要求 ≤4, 违约才触发)。
+  const allDrafts = parseChildren(resultText);
+  let drafts = allDrafts;
+  let droppedChildren = 0;
+  if (allDrafts.length > MAX_CHILDREN_PER_TICKET) {
+    drafts = allDrafts.slice(0, MAX_CHILDREN_PER_TICKET);
+    droppedChildren = allDrafts.length - drafts.length;
+  }
   const existingIds = new Set(tickets.map((t) => t.id));
   const newChildren: Ticket[] = [];
   drafts.forEach((d, i) => {
@@ -145,7 +106,7 @@ export function applyAfkResult(map: PathMap, ticketId: string, resultText: strin
     .map((t) => t.id)
     .filter((id) => id !== ticketId && !beforeFrontier.has(id));
 
-  return { map: nextMap, ticketId, newChildren, unblocked };
+  return { map: nextMap, ticketId, newChildren, unblocked, ...(droppedChildren > 0 ? { droppedChildren } : {}) };
 }
 
 // ── watchAfkResults (轮询/watcher, 注入 IO) ─────────────────────────────────────
@@ -162,6 +123,12 @@ export interface WatchOpts {
 export interface WatchDeps {
   /** 探一个 resultPath 是否就绪并读取; 未就绪 → null。默认 = fs.existsSync + readFileSync。 */
   readIfReady?: (path: string) => string | null;
+  /**
+   * 每 tick 开头从真相源重载地图; 返回 null → 沿用当前工作态。**生产必须注入** (loadMap(cwd, slug)):
+   * 否则 watcher 抱着启动时的内存快照, 会把用户 tick 间 /rule 落盘的裁决整文件覆写回滚。
+   * 纯测试可省略 (无盘, 工作态即真相)。
+   */
+  reloadMap?: () => PathMap | null;
   /** 持久回流后的地图 (md 真相 + db 索引)。默认 = no-op (调用方须注入真实 saveMap)。 */
   saveMap?: (map: PathMap, cwd: string) => void;
   /** 一次回流的通知回调 (extension 用来 notify + 重 surface 前沿)。 */
@@ -208,8 +175,12 @@ export function watchAfkResults(map: PathMap, opts: WatchOpts, deps: WatchDeps =
 
   const tick = (): AfkReflow[] => {
     const reflows: AfkReflow[] = [];
-    // 快照未裁 research 票 id (本轮内 current 会变 → 先取 id 列表)。
-    const pending = current.tickets.filter((t) => t.type === 'research' && t.status !== 'ruled').map((t) => t.id);
+    // 每 tick 从真相源重载 (防旧快照覆写他人落盘的裁决); 读-改-写在本 tick 内全同步, 不跨 await。
+    const fresh = deps.reloadMap?.();
+    if (fresh) current = fresh;
+    // 只回流 status=open 的 research 票: ruled/delivered 已定, escalated 是人的裁定权 ——
+    // 结果文件迟到也**不得**把人工升级覆写回 ruled。
+    const pending = current.tickets.filter((t) => t.type === 'research' && t.status === 'open').map((t) => t.id);
     for (const ticketId of pending) {
       try {
         const path = researchResultPath(opts.cwd, current.slug, ticketId);
@@ -222,6 +193,7 @@ export function watchAfkResults(map: PathMap, opts: WatchOpts, deps: WatchDeps =
           ticketId: applied.ticketId,
           newChildren: applied.newChildren,
           unblocked: applied.unblocked,
+          ...(applied.droppedChildren !== undefined ? { droppedChildren: applied.droppedChildren } : {}),
         };
         reflows.push(reflow);
         deps.onReflow?.(reflow);

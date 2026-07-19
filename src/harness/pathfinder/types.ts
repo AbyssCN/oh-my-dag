@@ -8,11 +8,11 @@
  *       D-10 (票自展开 children) · D-3 (markdown 真相源 + db 索引)。
  */
 
-/** 票类型 (D-9): research=AFK 后台调研 / grill=HITL 只读审议 / prototype=沙盒 spike / task=待编译施工。 */
+/** 票类型 (D-9): research=AFK 后台调研 / grill=HITL 审议 (纪律不动手, 无代码闸) / prototype=沙盒 spike / task=待编译施工。 */
 export type TicketType = 'research' | 'grill' | 'prototype' | 'task';
 
-/** 票状态: open=前沿可动 / blocked=前置未散 / ruled=已裁决 / escalated=`?` 上报 owner。 */
-export type TicketStatus = 'open' | 'blocked' | 'ruled' | 'escalated';
+/** 票状态: open=前沿可动 / blocked=前置未散 / ruled=已裁决 / delivered=slice 已交付(终态) / escalated=`?` 上报 owner。 */
+export type TicketStatus = 'open' | 'blocked' | 'ruled' | 'delivered' | 'escalated';
 
 /** slice 编译器消费的执行器种类 (D-9, 裁票时定; 与 ConductorPlan.executor 不同枚举, 编译期映射)。 */
 export type ExecutorKind = 'command' | 'inproc' | 'agent' | 'map' | 'primitive';
