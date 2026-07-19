@@ -27,6 +27,7 @@
 - [task-triad-docs] 交付三件套②③ + 入口文档: .claude/skills 安装指引 (22 技能直装, 指 skills/ 原样)、CLAUDE.md 模板 (omd 纪律: 写后必验/危险命令闸)、两个 PreToolUse hook 样例 (写后必验 + dangerous-cmd, 退出码 2 硬阻断)、README.md 增 Claude Code mcpServers 配置段 (`omd mcp`)。只动 docs/ 与 README, 示例落 docs/examples/claude-code/。
 - [grill-signoff] owner 签字: "按照sdd执行" (2026-07-19)。P1 范围如 SDD: server 骨架 + dag_run*/status/result + dag_research + memory 两件 + 三件套②③ + 配置文档。
 - [rca-filestouched-gate] run1(k3,240s)/run2(k3,600s) 全 7 叶 failed 的根因: executor-dag.ts:406 产物闸要求 filesTouched 非空, 但 AgentLeafRunner 的 filesTouched 生产者在全仓无任何实现 (grep 实证, 只有 leaf-runners.ts:21 类型声明) → producesFiles 节点 (goal 正则命中) 100% 假阴性, 与模型无关 (run2 叶已真写 src/mcp/server.ts 仍判 failed)。修复 = 在 agent-leaf scoped session 包 write/edit 工具记账 — 属 SDD Allowed 白名单外, 需另起 SDD 修引擎; 另: k3 叶 240s 预算不足 (600s 下正常产物), 且 k3 叶 loop 内有 drift spinning 前科。
+- [task-server-skeleton] 人工交付 (run2 产物审阅沿用, commit 54f0c53): src/mcp/server.ts + tui.ts `omd mcp` 分流 + package.json script + test/core/mcp-server.test.ts。run3 剔出 region, 防叶子覆写。
 
 ## Tickets
 
@@ -39,14 +40,6 @@ _(none)_
 _(none)_
 
 ### status: ruled
-
-### task-server-skeleton
-- type: task
-- title: server 骨架: src/mcp/server.ts 纯组装 (Server+StdioServerTransport+工具注册) + tui.ts args 分流 `omd mcp` + package.json script
-- status: ruled
-- blockedBy: research-sdk, grill-signoff
-- ruling: 交付 src/mcp/server.ts 纯组装 (Server + StdioServerTransport + 工具注册, 零逻辑) + src/harness/tui.ts args 分流 `omd mcp` (同 `omd init` 范式) + package.json script。先红: server 启动注册面测试 (test/core/mcp-*.test.ts)。边界: 只消费公共面, 禁改 executor-dag* / pathfinder/** / memory/** / model/** / runtime/**。已存在 run2 产物 src/mcp/server.ts + test/core/mcp-server.test.ts — 审阅沿用或补齐, 不推倒。
-- executorKind: agent
 
 ### task-run-registry
 - type: task
@@ -221,7 +214,13 @@ _(none)_
 
 ### status: delivered
 
-_(none)_
+### task-server-skeleton
+- type: task
+- title: server 骨架: src/mcp/server.ts 纯组装 (Server+StdioServerTransport+工具注册) + tui.ts args 分流 `omd mcp` + package.json script
+- status: delivered
+- blockedBy: research-sdk, grill-signoff
+- ruling: 交付 src/mcp/server.ts 纯组装 (Server + StdioServerTransport + 工具注册, 零逻辑) + src/harness/tui.ts args 分流 `omd mcp` (同 `omd init` 范式) + package.json script。先红: server 启动注册面测试 (test/core/mcp-*.test.ts)。边界: 只消费公共面, 禁改 executor-dag* / pathfinder/** / memory/** / model/** / runtime/**。已存在 run2 产物 src/mcp/server.ts + test/core/mcp-server.test.ts — 审阅沿用或补齐, 不推倒。
+- executorKind: agent
 
 ### status: escalated
 

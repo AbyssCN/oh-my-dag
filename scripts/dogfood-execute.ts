@@ -1,6 +1,8 @@
 /**
  * dogfood 执行脚本 —— owner 签字 ("按照sdd执行", 2026-07-19) 后的全链条:
  *   裁 grill-signoff + 7 task 票 → compileSlice → executeSlice (D-7 预构造入口, 跳 conductor) → 落盘 plan。
+ * run3: task-server-skeleton 已人工交付 (run2 产物审阅沿用, commit 54f0c53) → 置 delivered 并剔出 region,
+ *   只跑其余 6 票 (重跑会被叶子覆写已交付骨架)。
  * oracle 闸 (tsc + bun test) 由调用方 (runtime) 跑完后执行, 绿 → 票置 delivered (回流)。
  * 一次性, 跑完即删 (GP-9)。
  */
@@ -50,6 +52,14 @@ const ruled = mutateMap(cwd, slug, (map) => {
       t.ruling = 'owner 签字: "按照sdd执行" (2026-07-19)。P1 范围如 SDD: server 骨架 + dag_run*/status/result + dag_research + memory 两件 + 三件套②③ + 配置文档。';
       map.decisionsLog.push({ ticketId: t.id, gist: t.ruling });
     }
+    // run3: skeleton 票已人工交付 — 置 delivered 终态 (幂等), 不进 generic ruling 更新, 不进 region。
+    if (t.id === 'task-server-skeleton') {
+      if (t.status !== 'delivered') {
+        t.status = 'delivered';
+        map.decisionsLog.push({ ticketId: t.id, gist: '人工交付 (run2 产物审阅沿用, commit 54f0c53): src/mcp/server.ts + tui.ts `omd mcp` 分流 + package.json script + test/core/mcp-server.test.ts。run3 剔出 region, 防叶子覆写。' });
+      }
+      continue;
+    }
     const goal = goals[t.id];
     if (t.type === 'task' && goal && (t.status === 'open' || t.status === 'ruled')) {
       const changed = t.ruling !== goal;
@@ -76,7 +86,9 @@ const ruled = mutateMap(cwd, slug, (map) => {
 if (!ruled) throw new Error('map not found');
 
 // ── 2. 编译 slice (零 LLM, 只组装不发明) ─────────────────────────────────────
-const region = ruled.map.tickets.filter((t) => t.type === 'task').map((t) => t.id);
+// run3: 只取 ruled task 票 (delivered 的 skeleton 被 compileSlice 拒收, 且本来就该剔除) — 其余 6 票。
+const region = ruled.map.tickets.filter((t) => t.type === 'task' && t.status === 'ruled').map((t) => t.id);
+console.log(`[region] run3 目标 ${region.length} 票: ${region.join(', ')}`);
 const plan = compileSlice(ruled.map, region);
 mkdirSync('.omd/pathfinder', { recursive: true });
 writeFileSync('.omd/pathfinder/omd-mcp-server.slice.json', JSON.stringify(plan, null, 2));
