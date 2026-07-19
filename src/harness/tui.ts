@@ -76,6 +76,16 @@ setCoreLogger(logger);
 const userArgs = process.argv.slice(2);
 const userPickedModel = userArgs.includes('--model') || userArgs.includes('--provider');
 
+// omd mcp: stdio MCP server 入口 (D-1, 同 `omd init` 范式的 args 分流) —— 零 UI, 不进 wizard/TUI boot。
+// stdout 是 MCP 协议通道: pino 默认写 stdout 会腐蚀协议帧 → logger 先静默。常驻, 客户端管 spawn/kill (D-9)。
+// 工具面 [] = 骨架期空注册面; dag_*/memory_* 等工具由后续 task (tools-dag/tools-memory/tool-research) 装配进此调用点。
+if (userArgs[0] === 'mcp') {
+  logger.level = 'silent';
+  const { runOmdMcpServer } = await import('../mcp/server');
+  await runOmdMcpServer([]);
+  process.exit(0);
+}
+
 // omd 首次配置向导 (boot 前, controller 构造前): `omd init` 显式重配, 或缺 runtime 配置时自动进
 // (替代旧 OmdController fail-fast 崩 — 新用户零配置启动 = 引导而非报错)。wizard 写 .env +
 // 注入 process.env → 本次 boot 立即可用, 无需重启。已配 (.env 预置, Bun 自动加载) → detect ok 跳过。
