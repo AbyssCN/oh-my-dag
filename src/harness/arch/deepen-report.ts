@@ -69,17 +69,38 @@ const STRENGTH_CLASS: Record<string, string> = {
  * → <pre><code>), 非围栏段逐行转 (字段行 `- **k**: v` → 定义行, 其余 → 段落), 全程 esc。
  */
 function bodyToHtml(body: string): string {
-  const parts = body.split(/^```(\w*)\s*$/m); // [text, lang, fenced, text, lang, fenced, ...]
+  // 行式状态机 (regex-split 的 stride 会在围栏后错位吞正文): 开栏行记 lang, 收栏行 flush 代码块,
+  // 其余按当前态归 prose / fenced。未闭合围栏 → 余下按代码块 flush (best-effort 不丢内容)。
   const html: string[] = [];
-  for (let i = 0; i < parts.length; i += 3) {
-    html.push(proseToHtml(parts[i] ?? ''));
-    const lang = (parts[i + 1] ?? '').toLowerCase();
-    const fenced = parts[i + 2];
-    if (fenced !== undefined) {
-      if (lang === 'mermaid') html.push(`<pre class="mermaid">${esc(fenced.trim())}</pre>`);
-      else html.push(`<pre class="bg-slate-900 text-slate-100 rounded-lg p-3 text-xs overflow-x-auto"><code>${esc(fenced.trim())}</code></pre>`);
+  const prose: string[] = [];
+  const fenced: string[] = [];
+  let lang: string | null = null; // null = 不在围栏内
+  const flushProse = () => {
+    if (prose.length > 0) html.push(proseToHtml(prose.join('\n')));
+    prose.length = 0;
+  };
+  const flushFenced = () => {
+    const code = fenced.join('\n').trim();
+    if (lang === 'mermaid') html.push(`<pre class="mermaid">${esc(code)}</pre>`);
+    else html.push(`<pre class="bg-slate-900 text-slate-100 rounded-lg p-3 text-xs overflow-x-auto"><code>${esc(code)}</code></pre>`);
+    fenced.length = 0;
+  };
+  for (const line of body.split('\n')) {
+    const fence = line.match(/^```(\w*)\s*$/);
+    if (fence && lang === null) {
+      flushProse();
+      lang = (fence[1] ?? '').toLowerCase();
+    } else if (fence && lang !== null) {
+      flushFenced();
+      lang = null;
+    } else if (lang !== null) {
+      fenced.push(line);
+    } else {
+      prose.push(line);
     }
   }
+  if (lang !== null) flushFenced();
+  else flushProse();
   return html.join('\n');
 }
 

@@ -12,7 +12,7 @@
  * markdown 格式选 byte-stable 的行式 kv (见下), 保证 render∘parse∘render 幂等。
  */
 import { Database } from 'bun:sqlite';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { ExecutorKind, PathMap, Ticket, TicketStatus, TicketType } from './types';
 
@@ -31,7 +31,8 @@ export function defaultDbPath(cwd: string): string {
 // ── markdown render / parse (纯, byte-stable, roundtrip 属性) ─────────────────
 
 /** 渲染的状态分组顺序 (固定 → byte-stable)。 */
-const STATUS_ORDER: TicketStatus[] = ['open', 'blocked', 'ruled', 'escalated'];
+const STATUS_ORDER: TicketStatus[] = ['open', 'blocked', 'ruled', 'delivered', 'escalated'];
+const KNOWN_STATUS: ReadonlySet<string> = new Set(STATUS_ORDER);
 
 /** 转义自由文本里的换行/反斜杠 (单遍, 与 unesc 互逆) → 保证一票一行不被撑破。 */
 function esc(s: string): string {
@@ -72,6 +73,13 @@ export function renderMapMarkdown(map: PathMap): string {
     } else {
       for (const t of group) out.push(renderTicket(t), '');
     }
+  }
+  // 永不丢票: 手改出的未知 status (真相文件"人可读可编") 渲进兜底组而非静默过滤 ——
+  // 票自身的 `- status:` 行保留原词, 往返幂等, 由人看到后改回合法状态。
+  const unknown = map.tickets.filter((t) => !KNOWN_STATUS.has(t.status));
+  if (unknown.length > 0) {
+    out.push('### status: (unrecognized)', '');
+    for (const t of unknown) out.push(renderTicket(t), '');
   }
   return out.join('\n');
 }
@@ -287,4 +295,34 @@ export function loadMapDb(dbPath: string | Database, slug?: string): PathMap {
 /** "db 可从 md 真相重建"保证 (D-3): parse markdown → saveMapDb。 */
 export function rebuildDbFromMarkdown(md: string, dbPath: string | Database): void {
   saveMapDb(parseMapMarkdown(md), dbPath);
+}
+
+// ── 地图 IO 单写口 (load / save / mutate) ──────────────────────────────────────
+
+/** 读一张地图 (docs/plan/pathfinder/<slug>.md → parseMapMarkdown); 文件不存在 → null。 */
+export function loadMap(cwd: string, slug: string): PathMap | null {
+  const p = mapMarkdownPath(slug, cwd);
+  if (!existsSync(p)) return null;
+  return parseMapMarkdown(readFileSync(p, 'utf8'));
+}
+
+/** 落一张地图: markdown 真相 (docs/plan/pathfinder/) + db 索引 (.omd/pathfinder.db)。 */
+export function saveMap(map: PathMap, cwd: string): void {
+  const mdPath = mapMarkdownPath(map.slug, cwd);
+  mkdirSync(dirname(mdPath), { recursive: true });
+  writeFileSync(mdPath, renderMapMarkdown(map), 'utf8');
+  saveMapDb(map, defaultDbPath(cwd));
+}
+
+/**
+ * 地图变更的**唯一入口**: fresh load → fn 就地改 → save。杜绝"各持内存快照、谁 save 谁覆盖全文件"
+ * 一类静默回滚 (读-改-写全同步, 单线程事件循环内不可分割 —— 持图跨 await 再 save 才是被禁的形状)。
+ * 地图不存在 → 不调 fn, 返回 null。
+ */
+export function mutateMap<T>(cwd: string, slug: string, fn: (map: PathMap) => T): { map: PathMap; result: T } | null {
+  const map = loadMap(cwd, slug);
+  if (!map) return null;
+  const result = fn(map);
+  saveMap(map, cwd);
+  return { map, result };
 }

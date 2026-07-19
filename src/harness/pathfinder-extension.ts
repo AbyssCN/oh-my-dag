@@ -10,29 +10,28 @@
  *   - /path [目的地|slug]      → 无参列本 repo 开放地图; 有参开/建地图并 surface 前沿
  *   - /tickets                 → 列当前地图前沿票 (computeFrontier)
  *   - /rule <ticketId> <裁决>  → 裁一张前沿票 → 落 md+db → 前沿重算
+ *   - /deliver                 → owner 显式执行已散尽区域 (代码闸: 散尽只报信, 不自动执行)
  *
- * ★ P3 注入点 `onRegionClear(regionIds)`: 区域散尽时触发 dispatch+execute (P3 填)。P2 仅 log。
+ * ★ P3 注入点 `onRegionClear(regionIds)`: 区域散尽时回调 (override 默认报信+/deliver 闸)。
  *
  * idiom 参考 verify-gate-extension (工厂闭包持状态 + i18n m())。map-store/frontier/slice-compiler 只读 import。
  */
 import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { m } from './i18n';
 import { executeSlice as realExecuteSlice, resolveConductorDefault as realResolveConductorDefault, type ExecuteSliceOpts } from './execute-extension';
-import { dispatchFrontier as realDispatchFrontier } from './pathfinder/dispatch';
+import type { AgentLeafRunner, CommandLeafRunner } from './leaf-runners';
+import { countDispatchedResearch, dispatchFrontier as realDispatchFrontier } from './pathfinder/dispatch';
 import { watchAfkResults as realWatchAfkResults, type AfkReflow, type WatchHandle } from './pathfinder/afk-hook';
 import { computeFrontier } from './pathfinder/frontier';
-import {
-  defaultDbPath,
-  mapMarkdownPath,
-  parseMapMarkdown,
-  renderMapMarkdown,
-  saveMapDb,
-} from './pathfinder/map-store';
+import { loadMap, mutateMap, saveMap } from './pathfinder/map-store';
 import { compileSlice as realCompileSlice, regionIsClear } from './pathfinder/slice-compiler';
 import type { PathMap } from './pathfinder/types';
 import { createPathfinderModeState, type PathfinderModeState } from './plan/mode';
+
+// 地图 IO 的真身迁到 map-store (单写口 mutateMap 所在); re-export 兼容既有 import (omd-path CLI / 测试)。
+export { loadMap, mutateMap, saveMap } from './pathfinder/map-store';
 
 // ── 纯/薄-IO helpers (CLI omd-path 复用) ──────────────────────────────────────
 
@@ -56,21 +55,6 @@ export interface OpenMapSummary {
   openCount: number;
   /** 当前前沿 (可动) 票数 (computeFrontier)。 */
   frontierCount: number;
-}
-
-/** 读一张地图 (docs/plan/pathfinder/<slug>.md → parseMapMarkdown); 文件不存在 → null。 */
-export function loadMap(cwd: string, slug: string): PathMap | null {
-  const p = mapMarkdownPath(slug, cwd);
-  if (!existsSync(p)) return null;
-  return parseMapMarkdown(readFileSync(p, 'utf8'));
-}
-
-/** 落一张地图: markdown 真相 (docs/plan/pathfinder/) + db 索引 (.omd/pathfinder.db)。 */
-export function saveMap(map: PathMap, cwd: string): void {
-  const mdPath = mapMarkdownPath(map.slug, cwd);
-  mkdirSync(dirname(mdPath), { recursive: true });
-  writeFileSync(mdPath, renderMapMarkdown(map), 'utf8');
-  saveMapDb(map, defaultDbPath(cwd));
 }
 
 /** 扫 docs/plan/pathfinder/*.md, 每图算 open/frontier 计数。目录不存在 → []。按 slug 排序。 */
@@ -118,7 +102,7 @@ export interface PathfinderExtensionOpts {
   toggleKey?: string;
   /**
    * ★ P3 注入点 (override): 一个区域散尽 (ruled task 票 + 前置全裁) 时调用, 参数 = 该区域的票 id。
-   * 省略 → 用**默认实**装 (compileSlice → executeSlice → 报告 + 标记 delivered, 见 runRegionClear)。
+   * 省略 → 默认**只报信** (干跑编译 + 提示 /deliver); 真执行由 owner 显式 /deliver 触发 (deliverRegion)。
    * 测试注入以断言触发时机 / 绕过真执行。
    */
   onRegionClear?: (regionIds: string[]) => void | Promise<void>;
@@ -126,6 +110,13 @@ export interface PathfinderExtensionOpts {
   leafModel?: string;
   /** slice 执行的 agent leaf 模型 (改文件的叶子)。省略 = leafModel。 */
   agentLeafModel?: string;
+  /**
+   * agent-kind leaf 执行器 (带工具**真改文件**)。省略 → executor-dag 把 agent 节点降级为无工具
+   * inproc (不会改文件) / 产文件节点直接失败 —— 交付会是空转, 生产接线 (tui) 必须传。
+   */
+  agentRunner?: AgentLeafRunner;
+  /** command-kind leaf 执行器 (确定性 CLI, DAG 内自验节点)。省略 → command 节点失败。 */
+  commandRunner?: CommandLeafRunner;
   /** runtime-finalize 开关 (默认 OFF; 见 execute-extension.finalizePlan)。 */
   finalize?: boolean;
   /** dag-record 留痕器 (tui 已建的 recorder); 省略 = 不留痕。 */
@@ -146,9 +137,6 @@ export interface PathfinderExtensionDeps {
   resolveConductorDefault?: typeof realResolveConductorDefault;
 }
 
-/** decisionsLog 里的 slice-已交付标记 (跨 session 去重, 防区域重复执行)。ticketId 用非法票 id 前缀避免撞真票。 */
-const DELIVERED_MARKER = '#slice-delivered';
-
 export function createPathfinderExtension(
   opts: PathfinderExtensionOpts = {},
   deps: PathfinderExtensionDeps = {},
@@ -163,10 +151,10 @@ export function createPathfinderExtension(
   const resolveConductorDefaultFn = deps.resolveConductorDefault ?? realResolveConductorDefault;
 
   return (pi) => {
-    /** 已交付的区域签名 (本 session 内存去重, 叠加 decisionsLog 标记跨 session)。 */
-    const deliveredSignatures = new Set<string>();
     /** 当前活跃的 AFK watcher (单个; prefetch 换图时先 stop 旧的)。 */
     let watchHandle: WatchHandle | null = null;
+    /** 自续预算耗尽只提醒一次 (本 session)。 */
+    let budgetNotified = false;
     /** 可选的 runtime 回注 (execute brief); 测试 fake pi 无此方法 → 静默跳过。 */
     const sendUserMessage = (pi as { sendUserMessage?: (s: string) => void }).sendUserMessage;
     type Ctx = Parameters<Parameters<typeof pi.registerShortcut>[1]['handler']>[0];
@@ -200,24 +188,45 @@ export function createPathfinderExtension(
       );
     };
 
+    /** 当前可交付区域 = 全部 ruled task 票 (delivered 是终态, 不再入区域 → 天然不重复执行)。 */
+    const readyRegion = (map: PathMap): string[] | null => {
+      const ruledTasks = map.tickets.filter((t) => t.type === 'task' && t.status === 'ruled').map((t) => t.id);
+      if (ruledTasks.length === 0) return null;
+      return regionIsClear(map, ruledTasks).clear ? ruledTasks : null;
+    };
+
     /**
-     * ★ P3 默认区域散尽实装 (D-11): compileSlice (零 LLM) → executeSlice (跳 conductor 重分解) →
-     * 报告 (ctx.ui.notify + runtime brief) + 标记 delivered 持久 (去重防重复执行)。缺 leafModel /
-     * 缺 key → 降级为清晰提示, 绝不崩 (D-5)。
+     * ★ P3 区域交付实装 (D-11), **owner 显式触发** (/deliver): compileSlice (零 LLM) → executeSlice
+     * (跳 conductor 重分解, 带 agentRunner 真改文件) → 全节点 done 才把区域票翻 delivered (mutateMap
+     * 持久)。失败不标记 → /deliver 可重试。缺 leafModel / 缺 key → 清晰提示, 绝不崩 (D-5)。
      */
-    const runRegionClear = async (ctx: Ctx, map: PathMap, regionIds: string[]): Promise<void> => {
-      const signature = [...regionIds].sort().join(',');
-      // 去重: 内存签名 ∨ decisionsLog 标记 (跨 session) 命中 → 已交付, 不重跑。
-      if (deliveredSignatures.has(signature)) return;
-      if (map.decisionsLog.some((d) => d.ticketId === DELIVERED_MARKER && d.gist === signature)) {
-        deliveredSignatures.add(signature);
+    const deliverRegion = async (ctx: Ctx): Promise<void> => {
+      if (!state.activeSlug) {
+        ctx.ui.notify(m({ en: 'No active map. Open one with /path <destination>', zh: '无激活地图。/path <目的地> 打开一张' }), 'warning');
+        return;
+      }
+      const slug = state.activeSlug;
+      const map = loadMap(cwd, slug);
+      if (!map) {
+        ctx.ui.notify(m({ en: `map "${slug}" not found`, zh: `找不到地图 "${slug}"` }), 'warning');
+        return;
+      }
+      const regionIds = readyRegion(map);
+      if (!regionIds) {
+        ctx.ui.notify(
+          m({
+            en: '◈ nothing to deliver: no clear region of ruled task tickets (rule the frontier first).',
+            zh: '◈ 无可交付区域: 没有已散尽的 ruled task 票 (先把前沿裁完)。',
+          }),
+          'info',
+        );
         return;
       }
       if (!opts.leafModel) {
         ctx.ui.notify(
           m({
-            en: `◈ region ready to compile (${regionIds.length} task tickets) but no leafModel configured — set OMD_ITER_LEAF_MODEL to auto-execute.`,
-            zh: `◈ 区域已散尽可编译 (${regionIds.length} 张 task 票), 但未配 leafModel — 设 OMD_ITER_LEAF_MODEL 以自动执行。`,
+            en: `◈ region ready (${regionIds.length} task tickets) but no leafModel configured — set OMD_ITER_LEAF_MODEL to enable /deliver.`,
+            zh: `◈ 区域已散尽 (${regionIds.length} 张 task 票), 但未配 leafModel — 设 OMD_ITER_LEAF_MODEL 后 /deliver 才能执行。`,
           }),
           'warning',
         );
@@ -235,27 +244,42 @@ export function createPathfinderExtension(
         const result = await executeSliceFn(plan, {
           leafModel: opts.leafModel,
           agentLeafModel: opts.agentLeafModel,
+          agentRunner: opts.agentRunner,
+          commandRunner: opts.commandRunner,
           conductorModel: resolveConductorDefaultFn(),
           cwd,
           recorder: opts.recorder,
           finalize: opts.finalize,
         });
         const nodeCount = Object.keys(plan.nodes ?? {}).length;
+        const nodeStates = Object.values(result?.results ?? {});
+        const failedCount = nodeStates.filter((r) => (r as { status?: string }).status !== 'done').length;
         const pass = result?.verification?.pass;
+        const succeeded = failedCount === 0 && pass !== false;
         const verifyTail = pass === undefined ? '' : m({ en: ` · verify ${pass ? 'pass' : 'FAIL'}`, zh: ` · 校验 ${pass ? '通过' : '未过'}` });
+        if (!succeeded) {
+          // 不标记 delivered: 票保持 ruled, /deliver 可重试 (或 owner 改裁决后重来)。
+          ctx.ui.notify(
+            m({
+              en: `◈ slice "${plan.name}" ran with ${failedCount}/${nodeCount} node(s) not done${verifyTail} — region NOT marked delivered; fix & /deliver again.`,
+              zh: `◈ slice "${plan.name}" 执行有 ${failedCount}/${nodeCount} 节点未完成${verifyTail} — 区域未标记交付; 修复后可再 /deliver。`,
+            }),
+            'warning',
+          );
+          return;
+        }
+        // 全节点 done → 区域票翻 delivered (单写口 mutateMap, 不覆盖 tick 间他人落盘的改动)。
+        mutateMap(cwd, slug, (fresh) => {
+          for (const t of fresh.tickets) {
+            if (regionIds.includes(t.id) && t.status === 'ruled') t.status = 'delivered';
+          }
+        });
         const brief = m({
           en: `◈ slice "${plan.name}" executed (${nodeCount} nodes)${verifyTail} — region [${regionIds.join(', ')}] delivered.`,
           zh: `◈ slice "${plan.name}" 已执行 (${nodeCount} 节点)${verifyTail} — 区域 [${regionIds.join(', ')}] 已交付。`,
         });
-        ctx.ui.notify(brief, pass === false ? 'warning' : 'info');
+        ctx.ui.notify(brief, 'info');
         if (typeof sendUserMessage === 'function') sendUserMessage.call(pi, `<pathfinder-slice-delivered>\n${brief}\n</pathfinder-slice-delivered>`);
-        // 标记 delivered: 重载真相 (避免覆盖并发写) → 追标记 → 持久。
-        deliveredSignatures.add(signature);
-        const fresh = loadMap(cwd, map.slug);
-        if (fresh && !fresh.decisionsLog.some((d) => d.ticketId === DELIVERED_MARKER && d.gist === signature)) {
-          fresh.decisionsLog.push({ ticketId: DELIVERED_MARKER, gist: signature });
-          saveMap(fresh, cwd);
-        }
       } catch (e) {
         ctx.ui.notify(m({ en: 'slice execute failed: ', zh: 'slice 执行失败: ' }) + String(e), 'error');
       } finally {
@@ -263,16 +287,68 @@ export function createPathfinderExtension(
       }
     };
 
-    /** 区域散尽检测 → onRegionClear override ∨ 默认 runRegionClear。全部 ruled task 票构成 clear 区域即触发。 */
+    /**
+     * 区域散尽检测 (每次 /rule 后调): 只**报信**不执行 —— deliberate/build 边界是代码闸:
+     * 执行必须走 owner 显式 /deliver (readonly-gate 退役时承诺的 owner 签字, 落在这里)。
+     * opts.onRegionClear override (测试/程控) 保持原语义: 命中即调, 不走默认报信。
+     */
     const maybeSignalClearRegion = async (ctx: Ctx, map: PathMap): Promise<void> => {
-      const ruledTasks = map.tickets.filter((t) => t.type === 'task' && t.status === 'ruled').map((t) => t.id);
-      if (ruledTasks.length === 0) return;
-      if (!regionIsClear(map, ruledTasks).clear) return;
+      const regionIds = readyRegion(map);
+      if (!regionIds) return;
       if (opts.onRegionClear) {
-        await opts.onRegionClear(ruledTasks);
+        await opts.onRegionClear(regionIds);
         return;
       }
-      await runRegionClear(ctx, map, ruledTasks);
+      // 先干跑编译 (零 LLM) 把结构错误在裁决时就暴露, 而不是拖到 /deliver。
+      try {
+        compileSliceFn(map, regionIds);
+      } catch (e) {
+        ctx.ui.notify(m({ en: 'region clear but slice compile failed: ', zh: '区域散尽但 slice 编译失败: ' }) + String(e), 'error');
+        return;
+      }
+      ctx.ui.notify(
+        m({
+          en: `◈ region clear (${regionIds.length} task tickets, compiles clean) — run /deliver to execute the slice.`,
+          zh: `◈ 区域散尽 (${regionIds.length} 张 task 票, 编译通过) — owner 确认后 /deliver 执行 slice。`,
+        }),
+        'info',
+      );
+    };
+
+    /**
+     * D-10 自续: 回流孵出 research 子票时**在预算内**自动续派 (AFK detached, 不占 owner 带宽)。
+     * 预算 = OMD_PATH_RESEARCH_BUDGET (默认 12), 按 .dispatched 标记计数 (跨 session 持久);
+     * 耗尽 → 停自续 + 提醒一次 (owner 调预算或手动 --prefetch 追加 = 显式加钱, 不受此限)。
+     * 派发本身幂等 (结果已在/在途进程活着都不重 spawn), 所以整前沿重派是安全的。
+     */
+    const autoRedispatch = (ctx: Ctx, slug: string): void => {
+      const budget = Number(process.env.OMD_PATH_RESEARCH_BUDGET ?? 12);
+      const used = countDispatchedResearch(cwd, slug);
+      if (used >= budget) {
+        if (!budgetNotified) {
+          budgetNotified = true;
+          ctx.ui.notify(
+            m({
+              en: `◈ research budget exhausted (${used}/${budget}) — auto-expansion paused. Raise OMD_PATH_RESEARCH_BUDGET or run /path --prefetch to top up explicitly.`,
+              zh: `◈ 研究预算已用尽 (${used}/${budget}) — 自续暂停。调大 OMD_PATH_RESEARCH_BUDGET 或手动 /path --prefetch 显式追加。`,
+            }),
+            'warning',
+          );
+        }
+        return;
+      }
+      const map = loadMap(cwd, slug);
+      if (!map) return;
+      const fd = dispatchFrontierFn(map, { cwd, slug }, {});
+      if (fd.dispatched.length > 0) {
+        ctx.ui.notify(
+          m({
+            en: `◈ self-expansion: ${fd.dispatched.length} child research ticket(s) auto-dispatched (budget ${used + fd.dispatched.length}/${budget}).`,
+            zh: `◈ 自续: ${fd.dispatched.length} 张 research 子票已自动入 AFK 后台 (预算 ${used + fd.dispatched.length}/${budget})。`,
+          }),
+          'info',
+        );
+      }
     };
 
     /**
@@ -300,17 +376,22 @@ export function createPathfinderExtension(
         map,
         { cwd, mode: 'interval' },
         {
+          // 每 tick 从真相源重载: watcher 绝不抱旧快照覆写 tick 间 /rule 落盘的裁决。
+          reloadMap: () => loadMap(cwd, slug),
           saveMap: (mm) => saveMap(mm, cwd),
           onReflow: (r: AfkReflow) => {
             const childTail = r.newChildren.length > 0 ? m({ en: ` (+${r.newChildren.length} child tickets)`, zh: ` (+${r.newChildren.length} 子票)` }) : '';
+            const dropTail = r.droppedChildren ? m({ en: ` (${r.droppedChildren} over-cap children dropped)`, zh: ` (超上限丢弃 ${r.droppedChildren} 子票草案)` }) : '';
             ctx.ui.notify(
               m({
-                en: `◈ AFK result in: ${r.ticketId} ruled${childTail}${r.unblocked.length ? ` · unblocked ${r.unblocked.join(', ')}` : ''}`,
-                zh: `◈ AFK 结果回流: ${r.ticketId} 已裁${childTail}${r.unblocked.length ? ` · 解锁 ${r.unblocked.join(', ')}` : ''}`,
+                en: `◈ AFK result in: ${r.ticketId} ruled${childTail}${dropTail}${r.unblocked.length ? ` · unblocked ${r.unblocked.join(', ')}` : ''}`,
+                zh: `◈ AFK 结果回流: ${r.ticketId} 已裁${childTail}${dropTail}${r.unblocked.length ? ` · 解锁 ${r.unblocked.join(', ')}` : ''}`,
               }),
               'info',
             );
             surfaceFrontier(ctx, slug);
+            // D-10 自续: 新孵 research 子票 → 预算内自动续派 (自己跑, 不等 owner)。
+            if (r.newChildren.some((c) => c.type === 'research')) autoRedispatch(ctx, slug);
           },
         },
       );
@@ -464,26 +545,38 @@ export function createPathfinderExtension(
           ctx.ui.notify(m({ en: 'Usage: /rule <ticketId> <ruling>', zh: '用法: /rule <票id> <裁决>' }), 'warning');
           return;
         }
-        const map = loadMap(cwd, state.activeSlug);
-        if (!map) {
+        // 单写口 mutateMap: fresh load → 改 → save, 不与 watcher/其他命令互覆。
+        const mutated = mutateMap(cwd, state.activeSlug, (map) => {
+          const tk = map.tickets.find((t) => t.id === ticketId);
+          if (!tk) return false;
+          tk.status = 'ruled';
+          tk.ruling = ruling;
+          if (!map.decisionsLog.some((d) => d.ticketId === ticketId)) {
+            map.decisionsLog.push({ ticketId, gist: ruling.slice(0, 80) });
+          }
+          return true;
+        });
+        if (!mutated) {
           ctx.ui.notify(m({ en: `map "${state.activeSlug}" not found`, zh: `找不到地图 "${state.activeSlug}"` }), 'warning');
           return;
         }
-        const tk = map.tickets.find((t) => t.id === ticketId);
-        if (!tk) {
+        if (!mutated.result) {
           ctx.ui.notify(m({ en: `No ticket "${ticketId}" in this map`, zh: `地图里没有票 "${ticketId}"` }), 'warning');
           return;
         }
-        tk.status = 'ruled';
-        tk.ruling = ruling;
-        if (!map.decisionsLog.some((d) => d.ticketId === ticketId)) {
-          map.decisionsLog.push({ ticketId, gist: ruling.slice(0, 80) });
-        }
-        saveMap(map, cwd);
         ctx.ui.notify(m({ en: `✓ Ruled ${ticketId}: ${ruling.slice(0, 60)}`, zh: `✓ 已裁 ${ticketId}: ${ruling.slice(0, 60)}` }), 'info');
         surfaceFrontier(ctx, state.activeSlug);
-        await maybeSignalClearRegion(ctx, map);
+        await maybeSignalClearRegion(ctx, mutated.map);
       },
+    });
+
+    // /deliver: owner 显式触发区域执行 (deliberate/build 的代码闸 — 区域散尽只报信, 执行必须过这里)。
+    pi.registerCommand('deliver', {
+      description: m({
+        en: '/deliver — execute the clear region (compile slice → run DAG → mark tickets delivered)',
+        zh: '/deliver — 执行已散尽区域 (编译 slice → 跑 DAG → 票翻 delivered)',
+      }),
+      handler: async (_args: string, ctx: Ctx) => deliverRegion(ctx),
     });
   };
 }

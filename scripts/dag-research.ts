@@ -20,12 +20,13 @@
 import '../src/harness/script-bootstrap';
 import { createWebStackFromEnv } from '../src/harness/web';
 import { researchWebFanout } from '../src/harness/research/web-fanout';
+import { CHILDREN_INSTRUCTION, writeResultAtomic } from '../src/harness/pathfinder/result-format';
 import { bootstrapModelRuntime } from '../src/model/bootstrap';
 
 const USAGE =
-  'usage: bun run scripts/dag-research.ts "<研究问题>" [--council] [--super] [--k 8] [--crawl 5] [--no-tier] [--lens-count N] [--conductor-model M] [--lens-model ..] [--reason-model ..] [--out path]';
+  'usage: bun run scripts/dag-research.ts "<研究问题>" [--council] [--super] [--k 8] [--crawl 5] [--no-tier] [--lens-count N] [--conductor-model M] [--lens-model ..] [--reason-model ..] [--children] [--out path]';
 
-const BOOL = new Set(['super', 'council', 'no-tier', 'help']);
+const BOOL = new Set(['super', 'council', 'no-tier', 'children', 'help']);
 const flags: Record<string, string> = {};
 const positionals: string[] = [];
 const av = process.argv.slice(2);
@@ -78,6 +79,8 @@ const res = await researchWebFanout(stack, question, {
   lensCount: numFlag('lens-count', 1),
   lensModel: flags['lens-model'],
   reasonModel: flags['reason-model'],
+  // --children (pathfinder D-10 opt-in): 终稿末尾按共享契约附 `## children` 段 → afk-hook 自展开子票。
+  ...(flags.children ? { finalExtraInstruction: CHILDREN_INSTRUCTION } : {}),
   onStage: (s, d) => process.stderr.write(`  [${s}] ${d}\n`),
 });
 
@@ -93,7 +96,9 @@ for (const c of f.lensChampions) doc.push(`### ${c.key}`, c.text, '');
 doc.push('---', '', '## 检索语料附录 (零丢失, 综合的事实锚)', '', r.markdown);
 const slug = question.toLowerCase().replace(/[^a-z0-9一-鿿]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'research';
 const out = flags.out || `/tmp/dag-research-${slug}-${Date.now()}.md`;
-await Bun.write(out, doc.join('\n'));
+// 原子落盘 (tmp+rename, result-format 共享契约): pathfinder afk-hook 以文件存在为就绪信号,
+// 直写最终路径会被 4s 轮询读到半截并把票永久定格成截断裁决。
+writeResultAtomic(out, doc.join('\n'));
 
 // ---- stdout: 终稿就是要的答案 (进调用方 context); 语料/冠军在文件 ----
 process.stderr.write(`\n[dag-research] ${f.leafCount} leaves · $${f.costStats.totalUsd.toFixed(4)} (saved $${f.costStats.totalSavingsUsd.toFixed(4)}) → ${out}\n\n`);

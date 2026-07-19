@@ -108,6 +108,9 @@ if (wantLocal) {
     const dag = await runExecutorDagWithPlan(plan, {
       conductorModel: localModel, // 仅 escalation 语义占位; 预构造路径不走 conductor
       leafModel: localModel,
+      // 不设上限时 executor-dag 的 pool cap = 全节点数 → 大 diff (几十个文件) 一次齐发几十个
+      // LLM 请求, 限流/成本直接爆。8 与 dag-build 默认对齐。
+      maxFanout: 8,
       cavemanLevel: 'off', // finding 行本身即交付物, 不许压缩叙述
     });
     const synth = dag.results[SYNTH_NODE_ID];

@@ -1,7 +1,7 @@
 /**
  * src/harness/pathfinder/dispatch —— 票分派 (组件 3, D-6 / D-9 / D-13)。
  *
- * 前沿票按 type 分派 (D-9): research=AFK 后台车队 / grill=HITL 只读审议 / prototype=沙盒 spike /
+ * 前沿票按 type 分派 (D-9): research=AFK 后台车队 / grill=HITL 审议 (纪律约定不动手, 无代码闸) / prototype=沙盒 spike /
  * task=待编译。**纯决策 + 注入副作用**: dispatchTicket 算出该干什么 (DispatchResult), 真正的 spawn/git
  * 藏在 deps 后面 (默认 = Bun.spawn detached / Bun.spawnSync git) —— 测试注入替身, 永不起真进程/真 worktree。
  *
@@ -16,7 +16,7 @@
  *
  * 溯源: D-6 (research→AFK 后台) · D-9 (type 驱动分派) · D-10 (self-expansion children) · D-13 (prototype worktree 隔离)。
  */
-import { mkdirSync, openSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { computeFrontier } from './frontier';
 import type { PathMap, Ticket } from './types';
@@ -31,6 +31,32 @@ export function researchResultPath(cwd: string, slug: string, ticketId: string):
 /** research 子进程的 stdout/stderr log 路径 (与结果同目录, .log 后缀)。 */
 export function researchLogPath(cwd: string, slug: string, ticketId: string): string {
   return join(cwd, '.omd', 'pathfinder', 'results', slug, `${ticketId}.log`);
+}
+
+/** 在途标记路径 (内容 = 子进程 pid): 防重复派发同一票 (双进程竞写同一 resultPath + 双倍烧钱)。 */
+export function researchDispatchedPath(cwd: string, slug: string, ticketId: string): string {
+  return join(cwd, '.omd', 'pathfinder', 'results', slug, `${ticketId}.dispatched`);
+}
+
+/**
+ * dag-research 脚本按**本包安装位置**解析 (dispatch.ts 在 src/harness/pathfinder/ → 包根/scripts/):
+ * 相对 ctx.cwd 拼 'scripts/dag-research.ts' 在别的 repo 里必然 Script not found, 且错误只进 .log,
+ * 票会静默卡死在 open。scripts/ 随包发布 (package.json "files")。
+ */
+export function researchScriptPath(): string {
+  return join(import.meta.dir, '..', '..', '..', 'scripts', 'dag-research.ts');
+}
+
+/**
+ * 本图已派发过的 research 数 (按 .dispatched 标记计数, **跨 session 持久**) — D-10 自续的预算基准。
+ * 结果落地不清标记 (故这是"累计派发数"而非"在途数"), 正合预算语义: 花过的钱都算。
+ */
+export function countDispatchedResearch(cwd: string, slug: string): number {
+  try {
+    return readdirSync(join(cwd, '.omd', 'pathfinder', 'results', slug)).filter((f) => f.endsWith('.dispatched')).length;
+  } catch {
+    return 0; // 目录不存在 = 没派发过
+  }
 }
 
 /** prototype 隔离 worktree 目录 (D-13): <cwd>/.omd/pathfinder/proto/<ticketId>。 */
@@ -73,6 +99,8 @@ export interface DispatchDeps {
   spawnDetached?: (cmd: string[], opts: { cwd: string; logPath: string }) => number | undefined;
   /** 跑一条 git 命令 (prototype worktree add/remove)。默认 = Bun.spawnSync('git', args)。 */
   git?: (args: string[], opts: { cwd: string }) => void;
+  /** 探一个 pid 是否存活 (在途去重用)。默认 = process.kill(pid, 0)。 */
+  isAlive?: (pid: number) => boolean;
 }
 
 // ── 默认生产实现 (纯壳, 测试永不触及) ──────────────────────────────────────────
@@ -99,6 +127,16 @@ function defaultGit(args: string[], opts: { cwd: string }): void {
   }
 }
 
+/** 默认 isAlive: kill(pid, 0) 不发信号只探存在; 抛 ESRCH/EPERM → 视作死。 */
+function defaultIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ── dispatchTicket (纯决策 + 注入副作用) ────────────────────────────────────────
 
 /**
@@ -112,10 +150,31 @@ export function dispatchTicket(ticket: Ticket, ctx: DispatchCtx, deps: DispatchD
   switch (ticket.type) {
     case 'research': {
       const spawn = deps.spawnDetached ?? defaultSpawnDetached;
+      const isAlive = deps.isAlive ?? defaultIsAlive;
       const resultPath = researchResultPath(ctx.cwd, ctx.slug, ticket.id);
       const logPath = researchLogPath(ctx.cwd, ctx.slug, ticket.id);
-      const cmd = ['bun', 'run', 'scripts/dag-research.ts', ticket.title, '--out', resultPath];
+      // 去重①: 结果已落地 → 不再 spawn (watcher 下一 tick 回流)。
+      if (existsSync(resultPath)) return { kind: 'afk', ticketId: ticket.id, resultPath };
+      // 去重②: 在途标记 + 进程仍活 → 不再 spawn (防双进程竞写同一 resultPath + 双倍烧钱)。
+      // 进程已死而无结果 (崩/被杀) → 视作 stale, 重派并覆写标记。
+      const dispatchedPath = researchDispatchedPath(ctx.cwd, ctx.slug, ticket.id);
+      if (existsSync(dispatchedPath)) {
+        const prevPid = Number(readFileSync(dispatchedPath, 'utf8').trim());
+        if (Number.isFinite(prevPid) && prevPid > 0 && isAlive(prevPid)) {
+          return { kind: 'afk', ticketId: ticket.id, resultPath, pid: prevPid };
+        }
+      }
+      // --children: 终稿按共享契约附 `## children` 段 (D-10 自展开; 护栏在消费端 afk-hook)。
+      const cmd = ['bun', 'run', researchScriptPath(), ticket.title, '--out', resultPath, '--children'];
       const pid = spawn(cmd, { cwd: ctx.cwd, logPath });
+      if (pid !== undefined) {
+        try {
+          mkdirSync(dirname(dispatchedPath), { recursive: true });
+          writeFileSync(dispatchedPath, String(pid), 'utf8');
+        } catch {
+          // 标记是去重优化, 写不了 (只读 fs / 测试假 cwd) 不阻断派发本身。
+        }
+      }
       return { kind: 'afk', ticketId: ticket.id, resultPath, ...(pid !== undefined ? { pid } : {}) };
     }
     case 'grill':

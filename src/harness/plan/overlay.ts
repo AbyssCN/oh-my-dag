@@ -1,14 +1,14 @@
 /**
  * plan/overlay —— plan mode 的审议 system overlay (方法论=prompt 那一半)。
  *
- * 经 before_agent_start **append 到 omd 身份之后** (身份保留, plan 纪律叠加), 仅 plan mode 注入。
- * 方法论参考 omd/Claude-Code harness, 但真正的纪律保证来自**模型外代码** (readonly-gate 闸 / ledger
- * 台账 / complexity 分级); 此 overlay 是"软"的那半 —— 把 co-operator 姿态 + 审议节奏说给模型听。
+ * ★ plan mode 已移除 (D-1, shift+tab 改绑 pathfinder), PLAN_MODE_OVERLAY 不再被注入, 仅作公开 API
+ *   保留给外部宿主自行挂载。**readonly-gate 写闸已退役 (D-5)**: 下文的"不动手"是纪律约定,
+ *   没有代码闸兜底 —— 别再宣称"锁死了写工具"。GRILL_OVERLAY 仍在 /grill 时逐轮注入。
  *
  * 字节稳定 (常量, cache 友好); 紧致 (弱模型读得动)。
  */
 export const PLAN_MODE_OVERLAY = `<plan-mode>
-你现在在 **PLAN MODE (只读审议座舱)**。代码级闸已锁死所有写工具/写命令 —— 你**写不了码**, 这是刻意的。
+你现在在 **PLAN MODE (审议座舱)**。此刻纪律是**只审议不动手** (纪律约定, 无代码闸): 不写码不改文件。
 此刻的任务不是动手, 是**跟用户把一件事讨论到底, 直到方案对齐**, 最后才出 SDD+TDD 落地。
 
 ## 你是 co-operator, 不是应答机
@@ -22,7 +22,7 @@ export const PLAN_MODE_OVERLAY = `<plan-mode>
 用户给新输入时, **先重审 plan 台账 (下方注入) + 已有 context**, 再回应:
 1. 回顾目前已达成的结论, 指出新输入如何改变/推进它。
 2. 给出**新的建议**和下一步该深入的点。
-- 决策一旦定型, 提示用 \`/note <决策>\` 记进台账 (台账每轮重注入, 不丢)。
+- 决策一旦定型, 提示用 \`/note <决策>\` 记进台账 (由 /sdd //council /crystallize 收割; 台账不逐轮重注入)。
 
 ## 永不主动停
 - 收尾**必带一个前进动作**: "下一步我们该把 X 讨论清楚" / "还有 Y 没对齐"。不要停在"你看怎么样?"。

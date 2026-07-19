@@ -68,6 +68,11 @@ export interface WebFanoutOpts extends RetrieveOpts {
   lenses?: ResearchLens[];
   synthesisFramings?: { key: string; framing: string }[];
   judgeCriteria?: { key: string; criterion: string }[];
+  /**
+   * 附加到**每个综合 framing** 末尾的指令 (默认与 council-authored 都生效)。
+   * 用途: pathfinder --children 让终稿按共享契约附 `## children` 段 (opt-in, 不污染通用研究输出)。
+   */
+  finalExtraInstruction?: string;
   stablePrefix?: string;
   lensModel?: string;
   reasonModel?: string;
@@ -121,6 +126,10 @@ export async function researchWebFanout(
     synthesisFramings = authored.synthesisFramings;
     judgeCriteria = authored.judgeCriteria;
     opts.onStage?.('council', `authored ${lenses.length} lenses: ${lenses.map((l) => l.key).join(', ')}`);
+  }
+
+  if (opts.finalExtraInstruction) {
+    synthesisFramings = synthesisFramings.map((f) => ({ ...f, framing: `${f.framing}\n${opts.finalExtraInstruction}` }));
   }
 
   const fanout = await researchFanout({

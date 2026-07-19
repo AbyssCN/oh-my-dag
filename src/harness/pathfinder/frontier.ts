@@ -19,23 +19,27 @@ import type { PathMap, Ticket, TicketStatus } from './types';
  * 未知前置 id 不在 ruledSet → 视为未满足 → blocked。
  */
 export function deriveStatus(ticket: Ticket, ruledSet: ReadonlySet<string>): TicketStatus {
-  if (ticket.status === 'ruled' || ticket.status === 'escalated') return ticket.status;
+  if (ticket.status === 'ruled' || ticket.status === 'delivered' || ticket.status === 'escalated') return ticket.status;
   const ready = ticket.blockedBy.every((id) => ruledSet.has(id));
   return ready ? 'open' : 'blocked';
 }
 
-/** 已裁票 id 集合 (前沿判定的基准)。 */
+/** 已裁票 id 集合 (前沿判定的基准; delivered 已裁且已交付, 同样满足前置)。 */
 function ruledSetOf(map: PathMap): Set<string> {
-  return new Set(map.tickets.filter((t) => t.status === 'ruled').map((t) => t.id));
+  return new Set(map.tickets.filter((t) => t.status === 'ruled' || t.status === 'delivered').map((t) => t.id));
 }
 
 /**
- * 计算前沿: status 非 ruled/escalated 且 每个 blockedBy 都已裁的票。
+ * 计算前沿: status 非 ruled/delivered/escalated 且 每个 blockedBy 都已裁的票。
  * 保留 map.tickets 原顺序 (稳定)。
  */
 export function computeFrontier(map: PathMap): Ticket[] {
   const ruled = ruledSetOf(map);
   return map.tickets.filter(
-    (t) => t.status !== 'ruled' && t.status !== 'escalated' && t.blockedBy.every((id) => ruled.has(id)),
+    (t) =>
+      t.status !== 'ruled' &&
+      t.status !== 'delivered' &&
+      t.status !== 'escalated' &&
+      t.blockedBy.every((id) => ruled.has(id)),
   );
 }

@@ -7,8 +7,8 @@
  * + **model 侧证伪裁决**(refute checklist 抓三大系统性误报模式)。
  * 出口只放 CONFIRMED;REFUTED 留档;裁决失败 → UNVERIFIED(fail-open,不静默丢真伤)。
  */
-import { $ } from 'bun';
 import { send } from '../../model/gateway';
+import { grepWithFallback } from './grep-fallback';
 
 /** 可注入的模型调用 (测试 fake generate 用; 默认 gateway send)。 */
 export type ReviewSendFn = typeof send;
@@ -110,11 +110,26 @@ async function gatherEvidence(f: ExtractedFinding, cwd: string): Promise<string>
     const esc = leaf.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     // 定义/实现址优先 + 函数体上下文(-A 8):裁决 leaf 要看到守卫/排序/校验真身,
     // 而非散落调用行号——「未保证排序/缺守卫」类误报正靠这段体内 .sort()/JOIN 证伪。
-    // ugrep 缺失 → grep -E 兜底 (nothrow, 证据缺失时裁决自然偏 CONFIRMED 升人工)。
-    const def = (await $`sh -c ${`(ugrep -rn --no-heading -A 8 -E '\\b${esc}\\b\\s*[(:=]' src apps packages 2>/dev/null || grep -rn -A 8 -E '\\b${esc}\\b\\s*[(:=]' src apps packages 2>/dev/null) | head -48`}`
-      .cwd(cwd).nothrow().text()).trim();
-    const hits = def || (await $`sh -c ${`(ugrep -rn -F -w -A 4 '${leaf}' src apps packages 2>/dev/null || grep -rn -F -w -A 4 '${leaf}' src apps packages 2>/dev/null) | head -24`}`
-      .cwd(cwd).nothrow().text()).trim();
+    // 共享 grep-fallback helper (argv 零 shell): 符号名含引号/元字符也不会破坏命令。
+    const SCAN_ROOTS = ['src', 'apps', 'packages'];
+    const defPat = `\\b${esc}\\b\\s*[(:=]`;
+    const def = (
+      await grepWithFallback(defPat, SCAN_ROOTS, {
+        ugrepFlags: ['-rn', '--no-heading', '-A', '8', '-E'],
+        grepFlags: ['-rn', '-A', '8', '-E'],
+        cwd,
+        maxLines: 48,
+      })
+    ).text.trim();
+    const hits =
+      def ||
+      (
+        await grepWithFallback(leaf, SCAN_ROOTS, {
+          grepFlags: ['-rn', '-F', '-w', '-A', '4'],
+          cwd,
+          maxLines: 24,
+        })
+      ).text.trim();
     parts.push(`### 符号 \`${sym}\` 定义/实现真身(带函数体上下文)\n${hits || '(无命中)'}`);
   }
   return parts.join('\n\n').slice(0, 8000);

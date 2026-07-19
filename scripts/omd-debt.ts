@@ -14,7 +14,7 @@
  * exit 0 = 有标记出 ledger; exit 3 = 零标记 (打印约定提示)。
  */
 import { existsSync } from 'node:fs';
-import { $ } from 'bun';
+import { grepWithFallback } from '../src/harness/review/grep-fallback';
 import { parseDebtLine, formatLedger, type DebtMarker } from '../src/harness/slim/debt-scan';
 
 const USAGE =
@@ -45,11 +45,16 @@ const HINT =
 
 const markers: DebtMarker[] = [];
 if (roots.length > 0) {
-  // ugrep → grep 兜底 (verify.ts 同款 idiom); 无命中 exit 1 → nothrow 空文本。
+  // 共享 grep-fallback helper: argv 直传零 shell — 含空格/元字符的 --paths 不再 word-split /
+  // 命令替换; 真错误 (目录消失/工具挂) 显性报出, 不再被吞成"零标记"。
   const pat = String.raw`(#|//|/\*)[[:space:]]*ponytail:`;
-  const excl = '--exclude-dir=node_modules --exclude-dir=.git --exclude-dir=.omd';
-  const cmd = `(ugrep -rnE '${pat}' ${excl} ${roots.join(' ')} 2>/dev/null || grep -rnE '${pat}' ${excl} ${roots.join(' ')} 2>/dev/null)`;
-  const raw = (await $`sh -c ${cmd}`.nothrow().text()).trim();
+  const flags = ['-rnE', '--exclude-dir=node_modules', '--exclude-dir=.git', '--exclude-dir=.omd'];
+  const res = await grepWithFallback(pat, roots, { grepFlags: flags });
+  if (!res.ok) {
+    console.error(`[omd-debt] 扫描失败 (非"零命中"): ${res.error}`);
+    process.exit(1);
+  }
+  const raw = res.text.trim();
   for (const line of raw ? raw.split('\n') : []) {
     const m = line.match(/^(.+?):(\d+):(.*)$/);
     if (!m) continue; // "Binary file matches" 等非 file:line:text 行

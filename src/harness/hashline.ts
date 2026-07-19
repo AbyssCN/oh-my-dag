@@ -289,14 +289,14 @@ export const HASHLINE_BLOCK_NATIVE_EDIT_REASON =
  * 为什么经 extension: 交互 TUI 走 pi `main(args, { extensionFactories })`, **不暴露 customTools/
  * excludeTools** (那是 createAgentSession 才有的)。两侧各补一招:
  *   - 注入侧 → `pi.registerTool(hashline_read/hashline_edit)` (ExtensionAPI 原生支持)。
- *   - 排除侧 → `on('tool_call')` block 原生 `edit` (复用 readonly-gate/tool-gate 同一 fail-closed 形态)。
+ *   - 排除侧 → `on('tool_call')` block 原生 `edit` (tool-gate 同款 fail-closed 形态)。
  *     `write` 不拦 (整文件覆写不易行错位, 新建文件还需它) —— 与 agent-leaf `excludeTools:['edit']` 一致。
  *
  * 默认只在驱动**弱 executor** 时挂 (tui.ts 的 resolveHashlineEdit 门控): 弱 MiMo 原生 edit 易错位,
  * hashline 行锚定治它; 强模型 (用户 --model 选 Opus) 原生 edit 够好, 拦它反添摩擦。此工厂只管"挂了即生效"。
  *
- * tool_call handler 与 plan readonly-gate 正交叠加: plan mode 下 readonly-gate 已拦全部写工具
- * (含 hashline_edit), 此 handler 额外拦 native edit — 二者对 edit 都 block, 一致无冲突。
+ * (plan readonly-gate 已退役 (D-5): 现在**没有**别的写闸拦 hashline_edit/write —— 此 handler 只拦
+ * native edit, 是当前唯一的 edit 闸, 不要再假设上游还有一层。)
  */
 export function createHashlineExtension(opts: HashlineToolsOpts = {}): ExtensionFactory {
   // 共享快照: 建一次, 整 session 复用 (hashline_read 写标签 → hashline_edit 校验同一 store)。

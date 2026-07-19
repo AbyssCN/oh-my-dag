@@ -242,14 +242,20 @@ describe('pathfinder-extension', () => {
           return { verification: { pass: true } };
         }) as unknown as PathfinderExtensionDeps['executeSlice'],
       };
-      // no onRegionClear override → default wire runs; leafModel set → executes.
+      // no onRegionClear override → 散尽只报信 (/deliver 闸); owner 显式 /deliver 才执行。
       const h = harness(dir, undefined, { leafModel: 'ds:flash' }, deps);
       h.run('path', 'ship-x');
       await h.run('rule', 't1 done');
+      expect(h.allNotices()).toContain('/deliver'); // 报信不执行
+      expect(executedPlan).toBeNull();
+      await h.run('deliver', '');
       expect(compiledRegion as string[] | null).toEqual(['t1']);
       expect(executedPlan).toBe(fakePlan);
       expect(h.allNotices()).toContain('delivered');
       expect(h.sent.join('\n')).toContain('slice-delivered'); // brief sent to runtime
+      // 交付后区域票翻 delivered (终态) → 再裁新票不会把 t1 重新编进区域。
+      const after = loadMap(dir, 'ship-x');
+      expect(after?.tickets.find((t) => t.id === 't1')?.status).toBe('delivered');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -269,6 +275,7 @@ describe('pathfinder-extension', () => {
       const h = harness(dir, undefined, {}, deps); // no leafModel
       h.run('path', 'ship-x');
       await h.run('rule', 't1 done');
+      await h.run('deliver', ''); // 闸后执行入口; 缺 leafModel → 引导语, 不执行
       expect(executed).toBe(false);
       expect(h.allNotices().toLowerCase()).toContain('leafmodel');
     } finally {
@@ -316,6 +323,52 @@ describe('pathfinder-extension', () => {
       await h2.run('path', 'ship-x');
       expect(dispatchCalls).toBe(2);
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('D-10 自续: 回流孵出 research 子票 → 预算内自动续派; 预算 0 → 停 + 提醒', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pf-ext-'));
+    const prevBudget = process.env.OMD_PATH_RESEARCH_BUDGET;
+    try {
+      seedMap(dir, {
+        destination: 'Ship X',
+        slug: 'ship-x',
+        tickets: [tk({ id: 'r1', type: 'research', title: 'research it' })],
+        decisionsLog: [],
+      });
+      let dispatchCalls = 0;
+      let watchDeps: { onReflow?: (r: unknown) => void } = {};
+      const deps: PathfinderExtensionDeps = {
+        dispatchFrontier: (() => {
+          dispatchCalls++;
+          return { dispatched: [{ kind: 'afk', ticketId: 'r1', resultPath: '/x' }], reported: [] };
+        }) as unknown as PathfinderExtensionDeps['dispatchFrontier'],
+        watchAfkResults: ((_m: unknown, _o: unknown, d: typeof watchDeps) => {
+          watchDeps = d;
+          return { tick: () => [], stop: () => {} };
+        }) as unknown as PathfinderExtensionDeps['watchAfkResults'],
+      };
+      const h = harness(dir, undefined, {}, deps);
+      await h.run('path', 'ship-x --prefetch');
+      expect(dispatchCalls).toBe(1);
+
+      // 回流带 research 子票 → 自动续派 (预算默认 12, 本 cwd 无 .dispatched → used=0)。
+      delete process.env.OMD_PATH_RESEARCH_BUDGET;
+      watchDeps.onReflow!({ ticketId: 'r1', newChildren: [tk({ id: 'r1-c1', type: 'research', title: 'child q' })], unblocked: [] });
+      expect(dispatchCalls).toBe(2);
+      expect(h.allNotices()).toContain('self-expansion');
+
+      // 预算 0 → 自续停 + 提醒; 非 research 子票也不触发。
+      process.env.OMD_PATH_RESEARCH_BUDGET = '0';
+      watchDeps.onReflow!({ ticketId: 'r1-c1', newChildren: [tk({ id: 'r1-c1-c1', type: 'research', title: 'grand q' })], unblocked: [] });
+      expect(dispatchCalls).toBe(2);
+      expect(h.allNotices()).toContain('budget exhausted');
+      watchDeps.onReflow!({ ticketId: 'x', newChildren: [tk({ id: 'x-c1', type: 'task', title: 'build' })], unblocked: [] });
+      expect(dispatchCalls).toBe(2);
+    } finally {
+      if (prevBudget === undefined) delete process.env.OMD_PATH_RESEARCH_BUDGET;
+      else process.env.OMD_PATH_RESEARCH_BUDGET = prevBudget;
       rmSync(dir, { recursive: true, force: true });
     }
   });

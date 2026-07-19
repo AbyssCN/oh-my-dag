@@ -66,6 +66,13 @@ export interface ExecuteExtensionOpts {
   /** dag-record SQLite 路径。省略 = createDagRecorder 默认。 */
   recordPath?: string;
   /**
+   * agent-kind leaf 执行器 (带工具**真改文件**)。省略 → executor-dag 把 agent 节点降级为无工具
+   * inproc (不会改文件) / 产文件节点直接失败 —— "执行 SDD"会空转, 生产接线 (tui) 必须传。
+   */
+  agentRunner?: AgentLeafRunner;
+  /** command-kind leaf 执行器 (确定性 CLI 自验节点)。省略 → command 节点失败。 */
+  commandRunner?: CommandLeafRunner;
+  /**
    * 共享 plan 状态 (与 createPlanExtension({ state }) 同一实例)。提供后:
    *   ① 无 SDD 文档时回退 ledger 内容作契约; ② plan mode 在开时程序化干净退出。
    * 省略 = 仅 SDD 文档路径可用, plan mode 退出改为文字提示 (shift+tab)。
@@ -231,6 +238,9 @@ export function createExecuteExtension(
             judgeModel: opts.judgeModel,
             maxRounds: opts.maxRounds,
             conductorEscalationModel: opts.conductorEscalationModel,
+            // 真改文件的接缝: 不接 agentRunner, conductor 派的 agent/产文件节点全是空转 (降级/失败)。
+            agentRunner: opts.agentRunner,
+            commandRunner: opts.commandRunner,
             onComplete: (res) => {
               recorder.record(res, { question: 'execute ' + source + (redrawNotes ? ' (redraw)' : '') });
             },
