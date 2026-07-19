@@ -108,6 +108,12 @@ const PlanNode = z
      * 弱 conductor 不自动生成 (防 slop)。
      */
     persona: z.string().optional(),
+    /**
+     * Agent 模板引用 (agent-templates 注册表按名选卡): 执行期把卡片 body (方法论+检查单+输出纪律)
+     * 注入 leaf prompt 前缀 — 模板管深度, persona 管任务角度 (一行调味), 二者叠加。卡片可携 model
+     * (TPL-3: node.model 显式仍最高优先)。未知名规划期被 parsePlan(knownTemplates) 拒 (TPL-2)。
+     */
+    template: z.string().optional(),
     model: z.string().optional(),
     leaf: z.record(z.string(), z.unknown()).optional(),
     on_failure: z.enum(['retry', 'complete-then-retry', 'escalate', 'pause']).optional(),
@@ -159,10 +165,26 @@ export type ConductorPlan = z.infer<typeof PlanSchema>;
  * decomposition stance (SDD §3.1: Research-parallel / Synthesis-central / Impl-dispatch /
  * Verify-independent) and pins the output contract to the plan schema.
  */
-export function conductorSystemPrompt(opts: { agents?: string[] } = {}): string {
+export function conductorSystemPrompt(
+  opts: { agents?: string[]; templates?: { name: string; description: string }[] } = {},
+): string {
   const roster = opts.agents?.length
     ? `Available executor agents (use ONLY these as node "agent"): ${opts.agents.join(', ')}.`
     : 'Use the SAMPO roster as node "agent" ids (sibelius / lönnrot / vaaka / kaiku / aalto).';
+  // agent 模板注册表段 (只付每卡一行 description; body 执行期才注入 leaf — 规划上下文零 body 成本)。
+  const templateSection = opts.templates?.length
+    ? [
+        '',
+        'Agent template cards (field "template", optional — a registry of frozen specialist role cards):',
+        'A template injects a vetted role card (expert method + domain checklist + output discipline) into',
+        "the executor's prompt at run time — depth you do NOT have to author. Registry (use ONLY these names):",
+        ...opts.templates.map((t) => `- "${t.name}": ${t.description}`),
+        'When a node\'s job matches a card, SET "template" instead of hand-writing that depth; you may still',
+        'add a one-line "persona" ON TOP for the task-specific angle (template = depth, persona = angle).',
+        'Do NOT invent template names — an unknown name makes the whole plan INVALID. A card may pin the',
+        'node\'s model; omit "model" unless you must override it. Mechanical/command nodes need no template.',
+      ]
+    : [];
   return [
     'You are the CONDUCTOR — the L2 orchestrator of the omd agent runtime. You plan, coordinate,',
     'and OWN COMPLETENESS; you never execute (touch files / run tools) yourself. Your job is not just',
@@ -272,6 +294,7 @@ export function conductorSystemPrompt(opts: { agents?: string[] } = {}): string 
     '- impl / drafting → senior practitioner + a stance, e.g. "资深 Bun/TS 工程师 (删减优先, 最小接口)".',
     '- mechanical / file / command → OMIT persona (framing adds nothing, just wastes tokens).',
     'Keep the graph acyclic.',
+    ...templateSection,
     '',
     'Constrained control-flow primitives (field "kind":"primitive" — OPTIONAL, prefer over hand-wiring):',
     'When a node\'s job matches a known control-flow SHAPE, emit ONE primitive node instead of hand-drawing',
@@ -296,7 +319,7 @@ export function conductorSystemPrompt(opts: { agents?: string[] } = {}): string 
     '',
     'Output STRICTLY one JSON object, no prose, matching:',
     '{ "name": string, "description"?: string,',
-    '  "nodes": { "<node_id>": { "agent": string, "skill"?: string, "goal"?: string, "persona"?: string,',
+    '  "nodes": { "<node_id>": { "agent": string, "skill"?: string, "goal"?: string, "persona"?: string, "template"?: string,',
     '    "args"?: object, "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map", "command"?: string, "creative"?: boolean,',
     '    "map"?: { "lister": object, "over": string, "itemVar": string, "keyBy"?: string, "template": object, "maxItems"?: number },',
     '    "postcondition"?: { "method"?: "structural"|"code"|"llm-judge"|"human", "threshold"?: number },',
@@ -337,8 +360,15 @@ export function extractPlanJson(text: string): string {
   return text.slice(start).trim(); // unbalanced → hand the remainder to JSON.parse to error
 }
 
-/** Parse + validate a model reply into a plan. Returns ok|error (never throws). */
-export function parsePlan(text: string): { ok: true; plan: ConductorPlan } | { ok: false; error: string } {
+/**
+ * Parse + validate a model reply into a plan. Returns ok|error (never throws).
+ * opts.knownTemplates 给则校验每个 node.template (含 map 子模板) ∈ 注册表 — 未知名 = 整 plan 无效
+ * (TPL-2: 拒在规划层, 驱动 conductor 重试; enum 级防幻觉, 同 primitive-registry .strict() 手法)。
+ */
+export function parsePlan(
+  text: string,
+  opts: { knownTemplates?: ReadonlySet<string> } = {},
+): { ok: true; plan: ConductorPlan } | { ok: false; error: string } {
   let raw: unknown;
   try {
     raw = JSON.parse(extractPlanJson(text));
@@ -347,5 +377,19 @@ export function parsePlan(text: string): { ok: true; plan: ConductorPlan } | { o
   }
   const res = PlanSchema.safeParse(raw);
   if (!res.success) return { ok: false, error: res.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') };
+  if (opts.knownTemplates) {
+    const unknown = new Set<string>();
+    for (const node of Object.values(res.data.nodes)) {
+      if (node.template && !opts.knownTemplates.has(node.template)) unknown.add(node.template);
+      const mapChildTpl = (node.map?.template as { template?: unknown } | undefined)?.template;
+      if (typeof mapChildTpl === 'string' && !opts.knownTemplates.has(mapChildTpl)) unknown.add(mapChildTpl);
+    }
+    if (unknown.size > 0) {
+      return {
+        ok: false,
+        error: `unknown template(s): ${[...unknown].join(', ')} — "template" 只能取: ${[...opts.knownTemplates].join(', ')}`,
+      };
+    }
+  }
   return { ok: true, plan: res.data };
 }

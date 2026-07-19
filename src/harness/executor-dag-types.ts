@@ -1,4 +1,5 @@
 import type { ModelUsage } from '../model/gateway';
+import type { AgentTemplate } from './agent-templates';
 import type { ConductorPlan } from './conductor-plan';
 import type { CavemanLevel } from './caveman';
 import type { AgentLeafRunner, CommandLeafRunner, LeafModelRouter } from './leaf-runners';
@@ -54,6 +55,12 @@ export interface ExecutorDagConfig {
   maxPlanRetries?: number;
   /** 限定 conductor 可派的 agent roster (进规划 system prompt)。 */
   agents?: string[];
+  /**
+   * Agent 模板注册表 (name → 角色卡, 见 agent-templates.ts)。省略 = loadAgentTemplates()
+   * (内置 5 卡 + cwd/.omd/agents/*.md 项目卡覆盖)。传 Map 注入 (测试 fake / 宿主定制);
+   * 传空 Map = 关闭模板机制 (conductor prompt 无注册表段, 行为回退纯 persona)。
+   */
+  agentTemplates?: ReadonlyMap<string, AgentTemplate>;
   /** 注入式模型调用 (inproc leaf, 默认 callModel)。 */
   generate?: GenerateFn;
   /**

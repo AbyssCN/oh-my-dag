@@ -33,6 +33,7 @@ import { logger } from './logger';
 import type { GenerateFn, ExecutorDagConfig, LeafResult, ExecutorDagResult } from './executor-dag-types';
 import { makeDefaultGenerate, LEAF_SYSTEM_PREFIX, PONYTAIL_LEAF_DISPOSITION } from './executor-dag-defaults';
 import { topoLevels, buildLeafPrompt, addUsage } from './executor-dag-planner';
+import { loadAgentTemplates, templateRoster, type AgentTemplate } from './agent-templates';
 import { expandMapNode, mapSpecHash } from './plan/map-expand';
 // SDD 0013 S1 约束选择: primitive 节点 → compile(复用 primitives.ts)→ run。
 import { compilePrimitive, type PrimitiveCtx } from './primitive-registry';
@@ -40,6 +41,8 @@ import { compilePrimitive, type PrimitiveCtx } from './primitive-registry';
 // ── barrel re-export: 保持 ./executor-dag 公共面稳定 (importer-closure, 消费方零改) ──
 export type { GenerateFn, ExecutorDagConfig, ExecutorDagResult, LeafResult } from './executor-dag-types';
 export { topoLevels } from './executor-dag-planner';
+export { loadAgentTemplates, templateRoster, AGENT_TEMPLATE_DIR } from './agent-templates';
+export type { AgentTemplate } from './agent-templates';
 export { PONYTAIL_LEAF_DISPOSITION } from './executor-dag-defaults';
 
 /** 一轮 plan+execute 的产物 (verify/升级编排在 runExecutorDag 外层组装)。 */
@@ -63,9 +66,11 @@ async function planAndExecute(
   conductorModel: string,
   generate: GenerateFn,
   maxPlanRetries: number,
+  templates: ReadonlyMap<string, AgentTemplate>,
 ): Promise<ExecOnce> {
   // ── 1. conductor: 单结构化调用规划 (我们用 MiMo, 显式可换) ──────────────────
-  const sys = conductorSystemPrompt({ agents: config.agents });
+  // 模板注册表进规划 prompt (每卡一行 description); parsePlan 校验 template 引用 (TPL-2 规划层拒)。
+  const sys = conductorSystemPrompt({ agents: config.agents, templates: templateRoster(templates) });
   let plan: ConductorPlan | null = null;
   let conductorUsage: ModelUsage = { in: 0, out: 0 };
   let lastErr = '';
@@ -77,7 +82,7 @@ async function planAndExecute(
       thinkingLevel: config.conductorThinkingLevel ?? 'high', // 分解器: high 默认
     });
     conductorUsage = addUsage(conductorUsage, usage);
-    const parsed = parsePlan(text);
+    const parsed = parsePlan(text, { knownTemplates: new Set(templates.keys()) });
     if (parsed.ok) {
       plan = parsed.plan;
       break;
@@ -87,7 +92,7 @@ async function planAndExecute(
   if (!plan) throw new Error(`executor-dag: conductor (${conductorModel}) 未产出有效 plan: ${lastErr}`);
 
   // conductor 之后, 下游执行机器与 plan 来源无关 → 交 executePlan (D-7 预构造入口共用同一机器)。
-  return executePlan(plan, task, config, generate, conductorUsage);
+  return executePlan(plan, task, config, generate, conductorUsage, templates);
 }
 
 /**
@@ -102,6 +107,7 @@ async function executePlan(
   config: ExecutorDagConfig,
   generate: GenerateFn,
   conductorUsage: ModelUsage,
+  templates: ReadonlyMap<string, AgentTemplate>,
 ): Promise<ExecOnce> {
   const levels = topoLevels(plan);
   logger.info(
@@ -347,11 +353,18 @@ async function executePlan(
         const r = await config.commandRunner({ command: node.command });
         return { id, status: r.exitCode === 0 ? 'done' : 'failed', kind: 'command', output: r.text, deps, usage: r.usage };
       }
+      // agent 模板卡解析: 命中注册表 → body 注入 prompt 前缀 (buildLeafPrompt 前置放)。
+      // 未知名 = 预构造 plan 绕过了规划层校验 → TPL-2 执行层兜底: warn + 忽略, 不崩节点。
+      const tpl = node.template ? templates.get(node.template) : undefined;
+      if (node.template && !tpl) {
+        logger.warn({ node: id, template: node.template }, '[omd/executor-dag] 未知 agent 模板 → 忽略 (TPL-2 fail-open)');
+      }
       // caveman 路由: 创意节点 (node.creative) → off 护交付物; 否则 → 干活级 (默认 ultra) 压叙述省 token。
       const cav = cavemanRule(leafCavemanLevel(node.creative, config.cavemanLevel ?? 'ultra'));
       // ponytail (构建相位): leaf-only 降代码量, 维二红线不在砍范围。创意节点护交付物 → 不挂 (同 caveman)。
       const pony = config.leafPonytail && !node.creative ? `\n\n${PONYTAIL_LEAF_DISPOSITION}` : '';
-      const prompt = (cav ? `${buildLeafPrompt(id, node, depOutputs)}\n\n${cav}` : buildLeafPrompt(id, node, depOutputs)) + pony;
+      const basePrompt = buildLeafPrompt(id, node, depOutputs, tpl ? { name: tpl.name, body: tpl.body } : undefined);
+      const prompt = (cav ? `${basePrompt}\n\n${cav}` : basePrompt) + pony;
       // 双模分流: executor:'agent' + 有 agentRunner → 带工具子 agent (能改文件); 否则 inproc 单发。
       // M3 bug 修 (2026-06-20): conductor (M3 非确定性) 把"写文件"节点标成 leaf → inproc 不能写文件 →
       //   exit 0 但无产物 (静默假成功)。判别"写文件意图" = output_type:file/git ∨ 有 output_path ∨
@@ -373,11 +386,11 @@ async function executePlan(
         logger.warn({ node: id }, '[omd/executor-dag] executor:agent 但无 agentRunner → 降级 inproc (无工具, 不会改文件)');
       }
       const useAgent = wantAgent && !!config.agentRunner;
-      // per-node model 路由: node.model 显式最高优先 → 否则 router (bandit) 选 → 否则静态
-      // (agent→agentLeafModel, inproc→leafModel)。bucket = executor kind (router 学习单元)。
+      // per-node model 路由 (TPL-3): node.model 显式最高优先 → 模板卡 model → router (bandit) 选 →
+      // 静态 (agent→agentLeafModel, inproc→leafModel)。bucket = executor kind (router 学习单元)。
       const bucket = useAgent ? 'agent' : 'inproc';
       const staticModel = useAgent ? config.agentLeafModel ?? config.leafModel : config.leafModel;
-      const model = node.model ?? (config.router ? config.router.select(bucket, staticModel) : staticModel);
+      const model = node.model ?? tpl?.model ?? (config.router ? config.router.select(bucket, staticModel) : staticModel);
       const t0 = Date.now();
       let text: string;
       let usage: ModelUsage;
@@ -575,9 +588,25 @@ export async function runExecutorDagWithPlan(
   return runDagInternal(deriveTaskFromPlan(plan), config, plan);
 }
 
-/** 预构造 plan → escalation 重规划的种子 task (仅 verify fail 升级时喂 conductor; 正常执行不触及)。 */
+/**
+ * 预构造 plan → escalation 重规划的种子 task (仅 verify fail 升级时喂 conductor; 正常执行不触及)。
+ * ★ 必须携带**整张已编译 plan** (节点 goal = pathfinder 裁决, depends_on = blockedBy 边):
+ * 只给 description (= 目的地一句话) 会让升级 conductor 从散文重新发明 plan, 把地图上
+ * 已裁定的每一条决策全部丢掉 (违反 D-11 只组装不发明)。
+ */
 function deriveTaskFromPlan(plan: ConductorPlan): string {
-  return plan.description?.trim() || plan.name;
+  const header = plan.description?.trim() || plan.name;
+  const nodeLines = Object.entries(plan.nodes ?? {}).map(([id, n]) => {
+    const node = n as { goal?: string; depends_on?: string[]; executor?: string };
+    const deps = node.depends_on?.length ? ` (depends_on: ${node.depends_on.join(', ')})` : '';
+    return `- [${id}]${node.executor ? ` (${node.executor})` : ''}${deps}: ${node.goal ?? ''}`;
+  });
+  return [
+    header,
+    '',
+    '===== 已裁决的执行分解 (预构造 plan; 重规划时**只修不发明** — 保留各节点既定目标与依赖边) =====',
+    ...nodeLines,
+  ].join('\n');
 }
 
 async function runDagInternal(
@@ -591,12 +620,14 @@ async function runDagInternal(
   const generate = config.generate ?? makeDefaultGenerate(sessionId);
   const maxPlanRetries = config.maxPlanRetries ?? 2;
   const maxEscalations = config.maxEscalations ?? 1;
+  // agent 模板注册表: 注入 (测试/宿主) 或加载 (内置+.omd/agents)。每 run 载一次, 规划+执行+升级共用。
+  const templates = config.agentTemplates ?? loadAgentTemplates({ root: config.continuity?.repoRoot });
 
   let conductorModel = config.conductorModel ?? '';
   // D-7: 预构造 plan → executePlan 直执 (跳过 conductor); 否则 conductor 规划 → 执行。二者下游同一机器。
   let exec = prebuiltPlan
-    ? await executePlan(prebuiltPlan, task, config, generate, { in: 0, out: 0 })
-    : await planAndExecute(task, config, conductorModel, generate, maxPlanRetries);
+    ? await executePlan(prebuiltPlan, task, config, generate, { in: 0, out: 0 }, templates)
+    : await planAndExecute(task, config, conductorModel, generate, maxPlanRetries, templates);
   let conductorUsage = exec.conductorUsage;
   let leavesIn = exec.leavesIn;
   let leavesOut = exec.leavesOut;
@@ -622,7 +653,7 @@ async function runDagInternal(
       );
       conductorModel = config.conductorEscalationModel;
       const escTask = `${task}\n\n[上一轮校验未通过] ${verdict.reason}\n请基于此重新规划, 修复上述问题。`;
-      exec = await planAndExecute(escTask, config, conductorModel, generate, maxPlanRetries);
+      exec = await planAndExecute(escTask, config, conductorModel, generate, maxPlanRetries, templates);
       conductorUsage = addUsage(conductorUsage, exec.conductorUsage);
       leavesIn += exec.leavesIn;
       leavesOut += exec.leavesOut;
