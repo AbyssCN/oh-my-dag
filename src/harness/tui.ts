@@ -78,11 +78,12 @@ const userPickedModel = userArgs.includes('--model') || userArgs.includes('--pro
 
 // omd mcp: stdio MCP server 入口 (D-1, 同 `omd init` 范式的 args 分流) —— 零 UI, 不进 wizard/TUI boot。
 // stdout 是 MCP 协议通道: pino 默认写 stdout 会腐蚀协议帧 → logger 先静默。常驻, 客户端管 spawn/kill (D-9)。
-// 工具面 [] = 骨架期空注册面; dag_*/memory_* 等工具由后续 task (tools-dag/tools-memory/tool-research) 装配进此调用点。
+// 工具面 = assembleOmdMcpTools 全装配 (v1 七工具: dag 四件套 + dag_research + memory 两件套, 接缝=真引擎/真记忆/真 research)。
 if (userArgs[0] === 'mcp') {
   logger.level = 'silent';
   const { runOmdMcpServer } = await import('../mcp/server');
-  await runOmdMcpServer([]);
+  const { assembleOmdMcpTools } = await import('../mcp/assemble');
+  await runOmdMcpServer(assembleOmdMcpTools());
   process.exit(0);
 }
 

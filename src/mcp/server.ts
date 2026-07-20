@@ -29,7 +29,10 @@ export function createOmdMcpServer(tools: readonly OmdMcpTool[], info: Implement
   return server;
 }
 
-/** stdio 入口 (D-1): 防御式读包版本 (同 tui banner 范式, 失败不阻断) + 挂 stdio 传输。常驻, 生命周期客户端管 (D-9)。 */
+/** stdio 入口 (D-1): 防御式读包版本 (同 tui banner 范式, 失败不阻断) + 挂 stdio 传输。常驻, 生命周期客户端管 (D-9)。
+ * 退出双保险 (审核实测: 客户端消失后僵尸 100% CPU 忙转): SDK StdioServerTransport 只挂 stdin data/error,
+ * 不听 end/close —— stdin EOF 时 onclose 永不触发, Bun flowing-mode stdin 对已关 fd 空轮询 → 忙转。
+ * 此处事件驱动零轮询: stdin 'end'/'close' 或 transport onclose (SDK 正常关闭路径) 任一触发即干净收尾。 */
 export async function runOmdMcpServer(tools: readonly OmdMcpTool[]): Promise<void> {
   let version = '0.0.0';
   try {
@@ -41,9 +44,24 @@ export async function runOmdMcpServer(tools: readonly OmdMcpTool[]): Promise<voi
   } catch { /* 版本读不到 → 兜底版本号, server 照起 */ }
   const server = createOmdMcpServer(tools, { name: 'omd', version });
   await server.connect(new StdioServerTransport());
-  // connect 在 transport start 后即 resolve —— 挂住直到客户端断开 (stdin EOF → onclose),
-  // 否则调用方继续执行 = server 被秒杀。进程生命周期由客户端管 (D-9)。
+  // connect 在 transport start 后即 resolve —— 挂住直到客户端断开, 否则调用方继续执行 = server 被秒杀。
   await new Promise<void>((resolve) => {
-    server.server.onclose = () => resolve();
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      process.stdin.removeListener('end', finish);
+      process.stdin.removeListener('close', finish);
+      resolve();
+    };
+    process.stdin.once('end', finish);
+    process.stdin.once('close', finish);
+    server.server.onclose = finish;
+    // EOF 竞态: connect 期间 stdin 已结束 → end/close 已发过, 直接收尾不等下一拍。
+    if (process.stdin.readableEnded || process.stdin.destroyed) finish();
   });
+  // 收尾断忙转源头: transport.close 摘 stdin data 监听 + pause; destroy 兜底已 EOF 的 fd。
+  // server.close 会回触发 onclose → finish (已 settled, 幂等 no-op)。
+  await server.close().catch(() => {});
+  try { process.stdin.destroy(); } catch { /* 已销毁 */ }
 }
