@@ -39,7 +39,7 @@ import { expandMapNode, mapSpecHash } from './plan/map-expand';
 import { compilePrimitive, type PrimitiveCtx } from './primitive-registry';
 
 // ── barrel re-export: 保持 ./executor-dag 公共面稳定 (importer-closure, 消费方零改) ──
-export type { GenerateFn, ExecutorDagConfig, ExecutorDagResult, LeafResult } from './executor-dag-types';
+export type { GenerateFn, ExecutorDagConfig, ExecutorDagResult, LeafResult, DagNodeEvent } from './executor-dag-types';
 export { topoLevels } from './executor-dag-planner';
 export { loadAgentTemplates, templateRoster, AGENT_TEMPLATE_DIR } from './agent-templates';
 export type { AgentTemplate } from './agent-templates';
@@ -116,6 +116,21 @@ async function executePlan(
     { plan: plan.name, leafModel: config.leafModel, nodes: Object.keys(plan.nodes).length, levels: levels.length },
     '[omd/executor-dag] planned',
   );
+
+  // 节点进度事件发射器 (fail-open: 观察者抛错不许扰动执行)。kind 词表 = executor ?? primitive ?? leaf。
+  const nodeKind = (n: ConductorPlan['nodes'][string]): string =>
+    n.kind === 'primitive' ? 'primitive' : (n.executor ?? 'leaf');
+  const emitNodeEvent = (e: Parameters<NonNullable<ExecutorDagConfig['onNodeEvent']>>[0]): void => {
+    try {
+      config.onNodeEvent?.(e);
+    } catch {
+      /* fail-open */
+    }
+  };
+  emitNodeEvent({
+    type: 'planned',
+    nodes: Object.entries(plan.nodes).map(([id, n]) => ({ id, kind: nodeKind(n) })),
+  });
 
   // ── 2. executor: 逐层现场 fan-out (层内并行, 经 primitives), leaf 调显式 leafModel ──
   const results: Record<string, LeafResult> = {};
@@ -251,6 +266,8 @@ async function executePlan(
               }));
               results[child.id] = r;
               depOutputs[child.id] = r.output;
+              // map 子节点绕过外层 settle() → 此处补发 settle 事件 (INV-U6 子集独立调度)。
+              emitNodeEvent({ type: 'settle', id: child.id, status: r.status, kind: r.kind, ...(r.model ? { model: r.model } : {}) });
               usageAcc = addUsage(usageAcc, r.usage);
               if (r.status === 'failed') failedCount++;
               childResults.push({ key: child.key, item: child.item, status: r.status, output: r.status === 'failed' ? '[failed]' : r.output });
@@ -336,6 +353,7 @@ async function executePlan(
   const runNode = async (id: string): Promise<LeafResult> => {
       const node = plan!.nodes[id]!;
       const deps = node.depends_on ?? [];
+      emitNodeEvent({ type: 'start', id, kind: nodeKind(node) });
       // SDD 0013 S1: primitive 节点 (约束选择) → compile+run 分支 (先于 map/executor, 与自由 node 并存)。
       if (node.kind === 'primitive' && node.primitive) return runPrimitiveNode(id);
       // U1: map 节点走运行时展开分支 (永不整体 resume-skip — lister 便宜, 子节点各自续)。
@@ -513,6 +531,8 @@ async function executePlan(
       leavesOut += r.usage.out;
       leavesCacheHit += r.usage.cacheHit ?? 0;
     }
+    const settled = results[id]!;
+    emitNodeEvent({ type: 'settle', id, status: settled.status, kind: settled.kind, ...(settled.model ? { model: settled.model } : {}) });
     for (const dep of dependents.get(id) ?? []) {
       const n = (indeg.get(dep) ?? 1) - 1;
       indeg.set(dep, n);
