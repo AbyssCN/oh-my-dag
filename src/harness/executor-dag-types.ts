@@ -122,7 +122,21 @@ export interface ExecutorDagConfig {
    * 传 createDagRecorder().record 的闭包 → 自动落 SQLite 运行记录 (node 图谱可回溯)。抛错不阻断返回。
    */
   onComplete?: (result: ExecutorDagResult) => void | Promise<void>;
+  /**
+   * 节点级进度事件 (2026-07-20, MCP 派发简报/活体 status 的数据源):
+   *   planned = 图定型 (全部节点 id+kind, 每轮 plan/escalation 重规划各发一次)
+   *   start   = 节点起跑 (含 map 展开出的子节点)
+   *   settle  = 节点定局 (done/failed + 实际模型)
+   * fail-open: 回调抛错被吞, 永不影响执行 (观察者不许扰动被观察者)。
+   */
+  onNodeEvent?: (e: DagNodeEvent) => void;
 }
+
+/** 节点进度事件 (onNodeEvent 载荷)。kind 与 LeafResult.kind 同词表 + 'map'/'primitive'。 */
+export type DagNodeEvent =
+  | { type: 'planned'; nodes: Array<{ id: string; kind: string }> }
+  | { type: 'start'; id: string; kind: string }
+  | { type: 'settle'; id: string; status: 'done' | 'failed'; kind: string; model?: string };
 
 export interface LeafResult {
   id: string;
