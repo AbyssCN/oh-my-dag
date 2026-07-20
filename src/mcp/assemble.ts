@@ -221,7 +221,9 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     timer.unref?.();
   }
   const researchFanout = deps.researchFanout ?? createDefaultResearchFanout({ cwd, env });
-  const agentRunner = deps.agentRunner ?? createAgentLeafRunner({ cwd, hashlineEdit: true });
+  // 长任务叶子超时: OMD_LEAF_TIMEOUT_MS 覆 240s 默认, 1h 兜底防泄漏 (session.abort 不杀子进程)。
+  const leafTimeoutMs = (() => { const n = env.OMD_LEAF_TIMEOUT_MS ? Number.parseInt(env.OMD_LEAF_TIMEOUT_MS, 10) : NaN; return Number.isFinite(n) && n > 0 ? n : 3_600_000; })();
+  const agentRunner = deps.agentRunner ?? createAgentLeafRunner({ cwd, hashlineEdit: true, leafTimeoutMs });
   const commandRunner =
     deps.commandRunner ??
     createCommandLeafRunner({ allowlist: ['bun', 'tsc', 'npx'], cwd, timeoutMs: 180_000 });

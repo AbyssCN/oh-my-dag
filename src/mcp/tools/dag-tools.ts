@@ -22,19 +22,73 @@ import { topoLevels } from '../../harness/executor-dag.js';
  * 几层/什么模型, 不必等 dag_status。levels 经 topoLevels (环图不该出现 — parsePlan 不查环,
  * 防御性兜底)。
  */
-function dispatchBriefing(plan: ConductorPlan, config: ExecutorDagConfig): string {
-  const nodes = Object.values(plan.nodes);
+/** Max nodes before downsampling to per-level counts only. */
+const ASCII_DOWNSAMPLE_THRESHOLD = 20;
+
+/** Node status symbol map. */
+const STATUS_SYM: Record<string, string> = { done: '✔', running: '▶', failed: '✘' };
+
+/**
+ * ASCII层级图 — 宽 ≤maxCols 列。>20 节点降采样为每层计数。
+ * 有 topoLevels → 按层; 无 → planned 顺序平铺一行组 (诚实)。
+ * 导出供 dag_status / 外部渲染复用。
+ */
+export function renderProgressAscii(
+  levels: string[][] | undefined,
+  progress: {
+    planned: Array<{ id: string; kind: string }>;
+    started: string[];
+    settled: Array<{ id: string; status: 'done' | 'failed'; kind: string }>;
+  },
+  maxCols = 100,
+): string {
+  const settledOf = new Map(progress.settled.map((s) => [s.id, s]));
+  const startedSet = new Set(progress.started);
+  const kindOf = new Map(progress.planned.map((n) => [n.id, n.kind]));
+  // flat fallback: 无 topoLevels 时所有 planned 节点归一层
+  const effective = levels ?? (progress.planned.length > 0 ? [progress.planned.map((n) => n.id)] : []);
+  const total = effective.reduce((s, l) => s + l.length, 0);
+
+  const sym = (id: string): string => {
+    const s = settledOf.get(id);
+    if (s) return STATUS_SYM[s.status] ?? '○';
+    return startedSet.has(id) ? '▶' : '○';
+  };
+
+  if (total > ASCII_DOWNSAMPLE_THRESHOLD) {
+    return effective.map((ids, i) => {
+      const counts: Record<string, number> = {};
+      for (const id of ids) {
+        const s = sym(id);
+        counts[s] = (counts[s] ?? 0) + 1;
+      }
+      const parts = ['✔', '▶', '✘', '○'].filter((s) => counts[s]).map((s) => `${s}${counts[s]}`);
+      return `L${i + 1} ${parts.join(' ')}`;
+    }).join('\n');
+  }
+
+  return effective.map((ids, i) => {
+    const entries = ids.map((id) => `${sym(id)} ${id}(${kindOf.get(id) ?? '?'})`);
+    let line = `L${i + 1} ${entries.join(' ')}`;
+    if (line.length > maxCols) line = line.slice(0, maxCols - 3) + '...';
+    return line;
+  }).join('\n');
+}
+
+export function dispatchBriefing(plan: ConductorPlan, config: ExecutorDagConfig): string {
+  const entries = Object.entries(plan.nodes);
   const byKind: Record<string, number> = {};
-  for (const n of nodes) {
-    const kind = n.kind === 'primitive' ? 'primitive' : (n.executor ?? 'leaf');
+  for (const [, n] of entries) {
+    const kind = n.executor ?? 'leaf';
     byKind[kind] = (byKind[kind] ?? 0) + 1;
   }
   let levelsLine: string;
   let workersLine = '';
+  let topo: string[][] | undefined;
   try {
-    const levels = topoLevels(plan);
-    const widest = Math.max(...levels.map((l) => l.length));
-    levelsLine = `levels: ${levels.length} (widest ${widest})`;
+    topo = topoLevels(plan);
+    const widest = Math.max(...topo.map((l) => l.length));
+    levelsLine = `levels: ${topo.length} (widest ${widest})`;
     const cap = config.maxFanout && config.maxFanout > 0 ? config.maxFanout : undefined;
     workersLine = `workers: up to ${cap ? Math.min(widest, cap) : widest}${cap ? ` (cap ${cap})` : ' (cap ∞)'}`;
   } catch {
@@ -50,7 +104,11 @@ function dispatchBriefing(plan: ConductorPlan, config: ExecutorDagConfig): strin
   ]
     .filter(Boolean)
     .join(' ');
-  return [`nodes: ${nodes.length} (${kinds})`, levelsLine, workersLine, `models: ${models}`].filter(Boolean).join('\n');
+  const summary = [`nodes: ${entries.length} (${kinds})`, levelsLine, workersLine, `models: ${models}`].filter(Boolean).join('\n');
+  // ASCII 层级图: dispatch 瞬间全部 pending
+  const progress = { planned: entries.map(([id, n]) => ({ id, kind: n.executor ?? 'leaf' })), started: [], settled: [] };
+  const ascii = renderProgressAscii(topo, progress);
+  return `${summary}\n${ascii}`;
 }
 
 /** Engine seam — callers inject real implementations, tests inject fakes. */
@@ -353,7 +411,17 @@ function makeDagStatus({ runRegistry }: DagToolDeps): OmdMcpTool {
       if (!runId) {
         throw new McpError(ErrorCode.InvalidParams, 'dag_status: missing required param "runId"');
       }
+      const rec = runRegistry.getRecord(runId);
+      if (!rec) {
+        return { content: [{ type: 'text' as const, text: `unknown run ${runId}` }], isError: true };
+      }
       const summary = runRegistry.getSummary(runId);
+      // running 态追加 ASCII 层级图 (进度实时渲染)
+      if (rec.status === 'running' && rec.progress) {
+        const p = rec.progress;
+        const ascii = renderProgressAscii(undefined, p);
+        summary.content[0] = { type: 'text' as const, text: `${summary.content[0]!.text}\n${ascii}` };
+      }
       return { content: summary.content, isError: summary.isError };
     },
   };
