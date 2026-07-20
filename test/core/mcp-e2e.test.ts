@@ -28,6 +28,13 @@ const ALL_TOOLS = [
   'dag_research',
   'memory_recall',
   'memory_remember',
+  // pathfinder 六件套 (TUI-less 决策地图)
+  'path_map',
+  'path_add',
+  'path_tickets',
+  'path_rule',
+  'path_deliver',
+  'path_prefetch',
 ].sort();
 
 /** Minimal valid ConductorPlan (同 mcp-dag-tools.test.ts 形状)。 */
