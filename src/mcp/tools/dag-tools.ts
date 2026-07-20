@@ -9,8 +9,8 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import type { NodeDetail, RunRegistry } from '../run-registry.js';
 import type { OmdMcpTool } from '../server.js';
-import type { RunRegistry } from '../run-registry.js';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../../harness/executor-dag-types.js';
 import type { ConductorPlan } from '../../harness/conductor-plan.js';
 import { parsePlan } from '../../harness/conductor-plan.js';
@@ -30,6 +30,15 @@ export interface DagToolDeps {
   clock?: () => string;
   /** Default ExecutorDagConfig base (leafModel, conductorModel, etc.) — spread with per-call overrides. */
   defaultConfig?: Partial<ExecutorDagConfig>;
+}
+
+/** Map ExecutorDagResult.results → per-node NodeDetail {status, output} for registry storage. */
+function extractNodeDetails(result: ExecutorDagResult): Record<string, NodeDetail> {
+  const details: Record<string, NodeDetail> = {};
+  for (const [id, leaf] of Object.entries(result.results)) {
+    details[id] = { status: leaf.status, output: leaf.output };
+  }
+  return details;
 }
 
 /** Summarize a completed ExecutorDagResult for D-8 wide output (no full dump). */
@@ -77,7 +86,7 @@ function summarizeResult(result: ExecutorDagResult): Record<string, unknown> {
 }
 
 /**
- * Build 4 dag tools: dag_run, dag_run_plan, dag_status, dag_result.
+ * Build 5 dag tools: dag_run, dag_run_plan, dag_status, dag_result, dag_node_output.
  * Each handler is a pure fn closed over {engine, runRegistry, cwd, clock}.
  */
 export function createDagTools(deps: DagToolDeps): OmdMcpTool[] {
@@ -86,6 +95,7 @@ export function createDagTools(deps: DagToolDeps): OmdMcpTool[] {
     makeDagRunPlan(deps),
     makeDagStatus(deps),
     makeDagResult(deps),
+    makeDagNodeOutput(deps),
   ];
 }
 
@@ -143,6 +153,7 @@ function makeDagRun({ engine, runRegistry, defaultConfig }: DagToolDeps): OmdMcp
       engine
         .runExecutorDag(task, config)
         .then((result) => {
+          runRegistry.setNodeDetails(runId, extractNodeDetails(result));
           runRegistry.succeed(runId, summarizeResult(result));
         })
         .catch((err) => {
@@ -207,6 +218,7 @@ function makeDagRunPlan({ engine, runRegistry, defaultConfig }: DagToolDeps): Om
       engine
         .runExecutorDagWithPlan(parsed.plan, config)
         .then((result) => {
+          runRegistry.setNodeDetails(runId, extractNodeDetails(result));
           runRegistry.succeed(runId, summarizeResult(result));
         })
         .catch((err) => {
@@ -271,6 +283,61 @@ function makeDagResult({ runRegistry }: DagToolDeps): OmdMcpTool {
       }
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(rec.result, null, 2) }],
+      };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// dag_node_output — runId+nodeId → full node output, paged 4000 chars per call.
+// ---------------------------------------------------------------------------
+
+/** Page size (chars) for dag_node_output slices. */
+const NODE_OUTPUT_PAGE_SIZE = 4000;
+
+function makeDagNodeOutput({ runRegistry }: DagToolDeps): OmdMcpTool {
+  return {
+    name: 'dag_node_output',
+    description:
+      "Get one node's full output from a DAG run, paged in 4000-char chunks via offset. Unknown run/node → error.",
+    inputSchema: {
+      runId: z.string().describe('Run ID returned by dag_run or dag_run_plan'),
+      nodeId: z.string().describe('Node (leaf) ID within the run'),
+      offset: z.number().int().min(0).optional().describe('Char offset to start from (default 0); use nextOffset to continue'),
+    },
+    handler: async (args) => {
+      const { runId, nodeId, offset } = args as { runId?: string; nodeId?: string; offset?: number };
+      if (!runId) {
+        throw new McpError(ErrorCode.InvalidParams, 'dag_node_output: missing required param "runId"');
+      }
+      if (!nodeId) {
+        throw new McpError(ErrorCode.InvalidParams, 'dag_node_output: missing required param "nodeId"');
+      }
+      if (!runRegistry.getRecord(runId)) {
+        return { content: [{ type: 'text' as const, text: `unknown run ${runId}` }], isError: true };
+      }
+      const detail = runRegistry.getNodeDetail(runId, nodeId);
+      if (!detail) {
+        return {
+          content: [{ type: 'text' as const, text: `unknown node ${nodeId} in run ${runId}` }],
+          isError: true,
+        };
+      }
+      const start = Math.max(0, offset ?? 0);
+      const end = Math.min(start + NODE_OUTPUT_PAGE_SIZE, detail.output.length);
+      const page = detail.output.slice(start, end);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              text: page,
+              status: detail.status,
+              totalChars: detail.output.length,
+              nextOffset: end < detail.output.length ? end : null,
+            }),
+          },
+        ],
       };
     },
   };
