@@ -86,6 +86,13 @@ export interface ExecutorDagConfig {
    */
   continuity?: { manager: CheckpointManager; runId: string; resume?: boolean; repoRoot?: string };
   /**
+   * per-kind 并发闸 (fanout 最大化设计, 2026-07-21): inproc 叶纯 API 等待、无本地足迹 →
+   * 默认不限 (只受 maxFanout/图宽/provider 池); agent 叶 (本地工具调用) 与 command 叶
+   * (本地 CLI) 物理共享本机 CPU/磁盘 → 各自独立小闸。省略的 kind = 不限。
+   * 调度期按节点声明的 executor 记账 (运行期 leaf→agent 提升不改变记账桶 — 提升是罕见纠错路径)。
+   */
+  kindFanout?: { agent?: number; command?: number; inproc?: number };
+  /**
    * command-kind leaf 的执行器 (确定性 CLI, 零 LLM, 方案 A)。给则 `executor:'command'` 节点经此跑
    * node.command (经 fail-closed 闸 + 白名单)。省略 → command 节点失败 (无 runner)。
    * codegraph / piolium 等"方法论+CLI工具"型能力的并行检索底座。
