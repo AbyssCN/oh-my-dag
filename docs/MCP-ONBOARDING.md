@@ -79,23 +79,27 @@ cd <your-project> && claude mcp add omd -- omd mcp
 agent knows the disciplines (who rules, who delivers, how to iterate):
 
 ```bash
-cp -r client-skills/{path,tickets,rule,deliver,execute,iterate,grill,sdd,note,council,audit,sast} ~/.claude/skills/
+cp -r client-skills/{path,tickets,rule,deliver,execute,iterate,grill,sdd,note,council,audit,sast,review,slim,deepen,dream} ~/.claude/skills/
 ```
 
 Codex has no skills mechanism — merge the SKILL.md bodies you need into the target
 repo's `AGENTS.md`. See [client-skills/README.md](../client-skills/README.md) for
 the full command-migration table and workflows.
 
-## 4 · What you get (14 tools, three groups)
+## 4 · What you get (19 tools, three groups)
 
 **Engine group** — delegate work to the cheap fleet:
 
 | Tool | What it does |
 |---|---|
 | `dag_run` | task → conductor decomposes into a typed DAG → concurrent execution (agent leaves **really write files**, command leaves run tsc/tests) |
-| `dag_run_plan` | skip the conductor: execute a pre-built plan JSON directly |
+| `dag_run_plan` | skip the conductor: execute a pre-built plan JSON directly; `resume=<runId>` skips checkpointed done nodes (a 429-interrupted run continues instead of re-running the whole graph) |
 | `dag_status` / `dag_result` / `dag_node_output` | three-phase async: dispatch, keep chatting, poll, fetch artifacts |
+| `dag_runs` | list runs — memory registry merged with on-disk continuity checkpoints (disk-only ones marked `unknown(restart)`); optional `status` filter |
 | `dag_research` | multi-lens parallel research + judged synthesis; full report on disk, only a summary enters context |
+| `dag_review` | adversarial multi-dimension diff review fleet, async — `gate` G0|G1|G2|G3 (default G2), `scope` comma paths; returns runId → poll via `dag_status` / `dag_result` |
+| `dag_slim` | over-engineering cut-only audit fleet, async — optional `scope`; returns runId |
+| `dag_deepen` | architecture-deepening scan: git-hotspot discovery → one agent per hotspot → leverage-ranked HTML report; `commits` (default 200) / `hotspots` (default 6); returns runId |
 
 **Pathfinder group** — persistent planning for foggy multi-session work:
 
@@ -109,7 +113,8 @@ the full command-migration table and workflows.
 | `path_prefetch` | dispatch frontier research to detached background processes — they keep running after you close the client |
 
 **Memory group**: `memory_recall` / `memory_remember` — persistent fact store with
-namespace safeguards.
+namespace safeguards; `dream_consolidate` — one synchronous dream-pump round folding
+the recent event window into L0–L6 memory layers (returns per-layer stats).
 
 ## 5 · Five-minute walkthrough
 
@@ -146,5 +151,5 @@ agent:  (path_deliver) 3 nodes done, tickets delivered. Here's the diff — plea
 **装**:`git clone … && bun install && bun link`(需 Bun ≥1.3)。
 **配**:`omd init` 向导写 `.env`;模型是 `provider:model` 坐标,任何 OpenAI 兼容后端可用,不锁厂商。
 **接**:目标 repo 放 `.mcp.json`(本仓库带模板)或 `claude mcp add omd -- omd mcp`;**server 的 cwd = 它作用的仓库**。技能包:`cp -r client-skills/... ~/.claude/skills/`,获得 `/path` `/rule` `/deliver` `/execute` 等斜杠工作流。
-**得到什么**:14 个工具三组——DAG 引擎组(任务分解成类型化节点图、廉价模型车队并发真改文件、三段式异步)、pathfinder 组(持久决策地图、AFK 后台研究关了客户端还在跑、显式交付闸)、记忆组(跨 session 事实库)。
+**得到什么**:19 个工具三组——DAG 引擎组(任务分解成类型化节点图、廉价模型车队并发真改文件、三段式异步、review/slim/deepen 质量车队与 `dag_runs` 运行台账)、pathfinder 组(持久决策地图、AFK 后台研究关了客户端还在跑、显式交付闸)、记忆组(跨 session 事实库 + `dream_consolidate` 同步巩固)。
 **边界**:裁决与执行永远等 owner 显式指令;自续研究受预算约束(`OMD_PATH_RESEARCH_BUDGET`,默认 12);状态全在磁盘,换客户端零损失。

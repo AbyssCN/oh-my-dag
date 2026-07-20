@@ -1,13 +1,13 @@
 # client-skills — omd 的 runtime 客户端技能包
 
-**背景**:omd 已转为 MCP-first —— pi TUI 退役,runtime TUI 由 **Claude Code / Codex** 担任,经 `omd mcp`(stdio MCP server,13 工具)驱动 omd 的引擎。原先长在 pi TUI 扩展里的斜杠命令,在这里重生为 runtime 客户端的**技能**(Claude Code skills 格式):方法论进技能文本,重活经 MCP 工具落到 omd 引擎。
+**背景**:omd 已转为 MCP-first —— pi TUI 退役,runtime TUI 由 **Claude Code / Codex** 担任,经 `omd mcp`(stdio MCP server,19 工具)驱动 omd 的引擎。原先长在 pi TUI 扩展里的斜杠命令,在这里重生为 runtime 客户端的**技能**(Claude Code skills 格式):方法论进技能文本,重活经 MCP 工具落到 omd 引擎。
 
 ## 安装
 
 **Claude Code**(用户级,全仓库生效):
 
 ```bash
-cp -r client-skills/{path,tickets,rule,deliver,execute,iterate,grill,sdd,note,council,audit,sast} ~/.claude/skills/
+cp -r client-skills/{path,tickets,rule,deliver,execute,iterate,grill,sdd,note,council,audit,sast,review,slim,deepen,dream} ~/.claude/skills/
 ```
 
 或项目级:拷到目标 repo 的 `.claude/skills/`。装好后在 Claude 里敲 `/path`、`/deliver` 等即触发(新会话生效)。
@@ -21,7 +21,7 @@ cd <目标repo> && claude mcp add omd -- omd mcp        # 全局安装的 omd
 # 或源码: claude mcp add omd -- bun run <omd路径>/src/harness/tui.ts mcp
 ```
 
-## 技能一览(12 个)
+## 技能一览(16 个)
 
 | 技能 | 干什么 | 靠什么 |
 |---|---|---|
@@ -37,8 +37,12 @@ cd <目标repo> && claude mcp add omd -- omd mcp        # 全局安装的 omd
 | `/council` | 多视角议会:宽解空间问题并行出方案 + 评审择优 | MCP `dag_research`(council) |
 | `/audit` | 多 lens 并行安全审计 → 结构化报告 | MCP `dag_run`(审计 DAG 模板) |
 | `/sast` | 确定性 semgrep 静态扫描 | Bash semgrep |
+| `/review` | 对抗式改动审查车队,gate G0–G3 阶梯控深度(默认 G2) | MCP `dag_review`(三段式) |
+| `/slim` | 过度工程专审:镀金/抽象过度/死复杂度,只删不加 | MCP `dag_slim`(三段式) |
+| `/deepen` | git 热点架构加深扫描 → leverage 排序 HTML 报告 | MCP `dag_deepen`(三段式) |
+| `/dream` | 记忆巩固:近期事件窗归并进 L0–L6 七层(同步,慢) | MCP `dream_consolidate` |
 
-## 原 pi TUI 23 条斜杠命令 → 去向全表
+## 原 pi TUI 27 条斜杠命令 → 去向全表
 
 | TUI 命令 | 去向 |
 |---|---|
@@ -54,6 +58,8 @@ cd <目标repo> && claude mcp add omd -- omd mcp        # 全局安装的 omd
 | `/config` `/setup`(配置向导) | **退役** — 配置即 `.env`(照 `.env.example`);模型坐标 `OMD_RUNTIME_PROVIDER/MODEL` + 角色覆盖 `OMD_ITER_*` |
 | `/mcp`(TUI 内 MCP 路由管理) | **退役** — MCP 管理是 runtime 客户端自己的事(`claude mcp …`) |
 | `/cost` | **退役** — 成本随 `dag_result` / research 报告内嵌返回(cost 字段) |
+| `/review` `/slim` `/deepen` | → 同名技能(经 `dag_review`/`dag_slim`/`dag_deepen` 车队,异步三段式,报告落盘) |
+| `/dream` | → 同名技能(经 `dream_consolidate`,同步返回层统计) |
 
 ## 核心工作流
 

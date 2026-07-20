@@ -36,6 +36,12 @@ const ALL_TOOLS = [
   'path_rule',
   'path_deliver',
   'path_prefetch',
+  // fleet 增量 (SDD 2026-07-20: 车队四工具 + run 发现)
+  'dag_review',
+  'dag_slim',
+  'dag_deepen',
+  'dream_consolidate',
+  'dag_runs',
 ].sort();
 
 /** Minimal valid ConductorPlan (同 mcp-dag-tools.test.ts 形状)。 */

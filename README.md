@@ -7,7 +7,7 @@
 *Your agent stays the smart brain. omd brings the cheap concurrent hands*
 *and the memory that doesn't forget.*
 
-[![MCP server: 14 tools](https://img.shields.io/badge/MCP%20server-14%20tools-c9a227?style=flat-square&labelColor=140f0a)](docs/MCP-ONBOARDING.md)
+[![MCP server: 19 tools](https://img.shields.io/badge/MCP%20server-19%20tools-c9a227?style=flat-square&labelColor=140f0a)](docs/MCP-ONBOARDING.md)
 [![Clients: Claude Code · Codex · any MCP](https://img.shields.io/badge/clients-Claude%20Code%20%C2%B7%20Codex%20%C2%B7%20any%20MCP-6f9488?style=flat-square&labelColor=140f0a)](client-skills/)
 [![Models: bring your own](https://img.shields.io/badge/models-bring%20your%20own-b3382a?style=flat-square&labelColor=140f0a)](.env.example)
 [![Runtime: Bun ≥ 1.3](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.3-b3382a?style=flat-square&labelColor=140f0a)](https://bun.sh)
@@ -23,7 +23,7 @@
 
 Your coding agent (Claude Code, Codex, any MCP client) stays the smart brain; omd
 provides the cheap concurrent hands and the memory that doesn't forget. **`omd mcp`**
-is the primary front door — a stdio MCP server (14 tools). A terminal agent on the
+is the primary front door — a stdio MCP server (19 tools). A terminal agent on the
 [pi](https://pi.dev) runtime ships bundled as an alternative front-end. Any
 OpenAI-compatible backend plugs in; nothing is vendor-locked.
 
@@ -59,7 +59,7 @@ cd <your-project> && claude mcp add omd -- omd mcp
 Then install the slash-command workflow pack (teaches your agent the disciplines):
 
 ```bash
-cp -r client-skills/{path,tickets,rule,deliver,execute,iterate,grill,sdd,note,council,audit,sast} ~/.claude/skills/
+cp -r client-skills/{path,tickets,rule,deliver,execute,iterate,grill,sdd,note,council,audit,sast,review,slim,deepen,dream} ~/.claude/skills/
 ```
 
 **→ Full walkthrough: [docs/MCP-ONBOARDING.md](docs/MCP-ONBOARDING.md)** ·
@@ -127,6 +127,7 @@ shell (no API key needed).
 | `/iterate <task>` | DAG in a fixpoint loop — your agent is the convergence judge |
 | `/grill` `/note` `/council` | interrogate · decision ledger · judged debate |
 | `/audit` · `/sast` | multi-lens security audit DAG · deterministic semgrep scan |
+| `/review` `/slim` `/deepen` `/dream` | adversarial diff-review fleet (gate G0–G3) · cut-only slim audit · hotspot deepen scan · memory consolidation |
 
 (The bundled pi TUI keeps its original command set — see the migration table in
 [client-skills/README.md](client-skills/README.md).)
@@ -284,11 +285,12 @@ skill proposals.
 
 ## MCP integration (Claude Code / Codex / any client)
 
-`omd mcp` is a stdio MCP server — 14 tools in three groups: the DAG engine
+`omd mcp` is a stdio MCP server — 19 tools in three groups: the DAG engine
 (`dag_run` / `dag_run_plan` / `dag_status` / `dag_result` / `dag_node_output` /
-`dag_research`), pathfinder (`path_map` / `path_add` / `path_tickets` /
-`path_rule` / `path_deliver` / `path_prefetch`), and memory (`memory_recall` /
-`memory_remember`). The server is stateless: maps live in `docs/plan/pathfinder/`
+`dag_research` / `dag_runs` / `dag_review` / `dag_slim` / `dag_deepen`),
+pathfinder (`path_map` / `path_add` / `path_tickets` / `path_rule` / `path_deliver` /
+`path_prefetch`), and memory (`memory_recall` / `memory_remember` /
+`dream_consolidate`). The server is stateless: maps live in `docs/plan/pathfinder/`
 (git), runtime state in `.omd/` — any client can resume another's work.
 
 ```bash
@@ -333,7 +335,7 @@ MIT — see [LICENSE](LICENSE).
 ## 这是什么
 
 你的 coding agent（Claude Code / Codex / 任意 MCP 客户端）保持"聪明的大脑"，omd 提供
-"便宜的并发手脚和不丢的记忆"。**`omd mcp`** 是主入口（stdio MCP server，14 工具）；
+"便宜的并发手脚和不丢的记忆"。**`omd mcp`** 是主入口（stdio MCP server，19 工具）；
 pi 运行时上的终端 agent 作为备用前端随包附带。任意 OpenAI 兼容后端可用，不锁厂商。
 核心：**DAG 执行引擎**（任务变成类型化节点图，由你自选的廉价模型车队并发执行——agent
 叶子真改文件，跨模型 skeptic 校验，失败才升级；frontier 模型做判断，车队做执行)、

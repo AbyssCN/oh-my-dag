@@ -63,3 +63,19 @@ chmod +x .claude/hooks/*.sh
 See `docs/examples/claude-code/hooks/` for:
 - `verify-after-edit.sh` — blocks after edits until tsc + tests pass
 - `dangerous-cmd.sh` — blocks dangerous shell commands (exit 2 = hard stop)
+- `memory-distill.sh` — Stop hook; soft-nudges memory distillation at session end
+
+## 会话记忆蒸馏 (session memory distillation)
+
+When a session ends, decide whether anything is worth keeping in omd self-memory:
+
+- **Store** only durable, reusable conclusions: a verified root cause, a repo-specific
+  gotcha (wrong-identifier trap, surprising config behavior), a confirmed decision and why.
+- **Skip** transient state: task progress, intermediate errors already fixed, anything
+  recoverable from git history or the code itself.
+- At most **one fact per session**. If in doubt, skip — noise degrades recall quality.
+- **Namespace discipline**: use the repo-scoped namespace (e.g. this project's), never a
+  global one; include `confidence` and a `source_event_id`/`source_doc_id` reference.
+- Never store secrets, credentials, or personal data — the safeguard gate rejects them.
+
+Store via the omd `memory_remember` MCP tool. Retrieve later with `memory_recall`.

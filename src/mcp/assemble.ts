@@ -12,6 +12,9 @@
  *     写入仍过 validateFactWrite 校验闸, D-5)。
  *   - research 工具: 现有 researchFanout 接缝 (harness/research/fanout) 适配成 MCP 三段返回
  *     {runId, reportPath, summary} (报告全文落盘 .omd/research/, D-8 宽出)。
+ *   - fleet 四工具: createFleetTools (dag_review/slim/deepen 异步子进程 + dream_consolidate 同步泵;
+ *     spawn 接缝默认 Bun.spawn, dream 接缝注入; runRegistry/cwd 同现有)。
+ *   - runs 工具: createRunsTools (dag_runs 同步列表: 内存 registry ∪ 磁盘 continuity 合并去重)。
  *
  * 可测: 全部 deps 可选覆盖 (测试传 fake 引擎/内存记忆/fake research, 零网络零磁盘)。
  */
@@ -25,6 +28,8 @@ import { createDagTools, type DagEngine } from './tools/dag-tools';
 import { createMemoryTools } from './tools/memory';
 import { createPathfinderTools, type PathfinderToolDeps } from './tools/pathfinder';
 import { createDagResearchTool, type ResearchFanout } from './tools/research';
+import { createFleetTools, type SpawnFn } from './tools/fleet';
+import { createRunsTools } from './tools/runs';
 import { runExecutorDag, runExecutorDagWithPlan } from '../harness/executor-dag';
 import type { ExecutorDagConfig } from '../harness/executor-dag-types';
 import { createAgentLeafRunner } from '../harness/agent-leaf';
@@ -41,6 +46,7 @@ import {
   DEFAULT_COUNCIL_DEEP_FRAMINGS,
   DEFAULT_COUNCIL_DEEP_LENSES,
 } from '../harness/plan/best-of-n';
+import type { DreamPump } from '../harness/learning/types';
 
 /** 生产引擎接缝 (真 DAG 引擎)。 */
 const PROD_ENGINE: DagEngine = { runExecutorDag, runExecutorDagWithPlan };
@@ -67,6 +73,10 @@ export interface AssembleOmdMcpDeps {
   configOverrides?: Partial<ExecutorDagConfig>;
   /** pathfinder 工具接缝覆盖 (测试传 fake executeSlice/dispatchFrontier/watchAfkResults)。 */
   pathfinder?: Partial<Pick<PathfinderToolDeps, 'executeSlice' | 'dispatchFrontier' | 'watchAfkResults'>>;
+  /** fleet spawn 接缝 (测试注入 fake; 生产默认 Bun.spawn)。 */
+  spawn?: SpawnFn;
+  /** dream pump 接缝 (dream_consolidate; 省略 → 该工具回 isError 不炸)。 */
+  dream?: DreamPump;
 }
 
 /** runtime 模型坐标 (OMD_RUNTIME_PROVIDER:OMD_RUNTIME_MODEL); 未配 → '' (镜像 resolveConductorDefault)。 */
@@ -184,8 +194,9 @@ function renderResearchReport(question: string, runId: string, result: ResearchF
 }
 
 /**
- * 装配 v1 全工具面 (7 工具): dag_run/dag_run_plan/dag_status/dag_result + dag_research +
- * memory_recall/memory_remember。纯组装: 解析 deps → 调各工厂 → 拍平返回。
+ * 装配 v1 全工具面 (12 工具): dag_run/dag_run_plan/dag_status/dag_result + dag_research +
+ * memory_recall/memory_remember + dag_review/dag_slim/dag_deepen/dream_consolidate + dag_runs。
+ * 纯组装: 解析 deps → 调各工厂 → 拍平返回。
  */
 export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[] {
   const env = deps.env ?? process.env;
@@ -221,5 +232,9 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       commandRunner,
       ...deps.pathfinder,
     }),
+    // fleet 四工具: review/slim/deepen 异步子进程 + dream_consolidate 同步泵。
+    ...createFleetTools({ runRegistry, cwd, spawn: deps.spawn, dream: deps.dream }),
+    // runs 工具: 内存 registry ∪ 磁盘 continuity 合并列表。
+    ...createRunsTools({ runRegistry, cwd }),
   ];
 }

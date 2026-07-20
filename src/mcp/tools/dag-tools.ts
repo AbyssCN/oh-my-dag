@@ -145,25 +145,39 @@ export function createDagTools(deps: DagToolDeps): OmdMcpTool[] {
 function makeDagRun({ engine, runRegistry, defaultConfig, continuity }: DagToolDeps): OmdMcpTool {
   return {
     name: 'dag_run',
-    description: 'Execute a task via conductor DAG planning + leaf fan-out. Returns runId + summary.',
+    description: 'Execute a task via conductor DAG planning + leaf fan-out. resume=<runId> skips checkpointed nodes.',
     inputSchema: {
       task: z.string().describe('Task description for the conductor to plan and execute'),
       conductorModel: z.string().optional().describe('Conductor model (provider:modelId)'),
       leafModel: z.string().optional().describe('Leaf model (provider:modelId)'),
+      resume: z.string().optional().describe('Prior runId to resume — done nodes with valid checkpoints are skipped'),
     },
     handler: async (args) => {
-      const { task, conductorModel, leafModel } = args as {
+      const { task, conductorModel, leafModel, resume } = args as {
         task?: string;
         conductorModel?: string;
         leafModel?: string;
+        resume?: string;
       };
       if (!task) {
         throw new McpError(ErrorCode.InvalidParams, 'dag_run: missing required param "task"');
       }
-      const runId = randomUUID();
+      const runId = resume ?? randomUUID();
       const goal = task.slice(0, 200);
-      runRegistry.register(runId, { goal, meta: { tool: 'dag_run' } });
-      runRegistry.start(runId);
+      if (resume) {
+        // resume 语义: failed run 重开 / server 重启后未知 runId 重登记; 在飞或已 done 的拒绝。
+        const rec = runRegistry.getRecord(resume);
+        if (rec && rec.status !== 'failed') {
+          return {
+            content: [{ type: 'text' as const, text: `resume 拒绝: run ${resume} 当前 ${rec.status} (仅 failed/未知可续)` }],
+            isError: true,
+          };
+        }
+        runRegistry.reopenForResume(runId, { goal, meta: { tool: 'dag_run', resumed: true } });
+      } else {
+        runRegistry.register(runId, { goal, meta: { tool: 'dag_run' } });
+        runRegistry.start(runId);
+      }
 
       // Fire-and-forget: execute in background, update registry on completion.
       const config: ExecutorDagConfig = {
@@ -172,9 +186,9 @@ function makeDagRun({ engine, runRegistry, defaultConfig, continuity }: DagToolD
         leafModel: leafModel ?? defaultConfig?.leafModel ?? '',
         // 活体进度: conductor 出图后引擎发 planned → start/settle 流进 registry (dag_status 实时)。
         onNodeEvent: (e) => runRegistry.applyNodeEvent(runId, e),
-        // checkpoint 恒落盘 (conductor 路径暂无 resume 参数 — 重规划图形状可变, generation 闸自会作废失配 checkpoint)。
+        // D-3 断点续跑: checkpoint 恒落盘; resume 时命中已绿节点跳过 (429 打断不再整图重跑)。
         ...(continuity
-          ? { continuity: { manager: continuity.manager, runId, resume: false, repoRoot: continuity.repoRoot } }
+          ? { continuity: { manager: continuity.manager, runId, resume: !!resume, repoRoot: continuity.repoRoot } }
           : {}),
       } as ExecutorDagConfig;
 
