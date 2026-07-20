@@ -220,19 +220,22 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     1,
     Math.min(effectiveFanout({}, env), agentProvider ? resolveProviderCap(agentProvider) : Number.MAX_SAFE_INTEGER),
   );
-  // per-kind 闸: inproc 不限 (纯 API 等待, 由 provider 池经 defaultMaxFanout 兜); agent/command
-  // 有本地足迹 → 默认 8/4, env OMD_AGENT_FANOUT / OMD_COMMAND_FANOUT 可调。
+  // per-kind 闸: **代码零默认** (无硬默认教义 — MCP 是中立基础设施, 不烤机器立场; ms02 等
+  // 强机部署天然无限制)。弱机自己的约束写自己的 env: OMD_AGENT_FANOUT / OMD_COMMAND_FANOUT。
   const intEnv = (v: string | undefined): number | undefined => {
     const n = v ? Number.parseInt(v, 10) : NaN;
     return Number.isFinite(n) && n > 0 ? n : undefined;
   };
+  const agentCap = intEnv(env.OMD_AGENT_FANOUT);
+  const commandCap = intEnv(env.OMD_COMMAND_FANOUT);
+  const kindFanout = {
+    ...(agentCap ? { agent: agentCap } : {}),
+    ...(commandCap ? { command: commandCap } : {}),
+  };
   const defaultConfig: Partial<ExecutorDagConfig> = {
     ...models,
     maxFanout: defaultMaxFanout,
-    kindFanout: {
-      agent: intEnv(env.OMD_AGENT_FANOUT) ?? 8,
-      command: intEnv(env.OMD_COMMAND_FANOUT) ?? 4,
-    },
+    ...(Object.keys(kindFanout).length ? { kindFanout } : {}),
     agentRunner,
     commandRunner,
     ...deps.configOverrides,
