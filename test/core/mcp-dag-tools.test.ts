@@ -496,3 +496,35 @@ describe('continuity 接线 + resume', () => {
     expect(res.content[0]!.text).toContain('running');
   });
 });
+
+// ── maxFanout 手闸 (参数 > defaultConfig > 全宽) + briefing workers 行 ─────────────
+
+describe('maxFanout 手闸', () => {
+  function engineCapture() {
+    const captured: { config?: ExecutorDagConfig } = {};
+    const engine: DagEngine = {
+      runExecutorDag: async () => { throw new Error('unused'); },
+      runExecutorDagWithPlan: async (_p, config) => { captured.config = config; return stubResult(); },
+    };
+    return { engine, captured };
+  }
+
+  test('参数透传引擎 config 且覆盖 defaultConfig; briefing 出 workers 行', async () => {
+    const { engine, captured } = engineCapture();
+    const tools = createDagTools({ engine, runRegistry: new RunRegistry(), cwd: '/tmp',
+      defaultConfig: { leafModel: 'fake:leaf', maxFanout: 3 } });
+    const res = (await getTool(tools, 'dag_run_plan')({ plan: VALID_PLAN_JSON, maxFanout: 1 })) as { content: { text: string }[] };
+    await new Promise((r) => setTimeout(r, 10));
+    expect(captured.config!.maxFanout).toBe(1); // 参数 > defaultConfig(3)
+    expect(res.content[0]!.text).toContain('workers: up to 1 (cap 1)');
+  });
+
+  test('无参数 → defaultConfig (装配层 provider 池) 生效', async () => {
+    const { engine, captured } = engineCapture();
+    const tools = createDagTools({ engine, runRegistry: new RunRegistry(), cwd: '/tmp',
+      defaultConfig: { leafModel: 'fake:leaf', maxFanout: 3 } });
+    (await getTool(tools, 'dag_run_plan')({ plan: VALID_PLAN_JSON })) as unknown;
+    await new Promise((r) => setTimeout(r, 10));
+    expect(captured.config!.maxFanout).toBe(3);
+  });
+});
