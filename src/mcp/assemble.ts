@@ -29,6 +29,7 @@ import { createMemoryTools } from './tools/memory';
 import { createPathfinderTools, type PathfinderToolDeps } from './tools/pathfinder';
 import { createDagResearchTool, type ResearchFanout } from './tools/research';
 import { createFleetTools, type SpawnFn } from './tools/fleet';
+import { effectiveFanout, resolveProviderCap } from '../harness/fleet';
 import { createRunsTools } from './tools/runs';
 import { runExecutorDag, runExecutorDagWithPlan } from '../harness/executor-dag';
 import type { ExecutorDagConfig } from '../harness/executor-dag-types';
@@ -211,8 +212,17 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     createCommandLeafRunner({ allowlist: ['bun', 'tsc', 'npx'], cwd, timeoutMs: 180_000 });
 
   // engine config = env 角色矩阵三件套 + 真改文件 runner 对 (execute-extension 已解析形状同款)。
+  const models = resolveEngineModels(env);
+  // 并发默认接 fleet 层 (此前断路 = 引擎全宽): min(effectiveFanout(env OMD_MAX_FANOUT/CPU 兜底),
+  // agent 模型 provider 的并发池 cap)。工具参数 maxFanout 仍最高优先 (dag-tools 内覆盖)。
+  const agentProvider = (models.agentLeafModel ?? models.leafModel ?? '').split(':')[0] ?? '';
+  const defaultMaxFanout = Math.max(
+    1,
+    Math.min(effectiveFanout({}, env), agentProvider ? resolveProviderCap(agentProvider) : Number.MAX_SAFE_INTEGER),
+  );
   const defaultConfig: Partial<ExecutorDagConfig> = {
-    ...resolveEngineModels(env),
+    ...models,
+    maxFanout: defaultMaxFanout,
     agentRunner,
     commandRunner,
     ...deps.configOverrides,

@@ -30,9 +30,13 @@ function dispatchBriefing(plan: ConductorPlan, config: ExecutorDagConfig): strin
     byKind[kind] = (byKind[kind] ?? 0) + 1;
   }
   let levelsLine: string;
+  let workersLine = '';
   try {
     const levels = topoLevels(plan);
-    levelsLine = `levels: ${levels.length} (widest ${Math.max(...levels.map((l) => l.length))})`;
+    const widest = Math.max(...levels.map((l) => l.length));
+    levelsLine = `levels: ${levels.length} (widest ${widest})`;
+    const cap = config.maxFanout && config.maxFanout > 0 ? config.maxFanout : undefined;
+    workersLine = `workers: up to ${cap ? Math.min(widest, cap) : widest}${cap ? ` (cap ${cap})` : ' (cap ∞)'}`;
   } catch {
     levelsLine = 'levels: ? (graph not topo-sortable)';
   }
@@ -46,7 +50,7 @@ function dispatchBriefing(plan: ConductorPlan, config: ExecutorDagConfig): strin
   ]
     .filter(Boolean)
     .join(' ');
-  return [`nodes: ${nodes.length} (${kinds})`, levelsLine, `models: ${models}`].join('\n');
+  return [`nodes: ${nodes.length} (${kinds})`, levelsLine, workersLine, `models: ${models}`].filter(Boolean).join('\n');
 }
 
 /** Engine seam — callers inject real implementations, tests inject fakes. */
@@ -151,13 +155,15 @@ function makeDagRun({ engine, runRegistry, defaultConfig, continuity }: DagToolD
       conductorModel: z.string().optional().describe('Conductor model (provider:modelId)'),
       leafModel: z.string().optional().describe('Leaf model (provider:modelId)'),
       resume: z.string().optional().describe('Prior runId to resume — done nodes with valid checkpoints are skipped'),
+      maxFanout: z.number().int().positive().optional().describe('Concurrency cap for node fan-out (default: provider pool)'),
     },
     handler: async (args) => {
-      const { task, conductorModel, leafModel, resume } = args as {
+      const { task, conductorModel, leafModel, resume, maxFanout } = args as {
         task?: string;
         conductorModel?: string;
         leafModel?: string;
         resume?: string;
+        maxFanout?: number;
       };
       if (!task) {
         throw new McpError(ErrorCode.InvalidParams, 'dag_run: missing required param "task"');
@@ -186,6 +192,8 @@ function makeDagRun({ engine, runRegistry, defaultConfig, continuity }: DagToolD
         leafModel: leafModel ?? defaultConfig?.leafModel ?? '',
         // 活体进度: conductor 出图后引擎发 planned → start/settle 流进 registry (dag_status 实时)。
         onNodeEvent: (e) => runRegistry.applyNodeEvent(runId, e),
+        // 并发手闸: 参数 > defaultConfig (装配层 provider 池) > 引擎全宽。
+        ...(maxFanout ? { maxFanout } : {}),
         // D-3 断点续跑: checkpoint 恒落盘; resume 时命中已绿节点跳过 (429 打断不再整图重跑)。
         ...(continuity
           ? { continuity: { manager: continuity.manager, runId, resume: !!resume, repoRoot: continuity.repoRoot } }
@@ -240,13 +248,15 @@ function makeDagRunPlan({ engine, runRegistry, defaultConfig, continuity }: DagT
       task: z.string().optional().describe('Task description (for escalation re-planning seed)'),
       leafModel: z.string().optional().describe('Leaf model (provider:modelId)'),
       resume: z.string().optional().describe('Prior runId to resume — done nodes with valid checkpoints are skipped'),
+      maxFanout: z.number().int().positive().optional().describe('Concurrency cap for node fan-out (default: provider pool)'),
     },
     handler: async (args) => {
-      const { plan: planJson, task, leafModel, resume } = args as {
+      const { plan: planJson, task, leafModel, resume, maxFanout } = args as {
         plan?: string;
         task?: string;
         leafModel?: string;
         resume?: string;
+        maxFanout?: number;
       };
       if (!planJson) {
         throw new McpError(ErrorCode.InvalidParams, 'dag_run_plan: missing required param "plan"');
@@ -280,6 +290,8 @@ function makeDagRunPlan({ engine, runRegistry, defaultConfig, continuity }: DagT
         leafModel: leafModel ?? defaultConfig?.leafModel ?? '',
         // 活体进度: 引擎三事件 (planned/start/settle) 流进 registry → dag_status 实时可见。
         onNodeEvent: (e) => runRegistry.applyNodeEvent(runId, e),
+        // 并发手闸: 参数 > defaultConfig (装配层 provider 池) > 引擎全宽。
+        ...(maxFanout ? { maxFanout } : {}),
         // D-3 断点续跑: checkpoint 恒落盘; resume 时命中已绿节点跳过 (429 打断不再整图重跑)。
         ...(continuity
           ? { continuity: { manager: continuity.manager, runId, resume: !!resume, repoRoot: continuity.repoRoot } }
