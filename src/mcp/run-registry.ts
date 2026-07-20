@@ -170,6 +170,19 @@ export class RunRegistry {
     if (rec.status === 'failed' && rec.error) {
       parts.push(`error: ${rec.error}`);
     }
+    // running 态活体进度 (applyNodeEvent 累积; D-8 宽出: 计数 + 在跑节点名, 不灌输出)。
+    if (rec.status === 'running' && rec.progress) {
+      const p = rec.progress;
+      const total = p.planned.length || p.started.length + p.settled.length;
+      const done = p.settled.filter((s) => s.status === 'done').length;
+      const failed = p.settled.length - done;
+      const pending = Math.max(0, total - p.started.length - p.settled.length);
+      parts.push(`progress: ${done}/${total} done${failed ? `, ${failed} failed` : ''}, ${pending} pending`);
+      if (p.started.length) {
+        const kindOf = new Map(p.planned.map((n) => [n.id, n.kind]));
+        parts.push(`running: ${p.started.map((id) => `${id}(${kindOf.get(id) ?? '?'})`).join(', ')}`);
+      }
+    }
     return { content: [{ type: 'text', text: parts.join('\n') }] };
   }
 
