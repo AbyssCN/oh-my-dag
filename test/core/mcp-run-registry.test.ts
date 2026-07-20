@@ -70,3 +70,27 @@ describe('RunRegistry', () => {
     expect(reg.listRuns()).toEqual(expect.arrayContaining(['a', 'b']));
   });
 });
+
+// ── round4: applyNodeEvent 三事件语义 ────────────────────────────────────────────
+
+describe('applyNodeEvent', () => {
+  test('start 进 started; settle 移出 started 进 settled; planned 整体覆盖', () => {
+    const reg = new RunRegistry();
+    reg.register('r1', { goal: 'g' });
+    reg.start('r1');
+    reg.applyNodeEvent('r1', { type: 'planned', nodes: [{ id: 'a', kind: 'inproc' }, { id: 'b', kind: 'agent' }] });
+    reg.applyNodeEvent('r1', { type: 'start', id: 'a', kind: 'inproc' });
+    let p = reg.getRecord('r1')!.progress!;
+    expect(p.planned.length).toBe(2);
+    expect(p.started).toEqual(['a']);
+    reg.applyNodeEvent('r1', { type: 'settle', id: 'a', status: 'done', kind: 'inproc', model: 'fake:m' });
+    p = reg.getRecord('r1')!.progress!;
+    expect(p.started).toEqual([]);
+    expect(p.settled).toEqual([{ id: 'a', status: 'done', kind: 'inproc', model: 'fake:m' }]);
+    // 升级重规划: planned 整体覆盖
+    reg.applyNodeEvent('r1', { type: 'planned', nodes: [{ id: 'c', kind: 'inproc' }] });
+    expect(reg.getRecord('r1')!.progress!.planned).toEqual([{ id: 'c', kind: 'inproc' }]);
+    // 未知 runId: 静默不抛 (fail-open, 事件流不背崩溃责任)
+    expect(() => reg.applyNodeEvent('ghost', { type: 'start', id: 'x', kind: 'inproc' })).not.toThrow();
+  });
+});

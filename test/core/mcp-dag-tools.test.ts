@@ -334,3 +334,78 @@ describe('dag_result', () => {
     expect(result.content[0]!.text).toContain('failed');
   });
 });
+
+// ── round4: 派发简报 + 活体进度 (briefing + onNodeEvent 接线) ─────────────────────
+
+import type { DagNodeEvent } from '../../src/harness/executor-dag-types';
+
+describe('派发简报 + 活体进度', () => {
+  const THREE_NODE_PLAN = JSON.stringify({
+    name: 'briefing-plan',
+    nodes: {
+      a: { goal: 'research', executor: 'leaf' },
+      b: { goal: 'implement', executor: 'agent', depends_on: ['a'] },
+      gate: { executor: 'command', command: 'bun test', depends_on: ['b'] },
+    },
+  });
+
+  test('dag_run_plan 返回派发简报: 节点计数/分类/层数/模型', async () => {
+    const tools = createDagTools({
+      engine: fakeEngine(stubResult()),
+      runRegistry: new RunRegistry(),
+      cwd: '/tmp',
+      defaultConfig: { leafModel: 'fake:leaf', agentLeafModel: 'fake:agent' },
+    });
+    const res = (await getTool(tools, 'dag_run_plan')({ plan: THREE_NODE_PLAN })) as {
+      content: { text: string }[];
+    };
+    const text = res.content[0]!.text;
+    expect(text).toContain('--- dispatch ---');
+    expect(text).toContain('nodes: 3 (leaf:1 agent:1 command:1)');
+    expect(text).toContain('levels: 3 (widest 1)');
+    expect(text).toContain('leaf=fake:leaf');
+    expect(text).toContain('agent=fake:agent');
+  });
+
+  test('onNodeEvent 流进 registry: running 期 dag_status 活体进度, 完结回 done 语义', async () => {
+    const reg = new RunRegistry();
+    let emit!: (e: DagNodeEvent) => void;
+    let finish!: () => void;
+    const gatePromise = new Promise<void>((r) => {
+      finish = r;
+    });
+    const engine: DagEngine = {
+      runExecutorDag: async () => {
+        throw new Error('unused');
+      },
+      runExecutorDagWithPlan: async (_plan, config) => {
+        emit = config.onNodeEvent!;
+        await gatePromise;
+        return stubResult();
+      },
+    };
+    const tools = createDagTools({ engine, runRegistry: reg, cwd: '/tmp', defaultConfig: { leafModel: 'fake:leaf' } });
+    const runRes = (await getTool(tools, 'dag_run_plan')({ plan: THREE_NODE_PLAN })) as {
+      content: { text: string }[];
+    };
+    const runId = /runId: (\S+)/.exec(runRes.content[0]!.text)![1]!;
+
+    emit({ type: 'planned', nodes: [{ id: 'a', kind: 'inproc' }, { id: 'b', kind: 'agent' }, { id: 'gate', kind: 'command' }] });
+    emit({ type: 'start', id: 'a', kind: 'inproc' });
+    let status = (await getTool(tools, 'dag_status')({ runId })) as { content: { text: string }[] };
+    expect(status.content[0]!.text).toContain('progress: 0/3 done, 2 pending');
+    expect(status.content[0]!.text).toContain('running: a(inproc)');
+
+    emit({ type: 'settle', id: 'a', status: 'done', kind: 'inproc' });
+    emit({ type: 'start', id: 'b', kind: 'agent' });
+    status = (await getTool(tools, 'dag_status')({ runId })) as { content: { text: string }[] };
+    expect(status.content[0]!.text).toContain('progress: 1/3 done, 1 pending');
+    expect(status.content[0]!.text).toContain('running: b(agent)');
+
+    finish();
+    await new Promise((r) => setTimeout(r, 10));
+    status = (await getTool(tools, 'dag_status')({ runId })) as { content: { text: string }[] };
+    expect(status.content[0]!.text).toContain('status: done');
+    expect(status.content[0]!.text).not.toContain('running:');
+  });
+});
