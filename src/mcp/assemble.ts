@@ -22,6 +22,7 @@ import type { OmdMcpTool } from './server';
 import { RunRegistry } from './run-registry';
 import { createDagTools, type DagEngine } from './tools/dag-tools';
 import { createMemoryTools } from './tools/memory';
+import { createPathfinderTools, type PathfinderToolDeps } from './tools/pathfinder';
 import { createDagResearchTool, type ResearchFanout } from './tools/research';
 import { runExecutorDag, runExecutorDagWithPlan } from '../harness/executor-dag';
 import type { ExecutorDagConfig } from '../harness/executor-dag-types';
@@ -63,6 +64,8 @@ export interface AssembleOmdMcpDeps {
   commandRunner?: CommandLeafRunner;
   /** engine config 追加覆盖 (在 env 角色矩阵解析结果之上, caller 显式指定优先)。 */
   configOverrides?: Partial<ExecutorDagConfig>;
+  /** pathfinder 工具接缝覆盖 (测试传 fake executeSlice/dispatchFrontier/watchAfkResults)。 */
+  pathfinder?: Partial<Pick<PathfinderToolDeps, 'executeSlice' | 'dispatchFrontier' | 'watchAfkResults'>>;
 }
 
 /** runtime 模型坐标 (OMD_RUNTIME_PROVIDER:OMD_RUNTIME_MODEL); 未配 → '' (镜像 resolveConductorDefault)。 */
@@ -207,5 +210,14 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     ...createDagTools({ engine, runRegistry, cwd, defaultConfig }),
     createDagResearchTool(researchFanout),
     ...createMemoryTools({ memory, cwd }),
+    // pathfinder 六件套 (TUI-less 决策地图: map/add/tickets/rule/deliver/prefetch, pull 式回流)。
+    ...createPathfinderTools({
+      cwd,
+      env,
+      models: resolveEngineModels(env),
+      agentRunner,
+      commandRunner,
+      ...deps.pathfinder,
+    }),
   ];
 }
