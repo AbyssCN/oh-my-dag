@@ -44,7 +44,8 @@ _(none)_
 ### task-run-registry
 - type: task
 - title: run 注册表模块: runId → 状态/结果, 可无盘单测, 持久面复用 continuity
-- status: ruled
+- status: delivered
+- delivered: run3 交付 (c3a71d4) + 明细层 (1917a03) + 活体进度 applyNodeEvent (0da74bc)
 - blockedBy: research-seams, grill-signoff
 - ruling: 交付 src/mcp/run-registry.ts: run 注册表独立小模块 (runId → 状态/结果), 可无盘单测; 持久面复用 continuity (崩溃后 resume 同 runId, D-3/D-9)。先红 (test/core/mcp-run-registry.test.ts): 未知 runId 返明确错 (MCP error 非 crash)。
 - executorKind: agent
@@ -52,7 +53,8 @@ _(none)_
 ### task-tools-dag
 - type: task
 - title: dag_run/dag_run_plan/dag_status/dag_result 四工具 + 先红 (schema 拒坏参 / 未知 runId 明确错 / parsePlan 级拒绝)
-- status: ruled
+- status: delivered
+- delivered: 四工具 (c3a71d4) + dag_node_output 三级下钻 (1917a03) + 派发简报/活体status (340ec62) + resume 断点续跑 (6eeaf40)
 - blockedBy: task-server-skeleton, task-run-registry
 - ruling: 交付 src/mcp/tools/ 下 dag_run/dag_run_plan/dag_status/dag_result 四工具 — 纯函数处理器, 注入 {engine, runRegistry, cwd, clock} (测试传 fake, 同 executor-dag GenerateFn 注入范式); 引擎接缝 runExecutorDag/runExecutorDagWithPlan。先红: schema 拒坏参 (缺 task/plan 非法 → MCP error 非 crash)、dag_run_plan 对无效 ConductorPlan 的 parsePlan 级拒绝、未知 runId 明确错。宽出 (D-8): 返回 runId/节点计数/产物路径, 不灌全量输出。tools/list 描述 ≤120 字符 (D-11)。
 - executorKind: agent
@@ -60,7 +62,8 @@ _(none)_
 ### task-tools-memory
 - type: task
 - title: memory_recall/memory_remember 两工具 + 先红 (校验闸拒因回显)
-- status: ruled
+- status: delivered
+- delivered: 实现 (c3a71d4) + 真闸先红测试补齐 (round4 装配批)
 - blockedBy: task-server-skeleton, research-seams
 - ruling: 交付 memory_recall + memory_remember 两工具 (src/mcp/tools/memory.ts): recall (query,k? → 事实列表带置信/出处; OmdMemory/createOmdMemory 接缝); remember (fact → ok/rejected; 过 validateFactWrite 校验闸 @src/memory/safeguards/validator.ts, 拒因回显)。纯函数处理器注入 {memory, cwd}。先红: 校验闸拒 secret/越界 namespace 的回显。描述 ≤120 字符。
 - executorKind: agent
@@ -68,7 +71,8 @@ _(none)_
 ### task-tool-research
 - type: task
 - title: dag_research 异步工具 (researchFanout 接缝, runId 三段式, 报告落盘)
-- status: ruled
+- status: delivered
+- delivered: 实现 (c3a71d4) + 缺 question 先红测试补齐 (round4 装配批)
 - blockedBy: task-server-skeleton, research-seams
 - ruling: 交付 dag_research 异步工具 (src/mcp/tools/research.ts): question, council?, super?, k? → runId; researchFanout 接缝; 报告落盘, 返回落盘路径 + 摘要 (宽出 D-8)。先红: 缺 question → MCP error。描述 ≤120 字符。
 - executorKind: agent
@@ -76,7 +80,8 @@ _(none)_
 ### task-e2e-inmemory
 - type: task
 - title: InMemoryTransport 端到端: tools/list / schema 拒坏参 / 三段式生命周期
-- status: ruled
+- status: delivered
+- delivered: test/core/mcp-e2e.test.ts (round4 装配批) — 14 工具枚举/坏参三层拒/三段式生命周期; 真 stdio e2e 另证 E2E_PASS
 - blockedBy: task-tools-dag, task-tools-memory, task-tool-research
 - ruling: 交付 InMemoryTransport 端到端测试 (test/core/mcp-e2e.test.ts): Client/Server 双端无进程对接 — tools/list (全工具注册 + 描述 ≤120 字符 D-11)、schema 拒坏参、dag_run_plan 三段式生命周期 (注入 fake engine: runId → status 轮询 → result 取产物)。
 - executorKind: agent
@@ -84,7 +89,8 @@ _(none)_
 ### task-triad-docs
 - type: task
 - title: 三件套②③ + 入口文档: skills 安装指引 / CLAUDE.md 模板 / 两个 PreToolUse hook 样例 / Claude Code mcpServers 配置 (README)
-- status: ruled
+- status: delivered
+- delivered: docs/examples/claude-code (c3a71d4) + client-skills 12 技能包 + MCP-ONBOARDING (ad9a9f3)
 - blockedBy: grill-signoff
 - ruling: 交付三件套②③ + 入口文档: .claude/skills 安装指引 (22 技能直装, 指 skills/ 原样)、CLAUDE.md 模板 (omd 纪律: 写后必验/危险命令闸)、两个 PreToolUse hook 样例 (写后必验 + dangerous-cmd, 退出码 2 硬阻断)、README.md 增 Claude Code mcpServers 配置段 (`omd mcp`)。只动 docs/ 与 README, 示例落 docs/examples/claude-code/。
 - executorKind: agent

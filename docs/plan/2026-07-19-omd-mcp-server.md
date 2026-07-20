@@ -1,6 +1,10 @@
 # SDD — omd MCP Server（引擎与 UI 解耦：Claude Code 当大脑，omd 当自包含执行机器）
 
-> 状态：契约草案，待 owner 签字后开工。
+> 状态：**P1 + P2 已交付**（2026-07-20，dogfood: k3 车队执行 + 审核方验收整备）。
+> 交付偏差记录：工具面 14 个（原契约 16）——dag_review/slim/deepen 与 dream_consolidate 未做成
+> MCP 工具（走客户端 bash 调 shell 车队已够用，避免 D-7 注册面膨胀；要独立工具另立增量）；
+> 超契约新增：dag_node_output 三级下钻、派发简报、dag_status 活体进度、dag_run_plan resume
+> 断点续跑、path_add/path_prefetch。P3（sampling / ACP）未动。
 > 前情：pi TUI 对比 Claude Code/Codex 有代差（打磨/权限流/多端入口），且 pi 快速演进带 churn 税
 > （0.77→0.80 认证考古一天）。omd 的价值大头（DAG 引擎/车队/记忆/pathfinder）不依赖 pi 的 UI。
 
