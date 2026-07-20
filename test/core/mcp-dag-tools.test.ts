@@ -394,13 +394,13 @@ describe('派发简报 + 活体进度', () => {
     emit({ type: 'start', id: 'a', kind: 'inproc' });
     let status = (await getTool(tools, 'dag_status')({ runId })) as { content: { text: string }[] };
     expect(status.content[0]!.text).toContain('progress: 0/3 done, 2 pending');
-    expect(status.content[0]!.text).toContain('running: a(inproc)');
+    expect(status.content[0]!.text).toContain('running: a(inproc, 0s)');
 
     emit({ type: 'settle', id: 'a', status: 'done', kind: 'inproc' });
     emit({ type: 'start', id: 'b', kind: 'agent' });
     status = (await getTool(tools, 'dag_status')({ runId })) as { content: { text: string }[] };
     expect(status.content[0]!.text).toContain('progress: 1/3 done, 1 pending');
-    expect(status.content[0]!.text).toContain('running: b(agent)');
+    expect(status.content[0]!.text).toContain('running: b(agent, 0s)');
 
     finish();
     await new Promise((r) => setTimeout(r, 10));
