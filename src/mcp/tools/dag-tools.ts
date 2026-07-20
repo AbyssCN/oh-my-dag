@@ -124,6 +124,14 @@ function summarizeResult(result: ExecutorDagResult): Record<string, unknown> {
     verification: result.verification
       ? { pass: result.verification.pass, reason: result.verification.reason }
       : undefined,
+    // 用量可见性 (TUI /cost parity): 调用方能看到本 run 烧了多少 token/命中多少 cache。
+    usage: {
+      conductor: result.usage.conductor,
+      leavesIn: result.usage.leavesIn,
+      leavesOut: result.usage.leavesOut,
+      leavesCacheHit: result.usage.leavesCacheHit,
+      ...(result.usage.verifier ? { verifier: result.usage.verifier } : {}),
+    },
     outputs: Object.keys(outputs).length > 0 ? outputs : undefined,
   };
 }

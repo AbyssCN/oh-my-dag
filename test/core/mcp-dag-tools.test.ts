@@ -528,3 +528,20 @@ describe('maxFanout 手闸', () => {
     expect(captured.config!.maxFanout).toBe(3);
   });
 });
+
+// ── usage 可见性 (TUI /cost parity) ──────────────────────────────────────────────
+
+describe('dag_result usage 回传', () => {
+  test('result 含 conductor/leaves token 计数', async () => {
+    const reg = new RunRegistry();
+    const tools = createDagTools({ engine: fakeEngine(stubResult()), runRegistry: reg, cwd: '/tmp', defaultConfig: { leafModel: 'fake:leaf' } });
+    const run = (await getTool(tools, 'dag_run_plan')({ plan: VALID_PLAN_JSON })) as { content: { text: string }[] };
+    const runId = /runId: (\S+)/.exec(run.content[0]!.text)![1]!;
+    await new Promise((r) => setTimeout(r, 10));
+    const res = (await getTool(tools, 'dag_result')({ runId })) as { content: { text: string }[] };
+    const text = res.content[0]!.text;
+    expect(text).toContain('"leavesIn": 10');
+    expect(text).toContain('"leavesOut": 5');
+    expect(text).toContain('"conductor"');
+  });
+});

@@ -205,6 +205,21 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   const engine = deps.engine ?? PROD_ENGINE;
   const runRegistry = deps.runRegistry ?? new RunRegistry();
   const memory = deps.memory ?? createDefaultMemory(env);
+  // 记忆卫生 (TUI prune-scheduler parity — MCP 长驻进程 D-9): 默认 memory 时启动即 TTL 扫一次
+  // + 每 6h 一次。注入 memory 的调用方 (测试/宿主) 自管卫生; OMD_MEMORY_PRUNE=0 关闭。
+  // 定时器 unref: 不阻进程退出 (stdin EOF 干净退出语义不变)。prune 失败永不砖 server。
+  if (!deps.memory && env.OMD_MEMORY_PRUNE !== '0') {
+    const sweep = (): void => {
+      try {
+        memory.prune();
+      } catch {
+        /* 卫生失败不砖 */
+      }
+    };
+    sweep();
+    const timer = setInterval(sweep, 6 * 3600 * 1000);
+    timer.unref?.();
+  }
   const researchFanout = deps.researchFanout ?? createDefaultResearchFanout({ cwd, env });
   const agentRunner = deps.agentRunner ?? createAgentLeafRunner({ cwd, hashlineEdit: true });
   const commandRunner =
