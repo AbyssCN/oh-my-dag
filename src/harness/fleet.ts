@@ -41,8 +41,9 @@ export const DEFAULT_PROVIDER_POOLS: Record<string, number> = {
 const FALLBACK_PROVIDER_CAP = 8;
 
 /**
- * 内层 fan-out 实际上限。优先级: 显式 config.maxFanout > env OMD_MAX_FANOUT >
- * CPU fallback (min(16,cores−2))。这是「leaf 开大」的旋钮 —— 不再被 CPU 默认卡死。
+ * 内层 fan-out 实际上限。优先级: 显式 config.maxFanout > env OMD_MAX_FANOUT > **不设限**
+ * (owner 2026-07-21: 删 CPU 兜底 — API 等待型并发与核数无关, 钳 6 纯冤枉; 本地足迹的保护
+ * 迁至 per-kind 闸 ExecutorDagConfig.kindFanout, agent/command 各自小闸, inproc 放飞)。
  */
 export function effectiveFanout(
   config: OmdConcurrencyConfig = {},
@@ -51,7 +52,7 @@ export function effectiveFanout(
   if (config.maxFanout !== undefined && config.maxFanout > 0) return Math.floor(config.maxFanout);
   const envVal = env.OMD_MAX_FANOUT ? Number.parseInt(env.OMD_MAX_FANOUT, 10) : NaN;
   if (Number.isFinite(envVal) && envVal > 0) return envVal;
-  return CPU_FALLBACK_FANOUT;
+  return Number.MAX_SAFE_INTEGER;
 }
 
 /** 某 provider 的并发桶 cap。config > DEFAULT_PROVIDER_POOLS > FALLBACK。 */

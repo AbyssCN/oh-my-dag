@@ -65,3 +65,53 @@ describe('executor-dag ready-set 调度 (依赖驱动, 无层 barrier)', () => {
     expect(order.indexOf('fast')).toBeLessThan(order.indexOf('dep'));
   });
 });
+
+// ── per-kind 并发闸 (fanout 最大化, 2026-07-21) ──────────────────────────────────
+
+import { runExecutorDagWithPlan as runWithPlanKind, type GenerateFn as GenKind } from '../../src/harness/executor-dag';
+import type { ConductorPlan as PlanKind } from '../../src/harness/conductor-plan';
+
+describe('kindFanout per-kind 闸', () => {
+  test('agent 叶受独立小闸约束, inproc 叶同时放飞不受其挡', async () => {
+    // 4 个 agent 节点 + 4 个 inproc 节点, 全无依赖。kindFanout.agent=1 → agent 串行; inproc 全并发。
+    const nodes: Record<string, unknown> = {};
+    for (let i = 0; i < 4; i++) nodes[`a${i}`] = { agent: 'x', executor: 'agent', goal: `agent ${i}` };
+    for (let i = 0; i < 4; i++) nodes[`p${i}`] = { agent: 'x', executor: 'leaf', goal: `inproc ${i}` };
+    const plan = { name: 'kind-cap', nodes } as unknown as PlanKind;
+
+    let agentNow = 0, agentPeak = 0, inprocNow = 0, inprocPeak = 0;
+    const gen: GenKind = async ({ messages }) => {
+      inprocNow++; inprocPeak = Math.max(inprocPeak, inprocNow);
+      await new Promise((r) => setTimeout(r, 30));
+      inprocNow--;
+      return { text: 'ok', usage: { in: 1, out: 1 } };
+    };
+    const agentRunner = async () => {
+      agentNow++; agentPeak = Math.max(agentPeak, agentNow);
+      await new Promise((r) => setTimeout(r, 30));
+      agentNow--;
+      return { text: 'ok', usage: { in: 1, out: 1 }, filesTouched: [] };
+    };
+    const res = await runWithPlanKind(plan, {
+      conductorModel: '', leafModel: 'fake:leaf', generate: gen, agentRunner,
+      kindFanout: { agent: 1 },
+    });
+    expect(Object.values(res.results).every((r) => r.status === 'done')).toBe(true);
+    expect(agentPeak).toBe(1); // agent 闸生效: 永不并行
+    expect(inprocPeak).toBeGreaterThanOrEqual(3); // inproc 不受 agent 闸影响, 放飞
+  });
+
+  test('kindFanout 省略 → 行为与旧全宽完全一致 (BC)', async () => {
+    const nodes: Record<string, unknown> = {};
+    for (let i = 0; i < 5; i++) nodes[`n${i}`] = { agent: 'x', executor: 'leaf', goal: `g${i}` };
+    let now = 0, peak = 0;
+    const gen: GenKind = async () => {
+      now++; peak = Math.max(peak, now);
+      await new Promise((r) => setTimeout(r, 20));
+      now--;
+      return { text: 'ok', usage: { in: 1, out: 1 } };
+    };
+    await runWithPlanKind({ name: 'bc', nodes } as unknown as PlanKind, { conductorModel: '', leafModel: 'fake:leaf', generate: gen });
+    expect(peak).toBe(5); // 全宽
+  });
+});
