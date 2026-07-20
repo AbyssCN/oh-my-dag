@@ -12,6 +12,13 @@
 /** run 生命周期状态。 */
 export type RunStatus = 'pending' | 'running' | 'done' | 'failed';
 
+/** 单节点执行明细。 */
+export interface NodeDetail {
+  status: string;
+  output: string;
+  error?: string;
+}
+
 /** run 元数据快照。 */
 export interface RunRecord {
   status: RunStatus;
@@ -19,6 +26,7 @@ export interface RunRecord {
   meta: Record<string, unknown>;
   result?: unknown;
   error?: string;
+  nodeDetails?: Record<string, NodeDetail>;
   createdAt: string;
   updatedAt: string;
 }

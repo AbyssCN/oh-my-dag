@@ -41,6 +41,28 @@ function summarizeResult(result: ExecutorDagResult): Record<string, unknown> {
   for (const leaf of Object.values(result.results)) {
     if (leaf.filesTouched) artifactPaths.push(...leaf.filesTouched);
   }
+  // Sink outputs: leaf id absent from every other leaf's deps → terminal node.
+  // Per-node cap 2000 chars; total cap 8000 chars — drop trailing whole nodes, flag _truncated.
+  const dependedOn = new Set<string>();
+  for (const leaf of Object.values(result.results)) {
+    for (const dep of leaf.deps) dependedOn.add(dep);
+  }
+  const outputs: Record<string, string | boolean> = {};
+  let outputsChars = 0;
+  let truncated = false;
+  for (const id of nodeIds) {
+    if (dependedOn.has(id)) continue;
+    const text = result.results[id]!.output;
+    if (!text) continue;
+    const clipped = text.slice(0, 2000);
+    if (outputsChars + clipped.length > 8000) {
+      truncated = true;
+      break;
+    }
+    outputs[id] = clipped;
+    outputsChars += clipped.length;
+  }
+  if (truncated) outputs['_truncated'] = true;
   return {
     sessionId: result.sessionId,
     nodeCount: nodeIds.length,
@@ -50,6 +72,7 @@ function summarizeResult(result: ExecutorDagResult): Record<string, unknown> {
     verification: result.verification
       ? { pass: result.verification.pass, reason: result.verification.reason }
       : undefined,
+    outputs: Object.keys(outputs).length > 0 ? outputs : undefined,
   };
 }
 
