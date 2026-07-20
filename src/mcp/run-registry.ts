@@ -186,6 +186,24 @@ export class RunRegistry {
     return { content: [{ type: 'text', text: parts.join('\n') }] };
   }
 
+  /**
+   * resume 入口 (D-3 断点续跑): 未知 runId (server 重启, 内存态丢) → register+start;
+   * failed → 重开为 running (error/progress 清空, 新一次尝试); 其余态由调用方先行拒绝。
+   */
+  reopenForResume(runId: string, opts: { goal: string; meta?: Record<string, unknown> }): void {
+    const rec = this.runs.get(runId);
+    if (!rec) {
+      this.register(runId, opts);
+      this.start(runId);
+      return;
+    }
+    if (rec.status !== 'failed') throw new Error(`run ${runId} is ${rec.status} — resume 仅适用 failed/未知 run`);
+    rec.status = 'running';
+    rec.error = undefined;
+    rec.progress = undefined;
+    rec.updatedAt = new Date().toISOString();
+  }
+
   /** 按状态列 runId; 无参数 → 全部。 */
   listRuns(status?: RunStatus): string[] {
     const entries = [...this.runs.entries()];

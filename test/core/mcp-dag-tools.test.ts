@@ -10,7 +10,7 @@
 import { describe, expect, test } from 'bun:test';
 import { RunRegistry } from '../../src/mcp/run-registry';
 import { createDagTools, type DagEngine } from '../../src/mcp/tools/dag-tools';
-import type { ExecutorDagResult } from '../../src/harness/executor-dag-types';
+import type { ExecutorDagConfig, ExecutorDagResult } from '../../src/harness/executor-dag-types';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
 
 /** Minimal valid ConductorPlan for dag_run_plan tests. */
@@ -407,5 +407,92 @@ describe('派发简报 + 活体进度', () => {
     status = (await getTool(tools, 'dag_status')({ runId })) as { content: { text: string }[] };
     expect(status.content[0]!.text).toContain('status: done');
     expect(status.content[0]!.text).not.toContain('running:');
+  });
+});
+
+// ── continuity 断点续跑 (D-3): checkpoint 恒落 + resume 语义 ─────────────────────
+
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { CheckpointManager } from '../../src/harness/continuity/checkpoint-manager';
+
+describe('continuity 接线 + resume', () => {
+  function continuityDeps() {
+    const root = mkdtempSync(join(tmpdir(), 'omd-mcp-cont-'));
+    return { manager: new CheckpointManager(root), repoRoot: root };
+  }
+  /** 捕获 config 的 fake engine (可指定结局)。 */
+  function capturingEngine(outcome: 'ok' | 'reject') {
+    const captured: { config?: ExecutorDagConfig } = {};
+    const engine: DagEngine = {
+      runExecutorDag: async () => {
+        throw new Error('unused');
+      },
+      runExecutorDagWithPlan: async (_plan, config) => {
+        captured.config = config;
+        if (outcome === 'reject') throw new Error('boom 429');
+        return stubResult();
+      },
+    };
+    return { engine, captured };
+  }
+
+  test('新 run: continuity 恒落盘 (runId 一致, resume=false)', async () => {
+    const { engine, captured } = capturingEngine('ok');
+    const tools = createDagTools({
+      engine,
+      runRegistry: new RunRegistry(),
+      cwd: '/tmp',
+      defaultConfig: { leafModel: 'fake:leaf' },
+      continuity: continuityDeps(),
+    });
+    const res = (await getTool(tools, 'dag_run_plan')({ plan: VALID_PLAN_JSON })) as { content: { text: string }[] };
+    const runId = /runId: (\S+)/.exec(res.content[0]!.text)![1]!;
+    await new Promise((r) => setTimeout(r, 10));
+    expect(captured.config!.continuity!.runId).toBe(runId);
+    expect(captured.config!.continuity!.resume).toBe(false);
+  });
+
+  test('resume failed run: 同 runId 重开, continuity.resume=true, 状态回 running→done', async () => {
+    const reg = new RunRegistry();
+    const cont = continuityDeps();
+    const { engine: failEngine } = capturingEngine('reject');
+    const tools1 = createDagTools({ engine: failEngine, runRegistry: reg, cwd: '/tmp', defaultConfig: { leafModel: 'fake:leaf' }, continuity: cont });
+    const first = (await getTool(tools1, 'dag_run_plan')({ plan: VALID_PLAN_JSON })) as { content: { text: string }[] };
+    const runId = /runId: (\S+)/.exec(first.content[0]!.text)![1]!;
+    await new Promise((r) => setTimeout(r, 10));
+    expect(reg.getRecord(runId)!.status).toBe('failed');
+
+    const { engine: okEngine, captured } = capturingEngine('ok');
+    const tools2 = createDagTools({ engine: okEngine, runRegistry: reg, cwd: '/tmp', defaultConfig: { leafModel: 'fake:leaf' }, continuity: cont });
+    const second = (await getTool(tools2, 'dag_run_plan')({ plan: VALID_PLAN_JSON, resume: runId })) as { content: { text: string }[] };
+    expect(/runId: (\S+)/.exec(second.content[0]!.text)![1]).toBe(runId);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(captured.config!.continuity!.resume).toBe(true);
+    expect(reg.getRecord(runId)!.status).toBe('done');
+  });
+
+  test('resume 未知 runId (server 重启): 重登记照跑', async () => {
+    const { engine, captured } = capturingEngine('ok');
+    const reg = new RunRegistry();
+    const tools = createDagTools({ engine, runRegistry: reg, cwd: '/tmp', defaultConfig: { leafModel: 'fake:leaf' }, continuity: continuityDeps() });
+    const res = (await getTool(tools, 'dag_run_plan')({ plan: VALID_PLAN_JSON, resume: 'lost-after-restart' })) as { content: { text: string }[] };
+    expect(res.content[0]!.text).toContain('runId: lost-after-restart');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(captured.config!.continuity!.runId).toBe('lost-after-restart');
+    expect(captured.config!.continuity!.resume).toBe(true);
+    expect(reg.getRecord('lost-after-restart')!.status).toBe('done');
+  });
+
+  test('resume 在飞 run → isError 拒绝 (不重复执行)', async () => {
+    const reg = new RunRegistry();
+    reg.register('inflight', { goal: 'g' });
+    reg.start('inflight');
+    const { engine } = capturingEngine('ok');
+    const tools = createDagTools({ engine, runRegistry: reg, cwd: '/tmp', defaultConfig: { leafModel: 'fake:leaf' }, continuity: continuityDeps() });
+    const res = (await getTool(tools, 'dag_run_plan')({ plan: VALID_PLAN_JSON, resume: 'inflight' })) as { isError?: boolean; content: { text: string }[] };
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain('running');
   });
 });
