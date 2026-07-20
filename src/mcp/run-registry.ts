@@ -100,6 +100,19 @@ export class RunRegistry {
     return this.runs.get(runId) ?? null;
   }
 
+  /** 写节点明细; 未知 runId → 静默忽略 (不抛, 对齐查询侧 null 语义)。 */
+  setNodeDetails(runId: string, details: Record<string, NodeDetail>): void {
+    const rec = this.runs.get(runId);
+    if (!rec) return;
+    rec.nodeDetails = details;
+    rec.updatedAt = new Date().toISOString();
+  }
+
+  /** 查单节点明细; 未知 runId/nodeId → null (不抛)。 */
+  getNodeDetail(runId: string, nodeId: string): NodeDetail | null {
+    return this.runs.get(runId)?.nodeDetails?.[nodeId] ?? null;
+  }
+
   /**
    * MCP-safe 查询: 未知 runId → isError 结果 (非 crash)。
    * 已知 → 正常摘要。

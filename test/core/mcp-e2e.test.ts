@@ -25,6 +25,7 @@ const ALL_TOOLS = [
   'dag_run_plan',
   'dag_status',
   'dag_result',
+  'dag_node_output',
   'dag_research',
   'memory_recall',
   'memory_remember',
@@ -118,7 +119,7 @@ describe('omd MCP e2e (InMemoryTransport 双端)', () => {
   test('tools/list: v1 七工具全在, 每个 description 非空且 ≤120 字符 (D-11)', async () => {
     const { client, memory } = await wire();
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(ALL_TOOLS);
+    expect(tools.map((t) => t.name).sort()).toEqual([...ALL_TOOLS].sort());
     for (const t of tools) {
       expect(typeof t.description).toBe('string');
       expect(t.description!.length).toBeGreaterThan(0);
