@@ -14,6 +14,39 @@ import type { OmdMcpTool } from '../server.js';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../../harness/executor-dag-types.js';
 import type { ConductorPlan } from '../../harness/conductor-plan.js';
 import { parsePlan } from '../../harness/conductor-plan.js';
+import { topoLevels } from '../../harness/executor-dag.js';
+
+/**
+ * 派发简报 (D-8 宽出): 图结构 + 模型坐标一屏可读 — 客户端派发瞬间就知道开了多少节点/
+ * 几层/什么模型, 不必等 dag_status。levels 经 topoLevels (环图不该出现 — parsePlan 不查环,
+ * 防御性兜底)。
+ */
+function dispatchBriefing(plan: ConductorPlan, config: ExecutorDagConfig): string {
+  const nodes = Object.values(plan.nodes);
+  const byKind: Record<string, number> = {};
+  for (const n of nodes) {
+    const kind = n.kind === 'primitive' ? 'primitive' : (n.executor ?? 'leaf');
+    byKind[kind] = (byKind[kind] ?? 0) + 1;
+  }
+  let levelsLine: string;
+  try {
+    const levels = topoLevels(plan);
+    levelsLine = `levels: ${levels.length} (widest ${Math.max(...levels.map((l) => l.length))})`;
+  } catch {
+    levelsLine = 'levels: ? (graph not topo-sortable)';
+  }
+  const kinds = Object.entries(byKind)
+    .map(([k, c]) => `${k}:${c}`)
+    .join(' ');
+  const models = [
+    config.conductorModel ? `conductor=${config.conductorModel}` : '',
+    `leaf=${config.leafModel}`,
+    config.agentLeafModel ? `agent=${config.agentLeafModel}` : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+  return [`nodes: ${nodes.length} (${kinds})`, levelsLine, `models: ${models}`].join('\n');
+}
 
 /** Engine seam — callers inject real implementations, tests inject fakes. */
 export interface DagEngine {
@@ -131,6 +164,8 @@ function makeDagRun({ engine, runRegistry, defaultConfig }: DagToolDeps): OmdMcp
         ...defaultConfig,
         conductorModel: conductorModel ?? defaultConfig?.conductorModel ?? '',
         leafModel: leafModel ?? defaultConfig?.leafModel ?? '',
+        // 活体进度: conductor 出图后引擎发 planned → start/settle 流进 registry (dag_status 实时)。
+        onNodeEvent: (e) => runRegistry.applyNodeEvent(runId, e),
       } as ExecutorDagConfig;
 
       // Validate required config fields (engine will throw if missing, but we catch early).
@@ -205,6 +240,8 @@ function makeDagRunPlan({ engine, runRegistry, defaultConfig }: DagToolDeps): Om
       const config: ExecutorDagConfig = {
         ...defaultConfig,
         leafModel: leafModel ?? defaultConfig?.leafModel ?? '',
+        // 活体进度: 引擎三事件 (planned/start/settle) 流进 registry → dag_status 实时可见。
+        onNodeEvent: (e) => runRegistry.applyNodeEvent(runId, e),
       } as ExecutorDagConfig;
 
       if (!config.leafModel) {
@@ -227,7 +264,12 @@ function makeDagRunPlan({ engine, runRegistry, defaultConfig }: DagToolDeps): Om
         });
 
       return {
-        content: [{ type: 'text' as const, text: `runId: ${runId}\nstatus: running` }],
+        content: [
+          {
+            type: 'text' as const,
+            text: `runId: ${runId}\nstatus: running\n--- dispatch ---\n${dispatchBriefing(parsed.plan, config)}`,
+          },
+        ],
       };
     },
   };
