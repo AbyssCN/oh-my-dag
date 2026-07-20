@@ -67,35 +67,60 @@ export function createCommandLeafRunner(opts: CommandLeafRunnerOpts): CommandLea
   const memoize = opts.memoize !== false;
   const cache = memoize ? new Map<string, CommandLeafResult>() : null;
 
-  return async ({ command }) => {
-    // memoize 命中 (确定性只读命令 → 同 run 内同命令同输出)。
-    if (cache?.has(command)) return cache.get(command)!;
+  /** 单环三闸 (fail-closed): 危险命令 / 白名单 / shell 元字符。过闸返 null, 拒返 blocked 结果。 */
+  const gateLink = (link: string): CommandLeafResult | null => {
     // ① fail-closed: 危险命令拦 (复用 V2-HOOK 闸)。
-    const verdict = classifyCommand(command);
+    const verdict = classifyCommand(link);
     if (verdict.dangerous) {
-      logger.warn({ command, label: verdict.label }, '[omd/command-leaf] 危险命令拦截 (fail-closed)');
+      logger.warn({ command: link, label: verdict.label }, '[omd/command-leaf] 危险命令拦截 (fail-closed)');
       return { text: `[blocked dangerous: ${verdict.reason ?? verdict.label}]`, usage: { in: 0, out: 0 }, exitCode: -1 };
     }
     // ② 白名单 (GP-5): 首 token 必须在 allowlist。
-    const bin = commandBin(command);
+    const bin = commandBin(link);
     if (!allowlist.includes(bin)) {
-      logger.warn({ command, bin, allowlist }, '[omd/command-leaf] 命令不在白名单, 拒绝');
+      logger.warn({ command: link, bin, allowlist }, '[omd/command-leaf] 命令不在白名单, 拒绝');
       return { text: `[blocked not-allowed: '${bin}' ∉ allowlist]`, usage: { in: 0, out: 0 }, exitCode: -1 };
     }
     // ②.5 shell 元字符拦 (sec-audit 揪出的 CRITICAL): 白名单只查首 token, 整串喂 sh -c → 经
     // ; | & $() ` 换行 < > () 可在合法 bin 后注入任意命令。拒绝这些元字符 (引号/空格/路径字符仍允许)。
-    if (/[;&|`$<>(){}\n\r\\]/.test(command)) {
-      logger.warn({ command }, '[omd/command-leaf] 命令含 shell 元字符, 拒绝 (防注入)');
+    // && 已在上游拆链 → 环内残留的单 & 仍在此被拒 (背景执行/注入不放行)。
+    if (/[;&|`$<>(){}\n\r\\]/.test(link)) {
+      logger.warn({ command: link }, '[omd/command-leaf] 命令含 shell 元字符, 拒绝 (防注入)');
       return { text: '[blocked shell-metachar: ; & | ` $ < > ( ) \\ newline not allowed]', usage: { in: 0, out: 0 }, exitCode: -1 };
     }
-    // ③ 跑 + 超时 (Promise.race: 超时返 exitCode 124, 不悬挂 leaf)。
-    const { stdout, stderr, exitCode } = await Promise.race([
-      spawn(command, cwd),
-      new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve) =>
-        setTimeout(() => resolve({ stdout: '', stderr: `[timeout ${timeoutMs}ms]`, exitCode: 124 }), timeoutMs),
-      ),
-    ]);
-    const result: CommandLeafResult = { text: (stdout || stderr).trim(), usage: { in: 0, out: 0 }, exitCode };
+    return null;
+  };
+
+  return async ({ command }) => {
+    // memoize 命中 (确定性只读命令 → 同 run 内同命令同输出)。键 = 原始整串。
+    if (cache?.has(command)) return cache.get(command)!;
+    // && 链拆分 (2026-07-20 修: 兑现 conductor prompt 契约 "可 && 链验证步, 每环独立过闸" — 此前
+    // 无拆链实现, 含 && 的命令被元字符闸整串误杀)。先拆后闸: 每环独立 spawn, 无 sh 级注入面。
+    const links = command.split('&&').map((s) => s.trim());
+    if (links.some((l) => !l)) {
+      return { text: '[blocked empty link in && chain]', usage: { in: 0, out: 0 }, exitCode: -1 };
+    }
+    // 全链先过闸再执行 (fail-closed: 任一环非法 → 整链不跑, 防"合法头环已执行、恶意尾环才被拒"的部分执行)。
+    for (const link of links) {
+      const blocked = gateLink(link);
+      if (blocked) return blocked;
+    }
+    // ③ 顺序执行, 首败即停 (shell && 语义); 每环独立超时 (Promise.race: 超时返 exitCode 124, 不悬挂 leaf)。
+    const outParts: string[] = [];
+    let exitCode = 0;
+    for (const link of links) {
+      const { stdout, stderr, exitCode: code } = await Promise.race([
+        spawn(link, cwd),
+        new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve) =>
+          setTimeout(() => resolve({ stdout: '', stderr: `[timeout ${timeoutMs}ms]`, exitCode: 124 }), timeoutMs),
+        ),
+      ]);
+      const part = (stdout || stderr).trim();
+      if (part) outParts.push(part);
+      exitCode = code;
+      if (exitCode !== 0) break; // && 语义: 前环失败, 后环不跑
+    }
+    const result: CommandLeafResult = { text: outParts.join('\n'), usage: { in: 0, out: 0 }, exitCode };
     // 只缓存成功 (exitCode 0); 失败/超时不缓存 (下次重试)。block 路径在上方已 return, 不入此。
     if (cache && exitCode === 0) cache.set(command, result);
     return result;
