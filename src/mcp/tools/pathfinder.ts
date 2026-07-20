@@ -70,6 +70,33 @@ function ticketLine(t: Ticket): string {
   return `• [${t.type}] ${t.id}: ${t.title}${t.status !== 'open' ? ` (${t.status})` : ''}`;
 }
 
+/** 战争迷雾条: █=delivered/ruled ▒=open frontier ░=blocked, 条宽 10。 */
+export function fogBar(map: PathMap): string {
+  const total = map.tickets.length;
+  if (total === 0) return '          0/0 散雾';
+  let ruled = 0, open = 0, blocked = 0;
+  for (const t of map.tickets) {
+    if (t.status === 'delivered' || t.status === 'ruled') ruled++;
+    else if (t.status === 'blocked') blocked++;
+    else open++;
+  }
+  const W = 10;
+  const rb = Math.round((ruled / total) * W);
+  const ob = Math.round((open / total) * W);
+  const bb = W - rb - ob;
+  const bar = '█'.repeat(Math.max(0, rb)) + '▒'.repeat(Math.max(0, ob)) + '░'.repeat(Math.max(0, bb));
+  const ruledIds = map.tickets.filter((t) => t.status === 'delivered' || t.status === 'ruled').map((t) => t.id);
+  const openIds = map.tickets.filter((t) => t.status !== 'delivered' && t.status !== 'ruled' && t.status !== 'blocked').map((t) => t.id);
+  const blockedIds = map.tickets.filter((t) => t.status === 'blocked').map((t) => t.id);
+  const lines = [
+    `<${map.destination}>  ${bar}  ${ruled}/${total} 散雾`,
+    `█ ${ruledIds.join(' ') || '—'}`,
+    `▒ ${openIds.join(' ') || '—'}`,
+    `░ ${blockedIds.join(' ') || '—'}`,
+  ];
+  return lines.join('\n');
+}
+
 /** 地图快照文本: 目的地 + 状态计数 + 前沿逐行 + 区域散尽提示 (path_deliver 报信)。 */
 function renderStatus(map: PathMap): string {
   const fr = computeFrontier(map);
@@ -78,8 +105,9 @@ function renderStatus(map: PathMap): string {
   const countStr = [...counts.entries()].map(([s, n]) => `${s}=${n}`).join(' ') || 'empty';
   const lines = [
     `◈ ${map.destination} (slug=${map.slug}) — ${map.tickets.length} tickets [${countStr}]`,
-    fr.length === 0 ? '前沿空 (全裁决/受阻/已交付)。' : `前沿 (${fr.length}):`,
-    ...fr.map((t) => `  ${ticketLine(t)}`),
+    fogBar(map),
+     fr.length === 0 ? '前沿空 (全裁决/受阻/已交付)。' : `前沿 (${fr.length}):`,
+     ...fr.map((t) => `  ${ticketLine(t)}`),
   ];
   const region = readyRegion(map);
   if (region) {

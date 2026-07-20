@@ -93,4 +93,19 @@ describe('applyNodeEvent', () => {
     // 未知 runId: 静默不抛 (fail-open, 事件流不背崩溃责任)
     expect(() => reg.applyNodeEvent('ghost', { type: 'start', id: 'x', kind: 'inproc' })).not.toThrow();
   });
+
+  test('start 记 ISO 时刻 (注入 clock); running 行带耗时; settle 清时刻', () => {
+    let t = Date.parse('2026-01-01T00:00:00.000Z');
+    const reg = new RunRegistry(() => new Date(t));
+    reg.register('r1', { goal: 'g' });
+    reg.start('r1');
+    reg.applyNodeEvent('r1', { type: 'planned', nodes: [{ id: 'a', kind: 'inproc' }] });
+    reg.applyNodeEvent('r1', { type: 'start', id: 'a', kind: 'inproc' });
+    expect(reg.getRecord('r1')!.progress!.startedAt).toEqual({ a: '2026-01-01T00:00:00.000Z' });
+    t += 192_000; // 3m12s
+    const text = reg.getSummary('r1').content[0]!.text;
+    expect(text).toContain('running: a(inproc, 3m12s)');
+    reg.applyNodeEvent('r1', { type: 'settle', id: 'a', status: 'done', kind: 'inproc' });
+    expect(reg.getRecord('r1')!.progress!.startedAt).toEqual({});
+  });
 });

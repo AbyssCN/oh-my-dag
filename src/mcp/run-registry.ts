@@ -27,7 +27,17 @@ export interface NodeDetail {
 export interface RunProgress {
   planned: Array<{ id: string; kind: string }>;
   started: string[];
+  /** start 事件时刻 (ISO, settle 时清理) — running 行耗时由 now - startedAt 算出。 */
+  startedAt: Record<string, string>;
   settled: Array<{ id: string; status: 'done' | 'failed'; kind: string; model?: string }>;
+}
+
+/** 毫秒 → 人读耗时 (0s / 45s / 3m12s / 1h2m3s)。 */
+function formatDuration(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return `${h ? `${h}h` : ''}${h || m ? `${m}m` : ''}${s % 60}s`;
 }
 
 /** run 元数据快照。 */
@@ -59,6 +69,9 @@ const LEGAL_TRANSITIONS: Record<RunStatus, RunStatus[]> = {
 
 export class RunRegistry {
   private runs = new Map<string, RunRecord>();
+
+  /** @param now clock 注入 (单测可冻); 默认实时。 */
+  constructor(private readonly now: () => Date = () => new Date()) {}
 
   /** 注册新 run。重复 runId → throw。 */
   register(runId: string, opts: { goal: string; meta?: Record<string, unknown> }): void {
@@ -124,17 +137,19 @@ export class RunRegistry {
   applyNodeEvent(runId: string, e: DagNodeEvent): void {
     const rec = this.runs.get(runId);
     if (!rec) return;
-    const progress = (rec.progress ??= { planned: [], started: [], settled: [] });
+    const progress = (rec.progress ??= { planned: [], started: [], startedAt: {}, settled: [] });
     switch (e.type) {
       case 'planned':
         progress.planned = e.nodes;
         break;
       case 'start':
         progress.started.push(e.id);
+        progress.startedAt[e.id] = this.now().toISOString();
         break;
       case 'settle':
         progress.settled.push({ id: e.id, status: e.status, kind: e.kind, model: e.model });
         progress.started = progress.started.filter((id) => id !== e.id);
+        delete progress.startedAt[e.id];
         break;
     }
     rec.updatedAt = new Date().toISOString();
@@ -180,7 +195,12 @@ export class RunRegistry {
       parts.push(`progress: ${done}/${total} done${failed ? `, ${failed} failed` : ''}, ${pending} pending`);
       if (p.started.length) {
         const kindOf = new Map(p.planned.map((n) => [n.id, n.kind]));
-        parts.push(`running: ${p.started.map((id) => `${id}(${kindOf.get(id) ?? '?'})`).join(', ')}`);
+        const nowMs = this.now().getTime();
+        parts.push(`running: ${p.started.map((id) => {
+          const at = p.startedAt[id];
+          const elapsed = at ? formatDuration(nowMs - Date.parse(at)) : '?';
+          return `${id}(${kindOf.get(id) ?? '?'}, ${elapsed})`;
+        }).join(', ')}`);
       }
     }
     return { content: [{ type: 'text', text: parts.join('\n') }] };
