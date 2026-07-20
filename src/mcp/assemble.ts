@@ -220,9 +220,19 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     1,
     Math.min(effectiveFanout({}, env), agentProvider ? resolveProviderCap(agentProvider) : Number.MAX_SAFE_INTEGER),
   );
+  // per-kind 闸: inproc 不限 (纯 API 等待, 由 provider 池经 defaultMaxFanout 兜); agent/command
+  // 有本地足迹 → 默认 8/4, env OMD_AGENT_FANOUT / OMD_COMMAND_FANOUT 可调。
+  const intEnv = (v: string | undefined): number | undefined => {
+    const n = v ? Number.parseInt(v, 10) : NaN;
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  };
   const defaultConfig: Partial<ExecutorDagConfig> = {
     ...models,
     maxFanout: defaultMaxFanout,
+    kindFanout: {
+      agent: intEnv(env.OMD_AGENT_FANOUT) ?? 8,
+      command: intEnv(env.OMD_COMMAND_FANOUT) ?? 4,
+    },
     agentRunner,
     commandRunner,
     ...deps.configOverrides,

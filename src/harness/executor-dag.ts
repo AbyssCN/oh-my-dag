@@ -517,6 +517,20 @@ async function executePlan(
   }
   const ready: string[] = [...idSet].filter((id) => (indeg.get(id) ?? 0) === 0);
   const cap = config.maxFanout && config.maxFanout > 0 ? config.maxFanout : idSet.size || 1;
+  // per-kind 并发闸 (fanout 最大化, 2026-07-21): inproc 纯 API 等待默认不限;
+  // agent/command 有本地足迹 (工具调用/CLI 抢本机 CPU·磁盘) → 独立小闸。按声明 executor 记账。
+  const kindCap: Record<'agent' | 'command' | 'inproc', number> = {
+    agent: config.kindFanout?.agent ?? Number.POSITIVE_INFINITY,
+    command: config.kindFanout?.command ?? Number.POSITIVE_INFINITY,
+    inproc: config.kindFanout?.inproc ?? Number.POSITIVE_INFINITY,
+  };
+  const runningByKind: Record<'agent' | 'command' | 'inproc', number> = { agent: 0, command: 0, inproc: 0 };
+  const schedKind = (id: string): 'agent' | 'command' | 'inproc' => {
+    const n = plan!.nodes[id]!;
+    if (n.executor === 'command') return 'command';
+    if (n.executor === 'agent') return 'agent';
+    return 'inproc'; // leaf/map/primitive (map/primitive 内层并发各自管理)
+  };
 
   // settle: 写 results/depOutputs + 累加遥测 + 释放 dependents (indeg 归零 → 入 ready)。
   const settle = (id: string, r: LeafResult | null): void => {
@@ -555,13 +569,20 @@ async function executePlan(
         resolve();
         return;
       }
-      while (running < cap && ready.length > 0) {
-        const id = ready.shift()!;
+      for (;;) {
+        if (running >= cap || ready.length === 0) break;
+        // kind 闸内选第一个可起跑节点 (非严格 FIFO: 被 kind 闸挡住的节点让位给其它 kind, 保持吞吐)。
+        const idx = ready.findIndex((id) => runningByKind[schedKind(id)] < kindCap[schedKind(id)]);
+        if (idx < 0) break; // 所有就绪节点都被各自 kind 闸挡住 → 等 settle 释放
+        const id = ready.splice(idx, 1)[0]!;
+        const kind = schedKind(id);
         running++;
+        runningByKind[kind]++;
         runNode(id)
           .catch(() => null) // INV-6: leaf 抛错隔离成 null → settle 标 failed, 不连坐其它节点
           .then((r) => {
             running--;
+            runningByKind[kind]--;
             try {
               settle(id, r);
             } catch (e) {
