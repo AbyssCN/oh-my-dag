@@ -69,3 +69,6 @@ export function buildLeafPrompt(
 export function addUsage(a: ModelUsage, b: ModelUsage): ModelUsage {
   return { in: a.in + b.in, out: a.out + b.out, cacheHit: (a.cacheHit ?? 0) + (b.cacheHit ?? 0) };
 }
+
+// ── plan 过滤器 (plan 落地后、执行前的确定性挂点) ────────────────────────────
+export { filterOracleCommandNodes } from './oracle-plan-filter';
