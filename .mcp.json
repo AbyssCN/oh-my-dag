@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "omd": {
+      "command": "bun",
+      "args": ["run", "src/harness/tui.ts", "mcp"],
+      "env": {
+        "OMD_RUNTIME_PROVIDER": "kimi-coding",
+        "OMD_RUNTIME_MODEL": "k3",
+        "OMD_ITER_CONDUCTOR_MODEL": "kimi-coding:k3",
+        "OMD_ITER_LEAF_MODEL": "kimi-coding:k3",
+        "OMD_ITER_AGENT_MODEL": "kimi-coding:k3"
+      }
+    }
+  }
+}
