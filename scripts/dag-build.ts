@@ -126,8 +126,14 @@ const continuityManager = new CheckpointManager(repoRoot);
 const continuityRunId = flags.resume || `build-${dispatchId}`;
 process.stderr.write(`[dag-build] continuity runId=${continuityRunId}${flags.resume ? ' (resume: 跳已绿节点)' : ''}\n`);
 
+// oracle 命令可覆盖: 默认 tsc; 非 ts 项目 (如 Astro) 传 --oracle-cmd "npx astro check"。
+// 单一定义: 外层 oracle 闸与图内 oracle 复跑节点过滤器 (issue #2) 必须字节一致。
+const oracleCmd = flags['oracle-cmd'] || 'bun run tsc --noEmit';
+
 // DAG 配置 (初次 build + 自愈 fix-DAG 复用同一套)
 const dagConfig = {
+  // issue #2: conductor 规划出与 oracle 等价的 command 节点会被 command-leaf 元字符闸误拒 → 执行前确定性过滤。
+  oracleCmd,
   continuity: { manager: continuityManager, runId: continuityRunId, resume: !!flags.resume, repoRoot },
   conductorModel,
   leafModel,
@@ -183,8 +189,6 @@ export interface OracleResult {
   testFail: string[];
 }
 async function runOracle(): Promise<OracleResult> {
-  // oracle 命令可覆盖: 默认 tsc; 非 ts 项目 (如 Astro) 传 --oracle-cmd "npx astro check"。
-  const oracleCmd = flags['oracle-cmd'] || 'bun run tsc --noEmit';
   const tsc = await $`sh -c ${oracleCmd}`.nothrow().quiet();
   const rawOut = tsc.stdout.toString() + tsc.stderr.toString();
   let tscErrs = rawOut.split('\n').filter((l) => /error TS/.test(l) && !l.includes('node_modules'));

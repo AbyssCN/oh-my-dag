@@ -32,7 +32,7 @@ import { logger } from './logger';
 // ── T2#5 按簇拆出的兄弟文件 (引擎消费) ──
 import type { GenerateFn, ExecutorDagConfig, LeafResult, ExecutorDagResult } from './executor-dag-types';
 import { makeDefaultGenerate, LEAF_SYSTEM_PREFIX, PONYTAIL_LEAF_DISPOSITION } from './executor-dag-defaults';
-import { topoLevels, buildLeafPrompt, addUsage } from './executor-dag-planner';
+import { topoLevels, buildLeafPrompt, addUsage, filterOracleCommandNodes } from './executor-dag-planner';
 import { loadAgentTemplates, templateRoster, type AgentTemplate } from './agent-templates';
 import { expandMapNode, mapSpecHash } from './plan/map-expand';
 // SDD 0013 S1 约束选择: primitive 节点 → compile(复用 primitives.ts)→ run。
@@ -91,8 +91,10 @@ async function planAndExecute(
   }
   if (!plan) throw new Error(`executor-dag: conductor (${conductorModel}) 未产出有效 plan: ${lastErr}`);
 
+  // 确定性过滤: plan 中 command 与 oracleCmd 等价的节点移除 (oracle 已跑过, 重跑 = 浪费)。
+  const filteredPlan = config.oracleCmd ? filterOracleCommandNodes(plan, config.oracleCmd) : plan;
   // conductor 之后, 下游执行机器与 plan 来源无关 → 交 executePlan (D-7 预构造入口共用同一机器)。
-  return executePlan(plan, task, config, generate, conductorUsage, templates);
+  return executePlan(filteredPlan, task, config, generate, conductorUsage, templates);
 }
 
 /**
@@ -625,9 +627,13 @@ async function runDagInternal(
 
   let conductorModel = config.conductorModel ?? '';
   // D-7: 预构造 plan → executePlan 直执 (跳过 conductor); 否则 conductor 规划 → 执行。二者下游同一机器。
-  let exec = prebuiltPlan
-    ? await executePlan(prebuiltPlan, task, config, generate, { in: 0, out: 0 }, templates)
-    : await planAndExecute(task, config, conductorModel, generate, maxPlanRetries, templates);
+  let exec: ExecOnce;
+  if (prebuiltPlan) {
+    const filteredPlan = config.oracleCmd ? filterOracleCommandNodes(prebuiltPlan, config.oracleCmd) : prebuiltPlan;
+    exec = await executePlan(filteredPlan, task, config, generate, { in: 0, out: 0 }, templates);
+  } else {
+    exec = await planAndExecute(task, config, conductorModel, generate, maxPlanRetries, templates);
+  }
   let conductorUsage = exec.conductorUsage;
   let leavesIn = exec.leavesIn;
   let leavesOut = exec.leavesOut;

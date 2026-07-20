@@ -92,6 +92,13 @@ export interface ExecutorDagConfig {
    */
   commandRunner?: CommandLeafRunner;
   /**
+   * oracle 命令 (如 "bun run typecheck && bun test"): plan 中 command 与之等价的节点
+   * 在执行前被确定性过滤 (空白规范化后精确匹配, 最小无害边重连)。
+   * 选型理由: oracle 已跑过该命令, conductor 重规划出等价节点 = 浪费 token + 时间。
+   * 省略 = 不过滤 (向后兼容)。
+   */
+  oracleCmd?: string;
+  /**
    * 跨模型校验器 (model-agnostic skeptic, 见 verifier.ts)。省略 = 不校验 (back-compat 老行为)。
    * 给则 DAG 跑完用它审结果 → fail 且配了可用升级模型时触发 conductor 静默升级重规划。
    */
