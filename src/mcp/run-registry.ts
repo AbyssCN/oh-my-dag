@@ -5,18 +5,29 @@
  *   - runId → 状态/元数据/结果, 纯内存 (单测零磁盘)
  *   - 持久面: 复用 continuity CheckpointManager (crash resume, D-3/D-9)
  *   - 未知 runId 查询 → 明确 MCP error (isError + message), 非 crash
+ *   - 活体进度: applyNodeEvent 累积引擎 DagNodeEvent → planned/started/settled
  *
  * 状态机: pending → running → done | failed (不可逆; 非法转换抛)
  */
 
+import type { DagNodeEvent } from '../harness/executor-dag-types';
+
 /** run 生命周期状态。 */
 export type RunStatus = 'pending' | 'running' | 'done' | 'failed';
+
 
 /** 单节点执行明细。 */
 export interface NodeDetail {
   status: string;
   output: string;
   error?: string;
+}
+
+/** 活体进度快照 (applyNodeEvent 累积; planned 每轮重规划整体覆盖)。 */
+export interface RunProgress {
+  planned: Array<{ id: string; kind: string }>;
+  started: string[];
+  settled: Array<{ id: string; status: 'done' | 'failed'; kind: string; model?: string }>;
 }
 
 /** run 元数据快照。 */
@@ -27,6 +38,7 @@ export interface RunRecord {
   result?: unknown;
   error?: string;
   nodeDetails?: Record<string, NodeDetail>;
+  progress?: RunProgress;
   createdAt: string;
   updatedAt: string;
 }
@@ -105,6 +117,26 @@ export class RunRegistry {
     const rec = this.runs.get(runId);
     if (!rec) return;
     rec.nodeDetails = details;
+    rec.updatedAt = new Date().toISOString();
+  }
+
+  /** 应用引擎节点事件 → 活体进度; 未知 runId → 静默忽略 (对齐 setNodeDetails)。 */
+  applyNodeEvent(runId: string, e: DagNodeEvent): void {
+    const rec = this.runs.get(runId);
+    if (!rec) return;
+    const progress = (rec.progress ??= { planned: [], started: [], settled: [] });
+    switch (e.type) {
+      case 'planned':
+        progress.planned = e.nodes;
+        break;
+      case 'start':
+        progress.started.push(e.id);
+        break;
+      case 'settle':
+        progress.settled.push({ id: e.id, status: e.status, kind: e.kind, model: e.model });
+        progress.started = progress.started.filter((id) => id !== e.id);
+        break;
+    }
     rec.updatedAt = new Date().toISOString();
   }
 

@@ -41,7 +41,7 @@ import { fetchWithFallback } from './web/web-extension';
 import { CleaningFetchProvider } from './web/clean';
 import { createCodeExtension, type ToolMap } from './code';
 import { createCostExtension } from './cost-extension';
-import { logger } from '../logger';
+import { logger, setLoggerDestination } from '../logger';
 import { registerProvidersFromEnv, registerCustomApis } from '../model/providers';
 import { listCustomApis } from '../model/role-models';
 import { resolveHashlineEdit } from './tui-config';
@@ -77,10 +77,11 @@ const userArgs = process.argv.slice(2);
 const userPickedModel = userArgs.includes('--model') || userArgs.includes('--provider');
 
 // omd mcp: stdio MCP server 入口 (D-1, 同 `omd init` 范式的 args 分流) —— 零 UI, 不进 wizard/TUI boot。
-// stdout 是 MCP 协议通道: pino 默认写 stdout 会腐蚀协议帧 → logger 先静默。常驻, 客户端管 spawn/kill (D-9)。
+// stdout 是 MCP 协议通道: pino 默认写 stdout 会腐蚀协议帧 → 日志改道 stderr (warn 级, 引擎尸检可见)。常驻, 客户端管 spawn/kill (D-9)。
 // 工具面 = assembleOmdMcpTools 全装配 (v1 七工具: dag 四件套 + dag_research + memory 两件套, 接缝=真引擎/真记忆/真 research)。
 if (userArgs[0] === 'mcp') {
-  logger.level = 'silent';
+  setLoggerDestination(2);
+  logger.level = 'warn';
   // mcp 入口不走 TUI boot → provider 注册需自带引导 (同 dag-* 短命进程), 否则引擎 leaf 因
   // 注册表空而全部静默秒败 (settle(null) 空 output, 客户端只见"节点未完成")。stderr 打点协议安全。
   const { bootstrapModelRuntime } = await import('../model/bootstrap');
