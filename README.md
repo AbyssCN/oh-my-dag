@@ -4,11 +4,16 @@
 
 ### A DAG execution engine + persistent decision maps for your coding agent — served over MCP.
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-c9a227?style=flat-square&labelColor=140f0a)](LICENSE)
-[![Runtime: Bun ≥ 1.3](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.3-b3382a?style=flat-square&labelColor=140f0a)](https://bun.sh)
-[![Built on pi](https://img.shields.io/badge/built%20on-pi-6f9488?style=flat-square&labelColor=140f0a)](https://pi.dev)
+*Your agent stays the smart brain. omd brings the cheap concurrent hands*
+*and the memory that doesn't forget.*
 
-**English** · [中文](#中文)
+[![MCP server: 14 tools](https://img.shields.io/badge/MCP%20server-14%20tools-c9a227?style=flat-square&labelColor=140f0a)](docs/MCP-ONBOARDING.md)
+[![Clients: Claude Code · Codex · any MCP](https://img.shields.io/badge/clients-Claude%20Code%20%C2%B7%20Codex%20%C2%B7%20any%20MCP-6f9488?style=flat-square&labelColor=140f0a)](client-skills/)
+[![Models: bring your own](https://img.shields.io/badge/models-bring%20your%20own-b3382a?style=flat-square&labelColor=140f0a)](.env.example)
+[![Runtime: Bun ≥ 1.3](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.3-b3382a?style=flat-square&labelColor=140f0a)](https://bun.sh)
+[![License: MIT](https://img.shields.io/badge/license-MIT-c9a227?style=flat-square&labelColor=140f0a)](LICENSE)
+
+**[Get started →](docs/MCP-ONBOARDING.md)** · [client-skills](client-skills/) · **English** · [中文](#中文)
 
 </div>
 
@@ -318,6 +323,10 @@ MIT — see [LICENSE](LICENSE).
 # 中文
 
 ### DAG 执行引擎 + 持久决策地图 — 经 MCP 服务你的 coding agent。
+
+*你的 agent 保持聪明的大脑,omd 提供便宜的并发手脚和不丢的记忆。*
+
+**[上手 →](docs/MCP-ONBOARDING.md)** · [斜杠技能包](client-skills/)
 
 </div>
 
