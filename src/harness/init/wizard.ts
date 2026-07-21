@@ -28,6 +28,7 @@ import {
 } from '../../model/role-models';
 import { ROLE_PRESETS, ROLE_ENV_ALLOWLIST, coordProvider, type RolePreset } from './role-presets';
 import { globalEnvPath } from '../../env-alias';
+import { installHudStatusLine, type HudInstallResult } from './hud-statusline';
 
 /** 一线支持的后端 (= registerProvidersFromEnv 认识的)。 */
 export interface ProviderDef {
@@ -554,6 +555,31 @@ export async function runRoleTuneStep(
  *   → 写 env (项目有 .env 则写项目, 否则写全局 ~/.omd/env — 任何目录起 omd 都可用) → 健检。
  * 返回结果供 tui.ts 决定下一步 (写完即可继续 boot, env 已就绪)。
  */
+/**
+ * omd-hud statusLine opt-in 步 (issue: DAG/pathfinder 实时底栏 HUD)。
+ * 默认 No (opt-in); yes → 写 <repoRoot>/.claude/settings.local.json (仅本 repo, 不动全局 claude-hud)。
+ * install 注入便于测试。
+ */
+export async function runHudStatuslineStep(
+  io: WizardIO,
+  cwd: string,
+  install: (repoRoot: string) => HudInstallResult = installHudStatusLine,
+): Promise<void> {
+  const yes = await io.confirm(
+    '装 DAG/pathfinder 实时 HUD 到本仓库 Claude Code 底栏? (仅本 repo · settings.local.json · 不动全局)',
+    false,
+  );
+  if (!yes) return;
+  const r = install(cwd);
+  if (r.status === 'installed') {
+    io.note(bold(fg('gold', `✓ omd-hud 已装 → ${r.path}`)) + dim(fg('riceMuted', '  在 Claude Code 里打开本 repo 即见 (每 2s 刷新)')));
+  } else if (r.status === 'already') {
+    io.note(dim(fg('riceMuted', 'omd-hud statusLine 已在 — 跳过')));
+  } else {
+    io.note(fg('warning', `omd-hud 装配跳过: ${r.reason ?? '未知'}`));
+  }
+}
+
 export async function runInitWizard(deps: InitWizardDeps): Promise<InitWizardResult | null> {
   const { io } = deps;
   const env = deps.env ?? process.env;
@@ -648,6 +674,9 @@ export async function runInitWizard(deps: InitWizardDeps): Promise<InitWizardRes
   io.note(
     `${bold(fg('gold', '已就绪'))}  ${fg('rice', `${rtProvider}:${rtModel}`)} → ${envPath}  ${dim(fg('riceMuted', 'shift+tab 进 pathfinder · /cg 检索 · /audit 审计'))}`,
   );
+
+  // omd-hud statusLine opt-in (DAG/pathfinder 实时底栏 HUD) — 默认不装, 问一句。
+  await runHudStatuslineStep(io, cwd);
 
   return {
     writtenKeys: Object.keys(updates),

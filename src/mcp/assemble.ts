@@ -24,6 +24,7 @@ import { dirname, join } from 'node:path';
 import type { OmdMcpTool } from './server';
 import { RunRegistry } from './run-registry';
 import { CheckpointManager } from '../harness/continuity/checkpoint-manager';
+import { HudMirror } from '../hud/mirror';
 import { createDagTools, type DagEngine } from './tools/dag-tools';
 import { createMemoryTools } from './tools/memory';
 import { createPathfinderTools, type PathfinderToolDeps } from './tools/pathfinder';
@@ -258,9 +259,13 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     ...deps.configOverrides,
   };
 
+  // omd-hud 活体镜像: DAG 进度 (dag.json) + pathfinder 迷雾 (fog.json) 原子写 .omd/hud/,
+  // statusline (scripts/omd-hud.ts) 数据源。dag + pathfinder 工具共用一个实例 (同 repoRoot)。
+  const hudMirror = new HudMirror(cwd);
+
   return [
     // continuity 恒开 (D-3): checkpoint 落 <cwd>/.omd/continuity/<runId>/, dag_run_plan resume 可续。
-    ...createDagTools({ engine, runRegistry, cwd, defaultConfig, continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd } }),
+    ...createDagTools({ engine, runRegistry, cwd, defaultConfig, continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd }, hudMirror }),
     createDagResearchTool(researchFanout),
     ...createMemoryTools({ memory, cwd }),
     // pathfinder 六件套 (TUI-less 决策地图: map/add/tickets/rule/deliver/prefetch, pull 式回流)。
@@ -270,6 +275,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       models: resolveEngineModels(env),
       agentRunner,
       commandRunner,
+      hudMirror,
       ...deps.pathfinder,
     }),
     // fleet 四工具: review/slim/deepen 异步子进程 + dream_consolidate 同步泵。
