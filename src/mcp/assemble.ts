@@ -33,7 +33,9 @@ import { createFleetTools, type SpawnFn } from './tools/fleet';
 import { effectiveFanout, resolveProviderCap } from '../harness/fleet';
 import { createRunsTools } from './tools/runs';
 import { createConfigTools } from './tools/config-tools';
+import { createPlansTool } from './tools/plans';
 import { createModelRouterFromEnv } from '../harness/model-router';
+import { createPlanLedger, type PlanLedger } from '../harness/plan-ledger';
 import { runExecutorDag, runExecutorDagWithPlan } from '../harness/executor-dag';
 import type { ExecutorDagConfig } from '../harness/executor-dag-types';
 import { createAgentLeafRunner } from '../harness/agent-leaf';
@@ -81,6 +83,8 @@ export interface AssembleOmdMcpDeps {
   spawn?: SpawnFn;
   /** dream pump 接缝 (dream_consolidate; 省略 → 该工具回 isError 不炸)。 */
   dream?: DreamPump;
+  /** plan-memory 账本接缝 (测试注入 :memory:; 默认 .omd/plan-ledger.db)。 */
+  ledger?: PlanLedger;
 }
 
 /** runtime 模型坐标 (OMD_RUNTIME_PROVIDER:OMD_RUNTIME_MODEL); 未配 → '' (镜像 resolveConductorDefault)。 */
@@ -271,9 +275,13 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   // statusline (scripts/omd-hud.ts) 数据源。dag + pathfinder 工具共用一个实例 (同 repoRoot)。
   const hudMirror = new HudMirror(cwd);
 
+  // plan-memory Phase A 账本 (SDD 2026-07-21): 每个完成 run 记 family/版本/战绩, 纯记账零行为改变。
+  // 证据门 (issue #10, 2026-08-11): omd_plans 显示任一 family runs≥3 ∧ ok率≥0.8 → 开 Phase B 召回闸。
+  const ledger = deps.ledger ?? createPlanLedger({ path: join(cwd, '.omd', 'plan-ledger.db') });
+
   return [
     // continuity 恒开 (D-3): checkpoint 落 <cwd>/.omd/continuity/<runId>/, dag_run_plan resume 可续。
-    ...createDagTools({ engine, runRegistry, cwd, defaultConfig, continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd }, hudMirror }),
+    ...createDagTools({ engine, runRegistry, cwd, defaultConfig, continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd }, hudMirror, ledger }),
     createDagResearchTool(researchFanout),
     ...createMemoryTools({ memory, cwd }),
     // pathfinder 六件套 (TUI-less 决策地图: map/add/tickets/rule/deliver/prefetch, pull 式回流)。
@@ -292,5 +300,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     ...createRunsTools({ runRegistry, cwd }),
     // config 工具族: set_key/apply_preset/set_role/config_status/toggle_hud (omd init 的 MCP 面, 即时生效)。
     ...createConfigTools({ cwd, router }),
+    // plan-memory 账本可观测 (Phase A 证据门仪表, issue #10)。
+    createPlansTool(ledger),
   ];
 }

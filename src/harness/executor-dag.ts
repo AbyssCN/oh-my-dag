@@ -169,6 +169,9 @@ async function executePlan(
       deps,
       createdAt: new Date().toISOString(),
       generation: dagGeneration,
+      // plan-memory 缺口①: 全量 plan + 任务原文落盘 (此前只存骨架, 图的"肉"随进程丢弃)。
+      plan: { name: plan.name, ...(plan.description ? { description: plan.description } : {}), nodes: plan.nodes },
+      taskText: task,
     });
     if (continuity.resume) {
       for (const cp of continuity.manager.loadAllGreen(continuity.runId)) resumeGreens.set(cp.nodeId, cp);

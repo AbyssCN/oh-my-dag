@@ -18,6 +18,8 @@ import type { DagEngine } from '../../src/mcp/tools/dag-tools';
 import type { ExecutorDagResult } from '../../src/harness/executor-dag-types';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
 import type { AgentLeafRunner, CommandLeafRunner } from '../../src/harness/leaf-runners';
+import { Database } from 'bun:sqlite';
+import { createPlanLedger } from '../../src/harness/plan-ledger';
 
 /** v1 工具面全清单 (SDD §工具面 P1 期)。 */
 const ALL_TOOLS = [
@@ -48,6 +50,8 @@ const ALL_TOOLS = [
   'omd_set_role',
   'omd_config_status',
   'omd_toggle_hud',
+  // plan-memory 账本 (Phase A 证据门仪表)
+  'omd_plans',
 ].sort();
 
 /** Minimal valid ConductorPlan (同 mcp-dag-tools.test.ts 形状)。 */
@@ -112,6 +116,8 @@ async function wire(overrides: Partial<AssembleOmdMcpDeps> = {}) {
     researchFanout: async () => ({ runId: 'r-x', reportPath: '/tmp/x.md', summary: 's' }),
     agentRunner: fakeAgentRunner,
     commandRunner: fakeCommandRunner,
+    // plan-ledger 注入 :memory: — e2e 的 'e2e lifecycle' 任务不许污染真实 .omd/plan-ledger.db (证据门数据)。
+    ledger: createPlanLedger({ db: new Database(':memory:') }),
     ...overrides,
   };
   const server = createOmdMcpServer(assembleOmdMcpTools(deps), { name: 'omd', version: 'test' });
