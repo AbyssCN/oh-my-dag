@@ -24,6 +24,11 @@ export const DEFAULT_PRICES: PriceTable = {
   // ── MiMo (烧 token-plan 沉没额度) ──
   'mimo:mimo-v2.5-pro': { inputRate: 0.50, outputRate: 2.00, cacheHitRate: 0.10 },
   'mimo:mimo-v2.5': { inputRate: 0.50, outputRate: 2.00, cacheHitRate: 0.10 },
+  // ultraspeed = 按量 3×pro (fusang .env 2026-06-11 beta 记录)
+  'mimo:mimo-v2.5-pro-ultraspeed': { inputRate: 1.50, outputRate: 6.00, cacheHitRate: 0.30 },
+
+  // ── Kimi For Coding (订阅制, 边际成本≈0 — 若列入 bandit 池会因 cost=0 通吃, 慎入池) ──
+  'kimi-coding:k3': { inputRate: 0, outputRate: 0 },
 
   // ── Anthropic Claude (omd 设计大脑 / conductor 可升级档) ──
   'anthropic:claude-opus-4-8': { inputRate: 15, outputRate: 75, cacheHitRate: 1.50 },
