@@ -22,13 +22,6 @@
 - status: open
 - blockedBy: p1
 
-### t1
-- type: task
-- title: W1 共享 writer 模块:9 段蒸馏 + 零-LLM 反幻觉校验(文件存在/commit 可 resolve/noun-gate 容差3)+ _NEXT.md splice,接 omd 模型层 + git(正确性敏感核心)
-- status: open
-- blockedBy: g2, g3, g5
-- executorKind: agent
-
 ### t3
 - type: task
 - title: W3 Stop ledger:CC transcript token 记账 + 碰过文件/commit 抽取,隔离进独立 parser 模块 + fail-open + token best-effort 兜底(最 fiddly)
@@ -55,22 +48,6 @@
 _(none)_
 
 ### status: ruled
-
-### t5
-- type: task
-- title: W5 命名分离 + env 配置接线:session 目录与 DAG-run continuity 分家,OMD_SESSION_BUCKET / OMD_CONTINUITY_MODEL / MEMORY_TENANT→project-scope 映射
-- status: ruled
-- blockedBy: g3
-- ruling: session 交接的配置接线 + 命名分离收尾(纯机械;禁改 src/harness/session/{writer,read-back,noun-gate}.ts 与 sink.ts 契约的逻辑)。① scripts/session-writer.ts:装配 OmdMemory 传 runWriter({memory}) 打开 SQLite 镜像——照 src/mcp/assemble.ts 的 createDefaultMemory(process.env) 装配姿势构造(memory.db 路径要 OMD_DATA_HOME/dataPath 感知,别硬写进当前 repo;构造失败则 fail-open 不传,markdown 仍落);加 --no-sink 关闭开关。② 统一 /start 与 /handoff 的 session log 路径:skills/start/SKILL.md 写 .omd/sessions/ 而 skills/handoff/SKILL.md 写 .claude/sessions/——两文件统一到 .omd/sessions/(与 omd 数据面一致),只改路径字样不动其它流程。③ 文档:在 docs/ 合适处加一节说明 (a) OMD_CONTINUITY_MODEL=session 蒸馏模型(默认便宜档)(b) OMD_SESSION_BUCKET=触发档阈值(phase-2 用)(c) session 交接落 ~/.omd/projects/<slug>/session/,与 DAG-run 的 .omd/continuity/ 是两个不同 continuity,明确分层。oracle=tsc(改了 .ts 就跑)。禁碰 src/harness/continuity/。
-- executorKind: agent
-
-### t2
-- type: task
-- title: W4 SQLite sink:checkpoint 事件追加 + 最新快照镜像进现有记忆库(namespace=continuity)+ 一个读 checkpoint 时间线的入口
-- status: ruled
-- blockedBy: g2
-- ruling: 实装 src/harness/session/sink.ts 的真实 SQLite 镜像(替换两个 no-op 函数体;导出类型与函数签名逐字保持不变——W1 的 writer.ts 依赖它们)。① sinkCheckpoint(input,deps):deps.memory 存在时调 OmdMemory.writeFact(src/harness/memory/store.ts:187)写最新快照——namespace='continuity',id=input.sessionId(→同 session 多写演化更新一行,靠 writeFact 内建 tombstoneByIdentity),text=[input.intent,input.next].filter(Boolean).join('\\n').slice(0,2000)(空则 input.md.slice(0,2000)),payload={mode,ctxTokens,degraded,checkpointPath,md},actorType='model',actorId='claude',confidence 用现有允许值。返回{ok:未 rejected,factStatus:w.status,error}。全程 fail-open:writeFact 抛/rejected→{ok:false,error 摘要},绝不抛。无 deps.memory→保持现有 {ok:false,error:'no OmdMemory injected...'}。② listCheckpoints(opts,deps):deps.memory.retrieve 查 namespace='continuity' 的快照,映射 CheckpointRow[](payload 取 mode/ctxTokens/degraded/checkpointPath,ts 用 fact created_at,intent 用 text 首行);opts.sessionId 过滤、opts.recent 限量(默认20);read-only,fail-open 返 []。加 test/core/session-sink.test.ts:注入内存假 OmdMemory(writeFact 记参数 + retrieve 回放),断言 (a) namespace='continuity' 且 id=sessionId (b) 同 sessionId 二次写演化(identity 一致)(c) payload 含 md/checkpointPath (d) 无 memory→{ok:false} 不抛 (e) listCheckpoints 过滤 + 空库返 []。oracle=tsc + bun test。禁改契约类型/签名;禁碰 writer.ts/read-back.ts/noun-gate.ts;禁碰 src/harness/continuity/(DAG-run 续跑)。
-- executorKind: agent
 
 ### p1
 - type: prototype
@@ -109,7 +86,29 @@ _(none)_
 
 ### status: delivered
 
-_(none)_
+### t1
+- type: task
+- title: W1 共享 writer 模块:9 段蒸馏 + 零-LLM 反幻觉校验(文件存在/commit 可 resolve/noun-gate 容差3)+ _NEXT.md splice,接 omd 模型层 + git(正确性敏感核心)
+- status: delivered
+- blockedBy: g2, g3, g5
+- ruling: Aalto 亲手实装(不下放,g1 正确性敏感)—— src/harness/session/{writer,noun-gate,read-back,sink 契约}.ts + scripts/session-writer.ts + role-models.ts continuity 角色。commit f6e45fb。验证:tsc 0 err · 全 613 测试绿 · 真实 transcript 单 session 回路跑通(write→read-back)· 反幻觉闸实测正确拦截 flash 编造路径并 fail-open 降级 · 落盘 ~/.omd/projects/<slug>/session/ 与 DAG-run continuity 分家。
+- executorKind: agent
+
+### t5
+- type: task
+- title: W5 命名分离 + env 配置接线:session 目录与 DAG-run continuity 分家,OMD_SESSION_BUCKET / OMD_CONTINUITY_MODEL / MEMORY_TENANT→project-scope 映射
+- status: delivered
+- blockedBy: g3
+- ruling: session 交接的配置接线 + 命名分离收尾(纯机械;禁改 src/harness/session/{writer,read-back,noun-gate}.ts 与 sink.ts 契约的逻辑)。① scripts/session-writer.ts:装配 OmdMemory 传 runWriter({memory}) 打开 SQLite 镜像——照 src/mcp/assemble.ts 的 createDefaultMemory(process.env) 装配姿势构造(memory.db 路径要 OMD_DATA_HOME/dataPath 感知,别硬写进当前 repo;构造失败则 fail-open 不传,markdown 仍落);加 --no-sink 关闭开关。② 统一 /start 与 /handoff 的 session log 路径:skills/start/SKILL.md 写 .omd/sessions/ 而 skills/handoff/SKILL.md 写 .claude/sessions/——两文件统一到 .omd/sessions/(与 omd 数据面一致),只改路径字样不动其它流程。③ 文档:在 docs/ 合适处加一节说明 (a) OMD_CONTINUITY_MODEL=session 蒸馏模型(默认便宜档)(b) OMD_SESSION_BUCKET=触发档阈值(phase-2 用)(c) session 交接落 ~/.omd/projects/<slug>/session/,与 DAG-run 的 .omd/continuity/ 是两个不同 continuity,明确分层。oracle=tsc(改了 .ts 就跑)。禁碰 src/harness/continuity/。 【交付核对:② handoff 路径统一(.claude/sessions/→.omd/sessions/)+ ③ env/分层文档 已交付;① memory 装配随 W4 defer 已回退,session-writer 保持 markdown-only。】
+- executorKind: agent
+
+### t2
+- type: task
+- title: W4 SQLite sink:checkpoint 事件追加 + 最新快照镜像进现有记忆库(namespace=continuity)+ 一个读 checkpoint 时间线的入口
+- status: delivered
+- blockedBy: g2
+- ruling: ⚠️ 实为 DEFERRED —— 交付核对发现真存储撞 safeguard 红线(omd 记忆只收小型结构化 fact:user.*/omd.*,拒 continuity blob)。owner 决策甲=MVP markdown-only:DAG 交付的 writeFact impl 已回退,sink.ts 留 fail-open no-op 契约座,sink 测试删除。W4 非本 MVP 交付物;后续若要跨 session 语义召回,按「存 §1/§2 短摘要 fact + 新增 omd.session namespace」实现。原 slice 目标存档:实装 src/harness/session/sink.ts 的真实 SQLite 镜像(替换两个 no-op 函数体;导出类型与函数签名逐字保持不变——W1 的 writer.ts 依赖它们)。① sinkCheckpoint(input,deps):deps.memory 存在时调 OmdMemory.writeFact(src/harness/memory/store.ts:187)写最新快照——namespace='continuity',id=input.sessionId(→同 session 多写演化更新一行,靠 writeFact 内建 tombstoneByIdentity),text=[input.intent,input.next].filter(Boolean).join('\\n').slice(0,2000)(空则 input.md.slice(0,2000)),payload={mode,ctxTokens,degraded,checkpointPath,md},actorType='model',actorId='claude',confidence 用现有允许值。返回{ok:未 rejected,factStatus:w.status,error}。全程 fail-open:writeFact 抛/rejected→{ok:false,error 摘要},绝不抛。无 deps.memory→保持现有 {ok:false,error:'no OmdMemory injected...'}。② listCheckpoints(opts,deps):deps.memory.retrieve 查 namespace='continuity' 的快照,映射 CheckpointRow[](payload 取 mode/ctxTokens/degraded/checkpointPath,ts 用 fact created_at,intent 用 text 首行);opts.sessionId 过滤、opts.recent 限量(默认20);read-only,fail-open 返 []。加 test/core/session-sink.test.ts:注入内存假 OmdMemory(writeFact 记参数 + retrieve 回放),断言 (a) namespace='continuity' 且 id=sessionId (b) 同 sessionId 二次写演化(identity 一致)(c) payload 含 md/checkpointPath (d) 无 memory→{ok:false} 不抛 (e) listCheckpoints 过滤 + 空库返 []。oracle=tsc + bun test。禁改契约类型/签名;禁碰 writer.ts/read-back.ts/noun-gate.ts;禁碰 src/harness/continuity/(DAG-run 续跑)。
+- executorKind: agent
 
 ### status: escalated
 

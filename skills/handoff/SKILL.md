@@ -63,7 +63,7 @@ echo "=DIFF_STAT=" && git diff --stat "$(git rev-parse origin/main 2>/dev/null |
 ```
 Keep the old blocks below (FIFO, do not delete history; when too long, manually move the oldest block to an archive/journal file). Apply principles 1+2.
 
-**3b Session Log (Write)** — `.claude/sessions/{date}-{slug}.md`. Template (4 required + 6 optional) in `references/session-log-template.md`. Reference-don't-duplicate + redact.
+**3b Session Log (Write)** — `.omd/sessions/{date}-{slug}.md`. Template (4 required + 6 optional) in `references/session-log-template.md`. Reference-don't-duplicate + redact.
 
 ### Step 3.4 Claim-Evidence Gate (pure reasoning, no test re-run, no script)
 

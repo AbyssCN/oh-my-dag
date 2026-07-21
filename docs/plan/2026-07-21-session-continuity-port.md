@@ -113,3 +113,24 @@ hook 和手动 skill 复用 · session 目录与 DAG-run continuity 明确分家
 
 先等你拍:**实装 / 改范围 / 暂不做**。实装的话我建议先落 W1+W4(核心写+存)跑通单 session,
 再上 W2/W3 的 hook 自动化。
+
+## 9 · 配置接线与 continuity 分层(W5 落地)
+
+**env 旋钮**:
+
+| env | 作用 | 默认 |
+|---|---|---|
+| `OMD_CONTINUITY_MODEL` | session checkpoint 蒸馏模型(continuity 角色),经标准角色解析链(`resolveRoleModel('continuity')`) | 便宜档 `deepseek`(D3) |
+| `OMD_SESSION_BUCKET` | Stop hook 触发蒸馏的 token 档阈值(跨档或 commit 才跑 writer,D8) | phase-2 hook 接线时消费,当前预留 |
+
+**两个 continuity 是不同东西,目录明确分家(D2)**:
+
+- **session 交接** → `~/.omd/projects/<slug>/session/<sessionId>/`(script 入口经
+  `OMD_DATA_HOME=~/.omd` + project-scope;未设则退回 `.omd/session/`)。跨 session 蒸馏
+  checkpoint,真理源 = markdown 文件;开局读回也从 markdown 来。
+  **SQLite 召回镜像 deferred**(MVP markdown-only):omd 记忆是刻意克制的小型结构化 fact
+  (`user.*` / `omd.*`),不吃 5KB checkpoint blob——`namespace='continuity'` 被 safeguard 拒。
+  `sink.ts` 留 fail-open no-op 契约座;真要跨 session 语义召回,后续按「存 §1/§2 短摘要 fact +
+  新增 `omd.session` namespace」实现(见交付记录),不是本 MVP 范围。
+- **DAG-run 续跑** → `.omd/continuity/<runId>/`(CheckpointManager,节点产物哈希)。与
+  session 交接无关,本移植**刻意不碰**。
