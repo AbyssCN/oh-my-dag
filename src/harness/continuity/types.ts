@@ -16,20 +16,31 @@ import type { ModelUsage } from '../../model/gateway';
  */
 export interface NodeCheckpoint {
   nodeId: string;
-  leafKind: 'inproc' | 'agent' | 'command' | 'map';
-  /** 只有 done 的节点写 checkpoint。failed 节点不落。 */
-  status: 'done';
+  leafKind: 'inproc' | 'agent' | 'command' | 'map' | 'primitive';
+  /**
+   * done = 成功节点; failed = 失败节点 (issue #4: 留败因痕供事后诊断)。
+   * resume 语义只认 done —— loadAllGreen / shouldSkip 均过滤 status==='done', 故 failed
+   * checkpoint 永不被当绿跳过, 只作审计留痕。
+   */
+  status: 'done' | 'failed';
+  /**
+   * 失败节点 (issue #4) 的败因分类: 'stall' = 早期心跳闸判 provider 挂起 (issue #5) |
+   * 'failed' = 通用失败 (具体原因见 summary)。done 节点 undefined。
+   */
+  failureKind?: 'stall' | 'failed';
+  /** 实际所用模型坐标 (失败归因; inproc/agent leaf 有, command/无模型 → undefined)。 */
+  model?: string;
   /**
    * 该节点写入的产物路径 (相对于 repo root)。
    * agent-leaf 从 tool-call 事件收集 Edit/Write file_path。
-   * inproc/command leaf → []。
+   * inproc/command leaf / 失败节点 → []。
    */
   outputPaths: string[];
   /** 每个 outputPath → sha256 前 16 hex 字符。轻量产物完整性检验。 */
   artifactHashes: Record<string, string>;
   /** 模型用量。command leaf = null。 */
   tokenUsage: ModelUsage | null;
-  /** LeafResult.output 截断, ≤800 字符。 */
+  /** LeafResult.output 截断, ≤800 字符。失败节点 = 错误消息/最后输出截断 (issue #4 败因)。 */
   summary: string;
   /** U1 map 节点: spec hash (INV-U3 两级 resume; spec 变 → 子树作废)。optional。 */
   expansionHash?: string;

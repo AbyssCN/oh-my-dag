@@ -19,6 +19,9 @@ export interface AgentLeafResult {
   usage: ModelUsage;
   /** 本次 leaf 经 write/edit 族工具触碰的文件(continuity 接缝;去重)。 */
   filesTouched?: string[];
+  /** 早期心跳闸判定的停摆(issue #5): provider 挂起/排队, 未等满硬超时即中止。executor 据此标 failed +
+   *  留 stall 败因(而非把近零输出当 done)。省略/false = 正常完成或硬超时。 */
+  stalled?: boolean;
 }
 /** 注入点:executor-dag 的 agent-kind 节点经此跑。 */
 export type AgentLeafRunner = (input: AgentLeafInput) => Promise<AgentLeafResult>;

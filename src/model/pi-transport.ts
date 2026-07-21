@@ -240,6 +240,25 @@ export async function resolvePiApiKey(provider: string): Promise<string | undefi
   return d.getEnvApiKey(provider);
 }
 
+/**
+ * provider 是否有**可用凭证** —— 同步、无副作用 (不触发 OAuth 刷新/写回), 供角色兜底链 + 起跑坐席
+ * 检查廉价判定 (issue #6)。与 resolvePiApiKey 同优先序但只探"在不在", 不解析实际 key:
+ *   auth.json api_key 条目 ∨ auth.json oauth access (kimi-coding 等 OAuth) ∨ env key 映射。
+ * assertModelResolvable 是 **key-blind** (pi 目录认识 deepseek 全坐标即便无 key) → 判"能否真调用"
+ * 必须走凭证维度, 否则无 DEEPSEEK_API_KEY 时 judge/review 的 deepseek 坐标"看似可解析"实则 call 时抛无凭证。
+ */
+export function piHasCredential(
+  provider: string,
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  const entry = readAuthEntry(provider, deps().authPath);
+  if (entry) {
+    if (entry.type === 'api_key' && typeof entry.key === 'string' && entry.key.trim()) return true;
+    if (typeof entry.access === 'string' && entry.access.trim()) return true;
+  }
+  return !!piEnvApiKey(provider, env);
+}
+
 // ── 请求/响应适配 ──────────────────────────────────────────────────────────────
 
 const ZERO_USAGE: Usage = {

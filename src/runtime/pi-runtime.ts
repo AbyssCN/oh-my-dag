@@ -179,6 +179,16 @@ export async function applyDispatchOptions(
   }
 }
 
+/** runScopedSession 的收尾判定 (issue #5): 早期心跳闸停摆 / 硬超时 / 正常, + 累积输出字节。 */
+export interface ScopedRunOutcome {
+  /** 早期心跳闸判定的停摆: 启动 heartbeatMs 内近零输出且无工具活动 (provider 挂起典型) — 区别于真超时。 */
+  stalled: boolean;
+  /** 硬超时中止 (跑满 timeoutMs)。 */
+  timedOut: boolean;
+  /** 累积文本输出字节数。 */
+  outLen: number;
+}
+
 /**
  * 在一个 scoped (一次性) session 上跑一条 prompt, 收集流式文本, **保证 dispose** (修 session 泄漏)。
  * subscribe 与 prompt 都在 try 内 → 任何一步抛错都走 finally 释放 session + 解订阅,
@@ -187,16 +197,34 @@ export async function applyDispatchOptions(
 export async function runScopedSession(
   session: ScopedSessionLike,
   fullPrompt: string,
-  opts?: { timeoutMs?: number },
+  opts?: {
+    timeoutMs?: number;
+    /**
+     * 早期心跳闸 (issue #5): 启动后 heartbeatMs (如 30-45s) 累积输出仍 < heartbeatMinBytes **且**
+     * 期间无任何工具活动 → 判 provider 端挂起/排队 (停摆), 提前 abort 标 stall, 不白等满硬超时。
+     * 合法慢叶子此时已有模型应答 (narration 或工具调用) → 高于下限或有工具活动 → 不误杀。
+     * 0/省略 = 关 (纯单发 inproc / 子 agent 不需要)。
+     */
+    heartbeatMs?: number;
+    /** 心跳闸输出下限 (字节)。默认 32。 */
+    heartbeatMinBytes?: number;
+    /** 收尾判定回传 (stall/timeout/outLen) — 调用方据此标节点 stall (供 #4 败因留痕)。 */
+    onOutcome?: (o: ScopedRunOutcome) => void;
+  },
 ): Promise<string> {
   let out = '';
+  let toolActivity = false; // 任何工具调用 = 模型已应答 (非 provider 挂起) → 心跳闸豁免
   let unsub: (() => void) | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let heartbeat: ReturnType<typeof setTimeout> | null = null;
   let timedOut = false;
+  let stalled = false;
   try {
     unsub = session.subscribe((e) => {
       if (e.type === 'message_update' && e.assistantMessageEvent.type === 'text_delta') {
         out += e.assistantMessageEvent.delta;
+      } else if (e.type === 'tool_execution_start' || e.type === 'tool_execution_end') {
+        toolActivity = true;
       }
     });
     // 有界中止 (可靠性来自模型之外): 弱模型 agent loop 偶尔不干净退出 (写完产物后空转,
@@ -208,16 +236,34 @@ export async function runScopedSession(
         void session.abort?.();
       }, opts.timeoutMs);
     }
+    // 早期心跳闸 (issue #5): 一次性早检 —— provider 端排队/挂起时前 30s 就零/近零 token,
+    // 不必白等满 240s 硬超时。工具活动豁免 (合法慢叶子跑长 bash 时静默但已应答)。
+    if (opts?.heartbeatMs && opts.heartbeatMs > 0 && session.abort) {
+      const minBytes = opts.heartbeatMinBytes ?? 32;
+      heartbeat = setTimeout(() => {
+        if (out.length < minBytes && !toolActivity) {
+          stalled = true;
+          void session.abort?.();
+        }
+      }, opts.heartbeatMs);
+    }
     await session.prompt(fullPrompt);
   } finally {
     if (timer) clearTimeout(timer);
+    if (heartbeat) clearTimeout(heartbeat);
     unsub?.();
     // 先发 session_shutdown 再 dispose: 否则 pi-lsp 的 language-server 子进程不被清理 → 进程挂死 (见 helper 注释)。
     await disposeSessionWithShutdown(session);
   }
-  if (timedOut) {
+  if (stalled) {
+    logger.warn(
+      { heartbeatMs: opts?.heartbeatMs, outLen: out.length },
+      '[runScopedSession] leaf 停摆 (心跳闸提前中止: 窗口内近零输出+无工具活动, 疑 provider 挂起 — 非硬超时)',
+    );
+  } else if (timedOut) {
     logger.warn({ timeoutMs: opts?.timeoutMs, outLen: out.length }, '[runScopedSession] leaf 超时中止 (有界 abort, 返已累积输出)');
   }
+  opts?.onOutcome?.({ stalled, timedOut, outLen: out.length });
   return out;
 }
 

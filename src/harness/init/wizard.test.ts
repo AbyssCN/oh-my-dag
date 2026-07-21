@@ -236,9 +236,9 @@ describe('applyRolePreset · key 跳过闸', () => {
     expect(updates.OMD_PLAN_MODEL).toBe('deepseek:deepseek-v4-pro');
     expect(updates.OMD_LENS_MODEL).toBe('deepseek:deepseek-v4-flash');
     expect(calls.apis).toEqual([]); // 档②无自定 API
-    expect(calls.pools).toEqual([['mimo:mimo-2.5']]);
+    expect(calls.pools).toEqual([['mimo:mimo-v2.5']]);
     expect(calls.premiums).toEqual([]); // premium 空 → 不写
-    expect(calls.roles).toEqual([['verifier', 'mimo:mimo-2.5']]);
+    expect(calls.roles).toEqual([['verifier', 'mimo:mimo-v2.5']]);
   });
 
   test('档③ (cn-ultimate) 掌舵走 pi OAuth: kimi-coding 就绪免 key + ZHIPU 跳过 → premium 剩 kimi-coding', async () => {
@@ -262,10 +262,10 @@ describe('applyRolePreset · key 跳过闸', () => {
     expect(calls.apis).toEqual(['qwen', 'zhipu']); // kimi 开放平台 API 不再注册
     // env 不受 key 闸影响: review Spec 轴坐标 + router 池照写
     expect(updates.OMD_REVIEW_SPEC_MODEL).toBe('zhipu:glm-5.2');
-    expect(updates.OMD_ROUTER_POOL_INPROC).toBe('qwen:qwen3.7-plus,mimo:mimo-2.5-pro-ultraspeed');
+    expect(updates.OMD_ROUTER_POOL_INPROC).toBe('qwen:qwen3.7-plus,mimo:mimo-v2.5-pro-ultraspeed');
     expect(updates.OMD_ROUTER_POOL_AGENT).toBe('qwen:qwen3.7-plus,qwen:qwen3.7-max');
     // 便宜层全保留; 贵层剔除 zhipu (key 跳过) 剩 kimi-coding
-    expect(calls.pools).toEqual([['qwen:qwen3.7-plus', 'mimo:mimo-2.5-pro-ultraspeed']]);
+    expect(calls.pools).toEqual([['qwen:qwen3.7-plus', 'mimo:mimo-v2.5-pro-ultraspeed']]);
     expect(calls.premiums).toEqual([['kimi-coding:k3']]);
     expect(calls.roles).toEqual([['verifier', 'qwen:qwen3.7-max']]);
   });
