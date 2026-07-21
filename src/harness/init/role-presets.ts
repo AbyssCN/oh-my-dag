@@ -25,8 +25,10 @@ export const ZHIPU_BASE_URL = 'https://open.bigmodel.cn/api/paas/v4';
 // —— 模型坐标 (provider:model) · 换代只改这里 ——
 const DS_FLASH = 'deepseek:deepseek-v4-flash';
 const DS_PRO = 'deepseek:deepseek-v4-pro';
-const MIMO_25 = 'mimo:mimo-2.5';
-const MIMO_ULTRASPEED = 'mimo:mimo-2.5-pro-ultraspeed';
+// ⚠ mimo id 带 `v` (issue #8): xiaomimimo 端点 (MIMO_BASE_URL) 只认 `mimo-v2.5*`, 无 `v` 一律
+// 400 Unsupported model。全库其它 mimo 坐标 (cost-ledger / controller / executor-dag-types) 均带 v。
+const MIMO_25 = 'mimo:mimo-v2.5';
+const MIMO_ULTRASPEED = 'mimo:mimo-v2.5-pro-ultraspeed';
 // kimi-coding = pi OAuth 通道 (baf1295 统一模型层): 免 API key, 凭证走 ~/.pi/agent/auth.json。
 const KIMI_CODING_K3 = 'kimi-coding:k3';
 const QWEN_PLUS = 'qwen:qwen3.7-plus';

@@ -25,6 +25,7 @@ import { z } from 'zod';
 import type { GenerateFn } from '../executor-dag';
 import type { HaltVerdict, JudgeVerdict } from './types';
 import { logger } from '../logger';
+import { roleModelWithFallback } from '../../model/role-fallback';
 
 // ── L1 types ────────────────────────────────────────────────────────────────
 
@@ -226,7 +227,9 @@ export async function haltJudge(
   }
 
   // ── L2: goal judge ───────────────────────────────────────────
-  const model = deps.judgeModel ?? 'deepseek:deepseek-v4-flash';
+  // issue #6: 首选 (deepseek 家族默认) provider 未注册 → 兜底到已注册 provider, 让 L2 真跑,
+  // 而非抛错落 L3 oracle 盲从。全不可达 → 原样返 → 既有 L3 fail-open 兜底不变。
+  const model = roleModelWithFallback(deps.judgeModel ?? 'deepseek:deepseek-v4-flash', 'judge');
   const prompt = buildJudgePrompt(judge);
 
   let verdictObj: JudgeVerdict;

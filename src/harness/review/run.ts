@@ -16,6 +16,7 @@ import { buildReviewPrompt, buildSpecReviewPrompt, screenFinding, resolveReviewM
 import { verifyFindings, type VerifiedFinding, type ReviewSendFn } from './verify';
 import { findLatestSdd } from '../execute-extension';
 import { send } from '../../model/gateway';
+import { roleModelWithFallback } from '../../model/role-fallback';
 
 /** reasoning_effort 档 (send 的 thinkingLevel; high/xhigh → deepseek reasoning_effort high/max)。 */
 type ReviewEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';
@@ -99,13 +100,15 @@ export async function runReview(opts: RunReviewOpts): Promise<RunReviewResult> {
   const findSdd = opts.deps?.findSdd ?? findLatestSdd;
   const cwd = opts.cwd ?? process.cwd();
   // find 层 (宽/并行/找 bug 靠召回): model + effort 各 env 可调。默认 effort=high。
-  const findModel = opts.model ?? env.OMD_REVIEW_FIND_MODEL ?? resolveReviewModel(opts.gate, {}, env) ?? 'deepseek:deepseek-v4-pro';
+  // issue #6: 默认坐标落 deepseek 家族, 无凭证环境里 (内嵌 G2 自动 review) 会抛 provider 无凭证崩掉
+  // 整个审查阶段 → roleModelWithFallback 顺延到已注册 provider。全不可达才原样返 (下游报错语义不变)。
+  const findModel = roleModelWithFallback(opts.model ?? env.OMD_REVIEW_FIND_MODEL ?? resolveReviewModel(opts.gate, {}, env) ?? 'deepseek:deepseek-v4-pro', 'review');
   const findEffort = (env.OMD_REVIEW_FIND_EFFORT as ReviewEffort) || 'high';
   // spec 轴模型: OMD_REVIEW_SPEC_MODEL 单独覆盖 (spec 对照吃长上下文, 可路由长窗模型), 回落 find 层。
-  const specModel = env.OMD_REVIEW_SPEC_MODEL ?? findModel;
+  const specModel = roleModelWithFallback(env.OMD_REVIEW_SPEC_MODEL ?? findModel, 'review');
   // verify 判决层 (窄/高风险/一锤定音): 默认回落 findModel(env 未设 = 单模型)。
   // 设 OMD_REVIEW_VERIFY_MODEL=<另一模型> + EFFORT=xhigh → 跨模型 + max 推理。
-  const verifyModel = opts.verifyModel ?? env.OMD_REVIEW_VERIFY_MODEL ?? findModel;
+  const verifyModel = roleModelWithFallback(opts.verifyModel ?? env.OMD_REVIEW_VERIFY_MODEL ?? findModel, 'review');
   const verifyEffort = (env.OMD_REVIEW_VERIFY_EFFORT as ReviewEffort) || undefined;
   const diffBlock = `===== 改动 diff (审查依据) =====\n\`\`\`diff\n${opts.diff}\n\`\`\``;
 

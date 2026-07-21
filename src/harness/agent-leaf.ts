@@ -115,6 +115,14 @@ export interface AgentLeafRunnerOpts {
    */
   leafTimeoutMs?: number;
   /**
+   * 早期心跳闸 (issue #5): 启动后 heartbeatMs 累积输出仍近零且无工具活动 → 判 provider 挂起 (停摆),
+   * 提前中止标 stall, 不白等满 leafTimeoutMs (K3 停摆实测: 240s 只累积 24 字节 → 前 30s 即可判死)。
+   * 默认 45_000 (45s, 保守避误杀)。0 = 关。
+   */
+  heartbeatMs?: number;
+  /** 心跳闸输出下限 (字节)。默认 32。 */
+  heartbeatMinBytes?: number;
+  /**
    * 角色 persona 前缀 (P1 三层角色): **设计型/推理型** leaf 传 TASTE_CORE 或
    * composeTastePersona(role) 拔高品味判断; 纯执行型 leaf 省略 = 最小思考忠实执行。
    * 字节稳定 (prepend, cache 友好)。
@@ -218,18 +226,25 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       }
     });
     // 有界中止 (默认 4min): 治弱模型 loop 写完空转不退出 → 外部 SIGKILL 的 bug。
+    // 早期心跳闸 (issue #5, 默认 45s): provider 挂起时不白等满硬超时, 提前标 stall。
     let text: string;
+    let stalled = false;
     try {
       text = await runScopedSession(
         session as unknown as Parameters<typeof runScopedSession>[0],
         routedPrompt,
-        { timeoutMs: opts.leafTimeoutMs ?? 240_000 },
+        {
+          timeoutMs: opts.leafTimeoutMs ?? 240_000,
+          heartbeatMs: opts.heartbeatMs ?? 45_000,
+          ...(opts.heartbeatMinBytes !== undefined ? { heartbeatMinBytes: opts.heartbeatMinBytes } : {}),
+          onOutcome: (o) => { stalled = o.stalled; },
+        },
       );
     } finally {
       unsubTouch();
     }
     // usage 暂不可见(pi 不向上吐 token 计数, = V2-ECON 缺口)。
-    return { text, usage: { in: 0, out: 0 }, filesTouched: [...touched] };
+    return { text, usage: { in: 0, out: 0 }, filesTouched: [...touched], stalled };
   };
 }
 

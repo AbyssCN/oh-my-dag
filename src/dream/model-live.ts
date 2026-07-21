@@ -26,6 +26,7 @@
 import { z } from 'zod';
 import { callModel as defaultCallModel, type ModelRequest, type ModelUsage } from '../model';
 import { resolveRoleModel } from '../model/role-models';
+import { roleModelWithFallback } from '../model/role-fallback';
 import { DREAM_LAYERS, type DreamLayer } from './types';
 import type { CandidateFact, ConsolidationInput, DreamEvent, DreamModel } from './model';
 
@@ -101,7 +102,9 @@ export class LiveDreamModel implements DreamModel {
         { role: 'system', content: `${input.prompt}\n\n${OUTPUT_SHAPE_INSTRUCTION}` },
         { role: 'user', content: serializeEvents(input.events) },
       ],
-      model: this.model ?? resolveRoleModel('dream'),
+      // issue #6: dream 默认坐标 'deepseek' 无凭证时兜底到已注册 provider (否则 dream pump 每次
+      // session 结束静默停摆)。全不可达 → 原样返 → callModel 抛 → INV-1 FAIL-LOUD 语义不变。
+      model: roleModelWithFallback(this.model ?? resolveRoleModel('dream'), 'dream'),
       thinkingLevel: this.thinkingLevel,
       responseSchema: ConsolidationEnvelope,
     };

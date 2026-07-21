@@ -349,10 +349,14 @@ async function executePlan(
     }
   };
 
+  // 节点起跑时刻 (issue #4: 失败 checkpoint 的 durationMs 用; settle 在 runNode 各早退分支之外, 需独立捕获)。
+  const nodeStartedAt = new Map<string, number>();
+
   // runNode: 单节点执行 (resume-skip / primitive / map / command / agent / inproc + checkpoint)。由下方 ready-set 调度器按依赖就绪驱动。
   const runNode = async (id: string): Promise<LeafResult> => {
       const node = plan!.nodes[id]!;
       const deps = node.depends_on ?? [];
+      nodeStartedAt.set(id, Date.now());
       emitNodeEvent({ type: 'start', id, kind: nodeKind(node) });
       // SDD 0013 S1: primitive 节点 (约束选择) → compile+run 分支 (先于 map/executor, 与自由 node 并存)。
       if (node.kind === 'primitive' && node.primitive) return runPrimitiveNode(id);
@@ -420,6 +424,16 @@ async function executePlan(
         text = r.text;
         usage = r.usage;
         filesTouched = r.filesTouched ?? [];
+        // 早期心跳闸 (issue #5): provider 挂起判停摆 → 标 failed (不把近零输出当 done), 附 stall 标记
+        // 供 settle 记 failureKind='stall' (issue #4 败因留痕)。heal 回路可据此重试/换池。
+        if (r.stalled) {
+          logger.warn({ node: id, model, outLen: text.length }, '[omd/executor-dag] agent leaf 停摆 (心跳闸) → 节点 failed');
+          return {
+            id, status: 'failed', kind: 'agent', model,
+            output: `[停摆: 心跳闸提前中止, 疑 provider 挂起/排队] 原输出(${text.length}B): ${text.slice(0, 400)}`,
+            deps: node.depends_on ?? [], usage, filesTouched, stalled: true,
+          };
+        }
         // 产物校验闸 (2026-07-03 实测教训: ultraspeed leaf 4 节点 3 个 empty-done — 自报完成
         // 却零改动, oracle 因"新文件没接线"照样绿 → 谎报完工静默漏过)。写文件节点 done 的
         // **必要条件** = 真碰了文件: filesTouched 空 / 声称的路径不存在 → failed (heal 回路可见)。
@@ -532,6 +546,22 @@ async function executePlan(
     return 'inproc'; // leaf/map/primitive (map/primitive 内层并发各自管理)
   };
 
+  // 节点抛错 → 隔离成 failed LeafResult, **保留错误消息** (issue #4: 此前 .catch(()=>null) 直接
+  // 丢弃败因 → 失败节点无诊断信息)。INV-6: 单 leaf 抛错不连坐其它节点。
+  const failedFromThrow = (id: string, err: unknown): LeafResult => {
+    const node = plan!.nodes[id]!;
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn({ node: id, err: msg }, '[omd/executor-dag] 节点抛错 → 隔离 failed (保留败因)');
+    return {
+      id,
+      status: 'failed',
+      kind: node.executor === 'agent' && config.agentRunner ? 'agent' : 'inproc',
+      output: `[节点抛错] ${msg}`,
+      deps: node.depends_on ?? [],
+      usage: { in: 0, out: 0 },
+    };
+  };
+
   // settle: 写 results/depOutputs + 累加遥测 + 释放 dependents (indeg 归零 → 入 ready)。
   const settle = (id: string, r: LeafResult | null): void => {
     if (r == null) {
@@ -547,6 +577,32 @@ async function executePlan(
     }
     const settled = results[id]!;
     emitNodeEvent({ type: 'settle', id, status: settled.status, kind: settled.kind, ...(settled.model ? { model: settled.model } : {}) });
+    // issue #4: 失败节点留痕。成功节点由 runNode 内成功分支落 checkpoint; failed/抛错节点此前**零记录**
+    // (stdout 被 caveman 压掉、dag-runs.db 未启用、continuity 只存绿节点 → judge 截停后无法诊断)。
+    // 这里补一条结构化败因 checkpoint (节点 id/executor/model/败因分类/错误消息截断)。全程 fail-open,
+    // status='failed' 故 resume 永不当绿跳过 (loadAllGreen/shouldSkip 只认 done)。
+    if (settled.status === 'failed' && continuity) {
+      try {
+        const startedAt = nodeStartedAt.get(id);
+        continuity.manager.saveCheckpoint(continuity.runId, {
+          nodeId: id,
+          leafKind: settled.kind,
+          status: 'failed',
+          failureKind: settled.stalled ? 'stall' : 'failed',
+          ...(settled.model ? { model: settled.model } : {}),
+          outputPaths: [],
+          artifactHashes: {},
+          tokenUsage: settled.usage ?? null,
+          summary: (settled.output ?? '').slice(0, 800),
+          durationMs: startedAt ? Date.now() - startedAt : 0,
+          createdAt: new Date().toISOString(),
+          ...(dagGeneration ? { generation: dagGeneration } : {}),
+          schemaVersion: 1,
+        });
+      } catch (err) {
+        logger.warn({ node: id, err }, '[omd/executor-dag] 失败 checkpoint 落盘失败 (fail-open)');
+      }
+    }
     for (const dep of dependents.get(id) ?? []) {
       const n = (indeg.get(dep) ?? 1) - 1;
       indeg.set(dep, n);
@@ -558,7 +614,7 @@ async function executePlan(
   // (旧法每层暖 1 发 = 深 DAG 暖 N 次且每次阻塞该层; 共享前缀全局相同 → 单次全局暖即覆盖, 命中面更大、阻塞更少。)
   if (config.warmThenFanout && idSet.size > 1 && ready.length > 0) {
     const id = ready.shift()!;
-    settle(id, await runNode(id).catch(() => null));
+    settle(id, await runNode(id).catch((e) => failedFromThrow(id, e)));
   }
 
   // worker pool: 维持 ≤cap 并发, 节点完成即补位 + 释放下游, ready 空且无在跑 → 收敛。
@@ -579,7 +635,7 @@ async function executePlan(
         running++;
         runningByKind[kind]++;
         runNode(id)
-          .catch(() => null) // INV-6: leaf 抛错隔离成 null → settle 标 failed, 不连坐其它节点
+          .catch((e) => failedFromThrow(id, e)) // INV-6: leaf 抛错隔离成 failed (保留败因), 不连坐其它节点
           .then((r) => {
             running--;
             runningByKind[kind]--;

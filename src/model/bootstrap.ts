@@ -13,6 +13,7 @@
 import '../env-alias';
 import { registerProvidersFromEnv, registerCustomApis } from './providers';
 import { listCustomApis } from './role-models';
+import { warnUnregisteredRoles } from './role-fallback';
 
 /**
  * 引导短命进程的模型运行时: 内置 provider 注册 + 自定 API 叠加。
@@ -22,6 +23,8 @@ export function bootstrapModelRuntime(): string[] {
   const registered = registerProvidersFromEnv();
   const custom = registerCustomApis(listCustomApis());
   const all = [...registered, ...custom.filter((c) => !registered.includes(c))];
+  // 起跑坐席检查 (issue #6): provider 注册完后, 无凭证的角色启动即 WARN (不再跑到一半才炸)。
+  warnUnregisteredRoles();
   // 脚本侧 env 可见性 (stderr, 不污染 stdout 产物): provider 空 = .env 没配/没 propagate。
   process.stderr.write(
     `[omd env] providers=[${all.join(',') || '⚠空-检查 .env/--env-file'}] · ` +
