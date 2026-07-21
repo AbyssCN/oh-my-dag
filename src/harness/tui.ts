@@ -15,6 +15,7 @@
 import '../env-alias';
 // kimi-coding OAuth 登录件经扩展正门挂进 main() (交互主会话的过期刷新与 /login 由它而来, 见 kimi-oauth.ts)。
 import { createKimiOAuthExtension } from '../model/kimi-oauth';
+import { createMimoProviderExtension } from '../model/mimo-provider';
 import { main } from '@earendil-works/pi-coding-agent';
 import { setCoreLogger } from './logger';
 import { createVerifyGateExtension } from './verify-gate-extension';
@@ -421,6 +422,7 @@ await main(args, {
   extensionFactories: [
     // kimi-coding OAuth 正门注册 (最先挂: ModelRegistry.refresh 会清全局注册表, 见 kimi-oauth.ts)
     createKimiOAuthExtension(),
+    createMimoProviderExtension(),
     bannerExt,
     ...ctrl.toExtensionFactories(),
     cgAuditExt,

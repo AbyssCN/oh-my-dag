@@ -25,6 +25,7 @@ import { createHashlineCustomTools } from './hashline';
 import { createDriftDetectorHook, type DriftDetectorConfig } from './hooks/drift-detector';
 import { logger } from '../logger';
 import { createKimiOAuthExtension } from '../model/kimi-oauth';
+import { createMimoProviderExtension } from '../model/mimo-provider';
 import type { ModelUsage } from '../model/types';
 import type { ThinkingLevel } from '../runtime/types';
 
@@ -176,7 +177,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           additionalExtensionPaths: extensionDirs,
           // drift-detector 经 in-code extensionFactories 注入 (与 opts.extensionDirs 的扩展包并存)。
           // kimi-coding OAuth 恒挂 (正门注册, 会话 ModelRegistry.refresh 清全局注册表后由它重放)。
-          extensionFactories: [createKimiOAuthExtension(), ...(driftFactory ? [driftFactory] : [])],
+          extensionFactories: [createKimiOAuthExtension(), createMimoProviderExtension(), ...(driftFactory ? [driftFactory] : [])],
         });
         await rl.reload();
         return rl;
@@ -243,8 +244,15 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     } finally {
       unsubTouch();
     }
-    // usage 暂不可见(pi 不向上吐 token 计数, = V2-ECON 缺口)。
-    return { text, usage: { in: 0, out: 0 }, filesTouched: [...touched], stalled };
+    // usage: pi session 累计 token (getSessionStats().tokens) → ModelUsage (2026-07-21 补 V2-ECON 缺口 —
+    // 此前恒 {in:0,out:0}, agent 节点成本量不到; 这是 ④ model-mix 经济学的前置)。
+    const stats = (session as {
+      getSessionStats?: () => { tokens?: { input?: number; output?: number; cacheRead?: number } };
+    }).getSessionStats?.();
+    const usage = stats?.tokens
+      ? { in: stats.tokens.input ?? 0, out: stats.tokens.output ?? 0, cacheHit: stats.tokens.cacheRead ?? 0 }
+      : { in: 0, out: 0 };
+    return { text, usage, filesTouched: [...touched], stalled };
   };
 }
 
