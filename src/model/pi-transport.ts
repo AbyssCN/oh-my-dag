@@ -413,10 +413,21 @@ export async function piRequest(
     .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
     .map((b) => b.text)
     .join('');
+  const finishReason = piFinishReason(msg.stopReason);
+  // 空-content guard (INV-3 / C-5, 镜像 index.ts:363): reasoning 模型可把整个 token 预算烧在推理上,
+  // 返 finish 'length' + 空 content。此前静默返 {text:''} → agent 节点 empty-done, 看着像成功。
+  // 转 retryable `truncation` (截断长度部分随机, 有界重试常能过; 耗尽则调用方得"抬 maxTokens"的明确信号)。
+  // 'length' + 非空 = 真 (虽被切) 答案, 原样返, 仅 finishReason 标记。
+  if (finishReason === 'length' && !text.trim()) {
+    throw new ModelError(
+      'truncation',
+      'pi: output truncated at max_tokens with empty content (reasoning consumed the budget) — raise maxTokens',
+    );
+  }
   return {
     text,
     usage: piUsageToModelUsage(msg.usage),
     raw: msg,
-    finishReason: piFinishReason(msg.stopReason),
+    finishReason,
   };
 }
