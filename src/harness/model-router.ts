@@ -12,20 +12,27 @@
  * recordReward no-op。用户在 env 列 ≥2 模型才开启学习。冷启动: pool[0] 先被选 (optimistic init 让
  * 每个 arm 先各试一次) → **把静态默认列 pool[0] = day-1 行为等同今天**, 之后才据 reward 偏移。
  *
- * **reward 信号 (= verifier)**: leaf 自身成功 (done) × DAG 级 verdict (有 verifier 时 pass=1/fail=0,
- * 无 verifier 时只看 leaf 成功)。DAG 级 verdict 摊到该轮所有 leaf —— credit assignment 噪声跨多轮均掉。
+ * **reward 信号 (2026-07-21 成本化重构)**: 质量是**闸**不是学习信号 —— verifier/tsc 挡不合格产出,
+ * bandit 学的是"能通过闸的 arm 里哪个最省" (leafCostReward): leaf 成功闸 (failed=0, 逐叶干净归因)
+ * × DAG 软惩罚 (verifier fail → ×0.3, 非清零 — DAG 级连坐是归因噪声, 衰减不放大) × 连续成本效率
+ * exp(-costUsd/scale)。二值质量 reward 在个人流量下永不收敛 (均值分不开); 连续成本信号几十次即分。
  *
  * Invariants:
  *  ROUTER-1 model-agnostic: arm = 'provider:modelId' 坐标, 零硬编 provider 分支。
  *  ROUTER-2 no-op 安全: pool ≤1 → select 返 fallback / recordReward 不写 (无"选择"则不学)。
  *  ROUTER-3 reward ∈ [0,1] (越界钳); 增量均值, 不存全历史。
  *  ROUTER-4 只学**配置过的 arm**: recordReward 的 model ∉ pool[bucket] → 丢弃 (防脏数据)。
+ *  ROUTER-5 成本主信号: reward = 成功闸 × dag 软惩罚 × exp(-cost/scale); unpriced → 中性 0.5
+ *           (fail-open 不奖不罚, 防无价模型靠 cost=0 通吃)。
  */
 import { Database } from 'bun:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { logger } from '../logger';
 import { resolveMultimodalPool } from '../model/role-models';
+import { computeCost } from '../model/cost-ledger';
+import type { PriceTable } from '../model/econ-types';
+import type { ModelUsage } from '../model/types';
 
 // 类型单一真理源 = leaf-runners.ts (executor-dag 只认接口形状, 不 import 实现) — 这里 re-export 保旧调用面。
 export type { LeafModelRouter } from './leaf-runners';
@@ -170,4 +177,50 @@ export function createModelRouterFromEnv(
     logger.info({ pools, epsilon }, '[omd/model-router] bandit 选型启用 (env pool 已配)');
   }
   return createModelRouter({ pools, epsilon: Number.isFinite(epsilon) ? epsilon : undefined, ...opts });
+}
+
+// ---------------------------------------------------------------------------
+// leafCostReward —— 成本主信号 reward (ROUTER-5, 2026-07-21 成本化重构)。
+// ---------------------------------------------------------------------------
+
+/** exp 衰减尺度: 单叶成本 = scale 时 reward≈0.37; 远小于 scale ≈1。默认 $0.005/叶。 */
+const DEFAULT_COST_SCALE_USD = 0.005;
+
+/** DAG 级 verifier fail 的软惩罚系数 (连坐是归因噪声 → 衰减不清零, 成本项仍主导学习)。 */
+const DAG_FAIL_FACTOR = 0.3;
+
+export interface LeafRewardOpts {
+  /** exp 衰减尺度 (USD)。默认 env OMD_ROUTER_COST_SCALE 或 0.005。 */
+  scaleUsd?: number;
+  /** 注入价表 (测试)。默认 DEFAULT_PRICES。 */
+  prices?: PriceTable;
+}
+
+/**
+ * 单叶 reward ∈ [0,1]:
+ *   failed leaf → 0 (逐叶干净归因, 失败 = 白烧)。
+ *   done leaf   → dagFactor × costFactor
+ *     dagFactor  = verifier fail 时 0.3 (软惩罚), 无 verifier / pass 时 1。
+ *     costFactor = exp(-costUsd/scale) — 连续、单调、有界; 便宜 arm 高分。
+ *     unpriced (价表无坐标) → 0.5 中性 (不奖不罚, 防 cost=0 通吃; 补价表即启成本学习)。
+ */
+export function leafCostReward(
+  leaf: { status: string; model?: string; usage?: ModelUsage },
+  dagPass: boolean | undefined,
+  opts: LeafRewardOpts = {},
+): number {
+  if (leaf.status !== 'done') return 0;
+  const dagFactor = dagPass === false ? DAG_FAIL_FACTOR : 1;
+  if (!leaf.model || !leaf.usage) return 0.5 * dagFactor; // 无计量 → 中性
+  const scale = opts.scaleUsd ?? envCostScale() ?? DEFAULT_COST_SCALE_USD;
+  const { costUsd, unpriced } = computeCost(leaf.usage, leaf.model, opts.prices);
+  const costFactor = unpriced ? 0.5 : Math.exp(-costUsd / scale);
+  return dagFactor * costFactor;
+}
+
+function envCostScale(): number | undefined {
+  const raw = process.env.OMD_ROUTER_COST_SCALE?.trim();
+  if (!raw) return undefined;
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
 }

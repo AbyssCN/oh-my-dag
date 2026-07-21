@@ -214,6 +214,53 @@ export const ROLE_PRESETS: readonly RolePreset[] = [
       { env: 'MIMO_API_KEY', label: 'MiMo API key (极速多模态)', provider: 'mimo' },
     ],
   },
+  {
+    // ④ 三家档 cn-trio —— Opus 座舱下的 MCP 引擎配置 (掌舵实为 Claude, 引擎内部角色分三家):
+    //   kimi k3 掌 conductor/judge, ds-flash 铺 fleet/dream, mimo ultraspeed 管 synth + 多模态。
+    //   无 OMD_PLAN_MODEL/plan 角色 —— 审议座舱由 Opus 4.8 顶替, plan 在 MCP 模式冗余 (仅独立 TUI 消费)。
+    //   kimi-coding 认证走 ~/.pi/agent/auth.json (api_key 或 pi OAuth), 免 env key。
+    id: 'cn-trio',
+    label: '三家档 (kimi k3 掌舵/评判 + ds-flash 铺量/做梦 + mimo ultraspeed 合成/多模态) — Opus 座舱下的引擎配置',
+    env: {
+      // OMD_RUNTIME 保留作 conductor 兜底坐标 (掌舵实为 Opus; runtime 非独立大脑)。
+      OMD_RUNTIME_PROVIDER: 'kimi-coding',
+      OMD_RUNTIME_MODEL: 'k3',
+      // conductor 掌舵 = kimi k3 (拆 DAG · 卡点升级)
+      OMD_CG_CONDUCTOR_MODEL: KIMI_CODING_K3,
+      OMD_ITER_CONDUCTOR_MODEL: KIMI_CODING_K3,
+      OMD_CONDUCTOR_ESCALATION_MODEL: KIMI_CODING_K3,
+      // judge 择优 = kimi k3
+      OMD_JUDGE_MODEL: KIMI_CODING_K3,
+      // synth 归约/综合 = mimo ultraspeed
+      OMD_REDUCE_MODEL: MIMO_ULTRASPEED,
+      OMD_REASON_MODEL: MIMO_ULTRASPEED,
+      // fleet(leaf) 铺量执行 = ds-flash (inproc leaf / own-loop agent / 镜头)
+      OMD_CG_LEAF_MODEL: DS_FLASH,
+      OMD_ITER_LEAF_MODEL: DS_FLASH,
+      OMD_CG_AGENT_MODEL: DS_FLASH,
+      OMD_ITER_AGENT_MODEL: DS_FLASH,
+      OMD_LENS_MODEL: DS_FLASH,
+      // inproc bandit 池 (ROUTER-5 成本 reward): pool[0]=ds-flash 保静态默认, mimo 竞争者 —
+      // 学"过闸最省"。agent (改文件) 不开池, 保 ds-flash 确定性。
+      OMD_ROUTER_POOL_INPROC: `${DS_FLASH},${MIMO_25}`,
+    },
+    multimodalPool: [MIMO_ULTRASPEED],
+    // canonical config 角色 (role-models.ts 5 角色去 plan): conductor/leaf/verifier/dream。
+    // verifier 默认 k3 (Nick: k3 或 codex; k3 与掌舵同源, codex 为跨家族避盲点备选)。
+    configRoles: [
+      { role: 'conductor', coord: KIMI_CODING_K3 },
+      { role: 'leaf', coord: DS_FLASH },
+      { role: 'verifier', coord: KIMI_CODING_K3 },
+      { role: 'dream', coord: DS_FLASH },
+    ],
+    // kimi-coding 走 pi 通道 (auth.json api_key 或 OAuth) — 免 env key, 就绪判定走 auth.json。
+    oauthProviders: ['kimi-coding'],
+    keyPrompts: [
+      { env: 'DEEPSEEK_API_KEY', label: 'DeepSeek API key (fleet 执行 + dream)', provider: 'deepseek' },
+      { env: 'MIMO_API_KEY', label: 'MiMo API key (synth 合成 + 多模态池)', provider: 'mimo' },
+      // kimi-coding 走 auth.json (api_key/OAuth), 免 env key → 不入 keyPrompts。
+    ],
+  },
 ];
 
 /** 取坐标的 provider 前半 ('deepseek:xx' → 'deepseek'; 裸名原样返)。 */

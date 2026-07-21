@@ -10,8 +10,8 @@ import { ROLE_PRESETS, ROLE_ENV_ALLOWLIST, coordProvider } from './role-presets'
 const COORD_RE = /^[a-z0-9-]+:\S+$/;
 
 describe('ROLE_PRESETS 形状', () => {
-  test('恰好三档, id 唯一且非空 label', () => {
-    expect(ROLE_PRESETS.length).toBe(3);
+  test('恰好四档, id 唯一且非空 label', () => {
+    expect(ROLE_PRESETS.length).toBe(4);
     const ids = ROLE_PRESETS.map((p) => p.id);
     expect(new Set(ids).size).toBe(ids.length);
     for (const p of ROLE_PRESETS) {

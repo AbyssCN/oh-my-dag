@@ -42,6 +42,12 @@ const ALL_TOOLS = [
   'dag_deepen',
   'dream_consolidate',
   'dag_runs',
+  // config 工具族 (omd init 的 MCP 面)
+  'omd_set_key',
+  'omd_apply_preset',
+  'omd_set_role',
+  'omd_config_status',
+  'omd_toggle_hud',
 ].sort();
 
 /** Minimal valid ConductorPlan (同 mcp-dag-tools.test.ts 形状)。 */
@@ -122,7 +128,7 @@ function textOf(res: unknown): string {
 }
 
 describe('omd MCP e2e (InMemoryTransport 双端)', () => {
-  test('tools/list: v1 七工具全在, 每个 description 非空且 ≤120 字符 (D-11)', async () => {
+  test('tools/list: v1 全工具在, 每个 description 非空且 ≤120 字符 (D-11)', async () => {
     const { client, memory } = await wire();
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([...ALL_TOOLS].sort());

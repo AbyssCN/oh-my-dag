@@ -32,6 +32,8 @@ import { createDagResearchTool, type ResearchFanout } from './tools/research';
 import { createFleetTools, type SpawnFn } from './tools/fleet';
 import { effectiveFanout, resolveProviderCap } from '../harness/fleet';
 import { createRunsTools } from './tools/runs';
+import { createConfigTools } from './tools/config-tools';
+import { createModelRouterFromEnv } from '../harness/model-router';
 import { runExecutorDag, runExecutorDagWithPlan } from '../harness/executor-dag';
 import type { ExecutorDagConfig } from '../harness/executor-dag-types';
 import { createAgentLeafRunner } from '../harness/agent-leaf';
@@ -196,8 +198,9 @@ function renderResearchReport(question: string, runId: string, result: ResearchF
 }
 
 /**
- * 装配 v1 全工具面 (12 工具): dag_run/dag_run_plan/dag_status/dag_result + dag_research +
- * memory_recall/memory_remember + dag_review/dag_slim/dag_deepen/dream_consolidate + dag_runs。
+ * 装配 v1 全工具面: dag_run/dag_run_plan/dag_status/dag_result + dag_research +
+ * memory_recall/memory_remember + dag_review/dag_slim/dag_deepen/dream_consolidate + dag_runs +
+ * config 工具族 (omd_set_key/omd_apply_preset/omd_set_role/omd_config_status/omd_toggle_hud)。
  * 纯组装: 解析 deps → 调各工厂 → 拍平返回。
  */
 export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[] {
@@ -250,12 +253,17 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     ...(agentCap ? { agent: agentCap } : {}),
     ...(commandCap ? { command: commandCap } : {}),
   };
+  // B-2 bandit 选型路由 (2026-07-21 MCP 接线 — 此前只 TUI 有, MCP 路径 dag_run 恒静态):
+  // env pool (OMD_ROUTER_POOL_*) / config.multimodalPool ≥2 才真学; 未配 → no-op = 静态 (零回归)。
+  // reward = leafCostReward (成本主信号, 质量走 verifier 闸) — 见 model-router ROUTER-5。
+  const router = createModelRouterFromEnv(env);
   const defaultConfig: Partial<ExecutorDagConfig> = {
     ...models,
     maxFanout: defaultMaxFanout,
     ...(Object.keys(kindFanout).length ? { kindFanout } : {}),
     agentRunner,
     commandRunner,
+    router,
     ...deps.configOverrides,
   };
 
@@ -282,5 +290,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     ...createFleetTools({ runRegistry, cwd, spawn: deps.spawn, dream: deps.dream }),
     // runs 工具: 内存 registry ∪ 磁盘 continuity 合并列表。
     ...createRunsTools({ runRegistry, cwd }),
+    // config 工具族: set_key/apply_preset/set_role/config_status/toggle_hud (omd init 的 MCP 面, 即时生效)。
+    ...createConfigTools({ cwd, router }),
   ];
 }

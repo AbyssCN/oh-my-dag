@@ -5,6 +5,7 @@ import type { CavemanLevel } from './caveman';
 import type { AgentLeafRunner, CommandLeafRunner, LeafModelRouter } from './leaf-runners';
 import type { CheckpointManager } from './continuity/checkpoint-manager';
 import type { VerifierFn } from './verifier';
+import type { FaninSummaryConfig } from './fanin-summary';
 
 /** omd 本体编排的注入式模型调用 (单一注入点; 默认 callModel, 测试传 fake)。 */
 export type GenerateFn = (req: {
@@ -92,6 +93,14 @@ export interface ExecutorDagConfig {
    * 调度期按节点声明的 executor 记账 (运行期 leaf→agent 提升不改变记账桶 — 提升是罕见纠错路径)。
    */
   kindFanout?: { agent?: number; command?: number; inproc?: number };
+  /**
+   * fan-in **定向摘要** (引擎接缝, 2026-07-21): 一个 producer 的输出被 ≥2 个下游 consumer 消费时,
+   * 不再把全文复制 ≥2 份灌进各 consumer, 而是跑 1 发定向摘要 (按下游目标提炼) + 全文落盘留指针,
+   * 各 consumer 的 fan-in 上下文注入摘要而非全文 (省 token + 护 prompt-cache; 强制 conductor-plan
+   * "Fan-in carries SUMMARIES" 纪律)。省略 = 引擎内默认 ON (minChars=1800, minFanout=2; 同 caveman
+   * 默认 'ultra' 的行为旋钮惯例); `{ enabled: false }` 关闭。fail-open: 摘要失败 → 回退全文注入。
+   */
+  faninSummary?: FaninSummaryConfig;
   /**
    * command-kind leaf 的执行器 (确定性 CLI, 零 LLM, 方案 A)。给则 `executor:'command'` 节点经此跑
    * node.command (经 fail-closed 闸 + 白名单)。省略 → command 节点失败 (无 runner)。

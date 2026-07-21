@@ -28,6 +28,7 @@ type NounGateFn = (args: { text: string; material: string; repoRoot: string; ann
 let _nounGate: NounGateFn | null = null;
 export function setNounGate(fn: NounGateFn | null): void { _nounGate = fn; }
 import { cavemanRule, leafCavemanLevel } from './caveman';
+import { leafCostReward } from './model-router';
 import { logger } from './logger';
 // ── T2#5 按簇拆出的兄弟文件 (引擎消费) ──
 import type { GenerateFn, ExecutorDagConfig, LeafResult, ExecutorDagResult } from './executor-dag-types';
@@ -37,6 +38,13 @@ import { loadAgentTemplates, templateRoster, type AgentTemplate } from './agent-
 import { expandMapNode, mapSpecHash } from './plan/map-expand';
 // SDD 0013 S1 约束选择: primitive 节点 → compile(复用 primitives.ts)→ run。
 import { compilePrimitive, type PrimitiveCtx } from './primitive-registry';
+// fan-in 定向摘要 (扇出≥2 → 摘要替全文注入, 见 fanin-summary.ts)。
+import {
+  normalizeFaninConfig,
+  runFaninSummary,
+  composeFaninView,
+  DEFAULT_FANIN_SCHEMA,
+} from './fanin-summary';
 
 // ── barrel re-export: 保持 ./executor-dag 公共面稳定 (importer-closure, 消费方零改) ──
 export type { GenerateFn, ExecutorDagConfig, ExecutorDagResult, LeafResult, DagNodeEvent } from './executor-dag-types';
@@ -135,6 +143,10 @@ async function executePlan(
   // ── 2. executor: 逐层现场 fan-out (层内并行, 经 primitives), leaf 调显式 leafModel ──
   const results: Record<string, LeafResult> = {};
   const depOutputs: Record<string, string> = {};
+  // fan-in 定向摘要视图: nodeId → 摘要+全文指针 (扇出≥2 且够长的 producer 才有条目)。
+  // 下游 fan-in 注入 `faninView[d] ?? depOutputs[d]` (有摘要用摘要, 否则全文兜底)。
+  const faninView: Record<string, string> = {};
+  const faninCfg = normalizeFaninConfig(config.faninSummary);
   let leavesIn = 0;
   let leavesOut = 0;
   let leavesCacheHit = 0;
@@ -191,7 +203,7 @@ async function executePlan(
         ? `\n输出 JSON 必须符合 schema: ${JSON.stringify(spec.lister.output_schema)}`
         : '';
       const depCtx = deps.length
-        ? `\n\n<upstream>\n${deps.map((d) => `[${d}]\n${depOutputs[d] ?? ''}`).join('\n\n')}\n</upstream>`
+        ? `\n\n<upstream>\n${deps.map((d) => `[${d}]\n${faninView[d] ?? depOutputs[d] ?? ''}`).join('\n\n')}\n</upstream>`
         : '';
       let text: string;
       if (spec.lister.executor === 'command' && spec.lister.command && config.commandRunner) {
@@ -387,7 +399,8 @@ async function executePlan(
       const cav = cavemanRule(leafCavemanLevel(node.creative, config.cavemanLevel ?? 'ultra'));
       // ponytail (构建相位): leaf-only 降代码量, 维二红线不在砍范围。创意节点护交付物 → 不挂 (同 caveman)。
       const pony = config.leafPonytail && !node.creative ? `\n\n${PONYTAIL_LEAF_DISPOSITION}` : '';
-      const basePrompt = buildLeafPrompt(id, node, depOutputs, tpl ? { name: tpl.name, body: tpl.body } : undefined);
+      // fan-in: 有定向摘要的 dep 注入摘要 (faninView 覆盖 depOutputs), 否则全文。
+      const basePrompt = buildLeafPrompt(id, node, { ...depOutputs, ...faninView }, tpl ? { name: tpl.name, body: tpl.body } : undefined);
       const prompt = (cav ? `${basePrompt}\n\n${cav}` : basePrompt) + pony;
       // 双模分流: executor:'agent' + 有 agentRunner → 带工具子 agent (能改文件); 否则 inproc 单发。
       // M3 bug 修 (2026-06-20): conductor (M3 非确定性) 把"写文件"节点标成 leaf → inproc 不能写文件 →
@@ -546,6 +559,53 @@ async function executePlan(
     return 'inproc'; // leaf/map/primitive (map/primitive 内层并发各自管理)
   };
 
+  // ── fan-in 定向摘要 (扇出≥2 触发) ─────────────────────────────────────────────
+  // producer settle 前 (dependents 释放前) 判定并生成: 输出被 ≥2 consumer 消费 ∧ 够长 → 跑 1 发
+  // 定向摘要 (按下游目标提炼) + 全文落盘留指针, 存 faninView[id]; 下游 fan-in 注入摘要而非全文。
+  // 调用点在调度器 .then 内 (running 保持占位跨此 await → 收敛判据不会在摘要在飞时误触发, 见 pump)。
+  // 全程 fail-open: 任何失败 → view=null → 下游回退全文注入。usage 折进 producer 的 r.usage (账本一致)。
+  const maybeFaninView = async (id: string, r: LeafResult): Promise<{ r: LeafResult; view: string | null }> => {
+    try {
+      if (!faninCfg.enabled) return { r, view: null };
+      if (r.status !== 'done') return { r, view: null }; // 失败节点不摘要 (败因全文留给 heal)
+      if (r.kind === 'map') return { r, view: null }; // map 输出是结构化 JSON 数组, 摘要会毁其可解析性
+      const node = plan!.nodes[id]!;
+      if (node.creative) return { r, view: null }; // 护创意交付物 (best-of-n/judge 候选需全文, 同 caveman off)
+      const consumers = dependents.get(id) ?? [];
+      if (consumers.length < faninCfg.minFanout) return { r, view: null }; // 扇出闸 (默认 ≥2)
+      const output = r.output ?? '';
+      if (output.length < faninCfg.minChars) return { r, view: null }; // 短输出摘要纯亏 (摘要器 input 即全文)
+      const depGoals = consumers
+        .map((c) => plan!.nodes[c]?.goal)
+        .filter((g): g is string => typeof g === 'string' && g.length > 0);
+      // output_schema 默认化: producer 声明了则遵之, 否则用默认 fan-in schema。
+      const schema = (node.output_schema as Record<string, unknown> | undefined) ?? DEFAULT_FANIN_SCHEMA;
+      const { summaryJson, usage } = await runFaninSummary({
+        generate,
+        model: faninCfg.model ?? config.leafModel,
+        producerGoal: node.goal,
+        output,
+        depGoals,
+        schema,
+      });
+      if (!summaryJson) return { r, view: null }; // 解析失败 → 全文兜底
+      // 全文指针: continuity 在则落盘留 path (agent consumer 可自 Read); 否则仅摘要 (artifacts 字段保产物锚)。
+      const fullPath = continuity ? continuity.manager.saveFaninFull(continuity.runId, id, output) : null;
+      const view = composeFaninView(summaryJson, fullPath, output.length);
+      logger.info(
+        { node: id, consumers: consumers.length, fullLen: output.length, viewLen: view.length, persisted: !!fullPath },
+        '[omd/executor-dag] fan-in 定向摘要 (扇出≥2 → 摘要替全文注入)',
+      );
+      return { r: { ...r, usage: addUsage(r.usage, usage) }, view };
+    } catch (err) {
+      logger.warn(
+        { node: id, err: err instanceof Error ? err.message : String(err) },
+        '[omd/executor-dag] fan-in 摘要失败 → 全文兜底 (fail-open)',
+      );
+      return { r, view: null };
+    }
+  };
+
   // 节点抛错 → 隔离成 failed LeafResult, **保留错误消息** (issue #4: 此前 .catch(()=>null) 直接
   // 丢弃败因 → 失败节点无诊断信息)。INV-6: 单 leaf 抛错不连坐其它节点。
   const failedFromThrow = (id: string, err: unknown): LeafResult => {
@@ -614,7 +674,10 @@ async function executePlan(
   // (旧法每层暖 1 发 = 深 DAG 暖 N 次且每次阻塞该层; 共享前缀全局相同 → 单次全局暖即覆盖, 命中面更大、阻塞更少。)
   if (config.warmThenFanout && idSet.size > 1 && ready.length > 0) {
     const id = ready.shift()!;
-    settle(id, await runNode(id).catch((e) => failedFromThrow(id, e)));
+    const r0 = await runNode(id).catch((e) => failedFromThrow(id, e));
+    const { r: r1, view } = await maybeFaninView(id, r0); // 扇出≥2 → 摘要 (dependents 释放前)
+    if (view) faninView[id] = view;
+    settle(id, r1);
   }
 
   // worker pool: 维持 ≤cap 并发, 节点完成即补位 + 释放下游, ready 空且无在跑 → 收敛。
@@ -636,11 +699,15 @@ async function executePlan(
         runningByKind[kind]++;
         runNode(id)
           .catch((e) => failedFromThrow(id, e)) // INV-6: leaf 抛错隔离成 failed (保留败因), 不连坐其它节点
-          .then((r) => {
+          .then(async (r) => {
+            // fan-in 定向摘要在 running-- 之前 await: 保持槽位占用跨摘要在飞 → 收敛判据 (running===0)
+            // 不会误触发, dependents 也不会在摘要就绪前被释放 (settle 在此后)。fail-open, 永不抛。
+            const { r: settledR, view } = await maybeFaninView(id, r);
             running--;
             runningByKind[kind]--;
+            if (view) faninView[id] = view;
             try {
-              settle(id, r);
+              settle(id, settledR);
             } catch (e) {
               reject(e instanceof Error ? e : new Error(String(e)));
               return;
@@ -776,14 +843,13 @@ async function runDagInternal(
   }
 
   // ── 4. bandit reward 回更 (config.router 给则): 最终轮每 leaf 的 (bucket, model) 按
-  //       reward = leafOk × dagOk 更新 (dagOk = 有 verifier 时 verdict.pass 否则 1)。command 无模型跳过。
-  //       DAG 级 verdict 摊到该轮所有 leaf — credit assignment 噪声跨多轮 run 均掉。
+  //       leafCostReward 更新 (ROUTER-5 成本主信号): 成功闸 × dag 软惩罚 (×0.3, 非清零 — DAG 级
+  //       连坐是归因噪声) × exp(-costUsd/scale) 连续成本效率。质量由 verifier 闸住, bandit 学"过闸最省"。
   if (config.router) {
-    const dagOk = verification ? (verification.pass ? 1 : 0) : 1;
+    const dagPass = verification ? verification.pass : undefined;
     for (const leaf of Object.values(exec.results)) {
       if (leaf.kind === 'command' || !leaf.model) continue;
-      const leafOk = leaf.status === 'done' ? 1 : 0;
-      config.router.recordReward(leaf.kind, leaf.model, leafOk * dagOk);
+      config.router.recordReward(leaf.kind, leaf.model, leafCostReward(leaf, dagPass));
     }
   }
 
