@@ -327,7 +327,7 @@ async function executePlan(
       maxFanout: config.maxFanout,
       usage: () => usageAcc,
       leaf: async ({ goal, persona }) => {
-        const cav = cavemanRule(leafCavemanLevel(false, config.cavemanLevel ?? 'ultra'));
+        const cav = cavemanRule(leafCavemanLevel(false, config.cavemanLevel ?? 'full'));
         const personaLine = persona ? `<persona>${persona}</persona>\n` : '';
         const r = await generate({
           messages: [
@@ -395,8 +395,8 @@ async function executePlan(
       if (node.template && !tpl) {
         logger.warn({ node: id, template: node.template }, '[omd/executor-dag] 未知 agent 模板 → 忽略 (TPL-2 fail-open)');
       }
-      // caveman 路由: 创意节点 (node.creative) → off 护交付物; 否则 → 干活级 (默认 ultra) 压叙述省 token。
-      const cav = cavemanRule(leafCavemanLevel(node.creative, config.cavemanLevel ?? 'ultra'));
+      // caveman 路由: 创意节点 (node.creative) → off 护交付物; 否则 → 干活级 (默认 full; ultra opt-in) 压叙述省 token。
+      const cav = cavemanRule(leafCavemanLevel(node.creative, config.cavemanLevel ?? 'full'));
       // ponytail (构建相位): leaf-only 降代码量, 维二红线不在砍范围。创意节点护交付物 → 不挂 (同 caveman)。
       const pony = config.leafPonytail && !node.creative ? `\n\n${PONYTAIL_LEAF_DISPOSITION}` : '';
       // fan-in: 有定向摘要的 dep 注入摘要 (faninView 覆盖 depOutputs), 否则全文。
