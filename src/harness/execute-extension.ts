@@ -93,12 +93,14 @@ export function findLatestSdd(planDir: string): { path: string; text: string } |
   } catch {
     return null; // 目录不存在 = 无 SDD
   }
-  let best: { path: string; mtime: number } | null = null;
+  let best: { path: string; mtime: number; name: string } | null = null;
   for (const f of files) {
     const p = join(planDir, f);
     try {
       const mt = statSync(p).mtimeMs;
-      if (!best || mt > best.mtime) best = { path: p, mtime: mt };
+      // mtime 主序; 平手按文件名兜底 —— YYYY-MM-DD- 前缀下字典序=时间序, 且不依赖 readdir 序 (确定性)。
+      // 粗粒度 fs (WSL2/网络盘) 上背靠背写的文件 mtime 会相等, 无此兜底则 readdir 序决定, 挑到旧日期文件。
+      if (!best || mt > best.mtime || (mt === best.mtime && f > best.name)) best = { path: p, mtime: mt, name: f };
     } catch {
       // 竞态删除等 → 跳过该文件
     }
