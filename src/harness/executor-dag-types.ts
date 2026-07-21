@@ -36,8 +36,9 @@ export interface ExecutorDagConfig {
    */
   warmThenFanout?: boolean;
   /**
-   * 干活 leaf 的 caveman 压缩级 (省 output token)。默认 'ultra' (output=叙述扔掉, 实测零正确性成本)。
-   * 创意节点 (node.creative) 恒 'off' 不受此影响 (护交付物)。设 'off' 全关。
+   * 干活 leaf 的 caveman 压缩级 (省 output token)。默认 'full' (2026-07-21: 从 ultra 降 —— ultra 的边际
+   * 压缩是弱模型削 substance 的风险位且无 per-node 出口, 省 token 大头改由 fan-in 定向摘要接管)。
+   * 设 'ultra' opt-in (已知纯叙述且省 token 吃紧时压到底)。创意节点 (node.creative) 恒 'off' (护交付物)。
    */
   cavemanLevel?: CavemanLevel;
   /**
@@ -98,7 +99,7 @@ export interface ExecutorDagConfig {
    * 不再把全文复制 ≥2 份灌进各 consumer, 而是跑 1 发定向摘要 (按下游目标提炼) + 全文落盘留指针,
    * 各 consumer 的 fan-in 上下文注入摘要而非全文 (省 token + 护 prompt-cache; 强制 conductor-plan
    * "Fan-in carries SUMMARIES" 纪律)。省略 = 引擎内默认 ON (minChars=1800, minFanout=2; 同 caveman
-   * 默认 'ultra' 的行为旋钮惯例); `{ enabled: false }` 关闭。fail-open: 摘要失败 → 回退全文注入。
+   * 的行为旋钮惯例——默认档由引擎给); `{ enabled: false }` 关闭。fail-open: 摘要失败 → 回退全文注入。
    */
   faninSummary?: FaninSummaryConfig;
   /**

@@ -158,12 +158,12 @@ describe('omd executor-dag (in-process, fake model)', () => {
     expect(res.usage.leavesOut).toBe(16); // 4 × 4
   });
 
-  test('caveman 路由: 干活节点注入压缩规则, creative 节点不注入 (护交付物)', async () => {
+  test('caveman 路由: 干活节点默认注入 full 规则, creative 节点不注入 (护交付物)', async () => {
     const planJson = JSON.stringify({
       name: 'caveman-route',
       nodes: {
         copy: { agent: 'x', goal: 'write a slogan', creative: true }, // 创意 → caveman off
-        analyze: { agent: 'x', goal: 'count the lines' }, // 干活 → caveman ultra
+        analyze: { agent: 'x', goal: 'count the lines' }, // 干活 → caveman full (2026-07-21 默认档)
       },
     });
     const calls: { prompt: string }[] = [];
@@ -173,14 +173,27 @@ describe('omd executor-dag (in-process, fake model)', () => {
       calls.push({ prompt });
       return { text: 'ok', usage: { in: 1, out: 1 } };
     };
-    await runExecutorDag('t', { conductorModel: CONDUCTOR, leafModel: LEAF, generate: gen }); // 默认 ultra
+    await runExecutorDag('t', { conductorModel: CONDUCTOR, leafModel: LEAF, generate: gen }); // 默认 full
 
     const copyCall = calls.find((c) => c.prompt.includes('[omd leaf: copy]'));
     const analyzeCall = calls.find((c) => c.prompt.includes('[omd leaf: analyze]'));
-    // 创意节点: 无 caveman 压缩规则
-    expect(copyCall?.prompt).not.toMatch(/MAXIMUM compression|caveman/i);
-    // 干活节点: 注入了 ultra 压缩规则
-    expect(analyzeCall?.prompt).toMatch(/MAXIMUM compression/);
+    // 创意节点: 无任何 caveman 压缩规则 (off = 空串)
+    expect(copyCall?.prompt).not.toMatch(/smart caveman|MAXIMUM compression/i);
+    // 干活节点: 默认注入 full 规则 (非 ultra 的 "MAXIMUM compression")
+    expect(analyzeCall?.prompt).toMatch(/terse like a smart caveman/i);
+    expect(analyzeCall?.prompt).not.toMatch(/MAXIMUM compression/);
+  });
+
+  test('cavemanLevel:ultra → opt-in 恢复 ultra 压到底 (默认已降 full)', async () => {
+    const planJson = JSON.stringify({ name: 'ultra-optin', nodes: { w: { agent: 'x', goal: 'do work' } } });
+    const calls: string[] = [];
+    const gen: GenerateFn = async ({ model, messages }) => {
+      if (model === CONDUCTOR) return { text: planJson, usage: { in: 1, out: 1 } };
+      calls.push(messages.map((m) => m.content).join('\n'));
+      return { text: 'ok', usage: { in: 1, out: 1 } };
+    };
+    await runExecutorDag('t', { conductorModel: CONDUCTOR, leafModel: LEAF, generate: gen, cavemanLevel: 'ultra' });
+    expect(calls[0]).toMatch(/MAXIMUM compression/); // opt-in 拿回 ultra
   });
 
   test('command leaf (方案 A): executor:command 经 commandRunner 跑确定性 CLI, kind=command', async () => {
