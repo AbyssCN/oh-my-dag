@@ -73,6 +73,15 @@ export interface DagMetadata {
   createdAt: string;
   /** W4 SHADOW-3: 本 DAG 形态的代数签名 (goal+nodeIds+deps)。resume 一致性校验锚。 */
   generation?: string;
+  /**
+   * plan-memory (SDD 2026-07-21 缺口①): 完整 ConductorPlan 全量 (节点 goal/executor/depends_on/
+   * template/model)。此前只存骨架 (nodeIds+deps), 图的"肉"随进程丢弃 → 无法重放。
+   * optional = 向后兼容旧 _dag.json (缺此字段 → 不可重放, 仅 resume)。
+   * 类型用结构面而非 import ConductorPlan — continuity 层不依赖 conductor-plan 模块 (层次单向)。
+   */
+  plan?: { name: string; description?: string; nodes: Record<string, unknown> };
+  /** plan-memory: 用户任务原文 (family 聚类的匹配键; resume/预构造路径可缺)。 */
+  taskText?: string;
 }
 
 /**
