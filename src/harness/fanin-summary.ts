@@ -21,7 +21,7 @@ import type { GenerateFn } from './executor-dag-types';
 import type { ModelUsage } from '../model/gateway';
 
 export interface FaninSummaryConfig {
-  /** 开关。省略 = true (引擎内默认 ON, 同 caveman='ultra' 的行为旋钮默认; 经 config 或 env 可关)。 */
+  /** 开关。省略 = true (引擎内默认 ON, 同 caveman 的行为旋钮惯例; 经 config 可关)。 */
   enabled?: boolean;
   /** producer 输出 ≥ 此字符数才摘要 (短输出摘要纯亏 — 摘要器 input 就是全文)。省略 = 1800。 */
   minChars?: number;
