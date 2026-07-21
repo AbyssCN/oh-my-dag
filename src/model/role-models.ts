@@ -22,8 +22,12 @@
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-/** Daemon roles that drive callModel. plan = 审议座舱模型 (omd 对话脑子仍走 pi /model)。 */
-export type ModelRole = 'plan' | 'conductor' | 'leaf' | 'verifier' | 'dream';
+/**
+ * Daemon roles that drive callModel. plan = 审议座舱模型 (omd 对话脑子仍走 pi /model)。
+ * continuity = session 交接 checkpoint 蒸馏 (opt-in, 便宜档);刻意不进 MODEL_ROLES —— 它是后台
+ * 可选角色, 走 env/config/默认解析即可, 不进默认 config UI / 起跑坐席告警面 (避免未用该功能者被噪音)。
+ */
+export type ModelRole = 'plan' | 'conductor' | 'leaf' | 'verifier' | 'dream' | 'continuity';
 
 /** UX 顺序 (config 列表 / onboard 页展示): 规划 → 执行 → 校验 → 做梦。 */
 export const MODEL_ROLES: readonly ModelRole[] = ['plan', 'conductor', 'leaf', 'verifier', 'dream'];
@@ -46,6 +50,8 @@ const ROLE_SPECS: Record<ModelRole, RoleSpec> = {
   verifier: { envVar: 'OMD_VERIFIER_MODEL', fallback: 'deepseek' },
   // Dream consolidation = 抽取推理。默认 'deepseek'。
   dream: { envVar: 'OMD_DREAM_MODEL', fallback: 'deepseek' },
+  // Session 交接 checkpoint 蒸馏 = 便宜单发档 (同 dream 家族);opt-in。
+  continuity: { envVar: 'OMD_CONTINUITY_MODEL', fallback: 'deepseek' },
 };
 
 export type RoleModelSource = 'override' | 'file' | 'env' | 'default';
