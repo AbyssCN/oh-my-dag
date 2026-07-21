@@ -41,6 +41,7 @@
     "scripts",
     "!scripts/**/*.test.ts",
     "skills",
+    "client-skills",
     "substrate",
     "umbrella.md",
     "manifest.json",

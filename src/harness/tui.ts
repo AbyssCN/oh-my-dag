@@ -86,6 +86,13 @@ if (userArgs[0] === 'mcp') {
   // 注册表空而全部静默秒败 (settle(null) 空 output, 客户端只见"节点未完成")。stderr 打点协议安全。
   const { bootstrapModelRuntime } = await import('../model/bootstrap');
   bootstrapModelRuntime();
+  // 客户端技能自装 (best-effort, 从不抛): 装了 omd MCP 的用户新会话即得 /omd-* 斜杠命令, 免手 cp。
+  // 幂等 + 不覆盖用户改过的; opt-out OMD_INSTALL_SKILLS=0。stderr 记一行 (stdout 是协议通道, 不可污)。
+  try {
+    const { installClientSkills, formatInstallSummary } = await import('./client-skills-install');
+    const line = formatInstallSummary(installClientSkills());
+    if (line) logger.warn(line);
+  } catch { /* 自装是锦上添花, 失败绝不阻断 MCP server */ }
   const { runOmdMcpServer } = await import('../mcp/server');
   const { assembleOmdMcpTools } = await import('../mcp/assemble');
   await runOmdMcpServer(assembleOmdMcpTools());

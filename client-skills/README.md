@@ -4,80 +4,79 @@
 
 ## 安装
 
-**Claude Code**(用户级,全仓库生效):
+**Claude Code**:**无需手动拷贝**。注册 omd MCP 后,`omd mcp` server 首次启动时自动把这 16 个技能
+(统一 `omd-` 前缀,避免和你既有 skill 撞名)幂等铺进用户级 `~/.claude/skills/` —— 新会话即得
+`/omd-path`、`/omd-deliver` 等。自装幂等、随包升级更新,且**从不覆盖你改过的技能**(按内容 hash 判定,
+用户动过即跳过)。关掉自装:环境变量 `OMD_INSTALL_SKILLS=0`。机制在 `src/harness/client-skills-install.ts`。
 
 ```bash
-cp -r client-skills/{path,tickets,rule,deliver,execute,iterate,grill,sdd,note,council,audit,sast,review,slim,deepen,dream} ~/.claude/skills/
-```
-
-或项目级:拷到目标 repo 的 `.claude/skills/`。装好后在 Claude 里敲 `/path`、`/deliver` 等即触发(新会话生效)。
-
-**Codex**:没有 skills 机制——把需要的 SKILL.md 正文并入目标 repo 的 `AGENTS.md`,或作为 prompt 片段引用。
-
-**MCP server 注册**(前提,cwd 决定作用的仓库):
-
-```bash
-cd <目标repo> && claude mcp add omd -- omd mcp        # 全局安装的 omd
+cd <目标repo> && claude mcp add omd -- omd mcp        # 全局安装的 omd; 首次起 server 即自装技能
 # 或源码: claude mcp add omd -- bun run <omd路径>/src/harness/tui.ts mcp
 ```
 
-## 技能一览(16 个)
+**Codex**:没有 skills 机制——把需要的 SKILL.md 正文并入目标 repo 的 `AGENTS.md`,或作为 prompt 片段引用。
+
+## 技能一览(18 个)
 
 | 技能 | 干什么 | 靠什么 |
 |---|---|---|
-| `/path` | 开/建/列 pathfinder 决策地图 + 开票 + 预取 | MCP `path_map` `path_add` `path_prefetch` |
-| `/tickets` | 看前沿 + 拉 AFK 研究回流(预算内自续) | MCP `path_tickets` |
-| `/rule` | 裁决前沿票(owner 决策落盘真相文件) | MCP `path_rule` |
-| `/deliver` | **权力闸**:执行已散尽区域(编译 slice → DAG 真改文件) | MCP `path_deliver` |
-| `/execute` | SDD → conductor 分解 → DAG 执行 → 验收四选一 | MCP `dag_run`/`dag_status`/`dag_result` |
-| `/iterate` | fixpoint 迭代:跑→你评→带失败原因重画,≤3 轮 | MCP `dag_run` 三段式 |
-| `/grill` | HITL 审问式审议(只讨论不动手,抗中庸,沿决策树走) | 方法论(纯技能) |
-| `/sdd` | 审议结晶成 SDD 落盘 `docs/plan/`(/execute 的契约) | 方法论 + 文件 |
-| `/note` | 决策/引用记进 `docs/plan/NOTES.md` 台账 | 方法论 + 文件 |
-| `/council` | 多视角议会:宽解空间问题并行出方案 + 评审择优 | MCP `dag_research`(council) |
-| `/audit` | 多 lens 并行安全审计 → 结构化报告 | MCP `dag_run`(审计 DAG 模板) |
-| `/sast` | 确定性 semgrep 静态扫描 | Bash semgrep |
-| `/review` | 对抗式改动审查车队,gate G0–G3 阶梯控深度(默认 G2) | MCP `dag_review`(三段式) |
-| `/slim` | 过度工程专审:镀金/抽象过度/死复杂度,只删不加 | MCP `dag_slim`(三段式) |
-| `/deepen` | git 热点架构加深扫描 → leverage 排序 HTML 报告 | MCP `dag_deepen`(三段式) |
-| `/dream` | 记忆巩固:近期事件窗归并进 L0–L6 七层(同步,慢) | MCP `dream_consolidate` |
+| `/omd-path` | 开/建/列 pathfinder 决策地图 + 开票 + 预取 | MCP `path_map` `path_add` `path_prefetch` |
+| `/omd-tickets` | 看前沿 + 拉 AFK 研究回流(预算内自续) | MCP `path_tickets` |
+| `/omd-rule` | 裁决前沿票 + 终裁判定树(真源三层/灰态三画法/敏感清单) | MCP `path_rule` |
+| `/omd-deliver` | **权力闸**:执行已散尽区域 + delivered✅≠东西真在核对 | MCP `path_deliver` |
+| `/omd-execute` | SDD → DAG 执行 → 交叉验证 checklist → 验收四选一 | MCP `dag_run`/`dag_status`/`dag_result` |
+| `/omd-iterate` | fixpoint 迭代:跑→你评→带失败原因重画,≤3 轮 | MCP `dag_run` 三段式 |
+| `/omd-grill` | 对抗式审问(一次一问/外部标杆逼问)+ 宽解岔口开 council | 方法论(纯技能) |
+| `/omd-sdd` | 审议结晶成 SDD 落盘(承 /omd-grill 决策记录表) | 方法论 + 文件 |
+| `/omd-note` | 决策/引用记 NOTES.md 台账(引用不复制/遮敏感/追加) | 方法论 + 文件 |
+| `/omd-council` | 多视角议会 + 3-lens 人格 + 领域岔口接地档(反 happy-path) | MCP `dag_research`(council) |
+| `/omd-audit` | 安全专项审计:信任边界清单(注入/认证/fail-open) | MCP `dag_run`(审计 DAG 模板) |
+| `/omd-sast` | 确定性 semgrep 静态扫描 | Bash semgrep |
+| `/omd-review` | 对抗式 diff 审查 + 误报裁决程序 + gate ROI 分档 | MCP `dag_review`(三段式) |
+| `/omd-slim` | 精益审计:先 debt 台账、再 global-first 两遍法找过度工程 | `scripts/omd-debt.ts` + MCP `dag_slim` |
+| `/omd-deepen` | git 热点架构加深 → 浅模块去壳加厚 → leverage 排序 | MCP `dag_deepen`(三段式) |
+| `/omd-dream` | 记忆巩固 + 节制三闸 + 层级红线 + 健康比自检 | MCP `dream_consolidate` |
+| `/omd-investigate` | 系统化根因调试 8 阶段(无根因不修)+ 修完扫同类 | 方法论(原生 Grep/Read/git) |
+| `/omd-recall` | 推理卡住时主动召回既有记忆(语义+词法混合检索) | MCP `memory_recall` |
 
 ## 原 pi TUI 27 条斜杠命令 → 去向全表
 
-| TUI 命令 | 去向 |
+> 左列 = 原 pi TUI 命令(历史裸名);右列 = 现去向(技能统一 `omd-` 前缀)。
+
+| 原 TUI 命令 | 去向 |
 |---|---|
-| `/path` `/tickets` `/rule` `/deliver` | → 同名技能(经 `path_*` MCP 工具) |
-| `/pathfinder`(shift+tab 模式开关) | **退役** — Claude 没有"模式",`/path` 开图即进入工作流 |
-| `/execute` `/iterate` | → 同名技能(经 `dag_*` 三段式) |
-| `/grill` `/sdd` `/note` `/council` | → 同名技能 |
-| `/crystallize` `/crystals` | **并入 `/sdd`**(结晶落盘 + 列结晶文档) |
-| `/ref` | **并入 `/note`**(引用与决策同一台账) |
-| `/audit` `/sast` | → 同名技能 |
+| `/path` `/tickets` `/rule` `/deliver` | → `/omd-path` `/omd-tickets` `/omd-rule` `/omd-deliver`(经 `path_*` MCP 工具) |
+| `/pathfinder`(shift+tab 模式开关) | **退役** — Claude 没有"模式",`/omd-path` 开图即进入工作流 |
+| `/execute` `/iterate` | → `/omd-execute` `/omd-iterate`(经 `dag_*` 三段式) |
+| `/grill` `/sdd` `/note` `/council` | → `/omd-grill` `/omd-sdd` `/omd-note` `/omd-council` |
+| `/crystallize` `/crystals` | **并入 `/omd-sdd`**(结晶落盘 + 列结晶文档) |
+| `/ref` | **并入 `/omd-note`**(引用与决策同一台账) |
+| `/audit` `/sast` | → `/omd-audit` `/omd-sast` |
 | `/cg`(codegraph 代码检索) | **退役** — 为弱 runtime 补检索而生;Claude/Codex 原生代码检索更强 |
 | `/search` `/web`(搜网/抓页) | **退役** — runtime 原生 web 能力替代;要多源综合研究走 `dag_research` |
 | `/config` `/setup`(配置向导) | **退役** — 配置即 `.env`(照 `.env.example`);模型坐标 `OMD_RUNTIME_PROVIDER/MODEL` + 角色覆盖 `OMD_ITER_*` |
 | `/mcp`(TUI 内 MCP 路由管理) | **退役** — MCP 管理是 runtime 客户端自己的事(`claude mcp …`) |
 | `/cost` | **退役** — 成本随 `dag_result` / research 报告内嵌返回(cost 字段) |
-| `/review` `/slim` `/deepen` | → 同名技能(经 `dag_review`/`dag_slim`/`dag_deepen` 车队,异步三段式,报告落盘) |
-| `/dream` | → 同名技能(经 `dream_consolidate`,同步返回层统计) |
+| `/review` `/slim` `/deepen` | → `/omd-review` `/omd-slim` `/omd-deepen`(经 `dag_review`/`dag_slim`/`dag_deepen` 车队,异步三段式,报告落盘) |
+| `/dream` | → `/omd-dream`(经 `dream_consolidate`,同步返回层统计) |
 
 ## 核心工作流
 
 ### ① pathfinder 循环(大而模糊的多 session 工作)
 
 ```
-/path <目的地>            开图, 和 owner 把目的地拆成票 (path_add: research/grill/prototype/task + blockedBy)
+/omd-path <目的地>            开图, 和 owner 把目的地拆成票 (path_add: research/omd-grill/prototype/task + blockedBy)
    │
-   ├─ research 票 ── path_prefetch → detached AFK 后台自动跑 → /tickets 拉回流
+   ├─ research 票 ── path_prefetch → detached AFK 后台自动跑 → /omd-tickets 拉回流
    │                  结果自动裁决母票 + 孵子票 (## children), 预算内自续 (OMD_PATH_RESEARCH_BUDGET, 默认 12)
    │
-   ├─ grill 票 ────── /grill 和 owner 审问对齐 → owner 定夺 → /rule 落盘
+   ├─ grill 票 ────── /omd-grill 和 owner 审问对齐 → owner 定夺 → /omd-rule 落盘
    │
-   └─ task 票 ─────── owner /rule 逐张裁 (ruling = 将来的执行目标)
+   └─ task 票 ─────── owner /omd-rule 逐张裁 (ruling = 将来的执行目标)
                           │
                 区域散尽 (全部 task 已裁 + 编译通过) → 只报信
                           │
-                owner 显式 /deliver → 编译 slice → DAG 真改文件 → 票翻 delivered → 继续裁下一层
+                owner 显式 /omd-deliver → 编译 slice → DAG 真改文件 → 票翻 delivered → 继续裁下一层
 ```
 
 裁决即进度:地图真相在 `docs/plan/pathfinder/<slug>.md`(git 追踪、人可编辑),跨 session/跨机可续。
@@ -85,14 +84,14 @@ cd <目标repo> && claude mcp add omd -- omd mcp        # 全局安装的 omd
 ### ② SDD 交接(中大型一次性任务)
 
 ```
-/grill 审议到方案对齐 → (/note 沿途记决策) → /sdd 结晶成契约 → owner 说"执行" → /execute
-  → DAG 跑完 → 你主动验收 (对照 SDD 逐条判): 接受 / 重画(/execute redraw) / 迭代(/iterate) / 直接修
+/omd-grill 审议到方案对齐 → (/omd-note 沿途记决策) → /omd-sdd 结晶成契约 → owner 说"执行" → /omd-execute
+  → DAG 跑完 → 你主动验收 (对照 SDD 逐条判): 接受 / 重画(/omd-execute redraw) / 迭代(/omd-iterate) / 直接修
 ```
 
 ### ③ 研究与审查(随取随用)
 
-- 拿不准选哪个 → `/council`;要多源事实 → `dag_research`(检索版);
-- 上线前 → `/sast`(便宜确定)+ `/audit`(语义审查),先 sast 后 audit。
+- 拿不准选哪个 → `/omd-council`;要多源事实 → `dag_research`(检索版);
+- 上线前 → `/omd-sast`(便宜确定)+ `/omd-audit`(语义审查),先 sast 后 audit。
 
 ## 关键 env 旋钮
 
@@ -104,7 +103,7 @@ cd <目标repo> && claude mcp add omd -- omd mcp        # 全局安装的 omd
 
 ## 设计不变量(技能作者须知)
 
-1. **裁决权与执行权属于 owner**:技能可以推荐裁决词、报告区域散尽,但 `/rule` `/deliver` 只在 owner 明确表达后调用;
+1. **裁决权与执行权属于 owner**:技能可以推荐裁决词、报告区域散尽,但 `/omd-rule` `/omd-deliver` 只在 owner 明确表达后调用;
 2. **落图 ≠ 激活**:票落图零成本,深度不设限;成本唯一边界是派发预算;
 3. **状态全在磁盘**:MCP server 无状态,地图/结果/预算都在 `docs/plan/` 与 `.omd/`,任何客户端可续;
 4. **description ≤120 字符**(MCP 工具,D-11)——说明书住技能文本,客户端每轮为工具 description 付税。

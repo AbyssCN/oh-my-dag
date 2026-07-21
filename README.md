@@ -74,11 +74,11 @@ cd <your-project> && claude mcp add omd -- omd mcp
 # or drop a .mcp.json (this repo ships a template) for a zero-command project mount
 ```
 
-Then install the slash-command pack that teaches your agent the workflows:
-
-```bash
-cp -r client-skills/{path,tickets,rule,deliver,execute,iterate,grill,sdd,note,council,audit,sast,review,slim,deepen,dream} ~/.claude/skills/
-```
+The slash-command pack (`/omd-path`, `/omd-deepen`, `/omd-review`, … 16 skills that teach
+your agent the workflows) **installs itself** into `~/.claude/skills/` the first time the
+`omd mcp` server starts — no manual copy. It is idempotent, updates on package upgrade, and
+**never overwrites a skill you have edited**. New skills appear on your next Claude session.
+Opt out with `OMD_INSTALL_SKILLS=0`.
 
 **→ Full walkthrough: [docs/MCP-ONBOARDING.md](docs/MCP-ONBOARDING.md)** ·
 command reference: [client-skills/README.md](client-skills/README.md)
