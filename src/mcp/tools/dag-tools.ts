@@ -18,6 +18,8 @@ import { parsePlan } from '../../harness/conductor-plan.js';
 import { topoLevels } from '../../harness/executor-dag.js';
 import { renderProgressAscii } from './dag-ascii.js';
 import type { HudMirror } from '../../hud/mirror.js';
+import type { PlanLedger } from '../../harness/plan-ledger.js';
+import { computeCost } from '../../model/cost-ledger.js';
 
 // renderProgressAscii 已抽到 ./dag-ascii (纯函数, statusline 复用); 此处保留 re-export 兼容既有 importer。
 export { renderProgressAscii };
@@ -88,6 +90,43 @@ export interface DagToolDeps {
    * statusline 数据源)。fail-open 不影响执行; 省略 = 不写 (HUD 空闲)。
    */
   hudMirror?: HudMirror;
+  /**
+   * plan-memory Phase A 账本 (给则每个完成 run 记一笔: family 聚类 + 版本去重 + 战绩)。
+   * 纯记账零行为改变; record 自身 fail-open。省略 = 不记。
+   */
+  ledger?: PlanLedger;
+}
+
+/**
+ * plan-memory 记账 (dag_run/dag_run_plan 完成钩子共用)。
+ * ok = verifier pass ∨ (无 verifier ∧ 全叶 done) — A3 修复: MCP 路径无 verifier, "pass 才记"=账本永空。
+ * cost = Σ leaf computeCost + conductor (fail-open: unpriced 计 0)。
+ */
+function recordPlanRun(
+  ledger: PlanLedger,
+  taskText: string,
+  result: ExecutorDagResult,
+  conductorModel: string | undefined,
+): void {
+  const leaves = Object.values(result.results);
+  const allDone = leaves.length > 0 && leaves.every((l) => l.status === 'done');
+  const ok = result.verification ? result.verification.pass : allDone;
+  let costUsd = 0;
+  for (const leaf of leaves) {
+    if (leaf.model && leaf.usage) costUsd += computeCost(leaf.usage, leaf.model).costUsd;
+  }
+  if (conductorModel) costUsd += computeCost(result.usage.conductor, conductorModel).costUsd;
+  ledger.record({
+    taskText,
+    plan: {
+      name: result.plan.name,
+      ...(result.plan.description ? { description: result.plan.description } : {}),
+      nodes: result.plan.nodes as unknown as Record<string, unknown>,
+    },
+    ok,
+    verified: !!result.verification,
+    costUsd,
+  });
 }
 
 /** Map ExecutorDagResult.results → per-node NodeDetail {status, output} for registry storage. */
@@ -169,7 +208,7 @@ export function createDagTools(deps: DagToolDeps): OmdMcpTool[] {
 // dag_run — task → conductor plan → fan-out → {runId, summary}.
 // ---------------------------------------------------------------------------
 
-function makeDagRun({ engine, runRegistry, defaultConfig, continuity, hudMirror }: DagToolDeps): OmdMcpTool {
+function makeDagRun({ engine, runRegistry, defaultConfig, continuity, hudMirror, ledger }: DagToolDeps): OmdMcpTool {
   return {
     name: 'dag_run',
     description: 'Execute a task via conductor DAG planning + leaf fan-out. resume=<runId> skips checkpointed nodes.',
@@ -250,6 +289,8 @@ function makeDagRun({ engine, runRegistry, defaultConfig, continuity, hudMirror 
           runRegistry.setNodeDetails(runId, extractNodeDetails(result));
           runRegistry.succeed(runId, summarizeResult(result));
           hudMirror?.write(runId, runRegistry.getRecord(runId)); // 终态 done → statusline grace 后收起
+          // plan-memory Phase A: 记一笔 (family 聚类 + 版本 + 战绩)。record 自身 fail-open。
+          if (ledger) recordPlanRun(ledger, task, result, config.conductorModel);
         })
         .catch((err) => {
           const msg = err instanceof Error ? err.message : String(err);
@@ -268,7 +309,7 @@ function makeDagRun({ engine, runRegistry, defaultConfig, continuity, hudMirror 
 // dag_run_plan — pre-built plan JSON → execute (skip conductor) → {runId, summary}.
 // ---------------------------------------------------------------------------
 
-function makeDagRunPlan({ engine, runRegistry, defaultConfig, continuity, hudMirror }: DagToolDeps): OmdMcpTool {
+function makeDagRunPlan({ engine, runRegistry, defaultConfig, continuity, hudMirror, ledger }: DagToolDeps): OmdMcpTool {
   return {
     name: 'dag_run_plan',
     description: 'Execute a pre-built ConductorPlan JSON (skips conductor). resume=<runId> skips checkpointed nodes.',
@@ -353,6 +394,8 @@ function makeDagRunPlan({ engine, runRegistry, defaultConfig, continuity, hudMir
           runRegistry.setNodeDetails(runId, extractNodeDetails(result));
           runRegistry.succeed(runId, summarizeResult(result));
           hudMirror?.write(runId, runRegistry.getRecord(runId), hudLevels); // 终态 done
+          // plan-memory Phase A: task 原文在才记 (预构造无 task → 无聚类键, 不记)。
+          if (ledger && task) recordPlanRun(ledger, task, result, config.conductorModel);
         })
         .catch((err) => {
           const msg = err instanceof Error ? err.message : String(err);
