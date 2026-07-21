@@ -30,6 +30,8 @@ import { computeFrontier } from '../../harness/pathfinder/frontier';
 import { loadMap, mutateMap, saveMap } from '../../harness/pathfinder/map-store';
 import { compileSlice, regionIsClear } from '../../harness/pathfinder/slice-compiler';
 import type { PathMap, Ticket, TicketType } from '../../harness/pathfinder/types';
+import type { HudMirror } from '../../hud/mirror';
+import { compactFog } from '../../hud/fog';
 
 export interface PathfinderToolDeps {
   cwd: string;
@@ -42,6 +44,8 @@ export interface PathfinderToolDeps {
   executeSlice?: typeof realExecuteSlice;
   dispatchFrontier?: typeof realDispatchFrontier;
   watchAfkResults?: typeof realWatchAfkResults;
+  /** omd-hud 迷雾镜像 (给则每次 renderStatus 把当前地图迷雾原子写 .omd/hud/fog.json)。省略 = 不写。 */
+  hudMirror?: HudMirror;
 }
 
 /** 六工具: path_map / path_add / path_tickets / path_rule / path_deliver / path_prefetch。 */
@@ -97,8 +101,10 @@ export function fogBar(map: PathMap): string {
   return lines.join('\n');
 }
 
-/** 地图快照文本: 目的地 + 状态计数 + 前沿逐行 + 区域散尽提示 (path_deliver 报信)。 */
-function renderStatus(map: PathMap): string {
+/** 地图快照文本: 目的地 + 状态计数 + 前沿逐行 + 区域散尽提示 (path_deliver 报信)。
+ *  副作用: 给 hudMirror 则把当前迷雾原子写 fog.json (omd-hud 数据源; fail-open 内建)。 */
+function renderStatus(map: PathMap, hudMirror?: HudMirror): string {
+  hudMirror?.writeFog(compactFog(map));
   const fr = computeFrontier(map);
   const counts = new Map<string, number>();
   for (const t of map.tickets) counts.set(t.status, (counts.get(t.status) ?? 0) + 1);
@@ -190,7 +196,7 @@ function makeMap(deps: PathfinderToolDeps): OmdMcpTool {
       // slug 直开优先 (与 TUI /path 同语义)。
       const bySlug = loadMap(cwd, d);
       const map = bySlug ?? createOrResumeMap(cwd, d).map;
-      return ok(renderStatus(map));
+      return ok(renderStatus(map, deps.hudMirror));
     },
   };
 }
@@ -248,7 +254,7 @@ function makeAdd(deps: PathfinderToolDeps): OmdMcpTool {
         return err(String(e));
       }
       if (!mutated) return err(`找不到地图 "${r.slug}"`);
-      return ok(`✓ 已加票 ${mutated.result}\n${renderStatus(mutated.map)}`);
+      return ok(`✓ 已加票 ${mutated.result}\n${renderStatus(mutated.map, deps.hudMirror)}`);
     },
   };
 }
@@ -267,7 +273,7 @@ function makeTickets(deps: PathfinderToolDeps): OmdMcpTool {
       if ('error' in r) return err(r.error);
       const reflow = reflowOnce(deps, r.slug);
       const map = loadMap(deps.cwd, r.slug)!;
-      return ok([...reflow, renderStatus(map)].join('\n'));
+      return ok([...reflow, renderStatus(map, deps.hudMirror)].join('\n'));
     },
   };
 }
@@ -299,7 +305,7 @@ function makeRule(deps: PathfinderToolDeps): OmdMcpTool {
       });
       if (!mutated) return err(`找不到地图 "${r.slug}"`);
       if (!mutated.result) return err(`地图里没有票 "${ticketId}"`);
-      return ok([...reflow, `✓ 已裁 ${ticketId}: ${(ruling as string).slice(0, 60)}`, renderStatus(mutated.map)].join('\n'));
+      return ok([...reflow, `✓ 已裁 ${ticketId}: ${(ruling as string).slice(0, 60)}`, renderStatus(mutated.map, deps.hudMirror)].join('\n'));
     },
   };
 }
@@ -349,7 +355,7 @@ function makeDeliver(deps: PathfinderToolDeps): OmdMcpTool {
             if (region.includes(t.id) && t.status === 'ruled') t.status = 'delivered';
           }
         });
-        return ok(`◈ slice "${plan.name}" 已执行 (${Object.keys(plan.nodes ?? {}).length} 节点) — 区域 [${region.join(', ')}] 已交付。\n${renderStatus(loadMap(cwd, r.slug)!)}`);
+        return ok(`◈ slice "${plan.name}" 已执行 (${Object.keys(plan.nodes ?? {}).length} 节点) — 区域 [${region.join(', ')}] 已交付。\n${renderStatus(loadMap(cwd, r.slug)!, deps.hudMirror)}`);
       } catch (e) {
         return err(`slice 执行失败: ${String(e)}`);
       }

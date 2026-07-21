@@ -16,65 +16,17 @@ import type { CheckpointManager } from '../../harness/continuity/checkpoint-mana
 import type { ConductorPlan } from '../../harness/conductor-plan.js';
 import { parsePlan } from '../../harness/conductor-plan.js';
 import { topoLevels } from '../../harness/executor-dag.js';
+import { renderProgressAscii } from './dag-ascii.js';
+import type { HudMirror } from '../../hud/mirror.js';
+
+// renderProgressAscii 已抽到 ./dag-ascii (纯函数, statusline 复用); 此处保留 re-export 兼容既有 importer。
+export { renderProgressAscii };
 
 /**
  * 派发简报 (D-8 宽出): 图结构 + 模型坐标一屏可读 — 客户端派发瞬间就知道开了多少节点/
  * 几层/什么模型, 不必等 dag_status。levels 经 topoLevels (环图不该出现 — parsePlan 不查环,
  * 防御性兜底)。
  */
-/** Max nodes before downsampling to per-level counts only. */
-const ASCII_DOWNSAMPLE_THRESHOLD = 20;
-
-/** Node status symbol map. */
-const STATUS_SYM: Record<string, string> = { done: '✔', running: '▶', failed: '✘' };
-
-/**
- * ASCII层级图 — 宽 ≤maxCols 列。>20 节点降采样为每层计数。
- * 有 topoLevels → 按层; 无 → planned 顺序平铺一行组 (诚实)。
- * 导出供 dag_status / 外部渲染复用。
- */
-export function renderProgressAscii(
-  levels: string[][] | undefined,
-  progress: {
-    planned: Array<{ id: string; kind: string }>;
-    started: string[];
-    settled: Array<{ id: string; status: 'done' | 'failed'; kind: string }>;
-  },
-  maxCols = 100,
-): string {
-  const settledOf = new Map(progress.settled.map((s) => [s.id, s]));
-  const startedSet = new Set(progress.started);
-  const kindOf = new Map(progress.planned.map((n) => [n.id, n.kind]));
-  // flat fallback: 无 topoLevels 时所有 planned 节点归一层
-  const effective = levels ?? (progress.planned.length > 0 ? [progress.planned.map((n) => n.id)] : []);
-  const total = effective.reduce((s, l) => s + l.length, 0);
-
-  const sym = (id: string): string => {
-    const s = settledOf.get(id);
-    if (s) return STATUS_SYM[s.status] ?? '○';
-    return startedSet.has(id) ? '▶' : '○';
-  };
-
-  if (total > ASCII_DOWNSAMPLE_THRESHOLD) {
-    return effective.map((ids, i) => {
-      const counts: Record<string, number> = {};
-      for (const id of ids) {
-        const s = sym(id);
-        counts[s] = (counts[s] ?? 0) + 1;
-      }
-      const parts = ['✔', '▶', '✘', '○'].filter((s) => counts[s]).map((s) => `${s}${counts[s]}`);
-      return `L${i + 1} ${parts.join(' ')}`;
-    }).join('\n');
-  }
-
-  return effective.map((ids, i) => {
-    const entries = ids.map((id) => `${sym(id)} ${id}(${kindOf.get(id) ?? '?'})`);
-    let line = `L${i + 1} ${entries.join(' ')}`;
-    if (line.length > maxCols) line = line.slice(0, maxCols - 3) + '...';
-    return line;
-  }).join('\n');
-}
-
 export function dispatchBriefing(plan: ConductorPlan, config: ExecutorDagConfig): string {
   const entries = Object.entries(plan.nodes);
   const byKind: Record<string, number> = {};
@@ -131,6 +83,11 @@ export interface DagToolDeps {
    * dag_run_plan 的 resume 参数命中已绿节点即跳过 (429 打断后不再整图重跑)。省略 = 不落不续。
    */
   continuity?: { manager: CheckpointManager; repoRoot: string };
+  /**
+   * omd-hud 活体镜像 (给则每个 onNodeEvent + 完成态把 DAG 进度原子写 .omd/hud/dag.json,
+   * statusline 数据源)。fail-open 不影响执行; 省略 = 不写 (HUD 空闲)。
+   */
+  hudMirror?: HudMirror;
 }
 
 /** Map ExecutorDagResult.results → per-node NodeDetail {status, output} for registry storage. */
@@ -212,7 +169,7 @@ export function createDagTools(deps: DagToolDeps): OmdMcpTool[] {
 // dag_run — task → conductor plan → fan-out → {runId, summary}.
 // ---------------------------------------------------------------------------
 
-function makeDagRun({ engine, runRegistry, defaultConfig, continuity }: DagToolDeps): OmdMcpTool {
+function makeDagRun({ engine, runRegistry, defaultConfig, continuity, hudMirror }: DagToolDeps): OmdMcpTool {
   return {
     name: 'dag_run',
     description: 'Execute a task via conductor DAG planning + leaf fan-out. resume=<runId> skips checkpointed nodes.',
@@ -256,8 +213,12 @@ function makeDagRun({ engine, runRegistry, defaultConfig, continuity }: DagToolD
         ...defaultConfig,
         conductorModel: conductorModel ?? defaultConfig?.conductorModel ?? '',
         leafModel: leafModel ?? defaultConfig?.leafModel ?? '',
-        // 活体进度: conductor 出图后引擎发 planned → start/settle 流进 registry (dag_status 实时)。
-        onNodeEvent: (e) => runRegistry.applyNodeEvent(runId, e),
+        // 活体进度: conductor 出图后引擎发 planned → start/settle 流进 registry (dag_status 实时) +
+        // hudMirror 原子写 .omd/hud/dag.json (omd-hud statusline 数据源; conductor 路径无 topo → levels=null 平铺)。
+        onNodeEvent: (e) => {
+          runRegistry.applyNodeEvent(runId, e);
+          hudMirror?.write(runId, runRegistry.getRecord(runId));
+        },
         // 并发手闸: 参数 > defaultConfig (装配层 provider 池) > 引擎全宽。
         ...(maxFanout ? { maxFanout } : {}),
         // D-3 断点续跑: checkpoint 恒落盘; resume 时命中已绿节点跳过 (429 打断不再整图重跑)。
@@ -288,10 +249,12 @@ function makeDagRun({ engine, runRegistry, defaultConfig, continuity }: DagToolD
         .then((result) => {
           runRegistry.setNodeDetails(runId, extractNodeDetails(result));
           runRegistry.succeed(runId, summarizeResult(result));
+          hudMirror?.write(runId, runRegistry.getRecord(runId)); // 终态 done → statusline grace 后收起
         })
         .catch((err) => {
           const msg = err instanceof Error ? err.message : String(err);
           runRegistry.fail(runId, msg);
+          hudMirror?.write(runId, runRegistry.getRecord(runId)); // 终态 failed
         });
 
       return {
@@ -305,7 +268,7 @@ function makeDagRun({ engine, runRegistry, defaultConfig, continuity }: DagToolD
 // dag_run_plan — pre-built plan JSON → execute (skip conductor) → {runId, summary}.
 // ---------------------------------------------------------------------------
 
-function makeDagRunPlan({ engine, runRegistry, defaultConfig, continuity }: DagToolDeps): OmdMcpTool {
+function makeDagRunPlan({ engine, runRegistry, defaultConfig, continuity, hudMirror }: DagToolDeps): OmdMcpTool {
   return {
     name: 'dag_run_plan',
     description: 'Execute a pre-built ConductorPlan JSON (skips conductor). resume=<runId> skips checkpointed nodes.',
@@ -351,11 +314,23 @@ function makeDagRunPlan({ engine, runRegistry, defaultConfig, continuity }: DagT
         runRegistry.start(runId);
       }
 
+      // topo 层级 (预建 plan 现成可算) → hudMirror 出完整层级图; 环图不该出现 (parsePlan 已过) → 兜底 undefined 平铺。
+      let hudLevels: string[][] | undefined;
+      try {
+        hudLevels = topoLevels(parsed.plan);
+      } catch {
+        hudLevels = undefined;
+      }
+
       const config: ExecutorDagConfig = {
         ...defaultConfig,
         leafModel: leafModel ?? defaultConfig?.leafModel ?? '',
-        // 活体进度: 引擎三事件 (planned/start/settle) 流进 registry → dag_status 实时可见。
-        onNodeEvent: (e) => runRegistry.applyNodeEvent(runId, e),
+        // 活体进度: 引擎三事件 (planned/start/settle) 流进 registry → dag_status 实时可见 +
+        // hudMirror 原子写 .omd/hud/dag.json (omd-hud statusline 数据源, 带 topo 层级)。
+        onNodeEvent: (e) => {
+          runRegistry.applyNodeEvent(runId, e);
+          hudMirror?.write(runId, runRegistry.getRecord(runId), hudLevels);
+        },
         // 并发手闸: 参数 > defaultConfig (装配层 provider 池) > 引擎全宽。
         ...(maxFanout ? { maxFanout } : {}),
         // D-3 断点续跑: checkpoint 恒落盘; resume 时命中已绿节点跳过 (429 打断不再整图重跑)。
@@ -377,10 +352,12 @@ function makeDagRunPlan({ engine, runRegistry, defaultConfig, continuity }: DagT
         .then((result) => {
           runRegistry.setNodeDetails(runId, extractNodeDetails(result));
           runRegistry.succeed(runId, summarizeResult(result));
+          hudMirror?.write(runId, runRegistry.getRecord(runId), hudLevels); // 终态 done
         })
         .catch((err) => {
           const msg = err instanceof Error ? err.message : String(err);
           runRegistry.fail(runId, msg);
+          hudMirror?.write(runId, runRegistry.getRecord(runId), hudLevels); // 终态 failed
         });
 
       return {
