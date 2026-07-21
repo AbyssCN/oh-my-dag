@@ -94,6 +94,27 @@ export class CheckpointManager {
   }
 
   /**
+   * fan-in **定向摘要**的"全文指针"落点: producer 全文原子写 `<runDir>/fanin-<nodeId>.txt`,
+   * 返回绝对路径供摘要视图引用 (带工具的 agent consumer 需细节可自 Read)。
+   * 写失败 → null (fail-open, 摘要视图退化为仅摘要无指针, 不阻断 DAG)。
+   */
+  saveFaninFull(runId: string, nodeId: string, text: string): string | null {
+    try {
+      const dir = this.runDir(runId);
+      this.ensureDir(dir);
+      const safe = nodeId.replace(/[^\w.-]/g, '_'); // map 子节点 id 含 '::' 等 → 文件名安全化
+      const path = join(dir, `fanin-${safe}.txt`);
+      const tmp = join(dir, `fanin-${safe}.tmp`);
+      writeFileSync(tmp, text, 'utf-8');
+      renameSync(tmp, path);
+      return path;
+    } catch (err) {
+      logger.warn({ err, runId, nodeId }, 'checkpoint: saveFaninFull failed (fail-open)');
+      return null;
+    }
+  }
+
+  /**
    * 加载单个节点 checkpoint。
    * 不存在/损坏/schemaVersion 无效 → null。
    */
