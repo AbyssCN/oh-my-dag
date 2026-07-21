@@ -11,7 +11,11 @@
  * 另: 在 stderr 打一行 env 可见性 (provider 空 = .env 真没配, 立即看见), 不进 stdout 产物。
  */
 import '../env-alias';
-import { registerProvidersFromEnv, registerCustomApis } from './providers';
+import {
+  registerProvidersFromEnv,
+  registerCustomApis,
+  registerProvidersFromModelsJson,
+} from './providers';
 import { listCustomApis } from './role-models';
 import { warnUnregisteredRoles } from './role-fallback';
 
@@ -22,7 +26,16 @@ import { warnUnregisteredRoles } from './role-fallback';
 export function bootstrapModelRuntime(): string[] {
   const registered = registerProvidersFromEnv();
   const custom = registerCustomApis(listCustomApis());
-  const all = [...registered, ...custom.filter((c) => !registered.includes(c))];
+  // ~/.pi/agent/models.json 自定 provider (统一-registry D-2): 于 env/customApis 之后 → 单一真源, 同名覆盖。
+  const fromModelsJson = registerProvidersFromModelsJson();
+  const seen = new Set(registered);
+  const all = [...registered];
+  for (const id of [...custom, ...fromModelsJson]) {
+    if (!seen.has(id)) {
+      seen.add(id);
+      all.push(id);
+    }
+  }
   // 起跑坐席检查 (issue #6): provider 注册完后, 无凭证的角色启动即 WARN (不再跑到一半才炸)。
   warnUnregisteredRoles();
   // 脚本侧 env 可见性 (stderr, 不污染 stdout 产物): provider 空 = .env 没配/没 propagate。
