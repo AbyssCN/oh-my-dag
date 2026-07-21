@@ -68,7 +68,21 @@ export interface ApiDef {
   defaultModel?: string;
   /** 是否有多模态能力 (供 onboard 页过滤多模态池候选)。 */
   multimodal?: boolean;
+  /** per-model 声明 (能力/上下文/输出上限/思考默认)。省略 = 端点级粗声明。 */
+  models?: ModelDef[];
 }
+/** Per-model 定义 (C-1): 坐标后半 id + 能力声明。 */
+export interface ModelDef {
+  id: string;
+  reasoning?: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
+  thinkingDefault?: 'minimal' | 'low' | 'medium' | 'high' | 'max';
+}
+/** 思考默认档 (C-3) — 单一来源, 后续所有默认只准引用此常量。 */
+export const THINKING_DEFAULT: NonNullable<ModelDef['thinkingDefault']> = 'max';
+/** 输出上限默认 (C-3) — 单一来源。 */
+export const MAX_TOKENS_DEFAULT = 32_768;
 
 // ---------------------------------------------------------------------------
 // in-memory override (highest, non-durable: CLI / test).
@@ -260,14 +274,52 @@ export function persistMultimodalPoolPremium(coords: string[], path = configPath
 // custom APIs — config.apis (用户随意添加, boot 注册进 callModel registry)
 // ---------------------------------------------------------------------------
 
-/** 列用户自定 API。无 → []。 */
+/** 合法 thinkingDefault 值 (C-1 校验面)。 */
+const THINKING_LEVELS: readonly string[] = ['minimal', 'low', 'medium', 'high', 'max'];
+/** 单条 ModelDef 校验: 非法项静默剔除, 合法项带出 per-model。 */
+function filterModels(models: unknown): ModelDef[] | undefined {
+  if (!Array.isArray(models)) return undefined;
+  const clean = models.filter(
+    (m): m is ModelDef =>
+      !!m &&
+      typeof m === 'object' &&
+      typeof (m as ModelDef).id === 'string' &&
+      ((m as ModelDef).reasoning === undefined || typeof (m as ModelDef).reasoning === 'boolean') &&
+      ((m as ModelDef).contextWindow === undefined ||
+        typeof (m as ModelDef).contextWindow === 'number') &&
+      ((m as ModelDef).maxTokens === undefined || typeof (m as ModelDef).maxTokens === 'number') &&
+      ((m as ModelDef).thinkingDefault === undefined ||
+        THINKING_LEVELS.includes((m as ModelDef).thinkingDefault as string)),
+  );
+  return clean.length > 0 ? clean : undefined;
+}
+/** 列用户自定 API。无 → []。models 非法项静默剔除, 合法项带出。 */
 export function listCustomApis(path = configPath()): ApiDef[] {
   const apis = fileConfig(path).apis;
   if (!Array.isArray(apis)) return [];
-  return apis.filter(
-    (a): a is ApiDef =>
-      !!a && typeof a === 'object' && typeof a.id === 'string' && typeof a.baseUrl === 'string',
-  );
+  return apis
+    .filter(
+      (a): a is ApiDef =>
+        !!a && typeof a === 'object' && typeof a.id === 'string' && typeof a.baseUrl === 'string',
+    )
+    .map((a) => {
+      const models = filterModels(a.models);
+      return models ? { ...a, models } : a;
+    });
+}
+/**
+ * 按 'provider:model' 坐标解析 per-model 定义 (C-2)。坐标无 model 半 → {};
+ * provider/model 任一 miss → {}。静默 miss, 永不 throw (调用方走默认常量)。
+ */
+export function resolveModelDef(coord: string, path = configPath()): ModelDef {
+  const miss = {} as ModelDef; // C-2 契约: miss → {} (调用方走默认常量, 不读 id)
+  const sep = coord.indexOf(':');
+  if (sep < 0) return miss;
+  const provider = coord.slice(0, sep).trim();
+  const model = coord.slice(sep + 1).trim();
+  if (!provider || !model) return miss;
+  const api = listCustomApis(path).find((a) => a.id === provider);
+  return api?.models?.find((m) => m.id === model) ?? miss;
 }
 
 /** 增/改一个 API (按 id upsert)。 */

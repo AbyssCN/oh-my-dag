@@ -6,6 +6,8 @@
  */
 import type { ProviderConfig } from './types';
 import type { ApiDef } from './role-models';
+import { MAX_TOKENS_DEFAULT } from './role-models';
+import { readCustomProviders } from './models-json';
 
 const registry = new Map<string, ProviderConfig>();
 
@@ -87,6 +89,33 @@ export function registerCustomApis(
       defaultModel: a.defaultModel,
     });
     registered.push(a.id);
+  }
+  return registered;
+}
+
+/**
+ * 注册 `~/.pi/agent/models.json` 的完整自定 provider 进 callModel registry (统一-registry D-2/C-2)。
+ * 与 {@link registerProvidersFromEnv} 同级; boot 时于其**后**调 (bootstrap.ts / tui.ts) → models.json
+ * 是单一真源, 同名覆盖 env。幂等 (registry 按 name upsert)。builtin-override 条目 (deepseek 等) 由
+ * readCustomProviders 已滤掉 (INV-5); 无凭证条目已滤掉 (INV-4)。
+ * defaultModel 兜底 = 首个 model id (裸 coord 解析用)。maxTokens = 条目内模型 maxTokens 最大值, 无则
+ * MAX_TOKENS_DEFAULT (治 index.ts:239 的 `?? 4096` 太低吃 reasoning 预算)。返回注册的 provider id。
+ */
+export function registerProvidersFromModelsJson(
+  env: Record<string, string | undefined> = process.env,
+): string[] {
+  const registered: string[] = [];
+  for (const entry of readCustomProviders(env)) {
+    const maxTokens =
+      entry.models.reduce((mx, m) => Math.max(mx, m.maxTokens ?? 0), 0) || MAX_TOKENS_DEFAULT;
+    registerProvider(entry.id, {
+      baseUrl: entry.baseUrl,
+      apiKey: entry.apiKey,
+      api: entry.api === 'anthropic-messages' ? 'anthropic-messages' : 'openai-compatible',
+      ...(entry.models[0]?.id ? { defaultModel: entry.models[0].id } : {}),
+      maxTokens,
+    });
+    registered.push(entry.id);
   }
   return registered;
 }

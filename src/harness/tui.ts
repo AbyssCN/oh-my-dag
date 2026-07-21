@@ -43,7 +43,11 @@ import { CleaningFetchProvider } from './web/clean';
 import { createCodeExtension, type ToolMap } from './code';
 import { createCostExtension } from './cost-extension';
 import { logger, setLoggerDestination } from '../logger';
-import { registerProvidersFromEnv, registerCustomApis } from '../model/providers';
+import {
+  registerProvidersFromEnv,
+  registerCustomApis,
+  registerProvidersFromModelsJson,
+} from '../model/providers';
 import { listCustomApis } from '../model/role-models';
 import { resolveHashlineEdit } from './tui-config';
 import { readUserProfile, DEFAULT_USER_PROFILE_PATH } from './user-profile';
@@ -165,6 +169,11 @@ registerProvidersFromEnv();
 // key 从各自 keyEnv (默认 ID_API_KEY) 读 .env; 无 key 静默跳过 (/setup 提示补)。
 const customApis = registerCustomApis(listCustomApis());
 if (customApis.length) logger.info({ apis: customApis }, '[omd/config] 已注册自定 API provider');
+// ~/.pi/agent/models.json 自定 provider (统一-registry D-2): 两栈共读同一份 → callModel 也认 agent-leaf 那批。
+// 于 env/customApis 之后 → 单一真源, 同名覆盖。
+const modelsJsonApis = registerProvidersFromModelsJson();
+if (modelsJsonApis.length)
+  logger.info({ apis: modelsJsonApis }, '[omd/config] 已注册 models.json 自定 provider');
 
 // 跨模型校验 + conductor 静默升级 (verifier.ts)。verifier 默认 resolveRoleModel('verifier')=deepseek
 // (跨 conductor 避盲点); 升级模型 = OMD_CONDUCTOR_ESCALATION_MODEL (没设 / provider 未注册 → 不升级,
