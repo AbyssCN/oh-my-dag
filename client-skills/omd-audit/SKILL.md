@@ -40,5 +40,5 @@ description: 安全专项审计:经 omd dag_run 派多视角安全审查 DAG,按
 ## 与既有 skill 的边界
 
 - `/omd-audit` = **安全**专项(信任边界/注入/认证/fail-open/越权)。
-- 通用正确性 / bug / contract 审查 → `/omd-review`;确定性 semgrep 规则扫描(零 LLM,便宜)→ `/omd-sast`,可先 sast 后 audit;某次失败的根因 → `/omd-investigate`。
+- 通用正确性 / bug / contract 审查 → `/omd-review`;确定性 semgrep 规则扫描(零 LLM,便宜)→ `/omd-sast`,可先 sast 后 audit;某次失败的根因 → `/omd-debug`。
 - 审出的高危项定型后 → `/omd-note` 记录或开 pathfinder 票 `path_add` 排修。

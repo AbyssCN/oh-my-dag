@@ -1,5 +1,5 @@
 /**
- * src/mcp/tools/fleet —— dag_review / dag_slim / dag_deepen 异步 MCP 工具 + dream_consolidate 同步工具。
+ * src/mcp/tools/fleet —— dag_review / dag_slim / dag_deepen / dag_debug 异步 MCP 工具 + dream_consolidate 同步工具。
  *
  * 受监督子进程包装本仓 scripts/dag-{review,slim,deepen}.ts: Bun.spawn(['bun','run',<script>,...flags])
  * 数组参数非 shell 字符串 (无注入面), flag 白名单构造 + 值拒 `--` 前缀 (防 flag 走私), cwd 注入。
@@ -120,10 +120,16 @@ function reportPathFor(tool: string): string {
 // 工具面
 // ---------------------------------------------------------------------------
 
-/** Build 4 fleet tools: dag_review, dag_slim, dag_deepen, dream_consolidate. */
+/** Build 5 fleet tools: dag_review, dag_slim, dag_deepen, dag_debug, dream_consolidate. */
 export function createFleetTools(deps: FleetToolDeps): OmdMcpTool[] {
   const spawn = deps.spawn ?? defaultSpawn;
-  return [makeDagReview(deps, spawn), makeDagSlim(deps, spawn), makeDagDeepen(deps, spawn), makeDreamConsolidate(deps)];
+  return [
+    makeDagReview(deps, spawn),
+    makeDagSlim(deps, spawn),
+    makeDagDeepen(deps, spawn),
+    makeDagDebug(deps, spawn),
+    makeDreamConsolidate(deps),
+  ];
 }
 
 const REVIEW_GATES = ['G0', 'G1', 'G2', 'G3'] as const;
@@ -199,6 +205,43 @@ function makeDagDeepen(deps: FleetToolDeps, spawn: SpawnFn): OmdMcpTool {
         argv,
         reportPath: reportPathFor('deepen'),
         goal: `deepen commits=${commits ?? 200} hotspots=${hotspots ?? 6}`,
+      });
+      return { content: [{ type: 'text' as const, text: `runId: ${runId}\nstatus: running` }] };
+    },
+  };
+}
+
+function makeDagDebug(deps: FleetToolDeps, spawn: SpawnFn): OmdMcpTool {
+  return {
+    name: 'dag_debug',
+    description: 'Parallel multi-hypothesis root-cause debug async. failure=symptom, repro optional. No root cause→no fix. Returns runId.',
+    inputSchema: {
+      failure: z.string().min(1).describe('Failure symptom / stack trace / "worked yesterday" description'),
+      repro: z.string().optional().describe('Reproduction shell command (expected to go red)'),
+      oracleCmd: z.string().optional().describe('Red→green re-verify command (recorded; gated fix mode is future)'),
+      rounds: z.number().int().min(1).optional().describe('Max hypothesis rounds before escalating (default 3)'),
+      hypotheses: z.number().int().min(1).optional().describe('Max concurrent hypotheses per round (default 5)'),
+    },
+    handler: async (args) => {
+      const { failure, repro, oracleCmd, rounds, hypotheses } = args as {
+        failure: string; repro?: string; oracleCmd?: string; rounds?: number; hypotheses?: number;
+      };
+      // failure 是位置参数 → 防 `--` 前缀被脚本解析成 flag。
+      if (safeValue(failure) === null) {
+        return { content: [{ type: 'text' as const, text: 'dag_debug: failure must not start with "--"' }], isError: true };
+      }
+      const argv: string[] = [failure];
+      if (!pushFlag(argv, 'repro', repro) || !pushFlag(argv, 'oracle-cmd', oracleCmd)) {
+        return { content: [{ type: 'text' as const, text: 'dag_debug: repro/oracleCmd must not start with "--"' }], isError: true };
+      }
+      if (rounds !== undefined) argv.push('--rounds', String(rounds));
+      if (hypotheses !== undefined) argv.push('--hypotheses', String(hypotheses));
+      const runId = dispatchFleetRun({ ...deps, spawn }, {
+        tool: 'dag_debug',
+        script: 'scripts/dag-debug.ts',
+        argv,
+        reportPath: reportPathFor('debug'),
+        goal: `debug: ${failure.slice(0, 80)}`,
       });
       return { content: [{ type: 'text' as const, text: `runId: ${runId}\nstatus: running` }] };
     },

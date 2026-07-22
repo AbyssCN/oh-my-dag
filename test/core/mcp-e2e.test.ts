@@ -42,6 +42,7 @@ const ALL_TOOLS = [
   'dag_review',
   'dag_slim',
   'dag_deepen',
+  'dag_debug',
   'dream_consolidate',
   'dag_runs',
   // config 工具族 (omd init 的 MCP 面)
