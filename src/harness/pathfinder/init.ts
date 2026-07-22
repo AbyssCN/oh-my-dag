@@ -258,12 +258,13 @@ function ensureLabels(gh: GhRunner): void {
  * **已存在的 repo secret 跳过不覆写**: 仓库可能已配好云端专用 keyset (如 omd-actions,
  * 带独立配额墙), init 覆写会把它冲成本机 key、破坏 key 隔离。语义 = "确保有", 不是 "确保等于本机"。
  */
-function setSecrets(gh: GhRunner, env: NodeJS.ProcessEnv, ownerRepo: string): void {
+function setSecrets(gh: GhRunner, env: NodeJS.ProcessEnv, ownerRepo: string): { set: string[]; kept: string[] } {
   const existing = new Set<string>(
     (JSON.parse(run(gh, ['secret', 'list', '-R', ownerRepo, '--json', 'name'], 'setSecrets:list')) as Array<{ name: string }>).map(
       (s) => s.name,
     ),
   );
+  const kept = CLOUD_KEYS.filter((k) => existing.has(k));
   const toSet = CLOUD_KEYS.filter((k) => !existing.has(k));
   const missing = toSet.filter((k) => !(typeof env[k] === 'string' && env[k]!.trim().length > 0));
   if (missing.length > 0) {
@@ -275,6 +276,7 @@ function setSecrets(gh: GhRunner, env: NodeJS.ProcessEnv, ownerRepo: string): vo
   for (const k of toSet) {
     run(gh, ['secret', 'set', k, '-R', ownerRepo, '--body', env[k]!], `setSecrets:${k}`);
   }
+  return { set: [...toSet], kept };
 }
 
 /** 金丝雀轮询结果 (超时 → pending, 不挂死)。 */
@@ -497,9 +499,12 @@ function initGh(destination: string, cloudAfk: boolean | undefined, deps: InitDe
       out.push(`  caller: 本仓即中心 (已有 ${CENTRAL_WORKFLOW_REL}), 金丝雀直打之, 不拷 caller。`);
     }
 
-    // 3b. secrets (值从本机 env 读, 缺 → fail-loud)。
-    setSecrets(deps.gh, deps.env, ownerRepo);
-    out.push(`  secrets: ${CLOUD_KEYS.join(' / ')} 已 set 到 ${ownerRepo} (值从本机 env 复制)。`);
+    // 3b. secrets (值从本机 env 读, 缺 → fail-loud; 已存在跳过, 报告如实区分)。
+    const sec = setSecrets(deps.gh, deps.env, ownerRepo);
+    const secParts: string[] = [];
+    if (sec.set.length > 0) secParts.push(`${sec.set.join(' / ')} 已 set (值从本机 env 复制)`);
+    if (sec.kept.length > 0) secParts.push(`${sec.kept.join(' / ')} 已存在, 保留不覆写`);
+    out.push(`  secrets: ${secParts.join('; ')}。`);
 
     // 3c. canary (workflow_dispatch dry_run + 轮询)。
     canary = runCanary(deps.gh, workflowFile, ownerRepo, mapNumber, deps.canary ?? {});
