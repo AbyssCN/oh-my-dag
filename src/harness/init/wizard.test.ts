@@ -7,7 +7,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { WizardIO, PresetPersistDeps } from './wizard';
-import { runInitWizard, applyRolePreset, upsertEnv, listPiAuthReady, runPiOAuthStep, runRoleTuneStep, runProviderOverviewStep } from './wizard';
+import { runInitWizard, applyRolePreset, upsertEnv, listPiAuthReady, runPiOAuthStep, runRoleTuneStep, runProviderOverviewStep, runGrillChannelStep, GRILL_TOKEN_ENV } from './wizard';
 import { ROLE_PRESETS } from './role-presets';
 
 /** 隔离真实 ~/.pi/agent/auth.json (本机可能已登录) 的空 piAuth 注入。 */
@@ -369,6 +369,92 @@ describe('pi OAuth 步骤 (⑤′)', () => {
       ],
     });
     expect(notes.some((n) => n.includes('登录失败') && n.includes('boom'))).toBe(true);
+  });
+});
+
+describe('grill 评论区通道步 (②′)', () => {
+  // 合法 oat01 token: 前缀 + 44 字符尾段 (过 ^sk-ant-oat01-[A-Za-z0-9_-]{40,}$)。
+  const VALID_TOKEN = `sk-ant-oat01-${'A'.repeat(44)}`;
+
+  test('env 已配 token → 打码显示 + 跳过 (不消费 select, 不写 updates)', async () => {
+    const { io, notes } = scriptedIO({ selects: [], asks: [], confirms: [] });
+    const updates: Record<string, string> = {};
+    await runGrillChannelStep(io, updates, { [GRILL_TOKEN_ENV]: VALID_TOKEN }, '/tmp/fake/.env');
+    expect(updates[GRILL_TOKEN_ENV]).toBeUndefined(); // 已配不重写
+    const hit = notes.find((n) => n.includes('已配置'))!;
+    expect(hit).toContain('sk-ant-oat01-'); // 打码含前缀
+    expect(hit).not.toContain(VALID_TOKEN); // 不明文全展示
+  });
+
+  test('paste 合法 → 形状闸过 → 写 updates', async () => {
+    const { io, notes } = scriptedIO({ selects: ['paste'], asks: [VALID_TOKEN], confirms: [] });
+    const updates: Record<string, string> = {};
+    await runGrillChannelStep(io, updates, {}, '/tmp/fake/.env');
+    expect(updates[GRILL_TOKEN_ENV]).toBe(VALID_TOKEN);
+    expect(notes.some((n) => n.includes('token 已收'))).toBe(true);
+  });
+
+  test('paste 形状不符 → 重问一次; 第二次仍不符 → 跳过不写', async () => {
+    const { io, notes } = scriptedIO({ selects: ['paste'], asks: ['sk-bad', 'still-bad'], confirms: [] });
+    const updates: Record<string, string> = {};
+    await runGrillChannelStep(io, updates, {}, '/tmp/fake/.env');
+    expect(updates[GRILL_TOKEN_ENV]).toBeUndefined();
+    expect(notes.filter((n) => n.includes('形状不符')).length).toBe(2); // 重问一次 = 两次提示
+  });
+
+  test('skip → 不写 updates, 一行说明研究主链不受影响', async () => {
+    const { io, notes } = scriptedIO({ selects: ['skip'], asks: [], confirms: [] });
+    const updates: Record<string, string> = {};
+    await runGrillChannelStep(io, updates, {}, '/tmp/fake/.env');
+    expect(updates[GRILL_TOKEN_ENV]).toBeUndefined();
+    expect(notes.some((n) => n.includes('研究主链不受影响'))).toBe(true);
+  });
+
+  test('auto (注入替身不真跑 python): runAuto 成功 + 回读 → 写 env, 不写 updates', async () => {
+    const { io, notes } = scriptedIO({ selects: ['auto'], asks: [], confirms: [] });
+    const updates: Record<string, string> = {};
+    const env: Record<string, string | undefined> = {};
+    let ranWith = '';
+    await runGrillChannelStep(io, updates, env, '/tmp/fake/.env', {
+      hasPython3: () => true,
+      runAuto: (p) => {
+        ranWith = p;
+        return true;
+      },
+      readTokenFromEnv: () => VALID_TOKEN,
+    });
+    expect(ranWith).toBe('/tmp/fake/.env'); // envPath 透传给配方
+    expect(env[GRILL_TOKEN_ENV]).toBe(VALID_TOKEN); // 同步进 env 供本次 boot
+    expect(updates[GRILL_TOKEN_ENV]).toBeUndefined(); // auto 由 python 直写 envPath, 不进 updates
+    expect(notes.some((n) => n.includes('自动配方写入'))).toBe(true);
+  });
+
+  test('auto python3 缺失 → 回落 paste (替身 hasPython3=false, 不真跑)', async () => {
+    const { io, notes } = scriptedIO({ selects: ['auto'], asks: [VALID_TOKEN], confirms: [] });
+    const updates: Record<string, string> = {};
+    let autoCalled = false;
+    await runGrillChannelStep(io, updates, {}, '/tmp/fake/.env', {
+      hasPython3: () => false,
+      runAuto: () => {
+        autoCalled = true;
+        return true;
+      },
+    });
+    expect(autoCalled).toBe(false); // python 缺失不跑配方
+    expect(notes.some((n) => n.includes('python3 未找到'))).toBe(true);
+    expect(updates[GRILL_TOKEN_ENV]).toBe(VALID_TOKEN); // 回落 paste 收 token
+  });
+
+  test('auto 脚本失败 → 回落 paste (runAuto 返回 false)', async () => {
+    const { io, notes } = scriptedIO({ selects: ['auto'], asks: [VALID_TOKEN], confirms: [] });
+    const updates: Record<string, string> = {};
+    await runGrillChannelStep(io, updates, {}, '/tmp/fake/.env', {
+      hasPython3: () => true,
+      runAuto: () => false,
+      readTokenFromEnv: () => undefined,
+    });
+    expect(notes.some((n) => n.includes('自动配方未写入'))).toBe(true);
+    expect(updates[GRILL_TOKEN_ENV]).toBe(VALID_TOKEN);
   });
 });
 
