@@ -99,7 +99,7 @@ export const CHILDREN_INSTRUCTION = [
   `最多 ${MAX_CHILDREN_PER_TICKET} 条, 宁缺毋滥; 没有真值得立项的就不要输出该段。`,
 ].join('\n');
 
-/** 解析出的一条子票草案 (id 由 applyAfkResult 分配)。 */
+/** 解析出的一条子票草案 (id 由折入方分配: 后端自派, 血缘靠 parentId)。 */
 export interface ChildDraft {
   type: TicketType;
   title: string;
