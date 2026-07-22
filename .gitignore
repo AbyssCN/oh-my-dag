@@ -26,3 +26,4 @@ dist/
 
 # session 自动续接标记 — shutdown 时刷新的 transient 件, 不入库
 docs/session/_NEXT.md
+__pycache__/
