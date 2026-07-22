@@ -27,6 +27,11 @@ import { slugifyDestination } from '../pathfinder-extension';
 export const REQUIRED_SCOPES = ['repo', 'workflow'] as const;
 /** 云端 AFK 研究引擎所需的机器级 key (omd-actions keyset; 只探有无 + 复制, 不读值)。 */
 export const CLOUD_KEYS = ['DEEPSEEK_API_KEY', 'TAVILY_API_KEY'] as const;
+/**
+ * grill 评论区通道所需的机器级 key (Claude Code OAuth token, `claude setup-token` 生成; 只探有无 + 复制)。
+ * **可选件**: 与必选 CLOUD_KEYS 分开 —— 缺它不 fail (通道不启用即可), 研究主链路不受影响。
+ */
+export const GRILL_KEY = 'CLAUDE_CODE_OAUTH_TOKEN';
 
 /** path:* 全套 label + 颜色 (init 幂等确保; research-done 是 S2 workflow 打的完成标)。 */
 const PATH_LABELS: ReadonlyArray<readonly [string, string]> = [
@@ -45,6 +50,14 @@ const CALLER_WORKFLOW_REL = join('.github', 'workflows', 'path-research.yml');
 const CENTRAL_WORKFLOW_REL = join('.github', 'workflows', 'dag-research.yml');
 /** caller 模板随包发布 (package.json files 含 templates/); 相对本包根解析 (dispatch.researchScriptPath 同范式)。 */
 const CALLER_TEMPLATE_ABS = join(import.meta.dir, '..', '..', '..', 'templates', 'path-research-caller.yml');
+
+/**
+ * grill 评论区通道 workflow 落点。中心仓 (oh-my-dag 自身) 此处即真 reusable workflow (claude-grill.yml),
+ * 非中心仓则把 caller 模板拷到同一路径 —— 故「已存在 claude-grill.yml」= 本仓即中心, 不拷 (免覆写真 workflow / 双触发)。
+ */
+const GRILL_WORKFLOW_REL = join('.github', 'workflows', 'claude-grill.yml');
+/** grill caller 模板随包发布 (同 CALLER_TEMPLATE_ABS 范式)。 */
+const GRILL_CALLER_TEMPLATE_ABS = join(import.meta.dir, '..', '..', '..', 'templates', 'claude-grill-caller.yml');
 
 // ── 探测梯 (纯函数 + 注入探针) ────────────────────────────────────────────────────
 
@@ -279,6 +292,52 @@ function setSecrets(gh: GhRunner, env: NodeJS.ProcessEnv, ownerRepo: string): { 
   return { set: [...toSet], kept };
 }
 
+/**
+ * grill 评论区通道铺设 (**可选件**, 与必选 CLOUD_KEYS 分开): 探「repo secret 已存在 ∨ 本机 env 有值」。
+ *   - 满足 → 确保 secret (已存在跳过, 同 setSecrets 语义) + 非中心仓拷 grill caller → enabled=true。
+ *   - 两者皆无 → **不 fail** (可选件缺凭证不阻断 init), 报告一行指路 → enabled=false。
+ * 中心仓 (已有 claude-grill.yml = 真 reusable workflow) 不拷 caller, 免覆写真 workflow / 双触发。
+ */
+function setupGrillChannel(deps: InitDeps, ownerRepo: string): { enabled: boolean; line: string } {
+  const existing = new Set<string>(
+    (JSON.parse(run(deps.gh, ['secret', 'list', '-R', ownerRepo, '--json', 'name'], 'grill:secretList')) as Array<{ name: string }>).map(
+      (s) => s.name,
+    ),
+  );
+  const secretExists = existing.has(GRILL_KEY);
+  const envVal = deps.env[GRILL_KEY];
+  const hasEnv = typeof envVal === 'string' && envVal.trim().length > 0;
+
+  // 可选件缺凭证: 不 fail, 报告指路 (`claude setup-token` 生成 token 存本机 env 后重跑 path_init 可启用)。
+  if (!secretExists && !hasEnv) {
+    return {
+      enabled: false,
+      line: `  grill 评论区通道未启用 (缺 ${GRILL_KEY} — \`claude setup-token\` 生成后存本机 env 重跑 path_init 可启用)。`,
+    };
+  }
+
+  // secret 确保 (已存在跳过不覆写, 同 setSecrets 语义: 语义 = "确保有", 不冲已配好的 token)。
+  let secPart: string;
+  if (secretExists) {
+    secPart = `${GRILL_KEY} 已存在, 保留不覆写`;
+  } else {
+    run(deps.gh, ['secret', 'set', GRILL_KEY, '-R', ownerRepo, '--body', envVal!], 'grill:secretSet');
+    secPart = `${GRILL_KEY} 已 set (值从本机 env 复制)`;
+  }
+
+  // 非中心仓拷 caller (中心仓已有 claude-grill.yml, 不拷)。
+  const central = (deps.hasGrillWorkflow ?? (() => existsSync(join(deps.cwd, GRILL_WORKFLOW_REL))))();
+  let callerPart: string;
+  if (central) {
+    callerPart = '本仓即中心 (已有 claude-grill.yml), 不拷 caller';
+  } else {
+    const tpl = (deps.readGrillTemplate ?? (() => readFileSync(GRILL_CALLER_TEMPLATE_ABS, 'utf8')))();
+    (deps.writeWorkflow ?? ((p, c) => writeWorkflowFile(p, c)))(join(deps.cwd, GRILL_WORKFLOW_REL), tpl);
+    callerPart = `caller 已写 ${GRILL_WORKFLOW_REL} (pin @v1)`;
+  }
+  return { enabled: true, line: `  grill 评论区通道: ${secPart}; ${callerPart}。` };
+}
+
 /** 金丝雀轮询结果 (超时 → pending, 不挂死)。 */
 export interface CanaryResult {
   status: 'success' | 'failure' | 'pending';
@@ -349,6 +408,8 @@ export function probeNativeDependencies(gh: GhRunner): boolean {
 export interface PathfinderConfig {
   backend: 'md' | 'gh';
   cloudAfk?: boolean;
+  /** grill 评论区通道是否启用 (可选件; 缺 CLAUDE_CODE_OAUTH_TOKEN → false, 不阻断 init)。 */
+  grillChannel?: boolean;
   capabilities?: { nativeDependencies: boolean };
   canary?: CanaryResult & { at: string; workflow?: string };
 }
@@ -384,6 +445,10 @@ export interface InitDeps {
   writeConfig?: (cfg: PathfinderConfig) => void;
   /** 本仓是否已有中心 dag-research.yml (是 → 金丝雀直打它不拷 caller); 省略 = existsSync 探。 */
   hasCentralWorkflow?: () => boolean;
+  /** 读 grill caller 模板正文; 省略 = 读随包 templates/claude-grill-caller.yml。 */
+  readGrillTemplate?: () => string;
+  /** 本仓是否已有中心 claude-grill.yml (是 → 不拷 grill caller); 省略 = existsSync 探。 */
+  hasGrillWorkflow?: () => boolean;
   /** 金丝雀轮询预算 (测试注入 no-op sleep)。 */
   canary?: CanaryOpts;
   /** 原生依赖探针 (省略 = probeNativeDependencies(gh))。 */
@@ -487,6 +552,7 @@ function initGh(destination: string, cloudAfk: boolean | undefined, deps: InitDe
 
   let canary: CanaryResult | undefined;
   let nativeDeps = false;
+  let grillEnabled = false;
   if (wantCloud) {
     // 3a. caller: 本仓即中心 (已有 dag-research.yml) → 金丝雀直打它, 不拷 caller (免双触发同 issue 事件)。
     const central = (deps.hasCentralWorkflow ?? (() => existsSync(join(deps.cwd, CENTRAL_WORKFLOW_REL))))();
@@ -518,6 +584,11 @@ function initGh(destination: string, cloudAfk: boolean | undefined, deps: InitDe
     nativeDeps = (deps.probeNative ?? probeNativeDependencies)(deps.gh);
     out.push(`  原生 issue-dependencies: ${nativeDeps ? '可用 (记入 config; 切换真相源仍待人工确认, 见 ?)' : '不可用/未确认 — 维持 body 尾行 Blocked-by 单真相 (D-C.1)'}。`);
 
+    // 3e. grill 评论区通道 (可选件, 缺 CLAUDE_CODE_OAUTH_TOKEN 不 fail, 只报未启用)。
+    const grill = setupGrillChannel(deps, ownerRepo);
+    grillEnabled = grill.enabled;
+    out.push(grill.line);
+
     if (ladder.visibility === 'public') {
       out.push(`  ⚠ 本仓 public: map issue #${mapNumber} (决策历史) 现公开可读。`);
     }
@@ -527,6 +598,7 @@ function initGh(destination: string, cloudAfk: boolean | undefined, deps: InitDe
   const cfg: PathfinderConfig = {
     backend: 'gh',
     cloudAfk: wantCloud,
+    ...(wantCloud ? { grillChannel: grillEnabled } : {}),
     capabilities: { nativeDependencies: nativeDeps },
     ...(canary ? { canary: { ...canary, at: new Date().toISOString() } } : {}),
   };
