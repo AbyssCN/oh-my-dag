@@ -17,8 +17,6 @@ import { verifyFindings, type VerifiedFinding, type ReviewSendFn } from './verif
 import { findLatestSdd } from '../execute-extension';
 import { send } from '../../model/gateway';
 import { roleModelWithFallback } from '../../model/role-fallback';
-import type { ConductorPlan } from '../conductor-plan';
-import type { ExecutorDagConfig, ExecutorDagResult } from '../executor-dag-types';
 
 /** reasoning_effort 档 (send 的 thinkingLevel; high/xhigh → deepseek reasoning_effort high/max)。 */
 type ReviewEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';
@@ -62,8 +60,13 @@ export interface RunReviewDeps {
   findSdd?: (planDir: string) => { path: string; text: string } | null;
   /** env (默认 process.env; 测 OMD_REVIEW_SPEC_MODEL 等不污染进程)。 */
   env?: Record<string, string | undefined>;
-  /** 注入式 runExecutorDagWithPlan (DAG 路径测试用; 默认真实现)。 */
-  runDag?: (plan: ConductorPlan, config: ExecutorDagConfig) => Promise<ExecutorDagResult>;
+  /** 注入式 verifyFindings (单 agent 路径测试用; 默认真实现,避免测试打 live 模型 / grep)。 */
+  verifyFindings?: (
+    dimTexts: { dimension: string; text: string }[],
+    opts: { model: string; cwd?: string; verdictEffort?: ReviewEffort; send?: ReviewSendFn },
+  ) => Promise<VerifiedFinding[]>;
+  /** 注入式单 agent runner (arm C 测试用; 默认 createAgentLeafRunner)。 */
+  agentRun?: (input: { prompt: string; model: string }) => Promise<{ text: string }>;
 }
 
 export interface RunReviewOpts {
@@ -86,10 +89,8 @@ export interface RunReviewOpts {
   verify?: boolean;
   /** 取证 cwd (默认 process.cwd(), 即被审仓库根; spec 轴也在 <cwd>/docs/plan 找 SDD)。 */
   cwd?: string;
-  /** DAG-native 内核 opt-in(默认 opts.dag ?? env OMD_REVIEW_DAG==='1';off → 走老 Promise.all)。 */
-  dag?: boolean;
-  /** verify map 扇出上限(DAG 路径;默认 24)。 */
-  maxFindings?: number;
+  /** 深审 opt-in:单 agent review(读全仓 + 实测 → 确定性 verify)。默认 opts.single ?? OMD_REVIEW_SINGLE==='1';off → 老 Promise.all。 */
+  single?: boolean;
   /** 注入依赖 (测试用)。 */
   deps?: RunReviewDeps;
 }
@@ -104,11 +105,11 @@ export const SPEC_SKIPPED_NOTE = '无 SDD (docs/plan 下未找到 .md) — spec 
 export async function runReview(opts: RunReviewOpts): Promise<RunReviewResult> {
   const dims = opts.dims ?? DIMS_BY_GATE[opts.gate];
   const env = opts.deps?.env ?? process.env;
-  // REVIEW-2 灰度分流: opts.dag / OMD_REVIEW_DAG=1 → DAG-native 内核(动态 import 破循环依赖)。
-  // 默认 off → 走下方老 Promise.all(dag-build 零风险)。
-  if (opts.dag ?? env.OMD_REVIEW_DAG === '1') {
-    const { runReviewDag } = await import('./run-dag');
-    return runReviewDag(opts);
+  // 分流(动态 import 破循环): 单 agent 深审 opt-in > 老 Promise.all(默认,dag-build 零风险)。
+  // (DAG 分解路径 3 轮实测败给单 agent — 召回不加、精度更差、故障模式更多 — 已删,见 SDD。)
+  if (opts.single ?? env.OMD_REVIEW_SINGLE === '1') {
+    const { runReviewSingle } = await import('./run-single');
+    return runReviewSingle(opts);
   }
   const sendFn = opts.deps?.send ?? send;
   const findSdd = opts.deps?.findSdd ?? findLatestSdd;
