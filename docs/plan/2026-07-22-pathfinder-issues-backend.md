@@ -124,8 +124,20 @@ export function resolveBackend(cwd: string): PathBackend;
 - **TUI/MCP 双折入**(承 §4 S3 补记③):md 专属的 TUI `watchAfkResults`(4s 轮询)与后端无关的 MCP `reflowResearchResults` 两条折入路径并存;语义变更须两处同步。S5 未收敛(不在本片范围),留后评估。
 - **memory 写入是单向增益**:裁决不因 memory 故障回滚,memory 也不反向驱动裁决;消费端(`memory_recall` / 会话开场)自取。
 
-### 待办(交付后,非本片 oracle 门内)
+### §7 真 gh 演习(2026-07-22 已完成 · AbyssCN/oh-my-dag)
 
-- **真 gh 演习**(§7):在 AbyssCN/oh-my-dag 开一张真图走 add→label→Actions→评论→折入→rule→close 全链(gh 调用全程注入 fixture 测过,真 gh 往返尚未演习)。
-- **reusable workflow `@v1` tag 发布**(D-F):caller pin `@v1`,发布前 caller 模板指向未固定 ref。
-- **D-C.1 真相源切换**:blockedBy 现以 body 尾行 `Blocked-by: #N` 为准;原生 issue-dependencies API 切换是**人工闸**,待 init 金丝雀探测确认可用后单向切,永不双源并存。
+全链真跑通:`path_init`(labels + map issue **#15** + secrets 保留 + 金丝雀 success 真贴评论 + 原生依赖探测=**可用**)→ `addTicket` 建 **#16**(sub-issue 挂 #15)→ label 触发云端真研究(deepseek flash/pro,~$0.5/次)→ 锚点评论落票 → `reflowResearchResults` 折入 → #16 ruled+CLOSED+resolution 评论+ack。权力闸实战验证:`path:map` label 触发的 run 被正确 skipped。
+
+**演习揪出并修复 5 个「金丝雀绿而真链路暗坏」缺陷**(全部 commit 在 main):
+1. init secrets 无条件覆写 → 改「确保有」跳过已存在(保 omd-actions keyset);
+2. init 报告谎称「已 set」→ 如实区分 set/kept;
+3. 评论贴 `--out` 全档 → cat 几 MB 噎死日志管道 + 必撞 GitHub 评论 65536 上限 → 改贴 stdout 终稿 + 60000 截断护栏;
+4. pino-pretty transport 在 worker 线程绕开 `setLoggerDestination` 直灌 stdout(CI 未设 NODE_ENV 即中)→ transport destination 钉死 stderr + script-bootstrap 统一改道;
+5. stdout 裸终稿缺 `## 终稿` 锚点、金丝雀假结果反而带 → workflow 真研究分支统一前置锚点。
+
+已知 polish(非阻断):distill 首段作 ruling 会取到 LLM 开场白(「好的。作为首席架构师…」)——全文仍在结果评论里,裁决语义无损;后续可在 distill 加开场白剥离。auto-fold 的 ruling 经 backend.rule 直写,不走 path_rule → **不写 memory**(语义正确:memory 记 owner 决策,不记自动蒸馏)。
+
+### 待办(交付后)
+
+- **D-C.1 真相源切换**:blockedBy 现以 body 尾行 `Blocked-by: #N` 为准;演习探测 + #16 研究结论均确认原生 issue-dependencies **已 GA + REST/GraphQL 全套可用**——切换材料齐备,是**人工闸**,owner 明令后单向切,永不双源并存。
+- `@v1` tag 已发布(指向含全部演习修复的 commit)。
