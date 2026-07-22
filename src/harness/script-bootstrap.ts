@@ -15,9 +15,15 @@
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import '../env-alias';
+import { setLoggerDestination } from '../logger';
 import { resolveProject, setActiveProject } from './project-scope';
 
 process.env.OMD_DATA_HOME ??= join(homedir(), '.omd');
+
+// ③ 脚本契约 = 「stdout 是答案, 日志走 stderr」(xihe-* 消费铁律 `2>/dev/null`; Actions 贴评论
+// 直接吃 stdout)。logger 默认 fd=1, 只有 MCP 入口自行改道 → 脚本入口在此统一改道 stderr
+// (2026-07-22 演习实测: role-seat WARN 混进 issue 评论)。TUI 不 import 本模块, 不受影响。
+setLoggerDestination(2);
 
 try {
   setActiveProject(resolveProject());

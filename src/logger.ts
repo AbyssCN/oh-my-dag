@@ -26,7 +26,10 @@ export const logger = pino(
       ? {
           transport: {
             target: 'pino-pretty',
-            options: { colorize: true, translateTime: 'HH:MM:ss.l', ignore: 'pid,hostname' },
+            // destination: 2 (stderr) 钉死: transport 在 worker 线程写自己的 fd, 完全绕开下方可变
+            // destination 流 → setLoggerDestination 对它无效。stdout 必须留给协议帧 (MCP) / 答案
+            // (dag-* 脚本, 2026-07-22 演习实测 WARN 混进 issue 评论)。
+            options: { colorize: true, translateTime: 'HH:MM:ss.l', ignore: 'pid,hostname', destination: 2 },
           },
         }
       : {}),
