@@ -12,7 +12,7 @@
  *     写入仍过 validateFactWrite 校验闸, D-5)。
  *   - research 工具: 现有 researchFanout 接缝 (harness/research/fanout) 适配成 MCP 三段返回
  *     {runId, reportPath, summary} (报告全文落盘 .omd/research/, D-8 宽出)。
- *   - fleet 四工具: createFleetTools (dag_review/slim/deepen 异步子进程 + dream_consolidate 同步泵;
+ *   - fleet 五工具: createFleetTools (dag_review/slim/deepen/debug 异步子进程 + dream_consolidate 同步泵;
  *     spawn 接缝默认 Bun.spawn, dream 接缝注入; runRegistry/cwd 同现有)。
  *   - runs 工具: createRunsTools (dag_runs 同步列表: 内存 registry ∪ 磁盘 continuity 合并去重)。
  *
