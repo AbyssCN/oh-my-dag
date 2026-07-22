@@ -56,7 +56,7 @@ function fakePersist(): {
   return {
     calls,
     persist: {
-      persistCustomApi: (def) => calls.apis.push(def.id),
+      upsertProvider: (input: { id: string; baseUrl: string; keyEnv: string }) => calls.apis.push(input.id),
       persistMultimodalPool: (coords) => calls.pools.push(coords),
       persistMultimodalPoolPremium: (coords) => calls.premiums.push(coords),
       persistRoleModel: (role, coord) => calls.roles.push([role, coord]),

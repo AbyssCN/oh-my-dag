@@ -2,8 +2,8 @@
  * init/role-presets —— 角色模型矩阵预设 (wizard 步骤⑥的数据源)。
  *
  * 模型 id 字符串只住这里 (provider 换代改这一个文件); wizard 泛化消费:
- * env 合并进 updates → keyPrompt 补缺 key → persistCustomApi / persistMultimodalPool /
- * persistMultimodalPoolPremium / persistRoleModel 落 config.json → 汇总表。
+ * env 合并进 updates → keyPrompt 补缺 key → upsertProvider (自定 provider → models.json) /
+ * persistMultimodalPool / persistMultimodalPoolPremium / persistRoleModel 落盘 → 汇总表。
  *
  * 三档哲学:
  *   ① 基础档 base-opencode-go —— 一把 OPENCODE_API_KEY 走 opencode go 网关, 多家族混编:
@@ -95,7 +95,7 @@ export interface RolePreset {
   multimodalPool?: string[];
   /** 多模态贵层池 (persistMultimodalPoolPremium; 置信不足/显式深读时升级)。 */
   multimodalPoolPremium?: string[];
-  /** 需注册的自定 OpenAI 兼容 API (persistCustomApi 按 id upsert)。 */
+  /** 需注册的自定 OpenAI 兼容 provider (upsertProvider 按 id merge 写 ~/.pi/agent/models.json)。 */
   customApis?: RolePresetCustomApi[];
   /** 缺则提示粘贴的 key (回车跳过)。 */
   keyPrompts?: RolePresetKeyPrompt[];

@@ -24,6 +24,13 @@ import {
   toggleHud,
   type KeyTarget,
 } from '../../harness/init/headless-config';
+import {
+  listCustomProviderStatus,
+  modelsJsonPath,
+  upsertModel,
+  upsertProvider,
+  type ModelPatch,
+} from '../../model/models-json';
 
 export interface ConfigToolDeps {
   /** repo 根 (写 .env / config.json / .claude 的基准)。 */
@@ -47,6 +54,8 @@ export function createConfigTools(deps: ConfigToolDeps): OmdMcpTool[] {
     makeSetKey(cwd),
     makeApplyPreset(cwd),
     makeSetRole(),
+    makeRegisterProvider(),
+    makeSetModel(),
     makeConfigStatus(deps.router),
     makeToggleHud(cwd),
   ];
@@ -143,6 +152,92 @@ function makeSetRole(): OmdMcpTool {
   };
 }
 
+function makeRegisterProvider(): OmdMcpTool {
+  return {
+    name: 'omd_register_provider',
+    description:
+      'Register/update a custom OpenAI/Anthropic provider → models.json. Key as $KEYENV ref (set via omd_set_key).',
+    inputSchema: {
+      id: z.string().describe("Provider id (coord prefix), e.g. 'zhipu', 'minimax-cn'"),
+      baseUrl: z.string().describe('OpenAI/Anthropic-compatible base URL'),
+      keyEnv: z.string().describe("Env var name holding the API key (stored as $NAME), e.g. 'ZHIPU_API_KEY'"),
+      api: z
+        .string()
+        .optional()
+        .describe("pi api name (default 'openai-completions'; use 'anthropic-messages' for Anthropic-shaped)"),
+      models: z
+        .array(
+          z.object({
+            id: z.string().describe('Model id (coord suffix)'),
+            maxTokens: z.number().optional().describe('Max output tokens'),
+            contextWindow: z.number().optional().describe('Context window size'),
+          }),
+        )
+        .optional()
+        .describe('Model entries to upsert (merged by id; omitted models preserved)'),
+    },
+    handler: async ({ id, baseUrl, keyEnv, api, models }) => {
+      try {
+        const r = upsertProvider({
+          id: id as string,
+          baseUrl: baseUrl as string,
+          keyEnv: keyEnv as string,
+          ...(api ? { api: api as string } : {}),
+          ...(models ? { models: models as ModelPatch[] } : {}),
+        });
+        const lines = [
+          `✓ provider '${id}' ${r.created ? '已登记' : '已更新'} → ${modelsJsonPath()}`,
+          `  baseUrl=${baseUrl} · apiKey=$${keyEnv} · api=${api ?? 'openai-completions'}`,
+          ...(Array.isArray(models) && models.length
+            ? [`  models: ${(models as ModelPatch[]).map((m) => m.id).join(', ')}`]
+            : []),
+          '  两栈 (callModel + agent-leaf) 下次解析即读; key 未设 → 用 omd_set_key 补。',
+        ];
+        return ok(lines.join('\n'));
+      } catch (e) {
+        return err(`omd_register_provider 失败: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+  };
+}
+
+function makeSetModel(): OmdMcpTool {
+  return {
+    name: 'omd_set_model',
+    description:
+      'Update a model maxTokens/contextWindow → models.json. Provider must exist (register it first).',
+    inputSchema: {
+      coord: z.string().describe("Model coordinate 'provider:model', e.g. 'zhipu:glm-4.6'"),
+      maxTokens: z.number().optional().describe('Max output tokens'),
+      contextWindow: z.number().optional().describe('Context window size'),
+    },
+    handler: async ({ coord, maxTokens, contextWindow }) => {
+      try {
+        const patch = {
+          ...(typeof maxTokens === 'number' ? { maxTokens } : {}),
+          ...(typeof contextWindow === 'number' ? { contextWindow } : {}),
+        };
+        if (Object.keys(patch).length === 0) {
+          return err('omd_set_model: maxTokens 或 contextWindow 至少给一个');
+        }
+        const r = upsertModel(coord as string, patch);
+        if (!r.providerFound) {
+          return err(
+            `omd_set_model: provider '${r.provider}' 不在 models.json — 先用 omd_register_provider 登记它。`,
+          );
+        }
+        return ok(
+          `✓ model '${coord}' ${r.created ? '已加' : '已更新'} (${Object.entries(patch)
+            .map(([k, v]) => `${k}=${v}`)
+            .join(', ')}) → ${modelsJsonPath()}`,
+        );
+      } catch (e) {
+        return err(`omd_set_model 失败: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+  };
+}
+
 function makeConfigStatus(router?: ConfigToolDeps['router']): OmdMcpTool {
   return {
     name: 'omd_config_status',
@@ -164,7 +259,17 @@ function makeConfigStatus(router?: ConfigToolDeps['router']): OmdMcpTool {
           for (const e of s.envRoles) lines.push(`  ${e.label.padEnd(16)} ${e.coord.padEnd(34)} ${mark(e.hasCredential)}`);
         }
         if (s.multimodalPool.length) lines.push('', `多模态池: ${s.multimodalPool.join(', ')}`);
-        if (s.customApis.length) lines.push('', `自定 API: ${s.customApis.map((a) => `${a.id} (${a.baseUrl})`).join(', ')}`);
+        // models.json 自定 provider (统一-registry 单一真源, 两栈共读; pi-native 只读, 经 omd_register_provider 写)。
+        const customProviders = listCustomProviderStatus(process.env);
+        if (customProviders.length) {
+          lines.push('', 'models.json 自定 provider (~/.pi/agent/models.json, 两栈共读):');
+          for (const cp of customProviders) {
+            const models = cp.models.length ? cp.models.map((m) => m.id).join(', ') : '(端点级, 无 per-model)';
+            const keyNote = cp.keyEnv ? `$${cp.keyEnv}` : '字面 key';
+            lines.push(`  ${cp.id.padEnd(16)} ${mark(cp.hasKey)} ${keyNote} · ${cp.baseUrl}`);
+            lines.push(`  ${' '.repeat(16)}   models: ${models}`);
+          }
+        }
         // bandit 学习状态 (ROUTER-5 成本 reward): 让"静默学习"可见 — n=拉取次数, meanReward=均值。
         const arms = router?.arms() ?? [];
         if (arms.length) {
