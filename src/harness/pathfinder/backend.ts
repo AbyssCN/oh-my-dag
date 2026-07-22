@@ -219,6 +219,21 @@ function configuredBackend(cwd: string): 'md' | 'gh' | null {
   }
 }
 
+/**
+ * 从 config 读原生依赖能力开关 (D-C.2 门: init 金丝雀探测写入 capabilities.nativeDependencies)。
+ * 缺文件 / 坏 json / 无字段 → false 保守 (env 强制 gh 而无 config 时也走 legacy body 尾行, 不猜)。
+ */
+function configuredNativeDeps(cwd: string): boolean {
+  const p = join(cwd, '.omd', 'pathfinder', 'config.json');
+  if (!existsSync(p)) return false;
+  try {
+    const j = JSON.parse(readFileSync(p, 'utf8')) as { capabilities?: { nativeDependencies?: unknown } };
+    return j.capabilities?.nativeDependencies === true;
+  } catch {
+    return false;
+  }
+}
+
 /** resolveBackend 的注入接缝 (测试传替身)。省略 = 生产默认 (process.env + Bun.spawnSync gh)。 */
 export interface ResolveBackendDeps {
   /** 环境变量源 (读 OMD_PATH_BACKEND)。默认 process.env。 */
@@ -240,5 +255,6 @@ export function resolveBackend(cwd: string, deps: ResolveBackendDeps = {}): Path
   const choice: 'md' | 'gh' = explicit ?? configuredBackend(cwd) ?? 'md';
   if (choice === 'md') return createMdBackend();
   const gh = deps.gh ?? defaultGhRunner(cwd);
-  return createGhBackend(gh); // 构造即探测, 失败 throw 带修复命令
+  // blockedBy 真相源 (D-C.2) 由 config.capabilities.nativeDependencies 定, 缺省 false (legacy body 尾行)。
+  return createGhBackend(gh, configuredNativeDeps(cwd)); // 构造即探测, 失败 throw 带修复命令
 }

@@ -9,9 +9,13 @@
  * **测试注入 fixture, 永不真调 gh** (dispatch.ts 同款 idiom: 纯决策 + 注入副作用)。
  *
  * id 约定 (D-D): 票 id = issue number 的 `#N` 串, 无内部映射表; map slug = map issue number 串 (无 `#`)。
- * blockedBy (D-C, 单真相不混用): S1 以 issue **正文尾行** `Blocked-by: #N, #M` 为唯一真相
- *   (确定性 · 读写对称 · 不赌 preview 版原生 dependencies GraphQL)。native issue-dependencies 待可
- *   对真 gh 验证时再接 (届时单向切换真相源, 不与 body 并存)。
+ * blockedBy (D-C, 单真相不混用) —— 由 `nativeDeps` 开关二选一, **无 fallback 交叉** (每仓恰一真相):
+ *   - **legacy** (nativeDeps=false, 老 GHE): issue **正文尾行** `Blocked-by: #N, #M` 为唯一真相
+ *     (确定性 · 读写对称 · 不赌 preview 版原生 dependencies GraphQL)。
+ *   - **native** (nativeDeps=true, D-C.2 owner 明令切换): GitHub 原生 issue-dependencies ——
+ *     读走 GraphQL `blockedBy(first:N){nodes{number}}` 字段, 写走 REST
+ *     `POST /repos/{o}/{r}/issues/{n}/dependencies/blocked_by` (issue_id = blocking 票 databaseId);
+ *     **完全不读不写 body 尾行**。开关由 resolveBackend 从 config.capabilities.nativeDependencies 读, 缺省 false。
  */
 import { deriveStatus } from './frontier';
 import { looksLikeResult } from './result-format';
@@ -100,7 +104,10 @@ function baseStatus(state: string, labels: string[]): TicketStatus {
 }
 
 // GraphQL: map issue + 两层 sub-issue + 标签/评论 (一次抓齐, SDD "readMap 每次实时拼, 不做缓存层")。
-const READ_MAP_QUERY = `query($owner:String!,$repo:String!,$number:Int!){
+// native 策略额外并进 `blockedBy(first:50){nodes{number}}` (D-C.2: 前沿边真相走原生依赖, readMap 仍一次抓齐)。
+function readMapQuery(nativeDeps: boolean): string {
+  const blockedByField = nativeDeps ? '\n        blockedBy(first:50){ nodes{ number } }' : '';
+  return `query($owner:String!,$repo:String!,$number:Int!){
   repository(owner:$owner,name:$repo){
     issue(number:$number){
       number title body state
@@ -108,11 +115,12 @@ const READ_MAP_QUERY = `query($owner:String!,$repo:String!,$number:Int!){
         number title body state
         labels(first:20){ nodes{ name } }
         comments(first:50){ nodes{ body } }
-        subIssues(first:100){ nodes{ number } }
+        subIssues(first:100){ nodes{ number } }${blockedByField}
       }}
     }
   }
 }`;
+}
 
 const ADD_SUB_ISSUE_MUTATION = `mutation($parentId:ID!,$childId:ID!){
   addSubIssue(input:{issueId:$parentId,subIssueId:$childId}){ issue{ number } }
@@ -129,6 +137,8 @@ interface GqlSubTicket {
   labels: { nodes: GqlLabel[] };
   comments: { nodes: Array<{ body: string }> };
   subIssues: { nodes: Array<{ number: number }> };
+  /** native 策略专属: 原生 issue-dependencies 前置票 (legacy 策略该字段不查, 为 undefined)。 */
+  blockedBy?: { nodes: Array<{ number: number }> };
 }
 interface GqlMapIssue {
   number: number;
@@ -143,8 +153,11 @@ interface GqlMapIssue {
 /**
  * 构造 gh 后端: 先探 `gh repo view --json nameWithOwner` (一次覆盖 gh 装没装 / 认没认证 / 有没 remote
  * 三种失败, D-E fail-loud)。owner/repo 缓存进闭包供后续 GraphQL 用。探测失败 → throw 带修复命令。
+ *
+ * `nativeDeps` (缺省 false 保守): blockedBy 真相源二选一 (D-C.2, 每仓恰一真相, 无 fallback 交叉) ——
+ *   false = legacy body 尾行; true = 原生 issue-dependencies (读 GraphQL 字段 / 写 REST POST)。
  */
-export function createGhBackend(gh: GhRunner): PathBackend {
+export function createGhBackend(gh: GhRunner, nativeDeps = false): PathBackend {
   const probe = gh(['repo', 'view', '--json', 'nameWithOwner']);
   if (probe.exitCode !== 0) {
     throw new Error(
@@ -167,15 +180,26 @@ export function createGhBackend(gh: GhRunner): PathBackend {
     throw new Error(`pathfinder gh 后端: 解析不到 owner/repo (gh repo view 输出: ${probe.stdout.trim()}) — 设 OMD_PATH_BACKEND=md 回退。`);
   }
 
+  // 该后端实例的 read 查询按策略定型一次 (native 多并一个 blockedBy 字段)。
+  const readQuery = readMapQuery(nativeDeps);
+
   /** 跑 readMap 的 GraphQL, 返回 map issue 节点 (不存在 → null)。 */
   const fetchMap = (mapNumber: number): GqlMapIssue | null => {
     const out = run(
       gh,
-      ['api', 'graphql', '-H', SUB_ISSUE_HEADER, '-f', `query=${READ_MAP_QUERY}`, '-f', `owner=${owner}`, '-f', `repo=${repo}`, '-F', `number=${mapNumber}`],
+      ['api', 'graphql', '-H', SUB_ISSUE_HEADER, '-f', `query=${readQuery}`, '-f', `owner=${owner}`, '-f', `repo=${repo}`, '-F', `number=${mapNumber}`],
       'readMap',
     );
     const j = JSON.parse(out) as { data?: { repository?: { issue?: GqlMapIssue | null } } };
     return j.data?.repository?.issue ?? null;
+  };
+
+  /** native 策略: 取一张 issue 的 databaseId (REST dependencies 端点收 databaseId, 非 number)。 */
+  const databaseId = (issueNumber: string, ctx: string): string => {
+    const out = run(gh, ['api', `repos/${owner}/${repo}/issues/${issueNumber}`, '--jq', '.id'], ctx);
+    const id = out.trim();
+    if (!id) throw new Error(`${ctx}: issue ${issueNumber} 取不到 databaseId`);
+    return id;
   };
 
   return {
@@ -204,11 +228,13 @@ export function createGhBackend(gh: GhRunner): PathBackend {
         const status = baseStatus(sub.state, labels);
         const ruling = status === 'ruled' || status === 'delivered' ? parseRuling(sub.comments.nodes) : undefined;
         const children = sub.subIssues.nodes.map((c) => `#${c.number}`);
+        // blockedBy 单真相 (D-C.2): native 读原生依赖字段, legacy 读 body 尾行, 二选一不混用。
+        const blockedBy = nativeDeps ? (sub.blockedBy?.nodes ?? []).map((n) => `#${n.number}`) : parseBlockedBy(body);
         return {
           id: `#${sub.number}`,
           type,
           title,
-          blockedBy: parseBlockedBy(body),
+          blockedBy,
           status,
           ...(ruling !== undefined ? { ruling } : {}),
           ...(children.length > 0 ? { children } : {}),
@@ -237,7 +263,8 @@ export function createGhBackend(gh: GhRunner): PathBackend {
     addTicket: (_cwd, slug, nt) => {
       const bodyLines: string[] = [];
       if (nt.body) bodyLines.push(nt.body);
-      if (nt.blockedBy.length > 0) bodyLines.push(`Blocked-by: ${nt.blockedBy.join(', ')}`);
+      // legacy 策略: blockedBy 落 body 尾行 (单真相)。native 策略: body 绝不写尾行, 前置边走原生 REST (见下)。
+      if (!nativeDeps && nt.blockedBy.length > 0) bodyLines.push(`Blocked-by: ${nt.blockedBy.join(', ')}`);
       const body = bodyLines.join('\n\n');
       const out = run(
         gh,
@@ -255,6 +282,18 @@ export function createGhBackend(gh: GhRunner): PathBackend {
         ['api', 'graphql', '-H', SUB_ISSUE_HEADER, '-f', `query=${ADD_SUB_ISSUE_MUTATION}`, '-f', `parentId=${parentId}`, '-f', `childId=${childId}`],
         'addTicket:addSubIssue',
       );
+
+      // native 策略 (D-C.2): 逐个 blocking 票取 databaseId → REST POST 建原生依赖 (任一失败 fail-loud)。
+      if (nativeDeps) {
+        for (const dep of nt.blockedBy) {
+          const depId = databaseId(bareNumber(dep), 'addTicket:blockedByLookup');
+          run(
+            gh,
+            ['api', '-X', 'POST', `repos/${owner}/${repo}/issues/${number}/dependencies/blocked_by`, '-F', `issue_id=${depId}`],
+            'addTicket:blockedBy',
+          );
+        }
+      }
 
       const t: Ticket = {
         id: `#${number}`,
