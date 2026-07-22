@@ -87,7 +87,11 @@ jobs:
             # 贴票的是**终稿 (stdout)**, 不是 --out 全档 (含全文语料附录, 几 MB): 全档 cat 会噎死
             # runner 日志管道, 贴评论会撞 GitHub 65536 字符上限 (2026-07-22 演习 run 29936271221 实测)。
             QUERY=$(printf '%s\n%s' "$TITLE" "$BODY")
-            bun run scripts/dag-research.ts "$QUERY" --out result.md > comment.md
+            bun run scripts/dag-research.ts "$QUERY" --out result.md > answer.md
+            # 前置终稿锚点: S3 折入以 `## 终稿` 认结果评论 (result-format.FINAL_HEADING 契约);
+            # 脚本 stdout 是裸终稿不带该标题 (2026-07-22 演习实测折入报"结果缺失")。
+            printf '## 终稿 (综合判优)\n\n' > comment.md
+            cat answer.md >> comment.md
             # 65536 上限护栏: >60000 截断 + 指路 run artifact。
             if [ "$(wc -c < comment.md)" -gt 60000 ]; then
               head -c 60000 comment.md > comment.tmp
