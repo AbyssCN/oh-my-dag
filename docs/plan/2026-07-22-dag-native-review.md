@@ -1,7 +1,30 @@
-# SDD — DAG-native review:runReview 上 executor-dag(find 拿代码库访问 + verify map)
+# SDD — review 深度升级:实测把"DAG 分解"证否,收敛到单 agent
 
 > 承接会话:omd-review 深度评估 → 升级共享承重件 runReview。执行契约。
-> 日期 2026-07-22。状态:APPROVED(owner 令"写 SDD 然后执行")。
+> 日期 2026-07-22。状态:**SUPERSEDED by 实测**——DAG 分解路径(compileReviewPlan/verify-map)
+> 经 4 轮 A/B + 3 方埋 bug 召回测**明确败给单 agent**,已删。最终交付 = `run-single.ts`(单 agent 深审)。
+
+## ★ 实测结论(收口,2026-07-22)
+
+**问题**:omd-review 深度天花板 + 我常驳 finding。**实测 4 轮**(baseline / DAG-verify-map v1 / +强制oracle v2 / DAG-find+确定性verify v3)+ **3 方埋 bug 召回测**(authz P0 + null-deref P1):
+
+| 臂 | 真 bug 召回 | 假阳性 | 备注 |
+|---|---|---|---|
+| baseline(diff-盲 find + mimo verify) | **2/2** | 0 | 多维度冗余(7 条报 2 bug,无去重)|
+| DAG 分解 find + 确定性 verify(v3) | **2/2** | **2 假 REFUTED**(路径截断)| + tool flaky / mimo 驱动不了工具 |
+| **单 agent(不分解)+ 确定性 verify** | **2/2** | **0** | **最干净:自然去重、推理最好、最简** |
+
+**裁决**:
+1. **召回退化担忧证否**——三臂全 2/2,分解/保守 find 不丢真 logic bug。
+2. **DAG 分解 = 过度工程**:没加召回,精度更差(路径截断假证伪),故障模式更多(tool stale、mimo 当 agent 驱不动工具),代码最重 → **删**。
+3. **单 agent 最优**:一个连贯 context 看全 diff + 读全仓 + 强制 oracle 实测(杀 $.cwd 类外部 API 幻觉)→ 确定性 verifyFindings(mimo 当纯 judge,不驱工具)。**跨模型仍在**(deepseek find + mimo verify)。
+4. **强制 oracle 纪律**(库/runtime API 主张必须 `bun -e` 实测,跑不出不报)是治幻觉的关键,保留在单 agent goal。
+5. 附带修:mimo `xhigh`→HTTP 500(降 `high`,.env);review agent 限 `read+bash` 只读硬化。
+
+**最终交付**:`run-single.ts` + `runReview` 分流 `opts.single ?? OMD_REVIEW_SINGLE=1`(默认 off,baseline 不动);`dag-review --single` 深审入口。契约冻结不变(dag-review/dag-build 消费点无改)。
+
+---
+> 以下为原始 DAG-native 设计(已 SUPERSEDED,留档记录被证否的路径)。
 
 ## 0. 一句话
 
