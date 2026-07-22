@@ -31,5 +31,5 @@ description: 多视角专家议会:宽解空间的设计/决策问题,经 omd da
 4. **judge 择优 + 嫁接**:看**共识**(全票同向 = 强信号);冠军 + 嫁接正交亮点(最优解常是让争论变小,非选一项)。**领域红线不下放**(council 作输入,owner 终裁);收敛 owner 直觉的对内核,不硬否。
 
 ## 与既有 skill 的边界
-- omd-council = 宽解空间**横向铺宽**多方案择优。**纵向掘深单条决策线** → /omd-grill(岔口可 fire council);**审已写代码** → /omd-review;**根因调试** → /omd-investigate。
+- omd-council = 宽解空间**横向铺宽**多方案择优。**纵向掘深单条决策线** → /omd-grill(岔口可 fire council);**审已写代码** → /omd-review;**根因调试** → /omd-debug。
 - 单一明确解直接做;定型结论走 /omd-note 或 path_rule(/omd-rule)落盘。

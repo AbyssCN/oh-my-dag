@@ -37,4 +37,4 @@ description: 对一批 diff 做对抗式多维 DAG 审查(正确性/契约),gate
 - 0 P0/P1 ≠ 白审,可能是"插错位置"信号:过程审(写码前判定)> 结果审(post-code gate)。
 
 ## 与既有 skill 的边界
-- omd-review = 对 diff 的**通用正确性**审查。**专项安全**(信任边界/注入/fail-open)→ /omd-audit;**确定性 semgrep** → /omd-sast;**只找过度工程** → /omd-slim;**某失败的根因** → /omd-investigate。
+- omd-review = 对 diff 的**通用正确性**审查。**专项安全**(信任边界/注入/fail-open)→ /omd-audit;**确定性 semgrep** → /omd-sast;**只找过度工程** → /omd-slim;**某失败的根因** → /omd-debug。
