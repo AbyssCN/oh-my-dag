@@ -53,8 +53,6 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # 排障期打开完整输出 (2026-07-22 金丝雀 is_error 无详情); 通道稳定后可关。
-          show_full_output: true
           prompt: |
             你在 pathfinder 决策地图的一张票 (issue #${{ github.event.issue.number }}) 的评论区应答 owner。
             先读 .omd-engine/client-skills/omd-grill/SKILL.md 的「grill 票通道」纪律, 再读本票全部评论区 (已问已答的轮次不重问)。
