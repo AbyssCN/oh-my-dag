@@ -30,7 +30,7 @@ const USAGE =
   'usage: bun run scripts/dag-review.ts [--gate G0|G1|G2|G3] [--base main] [--staged] [--brief] [--no-verify] [--spec] [--no-spec] [--dims correctness,security,boundary,contract,spec] [--model ..] [--extra "<焦点>"] [--out path] [--paths "src,sql"]';
 
 // ---- args ----
-const BOOL = new Set(['staged', 'brief', 'no-verify', 'spec', 'no-spec', 'dag', 'help']);
+const BOOL = new Set(['staged', 'brief', 'no-verify', 'spec', 'no-spec', 'single', 'help']);
 const flags: Record<string, string> = {};
 const av = process.argv.slice(2);
 for (let i = 0; i < av.length; i++) {
@@ -102,7 +102,7 @@ const { findings, verified, outPath, sddPath, specSkipped } = await runReview({
   model: flags.model,
   outPath: flags.out,
   verify: !flags['no-verify'],
-  dag: flags.dag ? true : undefined, // --dag: 灰度 DAG-native 内核(agent 读全仓 + verify map)
+  single: flags.single ? true : undefined, // --single: 单 agent 深审(读全仓 + 实测 → 确定性 verify)
 });
 
 console.log(`✅ oh-my-dag 对抗审查 [${gate}] 完成 → ${outPath}  (finding≠ground truth, 调用方终裁)`);
