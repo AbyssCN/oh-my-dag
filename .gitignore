@@ -23,3 +23,6 @@ dist/
 # 本地运行时态 (SQLite 索引 / pi 配置) — 不入库; pathfinder 真相在 docs/plan/pathfinder/*.md
 .omd/
 .pi/
+
+# session 自动续接标记 — shutdown 时刷新的 transient 件, 不入库
+docs/session/_NEXT.md
