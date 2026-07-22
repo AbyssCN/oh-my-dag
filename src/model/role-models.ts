@@ -52,8 +52,9 @@ const ROLE_SPECS: Record<ModelRole, RoleSpec> = {
   dream: { envVar: 'OMD_DREAM_MODEL', fallback: 'deepseek' },
   // Session 交接 checkpoint 蒸馏 = 便宜单发档 (同 dream 家族);opt-in。
   continuity: { envVar: 'OMD_CONTINUITY_MODEL', fallback: 'deepseek' },
-  // Review find 层 = 对抗审查读码找 bug (verify 走 verifier 角色跨模型);opt-in, 不进 UI。
-  // fallback 裸 provider (→ defaultModel), 无凭证经 roleModelWithFallback 顺延 — 不假设用户 key。
+  // Review find 层 = 对抗审查读码找 bug;review 自成体系, verify 用 OMD_REVIEW_VERIFY_MODEL 覆盖/回落 find
+  // (不碰引擎 verifier 角色, 避免渗透)。opt-in 不进 UI; fallback 裸 provider (→ defaultModel),
+  // 无凭证经 roleModelWithFallback 顺延 — 不假设用户 key。
   review: { envVar: 'OMD_REVIEW_MODEL', fallback: 'deepseek' },
 };
 
