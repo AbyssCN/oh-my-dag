@@ -137,7 +137,14 @@ export function resolveBackend(cwd: string): PathBackend;
 
 已知 polish(非阻断):distill 首段作 ruling 会取到 LLM 开场白(「好的。作为首席架构师…」)——全文仍在结果评论里,裁决语义无损;后续可在 distill 加开场白剥离。auto-fold 的 ruling 经 backend.rule 直写,不走 path_rule → **不写 memory**(语义正确:memory 记 owner 决策,不记自动蒸馏)。
 
-### 待办(交付后)
+### D-C.2 — blockedBy 真相源单向切换(owner 2026-07-22 明令,执行契约)
 
-- **D-C.1 真相源切换**:blockedBy 现以 body 尾行 `Blocked-by: #N` 为准;演习探测 + #16 研究结论均确认原生 issue-dependencies **已 GA + REST/GraphQL 全套可用**——切换材料齐备,是**人工闸**,owner 明令后单向切,永不双源并存。
+对真仓库**实证过**的三个操作面(非文档转述):
+- 读(单查合并):GraphQL Issue 字段 `blockedBy(first:N){nodes{number}}` 实测可用 → 并进现有 READ_MAP_QUERY,readMap 仍一次抓齐。
+- 写:REST `POST /repos/{o}/{r}/issues/{n}/dependencies/blocked_by`,体 `{"issue_id": <blocking 票的 databaseId>}`(databaseId 经 `gh api repos/{o}/{r}/issues/{m} --jq .id` 取);实测 POST/GET/DELETE 全通。
+- 一律经 `gh api` shell-out(D-B),不依赖 gh CLI ≥2.94 的 `--add-blocked-by` 旗标(版本无关)。
+
+切换纪律:
+- **门 = `.omd/pathfinder/config.json` `capabilities.nativeDependencies`**(init 金丝雀探测写入):true → 原生策略(读 GraphQL 字段/写 REST,**完全不读不写 body 尾行**);false(老 GHE)→ 遗留 body-line 策略。每仓恰一真相,永不混用(D-C.1)。
+- 旧数据零迁移(D-H;演习图无 body-line 存量)。
 - `@v1` tag 已发布(指向含全部演习修复的 commit)。

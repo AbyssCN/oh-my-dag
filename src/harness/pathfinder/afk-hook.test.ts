@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { applyAfkResult, distill, parseChildren, reflowResearchResults, watchAfkResults, type AfkReflow } from './afk-hook';
 import { resolveBackend, type GhResult, type GhRunner } from './backend';
+import { createGhBackend } from './backend-gh';
 import { researchResultPath } from './dispatch';
 import { loadMap, saveMap } from './map-store';
 import type { PathMap, Ticket } from './types';
@@ -268,6 +269,42 @@ describe('reflowResearchResults — gh 后端', () => {
     expect(create[create.indexOf('--body') + 1]).toContain('Blocked-by: #11');
     // ack: 摘 research-done label (幂等锚点)。
     expect(calls.find((c) => c[1] === 'edit' && c.includes('--remove-label'))).toEqual(['issue', 'edit', '11', '--remove-label', 'research-done']);
+  });
+
+  test('native 策略: 子票 (blockedBy=[母票]) 走原生依赖 emission, 不写 Blocked-by 尾行', () => {
+    const calls: string[][] = [];
+    const gh = fakeGh((args) => {
+      calls.push(args);
+      if (args[0] === 'api' && args[1] === 'graphql') {
+        if (args.some((a) => a.includes('addSubIssue'))) return okr(JSON.stringify({ data: { addSubIssue: { issue: { number: 30 } } } }));
+        // native 读: reflowMapResponse 的 sub #11 无 blockedBy 字段 → readMap 视作 [] (与本用例无关)。
+        return okr(reflowMapResponse([{ body: '## 终稿\n\n用 bun 原生方案。\n\n## children\n- [task] 实装 bun 方案' }]));
+      }
+      if (args[0] === 'issue' && args[1] === 'create') return okr('https://github.com/acme/repo/issues/30\n');
+      if (args[0] === 'issue' && args[1] === 'view') return okr(JSON.stringify({ id: `NODE_${args[2]}` }));
+      // 母票 #11 databaseId lookup。
+      if (args[0] === 'api' && /issues\/11$/.test(args[1] ?? '')) return okr('9110\n');
+      return okr('');
+    });
+    // config 门写 native; createGhBackend(gh, true) 直构 (探测走 fakeGh)。
+    const b = createGhBackend(gh, true);
+
+    const outcomes = reflowResearchResults(b, '/repo', '5');
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]!.newChildren.map((c) => c.id)).toEqual(['#30']);
+    expect(outcomes[0]!.newChildren[0]).toMatchObject({ type: 'task', title: '实装 bun 方案', blockedBy: ['#11'] });
+
+    // 子票 create body 无 Blocked-by 尾行 (native 不写 body 真相)。
+    const create = calls.find((c) => c[0] === 'issue' && c[1] === 'create')!;
+    const createBody = create[create.indexOf('--body') + 1] ?? '';
+    expect(createBody).not.toContain('Blocked-by');
+    // 前置边走原生: 母票 #11 databaseId lookup + REST POST 到子票 #30。
+    expect(calls.some((c) => c[0] === 'api' && c[1] === 'repos/acme/repo/issues/11' && c.includes('.id'))).toBe(true);
+    expect(
+      calls.some((c) => c[0] === 'api' && c.includes('POST') && c[3] === 'repos/acme/repo/issues/30/dependencies/blocked_by' && c.includes('issue_id=9110')),
+    ).toBe(true);
+    // 反向证伪: 全程无 body Blocked-by 尾行。
+    expect(calls.some((c) => c.some((a) => a.includes('Blocked-by:')))).toBe(false);
   });
 
   test('失败路径: research-done 但无结果评论 → 警告, 不 rule 不 ack (留待下轮)', () => {
