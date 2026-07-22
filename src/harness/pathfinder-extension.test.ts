@@ -11,6 +11,7 @@ import {
   type PathfinderExtensionOpts,
 } from './pathfinder-extension';
 import { createPathfinderModeState } from './plan/mode';
+import type { ReflowOutcome } from './pathfinder/afk-hook';
 import type { PathMap, Ticket } from './pathfinder/types';
 
 /** 造一张票 (默认 open task, 无前置)。 */
@@ -293,16 +294,18 @@ describe('pathfinder-extension', () => {
         decisionsLog: [],
       });
       let dispatchCalls = 0;
-      let watchCalls = 0;
+      let timerCalls = 0;
       const deps: PathfinderExtensionDeps = {
         dispatchFrontier: (() => {
           dispatchCalls++;
           return { dispatched: [{ kind: 'afk', ticketId: 'r1', resultPath: '/x' }], reported: [] };
         }) as unknown as PathfinderExtensionDeps['dispatchFrontier'],
-        watchAfkResults: (() => {
-          watchCalls++;
-          return { tick: () => [], stop: () => {} };
-        }) as unknown as PathfinderExtensionDeps['watchAfkResults'],
+        reflowResearchResults: (() => []) as unknown as PathfinderExtensionDeps['reflowResearchResults'],
+        setInterval: (() => {
+          timerCalls++;
+          return 'HANDLE';
+        }) as unknown as PathfinderExtensionDeps['setInterval'],
+        clearInterval: (() => {}) as unknown as PathfinderExtensionDeps['clearInterval'],
       };
 
       // (a) default: entering + /tickets must NOT dispatch.
@@ -310,12 +313,12 @@ describe('pathfinder-extension', () => {
       h.toggle(); // enter
       await h.run('tickets');
       expect(dispatchCalls).toBe(0);
-      expect(watchCalls).toBe(0);
+      expect(timerCalls).toBe(0);
 
       // (b) explicit /tickets --prefetch triggers it.
       await h.run('tickets', '--prefetch');
       expect(dispatchCalls).toBe(1);
-      expect(watchCalls).toBe(1);
+      expect(timerCalls).toBe(1);
       expect(h.allNotices()).toContain('prefetch');
 
       // (c) autoPrefetch opt: /path opens + auto dispatches.
@@ -338,16 +341,20 @@ describe('pathfinder-extension', () => {
         decisionsLog: [],
       });
       let dispatchCalls = 0;
-      let watchDeps: { onReflow?: (r: unknown) => void } = {};
+      let tickFn: (() => void) | null = null;
+      let nextOutcomes: ReflowOutcome[] = [];
       const deps: PathfinderExtensionDeps = {
         dispatchFrontier: (() => {
           dispatchCalls++;
           return { dispatched: [{ kind: 'afk', ticketId: 'r1', resultPath: '/x' }], reported: [] };
         }) as unknown as PathfinderExtensionDeps['dispatchFrontier'],
-        watchAfkResults: ((_m: unknown, _o: unknown, d: typeof watchDeps) => {
-          watchDeps = d;
-          return { tick: () => [], stop: () => {} };
-        }) as unknown as PathfinderExtensionDeps['watchAfkResults'],
+        // 每 tick 折入 → 返回受控 outcomes (模拟一轮 landed 结果回流)。
+        reflowResearchResults: (() => nextOutcomes) as unknown as PathfinderExtensionDeps['reflowResearchResults'],
+        setInterval: ((fn: () => void) => {
+          tickFn = fn;
+          return 'HANDLE';
+        }) as unknown as PathfinderExtensionDeps['setInterval'],
+        clearInterval: (() => {}) as unknown as PathfinderExtensionDeps['clearInterval'],
       };
       const h = harness(dir, undefined, {}, deps);
       await h.run('path', 'ship-x --prefetch');
@@ -355,16 +362,19 @@ describe('pathfinder-extension', () => {
 
       // 回流带 research 子票 → 自动续派 (预算默认 12, 本 cwd 无 .dispatched → used=0)。
       delete process.env.OMD_PATH_RESEARCH_BUDGET;
-      watchDeps.onReflow!({ ticketId: 'r1', newChildren: [tk({ id: 'r1-c1', type: 'research', title: 'child q' })], unblocked: [] });
+      nextOutcomes = [{ ticketId: 'r1', newChildren: [tk({ id: 'r1-c1', type: 'research', title: 'child q' })] }];
+      tickFn!();
       expect(dispatchCalls).toBe(2);
       expect(h.allNotices()).toContain('self-expansion');
 
       // 预算 0 → 自续停 + 提醒; 非 research 子票也不触发。
       process.env.OMD_PATH_RESEARCH_BUDGET = '0';
-      watchDeps.onReflow!({ ticketId: 'r1-c1', newChildren: [tk({ id: 'r1-c1-c1', type: 'research', title: 'grand q' })], unblocked: [] });
+      nextOutcomes = [{ ticketId: 'r1-c1', newChildren: [tk({ id: 'r1-c1-c1', type: 'research', title: 'grand q' })] }];
+      tickFn!();
       expect(dispatchCalls).toBe(2);
       expect(h.allNotices()).toContain('budget exhausted');
-      watchDeps.onReflow!({ ticketId: 'x', newChildren: [tk({ id: 'x-c1', type: 'task', title: 'build' })], unblocked: [] });
+      nextOutcomes = [{ ticketId: 'x', newChildren: [tk({ id: 'x-c1', type: 'task', title: 'build' })] }];
+      tickFn!();
       expect(dispatchCalls).toBe(2);
     } finally {
       if (prevBudget === undefined) delete process.env.OMD_PATH_RESEARCH_BUDGET;
