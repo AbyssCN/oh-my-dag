@@ -372,6 +372,8 @@ export interface InitWizardDeps {
   piAuth?: PiAuthDeps;
   /** provider 总览步注入面 (测试换假目录)。 */
   providerCatalog?: ProviderOverviewDeps;
+  /** grill 评论区通道步注入面 (测试换假 python 探测 / 假 spawn, 不真跑 python)。 */
+  grill?: GrillChannelDeps;
 }
 
 export interface InitWizardResult {
@@ -547,6 +549,134 @@ export async function runRoleTuneStep(
   }
 }
 
+// ── grill 评论区通道 token 收口 (GitHub issue 里 @claude → 云端 grill) ─────────────────
+//
+// grounding: pathfinder init 的 GRILL_KEY = CLAUDE_CODE_OAUTH_TOKEN (setupGrillChannel 铺 repo
+// secret 用它); claude-token-auto.py 的 TOKEN_RE = sk-ant-oat01-[A-Za-z0-9_-]{40,}。两处同名同形,
+// 此处 env 名/形状闸与之对齐 (改一处需同步三处)。token 走 env, 由 pathfinder path_init 再铺成 repo secret。
+
+/** grill token 的 env 名 (与 pathfinder init GRILL_KEY 同)。 */
+export const GRILL_TOKEN_ENV = 'CLAUDE_CODE_OAUTH_TOKEN';
+/** grill token 形状闸 (与 claude-token-auto.py TOKEN_RE 同形; 整串锚定)。 */
+export const GRILL_TOKEN_RE = /^sk-ant-oat01-[A-Za-z0-9_-]{40,}$/;
+
+/** grill 步骤的注入面 (测试换假 python 探测 / 假 spawn / 假回读 — 不真跑 python)。 */
+export interface GrillChannelDeps {
+  /** python3 是否可用。默认 = Bun.which('python3') != null。 */
+  hasPython3?: () => boolean;
+  /** 跑自动配方 (交互 stdio 继承), 返回 true=退出码 0。默认 = Bun.spawnSync claude-token-auto.py。 */
+  runAuto?: (envPath: string) => boolean;
+  /** 自动跑完回读 env 确认写入。默认 = 读 envPath 文件刮 CLAUDE_CODE_OAUTH_TOKEN 行。 */
+  readTokenFromEnv?: (envPath: string) => string | undefined;
+}
+
+/** token 打码 (前 16 + 省略 + 后 4; 同 claude-token-auto.py mask 语义)。 */
+function maskGrillToken(tok: string): string {
+  return tok.length > 24 ? `${tok.slice(0, 16)}…${tok.slice(-4)}` : `${tok.slice(0, 12)}…`;
+}
+
+/** 默认自动配方跑法: Bun.spawnSync python3 配方 (stdio 继承交互); 先确保 env 父目录在。 */
+function defaultGrillAutoRunner(envPath: string): boolean {
+  // 配方脚本随本仓发布, 相对模块定位 (同 pathfinder/dispatch.ts 的 script 定位纹理), 不依赖 cwd。
+  const script = join(import.meta.dir, '..', '..', '..', 'scripts', 'claude-token-auto.py');
+  mkdirSync(dirname(envPath), { recursive: true }); // 首跑全局 ~/.omd/env 目录可能未建, python open('w') 需父目录在。
+  const r = Bun.spawnSync(['python3', script, '--env-file', envPath], {
+    stdin: 'inherit',
+    stdout: 'inherit',
+    stderr: 'inherit',
+  });
+  return r.exitCode === 0;
+}
+
+/** 默认回读: 从 envPath 文件刮 CLAUDE_CODE_OAUTH_TOKEN 行值 (缺文件/无行 → undefined)。 */
+function defaultGrillTokenReader(envPath: string): string | undefined {
+  try {
+    const m = /^CLAUDE_CODE_OAUTH_TOKEN=(.+)$/m.exec(readFileSync(envPath, 'utf8'));
+    return m?.[1]?.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** paste 子流: 提示贴 token → 形状闸 (不符重问一次, 共两次机会) → 写 updates。空输入 = 跳过。 */
+async function runGrillPasteFlow(io: WizardIO, updates: Record<string, string>): Promise<void> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const tok = (
+      await io.ask('另开终端跑 claude setup-token, 把打印的 token 粘贴到这里 (回车跳过)', { secret: true })
+    ).trim();
+    if (!tok) {
+      io.note(dim(fg('riceMuted', 'grill 评论区通道未配 — 研究主链不受影响。')));
+      return;
+    }
+    if (GRILL_TOKEN_RE.test(tok)) {
+      updates[GRILL_TOKEN_ENV] = tok;
+      io.note(`${fg('success', '✓')} grill 评论区通道 token 已收 (${dim(fg('riceMuted', maskGrillToken(tok)))})`);
+      return;
+    }
+    io.note(
+      fg('error', `token 形状不符 (应为 sk-ant-oat01-… 约 108 字符)${attempt === 0 ? ' — 再试一次' : ' — 跳过, 可稍后重跑 omd init 补'}`),
+    );
+  }
+}
+
+/**
+ * grill 评论区通道 token 收口步 (provider key 之后, 可选件): GitHub issue 里 @claude 触发云端 grill,
+ * 需 CLAUDE_CODE_OAUTH_TOKEN。整步**可选** — 任何失败/跳过都不阻断向导 (与 pathfinder init 可选件语义一致)。
+ *   - env (或本次前面步骤 updates) 已有 token → 打码显示 + 跳过 (不重问)。
+ *   - 未配 → 三选一: ① paste 手贴 (形状闸, 不符重问一次) ② auto 跑 python 配方 (交互 stdio 继承 → 回读确认;
+ *     python 缺失/脚本失败 → 回落 paste) ③ skip (只损失评论区通道, 研究主链不受影响)。
+ * 写入: paste 走 updates (随批 upsertEnv 落盘); auto 由 python 直写 envPath, 向导尾部 re-read 自动纳入,
+ * 并同步进 env 供本次 boot 立即可用。导出便于测试直驱。永不抛。
+ */
+export async function runGrillChannelStep(
+  io: WizardIO,
+  updates: Record<string, string>,
+  env: Record<string, string | undefined>,
+  envPath: string,
+  deps: GrillChannelDeps = {},
+): Promise<void> {
+  const existing = updates[GRILL_TOKEN_ENV]?.trim() || env[GRILL_TOKEN_ENV]?.trim();
+  if (existing) {
+    io.note(`${fg('success', '✓')} grill 评论区通道已配置 (${dim(fg('riceMuted', maskGrillToken(existing)))}) — 跳过`);
+    return;
+  }
+
+  const choice = await io.select('grill 评论区通道 (GitHub issue 里 @claude 触发云端 grill; 可跳过)', [
+    { id: 'paste', label: '手动粘贴 — 另开终端跑 claude setup-token, 把 token 贴进来' },
+    { id: 'auto', label: '一键配方 — python3 scripts/claude-token-auto.py 自动跑 (人只贴 code)' },
+    { id: 'skip', label: '跳过 — 不配只损失评论区通道, 研究主链不受影响' },
+  ]);
+
+  if (!choice || choice === 'skip') {
+    io.note(dim(fg('riceMuted', 'grill 评论区通道未配 — 研究主链不受影响, 可稍后 claude setup-token 后重跑 omd init 补。')));
+    return;
+  }
+
+  if (choice === 'auto') {
+    const hasPy = (deps.hasPython3 ?? (() => Bun.which('python3') != null))();
+    if (!hasPy) {
+      io.note(fg('warning', 'python3 未找到 — 回落手动粘贴。'));
+      await runGrillPasteFlow(io, updates);
+      return;
+    }
+    io.note(dim(fg('riceMuted', '跑 claude-token-auto.py (交互: 浏览器点授权 + 贴 code)…')));
+    const ok = (deps.runAuto ?? defaultGrillAutoRunner)(envPath);
+    const written = ok ? (deps.readTokenFromEnv ?? defaultGrillTokenReader)(envPath) : undefined;
+    if (ok && written) {
+      // python 已直写 envPath; 同步进 env 供本次 boot 立即可用 (尾部 upsertEnv re-read 也会纳入, 不覆写)。
+      (env as Record<string, string>)[GRILL_TOKEN_ENV] = written;
+      io.note(`${fg('success', '✓')} grill 评论区通道已配 (${dim(fg('riceMuted', maskGrillToken(written)))}) — 经自动配方写入 ${envPath}`);
+    } else {
+      io.note(fg('warning', '自动配方未写入 token — 回落手动粘贴。'));
+      await runGrillPasteFlow(io, updates);
+    }
+    return;
+  }
+
+  // paste
+  await runGrillPasteFlow(io, updates);
+}
+
 /**
  * 跑首次配置向导 (2026-07-19 重排, preset-first):
  *   ① pi OAuth 先行 (就绪检测 + 可选内联登录 — 就绪 provider 后续免 key)
@@ -650,6 +780,9 @@ export async function runInitWizard(deps: InitWizardDeps): Promise<InitWizardRes
         : `${fg('error', '✗')} ${def.id} 不可达: ${probe.detail} ${dim(fg('riceMuted', '(key 照写, 可稍后改)'))}`,
     );
   }
+
+  // ②′ grill 评论区通道 token 收口 (provider key 之后, 可选件): 缺 token 只损失评论区通道, 不阻断向导。
+  await runGrillChannelStep(io, updates, env, envPath, deps.grill ?? {});
 
   // ③ web 搜索 (可选)
   if (await io.confirm('配置 web 搜索? (Tavily / Anysearch, 可跳过)', false)) {
