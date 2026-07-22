@@ -94,6 +94,25 @@ describe('applyPresetHeadless', () => {
   test('未知 preset → throw', () => {
     expect(() => applyPresetHeadless('nope', { cwd: dir, env: {} })).toThrow(/unknown preset/);
   });
+
+  test('customApis preset → 自定 provider 写 models.json (统一-registry 迁移), PI_AGENT_DIR 隔离', () => {
+    // base-opencode-go 带 customApis: opencode-go。env 里给 PI_AGENT_DIR (隔离到 temp, 不碰真 ~/.pi)。
+    const env: Record<string, string | undefined> = { PI_AGENT_DIR: dir, OPENCODE_API_KEY: 'sk-oc' };
+    const r = applyPresetHeadless('base-opencode-go', { cwd: dir, env });
+    expect(r.customApis).toContain('opencode-go');
+    // 自定 provider 落 models.json (不落 config.json.apis — 该链已废)。
+    const mj = JSON.parse(readFileSync(join(dir, 'models.json'), 'utf8'));
+    expect(mj.providers['opencode-go']).toMatchObject({
+      baseUrl: expect.any(String),
+      apiKey: '$OPENCODE_API_KEY', // 落引用, 非明文
+      api: 'openai-completions',
+    });
+    // config.json 不再有 apis 段。
+    const cfg = JSON.parse(readFileSync(process.env.OMD_CONFIG_PATH!, 'utf8'));
+    expect(cfg.apis).toBeUndefined();
+    // key 在 env → callModel 侧已注册 (registerProvidersFromModelsJson 活注入)。
+    expect(getProvider('opencode-go')).toBeTruthy();
+  });
 });
 
 describe('setRoleHeadless', () => {

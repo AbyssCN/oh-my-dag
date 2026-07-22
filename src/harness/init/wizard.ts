@@ -19,13 +19,12 @@ import { piEnvApiKey } from '../../model/pi-transport';
 import { createKimiCodingOAuthProvider } from '../../model/kimi-oauth';
 import { bold, dim, fg } from '../branding/palette';
 import {
-  persistCustomApi,
   persistMultimodalPool,
   persistMultimodalPoolPremium,
   persistRoleModel,
-  type ApiDef,
   type ModelRole,
 } from '../../model/role-models';
+import { upsertProvider } from '../../model/models-json';
 import { ROLE_PRESETS, ROLE_ENV_ALLOWLIST, coordProvider, type RolePreset } from './role-presets';
 import { globalEnvPath } from '../../env-alias';
 import { installHudStatusLine, type HudInstallResult } from './hud-statusline';
@@ -351,9 +350,10 @@ export interface WizardIO {
   note(message: string): void;
 }
 
-/** preset 落 config.json 的写入口 (注入便于测试; 默认 role-models 真实现)。 */
+/** preset 落盘的写入口 (注入便于测试; 默认真实现)。 */
 export interface PresetPersistDeps {
-  persistCustomApi: (def: ApiDef) => void;
+  /** 自定 provider → ~/.pi/agent/models.json (统一-registry 单一真源)。 */
+  upsertProvider: (input: { id: string; baseUrl: string; keyEnv: string }) => void;
   persistMultimodalPool: (coords: string[]) => void;
   persistMultimodalPoolPremium: (coords: string[]) => void;
   persistRoleModel: (role: ModelRole, coord: string) => void;
@@ -384,7 +384,7 @@ export interface InitWizardResult {
 }
 
 const REAL_PERSIST: PresetPersistDeps = {
-  persistCustomApi: (def) => persistCustomApi(def),
+  upsertProvider: (input) => upsertProvider(input),
   persistMultimodalPool: (coords) => persistMultimodalPool(coords),
   persistMultimodalPoolPremium: (coords) => persistMultimodalPoolPremium(coords),
   persistRoleModel: (role, coord) => persistRoleModel(role, coord),
@@ -392,7 +392,7 @@ const REAL_PERSIST: PresetPersistDeps = {
 
 /**
  * 应用一个角色矩阵 preset (纯泛化消费, 模型字符串只在 role-presets.ts):
- * ① env 合并进 updates ② 缺 key 提示粘贴 (回车跳过) ③ persistCustomApi 注册自定端点
+ * ① env 合并进 updates ② 缺 key 提示粘贴 (回车跳过) ③ upsertProvider 登记自定端点 → models.json
  * ④ persistMultimodalPool / persistMultimodalPoolPremium 写多模态双层池 (对应 key 跳过则不写)
  * ⑤ persistRoleModel 写 config 角色
  * ⑥ io.note 汇总表。导出便于测试直驱。
@@ -433,9 +433,9 @@ export async function applyRolePreset(
     else if (kp.provider) missingProviders.add(kp.provider);
   }
 
-  // 自定 OpenAI 兼容端点 → config.json apis 段 (key 可后补, 端点元数据先落)。
+  // 自定 OpenAI 兼容端点 → ~/.pi/agent/models.json (统一-registry 单一真源, key 可后补; merge 不 clobber)。
   for (const api of preset.customApis ?? []) {
-    persist.persistCustomApi({ id: api.id, baseUrl: api.baseUrl, keyEnv: api.keyEnv });
+    persist.upsertProvider({ id: api.id, baseUrl: api.baseUrl, keyEnv: api.keyEnv });
   }
 
   // 多模态池 (便宜层 + 贵层): 对应 provider key 跳过的坐标剔除; 全空则不写。

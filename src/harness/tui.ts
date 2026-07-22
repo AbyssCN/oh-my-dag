@@ -15,7 +15,6 @@
 import '../env-alias';
 // kimi-coding OAuth 登录件经扩展正门挂进 main() (交互主会话的过期刷新与 /login 由它而来, 见 kimi-oauth.ts)。
 import { createKimiOAuthExtension } from '../model/kimi-oauth';
-import { createMimoProviderExtension } from '../model/mimo-provider';
 import { main } from '@earendil-works/pi-coding-agent';
 import { setCoreLogger } from './logger';
 import { createVerifyGateExtension } from './verify-gate-extension';
@@ -43,12 +42,7 @@ import { CleaningFetchProvider } from './web/clean';
 import { createCodeExtension, type ToolMap } from './code';
 import { createCostExtension } from './cost-extension';
 import { logger, setLoggerDestination } from '../logger';
-import {
-  registerProvidersFromEnv,
-  registerCustomApis,
-  registerProvidersFromModelsJson,
-} from '../model/providers';
-import { listCustomApis } from '../model/role-models';
+import { registerProvidersFromEnv, registerProvidersFromModelsJson } from '../model/providers';
 import { resolveHashlineEdit } from './tui-config';
 import { readUserProfile, DEFAULT_USER_PROFILE_PATH } from './user-profile';
 import { createOmdMemory } from './memory';
@@ -165,12 +159,8 @@ ensureMimoApiKey(ctrl.provider);
 
 // 注册 callModel 的 provider (mimo + deepseek from env) → /cg /audit 的 conductor/inproc-leaf 可解析。
 registerProvidersFromEnv();
-// 叠加用户自定 API (config.apis, /setup 页"添加 API" 写入) → 角色/多模态池可从同一池选。
-// key 从各自 keyEnv (默认 ID_API_KEY) 读 .env; 无 key 静默跳过 (/setup 提示补)。
-const customApis = registerCustomApis(listCustomApis());
-if (customApis.length) logger.info({ apis: customApis }, '[omd/config] 已注册自定 API provider');
-// ~/.pi/agent/models.json 自定 provider (统一-registry D-2): 两栈共读同一份 → callModel 也认 agent-leaf 那批。
-// 于 env/customApis 之后 → 单一真源, 同名覆盖。
+// ~/.pi/agent/models.json 自定 provider (统一-registry D-1/D-2, 单一真源): 两栈共读同一份 → callModel 也认
+// agent-leaf 那批 (zhipu/opencode-go/qwen/…)。于 env 之后 → 同名覆盖。preset/MCP omd_register_provider 写它。
 const modelsJsonApis = registerProvidersFromModelsJson();
 if (modelsJsonApis.length)
   logger.info({ apis: modelsJsonApis }, '[omd/config] 已注册 models.json 自定 provider');
@@ -431,7 +421,6 @@ await main(args, {
   extensionFactories: [
     // kimi-coding OAuth 正门注册 (最先挂: ModelRegistry.refresh 会清全局注册表, 见 kimi-oauth.ts)
     createKimiOAuthExtension(),
-    createMimoProviderExtension(),
     bannerExt,
     ...ctrl.toExtensionFactories(),
     cgAuditExt,

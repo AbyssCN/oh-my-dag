@@ -8,7 +8,7 @@
  *
  * 全部"写盘 + 活进程注入"双写 (沿 wizard.ts 的 §同步 process.env 模式): 落盘跨重启, 注入令当前
  * MCP 子进程即时生效 —— 角色 env 调用时现读 process.env · config.json 靠 mtime 重读 · native
- * provider 靠 registerProvidersFromEnv/registerCustomApis re-register。故改配置**不必重连 MCP**。
+ * provider 靠 registerProvidersFromEnv/registerProvidersFromModelsJson re-register。故改配置**不必重连 MCP**。
  *
  * 安全: 密钥只落 auth.json (~/.pi, repo 外) 或 .env (gitignored) —— **永不碰 .mcp.json** (git 跟踪)。
  */
@@ -16,16 +16,19 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import {
-  listCustomApis,
   listRoleModels,
-  persistCustomApi,
   persistMultimodalPool,
   persistMultimodalPoolPremium,
   persistRoleModel,
   resolveMultimodalPool,
   type ModelRole,
 } from '../../model/role-models';
-import { getProvider, registerCustomApis, registerProvidersFromEnv } from '../../model/providers';
+import {
+  getProvider,
+  registerProvidersFromEnv,
+  registerProvidersFromModelsJson,
+} from '../../model/providers';
+import { listCustomProviderStatus, modelsJsonPath, upsertProvider } from '../../model/models-json';
 import { piHasCredential } from '../../model/pi-transport';
 import { ROLE_PRESETS, coordProvider } from './role-presets';
 import { hudStatusLineCommand, installHudStatusLine } from './hud-statusline';
@@ -90,7 +93,7 @@ export function hasCredential(provider: string, env: Record<string, string | und
   if (getProvider(provider)) return true; // native registry 命中 (注册时 key 在)
   const nativeKey = NATIVE_ENV_KEY[provider];
   if (nativeKey && env[nativeKey]?.trim()) return true;
-  const customKeyEnv = listCustomApis().find((a) => a.id === provider)?.keyEnv;
+  const customKeyEnv = listCustomProviderStatus(env).find((cp) => cp.id === provider)?.keyEnv;
   if (customKeyEnv && env[customKeyEnv]?.trim()) return true;
   return piHasCredential(provider, env);
 }
@@ -127,7 +130,8 @@ export function setKeyHeadless(provider: string, key: string, target: KeyTarget 
   const authPath = deps.authPath ?? defaultAuthPath();
   const warnings: string[] = [];
 
-  const customKeyEnv = listCustomApis().find((a) => a.id === p)?.keyEnv;
+  // 自定 provider 的 keyEnv 从 models.json 展示态读 (统一-registry 单一真源; null → undefined 归一)。
+  const customKeyEnv = listCustomProviderStatus(env).find((cp) => cp.id === p)?.keyEnv || undefined;
   const nativeKeyEnv = NATIVE_ENV_KEY[p] ?? customKeyEnv;
   const resolved: 'authjson' | 'env' = target === 'auto' ? (nativeKeyEnv ? 'env' : 'authjson') : target;
 
@@ -136,7 +140,7 @@ export function setKeyHeadless(provider: string, key: string, target: KeyTarget 
     writeEnvUpdates(cwd, { [keyEnv]: k }, deps.writeFile);
     (env as Record<string, string>)[keyEnv] = k;
     registerProvidersFromEnv(env); // mimo/deepseek 重注册
-    if (customKeyEnv) registerCustomApis(listCustomApis(), env); // 自定 api 重注册
+    if (customKeyEnv) registerProvidersFromModelsJson(env); // models.json 自定 provider 重注册 (key 已注入)
     if (p === 'mimo' && !env.MIMO_BASE_URL) {
       warnings.push('MIMO_BASE_URL 未设 — mimo provider 注册会跳过; 先经 preset 或手动设 base/model。');
     }
@@ -185,9 +189,11 @@ export function applyPresetHeadless(presetId: string, deps: HeadlessDeps = {}): 
   writeEnvUpdates(cwd, updates, deps.writeFile);
   for (const [key, val] of Object.entries(updates)) (env as Record<string, string>)[key] = val;
 
-  // ② 自定 API 端点 → config.json (key 后补) + 注册 (key 在 env 则生效)。
+  // ② 自定 provider 端点 → ~/.pi/agent/models.json (统一-registry 单一真源, key 后补; merge 不 clobber 既有条目)。
+  // 路径经 modelsJsonPath(env) 派生 → 尊重 deps.env 的 PI_AGENT_DIR (测试隔离 + 不污染真文件)。
+  const mjPath = modelsJsonPath(env);
   for (const api of preset.customApis ?? []) {
-    persistCustomApi({ id: api.id, baseUrl: api.baseUrl, keyEnv: api.keyEnv });
+    upsertProvider({ id: api.id, baseUrl: api.baseUrl, keyEnv: api.keyEnv }, mjPath);
   }
 
   // ③ 多模态池 → config.json。
@@ -197,9 +203,9 @@ export function applyPresetHeadless(presetId: string, deps: HeadlessDeps = {}): 
   // ④ config 角色 (conductor/leaf/verifier/dream) → config.json (mtime 重读即时)。
   for (const cr of preset.configRoles ?? []) persistRoleModel(cr.role, cr.coord);
 
-  // ⑤ native provider 重注册 (新 env 生效) + 自定 api 重注册。
+  // ⑤ native provider 重注册 (新 env 生效) + models.json 自定 provider 重注册。
   registerProvidersFromEnv(env);
-  if (preset.customApis?.length) registerCustomApis(listCustomApis(), env);
+  if (preset.customApis?.length) registerProvidersFromModelsJson(env);
 
   // ⑥ 缺凭证的 provider 汇总 (供调用方提示补 key)。
   const providers = new Set<string>();
@@ -286,7 +292,7 @@ export function configSnapshot(deps: HeadlessDeps = {}): ConfigSnapshot {
     roles,
     envRoles,
     multimodalPool: resolveMultimodalPool(),
-    customApis: listCustomApis().map((a) => ({ id: a.id, baseUrl: a.baseUrl })),
+    customApis: listCustomProviderStatus(env).map((cp) => ({ id: cp.id, baseUrl: cp.baseUrl })),
     warnings,
   };
 }

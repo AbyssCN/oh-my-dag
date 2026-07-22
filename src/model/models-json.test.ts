@@ -5,10 +5,16 @@
  * 全走临时 models.json + 注入 env, 零网络零全局态。
  */
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readCustomProviders, modelsJsonPath } from './models-json';
+import {
+  listCustomProviderStatus,
+  readCustomProviders,
+  modelsJsonPath,
+  upsertModel,
+  upsertProvider,
+} from './models-json';
 import { registerProvidersFromModelsJson, getProvider, clearProviders } from './providers';
 import { MAX_TOKENS_DEFAULT } from './role-models';
 
@@ -131,5 +137,98 @@ describe('registerProvidersFromModelsJson', () => {
     );
     registerProvidersFromModelsJson({ PI_AGENT_DIR: dir });
     expect(getProvider('foo')?.maxTokens).toBe(MAX_TOKENS_DEFAULT);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// upsert (MCP 面写盘, C-4 / issue #12) — merge 不 clobber (GWT-6) 是核心不变量。
+// ---------------------------------------------------------------------------
+describe('upsertProvider / upsertModel', () => {
+  const freshPath = (): string =>
+    join(mkdtempSync(join(tmpdir(), 'omd-models-json-')), 'models.json');
+
+  test('新建 provider: apiKey 落 $keyEnv 引用, api 默认 openai-completions', () => {
+    const path = freshPath();
+    const r = upsertProvider(
+      { id: 'zhipu', baseUrl: 'https://open.bigmodel.cn/api/paas/v4/', keyEnv: 'ZHIPU_API_KEY', models: [{ id: 'glm-5.2', maxTokens: 128000 }] },
+      path,
+    );
+    expect(r.created).toBe(true);
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as { providers: Record<string, any> };
+    expect(raw.providers.zhipu).toEqual({
+      baseUrl: 'https://open.bigmodel.cn/api/paas/v4', // 尾斜杠归一
+      apiKey: '$ZHIPU_API_KEY', // 落引用, 非明文
+      api: 'openai-completions',
+      models: [{ id: 'glm-5.2', maxTokens: 128000 }],
+    });
+  });
+
+  test('GWT-6: merge upsert 不 clobber 既有 compat/headers 等未提供字段', () => {
+    const path = freshPath();
+    // 既有条目带 opencode-go 风格 compat flags + 一个 model。
+    writeFileSync(
+      path,
+      JSON.stringify({
+        providers: {
+          'opencode-go': {
+            baseUrl: 'https://old.example',
+            apiKey: '$OPENCODE_API_KEY',
+            api: 'openai-completions',
+            compat: { toolCalls: 'inline', noSystemRole: true },
+            headers: { 'X-Foo': 'bar' },
+            models: [{ id: 'deepseek-v4-pro', maxTokens: 8192 }],
+          },
+        },
+        // 顶层无关键也应保留。
+        someTopLevelKey: 42,
+      }),
+    );
+    upsertProvider(
+      { id: 'opencode-go', baseUrl: 'https://new.example', keyEnv: 'OPENCODE_API_KEY', models: [{ id: 'deepseek-v4-flash', maxTokens: 4096 }] },
+      path,
+    );
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as { providers: Record<string, any>; someTopLevelKey: number };
+    const p = raw.providers['opencode-go'];
+    // 未提供字段原样保留 (GWT-6)。
+    expect(p.compat).toEqual({ toolCalls: 'inline', noSystemRole: true });
+    expect(p.headers).toEqual({ 'X-Foo': 'bar' });
+    // 提供字段更新。
+    expect(p.baseUrl).toBe('https://new.example');
+    // models 按 id merge: 既有保留 + 新增追加。
+    expect(p.models).toEqual([
+      { id: 'deepseek-v4-pro', maxTokens: 8192 },
+      { id: 'deepseek-v4-flash', maxTokens: 4096 },
+    ]);
+    // 顶层无关键保留。
+    expect(raw.someTopLevelKey).toBe(42);
+  });
+
+  test('upsertModel: patch 既有 model 属性, provider 缺 → providerFound=false', () => {
+    const path = freshPath();
+    upsertProvider({ id: 'zhipu', baseUrl: 'https://x', keyEnv: 'ZHIPU_API_KEY', models: [{ id: 'glm-5.2', maxTokens: 100 }] }, path);
+    const r = upsertModel('zhipu:glm-5.2', { maxTokens: 200, contextWindow: 999 }, path);
+    expect(r).toMatchObject({ provider: 'zhipu', model: 'glm-5.2', providerFound: true, created: false });
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as { providers: Record<string, any> };
+    expect(raw.providers.zhipu.models[0]).toEqual({ id: 'glm-5.2', maxTokens: 200, contextWindow: 999 });
+    // provider 不存在 → 报缺, 不写。
+    expect(upsertModel('nope:m1', { maxTokens: 1 }, path).providerFound).toBe(false);
+  });
+
+  test('listCustomProviderStatus: 展示态含无凭证条目 (标 hasKey=false), builtin-override 不列', () => {
+    const path = freshPath();
+    writeFileSync(
+      path,
+      JSON.stringify({
+        providers: {
+          zhipu: { baseUrl: 'https://x', apiKey: '$ZHIPU_API_KEY', api: 'openai-completions', models: [{ id: 'glm-5.2' }] },
+          deepseek: { models: [{ id: 'deepseek-v4-pro' }] }, // builtin-override → 不列
+        },
+      }),
+    );
+    const withKey = listCustomProviderStatus({ ZHIPU_API_KEY: 'sk' }, path);
+    expect(withKey).toHaveLength(1);
+    expect(withKey[0]).toMatchObject({ id: 'zhipu', keyEnv: 'ZHIPU_API_KEY', hasKey: true });
+    const noKey = listCustomProviderStatus({}, path);
+    expect(noKey[0]).toMatchObject({ id: 'zhipu', hasKey: false }); // 仍列出 (展示态), 只标无凭证
   });
 });

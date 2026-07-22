@@ -25,7 +25,6 @@ import { createHashlineCustomTools } from './hashline';
 import { createDriftDetectorHook, type DriftDetectorConfig } from './hooks/drift-detector';
 import { logger } from '../logger';
 import { createKimiOAuthExtension } from '../model/kimi-oauth';
-import { createMimoProviderExtension } from '../model/mimo-provider';
 import type { ModelUsage } from '../model/types';
 import type { ThinkingLevel } from '../runtime/types';
 
@@ -177,7 +176,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           additionalExtensionPaths: extensionDirs,
           // drift-detector 经 in-code extensionFactories 注入 (与 opts.extensionDirs 的扩展包并存)。
           // kimi-coding OAuth 恒挂 (正门注册, 会话 ModelRegistry.refresh 清全局注册表后由它重放)。
-          extensionFactories: [createKimiOAuthExtension(), createMimoProviderExtension(), ...(driftFactory ? [driftFactory] : [])],
+          extensionFactories: [createKimiOAuthExtension(), ...(driftFactory ? [driftFactory] : [])],
         });
         await rl.reload();
         return rl;
@@ -252,6 +251,19 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     const usage = stats?.tokens
       ? { in: stats.tokens.input ?? 0, out: stats.tokens.output ?? 0, cacheHit: stats.tokens.cacheRead ?? 0 }
       : { in: 0, out: 0 };
+    // C-5b loud-error 闸 (统一-registry, issue #13): pi createAgentSession **静默吞错** —— 失败
+    // (401/404/空响应, 或 reasoning 截断吞正文) 返 0-token 空文本、不上抛 HTTP 状态, 是本次 mimo 排查绕
+    // 5 轮的元凶。session 空文本 + 无文件写入 + 非停摆 → **抛响亮错** (executor-dag failedFromThrow 接住,
+    // 保留败因入 heal 回路), 不把 empty-done 当成功。GWT-2 的 agent-leaf 侧。
+    // 双闸对齐避免误判: stalled 由心跳闸下游标 failed (此处不抛, 原样保 stalled 语义); producesFiles 由
+    // 产物闸下游校验 —— 此处只在**零文件写入**时抛, 有落盘即真产物, 交产物闸判 (不双重误杀)。
+    if (!text.trim() && touched.size === 0 && !stalled) {
+      throw new Error(
+        `[agent-leaf] 0-token empty-done (model=${model}): session 返回空文本、无文件写入、非停摆 — ` +
+          '疑 provider 静默失败 (401/404/空响应, 或 reasoning 截断吞了正文)。pi createAgentSession 不上抛 ' +
+          'HTTP 状态, 故此处响亮报错而非当成功 (统一-registry C-5b)。',
+      );
+    }
     return { text, usage, filesTouched: [...touched], stalled };
   };
 }

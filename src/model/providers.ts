@@ -5,7 +5,6 @@
  * against this map, so a new backend never touches call sites.
  */
 import type { ProviderConfig } from './types';
-import type { ApiDef } from './role-models';
 import { MAX_TOKENS_DEFAULT } from './role-models';
 import { readCustomProviders } from './models-json';
 
@@ -64,32 +63,6 @@ export function registerProvidersFromEnv(
   }
   // (旧 pi-auth-bridge 已删, 2026-07-19 统一模型层): kimi-coding 等 pi OAuth provider 不再桥进本
   // registry — callModel 的 pi-ai 目录后备通道 (pi-transport) 原生解析 + 认证 (auth.json / env 映射)。
-  return registered;
-}
-
-/**
- * 注册用户自定 API (config.apis) 进 callModel registry — "随意添加 API"。在 registerProvidersFromEnv
- * 之上叠加: 每个 api 的 key 从其 keyEnv (省略 = ID 大写 + _API_KEY) 读, 无 key 的静默跳过 (onboard 页提示)。
- * 同名覆盖 (config api 优先于内置, 让用户能改 base/key)。返回成功注册的 provider id。
- */
-export function registerCustomApis(
-  apis: ApiDef[],
-  env: Record<string, string | undefined> = process.env,
-): string[] {
-  const registered: string[] = [];
-  for (const a of apis) {
-    if (!a.id || !a.baseUrl) continue;
-    const keyEnv = a.keyEnv ?? `${a.id.toUpperCase()}_API_KEY`;
-    const apiKey = env[keyEnv];
-    if (!apiKey) continue; // 未配 key → 跳过 (registerProvider 要求 apiKey; onboard 页提示补)
-    registerProvider(a.id, {
-      baseUrl: a.baseUrl,
-      apiKey,
-      api: 'openai-compatible',
-      defaultModel: a.defaultModel,
-    });
-    registered.push(a.id);
-  }
   return registered;
 }
 

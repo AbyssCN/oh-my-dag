@@ -1,10 +1,11 @@
 /**
  * src/harness/config-center —— 统一配置中心 (`/setup` + `/config`)。
  *
- * 一处配齐: ❶角色模型 (plan/conductor/leaf/verifier/dream) ❷多模态 leaf 池 (多选) ❸自定 API (随意加,
- * 不限某一个) ❹Web 搜索 key ❺能力开关 ❻语言。分区菜单循环 (omd 美学 header), 即时落盘:
- *   - 角色 / 多模态池 / API 列表 → .omd/config.json (经 role-models persist*)
+ * 一处配齐: ❶角色模型 (plan/conductor/leaf/verifier/dream) ❷多模态 leaf 池 (多选) ❸Web 搜索 key
+ * ❹能力开关 ❺语言。分区菜单循环 (omd 美学 header), 即时落盘:
+ *   - 角色 / 多模态池 → .omd/config.json (经 role-models persist*)
  *   - key / 开关 → .env (经 upsertEnv, 同步 process.env 本次即生效)
+ * 自定 provider 登记已迁 `~/.pi/agent/models.json` (统一-registry D-6, 走 MCP omd_register_provider / 手写)。
  *
  * UX = 分区 select 循环 (非全屏 custom 组件 — 健壮 + 不崩; 全屏 focusable page 是后续 polish)。
  * 角色/池的 provider 列表取自 **callModel registry** (listProviders, 含内置 + 自定 API), 因角色经
@@ -12,15 +13,12 @@
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { listProviders, getProvider, registerCustomApis } from '../model';
+import { listProviders, getProvider } from '../model';
 import {
   listRoleModels,
   persistRoleModel,
   resolveMultimodalPool,
   persistMultimodalPool,
-  listCustomApis,
-  persistCustomApi,
-  removeCustomApi,
   type ModelRole,
 } from '../model/role-models';
 import { persistLang, setLang, type Lang } from './i18n';
@@ -62,14 +60,10 @@ function writeEnvUpdates(cwd: string, env: Record<string, string | undefined>, u
 }
 
 /** 选一个 provider:model 坐标 (从 callModel registry)。取消 → undefined。 */
-async function pickCoord(ui: ConfigUi, opts?: { multimodalOnly?: boolean }): Promise<string | undefined> {
-  let providers = listProviders();
-  if (opts?.multimodalOnly) {
-    // 多模态资格: 内置 provider (deepseek/mimo 等, 无 per-model 元数据) 放行让用户自选;
-    // 仅**排除** config.apis 里 multimodal !== true 的自定 API。
-    const nonMultimodal = new Set(listCustomApis().filter((a) => a.multimodal !== true).map((a) => a.id));
-    providers = providers.filter((p) => !nonMultimodal.has(p));
-  }
+async function pickCoord(ui: ConfigUi): Promise<string | undefined> {
+  // 已注册 provider (内置 + models.json 自定) 全放行让用户自选 —— 自定 provider 的多模态元数据不再在
+  // config 层维护 (统一-registry: 属性归 models.json, 无 multimodal 标记), 与内置 provider 一致。
+  const providers = listProviders();
   if (providers.length === 0) {
     ui.notify(m({ en: 'No provider registered — configure a backend / API first', zh: '无已注册 provider — 先配后端 / API' }), 'warning');
     return undefined;
@@ -111,7 +105,7 @@ async function editMultimodalPool(ui: ConfigUi): Promise<void> {
     const pick = await ui.select(m({ en: `Multimodal leaf pool: ${summary}`, zh: `多模态 leaf 池: ${summary}` }), opts);
     if (!pick || pick === DONE) return;
     if (pick === ADD) {
-      const coord = await pickCoord(ui, { multimodalOnly: true });
+      const coord = await pickCoord(ui);
       if (coord && !pool.includes(coord)) {
         persistMultimodalPool([...pool, coord]);
         ui.notify(m({ en: `Added ${coord}`, zh: `已加 ${coord}` }), 'info');
@@ -126,45 +120,8 @@ async function editMultimodalPool(ui: ConfigUi): Promise<void> {
   }
 }
 
-async function editApis(ui: ConfigUi, cwd: string, env: Record<string, string | undefined>): Promise<void> {
-  for (;;) {
-    const apis = listCustomApis();
-    const summary = apis.length ? apis.map((a) => a.id).join(', ') : m({ en: '(none)', zh: '(无)' });
-    const ADD = m({ en: '+ Add API', zh: '+ 添加 API' });
-    const DEL = m({ en: '- Remove API', zh: '- 移除 API' });
-    const DONE = m({ en: '✓ Done', zh: '✓ 完成' });
-    const opts = apis.length ? [ADD, DEL, DONE] : [ADD, DONE];
-    const pick = await ui.select(m({ en: `Custom APIs: ${summary}`, zh: `自定 API: ${summary}` }), opts);
-    if (!pick || pick === DONE) return;
-    if (pick === ADD) {
-      const id = ((await ui.input(m({ en: 'API id (e.g. gemini)', zh: 'API id (如 gemini)' }))) ?? '').trim();
-      if (!id) continue;
-      const baseUrl = ((await ui.input(m({ en: 'Base URL (OpenAI-compatible)', zh: 'Base URL (OpenAI 兼容)' }))) ?? '').trim();
-      if (!baseUrl) continue;
-      const keyEnv = ((await ui.input(m({ en: 'Key env var', zh: 'Key 环境变量名' }), `${id.toUpperCase()}_API_KEY`)) ?? '').trim() || `${id.toUpperCase()}_API_KEY`;
-      const defaultModel = ((await ui.input(m({ en: 'Default model id (optional)', zh: '默认 model id (可选)' }))) ?? '').trim();
-      const multimodal = await ui.confirm(m({ en: 'Multimodal capable?', zh: '有多模态能力?' }), m({ en: 'Mark this API as multimodal (selectable in the multimodal pool)', zh: '标记为多模态 (可选进多模态池)' }));
-      const apiDef = { id, baseUrl, keyEnv, defaultModel: defaultModel || undefined, multimodal };
-      persistCustomApi(apiDef);
-      const key = ((await ui.input(m({ en: `API key for ${id} (written to .env ${keyEnv})`, zh: `${id} 的 API key (写入 .env ${keyEnv})` }))) ?? '').trim();
-      if (key) writeEnvUpdates(cwd, env, { [keyEnv]: key });
-      // 即时注册进 callModel registry (key 已在 process.env, 同步可读) → 当场可在角色/池 picker 选到, 不必重启。
-      const ok = registerCustomApis([apiDef], env).length > 0;
-      ui.notify(
-        ok
-          ? m({ en: `Added API ${id} — registered, selectable now`, zh: `已加 API ${id} — 已注册, 现可选` })
-          : m({ en: `Added API ${id} — set its key (${keyEnv}) to register`, zh: `已加 API ${id} — 补 key (${keyEnv}) 后可用` }),
-        'info',
-      );
-    } else if (pick === DEL) {
-      const victim = await ui.select(m({ en: 'Remove which', zh: '移除哪个' }), apis.map((a) => a.id));
-      if (victim) {
-        removeCustomApi(victim);
-        ui.notify(m({ en: `Removed ${victim}`, zh: `已移除 ${victim}` }), 'info');
-      }
-    }
-  }
-}
+// 自定 provider 的登记已迁 `~/.pi/agent/models.json` (统一-registry D-6): 交互式加 API 的入口去掉,
+// 改走 MCP omd_register_provider / 手写 models.json (两栈共读单一真源)。此处仅保留角色/池/key/能力/语言分区。
 
 async function editWebKeys(ui: ConfigUi, cwd: string, env: Record<string, string | undefined>): Promise<void> {
   const updates: Record<string, string> = {};
@@ -212,18 +169,16 @@ export async function runConfigCenter(ui: ConfigUi, opts: ConfigCenterOpts = {})
   const SEC = {
     roles: m({ en: '❶ Role models', zh: '❶ 角色模型' }),
     mm: m({ en: '❷ Multimodal pool', zh: '❷ 多模态池' }),
-    apis: m({ en: '❸ Custom APIs', zh: '❸ 自定 API' }),
-    web: m({ en: '❹ Web search keys', zh: '❹ Web 搜索 key' }),
-    cap: m({ en: '❺ Capabilities', zh: '❺ 能力开关' }),
-    lang: m({ en: '❻ Language', zh: '❻ 语言' }),
+    web: m({ en: '❸ Web search keys', zh: '❸ Web 搜索 key' }),
+    cap: m({ en: '❹ Capabilities', zh: '❹ 能力开关' }),
+    lang: m({ en: '❺ Language', zh: '❺ 语言' }),
     done: m({ en: '✓ Exit', zh: '✓ 退出' }),
   };
   for (;;) {
-    const pick = await ui.select(header, [SEC.roles, SEC.mm, SEC.apis, SEC.web, SEC.cap, SEC.lang, SEC.done]);
+    const pick = await ui.select(header, [SEC.roles, SEC.mm, SEC.web, SEC.cap, SEC.lang, SEC.done]);
     if (!pick || pick === SEC.done) return;
     if (pick === SEC.roles) await editRoles(ui);
     else if (pick === SEC.mm) await editMultimodalPool(ui);
-    else if (pick === SEC.apis) await editApis(ui, cwd, env);
     else if (pick === SEC.web) await editWebKeys(ui, cwd, env);
     else if (pick === SEC.cap) await editCapabilities(ui, cwd, env);
     else if (pick === SEC.lang) await editLang(ui);
