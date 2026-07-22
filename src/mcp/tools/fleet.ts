@@ -137,15 +137,17 @@ const REVIEW_GATES = ['G0', 'G1', 'G2', 'G3'] as const;
 function makeDagReview(deps: FleetToolDeps, spawn: SpawnFn): OmdMcpTool {
   return {
     name: 'dag_review',
-    description: 'Run adversarial code review (scripts/dag-review.ts) async. gate G0-G3, scope=comma paths. Returns runId.',
+    description: 'Adversarial code review async. gate G0-G3, scope=paths, deep=single-agent full-repo review. Returns runId.',
     inputSchema: {
       gate: z.enum(REVIEW_GATES).optional().describe('Review gate G0|G1|G2|G3 (default G2)'),
       scope: z.string().optional().describe('Comma-separated pathspec limiting the diff (e.g. "src,sql")'),
+      deep: z.boolean().optional().describe('深审档: 单 agent 读全仓 + 实测(--single);比默认多维并行贵但精度高/自然去重'),
     },
     handler: async (args) => {
-      const { gate, scope } = args as { gate?: string; scope?: string };
+      const { gate, scope, deep } = args as { gate?: string; scope?: string; deep?: boolean };
       const argv: string[] = ['--brief'];
       if (gate) argv.push('--gate', gate);
+      if (deep) argv.push('--single');
       if (!pushFlag(argv, 'paths', scope)) {
         return { content: [{ type: 'text' as const, text: 'dag_review: scope must not start with "--"' }], isError: true };
       }
