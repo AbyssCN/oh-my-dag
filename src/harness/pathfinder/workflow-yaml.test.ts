@@ -11,6 +11,7 @@ const REPO_ROOT = join(import.meta.dir, '..', '..', '..');
 const RESEARCH_WF = join(REPO_ROOT, '.github', 'workflows', 'dag-research.yml');
 const CALLER_WF = join(REPO_ROOT, 'templates', 'path-research-caller.yml');
 const GRILL_WF = join(REPO_ROOT, '.github', 'workflows', 'claude-grill.yml');
+const GRILL_CALLER_WF = join(REPO_ROOT, 'templates', 'claude-grill-caller.yml');
 
 /** 读原文 (structural asserts 里做注入面文本检查用)。 */
 function raw(path: string): string {
@@ -78,6 +79,45 @@ describe('workflow yaml 可解析 + 结构就位', () => {
     // run 步骤统一读 inputs.* (workflow_call/dispatch 两路都填), 不再依赖 github.event.inputs.*。
     const text = raw(RESEARCH_WF);
     expect(text).toContain('DRY_RUN: ${{ inputs.dry_run }}');
+  });
+
+  test('claude-grill.yml: 双触发口 (issue_comment + workflow_call) + workflow_call 声明 token secret required', () => {
+    const wf = parse(raw(GRILL_WF)) as {
+      on?: { issue_comment?: { types?: string[] }; workflow_call?: { secrets?: Record<string, { required?: boolean }> } };
+    };
+    const on = wf.on ?? {};
+    expect(on.issue_comment?.types).toContain('created');
+    expect(on.workflow_call).toBeDefined();
+    expect(on.workflow_call?.secrets?.CLAUDE_CODE_OAUTH_TOKEN?.required).toBe(true);
+  });
+
+  test('claude-grill.yml: 始终额外 checkout oh-my-dag@v1 到 .omd-engine (取 omd-grill SKILL.md)', () => {
+    const wf = parse(raw(GRILL_WF)) as { jobs: { grill: { steps: Array<Record<string, unknown>> } } };
+    const steps = wf.jobs.grill.steps;
+    const engine = steps.find((s) => {
+      const w = s.with as { repository?: string; ref?: string; path?: string } | undefined;
+      return w?.repository === 'AbyssCN/oh-my-dag';
+    });
+    expect(engine).toBeDefined();
+    const w = engine!.with as { ref?: string; path?: string };
+    expect(w.ref).toBe('v1');
+    expect(w.path).toBe('.omd-engine');
+    // 默认 checkout (目标仓代码) 仍在 —— 引擎 checkout 是额外一个, 不替换默认。
+    expect(steps.filter((s) => typeof s.uses === 'string' && (s.uses as string).startsWith('actions/checkout')).length).toBeGreaterThanOrEqual(2);
+    // prompt 里 skill 路径改指引擎侧。
+    expect(raw(GRILL_WF)).toContain('.omd-engine/client-skills/omd-grill/SKILL.md');
+  });
+
+  test('claude-grill-caller.yml: YAML 解析无错 + reusable pin @v1 + secrets inherit (D-F)', () => {
+    expect(() => parse(raw(GRILL_CALLER_WF))).not.toThrow();
+    const wf = parse(raw(GRILL_CALLER_WF)) as {
+      on?: { issue_comment?: { types?: string[] } };
+      jobs: { grill: { uses: string; secrets: string } };
+    };
+    expect(wf.on?.issue_comment?.types).toContain('created');
+    const job = wf.jobs.grill;
+    expect(job.uses).toBe('AbyssCN/oh-my-dag/.github/workflows/claude-grill.yml@v1');
+    expect(job.secrets).toBe('inherit');
   });
 
   test('path-research-caller.yml: workflow_dispatch 金丝雀入口 + 转发 with (S4 canary)', () => {

@@ -10,9 +10,18 @@ name: Claude grill (comment channel)
 #   1. 权力闸 — 仅 repository owner 本人的评论触发 (public 仓库谁都能评论, 无闸 = 任何人烧订阅额度)。
 #   2. 范围闸 — 仅带 path: 前缀 label 的 issue (pathfinder 票), 不是全仓通用助理。
 #   3. 凭证 — CLAUDE_CODE_OAUTH_TOKEN (Max 订阅 OAuth, `claude setup-token` 生成), 不烧 API 计费。
+#
+# 双触发口 (同 dag-research 范式):
+#   - issue_comment.created  本仓 issue 评论区 @claude → 直接跑 (中心仓自用)。
+#   - workflow_call          供他仓 pin @v1 复用 (caller 见 templates/claude-grill-caller.yml); 逻辑集中一处。
 on:
   issue_comment:
     types: [created]
+  workflow_call:
+    # caller (claude-grill-caller.yml) 用 secrets: inherit 透传; token 必给 (缺 = 无凭证跑不了)。
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
 
 permissions:
   contents: read
@@ -22,20 +31,31 @@ permissions:
 
 jobs:
   grill:
+    # 权力闸 + 范围闸: 仅仓库 owner 本人 + 评论含 @claude + issue 带 path:* label 放行。
+    # (workflow_call 时 github.* 取 caller 触发事件, 故此闸对复用方同样成立: caller repo owner 本人评论。同 dag-research 注释。)
     if: >-
       github.event.comment.user.login == github.repository_owner &&
       contains(github.event.comment.body, '@claude') &&
       (contains(join(github.event.issue.labels.*.name, ','), 'path:'))
     runs-on: ubuntu-latest
     steps:
+      # 默认 checkout: 目标仓代码 (grill 事实自查用 —— Read/Grep 本仓票据/代码回答 owner)。
       - uses: actions/checkout@v4
+
+      # 引擎 checkout (始终): 额外拉 oh-my-dag@v1 到 .omd-engine, 取 client-skills/omd-grill/SKILL.md。
+      # caller 仓库没有此文件 —— workflow_call 下默认 checkout 是 caller 仓代码, 拿不到引擎侧 grill skill。
+      - uses: actions/checkout@v4
+        with:
+          repository: AbyssCN/oh-my-dag
+          ref: v1
+          path: .omd-engine
 
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             你在 pathfinder 决策地图的一张票 (issue #${{ github.event.issue.number }}) 的评论区应答 owner。
-            先读 client-skills/omd-grill/SKILL.md 的「grill 票通道」纪律, 再读本票全部评论区 (已问已答的轮次不重问)。
+            先读 .omd-engine/client-skills/omd-grill/SKILL.md 的「grill 票通道」纪律, 再读本票全部评论区 (已问已答的轮次不重问)。
             规则:
             - 这是**轻裁通道**: owner 同意推荐 → 给出待正式 rule 的结论草案 (标注「待折入侧正式 path_rule」);
               owner 同意但提出微调 → 评估微调, 采纳则并进草案, 有异议则一次一问反问 (评论即输入, 与证据冲突要反问不照办)。

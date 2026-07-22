@@ -1,0 +1,23 @@
+name: Claude grill (comment channel)
+
+# 他仓接入 oh-my-dag 评论区 grill 通道: 把此文件拷进本仓 .github/workflows/ (S4 path init 自动干)。
+# 带 path:* label 的 issue 下 owner 评论 @claude → 调中心 reusable workflow 按 omd-grill 纪律应答/续审并回帖。
+# pin @v1 (D-F): grill 逻辑集中在 oh-my-dag 一处, 各仓不各自维护; 中心挂了最坏 = 评论区通道停, 不碰本仓其它 CI。
+# owner 权力闸 / @claude / path:* 范围闸全在被调 workflow 里 (workflow_call 下 github.* 取 caller 事件),
+# 故 caller 只需这几行。
+on:
+  issue_comment:
+    types: [created]
+
+# 被调 workflow 跑起来受 caller 授权约束: 显式声明它需要的权限 (回帖 issues:write / OAuth id-token)。
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+  id-token: write
+
+jobs:
+  grill:
+    uses: AbyssCN/oh-my-dag/.github/workflows/claude-grill.yml@v1
+    # secrets: inherit 把本仓 CLAUDE_CODE_OAUTH_TOKEN 透传给被调 workflow。
+    secrets: inherit

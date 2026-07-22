@@ -351,6 +351,138 @@ describe('runInit 执行前预检 fail-loud (D-E: 缺什么报什么 + 修复命
   });
 });
 
+// ── grill 评论区通道 (可选件: 与必选 CLOUD_KEYS 分开, 缺凭证不 fail) ──────────────────
+
+describe('runInit grill 通道铺设 (可选件)', () => {
+  test('本机 env 有 token → secret set + 拷 grill caller + grillChannel:true', () => {
+    const dir = tmp();
+    try {
+      const { gh, calls } = recorderGh();
+      const writes: Array<[string, string]> = [];
+      let writtenCfg: PathfinderConfig | undefined;
+      const o = runInit(
+        { destination: 'Grill On', backend: 'gh', cloudAfk: true },
+        {
+          cwd: dir,
+          env: { DEEPSEEK_API_KEY: 'dk', TAVILY_API_KEY: 'tk', CLAUDE_CODE_OAUTH_TOKEN: 'oauth' },
+          probes: probes(),
+          gh,
+          readTemplate: () => 'CALLER_YAML',
+          readGrillTemplate: () => 'GRILL_CALLER_YAML',
+          writeWorkflow: (p, c) => writes.push([p, c]),
+          writeConfig: (c) => (writtenCfg = c),
+          hasCentralWorkflow: () => false,
+          hasGrillWorkflow: () => false,
+          canary: { sleep: () => {} },
+        },
+      );
+      expect(o.isError).toBeUndefined();
+      // token 走 secret set。
+      const secretNames = calls.filter((c) => c[0] === 'secret' && c[1] === 'set').map((c) => c[2]);
+      expect(secretNames).toContain('CLAUDE_CODE_OAUTH_TOKEN');
+      // grill caller 拷到 .github/workflows/claude-grill.yml。
+      const grillWrite = writes.find(([p]) => p.endsWith(join('.github', 'workflows', 'claude-grill.yml')));
+      expect(grillWrite?.[1]).toBe('GRILL_CALLER_YAML');
+      expect(writtenCfg?.grillChannel).toBe(true);
+      expect(o.text).toContain('grill 评论区通道');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('缺 token (env 无 + secret 无) → 不 fail, 报告含未启用 + grillChannel:false', () => {
+    const dir = tmp();
+    try {
+      const { gh } = recorderGh(); // secret list → [] (token 不存在)
+      let writtenCfg: PathfinderConfig | undefined;
+      const o = runInit(
+        { destination: 'Grill Off', backend: 'gh', cloudAfk: true },
+        {
+          cwd: dir,
+          env: { DEEPSEEK_API_KEY: 'dk', TAVILY_API_KEY: 'tk' }, // 无 CLAUDE_CODE_OAUTH_TOKEN
+          probes: probes(),
+          gh,
+          readTemplate: () => 'CALLER_YAML',
+          writeWorkflow: () => {},
+          writeConfig: (c) => (writtenCfg = c),
+          hasCentralWorkflow: () => false,
+          canary: { sleep: () => {} },
+        },
+      );
+      expect(o.isError).toBeUndefined(); // 可选件缺凭证不阻断
+      expect(o.text).toContain('grill 评论区通道未启用');
+      expect(o.text).toContain('CLAUDE_CODE_OAUTH_TOKEN');
+      expect(writtenCfg?.grillChannel).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('repo secret 已存在 → 跳过 set, 仍启用 (grillChannel:true, caller 照拷)', () => {
+    const dir = tmp();
+    try {
+      const { gh, calls } = recorderGh();
+      // secret list 报 token 已存在 (CLOUD_KEYS 仍走 env 复制); 其余透传共享 fixture。
+      const ghExisting: GhRunner = (args) =>
+        args[0] === 'secret' && args[1] === 'list' ? okr(JSON.stringify([{ name: 'CLAUDE_CODE_OAUTH_TOKEN' }])) : gh(args);
+      const writes: Array<[string, string]> = [];
+      let writtenCfg: PathfinderConfig | undefined;
+      const o = runInit(
+        { destination: 'Grill Kept', backend: 'gh', cloudAfk: true },
+        {
+          cwd: dir,
+          env: { DEEPSEEK_API_KEY: 'dk', TAVILY_API_KEY: 'tk' }, // env 无 token: 已存在即无需复制
+          probes: probes(),
+          gh: ghExisting,
+          readTemplate: () => 'CALLER_YAML',
+          readGrillTemplate: () => 'GRILL_CALLER_YAML',
+          writeWorkflow: (p, c) => writes.push([p, c]),
+          writeConfig: (c) => (writtenCfg = c),
+          hasCentralWorkflow: () => false,
+          hasGrillWorkflow: () => false,
+          canary: { sleep: () => {} },
+        },
+      );
+      expect(o.isError).toBeUndefined();
+      // token 不再 set (已存在, 保留不覆写)。
+      expect(calls.some((c) => c[0] === 'secret' && c[1] === 'set' && c[2] === 'CLAUDE_CODE_OAUTH_TOKEN')).toBe(false);
+      // 仍启用: caller 照拷, config true。
+      expect(writes.some(([p]) => p.endsWith(join('.github', 'workflows', 'claude-grill.yml')))).toBe(true);
+      expect(writtenCfg?.grillChannel).toBe(true);
+      expect(o.text).toContain('保留不覆写');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('中心仓 (已有 claude-grill.yml) → 不拷 grill caller, 仍启用', () => {
+    const dir = tmp();
+    try {
+      const { gh } = recorderGh();
+      const writes: Array<[string, string]> = [];
+      let writtenCfg: PathfinderConfig | undefined;
+      runInit(
+        { destination: 'Grill Central', backend: 'gh', cloudAfk: true },
+        {
+          cwd: dir,
+          env: { DEEPSEEK_API_KEY: 'dk', TAVILY_API_KEY: 'tk', CLAUDE_CODE_OAUTH_TOKEN: 'oauth' },
+          probes: probes(),
+          gh,
+          writeWorkflow: (p, c) => writes.push([p, c]),
+          writeConfig: (c) => (writtenCfg = c),
+          hasCentralWorkflow: () => true,
+          hasGrillWorkflow: () => true,
+          canary: { sleep: () => {} },
+        },
+      );
+      expect(writes.some(([p]) => p.endsWith(join('.github', 'workflows', 'claude-grill.yml')))).toBe(false);
+      expect(writtenCfg?.grillChannel).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 // ── gh fixture ────────────────────────────────────────────────────────────────
 
 /** 探测永远成功 + 各执行调用有响应的 recorder (owner/repo = acme/repo)。 */
