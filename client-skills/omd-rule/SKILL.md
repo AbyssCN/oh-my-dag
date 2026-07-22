@@ -7,6 +7,10 @@ description: 裁决 omd pathfinder 前沿票(记录 owner 决策到真相文件)
 
 调 omd MCP `path_rule`(可能带前缀 `mcp__omd__`;未加载先 ToolSearch "path_rule"),参数 `ticketId` + `ruling`(多图带 `slug`)。
 
+裁决怎么落地看后端:md 后端写进 `docs/plan/pathfinder/<slug>.md` 的票 status/ruling;gh 后端写一条 **resolution 评论**(首行约定 `**ruling**: <text>`)并 close 对应 issue。两后端语义等价。
+
+裁决成功后工具还把「<destination>: <票 title> 裁决 = <ruling>」写进 omd 自记忆(`omd.pattern` fact),供 memory_recall / 会话开场检索复用;这步是增益,写失败只 warn(输出里 `⚠ … memory 是增益`)不阻断裁决本身。
+
 ## 纪律:裁决权属于 owner
 
 - 只有 owner 明确表达决定("就用 SQLite"、"按方案 B 来"、"/omd-rule t3 …")才调。你的角色是把口头决定**提炼成一句清晰 ruling**——task 票的 ruling 会成为将来 slice 节点的执行目标 goal,要写到弱 executor 也能独立完成。

@@ -77,8 +77,8 @@ export interface AssembleOmdMcpDeps {
   commandRunner?: CommandLeafRunner;
   /** engine config 追加覆盖 (在 env 角色矩阵解析结果之上, caller 显式指定优先)。 */
   configOverrides?: Partial<ExecutorDagConfig>;
-  /** pathfinder 工具接缝覆盖 (测试传 fake executeSlice/dispatchFrontier/watchAfkResults)。 */
-  pathfinder?: Partial<Pick<PathfinderToolDeps, 'executeSlice' | 'dispatchFrontier' | 'watchAfkResults'>>;
+  /** pathfinder 工具接缝覆盖 (测试传 fake executeSlice/dispatchFrontier)。 */
+  pathfinder?: Partial<Pick<PathfinderToolDeps, 'executeSlice' | 'dispatchFrontier'>>;
   /** fleet spawn 接缝 (测试注入 fake; 生产默认 Bun.spawn)。 */
   spawn?: SpawnFn;
   /** dream pump 接缝 (dream_consolidate; 省略 → 该工具回 isError 不炸)。 */
@@ -292,6 +292,8 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       agentRunner,
       commandRunner,
       hudMirror,
+      // 裁决增益: path_rule 成功后经同款 OmdMemory 写 omd.pattern fact (memory_recall 消费端可召回)。
+      memory,
       ...deps.pathfinder,
     }),
     // fleet 四工具: review/slim/deepen 异步子进程 + dream_consolidate 同步泵。

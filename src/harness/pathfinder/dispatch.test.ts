@@ -1,14 +1,19 @@
 import { describe, expect, test } from 'bun:test';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   dispatchFrontier,
   dispatchTicket,
   disposePrototype,
   prototypeBranch,
   prototypeDir,
+  researchDispatchedPath,
   researchResultPath,
   researchScriptPath,
   type DispatchDeps,
 } from './dispatch';
+import type { GhResult, GhRunner } from './backend';
 import type { PathMap, Ticket } from './types';
 
 /** 造一张票 (默认 open task, 无前置)。 */
@@ -83,6 +88,89 @@ describe('dispatch — dispatchTicket routes by type', () => {
     expect(r).toEqual({ kind: 'compile', ticketId: 't1' });
     expect(d.spawns).toHaveLength(0);
     expect(d.gits).toHaveLength(0);
+  });
+});
+
+describe('dispatch — gh 后端 research 走云端 label 派发 (S2 · D-F)', () => {
+  const okr = (stdout = ''): GhResult => ({ stdout, exitCode: 0, stderr: '' });
+
+  test('research (backend=gh): 幂等打 path:research label, 不 spawn/不 git, .dispatched 照写 (D-J)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pf-dispatch-gh-'));
+    try {
+      const calls: string[][] = [];
+      const gh: GhRunner = (args) => {
+        calls.push(args);
+        return okr();
+      };
+      const spawns: string[][] = [];
+      const gits: string[][] = [];
+      const deps: DispatchDeps = {
+        gh,
+        spawnDetached: (cmd) => {
+          spawns.push(cmd);
+          return 1;
+        },
+        git: (args) => {
+          gits.push(args);
+        },
+      };
+      const ghCtx = { cwd: dir, slug: '5', backend: 'gh' as const };
+      const r = dispatchTicket(tk({ id: '#42', type: 'research', title: 'which store?' }), ghCtx, deps);
+
+      expect(r).toEqual({ kind: 'gh-label', ticketId: '#42', label: 'path:research' });
+      // gh CLI 收裸 number (去 #), 幂等 add-label。
+      expect(calls).toEqual([['issue', 'edit', '42', '--add-label', 'path:research']]);
+      // 云端派发: 无本地进程 / 无 git。
+      expect(spawns).toHaveLength(0);
+      expect(gits).toHaveLength(0);
+      // .dispatched 标记照写 (预算记账留本地, D-J)。
+      const marker = researchDispatchedPath(dir, '5', '#42');
+      expect(existsSync(marker)).toBe(true);
+      expect(readFileSync(marker, 'utf8')).toBe('gh');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('research (backend=gh): gh 非零退出 → fail-loud throw', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pf-dispatch-gh-'));
+    try {
+      const gh: GhRunner = () => ({ stdout: '', exitCode: 1, stderr: 'label path:research not found' });
+      const ghCtx = { cwd: dir, slug: '5', backend: 'gh' as const };
+      expect(() => dispatchTicket(tk({ id: '#42', type: 'research', title: 'x' }), ghCtx, { gh })).toThrow(
+        /label path:research not found/,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('dispatchFrontier (backend=gh): research 票走 gh-label, 其余仅 reported', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pf-dispatch-gh-'));
+    try {
+      const calls: string[][] = [];
+      const gh: GhRunner = (args) => {
+        calls.push(args);
+        return okr();
+      };
+      const map: PathMap = {
+        destination: 'Ship X',
+        slug: '5',
+        tickets: [
+          tk({ id: '#11', type: 'research', title: 'research A' }),
+          tk({ id: '#13', type: 'grill' }),
+          tk({ id: '#14', type: 'task' }),
+        ],
+        decisionsLog: [],
+      };
+      const fd = dispatchFrontier(map, { cwd: dir, slug: '5', backend: 'gh' }, { gh });
+      expect(fd.dispatched.map((x) => x.kind)).toEqual(['gh-label']);
+      expect(fd.dispatched[0]!.ticketId).toBe('#11');
+      expect(fd.reported.map((t) => t.id).sort()).toEqual(['#13', '#14']);
+      expect(calls).toEqual([['issue', 'edit', '11', '--add-label', 'path:research']]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
