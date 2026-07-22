@@ -7,6 +7,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveBackend, type GhResult, type GhRunner } from './backend';
+import { createGhBackend } from './backend-gh';
 
 const okr = (stdout: string): GhResult => ({ stdout, exitCode: 0, stderr: '' });
 const failr = (stderr: string): GhResult => ({ stdout: '', exitCode: 1, stderr });
@@ -308,6 +309,196 @@ describe('gh 写操作 emission', () => {
       const gh = fakeGh((args) => (args[1] === 'create' ? failr('label path:task not found') : okr('')));
       const b = resolveBackend(dir, { env: { OMD_PATH_BACKEND: 'gh' }, gh });
       expect(() => b.addTicket(dir, '5', { type: 'task', title: 'x', blockedBy: [] })).toThrow(/label path:task not found/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── native 策略 (D-C.2: 原生 issue-dependencies, blockedBy 单真相不走 body 尾行) ────────
+
+/** native readMap 响应: sub #12 的前置边来自原生 blockedBy 字段 (body 无尾行)。 */
+function nativeReadMapResponse(): string {
+  return JSON.stringify({
+    data: {
+      repository: {
+        issue: {
+          number: 5,
+          title: '🧭 [map] Ship X',
+          body: 'Destination: Ship X',
+          state: 'OPEN',
+          subIssues: {
+            nodes: [
+              {
+                number: 15,
+                title: '[research] survey deps',
+                body: '',
+                state: 'CLOSED',
+                labels: { nodes: [{ name: 'path:research' }] },
+                comments: { nodes: [{ body: '**ruling**: use bun native' }] },
+                subIssues: { nodes: [] },
+                blockedBy: { nodes: [] },
+              },
+              {
+                number: 12,
+                title: '[task] build it',
+                // body 有诱饵尾行, native 策略必须无视它 —— 前置边只认原生字段。
+                body: 'some detail\n\nBlocked-by: #999',
+                state: 'OPEN',
+                labels: { nodes: [{ name: 'path:task' }] },
+                comments: { nodes: [] },
+                subIssues: { nodes: [] },
+                blockedBy: { nodes: [{ number: 15 }] },
+              },
+            ],
+          },
+        },
+      },
+    },
+  });
+}
+
+describe('gh native 策略 — 读拼装', () => {
+  test('blockedBy 取自原生字段, 无视 body 尾行诱饵', () => {
+    const calls: string[][] = [];
+    const gh = fakeGh((args) => {
+      calls.push(args);
+      return args.includes('graphql') ? okr(nativeReadMapResponse()) : okr('[]');
+    });
+    const b = createGhBackend(gh, true);
+    const map = b.readMap('/repo', '5')!;
+
+    const task = map.tickets.find((t) => t.id === '#12')!;
+    expect(task.blockedBy).toEqual(['#15']); // 原生字段, 非 body 里的 #999
+    // #15 已裁 → task 前置满足 → open。
+    expect(task.status).toBe('open');
+
+    // read 查询确实并进了 blockedBy 选择集。
+    const q = calls.find((c) => c.includes('graphql'))!.find((a) => a.startsWith('query='))!;
+    expect(q).toContain('blockedBy(first:50)');
+  });
+});
+
+describe('gh native 策略 — 写 emission', () => {
+  test('addTicket: create 不写 Blocked-by 尾行, 逐 blocking 票 databaseId lookup + REST POST', () => {
+    const calls: string[][] = [];
+    const gh = fakeGh((args) => {
+      calls.push(args);
+      if (args[0] === 'issue' && args[1] === 'create') return okr('https://github.com/acme/repo/issues/42\n');
+      if (args[0] === 'issue' && args[1] === 'view') return okr(JSON.stringify({ id: `NODE_${args[2]}` }));
+      if (args.includes('graphql')) return okr(JSON.stringify({ data: { addSubIssue: { issue: { number: 42 } } } }));
+      // databaseId lookup: gh api repos/o/r/issues/N --jq .id
+      if (args[0] === 'api' && /issues\/11$/.test(args[1] ?? '')) return okr('9110\n');
+      if (args[0] === 'api' && /issues\/13$/.test(args[1] ?? '')) return okr('9130\n');
+      return okr('');
+    });
+    const b = createGhBackend(gh, true);
+    const t = b.addTicket('/repo', '5', { type: 'task', title: 'do a thing', body: 'detail', blockedBy: ['#11', '#13'] });
+
+    expect(t.id).toBe('#42');
+    expect(t.blockedBy).toEqual(['#11', '#13']);
+
+    // create body 只有 detail, 绝无 Blocked-by 尾行 (native 不写 body 真相)。
+    const create = calls.find((c) => c[0] === 'issue' && c[1] === 'create')!;
+    const createBody = create[create.indexOf('--body') + 1]!;
+    expect(createBody).toBe('detail');
+    expect(createBody).not.toContain('Blocked-by');
+
+    // 逐 blocking 票: databaseId lookup (--jq .id) 后紧跟 REST POST dependencies/blocked_by。
+    const lookup11 = calls.findIndex((c) => c[0] === 'api' && c[1] === 'repos/acme/repo/issues/11' && c.includes('.id'));
+    const post11 = calls.findIndex(
+      (c) => c[0] === 'api' && c.includes('-X') && c.includes('POST') && c[3] === 'repos/acme/repo/issues/42/dependencies/blocked_by' && c.includes('issue_id=9110'),
+    );
+    expect(lookup11).toBeGreaterThanOrEqual(0);
+    expect(post11).toBeGreaterThan(lookup11); // lookup 在 POST 之前
+
+    const post13 = calls.find(
+      (c) => c[0] === 'api' && c.includes('POST') && c[3] === 'repos/acme/repo/issues/42/dependencies/blocked_by' && c.includes('issue_id=9130'),
+    );
+    expect(post13).toBeDefined(); // 第二张 blocking 票也发了 POST
+
+    // 反向证伪: create 之外无任何 gh 调用带 Blocked-by body 尾行。
+    expect(calls.some((c) => c.some((a) => a.includes('Blocked-by:')))).toBe(false);
+  });
+
+  test('databaseId lookup 失败 → fail-loud throw (D-E, 不静默降级 body 尾行)', () => {
+    const gh = fakeGh((args) => {
+      if (args[0] === 'issue' && args[1] === 'create') return okr('https://github.com/acme/repo/issues/42\n');
+      if (args[0] === 'issue' && args[1] === 'view') return okr(JSON.stringify({ id: `NODE_${args[2]}` }));
+      if (args.includes('graphql')) return okr(JSON.stringify({ data: { addSubIssue: { issue: { number: 42 } } } }));
+      if (args[0] === 'api' && /issues\/11$/.test(args[1] ?? '')) return failr('404 Not Found');
+      return okr('');
+    });
+    const b = createGhBackend(gh, true);
+    expect(() => b.addTicket('/repo', '5', { type: 'task', title: 'x', blockedBy: ['#11'] })).toThrow(/404 Not Found/);
+  });
+});
+
+describe('D-C.2 门控: config.capabilities.nativeDependencies 选策略', () => {
+  test('nativeDependencies=true → native 策略 (读原生 blockedBy 字段)', () => {
+    const dir = tmp();
+    try {
+      mkdirSync(join(dir, '.omd', 'pathfinder'), { recursive: true });
+      writeFileSync(join(dir, '.omd', 'pathfinder', 'config.json'), JSON.stringify({ backend: 'gh', capabilities: { nativeDependencies: true } }));
+      const calls: string[][] = [];
+      const gh = fakeGh((args) => {
+        calls.push(args);
+        return args.includes('graphql') ? okr(nativeReadMapResponse()) : okr('[]');
+      });
+      const b = resolveBackend(dir, { env: {}, gh });
+      const map = b.readMap(dir, '5')!;
+      expect(map.tickets.find((t) => t.id === '#12')!.blockedBy).toEqual(['#15']);
+      const q = calls.find((c) => c.includes('graphql'))!.find((a) => a.startsWith('query='))!;
+      expect(q).toContain('blockedBy(first:50)');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('nativeDependencies=false → legacy 策略 (读 body 尾行, 写 body 尾行)', () => {
+    const dir = tmp();
+    try {
+      mkdirSync(join(dir, '.omd', 'pathfinder'), { recursive: true });
+      writeFileSync(join(dir, '.omd', 'pathfinder', 'config.json'), JSON.stringify({ backend: 'gh', capabilities: { nativeDependencies: false } }));
+      const calls: string[][] = [];
+      const gh = fakeGh((args) => {
+        calls.push(args);
+        if (args.includes('graphql')) return okr(readMapResponse());
+        if (args[0] === 'issue' && args[1] === 'create') return okr('https://github.com/acme/repo/issues/42\n');
+        if (args[0] === 'issue' && args[1] === 'view') return okr(JSON.stringify({ id: `NODE_${args[2]}` }));
+        return okr('');
+      });
+      const b = resolveBackend(dir, { env: {}, gh });
+      // 读: body 尾行真相 (readMapResponse 的 #12 body 有 Blocked-by: #11)。
+      const map = b.readMap(dir, '5')!;
+      expect(map.tickets.find((t) => t.id === '#12')!.blockedBy).toEqual(['#11']);
+      // read 查询不含原生字段。
+      const q = calls.find((c) => c.includes('graphql'))!.find((a) => a.startsWith('query='))!;
+      expect(q).not.toContain('blockedBy(first:50)');
+      // 写: body 尾行, 无 REST dependencies POST。
+      b.addTicket(dir, '5', { type: 'task', title: 'x', blockedBy: ['#11'] });
+      const create = calls.find((c) => c[0] === 'issue' && c[1] === 'create')!;
+      expect(create[create.indexOf('--body') + 1]).toContain('Blocked-by: #11');
+      expect(calls.some((c) => c.some((a) => a.includes('dependencies/blocked_by')))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('config 无 capabilities 字段 → 缺省 legacy (保守)', () => {
+    const dir = tmp();
+    try {
+      mkdirSync(join(dir, '.omd', 'pathfinder'), { recursive: true });
+      writeFileSync(join(dir, '.omd', 'pathfinder', 'config.json'), JSON.stringify({ backend: 'gh' }));
+      const calls: string[][] = [];
+      const gh = fakeGh((args) => {
+        calls.push(args);
+        return args.includes('graphql') ? okr(readMapResponse()) : okr('[]');
+      });
+      const b = resolveBackend(dir, { env: {}, gh });
+      b.readMap(dir, '5');
+      const q = calls.find((c) => c.includes('graphql'))!.find((a) => a.startsWith('query='))!;
+      expect(q).not.toContain('blockedBy(first:50)'); // 缺省不查原生字段
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
