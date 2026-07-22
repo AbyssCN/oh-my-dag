@@ -199,8 +199,8 @@ describe('runInit gh 执行序 emission', () => {
 
       // 7 个 label 全建。
       expect(verbs.filter((v) => v === 'label create')).toHaveLength(7);
-      // 两个 key 都 secret set。
-      const secretNames = calls.filter((c) => c[0] === 'secret').map((c) => c[2]);
+      // 两个 key 都 secret set (list 探已存在 → 空 → 全复制)。
+      const secretNames = calls.filter((c) => c[0] === 'secret' && c[1] === 'set').map((c) => c[2]);
       expect(secretNames).toEqual(['DEEPSEEK_API_KEY', 'TAVILY_API_KEY']);
       // canary dispatch 传 dry_run=true + issue=map number。
       const dispatch = calls.find((c) => c[0] === 'workflow' && c[1] === 'run')!;
@@ -259,6 +259,36 @@ describe('runInit gh 执行序 emission', () => {
       expect(calls.some((c) => c[0] === 'secret')).toBe(false);
       expect(calls.some((c) => c[0] === 'workflow' && c[1] === 'run')).toBe(false);
       expect(writtenCfg).toEqual({ backend: 'gh', cloudAfk: false, capabilities: { nativeDependencies: false } });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('repo secret 已存在 → 跳过不覆写 (保护云端专用 keyset, 不冲成本机 key)', () => {
+    const dir = tmp();
+    try {
+      const { gh, calls } = recorderGh();
+      // 包一层: secret list 报两个 key 都已存在 (如 omd-actions keyset), 其余透传共享 fixture。
+      const ghExisting: GhRunner = (args) =>
+        args[0] === 'secret' && args[1] === 'list'
+          ? { stdout: JSON.stringify([{ name: 'DEEPSEEK_API_KEY' }, { name: 'TAVILY_API_KEY' }]), stderr: '', exitCode: 0 }
+          : gh(args);
+      const o = runInit(
+        { destination: 'Keep Keyset', backend: 'gh', cloudAfk: true },
+        {
+          cwd: dir,
+          env: {}, // 本机 env 无 key 也不该报错: 已存在即无需复制
+          probes: probes(),
+          gh: ghExisting,
+          readTemplate: () => 'CALLER_YAML',
+          writeWorkflow: () => {},
+          writeConfig: () => {},
+          hasCentralWorkflow: () => false,
+          canary: { sleep: () => {} },
+        },
+      );
+      expect(o.isError).toBeUndefined();
+      expect(calls.some((c) => c[0] === 'secret' && c[1] === 'set')).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -334,6 +364,7 @@ function recorderGh(): { gh: GhRunner; calls: string[][] } {
     }
     if (args[0] === 'label') return okr('');
     if (args[0] === 'issue' && args[1] === 'create') return okr('https://github.com/acme/repo/issues/7\n');
+    if (args[0] === 'secret' && args[1] === 'list') return okr('[]');
     if (args[0] === 'secret') return okr('');
     if (args[0] === 'workflow' && args[1] === 'run') return okr('');
     if (args[0] === 'run' && args[1] === 'list') {

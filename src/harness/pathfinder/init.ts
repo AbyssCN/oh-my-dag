@@ -254,16 +254,25 @@ function ensureLabels(gh: GhRunner): void {
 /**
  * 把机器级 key 复制成 repo secret (值从本机 env 读; 缺 → fail-loud 报缺哪个 + 修复)。
  * GhRunner 无 stdin 通道 → 经 --body 传 (owner 本机一次性 init, 可接受; 值不落日志)。
+ *
+ * **已存在的 repo secret 跳过不覆写**: 仓库可能已配好云端专用 keyset (如 omd-actions,
+ * 带独立配额墙), init 覆写会把它冲成本机 key、破坏 key 隔离。语义 = "确保有", 不是 "确保等于本机"。
  */
 function setSecrets(gh: GhRunner, env: NodeJS.ProcessEnv, ownerRepo: string): void {
-  const missing = CLOUD_KEYS.filter((k) => !(typeof env[k] === 'string' && env[k]!.trim().length > 0));
+  const existing = new Set<string>(
+    (JSON.parse(run(gh, ['secret', 'list', '-R', ownerRepo, '--json', 'name'], 'setSecrets:list')) as Array<{ name: string }>).map(
+      (s) => s.name,
+    ),
+  );
+  const toSet = CLOUD_KEYS.filter((k) => !existing.has(k));
+  const missing = toSet.filter((k) => !(typeof env[k] === 'string' && env[k]!.trim().length > 0));
   if (missing.length > 0) {
     throw new Error(
       `缺机器级 key: ${missing.join(', ')} — 无法 gh secret set (值从本机 env 读)。` +
         ` 修复: 在 ~/.omd/env 或 .env 配好 ${missing.join('/')} (omd init 配 provider key) 后重跑 path_init。`,
     );
   }
-  for (const k of CLOUD_KEYS) {
+  for (const k of toSet) {
     run(gh, ['secret', 'set', k, '-R', ownerRepo, '--body', env[k]!], `setSecrets:${k}`);
   }
 }
