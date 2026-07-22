@@ -9,12 +9,11 @@
  * 契约冻结:返回 RunReviewResult,与 runReview 一致。
  */
 import { join } from 'node:path';
-import { buildGateReview, buildSpecReviewPrompt, screenFinding, DIMS_BY_GATE, resolveReviewModel } from './index';
-import type { ReviewFinding, RunReviewOpts, RunReviewResult } from './run';
+import { buildGateReview, buildSpecReviewPrompt, screenFinding, DIMS_BY_GATE } from './index';
+import { resolveReviewModels, type ReviewFinding, type RunReviewOpts, type RunReviewResult } from './run';
 import { verifyFindings as realVerifyFindings } from './verify';
 import { findLatestSdd } from '../execute-extension';
 import { createAgentLeafRunner } from '../agent-leaf';
-import { roleModelWithFallback } from '../../model/role-fallback';
 
 type ReviewEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';
 
@@ -47,11 +46,7 @@ export async function runReviewSingle(opts: RunReviewOpts): Promise<RunReviewRes
   const dims = opts.dims ?? DIMS_BY_GATE[opts.gate];
   const findSdd = opts.deps?.findSdd ?? findLatestSdd;
 
-  const findModel = roleModelWithFallback(
-    opts.model ?? env.OMD_REVIEW_FIND_MODEL ?? resolveReviewModel(opts.gate, {}, env) ?? 'deepseek:deepseek-v4-pro',
-    'review',
-  );
-  const verifyModel = roleModelWithFallback(opts.verifyModel ?? env.OMD_REVIEW_VERIFY_MODEL ?? findModel, 'review');
+  const { findModel, verifyModel } = resolveReviewModels(opts, env); // find→review 角色, verify→verifier 角色
   const verifyEffort = (env.OMD_REVIEW_VERIFY_EFFORT as ReviewEffort) || undefined;
 
   const wantSpec = dims.includes('spec');

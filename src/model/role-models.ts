@@ -27,7 +27,7 @@ import { dirname } from 'node:path';
  * continuity = session 交接 checkpoint 蒸馏 (opt-in, 便宜档);刻意不进 MODEL_ROLES —— 它是后台
  * 可选角色, 走 env/config/默认解析即可, 不进默认 config UI / 起跑坐席告警面 (避免未用该功能者被噪音)。
  */
-export type ModelRole = 'plan' | 'conductor' | 'leaf' | 'verifier' | 'dream' | 'continuity';
+export type ModelRole = 'plan' | 'conductor' | 'leaf' | 'verifier' | 'dream' | 'continuity' | 'review';
 
 /** UX 顺序 (config 列表 / onboard 页展示): 规划 → 执行 → 校验 → 做梦。 */
 export const MODEL_ROLES: readonly ModelRole[] = ['plan', 'conductor', 'leaf', 'verifier', 'dream'];
@@ -52,6 +52,9 @@ const ROLE_SPECS: Record<ModelRole, RoleSpec> = {
   dream: { envVar: 'OMD_DREAM_MODEL', fallback: 'deepseek' },
   // Session 交接 checkpoint 蒸馏 = 便宜单发档 (同 dream 家族);opt-in。
   continuity: { envVar: 'OMD_CONTINUITY_MODEL', fallback: 'deepseek' },
+  // Review find 层 = 对抗审查读码找 bug (verify 走 verifier 角色跨模型);opt-in, 不进 UI。
+  // fallback 裸 provider (→ defaultModel), 无凭证经 roleModelWithFallback 顺延 — 不假设用户 key。
+  review: { envVar: 'OMD_REVIEW_MODEL', fallback: 'deepseek' },
 };
 
 export type RoleModelSource = 'override' | 'file' | 'env' | 'default';

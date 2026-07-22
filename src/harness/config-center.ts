@@ -45,8 +45,9 @@ const ROLE_LABEL: Record<ModelRole, string> = {
   leaf: 'Leaf',
   verifier: 'Verifier',
   dream: 'Dream',
-  // continuity 不在 MODEL_ROLES(opt-in 后台角色)→ 不进本 TUI 列表;此 label 仅满足类型完整。
+  // continuity / review 不在 MODEL_ROLES(opt-in 后台角色)→ 不进本 TUI 列表;label 仅满足类型完整。
   continuity: 'Continuity',
+  review: 'Review',
 };
 
 const WEB_KEYS = ['TAVILY_API_KEY', 'ANYSEARCH_API_KEY', 'FIRECRAWL_API_KEY', 'JINA_API_KEY'] as const;
