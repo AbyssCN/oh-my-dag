@@ -1,11 +1,11 @@
 ---
 name: omd-review
-description: 对一批 diff 做对抗式多维 DAG 审查(正确性/契约),gate 阶梯控深度,产 findings 报告;finding≠真理,按误报裁决程序证伪后再定性。Trigger:/omd-review、审查这批改动、代码审查、review diff、release 闸。
+description: 对一批 diff 做对抗式审查:默认多维并行召回 + 确定性跨模型证伪,gate 阶梯控深度,deep 档单 agent 读全仓深审;finding≠真理,按误报裁决程序证伪后再定性。Trigger:/omd-review、审查这批改动、代码审查、review diff、release 闸、深审。
 ---
 
 # /omd-review — 对抗式改动审查
 
-经 omd MCP `dag_review`(可能带 `mcp__omd__` 前缀;未加载先 ToolSearch "dag_review")对一批改动派多维度对抗审查 DAG。
+经 omd MCP `dag_review`(可能带 `mcp__omd__` 前缀;未加载先 ToolSearch "dag_review")对一批改动做对抗审查:**默认**多维并行 find(召回)+ 确定性跨模型 verify(证伪);**deep 档**单 agent 读全仓 + 实测(实测最优,见档位选择)。
 
 ## 用法(异步三段式)
 
