@@ -20,9 +20,11 @@ import { roleModelWithFallback } from '../../model/role-fallback';
 import { resolveRoleModel } from '../../model/role-models';
 
 /**
- * review 模型解析(单一真源, baseline + 单 agent 共用)。**无硬编码完整坐标** —— 走角色系统:
- *  - find → `review` 角色(env OMD_REVIEW_MODEL / config / fallback);
- *  - verify → `verifier` 角色(专为跨模型对抗校验设计),可 OMD_REVIEW_VERIFY_MODEL 单独覆盖。
+ * review 模型解析(单一真源, baseline + 单 agent 共用)。**无硬编码坐标 + review 自成体系**:
+ *  - find → `review` 角色(env OMD_REVIEW_MODEL / config / fallback)。
+ *  - verify → `OMD_REVIEW_VERIFY_MODEL` 覆盖,否则回落 find 模型(**不引用引擎 `verifier` 角色**,
+ *    避免 OMD_VERIFIER_MODEL 意外渗入 review;跨模型靠显式配 OMD_REVIEW_VERIFY_MODEL)。
+ * `verifier` 角色留给引擎自身(DAG postcondition / judge 跨模型对抗),与 review 领域不重叠。
  * 不假设用户 key:坐标无凭证 → roleModelWithFallback 顺延已注册 provider。
  */
 export function resolveReviewModels(
@@ -30,11 +32,7 @@ export function resolveReviewModels(
   env: Record<string, string | undefined> = process.env,
 ): { findModel: string; verifyModel: string } {
   const findModel = roleModelWithFallback(opts.model ?? resolveRoleModel('review', env), 'review', env);
-  const verifyModel = roleModelWithFallback(
-    opts.verifyModel ?? env.OMD_REVIEW_VERIFY_MODEL ?? resolveRoleModel('verifier', env),
-    'verifier',
-    env,
-  );
+  const verifyModel = roleModelWithFallback(opts.verifyModel ?? env.OMD_REVIEW_VERIFY_MODEL ?? findModel, 'review', env);
   return { findModel, verifyModel };
 }
 
