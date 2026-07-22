@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'bun:test';
-import { applyAfkResult, distill, parseChildren, watchAfkResults, type AfkReflow } from './afk-hook';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { applyAfkResult, distill, parseChildren, reflowResearchResults, watchAfkResults, type AfkReflow } from './afk-hook';
+import { resolveBackend, type GhResult, type GhRunner } from './backend';
 import { researchResultPath } from './dispatch';
+import { loadMap, saveMap } from './map-store';
 import type { PathMap, Ticket } from './types';
 
 function tk(p: Partial<Ticket> & Pick<Ticket, 'id' | 'type'>): Ticket {
@@ -142,5 +147,145 @@ describe('afk-hook — watchAfkResults (once mode)', () => {
     expect(intervalFn).not.toBeNull();
     h.stop();
     expect(cleared).toBe(1);
+  });
+});
+
+// ── reflowResearchResults (后端无关折入编排, S3) ─────────────────────────────────
+
+const okr = (stdout: string): GhResult => ({ stdout, exitCode: 0, stderr: '' });
+
+/** 探测永远成功的 gh runner (owner/repo = acme/repo); 其余调用交给 handler (backend.test.ts 同款)。 */
+function fakeGh(handler: (args: string[]) => GhResult): GhRunner {
+  return (args) => {
+    if (args[0] === 'repo' && args[1] === 'view') return okr(JSON.stringify({ nameWithOwner: 'acme/repo' }));
+    return handler(args);
+  };
+}
+
+/** map #5 的 readMap GraphQL 响应, sub-issue #11 = research-done 票 (评论堆由入参给)。 */
+function reflowMapResponse(comments: Array<{ body: string }>): string {
+  return JSON.stringify({
+    data: {
+      repository: {
+        issue: {
+          number: 5,
+          title: '🧭 [map] Ship X',
+          body: 'Destination: Ship X',
+          state: 'OPEN',
+          subIssues: {
+            nodes: [
+              {
+                number: 11,
+                title: '[research] survey deps',
+                body: '',
+                state: 'OPEN',
+                labels: { nodes: [{ name: 'path:research' }, { name: 'research-done' }] },
+                comments: { nodes: comments },
+                subIssues: { nodes: [] },
+              },
+            ],
+          },
+        },
+      },
+    },
+  });
+}
+
+describe('reflowResearchResults — md 后端 (行为等价)', () => {
+  test('落盘结果 → 母票 ruled + distill ruling + decisionsLog + 子票挂母票; 再收幂等空', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pf-reflow-md-'));
+    try {
+      saveMap(
+        {
+          destination: 'Ship X',
+          slug: 'ship-x',
+          tickets: [
+            { id: 'r1', type: 'research', title: 'pick store', blockedBy: [], status: 'open' },
+            { id: 't2', type: 'task', title: 'build', blockedBy: ['r1'], status: 'open' },
+          ],
+          decisionsLog: [],
+        },
+        dir,
+      );
+      const resultPath = researchResultPath(dir, 'ship-x', 'r1');
+      mkdirSync(dirname(resultPath), { recursive: true });
+      writeFileSync(resultPath, '## 终稿\n\nmarkdown-in-git 作真相源。\n\n## children\n- [task] 实装存储', 'utf8');
+
+      const b = resolveBackend(dir, { env: {} });
+      expect(b.kind).toBe('md');
+      const outcomes = reflowResearchResults(b, dir, 'ship-x');
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0]!.ticketId).toBe('r1');
+      expect(outcomes[0]!.warning).toBeUndefined();
+      expect(outcomes[0]!.newChildren).toHaveLength(1);
+
+      const map = loadMap(dir, 'ship-x')!;
+      const r1 = map.tickets.find((t) => t.id === 'r1')!;
+      expect(r1.status).toBe('ruled');
+      expect(r1.ruling).toBe('markdown-in-git 作真相源。');
+      expect(map.decisionsLog.some((d) => d.ticketId === 'r1')).toBe(true);
+      const child = outcomes[0]!.newChildren[0]!;
+      expect(child.type).toBe('task');
+      expect(child.blockedBy).toEqual(['r1']);
+      expect(r1.children).toContain(child.id); // parentId → 挂母票血缘
+
+      // r1 已 ruled → 下轮 collect 不再命中 (ack no-op 的幂等锚点 = ruled 状态)。
+      expect(reflowResearchResults(b, dir, 'ship-x')).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('reflowResearchResults — gh 后端', () => {
+  test('research-done 票 + 结果评论 → rule + close + 子票建票 + ack 摘 label', () => {
+    const calls: string[][] = [];
+    const gh = fakeGh((args) => {
+      calls.push(args);
+      if (args[0] === 'api' && args[1] === 'graphql') {
+        if (args.some((a) => a.includes('addSubIssue'))) return okr(JSON.stringify({ data: { addSubIssue: { issue: { number: 30 } } } }));
+        return okr(reflowMapResponse([{ body: '## 终稿 (综合判优)\n\n用 bun 原生方案。\n\n## children\n- [task] 实装 bun 方案' }]));
+      }
+      if (args[0] === 'issue' && args[1] === 'create') return okr('https://github.com/acme/repo/issues/30\n');
+      if (args[0] === 'issue' && args[1] === 'view') return okr(JSON.stringify({ id: `NODE_${args[2]}` }));
+      return okr('');
+    });
+    const b = resolveBackend('/repo', { env: { OMD_PATH_BACKEND: 'gh' }, gh });
+
+    const outcomes = reflowResearchResults(b, '/repo', '5');
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]!.ticketId).toBe('#11');
+    expect(outcomes[0]!.warning).toBeUndefined();
+    expect(outcomes[0]!.newChildren.map((c) => c.id)).toEqual(['#30']); // D-D: 子票 id = 新 issue number
+    expect(outcomes[0]!.newChildren[0]).toMatchObject({ type: 'task', title: '实装 bun 方案', blockedBy: ['#11'] });
+
+    // 状态翻转: **ruling** 评论 (distill 后正文) + close。
+    expect(calls.find((c) => c[1] === 'comment')).toEqual(['issue', 'comment', '11', '--body', '**ruling**: 用 bun 原生方案。']);
+    expect(calls.some((c) => c[0] === 'issue' && c[1] === 'close' && c[2] === '11')).toBe(true);
+    // 子票 create 带 [task] 标题 + Blocked-by 母票。
+    const create = calls.find((c) => c[0] === 'issue' && c[1] === 'create')!;
+    expect(create).toContain('[task] 实装 bun 方案');
+    expect(create[create.indexOf('--body') + 1]).toContain('Blocked-by: #11');
+    // ack: 摘 research-done label (幂等锚点)。
+    expect(calls.find((c) => c[1] === 'edit' && c.includes('--remove-label'))).toEqual(['issue', 'edit', '11', '--remove-label', 'research-done']);
+  });
+
+  test('失败路径: research-done 但无结果评论 → 警告, 不 rule 不 ack (留待下轮)', () => {
+    const calls: string[][] = [];
+    const gh = fakeGh((args) => {
+      calls.push(args);
+      // 只有失败通知评论 (无 `## 终稿` 结果形状)。
+      if (args[0] === 'api' && args[1] === 'graphql') return okr(reflowMapResponse([{ body: '⚠ research failed: http://x' }]));
+      return okr('');
+    });
+    const b = resolveBackend('/repo', { env: { OMD_PATH_BACKEND: 'gh' }, gh });
+
+    const outcomes = reflowResearchResults(b, '/repo', '5');
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]!.warning).toBeDefined();
+    expect(outcomes[0]!.newChildren).toEqual([]);
+    // 不 ack (未摘 label → 下轮重试), 不 rule (无 comment/close)。
+    expect(calls.some((c) => c.includes('--remove-label'))).toBe(false);
+    expect(calls.some((c) => c[1] === 'comment' || c[1] === 'close')).toBe(false);
   });
 });

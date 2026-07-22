@@ -1,0 +1,118 @@
+name: DAG research (AFK)
+
+# pathfinder 决策层的云端 AFK 研究引擎 (SDD S2 · D-F reusable workflow)。
+# 三个触发口:
+#   - issues.labeled  本仓 issue 打上 path:research → 云端跑研究, 结果回贴评论 (决策层 = Issues)。
+#   - workflow_call   供他仓 pin @v1 复用 (caller 见 templates/path-research-caller.yml); 逻辑集中一处。
+#   - workflow_dispatch  init 金丝雀 (D-I): dry_run 干跑, 零 API 成本验证管道连通, 不跑真研究。
+#
+# 安全防线:
+#   1. 权力闸 — job 级 if 只放行「仓库 owner 本人触发」(issues.labeled 任何协作者/机器人都能打标签,
+#      不设闸 = 他人随手一个 label 烧掉 Tavily 300 credit/月配额)。owner 用 github.repository_owner 表达,
+#      不硬编码用户名。
+#   2. 脚本注入面 — issue title/body 是不可信输入, 一律经 env 传递再引用 "$VAR", 绝不把 ${{ }} 直接
+#      内插进 run 脚本 (GitHub Actions 脚本注入标准防线)。
+#   3. secrets — DEEPSEEK/TAVILY key 只在跑研究的 step 经 env 注入, 不落别处; 云端专用 keyset omd-actions。
+on:
+  issues:
+    types: [labeled]
+  workflow_call:
+    # caller (path-research-caller.yml) 转发金丝雀参数: issues.labeled 走真研究 (dry_run 缺省 false),
+    # caller 的 workflow_dispatch 干跑则显式传 dry_run=true。inputs.* 对 workflow_call/workflow_dispatch
+    # 两路统一可读 (github.event.inputs 只在 dispatch 有), 故下方 run 一律用 inputs.*。
+    inputs:
+      dry_run:
+        type: boolean
+        required: false
+        default: false
+      issue:
+        type: string
+        required: false
+    secrets:
+      DEEPSEEK_API_KEY:
+        required: true
+      TAVILY_API_KEY:
+        required: true
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '干跑金丝雀 (echo 假结果验证管道, 不跑真研究, 零 API 成本)'
+        type: boolean
+        default: true
+      issue:
+        description: '金丝雀评论目标 issue number (通常传 map issue; 提供则真贴一条 dry-run 评论, 验证 issues:write 真通)'
+        type: string
+        required: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  research:
+    # 权力闸: 仅仓库 owner 本人触发放行 (防他人打标签烧 API 预算); issues 触发额外只认 path:research label,
+    # workflow_dispatch / workflow_call 无 label 概念故放行。owner 走 github.repository_owner, 不硬编码用户名。
+    # (workflow_call 时 github.* 取 caller 触发事件, 故此闸对复用方同样成立: caller repo owner 本人触发。)
+    if: >-
+      github.actor == github.repository_owner &&
+      (github.event_name != 'issues' || github.event.label.name == 'path:research')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install deps
+        run: bun install --frozen-lockfile
+
+      - name: Run DAG research
+        env:
+          # 注入面防线: 不可信的 issue title/body 只经 env 过, 下方 run 引用 "$TITLE"/"$BODY", 绝不内插 ${{ }}。
+          TITLE: ${{ github.event.issue.title }}
+          BODY: ${{ github.event.issue.body }}
+          # inputs.* 统一读: dispatch 与 caller-forward 两路都填此上下文 (issues.labeled 事件则空 → 真研究)。
+          DRY_RUN: ${{ inputs.dry_run }}
+          # secrets 只在本 step 注入 (跑研究才需要), 不外泄到评论/label step。
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ "${DRY_RUN:-}" = "true" ]; then
+            # D-I 金丝雀: 干跑不碰 API, echo 假结果验证管道 (checkout→bun→脚本路径→result.md 全链)。
+            printf '## 终稿 (综合判优)\n\n(dry-run canary) 管道连通性已验证, 未跑真研究 (零 API 成本)。\n' > result.md
+          else
+            # 研究问题 = issue 标题换行接正文 (env 引用, 无注入面)。
+            QUERY=$(printf '%s\n%s' "$TITLE" "$BODY")
+            bun run scripts/dag-research.ts "$QUERY" --out result.md
+          fi
+          echo '--- result.md ---'
+          cat result.md
+
+      # 成功回贴: 评论研究结果 + 打 research-done label (S3 path_tickets 据此回流)。
+      # issue 上下文取 issues 事件的 number, 或金丝雀显式传入的 inputs.issue (D-I 补裁: canary 必须真发一条
+      # 评论验证 issues:write 真通 —— 否则权限被组织策略拦住时金丝雀绿而真链路断)。dry-run 只评论不打
+      # research-done label (假结果不得进 S3 回流)。两者皆空 → 跳过。
+      - name: Comment result + mark done
+        if: success() && (github.event.issue.number || inputs.issue)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.issue.number || inputs.issue }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          gh issue comment "$ISSUE" --body-file result.md
+          if [ "${DRY_RUN:-}" != "true" ]; then
+            gh issue edit "$ISSUE" --add-label research-done
+          fi
+
+      # fail-loud: 失败也要显性回贴 (否则票静默卡在 open, owner 无从知晓)。同样需 issue 上下文。
+      - name: Report failure
+        if: failure() && (github.event.issue.number || inputs.issue)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.issue.number || inputs.issue }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue comment "$ISSUE" --body "⚠ research failed: $RUN_URL"

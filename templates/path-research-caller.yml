@@ -1,0 +1,38 @@
+name: DAG research (AFK)
+
+# 他仓接入 oh-my-dag 云端研究: 把此文件拷进本仓 .github/workflows/ (S4 path init 自动干)。
+# issue 打上 path:research label → 调中心 reusable workflow 跑研究并回贴评论。
+# pin @v1 (D-F): 研究逻辑集中在 oh-my-dag 一处, 各仓不各自维护; 中心挂了最坏 = 研究停, 不碰本仓其它 CI。
+# label 过滤 / owner 权力闸 / 注入防线全在被调 workflow 里, 故 caller 只需这十几行。
+on:
+  issues:
+    types: [labeled]
+  # S4 path init 金丝雀入口: workflow_dispatch 干跑 (dry_run=true) 转发给中心 reusable, 零 API 成本
+  # 验证本仓 checkout→bun→脚本→评论管道 + secrets 真通 (issues.labeled 路 inputs 空 → dry_run 缺省 false → 真研究)。
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '干跑金丝雀 (dry_run=true 零 API 成本验证管道)'
+        type: boolean
+        default: true
+      issue:
+        description: '金丝雀评论目标 issue number (通常传 map issue)'
+        type: string
+        required: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  research:
+    uses: AbyssCN/oh-my-dag/.github/workflows/dag-research.yml@v1
+    # 把本仓 (workflow_dispatch 或 issues) 的 inputs 转发给中心 workflow;issues.labeled 时 inputs 空 →
+    # 中心侧 dry_run 缺省 false 走真研究, issue 回退 github.event.issue.number。
+    with:
+      # issues.labeled 事件 inputs 空 → `|| false` 保证布尔输入拿到真布尔 (空串会 coercion 报错) → 真研究;
+      # workflow_dispatch 干跑则 inputs.dry_run=true 原样转发。
+      dry_run: ${{ inputs.dry_run || false }}
+      issue: ${{ inputs.issue }}
+    # secrets: inherit 把本仓 DEEPSEEK_API_KEY / TAVILY_API_KEY 透传给被调 workflow。
+    secrets: inherit

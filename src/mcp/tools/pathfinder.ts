@@ -17,19 +17,21 @@ import {
   type ExecuteSliceOpts,
 } from '../../harness/execute-extension';
 import type { AgentLeafRunner, CommandLeafRunner } from '../../harness/leaf-runners';
+import { slugifyDestination } from '../../harness/pathfinder-extension';
 import {
-  createOrResumeMap,
-  summarizeOpenMaps,
-} from '../../harness/pathfinder-extension';
+  resolveBackend as realResolveBackend,
+  type PathBackend,
+} from '../../harness/pathfinder/backend';
+import { makeInitDeps, runInit, type InitDeps } from '../../harness/pathfinder/init';
 import {
   countDispatchedResearch,
   dispatchFrontier as realDispatchFrontier,
 } from '../../harness/pathfinder/dispatch';
-import { watchAfkResults as realWatchAfkResults } from '../../harness/pathfinder/afk-hook';
+import { reflowResearchResults } from '../../harness/pathfinder/afk-hook';
 import { computeFrontier } from '../../harness/pathfinder/frontier';
-import { loadMap, mutateMap, saveMap } from '../../harness/pathfinder/map-store';
 import { compileSlice, regionIsClear } from '../../harness/pathfinder/slice-compiler';
 import type { PathMap, Ticket, TicketType } from '../../harness/pathfinder/types';
+import type { OmdMemory } from '../../harness/memory/store';
 import type { HudMirror } from '../../hud/mirror';
 import { compactFog } from '../../hud/fog';
 
@@ -43,14 +45,24 @@ export interface PathfinderToolDeps {
   /** 注入接缝 (测试传替身, 永不真执行/真 spawn)。 */
   executeSlice?: typeof realExecuteSlice;
   dispatchFrontier?: typeof realDispatchFrontier;
-  watchAfkResults?: typeof realWatchAfkResults;
+  /** 后端解析器 (省略 = resolveBackend(cwd, {env}): env OMD_PATH_BACKEND > 仓库配置 > md)。测试注入 gh 替身。 */
+  resolveBackend?: (cwd: string) => PathBackend;
   /** omd-hud 迷雾镜像 (给则每次 renderStatus 把当前地图迷雾原子写 .omd/hud/fog.json)。省略 = 不写。 */
   hudMirror?: HudMirror;
+  /**
+   * 记忆接缝 (裁决增益): path_rule 成功后把「<destination>: <title> 裁决 = <ruling>」记为 omd.pattern
+   * fact, 经 memory_remember 同款底层 (OmdMemory.writeFact, scanSecrets:false 用户主权), **不绕道 MCP
+   * 工具面自调**。省略 = 不写 (纯导航测试无需); assemble 注入同款 OmdMemory。写入失败 warn 不 throw ——
+   * 裁决已落 Issues/md, memory 是增益不是链路。
+   */
+  memory?: Pick<OmdMemory, 'writeFact'>;
+  /** path_init 执行接缝覆盖 (测试注入 probes/gh/canary 替身; 省略 = 生产默认 gh/git/env 探测)。 */
+  initOverrides?: Partial<InitDeps>;
 }
 
-/** 六工具: path_map / path_add / path_tickets / path_rule / path_deliver / path_prefetch。 */
+/** 七工具: path_init + path_map / path_add / path_tickets / path_rule / path_deliver / path_prefetch。 */
 export function createPathfinderTools(deps: PathfinderToolDeps): OmdMcpTool[] {
-  return [makeMap(deps), makeAdd(deps), makeTickets(deps), makeRule(deps), makeDeliver(deps), makePrefetch(deps)];
+  return [makeInit(deps), makeMap(deps), makeAdd(deps), makeTickets(deps), makeRule(deps), makeDeliver(deps), makePrefetch(deps)];
 }
 
 // ── 共享 helpers ──────────────────────────────────────────────────────────────
@@ -58,16 +70,34 @@ export function createPathfinderTools(deps: PathfinderToolDeps): OmdMcpTool[] {
 const ok = (text: string) => ({ content: [{ type: 'text' as const, text }] });
 const err = (text: string) => ({ content: [{ type: 'text' as const, text }], isError: true as const });
 
+/** 后端 throw 的错误取干净正文 (不带 "Error:" 前缀), 直接当工具 isError 文案。 */
+const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** 挑后端 (每次工具调用现挑; gh 会现探 repo, 无缓存层 — 与 SDD "实时拼" 一致)。 */
+function backendOf(deps: PathfinderToolDeps): PathBackend {
+  return (deps.resolveBackend ?? ((cwd: string) => realResolveBackend(cwd, { env: deps.env })))(deps.cwd);
+}
+
 /** slug 解析: 显式给 → 用; 省略 → 恰一张开放地图用它, 零/多张 → 报错列 slug。 */
-function resolveSlug(cwd: string, slug: string | undefined): { slug: string } | { error: string } {
+function resolveSlug(backend: PathBackend, cwd: string, slug: string | undefined): { slug: string } | { error: string } {
   if (slug) {
-    if (!loadMap(cwd, slug)) return { error: `找不到地图 "${slug}" — path_map 列出/新建` };
+    if (!backend.readMap(cwd, slug)) return { error: `找不到地图 "${slug}" — path_map 列出/新建` };
     return { slug };
   }
-  const maps = summarizeOpenMaps(cwd);
+  const maps = backend.listMaps(cwd);
   if (maps.length === 0) return { error: '无开放地图 — path_map 带 destination 新建一张' };
   if (maps.length > 1) return { error: `多张开放地图, 需显式 slug: ${maps.map((m) => m.slug).join(', ')}` };
   return { slug: maps[0]!.slug };
+}
+
+/** 列图 + 现算 open/frontier 计数 (两后端一致: listMaps 只给 slug/destination, 计数用 readMap+computeFrontier)。 */
+function listMapsWithCounts(backend: PathBackend, cwd: string): Array<{ slug: string; destination: string; openCount: number; frontierCount: number }> {
+  return backend.listMaps(cwd).map(({ slug, destination }) => {
+    const map = backend.readMap(cwd, slug);
+    const openCount = map ? map.tickets.filter((t) => t.status !== 'ruled' && t.status !== 'escalated').length : 0;
+    const frontierCount = map ? computeFrontier(map).length : 0;
+    return { slug, destination, openCount, frontierCount };
+  });
 }
 
 function ticketLine(t: Ticket): string {
@@ -136,44 +166,109 @@ function readyRegion(map: PathMap): string[] | null {
 
 /**
  * once-tick 回流 + 预算内 D-10 自续 (MCP 无常驻 watcher 的 pull 等价):
- * landed 结果折进地图 → 新孵 research 子票在预算内自动续派。返回回流摘要行 (无事 → [])。
+ * landed 结果经**后端无关**折入 (reflowResearchResults: md 落盘文件 / gh issue 评论) → 新孵 research
+ * 子票在预算内自动续派。返回回流摘要行 (无事 → [])。折入的状态读写全经 backend, 此处只做编排 + 记账。
  */
-function reflowOnce(deps: PathfinderToolDeps, slug: string): string[] {
+function reflowOnce(deps: PathfinderToolDeps, backend: PathBackend, slug: string): string[] {
   const { cwd } = deps;
-  const watch = deps.watchAfkResults ?? realWatchAfkResults;
   const dispatch = deps.dispatchFrontier ?? realDispatchFrontier;
-  const map = loadMap(cwd, slug);
-  if (!map) return [];
+  const outcomes = reflowResearchResults(backend, cwd, slug);
   const lines: string[] = [];
   let hadResearchChildren = false;
-  watch(
-    map,
-    { cwd, mode: 'once' },
-    {
-      reloadMap: () => loadMap(cwd, slug),
-      saveMap: (m) => saveMap(m, cwd),
-      onReflow: (r) => {
-        const childTail = r.newChildren.length ? ` (+${r.newChildren.length} 子票)` : '';
-        const dropTail = r.droppedChildren ? ` (超上限丢弃 ${r.droppedChildren})` : '';
-        lines.push(`↩ AFK 回流: ${r.ticketId} 已裁${childTail}${dropTail}`);
-        if (r.newChildren.some((c) => c.type === 'research')) hadResearchChildren = true;
-      },
-    },
-  );
+  for (const o of outcomes) {
+    if (o.warning !== undefined) {
+      // 结果缺失/折入失败: 票据可见, 未 ack, 下轮重试 (不静默跳过)。
+      lines.push(`⚠ AFK 回流: ${o.ticketId} 结果未折入 (${o.warning}) — 未确认, 下轮重试。`);
+      continue;
+    }
+    const childTail = o.newChildren.length ? ` (+${o.newChildren.length} 子票)` : '';
+    const dropTail = o.droppedChildren ? ` (超上限丢弃 ${o.droppedChildren})` : '';
+    lines.push(`↩ AFK 回流: ${o.ticketId} 已裁${childTail}${dropTail}`);
+    if (o.newChildren.some((c) => c.type === 'research')) hadResearchChildren = true;
+  }
   if (hadResearchChildren) {
     const budget = Number(deps.env.OMD_PATH_RESEARCH_BUDGET ?? 12);
     const used = countDispatchedResearch(cwd, slug);
     if (used >= budget) {
       lines.push(`⏸ 研究预算已用尽 (${used}/${budget}) — 自续暂停; 调 OMD_PATH_RESEARCH_BUDGET 或 path_prefetch 显式追加。`);
     } else {
-      const fresh = loadMap(cwd, slug);
+      const fresh = backend.readMap(cwd, slug);
       if (fresh) {
-        const fd = dispatch(fresh, { cwd, slug }, {});
+        // 派发路径判据接后端 kind: gh 子票走云端 label 触发, md 走本地 detached 子进程。
+        const fd = dispatch(fresh, { cwd, slug, backend: backend.kind }, {});
         if (fd.dispatched.length > 0) lines.push(`⚡ 自续: ${fd.dispatched.length} 张 research 子票入 AFK 后台 (预算 ${used + fd.dispatched.length}/${budget})。`);
       }
     }
   }
   return lines;
+}
+
+/**
+ * 裁决写 memory (增益, 非链路): path_rule 成功后把「<destination>: <title> 裁决 = <ruling>」记为
+ * omd.pattern fact (situation = 问题<destination>: <title>, approach = 裁决 ruling)。走注入的
+ * OmdMemory.writeFact —— memory_remember 同款底层 + 同款 scanSecrets:false (用户主权, 裁决文本不过密钥闸)。
+ * 写失败/被拒 warn 不 throw: 裁决已落 Issues/md, memory 只是消费端 (memory_recall / /start) 的检索增益。
+ * 无 memory 接缝 → null (不写)。返回一行警告供工具输出, 成功则静默 (不污染裁决回报)。
+ */
+async function rememberRuling(
+  deps: PathfinderToolDeps,
+  map: PathMap,
+  ticketId: string,
+  ruling: string,
+): Promise<string | null> {
+  const memory = deps.memory;
+  if (!memory) return null;
+  const title = map.tickets.find((t) => t.id === ticketId)?.title ?? ticketId;
+  const anchor = `path_rule:${map.slug}:${ticketId}`;
+  const fact = {
+    namespace: 'omd.pattern',
+    situation: `${map.destination}: ${title}`,
+    approach: ruling,
+    outcome: 'worked' as const, // 裁决 = owner 拍板采纳的走法 (决定态即 "采用")。
+    source_event_id: anchor,
+    confidence: { level: 'agent_tentative' as const, source_event_ids: [anchor], created_at: new Date() },
+  };
+  try {
+    const result = await memory.writeFact(fact, { scanSecrets: false });
+    if (result.status === 'rejected') {
+      return `⚠ 裁决未写入 memory (${result.reason}) — 裁决已落地, memory 是增益。`;
+    }
+    return null;
+  } catch (e) {
+    return `⚠ 裁决写 memory 失败 (${errMsg(e)}) — 裁决已落地, memory 是增益。`;
+  }
+}
+
+// ── path_init ────────────────────────────────────────────────────────────────
+//
+// 独立工具 (非 path_map 增动作): init = 环境探测 + 后端选定 + 云端接线 (labels/secrets/canary/config)
+// 的重副作用一次性编排, 与 path_map 的"列图/建图/看前沿"轻导航正交。折进 path_map 会给它塞
+// action 判别符 + backend/cloudAfk 参, 污染每轮都调的导航工具 schema (D-11 description 税);
+// 拆独立工具两者 schema 各自干净, MCP 客户端各自可发现。init 是**唯一**合法挑后端的地方 (探测决定),
+// 不违 D-A (map/add/rule/deliver 仍零 backend.kind 分支)。
+
+function makeInit(deps: PathfinderToolDeps): OmdMcpTool {
+  return {
+    name: 'path_init',
+    description: 'Init pathfinder backend: no args → probe report + recommendation; with backend/cloudAfk → execute setup.',
+    inputSchema: {
+      destination: z.string().optional().describe('Map destination text (required when executing; omit in report mode)'),
+      backend: z.enum(['gh', 'md']).optional().describe('Backend choice; omit → return probe report + recommended answers'),
+      cloudAfk: z.boolean().optional().describe('gh only: enable cloud AFK research (public repo → decision history is publicly readable)'),
+    },
+    handler: async ({ destination, backend, cloudAfk }) => {
+      const initDeps = makeInitDeps(deps.cwd, deps.env, deps.initOverrides);
+      const outcome = runInit(
+        {
+          ...(destination !== undefined ? { destination: destination as string } : {}),
+          ...(backend !== undefined ? { backend: backend as 'gh' | 'md' } : {}),
+          ...(cloudAfk !== undefined ? { cloudAfk: cloudAfk as boolean } : {}),
+        },
+        initDeps,
+      );
+      return outcome.isError ? err(outcome.text) : ok(outcome.text);
+    },
+  };
 }
 
 // ── path_map ─────────────────────────────────────────────────────────────────
@@ -187,16 +282,22 @@ function makeMap(deps: PathfinderToolDeps): OmdMcpTool {
     },
     handler: async ({ destination }) => {
       const { cwd } = deps;
+      const backend = backendOf(deps);
       if (!destination) {
-        const maps = summarizeOpenMaps(cwd);
+        const maps = listMapsWithCounts(backend, cwd);
         if (maps.length === 0) return ok('无开放地图。path_map 带 destination 新建一张。');
         return ok(maps.map((m) => `• ${m.slug}: ${m.destination} (${m.openCount} open, ${m.frontierCount} frontier)`).join('\n'));
       }
       const d = destination as string;
-      // slug 直开优先 (与 TUI /path 同语义)。
-      const bySlug = loadMap(cwd, d);
-      const map = bySlug ?? createOrResumeMap(cwd, d).map;
-      return ok(renderStatus(map, deps.hudMirror));
+      // 命中 (slug 原文 / slug 化后 / 目的地相等) → resume; 否则新建 (与 TUI /path 同语义)。
+      const maps = backend.listMaps(cwd);
+      const hit = maps.find((m) => m.slug === d || m.destination === d || m.slug === slugifyDestination(d));
+      try {
+        const map = hit ? backend.readMap(cwd, hit.slug)! : backend.createMap(cwd, d, slugifyDestination(d));
+        return ok(renderStatus(map, deps.hudMirror));
+      } catch (e) {
+        return err(errMsg(e));
+      }
     },
   };
 }
@@ -220,41 +321,25 @@ function makeAdd(deps: PathfinderToolDeps): OmdMcpTool {
     handler: async ({ title, type, slug, id, blockedBy, executorKind }) => {
       // 防御缺省 (schema default 只在 SDK 层生效; 直调 handler 也要稳)。
       const ttype = ((type as string | undefined) ?? 'task') as TicketType;
-      const deps_ = (blockedBy as string[] | undefined) ?? [];
-      const r = resolveSlug(deps.cwd, slug as string | undefined);
+      const bb = (blockedBy as string[] | undefined) ?? [];
+      const { cwd } = deps;
+      const backend = backendOf(deps);
+      const r = resolveSlug(backend, cwd, slug as string | undefined);
       if ('error' in r) return err(r.error);
-      let mutated: { map: PathMap; result: string } | null = null;
+      let created: Ticket;
       try {
-        mutated = mutateMap(deps.cwd, r.slug, (map) => {
-          const ids = new Set(map.tickets.map((t) => t.id));
-          for (const dep of deps_) {
-            if (!ids.has(dep)) throw new Error(`blockedBy 引用不存在的票 "${dep}"`);
-          }
-          let tid = (id as string | undefined) ?? '';
-          if (!tid) {
-            const prefix = ttype[0]!; // r/g/p/t
-            let n = 1;
-            while (ids.has(`${prefix}${n}`)) n++;
-            tid = `${prefix}${n}`;
-          } else if (ids.has(tid)) {
-            throw new Error(`票 id "${tid}" 已存在`);
-          }
-          const t: Ticket = {
-            id: tid,
-            type: ttype,
-            title: title as string,
-            blockedBy: deps_,
-            status: 'open',
-            ...(executorKind ? { executorKind: executorKind as Ticket['executorKind'] } : {}),
-          };
-          map.tickets.push(t);
-          return tid;
+        created = backend.addTicket(cwd, r.slug, {
+          type: ttype,
+          title: title as string,
+          blockedBy: bb,
+          ...(id ? { id: id as string } : {}),
+          ...(executorKind ? { executorKind: executorKind as Ticket['executorKind'] } : {}),
         });
       } catch (e) {
-        return err(String(e));
+        return err(errMsg(e));
       }
-      if (!mutated) return err(`找不到地图 "${r.slug}"`);
-      return ok(`✓ 已加票 ${mutated.result}\n${renderStatus(mutated.map, deps.hudMirror)}`);
+      const map = backend.readMap(cwd, r.slug);
+      return ok(`✓ 已加票 ${created.id}${map ? `\n${renderStatus(map, deps.hudMirror)}` : ''}`);
     },
   };
 }
@@ -269,10 +354,11 @@ function makeTickets(deps: PathfinderToolDeps): OmdMcpTool {
       slug: z.string().optional().describe('Map slug (omit = the single open map)'),
     },
     handler: async ({ slug }) => {
-      const r = resolveSlug(deps.cwd, slug as string | undefined);
+      const backend = backendOf(deps);
+      const r = resolveSlug(backend, deps.cwd, slug as string | undefined);
       if ('error' in r) return err(r.error);
-      const reflow = reflowOnce(deps, r.slug);
-      const map = loadMap(deps.cwd, r.slug)!;
+      const reflow = reflowOnce(deps, backend, r.slug);
+      const map = backend.readMap(deps.cwd, r.slug)!;
       return ok([...reflow, renderStatus(map, deps.hudMirror)].join('\n'));
     },
   };
@@ -290,22 +376,25 @@ function makeRule(deps: PathfinderToolDeps): OmdMcpTool {
       slug: z.string().optional().describe('Map slug (omit = the single open map)'),
     },
     handler: async ({ ticketId, ruling, slug }) => {
-      const r = resolveSlug(deps.cwd, slug as string | undefined);
+      const backend = backendOf(deps);
+      const r = resolveSlug(backend, deps.cwd, slug as string | undefined);
       if ('error' in r) return err(r.error);
-      const reflow = reflowOnce(deps, r.slug); // 先折回流, 避免在过期视图上裁
-      const mutated = mutateMap(deps.cwd, r.slug, (map) => {
-        const tk = map.tickets.find((t) => t.id === ticketId);
-        if (!tk) return false;
-        tk.status = 'ruled';
-        tk.ruling = ruling as string;
-        if (!map.decisionsLog.some((d) => d.ticketId === ticketId)) {
-          map.decisionsLog.push({ ticketId: ticketId as string, gist: (ruling as string).slice(0, 80) });
-        }
-        return true;
-      });
-      if (!mutated) return err(`找不到地图 "${r.slug}"`);
-      if (!mutated.result) return err(`地图里没有票 "${ticketId}"`);
-      return ok([...reflow, `✓ 已裁 ${ticketId}: ${(ruling as string).slice(0, 60)}`, renderStatus(mutated.map, deps.hudMirror)].join('\n'));
+      const reflow = reflowOnce(deps, backend, r.slug); // 先折回流, 避免在过期视图上裁
+      try {
+        backend.rule(deps.cwd, r.slug, ticketId as string, ruling as string);
+      } catch (e) {
+        return err(errMsg(e));
+      }
+      const map = backend.readMap(deps.cwd, r.slug)!;
+      const memNote = await rememberRuling(deps, map, ticketId as string, ruling as string);
+      return ok(
+        [
+          ...reflow,
+          `✓ 已裁 ${ticketId}: ${(ruling as string).slice(0, 60)}`,
+          ...(memNote ? [memNote] : []),
+          renderStatus(map, deps.hudMirror),
+        ].join('\n'),
+      );
     },
   };
 }
@@ -322,9 +411,10 @@ function makeDeliver(deps: PathfinderToolDeps): OmdMcpTool {
     handler: async ({ slug }) => {
       const { cwd, models } = deps;
       const exec = deps.executeSlice ?? realExecuteSlice;
-      const r = resolveSlug(cwd, slug as string | undefined);
+      const backend = backendOf(deps);
+      const r = resolveSlug(backend, cwd, slug as string | undefined);
       if ('error' in r) return err(r.error);
-      const map = loadMap(cwd, r.slug)!;
+      const map = backend.readMap(cwd, r.slug)!;
       const region = readyRegion(map);
       if (!region) return err('无可交付区域: 没有已散尽的 ruled task 票 (先 path_rule 把前沿裁完)。');
       if (!models.leafModel) return err('未配 leaf 模型 — 设 OMD_ITER_LEAF_MODEL (或 OMD_RUNTIME_PROVIDER/MODEL) 后再 path_deliver。');
@@ -350,12 +440,8 @@ function makeDeliver(deps: PathfinderToolDeps): OmdMcpTool {
         if (failed > 0 || pass === false) {
           return err(`slice "${plan.name}" 执行有 ${failed}/${nodeStates.length} 节点未完成${pass === false ? ' · 校验未过' : ''} — 区域未标记交付, 修复后可再 path_deliver。`);
         }
-        mutateMap(cwd, r.slug, (fresh) => {
-          for (const t of fresh.tickets) {
-            if (region.includes(t.id) && t.status === 'ruled') t.status = 'delivered';
-          }
-        });
-        return ok(`◈ slice "${plan.name}" 已执行 (${Object.keys(plan.nodes ?? {}).length} 节点) — 区域 [${region.join(', ')}] 已交付。\n${renderStatus(loadMap(cwd, r.slug)!, deps.hudMirror)}`);
+        backend.markDelivered(cwd, r.slug, region);
+        return ok(`◈ slice "${plan.name}" 已执行 (${Object.keys(plan.nodes ?? {}).length} 节点) — 区域 [${region.join(', ')}] 已交付。\n${renderStatus(backend.readMap(cwd, r.slug)!, deps.hudMirror)}`);
       } catch (e) {
         return err(`slice 执行失败: ${String(e)}`);
       }
@@ -374,10 +460,12 @@ function makePrefetch(deps: PathfinderToolDeps): OmdMcpTool {
     },
     handler: async ({ slug }) => {
       const dispatch = deps.dispatchFrontier ?? realDispatchFrontier;
-      const r = resolveSlug(deps.cwd, slug as string | undefined);
+      const backend = backendOf(deps);
+      const r = resolveSlug(backend, deps.cwd, slug as string | undefined);
       if ('error' in r) return err(r.error);
-      const map = loadMap(deps.cwd, r.slug)!;
-      const fd = dispatch(map, { cwd: deps.cwd, slug: r.slug }, {});
+      const map = backend.readMap(deps.cwd, r.slug)!;
+      // 派发路径判据接后端 kind: gh 后端 research → 云端 label 触发 (dispatch.ts dispatchResearchGh)。
+      const fd = dispatch(map, { cwd: deps.cwd, slug: r.slug, backend: backend.kind }, {});
       const lines = [
         fd.dispatched.length > 0
           ? `⚡ ${fd.dispatched.length} 张 research 票已入 AFK 后台 (detached; path_tickets 拉回流)。`

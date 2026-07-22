@@ -19,6 +19,7 @@
 import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { computeFrontier } from './frontier';
+import type { GhResult, GhRunner } from './backend';
 import type { PathMap, Ticket } from './types';
 
 // ── 路径 helper ────────────────────────────────────────────────────────────────
@@ -75,6 +76,13 @@ export function prototypeBranch(ticketId: string): string {
 export interface DispatchCtx {
   cwd: string;
   slug: string;
+  /**
+   * 后端类型 (接 resolveBackend 结果; 省略 = 'md')。选派发路径的**唯一判据**:
+   *  - 'md' → research 起本地 detached 子进程 (原状)。
+   *  - 'gh' → research 幂等给 issue 打 path:research label, 由云端 GitHub Actions 接手 (S2 · D-F)。
+   * 判据在 ctx (调用点从 backend.kind 传入); dispatchTicket 仍纯决策, 副作用全在 deps 后面。
+   */
+  backend?: 'md' | 'gh';
 }
 
 /**
@@ -83,12 +91,14 @@ export interface DispatchCtx {
  *  - hitl      grill 交互票, prompt 交给用户在会话里跑 (无 spawn)。
  *  - worktree  prototype 已建隔离 worktree (dir/branch), 试验码不污主树 (弃用即 disposePrototype)。
  *  - compile   task 票, 无可运行 —— 等区域散尽由 slice-compiler 编译 (见 pathfinder-extension.onRegionClear)。
+ *  - gh-label  gh 后端 research: 已幂等给 issue 打 label, 云端 Actions 接手 (无本地进程, 结果回贴 issue 评论)。
  */
 export type DispatchResult =
   | { kind: 'afk'; ticketId: string; resultPath: string; pid?: number }
   | { kind: 'hitl'; ticketId: string; prompt: string }
   | { kind: 'worktree'; ticketId: string; dir: string; branch: string }
-  | { kind: 'compile'; ticketId: string };
+  | { kind: 'compile'; ticketId: string }
+  | { kind: 'gh-label'; ticketId: string; label: string };
 
 /** 注入式副作用 (默认 = 生产实现; 测试传替身, 永不起真进程/真 worktree)。 */
 export interface DispatchDeps {
@@ -101,6 +111,11 @@ export interface DispatchDeps {
   git?: (args: string[], opts: { cwd: string }) => void;
   /** 探一个 pid 是否存活 (在途去重用)。默认 = process.kill(pid, 0)。 */
   isAlive?: (pid: number) => boolean;
+  /**
+   * gh 调用器 (gh 后端 research 派发用: 幂等给 issue 打 path:research label 触发云端 Actions)。
+   * 默认 = Bun.spawnSync('gh', ...) (backend.ts 同款 idiom); 测试注入 fixture, 永不真调 gh。
+   */
+  gh?: GhRunner;
 }
 
 // ── 默认生产实现 (纯壳, 测试永不触及) ──────────────────────────────────────────
@@ -137,11 +152,49 @@ function defaultIsAlive(pid: number): boolean {
   }
 }
 
+/** 默认 gh: Bun.spawnSync(['gh', ...args], {cwd}) (与 backend.ts defaultGhRunner 对称, cwd 绑定认对 remote)。 */
+function defaultGh(cwd: string): GhRunner {
+  return (args: string[]): GhResult => {
+    const r = Bun.spawnSync(['gh', ...args], { cwd });
+    return {
+      stdout: r.stdout?.toString() ?? '',
+      exitCode: r.exitCode ?? -1,
+      stderr: r.stderr?.toString() ?? '',
+    };
+  };
+}
+
+/**
+ * gh 后端 research 派发 (S2 · D-F): 不起本地进程, 而是**幂等**给 issue 打 `path:<type>` label →
+ * 云端 GitHub Actions (dag-research.yml, on issues.labeled) 接手研究, 结果回贴 issue 评论 (S3 回流)。
+ * `gh issue edit --add-label` 幂等 (标签已在则 no-op)。`.dispatched` 标记照写 (D-J: 预算记账留本地,
+ * 两后端一致 —— countDispatchedResearch 按文件数计, 同票同文件名不重复计)。
+ */
+function dispatchResearchGh(ticket: Ticket, ctx: DispatchCtx, deps: DispatchDeps): DispatchResult {
+  const gh = deps.gh ?? defaultGh(ctx.cwd);
+  const label = `path:${ticket.type}`; // research 票 → path:research
+  const n = ticket.id.replace(/^#/, ''); // gh CLI 收 number, 不收 '#'
+  const r = gh(['issue', 'edit', n, '--add-label', label]);
+  if (r.exitCode !== 0) {
+    throw new Error(`gh issue edit ${n} --add-label ${label} 失败 (exit=${r.exitCode}): ${(r.stderr || r.stdout || '').trim()}`);
+  }
+  // .dispatched 标记 (内容 'gh' 区别于本地 afk 的 pid; 只作预算计数, 内容不被 gh 路径回读)。
+  const dispatchedPath = researchDispatchedPath(ctx.cwd, ctx.slug, ticket.id);
+  try {
+    mkdirSync(dirname(dispatchedPath), { recursive: true });
+    writeFileSync(dispatchedPath, 'gh', 'utf8');
+  } catch {
+    // 标记是预算优化, 写不了 (只读 fs / 测试假 cwd) 不阻断派发本身。
+  }
+  return { kind: 'gh-label', ticketId: ticket.id, label };
+}
+
 // ── dispatchTicket (纯决策 + 注入副作用) ────────────────────────────────────────
 
 /**
  * 按 type 分派一张票 (D-9)。纯决策 + 经 deps 落副作用 (research spawn / prototype worktree):
- *  - research (D-6): 起 detached `bun run scripts/dag-research.ts "<title>" --out <resultPath>` → {afk}。
+ *  - research (D-6): md 后端起 detached `bun run scripts/dag-research.ts …` → {afk};
+ *    gh 后端 (ctx.backend==='gh') 改幂等打 path:research label 让云端 Actions 接手 → {gh-label} (S2 · D-F)。
  *  - grill: HITL, 出 `/grill this: <title>` prompt, 无 spawn → {hitl}。
  *  - prototype (D-13): `git worktree add <dir> -b <branch>` 隔离 → {worktree}。
  *  - task: 无可运行, 等区域散尽编译 → {compile}。
@@ -149,6 +202,8 @@ function defaultIsAlive(pid: number): boolean {
 export function dispatchTicket(ticket: Ticket, ctx: DispatchCtx, deps: DispatchDeps = {}): DispatchResult {
   switch (ticket.type) {
     case 'research': {
+      // gh 后端: 云端 label 触发派发 (无本地进程); 判据接 resolveBackend 的 kind (经 ctx.backend 传入)。
+      if (ctx.backend === 'gh') return dispatchResearchGh(ticket, ctx, deps);
       const spawn = deps.spawnDetached ?? defaultSpawnDetached;
       const isAlive = deps.isAlive ?? defaultIsAlive;
       const resultPath = researchResultPath(ctx.cwd, ctx.slug, ticket.id);

@@ -31,13 +31,14 @@ const ALL_TOOLS = [
   'dag_research',
   'memory_recall',
   'memory_remember',
-  // pathfinder 六件套 (TUI-less 决策地图)
+  // pathfinder 七件套 (TUI-less 决策地图; path_init = SDD 2026-07-22 gh 后端接入向导)
   'path_map',
   'path_add',
   'path_tickets',
   'path_rule',
   'path_deliver',
   'path_prefetch',
+  'path_init',
   // fleet 增量 (SDD 2026-07-20: 车队四工具 + run 发现)
   'dag_review',
   'dag_slim',

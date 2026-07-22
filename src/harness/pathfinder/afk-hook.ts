@@ -16,6 +16,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { computeFrontier } from './frontier';
 import { researchResultPath } from './dispatch';
 import { distill, MAX_CHILDREN_PER_TICKET, parseChildren } from './result-format';
+import type { PathBackend } from './backend';
 import type { PathMap, Ticket } from './types';
 
 // distill / parseChildren 的真身在 result-format.ts (双端共享契约); 这里 re-export 兼容既有 import。
@@ -222,4 +223,61 @@ export function watchAfkResults(map: PathMap, opts: WatchOpts, deps: WatchDeps =
   }
 
   return { tick, stop };
+}
+
+// ── reflowResearchResults (后端无关折入编排, S3) ─────────────────────────────────
+
+/** 一张 research 结果折入的产物 (MCP/TUI 用来渲染 + 决定预算内自续)。 */
+export interface ReflowOutcome {
+  ticketId: string;
+  /** 本次经 backend.addTicket 建的自展开子票 (D-10; 挂母票 blockedBy=母票)。 */
+  newChildren: Ticket[];
+  /** 超上限被截断的子票草案数 (契约兜底); 0 省略。 */
+  droppedChildren?: number;
+  /** 设值 = 该票未折入 (结果缺失/未就绪/后端报错), **未 ack**, 留待下轮重试; 无值 = 折入成功。 */
+  warning?: string;
+}
+
+/**
+ * 后端无关的 research 结果折入 (S3 · SDD §4): distill + `## children` 解析 + 状态翻转的**编排**留此处,
+ * "结果从哪来 / 状态往哪写" 全经 PathBackend 端口 (md 走落盘文件+ruled 状态, gh 走 issue 评论+label)。
+ *
+ * 一张结果的折入序:
+ *   1. collect: backend.collectResearchResults 出料 (母票 id + 结果正文)。
+ *   2. distill → ruling → backend.rule 翻转母票状态 (md: →ruled+decisionsLog; gh: 评论 **ruling** + close)。
+ *   3. parseChildren (截断到契约上限) → 逐条 backend.addTicket 建子票 (parentId=母票 挂血缘, blockedBy=母票)。
+ *   4. backend.ackResearchResult 落幂等锚点 (md: no-op; gh: 摘 research-done label)。
+ *
+ * 纪律:
+ *  - **逐票隔离** (单张坏结果不掀桌): 每票 try/catch, 一张抛错不影响其余。
+ *  - **结果空/未就绪 / 折入抛错 → 标 warning, 不 ack** (留待下轮重试; gh 评论缺失即走此路, 绝不静默跳过)。
+ *  - 子票 id 由后端自行分配 (md 类型前缀自增 / gh issue number); parentId 已挂 children 血缘, 无需外派 id。
+ */
+export function reflowResearchResults(backend: PathBackend, cwd: string, slug: string): ReflowOutcome[] {
+  const collected = backend.collectResearchResults(cwd, slug);
+  const outcomes: ReflowOutcome[] = [];
+  for (const { ticketId, body } of collected) {
+    try {
+      // 空/未就绪结果 (gh: 有 research-done label 却无结果评论): 标警告不 ack, 不把票折成占位裁决。
+      if (body.trim() === '') {
+        outcomes.push({ ticketId, newChildren: [], warning: '研究结果缺失/未就绪' });
+        continue;
+      }
+      backend.rule(cwd, slug, ticketId, distill(body));
+      // 自展开子票: 截断到 MAX_CHILDREN_PER_TICKET (契约兜底; 生产端指令本就 ≤4, 违约才触发)。
+      const allDrafts = parseChildren(body);
+      const drafts = allDrafts.slice(0, MAX_CHILDREN_PER_TICKET);
+      const droppedChildren = allDrafts.length - drafts.length;
+      const newChildren = drafts.map((d) =>
+        backend.addTicket(cwd, slug, { type: d.type, title: d.title, blockedBy: [ticketId], parentId: ticketId }),
+      );
+      backend.ackResearchResult(cwd, slug, ticketId);
+      outcomes.push({ ticketId, newChildren, ...(droppedChildren > 0 ? { droppedChildren } : {}) });
+    } catch (e) {
+      // 折入中途抛错 (rule/addTicket/ack 任一后端调用失败): 标警告不 ack, 留待下轮 (已提交的部分副作用
+      // 由后端各自幂等性兜底 —— gh addTicket 会重建但 rule 评论幂等叠加, 属可接受的重试代价)。
+      outcomes.push({ ticketId, newChildren: [], warning: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return outcomes;
 }
