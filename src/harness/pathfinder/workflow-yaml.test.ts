@@ -10,6 +10,7 @@ import { parse } from 'yaml';
 const REPO_ROOT = join(import.meta.dir, '..', '..', '..');
 const RESEARCH_WF = join(REPO_ROOT, '.github', 'workflows', 'dag-research.yml');
 const CALLER_WF = join(REPO_ROOT, 'templates', 'path-research-caller.yml');
+const GRILL_WF = join(REPO_ROOT, '.github', 'workflows', 'claude-grill.yml');
 
 /** 读原文 (structural asserts 里做注入面文本检查用)。 */
 function raw(path: string): string {
@@ -23,6 +24,14 @@ describe('workflow yaml 可解析 + 结构就位', () => {
 
   test('path-research-caller.yml: YAML 解析无错', () => {
     expect(() => parse(raw(CALLER_WF))).not.toThrow();
+  });
+
+  test('claude-grill.yml: YAML 解析无错 + owner 闸 + path: label 范围闸', () => {
+    const wf = parse(raw(GRILL_WF)) as { jobs: { grill: { if: string } } };
+    const gate = wf.jobs.grill.if;
+    expect(gate).toContain('github.repository_owner');
+    expect(gate).toContain('@claude');
+    expect(gate).toContain("'path:'");
   });
 
   test('dag-research.yml: 三触发口齐 (issues.labeled / workflow_call / workflow_dispatch.dry_run)', () => {

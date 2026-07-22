@@ -1,0 +1,46 @@
+name: Claude grill (comment channel)
+
+# pathfinder grill 票的评论区轻裁通道: owner 在带 path:* label 的 issue 下评论 @claude
+# → Actions 里起 Claude Code (带仓库 checkout) 按 omd-grill 纪律应答/续审, 回帖落在评论区。
+#
+# 通道定位 (见 client-skills/omd-grill/SKILL.md 三通道路由): 轻裁专用 —— 同意推荐 / 同意但微调 /
+# 澄清一点; 超 ~3 轮或出现真岔口应升级到活会话 (本地 / 手机 Claude 拉票), 评论区每轮冷启动不适合对抗轮次。
+#
+# 安全防线:
+#   1. 权力闸 — 仅 repository owner 本人的评论触发 (public 仓库谁都能评论, 无闸 = 任何人烧订阅额度)。
+#   2. 范围闸 — 仅带 path: 前缀 label 的 issue (pathfinder 票), 不是全仓通用助理。
+#   3. 凭证 — CLAUDE_CODE_OAUTH_TOKEN (Max 订阅 OAuth, `claude setup-token` 生成), 不烧 API 计费。
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+  id-token: write
+
+jobs:
+  grill:
+    if: >-
+      github.event.comment.user.login == github.repository_owner &&
+      contains(github.event.comment.body, '@claude') &&
+      (contains(join(github.event.issue.labels.*.name, ','), 'path:'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            你在 pathfinder 决策地图的一张票 (issue #${{ github.event.issue.number }}) 的评论区应答 owner。
+            先读 client-skills/omd-grill/SKILL.md 的「grill 票通道」纪律, 再读本票全部评论区 (已问已答的轮次不重问)。
+            规则:
+            - 这是**轻裁通道**: owner 同意推荐 → 给出待正式 rule 的结论草案 (标注「待折入侧正式 path_rule」);
+              owner 同意但提出微调 → 评估微调, 采纳则并进草案, 有异议则一次一问反问 (评论即输入, 与证据冲突要反问不照办)。
+            - 需要新调研/新岔口 → 说明后用 `gh issue create` 建子票 (title 前缀 [research]/[grill],
+              label path:research / path:grill, 挂本票所在 map 的 sub-issue), 并在回帖里链接。
+            - 判断这轮对话已超出轻裁 (真岔口/需多轮对抗) → 明说「建议升级到活会话续审」并停, 不硬聊。
+            - 回帖用中文, 遵守仓库写作纪律; 不改代码, 不 commit。
+          claude_args: '--allowedTools "Bash(gh issue:*),Bash(gh api:*),Read,Grep,Glob"'
