@@ -80,15 +80,23 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${DRY_RUN:-}" = "true" ]; then
-            # D-I 金丝雀: 干跑不碰 API, echo 假结果验证管道 (checkout→bun→脚本路径→result.md 全链)。
-            printf '## 终稿 (综合判优)\n\n(dry-run canary) 管道连通性已验证, 未跑真研究 (零 API 成本)。\n' > result.md
+            # D-I 金丝雀: 干跑不碰 API, echo 假结果验证管道 (checkout→bun→脚本路径→comment.md 全链)。
+            printf '## 终稿 (综合判优)\n\n(dry-run canary) 管道连通性已验证, 未跑真研究 (零 API 成本)。\n' > comment.md
           else
             # 研究问题 = issue 标题换行接正文 (env 引用, 无注入面)。
+            # 贴票的是**终稿 (stdout)**, 不是 --out 全档 (含全文语料附录, 几 MB): 全档 cat 会噎死
+            # runner 日志管道, 贴评论会撞 GitHub 65536 字符上限 (2026-07-22 演习 run 29936271221 实测)。
             QUERY=$(printf '%s\n%s' "$TITLE" "$BODY")
-            bun run scripts/dag-research.ts "$QUERY" --out result.md
+            bun run scripts/dag-research.ts "$QUERY" --out result.md > comment.md
+            # 65536 上限护栏: >60000 截断 + 指路 run artifact。
+            if [ "$(wc -c < comment.md)" -gt 60000 ]; then
+              head -c 60000 comment.md > comment.tmp
+              printf '\n\n…(截断: 全文见 run %s)\n' "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" >> comment.tmp
+              mv comment.tmp comment.md
+            fi
           fi
-          echo '--- result.md ---'
-          cat result.md
+          echo '--- comment.md (head) ---'
+          head -c 3000 comment.md
 
       # 成功回贴: 评论研究结果 + 打 research-done label (S3 path_tickets 据此回流)。
       # issue 上下文取 issues 事件的 number, 或金丝雀显式传入的 inputs.issue (D-I 补裁: canary 必须真发一条
@@ -102,7 +110,7 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
-          gh issue comment "$ISSUE" --body-file result.md
+          gh issue comment "$ISSUE" --body-file comment.md
           if [ "${DRY_RUN:-}" != "true" ]; then
             gh issue edit "$ISSUE" --add-label research-done
           fi
