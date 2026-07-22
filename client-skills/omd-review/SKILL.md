@@ -21,7 +21,7 @@ description: 对一批 diff 做对抗式多维 DAG 审查(正确性/契约),gate
 
 - **默认(多维并行 find + 确定性 verify)**:廉价召回档,diff-可见的 bug 够抓,适合日常/大 diff。
 - **深审 `deep:true`(单 agent)**:实测最干净(3 方召回测:满召回 + 0 假阳性 + 推理最好 + 自然去重)。用于**敏感接缝**(会计/authz/迁移/状态机)、**需读 diff 外真身**、或默认档出噪音时。贵在一个 agent 全仓读+跑,别对大批量机械 diff 滥用。
-- 模型:find = `review` 角色(`OMD_REVIEW_MODEL`),verify = `verifier` 角色(跨模型对抗校验;`OMD_REVIEW_VERIFY_MODEL` 可单独覆盖)。**无需专配 review 角色**,不设则角色 fallback 优雅降级。
+- 模型(review 自成体系,不碰引擎 `verifier` 角色):find = `review` 角色(`OMD_REVIEW_MODEL`);verify = `OMD_REVIEW_VERIFY_MODEL` 覆盖,否则回落 find 模型(跨模型 verify 靠显式配 `OMD_REVIEW_VERIFY_MODEL`)。**无需任何配置也能跑**,fallback 优雅降级、不假设 key。
 
 ## 误报裁决程序(承终裁手册:finding ≠ ground truth)
 
