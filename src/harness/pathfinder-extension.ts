@@ -23,7 +23,8 @@ import { m } from './i18n';
 import { executeSlice as realExecuteSlice, resolveConductorDefault as realResolveConductorDefault, type ExecuteSliceOpts } from './execute-extension';
 import type { AgentLeafRunner, CommandLeafRunner } from './leaf-runners';
 import { countDispatchedResearch, dispatchFrontier as realDispatchFrontier } from './pathfinder/dispatch';
-import { watchAfkResults as realWatchAfkResults, type AfkReflow, type WatchHandle } from './pathfinder/afk-hook';
+import { reflowResearchResults as realReflowResearchResults } from './pathfinder/afk-hook';
+import { resolveBackend } from './pathfinder/backend';
 import { computeFrontier } from './pathfinder/frontier';
 import { loadMap, mutateMap, saveMap } from './pathfinder/map-store';
 import { compileSlice as realCompileSlice, regionIsClear } from './pathfinder/slice-compiler';
@@ -122,7 +123,7 @@ export interface PathfinderExtensionOpts {
   /** dag-record 留痕器 (tui 已建的 recorder); 省略 = 不留痕。 */
   recorder?: ExecuteSliceOpts['recorder'];
   /**
-   * 自动预取: 进模式 / /tickets 时自动 dispatchFrontier (research→AFK 后台) + watchAfkResults。
+   * 自动预取: 进模式 / /tickets 时自动 dispatchFrontier (research→AFK 后台) + 起 reflow 触发器。
    * 默认 **false** (真 spawn 会惊吓, D-5): 用户须显式 `/path --prefetch` / `/tickets --prefetch` 触发。
    */
   autoPrefetch?: boolean;
@@ -133,9 +134,17 @@ export interface PathfinderExtensionDeps {
   compileSlice?: typeof realCompileSlice;
   executeSlice?: typeof realExecuteSlice;
   dispatchFrontier?: typeof realDispatchFrontier;
-  watchAfkResults?: typeof realWatchAfkResults;
+  /** research 结果折入 (后端无关编排; TUI 固定 md 后端注入, 与 MCP 同引擎)。省略 = 真实实现。 */
+  reflowResearchResults?: typeof realReflowResearchResults;
   resolveConductorDefault?: typeof realResolveConductorDefault;
+  /** 注入式定时器 (reflow 触发器; 默认 globalThis.setInterval, unref 若可用)。 */
+  setInterval?: (fn: () => void, ms: number) => unknown;
+  /** 注入式清定时器 (默认 globalThis.clearInterval)。 */
+  clearInterval?: (handle: unknown) => void;
 }
+
+/** reflow 触发器轮询周期 ms (与旧 watchAfkResults 默认一致)。 */
+const REFLOW_TICK_MS = 4000;
 
 export function createPathfinderExtension(
   opts: PathfinderExtensionOpts = {},
@@ -147,12 +156,14 @@ export function createPathfinderExtension(
   const compileSliceFn = deps.compileSlice ?? realCompileSlice;
   const executeSliceFn = deps.executeSlice ?? realExecuteSlice;
   const dispatchFrontierFn = deps.dispatchFrontier ?? realDispatchFrontier;
-  const watchAfkResultsFn = deps.watchAfkResults ?? realWatchAfkResults;
+  const reflowResearchResultsFn = deps.reflowResearchResults ?? realReflowResearchResults;
   const resolveConductorDefaultFn = deps.resolveConductorDefault ?? realResolveConductorDefault;
+  const setIntervalFn = deps.setInterval ?? ((fn: () => void, ms: number) => globalThis.setInterval(fn, ms));
+  const clearIntervalFn = deps.clearInterval ?? ((h: unknown) => globalThis.clearInterval(h as ReturnType<typeof setInterval>));
 
   return (pi) => {
     /** 当前活跃的 AFK watcher (单个; prefetch 换图时先 stop 旧的)。 */
-    let watchHandle: WatchHandle | null = null;
+    let watchHandle: { stop: () => void } | null = null;
     /** 自续预算耗尽只提醒一次 (本 session)。 */
     let budgetNotified = false;
     /** 可选的 runtime 回注 (execute brief); 测试 fake pi 无此方法 → 静默跳过。 */
@@ -352,8 +363,45 @@ export function createPathfinderExtension(
     };
 
     /**
-     * 预取 (D-6, gated): dispatchFrontier 把 research 前沿票甩进 AFK 后台车队 + 起 watchAfkResults 轮询回流。
-     * 换图时先停旧 watcher。grill/prototype 只报不自动跑 (惊吓副作用)。
+     * reflow 定时触发器 (薄壳; 双折入路径收敛 —— TUI 与 MCP 同走 reflowResearchResults):
+     * 每 tick 经 reflowResearchResults(md 后端固定) 折入 landed 结果 → 母票 ruled + 后端自派子票血缘,
+     * 映射回旧 onReflow 语义 (通知 + 重 surface 前沿 + research 子票预算内自续)。
+     * 空结果/未就绪 (outcome.warning) 不折入、不占位, 留待下轮; 折入的状态读写全经 backend (mutateMap
+     * 单写口), 天然不抱旧快照覆写 tick 间 /rule 落盘的裁决。换图/退出前 stop() 清定时器。
+     */
+    const startReflowTimer = (ctx: Ctx, slug: string): { stop: () => void } => {
+      const backend = resolveBackend(cwd, { env: { OMD_PATH_BACKEND: 'md' } }); // TUI 场景固定 md
+      const tick = (): void => {
+        const outcomes = reflowResearchResultsFn(backend, cwd, slug);
+        let folded = false;
+        for (const o of outcomes) {
+          if (o.warning !== undefined) continue; // 结果缺失/未就绪: 不折入不占位, 下轮重试
+          folded = true;
+          const childTail = o.newChildren.length > 0 ? m({ en: ` (+${o.newChildren.length} child tickets)`, zh: ` (+${o.newChildren.length} 子票)` }) : '';
+          const dropTail = o.droppedChildren ? m({ en: ` (${o.droppedChildren} over-cap children dropped)`, zh: ` (超上限丢弃 ${o.droppedChildren} 子票草案)` }) : '';
+          ctx.ui.notify(
+            m({
+              en: `◈ AFK result in: ${o.ticketId} ruled${childTail}${dropTail}`,
+              zh: `◈ AFK 结果回流: ${o.ticketId} 已裁${childTail}${dropTail}`,
+            }),
+            'info',
+          );
+          // D-10 自续: 新孵 research 子票 → 预算内自动续派 (自己跑, 不等 owner)。
+          if (o.newChildren.some((c) => c.type === 'research')) autoRedispatch(ctx, slug);
+        }
+        if (folded) surfaceFrontier(ctx, slug); // 有折入才重算前沿
+      };
+      const timer = setIntervalFn(tick, REFLOW_TICK_MS);
+      // unref 若定时器支持 → 不阻塞进程退出 (旧 watchAfkResults 同款)。
+      if (timer && typeof (timer as { unref?: () => void }).unref === 'function') {
+        (timer as { unref: () => void }).unref();
+      }
+      return { stop: () => clearIntervalFn(timer) };
+    };
+
+    /**
+     * 预取 (D-6, gated): dispatchFrontier 把 research 前沿票甩进 AFK 后台车队 + 起 reflow 定时触发器。
+     * 换图时先停旧触发器。grill/prototype 只报不自动跑 (惊吓副作用)。
      */
     const prefetch = (ctx: Ctx, slug: string): void => {
       const map = loadMap(cwd, slug);
@@ -370,31 +418,9 @@ export function createPathfinderExtension(
       } else {
         ctx.ui.notify(m({ en: '◈ prefetch: no research tickets on the frontier.', zh: '◈ 预取: 前沿无 research 票。' }), 'info');
       }
-      // 起/换 watcher: 结果落地即回流通知 + 重 surface 前沿。
+      // 起/换 reflow 触发器: 结果落地即经 reflowResearchResults 折入 + 重 surface 前沿。
       watchHandle?.stop();
-      watchHandle = watchAfkResultsFn(
-        map,
-        { cwd, mode: 'interval' },
-        {
-          // 每 tick 从真相源重载: watcher 绝不抱旧快照覆写 tick 间 /rule 落盘的裁决。
-          reloadMap: () => loadMap(cwd, slug),
-          saveMap: (mm) => saveMap(mm, cwd),
-          onReflow: (r: AfkReflow) => {
-            const childTail = r.newChildren.length > 0 ? m({ en: ` (+${r.newChildren.length} child tickets)`, zh: ` (+${r.newChildren.length} 子票)` }) : '';
-            const dropTail = r.droppedChildren ? m({ en: ` (${r.droppedChildren} over-cap children dropped)`, zh: ` (超上限丢弃 ${r.droppedChildren} 子票草案)` }) : '';
-            ctx.ui.notify(
-              m({
-                en: `◈ AFK result in: ${r.ticketId} ruled${childTail}${dropTail}${r.unblocked.length ? ` · unblocked ${r.unblocked.join(', ')}` : ''}`,
-                zh: `◈ AFK 结果回流: ${r.ticketId} 已裁${childTail}${dropTail}${r.unblocked.length ? ` · 解锁 ${r.unblocked.join(', ')}` : ''}`,
-              }),
-              'info',
-            );
-            surfaceFrontier(ctx, slug);
-            // D-10 自续: 新孵 research 子票 → 预算内自动续派 (自己跑, 不等 owner)。
-            if (r.newChildren.some((c) => c.type === 'research')) autoRedispatch(ctx, slug);
-          },
-        },
-      );
+      watchHandle = startReflowTimer(ctx, slug);
     };
 
     const enterPathfinder = (ctx: Ctx): void => {
@@ -438,7 +464,7 @@ export function createPathfinderExtension(
     const exitPathfinder = (ctx: Ctx): void => {
       state.status = 'normal';
       ctx.ui.setStatus('pathfinder', undefined);
-      // 退出即停 AFK watcher (子进程 unref 后自跑; watcher 只是回流通道)。
+      // 退出即停 reflow 触发器 (子进程 unref 后自跑; 触发器只是回流通道)。
       watchHandle?.stop();
       watchHandle = null;
       ctx.ui.notify(m({ en: '▶ Exited PATHFINDER', zh: '▶ 退出 PATHFINDER' }), 'info');

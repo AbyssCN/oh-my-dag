@@ -121,7 +121,7 @@ export function resolveBackend(cwd: string): PathBackend;
 
 ### 已知接缝(收敛留观测)
 
-- **TUI/MCP 双折入**(承 §4 S3 补记③):md 专属的 TUI `watchAfkResults`(4s 轮询)与后端无关的 MCP `reflowResearchResults` 两条折入路径并存;语义变更须两处同步。S5 未收敛(不在本片范围),留后评估。
+- **TUI/MCP 双折入 — 已收敛**(2026-07-22,票 #17 grill → #18 delivered):TUI 轮询降为薄触发器,折入统一 `reflowResearchResults`(md 后端固定);生产消费单引擎。**残留**:`applyAfkResult`/`watchAfkResults` 原地保留——regressions 硬验收(断言一字不改)直接绑定二者,物理删除需重写 reg4/reg5 驱动方式(语义断言不变),属低优先 owner 闸,不阻塞;生产零消费已验证(仅注释提及)。
 - **memory 写入是单向增益**:裁决不因 memory 故障回滚,memory 也不反向驱动裁决;消费端(`memory_recall` / 会话开场)自取。
 
 ### §7 真 gh 演习(2026-07-22 已完成 · AbyssCN/oh-my-dag)
