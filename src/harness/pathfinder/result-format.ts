@@ -65,6 +65,15 @@ export function distill(resultText: string): string {
   return oneLine.length > 280 ? oneLine.slice(0, 277) + '…' : oneLine;
 }
 
+/**
+ * 一段文本是否"长得像 dag-research 结果"(含 `## 终稿` 段)。gh 折入据此从 issue 评论堆里认出结果评论,
+ * 区别于 `**ruling**` 裁决评论 / `⚠ research failed` 失败通知 (两者皆无终稿段)。与 distill 共用 FINAL_HEADING
+ * 锚点 → 认结果的判据与蒸馏取材的判据同源, 不各表。
+ */
+export function looksLikeResult(text: string): boolean {
+  return text.split('\n').some((l) => FINAL_HEADING.test(l));
+}
+
 const CHILDREN_HEADING = /^##\s+children\s*$/i;
 const VALID_TYPES: ReadonlySet<string> = new Set(['research', 'grill', 'prototype', 'task']);
 

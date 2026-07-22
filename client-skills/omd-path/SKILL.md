@@ -5,7 +5,26 @@ description: 打开/新建/列出 omd pathfinder 决策地图(经 omd MCP server
 
 # /omd-path — pathfinder 决策地图
 
-你在驱动 omd 的 pathfinder 模式(TUI-less,经 omd MCP server 的 `path_*` 工具;工具名可能带前缀如 `mcp__omd__path_map`,未加载时先 ToolSearch "path_map")。地图真相存在目标 repo 的 `docs/plan/pathfinder/<slug>.md`(人可读可编辑),MCP server 的 cwd 决定作用的 repo。
+你在驱动 omd 的 pathfinder 模式(TUI-less,经 omd MCP server 的 `path_*` 工具;工具名可能带前缀如 `mcp__omd__path_map`,未加载时先 ToolSearch "path_map")。MCP server 的 cwd 决定作用的 repo。
+
+## 后端(md / gh)
+
+pathfinder 有两个可选后端,同一套 `path_*` 工具面语义等价:
+
+- **md 后端(默认)**:地图真相存 `docs/plan/pathfinder/<slug>.md`(人可读可编辑)。
+- **gh 后端**:票据生命周期迁 GitHub Issues(map = `🧭 [map]` issue,票 = `[<type>]` sub-issue,ruling = resolution 评论 + close),AFK research 上 GitHub Actions。
+
+后端选择由 `.omd/pathfinder/config.json` 落定(`{"backend":"gh"|"md"}`),由 `path_init` 写入;缺省或无 GitHub remote → md。
+
+## path_init — 两步引导流(开图前先接线后端)
+
+新 repo 首次用 pathfinder 先跑 `path_init`,它是两步流:
+
+1. **报告模式**:`path_init`(不传 `backend`)→ 返回环境探测报告(git repo / GitHub remote / `gh auth` scope / repo 公私 / Actions / 机器级 key)+ 推荐答案。先把报告转述给 owner。
+2. **执行模式**:owner 确认后 `path_init` 带 `backend`(`gh`|`md`)+ `destination`(+ gh 时 `cloudAfk`:public 仓开云端 AFK = 决策历史公开可读,须 owner 明示)→ 建 labels / map issue / caller workflow / secrets / workflow_dispatch 干跑金丝雀 / 落 config。
+   - 缺什么报什么 + 修复命令(如 `gh auth refresh -s workflow`),照报错补齐再重跑。
+
+已建好后端的 repo 直接用 `path_map`,不必再 init。
 
 ## 用法
 
