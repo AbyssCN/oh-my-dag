@@ -312,7 +312,7 @@ function setupGrillChannel(deps: InitDeps, ownerRepo: string): { enabled: boolea
   if (!secretExists && !hasEnv) {
     return {
       enabled: false,
-      line: `  grill 评论区通道未启用 (缺 ${GRILL_KEY} — \`claude setup-token\` 生成后存本机 env 重跑 path_init 可启用)。`,
+      line: `  grill 评论区通道未启用 (缺 ${GRILL_KEY} — \`claude setup-token\` 或 python3 scripts/claude-token-auto.py 一键完成, 存本机 env 重跑 path_init 可启用)。`,
     };
   }
 
