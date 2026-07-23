@@ -1,11 +1,11 @@
 /**
- * large reuse-own fixture (SDD O2) —— 12 个模块的**难度梯度**大任务簇。
+ * large reuse-own fixture (SDD O2) —— 11 个模块的**难度梯度**大任务簇。
  *
  * medium (3 模块) 的病: 每模块整体过/挂 → 有效分辨率 ≈ 模块数 ≈ 4 档, 量不出相近模型的小差距
- * (v2.5 vs v2.5-pro)。large 铺一条 易×5 → 中×4 → 难×3 的梯度: 弱模型在梯度不同点掉队, 强的多清几个,
+ * (v2.5 vs v2.5-pro)。large 铺一条 易×5 → 中×4 → 难×2 的梯度: 弱模型在梯度不同点掉队, 强的多清几个,
  * 过测比例 (parseBunTest 按 test-case 汇总) 分布才连续、才拉得开。
  *
- * 机制同 medium: worktree 清空 12 目标 → fleet 照 SPEC + colocated 测试从零重建 → oracle = 12 测试
+ * 机制同 medium: worktree 清空 11 目标 → fleet 照 SPEC + colocated 测试从零重建 → oracle = 11 测试
  * 过测比例 + whole-project tsc。选材约束: 都有 colocated 测试 (事实契约) + 带测试注入接缝
  * (clean 的 Python / query-expand 的模型 / map-store 的 sqlite 均可隔离重建, 不打真外部依赖)。
  *
@@ -14,6 +14,10 @@
  */
 import { createWorktreeFixture, type WorktreeFixture } from './worktree';
 
+// ⚠️ 不变量 (2026-07-23, bwrap 隔离): 目标集**必须与 leaf-worker 运行时 import 闭包不相交**。
+// eval leaf 在 bwrap jail 里从 **worktree 内**跑 (真隔离, 主 repo 不可见); worktree 清空目标 → 若某目标
+// 又是 worker 启动依赖 (model/bootstrap→models-json), worker import 到空桩即崩、无法产物。故 model/models-json.ts
+// (模型配置 infra, 本非好的"照 spec 重建"目标) 已移出。改目标集前跑 importtrace 确认不落进 leaf-worker 闭包。
 const TARGETS = [
   // 易 ×5 (48–87 行, 纯函数/纯数据)
   'src/harness/pathfinder/types.ts',
@@ -26,17 +30,16 @@ const TARGETS = [
   'src/harness/web/query-expand.ts',
   'src/harness/debug/debug-plan.ts',
   'src/harness/web/clean.ts',
-  // 难 ×3 (270–328 行, 大表/预设/三态互转)
+  // 难 ×2 (270–328 行, 大表/预设/三态互转)
   'src/harness/init/role-presets.ts',
-  'src/model/models-json.ts',
   'src/harness/pathfinder/map-store.ts',
 ];
 
 const TESTS = TARGETS.map((t) => t.replace(/\.ts$/, '.test.ts'));
 
-const SPEC = `# Large reuse-own 任务: 重建 12 个模块 (难度梯度)
+const SPEC = `# Large reuse-own 任务: 重建 11 个模块 (难度梯度)
 
-重建下列 12 个模块, 使各自 colocated 测试全绿、且 whole-project tsc 无错。
+重建下列 11 个模块, 使各自 colocated 测试全绿、且 whole-project tsc 无错。
 每个模块的**测试文件就是精确契约** (导出名 / 签名 / 行为), 照它们重建 —— 不要改测试。
 各模块**互相独立** (唯一例外: pathfinder/map-store import pathfinder/types, 一并重建即可解析)。
 
@@ -89,15 +92,11 @@ const SPEC = `# Large reuse-own 任务: 重建 12 个模块 (难度梯度)
     角色模型矩阵预设 (wizard 数据源)。三档: base-opencode-go / cn-standard / cn-ultimate, 每档定 config 角色 + 自定 api +
     多模态池 + key prompt。coordProvider('provider:model')→'provider'。模型 id 字符串只住这里。字节稳定。
 
-11. src/model/models-json.ts — readCustomProviders / listCustomProviderStatus / upsertProvider / upsertModel / modelsJsonPath + interface ModelsJsonEntry 等
-    读/写 ~/.pi/agent/models.json 的自定 provider。只带出完整自定条目 (baseUrl+apiKey+api 齐全者), 跳过 builtin-override;
-    \`$ENV\` key 引用从 env 解析, 缺 key 跳过 (fail-open); 文件缺/坏 → [] 永不抛。upsertProvider/upsertModel=merge-upsert 保留既有字段不 clobber。
-
-12. src/harness/pathfinder/map-store.ts — renderMapMarkdown / parseMapMarkdown (纯, roundtrip: parse(render(m))≡m) + saveMapDb / loadMapDb / rebuildDbFromMarkdown (bun:sqlite) + loadMap / saveMap / mutateMap + 路径 helper
+11. src/harness/pathfinder/map-store.ts — renderMapMarkdown / parseMapMarkdown (纯, roundtrip: parse(render(m))≡m) + saveMapDb / loadMapDb / rebuildDbFromMarkdown (bun:sqlite) + loadMap / saveMap / mutateMap + 路径 helper
     markdown ↔ PathMap ↔ SQLite 三态互转。markdown=真相源 (byte-stable 行式 kv, render∘parse 幂等), db=可重建索引。
     纯 render/parse 与落盘分离便于无盘单测。import pathfinder/types。
 
-oracle = 这 12 个测试文件全绿 (过测比例) + whole-project tsc 无错。`;
+oracle = 这 11 个测试文件全绿 (过测比例) + whole-project tsc 无错。`;
 
 /** 建 large worktree fixture (清空 12 目标 + 留测试 + 写 SPEC)。用后调 .cleanup()。 */
 export function createLargeFixture(opts: { repoRoot?: string } = {}): Promise<WorktreeFixture> {
