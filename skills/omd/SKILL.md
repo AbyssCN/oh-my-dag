@@ -24,6 +24,7 @@ This table is the whole map.
 | 审查 | `/review` | audit: security / coverage / tech-debt / gate / PR |
 | 审查 | `/dag-review` | adversarial multi-lens diff review + verify/refute |
 | 研究 | `/dag-research` | web research: retrieve → fanout → judged synthesis |
+| 研究 | `/omd-video` | video → per-segment notes (MiMo reads screen+audio); corpus for dag |
 | 复利 | `/retro` | engineering retrospective from git history |
 | 复利 | `/dream` | consolidate raw session events into durable memory |
 | 复利 | `/skill-creator` | create / improve / eval skills |
