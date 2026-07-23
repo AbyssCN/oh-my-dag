@@ -27,7 +27,7 @@ import { reflowResearchResults as realReflowResearchResults } from './pathfinder
 import { resolveBackend } from './pathfinder/backend';
 import { computeFrontier } from './pathfinder/frontier';
 import { loadMap, mutateMap, saveMap } from './pathfinder/map-store';
-import { compileSlice as realCompileSlice, regionIsClear } from './pathfinder/slice-compiler';
+import { compileSlice as realCompileSlice, regionIsClear, specGateViolation } from './pathfinder/slice-compiler';
 import type { PathMap } from './pathfinder/types';
 import { createPathfinderModeState, type PathfinderModeState } from './plan/mode';
 
@@ -231,6 +231,12 @@ export function createPathfinderExtension(
           }),
           'info',
         );
+        return;
+      }
+      // deliver spec 护栏 (编译前, fail-loud): 复杂区域缺 docs/plan/ 契约引用 → 不编译不执行 (D-E)。
+      const gate = specGateViolation(map.tickets.filter((t) => regionIds.includes(t.id)));
+      if (gate) {
+        ctx.ui.notify(gate, 'warning');
         return;
       }
       if (!opts.leafModel) {

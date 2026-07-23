@@ -42,6 +42,7 @@ const PATH_LABELS: ReadonlyArray<readonly [string, string]> = [
   ['path:task', '0E8A16'],
   ['path:delivered', 'C2E0C6'],
   ['research-done', '0E8A16'],
+  ['research:council', 'BFD4F2'],
 ];
 
 /** 目标仓 caller workflow 落点 (S2 caller 模板拷入位; 金丝雀 workflow_dispatch 的对象)。 */
