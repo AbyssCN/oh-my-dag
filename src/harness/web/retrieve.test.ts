@@ -113,6 +113,130 @@ describe('retrieveWeb query 扩展', () => {
   });
 });
 
+describe('retrieveWeb 分层感知爬取预算 (成本敏感: 爬数直乘 fanout 账单)', () => {
+  // arxiv.org = tier-A (论文); blogN.example = tier-B (默认)。orderForCrawl 会把 A 排前。
+  const A = (i: number) => hit(`https://arxiv.org/abs/${i}`);
+  const B = (i: number) => hit(`http://blog${i}.example/x`);
+
+  /** 单轮命中固定列表 (无扩展) + fetch 计数。 */
+  function tierStack(hits: SearchResult[], counter: { n: number }): WebStack {
+    const fetchProvider: FetchProvider = {
+      name: 'fakefetch',
+      async fetch(url): Promise<FetchResult> {
+        counter.n++;
+        return { url, text: 'x'.repeat(300) };
+      },
+    };
+    return {
+      searchPool: {
+        async search() {
+          return { results: hits, providers: ['fake'], mode: 'rotate' as const };
+        },
+      },
+      fetchProviders: [fetchProvider],
+      cleaner: new PassthroughCleaner(),
+      quota: {},
+    } as unknown as WebStack;
+  }
+
+  test('query A: 候选 3 tier-A → target=5 (底线) → 爬 3A+2B (不变, 便宜)', async () => {
+    const counter = { n: 0 };
+    // 3 A + 4 B = 7 候选; 未显式 crawl → clamp(3, 5, 8) = 5。
+    const hits = [A(1), A(2), A(3), B(1), B(2), B(3), B(4)];
+    const r = await retrieveWeb(tierStack(hits, counter), 'q0', { clean: false, minChars: 1 });
+    expect(counter.n).toBe(5); // 爬 5 槽
+    expect(r.sources.length).toBe(7); // 索引全列
+    // ranked A→B: 前 3 是 A, 第 4/5 是 B, 且这 5 条有正文; 其余 (2 条 B) 无正文。
+    expect(r.sources.slice(0, 3).map((s) => s.tier)).toEqual(['A', 'A', 'A']);
+    expect(r.sources.slice(3, 5).map((s) => s.tier)).toEqual(['B', 'B']);
+    expect(r.sources.filter((s) => s.body).length).toBe(5); // 恰 3A+2B 被抓
+    expect(r.sources.slice(5).every((s) => !s.body)).toBe(true); // 尾部 B 未抓
+    expect(r.crawlBudget).toBe('分层预算: tier-A=3 → 爬 5/上限8');
+  });
+
+  test('query B: 候选 10 tier-A → target=8 (上限封顶) → 爬 8A (从 5 升到 8, 权威源不被挤)', async () => {
+    const counter = { n: 0 };
+    // 10 A + 2 B = 12 候选; 未显式 crawl → clamp(10, 5, 8) = 8。
+    const hits = [...Array.from({ length: 10 }, (_, i) => A(i)), B(1), B(2)];
+    const r = await retrieveWeb(tierStack(hits, counter), 'q0', { clean: false, minChars: 1 });
+    expect(counter.n).toBe(8); // 上限封顶爬 8
+    expect(r.sources.length).toBe(12);
+    // 被抓的 8 条全是 tier-A (ranked A 排前, 10 个 A 里取前 8)。
+    const crawled = r.sources.filter((s) => s.body);
+    expect(crawled.length).toBe(8);
+    expect(crawled.every((s) => s.tier === 'A')).toBe(true);
+    expect(r.crawlBudget).toBe('分层预算: tier-A=10 → 爬 8/上限8');
+  });
+
+  test('边界 floor: 5 tier-A → clamp(5,5,8)=5', async () => {
+    const counter = { n: 0 };
+    const hits = [...Array.from({ length: 5 }, (_, i) => A(i)), B(1), B(2), B(3)];
+    const r = await retrieveWeb(tierStack(hits, counter), 'q0', { clean: false, minChars: 1 });
+    expect(counter.n).toBe(5);
+    expect(r.crawlBudget).toBe('分层预算: tier-A=5 → 爬 5/上限8');
+  });
+
+  test('边界 ceil: 8 tier-A → clamp(8,5,8)=8; 9 tier-A → clamp(9,5,8)=8', async () => {
+    const c8 = { n: 0 };
+    const h8 = Array.from({ length: 8 }, (_, i) => A(i));
+    const r8 = await retrieveWeb(tierStack(h8, c8), 'q0', { clean: false, minChars: 1 });
+    expect(c8.n).toBe(8);
+    expect(r8.crawlBudget).toBe('分层预算: tier-A=8 → 爬 8/上限8');
+
+    const c9 = { n: 0 };
+    const h9 = Array.from({ length: 9 }, (_, i) => A(i));
+    const r9 = await retrieveWeb(tierStack(h9, c9), 'q0', { clean: false, minChars: 1 });
+    expect(c9.n).toBe(8); // 9 也封在 8
+    expect(r9.crawlBudget).toBe('分层预算: tier-A=9 → 爬 8/上限8');
+  });
+
+  test('底线兜底: 0 tier-A (全 B) → clamp(0,5,8)=5 (权威源少也保底抓 5)', async () => {
+    const counter = { n: 0 };
+    const hits = [B(1), B(2), B(3), B(4), B(5), B(6)];
+    const r = await retrieveWeb(tierStack(hits, counter), 'q0', { clean: false, minChars: 1 });
+    expect(counter.n).toBe(5);
+    expect(r.crawlBudget).toBe('分层预算: tier-A=0 → 爬 5/上限8');
+  });
+
+  test('自定 floor/ceil: crawlFloor=2 crawlCeil=4, 3 tier-A → clamp(3,2,4)=3', async () => {
+    const counter = { n: 0 };
+    const hits = [A(1), A(2), A(3), B(1), B(2)];
+    const r = await retrieveWeb(tierStack(hits, counter), 'q0', {
+      clean: false,
+      minChars: 1,
+      crawlFloor: 2,
+      crawlCeil: 4,
+    });
+    expect(counter.n).toBe(3);
+    expect(r.crawlBudget).toBe('分层预算: tier-A=3 → 爬 3/上限4');
+  });
+
+  test('向后兼容: 显式 --crawl 3 覆盖分层感知 (爬 3, 即便 tier-A 有 10)', async () => {
+    const counter = { n: 0 };
+    const hits = [...Array.from({ length: 10 }, (_, i) => A(i)), B(1)];
+    const r = await retrieveWeb(tierStack(hits, counter), 'q0', {
+      clean: false,
+      minChars: 1,
+      crawl: 3,
+    });
+    expect(counter.n).toBe(3); // 显式数说了算, 不走分层
+    expect(r.crawlBudget).toBe('显式指定: 爬 3');
+  });
+
+  test('向后兼容: 显式 --crawl 0 = 只搜不抓 (即便一堆 tier-A)', async () => {
+    const counter = { n: 0 };
+    const hits = [A(1), A(2), A(3), A(4), A(5)];
+    const r = await retrieveWeb(tierStack(hits, counter), 'q0', {
+      clean: false,
+      minChars: 1,
+      crawl: 0,
+    });
+    expect(counter.n).toBe(0); // 一个都不爬
+    expect(r.sources.length).toBe(5); // 但索引仍全列
+    expect(r.crawlBudget).toBe('显式指定: 爬 0');
+  });
+});
+
 describe('retrieveWeb per-source 蒸馏 (零丢失不变量重中之重)', () => {
   const HUGE_URL = 'http://big.com/page';
   const SMALL_URL = 'http://small.com/page';
