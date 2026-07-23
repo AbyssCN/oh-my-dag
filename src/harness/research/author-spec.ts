@@ -13,6 +13,7 @@
 import { z } from 'zod';
 import { send as defaultCallModel } from '../../model/gateway';
 import { TASTE_CORE } from '../taste';
+import { RESEARCH_LENS_TEMPLATE } from './lens-template';
 import type { ResearchFanoutConfig, ResearchLens } from './fanout';
 import { ModelError } from '../../model';
 
@@ -46,23 +47,17 @@ const ConductorOutputSchema = z.object({
 
 type ConductorOutput = z.infer<typeof ConductorOutputSchema>;
 
-/** system prompt 模板。TASTE_CORE 在调用侧注入 (不分行, 锚入 stable prefix)。 */
-const SYSTEM_PROMPT = `你是 researchFanout 的分解器。你的任务是把高层研究 goal + ground-truth 解构成一组专家镜头。
+/** system prompt: 镜头分解指引取自 lens-template 单源 (RESEARCH_LENS_TEMPLATE), 本件只加
+ * author-spec 专属外壳三样 —— 分解器角色 + TASTE 浸染 + JSON 输出契约。消除与 lens-template 双源漂移。 */
+const SYSTEM_PROMPT = `你是 researchFanout 的分解器。把高层研究 goal + ground-truth 解构成一组专家镜头。
 
-规则:
-1. 按 goal 选择 **真专家视角** (领域自激活: 会计问题→注册会计师 / 分布式系统→分布式系统架构师 / 安全问题→安全研究员 / harness 问题→harness 工程师 / UI 问题→首席设计师 / 业务→战略思考者)。
-2. 每个 lens 给:
-   - persona: 专家身份条件化 (身份+领域+视角, 注入以下工程品味)
-   - subAngles: **不同** sub-angle (每个 leaf 一个, 不重采样, 不重复)
-   - abstraction (可选): 高阶领域框架注入 (如 "Build Systems à la Carte: applicative vs monadic")
-3. 每个 lens 的 persona 必须浸染以下工程品味:
+${RESEARCH_LENS_TEMPLATE}
+
+每个 lens 的 persona 必须浸染以下工程品味:
 
 ${TASTE_CORE}
 
-4. synthesisFramings: M 个不同的综合 framing (不同立场/方法学, 供后续综合产出候选)。
-5. judgeCriteria: K 个评判维度 (adversarial 降单 judge 偏见)。
-6. **不要选模型** —— 模型分配是编排策略, 由调用侧控制, 不归你。你只做智识分解。
-7. **只输出 JSON**, 不输出 prose, 不输出 markdown 围栏。JSON 必须匹配以下 schema (仅这三个键):
+**只输出 JSON**, 不输出 prose, 不输出 markdown 围栏。JSON 必须匹配以下 schema (仅这三个键):
    - lenses: [{key, persona, subAngles:[string,...], abstraction?}]
    - synthesisFramings: [{key, framing}]
    - judgeCriteria: [{key, criterion}]`;

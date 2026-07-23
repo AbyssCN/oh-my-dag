@@ -46,12 +46,15 @@ import { UNIVERSAL_SAFEGUARD } from '../memory/safeguards/namespaces';
 import {
   researchFanout as runResearchFanout,
   type ResearchFanoutResult,
+  type ResearchLens,
 } from '../harness/research/fanout';
 import {
   DEFAULT_COUNCIL_DEEP_CRITERIA,
   DEFAULT_COUNCIL_DEEP_FRAMINGS,
   DEFAULT_COUNCIL_DEEP_LENSES,
 } from '../harness/plan/best-of-n';
+import { authorFanoutSpec } from '../harness/research/author-spec';
+import { logger } from '../harness/logger';
 import type { DreamPump } from '../harness/learning/types';
 
 /** 生产引擎接缝 (真 DAG 引擎)。 */
@@ -134,8 +137,17 @@ function createDefaultMemory(env: NodeJS.ProcessEnv): OmdMemory {
  *   super=true     = 深档: 全 M framing × 全 K 评判维度; 默认快档 (单 framing, 全评判);
  *   council=false  = 无 judge panel: 单 correctness 维度; 默认全评判 panel。
  */
-export function createDefaultResearchFanout(deps: { cwd: string; env: NodeJS.ProcessEnv }): ResearchFanout {
+export function createDefaultResearchFanout(deps: {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  /** 测试注入: conductor 分解器 (默认真 authorFanoutSpec)。 */
+  _authorFanoutSpec?: typeof authorFanoutSpec;
+  /** 测试注入: fanout 执行 (默认真 researchFanout)。 */
+  _researchFanout?: typeof runResearchFanout;
+}): ResearchFanout {
   const { cwd, env } = deps;
+  const authorFn = deps._authorFanoutSpec ?? authorFanoutSpec;
+  const fanoutFn = deps._researchFanout ?? runResearchFanout;
   return async ({ question, council, super: superMode, k }) => {
     const runId = randomUUID();
     const runtime = runtimeCoord(env);
@@ -143,13 +155,35 @@ export function createDefaultResearchFanout(deps: { cwd: string; env: NodeJS.Pro
     const lensModel = env.OMD_ITER_LEAF_MODEL?.trim() || runtime || 'deepseek:deepseek-v4-flash';
     const reasonModel = env.OMD_ITER_CONDUCTOR_MODEL?.trim() || runtime || 'deepseek:deepseek-v4-pro';
 
-    const lenses = [...DEFAULT_COUNCIL_DEEP_LENSES];
+    // 分解器 = conductor (author-spec): 按 question 自适应出领域专家镜头 (会计→CPA / 安全→安全研究员…)。
+    // 判领域本就是 conductor 职责,一次调用同时完成「判领域 + 出镜头」。fail-open: author 失败/超时 →
+    // 回落固定档 DEFAULT_COUNCIL_DEEP_*(零回归;P3 分解器统一:主路径也归一到 conductor)。
+    let lenses: readonly ResearchLens[];
+    let framingsAll: readonly { key: string; framing: string }[];
+    let criteriaAll: readonly { key: string; criterion: string }[];
+    try {
+      const authored = await authorFn({
+        goal: question,
+        groundTruth: question,
+        conductorModel: reasonModel,
+        lensModel,
+        reasonModel,
+      });
+      lenses = authored.lenses;
+      framingsAll = authored.synthesisFramings;
+      criteriaAll = authored.judgeCriteria;
+    } catch (err) {
+      logger.warn({ err: String(err) }, '[dag_research] author-spec 分解失败 → 回落固定档 (fail-open)');
+      lenses = DEFAULT_COUNCIL_DEEP_LENSES;
+      framingsAll = DEFAULT_COUNCIL_DEEP_FRAMINGS;
+      criteriaAll = DEFAULT_COUNCIL_DEEP_CRITERIA;
+    }
+    // 旗标仍作**向下 clamp**(只减不增,保持既有语义): k 限镜头数 · super 全 framing 否则单 · council=false 单维。
     const lensCount = k === undefined ? lenses.length : Math.max(1, Math.min(Math.trunc(k), lenses.length));
-    const framings = superMode ? [...DEFAULT_COUNCIL_DEEP_FRAMINGS] : DEFAULT_COUNCIL_DEEP_FRAMINGS.slice(0, 1);
-    const criteria =
-      council === false ? DEFAULT_COUNCIL_DEEP_CRITERIA.slice(0, 1) : [...DEFAULT_COUNCIL_DEEP_CRITERIA];
+    const framings = superMode ? framingsAll : framingsAll.slice(0, 1);
+    const criteria = council === false ? criteriaAll.slice(0, 1) : criteriaAll;
 
-    const result = await runResearchFanout({
+    const result = await fanoutFn({
       question,
       groundTruth: question,
       lenses: lenses.slice(0, lensCount),
