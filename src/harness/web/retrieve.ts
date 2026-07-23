@@ -12,8 +12,9 @@ import { CleaningFetchProvider } from './clean';
 import { fetchRacing } from './fetch-racing';
 import type { WebStack } from './index';
 import type { PoolMode } from './pool';
-import type { SearchResult } from './types';
+import { normalizeUrl, type SearchResult } from './types';
 import { classifySourceTier, orderForCrawl, type SourceTier } from './source-tier';
+import { expandQueries, type QueryExpander } from './query-expand';
 
 export interface RetrieveOpts {
   /** 搜索模式: rotate / aggregate(全 provider 并行去重) / failover。默认 rotate。 */
@@ -28,6 +29,13 @@ export interface RetrieveOpts {
   clean?: boolean;
   /** true(默认) = crawl 槽位按信源档位 A→B→C 重排 (降权不灭口); false = 纯引擎相关性序。 */
   tierRank?: boolean;
+  /**
+   * query 改写器 (增益非链路): 给则检索前先扩展 → 原 query + 全部改写各搜一轮 → URL 去重。
+   * 省略 = 单 query (现有行为不变)。爬取槽数不受影响 (成本天花板由 crawl 定)。测试注入替身。
+   */
+  expander?: QueryExpander;
+  /** 降级/告警回调 (改写失败退回单 query 时用)。默认静默。 */
+  onWarn?: (msg: string) => void;
   signal?: AbortSignal;
 }
 
@@ -46,6 +54,8 @@ export interface RetrievedSource extends SearchResult {
 
 export interface RetrieveResult {
   query: string;
+  /** 实际检索的 query 集 (原 query + 改写; 未扩展时 = [query])。透明留痕。 */
+  queries: string[];
   mode: PoolMode;
   searchProviders: string[];
   sources: RetrievedSource[];
@@ -68,12 +78,28 @@ export async function retrieveWeb(
   const clean = opts.clean ?? true;
   const tierRank = opts.tierRank ?? true;
 
-  const sr = await stack.searchPool.search(query, k, {
-    mode,
+  // query 扩展 (增益非链路): 原 query + 改写各搜一轮, 失败退回单 query。
+  const queries = await expandQueries(query, opts.expander, {
     signal: opts.signal,
+    onWarn: opts.onWarn,
   });
+  const rounds = await Promise.all(
+    queries.map((q) => stack.searchPool.search(q, k, { mode, signal: opts.signal })),
+  );
+  // 多轮结果按归一化 URL 去重 (保首现: 原 query 命中优先, 改写补召回); provider 并集去重。
+  const seen = new Set<string>();
+  const mergedResults: SearchResult[] = [];
+  for (const round of rounds) {
+    for (const r of round.results) {
+      const key = normalizeUrl(r.url);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      mergedResults.push(r);
+    }
+  }
+  const searchProviders = [...new Set(rounds.flatMap((r) => r.providers))];
   // 档位重排只决定谁吃 crawl 槽位 (A→B→C, 档内保留相关性序); 全部命中仍进索引。
-  const ranked = tierRank ? orderForCrawl(sr.results) : sr.results;
+  const ranked = tierRank ? orderForCrawl(mergedResults) : mergedResults;
   const toCrawl = ranked.slice(0, crawlN);
   const provs = clean
     ? stack.fetchProviders.map((fp) => new CleaningFetchProvider(fp, stack.cleaner))
@@ -97,11 +123,12 @@ export async function retrieveWeb(
 
   return {
     query,
+    queries,
     mode,
-    searchProviders: sr.providers,
+    searchProviders,
     sources,
     needsBrowserHarness,
-    markdown: buildMarkdown(query, mode, sr.providers, sources, toCrawl.length, clean),
+    markdown: buildMarkdown(query, mode, searchProviders, sources, toCrawl.length, clean, queries),
   };
 }
 
@@ -113,15 +140,20 @@ export function buildMarkdown(
   sources: RetrievedSource[],
   crawled: number,
   clean: boolean,
+  queries: string[] = [query],
 ): string {
   const ok = sources.filter((s) => s.body).length;
   const md: string[] = [];
   md.push(`# 检索: ${query}`, '');
   md.push(
     `> mode=${mode} · search=${searchProviders.join('+')} · 命中 ${sources.length} · ` +
-      `抓取 ${ok}/${crawled} · 清洗 ${clean ? 'trafilatura' : 'off'}`,
+      `抓取 ${ok}/${crawled} · 清洗 ${clean ? 'trafilatura' : 'off'}` +
+      (queries.length > 1 ? ` · 改写 ${queries.length - 1}` : ''),
     '',
   );
+  if (queries.length > 1) {
+    md.push(`> 检索 query (原+改写): ${queries.map((q) => `\`${q}\``).join(' · ')}`, '');
+  }
   md.push(
     '> 信源档位: A=一手/权威(论文/政府/官方docs/源码仓库) B=默认(博客/媒体/社区) C=已知农场/搬运(降权不删)',
     '',
