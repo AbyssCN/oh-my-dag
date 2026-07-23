@@ -11,8 +11,22 @@
  * ro-bind node_modules (自 root 向上找最近的) + bunDir → bun/tsc 可跑且解析依赖。系统只读 + /tmp + /proc + /dev。
  * **不 --clearenv**: 继承父进程 env (provider API key 等要流进 worker); 只 --setenv HOME/PATH。
  */
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+
+/**
+ * DNS 解析所需的额外绑定 (WSL2: /etc/resolv.conf 是指向 /mnt/wsl/resolv.conf 的符号链接, ro-bind /etc 时
+ * 链接目标不在 jail 内 → 无 DNS → leaf 连不上 model API)。把真身按**自己的绝对路径**绑进去, /etc 里的
+ * 符号链接自然解析。真身在 /etc 内 (常规文件) → 已被 /etc 覆盖, 返 []。
+ */
+function dnsBinds(): string[] {
+  try {
+    const real = realpathSync('/etc/resolv.conf');
+    return real.startsWith('/etc/') ? [] : [real];
+  } catch {
+    return [];
+  }
+}
 
 /** 自 start 向上找最近含 node_modules 的祖先目录, 返 node_modules 绝对路径 (无则 null)。 */
 export function findNodeModules(start: string): string | null {
@@ -52,7 +66,8 @@ export function bwrapArgs(root: string, roBinds: string[]): string[] {
   for (const p of ['/usr', '/bin', '/sbin', '/lib', '/lib64', '/etc']) {
     if (existsSync(p)) args.push('--ro-bind', p, p);
   }
-  for (const p of [...new Set(roBinds)]) {
+  // DNS (WSL2 resolv.conf 符号链接真身) + 调用方 roBinds (node_modules/bunDir), 去重、只挂存在的。
+  for (const p of [...new Set([...dnsBinds(), ...roBinds])]) {
     if (p && existsSync(p)) args.push('--ro-bind', p, p);
   }
   args.push('--bind', root, root);
