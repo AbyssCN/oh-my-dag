@@ -38,7 +38,7 @@ pathfinder 有两个可选后端,同一套 `path_*` 工具面语义等价:
    - `research`:需要检索调研的开放问题(会被 AFK 自动跑,烧钱;宁缺毋滥);
    - `grill`:需要和 owner 审议对齐的决策;
    - `prototype`:需要沙盒验证的假设;
-   - `task`:已明确到可施工的项(带 `executorKind`,默认 inproc;改文件的用 agent)。
+   - `task`:已明确到可施工的项(带 `executorKind`,默认 inproc;改文件的用 agent)。**垂直切分闸**:task 票按**用户功能垂直切**(一片端到端自带所需的数据/逻辑/界面,能独立验证),不按技术层横切(「先建表」→「再写后端」→「最后前端」)。横切的盲点是末端才可测、前面错后面全毁(反 happy-path);垂直片则即时验证 + 可并行分发。
    `blockedBy` 表达依赖:前置票全裁决后此票才进前沿。
 2. 展示前沿后,主动建议下一步:哪张票该先裁(/omd-rule)、research 是否值得 prefetch。
 3. **绝不**替 owner 裁决(/omd-rule)或触发交付(/omd-deliver)——那是 owner 的显式动作;你可以给推荐裁决词让 owner 确认。
