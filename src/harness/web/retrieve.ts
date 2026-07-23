@@ -15,6 +15,7 @@ import type { PoolMode } from './pool';
 import { normalizeUrl, type SearchResult } from './types';
 import { classifySourceTier, orderForCrawl, type SourceTier } from './source-tier';
 import { expandQueries, type QueryExpander } from './query-expand';
+import type { SourceDistiller } from './distill-source';
 
 export interface RetrieveOpts {
   /** 搜索模式: rotate / aggregate(全 provider 并行去重) / failover。默认 rotate。 */
@@ -34,9 +35,26 @@ export interface RetrieveOpts {
    * 省略 = 单 query (现有行为不变)。爬取槽数不受影响 (成本天花板由 crawl 定)。测试注入替身。
    */
   expander?: QueryExpander;
-  /** 降级/告警回调 (改写失败退回单 query 时用)。默认静默。 */
+  /**
+   * per-source expert 蒸馏器 (增益非链路 · 零丢失红线): 给则清洗后正文 > distillThreshold 的**巨源**,
+   * 喂 lens 的语料 (markdown) 里该源块换成「蒸馏精简视图 + 保留 url/标题 + 标注原文见附录」;
+   * 原文**永远全量**留在 fullCorpus 附录 (绝不替代/删除)。省略 = 不蒸馏 (现有行为不变)。
+   * 阈值门控 = 无巨源时零调用零成本。蒸馏失败 → warn + 该源 lens 语料退回全文, 不断链。测试注入替身。
+   */
+  distiller?: SourceDistiller;
+  /** 触发蒸馏的清洗后正文字符阈值 (默认 30000; A/B 实测: 5 源中位 14k, 30k 只逮离群巨页)。 */
+  distillThreshold?: number;
+  /** 降级/告警回调 (改写失败退回单 query / 蒸馏失败退回全文时用)。默认静默。 */
   onWarn?: (msg: string) => void;
   signal?: AbortSignal;
+}
+
+/** 一个源的蒸馏视图 (只进 lens 语料; 原文全量另在 fullCorpus 附录, 零丢失红线)。 */
+export interface DistilledView {
+  extract: string;
+  relevance: string;
+  /** 蒸馏前清洗后正文字符数 (透明留痕 + stderr 记录)。 */
+  origLen: number;
 }
 
 export interface RetrievedSource extends SearchResult {
@@ -61,8 +79,18 @@ export interface RetrieveResult {
   sources: RetrievedSource[];
   /** 全 provider 空/失败的 url → 调用方升级人工/浏览器接管。 */
   needsBrowserHarness: string[];
-  /** 结构化语料 (检索命中全列 + 逐条清洗后全文); 既是 CLI 落盘内容, 也是 fanout 的 groundTruth。 */
+  /**
+   * **喂 lens 的语料** (fanout groundTruth): 检索命中全列 + 逐条正文, 巨源块换成蒸馏精简视图
+   * (未开蒸馏 / 无巨源时 = 全文, 与 fullCorpus 同)。
+   */
   markdown: string;
+  /**
+   * **全文语料附录** (零丢失红线): 检索命中全列 + 逐条清洗后**全文**, 永不蒸馏。--out 落盘用这份。
+   * 无蒸馏发生时与 markdown 同引用 (省一次拼接)。
+   */
+  fullCorpus: string;
+  /** 本轮触发蒸馏的源 (透明留痕; 空 = 无巨源 / 未开蒸馏)。dag-research stderr 记录用。 */
+  distilled: { url: string; origLen: number; extractLen: number }[];
 }
 
 /** 跑一轮确定性检索+爬取。无网络可测: 注入 fake WebStack。 */
@@ -121,6 +149,41 @@ export async function retrieveWeb(
     .filter((x) => x.rejected)
     .map((x) => x.url);
 
+  // per-source 蒸馏 (增益非链路 · 零丢失红线): 巨源 (清洗后正文 > 阈值) 蒸馏出精简视图, 只进
+  // 喂 lens 的语料 (markdown); 原文永远全量进 fullCorpus 附录。阈值门控 = 无巨源时零调用零成本。
+  const distillThreshold = opts.distillThreshold ?? 30000;
+  const views = new Map<number, DistilledView>();
+  if (opts.distiller) {
+    await Promise.all(
+      sources.map(async (s, i) => {
+        if (!s.body || s.body.length <= distillThreshold) return;
+        try {
+          const { relevance, extract } = await opts.distiller!(
+            { body: s.body, title: s.title, url: s.url, question: query },
+            opts.signal,
+          );
+          views.set(i, { extract, relevance, origLen: s.body.length });
+        } catch (e) {
+          // 蒸馏失败 → 该源 lens 语料退回全文 (不 set view), warn 不断链 (降级不断链)。
+          opts.onWarn?.(`源蒸馏失败, lens 语料退回全文: ${s.url} — ${(e as Error).message}`);
+        }
+      }),
+    );
+  }
+  const distilled = [...views.entries()].map(([i, v]) => ({
+    url: sources[i]!.url,
+    origLen: v.origLen,
+    extractLen: v.extract.length,
+  }));
+
+  // markdown = 喂 lens 的语料 (巨源换蒸馏视图); fullCorpus = 全文附录 (永不蒸馏, 零丢失)。
+  // 无蒸馏发生 → 两者同引用 (省一次拼接)。
+  const markdown = buildMarkdown(query, mode, searchProviders, sources, toCrawl.length, clean, queries, views);
+  const fullCorpus =
+    views.size === 0
+      ? markdown
+      : buildMarkdown(query, mode, searchProviders, sources, toCrawl.length, clean, queries);
+
   return {
     query,
     queries,
@@ -128,11 +191,17 @@ export async function retrieveWeb(
     searchProviders,
     sources,
     needsBrowserHarness,
-    markdown: buildMarkdown(query, mode, searchProviders, sources, toCrawl.length, clean, queries),
+    markdown,
+    fullCorpus,
+    distilled,
   };
 }
 
-/** 结构化语料 (检索命中 + 逐条全文, 零压缩)。 */
+/**
+ * 结构化语料。
+ * @param views 给则为**喂 lens 的语料**: views 命中的巨源块换蒸馏精简视图 (保留 url/标题, 标注原文见附录);
+ *   省略/空则为**全文附录** (每源逐条全文, 零压缩, 零丢失红线)。
+ */
 export function buildMarkdown(
   query: string,
   mode: PoolMode,
@@ -141,6 +210,7 @@ export function buildMarkdown(
   crawled: number,
   clean: boolean,
   queries: string[] = [query],
+  views?: Map<number, DistilledView>,
 ): string {
   const ok = sources.filter((s) => s.body).length;
   const md: string[] = [];
@@ -168,7 +238,18 @@ export function buildMarkdown(
     md.push('## 抓取正文 (清洗后, 逐条全文)', '');
     sources.slice(0, crawled).forEach((s, i) => {
       md.push(`### ${i + 1}. ${s.title} [${s.tier}·${s.tierReason}]`, `- url: ${s.url}`);
-      if (s.body) {
+      const view = views?.get(i);
+      if (view) {
+        // 喂 lens 的语料: 巨源换蒸馏精简视图 (保留 url/标题行; 原文全文在 fullCorpus 附录)。
+        md.push(
+          `- provider: ${s.provider}`,
+          `- ⓘ 已蒸馏: 原文 ${view.origLen} → extract ${view.extract.length} chars (原文全文见语料附录)`,
+          `- 蒸馏相关性: ${view.relevance}`,
+          '',
+          '【蒸馏精简视图 · 供 lens 优先读; 原文全文见语料附录】',
+          view.extract,
+        );
+      } else if (s.body) {
         md.push(`- provider: ${s.provider}`, '', s.body);
       } else {
         md.push(

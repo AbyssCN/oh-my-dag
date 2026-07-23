@@ -34,11 +34,19 @@ export { createWebExtension, fetchWithFallback } from './web-extension';
 export { fetchRacing, defaultTier } from './fetch-racing';
 export type { FetchTier } from './fetch-racing';
 export { retrieveWeb, buildMarkdown } from './retrieve';
-export type { RetrieveOpts, RetrieveResult, RetrievedSource } from './retrieve';
+export type { RetrieveOpts, RetrieveResult, RetrievedSource, DistilledView } from './retrieve';
 export { classifySourceTier, orderForCrawl } from './source-tier';
 export type { SourceTier, TierVerdict } from './source-tier';
 export { createModelQueryExpander, expandQueries, parseRewrites, EXPAND_SYSTEM } from './query-expand';
 export type { QueryExpander } from './query-expand';
+export {
+  createModelSourceDistiller,
+  buildDistillPrompt,
+  DISTILL_SYSTEM,
+  DISTILL_DEFAULT_MODEL,
+  DISTILL_DEFAULT_MAX_CHARS,
+} from './distill-source';
+export type { SourceDistiller, SourceDistillInput, SourceDistillResult } from './distill-source';
 
 export interface WebStack {
   searchPool: WebSearchPool;
