@@ -72,7 +72,7 @@ grill 沿决策树走
 
 未解项单列「待 owner / 待实测」。这张表直接喂后续 `/omd-sdd` 结晶或 `/omd-execute`。
 
-> **不设人工确认闸**(owner 全自决 + anti-ceremonial):决策记录表直接喂 SDD,不停下等「OK 吗?」。唯一停点是需 owner 业务判断的 Decisions,不是 ceremonial 确认。
+> **不设 ceremonial 确认闸,但决策权不下放**(owner 全自决 + anti-ceremonial):决策记录表直接喂 SDD,不停下等「OK 吗?」。mattpocock 原版第 5 行「confirm 前不动手」的本义是**决策权转移**(人类=建筑师,拍板权归人),不是弱模型护栏——我们移除的只是那层 ceremonial「OK?」,决策权经 Facts/Decisions 分道保留:Decisions(需 owner 业务判断的)一律停下问 owner,authority 没丢。
 
 ## grill 票通道(审议对象是 pathfinder grill 票时的附加纪律)
 
