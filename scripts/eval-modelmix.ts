@@ -10,6 +10,7 @@
  *     --r N              每格重复次数 (默认 1; 真跑设 3 压 variance, SDD D3)
  *     --skip C1,C5       跳过 label 含这些子串的格 (如缺凭证的 C1 opus)
  *     --conductor <coord> --leaf <coord>   只跑这一个 ad-hoc 格 (覆盖网格; 用于单点复核)
+ *     --fixture medium|large   任务规模 (默认 medium 3 模块; large 12 模块难度梯度, 高分辨率)
  *     --out <path>       报告落盘路径 (默认 /tmp/eval-modelmix-<ts>.md)
  *
  * 消费: stdout = leaderboard 表 (score=finalPass 质量排序键; detail 有 firstShot/heal/cost/unpriced/nodeCount);
@@ -36,7 +37,7 @@ const r = flags.r ?? '1';
 const outPath = flags.out ?? `/tmp/eval-modelmix-${Date.now()}.md`;
 
 bootstrapModelRuntime();
-const spec = specFactory({ r, skip: flags.skip ?? '' });
+const spec = specFactory({ r, skip: flags.skip ?? '', fixture: flags.fixture ?? 'medium' });
 
 // --conductor + --leaf = ad-hoc 单格 (覆盖网格, 用于单点复核如 C5 重跑); 否则跑整网格。
 const cells =

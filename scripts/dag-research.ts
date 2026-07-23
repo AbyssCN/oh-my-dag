@@ -21,15 +21,15 @@
  * 模型默认全 flash (reason 覆盖: --reason-model / OMD_REASON_MODEL)。
  */
 import '../src/harness/script-bootstrap';
-import { createWebStackFromEnv, createModelQueryExpander } from '../src/harness/web';
+import { createWebStackFromEnv, createModelQueryExpander, createModelSourceDistiller } from '../src/harness/web';
 import { researchWebFanout } from '../src/harness/research/web-fanout';
 import { CHILDREN_INSTRUCTION, writeResultAtomic } from '../src/harness/pathfinder/result-format';
 import { bootstrapModelRuntime } from '../src/model/bootstrap';
 
 const USAGE =
-  'usage: bun run scripts/dag-research.ts "<研究问题>" [--council] [--super] [--k 8] [--crawl 5] [--no-tier] [--no-expand] [--expand-model M] [--lens-count N] [--conductor-model M] [--lens-model ..] [--reason-model ..] [--children] [--out path]';
+  'usage: bun run scripts/dag-research.ts "<研究问题>" [--council] [--super] [--k 8] [--crawl 5] [--no-tier] [--no-expand] [--expand-model M] [--no-distill] [--distill-model M] [--distill-threshold N] [--lens-count N] [--conductor-model M] [--lens-model ..] [--reason-model ..] [--children] [--out path]';
 
-const BOOL = new Set(['super', 'council', 'no-tier', 'no-expand', 'children', 'help']);
+const BOOL = new Set(['super', 'council', 'no-tier', 'no-expand', 'no-distill', 'children', 'help']);
 const flags: Record<string, string> = {};
 const positionals: string[] = [];
 const av = process.argv.slice(2);
@@ -79,6 +79,10 @@ const res = await researchWebFanout(stack, question, {
   tierRank: !flags['no-tier'],
   // query 扩展 (增益非链路): 检索前一次 flash 改写 → 多轮搜索 URL 去重。--no-expand 关 (A/B 对照)。
   expander: flags['no-expand'] ? undefined : createModelQueryExpander({ model: flags['expand-model'] }),
+  // per-source 蒸馏 (增益非链路 · 零丢失): 清洗后正文 > 阈值的巨源, 喂 lens 的语料换精简视图 (原文全量
+  // 留附录)。默认开 (阈值门控 = 无巨源时零调用零成本); --no-distill 关 (A/B 对照)。
+  distiller: flags['no-distill'] ? undefined : createModelSourceDistiller({ model: flags['distill-model'] }),
+  distillThreshold: numFlag('distill-threshold', 1),
   onWarn: (m) => process.stderr.write(`  [warn] ${m}\n`),
   council: !!flags.council, // conductor 按语料自动分解 lens 替代默认 3 视角
   conductorModel: flags['conductor-model'],
@@ -92,6 +96,11 @@ const res = await researchWebFanout(stack, question, {
 
 const { retrieval: r, fanout: f } = res;
 
+// 蒸馏留痕: 哪个源被蒸馏 + 原长→蒸馏后长 (stderr, 不进答案 context)。
+for (const d of r.distilled) {
+  process.stderr.write(`  [distill] ${d.url} — 原文 ${d.origLen} → extract ${d.extractLen} chars (lens 语料精简; 原文全文进附录)\n`);
+}
+
 // ---- 落盘: 终稿 + 冠军 + 成本 + 全文语料附录 (零丢失) ----
 const doc: string[] = [];
 doc.push(`# 研究: ${question}`, '');
@@ -99,7 +108,8 @@ doc.push(`> ${f.leafCount} leaves · $${f.costStats.totalUsd.toFixed(4)} · 检�
 doc.push('## 终稿 (综合判优)', '', f.final, '');
 doc.push('## Lens 冠军 (各视角最优)', '');
 for (const c of f.lensChampions) doc.push(`### ${c.key}`, c.text, '');
-doc.push('---', '', '## 检索语料附录 (零丢失, 综合的事实锚)', '', r.markdown);
+// 附录用 fullCorpus (永不蒸馏, 零丢失红线): 每源原文全文都在, 与喂 lens 的 r.markdown 分离。
+doc.push('---', '', '## 检索语料附录 (零丢失, 综合的事实锚)', '', r.fullCorpus);
 const slug = question.toLowerCase().replace(/[^a-z0-9一-鿿]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'research';
 const out = flags.out || `/tmp/dag-research-${slug}-${Date.now()}.md`;
 // 原子落盘 (tmp+rename, result-format 共享契约): pathfinder afk-hook 以文件存在为就绪信号,

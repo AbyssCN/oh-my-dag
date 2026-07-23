@@ -8,9 +8,30 @@ import { PassthroughCleaner } from './clean';
 import type { WebStack } from './index';
 import type { FetchProvider, FetchResult, SearchResult } from './types';
 import type { QueryExpander } from './query-expand';
+import type { SourceDistiller } from './distill-source';
 
 function hit(url: string): SearchResult {
   return { title: url, url, snippet: '' };
+}
+
+/** 每 url 定制正文长度 (蒸馏阈值测试用: 巨源 vs 小源)。search 命中 = bodies 全部 key。 */
+function bodyStack(bodies: Record<string, string>): WebStack {
+  const fetchProvider: FetchProvider = {
+    name: 'fakefetch',
+    async fetch(url): Promise<FetchResult> {
+      return { url, text: bodies[url] ?? 'x'.repeat(300) };
+    },
+  };
+  return {
+    searchPool: {
+      async search() {
+        return { results: Object.keys(bodies).map(hit), providers: ['fake'], mode: 'rotate' as const };
+      },
+    },
+    fetchProviders: [fetchProvider],
+    cleaner: new PassthroughCleaner(),
+    quota: {},
+  } as unknown as WebStack;
 }
 
 /** perQuery: query → 命中列表。fetchProvider 计数爬取次数。 */
@@ -89,5 +110,114 @@ describe('retrieveWeb query 扩展', () => {
     const stack = fakeStack({ q0: [hit('http://a.com/x')] });
     const r = await retrieveWeb(stack, 'q0', { crawl: 0 });
     expect(r.queries).toEqual(['q0']);
+  });
+});
+
+describe('retrieveWeb per-source 蒸馏 (零丢失不变量重中之重)', () => {
+  const HUGE_URL = 'http://big.com/page';
+  const SMALL_URL = 'http://small.com/page';
+  const HUGE = 'H'.repeat(40000); // > 30000 阈值 → 触发蒸馏
+  const SMALL = 's'.repeat(1000); // < 阈值 → 不触发
+  const EXTRACT = 'DISTILLED-EXTRACT-机制要点';
+
+  /** 计数 + 吐固定 extract 的蒸馏替身 (永不真调模型)。 */
+  function countingDistiller(counter: { n: number }): SourceDistiller {
+    return async () => {
+      counter.n++;
+      return { relevance: '相关', extract: EXTRACT };
+    };
+  }
+
+  test('不变量: 蒸馏触发时, fullCorpus 附录仍含该源原文全文 (逐字节 superset)', async () => {
+    const stack = bodyStack({ [HUGE_URL]: HUGE });
+    const counter = { n: 0 };
+    const r = await retrieveWeb(stack, 'q', {
+      clean: false,
+      distiller: countingDistiller(counter),
+    });
+    // 红线: 蒸馏发生 (extract 进了 lens 语料), 但原文全量在附录 —— 逐字节 superset。
+    expect(counter.n).toBe(1);
+    expect(r.markdown).toContain(EXTRACT); // lens 语料 = 精简视图
+    expect(r.markdown).not.toContain(HUGE); // lens 语料里巨源已换掉, 不含全文
+    expect(r.fullCorpus).toContain(HUGE); // 附录 = 全文, 零丢失
+    expect(r.fullCorpus).not.toContain(EXTRACT); // 附录永不蒸馏
+  });
+
+  test('不变量: 未开蒸馏时 markdown===fullCorpus, 全文都在 (行为不变)', async () => {
+    const stack = bodyStack({ [HUGE_URL]: HUGE });
+    const r = await retrieveWeb(stack, 'q', { clean: false }); // 无 distiller
+    expect(r.markdown).toBe(r.fullCorpus); // 同引用
+    expect(r.fullCorpus).toContain(HUGE);
+    expect(r.distilled).toEqual([]);
+  });
+
+  test('阈值: <30k 源不触发蒸馏 (零模型调用, distiller call count 0)', async () => {
+    const stack = bodyStack({ [SMALL_URL]: SMALL });
+    const counter = { n: 0 };
+    const r = await retrieveWeb(stack, 'q', {
+      clean: false,
+      distiller: countingDistiller(counter),
+    });
+    expect(counter.n).toBe(0); // 阈值门控 = 零调用零成本
+    expect(r.distilled).toEqual([]);
+    expect(r.markdown).toBe(r.fullCorpus); // 无蒸馏 → 同引用
+    expect(r.fullCorpus).toContain(SMALL);
+  });
+
+  test('触发: >30k 源 → lens 语料含蒸馏 extract + 保留 url; 附录仍全文', async () => {
+    const stack = bodyStack({ [HUGE_URL]: HUGE, [SMALL_URL]: SMALL });
+    const counter = { n: 0 };
+    const r = await retrieveWeb(stack, 'q', {
+      clean: false,
+      distiller: countingDistiller(counter),
+    });
+    expect(counter.n).toBe(1); // 只巨源触发, 小源不动
+    // lens 语料: 巨源换 extract, 保留 url; 小源保持全文。
+    expect(r.markdown).toContain(EXTRACT);
+    expect(r.markdown).toContain(HUGE_URL); // url 保留 (可溯源)
+    expect(r.markdown).toContain(SMALL); // 小源仍全文
+    expect(r.markdown).not.toContain(HUGE);
+    // 附录: 两源都全文。
+    expect(r.fullCorpus).toContain(HUGE);
+    expect(r.fullCorpus).toContain(SMALL);
+    // 留痕。
+    expect(r.distilled).toEqual([{ url: HUGE_URL, origLen: 40000, extractLen: EXTRACT.length }]);
+  });
+
+  test('降级: 蒸馏器抛错 → 该源 lens 语料退回全文, 不断链 + warn', async () => {
+    const stack = bodyStack({ [HUGE_URL]: HUGE });
+    let warned = '';
+    const boom: SourceDistiller = async () => {
+      throw new Error('蒸馏模型不可用');
+    };
+    const r = await retrieveWeb(stack, 'q', {
+      clean: false,
+      distiller: boom,
+      onWarn: (m) => (warned = m),
+    });
+    // 退回全文: lens 语料含巨源全文 (未被 extract 替换); 结果仍完整 (不断链)。
+    expect(r.markdown).toContain(HUGE);
+    expect(r.fullCorpus).toContain(HUGE);
+    expect(r.distilled).toEqual([]); // 未成功蒸馏
+    expect(warned).toContain('蒸馏模型不可用');
+  });
+
+  test('--no-distill 等价: 无 distiller 即便有巨源也不蒸馏', async () => {
+    const stack = bodyStack({ [HUGE_URL]: HUGE });
+    const r = await retrieveWeb(stack, 'q', { clean: false }); // 模拟 --no-distill (不传 distiller)
+    expect(r.markdown).toContain(HUGE); // 巨源全文, 未蒸馏
+    expect(r.distilled).toEqual([]);
+  });
+
+  test('自定阈值: distillThreshold 抬高 → 巨源也不触发', async () => {
+    const stack = bodyStack({ [HUGE_URL]: HUGE });
+    const counter = { n: 0 };
+    const r = await retrieveWeb(stack, 'q', {
+      clean: false,
+      distiller: countingDistiller(counter),
+      distillThreshold: 50000, // 40k < 50k → 不触发
+    });
+    expect(counter.n).toBe(0);
+    expect(r.markdown).toContain(HUGE);
   });
 });
