@@ -9,6 +9,9 @@
  *                                               [--lens-model ds:..] [--reason-model ds:..] [--out path]
  *   --no-tier  = 关信源分档重排 (默认开: crawl 槽位优先一手/权威源, 农场域降权不删 —
  *                见 src/harness/web/source-tier.ts)
+ *   --no-expand = 关 query 扩展 (默认开: 检索前一次 flash 改写 → 原+改写多轮搜 → URL 去重 →
+ *                扩召回; 爬取槽数不变 = 成本天花板不变; 改写失败退回单 query 不断链)
+ *   --expand-model M = 改写模型 (默认 OMD_EXPAND_MODEL → deepseek-v4-flash)
  *   --council  = 检索后让 conductor (authorFanoutSpec) 按语料自动分解 lens, 替代默认 3 视角
  *                (= 检索 + dag-council 的合体: 自动抓料 + 自动拆镜头 + fanout 综合判优)
  *   --lens-count N / --conductor-model M = council 旋钮
@@ -18,15 +21,15 @@
  * 模型默认全 flash (reason 覆盖: --reason-model / OMD_REASON_MODEL)。
  */
 import '../src/harness/script-bootstrap';
-import { createWebStackFromEnv } from '../src/harness/web';
+import { createWebStackFromEnv, createModelQueryExpander } from '../src/harness/web';
 import { researchWebFanout } from '../src/harness/research/web-fanout';
 import { CHILDREN_INSTRUCTION, writeResultAtomic } from '../src/harness/pathfinder/result-format';
 import { bootstrapModelRuntime } from '../src/model/bootstrap';
 
 const USAGE =
-  'usage: bun run scripts/dag-research.ts "<研究问题>" [--council] [--super] [--k 8] [--crawl 5] [--no-tier] [--lens-count N] [--conductor-model M] [--lens-model ..] [--reason-model ..] [--children] [--out path]';
+  'usage: bun run scripts/dag-research.ts "<研究问题>" [--council] [--super] [--k 8] [--crawl 5] [--no-tier] [--no-expand] [--expand-model M] [--lens-count N] [--conductor-model M] [--lens-model ..] [--reason-model ..] [--children] [--out path]';
 
-const BOOL = new Set(['super', 'council', 'no-tier', 'children', 'help']);
+const BOOL = new Set(['super', 'council', 'no-tier', 'no-expand', 'children', 'help']);
 const flags: Record<string, string> = {};
 const positionals: string[] = [];
 const av = process.argv.slice(2);
@@ -74,6 +77,9 @@ const res = await researchWebFanout(stack, question, {
   k: numFlag('k', 1),
   crawl: numFlag('crawl', 0), // 0 = 只搜不抓
   tierRank: !flags['no-tier'],
+  // query 扩展 (增益非链路): 检索前一次 flash 改写 → 多轮搜索 URL 去重。--no-expand 关 (A/B 对照)。
+  expander: flags['no-expand'] ? undefined : createModelQueryExpander({ model: flags['expand-model'] }),
+  onWarn: (m) => process.stderr.write(`  [warn] ${m}\n`),
   council: !!flags.council, // conductor 按语料自动分解 lens 替代默认 3 视角
   conductorModel: flags['conductor-model'],
   lensCount: numFlag('lens-count', 1),
