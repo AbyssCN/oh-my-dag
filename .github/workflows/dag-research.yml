@@ -74,6 +74,8 @@ jobs:
           BODY: ${{ github.event.issue.body }}
           # inputs.* 统一读: dispatch 与 caller-forward 两路都填此上下文 (issues.labeled 事件则空 → 真研究)。
           DRY_RUN: ${{ inputs.dry_run }}
+          # research:council 修饰 label → 升 council 档。经 env 传 (label 是受控值风险低, 仍走 env 统一注入面纪律)。
+          COUNCIL: ${{ contains(join(github.event.issue.labels.*.name, ','), 'research:council') }}
           # secrets 只在本 step 注入 (跑研究才需要), 不外泄到评论/label step。
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
@@ -87,7 +89,9 @@ jobs:
             # 贴票的是**终稿 (stdout)**, 不是 --out 全档 (含全文语料附录, 几 MB): 全档 cat 会噎死
             # runner 日志管道, 贴评论会撞 GitHub 65536 字符上限 (2026-07-22 演习 run 29936271221 实测)。
             QUERY=$(printf '%s\n%s' "$TITLE" "$BODY")
-            bun run scripts/dag-research.ts "$QUERY" --out result.md > answer.md
+            # research:council label 命中 → 追加 --council (升 council 档); 经 env 判定, 不内插不可信文本。
+            EXTRA=""; [ "$COUNCIL" = "true" ] && EXTRA="--council"
+            bun run scripts/dag-research.ts "$QUERY" $EXTRA --out result.md > answer.md
             # 前置终稿锚点: S3 折入以 `## 终稿` 认结果评论 (result-format.FINAL_HEADING 契约);
             # 脚本 stdout 是裸终稿不带该标题 (2026-07-22 演习实测折入报"结果缺失")。
             printf '## 终稿 (综合判优)\n\n' > comment.md

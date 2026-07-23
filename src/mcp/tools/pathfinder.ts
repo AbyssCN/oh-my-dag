@@ -29,7 +29,7 @@ import {
 } from '../../harness/pathfinder/dispatch';
 import { reflowResearchResults } from '../../harness/pathfinder/afk-hook';
 import { computeFrontier } from '../../harness/pathfinder/frontier';
-import { compileSlice, regionIsClear } from '../../harness/pathfinder/slice-compiler';
+import { compileSlice, regionIsClear, specGateViolation } from '../../harness/pathfinder/slice-compiler';
 import type { PathMap, Ticket, TicketType } from '../../harness/pathfinder/types';
 import type { OmdMemory } from '../../harness/memory/store';
 import type { HudMirror } from '../../hud/mirror';
@@ -417,6 +417,9 @@ function makeDeliver(deps: PathfinderToolDeps): OmdMcpTool {
       const map = backend.readMap(cwd, r.slug)!;
       const region = readyRegion(map);
       if (!region) return err('无可交付区域: 没有已散尽的 ruled task 票 (先 path_rule 把前沿裁完)。');
+      // deliver spec 护栏 (编译前, fail-loud): 复杂区域缺 docs/plan/ 契约引用 → 不编译不执行 (D-E)。
+      const gate = specGateViolation(map.tickets.filter((t) => region.includes(t.id)));
+      if (gate) return err(gate);
       if (!models.leafModel) return err('未配 leaf 模型 — 设 OMD_ITER_LEAF_MODEL (或 OMD_RUNTIME_PROVIDER/MODEL) 后再 path_deliver。');
       let plan;
       try {

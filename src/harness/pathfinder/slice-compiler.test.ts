@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { compileSlice, regionIsClear } from './slice-compiler';
+import { compileSlice, regionIsClear, specGateViolation } from './slice-compiler';
 import { PlanSchema } from '../conductor-plan';
 import type { PathMap, Ticket } from './types';
 
@@ -123,5 +123,43 @@ describe('regionIsClear', () => {
 
   test('未知票 id → not clear', () => {
     expect(regionIsClear(mapOf([]), ['ghost']).clear).toBe(false);
+  });
+});
+
+describe('specGateViolation', () => {
+  test('简单区域 (<3 票且无 agent) → 豁免 (null)', () => {
+    const ts = [
+      ticket({ id: 'a', ruling: 'do it' }),
+      ticket({ id: 'b', ruling: 'do that' }),
+    ];
+    expect(specGateViolation(ts)).toBeNull();
+  });
+
+  test('≥3 票且无 docs/plan/ 引用 → 拦截 (返回引导文案)', () => {
+    const ts = [
+      ticket({ id: 'a', ruling: 'do it' }),
+      ticket({ id: 'b', ruling: 'do that' }),
+      ticket({ id: 'c', ruling: 'do more' }),
+    ];
+    const v = specGateViolation(ts);
+    expect(v).toBeTruthy();
+    expect(v).toContain('docs/plan/');
+    expect(v).toContain('/omd-sdd');
+  });
+
+  test('agent 节点且无 docs/plan/ 引用 → 拦截 (即便 <3 票)', () => {
+    const ts = [ticket({ id: 'a', ruling: 'complex build', executorKind: 'agent' })];
+    const v = specGateViolation(ts);
+    expect(v).toBeTruthy();
+    expect(v).toContain('agent');
+  });
+
+  test('复杂区域但有票 ruling 含 docs/plan/ 引用 → 放行 (null)', () => {
+    const ts = [
+      ticket({ id: 'a', ruling: '按 docs/plan/2026-07-22-x.md §2 施工' }),
+      ticket({ id: 'b', ruling: 'do that' }),
+      ticket({ id: 'c', ruling: 'do more' }),
+    ];
+    expect(specGateViolation(ts)).toBeNull();
   });
 });

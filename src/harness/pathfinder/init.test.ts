@@ -197,8 +197,8 @@ describe('runInit gh 执行序 emission', () => {
       expect(iDispatch).toBeLessThan(iPoll);
       expect(iPoll).toBeLessThan(iIntrospect);
 
-      // 7 个 label 全建。
-      expect(verbs.filter((v) => v === 'label create')).toHaveLength(7);
+      // 8 个 label 全建 (含 research:council 修饰 label)。
+      expect(verbs.filter((v) => v === 'label create')).toHaveLength(8);
       // 两个 key 都 secret set (list 探已存在 → 空 → 全复制)。
       const secretNames = calls.filter((c) => c[0] === 'secret' && c[1] === 'set').map((c) => c[2]);
       expect(secretNames).toEqual(['DEEPSEEK_API_KEY', 'TAVILY_API_KEY']);

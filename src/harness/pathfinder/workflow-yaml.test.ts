@@ -64,6 +64,15 @@ describe('workflow yaml 可解析 + 结构就位', () => {
     expect(text).toContain('"$QUERY"');
   });
 
+  test('dag-research.yml: research:council label → COUNCIL env + run 追加 --council', () => {
+    const text = raw(RESEARCH_WF);
+    // label 判定经 env (受控值仍走 env 统一注入面纪律), 不内插进 run 脚本。
+    expect(text).toContain('COUNCIL: ${{');
+    expect(text).toContain("'research:council'");
+    // 真研究分支据 COUNCIL 追加 --council。
+    expect(text).toContain('--council');
+  });
+
   test('path-research-caller.yml: reusable pin @v1 + secrets inherit (D-F)', () => {
     const wf = parse(raw(CALLER_WF)) as { jobs: { research: { uses: string; secrets: string } } };
     const job = wf.jobs.research;

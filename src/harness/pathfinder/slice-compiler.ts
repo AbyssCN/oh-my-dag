@@ -123,3 +123,28 @@ export function regionIsClear(map: PathMap, regionTicketIds: string[]): { clear:
   }
   return { clear: true };
 }
+
+/**
+ * deliver spec 护栏 (纯函数, **权力闸层用**, 不进 compileSlice —— D-11 编译器只组装不发明,
+ * 护栏是 deliver 层的政策闸不是编译逻辑)。把「复杂活必须有契约」从纪律变可证伪的闸。
+ *
+ * 入参 = 待交付区域的 task 票。判定「复杂区域」= task 票数 ≥3 **或** 任一票 executorKind==='agent'。
+ * 复杂且**没有任何一张票**的 ruling 含 `docs/plan/` 引用 → 返回引导文案 (含修复路径); 否则 null。
+ * 简单区域 (<3 票且无 agent 节点) 直接豁免 (null): 小活不必背契约。
+ */
+export function specGateViolation(tickets: Ticket[]): string | null {
+  const taskCount = tickets.filter((t) => t.type === 'task').length;
+  const hasAgentNode = tickets.some((t) => t.executorKind === 'agent');
+  const complex = taskCount >= 3 || hasAgentNode;
+  if (!complex) return null;
+  const hasContractRef = tickets.some((t) => (t.ruling ?? '').includes('docs/plan/'));
+  if (hasContractRef) return null;
+  const why = hasAgentNode
+    ? `含 agent 执行节点 (${taskCount} 张 task 票)`
+    : `${taskCount} 张 task 票 (≥3)`;
+  return [
+    `◈ deliver 拦截: 复杂区域 (${why}) 缺契约引用 —— 无任何票的 ruling 含 docs/plan/ 章节引用。`,
+    '  复杂活必须有契约: 先 /omd-sdd 结晶契约, 把 ruling 补上 docs/plan/ 章节引用后重试;',
+    '  简单区域 (<3 票且无 agent 节点) 不受此闸约束。',
+  ].join('\n');
+}
