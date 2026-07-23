@@ -21,8 +21,9 @@ import {
 import { getModel } from '@earendil-works/pi-ai/compat'; // 0.80: 目录读挪 /compat
 import { runScopedSession } from '../runtime/pi-runtime';
 import { parseModelRef } from './fleet';
-import { createHashlineCustomTools } from './hashline';
+import { createHashlineCustomTools, hashlinePatchPaths } from './hashline';
 import { createDriftDetectorHook, type DriftDetectorConfig } from './hooks/drift-detector';
+import { createSandboxGuardHook } from './hooks/sandbox-guard';
 import { logger } from '../logger';
 import { createKimiOAuthExtension } from '../model/kimi-oauth';
 import type { ModelUsage } from '../model/types';
@@ -140,6 +141,17 @@ export interface AgentLeafRunnerOpts {
    * 默认开 (low-invasive: 仅同调用同参重复 ≥阈值才经 context 注 stuck-checklist)。false 关; 对象调阈值。
    */
   driftDetector?: DriftDetectorConfig | false;
+  /**
+   * 写沙箱根 (2026-07-23): 设则挂 sandbox-guard hook —— 任何结构化写 (write/edit/hashline_edit) 解析到
+   * 此根子树外 **事前 block** (治 leaf 用绝对路径写穿隔离; eval worktree 必设 = fx.root)。省略 = 不沙箱
+   * (真 DAG 跑默认信任 cwd; 需要硬隔离的场景显式设)。不拦 bash 写逃逸 (需容器级)。
+   */
+  sandboxRoot?: string;
+  /**
+   * debug 事件汇 (2026-07-23): 设则订阅 session **全部**事件转发给它 (tool_call 参数 / 工具结果 / 消息),
+   * 用于捕获 leaf transcript 挖 empty-done 根因。省略 = 不订阅 (零开销)。仅排障用, 非生产热路径。
+   */
+  onEvent?: (event: { type: string; [k: string]: unknown }) => void;
 }
 
 /**
@@ -165,6 +177,9 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       ? null
       : createDriftDetectorHook(typeof opts.driftDetector === 'object' ? opts.driftDetector : {});
 
+  // 写沙箱 (opt-in, 2026-07-23): 设 sandboxRoot 才挂 —— 结构化写解析到根子树外事前 block。
+  const sandboxFactory = opts.sandboxRoot ? createSandboxGuardHook({ root: opts.sandboxRoot }) : null;
+
   // resourceLoader 建一次复用 (reload 读盘, 别每 leaf 重建)。无 extensionDirs 且无 drift → 不建 (纯净 bare session)。
   let loaderPromise: Promise<DefaultResourceLoader> | null = null;
   const getLoader = (): Promise<DefaultResourceLoader> => {
@@ -176,7 +191,11 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           additionalExtensionPaths: extensionDirs,
           // drift-detector 经 in-code extensionFactories 注入 (与 opts.extensionDirs 的扩展包并存)。
           // kimi-coding OAuth 恒挂 (正门注册, 会话 ModelRegistry.refresh 清全局注册表后由它重放)。
-          extensionFactories: [createKimiOAuthExtension(), ...(driftFactory ? [driftFactory] : [])],
+          extensionFactories: [
+            createKimiOAuthExtension(),
+            ...(driftFactory ? [driftFactory] : []),
+            ...(sandboxFactory ? [sandboxFactory] : []),
+          ],
         });
         await rl.reload();
         return rl;
@@ -188,7 +207,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
   return async ({ prompt, model }) => {
     const { provider, modelId } = parseModelRef(model);
     const m = getModel(provider as Parameters<typeof getModel>[0], modelId as never);
-    const resourceLoader = extensionDirs.length > 0 || driftFactory ? await getLoader() : undefined;
+    const resourceLoader = extensionDirs.length > 0 || driftFactory || sandboxFactory ? await getLoader() : undefined;
     const { session } = await createAgentSession({
       cwd,
       model: m,
@@ -214,17 +233,29 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // 此前 runner 从不填 filesTouched → executor-dag 产物闸把真交付的文件节点全判 failed (恒空 = "谎报完工")。
     const FILE_WRITE_TOOLS = new Set(['write', 'edit', 'hashline_edit']);
     const touched = new Set<string>();
-    const pathByCall = new Map<string, string>();
-    const unsubTouch = (session as { subscribe: (l: (e: { type: string; toolCallId?: string; toolName?: string; args?: { path?: unknown }; isError?: boolean }) => void) => () => void }).subscribe((e) => {
-      if (e.type === 'tool_execution_start' && e.toolName && FILE_WRITE_TOOLS.has(e.toolName)) {
-        if (typeof e.args?.path === 'string' && e.args.path.trim() && e.toolCallId) {
-          pathByCall.set(e.toolCallId, e.args.path);
-        }
+    // toolCallId → 候选写路径 (可多: hashline_edit 一个 patch 多 section 多文件)。end 且 !isError 才计入。
+    const pathByCall = new Map<string, string[]>();
+    const unsubTouch = (session as { subscribe: (l: (e: { type: string; toolCallId?: string; toolName?: string; args?: { path?: unknown; patch?: unknown }; isError?: boolean }) => void) => () => void }).subscribe((e) => {
+      if (e.type === 'tool_execution_start' && e.toolName && FILE_WRITE_TOOLS.has(e.toolName) && e.toolCallId) {
+        // hashline_edit 路径嵌在 patch 头 (`¶PATH#TAG`), 不是顶层 path —— 必须解析 patch, 否则漏记 → 假 empty-done。
+        const paths =
+          e.toolName === 'hashline_edit' && typeof e.args?.patch === 'string'
+            ? hashlinePatchPaths(e.args.patch)
+            : typeof e.args?.path === 'string' && e.args.path.trim()
+              ? [e.args.path]
+              : [];
+        if (paths.length) pathByCall.set(e.toolCallId, paths);
       } else if (e.type === 'tool_execution_end' && e.isError === false && e.toolCallId) {
-        const p = pathByCall.get(e.toolCallId);
-        if (p) touched.add(p);
+        const ps = pathByCall.get(e.toolCallId);
+        if (ps) for (const p of ps) touched.add(p);
       }
     });
+    // debug 事件汇 (opt-in): 转发全部事件给 onEvent 抓 transcript。
+    const unsubDebug = opts.onEvent
+      ? (session as { subscribe: (l: (e: { type: string; [k: string]: unknown }) => void) => () => void }).subscribe(
+          (e) => opts.onEvent!(e),
+        )
+      : null;
     // 有界中止 (默认 4min): 治弱模型 loop 写完空转不退出 → 外部 SIGKILL 的 bug。
     // 早期心跳闸 (issue #5, 默认 45s): provider 挂起时不白等满硬超时, 提前标 stall。
     let text: string;
@@ -242,6 +273,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       );
     } finally {
       unsubTouch();
+      unsubDebug?.();
     }
     // usage: pi session 累计 token (getSessionStats().tokens) → ModelUsage (2026-07-21 补 V2-ECON 缺口 —
     // 此前恒 {in:0,out:0}, agent 节点成本量不到; 这是 ④ model-mix 经济学的前置)。
