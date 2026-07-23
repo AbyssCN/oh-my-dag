@@ -75,7 +75,9 @@ bootstrapModelRuntime(); // bootstrap providers (从 .env), 否则 fanout callMo
 const res = await researchWebFanout(stack, question, {
   mode: flags.super ? 'aggregate' : undefined,
   k: numFlag('k', 1),
-  crawl: numFlag('crawl', 0), // 0 = 只搜不抓
+  // 未传 --crawl → numFlag 返 undefined → retrieveWeb 走分层感知预算 (按候选 tier-A 数定爬数);
+  // 显式 --crawl N 覆盖 (N=0 = 只搜不抓, 尊重用户)。
+  crawl: numFlag('crawl', 0),
   tierRank: !flags['no-tier'],
   // query 扩展 (增益非链路): 检索前一次 flash 改写 → 多轮搜索 URL 去重。--no-expand 关 (A/B 对照)。
   expander: flags['no-expand'] ? undefined : createModelQueryExpander({ model: flags['expand-model'] }),
@@ -95,6 +97,9 @@ const res = await researchWebFanout(stack, question, {
 });
 
 const { retrieval: r, fanout: f } = res;
+
+// 爬取预算留痕: 分层感知算出还是显式指定 (stderr, 不进答案 context)。
+process.stderr.write(`  [budget] ${r.crawlBudget}\n`);
 
 // 蒸馏留痕: 哪个源被蒸馏 + 原长→蒸馏后长 (stderr, 不进答案 context)。
 for (const d of r.distilled) {

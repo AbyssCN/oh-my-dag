@@ -22,8 +22,16 @@ export interface RetrieveOpts {
   mode?: PoolMode;
   /** 检索取 N 条 (默认 8)。 */
   k?: number;
-  /** 抓前 N 条正文 (默认 5; 0 = 只搜不抓)。 */
+  /**
+   * 抓前 N 条正文。**显式给数** = 尊重用户意图 (含 0 = 只搜不抓), 向后兼容照旧。
+   * **省略 (undefined)** = 走分层感知预算: target = clamp(候选中 tier-A 数, crawlFloor, crawlCeil),
+   * 让权威源多的 query 多抓 (query 扩展后 tier-A 3→10 不再被固定 5 槽挤掉一半)。
+   */
   crawl?: number;
+  /** 分层感知预算下限 (默认 5): tier-A 再少也保底抓这么多 (含 B 补位)。crawl 显式时不生效。 */
+  crawlFloor?: number;
+  /** 分层感知预算上限 (默认 8): tier-A 再多也封顶, 挡住成本失控。crawl 显式时不生效。 */
+  crawlCeil?: number;
   /** 正文 trim 后短于此视作空 → escalate (默认 200)。 */
   minChars?: number;
   /** true(默认) = 裸抓 + trafilatura 清洗; false = 用 provider 自带 markdown。 */
@@ -91,6 +99,11 @@ export interface RetrieveResult {
   fullCorpus: string;
   /** 本轮触发蒸馏的源 (透明留痕; 空 = 无巨源 / 未开蒸馏)。dag-research stderr 记录用。 */
   distilled: { url: string; origLen: number; extractLen: number }[];
+  /**
+   * 爬取预算的取数留痕 (透明): 分层感知算出 (`分层预算: tier-A=10 → 爬 8/上限8`) 或
+   * 显式指定 (`显式指定: 爬 3`)。dag-research stderr 记录用, 不进 lens 语料。
+   */
+  crawlBudget: string;
 }
 
 /** 跑一轮确定性检索+爬取。无网络可测: 注入 fake WebStack。 */
@@ -101,7 +114,6 @@ export async function retrieveWeb(
 ): Promise<RetrieveResult> {
   const mode: PoolMode = opts.mode ?? 'rotate';
   const k = opts.k ?? 8;
-  const crawlN = opts.crawl ?? 5;
   const minChars = opts.minChars ?? 200;
   const clean = opts.clean ?? true;
   const tierRank = opts.tierRank ?? true;
@@ -128,7 +140,26 @@ export async function retrieveWeb(
   const searchProviders = [...new Set(rounds.flatMap((r) => r.providers))];
   // 档位重排只决定谁吃 crawl 槽位 (A→B→C, 档内保留相关性序); 全部命中仍进索引。
   const ranked = tierRank ? orderForCrawl(mergedResults) : mergedResults;
-  const toCrawl = ranked.slice(0, crawlN);
+  // ranked 每项定档一次算好 (选 toCrawl 的分层预算 + 后面 sources 标注共用, 避免重复分类)。
+  const verdicts = ranked.map((r) => classifySourceTier(r.url));
+
+  // 分层感知爬取预算 (成本敏感, 爬数直乘进 fanout token 账单):
+  //   显式 --crawl N (含 0) = 尊重用户, target = N, 向后兼容;
+  //   未显式 (crawl undefined) = target = clamp(候选 tier-A 数, floor, ceil) — ranked 本就 A→B→C,
+  //     所以爬前 target 条即"权威源优先吃满, 上限封顶"。tier-A 多的 query 多抓, 少的照旧便宜。
+  const crawlFloor = opts.crawlFloor ?? 5;
+  const crawlCeil = opts.crawlCeil ?? 8;
+  let target: number;
+  let crawlBudget: string;
+  if (opts.crawl !== undefined) {
+    target = opts.crawl;
+    crawlBudget = `显式指定: 爬 ${target}`;
+  } else {
+    const tierACount = verdicts.filter((v) => v.tier === 'A').length;
+    target = Math.min(Math.max(tierACount, crawlFloor), crawlCeil);
+    crawlBudget = `分层预算: tier-A=${tierACount} → 爬 ${target}/上限${crawlCeil}`;
+  }
+  const toCrawl = ranked.slice(0, target);
   const provs = clean
     ? stack.fetchProviders.map((fp) => new CleaningFetchProvider(fp, stack.cleaner))
     : stack.fetchProviders;
@@ -137,7 +168,7 @@ export async function retrieveWeb(
   );
 
   const sources: RetrievedSource[] = ranked.map((r, i) => {
-    const { tier, reason } = classifySourceTier(r.url);
+    const { tier, reason } = verdicts[i]!; // 复用上面一次算好的档位 (不重复分类)
     const base = { ...r, tier, tierReason: reason };
     const f = i < toCrawl.length ? fetched[i] : undefined;
     if (f?.status === 'fulfilled') return { ...base, body: f.value.result.text.trim(), provider: f.value.provider };
@@ -194,6 +225,7 @@ export async function retrieveWeb(
     markdown,
     fullCorpus,
     distilled,
+    crawlBudget,
   };
 }
 
