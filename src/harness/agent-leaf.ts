@@ -23,7 +23,7 @@ import { runScopedSession } from '../runtime/pi-runtime';
 import { parseModelRef } from './fleet';
 import { createHashlineCustomTools, hashlinePatchPaths } from './hashline';
 import { createDriftDetectorHook, type DriftDetectorConfig } from './hooks/drift-detector';
-import { createSandboxGuardHook } from './hooks/sandbox-guard';
+import { createSandboxedLeafRunner } from './hooks/sandboxed-leaf';
 import { logger } from '../logger';
 import { createKimiOAuthExtension } from '../model/kimi-oauth';
 import type { ModelUsage } from '../model/types';
@@ -159,6 +159,10 @@ export interface AgentLeafRunnerOpts {
  * 这是 omd 本体「真能干活(改文件)」的执行底座 —— 不再只是单发文本。
  */
 export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeafRunner {
+  // sandboxRoot 设 → subprocess-per-leaf under bwrap: 整个 leaf 进程关进只见 worktree 的文件系统视图
+  // (cwd=worktree, 主 repo 物理不可见) → pi 所有命令通道 (bash / 模型幻觉的 shell / 未来工具) + git-show
+  // oracle 泄漏一次性全封, 不逐工具打地鼠。前置委托: 下面 in-process 装配 (工具/hook/session) 全不需要。
+  if (opts.sandboxRoot) return createSandboxedLeafRunner(opts);
   const cwd = opts.cwd ?? process.cwd();
   // agent leaf 默认 max thinking (the owner 锁): agent leaf 改文件/工具循环, 质量优先 (数量少于 inproc fan-out,
   // max 成本可控)。inproc leaf 才走 high (mass fan-out 省成本)。可经 opts 覆盖。
@@ -177,9 +181,6 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       ? null
       : createDriftDetectorHook(typeof opts.driftDetector === 'object' ? opts.driftDetector : {});
 
-  // 写沙箱 (opt-in, 2026-07-23): 设 sandboxRoot 才挂 —— 结构化写解析到根子树外事前 block。
-  const sandboxFactory = opts.sandboxRoot ? createSandboxGuardHook({ root: opts.sandboxRoot }) : null;
-
   // resourceLoader 建一次复用 (reload 读盘, 别每 leaf 重建)。无 extensionDirs 且无 drift → 不建 (纯净 bare session)。
   let loaderPromise: Promise<DefaultResourceLoader> | null = null;
   const getLoader = (): Promise<DefaultResourceLoader> => {
@@ -194,7 +195,6 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           extensionFactories: [
             createKimiOAuthExtension(),
             ...(driftFactory ? [driftFactory] : []),
-            ...(sandboxFactory ? [sandboxFactory] : []),
           ],
         });
         await rl.reload();
@@ -207,12 +207,14 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
   return async ({ prompt, model }) => {
     const { provider, modelId } = parseModelRef(model);
     const m = getModel(provider as Parameters<typeof getModel>[0], modelId as never);
-    const resourceLoader = extensionDirs.length > 0 || driftFactory || sandboxFactory ? await getLoader() : undefined;
+    const resourceLoader = extensionDirs.length > 0 || driftFactory ? await getLoader() : undefined;
     const { session } = await createAgentSession({
       cwd,
       model: m,
       thinkingLevel,
-      sessionManager: SessionManager.inMemory(),
+      // cwd 必须传进 inMemory: SessionManager 的 cwd 绑内置工具 (write/read/ls/edit) 的相对路径解析。
+      // 缺省 = process.cwd() (eval 时 = 主 repo) → 相对写逃出 worktree 污染主树 (2026-07-23 md5 实证)。
+      sessionManager: SessionManager.inMemory(cwd),
       // 嵌入扩展 (caveman 压输出 + rtk 压工具输出) 经 resourceLoader 注入 agent leaf session。
       ...(resourceLoader ? { resourceLoader } : {}),
       // tools 省略 = pi 默认全工具(能改文件); 给则限定。
