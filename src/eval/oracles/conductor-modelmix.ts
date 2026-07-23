@@ -85,7 +85,8 @@ async function measureOnce(config: MixConfig, size: FixtureSize, leafTimeoutMs: 
   try {
     // leafTimeoutMs: agent-leaf 硬 wall-clock 上界 (默认 240s 会掐死重建大模块的廉价叶 → 假 empty-done floor,
     // 2026-07-23 Nick 定: 廉价模型忠实执行长任务是设计前提, 除非空转不该掐; 0 = 不限)。命令叶 (tsc/test) 独立放宽到 10min。
-    const agentRunner = createAgentLeafRunner({ cwd: fx.root, hashlineEdit: true, leafTimeoutMs }); // thinkingLevel 默认 xhigh
+    // sandboxRoot=fx.root: 事前 block 写穿 worktree (治 2026-07-23 隔离漏; F1 事后闸仍留作 bash 逃逸兜底)。
+    const agentRunner = createAgentLeafRunner({ cwd: fx.root, hashlineEdit: true, leafTimeoutMs, sandboxRoot: fx.root }); // thinkingLevel 默认 xhigh
     const commandRunner = createCommandLeafRunner({ allowlist: ['bun', 'tsc', 'npx'], cwd: fx.root, timeoutMs: 600_000 });
     const dagConfig = {
       conductorModel: config.conductorModel,

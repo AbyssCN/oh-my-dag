@@ -42,6 +42,7 @@ export function createOmdHooks(config: OmdHookConfig = {}): ExtensionFactory[] {
 
 export { createToolGateHook, type ToolGateConfig } from './tool-gate';
 export { createDriftDetectorHook, type DriftDetectorConfig } from './drift-detector';
+export { createSandboxGuardHook } from './sandbox-guard';
 export {
   classifyCommand,
   DANGEROUS_PATTERNS,

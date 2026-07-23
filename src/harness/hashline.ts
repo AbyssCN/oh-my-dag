@@ -39,6 +39,22 @@ import { defineTool, type ExtensionFactory, type ToolDefinition } from '@earendi
 import { logger } from '../logger';
 import { m } from './i18n';
 
+/**
+ * 从 hashline patch 抽出目标文件路径 (patch 头 `¶PATH#TAG`, 可多 section)。
+ *
+ * hashline_edit 的路径**嵌在 patch 参数里**, 不是顶层 `args.path` —— 所以 filesTouched 追踪 (agent-leaf)
+ * 与写沙箱 (sandbox-guard) 都得从 patch 解析路径, 否则 hashline 写对它们隐形 (2026-07-23: filesTouched
+ * 漏记 → executor-dag 把成功的 hashline 节点误判 empty-done failed → eval 假 floor)。轻量正则, 不 throw。
+ */
+export function hashlinePatchPaths(patch: string): string[] {
+  const paths: string[] = [];
+  for (const m of patch.matchAll(/^¶(.+?)#[0-9a-fA-F]+/gm)) {
+    const p = m[1]?.trim();
+    if (p) paths.push(p);
+  }
+  return paths;
+}
+
 /** 弱模型用法守则 (prompt.md <rules> 浓缩) —— 经 promptGuidelines 自动注入 leaf 系统提示。 */
 export const HASHLINE_GUIDELINES: string[] = [
   '改已存在文件用 hashline_edit (新建文件仍用 write)。改前必先 hashline_read 拿到 `¶PATH#TAG` 头与 `LINE:TEXT` 行号。',
