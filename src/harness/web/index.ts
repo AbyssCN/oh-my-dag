@@ -37,6 +37,8 @@ export { retrieveWeb, buildMarkdown } from './retrieve';
 export type { RetrieveOpts, RetrieveResult, RetrievedSource } from './retrieve';
 export { classifySourceTier, orderForCrawl } from './source-tier';
 export type { SourceTier, TierVerdict } from './source-tier';
+export { createModelQueryExpander, expandQueries, parseRewrites, EXPAND_SYSTEM } from './query-expand';
+export type { QueryExpander } from './query-expand';
 
 export interface WebStack {
   searchPool: WebSearchPool;
