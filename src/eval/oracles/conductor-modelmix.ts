@@ -79,12 +79,14 @@ async function dirtyRealFiles(): Promise<Set<string>> {
 }
 
 /** 单次测量一个候选 (建 worktree → 跑 DAG+heal → 打分 → 算成本 → 清理)。 */
-async function measureOnce(config: MixConfig, size: FixtureSize): Promise<RunMetrics & { costUsd: number; unpriced: boolean }> {
+async function measureOnce(config: MixConfig, size: FixtureSize, leafTimeoutMs: number): Promise<RunMetrics & { costUsd: number; unpriced: boolean }> {
   const before = await dirtyRealFiles(); // F1 泄漏护栏: run 前基线
   const fx = await fixtureFor(size);
   try {
-    const agentRunner = createAgentLeafRunner({ cwd: fx.root, hashlineEdit: true }); // thinkingLevel 默认 xhigh
-    const commandRunner = createCommandLeafRunner({ allowlist: ['bun', 'tsc', 'npx'], cwd: fx.root, timeoutMs: 180_000 });
+    // leafTimeoutMs: agent-leaf 硬 wall-clock 上界 (默认 240s 会掐死重建大模块的廉价叶 → 假 empty-done floor,
+    // 2026-07-23 Nick 定: 廉价模型忠实执行长任务是设计前提, 除非空转不该掐; 0 = 不限)。命令叶 (tsc/test) 独立放宽到 10min。
+    const agentRunner = createAgentLeafRunner({ cwd: fx.root, hashlineEdit: true, leafTimeoutMs }); // thinkingLevel 默认 xhigh
+    const commandRunner = createCommandLeafRunner({ allowlist: ['bun', 'tsc', 'npx'], cwd: fx.root, timeoutMs: 600_000 });
     const dagConfig = {
       conductorModel: config.conductorModel,
       leafModel: config.leafModel,
@@ -147,6 +149,10 @@ function avg(runs: Array<RunMetrics & { costUsd: number; unpriced: boolean }>): 
 export default function conductorModelmixSpec(opts: Record<string, string> = {}): TournamentSpec<MixConfig> {
   const R = Math.max(1, Number.parseInt(opts.r ?? '1', 10) || 1);
   const size: FixtureSize = opts.fixture === 'large' ? 'large' : 'medium';
+  // leafTimeout: agent-leaf wall-clock 上界 (ms)。默认 30min (远宽于旧 240s), '0'=不限。
+  const leafTimeoutMs = opts.leafTimeout != null && opts.leafTimeout !== ''
+    ? Math.max(0, Number.parseInt(opts.leafTimeout, 10) || 0)
+    : 1_800_000;
   // --skip C1,C5 = 排除 label 含这些子串的格 (如 C1 opus 缺 anthropic 凭证时先跳)。
   const skip = (opts.skip ?? '').split(',').map((s) => s.trim()).filter(Boolean);
   const grid = skip.length ? GRID.filter((c) => !skip.some((s) => c.label.includes(s))) : GRID;
@@ -155,7 +161,7 @@ export default function conductorModelmixSpec(opts: Record<string, string> = {})
     seed: () => grid,
     async measure(c) {
       const runs: Array<RunMetrics & { costUsd: number; unpriced: boolean }> = [];
-      for (let i = 0; i < R; i++) runs.push(await measureOnce(c.config, size));
+      for (let i = 0; i < R; i++) runs.push(await measureOnce(c.config, size, leafTimeoutMs));
       return avg(runs);
     },
     direction: 'max',

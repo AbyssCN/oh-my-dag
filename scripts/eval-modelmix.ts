@@ -37,7 +37,7 @@ const r = flags.r ?? '1';
 const outPath = flags.out ?? `/tmp/eval-modelmix-${Date.now()}.md`;
 
 bootstrapModelRuntime();
-const spec = specFactory({ r, skip: flags.skip ?? '', fixture: flags.fixture ?? 'medium' });
+const spec = specFactory({ r, skip: flags.skip ?? '', fixture: flags.fixture ?? 'medium', leafTimeout: flags['leaf-timeout'] ?? '' });
 
 // --conductor + --leaf = ad-hoc 单格 (覆盖网格, 用于单点复核如 C5 重跑); 否则跑整网格。
 const cells =
