@@ -90,6 +90,32 @@ describe('pathfinder MCP tools', () => {
     }
   });
 
+  test('deliver spec 护栏: 复杂区域 (≥3 票) 缺 docs/plan/ 引用 → 拦截, 不编译不执行', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pf-mcp-'));
+    try {
+      let executed = 0;
+      const { call } = tools(dir, {
+        executeSlice: (async () => {
+          executed++;
+          return { results: {} };
+        }) as unknown as PathfinderToolDeps['executeSlice'],
+      });
+      await call('path_map', { destination: 'Ship X' });
+      // 3 张 task 票 → 复杂区域, ruling 都无 docs/plan/ 引用 → 应被闸拦。
+      for (const id of ['t1', 't2', 't3']) {
+        await call('path_add', { title: `build ${id}`, type: 'task', id });
+        await call('path_rule', { ticketId: id, ruling: `just do ${id}` });
+      }
+      const deliver = await call('path_deliver');
+      expect(deliver.isError).toBe(true);
+      expect(deliver.text).toContain('docs/plan/');
+      expect(deliver.text).toContain('/omd-sdd');
+      expect(executed).toBe(0); // 拦下时无 dag 执行调用
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('path_init 引导两步流: 无 backend → 报告; md 全参 → 执行建本地图', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'pf-mcp-'));
     try {
