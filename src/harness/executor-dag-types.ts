@@ -73,6 +73,12 @@ export interface ExecutorDagConfig {
   sessionId?: string;
   /** conductor 分解推理档 (high 默认/复杂 plan 升 max; conductor 是分解器不需深推理, 见 fleet 注释)。 */
   conductorThinkingLevel?: 'off' | 'low' | 'medium' | 'high' | 'xhigh';
+  /**
+   * conductor system prompt 档位 (SDD v2, 2026-07-25): 'full' (默认, 弱 conductor 教练全量) |
+   * 'lean' (只留环境事实, 顶级 conductor 如 k3 用 — 教练是保守偏置疑压平分解)。
+   * 省略 → env OMD_CONDUCTOR_PROMPT ('lean'/'full') → 'full'。档位由 A/B eval 定, 见 conductor-plan。
+   */
+  conductorPromptProfile?: 'full' | 'lean';
   /** inproc leaf 推理档 (默认 high; mass fan-out 省成本, 不走 max — 那是 omd 设计 / best-of-N 的档)。 */
   inprocThinkingLevel?: 'off' | 'low' | 'medium' | 'high' | 'xhigh';
   /**
