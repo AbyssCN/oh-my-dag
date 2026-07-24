@@ -116,6 +116,13 @@ export function lookupRating(
 	if (!norm) return null;
 	const hit = ratings.get(norm);
 	if (hit) return hit;
+	// D-8: modelId 光秃不含品牌时 (如 'kimi-coding:k3' 的 'k3'), 试 provider 品牌 + modelId
+	// (剥 -coding/-platform/-go 后缀 → 'kimi k3') 再匹配 AA 名。deepseek-v4-pro 等含品牌者直接命中不走此路。
+	if (sep >= 0) {
+		const providerBase = coord.slice(0, sep).replace(/-(coding|platform|go)$/i, "");
+		const qhit = ratings.get(normalizeName(`${providerBase} ${modelId}`));
+		if (qhit) return qhit;
+	}
 	const tier = heuristicRating(norm);
 	logger.warn(
 		{ coord, tier: tier.intelligence },

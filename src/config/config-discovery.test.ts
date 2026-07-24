@@ -10,6 +10,7 @@ import {
 	classifyPlan,
 	buildChannelDeclarations,
 	discoverChannels,
+	readDeclaredPlans,
 	PLAN_STRINGS,
 } from "./config-discovery";
 
@@ -23,6 +24,46 @@ beforeEach(() => {
 
 afterEach(() => {
 	// Cleanup is implicit: tmpdir gets cleaned by OS.
+});
+
+describe("readDeclaredPlans (D-20 声明持仓)", () => {
+	function writeConfig(content: unknown): string {
+		const p = join(dir, "config.json");
+		writeFileSync(p, JSON.stringify(content));
+		return p;
+	}
+
+	it("读 declaredPlans 段, 跳过坏条目 (fail-open)", () => {
+		const p = writeConfig({
+			declaredPlans: [
+				{ provider: "kimi-coding", kind: "token", plan: "allegretto" },
+				{ provider: "opencode-go", kind: "flat" }, // 无 plan → 'declared'
+				{ provider: "", kind: "token" }, // 空 provider → 跳过
+				{ provider: "x", kind: "bogus" }, // 非法 kind → 跳过
+				"not-an-object", // → 跳过
+			],
+		});
+		const out = readDeclaredPlans(env, p);
+		expect(out).toHaveLength(2);
+		expect(out[0]).toMatchObject({ provider: "kimi-coding", kind: "token", plan: "allegretto" });
+		expect(out[1]).toMatchObject({ provider: "opencode-go", kind: "flat", plan: "declared" });
+	});
+
+	it("文件缺 / 无 declaredPlans 段 → []", () => {
+		expect(readDeclaredPlans(env, join(dir, "nope.json"))).toEqual([]);
+		expect(readDeclaredPlans(env, writeConfig({ version: 2 }))).toEqual([]);
+	});
+
+	it("discoverChannels 合并声明持仓 (auto-probe 探不到的也进渠道, 声明胜)", () => {
+		env.DEEPSEEK_API_KEY = "sk-x"; // auto-probe 到 deepseek
+		const cfg = writeConfig({
+			declaredPlans: [{ provider: "kimi-coding", kind: "token", plan: "allegretto" }],
+		});
+		const { declarations } = discoverChannels(env, { configPath: cfg });
+		const providers = declarations.map((d) => d.provider);
+		expect(providers).toContain("deepseek"); // auto
+		expect(providers).toContain("kimi-coding"); // declared (auth.json 探不到, 声明补上)
+	});
 });
 
 describe("discoverProviders", () => {

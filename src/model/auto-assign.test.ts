@@ -63,12 +63,12 @@ describe("autoAssign", () => {
 		});
 
 		// conductor + escalation → K3
-		expect(m.conductor!.coord).toBe("kimi-coding:kimi-k3");
-		expect(m.escalation!.coord).toBe("kimi-coding:kimi-k3");
+		expect(m.conductor!.coord).toBe("kimi-coding:k3");
+		expect(m.escalation!.coord).toBe("kimi-coding:k3");
 
 		// judge + reason → K3
-		expect(m.judge!.coord).toBe("kimi-coding:kimi-k3");
-		expect(m.reason!.coord).toBe("kimi-coding:kimi-k3");
+		expect(m.judge!.coord).toBe("kimi-coding:k3");
+		expect(m.reason!.coord).toBe("kimi-coding:k3");
 
 		// reduce → DS-Pro (D-14 特殊: 不走 K3)
 		expect(m.reduce!.coord).toBe("deepseek:deepseek-v4-pro");
@@ -254,7 +254,8 @@ describe("autoAssign", () => {
 	});
 
 	test("AA 快照未命中 → 命名启发兜底 (INV-7), 不崩", () => {
-		// 只给 GLM 快照, K3 未命中但名称含 'k3' → 命名启发 (但 k3 裸词不升档)
+		// 只给 GLM 快照 (无 kimi): kimi-coding:k3 → modelId 'k3' 快照无 → 品牌桥接试 'kimi k3' 亦无
+		// → 命名启发 norm='k3' (裸关键词, norm===kw 守卫挡升档) → 中档 42。验证 miss 不崩、返非空。
 		const ratingsPath = writeRatings([
 			{ name: "glm 5.2", intelligence: 51, costUsd: 0.32, speedTokS: 179 },
 		]);
@@ -264,8 +265,7 @@ describe("autoAssign", () => {
 			ratingsPath,
 		});
 
-		// kimi-k3 → norm 'kimi k3' → 含 'k3' 且 'kimi k3' !== 'k3' → 强档 45
-		expect(m.conductor!.coord).toBe("kimi-coding:kimi-k3");
-		expect(m.conductor!.intelligence).toBe(45);
+		expect(m.conductor!.coord).toBe("kimi-coding:k3");
+		expect(m.conductor!.intelligence).toBe(42);
 	});
 });

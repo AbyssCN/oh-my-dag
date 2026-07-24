@@ -74,10 +74,10 @@ const NODE_CLASS: Record<string, NodeClass> = {
 	dream: "dream",
 };
 
-/** 首选 coord (provider:modelId) 按分类。 */
+/** 首选 coord (provider:modelId) 按分类。⚠ kimi 真坐标 = 'kimi-coding:k3' (modelId 'k3' 非 'kimi-k3')。 */
 const PREFERRED_COORD: Record<NodeClass, string> = {
-	decomposer: "kimi-coding:kimi-k3",
-	judge_synth: "kimi-coding:kimi-k3",
+	decomposer: "kimi-coding:k3",
+	judge_synth: "kimi-coding:k3",
 	worker: "mimo:mimo-v2.5-pro",
 	verify: "openrouter:glm-5.2",
 	dream: "openrouter:glm-5.2",
