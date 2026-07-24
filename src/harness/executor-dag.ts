@@ -99,10 +99,20 @@ async function planAndExecute(
   }
   if (!plan) throw new Error(`executor-dag: conductor (${conductorModel}) 未产出有效 plan: ${lastErr}`);
 
-  // 确定性过滤: plan 中 command 与 oracleCmd 等价的节点移除 (oracle 已跑过, 重跑 = 浪费)。
-  const filteredPlan = config.oracleCmd ? filterOracleCommandNodes(plan, config.oracleCmd) : plan;
+  // pass 管线 (SDD v2): oracle 过滤 + planFilters (prune→dedup→stamp, 接线层组装)。
   // conductor 之后, 下游执行机器与 plan 来源无关 → 交 executePlan (D-7 预构造入口共用同一机器)。
-  return executePlan(filteredPlan, task, config, generate, conductorUsage, templates);
+  return executePlan(applyPlanFilters(plan, config), task, config, generate, conductorUsage, templates);
+}
+
+/**
+ * SDD v2 pass 管线: oracle 等价节点过滤 → config.planFilters 依序应用 (prune → dedup → stamp,
+ * 链由接线层组装, 见 plan-passes/)。确定性纯函数链; 抛错上抛 fail-closed (坏 pass 不静默跳过)。
+ * conductor 首轮与 escalation 重规划轮都过同一管线 (planAndExecute 每轮调用)。
+ */
+function applyPlanFilters(plan: ConductorPlan, config: ExecutorDagConfig): ConductorPlan {
+  let p = config.oracleCmd ? filterOracleCommandNodes(plan, config.oracleCmd) : plan;
+  for (const f of config.planFilters ?? []) p = f(p);
+  return p;
 }
 
 /**
@@ -842,8 +852,7 @@ async function runDagInternal(
   // D-7: 预构造 plan → executePlan 直执 (跳过 conductor); 否则 conductor 规划 → 执行。二者下游同一机器。
   let exec: ExecOnce;
   if (prebuiltPlan) {
-    const filteredPlan = config.oracleCmd ? filterOracleCommandNodes(prebuiltPlan, config.oracleCmd) : prebuiltPlan;
-    exec = await executePlan(filteredPlan, task, config, generate, { in: 0, out: 0 }, templates);
+    exec = await executePlan(applyPlanFilters(prebuiltPlan, config), task, config, generate, { in: 0, out: 0 }, templates);
   } else {
     exec = await planAndExecute(task, config, conductorModel, generate, maxPlanRetries, templates);
   }
