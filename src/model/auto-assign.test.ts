@@ -8,8 +8,9 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { mkdirSync, readFileSync } from "node:fs";
 import type { DeclaredPlan } from "./channels";
-import { autoAssign } from "./auto-assign";
+import { autoAssign, runAutoAssign } from "./auto-assign";
 
 /** 造 DeclaredPlan 的 shorthand。 */
 const ch = (
@@ -267,5 +268,38 @@ describe("autoAssign", () => {
 
 		expect(m.conductor!.coord).toBe("kimi-coding:k3");
 		expect(m.conductor!.intelligence).toBe(42);
+	});
+});
+
+describe("runAutoAssign — 端到端 (发现→分配→落盘; configPath 读写同目标)", () => {
+	test("声明 kimi-coding → 大脑簇落 kimi-coding:k3, 落盘可读回, INV-3 跨家族", () => {
+		const home = mkdtempSync(join(tmpdir(), "omd-run-aa-"));
+		mkdirSync(join(home, ".omd"), { recursive: true });
+		const configPath = join(home, ".omd", "config.json");
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				version: 2,
+				declaredPlans: [{ provider: "kimi-coding", kind: "token", plan: "allegretto" }],
+			}),
+		);
+		const ratingsPath = writeRatings([
+			{ name: "kimi k3", intelligence: 57, costUsd: 0.95, speedTokS: 33 },
+			{ name: "deepseek v4 pro", intelligence: 44, costUsd: 0.04, speedTokS: null },
+			{ name: "mimo v2.5 pro", intelligence: 48, costUsd: 0.25, speedTokS: null },
+		]);
+		// deepseek/mimo 经 env 自探; PI_AGENT_DIR 指空 temp → auth/models 探不到; kimi 靠声明补上。
+		const env = { DEEPSEEK_API_KEY: "sk-x", MIMO_API_KEY: "sk-m", PI_AGENT_DIR: home };
+		const map = runAutoAssign(env, { configPath, ratingsPath });
+
+		// 大脑簇 → kimi (声明的 Allegretto, 品牌桥接命中 57)
+		expect(map.conductor?.coord).toBe("kimi-coding:k3");
+		expect(map.judge?.coord).toBe("kimi-coding:k3");
+		expect(map.conductor?.intelligence).toBe(57);
+		// INV-3: verifier 家族 ≠ judge(kimi) 家族
+		expect(map.verifier?.coord.split(":")[0]).not.toBe("kimi-coding");
+		// 落盘可读回 (configPath 读写同目标)
+		const persisted = JSON.parse(readFileSync(configPath, "utf8")).autoAssigned;
+		expect(persisted.conductor).toBe("kimi-coding:k3");
 	});
 });
