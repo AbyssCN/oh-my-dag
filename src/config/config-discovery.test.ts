@@ -19,7 +19,8 @@ let env: Record<string, string | undefined>;
 
 beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "omd-discovery-"));
-	env = { PI_AGENT_DIR: dir };
+	// OMD_CONFIG_PATH 指临时目录 (默认不存在) → readDeclaredPlans hermetic, 不读真 .omd/config.json。
+	env = { PI_AGENT_DIR: dir, OMD_CONFIG_PATH: join(dir, "config.json") };
 });
 
 afterEach(() => {
@@ -360,7 +361,11 @@ describe("discoverChannels (full pipeline)", () => {
 	});
 
 	it("returns empty when no credentials found", () => {
-		const { discovered, declarations } = discoverChannels({});
+		// configPath 指不存在文件 → 无声明持仓 (否则读真 .omd/config.json 的 declaredPlans 破 hermetic)。
+		const { discovered, declarations } = discoverChannels(
+			{},
+			{ configPath: join(dir, "nope.json") },
+		);
 		expect(discovered).toHaveLength(0);
 		expect(declarations).toHaveLength(0);
 	});

@@ -35,21 +35,11 @@ function writeRatings(ratings: unknown[]): string {
 }
 
 describe("autoAssign", () => {
-	test("D-19 首选全可达: conductor/judge/escalation→K3(Allegretto) · leaf→MiMo-pro(Lite) · verifier→GLM(Go) · reduce→DS-Pro(Go)", () => {
+	test("D-19 首选全可达: 大脑簇→K3(Allegretto) · reduce→MiMo-pro · worker→MiMo-v2.5(Lite) · verifier→GLM(Go)", () => {
 		const ratingsPath = writeRatings([
 			{ name: "kimi k3", intelligence: 57, costUsd: 0.95, speedTokS: 33 },
-			{
-				name: "mimo v2.5 pro",
-				intelligence: 48,
-				costUsd: 0.25,
-				speedTokS: null,
-			},
-			{
-				name: "deepseek v4 pro",
-				intelligence: 44,
-				costUsd: 0.04,
-				speedTokS: null,
-			},
+			{ name: "mimo v2.5", intelligence: 42, costUsd: 0.2, speedTokS: null },
+			{ name: "mimo v2.5 pro", intelligence: 48, costUsd: 0.25, speedTokS: null },
 			{ name: "glm 5.2", intelligence: 51, costUsd: 0.32, speedTokS: 179 },
 		]);
 
@@ -57,97 +47,59 @@ describe("autoAssign", () => {
 			channels: [
 				ch("kimi-coding", "token"), // Allegretto plan
 				ch("mimo", "token"), // Lite plan
-				ch("deepseek", "token"), // Go / 按量
-				ch("openrouter", "token"), // Go (GLM via openrouter)
+				ch("opencode-go", "flat"), // Go flat-sub (次顶级 + 溢出)
 			],
 			ratingsPath,
 		});
 
-		// conductor + escalation → K3
-		expect(m.conductor!.coord).toBe("kimi-coding:k3");
-		expect(m.escalation!.coord).toBe("kimi-coding:k3");
-
-		// judge + reason → K3
-		expect(m.judge!.coord).toBe("kimi-coding:k3");
-		expect(m.reason!.coord).toBe("kimi-coding:k3");
-
-		// reduce → DS-Pro (D-14 特殊: 不走 K3)
-		expect(m.reduce!.coord).toBe("deepseek:deepseek-v4-pro");
-
-		// worker (leaf/agent/lens/expand/distill/overflow) → MiMo v2.5-pro
-		for (const n of [
-			"leaf",
-			"agent",
-			"lens",
-			"expand",
-			"distill",
-			"overflow",
-		]) {
-			expect(m[n]!.coord).toBe("mimo:mimo-v2.5-pro");
+		// 大脑簇 (conductor/escalation/judge/reason) → K3 (Allegretto, 不走 Go 避 288x 烧穿)
+		for (const n of ["conductor", "escalation", "judge", "reason"]) {
+			expect(m[n]!.coord).toBe("kimi-coding:k3");
 		}
 
-		// verifier → GLM (跨家族, INV-3)
-		expect(m.verifier!.coord).toBe("openrouter:glm-5.2");
-		expect(m["review-spec"]!.coord).toBe("openrouter:glm-5.2");
+		// reduce → MiMo v2.5-pro (D-14 够质量的最廉, 替代 ds-pro 位, 高频留 Lite 桶)
+		expect(m.reduce!.coord).toBe("mimo:mimo-v2.5-pro");
 
-		// dream → GLM
-		expect(m.dream!.coord).toBe("openrouter:glm-5.2");
+		// worker → MiMo v2.5 (Lite, 替代 ds-flash 位)
+		for (const n of ["leaf", "agent", "lens", "expand", "distill", "overflow"]) {
+			expect(m[n]!.coord).toBe("mimo:mimo-v2.5");
+		}
+
+		// verifier/review-spec/dream → GLM via Go flat-sub (次顶级, 跨 Kimi 家族 INV-3)
+		expect(m.verifier!.coord).toBe("opencode-go:glm-5.2");
+		expect(m["review-spec"]!.coord).toBe("opencode-go:glm-5.2");
+		expect(m.dream!.coord).toBe("opencode-go:glm-5.2");
 	});
 
-	test("溢出链降级: K3 无渠道 → conductor 降级到 GLM-5.2", () => {
+	test("溢出链降级: kimi-coding 无渠道 → 大脑簇降级到 Go(opencode-go:kimi-k3)", () => {
 		const ratingsPath = writeRatings([
+			{ name: "kimi k3", intelligence: 57, costUsd: 0.95, speedTokS: 33 },
 			{ name: "glm 5.2", intelligence: 51, costUsd: 0.32, speedTokS: 179 },
-			{
-				name: "deepseek v4 pro",
-				intelligence: 44,
-				costUsd: 0.04,
-				speedTokS: null,
-			},
-			{
-				name: "mimo v2.5 pro",
-				intelligence: 48,
-				costUsd: 0.25,
-				speedTokS: null,
-			},
 		]);
 
 		const m = autoAssign({
-			channels: [
-				// 无 kimi-coding 渠道 → K3 不可达
-				ch("openrouter", "token"), // GLM
-				ch("mimo", "token"),
-				ch("deepseek", "token"),
-			],
+			// 无 kimi-coding → K3 Allegretto 不可达, 落 Go 溢出首位 opencode-go:kimi-k3
+			channels: [ch("opencode-go", "flat")],
 			ratingsPath,
 		});
 
-		// conductor 降级到第一溢出候选 GLM
-		expect(m.conductor!.coord).toBe("openrouter:glm-5.2");
-		expect(m.judge!.coord).toBe("openrouter:glm-5.2");
+		expect(m.conductor!.coord).toBe("opencode-go:kimi-k3");
+		expect(m.judge!.coord).toBe("opencode-go:kimi-k3");
 	});
 
-	test("reduce 特殊: DS-Pro 不可达 → 降级到溢出链 (GLM)", () => {
+	test("reduce 特殊: MiMo 不可达 → 降级到判合成溢出链 (Go kimi-k3)", () => {
 		const ratingsPath = writeRatings([
+			{ name: "kimi k3", intelligence: 57, costUsd: 0.95, speedTokS: 33 },
 			{ name: "glm 5.2", intelligence: 51, costUsd: 0.32, speedTokS: 179 },
-			{
-				name: "mimo v2.5 pro",
-				intelligence: 48,
-				costUsd: 0.25,
-				speedTokS: null,
-			},
 		]);
 
 		const m = autoAssign({
-			channels: [
-				ch("mimo", "token"),
-				ch("openrouter", "token"), // GLM
-				// 无 deepseek 渠道 → DS-Pro 不可达
-			],
+			// 无 mimo → reduce 首选 mimo-v2.5-pro 不可达 → 落 judge_synth 溢出链首位
+			channels: [ch("opencode-go", "flat")],
 			ratingsPath,
 		});
 
-		// reduce: DS-Pro 不可达 → 跳到溢出链首位 GLM
-		expect(m.reduce!.coord).toBe("openrouter:glm-5.2");
+		expect(m.reduce!.coord).toBe("opencode-go:kimi-k3");
 	});
 
 	test("空渠道 → 空分配", () => {
@@ -163,69 +115,46 @@ describe("autoAssign", () => {
 		expect(Object.keys(m)).toHaveLength(0);
 	});
 
-	test("verifier 跨家族 (INV-3): GLM 可达时 verifier 走 GLM, 不走同族 kimi/mimo/deepseek", () => {
+	test("verifier 跨家族 (INV-3): verifier 走 Go-GLM, ≠ 大脑(kimi) 家族", () => {
 		const ratingsPath = writeRatings([
 			{ name: "kimi k3", intelligence: 57, costUsd: 0.95, speedTokS: 33 },
 			{ name: "glm 5.2", intelligence: 51, costUsd: 0.32, speedTokS: 179 },
-			{
-				name: "mimo v2.5 pro",
-				intelligence: 48,
-				costUsd: 0.25,
-				speedTokS: null,
-			},
-			{
-				name: "deepseek v4 pro",
-				intelligence: 44,
-				costUsd: 0.04,
-				speedTokS: null,
-			},
+			{ name: "mimo v2.5", intelligence: 42, costUsd: 0.2, speedTokS: null },
+			{ name: "mimo v2.5 pro", intelligence: 48, costUsd: 0.25, speedTokS: null },
 		]);
 
 		const m = autoAssign({
 			channels: [
 				ch("kimi-coding", "token"),
 				ch("mimo", "token"),
-				ch("deepseek", "token"),
-				ch("openrouter", "token"),
+				ch("opencode-go", "flat"),
 			],
 			ratingsPath,
 		});
 
-		// conductor/judge = kimi, leaf = mimo, reduce = deepseek
-		// verifier 必须 ≠ 上述三家 → GLM
-		const families = new Set([
+		// conductor/judge = kimi, worker = mimo, reduce = mimo → verifier ≠ kimi 家族 (跨检查者/被检查者)
+		const mains = new Set([
 			m.conductor!.coord.split(":")[0],
 			m.leaf!.coord.split(":")[0],
-			m.reduce!.coord.split(":")[0],
 		]);
-		expect(m.verifier!.coord.split(":")[0]).toBe("openrouter");
-		expect(families.has("openrouter")).toBe(false);
+		expect(m.verifier!.coord.split(":")[0]).toBe("opencode-go");
+		expect(mains.has("opencode-go")).toBe(false);
+		expect(m.verifier!.coord.split(":")[0]).not.toBe(m.judge!.coord.split(":")[0]);
 	});
 
 	test("node 分类完整覆盖: 所有已知 node 都有分配 (渠道充足时)", () => {
 		const ratingsPath = writeRatings([
 			{ name: "kimi k3", intelligence: 57, costUsd: 0.95, speedTokS: 33 },
 			{ name: "glm 5.2", intelligence: 51, costUsd: 0.32, speedTokS: 179 },
-			{
-				name: "mimo v2.5 pro",
-				intelligence: 48,
-				costUsd: 0.25,
-				speedTokS: null,
-			},
-			{
-				name: "deepseek v4 pro",
-				intelligence: 44,
-				costUsd: 0.04,
-				speedTokS: null,
-			},
+			{ name: "mimo v2.5", intelligence: 42, costUsd: 0.2, speedTokS: null },
+			{ name: "mimo v2.5 pro", intelligence: 48, costUsd: 0.25, speedTokS: null },
 		]);
 
 		const m = autoAssign({
 			channels: [
 				ch("kimi-coding", "token"),
 				ch("mimo", "token"),
-				ch("deepseek", "token"),
-				ch("openrouter", "token"),
+				ch("opencode-go", "flat"),
 			],
 			ratingsPath,
 		});
