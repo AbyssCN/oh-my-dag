@@ -6,9 +6,14 @@
  * Any change here = deliberate (not accidental drift).
  */
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	NODE_DEFAULT_COORD,
 	NODE_TIER,
+	persistAutoAssigned,
+	resetConfigCache,
 	resolveRoleModelConfigured,
 } from "./role-models";
 
@@ -35,7 +40,7 @@ describe("resolveRoleModelConfigured — regression snapshots (INV-4, G-2)", () 
 		test(`${node} → ${NODE_DEFAULT_COORD[node]} (tier: ${NODE_TIER[node]})`, () => {
 			const result = resolveRoleModelConfigured(node, {
 				env: {}, // empty env → no env hit
-				autoAssignMap: undefined, // no auto-assign
+				autoAssignMap: {}, // explicit empty = no auto-assign (hermetic: 不读真 .omd/config.json)
 			});
 			expect(result.model).toBe(NODE_DEFAULT_COORD[node]);
 			expect(result.source).toBe("default");
@@ -78,6 +83,37 @@ describe("resolveRoleModelConfigured — priority chain", () => {
 		});
 		expect(result.model).toBe("qwen:qwen3.7-max");
 		expect(result.source).toBe("env");
+	});
+});
+
+describe("config.json autoAssigned 层 — D-17 端到端接线", () => {
+	test("persistAutoAssigned 落盘 → resolveRoleModelConfigured auto 层读到", () => {
+		const path = join(mkdtempSync(join(tmpdir(), "omd-aa-")), "config.json");
+		persistAutoAssigned(
+			{ conductor: "kimi-coding:kimi-k3", leaf: "mimo:mimo-v2.5-pro" },
+			path,
+		);
+		resetConfigCache();
+		const c = resolveRoleModelConfigured("conductor", { env: {}, configPath: path });
+		expect(c.model).toBe("kimi-coding:kimi-k3");
+		expect(c.source).toBe("auto");
+	});
+
+	test("env 覆盖 auto 层; 未落盘的 node → default (优先序守 INV-4)", () => {
+		const path = join(mkdtempSync(join(tmpdir(), "omd-aa-")), "config.json");
+		persistAutoAssigned({ conductor: "kimi-coding:kimi-k3" }, path);
+		resetConfigCache();
+		// env > auto
+		const e = resolveRoleModelConfigured("conductor", {
+			env: { OMD_CONDUCTOR_MODEL: "x:y" },
+			configPath: path,
+		});
+		expect(e.model).toBe("x:y");
+		expect(e.source).toBe("env");
+		// 未落盘的 node → 仍走写死默认 (autoAssigned 只覆盖 conductor)
+		const d = resolveRoleModelConfigured("judge", { env: {}, configPath: path });
+		expect(d.model).toBe(NODE_DEFAULT_COORD.judge);
+		expect(d.source).toBe("default");
 	});
 });
 

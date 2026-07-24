@@ -12,6 +12,7 @@
  *
  * Contract: docs/plan/2026-07-24-channel-aware-model-node-routing.md D-19.
  */
+import { discoverChannels as discoverHoldings } from "../config/config-discovery";
 import { logger } from "../logger";
 import {
 	type Channel,
@@ -20,6 +21,7 @@ import {
 	orderByAmortization,
 } from "./channels";
 import { type ModelRating, lookupRating } from "./model-ratings";
+import { persistAutoAssigned } from "./role-models";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -211,4 +213,34 @@ export function autoAssign(input: AutoAssignInput): AssignmentMap {
 	}
 
 	return result;
+}
+
+/**
+ * 端到端接线 (D-17): 从真实持仓 auto-assign 并**一次性落盘** .omd/config.json 的 autoAssigned 段。
+ *   持仓发现 (config-discovery: env/auth.json/models.json/Go) → DeclaredPlan[] → autoAssign → 落盘。
+ * 落盘后 resolveRoleModelConfigured 的 auto 层即读到 → 全引擎 node 路由生效 (无需运行时动态)。
+ * 由 setup / `omd models auto` 显式触发 (非每 boot), 保"可读可改一次性填"语义。
+ *
+ * @param env  持仓探测的环境 (默认 process.env)。
+ * @param opts.configPath  落盘目标 (测试注入; 默认 .omd/config.json)。
+ * @param opts.ratingsPath AA 快照路径 (默认 model-ratings.json)。
+ * @returns 完整 AssignmentMap (含渠道 + intelligence, 供调用方展示)。
+ */
+export function runAutoAssign(
+	env: Record<string, string | undefined> = process.env,
+	opts: { configPath?: string; ratingsPath?: string } = {},
+): AssignmentMap {
+	const { declarations } = discoverHoldings(env);
+	const map = autoAssign({
+		channels: declarations,
+		...(opts.ratingsPath ? { ratingsPath: opts.ratingsPath } : {}),
+	});
+	const coords: Record<string, string> = {};
+	for (const [node, a] of Object.entries(map)) coords[node] = a.coord;
+	persistAutoAssigned(coords, opts.configPath);
+	logger.info(
+		{ nodes: Object.keys(coords).length, declarations: declarations.length },
+		"auto-assign: 已落盘 .omd/config.json autoAssigned 段",
+	);
+	return map;
 }

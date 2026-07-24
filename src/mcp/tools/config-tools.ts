@@ -15,6 +15,7 @@
 import { z } from 'zod';
 import type { OmdMcpTool } from '../server';
 import { ROLE_PRESETS } from '../../harness/init/role-presets';
+import { runAutoAssign } from '../../model/auto-assign';
 import {
   TUNABLE_CONFIG_ROLES,
   applyPresetHeadless,
@@ -54,6 +55,7 @@ export function createConfigTools(deps: ConfigToolDeps): OmdMcpTool[] {
     makeSetKey(cwd),
     makeApplyPreset(cwd),
     makeSetRole(),
+    makeModelsAuto(),
     makeRegisterProvider(),
     makeSetModel(),
     makeConfigStatus(deps.router),
@@ -147,6 +149,36 @@ function makeSetRole(): OmdMcpTool {
         return ok(`✓ 角色 ${r.role} → ${r.coord} (config.json, 即时生效)`);
       } catch (e) {
         return err(`omd_set_role 失败: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+  };
+}
+
+function makeModelsAuto(): OmdMcpTool {
+  return {
+    name: 'omd_models_auto',
+    description:
+      'Auto-assign per-node models by channel economics; persists to .omd/config.json autoAssigned. env still overrides.',
+    inputSchema: {},
+    handler: async () => {
+      try {
+        const map = runAutoAssign(process.env);
+        const entries = Object.entries(map);
+        if (entries.length === 0) {
+          return ok(
+            'auto-assign: 无可用渠道/评级 → 未写入 (全 node 落 env/写死默认)。先配持仓 (omd_set_key / 声明 plan)。',
+          );
+        }
+        const lines = [
+          `✓ auto-assign 已落盘 ${entries.length} node → .omd/config.json autoAssigned (即时生效)`,
+          ...entries.map(
+            ([node, a]) => `  ${node} → ${a.coord} [${a.channelId}] (intel ${a.intelligence})`,
+          ),
+          '  per-node OMD_<NODE>_MODEL env 仍高于本层; 想改直接编 config.json autoAssigned 段。',
+        ];
+        return ok(lines.join('\n'));
+      } catch (e) {
+        return err(`omd_models_auto 失败: ${e instanceof Error ? e.message : String(e)}`);
       }
     },
   };
