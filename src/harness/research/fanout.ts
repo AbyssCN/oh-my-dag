@@ -16,6 +16,7 @@
 import { randomUUID } from 'node:crypto';
 import { makeBudgetedCall } from '../../model/gateway';
 import { send } from '../../model/gateway';
+import { resolveRoleModelConfigured } from '../../model/role-models';
 import { withGoFallback } from '../../model/gateway';
 import type { ContentPart, ModelMessage } from '../../model/gateway';
 import type { ModelUsage, ModelRequest, ModelResponse } from '../../model/gateway';
@@ -189,8 +190,8 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
   // 角色默认钉死, 不再静默继承 reasonModel (模型分配 v3, Nick 2026-06-11):
   // reduce = 多调用阶段 (×L lens) — 绝不能继承慢/贵的 reason 模型 (mimo-pro 24s×L 实测爆超时的机制化防呆);
   // judge = 判别吃推理 → ds-pro (单价低 + K panel 并行, 背景任务可承受 ~50s/call)。
-  const reduceModel = cfg.reduceModel ?? process.env.OMD_REDUCE_MODEL ?? 'deepseek:deepseek-v4-flash';
-  const judgeModel = cfg.judgeModel ?? process.env.OMD_JUDGE_MODEL ?? 'deepseek:deepseek-v4-pro';
+  const reduceModel = cfg.reduceModel ?? resolveRoleModelConfigured('reduce').model;
+  const judgeModel = cfg.judgeModel ?? resolveRoleModelConfigured('judge').model;
   const warm = cfg.warmCache ?? true;
   let leafCount = 0;
 

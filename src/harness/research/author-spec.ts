@@ -12,6 +12,7 @@
  */
 import { z } from 'zod';
 import { send as defaultCallModel } from '../../model/gateway';
+import { resolveRoleModelConfigured } from '../../model/role-models';
 import { TASTE_CORE } from '../taste';
 import { RESEARCH_LENS_TEMPLATE } from './lens-template';
 import type { ResearchFanoutConfig, ResearchLens } from './fanout';
@@ -84,7 +85,7 @@ export async function authorFanoutSpec(input: {
   _callModel?: typeof defaultCallModel;
 }): Promise<ResearchFanoutConfig> {
   const call = input._callModel ?? defaultCallModel;
-  const model = input.conductorModel ?? process.env.OMD_CONDUCTOR_MODEL ?? 'deepseek:deepseek-v4-pro';
+  const model = input.conductorModel ?? resolveRoleModelConfigured('conductor').model;
 
   // 组装 user 消息: goal + groundTruth (lensCount 可选提示)
   let userContent = `## 研究目标 (goal)\n${input.goal}\n\n## 事实根据 (groundTruth)\n${input.groundTruth}`;
@@ -128,9 +129,9 @@ export async function authorFanoutSpec(input: {
     lenses: parsed.lenses,
     synthesisFramings: parsed.synthesisFramings,
     judgeCriteria: parsed.judgeCriteria,
-    lensModel: input.lensModel ?? process.env.OMD_LENS_MODEL ?? 'deepseek:deepseek-v4-flash',
+    lensModel: input.lensModel ?? resolveRoleModelConfigured('lens').model,
     // synth/终审 模型路由: 显式 input > OMD_REASON_MODEL env > 默认 ds-pro。
-    reasonModel: input.reasonModel ?? process.env.OMD_REASON_MODEL ?? 'deepseek:deepseek-v4-pro',
+    reasonModel: input.reasonModel ?? resolveRoleModelConfigured('reason').model,
   };
 
   return config;

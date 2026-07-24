@@ -13,6 +13,7 @@
  * 默认 lens/framing/judge 面向通用 web 研究; 调用方可整体覆盖 (领域研究传专家 lens)。
  */
 import { researchFanout, type ResearchFanoutResult, type ResearchLens } from './fanout';
+import { resolveRoleModelConfigured } from '../../model/role-models';
 import { authorFanoutSpec } from './author-spec';
 import { retrieveWeb, type RetrieveOpts, type RetrieveResult } from '../web/retrieve';
 import type { WebStack } from '../web';
@@ -104,9 +105,9 @@ export async function researchWebFanout(
   if (retrieval.sources.length === 0) throw new Error('researchWebFanout: 检索零结果, 无语料可研究');
   opts.onStage?.('retrieve', `命中 ${retrieval.sources.length} · 抓取 ${retrieval.sources.filter((s) => s.body).length} · 语料 ${retrieval.markdown.length} chars`);
 
-  const lensModel = opts.lensModel ?? process.env.OMD_LENS_MODEL ?? 'deepseek:deepseek-v4-flash';
+  const lensModel = opts.lensModel ?? resolveRoleModelConfigured('lens').model;
   // synth/终审默认 ds-pro。reduce/judge 在 fanout 层另有钉死默认, 不受此值牵连。
-  const reasonModel = opts.reasonModel ?? process.env.OMD_REASON_MODEL ?? 'deepseek:deepseek-v4-pro';
+  const reasonModel = opts.reasonModel ?? resolveRoleModelConfigured('reason').model;
 
   // lens/framing/judge: 默认通用 3 视角; --council 让 conductor 按问题+语料自动分解 (显式 lenses 优先于 council)。
   let lenses = opts.lenses ?? DEFAULT_WEB_LENSES;

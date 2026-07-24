@@ -28,6 +28,7 @@ import { createModelRouterFromEnv } from './model-router';
 import { createPlanExtension, createPlanModeState, createPathfinderModeState, ensurePlanToggleKeyFree } from './plan';
 import { createExecuteExtension } from './execute-extension';
 import { createPathfinderExtension } from './pathfinder-extension';
+import { resolveRoleModelConfigured } from '../model/role-models';
 import { createAgentLeafRunner } from './agent-leaf';
 import { createCommandLeafRunner } from './command-leaf';
 import { createMultimodalRouteExtension } from './multimodal-route-extension';
@@ -176,18 +177,18 @@ const router = createModelRouterFromEnv();
 
 // /cg /audit slash 命令 (cgRetrieve/secAudit 封装 + dag-record 留痕)。模型 env 可覆盖, 默认 DeepSeek (全可靠)。
 const cgAuditExt = createCgAuditExtension({
-  conductorModel: process.env.OMD_CG_CONDUCTOR_MODEL ?? 'deepseek:deepseek-v4-flash',
-  leafModel: process.env.OMD_CG_LEAF_MODEL ?? 'deepseek:deepseek-v4-flash',
-  agentLeafModel: process.env.OMD_CG_AGENT_MODEL ?? 'deepseek:deepseek-v4-flash',
+  conductorModel: process.env.OMD_CG_CONDUCTOR_MODEL ?? resolveRoleModelConfigured('conductor').model,
+  leafModel: process.env.OMD_CG_LEAF_MODEL ?? resolveRoleModelConfigured('leaf').model,
+  agentLeafModel: process.env.OMD_CG_AGENT_MODEL ?? resolveRoleModelConfigured('agent').model,
   verification,
   router,
 });
 
 // /iterate slash 命令 (内层 DAG 外层 fixpoint 迭代: 跑→评→重画 直到收敛 + dag-record 留痕)。
 const iterateExt = createIterateExtension({
-  conductorModel: process.env.OMD_ITER_CONDUCTOR_MODEL ?? 'deepseek:deepseek-v4-flash',
-  leafModel: process.env.OMD_ITER_LEAF_MODEL ?? 'deepseek:deepseek-v4-flash',
-  agentLeafModel: process.env.OMD_ITER_AGENT_MODEL ?? 'deepseek:deepseek-v4-flash',
+  conductorModel: process.env.OMD_ITER_CONDUCTOR_MODEL ?? resolveRoleModelConfigured('conductor').model,
+  leafModel: process.env.OMD_ITER_LEAF_MODEL ?? resolveRoleModelConfigured('leaf').model,
+  agentLeafModel: process.env.OMD_ITER_AGENT_MODEL ?? resolveRoleModelConfigured('agent').model,
   // 未收敛多轮 → 轮级升级 conductor (同 /cg /audit 的升级模型; 没配 / provider 未注册 → 维持弱)。
   conductorEscalationModel: process.env.OMD_CONDUCTOR_ESCALATION_MODEL,
 });
@@ -226,8 +227,8 @@ const commandRunner = createCommandLeafRunner({ allowlist: ['bun', 'tsc', 'npx']
 const executeExt = createExecuteExtension({
   // conductorModel 不传: resolveConductorDefault 自会走 OMD_ITER_CONDUCTOR_MODEL > runtime 坐标 (D-8)。
   // 此处硬编码兜底会让"conductor = runtime 同款"永远不生效 (identity 承诺 vs 实际行为背离)。
-  leafModel: process.env.OMD_ITER_LEAF_MODEL ?? 'deepseek:deepseek-v4-flash',
-  agentLeafModel: process.env.OMD_ITER_AGENT_MODEL ?? 'deepseek:deepseek-v4-flash',
+  leafModel: process.env.OMD_ITER_LEAF_MODEL ?? resolveRoleModelConfigured('leaf').model,
+  agentLeafModel: process.env.OMD_ITER_AGENT_MODEL ?? resolveRoleModelConfigured('agent').model,
   conductorEscalationModel: process.env.OMD_CONDUCTOR_ESCALATION_MODEL,
   agentRunner,
   commandRunner,

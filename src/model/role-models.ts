@@ -225,6 +225,111 @@ export function listRoleModels(
 }
 
 // ---------------------------------------------------------------------------
+// node-level resolution (D-5 classification, 14 nodes)
+// ---------------------------------------------------------------------------
+/** D-5 node tier classification. Each omd daemon node maps to one tier. */
+export type NodeTier = 'decomposer' | 'judge_synth' | 'worker' | 'verify' | 'dream';
+/** All 14 omd daemon nodes (D-2). */
+export type OmdNode =
+  | 'conductor' | 'escalation'
+  | 'judge' | 'reason' | 'reduce'
+  | 'leaf' | 'agent' | 'lens' | 'expand' | 'distill' | 'overflow'
+  | 'verifier' | 'review-spec'
+  | 'dream';
+/**
+ * D-5 node→tier mapping. Groups nodes by function for tier-based model selection.
+ * decomposer: conductor + escalation (分解/升级)
+ * judge_synth: judge + reason + reduce (判断/综合/缩约)
+ * worker: leaf/agent/lens/expand/distill/overflow (执行)
+ * verify: verifier + review-spec (跨模型校验, ≠ 主力族)
+ * dream: dream (独立 consolidation)
+ */
+export const NODE_TIER: Record<OmdNode, NodeTier> = {
+  conductor: 'decomposer',
+  escalation: 'decomposer',
+  judge: 'judge_synth',
+  reason: 'judge_synth',
+  reduce: 'judge_synth',
+  leaf: 'worker',
+  agent: 'worker',
+  lens: 'worker',
+  expand: 'worker',
+  distill: 'worker',
+  overflow: 'worker',
+  verifier: 'verify',
+  'review-spec': 'verify',
+  dream: 'dream',
+};
+/**
+ * Per-node hardcoded default coordinates (provider:modelId).
+ * These are the canonical fallback when no env/auto-assign/config-file override exists.
+ * INV-4 / G-2: regression test snapshots these — change = deliberate, not accidental.
+ * Values aligned with actual production usage in harness/research/*.ts and harness/tui.ts.
+ */
+export const NODE_DEFAULT_COORD: Record<OmdNode, string> = {
+  // decomposer — conductor/escalation use deepseek-v4-pro (research-quality default).
+  conductor: 'deepseek:deepseek-v4-pro',
+  escalation: 'deepseek:deepseek-v4-pro',
+  // judge_synth — judge/reason use deepseek-v4-pro; reduce uses cheaper flash (D-14).
+  judge: 'deepseek:deepseek-v4-pro',
+  reason: 'deepseek:deepseek-v4-pro',
+  reduce: 'deepseek:deepseek-v4-flash',
+  // worker — leaf/agent/lens use flash-tier; remaining workers same tier.
+  leaf: 'deepseek:deepseek-v4-flash',
+  agent: 'deepseek:deepseek-v4-flash',
+  lens: 'deepseek:deepseek-v4-flash',
+  expand: 'deepseek:deepseek-v4-flash',
+  distill: 'deepseek:deepseek-v4-flash',
+  overflow: 'deepseek:deepseek-v4-flash',
+  // verify — cross-model ≠ main (INV-3).
+  verifier: 'deepseek',
+  'review-spec': 'deepseek',
+  // dream
+  dream: 'deepseek',
+};
+export interface NodeModelResult {
+  /** Resolved model coordinate ('provider' or 'provider:modelId'). */
+  model: string;
+  /** How the model was resolved. 'default' = hardcoded fallback (unconfigured). */
+  source: 'explicit' | 'env' | 'auto' | 'default';
+}
+/**
+ * Resolve a node's model with full configuration chain.
+ * Priority: explicit-arg ?? OMD_<NODE>_MODEL env ?? auto-assign coord ?? hardcoded default.
+ *
+ * @param node - D-2 node name (e.g. 'conductor', 'leaf', 'review-spec').
+ * @param opts.explicit - Caller-provided override (highest priority).
+ * @param opts.autoAssignMap - Optional node→coord map from auto-assign (D-19).
+ * @param opts.env - Environment to read from (default: process.env).
+ */
+export function resolveRoleModelConfigured(
+  node: OmdNode,
+  opts: {
+    explicit?: string;
+    autoAssignMap?: Record<string, string>;
+    env?: Record<string, string | undefined>;
+  } = {},
+): NodeModelResult {
+  const { explicit, autoAssignMap, env = process.env } = opts;
+  // 1. explicit argument (caller knows best)
+  if (explicit?.trim()) {
+    return { model: explicit.trim(), source: 'explicit' };
+  }
+  // 2. per-node env: OMD_<NODE_UPPER>_MODEL (hyphens + dots → underscore, 对齐既有
+  //    ROLE_ENV_ALLOWLIST 约定 OMD_REVIEW_SPEC_MODEL; 若只转 dots 会成 OMD_REVIEW-SPEC_MODEL 不匹配)
+  const envKey = `OMD_${node.toUpperCase().replace(/[.-]/g, '_')}_MODEL`;
+  const fromEnv = env[envKey]?.trim();
+  if (fromEnv) {
+    return { model: fromEnv, source: 'env' };
+  }
+  // 3. auto-assign (D-19 channel-aware routing, when available)
+  const fromAuto = autoAssignMap?.[node]?.trim();
+  if (fromAuto) {
+    return { model: fromAuto, source: 'auto' };
+  }
+  // 4. hardcoded default (D-5 tier classification)
+  return { model: NODE_DEFAULT_COORD[node], source: 'default' };
+}
 // multimodal leaf pool — config.multimodalPool (坐标列表)
 // ---------------------------------------------------------------------------
 
