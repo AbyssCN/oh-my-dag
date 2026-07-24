@@ -230,7 +230,12 @@ export function runAutoAssign(
 	env: Record<string, string | undefined> = process.env,
 	opts: { configPath?: string; ratingsPath?: string } = {},
 ): AssignmentMap {
-	const { declarations } = discoverHoldings(env);
+	// configPath 同时喂发现 (读 declaredPlans) 与落盘 (写 autoAssigned) —— 读写同一目标, 否则声明持仓
+	// 从默认 config 读、结果往 opts.configPath 写 = 错位 (测试/非默认路径会踩)。
+	const { declarations } = discoverHoldings(
+		env,
+		opts.configPath ? { configPath: opts.configPath } : undefined,
+	);
 	const map = autoAssign({
 		channels: declarations,
 		...(opts.ratingsPath ? { ratingsPath: opts.ratingsPath } : {}),
