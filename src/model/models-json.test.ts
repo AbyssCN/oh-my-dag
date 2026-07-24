@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   listCustomProviderStatus,
+  listModelIds,
   readCustomProviders,
   modelsJsonPath,
   upsertModel,
@@ -60,6 +61,26 @@ describe('readCustomProviders', () => {
       },
     });
     expect(readCustomProviders({}, path)).toHaveLength(0);
+  });
+
+  test('listModelIds 带出 catalog id (含 builtin-override), 无凭证不过滤; 缺 provider → []', () => {
+    const path = writeModelsJson({
+      providers: {
+        // 完整自定条目
+        zhipu: {
+          baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+          apiKey: '$MISSING_KEY', // 缺 key — listModelIds 是展示态, 不按凭证过滤
+          api: 'openai-completions',
+          models: [{ id: 'glm-5.2' }, { id: 'glm-5.2-air' }],
+        },
+        // builtin-override (只有 models[], 无 baseUrl) — 也要带出
+        deepseek: { models: [{ id: 'deepseek-v4-pro' }, { id: 'deepseek-v4-flash' }] },
+      },
+    });
+    expect(listModelIds('zhipu', {}, path)).toEqual(['glm-5.2', 'glm-5.2-air']);
+    expect(listModelIds('deepseek', {}, path)).toEqual(['deepseek-v4-pro', 'deepseek-v4-flash']);
+    expect(listModelIds('nonexistent', {}, path)).toEqual([]);
+    expect(listModelIds('zhipu', {}, join(tmpdir(), 'omd-nope', 'models.json'))).toEqual([]); // 文件缺 → []
   });
 
   test('字面 key (非 $ 前缀) 原样带出', () => {
