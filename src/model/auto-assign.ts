@@ -74,28 +74,38 @@ const NODE_CLASS: Record<string, NodeClass> = {
 	dream: "dream",
 };
 
-/** 首选 coord (provider:modelId) 按分类。⚠ kimi 真坐标 = 'kimi-coding:k3' (modelId 'k3' 非 'kimi-k3')。 */
+/**
+ * 首选 coord (provider:modelId) 按分类 (D-19 分配表, owner 2026-07-24 定):
+ *   - 大脑簇 (decomposer/judge/reason) = Kimi K3 via Allegretto 专属桶 (kimi-coding:k3) —— **不走 Go**:
+ *     Kimi K3 在 Go 共享美元桶烧穿快 288×, 高频大脑簇会饿死 Go, 故用专属预付桶。
+ *   - 干活 (worker) = MiMo v2.5 via Lite plan (替代原 deepseek-flash 位)。
+ *   - 校验 (verify) = GLM-5.2 via **Go flat-sub** (opencode-go, 次顶级, 跨 Kimi 家族 INV-3, cost=0)。
+ * ⚠ kimi 真坐标 = 'kimi-coding:k3' (modelId 'k3')。
+ */
 const PREFERRED_COORD: Record<NodeClass, string> = {
 	decomposer: "kimi-coding:k3",
 	judge_synth: "kimi-coding:k3",
-	worker: "mimo:mimo-v2.5-pro",
-	verify: "openrouter:glm-5.2",
-	dream: "openrouter:glm-5.2",
+	worker: "mimo:mimo-v2.5", // MiMo Lite, 替代 deepseek-flash 位
+	verify: "opencode-go:glm-5.2", // 次顶级 via Go flat-sub
+	dream: "opencode-go:glm-5.2",
 };
 
 /**
- * reduce 特殊: "够质量的最廉"而非首选 (D-14)。
- * 取 DS-V4-Pro via Go (智力够, 成本远低于 K3)。
+ * reduce 特殊 (D-14 "够质量的最廉"): 高频阶段, 取 MiMo v2.5-pro via Lite plan (替代原 deepseek-pro 位,
+ * owner: deepseek 位→mimo)。高频故留专属 Lite 桶不烧 Go 共享桶。
  */
-const REDUCE_COORD = "deepseek:deepseek-v4-pro";
+const REDUCE_COORD = "mimo:mimo-v2.5-pro";
 
-/** 按 NodeClass 排列的溢出候选 (D-19 溢出列)。 */
+/**
+ * 按 NodeClass 排列的溢出候选 (D-19 溢出列): 专属桶烧穿 → 落 **Go flat-sub** (opencode-go, cost=0,
+ * 一价多模型) 作通用溢出目标。Go 里 kimi-k3/glm/qwen/mimo/deepseek 全可达。
+ */
 const FALLBACK_COORDS: Record<NodeClass, string[]> = {
-	decomposer: ["openrouter:glm-5.2", "deepseek:deepseek-v4-pro"],
-	judge_synth: ["openrouter:glm-5.2", "deepseek:deepseek-v4-pro"],
-	worker: ["deepseek:deepseek-v4-flash", "openrouter:glm-5.2"],
-	verify: ["qwen:qwen3.7-max", "deepseek:deepseek-v4-pro"],
-	dream: ["qwen:qwen3.7-max", "deepseek:deepseek-v4-pro"],
+	decomposer: ["opencode-go:kimi-k3", "opencode-go:glm-5.2"],
+	judge_synth: ["opencode-go:kimi-k3", "opencode-go:glm-5.2"],
+	worker: ["opencode-go:mimo-v2.5", "opencode-go:deepseek-v4-flash"],
+	verify: ["opencode-go:qwen3.7-max", "opencode-go:glm-5.1"],
+	dream: ["opencode-go:qwen3.7-max", "opencode-go:deepseek-v4-flash"],
 };
 
 // ── 内部 helpers ───────────────────────────────────────────────────────
