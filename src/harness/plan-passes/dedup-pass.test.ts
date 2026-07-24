@@ -2,7 +2,7 @@
  * dedup-pass 测试 —— D-20 语义指纹图内去重 (契约: SDD v2 D-20 + INV-10)。
  */
 import { describe, expect, test } from "bun:test";
-import type { ConductorPlan } from "../conductor-plan";
+import { PlanSchema, type ConductorPlan } from "../conductor-plan";
 import { dedupPass } from "./dedup-pass";
 
 const plan = (
@@ -126,6 +126,67 @@ describe("dedupPass (D-20)", () => {
 		});
 		const { merged } = dedupPass(p);
 		expect(merged).toEqual({});
+	});
+
+	test("指纹对 PlanNode 每个 schema 字段敏感 (INV-10 完备性闸, zod 内省防漏)", () => {
+		// 教训 (2026-07-25): dedup 首版指纹漏 tier/requires 等新 schema 字段 — spec 级漏项人审才抓到。
+		// 此闸把该错误类变成确定性测试红: schema 加新字段而没在此表决定其指纹归属 → 立即失败。
+		const shape = (
+			PlanSchema.shape.nodes as unknown as {
+				valueType: { shape: Record<string, unknown> };
+			}
+		).valueType.shape;
+		// map = 整节点不参与判重 (D-20 v1 保守), 无指纹归属可言。
+		const EXCLUDED = new Set(["map"]);
+		// 每字段一对「仅此字段不同」的取值 (B 可为 undefined = 字段省略)。
+		const pairs: Record<string, [unknown, unknown]> = {
+			agent: ["a1", "a2"],
+			skill: ["s1", "s2"],
+			goal: ["g1", "g2"],
+			args: [{ a: 1 }, { a: 2 }],
+			depends_on: [["d1"], ["d2"]],
+			postcondition: [{ method: "code" }, { method: "human" }],
+			output_type: ["structured", "none"],
+			output_path: ["p1", "p2"],
+			output_schema: [{ x: 1 }, { x: 2 }],
+			executor: ["leaf", "agent"],
+			command: ["c1", "c2"],
+			kind: ["primitive", undefined],
+			primitive: ["parallel", "judge"],
+			params: [{ p: 1 }, { p: 2 }],
+			creative: [true, false],
+			persona: ["评论家", "审计员"],
+			template: ["t1", "t2"],
+			model: ["m1", "m2"],
+			leaf: [{ l: 1 }, { l: 2 }],
+			on_failure: ["retry", "escalate"],
+			max_retry: [1, 2],
+			fallback: ["human", "reactive"],
+			requires: ["all", 1],
+			cluster: ["fe", "be"],
+			tier: ["strong", "cheap"],
+			attach_media: [true, false],
+		};
+		for (const key of Object.keys(shape)) {
+			if (EXCLUDED.has(key)) continue;
+			if (!(key in pairs))
+				throw new Error(
+					`PlanNode 新字段 "${key}" 无指纹敏感性用例 — 决定它是否语义字段, 补进 dedup 指纹与本表 (INV-10)`,
+				);
+			const [a, b] = pairs[key]!;
+			const p = plan({
+				n1: { goal: "base", [key]: a } as ConductorPlan["nodes"][string],
+				n2: { goal: "base", [key]: b } as ConductorPlan["nodes"][string],
+			});
+			const { merged } = dedupPass(p);
+			if (Object.keys(merged).length > 0)
+				throw new Error(`字段 "${key}" 不同仍被判重 — 指纹漏字段 (INV-10)`);
+		}
+		// 控制组: 全同 → 判重 (证明上面不是恒 no-merge 的空转断言)。
+		const same = dedupPass(
+			plan({ n1: { goal: "base" }, n2: { goal: "base" } }),
+		);
+		expect(same.merged).toEqual({ n2: "n1" });
 	});
 
 	test("缺省 executor 归一为 leaf: 省略 executor 与显式 leaf 同指纹 → 判重", () => {

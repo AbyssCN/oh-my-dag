@@ -23,6 +23,7 @@ const NONE = "·";
 function fingerprint(node: PlanNode, remap: (id: string) => string): string {
 	const deps = (node.depends_on ?? []).map(remap).sort();
 	return JSON.stringify([
+		node.agent ?? NONE, // host roster 语义 (宿主宏观引擎 dispatch 用) — 不同 agent ≠ 同一个工作
 		node.executor ?? "leaf",
 		node.kind ?? NONE,
 		node.primitive ?? NONE,
