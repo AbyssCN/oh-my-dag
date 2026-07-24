@@ -29,8 +29,8 @@ export interface HudDagSnapshot {
   started: string[];
   /** start 时刻 (ISO) — running 行耗时由 now - startedAt 算。 */
   startedAt: Record<string, string>;
-  /** 已定局节点 (done/failed + 实际模型)。 */
-  settled: Array<{ id: string; status: 'done' | 'failed'; kind: string; model?: string }>;
+  /** 已定局节点 (done/failed/skipped + 实际模型; skipped = D-7v2 quorum 级联跳过)。 */
+  settled: Array<{ id: string; status: 'done' | 'failed' | 'skipped'; kind: string; model?: string }>;
 }
 
 /** pathfinder 战争迷雾快照 — pathfinder 存图时写, statusline 直接印 bar (零 SQLite)。 */

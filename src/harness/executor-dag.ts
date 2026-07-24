@@ -140,7 +140,7 @@ async function executePlan(
     nodes: Object.entries(plan.nodes).map(([id, n]) => ({ id, kind: nodeKind(n) })),
   });
 
-  // ── 2. executor: 逐层现场 fan-out (层内并行, 经 primitives), leaf 调显式 leafModel ──
+  // ── 2. executor: ready-set 现场 fan-out (依赖就绪即跑, 见下方调度器), leaf 调显式 leafModel ──
   const results: Record<string, LeafResult> = {};
   const depOutputs: Record<string, string> = {};
   // fan-in 定向摘要视图: nodeId → 摘要+全文指针 (扇出≥2 且够长的 producer 才有条目)。
@@ -643,15 +643,16 @@ async function executePlan(
     // issue #4: 失败节点留痕。成功节点由 runNode 内成功分支落 checkpoint; failed/抛错节点此前**零记录**
     // (stdout 被 caveman 压掉、dag-runs.db 未启用、continuity 只存绿节点 → judge 截停后无法诊断)。
     // 这里补一条结构化败因 checkpoint (节点 id/executor/model/败因分类/错误消息截断)。全程 fail-open,
-    // status='failed' 故 resume 永不当绿跳过 (loadAllGreen/shouldSkip 只认 done)。
-    if (settled.status === 'failed' && continuity) {
+    // status≠'done' 故 resume 永不当绿跳过 (loadAllGreen/shouldSkip 只认 done)。skipped (D-7v2
+    // quorum 级联) 同样留痕: failureKind='dep-skip', summary 含未达 quorum 的依赖清单。
+    if (settled.status !== 'done' && continuity) {
       try {
         const startedAt = nodeStartedAt.get(id);
         continuity.manager.saveCheckpoint(continuity.runId, {
           nodeId: id,
           leafKind: settled.kind,
-          status: 'failed',
-          failureKind: settled.stalled ? 'stall' : 'failed',
+          status: settled.status,
+          failureKind: settled.status === 'skipped' ? 'dep-skip' : settled.stalled ? 'stall' : 'failed',
           ...(settled.model ? { model: settled.model } : {}),
           outputPaths: [],
           artifactHashes: {},
@@ -683,19 +684,64 @@ async function executePlan(
     settle(id, r1);
   }
 
+  // ── D-7v2 quorum (SDD v2): 全部依赖 settle (indeg 归零) 后判定本节点是否还值得跑 ─────
+  // requires 缺省启发: 单依赖 'all' (依赖失败还跑 = 拿 [failed] 文本当正文, 纯浪费 + 静默假成功),
+  // 多依赖 fan-in 'any' (宽扇出单叶 429 不陪葬 synth; 反 happy-path: 一律 'all' 比现状更脆)。
+  // 不达 quorum → status:'skipped' 级联 (settle 释放下游 → 下游同判), 零 LLM 零 worker 槽。
+  const quorumSkip = (id: string): LeafResult | null => {
+    const node = plan!.nodes[id]!;
+    const deps = (node.depends_on ?? []).filter((d) => idSet.has(d));
+    if (deps.length === 0) return null;
+    const doneCount = deps.filter((d) => results[d]?.status === 'done').length;
+    const req = node.requires ?? (deps.length <= 1 ? 'all' : 'any');
+    const ok = req === 'all' ? doneCount === deps.length : req === 'any' ? doneCount >= 1 : doneCount >= req;
+    if (ok) return null;
+    const bad = deps.filter((d) => results[d]?.status !== 'done').map((d) => `${d}(${results[d]?.status ?? '?'})`);
+    logger.warn(
+      { node: id, requires: req, done: doneCount, deps: deps.length, bad },
+      '[omd/executor-dag] 依赖未达 quorum → skipped 级联 (D-7v2)',
+    );
+    return {
+      id,
+      status: 'skipped',
+      kind: node.executor === 'command' ? 'command' : node.executor === 'agent' && config.agentRunner ? 'agent' : 'inproc',
+      output: `[skipped: 依赖未达 quorum (requires=${req}, done ${doneCount}/${deps.length}) — ${bad.join(', ')}]`,
+      deps,
+      usage: { in: 0, out: 0 },
+    };
+  };
+
   // worker pool: 维持 ≤cap 并发, 节点完成即补位 + 释放下游, ready 空且无在跑 → 收敛。
   let running = 0;
   await new Promise<void>((resolve, reject) => {
     const pump = (): void => {
-      if (ready.length === 0 && running === 0) {
-        resolve();
-        return;
-      }
       for (;;) {
-        if (running >= cap || ready.length === 0) break;
+        // ① quorum skip 先于 kind 闸消化 (skip 不运行不占槽, 不该被闸挡; 同步 settle 可能释放
+        //    新 ready 甚至清空图 → continue 回到循环头重判收敛, 防全 skip 链上的收敛死锁)。
+        let skippedOne = false;
+        for (let i = 0; i < ready.length; i++) {
+          const sk = quorumSkip(ready[i]!);
+          if (sk) {
+            ready.splice(i, 1);
+            try {
+              settle(sk.id, sk);
+            } catch (e) {
+              reject(e instanceof Error ? e : new Error(String(e)));
+              return;
+            }
+            skippedOne = true;
+            break;
+          }
+        }
+        if (skippedOne) continue;
+        if (ready.length === 0 && running === 0) {
+          resolve();
+          return;
+        }
+        if (running >= cap || ready.length === 0) return;
         // kind 闸内选第一个可起跑节点 (非严格 FIFO: 被 kind 闸挡住的节点让位给其它 kind, 保持吞吐)。
         const idx = ready.findIndex((id) => runningByKind[schedKind(id)] < kindCap[schedKind(id)]);
-        if (idx < 0) break; // 所有就绪节点都被各自 kind 闸挡住 → 等 settle 释放
+        if (idx < 0) return; // 所有就绪节点都被各自 kind 闸挡住 → 等 settle 释放
         const id = ready.splice(idx, 1)[0]!;
         const kind = schedKind(id);
         running++;

@@ -126,7 +126,8 @@ function dagLines(view: DagView, ctx: Ctx): string[] {
   const { snap, phase } = view;
   const total = snap.planned.length || snap.started.length + snap.settled.length;
   const done = snap.settled.filter((s) => s.status === 'done').length;
-  const failed = snap.settled.length - done;
+  const skipped = snap.settled.filter((s) => s.status === 'skipped').length;
+  const failed = snap.settled.length - done - skipped;
   const running = snap.started.length;
   const bar = progressBar(done, running, total, 12);
   const goal = snap.goal || snap.runId.slice(0, 8);
@@ -143,7 +144,7 @@ function dagLines(view: DagView, ctx: Ctx): string[] {
     label = failed ? '✘ failed' : '✔ done';
     headColor = failed ? ctx.c.red : ctx.c.green;
   }
-  const header = `⚡ ${goal} · ${label} · ${bar} ${done}/${total}${failed ? ` ✘${failed}` : ''}`;
+  const header = `⚡ ${goal} · ${label} · ${bar} ${done}/${total}${failed ? ` ✘${failed}` : ''}${skipped ? ` ⊘${skipped}` : ''}`;
   const out = [line(header, ctx, headColor)];
 
   // 层级图 (finished/stalled 也画最后已知形状)。renderProgressAscii 内部已按 cols 截, 再过 clamp 兜 ANSI 无。

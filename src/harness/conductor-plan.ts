@@ -119,6 +119,22 @@ const PlanNode = z
     on_failure: z.enum(['retry', 'complete-then-retry', 'escalate', 'pause']).optional(),
     max_retry: z.number().int().optional(),
     fallback: z.enum(['human', 'reactive']).optional(),
+    // ── SDD v2 (dag-engine-fusion-refactor) 调度/分配元数据 ──
+    /**
+     * D-7v2 quorum: 依赖失败时本节点的执行判据。'all' = 任一依赖 failed/skipped → 本节点级联
+     * skipped(不执行零 token);'any' = ≥1 依赖 done 即执行(fan-in 韧性);K(整数)= done 依赖
+     * ≥K 才执行(best-of-N 至少 K 候选)。缺省启发:deps≤1 → 'all',≥2 → 'any'(判定在执行器)。
+     */
+    requires: z.union([z.enum(['all', 'any']), z.number().int().min(1)]).optional(),
+    /** D-12v2 cluster 标签:HUD/报告分组 + stamp pass 链亲和(D-22)的边界信号。纯元数据,不进调度。 */
+    cluster: z.string().optional(),
+    /** D-17 强度档覆盖:stamp pass 选池档位(缺省 executor-kind 启发地板)。 */
+    tier: z.enum(['strong', 'mid', 'cheap']).optional(),
+    /**
+     * D-14v2 多模态:true = 执行期从直接前驱输出解析图片路径(存在性校验),经 content parts
+     * 注入本 leaf 调用,模型走 multimodal 池。
+     */
+    attach_media: z.boolean().optional(),
   })
   .passthrough()
   // U1 map 节点交叉校验: map spec ⇔ executor:'map' 互为 required + INV-U5 禁嵌套 map。
@@ -153,8 +169,19 @@ export const PlanSchema = z
     nodes: z
       .record(z.string(), PlanNode)
       .refine((n) => Object.keys(n).length > 0, { message: 'plan must have ≥1 node' }),
+    /**
+     * D-2/4v2 交付物声明:prune pass 的 keep-set 种子。未声明 → prune 恒等(INV-9 零回归)。
+     * 引用的 id 必须存在于 nodes(superRefine 闸,防剪错图)。
+     */
+    outputs: z.array(z.string().min(1)).optional(),
   })
-  .passthrough();
+  .passthrough()
+  .superRefine((plan, ctx) => {
+    for (const id of plan.outputs ?? []) {
+      if (!(id in plan.nodes))
+        ctx.addIssue({ code: 'custom', message: `outputs 引用不存在的节点 id: ${id}`, path: ['outputs'] });
+    }
+  });
 
 export type ConductorPlan = z.infer<typeof PlanSchema>;
 

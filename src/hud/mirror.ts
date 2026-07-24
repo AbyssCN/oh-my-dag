@@ -31,7 +31,7 @@ export interface HudRunRecordLike {
     planned: Array<{ id: string; kind: string }>;
     started: string[];
     startedAt: Record<string, string>;
-    settled: Array<{ id: string; status: 'done' | 'failed'; kind: string; model?: string }>;
+    settled: Array<{ id: string; status: 'done' | 'failed' | 'skipped'; kind: string; model?: string }>;
   };
 }
 

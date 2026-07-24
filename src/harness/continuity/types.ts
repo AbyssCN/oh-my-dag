@@ -18,16 +18,17 @@ export interface NodeCheckpoint {
   nodeId: string;
   leafKind: 'inproc' | 'agent' | 'command' | 'map' | 'primitive';
   /**
-   * done = 成功节点; failed = 失败节点 (issue #4: 留败因痕供事后诊断)。
-   * resume 语义只认 done —— loadAllGreen / shouldSkip 均过滤 status==='done', 故 failed
-   * checkpoint 永不被当绿跳过, 只作审计留痕。
+   * done = 成功节点; failed = 失败节点 (issue #4: 留败因痕供事后诊断); skipped = 依赖未达
+   * quorum 级联跳过 (D-7v2, 零执行)。resume 语义只认 done —— loadAllGreen / shouldSkip 均
+   * 过滤 status==='done', 故 failed/skipped checkpoint 永不被当绿跳过, 只作审计留痕。
    */
-  status: 'done' | 'failed';
+  status: 'done' | 'failed' | 'skipped';
   /**
    * 失败节点 (issue #4) 的败因分类: 'stall' = 早期心跳闸判 provider 挂起 (issue #5) |
-   * 'failed' = 通用失败 (具体原因见 summary)。done 节点 undefined。
+   * 'failed' = 通用失败 (具体原因见 summary) | 'dep-skip' = 依赖失败级联跳过 (D-7v2)。
+   * done 节点 undefined。
    */
-  failureKind?: 'stall' | 'failed';
+  failureKind?: 'stall' | 'failed' | 'dep-skip';
   /** 实际所用模型坐标 (失败归因; inproc/agent leaf 有, command/无模型 → undefined)。 */
   model?: string;
   /**

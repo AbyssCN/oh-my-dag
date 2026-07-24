@@ -9,8 +9,8 @@
 /** Max nodes before downsampling to per-level counts only. */
 const ASCII_DOWNSAMPLE_THRESHOLD = 20;
 
-/** Node status symbol map. */
-const STATUS_SYM: Record<string, string> = { done: '✔', running: '▶', failed: '✘' };
+/** Node status symbol map (skipped = D-7v2 quorum 级联跳过)。 */
+const STATUS_SYM: Record<string, string> = { done: '✔', running: '▶', failed: '✘', skipped: '⊘' };
 
 /**
  * ASCII层级图 — 宽 ≤maxCols 列。>20 节点降采样为每层计数。
@@ -22,7 +22,7 @@ export function renderProgressAscii(
   progress: {
     planned: Array<{ id: string; kind: string }>;
     started: string[];
-    settled: Array<{ id: string; status: 'done' | 'failed'; kind: string }>;
+    settled: Array<{ id: string; status: 'done' | 'failed' | 'skipped'; kind: string }>;
   },
   maxCols = 100,
 ): string {
@@ -46,7 +46,7 @@ export function renderProgressAscii(
         const s = sym(id);
         counts[s] = (counts[s] ?? 0) + 1;
       }
-      const parts = ['✔', '▶', '✘', '○'].filter((s) => counts[s]).map((s) => `${s}${counts[s]}`);
+      const parts = ['✔', '▶', '✘', '⊘', '○'].filter((s) => counts[s]).map((s) => `${s}${counts[s]}`);
       return `L${i + 1} ${parts.join(' ')}`;
     }).join('\n');
   }
