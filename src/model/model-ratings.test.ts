@@ -28,13 +28,16 @@ describe("lookupRating", () => {
 		});
 	});
 
-	test("裸关键词 modelId 不升档: kimi-coding:k3 归一后='k3', 快照无 → 中档兜底 (不加映射)", () => {
+	test("provider 品牌桥接 (D-8): kimi-coding:k3 的裸 modelId 'k3' 快照无 → 试 'kimi k3' 命中 57", () => {
+		// 剥 -coding 后缀 → 'kimi' + 'k3' → 'kimi k3' 匹配 AA 名 (修前落中档 42 heuristic)。
 		const r = lookupRating("kimi-coding:k3");
-		expect(r).toMatchObject({
-			intelligence: 42,
-			costUsd: 0.3,
-			speedTokS: null,
-		});
+		expect(r?.intelligence).toBe(57);
+		expect(r?.name).toBe("kimi k3");
+	});
+
+	test("品牌桥接不误伤: 含品牌的 modelId 直接命中不走桥接", () => {
+		// deepseek-v4-pro 归一即 'deepseek v4 pro' 直接命中, 不因桥接改变。
+		expect(lookupRating("deepseek:deepseek-v4-pro")?.intelligence).toBe(44);
 	});
 
 	test("未知 coord 含 'pro' → 强档兜底 (45/0.5)", () => {

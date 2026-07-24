@@ -171,6 +171,41 @@ function probeModelsJson(
 	return out;
 }
 
+/** .omd/config.json 路径 (OMD_CONFIG_PATH ?? .omd/config.json, cwd-相对) — 与 role-models 同约定。 */
+export function omdConfigPath(env: Record<string, string | undefined> = process.env): string {
+	return env.OMD_CONFIG_PATH?.trim() || ".omd/config.json";
+}
+
+const DECLARED_KINDS = new Set<BillingKind>(["token", "request", "session", "flat"]);
+
+/**
+ * 读 .omd/config.json 的 declaredPlans 段 (D-20): 用户**显式声明** auto-probe 探不到的持仓 ——
+ * 如 Kimi Allegretto (OAuth, auth.json 里没有)、Go 订阅 (OPENCODE_API_KEY 没配) 等。
+ * 形如 [{ provider, kind, rateUsd?, plan? }]。坏条目静默跳过 (fail-open)。
+ */
+export function readDeclaredPlans(
+	env: Record<string, string | undefined> = process.env,
+	pathOverride?: string,
+): DeclaredPlan[] {
+	const root = readJsonSafe(pathOverride ?? omdConfigPath(env));
+	const raw = root?.declaredPlans;
+	if (!Array.isArray(raw)) return [];
+	const out: DeclaredPlan[] = [];
+	for (const d of raw) {
+		if (!d || typeof d !== "object") continue;
+		const e = d as Record<string, unknown>;
+		if (typeof e.provider !== "string" || !e.provider) continue;
+		if (typeof e.kind !== "string" || !DECLARED_KINDS.has(e.kind as BillingKind)) continue;
+		out.push({
+			provider: e.provider,
+			kind: e.kind as BillingKind,
+			rateUsd: typeof e.rateUsd === "number" ? e.rateUsd : 0,
+			plan: typeof e.plan === "string" ? e.plan : "declared",
+		});
+	}
+	return out;
+}
+
 /** Probe OPENCODE_API_KEY for Go subscription. */
 function probeGoSubscription(
 	env: Record<string, string | undefined>,
@@ -259,6 +294,7 @@ export function discoverChannels(
 	opts?: {
 		authPath?: string;
 		modelsPath?: string;
+		configPath?: string;
 		planOverrides?: Record<string, PlanType>;
 	},
 ): { discovered: DiscoveredProvider[]; declarations: DeclaredPlan[] } {
@@ -268,6 +304,12 @@ export function discoverChannels(
 		const override = opts?.planOverrides?.[p.id];
 		plans.set(p.id, override ?? classifyPlan(p));
 	}
-	const declarations = buildChannelDeclarations(plans, discovered);
-	return { discovered, declarations };
+	const auto = buildChannelDeclarations(plans, discovered);
+	// D-20: 合并用户显式声明的持仓 (auto-probe 探不到的 OAuth plan / Go 等)。同 provider 声明胜
+	// (用户显式知情 > 自动推断)。
+	const declared = readDeclaredPlans(env, opts?.configPath);
+	const byProvider = new Map<string, DeclaredPlan>();
+	for (const d of auto) byProvider.set(d.provider, d);
+	for (const d of declared) byProvider.set(d.provider, d);
+	return { discovered, declarations: [...byProvider.values()] };
 }
