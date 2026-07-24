@@ -97,6 +97,8 @@ interface ConfigFile {
   models?: Record<string, string>;
   /** 多模态 leaf 候选池 (坐标列表)。 */
   multimodalPool?: string[];
+  /** auto-assign 落盘的 node → coord (D-17 一次性填, 可读可改)。resolveRoleModelConfigured 的 auto 层读它。 */
+  autoAssigned?: Record<string, string>;
 }
 
 let fileCache: { path: string; mtimeMs: number; config: ConfigFile } | null = null;
@@ -293,6 +295,22 @@ export interface NodeModelResult {
   /** How the model was resolved. 'default' = hardcoded fallback (unconfigured). */
   source: 'explicit' | 'env' | 'auto' | 'default';
 }
+
+/** 读 .omd/config.json 的 autoAssigned 段 (node→coord)。无/坏 → {} (mtime-cached, 静默)。 */
+function fileAutoAssigned(path = configPath()): Record<string, string> {
+  const a = fileConfig(path).autoAssigned;
+  return a && typeof a === 'object' && !Array.isArray(a) ? a : {};
+}
+
+/**
+ * 落盘 auto-assign 结果 (node→coord) 到 .omd/config.json autoAssigned 段 (D-17 一次性填, 可读可改)。
+ * 整段替换 (保留 models/multimodalPool 等其它段)。跨进程: daemon 下次 resolve 时 mtime 重读即捡到。
+ */
+export function persistAutoAssigned(map: Record<string, string>, path = configPath()): void {
+  mutateConfig((cfg) => {
+    cfg.autoAssigned = { ...map };
+  }, path);
+}
 /**
  * Resolve a node's model with full configuration chain.
  * Priority: explicit-arg ?? OMD_<NODE>_MODEL env ?? auto-assign coord ?? hardcoded default.
@@ -308,9 +326,11 @@ export function resolveRoleModelConfigured(
     explicit?: string;
     autoAssignMap?: Record<string, string>;
     env?: Record<string, string | undefined>;
+    /** config.json 路径 (测试注入; 默认 configPath())。auto 层读 autoAssigned 段用。 */
+    configPath?: string;
   } = {},
 ): NodeModelResult {
-  const { explicit, autoAssignMap, env = process.env } = opts;
+  const { explicit, autoAssignMap, env = process.env, configPath: cfgPath } = opts;
   // 1. explicit argument (caller knows best)
   if (explicit?.trim()) {
     return { model: explicit.trim(), source: 'explicit' };
@@ -322,8 +342,10 @@ export function resolveRoleModelConfigured(
   if (fromEnv) {
     return { model: fromEnv, source: 'env' };
   }
-  // 3. auto-assign (D-19 channel-aware routing, when available)
-  const fromAuto = autoAssignMap?.[node]?.trim();
+  // 3. auto-assign (D-19): 显式 param 优先; 未传 param 则读 .omd/config.json 的 autoAssigned 段
+  //    (D-17 一次性落盘, runAutoAssign 写)。测试传 autoAssignMap:{} 走纯链 (不读真 config, 保 hermetic)。
+  const autoMap = autoAssignMap ?? fileAutoAssigned(cfgPath);
+  const fromAuto = autoMap[node]?.trim();
   if (fromAuto) {
     return { model: fromAuto, source: 'auto' };
   }

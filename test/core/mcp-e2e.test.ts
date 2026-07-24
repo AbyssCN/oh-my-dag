@@ -51,6 +51,7 @@ const ALL_TOOLS = [
   'omd_set_key',
   'omd_apply_preset',
   'omd_set_role',
+  'omd_models_auto',
   'omd_register_provider',
   'omd_set_model',
   'omd_config_status',
