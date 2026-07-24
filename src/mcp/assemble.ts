@@ -38,6 +38,9 @@ import { createModelRouterFromEnv } from '../harness/model-router';
 import { createPlanLedger, type PlanLedger } from '../harness/plan-ledger';
 import { runExecutorDag, runExecutorDagWithPlan } from '../harness/executor-dag';
 import type { ExecutorDagConfig } from '../harness/executor-dag-types';
+import type { ConductorPlan } from '../harness/conductor-plan';
+import { prunePass } from '../harness/plan-passes/prune-pass';
+import { dedupPass } from '../harness/plan-passes/dedup-pass';
 import { createAgentLeafRunner } from '../harness/agent-leaf';
 import { createCommandLeafRunner } from '../harness/command-leaf';
 import type { AgentLeafRunner, CommandLeafRunner } from '../harness/leaf-runners';
@@ -295,6 +298,21 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   // env pool (OMD_ROUTER_POOL_*) / config.multimodalPool ≥2 才真学; 未配 → no-op = 静态 (零回归)。
   // reward = leafCostReward (成本主信号, 质量走 verifier 闸) — 见 model-router ROUTER-5。
   const router = createModelRouterFromEnv(env);
+  // SDD v2 pass 管线接线: prune (outputs 未声明 → 恒等) → dedup (无重复 → 恒等)。
+  // stamp 待 S3 (需 role-models → 四池映射 + familyOf 注入, 单独切片)。日志在接线层
+  // (INV-8: pass 纯函数零 IO, 观测归组装侧)。
+  const planFilters: Array<(p: ConductorPlan) => ConductorPlan> = [
+    (p) => {
+      const { plan, pruned } = prunePass(p);
+      if (pruned.length) logger.info({ pruned }, '[omd/mcp] prune pass: 剪除死节点 (D-2/4v2)');
+      return plan;
+    },
+    (p) => {
+      const { plan, merged } = dedupPass(p);
+      if (Object.keys(merged).length) logger.info({ merged }, '[omd/mcp] dedup pass: 语义指纹去重 (D-20)');
+      return plan;
+    },
+  ];
   const defaultConfig: Partial<ExecutorDagConfig> = {
     ...models,
     maxFanout: defaultMaxFanout,
@@ -302,6 +320,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     agentRunner,
     commandRunner,
     router,
+    planFilters,
     ...deps.configOverrides,
   };
 
