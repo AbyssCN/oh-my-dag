@@ -73,6 +73,10 @@ export function bwrapArgs(root: string, roBinds: string[]): string[] {
   args.push('--bind', root, root);
   args.push('--chdir', root);
   args.push('--setenv', 'HOME', '/tmp');
+  // TMPDIR 必须洗 (2026-07-25 实证): 宿主 shell 的 TMPDIR (如 ~/.cache/tmp) 泄进 jail 后,
+  // pi bash 工具往 os.tmpdir() 写日志 → 未挂载路径 ENOENT → worker 停摆 → 超时 SIGKILL 137。
+  // jail 内 tmp 一律指向 tmpfs /tmp (hermetic, 不 bind 宿主 cache)。
+  for (const k of ['TMPDIR', 'TEMP', 'TMP']) args.push('--setenv', k, '/tmp');
   args.push('--setenv', 'PATH', `${dirname(process.execPath)}:/usr/bin:/bin`);
   return args;
 }

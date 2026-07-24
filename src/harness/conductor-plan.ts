@@ -394,11 +394,8 @@ export function conductorSystemPrompt(
  * `{...}\nNote: {x}` — is extracted cleanly (G2 P2: the old first-`{`/last-`}` slice
  * swallowed the trailing braces and failed to parse).
  */
-export function extractPlanJson(text: string): string {
-  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence?.[1]) return fence[1].trim();
-  const start = text.indexOf('{');
-  if (start < 0) return text.trim();
+/** start 起的括号平衡切片 (字符串感知); 不平衡 → 余文 (交 JSON.parse 报错)。 */
+function balancedSlice(text: string, start: number): string {
   let depth = 0;
   let inStr = false;
   let esc = false;
@@ -414,7 +411,36 @@ export function extractPlanJson(text: string): string {
     else if (c === '{') depth++;
     else if (c === '}' && --depth === 0) return text.slice(start, i + 1);
   }
-  return text.slice(start).trim(); // unbalanced → hand the remainder to JSON.parse to error
+  return text.slice(start).trim();
+}
+
+export function extractPlanJson(text: string): string {
+  // 候选制提取 (2026-07-25 两轮 k3 实证):
+  //  ① 惰性 ```…``` 正则被字符串值里的 ``` 提前截断 (goal 引用 spec 的 "不含 ``` 围栏" →
+  //     Unterminated string) → 终点一律括号平衡扫描, 不信闭合 fence。
+  //  ② fence 开点也不可信 —— 裸 JSON 的字符串值里同样可能有 ```, 拿它当起点会跳进正文
+  //     深处抓到嵌套小对象 (首版修的回归, k3-fail-rep6 样本)。
+  // → 多锚点 (文首 + 每个 fence 开点) 各取平衡切片当候选, 优先返回「可解析且带 name+nodes」
+  //   的 plan 形状候选; 其次首个可解析; 全不可解析 → 文首余文交上层报错 (原行为)。
+  const anchors: number[] = [0];
+  const fenceRe = /```(?:json)?\s*/gi;
+  for (let m = fenceRe.exec(text); m; m = fenceRe.exec(text)) anchors.push(m.index + m[0].length);
+  let firstParseable: string | null = null;
+  for (const a of anchors) {
+    const start = text.indexOf('{', a);
+    if (start < 0) continue;
+    const cand = balancedSlice(text, start);
+    try {
+      const obj = JSON.parse(cand) as Record<string, unknown>;
+      if (obj && typeof obj === 'object' && 'name' in obj && 'nodes' in obj) return cand;
+      firstParseable ??= cand;
+    } catch {
+      /* 该锚点候选不可解析 → 试下一锚点 */
+    }
+  }
+  if (firstParseable) return firstParseable;
+  const start = text.indexOf('{');
+  return start < 0 ? text.trim() : balancedSlice(text, start);
 }
 
 /**

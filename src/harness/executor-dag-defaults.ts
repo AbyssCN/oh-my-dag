@@ -17,6 +17,7 @@ export function makeDefaultGenerate(sessionId: string): GenerateFn {
       messages: req.messages,
       model: req.model,
       thinkingLevel: req.thinkingLevel,
+      ...(req.maxTokens !== undefined ? { maxTokens: req.maxTokens } : {}),
       meta: { role: 'omd-leaf', overflowModel: LEAF_OVERFLOW_MODEL, sessionId },
     });
     return { text: r.text, usage: r.usage };

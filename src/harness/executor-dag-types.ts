@@ -13,6 +13,8 @@ export type GenerateFn = (req: {
   model: string;
   /** 推理档 (conductor=分解器 high / inproc leaf=high; → deepseek reasoning_effort)。省略=模型默认。 */
   thinkingLevel?: 'off' | 'low' | 'medium' | 'high' | 'xhigh';
+  /** 输出 token 预算 (→ send maxTokens)。省略 = transport 默认 (4096)。conductor plan 输出随任务规模涨, 必须给足。 */
+  maxTokens?: number;
 }) => Promise<{ text: string; usage: ModelUsage }>;
 
 export interface ExecutorDagConfig {
@@ -79,6 +81,11 @@ export interface ExecutorDagConfig {
    * 省略 → env OMD_CONDUCTOR_PROMPT ('lean'/'full') → 'full'。档位由 A/B eval 定, 见 conductor-plan。
    */
   conductorPromptProfile?: 'full' | 'lean';
+  /**
+   * conductor 输出 token 预算 (plan JSON 随任务规模涨; thinking conductor 的推理可计入 completion)。
+   * 省略 → env OMD_CONDUCTOR_MAX_TOKENS → 8192 (deepseek 系安全顶)。k3 大 plan 建议 32768。
+   */
+  conductorMaxTokens?: number;
   /** inproc leaf 推理档 (默认 high; mass fan-out 省成本, 不走 max — 那是 omd 设计 / best-of-N 的档)。 */
   inprocThinkingLevel?: 'off' | 'low' | 'medium' | 'high' | 'xhigh';
   /**

@@ -89,12 +89,18 @@ async function planAndExecute(
   let plan: ConductorPlan | null = null;
   let conductorUsage: ModelUsage = { in: 0, out: 0 };
   let lastErr = '';
+  // conductor 输出预算 (2026-07-25 实证修): plan JSON 随任务规模涨, thinking 模型 (k3) 的推理还可能
+  // 计入 completion 预算 — transport 默认 4096 必截断 (Unterminated string 重试耗尽整轮报废)。
+  // 默认 8192 = deepseek 系安全顶 (同 fanout SYNTH_MAX 语义); k3 等高容量 conductor 经 config/env 升。
+  const conductorMaxTokens =
+    config.conductorMaxTokens ?? (Number(process.env.OMD_CONDUCTOR_MAX_TOKENS) || 8192);
   for (let attempt = 1; attempt <= maxPlanRetries + 1; attempt++) {
     const correction = attempt === 1 ? '' : `\n\n上次回复不是有效 plan (${lastErr})。只回 JSON 对象, 别的不要。`;
     const { text, usage } = await generate({
       messages: [{ role: 'system', content: sys }, { role: 'user', content: `${PLAN_BOUNDARY}${task}${correction}` }],
       model: conductorModel,
       thinkingLevel: config.conductorThinkingLevel ?? 'high', // 分解器: high 默认
+      maxTokens: conductorMaxTokens,
     });
     conductorUsage = addUsage(conductorUsage, usage);
     const parsed = parsePlan(text, { knownTemplates: new Set(templates.keys()) });
