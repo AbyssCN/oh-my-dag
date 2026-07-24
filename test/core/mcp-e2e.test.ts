@@ -25,6 +25,7 @@ import { createPlanLedger } from '../../src/harness/plan-ledger';
 const ALL_TOOLS = [
   'dag_run',
   'dag_run_plan',
+  'dag_resume',
   'dag_status',
   'dag_result',
   'dag_node_output',

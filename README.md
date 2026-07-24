@@ -7,7 +7,7 @@
 *Your agent stays the smart brain. omd brings the cheap concurrent hands*
 *and the memory that doesn't forget.*
 
-[![MCP server: 29 tools](https://img.shields.io/badge/MCP%20server-29%20tools-c9a227?style=flat-square&labelColor=140f0a)](docs/MCP-ONBOARDING.md)
+[![MCP server: 30 tools](https://img.shields.io/badge/MCP%20server-30%20tools-c9a227?style=flat-square&labelColor=140f0a)](docs/MCP-ONBOARDING.md)
 [![Clients: Claude Code · Codex · any MCP](https://img.shields.io/badge/clients-Claude%20Code%20%C2%B7%20Codex%20%C2%B7%20any%20MCP-6f9488?style=flat-square&labelColor=140f0a)](client-skills/)
 [![Models: bring your own](https://img.shields.io/badge/models-bring%20your%20own-b3382a?style=flat-square&labelColor=140f0a)](.env.example)
 [![Runtime: Bun ≥ 1.3](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.3-b3382a?style=flat-square&labelColor=140f0a)](https://bun.sh)
@@ -30,7 +30,7 @@ jobs, runs them concurrently on cheap models you bring, verifies the result with
 skeptic from a different model family, and only spends a frontier model when a check
 actually fails. Your agent decides *what* to do and *judges* the outcome; the fleet
 does the typing. It plugs into any client as **`omd mcp`** — a stdio MCP server
-exposing 29 tools — so nothing about your existing setup changes.
+exposing 30 tools — so nothing about your existing setup changes.
 
 Three things it gives your agent, all built on one DAG engine:
 
@@ -74,7 +74,7 @@ cd <your-project> && claude mcp add omd -- omd mcp
 # or drop a .mcp.json (this repo ships a template) for a zero-command project mount
 ```
 
-The slash-command pack (`/omd-path`, `/omd-deepen`, `/omd-review`, … 19 skills that teach
+The slash-command pack (`/omd-path`, `/omd-deepen`, `/omd-review`, … 20 skills that teach
 your agent the workflows) **installs itself** into `~/.claude/skills/` the first time the
 `omd mcp` server starts — no manual copy. It is idempotent, updates on package upgrade, and
 **never overwrites a skill you have edited**. New skills appear on your next Claude session.
@@ -140,7 +140,7 @@ sides. The **MCP tools** are the engine's raw API. The **slash commands** are th
 workflow wrappers your agent invokes — each one calls the MCP tool named beside it and
 adds the discipline (when to escalate, how to accept, who holds the trigger).
 
-### MCP tools — the engine (29 tools, four groups)
+### MCP tools — the engine (30 tools, four groups)
 
 **Engine** — delegate work to the cheap fleet:
 
@@ -148,6 +148,7 @@ adds the discipline (when to escalate, how to accept, who holds the trigger).
 |---|---|
 | `dag_run` | task → conductor decomposes into a typed DAG → concurrent execution (agent leaves really write files, command leaves run tsc/tests) |
 | `dag_run_plan` | skip the conductor: execute a pre-built plan JSON directly; `resume=<runId>` skips checkpointed done nodes |
+| `dag_resume` | one-step resume: reload a failed run's plan from its on-disk checkpoint and re-run, skipping green nodes |
 | `dag_status` · `dag_result` · `dag_node_output` | three-phase async: dispatch, keep chatting, poll, fetch artifacts |
 | `dag_runs` | list runs — memory registry merged with on-disk checkpoints; optional status filter |
 | `dag_research` | multi-lens parallel research + judged synthesis; full report on disk, summary into context |
@@ -199,6 +200,7 @@ tool(s) in the right column and adds the workflow discipline.
 | `/sdd` | writes spec to `docs/plan/` | crystallize the conversation into a spec on disk before building |
 | `/execute` | `dag_run` → `dag_status`/`dag_result` | run a spec as a DAG, then actively accept the result against it |
 | `/iterate` | `dag_run` (fixpoint loop) | re-run to convergence — your agent is the judge |
+| `/resume` | `dag_runs` · `dag_resume` | list failed/interrupted runs, pick one, resume it from disk |
 | `/grill` | deliberation → `path_rule` | interrogate an idea before it's locked; land the ruling |
 | `/note` | `path_add` · `path_rule` | a decision ledger for the conversation |
 | `/council` | `dag_research` (--council) | judged multi-persona debate over a hard call |
@@ -402,7 +404,7 @@ Adopt it by copying [`harness/CLAUDE.md`](harness/CLAUDE.md) into your project a
 
 ## MCP integration (Claude Code / Codex / any client)
 
-`omd mcp` is a stdio MCP server — the 29 tools above in four groups. The server is
+`omd mcp` is a stdio MCP server — the 30 tools above in four groups. The server is
 **stateless**: maps live in `docs/plan/pathfinder/` (git), runtime state in `.omd/`,
 so any client can resume another's work.
 
@@ -446,7 +448,7 @@ MIT — see [LICENSE](LICENSE).
 **oh-my-dag(omd)是整辆车的其余部分。** 它把一个任务拆成一张小活的图,用你自带的廉价
 模型并发执行,再由一个来自不同模型家族的 skeptic 校验结果,只有校验真的失败时才动用
 frontier 模型。你的 agent 决定*做什么*、并*判断*产物;车队负责敲键盘。它以 **`omd mcp`**
-接入任意客户端 —— 一个 stdio MCP server,暴露 29 个工具 —— 你现有的配置一行都不用改。
+接入任意客户端 —— 一个 stdio MCP server,暴露 30 个工具 —— 你现有的配置一行都不用改。
 
 一套 DAG 引擎之上,给你的 agent 三样东西:
 
@@ -485,7 +487,7 @@ cd <your-project> && claude mcp add omd -- omd mcp
 # 或放一个 .mcp.json(本仓库带模板),项目级挂载零命令
 ```
 
-斜杠命令包(`/omd-path`、`/omd-deepen`、`/omd-review`… 19 个教会 agent 工作流的技能)在
+斜杠命令包(`/omd-path`、`/omd-deepen`、`/omd-review`… 20 个教会 agent 工作流的技能)在
 `omd mcp` server 首次启动时**自动装**进 `~/.claude/skills/` —— 无需手动拷贝。幂等、随包升级
 更新、**绝不覆盖你改过的技能**。新技能在你下个 Claude session 出现。用 `OMD_INSTALL_SKILLS=0` 关闭。
 
@@ -540,7 +542,7 @@ omd 能做的一切都有两条到达路径,而且它们是同一件事的两个
 API;**斜杠命令**是你的 agent 调用的薄工作流包装 —— 每条都调右列那个 MCP 工具,再补上
 纪律(何时升级、怎么验收、谁扳扳机)。
 
-### MCP 工具 —— 引擎(29 工具,四组)
+### MCP 工具 —— 引擎(30 工具,四组)
 
 **引擎组** —— 把活甩给廉价车队:
 
@@ -548,6 +550,7 @@ API;**斜杠命令**是你的 agent 调用的薄工作流包装 —— 每条都
 |---|---|
 | `dag_run` | 任务 → conductor 分解成类型化 DAG → 并发执行(agent 叶子真写文件,command 叶子跑 tsc/测试) |
 | `dag_run_plan` | 跳过 conductor:直接执行预建 plan JSON;`resume=<runId>` 跳过已 checkpoint 的 done 节点 |
+| `dag_resume` | 一键续跑:从磁盘 checkpoint 重载失败 run 的 plan 再跑,跳过已绿节点 |
 | `dag_status` · `dag_result` · `dag_node_output` | 三段式异步:派活、继续聊、轮询、取产物 |
 | `dag_runs` | 列出运行 —— 内存台账并上磁盘 checkpoint;可按状态过滤 |
 | `dag_research` | 多视角并行研究 + 评判合成;完整报告写盘,摘要进上下文 |
@@ -598,6 +601,7 @@ API;**斜杠命令**是你的 agent 调用的薄工作流包装 —— 每条都
 | `/sdd` | 写 spec 进 `docs/plan/` | 建造前把对话结晶成写盘的 spec |
 | `/execute` | `dag_run` → `dag_status`/`dag_result` | 把 spec 当 DAG 跑,再主动对照验收 |
 | `/iterate` | `dag_run`(不动点循环) | 反复跑到收敛 —— 你的 agent 当判官 |
+| `/resume` | `dag_runs` · `dag_resume` | 列出断掉的 run 挑一个,从磁盘续跑 |
 | `/grill` | 审议 → `path_rule` | 锁定前拷问想法;落裁决 |
 | `/note` | `path_add` · `path_rule` | 对话的决策台账 |
 | `/council` | `dag_research`(--council) | 对难拍的决策做评判式多角色辩论 |
@@ -766,7 +770,7 @@ prompt 每张卡只付一行 description;卡片 body 只注入执行叶、且前
 
 ## MCP 接入(Claude Code / Codex / 任意客户端)
 
-`omd mcp` 是 stdio MCP server —— 上面 29 个工具、四组。server 是**无状态**的:地图在
+`omd mcp` 是 stdio MCP server —— 上面 30 个工具、四组。server 是**无状态**的:地图在
 `docs/plan/pathfinder/`(git),运行时状态在 `.omd/`,所以任意客户端都能接手另一个的活。
 
 ```bash
