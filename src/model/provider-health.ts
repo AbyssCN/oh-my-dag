@@ -1,52 +1,68 @@
 /**
- * src/model/provider-health —— provider 运行时熔断 (circuit breaker, 补 role-fallback 的健康维度)。
+ * src/model/provider-health —— (channel, model) 粒度熔断 (circuit breaker, D-18/INV-5)。
  *
- * role-fallback 原判据只有「凭证维度」(启动时有没有 key)。缺「运行时健康」: 一个配了 key 但正在
- * 限流/宕机的 provider 仍被 usable 放行, 照样往它打。本模块补一层短时冷却:
- *   callModel 命中 provider-fault (fetch 失败 / HTTP 429 / 5xx) → reportProviderFailure 冷却 N 秒;
- *   冷却窗内 inCooldown=true → role-fallback 的 usable 判 false → 该角色顺延到 fallback;
- *   窗过自动放回 (无需显式 recovery 探测 —— 下次解析即重试。LKGP「粘住上次成功」对我们候选少
- *   收益低, 故不做)。
+ * 原设计按 provider 裸名冷却 → 同 provider 不同 model 共享冷却窗 (深seek v4-flash 故障把 v4-pro 也拉黑)。
+ * D-18 改为 (channel, model) 粒度: 同一 model 在不同 channel 独立冷却 —— allegretto:kimi-k3 故障不影响
+ * lite:kimi-k3。role-fallback 只知 channel 不知 model → channelInCooldown(channel) 查该 channel 是否有
+ * **任意** model 在冷却 (宽门); inCooldown(coord) 按 channel:model 精确查 (窄门, callModel 重试用)。
  *
- * 纯内存 (进程级), 不落盘: 熔断是瞬时健康态, 重启即清是对的。**独立模块**避免 index ↔ role-fallback
- * 的 import 环 —— index (callModel) 与 role-fallback (usable) 都只依赖本模块, 本模块不反向依赖二者。
+ * 纯内存 (进程级), 不落盘: 熔断是瞬时健康态, 重启即清是对的。独立模块避免 index ↔ role-fallback import 环。
  */
 
-/** 默认冷却窗 (ms): 一次 provider-fault 后该 provider 静默 30s, 期间角色顺延兜底。 */
+/** 默认冷却窗 (ms): 一次 provider-fault 后该 (channel, model) 静默 30s。 */
 const DEFAULT_COOLDOWN_MS = 30_000;
 
-/** provider 名 → 冷却截止 epoch ms。 */
+/** "channel:model" → 冷却截止 epoch ms。 */
 const cooldownUntil = new Map<string, number>();
 
-/** 坐标/裸名 → 裸 provider 名 ('deepseek:xx' → 'deepseek'; 裸名原样) —— report 与 query 归一, 防错位漏命中。 */
-function providerOf(coordOrName: string): string {
-  const i = coordOrName.indexOf(':');
-  return i === -1 ? coordOrName : coordOrName.slice(0, i);
+/** "channel:model" 坐标 → "channel:model" key。裸 channel 名 → "channel:" (全 channel 冷却, 内部不用)。 */
+function keyOf(coord: string): string {
+  return coord.includes(':') ? coord : `${coord}:`;
+}
+
+/** 从 "channel:model" 坐标提取 channel 名。 */
+function channelOf(coord: string): string {
+  const i = coord.indexOf(':');
+  return i === -1 ? coord : coord.slice(0, i);
 }
 
 /**
- * 上报一次 provider 故障 → 冷却该 provider。接受坐标或裸名 (内部归一到 provider)。
- * 幂等: 重复上报只刷新截止时间。空串忽略。
+ * 上报一次 channel:model 故障 → 冷却该组合。幂等: 重复上报刷新截止时间。
+ * @param coord "channel:model" 坐标 (如 "allegretto:kimi-k3") 或裸 channel 名 (冷却该 channel 所有 model)。
  */
-export function reportProviderFailure(coordOrName: string, cooldownMs = DEFAULT_COOLDOWN_MS): void {
-  const p = providerOf(coordOrName);
-  if (!p) return;
-  cooldownUntil.set(p, Date.now() + Math.max(0, cooldownMs));
+export function reportProviderFailure(coord: string, cooldownMs = DEFAULT_COOLDOWN_MS): void {
+  if (!coord) return;
+  cooldownUntil.set(keyOf(coord), Date.now() + Math.max(0, cooldownMs));
 }
 
 /**
- * provider 是否在冷却窗内 (= 运行时不健康, 应顺延兜底)。窗已过 → 顺手清条目 + 返 false (自愈)。
+ * 坐标是否在冷却窗内 (精确 channel:model)。窗已过 → 清条目返 false (自愈)。
  * `now` 可注入供测试。
  */
-export function inCooldown(coordOrName: string, now = Date.now()): boolean {
-  const p = providerOf(coordOrName);
-  const until = cooldownUntil.get(p);
+export function inCooldown(coord: string, now = Date.now()): boolean {
+  const k = keyOf(coord);
+  const until = cooldownUntil.get(k);
   if (until === undefined) return false;
   if (until <= now) {
-    cooldownUntil.delete(p);
+    cooldownUntil.delete(k);
     return false;
   }
   return true;
+}
+
+/**
+ * 该 channel 是否有**任意** model 在冷却 (= channel 级宽门)。
+ * role-fallback 只知 channel 不知 model, 用此判断是否顺延到下一个 channel。
+ */
+export function channelInCooldown(channel: string, now = Date.now()): boolean {
+  const prefix = `${channel}:`;
+  for (const [k, until] of cooldownUntil) {
+    if (k.startsWith(prefix)) {
+      if (until > now) return true;
+      cooldownUntil.delete(k); // 窗过自愈
+    }
+  }
+  return false;
 }
 
 /** 清全部冷却态 —— 测试钩子 (跨用例不串味)。 */

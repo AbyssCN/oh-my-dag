@@ -1,30 +1,45 @@
 /**
- * provider-health 熔断测试: 上报即冷却 · 窗内 inCooldown · 窗过自愈 · 坐标/裸名归一 · reset。
- * 纯内存零网络; `now` 注入避免真时钟依赖。
+ * provider-health 熔断测试 (D-18/INV-5): channel:model 粒度冷却。
+ *  · 上报 channel:model → 该精确组合冷却, 其它 model 同 channel 不受影响
+ *  · channelInCooldown(channel) → channel 级宽门 (role-fallback 用)
+ *  · 窗过自愈 · 空串忽略 · reset
  */
 import { afterEach, describe, expect, test } from 'bun:test';
-import { inCooldown, reportProviderFailure, resetProviderCooldowns } from './provider-health';
+import {
+  channelInCooldown,
+  inCooldown,
+  reportProviderFailure,
+  resetProviderCooldowns,
+} from './provider-health';
 
-describe('provider-health circuit breaker', () => {
+describe('provider-health circuit breaker (D-18/INV-5)', () => {
   afterEach(() => resetProviderCooldowns());
 
   test('未上报 → 不在冷却', () => {
-    expect(inCooldown('deepseek')).toBe(false);
+    expect(inCooldown('allegretto:kimi-k3')).toBe(false);
+    expect(channelInCooldown('allegretto')).toBe(false);
   });
 
-  test('上报后窗内 → 在冷却; 窗过 → 自愈返 false', () => {
-    reportProviderFailure('deepseek', 30_000);
+  test('上报 channel:model → 该精确组合冷却; 窗过 → 自愈', () => {
+    reportProviderFailure('allegretto:kimi-k3', 30_000);
     const t0 = Date.now();
-    expect(inCooldown('deepseek', t0 + 10_000)).toBe(true); // 窗内
-    expect(inCooldown('deepseek', t0 + 40_000)).toBe(false); // 窗过 → 自愈
-    // 自愈后条目已清: 再查 (即便 now 回到窗内) 仍 false
-    expect(inCooldown('deepseek', t0 + 10_000)).toBe(false);
+    expect(inCooldown('allegretto:kimi-k3', t0 + 10_000)).toBe(true);  // 窗内
+    expect(inCooldown('allegretto:kimi-k3', t0 + 40_000)).toBe(false); // 窗过 → 自愈
+    expect(inCooldown('allegretto:kimi-k3', t0 + 10_000)).toBe(false); // 自愈后条目已清
   });
 
-  test('坐标与裸名归一: 上报坐标 → 裸名查得到 (防错位漏命中)', () => {
-    reportProviderFailure('deepseek:deepseek-v4-pro', 30_000);
-    expect(inCooldown('deepseek', Date.now() + 1_000)).toBe(true);
-    expect(inCooldown('deepseek:deepseek-v4-flash', Date.now() + 1_000)).toBe(true);
+  test('同 channel 不同 model 独立冷却 (D-18 核心)', () => {
+    reportProviderFailure('allegretto:kimi-k3', 30_000);
+    // kimi-k3 冷却中, 但同 channel 的其它 model 不受影响
+    expect(inCooldown('allegretto:kimi-k3')).toBe(true);
+    expect(inCooldown('allegretto:other-model')).toBe(false);
+    expect(inCooldown('lite:kimi-k3')).toBe(false); // 不同 channel 也不影响
+  });
+
+  test('channelInCooldown 宽门: channel 内任一 model 冷却 → true', () => {
+    reportProviderFailure('allegretto:kimi-k3', 30_000);
+    expect(channelInCooldown('allegretto')).toBe(true);   // channel 有 model 在冷却
+    expect(channelInCooldown('lite')).toBe(false);         // 不同 channel
   });
 
   test('空串忽略, 不抛', () => {
@@ -33,8 +48,10 @@ describe('provider-health circuit breaker', () => {
   });
 
   test('reset 清全部冷却', () => {
-    reportProviderFailure('mimo', 60_000);
+    reportProviderFailure('allegretto:kimi-k3', 60_000);
+    reportProviderFailure('lite:kimi-k3', 60_000);
     resetProviderCooldowns();
-    expect(inCooldown('mimo', Date.now() + 1_000)).toBe(false);
+    expect(inCooldown('allegretto:kimi-k3')).toBe(false);
+    expect(inCooldown('lite:kimi-k3')).toBe(false);
   });
 });

@@ -197,7 +197,7 @@ export const ROLE_PRESETS: readonly RolePreset[] = [
       OMD_ROUTER_POOL_INPROC: `${QWEN_PLUS},${MIMO_ULTRASPEED}`,
       OMD_ROUTER_POOL_AGENT: `${QWEN_PLUS},${QWEN_MAX}`,
     },
-    multimodalPool: [QWEN_PLUS, MIMO_ULTRASPEED],
+    multimodalPool: [QWEN_PLUS, MIMO_25],
     multimodalPoolPremium: [ZHIPU_GLM, KIMI_CODING_K3],
     // verifier 跨家族 → qwen max (≠ kimi 掌舵 / deepseek 评判)
     configRoles: [{ role: 'verifier', coord: QWEN_MAX }],
@@ -244,7 +244,7 @@ export const ROLE_PRESETS: readonly RolePreset[] = [
       // 学"过闸最省"。agent (改文件) 不开池, 保 ds-flash 确定性。
       OMD_ROUTER_POOL_INPROC: `${DS_FLASH},${MIMO_25}`,
     },
-    multimodalPool: [MIMO_ULTRASPEED],
+    multimodalPool: [MIMO_25],
     // canonical config 角色 (role-models.ts 5 角色去 plan): conductor/leaf/verifier/dream。
     // verifier 默认 k3 (Nick: k3 或 codex; k3 与掌舵同源, codex 为跨家族避盲点备选)。
     configRoles: [

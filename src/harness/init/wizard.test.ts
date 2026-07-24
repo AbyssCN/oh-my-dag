@@ -265,7 +265,7 @@ describe('applyRolePreset · key 跳过闸', () => {
     expect(updates.OMD_ROUTER_POOL_INPROC).toBe('qwen:qwen3.7-plus,mimo:mimo-v2.5-pro-ultraspeed');
     expect(updates.OMD_ROUTER_POOL_AGENT).toBe('qwen:qwen3.7-plus,qwen:qwen3.7-max');
     // 便宜层全保留; 贵层剔除 zhipu (key 跳过) 剩 kimi-coding
-    expect(calls.pools).toEqual([['qwen:qwen3.7-plus', 'mimo:mimo-v2.5-pro-ultraspeed']]);
+    expect(calls.pools).toEqual([['qwen:qwen3.7-plus', 'mimo:mimo-v2.5']]);
     expect(calls.premiums).toEqual([['kimi-coding:k3']]);
     expect(calls.roles).toEqual([['verifier', 'qwen:qwen3.7-max']]);
   });

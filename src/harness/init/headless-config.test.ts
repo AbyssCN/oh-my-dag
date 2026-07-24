@@ -88,7 +88,7 @@ describe('applyPresetHeadless', () => {
     expect(cfg.models.verifier).toBe('kimi-coding:k3');
     expect(cfg.models.dream).toBe('deepseek:deepseek-v4-flash');
     expect(cfg.models.plan).toBeUndefined();
-    expect(cfg.multimodalPool).toEqual(['mimo:mimo-v2.5-pro-ultraspeed']);
+    expect(cfg.multimodalPool).toEqual(['mimo:mimo-v2.5']);
   });
 
   test('未知 preset → throw', () => {
