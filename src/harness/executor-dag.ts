@@ -76,9 +76,16 @@ async function planAndExecute(
   maxPlanRetries: number,
   templates: ReadonlyMap<string, AgentTemplate>,
 ): Promise<ExecOnce> {
-  // ── 1. conductor: 单结构化调用规划 (我们用 MiMo, 显式可换) ──────────────────
+  // ── 1. conductor: 单结构化调用规划 (显式可换) ──────────────────────────────
   // 模板注册表进规划 prompt (每卡一行 description); parsePlan 校验 template 引用 (TPL-2 规划层拒)。
-  const sys = conductorSystemPrompt({ agents: config.agents, templates: templateRoster(templates) });
+  // prompt 档位: config > env OMD_CONDUCTOR_PROMPT > 'full' (弱 conductor 教练全量; 'lean' 给顶级模型)。
+  const promptProfile =
+    config.conductorPromptProfile ?? (process.env.OMD_CONDUCTOR_PROMPT === 'lean' ? 'lean' : 'full');
+  const sys = conductorSystemPrompt({
+    agents: config.agents,
+    templates: templateRoster(templates),
+    profile: promptProfile,
+  });
   let plan: ConductorPlan | null = null;
   let conductorUsage: ModelUsage = { in: 0, out: 0 };
   let lastErr = '';

@@ -191,10 +191,18 @@ export type ConductorPlan = z.infer<typeof PlanSchema>;
  * The conductor's frozen system prompt (PLAN-1). Encodes the coordinator's 4-phase
  * decomposition stance (SDD §3.1: Research-parallel / Synthesis-central / Impl-dispatch /
  * Verify-independent) and pins the output contract to the plan schema.
+ *
+ * profile (SDD v2 追加, 2026-07-25): prompt 内容 = 环境事实 + 弱模型补偿两类混装。
+ *  - 'full' (默认, 零回归) = 全量 — 弱 conductor (mimo/M3 era) 需要 granularity/深度/genre 教练。
+ *  - 'lean' = 只留**环境事实**(输出 schema / executor 词表+写文件硬规则 / 并行安全 / map·primitive
+ *    菜单 / 模板注册表) + 一行版纪律 — 顶级 conductor (k3) 上全量教练是保守偏置, 疑压平分解质量
+ *    (harness 退役测试: 强模型使教练冗余 → 撤)。两档均为字节稳定冻结前缀 (PLAN-1, 各自成 cache 面)。
+ *    档位选择走 A/B eval (conductor-modelmix oracle), 不拍脑袋。
  */
 export function conductorSystemPrompt(
-  opts: { agents?: string[]; templates?: { name: string; description: string }[] } = {},
+  opts: { agents?: string[]; templates?: { name: string; description: string }[]; profile?: 'full' | 'lean' } = {},
 ): string {
+  const lean = opts.profile === 'lean';
   const roster = opts.agents?.length
     ? `Available executor agents (use ONLY these as node "agent"): ${opts.agents.join(', ')}.`
     : 'Use the SAMPO roster as node "agent" ids (sibelius / lönnrot / vaaka / kaiku / aalto).';
@@ -218,6 +226,16 @@ export function conductorSystemPrompt(
     'to split work — it is to guarantee the graph, once run, fully answers the task with nothing missing.',
     'Decompose the task below into a directed acyclic graph of executor nodes.',
     '',
+    // ── 纪律段: full = 弱 conductor 教练全量; lean = 一行版 (强模型自判, 只留不可自推导的钩子) ──
+    ...(lean
+      ? [
+          'Split on natural boundaries; give correctness-critical nodes a postcondition (GWT). Prefer',
+          '"command" nodes over fresh generation where indexed infra already answers. depends_on only for',
+          'real data dependencies. Executors may be weak models: phrase each leaf goal to PRODUCE its',
+          'deliverable content (never "execute step X"), and size nodes so a weak executor stays coherent.',
+          '',
+        ]
+      : [
     'Decomposition stance (split on NATURAL boundaries, not turn counts):',
     '- Research-parallel: independent investigations become sibling nodes (no deps between them).',
     '- Synthesis-central: a node that consumes several siblings declares them in depends_on.',
@@ -258,6 +276,7 @@ export function conductorSystemPrompt(
     '- After planning, scan the longest dependency chain: if a node sits on a deep level but consumes nothing',
     '  from the levels above it, LIFT it up to run in parallel. Keep the graph WIDE (many siblings) and SHALLOW.',
     '',
+        ]),
     'Parallel-safety (siblings run concurrently — this GATES the WIDE-over-DEEP rule above):',
     '- Make two nodes siblings (no dep between them) ONLY if they touch disjoint files, write distinct',
     '  output_path, and share no migration / DB fixture / scarce resource (port, provider rate limit).',
@@ -283,12 +302,16 @@ export function conductorSystemPrompt(
     '  produces NOTHING (returns text, node reports done, no artifact). NEVER use "leaf" for an',
     '  implementation/build node. "Default to leaf" applies only to text-deliverable nodes (analysis/design/research).',
     '',
+    ...(lean
+      ? []
+      : [
     'Node goal phrasing (genre): when the task asks to DESIGN / BREAK DOWN / DESCRIBE / PLAN / ANALYZE',
     '(the deliverable is TEXT, not a side effect), each node\'s "goal" must PRODUCE that piece of content',
     '— e.g. "describe step 2 / design the review for X / list the checks" — NEVER "execute / perform / run',
     'step X". Action-verb goals belong only to executor:agent/command nodes that genuinely touch files or',
     'run tools; phrasing a leaf goal as "execute …" makes the model fake-perform it and fabricate data.',
     '',
+        ]),
     'Runtime work-list → executor:"map" (do NOT hallucinate a command that enumerates AND processes):',
     'When the SET of items to process is UNKNOWN at plan time — audit EACH module, research EACH lens,',
     'fix EACH failing test, process EACH discovered file — you cannot name them now. Do NOT collapse the',
@@ -312,6 +335,12 @@ export function conductorSystemPrompt(
     'Those keep full expressive output. All work/retrieval/analysis nodes omit it (their narration gets',
     'compressed to save tokens — the real result lives in files/structured output, not the prose).',
     '',
+    ...(lean
+      ? [
+          'Field "persona" (optional): ONE line ROLE + first-principles lens to condition a weak executor',
+          'into its expert region (research/judgement/design leaves only; omit for mechanical/command).',
+        ]
+      : [
     'Expert framing (field "persona", optional): condition a weak executor into the EXPERT REGION of its',
     'distribution. A persona is ONE line = ROLE + VIEWPOINT/first-principles lens, MATCHED to the leaf',
     'genre — never a bland title ("expert"/"engineer" alone barely conditions; the sharper the role+lens,',
@@ -320,6 +349,7 @@ export function conductorSystemPrompt(
     '  e.g. "分布式系统 PhD (CALM/单调性视角)" · "前沿战略分析师 (二阶效应/反身性视角)".',
     '- impl / drafting → senior practitioner + a stance, e.g. "资深 Bun/TS 工程师 (删减优先, 最小接口)".',
     '- mechanical / file / command → OMIT persona (framing adds nothing, just wastes tokens).',
+        ]),
     'Keep the graph acyclic.',
     ...templateSection,
     '',
