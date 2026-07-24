@@ -14,6 +14,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { listProviders, getProvider } from '../model';
+import { listModelIds } from '../model/models-json';
 import {
   listRoleModels,
   persistRoleModel,
@@ -60,10 +61,15 @@ function writeEnvUpdates(cwd: string, env: Record<string, string | undefined>, u
   for (const [k, v] of Object.entries(updates)) (env as Record<string, string>)[k] = v;
 }
 
-/** 选一个 provider:model 坐标 (从 callModel registry)。取消 → undefined。 */
+/**
+ * 选一个 provider:model 坐标。两级 select 零打字:
+ *   ① 选 provider (callModel registry: 内置 + models.json 自定)
+ *   ② 从 models.json 该 provider 登记的 model id **列菜单** (免盲打坐标) + 逃生口:
+ *      「↩ 默认」→ 裸 provider 坐标 (走 defaultModel);「✎ 自定义」→ 手输 (catalog 未登记的 model)。
+ * catalog 空 (该 provider 没在 models.json 登记 model) → 直接落自定义输入 (退回旧行为, 不卡死)。
+ * 取消 → undefined。
+ */
 async function pickCoord(ui: ConfigUi): Promise<string | undefined> {
-  // 已注册 provider (内置 + models.json 自定) 全放行让用户自选 —— 自定 provider 的多模态元数据不再在
-  // config 层维护 (统一-registry: 属性归 models.json, 无 multimodal 标记), 与内置 provider 一致。
   const providers = listProviders();
   if (providers.length === 0) {
     ui.notify(m({ en: 'No provider registered — configure a backend / API first', zh: '无已注册 provider — 先配后端 / API' }), 'warning');
@@ -71,9 +77,23 @@ async function pickCoord(ui: ConfigUi): Promise<string | undefined> {
   }
   const provider = await ui.select(m({ en: 'Pick provider', zh: '选 provider' }), providers);
   if (!provider) return undefined;
+
   const def = getProvider(provider)?.defaultModel ?? '';
-  const model = (await ui.input(m({ en: `Model id for ${provider} (blank = default)`, zh: `${provider} 的 model id (空 = 默认)` }), def)) ?? '';
-  const mid = model.trim();
+  const catalog = listModelIds(provider);
+  const DEFAULT = def ? m({ en: `↩ default (${def})`, zh: `↩ 默认 (${def})` }) : '';
+  const CUSTOM = m({ en: '✎ custom model id…', zh: '✎ 自定义 model id…' });
+
+  // catalog 有登记 → 列菜单; 无 → 直接自定义输入 (免选一个只有逃生口的空菜单)。
+  let mid: string | undefined;
+  if (catalog.length > 0) {
+    const opts = [...catalog, ...(DEFAULT ? [DEFAULT] : []), CUSTOM];
+    const picked = await ui.select(m({ en: `Model for ${provider}`, zh: `选 ${provider} 的模型` }), opts);
+    if (!picked) return undefined;
+    if (DEFAULT && picked === DEFAULT) return provider; // 裸坐标 → defaultModel
+    if (picked !== CUSTOM) return `${provider}:${picked}`; // 直接选中 catalog 项
+    // CUSTOM → 落到下方手输
+  }
+  mid = ((await ui.input(m({ en: `Model id for ${provider} (blank = default)`, zh: `${provider} 的 model id (空 = 默认)` }), def)) ?? '').trim();
   return mid ? `${provider}:${mid}` : provider;
 }
 

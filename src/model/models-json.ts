@@ -97,6 +97,28 @@ export function readCustomProviders(
   return out;
 }
 
+/**
+ * 列某 provider 在 models.json 里登记的 model id (供 config-center 角色选单直接列菜单, 免盲打)。
+ * **不按凭证/条目完整性过滤** —— 展示态, builtin-override (只有 models[], 无 baseUrl) 也带出,
+ * 这样内置 provider (deepseek 等) 的候选 model 同样进菜单。文件缺/坏/无该 provider → []。
+ */
+export function listModelIds(
+  provider: string,
+  env: Record<string, string | undefined> = process.env,
+  path = modelsJsonPath(env),
+): string[] {
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as {
+      providers?: Record<string, RawProvider>;
+    };
+    const p = parsed?.providers?.[provider];
+    if (!p || typeof p !== 'object') return [];
+    return cleanModels(p.models).map((m) => m.id);
+  } catch {
+    return [];
+  }
+}
+
 /** 一个自定 provider 的展示态 (config_status 用): key 未解析前的原貌 + 凭证是否就绪。 */
 export interface CustomProviderStatus {
   id: string;

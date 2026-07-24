@@ -6,6 +6,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { clearProviders, registerProvider } from './providers';
 import { setPiTransportDepsForTest } from './pi-transport';
+import { reportProviderFailure, resetProviderCooldowns } from './provider-health';
 import { roleModelWithFallback, resetRoleFallbackWarned, warnUnregisteredRoles } from './role-fallback';
 
 const FAKE = { baseUrl: 'http://x.invalid', apiKey: 'k', api: 'openai-compatible' as const };
@@ -16,10 +17,12 @@ describe('roleModelWithFallback (issue #6)', () => {
   beforeEach(() => {
     clearProviders();
     resetRoleFallbackWarned();
+    resetProviderCooldowns();
     isolateAuth();
   });
   afterEach(() => {
     clearProviders();
+    resetProviderCooldowns();
   });
   afterAll(() => {
     setPiTransportDepsForTest(); // 复位, 不污染其它测试文件
@@ -56,6 +59,23 @@ describe('roleModelWithFallback (issue #6)', () => {
 
   test('全不可达 (空注册表, 无凭证) → 原样返首选 (下游 fail-loud/降级)', () => {
     expect(roleModelWithFallback('deepseek:deepseek-v4-flash', 'dream', {})).toBe('deepseek:deepseek-v4-flash');
+  });
+
+  test('首选有凭证但**运行时熔断中** → 顺延到健康 provider (健康维度)', () => {
+    registerProvider('deepseek', { ...FAKE, defaultModel: 'deepseek-v4-pro' });
+    registerProvider('mimo', { ...FAKE, defaultModel: 'mimo-v2.5-pro' });
+    reportProviderFailure('deepseek'); // deepseek 刚 429/宕机 → 冷却
+    // deepseek 有凭证但冷却中 → usable=false → 顺延注册表首个健康者 (mimo)
+    expect(roleModelWithFallback('deepseek:deepseek-v4-pro', 'leaf', {})).toBe('mimo');
+  });
+
+  test('兜底跳过同样熔断中的 provider (不顺延到另一个不健康后端)', () => {
+    registerProvider('deepseek', { ...FAKE, defaultModel: 'deepseek-v4-pro' });
+    registerProvider('mimo', { ...FAKE, defaultModel: 'mimo-v2.5-pro' });
+    registerProvider('kimi', { ...FAKE, defaultModel: 'k' });
+    reportProviderFailure('deepseek'); // 首选冷却
+    reportProviderFailure('mimo'); // 注册序首个兜底也冷却 → 应跳过, 落 kimi
+    expect(roleModelWithFallback('deepseek:deepseek-v4-pro', 'leaf', {})).toBe('kimi');
   });
 });
 

@@ -18,6 +18,7 @@
 import { assertModelResolvable } from './index';
 import { getProvider, listProviders } from './providers';
 import { piHasCredential } from './pi-transport';
+import { inCooldown } from './provider-health';
 import { MODEL_ROLES, resolveRoleModel } from './role-models';
 import { logger } from '../logger';
 
@@ -45,9 +46,14 @@ function resolvable(coord: string): boolean {
   }
 }
 
-/** 首选坐标是否可用 (凭证维度)。 */
+/**
+ * 首选坐标是否可用 = **凭证维度 且 运行时健康维度** (双闸)。
+ * 凭证: 有 key/OAuth (credentialed)。健康: 不在熔断冷却窗内 (inCooldown, 补 provider-health)。
+ * 任一不满足 → 视为不可用 → roleModelWithFallback 顺延兜底。
+ */
 function usable(coord: string, env: Record<string, string | undefined>): boolean {
-  return credentialed(providerOf(coord), env);
+  const p = providerOf(coord);
+  return credentialed(p, env) && !inCooldown(p);
 }
 
 // warn-once 去重 (per role→fallback): 「起跑一行 WARN」不刷屏 —— dream 每次 session 结束都会走这条,
@@ -73,8 +79,9 @@ export function roleModelWithFallback(
 ): string {
   if (usable(preferred, env)) return preferred;
   for (const p of listProviders()) {
-    // 兜底目标须**有凭证** (自有 registry 注册即带 key) **且**裸坐标可解析 (有 defaultModel)。
-    if (credentialed(p, env) && resolvable(p)) {
+    // 兜底目标须**有凭证** (自有 registry 注册即带 key)、**运行时健康** (不在熔断冷却) **且**裸坐标
+    // 可解析 (有 defaultModel)。跳过冷却中的 provider, 避免顺延到另一个正在限流/宕机的后端。
+    if (credentialed(p, env) && !inCooldown(p) && resolvable(p)) {
       const key = `${role}:${preferred}→${p}`;
       if (!warnedFallback.has(key)) {
         warnedFallback.add(key);

@@ -18,6 +18,7 @@ import type {
 import { getProvider } from './providers';
 import { emitModelUsage } from './accounting';
 import { resolvePiModel, piRequest, type PiModel } from './pi-transport';
+import { reportProviderFailure } from './provider-health';
 
 export type {
   ContentPart,
@@ -313,6 +314,17 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/**
+ * 该错误是否 = provider 运行时故障 (值得熔断该 provider): fetch 失败 (非 abort) 或 HTTP 429/5xx。
+ * abort = 调用方意图停止 (非后端故障) → 不熔断。config/parse/validation/truncation = 请求/内容问题,
+ * 换 provider 也不解决 → 不熔断 (熔断只针对「这个后端此刻不健康」)。
+ */
+function isProviderFault(err: ModelError): boolean {
+  if (err.kind === 'transport') return !String(err.message).includes('abort');
+  if (err.kind === 'http') return err.status === 429 || (err.status ?? 0) >= 500;
+  return false;
+}
+
 export async function callModel(req: ModelRequest): Promise<ModelResponse> {
   if (!req.messages || req.messages.length === 0) {
     throw new ModelError('config', 'callModel: messages required');
@@ -346,6 +358,9 @@ export async function callModel(req: ModelRequest): Promise<ModelResponse> {
       }
       lastErr = e instanceof ModelError ? e : new ModelError('transport', String(e), { cause: e });
       lastErr.attempts = attempt + 1; // accurate budget on exhaustion (P1-C / INV-3)
+      // 运行时熔断: provider-fault (429/5xx/网络) → 冷却该 provider, 后续 role 解析顺延兜底
+      // (provider-health)。本次 in-flight 重试仍打原 target — 冷却只改**未来**的角色路由。
+      if (isProviderFault(lastErr)) reportProviderFailure(target.resolved);
       if (attempt < maxRetries) {
         await sleep(baseDelay * 2 ** attempt, req.signal);
         continue;
