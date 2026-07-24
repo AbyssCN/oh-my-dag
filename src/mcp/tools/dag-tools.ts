@@ -194,10 +194,112 @@ function summarizeResult(result: ExecutorDagResult): Record<string, unknown> {
  * Build 5 dag tools: dag_run, dag_run_plan, dag_status, dag_result, dag_node_output.
  * Each handler is a pure fn closed over {engine, runRegistry, cwd, clock}.
  */
+/**
+ * Shared plan-launch: register/reopen the run, wire live progress + continuity, fire the engine
+ * (fire-and-forget), return the running-status tool result. Reused by dag_run_plan and dag_resume.
+ */
+function launchPlanRun(
+  parsedPlan: ConductorPlan,
+  opts: { resume?: string; leafModel?: string; maxFanout?: number; task?: string; toolName: string },
+  deps: DagToolDeps,
+): { content: { type: 'text'; text: string }[]; isError?: boolean } {
+  const { engine, runRegistry, defaultConfig, continuity, hudMirror, ledger } = deps;
+  const { resume, leafModel, maxFanout, task, toolName } = opts;
+  const runId = resume ?? randomUUID();
+  const goal = task?.slice(0, 200) ?? parsedPlan.name ?? 'prebuilt plan';
+  if (resume) {
+    // resume 语义: failed run 重开 / server 重启后未知 runId 重登记; 在飞或已 done 的拒绝。
+    const rec = runRegistry.getRecord(resume);
+    if (rec && rec.status !== 'failed') {
+      return { content: [{ type: 'text', text: `resume 拒绝: run ${resume} 当前 ${rec.status} (仅 failed/未知可续)` }], isError: true };
+    }
+    runRegistry.reopenForResume(runId, { goal, meta: { tool: toolName, resumed: true } });
+  } else {
+    runRegistry.register(runId, { goal, meta: { tool: toolName } });
+    runRegistry.start(runId);
+  }
+  let hudLevels: string[][] | undefined;
+  try {
+    hudLevels = topoLevels(parsedPlan);
+  } catch {
+    hudLevels = undefined;
+  }
+  const config: ExecutorDagConfig = {
+    ...defaultConfig,
+    leafModel: leafModel ?? defaultConfig?.leafModel ?? '',
+    onNodeEvent: (e) => {
+      runRegistry.applyNodeEvent(runId, e);
+      hudMirror?.write(runId, runRegistry.getRecord(runId), hudLevels);
+    },
+    ...(maxFanout ? { maxFanout } : {}),
+    ...(continuity
+      ? { continuity: { manager: continuity.manager, runId, resume: !!resume, repoRoot: continuity.repoRoot } }
+      : {}),
+  } as ExecutorDagConfig;
+  if (!config.leafModel) {
+    runRegistry.fail(runId, `${toolName}: leafModel required (param or defaultConfig)`);
+    return { content: [{ type: 'text', text: `runId: ${runId}\nerror: leafModel required` }], isError: true };
+  }
+  engine
+    .runExecutorDagWithPlan(parsedPlan, config)
+    .then((result) => {
+      runRegistry.setNodeDetails(runId, extractNodeDetails(result));
+      runRegistry.succeed(runId, summarizeResult(result));
+      hudMirror?.write(runId, runRegistry.getRecord(runId), hudLevels);
+      if (ledger && task) recordPlanRun(ledger, task, result, config.conductorModel);
+    })
+    .catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      runRegistry.fail(runId, msg);
+      hudMirror?.write(runId, runRegistry.getRecord(runId), hudLevels);
+    });
+  return {
+    content: [{ type: 'text', text: `runId: ${runId}\nstatus: running\n--- dispatch ---\n${dispatchBriefing(parsedPlan, config)}` }],
+  };
+}
+
+/**
+ * dag_resume — one-step resume: reload a run's plan from its on-disk checkpoint (`_dag.json`) and
+ * re-run, skipping still-green nodes. Closes the manual "read _dag.json → dag_run_plan resume" loop.
+ */
+function makeDagResume(deps: DagToolDeps): OmdMcpTool {
+  return {
+    name: 'dag_resume',
+    description: 'Resume a failed/interrupted run by runId — reload its plan from checkpoint, re-run skipping green nodes.',
+    inputSchema: {
+      runId: z.string().describe('runId of a failed/interrupted run (see dag_runs)'),
+      leafModel: z.string().optional().describe('Leaf model override (provider:modelId)'),
+      maxFanout: z.number().int().positive().optional().describe('Concurrency cap for node fan-out'),
+    },
+    handler: async (args) => {
+      const { runId, leafModel, maxFanout } = args as { runId?: string; leafModel?: string; maxFanout?: number };
+      if (!runId) {
+        throw new McpError(ErrorCode.InvalidParams, 'dag_resume: missing required param "runId"');
+      }
+      if (!deps.continuity) {
+        return { content: [{ type: 'text' as const, text: 'dag_resume: continuity not configured — no checkpoints to resume from' }], isError: true };
+      }
+      const meta = deps.continuity.manager.loadDagMetadata(runId);
+      if (!meta) {
+        return { content: [{ type: 'text' as const, text: `dag_resume: no checkpoint for run ${runId} (see dag_runs)` }], isError: true };
+      }
+      if (!meta.plan) {
+        return { content: [{ type: 'text' as const, text: `dag_resume: run ${runId} stored only a skeleton (pre-plan-memory) — can't auto-replay; re-supply the plan via dag_run_plan resume=${runId}` }], isError: true };
+      }
+      const parsed = parsePlan(JSON.stringify(meta.plan));
+      if (!parsed.ok) {
+        return { content: [{ type: 'text' as const, text: `dag_resume: stored plan for ${runId} is invalid — ${parsed.error}` }], isError: true };
+      }
+      return launchPlanRun(parsed.plan, { resume: runId, leafModel, maxFanout, task: meta.goal, toolName: 'dag_resume' }, deps);
+    },
+  };
+}
+
 export function createDagTools(deps: DagToolDeps): OmdMcpTool[] {
   return [
     makeDagRun(deps),
     makeDagRunPlan(deps),
+    makeDagResume(deps),
     makeDagStatus(deps),
     makeDagResult(deps),
     makeDagNodeOutput(deps),
@@ -309,7 +411,7 @@ function makeDagRun({ engine, runRegistry, defaultConfig, continuity, hudMirror,
 // dag_run_plan — pre-built plan JSON → execute (skip conductor) → {runId, summary}.
 // ---------------------------------------------------------------------------
 
-function makeDagRunPlan({ engine, runRegistry, defaultConfig, continuity, hudMirror, ledger }: DagToolDeps): OmdMcpTool {
+function makeDagRunPlan(deps: DagToolDeps): OmdMcpTool {
   return {
     name: 'dag_run_plan',
     description: 'Execute a pre-built ConductorPlan JSON (skips conductor). resume=<runId> skips checkpointed nodes.',
@@ -338,79 +440,7 @@ function makeDagRunPlan({ engine, runRegistry, defaultConfig, continuity, hudMir
         throw new McpError(ErrorCode.InvalidParams, `dag_run_plan: invalid plan — ${parsed.error}`);
       }
 
-      const runId = resume ?? randomUUID();
-      const goal = task?.slice(0, 200) ?? parsed.plan.name ?? 'prebuilt plan';
-      if (resume) {
-        // resume 语义: failed run 重开 / server 重启后未知 runId 重登记; 在飞或已 done 的拒绝。
-        const rec = runRegistry.getRecord(resume);
-        if (rec && rec.status !== 'failed') {
-          return {
-            content: [{ type: 'text' as const, text: `resume 拒绝: run ${resume} 当前 ${rec.status} (仅 failed/未知可续)` }],
-            isError: true,
-          };
-        }
-        runRegistry.reopenForResume(runId, { goal, meta: { tool: 'dag_run_plan', resumed: true } });
-      } else {
-        runRegistry.register(runId, { goal, meta: { tool: 'dag_run_plan' } });
-        runRegistry.start(runId);
-      }
-
-      // topo 层级 (预建 plan 现成可算) → hudMirror 出完整层级图; 环图不该出现 (parsePlan 已过) → 兜底 undefined 平铺。
-      let hudLevels: string[][] | undefined;
-      try {
-        hudLevels = topoLevels(parsed.plan);
-      } catch {
-        hudLevels = undefined;
-      }
-
-      const config: ExecutorDagConfig = {
-        ...defaultConfig,
-        leafModel: leafModel ?? defaultConfig?.leafModel ?? '',
-        // 活体进度: 引擎三事件 (planned/start/settle) 流进 registry → dag_status 实时可见 +
-        // hudMirror 原子写 .omd/hud/dag.json (omd-hud statusline 数据源, 带 topo 层级)。
-        onNodeEvent: (e) => {
-          runRegistry.applyNodeEvent(runId, e);
-          hudMirror?.write(runId, runRegistry.getRecord(runId), hudLevels);
-        },
-        // 并发手闸: 参数 > defaultConfig (装配层 provider 池) > 引擎全宽。
-        ...(maxFanout ? { maxFanout } : {}),
-        // D-3 断点续跑: checkpoint 恒落盘; resume 时命中已绿节点跳过 (429 打断不再整图重跑)。
-        ...(continuity
-          ? { continuity: { manager: continuity.manager, runId, resume: !!resume, repoRoot: continuity.repoRoot } }
-          : {}),
-      } as ExecutorDagConfig;
-
-      if (!config.leafModel) {
-        runRegistry.fail(runId, 'dag_run_plan: leafModel required (param or defaultConfig)');
-        return {
-          content: [{ type: 'text' as const, text: `runId: ${runId}\nerror: leafModel required` }],
-          isError: true,
-        };
-      }
-
-      engine
-        .runExecutorDagWithPlan(parsed.plan, config)
-        .then((result) => {
-          runRegistry.setNodeDetails(runId, extractNodeDetails(result));
-          runRegistry.succeed(runId, summarizeResult(result));
-          hudMirror?.write(runId, runRegistry.getRecord(runId), hudLevels); // 终态 done
-          // plan-memory Phase A: task 原文在才记 (预构造无 task → 无聚类键, 不记)。
-          if (ledger && task) recordPlanRun(ledger, task, result, config.conductorModel);
-        })
-        .catch((err) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          runRegistry.fail(runId, msg);
-          hudMirror?.write(runId, runRegistry.getRecord(runId), hudLevels); // 终态 failed
-        });
-
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: `runId: ${runId}\nstatus: running\n--- dispatch ---\n${dispatchBriefing(parsed.plan, config)}`,
-          },
-        ],
-      };
+      return launchPlanRun(parsed.plan, { resume, leafModel, maxFanout, task, toolName: 'dag_run_plan' }, deps);
     },
   };
 }
