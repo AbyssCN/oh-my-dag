@@ -7,7 +7,7 @@
 *Your agent stays the smart brain. omd brings the cheap concurrent hands*
 *and the memory that doesn't forget.*
 
-[![MCP server: 19 tools](https://img.shields.io/badge/MCP%20server-19%20tools-c9a227?style=flat-square&labelColor=140f0a)](docs/MCP-ONBOARDING.md)
+[![MCP server: 29 tools](https://img.shields.io/badge/MCP%20server-29%20tools-c9a227?style=flat-square&labelColor=140f0a)](docs/MCP-ONBOARDING.md)
 [![Clients: Claude Code · Codex · any MCP](https://img.shields.io/badge/clients-Claude%20Code%20%C2%B7%20Codex%20%C2%B7%20any%20MCP-6f9488?style=flat-square&labelColor=140f0a)](client-skills/)
 [![Models: bring your own](https://img.shields.io/badge/models-bring%20your%20own-b3382a?style=flat-square&labelColor=140f0a)](.env.example)
 [![Runtime: Bun ≥ 1.3](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.3-b3382a?style=flat-square&labelColor=140f0a)](https://bun.sh)
@@ -30,7 +30,7 @@ jobs, runs them concurrently on cheap models you bring, verifies the result with
 skeptic from a different model family, and only spends a frontier model when a check
 actually fails. Your agent decides *what* to do and *judges* the outcome; the fleet
 does the typing. It plugs into any client as **`omd mcp`** — a stdio MCP server
-exposing 19 tools — so nothing about your existing setup changes.
+exposing 29 tools — so nothing about your existing setup changes.
 
 Three things it gives your agent, all built on one DAG engine:
 
@@ -74,7 +74,7 @@ cd <your-project> && claude mcp add omd -- omd mcp
 # or drop a .mcp.json (this repo ships a template) for a zero-command project mount
 ```
 
-The slash-command pack (`/omd-path`, `/omd-deepen`, `/omd-review`, … 16 skills that teach
+The slash-command pack (`/omd-path`, `/omd-deepen`, `/omd-review`, … 19 skills that teach
 your agent the workflows) **installs itself** into `~/.claude/skills/` the first time the
 `omd mcp` server starts — no manual copy. It is idempotent, updates on package upgrade, and
 **never overwrites a skill you have edited**. New skills appear on your next Claude session.
@@ -140,7 +140,7 @@ sides. The **MCP tools** are the engine's raw API. The **slash commands** are th
 workflow wrappers your agent invokes — each one calls the MCP tool named beside it and
 adds the discipline (when to escalate, how to accept, who holds the trigger).
 
-### MCP tools — the engine (19 tools, three groups)
+### MCP tools — the engine (29 tools, four groups)
 
 **Engine** — delegate work to the cheap fleet:
 
@@ -154,11 +154,13 @@ adds the discipline (when to escalate, how to accept, who holds the trigger).
 | `dag_review` | adversarial multi-dimension diff review fleet, async — gate `G0`–`G3`, `scope` paths |
 | `dag_slim` | over-engineering, deletion-only audit fleet, async |
 | `dag_deepen` | architecture-deepening scan: git-hotspot discovery → one agent per hotspot → leverage-ranked HTML report |
+| `dag_debug` | parallel multi-hypothesis root-cause debug fleet, async — reproduce + codegraph → fan out hypotheses |
 
 **Pathfinder** — persistent planning for foggy, multi-session work:
 
 | Tool | What it does |
 |---|---|
+| `path_init` | initialize the pathfinder backend: no args → probe + recommendation; or set the backend (git-markdown / issues) |
 | `path_map` | list / create / resume decision maps |
 | `path_add` | add typed tickets (research / grill / prototype / task) with dependency edges |
 | `path_tickets` | show the frontier; folds in landed background results first |
@@ -173,6 +175,15 @@ adds the discipline (when to escalate, how to accept, who holds the trigger).
 | `memory_recall` | hybrid semantic + lexical search over the fact store; ranked hits with confidence and source |
 | `memory_remember` | store a fact, gated by namespace safeguards (rejects secrets / banned / out-of-namespace) |
 | `dream_consolidate` | one synchronous consolidation round folding the recent event window into L0–L6 layers |
+
+**Config** — model roster, keys, presets, all over MCP:
+
+| Tool | What it does |
+|---|---|
+| `omd_config_status` · `omd_plans` | show the model roster / role assignments / which keys are set · list saved plans |
+| `omd_register_provider` | register an OpenAI-compatible provider (baseUrl + key-env + models) into the shared model registry |
+| `omd_set_key` · `omd_set_model` · `omd_set_role` | set a provider key · a model's attributes · a role→model assignment |
+| `omd_apply_preset` · `omd_toggle_hud` | apply a wizard preset (base-opencode-go / cn-standard / cn-ultimate) · toggle the statusline HUD |
 
 ### Claude slash commands (the [client-skills](client-skills/) pack)
 
@@ -196,7 +207,10 @@ tool(s) in the right column and adds the workflow discipline.
 | `/review` | `dag_review` | adversarial diff-review fleet, gate G0–G3 |
 | `/slim` | `dag_slim` | deletion-only over-engineering audit |
 | `/deepen` | `dag_deepen` | architecture-hotspot scan → leverage-ranked report |
+| `/debug` | `dag_debug` | root-cause debug fleet: reproduce → multi-hypothesis → verify |
 | `/dream` | `dream_consolidate` | fold recent events into layered memory |
+| `/recall` | `memory_recall` | proactively pull prior facts when reasoning stalls |
+| `/video` | (local) | video → structured per-segment notes (frames + audio) |
 
 ## The DAG engine
 
@@ -370,9 +384,25 @@ discipline); `persona` carries the angle** — they stack.
 - **Registry over regeneration** — anything a model would re-derive per run (role
   cards, lens structures, control flow) is frozen once and referenced by name.
 
+## The methodology harness (`harness/`)
+
+The design rules above aren't just how *omd* is built — they're a **reusable, model-agnostic
+methodology harness** you can drop into any project, in [`harness/`](harness/). It's the operating
+system for the *brain*, the complement to omd's *hands*: a `CLAUDE.md` core + a `docs/` set (the
+work loop, review gates, slice contract, a final-ruling handbook, an anti-happy-path checklist, the
+control-layer architecture, and a weak-fleet playbook).
+
+Its governing idea is a **retirement test** — every rule must survive *"will a stronger future model
+make this redundant?"* — so it holds only what a model never self-supplies: external-reliability
+structure, governance, and design discipline (not the classification ceremony a strong model
+self-judges). One inversion runs through it: **trim the strong Conductor, weld the weak Fleet.**
+
+Adopt it by copying [`harness/CLAUDE.md`](harness/CLAUDE.md) into your project and filling the
+`<placeholders>`. See [harness/README.md](harness/README.md).
+
 ## MCP integration (Claude Code / Codex / any client)
 
-`omd mcp` is a stdio MCP server — the 19 tools above in three groups. The server is
+`omd mcp` is a stdio MCP server — the 29 tools above in four groups. The server is
 **stateless**: maps live in `docs/plan/pathfinder/` (git), runtime state in `.omd/`,
 so any client can resume another's work.
 
@@ -416,7 +446,7 @@ MIT — see [LICENSE](LICENSE).
 **oh-my-dag(omd)是整辆车的其余部分。** 它把一个任务拆成一张小活的图,用你自带的廉价
 模型并发执行,再由一个来自不同模型家族的 skeptic 校验结果,只有校验真的失败时才动用
 frontier 模型。你的 agent 决定*做什么*、并*判断*产物;车队负责敲键盘。它以 **`omd mcp`**
-接入任意客户端 —— 一个 stdio MCP server,暴露 19 个工具 —— 你现有的配置一行都不用改。
+接入任意客户端 —— 一个 stdio MCP server,暴露 29 个工具 —— 你现有的配置一行都不用改。
 
 一套 DAG 引擎之上,给你的 agent 三样东西:
 
@@ -455,11 +485,9 @@ cd <your-project> && claude mcp add omd -- omd mcp
 # 或放一个 .mcp.json(本仓库带模板),项目级挂载零命令
 ```
 
-再装教会 agent 工作流的斜杠技能包:
-
-```bash
-cp -r client-skills/{path,tickets,rule,deliver,execute,iterate,grill,sdd,note,council,audit,sast,review,slim,deepen,dream} ~/.claude/skills/
-```
+斜杠命令包(`/omd-path`、`/omd-deepen`、`/omd-review`… 19 个教会 agent 工作流的技能)在
+`omd mcp` server 首次启动时**自动装**进 `~/.claude/skills/` —— 无需手动拷贝。幂等、随包升级
+更新、**绝不覆盖你改过的技能**。新技能在你下个 Claude session 出现。用 `OMD_INSTALL_SKILLS=0` 关闭。
 
 **→ 完整走查:[docs/MCP-ONBOARDING.md](docs/MCP-ONBOARDING.md)** ·
 命令参考:[client-skills/README.md](client-skills/README.md)
@@ -512,7 +540,7 @@ omd 能做的一切都有两条到达路径,而且它们是同一件事的两个
 API;**斜杠命令**是你的 agent 调用的薄工作流包装 —— 每条都调右列那个 MCP 工具,再补上
 纪律(何时升级、怎么验收、谁扳扳机)。
 
-### MCP 工具 —— 引擎(19 工具,三组)
+### MCP 工具 —— 引擎(29 工具,四组)
 
 **引擎组** —— 把活甩给廉价车队:
 
@@ -526,11 +554,13 @@ API;**斜杠命令**是你的 agent 调用的薄工作流包装 —— 每条都
 | `dag_review` | 对抗式多维度 diff 审查车队,异步 —— gate `G0`–`G3`,`scope` 限定路径 |
 | `dag_slim` | 过度工程、只删不加的审计车队,异步 |
 | `dag_deepen` | 架构深化扫描:git 热点发现 → 每热点一个 agent → 按杠杆排序的 HTML 报告 |
+| `dag_debug` | 并行多假设根因调试车队,异步 —— 复现 + codegraph → 假设扇出 |
 
 **Pathfinder 组** —— 给模糊的跨 session 大活做持久规划:
 
 | 工具 | 做什么 |
 |---|---|
+| `path_init` | 初始化 pathfinder 后端:无参 → 探测 + 建议;或指定后端(git-markdown / issues) |
 | `path_map` | 列出 / 新建 / 恢复决策地图 |
 | `path_add` | 加类型化票(research / grill / prototype / task)带依赖边 |
 | `path_tickets` | 显示前沿;优先折入落地的后台结果 |
@@ -545,6 +575,15 @@ API;**斜杠命令**是你的 agent 调用的薄工作流包装 —— 每条都
 | `memory_recall` | 对事实库做语义 + 词法混合搜索;返回带置信度与来源的排序命中 |
 | `memory_remember` | 存一条事实,经 namespace 安全闸(拒密钥 / 禁词 / 越 namespace) |
 | `dream_consolidate` | 一轮同步巩固,把近期事件窗口折叠进 L0–L6 分层 |
+
+**配置组** —— 模型阵容、密钥、预设,全经 MCP:
+
+| 工具 | 做什么 |
+|---|---|
+| `omd_config_status` · `omd_plans` | 显示模型阵容 / 角色分配 / 哪些 key 已配 · 列出已存 plan |
+| `omd_register_provider` | 把一个 OpenAI 兼容 provider(baseUrl + key-env + models)登记进共享模型 registry |
+| `omd_set_key` · `omd_set_model` · `omd_set_role` | 设 provider key · 模型属性 · 角色→模型分配 |
+| `omd_apply_preset` · `omd_toggle_hud` | 应用向导预设(base-opencode-go / cn-standard / cn-ultimate)· 开关状态栏 HUD |
 
 ### Claude 斜杠命令([client-skills](client-skills/) 包)
 
@@ -567,7 +606,10 @@ API;**斜杠命令**是你的 agent 调用的薄工作流包装 —— 每条都
 | `/review` | `dag_review` | 对抗式 diff 审查车队,gate G0–G3 |
 | `/slim` | `dag_slim` | 只删不加的过度工程审计 |
 | `/deepen` | `dag_deepen` | 架构热点扫描 → 按杠杆排序的报告 |
+| `/debug` | `dag_debug` | 根因调试车队:复现 → 多假设 → 验证 |
 | `/dream` | `dream_consolidate` | 把近期事件折叠进分层记忆 |
+| `/recall` | `memory_recall` | 推理卡住时主动召回既有事实 |
+| `/video` | (本地) | 视频 → 逐段结构化笔记(画面 + 音频) |
 
 ## DAG 引擎
 
@@ -708,9 +750,23 @@ prompt 每张卡只付一行 description;卡片 body 只注入执行叶、且前
 - **只为失败付费** —— 廉价模型够用;升级由失败的校验触发,不靠感觉。
 - **注册表优于重生成** —— 模型会每次重推的东西(角色卡、lens 结构、控制流)冻结一次、按名引用。
 
+## 方法论 harness(`harness/`)
+
+上面的设计准则不只是 *omd* 自己的搭法 —— 它们被抽成一套**可复用、模型无关的方法论 harness**,
+放在 [`harness/`](harness/),可直接搬进任何项目。它是*大脑*的操作系统,补齐 omd 的*手脚*:一个
+`CLAUDE.md` 核心 + 一套 `docs/`(工作流 loop、审查闸、slice 契约、终裁手册、反 happy-path 清单、
+控制层架构,以及一份弱 fleet playbook)。
+
+统领它的是一条**退役测试** —— 每条纪律都要过「更强的未来模型会让它冗余吗?」—— 所以它只留模型
+永远不自带的东西:模型外的可靠性结构、治理、设计纪律(不留强模型自判的分类仪式)。一条反向贯穿
+全篇:**削强 Conductor,焊弱 Fleet。**
+
+采用方式:把 [`harness/CLAUDE.md`](harness/CLAUDE.md) 拷进你的项目,填 `<占位符>`。见
+[harness/README.md](harness/README.md)。
+
 ## MCP 接入(Claude Code / Codex / 任意客户端)
 
-`omd mcp` 是 stdio MCP server —— 上面 19 个工具、三组。server 是**无状态**的:地图在
+`omd mcp` 是 stdio MCP server —— 上面 29 个工具、四组。server 是**无状态**的:地图在
 `docs/plan/pathfinder/`(git),运行时状态在 `.omd/`,所以任意客户端都能接手另一个的活。
 
 ```bash
