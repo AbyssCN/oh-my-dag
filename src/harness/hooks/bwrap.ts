@@ -12,6 +12,7 @@
  * **不 --clearenv**: 继承父进程 env (provider API key 等要流进 worker); 只 --setenv HOME/PATH。
  */
 import { existsSync, realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
 /**
@@ -72,6 +73,11 @@ export function bwrapArgs(root: string, roBinds: string[]): string[] {
   }
   args.push('--bind', root, root);
   args.push('--chdir', root);
+  // 模型注册表映入 jail HOME (2026-07-25 实证): HOME=/tmp 后 worker 读 /tmp/.pi/agent/models.json
+  // → 注册制 provider (mimo-platform/opencode-go/…) 全消失 → leaf 模型解析不到, leafTokens=0 全军
+  // 覆没。真 ~/.pi/agent 只读映到 jail HOME 下 — 凭证本就经继承 env 流入 jail, 同信任域, ro 无升权。
+  const piAgent = join(homedir(), '.pi', 'agent');
+  if (existsSync(piAgent)) args.push('--ro-bind', piAgent, '/tmp/.pi/agent');
   args.push('--setenv', 'HOME', '/tmp');
   // TMPDIR 必须洗 (2026-07-25 实证): 宿主 shell 的 TMPDIR (如 ~/.cache/tmp) 泄进 jail 后,
   // pi bash 工具往 os.tmpdir() 写日志 → 未挂载路径 ENOENT → worker 停摆 → 超时 SIGKILL 137。
