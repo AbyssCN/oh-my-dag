@@ -181,33 +181,32 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       ? null
       : createDriftDetectorHook(typeof opts.driftDetector === 'object' ? opts.driftDetector : {});
 
-  // resourceLoader 建一次复用 (reload 读盘, 别每 leaf 重建)。无 extensionDirs 且无 drift → 不建 (纯净 bare session)。
-  let loaderPromise: Promise<DefaultResourceLoader> | null = null;
-  const getLoader = (): Promise<DefaultResourceLoader> => {
-    if (!loaderPromise) {
-      loaderPromise = (async () => {
-        const rl = new DefaultResourceLoader({
-          cwd,
-          agentDir: getAgentDir(),
-          additionalExtensionPaths: extensionDirs,
-          // drift-detector 经 in-code extensionFactories 注入 (与 opts.extensionDirs 的扩展包并存)。
-          // kimi-coding OAuth 恒挂 (正门注册, 会话 ModelRegistry.refresh 清全局注册表后由它重放)。
-          extensionFactories: [
-            createKimiOAuthExtension(),
-            ...(driftFactory ? [driftFactory] : []),
-          ],
-        });
-        await rl.reload();
-        return rl;
-      })();
-    }
-    return loaderPromise;
+  // kimi-coding OAuth 扩展 factory: 无状态 (每次 pi.registerProvider 各自注册), 跨 loader 复用同一个安全。
+  const kimiOAuthFactory = createKimiOAuthExtension();
+
+  // ⚠ resourceLoader **每 leaf 建一份, 不缓存复用** —— 曾缓存单例 (省 reload 读盘) 引入 ctx-stale 竞态:
+  //   pi 的 ModelRegistry.refresh 是 per-loader 的全局 wipe+replay (kimi-oauth 恒挂重放即为此); 并发/
+  //   后续 leaf 共享同一 loader 时, 一个 leaf 建 session 触发的 refresh 会使**其它在飞 leaf 捕获的 ctx
+  //   失效** → 8/8 工具报 "ctx is stale after session replacement or reload", filesTouched 空
+  //   (2026-07-24 dogfood 实证: slice-2 并发 impl 全挂)。pi-runtime.ts 一贯 per-session 建 loader
+  //   (不缓存) 且无此 bug —— 此处对齐。correctness > 省这次读盘, fan-out 有并发上限故代价有界。
+  //   drift-detector 经 in-code extensionFactories 注入; driftFactory 是**工厂** (每 session 起新
+  //   ring/flag), 跨 per-leaf loader 复用同一工厂安全。无 extensionDirs 且无 drift → 不建 (纯净 bare session)。
+  const buildLoader = async (): Promise<DefaultResourceLoader> => {
+    const rl = new DefaultResourceLoader({
+      cwd,
+      agentDir: getAgentDir(),
+      additionalExtensionPaths: extensionDirs,
+      extensionFactories: [kimiOAuthFactory, ...(driftFactory ? [driftFactory] : [])],
+    });
+    await rl.reload();
+    return rl;
   };
 
   return async ({ prompt, model }) => {
     const { provider, modelId } = parseModelRef(model);
     const m = getModel(provider as Parameters<typeof getModel>[0], modelId as never);
-    const resourceLoader = extensionDirs.length > 0 || driftFactory ? await getLoader() : undefined;
+    const resourceLoader = extensionDirs.length > 0 || driftFactory ? await buildLoader() : undefined;
     const { session } = await createAgentSession({
       cwd,
       model: m,
