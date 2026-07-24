@@ -153,11 +153,15 @@ export interface ExecutorDagConfig {
 export type DagNodeEvent =
   | { type: 'planned'; nodes: Array<{ id: string; kind: string }> }
   | { type: 'start'; id: string; kind: string }
-  | { type: 'settle'; id: string; status: 'done' | 'failed'; kind: string; model?: string };
+  | { type: 'settle'; id: string; status: 'done' | 'failed' | 'skipped'; kind: string; model?: string };
 
 export interface LeafResult {
   id: string;
-  status: 'done' | 'failed';
+  /**
+   * 'skipped' (D-7v2 quorum) = 依赖失败未达 requires 判据 → 级联跳过, 零 LLM 零 worker 槽。
+   * 与 resume 的 `skipped?: boolean` (已绿跳过, status 仍 'done') 是两个正交概念, 不混用。
+   */
+  status: 'done' | 'failed' | 'skipped';
   /** 实际执行模式: inproc 单发 / agent 带工具 / command CLI / map 动态扇出 (U1) / primitive 约束选择 (SDD 0013)。 */
   kind: 'inproc' | 'agent' | 'command' | 'map' | 'primitive';
   /** 实际所用模型坐标 (inproc/agent leaf; command 无模型 → undefined)。bandit reward 归因 + 审计用。 */

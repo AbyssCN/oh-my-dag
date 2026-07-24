@@ -29,7 +29,7 @@ export interface RunProgress {
   started: string[];
   /** start 事件时刻 (ISO, settle 时清理) — running 行耗时由 now - startedAt 算出。 */
   startedAt: Record<string, string>;
-  settled: Array<{ id: string; status: 'done' | 'failed'; kind: string; model?: string }>;
+  settled: Array<{ id: string; status: 'done' | 'failed' | 'skipped'; kind: string; model?: string }>;
 }
 
 /** 毫秒 → 人读耗时 (0s / 45s / 3m12s / 1h2m3s)。 */

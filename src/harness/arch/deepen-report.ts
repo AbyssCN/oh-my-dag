@@ -19,7 +19,7 @@ export interface DeepenReportInput {
   /** synthesis 叶输出 (CANDIDATE_FORMAT markdown)。 */
   synthMarkdown: string;
   /** 各叶终态 (失败热点在报告标出, 候选不装全知)。 */
-  leafStatuses?: { id: string; status: 'done' | 'failed' }[];
+  leafStatuses?: { id: string; status: 'done' | 'failed' | 'skipped' }[];
   /** 生成时刻 (注入可测; 缺省 now)。 */
   generatedAt?: string;
 }

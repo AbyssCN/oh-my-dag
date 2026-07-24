@@ -32,7 +32,7 @@ import { roleModelWithFallback } from '../../model/role-fallback';
 /** 叶子节点状态快照 (L1 输入)。 */
 export interface LeafState {
   id: string;
-  status: 'done' | 'failed';
+  status: 'done' | 'failed' | 'skipped';
   kind: 'inproc' | 'agent' | 'command' | 'map' | 'primitive';
 }
 
