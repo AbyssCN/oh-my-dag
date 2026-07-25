@@ -71,12 +71,27 @@ export interface TaskSignals extends ComplexitySignals {
 
 /** compile 拿到的执行上下文:leaf 工厂(单发模型调用,内部累加 usage)+ 上游依赖 + 并发默认。 */
 export interface PrimitiveCtx {
-  /** 跑一个单发 leaf(inproc 模型调用);返回文本,usage 内部累加。上游 dep 上下文由 executor 环境自动注入。 */
-  leaf(req: { goal: string; persona?: string }): Promise<string>;
+  /**
+   * 跑一个单发 leaf(inproc 模型调用);返回文本,usage 内部累加。上游 dep 上下文由 executor 环境自动注入。
+   * model (SDD v2 D-8v2): 本次调用的模型覆盖 (candidates 轮转注入); 省略 = 环境默认 leafModel。
+   */
+  leaf(req: { goal: string; persona?: string; model?: string }): Promise<string>;
   /** 读累加的 usage(原语内部 parallel/judge 吞掉 usage,故经此侧信道回收)。 */
   usage(): ModelUsage;
   /** 本原语扇出并发上限(缺省继承 config.maxFanout / primitives 默认)。 */
   maxFanout?: number;
+  /**
+   * 候选模型池 (SDD v2 D-8v2/INV-7): judge/parallel/tournament 的 N 路 attempts 按此池
+   * 轮转 (跨家族多样性, 接线层保证池含 ≥2 家族)。省略/空 = 全部 attempts 用默认 leafModel。
+   * 评分/聚合 leaf 不轮转 (判位模型由环境配置, INV-7 判 ≠ 候选族由接线层池选择保证)。
+   */
+  candidates?: string[];
+}
+
+/** attempts 轮转取候选模型 (池空 → undefined = 环境默认)。 */
+function pickCandidate(ctx: PrimitiveCtx, i: number): string | undefined {
+  const pool = ctx.candidates;
+  return pool && pool.length > 0 ? pool[i % pool.length] : undefined;
 }
 
 /** compile 的产物:静态上界 + 可执行闭包。 */
@@ -184,7 +199,8 @@ const parallelTemplate: PrimitiveTemplate<ParallelParams> = {
       maxUnits: params.goals.length,
       run: async () => {
         const outs = await parallel(
-          params.goals.map((g) => () => ctx.leaf({ goal: g, persona: params.persona })),
+          // 并行 siblings 按候选池轮转 (D-8v2: 跨家族盲点互补; 池空 = 旧行为)。
+          params.goals.map((g, i) => () => ctx.leaf({ goal: g, persona: params.persona, model: pickCandidate(ctx, i) })),
           { concurrency: ctx.maxFanout },
         );
         const output = JSON.stringify(outs.map((o, i) => ({ goal: params.goals[i], output: o ?? '[failed]' })));
@@ -324,7 +340,8 @@ const judgeTemplate: PrimitiveTemplate<JudgeParams> = {
       maxUnits: params.attempts + params.attempts * criteria.length,
       run: async () => {
         const attemptFns = Array.from({ length: params.attempts }, (_, i) => () =>
-          ctx.leaf({ goal: `${params.attemptGoal}\n\n(独立第 ${i + 1} 稿,与其它稿走不同角度)` }),
+          // best-of-N 候选按池轮转 (D-8v2/INV-7 跨家族); 评分 leaf 不轮转 (判位固定)。
+          ctx.leaf({ goal: `${params.attemptGoal}\n\n(独立第 ${i + 1} 稿,与其它稿走不同角度)`, model: pickCandidate(ctx, i) }),
         );
         const best = await judgePanel(attemptFns, (candidate) => async () => {
           // 多准则:各准则一发,求均(某准则解析失败 → 该准则 -inf 拉低,不静默忽略)。
@@ -477,7 +494,8 @@ const tournamentTemplate: PrimitiveTemplate<TournamentParams> = {
         // 1. 产候选。
         const produced = await parallel(
           Array.from({ length: params.attempts }, (_, i) => () =>
-            ctx.leaf({ goal: `${params.attemptGoal}\n\n(独立第 ${i + 1} 稿,走不同角度)` }),
+            // 候选池轮转 (D-8v2/INV-7); 淘汰赛评分 leaf 不轮转。
+            ctx.leaf({ goal: `${params.attemptGoal}\n\n(独立第 ${i + 1} 稿,走不同角度)`, model: pickCandidate(ctx, i) }),
           ),
           { concurrency: ctx.maxFanout },
         );

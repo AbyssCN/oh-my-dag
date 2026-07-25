@@ -173,6 +173,35 @@ describe('G-4 quorum fail-skip (D-7v2)', () => {
   });
 });
 
+describe('D-23 per-channel 并发闸', () => {
+  test('渠道 cap=1 → 同渠道节点串行, 未列渠道不限', async () => {
+    const { generate, maxActive } = makeGenerate({ delayMs: 20 });
+    await runExecutorDagWithPlan(
+      plan({
+        a: { goal: '甲', model: 'slowchan:m1' },
+        b: { goal: '乙', model: 'slowchan:m1' },
+        c: { goal: '丙', model: 'freechan:m2' },
+      }),
+      makeConfig(generate, { channelFanout: { slowchan: 1 } }),
+    );
+    // slowchan 两节点串行 → 全局并发峰值 ≤ 2 (1 slowchan + 1 freechan); 无闸时应为 3。
+    expect(maxActive()).toBeLessThanOrEqual(2);
+  });
+
+  test('channelFanout 未配 → 行为不变 (全并发)', async () => {
+    const { generate, maxActive } = makeGenerate({ delayMs: 20 });
+    await runExecutorDagWithPlan(
+      plan({
+        a: { goal: '甲', model: 'slowchan:m1' },
+        b: { goal: '乙', model: 'slowchan:m1' },
+        c: { goal: '丙', model: 'freechan:m2' },
+      }),
+      makeConfig(generate),
+    );
+    expect(maxActive()).toBe(3);
+  });
+});
+
 describe('G-11v2 零回归', () => {
   test('全绿链行为不变: 状态/输出/用量账本', async () => {
     const { generate, prompts } = makeGenerate();

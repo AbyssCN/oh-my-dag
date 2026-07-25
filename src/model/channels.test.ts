@@ -9,6 +9,7 @@ import {
 	type DeclaredPlan,
 	BILLING_PRIORITY,
 	discoverChannels,
+	modelFamily,
 	orderByAmortization,
 } from "./channels";
 
@@ -222,6 +223,30 @@ describe("orderByAmortization", () => {
 		const sorted = orderByAmortization([ch]);
 		expect(sorted).toHaveLength(1);
 		expect(sorted[0]!.kind).toBe("request");
+	});
+});
+
+describe("modelFamily (INV-7/INV-3 家族判定)", () => {
+	test("渠道后缀剥离: kimi-coding→kimi, mimo-platform→mimo", () => {
+		expect(modelFamily("kimi-coding:k3")).toBe("kimi");
+		expect(modelFamily("mimo-platform:mimo-v2.5-pro-ultraspeed")).toBe("mimo");
+		expect(modelFamily("mimo:mimo-v2.5")).toBe("mimo");
+	});
+
+	test("聚合渠道按 modelId 品牌头: opencode-go 托管多家族", () => {
+		expect(modelFamily("opencode-go:glm-5.2")).toBe("glm");
+		expect(modelFamily("opencode-go:qwen3.7-max")).toBe("qwen");
+		expect(modelFamily("opencode-go:minimax-m3")).toBe("minimax");
+		expect(modelFamily("opencode-go:deepseek-v4-flash")).toBe("deepseek");
+	});
+
+	test("品牌归一: zhipu 与 opencode-go 的 glm 同族 (INV-3 判同才有意义)", () => {
+		expect(modelFamily("zhipu:glm-4.7")).toBe(modelFamily("opencode-go:glm-5.2"));
+		expect(modelFamily("minimax-cn:minimax-m3")).toBe(modelFamily("opencode-go:minimax-m3"));
+	});
+
+	test("裸 provider 坐标不炸", () => {
+		expect(modelFamily("deepseek")).toBe("deepseek");
 	});
 });
 

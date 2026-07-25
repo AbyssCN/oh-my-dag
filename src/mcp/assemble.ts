@@ -41,6 +41,9 @@ import type { ExecutorDagConfig } from '../harness/executor-dag-types';
 import type { ConductorPlan } from '../harness/conductor-plan';
 import { prunePass } from '../harness/plan-passes/prune-pass';
 import { dedupPass } from '../harness/plan-passes/dedup-pass';
+import { stampPass } from '../harness/plan-passes/stamp-pass';
+import { modelFamily } from '../model/channels';
+import { resolveRoleModelConfigured, resolveMultimodalPool, type OmdNode } from '../model/role-models';
 import { createAgentLeafRunner } from '../harness/agent-leaf';
 import { createCommandLeafRunner } from '../harness/command-leaf';
 import type { AgentLeafRunner, CommandLeafRunner } from '../harness/leaf-runners';
@@ -298,9 +301,18 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   // env pool (OMD_ROUTER_POOL_*) / config.multimodalPool ≥2 才真学; 未配 → no-op = 静态 (零回归)。
   // reward = leafCostReward (成本主信号, 质量走 verifier 闸) — 见 model-router ROUTER-5。
   const router = createModelRouterFromEnv(env);
-  // SDD v2 pass 管线接线: prune (outputs 未声明 → 恒等) → dedup (无重复 → 恒等)。
-  // stamp 待 S3 (需 role-models → 四池映射 + familyOf 注入, 单独切片)。日志在接线层
-  // (INV-8: pass 纯函数零 IO, 观测归组装侧)。
+  // SDD v2 pass 管线接线 (顺序钉死 prune → dedup → stamp; 日志在接线层 — INV-8 pass 纯函数零 IO)。
+  // S3 四池: strong=判/证, mid=执行主力, cheap=探索/机械, multimodal=多模态尺子 — 从 role 配置
+  // 组装 (auto-assign 落的 .omd/config.json 经 resolveRoleModelConfigured 读)。裸 provider 坐标
+  // (无 ':') 过滤掉 (stamp 要精确坐标); 池空 → stamp 恒等 (INV-9 配置不全零回归)。
+  const roleCoord = (n: OmdNode): string => resolveRoleModelConfigured(n, { env }).model;
+  const uniqCoords = (xs: string[]): string[] => [...new Set(xs.filter((x) => x.includes(':')))];
+  const stampPools = {
+    strong: uniqCoords([roleCoord('judge'), roleCoord('reason'), roleCoord('verifier')]),
+    mid: uniqCoords([roleCoord('leaf'), roleCoord('agent'), roleCoord('overflow')]),
+    cheap: uniqCoords([roleCoord('lens'), roleCoord('expand'), roleCoord('distill')]),
+    multimodal: resolveMultimodalPool(),
+  };
   const planFilters: Array<(p: ConductorPlan) => ConductorPlan> = [
     (p) => {
       const { plan, pruned } = prunePass(p);
@@ -312,7 +324,19 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       if (Object.keys(merged).length) logger.info({ merged }, '[omd/mcp] dedup pass: 语义指纹去重 (D-20)');
       return plan;
     },
+    (p) => {
+      const { plan, stamped } = stampPass(p, { pools: stampPools, familyOf: modelFamily });
+      if (Object.keys(stamped).length) logger.info({ stamped }, '[omd/mcp] stamp pass: node.model 计划期分配 (D-16/17/22)');
+      return plan;
+    },
   ];
+  // D-23 per-channel 并发闸: OMD_CHANNEL_FANOUT="mimo=8,opencode-go=4" (provider 前缀=并发上限)。
+  const channelFanout: Record<string, number> = {};
+  for (const pair of (env.OMD_CHANNEL_FANOUT ?? '').split(',')) {
+    const [k, v] = pair.split('=');
+    const n = Number.parseInt(v ?? '', 10);
+    if (k?.trim() && Number.isFinite(n) && n > 0) channelFanout[k.trim()] = n;
+  }
   // conductor 档位随模型 (2026-07-25 A/B eval 裁决, medium fixture R=2 串行):
   // k3 上 full/lean 同分 1.000/1.000 且 firstShot 全过, lean 少 25% leaf token (66.9k vs 89.5k)
   // → 强 conductor 撤教练段 (harness 退役测试), 弱 conductor 保 full。maxTokens 32768 仅对
@@ -328,6 +352,9 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     commandRunner,
     router,
     planFilters,
+    // D-8v2: judge/parallel/tournament 的 attempts 候选池 = mid 执行主力池 (跨家族轮转)。
+    ...(stampPools.mid.length >= 2 ? { primitiveCandidates: stampPools.mid } : {}),
+    ...(Object.keys(channelFanout).length ? { channelFanout } : {}),
     ...conductorTuning,
     ...deps.configOverrides,
   };
