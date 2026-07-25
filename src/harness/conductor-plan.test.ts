@@ -69,9 +69,11 @@ describe('S5 conductor prompt: SDD v2 字段 + 前端 motif (G-9)', () => {
     }
   });
 
-  test('两档均含前端 SDD motif (契约节点同步点 + 渲染 command + 多模态审查 + review 交叉)', () => {
+  test('两档均含 UI motif (宽触发 + 看像素硬规则 + 契约同步点 + 多模态审查 + review 交叉)', () => {
     for (const p of [full, lean]) {
-      expect(p).toContain('Frontend / full-stack SDD motif');
+      expect(p).toContain('UI work motif');
+      expect(p).toContain('pixels get SEEN'); // 硬规则: UI 交付物必须被真像素审查, 不限全栈 SDD
+      expect(p).toContain('motion/animation'); // 动效经关键帧/GIF 进审查
       expect(p).toContain('contract node');
       expect(p).toContain('attach_media:true');
       expect(p).toContain('cross-review');
