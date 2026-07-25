@@ -873,6 +873,22 @@ export async function runExecutorDagWithPlan(
 }
 
 /**
+ * plan → 文本大纲 (节点 id/executor/deps/goal 逐行)。escalation 重规划与预构造种子共用:
+ * 重规划 conductor 必须**看得见上一轮分解**才可能「只修不发明」— 只给 task 散文会让它从零
+ * 重新发明 plan (id/措辞全漂), 既丢已裁决结构又把 D-21 语义指纹复用全部打空 (2026-07-25 实证:
+ * conductor 路径 escTask 原本不带上轮 plan → 重规划 0 复用)。
+ */
+function planOutline(plan: ConductorPlan): string {
+  return Object.entries(plan.nodes ?? {})
+    .map(([id, n]) => {
+      const node = n as { goal?: string; depends_on?: string[]; executor?: string };
+      const deps = node.depends_on?.length ? ` (depends_on: ${node.depends_on.join(', ')})` : '';
+      return `- [${id}]${node.executor ? ` (${node.executor})` : ''}${deps}: ${node.goal ?? ''}`;
+    })
+    .join('\n');
+}
+
+/**
  * 预构造 plan → escalation 重规划的种子 task (仅 verify fail 升级时喂 conductor; 正常执行不触及)。
  * ★ 必须携带**整张已编译 plan** (节点 goal = pathfinder 裁决, depends_on = blockedBy 边):
  * 只给 description (= 目的地一句话) 会让升级 conductor 从散文重新发明 plan, 把地图上
@@ -880,16 +896,11 @@ export async function runExecutorDagWithPlan(
  */
 function deriveTaskFromPlan(plan: ConductorPlan): string {
   const header = plan.description?.trim() || plan.name;
-  const nodeLines = Object.entries(plan.nodes ?? {}).map(([id, n]) => {
-    const node = n as { goal?: string; depends_on?: string[]; executor?: string };
-    const deps = node.depends_on?.length ? ` (depends_on: ${node.depends_on.join(', ')})` : '';
-    return `- [${id}]${node.executor ? ` (${node.executor})` : ''}${deps}: ${node.goal ?? ''}`;
-  });
   return [
     header,
     '',
     '===== 已裁决的执行分解 (预构造 plan; 重规划时**只修不发明** — 保留各节点既定目标与依赖边) =====',
-    ...nodeLines,
+    planOutline(plan),
   ].join('\n');
 }
 
@@ -939,7 +950,18 @@ async function runDagInternal(
         '[omd/executor-dag] verifier 未过 → conductor 静默升级重规划',
       );
       conductorModel = config.conductorEscalationModel;
-      const escTask = `${task}\n\n[上一轮校验未通过] ${verdict.reason}\n请基于此重新规划, 修复上述问题。`;
+      // D-21: escTask 必带上轮 plan 大纲 (planOutline) — 重规划「只修不发明」的前提是看得见上轮
+      // 分解; 未点名节点逐字保留 → 语义指纹跨轮复用零 LLM (措辞漂移 = 白白重算)。
+      const escTask = [
+        task,
+        '',
+        '===== 上一轮的执行分解 (重规划基线) =====',
+        planOutline(exec.plan),
+        '',
+        `[上一轮校验未通过] ${verdict.reason}`,
+        '请基于上述分解重新规划: 只修被点名有问题的节点; 未点名节点**逐字保留**其 id/goal/字段/依赖边',
+        '(引擎按语义指纹复用未变节点的上轮结果 — 任何措辞变化都会浪费一次重算)。',
+      ].join('\n');
       // D-21: 上轮 plan+results 作复用匹配源 — 语义未变的节点零 LLM 注入上轮输出, 只重跑变化子图。
       exec = await planAndExecute(escTask, config, conductorModel, generate, maxPlanRetries, templates, {
         plan: exec.plan,
