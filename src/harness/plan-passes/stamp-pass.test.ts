@@ -232,3 +232,32 @@ describe('template 节点的 tier 不再是哑弹', () => {
 		expect(stampPass(p, { pools: p4, familyOf: famOf, templateHasModel: () => false }).stamped.n).toBeUndefined();
 	});
 });
+
+// 2026-07-26 owner: "verifier 需要多模态 SOTA 就该用 gpt sol"。此前 attach_media 一律走 multimodal 池,
+// tier 被能力约束整个盖掉 —— 判 UI 的裁判永远只能是中档模型。
+describe('强档多模态池 (attach_media + tier:strong)', () => {
+	const famOf2 = (c: string) => c.split(':')[0]!;
+	const mk2 = (nodes: ConductorPlan['nodes']): ConductorPlan => ({ name: 't', nodes }) as ConductorPlan;
+	const P = { strong: ['s:a'], mid: ['m:a'], cheap: ['c:a'], multimodal: ['mm:a'], multimodalStrong: ['sota:mm'] };
+
+	test('tier:strong 的看图节点走强档多模态池', () => {
+		const r = stampPass(mk2({ n: { goal: 'g', attach_media: true, tier: 'strong' } }), { pools: P, familyOf: famOf2 });
+		expect(r.stamped.n).toBe('sota:mm');
+	});
+
+	test('没有 tier 的看图节点仍走普通多模态池 (常规像素检查不烧 SOTA)', () => {
+		const r = stampPass(mk2({ n: { goal: 'g', attach_media: true } }), { pools: P, familyOf: famOf2 });
+		expect(r.stamped.n).toBe('mm:a');
+	});
+
+	test('强档多模态池为空 → 回落普通多模态池 (零回归)', () => {
+		const pools = { ...P, multimodalStrong: [] };
+		const r = stampPass(mk2({ n: { goal: 'g', attach_media: true, tier: 'strong' } }), { pools, familyOf: famOf2 });
+		expect(r.stamped.n).toBe('mm:a');
+	});
+
+	test('能力约束仍优先于档位: tier:strong 的非看图节点走普通 strong 池', () => {
+		const r = stampPass(mk2({ n: { goal: 'g', tier: 'strong' } }), { pools: P, familyOf: famOf2 });
+		expect(r.stamped.n).toBe('s:a');
+	});
+});

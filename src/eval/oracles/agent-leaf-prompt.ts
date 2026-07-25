@@ -148,7 +148,10 @@ const median = (xs: number[]): number => {
 
 export default function agentLeafPromptSpec(opts: Record<string, string> = {}): TournamentSpec<LeafConfig> {
   const R = Math.max(1, Number.parseInt(opts.r ?? '3', 10) || 3);
-  const size: FixtureSize = opts.fixture === 'medium' ? 'medium' : 'large';
+  // fixture 默认 **medium** —— 与 conductor eval 相反, 刻意的: 那边是 conductor 分解 12 个模块
+  // (要难度才不饱和); 这边是**一片叶子**独自吃下整个 fixture, large 的 12 模块单叶做不完, 量到的
+  // 只会是超时率不是 prompt 档的差。
+  const size: FixtureSize = opts.fixture === 'large' ? 'large' : 'medium';
   const leafTimeoutMs = opts.leafTimeout ? Math.max(0, Number.parseInt(opts.leafTimeout, 10) || 0) : 1_800_000;
   const models = (opts.models ?? '').split(',').map((s) => s.trim()).filter(Boolean);
   const profiles = (opts.profiles ?? '').split(',').map((s) => s.trim())
