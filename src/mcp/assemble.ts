@@ -325,6 +325,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     mid: cfgPools.mid ?? uniqCoords([roleCoord('leaf'), roleCoord('agent'), roleCoord('overflow')]),
     cheap: cfgPools.cheap ?? uniqCoords([roleCoord('lens'), roleCoord('expand'), roleCoord('distill')]),
     multimodal: cfgPools.multimodal ?? resolveMultimodalPool(),
+    ...(cfgPools.multimodalStrong ? { multimodalStrong: cfgPools.multimodalStrong } : {}),
   };
   const planFilters: Array<(p: ConductorPlan) => ConductorPlan> = [
     (p) => {

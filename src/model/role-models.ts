@@ -103,7 +103,7 @@ interface ConfigFile {
    * 是空转, sibling 跨家族分散也没有对象可散。池是「档位里有哪些模型」, 座位是「哪个角色用哪个模型」——
    * 两件事, 分开配。
    */
-  pools?: { strong?: string[]; mid?: string[]; cheap?: string[]; multimodal?: string[] };
+  pools?: { strong?: string[]; mid?: string[]; cheap?: string[]; multimodal?: string[]; multimodalStrong?: string[] };
   /** auto-assign 落盘的 node → coord (D-17 一次性填, 可读可改)。resolveRoleModelConfigured 的 auto 层读它。 */
   autoAssigned?: Record<string, string>;
   /**
@@ -476,7 +476,7 @@ export function persistMultimodalPoolPremium(coords: string[], path = configPath
  */
 export function resolveConfiguredPools(
   path = configPath(),
-): { strong?: string[]; mid?: string[]; cheap?: string[]; multimodal?: string[] } {
+): { strong?: string[]; mid?: string[]; cheap?: string[]; multimodal?: string[]; multimodalStrong?: string[] } {
   const raw = fileConfig(path).pools;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
   const clean = (xs: unknown): string[] | undefined => {
@@ -489,5 +489,6 @@ export function resolveConfiguredPools(
     ...(clean(raw.mid) ? { mid: clean(raw.mid)! } : {}),
     ...(clean(raw.cheap) ? { cheap: clean(raw.cheap)! } : {}),
     ...(clean(raw.multimodal) ? { multimodal: clean(raw.multimodal)! } : {}),
+    ...(clean(raw.multimodalStrong) ? { multimodalStrong: clean(raw.multimodalStrong)! } : {}),
   };
 }

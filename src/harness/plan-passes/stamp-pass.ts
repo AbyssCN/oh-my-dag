@@ -22,6 +22,14 @@ export interface StampPools {
 	mid: string[];
 	cheap: string[];
 	multimodal: string[];
+	/**
+	 * **强档多模态池** (2026-07-26 owner: "verifier 需要多模态 SOTA 就该用 gpt sol")。
+	 * 此前 attach_media 一律走 multimodal 池, tier 被能力约束整个盖掉 —— 于是「判 UI 的裁判」
+	 * 永远只能是池里那几个中档模型, `tier:'strong'` 对看图节点是死字。
+	 * 现在: attach_media + tier:'strong' 且本池非空 → 走本池; 否则仍走 multimodal。
+	 * 空 = 关掉这条分支 (零回归)。
+	 */
+	multimodalStrong?: string[];
 }
 
 type PoolKey = keyof StampPools;
@@ -61,9 +69,16 @@ export function stampPass(
 		if (n.kind === "primitive") return null; // 原语节点模型由 primitive 层自理
 		// 多模态 = 能力硬约束, 优先于 tier 档位偏好 (非多模态模型看不见图)。
 		if (n.attach_media === true) {
+			// 强档看图节点先看 multimodalStrong (判 UI 的裁判也该能配 SOTA)。
+			if (n.tier === "strong" && (pools.multimodalStrong?.length ?? 0) > 0) {
+				return { key: "multimodalStrong", coords: pools.multimodalStrong! };
+			}
+			// ⚠ 回落 mid 是有代价的: mid 主力 mimo-v2.5-pro 实测**没有图像端点** (HTTP 404
+			// "No endpoints found that support image input")。多模态池为空时这条会把看图节点送进
+			// 一个文本模型 → 节点必然失败。宁可让它失败得响亮, 也不要以为"回落了就没事"。
 			return pools.multimodal.length > 0
 				? { key: "multimodal", coords: pools.multimodal }
-				: { key: "mid", coords: pools.mid }; // D-14v2: 空则回落 mid
+				: { key: "mid", coords: pools.mid }; // D-14v2
 		}
 		const key: PoolKey = n.tier ?? "mid"; // D-17: tier 显式覆盖, 缺省 mid 地板
 		return { key, coords: pools[key] };
@@ -151,7 +166,7 @@ export function stampPass(
 		if (g) {
 			// 池内坐标按 familyOf 分组 (保池序), 轮转家族取模型 — 组内仍逐成员链亲和优先。
 			const buckets = new Map<string, string[]>();
-			for (const coord of pools[g.key]) {
+			for (const coord of pools[g.key] ?? []) {
 				const f = fam(coord);
 				buckets.set(f, [...(buckets.get(f) ?? []), coord]);
 			}
