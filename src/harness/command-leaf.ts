@@ -9,9 +9,15 @@
  * 只 conductor + synthesis 烧 LLM。比 agent leaf 包 LLM 跑命令便宜得多, 且确定性可缓存友好。
  *
  * 安全 (GP-5 fail-closed, 因命令串来自 conductor 模型, 不可信):
- *  ① classifyCommand 拦危险命令 (rm -rf / git force / DROP …, 复用 V2-HOOK 闸)。
+ *  ① classifyCommand 拦危险命令 (rm -rf / git force / find -delete / DROP …, 复用 V2-HOOK 闸)。
  *  ② allowlist 命令首 token 白名单 (空白名单 = 全拒, 必须显式给如 ['codegraph'])。
+ *  ②.5 shell 元字符拦 (防 `;` `|` `$()` 注入)。
+ *  ②.6 git 子命令只读闸 (放行 bin 'git' 不等于放行 `git checkout .` / `git commit`)。
  *  ③ 超时 kill。
+ *
+ * **边界诚实说明**: 白名单是「防手滑 + 挡明显危险」的护栏, 不是对抗性沙箱 —— 'bun'/'node'/'npx'
+ * 一旦在表内就等价于任意代码执行 (验证叶跑 `bun test` 是本职, 拿不掉)。command leaf 的真实边界是
+ * cwd 锚 + 超时 + 危险模式表; 需要强隔离的是 agent leaf (那边有 bwrap jail)。
  */
 import { classifyCommand } from './hooks/dangerous-cmd';
 import { logger } from '../logger';
@@ -20,6 +26,40 @@ import type { ModelUsage } from '../model/types';
 // 类型单一真理源 = leaf-runners.ts (executor-dag 只认接口形状, 不 import 实现) — 这里 re-export 保旧调用面。
 export type { CommandLeafInput, CommandLeafResult, CommandLeafRunner } from './leaf-runners';
 import type { CommandLeafInput, CommandLeafResult, CommandLeafRunner } from './leaf-runners';
+
+/**
+ * DAG 执行器的缺省命令白名单 —— **单一真源** (此前 ['bun','tsc','npx'] 字面量散在 4 处调用点)。
+ * 判据: 一个「确定性验证叶」要能① 跑闸 ② 看见自己的产物 ③ 搜代码 ④ 调项目自有确定性工具。
+ * 单一用途的 runner (cg-retrieve / sast-scan) 不吃这张表, 继续给最小白名单 —— fail-closed 不放宽。
+ *
+ * 不收的东西与理由: 写类 (rm/mv/cp/mkdir/chmod) —— 验证叶不该改文件系统, 要写就该是 agent leaf;
+ * 网络类 (curl/wget) —— 防外泄与不确定性; env/printenv —— 输出会进模型上下文, 等于把 key 喂出去;
+ * sed/awk —— `-i` 就地改文件, 收益不抵风险; npm/pnpm/yarn —— publish/install 是外向且改依赖树。
+ */
+export const DEFAULT_COMMAND_ALLOWLIST: readonly string[] = [
+  // ① 构建 / 类型 / 测试闸
+  'bun', 'node', 'tsc', 'npx',
+  // ② 只读检视 —— 验证叶要能证实自己的产物真存在、非空、内容对
+  'ls', 'cat', 'head', 'tail', 'wc', 'stat', 'file', 'du', 'pwd', 'realpath', 'basename', 'dirname', 'diff',
+  // ③ 搜索
+  'grep', 'rg', 'ugrep', 'find', 'bfs', 'fd',
+  // ④ 结构化读取
+  'jq',
+  // ⑤ 项目自有确定性工具
+  'codegraph', 'semgrep', 'omd', 'oh-my-dag',
+  // ⑥ 版本控制 —— 仅只读子命令 (见 GIT_READONLY_SUBCOMMANDS)
+  'git',
+  // ⑦ 回显 (探针 / 占位输出)
+  'echo',
+];
+
+/**
+ * 允许的 git 子命令 (只读)。放行 bin 'git' 不等于放行改仓库状态 ——
+ * `git checkout .` 抹掉 DAG 刚写的文件、`git commit`/`git add` 越权代 owner 提交, 一律拒。
+ */
+export const GIT_READONLY_SUBCOMMANDS: readonly string[] = [
+  'status', 'diff', 'log', 'show', 'ls-files', 'ls-tree', 'rev-parse', 'blame', 'describe', 'shortlog', 'cat-file', 'grep',
+];
 
 export interface CommandLeafRunnerOpts {
   /** 允许的命令首 token 白名单 (GP-5)。空 = 全拒 (必须显式给, 如 ['codegraph'])。 */
@@ -47,6 +87,24 @@ const defaultSpawn = async (command: string, cwd: string) => {
   ]);
   return { stdout, stderr, exitCode };
 };
+
+/** git 的「带值全局 flag」—— 取子命令时必须连它的值一起跳过, 否则 `git -C /repo status` 会把 /repo 当子命令。 */
+const GIT_VALUE_FLAGS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--config-env']);
+
+/** 从 git 命令串里定位子命令 (跳过全局 flag 及其值)。找不到 → undefined (裸 git)。 */
+function gitSubcommand(link: string): string | undefined {
+  const toks = link.trim().split(/\s+/).slice(1);
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i]!;
+    if (GIT_VALUE_FLAGS.has(t)) {
+      i++; // 连值跳过
+      continue;
+    }
+    if (t.startsWith('-')) continue; // 布尔 flag / --foo=bar 形
+    return t;
+  }
+  return undefined;
+}
 
 /** 命令首 token (路径取 basename) — 用于白名单匹配。 */
 function commandBin(command: string): string {
@@ -87,6 +145,19 @@ export function createCommandLeafRunner(opts: CommandLeafRunnerOpts): CommandLea
     if (/[;&|`$<>(){}\n\r\\]/.test(link)) {
       logger.warn({ command: link }, '[omd/command-leaf] 命令含 shell 元字符, 拒绝 (防注入)');
       return { text: '[blocked shell-metachar: ; & | ` $ < > ( ) \\ newline not allowed]', usage: { in: 0, out: 0 }, exitCode: -1 };
+    }
+    // ②.6 git 子命令只读闸: bin 在白名单只说明「可以调 git」, 改仓库状态的子命令仍拒
+    // (`git checkout .` 会抹掉 DAG 刚写的文件; `git commit` 越权代 owner 提交)。
+    if (bin === 'git') {
+      const sub = gitSubcommand(link);
+      if (!sub || !GIT_READONLY_SUBCOMMANDS.includes(sub)) {
+        logger.warn({ command: link, sub }, '[omd/command-leaf] git 子命令非只读, 拒绝');
+        return {
+          text: `[blocked git-write: '${sub ?? '(none)'}' ∉ 只读子命令 ${GIT_READONLY_SUBCOMMANDS.join('/')}]`,
+          usage: { in: 0, out: 0 },
+          exitCode: -1,
+        };
+      }
     }
     return null;
   };

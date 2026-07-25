@@ -19,6 +19,7 @@ import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
 import { iterateExecutorDag, summarizeDagResult, type IterateResult } from './plan/iterate';
 import { createDagRecorder } from './dag-record';
 import { runExecutorDagWithPlan, type ExecutorDagResult, type GenerateFn } from './executor-dag';
+import { resolveSeatThinking } from '../model/role-models';
 import { parsePlan, type ConductorPlan } from './conductor-plan';
 import type { VerifierFn } from './verifier';
 import type { AgentLeafRunner, CommandLeafRunner } from './leaf-runners';
@@ -419,6 +420,8 @@ export async function executeSlice(
     generate: opts.generate,
     agentRunner: opts.agentRunner,
     commandRunner: opts.commandRunner,
+    // S-T: 座位推理档随座位下发 (TUI 路径与 MCP 路径同源, 别只给一条路)。
+    seatThinking: (coord: string) => resolveSeatThinking(coord),
     onComplete: opts.recorder
       ? (res) => {
           opts.recorder!.record(res, { question: `executeSlice ${finalPlan.name}` });

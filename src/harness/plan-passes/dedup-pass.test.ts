@@ -167,6 +167,7 @@ describe("dedupPass (D-20)", () => {
 			cluster: ["fe", "be"],
 			tier: ["strong", "cheap"],
 			attach_media: [true, false],
+			thinking: ["low", "xhigh"],
 		};
 		for (const key of Object.keys(shape)) {
 			if (EXCLUDED.has(key)) continue;

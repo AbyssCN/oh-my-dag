@@ -42,10 +42,18 @@ import type { ConductorPlan } from '../harness/conductor-plan';
 import { prunePass } from '../harness/plan-passes/prune-pass';
 import { dedupPass } from '../harness/plan-passes/dedup-pass';
 import { stampPass } from '../harness/plan-passes/stamp-pass';
+import { evidencePass } from '../harness/plan-passes/evidence-pass';
+import { loadAgentTemplates } from '../harness/agent-templates';
 import { modelFamily } from '../model/channels';
-import { resolveRoleModelConfigured, resolveMultimodalPool, type OmdNode } from '../model/role-models';
+import {
+  resolveRoleModelConfigured,
+  resolveMultimodalPool,
+  resolveSeatThinking,
+  type OmdNode,
+  type ThinkingLevel,
+} from '../model/role-models';
 import { createAgentLeafRunner } from '../harness/agent-leaf';
-import { createCommandLeafRunner } from '../harness/command-leaf';
+import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../harness/command-leaf';
 import type { AgentLeafRunner, CommandLeafRunner } from '../harness/leaf-runners';
 import { createOmdMemory, type OmdMemory } from '../harness/memory';
 import { UNIVERSAL_SAFEGUARD } from '../memory/safeguards/namespaces';
@@ -274,7 +282,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   const agentRunner = deps.agentRunner ?? createAgentLeafRunner({ cwd, hashlineEdit: true, leafTimeoutMs });
   const commandRunner =
     deps.commandRunner ??
-    createCommandLeafRunner({ allowlist: ['bun', 'tsc', 'npx'], cwd, timeoutMs: 180_000 });
+    createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], cwd, timeoutMs: 180_000 });
 
   // engine config = env 角色矩阵三件套 + 真改文件 runner 对 (execute-extension 已解析形状同款)。
   const models = resolveEngineModels(env);
@@ -324,6 +332,17 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       if (Object.keys(merged).length) logger.info({ merged }, '[omd/mcp] dedup pass: 语义指纹去重 (D-20)');
       return plan;
     },
+    // S2 证据闸 (SDD 2026-07-25 skills-compile-evidence-gate)。**排在 stamp 之前**是刻意的:
+    // 本 pass 会新增节点, 排在 stamp 后补挂的 attach_media 审查 leaf 拿不到多模态池模型 = 白补
+    // (回流修正 SDD 的「链尾」写法, 理由见 evidence-pass.ts 文件头)。卡按调用时刻读盘 (与执行器同源)。
+    (p) => {
+      const { plan, patched, noCardHits, shape } = evidencePass(p, { templates: loadAgentTemplates({ root: cwd }) });
+      if (patched.length) logger.info({ patched }, '[omd/mcp] evidence pass: 补挂 ui-pixels 证据链 (S2/D-2)');
+      // D-11 挖矿日志: (goal, 图形状指纹, 无卡命中) —— S4 图形状挖矿与卡自扩的前置数据。
+      // 三元组的 oracle 结果那一半在执行完成后由 run 汇总记 (规划期拿不到)。
+      logger.info({ goal: plan.name, shape, noCardHits }, '[omd/mcp] evidence pass: 图形状指纹 (D-11 挖矿信号)');
+      return plan;
+    },
     (p) => {
       const { plan, stamped } = stampPass(p, { pools: stampPools, familyOf: modelFamily });
       if (Object.keys(stamped).length) logger.info({ stamped }, '[omd/mcp] stamp pass: node.model 计划期分配 (D-16/17/22)');
@@ -344,8 +363,13 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   const conductorTuning: Partial<ExecutorDagConfig> = models.conductorModel?.startsWith('kimi-coding:')
     ? { conductorPromptProfile: 'lean', conductorMaxTokens: 32768 }
     : {};
+  // S-T 座位推理档 (坐标 → 档): auto-assign 把「模型 + 推理档」成对落盘, 执行期按节点已钉的坐标反查。
+  // 不在此加缓存 —— 底层 fileConfig 已按 mtime 缓存, 自己再存一层会在 `omd models auto` 重写 config
+  // 后拿着旧档不放 (daemon 长活)。config 无该段 → 恒 undefined → 执行器回落原默认, 老 config 零变化。
+  const seatThinking = (coord: string): ThinkingLevel | undefined => resolveSeatThinking(coord);
   const defaultConfig: Partial<ExecutorDagConfig> = {
     ...models,
+    seatThinking,
     maxFanout: defaultMaxFanout,
     ...(Object.keys(kindFanout).length ? { kindFanout } : {}),
     agentRunner,

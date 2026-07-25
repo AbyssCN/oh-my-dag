@@ -14,6 +14,7 @@
  *  PLAN-3 plan = WorkflowYaml-shaped → 可直接 compile (toWorkflowYaml 在 conductor/plan)。
  */
 import { z } from 'zod';
+import { DEFAULT_COMMAND_ALLOWLIST, GIT_READONLY_SUBCOMMANDS } from './command-leaf';
 
 /** Frozen-prefix boundary (SDD §2 __SYSTEM_PROMPT_DYNAMIC_BOUNDARY__ analogue). */
 export const PLAN_BOUNDARY = '\n\n===== TASK (dynamic, below the frozen boundary) =====\n\n';
@@ -130,6 +131,12 @@ const PlanNode = z
     cluster: z.string().optional(),
     /** D-17 强度档覆盖:stamp pass 选池档位(缺省 executor-kind 启发地板)。 */
     tier: z.enum(['strong', 'mid', 'cheap']).optional(),
+    /**
+     * S-T 推理档显式覆盖:显式给了永远赢过座位档与全局默认(同 TPL-3 的 model 优先序哲学)。
+     * 刻意**不进 conductor prompt** —— 这是手写 plan / patch 的逃生口,不是让弱 conductor
+     * 到处撒的旋钮(档位该由座位分配表统一给,散在节点上就没人管得住)。
+     */
+    thinking: z.enum(['off', 'low', 'medium', 'high', 'xhigh']).optional(),
     /**
      * D-14v2 多模态:true = 执行期从直接前驱输出解析图片路径(存在性校验),经 content parts
      * 注入本 leaf 调用,模型走 multimodal 池。
@@ -335,6 +342,15 @@ export function conductorSystemPrompt(
     'run tools; phrasing a leaf goal as "execute …" makes the model fake-perform it and fabricate data.',
     '',
         ]),
+    // command 节点的白名单此前从没进过 prompt —— conductor 只能猜, 猜错就是「假红」(合法验证步被闸拒)。
+    // 白名单是真源导出的常量, 这里拼进 prompt, 表变了 prompt 自动跟着变。
+    `executor:"command" — allowed binaries (first token MUST be one of these, else the node is REJECTED`,
+    `unrun): ${DEFAULT_COMMAND_ALLOWLIST.join(' ')}.`,
+    `Also blocked: shell metacharacters ; | & \` $ ( ) < > \\ and newlines (chain steps with && instead —`,
+    `each link is gated separately); git is READ-ONLY (${GIT_READONLY_SUBCOMMANDS.join('/')} only — never`,
+    'checkout/commit/add/push); no writes (rm/mv/cp/mkdir), no network (curl/wget), no env dumping.',
+    'Need anything outside this set? Use executor:"agent" (it has real tools) — do NOT invent a command.',
+    '',
     'Runtime work-list → executor:"map" (do NOT hallucinate a command that enumerates AND processes):',
     'When the SET of items to process is UNKNOWN at plan time — audit EACH module, research EACH lens,',
     'fix EACH failing test, process EACH discovered file — you cannot name them now. Do NOT collapse the',

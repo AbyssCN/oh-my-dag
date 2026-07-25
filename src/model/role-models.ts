@@ -21,6 +21,7 @@
  */
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { logger } from '../logger';
 
 /**
  * Daemon roles that drive callModel. (plan 审议座舱角色已随 plan-extension 撤除, 2026-07-25 owner 裁决。)
@@ -97,6 +98,12 @@ interface ConfigFile {
   multimodalPool?: string[];
   /** auto-assign 落盘的 node → coord (D-17 一次性填, 可读可改)。resolveRoleModelConfigured 的 auto 层读它。 */
   autoAssigned?: Record<string, string>;
+  /**
+   * S-T: auto-assign 落盘的 node → 推理档 (与 autoAssigned 同键)。**独立一段而非把 autoAssigned
+   * 的值改成对象**: 后者要每个读者都做归一化, 且毁掉「手改 config 时一行一个坐标」的可读性;
+   * 独立段是纯增量 —— 老 config 没有这段 = 座位档缺席 = 执行期回落原有默认 (向后兼容)。
+   */
+  autoAssignedThinking?: Record<string, string>;
 }
 
 let fileCache: { path: string; mtimeMs: number; config: ConfigFile } | null = null;
@@ -303,11 +310,76 @@ function fileAutoAssigned(path = configPath()): Record<string, string> {
 /**
  * 落盘 auto-assign 结果 (node→coord) 到 .omd/config.json autoAssigned 段 (D-17 一次性填, 可读可改)。
  * 整段替换 (保留 models/multimodalPool 等其它段)。跨进程: daemon 下次 resolve 时 mtime 重读即捡到。
+ * thinking 给了则同时整段替换 autoAssignedThinking (S-T 座位档随座位成对下发)。
  */
-export function persistAutoAssigned(map: Record<string, string>, path = configPath()): void {
+export function persistAutoAssigned(
+  map: Record<string, string>,
+  path = configPath(),
+  thinking?: Record<string, ThinkingLevel>,
+): void {
   mutateConfig((cfg) => {
     cfg.autoAssigned = { ...map };
+    if (thinking) cfg.autoAssignedThinking = { ...thinking };
   }, path);
+}
+
+/** 推理档词表 (与 GenerateFn/callModel 的 thinkingLevel 同词表 — 单一词汇)。 */
+export type ThinkingLevel = 'off' | 'low' | 'medium' | 'high' | 'xhigh';
+const THINKING_LEVELS: readonly ThinkingLevel[] = ['off', 'low', 'medium', 'high', 'xhigh'];
+/** 档位强弱序 (取 max 用): off < low < medium < high < xhigh。 */
+const thinkingRank = (t: ThinkingLevel): number => THINKING_LEVELS.indexOf(t);
+
+/** 读 .omd/config.json 的 autoAssignedThinking 段 (node→档)。无/坏值 → 丢弃该条 (fail-open)。 */
+function fileAutoAssignedThinking(path = configPath()): Record<string, ThinkingLevel> {
+  const raw = fileConfig(path).autoAssignedThinking;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out: Record<string, ThinkingLevel> = {};
+  for (const [node, v] of Object.entries(raw)) {
+    if (typeof v === 'string' && (THINKING_LEVELS as readonly string[]).includes(v)) out[node] = v as ThinkingLevel;
+  }
+  return out;
+}
+
+/**
+ * S-T: 模型坐标 → 座位推理档。座位档按 node 名落盘, 而执行期只认坐标 (stamp pass 把座位坐标
+ * 铺到 plan 节点上), 故按坐标反查。
+ *
+ * **多座位共用一个坐标时取最高档** (如 worker 与 verify 都落在同一模型上): 宁可多花推理 token,
+ * 也不把 verify/judge 座静默降档 —— 降档的代价是错答案通过, 比 token 贵。碰撞会 log 供修分配表。
+ *
+ * @returns 该坐标的座位档; 无座位落在此坐标 (或老 config 无该段) → undefined (调用方回落原默认)。
+ */
+export function resolveSeatThinking(
+  coord: string,
+  opts: { configPath?: string; autoAssignMap?: Record<string, string>; thinkingMap?: Record<string, ThinkingLevel> } = {},
+): ThinkingLevel | undefined {
+  const coords = opts.autoAssignMap ?? fileAutoAssigned(opts.configPath);
+  const thinking = opts.thinkingMap ?? fileAutoAssignedThinking(opts.configPath);
+  let best: ThinkingLevel | undefined;
+  let winner: string | undefined;
+  const collided: string[] = [];
+  for (const [node, c] of Object.entries(coords)) {
+    if (c !== coord) continue;
+    const t = thinking[node];
+    if (!t) continue;
+    if (best === undefined) {
+      best = t;
+      winner = node;
+    } else if (t !== best) {
+      collided.push(node);
+      if (thinkingRank(t) > thinkingRank(best)) {
+        best = t;
+        winner = node;
+      }
+    }
+  }
+  if (collided.length > 0) {
+    logger.warn(
+      { coord, winner, level: best, collided },
+      '[omd/role-models] 多座位共用坐标且档位不一致 → 取最高档 (改 auto-assign 分配表可消除)',
+    );
+  }
+  return best;
 }
 /**
  * Resolve a node's model with full configuration chain.

@@ -33,6 +33,9 @@ export type NodeClass =
 	| "verify" // verifier + review-spec
 	| "dream"; // dream (独立)
 
+/** 推理档 (与 GenerateFn/callModel 的 thinkingLevel 同词表 — 别引入第二套词汇)。 */
+export type SeatThinking = "off" | "low" | "medium" | "high" | "xhigh";
+
 /** 单 node 分配结果。 */
 export interface NodeAssignment {
 	/** 分配到的模型坐标 (provider:modelId)。 */
@@ -41,6 +44,8 @@ export interface NodeAssignment {
 	readonly channelId: string;
 	/** AA intelligence 分数 (快照或启发兜底)。 */
 	readonly intelligence: number;
+	/** S-T 座位推理档 (随座位下发, 见 NODE_CLASS_THINKING)。 */
+	readonly thinkingLevel: SeatThinking;
 }
 
 /** autoAssign 输出: node 名 → 分配。 */
@@ -88,6 +93,34 @@ const PREFERRED_COORD: Record<NodeClass, string> = {
 	worker: "mimo:mimo-v2.5-pro", // MiMo Lite 额度大 (owner 2026-07-25: pro 默认替代 v2.5; 多模态池例外留 v2.5)
 	verify: "opencode-go:glm-5.2", // 次顶级 via Go flat-sub
 	dream: "opencode-go:glm-5.2",
+};
+
+/**
+ * S-T 座位推理档 (SDD 2026-07-25 skills-compile-evidence-gate S-T; 来源: codex MultiAgent V2 的
+ * ROLE_ROUTES 把「模型 + reasoning_effort」**成对**下发)。此前 auto-assign 只派坐标不派档,
+ * 执行期全局吃一个硬编码 'high'。
+ *
+ * 档位选择被 2026-07-25 的实测改写过一轮 (owner 指出 xhigh 不通用 + 要求量证 worker 档):
+ *   ① **上限是 high 不是 xhigh** — mimo 实测只接受 'low'|'medium'|'high', 'max' 直接 HTTP 400。
+ *      判/证/分解座位随溢出链落到 mimo 是常态, 配 xhigh 等于给自己埋 400。真需要 max 的座位由
+ *      transport 层按 provider 能力表决定 (reasoningEffortFor), 分配表不假设。
+ *   ② **worker 不降档** — 原设想「量产座降 low 省推理 token」, mimo-v2.5-pro 实测 n=3 打不出差:
+ *      不发 effort / low / high 的 completion token 中位 184 / 403 / 316, 区间大幅重叠, 方差远大于
+ *      档间差; 且 mimo 没有可用的关思考开关 (enable_thinking:false 等三种写法全被忽略)。
+ *      **省不出来的东西就别配** —— 配了只会拿质量换零收益。换到档位真有成本差的模型时再调这张表。
+ *
+ * 现档表: 全座位 'high'。它当前与硬默认同值 = 行为不变, 但机制在位:
+ *   坐标 → 座位 → 档 的通路打通了, 换模型/换池时这里是唯一要改的地方。
+ *
+ * ⚠ **agent leaf 是 worker 类里的例外, 不吃座位档**: agent-leaf.ts 的 xhigh 默认是 owner 早前锁的
+ * (改文件 + 工具循环, 数量远少于 inproc 扇出, 质量优先)。座位档只下发到 inproc leaf 与 conductor。
+ */
+const NODE_CLASS_THINKING: Record<NodeClass, SeatThinking> = {
+	decomposer: "high",
+	judge_synth: "high",
+	worker: "high",
+	verify: "high",
+	dream: "high",
 };
 
 /**
@@ -206,6 +239,7 @@ export function autoAssign(input: AutoAssignInput): AssignmentMap {
 					coord: r.coord,
 					channelId: r.channel.id,
 					intelligence: r.rating.intelligence,
+					thinkingLevel: NODE_CLASS_THINKING[nodeClass],
 				};
 				continue;
 			}
@@ -227,6 +261,7 @@ export function autoAssign(input: AutoAssignInput): AssignmentMap {
 				coord: resolved.coord,
 				channelId: resolved.channel.id,
 				intelligence: resolved.rating.intelligence,
+				thinkingLevel: NODE_CLASS_THINKING[nodeClass],
 			};
 		} else {
 			// INV-7: 全链不可达 → 不写入, 但 log。
@@ -266,8 +301,12 @@ export function runAutoAssign(
 		...(opts.ratingsPath ? { ratingsPath: opts.ratingsPath } : {}),
 	});
 	const coords: Record<string, string> = {};
-	for (const [node, a] of Object.entries(map)) coords[node] = a.coord;
-	persistAutoAssigned(coords, opts.configPath);
+	const thinking: Record<string, SeatThinking> = {};
+	for (const [node, a] of Object.entries(map)) {
+		coords[node] = a.coord;
+		thinking[node] = a.thinkingLevel;
+	}
+	persistAutoAssigned(coords, opts.configPath, thinking);
 	logger.info(
 		{ nodes: Object.keys(coords).length, declarations: declarations.length },
 		"auto-assign: 已落盘 .omd/config.json autoAssigned 段",

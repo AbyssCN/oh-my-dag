@@ -41,6 +41,8 @@ export function nodeFieldsKey(node: PlanNode): string {
 		node.params ? JSON.stringify(node.params) : NONE,
 		node.output_type ?? NONE,
 		node.tier ?? NONE,
+		// S-T: 推理档是语义 (同 goal 不同档 = 不同的执行, 成本与质量都不同), 入键。
+		node.thinking ?? NONE,
 		node.cluster ?? NONE,
 		node.requires ?? NONE,
 		node.attach_media ?? NONE,
