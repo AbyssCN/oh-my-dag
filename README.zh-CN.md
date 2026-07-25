@@ -16,7 +16,69 @@
 
 </div>
 
-<img src="docs/assets/engine-architecture.svg" alt="omd 引擎架构:计划期、执行期、反馈期与模型层" width="100%">
+```mermaid
+flowchart TB
+  TASK(["TASK"])
+
+  subgraph PLAN["1 · PLAN — one LLM call, everything after it is a pure function"]
+    direction TB
+    CD["Conductor<br/>gpt-5.6-sol · frozen prefix + task"]
+    PJ["Plan JSON<br/>zod-validated · unknown card rejects the plan"]
+    P1["prune<br/>cut nodes nothing consumes"]
+    P2["dedup<br/>merge by semantic key"]
+    P3["evidence<br/>UI pixel-chain gate"]
+    P4["stamp<br/>pin a model: pick pool, then 3 rules"]
+    CD --> PJ --> P1 --> P2 --> P3 --> P4
+  end
+
+  subgraph EXEC["2 · EXECUTE — dependency-driven, no level barrier"]
+    direction TB
+    RS{{"Ready-set scheduler<br/>a node waits only for its own deps"}}
+    L1["inproc leaf<br/>one shot, no tools"]
+    L2["agent leaf<br/>tools + bwrap jail<br/>the only kind that writes files"]
+    L3["command<br/>zero LLM · allowlisted CLI"]
+    L4["map · primitive<br/>runtime fan-out / engine-owned control flow"]
+    UI["UI evidence branch<br/>render command prints image paths<br/>then attach_media leaf judges real pixels"]
+    RS --> L1 & L2 & L3 & L4
+    L2 -.-> UI
+    L3 -.-> UI
+  end
+
+  subgraph FB["3 · FEEDBACK — objective gate first, model judgement second"]
+    direction TB
+    FI["Fan-in<br/>summaries, never transcripts"]
+    OG["Oracle gate<br/>tsc + test · zero LLM, cannot hallucinate"]
+    VF["Verifier<br/>glm-5.2 · cross-family · fails on doubt"]
+    HL["Heal<br/>a red gate becomes a repair task"]
+    ES["Escalation<br/>emits a node PATCH; untouched nodes stay byte-identical"]
+    FI --> OG --> VF
+    OG -->|red| HL
+    VF -->|rejected| ES
+  end
+
+  CP[("Checkpoint<br/>.omd/continuity/runId")]
+
+  TASK --> CD
+  P4 --> RS
+  L1 & L2 & L3 & L4 --> FI
+  UI --> FI
+  L1 & L2 & L3 & L4 -.->|every done node lands atomically| CP
+  CP -.->|resume: same input hash = green, re-run only the rest| RS
+  HL --> RS
+  ES --> CD
+
+  classDef llm fill:#EEEDFE,stroke:#534AB7,color:#26215C
+  classDef pure fill:#E1F5EE,stroke:#0F6E56,color:#04342C
+  classDef exec fill:#FAECE7,stroke:#993C1D,color:#4A1B0C
+  classDef infra fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
+  class CD,PJ,VF,ES llm
+  class P1,P2,P3,P4,OG,L3 pure
+  class L1,L2,HL,UI exec
+  class TASK,RS,L4,FI,CP infra
+```
+
+*紫 = 烧 LLM · 青 = 确定性零 LLM · 橙 = 执行体 · 灰 = 引擎结构件。*
+*图的真理源(含 rationale 与 changelog):[docs/diagrams/01-engine-flow.md](docs/diagrams/01-engine-flow.md)。*
 
 ## 这是什么
 

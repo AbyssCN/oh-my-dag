@@ -2,7 +2,7 @@
 
 [← README](../README.md) · [primitives](primitives.md) · [model layer](model-layer.md) · [MCP tools](mcp-tools.md)
 
-<img src="assets/engine-architecture.svg" alt="engine architecture" width="100%">
+**[→ 引擎流转图(Mermaid 真理源 + rationale + changelog)](diagrams/01-engine-flow.md)**
 
 The shape of the whole system in one sentence: **one LLM call plans, pure functions
 transform, dependency order executes, objective gates judge.**

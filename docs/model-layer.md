@@ -52,6 +52,22 @@ makes `mid` and `cheap` collapse into the same model — configure them).
 | `cheap` | `tier: "cheap"` | mechanical enumeration |
 | `multimodal` | `attach_media: true` | capability is a hard constraint — a text-only model cannot see the screenshot |
 
+### Vision is measured, not assumed
+
+Probe (2026-07-26): render a page with a random 4-char code and a coloured shape, ask the
+model to read both back.
+
+| Coordinate | Verdict | Answer |
+|---|---|---|
+| `mimo:mimo-v2.5` | ✅ exact | `7QK4`, blue triangle |
+| `opencode-go:minimax-m3` | ✅ exact | `7QK4`, blue triangle |
+| `opencode-go:qwen3.7-plus` | ⚠️ sees, misreads | `7GR4` — shape and colour right, code wrong by two chars |
+| `opencode-go:glm-5.2` | ❌ blind | "unknown code, unknown colour and shape" |
+
+Only the two exact ones are in the pool. `qwen3.7-plus` is not: the pool exists to *judge UI
+screenshots*, and a model that misreads text in a screenshot will produce confident, wrong
+findings about labels and copy. Re-run the probe before adding any coordinate here.
+
 ## Stamp rules, in priority order
 
 1. **Chain affinity** — exactly one real dep, this node is its only consumer, the upstream
