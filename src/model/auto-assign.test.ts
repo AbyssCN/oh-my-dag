@@ -60,9 +60,9 @@ describe("autoAssign", () => {
 		// reduce → MiMo v2.5-pro (D-14 够质量的最廉, 替代 ds-pro 位, 高频留 Lite 桶)
 		expect(m.reduce!.coord).toBe("mimo:mimo-v2.5-pro");
 
-		// worker → MiMo v2.5 (Lite, 替代 ds-flash 位)
+		// worker → MiMo v2.5-pro (owner 2026-07-25: Lite 额度大, pro 默认; 多模态池例外留 v2.5)
 		for (const n of ["leaf", "agent", "lens", "expand", "distill", "overflow"]) {
-			expect(m[n]!.coord).toBe("mimo:mimo-v2.5");
+			expect(m[n]!.coord).toBe("mimo:mimo-v2.5-pro");
 		}
 
 		// verifier/review-spec/dream → GLM via Go flat-sub (次顶级, 跨 Kimi 家族 INV-3)
@@ -96,7 +96,7 @@ describe("autoAssign", () => {
 		// reason 每图多发 → 留 k3 (Plus 配额保护); reduce/worker 不动
 		expect(m.reason!.coord).toBe("kimi-coding:k3");
 		expect(m.reduce!.coord).toBe("mimo:mimo-v2.5-pro");
-		expect(m.leaf!.coord).toBe("mimo:mimo-v2.5");
+		expect(m.leaf!.coord).toBe("mimo:mimo-v2.5-pro");
 		// INV-3: verifier (glm) 跨 gpt 大脑家族
 		expect(m.verifier!.coord).toBe("opencode-go:glm-5.2");
 	});

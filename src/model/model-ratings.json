@@ -7,6 +7,7 @@
     { "name": "qwen3.7 max", "intelligence": 46, "costUsd": 1.03, "speedTokS": 198 },
     { "name": "deepseek v4 pro", "intelligence": 44, "costUsd": 0.04, "speedTokS": null },
     { "name": "deepseek v4 flash", "intelligence": 40, "costUsd": 0.14, "speedTokS": null },
-    { "name": "mimo v2.5", "intelligence": 42, "costUsd": 0.20, "speedTokS": null }
+    { "name": "mimo v2.5", "intelligence": 42, "costUsd": 0.20, "speedTokS": null },
+    { "name": "mimo v2.5 pro", "intelligence": 45, "costUsd": 0.25, "speedTokS": null }
   ]
 }
