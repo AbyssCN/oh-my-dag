@@ -50,6 +50,7 @@ import {
   resolveRoleModelConfigured,
   resolveMultimodalPool,
   resolveSeatThinking,
+  resolveConfiguredPools,
   type OmdNode,
   type ThinkingLevel,
 } from '../model/role-models';
@@ -316,11 +317,14 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   // (无 ':') 过滤掉 (stamp 要精确坐标); 池空 → stamp 恒等 (INV-9 配置不全零回归)。
   const roleCoord = (n: OmdNode): string => resolveRoleModelConfigured(n, { env }).model;
   const uniqCoords = (xs: string[]): string[] => [...new Set(xs.filter((x) => x.includes(':')))];
+  // 显式池 (config.pools) 优先; 每档独立回落座位推导。座位推导下 mid/cheap 会恒等 (六个 worker
+  // 座位同一个坐标) —— 想让 tier:'cheap' 真的便宜、想让 sibling 跨家族分散有对象, 就得显式配池。
+  const cfgPools = resolveConfiguredPools();
   const stampPools = {
-    strong: uniqCoords([roleCoord('judge'), roleCoord('reason'), roleCoord('verifier')]),
-    mid: uniqCoords([roleCoord('leaf'), roleCoord('agent'), roleCoord('overflow')]),
-    cheap: uniqCoords([roleCoord('lens'), roleCoord('expand'), roleCoord('distill')]),
-    multimodal: resolveMultimodalPool(),
+    strong: cfgPools.strong ?? uniqCoords([roleCoord('judge'), roleCoord('reason'), roleCoord('verifier')]),
+    mid: cfgPools.mid ?? uniqCoords([roleCoord('leaf'), roleCoord('agent'), roleCoord('overflow')]),
+    cheap: cfgPools.cheap ?? uniqCoords([roleCoord('lens'), roleCoord('expand'), roleCoord('distill')]),
+    multimodal: cfgPools.multimodal ?? resolveMultimodalPool(),
   };
   const planFilters: Array<(p: ConductorPlan) => ConductorPlan> = [
     (p) => {
