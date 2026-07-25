@@ -47,6 +47,9 @@ import {
 } from './fanin-summary';
 // D-21 escalation 跨轮复用: 语义 Merkle 指纹 + 前驱闭包匹配 (semantic-key 单一真源)。
 import { computeReuse } from './plan-passes/semantic-key';
+// D-14v2 多模态媒体管道 (S4): attach_media 执行期从直接前驱输出解析图片 → ContentPart 注入。
+import { collectDepMedia } from './leaf-media';
+import type { ContentPart } from '../model/gateway';
 
 /** 上一轮 plan+results (escalation 重规划轮传入, D-21 跨轮复用的匹配源)。 */
 type PriorExec = { plan: ConductorPlan; results: Record<string, LeafResult> };
@@ -471,6 +474,42 @@ async function executePlan(
         logger.warn({ node: id }, '[omd/executor-dag] executor:agent 但无 agentRunner → 降级 inproc (无工具, 不会改文件)');
       }
       const useAgent = wantAgent && !!config.agentRunner;
+      // ── D-14v2 (SDD v2 S4) attach_media 媒体管道: 直接前驱的**原始输出** (depOutputs, 非 fanin
+      // 摘要 — 摘要可能丢路径) 里解析图片引用 → 存在性校验 → data-URI ContentPart, 注入 inproc leaf
+      // 的 user 消息 (模型由 stamp pass 分到 multimodal 池)。usage 走 provider 真值 — 图片 token
+      // 计入返回的 usage.in, 账本无需特判。
+      let mediaParts: ContentPart[] = [];
+      if (node.attach_media === true) {
+        const mediaRoot = continuity?.repoRoot ?? process.cwd();
+        const depTexts = deps.filter((d) => results[d]?.status === 'done').map((d) => depOutputs[d] ?? '');
+        const media = collectDepMedia(depTexts, { root: mediaRoot });
+        if (media.skipped.length > 0 || media.missing.length > 0) {
+          // MEDIA-2 no silent caps: 没附上的引用全部留痕 (超限/读失败/不存在), 不静默装作看过。
+          logger.warn(
+            { node: id, missing: media.missing, skipped: media.skipped, attached: media.attached.length },
+            '[omd/executor-dag] attach_media 部分媒体未附上 (D-14v2)',
+          );
+        }
+        if (media.parts.length === 0) {
+          // 拒绝"无图多模态审查"静默文本化 (同 empty-done/产物校验哲学): 看图节点没图 = 假成功
+          // 温床 → 显式 failed, heal/escalate 回路可见。前驱失败缺图的形态由 requires quorum 先拦。
+          logger.warn({ node: id, missing: media.missing }, '[omd/executor-dag] attach_media 无可用媒体 → failed (D-14v2 fail-closed)');
+          return {
+            id, status: 'failed', kind: useAgent ? 'agent' : 'inproc',
+            output: `[attach_media 无可用媒体: 直接前驱输出未解析出存在的图片${media.missing.length ? `; 路径不存在: ${media.missing.join(', ')}` : ''}]`,
+            deps, usage: { in: 0, out: 0 },
+          };
+        }
+        if (useAgent) {
+          // agent leaf 走工具子进程 (prompt 是纯文本接缝): 不注入 parts — 路径已在 prompt 文本里,
+          // 多模态注入仅 inproc leaf (D-14v2 收窄; agent 自有 Read 工具可看文件)。
+          logger.warn({ node: id }, '[omd/executor-dag] attach_media 于 agent 节点 → 忽略注入 (仅 inproc 支持, 路径在 prompt 文本)');
+          mediaParts = [];
+        } else {
+          logger.info({ node: id, attached: media.attached }, '[omd/executor-dag] attach_media 注入媒体 parts (D-14v2)');
+          mediaParts = media.parts;
+        }
+      }
       // per-node model 路由 (TPL-3): node.model 显式最高优先 → 模板卡 model → router (bandit) 选 →
       // 静态 (agent→agentLeafModel, inproc→leafModel)。bucket = executor kind (router 学习单元)。
       const bucket = useAgent ? 'agent' : 'inproc';
@@ -515,10 +554,13 @@ async function executePlan(
         }
       } else {
         // inproc leaf 带共享冻结前缀 (system) → 暖发后跨 leaf 命中 prompt-cache。
+        // attach_media: user 消息升格 ContentPart[] (text part 在前, 图 parts 随后 — openai-compat 惯例)。
+        const userContent: string | ContentPart[] =
+          mediaParts.length > 0 ? [{ type: 'text', text: prompt }, ...mediaParts] : prompt;
         const r = await generate({
           messages: [
             { role: 'system', content: config.leafSystemPrefix ?? LEAF_SYSTEM_PREFIX },
-            { role: 'user', content: prompt },
+            { role: 'user', content: userContent },
           ],
           model,
           thinkingLevel: config.inprocThinkingLevel ?? 'high', // inproc leaf: high (mass fan-out 省成本, 非 max)

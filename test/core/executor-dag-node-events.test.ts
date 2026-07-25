@@ -42,7 +42,7 @@ describe('executor-dag onNodeEvent', () => {
 
   test('失败叶 settle status=failed; 回调抛错 fail-open 不断 run', async () => {
     const gen: GenerateFn = async ({ messages }) => {
-      if (messages.some((m) => m.content.includes('[omd leaf: a]'))) throw new Error('boom');
+      if (messages.some((m) => typeof m.content === 'string' && m.content.includes('[omd leaf: a]'))) throw new Error('boom');
       return { text: 'ok', usage: { in: 1, out: 1 } };
     };
     const events: DagNodeEvent[] = [];

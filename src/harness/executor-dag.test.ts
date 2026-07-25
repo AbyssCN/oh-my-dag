@@ -4,11 +4,19 @@
  * 全部经 runExecutorDagWithPlan (预构造 plan, 跳过 conductor) + 注入 fake generate — 零真实 LLM。
  */
 import { describe, expect, test } from 'bun:test';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { runExecutorDagWithPlan } from './executor-dag';
 import type { ConductorPlan } from './conductor-plan';
+import type { ContentPart } from '../model/gateway';
 import type { DagNodeEvent, ExecutorDagConfig, GenerateFn } from './executor-dag-types';
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** content → 文本 (D-14v2 后 content 可为 ContentPart[]; fake 断言用 text parts 拼接)。 */
+const contentText = (c: string | ContentPart[] | undefined): string =>
+  typeof c === 'string' ? (c ?? '') : (c ?? []).map((p) => (p.type === 'text' ? p.text : '')).join('\n');
 
 /** 从 buildLeafPrompt 产出的 user prompt 里解析节点 id (`[omd leaf: <id>]` 行)。 */
 const leafId = (prompt: string): string => /\[omd leaf: ([^\]]+)\]/.exec(prompt)?.[1] ?? '?';
@@ -27,7 +35,7 @@ function makeGenerate(opts: { delayMs?: number } = {}): {
   let active = 0;
   let peak = 0;
   const generate: GenerateFn = async (req) => {
-    const prompt = req.messages.find((m) => m.role === 'user')?.content ?? '';
+    const prompt = contentText(req.messages.find((m) => m.role === 'user')?.content);
     const id = leafId(prompt);
     calls.push(id);
     prompts[id] = prompt;
@@ -222,6 +230,73 @@ describe('D-8v2 primitive 候选池轮转', () => {
       makeConfig(generate),
     );
     expect(new Set(models)).toEqual(new Set(['test:leaf'])); // 池未配 → 零回归
+  });
+});
+
+describe('G-10 attach_media 多模态媒体管道 (D-14v2)', () => {
+  /** 前驱输出带真实存在的图片路径 → 下游 attach_media 节点收到 ContentPart[] (text + data-URI 图)。 */
+  test('前驱产截图路径 → 媒体经 content parts 注入, usage 走 provider 真值', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omd-media-'));
+    const shot = join(dir, 'ui-variant-a.png');
+    writeFileSync(shot, Buffer.from('fake-png-bytes'));
+    const userContents: Array<string | ContentPart[]> = [];
+    const generate: GenerateFn = async (req) => {
+      const c = req.messages.find((m) => m.role === 'user')!.content;
+      userContents.push(c);
+      const id = leafId(contentText(c));
+      if (id === 'render') return { text: `截图已产出: ${shot}`, usage: { in: 1, out: 1 } };
+      return { text: `findings:${id}`, usage: { in: 7, out: 3 } };
+    };
+    const r = await runExecutorDagWithPlan(
+      plan({
+        render: { goal: '渲染并截图' },
+        review: { goal: 'UI/UX 审查', depends_on: ['render'], attach_media: true },
+      }),
+      makeConfig(generate),
+    );
+    expect(r.results.review!.status).toBe('done');
+    const reviewContent = userContents.find((c) => Array.isArray(c)) as ContentPart[];
+    expect(reviewContent).toBeDefined();
+    // text part 在前 (带 leaf prompt), 图 part 是 data URI (png mime + base64 本体)。
+    expect(reviewContent[0]!.type).toBe('text');
+    const img = reviewContent.find((p) => p.type === 'image_url') as Extract<ContentPart, { type: 'image_url' }>;
+    expect(img.image_url.url.startsWith('data:image/png;base64,')).toBe(true);
+    expect(Buffer.from(img.image_url.url.split(',')[1]!, 'base64').toString()).toBe('fake-png-bytes');
+    // usage 计费: provider 返回值直通账本 (图片 token 由 provider 计入 in)。
+    expect(r.results.review!.usage).toEqual({ in: 7, out: 3 });
+  });
+
+  test('fail-closed: 前驱无可用图片 → 节点 failed (拒绝无图多模态审查静默文本化)', async () => {
+    const calls: string[] = [];
+    const generate: GenerateFn = async (req) => {
+      const id = leafId(contentText(req.messages.find((m) => m.role === 'user')?.content));
+      calls.push(id);
+      return { text: id === 'a' ? '截图在 /no/such/shot.png' : 'x', usage: { in: 1, out: 1 } };
+    };
+    const r = await runExecutorDagWithPlan(
+      plan({
+        a: { goal: '前驱, 提到不存在的截图路径' },
+        see: { goal: '看图', depends_on: ['a'], attach_media: true },
+      }),
+      makeConfig(generate),
+    );
+    expect(r.results.see!.status).toBe('failed');
+    expect(r.results.see!.output).toContain('attach_media 无可用媒体');
+    expect(r.results.see!.output).toContain('/no/such/shot.png');
+    expect(calls).toEqual(['a']); // see 未调模型 (零 token)
+  });
+
+  test('零回归: 无 attach_media → user content 仍是纯 string', async () => {
+    const contents: Array<string | ContentPart[]> = [];
+    const generate: GenerateFn = async (req) => {
+      contents.push(req.messages.find((m) => m.role === 'user')!.content);
+      return { text: '含个路径 /tmp/x.png 也不该触发', usage: { in: 1, out: 1 } };
+    };
+    await runExecutorDagWithPlan(
+      plan({ a: { goal: '甲' }, b: { goal: '乙', depends_on: ['a'] } }),
+      makeConfig(generate),
+    );
+    expect(contents.every((c) => typeof c === 'string')).toBe(true);
   });
 });
 
