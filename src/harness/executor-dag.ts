@@ -17,10 +17,13 @@ import type { ModelUsage } from '../model/gateway';
 import { escalationProviderReady } from './verifier';
 import {
   conductorSystemPrompt,
+  conductorPatchSystemPrompt,
   parsePlan,
   PLAN_BOUNDARY,
   type ConductorPlan,
 } from './conductor-plan';
+// S3.6 escalation patch 模式: 补丁解析 + 程序化 merge (未补丁节点字节不动 → D-21 复用按构造成立)。
+import { parsePlanPatch, applyPlanPatch } from './plan-patch';
 import { hashArtifact, computeDagGeneration } from './continuity/checkpoint-manager';
 import type { NodeCheckpoint } from './continuity/types';
 // noun-gate 接缝(INV-X3):宿主注入(上游宿主传 memory-hub checkNouns);包不依赖 memory-hub。
@@ -135,6 +138,71 @@ function applyPlanFilters(plan: ConductorPlan, config: ExecutorDagConfig): Condu
   let p = config.oracleCmd ? filterOracleCommandNodes(plan, config.oracleCmd) : plan;
   for (const f of config.planFilters ?? []) p = f(p);
   return p;
+}
+
+/**
+ * S3.6 escalation patch 模式 (D-21/G-21 强化, 信任反转): 重规划 conductor 只输出节点补丁 JSON
+ * ({改哪些节点: 新字段}), 引擎程序化 merge 到上轮 plan — 未补丁节点**字节不动** → 语义指纹复用
+ * 按构造成立, 不再指望 LLM「逐字保留」(S3.5 实证跨轮重措辞, 4 采样 1 中)。
+ * 补丁解析/校验失败 → exec:null, 调用方回退现行整图重规划 (SDD 钉死 fail-open);
+ * usage 始终返回 (补丁尝试烧掉的 conductor token 不丢账 — 成功时已折进 exec.conductorUsage)。
+ */
+async function tryPatchReplan(
+  task: string,
+  reason: string,
+  prior: PriorExec,
+  config: ExecutorDagConfig,
+  conductorModel: string,
+  generate: GenerateFn,
+  maxPlanRetries: number,
+  templates: ReadonlyMap<string, AgentTemplate>,
+): Promise<{ exec: ExecOnce | null; usage: ModelUsage }> {
+  const sys = conductorPatchSystemPrompt();
+  const prevPlanJson = JSON.stringify(
+    {
+      name: prior.plan.name,
+      ...(prior.plan.description ? { description: prior.plan.description } : {}),
+      nodes: prior.plan.nodes,
+      ...(prior.plan.outputs?.length ? { outputs: prior.plan.outputs } : {}),
+    },
+    null,
+    1,
+  );
+  const known = new Set(templates.keys());
+  let usage: ModelUsage = { in: 0, out: 0 };
+  let lastErr = '';
+  for (let attempt = 1; attempt <= maxPlanRetries + 1; attempt++) {
+    const correction = attempt === 1 ? '' : `\n\n上次回复不是有效补丁 (${lastErr})。只回 {"patch": {...}} JSON 对象, 别的不要。`;
+    const { text, usage: u } = await generate({
+      messages: [
+        { role: 'system', content: sys },
+        { role: 'user', content: `${PLAN_BOUNDARY}${prevPlanJson}\n\n[verification failure] ${reason}${correction}` },
+      ],
+      model: conductorModel,
+      thinkingLevel: config.conductorThinkingLevel ?? 'high',
+      maxTokens: config.conductorMaxTokens ?? (Number(process.env.OMD_CONDUCTOR_MAX_TOKENS) || 8192),
+    });
+    usage = addUsage(usage, u);
+    const parsed = parsePlanPatch(text);
+    if (!parsed.ok) {
+      lastErr = parsed.error;
+      continue;
+    }
+    const applied = applyPlanPatch(prior.plan, parsed.patch, { knownTemplates: known });
+    if (!applied.ok) {
+      lastErr = applied.error;
+      continue;
+    }
+    const { plan, changed, removed, added } = applied.applied;
+    logger.info(
+      { changed, removed, added, total: Object.keys(plan.nodes).length },
+      '[omd/executor-dag] escalation 补丁采纳 → 程序化 merge (S3.6; 未补丁节点按构造复用)',
+    );
+    const exec = await executePlan(applyPlanFilters(plan, config), task, config, generate, usage, templates, prior);
+    return { exec, usage };
+  }
+  logger.warn({ err: lastErr }, '[omd/executor-dag] escalation 补丁模式未产出有效补丁 → 回退整图重规划 (S3.6 fail-open)');
+  return { exec: null, usage };
 }
 
 /**
@@ -1005,10 +1073,15 @@ async function runDagInternal(
         '(引擎按语义指纹复用未变节点的上轮结果 — 任何措辞变化都会浪费一次重算)。',
       ].join('\n');
       // D-21: 上轮 plan+results 作复用匹配源 — 语义未变的节点零 LLM 注入上轮输出, 只重跑变化子图。
-      exec = await planAndExecute(escTask, config, conductorModel, generate, maxPlanRetries, templates, {
-        plan: exec.plan,
-        results: exec.results,
-      });
+      const priorExec: PriorExec = { plan: exec.plan, results: exec.results };
+      // S3.6 补丁模式优先 (未补丁节点字节不动 → 复用按构造成立); 补丁失败回退整图重规划 (fail-open)。
+      const patched = await tryPatchReplan(escTask, verdict.reason, priorExec, config, conductorModel, generate, maxPlanRetries, templates);
+      if (patched.exec) {
+        exec = patched.exec;
+      } else {
+        conductorUsage = addUsage(conductorUsage, patched.usage); // 补丁尝试的 token 不丢账
+        exec = await planAndExecute(escTask, config, conductorModel, generate, maxPlanRetries, templates, priorExec);
+      }
       conductorUsage = addUsage(conductorUsage, exec.conductorUsage);
       leavesIn += exec.leavesIn;
       leavesOut += exec.leavesOut;

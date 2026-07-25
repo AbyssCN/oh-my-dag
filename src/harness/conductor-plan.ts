@@ -387,6 +387,34 @@ export function conductorSystemPrompt(
   ].join('\n');
 }
 
+/**
+ * escalation patch 模式的冻结 system prompt (SDD v2 S3.6, D-21/G-21 强化)。
+ * 信任反转: 不再要求重规划 conductor「逐字保留」整图 (S3.5 实证跨 LLM 重措辞漂移, 4 采样 1 中),
+ * 改为只输出节点补丁 JSON — 引擎程序化 merge, 未补丁节点字节不动 → 复用按构造成立。
+ * 字节稳定冻结前缀 (PLAN-1 同哲学); 上轮 plan JSON + 失败原因走 user 消息动态尾部。
+ */
+export function conductorPatchSystemPrompt(): string {
+  return [
+    'You are the CONDUCTOR in REPLAN-PATCH mode. A previous run of the plan (given below the boundary)',
+    'FAILED verification. Your job is to fix the plan with the SMALLEST possible patch — the engine',
+    'merges your patch into the previous plan programmatically, and every node you do NOT mention is',
+    'reused verbatim WITHOUT re-running (that is the point: unchanged nodes cost zero tokens).',
+    '',
+    'Output STRICTLY one JSON object, no prose, matching:',
+    '{ "patch": { "<node_id>": { <only the fields you change> } | null, ... }, "outputs"?: string[] }',
+    'Patch semantics (per node id):',
+    '- an OBJECT is shallow-merged into the existing node: include ONLY fields you change;',
+    '  set a field to null to REMOVE that field from the node.',
+    '- null DELETES the node — you must then also patch the depends_on of every node that referenced it.',
+    '- an id NOT in the previous plan ADDS a new node (give its full fields, same schema as planning).',
+    '- an empty patch {} means: the topology is fine, just re-run whatever failed.',
+    '"outputs" (optional) REPLACES the plan-level outputs array.',
+    '',
+    'Rules: keep the graph acyclic; only fix what the verification failure names — do NOT rewrite,',
+    'rephrase, or "improve" nodes that were not blamed (any touched node re-runs and burns tokens).',
+  ].join('\n');
+}
+
 // ── JSON extraction (弱模型鲁棒 · PLAN-2) ──────────────────────────────────────
 
 /**
