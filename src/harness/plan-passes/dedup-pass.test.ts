@@ -137,10 +137,11 @@ describe("dedupPass (D-20)", () => {
 			}
 		).valueType.shape;
 		// map = 整节点不参与判重 (D-20 v1 保守), 无指纹归属可言。
-		const EXCLUDED = new Set(["map"]);
+		// agent = SAMPO roster 指派, omd executor-dag 不消费且每轮随机 → 刻意排除
+		// (入键会系统性打空 D-21 跨轮复用, 见 semantic-key.ts 注)。
+		const EXCLUDED = new Set(["map", "agent"]);
 		// 每字段一对「仅此字段不同」的取值 (B 可为 undefined = 字段省略)。
 		const pairs: Record<string, [unknown, unknown]> = {
-			agent: ["a1", "a2"],
 			skill: ["s1", "s2"],
 			goal: ["g1", "g2"],
 			args: [{ a: 1 }, { a: 2 }],

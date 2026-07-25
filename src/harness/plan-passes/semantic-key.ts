@@ -22,7 +22,9 @@ const NONE = "·";
  */
 export function nodeFieldsKey(node: PlanNode): string {
 	return JSON.stringify([
-		node.agent ?? NONE,
+		// ⚠ `agent` (SAMPO roster) 刻意排除: omd executor-dag 不消费它 (按 executor/model 分流,
+		// schema 注释明示), 且 conductor 每轮随机指派 → 入键 = 纯噪声, 系统性打空 D-21 跨轮复用
+		// (2026-07-25 实证: 重规划 diff 唯一漂移就是 agent)。宿主宏观引擎路径不经本 pass。
 		node.executor ?? "leaf",
 		node.kind ?? NONE,
 		node.primitive ?? NONE,

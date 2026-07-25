@@ -202,6 +202,29 @@ describe('D-23 per-channel 并发闸', () => {
   });
 });
 
+describe('D-8v2 primitive 候选池轮转', () => {
+  test('parallel primitive 的 goals 按 candidates 跨池轮转; 未配则全走 leafModel', async () => {
+    const models: string[] = [];
+    const generate: GenerateFn = async (req) => {
+      models.push(req.model);
+      return { text: 'ok', usage: { in: 1, out: 1 } };
+    };
+    await runExecutorDagWithPlan(
+      plan({
+        p: { kind: 'primitive', primitive: 'parallel', params: { goals: ['甲', '乙', '丙'] } },
+      }),
+      makeConfig(generate, { primitiveCandidates: ['famA:m1', 'famB:m2'] }),
+    );
+    expect(models.sort()).toEqual(['famA:m1', 'famA:m1', 'famB:m2']); // 3 路轮转 2 候选
+    models.length = 0;
+    await runExecutorDagWithPlan(
+      plan({ p: { kind: 'primitive', primitive: 'parallel', params: { goals: ['甲', '乙'] } } }),
+      makeConfig(generate),
+    );
+    expect(new Set(models)).toEqual(new Set(['test:leaf'])); // 池未配 → 零回归
+  });
+});
+
 describe('G-11v2 零回归', () => {
   test('全绿链行为不变: 状态/输出/用量账本', async () => {
     const { generate, prompts } = makeGenerate();
