@@ -127,6 +127,15 @@ export interface AgentLeafRunnerOpts {
    */
   disciplineCore?: boolean;
   /**
+   * prompt 档强制覆盖 (eval 用)。缺省 `'auto'` = 按本次 leaf 的模型档自选 (强模型走
+   * STRONG_MODEL_CORE, 其余走全量脚手架)。**A/B 必须能把档位固定住**, 否则换模型时档位跟着变,
+   * 量到的差是"模型 × 档位"的混合效应, 分不清是哪一半 —— 这正是 conductor 那轮 A/B 的教训。
+   *   'weak'   = 恒发 TOOL_ROUTING + DISCIPLINE_CORE
+   *   'strong' = 恒发 STRONG_MODEL_CORE
+   *   'off'    = 两块都不发 (裸 prompt 基线)
+   */
+  promptProfile?: 'auto' | 'weak' | 'strong' | 'off';
+  /**
    * agent loop 有界超时 (ms): 弱模型 (DeepSeek) loop 偶尔写完产物后空转不退出 (pi 无 maxTurns,
    * prompt() 永不 resolve → 外部 SIGKILL)。超时 → session.abort() settle 流, 返已累积输出 (产物多已落盘)。
    * 默认 240_000 (4min, 原子叶子充裕上界)。0/省略 = 不限 (慎用)。
@@ -244,8 +253,11 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // 弱模型吃全量脚手架。opts 的两个开关仍是硬关 (纯命令叶可全关)。
     const wantRouting = opts.toolRouting ?? true;
     const wantDiscipline = opts.disciplineCore ?? true;
+    const profile = opts.promptProfile ?? 'auto';
     let disciplined: string;
-    if (isStrongCoord(model) && (wantRouting || wantDiscipline)) {
+    if (profile === 'off') {
+      disciplined = prompt;
+    } else if (profile === 'strong' || (profile === 'auto' && isStrongCoord(model) && (wantRouting || wantDiscipline))) {
       disciplined = `${STRONG_MODEL_CORE}\n\n${prompt}`;
     } else {
       // TR-INV-5: prepend tool-routing guideline → 弱模型重叠区选对工具。
@@ -259,9 +271,11 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // 此前 runner 从不填 filesTouched → executor-dag 产物闸把真交付的文件节点全判 failed (恒空 = "谎报完工")。
     const FILE_WRITE_TOOLS = new Set(['write', 'edit', 'hashline_edit']);
     const touched = new Set<string>();
+    let toolCalls = 0; // 工具调用计数 (prompt 档的路由效率读数, 见 AgentLeafResult.toolCalls)。
     // toolCallId → 候选写路径 (可多: hashline_edit 一个 patch 多 section 多文件)。end 且 !isError 才计入。
     const pathByCall = new Map<string, string[]>();
     const unsubTouch = (session as { subscribe: (l: (e: { type: string; toolCallId?: string; toolName?: string; args?: { path?: unknown; patch?: unknown }; isError?: boolean }) => void) => () => void }).subscribe((e) => {
+      if (e.type === 'tool_execution_start') toolCalls++;
       if (e.type === 'tool_execution_start' && e.toolName && FILE_WRITE_TOOLS.has(e.toolName) && e.toolCallId) {
         // hashline_edit 路径嵌在 patch 头 (`¶PATH#TAG`), 不是顶层 path —— 必须解析 patch, 否则漏记 → 假 empty-done。
         const paths =
@@ -322,7 +336,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           'HTTP 状态, 故此处响亮报错而非当成功 (统一-registry C-5b)。',
       );
     }
-    return { text, usage, filesTouched: [...touched], stalled };
+    return { text, usage, filesTouched: [...touched], toolCalls, stalled };
   };
 }
 

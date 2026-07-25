@@ -19,6 +19,12 @@ export interface AgentLeafResult {
   usage: ModelUsage;
   /** 本次 leaf 经 write/edit 族工具触碰的文件(continuity 接缝;去重)。 */
   filesTouched?: string[];
+  /**
+   * 本次 leaf 的工具调用次数 (按 tool_execution_start 计)。**prompt 档的路由效率读数** ——
+   * 工具路由那一段教的就是"该用 codegraph 时别拿 grep 凑", 而档位改动的效果只有在这个量上
+   * 才看得见 (同样过闸, 调了 8 次工具还是 30 次, 差的是钱和墙钟)。省略 = 该 runner 不统计。
+   */
+  toolCalls?: number;
   /** 早期心跳闸判定的停摆(issue #5): provider 挂起/排队, 未等满硬超时即中止。executor 据此标 failed +
    *  留 stall 败因(而非把近零输出当 done)。省略/false = 正常完成或硬超时。 */
   stalled?: boolean;

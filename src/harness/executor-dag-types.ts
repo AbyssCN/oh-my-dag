@@ -218,6 +218,8 @@ export interface LeafResult {
   skipped?: boolean;
   /** agent leaf 触碰的文件 (来自 AgentLeafResult.filesTouched, checkpoint 产物锚)。 */
   filesTouched?: string[];
+  /** agent leaf 的工具调用次数 (来自 AgentLeafResult.toolCalls; prompt 档的路由效率读数)。 */
+  toolCalls?: number;
   /** 早期心跳闸判停摆 (issue #5): provider 挂起, 未等满硬超时即中止 → settle 记 failureKind='stall'。 */
   stalled?: boolean;
 }
