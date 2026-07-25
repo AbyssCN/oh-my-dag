@@ -213,9 +213,11 @@ export function conductorSystemPrompt(
   opts: { agents?: string[]; templates?: { name: string; description: string }[]; profile?: 'full' | 'lean' } = {},
 ): string {
   const lean = opts.profile === 'lean';
+  // roster 段 2026-07-26 撤下: node.agent 在 executor-dag 零消费者 (分流看 executor/model), 且
+  // conductor 每轮重掷它 → 系统性打空 D-21 跨轮复用。宿主若真注入 agents 名单才提一句, 否则不提。
   const roster = opts.agents?.length
-    ? `Available executor agents (use ONLY these as node "agent"): ${opts.agents.join(', ')}.`
-    : 'Use the SAMPO roster as node "agent" ids (sibelius / lönnrot / vaaka / kaiku / aalto).';
+    ? [`Host executor roster (field "agent", optional label): ${opts.agents.join(', ')}.`]
+    : [];
   // agent 模板注册表段 (只付每卡一行 description; body 执行期才注入 leaf — 规划上下文零 body 成本)。
   const templateSection = opts.templates?.length
     ? [
@@ -289,12 +291,31 @@ export function conductorSystemPrompt(
     '  from the levels above it, LIFT it up to run in parallel. Keep the graph WIDE (many siblings) and SHALLOW.',
     '',
         ]),
+    ...(lean
+      ? [
+          'Parallel-safety: siblings run CONCURRENTLY with NO level barrier — two nodes may be siblings only',
+          'if they touch disjoint files, write distinct output_path, and share no migration / fixture / scarce',
+          'resource. Anything colliding gets chained via depends_on.',
+          '',
+        ]
+      : [
     'Parallel-safety (siblings run concurrently — this GATES the WIDE-over-DEEP rule above):',
     '- Make two nodes siblings (no dep between them) ONLY if they touch disjoint files, write distinct',
     '  output_path, and share no migration / DB fixture / scarce resource (port, provider rate limit).',
     '  If any collide, serialize them via depends_on — a wrong parallel edge corrupts files or double-writes.',
     '- Serialize hotspots, parallelize slices: schema/migrations, hot shared routes, and contracts are',
     '  collision-prone → chain them (or route through ONE owner node); isolated modules/files fan out wide.',
+    '',
+        ]),
+    // 2026-07-26 owner: contract-node 从「全栈 SDD motif 第 2 步」提为通用规则 —— 它不是前端专属,
+    // 任何「一个决策 → 一堆执行」的图都该长这样, 且是 tier:'strong' 最该出现的位置。两档都发。
+    'ONE decision, THEN the fan-out (applies to ANY fan-out — not just full-stack work):',
+    '- When N nodes must agree on the same interface / schema / naming / design decision, emit ONE node',
+    '  that OUTPUTS that decision as text, and have all N depend_on it. NEVER let N siblings each invent',
+    '  it: you get N incompatible answers and a merge nobody owns.',
+    '- The decision node is an ORDINARY leaf — no special node kind. Give it tier:"strong" when the whole',
+    '  fan-out rides on it (this is the single best place to spend a strong model); the workers below it',
+    '  can stay cheap, because they are now transcribing a decision instead of making one.',
     '',
     'Executor kind per node (field "executor"):',
     '- "leaf"  = a single-shot model call, NO tools. Use for generation / research / judgement / drafting.',
@@ -390,6 +411,7 @@ export function conductorSystemPrompt(
     '- mechanical / file / command → OMIT persona (framing adds nothing, just wastes tokens).',
         ]),
     'Keep the graph acyclic.',
+    ...roster,
     ...templateSection,
     '',
     'Constrained control-flow primitives (field "kind":"primitive" — OPTIONAL, prefer over hand-wiring):',
@@ -421,8 +443,8 @@ export function conductorSystemPrompt(
     '  the review sees the states the motion passes through.',
     'Full-stack SDD shape (a spec with UI + API surfaces decomposes into THIS):',
     '1. research cluster — parallel sibling leaves (cluster:"research"): domain, UX reference, tech constraints.',
-    '2. ONE contract node depending on the research: a leaf that OUTPUTS the interface text (API routes /',
-    '   props / schema). The contract IS the sync point — it needs no special node kind.',
+    '2. ONE contract node depending on the research (the "ONE decision, THEN the fan-out" rule above,',
+    '   applied to the API/props/schema surface).',
     '3. backend cluster + frontend cluster — agent nodes that ALL depend_on the contract node, never on each',
     '   other across clusters: both sides build against the same frozen interface, so the clusters run in',
     '   parallel safely (cluster:"backend" / cluster:"frontend").',
@@ -435,13 +457,15 @@ export function conductorSystemPrompt(
     '   load-bearing.',
     'UI best-of-N: N variant agent nodes → N render command nodes → ONE multimodal judge (attach_media:true,',
     'requires:K) so a failed variant does not kill the judgement.',
-    roster,
     '',
     'Output STRICTLY one JSON object, no prose, matching:',
     '{ "name": string, "description"?: string, "outputs"?: string[],',
     // "skill" 从广告 schema 撤下 (2026-07-25 ponytail): 执行层无 skill 加载器, 该字段只会渲染成一行
     // 无载荷文字 — 别邀请 conductor 相信一个不存在的通道。zod 层保留容忍 (daemon 遗产/旧 plan 兼容)。
-    '  "nodes": { "<node_id>": { "agent": string, "goal"?: string, "persona"?: string, "template"?: string,',
+    // "agent" 2026-07-26 从广告 schema 撤下 (同 skill 的理由): executor-dag 零消费者 —— 分流只看
+    // executor/model; 而 conductor 每轮重掷这个字段, 反而系统性打空 D-21 跨轮语义复用
+    // (semantic-key 为此把它排除在指纹外)。zod 层仍容忍旧 plan。
+    '  "nodes": { "<node_id>": { "goal"?: string, "persona"?: string, "template"?: string,',
     '    "args"?: object, "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map", "command"?: string, "creative"?: boolean,',
     '    "map"?: { "lister": object, "over": string, "itemVar": string, "keyBy"?: string, "template": object, "maxItems"?: number },',
     '    "postcondition"?: { "method"?: "structural"|"code"|"llm-judge"|"human", "threshold"?: number },',

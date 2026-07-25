@@ -345,7 +345,13 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       return plan;
     },
     (p) => {
-      const { plan, stamped } = stampPass(p, { pools: stampPools, familyOf: modelFamily });
+      // templateHasModel: 卡真钉了模型才让 stamp 让路 (卡没钉 → 照常按 tier 选池, 否则 tier 是哑弹)。
+      const tpls = loadAgentTemplates({ root: cwd });
+      const { plan, stamped } = stampPass(p, {
+        pools: stampPools,
+        familyOf: modelFamily,
+        templateHasModel: (name) => Boolean(tpls.get(name)?.model),
+      });
       if (Object.keys(stamped).length) logger.info({ stamped }, '[omd/mcp] stamp pass: node.model 计划期分配 (D-16/17/22)');
       return plan;
     },
