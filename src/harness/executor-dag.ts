@@ -45,6 +45,11 @@ import {
   composeFaninView,
   DEFAULT_FANIN_SCHEMA,
 } from './fanin-summary';
+// D-21 escalation 跨轮复用: 语义 Merkle 指纹 + 前驱闭包匹配 (semantic-key 单一真源)。
+import { computeReuse } from './plan-passes/semantic-key';
+
+/** 上一轮 plan+results (escalation 重规划轮传入, D-21 跨轮复用的匹配源)。 */
+type PriorExec = { plan: ConductorPlan; results: Record<string, LeafResult> };
 
 // ── barrel re-export: 保持 ./executor-dag 公共面稳定 (importer-closure, 消费方零改) ──
 export type { GenerateFn, ExecutorDagConfig, ExecutorDagResult, LeafResult, DagNodeEvent } from './executor-dag-types';
@@ -75,6 +80,7 @@ async function planAndExecute(
   generate: GenerateFn,
   maxPlanRetries: number,
   templates: ReadonlyMap<string, AgentTemplate>,
+  prior?: PriorExec,
 ): Promise<ExecOnce> {
   // ── 1. conductor: 单结构化调用规划 (显式可换) ──────────────────────────────
   // 模板注册表进规划 prompt (每卡一行 description); parsePlan 校验 template 引用 (TPL-2 规划层拒)。
@@ -114,7 +120,7 @@ async function planAndExecute(
 
   // pass 管线 (SDD v2): oracle 过滤 + planFilters (prune→dedup→stamp, 接线层组装)。
   // conductor 之后, 下游执行机器与 plan 来源无关 → 交 executePlan (D-7 预构造入口共用同一机器)。
-  return executePlan(applyPlanFilters(plan, config), task, config, generate, conductorUsage, templates);
+  return executePlan(applyPlanFilters(plan, config), task, config, generate, conductorUsage, templates, prior);
 }
 
 /**
@@ -141,6 +147,7 @@ async function executePlan(
   generate: GenerateFn,
   conductorUsage: ModelUsage,
   templates: ReadonlyMap<string, AgentTemplate>,
+  prior?: PriorExec,
 ): Promise<ExecOnce> {
   const levels = topoLevels(plan);
   logger.info(
@@ -162,6 +169,13 @@ async function executePlan(
     type: 'planned',
     nodes: Object.entries(plan.nodes).map(([id, n]) => ({ id, kind: nodeKind(n) })),
   });
+
+  // ── D-21 escalation 跨轮复用: 语义 Merkle 指纹 + 前驱闭包匹配上轮 done 节点 → 零 LLM 注入。
+  // 重规划最烧 token 的形态 = 80% 节点语义没变却整图重跑; 指纹按语义不按 id, 重命名不破匹配。
+  const reuse = prior ? computeReuse(plan, prior) : new Map<string, LeafResult>();
+  if (reuse.size > 0) {
+    logger.info({ reused: [...reuse.keys()], total: Object.keys(plan.nodes).length }, '[omd/executor-dag] 跨轮语义复用集 (D-21)');
+  }
 
   // ── 2. executor: ready-set 现场 fan-out (依赖就绪即跑, 见下方调度器), leaf 调显式 leafModel ──
   const results: Record<string, LeafResult> = {};
@@ -352,7 +366,9 @@ async function executePlan(
     const ctx: PrimitiveCtx = {
       maxFanout: config.maxFanout,
       usage: () => usageAcc,
-      leaf: async ({ goal, persona }) => {
+      // D-8v2: judge/parallel/tournament 的 attempts 按候选池轮转 (原语层 pickCandidate)。
+      candidates: config.primitiveCandidates,
+      leaf: async ({ goal, persona, model }) => {
         const cav = cavemanRule(leafCavemanLevel(false, config.cavemanLevel ?? 'full'));
         const personaLine = persona ? `<persona>${persona}</persona>\n` : '';
         const r = await generate({
@@ -360,7 +376,7 @@ async function executePlan(
             { role: 'system', content: config.leafSystemPrefix ?? LEAF_SYSTEM_PREFIX },
             { role: 'user', content: `${personaLine}${goal}${depCtx}${cav ? `\n\n${cav}` : ''}` },
           ],
-          model: config.leafModel,
+          model: model ?? config.leafModel,
           thinkingLevel: config.inprocThinkingLevel ?? 'high',
         });
         usageAcc = addUsage(usageAcc, r.usage);
@@ -396,6 +412,12 @@ async function executePlan(
       const deps = node.depends_on ?? [];
       nodeStartedAt.set(id, Date.now());
       emitNodeEvent({ type: 'start', id, kind: nodeKind(node) });
+      // D-21: 跨轮复用命中 → 上轮输出直接注入 (零 LLM 零工具; id/deps 归本轮, skipped 同 resume 语义)。
+      const prev = reuse.get(id);
+      if (prev) {
+        logger.info({ node: id }, '[omd/executor-dag] 跨轮语义复用命中 → 注入上轮输出 (D-21)');
+        return { ...prev, id, deps, usage: { in: 0, out: 0 }, skipped: true };
+      }
       // SDD 0013 S1: primitive 节点 (约束选择) → compile+run 分支 (先于 map/executor, 与自由 node 并存)。
       if (node.kind === 'primitive' && node.primitive) return runPrimitiveNode(id);
       // U1: map 节点走运行时展开分支 (永不整体 resume-skip — lister 便宜, 子节点各自续)。
@@ -585,6 +607,27 @@ async function executePlan(
     return 'inproc'; // leaf/map/primitive (map/primitive 内层并发各自管理)
   };
 
+  // ── D-23 per-channel 并发闸 (SDD v2): key = provider 前缀, 调度期由 node.model ?? kind 静态
+  // 模型确定性推出 (运行期 router 选择不改记账 — 与 kind 闸「按声明记账」同哲学)。command 无
+  // 模型 → 不入渠道闸。未配 channelFanout → 全部不限 (零回归)。
+  const channelCap = config.channelFanout ?? {};
+  const hasChannelCaps = Object.keys(channelCap).length > 0;
+  const runningByChannel = new Map<string, number>();
+  const schedChannel = (id: string): string | null => {
+    const n = plan!.nodes[id]!;
+    if (n.executor === 'command') return null;
+    const model = n.model ?? (schedKind(id) === 'agent' ? config.agentLeafModel ?? config.leafModel : config.leafModel);
+    const sep = model.indexOf(':');
+    return sep >= 0 ? model.slice(0, sep) : model;
+  };
+  const channelBlocked = (id: string): boolean => {
+    if (!hasChannelCaps) return false;
+    const ch = schedChannel(id);
+    if (ch == null) return false;
+    const cap = channelCap[ch];
+    return cap !== undefined && (runningByChannel.get(ch) ?? 0) >= cap;
+  };
+
   // ── fan-in 定向摘要 (扇出≥2 触发) ─────────────────────────────────────────────
   // producer settle 前 (dependents 释放前) 判定并生成: 输出被 ≥2 consumer 消费 ∧ 够长 → 跑 1 发
   // 定向摘要 (按下游目标提炼) + 全文落盘留指针, 存 faninView[id]; 下游 fan-in 注入摘要而非全文。
@@ -762,13 +805,15 @@ async function executePlan(
           return;
         }
         if (running >= cap || ready.length === 0) return;
-        // kind 闸内选第一个可起跑节点 (非严格 FIFO: 被 kind 闸挡住的节点让位给其它 kind, 保持吞吐)。
-        const idx = ready.findIndex((id) => runningByKind[schedKind(id)] < kindCap[schedKind(id)]);
-        if (idx < 0) return; // 所有就绪节点都被各自 kind 闸挡住 → 等 settle 释放
+        // kind × channel 双闸内选第一个可起跑节点 (非严格 FIFO: 被闸挡住的节点让位, 保持吞吐)。
+        const idx = ready.findIndex((id) => runningByKind[schedKind(id)] < kindCap[schedKind(id)] && !channelBlocked(id));
+        if (idx < 0) return; // 所有就绪节点都被 kind/channel 闸挡住 → 等 settle 释放
         const id = ready.splice(idx, 1)[0]!;
         const kind = schedKind(id);
+        const channel = hasChannelCaps ? schedChannel(id) : null;
         running++;
         runningByKind[kind]++;
+        if (channel != null) runningByChannel.set(channel, (runningByChannel.get(channel) ?? 0) + 1);
         runNode(id)
           .catch((e) => failedFromThrow(id, e)) // INV-6: leaf 抛错隔离成 failed (保留败因), 不连坐其它节点
           .then(async (r) => {
@@ -777,6 +822,7 @@ async function executePlan(
             const { r: settledR, view } = await maybeFaninView(id, r);
             running--;
             runningByKind[kind]--;
+            if (channel != null) runningByChannel.set(channel, (runningByChannel.get(channel) ?? 1) - 1);
             if (view) faninView[id] = view;
             try {
               settle(id, settledR);
@@ -894,7 +940,11 @@ async function runDagInternal(
       );
       conductorModel = config.conductorEscalationModel;
       const escTask = `${task}\n\n[上一轮校验未通过] ${verdict.reason}\n请基于此重新规划, 修复上述问题。`;
-      exec = await planAndExecute(escTask, config, conductorModel, generate, maxPlanRetries, templates);
+      // D-21: 上轮 plan+results 作复用匹配源 — 语义未变的节点零 LLM 注入上轮输出, 只重跑变化子图。
+      exec = await planAndExecute(escTask, config, conductorModel, generate, maxPlanRetries, templates, {
+        plan: exec.plan,
+        results: exec.results,
+      });
       conductorUsage = addUsage(conductorUsage, exec.conductorUsage);
       leavesIn += exec.leavesIn;
       leavesOut += exec.leavesOut;

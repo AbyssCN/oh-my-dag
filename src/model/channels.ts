@@ -17,6 +17,30 @@
 /** Billing dimension — what the provider actually charges for. */
 export type BillingKind = "token" | "request" | "session" | "flat";
 
+/** 聚合渠道 (一个 provider 托管多家族模型) 的 provider 基名。家族须从 modelId 品牌头解析。 */
+const AGGREGATOR_PROVIDERS = new Set(["opencode"]);
+/** 品牌归一: 渠道别名 → 家族名 (INV-3/INV-7 跨家族判定用 zhipu 与 glm 同族等)。 */
+const BRAND_ALIAS: Record<string, string> = { zhipu: "glm", xiaomi: "mimo" };
+
+/**
+ * 坐标 → 模型家族 (INV-7 跨家族分散 / INV-3 verifier≠主力族 的判定单元)。
+ * 规则: provider 剥渠道后缀 (-coding/-platform/-go/-cn/-us) 得基名; 基名是聚合渠道
+ * (opencode) → 取 modelId 品牌头 (首段字母串: glm-5.2→glm, qwen3.7-max→qwen);
+ * 否则家族 = 基名 (kimi-coding:k3→kimi, mimo-platform:*→mimo)。经 BRAND_ALIAS 归一。
+ * 对齐 model-ratings lookupRating 的品牌桥接 (D-8 剥后缀) — 改一处核两处。
+ */
+export function modelFamily(coord: string): string {
+	const sep = coord.indexOf(":");
+	const provider = (sep >= 0 ? coord.slice(0, sep) : coord).toLowerCase();
+	const modelId = sep >= 0 ? coord.slice(sep + 1).toLowerCase() : "";
+	const base = provider.replace(/-(coding|platform|go|cn|us)$/i, "");
+	if (AGGREGATOR_PROVIDERS.has(base) && modelId) {
+		const brand = /^[a-z]+/.exec(modelId)?.[0] ?? base;
+		return BRAND_ALIAS[brand] ?? brand;
+	}
+	return BRAND_ALIAS[base] ?? base;
+}
+
 /** A discovered billing channel: one (provider, kind) pair with its effective rate. */
 export interface Channel {
 	readonly id: string;

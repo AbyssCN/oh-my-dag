@@ -10,48 +10,17 @@
  * 纯函数: 零 IO、零 logger、不变异输入 (返回新 plan)。
  */
 import type { ConductorPlan } from "../conductor-plan";
+import { nodeFieldsKey } from "./semantic-key";
 
 type PlanNode = ConductorPlan["nodes"][string];
 
-/** 缺省字段占位 (undefined 与 '' 都归一到这里, 不影响语义区分 —— 弱模型漏填 ≈ 空)。 */
-const NONE = "·";
-
 /**
- * 节点语义指纹 (D-20): executor ?? 'leaf' + 全部语义字段 + sorted depends_on (已应用当前 merged)。
- * 对象字段 (output_schema/args/params) 走 JSON.stringify; id 不入指纹。
+ * 节点语义指纹 (D-20): 共享字段序列化 (semantic-key, 单一真源 — D-21 Merkle 同吃) +
+ * sorted depends_on (已应用当前 merged)。id 不入指纹。
  */
 function fingerprint(node: PlanNode, remap: (id: string) => string): string {
 	const deps = (node.depends_on ?? []).map(remap).sort();
-	return JSON.stringify([
-		node.agent ?? NONE, // host roster 语义 (宿主宏观引擎 dispatch 用) — 不同 agent ≠ 同一个工作
-		node.executor ?? "leaf",
-		node.kind ?? NONE,
-		node.primitive ?? NONE,
-		node.template ?? NONE,
-		node.model ?? NONE,
-		node.goal ?? NONE,
-		node.command ?? NONE,
-		node.skill ?? NONE,
-		node.output_path ?? NONE,
-		node.persona ?? NONE,
-		node.creative ?? NONE,
-		node.output_schema ? JSON.stringify(node.output_schema) : NONE,
-		node.args ? JSON.stringify(node.args) : NONE,
-		node.params ? JSON.stringify(node.params) : NONE,
-		// SDD v2 调度/分配元数据同为语义字段 (INV-10): tier 决定档位、requires 决定 quorum、
-		// attach_media 决定媒体注入、cluster 决定链亲和边界 — 任一不同都不是"同一个工作"。
-		node.output_type ?? NONE,
-		node.tier ?? NONE,
-		node.cluster ?? NONE,
-		node.requires ?? NONE,
-		node.attach_media ?? NONE,
-		node.on_failure ?? NONE,
-		node.max_retry ?? NONE,
-		node.fallback ?? NONE,
-		node.postcondition ? JSON.stringify(node.postcondition) : NONE,
-		node.leaf ? JSON.stringify(node.leaf) : NONE,
-		deps,
-	]);
+	return `${nodeFieldsKey(node)}|${deps.join(",")}`;
 }
 
 /**
