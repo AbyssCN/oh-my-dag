@@ -416,7 +416,9 @@ export function conductorSystemPrompt(
     '',
     'Output STRICTLY one JSON object, no prose, matching:',
     '{ "name": string, "description"?: string, "outputs"?: string[],',
-    '  "nodes": { "<node_id>": { "agent": string, "skill"?: string, "goal"?: string, "persona"?: string, "template"?: string,',
+    // "skill" 从广告 schema 撤下 (2026-07-25 ponytail): 执行层无 skill 加载器, 该字段只会渲染成一行
+    // 无载荷文字 — 别邀请 conductor 相信一个不存在的通道。zod 层保留容忍 (daemon 遗产/旧 plan 兼容)。
+    '  "nodes": { "<node_id>": { "agent": string, "goal"?: string, "persona"?: string, "template"?: string,',
     '    "args"?: object, "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map", "command"?: string, "creative"?: boolean,',
     '    "map"?: { "lister": object, "over": string, "itemVar": string, "keyBy"?: string, "template": object, "maxItems"?: number },',
     '    "postcondition"?: { "method"?: "structural"|"code"|"llm-judge"|"human", "threshold"?: number },',
