@@ -87,6 +87,10 @@ describe('S5 conductor prompt: SDD v2 字段 + 前端 motif (G-9)', () => {
     }
   });
 
+  test('schema 块不再广告 "skill" (执行层无加载器, 防回归重新邀请无载荷字段)', () => {
+    for (const p of [full, lean]) expect(p).not.toContain('"skill"?');
+  });
+
   test('G-9 结构验收: motif 形状的前端图 parse 通过且无环, 分层符合 motif 序', () => {
     const motifPlan = {
       name: 'frontend-sdd',
