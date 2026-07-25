@@ -130,3 +130,21 @@ export function lookupRating(
 	);
 	return { name: norm, ...tier };
 }
+
+/**
+ * 「强模型」判据下限 (AA intelligence)。**57 = k3 的分数,不是拍的**:
+ * conductor prompt 的 full/lean A/B eval(conductor-modelmix oracle,2026-07-25 medium R=2)
+ * 唯一被实测验证过的强模型就是 k3 —— full/lean 同分 1.000 且 firstShot 全过,lean 少 25% leaf token。
+ * 把门槛钉在被验证的那一点上: ≥57 才敢撤教练段,以下一律保守走 full。
+ * 想放宽门槛请先跑一轮 A/B,别改数字了事。
+ */
+export const STRONG_INTELLIGENCE_FLOOR = 57;
+
+/**
+ * S-P: 该坐标是否算「强模型」(决定 conductor prompt 是否撤弱模型教练段)。
+ * 评级查不到 → false(保守走 full)。启发兜底给出的分数同样算数 —— 它已经 warn 过 (INV-7)。
+ */
+export function isStrongCoord(coord: string, path = defaultRatingsPath()): boolean {
+	const r = lookupRating(coord, path);
+	return r !== null && r.intelligence >= STRONG_INTELLIGENCE_FLOOR;
+}
