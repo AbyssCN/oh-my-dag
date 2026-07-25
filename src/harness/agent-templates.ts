@@ -33,9 +33,18 @@ export interface AgentTemplate {
   description: string;
   /** 可选 model tier ('provider:modelId') — 卡片级模型路由 (TPL-3: node.model 显式仍最高优先)。 */
   model?: string;
+  /**
+   * 可选证据类 (词表 KNOWN_EVIDENCE_CLASSES) — 声明用此卡的节点交付物需要哪条证据链,
+   * S2 证据闸按此施加图形状约束 ('ui-pixels' ⇒ 渲染 command 后代 + attach_media 审查尾)。
+   * 词表外的值在加载期被丢弃 (fail-open, 防拼错卡召唤不存在的闸)。
+   */
+  evidence?: string;
   /** 卡片正文 (方法论+检查单+输出纪律) — 执行期注入 leaf prompt 前缀, 规划期不进上下文。 */
   body: string;
 }
+
+/** evidence 词表 (v1 仅 UI 像素链; rule-of-three — 第二个领域实例出现前不扩)。S2 证据闸与加载器共用此真源。 */
+export const KNOWN_EVIDENCE_CLASSES: ReadonlySet<string> = new Set(['ui-pixels']);
 
 /** 项目卡目录 (repoRoot 相对)。 */
 export const AGENT_TEMPLATE_DIR = '.omd/agents';
@@ -68,13 +77,18 @@ export function loadAgentTemplates(opts: { root?: string } = {}): Map<string, Ag
         continue;
       }
       const model = typeof fm.model === 'string' && fm.model.trim() ? fm.model.trim() : undefined;
+      let evidence = typeof fm.evidence === 'string' && fm.evidence.trim() ? fm.evidence.trim() : undefined;
+      if (evidence && !KNOWN_EVIDENCE_CLASSES.has(evidence)) {
+        logger.warn({ file, evidence }, '[omd/agent-templates] 未知 evidence 类 → 丢弃字段, 卡照常加载 (词表见 KNOWN_EVIDENCE_CLASSES)');
+        evidence = undefined;
+      }
       const trimmedBody = body.trim();
       if (!trimmedBody) {
         logger.warn({ file }, '[omd/agent-templates] 卡片 body 为空 → 跳过 (TPL-1)');
         continue;
       }
       if (templates.has(name)) logger.info({ name, file }, '[omd/agent-templates] 项目卡覆盖同名卡');
-      templates.set(name, { name, description, ...(model ? { model } : {}), body: trimmedBody });
+      templates.set(name, { name, description, ...(model ? { model } : {}), ...(evidence ? { evidence } : {}), body: trimmedBody });
     } catch (err) {
       logger.warn({ file, err }, '[omd/agent-templates] 卡片解析失败 → 跳过 (TPL-1 fail-open)');
     }

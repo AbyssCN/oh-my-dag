@@ -71,6 +71,35 @@ describe('agent-templates loader', () => {
   });
 });
 
+describe('S1 evidence 证据类字段 (S2 证据闸的绑定点, SDD 2026-07-25)', () => {
+  test('内置卡: frontend-impl 携 ui-pixels, 其余内置卡无 evidence', () => {
+    const t = loadAgentTemplates({ root: tmpRoot() });
+    expect(t.get('frontend-impl')?.evidence).toBe('ui-pixels');
+    for (const b of BUILTIN_AGENT_TEMPLATES) {
+      if (b.name !== 'frontend-impl') expect(t.get(b.name)?.evidence).toBeUndefined();
+    }
+  });
+
+  test('项目卡 frontmatter evidence 解析 (同名覆盖内置时同样携带)', () => {
+    const root = tmpRoot({
+      'shop-ui.md': ['---', 'name: shop-ui', 'description: shop UI impl', 'evidence: ui-pixels', '---', 'body'].join('\n'),
+      'code-reviewer.md': ['---', 'name: code-reviewer', 'description: ui override', 'evidence: ui-pixels', '---', 'b'].join('\n'),
+    });
+    const t = loadAgentTemplates({ root });
+    expect(t.get('shop-ui')?.evidence).toBe('ui-pixels');
+    expect(t.get('code-reviewer')?.evidence).toBe('ui-pixels'); // 覆盖卡携带
+  });
+
+  test('词表外 evidence → 丢弃字段, 卡照常加载 (fail-open, 防拼错召唤不存在的闸)', () => {
+    const root = tmpRoot({
+      'weird.md': ['---', 'name: weird', 'description: d', 'evidence: bogus-class', '---', 'body'].join('\n'),
+    });
+    const t = loadAgentTemplates({ root });
+    expect(t.get('weird')?.description).toBe('d'); // 卡在
+    expect(t.get('weird')?.evidence).toBeUndefined(); // 字段被丢
+  });
+});
+
 describe('conductor prompt + parsePlan (规划层)', () => {
   const registry: AgentTemplate[] = [{ name: 'card-a', description: 'does A', body: 'BODY-A' }];
 
