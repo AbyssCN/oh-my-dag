@@ -198,6 +198,8 @@ export type ConductorPlan = z.infer<typeof PlanSchema>;
  *    菜单 / 模板注册表) + 一行版纪律 — 顶级 conductor (k3) 上全量教练是保守偏置, 疑压平分解质量
  *    (harness 退役测试: 强模型使教练冗余 → 撤)。两档均为字节稳定冻结前缀 (PLAN-1, 各自成 cache 面)。
  *    档位选择走 A/B eval (conductor-modelmix oracle), 不拍脑袋。
+ *    裁决 (2026-07-25, medium R=2 串行): k3 full/lean 同分 1.000 且 firstShot 全过, lean 少 25%
+ *    leaf token → k3 采 lean (assemble 接线); large fixture 高分辨率复核为可选 follow-up。
  */
 export function conductorSystemPrompt(
   opts: { agents?: string[]; templates?: { name: string; description: string }[]; profile?: 'full' | 'lean' } = {},

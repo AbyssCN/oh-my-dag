@@ -313,6 +313,13 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       return plan;
     },
   ];
+  // conductor 档位随模型 (2026-07-25 A/B eval 裁决, medium fixture R=2 串行):
+  // k3 上 full/lean 同分 1.000/1.000 且 firstShot 全过, lean 少 25% leaf token (66.9k vs 89.5k)
+  // → 强 conductor 撤教练段 (harness 退役测试), 弱 conductor 保 full。maxTokens 32768 仅对
+  // kimi 系放开 (32k 实测安全; deepseek 系 ~8k 硬顶故不全局提)。
+  const conductorTuning: Partial<ExecutorDagConfig> = models.conductorModel?.startsWith('kimi-coding:')
+    ? { conductorPromptProfile: 'lean', conductorMaxTokens: 32768 }
+    : {};
   const defaultConfig: Partial<ExecutorDagConfig> = {
     ...models,
     maxFanout: defaultMaxFanout,
@@ -321,6 +328,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     commandRunner,
     router,
     planFilters,
+    ...conductorTuning,
     ...deps.configOverrides,
   };
 
