@@ -341,6 +341,41 @@ describe('G-21 强化: escalation patch 模式 (S3.6)', () => {
     expect(r.usage.conductor.in).toBeGreaterThanOrEqual(5);
   });
 
+  /** 执行层散雾 (S3.6 升格): findings 说「缺 X」→ 补丁在上轮图上**长出新下游子图**, 未动部分全复用。 */
+  test('补丁加节点: 上轮图长出新下游子图, 旧节点零重跑 (add 语义)', async () => {
+    const calls: string[] = [];
+    const generate: GenerateFn = async (req) => {
+      const sysC = req.messages.find((m) => m.role === 'system')?.content;
+      const sys = typeof sysC === 'string' ? sysC : '';
+      if (sys.includes('REPLAN-PATCH')) {
+        // 审核缺审查节点 → 补丁只加一个下游 review 节点, 不动 a/b
+        return { text: '{"patch": {"review": {"goal": "补交叉审查", "depends_on": ["b"]}}}', usage: { in: 5, out: 5 } };
+      }
+      const id = leafId(contentText(req.messages.find((m) => m.role === 'user')?.content));
+      calls.push(id);
+      return { text: `out:${id}`, usage: { in: 1, out: 1 } };
+    };
+    let verifyCount = 0;
+    const verifier = async (): Promise<{ pass: boolean; reason: string; usage: { in: number; out: number } }> => {
+      verifyCount++;
+      return verifyCount === 1
+        ? { pass: false, reason: '缺交叉审查节点', usage: { in: 0, out: 0 } }
+        : { pass: true, reason: 'ok', usage: { in: 0, out: 0 } };
+    };
+    const r = await runExecutorDagWithPlan(
+      plan({ a: { goal: '甲' }, b: { goal: '乙', depends_on: ['a'] } }),
+      makeConfig(generate, { verifier, conductorEscalationModel: 'escx:strong' }),
+    );
+    expect(r.verification!.pass).toBe(true);
+    // a/b 各只跑一次 (轮 2 按构造复用), 新 review 节点跑一次且吃到 b 的上轮输出
+    expect(calls.filter((c) => c === 'a').length).toBe(1);
+    expect(calls.filter((c) => c === 'b').length).toBe(1);
+    expect(calls.filter((c) => c === 'review').length).toBe(1);
+    expect(r.results.a!.skipped).toBe(true);
+    expect(r.results.b!.skipped).toBe(true);
+    expect(r.results.review!.status).toBe('done');
+  });
+
   test('fail-open: 补丁始终无效 → 回退整图重规划 (CONDUCTOR 全量 prompt), 补丁 token 不丢账', async () => {
     const sysSeen: string[] = [];
     const fullPlanJson = JSON.stringify({
