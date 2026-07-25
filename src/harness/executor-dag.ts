@@ -111,7 +111,8 @@ async function planAndExecute(
     const { text, usage } = await generate({
       messages: [{ role: 'system', content: sys }, { role: 'user', content: `${PLAN_BOUNDARY}${task}${correction}` }],
       model: conductorModel,
-      thinkingLevel: config.conductorThinkingLevel ?? 'high', // 分解器: high 默认
+      // S-T 优先序: config 显式 > 座位档 (auto-assign 给 decomposer 座的档) > 硬默认。
+      thinkingLevel: config.conductorThinkingLevel ?? config.seatThinking?.(conductorModel) ?? 'high',
       maxTokens: conductorMaxTokens,
     });
     conductorUsage = addUsage(conductorUsage, usage);
@@ -179,7 +180,7 @@ async function tryPatchReplan(
         { role: 'user', content: `${PLAN_BOUNDARY}${prevPlanJson}\n\n[verification failure] ${reason}${correction}` },
       ],
       model: conductorModel,
-      thinkingLevel: config.conductorThinkingLevel ?? 'high',
+      thinkingLevel: config.conductorThinkingLevel ?? config.seatThinking?.(conductorModel) ?? 'high',
       maxTokens: config.conductorMaxTokens ?? (Number(process.env.OMD_CONDUCTOR_MAX_TOKENS) || 8192),
     });
     usage = addUsage(usage, u);
@@ -336,7 +337,7 @@ async function executePlan(
             { role: 'user', content: `${listerGoal}${schemaNote}${depCtx}\n\n只回一个 JSON 对象, 必含数组键 "${spec.over}"。别的不要。` },
           ],
           model: config.leafModel,
-          thinkingLevel: config.inprocThinkingLevel ?? 'high',
+          thinkingLevel: config.inprocThinkingLevel ?? config.seatThinking?.(config.leafModel) ?? 'high',
         });
         text = r.text;
         usageAcc = addUsage(usageAcc, r.usage);
@@ -448,7 +449,8 @@ async function executePlan(
             { role: 'user', content: `${personaLine}${goal}${depCtx}${cav ? `\n\n${cav}` : ''}` },
           ],
           model: model ?? config.leafModel,
-          thinkingLevel: config.inprocThinkingLevel ?? 'high',
+          thinkingLevel:
+            config.inprocThinkingLevel ?? config.seatThinking?.(model ?? config.leafModel) ?? 'high',
         });
         usageAcc = addUsage(usageAcc, r.usage);
         return r.text;
@@ -631,7 +633,9 @@ async function executePlan(
             { role: 'user', content: userContent },
           ],
           model,
-          thinkingLevel: config.inprocThinkingLevel ?? 'high', // inproc leaf: high (mass fan-out 省成本, 非 max)
+          // S-T 优先序 (显式永远赢): node.thinking > config 显式档 > 座位档 > 硬默认 high。
+          // 座位档来自 auto-assign (量产 worker 座 low / judge·verify 座 xhigh), 老 config 无该段 → 回落 high。
+          thinkingLevel: node.thinking ?? config.inprocThinkingLevel ?? config.seatThinking?.(model) ?? 'high',
         });
         text = r.text;
         usage = r.usage;

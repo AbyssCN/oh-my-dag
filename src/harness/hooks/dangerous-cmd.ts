@@ -56,6 +56,13 @@ export const DANGEROUS_PATTERNS: readonly DangerousPattern[] = [
     reason: 'rm -rf/-fr 作用于根/家目录 = 灾难性删除',
     re: /rm\s+-(?=[a-z]*r)(?=[a-z]*f)[a-z]+\s+(\/|~|\/\*|\$HOME)(\s|$)/i,
   },
+  {
+    label: 'find-delete',
+    // command-leaf 白名单收了 find/bfs/fd (验证叶要能找产物), 而 `-delete` 是它们自带的递归删除,
+    // 不经 rm 因此绕开 rm-rf-root。`-exec rm` 的 `\;` 已被 command-leaf 元字符闸挡, 这里补全另一半。
+    reason: 'find/bfs/fd -delete 或 -exec rm 递归删除文件不可逆',
+    re: /\b(find|bfs|fd)\b[^\n]*(\s-delete\b|-exec\s+rm\b)/i,
+  },
   // --- git 不可逆 (CLAUDE.md §安全底线 hard line) ---
   {
     label: 'git-force-push',

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { createCommandLeafRunner } from '../../src/harness/command-leaf';
+import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../../src/harness/command-leaf';
 
 // command leaf && 链 (2026-07-20 修): 拆链 + 每环独立过闸 + 首败即停; 单 & 等元字符照拒。
 
@@ -76,5 +76,98 @@ describe('command-leaf && 链', () => {
     await run({ command: 'bun run typecheck && bun test' });
     await run({ command: 'bun run typecheck && bun test' });
     expect(calls.length).toBe(2); // 第二次全缓存
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 缺省白名单 + git 只读闸 (2026-07-25 审计: 验证叶连自己的产物都看不见 → 合法验证步被判假红)
+// ---------------------------------------------------------------------------
+
+describe('DEFAULT_COMMAND_ALLOWLIST', () => {
+  test('验证叶的四类本职命令全放行 (跑闸 / 看产物 / 搜代码 / 项目工具)', async () => {
+    const cmds = [
+      'bun test',
+      'ls -la /tmp/omd-render-out',
+      'cat package.json',
+      'wc -c dist/app.js',
+      'grep -rn evidence src',
+      'codegraph trace a b',
+    ];
+    const { spawn, calls } = fakeSpawn(Object.fromEntries(cmds.map((c) => [c, { stdout: 'ok', exitCode: 0 }])));
+    const run = createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], spawn });
+    for (const c of cmds) {
+      const r = await run({ command: c });
+      expect(r.text).not.toContain('blocked');
+      expect(r.exitCode).toBe(0);
+    }
+    expect(calls.length).toBe(cmds.length);
+  });
+
+  test('写类 / 网络类 / env 泄露类不在表内 (fail-closed 未放宽)', async () => {
+    for (const bin of ['rm', 'mv', 'cp', 'mkdir', 'chmod', 'curl', 'wget', 'env', 'printenv', 'sed', 'npm']) {
+      expect(DEFAULT_COMMAND_ALLOWLIST).not.toContain(bin);
+    }
+  });
+
+  test('白名单外的 bin 仍拒, 零 spawn', async () => {
+    const { spawn, calls } = fakeSpawn({});
+    const run = createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], spawn });
+    const r = await run({ command: 'curl https://evil.example/x' });
+    expect(r.text).toContain('blocked not-allowed');
+    expect(calls).toEqual([]);
+  });
+});
+
+describe('git 子命令只读闸', () => {
+  test('只读子命令放行', async () => {
+    const { spawn } = fakeSpawn({ 'git diff --stat': { stdout: '3 files changed', exitCode: 0 } });
+    const run = createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], spawn });
+    const r = await run({ command: 'git diff --stat' });
+    expect(r.exitCode).toBe(0);
+    expect(r.text).toContain('3 files changed');
+  });
+
+  test('改仓库状态的子命令拒 (checkout 会抹掉 DAG 刚写的文件, commit 越权代 owner)', async () => {
+    const { spawn, calls } = fakeSpawn({});
+    const run = createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], spawn });
+    for (const c of ['git checkout .', 'git commit -m x', 'git add -A', 'git push', 'git stash', 'git rebase main']) {
+      const r = await run({ command: c });
+      expect(r.text).toContain('blocked git-write');
+      expect(r.exitCode).toBe(-1);
+    }
+    expect(calls).toEqual([]);
+  });
+
+  test('flag 先于子命令仍能定位 (git -C dir status)', async () => {
+    const { spawn } = fakeSpawn({ 'git -C /repo status': { stdout: 'clean', exitCode: 0 } });
+    const run = createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], spawn });
+    const r = await run({ command: 'git -C /repo status' });
+    expect(r.exitCode).toBe(0);
+  });
+
+  test('裸 git (无子命令) 拒', async () => {
+    const { spawn } = fakeSpawn({});
+    const run = createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], spawn });
+    const r = await run({ command: 'git' });
+    expect(r.text).toContain('blocked git-write');
+  });
+});
+
+describe('find -delete 危险闸 (白名单收了 find/bfs/fd 之后的配套)', () => {
+  test('find -delete / -exec rm 一律拦, 零 spawn', async () => {
+    const { spawn, calls } = fakeSpawn({});
+    const run = createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], spawn });
+    for (const c of ['find . -name *.ts -delete', 'bfs src -delete', 'find . -exec rm {} +']) {
+      const r = await run({ command: c });
+      expect(r.text).toContain('blocked dangerous');
+    }
+    expect(calls).toEqual([]);
+  });
+
+  test('普通 find 搜索照常放行', async () => {
+    const { spawn } = fakeSpawn({ 'find src -name *.test.ts': { stdout: 'a.test.ts', exitCode: 0 } });
+    const run = createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], spawn });
+    const r = await run({ command: 'find src -name *.test.ts' });
+    expect(r.exitCode).toBe(0);
   });
 });

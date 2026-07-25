@@ -172,11 +172,52 @@ async function postJson(
   return res.json();
 }
 
+/**
+ * provider → 该 provider 真正接受的 `reasoning_effort` 字面量 (由弱到强)。
+ * **实测事实, 不是推测** —— 发错值不是降级而是 HTTP 400/500, 整个节点白挂:
+ *   - mimo / mimo-platform: 2026-07-25 实测 `Input should be 'low', 'medium' or 'high'`;
+ *     'max' 与 'minimal' 均 400 (与 .env 里"ultraspeed 在 max 上 500"的旧记录同源)。
+ *   - deepseek: 'high' / 'max' (R6 验 api-docs.deepseek.com)。
+ * 未列的 provider 走 UNKNOWN_EFFORTS: 只发 'high' —— 保守到底, 宁可不省也不发坏参数。
+ * 新增一行前请**先真打一次 API**, 别照抄别家文档。
+ */
+const PROVIDER_EFFORTS: Record<string, readonly string[]> = {
+  mimo: ['low', 'medium', 'high'],
+  'mimo-platform': ['low', 'medium', 'high'],
+  deepseek: ['high', 'max'],
+};
+const UNKNOWN_EFFORTS: readonly string[] = ['high'];
+
+/** 内部档 → provider 字面量的候选序 (由该档出发, 先找同义, 再向下退)。 */
+const EFFORT_LADDER: Record<string, readonly string[]> = {
+  off: [],
+  low: ['low', 'minimal'],
+  medium: ['medium', 'low'],
+  high: ['high', 'medium'],
+  // xhigh 想要"最强": 有 max 用 max, 没有就**降到 high** (owner 2026-07-25: xhigh 不是每个模型都有)。
+  xhigh: ['max', 'high'],
+};
+
+/**
+ * 内部 thinkingLevel → 该 provider 可接受的 reasoning_effort 字面量; 取不到 → undefined (不发该字段)。
+ * 'off' 恒不发 —— OpenAI 兼容端点没有统一的关思考开关 (mimo 实测 enable_thinking/thinking 三种写法
+ * 全被忽略, 输出 token 与不发时同量级), 与其发一个假装有效的字段, 不如诚实地什么都不发。
+ */
+export function reasoningEffortFor(provider: string, level: string | undefined): string | undefined {
+  if (!level) return undefined;
+  const supported = PROVIDER_EFFORTS[provider] ?? UNKNOWN_EFFORTS;
+  for (const cand of EFFORT_LADDER[level] ?? []) {
+    if (supported.includes(cand)) return cand;
+  }
+  return undefined;
+}
+
 async function openaiRequest(
   cfg: ProviderConfig,
   modelId: string,
   messages: ModelMessage[],
   req: ModelRequest,
+  provider: string,
 ): Promise<RawResult> {
   const body: Record<string, unknown> = {
     model: modelId,
@@ -184,9 +225,7 @@ async function openaiRequest(
   };
   if (req.temperature !== undefined) body.temperature = req.temperature;
   if (req.topP !== undefined) body.top_p = req.topP;
-  // thinkingLevel → deepseek reasoning_effort (R6 验: api-docs.deepseek.com, high/max; 默认 high)。
-  // 只映 high/xhigh (其余 = 不发, 用模型默认), 避免对不支持的 provider 发坏参数。
-  const effort = req.thinkingLevel === 'high' ? 'high' : req.thinkingLevel === 'xhigh' ? 'max' : undefined;
+  const effort = reasoningEffortFor(provider, req.thinkingLevel);
   if (effort) body.reasoning_effort = effort;
   if (req.maxTokens !== undefined) body.max_tokens = req.maxTokens;
   if (req.responseSchema) body.response_format = { type: 'json_object' };
@@ -284,9 +323,10 @@ function doRequest(
     // pi-transport 的 PiCallResult 与 RawResult 结构同形 (text/usage/raw/finishReason)。
     return piRequest(target.piModel, messages, req);
   }
+  const provider = target.resolved.split(':')[0] ?? '';
   return target.cfg.api === 'anthropic-messages'
     ? anthropicRequest(target.cfg, target.modelId, messages, req)
-    : openaiRequest(target.cfg, target.modelId, messages, req);
+    : openaiRequest(target.cfg, target.modelId, messages, req, provider);
 }
 
 /** Strip a ```json … ``` fence if the model wrapped its JSON in one. */

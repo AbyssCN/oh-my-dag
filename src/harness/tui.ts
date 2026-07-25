@@ -30,7 +30,7 @@ import { createExecuteExtension } from './execute-extension';
 import { createPathfinderExtension } from './pathfinder-extension';
 import { resolveRoleModelConfigured } from '../model/role-models';
 import { createAgentLeafRunner } from './agent-leaf';
-import { createCommandLeafRunner } from './command-leaf';
+import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from './command-leaf';
 import { createMultimodalRouteExtension } from './multimodal-route-extension';
 import { createBannerExtension, ensureOmdTheme } from './branding';
 import { detectRuntimeConfig, runInitWizard, createReadlineIO } from './init';
@@ -218,7 +218,7 @@ function resolvePathfinderLeafModel(explicit: string | undefined): { leafModel?:
   if (process.env.DEEPSEEK_BASE_URL && process.env.DEEPSEEK_API_KEY) return { leafModel: 'deepseek:deepseek-v4-flash' };
   return {};
 }
-const commandRunner = createCommandLeafRunner({ allowlist: ['bun', 'tsc', 'npx'], cwd: process.cwd(), timeoutMs: 180_000 });
+const commandRunner = createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], cwd: process.cwd(), timeoutMs: 180_000 });
 const executeExt = createExecuteExtension({
   // conductorModel 不传: resolveConductorDefault 自会走 OMD_ITER_CONDUCTOR_MODEL > runtime 坐标 (D-8)。
   // 此处硬编码兜底会让"conductor = runtime 同款"永远不生效 (identity 承诺 vs 实际行为背离)。

@@ -93,6 +93,13 @@ export interface ExecutorDagConfig {
   /** inproc leaf 推理档 (默认 high; mass fan-out 省成本, 不走 max — 那是 omd 设计 / best-of-N 的档)。 */
   inprocThinkingLevel?: 'off' | 'low' | 'medium' | 'high' | 'xhigh';
   /**
+   * S-T 座位推理档查询 (坐标 → 档): auto-assign 把「模型 + 推理档」成对下发, 执行期按节点已钉的
+   * 坐标反查该座位的档。接线层注入 (读 .omd/config.json 是接线层的活, 执行器不碰 IO);
+   * 省略 / 返 undefined → 回落原有默认, 老 config 行为不变 (向后兼容)。
+   * 优先序 (同 TPL-3 哲学: 显式永远赢): node.thinking > 本 config 的显式档 > 座位档 > 硬默认。
+   */
+  seatThinking?: (coord: string) => 'off' | 'low' | 'medium' | 'high' | 'xhigh' | undefined;
+  /**
    * agent-kind leaf 的执行器 (带工具子 agent, 能改文件)。给则 `executor:'agent'` 节点经此跑;
    * 省略 → agent 节点降级为 inproc 单发 (无工具, 只生成文本) + warn。默认 createAgentLeafRunner。
    */

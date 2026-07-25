@@ -13,7 +13,7 @@
 import { $ } from 'bun';
 import { runExecutorDag } from '../../harness/executor-dag';
 import { createAgentLeafRunner } from '../../harness/agent-leaf';
-import { createCommandLeafRunner } from '../../harness/command-leaf';
+import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../../harness/command-leaf';
 import { computeCost } from '../../model/cost-ledger';
 import { scoreRun, type OracleProbe, type RunMetrics } from '../scorer';
 import { createMediumFixture } from '../tasks/medium';
@@ -87,7 +87,7 @@ async function measureOnce(config: MixConfig, size: FixtureSize, leafTimeoutMs: 
     // 2026-07-23 Nick 定: 廉价模型忠实执行长任务是设计前提, 除非空转不该掐; 0 = 不限)。命令叶 (tsc/test) 独立放宽到 10min。
     // sandboxRoot=fx.root: 事前 block 写穿 worktree (治 2026-07-23 隔离漏; F1 事后闸仍留作 bash 逃逸兜底)。
     const agentRunner = createAgentLeafRunner({ cwd: fx.root, hashlineEdit: true, leafTimeoutMs, sandboxRoot: fx.root }); // thinkingLevel 默认 xhigh
-    const commandRunner = createCommandLeafRunner({ allowlist: ['bun', 'tsc', 'npx'], cwd: fx.root, timeoutMs: 600_000 });
+    const commandRunner = createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], cwd: fx.root, timeoutMs: 600_000 });
     const dagConfig = {
       conductorModel: config.conductorModel,
       leafModel: config.leafModel,

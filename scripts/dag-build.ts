@@ -29,7 +29,7 @@
 import '../src/harness/script-bootstrap';
 import { runExecutorDag } from '../src/harness/executor-dag';
 import { createAgentLeafRunner } from '../src/harness/agent-leaf';
-import { createCommandLeafRunner } from '../src/harness/command-leaf';
+import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../src/harness/command-leaf';
 import { runReview, type ReviewGate } from '../src/harness/review';
 import { classifyOracle } from '../src/harness/build/oracle-classify';
 import { CheckpointManager } from '../src/harness/continuity/checkpoint-manager';
@@ -154,7 +154,7 @@ const dagConfig = {
   }),
   // 确定性 command leaf: 让 conductor 在 DAG 内插 typecheck/test 节点能真跑 (中途自验 → 收敛更快)。
   // 白名单 = 验证类命令首 token (bun run tsc / bun test / tsc / npx tsc); 元字符/危险命令 fail-closed 拦。
-  commandRunner: createCommandLeafRunner({ allowlist: ['bun', 'tsc', 'npx'], cwd: targetCwd, timeoutMs: 180_000 }),
+  commandRunner: createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], cwd: targetCwd, timeoutMs: 180_000 }),
   // leaf 冻结前缀 = 契约 (让每个 leaf 都见 groundTruth)。
   ...(context ? { leafSystemPrefix: context } : {}),
 };
