@@ -5,7 +5,8 @@
  * 修后: fence 只定位起点, 终点一律括号平衡扫描。
  */
 import { describe, expect, test } from 'bun:test';
-import { extractPlanJson, parsePlan } from './conductor-plan';
+import { conductorSystemPrompt, extractPlanJson, parsePlan } from './conductor-plan';
+import { topoLevels } from './executor-dag-planner';
 
 const PLAN = { name: 'p', nodes: { a: { goal: 'x' } } };
 
@@ -49,5 +50,68 @@ describe('extractPlanJson', () => {
     const text = '```json\n{"name": "p", "nodes": {"a": {"goal": "截断';
     const r = parsePlan(text);
     expect(r.ok).toBe(false);
+  });
+});
+
+// ── SDD v2 S5: conductor prompt motif (G-9) ──────────────────────────────────
+
+describe('S5 conductor prompt: SDD v2 字段 + 前端 motif (G-9)', () => {
+  const full = conductorSystemPrompt();
+  const lean = conductorSystemPrompt({ profile: 'lean' });
+
+  test('两档均含调度/分配字段指引 (环境事实, lean 不裁)', () => {
+    for (const p of [full, lean]) {
+      expect(p).toContain('"requires"');
+      expect(p).toContain('"cluster"');
+      expect(p).toContain('"tier"');
+      expect(p).toContain('"attach_media"');
+      expect(p).toContain('Plan-level "outputs"');
+    }
+  });
+
+  test('两档均含前端 SDD motif (契约节点同步点 + 渲染 command + 多模态审查 + review 交叉)', () => {
+    for (const p of [full, lean]) {
+      expect(p).toContain('Frontend / full-stack SDD motif');
+      expect(p).toContain('contract node');
+      expect(p).toContain('attach_media:true');
+      expect(p).toContain('cross-review');
+    }
+  });
+
+  test('输出 schema 块列出新字段 (plan outputs + requires/cluster/tier/attach_media/output_path)', () => {
+    for (const p of [full, lean]) {
+      expect(p).toContain('"outputs"?: string[]');
+      expect(p).toContain('"requires"?: "all"|"any"|number');
+      expect(p).toContain('"tier"?: "strong"|"mid"|"cheap"');
+      expect(p).toContain('"output_path"?: string');
+    }
+  });
+
+  test('G-9 结构验收: motif 形状的前端图 parse 通过且无环, 分层符合 motif 序', () => {
+    const motifPlan = {
+      name: 'frontend-sdd',
+      outputs: ['cross_review'],
+      nodes: {
+        r_domain: { goal: '领域调研', cluster: 'research' },
+        r_ux: { goal: 'UX 对标调研', cluster: 'research' },
+        contract: { goal: '产 API/props 契约文本', depends_on: ['r_domain', 'r_ux'], requires: 'all' },
+        be_impl: { goal: '实装 API', executor: 'agent', output_type: 'file', output_path: 'src/api.ts', depends_on: ['contract'], cluster: 'backend' },
+        fe_impl: { goal: '实装 UI', executor: 'agent', output_type: 'file', output_path: 'src/ui.tsx', depends_on: ['contract'], cluster: 'frontend' },
+        render: { goal: '构建并截图', executor: 'command', command: 'bun run build && bun scripts/shot.ts', depends_on: ['fe_impl'] },
+        mm_review: { goal: 'UI/UX 像素审查', depends_on: ['render'], attach_media: true, tier: 'strong' },
+        cross_review: { goal: '契约违反与遗漏交叉审查', depends_on: ['contract', 'be_impl', 'fe_impl', 'mm_review'] },
+      },
+    };
+    const r = parsePlan(JSON.stringify(motifPlan));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const levels = topoLevels(r.plan); // 无环 (有环会抛)
+    expect(levels[0]!.sort()).toEqual(['r_domain', 'r_ux']); // research 簇并行根
+    expect(levels[1]).toEqual(['contract']); // 契约 = 同步点
+    expect(levels[2]!.sort()).toEqual(['be_impl', 'fe_impl']); // 前后端簇并行
+    const idx = (id: string): number => levels.findIndex((l) => l.includes(id));
+    expect(idx('render')).toBeGreaterThan(idx('fe_impl'));
+    expect(idx('mm_review')).toBeGreaterThan(idx('render'));
+    expect(idx('cross_review')).toBeGreaterThan(idx('mm_review'));
   });
 });
