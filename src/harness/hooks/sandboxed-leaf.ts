@@ -11,7 +11,7 @@ import { join, resolve } from 'node:path';
 import { logger } from '../../logger';
 import type { AgentLeafInput, AgentLeafResult, AgentLeafRunner } from '../leaf-runners';
 import type { AgentLeafRunnerOpts } from '../agent-leaf';
-import { bwrapArgs, defaultRoBinds } from './bwrap';
+import { bwrapArgs, defaultRoBinds, makePiAgentCopy } from './bwrap';
 
 /** worker 在 worktree 内的相对路径 (worktree = HEAD checkout, 含此文件 —— 故改动须提交)。 */
 const WORKER_REL = 'src/harness/leaf-worker.ts';
@@ -44,8 +44,10 @@ export function createSandboxedLeafRunner(opts: AgentLeafRunnerOpts): AgentLeafR
     const resultAbs = join(root, resultRel);
     writeFileSync(payloadAbs, JSON.stringify({ opts: optsJson, input }));
 
+    // pi agent dir 即弃 rw 副本 (每 leaf 一份, 防并发写共享态; 见 makePiAgentCopy ⚠ OAuth 注)。
+    const piAgentCopy = makePiAgentCopy();
     // bwrap [binds] bun run <worker> <payloadRel> <resultRel> —— 相对路径, cwd=worktree (bwrap --chdir)。
-    const argv = ['bwrap', ...bwrapArgs(root, roBinds), 'bun', 'run', WORKER_REL, payloadRel, resultRel];
+    const argv = ['bwrap', ...bwrapArgs(root, roBinds, piAgentCopy ? { piAgentCopy } : {}), 'bun', 'run', WORKER_REL, payloadRel, resultRel];
     const proc = Bun.spawn(argv, { stdout: 'pipe', stderr: 'pipe', stdin: 'ignore' });
     // 超时 = leaf 硬上界 + 30s buffer (worker 内部还有自己的 leafTimeoutMs/心跳闸兜底)。
     const killer = setTimeout(() => proc.kill(9), timeoutMs + 30_000);
@@ -73,6 +75,7 @@ export function createSandboxedLeafRunner(opts: AgentLeafRunnerOpts): AgentLeafR
     } finally {
       rmSync(payloadAbs, { force: true });
       rmSync(resultAbs, { force: true });
+      if (piAgentCopy) rmSync(piAgentCopy, { recursive: true, force: true });
     }
   };
 }

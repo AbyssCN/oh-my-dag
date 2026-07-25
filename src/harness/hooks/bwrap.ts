@@ -11,9 +11,9 @@
  * ro-bind node_modules (自 root 向上找最近的) + bunDir → bun/tsc 可跑且解析依赖。系统只读 + /tmp + /proc + /dev。
  * **不 --clearenv**: 继承父进程 env (provider API key 等要流进 worker); 只 --setenv HOME/PATH。
  */
-import { existsSync, realpathSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { basename, dirname, join, resolve } from 'node:path';
 
 /**
  * DNS 解析所需的额外绑定 (WSL2: /etc/resolv.conf 是指向 /mnt/wsl/resolv.conf 的符号链接, ro-bind /etc 时
@@ -48,11 +48,41 @@ export function defaultRoBinds(root: string): string[] {
   return [bunDir, ...(nm ? [nm] : [])];
 }
 
+/** pi agent dir 里的大只读件 (rw 副本排除、jail 内 ro 叠挂): 依赖/扩展机器 + 宿主私有 sessions。 */
+const PI_AGENT_BIG_DIRS = ['npm', 'node_modules', 'pi-rogue'] as const;
+const PI_AGENT_COPY_EXCLUDE = new Set<string>([...PI_AGENT_BIG_DIRS, 'sessions']);
+
+/** bwrapArgs 可选件。 */
+export interface BwrapOpts {
+  /** makePiAgentCopy() 产的即弃 rw 副本目录 — 挂 jail /tmp/.pi/agent (见 bwrapArgs 内注释)。 */
+  piAgentCopy?: string;
+}
+
+/**
+ * 造 ~/.pi/agent 的**即弃 rw 副本** (每 leaf 一份, 用完调用方 rmSync): 小状态文件全拷
+ * (models.json/auth.json/extensions/fiale-plus/… ≈3MB), 大只读件与宿主 sessions 排除
+ * (jail 内 sessions 用全新空目录 — 不暴露宿主会话史)。~/.pi/agent 不存在 → null (worker
+ * 退回 env 内建 provider, 07-23 基线行为)。
+ * ⚠ OAuth 刷新落在副本里即弃 — 会轮换 refresh-token 的 OAuth provider 别做 leaf 模型
+ * (leaf 走 env-key provider: mimo/Go); 记忆 kimi-oauth 恒挂重放同源约束。
+ */
+export function makePiAgentCopy(): string | null {
+  const real = join(homedir(), '.pi', 'agent');
+  if (!existsSync(real)) return null;
+  const dir = mkdtempSync(join(tmpdir(), 'omd-pi-agent-'));
+  cpSync(real, dir, {
+    recursive: true,
+    filter: (src) => !(dirname(src) === real && PI_AGENT_COPY_EXCLUDE.has(basename(src))),
+  });
+  mkdirSync(join(dir, 'sessions'), { recursive: true });
+  return dir;
+}
+
 /**
  * 组 bwrap argv (不含末尾要跑的程序)。root 同路径 rw 挂载; roBinds 只读; 系统只读; 只挂真存在的目录。
  * chdir 到 root → 子进程 process.cwd() = worktree, 主 repo 物理不可见。
  */
-export function bwrapArgs(root: string, roBinds: string[]): string[] {
+export function bwrapArgs(root: string, roBinds: string[], opts: BwrapOpts = {}): string[] {
   const args: string[] = [
     '--unshare-user',
     '--unshare-pid',
@@ -73,11 +103,20 @@ export function bwrapArgs(root: string, roBinds: string[]): string[] {
   }
   args.push('--bind', root, root);
   args.push('--chdir', root);
-  // 模型注册表映入 jail HOME (2026-07-25 实证): HOME=/tmp 后 worker 读 /tmp/.pi/agent/models.json
-  // → 注册制 provider (mimo-platform/opencode-go/…) 全消失 → leaf 模型解析不到, leafTokens=0 全军
-  // 覆没。真 ~/.pi/agent 只读映到 jail HOME 下 — 凭证本就经继承 env 流入 jail, 同信任域, ro 无升权。
-  const piAgent = join(homedir(), '.pi', 'agent');
-  if (existsSync(piAgent)) args.push('--ro-bind', piAgent, '/tmp/.pi/agent');
+  // pi agent dir 分层挂载 (2026-07-25 三轮实证): HOME=/tmp 后 worker 缺 /tmp/.pi/agent →
+  // 注册制 provider (mimo-platform/opencode-go/…) 全消失, leaf 全军覆没 leafTokens=0。
+  // 但直接 ro-bind 真身也不行 —— pi session 栈要在 agent dir 里**写** (EROFS 被静默吞成
+  // 0-token empty-done); 全量 rw 副本又 713MB 不可行。分层: opts.piAgentCopy (小状态文件
+  // 的即弃 rw 副本, makePiAgentCopy 产) 挂 /tmp/.pi/agent, 大只读件 (npm/node_modules/
+  // pi-rogue, extension 机器启动链必需 — 缺 node_modules 时 pi 会试跑 npm install) ro 叠上。
+  if (opts.piAgentCopy) {
+    const real = join(homedir(), '.pi', 'agent');
+    args.push('--bind', opts.piAgentCopy, '/tmp/.pi/agent');
+    for (const big of PI_AGENT_BIG_DIRS) {
+      const p = join(real, big);
+      if (existsSync(p)) args.push('--ro-bind', p, `/tmp/.pi/agent/${big}`);
+    }
+  }
   args.push('--setenv', 'HOME', '/tmp');
   // TMPDIR 必须洗 (2026-07-25 实证): 宿主 shell 的 TMPDIR (如 ~/.cache/tmp) 泄进 jail 后,
   // pi bash 工具往 os.tmpdir() 写日志 → 未挂载路径 ENOENT → worker 停摆 → 超时 SIGKILL 137。
