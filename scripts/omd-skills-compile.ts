@@ -6,7 +6,7 @@
  *   bun run scripts/omd-skills-compile.ts --suggest                 # 全池分类列候选 (零 LLM 零写盘)
  *   bun run scripts/omd-skills-compile.ts impeccable dataviz ...    # 显式点名编译 (CMP-4 opt-in)
  *   选项: --root <repoRoot> (缺省 cwd) · --skills-dir <dir> (缺省 $CLAUDE_CONFIG_DIR|~/.claude/skills)
- *         · --model <coord> (缺省 role 'plan' — 蒸馏是稀发一次性操作, 用便宜栈最优质档)
+ *         · --model <coord> (缺省 role 'conductor' — plan 是 TUI 审议座舱专属角色, headless 不用)
  *         · --as card|recipe (显式分类覆盖 — 带辅助脚本的 craft skill 被脚本优先规则误收时用)
  */
 import '../src/harness/script-bootstrap';
@@ -49,7 +49,7 @@ if (flags.suggest) {
 }
 
 bootstrapModelRuntime();
-const model = flags.model ?? resolveRoleModel('plan');
+const model = flags.model ?? resolveRoleModel('conductor');
 
 const distill = async (prompt: string): Promise<Distilled> => {
   const res = await callModel({
