@@ -45,6 +45,7 @@ import { stampPass } from '../harness/plan-passes/stamp-pass';
 import { evidencePass } from '../harness/plan-passes/evidence-pass';
 import { loadAgentTemplates } from '../harness/agent-templates';
 import { modelFamily } from '../model/channels';
+import { isStrongCoord } from '../model/model-ratings';
 import {
   resolveRoleModelConfigured,
   resolveMultimodalPool,
@@ -356,13 +357,20 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     const n = Number.parseInt(v ?? '', 10);
     if (k?.trim() && Number.isFinite(n) && n > 0) channelFanout[k.trim()] = n;
   }
-  // conductor 档位随模型 (2026-07-25 A/B eval 裁决, medium fixture R=2 串行):
-  // k3 上 full/lean 同分 1.000/1.000 且 firstShot 全过, lean 少 25% leaf token (66.9k vs 89.5k)
-  // → 强 conductor 撤教练段 (harness 退役测试), 弱 conductor 保 full。maxTokens 32768 仅对
-  // kimi 系放开 (32k 实测安全; deepseek 系 ~8k 硬顶故不全局提)。
-  const conductorTuning: Partial<ExecutorDagConfig> = models.conductorModel?.startsWith('kimi-coding:')
-    ? { conductorPromptProfile: 'lean', conductorMaxTokens: 32768 }
-    : {};
+  // S-P conductor prompt 档位随**座位模型档**分派 (SDD 2026-07-25 S-P; 2026-07-25 A/B eval 裁决:
+  // k3 上 full/lean 同分 1.000/1.000 且 firstShot 全过, lean 少 25% leaf token → 强 conductor 撤
+  // 教练段 = harness 退役测试, 弱 conductor 保 full)。
+  // 此前这里硬编码 `startsWith('kimi-coding:')` —— conductor 座 2026-07-25 已换 gpt-5.6-sol,
+  // 那条判据当天就失效了 (SOTA 座位在吃给弱模型写的教练段)。改成按 AA intelligence 查档,
+  // 换座位自动跟着走, 不用记得改这一行。
+  //
+  // maxTokens **不并进这张表** —— 它是另一根轴 (provider 的输出上限能力, 32768 只在 kimi 系实测过;
+  // deepseek 系 ~8k 硬顶)。把"prompt 要不要教练段"和"能吐多少 token"混成一个条件是两次埋雷。
+  const strongConductor = models.conductorModel ? isStrongCoord(models.conductorModel) : false;
+  const conductorTuning: Partial<ExecutorDagConfig> = {
+    ...(strongConductor ? { conductorPromptProfile: 'lean' as const } : {}),
+    ...(models.conductorModel?.startsWith('kimi-coding:') ? { conductorMaxTokens: 32768 } : {}),
+  };
   // S-T 座位推理档 (坐标 → 档): auto-assign 把「模型 + 推理档」成对落盘, 执行期按节点已钉的坐标反查。
   // 不在此加缓存 —— 底层 fileConfig 已按 mtime 缓存, 自己再存一层会在 `omd models auto` 重写 config
   // 后拿着旧档不放 (daemon 长活)。config 无该段 → 恒 undefined → 执行器回落原默认, 老 config 零变化。
