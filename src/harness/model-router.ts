@@ -17,6 +17,14 @@
  * × DAG 软惩罚 (verifier fail → ×0.3, 非清零 — DAG 级连坐是归因噪声, 衰减不放大) × 连续成本效率
  * exp(-costUsd/scale)。二值质量 reward 在个人流量下永不收敛 (均值分不开); 连续成本信号几十次即分。
  *
+ * ⚠ **当前状态: 刻意关着 (owner 裁决 2026-07-25, pathfinder 票 #24)**。三个 bucket 的池全未配
+ * (env 无 OMD_ROUTER_POOL_*, config.multimodalPool 单元素) → ROUTER-2 让它全程 no-op, omd_router_arms
+ * 至今零行。**别"顺手"配上池把它打开**: reward 主信号是成本 (ROUTER-5), 而现在四池主力全是
+ * flat-sub/预付渠道 (cost≈0), arm 之间的成本信号基本不可分 —— 开了学不出东西, 只会让 ε=0.1 的
+ * 随机换模型打掉 stamp 链亲和辛苦挣来的 prompt-cache 命中。
+ * 重开的前提: 主力座位转按量计费, 或 reward 换成 flat-sub 时代真正稀缺的量 (配额消耗率 /
+ * 单位墙钟通过率)。要动先去 #24 拿裁决。
+ *
  * Invariants:
  *  ROUTER-1 model-agnostic: arm = 'provider:modelId' 坐标, 零硬编 provider 分支。
  *  ROUTER-2 no-op 安全: pool ≤1 → select 返 fallback / recordReward 不写 (无"选择"则不学)。
