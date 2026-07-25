@@ -21,12 +21,16 @@ import {
 const LEAF = 'deepseek:deepseek-v4-flash';
 const PAD = 'x'.repeat(400); // 让 producer 输出超 minChars 的填充 (仅出现在输出, 不在任何 goal)
 
+/** content 归一化 (D-14v2 后可为 ContentPart[]; 本套件纯文本, 直接取 string 分支)。 */
+const asText = (c: string | Array<{ type: string; text?: string }> | undefined): string =>
+  typeof c === 'string' ? c : (c ?? []).map((p) => p.text ?? '').join('\n');
+
 /** 记录调用 + 按 system 前缀分流 (摘要器 vs 普通 leaf); producer goal 含 'BIG' → 长输出。 */
 function makeFake() {
   const leafCalls: { id: string; prompt: string }[] = [];
   const faninCalls: { prompt: string }[] = [];
   const gen: GenerateFn = async ({ messages }) => {
-    const sys = messages.find((m) => m.role === 'system')?.content ?? '';
+    const sys = asText(messages.find((m) => m.role === 'system')?.content);
     const prompt = messages.map((m) => m.content).join('\n');
     // fan-in 摘要器: 冻结 system 前缀含 'DIRECTED fan-in summary'。
     if (sys.includes('DIRECTED fan-in summary')) {
@@ -126,7 +130,7 @@ describe('fan-in 定向摘要 (executor-dag 接缝)', () => {
   test('摘要器返回非 JSON → fail-open 回退全文, DAG 仍全 done', async () => {
     const faninCalls: { prompt: string }[] = [];
     const gen: GenerateFn = async ({ messages }) => {
-      const sys = messages.find((m) => m.role === 'system')?.content ?? '';
+      const sys = asText(messages.find((m) => m.role === 'system')?.content);
       const prompt = messages.map((m) => m.content).join('\n');
       if (sys.includes('DIRECTED fan-in summary')) {
         faninCalls.push({ prompt });

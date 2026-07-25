@@ -1,4 +1,4 @@
-import type { ModelUsage } from '../model/gateway';
+import type { ContentPart, ModelUsage } from '../model/gateway';
 import type { AgentTemplate } from './agent-templates';
 import type { ConductorPlan } from './conductor-plan';
 import type { CavemanLevel } from './caveman';
@@ -9,7 +9,11 @@ import type { FaninSummaryConfig } from './fanin-summary';
 
 /** omd 本体编排的注入式模型调用 (单一注入点; 默认 callModel, 测试传 fake)。 */
 export type GenerateFn = (req: {
-  messages: { role: 'system' | 'user'; content: string }[];
+  /**
+   * content 常态 string; D-14v2 attach_media 媒体注入时为 ContentPart[] (与 gateway ModelMessage
+   * 同构 — 媒体走标准消息形状而非旁路字段, 不认 parts 的 transport 大声失败, 不静默丢图)。
+   */
+  messages: { role: 'system' | 'user'; content: string | ContentPart[] }[];
   model: string;
   /** 推理档 (conductor=分解器 high / inproc leaf=high; → deepseek reasoning_effort)。省略=模型默认。 */
   thinkingLevel?: 'off' | 'low' | 'medium' | 'high' | 'xhigh';

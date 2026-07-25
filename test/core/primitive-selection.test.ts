@@ -185,7 +185,8 @@ test('PlanSchema BC:纯自由 node-graph 仍解析通过(不回归)', () => {
 /** conductor 调用返回预置 plan JSON;leaf 调用返回桩。 */
 function fakeGenerate(planJson: string): GenerateFn {
   return async ({ messages }) => {
-    const sys = messages.find((m) => m.role === 'system')?.content ?? '';
+    const sysC = messages.find((m) => m.role === 'system')?.content;
+    const sys = typeof sysC === 'string' ? sysC : '';
     const usage = { in: 1, out: 1 };
     if (sys.includes('CONDUCTOR')) return { text: planJson, usage };
     return { text: 'leaf-stub', usage }; // 所有 leaf
