@@ -85,7 +85,7 @@ const NODE_CLASS: Record<string, NodeClass> = {
 const PREFERRED_COORD: Record<NodeClass, string> = {
 	decomposer: "kimi-coding:k3",
 	judge_synth: "kimi-coding:k3",
-	worker: "mimo:mimo-v2.5", // MiMo Lite, 替代 deepseek-flash 位
+	worker: "mimo:mimo-v2.5-pro", // MiMo Lite 额度大 (owner 2026-07-25: pro 默认替代 v2.5; 多模态池例外留 v2.5)
 	verify: "opencode-go:glm-5.2", // 次顶级 via Go flat-sub
 	dream: "opencode-go:glm-5.2",
 };
