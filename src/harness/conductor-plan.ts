@@ -195,7 +195,8 @@ export type ConductorPlan = z.infer<typeof PlanSchema>;
  * profile (SDD v2 追加, 2026-07-25): prompt 内容 = 环境事实 + 弱模型补偿两类混装。
  *  - 'full' (默认, 零回归) = 全量 — 弱 conductor (mimo/M3 era) 需要 granularity/深度/genre 教练。
  *  - 'lean' = 只留**环境事实**(输出 schema / executor 词表+写文件硬规则 / 并行安全 / map·primitive
- *    菜单 / 模板注册表) + 一行版纪律 — 顶级 conductor (k3) 上全量教练是保守偏置, 疑压平分解质量
+ *    菜单 / 模板注册表 / SDD v2 调度分配字段 / 前端 SDD motif — 字段语义与 motif 接线是本引擎独有,
+ *    强模型也推导不出) + 一行版纪律 — 顶级 conductor (k3) 上全量教练是保守偏置, 疑压平分解质量
  *    (harness 退役测试: 强模型使教练冗余 → 撤)。两档均为字节稳定冻结前缀 (PLAN-1, 各自成 cache 面)。
  *    档位选择走 A/B eval (conductor-modelmix oracle), 不拍脑袋。
  *    裁决 (2026-07-25, medium R=2 串行): k3 full/lean 同分 1.000 且 firstShot 全过, lean 少 25%
@@ -304,6 +305,24 @@ export function conductorSystemPrompt(
     '  produces NOTHING (returns text, node reports done, no artifact). NEVER use "leaf" for an',
     '  implementation/build node. "Default to leaf" applies only to text-deliverable nodes (analysis/design/research).',
     '',
+    'Scheduling / allocation fields (all optional; the engine enforces them — set only where the default is wrong):',
+    '- "requires": how many done dependencies a node needs to run: "all" (default for ≤1 dep — any failed dep',
+    '  SKIPS this node), "any" (default for ≥2 deps — survives sibling failures), or an integer K (run only',
+    '  when ≥K deps succeeded, e.g. a judge needing 3 candidates). Set "all" explicitly on a synthesis that',
+    '  MUST see every input; leave the defaults elsewhere.',
+    '- "cluster": short workstream label ("research"/"backend"/"frontend"/...) on nodes forming one strand.',
+    '  It groups progress display and keeps one model along a same-cluster chain (prompt-cache affinity).',
+    '  Label honestly — do not force unrelated nodes into one cluster.',
+    '- "tier": "strong"|"mid"|"cheap" — override the model-strength floor for THIS node. Reserve "strong"',
+    '  for judging/synthesis that gates the run; "cheap" for mechanical enumeration. Omit for the default.',
+    '- "attach_media": true on a leaf whose job is to LOOK AT images (UI screenshots, diagrams, renders).',
+    '  The engine parses image paths from the node\'s DIRECT predecessor outputs and feeds the actual images',
+    '  to a multimodal model — so its predecessor must OUTPUT the image path(s) (e.g. a "command" render',
+    '  node that prints screenshot paths). A media node whose predecessors yield no existing image FAILS.',
+    '- Plan-level "outputs": [node ids] — declare the final deliverable nodes; the engine then prunes any',
+    '  node that neither feeds an output nor is a file/git/command node. Declare it when the deliverable',
+    '  set is clear (dead branches cost real tokens).',
+    '',
     ...(lean
       ? []
       : [
@@ -374,15 +393,33 @@ export function conductorSystemPrompt(
     'A primitive node uses "depends_on" like any node; omit executor/goal for it. If no primitive fits the',
     'shape, just use ordinary leaf/agent/command nodes (the free graph is always valid).',
     '("escape-hatch" is a gated last-resort imperative sequence — OFF by default; do NOT reach for it.)',
+    '',
+    'Frontend / full-stack SDD motif (a spec with UI + API surfaces decomposes into THIS shape):',
+    '1. research cluster — parallel sibling leaves (cluster:"research"): domain, UX reference, tech constraints.',
+    '2. ONE contract node depending on the research: a leaf that OUTPUTS the interface text (API routes /',
+    '   props / schema). The contract IS the sync point — it needs no special node kind.',
+    '3. backend cluster + frontend cluster — agent nodes that ALL depend_on the contract node, never on each',
+    '   other across clusters: both sides build against the same frozen interface, so the clusters run in',
+    '   parallel safely (cluster:"backend" / cluster:"frontend").',
+    '4. render node — executor:"command" that builds and screenshots the UI (build + playwright script),',
+    '   PRINTING the screenshot file path(s) as its output.',
+    '5. multimodal review leaf — attach_media:true, depends_on the render node: judge the REAL pixels',
+    '   (hierarchy, spacing, states), not the code that claims to draw them.',
+    '6. cross-review node — depends_on contract + impl + multimodal findings: catch contract violations and',
+    '   omissions; its findings feed the engine\'s verify loop. Give it requires:"all" only if every input is',
+    '   load-bearing.',
+    'UI best-of-N: N variant agent nodes → N render command nodes → ONE multimodal judge (attach_media:true,',
+    'requires:K) so a failed variant does not kill the judgement.',
     roster,
     '',
     'Output STRICTLY one JSON object, no prose, matching:',
-    '{ "name": string, "description"?: string,',
+    '{ "name": string, "description"?: string, "outputs"?: string[],',
     '  "nodes": { "<node_id>": { "agent": string, "skill"?: string, "goal"?: string, "persona"?: string, "template"?: string,',
     '    "args"?: object, "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map", "command"?: string, "creative"?: boolean,',
     '    "map"?: { "lister": object, "over": string, "itemVar": string, "keyBy"?: string, "template": object, "maxItems"?: number },',
     '    "postcondition"?: { "method"?: "structural"|"code"|"llm-judge"|"human", "threshold"?: number },',
-    '    "output_type"?: "structured"|"file"|"git"|"none",',
+    '    "output_type"?: "structured"|"file"|"git"|"none", "output_path"?: string,',
+    '    "requires"?: "all"|"any"|number, "cluster"?: string, "tier"?: "strong"|"mid"|"cheap", "attach_media"?: boolean,',
     '    "kind"?: "primitive", "primitive"?: "parallel"|"pipeline"|"loop-until"|"verify"|"judge"|"discovery"|"iterate"|"tournament"|"router"|"race"|"escalation"|"saga"|"escape-hatch", "params"?: object } } }',
   ].join('\n');
 }
