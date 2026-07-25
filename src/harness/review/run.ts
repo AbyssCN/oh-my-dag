@@ -36,6 +36,32 @@ export function resolveReviewModels(
   return { findModel, verifyModel };
 }
 
+/**
+ * 维度 → 模型的**跨模型分派** (2026-07-26 owner: review 该是多视角, 不是一个模型换五个 prompt)。
+ *
+ * 为什么: find 层是**召回漏斗** —— 同一个模型换五个维度 prompt, 五条召回共享同一套盲点
+ * (同家族的训练数据/偏好/思维定式), 五维看着宽实则窄。不同家族的模型各扫一遍, 才是真的多视角。
+ *
+ * 配法: `OMD_REVIEW_DIM_MODELS="correctness=openai-codex:gpt-5.6-sol,security=kimi-coding:k3"`
+ * (逗号分隔 `维度=坐标`)。未列出的维度回落 findModel; spec 轴仍走 OMD_REVIEW_SPEC_MODEL。
+ * 坐标不可达 → roleModelWithFallback 顺延 (无凭证环境不炸整轮审查)。
+ */
+export function resolveDimensionModels(
+  env: Record<string, string | undefined>,
+  fallback: string,
+): Record<string, string> {
+  const raw = env.OMD_REVIEW_DIM_MODELS?.trim();
+  if (!raw) return {};
+  const out: Record<string, string> = {};
+  for (const pair of raw.split(',')) {
+    const [dim, coord] = pair.split('=').map((x) => x?.trim());
+    if (!dim || !coord || !coord.includes(':')) continue;
+    out[dim] = roleModelWithFallback(coord, 'review', env);
+  }
+  void fallback;
+  return out;
+}
+
 /** reasoning_effort 档 (send 的 thinkingLevel; high/xhigh → deepseek reasoning_effort high/max)。 */
 type ReviewEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';
 
@@ -137,6 +163,7 @@ export async function runReview(opts: RunReviewOpts): Promise<RunReviewResult> {
   // 整个审查阶段 → roleModelWithFallback 顺延到已注册 provider。全不可达才原样返 (下游报错语义不变)。
   // find→review 角色, verify→verifier 角色(跨模型), 单一真源 resolveReviewModels(无硬编码坐标)。
   const { findModel, verifyModel } = resolveReviewModels(opts, env);
+  const dimModels = resolveDimensionModels(env, findModel);
   const findEffort = (env.OMD_REVIEW_FIND_EFFORT as ReviewEffort) || 'high';
   // spec 轴模型: OMD_REVIEW_SPEC_MODEL 单独覆盖 (spec 对照吃长上下文, 可路由长窗模型), 回落 find 层。
   const specModel = roleModelWithFallback(env.OMD_REVIEW_SPEC_MODEL ?? findModel, 'review');
@@ -167,8 +194,10 @@ export async function runReview(opts: RunReviewOpts): Promise<RunReviewResult> {
       }
       const prompt = buildReviewPrompt({ dimension, scope: opts.scope, gate: opts.gate, extraFocus: opts.extraFocus });
       // diff 在前 (共享前缀 → prefix-cache) + 维度 prompt 在后。
+      // 维度模型: OMD_REVIEW_DIM_MODELS 里点名的走那个坐标, 否则回落 findModel (跨模型多视角, 见
+      // resolveDimensionModels —— 同一模型跑五个维度 = 五条召回共享同一套盲点)。
       const res = await sendFn({
-        model: findModel,
+        model: dimModels[dimension] ?? findModel,
         messages: [{ role: 'user', content: `${diffBlock}\n\n${prompt}` }],
         thinkingLevel: findEffort,
       });

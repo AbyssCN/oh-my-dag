@@ -28,6 +28,7 @@ import { logger } from '../logger';
 import { createKimiOAuthExtension } from '../model/kimi-oauth';
 import type { ModelUsage } from '../model/types';
 import type { ThinkingLevel } from '../runtime/types';
+import { isStrongCoord } from '../model/model-ratings';
 
 /**
  * 默认零嵌入扩展 (2026-07-19 删 pi-rtk-optimizer/pi-lsp: 二者非依赖, 每次 spawn 都 WARN 未装;
@@ -75,6 +76,22 @@ const DISCIPLINE_CORE = `<discipline weak-model="true">
 - 卡住自检 (3 次失败触发): ①真复现了吗 ②抓的是根因还是症状 ③同类先例查了吗 (recall/codegraph) ④换个认知 mode。仍卡 → 输出"卡在哪 + 已试什么", 别空转烧 token。
 </discipline>`;
 
+/**
+ * **强模型档** (2026-07-26, 同 conductor S-P 的判据): 上面两块都标了 weak-model="true" —— 它们是给
+ * mimo 档执行体写的脚手架。而卡级路由已经能把 agent leaf 钉到 SOTA 上 (frontend-impl → k3),
+ * 那些叶子在吃「选工具前先说用 X 因为 Y」这种对它冗余的叮嘱。
+ *
+ * 这一档只留强模型**推导不出来的**两类:① 本仓环境事实 (codegraph 存在 / hashline 强制 / 工具分工);
+ * ② 房规红线 (验证>信任、无根因不修、identifier 必查、反 slop) —— 模型再强也不自带我们的红线。
+ * 砍掉的是: 两步法自述、逐条工具对照表、卡住自检四步、think-in-code 提醒。
+ */
+const STRONG_MODEL_CORE = `<house-rules>
+本仓环境: 查符号/调用链用 codegraph (bash), 查任意文本用 ugrep; 改已存在文件走 hashline_edit (内置 edit 已禁用), 新建用 write。
+红线: ① 改完 tsc/test 必须绿才算完, 红了就停下修, 不绕过不假装完成。② bug 先定根因再改, 不加 try/catch 挡症状。
+③ 任何 repo identifier (模型坐标/表名/函数名/env 名) 写进代码前先在**本仓**核实存在与拼写 —— 猜错会编译通过但静默失效。
+④ 不套模板不照抄范式, 命名与注释密度跟周围代码一致。
+</house-rules>`;
+
 // 类型单一真理源 = leaf-runners.ts (executor-dag 只认接口形状, 不 import 实现) — 这里 re-export 保旧调用面。
 export type { AgentLeafInput, AgentLeafResult, AgentLeafRunner } from './leaf-runners';
 import type { AgentLeafInput, AgentLeafResult, AgentLeafRunner } from './leaf-runners';
@@ -82,7 +99,7 @@ import type { AgentLeafInput, AgentLeafResult, AgentLeafRunner } from './leaf-ru
 export interface AgentLeafRunnerOpts {
   /** 工具落盘的工作根。默认 process.cwd()。每个 agent leaf 应被 scope 到此根下的原子产物。 */
   cwd?: string;
-  /** thinking 档位。默认 medium。 */
+  /** thinking 档位。默认 xhigh (agent leaf 改文件/工具循环, 质量优先; 见下方赋值处注)。 */
   thinkingLevel?: ThinkingLevel;
   /**
    * 工具白名单(CC frontmatter 风格)。**省略 = pi 默认全工具(含 read/edit/write/bash, 能改文件)。**
@@ -223,11 +240,19 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       // hashline 模式排除内置 edit (强制行锚定路径)。
       ...(excludeTools ? { excludeTools } : {}),
     });
-    // TR-INV-5: prepend tool-routing guideline (默认开) → 弱模型重叠区选对工具。
-    // persona (P1 三层角色, 设计型 leaf 传 TASTE_CORE) 走最前 (角色框 → 工具路由 → 任务)。
-    const tooled = (opts.toolRouting ?? true) ? `${TOOL_ROUTING_GUIDELINE}\n\n${prompt}` : prompt;
-    // 承重纪律核 (默认开) 走 tool-routing 之前 (元规则 → 工具细则 → 任务)。
-    const disciplined = (opts.disciplineCore ?? true) ? `${DISCIPLINE_CORE}\n\n${tooled}` : tooled;
+    // prompt 档随**本次 leaf 的模型档**分派 (同 conductor S-P): 强模型只吃 house-rules,
+    // 弱模型吃全量脚手架。opts 的两个开关仍是硬关 (纯命令叶可全关)。
+    const wantRouting = opts.toolRouting ?? true;
+    const wantDiscipline = opts.disciplineCore ?? true;
+    let disciplined: string;
+    if (isStrongCoord(model) && (wantRouting || wantDiscipline)) {
+      disciplined = `${STRONG_MODEL_CORE}\n\n${prompt}`;
+    } else {
+      // TR-INV-5: prepend tool-routing guideline → 弱模型重叠区选对工具。
+      const tooled = wantRouting ? `${TOOL_ROUTING_GUIDELINE}\n\n${prompt}` : prompt;
+      // 承重纪律核走 tool-routing 之前 (元规则 → 工具细则 → 任务)。
+      disciplined = wantDiscipline ? `${DISCIPLINE_CORE}\n\n${tooled}` : tooled;
+    }
     const routedPrompt = opts.persona ? `<persona>\n${opts.persona}\n</persona>\n\n${disciplined}` : disciplined;
     // filesTouched 采集 (2026-07-20 修产物闸冤杀): 并挂第二个监听收集**成功落盘**的写路径 —
     // start 记 toolCallId→path 候选, end 且 !isError 才计入 (失败的写不算产物)。

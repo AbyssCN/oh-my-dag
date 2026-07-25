@@ -96,6 +96,14 @@ interface ConfigFile {
   models?: Record<string, string>;
   /** 多模态 leaf 候选池 (坐标列表)。 */
   multimodalPool?: string[];
+  /**
+   * stamp pass 的**显式档位池** (2026-07-26)。缺省 → 从座位坐标推导 (老行为)。
+   * 为什么要它: 座位推导下 mid = uniq(leaf/agent/overflow)、cheap = uniq(lens/expand/distill),
+   * 而 auto-assign 把这六个座位全归 worker 类给同一个坐标 → **mid 与 cheap 恒等**, tier:'cheap'
+   * 是空转, sibling 跨家族分散也没有对象可散。池是「档位里有哪些模型」, 座位是「哪个角色用哪个模型」——
+   * 两件事, 分开配。
+   */
+  pools?: { strong?: string[]; mid?: string[]; cheap?: string[]; multimodal?: string[] };
   /** auto-assign 落盘的 node → coord (D-17 一次性填, 可读可改)。resolveRoleModelConfigured 的 auto 层读它。 */
   autoAssigned?: Record<string, string>;
   /**
@@ -461,3 +469,25 @@ export function persistMultimodalPoolPremium(coords: string[], path = configPath
 // models-json.ts 的 upsertProvider / MCP omd_register_provider, callModel 侧注册走
 // registerProvidersFromModelsJson。原 config.apis 链 (listCustomApis/persistCustomApi/registerCustomApis)
 // 已废 —— models.json 是其超集且额外覆盖 agent-leaf 栈。
+
+/**
+ * 读 .omd/config.json 的显式档位池 (`pools` 段)。每档独立 —— 只配了 cheap 就只覆盖 cheap,
+ * 其余仍走座位推导 (调用方以 `?? 座位推导` 兜)。坏值/非坐标条目丢弃 (fail-open)。
+ */
+export function resolveConfiguredPools(
+  path = configPath(),
+): { strong?: string[]; mid?: string[]; cheap?: string[]; multimodal?: string[] } {
+  const raw = fileConfig(path).pools;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const clean = (xs: unknown): string[] | undefined => {
+    if (!Array.isArray(xs)) return undefined;
+    const out = [...new Set(xs.filter((x): x is string => typeof x === 'string' && x.includes(':')))];
+    return out.length ? out : undefined;
+  };
+  return {
+    ...(clean(raw.strong) ? { strong: clean(raw.strong)! } : {}),
+    ...(clean(raw.mid) ? { mid: clean(raw.mid)! } : {}),
+    ...(clean(raw.cheap) ? { cheap: clean(raw.cheap)! } : {}),
+    ...(clean(raw.multimodal) ? { multimodal: clean(raw.multimodal)! } : {}),
+  };
+}
