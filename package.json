@@ -66,7 +66,8 @@
     "test": "bun test",
     "dag-deepen": "bun run scripts/dag-deepen.ts",
     "dag-slim": "bun run scripts/dag-slim.ts",
-    "omd-debt": "bun run scripts/omd-debt.ts"
+    "omd-debt": "bun run scripts/omd-debt.ts",
+    "omd-render": "bun run scripts/omd-render.ts"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.80.10",
@@ -84,5 +85,8 @@
     "@types/bun": "latest",
     "@types/js-yaml": "^4.0.9",
     "typescript": "^5.7.0"
+  },
+  "optionalDependencies": {
+    "playwright-core": "^1.62.0"
   }
 }
