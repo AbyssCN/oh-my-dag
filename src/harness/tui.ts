@@ -25,7 +25,7 @@ import { createCgAuditExtension } from './cg-audit-extension';
 import { createIterateExtension } from './iterate-extension';
 import { resolveVerification } from './verifier';
 import { createModelRouterFromEnv } from './model-router';
-import { createPlanExtension, createPlanModeState, createPathfinderModeState, ensurePlanToggleKeyFree } from './plan';
+import { createPathfinderModeState, ensurePlanToggleKeyFree } from './plan';
 import { createExecuteExtension } from './execute-extension';
 import { createPathfinderExtension } from './pathfinder-extension';
 import { resolveRoleModelConfigured } from '../model/role-models';
@@ -193,28 +193,23 @@ const iterateExt = createIterateExtension({
   conductorEscalationModel: process.env.OMD_CONDUCTOR_ESCALATION_MODEL,
 });
 
-// plan mode (P1 脊柱): shift+tab 进只读审议座舱, 默认 deepseek-v4-pro xhigh (env 可覆盖)。交互-TUI 专属。
-// pi 0.77 把 shift+tab(=app.thinking.cycle) 列为扩展冲突保留键 → 扩展 shortcut 被静默 skip,
-// shift+tab 进不去 plan mode。boot 前把 thinking-cycle 从 shift+tab 让路 (写 pi keybindings.json),
-// 释放该键给 plan mode 扩展。幂等 + 非破坏性; 失败则降级到 /plan 命令 (不阻断 boot)。
+// shift+tab 键释放: pi 0.77 把 shift+tab(=app.thinking.cycle) 列为扩展冲突保留键 → 扩展 shortcut
+// 被静默 skip。boot 前把 thinking-cycle 从 shift+tab 让路 (写 pi keybindings.json), 释放该键给
+// pathfinder 扩展抢占。幂等 + 非破坏性; 失败不阻断 boot (pathfinder 经 /pathfinder 命令仍可进)。
+// (plan-extension 审议座舱 2026-07-25 owner 裁决撤除 — 规划思考归 Claude, TUI 只留执行位。)
 const planKeyFix = ensurePlanToggleKeyFree();
 if (planKeyFix.changed) {
   logger.info(
     { path: planKeyFix.path, fallback: planKeyFix.fallbackKey, reason: planKeyFix.reason },
-    `[omd/plan] 已让出 shift+tab 给 plan mode (thinking-cycle → ${planKeyFix.fallbackKey}); 本次 boot 即生效`,
+    `[omd/pathfinder] 已让出 shift+tab (thinking-cycle → ${planKeyFix.fallbackKey}); 本次 boot 即生效`,
   );
 } else if (planKeyFix.reason === 'parse-error' || planKeyFix.reason === 'write-error') {
   logger.warn(
     { path: planKeyFix.path, reason: planKeyFix.reason },
-    '[omd/plan] 无法自动让出 shift+tab (keybindings.json 异常); plan mode 经 /plan 命令仍可进',
+    '[omd/pathfinder] 无法自动让出 shift+tab (keybindings.json 异常)',
   );
 }
-// plan 模型走统一 config 中心 (resolveRoleModel('plan') = config.json / OMD_PLAN_MODEL / 默认),
-// 故此处不再传 planModel — 让 plan-extension 自己 resolve, /setup·/config 改 plan 角色即生效。
-// plan mode 状态共享给 /execute (交接协议: plan 里说"开始执行" → /execute 干净退出 plan 再跑 DAG)。
-const planState = createPlanModeState();
-const planExt = createPlanExtension({ state: planState });
-// plan→DAG→runtime 交接: /execute 把 SDD 丢给 conductor 分解执行, 跑完发验收简报给 runtime 模型。
+// SDD→DAG→runtime 交接: /execute 把 docs/plan 最新 SDD 丢给 conductor 分解执行, 跑完发验收简报给 runtime 模型。
 // 真改文件的叶子执行器 (executeExt + pathfinderExt 共享): 不接 = agent 节点降级纯文本 (空转交付)。
 const agentRunner = createAgentLeafRunner({ cwd: process.cwd(), hashlineEdit: true });
 /** pathfinder leaf 模型: 显式 env > (deepseek key 在 → flash 兜底) > 不配 (引导语可达)。 */
@@ -232,7 +227,6 @@ const executeExt = createExecuteExtension({
   conductorEscalationModel: process.env.OMD_CONDUCTOR_ESCALATION_MODEL,
   agentRunner,
   commandRunner,
-  planState,
 });
 
 // pathfinder 模式 (shift+tab, D-1): 决策地图 → 前沿按 type 分派 → 区域散尽编译 slice → executeSlice。
@@ -426,7 +420,6 @@ await main(args, {
     ...ctrl.toExtensionFactories(),
     cgAuditExt,
     iterateExt,
-    planExt,
     executeExt,
     pathfinderExt,
     // 多模态路由: 媒体一律走多模态池模型分析, 文本结果回注当前模型 (池空 = no-op)。

@@ -3,16 +3,7 @@
  * SDD/plan: ~/.claude/plans/typed-questing-waterfall.md。
  */
 export {
-  createPlanExtension,
-  PLAN_DEFAULT_MODEL,
-  PLAN_DEFAULT_THINKING,
-  type PlanExtensionOpts,
-} from './plan-extension';
-export {
-  createPlanModeState,
   createPathfinderModeState,
-  type PlanModeState,
-  type PlanModeStatus,
   type PathfinderModeState,
   type PathfinderModeStatus,
 } from './mode';
@@ -23,8 +14,7 @@ export {
   type EnsurePlanKeyReason,
 } from './keybindings-setup';
 export { PlanLedger, type PlanRef, type PlanLedgerInit } from './ledger';
-export { PLAN_MODE_OVERLAY, GRILL_OVERLAY } from './overlay';
-// readonly-gate 已退役 (D-5 开放 src): 写闸判定删除, 无 re-export。
+// plan-extension/overlay 已撤 (2026-07-25 owner 裁决, 见 mode.ts 头注); readonly-gate 已退役 (D-5)。
 export { extractUrls, stripUrls } from './url-detect';
 export {
   createDefaultWebRetriever,

@@ -51,7 +51,6 @@ export interface ConfigCenterOpts {
 }
 
 const ROLE_LABEL: Record<ModelRole, string> = {
-	plan: "Plan",
 	conductor: "Conductor",
 	leaf: "Leaf",
 	verifier: "Verifier",

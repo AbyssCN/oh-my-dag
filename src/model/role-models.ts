@@ -23,14 +23,14 @@ import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 /**
- * Daemon roles that drive callModel. plan = 审议座舱模型 (omd 对话脑子仍走 pi /model)。
+ * Daemon roles that drive callModel. (plan 审议座舱角色已随 plan-extension 撤除, 2026-07-25 owner 裁决。)
  * continuity = session 交接 checkpoint 蒸馏 (opt-in, 便宜档);刻意不进 MODEL_ROLES —— 它是后台
  * 可选角色, 走 env/config/默认解析即可, 不进默认 config UI / 起跑坐席告警面 (避免未用该功能者被噪音)。
  */
-export type ModelRole = 'plan' | 'conductor' | 'leaf' | 'verifier' | 'dream' | 'continuity' | 'review';
+export type ModelRole = 'conductor' | 'leaf' | 'verifier' | 'dream' | 'continuity' | 'review';
 
-/** UX 顺序 (config 列表 / onboard 页展示): 规划 → 执行 → 校验 → 做梦。 */
-export const MODEL_ROLES: readonly ModelRole[] = ['plan', 'conductor', 'leaf', 'verifier', 'dream'];
+/** UX 顺序 (config 列表 / onboard 页展示): 执行 → 校验 → 做梦。 */
+export const MODEL_ROLES: readonly ModelRole[] = ['conductor', 'leaf', 'verifier', 'dream'];
 
 interface RoleSpec {
   /** per-role env override (在 file 之下、出厂默认之上)。 */
@@ -40,8 +40,6 @@ interface RoleSpec {
 }
 
 const ROLE_SPECS: Record<ModelRole, RoleSpec> = {
-  // Plan 审议座舱 = 强推理。默认 deepseek-v4-pro (完整坐标, 不依赖 provider defaultModel)。
-  plan: { envVar: 'OMD_PLAN_MODEL', fallback: 'deepseek:deepseek-v4-pro' },
   // Conductor 分解。默认 mimo (provider 裸名 → provider defaultModel)。
   conductor: { envVar: 'OMD_CONDUCTOR_MODEL', fallback: 'mimo' },
   // Leaf 执行 = 单发廉价档。

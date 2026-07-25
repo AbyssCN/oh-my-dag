@@ -1,11 +1,8 @@
 /**
  * src/harness/execute-extension —— plan → DAG → runtime 交接的 pi /execute 命令 (验收闭环入口)。
  *
- * 交接协议 (owner 定): plan mode 里 owner 说「开始执行」→ runtime 模型调 /execute:
- *   ① 取当前规划产物: docs/plan/ 最新 SDD (由 /sdd 落盘, 命名 YYYY-MM-DD-<slug>.md) →
- *     没有则回退 plan 台账 (PlanLedger.crystallize) → 都没有则提示先 /sdd。
- *   ② plan mode 若在开 (共享 planState 注入时可判) → 经 PlanModeState 公开态干净退出
- *     (还原 model/thinking, 同 plan-extension.exitPlan 语义); 无共享态则提示 shift+tab 退出。
+ * 交接协议 (owner 定; 2026-07-25 plan mode 撤除后 SDD 文档是唯一规划产物入口):
+ *   ① 取当前规划产物: docs/plan/ 最新 SDD (命名 YYYY-MM-DD-<slug>.md) → 没有则提示先写 SDD。
  *   ③ SDD 文本作 task/契约喂 iterateExecutorDag (conductor 分解 → DAG 并行执行 → judge 收敛),
  *     每轮经 createDagRecorder 留痕 (iterate-extension 同范式)。
  *   ④ 完成后发 **ACCEPTANCE BRIEF** 回 session (pi.sendUserMessage 触发 runtime 模型主动验收
@@ -26,7 +23,6 @@ import { parsePlan, type ConductorPlan } from './conductor-plan';
 import type { VerifierFn } from './verifier';
 import type { AgentLeafRunner, CommandLeafRunner } from './leaf-runners';
 import { callModel, type ModelRequest, type ModelResponse } from '../model';
-import type { PlanModeState } from './plan/mode';
 import { logger } from './logger';
 import { m } from './i18n';
 
@@ -72,12 +68,6 @@ export interface ExecuteExtensionOpts {
   agentRunner?: AgentLeafRunner;
   /** command-kind leaf 执行器 (确定性 CLI 自验节点)。省略 → command 节点失败。 */
   commandRunner?: CommandLeafRunner;
-  /**
-   * 共享 plan 状态 (与 createPlanExtension({ state }) 同一实例)。提供后:
-   *   ① 无 SDD 文档时回退 ledger 内容作契约; ② plan mode 在开时程序化干净退出。
-   * 省略 = 仅 SDD 文档路径可用, plan mode 退出改为文字提示 (shift+tab)。
-   */
-  planState?: PlanModeState;
 }
 
 export interface ExecuteDeps {
@@ -176,50 +166,21 @@ export function createExecuteExtension(
           redrawNotes = trimmed.slice('--redraw'.length).trim().replace(/^["']|["']$/g, '');
         }
 
-        // ── ② 取规划产物: docs/plan 最新 SDD → 回退 ledger → 都没有则提示 /sdd ──
+        // ── ② 取规划产物: docs/plan 最新 SDD; 没有则提示先写 SDD (plan mode/台账回退已随座舱撤除) ──
         const cwd = opts.cwd ?? ctx.cwd;
         const sdd = findLatestSdd(join(cwd, 'docs', 'plan'));
-        let contract: string;
-        let source: string;
-        if (sdd) {
-          contract = sdd.text;
-          source = sdd.path;
-        } else {
-          const ledger = opts.planState?.ledger;
-          const hasLedger = !!ledger && (ledger.goal.trim() !== '' || ledger.decisions.length > 0);
-          if (hasLedger) {
-            contract = ledger!.crystallize('执行契约 (plan ledger)', new Date().toISOString().slice(0, 10));
-            source = 'plan ledger (未落盘 SDD)';
-          } else {
-            ctx.ui.notify(
-              m({
-                en: 'No plan artifact found: no SDD under docs/plan/ and the plan ledger is empty. In plan mode run /sdd first (crystallize the deliberation), then /execute.',
-                zh: '没找到规划产物: docs/plan/ 下无 SDD 且 plan 台账为空。先在 plan mode 里 /sdd 落盘审议结论, 再 /execute。',
-              }),
-              'warning',
-            );
-            return;
-          }
+        if (!sdd) {
+          ctx.ui.notify(
+            m({
+              en: 'No plan artifact found: no SDD under docs/plan/. Write the SDD first (YYYY-MM-DD-<slug>.md), then /execute.',
+              zh: '没找到规划产物: docs/plan/ 下无 SDD。先写 SDD (YYYY-MM-DD-<slug>.md), 再 /execute。',
+            }),
+            'warning',
+          );
+          return;
         }
-
-        // ── ③ plan mode 在开 → 经共享 PlanModeState 干净退出 (同 plan-extension.exitPlan 语义);
-        //      无共享态则无法程序化退出, brief 里附 shift+tab 提示。──
-        const st = opts.planState;
-        let planExitHint = '';
-        if (st?.status === 'plan') {
-          st.status = 'normal';
-          if (st.savedModel) void pi.setModel(st.savedModel as Parameters<typeof pi.setModel>[0]);
-          if (st.savedThinking) pi.setThinkingLevel(st.savedThinking);
-          st.savedModel = null;
-          st.savedThinking = null;
-          ctx.ui.setStatus('plan', undefined);
-          ctx.ui.notify(m({ en: 'Exited PLAN MODE → handing off to DAG', zh: '▶ 已退出 PLAN MODE → 交接给 DAG 执行' }), 'info');
-        } else if (!st) {
-          planExitHint = m({
-            en: '(If the session is still in plan mode, shift+tab out before acting on this brief.)',
-            zh: '(若会话仍在 plan mode, 先 shift+tab 退出再执行验收动作。)',
-          });
-        }
+        const contract: string = sdd.text;
+        const source: string = sdd.path;
 
         // ── ④ task = SDD 契约 (+ redraw 失败要点) → iterateExecutorDag (每轮 dag-record 留痕) ──
         const task = redrawNotes
@@ -263,7 +224,6 @@ export function createExecuteExtension(
             summary,
             '',
             acceptanceInstructions(),
-            ...(planExitHint ? ['', planExitHint] : []),
             '</execute-acceptance-brief>',
           ].join('\n');
 

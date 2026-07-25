@@ -173,15 +173,9 @@ export {
 } from './iterate-extension';
 // dag-record: DAG 运行留痕层 (轻量持久 SQLite, node 图谱可回溯重建)。
 export { createDagRecorder, type DagRecorder, type DagRunRecord, type DagRunNode } from './dag-record';
-// plan: omd plan mode (P1 脊柱 — shift+tab 只读审议座舱 + 模型座舱 + 复杂度路由 code 化)。
+// plan: 规划支撑库 (ledger/检索/蒸馏/best-of-N/复杂度; plan-extension 审议座舱 2026-07-25 owner 裁决撤除)。
 export {
-  createPlanExtension,
-  PLAN_DEFAULT_MODEL,
-  PLAN_DEFAULT_THINKING,
-  createPlanModeState,
   PlanLedger,
-  PLAN_MODE_OVERLAY,
-  GRILL_OVERLAY,
   extractUrls,
   stripUrls,
   createDefaultWebRetriever,
@@ -194,9 +188,6 @@ export {
   classifyTaskComplexity,
   shouldSpawnAgents,
   grillOfferThreshold,
-  type PlanExtensionOpts,
-  type PlanModeState,
-  type PlanModeStatus,
   type PlanRef,
   type PlanLedgerInit,
   type WebRetriever,
