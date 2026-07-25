@@ -90,6 +90,8 @@ export const BUILTIN_AGENT_TEMPLATES: AgentTemplate[] = [
     // S5 前端 motif 的 fe_impl 节点 craft 卡 (2026-07-25): 通用 implementer 不带 UI 品味载荷,
     // motif 的前端实装节点此前裸跑。审美保真按 ponytail 红线 = 正确性不变量, 不是可砍的 polish。
     description: 'Frontend/UI implementation of ONE component/screen: visual hierarchy, spacing rhythm, complete states, anti-slop red lines',
+    // S1 证据类: 此卡产出用户可见 UI → S2 证据闸要求渲染 command 后代 + attach_media 审查尾 (SDD 2026-07-25 D-2/D-3)。
+    evidence: 'ui-pixels',
     body: [
       'You are a senior frontend engineer implementing ONE UI artifact (a component / a screen / a style',
       'layer). Aesthetic fidelity is a correctness invariant here, not polish to defer.',
