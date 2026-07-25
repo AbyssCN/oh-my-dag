@@ -31,7 +31,17 @@ type Target = { key: PoolKey; coords: string[] };
 
 export function stampPass(
 	plan: ConductorPlan,
-	opts: { pools: StampPools; familyOf: (coord: string) => string },
+	opts: {
+		pools: StampPools;
+		familyOf: (coord: string) => string;
+		/**
+		 * 卡是否**真的**钉了模型。省略 = 一律认为钉了 (老行为)。
+		 * 为什么需要它: 本 pass 手上没有模板注册表, 早先对「有 template 的节点」一律让路 —— 结果卡上
+		 * 没写 model 时该节点既没被 stamp 也没有卡模型, 直接掉到静态 leafModel, **node.tier 被静默丢掉**
+		 * (conductor 写 tier:'strong' 是哑弹)。注入这个谓词后只对真钉了模型的卡让路。
+		 */
+		templateHasModel?: (name: string) => boolean;
+	},
 ): { plan: ConductorPlan; stamped: Record<string, string> } {
 	const { pools, familyOf } = opts;
 	const ids = Object.keys(plan.nodes);
@@ -44,7 +54,9 @@ export function stampPass(
 	// ① 跳过判定 + ② 档位选池 (D-16/17)。
 	const targetOf = (id: string): Target | null => {
 		const n = plan.nodes[id]!;
-		if (n.model || n.template) return null; // 已钉模型 / 模板卡可钉模型 (注册表不在本层)
+		if (n.model) return null; // 已钉模型 (TPL-3 显式最高优先)
+		// 卡真钉了模型才让路; 没钉的卡照常按 tier 选池 (否则 node.tier 是哑弹, 见 templateHasModel 注)。
+		if (n.template && (opts.templateHasModel?.(n.template) ?? true)) return null;
 		if (n.executor === "command" || n.executor === "map") return null; // 无模型调用 / 运行时展开
 		if (n.kind === "primitive") return null; // 原语节点模型由 primitive 层自理
 		// 多模态 = 能力硬约束, 优先于 tier 档位偏好 (非多模态模型看不见图)。

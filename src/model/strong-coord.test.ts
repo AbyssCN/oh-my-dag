@@ -49,3 +49,35 @@ describe('S-P GWT: lean 档删的是教练段, 不是契约', () => {
     for (const p of [full, lean]) expect(p).toContain('allowed binaries');
   });
 });
+
+describe('conductor prompt 2026-07-26 审核 (SOTA-only 口径)', () => {
+  const full = conductorSystemPrompt({ profile: 'full' });
+  const lean = conductorSystemPrompt({ profile: 'lean' });
+
+  test('contract-node 已从「全栈 motif 第 2 步」提为通用规则 —— 两档都发', () => {
+    for (const p of [full, lean]) {
+      expect(p).toContain('ONE decision, THEN the fan-out');
+      expect(p).toContain('tier:"strong"'); // 通用规则直接指出强模型该花在哪
+    }
+  });
+
+  test('SAMPO roster 与广告 schema 的 "agent" 字段已撤 (executor-dag 零消费者)', () => {
+    for (const p of [full, lean]) {
+      expect(p).not.toContain('SAMPO');
+      expect(p).not.toContain('"agent": string');
+    }
+  });
+
+  test('宿主真注入 agents 名单时才提一句 (且只是 optional label)', () => {
+    const withRoster = conductorSystemPrompt({ profile: 'lean', agents: ['a', 'b'] });
+    expect(withRoster).toContain('Host executor roster');
+    expect(lean).not.toContain('Host executor roster');
+  });
+
+  test('lean 仍是 full 的真子集式瘦身 (省 >20% 且契约段无损)', () => {
+    expect(lean.length).toBeLessThan(full.length * 0.8);
+    for (const must of ['Output STRICTLY one JSON object', 'allowed binaries', 'executor:"map"', '"tier"']) {
+      expect(lean).toContain(must);
+    }
+  });
+});

@@ -2,7 +2,7 @@
  * stamp-pass 测试 —— 契约: SDD v2 B 节 D-16/17/22 + INV-7/9/11, GWT G-6/G-22。
  * familyOf fake: 坐标冒号前缀作家族 ('kimi:k2' → 'kimi')。
  */
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, test } from "bun:test";
 import type { ConductorPlan } from "../conductor-plan";
 import { stampPass, type StampPools } from "./stamp-pass";
 
@@ -201,5 +201,34 @@ describe("stamp-pass (D-16/17/22 · INV-7/9/11)", () => {
 		const r1 = stampPass(plan, { pools: full, familyOf: fam });
 		const r2 = stampPass(plan, { pools: full, familyOf: fam });
 		expect(r1).toEqual(r2);
+	});
+});
+
+// 2026-07-26: 卡没钉模型时 tier 曾被静默丢掉 (stamp 对所有 template 节点让路 → 掉静态 leafModel)。
+describe('template 节点的 tier 不再是哑弹', () => {
+	const p4 = { strong: ['s:a'], mid: ['m:a'], cheap: ['c:a'], multimodal: [] };
+	const famOf = (c: string) => c.split(':')[0]!;
+	const mk = (nodes: ConductorPlan['nodes']): ConductorPlan => ({ name: 't', nodes }) as ConductorPlan;
+
+	test('卡没钉模型 → 照常按 tier 选池', () => {
+		const p = mk({ n: { goal: 'g', template: 'plain-card', tier: 'strong' } });
+		const r = stampPass(p, { pools: p4, familyOf: famOf, templateHasModel: () => false });
+		expect(r.stamped.n).toBe('s:a');
+	});
+
+	test('卡钉了模型 → stamp 让路 (卡级路由仍最高优先于池)', () => {
+		const p = mk({ n: { goal: 'g', template: 'pinned-card', tier: 'strong' } });
+		const r = stampPass(p, { pools: p4, familyOf: famOf, templateHasModel: () => true });
+		expect(r.stamped.n).toBeUndefined();
+	});
+
+	test('不注入谓词 → 老行为 (一律让路), 零回归', () => {
+		const p = mk({ n: { goal: 'g', template: 'x', tier: 'strong' } });
+		expect(stampPass(p, { pools: p4, familyOf: famOf }).stamped.n).toBeUndefined();
+	});
+
+	test('node.model 显式仍永远赢 (TPL-3)', () => {
+		const p = mk({ n: { goal: 'g', template: 'plain-card', tier: 'strong', model: 'x:y' } });
+		expect(stampPass(p, { pools: p4, familyOf: famOf, templateHasModel: () => false }).stamped.n).toBeUndefined();
 	});
 });
