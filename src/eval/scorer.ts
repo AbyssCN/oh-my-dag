@@ -54,6 +54,19 @@ export interface RunMetrics {
   healRounds: number;
   /** 本次 build DAG 的节点数。 */
   nodeCount: number;
+  /**
+   * 图形状读数 (2026-07-26): conductor 的产物是**图**, 而此前只记 nodeCount —— prompt 里
+   * "keep it wide and shallow" / "no consumer → don't build" 这类规则**没有任何指标能量到**。
+   * 三个数全从 first.results 的 deps 边算出, 零 LLM 零额外成本。
+   */
+  shape: {
+    /** 最长依赖链的层数 (关键路径深度; 越深越串行)。 */
+    depth: number;
+    /** 单层最大并发节点数 (宽度; 越宽越省墙钟)。 */
+    maxWidth: number;
+    /** 孤儿节点数: 没有下游消费者、且自己也不是 command/file 交付的节点 (纯浪费)。 */
+    orphans: number;
+  };
   /** 按角色 token 累加 (跨初次 build + 各 heal 轮)。USD 折算见 src/model/cost-ledger, 此处只留 token 原值。 */
   usage: {
     conductorIn: number;
@@ -112,6 +125,7 @@ export async function scoreRun(
   const first = await deps.runDag(task);
   accumulate(usage, first);
   const nodeCount = Object.keys(first.results).length;
+  const shape = graphShape(first.results);
 
   const probeOnce = async (): Promise<{ snap: OracleSnapshot; bt: BunTestResult }> => {
     const tscErrs = await deps.probe.tsc();
@@ -144,7 +158,44 @@ export async function scoreRun(
     finalPass: cur.bt.fraction,
     healRounds,
     nodeCount,
+    shape,
     usage,
     raw: { firstShot, final: cur.bt },
+  };
+}
+
+/**
+ * 从执行结果的 deps 边算图形状 (纯函数, 零 LLM)。层 = 最长入边路径 (Kahn 松弛),
+ * 孤儿 = 无人消费且非 command 产出的节点 (command 是闸, 本就无下游)。
+ */
+function graphShape(results: ExecutorDagResult['results']): RunMetrics['shape'] {
+  const ids = Object.keys(results);
+  if (ids.length === 0) return { depth: 0, maxWidth: 0, orphans: 0 };
+  const idSet = new Set(ids);
+  const depsOf = (id: string): string[] => (results[id]?.deps ?? []).filter((d) => idSet.has(d));
+  const level = new Map<string, number>();
+  // 松弛到不动点 (图是 DAG, 至多 |V| 轮)。
+  for (let round = 0; round < ids.length; round++) {
+    let changed = false;
+    for (const id of ids) {
+      const want = depsOf(id).reduce((m, d) => Math.max(m, (level.get(d) ?? 0) + 1), 0);
+      if (want !== (level.get(id) ?? 0)) {
+        level.set(id, want);
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  const perLevel = new Map<number, number>();
+  for (const id of ids) {
+    const l = level.get(id) ?? 0;
+    perLevel.set(l, (perLevel.get(l) ?? 0) + 1);
+  }
+  const consumed = new Set(ids.flatMap(depsOf));
+  const orphans = ids.filter((id) => !consumed.has(id) && results[id]?.kind !== 'command').length;
+  return {
+    depth: Math.max(...[...level.values()], 0) + 1,
+    maxWidth: Math.max(...perLevel.values()),
+    orphans,
   };
 }

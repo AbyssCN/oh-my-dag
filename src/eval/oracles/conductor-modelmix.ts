@@ -3,12 +3,21 @@
  *
  * 复刻 Cursor《agent-swarm economics》: 固定任务, 跑 {conductorModel × leafModel} 网格, 量
  * quality × cost, 读 knee。**单轮全网格 sweep** (非收窄 tournament, INV-4): 省 expand, 出整表。
- * measure 串行 (INV-1: 并行争 provider 限流污染读数); 内部重复 R 次取均值 (LLM 非确定, 单发是噪音)。
+ * measure 串行 (INV-1: 并行争 provider 限流污染读数); 内部重复 R 次取**中位** (LLM 非确定, 单发是噪音)。
+ *
+ * 2026-07-26 改造 (owner 指派, 五条):
+ *   ① prompt 档进候选轴 (`--profiles full,lean`) —— 此前要 A/B prompt 只能改代码跑两次, 不可复现;
+ *   ② score 换 firstShotPass —— finalPass 被 heal 拉饱和 (k3 的 full/lean 都是 1.000, 判据分不开);
+ *   ③ fixture 默认 large —— medium 只有 3 模块, 早已饱和;
+ *   ④ detail 加图形状三量 (depth / maxWidth / orphans) —— conductor 的产物是图, 而 prompt 里
+ *      "wide and shallow"/"no consumer → don't build" 此前没有任何指标能量到;
+ *   ⑤ R 默认 3 且报中位 + 附 spread —— token/墙钟是重尾, 均值会被单次长尾拽走。
  *
  * 消费: 经 fusang xihe-tournament.ts 跑 —
- *   bun run $FUSANG_HOME/scripts/xihe-tournament.ts src/eval/oracles/conductor-modelmix.ts [--r 3]
- * default export = (opts) => TournamentSpec。每候选 detail 带 4 量 (firstShot/final/heal/cost),
- * leaderboard 全表读 cost-at-quality (score=finalPass 只为排序, 真信息在 detail; INV-4 不取单冠军)。
+ *   bun run $FUSANG_HOME/scripts/xihe-tournament.ts src/eval/oracles/conductor-modelmix.ts \
+ *     [--r 3] [--fixture large|medium] [--profiles full,lean] [--skip C1,C5]
+ * default export = (opts) => TournamentSpec。leaderboard 全表读 cost-at-quality
+ * (score 只为排序, 真信息在 detail; INV-4 不取单冠军)。
  */
 import { $ } from 'bun';
 import { runExecutorDag } from '../../harness/executor-dag';
@@ -37,9 +46,26 @@ interface TournamentSpec<C> {
   maxRounds?: number;
 }
 
-interface MixConfig { conductorModel: string; leafModel: string; }
+interface MixConfig {
+  conductorModel: string;
+  leafModel: string;
+  /** conductor prompt 档 (2026-07-26 加轴)。省略 = 引擎按座位模型档自选 (S-P)。 */
+  profile?: 'full' | 'lean';
+}
 
 /** 锁定的 4 格网格 (SDD D3; C1/C2/C3 固定 leaf=ds-flash 为干净 conductor 轴, C5 独立组合)。 */
+/**
+ * prompt 档 A/B 轴 (2026-07-26): 此前 grid 只有 {conductorModel × leafModel} —— 要 A/B prompt
+ * 只能改代码跑两次, **不可复现**, 而 2026-07-25 的 full/lean 裁决正是这么做的。
+ * 现在档位是候选的一维: `--profiles full,lean` 把每个模型格展开成两格, 同一轮 sweep 内对照。
+ */
+function withProfiles(grid: Candidate<MixConfig>[], profiles: Array<'full' | 'lean'>): Candidate<MixConfig>[] {
+  if (profiles.length === 0) return grid;
+  return grid.flatMap((c) =>
+    profiles.map((profile) => ({ label: `${c.label} [${profile}]`, config: { ...c.config, profile } })),
+  );
+}
+
 const GRID: Candidate<MixConfig>[] = [
   { label: 'C1 opus/ds-flash', config: { conductorModel: 'anthropic:claude-opus-4-8', leafModel: 'deepseek:deepseek-v4-flash' } },
   { label: 'C2 mimo-pro/ds-flash', config: { conductorModel: 'mimo:mimo-v2.5-pro', leafModel: 'deepseek:deepseek-v4-flash' } },
@@ -96,6 +122,7 @@ async function measureOnce(config: MixConfig, size: FixtureSize, leafTimeoutMs: 
       commandRunner,
       maxFanout: 8,
       warmThenFanout: true,
+      ...(config.profile ? { conductorPromptProfile: config.profile } : {}),
       oracleCmd: fx.oracleCmd,
       leafSystemPrefix: fx.spec,
     } as Parameters<typeof runExecutorDag>[1];
@@ -126,44 +153,70 @@ async function measureOnce(config: MixConfig, size: FixtureSize, leafTimeoutMs: 
   }
 }
 
-/** 均值聚合 R 次测量 (variance)。 */
-function avg(runs: Array<RunMetrics & { costUsd: number; unpriced: boolean }>): { score: number; detail: unknown } {
-  const n = runs.length;
-  const mean = (f: (r: (typeof runs)[number]) => number) => runs.reduce((s, r) => s + f(r), 0) / n;
+/**
+ * 聚合 R 次测量。**报中位不报均值** (2026-07-26): token / 墙钟是重尾分布 —— 实测同一模型同一设置
+ * 下 completion token 在 183↔433 之间跳, 一次长尾就把均值拽走, 中位不受影响。
+ *
+ * **score = firstShotPass 而不是 finalPass** (2026-07-26): heal 会把强弱两边都拉到 1.000
+ * (2026-07-25 的 k3 full/lean 就是 1.000 对 1.000, 判据自己饱和了)。conductor 的职责是**一次画对**,
+ * 所以排序键取 heal 前的首刀过测率; finalPass 仍在 detail 里, 没丢。
+ */
+function median(xs: number[]): number {
+  const a = [...xs].sort((x, y) => x - y);
+  const m = a.length >> 1;
+  return a.length % 2 ? a[m]! : (a[m - 1]! + a[m]!) / 2;
+}
+
+function agg(runs: Array<RunMetrics & { costUsd: number; unpriced: boolean }>): { score: number; detail: unknown } {
+  const med = (f: (r: (typeof runs)[number]) => number) => median(runs.map(f));
   const unpriced = runs.some((r) => r.unpriced); // 任一坐标无价 → costUsd 被低估 (F2)
   return {
-    score: mean((r) => r.finalPass), // 排序键 = 质量; 真信息全在 detail (INV-4)
+    score: med((r) => r.firstShotPass), // 排序键 = 首刀分解质量 (未被 heal 掩盖)
     detail: {
-      runs: n,
-      firstShotPass: +mean((r) => r.firstShotPass).toFixed(3),
-      finalPass: +mean((r) => r.finalPass).toFixed(3),
-      healRounds: +mean((r) => r.healRounds).toFixed(2),
-      leafTokens: Math.round(mean((r) => r.usage.leavesIn + r.usage.leavesOut)),
-      nodeCount: +mean((r) => r.nodeCount).toFixed(1),
-      costUsd: +mean((r) => r.costUsd).toFixed(4),
+      runs: runs.length,
+      firstShotPass: +med((r) => r.firstShotPass).toFixed(3),
+      finalPass: +med((r) => r.finalPass).toFixed(3),
+      healRounds: +med((r) => r.healRounds).toFixed(2),
+      leafTokens: Math.round(med((r) => r.usage.leavesIn + r.usage.leavesOut)),
+      conductorTokens: Math.round(med((r) => r.usage.conductorIn + r.usage.conductorOut)),
+      nodeCount: +med((r) => r.nodeCount).toFixed(1),
+      // 图形状: prompt 里 "wide and shallow" / "no consumer → don't build" 的可量化对应物。
+      depth: +med((r) => r.shape.depth).toFixed(1),
+      maxWidth: +med((r) => r.shape.maxWidth).toFixed(1),
+      orphans: +med((r) => r.shape.orphans).toFixed(1),
+      costUsd: +med((r) => r.costUsd).toFixed(4),
       unpriced, // true = 上面 costUsd 不完整 (有坐标不在 cost-ledger 价表)
+      spread: { firstShot: runs.map((r) => +r.firstShotPass.toFixed(2)) }, // 方差可见, 别只看中位
     },
   };
 }
 
 /** default export: (opts) => TournamentSpec。opts.r = 每候选重复次数 (默认 1; 真跑设 3, SDD D3)。 */
 export default function conductorModelmixSpec(opts: Record<string, string> = {}): TournamentSpec<MixConfig> {
-  const R = Math.max(1, Number.parseInt(opts.r ?? '1', 10) || 1);
-  const size: FixtureSize = opts.fixture === 'large' ? 'large' : 'medium';
+  // R 默认 3 (2026-07-26): R=1/2 在重尾分布上读不出东西 —— 单发是噪音, 两发无法取中位。
+  const R = Math.max(1, Number.parseInt(opts.r ?? '3', 10) || 3);
+  // fixture 默认 large (2026-07-26): medium 只有 3 模块, finalPass 恒 1.000 已饱和, 判不出差。
+  const size: FixtureSize = opts.fixture === 'medium' ? 'medium' : 'large';
+  // --profiles full,lean → prompt 档进候选轴 (省略 = 不展开, 引擎按座位模型档自选)。
+  const profiles = (opts.profiles ?? '')
+    .split(',')
+    .map((x) => x.trim())
+    .filter((x): x is 'full' | 'lean' => x === 'full' || x === 'lean');
   // leafTimeout: agent-leaf wall-clock 上界 (ms)。默认 30min (远宽于旧 240s), '0'=不限。
   const leafTimeoutMs = opts.leafTimeout != null && opts.leafTimeout !== ''
     ? Math.max(0, Number.parseInt(opts.leafTimeout, 10) || 0)
     : 1_800_000;
   // --skip C1,C5 = 排除 label 含这些子串的格 (如 C1 opus 缺 anthropic 凭证时先跳)。
   const skip = (opts.skip ?? '').split(',').map((s) => s.trim()).filter(Boolean);
-  const grid = skip.length ? GRID.filter((c) => !skip.some((s) => c.label.includes(s))) : GRID;
+  const base = skip.length ? GRID.filter((c) => !skip.some((s) => c.label.includes(s))) : GRID;
+  const grid = withProfiles(base, profiles);
   return {
     name: 'conductor-modelmix',
     seed: () => grid,
     async measure(c) {
       const runs: Array<RunMetrics & { costUsd: number; unpriced: boolean }> = [];
       for (let i = 0; i < R; i++) runs.push(await measureOnce(c.config, size, leafTimeoutMs));
-      return avg(runs);
+      return agg(runs);
     },
     direction: 'max',
     concurrency: 1, // INV-1: 串行, 并行争 provider 限流

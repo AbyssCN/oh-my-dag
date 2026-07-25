@@ -589,11 +589,13 @@ async function executePlan(
       let text: string;
       let usage: ModelUsage;
       let filesTouched: string[] = [];
+      let toolCalls: number | undefined;
       if (useAgent) {
         const r = await config.agentRunner!({ prompt, model });
         text = r.text;
         usage = r.usage;
         filesTouched = r.filesTouched ?? [];
+        toolCalls = r.toolCalls;
         // 早期心跳闸 (issue #5): provider 挂起判停摆 → 标 failed (不把近零输出当 done), 附 stall 标记
         // 供 settle 记 failureKind='stall' (issue #4 败因留痕)。heal 回路可据此重试/换池。
         if (r.stalled) {
@@ -640,7 +642,7 @@ async function executePlan(
         text = r.text;
         usage = r.usage;
       }
-      const leaf: LeafResult = { id, status: 'done', kind: useAgent ? 'agent' : 'inproc', model, output: text, deps: node.depends_on ?? [], usage, filesTouched };
+      const leaf: LeafResult = { id, status: 'done', kind: useAgent ? 'agent' : 'inproc', model, output: text, deps: node.depends_on ?? [], usage, filesTouched, ...(toolCalls !== undefined ? { toolCalls } : {}) };
       // W2 checkpoint 落盘 (done 节点, fail-open)。summary=output 截断; noun-gate 注释 only,
       // material=节点 prompt (含 deps 上下文) —— "输出了输入和 repo 都没有的名词" 才是审计信号
       // (material 含 output 会恒真, SDD C5 消费者② 修正)。tokenUsage: agent leaf 真值不可得 → null (V2-ECON)。
