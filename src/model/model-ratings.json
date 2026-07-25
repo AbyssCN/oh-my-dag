@@ -1,6 +1,7 @@
 {
   "source": "artificialanalysis.ai",
   "ratings": [
+    { "name": "gpt 5.6 sol", "intelligence": 62, "costUsd": 0, "speedTokS": null },
     { "name": "kimi k3", "intelligence": 57, "costUsd": 0.95, "speedTokS": 33 },
     { "name": "glm 5.2", "intelligence": 51, "costUsd": 0.32, "speedTokS": 179 },
     { "name": "qwen3.7 max", "intelligence": 46, "costUsd": 1.03, "speedTokS": 198 },
