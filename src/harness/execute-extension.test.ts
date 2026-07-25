@@ -21,8 +21,6 @@ import type { ConductorPlan } from './conductor-plan';
 import type { ModelResponse } from '../model';
 import { compileSlice } from './pathfinder/slice-compiler';
 import type { PathMap } from './pathfinder/types';
-import { createPlanModeState } from './plan/mode';
-import { PlanLedger } from './plan/ledger';
 
 /** 最小 ExecutorDagResult (summarizeDagResult / sumUsage 消费的字段齐)。 */
 function fakeDagResult(output = 'leaf ok'): ExecutorDagResult {
@@ -119,14 +117,6 @@ function makeCwd(sddContent?: string, sddName = '2026-07-19-测试契约.md'): s
 }
 
 describe('execute-extension', () => {
-  test('无 SDD 且无台账 → 提示先 /sdd, 不跑 DAG', async () => {
-    const h = harness({ cwd: makeCwd() });
-    await h.run();
-    expect(h.iterateCalls.length).toBe(0);
-    expect(h.sent.length).toBe(0);
-    expect(h.notifies.some((n) => n.msg.includes('/sdd') && n.level === 'warning')).toBe(true);
-  });
-
   test('有 SDD → SDD 全文作 task 喂 DAG, 完成后发验收 brief (四选一 + 摘要 + 收敛态)', async () => {
     const sdd = '# 测试契约\n\n## Contracts\n不变量 X 必须保持';
     const h = harness({ cwd: makeCwd(sdd) });
@@ -177,37 +167,12 @@ describe('execute-extension', () => {
     expect(h.recorded[0]!.question).toContain('(redraw)');
   });
 
-  test('无 SDD 但共享 planState 台账有货 → 回退 ledger.crystallize 作契约', async () => {
-    const ledger = new PlanLedger({ goal: '把 X 接进 Y' });
-    ledger.note('决策A: 走接缝 Z');
-    const state = createPlanModeState(ledger);
-    const h = harness({ cwd: makeCwd(), planState: state });
+  test('无 SDD → warning 提示先写 SDD, 不跑 DAG (plan 台账回退已随座舱撤除)', async () => {
+    const h = harness({ cwd: makeCwd() }); // makeCwd 无参 = docs/plan 空
     await h.run();
-    expect(h.iterateCalls.length).toBe(1);
-    const task = h.iterateCalls[0]!.task;
-    expect(task).toContain('把 X 接进 Y');
-    expect(task).toContain('决策A: 走接缝 Z');
-    expect(h.sent[0]!).toContain('plan ledger');
-  });
-
-  test('plan mode 在开 → 程序化干净退出 (还原 model/thinking, status 翻 normal)', async () => {
-    const state = createPlanModeState(new PlanLedger({ goal: 'g' }));
-    state.status = 'plan';
-    state.savedModel = { id: 'runtime-model' };
-    state.savedThinking = 'high';
-    const h = harness({ cwd: makeCwd('# 契约'), planState: state });
-    await h.run();
-    expect(state.status as string).toBe('normal');
-    expect(state.savedModel).toBeNull();
-    expect(state.savedThinking).toBeNull();
-    expect(h.setModelCalls).toEqual([{ id: 'runtime-model' }]);
-    expect(h.setThinkingCalls).toEqual(['high']);
-  });
-
-  test('未注入 planState → brief 附 shift+tab 退出提示', async () => {
-    const h = harness({ cwd: makeCwd('# 契约') });
-    await h.run();
-    expect(h.sent[0]!).toContain('shift+tab');
+    expect(h.iterateCalls.length).toBe(0);
+    expect(h.sent.length).toBe(0);
+    expect(h.notifies.some((n) => n.msg.includes('SDD'))).toBe(true);
   });
 
   test('DAG 抛错 → error notify, 不发 brief', async () => {

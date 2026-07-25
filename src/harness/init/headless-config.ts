@@ -268,9 +268,8 @@ export function configSnapshot(deps: HeadlessDeps = {}): ConfigSnapshot {
   const env = deps.env ?? process.env;
   const warnings: string[] = [];
 
-  // canonical config 角色 (去 plan)。
+  // canonical config 角色 (plan 角色已随审议座舱撤除, 无需再滤)。
   const roles = listRoleModels(env)
-    .filter((e) => e.role !== 'plan')
     .map((e) => {
       const provider = coordProvider(e.resolved);
       const cred = hasCredential(provider, env);
