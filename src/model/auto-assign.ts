@@ -91,6 +91,18 @@ const PREFERRED_COORD: Record<NodeClass, string> = {
 };
 
 /**
+ * per-node 首选覆盖 (owner 2026-07-25: GPT 订阅进图内当 SOTA 大脑): conductor/escalation/judge 三个
+ * **稀疏高价值**座位首选 gpt-5.6-sol via ChatGPT 订阅 (openai-codex, pi 通道 OAuth, flat 计费)。
+ * 刻意不含 reason/reduce (每图多发, Plus 配额撑不住) — 量产座位留 k3/mimo 专属桶。
+ * 渠道不可达 (未声明持仓/无凭证) → 自然落类首选 k3 链, 老行为不变。
+ */
+const NODE_PREFERRED: Record<string, string> = {
+	conductor: "openai-codex:gpt-5.6-sol",
+	escalation: "openai-codex:gpt-5.6-sol",
+	judge: "openai-codex:gpt-5.6-sol",
+};
+
+/**
  * reduce 特殊 (D-14 "够质量的最廉"): 高频阶段, 取 MiMo v2.5-pro via Lite plan (替代原 deepseek-pro 位,
  * owner: deepseek 位→mimo)。高频故留专属 Lite 桶不烧 Go 共享桶。
  */
@@ -200,11 +212,14 @@ export function autoAssign(input: AutoAssignInput): AssignmentMap {
 			// DS-Pro 不可用 → 降级到 judge_synth 溢出链。
 		}
 
-		// 首选 → 溢出链。
+		// per-node 覆盖 → 类首选 → 溢出链。
 		const preferred = PREFERRED_COORD[nodeClass];
 		const fallbacks = FALLBACK_COORDS[nodeClass] ?? [];
+		const nodeOverride = NODE_PREFERRED[node];
 		const candidates =
-			node === "reduce" ? [...fallbacks] : [preferred, ...fallbacks];
+			node === "reduce"
+				? [...fallbacks]
+				: [...(nodeOverride ? [nodeOverride] : []), preferred, ...fallbacks];
 
 		const resolved = resolveFirstReachable(candidates, channels, ratingsPath);
 		if (resolved) {

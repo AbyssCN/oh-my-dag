@@ -245,6 +245,11 @@ describe("modelFamily (INV-7/INV-3 家族判定)", () => {
 		expect(modelFamily("minimax-cn:minimax-m3")).toBe(modelFamily("opencode-go:minimax-m3"));
 	});
 
+	test("openai-codex (ChatGPT 订阅渠道) → gpt 家族 (INV-3: verifier glm ≠ gpt 大脑)", () => {
+		expect(modelFamily("openai-codex:gpt-5.6-sol")).toBe("gpt");
+		expect(modelFamily("openai:gpt-5.4")).toBe("gpt");
+	});
+
 	test("裸 provider 坐标不炸", () => {
 		expect(modelFamily("deepseek")).toBe("deepseek");
 	});

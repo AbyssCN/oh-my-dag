@@ -71,6 +71,36 @@ describe("autoAssign", () => {
 		expect(m.dream!.coord).toBe("opencode-go:glm-5.2");
 	});
 
+	test("GPT 订阅座位 (owner 2026-07-25): codex 渠道在 → conductor/escalation/judge→sol, reason 留 k3, 量产不动", () => {
+		const ratingsPath = writeRatings([
+			{ name: "gpt 5.6 sol", intelligence: 62, costUsd: 0, speedTokS: null },
+			{ name: "kimi k3", intelligence: 57, costUsd: 0.95, speedTokS: 33 },
+			{ name: "mimo v2.5", intelligence: 42, costUsd: 0.2, speedTokS: null },
+			{ name: "mimo v2.5 pro", intelligence: 48, costUsd: 0.25, speedTokS: null },
+			{ name: "glm 5.2", intelligence: 51, costUsd: 0.32, speedTokS: 179 },
+		]);
+		const m = autoAssign({
+			channels: [
+				ch("openai-codex", "flat", 0), // ChatGPT Plus 订阅 (pi OAuth 通道)
+				ch("kimi-coding", "token"),
+				ch("mimo", "token"),
+				ch("opencode-go", "flat"),
+			],
+			ratingsPath,
+		});
+		// 稀疏高价值三座 → sol (flat 渠道)
+		for (const n of ["conductor", "escalation", "judge"]) {
+			expect(m[n]!.coord).toBe("openai-codex:gpt-5.6-sol");
+			expect(m[n]!.channelId).toBe("openai-codex:flat");
+		}
+		// reason 每图多发 → 留 k3 (Plus 配额保护); reduce/worker 不动
+		expect(m.reason!.coord).toBe("kimi-coding:k3");
+		expect(m.reduce!.coord).toBe("mimo:mimo-v2.5-pro");
+		expect(m.leaf!.coord).toBe("mimo:mimo-v2.5");
+		// INV-3: verifier (glm) 跨 gpt 大脑家族
+		expect(m.verifier!.coord).toBe("opencode-go:glm-5.2");
+	});
+
 	test("溢出链降级: kimi-coding 无渠道 → 大脑簇降级到 Go(opencode-go:kimi-k3)", () => {
 		const ratingsPath = writeRatings([
 			{ name: "kimi k3", intelligence: 57, costUsd: 0.95, speedTokS: 33 },
