@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { runExecutorDagWithPlan } from './executor-dag';
 import type { ConductorPlan } from './conductor-plan';
 import type { ContentPart } from '../model/gateway';
+import { registerProvider } from '../model/providers';
 import type { DagNodeEvent, ExecutorDagConfig, GenerateFn } from './executor-dag-types';
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -297,6 +298,86 @@ describe('G-10 attach_media 多模态媒体管道 (D-14v2)', () => {
       makeConfig(generate),
     );
     expect(contents.every((c) => typeof c === 'string')).toBe(true);
+  });
+});
+
+describe('G-21 强化: escalation patch 模式 (S3.6)', () => {
+  // 升级闸要求 provider 已注册 (escalationProviderReady) → 注册假 provider (fake generate, 零真调用)。
+  registerProvider('escx', { baseUrl: 'http://127.0.0.1:9', apiKey: 'test-key', api: 'openai-compatible' });
+
+  /** verifier 首轮 fail 点名 b → patch 模式改 b.goal → 未补丁节点 a 按构造复用 (零重跑)。 */
+  test('补丁采纳: 未补丁节点字节不动 → D-21 复用按构造成立', async () => {
+    const calls: string[] = [];
+    const generate: GenerateFn = async (req) => {
+      const sysC = req.messages.find((m) => m.role === 'system')?.content;
+      const sys = typeof sysC === 'string' ? sysC : '';
+      if (sys.includes('REPLAN-PATCH')) {
+        return { text: '{"patch": {"b": {"goal": "修好的乙"}}}', usage: { in: 5, out: 5 } };
+      }
+      const id = leafId(contentText(req.messages.find((m) => m.role === 'user')?.content));
+      calls.push(id);
+      return { text: `out:${id}`, usage: { in: 1, out: 1 } };
+    };
+    let verifyCount = 0;
+    const verifier = async (): Promise<{ pass: boolean; reason: string; usage: { in: number; out: number } }> => {
+      verifyCount++;
+      return verifyCount === 1
+        ? { pass: false, reason: '节点 b 输出不合格', usage: { in: 1, out: 1 } }
+        : { pass: true, reason: 'ok', usage: { in: 1, out: 1 } };
+    };
+    const r = await runExecutorDagWithPlan(
+      plan({ a: { goal: '甲' }, b: { goal: '乙', depends_on: ['a'] } }),
+      makeConfig(generate, { verifier, conductorEscalationModel: 'escx:strong' }),
+    );
+    expect(r.verification!.pass).toBe(true);
+    expect(r.verification!.escalated).toBe(true);
+    // a 只跑一次 (轮 2 语义指纹命中 → 零 LLM 注入), b 补丁后重跑 → 两次
+    expect(calls.filter((c) => c === 'a').length).toBe(1);
+    expect(calls.filter((c) => c === 'b').length).toBe(2);
+    expect(r.results.a!.skipped).toBe(true); // 轮 2 的 a = 复用注入
+    expect(r.results.a!.output).toBe('out:a');
+    expect(r.results.b!.status).toBe('done');
+    // 补丁 conductor 用量入账
+    expect(r.usage.conductor.in).toBeGreaterThanOrEqual(5);
+  });
+
+  test('fail-open: 补丁始终无效 → 回退整图重规划 (CONDUCTOR 全量 prompt), 补丁 token 不丢账', async () => {
+    const sysSeen: string[] = [];
+    const fullPlanJson = JSON.stringify({
+      name: 'replanned',
+      nodes: { a: { goal: '甲' }, b: { goal: '乙v2', depends_on: ['a'] } },
+    });
+    const generate: GenerateFn = async (req) => {
+      const sysC = req.messages.find((m) => m.role === 'system')?.content;
+      const sys = typeof sysC === 'string' ? sysC : '';
+      if (sys.includes('REPLAN-PATCH')) {
+        sysSeen.push('patch');
+        return { text: 'garbage not a patch', usage: { in: 3, out: 3 } };
+      }
+      if (sys.includes('CONDUCTOR')) {
+        sysSeen.push('conductor');
+        return { text: fullPlanJson, usage: { in: 10, out: 10 } };
+      }
+      return { text: 'out', usage: { in: 1, out: 1 } };
+    };
+    let verifyCount = 0;
+    const verifier = async (): Promise<{ pass: boolean; reason: string; usage: { in: number; out: number } }> => {
+      verifyCount++;
+      return verifyCount === 1
+        ? { pass: false, reason: 'b 不合格', usage: { in: 0, out: 0 } }
+        : { pass: true, reason: 'ok', usage: { in: 0, out: 0 } };
+    };
+    const r = await runExecutorDagWithPlan(
+      plan({ a: { goal: '甲' }, b: { goal: '乙', depends_on: ['a'] } }),
+      makeConfig(generate, { verifier, conductorEscalationModel: 'escx:strong', maxPlanRetries: 1 }),
+    );
+    expect(r.verification!.pass).toBe(true);
+    expect(r.verification!.escalated).toBe(true);
+    // 补丁试过 (maxPlanRetries+1 = 2 次) 后回退全量 conductor
+    expect(sysSeen).toEqual(['patch', 'patch', 'conductor']);
+    // 补丁尝试 3+3 ×2 + conductor 10 全入账
+    expect(r.usage.conductor.in).toBe(16);
+    expect(r.usage.conductor.out).toBe(16);
   });
 });
 
