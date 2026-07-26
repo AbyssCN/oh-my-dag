@@ -52,21 +52,16 @@ makes `mid` and `cheap` collapse into the same model — configure them).
 | `cheap` | `tier: "cheap"` | mechanical enumeration |
 | `multimodal` | `attach_media: true` | capability is a hard constraint — a text-only model cannot see the screenshot |
 
-### Vision is measured, not assumed
+### Vision is verified, not assumed
 
-How to check a coordinate: render a page with a random 4-character code and a coloured shape,
-then ask the model to read both back. Measured results:
+Vendor multimodality claims are not a qualification. A model that *sees* the image but misreads
+text in it is worse than one that cannot see at all: it produces confident, wrong findings about
+labels and copy, and nothing in the pipeline contradicts it.
 
-| Coordinate | Verdict | Answer |
-|---|---|---|
-| `mimo:mimo-v2.5` | ✅ exact | `7QK4`, blue triangle |
-| `opencode-go:minimax-m3` | ✅ exact | `7QK4`, blue triangle |
-| `opencode-go:qwen3.7-plus` | ⚠️ sees, misreads | `7GR4` — shape and colour right, code wrong by two chars |
-| `opencode-go:glm-5.2` | ❌ blind | "unknown code, unknown colour and shape" |
-
-Only the two exact ones are in the pool. `qwen3.7-plus` is not: the pool exists to *judge UI
-screenshots*, and a model that misreads text in a screenshot will produce confident, wrong
-findings about labels and copy. Run that probe before adding any coordinate here — vendor claims of multimodality are not enough.
+**The bar for entering the multimodal pool**: render a page containing a random short code and a
+coloured shape, ask the coordinate to read both back, and admit it only if both are exact. Run that
+before adding any coordinate — the answer differs between siblings in the same family, and it
+changes as providers ship.
 
 ## Stamp rules, in priority order
 
@@ -89,14 +84,18 @@ picks its own).
 Effort is delivered **with** the coordinate, not globally. Resolution order, highest first:
 `node.thinking` → explicit run config → seat tier → the built-in default.
 
-The transport clamps per provider, because sending an unsupported value is an HTTP error,
-not a graceful downgrade — mimo accepts `low|medium|high` and **400s on `max`**, while
-deepseek accepts `high|max`. An unknown provider only ever gets `high`. Add a provider row
-only after calling its API for real.
+**The transport clamps effort per provider.** Providers accept different effort vocabularies, and
+sending one an unsupported value is an HTTP error, not a graceful downgrade — a whole node dies for
+a parameter. The clamp table is therefore keyed by provider, and an unknown provider gets only the
+one level every reasoning API accepts.
 
-Measured, not assumed: on mimo-v2.5-pro the effort level makes no reliable difference to
-output tokens, and there is no working "thinking off" switch. Don't buy a quality risk for
-a saving that isn't there.
+Two disciplines around that table:
+
+- **Add a row only after calling that provider's API for real.** Vendor docs and sibling models
+  disagree often enough that copying either is how the 400s get in.
+- **Lower a seat's effort only against a measurement.** "Cheaper models should think less" is an
+  assumption, not a finding; on some models the levels do not separate at all, and then you have
+  traded quality for nothing.
 
 ## Multi-perspective review
 
