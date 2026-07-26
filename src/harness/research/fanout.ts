@@ -48,6 +48,28 @@ export type ResearchGap = z.infer<typeof GAP_SCHEMA>['gaps'][number];
 /** 每轮缺口上限 —— 超过就不是"增量"而是重开题 (引擎钳制, 不与模型商量)。 */
 const MAX_GAPS = 6;
 
+/**
+ * 脊柱语料瘦身 (owner 2026-07-27 裁决): 语料索引 = 结构骨架 (标题行 + 去重来源 URL + 规模),
+ * 供 post-reduce 脊柱 stage (synth/judge/fusion/graft) 替代全文 —— 它们消费的是冠军/候选 digest,
+ * 全文在那里只剩延迟与账单 (实测 --deep 32 min 的大头 = 脊柱 ~20 万 token prompt × 慢推理座)。
+ * gen/reduce/gap 仍持全文: 抽取与缺口判定需要正文。
+ */
+export function buildCorpusIndex(corpus: string, maxChars = 8_000): string {
+  const heads: string[] = [];
+  for (const raw of corpus.split('\n')) {
+    const t = raw.trim();
+    if (/^#{1,4} /.test(t) || /^<\/?second-pass-corpus/.test(t)) heads.push(t);
+  }
+  const urls = [
+    ...new Set((corpus.match(/https?:\/\/[^\s<>()[\]{}"'`,;）)]+/g) ?? []).map((u) => u.replace(/[.,;:!?]+$/, ''))),
+  ];
+  const body =
+    `<corpus-index chars="${corpus.length}">\n` +
+    `(脊柱瘦身: 全文语料已被镜头冠军/候选消化, 此处只留骨架; 事实与引用以冠军/候选内嵌者为准)\n` +
+    `${heads.join('\n')}\n\n来源 URL (${urls.length}):\n${urls.join('\n')}\n</corpus-index>`;
+  return body.length > maxChars ? `${body.slice(0, maxChars)}\n…[索引截断]\n</corpus-index>` : body;
+}
+
 /** 确定性探测器 (下限半边) 的产出。全空 = 这半边无新增。 */
 export interface ProbeYield {
   /** 缺料抓回来的增量语料 (append 进下一轮 groundTruth, 零丢失由调用方留档)。 */
@@ -354,9 +376,12 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
 
   const championsDigest = lensChampions.map((c) => `## 镜头冠军[${c.key}]\n${c.text}`).join('\n\n');
 
+  // 脊柱瘦身: post-reduce 脊柱共用 [stablePrefix + 语料索引] 前缀 (互相之间仍缓存对齐, 且小一个量级)。
+  const spineHead = cfg.stablePrefix ? `${cfg.stablePrefix}\n\n${buildCorpusIndex(corpus)}` : buildCorpusIndex(corpus);
+
   // ── Stage 3: M framing 综合候选 (pro, 并行)。
   const synthJobs = cfg.synthesisFramings.map((fr) => async () => {
-    const prompt = `${corpus}\n\n各镜头冠军:\n${championsDigest}\n\n<framing>${fr.framing}</framing>\n\n按此 framing 综合成一份完整方案 (具体到模块/文件/接点, 用真实模块名)。`;
+    const prompt = `${spineHead}\n\n各镜头冠军:\n${championsDigest}\n\n<framing>${fr.framing}</framing>\n\n按此 framing 综合成一份完整方案 (具体到模块/文件/接点, 用真实模块名)。`;
     const text = await track(cfg.reasonModel, call({ model: cfg.reasonModel, messages: msg(prompt) }));
     return { key: fr.key, text };
   });
@@ -370,7 +395,7 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
   // ── Stage 4: K-judge panel (pro, 并行) → 各维度评判。
   const judgeJobs = cfg.judgeCriteria.map((j) => async () => {
     const jm = j.model ?? judgeModel; // 跨族 panel: 该维度指定模型, 否则全局 judgeModel
-    const prompt = `${corpus}\n\n${candDigest}\n\n你是评判维度【${j.criterion}】的 judge。按此维度评 ${synthCandidates.length} 个候选: 各自强弱 + 哪个最优 + 该嫁接谁的哪段。只从你这个维度评。`;
+    const prompt = `${spineHead}\n\n${candDigest}\n\n你是评判维度【${j.criterion}】的 judge。按此维度评 ${synthCandidates.length} 个候选: 各自强弱 + 哪个最优 + 该嫁接谁的哪段。只从你这个维度评。`;
     const text = await track(jm, call({ model: jm, messages: msg(prompt) }));
     return { key: j.key, text };
   });
@@ -386,14 +411,14 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
   // (last30days 2026-06-16: synthesis 质量 ~3/4 of lift)。前缀 `head\n\n${candDigest}` 与
   // judge/graft 字节对齐 → 复用已暖缓存。
   leafCount += 1;
-  const fusionPrompt = `${corpus}\n\n${candDigest}\n\nK-judge panel 多维评判:\n${critDigest}\n\n${buildFusionAnalysisPrompt()}`;
+  const fusionPrompt = `${spineHead}\n\n${candDigest}\n\nK-judge panel 多维评判:\n${critDigest}\n\n${buildFusionAnalysisPrompt()}`;
   const fusionAnalysis = await track(judgeModel, call({ model: judgeModel, messages: msg(fusionPrompt) }));
   stage('fusion', 'fusion 融合分析 (5-tuple)');
 
   // ── Stage 5: 终审 graft (pro, 1 发) → 据 panel 评判 + fusion 5-tuple 合成最终方案。
   leafCount += 1;
   // 前缀与 fusion 字节对齐 (`head\n\n${candDigest}`) → 复用 judge/fusion 已暖的 head+candDigest 缓存。
-  const finalPrompt = `${corpus}\n\n${candDigest}\n\nK-judge panel 多维评判:\n${critDigest}\n\nFusion 融合分析 (结构化):\n${fusionAnalysis}\n\n你是首席架构师。据 panel 多维评判 + fusion 融合分析**合成唯一最终方案**: 选最强骨架, 嫁接共识与独特洞察, 显式消解矛盾点、补齐覆盖缺口与盲点。直接给最终方案, 不要元评论。`;
+  const finalPrompt = `${spineHead}\n\n${candDigest}\n\nK-judge panel 多维评判:\n${critDigest}\n\nFusion 融合分析 (结构化):\n${fusionAnalysis}\n\n你是首席架构师。据 panel 多维评判 + fusion 融合分析**合成唯一最终方案**: 选最强骨架, 嫁接共识与独特洞察, 显式消解矛盾点、补齐覆盖缺口与盲点。直接给最终方案, 不要元评论。`;
   const finalText = await track(cfg.reasonModel, call({ model: cfg.reasonModel, messages: msg(finalPrompt) }));
 
   // 收尾遥测: per-model 缓存命中率 + 成本 (M6: 测量命中率而非靠账单倒猜)。经 onStage 流到所有 driver 的 stderr。

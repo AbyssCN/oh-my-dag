@@ -1,5 +1,5 @@
 import { test, expect, describe } from 'bun:test';
-import { researchFanout, type ResearchFanoutConfig } from '../../src/harness/research/fanout';
+import { buildCorpusIndex, researchFanout, type ResearchFanoutConfig } from '../../src/harness/research/fanout';
 
 // fake callModel: 回 prompt 的 stage 标记 (据 prompt 内容判断在哪个 stage), 计调用次数。
 function makeFakeCall() {
@@ -70,6 +70,45 @@ describe('researchFanout — L×V staging', () => {
     const genB = seen.filter((s) => s.includes('sub-angle: b'));
     expect(genA.every((s) => s.includes('domain-abstraction'))).toBe(true); // lens a 有 abstraction
     expect(genB.some((s) => s.includes('domain-abstraction'))).toBe(false); // lens b 无
+  });
+});
+
+// ── 脊柱语料瘦身 (owner 2026-07-27): post-reduce 脊柱只带索引。
+describe('buildCorpusIndex — 语料索引', () => {
+  test('留骨架 (标题/来源 URL/规模), 丢正文', () => {
+    const corpus = '# 检索: q\n\n## [A] SQLite 官方 — https://sqlite.org/wal.html\n\n正文段落 SECRET-BODY 很长很长\n\n<second-pass-corpus round="2">\n## https://x.example/p\n\n补抓正文 ALSO-BODY\n</second-pass-corpus>';
+    const idx = buildCorpusIndex(corpus);
+    expect(idx).toContain('# 检索: q');
+    expect(idx).toContain('https://sqlite.org/wal.html');
+    expect(idx).toContain('https://x.example/p');
+    expect(idx).toContain('<second-pass-corpus round="2">');
+    expect(idx).toContain(`chars="${corpus.length}"`);
+    expect(idx).not.toContain('SECRET-BODY');
+    expect(idx).not.toContain('ALSO-BODY');
+  });
+
+  test('超上限截断带标记', () => {
+    const corpus = Array.from({ length: 900 }, (_, i) => `## 源 ${i} — https://s.example/${i}`).join('\n\n正文\n\n');
+    const idx = buildCorpusIndex(corpus, 2_000);
+    expect(idx.length).toBeLessThan(2_100);
+    expect(idx).toContain('[索引截断]');
+  });
+
+  test('synth/judge/fusion/graft 全走索引, gen/reduce/gap 仍持全文', async () => {
+    const seen: string[] = [];
+    const fake = (async (req: { model: string; messages: { content: string }[] }) => {
+      const p = req.messages[0]!.content as string;
+      seen.push(p);
+      let text = 'X';
+      if (p.includes('缺口分析器')) text = '{"gaps":[{"key":"g","question":"q","why":"w"}]}';
+      return { text, model: req.model, usage: { in: 1, out: 1 } };
+    }) as unknown as ResearchFanoutConfig['_callModel'];
+    await researchFanout({ ...baseCfg(fake), groundTruth: 'GT-FULL-BODY 事实', rounds: 2 });
+    const spine = seen.filter((s) => s.includes('<framing>') || s.includes('评判维度【') || s.includes('据 panel') || s.includes('五元组') || s.includes('K-judge'));
+    expect(spine.length).toBeGreaterThanOrEqual(5); // 2 synth + 2 judge + fusion/graft
+    expect(spine.every((s) => !s.includes('GT-FULL-BODY'))).toBe(true);
+    const fullText = seen.filter((s) => s.includes('sub-angle:') || s.includes('首席 judge') || s.includes('缺口分析器'));
+    expect(fullText.every((s) => s.includes('GT-FULL-BODY'))).toBe(true);
   });
 });
 
@@ -151,8 +190,10 @@ describe('researchFanout — research-second-pass rounds', () => {
     // 二轮 gen prompt 含补抓语料 (append-only 进 corpus)
     const secondGen = seen.filter((s) => s.includes('NEW-CORPUS-FACTS') && s.includes('sub-angle:'));
     expect(secondGen.length).toBe(1);
-    // 终局 synth 也在长大后的 corpus 上 (缺口答案有事实锚)
-    expect(seen.some((s) => s.includes('NEW-CORPUS-FACTS') && s.includes('<framing>'))).toBe(true);
+    // 脊柱瘦身 (owner 2026-07-27): synth 只带语料索引不带全文 —— 事实经镜头冠军 digest 传递
+    const synthPrompts = seen.filter((s) => s.includes('<framing>'));
+    expect(synthPrompts.every((s) => !s.includes('NEW-CORPUS-FACTS'))).toBe(true);
+    expect(synthPrompts.every((s) => s.includes('<corpus-index'))).toBe(true);
     expect(r.secondPass[0]!.probedUrls).toEqual(['https://miss.example/a']);
   });
 
