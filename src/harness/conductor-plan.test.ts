@@ -69,17 +69,17 @@ describe('S5 conductor prompt: SDD v2 字段 + 前端 motif (G-9)', () => {
     }
   });
 
-  // 2026-07-26: 硬规则从"必须被多模态审查"改成"必须过确定性截图闸" —— 模型看一眼失败是静默的
-  // (全栈 eval 实测: 证据链 6 次只走通 1 次, 而 pass 依然 1.000)。审查降为可选尾巴。
-  test('两档均含 UI motif (宽触发 + 确定性截图闸硬规则 + 契约同步点 + 可选审查 + review 交叉)', () => {
+  // 2026-07-26: shape 段从散文改成 src/harness/shapes 的渲染 (单一真源, 同时喂 conductor 与
+  // 组合模式下的外部 agent)。断言改成"数据里的每个 shape 都出现在 prompt 里 + 硬闸标注在"。
+  test('两档均含全部 shape (含反例行) 与 UI 证据链的零模型硬闸', () => {
     for (const p of [full, lean]) {
-      expect(p).toContain('UI work motif');
+      expect(p).toContain('Graph shapes');
+      expect(p).toContain('ui-evidence');
+      expect(p).toContain('full-stack');
+      expect(p).toContain('one-decision-then-fanout');
+      expect(p).toContain('NOT when:'); // 反例是数据化强制多出来的那一栏
       expect(p).toContain('omd-shots-verify'); // 硬规则 = 零模型闸
-      expect(p).toContain('ZERO-MODEL');
-      expect(p).toContain('motion/animation');
-      expect(p).toContain('contract node');
-      expect(p).toContain('attach_media:true'); // 仍在, 但作为可选
-      expect(p).toContain('optional');
+      expect(p).toContain('ENFORCED:'); // 建议与硬闸必须可分辨
       expect(p).toContain('cross-review');
     }
   });

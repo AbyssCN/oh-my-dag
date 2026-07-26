@@ -15,6 +15,7 @@
  */
 import { z } from 'zod';
 import { DEFAULT_COMMAND_ALLOWLIST, GIT_READONLY_SUBCOMMANDS } from './command-leaf';
+import { renderShapesForPrompt } from './shapes';
 
 /** Frozen-prefix boundary (SDD §2 __SYSTEM_PROMPT_DYNAMIC_BOUNDARY__ analogue). */
 export const PLAN_BOUNDARY = '\n\n===== TASK (dynamic, below the frozen boundary) =====\n\n';
@@ -434,32 +435,7 @@ export function conductorSystemPrompt(
     'shape, just use ordinary leaf/agent/command nodes (the free graph is always valid).',
     '("escape-hatch" is a gated last-resort imperative sequence — OFF by default; do NOT reach for it.)',
     '',
-    'UI work motif (TRIGGER: the task touches ANY user-visible UI — HTML/CSS, components, pages,',
-    'frontend motion/animation, visual output — not only full frontend SDDs):',
-    'HARD RULE — pixels must EXIST and be CHECKED DETERMINISTICALLY: any node whose deliverable is',
-    '  user-visible UI must be followed by (1) a render node (executor:"command", screenshot script that',
-    '  PRINTS the image paths) and (2) a "command" node running `omd-shots-verify` over those shots —',
-    '  it fails the run if a screenshot is missing, empty, or a blank page. That gate is ZERO-MODEL:',
-    '  a model "having a look" is not evidence, because when it silently does not run, nothing turns red.',
-    '  For motion/animation, the render step captures key-state frames so the shots cover each state.',
-    'An attach_media:true review leaf MAY follow the gate for taste judgement — it is optional, and it',
-    '  never replaces the deterministic gate. Design-quality review belongs with a human or outside the graph.',
-    'Full-stack SDD shape (a spec with UI + API surfaces decomposes into THIS):',
-    '1. research cluster — parallel sibling leaves (cluster:"research"): domain, UX reference, tech constraints.',
-    '2. ONE contract node depending on the research (the "ONE decision, THEN the fan-out" rule above,',
-    '   applied to the API/props/schema surface).',
-    '3. backend cluster + frontend cluster — agent nodes that ALL depend_on the contract node, never on each',
-    '   other across clusters: both sides build against the same frozen interface, so the clusters run in',
-    '   parallel safely (cluster:"backend" / cluster:"frontend").',
-    '4. render node — executor:"command" that builds and screenshots the UI (build + playwright script),',
-    '   PRINTING the screenshot file path(s) as its output.',
-    '5. shots gate — executor:"command" running `omd-shots-verify` over the produced screenshots',
-    '   (zero model; fails on missing / empty / blank). An attach_media review leaf after it is optional.',
-    '6. cross-review node — depends_on contract + impl + multimodal findings: catch contract violations and',
-    '   omissions; its findings feed the engine\'s verify loop. Give it requires:"all" only if every input is',
-    '   load-bearing.',
-    'UI best-of-N: N variant agent nodes → N render command nodes → ONE multimodal judge (attach_media:true,',
-    'requires:K) so a failed variant does not kill the judgement.',
+    ...renderShapesForPrompt(lean ? 'lean' : 'full'),
     '',
     'Output STRICTLY one JSON object, no prose, matching:',
     '{ "name": string, "description"?: string, "outputs"?: string[],',
