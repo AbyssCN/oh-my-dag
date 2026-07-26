@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runExecutorDag, type GenerateFn } from '../../src/harness/executor-dag';
@@ -86,5 +86,60 @@ describe('executor-dag 写文件节点 guard (M3 conductor bug)', () => {
     });
     expect(res.results['think']!.kind).toBe('inproc'); // 分析不写文件 → 不误提升
     expect(flag.called).toBe(false);
+  });
+});
+
+// 2026-07-26 实测复现的真 bug: 产物校验闸拿 `continuity?.repoRoot ?? process.cwd()` 当根解析
+// filesTouched 的相对路径, 而 agent runner 的 cwd 可以是任意目录 (worktree / 子项目)。
+// 两者不一致 → 写对了文件的节点被判 empty-done → 下游整片级联 skip。
+// 全栈 eval 里 6 次跑挂 10 个节点、35 次级联, 根因就是这一行。
+describe('产物校验闸的根 = leaf 自报的 cwd', () => {
+  const PLAN = JSON.stringify({
+    name: 'fp',
+    nodes: { impl: { goal: '实现 src/x.ts', executor: 'agent', output_type: 'file', output_path: 'src/x.ts' } },
+  });
+
+  test('leaf 在别的 cwd 下写对了文件 → 判 done (此前误判 failed)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omd-fp-'));
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(join(dir, 'src', 'x.ts'), 'export const x = 1;\n');
+    const gen: GenerateFn = async ({ model }) =>
+      model === 'c:c' ? { text: PLAN, usage: { in: 1, out: 1 } } : { text: 'ok', usage: { in: 1, out: 1 } };
+    const res = await runExecutorDag('t', {
+      conductorModel: 'c:c',
+      leafModel: 'l:l',
+      generate: gen,
+      // 关键: runner 的根是 dir, 不是 process.cwd(); 结果自报 cwd
+      agentRunner: async () => ({ text: 'done', usage: { in: 1, out: 1 }, filesTouched: ['src/x.ts'], cwd: dir }),
+    });
+    expect(res.results.impl!.status).toBe('done');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('自报 cwd 但文件真不存在 → 仍判 failed (闸没被削弱)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omd-fp-'));
+    const gen: GenerateFn = async ({ model }) =>
+      model === 'c:c' ? { text: PLAN, usage: { in: 1, out: 1 } } : { text: 'ok', usage: { in: 1, out: 1 } };
+    const res = await runExecutorDag('t', {
+      conductorModel: 'c:c',
+      leafModel: 'l:l',
+      generate: gen,
+      agentRunner: async () => ({ text: 'done', usage: { in: 1, out: 1 }, filesTouched: ['src/nope.ts'], cwd: dir }),
+    });
+    expect(res.results.impl!.status).toBe('failed');
+    expect(res.results.impl!.output).toContain('产物校验失败');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('不自报 cwd → 回落老行为 (零回归)', async () => {
+    const gen: GenerateFn = async ({ model }) =>
+      model === 'c:c' ? { text: PLAN, usage: { in: 1, out: 1 } } : { text: 'ok', usage: { in: 1, out: 1 } };
+    const res = await runExecutorDag('t', {
+      conductorModel: 'c:c',
+      leafModel: 'l:l',
+      generate: gen,
+      agentRunner: async () => ({ text: 'done', usage: { in: 1, out: 1 }, filesTouched: ['src/nope-xyz.ts'] }),
+    });
+    expect(res.results.impl!.status).toBe('failed');
   });
 });
