@@ -1,5 +1,5 @@
 import { test, expect, describe } from 'bun:test';
-import { buildSecondPassProbe, extractCitedUrls } from '../../src/harness/research/web-fanout';
+import { assembleGroundTruth, buildSecondPassProbe, extractCitedUrls } from '../../src/harness/research/web-fanout';
 import type { WebStack } from '../../src/harness/web';
 
 // probe 只碰 fetchProviders + cleaner → 最小 fake stack (searchPool/quota 不参与, 断言型 cast)。
@@ -20,6 +20,21 @@ function makeStack(bodies: Record<string, string>): WebStack {
 }
 
 const LONG = (tag: string): string => `${tag} ` + 'x'.repeat(300); // 过 200 chars 壳渣闸
+
+describe('assembleGroundTruth — deep-research 档语料组装', () => {
+  test('序 = 锚点 → 主检索 → 种子; 锚点带节头原样进入', () => {
+    const gt = assembleGroundTruth(
+      [{ label: 'docs/a.md', text: 'ANCHOR-BODY' }],
+      'MAIN-CORPUS',
+      ['SEED-1', 'SEED-2'],
+    );
+    expect(gt).toBe('# 锚点: docs/a.md\n\nANCHOR-BODY\n\nMAIN-CORPUS\n\nSEED-1\n\nSEED-2');
+  });
+
+  test('无锚点无种子 = 主检索原样 (单问题路径零回归)', () => {
+    expect(assembleGroundTruth(undefined, 'MAIN', [])).toBe('MAIN');
+  });
+});
 
 describe('extractCitedUrls — 确定性引用抽取', () => {
   test('抽 http(s), 去重, 剥尾部标点; 非 URL 文本忽略', () => {

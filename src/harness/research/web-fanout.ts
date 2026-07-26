@@ -90,6 +90,17 @@ export interface WebFanoutOpts extends RetrieveOpts {
   rounds?: number;
   /** probe 每轮补抓 URL 上限 (默认 5 —— 轮间抓取成本天花板)。 */
   probeCrawl?: number;
+  /**
+   * 额外种子 query (deep-research 档, 吸收自 xihe-deep-research 的多角度 gather):
+   * 每个各跑一轮独立检索, 语料带节头并入 groundTruth (蒸馏各自生效, 不跨 query 重建);
+   * 单个种子检索失败跳过留痕不断链。probe 的已抓集含全部种子的 URL。
+   */
+  seedQueries?: string[];
+  /**
+   * 锚点文本 (已有设计笔记/契约, 吸收自 xihe-deep-research 的 anchors): 原样进 groundTruth
+   * 之首 —— 排最前 = 跨轮字节最稳的段, 对 prompt cache 最友好。
+   */
+  anchors?: { label: string; text: string }[];
   onStage?: (stage: string, detail: string) => void;
 }
 
@@ -101,6 +112,21 @@ export interface WebFanoutResult {
   fanout: ResearchFanoutResult;
   /** rounds>1 时 probe 补抓的增量语料 (附录落盘用; 巨源带显式截断标记, 全文经源 URL; 单轮/无补抓 = undefined)。 */
   secondPassCorpus?: string;
+  /** seedQueries 的各自检索产物 (fullCorpus 附录落盘用; 未用种子 = undefined)。 */
+  seedRetrievals?: RetrieveResult[];
+}
+
+/**
+ * groundTruth 组装 (deep-research 档)。序 = 缓存稳定序: 锚点 (跨轮字节最稳) → 主检索 → 种子检索。
+ * 导出纯函数: 锚点/种子是否真进语料必须可单测证伪, 不靠付费真跑肉眼看。
+ */
+export function assembleGroundTruth(
+  anchors: { label: string; text: string }[] | undefined,
+  main: string,
+  seeds: string[],
+): string {
+  const anchorBlock = anchors?.length ? anchors.map((a) => `# 锚点: ${a.label}\n\n${a.text}`).join('\n\n') + '\n\n' : '';
+  return `${anchorBlock}${main}${seeds.map((s) => `\n\n${s}`).join('')}`;
 }
 
 /** 从文本抠 http(s) URL (确定性, probe 下限半边的原料)。尾部标点剥离; 括号内 URL 会被截断 (v1 已知边界)。 */
@@ -178,6 +204,21 @@ export async function researchWebFanout(
   if (retrieval.sources.length === 0) throw new Error('researchWebFanout: 检索零结果, 无语料可研究');
   opts.onStage?.('retrieve', `命中 ${retrieval.sources.length} · 抓取 ${retrieval.sources.filter((s) => s.body).length} · 语料 ${retrieval.markdown.length} chars`);
 
+  // deep-research 档: 种子 query 各自独立检索 (蒸馏各自生效), 失败跳过留痕不断链。
+  const seedRetrievals: RetrieveResult[] = [];
+  for (const q of opts.seedQueries ?? []) {
+    opts.onStage?.('retrieve', `种子 query "${q}"`);
+    try {
+      const r = await retrieveWeb(stack, q, opts);
+      seedRetrievals.push(r);
+      opts.onStage?.('retrieve', `种子命中 ${r.sources.length} · 抓取 ${r.sources.filter((s) => s.body).length}`);
+    } catch (e) {
+      opts.onStage?.('retrieve', `种子 "${q}" 检索失败 (${(e as Error).message}) → 跳过`);
+    }
+  }
+
+  const groundTruth = assembleGroundTruth(opts.anchors, retrieval.markdown, seedRetrievals.map((r) => r.markdown));
+
   const lensModel = opts.lensModel ?? resolveRoleModelConfigured('lens').model;
   // synth/终审默认 ds-pro。reduce/judge 在 fanout 层另有钉死默认, 不受此值牵连。
   const reasonModel = opts.reasonModel ?? resolveRoleModelConfigured('reason').model;
@@ -190,7 +231,7 @@ export async function researchWebFanout(
     opts.onStage?.('council', 'conductor 按语料分解 lens...');
     const authored = await authorFanoutSpec({
       goal: question,
-      groundTruth: retrieval.markdown,
+      groundTruth, // 含锚点+种子 — lens 分解要看见全部语料面
       conductorModel: opts.conductorModel,
       lensCount: opts.lensCount,
       lensModel,
@@ -213,7 +254,7 @@ export async function researchWebFanout(
   if (rounds > 1) {
     const base = buildSecondPassProbe(
       stack,
-      retrieval.sources.filter((s) => s.body).map((s) => s.url),
+      [retrieval, ...seedRetrievals].flatMap((r) => r.sources.filter((s) => s.body).map((s) => s.url)),
       { probeCrawl: opts.probeCrawl, signal: opts.signal, onStage: opts.onStage },
     );
     probe = async (a) => {
@@ -226,7 +267,7 @@ export async function researchWebFanout(
   const fanout = await researchFanout({
     question,
     stablePrefix: opts.stablePrefix ?? DEFAULT_WEB_STABLE_PREFIX,
-    groundTruth: retrieval.markdown, // 检索语料 = 防幻觉事实锚, 注入每 leaf
+    groundTruth, // 锚点 + 主检索 + 种子检索 = 防幻觉事实锚, 注入每 leaf
     lenses,
     synthesisFramings,
     judgeCriteria,
@@ -245,5 +286,6 @@ export async function researchWebFanout(
     retrieval,
     fanout,
     ...(probeSections.length ? { secondPassCorpus: probeSections.join('\n\n') } : {}),
+    ...(seedRetrievals.length ? { seedRetrievals } : {}),
   };
 }
