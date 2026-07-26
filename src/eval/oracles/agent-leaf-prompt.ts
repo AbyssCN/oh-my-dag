@@ -163,7 +163,6 @@ const median = (xs: number[]): number => {
 };
 
 export default function agentLeafPromptSpec(opts: Record<string, string> = {}): TournamentSpec<LeafConfig> {
-  bootstrapModelRuntime();
   const R = Math.max(1, Number.parseInt(opts.r ?? '3', 10) || 3);
   // fixture 默认 **medium** —— 与 conductor eval 相反, 刻意的: 那边是 conductor 分解 12 个模块
   // (要难度才不饱和); 这边是**一片叶子**独自吃下整个 fixture, large 的 12 模块单叶做不完, 量到的
@@ -190,6 +189,8 @@ export default function agentLeafPromptSpec(opts: Record<string, string> = {}): 
     name: 'agent-leaf-prompt',
     seed: () => grid,
     async measure(c) {
+      bootstrapModelRuntime(); // 真跑前注册 provider (幂等); **不放 spec 构造里** —— 那会让
+      // 单纯构造一个 spec 就污染全局 registry, 连累同进程里其它测试的回落行为 (2026-07-26 实测踩到)。
       const runs: LeafRun[] = [];
       for (let i = 0; i < R; i++) runs.push(await measureOnce(c.config, size, leafTimeoutMs));
       const med = (f: (r: LeafRun) => number) => median(runs.map(f));
