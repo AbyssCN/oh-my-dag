@@ -51,6 +51,7 @@ const ALL_TOOLS = [
   'omd_set_key',
   'omd_apply_preset',
   'omd_set_role',
+  'omd_shapes',
   'omd_models_auto',
   'omd_register_provider',
   'omd_set_model',
@@ -58,6 +59,7 @@ const ALL_TOOLS = [
   'omd_toggle_hud',
   // plan-memory 账本 (Phase A 证据门仪表)
   'omd_plans',
+  'omd_primitive',
 ].sort();
 
 /** Minimal valid ConductorPlan (同 mcp-dag-tools.test.ts 形状)。 */

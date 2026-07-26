@@ -6,7 +6,7 @@
 
 *你的 agent 继续当脑子。omd 提供便宜的并发双手。*
 
-[![MCP server: 30 tools](https://img.shields.io/badge/MCP%20server-30%20tools-c9a227?style=flat-square&labelColor=140f0a)](docs/mcp-tools.md)
+[![MCP server: 33 tools](https://img.shields.io/badge/MCP%20server-33%20tools-c9a227?style=flat-square&labelColor=140f0a)](docs/mcp-tools.md)
 [![Clients: Claude Code · Codex · any MCP](https://img.shields.io/badge/clients-Claude%20Code%20%C2%B7%20Codex%20%C2%B7%20any%20MCP-6f9488?style=flat-square&labelColor=140f0a)](client-skills/)
 [![Models: bring your own](https://img.shields.io/badge/models-bring%20your%20own-b3382a?style=flat-square&labelColor=140f0a)](docs/model-layer.md)
 [![Runtime: Bun ≥ 1.3](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.3-b3382a?style=flat-square&labelColor=140f0a)](https://bun.sh)
@@ -87,7 +87,7 @@ flowchart TB
 
 **omd 把一个任务变成一张小活的图**,在你自带的便宜模型上并发跑完,用客观闸和一个**来自
 不同模型家族**的怀疑者检查结果,只在真正需要判断的地方花前沿模型的钱。它以 `omd mcp`
-挂进任意客户端 —— 一个 stdio MCP server,30 个工具。
+挂进任意客户端 —— 一个 stdio MCP server,33 个工具。
 
 一套引擎,三件事:
 

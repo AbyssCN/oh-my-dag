@@ -6,7 +6,7 @@
 
 *Your agent stays the brain. omd brings the cheap concurrent hands.*
 
-[![MCP server: 30 tools](https://img.shields.io/badge/MCP%20server-30%20tools-c9a227?style=flat-square&labelColor=140f0a)](docs/mcp-tools.md)
+[![MCP server: 33 tools](https://img.shields.io/badge/MCP%20server-33%20tools-c9a227?style=flat-square&labelColor=140f0a)](docs/mcp-tools.md)
 [![Clients: Claude Code · Codex · any MCP](https://img.shields.io/badge/clients-Claude%20Code%20%C2%B7%20Codex%20%C2%B7%20any%20MCP-6f9488?style=flat-square&labelColor=140f0a)](client-skills/)
 [![Models: bring your own](https://img.shields.io/badge/models-bring%20your%20own-b3382a?style=flat-square&labelColor=140f0a)](docs/model-layer.md)
 [![Runtime: Bun ≥ 1.3](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.3-b3382a?style=flat-square&labelColor=140f0a)](https://bun.sh)
@@ -88,7 +88,7 @@ run every test is the wrong job for the smartest thing in the room.
 **omd turns one task into a graph of small jobs**, runs them concurrently on cheap
 models you bring, checks the result with an objective gate and a skeptic from a
 different model family, and spends a frontier model only where judgement actually
-happens. It mounts into any client as `omd mcp` — a stdio MCP server, 30 tools.
+happens. It mounts into any client as `omd mcp` — a stdio MCP server, 33 tools.
 
 Three capabilities on one engine:
 
