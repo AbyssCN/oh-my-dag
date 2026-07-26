@@ -207,7 +207,6 @@ const median = (xs: number[]): number => {
 };
 
 export default function fullstackDagSpec(opts: Record<string, string> = {}): TournamentSpec<FsConfig> {
-  bootstrapModelRuntime();
   // R 默认 2: 一次全栈 run 是几十分钟, R=3 起步就是半天。要读噪声地板靠对照格, 不靠堆 R。
   const R = Math.max(1, Number.parseInt(opts.r ?? '2', 10) || 2);
   const leafTimeoutMs = opts.leafTimeout ? Math.max(0, Number.parseInt(opts.leafTimeout, 10) || 0) : 1_800_000;
@@ -228,6 +227,8 @@ export default function fullstackDagSpec(opts: Record<string, string> = {}): Tou
     name: 'fullstack-dag',
     seed: () => grid,
     async measure(c) {
+      bootstrapModelRuntime(); // 真跑前注册 provider (幂等); **不放 spec 构造里** —— 那会让
+      // 单纯构造一个 spec 就污染全局 registry, 连累同进程里其它测试的回落行为 (2026-07-26 实测踩到)。
       const runs: FsRun[] = [];
       for (let i = 0; i < R; i++) runs.push(await measureOnce(c.config, leafTimeoutMs));
       const med = (f: (r: FsRun) => number) => median(runs.map(f));
