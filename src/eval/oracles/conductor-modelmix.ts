@@ -136,7 +136,9 @@ async function measureOnce(config: MixConfig, size: FixtureSize, leafTimeoutMs: 
     // F1 泄漏护栏: run 后主树若冒出新的 worktree 外真源改动 = leaf 逃出隔离改了真码 → 响亮报错、废读数。
     const leaked = [...(await dirtyRealFiles())].filter((p) => !before.has(p));
     if (leaked.length) {
-      throw new Error(`[eval 泄漏] leaf 改了 worktree 外的真源码: ${leaked.join(', ')} — 隔离破了, 别用这次读数; git checkout 还原`);
+      throw new Error(`[eval 泄漏] leaf 改了 worktree 外的真源码: ${leaked.join(', ')} — 废读数。\n` +
+        `若你在 eval 运行期间编辑了本仓, 这是**误报** (护栏分不清 leaf 逃逸与人手编辑); ` +
+        `纪律: eval 跑起来之后别碰工作树。真逃逸则 git checkout 还原。`);
     }
 
     // 成本: conductor + leaves 分别按坐标计价 (leaf 用量已含 agent 节点, 见 executor-dag:637 + B 修)。
