@@ -154,7 +154,13 @@ async function measureOnce(cfg: FsConfig, leafTimeoutMs: number): Promise<FsRun>
     } as Parameters<typeof runExecutorDag>[1]);
 
     const leaked = [...(await dirtyRealFiles())].filter((p) => !before.has(p));
-    if (leaked.length) throw new Error(`[eval 泄漏] 改了 worktree 外的真源码: ${leaked.join(', ')} — 废读数`);
+    if (leaked.length) {
+      throw new Error(
+        `[eval 泄漏] 改了 worktree 外的真源码: ${leaked.join(', ')} — 废读数。\n` +
+          `若你在 eval 运行期间编辑了本仓, 这是**误报**: 护栏拿 git status 前后比对, 分不清 leaf 逃逸与人手编辑。\n` +
+          `纪律: eval 跑起来之后别碰工作树 (.omd/ 除外, 它不在比对范围内)。`,
+      );
+    }
 
     // 客观闸: 在 worktree 里真跑一次 oracle (不信任图内节点的自述)。
     const gate = await $`sh -c ${fx.oracleCmd}`.cwd(fx.root).nothrow().quiet();
