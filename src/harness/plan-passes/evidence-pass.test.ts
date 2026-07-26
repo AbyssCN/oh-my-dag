@@ -15,12 +15,12 @@ const plan = (nodes: ConductorPlan["nodes"], outputs?: string[]): ConductorPlan 
 	({ name: "t", nodes, ...(outputs ? { outputs } : {}) }) as ConductorPlan;
 
 describe("evidence-pass 命中与补挂", () => {
-	test("缺尾 plan → 补挂 [command 渲染 → attach_media 审查] 两节点, 链成立", () => {
+	test("缺尾 plan → 补挂 [渲染 command → 确定性截图闸 command] 两节点", () => {
 		const p = plan({
 			ui: { goal: "写落地页", template: "frontend-impl", output_path: "dist/index.html", executor: "agent" },
 		});
 		const r = evidencePass(p, { templates });
-		expect(r.patched).toEqual(["ui-pixel-review", "ui-render"]);
+		expect(r.patched).toEqual(["ui-render", "ui-shots-verify"]);
 
 		const render = r.plan.nodes["ui-render"]!;
 		expect(render.executor).toBe("command");
@@ -28,9 +28,10 @@ describe("evidence-pass 命中与补挂", () => {
 		expect(render.command).toContain("dist/index.html");
 		expect(render.depends_on).toEqual(["ui"]);
 
-		const review = r.plan.nodes["ui-pixel-review"]!;
-		expect(review.attach_media).toBe(true);
-		expect(review.depends_on).toEqual(["ui-render"]);
+		const verify = r.plan.nodes["ui-shots-verify"]!;
+		expect(verify.executor).toBe("command");
+		expect(verify.command).toContain("omd-shots-verify");
+		expect(verify.depends_on).toEqual(["ui-render"]);
 
 		// 原 plan 不被变异 (纯函数)。
 		expect(Object.keys(p.nodes)).toEqual(["ui"]);
@@ -40,7 +41,7 @@ describe("evidence-pass 命中与补挂", () => {
 		const p = plan({
 			ui: { goal: "写落地页", template: "frontend-impl", output_path: "dist/index.html", executor: "agent" },
 			shots: { goal: "截图", executor: "command", command: "bun run render.ts", depends_on: ["ui"] },
-			judge: { goal: "看像素", attach_media: true, depends_on: ["shots"] },
+			gate: { goal: "校验截图", executor: "command", command: "bun run scripts/omd-shots-verify.ts shots", depends_on: ["shots"] },
 		});
 		const r = evidencePass(p, { templates });
 		expect(r.patched).toEqual([]);
@@ -53,21 +54,21 @@ describe("evidence-pass 命中与补挂", () => {
 			build: { goal: "构建", executor: "command", command: "bun run build", depends_on: ["ui"] },
 			shots: { goal: "截图", executor: "command", command: "bun run render.ts", depends_on: ["build"] },
 			mid: { goal: "整理", depends_on: ["shots"] },
-			judge: { goal: "看像素", attach_media: true, depends_on: ["mid"] },
+			gate: { goal: "校验", executor: "command", command: "omd-shots-verify shots", depends_on: ["mid"] },
 		});
 		expect(evidencePass(p, { templates }).patched).toEqual([]);
 	});
 
-	test("有 command 后代但没有 attach_media 尾 → 仍判缺链, 补挂", () => {
+	test("有 command 后代但不是确定性截图闸 → 仍判缺链, 补挂", () => {
 		const p = plan({
 			ui: { goal: "写页面", template: "frontend-impl", output_path: "dist/a.html" },
 			shots: { goal: "截图", executor: "command", command: "bun run render.ts", depends_on: ["ui"] },
-			judge: { goal: "看代码", depends_on: ["shots"] }, // 少了 attach_media
+			judge: { goal: "看代码", depends_on: ["shots"] }, // 少了 omd-shots-verify
 		});
 		expect(evidencePass(p, { templates }).patched.length).toBe(2);
 	});
 
-	test("有 attach_media 审查但没有 command 渲染步 → 仍判缺链 (代码审查冒充像素证据)", () => {
+	test("只有 attach_media 审查 (无确定性闸) → 仍判缺链: 模型看一眼不算证据", () => {
 		const p = plan({
 			ui: { goal: "写页面", template: "frontend-impl", output_path: "dist/a.html" },
 			judge: { goal: "看像素", attach_media: true, depends_on: ["ui"] },
@@ -101,34 +102,8 @@ describe("evidence-pass 命中与补挂", () => {
 			b: { goal: "页面 B", template: "frontend-impl", output_path: "dist/b.html" },
 		});
 		const r = evidencePass(p, { templates });
-		expect(r.patched.sort()).toEqual(["a-pixel-review", "a-render", "b-pixel-review", "b-render"]);
+		expect(r.patched.sort()).toEqual(["a-render", "a-shots-verify", "b-render", "b-shots-verify"]);
 		expect(r.plan.nodes["b-render"]!.command).toContain("dist/b.html");
-	});
-});
-
-describe("evidence-pass 补挂节点复用既有 ui-reviewer 卡", () => {
-	test("注册表有 ui-reviewer → 补挂的审查 leaf 挂上它 (别让补挂节点裸奔)", () => {
-		const tpls = new Map(templates);
-		tpls.set("ui-reviewer", { name: "ui-reviewer", description: "多模态 UI 审查", body: "…" });
-		const p = plan({ ui: { goal: "写页面", template: "frontend-impl", output_path: "dist/a.html" } });
-		const r = evidencePass(p, { templates: tpls });
-		expect(r.plan.nodes["ui-pixel-review"]!.template).toBe("ui-reviewer");
-	});
-
-	test("注册表没有 ui-reviewer → 不挂 template (装饰 fail-open, 不召唤未知卡名)", () => {
-		const p = plan({ ui: { goal: "写页面", template: "frontend-impl", output_path: "dist/a.html" } });
-		const r = evidencePass(p, { templates }); // 该 map 里没有 ui-reviewer
-		expect(r.plan.nodes["ui-pixel-review"]!.template).toBeUndefined();
-	});
-
-	test("attach_media 节点自身不算命中 (防审查节点自噬: 它看像素, 不产像素)", () => {
-		const tpls = new Map<string, AgentTemplate>([
-			["mm", { name: "mm", description: "看图的卡", evidence: "ui-pixels", body: "…" }],
-		]);
-		const p = plan({ judge: { goal: "看像素", template: "mm", attach_media: true } });
-		const r = evidencePass(p, { templates: tpls });
-		expect(r.patched).toEqual([]);
-		expect(r.plan).toBe(p);
 	});
 });
 

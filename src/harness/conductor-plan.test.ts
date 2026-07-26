@@ -69,13 +69,17 @@ describe('S5 conductor prompt: SDD v2 字段 + 前端 motif (G-9)', () => {
     }
   });
 
-  test('两档均含 UI motif (宽触发 + 看像素硬规则 + 契约同步点 + 多模态审查 + review 交叉)', () => {
+  // 2026-07-26: 硬规则从"必须被多模态审查"改成"必须过确定性截图闸" —— 模型看一眼失败是静默的
+  // (全栈 eval 实测: 证据链 6 次只走通 1 次, 而 pass 依然 1.000)。审查降为可选尾巴。
+  test('两档均含 UI motif (宽触发 + 确定性截图闸硬规则 + 契约同步点 + 可选审查 + review 交叉)', () => {
     for (const p of [full, lean]) {
       expect(p).toContain('UI work motif');
-      expect(p).toContain('pixels get SEEN'); // 硬规则: UI 交付物必须被真像素审查, 不限全栈 SDD
-      expect(p).toContain('motion/animation'); // 动效经关键帧/GIF 进审查
+      expect(p).toContain('omd-shots-verify'); // 硬规则 = 零模型闸
+      expect(p).toContain('ZERO-MODEL');
+      expect(p).toContain('motion/animation');
       expect(p).toContain('contract node');
-      expect(p).toContain('attach_media:true');
+      expect(p).toContain('attach_media:true'); // 仍在, 但作为可选
+      expect(p).toContain('optional');
       expect(p).toContain('cross-review');
     }
   });
