@@ -40,3 +40,32 @@ describe('fullstack fixture', () => {
     expect(t).toContain("from './board'");
   });
 });
+
+// 2026-07-26 owner: "故意做坏的 ui 一起测, 让多模态审核来检测到 ui 崩坏"。
+describe('故意做坏的参考页', () => {
+  const page = () => readFileSync(join(fx.root, 'eval-app/fixtures/broken-board.html'), 'utf8');
+
+  test('参考页落进 worktree', () => {
+    expect(existsSync(join(fx.root, 'eval-app/fixtures/broken-board.html'))).toBe(true);
+  });
+
+  test('四个缺陷都真的种在页面里 (页面与 PLANTED_DEFECTS 同源, 改一处必须改两处)', () => {
+    const h = page();
+    expect(h).toContain('TODO_PLACEHOLDER');                 // D1 占位文案
+    expect(h).toMatch(/width:120px;overflow:hidden/);         // D2 裁切
+    expect(h).toContain('#eeeeee');                           // D3 低对比度
+    // D4: done 与 open 两行用同一个 class, 没有任何区分样式
+    expect(h).toMatch(/data-status="done"/);
+    expect(h).not.toMatch(/\.row\[data-status="done"\]/);
+  });
+
+  test('SPEC 要求两层审查, 第二层挂 ui-reviewer 卡 (按技能卡评设计质量)', () => {
+    expect(fx.spec).toContain('崩坏检测');
+    expect(fx.spec).toContain('设计质量');
+    expect(fx.spec).toContain('template: "ui-reviewer"');
+  });
+
+  test('SPEC 指向的参考页路径与真实落盘路径一致', () => {
+    expect(fx.spec).toContain('eval-app/fixtures/broken-board.html');
+  });
+});

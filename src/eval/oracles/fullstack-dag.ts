@@ -32,7 +32,7 @@ import { createAgentLeafRunner } from '../../harness/agent-leaf';
 import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../../harness/command-leaf';
 import { extractMediaRefs } from '../../harness/leaf-media';
 import { resolveConfiguredPools } from '../../model/role-models';
-import { createFullstackFixture } from '../tasks/fullstack';
+import { createFullstackFixture, PLANTED_DEFECTS } from '../tasks/fullstack';
 
 interface FsConfig { conductorModel: string; leafModel: string }
 interface Candidate<C> { label: string; config: C }
@@ -100,9 +100,28 @@ function realShots(results: ExecutorDagResult['results'], root: string): number 
   return n;
 }
 
+/**
+ * 崩坏召回: 所有 attach_media 节点的输出合起来, 提到了几个**我们亲手种的**缺陷 (0..4)。
+ * 关键词匹配是代理指标不是完美 oracle —— 但这四个缺陷无歧义, 看见了几乎不会不说、
+ * 没看见也编不出来。哪一条恒为 0 就说明那一类缺陷视觉模型压根看不见, 比总分更有信息。
+ */
+function defectsCaught(texts: string[]): { total: number; byId: Record<string, number> } {
+  const blob = texts.join('\n').toLowerCase();
+  const byId: Record<string, number> = {};
+  let total = 0;
+  for (const d of PLANTED_DEFECTS) {
+    const hit = d.hints.some((h) => blob.includes(h.toLowerCase())) ? 1 : 0;
+    byId[d.id] = hit;
+    total += hit;
+  }
+  return { total, byId };
+}
+
 interface FsRun {
   pass: number;
   shots: number;
+  defects: number;
+  defectsById: Record<string, number>;
   mediaNodes: number;
   mediaUpgraded: number;
   nodeCount: number;
@@ -150,9 +169,12 @@ async function measureOnce(cfg: FsConfig, leafTimeoutMs: number): Promise<FsRun>
       const m = res.results[id]?.model ?? (res.plan.nodes[id] as { model?: string }).model;
       return m ? strongMm.has(m) : false;
     });
+    const dc = defectsCaught(mediaIds.map((id) => res.results[id]?.output ?? ''));
     return {
       pass: gate.exitCode === 0 ? 1 : 0,
       shots: realShots(res.results, fx.root),
+      defects: dc.total,
+      defectsById: dc.byId,
       mediaNodes: mediaIds.length,
       mediaUpgraded: upgraded.length,
       nodeCount: Object.keys(res.results).length,
@@ -203,6 +225,11 @@ export default function fullstackDagSpec(opts: Record<string, string> = {}): Tou
           runs: R,
           pass: +med((r) => r.pass).toFixed(2),
           shots: +med((r) => r.shots).toFixed(1), // UI 证据链真走通了没有
+          defectsCaught: +med((r) => r.defects).toFixed(1), // 种下的 4 个崩坏抓到几个
+          // 逐缺陷命中率: 某一条恒 0 = 那类缺陷视觉模型看不见, 比总分更有信息
+          defectRate: Object.fromEntries(
+            PLANTED_DEFECTS.map((d) => [d.id, +(runs.reduce((s2, r) => s2 + (r.defectsById[d.id] ?? 0), 0) / R).toFixed(2)]),
+          ),
           nodeCount: +med((r) => r.nodeCount).toFixed(1),
           depth: +med((r) => r.depth).toFixed(1),
           maxWidth: +med((r) => r.maxWidth).toFixed(1), // 前后端并没并起来

@@ -189,6 +189,46 @@ describe('renderBoardHtml', () => {
 });
 `;
 
+
+/**
+ * **故意做坏的参考页** (2026-07-26 owner: "让多模态审核来检测到 ui 崩坏")。
+ *
+ * 四个缺陷是刻意挑的 —— 两个 OCR 级 (看得见字才发现)、两个布局级 (看得懂空间关系才发现),
+ * 一起测才知道视觉模型是"能读字"还是"真能看图":
+ *   D1 占位文案没删      TODO_PLACEHOLDER 明晃晃留在页面上   → OCR 级
+ *   D2 文字溢出被裁切    固定宽 + overflow:hidden 切在词中间  → 布局级
+ *   D3 对比度不可读      #eeeeee 文字压在白底上               → 布局/色彩级
+ *   D4 状态视觉不可分    done 与 open 两行长得一模一样        → 语义/视觉级
+ *
+ * 判据是**召回**: 审查节点的输出提到了几个。关键词匹配是代理指标, 不是完美 oracle ——
+ * 但这四个缺陷是我们亲手种的、无歧义的, 看见了几乎不可能不说, 没看见也编不出来。
+ */
+const BROKEN_PAGE = `<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>Task board (reference)</title><style>
+body{font-family:system-ui;margin:0;background:#fff;color:#222}
+.wrap{max-width:520px;margin:32px auto}
+h1{font-size:22px;margin:0 0 4px}
+.sub{color:#eeeeee;font-size:13px;margin:0 0 18px}
+.row{display:flex;gap:8px;padding:9px 10px;border-bottom:1px solid #eee}
+.title{width:120px;overflow:hidden;white-space:nowrap}
+.badge{font-size:12px;color:#888}
+</style></head><body><div class="wrap">
+<h1>Task board</h1>
+<p class="sub">共 3 项 · 1 项已完成 · 最近更新 2 分钟前</p>
+<div class="row" data-task-id="t1" data-status="open"><div class="title">把发布流程整理成一份可执行的清单</div><div class="badge">open</div></div>
+<div class="row" data-task-id="t2" data-status="done"><div class="title">写 changelog</div><div class="badge">done</div></div>
+<div class="row" data-task-id="t3" data-status="open"><div class="title">TODO_PLACEHOLDER</div><div class="badge">open</div></div>
+</div></body></html>
+`;
+
+/** 种下的缺陷清单 (eval 侧按它算召回; 与页面同源, 改页面必须同步改这里)。 */
+export const PLANTED_DEFECTS = [
+  { id: 'D1', what: '占位文案 TODO_PLACEHOLDER 留在页面上', hints: ['todo', 'placeholder', '占位'] },
+  { id: 'D2', what: '标题被固定宽容器裁切 (overflow hidden, 切在词中间)', hints: ['溢出', '裁切', '截断', 'overflow', 'clip', 'truncat', 'cut off', 'cut-off'] },
+  { id: 'D3', what: '副标题 #eeeeee 压白底, 对比度不可读', hints: ['对比度', '读不清', '看不清', '太浅', 'contrast', 'illegible', 'unreadable', 'faint'] },
+  { id: 'D4', what: 'done 与 open 两行视觉上无法区分', hints: ['无法区分', '不可分', '区分不开', '一样', 'indistinguish', 'no visual difference', 'same style'] },
+] as const;
+
 function spec(renderCli: string): string {
   return `# Fullstack 任务: 从零建一个任务板 (后端 + API + 前端 + 像素证据)
 
@@ -217,10 +257,20 @@ function spec(renderCli: string): string {
    视觉要求 (会被真像素审查, 不只看代码): 清晰的视觉层级 (标题 > 任务 > 元信息) · 一致的间距节奏 ·
    done 与 open 有可分辨的视觉差异 · 没有溢出/裁切/挤在一起的元素。
 
-## 像素证据 (硬要求)
+## 像素证据 (硬要求, **两层**)
 
-前端做完后必须有一个 command 节点把页面渲染成截图并**打印图片路径**, 再有一个 \`attach_media\` 的
-审查 leaf 判真像素。渲染这样调 (omd-render 住在本仓, 不在本 worktree 里, 用绝对路径):
+前端做完后必须有一个 command 节点把页面渲染成截图并**打印图片路径**, 然后接**两层**审查:
+
+**第一层 —— 崩坏检测**: 一个 \`attach_media\` 的审查 leaf, 同时看**两张图**:
+你自己产出的页面, 以及仓库里已有的参考页 \`${APP}/fixtures/broken-board.html\` (它是**故意做坏的**)。
+逐条列出你在**像素上**看到的视觉缺陷 —— 占位文案、被裁切的文字、读不清的低对比度文字、
+状态之间无法区分, 等等。只说图上看得见的, 不要从代码推断。
+
+**第二层 —— 设计质量**: 再接一个 \`attach_media\` 的审查 leaf, \`depends_on\` 第一层,
+并设 \`template: "ui-reviewer"\` (用仓库里那张审查卡的六个维度: 层级/布局/可读性/状态/一致性/slop)。
+它评的是**整页的 UX 与视觉设计质量**, 不是找崩坏 —— 给出按严重度排序的改进项。
+
+渲染这样调 (omd-render 住在本仓, 不在本 worktree 里, 用绝对路径):
 
 \`\`\`
 bun run ${renderCli} <生成的 html 绝对路径> --out ${APP}/shots
@@ -228,6 +278,7 @@ bun run ${renderCli} <生成的 html 绝对路径> --out ${APP}/shots
 
 生成待截图页面的办法: 写一个小脚本 \`${APP}/build-page.ts\`, 调 \`renderBoardHtml\` 把示例数据渲染成
 \`${APP}/dist/index.html\` (\`bun run ${APP}/build-page.ts\`), 再对它截图。空态也值得单独截一张。
+参考页 \`${APP}/fixtures/broken-board.html\` 已经在仓库里, 直接对它截图即可 (别改它, 它是对照物)。
 
 ## oracle
 
@@ -253,6 +304,8 @@ export async function createFullstackFixture(opts: { repoRoot?: string } = {}): 
   await writeFile(join(fx.root, APP, 'src', 'board.test.ts'), BOARD_TEST, 'utf8');
   await writeFile(join(fx.root, APP, 'src', 'api.test.ts'), API_TEST, 'utf8');
   await writeFile(join(fx.root, APP, 'src', 'render-board.test.ts'), RENDER_TEST, 'utf8');
+  await mkdir(join(fx.root, APP, 'fixtures'), { recursive: true });
+  await writeFile(join(fx.root, APP, 'fixtures', 'broken-board.html'), BROKEN_PAGE, 'utf8');
   return {
     ...fx,
     // 只跑 eval-app 的测试 (本仓自己的 1000+ 测试与本任务无关, 跑它们纯烧墙钟)。
