@@ -19,6 +19,8 @@ import { TavilyProvider } from './providers/tavily';
 import { AnySearchProvider } from './providers/anysearch';
 import { FirecrawlProvider } from './providers/firecrawl';
 import { JinaProvider } from './providers/jina';
+import { SearxngProvider } from './providers/searxng';
+import { PlainFetchProvider } from './providers/plain';
 import { resolveCleaner, type Cleaner } from './clean';
 
 export * from './types';
@@ -29,6 +31,8 @@ export { TavilyProvider } from './providers/tavily';
 export { AnySearchProvider } from './providers/anysearch';
 export { FirecrawlProvider } from './providers/firecrawl';
 export { JinaProvider } from './providers/jina';
+export { SearxngProvider } from './providers/searxng';
+export { PlainFetchProvider } from './providers/plain';
 
 export { createWebExtension, fetchWithFallback } from './web-extension';
 export { fetchRacing, defaultTier } from './fetch-racing';
@@ -76,6 +80,11 @@ export function createWebStackFromEnv(
       limit: env.ANYSEARCH_LIMIT ? Number(env.ANYSEARCH_LIMIT) : undefined,
     });
   }
+  // 零 key 搜索入口 (2026-07-26): 自托管 SearXNG。放在**最后** —— 有 key 的 provider 优先,
+  // 没 key 时它是唯一还能搜的东西, 而不是"没配 key 就整层不可用"。
+  if (env.SEARXNG_URL) {
+    entries.push({ name: 'searxng', provider: new SearxngProvider({ baseUrl: env.SEARXNG_URL }) });
+  }
   const searchPool = createWebSearchPool({
     entries,
     quota,
@@ -86,6 +95,10 @@ export function createWebStackFromEnv(
   const fetchProviders: FetchProvider[] = [];
   if (env.FIRECRAWL_API_KEY) fetchProviders.push(new FirecrawlProvider({ apiKey: env.FIRECRAWL_API_KEY }));
   fetchProviders.push(new JinaProvider({ apiKey: env.JINA_API_KEY })); // keyless ok
+  // 零 key、零依赖、零子进程的最终兜底: 内置 fetch + clean。排最后 —— 它不执行 JS 也不过反爬,
+  // 是"前面全挂了至少还能抓到静态正文", 不是替代 (owner 2026-07-26 问 curl: 内置 fetch 更好,
+  // 不起子进程 / 不用碰命令白名单; 另查证 pi 本身没有任何 web 工具)。
+  fetchProviders.push(new PlainFetchProvider());
 
   return { searchPool, fetchProviders, cleaner: resolveCleaner(), quota };
 }
