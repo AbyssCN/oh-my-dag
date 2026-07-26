@@ -102,31 +102,31 @@ MCP server 是正门,这个是顺手。
 
 ```mermaid
 flowchart LR
-  subgraph EXEC["执行 —— 把活干完"]
+  subgraph EXEC["EXECUTE — get the work done"]
     E1["dag_run · dag_run_plan · dag_resume<br/>dag_status · dag_result · dag_runs"]
-    E2["omd_primitive<br/>12 个控制流形状"]
+    E2["omd_primitive<br/>12 control-flow shapes"]
   end
 
-  subgraph RESEARCH["研究 —— 把问题查透"]
-    R1["omd_web<br/>零模型:搜 + 抓,全文落盘"]
-    R2["omd_distill<br/>expert 忠实 / challenger 挖长尾"]
-    R3["dag_research<br/>抓 + 多镜头综合判优"]
+  subgraph RESEARCH["RESEARCH — get to the bottom of it"]
+    R1["omd_web<br/>zero model: search + fetch, full text to disk"]
+    R2["omd_distill<br/>expert: faithful · challenger: long tail"]
+    R3["dag_research<br/>fetch + multi-lens synthesis, judged"]
   end
 
-  subgraph AUDIT["审查 —— 把问题找出来"]
-    A1["dag_review<br/>多维度 + 跨家族证伪"]
+  subgraph AUDIT["AUDIT — find what is wrong"]
+    A1["dag_review<br/>many dimensions, cross-family falsification"]
     A2["dag_debug · dag_slim · dag_deepen"]
-    A3["omd-shots-verify<br/>零模型:截图真存在且非白板"]
+    A3["omd-shots-verify<br/>zero model: shots exist and are not blank"]
   end
 
-  subgraph MEMORY["记忆与规划 —— 活过上下文窗口"]
+  subgraph MEMORY["MEMORY &amp; PLANNING — outlive the context window"]
     M1["memory_recall · memory_remember<br/>dream_consolidate"]
     M2["path_map · path_add · path_rule<br/>path_deliver · path_prefetch"]
   end
 
-  subgraph KNOW["知识 —— 别每次从零发明"]
-    K1["omd_shapes<br/>图式 + 什么时候别用"]
-    K2["agent 模板卡<br/>专家检查单注入 leaf"]
+  subgraph KNOW["KNOWLEDGE — stop reinventing the shape"]
+    K1["omd_shapes<br/>graph shapes, and when NOT to use them"]
+    K2["template cards<br/>expert checklist injected into a node"]
   end
 
   classDef llm fill:#EEEDFE,stroke:#534AB7,color:#26215C
