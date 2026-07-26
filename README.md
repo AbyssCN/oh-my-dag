@@ -155,7 +155,7 @@ stop / scoring logic belongs to the runtime, never to the model:
 `tournament` · `router` · `race` · `escalation` · `saga`.
 
 **→ Details:** [architecture](docs/architecture.md) · [primitives](docs/primitives.md) ·
-[model layer](docs/model-layer.md) · [MCP tools](docs/mcp-tools.md) · [memory](docs/memory.md)
+[model layer](docs/model-layer.md) · [MCP tools](docs/mcp-tools.md) · [memory](docs/memory.md) · [eval findings](docs/eval-findings.md)
 
 ## Why it's worth wiring in
 
