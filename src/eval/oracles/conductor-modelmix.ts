@@ -20,6 +20,11 @@
  * (score 只为排序, 真信息在 detail; INV-4 不取单冠军)。
  */
 import { $ } from 'bun';
+// ⚠ 必须先注册 provider: inproc leaf 走 callModel, 而 callModel 的 registry 要 bootstrap 才有
+// 'mimo'/'deepseek' 等自有 provider (kimi/openai-codex 走 pi 通道自注册, 所以只挂 inproc 那半边)。
+// 2026-07-26 全栈首轮就是栽在这: contract 节点 (inproc) 抛 "provider 'mimo' not registered",
+// 整张图级联 skip, 6 次跑全废 —— 而且 agent-leaf-prompt 的固定图里没有 inproc leaf, 所以从没暴露。
+import { bootstrapModelRuntime } from '../../model/bootstrap';
 import { runExecutorDag } from '../../harness/executor-dag';
 import { createAgentLeafRunner } from '../../harness/agent-leaf';
 import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../../harness/command-leaf';
@@ -195,6 +200,7 @@ function agg(runs: Array<RunMetrics & { costUsd: number; unpriced: boolean }>): 
 
 /** default export: (opts) => TournamentSpec。opts.r = 每候选重复次数 (默认 1; 真跑设 3, SDD D3)。 */
 export default function conductorModelmixSpec(opts: Record<string, string> = {}): TournamentSpec<MixConfig> {
+  bootstrapModelRuntime();
   // R 默认 3 (2026-07-26): R=1/2 在重尾分布上读不出东西 —— 单发是噪音, 两发无法取中位。
   const R = Math.max(1, Number.parseInt(opts.r ?? '3', 10) || 3);
   // fixture 默认 large (2026-07-26): medium 只有 3 模块, finalPass 恒 1.000 已饱和, 判不出差。

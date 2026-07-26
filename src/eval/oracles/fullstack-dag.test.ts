@@ -32,3 +32,12 @@ describe('fullstack-dag eval spec', () => {
     expect(s.maxRounds).toBe(1);
   });
 });
+
+// 2026-07-26 首轮血的教训: eval oracle 忘了 bootstrapModelRuntime → inproc leaf 抛
+// "provider 'mimo' not registered" → 整张图级联 skip → 6 次全栈跑全废 (约 30 分钟)。
+// 这条闸让同类错误在 0.1 秒里现形, 而不是半小时后。
+test('spec 构造时已注册自有 provider (inproc leaf 走 callModel, 需要 registry)', () => {
+  fullstackDagSpec();
+  const { listProviders } = require('../../model/gateway');
+  expect(listProviders().length).toBeGreaterThan(0);
+});

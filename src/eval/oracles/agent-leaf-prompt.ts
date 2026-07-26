@@ -33,6 +33,11 @@
  * 详见 docs/eval-findings.md。
  */
 import { $ } from 'bun';
+// ⚠ 必须先注册 provider: inproc leaf 走 callModel, 而 callModel 的 registry 要 bootstrap 才有
+// 'mimo'/'deepseek' 等自有 provider (kimi/openai-codex 走 pi 通道自注册, 所以只挂 inproc 那半边)。
+// 2026-07-26 全栈首轮就是栽在这: contract 节点 (inproc) 抛 "provider 'mimo' not registered",
+// 整张图级联 skip, 6 次跑全废 —— 而且 agent-leaf-prompt 的固定图里没有 inproc leaf, 所以从没暴露。
+import { bootstrapModelRuntime } from '../../model/bootstrap';
 import { runExecutorDagWithPlan } from '../../harness/executor-dag';
 import type { ConductorPlan } from '../../harness/conductor-plan';
 import { createAgentLeafRunner } from '../../harness/agent-leaf';
@@ -158,6 +163,7 @@ const median = (xs: number[]): number => {
 };
 
 export default function agentLeafPromptSpec(opts: Record<string, string> = {}): TournamentSpec<LeafConfig> {
+  bootstrapModelRuntime();
   const R = Math.max(1, Number.parseInt(opts.r ?? '3', 10) || 3);
   // fixture 默认 **medium** —— 与 conductor eval 相反, 刻意的: 那边是 conductor 分解 12 个模块
   // (要难度才不饱和); 这边是**一片叶子**独自吃下整个 fixture, large 的 12 模块单叶做不完, 量到的
