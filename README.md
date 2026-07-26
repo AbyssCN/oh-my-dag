@@ -173,6 +173,10 @@ stop / scoring logic belongs to the runtime, never to the model:
   never runs.
 - **The model is not the reliability layer.** Gates, verifiers and deterministic passes
   live outside the model — a stronger model makes them cheaper, not redundant.
+- **…but the model *is* the creativity layer.** Gates judge (did it happen, does it pass);
+  models generate (what to do, what is still missing). Replacing generation with a
+  mechanical rule marks a frontier model down to the expressive power of that rule.
+  Detectors are a floor, never a ceiling. [Details](docs/architecture.md).
 - **Fail closed at the edges, fail open in the bookkeeping.** Unknown template name
   rejects the plan; a checkpoint that cannot be written only warns.
 - **No silent success.** A file-producing node with no file on disk is a failure, not a

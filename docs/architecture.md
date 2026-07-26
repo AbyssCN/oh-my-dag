@@ -111,6 +111,42 @@ cached before the storm) · `verifier` + `conductorEscalationModel` + `maxEscala
 `continuity` · per-provider concurrency caps · `sessionId` · SQLite run recording ·
 `planToMermaid()`.
 
+## The two halves of the design principle
+
+Everything above is one half of a pair. Stating only the first half — which is what this
+codebase did for a long time — produces a predictable failure: over-mechanising the model
+away.
+
+> **Reliability comes from outside the model. Creativity comes from inside it.**
+>
+> **Gates judge** — did it happen, is it there, does it pass? Deterministic, zero-model,
+> fail-closed. A model "having a look" is not a gate, because when it silently does not
+> run, nothing turns red.
+>
+> **Models generate** — what to do, how to do it, what is still missing. Inside the gates,
+> do not replace this with rules. Replacing generation with a mechanical rule marks the
+> model's intelligence down to the expressive power of the rule.
+
+Three corollaries that decide real designs:
+
+1. **A deterministic detector is a floor, not a ceiling.** It guarantees the obvious miss
+   does not get missed. It must never become the only thing allowed to notice something.
+   A set-difference over fetched URLs is a good floor for "what did we fail to read"; it is
+   a terrible substitute for "what should we look into next".
+2. **Termination belongs to the engine; content belongs to the model.** Round caps,
+   "stop after K dry rounds", quorum — the engine counts. What to ask, which angle to take,
+   what looks wrong — the model decides. Asking a model "are we done yet?" reintroduces
+   exactly the silent failure the gates exist to remove.
+3. **Gates sit at the joins, not on every step.** Treat a SOTA model like a competent
+   person: you check the work at the points where being wrong is expensive, and you do not
+   look over their shoulder while they think.
+
+The engine's own history is the evidence for both halves. Trusting a model to *judge* that
+UI pixels were fine produced a chain that silently never ran while the headline metric
+stayed green (see [eval findings](eval-findings.md)) — that is why gates are deterministic.
+Constraining a model to *only* follow mechanical detectors would have produced research that
+can never look beyond the URLs it already had — which is why generation is not gated.
+
 ## Cost shape
 
 Overhead is **per-graph, not per-node**: a 5-node graph costs the node work + 2 LLM
