@@ -149,7 +149,7 @@ MCP server 是正门,这个是顺手。
 `tournament` · `router` · `race` · `escalation` · `saga`。
 
 **→ 细节:** [架构](docs/architecture.md) · [原语](docs/primitives.md) ·
-[模型层](docs/model-layer.md) · [MCP 工具](docs/mcp-tools.md) · [记忆](docs/memory.md)
+[模型层](docs/model-layer.md) · [MCP 工具](docs/mcp-tools.md) · [记忆](docs/memory.md) · [eval 读数](docs/eval-findings.md)
 
 ## 为什么值得接进来
 

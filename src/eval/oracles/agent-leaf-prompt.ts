@@ -22,6 +22,15 @@
  *  - oracle 只认 tsc/test, 不用 LLM 当裁判。
  *  - worktree 隔离 + 泄漏护栏: 跑完主树若冒出 worktree 外的新脏文件 → 响亮报错废读数。
  *  - 报中位 + 附 spread (token/墙钟重尾)。
+ *  - **每个模型带一个 control 格** (复制首档): 它与原格的差就是噪声地板, 效应必须大过它才可信。
+ *
+ * 首轮实测 (2026-07-26, mimo-pro × k3 × {auto,weak,strong} × R=3, medium fixture) 的两条结论:
+ *   ① **pass 在 medium 上饱和** —— 18/18 全绿, 质量维度判不出差 (与 conductor eval 同病)。
+ *      要读质量差得上 large 或更难的 fixture。
+ *   ② **R=3 的噪声地板 ≈ 20~40%** —— 同配置重复格的 token 中位差 19% (mimo) / 39% (k3)。
+ *      所以那轮**不足以支持** "STRONG_MODEL_CORE 更省" 的结论, 也不足以否定它。要读出 20-30%
+ *      的效应, R 得到 8~10, 或换更长的任务把单次相对方差压下去。
+ * 详见 docs/eval-findings.md。
  */
 import { $ } from 'bun';
 import { runExecutorDagWithPlan } from '../../harness/executor-dag';
@@ -157,12 +166,17 @@ export default function agentLeafPromptSpec(opts: Record<string, string> = {}): 
   const profiles = (opts.profiles ?? '').split(',').map((s) => s.trim())
     .filter((s): s is PromptProfile => (DEFAULT_PROFILES as string[]).includes(s));
 
-  const grid: Candidate<LeafConfig>[] = (models.length ? models : DEFAULT_MODELS).flatMap((model) =>
-    (profiles.length ? profiles : DEFAULT_PROFILES).map((profile) => ({
-      label: `${model} [${profile}]`,
-      config: { model, profile },
-    })),
-  );
+  const useProfiles = profiles.length ? profiles : DEFAULT_PROFILES;
+  const useModels = models.length ? models : DEFAULT_MODELS;
+  const grid: Candidate<LeafConfig>[] = useModels.flatMap((model) => [
+    ...useProfiles.map((profile) => ({ label: `${model} [${profile}]`, config: { model, profile } })),
+    // **噪声地板对照格** (2026-07-26 首轮实测倒逼加的): 复制第一个档再跑一遍, 同配置同样本量。
+    // 它与原格的差 = 这次测量的噪声地板 —— 任何小于它的"效应"都不可读。
+    // 首轮血的教训: 网格里恰好有两对同配置重复 (auto≡strong on k3 / auto≡weak on mimo),
+    // 它们的 token 中位差了 39% 与 19%; 若没注意到, k3[strong] 那行 (37k token / 15 tool calls)
+    // 看着就是漂亮的胜利, 实则读的是噪声。对照格从此是网格的一部分, 不靠运气。
+    { label: `${model} [${useProfiles[0]}·control]`, config: { model, profile: useProfiles[0]! } },
+  ]);
 
   return {
     name: 'agent-leaf-prompt',
