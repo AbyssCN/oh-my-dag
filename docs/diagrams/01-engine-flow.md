@@ -16,7 +16,7 @@ flowchart TB
 
   subgraph PLAN["1 · PLAN — one LLM call, everything after it is a pure function"]
     direction TB
-    CD["Conductor<br/>gpt-5.6-sol · frozen prefix + task"]
+    CD["Conductor<br/>decomposer seat · frozen prefix + task"]
     PJ["Plan JSON<br/>zod-validated · unknown card rejects the plan"]
     P1["prune<br/>cut nodes nothing consumes"]
     P2["dedup<br/>merge by semantic key"]
@@ -42,7 +42,7 @@ flowchart TB
     direction TB
     FI["Fan-in<br/>summaries, never transcripts"]
     OG["Oracle gate<br/>tsc + test · zero LLM, cannot hallucinate"]
-    VF["Verifier<br/>glm-5.2 · cross-family · fails on doubt"]
+    VF["Verifier<br/>verify seat · cross-family · fails on doubt"]
     HL["Heal<br/>a red gate becomes a repair task"]
     ES["Escalation<br/>emits a node PATCH; untouched nodes stay byte-identical"]
     FI --> OG --> VF

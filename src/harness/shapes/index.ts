@@ -1,7 +1,5 @@
 /**
- * src/harness/shapes —— **图式 (shape) 的单一真源** (2026-07-26 owner 定名: 用 shape 不用 motif ——
- * prompt 里本来就写着 "Full-stack SDD shape" / "control-flow SHAPE", eval 里的函数就叫 shapeOf,
- * 扶正已在用的词, 不再引入新词)。
+ * src/harness/shapes —— **图式 (shape) 的单一真源**。
  *
  * 三层各管一件事, 粒度递减 —— 别混:
  *   skill  「这类活该走哪条路」 路由 + 验收纪律     载体 client-skills/*.md   消费者 agent runtime
@@ -12,7 +10,7 @@
  * 没有"为什么"。而 omd 正在从"图是唯一入口"走向"任何 SOTA agent 经 MCP 自由组合"(见 README
  * 的定位): 组合模式下 conductor 不在场, 这些**攒了很久的图形状知识会直接蒸发**。
  *
- * 一份数据, 两个消费面 (与 DEFAULT_COMMAND_ALLOWLIST 同款做法, 2026-07-26 已验证):
+ * 一份数据, 两个消费面 (与 DEFAULT_COMMAND_ALLOWLIST 同款做法):
  *   ① conductorSystemPrompt —— 渲染成 prompt 行 (图模式, 行为与散文版等价)
  *   ② MCP 工具 —— 组合模式下, 外部 agent 分解前取一次
  * skill 里**只存"去取 shape"这个动作, 不存内容** —— 抄第二份必然漂移。
@@ -63,9 +61,9 @@ export const GRAPH_SHAPES: readonly GraphShape[] = [
       '(可选) attach_media:true 审查 leaf 接在闸后面, 判品味',
     ],
     why:
-      '地板必须是零模型的: 实测一轮全栈 eval, 依赖多模态审查当地板时 6 次跑只走通 1 次, ' +
-      '而主指标 pass 依然 1.000 —— **模型判断这一环失败是静默的**, 断了读数上看不出来。' +
-      '确定性闸没跑就是没跑, 白板就是红的。看得懂设计好不好是品味, 属于人或图外。',
+      '地板必须是零模型的: **模型判断这一环失败是静默的** —— 它没跑时没有任何东西会变红, ' +
+      '主指标照样全绿。确定性闸没跑就是没跑, 白板就是红的。' +
+      '看得懂设计好不好是品味, 属于人或图外。',
     enforced: 'evidence pass 硬闸: 卡声明 evidence:"ui-pixels" 的节点缺这条链 → 自动补挂; 补不出 → 拒 plan',
   },
   {
@@ -128,9 +126,7 @@ export const GRAPH_SHAPES: readonly GraphShape[] = [
     id: 'research-second-pass',
     what: '第一轮之后再挖一轮 —— 但只挖**新的东西**',
     when: '第一轮出了答案, 而你需要的是深度不是覆盖面; 或第一轮暴露了没读的料 / 没出处的断言',
-    whenNot:
-      '第一轮已经回答了问题 —— 再来一轮只会得到同一批角度的重述。' +
-      '**重复的不是信息, 是噪声** (实测: 同配置重跑的差值能到 39%)。',
+    whenNot: '第一轮已经回答了问题 —— 再来一轮只会得到同一批角度的重述。**重复的不是信息, 是噪声。**',
     steps: [
       '确定性探测器扫第一轮产物 (被引用却没抓取过的 URL / 没有出处的结论) —— 这是**下限**, 保证明显的漏不漏',
       '模型自由地读第一轮全文, 提出该继续挖什么 —— 这是**上限**, 不用规则替代它',
