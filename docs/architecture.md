@@ -141,11 +141,10 @@ Three corollaries that decide real designs:
    person: you check the work at the points where being wrong is expensive, and you do not
    look over their shoulder while they think.
 
-The engine's own history is the evidence for both halves. Trusting a model to *judge* that
-UI pixels were fine produced a chain that silently never ran while the headline metric
-stayed green (see [eval findings](eval-findings.md)) — that is why gates are deterministic.
-Constraining a model to *only* follow mechanical detectors would have produced research that
-can never look beyond the URLs it already had — which is why generation is not gated.
+Both failure modes are real and opposite. A model asked to *judge* whether something passed can
+stop running entirely without anything turning red — which is why gates are deterministic. A model
+allowed to *only* follow mechanical detectors can never look beyond what those detectors already
+see — which is why generation is not gated.
 
 ## Cost shape
 

@@ -54,8 +54,8 @@ makes `mid` and `cheap` collapse into the same model — configure them).
 
 ### Vision is measured, not assumed
 
-Probe (2026-07-26): render a page with a random 4-char code and a coloured shape, ask the
-model to read both back.
+How to check a coordinate: render a page with a random 4-character code and a coloured shape,
+then ask the model to read both back. Measured results:
 
 | Coordinate | Verdict | Answer |
 |---|---|---|
@@ -66,7 +66,7 @@ model to read both back.
 
 Only the two exact ones are in the pool. `qwen3.7-plus` is not: the pool exists to *judge UI
 screenshots*, and a model that misreads text in a screenshot will produce confident, wrong
-findings about labels and copy. Re-run the probe before adding any coordinate here.
+findings about labels and copy. Run that probe before adding any coordinate here — vendor claims of multimodality are not enough.
 
 ## Stamp rules, in priority order
 

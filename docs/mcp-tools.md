@@ -51,7 +51,7 @@ discipline (when to escalate, how to accept, who holds the trigger).
 | `omd_set_key` · `omd_set_model` · `omd_set_role` | set a provider key · a model's attributes · a role→model assignment |
 | `omd_apply_preset` · `omd_toggle_hud` | apply a wizard preset (base-opencode-go / cn-standard / cn-ultimate) · toggle the statusline HUD |
 
-### Claude slash commands (the [client-skills](client-skills/) pack)
+### Claude slash commands (the [client-skills](../client-skills/) pack)
 
 Copy into `~/.claude/skills/` (Codex: merge into `AGENTS.md`). Each wraps the MCP
 tool(s) in the right column and adds the workflow discipline.
