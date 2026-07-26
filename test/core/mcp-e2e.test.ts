@@ -56,6 +56,7 @@ const ALL_TOOLS = [
   'omd_register_provider',
   'omd_set_model',
   'omd_config_status',
+  'omd_distill',
   'omd_toggle_hud',
   // plan-memory 账本 (Phase A 证据门仪表)
   'omd_plans',
