@@ -9,7 +9,7 @@ import type { OmdMcpTool } from '../server.js';
 
 /** researchFanout 接缝 —— 具体实现在 orchestration 层注入。 */
 export interface ResearchFanout {
-  (params: { question: string; council?: boolean; super?: boolean; k?: number }): Promise<{
+  (params: { question: string; council?: boolean; super?: boolean; k?: number; rounds?: number }): Promise<{
     runId: string;
     reportPath: string;
     summary: string;
@@ -26,18 +26,20 @@ export function createDagResearchTool(researchFanout: ResearchFanout): OmdMcpToo
       council: z.boolean().optional().describe('Enable council deliberation'),
       super: z.boolean().optional().describe('Enable super-deep mode'),
       k: z.number().optional().describe('Top-k results to return'),
+      rounds: z.number().int().min(1).max(4).optional().describe('Second-pass rounds cap (default 1; engine stops early when no new material)'),
     },
     handler: async (args) => {
-      const { question, council, super: superMode, k } = args as {
+      const { question, council, super: superMode, k, rounds } = args as {
         question?: string;
         council?: boolean;
         super?: boolean;
         k?: number;
+        rounds?: number;
       };
       if (!question) {
         throw new McpError(ErrorCode.InvalidParams, 'dag_research: missing required param "question"');
       }
-      const result = await researchFanout({ question, council, super: superMode, k });
+      const result = await researchFanout({ question, council, super: superMode, k, rounds });
       return {
         content: [{ type: 'text', text: JSON.stringify(result) }],
       };

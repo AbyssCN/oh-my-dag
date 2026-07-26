@@ -4,6 +4,11 @@
  * 结构 (Nick 2026-06-03 锁): L lens × V sub-angle 变体 → per-lens judge reduce 成冠军 →
  * M framing 综合 → K-judge panel + graft → 最终方案。每 leaf 注入 persona + 领域抽象块 + groundTruth。
  *
+ * rounds (research-second-pass, 2026-07-26): gen+reduce 可迭代多轮 —— 轮间由 [模型缺口分析 (上限) +
+ * 注入式确定性 probe (下限)] 决定增量, **无新增即停、轮数上限, 全归引擎计数, 不问模型"够了吗"**;
+ * 二轮起换 challenger lens 只挖缺口不重答原题。synth/judge/fusion/graft 终局一次, 吃全部轮的冠军。
+ * 语料 append-only 增长 → 每轮 prompt 同一前缀开头, 已暖缓存跨轮命中。shape: research-second-pass。
+ *
  * 核心纪律 (为什么这么设计):
  *  - **多样性 > 体积**: lens 内是 V 个**不同 sub-angle**, 不是同一 prompt 重采样 V 遍 (后者边际递减)。
  *  - **抽象注入**: 每 leaf 注 persona + 高阶领域框架 (Build Systems à la Carte 等) → 把弱模型从通用
@@ -14,6 +19,7 @@
  * 全注入 callModel (默认真 callModel; 测试传 fake) → 无网络可测 staging 结构。
  */
 import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
 import { makeBudgetedCall } from '../../model/gateway';
 import { send } from '../../model/gateway';
 import { resolveRoleModelConfigured } from '../../model/role-models';
@@ -23,6 +29,32 @@ import type { ModelUsage, ModelRequest, ModelResponse } from '../../model/gatewa
 import { computeCost } from '../../model/gateway';
 import { parallel } from '../primitives';
 import { buildFusionAnalysisPrompt } from './fusion-analysis';
+
+/** research-second-pass 缺口条目 (模型上限半边的结构化产出)。 */
+const GAP_SCHEMA = z.object({
+  gaps: z.array(
+    z.object({
+      key: z.string(),
+      /** 下一轮要挖的具体问题 (增量, 不是原题重述)。 */
+      question: z.string(),
+      why: z.string(),
+      /** 该缺口点名要读的 URL (被引用未抓取 / 该查证的出处) —— 喂确定性 probe。 */
+      urls: z.array(z.string()).optional(),
+    }),
+  ),
+});
+export type ResearchGap = z.infer<typeof GAP_SCHEMA>['gaps'][number];
+
+/** 每轮缺口上限 —— 超过就不是"增量"而是重开题 (引擎钳制, 不与模型商量)。 */
+const MAX_GAPS = 6;
+
+/** 确定性探测器 (下限半边) 的产出。全空 = 这半边无新增。 */
+export interface ProbeYield {
+  /** 缺料抓回来的增量语料 (append 进下一轮 groundTruth, 零丢失由调用方留档)。 */
+  newCorpus?: string;
+  /** 本次真抓到正文的 URL (留痕进 secondPass)。 */
+  fetchedUrls?: string[];
+}
 
 /** 一个研究镜头 = 一个专家视角 + 它内部的 V 个不同 sub-angle 变体。 */
 export interface ResearchLens {
@@ -84,6 +116,18 @@ export interface ResearchFanoutConfig {
   images?: string[];
   /** gen-stage leaf 的 thinkingLevel (如 mimo 只到 'high')。省略 = 模型默认。 */
   leafThinking?: 'high' | 'xhigh';
+  /**
+   * research-second-pass 轮数上限 (默认 1 = 单轮原行为)。每轮 = gen+reduce; 轮间由
+   * [模型缺口分析 (上限) + 注入 probe (下限)] 决定增量, **无新增即停 —— 停由引擎计数,
+   * 不问模型"够了吗"** (shape: research-second-pass)。synth/judge/fusion/graft 终局一次。
+   */
+  rounds?: number;
+  /**
+   * 确定性探测器 (web 层注入, 零 LLM): 读本轮冠军全文 + 缺口点名的 urls, 抓「被引用却
+   * 没抓过」的缺料回增量语料。省略 = 纯模型路径 (challenger 只重蒸已有料, 不抓网)。
+   * 失败不断链 (probe 是增益): 抛错 → 只剩模型半边。
+   */
+  probe?: (args: { round: number; digest: string; gaps: ResearchGap[] }) => Promise<ProbeYield>;
   /** 注入 callModel (测试 fake)。结构化签名 (不 import callModel 值 → 不绕 gateway, 守 INV-1)。 */
   _callModel?: (req: ModelRequest) => Promise<ModelResponse>;
   /** 进度回调 (可选)。 */
@@ -115,8 +159,12 @@ export interface ResearchFanoutResult {
   judgeCritiques: { key: string; text: string }[];
   /** Fusion 融合分析 (5-tuple 文本: 共识/矛盾/覆盖缺口/独特洞察/盲点), graft 据此 ground。见 fusion-analysis.ts。 */
   fusionAnalysis: string;
-  /** 实际跑的 leaf 总数 (L×V + L reduce + M synth + K judge + 1 fusion + 1 graft)。 */
+  /** 实际跑的 leaf 总数 (Σ轮(gen+reduce) + 轮间 gap 分析 + M synth + K judge + 1 fusion + 1 graft)。 */
   leafCount: number;
+  /** 实际跑的轮数 (rounds>1 时可能因"无新增"早停; 单轮 = 1)。 */
+  roundsRun: number;
+  /** 轮间留痕: 每个后续轮的缺口清单 + probe 补抓到正文的 URL (单轮 = [])。 */
+  secondPass: { round: number; gaps: ResearchGap[]; probedUrls: string[] }[];
   /** 整轮 token/缓存/成本遥测 (M6: 测量缓存命中而非靠账单猜)。 */
   costStats: FanoutCostStats;
 }
@@ -151,7 +199,8 @@ async function warmParallel<T>(
 }
 
 /**
- * 跑一轮深度研究 fan-out。leafCount = ΣV (gen) + L (per-lens reduce) + M (synth) + K (judge) + 1 (fusion 融合分析) + 1 (graft)。
+ * 跑深度研究 fan-out (rounds 轮, 默认 1)。
+ * leafCount = Σ轮(ΣV gen + L reduce) + (轮间 gap 分析 ×(roundsRun-1 或早停轮)) + M (synth) + K (judge) + 1 (fusion) + 1 (graft)。
  */
 export async function researchFanout(cfg: ResearchFanoutConfig): Promise<ResearchFanoutResult> {
   // 调用通道 (B2 预算下沉):
@@ -165,7 +214,8 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
     messages: ModelMessage[];
     thinkingLevel?: 'high' | 'xhigh';
     maxTokens?: number;
-  }) => Promise<{ text: string; usage?: ModelUsage }>;
+    responseSchema?: z.ZodTypeAny;
+  }) => Promise<{ text: string; usage?: ModelUsage; parsed?: unknown }>;
   // ponytail: 输出兜底 8192 (默认 4096 截断 synth/final 综合长文)。per-model 更高经 env 调 —
   //   200k 仅 minimax 两端点验过, deepseek 系硬顶 ~8k 会 400, 故不硬编码高值。upgrade: 某模型验过更高 → 调 env。
   const SYNTH_MAX = Number(process.env.OMD_SYNTH_MAX_TOKENS) || 8192;
@@ -177,6 +227,7 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
           messages: req.messages,
           thinkingLevel: req.thinkingLevel,
           maxTokens: req.maxTokens,
+          responseSchema: req.responseSchema,
           meta: { role: 'fanout-leaf', sessionId },
         });
   // 单点包装: maxTokens 兜底 + GO 溢出回退 ds-v4-pro (A② fallback chain), 全 stage (gen/reduce/synth/judge/graft) 继承。
@@ -207,47 +258,105 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
     return r.text;
   };
 
-  // ── Stage 1: L×V sub-angle 变体 (flash, 全并行)。每 leaf = persona + 抽象 + groundTruth + sub-angle。
-  const genJobs: (() => Promise<{ lens: string; angleIdx: number; text: string }>)[] = [];
-  for (const lens of cfg.lenses) {
-    for (let i = 0; i < lens.subAngles.length; i++) {
-      const angle = lens.subAngles[i]!;
-      genJobs.push(async () => {
-        const abstraction = lens.abstraction ? `\n<domain-abstraction>${lens.abstraction}</domain-abstraction>` : '';
-        const prompt = `${head}\n\n<persona>${lens.persona}</persona>${abstraction}\n\n研究问题: ${cfg.question}\n\n本 leaf 的具体 sub-angle: ${angle}\n\n用 ground-truth 里的真实模块名推理 (禁造)。结构化、具体、可落地、只答这个 sub-angle。`;
-        const text = await track(
-          cfg.lensModel,
-          call({ model: cfg.lensModel, messages: userMsg(prompt, cfg.images), thinkingLevel: cfg.leafThinking }),
-        );
-        return { lens: lens.key, angleIdx: i, text };
-      });
-    }
-  }
-  leafCount += genJobs.length;
-  // gen 波也共享 head 大前缀 (persona/sub-angle 在 head 之后) → warm-then-fanout:
-  // 串行暖 1 个写 head 到缓存, 其余 L×V-1 个 leaf 命中 head 段 (冷并发 = 每 leaf 全 miss head)。
-  const genResults = (await warmParallel(genJobs, conc, warm)).filter(Boolean) as { lens: string; angleIdx: number; text: string }[];
-  stage('gen', `${genResults.length}/${genJobs.length} sub-angle leaf`);
+  // ── Stage 1+2 按轮迭代 (research-second-pass)。语料 append-only: 每轮 prompt 以同一 head
+  // 开头 → 已暖前缀缓存跨轮命中; 单轮时 corpus === head, 与原行为逐字节一致。
+  const maxRounds = Math.max(1, Math.trunc(cfg.rounds ?? 1));
+  let corpus = head;
+  let roundLenses: readonly ResearchLens[] = cfg.lenses;
+  const lensChampions: { key: string; text: string }[] = [];
+  const secondPass: { round: number; gaps: ResearchGap[]; probedUrls: string[] }[] = [];
+  let roundsRun = 0;
 
-  // ── Stage 2: per-lens judge reduce → 冠军 + 摘碎片 (pro, L 并行)。
-  const reduceJobs = cfg.lenses.map((lens) => async () => {
-    const variants = genResults.filter((g) => g.lens === lens.key).sort((a, b) => a.angleIdx - b.angleIdx);
-    const body = variants.map((v, i) => `### sub-angle ${i + 1}\n${v.text}`).join('\n\n');
-    const prompt = `${head}\n\n镜头[${lens.key}] 的 ${variants.length} 个 sub-angle 产出:\n${body}\n\n你是该镜头的首席 judge。合成这镜头的**冠军答案**: 取最强骨架 + 嫁接各 sub-angle 的最佳碎片, 去冗余去弱点。直接给冠军答案。`;
-    const text = await track(reduceModel, call({ model: reduceModel, messages: msg(prompt) }));
-    return { key: lens.key, text };
-  });
-  leafCount += reduceJobs.length;
-  // reduce 各 lens body 互不相同, 但全部共享 head (stablePrefix+groundTruth) 这个大前缀, 且 reduce 是**首个 pro 阶段**。
-  // warm-then-fanout: 串行暖 1 个写 head 到缓存 → reduce 2..L + 下游 synth/judge/graft 全继承命中 (L×head miss → 1×head miss)。
-  const lensChampions = (await warmParallel(reduceJobs, conc, warm)).filter(Boolean) as { key: string; text: string }[];
-  stage('reduce', `${lensChampions.length} lens 冠军`);
+  /** 模型上限半边: 通读冠军全文提缺口。fail-open: 解析/调用失败 → 空缺口 (增益不是链路)。 */
+  const analyzeGaps = async (round: number, digest: string): Promise<ResearchGap[]> => {
+    leafCount += 1;
+    const prompt = `${corpus}\n\n各镜头冠军 (截至第 ${round} 轮):\n${digest}\n\n你是 research-second-pass 的缺口分析器。通读以上全部, 提出下一轮**只做增量**该挖什么: 没有出处的关键断言、被引用/被点名却没读过的来源 (urls 给完整链接)、有料没挖透的角度。已答好的部分不要重复提。没有值得挖的就返回空 gaps —— 不要硬凑。只输出 JSON: {"gaps":[{"key":"...","question":"...","why":"...","urls":["..."]}]}`;
+    try {
+      const res = await call({ model: cfg.reasonModel, messages: msg(prompt), responseSchema: GAP_SCHEMA });
+      usageLog.push({ model: cfg.reasonModel, usage: res.usage ?? { in: 0, out: 0 } });
+      const parsed = GAP_SCHEMA.safeParse(res.parsed ?? lenientJson(res.text));
+      return parsed.success ? parsed.data.gaps.slice(0, MAX_GAPS) : [];
+    } catch (e) {
+      stage('gap', `r${round}: 缺口分析失败 (${(e as Error).message}) → fail-open 空缺口`);
+      return [];
+    }
+  };
+
+  for (let round = 1; ; round++) {
+    roundsRun = round;
+    // 二轮起: 不重答原题, 只挖缺口 (challenger lens 的 sub-angle 就是缺口本身)。
+    const roundNote =
+      round === 1
+        ? ''
+        : `\n第 ${round} 轮增量 (research-second-pass): 主体答案已在上一轮产出 —— 不重答原题, 只挖本 sub-angle 指向的缺口。`;
+
+    // ── Stage 1: L×V sub-angle 变体 (flash, 全并行)。每 leaf = persona + 抽象 + groundTruth + sub-angle。
+    const genJobs: (() => Promise<{ lens: string; angleIdx: number; text: string }>)[] = [];
+    for (const lens of roundLenses) {
+      for (let i = 0; i < lens.subAngles.length; i++) {
+        const angle = lens.subAngles[i]!;
+        genJobs.push(async () => {
+          const abstraction = lens.abstraction ? `\n<domain-abstraction>${lens.abstraction}</domain-abstraction>` : '';
+          const prompt = `${corpus}\n\n<persona>${lens.persona}</persona>${abstraction}\n\n研究问题: ${cfg.question}${roundNote}\n\n本 leaf 的具体 sub-angle: ${angle}\n\n用 ground-truth 里的真实模块名推理 (禁造)。结构化、具体、可落地、只答这个 sub-angle。`;
+          const text = await track(
+            cfg.lensModel,
+            call({ model: cfg.lensModel, messages: userMsg(prompt, cfg.images), thinkingLevel: cfg.leafThinking }),
+          );
+          return { lens: lens.key, angleIdx: i, text };
+        });
+      }
+    }
+    leafCount += genJobs.length;
+    // gen 波也共享 head 大前缀 (persona/sub-angle 在 head 之后) → warm-then-fanout:
+    // 串行暖 1 个写 head 到缓存, 其余 L×V-1 个 leaf 命中 head 段 (冷并发 = 每 leaf 全 miss head)。
+    const genResults = (await warmParallel(genJobs, conc, warm)).filter(Boolean) as { lens: string; angleIdx: number; text: string }[];
+    stage('gen', `r${round}: ${genResults.length}/${genJobs.length} sub-angle leaf`);
+
+    // ── Stage 2: per-lens judge reduce → 冠军 + 摘碎片 (pro, L 并行)。
+    const reduceJobs = roundLenses.map((lens) => async () => {
+      const variants = genResults.filter((g) => g.lens === lens.key).sort((a, b) => a.angleIdx - b.angleIdx);
+      const body = variants.map((v, i) => `### sub-angle ${i + 1}\n${v.text}`).join('\n\n');
+      const prompt = `${corpus}\n\n镜头[${lens.key}] 的 ${variants.length} 个 sub-angle 产出:\n${body}\n\n你是该镜头的首席 judge。合成这镜头的**冠军答案**: 取最强骨架 + 嫁接各 sub-angle 的最佳碎片, 去冗余去弱点。直接给冠军答案。`;
+      const text = await track(reduceModel, call({ model: reduceModel, messages: msg(prompt) }));
+      return { key: lens.key, text };
+    });
+    leafCount += reduceJobs.length;
+    // reduce 各 lens body 互不相同, 但全部共享 head (stablePrefix+groundTruth) 这个大前缀, 且 reduce 是**首个 pro 阶段**。
+    // warm-then-fanout: 串行暖 1 个写 head 到缓存 → reduce 2..L + 下游 synth/judge/graft 全继承命中 (L×head miss → 1×head miss)。
+    const champions = (await warmParallel(reduceJobs, conc, warm)).filter(Boolean) as { key: string; text: string }[];
+    lensChampions.push(...champions);
+    stage('reduce', `r${round}: ${champions.length} lens 冠军`);
+
+    if (round >= maxRounds) break;
+
+    // ── 轮间 (research-second-pass): 模型缺口分析 (上限) + 注入确定性 probe (下限)。
+    const digest = lensChampions.map((c) => `## 镜头冠军[${c.key}]\n${c.text}`).join('\n\n');
+    const gaps = await analyzeGaps(round, digest);
+    let probeYield: ProbeYield = {};
+    if (cfg.probe) {
+      try {
+        probeYield = await cfg.probe({ round, digest, gaps });
+      } catch (e) {
+        stage('probe', `r${round}: probe 失败 (${(e as Error).message}) → 只剩模型半边`);
+      }
+    }
+    const newCorpus = probeYield.newCorpus?.trim() ?? '';
+    // 无新增即停: 两个半边都空 → 再来一轮只会重述 (shape whenNot: 重复的不是信息是噪声)。引擎判, 不问模型。
+    if (gaps.length === 0 && !newCorpus) {
+      stage('second-pass', `r${round}: 无新增 (0 缺口, 0 新语料) → 停`);
+      break;
+    }
+    secondPass.push({ round: round + 1, gaps, probedUrls: probeYield.fetchedUrls ?? [] });
+    if (newCorpus) corpus += `\n\n<second-pass-corpus round="${round + 1}">\n${newCorpus}\n</second-pass-corpus>`;
+    roundLenses = [secondPassLens(round + 1, gaps)];
+    stage('second-pass', `r${round + 1}: ${gaps.length} 缺口, +${newCorpus.length} chars 补抓语料`);
+  }
 
   const championsDigest = lensChampions.map((c) => `## 镜头冠军[${c.key}]\n${c.text}`).join('\n\n');
 
   // ── Stage 3: M framing 综合候选 (pro, 并行)。
   const synthJobs = cfg.synthesisFramings.map((fr) => async () => {
-    const prompt = `${head}\n\n各镜头冠军:\n${championsDigest}\n\n<framing>${fr.framing}</framing>\n\n按此 framing 综合成一份完整方案 (具体到模块/文件/接点, 用真实模块名)。`;
+    const prompt = `${corpus}\n\n各镜头冠军:\n${championsDigest}\n\n<framing>${fr.framing}</framing>\n\n按此 framing 综合成一份完整方案 (具体到模块/文件/接点, 用真实模块名)。`;
     const text = await track(cfg.reasonModel, call({ model: cfg.reasonModel, messages: msg(prompt) }));
     return { key: fr.key, text };
   });
@@ -261,7 +370,7 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
   // ── Stage 4: K-judge panel (pro, 并行) → 各维度评判。
   const judgeJobs = cfg.judgeCriteria.map((j) => async () => {
     const jm = j.model ?? judgeModel; // 跨族 panel: 该维度指定模型, 否则全局 judgeModel
-    const prompt = `${head}\n\n${candDigest}\n\n你是评判维度【${j.criterion}】的 judge。按此维度评 ${synthCandidates.length} 个候选: 各自强弱 + 哪个最优 + 该嫁接谁的哪段。只从你这个维度评。`;
+    const prompt = `${corpus}\n\n${candDigest}\n\n你是评判维度【${j.criterion}】的 judge。按此维度评 ${synthCandidates.length} 个候选: 各自强弱 + 哪个最优 + 该嫁接谁的哪段。只从你这个维度评。`;
     const text = await track(jm, call({ model: jm, messages: msg(prompt) }));
     return { key: j.key, text };
   });
@@ -277,14 +386,14 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
   // (last30days 2026-06-16: synthesis 质量 ~3/4 of lift)。前缀 `head\n\n${candDigest}` 与
   // judge/graft 字节对齐 → 复用已暖缓存。
   leafCount += 1;
-  const fusionPrompt = `${head}\n\n${candDigest}\n\nK-judge panel 多维评判:\n${critDigest}\n\n${buildFusionAnalysisPrompt()}`;
+  const fusionPrompt = `${corpus}\n\n${candDigest}\n\nK-judge panel 多维评判:\n${critDigest}\n\n${buildFusionAnalysisPrompt()}`;
   const fusionAnalysis = await track(judgeModel, call({ model: judgeModel, messages: msg(fusionPrompt) }));
   stage('fusion', 'fusion 融合分析 (5-tuple)');
 
   // ── Stage 5: 终审 graft (pro, 1 发) → 据 panel 评判 + fusion 5-tuple 合成最终方案。
   leafCount += 1;
   // 前缀与 fusion 字节对齐 (`head\n\n${candDigest}`) → 复用 judge/fusion 已暖的 head+candDigest 缓存。
-  const finalPrompt = `${head}\n\n${candDigest}\n\nK-judge panel 多维评判:\n${critDigest}\n\nFusion 融合分析 (结构化):\n${fusionAnalysis}\n\n你是首席架构师。据 panel 多维评判 + fusion 融合分析**合成唯一最终方案**: 选最强骨架, 嫁接共识与独特洞察, 显式消解矛盾点、补齐覆盖缺口与盲点。直接给最终方案, 不要元评论。`;
+  const finalPrompt = `${corpus}\n\n${candDigest}\n\nK-judge panel 多维评判:\n${critDigest}\n\nFusion 融合分析 (结构化):\n${fusionAnalysis}\n\n你是首席架构师。据 panel 多维评判 + fusion 融合分析**合成唯一最终方案**: 选最强骨架, 嫁接共识与独特洞察, 显式消解矛盾点、补齐覆盖缺口与盲点。直接给最终方案, 不要元评论。`;
   const finalText = await track(cfg.reasonModel, call({ model: cfg.reasonModel, messages: msg(finalPrompt) }));
 
   // 收尾遥测: per-model 缓存命中率 + 成本 (M6: 测量命中率而非靠账单倒猜)。经 onStage 流到所有 driver 的 stderr。
@@ -294,7 +403,31 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
     .join(' | ');
   stage('cost', `$${costStats.totalUsd.toFixed(4)} · cache saved $${costStats.totalSavingsUsd.toFixed(4)} · ${perModelLine}`);
 
-  return { final: finalText, lensChampions, synthCandidates, judgeCritiques, fusionAnalysis, leafCount, costStats };
+  return { final: finalText, lensChampions, synthCandidates, judgeCritiques, fusionAnalysis, leafCount, roundsRun, secondPass, costStats };
+}
+
+/** 二轮 challenger persona (温度对偶承 distill-challenger: 主体答案已有, 只挖缺口不重述)。 */
+const SECOND_PASS_PERSONA =
+  '你是对抗式深挖研究员 (challenger lens): 主体答案已经有了, 你只负责挖它没覆盖/没证实的部分 —— ' +
+  '未言明前提、没有出处的关键断言、新增语料里的关键事实与冲突。宁可少而尖, 不重述已有答案。';
+
+/** 轮间构造下一轮的单一 challenger lens: 缺口 → sub-angle; 无缺口 (纯 probe 新料) → 泛化挖矿角。 */
+function secondPassLens(round: number, gaps: ResearchGap[]): ResearchLens {
+  const subAngles = gaps.length
+    ? gaps.map((g) => `缺口[${g.key}] ${g.question} (why: ${g.why})`)
+    : ['新增语料 (second-pass-corpus) 里与原题相关的新事实、与上一轮结论的冲突、被证实/证伪的断言'];
+  return { key: `second-pass-r${round}`, persona: SECOND_PASS_PERSONA, subAngles };
+}
+
+/** 从自由文本里抠第一个 JSON 对象 (fake/无 schema 路径的兜底解析)。失败 → undefined。 */
+function lenientJson(text: string): unknown {
+  const m = text.match(/\{[\s\S]*\}/);
+  if (!m) return undefined;
+  try {
+    return JSON.parse(m[0]);
+  } catch {
+    return undefined;
+  }
 }
 
 /** usageLog → per-model token/缓存/成本聚合。未定价模型 costUsd=0 (computeCost fail-open)。 */
