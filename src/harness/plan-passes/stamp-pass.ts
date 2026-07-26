@@ -70,7 +70,10 @@ export function stampPass(
 		// 多模态 = 能力硬约束, 优先于 tier 档位偏好 (非多模态模型看不见图)。
 		if (n.attach_media === true) {
 			// 强档看图节点先看 multimodalStrong (判 UI 的裁判也该能配 SOTA)。
-			if (n.tier === "strong" && (pools.multimodalStrong?.length ?? 0) > 0) {
+			// **二次审查自动升档** (2026-07-26 owner): 祖先链里已经有过 attach_media 节点 = 这一层是
+			// "弱多模态看过之后还要再审" —— 那正是需要真判断的一层, 不该再落回廉价视觉模型。
+			// 做成机械规则而不是指望 conductor 记得标 tier: 弱 conductor 漏标的代价是整条证据链降级。
+			if ((n.tier === "strong" || hasMediaAncestor(id)) && (pools.multimodalStrong?.length ?? 0) > 0) {
 				return { key: "multimodalStrong", coords: pools.multimodalStrong! };
 			}
 			// ⚠ 回落 mid 是有代价的: mid 主力 mimo-v2.5-pro 实测**没有图像端点** (HTTP 404
@@ -82,6 +85,20 @@ export function stampPass(
 		}
 		const key: PoolKey = n.tier ?? "mid"; // D-17: tier 显式覆盖, 缺省 mid 地板
 		return { key, coords: pools[key] };
+	};
+
+	/** 祖先链里是否已有 attach_media 节点 (二次审查判据; 只走 nodes 内的真实边, 幻象 dep 忽略)。 */
+	const hasMediaAncestor = (id: string): boolean => {
+		const seen = new Set<string>([id]);
+		const queue = [...(plan.nodes[id]?.depends_on ?? [])];
+		while (queue.length > 0) {
+			const cur = queue.pop()!;
+			if (!idSet.has(cur) || seen.has(cur)) continue;
+			seen.add(cur);
+			if (plan.nodes[cur]!.attach_media === true) return true;
+			queue.push(...(plan.nodes[cur]!.depends_on ?? []));
+		}
+		return false;
 	};
 
 	// resolved: 节点 → 已定模型 (原有 model + 本 pass 已 stamp)。
