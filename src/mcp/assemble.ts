@@ -33,6 +33,7 @@ import { createFleetTools, type SpawnFn } from './tools/fleet';
 import { effectiveFanout, resolveProviderCap } from '../harness/fleet';
 import { createRunsTools } from './tools/runs';
 import { createConfigTools } from './tools/config-tools';
+import { createComposeTools } from './tools/compose';
 import { createPlansTool } from './tools/plans';
 import { createModelRouterFromEnv } from '../harness/model-router';
 import { createPlanLedger, type PlanLedger } from '../harness/plan-ledger';
@@ -433,6 +434,13 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     ...createRunsTools({ runRegistry, cwd }),
     // config 工具族: set_key/apply_preset/set_role/config_status/toggle_hud (omd init 的 MCP 面, 即时生效)。
     ...createConfigTools({ cwd, router }),
+    // 组合模式入口 (2026-07-26): 原语与图式递到图外, 让外部 SOTA agent 不必先出图就能用引擎能力。
+    // runPlan 走同一条 runExecutorDagWithPlan —— 零新执行路径, stamp/闸/checkpoint 全部照旧。
+    ...createComposeTools({
+      runPlan: (plan, config) =>
+        engine.runExecutorDagWithPlan(plan, config as unknown as Parameters<typeof runExecutorDagWithPlan>[1]),
+      baseConfig: defaultConfig as Record<string, unknown>,
+    }),
     // plan-memory 账本可观测 (Phase A 证据门仪表, issue #10)。
     createPlansTool(ledger),
   ];
