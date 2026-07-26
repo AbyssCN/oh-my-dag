@@ -4,9 +4,13 @@
  *
  * 检索调研一条龙: 确定性搜+爬+清洗 (零丢失语料) → 喂 researchFanout 多-lens 综合 + K-judge 判优 → 终稿。
  *
- *   bun run scripts/dag-research.ts "<研究问题>" [--council] [--super] [--k 8] [--crawl 5]
+ *   bun run scripts/dag-research.ts "<研究问题>" [--rounds 2] [--council] [--super] [--k 8] [--crawl 5]
  *                                               [--no-tier] [--lens-count N] [--conductor-model M]
  *                                               [--lens-model ds:..] [--reason-model ds:..] [--out path]
+ *   --rounds N = research-second-pass 轮数上限 (默认 1 单轮)。>1 时轮间 [模型缺口分析 + 确定性
+ *                probe (引用集−已抓集 缺料补抓, --probe-crawl 限每轮 URL 数)] 决定增量,
+ *                无新增即停 (引擎计数)。二轮起 challenger lens 只挖缺口不重答原题 —— 这就是
+ *                deep-research 档: 抓→综合→缺口→补抓→再蒸, 全在一条命令里。
  *   --no-tier  = 关信源分档重排 (默认开: crawl 槽位优先一手/权威源, 农场域降权不删 —
  *                见 src/harness/web/source-tier.ts)
  *   --no-expand = 关 query 扩展 (默认开: 检索前一次 flash 改写 → 原+改写多轮搜 → URL 去重 →
@@ -27,7 +31,7 @@ import { CHILDREN_INSTRUCTION, writeResultAtomic } from '../src/harness/pathfind
 import { bootstrapModelRuntime } from '../src/model/bootstrap';
 
 const USAGE =
-  'usage: bun run scripts/dag-research.ts "<研究问题>" [--council] [--super] [--k 8] [--crawl 5] [--no-tier] [--no-expand] [--expand-model M] [--no-distill] [--distill-model M] [--distill-threshold N] [--lens-count N] [--conductor-model M] [--lens-model ..] [--reason-model ..] [--children] [--out path]';
+  'usage: bun run scripts/dag-research.ts "<研究问题>" [--rounds N] [--probe-crawl N] [--council] [--super] [--k 8] [--crawl 5] [--no-tier] [--no-expand] [--expand-model M] [--no-distill] [--distill-model M] [--distill-threshold N] [--lens-count N] [--conductor-model M] [--lens-model ..] [--reason-model ..] [--children] [--out path]';
 
 const BOOL = new Set(['super', 'council', 'no-tier', 'no-expand', 'no-distill', 'children', 'help']);
 const flags: Record<string, string> = {};
@@ -86,6 +90,9 @@ const res = await researchWebFanout(stack, question, {
   distiller: flags['no-distill'] ? undefined : createModelSourceDistiller({ model: flags['distill-model'] }),
   distillThreshold: numFlag('distill-threshold', 1),
   onWarn: (m) => process.stderr.write(`  [warn] ${m}\n`),
+  // research-second-pass: 轮数上限 + 每轮补抓 URL 上限 (缺省单轮 = 原行为)。
+  rounds: numFlag('rounds', 1),
+  probeCrawl: numFlag('probe-crawl', 1),
   council: !!flags.council, // conductor 按语料自动分解 lens 替代默认 3 视角
   conductorModel: flags['conductor-model'],
   lensCount: numFlag('lens-count', 1),
@@ -109,12 +116,18 @@ for (const d of r.distilled) {
 // ---- 落盘: 终稿 + 冠军 + 成本 + 全文语料附录 (零丢失) ----
 const doc: string[] = [];
 doc.push(`# 研究: ${question}`, '');
-doc.push(`> ${f.leafCount} leaves · $${f.costStats.totalUsd.toFixed(4)} · 检索命中 ${r.sources.length} · 抓取 ${r.sources.filter((s) => s.body).length}`, '');
+doc.push(`> ${f.leafCount} leaves · ${f.roundsRun} 轮 · $${f.costStats.totalUsd.toFixed(4)} · 检索命中 ${r.sources.length} · 抓取 ${r.sources.filter((s) => s.body).length}`, '');
+// research-second-pass 留痕: 每个后续轮挖了什么缺口、补抓了哪些 URL (透明, 不进 stdout)。
+for (const sp of f.secondPass) {
+  doc.push(`> 第 ${sp.round} 轮: ${sp.gaps.map((g) => `[${g.key}] ${g.question}`).join(' · ') || '(纯补抓)'}${sp.probedUrls.length ? ` · 补抓 ${sp.probedUrls.join(', ')}` : ''}`, '');
+}
 doc.push('## 终稿 (综合判优)', '', f.final, '');
 doc.push('## Lens 冠军 (各视角最优)', '');
 for (const c of f.lensChampions) doc.push(`### ${c.key}`, c.text, '');
 // 附录用 fullCorpus (永不蒸馏, 零丢失红线): 每源原文全文都在, 与喂 lens 的 r.markdown 分离。
 doc.push('---', '', '## 检索语料附录 (零丢失, 综合的事实锚)', '', r.fullCorpus);
+// 二轮补抓语料附录 (probe 语料有每源截断闸, 截断处带标记 + 源 URL 可回读全文)。
+if (res.secondPassCorpus) doc.push('', '## 二轮补抓语料附录 (research-second-pass probe)', '', res.secondPassCorpus);
 const slug = question.toLowerCase().replace(/[^a-z0-9一-鿿]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'research';
 const out = flags.out || `/tmp/dag-research-${slug}-${Date.now()}.md`;
 // 原子落盘 (tmp+rename, result-format 共享契约): pathfinder afk-hook 以文件存在为就绪信号,

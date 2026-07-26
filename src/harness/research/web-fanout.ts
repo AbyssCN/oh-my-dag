@@ -12,10 +12,13 @@
  *
  * 默认 lens/framing/judge 面向通用 web 研究; 调用方可整体覆盖 (领域研究传专家 lens)。
  */
-import { researchFanout, type ResearchFanoutResult, type ResearchLens } from './fanout';
+import { researchFanout, type ProbeYield, type ResearchFanoutConfig, type ResearchFanoutResult, type ResearchLens } from './fanout';
 import { resolveRoleModelConfigured } from '../../model/role-models';
 import { authorFanoutSpec } from './author-spec';
 import { retrieveWeb, type RetrieveOpts, type RetrieveResult } from '../web/retrieve';
+import { CleaningFetchProvider } from '../web/clean';
+import { fetchRacing } from '../web/fetch-racing';
+import { normalizeUrl } from '../web/types';
 import type { WebStack } from '../web';
 
 /** 通用 web 研究 lens (证据/批判/实践三视角, 各 3 sub-angle)。领域研究覆盖之。 */
@@ -80,6 +83,13 @@ export interface WebFanoutOpts extends RetrieveOpts {
   reduceModel?: string;
   judgeModel?: string;
   maxFanout?: number;
+  /**
+   * research-second-pass 轮数上限 (默认 1 = 单轮)。>1 时自动挂确定性 probe:
+   * (冠军引用集 ∪ 缺口点名集) − 已抓集 的缺料补抓, 抓回语料 append 进下一轮。
+   */
+  rounds?: number;
+  /** probe 每轮补抓 URL 上限 (默认 5 —— 轮间抓取成本天花板)。 */
+  probeCrawl?: number;
   onStage?: (stage: string, detail: string) => void;
 }
 
@@ -89,6 +99,69 @@ export interface WebFanoutResult {
   retrieval: RetrieveResult;
   /** fanout 综合判优产物 (final / lensChampions / costStats / ...)。 */
   fanout: ResearchFanoutResult;
+  /** rounds>1 时 probe 补抓的增量语料 (附录落盘用; 巨源带显式截断标记, 全文经源 URL; 单轮/无补抓 = undefined)。 */
+  secondPassCorpus?: string;
+}
+
+/** 从文本抠 http(s) URL (确定性, probe 下限半边的原料)。尾部标点剥离; 括号内 URL 会被截断 (v1 已知边界)。 */
+export function extractCitedUrls(text: string): string[] {
+  const m = text.match(/https?:\/\/[^\s<>()[\]{}"'`«»「」,;]+/g) ?? [];
+  return [...new Set(m.map((u) => u.replace(/[.,;:!?]+$/, '')))];
+}
+
+/**
+ * research-second-pass 的确定性探测器 (下限半边, 零 LLM):
+ * 「被引用却没抓取过的 URL」 = (冠军文本引用集 ∪ 缺口点名集) − 已抓集, 抓回正文 append 进下一轮语料。
+ * 每 URL 只花一次机会 (失败不重试, 同轮去重跨轮持久); 全失败 → 空产出, 不断链 (probe 是增益)。
+ * 注: shape 里探测器的另一半「没有出处的结论」无纯确定性判据, 归缺口分析的模型半边。
+ */
+export function buildSecondPassProbe(
+  stack: WebStack,
+  alreadyFetched: Iterable<string>,
+  opts: {
+    probeCrawl?: number;
+    minChars?: number;
+    /** 每源进语料的字符上限 (默认 12k, 超出截断带标记)。实测不截: 一个论坛长帖 +35 万 chars,
+     *  后续每个 stage 都拖着它 —— 语料增长必须有成本闸, 与 retrieveWeb 巨源蒸馏同一门纪律。 */
+    maxCharsPerSource?: number;
+    signal?: AbortSignal;
+    onStage?: (s: string, d: string) => void;
+  } = {},
+): NonNullable<ResearchFanoutConfig['probe']> {
+  const fetchedSet = new Set([...alreadyFetched].map(normalizeUrl));
+  const cap = opts.probeCrawl ?? 5;
+  const maxChars = opts.maxCharsPerSource ?? 12_000;
+  return async ({ round, digest, gaps }): Promise<ProbeYield> => {
+    const candidates = [...extractCitedUrls(digest), ...gaps.flatMap((g) => g.urls ?? [])];
+    const missing: string[] = [];
+    for (const u of candidates) {
+      if (missing.length >= cap) break;
+      const key = normalizeUrl(u);
+      if (fetchedSet.has(key)) continue;
+      fetchedSet.add(key);
+      missing.push(u);
+    }
+    if (missing.length === 0) return {};
+    const provs = stack.fetchProviders.map((fp) => new CleaningFetchProvider(fp, stack.cleaner));
+    const settled = await Promise.allSettled(
+      missing.map((u) => fetchRacing(provs, u, { minChars: opts.minChars ?? 200, signal: opts.signal })),
+    );
+    const sections: string[] = [];
+    const fetchedUrls: string[] = [];
+    settled.forEach((s, i) => {
+      if (s.status !== 'fulfilled') return;
+      const body = s.value.result.text.trim();
+      if (!body) return;
+      fetchedUrls.push(missing[i]!);
+      // 截断带显式标记 (不静默丢): 全文要看的话源 URL 就在节头, 消费方自己 Read。
+      const clipped =
+        body.length > maxChars ? `${body.slice(0, maxChars)}\n…[probe 截断: 原文 ${body.length} chars, 全文见源 URL]` : body;
+      sections.push(`## ${missing[i]}\n\n${clipped}`);
+    });
+    opts.onStage?.('probe', `r${round + 1}: 补抓 ${fetchedUrls.length}/${missing.length} 缺料 URL`);
+    if (sections.length === 0) return {};
+    return { newCorpus: sections.join('\n\n'), fetchedUrls };
+  };
 }
 
 /**
@@ -133,6 +206,23 @@ export async function researchWebFanout(
     synthesisFramings = synthesisFramings.map((f) => ({ ...f, framing: `${f.framing}\n${opts.finalExtraInstruction}` }));
   }
 
+  // rounds>1: 挂确定性 probe (下限半边)。wrap 收集补抓语料 → 附录落盘 (与进 prompt 的同份, 巨源带截断标记)。
+  const rounds = Math.max(1, Math.trunc(opts.rounds ?? 1));
+  const probeSections: string[] = [];
+  let probe: ResearchFanoutConfig['probe'];
+  if (rounds > 1) {
+    const base = buildSecondPassProbe(
+      stack,
+      retrieval.sources.filter((s) => s.body).map((s) => s.url),
+      { probeCrawl: opts.probeCrawl, signal: opts.signal, onStage: opts.onStage },
+    );
+    probe = async (a) => {
+      const y = await base(a);
+      if (y.newCorpus) probeSections.push(y.newCorpus);
+      return y;
+    };
+  }
+
   const fanout = await researchFanout({
     question,
     stablePrefix: opts.stablePrefix ?? DEFAULT_WEB_STABLE_PREFIX,
@@ -145,8 +235,15 @@ export async function researchWebFanout(
     reduceModel: opts.reduceModel,
     judgeModel: opts.judgeModel,
     maxFanout: opts.maxFanout,
+    rounds,
+    probe,
     onStage: opts.onStage,
   });
 
-  return { question, retrieval, fanout };
+  return {
+    question,
+    retrieval,
+    fanout,
+    ...(probeSections.length ? { secondPassCorpus: probeSections.join('\n\n') } : {}),
+  };
 }

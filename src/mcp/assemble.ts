@@ -169,7 +169,7 @@ export function createDefaultResearchFanout(deps: {
   const { cwd, env } = deps;
   const authorFn = deps._authorFanoutSpec ?? authorFanoutSpec;
   const fanoutFn = deps._researchFanout ?? runResearchFanout;
-  return async ({ question, council, super: superMode, k }) => {
+  return async ({ question, council, super: superMode, k, rounds }) => {
     const runId = randomUUID();
     const runtime = runtimeCoord(env);
     // 模型解析同角色矩阵; 终兜底镜像 councilDeepPlan 的既有默认 (env 未配时的仓内行为)。
@@ -212,6 +212,8 @@ export function createDefaultResearchFanout(deps: {
       judgeCriteria: [...criteria],
       lensModel,
       reasonModel,
+      // research-second-pass (无 web probe 的 MCP 档: 只有模型缺口分析半边, 无新增即停照常成立)。
+      ...(rounds ? { rounds } : {}),
     });
 
     const reportDir = join(cwd, '.omd', 'research');

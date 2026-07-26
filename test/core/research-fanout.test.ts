@@ -72,3 +72,100 @@ describe('researchFanout — L×V staging', () => {
     expect(genB.some((s) => s.includes('domain-abstraction'))).toBe(false); // lens b 无
   });
 });
+
+// ── research-second-pass (rounds): 引擎计数的多轮增量 —— shape: research-second-pass。
+describe('researchFanout — research-second-pass rounds', () => {
+  const GAP_JSON = JSON.stringify({
+    gaps: [{ key: 'g1', question: '挖X的出处', why: '关键断言无来源', urls: ['https://miss.example/a'] }],
+  });
+
+  /** rounds 版 fake: 额外识别缺口分析 prompt; gapText 可注入 (空缺口 / 非 JSON 场景)。 */
+  function makeRoundsFake(opts: { gapText?: string } = {}) {
+    const seen: string[] = [];
+    const fake = (async (req: { model: string; messages: { content: string }[] }) => {
+      const p = req.messages[0]!.content as string;
+      seen.push(p);
+      let text = 'X';
+      if (p.includes('缺口分析器')) text = opts.gapText ?? GAP_JSON;
+      else if (p.includes('sub-angle:')) text = 'GEN';
+      else if (p.includes('首席 judge')) text = 'CHAMPION';
+      else if (p.includes('<framing>')) text = 'SYNTH';
+      else if (p.includes('评判维度【')) text = 'CRIT';
+      else if (p.includes('据 panel')) text = 'FINAL';
+      return { text, model: req.model, usage: { in: 1, out: 1 } };
+    }) as unknown as ResearchFanoutConfig['_callModel'];
+    return { fake, seen };
+  }
+
+  test('rounds 缺省 = 单轮原行为: 无 gap 调用, roundsRun=1, secondPass=[]', async () => {
+    const { fake, seen } = makeRoundsFake();
+    const r = await researchFanout(baseCfg(fake));
+    expect(r.roundsRun).toBe(1);
+    expect(r.leafCount).toBe(11);
+    expect(r.secondPass).toEqual([]);
+    expect(seen.some((s) => s.includes('缺口分析器'))).toBe(false);
+  });
+
+  test('rounds=2: 二轮以 challenger lens 只挖缺口不重答原题, 冠军并入终局综合', async () => {
+    const { fake, seen } = makeRoundsFake();
+    const r = await researchFanout({ ...baseCfg(fake), rounds: 2 });
+    expect(r.roundsRun).toBe(2);
+    // 二轮冠军入列 (终局 synth 吃全部冠军)
+    expect(r.lensChampions.map((c) => c.key)).toContain('second-pass-r2');
+    // 二轮 gen: 1 gap → 1 sub-angle, prompt 标明增量不重答原题 + 带缺口问题
+    const secondGen = seen.filter((s) => s.includes('research-second-pass') && s.includes('sub-angle:'));
+    expect(secondGen.length).toBe(1);
+    expect(secondGen[0]).toContain('挖X的出处');
+    expect(secondGen[0]).toContain('不重答原题');
+    // leafCount: r1(3 gen + 2 reduce) + 1 gap + r2(1 gen + 1 reduce) + 2 synth + 2 judge + 1 fusion + 1 graft = 14
+    expect(r.leafCount).toBe(14);
+    expect(r.secondPass.length).toBe(1);
+    expect(r.secondPass[0]!.round).toBe(2);
+    expect(r.secondPass[0]!.gaps[0]!.key).toBe('g1');
+  });
+
+  test('无新增即停 (引擎计数): gaps 空且无 probe → roundsRun=1, 不跑二轮', async () => {
+    const { fake } = makeRoundsFake({ gapText: '{"gaps":[]}' });
+    const r = await researchFanout({ ...baseCfg(fake), rounds: 3 });
+    expect(r.roundsRun).toBe(1);
+    expect(r.lensChampions.map((c) => c.key).sort()).toEqual(['a', 'b']);
+    expect(r.leafCount).toBe(12); // 单轮 11 + 1 gap 分析
+    expect(r.secondPass).toEqual([]);
+  });
+
+  test('probe (确定性下限): 收 digest+gaps, newCorpus 进二轮语料, probedUrls 留痕', async () => {
+    const { fake, seen } = makeRoundsFake();
+    const probeArgs: { round: number; digest: string; gaps: { key: string }[] }[] = [];
+    const r = await researchFanout({
+      ...baseCfg(fake),
+      rounds: 2,
+      probe: async (a) => {
+        probeArgs.push(a as (typeof probeArgs)[number]);
+        return { newCorpus: 'NEW-CORPUS-FACTS', fetchedUrls: ['https://miss.example/a'] };
+      },
+    });
+    expect(probeArgs.length).toBe(1);
+    expect(probeArgs[0]!.round).toBe(1);
+    expect(probeArgs[0]!.digest).toContain('CHAMPION'); // 冠军全文喂 probe (抽引用 URL 用)
+    expect(probeArgs[0]!.gaps[0]!.key).toBe('g1');
+    // 二轮 gen prompt 含补抓语料 (append-only 进 corpus)
+    const secondGen = seen.filter((s) => s.includes('NEW-CORPUS-FACTS') && s.includes('sub-angle:'));
+    expect(secondGen.length).toBe(1);
+    // 终局 synth 也在长大后的 corpus 上 (缺口答案有事实锚)
+    expect(seen.some((s) => s.includes('NEW-CORPUS-FACTS') && s.includes('<framing>'))).toBe(true);
+    expect(r.secondPass[0]!.probedUrls).toEqual(['https://miss.example/a']);
+  });
+
+  test('gap 产出不可解析 → fail-open 空缺口; probe 有新料时轮次照走 (泛化挖矿角)', async () => {
+    const { fake, seen } = makeRoundsFake({ gapText: '这不是 JSON' });
+    const r = await researchFanout({
+      ...baseCfg(fake),
+      rounds: 2,
+      probe: async () => ({ newCorpus: 'PROBE-ONLY-CORPUS', fetchedUrls: [] }),
+    });
+    expect(r.roundsRun).toBe(2); // 确定性半边有新增 → 不因模型半边失败而停
+    const secondGen = seen.filter((s) => s.includes('research-second-pass') && s.includes('sub-angle:'));
+    expect(secondGen.length).toBe(1); // 无缺口 → 单个泛化 sub-angle 挖新增语料
+    expect(secondGen[0]).toContain('PROBE-ONLY-CORPUS');
+  });
+});
