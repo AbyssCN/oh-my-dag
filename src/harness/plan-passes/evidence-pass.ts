@@ -126,7 +126,8 @@ function descendantsOf(nodes: ConductorPlan["nodes"], id: string): string[] {
 }
 
 /**
- * 给节点 id 补 [渲染 command → attach_media 审查 leaf] 两节点, 就地写进 nodes, 返回新 id。
+ * 给节点 id 补 [渲染 command → omd-shots-verify 确定性闸] 两个 command 节点, 就地写进 nodes, 返回新 id。
+ * 不补 attach_media 审查 leaf: 品味审查是闸后可选挂载, 不属于地板 (见文件头)。
  * 渲染目标取该节点声明的 output_path (须是可渲染后缀) —— 取不到就没有可截图的东西,
  * 抛错拒 plan (D-2: 采集是地板; 与其挂一个必然失败的命令假装有证据链, 不如让 owner/conductor 补 output_path)。
  */
@@ -137,7 +138,7 @@ function patchChain(nodes: ConductorPlan["nodes"], id: string): string[] {
 		throw new Error(
 			`evidence-pass: 节点 '${id}' 的卡声明 evidence:'${UI_PIXELS}' 但缺可渲染目标 ` +
 				`(output_path=${target ?? "(未声明)"}) —— 补不出渲染步。修法: 给该节点声明 .html 产物的 output_path, ` +
-				`或显式画出 [executor:'command' 渲染节点 → attach_media:true 审查 leaf] 后代链。`,
+				`或显式画出 [executor:'command' 渲染节点 → 跑 ${SHOTS_VERIFY_CLI} 的 command 节点] 后代链。`,
 		);
 	}
 	const renderId = freshId(nodes, `${id}-render`);
