@@ -2,9 +2,9 @@
 
 # oh-my-dag
 
-### DAG 执行引擎 + 持久决策地图 + 自整理记忆 —— 经 MCP 服务你的 coding agent。
+### 两条路把便宜的并发模型接到你的 agent 后面 —— 调一个能力,或者把整张图交出去。
 
-*你的 agent 继续当脑子。omd 提供便宜的并发双手。*
+*你的 agent 继续当脑子。omd 提供双手、闸门和记忆。*
 
 [![MCP server: 33 tools](https://img.shields.io/badge/MCP%20server-33%20tools-c9a227?style=flat-square&labelColor=140f0a)](docs/mcp-tools.md)
 [![Clients: Claude Code · Codex · any MCP](https://img.shields.io/badge/clients-Claude%20Code%20%C2%B7%20Codex%20%C2%B7%20any%20MCP-6f9488?style=flat-square&labelColor=140f0a)](client-skills/)
@@ -15,6 +15,153 @@
 [English](README.md) · **中文** · **[上手 →](docs/MCP-ONBOARDING.md)**
 
 </div>
+
+## 两条主线
+
+你的 coding agent 是一个强而贵的脑子。让它逐字敲文件、逐页读资料、把所有计划都装在脑子里,
+是把屋里最聪明的东西用在了最不该用的地方。
+
+omd 给它两条派活的路,而且**两条共用同一个底座** —— 换轨道不换可靠性:
+
+```mermaid
+flowchart TB
+  AGENT["Your agent<br/>Claude Code · Codex · any MCP client · omd's own TUI"]
+
+  subgraph OMD["omd — one engine, two ways in"]
+    direction TB
+
+    subgraph T1["Track 1 · COMPOSE — call one capability at a time"]
+      C1["omd_primitive<br/>judge · verify · parallel · tournament · 12 shapes"]
+      C2["omd_web / omd_distill<br/>fetch pages · distil insight"]
+      C3["memory_recall / path_map<br/>facts that outlive the window"]
+      C4["omd_shapes<br/>proven decompositions, and when NOT to use them"]
+    end
+
+    subgraph T2["Track 2 · GRAPH — hand off a whole fan-out"]
+      G1["dag_run<br/>a conductor decomposes for you"]
+      G2["dag_run_plan<br/>you wrote the graph, just run it"]
+      G3["dag_review / dag_debug / dag_slim / dag_deepen<br/>pre-shaped fleets"]
+    end
+
+    BASE["Shared substrate<br/>typed plan · deterministic passes · oracle gates · cross-family verifier<br/>checkpoints · model pools · cost accounting"]
+    T1 --> BASE
+    T2 --> BASE
+  end
+
+  MODELS[("Your models<br/>any OpenAI-compatible backend")]
+  AGENT -->|MCP| T1
+  AGENT -->|MCP| T2
+  BASE --> MODELS
+
+  classDef compose fill:#FAECE7,stroke:#993C1D,color:#4A1B0C
+  classDef dagmode fill:#EEEDFE,stroke:#534AB7,color:#26215C
+  classDef base fill:#E1F5EE,stroke:#0F6E56,color:#04342C
+  classDef ext fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
+  class C1,C2,C3,C4 compose
+  class G1,G2,G3 dagmode
+  class BASE base
+  class AGENT,MODELS ext
+```
+
+**主线一 · 组合** —— 调一个能力,看一眼结果:让 `judge` 在三个尝试里挑最优、抓一篇文章蒸出洞察、
+召回上周定过什么。二到五步,你全程在场。
+
+**主线二 · 图** —— 把整片扇出交出去:任务变成带类型的节点,节点在自己的依赖就绪那一刻就跑,
+每个节点都有 checkpoint,断掉的 run 是续跑不是重来。十个节点还是一百个,你可以去干别的。
+
+分界线是**规模**,而调用方最擅长判断规模。让图值回票价的那四个确定性 pass(剪枝/去重/证据闸/
+钉模型)在 3 步组合里一分钱不值,在 40 节点扇出里是命根子。
+
+## 快速上手
+
+```bash
+git clone https://github.com/AbyssCN/oh-my-dag.git && cd oh-my-dag
+bun install && bun link      # 把 `omd` 放上 PATH (Bun ≥ 1.3)
+omd init                     # 向导:密钥、模型预设、可达性探测 → .env
+```
+
+```bash
+cd <你的项目> && claude mcp add omd -- omd mcp
+```
+
+斜杠命令包(`/omd-path`、`/omd-review` 等 20 个 skill)在 server 首次启动时自动装进
+`~/.claude/skills/` —— 幂等,且**绝不覆盖你改过的 skill**。`OMD_INSTALL_SKILLS=0` 可关。
+
+**→ [完整走查](docs/MCP-ONBOARDING.md)** · [命令参考](client-skills/README.md)
+
+<details>
+<summary>另一个入口:自带的终端 agent</summary>
+
+`bun run omd`(交互)或 `bun run omd -p "..."`(一次性);在 `.env` 里配
+`OMD_RUNTIME_PROVIDER` + `OMD_RUNTIME_MODEL` + 后端密钥(抄 [.env.example](.env.example))。
+MCP server 是正门,这个是顺手。
+
+</details>
+
+## 能有哪些能力可调
+
+```mermaid
+flowchart LR
+  subgraph EXEC["执行 —— 把活干完"]
+    E1["dag_run · dag_run_plan · dag_resume<br/>dag_status · dag_result · dag_runs"]
+    E2["omd_primitive<br/>12 个控制流形状"]
+  end
+
+  subgraph RESEARCH["研究 —— 把问题查透"]
+    R1["omd_web<br/>零模型:搜 + 抓,全文落盘"]
+    R2["omd_distill<br/>expert 忠实 / challenger 挖长尾"]
+    R3["dag_research<br/>抓 + 多镜头综合判优"]
+  end
+
+  subgraph AUDIT["审查 —— 把问题找出来"]
+    A1["dag_review<br/>多维度 + 跨家族证伪"]
+    A2["dag_debug · dag_slim · dag_deepen"]
+    A3["omd-shots-verify<br/>零模型:截图真存在且非白板"]
+  end
+
+  subgraph MEMORY["记忆与规划 —— 活过上下文窗口"]
+    M1["memory_recall · memory_remember<br/>dream_consolidate"]
+    M2["path_map · path_add · path_rule<br/>path_deliver · path_prefetch"]
+  end
+
+  subgraph KNOW["知识 —— 别每次从零发明"]
+    K1["omd_shapes<br/>图式 + 什么时候别用"]
+    K2["agent 模板卡<br/>专家检查单注入 leaf"]
+  end
+
+  classDef llm fill:#EEEDFE,stroke:#534AB7,color:#26215C
+  classDef zero fill:#E1F5EE,stroke:#0F6E56,color:#04342C
+  classDef mixed fill:#FAECE7,stroke:#993C1D,color:#4A1B0C
+  class E1,E2,R3,A1,A2 mixed
+  class R1,A3,K1,K2 zero
+  class R2,M1,M2 llm
+```
+
+**执行** —— `dag_run`(conductor 替你分解)· `dag_run_plan`(图你自己写好了)· `dag_resume`
+(从断掉的地方接着跑)· `omd_primitive`(单跑一个控制流形状,不必先有图)· `dag_status` /
+`dag_result` / `dag_node_output` / `dag_runs`。
+
+**研究** —— `omd_web`(搜 + 抓,**零 LLM**;全文落盘,只回索引)· `omd_distill`(对你已有的
+文本跑两个镜头:一个忠实,一个对抗)· `dag_research`(抓 + 多镜头综合 + 裁判团)。
+
+**审查** —— `dag_review`(多维度 diff 审查,每个维度可路由到不同模型家族)· `dag_debug` ·
+`dag_slim`(只删不加的过度工程审计)· `dag_deepen`(架构热点)。
+
+**记忆与规划** —— `memory_recall` / `memory_remember` / `dream_consolidate` ·
+`path_map` / `path_add` / `path_rule` / `path_deliver` / `path_prefetch`(一张进 git 的决策地图,
+用带类型的票推进,后台调研在你关掉客户端之后继续跑)。
+
+**知识** —— `omd_shapes`(经验证的图式,每条都带触发条件**和"什么时候别用"**)·
+模板卡(执行期把专家检查单注入节点)。
+
+**配置** —— `omd_config_status` / `omd_set_model` / `omd_set_role` / `omd_apply_preset` / …
+
+**→ [完整工具参考](docs/mcp-tools.md)**
+
+## 图是怎么跑的
+
+一个任务由 LLM **规划一次**,然后交给**纯函数**变换,再按依赖顺序执行。conductor 之后的一切
+都是确定性的。
 
 ```mermaid
 flowchart TB
@@ -78,57 +225,6 @@ flowchart TB
 ```
 
 *紫 = 烧 LLM · 青 = 确定性零 LLM · 橙 = 执行体 · 灰 = 引擎结构件。*
-*图的真理源(含 rationale 与 changelog):[docs/diagrams/01-engine-flow.md](docs/diagrams/01-engine-flow.md)。*
-
-## 这是什么
-
-你的 coding agent 是一个强而贵的脑子。让它逐字敲文件、逐条跑测试,是把屋里最聪明的东西
-用在了最不该用的地方。
-
-**omd 把一个任务变成一张小活的图**,在你自带的便宜模型上并发跑完,用客观闸和一个**来自
-不同模型家族**的怀疑者检查结果,只在真正需要判断的地方花前沿模型的钱。它以 `omd mcp`
-挂进任意客户端 —— 一个 stdio MCP server,33 个工具。
-
-一套引擎,三件事:
-
-- **DAG 执行** —— 任务变成带类型的节点:真能写文件的 `agent` 叶、零 LLM 跑 `tsc`/测试的
-  `command` 叶、运行时才展开的 `map` 节点、管控制流的 `primitive` 节点。节点在自己的依赖
-  就绪那一刻就跑;每个节点都有 checkpoint,断掉的 run 是续跑不是重来。
-- **Pathfinder** —— 给一个 session 装不下的活做规划:一张进 git 的决策地图,用带类型的票
-  推进,后台调研在你关掉客户端之后继续跑,交付闸只有你能扣。
-- **自整理记忆** —— 每个项目一个事实库,语义 + 词法混合召回 + 时序知识图,把原始 session
-  事件折叠成分层事实。
-
-## 快速上手
-
-```bash
-git clone https://github.com/AbyssCN/oh-my-dag.git && cd oh-my-dag
-bun install && bun link      # 把 `omd` 放上 PATH (Bun ≥ 1.3)
-omd init                     # 向导:密钥、模型预设、可达性探测 → .env
-```
-
-```bash
-cd <你的项目> && claude mcp add omd -- omd mcp
-```
-
-斜杠命令包(`/omd-path`、`/omd-review` 等 20 个 skill)在 server 首次启动时**自动装**进
-`~/.claude/skills/` —— 幂等,且**绝不覆盖你改过的 skill**。`OMD_INSTALL_SKILLS=0` 可关。
-
-**→ [完整走查](docs/MCP-ONBOARDING.md)** · [命令参考](client-skills/README.md)
-
-<details>
-<summary>另一个入口:自带的终端 agent</summary>
-
-`bun run omd`(交互)或 `bun run omd -p "..."`(一次性);在 `.env` 里配
-`OMD_RUNTIME_PROVIDER` + `OMD_RUNTIME_MODEL` + 后端密钥(抄 [.env.example](.env.example))。
-MCP server 是正门,这个是顺手。
-
-</details>
-
-## 一屏看完引擎
-
-一个任务由 LLM **规划一次**,然后交给**纯函数**变换,再按依赖顺序执行。conductor 之后
-的一切都是确定性的。
 
 **节点种类** —— 一个节点可以是什么:
 
@@ -140,37 +236,102 @@ MCP server 是正门,这个是顺手。
 | `map` | 混合 | — | 运行时扇出:lister 跑出工作清单,每个元素一个子节点 |
 | `primitive` | 混合 | — | 12 种由引擎持有的控制流形状 |
 
-**Plan pass** —— 计划与执行之间的纯函数:
-`prune`(剪死节点)→ `dedup`(语义指纹归并)→ `evidence`(UI 像素证据链闸)→
-`stamp`(给每个节点钉模型)。
+**Plan pass** —— 计划与执行之间的纯函数:`prune`(剪死节点)→ `dedup`(语义指纹归并)→
+`evidence`(UI 像素证据链闸)→ `stamp`(给每个节点钉模型)。
 
 **控制流原语** —— 你只挑形状和参数;循环 / 分支 / 停止 / 打分的逻辑归运行时,永远不归模型:
 `parallel` · `pipeline` · `loop-until` · `verify` · `judge` · `discovery` · `iterate` ·
 `tournament` · `router` · `race` · `escalation` · `saga`。
 
-**→ 细节:** [架构](docs/architecture.md) · [原语](docs/primitives.md) ·
-[模型层](docs/model-layer.md) · [MCP 工具](docs/mcp-tools.md) · [记忆](docs/memory.md) · [eval 读数](docs/eval-findings.md)
+**→ [架构详解](docs/architecture.md)** · [原语](docs/primitives.md) ·
+[图的真理源](docs/diagrams/01-engine-flow.md)
 
-## 为什么值得接进来
+## 哪个模型跑哪个节点
 
-| | |
-|---|---|
-| **便宜的并发** | 靠宽度,不靠更大的模型。一打小模型叶子并行跑,价格约等于一次前沿调用。 |
-| **前沿判、车队干** | 钱花在决策点和 verify 上,不是花在每个节点上。 |
-| **不丢状态** | 每个节点的输出都按输入哈希落 checkpoint。429、崩溃、合上电脑 —— 从第一个没跑完的节点接着来。 |
-| **跨 session 的记忆** | 决策与坑活过上下文窗口,召回只要一次调用。 |
-| **任意客户端、任意模型** | 进来是 MCP,出去是 OpenAI 兼容后端。无绑定。 |
+```mermaid
+flowchart TB
+  N["a node needs a model"]
+
+  N --> R1{"node.model set?"}
+  R1 -->|yes| USE["use it"]
+  R1 -->|no| R2{"template card pins a model?"}
+  R2 -->|yes| USE
+  R2 -->|no| STAMP["stamp pass picks from a pool"]
+  STAMP --> USE
+  USE --> EFF["reasoning effort<br/>node.thinking > run config > seat tier > default<br/>transport clamps per provider"]
+
+  subgraph POOLS["pools — capability first, then tier"]
+    direction TB
+    P0["attach_media? → multimodal pool<br/>(tier:strong → the SOTA multimodal pool)"]
+    P1["tier:strong → strong pool — ≥2 families"]
+    P2["default → mid pool"]
+    P3["tier:cheap → cheap pool"]
+  end
+  STAMP -.-> POOLS
+
+  subgraph RULES["stamp rules, in priority order"]
+    direction TB
+    S1["chain affinity — inherit upstream, keep the prompt cache"]
+    S2["sibling spread — siblings get different model families"]
+    S3["rotation — spread load inside the tier"]
+  end
+  STAMP -.-> RULES
+
+  classDef pick fill:#EEEDFE,stroke:#534AB7,color:#26215C
+  classDef pool fill:#E1F5EE,stroke:#0F6E56,color:#04342C
+  classDef rule fill:#FAECE7,stroke:#993C1D,color:#4A1B0C
+  classDef plain fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
+  class R1,R2,STAMP pick
+  class P0,P1,P2,P3 pool
+  class S1,S2,S3 rule
+  class N,USE,EFF plain
+```
+
+两件事刻意分得很开:**卡(card)说"怎么做"** —— 方法论、检查单、输出纪律;**座位与池说
+"谁来做"** —— 模型坐标。二者自由组合:同一张卡能跑在任何模型上,同一个模型能执行任何卡。
+这是它与 subagent 最大的结构差别 —— subagent 把这两件事焊死在一个定义里。
+
+**→ [模型层详解](docs/model-layer.md)** · [图的真理源](docs/diagrams/04-model-layer.md)
+
+## 为什么它立得住
+
+一条原则的两半。只讲第一半(这个仓库讲了很久)会导致一个可预测的失败:**把模型过度机械化掉**。
+
+> **可靠性来自模型之外。** 闸管**判定** —— 做完没有、存不存在、过不过?确定性、零模型、
+> fail-closed。模型"看一眼"不算闸:它静默地没跑时,没有任何东西会变红。
+>
+> **创造力来自模型之内。** 模型管**生成** —— 做什么、怎么做、还缺什么。闸内不要用规则替代它。
+> 用机械规则替代生成,就是把前沿模型的智商折价成那条规则的表达力。
+
+三条推论(它们才是能决定具体设计的部分):
+
+1. **确定性探测器是下限,不是上限。** 它保证明显的漏不漏,但绝不能成为"唯一被允许发现问题的东西"。
+2. **终止归引擎,内容归模型。** 轮数与 quorum 由引擎计数;问模型"够了吗"等于把闸要消除的
+   静默失败又请回来。
+3. **闸在接缝上,不在每一步。** 把有能力的模型当有能力的人:代价高的地方检查,它想的时候别盯着看。
+
+两半都有本仓的实测支撑 —— **包括那些推翻了我们自己假设的读数**。
+**→ [我们量到了什么,以及它否定了什么](docs/eval-findings.md)**
 
 ## 设计准则
 
 - **契约优先于散文。** 每个接缝都是带类型的 schema;校验不过的 plan 根本不会跑。
-- **可靠性不来自模型。** 闸、校验者、确定性 pass 都活在模型之外 —— 模型更强只会让它们更
-  便宜,不会让它们冗余。
-- **……但创造力恰恰来自模型。** 闸管**判定**(做完没有、过不过);模型管**生成**(做什么、
-  还缺什么)。用机械规则替代生成,就是把前沿模型的智商折价成那条规则的表达力。
-  探测器是**下限,永远不是上限**。[详见](docs/architecture.md)
 - **边界 fail closed,记账 fail open。** 未知的卡名直接拒 plan;checkpoint 写不下去只 warn。
-- **不许静默成功。** 声称产出文件却盘上没有 = 失败,不是可以信任的自述。
+- **不许静默成功。** 声称产出文件却盘上没有 = 失败,不是可以信任的自述。声称"审过"却根本
+  不存在的截图同理。
+- **跨家族才算数。** 与作者同家族的校验者共享它的盲点;同家族的三个研究镜头也一样。
+
+## 文档
+
+| | |
+|---|---|
+| [架构](docs/architecture.md) | pass 管线、调度、故障边界、checkpoint 与续跑 |
+| [原语](docs/primitives.md) | 12 个控制流形状,以及什么时候该用普通节点 |
+| [模型层](docs/model-layer.md) | 座位、池、stamp 规则、推理档、多视角审查 |
+| [MCP 工具](docs/mcp-tools.md) | 全部 33 个,分组 |
+| [记忆](docs/memory.md) | 事实库、混合召回、dream 巩固 |
+| [Eval 读数](docs/eval-findings.md) | 我们量到了什么 —— 含否定结论 |
+| [图](docs/diagrams/) | 上面每张图的 Mermaid 真理源 |
 
 ## 许可
 
