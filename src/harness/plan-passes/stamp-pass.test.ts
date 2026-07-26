@@ -261,3 +261,46 @@ describe('强档多模态池 (attach_media + tier:strong)', () => {
 		expect(r.stamped.n).toBe('s:a');
 	});
 });
+
+// 2026-07-26 owner: "经过了弱多模态模型之后需要审核的节点换成 kimi k3"。
+describe('二次多模态审查自动升档', () => {
+	const f3 = (c: string) => c.split(':')[0]!;
+	const m3 = (nodes: ConductorPlan['nodes']): ConductorPlan => ({ name: 't', nodes }) as ConductorPlan;
+	const P3 = { strong: ['s:a'], mid: ['m:a'], cheap: ['c:a'], multimodal: ['mm:cheap'], multimodalStrong: ['k3:strong'] };
+
+	test('第一层看图走廉价视觉模型, 第二层 (祖先里已有看图节点) 自动升强档', () => {
+		const r = stampPass(
+			m3({
+				shots: { goal: '截图', executor: 'command', command: 'bun run render.ts' },
+				look1: { goal: '初判像素', attach_media: true, depends_on: ['shots'] },
+				look2: { goal: '再审一次', attach_media: true, depends_on: ['look1'] },
+			}),
+			{ pools: P3, familyOf: f3 },
+		);
+		expect(r.stamped.look1).toBe('mm:cheap');
+		expect(r.stamped.look2).toBe('k3:strong');
+	});
+
+	test('隔了中间节点也算祖先 (链路不必直连)', () => {
+		const r = stampPass(
+			m3({
+				look1: { goal: '初判', attach_media: true },
+				mid: { goal: '整理', depends_on: ['look1'] },
+				look2: { goal: '再审', attach_media: true, depends_on: ['mid'] },
+			}),
+			{ pools: P3, familyOf: f3 },
+		);
+		expect(r.stamped.look2).toBe('k3:strong');
+	});
+
+	test('强档池为空 → 不升档, 回落普通多模态池 (零回归)', () => {
+		const r = stampPass(
+			m3({
+				look1: { goal: '初判', attach_media: true },
+				look2: { goal: '再审', attach_media: true, depends_on: ['look1'] },
+			}),
+			{ pools: { ...P3, multimodalStrong: [] }, familyOf: f3 },
+		);
+		expect(r.stamped.look2).toBe('mm:cheap');
+	});
+});
