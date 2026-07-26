@@ -2,13 +2,18 @@
  * src/harness/plan-passes/evidence-pass —— pass 管线 ③ evidence: 证据链结构闸 (SDD 2026-07-25 S2)。
  * 契约来源: docs/plan/2026-07-25-skills-compile-evidence-gate.md D-2/D-3 + S2 契约段。
  *
- * 语义: 节点引用的 agent 模板卡声明 evidence:'ui-pixels' ⇒ 该节点必须存在后代链
- *   [executor:'command' 渲染节点 → attach_media:true 审查 leaf]。
- * 缺链 → 程序化补挂 (修复优先); 补不出来 (无可渲染目标) → 抛错拒 plan (D-2「地板不可绕」)。
+ * 语义: 节点引用的 agent 模板卡声明 evidence:'ui-pixels' ⇒ 该节点必须存在一个跑
+ *   `omd-shots-verify` 的后代 command 节点 (它内部要求截图真存在、非空、不是白板)。
+ * 缺链 → 程序化补挂 [渲染 command → 校验 command]; 补不出来 (无可渲染目标) → 抛错拒 plan。
  *
- * **为什么闸只查结构不查语义**: 「这个 command 真的截了图吗」在规划期不可判 (命令串是任意脚本)。
- * 结构闸只保证「有渲染步 + 有看图的尾」; 命令没真打印图片路径这一半由执行期 leaf-media 的
- * MEDIA-2 (解析到但没附上的引用全部留痕) 兜。两层各司其职, 别在这里做启发式猜命令。
+ * **地板为什么是确定性的, 不是多模态审查** (2026-07-26 owner 裁决, 有实测支撑):
+ * 原本地板是"派一个多模态模型去看一眼"。全栈 eval 实测: 6 次跑只有 1 次真产出截图, 唯一产出的
+ * 那次种下的四个崩坏一个都没被提到 —— 而主指标 pass 依然 1.000。**模型判断那一环不仅贵,
+ * 失败还是静默的**: 证据链断了, 读数上完全看不出来。
+ * 改成零模型可计算之后: 没跑就是没跑, 白板就是红的。
+ *
+ * 看得懂设计好不好是**品味**, 交给 HITL 或图外 —— 不该由一个便宜模型在图里假装做完。
+ * attach_media 审查仍然允许接在后面 (omd-shots-verify 的 stdout 就是图片路径), 只是**不再强制**。
  *
  * **管线位置 (对 SDD「planFilters 链尾」的回流修正)**: 实装在 dedup 之后、**stamp 之前**。
  * SDD 写「链尾」时没考虑本 pass 会**新增节点** —— 排在 stamp 后, 补挂的 attach_media 审查 leaf
@@ -31,8 +36,8 @@ type PlanNode = ConductorPlan["nodes"][string];
 /** 本 pass 认识的证据类 (v1 唯一; 词表真源在 agent-templates.KNOWN_EVIDENCE_CLASSES)。 */
 const UI_PIXELS = "ui-pixels";
 
-/** 补挂的审查 leaf 复用的内置审查卡名 (注册表里没有就不挂, 见 patchChain)。 */
-const UI_REVIEWER_TEMPLATE = "ui-reviewer";
+/** 确定性截图闸的 CLI (结构闸按名认它 —— 认的是我们自己的工具, 不是猜命令语义)。 */
+const SHOTS_VERIFY_CLI = "omd-shots-verify";
 
 /** 可直接喂给 omd-render 的产物后缀 (静态页); 其余后缀无法当渲染目标。 */
 const RENDERABLE_EXT = /\.(html?|htm)$/i;
@@ -77,7 +82,7 @@ export function evidencePass(
 	const patched: string[] = [];
 	for (const id of hits) {
 		if (hasEvidenceChain(nodes, id)) continue;
-		patched.push(...patchChain(nodes, id, opts.templates.has(UI_REVIEWER_TEMPLATE)));
+		patched.push(...patchChain(nodes, id));
 	}
 	if (patched.length === 0) return { plan, patched: [], noCardHits, shape }; // EVD-1 恒等
 
@@ -94,17 +99,13 @@ export function evidencePass(
 }
 
 /**
- * 节点 id 是否已有 [command 渲染后代 → attach_media 审查后代] 链。
- * 只查结构 (见文件头「为什么闸只查结构」): 任一 command 后代 R, 且 R 有 attach_media 后代 ⇒ 成立。
+ * 节点 id 是否已有确定性截图闸后代 —— 一个跑 omd-shots-verify 的 command 节点。
+ * 渲染步不必单独结构校验: 没渲染 → 没图 → 这道闸运行时自己会红。**判据收敛成一条, 更强也更简单。**
  */
 function hasEvidenceChain(nodes: ConductorPlan["nodes"], id: string): boolean {
-	for (const r of descendantsOf(nodes, id)) {
-		if (nodes[r]!.executor !== "command") continue;
-		for (const v of descendantsOf(nodes, r)) {
-			if (nodes[v]!.attach_media === true) return true;
-		}
-	}
-	return false;
+	return descendantsOf(nodes, id).some(
+		(d) => nodes[d]!.executor === "command" && (nodes[d]!.command ?? "").includes(SHOTS_VERIFY_CLI),
+	);
 }
 
 /** 传递闭包: 所有 (直接/间接) 依赖 id 的节点。幻象 dep 自然被忽略 (只走 nodes 内的边)。 */
@@ -129,7 +130,7 @@ function descendantsOf(nodes: ConductorPlan["nodes"], id: string): string[] {
  * 渲染目标取该节点声明的 output_path (须是可渲染后缀) —— 取不到就没有可截图的东西,
  * 抛错拒 plan (D-2: 采集是地板; 与其挂一个必然失败的命令假装有证据链, 不如让 owner/conductor 补 output_path)。
  */
-function patchChain(nodes: ConductorPlan["nodes"], id: string, hasUiReviewer: boolean): string[] {
+function patchChain(nodes: ConductorPlan["nodes"], id: string): string[] {
 	const node = nodes[id]!;
 	const target = node.output_path;
 	if (!target || !RENDERABLE_EXT.test(target)) {
@@ -140,27 +141,23 @@ function patchChain(nodes: ConductorPlan["nodes"], id: string, hasUiReviewer: bo
 		);
 	}
 	const renderId = freshId(nodes, `${id}-render`);
-	const reviewId = freshId(nodes, `${id}-pixel-review`);
+	const verifyId = freshId(nodes, `${id}-shots-verify`);
 	const renderNode: PlanNode = {
 		goal: `渲染 ${target} 截图, 打印产物图片路径 (证据采集步, 由 evidence-pass 补挂)`,
 		executor: "command",
 		command: `bun run scripts/omd-render.ts ${target} --out .omd/render/${renderId}`,
 		depends_on: [id],
 	};
-	const reviewNode: PlanNode = {
-		goal:
-			`看 ${target} 的真实像素 (层级/间距/状态), 判它是否达到交付标准; ` +
-			`只依据截图判断, 不复述代码 (证据审查步, 由 evidence-pass 补挂)`,
-		// 复用既有 ui-reviewer 卡的审查清单 (层级/布局/可读性/状态/一致性/slop), 别让补挂节点裸奔。
-		// 注册表里没有这张卡时不挂 (执行期 TPL-2 会拒未知卡名) —— 装饰 fail-open, 链本身仍 fail-closed。
-		...(hasUiReviewer ? { template: UI_REVIEWER_TEMPLATE } : {}),
-		attach_media: true,
+	const verifyNode: PlanNode = {
+		goal: `校验 ${target} 的截图真存在、非空、不是白板 (确定性证据闸, 零模型, 由 evidence-pass 补挂)`,
+		executor: "command",
+		command: `bun run scripts/${SHOTS_VERIFY_CLI}.ts .omd/render/${renderId}`,
 		depends_on: [renderId],
 		requires: "all",
 	};
 	nodes[renderId] = renderNode;
-	nodes[reviewId] = reviewNode;
-	return [renderId, reviewId];
+	nodes[verifyId] = verifyNode;
+	return [renderId, verifyId];
 }
 
 /** id 去重 (补挂 id 与既有 id 撞车时加数字后缀)。 */
