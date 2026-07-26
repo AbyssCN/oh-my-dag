@@ -303,8 +303,8 @@ main structural difference from a subagent, where "who" and "how" are welded int
 
 ## Why it holds together
 
-Two halves of one principle. Stating only the first — which this codebase did for a long time —
-produces a predictable failure: over-mechanising the model away.
+Two halves of one principle. Systems that state only the first end up mechanising the model away;
+systems that state only the second end up trusting it where trust is not checkable.
 
 > **Reliability comes from outside the model.** Gates judge — did it happen, is it there, does it
 > pass? Deterministic, zero-model, fail-closed. A model "having a look" is not a gate: when it
@@ -322,9 +322,6 @@ Three corollaries that decide real designs:
    counted by the engine. Asking a model "are we done yet?" reintroduces the silent failure gates exist to remove.
 3. **Gates sit at the joins, not on every step.** Treat a capable model like a capable person: check
    the work where being wrong is expensive; don't look over their shoulder while they think.
-
-Both halves are backed by measurements in this repo — including the ones that contradicted our own
-assumptions. **→ [What we measured, and what it disproved](docs/eval-findings.md)**
 
 ## Design rules
 
@@ -345,7 +342,6 @@ assumptions. **→ [What we measured, and what it disproved](docs/eval-findings.
 | [Model layer](docs/model-layer.md) | seats, pools, stamp rules, reasoning effort, multi-perspective review |
 | [MCP tools](docs/mcp-tools.md) | all 33, grouped |
 | [Memory](docs/memory.md) | fact store, hybrid recall, dream consolidation |
-| [Eval findings](docs/eval-findings.md) | what we measured — including the negative results |
 | [Diagrams](docs/diagrams/) | Mermaid source of truth for every figure above |
 
 ## License
