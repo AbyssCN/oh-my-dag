@@ -49,7 +49,10 @@ function corpusPath(cwd: string, query: string, stamp: string): string {
   return join(dir, `${slug}-${stamp}.md`);
 }
 
-export function createWebTools(deps: WebToolDeps): OmdMcpTool[] {
+/**
+ * omd_web —— 需要 search provider (无则调用方不挂它)。
+ */
+export function createWebTools(deps: Omit<WebToolDeps, 'distill'>): OmdMcpTool[] {
   return [
     {
       name: 'omd_web',
@@ -98,6 +101,16 @@ export function createWebTools(deps: WebToolDeps): OmdMcpTool[] {
         }
       }) as OmdMcpTool['handler'],
     },
+  ];
+}
+
+/**
+ * omd_distill —— **不依赖任何 web provider**: 它吃调用方给的文本, 只要有模型就能跑。
+ * 单独一个工厂是 2026-07-26 真跑时发现的: 原本和 omd_web 绑在一起, 于是零 key 用户连
+ * 一个本来能用的工具都拿不到 —— 挂载条件必须跟**真实依赖**走, 不跟"同一个文件"走。
+ */
+export function createDistillTools(deps: Pick<WebToolDeps, 'distill'>): OmdMcpTool[] {
+  return [
     {
       name: 'omd_distill',
       description: '吃已有原文蒸馏洞察, 不抓网。expert=忠实抽机制, challenger=高温挖长尾 (未言明前提/冲突/迁移)。',

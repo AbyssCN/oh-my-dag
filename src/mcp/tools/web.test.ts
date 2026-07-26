@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createWebTools } from './web';
+import { createDistillTools, createWebTools } from './web';
 
 // web 能力递到图外。红线: 原文零丢失 (落盘) + context 零污染 (stdout 只回索引)。
 // fetchedUrls 是 research 第二轮那个确定性探测器的原料 —— 它必须准。
@@ -23,7 +23,8 @@ const deps = (cwd: string) => ({
   distill: async (lens: 'expert' | 'challenger') =>
     lens === 'expert' ? { relevance: 'r-e', extract: 'x-e' } : { relevance: 'r-c', extract: 'x-c' },
 });
-const tool = (cwd: string, n: string) => createWebTools(deps(cwd) as never).find((t) => t.name === n)!;
+const tool = (cwd: string, n: string) =>
+  [...createWebTools(deps(cwd) as never), ...createDistillTools(deps(cwd) as never)].find((t) => t.name === n)!;
 const call = (t: ReturnType<typeof tool>, a: unknown) =>
   (t.handler as never as (x: unknown) => Promise<{ isError?: boolean; content: { text: string }[] }>)(a);
 
@@ -69,9 +70,7 @@ describe('omd_distill', () => {
   });
 
   test('一个 lens 挂了照回另一个, 但**留痕**不静默吞 (蒸馏是增益不是链路)', async () => {
-    const tools = createWebTools({
-      cwd: '.',
-      retrieve: (async () => ({})) as never,
+    const tools = createDistillTools({
       distill: (async (lens: string) => {
         if (lens === 'expert') throw new Error('boom');
         return { relevance: 'r', extract: 'x' };
@@ -81,6 +80,12 @@ describe('omd_distill', () => {
     expect(t).toContain('expert (失败)');
     expect(t).toContain('boom');
     expect(t).toContain('x'); // challenger 仍然出结果
+  });
+
+  test('不依赖 web provider —— 独立工厂, 零 key 也能用 (真跑时发现的接线错)', () => {
+    expect(createDistillTools({ distill: (async () => ({ relevance: 'r', extract: 'x' })) as never }).map((t) => t.name)).toEqual([
+      'omd_distill',
+    ]);
   });
 
   test('空 text → isError', async () => {
