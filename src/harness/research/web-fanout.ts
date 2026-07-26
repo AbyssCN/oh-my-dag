@@ -12,7 +12,9 @@
  *
  * 默认 lens/framing/judge 面向通用 web 研究; 调用方可整体覆盖 (领域研究传专家 lens)。
  */
+import { z } from 'zod';
 import { researchFanout, type ProbeYield, type ResearchFanoutConfig, type ResearchFanoutResult, type ResearchLens } from './fanout';
+import { send } from '../../model/gateway';
 import { resolveRoleModelConfigured } from '../../model/role-models';
 import { authorFanoutSpec } from './author-spec';
 import { retrieveWeb, type RetrieveOpts, type RetrieveResult } from '../web/retrieve';
@@ -101,6 +103,12 @@ export interface WebFanoutOpts extends RetrieveOpts {
    * 之首 —— 排最前 = 跨轮字节最稳的段, 对 prompt cache 最友好。
    */
   anchors?: { label: string; text: string }[];
+  /**
+   * deep 档: seedQueries 未显式给时由模型作者化 3-4 个互补种子 query (authorSeedQueries)。
+   * xihe-deep-research 的 config.web[] 是人手写的 gather 清单 —— 自动化它, 一条命令才成管线。
+   * fail-open: 作者化失败 → 无种子继续 (单检索 + rounds 仍在)。
+   */
+  authorSeeds?: boolean;
   onStage?: (stage: string, detail: string) => void;
 }
 
@@ -114,6 +122,43 @@ export interface WebFanoutResult {
   secondPassCorpus?: string;
   /** seedQueries 的各自检索产物 (fullCorpus 附录落盘用; 未用种子 = undefined)。 */
   seedRetrievals?: RetrieveResult[];
+}
+
+/** 种子作者化 schema: 互补角度的检索 query 清单。 */
+const SEED_SCHEMA = z.object({ queries: z.array(z.string().min(4)) });
+
+/**
+ * deep 档种子作者化: 把一个领域问题拆成 3-4 个**互补角度**的检索 query。
+ * 与 query-expand 的分工: expand 是同一 query 的检索友好改写 (召回), 这里是**不同侧面的子领域**
+ * (覆盖)。fail-open: 调用/解析失败 → [] (deep 退化为单检索, 不断链)。
+ */
+export async function authorSeedQueries(
+  question: string,
+  opts: { model?: string; _call?: typeof send } = {},
+): Promise<string[]> {
+  const call = opts._call ?? send;
+  const model = opts.model ?? resolveRoleModelConfigured('lens').model;
+  try {
+    const res = await call({
+      model,
+      messages: [
+        {
+          role: 'user',
+          content:
+            `研究问题: ${question}\n\n把它拆成 3-4 个**互补角度**的检索 query —— 不是原题的同义改写, ` +
+            `而是覆盖原题不同侧面的子领域 (机制/实践/反面与风险/生态与替代等), 语言按检索效果选。` +
+            `只输出 JSON: {"queries":["..."]}`,
+        },
+      ],
+      responseSchema: SEED_SCHEMA,
+      maxTokens: 1024,
+      meta: { role: 'seed-author' },
+    });
+    const parsed = SEED_SCHEMA.safeParse(res.parsed);
+    return parsed.success ? parsed.data.queries.slice(0, 4) : [];
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -204,9 +249,19 @@ export async function researchWebFanout(
   if (retrieval.sources.length === 0) throw new Error('researchWebFanout: 检索零结果, 无语料可研究');
   opts.onStage?.('retrieve', `命中 ${retrieval.sources.length} · 抓取 ${retrieval.sources.filter((s) => s.body).length} · 语料 ${retrieval.markdown.length} chars`);
 
+  // deep 档: 种子未显式给 → 模型作者化 (显式给的优先, 作者化不覆盖人)。
+  let seedQueries = opts.seedQueries;
+  if (!seedQueries?.length && opts.authorSeeds) {
+    seedQueries = await authorSeedQueries(question, { model: opts.lensModel });
+    opts.onStage?.(
+      'seeds',
+      seedQueries.length ? `作者化 ${seedQueries.length} 个种子: ${seedQueries.join(' · ')}` : '种子作者化失败 → 单检索继续 (fail-open)',
+    );
+  }
+
   // deep-research 档: 种子 query 各自独立检索 (蒸馏各自生效), 失败跳过留痕不断链。
   const seedRetrievals: RetrieveResult[] = [];
-  for (const q of opts.seedQueries ?? []) {
+  for (const q of seedQueries ?? []) {
     opts.onStage?.('retrieve', `种子 query "${q}"`);
     try {
       const r = await retrieveWeb(stack, q, opts);

@@ -1,5 +1,5 @@
 import { test, expect, describe } from 'bun:test';
-import { assembleGroundTruth, buildSecondPassProbe, extractCitedUrls } from '../../src/harness/research/web-fanout';
+import { assembleGroundTruth, authorSeedQueries, buildSecondPassProbe, extractCitedUrls } from '../../src/harness/research/web-fanout';
 import type { WebStack } from '../../src/harness/web';
 
 // probe 只碰 fetchProviders + cleaner → 最小 fake stack (searchPool/quota 不参与, 断言型 cast)。
@@ -33,6 +33,30 @@ describe('assembleGroundTruth — deep-research 档语料组装', () => {
 
   test('无锚点无种子 = 主检索原样 (单问题路径零回归)', () => {
     expect(assembleGroundTruth(undefined, 'MAIN', [])).toBe('MAIN');
+  });
+});
+
+describe('authorSeedQueries — deep 档种子作者化', () => {
+  test('parsed 命中 schema → 取 query 清单, 钳 4 条', async () => {
+    const fake = (async () => ({
+      text: '',
+      parsed: { queries: ['角度一 query', '角度二 query', '角度三 query', '角度四 query', '角度五 query'] },
+      usage: { in: 1, out: 1 },
+    })) as unknown as Parameters<typeof authorSeedQueries>[1] extends { _call?: infer C } ? C : never;
+    const qs = await authorSeedQueries('问题', { model: 'fake:m', _call: fake });
+    expect(qs.length).toBe(4);
+    expect(qs[0]).toBe('角度一 query');
+  });
+
+  test('调用抛错 / parsed 缺失 → fail-open 空清单 (deep 退化为单检索不断链)', async () => {
+    const boom = (async () => {
+      throw new Error('402');
+    }) as unknown as Parameters<typeof authorSeedQueries>[1] extends { _call?: infer C } ? C : never;
+    expect(await authorSeedQueries('问题', { model: 'fake:m', _call: boom })).toEqual([]);
+    const noParsed = (async () => ({ text: '不是 JSON', usage: { in: 1, out: 1 } })) as unknown as Parameters<
+      typeof authorSeedQueries
+    >[1] extends { _call?: infer C } ? C : never;
+    expect(await authorSeedQueries('问题', { model: 'fake:m', _call: noParsed })).toEqual([]);
   });
 });
 

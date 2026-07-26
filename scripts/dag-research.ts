@@ -14,6 +14,9 @@
  *   --queries 'q1;;q2' = 额外种子 query (整领域档案档, 吸收自 xihe-deep-research 多角度 gather):
  *                各自独立检索并入语料; 与 --rounds/--council 组合 = 原 xihe-deep-research 全形态。
  *   --anchor p1,p2 = 锚点文件 (已有设计笔记/契约) 原样进 groundTruth 之首; 文件不可读 = 响亮报错。
+ *   --deep = **终极档一键预设** (显式激发, 不要求用户记四旗标咒语):
+ *            council + rounds=3 (显式 --rounds 优先) + 种子作者化 (未给 --queries 时模型拆 3-4
+ *            互补角度自动 gather)。加 --anchor 即原 xihe-deep-research 全形态一条命令。
  *   --no-tier  = 关信源分档重排 (默认开: crawl 槽位优先一手/权威源, 农场域降权不删 —
  *                见 src/harness/web/source-tier.ts)
  *   --no-expand = 关 query 扩展 (默认开: 检索前一次 flash 改写 → 原+改写多轮搜 → URL 去重 →
@@ -34,9 +37,9 @@ import { CHILDREN_INSTRUCTION, writeResultAtomic } from '../src/harness/pathfind
 import { bootstrapModelRuntime } from '../src/model/bootstrap';
 
 const USAGE =
-  'usage: bun run scripts/dag-research.ts "<研究问题>" [--rounds N] [--probe-crawl N] [--queries "q1;;q2"] [--anchor p1,p2] [--council] [--super] [--k 8] [--crawl 5] [--no-tier] [--no-expand] [--expand-model M] [--no-distill] [--distill-model M] [--distill-threshold N] [--lens-count N] [--conductor-model M] [--lens-model ..] [--reason-model ..] [--children] [--out path]';
+  'usage: bun run scripts/dag-research.ts "<研究问题>" [--deep] [--rounds N] [--probe-crawl N] [--queries "q1;;q2"] [--anchor p1,p2] [--council] [--super] [--k 8] [--crawl 5] [--no-tier] [--no-expand] [--expand-model M] [--no-distill] [--distill-model M] [--distill-threshold N] [--lens-count N] [--conductor-model M] [--lens-model ..] [--reason-model ..] [--children] [--out path]';
 
-const BOOL = new Set(['super', 'council', 'no-tier', 'no-expand', 'no-distill', 'children', 'help']);
+const BOOL = new Set(['deep', 'super', 'council', 'no-tier', 'no-expand', 'no-distill', 'children', 'help']);
 const flags: Record<string, string> = {};
 const positionals: string[] = [];
 const av = process.argv.slice(2);
@@ -70,6 +73,12 @@ function numFlag(name: string, min: number): number | undefined {
   return n;
 }
 
+// --deep 预设展开 (在 opts 组装前, 显式旗标优先): council + rounds=3 + 种子作者化。
+if (flags.deep) {
+  flags.council = 'true';
+  if (!flags.rounds) flags.rounds = '3';
+}
+
 let stack: ReturnType<typeof createWebStackFromEnv>;
 try {
   stack = createWebStackFromEnv();
@@ -98,6 +107,8 @@ const res = await researchWebFanout(stack, question, {
   probeCrawl: numFlag('probe-crawl', 1),
   // deep-research 档: 种子 query (';;' 分隔) + 锚点文件 (逗号分隔, 不可读响亮报错)。
   seedQueries: flags.queries ? flags.queries.split(';;').map((s) => s.trim()).filter(Boolean) : undefined,
+  authorSeeds: !!flags.deep, // 显式 --queries 优先, 作者化只在缺席时生效 (web-fanout 内判)
+
   anchors: flags.anchor
     ? await Promise.all(
         flags.anchor.split(',').map((s) => s.trim()).filter(Boolean).map(async (p) => {
