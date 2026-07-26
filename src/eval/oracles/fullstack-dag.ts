@@ -24,6 +24,11 @@
  *     [--r 2] [--conductors openai-codex:gpt-5.6-sol,kimi-coding:k3] [--leaf mimo:mimo-v2.5-pro]
  */
 import { $ } from 'bun';
+// ⚠ 必须先注册 provider: inproc leaf 走 callModel, 而 callModel 的 registry 要 bootstrap 才有
+// 'mimo'/'deepseek' 等自有 provider (kimi/openai-codex 走 pi 通道自注册, 所以只挂 inproc 那半边)。
+// 2026-07-26 全栈首轮就是栽在这: contract 节点 (inproc) 抛 "provider 'mimo' not registered",
+// 整张图级联 skip, 6 次跑全废 —— 而且 agent-leaf-prompt 的固定图里没有 inproc leaf, 所以从没暴露。
+import { bootstrapModelRuntime } from '../../model/bootstrap';
 import { existsSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { runExecutorDag } from '../../harness/executor-dag';
@@ -202,6 +207,7 @@ const median = (xs: number[]): number => {
 };
 
 export default function fullstackDagSpec(opts: Record<string, string> = {}): TournamentSpec<FsConfig> {
+  bootstrapModelRuntime();
   // R 默认 2: 一次全栈 run 是几十分钟, R=3 起步就是半天。要读噪声地板靠对照格, 不靠堆 R。
   const R = Math.max(1, Number.parseInt(opts.r ?? '2', 10) || 2);
   const leafTimeoutMs = opts.leafTimeout ? Math.max(0, Number.parseInt(opts.leafTimeout, 10) || 0) : 1_800_000;
