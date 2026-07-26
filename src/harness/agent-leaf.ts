@@ -336,7 +336,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           'HTTP 状态, 故此处响亮报错而非当成功 (统一-registry C-5b)。',
       );
     }
-    return { text, usage, filesTouched: [...touched], toolCalls, stalled };
+    return { text, usage, filesTouched: [...touched], cwd, toolCalls, stalled };
   };
 }
 

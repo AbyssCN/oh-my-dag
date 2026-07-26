@@ -17,8 +17,18 @@ export interface AgentLeafInput {
 export interface AgentLeafResult {
   text: string;
   usage: ModelUsage;
-  /** 本次 leaf 经 write/edit 族工具触碰的文件(continuity 接缝;去重)。 */
+  /** 本次 leaf 经 write/edit 族工具触碰的文件(continuity 接缝;去重)。**相对路径的根见 cwd。** */
   filesTouched?: string[];
+  /**
+   * filesTouched 里相对路径的**解析根** = 本 runner 的 cwd。
+   *
+   * 为什么必须由结果自己带: 产物校验闸原本拿 `continuity?.repoRoot ?? process.cwd()` 当根 ——
+   * 而 agent runner 的 cwd 可以是任意目录 (worktree / 子项目)。两者不一致时, 闸拿错根去查存在性,
+   * **把写对了文件的节点判成 empty-done**, 下游整片级联 skip。2026-07-26 实测复现:
+   * filesTouched=["eval-app/src/board.ts"] 文件真在 worktree 里, 闸却按 omd 仓根查 → 误杀。
+   * 省略 = 调用方回落老行为。
+   */
+  cwd?: string;
   /**
    * 本次 leaf 的工具调用次数 (按 tool_execution_start 计)。**prompt 档的路由效率读数** ——
    * 工具路由那一段教的就是"该用 codegraph 时别拿 grep 凑", 而档位改动的效果只有在这个量上

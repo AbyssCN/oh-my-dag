@@ -590,11 +590,14 @@ async function executePlan(
       let usage: ModelUsage;
       let filesTouched: string[] = [];
       let toolCalls: number | undefined;
+      let artifactRoot: string | undefined;
       if (useAgent) {
         const r = await config.agentRunner!({ prompt, model });
         text = r.text;
         usage = r.usage;
         filesTouched = r.filesTouched ?? [];
+        // 产物根: leaf 自报的 cwd 最准 (它就是写文件的那个进程) > continuity 根 > 本进程 cwd。
+        artifactRoot = r.cwd;
         toolCalls = r.toolCalls;
         // 早期心跳闸 (issue #5): provider 挂起判停摆 → 标 failed (不把近零输出当 done), 附 stall 标记
         // 供 settle 记 failureKind='stall' (issue #4 败因留痕)。heal 回路可据此重试/换池。
@@ -610,7 +613,7 @@ async function executePlan(
         // 却零改动, oracle 因"新文件没接线"照样绿 → 谎报完工静默漏过)。写文件节点 done 的
         // **必要条件** = 真碰了文件: filesTouched 空 / 声称的路径不存在 → failed (heal 回路可见)。
         if (producesFiles) {
-          const root = continuity?.repoRoot ?? process.cwd();
+          const root = artifactRoot ?? continuity?.repoRoot ?? process.cwd();
           const missing = filesTouched.filter((p) => !existsSync(p.startsWith('/') ? p : `${root}/${p}`));
           if (filesTouched.length === 0 || missing.length > 0) {
             const why = filesTouched.length === 0
