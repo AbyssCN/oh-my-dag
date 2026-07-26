@@ -34,8 +34,12 @@ import { effectiveFanout, resolveProviderCap } from '../harness/fleet';
 import { createRunsTools } from './tools/runs';
 import { createConfigTools } from './tools/config-tools';
 import { createComposeTools } from './tools/compose';
+import { createWebTools } from './tools/web';
 import { createPlansTool } from './tools/plans';
 import { createModelRouterFromEnv } from '../harness/model-router';
+import { createWebStackFromEnv, retrieveWeb } from '../harness/web';
+import { createModelSourceDistiller } from '../harness/web/distill-source';
+import { createChallengerDistiller } from '../harness/web/distill-challenger';
 import { createPlanLedger, type PlanLedger } from '../harness/plan-ledger';
 import { runExecutorDag, runExecutorDagWithPlan } from '../harness/executor-dag';
 import type { ExecutorDagConfig } from '../harness/executor-dag-types';
@@ -436,6 +440,24 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     ...createConfigTools({ cwd, router }),
     // 组合模式入口 (2026-07-26): 原语与图式递到图外, 让外部 SOTA agent 不必先出图就能用引擎能力。
     // runPlan 走同一条 runExecutorDagWithPlan —— 零新执行路径, stamp/闸/checkpoint 全部照旧。
+    // web 能力递到图外 (2026-07-26): omd 早有整套 web 层但只在 TUI 挂。无 search provider 时
+    // createWebStackFromEnv 会抛 —— 那时不挂这两个工具 (与 tui 同款优雅跳过, 不崩 boot)。
+    ...(() => {
+      try {
+        const stack = createWebStackFromEnv(env);
+        return createWebTools({
+          cwd,
+          retrieve: (query, o) => retrieveWeb(stack, query, o as Parameters<typeof retrieveWeb>[2]) as never,
+          distill: async (lens, input) => {
+            const d = lens === 'challenger' ? createChallengerDistiller() : createModelSourceDistiller();
+            return d(input);
+          },
+        });
+      } catch (e) {
+        logger.warn({ err: (e as Error).message }, '[omd/mcp] 无 search provider → omd_web/omd_distill 不挂 (设 TAVILY_API_KEY / ANYSEARCH_API_KEY / SEARXNG_URL 启用)');
+        return [];
+      }
+    })(),
     ...createComposeTools({
       runPlan: (plan, config) =>
         engine.runExecutorDagWithPlan(plan, config as unknown as Parameters<typeof runExecutorDagWithPlan>[1]),
