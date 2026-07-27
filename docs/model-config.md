@@ -83,8 +83,8 @@ expired token depends on whether omd has a built-in OAuth handler for that provi
 | Sub | Coordinate | omd OAuth handler? | How to log in / keep alive |
 |---|---|---|---|
 | **Kimi** | `kimi-coding:k3` | ✅ built-in (device-code, `src/model/kimi-oauth.ts`) | omd TUI **`/login`** runs the device-code flow and writes auth.json; auto-refreshes. When the refresh token itself dies → `/login` again. |
-| **GPT (ChatGPT Plus)** | `openai-codex:gpt-5.6-sol` | ⚠️ none in omd | The token is minted by the external **pi / codex CLI**; omd only reads it. When `expires` passes, omd uses the stale token (requests 401) until the pi/codex side refreshes it. Keep that CLI logged in; re-run its login if 401s appear. |
-| **Claude** | `anthropic:claude-opus-4-8` (etc.) | ⚠️ not wired as OAuth | Two options below. |
+| **GPT (ChatGPT Plus)** | `openai-codex:gpt-5.6-sol` | ✅ built-in (`src/model/openai-codex-oauth.ts`) | Initial login is done once by the external **pi / codex CLI** (writes auth.json); from then on omd **auto-refreshes** the access token via the `refresh_token` grant when it expires. Only when the refresh token itself is revoked do you re-run the codex login. |
+| **Claude** | `anthropic:claude-opus-4-8` (etc.) | ⚠️ not wired as OAuth | Two options below (an omd handler like codex's could be added by wiring pi-ai's `anthropic` flow). |
 
 **Registering Claude:**
 - **Reliable — API key:** `omd_set_key anthropic <sk-ant-…>` then
