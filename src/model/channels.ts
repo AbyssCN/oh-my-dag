@@ -20,7 +20,17 @@ export type BillingKind = "token" | "request" | "session" | "flat";
 /** 聚合渠道 (一个 provider 托管多家族模型) 的 provider 基名。家族须从 modelId 品牌头解析。 */
 const AGGREGATOR_PROVIDERS = new Set(["opencode"]);
 /** 品牌归一: 渠道别名 → 家族名 (INV-3/INV-7 跨家族判定用 zhipu 与 glm 同族等; openai-codex = ChatGPT 订阅渠道 → gpt 家族)。 */
-const BRAND_ALIAS: Record<string, string> = { zhipu: "glm", xiaomi: "mimo", "openai-codex": "gpt", openai: "gpt" };
+const BRAND_ALIAS: Record<string, string> = {
+	zhipu: "glm",
+	xiaomi: "mimo",
+	// 小米 token-plan 订阅三区 (pi-ai 原生 provider, 端点 token-plan-{ams,cn,sgp}.xiaomimimo.com) = mimo 族。
+	// cn 的 -cn 会被 suffix strip 成 'xiaomi-token-plan'; ams/sgp 不被 strip, 故三个基名都列。
+	"xiaomi-token-plan-ams": "mimo",
+	"xiaomi-token-plan-sgp": "mimo",
+	"xiaomi-token-plan": "mimo",
+	"openai-codex": "gpt",
+	openai: "gpt",
+};
 
 /**
  * 坐标 → 模型家族 (INV-7 跨家族分散 / INV-3 verifier≠主力族 的判定单元)。

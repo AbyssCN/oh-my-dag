@@ -72,9 +72,11 @@ export const LENS_DIVERGENCE_POOL = [
   'opencode-go:qwen3.7-plus',
   'opencode-go:minimax-m3',
   'opencode-go:deepseek-v4-pro',
-  'mimo:mimo-v2.5-pro',
+  'xiaomi-token-plan-ams:mimo-v2.5-pro', // mimo 真订阅 (token-plan, cost0); ≠ sk- 按量端点 (已打光)
 ];
-export const LENS_DIVERGENCE_WEIGHTS: Record<string, number> = { 'mimo:mimo-v2.5-pro': 3 };
+export const LENS_DIVERGENCE_WEIGHTS: Record<string, number> = {
+  'xiaomi-token-plan-ams:mimo-v2.5-pro': 3,
+};
 /** judge panel 跨族池: K 维度逐个轮不同族, 降单模型系统偏见。 */
 export const JUDGE_PANEL_POOL = ['opencode-go:glm-5.2', 'openai-codex:gpt-5.6-sol', 'kimi-coding:k3'];
 

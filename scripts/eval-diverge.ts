@@ -21,14 +21,14 @@ const question =
 const crawlArg = process.argv.indexOf('--crawl');
 const crawl = crawlArg >= 0 ? Number(process.argv[crawlArg + 1]) : 3;
 
-const MONO = 'mimo:mimo-v2.5';
+const MONO = 'xiaomi-token-plan-ams:mimo-v2.5'; // mimo 真订阅 (token-plan, cost0)
 const arms: { name: string; opts: Record<string, unknown> }[] = [
   {
     name: 'A-mono-v2.5',
     opts: { divergePool: [MONO], judgePool: [MONO], lensModel: MONO, reasonModel: MONO, reduceModel: MONO, judgeModel: MONO, fusionModel: MONO, graftModel: MONO },
   },
   { name: 'B-sol', opts: { fusionModel: 'openai-codex:gpt-5.6-sol', graftModel: 'openai-codex:gpt-5.6-sol' } },
-  { name: 'B-v2.5', opts: { fusionModel: 'mimo:mimo-v2.5-pro', graftModel: 'mimo:mimo-v2.5-pro' } },
+  { name: 'B-v2.5', opts: { fusionModel: 'xiaomi-token-plan-ams:mimo-v2.5-pro', graftModel: 'xiaomi-token-plan-ams:mimo-v2.5-pro' } },
 ];
 
 const stack = createWebStackFromEnv();
