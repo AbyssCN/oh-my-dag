@@ -165,6 +165,52 @@ advanced by typed tickets, with background research that outlives your client).
 
 **→ [Full tool reference](docs/mcp-tools.md)**
 
+## Deep research, benchmarked
+
+One command fans a question across cheap concurrent models, keeps every source on disk with zero
+loss, synthesizes through competing lenses, closes its own gaps by re-crawling, and lets a judge
+panel pick the winner.
+
+```bash
+bun run scripts/dag-research.ts "<your question>" --deep
+```
+
+We put it head-to-head against an all-frontier alternative on the same question (a mid-2026 MCP
+ecosystem review). **System A** — omd `--deep` on cheap seats. **System B** — a 106-agent
+Claude workflow where every agent is a frontier model.
+
+| | **A · omd `--deep`** | **B · 106-agent frontier workflow** |
+|---|---|---|
+| Cash cost | **$2.19** | subscription quota · 3.76M tokens |
+| Result | 132k-char report · 32 sources | 23 claims, verified 3-of-3 |
+| The catch | finished clean | hit the limit before it finished |
+
+> **A cheap stack reproduced 13 of the 15 facts the frontier workflow verified — for $2.19.**
+
+Not because the small models are secretly frontier-grade. Because deep research has a **deterministic
+retrieval floor**: `omd_web` fetches with no model in the loop, full text lands on disk, and gaps
+close by *re-crawling the missing source*, never by a model filling them from memory. The model does
+synthesis; the engine does recall. That is the whole repo's thesis, measured on one task —
+*reliability comes from outside the model.*
+
+```mermaid
+flowchart LR
+  Q(["question"]) --> G["gather<br/>zero-LLM search + fetch<br/>full text to disk"]
+  G --> S["synthesize<br/>lenses fan out, a panel judges"]
+  S --> D["deepen ×3<br/>find gaps → re-crawl → mine only the gaps"]
+  D -->|no new finds| R(["cited report<br/>+ zero-loss appendix"])
+  D -.->|new finds| S
+  classDef zero fill:#E1F5EE,stroke:#0F6E56,color:#04342C
+  classDef llm fill:#EEEDFE,stroke:#534AB7,color:#26215C
+  classDef infra fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
+  class G zero
+  class S,D llm
+  class Q,R infra
+```
+
+**→ [How it works, the models, and the full A/B benchmark](docs/deep-research.md)** ·
+[sample output](docs/examples/deep-research-mcp-2026.md)
+
 ## How the graph runs
 
 A task is planned **once** by an LLM, then transformed by **pure functions**, then executed by
