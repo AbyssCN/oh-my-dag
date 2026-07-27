@@ -94,6 +94,7 @@ describe("resolveRoleModelConfigured — priority chain", () => {
 	test("review-spec env key = OMD_REVIEW_SPEC_MODEL (hyphen→underscore, 对齐既有约定)", () => {
 		const result = resolveRoleModelConfigured("review-spec", {
 			env: { OMD_REVIEW_SPEC_MODEL: "qwen:qwen3.7-max" },
+			modelsMap: {}, // hermetic: 不读真 .omd/config.json models 段
 		});
 		expect(result.model).toBe("qwen:qwen3.7-max");
 		expect(result.source).toBe("env");

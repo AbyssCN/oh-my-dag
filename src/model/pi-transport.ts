@@ -38,6 +38,7 @@ import {
 } from '@earendil-works/pi-ai/compat';
 import type { OAuthCredentials } from '@earendil-works/pi-ai/oauth';
 import { createKimiCodingOAuthProvider } from './kimi-oauth';
+import { createOpenAICodexOAuthProvider } from './openai-codex-oauth';
 import type { ContentPart, ModelMessage, ModelRequest, ModelUsage } from './types';
 import { ModelError } from './index';
 import { logger } from '../logger';
@@ -106,19 +107,25 @@ export function piEnvApiKey(provider: string, env: Record<string, string | undef
 
 /** 真实现 (静态 import: pi-ai 是 ESM-only export map, Bun require 解析不到 import 条件)。 */
 function realDeps(): PiTransportDeps {
-  // kimi-coding 刷新件 = 本仓 kimi-oauth (0.80 无全局 OAuth 注册表; 其余 oauth provider 无刷新件,
-  // 走过期快照 + 响亮警告的旧语义)。
-  const kimi = createKimiCodingOAuthProvider();
+  // OAuth 刷新件 (0.80 删了全局 OAuth 注册表且未再 re-wire bundled flows): kimi 走本仓 kimi-oauth
+  // (pi-ai 无内置), openai-codex 走本仓 openai-codex-oauth (pi-ai 有内置但 loader 不在 public export
+  // map, 无法干净 import) —— 两者同结构面 (id/getApiKey/refreshToken), 过期路统一按 id 分派。
+  const oauthFlows = [createKimiCodingOAuthProvider(), createOpenAICodexOAuthProvider()];
+  const findFlow = (id: string) => oauthFlows.find((f) => f.id === id);
   return {
     getModel: piGetModel as unknown as PiTransportDeps['getModel'],
     getModels: piGetModels as unknown as PiTransportDeps['getModels'],
     completeSimple: piCompleteSimple,
     getEnvApiKey: (p) => piEnvApiKey(p),
-    getOAuthProvider: (id) => (id === kimi.id ? { getApiKey: (c) => kimi.getApiKey(c) } : undefined),
+    getOAuthProvider: (id) => {
+      const f = findFlow(id);
+      return f ? { getApiKey: (c) => f.getApiKey(c) } : undefined;
+    },
     getOAuthApiKey: async (id, creds) => {
-      if (id !== kimi.id || !creds[id]) return null;
-      const next = await kimi.refreshToken(creds[id]!);
-      return { newCredentials: next, apiKey: kimi.getApiKey(next) };
+      const f = findFlow(id);
+      if (!f || !creds[id]) return null;
+      const next = await f.refreshToken(creds[id]!);
+      return { newCredentials: next, apiKey: f.getApiKey(next) };
     },
     authPath: join(homedir(), '.pi', 'agent', 'auth.json'),
     now: () => Date.now(),
