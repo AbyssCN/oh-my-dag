@@ -246,6 +246,15 @@ export interface CouncilDeepOpts {
   synthPool?: string[];
   /** judge panel 跨族池 (默认 undefined = K 维度全走 reasonModel 单族)。 */
   judgePool?: string[];
+  /**
+   * reduce/judge/fusion/graft 座位。省略 → researchFanout 内各自回落到 config 角色座位
+   * (leaf=mimo / judge=gpt-sol 等) —— 那会让"单族臂"根本 mono 不了, 且判官家族可能同时是终稿作者
+   * (自判污染)。做 A/B 必须显式钉死。
+   */
+  reduceModel?: string;
+  judgeModel?: string;
+  fusionModel?: string;
+  graftModel?: string;
   /** 注入 researchFanout (测试 fake)。 */
   _researchFanout?: typeof researchFanout;
   onStage?: (stage: string, detail: string) => void;
@@ -272,6 +281,10 @@ export async function councilDeepPlan(
     ...(opts.divergeWeights ? { divergeWeights: opts.divergeWeights } : {}),
     ...(opts.synthPool ? { synthPool: opts.synthPool } : {}),
     ...(opts.judgePool ? { judgePool: opts.judgePool } : {}),
+    ...(opts.reduceModel ? { reduceModel: opts.reduceModel } : {}),
+    ...(opts.judgeModel ? { judgeModel: opts.judgeModel } : {}),
+    ...(opts.fusionModel ? { fusionModel: opts.fusionModel } : {}),
+    ...(opts.graftModel ? { graftModel: opts.graftModel } : {}),
     onStage: opts.onStage,
   });
 }
