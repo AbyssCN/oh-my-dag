@@ -324,7 +324,7 @@ async function distill(
         { role: 'user', content: userMsg },
       ],
       temperature: 0.2,
-      maxTokens: 8000,
+      maxTokens: 32_768,
     });
     const md = res.text.trim().replace(/^```(?:markdown)?\n?|\n?```$/g, '');
     const errors = validate(md, material, projectRoot);

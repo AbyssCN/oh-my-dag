@@ -141,7 +141,8 @@ export function createDefaultVerifier(opts: DefaultVerifierOpts): VerifierFn {
         model: m,
         messages: [{ role: 'user', content: verifierPrompt(task, summary) }],
         temperature: 0.2,
-        maxTokens: 700,
+        // xhigh 推理档 + 700 预算 = reasoning 必吃光正文 (这是审查 oracle 闸, 空裁决最伤)。
+        maxTokens: 8192,
         thinkingLevel: opts.thinkingLevel ?? 'xhigh',
         responseSchema: VERIFIER_VERDICT_SCHEMA,
       }),

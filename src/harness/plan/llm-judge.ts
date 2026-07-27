@@ -80,7 +80,7 @@ export function makeLlmConvergenceJudge<R>(opts: LlmJudgeOpts<R>): FixpointJudge
       model: opts.judgeModel,
       messages: [{ role: 'user', content: judgePrompt(opts.task, summary, round, threshold) }],
       temperature: 0.3,
-      maxTokens: 700,
+      maxTokens: 4096, // 700 会被推理族的 reasoning 吃光 → 空裁决
       responseSchema: CONVERGENCE_VERDICT_SCHEMA,
     });
     const v = r.parsed as { converged: boolean; score: number; failureReason?: string } | undefined;

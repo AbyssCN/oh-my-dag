@@ -101,7 +101,7 @@ export function createModelSourceDistiller(
       ],
       temperature: 0.25,
       topP: 0.85,
-      maxTokens: 4096,
+      maxTokens: 16_384, // 巨源蒸馏, 4096 会把长文档的后半截切掉
       responseSchema: DISTILL_SCHEMA,
       signal,
     });
