@@ -23,7 +23,7 @@ import { gradeAnswer } from './eval-tasks/grade';
  * 默认换掉 deepseek-v4-pro: 实测它 reasoning 与正文共用 8k 预算, 喂 6 份长候选后正文被腰斩,
  * 截断会伪装成"择优丢点"。--synth 可换族, 结论要在两个综合器下都成立才算数。
  */
-const SYNTH_MAX = 8000;
+const SYNTH_MAX = Number(process.env.EVAL_SYNTH_MAX_TOKENS) || 32_768; // 8000 会让话多的综合器被截 → 伪装成"择优丢点"
 
 const argv = process.argv.slice(2);
 const taskId = argv.find((a) => !a.startsWith('--')) ?? 'webhook-billing';

@@ -42,10 +42,12 @@ const GRADER_CONC = 3; // sol 三座
 /** 噪声抽检用的第二判官 (与部分臂同族, 只标误差棒不计分)。--grader2 off 关掉。 */
 const GRADER2 = process.env.EVAL_GRADER2 || 'opencode-go:glm-5.2';
 /**
- * 输出上限对所有家族**同一个数**才是单变量。设 8000 而非 2200: 推理型家族 (deepseek-v4-pro)
- * 的 reasoning token 计在同一预算里, 2200 会被思考吃光导致正文为空 —— 那测的是预算不是能力。
+ * 输出上限。**8000 是 2026-07-28 修掉的测量偏差**: 当时以为"同一个数 = 单变量", 实际上顶只咬话多的族 ——
+ * 三题 54 格里 minimax 撞顶 4 次、qwen 3 次、deepseek 2 次, 而 kimi/glm/mimo 一次都没撞。
+ * 截断只伤被截的一方 → 那个"公平的顶"系统性偏袒简短家族。
+ * 32768 高于各族实测自然长度 (最长 minimax 平均 6.5k), 让每一族都写到自己想停的地方才是真单变量。
  */
-const GEN_MAX_TOKENS = 8000;
+const GEN_MAX_TOKENS = Number(process.env.EVAL_GEN_MAX_TOKENS) || 32_768;
 
 const argv = process.argv.slice(2);
 const flag = (name: string, dflt: string): string => {

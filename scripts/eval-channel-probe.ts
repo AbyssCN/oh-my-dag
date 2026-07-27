@@ -34,7 +34,7 @@ for (const pair of PAIRS) {
           messages: [{ role: 'user', content: buildGenPrompt(task, p) }],
           temperature: p.temperature,
           topP: p.topP,
-          maxTokens: 8000,
+          maxTokens: 32_768,
           meta: { role: 'eval-channel-probe' },
         });
         const text = r.text.trim();
