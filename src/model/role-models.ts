@@ -306,7 +306,7 @@ export interface NodeModelResult {
   /** Resolved model coordinate ('provider' or 'provider:modelId'). */
   model: string;
   /** How the model was resolved. 'default' = hardcoded fallback (unconfigured). */
-  source: 'explicit' | 'env' | 'auto' | 'default';
+  source: 'explicit' | 'file' | 'env' | 'auto' | 'default';
 }
 
 /** 读 .omd/config.json 的 autoAssigned 段 (node→coord)。无/坏 → {} (mtime-cached, 静默)。 */
@@ -403,31 +403,41 @@ export function resolveRoleModelConfigured(
   opts: {
     explicit?: string;
     autoAssignMap?: Record<string, string>;
+    /** .omd/config.json 的 models 段 (测试注入 hermetic; 默认读 fileModels(configPath))。 */
+    modelsMap?: Record<string, string>;
     env?: Record<string, string | undefined>;
-    /** config.json 路径 (测试注入; 默认 configPath())。auto 层读 autoAssigned 段用。 */
+    /** config.json 路径 (测试注入; 默认 configPath())。models / auto 段读它。 */
     configPath?: string;
   } = {},
 ): NodeModelResult {
-  const { explicit, autoAssignMap, env = process.env, configPath: cfgPath } = opts;
+  const { explicit, autoAssignMap, modelsMap, env = process.env, configPath: cfgPath } = opts;
   // 1. explicit argument (caller knows best)
   if (explicit?.trim()) {
     return { model: explicit.trim(), source: 'explicit' };
   }
-  // 2. per-node env: OMD_<NODE_UPPER>_MODEL (hyphens + dots → underscore, 对齐既有
+  // 2. .omd/config.json `models` 段 —— 单一手配面 (与角色路 resolveRoleModel 同源, 见文件头优先序
+  //    override→file→env→default)。显式设一次角色→模型, 节点路与角色路自此同解到同一坐标,
+  //    压过 auto-assign 提案 —— 消灭"不同解析器跑出不同步 conductor"。测试传 modelsMap:{} 保 hermetic。
+  const modelsTbl = modelsMap ?? fileModels(cfgPath);
+  const fromModels = modelsTbl[node]?.trim();
+  if (fromModels) {
+    return { model: fromModels, source: 'file' };
+  }
+  // 3. per-node env: OMD_<NODE_UPPER>_MODEL (hyphens + dots → underscore, 对齐既有
   //    ROLE_ENV_ALLOWLIST 约定 OMD_REVIEW_SPEC_MODEL; 若只转 dots 会成 OMD_REVIEW-SPEC_MODEL 不匹配)
   const envKey = `OMD_${node.toUpperCase().replace(/[.-]/g, '_')}_MODEL`;
   const fromEnv = env[envKey]?.trim();
   if (fromEnv) {
     return { model: fromEnv, source: 'env' };
   }
-  // 3. auto-assign (D-19): 显式 param 优先; 未传 param 则读 .omd/config.json 的 autoAssigned 段
+  // 4. auto-assign (D-19): 显式 param 优先; 未传 param 则读 .omd/config.json 的 autoAssigned 段
   //    (D-17 一次性落盘, runAutoAssign 写)。测试传 autoAssignMap:{} 走纯链 (不读真 config, 保 hermetic)。
   const autoMap = autoAssignMap ?? fileAutoAssigned(cfgPath);
   const fromAuto = autoMap[node]?.trim();
   if (fromAuto) {
     return { model: fromAuto, source: 'auto' };
   }
-  // 4. hardcoded default (D-5 tier classification)
+  // 5. hardcoded default (D-5 tier classification)
   return { model: NODE_DEFAULT_COORD[node], source: 'default' };
 }
 // multimodal leaf pool — config.multimodalPool (坐标列表)

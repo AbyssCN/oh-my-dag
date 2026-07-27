@@ -120,20 +120,26 @@ function runtimeCoord(env: NodeJS.ProcessEnv): string {
 
 /**
  * env 角色矩阵 → engine config 的模型三件套 (纯函数, 导出供测试):
- *   conductorModel = OMD_ITER_CONDUCTOR_MODEL > runtime 坐标 (D-8: conductor 默认 = runtime 同款);
- *   leafModel      = OMD_ITER_LEAF_MODEL      > runtime 坐标;
+ *   conductorModel = OMD_ITER_CONDUCTOR_MODEL > runtime 坐标 > .omd/config.json models['conductor'];
+ *   leafModel      = OMD_ITER_LEAF_MODEL      > runtime 坐标 > .omd/config.json models['leaf'];
  *   agentLeafModel = OMD_ITER_AGENT_MODEL     > runtime 坐标 (解析不出则省略 = 引擎内回退 leafModel)。
- * 全空 → 空串: dag 工具 handler 会给出明确的 isError (conductorModel/leafModel required), 非 crash。
+ * C2 (单一配置面): env/runtime 皆空时兜底走 resolveRoleModelConfigured —— 引擎默认座与 dag_run 的
+ * conductor/leaf 座**同源读 .omd/config.json models**, 不再游离于 config 之外。resolveNode 可注入 (测试)。
+ * resolveRoleModelConfigured 恒返坐标 (末级 NODE_DEFAULT_COORD), 故 conductor/leaf 不再空串。
  */
-export function resolveEngineModels(env: NodeJS.ProcessEnv): {
+export function resolveEngineModels(
+  env: NodeJS.ProcessEnv,
+  resolveNode: typeof resolveRoleModelConfigured = resolveRoleModelConfigured,
+): {
   conductorModel: string;
   leafModel: string;
   agentLeafModel?: string;
 } {
   const runtime = runtimeCoord(env);
-  const conductorModel = env.OMD_ITER_CONDUCTOR_MODEL?.trim() || runtime;
-  const leafModel = env.OMD_ITER_LEAF_MODEL?.trim() || runtime;
-  const agentLeafModel = env.OMD_ITER_AGENT_MODEL?.trim() || runtime;
+  const conductorModel =
+    env.OMD_ITER_CONDUCTOR_MODEL?.trim() || runtime || resolveNode('conductor', { env }).model;
+  const leafModel = env.OMD_ITER_LEAF_MODEL?.trim() || runtime || resolveNode('leaf', { env }).model;
+  const agentLeafModel = env.OMD_ITER_AGENT_MODEL?.trim() || runtime; // 未配 → 省略, 引擎内回退 leafModel
   return {
     conductorModel,
     leafModel,

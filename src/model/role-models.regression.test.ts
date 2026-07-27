@@ -40,6 +40,7 @@ describe("resolveRoleModelConfigured — regression snapshots (INV-4, G-2)", () 
 		test(`${node} → ${NODE_DEFAULT_COORD[node]} (tier: ${NODE_TIER[node]})`, () => {
 			const result = resolveRoleModelConfigured(node, {
 				env: {}, // empty env → no env hit
+				modelsMap: {}, // hermetic: 不读真 .omd/config.json models 段
 				autoAssignMap: {}, // explicit empty = no auto-assign (hermetic: 不读真 .omd/config.json)
 			});
 			expect(result.model).toBe(NODE_DEFAULT_COORD[node]);
@@ -62,6 +63,7 @@ describe("resolveRoleModelConfigured — priority chain", () => {
 	test("env overrides auto-assign and default", () => {
 		const result = resolveRoleModelConfigured("leaf", {
 			env: { OMD_LEAF_MODEL: "env:leaf-model" },
+			modelsMap: {}, // hermetic: 无 models 段 → env 生效
 			autoAssignMap: { leaf: "auto:leaf" },
 		});
 		expect(result.model).toBe("env:leaf-model");
@@ -71,10 +73,22 @@ describe("resolveRoleModelConfigured — priority chain", () => {
 	test("auto-assign overrides default", () => {
 		const result = resolveRoleModelConfigured("judge", {
 			env: {},
+			modelsMap: {},
 			autoAssignMap: { judge: "kimi-coding:kimi-k3" },
 		});
 		expect(result.model).toBe("kimi-coding:kimi-k3");
 		expect(result.source).toBe("auto");
+	});
+
+	// C1 (单一配置面): models 段压过 env 与 auto-assign — 节点路与角色路同序, 一处设置全解析器同步。
+	test("models 段压过 env 与 auto-assign (source:file)", () => {
+		const result = resolveRoleModelConfigured("conductor", {
+			modelsMap: { conductor: "openai-codex:gpt-5.6-sol" },
+			env: { OMD_CONDUCTOR_MODEL: "env:should-lose" },
+			autoAssignMap: { conductor: "auto:should-lose" },
+		});
+		expect(result.model).toBe("openai-codex:gpt-5.6-sol");
+		expect(result.source).toBe("file");
 	});
 
 	test("review-spec env key = OMD_REVIEW_SPEC_MODEL (hyphen→underscore, 对齐既有约定)", () => {
