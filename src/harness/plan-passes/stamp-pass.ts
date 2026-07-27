@@ -15,6 +15,7 @@
  */
 import type { ConductorPlan } from "../conductor-plan";
 import { topoLevels } from "../executor-dag-planner";
+import { rotateFamilies } from "../../model/family-rotate";
 
 /** 四池模型坐标 (接线层注入; 坐标形如 'provider:model', familyOf 给家族)。 */
 export interface StampPools {
@@ -181,25 +182,16 @@ export function stampPass(
 
 		const g = spreadGroupOf.get(id);
 		if (g) {
-			// 池内坐标按 familyOf 分组 (保池序), 轮转家族取模型 — 组内仍逐成员链亲和优先。
-			const buckets = new Map<string, string[]>();
-			for (const coord of pools[g.key] ?? []) {
-				const f = fam(coord);
-				buckets.set(f, [...(buckets.get(f) ?? []), coord]);
-			}
-			const fams = [...buckets.keys()];
-			const cursor = new Map<string, number>(); // 每家族内坐标游标
-			let i = 0;
+			// 跨家族散布统一走 rotateFamilies (与 research 同一真源)。链亲和成员优先, 不占轮转槽。
+			// 均匀权重下 SWRR ≡ 老 fams[i%len] 轮转 + 家族内游标 → 行为不变 (INV-7)。
+			const rotated = rotateFamilies(pools[g.key] ?? [], g.members.length, { familyOf: fam });
+			let ri = 0;
 			for (const m of g.members) {
 				if (assigned.has(m)) continue;
 				const mt = targetOf(m)!;
 				if (tryChainAffinity(m, mt)) continue;
-				const f = fams[i % fams.length]!;
-				const arr = buckets.get(f)!;
-				const ci = cursor.get(f) ?? 0;
-				assign(m, arr[ci % arr.length]!);
-				cursor.set(f, ci + 1);
-				i++;
+				assign(m, rotated[ri]!);
+				ri++;
 			}
 			continue;
 		}
