@@ -64,6 +64,20 @@ export const DEFAULT_WEB_STABLE_PREFIX =
   '(2) 关键断言后标来源 URL; ' +
   '(3) 语料不足以回答的部分明说"语料未覆盖", 不要编。';
 
+/**
+ * 跨家族发散池 (owner 2026-07-27): lens gen + synth framing 逐单元轮不同模型族 (「同族 N 单元共享盲点」)。
+ * mimo-v2.5-pro 权重 3 → 占 50% (走订阅, cost≈0), 另 50% 由 qwen/minimax/deepseek 三付费 Go 家族分。
+ */
+export const LENS_DIVERGENCE_POOL = [
+  'opencode-go:qwen3.7-plus',
+  'opencode-go:minimax-m3',
+  'opencode-go:deepseek-v4-pro',
+  'mimo:mimo-v2.5-pro',
+];
+export const LENS_DIVERGENCE_WEIGHTS: Record<string, number> = { 'mimo:mimo-v2.5-pro': 3 };
+/** judge panel 跨族池: K 维度逐个轮不同族, 降单模型系统偏见。 */
+export const JUDGE_PANEL_POOL = ['opencode-go:glm-5.2', 'openai-codex:gpt-5.6-sol', 'kimi-coding:k3'];
+
 export interface WebFanoutOpts extends RetrieveOpts {
   /** true → conductor (authorFanoutSpec) 按问题+语料自动分解 lens/framing/judge, 替代默认 3 视角。 */
   council?: boolean;
@@ -84,6 +98,15 @@ export interface WebFanoutOpts extends RetrieveOpts {
   reasonModel?: string;
   reduceModel?: string;
   judgeModel?: string;
+  /** 跨家族发散池覆盖 (省略 → LENS_DIVERGENCE_POOL; 传 [] 或单坐标数组 = 关发散, mono baseline)。 */
+  divergePool?: string[];
+  divergeWeights?: Record<string, number>;
+  /** judge panel 跨族池覆盖 (省略 → JUDGE_PANEL_POOL)。 */
+  judgePool?: string[];
+  /** fusion 融合分析模型 (省略 → judgeModel = 强)。收敛单发。 */
+  fusionModel?: string;
+  /** graft 终笔模型 (省略 → judge 座 = 强连贯; 原为 reasonModel=k3)。eval 用它测 v2.5-pro vs sol。 */
+  graftModel?: string;
   maxFanout?: number;
   /**
    * research-second-pass 轮数上限 (默认 1 = 单轮)。>1 时自动挂确定性 probe:
@@ -330,6 +353,12 @@ export async function researchWebFanout(
     reasonModel,
     reduceModel: opts.reduceModel,
     judgeModel: opts.judgeModel,
+    // 跨家族发散 (统一 rotateFamilies): lens+synth 走发散池, judge panel 走 judge 池; 终局 fusion/graft 单强不发散。
+    divergePool: opts.divergePool ?? LENS_DIVERGENCE_POOL,
+    divergeWeights: opts.divergeWeights ?? LENS_DIVERGENCE_WEIGHTS,
+    judgePool: opts.judgePool ?? JUDGE_PANEL_POOL,
+    fusionModel: opts.fusionModel,
+    graftModel: opts.graftModel ?? resolveRoleModelConfigured('judge').model,
     maxFanout: opts.maxFanout,
     rounds,
     probe,

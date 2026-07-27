@@ -29,6 +29,7 @@ import type { ModelUsage, ModelRequest, ModelResponse } from '../../model/gatewa
 import { computeCost } from '../../model/gateway';
 import { parallel } from '../primitives';
 import { buildFusionAnalysisPrompt } from './fusion-analysis';
+import { rotateFamilies } from '../../model/family-rotate';
 
 /** research-second-pass 缺口条目 (模型上限半边的结构化产出)。 */
 const GAP_SCHEMA = z.object({
@@ -101,6 +102,20 @@ export interface ResearchFanoutConfig {
   reduceModel?: string;
   /** K-judge panel 模型。默认 = reasonModel。评判判别性更吃推理, 下沉前看遥测。 */
   judgeModel?: string;
+  /**
+   * 跨家族发散池 (统一 rotateFamilies): 设则 **lens gen 与 synth framing** 逐单元轮到不同模型族
+   * (本仓铁律「同族 N 单元共享盲点」)。省略 → lens 全用 lensModel、synth 全用 reasonModel (原单族行为)。
+   * divergeWeights: coord→权重, 表达「N% 走某坐标」的经济约束 (如 mimo-v2.5-pro:3 → 该坐标占 50%,
+   * 另 50% 由池内其余家族分)。缺省全 1 = 均匀跨族。
+   */
+  divergePool?: string[];
+  divergeWeights?: Record<string, number>;
+  /** judge panel 跨族池: 设则逐维度轮到不同族 (仅在该维度未显式 judgeCriteria[].model 时)。省略 → judgeModel。 */
+  judgePool?: string[];
+  /** fusion 融合分析模型 (1 发终局分析)。默认 = judgeModel。收敛单发, 不发散。 */
+  fusionModel?: string;
+  /** graft 终审合成模型 (1 发终笔)。默认 = reasonModel。收敛单发, 用单一强连贯模型。 */
+  graftModel?: string;
   /**
    * warm-then-fanout: synth/judge 波先串行暖 1 个调用写入共享前缀 (championsDigest / candDigest),
    * 再并行其余 → 把同时并发波的"全 miss"转成"1 miss + N-1 hit"。默认 true (零输出影响, 纯降本)。
@@ -291,21 +306,26 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
         : `\n第 ${round} 轮增量 (research-second-pass): 主体答案已在上一轮产出 —— 不重答原题, 只挖本 sub-angle 指向的缺口。`;
 
     // ── Stage 1: L×V sub-angle 变体 (flash, 全并行)。每 leaf = persona + 抽象 + groundTruth + sub-angle。
+    // 跨家族发散: 设 divergePool 则每个镜头轮到不同模型族 (镜头=视角, 家族=思路; V 变体同族深挖)。
+    const lensModels = cfg.divergePool?.length
+      ? rotateFamilies(cfg.divergePool, roundLenses.length, { weights: cfg.divergeWeights })
+      : null;
     const genJobs: (() => Promise<{ lens: string; angleIdx: number; text: string }>)[] = [];
-    for (const lens of roundLenses) {
+    roundLenses.forEach((lens, li) => {
+      const lensModel = lensModels?.[li] ?? cfg.lensModel;
       for (let i = 0; i < lens.subAngles.length; i++) {
         const angle = lens.subAngles[i]!;
         genJobs.push(async () => {
           const abstraction = lens.abstraction ? `\n<domain-abstraction>${lens.abstraction}</domain-abstraction>` : '';
           const prompt = `${corpus}\n\n<persona>${lens.persona}</persona>${abstraction}\n\n研究问题: ${cfg.question}${roundNote}\n\n本 leaf 的具体 sub-angle: ${angle}\n\n用 ground-truth 里的真实模块名推理 (禁造)。结构化、具体、可落地、只答这个 sub-angle。`;
           const text = await track(
-            cfg.lensModel,
-            call({ model: cfg.lensModel, messages: userMsg(prompt, cfg.images), thinkingLevel: cfg.leafThinking }),
+            lensModel,
+            call({ model: lensModel, messages: userMsg(prompt, cfg.images), thinkingLevel: cfg.leafThinking }),
           );
           return { lens: lens.key, angleIdx: i, text };
         });
       }
-    }
+    });
     leafCount += genJobs.length;
     // gen 波也共享 head 大前缀 (persona/sub-angle 在 head 之后) → warm-then-fanout:
     // 串行暖 1 个写 head 到缓存, 其余 L×V-1 个 leaf 命中 head 段 (冷并发 = 每 leaf 全 miss head)。
@@ -354,10 +374,14 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
 
   const championsDigest = lensChampions.map((c) => `## 镜头冠军[${c.key}]\n${c.text}`).join('\n\n');
 
-  // ── Stage 3: M framing 综合候选 (pro, 并行)。
-  const synthJobs = cfg.synthesisFramings.map((fr) => async () => {
+  // ── Stage 3: M framing 综合候选 (pro, 并行)。synth 是 M 路发散 (不同立场各出一版) → 跨家族。
+  const synthModels = cfg.divergePool?.length
+    ? rotateFamilies(cfg.divergePool, cfg.synthesisFramings.length, { weights: cfg.divergeWeights })
+    : null;
+  const synthJobs = cfg.synthesisFramings.map((fr, mi) => async () => {
+    const sm = synthModels?.[mi] ?? cfg.reasonModel;
     const prompt = `${corpus}\n\n各镜头冠军:\n${championsDigest}\n\n<framing>${fr.framing}</framing>\n\n按此 framing 综合成一份完整方案 (具体到模块/文件/接点, 用真实模块名)。`;
-    const text = await track(cfg.reasonModel, call({ model: cfg.reasonModel, messages: msg(prompt) }));
+    const text = await track(sm, call({ model: sm, messages: msg(prompt) }));
     return { key: fr.key, text };
   });
   leafCount += synthJobs.length;
@@ -367,9 +391,12 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
 
   const candDigest = synthCandidates.map((s) => `## 候选[${s.key}]\n${s.text}`).join('\n\n');
 
-  // ── Stage 4: K-judge panel (pro, 并行) → 各维度评判。
-  const judgeJobs = cfg.judgeCriteria.map((j) => async () => {
-    const jm = j.model ?? judgeModel; // 跨族 panel: 该维度指定模型, 否则全局 judgeModel
+  // ── Stage 4: K-judge panel (pro, 并行) → 各维度评判。评判是 K 路独立评判 → 跨家族降单模型系统偏见。
+  const judgePanelModels = cfg.judgePool?.length
+    ? rotateFamilies(cfg.judgePool, cfg.judgeCriteria.length)
+    : null;
+  const judgeJobs = cfg.judgeCriteria.map((j, ki) => async () => {
+    const jm = j.model ?? judgePanelModels?.[ki] ?? judgeModel; // 显式 model > judgePool 轮转 > 全局 judgeModel
     const prompt = `${corpus}\n\n${candDigest}\n\n你是评判维度【${j.criterion}】的 judge。按此维度评 ${synthCandidates.length} 个候选: 各自强弱 + 哪个最优 + 该嫁接谁的哪段。只从你这个维度评。`;
     const text = await track(jm, call({ model: jm, messages: msg(prompt) }));
     return { key: j.key, text };
@@ -386,15 +413,17 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
   // (last30days 2026-06-16: synthesis 质量 ~3/4 of lift)。前缀 `head\n\n${candDigest}` 与
   // judge/graft 字节对齐 → 复用已暖缓存。
   leafCount += 1;
+  const fusionModel = cfg.fusionModel ?? judgeModel; // 收敛单发, 不发散
   const fusionPrompt = `${corpus}\n\n${candDigest}\n\nK-judge panel 多维评判:\n${critDigest}\n\n${buildFusionAnalysisPrompt()}`;
-  const fusionAnalysis = await track(judgeModel, call({ model: judgeModel, messages: msg(fusionPrompt) }));
+  const fusionAnalysis = await track(fusionModel, call({ model: fusionModel, messages: msg(fusionPrompt) }));
   stage('fusion', 'fusion 融合分析 (5-tuple)');
 
   // ── Stage 5: 终审 graft (pro, 1 发) → 据 panel 评判 + fusion 5-tuple 合成最终方案。
   leafCount += 1;
   // 前缀与 fusion 字节对齐 (`head\n\n${candDigest}`) → 复用 judge/fusion 已暖的 head+candDigest 缓存。
   const finalPrompt = `${corpus}\n\n${candDigest}\n\nK-judge panel 多维评判:\n${critDigest}\n\nFusion 融合分析 (结构化):\n${fusionAnalysis}\n\n你是首席架构师。据 panel 多维评判 + fusion 融合分析**合成唯一最终方案**: 选最强骨架, 嫁接共识与独特洞察, 显式消解矛盾点、补齐覆盖缺口与盲点。直接给最终方案, 不要元评论。`;
-  const finalText = await track(cfg.reasonModel, call({ model: cfg.reasonModel, messages: msg(finalPrompt) }));
+  const graftModel = cfg.graftModel ?? cfg.reasonModel; // 收敛终笔, 单一强连贯模型
+  const finalText = await track(graftModel, call({ model: graftModel, messages: msg(finalPrompt) }));
 
   // 收尾遥测: per-model 缓存命中率 + 成本 (M6: 测量命中率而非靠账单倒猜)。经 onStage 流到所有 driver 的 stderr。
   const costStats = buildCostStats(usageLog);
