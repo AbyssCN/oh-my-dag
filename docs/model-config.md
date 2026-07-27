@@ -62,6 +62,51 @@ is the fix that makes a seat's model consistent across every code path
   `OMD_ITER_*` / `OMD_RUNTIME_*` in the MCP registration to force engine models — that path now
   falls through to `models`, which is the point. (Removed from `~/.claude.json` on this machine.)
 
+## 1.5 · The seats — what each does, weak or strong
+
+omd resolves **14 seats** in 5 functional classes. Auto-assign (`omd_models_auto`) fills them by
+**channel economics** — amortize the cheapest / flat-subscription channel that can do the job — not
+by spreading model families for its own sake. Family diversity is injected only where it changes the
+answer: **verify** (a checker from the author's own family shares its blind spots) and, ideally,
+**research lenses** (multi-perspective wants multiple minds).
+
+| Seat | Class | What it does | Weak / Strong | Why |
+|---|---|---|---|---|
+| `conductor` | decomposer | Decomposes a task into the typed plan graph | **Strong** | The one call that shapes everything downstream; SOTA brain pays off. |
+| `escalation` | decomposer | Re-plans / patches a failed subgraph | **Strong** | Reasoning over a failure; sparse, high-value. |
+| `judge` | judge_synth | Scores attempts, picks a winner | **Strong** | Judgement quality caps best-of-N; a weak judge picks wrong. |
+| `reason` | judge_synth | Gap analysis, deep reasoning steps | Strong-ish | Long-prompt reasoning (k3); mid-frequency. |
+| `reduce` | judge_synth | Folds fan-out results into one | Mid | High-frequency, mechanical merge — cheap is fine. |
+| `leaf` | worker | One-shot generation, no tools | **Cheap** | Volume execution behind an oracle gate. |
+| `agent` | worker | Writes files (tool loop, bwrap jail) | Mid | Needs capability to edit correctly; fewer than inproc leaves. |
+| `lens` | worker | A research perspective in a fan-out | Mid **+ diverse** | Multi-perspective — see the note below. |
+| `expand` | worker | Rewrites a query for recall | Cheap | Mechanical; oracle-free but low-stakes. |
+| `distill` | worker | Cleans / distils a source | Cheap–Mid | Extraction; capable-cheap suffices. |
+| `overflow` | worker | Fallback when a channel is saturated | Cheap | Safety valve, not a quality seat. |
+| `verifier` | verify | Cross-family adversarial check | Mid **· cross-family** | **Must differ** from the author's family (INV-3). |
+| `review-spec` | verify | Spec/contract review | Mid · cross-family | Same cross-family rule. |
+| `dream` | dream | Memory consolidation distillation | Cheap–Mid | Background, opt-in. |
+
+**Why most worker seats land on one cheap model (e.g. `mimo-v2.5-pro`)** — the six worker seats are
+the highest-frequency traffic. Auto-assign keeps them on a big-quota **flat/prepaid** channel because
+scattering them onto a shared-dollar pool burns money fast (Kimi K3 drains the shared bucket ~288×
+faster than a prepaid one — which is exactly why the *brain* seats get a dedicated prepaid bucket, not
+the shared pool). For worker tasks — generate a defined thing, extract, fold — **quality is gated by
+the oracle (tsc/test/verifier), not by the model family**, and eval showed cheap models buy execution,
+not divergence. So one capable cheap model across the worker bucket is the right call; spreading it
+across families buys nothing and costs money.
+
+**The distribution is already multi-family across *roles*:** GPT (brain: conductor/judge/escalation) ·
+Kimi K3 (reason) · GLM-5.2 (verify, deliberately off the author's family) · MiMo (workers). Mono-family
+only *within* the worker bucket, by design.
+
+**The one seat where more diversity genuinely pays: `lens`.** Research lenses are multiple *viewpoints*.
+The repo's own rule — "three research lenses on one family share its blind spots" — means mono-family
+lenses are multi-prompt but single-mind. Spreading the lens/cheap pool across families
+(MiMo + GLM + Qwen + Kimi) so the stamp pass's sibling-spread rotates each lens onto a different family
+would improve real divergence. `reduce → deepseek` instead of MiMo is marginal by comparison (reduce is
+a mechanical fold, and it is high-frequency, so it stays on the cheap prepaid bucket).
+
 ## 2 · Provider catalog — where a model lives
 
 A coordinate `provider:modelId` resolves **own registry → pi-ai catalog → error**:
