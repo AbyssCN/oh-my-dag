@@ -236,9 +236,11 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
     maxTokens?: number;
     responseSchema?: z.ZodTypeAny;
   }) => Promise<{ text: string; usage?: ModelUsage; parsed?: unknown }>;
-  // ponytail: 输出兜底 8192 (默认 4096 截断 synth/final 综合长文)。per-model 更高经 env 调 —
-  //   200k 仅 minimax 两端点验过, deepseek 系硬顶 ~8k 会 400, 故不硬编码高值。upgrade: 某模型验过更高 → 调 env。
-  const SYNTH_MAX = Number(process.env.OMD_SYNTH_MAX_TOKENS) || 8192;
+  // 输出兜底。**8192 是 2026-07-28 修掉的 bug**: 那个数来自一句没验过的注释 ("deepseek 系硬顶 ~8k 会 400"),
+  // 实测推翻 —— 同一条 opencode-go 渠道 cap=32000 下 minimax-m3 自然写到 out=21309、kimi-k3 写到 13874, 都正常收尾,
+  // 没有 400。8k 顶反而让长综合被静默腰斩 (推理族更惨: reasoning 与正文共用这份预算, 思考吃完正文只剩几百字)。
+  // 模型写完就停, cap 只在它还想写时才咬 → 抬高不增加常态成本, 只是不再人为切断。
+  const SYNTH_MAX = Number(process.env.OMD_SYNTH_MAX_TOKENS) || 32_768;
   const rawCall: CallFn = cfg._callModel
     ? makeBudgetedCall(cfg._callModel)
     : (req) =>

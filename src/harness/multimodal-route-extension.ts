@@ -409,7 +409,7 @@ export function createMultimodalRouteExtension(
         const res = await call({
           model,
           messages: [{ role: 'user', content: parts }],
-          maxTokens: 4096,
+          maxTokens: 16_384,
           signal,
         });
         const text = res.text.trim();

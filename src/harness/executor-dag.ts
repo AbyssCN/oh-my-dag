@@ -105,7 +105,7 @@ async function planAndExecute(
   // 计入 completion 预算 — transport 默认 4096 必截断 (Unterminated string 重试耗尽整轮报废)。
   // 默认 8192 = deepseek 系安全顶 (同 fanout SYNTH_MAX 语义); k3 等高容量 conductor 经 config/env 升。
   const conductorMaxTokens =
-    config.conductorMaxTokens ?? (Number(process.env.OMD_CONDUCTOR_MAX_TOKENS) || 8192);
+    config.conductorMaxTokens ?? (Number(process.env.OMD_CONDUCTOR_MAX_TOKENS) || 32_768);
   for (let attempt = 1; attempt <= maxPlanRetries + 1; attempt++) {
     const correction = attempt === 1 ? '' : `\n\n上次回复不是有效 plan (${lastErr})。只回 JSON 对象, 别的不要。`;
     const { text, usage } = await generate({
@@ -181,7 +181,7 @@ async function tryPatchReplan(
       ],
       model: conductorModel,
       thinkingLevel: config.conductorThinkingLevel ?? config.seatThinking?.(conductorModel) ?? 'high',
-      maxTokens: config.conductorMaxTokens ?? (Number(process.env.OMD_CONDUCTOR_MAX_TOKENS) || 8192),
+      maxTokens: config.conductorMaxTokens ?? (Number(process.env.OMD_CONDUCTOR_MAX_TOKENS) || 32_768),
     });
     usage = addUsage(usage, u);
     const parsed = parsePlanPatch(text);

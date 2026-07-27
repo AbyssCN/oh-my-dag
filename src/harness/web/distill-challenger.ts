@@ -58,7 +58,7 @@ export function createChallengerDistiller(
       ],
       temperature,
       topP: 0.95,
-      maxTokens: 4096,
+      maxTokens: 16_384,
       responseSchema: CHALLENGER_SCHEMA,
       ...(signal ? { signal } : {}),
     });

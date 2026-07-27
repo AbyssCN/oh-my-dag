@@ -13,6 +13,13 @@ import { send } from '../../model/gateway';
 /** best-of-N 默认生成/judge 模型 (强推理)。 */
 export const BESTOFN_DEFAULT_MODEL = 'deepseek:deepseek-v4-pro';
 
+/**
+ * 方案/judge 的输出预算。原来 gen=2500 / judge=3000 —— 一份完整 SDD 骨架 (contracts + GWT + 落点)
+ * 根本写不完, 必被静默腰斩。实测同渠道 cap=32000 下模型自然写到 1.4-2.1 万 out-tok 后正常收尾,
+ * 说明 cap 只在模型还想写时才咬: 抬高不增加常态成本, 只是不再人为切断。
+ */
+const PLAN_MAX_TOKENS = Number(process.env.OMD_PLAN_MAX_TOKENS) || 32_768;
+
 /** 一个方案视角: persona+angle 激活分布, 采样调忠实/探索。 */
 export interface PlanLens {
   id: string;
@@ -131,7 +138,7 @@ export async function bestOfNPlan(
             model,
             temperature: lens.temperature,
             topP: lens.topP,
-            maxTokens: 2500,
+            maxTokens: PLAN_MAX_TOKENS, // 2500 会切断 SDD 骨架 (contracts+GWT+落点), 实测模型自然写到 1.4-2.1 万 out-tok
           });
           const plan = r.text.trim();
           return plan ? { lens: lens.id, plan } : null;
@@ -157,7 +164,7 @@ export async function bestOfNPlan(
       model: judgeModel,
       temperature: 0.3,
       topP: 0.85,
-      maxTokens: 3000,
+      maxTokens: PLAN_MAX_TOKENS, // judge 要吐完整 synthesis, 3000 必截
       responseSchema: VERDICT_SCHEMA,
     });
     const v = r.parsed as BestOfNVerdict | undefined;
@@ -229,6 +236,16 @@ export interface CouncilDeepOpts {
   reasonModel?: string;
   /** 覆写镜头集 (默认 DEFAULT_COUNCIL_DEEP_LENSES)。 */
   lenses?: readonly ResearchLens[];
+  /**
+   * 跨家族发散池 (默认 undefined = 全部 leaf 走 lensModel 单族, 即原行为)。
+   * 设则 gen/synth 逐单元轮到不同家族。默认关 —— 开不开由 eval 定, 不默认改产线行为。
+   */
+  divergePool?: string[];
+  divergeWeights?: Record<string, number>;
+  /** synth framing 专用池 (省略 → 回落 divergePool)。 */
+  synthPool?: string[];
+  /** judge panel 跨族池 (默认 undefined = K 维度全走 reasonModel 单族)。 */
+  judgePool?: string[];
   /** 注入 researchFanout (测试 fake)。 */
   _researchFanout?: typeof researchFanout;
   onStage?: (stage: string, detail: string) => void;
@@ -251,6 +268,10 @@ export async function councilDeepPlan(
     judgeCriteria: [...DEFAULT_COUNCIL_DEEP_CRITERIA],
     lensModel: opts.lensModel ?? 'deepseek:deepseek-v4-flash',
     reasonModel: opts.reasonModel ?? BESTOFN_DEFAULT_MODEL,
+    ...(opts.divergePool ? { divergePool: opts.divergePool } : {}),
+    ...(opts.divergeWeights ? { divergeWeights: opts.divergeWeights } : {}),
+    ...(opts.synthPool ? { synthPool: opts.synthPool } : {}),
+    ...(opts.judgePool ? { judgePool: opts.judgePool } : {}),
     onStage: opts.onStage,
   });
 }

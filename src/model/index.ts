@@ -19,6 +19,7 @@ import { getProvider } from './providers';
 import { emitModelUsage } from './accounting';
 import { resolvePiModel, piRequest, type PiModel } from './pi-transport';
 import { reportProviderFailure } from './provider-health';
+import { reportTruncation } from './truncation';
 
 export type {
   ContentPart,
@@ -427,6 +428,16 @@ export async function callModel(req: ModelRequest): Promise<ModelResponse> {
         continue;
       }
       break;
+    }
+
+    // 'length' + 非空 = 真答案但被切。老路径原样返回 → 半截文当成品往下游传 (finishReason 有生产者
+    // 零消费者)。这里**必上报**: 静默截断会伪装成"模型更差 / 综合丢点", 是最难查的那类失真。
+    if (result.finishReason === 'length' && result.text.trim()) {
+      reportTruncation({
+        model: resolved,
+        out: result.usage.out,
+        ...(req.maxTokens !== undefined ? { cap: req.maxTokens } : {}),
+      });
     }
 
     if (!req.responseSchema) {

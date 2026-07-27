@@ -176,7 +176,7 @@ export async function authorSeedQueries(
         },
       ],
       responseSchema: SEED_SCHEMA,
-      maxTokens: 1024,
+      maxTokens: 4096, // 种子 query 虽短, 推理族仍需 reasoning 余量
       meta: { role: 'seed-author' },
     });
     const parsed = SEED_SCHEMA.safeParse(res.parsed);

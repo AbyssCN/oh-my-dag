@@ -111,7 +111,7 @@ export function createDistiller(
           model,
           temperature: lens.temperature,
           topP: lens.topP,
-          maxTokens: 1500,
+          maxTokens: 8192, // 正文长度由 perLensMax 截, 不靠 cap 卡 (cap 卡出来的是半句话)
           responseSchema: LENS_SCHEMA,
         });
         const p = r.parsed as DistillResult | undefined;
