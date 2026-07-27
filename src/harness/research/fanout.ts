@@ -110,6 +110,11 @@ export interface ResearchFanoutConfig {
    */
   divergePool?: string[];
   divergeWeights?: Record<string, number>;
+  /**
+   * synth framing 专用发散池 (与 lens 解耦): 设则 synth 的 M framing 走这个池, lens 仍走 divergePool/lensModel。
+   * 省略 → 回落 divergePool (lens 与 synth 共池, 原行为)。用途: lens 留廉价单族、只在 synth 花多家族。
+   */
+  synthPool?: string[];
   /** judge panel 跨族池: 设则逐维度轮到不同族 (仅在该维度未显式 judgeCriteria[].model 时)。省略 → judgeModel。 */
   judgePool?: string[];
   /** fusion 融合分析模型 (1 发终局分析)。默认 = judgeModel。收敛单发, 不发散。 */
@@ -375,8 +380,10 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
   const championsDigest = lensChampions.map((c) => `## 镜头冠军[${c.key}]\n${c.text}`).join('\n\n');
 
   // ── Stage 3: M framing 综合候选 (pro, 并行)。synth 是 M 路发散 (不同立场各出一版) → 跨家族。
-  const synthModels = cfg.divergePool?.length
-    ? rotateFamilies(cfg.divergePool, cfg.synthesisFramings.length, { weights: cfg.divergeWeights })
+  // synthPool 与 lens 解耦: 省略则回落 divergePool (共池); 设则 synth 独立发散 (如 lens 廉价单族 + synth 多族)。
+  const synthPool = cfg.synthPool ?? cfg.divergePool;
+  const synthModels = synthPool?.length
+    ? rotateFamilies(synthPool, cfg.synthesisFramings.length, { weights: cfg.divergeWeights })
     : null;
   const synthJobs = cfg.synthesisFramings.map((fr, mi) => async () => {
     const sm = synthModels?.[mi] ?? cfg.reasonModel;
