@@ -345,6 +345,25 @@ checklist, output discipline); a **seat or pool** says *who* does it (which mode
 They compose freely — the same card runs on any model, one model executes many cards. That is the
 main structural difference from a subagent, where "who" and "how" are welded into one definition.
 
+### The seats at a glance
+
+omd routes work to 14 named seats in five functional classes. Pin any of them once in
+`.omd/config.json` `models` and every resolver reads that one value. Rule of thumb: **strong where
+being wrong is expensive and rare; cheap where volume is high and an oracle catches mistakes.**
+
+| Class | Seats | Does | Reach for |
+|---|---|---|---|
+| decomposer | `conductor` · `escalation` | shapes / repairs the plan graph | **strong** (SOTA brain) |
+| judge_synth | `judge` · `reason` · `reduce` | picks winners, reasons, folds results | **strong** to judge; cheaper to fold |
+| worker | `leaf` · `agent` · `lens` · `expand` · `distill` · `overflow` | volume execution behind a gate | **cheap–mid** (family ≠ quality here) |
+| verify | `verifier` · `review-spec` | adversarial cross-check | **mid, different family** from the author |
+| dream | `dream` | memory consolidation | cheap–mid |
+
+Auto-assign fills these by **channel economics**, not by scattering families — diversity is spent only
+where it changes the answer (verify is off the author's family on purpose; research `lens` seats want
+several). Full per-seat table, the weak/strong rationale, and how to register OAuth/subscription models
+(Claude · GPT · Kimi) → **[model configuration guide](docs/model-config.md)**.
+
 **→ [Model layer in depth](docs/model-layer.md)** · [diagram source](docs/diagrams/04-model-layer.md)
 
 ## Why it holds together
