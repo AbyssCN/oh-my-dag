@@ -158,6 +158,48 @@ flowchart LR
 
 **→ [完整工具参考](docs/mcp-tools.md)**
 
+## Deep research —— 拿真数字量过
+
+一条命令把问题扇给一群便宜的并发模型:零丢失地把每个来源抓到盘上,用互相竞争的镜头综合,靠再抓补自己的
+缺口,最后让评判团挑出冠军。
+
+```bash
+bun run scripts/dag-research.ts "<你的问题>" --deep
+```
+
+我们拿它和一套全强模型的方案在同一道题上对跑(MCP 生态 2026 年中盘点)。**System A** —— omd `--deep`
+跑便宜座位;**System B** —— 106 个 agent 的 Claude workflow,每个 agent 都是强模型。
+
+| | **A · omd `--deep`** | **B · 106-agent 强模型 workflow** |
+|---|---|---|
+| 现金成本 | **$2.19** | 订阅额度 · 3.76M token |
+| 产出 | 132k 字终稿 · 32 个来源 | 23 条断言,3 票全票核实 |
+| 代价 | 干净跑完 | 撞限额没跑完 |
+
+> **便宜栈用 $2.19 再现了强模型 workflow 核实过的 15 条事实里的 13 条。**
+
+不是因为小模型偷偷有强模型的水平,而是因为 deep research 有一层**确定性的检索地板**:`omd_web` 抓取全程
+不带模型,原文全量落盘,缺口靠**再抓那个缺的来源**补上,而不是让模型凭记忆填。模型只管综合,检索交给引擎。
+这就是整个仓库那句话在一道题上的实测 —— *可靠性来自模型之外*。
+
+```mermaid
+flowchart LR
+  Q(["问题"]) --> G["gather 采集<br/>零模型搜+抓<br/>原文全量落盘"]
+  G --> S["synthesize 综合<br/>镜头扇出,评判团判优"]
+  S --> D["deepen 加深 ×3<br/>找缺口 → 再抓 → 只挖缺口"]
+  D -->|无新增即停| R(["带引用终稿<br/>+ 零丢失附录"])
+  D -.->|有新增| S
+  classDef zero fill:#E1F5EE,stroke:#0F6E56,color:#04342C
+  classDef llm fill:#EEEDFE,stroke:#534AB7,color:#26215C
+  classDef infra fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
+  class G zero
+  class S,D llm
+  class Q,R infra
+```
+
+**→ [原理、模型分配、完整 A/B 对比](docs/deep-research.md)** ·
+[样例输出](docs/examples/deep-research-mcp-2026.md)
+
 ## 图是怎么跑的
 
 一个任务由 LLM **规划一次**,然后交给**纯函数**变换,再按依赖顺序执行。conductor 之后的一切
