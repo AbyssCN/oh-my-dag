@@ -20,6 +20,7 @@ import { emitModelUsage } from './accounting';
 import { resolvePiModel, piRequest, type PiModel } from './pi-transport';
 import { reportProviderFailure } from './provider-health';
 import { reportTruncation } from './truncation';
+import { capsFor, maxOutputFor } from './model-caps';
 
 export type {
   ContentPart,
@@ -204,9 +205,15 @@ const EFFORT_LADDER: Record<string, readonly string[]> = {
  * 'off' 恒不发 —— OpenAI 兼容端点没有统一的关思考开关 (mimo 实测 enable_thinking/thinking 三种写法
  * 全被忽略, 输出 token 与不发时同量级), 与其发一个假装有效的字段, 不如诚实地什么都不发。
  */
-export function reasoningEffortFor(provider: string, level: string | undefined): string | undefined {
+export function reasoningEffortFor(
+  provider: string,
+  level: string | undefined,
+  modelId?: string,
+): string | undefined {
   if (!level) return undefined;
-  const supported = PROVIDER_EFFORTS[provider] ?? UNKNOWN_EFFORTS;
+  // 词表优先级: **模型 > provider > 保守兜底**。聚合渠道 (opencode-go) 底下住着六个家族, 按 provider 查
+  // 会把 deepseek 的词表套到 qwen 头上 —— 而 qwen 实测拒 'max', 发错即 400。
+  const supported = (modelId && capsFor(modelId)?.efforts) ?? PROVIDER_EFFORTS[provider] ?? UNKNOWN_EFFORTS;
   for (const cand of EFFORT_LADDER[level] ?? []) {
     if (supported.includes(cand)) return cand;
   }
@@ -224,11 +231,16 @@ async function openaiRequest(
     model: modelId,
     messages: messages.map((m) => ({ role: m.role, content: m.content })),
   };
-  if (req.temperature !== undefined) body.temperature = req.temperature;
-  if (req.topP !== undefined) body.top_p = req.topP;
-  const effort = reasoningEffortFor(provider, req.thinkingLevel);
+  // 采样参数按模型过滤: 个别路由对 temperature/topP 直接 400 (kimi-k3 经 opencode-go 实测),
+  // 发过去不是降级而是整节点挂 —— 宁可不调采样, 也不让一个已知会炸的字段出门。
+  const caps = capsFor(modelId);
+  if (req.temperature !== undefined && !caps?.rejects?.includes('temperature')) body.temperature = req.temperature;
+  if (req.topP !== undefined && !caps?.rejects?.includes('topP')) body.top_p = req.topP;
+  const effort = reasoningEffortFor(provider, req.thinkingLevel, modelId);
   if (effort) body.reasoning_effort = effort;
-  if (req.maxTokens !== undefined) body.max_tokens = req.maxTokens;
+  // 上限收敛到该模型官方能力 (不给就用官方上限), 免得朝 glm/qwen 要 deepseek 的 384K。
+  const ceiling = caps?.maxOutput;
+  if (req.maxTokens !== undefined) body.max_tokens = ceiling ? Math.min(req.maxTokens, ceiling) : req.maxTokens;
   if (req.responseSchema) body.response_format = { type: 'json_object' };
 
   const json = (await postJson(cfg, '/chat/completions', body, req.signal)) as {
@@ -277,7 +289,9 @@ async function anthropicRequest(
     .map((m) => ({ role: m.role, content: m.content }));
   const body: Record<string, unknown> = {
     model: modelId,
-    max_tokens: req.maxTokens ?? cfg.maxTokens ?? 4096,
+    // 兜底序: 显式 > 该模型官方上限 > provider 级 > 4096。原来跳过"模型级"直接吃 provider 级
+    // (= 该 provider 内**最大**的那个模型的上限), 对小上限模型是超发, 对没登记的又只有 4096。
+    max_tokens: req.maxTokens ?? maxOutputFor(modelId) ?? cfg.maxTokens ?? 4096,
     messages: turns,
   };
   if (system) body.system = system;
