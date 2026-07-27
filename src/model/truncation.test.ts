@@ -39,8 +39,7 @@ describe('truncation 上报', () => {
   it('无订阅者时兜底写 stderr —— 绝不静默', () => {
     const orig = process.stderr.write.bind(process.stderr);
     const lines: string[] = [];
-    // @ts-expect-error 测试替身
-    process.stderr.write = (s: string) => (lines.push(String(s)), true);
+    process.stderr.write = ((s: string) => (lines.push(String(s)), true)) as typeof process.stderr.write;
     try {
       reportTruncation({ model: 'opencode-go:deepseek-v4-pro', out: 8192, cap: 8192 });
     } finally {
