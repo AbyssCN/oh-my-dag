@@ -288,15 +288,6 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     deps.commandRunner ??
     createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], cwd, timeoutMs: 180_000 });
 
-  // engine config = env 角色矩阵三件套 + 真改文件 runner 对 (execute-extension 已解析形状同款)。
-  const models = resolveEngineModels(env);
-  // 并发默认接 fleet 层 (此前断路 = 引擎全宽): min(effectiveFanout(env OMD_MAX_FANOUT/CPU 兜底),
-  // agent 模型 provider 的并发池 cap)。工具参数 maxFanout 仍最高优先 (dag-tools 内覆盖)。
-  const agentProvider = (models.agentLeafModel ?? models.leafModel ?? '').split(':')[0] ?? '';
-  const defaultMaxFanout = Math.max(
-    1,
-    Math.min(effectiveFanout({}, env), agentProvider ? resolveProviderCap(agentProvider) : Number.MAX_SAFE_INTEGER),
-  );
   // per-kind 闸: **代码零默认** (无硬默认教义 — MCP 是中立基础设施, 不烤机器立场; ms02 等
   // 强机部署天然无限制)。弱机自己的约束写自己的 env: OMD_AGENT_FANOUT / OMD_COMMAND_FANOUT。
   const intEnv = (v: string | undefined): number | undefined => {
@@ -313,95 +304,114 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   // env pool (OMD_ROUTER_POOL_*) / config.multimodalPool ≥2 才真学; 未配 → no-op = 静态 (零回归)。
   // reward = leafCostReward (成本主信号, 质量走 verifier 闸) — 见 model-router ROUTER-5。
   const router = createModelRouterFromEnv(env);
-  // SDD v2 pass 管线接线 (顺序钉死 prune → dedup → stamp; 日志在接线层 — INV-8 pass 纯函数零 IO)。
-  // S3 四池: strong=判/证, mid=执行主力, cheap=探索/机械, multimodal=多模态尺子 — 从 role 配置
-  // 组装 (auto-assign 落的 .omd/config.json 经 resolveRoleModelConfigured 读)。裸 provider 坐标
-  // (无 ':') 过滤掉 (stamp 要精确坐标); 池空 → stamp 恒等 (INV-9 配置不全零回归)。
-  const roleCoord = (n: OmdNode): string => resolveRoleModelConfigured(n, { env }).model;
-  const uniqCoords = (xs: string[]): string[] => [...new Set(xs.filter((x) => x.includes(':')))];
-  // 显式池 (config.pools) 优先; 每档独立回落座位推导。座位推导下 mid/cheap 会恒等 (六个 worker
-  // 座位同一个坐标) —— 想让 tier:'cheap' 真的便宜、想让 sibling 跨家族分散有对象, 就得显式配池。
-  const cfgPools = resolveConfiguredPools();
-  const stampPools = {
-    strong: cfgPools.strong ?? uniqCoords([roleCoord('judge'), roleCoord('reason'), roleCoord('verifier')]),
-    mid: cfgPools.mid ?? uniqCoords([roleCoord('leaf'), roleCoord('agent'), roleCoord('overflow')]),
-    cheap: cfgPools.cheap ?? uniqCoords([roleCoord('lens'), roleCoord('expand'), roleCoord('distill')]),
-    multimodal: cfgPools.multimodal ?? resolveMultimodalPool(),
-    ...(cfgPools.multimodalStrong ? { multimodalStrong: cfgPools.multimodalStrong } : {}),
-  };
-  const planFilters: Array<(p: ConductorPlan) => ConductorPlan> = [
-    (p) => {
-      const { plan, pruned } = prunePass(p);
-      if (pruned.length) logger.info({ pruned }, '[omd/mcp] prune pass: 剪除死节点 (D-2/4v2)');
-      return plan;
-    },
-    (p) => {
-      const { plan, merged } = dedupPass(p);
-      if (Object.keys(merged).length) logger.info({ merged }, '[omd/mcp] dedup pass: 语义指纹去重 (D-20)');
-      return plan;
-    },
-    // S2 证据闸 (SDD 2026-07-25 skills-compile-evidence-gate)。**排在 stamp 之前**是刻意的:
-    // 本 pass 会新增节点, 排在 stamp 后补挂的 attach_media 审查 leaf 拿不到多模态池模型 = 白补
-    // (回流修正 SDD 的「链尾」写法, 理由见 evidence-pass.ts 文件头)。卡按调用时刻读盘 (与执行器同源)。
-    (p) => {
-      const { plan, patched, noCardHits, shape } = evidencePass(p, { templates: loadAgentTemplates({ root: cwd }) });
-      if (patched.length) logger.info({ patched }, '[omd/mcp] evidence pass: 补挂 ui-pixels 证据链 (S2/D-2)');
-      // D-11 挖矿日志: (goal, 图形状指纹, 无卡命中) —— S4 图形状挖矿与卡自扩的前置数据。
-      // 三元组的 oracle 结果那一半在执行完成后由 run 汇总记 (规划期拿不到)。
-      logger.info({ goal: plan.name, shape, noCardHits }, '[omd/mcp] evidence pass: 图形状指纹 (D-11 挖矿信号)');
-      return plan;
-    },
-    (p) => {
-      // templateHasModel: 卡真钉了模型才让 stamp 让路 (卡没钉 → 照常按 tier 选池, 否则 tier 是哑弹)。
-      const tpls = loadAgentTemplates({ root: cwd });
-      const { plan, stamped } = stampPass(p, {
-        pools: stampPools,
-        familyOf: modelFamily,
-        templateHasModel: (name) => Boolean(tpls.get(name)?.model),
-      });
-      if (Object.keys(stamped).length) logger.info({ stamped }, '[omd/mcp] stamp pass: node.model 计划期分配 (D-16/17/22)');
-      return plan;
-    },
-  ];
-  // D-23 per-channel 并发闸: OMD_CHANNEL_FANOUT="mimo=8,opencode-go=4" (provider 前缀=并发上限)。
-  const channelFanout: Record<string, number> = {};
-  for (const pair of (env.OMD_CHANNEL_FANOUT ?? '').split(',')) {
-    const [k, v] = pair.split('=');
-    const n = Number.parseInt(v ?? '', 10);
-    if (k?.trim() && Number.isFinite(n) && n > 0) channelFanout[k.trim()] = n;
-  }
-  // S-P conductor prompt 档位随**座位模型档**分派 (SDD 2026-07-25 S-P; 2026-07-25 A/B eval 裁决:
-  // k3 上 full/lean 同分 1.000/1.000 且 firstShot 全过, lean 少 25% leaf token → 强 conductor 撤
-  // 教练段 = harness 退役测试, 弱 conductor 保 full)。
-  // 此前这里硬编码 `startsWith('kimi-coding:')` —— conductor 座 2026-07-25 已换 gpt-5.6-sol,
-  // 那条判据当天就失效了 (SOTA 座位在吃给弱模型写的教练段)。改成按 AA intelligence 查档,
-  // 换座位自动跟着走, 不用记得改这一行。
-  //
-  // maxTokens **不并进这张表** —— 它是另一根轴 (provider 的输出上限能力, 32768 只在 kimi 系实测过;
-  // deepseek 系 ~8k 硬顶)。把"prompt 要不要教练段"和"能吐多少 token"混成一个条件是两次埋雷。
-  const strongConductor = models.conductorModel ? isStrongCoord(models.conductorModel) : false;
-  const conductorTuning: Partial<ExecutorDagConfig> = {
-    ...(strongConductor ? { conductorPromptProfile: 'lean' as const } : {}),
-    ...(models.conductorModel?.startsWith('kimi-coding:') ? { conductorMaxTokens: 32768 } : {}),
-  };
-  // S-T 座位推理档 (坐标 → 档): auto-assign 把「模型 + 推理档」成对落盘, 执行期按节点已钉的坐标反查。
-  // 不在此加缓存 —— 底层 fileConfig 已按 mtime 缓存, 自己再存一层会在 `omd models auto` 重写 config
-  // 后拿着旧档不放 (daemon 长活)。config 无该段 → 恒 undefined → 执行器回落原默认, 老 config 零变化。
-  const seatThinking = (coord: string): ThinkingLevel | undefined => resolveSeatThinking(coord);
-  const defaultConfig: Partial<ExecutorDagConfig> = {
-    ...models,
-    seatThinking,
-    maxFanout: defaultMaxFanout,
-    ...(Object.keys(kindFanout).length ? { kindFanout } : {}),
-    agentRunner,
-    commandRunner,
-    router,
-    planFilters,
-    // D-8v2: judge/parallel/tournament 的 attempts 候选池 = mid 执行主力池 (跨家族轮转)。
-    ...(stampPools.mid.length >= 2 ? { primitiveCandidates: stampPools.mid } : {}),
-    ...(Object.keys(channelFanout).length ? { channelFanout } : {}),
-    ...conductorTuning,
-    ...deps.configOverrides,
+  /**
+   * engine config 基座 —— **每个 run 重算** (INV-MODEL-3 无 boot 冻结)。
+   *
+   * 这一段刻意住在函数里而不是装配期常量: MCP server 是长驻进程 (D-9), 装配期算一次就把座位/池
+   * 冻在 boot 那一刻 —— `omd_set_role` / `omd models auto` 改完 config, 下一次 dag_run 仍用旧座,
+   * 得杀进程重连才生效 (P0 前的真实症状)。router (bandit, 有状态) 与两个 runner 留在外面复用。
+   */
+  const buildDefaultConfig = (): Partial<ExecutorDagConfig> => {
+    // engine config = 座位三件套 (conductor/leaf/agent, 单一 resolver) + 真改文件 runner 对。
+    const models = resolveEngineModels(env);
+    // 并发默认接 fleet 层 (此前断路 = 引擎全宽): min(effectiveFanout(env OMD_MAX_FANOUT/CPU 兜底),
+    // agent 模型 provider 的并发池 cap)。工具参数 maxFanout 仍最高优先 (dag-tools 内覆盖)。
+    const agentProvider = (models.agentLeafModel ?? models.leafModel ?? '').split(':')[0] ?? '';
+    const defaultMaxFanout = Math.max(
+      1,
+      Math.min(effectiveFanout({}, env), agentProvider ? resolveProviderCap(agentProvider) : Number.MAX_SAFE_INTEGER),
+    );
+    // SDD v2 pass 管线接线 (顺序钉死 prune → dedup → stamp; 日志在接线层 — INV-8 pass 纯函数零 IO)。
+    // S3 四池: strong=判/证, mid=执行主力, cheap=探索/机械, multimodal=多模态尺子 — 从 role 配置
+    // 组装 (auto-assign 落的 .omd/config.json 经 resolveRoleModelConfigured 读)。裸 provider 坐标
+    // (无 ':') 过滤掉 (stamp 要精确坐标); 池空 → stamp 恒等 (INV-9 配置不全零回归)。
+    const roleCoord = (n: OmdNode): string => resolveRoleModelConfigured(n, { env }).model;
+    const uniqCoords = (xs: string[]): string[] => [...new Set(xs.filter((x) => x.includes(':')))];
+    // 显式池 (config.pools) 优先; 每档独立回落座位推导。座位推导下 mid/cheap 会恒等 (六个 worker
+    // 座位同一个坐标) —— 想让 tier:'cheap' 真的便宜、想让 sibling 跨家族分散有对象, 就得显式配池。
+    const cfgPools = resolveConfiguredPools();
+    const stampPools = {
+      strong: cfgPools.strong ?? uniqCoords([roleCoord('judge'), roleCoord('reason'), roleCoord('verifier')]),
+      mid: cfgPools.mid ?? uniqCoords([roleCoord('leaf'), roleCoord('agent'), roleCoord('overflow')]),
+      cheap: cfgPools.cheap ?? uniqCoords([roleCoord('lens'), roleCoord('expand'), roleCoord('distill')]),
+      multimodal: cfgPools.multimodal ?? resolveMultimodalPool(),
+      ...(cfgPools.multimodalStrong ? { multimodalStrong: cfgPools.multimodalStrong } : {}),
+    };
+    const planFilters: Array<(p: ConductorPlan) => ConductorPlan> = [
+      (p) => {
+        const { plan, pruned } = prunePass(p);
+        if (pruned.length) logger.info({ pruned }, '[omd/mcp] prune pass: 剪除死节点 (D-2/4v2)');
+        return plan;
+      },
+      (p) => {
+        const { plan, merged } = dedupPass(p);
+        if (Object.keys(merged).length) logger.info({ merged }, '[omd/mcp] dedup pass: 语义指纹去重 (D-20)');
+        return plan;
+      },
+      // S2 证据闸 (SDD 2026-07-25 skills-compile-evidence-gate)。**排在 stamp 之前**是刻意的:
+      // 本 pass 会新增节点, 排在 stamp 后补挂的 attach_media 审查 leaf 拿不到多模态池模型 = 白补
+      // (回流修正 SDD 的「链尾」写法, 理由见 evidence-pass.ts 文件头)。卡按调用时刻读盘 (与执行器同源)。
+      (p) => {
+        const { plan, patched, noCardHits, shape } = evidencePass(p, { templates: loadAgentTemplates({ root: cwd }) });
+        if (patched.length) logger.info({ patched }, '[omd/mcp] evidence pass: 补挂 ui-pixels 证据链 (S2/D-2)');
+        // D-11 挖矿日志: (goal, 图形状指纹, 无卡命中) —— S4 图形状挖矿与卡自扩的前置数据。
+        // 三元组的 oracle 结果那一半在执行完成后由 run 汇总记 (规划期拿不到)。
+        logger.info({ goal: plan.name, shape, noCardHits }, '[omd/mcp] evidence pass: 图形状指纹 (D-11 挖矿信号)');
+        return plan;
+      },
+      (p) => {
+        // templateHasModel: 卡真钉了模型才让 stamp 让路 (卡没钉 → 照常按 tier 选池, 否则 tier 是哑弹)。
+        const tpls = loadAgentTemplates({ root: cwd });
+        const { plan, stamped } = stampPass(p, {
+          pools: stampPools,
+          familyOf: modelFamily,
+          templateHasModel: (name) => Boolean(tpls.get(name)?.model),
+        });
+        if (Object.keys(stamped).length) logger.info({ stamped }, '[omd/mcp] stamp pass: node.model 计划期分配 (D-16/17/22)');
+        return plan;
+      },
+    ];
+    // D-23 per-channel 并发闸: OMD_CHANNEL_FANOUT="mimo=8,opencode-go=4" (provider 前缀=并发上限)。
+    const channelFanout: Record<string, number> = {};
+    for (const pair of (env.OMD_CHANNEL_FANOUT ?? '').split(',')) {
+      const [k, v] = pair.split('=');
+      const n = Number.parseInt(v ?? '', 10);
+      if (k?.trim() && Number.isFinite(n) && n > 0) channelFanout[k.trim()] = n;
+    }
+    // S-P conductor prompt 档位随**座位模型档**分派 (SDD 2026-07-25 S-P; 2026-07-25 A/B eval 裁决:
+    // k3 上 full/lean 同分 1.000/1.000 且 firstShot 全过, lean 少 25% leaf token → 强 conductor 撤
+    // 教练段 = harness 退役测试, 弱 conductor 保 full)。
+    // 此前这里硬编码 `startsWith('kimi-coding:')` —— conductor 座 2026-07-25 已换 gpt-5.6-sol,
+    // 那条判据当天就失效了 (SOTA 座位在吃给弱模型写的教练段)。改成按 AA intelligence 查档,
+    // 换座位自动跟着走, 不用记得改这一行。
+    //
+    // maxTokens **不并进这张表** —— 它是另一根轴 (provider 的输出上限能力, 32768 只在 kimi 系实测过;
+    // deepseek 系 ~8k 硬顶)。把"prompt 要不要教练段"和"能吐多少 token"混成一个条件是两次埋雷。
+    const strongConductor = models.conductorModel ? isStrongCoord(models.conductorModel) : false;
+    const conductorTuning: Partial<ExecutorDagConfig> = {
+      ...(strongConductor ? { conductorPromptProfile: 'lean' as const } : {}),
+      ...(models.conductorModel?.startsWith('kimi-coding:') ? { conductorMaxTokens: 32768 } : {}),
+    };
+    // S-T 座位推理档 (坐标 → 档): auto-assign 把「模型 + 推理档」成对落盘, 执行期按节点已钉的坐标反查。
+    // 不在此加缓存 —— 底层 fileConfig 已按 mtime 缓存, 自己再存一层会在 `omd models auto` 重写 config
+    // 后拿着旧档不放 (daemon 长活)。config 无该段 → 恒 undefined → 执行器回落原默认, 老 config 零变化。
+    const seatThinking = (coord: string): ThinkingLevel | undefined => resolveSeatThinking(coord);
+    const defaultConfig: Partial<ExecutorDagConfig> = {
+      ...models,
+      seatThinking,
+      maxFanout: defaultMaxFanout,
+      ...(Object.keys(kindFanout).length ? { kindFanout } : {}),
+      agentRunner,
+      commandRunner,
+      router,
+      planFilters,
+      // D-8v2: judge/parallel/tournament 的 attempts 候选池 = mid 执行主力池 (跨家族轮转)。
+      ...(stampPools.mid.length >= 2 ? { primitiveCandidates: stampPools.mid } : {}),
+      ...(Object.keys(channelFanout).length ? { channelFanout } : {}),
+      ...conductorTuning,
+      ...deps.configOverrides,
+    };
+    return defaultConfig;
   };
 
   // omd-hud 活体镜像: DAG 进度 (dag.json) + pathfinder 迷雾 (fog.json) 原子写 .omd/hud/,
@@ -414,7 +424,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
 
   return [
     // continuity 恒开 (D-3): checkpoint 落 <cwd>/.omd/continuity/<runId>/, dag_run_plan resume 可续。
-    ...createDagTools({ engine, runRegistry, cwd, defaultConfig, continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd }, hudMirror, ledger }),
+    ...createDagTools({ engine, runRegistry, cwd, defaultConfig: buildDefaultConfig, continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd }, hudMirror, ledger }),
     createDagResearchTool(researchFanout),
     ...createMemoryTools({ memory, cwd }),
     // pathfinder 六件套 (TUI-less 决策地图: map/add/tickets/rule/deliver/prefetch, pull 式回流)。
@@ -458,7 +468,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     ...createComposeTools({
       runPlan: (plan, config) =>
         engine.runExecutorDagWithPlan(plan, config as unknown as Parameters<typeof runExecutorDagWithPlan>[1]),
-      baseConfig: defaultConfig as Record<string, unknown>,
+      baseConfig: () => buildDefaultConfig() as Record<string, unknown>,
     }),
     // plan-memory 账本可观测 (Phase A 证据门仪表, issue #10)。
     createPlansTool(ledger),

@@ -59,7 +59,8 @@ export interface ComposeToolDeps {
     usage: unknown;
   }>;
   /** 引擎基础 config (模型坐标 / runner / planFilters …)。 */
-  baseConfig: Record<string, unknown>;
+  /** 每次调用重解 (INV-MODEL-3 无 boot 冻结) — 见 assemble.buildDefaultConfig。 */
+  baseConfig: () => Record<string, unknown>;
 }
 
 /** 把一个原语包成单节点 plan —— 复用图内全部机器, 不新建执行路径。 */
@@ -101,7 +102,7 @@ export function createComposeTools(deps: ComposeToolDeps): OmdMcpTool[] {
         const params = (args.params ?? {}) as Record<string, unknown>;
         const model = typeof args.model === 'string' ? args.model : undefined;
         try {
-          const res = await deps.runPlan(primitivePlan(primitive, params, model), deps.baseConfig);
+          const res = await deps.runPlan(primitivePlan(primitive, params, model), deps.baseConfig());
           const leaf = res.results.p;
           if (!leaf || leaf.status !== 'done') {
             return {
