@@ -122,3 +122,48 @@ describe('repoProbe — 名额按 query 轮转, 不是先到先得', () => {
     expect(argv[argv.indexOf('-m') + 1]).toBe('3');
   });
 });
+
+// ── 上下文行解析 (2026-07-28 实测抓到的两个 bug 的回归钉) ────────────────
+describe('repoProbe — 上下文行归并', () => {
+  test('±N 行上下文进正文 (裸一行 import 回答不了"怎么用的")', () => {
+    const { spawn, calls } = fakeSpawn({
+      q: [
+        './src/a.ts-40-前一行',
+        './src/a.ts:41:命中行',
+        './src/a.ts-42-后一行',
+      ].join('\n'),
+    });
+    const hits = repoProbe(['q'], { cwd: '/repo', contextLines: 1, _spawn: spawn });
+    expect(hits[0]!.path).toBe('src/a.ts:41');
+    expect(hits[0]!.text).toBe('前一行\n命中行\n后一行');
+    expect(calls[0]).toContain('-A'); // 上下文真的问 ugrep 要了
+  });
+
+  // 贪婪匹配下, 正文里的 "2026-07-28" 会把切点吃到最后一处 `-数字-` → 行号与正文全错位。
+  test('正文含 `-数字-` 串时非贪婪切分 (行号不错位)', () => {
+    const { spawn } = fakeSpawn({ q: './src/a.ts:7:// 2026-07-28 实测: 见 issue-12-bug' });
+    const hits = repoProbe(['q'], { cwd: '/repo', _spawn: spawn });
+    expect(hits[0]!.path).toBe('src/a.ts:7');
+    expect(hits[0]!.text).toBe('// 2026-07-28 实测: 见 issue-12-bug');
+  });
+
+  // 实测复现过: 一条命中的尾巴接着另一个文件的 import 行。
+  test('跨文件不串味: B 文件的上下文不挂到 A 文件的命中上', () => {
+    const { spawn } = fakeSpawn({
+      q: [
+        './src/a.ts:1:A 的命中',
+        './src/b.ts-8-B 的上文',
+        './src/b.ts:9:B 的命中',
+      ].join('\n'),
+    });
+    const hits = repoProbe(['q'], { cwd: '/repo', contextLines: 2, _spawn: spawn });
+    expect(hits[0]!.text).toBe('A 的命中'); // 没被 B 的上文污染
+    expect(hits[1]!.text).toBe('B 的上文\nB 的命中');
+  });
+
+  test('contextLines:0 → 不向 ugrep 要上下文 (省 IO)', () => {
+    const { spawn, calls } = fakeSpawn({});
+    repoProbe(['q'], { cwd: '/repo', contextLines: 0, _spawn: spawn });
+    expect(calls[0]).not.toContain('-A');
+  });
+});
