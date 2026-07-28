@@ -545,3 +545,55 @@ describe('dag_result usage 回传', () => {
     expect(text).toContain('"conductor"');
   });
 });
+
+// ── INV-MODEL-3 (P0): 无 boot 冻结 ─────────────────────────────────────
+// MCP server 长驻: 装配期把座位算死 → omd_set_role 改完配置仍跑旧模型, 得杀进程重连。
+// defaultConfig 给 thunk 时必须**每个 run 重算**。
+describe('defaultConfig thunk — INV-MODEL-3 无 boot 冻结', () => {
+  test('每次 dag_run / dag_run_plan 重新求值 (改配置下一跑即生效)', async () => {
+    const seen: string[] = [];
+    let conductor = 'v1:model';
+    const engine: DagEngine = {
+      runExecutorDag: async (_task, cfg) => {
+        seen.push((cfg as ExecutorDagConfig).conductorModel ?? '');
+        return stubResult();
+      },
+      runExecutorDagWithPlan: async (_plan, cfg) => {
+        seen.push((cfg as ExecutorDagConfig).conductorModel ?? '');
+        return stubResult();
+      },
+    };
+    const tools = createDagTools({
+      engine,
+      runRegistry: new RunRegistry(),
+      cwd: '/tmp',
+      defaultConfig: () => ({ conductorModel: conductor, leafModel: 'l:m' }),
+    });
+    const run = getTool(tools, 'dag_run');
+    await run({ task: 'first' });
+    conductor = 'v2:model'; // ← 模拟 omd_set_role 改 config
+    await run({ task: 'second' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(seen).toEqual(['v1:model', 'v2:model']);
+  });
+
+  test('给值 (非 thunk) = 老语义, 不回归', async () => {
+    const seen: string[] = [];
+    const engine: DagEngine = {
+      runExecutorDag: async (_t, cfg) => {
+        seen.push((cfg as ExecutorDagConfig).conductorModel ?? '');
+        return stubResult();
+      },
+      runExecutorDagWithPlan: async () => stubResult(),
+    };
+    const tools = createDagTools({
+      engine,
+      runRegistry: new RunRegistry(),
+      cwd: '/tmp',
+      defaultConfig: { conductorModel: 'fixed:m', leafModel: 'l:m' },
+    });
+    await getTool(tools, 'dag_run')({ task: 'x' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(seen).toEqual(['fixed:m']);
+  });
+});

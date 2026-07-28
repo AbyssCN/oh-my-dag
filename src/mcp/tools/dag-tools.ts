@@ -78,8 +78,13 @@ export interface DagToolDeps {
   cwd: string;
   /** Clock seam — injectable for deterministic tests. Default: () => new Date().toISOString(). */
   clock?: () => string;
-  /** Default ExecutorDagConfig base (leafModel, conductorModel, etc.) — spread with per-call overrides. */
-  defaultConfig?: Partial<ExecutorDagConfig>;
+  /**
+   * Default ExecutorDagConfig base (leafModel, conductorModel, etc.) — spread with per-call overrides.
+   *
+   * **给 thunk 则每个 run 重算** (INV-MODEL-3 无 boot 冻结): MCP server 是长驻进程, 装配期算一次
+   * 就把座位/池冻在 boot 那一刻 —— `omd_set_role` 改了配置也要重连才生效。给值 = 老语义 (测试用)。
+   */
+  defaultConfig?: Partial<ExecutorDagConfig> | (() => Partial<ExecutorDagConfig>);
   /**
    * W2 continuity (D-3 断点续跑): 给则每个 run 落节点 checkpoint (.omd/continuity/<runId>/),
    * dag_run_plan 的 resume 参数命中已绿节点即跳过 (429 打断后不再整图重跑)。省略 = 不落不续。
@@ -203,7 +208,8 @@ function launchPlanRun(
   opts: { resume?: string; leafModel?: string; maxFanout?: number; task?: string; toolName: string },
   deps: DagToolDeps,
 ): { content: { type: 'text'; text: string }[]; isError?: boolean } {
-  const { engine, runRegistry, defaultConfig, continuity, hudMirror, ledger } = deps;
+  const { engine, runRegistry, continuity, hudMirror, ledger } = deps;
+  const defaultConfig = resolveDefaults(deps.defaultConfig);
   const { resume, leafModel, maxFanout, task, toolName } = opts;
   const runId = resume ?? randomUUID();
   const goal = task?.slice(0, 200) ?? parsedPlan.name ?? 'prebuilt plan';
@@ -310,7 +316,14 @@ export function createDagTools(deps: DagToolDeps): OmdMcpTool[] {
 // dag_run — task → conductor plan → fan-out → {runId, summary}.
 // ---------------------------------------------------------------------------
 
-function makeDagRun({ engine, runRegistry, defaultConfig, continuity, hudMirror, ledger }: DagToolDeps): OmdMcpTool {
+/** thunk 则调用 (每 run 新鲜), 值则原样 — 见 DagToolDeps.defaultConfig。 */
+function resolveDefaults(
+  d: Partial<ExecutorDagConfig> | (() => Partial<ExecutorDagConfig>) | undefined,
+): Partial<ExecutorDagConfig> | undefined {
+  return typeof d === 'function' ? d() : d;
+}
+
+function makeDagRun({ engine, runRegistry, continuity, hudMirror, ledger, ...rest }: DagToolDeps): OmdMcpTool {
   return {
     name: 'dag_run',
     description: 'Execute a task via conductor DAG planning + leaf fan-out. resume=<runId> skips checkpointed nodes.',
@@ -350,6 +363,8 @@ function makeDagRun({ engine, runRegistry, defaultConfig, continuity, hudMirror,
       }
 
       // Fire-and-forget: execute in background, update registry on completion.
+      // 座位/池**每 run 重解** (INV-MODEL-3): thunk 在这里调用, 故 omd_set_role 改完下一次 dag_run 就用新座。
+      const defaultConfig = resolveDefaults(rest.defaultConfig);
       const config: ExecutorDagConfig = {
         ...defaultConfig,
         conductorModel: conductorModel ?? defaultConfig?.conductorModel ?? '',

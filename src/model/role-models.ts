@@ -2,25 +2,29 @@
  * src/model/role-models.ts — the role→model resolver + unified config center (D60 · omd config seam).
  *
  * callModel 的 provider registry 已是 config-driven (provider:modelId 经注册解析);
- * 这一层补"哪个 daemon 角色用哪个 model"的绑定 + 多模态池 + 用户自定 API。每个角色解析到
- * 一个坐标, 4 级优先:
+ * 这一层补"哪个座位用哪个 model"的绑定 + 多模态池。**全库唯一的模型解析权威**
+ * ({@link resolveSeatModel}, P0 2026-07-28 INV-MODEL-1) —— 座位 = 14 个 DAG 节点 + continuity/review
+ * 两个后台角色, 一条链:
  *
- *   in-memory override (CLI/test, 非持久)
- *     → file (.omd/config.json, 持久 + 跨进程, TUI /config·/setup 写它)
- *       → per-role env (OMD_PLAN_MODEL / OMD_CONDUCTOR_MODEL / …)
- *         → 出厂默认
+ *   explicit (调用方显式)
+ *     → in-memory override (CLI/test, 非持久)
+ *       → config.models[seat] (持久 + 跨进程, TUI /config·/setup·omd_set_role 写它)
+ *         → env: OMD_<SEAT>_MODEL, 其后历史别名 OMD_ITER_* / OMD_CG_*
+ *           → config.autoAssigned[seat] (omd models auto 按渠道经济学落盘)
+ *             → **单一可配** config.defaultModel / OMD_DEFAULT_MODEL / OMD_RUNTIME_*
+ *               → 抛 SeatUnresolvedError (INV-MODEL-5: 无出厂坐标, 计划期响亮失败)
  *
  * config.json schema v2 (向后兼容 v1):
- *   { version, models: {role→coord}, multimodalPool: [coord…], apis: [{id,baseUrl,keyEnv?,multimodal?}] }
- * multimodalPool = 多模态 leaf 的候选池 (从 provider 池里挑有多模态能力的, 如 mimo/gemini/kimi 多选);
- * apis = 用户自定 OpenAI-兼容端点, boot 时 registerProvidersFromConfig 注册进 callModel registry。
+ *   { version, models: {seat→coord}, defaultModel, multimodalPool: [coord…], pools, autoAssigned }
+ * multimodalPool = 多模态 leaf 的候选池 (从 provider 池里挑有多模态能力的, 如 mimo/gemini/kimi 多选)。
  *
- * 文件层 = omd 既有落盘约定 (.omd/* cwd-相对, 经 OMD_CONFIG_PATH 覆盖)。daemon 与 TUI 同从
- * repo root 跑, 共享同一 .omd/config.json; 下次 resolve 时 mtime 重读即捡到改动, 不重启。
+ * 文件路径经 {@link configPath} 确定性发现 (INV-MODEL-4: 向上找 .omd/config.json → repo 根,
+ * OMD_CONFIG_PATH 显式覆盖), 不再是 cwd-相对 —— server 与脚本从不同目录起也读同一份。
+ * 下次 resolve 时 mtime 重读即捡到改动, 不重启 (INV-MODEL-3)。
  * INV: 永不返硬编码 URL — 只返 'provider' / 'provider:modelId' 坐标, callModel 经注册 provider 解析。
  */
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, parse, resolve } from 'node:path';
 import { logger } from '../logger';
 
 /**
@@ -62,11 +66,52 @@ const overrides = new Map<OmdSeat, string>();
 // ---------------------------------------------------------------------------
 // file layer — .omd/config.json (cwd-relative; OMD_CONFIG_PATH override).
 // ---------------------------------------------------------------------------
-const DEFAULT_CONFIG_PATH = '.omd/config.json';
+const DEFAULT_CONFIG_REL = '.omd/config.json';
 
-/** Resolved config-file path: OMD_CONFIG_PATH or .omd/config.json (cwd-relative). */
+/** 路径发现缓存 (只缓存**路径**不缓存内容; 内容仍走 fileCache 的 mtime 判定)。 */
+let configPathCache: { cwd: string; env: string | undefined; path: string } | null = null;
+
+/**
+ * **确定性 config 路径** (INV-MODEL-4)。此前是裸 `.omd/config.json` cwd-相对 —— MCP server 从
+ * 一个目录起、dag-* 脚本从另一个目录起, 两边读的是**两份不同的 config**, 于是"我明明改了配置"。
+ *
+ * 解析序 (从 cwd 逐级向上, **走到 repo 边界为止**):
+ *   1. `OMD_CONFIG_PATH` (显式即权威, 相对路径对 cwd 解析成绝对);
+ *   2. 路上第一个**已存在的** `.omd/config.json` (worktree 里跑 = 用 worktree 自己的);
+ *   3. 撞到 repo 根 (`.git`) 就停 → `<root>/.omd/config.json` (还没 init 的仓; init/models auto 写这里);
+ *   4. 压根不在仓里 → 一直走到文件系统根, 都没有则 `<cwd>/.omd/config.json`。
+ *
+ * **在仓内不越过仓边界**是刻意的: 否则一份游离的 `~/.omd/config.json` 会静默劫持每个还没 init
+ * 的项目 —— 那种"配置从哪来的"最难查。
+ *
+ * 返回**绝对路径**, 故 cwd 之后再变也不会读串。cwd/env 变了会重新发现 (键在缓存里)。
+ */
 export function configPath(): string {
-  return process.env.OMD_CONFIG_PATH ?? DEFAULT_CONFIG_PATH;
+  const cwd = process.cwd();
+  const envPath = process.env.OMD_CONFIG_PATH;
+  if (configPathCache && configPathCache.cwd === cwd && configPathCache.env === envPath) {
+    return configPathCache.path;
+  }
+  const path = discoverConfigPath(cwd, envPath);
+  configPathCache = { cwd, env: envPath, path };
+  return path;
+}
+
+function discoverConfigPath(cwd: string, envPath: string | undefined): string {
+  if (envPath?.trim()) {
+    const p = envPath.trim();
+    return isAbsolute(p) ? p : resolve(cwd, p);
+  }
+  const fsRoot = parse(cwd).root;
+  let dir = cwd;
+  for (;;) {
+    if (existsSync(join(dir, DEFAULT_CONFIG_REL))) return join(dir, DEFAULT_CONFIG_REL);
+    // repo 边界: 仓里没 config 就用仓根的位置, **不再往上找别人的**
+    if (existsSync(join(dir, '.git'))) return join(dir, DEFAULT_CONFIG_REL);
+    if (dir === fsRoot) break;
+    dir = dirname(dir);
+  }
+  return join(cwd, DEFAULT_CONFIG_REL);
 }
 
 interface ConfigFile {
@@ -130,9 +175,10 @@ function fileModels(path = configPath()): Record<string, string> {
   return m && typeof m === 'object' ? m : {};
 }
 
-/** Drop the mtime cache — test hook + after an out-of-band file write. */
+/** Drop the mtime + 路径发现缓存 — test hook + after an out-of-band file write / chdir。 */
 export function resetConfigCache(): void {
   fileCache = null;
+  configPathCache = null;
 }
 
 /**
