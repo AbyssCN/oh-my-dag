@@ -86,3 +86,39 @@ describe('renderRepoHits — 进语料的形状', () => {
     expect(renderRepoHits([])).toBe('');
   });
 });
+
+// ── 名额分配 (2026-07-28 实测驱动的修复) ────────────────────────────────
+// 修前是"顺序取, 先到先得": 第一条常见词吃光全部名额, 后面真正想查的符号零命中。
+// 实测复现: ["config", "SeatUnresolvedError", "assertSeatsUsable"] → 后两条各 0 条。
+describe('repoProbe — 名额按 query 轮转, 不是先到先得', () => {
+  test('常见词打头不再饿死后面的 query', () => {
+    const flood = Array.from({ length: 40 }, (_, i) => `./src/noise${i}.ts:1:config`).join('\n');
+    const { spawn } = fakeSpawn({
+      config: flood,
+      rareA: './src/a.ts:7:rareA 在这',
+      rareB: './src/b.ts:9:rareB 在这',
+    });
+    const hits = repoProbe(['config', 'rareA', 'rareB'], { cwd: '/repo', maxHitsTotal: 6, _spawn: spawn });
+    expect(hits.some((h) => h.text.includes('rareA'))).toBe(true);
+    expect(hits.some((h) => h.text.includes('rareB'))).toBe(true);
+    // 轮转 = 第一轮各取一条, 常见词不会独占
+    expect(hits.filter((h) => h.text === 'config').length).toBeLessThanOrEqual(4);
+  });
+
+  test('某条 query 早早取完 → 剩余额度流给还有货的 (公平但不浪费)', () => {
+    const { spawn } = fakeSpawn({
+      few: './src/f.ts:1:只有一条',
+      many: Array.from({ length: 10 }, (_, i) => `./src/m${i}.ts:1:many ${i}`).join('\n'),
+    });
+    const hits = repoProbe(['few', 'many'], { cwd: '/repo', maxHitsTotal: 8, _spawn: spawn });
+    expect(hits).toHaveLength(8); // 没有因为 few 只有一条就浪费名额
+    expect(hits.filter((h) => h.text.startsWith('many')).length).toBe(7);
+  });
+
+  test('per-file 上限当 ugrep -m 传 (它就是 per-file 语义)', () => {
+    const { spawn, calls } = fakeSpawn({});
+    repoProbe(['q'], { cwd: '/repo', maxHitsPerFile: 3, _spawn: spawn });
+    const argv = calls[0]!;
+    expect(argv[argv.indexOf('-m') + 1]).toBe('3');
+  });
+});
