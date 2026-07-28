@@ -1,7 +1,7 @@
 /**
  * src/harness/continuity/halt-judge.ts — 停机闸栈 (SDD §2 C6).
  *
- * L1 确定性(零模型) → L2 goal judge (deepseek:deepseek-v4-flash) → L3 fail-open.
+ * L1 确定性(零模型) → L2 goal judge ('judge' 座位) → L3 fail-open.
  *
  * 消费方: dag-build driver (C6 接线)。
  *   驱动方需将 callModel (responseSchema=judgeVerdictSchema) 包装成 GenerateFn,
@@ -26,6 +26,7 @@ import type { GenerateFn } from '../executor-dag';
 import type { HaltVerdict, JudgeVerdict } from './types';
 import { logger } from '../logger';
 import { roleModelWithFallback } from '../../model/role-fallback';
+import { resolveSeatModel } from '../../model/role-models';
 
 // ── L1 types ────────────────────────────────────────────────────────────────
 
@@ -61,7 +62,7 @@ export interface JudgeInput {
 export interface HaltDeps {
   /** 模型调用函数。driver 应传 GenerateFn (包装 callModel + responseSchema)。 */
   generate: GenerateFn;
-  /** L2 judge 模型坐标。缺省 'deepseek:deepseek-v4-flash'。 */
+  /** L2 judge 模型坐标。缺省 = 'judge' 座位 (单一 resolver)。 */
   judgeModel?: string;
   /** L2 调用配额上限。缺省 2。 */
   judgeCap?: number;
@@ -227,9 +228,11 @@ export async function haltJudge(
   }
 
   // ── L2: goal judge ───────────────────────────────────────────
-  // issue #6: 首选 (deepseek 家族默认) provider 未注册 → 兜底到已注册 provider, 让 L2 真跑,
-  // 而非抛错落 L3 oracle 盲从。全不可达 → 原样返 → 既有 L3 fail-open 兜底不变。
-  const model = roleModelWithFallback(deps.judgeModel ?? 'deepseek:deepseek-v4-flash', 'judge');
+  // issue #6: 首选 provider 未注册 → 兜底到已注册 provider, 让 L2 真跑, 而非抛错落 L3 oracle 盲从。
+  // 全不可达 → 原样返 → 既有 L3 fail-open 兜底不变。首选坐标 = 'judge' 座位 (单一 resolver)。
+  const model = roleModelWithFallback(resolveSeatModel('judge', {
+    ...(deps.judgeModel ? { explicit: deps.judgeModel } : {}),
+  }).model, 'judge');
   const prompt = buildJudgePrompt(judge);
 
   let verdictObj: JudgeVerdict;

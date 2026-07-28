@@ -17,7 +17,8 @@
  *   - **不许脑补事实**: 挖的是原文支持得住的推论, 不是编新的事实 (下面 system 里第一条就是它)。
  */
 import { send as defaultCallModel } from '../../model/gateway';
-import { DISTILL_DEFAULT_MAX_CHARS, DISTILL_DEFAULT_MODEL, buildDistillPrompt, type SourceDistillInput, type SourceDistillResult, type SourceDistiller } from './distill-source';
+import { resolveSeatModel } from '../../model/role-models';
+import { DISTILL_DEFAULT_MAX_CHARS, distillDefaultModel, buildDistillPrompt, type SourceDistillInput, type SourceDistillResult, type SourceDistiller } from './distill-source';
 import { z } from 'zod';
 
 /** 与 expert 档同 schema —— 两个 lens 的产物可以直接并排喂给同一个综合层。 */
@@ -45,7 +46,7 @@ export function createChallengerDistiller(
   opts: { model?: string; maxChars?: number; temperature?: number; _callModel?: typeof defaultCallModel } = {},
 ): SourceDistiller {
   const call = opts._callModel ?? defaultCallModel;
-  const model = opts.model ?? process.env.OMD_DISTILL_MODEL ?? DISTILL_DEFAULT_MODEL;
+  const model = resolveSeatModel('distill', { ...(opts.model ? { explicit: opts.model } : {}) }).model;
   const maxChars = opts.maxChars ?? DISTILL_DEFAULT_MAX_CHARS;
   // 高温是这一档的**机制**不是调味: 低温采样按定义往高概率 token 走, 而非显然的东西住在长尾。
   const temperature = opts.temperature ?? 0.9;
