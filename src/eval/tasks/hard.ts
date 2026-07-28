@@ -97,6 +97,8 @@ const DISTANT_SPEC = `# Debug 任务: 定位并修复回归 (根因在别处)
 export interface HardDebugFixture extends WorktreeFixture {
   bugs: readonly DistantBug[];
   causeFiles: string[];
+  /** = causeFiles 的别名, 让 debug-planted 的 inspectDiff 能同样吃这份 fixture (改动面判据共用一套)。 */
+  buggyFiles: string[];
 }
 
 /** H2 fixture: 不清空任何文件, 只在"因"处种 bug, SPEC 明确排除"果"文件以逼真定位。 */
@@ -119,6 +121,11 @@ export async function createDistantBugFixture(opts: { repoRoot?: string } = {}):
     await writeFile(p, src.replace(bug.find, bug.replace), 'utf8');
   }
 
+  // 与 debug-planted 同: 把种完的状态提交进 worktree, 让 diff 基线 = 带 bug 的状态
+  // (否则正确修复恰好改回原版 → 显示 +0/-0, 与"没干活"分不开)。
+  await $`git add -A`.cwd(fx.root).quiet().nothrow();
+  await $`git -c user.email=eval@local -c user.name=eval commit -m planted-baseline`.cwd(fx.root).quiet().nothrow();
+
   // 自检 ①: 果处必须真的红 (否则这题测不出东西)。
   const red = await $`bun test ${DISTANT_BUGS[0]!.symptomTest}`.cwd(fx.root).quiet().nothrow();
   if (red.exitCode === 0) {
@@ -134,7 +141,8 @@ export async function createDistantBugFixture(opts: { repoRoot?: string } = {}):
     throw new Error(`hard/trap: 因处 ${causeTest} 仍绿 —— 局部弄绿将无法被识破, 陷阱失效`);
   }
 
-  return { ...fx, bugs: DISTANT_BUGS, causeFiles: [...new Set(DISTANT_BUGS.map((b) => b.causeFile))] };
+  const causeFiles = [...new Set(DISTANT_BUGS.map((b) => b.causeFile))];
+  return { ...fx, bugs: DISTANT_BUGS, causeFiles, buggyFiles: causeFiles };
 }
 
 // ── H3: 全量 oracle ──────────────────────────────────────────────────────────
