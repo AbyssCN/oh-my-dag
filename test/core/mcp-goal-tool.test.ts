@@ -18,6 +18,7 @@ const result = (over: Partial<RunGoalResult> = {}): RunGoalResult => ({
   ],
   specPath: 'docs/plan/x.md',
   sources: ['https://a', 'https://b', 'https://c'],
+  repoContext: 'src/x.ts:1 — 已有同类机制',
   converged: true,
   rounds: 2,
   reusedNodes: ['n1', 'n2', 'n3', 'n4'],
