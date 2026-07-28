@@ -126,11 +126,19 @@ const PlanNode = z
     template: z.string().optional(),
     model: z.string().optional(),
     leaf: z.record(z.string(), z.unknown()).optional(),
-    on_failure: z.enum(['retry', 'complete-then-retry', 'escalate', 'pause']).optional(),
-    // INV-GOAL-4 有界: 重试次数不允许出现"无限"这个取值。**目前引擎侧无消费者**
-    // (只进语义指纹) —— 但一个无界的字段就是给未来的实装者留的坑, 现在钉住比事后追便宜。
+    /**
+     * L0 节点级重试上限 (INV-P2-2)。省略/0 = 不重试 (默认, 零回归)。每次重试把**上一次的失败原因**
+     * 注入 prompt (不是原样重放); 用尽仍 failed → 该节点 failed, 由上层 (verifier 升级 / 外层 fixpoint) 接手。
+     *
+     * 这是本 schema 里**唯一**的节点级恢复旋钮 (D-11, 2026-07-28): 原先并列的 `on_failure`
+     * (retry/complete-then-retry/escalate/pause) 与 `fallback` (human/reactive) 全部**零引擎消费者**却
+     * 进语义指纹 —— 手写 plan 显式写了会被静默忽略。二选一时删掉它们而非实装:
+     * escalate 的语义 (便宜→强逐级试) `escalation` **原语**已经做了 (primitive-registry), 不重复造;
+     * pause/human 属 HITL, 已定推迟 (D-8)。判据承 `agent` 字段被排出指纹时立的那条: 不消费就不该在键里。
+     *
+     * INV-GOAL-4 有界: 不允许"无限"这个取值。
+     */
     max_retry: z.number().int().min(0).max(3).optional(),
-    fallback: z.enum(['human', 'reactive']).optional(),
     // ── SDD v2 (dag-engine-fusion-refactor) 调度/分配元数据 ──
     /**
      * D-7v2 quorum: 依赖失败时本节点的执行判据。'all' = 任一依赖 failed/skipped → 本节点级联
@@ -252,7 +260,7 @@ export function conductorSystemPrompt(
     // ── 纪律段: full = 弱 conductor 教练全量; lean = 一行版 (强模型自判, 只留不可自推导的钩子) ──
     ...(lean
       ? [
-          'Split on natural boundaries; give correctness-critical nodes a postcondition (GWT). Prefer',
+          'Split on natural boundaries; route correctness-critical output through a checking node. Prefer',
           '"command" nodes over fresh generation where indexed infra already answers. depends_on only for',
           'real data dependencies. Executors may be weak models: phrase each leaf goal to PRODUCE its',
           'deliverable content (never "execute step X"), and size nodes so a weak executor stays coherent.',
@@ -263,7 +271,7 @@ export function conductorSystemPrompt(
     '- Research-parallel: independent investigations become sibling nodes (no deps between them).',
     '- Synthesis-central: a node that consumes several siblings declares them in depends_on.',
     '- Impl-dispatch: distinct skills / agents / artifacts become distinct nodes.',
-    '- Verify-independent: where correctness matters, give the node a postcondition (GWT).',
+    '- Verify-independent: where correctness matters, add a checking node ("command" oracle or a judge/verify\n  primitive) downstream — a node that actually RUNS, not a declared condition.',
     '',
     'Design law (what to create, how to wire — applies to EVERY node):',
     '- No consumer → do NOT build: never emit a node whose output nothing downstream consumes and that',
@@ -278,7 +286,7 @@ export function conductorSystemPrompt(
     '- For any multi-node task, add a terminal synthesis/review node that consumes the siblings and is',
     '  charged to CATCH OMISSIONS: gaps, contradictions, uncovered sub-parts of the original task.',
     '- Do NOT assume a leaf returns complete output. Where a leaf could plausibly drop a required part,',
-    '  give it a postcondition (GWT) naming that part, OR route its output through a checking node.',
+    '  route its output through a checking node that names that part.',
     '- A task is only decomposed correctly when the union of leaf goals covers the WHOLE ask — verify',
     '  that coverage as you plan, and add the missing node rather than hoping a leaf over-delivers.',
     '',
@@ -454,15 +462,18 @@ export function conductorSystemPrompt(
     '',
     'Output STRICTLY one JSON object, no prose, matching:',
     '{ "name": string, "description"?: string, "outputs"?: string[],',
-    // "skill" 从广告 schema 撤下 (2026-07-25 ponytail): 执行层无 skill 加载器, 该字段只会渲染成一行
+    // "skill" 从明示 schema 撤下 (2026-07-25 ponytail): 执行层无 skill 加载器, 该字段只会渲染成一行
     // 无载荷文字 — 别邀请 conductor 相信一个不存在的通道。zod 层保留容忍 (daemon 遗产/旧 plan 兼容)。
-    // "agent" 2026-07-26 从广告 schema 撤下 (同 skill 的理由): executor-dag 零消费者 —— 分流只看
+    // "agent" 2026-07-26 从明示 schema 撤下 (同 skill 的理由): executor-dag 零消费者 —— 分流只看
     // executor/model; 而 conductor 每轮重掷这个字段, 反而系统性打空 D-21 跨轮语义复用
     // (semantic-key 为此把它排除在指纹外)。zod 层仍容忍旧 plan。
     '  "nodes": { "<node_id>": { "goal"?: string, "persona"?: string, "template"?: string,',
     '    "args"?: object, "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map", "command"?: string, "creative"?: boolean,',
     '    "map"?: { "lister": object, "over": string, "itemVar": string, "keyBy"?: string, "template": object, "maxItems"?: number },',
-    '    "postcondition"?: { "method"?: "structural"|"code"|"llm-judge"|"human", "threshold"?: number },',
+    // "postcondition" 2026-07-28 从明示 schema 撤下 (同 skill/agent 的理由, 空旋钮全仓扫): 全仓零消费者,
+    // 引擎从不检查它。明示它比明示 skill 更坏 —— 那是在请 conductor 给"正确性敏感的节点"写验证条件,
+    // 写完没人看: 是验证的样子而不是验证, 还会把它从**真的会跑**的 command / judge 节点那条路上引开。
+    // zod 层仍容忍旧 plan; 指纹已排除 (semantic-key)。
     '    "output_type"?: "structured"|"file"|"git"|"none", "output_path"?: string,',
     '    "requires"?: "all"|"any"|number, "cluster"?: string, "tier"?: "strong"|"mid"|"cheap", "attach_media"?: boolean,',
     '    "kind"?: "primitive", "primitive"?: "parallel"|"pipeline"|"loop-until"|"verify"|"judge"|"discovery"|"iterate"|"tournament"|"router"|"race"|"escalation"|"saga"|"escape-hatch", "params"?: object } } }',

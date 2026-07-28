@@ -86,6 +86,40 @@ export interface DagMetadata {
 }
 
 /**
+ * **外层 fixpoint 轮journal** (INV-P2-6), 落 `_fixpoint.json`。
+ *
+ * `_dag.json` + per-node checkpoint 记的是**一张内层图**;外层 fixpoint (iterateExecutorDag) 的轮次、
+ * 跨轮复用源、D-4 毒集此前全是进程内闭包变量 —— 进程一死全丢, 重跑从第 1 轮起、毒集清零
+ * (**被拒的产出会因此复活**, 比不复用更坏)。这个文件就是那份缺失的外层状态。
+ *
+ * 写入时机 = **每轮 judge 判完之后**。死在一轮中途 → 该轮没有 journal, resume 重跑该轮;
+ * 但该轮内部的绿节点仍由 per-node checkpoint 兜住, 不是从零。
+ *
+ * 类型用结构面而非 import ConductorPlan / LeafResult —— continuity 层不依赖 harness 上层 (层次单向,
+ * 同 DagMetadata.plan 的处理)。
+ */
+export interface FixpointJournal {
+  runId: string;
+  /** 已判完的外层轮数; resume 从 completedRounds+1 起跑。 */
+  completedRounds: number;
+  /** D-4 指纹毒集 (累积不撤)。丢了它 = 复活被拒产出。 */
+  poisoned: string[];
+  /** 上一轮的 {plan, results} —— 跨轮复用 (D-21) 的匹配源。 */
+  lastRound?: {
+    plan: { name: string; description?: string; nodes: Record<string, unknown> };
+    results: Record<string, unknown>;
+  };
+  /** judge 判未收敛却开不出一张可解析的票 → 上一轮整体不可信 (D-4 fail-closed)。 */
+  distrustLastRound?: boolean;
+  /** 上一轮的失败原因 (enrich 注入下一轮 input)。 */
+  prevReason?: string;
+  /** 上一轮是否已判收敛 (收敛后 resume 无事可做)。 */
+  converged?: boolean;
+  updatedAt: string;
+  schemaVersion: 1;
+}
+
+/**
  * 停机闸栈 (L1-L3) 判定结果。
  * - continue: 继续执行下一节点/轮。
  * - stop: 停机, 携带原因与可选证据。

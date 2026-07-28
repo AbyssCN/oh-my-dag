@@ -24,7 +24,7 @@ import {
 } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
 import { logger } from '../logger';
-import type { NodeCheckpoint, DagMetadata } from './types';
+import type { NodeCheckpoint, DagMetadata, FixpointJournal } from './types';
 import { dataPath } from '../project-scope';
 
 /** `.omd/continuity` — 约定目录, per-worktree 局部 (legacy: repoRoot 相对)。 */
@@ -70,6 +70,32 @@ export class CheckpointManager {
       const path = join(this.runDir(runId), '_dag.json');
       if (!existsSync(path)) return null;
       return JSON.parse(readFileSync(path, 'utf-8')) as DagMetadata;
+    } catch {
+      return null;
+    }
+  }
+
+  // ── 外层 fixpoint journal (INV-P2-6) ─────────────────────────────────────
+
+  /** 落 `_fixpoint.json` (原子写)。失败 → WARN (fail-open, 与 _dag.json 同纪律)。 */
+  writeFixpointJournal(runId: string, journal: FixpointJournal): void {
+    try {
+      const dir = this.runDir(runId);
+      this.ensureDir(dir);
+      const tmp = join(dir, '_fixpoint.tmp');
+      writeFileSync(tmp, JSON.stringify(journal, null, 2), 'utf-8');
+      renameSync(tmp, join(dir, '_fixpoint.json'));
+    } catch (err) {
+      logger.warn({ err, runId }, 'checkpoint: writeFixpointJournal failed (fail-open)');
+    }
+  }
+
+  /** 读 `_fixpoint.json`。不存在/损坏 → null (调用方按"没有外层历史"处理, 即从第 1 轮起)。 */
+  loadFixpointJournal(runId: string): FixpointJournal | null {
+    try {
+      const path = join(this.runDir(runId), '_fixpoint.json');
+      if (!existsSync(path)) return null;
+      return JSON.parse(readFileSync(path, 'utf-8')) as FixpointJournal;
     } catch {
       return null;
     }

@@ -61,7 +61,7 @@ describe('conductor prompt 2026-07-26 审核 (SOTA-only 口径)', () => {
     }
   });
 
-  test('SAMPO roster 与广告 schema 的 "agent" 字段已撤 (executor-dag 零消费者)', () => {
+  test('SAMPO roster 与明示 schema 的 "agent" 字段已撤 (executor-dag 零消费者)', () => {
     for (const p of [full, lean]) {
       expect(p).not.toContain('SAMPO');
       expect(p).not.toContain('"agent": string');
