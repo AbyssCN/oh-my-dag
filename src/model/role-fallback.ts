@@ -19,7 +19,7 @@ import { assertModelResolvable } from './index';
 import { getProvider, listProviders } from './providers';
 import { piHasCredential } from './pi-transport';
 import { channelInCooldown } from './provider-health';
-import { ALL_SEATS, type OmdSeat, tryResolveSeatModel } from './role-models';
+import { ALL_SEATS, type OmdSeat, tryResolveSeatModel, resolveConfiguredPools } from './role-models';
 import { logger } from '../logger';
 
 /** 坐标前半 = provider 名 ('deepseek:x' → 'deepseek'; 裸名原样)。 */
@@ -146,6 +146,34 @@ export function assertSeatsUsable(
   );
 }
 
+/** 一个显式配置的池子的自检结论 (tier + 池内每个坐标可用与否)。 */
+export interface PoolCheck {
+  tier: string;
+  /** 池内**不可用**的坐标 (有凭证的不列)。 */
+  unusable: string[];
+  /** 池子总坐标数 (判"整池全死"用)。 */
+  size: number;
+}
+
+/**
+ * **池子自检** (2026-07-29)。座位自检管不到这里 —— `config.pools` 是**第三条轴**:
+ * 它不回答"某个座位用哪个模型", 而是"stamp pass 把节点判成 cheap 档时从哪几个坐标里轮换"。
+ * 显式配了 pools 的档位**完全不经过座位链** (`mcp/assemble.ts` 的 `cfgPools.x ?? 座位推导`),
+ * 于是既躲开 env 覆盖, 也躲开 checkSeats —— 一池子欠费 provider 照样开跑, 直到 429/403 才炸。
+ *
+ * 只查**显式配置**的池子: 未配的档位由座位推导而来, 那些坐标已被 checkSeats 覆盖, 重复查是噪声。
+ */
+export function checkPools(env: Record<string, string | undefined> = process.env): PoolCheck[] {
+  const pools = resolveConfiguredPools();
+  return Object.entries(pools)
+    .filter((e): e is [string, string[]] => Array.isArray(e[1]) && e[1].length > 0)
+    .map(([tier, coords]) => ({
+      tier,
+      unusable: coords.filter((c) => !usable(c, env)),
+      size: coords.length,
+    }));
+}
+
 /**
  * 起跑坐席检查 (issue #6 → P0 扩到全部座位): bootstrapModelRuntime 注册完 provider 后调一次 ——
  * **无可用凭证**的座位在启动时打一行 WARN (而非跑到一半炸)。仅告警不改配置: boot 时还不知道这次
@@ -163,5 +191,24 @@ export function warnUnregisteredRoles(env: Record<string, string | undefined> = 
       `[role-seat] ${bad.length} 个座位未配或无可用凭证: ${detail} ` +
         `— 运行时按注册表顺延兜底 (issue #6); 配齐凭证或改 .omd/config.json 消除本告警。`,
     );
+  }
+  // 池子那条轴 (config.pools): 显式配的档位绕开座位链, 座位全绿也可能一池子欠费 provider。
+  for (const p of checkPools(env)) {
+    if (p.unusable.length === 0) continue;
+    const dead = p.unusable.join(', ');
+    // 整池全死 = 该档位每个节点必炸 (轮换轮到谁都一样), 提到 error 级 —— 这正是"跑到一半 429"的源头。
+    if (p.unusable.length === p.size) {
+      logger.error(
+        { tier: p.tier, dead, size: p.size },
+        `[role-pool] config.pools.${p.tier} **整池无可用凭证** (${dead}) — 判到该档的节点会全数失败。` +
+          `注意 pools 不经过座位链: env / --*-model / config.models 都覆盖不了它, 只能改 .omd/config.json 的 pools 段。`,
+      );
+    } else {
+      logger.warn(
+        { tier: p.tier, dead, size: p.size },
+        `[role-pool] config.pools.${p.tier} 有 ${p.unusable.length}/${p.size} 个坐标无可用凭证: ${dead} ` +
+          `— 轮换轮到它们的节点会失败。pools 不经过座位链, 只能改 .omd/config.json 的 pools 段。`,
+      );
+    }
   }
 }
