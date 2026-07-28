@@ -37,7 +37,9 @@ import { createComposeTools } from './tools/compose';
 import { createWebTools, createDistillTools } from './tools/web';
 import { createPlansTool } from './tools/plans';
 import { createModelRouterFromEnv } from '../harness/model-router';
-import { createWebStackFromEnv, retrieveWeb } from '../harness/web';
+import { createModelQueryExpander, createWebStackFromEnv, retrieveWeb } from '../harness/web';
+import { researchWebFanout } from '../harness/research/web-fanout';
+import type { ResearchLeafRunner } from '../harness/leaf-runners';
 import { createModelSourceDistiller } from '../harness/web/distill-source';
 import { createChallengerDistiller } from '../harness/web/distill-challenger';
 import { createPlanLedger, type PlanLedger } from '../harness/plan-ledger';
@@ -100,6 +102,8 @@ export interface AssembleOmdMcpDeps {
   agentRunner?: AgentLeafRunner;
   /** command-kind leaf 执行器 (默认 tui 同款白名单 bun/tsc/npx, 180s 超时)。 */
   commandRunner?: CommandLeafRunner;
+  /** research-kind leaf 执行器 (默认 createDefaultResearchRunner: 真 web; 无 search key → 不挂)。 */
+  researchRunner?: ResearchLeafRunner;
   /** engine config 追加覆盖 (在 env 角色矩阵解析结果之上, caller 显式指定优先)。 */
   configOverrides?: Partial<ExecutorDagConfig>;
   /** pathfinder 工具接缝覆盖 (测试传 fake executeSlice/dispatchFrontier)。 */
@@ -225,6 +229,70 @@ export function createDefaultResearchFanout(deps: {
   };
 }
 
+/**
+ * 生产 research **节点**执行器 (D-6, P1): `executor:'research'` 节点经此跑 —— **真 web**
+ * (researchWebFanout: 检索 → 抓正文 → 蒸馏 → 多镜头扇出判优), 不是 dag_research 那条纯模型档。
+ *
+ * 为什么不复用 agent 节点带 web 工具: agent 节点的 `DEFAULT_EXTENSION_DIRS=[]` 没有 web,
+ * 拿到的"引用"来自模型记忆 = 假 grounded (本 SDD D-6 的实证)。
+ *
+ * 无搜索 provider (零 TAVILY/ANYSEARCH/SEARXNG) → 返 undefined = **不挂 runner**,
+ * research 节点因此响亮失败, 而不是静默退化成没有 web 的 leaf。
+ */
+export function createDefaultResearchRunner(deps: {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  /** 测试注入 (默认真 researchWebFanout)。 */
+  _webFanout?: typeof researchWebFanout;
+  /** 测试注入 (默认真 createWebStackFromEnv)。 */
+  _webStack?: typeof createWebStackFromEnv;
+}): ResearchLeafRunner | undefined {
+  const { cwd, env } = deps;
+  const stackFn = deps._webStack ?? createWebStackFromEnv;
+  const fanoutFn = deps._webFanout ?? researchWebFanout;
+  let stack: ReturnType<typeof createWebStackFromEnv>;
+  try {
+    stack = stackFn(env);
+  } catch (e) {
+    logger.warn(
+      { err: (e as Error).message },
+      "[omd/mcp] 无 search provider → executor:'research' 节点不可用 (设 TAVILY_API_KEY / ANYSEARCH_API_KEY / SEARXNG_URL)",
+    );
+    return undefined;
+  }
+  return async (input) => {
+    const runId = randomUUID();
+    const res = await fanoutFn(stack, input.question, {
+      council: true, // 按问题自适应出镜头 (同 dag_research 的分解器职责)
+      conductorModel: resolveRoleModelConfigured('conductor', { env }).model,
+      lensModel: resolveRoleModelConfigured('lens', { env }).model,
+      reasonModel: resolveRoleModelConfigured('reason', { env }).model,
+      expander: createModelQueryExpander({}),
+      distiller: createModelSourceDistiller({}),
+      // 内环的界 (INV-GOAL-4): 调用方给多少跑多少, 缺省单轮; schema 已钳 ≤4。
+      rounds: input.rounds ?? 1,
+      ...(input.k ? { k: input.k } : {}),
+      ...(input.groundTruth ? { anchors: [{ label: '上游节点产出', text: input.groundTruth }] } : {}),
+      onWarn: (m: string) => logger.warn({ warn: m }, '[omd/research-node]'),
+    });
+    // INV-GOAL-2 的证据面 = **真抓到正文的** URL (搜到但没抓下来的不算痕迹)。
+    const sources = res.retrieval.sources.filter((x) => x.body).map((x) => x.url);
+    const reportDir = join(cwd, '.omd', 'research');
+    mkdirSync(reportDir, { recursive: true });
+    const reportPath = join(reportDir, `${runId}.md`);
+    writeFileSync(
+      reportPath,
+      `${renderResearchReport(input.question, runId, res.fanout)}\n## 来源 (真抓到正文)\n\n${sources.map((u) => `- ${u}`).join('\n')}\n`,
+    );
+    // usage = 整轮各模型 in/out 之和 (账本口径与 leaf 一致 —— 一个 research 节点是几十次调用)。
+    const usage = Object.values(res.fanout.costStats.perModel).reduce(
+      (acc, m) => ({ in: acc.in + m.in, out: acc.out + m.out }),
+      { in: 0, out: 0 },
+    );
+    return { text: res.fanout.final, usage, sources, reportPath };
+  };
+}
+
 /** 研究报告全文 (零丢失, D-8: 客户端上下文只拿 summary, 细节自己 Read 落盘文件)。 */
 function renderResearchReport(question: string, runId: string, result: ResearchFanoutResult): string {
   const sections = [
@@ -288,6 +356,9 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   const commandRunner =
     deps.commandRunner ??
     createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], cwd, timeoutMs: 180_000 });
+  // research 节点执行器 (D-6): web stack 带配额状态 → 装配期建一次复用 (同 router)。
+  // 无 search provider → undefined = 不挂 → research 节点响亮失败 (见 createDefaultResearchRunner)。
+  const researchRunner = deps.researchRunner ?? createDefaultResearchRunner({ cwd, env });
 
   // per-kind 闸: **代码零默认** (无硬默认教义 — MCP 是中立基础设施, 不烤机器立场; ms02 等
   // 强机部署天然无限制)。弱机自己的约束写自己的 env: OMD_AGENT_FANOUT / OMD_COMMAND_FANOUT。
@@ -404,6 +475,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       ...(Object.keys(kindFanout).length ? { kindFanout } : {}),
       agentRunner,
       commandRunner,
+      ...(researchRunner ? { researchRunner } : {}),
       router,
       planFilters,
       // D-8v2: judge/parallel/tournament 的 attempts 候选池 = mid 执行主力池 (跨家族轮转)。

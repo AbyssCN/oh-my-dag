@@ -443,3 +443,97 @@ describe('G-11v2 零回归', () => {
     expect(r.results.A!.status).toBe('done');
   });
 });
+
+// ── D-6: executor:'research' 节点 (INV-GOAL-2 真 web / INV-GOAL-4 内环有界) ────────
+describe("executor:'research' 节点 (D-6)", () => {
+  const researchPlan = (extra: Record<string, unknown> = {}) =>
+    plan({
+      R: { goal: 'omd 的 DAG 引擎怎么做增量复用', executor: 'research', ...extra },
+      S: { goal: '据研究写结论', depends_on: ['R'] },
+    });
+
+  test('有 sources → done, 输出进下游 fan-in, reportPath 记进 filesTouched', async () => {
+    const { generate, prompts } = makeGenerate();
+    let got: unknown;
+    const r = await runExecutorDagWithPlan(
+      researchPlan(),
+      makeConfig(generate, {
+        researchRunner: async (input) => {
+          got = input;
+          return {
+            text: '研究终稿: 语义 Merkle 跳未变节点',
+            usage: { in: 100, out: 50 },
+            sources: ['https://example.com/a', 'https://example.com/b'],
+            reportPath: '.omd/research/xyz.md',
+          };
+        },
+      }),
+    );
+    expect(r.results.R!.status).toBe('done');
+    expect(r.results.R!.kind).toBe('research');
+    expect(r.results.R!.sources).toEqual(['https://example.com/a', 'https://example.com/b']);
+    expect(r.results.R!.filesTouched).toEqual(['.omd/research/xyz.md']);
+    // 下游拿到的是研究终稿 (真进 fan-in, 不是空转)
+    expect(prompts.S).toContain('语义 Merkle');
+    // 问题 = 节点 goal; 内环轮数缺省 1 (有界)
+    expect((got as { question: string }).question).toContain('增量复用');
+    expect((got as { rounds: number }).rounds).toBe(1);
+  });
+
+  // INV-GOAL-2: 零来源 = 没有任何真抓取痕迹 → 那份"终稿"是模型记忆里的引用, 判 failed 比放行更安全。
+  test('零 sources → failed (假 grounded 不许过闸), 下游级联跳过', async () => {
+    const { generate } = makeGenerate();
+    const r = await runExecutorDagWithPlan(
+      researchPlan(),
+      makeConfig(generate, {
+        researchRunner: async () => ({ text: '看起来很像研究的一段话', usage: { in: 1, out: 1 }, sources: [] }),
+      }),
+    );
+    expect(r.results.R!.status).toBe('failed');
+    expect(r.results.R!.output).toContain('零来源');
+    expect(r.results.S!.status).toBe('skipped');
+  });
+
+  // 与"写文件节点无 agentRunner → failed"同一条纪律: 不静默降级成没有 web 的 inproc。
+  test('无 researchRunner → failed (不降级 inproc)', async () => {
+    const { generate, calls } = makeGenerate();
+    const r = await runExecutorDagWithPlan(researchPlan(), makeConfig(generate));
+    expect(r.results.R!.status).toBe('failed');
+    expect(r.results.R!.output).toContain('researchRunner');
+    expect(calls).not.toContain('R'); // 没有偷偷走 inproc 生成
+  });
+
+  test('node.research 旋钮透传 (k / rounds = 内环的界)', async () => {
+    const { generate } = makeGenerate();
+    let got: { k?: number; rounds?: number } = {};
+    await runExecutorDagWithPlan(
+      researchPlan({ research: { k: 3, rounds: 2 } }),
+      makeConfig(generate, {
+        researchRunner: async (input) => {
+          got = input;
+          return { text: 'x', usage: { in: 1, out: 1 }, sources: ['https://e.com'] };
+        },
+      }),
+    );
+    expect(got.k).toBe(3);
+    expect(got.rounds).toBe(2);
+  });
+
+  test('上游输出当 groundTruth 注入 (防幻觉锚)', async () => {
+    const { generate } = makeGenerate();
+    let got: { groundTruth?: string } = {};
+    await runExecutorDagWithPlan(
+      plan({
+        A: { goal: '仓内事实' },
+        R: { goal: '研究问题', executor: 'research', depends_on: ['A'] },
+      }),
+      makeConfig(generate, {
+        researchRunner: async (input) => {
+          got = input;
+          return { text: 'x', usage: { in: 1, out: 1 }, sources: ['https://e.com'] };
+        },
+      }),
+    );
+    expect(got.groundTruth).toContain('out:A');
+  });
+});

@@ -510,6 +510,42 @@ async function executePlan(
         const r = await config.commandRunner({ command: node.command });
         return { id, status: r.exitCode === 0 ? 'done' : 'failed', kind: 'command', output: r.text, deps, usage: r.usage };
       }
+      // research leaf (D-6): 真 web 检索 + 有界内环。**零来源 = failed** —— INV-GOAL-2 要的是
+      // 真抓取痕迹, 一个没抓到还吐终稿的节点吐的是模型记忆里的引用 (假 grounded), 比失败更坏:
+      // 它会带着编造的事实往下游走。与 producesFiles 的 filesTouched 闸同一条纪律。
+      if (node.executor === 'research') {
+        if (!config.researchRunner) {
+          logger.warn({ node: id }, "[omd/executor-dag] executor:research 缺 researchRunner → failed (拒绝降级 inproc 编引用)");
+          return { id, status: 'failed', kind: 'research', output: '[research 节点无 researchRunner, 无 web 能力]', deps, usage: { in: 0, out: 0 } };
+        }
+        const groundTruth = deps
+          .filter((d) => results[d]?.status === 'done')
+          .map((d) => depOutputs[d] ?? '')
+          .filter(Boolean)
+          .join('\n\n');
+        const r = await config.researchRunner({
+          question: node.goal ?? id,
+          ...(groundTruth ? { groundTruth } : {}),
+          ...(node.research?.k ? { k: node.research.k } : {}),
+          // 内环有界 (INV-GOAL-4): 缺省 1 轮, 上限由 schema 钳到 4。
+          rounds: node.research?.rounds ?? 1,
+        });
+        if (r.sources.length === 0) {
+          logger.warn({ node: id }, '[omd/executor-dag] research 节点零来源 → failed (无真抓取痕迹 = 假 grounded)');
+          return { id, status: 'failed', kind: 'research', output: '[research 零来源: 无真 URL 抓取痕迹]', deps, usage: r.usage };
+        }
+        logger.info({ node: id, sources: r.sources.length, reportPath: r.reportPath }, '[omd/executor-dag] research 节点完成');
+        return {
+          id,
+          status: 'done',
+          kind: 'research',
+          output: r.text,
+          deps,
+          usage: r.usage,
+          sources: r.sources,
+          ...(r.reportPath ? { filesTouched: [r.reportPath] } : {}),
+        };
+      }
       // agent 模板卡解析: 命中注册表 → body 注入 prompt 前缀 (buildLeafPrompt 前置放)。
       // 未知名 = 预构造 plan 绕过了规划层校验 → TPL-2 执行层兜底: warn + 忽略, 不崩节点。
       const tpl = node.template ? templates.get(node.template) : undefined;
