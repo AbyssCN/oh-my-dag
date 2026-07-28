@@ -22,6 +22,10 @@ const fakeWebResult = () =>
       ],
       markdown: '语料',
     },
+    // deep 档: 种子 query 各自也检索 (第 2 个源真抓到)
+    seedRetrievals: [
+      { sources: [{ url: 'https://seed.example/doc', body: '种子正文' }, { url: 'https://seed.example/miss' }] },
+    ],
     fanout: {
       final: '研究终稿',
       lensChampions: [],
@@ -29,6 +33,9 @@ const fakeWebResult = () =>
       judgeCritiques: [],
       fusionAnalysis: '',
       leafCount: 7,
+      roundsRun: 2,
+      // 轮 2 的 probe 补抓 (缺料 URL) —— 多轮研究**新增**的证据就在这里
+      secondPass: [{ round: 2, gaps: [{ key: 'gap-1' }], probedUrls: ['https://probe.example/spec'] }],
       costStats: {
         totalUsd: 0,
         totalSavingsUsd: 0,
@@ -49,7 +56,13 @@ describe("executor:'research' 生产执行器 (D-6)", () => {
       _webFanout: (async () => fakeWebResult()) as never,
     })!;
     const r = await runner({ question: '怎么做增量复用' });
-    expect(r.sources).toEqual(['https://a.example/doc', 'https://b.example/doc']);
+    // 三个抓取面都算: 主检索 2 条 + 种子检索 1 条 + 轮 2 probe 补抓 1 条 (搜到没抓下来的都不算)
+    expect(r.sources).toEqual([
+      'https://a.example/doc',
+      'https://b.example/doc',
+      'https://seed.example/doc',
+      'https://probe.example/spec',
+    ]);
     expect(r.text).toBe('研究终稿');
     // usage = 整轮各模型 in/out 之和 (一个 research 节点 = 几十次调用, 账本别记成 1 次)
     expect(r.usage).toEqual({ in: 900, out: 300 });
@@ -69,6 +82,11 @@ describe("executor:'research' 生产执行器 (D-6)", () => {
     expect(report).toContain('## 来源 (真抓到正文)');
     expect(report).toContain('https://a.example/doc');
     expect(report).not.toContain('https://c.example/doc');
+    // 多轮档的"第二轮到底干了什么"要留在报告里, 不只活在日志
+    expect(report).toContain('## 轮次留痕 (共 2 轮)');
+    expect(report).toContain('第 2 轮');
+    expect(report).toContain('gap-1');
+    expect(report).toContain('https://probe.example/spec');
   });
 
   test('内环有界: rounds 透传, 缺省 1 轮', async () => {

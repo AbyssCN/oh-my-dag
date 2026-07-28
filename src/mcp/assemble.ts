@@ -278,13 +278,34 @@ export function createDefaultResearchRunner(deps: {
       onWarn: (m: string) => logger.warn({ warn: m }, '[omd/research-node]'),
     });
     // INV-GOAL-2 的证据面 = **真抓到正文的** URL (搜到但没抓下来的不算痕迹)。
-    const sources = res.retrieval.sources.filter((x) => x.body).map((x) => x.url);
+    // 三个来源都要算 —— 只数主检索会把多轮档的证据漏掉大半:
+    //   ① 主检索  ② 种子 query 各自的检索 (deep 档)  ③ 轮 2+ 的 probe 补抓 (secondPass.probedUrls,
+    // 那批是"上一轮冠军引用了但没读过"的缺料, 恰恰是多轮研究**新增**的证据)。
+    const bodied = (r: { sources: { url: string; body?: string }[] }): string[] =>
+      r.sources.filter((x) => x.body).map((x) => x.url);
+    const sources = [
+      ...new Set([
+        ...bodied(res.retrieval),
+        ...(res.seedRetrievals ?? []).flatMap(bodied),
+        ...res.fanout.secondPass.flatMap((sp) => sp.probedUrls),
+      ]),
+    ];
     const reportDir = join(cwd, '.omd', 'research');
     mkdirSync(reportDir, { recursive: true });
     const reportPath = join(reportDir, `${runId}.md`);
+    // 报告里把轮次留痕摊开 (哪一轮补了什么缺口、抓了哪几条) —— 多轮档的"第二轮到底干了什么"
+    // 不该只活在日志里。
+    const roundTrace = res.fanout.secondPass.length
+      ? `\n## 轮次留痕 (共 ${res.fanout.roundsRun} 轮)\n\n${res.fanout.secondPass
+          .map(
+            (sp) =>
+              `### 第 ${sp.round} 轮\n缺口: ${sp.gaps.map((g) => g.key).join(' · ') || '(无)'}\n补抓: ${sp.probedUrls.map((u) => `\n  - ${u}`).join('') || ' (无)'}`,
+          )
+          .join('\n\n')}\n`
+      : '';
     writeFileSync(
       reportPath,
-      `${renderResearchReport(input.question, runId, res.fanout)}\n## 来源 (真抓到正文)\n\n${sources.map((u) => `- ${u}`).join('\n')}\n`,
+      `${renderResearchReport(input.question, runId, res.fanout)}${roundTrace}\n## 来源 (真抓到正文)\n\n${sources.map((u) => `- ${u}`).join('\n')}\n`,
     );
     // usage = 整轮各模型 in/out 之和 (账本口径与 leaf 一致 —— 一个 research 节点是几十次调用)。
     const usage = Object.values(res.fanout.costStats.perModel).reduce(
