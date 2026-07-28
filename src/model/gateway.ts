@@ -26,7 +26,7 @@ export type {
 export { listProviders } from './providers';
 export { assertModelResolvable, ModelError } from './index';
 export { resolveRoleModel, listRoleModels } from './role-models';
-export { withGoFallback, isGoModel, GO_FALLBACK_MODEL } from './go-fallback';
+export { withGoFallback, isGoModel, goFallbackModel } from './go-fallback';
 export { makeBudgetedCall } from './provider-budget';
 export { computeCost } from './cost-ledger';
 

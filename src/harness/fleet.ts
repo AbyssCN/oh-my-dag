@@ -9,6 +9,7 @@
  * 默认: DeepSeek 可靠+可扩 → 开大; MiMo flaky+RPM100 → 压小 (实测 headless 单发都会 hang)。
  */
 import { availableParallelism } from 'node:os';
+import { resolveMultimodalPool, resolveSeatModel } from '../model/role-models';
 
 // ---------------------------------------------------------------------------
 // 并发配置 (VAL-DAG-7)
@@ -94,20 +95,22 @@ export interface ModelRoutingConfig {
  * (probe 证原始 API 不 hang, 故是 pi+MiMo 多轮的问题) → coding 也走可靠的 DeepSeek。
  * **只有多模态留 MiMo** (它是唯一带 vision 的)。
  */
-export const DEFAULT_ROUTING: Required<ModelRoutingConfig> = {
-  routes: {
-    coding: 'deepseek:deepseek-v4-flash', // agentic 实装走可靠 DeepSeek (MiMo 工具循环 hang)
-    multimodal: 'xiaomi-token-plan-ams:mimo-v2.5', // 唯一带 vision → MiMo v2.5 (⚠ 确认 id)
-    general: 'deepseek:deepseek-v4-flash', // 其他 → deepseek v4-flash
-  },
-  default: 'deepseek:deepseek-v4-flash',
-  // conductor = **分解器非设计者**: omd (主 agent, 可换 SOTA) 已做高海拔设计/SDD, conductor 只把
-  // 已成形的 plan 忠实分解成有效 DAG (拓扑/原子叶/executor 路由)。这活要 **指令遵守 + 结构化输出保真 + 快**,
-  // **不要 reasoning** —— 推理会: ① 加延迟 (gate 在 fan-out 前, 拖慢全局) ② 过度思考 (擅自"改进"/二次设计
-  // 已定 plan) ③ reasoning 模型反而常少遵守结构化输出指令。flash 更遵守指令 = 正解。
-  // (例外: 无 omd 上游设计的 headless 裸任务, 分解需理解 → 可经 config 升 pro; 默认 flash。)
-  conductor: 'deepseek:deepseek-v4-flash',
-};
+export function defaultRouting(): Required<ModelRoutingConfig> {
+  const multimodal = resolveMultimodalPool()[0];
+  return {
+    routes: {
+      coding: resolveSeatModel('agent').model, // agentic 实装 = agent 座
+      ...(multimodal ? { multimodal } : {}), // 多模态池首选 (config.multimodalPool)
+      general: resolveSeatModel('leaf').model,
+    },
+    default: resolveSeatModel('leaf').model,
+    // conductor = **分解器非设计者**: omd (主 agent, 可换 SOTA) 已做高海拔设计/SDD, conductor 只把
+    // 已成形的 plan 忠实分解成有效 DAG (拓扑/原子叶/executor 路由)。这活要 **指令遵守 + 结构化输出保真 + 快**,
+    // **不要 reasoning** —— 推理会: ① 加延迟 (gate 在 fan-out 前, 拖慢全局) ② 过度思考 (擅自"改进"/二次设计
+    // 已定 plan) ③ reasoning 模型反而常少遵守结构化输出指令。
+    conductor: resolveSeatModel('conductor').model,
+  };
+}
 
 /** 'provider:modelId' → {provider, modelId} (split on first ':')。 */
 export function parseModelRef(ref: string): ModelRef {
@@ -121,15 +124,12 @@ export function resolveExecutorModel(
   kind: TaskKind,
   config: ModelRoutingConfig = {},
 ): ModelRef {
-  const ref =
-    config.routes?.[kind] ??
-    DEFAULT_ROUTING.routes[kind] ??
-    config.default ??
-    DEFAULT_ROUTING.default;
+  const fallback = defaultRouting();
+  const ref = config.routes?.[kind] ?? fallback.routes[kind] ?? config.default ?? fallback.default;
   return parseModelRef(ref);
 }
 
 /** conductor (规划) 模型 ref。 */
 export function resolveConductorModel(config: ModelRoutingConfig = {}): ModelRef {
-  return parseModelRef(config.conductor ?? DEFAULT_ROUTING.conductor);
+  return parseModelRef(config.conductor ?? defaultRouting().conductor);
 }

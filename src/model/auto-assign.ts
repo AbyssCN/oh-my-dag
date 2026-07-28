@@ -77,6 +77,9 @@ const NODE_CLASS: Record<string, NodeClass> = {
 	verifier: "verify",
 	"review-spec": "verify",
 	dream: "dream",
+	// 两个后台角色也是座位 (ALL_SEATS): 不给它们分配 = 起跑自检恒报缺, review/continuity 用不了。
+	review: "verify", // review find 层 = 对抗读码, 跨家族同 verify 类
+	continuity: "worker", // session 交接蒸馏 = 便宜单发
 };
 
 /**

@@ -24,10 +24,10 @@ export type GenerateFn = (req: {
 export interface ExecutorDagConfig {
   /** conductor 模型 'provider:modelId' (规划用, 我们=mimo:mimo-v2.5-pro)。**必填, 无硬默认。** */
   conductorModel: string;
-  /** inproc leaf 模型 'provider:modelId' (生成/判断单发)。**必填, 无硬默认。** 我们: 烧 MiMo 沉没额度时=mimo:mimo-v2.5, 耗尽=deepseek:deepseek-v4-flash。 */
+  /** inproc leaf 模型 'provider:modelId' (生成/判断单发)。**必填, 无硬默认** —— 装配层由 'leaf' 座位解析。 */
   leafModel: string;
   /**
-   * agent leaf 模型 (带工具改文件)。省略 = 同 leafModel。我们=deepseek:deepseek-v4-flash
+   * agent leaf 模型 (带工具改文件)。省略 = 同 leafModel; 装配层由 'agent' 座位解析。
    * (MiMo agentic flaky + 无 cache, 不适合工具循环 → agent leaf 走 DeepSeek; inproc 才用 MiMo 烧额度)。
    */
   agentLeafModel?: string;

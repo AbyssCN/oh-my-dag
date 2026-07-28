@@ -93,7 +93,7 @@ export {
   parseModelRef,
   CPU_FALLBACK_FANOUT,
   DEFAULT_PROVIDER_POOLS,
-  DEFAULT_ROUTING,
+  defaultRouting,
   type OmdConcurrencyConfig,
   type ModelRoutingConfig,
   type ModelRef,

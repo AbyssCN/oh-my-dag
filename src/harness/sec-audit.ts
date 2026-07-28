@@ -16,7 +16,7 @@ export interface SecAuditOpts {
   conductorModel: string;
   /** inproc leaf 模型 'provider:modelId' (综合报告用)。必填, 无硬默认。 */
   leafModel: string;
-  /** agent leaf 模型 (带工具审查文件)。省略 = leafModel。建议 deepseek:deepseek-v4-flash。 */
+  /** agent leaf 模型 (带工具审查文件)。省略 = leafModel ('agent' 座位由装配层解析)。 */
   agentLeafModel?: string;
   /** 审计目标的工作根。默认 process.cwd()。 */
   cwd?: string;

@@ -111,21 +111,15 @@ export interface AssembleOmdMcpDeps {
   ledger?: PlanLedger;
 }
 
-/** runtime 模型坐标 (OMD_RUNTIME_PROVIDER:OMD_RUNTIME_MODEL); 未配 → '' (镜像 resolveConductorDefault)。 */
-function runtimeCoord(env: NodeJS.ProcessEnv): string {
-  const provider = env.OMD_RUNTIME_PROVIDER?.trim();
-  const model = env.OMD_RUNTIME_MODEL?.trim();
-  return provider && model ? `${provider}:${model}` : '';
-}
-
 /**
- * env 角色矩阵 → engine config 的模型三件套 (纯函数, 导出供测试):
- *   conductorModel = OMD_ITER_CONDUCTOR_MODEL > runtime 坐标 > .omd/config.json models['conductor'];
- *   leafModel      = OMD_ITER_LEAF_MODEL      > runtime 坐标 > .omd/config.json models['leaf'];
- *   agentLeafModel = OMD_ITER_AGENT_MODEL     > runtime 坐标 (解析不出则省略 = 引擎内回退 leafModel)。
- * C2 (单一配置面): env/runtime 皆空时兜底走 resolveRoleModelConfigured —— 引擎默认座与 dag_run 的
- * conductor/leaf 座**同源读 .omd/config.json models**, 不再游离于 config 之外。resolveNode 可注入 (测试)。
- * resolveRoleModelConfigured 恒返坐标 (末级 NODE_DEFAULT_COORD), 故 conductor/leaf 不再空串。
+ * engine config 的模型三件套 —— **全部经单一 resolver** (INV-MODEL-1, P0 2026-07-28)。
+ *
+ * 此前这里是第 5 套并行解析器: OMD_ITER_* > OMD_RUNTIME_* > config。那个序把 env 排在 config
+ * **之上**, 于是"改了 .omd/config.json 却还是老 conductor" —— 同一个座位在引擎路与 dag_run 路
+ * 解出两个答案。现在 OMD_ITER_* 是座位链里的 env 别名、OMD_RUNTIME_* 是 defaultModel 层,
+ * 两条路同解。resolveNode 仍可注入 (测试)。
+ *
+ * @throws {SeatUnresolvedError} conductor/leaf/agent 任一座位一层都没配 (INV-MODEL-5 计划期响亮失败)。
  */
 export function resolveEngineModels(
   env: NodeJS.ProcessEnv,
@@ -135,15 +129,10 @@ export function resolveEngineModels(
   leafModel: string;
   agentLeafModel?: string;
 } {
-  const runtime = runtimeCoord(env);
-  const conductorModel =
-    env.OMD_ITER_CONDUCTOR_MODEL?.trim() || runtime || resolveNode('conductor', { env }).model;
-  const leafModel = env.OMD_ITER_LEAF_MODEL?.trim() || runtime || resolveNode('leaf', { env }).model;
-  const agentLeafModel = env.OMD_ITER_AGENT_MODEL?.trim() || runtime; // 未配 → 省略, 引擎内回退 leafModel
   return {
-    conductorModel,
-    leafModel,
-    ...(agentLeafModel ? { agentLeafModel } : {}),
+    conductorModel: resolveNode('conductor', { env }).model,
+    leafModel: resolveNode('leaf', { env }).model,
+    agentLeafModel: resolveNode('agent', { env }).model,
   };
 }
 
@@ -177,10 +166,10 @@ export function createDefaultResearchFanout(deps: {
   const fanoutFn = deps._researchFanout ?? runResearchFanout;
   return async ({ question, council, super: superMode, k, rounds }) => {
     const runId = randomUUID();
-    const runtime = runtimeCoord(env);
-    // 模型解析同角色矩阵; 终兜底镜像 councilDeepPlan 的既有默认 (env 未配时的仓内行为)。
-    const lensModel = env.OMD_ITER_LEAF_MODEL?.trim() || runtime || 'xiaomi-token-plan-ams:mimo-v2.5-pro';
-    const reasonModel = env.OMD_ITER_CONDUCTOR_MODEL?.trim() || runtime || 'xiaomi-token-plan-ams:mimo-v2.5-pro';
+    // 模型解析走单一 resolver 的 lens/reason 座位 (INV-MODEL-1) —— 此前是"OMD_ITER_* > runtime >
+    // 硬编码 mimo"的第 6 套链, 与 config 里的 lens/reason 座位互不相认。
+    const lensModel = resolveRoleModelConfigured('lens', { env }).model;
+    const reasonModel = resolveRoleModelConfigured('reason', { env }).model;
 
     // 分解器 = conductor (author-spec): 按 question 自适应出领域专家镜头 (会计→CPA / 安全→安全研究员…)。
     // 判领域本就是 conductor 职责,一次调用同时完成「判领域 + 出镜头」。fail-open: author 失败/超时 →

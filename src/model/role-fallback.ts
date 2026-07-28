@@ -10,7 +10,7 @@
  * 全不可达 → 原样返首选, 让下游按既有语义 fail-loud (dream INV-1) 或降级 (judge L3)。
  *
  * ⚠ 判据 = **凭证维度** (piHasCredential + 自有 registry), 不是 assertModelResolvable ——
- * 后者 key-blind: pi-ai 目录认识 deepseek 全坐标即便无 key (实测 deepseek:deepseek-v4-flash/pro
+ * 后者 key-blind: pi-ai 目录认识某 provider 的全坐标即便无 key (实测 deepseek 的 flash/pro 全坐标
  * 都"可解析"), 只有裸 'deepseek' 才 throw。若以可解析为闸, judge/review 的**全坐标** deepseek
  * 无 key 时不会兜底 → 仍在 call 时抛无凭证。故必须问"有没有凭证"而非"认不认识"。
  * OAuth provider (kimi-coding, 凭证走 auth.json 非 env key) 由 piHasCredential 正确纳入 → 不误判。
