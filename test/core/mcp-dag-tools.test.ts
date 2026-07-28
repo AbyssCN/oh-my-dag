@@ -597,3 +597,37 @@ describe('defaultConfig thunk — INV-MODEL-3 无 boot 冻结', () => {
     expect(seen).toEqual(['fixed:m']);
   });
 });
+
+// ── INV-MODEL-5 (P0): 起跑自检失败 → MCP error, 不崩 server ─────────────
+describe('defaultConfig thunk 抛错 — INV-MODEL-5 响亮但不崩', () => {
+  const throwing = () => {
+    throw new Error('[omd/model] 起跑自检失败 —— 1 个座位不可用: conductor=<未配>');
+  };
+
+  test('dag_run: 回 isError 并带出座位名, run 标 failed', async () => {
+    const reg = new RunRegistry();
+    const tools = createDagTools({
+      engine: fakeEngine(stubResult()),
+      runRegistry: reg,
+      cwd: '/tmp',
+      defaultConfig: throwing,
+    });
+    const r = await getTool(tools, 'dag_run')({ task: 'x' }) as { content: { text: string }[]; isError?: boolean };
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toContain('conductor=<未配>');
+    const runId = r.content[0]!.text.match(/runId: ([\w-]+)/)![1]!;
+    expect(reg.getRecord(runId)!.status).toBe('failed');
+  });
+
+  test('dag_run_plan: 回 isError, 不注册在飞 run', async () => {
+    const tools = createDagTools({
+      engine: fakeEngine(stubResult()),
+      runRegistry: new RunRegistry(),
+      cwd: '/tmp',
+      defaultConfig: throwing,
+    });
+    const r = await getTool(tools, 'dag_run_plan')({ plan: VALID_PLAN_JSON }) as { content: { text: string }[]; isError?: boolean };
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toContain('起跑自检失败');
+  });
+});
