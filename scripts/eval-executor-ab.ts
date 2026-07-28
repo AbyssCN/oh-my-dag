@@ -160,6 +160,7 @@ for (let rep = 0; rep < REPS; rep++) {
       const { tscClean, pass } = HARD
         ? await (async () => {
             const s2 = await wholeSuite(fx!.root);
+            if (!s2.tscClean) log(`  tsc 红: ${s2.tscErrors.join(' | ').slice(0, 300) || '(无 TS 错误行 — 可能是命令本身失败)'}`);
             return { tscClean: s2.tscClean, pass: s2.green ? 1 : s2.pass / Math.max(1, s2.pass + s2.fail) };
           })()
         : await oracle(fx.root, TEST_PATH);
