@@ -592,21 +592,34 @@ export function persistMultimodalPoolPremium(coords: string[], path = configPath
  * 读 .omd/config.json 的显式档位池 (`pools` 段)。每档独立 —— 只配了 cheap 就只覆盖 cheap,
  * 其余仍走座位推导 (调用方以 `?? 座位推导` 兜)。坏值/非坐标条目丢弃 (fail-open)。
  */
+export const POOL_TIERS = ['strong', 'mid', 'cheap', 'multimodal', 'multimodalStrong'] as const;
+export type PoolTier = (typeof POOL_TIERS)[number];
+
+/** 档位正名 env key: `OMD_POOL_<TIER>` (驼峰 → 下划线大写)。逗号分隔多个坐标。 */
+export function poolEnvKey(tier: PoolTier): string {
+  return `OMD_POOL_${tier.replace(/([a-z])([A-Z])/g, '$1_$2').toUpperCase()}`;
+}
+
 export function resolveConfiguredPools(
   path = configPath(),
+  env: Record<string, string | undefined> = process.env,
 ): { strong?: string[]; mid?: string[]; cheap?: string[]; multimodal?: string[]; multimodalStrong?: string[] } {
   const raw = fileConfig(path).pools;
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const fromFile = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
   const clean = (xs: unknown): string[] | undefined => {
-    if (!Array.isArray(xs)) return undefined;
-    const out = [...new Set(xs.filter((x): x is string => typeof x === 'string' && x.includes(':')))];
+    const arr = typeof xs === 'string' ? xs.split(',') : xs;
+    if (!Array.isArray(arr)) return undefined;
+    const out = [...new Set(arr.filter((x): x is string => typeof x === 'string').map((x) => x.trim()).filter((x) => x.includes(':')))];
     return out.length ? out : undefined;
   };
-  return {
-    ...(clean(raw.strong) ? { strong: clean(raw.strong)! } : {}),
-    ...(clean(raw.mid) ? { mid: clean(raw.mid)! } : {}),
-    ...(clean(raw.cheap) ? { cheap: clean(raw.cheap)! } : {}),
-    ...(clean(raw.multimodal) ? { multimodal: clean(raw.multimodal)! } : {}),
-    ...(clean(raw.multimodalStrong) ? { multimodalStrong: clean(raw.multimodalStrong)! } : {}),
-  };
+  const out: Record<string, string[]> = {};
+  for (const tier of POOL_TIERS) {
+    // env **压过** config.pools —— 与座位那条 env 别名的方向相反, 是刻意的:
+    // 座位的 env 是**历史别名** (OMD_ITER_* 等), 当年它们压过 config 造成"改了 config 还是老模型",
+    // 所以 P0 把它们降到 config 之下。这里的 OMD_POOL_* 是**新造的临时覆盖口**, 没有历史包袱,
+    // 语义就该是"这次进程按我说的来" —— 否则配置文件永远配着, 临时覆盖就永远不生效, 等于白加。
+    const picked = clean(env[poolEnvKey(tier)]) ?? clean(fromFile[tier]);
+    if (picked) out[tier] = picked;
+  }
+  return out;
 }
