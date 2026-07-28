@@ -195,6 +195,9 @@ export function createDefaultResearchRunner(deps: {
       distiller: createModelSourceDistiller({}),
       // 内环的界 (INV-GOAL-4): 调用方给多少跑多少, 缺省单轮; schema 已钳 ≤4。
       rounds: input.rounds ?? 1,
+      // 仓内腿默认开: research 的 leaf 是 inproc 看不见仓库, 轮间那次确定性检索是
+      // "这个在我们仓里怎么实现的"唯一能落地的地方。
+      repoCwd: cwd,
       ...(input.k ? { k: input.k } : {}),
       ...(input.groundTruth ? { anchors: [{ label: '上游节点产出', text: input.groundTruth }] } : {}),
       onWarn: (m: string) => logger.warn({ warn: m }, '[omd/research-node]'),
@@ -221,7 +224,7 @@ export function createDefaultResearchRunner(deps: {
       ? `\n## 轮次留痕 (共 ${res.fanout.roundsRun} 轮)\n\n${res.fanout.secondPass
           .map(
             (sp) =>
-              `### 第 ${sp.round} 轮\n缺口: ${sp.gaps.map((g) => g.key).join(' · ') || '(无)'}\n补抓: ${sp.probedUrls.map((u) => `\n  - ${u}`).join('') || ' (无)'}`,
+              `### 第 ${sp.round} 轮\n缺口: ${sp.gaps.map((g) => g.key).join(' · ') || '(无)'}\n补抓 (web): ${sp.probedUrls.map((u) => `\n  - ${u}`).join('') || ' (无)'}\n命中 (仓内): ${(sp.repoHits ?? []).map((h) => `\n  - ${h}`).join('') || ' (无)'}`,
           )
           .join('\n\n')}\n`
       : '';

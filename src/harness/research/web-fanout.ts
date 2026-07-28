@@ -20,6 +20,7 @@ import { authorFanoutSpec } from './author-spec';
 import { retrieveWeb, type RetrieveOpts, type RetrieveResult } from '../web/retrieve';
 import { CleaningFetchProvider } from '../web/clean';
 import { fetchRacing } from '../web/fetch-racing';
+import { repoProbe, renderRepoHits } from './repo-probe';
 import { normalizeUrl } from '../web/types';
 import type { WebStack } from '../web';
 
@@ -119,6 +120,11 @@ export interface WebFanoutOpts extends RetrieveOpts {
   rounds?: number;
   /** probe 每轮补抓 URL 上限 (默认 5 —— 轮间抓取成本天花板)。 */
   probeCrawl?: number;
+  /**
+   * 仓内腿的检索根。给则轮间 probe 除了抓 web, 还把 gap.repoQueries 交确定性检索
+   * (研究 leaf 是 inproc 看不见仓库 —— 这是"我们仓里怎么实现的"那类缺口唯一的入口)。
+   */
+  repoCwd?: string;
   /**
    * 额外种子 query (deep-research 档, 吸收自 xihe-deep-research 的多角度 gather):
    * 每个各跑一轮独立检索, 语料带节头并入 groundTruth (蒸馏各自生效, 不跨 query 重建);
@@ -223,6 +229,11 @@ export function buildSecondPassProbe(
      *  后续每个 stage 都拖着它 —— 语料增长必须有成本闸, 与 retrieveWeb 巨源蒸馏同一门纪律。 */
     maxCharsPerSource?: number;
     signal?: AbortSignal;
+    /**
+     * **仓内腿** (对称 web 腿): 给则 gap.repoQueries 交确定性检索, 命中并进下一轮语料。
+     * 省略 = 只有 web 腿 —— "这个在我们仓里怎么实现的"那类缺口就悬着 (原行为)。
+     */
+    repoCwd?: string;
     onStage?: (s: string, d: string) => void;
   } = {},
 ): NonNullable<ResearchFanoutConfig['probe']> {
@@ -230,6 +241,16 @@ export function buildSecondPassProbe(
   const cap = opts.probeCrawl ?? 5;
   const maxChars = opts.maxCharsPerSource ?? 12_000;
   return async ({ round, digest, gaps }): Promise<ProbeYield> => {
+    // ── 仓内腿: 模型点名要查的字面串/符号 → 确定性检索 (不过 shell, 命中双封顶)。
+    let repoSection = '';
+    let repoHits: string[] = [];
+    const repoQueries = [...new Set(gaps.flatMap((g) => g.repoQueries ?? []))];
+    if (opts.repoCwd && repoQueries.length > 0) {
+      const hits = repoProbe(repoQueries, { cwd: opts.repoCwd });
+      repoHits = hits.map((h) => h.path);
+      repoSection = renderRepoHits(hits);
+      opts.onStage?.('probe', `r${round + 1}: 仓内检索 ${repoQueries.length} 条 query → ${hits.length} 命中`);
+    }
     const candidates = [...extractCitedUrls(digest), ...gaps.flatMap((g) => g.urls ?? [])];
     const missing: string[] = [];
     for (const u of candidates) {
@@ -239,7 +260,10 @@ export function buildSecondPassProbe(
       fetchedSet.add(key);
       missing.push(u);
     }
-    if (missing.length === 0) return {};
+    // web 腿无缺料但仓内腿有货 → 仍是"有新增" (别让一条腿的空手把另一条腿的收获也扔了)。
+    if (missing.length === 0) {
+      return repoSection ? { newCorpus: repoSection, repoHits } : {};
+    }
     const provs = stack.fetchProviders.map((fp) => new CleaningFetchProvider(fp, stack.cleaner));
     const settled = await Promise.allSettled(
       missing.map((u) => fetchRacing(provs, u, { minChars: opts.minChars ?? 200, signal: opts.signal })),
@@ -257,8 +281,9 @@ export function buildSecondPassProbe(
       sections.push(`## ${missing[i]}\n\n${clipped}`);
     });
     opts.onStage?.('probe', `r${round + 1}: 补抓 ${fetchedUrls.length}/${missing.length} 缺料 URL`);
-    if (sections.length === 0) return {};
-    return { newCorpus: sections.join('\n\n'), fetchedUrls };
+    if (sections.length === 0 && !repoSection) return {};
+    const corpus = [repoSection, ...sections].filter(Boolean).join('\n\n');
+    return { newCorpus: corpus, fetchedUrls, ...(repoHits.length ? { repoHits } : {}) };
   };
 }
 
@@ -337,7 +362,13 @@ export async function researchWebFanout(
     const base = buildSecondPassProbe(
       stack,
       [retrieval, ...seedRetrievals].flatMap((r) => r.sources.filter((s) => s.body).map((s) => s.url)),
-      { probeCrawl: opts.probeCrawl, signal: opts.signal, onStage: opts.onStage },
+      {
+        probeCrawl: opts.probeCrawl,
+        signal: opts.signal,
+        // 仓内腿 (给了根才开): 缺口点名的 repoQueries 走确定性检索并进下一轮语料。
+        ...(opts.repoCwd ? { repoCwd: opts.repoCwd } : {}),
+        onStage: opts.onStage,
+      },
     );
     probe = async (a) => {
       const y = await base(a);
