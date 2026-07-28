@@ -35,7 +35,7 @@ const fakeWebResult = () =>
       leafCount: 7,
       roundsRun: 2,
       // 轮 2 的 probe 补抓 (缺料 URL) —— 多轮研究**新增**的证据就在这里
-      secondPass: [{ round: 2, gaps: [{ key: 'gap-1' }], probedUrls: ['https://probe.example/spec'] }],
+      secondPass: [{ round: 2, gaps: [{ key: 'gap-1' }], probedUrls: ['https://probe.example/spec'], repoHits: ['src/x.ts:42'] }],
       costStats: {
         totalUsd: 0,
         totalSavingsUsd: 0,
@@ -63,6 +63,8 @@ describe("executor:'research' 生产执行器 (D-6)", () => {
       'https://seed.example/doc',
       'https://probe.example/spec',
     ]);
+    // 仓内命中**不进** sources: 那是 INV-GOAL-2 的"真 web 抓取痕迹"证据面, 掺本地路径就废了
+    expect(r.sources.some((u) => u.startsWith('src/'))).toBe(false);
     expect(r.text).toBe('研究终稿');
     // usage = 整轮各模型 in/out 之和 (一个 research 节点 = 几十次调用, 账本别记成 1 次)
     expect(r.usage).toEqual({ in: 900, out: 300 });
