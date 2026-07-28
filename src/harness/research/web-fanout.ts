@@ -246,10 +246,14 @@ export function buildSecondPassProbe(
     let repoHits: string[] = [];
     const repoQueries = [...new Set(gaps.flatMap((g) => g.repoQueries ?? []))];
     if (opts.repoCwd && repoQueries.length > 0) {
-      const hits = repoProbe(repoQueries, { cwd: opts.repoCwd });
-      repoHits = hits.map((h) => h.path);
-      repoSection = renderRepoHits(hits);
-      opts.onStage?.('probe', `r${round + 1}: 仓内检索 ${repoQueries.length} 条 query → ${hits.length} 命中`);
+      const res = repoProbe(repoQueries, { cwd: opts.repoCwd });
+      // 留痕含两个面: 行级命中的 file:line + 整读文件的路径 (后者标 (全文))。
+      repoHits = [...res.hits.map((h) => h.path), ...res.files.map((f) => `${f.path} (全文)`)];
+      repoSection = renderRepoHits(res);
+      opts.onStage?.(
+        'probe',
+        `r${round + 1}: 仓内检索 ${repoQueries.length} 条 query → ${res.hits.length} 命中 + ${res.files.length} 个文件整读`,
+      );
     }
     const candidates = [...extractCitedUrls(digest), ...gaps.flatMap((g) => g.urls ?? [])];
     const missing: string[] = [];
