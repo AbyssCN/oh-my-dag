@@ -9,9 +9,12 @@
  */
 import { z } from 'zod';
 import { send } from '../../model/gateway';
+import { resolveSeatModel } from '../../model/role-models';
 
-/** best-of-N 默认生成/judge 模型 (强推理)。 */
-export const BESTOFN_DEFAULT_MODEL = 'deepseek:deepseek-v4-pro';
+/** best-of-N 默认生成/judge 模型 = 'reason' 座位 (强推理档, 单一 resolver)。 */
+export function bestOfNDefaultModel(): string {
+  return resolveSeatModel('reason').model;
+}
 
 /**
  * 方案/judge 的输出预算。原来 gen=2500 / judge=3000 —— 一份完整 SDD 骨架 (contracts + GWT + 落点)
@@ -124,7 +127,7 @@ export async function bestOfNPlan(
   opts: BestOfNOpts = {},
   callModelFn: typeof send = send,
 ): Promise<BestOfNResult> {
-  const model = opts.model ?? BESTOFN_DEFAULT_MODEL;
+  const model = opts.model ?? bestOfNDefaultModel();
   const judgeModel = opts.judgeModel ?? model;
   const lenses = opts.lenses ?? DEFAULT_PLAN_LENSES;
 
@@ -275,8 +278,8 @@ export async function councilDeepPlan(
     lenses: [...(opts.lenses ?? DEFAULT_COUNCIL_DEEP_LENSES)],
     synthesisFramings: [...DEFAULT_COUNCIL_DEEP_FRAMINGS],
     judgeCriteria: [...DEFAULT_COUNCIL_DEEP_CRITERIA],
-    lensModel: opts.lensModel ?? 'deepseek:deepseek-v4-flash',
-    reasonModel: opts.reasonModel ?? BESTOFN_DEFAULT_MODEL,
+    lensModel: opts.lensModel ?? resolveSeatModel('lens').model,
+    reasonModel: opts.reasonModel ?? bestOfNDefaultModel(),
     ...(opts.divergePool ? { divergePool: opts.divergePool } : {}),
     ...(opts.divergeWeights ? { divergeWeights: opts.divergeWeights } : {}),
     ...(opts.synthPool ? { synthPool: opts.synthPool } : {}),

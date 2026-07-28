@@ -25,7 +25,7 @@ export {
 } from './web-retriever';
 export {
   createDistiller,
-  DISTILL_DEFAULT_MODEL,
+  distillDefaultModel,
   DEFAULT_LENSES,
   type DistillFn,
   type DistillResult,
@@ -48,7 +48,7 @@ export {
 export {
   bestOfNPlan,
   DEFAULT_PLAN_LENSES,
-  BESTOFN_DEFAULT_MODEL,
+  bestOfNDefaultModel,
   councilDeepPlan,
   DEFAULT_COUNCIL_DEEP_LENSES,
   DEFAULT_COUNCIL_DEEP_FRAMINGS,

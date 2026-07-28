@@ -11,6 +11,7 @@
  *   - 注入接缝: expander 是纯函数, 测试注入替身 → **永不真调模型**。
  */
 import { send as defaultCallModel } from '../../model/gateway';
+import { resolveSeatModel } from '../../model/role-models';
 
 /** query → 改写查询列表 (不含原 query; caller 负责拼原 query 并去重)。 */
 export type QueryExpander = (query: string, signal?: AbortSignal) => Promise<string[]>;
@@ -71,14 +72,14 @@ function norm(s: string): string {
 
 /**
  * 默认改写器: 一次 flash 档模型调用。失败**照抛** (交给上层 expandQueries 兜底降级)。
- * @param opts.model 改写模型 (默认 env OMD_EXPAND_MODEL → deepseek:deepseek-v4-flash)。
+ * @param opts.model 改写模型 (省略 → 'expand' 座位; 座位链自带 OMD_EXPAND_MODEL env 层)。
  * @param opts._callModel 测试注入 (省略 = gateway send)。
  */
 export function createModelQueryExpander(
   opts: { model?: string; _callModel?: typeof defaultCallModel } = {},
 ): QueryExpander {
   const call = opts._callModel ?? defaultCallModel;
-  const model = opts.model ?? process.env.OMD_EXPAND_MODEL ?? 'deepseek:deepseek-v4-flash';
+  const model = resolveSeatModel('expand', { ...(opts.model ? { explicit: opts.model } : {}) }).model;
   return async (query, signal) => {
     const res = await call({
       model,

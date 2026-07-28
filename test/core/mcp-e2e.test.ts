@@ -44,6 +44,7 @@ const ALL_TOOLS = [
   'dag_review',
   'dag_slim',
   'dag_deepen',
+  'dag_goal',
   'dag_debug',
   'dream_consolidate',
   'dag_runs',

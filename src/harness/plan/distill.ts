@@ -12,9 +12,12 @@
  */
 import { z } from 'zod';
 import { callModel } from '../../model';
+import { resolveSeatModel } from '../../model/role-models';
 
-/** 蒸馏默认模型 (cheap + 可靠)。 */
-export const DISTILL_DEFAULT_MODEL = 'deepseek:deepseek-v4-flash';
+/** 蒸馏默认模型 = 'distill' 座位 (单一 resolver, INV-MODEL-1; 未配即抛, 不静默落某家)。 */
+export function distillDefaultModel(): string {
+  return resolveSeatModel('distill').model;
+}
 
 /** 一个蒸馏视角: persona 激活分布, 采样参数调制忠实/探索。 */
 export interface DistillLens {
@@ -99,7 +102,7 @@ export function createDistiller(
   opts: DistillerOpts = {},
   callModelFn: typeof callModel = callModel,
 ): DistillFn {
-  const model = opts.model ?? DISTILL_DEFAULT_MODEL;
+  const model = opts.model ?? distillDefaultModel();
   const lenses = opts.lenses ?? DEFAULT_LENSES;
   const perLensMax = opts.perLensMaxChars ?? 1000;
 

@@ -22,6 +22,7 @@
 import { z } from 'zod';
 import { send, listProviders, assertModelResolvable } from '../model/gateway';
 import { resolveRoleModel, listRoleModels } from '../model/gateway';
+import { tryResolveSeatModel } from '../model/role-models';
 import { withGoFallback } from '../model/gateway';
 import { logger } from './logger';
 import type { ModelUsage } from '../model/gateway';
@@ -214,7 +215,10 @@ export function resolveVerification(opts: ResolveVerificationOpts = {}): Verific
     thinkingLevel: opts.thinkingLevel,
     callModelFn: opts.callModelFn,
   });
-  const escalationModel = (opts.escalationModel ?? env.OMD_CONDUCTOR_ESCALATION_MODEL)?.trim();
+  // `escalation` 座位经**单一 resolver** 解析 (INV-MODEL-1): config.models → env(正名 + 老名别名)
+  // → auto-assign → defaultModel。此前这里直读 env, 于是 config 配了 escalation 也不生效 ——
+  // 那个座位被 auto-assign 派了模型、被起跑自检查了凭证, 却没有任何人读它 (2026-07-28 空旋钮全仓扫)。
+  const escalationModel = (opts.escalationModel ?? tryResolveSeatModel('escalation', { env })?.model)?.trim();
   logger.info(
     { verifierModel, escalationModel: escalationModel || undefined },
     '[omd/verifier] 跨模型校验: ON',

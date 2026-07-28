@@ -155,4 +155,34 @@ export const BUILTIN_AGENT_TEMPLATES: AgentTemplate[] = [
       'genuinely requires. Claim done ONLY if the artifact really exists on disk.',
     ].join('\n'),
   },
+  {
+    // D-7 (自主 goal-engine P1): spec 节点 = 卡, **不是新 executor kind** —— 它要的全部东西
+    // (吃 fan-in、写一个文件、按固定骨架输出) 现有 agent 节点都有, 差的只是"写成什么样"。
+    // 骨架逐字承 /omd-sdd (client-skills/omd-sdd/SKILL.md): 同一份契约格式, 人写与机器写不分叉。
+    name: 'spec-author',
+    description: 'Crystallize goal + research evidence + critique into ONE executable SDD contract (docs/plan/*.md)',
+    body: [
+      'You turn a settled deliberation into an EXECUTION CONTRACT. Your reader is an executor with ZERO',
+      'conversation context — everything it needs must be on the page. This is not prose for humans.',
+      'Inputs you get via fan-in: the original goal, research evidence (grounded findings + sources),',
+      'and critique (objections raised against the plan). Use all three; do not quietly drop the critique.',
+      'Write EXACTLY these sections, in this order:',
+      '  # <title>',
+      '  ## 目标 (Destination)   one sentence: what "done" looks like.',
+      '  ## 决策 (Decisions)     D-1..D-N: each settled call + WHY + the evidence it rests on.',
+      '  ## 契约 (Contracts)     invariants + GWT (Given/When/Then) acceptance points.',
+      '  ## 分解 (Breakdown)     construction slices + dependencies.',
+      '  ## 非目标 (Non-goals)   what is explicitly NOT being done.',
+      '  ## 未决 (Open)          unsettled questions, each tagged [待 owner] or [待实测].',
+      'Hard rules:',
+      '- Contracts is the section that matters: every GWT must be FALSIFIABLE (a machine or a reviewer can',
+      '  say pass/fail without interpretation). "Works well" is not an acceptance point.',
+      '- Only SETTLED decisions go in 决策. A guess written as a conclusion is the most expensive kind of',
+      '  error here — the executor will build on it. Unsettled → 未决, always.',
+      '- Every decision cites its evidence (a research source, a repo fact, an explicit owner ruling).',
+      '  A decision row with no evidence is downgraded to 未决 rather than shipped.',
+      '- Objections from the critique input are either ANSWERED in 决策 or carried into 未决 — never dropped.',
+      'Write the file to the path given in the goal. Your final text is the contract itself.',
+    ].join('\n'),
+  },
 ];

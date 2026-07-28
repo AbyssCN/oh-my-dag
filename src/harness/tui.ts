@@ -28,7 +28,7 @@ import { createModelRouterFromEnv } from './model-router';
 import { createPathfinderModeState, ensurePlanToggleKeyFree } from './plan';
 import { createExecuteExtension } from './execute-extension';
 import { createPathfinderExtension } from './pathfinder-extension';
-import { resolveRoleModelConfigured } from '../model/role-models';
+import { resolveRoleModelConfigured, tryResolveSeatModel } from '../model/role-models';
 import { createAgentLeafRunner } from './agent-leaf';
 import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from './command-leaf';
 import { createMultimodalRouteExtension } from './multimodal-route-extension';
@@ -177,18 +177,21 @@ const router = createModelRouterFromEnv();
 
 // /cg /audit slash 命令 (cgRetrieve/secAudit 封装 + dag-record 留痕)。模型 env 可覆盖, 默认 DeepSeek (全可靠)。
 const cgAuditExt = createCgAuditExtension({
-  conductorModel: process.env.OMD_CG_CONDUCTOR_MODEL ?? resolveRoleModelConfigured('conductor').model,
-  leafModel: process.env.OMD_CG_LEAF_MODEL ?? resolveRoleModelConfigured('leaf').model,
-  agentLeafModel: process.env.OMD_CG_AGENT_MODEL ?? resolveRoleModelConfigured('agent').model,
+  // 座位链自带 OMD_CG_* 别名 (INV-MODEL-1): 此前这里 `process.env.X ?? 座位` 把 env 抬到 config
+  // 之上, 与引擎路优先序相反 —— 同一个 conductor 在 TUI 与 MCP 解出两个答案。
+  conductorModel: resolveRoleModelConfigured('conductor').model,
+  leafModel: resolveRoleModelConfigured('leaf').model,
+  agentLeafModel: resolveRoleModelConfigured('agent').model,
   verification,
   router,
 });
 
 // /iterate slash 命令 (内层 DAG 外层 fixpoint 迭代: 跑→评→重画 直到收敛 + dag-record 留痕)。
 const iterateExt = createIterateExtension({
-  conductorModel: process.env.OMD_ITER_CONDUCTOR_MODEL ?? resolveRoleModelConfigured('conductor').model,
-  leafModel: process.env.OMD_ITER_LEAF_MODEL ?? resolveRoleModelConfigured('leaf').model,
-  agentLeafModel: process.env.OMD_ITER_AGENT_MODEL ?? resolveRoleModelConfigured('agent').model,
+  // 同上: OMD_ITER_* 已是座位链的 env 别名, 不再在这里抢跑。
+  conductorModel: resolveRoleModelConfigured('conductor').model,
+  leafModel: resolveRoleModelConfigured('leaf').model,
+  agentLeafModel: resolveRoleModelConfigured('agent').model,
   // 未收敛多轮 → 轮级升级 conductor (同 /cg /audit 的升级模型; 没配 / provider 未注册 → 维持弱)。
   conductorEscalationModel: process.env.OMD_CONDUCTOR_ESCALATION_MODEL,
 });
@@ -212,18 +215,20 @@ if (planKeyFix.changed) {
 // SDD→DAG→runtime 交接: /execute 把 docs/plan 最新 SDD 丢给 conductor 分解执行, 跑完发验收简报给 runtime 模型。
 // 真改文件的叶子执行器 (executeExt + pathfinderExt 共享): 不接 = agent 节点降级纯文本 (空转交付)。
 const agentRunner = createAgentLeafRunner({ cwd: process.cwd(), hashlineEdit: true });
-/** pathfinder leaf 模型: 显式 env > (deepseek key 在 → flash 兜底) > 不配 (引导语可达)。 */
+/**
+ * pathfinder leaf 模型 = 'leaf' 座位 (单一 resolver)。座位解不到 → 留空, 让"未配 leafModel"的
+ * 引导语可达 (否则用户只看到 raw 的 provider 未注册错误)。
+ */
 function resolvePathfinderLeafModel(explicit: string | undefined): { leafModel?: string } {
-  if (explicit) return { leafModel: explicit };
-  if (process.env.DEEPSEEK_BASE_URL && process.env.DEEPSEEK_API_KEY) return { leafModel: 'deepseek:deepseek-v4-flash' };
-  return {};
+  const seat = tryResolveSeatModel('leaf', { ...(explicit ? { explicit } : {}) });
+  return seat ? { leafModel: seat.model } : {};
 }
 const commandRunner = createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], cwd: process.cwd(), timeoutMs: 180_000 });
 const executeExt = createExecuteExtension({
   // conductorModel 不传: resolveConductorDefault 自会走 OMD_ITER_CONDUCTOR_MODEL > runtime 坐标 (D-8)。
   // 此处硬编码兜底会让"conductor = runtime 同款"永远不生效 (identity 承诺 vs 实际行为背离)。
-  leafModel: process.env.OMD_ITER_LEAF_MODEL ?? resolveRoleModelConfigured('leaf').model,
-  agentLeafModel: process.env.OMD_ITER_AGENT_MODEL ?? resolveRoleModelConfigured('agent').model,
+  leafModel: resolveRoleModelConfigured('leaf').model,
+  agentLeafModel: resolveRoleModelConfigured('agent').model,
   conductorEscalationModel: process.env.OMD_CONDUCTOR_ESCALATION_MODEL,
   agentRunner,
   commandRunner,
@@ -238,8 +243,11 @@ const pathfinderExt = createPathfinderExtension({
   state: pathfinderState,
   // leafModel: 显式 env 优先; deepseek 兜底只在 key 真的在时给 —— 无 key 时留空,
   // 让"未配 leafModel"的引导语可达 (否则用户只会看到 raw 的 provider 未注册错误)。
-  ...(resolvePathfinderLeafModel(process.env.OMD_ITER_LEAF_MODEL)),
-  ...(process.env.OMD_ITER_AGENT_MODEL ? { agentLeafModel: process.env.OMD_ITER_AGENT_MODEL } : {}),
+  ...resolvePathfinderLeafModel(undefined),
+  ...(() => {
+    const a = tryResolveSeatModel('agent');
+    return a ? { agentLeafModel: a.model } : {};
+  })(),
   agentRunner,
   commandRunner,
   finalize: process.env.OMD_PATH_FINALIZE === '1',

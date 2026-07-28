@@ -68,7 +68,7 @@ ${TASTE_CORE}
  *
  * @param input.goal — 高层研究目标 (什么视角/做什么决策)。
  * @param input.groundTruth — 代码库 / 事实 ground-truth (注入每个 leaf 防幻觉)。
- * @param input.conductorModel — 分解器模型 (默认 env OMD_CONDUCTOR_MODEL → deepseek:deepseek-v4-pro)。
+ * @param input.conductorModel — 分解器模型 (省略 → 'conductor' 座位, 单一 resolver)。
  * @param input.lensCount — 建议镜头数 (默认让 conductor 自定)。
  * @param input._callModel — 测试 fake 注入。
  * @returns 完整 ResearchFanoutConfig, question/groundTruth 强制 = 入参原文。

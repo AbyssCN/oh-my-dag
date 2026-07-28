@@ -39,8 +39,16 @@ const GAP_SCHEMA = z.object({
       /** 下一轮要挖的具体问题 (增量, 不是原题重述)。 */
       question: z.string(),
       why: z.string(),
-      /** 该缺口点名要读的 URL (被引用未抓取 / 该查证的出处) —— 喂确定性 probe。 */
+      /** 该缺口点名要读的 URL (被引用未抓取 / 该查证的出处) —— 喂确定性 probe 的 web 腿。 */
       urls: z.array(z.string()).optional(),
+      /**
+       * 该缺口点名要**在本仓查**的字面串/符号名 —— 喂确定性 probe 的**仓内腿**。
+       *
+       * 为什么要这条: 缺口分析常问"这个断言在**我们仓里**是怎么实现的", 而 web 腿只会去抓 URL,
+       * 接不住。研究 leaf 是 inproc 看不见仓库, 于是这类缺口永远悬着 —— 补上这条腿, 上限
+       * (模型说缺什么) 与下限 (确定性检索去取) 才在两个方向上都对称。
+       */
+      repoQueries: z.array(z.string()).optional(),
     }),
   ),
 });
@@ -55,6 +63,11 @@ export interface ProbeYield {
   newCorpus?: string;
   /** 本次真抓到正文的 URL (留痕进 secondPass)。 */
   fetchedUrls?: string[];
+  /**
+   * 本次仓内检索命中的文件路径 (留痕进 secondPass)。
+   * **与 fetchedUrls 分开**: 后者是 INV-GOAL-2 的"真 web 抓取痕迹"证据面, 掺进本地路径就废了。
+   */
+  repoHits?: string[];
 }
 
 /** 一个研究镜头 = 一个专家视角 + 它内部的 V 个不同 sub-angle 变体。 */
@@ -184,7 +197,7 @@ export interface ResearchFanoutResult {
   /** 实际跑的轮数 (rounds>1 时可能因"无新增"早停; 单轮 = 1)。 */
   roundsRun: number;
   /** 轮间留痕: 每个后续轮的缺口清单 + probe 补抓到正文的 URL (单轮 = [])。 */
-  secondPass: { round: number; gaps: ResearchGap[]; probedUrls: string[] }[];
+  secondPass: { round: number; gaps: ResearchGap[]; probedUrls: string[]; repoHits?: string[] }[];
   /** 整轮 token/缓存/成本遥测 (M6: 测量缓存命中而非靠账单猜)。 */
   costStats: FanoutCostStats;
 }
@@ -286,13 +299,13 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
   let corpus = head;
   let roundLenses: readonly ResearchLens[] = cfg.lenses;
   const lensChampions: { key: string; text: string }[] = [];
-  const secondPass: { round: number; gaps: ResearchGap[]; probedUrls: string[] }[] = [];
+  const secondPass: { round: number; gaps: ResearchGap[]; probedUrls: string[]; repoHits?: string[] }[] = [];
   let roundsRun = 0;
 
   /** 模型上限半边: 通读冠军全文提缺口。fail-open: 解析/调用失败 → 空缺口 (增益不是链路)。 */
   const analyzeGaps = async (round: number, digest: string): Promise<ResearchGap[]> => {
     leafCount += 1;
-    const prompt = `${corpus}\n\n各镜头冠军 (截至第 ${round} 轮):\n${digest}\n\n你是 research-second-pass 的缺口分析器。通读以上全部, 提出下一轮**只做增量**该挖什么: 没有出处的关键断言、被引用/被点名却没读过的来源 (urls 给完整链接)、有料没挖透的角度。已答好的部分不要重复提。没有值得挖的就返回空 gaps —— 不要硬凑。只输出 JSON: {"gaps":[{"key":"...","question":"...","why":"...","urls":["..."]}]}`;
+    const prompt = `${corpus}\n\n各镜头冠军 (截至第 ${round} 轮):\n${digest}\n\n你是 research-second-pass 的缺口分析器。通读以上全部, 提出下一轮**只做增量**该挖什么: 没有出处的关键断言、被引用/被点名却没读过的来源 (urls 给完整链接)、有料没挖透的角度。\n\n缺口有两个方向, 分开填:\n- urls: 该读的**外部**来源 (完整链接);\n- repoQueries: 该在**本仓**查证的字面串/符号名 (函数名/类型名/常量/配置键/错误文案)。凡是"我们仓里是怎么做的 / 有没有现成的"这类缺口都填这里 —— 会有确定性检索去取, 你不要凭印象回答。\n\n已答好的部分不要重复提。没有值得挖的就返回空 gaps —— 不要硬凑。只输出 JSON: {"gaps":[{"key":"...","question":"...","why":"...","urls":["..."],"repoQueries":["..."]}]}`;
     try {
       const res = await call({ model: cfg.reasonModel, messages: msg(prompt), responseSchema: GAP_SCHEMA });
       usageLog.push({ model: cfg.reasonModel, usage: res.usage ?? { in: 0, out: 0 } });
@@ -373,7 +386,7 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
       stage('second-pass', `r${round}: 无新增 (0 缺口, 0 新语料) → 停`);
       break;
     }
-    secondPass.push({ round: round + 1, gaps, probedUrls: probeYield.fetchedUrls ?? [] });
+    secondPass.push({ round: round + 1, gaps, probedUrls: probeYield.fetchedUrls ?? [], ...(probeYield.repoHits?.length ? { repoHits: probeYield.repoHits } : {}) });
     if (newCorpus) corpus += `\n\n<second-pass-corpus round="${round + 1}">\n${newCorpus}\n</second-pass-corpus>`;
     roundLenses = [secondPassLens(round + 1, gaps)];
     stage('second-pass', `r${round + 1}: ${gaps.length} 缺口, +${newCorpus.length} chars 补抓语料`);

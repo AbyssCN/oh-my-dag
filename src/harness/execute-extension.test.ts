@@ -7,6 +7,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { resetConfigCache } from '../model/role-models';
 import {
   createExecuteExtension,
   findLatestSdd,
@@ -203,36 +204,65 @@ describe('execute-extension', () => {
   });
 });
 
-// ── D-8: conductor 默认 = runtime 坐标 (廉价 conductor 拆除) ──────────────────────
-describe('resolveConductorDefault (D-8)', () => {
+// ── D-8: conductor 默认 = 'conductor' 座位 (P0 统一 resolver 后) ────────────────
+// 座位链: config.models > env (OMD_CONDUCTOR_MODEL → OMD_ITER_CONDUCTOR_MODEL 别名) >
+// autoAssigned > defaultModel (OMD_RUNTIME_*)。用空 config 指路保 hermetic (否则读到仓内真 config)。
+describe('resolveConductorDefault (D-8 · 单一座位链)', () => {
   const save = { ...process.env };
-  const reset = () => {
+  const emptyCfg = (): string => {
+    const p = join(mkdtempSync(join(tmpdir(), 'omd-cd-')), 'config.json');
+    writeFileSync(p, '{"version":2}');
+    resetConfigCache();
+    return p;
+  };
+  const reset = (cfgPath: string) => {
+    // conductor 座的全部 env 层 (正名 + 两个历史别名) —— 少删一个就会读到 .env 里的遗留值
+    delete process.env.OMD_CONDUCTOR_MODEL;
     delete process.env.OMD_ITER_CONDUCTOR_MODEL;
+    delete process.env.OMD_CG_CONDUCTOR_MODEL;
     delete process.env.OMD_RUNTIME_PROVIDER;
     delete process.env.OMD_RUNTIME_MODEL;
+    delete process.env.OMD_DEFAULT_MODEL;
+    process.env.OMD_CONFIG_PATH = cfgPath;
+    resetConfigCache();
+  };
+  const restore = () => {
+    for (const k of Object.keys(process.env)) if (!(k in save)) delete process.env[k];
+    Object.assign(process.env, save);
+    resetConfigCache();
   };
 
-  test('默认 = runtime 坐标 (OMD_RUNTIME_PROVIDER:OMD_RUNTIME_MODEL)', () => {
-    reset();
-    process.env.OMD_RUNTIME_PROVIDER = 'deepseek';
-    process.env.OMD_RUNTIME_MODEL = 'deepseek-v4-pro';
-    expect(resolveConductorDefault()).toBe('deepseek:deepseek-v4-pro');
-    Object.assign(process.env, save);
+  test('config 未配 conductor → 回落 runtime 坐标 (D-8 本意保住)', () => {
+    reset(emptyCfg());
+    process.env.OMD_RUNTIME_PROVIDER = 'acme';
+    process.env.OMD_RUNTIME_MODEL = 'm-pro';
+    expect(resolveConductorDefault()).toBe('acme:m-pro');
+    restore();
   });
 
-  test('已设 env 覆盖 (OMD_ITER_CONDUCTOR_MODEL) 优先于 runtime 坐标', () => {
-    reset();
-    process.env.OMD_RUNTIME_PROVIDER = 'deepseek';
-    process.env.OMD_RUNTIME_MODEL = 'deepseek-v4-pro';
+  test('OMD_ITER_CONDUCTOR_MODEL (env 别名) 优先于 runtime 坐标', () => {
+    reset(emptyCfg());
+    process.env.OMD_RUNTIME_PROVIDER = 'acme';
+    process.env.OMD_RUNTIME_MODEL = 'm-pro';
     process.env.OMD_ITER_CONDUCTOR_MODEL = 'mimo:mimo-v2.5-pro';
     expect(resolveConductorDefault()).toBe('mimo:mimo-v2.5-pro');
-    Object.assign(process.env, save);
+    restore();
   });
 
-  test('env 全未配 → 空串 (caller 若真需 conductor 会自行报缺)', () => {
-    reset();
+  // P0 的刻意换序: 此前 OMD_ITER_* 压过 config, 于是改了 config.json 也不生效。
+  test('config.models.conductor 压过 env 别名 (INV-MODEL-1)', () => {
+    const p = join(mkdtempSync(join(tmpdir(), 'omd-cd-')), 'config.json');
+    writeFileSync(p, JSON.stringify({ version: 2, models: { conductor: 'file:c' } }));
+    reset(p);
+    process.env.OMD_ITER_CONDUCTOR_MODEL = 'mimo:mimo-v2.5-pro';
+    expect(resolveConductorDefault()).toBe('file:c');
+    restore();
+  });
+
+  test('一层都没配 → 空串 (caller 若真需 conductor 会自行报缺)', () => {
+    reset(emptyCfg());
     expect(resolveConductorDefault()).toBe('');
-    Object.assign(process.env, save);
+    restore();
   });
 });
 

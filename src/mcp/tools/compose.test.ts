@@ -8,7 +8,7 @@ import { GRAPH_SHAPES } from '../../harness/shapes';
 const fakeRun = (out = 'RESULT') =>
   async () => ({ results: { p: { status: 'done', output: out } }, usage: {} });
 
-const tools = (run = fakeRun()) => createComposeTools({ runPlan: run as never, baseConfig: {} });
+const tools = (run = fakeRun()) => createComposeTools({ runPlan: run as never, baseConfig: () => ({}) });
 const byName = (n: string) => tools().find((t) => t.name === n)!;
 
 describe('omd_primitive', () => {

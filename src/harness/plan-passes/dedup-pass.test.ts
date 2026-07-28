@@ -139,14 +139,15 @@ describe("dedupPass (D-20)", () => {
 		// map = 整节点不参与判重 (D-20 v1 保守), 无指纹归属可言。
 		// agent = SAMPO roster 指派, omd executor-dag 不消费且每轮随机 → 刻意排除
 		// (入键会系统性打空 D-21 跨轮复用, 见 semantic-key.ts 注)。
-		const EXCLUDED = new Set(["map", "agent"]);
+		// postcondition / leaf 2026-07-28 加入 (空旋钮全仓扫): 引擎零消费者, 明示已撤, zod 留容忍。
+		// 零消费者字段入键 = 纯噪声打空跨轮复用 (与 agent 同一形态)。要重新入键, 先给它一个消费者。
+		const EXCLUDED = new Set(["map", "agent", "postcondition", "leaf"]);
 		// 每字段一对「仅此字段不同」的取值 (B 可为 undefined = 字段省略)。
 		const pairs: Record<string, [unknown, unknown]> = {
 			skill: ["s1", "s2"],
 			goal: ["g1", "g2"],
 			args: [{ a: 1 }, { a: 2 }],
 			depends_on: [["d1"], ["d2"]],
-			postcondition: [{ method: "code" }, { method: "human" }],
 			output_type: ["structured", "none"],
 			output_path: ["p1", "p2"],
 			output_schema: [{ x: 1 }, { x: 2 }],
@@ -159,14 +160,12 @@ describe("dedupPass (D-20)", () => {
 			persona: ["评论家", "审计员"],
 			template: ["t1", "t2"],
 			model: ["m1", "m2"],
-			leaf: [{ l: 1 }, { l: 2 }],
-			on_failure: ["retry", "escalate"],
 			max_retry: [1, 2],
-			fallback: ["human", "reactive"],
 			requires: ["all", 1],
 			cluster: ["fe", "be"],
 			tier: ["strong", "cheap"],
 			attach_media: [true, false],
+			research: [{ rounds: 1 }, { rounds: 2 }],
 			thinking: ["low", "xhigh"],
 		};
 		for (const key of Object.keys(shape)) {

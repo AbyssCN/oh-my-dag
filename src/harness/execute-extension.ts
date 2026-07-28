@@ -25,21 +25,19 @@ import type { VerifierFn } from './verifier';
 import type { AgentLeafRunner, CommandLeafRunner } from './leaf-runners';
 import { callModel, type ModelRequest, type ModelResponse } from '../model';
 import { logger } from './logger';
+import { tryResolveSeatModel } from '../model/role-models';
 import { m } from './i18n';
 
 /**
- * D-8: conductor 模型的**默认 = runtime 模型坐标** (env OMD_RUNTIME_PROVIDER:OMD_RUNTIME_MODEL),
- * 而非单独的廉价 conductor —— 廉价 conductor 从散文重推 = 交接税, runtime 模型有全上下文更该当分解器。
- * 解析序 (已设的 env 覆盖优先): OMD_ITER_CONDUCTOR_MODEL > runtime 坐标 > '' (caller 须显式给)。
- * 返回 '' = 环境未配 → caller 若真需 conductor (escalation / conductor 路径) 会自行报「conductorModel 必填」。
+ * D-8: conductor 模型的默认 = **'conductor' 座位** (单一 resolver, INV-MODEL-1)。
+ *
+ * 座位链自带这里原有的两层: OMD_ITER_CONDUCTOR_MODEL 是 env 层别名, OMD_RUNTIME_PROVIDER/MODEL 是
+ * defaultModel 层 —— 只是现在 **config.models 压过它们** (P0 前反着, 于是改了 config 也不生效)。
+ * D-8 的本意 (runtime 模型有全上下文, 更该当分解器) 由「config 没配 conductor 时回落 runtime 坐标」保住。
+ * 返回 '' = 一层都没配 → caller 若真需 conductor 会自行报「conductorModel 必填」。
  */
 export function resolveConductorDefault(): string {
-  const override = process.env.OMD_ITER_CONDUCTOR_MODEL?.trim();
-  if (override) return override;
-  const provider = process.env.OMD_RUNTIME_PROVIDER?.trim();
-  const model = process.env.OMD_RUNTIME_MODEL?.trim();
-  if (provider && model) return `${provider}:${model}`;
-  return '';
+  return tryResolveSeatModel('conductor')?.model ?? '';
 }
 
 export interface ExecuteExtensionOpts {
@@ -269,7 +267,7 @@ function finalizeSystemPrompt(): string {
     '  params)。若某 goal 明显是「对 EACH … 逐个处理」的运行时工作表 → 还原成 executor:"map" (补 lister/over/',
     '  itemVar/template); 若明显匹配某控制流形 → 还原成 kind:"primitive" (+ primitive + params)。做不到就**留',
     '  作 leaf** (best-effort, 宁缺毋滥)。',
-    '- 加 verify 提示: 对正确性敏感的节点补 postcondition (GWT), 或在末尾加一个 command 验证节点 (如',
+    '- 加 verify 节点: 对正确性敏感的产出, 在末尾加一个 command 验证节点 (如',
     '  "bun run tsc --noEmit && bun test")。',
     '- 宽深 sanity-check: 无真实数据依赖的节点必须是兄弟 (同层并行); 别把逻辑顺序压成 depends_on 深链。',
     '保持无环。保留原有 node id (稳定 key)。',
@@ -280,7 +278,7 @@ function finalizeSystemPrompt(): string {
     '  "output_type"?: "structured"|"file"|"git"|"none", "output_path"?: string,',
     '  "map"?: { "lister": object, "over": string, "itemVar": string, "keyBy"?: string, "template": object },',
     '  "kind"?: "primitive", "primitive"?: string, "params"?: object,',
-    '  "postcondition"?: { "method"?: "structural"|"code"|"llm-judge"|"human" } } } }',
+    '  } } }',
   ].join('\n');
 }
 
