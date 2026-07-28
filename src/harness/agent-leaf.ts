@@ -184,6 +184,20 @@ export interface AgentLeafRunnerOpts {
  * 造一个真 agent-leaf runner: 每次调用起一个一次性带工具子 session, 跑完 dispose。
  * 这是 omd 本体「真能干活(改文件)」的执行底座 —— 不再只是单发文本。
  */
+/**
+ * pi session token 口径 → ModelUsage 口径 (2026-07-28 修, 纯函数便于单测)。
+ *
+ * pi 的 `tokens.input` 是**不含缓存命中**的增量; 而 ModelUsage 契约要求 `in` = 总 prompt token 且
+ * **cacheHit ⊆ in** (见 model/types.ts)。直接照搬两字段会让 cacheHit 远大于 in —— 工具循环里缓存前缀
+ * 被复用几十轮, 实测 cacheHit/in 到过 **2082%**。后果不止读数难看: 成本账按
+ * `(in − cacheHit)×全价 + cacheHit×10%` 折算, in 偏小会算出**负成本**。故这里把 cacheRead 补回 in。
+ */
+export function mapSessionUsage(tokens?: { input?: number; output?: number; cacheRead?: number }): ModelUsage {
+  if (!tokens) return { in: 0, out: 0 };
+  const cacheHit = tokens.cacheRead ?? 0;
+  return { in: (tokens.input ?? 0) + cacheHit, out: tokens.output ?? 0, cacheHit };
+}
+
 export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeafRunner {
   // sandboxRoot 设 → subprocess-per-leaf under bwrap: 整个 leaf 进程关进只见 worktree 的文件系统视图
   // (cwd=worktree, 主 repo 物理不可见) → pi 所有命令通道 (bash / 模型幻觉的 shell / 未来工具) + git-show
@@ -320,9 +334,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     const stats = (session as {
       getSessionStats?: () => { tokens?: { input?: number; output?: number; cacheRead?: number } };
     }).getSessionStats?.();
-    const usage = stats?.tokens
-      ? { in: stats.tokens.input ?? 0, out: stats.tokens.output ?? 0, cacheHit: stats.tokens.cacheRead ?? 0 }
-      : { in: 0, out: 0 };
+    const usage = mapSessionUsage(stats?.tokens);
     // C-5b loud-error 闸 (统一-registry, issue #13): pi createAgentSession **静默吞错** —— 失败
     // (401/404/空响应, 或 reasoning 截断吞正文) 返 0-token 空文本、不上抛 HTTP 状态, 是本次 mimo 排查绕
     // 5 轮的元凶。session 空文本 + 无文件写入 + 非停摆 → **抛响亮错** (executor-dag failedFromThrow 接住,
