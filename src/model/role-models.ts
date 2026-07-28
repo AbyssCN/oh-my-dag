@@ -326,6 +326,13 @@ const SEAT_ENV_ALIASES: Partial<Record<OmdSeat, readonly string[]>> = {
   conductor: ['OMD_ITER_CONDUCTOR_MODEL', 'OMD_CG_CONDUCTOR_MODEL'],
   leaf: ['OMD_ITER_LEAF_MODEL', 'OMD_CG_LEAF_MODEL'],
   agent: ['OMD_ITER_AGENT_MODEL', 'OMD_CG_AGENT_MODEL'],
+  // 2026-07-28 空旋钮全仓扫: `escalation` 座此前是**纯装饰** —— auto-assign 给它派模型、起跑自检查
+  // 它的凭证, 而引擎读的是 OMD_CONDUCTOR_ESCALATION_MODEL, 谁都没解析过这个座。config 说 X 引擎用
+  // env 的 Y, 正是 INV-MODEL-1 要杀的形态, 在这一个座位上活了下来 (P0 收口时漏的)。
+  // 收法与其它座位一致: 老 env 名降为本座别名, config.models 压过它。
+  escalation: ['OMD_CONDUCTOR_ESCALATION_MODEL'],
+  // `review-spec` 同上, 只是它的正名 env key 恰好就是历史名 (seatEnvKey → OMD_REVIEW_SPEC_MODEL),
+  // 无需别名 —— 缺的只是消费方去解析它 (见 harness/review/run.ts)。
 };
 
 /** 座位正名 env key: OMD_<SEAT>_MODEL (连字符/点 → 下划线, 对齐既有 OMD_REVIEW_SPEC_MODEL 约定)。 */

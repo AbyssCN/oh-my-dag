@@ -242,6 +242,16 @@ export interface LeafResult {
 export interface PriorExec {
   plan: ConductorPlan;
   results: Record<string, LeafResult>;
+  /**
+   * D-4b 指纹毒集: 被 review/judge 点名拒绝过的节点**语义指纹**。命中者不进复用池。
+   *
+   * 为什么锚在指纹而非节点 id: 外层每轮把 plan 扔掉让 conductor 重画, id 跨轮无意义 (且指纹刻意
+   * 不含 id)。票在**铸它的那一轮的 id 空间**里生成, 当场翻成指纹再往下一轮带 —— 见 plan/iterate。
+   *
+   * 没有它, 被拒节点 (status 仍是 'done' —— 拒的是质量不是状态) 会被指纹匹配原样复用进修复轮,
+   * 修复轮能否修对就全看 conductor 从散文里猜没猜中该改哪个节点。
+   */
+  poisoned?: ReadonlySet<string>;
 }
 
 export interface ExecutorDagResult {

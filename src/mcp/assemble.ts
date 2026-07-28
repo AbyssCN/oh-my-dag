@@ -473,7 +473,15 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     ...createDagTools({ engine, runRegistry, cwd, defaultConfig: buildDefaultConfig, continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd }, hudMirror, ledger }),
     createDagResearchTool(researchFanout),
     // 自主 goal 环 (P1 / INV-GOAL-1): buildDefaultConfig 传 thunk = 每次调用重解座位 (INV-MODEL-3)。
-    createGoalTool({ runGoal, runRegistry, cwd, buildConfig: buildDefaultConfig }),
+    // continuity 同 dag_run 恒开: 内层节点 checkpoint + **外层轮 journal** (INV-P2-6),
+    // dag_goal resume=<runId> 才接得回轮次/毒集/复用源。
+    createGoalTool({
+      runGoal,
+      runRegistry,
+      cwd,
+      buildConfig: buildDefaultConfig,
+      continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd },
+    }),
     ...createMemoryTools({ memory, cwd }),
     // pathfinder 六件套 (TUI-less 决策地图: map/add/tickets/rule/deliver/prefetch, pull 式回流)。
     ...createPathfinderTools({

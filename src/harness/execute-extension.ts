@@ -267,7 +267,7 @@ function finalizeSystemPrompt(): string {
     '  params)。若某 goal 明显是「对 EACH … 逐个处理」的运行时工作表 → 还原成 executor:"map" (补 lister/over/',
     '  itemVar/template); 若明显匹配某控制流形 → 还原成 kind:"primitive" (+ primitive + params)。做不到就**留',
     '  作 leaf** (best-effort, 宁缺毋滥)。',
-    '- 加 verify 提示: 对正确性敏感的节点补 postcondition (GWT), 或在末尾加一个 command 验证节点 (如',
+    '- 加 verify 节点: 对正确性敏感的产出, 在末尾加一个 command 验证节点 (如',
     '  "bun run tsc --noEmit && bun test")。',
     '- 宽深 sanity-check: 无真实数据依赖的节点必须是兄弟 (同层并行); 别把逻辑顺序压成 depends_on 深链。',
     '保持无环。保留原有 node id (稳定 key)。',
@@ -278,7 +278,7 @@ function finalizeSystemPrompt(): string {
     '  "output_type"?: "structured"|"file"|"git"|"none", "output_path"?: string,',
     '  "map"?: { "lister": object, "over": string, "itemVar": string, "keyBy"?: string, "template": object },',
     '  "kind"?: "primitive", "primitive"?: string, "params"?: object,',
-    '  "postcondition"?: { "method"?: "structural"|"code"|"llm-judge"|"human" } } } }',
+    '  } } }',
   ].join('\n');
 }
 

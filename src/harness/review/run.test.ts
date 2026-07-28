@@ -92,15 +92,32 @@ describe('review/run 双轴', () => {
   test('OMD_REVIEW_SPEC_MODEL: spec 轴单独路由, standards 轴不受影响; 未设 → 回落 find 层', async () => {
     const { calls, send } = makeFakeSend();
     await runReview(baseOpts({
-      deps: { send, findSdd: () => FAKE_SDD, env: { OMD_REVIEW_SPEC_MODEL: 'test:spec-model' } },
+      // seatOpts 空表 = 绕开真仓 .omd/config.json (座位链会读它, 否则真配置压过注入的 env)。
+      deps: {
+        send,
+        findSdd: () => FAKE_SDD,
+        env: { OMD_REVIEW_SPEC_MODEL: 'test:spec-model' },
+        seatOpts: { modelsMap: {}, autoAssignMap: {} },
+      },
     }));
     const specCall = calls.find((c) => c.content.includes('对抗式审查 [spec]'))!;
     expect(specCall.model).toBe('test:spec-model');
     for (const c of calls.filter((c) => c !== specCall)) expect(c.model).toBe('test:find-model');
 
-    // 未设 → spec 轴回落 find 层模型
+    // 座位链一层都不命中 → spec 轴回落 find 层模型。
+    // (真实环境里 auto-assign 会给 review-spec 派 verify 档坐标, 与 review 座同档 —— 所以这条
+    //  回落在生产中很少走到; 这里用空 seatOpts 造出"整条链皆空"的边界来钉它仍然成立。)
     const fb = makeFakeSend();
-    await runReview(baseOpts({ deps: { send: fb.send, findSdd: () => FAKE_SDD, env: {} } }));
+    await runReview(
+      baseOpts({
+        deps: {
+          send: fb.send,
+          findSdd: () => FAKE_SDD,
+          env: {},
+          seatOpts: { modelsMap: {}, autoAssignMap: {}, configPath: '/nonexistent/omd-config.json' },
+        },
+      }),
+    );
     expect(fb.calls.find((c) => c.content.includes('对抗式审查 [spec]'))!.model).toBe('test:find-model');
   });
 

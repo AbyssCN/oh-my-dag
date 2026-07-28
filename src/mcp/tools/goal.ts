@@ -12,6 +12,7 @@ import { z } from 'zod';
 import type { OmdMcpTool } from '../server';
 import type { RunGoalResult, GoalTier } from '../../harness/goal/run-goal';
 import type { ExecutorDagConfig } from '../../harness/executor-dag-types';
+import type { CheckpointManager } from '../../harness/continuity/checkpoint-manager';
 import type { RunRegistry } from '../run-registry';
 
 export interface GoalToolDeps {
@@ -27,6 +28,12 @@ export interface GoalToolDeps {
    * 装配期算死的座位会让 omd_set_role 改完不生效)。
    */
   buildConfig: () => Partial<ExecutorDagConfig>;
+  /**
+   * W2 continuity + **外层轮 journal** (INV-P2-6)。给则:内层节点落 checkpoint,外层 fixpoint 的
+   * 轮次/毒集/复用源落 `_fixpoint.json` —— `resume=<runId>` 才接得回来。省略 = 不落不续
+   * (自主环仍能跑,但崩了从第 1 轮起且**毒集清零**,被拒产出会复活)。
+   */
+  continuity?: { manager: CheckpointManager; repoRoot: string };
 }
 
 /** 阶段结论压成宽出摘要 (D-8: 客户端上下文只拿结论, 全文自己 Read spec/report)。 */
@@ -52,13 +59,18 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
       tier: z.enum(['simple', 'complex']).optional().describe('Force routing; omit = auto-classify'),
       maxRounds: z.number().int().min(1).max(5).optional().describe('Execute-phase round cap (default 2 = 1 repair)'),
       researchRounds: z.number().int().min(1).max(4).optional().describe('Research inner-loop cap (default 1)'),
+      resume: z
+        .string()
+        .optional()
+        .describe('runId of an interrupted dag_goal — resume its outer rounds (keeps poison set + prior results)'),
     },
     handler: async (args) => {
-      const { goal, tier, maxRounds, researchRounds } = args as {
+      const { goal, tier, maxRounds, researchRounds, resume } = args as {
         goal?: string;
         tier?: GoalTier;
         maxRounds?: number;
         researchRounds?: number;
+        resume?: string;
       };
       if (!goal?.trim()) {
         return { content: [{ type: 'text' as const, text: 'dag_goal: goal 必填' }], isError: true };
@@ -70,15 +82,35 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         // 起跑自检 / 座位未配 (INV-MODEL-5): 响亮但不崩 server。
         return { content: [{ type: 'text' as const, text: `dag_goal 拒绝: ${(e as Error).message}` }], isError: true };
       }
-      const runId = randomUUID();
+      // resume 复用**同一个 runId** —— journal 与 checkpoint 都按 runId 存, 换 id 就等于从零开始。
+      if (resume && !deps.continuity) {
+        return {
+          content: [{ type: 'text' as const, text: 'dag_goal: resume 需要 continuity (未配置 → 无 journal 可续)' }],
+          isError: true,
+        };
+      }
+      const runId = resume || randomUUID();
       deps.runRegistry.register(runId, { goal: goal.slice(0, 200), meta: { tool: 'dag_goal' } });
       deps.runRegistry.start(runId);
+
+      // INV-P2-6: continuity 给了才落外层 journal; resume 时才读它 (与 per-node resume 同一开关)。
+      const dagWithContinuity: ExecutorDagConfig = deps.continuity
+        ? ({
+            ...dag,
+            continuity: {
+              manager: deps.continuity.manager,
+              runId,
+              repoRoot: deps.continuity.repoRoot,
+              ...(resume ? { resume: true } : {}),
+            },
+          } as ExecutorDagConfig)
+        : (dag as ExecutorDagConfig);
 
       // fire-and-forget: 自主环是长活 (research + spec + 多轮执行), 三段式取结果。
       deps
         .runGoal(goal, {
           cwd: deps.cwd,
-          dag: dag as ExecutorDagConfig,
+          dag: dagWithContinuity,
           ...(maxRounds ? { maxRounds } : {}),
           ...(researchRounds ? { researchRounds } : {}),
           ...(tier ? { tier } : {}),

@@ -22,6 +22,16 @@ export interface FixpointVerdict {
   score?: number;
   /** converged=false 时: 下一轮改进方向, 经 enrich 注入下一轮 input。 */
   failureReason?: string;
+  /**
+   * D-4 DeltaTicket (P1.5): judge 点名"产出有问题"的节点 id, **本轮 id 空间**。
+   *
+   * 本层只负责透传 —— 它是不是有效 id、怎么翻成跨轮可用的键, 是绑定层的事
+   * (omd 侧见 plan/iterate: 当场翻成语义指纹存进毒集)。
+   *
+   * 语义是**单调加毒**: 点名 = 禁止复用该节点的本轮产出。judge 只能往里加, 不能赦免 ——
+   * 错点名的代价是多跑一次 (钱), 漏点名的代价是坏产出被当已批准制品复用 (信任)。
+   */
+  rejectedNodes?: string[];
 }
 
 /** 一轮快照 (审计 + 单调 context 溯源)。 */
@@ -57,6 +67,15 @@ export interface FixpointResult<R> {
 export interface FixpointOpts {
   /** 最大轮数 (well-founded 终止上界)。< 1 → 钳到 1。 */
   maxRounds: number;
+  /**
+   * 起跑轮次 (INV-P2-6 崩溃恢复): 省略/≤1 = 从第 1 轮起 (常态)。
+   * 恢复时给 journal 里的 `completedRounds+1` —— **maxRounds 仍是总上界**, 不是"再跑这么多轮",
+   * 否则一次崩溃就把有界性洗掉了 (崩 N 次 = 跑 N×maxRounds 轮)。
+   * 已跑过的轮次不在本次的 `rounds` 数组里 (它们在上一个进程里), 由调用方按 journal 交代。
+   */
+  startRound?: number;
+  /** 恢复时的上一轮失败原因 (进 enrich; 常态为空)。 */
+  seedReason?: string;
 }
 
 /** roundRunner: 给定本轮 (已 enrich 的) input + 轮次 → 产出 result。抛错 = 本轮 DAG 整体崩。 */
@@ -104,9 +123,12 @@ export async function runFixpoint<R>(
 ): Promise<FixpointResult<R>> {
   const maxRounds = Math.max(1, Math.floor(opts.maxRounds));
   const rounds: FixpointRound<R>[] = [];
-  let prevReason = '';
+  let prevReason = opts.seedReason ?? '';
+  // 恢复起跑点钳进 [1, maxRounds]: journal 说已跑满 → 仍跑一轮 (而不是零轮直接 degenerate),
+  // 由 judge 判它到底收没收敛 —— 崩在"判之前"和"判完了"在磁盘上分不出来, 宁可多判一次。
+  const startRound = Math.min(Math.max(1, Math.floor(opts.startRound ?? 1)), maxRounds);
 
-  for (let round = 1; round <= maxRounds; round++) {
+  for (let round = startRound; round <= maxRounds; round++) {
     const roundInput = enrich(input, prevReason, round);
 
     // 跑一张静态 applicative 图。抛 → 停 (第一轮 = degenerate, 否则 = failed)。
