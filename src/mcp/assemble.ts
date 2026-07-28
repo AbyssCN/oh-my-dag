@@ -382,6 +382,19 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       multimodal: cfgPools.multimodal ?? resolveMultimodalPool(),
       ...(cfgPools.multimodalStrong ? { multimodalStrong: cfgPools.multimodalStrong } : {}),
     };
+    // 来源留痕 (2026-07-29): pools 是**第三条轴** —— 显式配的档位完全不问座位, env / --*-model /
+    // config.models 都覆盖不了它。此前无任何读数, 只能靠 [cost] 行反推实际跑了谁 (实测踩过:
+    // 12 个 OMD_* + 5 个旗标全设了却一个没生效, 因为叶子走的是 pools 不是座位)。
+    logger.info(
+      {
+        strong: cfgPools.strong ? 'config.pools' : '座位推导',
+        mid: cfgPools.mid ? 'config.pools' : '座位推导',
+        cheap: cfgPools.cheap ? 'config.pools' : '座位推导',
+        multimodal: cfgPools.multimodal ? 'config.pools' : '座位推导',
+        coords: stampPools,
+      },
+      '[omd/mcp] stamp 池来源 — 标 config.pools 的档位**不经过座位链**, 座位覆盖对它无效',
+    );
     const planFilters: Array<(p: ConductorPlan) => ConductorPlan> = [
       (p) => {
         const { plan, pruned } = prunePass(p);
