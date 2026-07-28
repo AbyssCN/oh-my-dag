@@ -84,8 +84,9 @@ const NODE_CLASS: Record<string, NodeClass> = {
 
 /**
  * 首选 coord (provider:modelId) 按分类 (D-19 分配表, owner 2026-07-24 定):
- * **2026-07-29 owner 重派: 主力整体切 DeepSeek 官网 API** —— mimo token-plan 已烧完、codex 429、
- * kimi 计费周期用尽、Go 桶不可靠, 四条 flat-sub/预付渠道同时失效, 摊销序暂时无对象可排。
+ * **2026-07-29 owner 重派: 文本主力整体切 DeepSeek 官网 API** —— mimo token-plan 已烧完、
+ * codex 429、kimi 计费周期用尽, 预付/订阅渠道大面积失效, 文本侧的摊销序暂时无对象可排。
+ * (**opencode-go 订阅仍在**, 只是不再承文本主力; 多模态轴仍走它 —— 见 config.pools.multimodal。)
  *   - 大脑簇 (decomposer/judge_synth) + 校验 (verify) = deepseek-v4-pro
  *   - 干活 (worker) + dream + reduce = deepseek-v4-flash (量在这里, 且 worker 档已降 low)
  * ⚠ 两条代价, 恢复渠道后应回退: ① **verify 不再跨家族** (INV-3 的跨模型对抗失效 —— 判和证同一个族,
