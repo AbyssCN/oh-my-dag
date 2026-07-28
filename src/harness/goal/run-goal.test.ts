@@ -31,17 +31,26 @@ function cfg(dag: Partial<ExecutorDagConfig> = {}, extra: Partial<RunGoalConfig>
 describe('runGoal — INV-GOAL-1 全自主 (阶段间零人工介入)', () => {
   test('complex 档: research → spec → execute 一次跑完, 每阶段留结论', async () => {
     const seen: string[] = [];
+    let researchGroundTruth: string | undefined;
+    let agentCall = 0;
     const r = await runGoal('给 omd 加一个自主 goal 引擎', {
       ...cfg({
-        researchRunner: async () => {
+        researchRunner: async (i) => {
           seen.push('research');
+          researchGroundTruth = i.groundTruth;
           return { text: '研究终稿', usage: { in: 1, out: 1 }, sources: ['https://a.example'], reportPath: '/tmp/r.md' };
         },
         agentRunner: async ({ prompt }) => {
+          // 第一次 = 仓内勘察 (只读), 第二次 = spec 起草
+          if (agentCall++ === 0) {
+            seen.push('survey');
+            expect(prompt).toContain('只读不改');
+            return { text: 'src/harness/executor-dag.ts:497 — map 节点已有运行时展开', usage: { in: 1, out: 1 } };
+          }
           seen.push('spec');
-          // spec-author 卡的骨架进了 prompt (卡真被用上, 不是空喊)
-          expect(prompt).toContain('## 契约 (Contracts)');
-          expect(prompt).toContain('研究终稿'); // 证据真喂进去
+          expect(prompt).toContain('## 契约 (Contracts)'); // 卡骨架真被用上
+          expect(prompt).toContain('研究终稿'); // 外部证据喂进去
+          expect(prompt).toContain('executor-dag.ts:497'); // 仓内事实也喂进去
           return { text: '# SDD\n...', usage: { in: 1, out: 1 }, filesTouched: ['docs/plan/2026-07-28-给-omd-加一个自主-goal-引擎.md'] };
         },
       }),
@@ -52,9 +61,13 @@ describe('runGoal — INV-GOAL-1 全自主 (阶段间零人工介入)', () => {
         return okIterate();
       }) as never,
     });
-    expect(seen).toEqual(['research', 'spec', 'execute']); // 阶段序固定, 中间没有人
+    expect(seen).toEqual(['survey', 'research', 'spec', 'execute']); // 阶段序固定, 中间没有人
+    // research 的 leaf 是 inproc 看不见仓库 —— 仓内事实只能这么当锚点喂进去
+    expect(researchGroundTruth).toContain('executor-dag.ts:497');
+    expect(r.repoContext).toContain('executor-dag.ts:497');
     expect(r.stages.map((s) => `${s.stage}:${s.status}`)).toEqual([
       'classify:done',
+      'survey:done',
       'research:done',
       'spec:done',
       'execute:done',
@@ -188,5 +201,67 @@ describe('goalSlug', () => {
     expect(goalSlug('Add A New Thing!')).toBe('add-a-new-thing');
     expect(goalSlug('!!!')).toBe('goal');
     expect(goalSlug('x'.repeat(80))).toHaveLength(48);
+  });
+});
+
+// ── 仓内勘察 (survey): research 的 leaf 是 inproc 看不见仓库, agent 反过来有全套工具没 web。
+// 这一站就是把两边接上 —— 少了它, research 是在不知道"仓里已有什么"的前提下去查外面。
+describe('runGoal — survey 仓内勘察 (inproc 研究与仓库的接点)', () => {
+  test('无 agentRunner → survey skipped, 且 spec 明写"未勘察"禁凭印象', async () => {
+    // agentRunner 缺席时 spec 阶段也不会跑, 故直接看结果与 research 的 groundTruth
+    let gt: string | undefined = 'sentinel';
+    const r = await runGoal('g', {
+      ...cfg({
+        researchRunner: async (i) => {
+          gt = i.groundTruth;
+          return { text: 't', usage: { in: 1, out: 1 }, sources: ['https://x'] };
+        },
+      }),
+      _classify: async () => 'complex',
+    });
+    expect(r.stages.find((s) => s.stage === 'survey')!.status).toBe('skipped');
+    expect(r.repoContext).toBe('');
+    expect(gt).toBeUndefined(); // 没勘察就别塞空锚点
+  });
+
+  test('survey 空输出 → failed 留痕 (不当成"仓里什么都没有")', async () => {
+    const r = await runGoal('g', {
+      ...cfg({ agentRunner: async () => ({ text: '   ', usage: { in: 1, out: 1 } }) }),
+      _classify: async () => 'complex',
+    });
+    expect(r.stages.find((s) => s.stage === 'survey')!.status).toBe('failed');
+  });
+
+  test('survey 抛错 → 不断流程, 后续阶段照跑', async () => {
+    let ran = false;
+    const r = await runGoal('g', {
+      ...cfg({
+        agentRunner: async () => {
+          throw new Error('勘察崩了');
+        },
+        researchRunner: async () => {
+          ran = true;
+          return { text: 't', usage: { in: 1, out: 1 }, sources: ['https://x'] };
+        },
+      }),
+      _classify: async () => 'complex',
+    });
+    expect(r.stages.find((s) => s.stage === 'survey')!.summary).toContain('勘察崩了');
+    expect(ran).toBe(true);
+  });
+
+  test('simple 档不勘察 (做法已定的活不值一次读仓)', async () => {
+    let called = false;
+    const r = await runGoal('g', {
+      ...cfg({
+        agentRunner: async () => {
+          called = true;
+          return { text: 'x', usage: { in: 1, out: 1 } };
+        },
+      }),
+      _classify: async () => 'simple',
+    });
+    expect(called).toBe(false);
+    expect(r.stages.find((s) => s.stage === 'survey')).toBeUndefined();
   });
 });

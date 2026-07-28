@@ -36,6 +36,7 @@ export function summarizeGoal(r: RunGoalResult): string {
     `tier: ${r.tier} · ${r.converged ? '收敛' : '未收敛'} · ${r.rounds} 轮`,
     ...r.stages.map((s) => `  [${s.status}] ${s.stage} — ${s.summary}`),
   ];
+  if (r.repoContext) lines.push(`仓内事实: ${r.repoContext.split('\n').length} 行`);
   if (r.specPath) lines.push(`spec: ${r.specPath}`);
   if (r.sources.length) lines.push(`来源 (${r.sources.length}): ${r.sources.slice(0, 5).join(', ')}`);
   if (r.reusedNodes.length) lines.push(`修复轮复用: ${r.reusedNodes.length} 节点`);

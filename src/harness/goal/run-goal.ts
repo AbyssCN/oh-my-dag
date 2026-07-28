@@ -20,7 +20,7 @@ import { logger } from '../logger';
 /** D-5 轻重路由: simple = 直接 Execute→Verify→Accept; complex = 全 research→spec→execute。 */
 export type GoalTier = 'simple' | 'complex';
 
-export type GoalStageName = 'classify' | 'research' | 'spec' | 'execute';
+export type GoalStageName = 'classify' | 'survey' | 'research' | 'spec' | 'execute';
 
 export interface GoalStage {
   stage: GoalStageName;
@@ -57,6 +57,8 @@ export interface RunGoalResult {
   specPath?: string;
   /** research 阶段真抓到正文的 URL (INV-GOAL-2 证据面)。 */
   sources: string[];
+  /** 仓内勘察结论 (survey 阶段产出; 跳过则空串)。 */
+  repoContext: string;
   /** execute 阶段是否收敛 (judge 判过)。 */
   converged: boolean;
   /** execute 阶段实跑轮数。 */
@@ -124,17 +126,52 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   const sources: string[] = [];
   let specPath: string | undefined;
   let evidence = '';
+  let repoContext = '';
 
   // ── S0/S-classify: 轻重路由 (D-5) ────────────────────────────────
   const tier = config.tier ?? (await (config._classify ?? ((g: string) => classifyGoal(g, config)))(goal));
   stages.push({ stage: 'classify', status: 'done', summary: `tier=${tier}` });
 
   if (tier === 'complex') {
+    // ── S0.5 Survey (仓内勘察): **agent 节点只读跑一趟仓库**, 产出当 research 的锚点 + spec 的仓内事实。
+    //
+    // 为什么必须有这一站: research 节点是 inproc 扇出 (无工具, 只能读喂给它的语料), agent 节点反过来
+    // (有全套读写工具, 无 web)。两边能力互补但**互相看不见** —— 少了这一步, research 就是在不知道
+    // "我们仓里已经有什么"的前提下去查外面, 查回来的东西没法跟既有实现对齐, spec 也就只能凭空写。
+    // 图级组合本来就能表达 (agent 读仓 → research → agent 改码), 这里是把它固化进自主管线。
+    if (config.dag.agentRunner) {
+      try {
+        const r = await config.dag.agentRunner({
+          prompt: [
+            '你是仓内勘察员。**只读不改**: 不要动任何文件, 不要跑会改状态的命令。',
+            `目标: ${goal}`,
+            '任务: 找出这个目标在**本仓**里的落点与既有实现 —— 相关模块/文件、已有的同类机制、',
+            '会被影响的接缝、以及仓内已经定过的相关约定 (契约/SDD/注释里的裁决)。',
+            '输出: 每条一行 `file:line — 事实`; 找不到相关实现就明说"仓内无既有实现", 不要编。',
+            '这份结论会当作事实锚喂给后续的外部调研与契约起草 —— 编造的一行会污染整条链。',
+          ].join('\n'),
+          model: config.dag.agentLeafModel ?? config.dag.leafModel,
+        });
+        repoContext = r.text.trim();
+        stages.push({
+          stage: 'survey',
+          status: repoContext ? 'done' : 'failed',
+          summary: repoContext ? `${repoContext.split('\n').length} 行仓内事实` : 'survey 空输出',
+        });
+      } catch (err) {
+        stages.push({ stage: 'survey', status: 'failed', summary: `survey 抛错: ${String(err).slice(0, 200)}` });
+      }
+    } else {
+      stages.push({ stage: 'survey', status: 'skipped', summary: '无 agentRunner → 无仓内事实' });
+    }
+
     // ── S1 Research: 真 web (D-6)。无 runner = 没有 web 能力 → 跳过并留痕, 不假装研究过。
     if (config.dag.researchRunner) {
       try {
         const r = await config.dag.researchRunner({
           question: goal,
+          // 仓内勘察结论当事实锚 (research 的 leaf 是 inproc, 看不见仓库 —— 只能这么喂进去)。
+          ...(repoContext ? { groundTruth: repoContext } : {}),
           rounds: config.researchRounds ?? 1,
         });
         sources.push(...r.sources);
@@ -169,6 +206,11 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
         tpl?.body ?? '把目标结晶成一份可执行的 SDD 契约。',
         '',
         `## 目标\n${goal}`,
+        // 两个证据源分开标: 仓内事实是"我们已经有什么", 研究证据是"外面怎么做" —— 混在一起
+        // 会让起草者分不清哪条能直接落地、哪条要先适配。
+        repoContext
+          ? `\n## 仓内事实 (只读勘察, file:line)\n${repoContext}`
+          : '\n## 仓内事实\n(未勘察 — 任何关于"仓里已有什么"的断言都必须进「未决」段, 不许凭印象写)',
         evidence ? `\n## 研究证据 (真 web, 来源见下)\n${evidence}\n\n来源:\n${sources.map((u) => `- ${u}`).join('\n')}` : '\n## 研究证据\n(本次无外部证据 — 只能依据仓内事实; 任何需要外部事实支撑的决策必须进「未决」段)',
         `\n## 落盘路径 (写到这里)\n${path}`,
       ].join('\n');
@@ -207,7 +249,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
     exec = await iterate(task, { ...config.dag, maxRounds: config.maxRounds ?? 2 });
   } catch (err) {
     stages.push({ stage: 'execute', status: 'failed', summary: `execute 抛错: ${String(err).slice(0, 200)}` });
-    return { goal, tier, stages, ...(specPath ? { specPath } : {}), sources, converged: false, rounds: 0, reusedNodes: [] };
+    return { goal, tier, stages, ...(specPath ? { specPath } : {}), sources, repoContext, converged: false, rounds: 0, reusedNodes: [] };
   }
   // 复用面取**最后一轮** (INV-GOAL-3 问的是"修复轮复用了多少", 首轮恒 0)。
   const reusedNodes = exec.finalRound?.result?.reusedNodes ?? [];
@@ -224,6 +266,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
     stages,
     ...(specPath ? { specPath } : {}),
     sources,
+    repoContext,
     converged: exec.converged,
     rounds: roundCount,
     reusedNodes,
