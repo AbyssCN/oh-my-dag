@@ -65,6 +65,10 @@ export interface ResearchLeafInput {
   k?: number;
   /** second-pass 轮数上限 (**有界内环** — INV-GOAL-4: 节点内环必须有界)。 */
   rounds?: number;
+  /** 镜头分解: 缺省/true = conductor 按问题自适应出镜头; false = 固定档 (省一次分解调用)。 */
+  council?: boolean;
+  /** 深档: 种子 query 作者化 (3-4 个互补角度各自检索) + provider 池全并行去重。默认关。 */
+  deep?: boolean;
 }
 export interface ResearchLeafResult {
   /** 研究终稿正文 (进下游节点的 fan-in)。 */
