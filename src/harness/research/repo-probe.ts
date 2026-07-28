@@ -16,7 +16,7 @@ import { logger } from '../logger';
 export interface RepoHit {
   /** 仓相对路径 (含行号锚, 形如 src/x.ts:42)。 */
   path: string;
-  /** 命中行原文 (已按 maxCharsPerHit 截断)。 */
+  /** 命中行原文 + 上下文 (换行分隔, 已按 maxCharsPerHit 截断)。 */
   text: string;
 }
 
@@ -32,7 +32,15 @@ export interface RepoProbeOpts {
   maxHitsPerQuery?: number;
   /** 单轮总命中上限 (跨 query)。默认 40 —— 语料增长必须有闸, 同 web 腿的 probeCrawl。 */
   maxHitsTotal?: number;
-  /** 单条命中字符上限。默认 400 (一行代码 + 上下文足够)。 */
+  /**
+   * 每条命中前后各带几行上下文。默认 2。
+   *
+   * 为什么不是 0: 裸一行 `import { X } from '...'` 只回答了"这里用了 X", 回答不了缺口真正问的
+   * "**怎么**用的" —— 而那正是仓内腿存在的理由。反过来也别开太大: 一条 import 周围的 ±5 行
+   * 是纯噪声。最优值是 eval 该测的曲线, 不是这里能拍的。
+   */
+  contextLines?: number;
+  /** 单条命中 (含上下文) 字符上限。默认 1200 —— 对齐 web 腿每源 12k 的量级差 (10×, 不是 30×)。 */
   maxCharsPerHit?: number;
   /** 注入式 spawn (测试替身)。默认 Bun.spawnSync。 */
   _spawn?: (argv: string[], opts: { cwd: string }) => { stdout: string; exitCode: number };
@@ -48,11 +56,14 @@ function runQuery(query: string, opts: RepoProbeOpts): RepoHit[] {
   const spawn = opts._spawn ?? defaultSpawn;
   const perFile = opts.maxHitsPerFile ?? 2;
   const perQuery = opts.maxHitsPerQuery ?? 16;
-  const maxChars = opts.maxCharsPerHit ?? 400;
+  const maxChars = opts.maxCharsPerHit ?? 1200;
+  const ctx = Math.max(0, opts.contextLines ?? 2);
   // -F 字面串 (查询串永远不当正则/元字符解释) · -n 行号 · -r 递归 · -m = **每文件**上限 · 跳噪声目录。
+  // -A/-B 上下文: ugrep 用 `path:line:text` 标命中行、`path-line-text` 标上下文行, 据此归并。
   const argv = [
     'ugrep', '-F', '-n', '-r', '--no-heading',
     '-m', String(perFile),
+    ...(ctx > 0 ? ['-A', String(ctx), '-B', String(ctx)] : []),
     '--exclude-dir=node_modules', '--exclude-dir=.git', '--exclude-dir=dist',
     '--', query, '.',
   ];
@@ -65,12 +76,37 @@ function runQuery(query: string, opts: RepoProbeOpts): RepoHit[] {
   }
   if (out.exitCode !== 0 && !out.stdout) return []; // exit 1 = 没搜到, 正常
   const hits: RepoHit[] = [];
+  /** 尚未归属的 before 上下文 (path → 行), 等它那条命中出现再合并。 */
+  let pending: { path: string; lines: string[] } | null = null;
   for (const line of out.stdout.split('\n')) {
-    if (hits.length >= perQuery) break;
-    // ugrep --no-heading 输出: path:line:text
-    const m = /^([^:]+):(\d+):(.*)$/.exec(line);
-    if (!m) continue;
-    hits.push({ path: `${m[1]!.replace(/^\.\//, '')}:${m[2]}`, text: (m[3] ?? '').trim().slice(0, maxChars) });
+    // **非贪婪**: 正文里出现 `-12-` 这种串很常见, 贪婪会切到最后一处 → 行号与正文全错位
+    // (2026-07-28 实测: 一条注释里的 "2026-07-28" 把切点吃到了 "28")。
+    const hit = /^(.+?):(\d+):(.*)$/.exec(line);
+    if (hit) {
+      if (hits.length >= perQuery) break;
+      const path = hit[1]!.replace(/^\.\//, '');
+      const before = pending && pending.path === path ? pending.lines : [];
+      pending = null;
+      const body = [...before, (hit[3] ?? '').trim()].filter(Boolean).join('\n');
+      hits.push({ path: `${path}:${hit[2]}`, text: body.slice(0, maxChars) });
+      continue;
+    }
+    const ctxLine = /^(.+?)-(\d+)-(.*)$/.exec(line);
+    if (!ctxLine) continue; // 块间的 '--' 分隔行等
+    const path = ctxLine[1]!.replace(/^\.\//, '');
+    const text = (ctxLine[3] ?? '').trim();
+    if (!text) continue;
+    const last = hits.at(-1);
+    // **同文件才归并**: 不加这个判据, B 文件的 before 上下文会挂到 A 文件的命中上
+    // (2026-07-28 实测复现: 一条命中的尾巴接着另一个文件的 import 行)。
+    if (last && last.path.startsWith(`${path}:`)) {
+      if (last.text.length < maxChars) last.text = `${last.text}\n${text}`.slice(0, maxChars);
+      continue;
+    }
+    // 属于下一条命中的 before 上下文 (只留最近 ctx 行)
+    if (!pending || pending.path !== path) pending = { path, lines: [] };
+    pending.lines.push(text);
+    if (pending.lines.length > ctx) pending.lines.shift();
   }
   return hits;
 }
