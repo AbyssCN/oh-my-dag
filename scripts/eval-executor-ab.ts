@@ -29,6 +29,7 @@ import { modelFamily } from '../src/model/channels';
 import { rotateFamilies } from '../src/model/family-rotate';
 import { onTruncation } from '../src/model/truncation';
 import { createDebugFixture, inspectDiff, type DebugFixture } from '../src/eval/tasks/debug-planted';
+import { createDistantBugFixture, wholeSuite } from '../src/eval/tasks/hard';
 import {
   checkConstraints,
   constraintsBlock,
@@ -40,14 +41,15 @@ import {
 const SOL = 'openai-codex:gpt-5.6-sol'; // conductor (两臂同一个, 且 plan 共用 → 完全不是变量)
 const MIMO_PRO = 'xiaomi-token-plan-ams:mimo-v2.5-pro';
 const MIMO = 'xiaomi-token-plan-ams:mimo-v2.5';
-/** opencode-go 的 worker 档池 (Nick 的问题: 这些"要 worker 级但不要 SOTA"的座位值不值一个订阅)。 */
-const GO_WORKER_POOL = [
-  'opencode-go:deepseek-v4-flash',
-  'opencode-go:glm-5.2',
-  'opencode-go:qwen3.7-max',
-  'opencode-go:minimax-m3',
-  'opencode-go:kimi-k3',
-];
+const KIMI = 'kimi-coding:k3';
+/**
+ * **能真正驱动 agent leaf 的座位池** (2026-07-28 实测收窄):
+ * pi agent session 与我们自己的 gateway 是**两套栈** —— 全部 opencode-go 座位在 agent leaf 里
+ * 返回 0-token empty-done (沙箱内外皆然, 换 kimi-coding 同族立刻正常), `deepseek:*` 同样空。
+ * 所以工具循环这条线上今天只有: mimo 两档 + kimi-coding + gpt-codex。
+ * → "用 go 的便宜模型跑代码"在栈修好前是空中楼阁, 这条比 eval 结论本身更要紧。
+ */
+const AGENT_CAPABLE_POOL = [MIMO_PRO, KIMI, MIMO];
 
 interface Arm {
   name: string;
@@ -62,16 +64,16 @@ const ARMS: Arm[] = [
     seats: (ids) => Object.fromEntries(ids.map((id) => [id, MIMO_PRO])),
   },
   {
-    name: 'B-go-single',
-    note: 'worker 换成 opencode-go 单座 (ds-flash) —— 换栈但仍粘同一模型, 隔离"go 的 worker 档强不强"',
-    seats: (ids) => Object.fromEntries(ids.map((id) => [id, 'opencode-go:deepseek-v4-flash'])),
+    name: 'B-kimi-sticky',
+    note: '全走 kimi-coding 单座 —— 换家族但同样粘死, 隔离"家族差"与"发散"两件事',
+    seats: (ids) => Object.fromEntries(ids.map((id) => [id, KIMI])),
   },
   {
-    name: 'C-go-diverse',
-    note: 'worker 逐节点轮不同家族 —— 发散最大, 但每换一族缓存全 miss',
+    name: 'C-diverse',
+    note: '逐节点轮 mimo-pro/kimi/mimo —— 发散最大, 但每换一族缓存全 miss',
     seats: (ids) => {
-      const models = rotateFamilies(GO_WORKER_POOL, ids.length);
-      return Object.fromEntries(ids.map((id, i) => [id, models[i] ?? GO_WORKER_POOL[0]!]));
+      const models = rotateFamilies(AGENT_CAPABLE_POOL, ids.length);
+      return Object.fromEntries(ids.map((id, i) => [id, models[i] ?? AGENT_CAPABLE_POOL[0]!]));
     },
   },
 ];
@@ -79,7 +81,8 @@ const ARMS: Arm[] = [
 const argv = process.argv.slice(2);
 const repsIdx = argv.indexOf('--reps');
 const REPS = repsIdx >= 0 ? Number(argv[repsIdx + 1]) : 2;
-const OUT = '/tmp/eval-executor-ab';
+const HARD = argv.includes('--hard'); // H2 共享根因陷阱 + H3 全量 oracle (简单档三臂全满分, 无区分度)
+const OUT = HARD ? '/tmp/eval-executor-ab-hard' : '/tmp/eval-executor-ab';
 const log = (s: string): void => void process.stderr.write(s + '\n');
 
 const truncs: string[] = [];
@@ -149,9 +152,17 @@ for (let rep = 0; rep < REPS; rep++) {
     let fx: DebugFixture | undefined;
     const t0 = Date.now();
     try {
-      fx = await createDebugFixture(); // 每次新种 —— 上一轮改过的文件不能带进来
+      // 硬档: 因在 channels 的后缀剥离, 症状同时落在 family-rotate 与 channels ——
+      // 在症状处打特例能弄绿 scoped 测试但根因还在, 只有全量 oracle 戳得穿。
+      fx = (HARD ? await createDistantBugFixture() : await createDebugFixture()) as DebugFixture;
       const res: ExecutorDagResult = await runExecutorDagWithPlan(planWithSeats(sharedPlan, arm), dagCfg(fx.root, MIMO));
-      const { tscClean, pass } = await oracle(fx.root, TEST_PATH);
+      // 硬档判决 = 全量 1151 测试 + tsc (局部弄绿当场现形); 简单档只跑 scoped。
+      const { tscClean, pass } = HARD
+        ? await (async () => {
+            const s2 = await wholeSuite(fx!.root);
+            return { tscClean: s2.tscClean, pass: s2.green ? 1 : s2.pass / Math.max(1, s2.pass + s2.fail) };
+          })()
+        : await oracle(fx.root, TEST_PATH);
       const diff = await inspectDiff(fx);
       const fam = new Map<string, number>();
       for (const l of Object.values(res.results)) if (l.model) fam.set(modelFamily(l.model), (fam.get(modelFamily(l.model)) ?? 0) + 1);
