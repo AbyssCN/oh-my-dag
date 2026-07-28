@@ -29,6 +29,8 @@ import { createDagTools, type DagEngine } from './tools/dag-tools';
 import { createMemoryTools } from './tools/memory';
 import { createPathfinderTools, type PathfinderToolDeps } from './tools/pathfinder';
 import { createDagResearchTool, type ResearchFanout } from './tools/research';
+import { createGoalTool } from './tools/goal';
+import { runGoal } from '../harness/goal/run-goal';
 import { createFleetTools, type SpawnFn } from './tools/fleet';
 import { effectiveFanout, resolveProviderCap } from '../harness/fleet';
 import { createRunsTools } from './tools/runs';
@@ -499,6 +501,8 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     // continuity 恒开 (D-3): checkpoint 落 <cwd>/.omd/continuity/<runId>/, dag_run_plan resume 可续。
     ...createDagTools({ engine, runRegistry, cwd, defaultConfig: buildDefaultConfig, continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd }, hudMirror, ledger }),
     createDagResearchTool(researchFanout),
+    // 自主 goal 环 (P1 / INV-GOAL-1): buildDefaultConfig 传 thunk = 每次调用重解座位 (INV-MODEL-3)。
+    createGoalTool({ runGoal, runRegistry, cwd, buildConfig: buildDefaultConfig }),
     ...createMemoryTools({ memory, cwd }),
     // pathfinder 六件套 (TUI-less 决策地图: map/add/tickets/rule/deliver/prefetch, pull 式回流)。
     ...createPathfinderTools({
