@@ -25,21 +25,19 @@ import type { VerifierFn } from './verifier';
 import type { AgentLeafRunner, CommandLeafRunner } from './leaf-runners';
 import { callModel, type ModelRequest, type ModelResponse } from '../model';
 import { logger } from './logger';
+import { tryResolveSeatModel } from '../model/role-models';
 import { m } from './i18n';
 
 /**
- * D-8: conductor 模型的**默认 = runtime 模型坐标** (env OMD_RUNTIME_PROVIDER:OMD_RUNTIME_MODEL),
- * 而非单独的廉价 conductor —— 廉价 conductor 从散文重推 = 交接税, runtime 模型有全上下文更该当分解器。
- * 解析序 (已设的 env 覆盖优先): OMD_ITER_CONDUCTOR_MODEL > runtime 坐标 > '' (caller 须显式给)。
- * 返回 '' = 环境未配 → caller 若真需 conductor (escalation / conductor 路径) 会自行报「conductorModel 必填」。
+ * D-8: conductor 模型的默认 = **'conductor' 座位** (单一 resolver, INV-MODEL-1)。
+ *
+ * 座位链自带这里原有的两层: OMD_ITER_CONDUCTOR_MODEL 是 env 层别名, OMD_RUNTIME_PROVIDER/MODEL 是
+ * defaultModel 层 —— 只是现在 **config.models 压过它们** (P0 前反着, 于是改了 config 也不生效)。
+ * D-8 的本意 (runtime 模型有全上下文, 更该当分解器) 由「config 没配 conductor 时回落 runtime 坐标」保住。
+ * 返回 '' = 一层都没配 → caller 若真需 conductor 会自行报「conductorModel 必填」。
  */
 export function resolveConductorDefault(): string {
-  const override = process.env.OMD_ITER_CONDUCTOR_MODEL?.trim();
-  if (override) return override;
-  const provider = process.env.OMD_RUNTIME_PROVIDER?.trim();
-  const model = process.env.OMD_RUNTIME_MODEL?.trim();
-  if (provider && model) return `${provider}:${model}`;
-  return '';
+  return tryResolveSeatModel('conductor')?.model ?? '';
 }
 
 export interface ExecuteExtensionOpts {
