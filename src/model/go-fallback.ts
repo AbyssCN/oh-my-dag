@@ -4,8 +4,17 @@
 //   但 GO 端点偶发 context 溢出 / 429 / 5xx → 整轮 fanout 或 verifier 失败。回退到官方 deepseek-v4-pro
 //   (有钱、稳) 保证产出。只对 `opencode-go:` 坐标生效, 其它模型失败照常抛 (别吞真错误)。
 
-/** GO 失败时的官方回退坐标 (deepseek 官方账户, 实测稳)。 */
-export const GO_FALLBACK_MODEL = 'deepseek:deepseek-v4-pro';
+/**
+ * GO 失败时的回退坐标: env OMD_GO_FALLBACK_MODEL → 单一可配 defaultModel (INV-MODEL-2)。
+ * **无出厂坐标** —— 没配就没有回退, 原错照抛 (胜过静默打到一个没余额的账户上再炸一次)。
+ */
+export function goFallbackModel(
+  env: Record<string, string | undefined> = process.env,
+): string | undefined {
+  return env.OMD_GO_FALLBACK_MODEL?.trim() || resolveDefaultModel({ env });
+}
+
+import { resolveDefaultModel } from './role-models';
 
 /** model 是否走 GO 订阅端点 (= 该挂回退)。 */
 export function isGoModel(model: string): boolean {
@@ -19,12 +28,12 @@ export function isGoModel(model: string): boolean {
 export async function withGoFallback<T>(
   model: string,
   run: (m: string) => Promise<T>,
-  fallbackModel: string = GO_FALLBACK_MODEL,
+  fallbackModel: string | undefined = goFallbackModel(),
 ): Promise<T> {
   try {
     return await run(model);
   } catch (e) {
-    if (isGoModel(model)) return run(fallbackModel);
+    if (isGoModel(model) && fallbackModel) return run(fallbackModel);
     throw e;
   }
 }

@@ -24,12 +24,15 @@ import {
   type ExecutorDagConfig,
   type ExecutorDagResult,
 } from '../executor-dag';
+import type { PriorExec } from '../executor-dag-types';
 import {
   runFixpoint,
   DEFAULT_MAX_ROUNDS,
   type FixpointResult,
   type FixpointJudge,
 } from './fixpoint';
+import { merkleFingerprints } from '../plan-passes/semantic-key';
+import type { FixpointJournal } from '../continuity/types';
 import { makeLlmConvergenceJudge } from './llm-judge';
 import { escalationProviderReady } from '../verifier';
 import { logger } from '../logger';
@@ -49,8 +52,18 @@ export interface IterateConfig extends ExecutorDagConfig {
   escalateAfterRound?: number;
   /** 注入式收敛 judge (默认 = LLM judge)。测试 / 自定义评判传这个。 */
   judge?: FixpointJudge<ExecutorDagResult>;
-  /** 注入式 runDag (默认 runExecutorDag)。测试传 fake, 不碰 live 模型。 */
-  _runDag?: (task: string, config: ExecutorDagConfig) => Promise<ExecutorDagResult>;
+  /**
+   * 注入式 runDag (默认 runExecutorDag)。测试传 fake, 不碰 live 模型。
+   * 第三参 prior = 上一轮的 {plan, results} (D-21 跨轮复用)。
+   */
+  _runDag?: (task: string, config: ExecutorDagConfig, prior?: PriorExec) => Promise<ExecutorDagResult>;
+  /**
+   * 跨轮复用开关 (默认开)。关掉 = 每轮从零重跑 (A/B 对照用)。
+   *
+   * 为什么默认开: 修复轮的图和上一轮 80% 同构 —— 不带 prior 就是整图重跑, "只重跑污染节点"
+   * 这句话在代码里根本没落地过 (P1 前 iterate 调 runDag 从不传 prior, 复用只在轮内 escalation 生效)。
+   */
+  crossRoundReuse?: boolean;
 }
 
 export type IterateResult = FixpointResult<ExecutorDagResult>;
@@ -78,7 +91,10 @@ export async function iterateExecutorDag(task: string, config: IterateConfig): P
   if (!config.leafModel) throw new Error('iterate: leafModel 必填 (无硬默认)');
 
   const runDag = config._runDag ?? runExecutorDag;
-  const judge =
+  // D-4 毒集: 被 judge 点名拒绝过的节点**语义指纹**。累积不撤 —— 指纹含前驱闭包, 所以一个毒指纹
+  // 恒等于"这个节点在这个上游语境下产出被拒过", 这件事不会随轮次变假 (上游变了指纹本身就变了)。
+  const poisoned = new Set<string>();
+  const baseJudge =
     config.judge ??
     makeLlmConvergenceJudge<ExecutorDagResult>({
       judgeModel: config.judgeModel || config.leafModel,
@@ -87,14 +103,107 @@ export async function iterateExecutorDag(task: string, config: IterateConfig): P
       // 内层 DAG 整轮总算"跑完了"(单 leaf 失败在 summary 里); roundRunner 抛才是整轮崩 (fixpoint 接住)。
       extract: (r) => ({ status: 'done', summary: summarizeDagResult(r) }),
     });
+
+  /**
+   * D-4b 铸票: judge 点的是**本轮 id**, 当场用本轮 plan 翻成语义指纹再入毒集。
+   * 必须在这里翻 —— 下一轮 conductor 重画后那些 id 就没有意义了 (且指纹刻意不含 id)。
+   *
+   * **fail-closed (D-4e)**: 判了不收敛却拿不到**任何一张可解析的票** (没点名 / 点的全是图里不存在的
+   * id) = 对"哪里错了"零信息, 而"整轮被拒"是已知的 → 本轮产出整体不进下一轮的复用源, 退回 P1 之前的
+   * 整图重跑基线。不这么兜的话, 一个偷懒的 judge 就把上面这道闸悄悄绕过去了 —— 而它恰恰只在生产
+   * (弱 judge 模型漏填字段) 才发作。
+   *
+   * 这里**不**往毒集里塞本轮全部指纹: 毒集累积不撤, 只该装有证据的条目, 不装猜测。
+   */
+  const judge: FixpointJudge<ExecutorDagResult> = async (result, round) => {
+    const verdict = await baseJudge(result, round);
+    if (verdict.converged) {
+      distrustLastRound = false;
+      persistJournal(round, true);
+      return verdict;
+    }
+    const fps = merkleFingerprints(result.plan);
+    const minted: string[] = [];
+    const ghosts: string[] = [];
+    for (const id of verdict.rejectedNodes ?? []) {
+      const fp = fps.get(id);
+      if (fp) {
+        poisoned.add(fp);
+        minted.push(id);
+      } else ghosts.push(id);
+    }
+    if (ghosts.length) {
+      logger.warn({ round, ghosts }, '[omd/iterate] judge 点名了图中不存在的节点 id → 丢弃 (D-4)');
+    }
+    distrustLastRound = minted.length === 0;
+    if (distrustLastRound) {
+      logger.warn(
+        { round, named: verdict.rejectedNodes?.length ?? 0 },
+        '[omd/iterate] judge 判未收敛但无一张可解析的票 → 本轮产出整体不复用 (D-4 fail-closed)',
+      );
+    } else {
+      logger.info({ round, rejected: minted, poisonedTotal: poisoned.size }, '[omd/iterate] D-4 铸票: 被拒节点指纹入毒集');
+    }
+    persistJournal(round, false, verdict.failureReason);
+    return verdict;
+  };
+
   const maxRounds = config.maxRounds ?? DEFAULT_MAX_ROUNDS;
   const escalateAfterRound = config.escalateAfterRound ?? 2;
 
   // 剥出: onComplete (本层每轮显式调, 防 _runDag=runExecutorDag 双调) +
   //       verifier/maxEscalations (executor-dag 内部 verify+升级循环 → 本层关闭它, 防 double-loop:
   //       本层 fixpoint judge 已是唯一 verify 循环)。conductorEscalationModel 留作本层轮级升级用。
-  const { onComplete, verifier: _verifier, maxEscalations: _maxEsc, conductorEscalationModel, ...dagConfig } = config;
+  const { onComplete, verifier: _verifier, maxEscalations: _maxEsc, conductorEscalationModel, crossRoundReuse, ...dagConfig } = config;
   const canEscalate = escalationProviderReady(conductorEscalationModel);
+  // 跨轮复用: 上一轮的 {plan, results} 喂下一轮 → 语义没变的节点零 LLM 注入上轮输出 (D-21)。
+  // 毒集在**调用当刻**才拼进去 (不是上轮结束时快照): judge 是在 roundRunner 返回之后才跑的,
+  // 上轮的票要等 judge 铸完才存在。提前快照 = 永远晚一轮, 毒集等于白加。
+  let lastRound: { plan: ExecutorDagResult['plan']; results: ExecutorDagResult['results'] } | undefined;
+  // judge 拒了整轮却说不出哪个节点错 → 这一轮的产出整体不可信, 下一轮不拿它当复用源 (见 judge 包装)。
+  let distrustLastRound = false;
+  const priorArg = (): PriorExec | undefined =>
+    lastRound && !distrustLastRound ? { ...lastRound, ...(poisoned.size ? { poisoned } : {}) } : undefined;
+
+  // ── INV-P2-6 外层持久化 ──────────────────────────────────────────────────
+  // `_dag.json` + per-node checkpoint 只覆盖**一张内层图**; 轮次/复用源/毒集是外层的, 此前全在
+  // 进程内 —— 崩一次就从第 1 轮起、毒集清零 (被拒产出复活)。这里把它们写进 `_fixpoint.json`。
+  // 写在**每轮 judge 判完之后**: 死在一轮中途 → 该轮无 journal, resume 重跑该轮 (其内部绿节点
+  // 仍由 per-node checkpoint 兜住)。全程 fail-open (manager 内部吞异常), 持久化挂了不断迭代。
+  const continuity = config.continuity;
+  const persistJournal = (round: number, converged: boolean, reason?: string): void => {
+    if (!continuity) return;
+    continuity.manager.writeFixpointJournal(continuity.runId, {
+      runId: continuity.runId,
+      completedRounds: round,
+      poisoned: [...poisoned],
+      ...(lastRound ? { lastRound: lastRound as unknown as FixpointJournal['lastRound'] } : {}),
+      distrustLastRound,
+      ...(reason ? { prevReason: reason } : {}),
+      converged,
+      updatedAt: new Date().toISOString(),
+      schemaVersion: 1,
+    });
+  };
+
+  // 恢复: 只在调用方明确要 resume 时读 (与 per-node resume 同一个开关, 不新增 API 面)。
+  const journal = continuity?.resume ? continuity.manager.loadFixpointJournal(continuity.runId) : null;
+  let startRound = 1;
+  let seedReason = '';
+  if (journal) {
+    for (const fp of journal.poisoned) poisoned.add(fp);
+    // crossRoundReuse:false 是 A/B 对照口子 —— 恢复时也照样不给复用源, 否则对照组被静默破坏。
+    if (journal.lastRound && crossRoundReuse !== false) {
+      lastRound = journal.lastRound as unknown as typeof lastRound;
+    }
+    distrustLastRound = journal.distrustLastRound ?? false;
+    seedReason = journal.prevReason ?? '';
+    startRound = journal.completedRounds + 1;
+    logger.info(
+      { runId: continuity!.runId, startRound, poisoned: poisoned.size, hadPrior: !!lastRound, converged: journal.converged },
+      '[omd/iterate] 外层恢复: 接回轮次/毒集/复用源 (INV-P2-6)',
+    );
+  }
 
   return runFixpoint<ExecutorDagResult>(
     task,
@@ -110,11 +219,18 @@ export async function iterateExecutorDag(task: string, config: IterateConfig): P
           '[omd/iterate] 未收敛多轮 → conductor 轮级升级重画',
         );
       }
-      const res = await runDag(roundInput, roundConfig);
+      const res = await runDag(roundInput, roundConfig, priorArg());
+      if (res.reusedNodes?.length) {
+        logger.info(
+          { round, reused: res.reusedNodes.length, total: Object.keys(res.results).length },
+          '[omd/iterate] 跨轮复用命中 → 只重跑污染节点 (D-21)',
+        );
+      }
+      if (crossRoundReuse !== false) lastRound = { plan: res.plan, results: res.results };
       if (onComplete) await onComplete(res);
       return res;
     },
     judge,
-    { maxRounds },
+    { maxRounds, startRound, ...(seedReason ? { seedReason } : {}) },
   );
 }

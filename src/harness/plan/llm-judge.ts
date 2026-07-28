@@ -17,6 +17,8 @@ export const CONVERGENCE_VERDICT_SCHEMA = z.object({
   converged: z.coerce.boolean(),
   score: z.coerce.number().min(0).max(1),
   failureReason: z.coerce.string().optional(),
+  /** D-4 DeltaTicket (P1.5): 产出有问题的节点 id (本轮 id 空间); 绑定层翻成指纹毒集禁止复用。 */
+  rejectedNodes: z.array(z.coerce.string()).optional(),
 });
 
 /** 默认收敛阈值 (进 prompt 作 LLM 判收敛的 bar)。 */
@@ -55,10 +57,14 @@ ${task}
 ${summary}
 ---
 
-输出 JSON 三字段:
+输出 JSON 四字段:
 - converged (bool): 是否已达收敛标准 (不动点到达)。这是裁决, 必须与你的 score 一致。
 - score (0..1): 质量分
-- failureReason (string, converged=false 时必填): 缺哪条明确要求 / 哪里捏造 + 下一轮该怎么改 (机制级, 不是"不够好")`;
+- failureReason (string, converged=false 时必填): 缺哪条明确要求 / 哪里捏造 + 下一轮该怎么改 (机制级, 不是"不够好")
+- rejectedNodes (string[], converged=false 时必填): **点名产出有问题的节点 id** —— 上面结果里每段
+  \`### <id> [状态]\` 开头的那个 id, 逐字照抄。判据是"这段产出本身错了/缺了/是编的", 不是"这个节点无关"。
+  **宁可多点名, 不可漏点名**: 没被点名的节点, 它这一轮的产出会被原样当作已批准结果复用进下一轮 ——
+  漏点一个, 下一轮就在坏结果上继续盖。拿不准的点上。整轮都不可用就把所有 id 都列上。`;
 }
 
 /**
@@ -83,10 +89,18 @@ export function makeLlmConvergenceJudge<R>(opts: LlmJudgeOpts<R>): FixpointJudge
       maxTokens: 4096, // 700 会被推理族的 reasoning 吃光 → 空裁决
       responseSchema: CONVERGENCE_VERDICT_SCHEMA,
     });
-    const v = r.parsed as { converged: boolean; score: number; failureReason?: string } | undefined;
+    const v = r.parsed as
+      | { converged: boolean; score: number; failureReason?: string; rejectedNodes?: string[] }
+      | undefined;
     if (!v) return { converged: false, score: 0, failureReason: 'judge 未结构化输出' };
     // 信 judge 的 converged 布尔 (threshold 已进 prompt); score 仅记录, 不二次覆盖判断。
     const converged = v.converged === true;
-    return { converged, score: v.score, failureReason: converged ? undefined : v.failureReason ?? '未达收敛标准' };
+    return {
+      converged,
+      score: v.score,
+      failureReason: converged ? undefined : v.failureReason ?? '未达收敛标准',
+      // D-4: 收敛了就没有毒 (产出全批准); 未收敛才带票。judge 漏填 = 空票, 由绑定层记账 (不静默当"全批准")。
+      ...(converged || !v.rejectedNodes?.length ? {} : { rejectedNodes: v.rejectedNodes }),
+    };
   };
 }

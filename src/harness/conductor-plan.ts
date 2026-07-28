@@ -81,9 +81,17 @@ const PlanNode = z
     output_path: z.string().optional(),
     output_schema: z.record(z.string(), z.unknown()).optional(),
     // 'map' (U1) = 运行时动态扇出节点 (STUDY Q3): lister → per-element 展开成 applicative 子节点。
-    executor: z.enum(['agent', 'leaf', 'command', 'map']).optional(),
+    executor: z.enum(['agent', 'leaf', 'command', 'map', 'research']).optional(),
     /** executor='command' 时要跑的确定性 CLI (如 'codegraph trace X Y')。经 fail-closed 闸 + 白名单。 */
     command: z.string().optional(),
+    /**
+     * executor='research' 的旋钮 (D-6)。**rounds 是节点内环的界** (INV-GOAL-4: 环封节点内且必须有界) ——
+     * schema 层就钳到 1..4, 不给"跑到满意为止"留口子。
+     */
+    research: z.object({
+      k: z.number().int().min(1).max(12).optional().describe('镜头数上限 (广度)'),
+      rounds: z.number().int().min(1).max(4).optional().describe('second-pass 轮数上限 (内环的界)'),
+    }).optional(),
     /** executor='map' 时的动态扇出规格 (与 executor:'map' 互为 required, superRefine 校验)。 */
     map: MapSpec.optional(),
     // ── SDD 0013 S1 约束选择节点 (与自由 node 并存, SEL-5 BC) ──
@@ -118,9 +126,19 @@ const PlanNode = z
     template: z.string().optional(),
     model: z.string().optional(),
     leaf: z.record(z.string(), z.unknown()).optional(),
-    on_failure: z.enum(['retry', 'complete-then-retry', 'escalate', 'pause']).optional(),
-    max_retry: z.number().int().optional(),
-    fallback: z.enum(['human', 'reactive']).optional(),
+    /**
+     * L0 节点级重试上限 (INV-P2-2)。省略/0 = 不重试 (默认, 零回归)。每次重试把**上一次的失败原因**
+     * 注入 prompt (不是原样重放); 用尽仍 failed → 该节点 failed, 由上层 (verifier 升级 / 外层 fixpoint) 接手。
+     *
+     * 这是本 schema 里**唯一**的节点级恢复旋钮 (D-11, 2026-07-28): 原先并列的 `on_failure`
+     * (retry/complete-then-retry/escalate/pause) 与 `fallback` (human/reactive) 全部**零引擎消费者**却
+     * 进语义指纹 —— 手写 plan 显式写了会被静默忽略。二选一时删掉它们而非实装:
+     * escalate 的语义 (便宜→强逐级试) `escalation` **原语**已经做了 (primitive-registry), 不重复造;
+     * pause/human 属 HITL, 已定推迟 (D-8)。判据承 `agent` 字段被排出指纹时立的那条: 不消费就不该在键里。
+     *
+     * INV-GOAL-4 有界: 不允许"无限"这个取值。
+     */
+    max_retry: z.number().int().min(0).max(3).optional(),
     // ── SDD v2 (dag-engine-fusion-refactor) 调度/分配元数据 ──
     /**
      * D-7v2 quorum: 依赖失败时本节点的执行判据。'all' = 任一依赖 failed/skipped → 本节点级联
@@ -242,7 +260,7 @@ export function conductorSystemPrompt(
     // ── 纪律段: full = 弱 conductor 教练全量; lean = 一行版 (强模型自判, 只留不可自推导的钩子) ──
     ...(lean
       ? [
-          'Split on natural boundaries; give correctness-critical nodes a postcondition (GWT). Prefer',
+          'Split on natural boundaries; route correctness-critical output through a checking node. Prefer',
           '"command" nodes over fresh generation where indexed infra already answers. depends_on only for',
           'real data dependencies. Executors may be weak models: phrase each leaf goal to PRODUCE its',
           'deliverable content (never "execute step X"), and size nodes so a weak executor stays coherent.',
@@ -253,7 +271,7 @@ export function conductorSystemPrompt(
     '- Research-parallel: independent investigations become sibling nodes (no deps between them).',
     '- Synthesis-central: a node that consumes several siblings declares them in depends_on.',
     '- Impl-dispatch: distinct skills / agents / artifacts become distinct nodes.',
-    '- Verify-independent: where correctness matters, give the node a postcondition (GWT).',
+    '- Verify-independent: where correctness matters, add a checking node ("command" oracle or a judge/verify\n  primitive) downstream — a node that actually RUNS, not a declared condition.',
     '',
     'Design law (what to create, how to wire — applies to EVERY node):',
     '- No consumer → do NOT build: never emit a node whose output nothing downstream consumes and that',
@@ -268,7 +286,7 @@ export function conductorSystemPrompt(
     '- For any multi-node task, add a terminal synthesis/review node that consumes the siblings and is',
     '  charged to CATCH OMISSIONS: gaps, contradictions, uncovered sub-parts of the original task.',
     '- Do NOT assume a leaf returns complete output. Where a leaf could plausibly drop a required part,',
-    '  give it a postcondition (GWT) naming that part, OR route its output through a checking node.',
+    '  route its output through a checking node that names that part.',
     '- A task is only decomposed correctly when the union of leaf goals covers the WHOLE ask — verify',
     '  that coverage as you plan, and add the missing node rather than hoping a leaf over-delivers.',
     '',
@@ -319,7 +337,12 @@ export function conductorSystemPrompt(
     '  can stay cheap, because they are now transcribing a decision instead of making one.',
     '',
     'Executor kind per node (field "executor"):',
-    '- "leaf"  = a single-shot model call, NO tools. Use for generation / research / judgement / drafting.',
+    '- "leaf"  = a single-shot model call, NO tools. Use for generation / judgement / drafting from what',
+    '            you already have. A leaf has NO web access — it answers from model memory.',
+    '- "research" = real WEB research (search → fetch → distill → multi-lens synthesis), bounded by',
+    '            field "research".rounds (1..4, default 1). Use whenever the node needs CURRENT external',
+    '            facts (docs, APIs, prior art, "what do people do about X"). A node that fails to fetch a',
+    '            single real page FAILS — so never use it for questions answerable from the repo alone.',
     '- "agent" = a tool-using sub-agent (read / edit / write / bash). Use ONLY for nodes that must touch',
     '            files or run commands; scope each agent node to ONE atomic artifact (e.g. a single file).',
     '- "command" = run a deterministic CLI (field "command", e.g. "codegraph trace A B") with NO model.',
@@ -329,7 +352,7 @@ export function conductorSystemPrompt(
     '- "map"  = runtime dynamic fan-out (field "map"): a lister enumerates an array AT RUNTIME, then a',
     '            per-element template spawns one child per item. Use when the work-list is unknown until run',
     '            time (see the "Runtime work-list" section below). This is the ONLY node kind that expands itself.',
-    'Default to "leaf" unless the node needs tools/CLI. A non-map node never spawns DAG sub-nodes itself.',
+    'Default to "leaf" unless the node needs tools/CLI/web. A non-map node never spawns DAG sub-nodes itself.',
     'HARD RULE — file producers MUST be "agent": if a node CREATES or MODIFIES any file (its job is to',
     '  implement/write/生成 a path like src/x.ts), it MUST set executor:"agent" AND output_type:"file"',
     '  (set output_path too). A "leaf" CANNOT touch the filesystem — a leaf told to write a file silently',
@@ -439,15 +462,18 @@ export function conductorSystemPrompt(
     '',
     'Output STRICTLY one JSON object, no prose, matching:',
     '{ "name": string, "description"?: string, "outputs"?: string[],',
-    // "skill" 从广告 schema 撤下 (2026-07-25 ponytail): 执行层无 skill 加载器, 该字段只会渲染成一行
+    // "skill" 从明示 schema 撤下 (2026-07-25 ponytail): 执行层无 skill 加载器, 该字段只会渲染成一行
     // 无载荷文字 — 别邀请 conductor 相信一个不存在的通道。zod 层保留容忍 (daemon 遗产/旧 plan 兼容)。
-    // "agent" 2026-07-26 从广告 schema 撤下 (同 skill 的理由): executor-dag 零消费者 —— 分流只看
+    // "agent" 2026-07-26 从明示 schema 撤下 (同 skill 的理由): executor-dag 零消费者 —— 分流只看
     // executor/model; 而 conductor 每轮重掷这个字段, 反而系统性打空 D-21 跨轮语义复用
     // (semantic-key 为此把它排除在指纹外)。zod 层仍容忍旧 plan。
     '  "nodes": { "<node_id>": { "goal"?: string, "persona"?: string, "template"?: string,',
     '    "args"?: object, "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map", "command"?: string, "creative"?: boolean,',
     '    "map"?: { "lister": object, "over": string, "itemVar": string, "keyBy"?: string, "template": object, "maxItems"?: number },',
-    '    "postcondition"?: { "method"?: "structural"|"code"|"llm-judge"|"human", "threshold"?: number },',
+    // "postcondition" 2026-07-28 从明示 schema 撤下 (同 skill/agent 的理由, 空旋钮全仓扫): 全仓零消费者,
+    // 引擎从不检查它。明示它比明示 skill 更坏 —— 那是在请 conductor 给"正确性敏感的节点"写验证条件,
+    // 写完没人看: 是验证的样子而不是验证, 还会把它从**真的会跑**的 command / judge 节点那条路上引开。
+    // zod 层仍容忍旧 plan; 指纹已排除 (semantic-key)。
     '    "output_type"?: "structured"|"file"|"git"|"none", "output_path"?: string,',
     '    "requires"?: "all"|"any"|number, "cluster"?: string, "tier"?: "strong"|"mid"|"cheap", "attach_media"?: boolean,',
     '    "kind"?: "primitive", "primitive"?: "parallel"|"pipeline"|"loop-until"|"verify"|"judge"|"discovery"|"iterate"|"tournament"|"router"|"race"|"escalation"|"saga"|"escape-hatch", "params"?: object } } }',

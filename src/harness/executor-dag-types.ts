@@ -2,7 +2,7 @@ import type { ContentPart, ModelUsage } from '../model/gateway';
 import type { AgentTemplate } from './agent-templates';
 import type { ConductorPlan } from './conductor-plan';
 import type { CavemanLevel } from './caveman';
-import type { AgentLeafRunner, CommandLeafRunner, LeafModelRouter } from './leaf-runners';
+import type { AgentLeafRunner, CommandLeafRunner, LeafModelRouter, ResearchLeafRunner } from './leaf-runners';
 import type { CheckpointManager } from './continuity/checkpoint-manager';
 import type { VerifierFn } from './verifier';
 import type { FaninSummaryConfig } from './fanin-summary';
@@ -24,10 +24,10 @@ export type GenerateFn = (req: {
 export interface ExecutorDagConfig {
   /** conductor 模型 'provider:modelId' (规划用, 我们=mimo:mimo-v2.5-pro)。**必填, 无硬默认。** */
   conductorModel: string;
-  /** inproc leaf 模型 'provider:modelId' (生成/判断单发)。**必填, 无硬默认。** 我们: 烧 MiMo 沉没额度时=mimo:mimo-v2.5, 耗尽=deepseek:deepseek-v4-flash。 */
+  /** inproc leaf 模型 'provider:modelId' (生成/判断单发)。**必填, 无硬默认** —— 装配层由 'leaf' 座位解析。 */
   leafModel: string;
   /**
-   * agent leaf 模型 (带工具改文件)。省略 = 同 leafModel。我们=deepseek:deepseek-v4-flash
+   * agent leaf 模型 (带工具改文件)。省略 = 同 leafModel; 装配层由 'agent' 座位解析。
    * (MiMo agentic flaky + 无 cache, 不适合工具循环 → agent leaf 走 DeepSeek; inproc 才用 MiMo 烧额度)。
    */
   agentLeafModel?: string;
@@ -147,6 +147,12 @@ export interface ExecutorDagConfig {
    */
   commandRunner?: CommandLeafRunner;
   /**
+   * research-kind leaf 的执行器 (真 web 检索 + 有界内环, D-6)。给则 `executor:'research'` 节点经此跑。
+   * 省略 → research 节点失败 —— **刻意不降级成 inproc**: 无 web 的 leaf 只会拿模型记忆编引用,
+   * 那是假 grounded (与"写文件节点无 agentRunner → 失败"同一条纪律: 拒绝静默假成功)。
+   */
+  researchRunner?: ResearchLeafRunner;
+  /**
    * oracle 命令 (如 "bun run typecheck && bun test"): plan 中 command 与之等价的节点
    * 在执行前被确定性过滤 (空白规范化后精确匹配, 最小无害边重连)。
    * 选型理由: oracle 已跑过该命令, conductor 重规划出等价节点 = 浪费 token + 时间。
@@ -207,8 +213,8 @@ export interface LeafResult {
    * 与 resume 的 `skipped?: boolean` (已绿跳过, status 仍 'done') 是两个正交概念, 不混用。
    */
   status: 'done' | 'failed' | 'skipped';
-  /** 实际执行模式: inproc 单发 / agent 带工具 / command CLI / map 动态扇出 (U1) / primitive 约束选择 (SDD 0013)。 */
-  kind: 'inproc' | 'agent' | 'command' | 'map' | 'primitive';
+  /** 实际执行模式: inproc 单发 / agent 带工具 / command CLI / map 动态扇出 (U1) / primitive 约束选择 (SDD 0013) / research 真 web (D-6)。 */
+  kind: 'inproc' | 'agent' | 'command' | 'map' | 'primitive' | 'research';
   /** 实际所用模型坐标 (inproc/agent leaf; command 无模型 → undefined)。bandit reward 归因 + 审计用。 */
   model?: string;
   output: string;
@@ -218,10 +224,34 @@ export interface LeafResult {
   skipped?: boolean;
   /** agent leaf 触碰的文件 (来自 AgentLeafResult.filesTouched, checkpoint 产物锚)。 */
   filesTouched?: string[];
+  /**
+   * research leaf 真抓到正文的 URL (INV-GOAL-2 证据面)。零来源的 research 节点在引擎里已判 failed,
+   * 故 done 的 research 结果这里恒非空 —— 下游 gate/审计据此判"这份研究是否真落地过网页"。
+   */
+  sources?: string[];
   /** agent leaf 的工具调用次数 (来自 AgentLeafResult.toolCalls; prompt 档的路由效率读数)。 */
   toolCalls?: number;
   /** 早期心跳闸判停摆 (issue #5): provider 挂起, 未等满硬超时即中止 → settle 记 failureKind='stall'。 */
   stalled?: boolean;
+}
+
+/**
+ * 上一轮执行的 {plan, results} —— D-21 跨轮语义复用的输入。
+ * 轮内 escalation 与外层 fixpoint (iterateExecutorDag) 共用同一形状。
+ */
+export interface PriorExec {
+  plan: ConductorPlan;
+  results: Record<string, LeafResult>;
+  /**
+   * D-4b 指纹毒集: 被 review/judge 点名拒绝过的节点**语义指纹**。命中者不进复用池。
+   *
+   * 为什么锚在指纹而非节点 id: 外层每轮把 plan 扔掉让 conductor 重画, id 跨轮无意义 (且指纹刻意
+   * 不含 id)。票在**铸它的那一轮的 id 空间**里生成, 当场翻成指纹再往下一轮带 —— 见 plan/iterate。
+   *
+   * 没有它, 被拒节点 (status 仍是 'done' —— 拒的是质量不是状态) 会被指纹匹配原样复用进修复轮,
+   * 修复轮能否修对就全看 conductor 从散文里猜没猜中该改哪个节点。
+   */
+  poisoned?: ReadonlySet<string>;
 }
 
 export interface ExecutorDagResult {
@@ -242,6 +272,11 @@ export interface ExecutorDagResult {
     /** 校验器用量 (跨所有 verify 轮累加)。仅 config.verifier 存在时有值。 */
     verifier?: ModelUsage;
   };
+  /**
+   * D-21 跨轮语义复用命中的节点 id (本轮零 LLM 直接注入上轮输出)。空 = 无复用 (首轮 / 全变了)。
+   * INV-GOAL-3 的"可证"面: 修复轮跑完看这个数, 而不是猜"应该复用了吧"。
+   */
+  reusedNodes?: string[];
   /** 校验结果 (仅 config.verifier 存在时有值)。escalated=是否触发过 conductor 升级。 */
   verification?: {
     pass: boolean;

@@ -2,62 +2,45 @@
  * src/model/role-models.ts — the role→model resolver + unified config center (D60 · omd config seam).
  *
  * callModel 的 provider registry 已是 config-driven (provider:modelId 经注册解析);
- * 这一层补"哪个 daemon 角色用哪个 model"的绑定 + 多模态池 + 用户自定 API。每个角色解析到
- * 一个坐标, 4 级优先:
+ * 这一层补"哪个座位用哪个 model"的绑定 + 多模态池。**全库唯一的模型解析权威**
+ * ({@link resolveSeatModel}, P0 2026-07-28 INV-MODEL-1) —— 座位 = 14 个 DAG 节点 + continuity/review
+ * 两个后台角色, 一条链:
  *
- *   in-memory override (CLI/test, 非持久)
- *     → file (.omd/config.json, 持久 + 跨进程, TUI /config·/setup 写它)
- *       → per-role env (OMD_PLAN_MODEL / OMD_CONDUCTOR_MODEL / …)
- *         → 出厂默认
+ *   explicit (调用方显式)
+ *     → in-memory override (CLI/test, 非持久)
+ *       → config.models[seat] (持久 + 跨进程, TUI /config·/setup·omd_set_role 写它)
+ *         → env: OMD_<SEAT>_MODEL, 其后历史别名 OMD_ITER_* / OMD_CG_*
+ *           → config.autoAssigned[seat] (omd models auto 按渠道经济学落盘)
+ *             → **单一可配** config.defaultModel / OMD_DEFAULT_MODEL / OMD_RUNTIME_*
+ *               → 抛 SeatUnresolvedError (INV-MODEL-5: 无出厂坐标, 计划期响亮失败)
  *
  * config.json schema v2 (向后兼容 v1):
- *   { version, models: {role→coord}, multimodalPool: [coord…], apis: [{id,baseUrl,keyEnv?,multimodal?}] }
- * multimodalPool = 多模态 leaf 的候选池 (从 provider 池里挑有多模态能力的, 如 mimo/gemini/kimi 多选);
- * apis = 用户自定 OpenAI-兼容端点, boot 时 registerProvidersFromConfig 注册进 callModel registry。
+ *   { version, models: {seat→coord}, defaultModel, multimodalPool: [coord…], pools, autoAssigned }
+ * multimodalPool = 多模态 leaf 的候选池 (从 provider 池里挑有多模态能力的, 如 mimo/gemini/kimi 多选)。
  *
- * 文件层 = omd 既有落盘约定 (.omd/* cwd-相对, 经 OMD_CONFIG_PATH 覆盖)。daemon 与 TUI 同从
- * repo root 跑, 共享同一 .omd/config.json; 下次 resolve 时 mtime 重读即捡到改动, 不重启。
+ * 文件路径经 {@link configPath} 确定性发现 (INV-MODEL-4: 向上找 .omd/config.json → repo 根,
+ * OMD_CONFIG_PATH 显式覆盖), 不再是 cwd-相对 —— server 与脚本从不同目录起也读同一份。
+ * 下次 resolve 时 mtime 重读即捡到改动, 不重启 (INV-MODEL-3)。
  * INV: 永不返硬编码 URL — 只返 'provider' / 'provider:modelId' 坐标, callModel 经注册 provider 解析。
  */
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, parse, resolve } from 'node:path';
 import { logger } from '../logger';
 
 /**
  * Daemon roles that drive callModel. (plan 审议座舱角色已随 plan-extension 撤除, 2026-07-25 owner 裁决。)
  * continuity = session 交接 checkpoint 蒸馏 (opt-in, 便宜档);刻意不进 MODEL_ROLES —— 它是后台
  * 可选角色, 走 env/config/默认解析即可, 不进默认 config UI / 起跑坐席告警面 (避免未用该功能者被噪音)。
+ *
+ * **角色 = 座位的子集** (INV-MODEL-1, P0 2026-07-28): 角色路与节点路自此是同一个 resolver
+ * ({@link resolveSeatModel}) 的两个门面, 不再是两条会跑出不同答案的链。
  */
 export type ModelRole = 'conductor' | 'leaf' | 'verifier' | 'dream' | 'continuity' | 'review';
 
 /** UX 顺序 (config 列表 / onboard 页展示): 执行 → 校验 → 做梦。 */
 export const MODEL_ROLES: readonly ModelRole[] = ['conductor', 'leaf', 'verifier', 'dream'];
 
-interface RoleSpec {
-  /** per-role env override (在 file 之下、出厂默认之上)。 */
-  envVar: string;
-  /** 出厂默认坐标 ('provider' 或 'provider:modelId')。 */
-  fallback: string;
-}
-
-const ROLE_SPECS: Record<ModelRole, RoleSpec> = {
-  // Conductor 分解。默认 mimo (provider 裸名 → provider defaultModel)。
-  conductor: { envVar: 'OMD_CONDUCTOR_MODEL', fallback: 'mimo' },
-  // Leaf 执行 = 单发廉价档。
-  leaf: { envVar: 'OMD_LEAF_MODEL', fallback: 'mimo' },
-  // Verifier 跨模型校验 = 对抗式审查。默认 'deepseek' (≠ mimo conductor/leaf, 故意跨模型避盲点)。
-  verifier: { envVar: 'OMD_VERIFIER_MODEL', fallback: 'deepseek' },
-  // Dream consolidation = 抽取推理。默认 'deepseek'。
-  dream: { envVar: 'OMD_DREAM_MODEL', fallback: 'deepseek' },
-  // Session 交接 checkpoint 蒸馏 = 便宜单发档 (同 dream 家族);opt-in。
-  continuity: { envVar: 'OMD_CONTINUITY_MODEL', fallback: 'deepseek' },
-  // Review find 层 = 对抗审查读码找 bug;review 自成体系, verify 用 OMD_REVIEW_VERIFY_MODEL 覆盖/回落 find
-  // (不碰引擎 verifier 角色, 避免渗透)。opt-in 不进 UI; fallback 裸 provider (→ defaultModel),
-  // 无凭证经 roleModelWithFallback 顺延 — 不假设用户 key。
-  review: { envVar: 'OMD_REVIEW_MODEL', fallback: 'deepseek' },
-};
-
-export type RoleModelSource = 'override' | 'file' | 'env' | 'default';
+export type RoleModelSource = SeatModelSource;
 
 /**
  * Per-model 定义: 坐标后半 id + 能力声明。per-model 属性的单一真源已迁到 `~/.pi/agent/models.json`
@@ -78,22 +61,69 @@ export const MAX_TOKENS_DEFAULT = 32_768;
 // ---------------------------------------------------------------------------
 // in-memory override (highest, non-durable: CLI / test).
 // ---------------------------------------------------------------------------
-const overrides = new Map<ModelRole, string>();
+const overrides = new Map<OmdSeat, string>();
 
 // ---------------------------------------------------------------------------
 // file layer — .omd/config.json (cwd-relative; OMD_CONFIG_PATH override).
 // ---------------------------------------------------------------------------
-const DEFAULT_CONFIG_PATH = '.omd/config.json';
+const DEFAULT_CONFIG_REL = '.omd/config.json';
 
-/** Resolved config-file path: OMD_CONFIG_PATH or .omd/config.json (cwd-relative). */
+/** 路径发现缓存 (只缓存**路径**不缓存内容; 内容仍走 fileCache 的 mtime 判定)。 */
+let configPathCache: { cwd: string; env: string | undefined; path: string } | null = null;
+
+/**
+ * **确定性 config 路径** (INV-MODEL-4)。此前是裸 `.omd/config.json` cwd-相对 —— MCP server 从
+ * 一个目录起、dag-* 脚本从另一个目录起, 两边读的是**两份不同的 config**, 于是"我明明改了配置"。
+ *
+ * 解析序 (从 cwd 逐级向上, **走到 repo 边界为止**):
+ *   1. `OMD_CONFIG_PATH` (显式即权威, 相对路径对 cwd 解析成绝对);
+ *   2. 路上第一个**已存在的** `.omd/config.json` (worktree 里跑 = 用 worktree 自己的);
+ *   3. 撞到 repo 根 (`.git`) 就停 → `<root>/.omd/config.json` (还没 init 的仓; init/models auto 写这里);
+ *   4. 压根不在仓里 → 一直走到文件系统根, 都没有则 `<cwd>/.omd/config.json`。
+ *
+ * **在仓内不越过仓边界**是刻意的: 否则一份游离的 `~/.omd/config.json` 会静默劫持每个还没 init
+ * 的项目 —— 那种"配置从哪来的"最难查。
+ *
+ * 返回**绝对路径**, 故 cwd 之后再变也不会读串。cwd/env 变了会重新发现 (键在缓存里)。
+ */
 export function configPath(): string {
-  return process.env.OMD_CONFIG_PATH ?? DEFAULT_CONFIG_PATH;
+  const cwd = process.cwd();
+  const envPath = process.env.OMD_CONFIG_PATH;
+  if (configPathCache && configPathCache.cwd === cwd && configPathCache.env === envPath) {
+    return configPathCache.path;
+  }
+  const path = discoverConfigPath(cwd, envPath);
+  configPathCache = { cwd, env: envPath, path };
+  return path;
+}
+
+function discoverConfigPath(cwd: string, envPath: string | undefined): string {
+  if (envPath?.trim()) {
+    const p = envPath.trim();
+    return isAbsolute(p) ? p : resolve(cwd, p);
+  }
+  const fsRoot = parse(cwd).root;
+  let dir = cwd;
+  for (;;) {
+    if (existsSync(join(dir, DEFAULT_CONFIG_REL))) return join(dir, DEFAULT_CONFIG_REL);
+    // repo 边界: 仓里没 config 就用仓根的位置, **不再往上找别人的**
+    if (existsSync(join(dir, '.git'))) return join(dir, DEFAULT_CONFIG_REL);
+    if (dir === fsRoot) break;
+    dir = dirname(dir);
+  }
+  return join(cwd, DEFAULT_CONFIG_REL);
 }
 
 interface ConfigFile {
   version?: number;
   /** role → 'provider:modelId' coordinate. Absent role = fall to env / default. */
   models?: Record<string, string>;
+  /**
+   * **全库唯一的"没配时用谁"** (INV-MODEL-2, P0 2026-07-28)。此前 14 个节点 + 6 个角色各带一条
+   * 硬编码 deepseek 兜底, 换栈时漏改一条就是跑到一半 402;现在收成这一个可配键。
+   * 仍然**没有出厂值** (owner 锁「不 bake 任何模型」) —— 这里也空 = 座位未配 = 计划期响亮失败。
+   */
+  defaultModel?: string;
   /** 多模态 leaf 候选池 (坐标列表)。 */
   multimodalPool?: string[];
   /**
@@ -145,9 +175,10 @@ function fileModels(path = configPath()): Record<string, string> {
   return m && typeof m === 'object' ? m : {};
 }
 
-/** Drop the mtime cache — test hook + after an out-of-band file write. */
+/** Drop the mtime + 路径发现缓存 — test hook + after an out-of-band file write / chdir。 */
 export function resetConfigCache(): void {
   fileCache = null;
+  configPathCache = null;
 }
 
 /**
@@ -173,18 +204,17 @@ function mutateConfig(mutator: (cfg: ConfigFile) => void, path = configPath()): 
 // role resolution + mutation
 // ---------------------------------------------------------------------------
 
-/** Resolve a role's model coordinate. Priority: override → file → env → default. */
+/**
+ * Resolve a role's model coordinate (座位 resolver 的角色门面)。
+ * Priority: override → file → env → auto → defaultModel。
+ * @throws {SeatUnresolvedError} 座位一层都没配 (INV-MODEL-5 响亮失败)。非致命场景用
+ *   {@link tryResolveSeatModel} 拿 undefined。
+ */
 export function resolveRoleModel(
   role: ModelRole,
   env: Record<string, string | undefined> = process.env,
 ): string {
-  const override = overrides.get(role);
-  if (override) return override;
-  const fromFile = fileModels()[role]?.trim();
-  if (fromFile) return fromFile;
-  const fromEnv = env[ROLE_SPECS[role].envVar]?.trim();
-  if (fromEnv) return fromEnv;
-  return ROLE_SPECS[role].fallback;
+  return resolveSeatModel(role, { env }).model;
 }
 
 /** In-memory (non-durable) override — CLI / test. */
@@ -219,6 +249,7 @@ export function persistRoleModel(role: ModelRole, coord: string, path = configPa
 
 export interface RoleModelEntry {
   role: ModelRole;
+  /** 解析到的坐标; **未配座位 = ''** (展示面不抛, 由 UI 显示"未配")。 */
   resolved: string;
   source: RoleModelSource;
 }
@@ -227,15 +258,9 @@ export interface RoleModelEntry {
 export function listRoleModels(
   env: Record<string, string | undefined> = process.env,
 ): RoleModelEntry[] {
-  const fm = fileModels();
   return MODEL_ROLES.map((role): RoleModelEntry => {
-    const override = overrides.get(role);
-    if (override) return { role, resolved: override, source: 'override' };
-    const f = fm[role]?.trim();
-    if (f) return { role, resolved: f, source: 'file' };
-    const e = env[ROLE_SPECS[role].envVar]?.trim();
-    if (e) return { role, resolved: e, source: 'env' };
-    return { role, resolved: ROLE_SPECS[role].fallback, source: 'default' };
+    const r = tryResolveSeatModel(role, { env });
+    return { role, resolved: r?.model ?? '', source: r?.source ?? 'default' };
   });
 }
 
@@ -276,37 +301,161 @@ export const NODE_TIER: Record<OmdNode, NodeTier> = {
   dream: 'dream',
 };
 /**
- * Per-node hardcoded default coordinates (provider:modelId).
- * These are the canonical fallback when no env/auto-assign/config-file override exists.
- * INV-4 / G-2: regression test snapshots these — change = deliberate, not accidental.
- * Values aligned with actual production usage in harness/research/*.ts and harness/tui.ts.
+ * **全部模型座位** = 14 个 DAG 节点 + 2 个后台角色 (continuity 交接蒸馏 / review find 层)。
+ * 单一 resolver 的唯一键空间 (INV-MODEL-1) —— 起跑自检、config UI、auto-assign 都按这张表遍历,
+ * 加座位只加这一处就不会漏。
  */
-export const NODE_DEFAULT_COORD: Record<OmdNode, string> = {
-  // decomposer — conductor/escalation use deepseek-v4-pro (research-quality default).
-  conductor: 'deepseek:deepseek-v4-pro',
-  escalation: 'deepseek:deepseek-v4-pro',
-  // judge_synth — judge/reason use deepseek-v4-pro; reduce uses cheaper flash (D-14).
-  judge: 'deepseek:deepseek-v4-pro',
-  reason: 'deepseek:deepseek-v4-pro',
-  reduce: 'deepseek:deepseek-v4-flash',
-  // worker — leaf/agent/lens use flash-tier; remaining workers same tier.
-  leaf: 'deepseek:deepseek-v4-flash',
-  agent: 'deepseek:deepseek-v4-flash',
-  lens: 'deepseek:deepseek-v4-flash',
-  expand: 'deepseek:deepseek-v4-flash',
-  distill: 'deepseek:deepseek-v4-flash',
-  overflow: 'deepseek:deepseek-v4-flash',
-  // verify — cross-model ≠ main (INV-3).
-  verifier: 'deepseek',
-  'review-spec': 'deepseek',
-  // dream
-  dream: 'deepseek',
+export type OmdSeat = OmdNode | 'continuity' | 'review';
+
+/** 全部座位 (遍历序 = NODE_TIER 序 + 两个后台角色)。 */
+export const ALL_SEATS: readonly OmdSeat[] = [
+  ...(Object.keys(NODE_TIER) as OmdNode[]),
+  'continuity',
+  'review',
+];
+
+/**
+ * 座位的 **env 别名** —— 历史上并行跑着的那几套解析器 (OMD_ITER_* 的 /iterate·/execute·MCP 引擎座、
+ * OMD_CG_* 的 /cg·/audit 座) 在此收编成同一条链的 env 层别名 (INV-MODEL-1)。
+ *
+ * **别名落在 config.models 之下** 是刻意的: 此前 `resolveEngineModels` 把 OMD_ITER_* 排在 config
+ * 之上, 于是"改了 config.json 却还是老模型"——同一个 conductor 座在两条链上解出两个答案。统一后
+ * 优先序只有一条: override → config.models → env(正名 → 别名) → autoAssigned → defaultModel。
+ */
+const SEAT_ENV_ALIASES: Partial<Record<OmdSeat, readonly string[]>> = {
+  conductor: ['OMD_ITER_CONDUCTOR_MODEL', 'OMD_CG_CONDUCTOR_MODEL'],
+  leaf: ['OMD_ITER_LEAF_MODEL', 'OMD_CG_LEAF_MODEL'],
+  agent: ['OMD_ITER_AGENT_MODEL', 'OMD_CG_AGENT_MODEL'],
+  // 2026-07-28 空旋钮全仓扫: `escalation` 座此前是**纯装饰** —— auto-assign 给它派模型、起跑自检查
+  // 它的凭证, 而引擎读的是 OMD_CONDUCTOR_ESCALATION_MODEL, 谁都没解析过这个座。config 说 X 引擎用
+  // env 的 Y, 正是 INV-MODEL-1 要杀的形态, 在这一个座位上活了下来 (P0 收口时漏的)。
+  // 收法与其它座位一致: 老 env 名降为本座别名, config.models 压过它。
+  escalation: ['OMD_CONDUCTOR_ESCALATION_MODEL'],
+  // `review-spec` 同上, 只是它的正名 env key 恰好就是历史名 (seatEnvKey → OMD_REVIEW_SPEC_MODEL),
+  // 无需别名 —— 缺的只是消费方去解析它 (见 harness/review/run.ts)。
 };
-export interface NodeModelResult {
+
+/** 座位正名 env key: OMD_<SEAT>_MODEL (连字符/点 → 下划线, 对齐既有 OMD_REVIEW_SPEC_MODEL 约定)。 */
+export function seatEnvKey(seat: OmdSeat): string {
+  return `OMD_${seat.toUpperCase().replace(/[.-]/g, '_')}_MODEL`;
+}
+
+export type SeatModelSource = 'explicit' | 'override' | 'file' | 'env' | 'auto' | 'default';
+
+export interface SeatModelResult {
   /** Resolved model coordinate ('provider' or 'provider:modelId'). */
   model: string;
-  /** How the model was resolved. 'default' = hardcoded fallback (unconfigured). */
-  source: 'explicit' | 'file' | 'env' | 'auto' | 'default';
+  /** 解析层。'default' = 单一可配 defaultModel 兜底 (座位本身未配)。 */
+  source: SeatModelSource;
+  /** 命中的具体来源标识 (env key / 'config.models' / 'config.autoAssigned' / 'config.defaultModel')。 */
+  via: string;
+}
+
+/** 向后兼容别名 (老调用方签名不变)。 */
+export type NodeModelResult = SeatModelResult;
+
+/**
+ * 座位一层都没配 —— 计划期响亮失败 (INV-MODEL-5)。
+ * 此前这里是静默落 deepseek: 没 DeepSeek 余额的部署会一路跑到 leaf 调用才 402, 报错还不指名是哪个座。
+ */
+export class SeatUnresolvedError extends Error {
+  constructor(readonly seat: OmdSeat) {
+    super(
+      `[omd/model] 座位 '${seat}' 未配模型 —— 无 config.models['${seat}'] / ${seatEnvKey(seat)} / ` +
+        `config.autoAssigned['${seat}'] / config.defaultModel。` +
+        `修: 跑 \`omd models auto\` (按渠道自动分配) 或 \`omd_set_role ${seat} <provider:model>\`, ` +
+        `或设 config.defaultModel 兜住全部座位。`,
+    );
+    this.name = 'SeatUnresolvedError';
+  }
+}
+
+export interface SeatResolveOpts {
+  /** Caller-provided override (highest priority)。 */
+  explicit?: string;
+  /** auto-assign map 注入 (测试传 {} 走纯链, 不读真 config)。 */
+  autoAssignMap?: Record<string, string>;
+  /** .omd/config.json 的 models 段 (测试注入 hermetic; 默认读 fileModels(configPath()))。 */
+  modelsMap?: Record<string, string>;
+  env?: Record<string, string | undefined>;
+  /** config.json 路径 (测试注入; 默认 configPath())。models / auto / defaultModel 段读它。 */
+  configPath?: string;
+  /** 末级兜底注入 (测试; 默认读 config.defaultModel → OMD_DEFAULT_MODEL → OMD_RUNTIME_*)。 */
+  defaultModel?: string;
+}
+
+/**
+ * **单一可配兜底** (INV-MODEL-2): config.defaultModel → env OMD_DEFAULT_MODEL →
+ * runtime 坐标 OMD_RUNTIME_PROVIDER:OMD_RUNTIME_MODEL (TUI init wizard 写的那对)。
+ * 三处皆空 → undefined = 无出厂硬编码 (owner 锁「不 bake 任何模型」)。
+ */
+export function resolveDefaultModel(
+  opts: { env?: Record<string, string | undefined>; configPath?: string } = {},
+): string | undefined {
+  const env = opts.env ?? process.env;
+  const fromFile = fileConfig(opts.configPath ?? configPath()).defaultModel?.trim();
+  if (fromFile) return fromFile;
+  const fromEnv = env.OMD_DEFAULT_MODEL?.trim();
+  if (fromEnv) return fromEnv;
+  const provider = env.OMD_RUNTIME_PROVIDER?.trim();
+  const model = env.OMD_RUNTIME_MODEL?.trim();
+  return provider && model ? `${provider}:${model}` : undefined;
+}
+
+/** 持久化单一兜底坐标到 .omd/config.json defaultModel 段。 */
+export function persistDefaultModel(coord: string, path = configPath()): void {
+  const c = coord.trim();
+  if (!c) throw new Error('persistDefaultModel: coord required');
+  mutateConfig((cfg) => {
+    cfg.defaultModel = c;
+  }, path);
+}
+
+/**
+ * **唯一的模型解析权威** (INV-MODEL-1)。全部座位 —— DAG 节点 stamp / stampPools / research 的
+ * lens·reason·expand·distill / agent-leaf / 后台角色 —— 都经这一条链, 读同一个 config。
+ *
+ * 优先序: explicit → in-memory override → config.models → env (正名 → 别名) → config.autoAssigned
+ *        → 单一可配 defaultModel。
+ *
+ * 一层都没命中 → undefined (调用方决定是响亮失败还是跳过该功能)。要"解不到就抛"用
+ * {@link resolveSeatModel}。
+ */
+export function tryResolveSeatModel(
+  seat: OmdSeat,
+  opts: SeatResolveOpts = {},
+): SeatModelResult | undefined {
+  const { explicit, autoAssignMap, modelsMap, env = process.env, configPath: cfgPath } = opts;
+  // 1. explicit argument (caller knows best)
+  if (explicit?.trim()) return { model: explicit.trim(), source: 'explicit', via: 'explicit' };
+  // 2. in-memory override (CLI / test, 非持久)
+  const override = overrides.get(seat as ModelRole);
+  if (override?.trim()) return { model: override.trim(), source: 'override', via: 'override' };
+  // 3. .omd/config.json `models` 段 —— 单一手配面。压过 env 与 auto-assign 提案。
+  const fromModels = (modelsMap ?? fileModels(cfgPath))[seat]?.trim();
+  if (fromModels) return { model: fromModels, source: 'file', via: 'config.models' };
+  // 4. env: 正名 OMD_<SEAT>_MODEL, 其后历史别名 (OMD_ITER_* / OMD_CG_*)
+  for (const key of [seatEnvKey(seat), ...(SEAT_ENV_ALIASES[seat] ?? [])]) {
+    const v = env[key]?.trim();
+    if (v) return { model: v, source: 'env', via: key };
+  }
+  // 5. auto-assign (D-19): `omd models auto` 按渠道经济学落盘的 node→coord
+  const fromAuto = (autoAssignMap ?? fileAutoAssigned(cfgPath))[seat]?.trim();
+  if (fromAuto) return { model: fromAuto, source: 'auto', via: 'config.autoAssigned' };
+  // 6. 单一可配兜底 (INV-MODEL-2: 全库仅此一处"没配时用谁", 且无出厂值)
+  const fallback = opts.defaultModel?.trim() || resolveDefaultModel({ env, ...(cfgPath ? { configPath: cfgPath } : {}) });
+  if (fallback) return { model: fallback, source: 'default', via: 'config.defaultModel' };
+  return undefined;
+}
+
+/**
+ * 座位模型解析, 解不到即抛 (INV-MODEL-5 计划期响亮失败)。
+ * @throws {SeatUnresolvedError}
+ */
+export function resolveSeatModel(seat: OmdSeat, opts: SeatResolveOpts = {}): SeatModelResult {
+  const r = tryResolveSeatModel(seat, opts);
+  if (!r) throw new SeatUnresolvedError(seat);
+  return r;
 }
 
 /** 读 .omd/config.json 的 autoAssigned 段 (node→coord)。无/坏 → {} (mtime-cached, 静默)。 */
@@ -390,55 +539,14 @@ export function resolveSeatThinking(
   return best;
 }
 /**
- * Resolve a node's model with full configuration chain.
- * Priority: explicit-arg ?? OMD_<NODE>_MODEL env ?? auto-assign coord ?? hardcoded default.
- *
- * @param node - D-2 node name (e.g. 'conductor', 'leaf', 'review-spec').
- * @param opts.explicit - Caller-provided override (highest priority).
- * @param opts.autoAssignMap - Optional node→coord map from auto-assign (D-19).
- * @param opts.env - Environment to read from (default: process.env).
+ * 节点门面 (老名字, 老签名) —— 实现即 {@link resolveSeatModel}。
+ * @throws {SeatUnresolvedError} 座位一层都没配 (INV-MODEL-5)。
  */
 export function resolveRoleModelConfigured(
-  node: OmdNode,
-  opts: {
-    explicit?: string;
-    autoAssignMap?: Record<string, string>;
-    /** .omd/config.json 的 models 段 (测试注入 hermetic; 默认读 fileModels(configPath))。 */
-    modelsMap?: Record<string, string>;
-    env?: Record<string, string | undefined>;
-    /** config.json 路径 (测试注入; 默认 configPath())。models / auto 段读它。 */
-    configPath?: string;
-  } = {},
+  node: OmdSeat,
+  opts: SeatResolveOpts = {},
 ): NodeModelResult {
-  const { explicit, autoAssignMap, modelsMap, env = process.env, configPath: cfgPath } = opts;
-  // 1. explicit argument (caller knows best)
-  if (explicit?.trim()) {
-    return { model: explicit.trim(), source: 'explicit' };
-  }
-  // 2. .omd/config.json `models` 段 —— 单一手配面 (与角色路 resolveRoleModel 同源, 见文件头优先序
-  //    override→file→env→default)。显式设一次角色→模型, 节点路与角色路自此同解到同一坐标,
-  //    压过 auto-assign 提案 —— 消灭"不同解析器跑出不同步 conductor"。测试传 modelsMap:{} 保 hermetic。
-  const modelsTbl = modelsMap ?? fileModels(cfgPath);
-  const fromModels = modelsTbl[node]?.trim();
-  if (fromModels) {
-    return { model: fromModels, source: 'file' };
-  }
-  // 3. per-node env: OMD_<NODE_UPPER>_MODEL (hyphens + dots → underscore, 对齐既有
-  //    ROLE_ENV_ALLOWLIST 约定 OMD_REVIEW_SPEC_MODEL; 若只转 dots 会成 OMD_REVIEW-SPEC_MODEL 不匹配)
-  const envKey = `OMD_${node.toUpperCase().replace(/[.-]/g, '_')}_MODEL`;
-  const fromEnv = env[envKey]?.trim();
-  if (fromEnv) {
-    return { model: fromEnv, source: 'env' };
-  }
-  // 4. auto-assign (D-19): 显式 param 优先; 未传 param 则读 .omd/config.json 的 autoAssigned 段
-  //    (D-17 一次性落盘, runAutoAssign 写)。测试传 autoAssignMap:{} 走纯链 (不读真 config, 保 hermetic)。
-  const autoMap = autoAssignMap ?? fileAutoAssigned(cfgPath);
-  const fromAuto = autoMap[node]?.trim();
-  if (fromAuto) {
-    return { model: fromAuto, source: 'auto' };
-  }
-  // 5. hardcoded default (D-5 tier classification)
-  return { model: NODE_DEFAULT_COORD[node], source: 'default' };
+  return resolveSeatModel(node, opts);
 }
 // multimodal leaf pool — config.multimodalPool (坐标列表)
 // ---------------------------------------------------------------------------
@@ -484,21 +592,34 @@ export function persistMultimodalPoolPremium(coords: string[], path = configPath
  * 读 .omd/config.json 的显式档位池 (`pools` 段)。每档独立 —— 只配了 cheap 就只覆盖 cheap,
  * 其余仍走座位推导 (调用方以 `?? 座位推导` 兜)。坏值/非坐标条目丢弃 (fail-open)。
  */
+export const POOL_TIERS = ['strong', 'mid', 'cheap', 'multimodal', 'multimodalStrong'] as const;
+export type PoolTier = (typeof POOL_TIERS)[number];
+
+/** 档位正名 env key: `OMD_POOL_<TIER>` (驼峰 → 下划线大写)。逗号分隔多个坐标。 */
+export function poolEnvKey(tier: PoolTier): string {
+  return `OMD_POOL_${tier.replace(/([a-z])([A-Z])/g, '$1_$2').toUpperCase()}`;
+}
+
 export function resolveConfiguredPools(
   path = configPath(),
+  env: Record<string, string | undefined> = process.env,
 ): { strong?: string[]; mid?: string[]; cheap?: string[]; multimodal?: string[]; multimodalStrong?: string[] } {
   const raw = fileConfig(path).pools;
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const fromFile = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
   const clean = (xs: unknown): string[] | undefined => {
-    if (!Array.isArray(xs)) return undefined;
-    const out = [...new Set(xs.filter((x): x is string => typeof x === 'string' && x.includes(':')))];
+    const arr = typeof xs === 'string' ? xs.split(',') : xs;
+    if (!Array.isArray(arr)) return undefined;
+    const out = [...new Set(arr.filter((x): x is string => typeof x === 'string').map((x) => x.trim()).filter((x) => x.includes(':')))];
     return out.length ? out : undefined;
   };
-  return {
-    ...(clean(raw.strong) ? { strong: clean(raw.strong)! } : {}),
-    ...(clean(raw.mid) ? { mid: clean(raw.mid)! } : {}),
-    ...(clean(raw.cheap) ? { cheap: clean(raw.cheap)! } : {}),
-    ...(clean(raw.multimodal) ? { multimodal: clean(raw.multimodal)! } : {}),
-    ...(clean(raw.multimodalStrong) ? { multimodalStrong: clean(raw.multimodalStrong)! } : {}),
-  };
+  const out: Record<string, string[]> = {};
+  for (const tier of POOL_TIERS) {
+    // env **压过** config.pools —— 与座位那条 env 别名的方向相反, 是刻意的:
+    // 座位的 env 是**历史别名** (OMD_ITER_* 等), 当年它们压过 config 造成"改了 config 还是老模型",
+    // 所以 P0 把它们降到 config 之下。这里的 OMD_POOL_* 是**新造的临时覆盖口**, 没有历史包袱,
+    // 语义就该是"这次进程按我说的来" —— 否则配置文件永远配着, 临时覆盖就永远不生效, 等于白加。
+    const picked = clean(env[poolEnvKey(tier)]) ?? clean(fromFile[tier]);
+    if (picked) out[tier] = picked;
+  }
+  return out;
 }

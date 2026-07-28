@@ -93,7 +93,7 @@ describe('S5 conductor prompt: SDD v2 字段 + 前端 motif (G-9)', () => {
     }
   });
 
-  test('schema 块不再广告 "skill" (执行层无加载器, 防回归重新邀请无载荷字段)', () => {
+  test('schema 块不再明示 "skill" (执行层无加载器, 防回归重新邀请无载荷字段)', () => {
     for (const p of [full, lean]) expect(p).not.toContain('"skill"?');
   });
 

@@ -14,7 +14,8 @@ const fakeVerify = async (dimTexts: { dimension: string; text: string }[]): Prom
     verdict: 'CONFIRMED', reason: 'fake',
   }));
 
-const BASE = { diff: 'diff\n+const y=1;', scope: 'x.ts', gate: 'G2' as const, outPath: OUT };
+// model 显式给 = hermetic: 契约映射测试不该依赖本机 .omd/config.json 的 review 座位。
+const BASE = { diff: 'diff\n+const y=1;', scope: 'x.ts', gate: 'G2' as const, outPath: OUT, model: 'fake:review' };
 
 describe('runReviewSingle 契约映射', () => {
   test('单 agent 输出 → findings + verifyFindings → verified + 落盘', async () => {

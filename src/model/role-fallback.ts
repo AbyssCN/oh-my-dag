@@ -10,7 +10,7 @@
  * 全不可达 → 原样返首选, 让下游按既有语义 fail-loud (dream INV-1) 或降级 (judge L3)。
  *
  * ⚠ 判据 = **凭证维度** (piHasCredential + 自有 registry), 不是 assertModelResolvable ——
- * 后者 key-blind: pi-ai 目录认识 deepseek 全坐标即便无 key (实测 deepseek:deepseek-v4-flash/pro
+ * 后者 key-blind: pi-ai 目录认识某 provider 的全坐标即便无 key (实测 deepseek 的 flash/pro 全坐标
  * 都"可解析"), 只有裸 'deepseek' 才 throw。若以可解析为闸, judge/review 的**全坐标** deepseek
  * 无 key 时不会兜底 → 仍在 call 时抛无凭证。故必须问"有没有凭证"而非"认不认识"。
  * OAuth provider (kimi-coding, 凭证走 auth.json 非 env key) 由 piHasCredential 正确纳入 → 不误判。
@@ -19,7 +19,7 @@ import { assertModelResolvable } from './index';
 import { getProvider, listProviders } from './providers';
 import { piHasCredential } from './pi-transport';
 import { channelInCooldown } from './provider-health';
-import { MODEL_ROLES, resolveRoleModel } from './role-models';
+import { ALL_SEATS, type OmdSeat, tryResolveSeatModel, resolveConfiguredPools } from './role-models';
 import { logger } from '../logger';
 
 /** 坐标前半 = provider 名 ('deepseek:x' → 'deepseek'; 裸名原样)。 */
@@ -96,23 +96,119 @@ export function roleModelWithFallback(
   return preferred; // 全不可达: 原样返, 下游 fail-loud (dream INV-1) / 降级 (judge L3)
 }
 
+/** 坐标可用性 (凭证 + 未熔断) —— 导出供起跑自检 / 计划期硬闸复用。 */
+export function coordUsable(coord: string, env: Record<string, string | undefined> = process.env): boolean {
+  return usable(coord, env);
+}
+
+/** 一个座位的自检结论。 */
+export type SeatStatus = 'ok' | 'unset' | 'no-credential';
+export interface SeatCheck {
+  seat: OmdSeat;
+  /** 解析到的坐标; status='unset' 时无。 */
+  coord?: string;
+  status: SeatStatus;
+}
+
 /**
- * 起跑坐席检查 (issue #6): bootstrapModelRuntime 注册完 provider 后调一次 —— 解析全部 daemon 角色的
- * 默认坐标, **无可用凭证**的角色在启动时打一行 WARN (而非跑到一半炸)。仅告警不改配置, 真正兜底在
- * 各消费点的 roleModelWithFallback。judge/review 的默认坐标同落 deepseek 家族, 与这里的 verifier/dream
- * 同源 —— 本告警覆盖它们的凭证盲区。OAuth 角色 (kimi-coding 掌舵) 凭证走 auth.json → 不误报。
+ * **座位自检** (INV-MODEL-5, P0 2026-07-28): 遍历全部 16 个座位, 报「未配 / 无凭证 / ok」。
+ * 纯读不改配置, 不抛 —— 拿它做启动告警面与 omd_config_status 的数据源;
+ * "解不到就失败"的硬闸是 {@link assertSeatsUsable} (只对本次 run 真要用的座位)。
+ */
+export function checkSeats(env: Record<string, string | undefined> = process.env): SeatCheck[] {
+  return ALL_SEATS.map((seat): SeatCheck => {
+    const r = tryResolveSeatModel(seat, { env });
+    if (!r) return { seat, status: 'unset' };
+    return { seat, coord: r.model, status: usable(r.model, env) ? 'ok' : 'no-credential' };
+  });
+}
+
+/**
+ * **计划期硬闸** (INV-MODEL-5 的"响亮失败"): 本次 run 真要用的座位里有未配 / 无凭证的 → 抛,
+ * 错误里指名座位与坐标。
+ *
+ * 为什么只闸「真要用的」而不是全部 16 座: dream/continuity 是 opt-in 后台角色, 没配它们不该
+ * 挡住一次 dag_run。全景在 {@link checkSeats}, 那是告警面不是闸。
+ */
+export function assertSeatsUsable(
+  seats: readonly OmdSeat[],
+  env: Record<string, string | undefined> = process.env,
+): void {
+  const bad = checkSeats(env).filter((c) => seats.includes(c.seat) && c.status !== 'ok');
+  if (bad.length === 0) return;
+  const detail = bad
+    .map((c) => (c.status === 'unset' ? `${c.seat}=<未配>` : `${c.seat}=${c.coord} (无凭证)`))
+    .join(', ');
+  throw new Error(
+    `[omd/model] 起跑自检失败 —— ${bad.length} 个座位不可用: ${detail}。` +
+      `修: omd_set_key / omd_register_provider 配凭证, 或 omd_set_role 换座位, 或 omd models auto 重分配。` +
+      `(此前这里是静默兜底, 跑到一半才 402/无凭证崩。)`,
+  );
+}
+
+/** 一个显式配置的池子的自检结论 (tier + 池内每个坐标可用与否)。 */
+export interface PoolCheck {
+  tier: string;
+  /** 池内**不可用**的坐标 (有凭证的不列)。 */
+  unusable: string[];
+  /** 池子总坐标数 (判"整池全死"用)。 */
+  size: number;
+}
+
+/**
+ * **池子自检** (2026-07-29)。座位自检管不到这里 —— `config.pools` 是**第三条轴**:
+ * 它不回答"某个座位用哪个模型", 而是"stamp pass 把节点判成 cheap 档时从哪几个坐标里轮换"。
+ * 显式配了 pools 的档位 (config.pools 或 OMD_POOL_*) **完全不经过座位链** (`mcp/assemble.ts` 的 `cfgPools.x ?? 座位推导`),
+ * 于是既躲开 env 覆盖, 也躲开 checkSeats —— 一池子欠费 provider 照样开跑, 直到 429/403 才炸。
+ *
+ * 只查**显式配置**的池子: 未配的档位由座位推导而来, 那些坐标已被 checkSeats 覆盖, 重复查是噪声。
+ */
+export function checkPools(env: Record<string, string | undefined> = process.env): PoolCheck[] {
+  const pools = resolveConfiguredPools(undefined, env);
+  return Object.entries(pools)
+    .filter((e): e is [string, string[]] => Array.isArray(e[1]) && e[1].length > 0)
+    .map(([tier, coords]) => ({
+      tier,
+      unusable: coords.filter((c) => !usable(c, env)),
+      size: coords.length,
+    }));
+}
+
+/**
+ * 起跑坐席检查 (issue #6 → P0 扩到全部座位): bootstrapModelRuntime 注册完 provider 后调一次 ——
+ * **无可用凭证**的座位在启动时打一行 WARN (而非跑到一半炸)。仅告警不改配置: boot 时还不知道这次
+ * 要用哪些座位, 硬闸留给 assertSeatsUsable (计划期, 只闸真要用的)。
+ * OAuth 座位 (kimi-coding 掌舵) 凭证走 auth.json → 不误报。
  */
 export function warnUnregisteredRoles(env: Record<string, string | undefined> = process.env): void {
-  const unusable: string[] = [];
-  for (const role of MODEL_ROLES) {
-    const coord = resolveRoleModel(role, env);
-    if (!usable(coord, env)) unusable.push(`${role}=${coord}`);
-  }
-  if (unusable.length > 0) {
+  const bad = checkSeats(env).filter((c) => c.status !== 'ok');
+  if (bad.length > 0) {
+    const detail = bad
+      .map((c) => (c.status === 'unset' ? `${c.seat}=<未配>` : `${c.seat}=${c.coord}`))
+      .join(', ');
     logger.warn(
-      { unusable },
-      `[role-seat] ${unusable.length} 个角色首选 provider 无可用凭证: ${unusable.join(', ')} ` +
+      { unusable: detail, count: bad.length },
+      `[role-seat] ${bad.length} 个座位未配或无可用凭证: ${detail} ` +
         `— 运行时按注册表顺延兜底 (issue #6); 配齐凭证或改 .omd/config.json 消除本告警。`,
     );
+  }
+  // 池子那条轴 (config.pools): 显式配的档位绕开座位链, 座位全绿也可能一池子欠费 provider。
+  for (const p of checkPools(env)) {
+    if (p.unusable.length === 0) continue;
+    const dead = p.unusable.join(', ');
+    // 整池全死 = 该档位每个节点必炸 (轮换轮到谁都一样), 提到 error 级 —— 这正是"跑到一半 429"的源头。
+    if (p.unusable.length === p.size) {
+      logger.error(
+        { tier: p.tier, dead, size: p.size },
+        `[role-pool] config.pools.${p.tier} **整池无可用凭证** (${dead}) — 判到该档的节点会全数失败。` +
+          `注意 pools 不经过座位链: env / --*-model / config.models 都覆盖不了它, 只能改 .omd/config.json 的 pools 段。`,
+      );
+    } else {
+      logger.warn(
+        { tier: p.tier, dead, size: p.size },
+        `[role-pool] config.pools.${p.tier} 有 ${p.unusable.length}/${p.size} 个坐标无可用凭证: ${dead} ` +
+          `— 轮换轮到它们的节点会失败。pools 不经过座位链, 只能改 .omd/config.json 的 pools 段。`,
+      );
+    }
   }
 }

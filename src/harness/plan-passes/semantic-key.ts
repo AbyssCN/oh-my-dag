@@ -25,6 +25,10 @@ export function nodeFieldsKey(node: PlanNode): string {
 		// ⚠ `agent` (SAMPO roster) 刻意排除: omd executor-dag 不消费它 (按 executor/model 分流,
 		// schema 注释明示), 且 conductor 每轮随机指派 → 入键 = 纯噪声, 系统性打空 D-21 跨轮复用
 		// (2026-07-25 实证: 重规划 diff 唯一漂移就是 agent)。宿主宏观引擎路径不经本 pass。
+		// ⚠ `postcondition` / `leaf` 同 `agent` 一并排除 (2026-07-28 空旋钮全仓扫): 引擎零消费者。
+		// postcondition 此前更糟 —— 两个 conductor prompt 都在明示它、还主动指导「对正确性敏感的
+		// 节点补 postcondition」, 而没有任何地方检查它 (是"验证"的样子, 不是验证)。明示已撤,
+		// zod 层留容忍 (旧 plan 兼容), 但不该再进指纹: 零消费者字段入键 = 纯噪声打空跨轮复用。
 		node.executor ?? "leaf",
 		node.kind ?? NONE,
 		node.primitive ?? NONE,
@@ -46,11 +50,12 @@ export function nodeFieldsKey(node: PlanNode): string {
 		node.cluster ?? NONE,
 		node.requires ?? NONE,
 		node.attach_media ?? NONE,
-		node.on_failure ?? NONE,
+		// D-11: max_retry 留在键里是因为它**真影响执行** (重试次数不同 = 不同的执行与成本)。
+		// 同批的 on_failure / fallback 已从 schema 删除 —— 它们零消费者却入键 = 纯噪声打空跨轮复用,
+		// 与 `agent` 字段被排除的是同一个形态。
 		node.max_retry ?? NONE,
-		node.fallback ?? NONE,
-		node.postcondition ? JSON.stringify(node.postcondition) : NONE,
-		node.leaf ? JSON.stringify(node.leaf) : NONE,
+		// D-6: research 旋钮是语义 (同问题跑 1 轮 vs 4 轮 = 不同深度的执行, 成本与产出都不同)。
+		node.research ? JSON.stringify(node.research) : NONE,
 		// map spec 也是语义 (D-21 复用要对 map 节点保守但正确; dedup 层面 map 整节点被排除)。
 		node.map ? JSON.stringify(node.map) : NONE,
 	]);
@@ -88,15 +93,25 @@ export function merkleFingerprints(plan: ConductorPlan): Map<string, string> {
  * 前驱须同为可复用: 复用的输出是由上轮前驱输出喂出来的 — 新前驱若要重跑 (语义变了),
  * 本节点吃到的输入就变了, 不可复用 (Merkle 匹配保证语义同构, 前驱闭包保证数据一致)。
  * 上轮 failed/skipped 节点不入池 (败果不复用)。
+ *
+ * **D-4 毒集 (P1.5)**: `poisoned` 里的指纹一律不入复用池 —— 那是 review/judge 拒过的产出。
+ * 状态闸 (`status === 'done'`) 只挡得住"跑挂了"的机器失败; 挡不住"跑完了但产出是错的"。
+ * 后者只有 judge 说得出, 故经 DeltaTicket 从外层带进来。
+ *
+ * **前向闭包是免费的**, 不需要额外 BFS: 毒一个指纹 → 该节点 `hit` 落空 → 其全部下游的
+ * `deps.every(check)` 连锁失败 → 自动整条下游重跑。下面那行 `ok = !!hit && deps.every(check)`
+ * 就是污染闭包的逆否形式 (研究报告的 `compute_tainted_set` 因此不移植)。
  */
 export function computeReuse(
 	plan: ConductorPlan,
 	prior: { plan: ConductorPlan; results: Record<string, LeafResult> },
+	poisoned?: ReadonlySet<string>,
 ): Map<string, LeafResult> {
 	const priorFp = merkleFingerprints(prior.plan);
 	const priorByFp = new Map<string, LeafResult>();
 	for (const [id, f] of priorFp) {
 		const r = prior.results[id];
+		if (poisoned?.has(f)) continue; // D-4: 被拒产出不入池 (哪怕 status='done')
 		if (r && r.status === "done" && !priorByFp.has(f)) priorByFp.set(f, r);
 	}
 	const newFp = merkleFingerprints(plan);

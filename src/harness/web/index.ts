@@ -47,7 +47,7 @@ export {
   createModelSourceDistiller,
   buildDistillPrompt,
   DISTILL_SYSTEM,
-  DISTILL_DEFAULT_MODEL,
+  distillDefaultModel,
   DISTILL_DEFAULT_MAX_CHARS,
 } from './distill-source';
 export type { SourceDistiller, SourceDistillInput, SourceDistillResult } from './distill-source';

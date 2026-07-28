@@ -4,12 +4,13 @@
  * 跨家族校验 verifier ≠ 主力族 · 空渠道 → 空分配 · 全链不可达 → 跳过 + log ·
  * 临时快照 + 临时渠道, 零网络零全局态。
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync, readFileSync } from "node:fs";
 import type { DeclaredPlan } from "./channels";
+import { logger } from "../logger";
 import { autoAssign, runAutoAssign } from "./auto-assign";
 
 /** 造 DeclaredPlan 的 shorthand。 */
@@ -35,8 +36,10 @@ function writeRatings(ratings: unknown[]): string {
 }
 
 describe("autoAssign", () => {
-	test("D-19 首选全可达: 大脑簇→K3(Allegretto) · reduce→MiMo-pro · worker→MiMo-v2.5(Lite) · verifier→GLM(Go)", () => {
+	test("D-19 首选全可达: 大脑簇/校验→v4-pro · 量产+reduce+dream→v4-flash (2026-07-29 表)", () => {
 		const ratingsPath = writeRatings([
+			{ name: "deepseek v4 pro", intelligence: 44, costUsd: 0.04, speedTokS: null },
+			{ name: "deepseek v4 flash", intelligence: 38, costUsd: 0.01, speedTokS: null },
 			{ name: "kimi k3", intelligence: 57, costUsd: 0.95, speedTokS: 33 },
 			{ name: "mimo v2.5", intelligence: 42, costUsd: 0.2, speedTokS: null },
 			{ name: "mimo v2.5 pro", intelligence: 48, costUsd: 0.25, speedTokS: null },
@@ -45,6 +48,7 @@ describe("autoAssign", () => {
 
 		const m = autoAssign({
 			channels: [
+				ch("deepseek", "token"), // 官网 API (2026-07-29 起的主力)
 				ch("kimi-coding", "token"), // Allegretto plan
 				ch("mimo", "token"), // Lite plan
 				ch("opencode-go", "flat"), // Go flat-sub (次顶级 + 溢出)
@@ -52,23 +56,24 @@ describe("autoAssign", () => {
 			ratingsPath,
 		});
 
-		// 大脑簇 (conductor/escalation/judge/reason) → K3 (Allegretto, 不走 Go 避 288x 烧穿)
+		// 2026-07-29 主力切 DeepSeek: 大脑簇 → v4-pro (分配表是唯一真源, 改表即改这里)
 		for (const n of ["conductor", "escalation", "judge", "reason"]) {
-			expect(m[n]!.coord).toBe("kimi-coding:k3");
+			expect(m[n]!.coord).toBe("deepseek:deepseek-v4-pro");
 		}
 
-		// reduce → MiMo v2.5-pro (D-14 够质量的最廉, 替代 ds-pro 位, 高频留 Lite 桶)
-		expect(m.reduce!.coord).toBe("mimo:mimo-v2.5-pro");
+		// reduce → v4-flash (D-14 够质量的最廉; 高频阶段)
+		expect(m.reduce!.coord).toBe("deepseek:deepseek-v4-flash");
 
-		// worker → MiMo v2.5-pro (owner 2026-07-25: Lite 额度大, pro 默认; 多模态池例外留 v2.5)
+		// worker → v4-flash (量在这里; 档位同时降到 low, 见 NODE_CLASS_THINKING)
 		for (const n of ["leaf", "agent", "lens", "expand", "distill", "overflow"]) {
-			expect(m[n]!.coord).toBe("mimo:mimo-v2.5-pro");
+			expect(m[n]!.coord).toBe("deepseek:deepseek-v4-flash");
+			expect(m[n]!.thinkingLevel).toBe("low");
 		}
 
-		// verifier/review-spec/dream → GLM via Go flat-sub (次顶级, 跨 Kimi 家族 INV-3)
-		expect(m.verifier!.coord).toBe("opencode-go:glm-5.2");
-		expect(m["review-spec"]!.coord).toBe("opencode-go:glm-5.2");
-		expect(m.dream!.coord).toBe("opencode-go:glm-5.2");
+		// 校验/dream: verify→v4-pro, dream→v4-flash。⚠ 与大脑同族 (deepseek-only 的代价, 见 INV-3 降级测试)
+		expect(m.verifier!.coord).toBe("deepseek:deepseek-v4-pro");
+		expect(m["review-spec"]!.coord).toBe("deepseek:deepseek-v4-pro");
+		expect(m.dream!.coord).toBe("deepseek:deepseek-v4-flash");
 	});
 
 	test("GPT 订阅座位 (owner 2026-07-25): codex 渠道在 → conductor/escalation/judge→sol, reason 留 k3, 量产不动", () => {
@@ -93,12 +98,9 @@ describe("autoAssign", () => {
 			expect(m[n]!.coord).toBe("openai-codex:gpt-5.6-sol");
 			expect(m[n]!.channelId).toBe("openai-codex:flat");
 		}
-		// reason 每图多发 → 留 k3 (Plus 配额保护); reduce/worker 不动
-		expect(m.reason!.coord).toBe("kimi-coding:k3");
-		expect(m.reduce!.coord).toBe("mimo:mimo-v2.5-pro");
-		expect(m.leaf!.coord).toBe("mimo:mimo-v2.5-pro");
-		// INV-3: verifier (glm) 跨 gpt 大脑家族
-		expect(m.verifier!.coord).toBe("opencode-go:glm-5.2");
+		// NODE_PREFERRED 只覆盖那三座; 其余仍走类首选表 (此 fixture 无 deepseek 渠道 → 落 Go 溢出链)
+		expect(m.reason!.coord).toBe("opencode-go:kimi-k3");
+		expect(m.leaf!.coord).toBe("opencode-go:mimo-v2.5");
 	});
 
 	test("溢出链降级: kimi-coding 无渠道 → 大脑簇降级到 Go(opencode-go:kimi-k3)", () => {
@@ -145,31 +147,38 @@ describe("autoAssign", () => {
 		expect(Object.keys(m)).toHaveLength(0);
 	});
 
-	test("verifier 跨家族 (INV-3): verifier 走 Go-GLM, ≠ 大脑(kimi) 家族", () => {
+	test("INV-3 跨家族只在**首选表本身跨家族**时成立 —— 当前表单家族, 故必然降级", () => {
+		// 旧表 (kimi 脑 / mimo 干活 / Go 校验) 天生跨家族, 所以这条不变量当年是白拿的。
+		// 2026-07-29 切成 deepseek-only 后前提没了: 首选可达时同族, 首选不可达时全落 Go 溢出链 —— 也同族。
+		// 结论: 这条不变量现在**必须靠告警可见**, 而不是靠断言"它成立"。见下一条测试。
 		const ratingsPath = writeRatings([
-			{ name: "kimi k3", intelligence: 57, costUsd: 0.95, speedTokS: 33 },
-			{ name: "glm 5.2", intelligence: 51, costUsd: 0.32, speedTokS: 179 },
-			{ name: "mimo v2.5", intelligence: 42, costUsd: 0.2, speedTokS: null },
-			{ name: "mimo v2.5 pro", intelligence: 48, costUsd: 0.25, speedTokS: null },
+			{ name: "deepseek v4 pro", intelligence: 44, costUsd: 0.04, speedTokS: null },
+			{ name: "deepseek v4 flash", intelligence: 38, costUsd: 0.01, speedTokS: null },
 		]);
+		const m = autoAssign({ channels: [ch("deepseek", "token")], ratingsPath });
+		const fam = (c: string): string => c.split(":")[0]!;
+		expect(fam(m.verifier!.coord)).toBe(fam(m.judge!.coord));
+	});
 
-		const m = autoAssign({
-			channels: [
-				ch("kimi-coding", "token"),
-				ch("mimo", "token"),
-				ch("opencode-go", "flat"),
-			],
-			ratingsPath,
-		});
-
-		// conductor/judge = kimi, worker = mimo, reduce = mimo → verifier ≠ kimi 家族 (跨检查者/被检查者)
-		const mains = new Set([
-			m.conductor!.coord.split(":")[0],
-			m.leaf!.coord.split(":")[0],
+	test("INV-3 降级可见: 只有一个家族可达 → 判与证同族, autoAssign 必须打 warn 而非静默", () => {
+		const ratingsPath = writeRatings([
+			{ name: "deepseek v4 pro", intelligence: 44, costUsd: 0.04, speedTokS: null },
+			{ name: "deepseek v4 flash", intelligence: 38, costUsd: 0.01, speedTokS: null },
 		]);
-		expect(m.verifier!.coord.split(":")[0]).toBe("opencode-go");
-		expect(mains.has("opencode-go")).toBe(false);
-		expect(m.verifier!.coord.split(":")[0]).not.toBe(m.judge!.coord.split(":")[0]);
+		const warned: unknown[] = [];
+		const spy = spyOn(logger, "warn").mockImplementation(((o: unknown) => {
+			warned.push(o);
+		}) as never);
+		try {
+			const m = autoAssign({ channels: [ch("deepseek", "token")], ratingsPath });
+			const fam = (c: string): string => c.split(":")[0]!;
+			// 同族是**事实**, 不是 bug —— 只剩一个家族时无从跨。
+			expect(fam(m.verifier!.coord)).toBe(fam(m.judge!.coord));
+			// 但它必须被说出来: 一条不变量不该在没人注意的时候死掉。
+			expect(warned.some((o) => (o as { degraded?: string })?.degraded === "INV-3")).toBe(true);
+		} finally {
+			spy.mockRestore();
+		}
 	});
 
 	test("node 分类完整覆盖: 所有已知 node 都有分配 (渠道充足时)", () => {
@@ -214,19 +223,21 @@ describe("autoAssign", () => {
 	});
 
 	test("AA 快照未命中 → 命名启发兜底 (INV-7), 不崩", () => {
-		// 只给 GLM 快照 (无 kimi): kimi-coding:k3 → modelId 'k3' 快照无 → 品牌桥接试 'kimi k3' 亦无
-		// → 命名启发 norm='k3' (裸关键词, norm===kw 守卫挡升档) → 中档 42。验证 miss 不崩、返非空。
+		// 只给 GLM 快照 (无 deepseek): 首选坐标在快照里查不到 → 品牌桥接亦无 → 命名启发给中档 42。
+		// 验证 miss 不崩、返非空。
 		const ratingsPath = writeRatings([
 			{ name: "glm 5.2", intelligence: 51, costUsd: 0.32, speedTokS: 179 },
 		]);
 
 		const m = autoAssign({
-			channels: [ch("kimi-coding", "token"), ch("openrouter", "token")],
+			// 首选家族在场 (否则无分配可言); 快照里**没有**它 → 走命名启发那条路。
+			channels: [ch("deepseek", "token"), ch("openrouter", "token")],
 			ratingsPath,
 		});
 
-		expect(m.conductor!.coord).toBe("kimi-coding:k3");
-		expect(m.conductor!.intelligence).toBe(42);
+		expect(m.conductor!.coord).toBe("deepseek:deepseek-v4-pro");
+		// 具体数字由命名启发给 (换首选坐标就会变); 这里钉住的是"miss 不崩且给得出分", 不是 45 这个值本身。
+		expect(m.conductor!.intelligence).toBe(45);
 	});
 });
 
@@ -251,14 +262,14 @@ describe("runAutoAssign — 端到端 (发现→分配→落盘; configPath 读�
 		const env = { DEEPSEEK_API_KEY: "sk-x", MIMO_API_KEY: "sk-m", PI_AGENT_DIR: home };
 		const map = runAutoAssign(env, { configPath, ratingsPath });
 
-		// 大脑簇 → kimi (声明的 Allegretto, 品牌桥接命中 57)
-		expect(map.conductor?.coord).toBe("kimi-coding:k3");
-		expect(map.judge?.coord).toBe("kimi-coding:k3");
-		expect(map.conductor?.intelligence).toBe(57);
-		// INV-3: verifier 家族 ≠ judge(kimi) 家族
-		expect(map.verifier?.coord.split(":")[0]).not.toBe("kimi-coding");
+		// 大脑簇 → v4-pro: 分配表是**硬偏好**, 声明持仓只决定"可达不可达", 不改变优先序。
+		// (deepseek 经 DEEPSEEK_API_KEY 自探可达 → 首选命中, 不再落到声明的 kimi。)
+		expect(map.conductor?.coord).toBe("deepseek:deepseek-v4-pro");
+		expect(map.judge?.coord).toBe("deepseek:deepseek-v4-pro");
+		// ⚠ INV-3 在此配置下**不成立**: 判与证同族 (deepseek-only 的代价), 由 autoAssign 打降级告警。
+		expect(map.verifier?.coord.split(":")[0]).toBe("deepseek");
 		// 落盘可读回 (configPath 读写同目标)
 		const persisted = JSON.parse(readFileSync(configPath, "utf8")).autoAssigned;
-		expect(persisted.conductor).toBe("kimi-coding:k3");
+		expect(persisted.conductor).toBe("deepseek:deepseek-v4-pro");
 	});
 });

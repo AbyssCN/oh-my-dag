@@ -17,7 +17,7 @@ import { verifyFindings, type VerifiedFinding, type ReviewSendFn } from './verif
 import { findLatestSdd } from '../execute-extension';
 import { send } from '../../model/gateway';
 import { roleModelWithFallback } from '../../model/role-fallback';
-import { resolveRoleModel } from '../../model/role-models';
+import { resolveRoleModel, tryResolveSeatModel } from '../../model/role-models';
 
 /**
  * review 模型解析(单一真源, baseline + 单 agent 共用)。**无硬编码坐标 + review 自成体系**:
@@ -111,6 +111,11 @@ export interface RunReviewDeps {
   ) => Promise<VerifiedFinding[]>;
   /** 注入式单 agent runner (arm C 测试用; 默认 createAgentLeafRunner)。 */
   agentRun?: (input: { prompt: string; model: string }) => Promise<{ text: string }>;
+  /**
+   * `review-spec` 座位解析的注入面 (hermetic 测试用; 默认读真 .omd/config.json)。
+   * 座位链会读进程级 config —— 不给这个口子, 任何注入 env 的测试都会被真实仓配置压过去。
+   */
+  seatOpts?: { modelsMap?: Record<string, string>; autoAssignMap?: Record<string, string>; configPath?: string };
 }
 
 export interface RunReviewOpts {
@@ -165,8 +170,14 @@ export async function runReview(opts: RunReviewOpts): Promise<RunReviewResult> {
   const { findModel, verifyModel } = resolveReviewModels(opts, env);
   const dimModels = resolveDimensionModels(env, findModel);
   const findEffort = (env.OMD_REVIEW_FIND_EFFORT as ReviewEffort) || 'high';
-  // spec 轴模型: OMD_REVIEW_SPEC_MODEL 单独覆盖 (spec 对照吃长上下文, 可路由长窗模型), 回落 find 层。
-  const specModel = roleModelWithFallback(env.OMD_REVIEW_SPEC_MODEL ?? findModel, 'review');
+  // spec 轴模型 = `review-spec` **座位** (spec 对照吃长上下文, 可路由长窗模型), 解不到回落 find 层。
+  // 经单一 resolver (INV-MODEL-1): config.models['review-spec'] → OMD_REVIEW_SPEC_MODEL (座位正名 env)
+  // → auto-assign → defaultModel。此前这里直读 env, 于是那个座位是纯装饰 —— auto-assign 派了模型、
+  // 起跑自检查了凭证, 却没有任何人读它 (2026-07-28 空旋钮全仓扫)。
+  const specModel = roleModelWithFallback(
+    tryResolveSeatModel('review-spec', { env, ...(opts.deps?.seatOpts ?? {}) })?.model ?? findModel,
+    'review',
+  );
   const verifyEffort = (env.OMD_REVIEW_VERIFY_EFFORT as ReviewEffort) || undefined;
   const diffBlock = `===== 改动 diff (审查依据) =====\n\`\`\`diff\n${opts.diff}\n\`\`\``;
 

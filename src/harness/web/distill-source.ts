@@ -16,9 +16,15 @@
  */
 import { z } from 'zod';
 import { send as defaultCallModel } from '../../model/gateway';
+import { resolveSeatModel } from '../../model/role-models';
 
-/** 蒸馏默认模型 (cheap + 可靠, 与 query 扩展同档)。 */
-export const DISTILL_DEFAULT_MODEL = 'deepseek:deepseek-v4-flash';
+/**
+ * 蒸馏默认模型 = 'distill' 座位。座位链自带 OMD_DISTILL_MODEL env 层, 故此处不再单独读 env
+ * (INV-MODEL-1: 一个座位一条链)。
+ */
+export function distillDefaultModel(): string {
+  return resolveSeatModel('distill').model;
+}
 /** 蒸馏 extract 默认字数上限 (远小于 30k 触发阈值, 但够留机制 + 可引用片段)。 */
 export const DISTILL_DEFAULT_MAX_CHARS = 2500;
 
@@ -90,7 +96,7 @@ export function createModelSourceDistiller(
   opts: { model?: string; maxChars?: number; _callModel?: typeof defaultCallModel } = {},
 ): SourceDistiller {
   const call = opts._callModel ?? defaultCallModel;
-  const model = opts.model ?? process.env.OMD_DISTILL_MODEL ?? DISTILL_DEFAULT_MODEL;
+  const model = resolveSeatModel('distill', { ...(opts.model ? { explicit: opts.model } : {}) }).model;
   const maxChars = opts.maxChars ?? DISTILL_DEFAULT_MAX_CHARS;
   return async (input, signal) => {
     const res = await call({

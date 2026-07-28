@@ -55,7 +55,7 @@ import { collectDepMedia } from './leaf-media';
 import type { ContentPart } from '../model/gateway';
 
 /** 上一轮 plan+results (escalation 重规划轮传入, D-21 跨轮复用的匹配源)。 */
-type PriorExec = { plan: ConductorPlan; results: Record<string, LeafResult> };
+import type { PriorExec } from './executor-dag-types';
 
 // ── barrel re-export: 保持 ./executor-dag 公共面稳定 (importer-closure, 消费方零改) ──
 export type { GenerateFn, ExecutorDagConfig, ExecutorDagResult, LeafResult, DagNodeEvent } from './executor-dag-types';
@@ -69,6 +69,9 @@ interface ExecOnce {
   plan: ConductorPlan;
   levels: string[][];
   results: Record<string, LeafResult>;
+  /** 本轮 D-21 复用命中的节点 id (结果面 reusedNodes 的来源)。 */
+  reusedNodes: string[];
+
   conductorUsage: ModelUsage;
   leavesIn: number;
   leavesOut: number;
@@ -244,9 +247,13 @@ async function executePlan(
 
   // ── D-21 escalation 跨轮复用: 语义 Merkle 指纹 + 前驱闭包匹配上轮 done 节点 → 零 LLM 注入。
   // 重规划最烧 token 的形态 = 80% 节点语义没变却整图重跑; 指纹按语义不按 id, 重命名不破匹配。
-  const reuse = prior ? computeReuse(plan, prior) : new Map<string, LeafResult>();
+  // D-4 (P1.5): prior.poisoned = 上轮被 judge 点名拒绝的节点指纹, 一律不复用 (前向闭包免费, 见 computeReuse)。
+  const reuse = prior ? computeReuse(plan, prior, prior.poisoned) : new Map<string, LeafResult>();
   if (reuse.size > 0) {
     logger.info({ reused: [...reuse.keys()], total: Object.keys(plan.nodes).length }, '[omd/executor-dag] 跨轮语义复用集 (D-21)');
+  }
+  if (prior?.poisoned?.size) {
+    logger.info({ poisoned: prior.poisoned.size, reused: reuse.size }, '[omd/executor-dag] D-4 毒集生效 → 被拒指纹及其下游强制重跑');
   }
 
   // ── 2. executor: ready-set 现场 fan-out (依赖就绪即跑, 见下方调度器), leaf 调显式 leafModel ──
@@ -479,12 +486,13 @@ async function executePlan(
   // 节点起跑时刻 (issue #4: 失败 checkpoint 的 durationMs 用; settle 在 runNode 各早退分支之外, 需独立捕获)。
   const nodeStartedAt = new Map<string, number>();
 
-  // runNode: 单节点执行 (resume-skip / primitive / map / command / agent / inproc + checkpoint)。由下方 ready-set 调度器按依赖就绪驱动。
-  const runNode = async (id: string): Promise<LeafResult> => {
-      const node = plan!.nodes[id]!;
+  // runNodeOnce: **单次尝试** (resume-skip / primitive / map / command / agent / inproc + checkpoint)。
+  // 重试策略在下方 runNode 包一层 —— 这里只管跑一次, 不认识 max_retry。
+  // attempt.causeNote: L0 重试把上一次的失败原因追加进 goal (经 buildLeafPrompt 进 prompt), 不原样重放。
+  const runNodeOnce = async (id: string, attempt?: { causeNote?: string }): Promise<LeafResult> => {
+      const rawNode = plan!.nodes[id]!;
+      const node = attempt?.causeNote ? { ...rawNode, goal: `${rawNode.goal ?? ''}${attempt.causeNote}` } : rawNode;
       const deps = node.depends_on ?? [];
-      nodeStartedAt.set(id, Date.now());
-      emitNodeEvent({ type: 'start', id, kind: nodeKind(node) });
       // D-21: 跨轮复用命中 → 上轮输出直接注入 (零 LLM 零工具; id/deps 归本轮, skipped 同 resume 语义)。
       const prev = reuse.get(id);
       if (prev) {
@@ -509,6 +517,42 @@ async function executePlan(
         }
         const r = await config.commandRunner({ command: node.command });
         return { id, status: r.exitCode === 0 ? 'done' : 'failed', kind: 'command', output: r.text, deps, usage: r.usage };
+      }
+      // research leaf (D-6): 真 web 检索 + 有界内环。**零来源 = failed** —— INV-GOAL-2 要的是
+      // 真抓取痕迹, 一个没抓到还吐终稿的节点吐的是模型记忆里的引用 (假 grounded), 比失败更坏:
+      // 它会带着编造的事实往下游走。与 producesFiles 的 filesTouched 闸同一条纪律。
+      if (node.executor === 'research') {
+        if (!config.researchRunner) {
+          logger.warn({ node: id }, "[omd/executor-dag] executor:research 缺 researchRunner → failed (拒绝降级 inproc 编引用)");
+          return { id, status: 'failed', kind: 'research', output: '[research 节点无 researchRunner, 无 web 能力]', deps, usage: { in: 0, out: 0 } };
+        }
+        const groundTruth = deps
+          .filter((d) => results[d]?.status === 'done')
+          .map((d) => depOutputs[d] ?? '')
+          .filter(Boolean)
+          .join('\n\n');
+        const r = await config.researchRunner({
+          question: node.goal ?? id,
+          ...(groundTruth ? { groundTruth } : {}),
+          ...(node.research?.k ? { k: node.research.k } : {}),
+          // 内环有界 (INV-GOAL-4): 缺省 1 轮, 上限由 schema 钳到 4。
+          rounds: node.research?.rounds ?? 1,
+        });
+        if (r.sources.length === 0) {
+          logger.warn({ node: id }, '[omd/executor-dag] research 节点零来源 → failed (无真抓取痕迹 = 假 grounded)');
+          return { id, status: 'failed', kind: 'research', output: '[research 零来源: 无真 URL 抓取痕迹]', deps, usage: r.usage };
+        }
+        logger.info({ node: id, sources: r.sources.length, reportPath: r.reportPath }, '[omd/executor-dag] research 节点完成');
+        return {
+          id,
+          status: 'done',
+          kind: 'research',
+          output: r.text,
+          deps,
+          usage: r.usage,
+          sources: r.sources,
+          ...(r.reportPath ? { filesTouched: [r.reportPath] } : {}),
+        };
       }
       // agent 模板卡解析: 命中注册表 → body 注入 prompt 前缀 (buildLeafPrompt 前置放)。
       // 未知名 = 预构造 plan 绕过了规划层校验 → TPL-2 执行层兜底: warn + 忽略, 不崩节点。
@@ -690,6 +734,60 @@ async function executePlan(
         }
       }
       return leaf;
+  };
+
+  /**
+   * runNode: 单节点执行 + **L0 节点级重试** (D-11 / INV-P2-2)。
+   *
+   * `max_retry` 此前是纯装饰 (有 schema、进语义指纹、零消费者) —— 手写 plan 显式写了会被静默忽略。
+   * 语义: 失败则最多再试 `max_retry` 次, 每次把**上一次的失败输出**注入 prompt (不是原样重放 ——
+   * 原样重放对确定性失败是纯烧钱)。用尽仍 failed → 交上层 (verifier 升级 / 外层 fixpoint)。
+   *
+   * **每次尝试的 usage 全部计入**最终结果: 丢弃的尝试也真花了钱, 不记账就是账本对不上
+   * (同 escalation 补丁那条"尝试的 token 不丢账")。
+   *
+   * start 事件与起跑时刻在**这一层**打, 不在 runNodeOnce —— 一个节点对外仍是一次 start,
+   * 内部试了几次是实现细节; durationMs 也该覆盖全部尝试。
+   */
+  const runNode = async (id: string): Promise<LeafResult> => {
+    const node = plan!.nodes[id]!;
+    nodeStartedAt.set(id, Date.now());
+    emitNodeEvent({ type: 'start', id, kind: nodeKind(node) });
+    const budget = node.max_retry ?? 0;
+    // 上一次的败因 → 下一次的 prompt。**抛错也算一次失败**: 最典型的可重试失败 (429 / 网络抖动)
+    // 是 generate 抛出来的, 不是 status='failed' —— 只看 status 的重试恰好漏掉最该重试的那类。
+    const causeOf = (prevLeaf: LeafResult | undefined, prevErr: unknown): string => {
+      const body = prevLeaf
+        ? prevLeaf.output || '(无输出)'
+        : `[抛错] ${prevErr instanceof Error ? prevErr.message : String(prevErr)}`;
+      return (
+        `\n\n[上一次尝试失败]\n${body.slice(0, 600)}\n` +
+        '请针对这个失败原因改变做法; 原样重复上一次的做法只会再失败一次。'
+      );
+    };
+    const spent: ModelUsage[] = []; // 被丢弃的尝试的 usage — 也真花了钱, 不记账就是账本对不上
+    let leaf: LeafResult | undefined;
+    let thrown: unknown;
+    for (let attempt = 0; ; attempt++) {
+      if (attempt > 0) logger.info({ node: id, attempt, budget }, '[omd/executor-dag] L0 节点级重试 (带上次失败原因)');
+      const causeNote = attempt === 0 ? undefined : causeOf(leaf, thrown);
+      try {
+        leaf = await runNodeOnce(id, causeNote ? { causeNote } : undefined);
+        thrown = undefined;
+      } catch (err) {
+        thrown = err;
+        leaf = undefined;
+      }
+      if (leaf && leaf.status !== 'failed') break; // done / skipped — 重试无意义
+      if (attempt >= budget) break; // 预算用尽
+      if (leaf) spent.push(leaf.usage);
+    }
+    // 最后一次是抛错 → 原样抛回, 维持既有 failedFromThrow 隔离路径 (败因不丢, INV-6 不连坐)。
+    if (!leaf) throw thrown;
+    if (leaf.status === 'failed' && budget > 0) {
+      logger.warn({ node: id, budget }, '[omd/executor-dag] L0 重试预算用尽仍 failed → 交上层 (verifier 升级 / 外层 fixpoint)');
+    }
+    return spent.length ? { ...leaf, usage: spent.reduce((a, b) => addUsage(a, b), leaf.usage) } : leaf;
   };
 
   // ── 依赖驱动 ready-set 调度 (取代逐层 barrier) ──
@@ -956,7 +1054,7 @@ async function executePlan(
     pump();
   });
 
-  return { plan, levels, results, conductorUsage, leavesIn, leavesOut, leavesCacheHit };
+  return { plan, levels, results, reusedNodes: [...reuse.keys()], conductorUsage, leavesIn, leavesOut, leavesCacheHit };
 }
 
 /**
@@ -970,10 +1068,11 @@ async function executePlan(
 export async function runExecutorDag(
   task: string,
   config: ExecutorDagConfig,
+  prior?: PriorExec,
 ): Promise<ExecutorDagResult> {
   if (!config.conductorModel) throw new Error('executor-dag: conductorModel 必填 (无硬默认, 形如 provider:modelId)');
   if (!config.leafModel) throw new Error('executor-dag: leafModel 必填 (无硬默认, 形如 provider:modelId)');
-  return runDagInternal(task, config, null);
+  return runDagInternal(task, config, null, prior);
 }
 
 /**
@@ -986,9 +1085,10 @@ export async function runExecutorDag(
 export async function runExecutorDagWithPlan(
   plan: ConductorPlan,
   config: ExecutorDagConfig,
+  prior?: PriorExec,
 ): Promise<ExecutorDagResult> {
   if (!config.leafModel) throw new Error('executor-dag: leafModel 必填 (无硬默认, 形如 provider:modelId)');
-  return runDagInternal(deriveTaskFromPlan(plan), config, plan);
+  return runDagInternal(deriveTaskFromPlan(plan), config, plan, prior);
 }
 
 /**
@@ -1027,6 +1127,8 @@ async function runDagInternal(
   task: string,
   config: ExecutorDagConfig,
   prebuiltPlan: ConductorPlan | null,
+  /** 上一**外层轮**的 {plan, results} (D-21 跨轮复用)。轮内 escalation 的 prior 另在下方组装。 */
+  prior?: PriorExec,
 ): Promise<ExecutorDagResult> {
   // sessionId: 本次 run 的 conductor+leaf 全部经 send → 同一 Langfuse session (B2)。
   // 可注入 (config.sessionId): 调用方传则跨平面关联 (派活飞轮 dispatchId ↔ Langfuse session); 省略 → 自生成。
@@ -1041,9 +1143,9 @@ async function runDagInternal(
   // D-7: 预构造 plan → executePlan 直执 (跳过 conductor); 否则 conductor 规划 → 执行。二者下游同一机器。
   let exec: ExecOnce;
   if (prebuiltPlan) {
-    exec = await executePlan(applyPlanFilters(prebuiltPlan, config), task, config, generate, { in: 0, out: 0 }, templates);
+    exec = await executePlan(applyPlanFilters(prebuiltPlan, config), task, config, generate, { in: 0, out: 0 }, templates, prior);
   } else {
-    exec = await planAndExecute(task, config, conductorModel, generate, maxPlanRetries, templates);
+    exec = await planAndExecute(task, config, conductorModel, generate, maxPlanRetries, templates, prior);
   }
   let conductorUsage = exec.conductorUsage;
   let leavesIn = exec.leavesIn;
@@ -1082,7 +1184,13 @@ async function runDagInternal(
         '(引擎按语义指纹复用未变节点的上轮结果 — 任何措辞变化都会浪费一次重算)。',
       ].join('\n');
       // D-21: 上轮 plan+results 作复用匹配源 — 语义未变的节点零 LLM 注入上轮输出, 只重跑变化子图。
-      const priorExec: PriorExec = { plan: exec.plan, results: exec.results };
+      // 毒集从外层轮继承下来 (D-4): 外层 judge 拒过的指纹在轮内 escalation 里同样不该复活。
+      // 轮内不新铸票 —— verifier 的 verdict 只有整轮 {pass, reason}, 没有节点级点名 (要它得先扩 verifier 契约)。
+      const priorExec: PriorExec = {
+        plan: exec.plan,
+        results: exec.results,
+        ...(prior?.poisoned?.size ? { poisoned: prior.poisoned } : {}),
+      };
       // S3.6 补丁模式优先 (未补丁节点字节不动 → 复用按构造成立); 补丁失败回退整图重规划 (fail-open)。
       const patched = await tryPatchReplan(escTask, verdict.reason, priorExec, config, conductorModel, generate, maxPlanRetries, templates);
       if (patched.exec) {
@@ -1125,6 +1233,7 @@ async function runDagInternal(
     sessionId,
     levels: exec.levels,
     results: exec.results,
+    reusedNodes: exec.reusedNodes,
     usage: {
       conductor: conductorUsage,
       leavesIn,

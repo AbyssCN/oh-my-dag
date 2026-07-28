@@ -77,22 +77,26 @@ const NODE_CLASS: Record<string, NodeClass> = {
 	verifier: "verify",
 	"review-spec": "verify",
 	dream: "dream",
+	// 两个后台角色也是座位 (ALL_SEATS): 不给它们分配 = 起跑自检恒报缺, review/continuity 用不了。
+	review: "verify", // review find 层 = 对抗读码, 跨家族同 verify 类
+	continuity: "worker", // session 交接蒸馏 = 便宜单发
 };
 
 /**
  * 首选 coord (provider:modelId) 按分类 (D-19 分配表, owner 2026-07-24 定):
- *   - 大脑簇 (decomposer/judge/reason) = Kimi K3 via Allegretto 专属桶 (kimi-coding:k3) —— **不走 Go**:
- *     Kimi K3 在 Go 共享美元桶烧穿快 288×, 高频大脑簇会饿死 Go, 故用专属预付桶。
- *   - 干活 (worker) = MiMo v2.5 via Lite plan (替代原 deepseek-flash 位)。
- *   - 校验 (verify) = GLM-5.2 via **Go flat-sub** (opencode-go, 次顶级, 跨 Kimi 家族 INV-3, cost=0)。
- * ⚠ kimi 真坐标 = 'kimi-coding:k3' (modelId 'k3')。
+ * **2026-07-29 owner 重派: 主力整体切 DeepSeek 官网 API** —— mimo token-plan 已烧完、codex 429、
+ * kimi 计费周期用尽、Go 桶不可靠, 四条 flat-sub/预付渠道同时失效, 摊销序暂时无对象可排。
+ *   - 大脑簇 (decomposer/judge_synth) + 校验 (verify) = deepseek-v4-pro
+ *   - 干活 (worker) + dream + reduce = deepseek-v4-flash (量在这里, 且 worker 档已降 low)
+ * ⚠ 两条代价, 恢复渠道后应回退: ① **verify 不再跨家族** (INV-3 的跨模型对抗失效 —— 判和证同一个族,
+ *   共享盲点); ② 全按量计费, 没有 flat-sub 摊销。渠道恢复后改回这张表即可 (它是唯一的分配真源)。
  */
 const PREFERRED_COORD: Record<NodeClass, string> = {
-	decomposer: "kimi-coding:k3",
-	judge_synth: "kimi-coding:k3",
-	worker: "mimo:mimo-v2.5-pro", // MiMo Lite 额度大 (owner 2026-07-25: pro 默认替代 v2.5; 多模态池例外留 v2.5)
-	verify: "opencode-go:glm-5.2", // 次顶级 via Go flat-sub
-	dream: "opencode-go:glm-5.2",
+	decomposer: "deepseek:deepseek-v4-pro",
+	judge_synth: "deepseek:deepseek-v4-pro",
+	worker: "deepseek:deepseek-v4-flash",
+	verify: "deepseek:deepseek-v4-pro",
+	dream: "deepseek:deepseek-v4-flash",
 };
 
 /**
@@ -118,7 +122,13 @@ const PREFERRED_COORD: Record<NodeClass, string> = {
 const NODE_CLASS_THINKING: Record<NodeClass, SeatThinking> = {
 	decomposer: "high",
 	judge_synth: "high",
-	worker: "high",
+	// 2026-07-29 owner 定: worker 降 low。上面②说的「换到档位真有成本差的模型时再调这张表」——
+	// 主力换到 DeepSeek v4 后条件满足了: v4 是推理族, **reasoning token 按 output 计价**, 而 output
+	// 是缓存命中价的 15.7 倍 (0.07 → 1.10 /M, cost-ledger 价表)。实测一天 970 万 flash token 花了
+	// $9.63 (有效 $0.99/M ≈ 纯 output 价), 同期一天 3000 万 token 只花 $3.18 (98% 命中缓存)。
+	// 差别全在 output 占比: 87% vs 1%。量产座是发得最多的一档, 降它收益最大。
+	// ⚠ agent leaf 不吃这张表 (agent-leaf.ts 自带 xhigh, owner 早前锁的), 所以改这里不影响改文件的 agent。
+	worker: "low",
 	verify: "high",
 	dream: "high",
 };
@@ -139,7 +149,7 @@ const NODE_PREFERRED: Record<string, string> = {
  * reduce 特殊 (D-14 "够质量的最廉"): 高频阶段, 取 MiMo v2.5-pro via Lite plan (替代原 deepseek-pro 位,
  * owner: deepseek 位→mimo)。高频故留专属 Lite 桶不烧 Go 共享桶。
  */
-const REDUCE_COORD = "mimo:mimo-v2.5-pro";
+const REDUCE_COORD = "deepseek:deepseek-v4-flash";
 
 /**
  * 按 NodeClass 排列的溢出候选 (D-19 溢出列): 专属桶烧穿 → 落 **Go flat-sub** (opencode-go, cost=0,
@@ -270,6 +280,22 @@ export function autoAssign(input: AutoAssignInput): AssignmentMap {
 				"auto-assign: 全候选链不可达 (无渠道或无评级), 跳过该 node",
 			);
 		}
+	}
+
+	// INV-3 跨家族校验闸: 校验座位与大脑座位落到同一个 provider 家族 = **判和证共享盲点**,
+	// 跨模型对抗名存实亡。可达家族只剩一个时这是不可避免的 (2026-07-29 的 deepseek-only 就是),
+	// 但**不可避免不等于可以静默** —— 这里明说一句, 否则一条不变量会在没人注意时死掉。
+	const famOf = (c?: string): string | undefined => c?.split(":")[0];
+	const verifyFam = famOf(result.verifier?.coord);
+	const brainFams = new Set(
+		[result.conductor?.coord, result.judge?.coord, result.leaf?.coord].map(famOf).filter(Boolean) as string[],
+	);
+	if (verifyFam && brainFams.has(verifyFam)) {
+		logger.warn(
+			{ verifier: result.verifier?.coord, brains: [...brainFams], degraded: "INV-3" },
+			`auto-assign: **INV-3 降级** —— 校验座位 (${result.verifier?.coord}) 与大脑座位同属 '${verifyFam}' 家族, ` +
+				`跨模型对抗失效 (判与证共享盲点)。多渠道恢复后应把 verify 挪回异族。`,
+		);
 	}
 
 	return result;
