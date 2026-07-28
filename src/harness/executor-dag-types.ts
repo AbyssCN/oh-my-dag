@@ -235,6 +235,15 @@ export interface LeafResult {
   stalled?: boolean;
 }
 
+/**
+ * 上一轮执行的 {plan, results} —— D-21 跨轮语义复用的输入。
+ * 轮内 escalation 与外层 fixpoint (iterateExecutorDag) 共用同一形状。
+ */
+export interface PriorExec {
+  plan: ConductorPlan;
+  results: Record<string, LeafResult>;
+}
+
 export interface ExecutorDagResult {
   plan: ConductorPlan;
   /** 本次 run 的 Langfuse session id (= config.sessionId 或内部生成的)。回显供调用方做跨平面关联。 */
@@ -253,6 +262,11 @@ export interface ExecutorDagResult {
     /** 校验器用量 (跨所有 verify 轮累加)。仅 config.verifier 存在时有值。 */
     verifier?: ModelUsage;
   };
+  /**
+   * D-21 跨轮语义复用命中的节点 id (本轮零 LLM 直接注入上轮输出)。空 = 无复用 (首轮 / 全变了)。
+   * INV-GOAL-3 的"可证"面: 修复轮跑完看这个数, 而不是猜"应该复用了吧"。
+   */
+  reusedNodes?: string[];
   /** 校验结果 (仅 config.verifier 存在时有值)。escalated=是否触发过 conductor 升级。 */
   verification?: {
     pass: boolean;

@@ -55,7 +55,7 @@ import { collectDepMedia } from './leaf-media';
 import type { ContentPart } from '../model/gateway';
 
 /** 上一轮 plan+results (escalation 重规划轮传入, D-21 跨轮复用的匹配源)。 */
-type PriorExec = { plan: ConductorPlan; results: Record<string, LeafResult> };
+import type { PriorExec } from './executor-dag-types';
 
 // ── barrel re-export: 保持 ./executor-dag 公共面稳定 (importer-closure, 消费方零改) ──
 export type { GenerateFn, ExecutorDagConfig, ExecutorDagResult, LeafResult, DagNodeEvent } from './executor-dag-types';
@@ -69,6 +69,9 @@ interface ExecOnce {
   plan: ConductorPlan;
   levels: string[][];
   results: Record<string, LeafResult>;
+  /** 本轮 D-21 复用命中的节点 id (结果面 reusedNodes 的来源)。 */
+  reusedNodes: string[];
+
   conductorUsage: ModelUsage;
   leavesIn: number;
   leavesOut: number;
@@ -992,7 +995,7 @@ async function executePlan(
     pump();
   });
 
-  return { plan, levels, results, conductorUsage, leavesIn, leavesOut, leavesCacheHit };
+  return { plan, levels, results, reusedNodes: [...reuse.keys()], conductorUsage, leavesIn, leavesOut, leavesCacheHit };
 }
 
 /**
@@ -1006,10 +1009,11 @@ async function executePlan(
 export async function runExecutorDag(
   task: string,
   config: ExecutorDagConfig,
+  prior?: PriorExec,
 ): Promise<ExecutorDagResult> {
   if (!config.conductorModel) throw new Error('executor-dag: conductorModel 必填 (无硬默认, 形如 provider:modelId)');
   if (!config.leafModel) throw new Error('executor-dag: leafModel 必填 (无硬默认, 形如 provider:modelId)');
-  return runDagInternal(task, config, null);
+  return runDagInternal(task, config, null, prior);
 }
 
 /**
@@ -1022,9 +1026,10 @@ export async function runExecutorDag(
 export async function runExecutorDagWithPlan(
   plan: ConductorPlan,
   config: ExecutorDagConfig,
+  prior?: PriorExec,
 ): Promise<ExecutorDagResult> {
   if (!config.leafModel) throw new Error('executor-dag: leafModel 必填 (无硬默认, 形如 provider:modelId)');
-  return runDagInternal(deriveTaskFromPlan(plan), config, plan);
+  return runDagInternal(deriveTaskFromPlan(plan), config, plan, prior);
 }
 
 /**
@@ -1063,6 +1068,8 @@ async function runDagInternal(
   task: string,
   config: ExecutorDagConfig,
   prebuiltPlan: ConductorPlan | null,
+  /** 上一**外层轮**的 {plan, results} (D-21 跨轮复用)。轮内 escalation 的 prior 另在下方组装。 */
+  prior?: PriorExec,
 ): Promise<ExecutorDagResult> {
   // sessionId: 本次 run 的 conductor+leaf 全部经 send → 同一 Langfuse session (B2)。
   // 可注入 (config.sessionId): 调用方传则跨平面关联 (派活飞轮 dispatchId ↔ Langfuse session); 省略 → 自生成。
@@ -1077,9 +1084,9 @@ async function runDagInternal(
   // D-7: 预构造 plan → executePlan 直执 (跳过 conductor); 否则 conductor 规划 → 执行。二者下游同一机器。
   let exec: ExecOnce;
   if (prebuiltPlan) {
-    exec = await executePlan(applyPlanFilters(prebuiltPlan, config), task, config, generate, { in: 0, out: 0 }, templates);
+    exec = await executePlan(applyPlanFilters(prebuiltPlan, config), task, config, generate, { in: 0, out: 0 }, templates, prior);
   } else {
-    exec = await planAndExecute(task, config, conductorModel, generate, maxPlanRetries, templates);
+    exec = await planAndExecute(task, config, conductorModel, generate, maxPlanRetries, templates, prior);
   }
   let conductorUsage = exec.conductorUsage;
   let leavesIn = exec.leavesIn;
@@ -1161,6 +1168,7 @@ async function runDagInternal(
     sessionId,
     levels: exec.levels,
     results: exec.results,
+    reusedNodes: exec.reusedNodes,
     usage: {
       conductor: conductorUsage,
       leavesIn,
