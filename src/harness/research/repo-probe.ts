@@ -23,9 +23,14 @@ export interface RepoHit {
 export interface RepoProbeOpts {
   /** 检索根 (绑定 cwd, 不接受调用方在 query 里逃逸)。 */
   cwd: string;
-  /** 每个 query 取前 N 条命中。默认 8。 */
+  /**
+   * **同一文件**最多取几条。默认 2 —— 同一个符号在一个文件里重复 8 次基本是噪声, 2 条足够定位,
+   * 省下的名额给别的文件 = 更多来源。(直接当 ugrep 的 -m 传, 它就是 per-file 语义。)
+   */
+  maxHitsPerFile?: number;
+  /** 每条 query 收集上限 (进轮转分配前的池子)。默认 16。 */
   maxHitsPerQuery?: number;
-  /** 单轮总命中上限 (跨 query)。默认 24 —— 语料增长必须有闸, 同 web 腿的 probeCrawl。 */
+  /** 单轮总命中上限 (跨 query)。默认 40 —— 语料增长必须有闸, 同 web 腿的 probeCrawl。 */
   maxHitsTotal?: number;
   /** 单条命中字符上限。默认 400 (一行代码 + 上下文足够)。 */
   maxCharsPerHit?: number;
@@ -38,47 +43,69 @@ const defaultSpawn = (argv: string[], opts: { cwd: string }): { stdout: string; 
   return { stdout: new TextDecoder().decode(r.stdout), exitCode: r.exitCode ?? 1 };
 };
 
+/** 跑一条 query, 返回已按 per-file 收敛的命中 (顺序 = ugrep 遍历序)。 */
+function runQuery(query: string, opts: RepoProbeOpts): RepoHit[] {
+  const spawn = opts._spawn ?? defaultSpawn;
+  const perFile = opts.maxHitsPerFile ?? 2;
+  const perQuery = opts.maxHitsPerQuery ?? 16;
+  const maxChars = opts.maxCharsPerHit ?? 400;
+  // -F 字面串 (查询串永远不当正则/元字符解释) · -n 行号 · -r 递归 · -m = **每文件**上限 · 跳噪声目录。
+  const argv = [
+    'ugrep', '-F', '-n', '-r', '--no-heading',
+    '-m', String(perFile),
+    '--exclude-dir=node_modules', '--exclude-dir=.git', '--exclude-dir=dist',
+    '--', query, '.',
+  ];
+  let out: { stdout: string; exitCode: number };
+  try {
+    out = spawn(argv, { cwd: opts.cwd });
+  } catch (e) {
+    logger.warn({ query, err: String(e) }, '[omd/repo-probe] 检索失败 → 该 query 跳过 (fail-open)');
+    return [];
+  }
+  if (out.exitCode !== 0 && !out.stdout) return []; // exit 1 = 没搜到, 正常
+  const hits: RepoHit[] = [];
+  for (const line of out.stdout.split('\n')) {
+    if (hits.length >= perQuery) break;
+    // ugrep --no-heading 输出: path:line:text
+    const m = /^([^:]+):(\d+):(.*)$/.exec(line);
+    if (!m) continue;
+    hits.push({ path: `${m[1]!.replace(/^\.\//, '')}:${m[2]}`, text: (m[3] ?? '').trim().slice(0, maxChars) });
+  }
+  return hits;
+}
+
 /**
  * 跑一批仓内查询 → 命中列表 (已去重、已封顶)。
  *
- * 失败不断链 (与 web 腿同): ugrep 不在 / 非零退出 (含"没搜到"的 exit 1) → 该 query 空手而归,
- * 不抛。整条 second-pass 是增益不是链路。
+ * **名额按 query 轮转分配**, 不是先到先得。为什么: 顺序取的写法下, 第一条常见词 (如 "config")
+ * 会吃光全部名额, 后面真正想查的符号**零命中** —— 2026-07-28 实测复现
+ * (["config", "SeatUnresolvedError", "assertSeatsUsable"] → 后两条各 0 条)。
+ * 轮转既公平又不浪费: 某条 query 早早取完, 剩余额度自动流给还有货的。
+ *
+ * 失败不断链 (与 web 腿同): ugrep 不在 / 非零退出 → 该 query 空手而归, 不抛。
  */
 export function repoProbe(queries: readonly string[], opts: RepoProbeOpts): RepoHit[] {
-  const spawn = opts._spawn ?? defaultSpawn;
-  const perQuery = opts.maxHitsPerQuery ?? 8;
-  const total = opts.maxHitsTotal ?? 24;
-  const maxChars = opts.maxCharsPerHit ?? 400;
+  const total = opts.maxHitsTotal ?? 40;
+  const pools = queries
+    .map((q) => q.trim())
+    .filter(Boolean)
+    .map((q) => runQuery(q, opts));
   const hits: RepoHit[] = [];
   const seen = new Set<string>();
-  for (const q of queries) {
-    if (hits.length >= total) break;
-    const query = q.trim();
-    if (!query) continue;
-    // -F 字面串 (查询串永远不当正则/元字符解释) · -n 行号 · -r 递归 · --exclude-dir 跳噪声。
-    const argv = [
-      'ugrep', '-F', '-n', '-r', '--no-heading',
-      '-m', String(perQuery),
-      '--exclude-dir=node_modules', '--exclude-dir=.git', '--exclude-dir=dist',
-      '--', query, '.',
-    ];
-    let out: { stdout: string; exitCode: number };
-    try {
-      out = spawn(argv, { cwd: opts.cwd });
-    } catch (e) {
-      logger.warn({ query, err: String(e) }, '[omd/repo-probe] 检索失败 → 该 query 跳过 (fail-open)');
-      continue;
-    }
-    if (out.exitCode !== 0 && !out.stdout) continue; // exit 1 = 没搜到, 正常
-    for (const line of out.stdout.split('\n')) {
-      if (hits.length >= total) break;
-      // ugrep --no-heading 输出: path:line:text
-      const m = /^([^:]+):(\d+):(.*)$/.exec(line);
-      if (!m) continue;
-      const path = `${m[1]!.replace(/^\.\//, '')}:${m[2]}`;
-      if (seen.has(path)) continue;
-      seen.add(path);
-      hits.push({ path, text: (m[3] ?? '').trim().slice(0, maxChars) });
+  const cursor = new Array(pools.length).fill(0);
+  let progressed = true;
+  while (hits.length < total && progressed) {
+    progressed = false;
+    for (let i = 0; i < pools.length && hits.length < total; i++) {
+      const pool = pools[i]!;
+      // 跳过本 query 里已被别的 query 命中过的同一 file:line (去重不占轮次)
+      while (cursor[i] < pool.length && seen.has(pool[cursor[i]]!.path)) cursor[i]++;
+      if (cursor[i] >= pool.length) continue;
+      const hit = pool[cursor[i]++]!;
+      seen.add(hit.path);
+      hits.push(hit);
+      progressed = true;
     }
   }
   return hits;
