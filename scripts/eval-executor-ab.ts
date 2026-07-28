@@ -164,6 +164,10 @@ for (let rep = 0; rep < REPS; rep++) {
           })()
         : await oracle(fx.root, TEST_PATH);
       const diff = await inspectDiff(fx);
+      // 存 diff 原文: 事后复盘唯一凭据 (worktree 跑完即毁)。B 臂出现过 +1/-0 —— 全量测试绿但
+      // 改法是"另加一条规则"而非恢复通用规则, 没有原文就永远查不出这种"过测但没真修"。
+      const patch = await $`git diff`.cwd(fx.root).quiet().nothrow();
+      writeFileSync(`${OUT}/${arm.name}-rep${rep}.patch`, patch.stdout.toString());
       const fam = new Map<string, number>();
       for (const l of Object.values(res.results)) if (l.model) fam.set(modelFamily(l.model), (fam.get(modelFamily(l.model)) ?? 0) + 1);
       rows.push({
