@@ -123,3 +123,42 @@ describe("executor:'research' 生产执行器 (D-6)", () => {
     expect(runner).toBeUndefined();
   });
 });
+
+// ── dag_research 与 research 节点走**同一条 web 管线** (不再有"纯模型档"分身) ──────
+describe('dag_research 旗标落到 web 管线', () => {
+  test('council:false → 固定档 (省一次分解调用); 默认自适应出镜头', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-rnode-'));
+    let opts: { council?: boolean; authorSeeds?: boolean; mode?: string } = {};
+    const mk = () =>
+      createDefaultResearchRunner({
+        cwd,
+        env: { TAVILY_API_KEY: 'x' } as NodeJS.ProcessEnv,
+        _webStack: fakeStack,
+        _webFanout: (async (_s: unknown, _q: string, o: typeof opts) => {
+          opts = o;
+          return fakeWebResult();
+        }) as never,
+      })!;
+    await mk()({ question: 'q' });
+    expect(opts.council).toBe(true);
+    await mk()({ question: 'q', council: false });
+    expect(opts.council).toBe(false);
+  });
+
+  test('deep → 种子作者化 + provider 池全并行 (super 旗标的落点)', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-rnode-'));
+    let opts: { authorSeeds?: boolean; mode?: string } = {};
+    const runner = createDefaultResearchRunner({
+      cwd,
+      env: { TAVILY_API_KEY: 'x' } as NodeJS.ProcessEnv,
+      _webStack: fakeStack,
+      _webFanout: (async (_s: unknown, _q: string, o: typeof opts) => {
+        opts = o;
+        return fakeWebResult();
+      }) as never,
+    })!;
+    await runner({ question: 'q', deep: true });
+    expect(opts.authorSeeds).toBe(true);
+    expect(opts.mode).toBe('aggregate');
+  });
+});

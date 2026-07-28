@@ -20,7 +20,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import type { OmdMcpTool } from './server';
 import { RunRegistry } from './run-registry';
 import { CheckpointManager } from '../harness/continuity/checkpoint-manager';
@@ -151,87 +151,6 @@ function createDefaultMemory(env: NodeJS.ProcessEnv): OmdMemory {
 }
 
 /**
- * 生产 research 接缝 (导出 = 可测 seam): question → 真 researchFanout (council-deep 默认镜头集)
- * → 报告全文落盘 .omd/research/<runId>.md → {runId, reportPath, summary} (D-8 宽出: summary =
- * 统计 + final 前 600 字符, 全量只在落盘文件)。
- *
- * 旗标全是真旋钮 (直接改 fanout 配置形状, 无装饰参数):
- *   k              = 广度: 取前 k 个镜头 (clamp 1..镜头总数, 默认全取);
- *   super=true     = 深档: 全 M framing × 全 K 评判维度; 默认快档 (单 framing, 全评判);
- *   council=false  = 无 judge panel: 单 correctness 维度; 默认全评判 panel。
- */
-export function createDefaultResearchFanout(deps: {
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  /** 测试注入: conductor 分解器 (默认真 authorFanoutSpec)。 */
-  _authorFanoutSpec?: typeof authorFanoutSpec;
-  /** 测试注入: fanout 执行 (默认真 researchFanout)。 */
-  _researchFanout?: typeof runResearchFanout;
-}): ResearchFanout {
-  const { cwd, env } = deps;
-  const authorFn = deps._authorFanoutSpec ?? authorFanoutSpec;
-  const fanoutFn = deps._researchFanout ?? runResearchFanout;
-  return async ({ question, council, super: superMode, k, rounds }) => {
-    const runId = randomUUID();
-    // 模型解析走单一 resolver 的 lens/reason 座位 (INV-MODEL-1) —— 此前是"OMD_ITER_* > runtime >
-    // 硬编码 mimo"的第 6 套链, 与 config 里的 lens/reason 座位互不相认。
-    const lensModel = resolveRoleModelConfigured('lens', { env }).model;
-    const reasonModel = resolveRoleModelConfigured('reason', { env }).model;
-
-    // 分解器 = conductor (author-spec): 按 question 自适应出领域专家镜头 (会计→CPA / 安全→安全研究员…)。
-    // 判领域本就是 conductor 职责,一次调用同时完成「判领域 + 出镜头」。fail-open: author 失败/超时 →
-    // 回落固定档 DEFAULT_COUNCIL_DEEP_*(零回归;P3 分解器统一:主路径也归一到 conductor)。
-    let lenses: readonly ResearchLens[];
-    let framingsAll: readonly { key: string; framing: string }[];
-    let criteriaAll: readonly { key: string; criterion: string }[];
-    try {
-      const authored = await authorFn({
-        goal: question,
-        groundTruth: question,
-        conductorModel: reasonModel,
-        lensModel,
-        reasonModel,
-      });
-      lenses = authored.lenses;
-      framingsAll = authored.synthesisFramings;
-      criteriaAll = authored.judgeCriteria;
-    } catch (err) {
-      logger.warn({ err: String(err) }, '[dag_research] author-spec 分解失败 → 回落固定档 (fail-open)');
-      lenses = DEFAULT_COUNCIL_DEEP_LENSES;
-      framingsAll = DEFAULT_COUNCIL_DEEP_FRAMINGS;
-      criteriaAll = DEFAULT_COUNCIL_DEEP_CRITERIA;
-    }
-    // 旗标仍作**向下 clamp**(只减不增,保持既有语义): k 限镜头数 · super 全 framing 否则单 · council=false 单维。
-    const lensCount = k === undefined ? lenses.length : Math.max(1, Math.min(Math.trunc(k), lenses.length));
-    const framings = superMode ? framingsAll : framingsAll.slice(0, 1);
-    const criteria = council === false ? criteriaAll.slice(0, 1) : criteriaAll;
-
-    const result = await fanoutFn({
-      question,
-      groundTruth: question,
-      lenses: lenses.slice(0, lensCount),
-      synthesisFramings: [...framings],
-      judgeCriteria: [...criteria],
-      lensModel,
-      reasonModel,
-      // research-second-pass (无 web probe 的 MCP 档: 只有模型缺口分析半边, 无新增即停照常成立)。
-      ...(rounds ? { rounds } : {}),
-    });
-
-    const reportDir = join(cwd, '.omd', 'research');
-    mkdirSync(reportDir, { recursive: true });
-    const reportPath = join(reportDir, `${runId}.md`);
-    writeFileSync(reportPath, renderResearchReport(question, runId, result));
-
-    const summary =
-      `leafCount=${result.leafCount} cost=$${result.costStats.totalUsd.toFixed(4)} ` +
-      `(cache 省 $${result.costStats.totalSavingsUsd.toFixed(4)})\n` +
-      result.final.slice(0, 600);
-    return { runId, reportPath, summary };
-  };
-}
-
-/**
  * 生产 research **节点**执行器 (D-6, P1): `executor:'research'` 节点经此跑 —— **真 web**
  * (researchWebFanout: 检索 → 抓正文 → 蒸馏 → 多镜头扇出判优), 不是 dag_research 那条纯模型档。
  *
@@ -265,7 +184,10 @@ export function createDefaultResearchRunner(deps: {
   return async (input) => {
     const runId = randomUUID();
     const res = await fanoutFn(stack, input.question, {
-      council: true, // 按问题自适应出镜头 (同 dag_research 的分解器职责)
+      // council: 按问题自适应出镜头 (分解器职责); 显式 false = 固定档单维, 省一次 conductor 调用。
+      council: input.council !== false,
+      // deep 档: 种子作者化 (3-4 个互补角度各自检索) —— dag_research 的 super 旗标落到这里。
+      ...(input.deep ? { authorSeeds: true, mode: 'aggregate' as const } : {}),
       conductorModel: resolveRoleModelConfigured('conductor', { env }).model,
       lensModel: resolveRoleModelConfigured('lens', { env }).model,
       reasonModel: resolveRoleModelConfigured('reason', { env }).model,
@@ -372,7 +294,32 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     const timer = setInterval(sweep, 6 * 3600 * 1000);
     timer.unref?.();
   }
-  const researchFanout = deps.researchFanout ?? createDefaultResearchFanout({ cwd, env });
+  // dag_research = **真 web** (与 executor:'research' 节点同一条管线, 不再有"纯模型档"分身)。
+  // 此前这里是 createDefaultResearchFanout: groundTruth 直接等于 question, 零检索 —— 一个叫
+  // research 的工具做的正是 D-6 判死的事 (拿模型记忆当调研)。无 search provider → 不挂 runner,
+  // 工具响亮拒绝, 而不是静默降级成"看起来像调研的一段话"。
+  const researchFanout: ResearchFanout =
+    deps.researchFanout ??
+    (async ({ question, council, super: superMode, k, rounds }) => {
+      if (!researchRunner) {
+        throw new Error(
+          '[dag_research] 无 search provider → 没有 web 就没有调研 (设 TAVILY_API_KEY / ANYSEARCH_API_KEY / SEARXNG_URL)。' +
+            '要纯模型的多视角综合请用 dag_run, 别把它当调研。',
+        );
+      }
+      const r = await researchRunner({
+        question,
+        ...(k ? { k } : {}),
+        rounds: rounds ?? 1,
+        ...(council === false ? { council: false } : {}),
+        ...(superMode ? { deep: true } : {}),
+      });
+      return {
+        runId: basename(r.reportPath ?? '', '.md'),
+        reportPath: r.reportPath ?? '',
+        summary: `${r.sources.length} 个来源真抓到正文\n${r.text.slice(0, 600)}`,
+      };
+    });
   // 长任务叶子超时: OMD_LEAF_TIMEOUT_MS 覆 240s 默认, 1h 兜底防泄漏 (session.abort 不杀子进程)。
   const leafTimeoutMs = (() => { const n = env.OMD_LEAF_TIMEOUT_MS ? Number.parseInt(env.OMD_LEAF_TIMEOUT_MS, 10) : NaN; return Number.isFinite(n) && n > 0 ? n : 3_600_000; })();
   const agentRunner = deps.agentRunner ?? createAgentLeafRunner({ cwd, hashlineEdit: true, leafTimeoutMs });
