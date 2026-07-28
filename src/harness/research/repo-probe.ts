@@ -11,6 +11,8 @@
  * 安全面: 固定 argv 数组调 ugrep/grep (**不过 shell**, 查询串当字面量 -F 传), cwd 绑定,
  * 命中数/字节数双封顶。查询串再怎么畸形也只是搜不到东西, 不会变成命令。
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { logger } from '../logger';
 
 export interface RepoHit {
@@ -18,6 +20,21 @@ export interface RepoHit {
   path: string;
   /** 命中行原文 + 上下文 (换行分隔, 已按 maxCharsPerHit 截断)。 */
   text: string;
+}
+
+/** 整读进来的文件 (仓内腿的"一个源" —— 与 web 腿的"一个页面"对位)。 */
+export interface RepoFile {
+  path: string;
+  text: string;
+  /** 超 maxCharsPerFile 被截断 (带显式标记进语料, 不静默丢)。 */
+  truncated: boolean;
+}
+
+export interface RepoProbeResult {
+  /** 行级命中 (定位面)。 */
+  hits: RepoHit[];
+  /** 整读文件 (纵深面) —— 命中最集中的前 N 个。 */
+  files: RepoFile[];
 }
 
 export interface RepoProbeOpts {
@@ -42,8 +59,22 @@ export interface RepoProbeOpts {
   contextLines?: number;
   /** 单条命中 (含上下文) 字符上限。默认 1200 —— 对齐 web 腿每源 12k 的量级差 (10×, 不是 30×)。 */
   maxCharsPerHit?: number;
+  /**
+   * 命中最集中的前 N 个文件**整读**进语料。默认 3; 0 = 关。
+   *
+   * 为什么要这条: web 腿的一个"源"是**一整页**(几 KB~30KB), 仓内腿的一条"命中"只是**一行**
+   * (实测均 ~200 字符, 只用到自己上限的 12%)。同样 40 个单位, 一边是 40 页一边是 40 行 ——
+   * 差的不是预算数字是**取材粒度**, 调大单条上限没用。整读把仓内腿的单位提到与 web 对位。
+   */
+  fullFileTop?: number;
+  /** 整读单文件字符上限。默认 12000 —— 与 web 腿每源同一个数, 两边"一个源"的量级对齐。 */
+  maxCharsPerFile?: number;
+  /** 仓内腿语料总闸 (行级 + 整读)。默认 40000。 */
+  maxCharsTotal?: number;
   /** 注入式 spawn (测试替身)。默认 Bun.spawnSync。 */
   _spawn?: (argv: string[], opts: { cwd: string }) => { stdout: string; exitCode: number };
+  /** 注入式文件读 (测试替身)。默认 readFileSync。 */
+  _readFile?: (path: string) => string;
 }
 
 const defaultSpawn = (argv: string[], opts: { cwd: string }): { stdout: string; exitCode: number } => {
@@ -121,7 +152,7 @@ function runQuery(query: string, opts: RepoProbeOpts): RepoHit[] {
  *
  * 失败不断链 (与 web 腿同): ugrep 不在 / 非零退出 → 该 query 空手而归, 不抛。
  */
-export function repoProbe(queries: readonly string[], opts: RepoProbeOpts): RepoHit[] {
+export function repoProbe(queries: readonly string[], opts: RepoProbeOpts): RepoProbeResult {
   const total = opts.maxHitsTotal ?? 40;
   const pools = queries
     .map((q) => q.trim())
@@ -144,16 +175,69 @@ export function repoProbe(queries: readonly string[], opts: RepoProbeOpts): Repo
       progressed = true;
     }
   }
-  return hits;
+  return { hits, files: promoteFiles(hits, opts) };
 }
 
-/** 命中列表 → 进语料的 markdown 段 (无命中 → '')。 */
-export function renderRepoHits(hits: readonly RepoHit[]): string {
-  if (hits.length === 0) return '';
-  return [
+/**
+ * 命中最集中的前 N 个文件整读 —— 仓内腿的"纵深面"。
+ *
+ * 挑法 = 命中数排序 (命中多 = 这个文件与缺口最相关), 同数按路径稳定序。读失败跳过不抛
+ * (second-pass 是增益不是链路)。
+ */
+function promoteFiles(hits: readonly RepoHit[], opts: RepoProbeOpts): RepoFile[] {
+  const topN = opts.fullFileTop ?? 3;
+  if (topN <= 0 || hits.length === 0) return [];
+  const perFile = opts.maxCharsPerFile ?? 12_000;
+  const totalCap = opts.maxCharsTotal ?? 40_000;
+  const read = opts._readFile ?? ((p: string) => readFileSync(p, 'utf8'));
+  const counts = new Map<string, number>();
+  for (const h of hits) {
+    const f = h.path.slice(0, h.path.lastIndexOf(':'));
+    counts.set(f, (counts.get(f) ?? 0) + 1);
+  }
+  const ranked = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, topN)
+    .map(([f]) => f);
+  const files: RepoFile[] = [];
+  // 行级命中已经占了一部分预算, 整读只能用剩下的 (总闸对两个面一起生效)。
+  let budget = totalCap - hits.reduce((a, h) => a + h.text.length, 0);
+  for (const f of ranked) {
+    if (budget <= 0) break;
+    let raw: string;
+    try {
+      raw = read(join(opts.cwd, f));
+    } catch (e) {
+      logger.warn({ file: f, err: String(e) }, '[omd/repo-probe] 整读失败 → 跳过 (fail-open)');
+      continue;
+    }
+    const cap = Math.min(perFile, budget);
+    const truncated = raw.length > cap;
+    files.push({ path: f, text: raw.slice(0, cap), truncated });
+    budget -= Math.min(raw.length, cap);
+  }
+  return files;
+}
+
+/** 命中 + 整读文件 → 进语料的 markdown 段 (全空 → '')。 */
+export function renderRepoHits(r: RepoProbeResult | readonly RepoHit[]): string {
+  // 兼容老签名 (只给 hits 数组)。
+  const res: RepoProbeResult = Array.isArray(r) ? { hits: r as RepoHit[], files: [] } : (r as RepoProbeResult);
+  if (res.hits.length === 0 && res.files.length === 0) return '';
+  const parts = [
     '<repo-probe>',
-    '以下是**本仓**确定性检索的命中 (file:line — 原文)。这是仓内事实, 与外部来源分开对待:',
-    ...hits.map((h) => `- ${h.path} — ${h.text}`),
-    '</repo-probe>',
-  ].join('\n');
+    '以下是**本仓**确定性检索的结果。这是仓内事实, 与外部来源分开对待:',
+  ];
+  if (res.hits.length > 0) {
+    parts.push('', '### 命中定位 (file:line — 原文 + 上下文)', ...res.hits.map((h) => `- ${h.path}\n${h.text}`));
+  }
+  for (const f of res.files) {
+    parts.push(
+      '',
+      `### 相关文件全文: ${f.path}${f.truncated ? ' [已截断, 全文见该路径]' : ''}`,
+      f.text,
+    );
+  }
+  parts.push('</repo-probe>');
+  return parts.join('\n');
 }
