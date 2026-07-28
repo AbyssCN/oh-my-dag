@@ -127,7 +127,9 @@ const PlanNode = z
     model: z.string().optional(),
     leaf: z.record(z.string(), z.unknown()).optional(),
     on_failure: z.enum(['retry', 'complete-then-retry', 'escalate', 'pause']).optional(),
-    max_retry: z.number().int().optional(),
+    // INV-GOAL-4 有界: 重试次数不允许出现"无限"这个取值。**目前引擎侧无消费者**
+    // (只进语义指纹) —— 但一个无界的字段就是给未来的实装者留的坑, 现在钉住比事后追便宜。
+    max_retry: z.number().int().min(0).max(3).optional(),
     fallback: z.enum(['human', 'reactive']).optional(),
     // ── SDD v2 (dag-engine-fusion-refactor) 调度/分配元数据 ──
     /**
