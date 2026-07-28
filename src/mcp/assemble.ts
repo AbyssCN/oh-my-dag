@@ -179,8 +179,8 @@ export function createDefaultResearchFanout(deps: {
     const runId = randomUUID();
     const runtime = runtimeCoord(env);
     // 模型解析同角色矩阵; 终兜底镜像 councilDeepPlan 的既有默认 (env 未配时的仓内行为)。
-    const lensModel = env.OMD_ITER_LEAF_MODEL?.trim() || runtime || 'deepseek:deepseek-v4-flash';
-    const reasonModel = env.OMD_ITER_CONDUCTOR_MODEL?.trim() || runtime || 'deepseek:deepseek-v4-pro';
+    const lensModel = env.OMD_ITER_LEAF_MODEL?.trim() || runtime || 'xiaomi-token-plan-ams:mimo-v2.5-pro';
+    const reasonModel = env.OMD_ITER_CONDUCTOR_MODEL?.trim() || runtime || 'xiaomi-token-plan-ams:mimo-v2.5-pro';
 
     // 分解器 = conductor (author-spec): 按 question 自适应出领域专家镜头 (会计→CPA / 安全→安全研究员…)。
     // 判领域本就是 conductor 职责,一次调用同时完成「判领域 + 出镜头」。fail-open: author 失败/超时 →

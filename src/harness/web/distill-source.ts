@@ -17,8 +17,8 @@
 import { z } from 'zod';
 import { send as defaultCallModel } from '../../model/gateway';
 
-/** 蒸馏默认模型 (cheap + 可靠, 与 query 扩展同档)。 */
-export const DISTILL_DEFAULT_MODEL = 'deepseek:deepseek-v4-flash';
+/** 蒸馏默认模型 (token-plan mimo, 有余额; deepseek 直连账户已 402 打光, 2026-07-28)。 */
+export const DISTILL_DEFAULT_MODEL = 'xiaomi-token-plan-ams:mimo-v2.5-pro';
 /** 蒸馏 extract 默认字数上限 (远小于 30k 触发阈值, 但够留机制 + 可引用片段)。 */
 export const DISTILL_DEFAULT_MAX_CHARS = 2500;
 
