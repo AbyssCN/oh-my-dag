@@ -134,13 +134,24 @@ export interface CacheEcon {
 }
 
 export function cacheEcon(res: ExecutorDagResult): CacheEcon {
-  const { leavesIn, leavesOut, leavesCacheHit } = res.usage;
+  // 从 **per-leaf usage 直接累加**, 不用 res.usage 的聚合字段 —— 后者对 agent leaf 不完整,
+  // 实测出现过 cacheHit/leavesIn = 2082% (命中大于总输入, 物理上不可能)。
+  let leavesIn = 0;
+  let leavesOut = 0;
+  let cacheHit = 0;
+  for (const l of Object.values(res.results)) {
+    leavesIn += l.usage?.in ?? 0;
+    leavesOut += l.usage?.out ?? 0;
+    cacheHit += l.usage?.cacheHit ?? 0;
+  }
+  // 命中 ⊆ 输入 (契约), 越界即读数坏 → 夹住并让它显形而不是silently 报个假比例。
+  const bounded = Math.min(cacheHit, leavesIn);
   return {
     leavesIn,
     leavesOut,
-    cacheHit: leavesCacheHit,
-    hitRate: leavesIn ? leavesCacheHit / leavesIn : 0,
-    effectiveInput: leavesIn - leavesCacheHit * 0.9,
+    cacheHit: bounded,
+    hitRate: leavesIn ? bounded / leavesIn : 0,
+    effectiveInput: leavesIn - bounded * 0.9,
   };
 }
 

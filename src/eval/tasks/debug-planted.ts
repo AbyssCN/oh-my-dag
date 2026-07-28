@@ -95,6 +95,12 @@ export async function createDebugFixture(opts: { repoRoot?: string } = {}): Prom
     planted.push(bug);
   }
 
+  // **把种完的状态提交进 worktree** —— 否则 git diff 的基线是"没 bug 的原版", 而正确的修复恰好把代码
+  // 改回原版 → 完美修复显示成 +0/-0, 与"一动没动"无法区分 (2026-07-28 首跑实测踩到)。
+  // 提交后基线 = 带 bug 的状态, diff 量的就是**模型改了什么**。
+  await $`git add -A`.cwd(fx.root).quiet().nothrow();
+  await $`git -c user.email=eval@local -c user.name=eval commit -m planted-baseline`.cwd(fx.root).quiet().nothrow();
+
   // 自检: 种完测试必须真的红 —— 不红说明这题测不出东西 (测试覆盖不到种的 bug)。
   const red = await $`bun test src/model/family-rotate.test.ts`.cwd(fx.root).quiet().nothrow();
   if (red.exitCode === 0) {
