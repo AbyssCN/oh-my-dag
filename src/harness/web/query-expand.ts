@@ -78,7 +78,7 @@ export function createModelQueryExpander(
   opts: { model?: string; _callModel?: typeof defaultCallModel } = {},
 ): QueryExpander {
   const call = opts._callModel ?? defaultCallModel;
-  const model = opts.model ?? process.env.OMD_EXPAND_MODEL ?? 'deepseek:deepseek-v4-flash';
+  const model = opts.model ?? process.env.OMD_EXPAND_MODEL ?? 'xiaomi-token-plan-ams:mimo-v2.5-pro';
   return async (query, signal) => {
     const res = await call({
       model,

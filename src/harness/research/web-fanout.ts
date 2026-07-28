@@ -77,8 +77,10 @@ export const LENS_DIVERGENCE_POOL = [
 export const LENS_DIVERGENCE_WEIGHTS: Record<string, number> = {
   'xiaomi-token-plan-ams:mimo-v2.5-pro': 3,
 };
-/** judge panel 跨族池: K 维度逐个轮不同族, 降单模型系统偏见。 */
-export const JUDGE_PANEL_POOL = ['opencode-go:glm-5.2', 'openai-codex:gpt-5.6-sol', 'kimi-coding:k3'];
+/** judge panel 跨族池: K 维度逐个轮不同族, 降单模型系统偏见。
+ * 2026-07-28: GPT(openai-codex/Codex) 在 research 大输入聚合上反复 "An error occurred processing your
+ * request"/context 溢出 → 移出研究判优池 (mimo 1M 打头 + glm/kimi 保跨族)。GPT 仍是 dag_run 的 conductor/review。 */
+export const JUDGE_PANEL_POOL = ['xiaomi-token-plan-ams:mimo-v2.5-pro', 'opencode-go:glm-5.2', 'kimi-coding:k3'];
 
 export interface WebFanoutOpts extends RetrieveOpts {
   /** true → conductor (authorFanoutSpec) 按问题+语料自动分解 lens/framing/judge, 替代默认 3 视角。 */
