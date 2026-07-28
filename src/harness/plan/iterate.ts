@@ -24,6 +24,7 @@ import {
   type ExecutorDagConfig,
   type ExecutorDagResult,
 } from '../executor-dag';
+import type { PriorExec } from '../executor-dag-types';
 import {
   runFixpoint,
   DEFAULT_MAX_ROUNDS,
@@ -49,8 +50,18 @@ export interface IterateConfig extends ExecutorDagConfig {
   escalateAfterRound?: number;
   /** 注入式收敛 judge (默认 = LLM judge)。测试 / 自定义评判传这个。 */
   judge?: FixpointJudge<ExecutorDagResult>;
-  /** 注入式 runDag (默认 runExecutorDag)。测试传 fake, 不碰 live 模型。 */
-  _runDag?: (task: string, config: ExecutorDagConfig) => Promise<ExecutorDagResult>;
+  /**
+   * 注入式 runDag (默认 runExecutorDag)。测试传 fake, 不碰 live 模型。
+   * 第三参 prior = 上一轮的 {plan, results} (D-21 跨轮复用)。
+   */
+  _runDag?: (task: string, config: ExecutorDagConfig, prior?: PriorExec) => Promise<ExecutorDagResult>;
+  /**
+   * 跨轮复用开关 (默认开)。关掉 = 每轮从零重跑 (A/B 对照用)。
+   *
+   * 为什么默认开: 修复轮的图和上一轮 80% 同构 —— 不带 prior 就是整图重跑, "只重跑污染节点"
+   * 这句话在代码里根本没落地过 (P1 前 iterate 调 runDag 从不传 prior, 复用只在轮内 escalation 生效)。
+   */
+  crossRoundReuse?: boolean;
 }
 
 export type IterateResult = FixpointResult<ExecutorDagResult>;
@@ -93,8 +104,10 @@ export async function iterateExecutorDag(task: string, config: IterateConfig): P
   // 剥出: onComplete (本层每轮显式调, 防 _runDag=runExecutorDag 双调) +
   //       verifier/maxEscalations (executor-dag 内部 verify+升级循环 → 本层关闭它, 防 double-loop:
   //       本层 fixpoint judge 已是唯一 verify 循环)。conductorEscalationModel 留作本层轮级升级用。
-  const { onComplete, verifier: _verifier, maxEscalations: _maxEsc, conductorEscalationModel, ...dagConfig } = config;
+  const { onComplete, verifier: _verifier, maxEscalations: _maxEsc, conductorEscalationModel, crossRoundReuse, ...dagConfig } = config;
   const canEscalate = escalationProviderReady(conductorEscalationModel);
+  // 跨轮复用: 上一轮的 {plan, results} 喂下一轮 → 语义没变的节点零 LLM 注入上轮输出 (D-21)。
+  let prior: PriorExec | undefined;
 
   return runFixpoint<ExecutorDagResult>(
     task,
@@ -110,7 +123,14 @@ export async function iterateExecutorDag(task: string, config: IterateConfig): P
           '[omd/iterate] 未收敛多轮 → conductor 轮级升级重画',
         );
       }
-      const res = await runDag(roundInput, roundConfig);
+      const res = await runDag(roundInput, roundConfig, prior);
+      if (res.reusedNodes?.length) {
+        logger.info(
+          { round, reused: res.reusedNodes.length, total: Object.keys(res.results).length },
+          '[omd/iterate] 跨轮复用命中 → 只重跑污染节点 (D-21)',
+        );
+      }
+      if (crossRoundReuse !== false) prior = { plan: res.plan, results: res.results };
       if (onComplete) await onComplete(res);
       return res;
     },
