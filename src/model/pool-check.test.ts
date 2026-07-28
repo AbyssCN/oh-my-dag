@@ -12,6 +12,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkPools } from './role-fallback';
+import { poolEnvKey } from './role-models';
 
 /** 造一份只含 pools 段的临时 config, 并把 OMD_CONFIG_PATH 指过去。 */
 const withConfig = <T,>(cfg: unknown, fn: () => T): T => {
@@ -62,5 +63,33 @@ describe('checkPools — config.pools 的死坐标要在起跑就可见', () => 
   test('空数组档位不产生结论 (配了个空池 ≠ 有问题)', () => {
     const out = withConfig({ pools: { cheap: [] } }, () => checkPools({}));
     expect(out).toEqual([]);
+  });
+});
+
+describe('OMD_POOL_* env 覆盖 (2026-07-29)', () => {
+  test('env 压过 config.pools —— 临时换一档不用改文件', () => {
+    const out = withConfig({ pools: { cheap: ['deadco:m1'] } }, () =>
+      checkPools({ OMD_POOL_CHEAP: 'other:m9' }),
+    );
+    const cheap = out.find((p) => p.tier === 'cheap')!;
+    expect(cheap.size).toBe(1);
+    expect(cheap.unusable).toEqual(['other:m9']); // 生效的是 env 那个, 不是文件里的
+  });
+
+  test('逗号分隔多坐标 + 去空白', () => {
+    const out = withConfig({}, () => checkPools({ OMD_POOL_MID: ' a:1 , b:2 ' }));
+    expect(out.find((p) => p.tier === 'mid')!.size).toBe(2);
+  });
+
+  test('驼峰档位的 env key 是下划线大写 (multimodalStrong → OMD_POOL_MULTIMODAL_STRONG)', () => {
+    expect(poolEnvKey('multimodalStrong')).toBe('OMD_POOL_MULTIMODAL_STRONG');
+    expect(poolEnvKey('cheap')).toBe('OMD_POOL_CHEAP');
+    const out = withConfig({}, () => checkPools({ OMD_POOL_MULTIMODAL_STRONG: 'x:1' }));
+    expect(out.find((p) => p.tier === 'multimodalStrong')!.size).toBe(1);
+  });
+
+  test('env 给的是垃圾 (无冒号) → 不接受, 回落文件', () => {
+    const out = withConfig({ pools: { cheap: ['file:m1'] } }, () => checkPools({ OMD_POOL_CHEAP: 'nocolon' }));
+    expect(out.find((p) => p.tier === 'cheap')!.unusable).toEqual(['file:m1']);
   });
 });

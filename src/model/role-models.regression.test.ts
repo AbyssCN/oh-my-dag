@@ -240,6 +240,10 @@ describe("INV-MODEL-2 GWT — runtime 解析路径 0 处 deepseek 字面坐标",
 	const ALLOW = [
 		"src/harness/init/role-presets.ts", // 用户在 init 向导里挑的预设档 (显式选择, 非兜底)
 		"src/model/cost-ledger.ts", // 价目表: 坐标是**表的键**, 不是"没配时用谁"
+		// 分配策略表 (2026-07-29): 同上一类 —— 坐标是**策略表的值**, 由 `omd models auto` 显式触发,
+		// 产出落 config.autoAssigned, 而 autoAssigned 在解析链里**排在 env 之下**。
+		// 它不是"解不到就用谁"的兜底, 所以不违反 INV-MODEL-2 (那条禁的是静默兜底)。
+		"src/model/auto-assign.ts",
 	];
 
 	test("src/ 下无 'deepseek:deepseek-' 字面 (白名单外)", () => {

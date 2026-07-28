@@ -158,13 +158,13 @@ export interface PoolCheck {
 /**
  * **池子自检** (2026-07-29)。座位自检管不到这里 —— `config.pools` 是**第三条轴**:
  * 它不回答"某个座位用哪个模型", 而是"stamp pass 把节点判成 cheap 档时从哪几个坐标里轮换"。
- * 显式配了 pools 的档位**完全不经过座位链** (`mcp/assemble.ts` 的 `cfgPools.x ?? 座位推导`),
+ * 显式配了 pools 的档位 (config.pools 或 OMD_POOL_*) **完全不经过座位链** (`mcp/assemble.ts` 的 `cfgPools.x ?? 座位推导`),
  * 于是既躲开 env 覆盖, 也躲开 checkSeats —— 一池子欠费 provider 照样开跑, 直到 429/403 才炸。
  *
  * 只查**显式配置**的池子: 未配的档位由座位推导而来, 那些坐标已被 checkSeats 覆盖, 重复查是噪声。
  */
 export function checkPools(env: Record<string, string | undefined> = process.env): PoolCheck[] {
-  const pools = resolveConfiguredPools();
+  const pools = resolveConfiguredPools(undefined, env);
   return Object.entries(pools)
     .filter((e): e is [string, string[]] => Array.isArray(e[1]) && e[1].length > 0)
     .map(([tier, coords]) => ({
