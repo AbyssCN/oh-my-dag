@@ -51,6 +51,7 @@ import { evidencePass } from '../harness/plan-passes/evidence-pass';
 import { loadAgentTemplates } from '../harness/agent-templates';
 import { modelFamily } from '../model/channels';
 import { isStrongCoord } from '../model/model-ratings';
+import { assertSeatsUsable } from '../model/role-fallback';
 import {
   resolveRoleModelConfigured,
   resolveMultimodalPool,

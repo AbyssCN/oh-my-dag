@@ -209,7 +209,13 @@ function launchPlanRun(
   deps: DagToolDeps,
 ): { content: { type: 'text'; text: string }[]; isError?: boolean } {
   const { engine, runRegistry, continuity, hudMirror, ledger } = deps;
-  const defaultConfig = resolveDefaults(deps.defaultConfig);
+  let defaultConfig: Partial<ExecutorDagConfig> | undefined;
+  try {
+    defaultConfig = resolveDefaults(deps.defaultConfig);
+  } catch (e) {
+    // 起跑自检 / 座位未配 (INV-MODEL-5): 响亮但不崩 server —— 回 MCP error 并把座位名带出去。
+    return { content: [{ type: 'text' as const, text: `${opts.toolName} 拒绝: ${(e as Error).message}` }], isError: true };
+  }
   const { resume, leafModel, maxFanout, task, toolName } = opts;
   const runId = resume ?? randomUUID();
   const goal = task?.slice(0, 200) ?? parsedPlan.name ?? 'prebuilt plan';
@@ -364,7 +370,14 @@ function makeDagRun({ engine, runRegistry, continuity, hudMirror, ledger, ...res
 
       // Fire-and-forget: execute in background, update registry on completion.
       // 座位/池**每 run 重解** (INV-MODEL-3): thunk 在这里调用, 故 omd_set_role 改完下一次 dag_run 就用新座。
-      const defaultConfig = resolveDefaults(rest.defaultConfig);
+      let defaultConfig: Partial<ExecutorDagConfig> | undefined;
+      try {
+        defaultConfig = resolveDefaults(rest.defaultConfig);
+      } catch (e) {
+        const msg = (e as Error).message;
+        runRegistry.fail(runId, msg);
+        return { content: [{ type: 'text' as const, text: `runId: ${runId}\nerror: ${msg}` }], isError: true };
+      }
       const config: ExecutorDagConfig = {
         ...defaultConfig,
         conductorModel: conductorModel ?? defaultConfig?.conductorModel ?? '',
