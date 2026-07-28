@@ -148,6 +148,9 @@ export async function createDistantBugFixture(opts: { repoRoot?: string } = {}):
 // ── H3: 全量 oracle ──────────────────────────────────────────────────────────
 export interface SuiteResult {
   tscClean: boolean;
+  /** tsc 报的前几条错 —— 闸说"红"必须说得出红在哪, 否则无法诊断 (本次实测踩到: 修复率 0% 但过测 100%,
+   *  查了半天才知道是 tsc 判红, 而 tsc 红在哪当时没人记录)。 */
+  tscErrors: string[];
   pass: number;
   fail: number;
   /** 全绿 = tsc 零错 且 fail=0。**这才是"真修好了"的定义**。 */
@@ -162,12 +165,17 @@ export interface SuiteResult {
  */
 export async function wholeSuite(root: string, baselineFail = 0): Promise<SuiteResult> {
   const tsc = await $`npx tsc --noEmit -p tsconfig.json`.cwd(root).quiet().nothrow();
+  const tscErrors = (tsc.stdout.toString() + tsc.stderr.toString())
+    .split('\n')
+    .filter((l) => /error TS\d+/.test(l))
+    .slice(0, 5);
   const t = await $`bun test`.cwd(root).quiet().nothrow();
   const out = t.stdout.toString() + t.stderr.toString();
   const pass = Number(/(\d+) pass/.exec(out)?.[1] ?? 0);
   const fail = Number(/(\d+) fail/.exec(out)?.[1] ?? 0);
   return {
     tscClean: tsc.exitCode === 0,
+    tscErrors,
     pass,
     fail,
     green: tsc.exitCode === 0 && fail === 0,
