@@ -16,7 +16,7 @@ import type { ModelUsage } from '../../model/gateway';
  */
 export interface NodeCheckpoint {
   nodeId: string;
-  leafKind: 'inproc' | 'agent' | 'command' | 'map' | 'primitive';
+  leafKind: 'inproc' | 'agent' | 'command' | 'map' | 'primitive' | 'research';
   /**
    * done = 成功节点; failed = 失败节点 (issue #4: 留败因痕供事后诊断); skipped = 依赖未达
    * quorum 级联跳过 (D-7v2, 零执行)。resume 语义只认 done —— loadAllGreen / shouldSkip 均

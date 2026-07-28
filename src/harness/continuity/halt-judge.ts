@@ -34,7 +34,7 @@ import { resolveSeatModel } from '../../model/role-models';
 export interface LeafState {
   id: string;
   status: 'done' | 'failed' | 'skipped';
-  kind: 'inproc' | 'agent' | 'command' | 'map' | 'primitive';
+  kind: 'inproc' | 'agent' | 'command' | 'map' | 'primitive' | 'research';
 }
 
 export interface L1Input {

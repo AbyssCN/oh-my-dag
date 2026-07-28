@@ -55,6 +55,32 @@ export interface CommandLeafResult {
 /** 注入点:executor-dag 的 command-kind 节点经此跑。 */
 export type CommandLeafRunner = (input: CommandLeafInput) => Promise<CommandLeafResult>;
 
+// ── research leaf(真 web 检索 + 有界内环的研究节点)──────────────────
+export interface ResearchLeafInput {
+  /** 研究问题 (= 节点 goal, 已含 fan-in 上下文)。 */
+  question: string;
+  /** 上游节点输出当事实锚 (防幻觉); 省略 = 只有问题本身。 */
+  groundTruth?: string;
+  /** 镜头数上限 (广度旋钮)。 */
+  k?: number;
+  /** second-pass 轮数上限 (**有界内环** — INV-GOAL-4: 节点内环必须有界)。 */
+  rounds?: number;
+}
+export interface ResearchLeafResult {
+  /** 研究终稿正文 (进下游节点的 fan-in)。 */
+  text: string;
+  usage: ModelUsage;
+  /**
+   * **真抓到正文的 URL** (INV-GOAL-2 的证据面)。空数组 = 没有任何真检索痕迹 →
+   * executor 判 failed, 拒绝"引用来自模型记忆"的假 grounded 通过。
+   */
+  sources: string[];
+  /** 报告全文落盘路径 (宽出: 节点输出只带终稿, 细节自己 Read)。 */
+  reportPath?: string;
+}
+/** 注入点:executor-dag 的 research-kind 节点经此跑。未注入 = research 节点判 failed (不静默降级)。 */
+export type ResearchLeafRunner = (input: ResearchLeafInput) => Promise<ResearchLeafResult>;
+
 // ── leaf 模型路由(ε-greedy bandit;静态 fallback = no-op)──────────────
 export interface LeafModelRouter {
   /** 给 bucket 选模型坐标;pool 空/单 → 返 fallback(no-op = 静态)。 */

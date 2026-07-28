@@ -81,9 +81,17 @@ const PlanNode = z
     output_path: z.string().optional(),
     output_schema: z.record(z.string(), z.unknown()).optional(),
     // 'map' (U1) = 运行时动态扇出节点 (STUDY Q3): lister → per-element 展开成 applicative 子节点。
-    executor: z.enum(['agent', 'leaf', 'command', 'map']).optional(),
+    executor: z.enum(['agent', 'leaf', 'command', 'map', 'research']).optional(),
     /** executor='command' 时要跑的确定性 CLI (如 'codegraph trace X Y')。经 fail-closed 闸 + 白名单。 */
     command: z.string().optional(),
+    /**
+     * executor='research' 的旋钮 (D-6)。**rounds 是节点内环的界** (INV-GOAL-4: 环封节点内且必须有界) ——
+     * schema 层就钳到 1..4, 不给"跑到满意为止"留口子。
+     */
+    research: z.object({
+      k: z.number().int().min(1).max(12).optional().describe('镜头数上限 (广度)'),
+      rounds: z.number().int().min(1).max(4).optional().describe('second-pass 轮数上限 (内环的界)'),
+    }).optional(),
     /** executor='map' 时的动态扇出规格 (与 executor:'map' 互为 required, superRefine 校验)。 */
     map: MapSpec.optional(),
     // ── SDD 0013 S1 约束选择节点 (与自由 node 并存, SEL-5 BC) ──
@@ -319,7 +327,12 @@ export function conductorSystemPrompt(
     '  can stay cheap, because they are now transcribing a decision instead of making one.',
     '',
     'Executor kind per node (field "executor"):',
-    '- "leaf"  = a single-shot model call, NO tools. Use for generation / research / judgement / drafting.',
+    '- "leaf"  = a single-shot model call, NO tools. Use for generation / judgement / drafting from what',
+    '            you already have. A leaf has NO web access — it answers from model memory.',
+    '- "research" = real WEB research (search → fetch → distill → multi-lens synthesis), bounded by',
+    '            field "research".rounds (1..4, default 1). Use whenever the node needs CURRENT external',
+    '            facts (docs, APIs, prior art, "what do people do about X"). A node that fails to fetch a',
+    '            single real page FAILS — so never use it for questions answerable from the repo alone.',
     '- "agent" = a tool-using sub-agent (read / edit / write / bash). Use ONLY for nodes that must touch',
     '            files or run commands; scope each agent node to ONE atomic artifact (e.g. a single file).',
     '- "command" = run a deterministic CLI (field "command", e.g. "codegraph trace A B") with NO model.',
@@ -329,7 +342,7 @@ export function conductorSystemPrompt(
     '- "map"  = runtime dynamic fan-out (field "map"): a lister enumerates an array AT RUNTIME, then a',
     '            per-element template spawns one child per item. Use when the work-list is unknown until run',
     '            time (see the "Runtime work-list" section below). This is the ONLY node kind that expands itself.',
-    'Default to "leaf" unless the node needs tools/CLI. A non-map node never spawns DAG sub-nodes itself.',
+    'Default to "leaf" unless the node needs tools/CLI/web. A non-map node never spawns DAG sub-nodes itself.',
     'HARD RULE — file producers MUST be "agent": if a node CREATES or MODIFIES any file (its job is to',
     '  implement/write/生成 a path like src/x.ts), it MUST set executor:"agent" AND output_type:"file"',
     '  (set output_path too). A "leaf" CANNOT touch the filesystem — a leaf told to write a file silently',

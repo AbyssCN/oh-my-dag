@@ -167,6 +167,7 @@ describe("dedupPass (D-20)", () => {
 			cluster: ["fe", "be"],
 			tier: ["strong", "cheap"],
 			attach_media: [true, false],
+			research: [{ rounds: 1 }, { rounds: 2 }],
 			thinking: ["low", "xhigh"],
 		};
 		for (const key of Object.keys(shape)) {

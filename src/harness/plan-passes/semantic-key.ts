@@ -51,6 +51,8 @@ export function nodeFieldsKey(node: PlanNode): string {
 		node.fallback ?? NONE,
 		node.postcondition ? JSON.stringify(node.postcondition) : NONE,
 		node.leaf ? JSON.stringify(node.leaf) : NONE,
+		// D-6: research 旋钮是语义 (同问题跑 1 轮 vs 4 轮 = 不同深度的执行, 成本与产出都不同)。
+		node.research ? JSON.stringify(node.research) : NONE,
 		// map spec 也是语义 (D-21 复用要对 map 节点保守但正确; dedup 层面 map 整节点被排除)。
 		node.map ? JSON.stringify(node.map) : NONE,
 	]);

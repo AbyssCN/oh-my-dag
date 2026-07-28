@@ -2,7 +2,7 @@ import type { ContentPart, ModelUsage } from '../model/gateway';
 import type { AgentTemplate } from './agent-templates';
 import type { ConductorPlan } from './conductor-plan';
 import type { CavemanLevel } from './caveman';
-import type { AgentLeafRunner, CommandLeafRunner, LeafModelRouter } from './leaf-runners';
+import type { AgentLeafRunner, CommandLeafRunner, LeafModelRouter, ResearchLeafRunner } from './leaf-runners';
 import type { CheckpointManager } from './continuity/checkpoint-manager';
 import type { VerifierFn } from './verifier';
 import type { FaninSummaryConfig } from './fanin-summary';
@@ -147,6 +147,12 @@ export interface ExecutorDagConfig {
    */
   commandRunner?: CommandLeafRunner;
   /**
+   * research-kind leaf 的执行器 (真 web 检索 + 有界内环, D-6)。给则 `executor:'research'` 节点经此跑。
+   * 省略 → research 节点失败 —— **刻意不降级成 inproc**: 无 web 的 leaf 只会拿模型记忆编引用,
+   * 那是假 grounded (与"写文件节点无 agentRunner → 失败"同一条纪律: 拒绝静默假成功)。
+   */
+  researchRunner?: ResearchLeafRunner;
+  /**
    * oracle 命令 (如 "bun run typecheck && bun test"): plan 中 command 与之等价的节点
    * 在执行前被确定性过滤 (空白规范化后精确匹配, 最小无害边重连)。
    * 选型理由: oracle 已跑过该命令, conductor 重规划出等价节点 = 浪费 token + 时间。
@@ -207,8 +213,8 @@ export interface LeafResult {
    * 与 resume 的 `skipped?: boolean` (已绿跳过, status 仍 'done') 是两个正交概念, 不混用。
    */
   status: 'done' | 'failed' | 'skipped';
-  /** 实际执行模式: inproc 单发 / agent 带工具 / command CLI / map 动态扇出 (U1) / primitive 约束选择 (SDD 0013)。 */
-  kind: 'inproc' | 'agent' | 'command' | 'map' | 'primitive';
+  /** 实际执行模式: inproc 单发 / agent 带工具 / command CLI / map 动态扇出 (U1) / primitive 约束选择 (SDD 0013) / research 真 web (D-6)。 */
+  kind: 'inproc' | 'agent' | 'command' | 'map' | 'primitive' | 'research';
   /** 实际所用模型坐标 (inproc/agent leaf; command 无模型 → undefined)。bandit reward 归因 + 审计用。 */
   model?: string;
   output: string;
@@ -218,6 +224,11 @@ export interface LeafResult {
   skipped?: boolean;
   /** agent leaf 触碰的文件 (来自 AgentLeafResult.filesTouched, checkpoint 产物锚)。 */
   filesTouched?: string[];
+  /**
+   * research leaf 真抓到正文的 URL (INV-GOAL-2 证据面)。零来源的 research 节点在引擎里已判 failed,
+   * 故 done 的 research 结果这里恒非空 —— 下游 gate/审计据此判"这份研究是否真落地过网页"。
+   */
+  sources?: string[];
   /** agent leaf 的工具调用次数 (来自 AgentLeafResult.toolCalls; prompt 档的路由效率读数)。 */
   toolCalls?: number;
   /** 早期心跳闸判停摆 (issue #5): provider 挂起, 未等满硬超时即中止 → settle 记 failureKind='stall'。 */
