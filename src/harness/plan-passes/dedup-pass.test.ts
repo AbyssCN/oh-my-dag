@@ -155,6 +155,7 @@ describe("dedupPass (D-20)", () => {
 			command: ["c1", "c2"],
 			expect_exit: [0, 1],
 			max_nodes: [4, 8],
+			max_rounds: [1, 3],
 			kind: ["primitive", undefined],
 			primitive: ["parallel", "judge"],
 			params: [{ p: 1 }, { p: 2 }],

@@ -157,6 +157,40 @@ export interface FixpointJournal {
 }
 
 /**
+ * **节点级环 journal** (P3 D-A/D-F, 2026-07-29), 落 `_loop-<nodeId>.json`。
+ *
+ * 环从外层搬进 conductor 节点之后, 轮次与毒集也得跟着搬。**搬到哪里是查证过的**, 两个看似顺手的
+ * 位置都不行:
+ *
+ *  ❌ **不能放 `NodeCheckpoint`**: checkpoint 只在节点 **done** 时写, 而环没收敛就没有 done ——
+ *     崩在环中间等于毒集蒸发, 正好是要防的那件事 (INV-P2-6 说的"毒集丢了比不复用更坏")。
+ *  ❌ **不能拿子节点 id 当毒集键**充数: 子节点 id 的后缀来自 `merkleFingerprints(**子图**)`
+ *     (deps 只含图内边), 而 judge 铸票算的是 `merkleFingerprints(**轮结果整图**)`
+ *     (deps 含并进来的父节点外层上游) —— **两个指纹不相等**, 不能互相代用。
+ *
+ * ✅ 于是就是这个: 结构与 {@link FixpointJournal} 同形, 键从 `runId` 降到 `runId + nodeId`,
+ *    写入时机同样是**每轮 judge 判完之后**。所以 D-F 的「废 `_fixpoint.json`」准确说法是
+ *    **「把 FixpointJournal 从 run 级降到节点级」** —— 概念删掉等于把缺陷换个方式重新引入。
+ */
+export interface NodeLoopJournal {
+  runId: string;
+  /** 拥有这个环的节点 id (conductor 节点)。 */
+  nodeId: string;
+  /** 已判完的内环轮数; resume 从 completedRounds+1 起跑。 */
+  completedRounds: number;
+  /** 毒集: 内环 judge 点名过的**子节点指纹** (累积不撤, 与 NodeCheckpoint.fingerprint 同一键空间)。 */
+  poisoned: string[];
+  /** 上一轮的失败原因 —— 注入下一轮**重展开**的 prompt (环的信息通道就是它)。 */
+  prevReason?: string;
+  /** 已判收敛 (resume 时无事可做, 直接返上次结论)。 */
+  converged?: boolean;
+  /** 上一轮的产出摘要 (收敛后 resume 要拿它当本节点的 output)。 */
+  lastOutput?: string;
+  updatedAt: string;
+  schemaVersion: 1;
+}
+
+/**
  * **goal 前置阶段 journal** (2026-07-29), 落 `_goal.json`。
  *
  * `dag_goal` 的前四段 (classify / survey / research / spec) 是**编排代码**不是图 —— 它们不经 conductor、

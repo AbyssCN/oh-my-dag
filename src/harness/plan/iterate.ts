@@ -40,8 +40,8 @@ import { logger } from '../logger';
 export interface IterateConfig extends ExecutorDagConfig {
   /** 最大迭代轮数 (默认 DEFAULT_MAX_ROUNDS=3)。 */
   maxRounds?: number;
-  /** 收敛 judge 模型 'provider:modelId' (默认 = leafModel)。仅默认 LLM judge 用。 */
-  judgeModel?: string;
+  // judgeModel 已上移到 ExecutorDagConfig (conductor 节点的内环 judge 也要用它, D-A)。
+  // 本层的回落仍是 leafModel (见下方 makeLlmConvergenceJudge 的接线), 与节点内环回落 conductorModel 不同。
   /** 收敛阈值 (进 judge prompt 作 bar)。默认 0.8。 */
   convergenceThreshold?: number;
   /**

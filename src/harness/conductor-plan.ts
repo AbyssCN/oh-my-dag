@@ -90,6 +90,17 @@ const PlanNode = z
      * 与 map 的 maxItems 同一个数 —— 没有证据支持给它一个不同的值。
      */
     max_nodes: z.number().int().min(1).max(64).optional(),
+    /**
+     * executor='conductor' 的**内环轮数上限** (P3 D-A)。缺省 1 = 展开一次就结束, **零回归**。
+     *
+     * >1 时环的语义是**逐轮重展开**, 不是"重跑同一张子图": 每轮把上一轮的失败原因喂回给
+     * conductor, 让它**重新画**。这条区分是环的全部价值所在 —— 重跑同一张图只能把同样的活
+     * 再干一遍, 重新画才能补一个上一轮压根没有的步骤 (D-G′ 说的「补调研」正是这个形状:
+     * 不需要回边, 因为每一轮都是一张全新的无环子图)。
+     *
+     * INV-GOAL-4 有界: 不允许"跑到满意为止"。
+     */
+    max_rounds: z.number().int().min(1).max(4).optional(),
     /** executor='command' 时要跑的确定性 CLI (如 'codegraph trace X Y')。经 fail-closed 闸 + 白名单。 */
     command: z.string().optional(),
     /**
