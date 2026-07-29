@@ -120,6 +120,36 @@ export interface FixpointJournal {
 }
 
 /**
+ * **goal 前置阶段 journal** (2026-07-29), 落 `_goal.json`。
+ *
+ * `dag_goal` 的前四段 (classify / survey / research / spec) 是**编排代码**不是图 —— 它们不经 conductor、
+ * 不进 DAG、没有 per-node checkpoint。于是崩在任何一段, resume 都得从 classify 重跑一遍:
+ * research 是真联网 (实测 104s + token), spec 写的文件会被覆盖重写。**最贵的两段白烧。**
+ *
+ * 修法承 Claude Code `/loop` 的形状: **不造状态机, 靠幂等再入** —— 每段把结论写进世界,
+ * 入口先看世界。于是 "resume" 不是一条特殊代码路径, 就是"再跑一遍, 已经有的自然跳过"
+ * (与 `shouldSkip` 同一纪律: 存在 ∧ 有效 → 跳)。
+ *
+ * ⚠ `goal` 字段是**防误用闸**: 同一个 runId 换个 goal 再跑, 上次的仓内事实/研究证据对新 goal 无效,
+ * 复用它们等于拿错证据写契约。goal 文本不匹配 → 整份 journal 作废。
+ */
+export interface GoalStageJournal {
+  runId: string;
+  /** 产出这批制品的 goal 原文 (不匹配则整份作废)。 */
+  goal: string;
+  tier?: 'simple' | 'complex';
+  /** survey 阶段的仓内事实 (file:line 行)。 */
+  repoContext?: string;
+  /** research 证据正文 (零来源时为空 —— 与"假 grounded 不进 spec"同判据)。 */
+  evidence?: string;
+  sources?: string[];
+  /** spec 落盘路径 (未落盘则无)。 */
+  specPath?: string;
+  updatedAt: string;
+  schemaVersion: 1;
+}
+
+/**
  * 停机闸栈 (L1-L3) 判定结果。
  * - continue: 继续执行下一节点/轮。
  * - stop: 停机, 携带原因与可选证据。

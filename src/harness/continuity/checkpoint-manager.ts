@@ -24,7 +24,7 @@ import {
 } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
 import { logger } from '../logger';
-import type { NodeCheckpoint, DagMetadata, FixpointJournal } from './types';
+import type { NodeCheckpoint, DagMetadata, FixpointJournal, GoalStageJournal } from './types';
 import { dataPath } from '../project-scope';
 
 /** `.omd/continuity` — 约定目录, per-worktree 局部 (legacy: repoRoot 相对)。 */
@@ -96,6 +96,32 @@ export class CheckpointManager {
       const path = join(this.runDir(runId), '_fixpoint.json');
       if (!existsSync(path)) return null;
       return JSON.parse(readFileSync(path, 'utf-8')) as FixpointJournal;
+    } catch {
+      return null;
+    }
+  }
+
+  // ── goal 前置阶段 journal (2026-07-29) ───────────────────────────────────
+
+  /** 落 `_goal.json` (原子写)。失败 → WARN (fail-open, 与 _dag/_fixpoint 同纪律)。 */
+  writeGoalJournal(runId: string, journal: GoalStageJournal): void {
+    try {
+      const dir = this.runDir(runId);
+      this.ensureDir(dir);
+      const tmp = join(dir, '_goal.tmp');
+      writeFileSync(tmp, JSON.stringify(journal, null, 2), 'utf-8');
+      renameSync(tmp, join(dir, '_goal.json'));
+    } catch (err) {
+      logger.warn({ err, runId }, 'checkpoint: writeGoalJournal failed (fail-open)');
+    }
+  }
+
+  /** 读 `_goal.json`。不存在/损坏 → null (按"没有前置产出"处理, 即从 classify 重跑)。 */
+  loadGoalJournal(runId: string): GoalStageJournal | null {
+    try {
+      const path = join(this.runDir(runId), '_goal.json');
+      if (!existsSync(path)) return null;
+      return JSON.parse(readFileSync(path, 'utf-8')) as GoalStageJournal;
     } catch {
       return null;
     }
