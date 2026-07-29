@@ -33,6 +33,7 @@ const DECLARED_CONSUMERS: Record<string, string> = {
   depends_on: 'executor-dag (拓扑/ready-set 调度)',
   executor: 'executor-dag (agent/command/research/map 分流)',
   command: 'executor-dag (commandRunner)',
+  expect_exit: 'executor-dag (command 分支判 done 的期望退出码, D-K)',
   creative: 'executor-dag (caveman 档位路由)',
   map: 'executor-dag.runMapNode',
   output_type: 'executor-dag (producesFiles 判定)',

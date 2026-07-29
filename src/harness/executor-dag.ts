@@ -24,7 +24,7 @@ import {
 } from './conductor-plan';
 // S3.6 escalation patch 模式: 补丁解析 + 程序化 merge (未补丁节点字节不动 → D-21 复用按构造成立)。
 import { parsePlanPatch, applyPlanPatch } from './plan-patch';
-import { hashArtifact, computeDagGeneration } from './continuity/checkpoint-manager';
+import { hashArtifact, hashText, computeDagGeneration } from './continuity/checkpoint-manager';
 import type { NodeCheckpoint } from './continuity/types';
 // noun-gate 接缝(INV-X3):宿主注入(上游宿主传 memory-hub checkNouns);包不依赖 memory-hub。
 type NounGateFn = (args: { text: string; material: string; repoRoot: string; annotate: boolean }) => { novelNouns: string[] };
@@ -49,7 +49,7 @@ import {
   DEFAULT_FANIN_SCHEMA,
 } from './fanin-summary';
 // D-21 escalation 跨轮复用: 语义 Merkle 指纹 + 前驱闭包匹配 (semantic-key 单一真源)。
-import { computeReuse } from './plan-passes/semantic-key';
+import { computeReuse, merkleFingerprints } from './plan-passes/semantic-key';
 // D-14v2 多模态媒体管道 (S4): attach_media 执行期从直接前驱输出解析图片 → ContentPart 注入。
 import { collectDepMedia } from './leaf-media';
 import type { ContentPart } from '../model/gateway';
@@ -291,8 +291,99 @@ async function executePlan(
     });
     if (continuity.resume) {
       for (const cp of continuity.manager.loadAllGreen(continuity.runId)) resumeGreens.set(cp.nodeId, cp);
+      dropPoisonedGreens(resumeGreens, plan, prior?.poisoned);
     }
   }
+
+  /**
+   * 一个节点这次吃到的**输入面** (D-O): dep id → 该 dep 的**输出全文**。
+   *
+   * 锚在依赖的全文而非"实际注入的 prompt": fan-in 定向摘要是 LLM 现生成的, 拿它当锚会让每次
+   * resume 都判 stale。全文没变 = 输入语义没变。还没产出的 dep 不入表 (调度保证不会发生)。
+   */
+  const inputsOf = (deps: readonly string[]): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const d of deps) {
+      const o = depOutputs[d];
+      if (o !== undefined) out[d] = o;
+    }
+    return out;
+  };
+
+  /**
+   * **成功节点 checkpoint 落盘** (D-O 统一出口, fail-open)。此前只有 inproc/agent 分支写,
+   * command / research 节点根本没有绿 checkpoint。
+   *
+   * 三件事一起做: ① 输出全文落制品 (`out-<id>.txt`) —— summary 自此只给人看 ② 记输入面指纹
+   * (上游内容变了 resume 就不许跳过) ③ 产物 hash (原有的产出面校验)。
+   *
+   * noun-gate 注释 only, material = 节点 prompt (含 deps 上下文) —— "输出了输入和 repo 都没有的
+   * 名词"才是审计信号 (material 含 output 会恒真, SDD C5 消费者② 修正)。无 prompt 的节点
+   * (command/research) 不跑它。tokenUsage: agent leaf 真值不可得 → null (V2-ECON)。
+   */
+  const saveDoneCheckpoint = (opts: {
+    id: string;
+    kind: NodeCheckpoint['leafKind'];
+    model?: string;
+    text: string;
+    usage: ModelUsage | null;
+    filesTouched: readonly string[];
+    deps: readonly string[];
+    t0: number;
+    /** noun-gate material (agent/inproc leaf 的完整 prompt); 无则跳过注释。 */
+    prompt?: string;
+    /** 产物根 (agent leaf 自报 cwd 最准); 缺省 continuity.repoRoot。 */
+    artifactRoot?: string;
+  }): void => {
+    if (!continuity) return;
+    try {
+      const root = opts.artifactRoot ?? continuity.repoRoot ?? process.cwd();
+      // 产物路径相对化到 repoRoot (worktree 可移植; shouldSkip 用 repoRoot 锚回)。
+      const rel = (p: string): string => (p.startsWith(`${root}/`) ? p.slice(root.length + 1) : p);
+      const artifactHashes: Record<string, string> = {};
+      const outputPaths: string[] = [];
+      for (const p of opts.filesTouched) {
+        const rp = rel(p);
+        outputPaths.push(rp);
+        const h = hashArtifact(p.startsWith('/') ? p : `${root}/${rp}`);
+        if (h) artifactHashes[rp] = h;
+      }
+      const summary = opts.text.slice(0, 800);
+      // D-O: 全文落制品。写失败 → null → 字段缺席, resume 退回 summary (fail-open, 有留痕)。
+      const outputText = continuity.manager.saveNodeOutput(continuity.runId, opts.id, opts.text);
+      const inputHashes: Record<string, string> = {};
+      for (const [d, o] of Object.entries(inputsOf(opts.deps))) inputHashes[d] = hashText(o);
+      let nounAnnotations: string[] | undefined;
+      if (opts.prompt !== undefined) {
+        try {
+          if (!_nounGate) throw new Error('noun-gate not injected');
+          const ng = _nounGate({ text: summary, material: opts.prompt, repoRoot: root, annotate: false });
+          if (ng.novelNouns.length > 0) nounAnnotations = ng.novelNouns.slice(0, 10);
+        } catch {
+          /* noun-gate 注释 only, 挂了不影响 checkpoint */
+        }
+      }
+      continuity.manager.saveCheckpoint(continuity.runId, {
+        nodeId: opts.id,
+        leafKind: opts.kind,
+        status: 'done',
+        ...(opts.model ? { model: opts.model } : {}),
+        outputPaths,
+        artifactHashes,
+        tokenUsage: opts.usage,
+        summary,
+        ...(outputText ? { outputText } : {}),
+        ...(Object.keys(inputHashes).length ? { inputHashes } : {}),
+        ...(nounAnnotations ? { nounAnnotations } : {}),
+        durationMs: Date.now() - opts.t0,
+        createdAt: new Date().toISOString(),
+        ...(dagGeneration ? { generation: dagGeneration } : {}),
+        schemaVersion: 1,
+      });
+    } catch (err) {
+      logger.warn({ node: opts.id, err }, '[omd/executor-dag] checkpoint write failed (fail-open)');
+    }
+  };
 
   // ── U1 P1: map 节点运行时展开 (SDD 0009 §2.3 StateMachine) ──────────────────
   // lister → expandMapNode(纯) → 子节点入 plan.nodes 复用 runNode 全套(路由/产物闸/checkpoint)
@@ -503,11 +594,22 @@ async function executePlan(
       if (node.kind === 'primitive' && node.primitive) return runPrimitiveNode(id);
       // U1: map 节点走运行时展开分支 (永不整体 resume-skip — lister 便宜, 子节点各自续)。
       if (node.executor === 'map' && node.map) return runMapNode(id);
-      // W2 resume: checkpoint done ∧ 产物存在 ∧ hash 匹配 → 跳过执行 (shouldSkip 内含校验)。
-      if (continuity?.resume && resumeGreens.has(id) && continuity.manager.shouldSkip(continuity.runId, id, dagGeneration)) {
+      // W2 resume: checkpoint done ∧ 代数匹配 ∧ **输入面未变 (D-O)** ∧ 产物存在且 hash 匹配 → 跳过执行。
+      if (
+        continuity?.resume &&
+        resumeGreens.has(id) &&
+        continuity.manager.shouldSkip(continuity.runId, id, dagGeneration, inputsOf(deps))
+      ) {
         const cp = resumeGreens.get(id)!;
-        logger.info({ node: id }, '[omd/executor-dag] continuity resume: 节点已绿, 跳过');
-        return { id, status: 'done', kind: cp.leafKind, output: cp.summary, deps, usage: { in: 0, out: 0 }, skipped: true, filesTouched: cp.outputPaths };
+        // D-O: 还原**全文**产物, 不是 800 字 summary —— 下游吃的就是这份输出, 拿摘要顶替等于
+        // 每 resume 一次上游信息就被静默截断一次, 且它的 hash 与下游 inputHashes 对不上,
+        // 会让整条下游误判 stale 全体重跑 (省下的钱又赔回去)。
+        const full = cp.outputText ? continuity.manager.loadNodeOutput(cp.outputText) : null;
+        if (cp.outputText && full === null) {
+          logger.warn({ node: id, path: cp.outputText }, '[omd/executor-dag] resume: 输出制品读不到 → 退回 800 字 summary (下游可能因此重跑)');
+        }
+        logger.info({ node: id, restored: full !== null ? 'full' : 'summary' }, '[omd/executor-dag] continuity resume: 节点已绿, 跳过');
+        return { id, status: 'done', kind: cp.leafKind, output: full ?? cp.summary, deps, usage: { in: 0, out: 0 }, skipped: true, filesTouched: cp.outputPaths };
       }
       // command leaf (方案 A): 确定性 CLI, 零 LLM, 无 caveman/prompt。exitCode 0 = done。
       if (node.executor === 'command') {
@@ -516,7 +618,36 @@ async function executePlan(
           return { id, status: 'failed', kind: 'command', output: '', deps, usage: { in: 0, out: 0 } };
         }
         const r = await config.commandRunner({ command: node.command });
-        return { id, status: r.exitCode === 0 ? 'done' : 'failed', kind: 'command', output: r.text, deps, usage: r.usage };
+        // D-K: expect_exit = 判 done 的期望退出码 (缺省 0)。verify-red 靠它表达 —— "证明新测试现在是红的"
+        // 的成功判据就是非 0 退出, 而 shell 取反整族被注入闸拒 (command-leaf.ts:145)。
+        //
+        // ⚠ 负退出码**恒 failed**, 不受 expect_exit 影响: -1 是 command-leaf 的**闸拒**返回值
+        // (危险命令 / 不在白名单 / 含元字符 / git 写子命令), 不是被执行命令的退出码。让 expect_exit
+        // 把一次安全拒绝翻译成 done, 等于给闸开了一条从 plan 里绕过去的路。schema 已 min(0) 挡住
+        // conductor 写 -1; 这条是给**预构造 plan** (不经 zod) 的运行期硬闸, 两层都要有。
+        const want = node.expect_exit ?? 0;
+        const blocked = r.exitCode < 0;
+        const ok = !blocked && r.exitCode === want;
+        if (!ok && want !== 0) {
+          logger.warn({ node: id, want, got: r.exitCode, blocked }, '[omd/executor-dag] command 节点未命中 expect_exit → failed (D-K)');
+        }
+        return {
+          id,
+          status: ok ? 'done' : 'failed',
+          kind: 'command',
+          // 期望非 0 却拿到别的码时, 把"想要什么/拿到什么"写进 output —— 否则 verify-red 失败时
+          // 下游只看到一串正常的测试输出, 看不出它失败在"本该红却绿了"。
+          output: !ok && want !== 0
+            ? `[expect_exit ${want}, 实得 ${r.exitCode}${blocked ? ' (命令被闸拒, 未执行)' : ''}]\n${r.text}`
+            : r.text,
+          deps,
+          usage: r.usage,
+        };
+      }
+      // 明示即承诺的反面守卫: expect_exit 只有 command 分支消费, 设在别处等于一个静默无效的旋钮
+      // (正是 2026-07-28 空旋钮全仓扫要杀的形态) → 响亮 WARN, 不改变执行 (fail-open)。
+      if (node.expect_exit !== undefined) {
+        logger.warn({ node: id, executor: node.executor, expect_exit: node.expect_exit }, '[omd/executor-dag] expect_exit 只对 executor:command 生效 → 本节点忽略 (D-K)');
       }
       // research leaf (D-6): 真 web 检索 + 有界内环。**零来源 = failed** —— INV-GOAL-2 要的是
       // 真抓取痕迹, 一个没抓到还吐终稿的节点吐的是模型记忆里的引用 (假 grounded), 比失败更坏:
@@ -543,6 +674,19 @@ async function executePlan(
           return { id, status: 'failed', kind: 'research', output: '[research 零来源: 无真 URL 抓取痕迹]', deps, usage: r.usage };
         }
         logger.info({ node: id, sources: r.sources.length, reportPath: r.reportPath }, '[omd/executor-dag] research 节点完成');
+        // D-O: research 节点此前**没有绿 checkpoint** —— 于是每次 resume 都重跑一遍真联网检索
+        // (实测 104s + token)。它正是最该被 resume 兜住的一类。
+        // 对照: command 节点**刻意不落绿 checkpoint** —— 它便宜 (这是它存在的理由) 且往往就是验收
+        // oracle, resume 时重跑一遍比"跳过一个闸"安全 (同 map 节点"lister 便宜, 重展开保正确")。
+        saveDoneCheckpoint({
+          id,
+          kind: 'research',
+          text: r.text,
+          usage: r.usage,
+          filesTouched: r.reportPath ? [r.reportPath] : [],
+          deps,
+          t0: nodeStartedAt.get(id) ?? Date.now(),
+        });
         return {
           id,
           status: 'done',
@@ -690,49 +834,19 @@ async function executePlan(
         usage = r.usage;
       }
       const leaf: LeafResult = { id, status: 'done', kind: useAgent ? 'agent' : 'inproc', model, output: text, deps: node.depends_on ?? [], usage, filesTouched, ...(toolCalls !== undefined ? { toolCalls } : {}) };
-      // W2 checkpoint 落盘 (done 节点, fail-open)。summary=output 截断; noun-gate 注释 only,
-      // material=节点 prompt (含 deps 上下文) —— "输出了输入和 repo 都没有的名词" 才是审计信号
-      // (material 含 output 会恒真, SDD C5 消费者② 修正)。tokenUsage: agent leaf 真值不可得 → null (V2-ECON)。
-      if (continuity) {
-        try {
-          const root = continuity.repoRoot ?? process.cwd();
-          // 产物路径相对化到 repoRoot (worktree 可移植; shouldSkip 用 repoRoot 锚回)。
-          const rel = (p: string): string => (p.startsWith(`${root}/`) ? p.slice(root.length + 1) : p);
-          const artifactHashes: Record<string, string> = {};
-          const outputPaths: string[] = [];
-          for (const p of filesTouched) {
-            const rp = rel(p);
-            outputPaths.push(rp);
-            const h = hashArtifact(p.startsWith('/') ? p : `${root}/${rp}`);
-            if (h) artifactHashes[rp] = h;
-          }
-          const summary = text.slice(0, 800);
-          let nounAnnotations: string[] | undefined;
-          try {
-            if (!_nounGate) throw new Error('noun-gate not injected');
-            const ng = _nounGate({ text: summary, material: prompt, repoRoot: root, annotate: false });
-            if (ng.novelNouns.length > 0) nounAnnotations = ng.novelNouns.slice(0, 10);
-          } catch {
-            /* noun-gate 注释 only, 挂了不影响 checkpoint */
-          }
-          continuity.manager.saveCheckpoint(continuity.runId, {
-            nodeId: id,
-            leafKind: useAgent ? 'agent' : 'inproc',
-            status: 'done',
-            outputPaths,
-            artifactHashes,
-            tokenUsage: useAgent ? null : usage,
-            summary,
-            ...(nounAnnotations ? { nounAnnotations } : {}),
-            durationMs: Date.now() - t0,
-            createdAt: new Date().toISOString(),
-            ...(dagGeneration ? { generation: dagGeneration } : {}),
-            schemaVersion: 1,
-          });
-        } catch (err) {
-          logger.warn({ node: id, err }, '[omd/executor-dag] checkpoint write failed (fail-open)');
-        }
-      }
+      saveDoneCheckpoint({
+        id,
+        kind: useAgent ? 'agent' : 'inproc',
+        model,
+        text,
+        usage: useAgent ? null : usage,
+        filesTouched,
+        deps: node.depends_on ?? [],
+        t0,
+        prompt,
+        // agent leaf 自报的 cwd 最准 (它就是写文件的那个进程); inproc 无产物, 参数无所谓。
+        ...(artifactRoot ? { artifactRoot } : {}),
+      });
       return leaf;
   };
 
@@ -1121,6 +1235,44 @@ function deriveTaskFromPlan(plan: ConductorPlan): string {
     '===== 已裁决的执行分解 (预构造 plan; 重规划时**只修不发明** — 保留各节点既定目标与依赖边) =====',
     planOutline(plan),
   ].join('\n');
+}
+
+/**
+ * D-4 × W2 接缝 (2026-07-29 故障注入实测揪出): **resume 的已绿预载此前不问毒集**。
+ *
+ * 崩溃若落在「judge 拒了 X」与「X 真的重跑」之间, 盘上 X 的 per-node checkpoint 仍是那份**被拒的
+ * 产出**, resume 会把它当绿跳过 —— 被拒产出借一次崩溃复活了。`computeReuse` 的毒集闸只管 D-21
+ * 那条通道 (上轮 results 注入), 管不到 continuity 这条; 两条通道都能让上轮产出进入本轮, 只堵一条
+ * 等于没堵。这正是 INV-P2-6 说的"毒集丢了比不复用更坏", 只是走的是另一条路。
+ *
+ * 前向闭包一起清: 下游那份 checkpoint 是**吃着被拒输出**跑出来的, 同样不作数
+ * (computeReuse 靠 `deps.every(check)` 免费拿到这个闭包, 这里没有那条链, 故显式求不动点)。
+ *
+ * 代价是崩溃后被毒节点及其下游必然重跑一次 —— 与 D-4 同一个取舍: 多花的是钱, 省下的是信任。
+ */
+function dropPoisonedGreens(
+  greens: Map<string, NodeCheckpoint>,
+  plan: ConductorPlan,
+  poisoned?: ReadonlySet<string>,
+): void {
+  if (!poisoned?.size || greens.size === 0) return;
+  const blocked = new Set<string>();
+  for (const [id, fp] of merkleFingerprints(plan)) if (poisoned.has(fp)) blocked.add(id);
+  if (blocked.size === 0) return;
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const [id, n] of Object.entries(plan.nodes)) {
+      if (blocked.has(id)) continue;
+      if ((n.depends_on ?? []).some((d) => blocked.has(d))) {
+        blocked.add(id);
+        changed = true;
+      }
+    }
+  }
+  const dropped = [...blocked].filter((id) => greens.delete(id));
+  if (dropped.length) {
+    logger.warn({ dropped }, '[omd/executor-dag] resume: 毒集命中 → 丢弃这些节点的已绿 checkpoint, 强制重跑 (D-4 × W2)');
+  }
 }
 
 async function runDagInternal(

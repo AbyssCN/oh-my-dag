@@ -146,22 +146,49 @@ export class CheckpointManager {
   }
 
   /**
+   * 文本制品原子写 `<runDir>/<prefix><安全化 nodeId>.txt`, 返绝对路径。失败 → null (fail-open)。
+   * map 子节点 id 含 '::' 等 → 文件名安全化; 故**读取一律用返回的路径**, 不要在别处重算文件名。
+   */
+  private saveTextArtifact(runId: string, prefix: string, nodeId: string, text: string): string | null {
+    try {
+      const dir = this.runDir(runId);
+      this.ensureDir(dir);
+      const safe = nodeId.replace(/[^\w.-]/g, '_');
+      const path = join(dir, `${prefix}${safe}.txt`);
+      const tmp = join(dir, `${prefix}${safe}.tmp`);
+      writeFileSync(tmp, text, 'utf-8');
+      renameSync(tmp, path);
+      return path;
+    } catch (err) {
+      logger.warn({ err, runId, nodeId, prefix }, 'checkpoint: saveTextArtifact failed (fail-open)');
+      return null;
+    }
+  }
+
+  /**
    * fan-in **定向摘要**的"全文指针"落点: producer 全文原子写 `<runDir>/fanin-<nodeId>.txt`,
    * 返回绝对路径供摘要视图引用 (带工具的 agent consumer 需细节可自 Read)。
    * 写失败 → null (fail-open, 摘要视图退化为仅摘要无指针, 不阻断 DAG)。
    */
   saveFaninFull(runId: string, nodeId: string, text: string): string | null {
+    return this.saveTextArtifact(runId, 'fanin-', nodeId, text);
+  }
+
+  /**
+   * **D-O 产出面**: 节点输出**全文**落 `<runDir>/out-<nodeId>.txt`, 返绝对路径写进 checkpoint
+   * (`NodeCheckpoint.outputText`)。summary 自此只给人看 —— 下游拿的是这份全文。
+   * 写失败 → null (fail-open: checkpoint 无该字段, resume 退回 summary 并留痕)。
+   */
+  saveNodeOutput(runId: string, nodeId: string, text: string): string | null {
+    return this.saveTextArtifact(runId, 'out-', nodeId, text);
+  }
+
+  /** 读回 {@link saveNodeOutput} 落的全文 (传 checkpoint 里存的绝对路径)。不存在/读失败 → null。 */
+  loadNodeOutput(path: string): string | null {
     try {
-      const dir = this.runDir(runId);
-      this.ensureDir(dir);
-      const safe = nodeId.replace(/[^\w.-]/g, '_'); // map 子节点 id 含 '::' 等 → 文件名安全化
-      const path = join(dir, `fanin-${safe}.txt`);
-      const tmp = join(dir, `fanin-${safe}.tmp`);
-      writeFileSync(tmp, text, 'utf-8');
-      renameSync(tmp, path);
-      return path;
-    } catch (err) {
-      logger.warn({ err, runId, nodeId }, 'checkpoint: saveFaninFull failed (fail-open)');
+      if (!existsSync(path)) return null;
+      return readFileSync(path, 'utf-8');
+    } catch {
       return null;
     }
   }
@@ -213,14 +240,37 @@ export class CheckpointManager {
 
   /**
    * 判定节点是否可跳过 (resume 场景):
-   *   checkpoint 存在 ∧ status=done ∧ **所有 outputPaths 存在且 sha256 前 16 匹配**。
+   *   checkpoint 存在 ∧ status=done ∧ 代数匹配 ∧ **输入面未变 (D-O)** ∧
+   *   **所有 outputPaths 存在且 sha256 前 16 匹配**。
    *
    * 任意 output 文件缺失/被改 → 返回 false (需重执行)。
    * checkpoint 记录无 outputPaths → 返回 true (无产物需验证, 如 inproc/command 节点)。
+   *
+   * @param currentInputs D-O: 本次的 dep nodeId → **输出全文**。给了且 checkpoint 记过 inputHashes
+   *   → 逐条比对, 任一依赖的产出内容变了就重跑。不给 / 老 checkpoint 无该字段 → 退回原语义
+   *   (只看形态与产物), 向后兼容。
    */
-  shouldSkip(runId: string, nodeId: string, currentGeneration?: string): boolean {
+  shouldSkip(
+    runId: string,
+    nodeId: string,
+    currentGeneration?: string,
+    currentInputs?: Record<string, string>,
+  ): boolean {
     const cp = this.loadCheckpoint(runId, nodeId);
     if (!cp || cp.status !== 'done') return false;
+
+    // D-O 输入面守卫: `generation` 只签图的**形态** (nodeIds + deps), 形态没变而上游重跑出**不同内容**
+    // 时它一无所知 —— 于是下游被当绿跳过, 拿旧输入的产物冒充新输入的产物。这一段补的就是那个洞。
+    if (cp.inputHashes && currentInputs) {
+      for (const [dep, expected] of Object.entries(cp.inputHashes)) {
+        const now = currentInputs[dep];
+        // 依赖这次压根没产出 (缺席) 也算变了 —— 宁可重跑, 不拿来路不明的输入充数。
+        if (now === undefined || hashText(now) !== expected) {
+          logger.info({ runId, nodeId, dep }, 'checkpoint: 依赖输出已变 → 不跳过, 重执行 (D-O 输入面)');
+          return false;
+        }
+      }
+    }
 
     // W4 SHADOW-3/4: 代数守卫。currentGeneration 与 cp.generation 均有且不等 → 过期 DAG 形态
     // 的 checkpoint, 丢弃重执行 (防"过期切点乱截")。相等 → 安全跳过 (幂等)。任一缺失 → 退回
@@ -315,6 +365,14 @@ export function computeDagGeneration(meta: {
 function fileSha256Hex(filePath: string): string {
   const content = readFileSync(filePath);
   return createHash('sha256').update(content).digest('hex');
+}
+
+/**
+ * 文本 hash (sha256 前 16 hex) —— D-O 输入面的指纹函数。与 {@link hashArtifact} 同截断长度,
+ * 但吃的是内存里的字符串 (节点输出全文), 不是文件。
+ */
+export function hashText(text: string): string {
+  return createHash('sha256').update(text).digest('hex').slice(0, 16);
 }
 
 /**

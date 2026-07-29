@@ -102,9 +102,9 @@ run. Escalation is bounded by `maxEscalations`.
 | `attach_media` | this leaf looks at images from its direct predecessors' output |
 | `map` | `lister` discovers the work-list at runtime → one child per item, resumable ids, bounded |
 | `kind: primitive` + `primitive` + `params` | one of 12 control-flow shapes ([details](primitives.md)) |
-| `postcondition` | `structural` / `code` / `llm-judge` / `human` |
+| `command` · `expect_exit` | the CLI to run · which exit code counts as success (default 0 — set `1` for a TDD *red* step) |
 | `output_type` · `output_path` | drives the file-producer guard |
-| `on_failure` · `max_retry` | `retry` / `complete-then-retry` / `escalate` / `pause` |
+| `max_retry` | node-level retries, each fed the previous failure (0..3; the only recovery knob) |
 
 Run-level knobs: `maxFanout` · `warmThenFanout` (one warm call so the frozen prefix is
 cached before the storm) · `verifier` + `conductorEscalationModel` + `maxEscalations` ·
