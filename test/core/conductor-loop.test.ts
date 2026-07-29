@@ -453,3 +453,40 @@ describe('D-F — 轮级 conductor 升级 (原属外层 fixpoint 的能力, 不�
     expect(m.expandModels).toEqual(['pinned:x', 'pinned:x']);
   });
 });
+
+describe('D-F — 环的信息通道: 失败子节点的败因不许在环里丢掉', () => {
+  /** 一个子节点跑成、一个子节点失败 (leaf 抛 → 引擎记 failed 并把原因写进 output)。 */
+  const SUB2 = JSON.stringify({ name: 's', nodes: { good: { goal: '好的那步' }, bad: { goal: '坏的那步' } } });
+
+  test('judge 视图里带得到败因原文 (只给 `[failed]` 会让 judge 自己编猜测)', async () => {
+    const judgeViews: string[] = [];
+    const generate: GenerateFn = async (req) => {
+      const user = req.messages.find((m) => m.role === 'user');
+      const text = typeof user?.content === 'string' ? user.content : '';
+      const id = leafId(text);
+      if (!id) return { text: SUB2, usage: { in: 1, out: 1 } };
+      // 子节点 id 后缀是内容寻址的哈希, 认不出原名 → 靠 goal 正文分辨哪一步。
+      if (text.includes('坏的那步')) throw new Error('产物校验失败: filesTouched 空 — leaf 自报完成但未写文件');
+      return { text: 'ok', usage: { in: 1, out: 1 } };
+    };
+    await runExecutorDagWithPlan(
+      node({ max_rounds: 1, judge_final: true }),
+      cfg(generate, false, true, judgeSendOf([{ converged: false, failureReason: 'x' }], (p) => judgeViews.push(p))),
+    );
+    expect(judgeViews).toHaveLength(1);
+    expect(judgeViews[0]).toContain('产物校验失败');
+    expect(judgeViews[0]).toContain('filesTouched 空');
+  });
+
+  test('下游/审计那份 output 同样带得到 (崩了之后查得出是哪一步为什么坏)', async () => {
+    const generate: GenerateFn = async (req) => {
+      const user = req.messages.find((m) => m.role === 'user');
+      const text = typeof user?.content === 'string' ? user.content : '';
+      if (!leafId(text)) return { text: SUB2, usage: { in: 1, out: 1 } };
+      if (text.includes('坏的那步')) throw new Error('某个很确切的败因');
+      return { text: 'ok', usage: { in: 1, out: 1 } };
+    };
+    const r = await runExecutorDagWithPlan(node(), cfg(generate, false, true));
+    expect(r.results.C?.output).toContain('某个很确切的败因');
+  });
+});

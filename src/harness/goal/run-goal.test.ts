@@ -323,6 +323,25 @@ describe('runGoal — INV-GOAL-4 有界 / INV-GOAL-3 可证', () => {
   });
 });
 
+/**
+ * 2026-07-30 第一次 live 冒烟才看见的空旋钮: `runGoal` 只读 `config.dag.generate` 去建分类器,
+ * 而那是**注入口**, 生产从来不设 (引擎自己 `?? makeDefaultGenerate`) —— 于是真实路径上每一次
+ * dag_goal 都走「无分类器」兜底 → 恒探索型 → **D-I 的执行型验收 (强制可跑命令) 从未成立过**。
+ * 机制在、注入式测试全绿、生产零生效。这条钉的是"回落到引擎默认实现"这根接线。
+ */
+describe('runGoal — 分类器必须真接上 (D-I 的地基, 不许静默降级)', () => {
+  test('不传 _classify 且 dag.generate 缺席 → 仍**建得出**分类器 (降级原因不是"无分类器")', async () => {
+    const r = await runGoal('g', {
+      ...cfg({ conductorModel: 'no-such-provider:m' }), // provider 没注册 → 调用会抛 → 走"调用失败"兜底
+    });
+    // 两种兜底文案分得开: "无分类器" = 压根没接上 (就是这次要防的那个 bug);
+    // "分类调用或解析失败" = 接上了但这次调不通 (座位没配/网断, 那是另一回事)。
+    const s = r.stages.find((x) => x.stage === 'classify')!.summary;
+    expect(s).not.toContain('无分类器');
+    expect(s).toContain('分类调用或解析失败');
+  });
+});
+
 describe('goalSlug', () => {
   test('kebab 化 + 截断 + 空值兜底', () => {
     expect(goalSlug('Add A New Thing!')).toBe('add-a-new-thing');
