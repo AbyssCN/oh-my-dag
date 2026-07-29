@@ -29,9 +29,10 @@ export interface GoalToolDeps {
    */
   buildConfig: () => Partial<ExecutorDagConfig>;
   /**
-   * W2 continuity + **外层轮 journal** (INV-P2-6)。给则:内层节点落 checkpoint,外层 fixpoint 的
-   * 轮次/毒集/复用源落 `_fixpoint.json` —— `resume=<runId>` 才接得回来。省略 = 不落不续
-   * (自主环仍能跑,但崩了从第 1 轮起且**毒集清零**,被拒产出会复活)。
+   * W2 continuity + **节点级环 journal** (INV-P2-6, D-F 后降级到节点级)。给则:节点落 checkpoint,
+   * 两个 conductor 节点 (契约段/执行段) 各自的轮次/毒集/上轮原因落 `_loop-<nodeId>.json` ——
+   * `resume=<runId>` 才接得回来。省略 = 不落不续 (自主环仍能跑,但崩了从第 1 轮起且**毒集清零**,
+   * 被拒产出会复活)。
    */
   continuity?: { manager: CheckpointManager; repoRoot: string };
 }
@@ -62,12 +63,14 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
     inputSchema: {
       goal: z.string().describe('The goal to pursue autonomously (required)'),
       tier: z.enum(['simple', 'complex']).optional().describe('Force routing; omit = auto-classify'),
-      maxRounds: z.number().int().min(1).max(5).optional().describe('Execute-phase round cap (default 2 = 1 repair)'),
+      // 上界 4 = PlanNode.max_rounds 的 schema 上界 (环封在 conductor 节点内, D-F) —— 两处必须同数,
+      // 不然这里放进来的 5 会在下游被静默钳掉, 又是一个"配了但不生效"的旋钮。
+      maxRounds: z.number().int().min(1).max(4).optional().describe('Execute-phase inner-loop round cap (default 2 = 1 repair)'),
       researchRounds: z.number().int().min(1).max(4).optional().describe('Research inner-loop cap (default 1)'),
       resume: z
         .string()
         .optional()
-        .describe('runId of an interrupted dag_goal — resume its outer rounds (keeps poison set + prior results)'),
+        .describe('runId of an interrupted dag_goal — resume its inner loop rounds (keeps poison set + green nodes)'),
     },
     handler: async (args) => {
       const { goal, tier, maxRounds, researchRounds, resume } = args as {
@@ -98,7 +101,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
       deps.runRegistry.register(runId, { goal: goal.slice(0, 200), meta: { tool: 'dag_goal' } });
       deps.runRegistry.start(runId);
 
-      // INV-P2-6: continuity 给了才落外层 journal; resume 时才读它 (与 per-node resume 同一开关)。
+      // INV-P2-6: continuity 给了才落环 journal; resume 时才读它 (与 per-node resume 同一开关)。
       const dagWithContinuity: ExecutorDagConfig = deps.continuity
         ? ({
             ...dag,

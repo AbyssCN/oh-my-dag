@@ -101,6 +101,19 @@ const PlanNode = z
      * INV-GOAL-4 有界: 不允许"跑到满意为止"。
      */
     max_rounds: z.number().int().min(1).max(4).optional(),
+    /**
+     * executor='conductor' 的**终轮必判** (P3 D-F, 2026-07-30)。缺省 false = 零回归。
+     *
+     * 环内的 judge 本来只为"要不要再画一轮"服务, 所以最后一轮 (含 `max_rounds:1`) 不请它 ——
+     * 判了也没有下一轮可去, 白花一次贵座调用。但**撤掉外层 fixpoint 之后** (D-F), 「整体目标
+     * 成了吗」这个问题就没有别的层来问了: 调用方 (如 goal 引擎决定 `dag_goal` 记 succeed 还是
+     * fail) 拿不到裁决, 只能拿"跑完了"当"成了", 那正是谎报完成最舒服的入口。
+     *
+     * 置 true = 最后一轮也判一次, 裁决经 `LeafResult.converged` 带给调用方。代价是一次 judge
+     * 调用 (~1100 out tok / ~17s 实测)。**刻意不进 conductor 的图式引导** —— 这是程序构造节点
+     * 时用的旋钮 (谁要裁决谁自己开), 不是让规划者随手打开的东西。
+     */
+    judge_final: z.boolean().optional(),
     /** executor='command' 时要跑的确定性 CLI (如 'codegraph trace X Y')。经 fail-closed 闸 + 白名单。 */
     command: z.string().optional(),
     /**

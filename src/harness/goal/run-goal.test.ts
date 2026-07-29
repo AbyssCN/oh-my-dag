@@ -1,6 +1,9 @@
 /**
  * runGoal 契约测试 — INV-GOAL-1 (全自主) / INV-GOAL-4 (无环 + 有界)。
- * 全注入 (_classify / _iterate / researchRunner / agentRunner) — 零 live 模型、零真检索。
+ * 全注入 (_classify / _runDag / researchRunner / agentRunner) — 零 live 模型、零真检索。
+ *
+ * **D-F (2026-07-30) 之后两段都是图**: 契约段 `goal-contract` 与执行段 `goal-execute` 各是一张
+ * 单 conductor 节点的图, 共用 `_runDag` 注入口, 靠 `plan.name` 分辨 —— 所以这里的注入器是个路由器。
  */
 import { describe, expect, test } from 'bun:test';
 import { mkdtempSync } from 'node:fs';
@@ -10,7 +13,6 @@ import { goalSlug, runGoal, type RunGoalConfig } from './run-goal';
 import type { AcceptanceSpec, GoalClassification, GoalTier } from './acceptance';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../executor-dag-types';
-import type { IterateResult } from '../plan/iterate';
 
 /**
  * D-I: 分类器一次出两条轴 (成本轴 tier + 判据轴 acceptance)。本文件多数用例只关心成本轴,
@@ -41,20 +43,47 @@ function contractDag(opts: { survey?: string; sources?: string[]; specFile?: str
   return { plan: { name: 'goal-contract', nodes: {} }, results } as unknown as ExecutorDagResult;
 }
 
-const okIterate = (rounds = 1, reused: string[] = []): IterateResult =>
-  ({
-    rounds: Array.from({ length: rounds }, (_, i) => ({ round: i + 1, result: {}, verdict: {} })),
-    finalRound: { round: rounds, result: { reusedNodes: reused }, verdict: {} },
-    converged: true,
-    status: 'converged',
-  }) as unknown as IterateResult;
+/**
+ * 造一份「执行段 conductor 节点」的执行结果 (D-F: 环封在这个节点内)。
+ * `converged` / `rounds` 是内环 judge 盖在 leaf 上的 —— runGoal 的整段结论就取自它俩。
+ */
+function executeDag(
+  opts: { converged?: boolean; rounds?: number; reused?: string[]; status?: 'done' | 'failed' } = {},
+): ExecutorDagResult {
+  return {
+    plan: { name: 'goal-execute', nodes: {} },
+    results: {
+      execute: {
+        id: 'execute',
+        status: opts.status ?? 'done',
+        kind: 'conductor',
+        output: '[conductor 子图: 2/2 成功]',
+        deps: [],
+        usage: { in: 1, out: 1 },
+        rounds: opts.rounds ?? 1,
+        ...(opts.converged === undefined ? {} : { converged: opts.converged }),
+      },
+    },
+    reusedNodes: opts.reused ?? [],
+  } as unknown as ExecutorDagResult;
+}
+
+/** 两段共用一个 `_runDag`, 按 plan.name 路由 (省略的那段走缺省的"一切正常")。 */
+const dagRouter = (h: {
+  contract?: (plan: ConductorPlan) => Promise<ExecutorDagResult>;
+  execute?: (plan: ConductorPlan) => Promise<ExecutorDagResult>;
+}) =>
+  (async (plan: ConductorPlan) =>
+    plan.name === 'goal-execute'
+      ? await (h.execute ?? (async () => executeDag({ converged: true })))(plan)
+      : await (h.contract ?? (async () => contractDag({})))(plan)) as never;
 
 function cfg(dag: Partial<ExecutorDagConfig> = {}, extra: Partial<RunGoalConfig> = {}): RunGoalConfig {
   return {
     cwd: mkdtempSync(join(tmpdir(), 'omd-goal-')),
     dag: { conductorModel: 'c:m', leafModel: 'l:m', ...dag } as ExecutorDagConfig,
     _today: () => '2026-07-28',
-    _iterate: (async () => okIterate()) as never,
+    _runDag: dagRouter({}),
     ...extra,
   };
 }
@@ -66,21 +95,25 @@ describe('runGoal — INV-GOAL-1 全自主 (阶段间零人工介入)', () => {
     const r = await runGoal('给 omd 加一个自主 goal 引擎', {
       ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
       _classify: cls('complex'),
-      // D-G′: survey/research/spec 现在是**一个 conductor 节点**的子图 —— 这里注入它的执行结果。
-      _runDag: (async (plan: ConductorPlan) => {
-        seen.push('contract');
-        contractGoal = String(plan.nodes.contract!.goal);
-        return contractDag({
-          survey: 'src/harness/executor-dag.ts:497 — map 节点已有运行时展开',
-          sources: ['https://a.example'],
-          specFile: 'docs/plan/2026-07-28-给-omd-加一个自主-goal-引擎.md',
-        });
-      }) as never,
-      _iterate: (async (task: string) => {
-        seen.push('execute');
-        expect(task).toContain('按下面这份 SDD 契约实施'); // 执行读的是契约不是对话
-        return okIterate();
-      }) as never,
+      // D-G′: survey/research/spec 是**一个 conductor 节点**的子图; D-F: execute 段也是。
+      _runDag: dagRouter({
+        contract: async (plan) => {
+          seen.push('contract');
+          contractGoal = String(plan.nodes.contract!.goal);
+          return contractDag({
+            survey: 'src/harness/executor-dag.ts:497 — map 节点已有运行时展开',
+            sources: ['https://a.example'],
+            specFile: 'docs/plan/2026-07-28-给-omd-加一个自主-goal-引擎.md',
+          });
+        },
+        execute: async (plan) => {
+          seen.push('execute');
+          const n = plan.nodes.execute!;
+          expect(n.executor).toBe('conductor');
+          expect(String(n.goal)).toContain('按下面这份 SDD 契约实施'); // 执行读的是契约不是对话
+          return executeDag({ converged: true });
+        },
+      }),
     });
     expect(seen).toEqual(['contract', 'execute']); // 阶段序固定, 中间没有人
     // 契约段的 goal 里该有的三样: 目标 / 起草卡点名 / **冻结的判卷标准** (D-I 方案 A)。
@@ -106,10 +139,12 @@ describe('runGoal — INV-GOAL-1 全自主 (阶段间零人工介入)', () => {
     const r = await runGoal('把 foo 重命名成 bar', {
       ...cfg({ researchRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 }, sources: ['https://x'] }) }),
       _classify: cls('simple'),
-      _iterate: (async (t: string) => {
-        task = t;
-        return okIterate();
-      }) as never,
+      _runDag: dagRouter({
+        execute: async (plan) => {
+          task = String(plan.nodes.execute!.goal);
+          return executeDag({ converged: true });
+        },
+      }),
     });
     expect(r.tier).toBe('simple');
     expect(r.stages.find((s) => s.stage === 'research')!.status).toBe('skipped');
@@ -127,7 +162,7 @@ describe('runGoal — 降级路径都留痕, 不假装', () => {
     const r = await runGoal('设计一个新机制', {
       ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
       _classify: cls('complex'),
-      _runDag: (async () => contractDag({ survey: 'src/x.ts:1 — 事实', specFile: 'docs/plan/2026-07-28-设计一个新机制.md' })) as never,
+      _runDag: dagRouter({ contract: async () => contractDag({ survey: 'src/x.ts:1 — 事实', specFile: 'docs/plan/2026-07-28-设计一个新机制.md' }) }),
     });
     const s = r.stages.find((x) => x.stage === 'research')!;
     expect(s.status).toBe('skipped');
@@ -140,7 +175,7 @@ describe('runGoal — 降级路径都留痕, 不假装', () => {
     const r = await runGoal('查点什么', {
       ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
       _classify: cls('complex'),
-      _runDag: (async () => contractDag({ sources: [], specFile: 'docs/plan/2026-07-28-查点什么.md' })) as never,
+      _runDag: dagRouter({ contract: async () => contractDag({ sources: [], specFile: 'docs/plan/2026-07-28-查点什么.md' }) }),
     });
     expect(r.stages.find((s) => s.stage === 'research')!.status).toBe('failed');
     expect(r.sources).toEqual([]); // 零来源的那段不算证据
@@ -150,7 +185,7 @@ describe('runGoal — 降级路径都留痕, 不假装', () => {
     const r = await runGoal('做点事', {
       ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
       _classify: cls('complex'),
-      _runDag: (async () => contractDag({ specText: '# SDD 正文' })) as never, // 无 specFile
+      _runDag: dagRouter({ contract: async () => contractDag({ specText: '# SDD 正文' }) }), // 无 specFile
     });
     expect(r.stages.find((s) => s.stage === 'spec')!.status).toBe('failed');
     expect(r.specPath).toBeUndefined();
@@ -161,9 +196,11 @@ describe('runGoal — 降级路径都留痕, 不假装', () => {
     const r = await runGoal('做点事', {
       ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
       _classify: cls('complex'),
-      _runDag: (async () => {
-        throw new Error('契约段崩了');
-      }) as never,
+      _runDag: dagRouter({
+        contract: async () => {
+          throw new Error('契约段崩了');
+        },
+      }),
     });
     expect(r.stages.find((s) => s.stage === 'spec')!.summary).toContain('契约段崩了');
     expect(r.stages.find((s) => s.stage === 'execute')!.status).toBe('done');
@@ -173,9 +210,11 @@ describe('runGoal — 降级路径都留痕, 不假装', () => {
     const r = await runGoal('做点事', {
       ...cfg(),
       _classify: cls('simple'),
-      _iterate: (async () => {
-        throw new Error('conductor 崩了');
-      }) as never,
+      _runDag: dagRouter({
+        execute: async () => {
+          throw new Error('conductor 崩了');
+        },
+      }),
     });
     expect(r.converged).toBe(false);
     expect(r.stages.at(-1)!.summary).toContain('conductor 崩了');
@@ -183,15 +222,72 @@ describe('runGoal — 降级路径都留痕, 不假装', () => {
 });
 
 describe('runGoal — INV-GOAL-4 有界 / INV-GOAL-3 可证', () => {
+  // D-F: 轮数上限现在是**节点上的 max_rounds** (环在节点内), 不再是 iterate 的配置项。
   test('执行轮数上限默认 2 (= 1 轮修复), 可覆盖', async () => {
-    const seen: number[] = [];
-    const spy = (async (_t: string, c: { maxRounds?: number }) => {
-      seen.push(c.maxRounds!);
-      return okIterate();
-    }) as never;
-    await runGoal('g', { ...cfg(), _classify: cls('simple'), _iterate: spy });
-    await runGoal('g', { ...cfg(), maxRounds: 5, _classify: cls('simple'), _iterate: spy });
-    expect(seen).toEqual([2, 5]);
+    const seen: (number | undefined)[] = [];
+    const spy = dagRouter({
+      execute: async (plan) => {
+        seen.push(plan.nodes.execute!.max_rounds);
+        return executeDag({ converged: true });
+      },
+    });
+    await runGoal('g', { ...cfg(), _classify: cls('simple'), _runDag: spy });
+    await runGoal('g', { ...cfg(), maxRounds: 4, _classify: cls('simple'), _runDag: spy });
+    expect(seen).toEqual([2, 4]);
+  });
+
+  /**
+   * D-F 的兜底: 撤了外层 fixpoint 之后, 「整体目标成了吗」这个问题只剩内环 judge 会问 ——
+   * 而内环**最后一轮默认不请 judge**。执行段的节点若忘了写 `judge_final`, runGoal 就只能拿
+   * "跑完了"当"成了"。这条钉的就是那个开关恒在。
+   */
+  test('执行段节点恒带 judge_final (撤外层之后 converged 的唯一来源)', async () => {
+    let jf: boolean | undefined;
+    await runGoal('g', {
+      ...cfg(),
+      _classify: cls('simple'),
+      _runDag: dagRouter({
+        execute: async (plan) => {
+          jf = plan.nodes.execute!.judge_final;
+          return executeDag({ converged: true });
+        },
+      }),
+    });
+    expect(jf).toBe(true);
+  });
+
+  test('内环判未收敛 → 整段 failed 且 converged=false (不因"跑完了"就算成)', async () => {
+    const r = await runGoal('g', {
+      ...cfg(),
+      _classify: cls('simple'),
+      _runDag: dagRouter({ execute: async () => executeDag({ converged: false, rounds: 2 }) }),
+    });
+    expect(r.converged).toBe(false);
+    expect(r.rounds).toBe(2);
+    expect(r.stages.at(-1)!.status).toBe('failed');
+    expect(r.stages.at(-1)!.summary).toContain('未收敛');
+  });
+
+  // 缺席 ≠ 未收敛, 但**一律不算成**: 没人判过就说成了, 正是谎报完成最舒服的入口。
+  test('leaf 上没有 converged (没人判过) → 不算成', async () => {
+    const r = await runGoal('g', {
+      ...cfg(),
+      _classify: cls('simple'),
+      _runDag: dagRouter({ execute: async () => executeDag({}) }), // converged 缺席
+    });
+    expect(r.converged).toBe(false);
+  });
+
+  test('execute 节点根本没结果 → failed 留痕 (不静默当收敛)', async () => {
+    const r = await runGoal('g', {
+      ...cfg(),
+      _classify: cls('simple'),
+      _runDag: dagRouter({
+        execute: async () => ({ plan: { name: 'goal-execute', nodes: {} }, results: {} }) as unknown as ExecutorDagResult,
+      }),
+    });
+    expect(r.converged).toBe(false);
+    expect(r.stages.at(-1)!.summary).toContain('无结果');
   });
 
   // 合并成子图之后 researchRounds 只能经契约段的 goal 传下去 —— 不传就成了"配了但不生效"的空旋钮。
@@ -202,10 +298,12 @@ describe('runGoal — INV-GOAL-4 有界 / INV-GOAL-3 可证', () => {
         ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
         ...(rounds ? { researchRounds: rounds } : {}),
         _classify: cls('complex'),
-        _runDag: (async (plan: ConductorPlan) => {
-          seen.push(String(plan.nodes.contract!.goal));
-          return contractDag({ specFile: 'docs/plan/2026-07-28-g.md' });
-        }) as never,
+        _runDag: dagRouter({
+          contract: async (plan) => {
+            seen.push(String(plan.nodes.contract!.goal));
+            return contractDag({ specFile: 'docs/plan/2026-07-28-g.md' });
+          },
+        }),
       });
     await mk();
     await mk(3);
@@ -213,11 +311,12 @@ describe('runGoal — INV-GOAL-4 有界 / INV-GOAL-3 可证', () => {
     expect(seen[1]).toContain('"rounds": 3');
   });
 
-  test('最后一轮的复用集进结果 (INV-GOAL-3 可证面)', async () => {
+  // D-F 之后复用发生在**内环**里 (子节点内容寻址), 由引擎并进结果面的 reusedNodes。
+  test('复用集进结果 (INV-GOAL-3 可证面)', async () => {
     const r = await runGoal('g', {
       ...cfg(),
       _classify: cls('simple'),
-      _iterate: (async () => okIterate(2, ['a', 'b'])) as never,
+      _runDag: dagRouter({ execute: async () => executeDag({ converged: true, rounds: 2, reused: ['a', 'b'] }) }),
     });
     expect(r.reusedNodes).toEqual(['a', 'b']);
     expect(r.rounds).toBe(2);
@@ -240,10 +339,12 @@ describe('runGoal — survey 仓内勘察 (inproc 研究与仓库的接点)', ()
     const r = await runGoal('g', {
       ...cfg({ researchRunner: async () => ({ text: 't', usage: { in: 1, out: 1 }, sources: ['https://x'] }) }),
       _classify: cls('complex'),
-      _runDag: (async () => {
-        ranDag = true;
-        return contractDag({});
-      }) as never,
+      _runDag: dagRouter({
+        contract: async () => {
+          ranDag = true;
+          return contractDag({});
+        },
+      }),
     });
     expect(ranDag).toBe(false); // 连图都不跑, 不白花一次 conductor 调用
     for (const st of ['survey', 'research', 'spec'] as const) {
@@ -256,7 +357,7 @@ describe('runGoal — survey 仓内勘察 (inproc 研究与仓库的接点)', ()
     const r = await runGoal('g', {
       ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
       _classify: cls('complex'),
-      _runDag: (async () => contractDag({ survey: '   ', specFile: 'docs/plan/2026-07-28-g.md' })) as never,
+      _runDag: dagRouter({ contract: async () => contractDag({ survey: '   ', specFile: 'docs/plan/2026-07-28-g.md' }) }),
     });
     const s = r.stages.find((x) => x.stage === 'survey')!;
     expect(s.status).toBe('failed');
@@ -267,7 +368,7 @@ describe('runGoal — survey 仓内勘察 (inproc 研究与仓库的接点)', ()
     const r = await runGoal('g', {
       ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
       _classify: cls('complex'),
-      _runDag: (async () => contractDag({ specFile: 'docs/plan/2026-07-28-g.md' })) as never,
+      _runDag: dagRouter({ contract: async () => contractDag({ specFile: 'docs/plan/2026-07-28-g.md' }) }),
     });
     expect(r.stages.find((x) => x.stage === 'survey')!.status).toBe('skipped');
   });

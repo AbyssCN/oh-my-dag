@@ -4,15 +4,28 @@
  * 一个 goal 进来, 自主走完 research → spec → execute → verify → 1 轮修复, 阶段间零人工介入
  * (INV-GOAL-1)。它替代的是手动技能链 `/omd-research-deep → /omd-grill → /omd-sdd → /omd-execute`。
  *
- * **外层严格无环** (D-2): 这里是一条固定的阶段序列, 不画回边; 唯一的"环"是 execute 阶段内部的
- * fixpoint (iterateExecutorDag), 它封在节点内且有轮数上限 —— INV-GOAL-4。
+ * **外层严格无环** (D-2): 这里是一条固定的阶段序列, 不画回边。
  *
- * 为什么阶段序列是**编排代码**而不是一张 DAG: execute 阶段本身要 conductor 现场分解出一整张子图,
- * 那不是"一个节点"。把外层写成三次显式调用, 比造一个能孵化子图的节点类型诚实得多 (D-1: 用 OMD
- * 自己的 executor 当 runtime, 不引第二套编排语义)。
+ * **D-F (2026-07-30): 外层 fixpoint 已撤**。此前 execute 段走 `iterateExecutorDag` —— 一层 run 级
+ * 的环 (重画整张内层图) 套着节点内可能存在的另一层。P1 的 double-loop 教训是两层 verify 必须
+ * 二选一 (成本翻倍 + 谁负责收敛语义打架), D-A 定的是**留节点内那一层**。于是现在两段都是
+ * 一个 `executor:'conductor'` 节点:
+ *
+ *   契约段 `goal-contract` (specRounds) · 执行段 `goal-execute` (maxRounds)
+ *
+ * 环因此封在节点内且有轮数上限 (INV-GOAL-4), 状态 (轮次/毒集/上轮原因) 落**节点级** journal
+ * `_loop-<nodeId>.json` —— run 级 `_fixpoint.json` 在这条路上不再被写也不再被读 (概念没删,
+ * 是从 run 级降到了节点级; 删掉它等于把"被拒产出借崩溃复活"那个缺陷换个方式重新引入)。
+ *
+ * ⚠ 撤外层的代价记在 `judge_final` 上: 内环 judge 判的是**一个节点的 goal**, 而执行段那个节点的
+ * goal 就是整个任务, 所以「整体目标成了吗」仍有人问 —— 但只有 `judge_final:true` 才在最后一轮
+ * 真去问。别把它当成可省的旋钮。
+ *
+ * 为什么阶段序列仍是**编排代码**而不是一张 DAG: 判卷标准 (D-I) 必须留在环外, 它是在 classify 段
+ * 算好后冻进两个节点的输入的 —— 让它进图就等于让执行体自己的环去产出判据 (D-J 整套防作弊的地基
+ * 就是"判卷标准是执行体动不了的东西")。
  */
 import { join } from 'node:path';
-import { iterateExecutorDag, type IterateResult } from '../plan/iterate';
 import { runExecutorDagWithPlan } from '../executor-dag';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagResult } from '../executor-dag-types';
@@ -35,7 +48,10 @@ export interface RunGoalConfig {
   cwd: string;
   /** 引擎 config 基座 (座位 + agent/command/research runner)。execute 阶段直接用它。 */
   dag: ExecutorDagConfig;
-  /** execute 阶段总轮数上限 (1 轮修复 = 2)。默认 2 —— D-9 薄竖切就是"一轮修复"。 */
+  /**
+   * execute 段 conductor 节点的**内环**轮数上限 (1 轮修复 = 2)。默认 2 —— D-9 薄竖切就是"一轮修复"。
+   * 上限 4 (schema 钳)。轮的语义是**逐轮重展开**, 不是重跑同一张子图。
+   */
   maxRounds?: number;
   /** research 节点内环轮数 (有界, INV-GOAL-4)。默认 1。 */
   researchRounds?: number;
@@ -54,9 +70,11 @@ export interface RunGoalConfig {
   _today?: () => string;
   /** 注入式分类器 (测试 / 自定义): 一次出两条轴 (D-I)。 */
   _classify?: (goal: string) => Promise<GoalClassification>;
-  /** 注入式 execute 阶段 (测试传 fake, 不碰 live 模型)。 */
-  _iterate?: typeof iterateExecutorDag;
-  /** 注入式**契约段** DAG 执行 (测试传 fake; 默认 runExecutorDagWithPlan)。 */
+  /**
+   * 注入式 DAG 执行 (测试传 fake; 默认 runExecutorDagWithPlan)。
+   * **契约段与执行段共用这一个注入口** —— 两段都是一张单 conductor 节点的图 (D-F),
+   * 靠 `plan.name` (`goal-contract` / `goal-execute`) 分辨是谁在调。
+   */
   _runDag?: (plan: ConductorPlan, config: RunGoalConfig['dag']) => Promise<ExecutorDagResult>;
 }
 
@@ -244,21 +262,43 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
       ? `${goal}\n\n参考材料:\n${evidence}`
       : goal;
   const task = `${body}\n\n${acceptanceBlock}`;
-  const iterate = config._iterate ?? iterateExecutorDag;
-  let exec: IterateResult;
-  try {
-    exec = await iterate(task, { ...config.dag, maxRounds: config.maxRounds ?? 2 });
-  } catch (err) {
-    stages.push({ stage: 'execute', status: 'failed', summary: `execute 抛错: ${String(err).slice(0, 200)}` });
+  const bail = (summary: string): RunGoalResult => {
+    stages.push({ stage: 'execute', status: 'failed', summary });
     return { goal, tier, acceptance, stages, ...(specPath ? { specPath } : {}), sources, repoContext, converged: false, rounds: 0, reusedNodes: [] };
+  };
+  const execPlan: ConductorPlan = {
+    name: 'goal-execute',
+    nodes: {
+      execute: {
+        executor: 'conductor',
+        max_rounds: config.maxRounds ?? 2,
+        // D-F 的兜底那一半: 撤了外层就没有别的层再问「整体目标成了吗」。这个开关让内环在
+        // **最后一轮也判一次**, 裁决经 LeafResult.converged 出来 —— 否则 `dag_goal` 只能拿
+        // "跑完了"当"成了", 那是谎报完成最舒服的入口。
+        judge_final: true,
+        goal: task,
+      },
+    },
+  } as ConductorPlan;
+  let exec: ExecutorDagResult;
+  try {
+    exec = await (config._runDag ?? runExecutorDagWithPlan)(execPlan, config.dag);
+  } catch (err) {
+    return bail(`execute 抛错: ${String(err).slice(0, 200)}`);
   }
-  // 复用面取**最后一轮** (INV-GOAL-3 问的是"修复轮复用了多少", 首轮恒 0)。
-  const reusedNodes = exec.finalRound?.result?.reusedNodes ?? [];
-  const roundCount = exec.rounds.length;
+  const execLeaf = exec.results.execute;
+  if (!execLeaf) return bail('execute 节点无结果 (引擎没跑到它)');
+  // `converged` 缺席 = 没人判过 → 一律**不算成** (judge_final 已保证它在, 缺席意味着引擎跑歪了)。
+  const converged = execLeaf.converged === true;
+  const roundCount = execLeaf.rounds ?? 0;
+  // INV-GOAL-3 可证面: 复用现在全发生在**内环**里 (子节点内容寻址, 同 id ≡ 同规格 + 同祖先规格)。
+  const reusedNodes = exec.reusedNodes ?? [];
   stages.push({
     stage: 'execute',
-    status: exec.converged ? 'done' : 'failed',
-    summary: `${roundCount} 轮${exec.converged ? '收敛' : `未收敛 (${exec.status})`}${reusedNodes.length ? ` · 复用 ${reusedNodes.length} 节点` : ''}`,
+    status: converged ? 'done' : 'failed',
+    summary:
+      `${roundCount} 轮${converged ? '收敛' : `未收敛 (${execLeaf.status})`}` +
+      `${reusedNodes.length ? ` · 复用 ${reusedNodes.length} 节点` : ''}`,
   });
 
   return {
@@ -269,7 +309,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
     ...(specPath ? { specPath } : {}),
     sources,
     repoContext,
-    converged: exec.converged,
+    converged,
     rounds: roundCount,
     reusedNodes,
   };

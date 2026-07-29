@@ -253,6 +253,9 @@ async function executePlan(
   // 重规划最烧 token 的形态 = 80% 节点语义没变却整图重跑; 指纹按语义不按 id, 重命名不破匹配。
   // D-4 (P1.5): prior.poisoned = 上轮被 judge 点名拒绝的节点指纹, 一律不复用 (前向闭包免费, 见 computeReuse)。
   const reuse = prior ? computeReuse(plan, prior, prior.poisoned) : new Map<string, LeafResult>();
+  // conductor 内环的跨轮复用命中 (D-21 内环版) 也要进结果面 —— 撤外层 (D-F) 之后, 复用这件事
+  // **只发生在内环里**, 不并进来的话 `reusedNodes` 对 goal 引擎恒空 (INV-GOAL-3 的可证面就没了)。
+  const innerReused = new Set<string>();
   if (reuse.size > 0) {
     logger.info({ reused: [...reuse.keys()], total: Object.keys(plan.nodes).length }, '[omd/executor-dag] 跨轮语义复用集 (D-21)');
   }
@@ -484,6 +487,22 @@ async function executePlan(
         '这一轮请**重新分解**: 该补的步骤补上 (包括上一轮压根没有的那种, 比如先去把某个事实查清楚), ' +
         '该改的改掉。原样再画一遍上一轮的图只会再失败一次。'
       : '';
+    // ── 轮级 conductor 升级 (D-F 顺带搬进来的) ────────────────────────────────
+    // 外层 fixpoint 有这条: 连着几轮不收敛就换更强的脑子重画 (弱 conductor 画不出来的图, 再画
+    // 一遍多半还是画不出来)。撤外层 (D-F) 不该顺手把这个能力一起撤掉 —— 内环是它现在唯一的家。
+    // 旋钮与外层**共用** ExecutorDagConfig 的 conductorEscalationModel/escalateAfterRound
+    // (两处各写一份默认值就会漂)。provider 没注册 → escalationProviderReady 判 false, 维持弱。
+    const useEscalation =
+      round >= (config.escalateAfterRound ?? 2) && escalationProviderReady(config.conductorEscalationModel);
+    // TPL-3 显式最高优先: 手写 plan 钉了 node.model 就用它 (升级也压不过显式指定)。
+    // (stamp pass 刻意跳过 conductor 节点 —— 它盖的是 leaf 档坐标, 这里根本不读。)
+    const conductorCoord = node.model ?? (useEscalation ? config.conductorEscalationModel! : config.conductorModel);
+    if (useEscalation && !node.model) {
+      logger.info(
+        { node: id, round, from: config.conductorModel, to: config.conductorEscalationModel },
+        '[omd/executor-dag] 内环多轮未收敛 → conductor 轮级升级重画 (D-F)',
+      );
+    }
     let sub: ConductorPlan;
     try {
       const sys = conductorSystemPrompt({
@@ -503,10 +522,9 @@ async function executePlan(
               '你现在就是运行时展开, 已经知道清单了, 直接把步骤列出来即可。',
           },
         ],
-        // TPL-3 显式最高优先: 手写 plan 钉了 node.model 就用它; 否则走 conductor 座位。
-        // (stamp pass 刻意跳过 conductor 节点 —— 它盖的是 leaf 档坐标, 这里根本不读。)
-        model: node.model ?? config.conductorModel,
-        thinkingLevel: config.conductorThinkingLevel ?? config.seatThinking?.(node.model ?? config.conductorModel) ?? 'high',
+        // 坐标 (含轮级升级) 在上面算好, 见 conductorCoord。
+        model: conductorCoord,
+        thinkingLevel: config.conductorThinkingLevel ?? config.seatThinking?.(conductorCoord) ?? 'high',
         maxTokens: config.conductorMaxTokens ?? (Number(process.env.OMD_CONDUCTOR_MAX_TOKENS) || 32_768),
       });
       usageAcc = addUsage(usageAcc, usage);
@@ -594,6 +612,7 @@ async function executePlan(
         return ok;
       };
       for (const c of expand.children) canReuse(c.id);
+      for (const cid of reuseLocal.keys()) innerReused.add(cid);
       if (reuseLocal.size > 0) {
         logger.info(
           { node: id, round, reused: reuseLocal.size, total: expand.children.length },
@@ -620,6 +639,25 @@ async function executePlan(
       for (const d of inner) dependentsLocal.set(d, [...(dependentsLocal.get(d) ?? []), cid]);
     }
     const readyLocal = childIds.filter((c) => (indegLocal.get(c) ?? 0) === 0);
+    // judge 视图的顺序 = 子图内**拓扑序** (上游在前), 在 pump 把 indeg 改掉之前先算出来。
+    // 为什么不用现成的两个顺序: 结清序取决于并发时序 (同一张图两次跑给出两个不同的 prompt);
+    // 展开序是**按指纹字典序**排的 (conductor-expand 为了同指纹消歧确定性), 那是哈希顺序,
+    // 谁在前面纯属偶然。拓扑序两条都占: 确定, 且是读一张子图最自然的顺序。
+    const topoOrder = ((): string[] => {
+      const indeg = new Map(indegLocal);
+      const queue = childIds.filter((c) => (indeg.get(c) ?? 0) === 0);
+      const out: string[] = [];
+      while (queue.length) {
+        const c = queue.shift()!;
+        out.push(c);
+        for (const d of dependentsLocal.get(c) ?? []) {
+          const n = (indeg.get(d) ?? 1) - 1;
+          indeg.set(d, n);
+          if (n === 0) queue.push(d);
+        }
+      }
+      return out.length === childIds.length ? out : childIds; // 有环 (展开期已拒) 时的纯函数兜底
+    })();
     const capLocal = Math.max(1, config.maxFanout && config.maxFanout > 0 ? config.maxFanout : childIds.length);
     let runningLocal = 0;
     let settledLocal = 0;
@@ -684,11 +722,22 @@ async function executePlan(
     });
 
     // ── 5. 汇总 (INV-U7 同款: 子节点部分失败 = 部分成功; 全失败才算 conductor 节点失败) ──
+    //
+    // ⚠ `[...childOut]` 那个拷贝不是洁癖: `sort` **原地改数组**, 而下面 judge 视图用的是同一个
+    // childOut。原先两处共用一份被就地排过序的数组 —— 于是 judge 看到的顺序悄悄变成了"按内容
+    // 寻址 id 的字典序", 也就是**按哈希值排**, 谁在前面纯属偶然 (2026-07-30 给指纹加一个字段就
+    // 让顺序翻了个个儿, 一条按下标点名的测试因此变红)。两个视图的顺序从此各自独立且确定:
+    // 人看的摘要按 id 排 (稳定), judge 看的按**子图拓扑序** (见 topoOrder 那段注)。
     const ok = childOut.filter((c) => c.status !== 'failed').length;
-    const summary = childOut
+    const summary = [...childOut]
       .sort((a, b) => (a.id < b.id ? -1 : 1))
       .map((c) => `[${c.originalId}] ${c.status}\n${c.output}`)
       .join('\n\n');
+    const settled = new Map(childOut.map((c) => [c.id, c]));
+    const orderedChildren = topoOrder.flatMap((cid) => {
+      const c = settled.get(cid);
+      return c ? [{ id: c.id, originalId: c.originalId, status: c.status, output: c.output }] : [];
+    });
     return {
       leaf: {
         id,
@@ -699,7 +748,7 @@ async function executePlan(
         usage: usageAcc,
         ...(touchedAll.size ? { filesTouched: [...touchedAll] } : {}),
       },
-      children: childOut.map((c) => ({ id: c.id, originalId: c.originalId, status: c.status, output: c.output })),
+      children: orderedChildren,
       usage: usageAcc,
       results: roundResults,
     };
@@ -717,18 +766,26 @@ async function executePlan(
    * 状态 (轮次 / 毒集 / 上轮原因) 落**节点级 journal**, 每轮 judge 判完就写。为什么不是
    * NodeCheckpoint: 那个只在节点 done 时写, 而环没收敛就没有 done, 崩在环中间等于毒集蒸发
    * —— 正好是要防的那件事。详见 {@link NodeLoopJournal} 的类型注。
+   *
+   * **D-F (2026-07-30) 之后这里是唯一的环**: 外层 fixpoint 在 goal 引擎那条路上已撤。随之搬进来
+   * 两件原属外层的东西 —— 轮级 conductor 升级 (见 runConductorRound), 与 `judge_final` 终轮必判
+   * (撤了外层就没人再问「整体目标成了吗」, 调用方要裁决得有地方拿, 见 LeafResult.converged)。
    */
   const runConductorNode = async (id: string): Promise<LeafResult> => {
     const node = plan!.nodes[id]!;
     const deps = node.depends_on ?? [];
     const maxRounds = node.max_rounds ?? 1;
+    const judgeFinal = node.judge_final === true;
     const cm = continuity?.manager;
 
     // resume: 接回上次的轮次/毒集/上轮原因 (INV-P2-6 同款, 只是键降到了节点级)。
     const journal = cm && continuity?.resume ? cm.loadNodeLoopJournal(continuity.runId, id) : null;
     if (journal?.converged) {
       logger.info({ node: id, rounds: journal.completedRounds }, '[omd/executor-dag] 内环已收敛 (journal) → 直接返上次结论');
-      return { id, status: 'done', kind: 'conductor', output: journal.lastOutput ?? '[内环已收敛]', deps, usage: { in: 0, out: 0 }, skipped: true };
+      return {
+        id, status: 'done', kind: 'conductor', output: journal.lastOutput ?? '[内环已收敛]', deps,
+        usage: { in: 0, out: 0 }, skipped: true, rounds: journal.completedRounds, converged: true,
+      };
     }
     const poisoned = new Set(journal?.poisoned ?? []);
     let prevReason = journal?.prevReason ?? '';
@@ -742,15 +799,45 @@ async function executePlan(
     // 上一轮的子节点结果 —— 跨轮复用的匹配源 (进程内; 崩溃后由各子节点自己的 checkpoint 兜)。
     let prevResults = new Map<string, LeafResult>();
 
+    /**
+     * 节点定局的**唯一出口**: 盖轮数/裁决 + 落审计 checkpoint。
+     *
+     * 审计 checkpoint (交接文 2026-07-30 的 filesTouched 下一档): `outputPaths` = 子树并集,
+     * `artifactHashes` 照算。此前这份并集只活在内存里, 崩了就没 —— 而"这棵子树到底动过哪些文件"
+     * 是事后审计唯一的锚。**永不用于 resume-skip**: runNode 在 conductor 分支就 return 了,
+     * 结构上走不到那条 resume 判定 (纪律由结构保证而不靠自觉; 有测试钉住)。
+     */
+    const settle = (leaf: LeafResult, rounds: number, converged?: boolean): LeafResult => {
+      const out: LeafResult = { ...leaf, rounds, ...(converged === undefined ? {} : { converged }) };
+      if (out.status === 'done') {
+        saveDoneCheckpoint({
+          id,
+          kind: 'conductor',
+          text: out.output,
+          usage: out.usage,
+          filesTouched: out.filesTouched ?? [],
+          deps,
+          t0: nodeStartedAt.get(id) ?? Date.now(),
+        });
+      }
+      return out;
+    };
+
     for (let round = startRound; round <= maxRounds; round++) {
       const r = await runConductorRound(id, round, prevReason, poisoned, prevResults);
       prevResults = r.results;
       usageAcc = addUsage(usageAcc, r.usage);
       last = { ...r.leaf, usage: usageAcc };
+      const isFinal = round === maxRounds;
 
       // 单轮档 (max_rounds=1, 缺省): 不请 judge —— 没有下一轮可去, 判了也没有用它的地方,
       // 白花一次贵座调用。这也是零回归的那一半。
-      if (maxRounds === 1) return last;
+      //
+      // `judge_final` 是那唯一的例外 (D-F): 调用方要拿这个裁决当"整体目标成了吗"的答案
+      // (撤外层之后没有别的层再问这句), 那就值得为单轮档也多付一次。
+      // 多轮档照旧**每轮都判** —— 末轮那次不只是为了下一轮, 它还要写进 journal (resume 据它
+      // 判"这个节点上次到底成没成"), 省掉它等于让 resume 拿一个空白的结论重跑。
+      if (maxRounds === 1 && !judgeFinal) return settle(last, round);
 
       const verdict = await judgeConductorRound(id, node.goal ?? id, r.leaf, round, r.children);
       usageAcc = addUsage(usageAcc, verdict.usage);
@@ -775,13 +862,19 @@ async function executePlan(
       }
       if (verdict.converged) {
         logger.info({ node: id, round }, '[omd/executor-dag] 内环收敛 (D-A)');
-        return last;
+        return settle(last, round, true);
+      }
+      // 轮数用尽仍未收敛 (judge_final 档才走到这): 返最后一轮结果并**如实带上 converged=false**。
+      if (isFinal) {
+        logger.warn({ node: id, maxRounds }, '[omd/executor-dag] 内环轮数用尽仍未收敛 (INV-GOAL-4 有界)');
+        return settle(last, round, false);
       }
       logger.info({ node: id, round, rejected: verdict.rejected.length }, '[omd/executor-dag] 内环未收敛 → 重新展开');
     }
 
-    // 轮数用尽仍未收敛: 返最后一轮的结果, 但**不谎报收敛** —— 上层 (外层 fixpoint / 调用方) 据此判。
-    logger.warn({ node: id, maxRounds }, '[omd/executor-dag] 内环轮数用尽仍未收敛 (INV-GOAL-4 有界)');
+    // 到这里 = startRound > maxRounds (resume 接回一个已跑满轮数却没收敛的节点): 一轮都没跑,
+    // 没有裁决可报。**不谎报收敛**。
+    logger.warn({ node: id, maxRounds, startRound }, '[omd/executor-dag] 内环无轮可跑 (resume 已用尽轮数)');
     return last ?? { id, status: 'failed', kind: 'conductor', output: '[内环一轮都没跑成]', deps, usage: usageAcc };
   };
 
@@ -1572,7 +1665,7 @@ async function executePlan(
     pump();
   });
 
-  return { plan, levels, results, reusedNodes: [...reuse.keys()], conductorUsage, leavesIn, leavesOut, leavesCacheHit };
+  return { plan, levels, results, reusedNodes: [...reuse.keys(), ...innerReused], conductorUsage, leavesIn, leavesOut, leavesCacheHit };
 }
 
 /**
