@@ -34,6 +34,7 @@ const DECLARED_CONSUMERS: Record<string, string> = {
   executor: 'executor-dag (agent/command/research/map 分流)',
   command: 'executor-dag (commandRunner)',
   expect_exit: 'executor-dag (command 分支判 done 的期望退出码, D-K)',
+  max_nodes: 'executor-dag.runConductorNode → plan/conductor-expand (子图硬顶, D-B/D-D)',
   creative: 'executor-dag (caveman 档位路由)',
   map: 'executor-dag.runMapNode',
   output_type: 'executor-dag (producesFiles 判定)',
