@@ -51,6 +51,14 @@ import {
 // D-21 escalation 跨轮复用: 语义 Merkle 指纹 + 前驱闭包匹配 (semantic-key 单一真源)。
 import { computeReuse, merkleFingerprints } from './plan-passes/semantic-key';
 import { expandConductorNode, subgraphWarnings } from './plan/conductor-expand';
+import {
+  conductorJudgePrompt,
+  parseConductorVerdict,
+  renderRoundForJudge,
+  CONDUCTOR_JUDGE_THINKING,
+  CONDUCTOR_JUDGE_MAX_TOKENS,
+  type JudgeChildView,
+} from './plan/conductor-judge';
 // D-14v2 多模态媒体管道 (S4): attach_media 执行期从直接前驱输出解析图片 → ContentPart 注入。
 import { collectDepMedia } from './leaf-media';
 import type { ContentPart } from '../model/gateway';
@@ -416,50 +424,28 @@ async function executePlan(
     goal: string,
     leaf: LeafResult,
     round: number,
-    childIds: readonly string[],
+    children: readonly JudgeChildView[],
   ): Promise<{ converged: boolean; reason: string; rejected: string[]; usage: ModelUsage }> => {
+    const childIds = children.map((c) => c.id);
     // 整轮就没跑成 → 直接未收敛, 省一次 judge 调用 (同 llm-judge 的 status==='failed' 短路)。
     if (leaf.status === 'failed') {
       return { converged: false, reason: `整轮失败: ${leaf.output.slice(0, 300)}`, rejected: [], usage: { in: 0, out: 0 } };
     }
-    const prompt = [
-      '你在判一个子任务**是否已经达成**。只回一个 JSON 对象, 别的不要。',
-      `目标: ${goal}`,
-      '',
-      '本轮各步骤的产出:',
-      leaf.output.slice(0, 6000),
-      '',
-      `可点名的步骤 id (只能从这里选): ${childIds.join(', ')}`,
-      '',
-      '形状: {"converged":boolean,"failureReason":string,"rejectedNodes":string[]}',
-      '- converged: 目标真的达成了才 true。**宁可判没达成**, 多跑一轮的代价远小于谎报完成。',
-      '- failureReason: 没达成时写清**还差什么**, 下一轮会拿它重新分解 (包括"某个事实没查清楚"',
-      '  这种需要补一个新步骤的情况 —— 直说, 下一轮画得出来)。',
-      '- rejectedNodes: 哪些步骤的**产出不作数** (编的 / 空的 / 没按要求做)。宁可多点名不可漏点名:',
-      '  漏点名会让那份产出在下一轮被当成已完成复用。没有就给空数组。',
-    ].join('\n');
+    const judgeCoord = config.judgeModel ?? config.conductorModel;
     try {
       const { text, usage } = await generate({
-        model: config.judgeModel ?? config.conductorModel,
-        messages: [{ role: 'user', content: prompt }],
-        thinkingLevel: config.seatThinking?.(config.judgeModel ?? config.conductorModel) ?? 'high',
-        maxTokens: 2048,
+        model: judgeCoord,
+        // judge 看的是**专门渲染的视图**, 不是节点对下游的 output —— 后者带"N/M 成功"的开场白
+        // (对 judge 是"都好着呢"的暗示) 且只有可读名没有可点名的 id。2026-07-29 实测逼出来的。
+        messages: [{ role: 'user', content: conductorJudgePrompt(goal, renderRoundForJudge(children), childIds) }],
+        thinkingLevel: config.seatThinking?.(judgeCoord) ?? CONDUCTOR_JUDGE_THINKING,
+        maxTokens: CONDUCTOR_JUDGE_MAX_TOKENS,
       });
-      const s = text.indexOf('{');
-      const e = text.lastIndexOf('}');
-      if (s < 0 || e <= s) throw new Error('judge 无 JSON 对象');
-      const v = JSON.parse(text.slice(s, e + 1)) as { converged?: unknown; failureReason?: unknown; rejectedNodes?: unknown };
-      const known = new Set(childIds);
-      // 点了图里不存在的 id → 丢弃 (D-4 的幻觉处理)。
-      const rejected = Array.isArray(v.rejectedNodes)
-        ? v.rejectedNodes.filter((x): x is string => typeof x === 'string' && known.has(x))
-        : [];
-      return {
-        converged: v.converged === true,
-        reason: typeof v.failureReason === 'string' ? v.failureReason : '',
-        rejected,
-        usage,
-      };
+      const v = parseConductorVerdict(text, childIds);
+      if (v.ghosts.length) {
+        logger.warn({ node: id, round, ghosts: v.ghosts }, '[omd/executor-dag] 内环 judge 点名了子图中不存在的 id → 丢弃');
+      }
+      return { converged: v.converged, reason: v.reason, rejected: v.rejected, usage };
     } catch (err) {
       // fail-closed: 判不出来就当没达成。judge 挂掉不该变成"那就算过了吧"。
       logger.warn({ node: id, round, err: String(err) }, '[omd/executor-dag] 内环 judge 无结论 → 判未收敛 (fail-closed)');
@@ -473,7 +459,9 @@ async function executePlan(
     round: number,
     prevReason: string,
     poisoned: ReadonlySet<string>,
-  ): Promise<{ leaf: LeafResult; childIds: string[]; usage: ModelUsage }> => {
+    /** 上一轮的子节点结果 (D-21 内环版: 跨轮复用的匹配源, 键 = 内容寻址 id)。 */
+    prevResults: ReadonlyMap<string, LeafResult>,
+  ): Promise<{ leaf: LeafResult; children: JudgeChildView[]; usage: ModelUsage; results: Map<string, LeafResult> }> => {
     const node = plan!.nodes[id]!;
     const deps = node.depends_on ?? [];
     let usageAcc: ModelUsage = { in: 0, out: 0 };
@@ -531,7 +519,7 @@ async function executePlan(
       logger.warn({ node: id, round, err: msg }, '[omd/executor-dag] conductor 节点展开失败 → failed');
       return {
         leaf: { id, status: 'failed', kind: 'conductor', output: `[conductor 展开失败: ${msg}]`, deps, usage: usageAcc },
-        childIds: [], usage: usageAcc,
+        children: [], usage: usageAcc, results: new Map(),
       };
     }
 
@@ -549,7 +537,7 @@ async function executePlan(
           output: `[子图被拒 (${expand.status}): ${expand.error ?? '空子图 — conductor 没能分解出任何步骤'}]`,
           deps, usage: usageAcc,
         },
-        childIds: [], usage: usageAcc,
+        children: [], usage: usageAcc, results: new Map(),
       };
     }
     if (expand.truncated > 0) {
@@ -571,15 +559,41 @@ async function executePlan(
     }
     // **本节点自己的毒集**落到 resume 面 (D-A: 毒集的新家是节点级 journal, 见 NodeLoopJournal)。
     // 上一轮被内环 judge 点名的子节点, 崩溃重来时不许靠 checkpoint 当绿跳过 —— 与外层
-    // `dropPoisonedGreens` 同一条纪律, 只是键在这个节点自己的 journal 里。判据用 checkpoint
-    // 存下来的指纹 (通道⑤-b), 不重算。
-    if (poisoned.size > 0) {
-      for (const child of expand.children) {
-        const cp = resumeGreens.get(child.id);
-        if (cp?.fingerprint && poisoned.has(cp.fingerprint)) {
-          resumeGreens.delete(child.id);
-          logger.info({ node: id, child: child.id }, '[omd/executor-dag] 内环毒集命中 → 该子节点强制重跑 (D-A)');
-        }
+    // `dropPoisonedGreens` 同一条纪律, 只是键是**内容寻址的子节点 id** (见 NodeLoopJournal 的注:
+    // 子图指纹与整图指纹不相等, 而 id 一把钥匙同时开两把锁)。
+    for (const child of expand.children) {
+      if (poisoned.has(child.id) && resumeGreens.delete(child.id)) {
+        logger.info({ node: id, child: child.id }, '[omd/executor-dag] 内环毒集命中 → 该子节点强制重跑 (D-A)');
+      }
+    }
+
+    // ── D-21 的内环版: **跨轮复用** ────────────────────────────────────────────
+    // 环搬进节点之后一度把这条丢了 —— 外层 fixpoint 有 `computeReuse`, 语义没变的节点零 LLM 注入
+    // 上轮输出; 内环第 2 轮却把**每个**子节点重跑一遍 (实测 3 个子节点 → 6 次调用)。修复轮的图与
+    // 上一轮大半同构, 全重跑就是把环的成本翻倍。
+    //
+    // 匹配免费: 子节点 id 是内容寻址的, "同 id" ≡ "同规格 + 同祖先规格"。只需再要一条 ——
+    // **前驱也得可复用**: 上游若要重跑, 本节点吃到的输入就变了 (与 computeReuse 的 `deps.every` 同理)。
+    const reuseLocal = new Map<string, LeafResult>();
+    if (prevResults.size > 0) {
+      const memo = new Map<string, boolean>();
+      const canReuse = (cid: string): boolean => {
+        const m = memo.get(cid);
+        if (m !== undefined) return m;
+        memo.set(cid, false); // 环/自引用下界 (展开期已查过环, 这里是纯函数自保)
+        const prev = prevResults.get(cid);
+        const inner = ((plan!.nodes[cid]?.depends_on ?? []) as string[]).filter((d) => d.startsWith(`${id}::`));
+        const ok = !!prev && prev.status === 'done' && !poisoned.has(cid) && inner.every(canReuse);
+        memo.set(cid, ok);
+        if (ok && prev) reuseLocal.set(cid, prev);
+        return ok;
+      };
+      for (const c of expand.children) canReuse(c.id);
+      if (reuseLocal.size > 0) {
+        logger.info(
+          { node: id, round, reused: reuseLocal.size, total: expand.children.length },
+          '[omd/executor-dag] 内环跨轮复用 → 语义没变的子节点零 LLM 注入上轮输出',
+        );
       }
     }
     logger.info(
@@ -610,6 +624,7 @@ async function executePlan(
     // 全落在它内部的子节点上 —— 不冒泡, 父节点的 filesTouched 恒空, 调用方 (如 goal 引擎要找
     // 子树写的 spec 文件) 与外层的产物观察面就都看不见这棵子树干了什么。同 map 的收集语义。
     const touchedAll = new Set<string>();
+    const roundResults = new Map<string, LeafResult>();
     const byId = new Map(expand.children.map((c) => [c.id, c]));
 
     await new Promise<void>((resolve) => {
@@ -621,7 +636,12 @@ async function executePlan(
         while (runningLocal < capLocal && readyLocal.length > 0) {
           const cid = readyLocal.shift()!;
           runningLocal++;
-          void runNode(cid)
+          const hit = reuseLocal.get(cid);
+          void (hit
+            ? // 复用命中: 注入上轮输出, 零 LLM 零工具 (id/deps 归本轮, skipped 同 resume 语义)。
+              Promise.resolve({ ...hit, id: cid, deps: (plan!.nodes[cid]!.depends_on ?? []) as string[], usage: { in: 0, out: 0 }, skipped: true } as LeafResult)
+            : runNode(cid)
+          )
             .catch((e): LeafResult => ({
               id: cid, status: 'failed', kind: 'inproc',
               output: `[failed] ${e instanceof Error ? e.message : String(e)}`,
@@ -629,6 +649,7 @@ async function executePlan(
             }))
             .then((r) => {
               results[cid] = r;
+              roundResults.set(cid, r);
               depOutputs[cid] = r.output;
               usageAcc = addUsage(usageAcc, r.usage);
               if (r.status === 'failed') failedLocal++;
@@ -673,8 +694,9 @@ async function executePlan(
         usage: usageAcc,
         ...(touchedAll.size ? { filesTouched: [...touchedAll] } : {}),
       },
-      childIds,
+      children: childOut.map((c) => ({ id: c.id, originalId: c.originalId, status: c.status, output: c.output })),
       usage: usageAcc,
+      results: roundResults,
     };
   };
 
@@ -712,9 +734,12 @@ async function executePlan(
 
     let usageAcc: ModelUsage = { in: 0, out: 0 };
     let last: LeafResult | null = null;
+    // 上一轮的子节点结果 —— 跨轮复用的匹配源 (进程内; 崩溃后由各子节点自己的 checkpoint 兜)。
+    let prevResults = new Map<string, LeafResult>();
 
     for (let round = startRound; round <= maxRounds; round++) {
-      const r = await runConductorRound(id, round, prevReason, poisoned);
+      const r = await runConductorRound(id, round, prevReason, poisoned, prevResults);
+      prevResults = r.results;
       usageAcc = addUsage(usageAcc, r.usage);
       last = { ...r.leaf, usage: usageAcc };
 
@@ -722,15 +747,12 @@ async function executePlan(
       // 白花一次贵座调用。这也是零回归的那一半。
       if (maxRounds === 1) return last;
 
-      const verdict = await judgeConductorRound(id, node.goal ?? id, r.leaf, round, r.childIds);
+      const verdict = await judgeConductorRound(id, node.goal ?? id, r.leaf, round, r.children);
       usageAcc = addUsage(usageAcc, verdict.usage);
       last = { ...r.leaf, usage: usageAcc };
 
-      // D-4 同款铸票: judge 点名的子节点 → 指纹入毒集 (指纹取 checkpoint 落盘的那份, 通道⑤-b)。
-      for (const cid of verdict.rejected) {
-        const fp = resumeGreens.get(cid)?.fingerprint ?? merkleFingerprints(plan!).get(cid);
-        if (fp) poisoned.add(fp);
-      }
+      // D-4 同款铸票: judge 点名的子节点 → **id** 入毒集 (键取 id 的理由见 NodeLoopJournal 的注)。
+      for (const cid of verdict.rejected) poisoned.add(cid);
       prevReason = verdict.reason;
 
       // **每轮判完就写** journal —— 不是节点结束时写。崩在这之后, 下次 resume 接得回来。

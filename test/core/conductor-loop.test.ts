@@ -229,3 +229,67 @@ describe('D-A 毒集的新家 — 节点级 journal, 每轮判完就写', () => 
     expect(existsSync(runDir())).toBe(false);
   });
 });
+
+describe('D-21 内环版 — 跨轮复用 (环搬进节点后一度丢了这条)', () => {
+  const SUB3 = JSON.stringify({ name: 's', nodes: { a: { goal: 'A' }, b: { goal: 'B' }, c: { goal: 'C' } } });
+
+  /** 逐轮同一份子图 + 逐轮裁决; 回收 leaf 调用。 */
+  function loopFake(verdicts: Array<{ converged: boolean; failureReason?: string; rejectedNodes?: string[] }>) {
+    const leafCalls: string[] = [];
+    let j = 0;
+    let lastChildIds: string[] = [];
+    const generate: GenerateFn = async (req) => {
+      const u = req.messages.find((m) => m.role === 'user');
+      const t = typeof u?.content === 'string' ? u.content : '';
+      if (isJudge(t)) {
+        // 从 prompt 里抠出本轮可点名的 id, 好让裁决点得中 (judge 只能点内容寻址 id)。
+        lastChildIds = [...t.matchAll(/C::[\w-]+/g)].map((m) => m[0]);
+        const v = verdicts[Math.min(j++, verdicts.length - 1)]!;
+        const named = (v.rejectedNodes ?? []).map((n) => lastChildIds[Number(n)] ?? n);
+        return { text: JSON.stringify({ ...v, rejectedNodes: named }), usage: { in: 1, out: 1 } };
+      }
+      const id = leafId(t);
+      if (!id) return { text: SUB3, usage: { in: 1, out: 1 } };
+      leafCalls.push(id);
+      return { text: `out:${id}`, usage: { in: 1, out: 1 } };
+    };
+    return { generate, leafCalls };
+  }
+
+  test('第 2 轮语义没变的子节点**零 LLM 复用**上轮输出 (3 个子节点两轮 = 3 次调用, 不是 6 次)', async () => {
+    const f = loopFake([{ converged: false, failureReason: '再想想' }, { converged: true }]);
+    await runExecutorDagWithPlan(node({ max_rounds: 2 }), cfg(f.generate));
+    expect(f.leafCalls).toHaveLength(3);
+  });
+
+  test('被 judge 点名的子节点**必须重跑**, 不许被复用抵消掉 (毒集优先于复用)', async () => {
+    // 第 1 轮点名第 0 个子节点 → 第 2 轮它重跑; 另两个复用。
+    const f = loopFake([{ converged: false, failureReason: '第一个是编的', rejectedNodes: ['0'] }, { converged: true }]);
+    await runExecutorDagWithPlan(node({ max_rounds: 2 }), cfg(f.generate));
+    expect(f.leafCalls).toHaveLength(4); // 3 (轮1) + 1 (轮2 只重跑被毒那个)
+  });
+
+  test('复用不跨越"上游要重跑"这条线 (前驱重跑 → 下游吃到的输入变了, 也得重跑)', async () => {
+    const CHAIN = JSON.stringify({ name: 's', nodes: { a: { goal: 'A' }, b: { goal: 'B', depends_on: ['a'] } } });
+    const leafCalls: string[] = [];
+    let j = 0;
+    let ids: string[] = [];
+    const generate: GenerateFn = async (req) => {
+      const u = req.messages.find((m) => m.role === 'user');
+      const t = typeof u?.content === 'string' ? u.content : '';
+      if (isJudge(t)) {
+        ids = [...t.matchAll(/C::[\w-]+/g)].map((m) => m[0]);
+        // 点名**上游** a (它在 judge 视图里排第一 —— 无依赖者先跑先结清)。
+        const v = j++ === 0 ? { converged: false, failureReason: 'a 是编的', rejectedNodes: [ids[0]] } : { converged: true };
+        return { text: JSON.stringify(v), usage: { in: 1, out: 1 } };
+      }
+      const id = leafId(t);
+      if (!id) return { text: CHAIN, usage: { in: 1, out: 1 } };
+      leafCalls.push(id);
+      return { text: `out:${id}`, usage: { in: 1, out: 1 } };
+    };
+    await runExecutorDagWithPlan(node({ max_rounds: 2 }), cfg(generate));
+    // 轮1 跑 2 个; 轮2 上游被毒重跑, 下游因"前驱不可复用"也重跑 → 共 4 次。
+    expect(leafCalls).toHaveLength(4);
+  });
+});

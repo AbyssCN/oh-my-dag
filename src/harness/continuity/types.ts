@@ -178,7 +178,14 @@ export interface NodeLoopJournal {
   nodeId: string;
   /** 已判完的内环轮数; resume 从 completedRounds+1 起跑。 */
   completedRounds: number;
-  /** 毒集: 内环 judge 点名过的**子节点指纹** (累积不撤, 与 NodeCheckpoint.fingerprint 同一键空间)。 */
+  /**
+   * 毒集: 内环 judge 点名过的**子节点 id** (累积不撤)。
+   *
+   * ⚠ 键取 **id 而不是指纹**, 与外层毒集刻意不同 —— 因为子节点 id 本身就是内容寻址的 (D-B):
+   * "同一个 id" 已经等价于"同一份规格 + 同一批祖先规格"。而指纹在这里反而不好使: 子图指纹
+   * (deps 只含图内边) 与轮结果整图指纹 (deps 含并进来的父节点外层上游) **不相等**, 用哪个都得
+   * 在两个键空间之间来回翻译。id 一把钥匙同时开两把锁: 拦 resume 复活, 也拦跨轮复用。
+   */
   poisoned: string[];
   /** 上一轮的失败原因 —— 注入下一轮**重展开**的 prompt (环的信息通道就是它)。 */
   prevReason?: string;
