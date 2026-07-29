@@ -24,7 +24,7 @@ import {
 } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
 import { logger } from '../logger';
-import type { NodeCheckpoint, DagMetadata, FixpointJournal, GoalStageJournal } from './types';
+import type { NodeCheckpoint, DagMetadata, FixpointJournal, GoalStageJournal, NodeLoopJournal } from './types';
 import { dataPath } from '../project-scope';
 
 /** `.omd/continuity` — 约定目录, per-worktree 局部 (legacy: repoRoot 相对)。 */
@@ -96,6 +96,43 @@ export class CheckpointManager {
       const path = join(this.runDir(runId), '_fixpoint.json');
       if (!existsSync(path)) return null;
       return JSON.parse(readFileSync(path, 'utf-8')) as FixpointJournal;
+    } catch {
+      return null;
+    }
+  }
+
+  // ── 节点级环 journal (P3 D-A, 2026-07-29) ────────────────────────────────
+
+  /** `_loop-<安全化 nodeId>.json` —— 每个带内环的节点一份。 */
+  private loopPath(runId: string, nodeId: string): string {
+    return join(this.runDir(runId), `_loop-${nodeId.replace(/[^\w.-]/g, '_')}.json`);
+  }
+
+  /**
+   * 落节点级环 journal (原子写)。**写入时机 = 每轮 judge 判完之后**, 不是节点结束时 ——
+   * 节点结束才写就等于崩在环中间毒集全丢, 那正是这个文件存在的理由。
+   */
+  writeNodeLoopJournal(runId: string, journal: NodeLoopJournal): void {
+    try {
+      const dir = this.runDir(runId);
+      this.ensureDir(dir);
+      const path = this.loopPath(runId, journal.nodeId);
+      const tmp = `${path.slice(0, -5)}.tmp`;
+      writeFileSync(tmp, JSON.stringify(journal, null, 2), 'utf-8');
+      renameSync(tmp, path);
+    } catch (err) {
+      logger.warn({ err, runId, nodeId: journal.nodeId }, 'checkpoint: writeNodeLoopJournal failed (fail-open)');
+    }
+  }
+
+  /** 读节点级环 journal。不存在/损坏 → null (按"没有内环历史"处理, 即从第 1 轮起)。 */
+  loadNodeLoopJournal(runId: string, nodeId: string): NodeLoopJournal | null {
+    try {
+      const path = this.loopPath(runId, nodeId);
+      if (!existsSync(path)) return null;
+      const j = JSON.parse(readFileSync(path, 'utf-8')) as NodeLoopJournal;
+      if (j.nodeId !== nodeId) return null; // 防错位 (同 loadCheckpoint)
+      return j;
     } catch {
       return null;
     }

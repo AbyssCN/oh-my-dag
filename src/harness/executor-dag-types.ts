@@ -167,6 +167,13 @@ export interface ExecutorDagConfig {
    */
   planFilters?: Array<(plan: ConductorPlan) => ConductorPlan>;
   /**
+   * 收敛 judge 的模型坐标。两个消费方:
+   *  - 外层 fixpoint (`plan/iterate` 的默认 LLM judge);
+   *  - **conductor 节点的内环 judge** (D-A, `max_rounds > 1` 时) —— 缺省回落 conductorModel
+   *    (判"goal 达成没有"与"怎么分解"同属大脑簇, 回落到 leaf 档会让判决比分解还弱)。
+   */
+  judgeModel?: string;
+  /**
    * 跨模型校验器 (model-agnostic skeptic, 见 verifier.ts)。省略 = 不校验 (back-compat 老行为)。
    * 给则 DAG 跑完用它审结果 → fail 且配了可用升级模型时触发 conductor 静默升级重规划。
    */

@@ -69,6 +69,8 @@ export function nodeFieldsKey(node: PlanNode): string {
 		node.map ? JSON.stringify(node.map) : NONE,
 		// D-B/D-D: conductor 节点的子图硬顶是语义 —— 顶不同 = 允许展开的范围不同 = 不同的执行。
 		node.max_nodes ?? NONE,
+		// D-A: 内环轮数同理 (跑 1 轮 vs 跑 3 轮 = 不同深度的执行, 成本与产出都不同; 同 research.rounds)。
+		node.max_rounds ?? NONE,
 	]);
 }
 

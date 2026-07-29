@@ -404,7 +404,76 @@ async function executePlan(
   // **本次不带环** (刻意): 第一次加厚只做「展开 + 局部调度」, 跑通为先。环 (D-A: 把外层 fixpoint
   // 搬进节点内) 留给第二次加厚 —— P1 的 double-loop 教训是两层 verify 必须二选一, 在环搬进来
   // **之前**先把外层撤掉是错的顺序, 会有一段时间两层都不在。
-  const runConductorNode = async (id: string): Promise<LeafResult> => {
+  /**
+   * 内环 judge (D-E): 判的是**这个节点的 goal 达成没有**, 不另加一层全局验收
+   * (加了就要回边, 破坏无环)。形状承 D-4: 除了收敛与否, 还要它**点名**哪些子节点的产出不作数
+   * —— 点名才铸得出票, 铸不出票就只能整轮重来。
+   *
+   * fail-closed: 解析不出结论 → 判未收敛并说明, 不当作收敛 (谎报收敛比多跑一轮贵得多)。
+   */
+  const judgeConductorRound = async (
+    id: string,
+    goal: string,
+    leaf: LeafResult,
+    round: number,
+    childIds: readonly string[],
+  ): Promise<{ converged: boolean; reason: string; rejected: string[]; usage: ModelUsage }> => {
+    // 整轮就没跑成 → 直接未收敛, 省一次 judge 调用 (同 llm-judge 的 status==='failed' 短路)。
+    if (leaf.status === 'failed') {
+      return { converged: false, reason: `整轮失败: ${leaf.output.slice(0, 300)}`, rejected: [], usage: { in: 0, out: 0 } };
+    }
+    const prompt = [
+      '你在判一个子任务**是否已经达成**。只回一个 JSON 对象, 别的不要。',
+      `目标: ${goal}`,
+      '',
+      '本轮各步骤的产出:',
+      leaf.output.slice(0, 6000),
+      '',
+      `可点名的步骤 id (只能从这里选): ${childIds.join(', ')}`,
+      '',
+      '形状: {"converged":boolean,"failureReason":string,"rejectedNodes":string[]}',
+      '- converged: 目标真的达成了才 true。**宁可判没达成**, 多跑一轮的代价远小于谎报完成。',
+      '- failureReason: 没达成时写清**还差什么**, 下一轮会拿它重新分解 (包括"某个事实没查清楚"',
+      '  这种需要补一个新步骤的情况 —— 直说, 下一轮画得出来)。',
+      '- rejectedNodes: 哪些步骤的**产出不作数** (编的 / 空的 / 没按要求做)。宁可多点名不可漏点名:',
+      '  漏点名会让那份产出在下一轮被当成已完成复用。没有就给空数组。',
+    ].join('\n');
+    try {
+      const { text, usage } = await generate({
+        model: config.judgeModel ?? config.conductorModel,
+        messages: [{ role: 'user', content: prompt }],
+        thinkingLevel: config.seatThinking?.(config.judgeModel ?? config.conductorModel) ?? 'high',
+        maxTokens: 2048,
+      });
+      const s = text.indexOf('{');
+      const e = text.lastIndexOf('}');
+      if (s < 0 || e <= s) throw new Error('judge 无 JSON 对象');
+      const v = JSON.parse(text.slice(s, e + 1)) as { converged?: unknown; failureReason?: unknown; rejectedNodes?: unknown };
+      const known = new Set(childIds);
+      // 点了图里不存在的 id → 丢弃 (D-4 的幻觉处理)。
+      const rejected = Array.isArray(v.rejectedNodes)
+        ? v.rejectedNodes.filter((x): x is string => typeof x === 'string' && known.has(x))
+        : [];
+      return {
+        converged: v.converged === true,
+        reason: typeof v.failureReason === 'string' ? v.failureReason : '',
+        rejected,
+        usage,
+      };
+    } catch (err) {
+      // fail-closed: 判不出来就当没达成。judge 挂掉不该变成"那就算过了吧"。
+      logger.warn({ node: id, round, err: String(err) }, '[omd/executor-dag] 内环 judge 无结论 → 判未收敛 (fail-closed)');
+      return { converged: false, reason: 'judge 无可解析结论 (fail-closed)', rejected: [], usage: { in: 0, out: 0 } };
+    }
+  };
+
+  /** 一轮内环: 展开 → 闸 → 局部调度 → 汇总。环由 {@link runConductorNode} 在外面绕。 */
+  const runConductorRound = async (
+    id: string,
+    round: number,
+    prevReason: string,
+    poisoned: ReadonlySet<string>,
+  ): Promise<{ leaf: LeafResult; childIds: string[]; usage: ModelUsage }> => {
     const node = plan!.nodes[id]!;
     const deps = node.depends_on ?? [];
     let usageAcc: ModelUsage = { in: 0, out: 0 };
@@ -413,6 +482,14 @@ async function executePlan(
     // 上游输出进 prompt (有 fan-in 摘要用摘要), 与 map lister 同形。
     const depCtx = deps.length
       ? `\n\n<upstream>\n${deps.map((d) => `[${d}]\n${faninView[d] ?? depOutputs[d] ?? ''}`).join('\n\n')}\n</upstream>`
+      : '';
+    // **环的信息通道**: 上一轮的失败原因回灌给 conductor, 让它**重新画**而不是重跑同一张图。
+    // 这是 D-A 环的全部价值 —— 重跑只能把同样的活再干一遍, 重画才补得出上一轮压根没有的步骤
+    // (D-G′ 说的「补调研」正是这个形状: 不需要回边, 每一轮都是一张全新的无环子图)。
+    const retryCtx = prevReason
+      ? `\n\n<上一轮未通过>\n${prevReason.slice(0, 1500)}\n</上一轮未通过>\n` +
+        '这一轮请**重新分解**: 该补的步骤补上 (包括上一轮压根没有的那种, 比如先去把某个事实查清楚), ' +
+        '该改的改掉。原样再画一遍上一轮的图只会再失败一次。'
       : '';
     let sub: ConductorPlan;
     try {
@@ -427,7 +504,7 @@ async function executePlan(
           {
             role: 'user',
             content:
-              `${PLAN_BOUNDARY}${node.goal ?? id}${depCtx}\n\n` +
+              `${PLAN_BOUNDARY}${node.goal ?? id}${depCtx}${retryCtx}\n\n` +
               // D-D 写进 prompt 而不只靠事后拒: 让它知道边界, 比让它撞上去便宜。
               '注意: 本次分解出的节点**不得**再用 executor:"conductor" 或 executor:"map" —— ' +
               '你现在就是运行时展开, 已经知道清单了, 直接把步骤列出来即可。',
@@ -451,8 +528,11 @@ async function executePlan(
       sub = applyPlanFilters(parsed.plan, config);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      logger.warn({ node: id, err: msg }, '[omd/executor-dag] conductor 节点展开失败 → failed');
-      return { id, status: 'failed', kind: 'conductor', output: `[conductor 展开失败: ${msg}]`, deps, usage: usageAcc };
+      logger.warn({ node: id, round, err: msg }, '[omd/executor-dag] conductor 节点展开失败 → failed');
+      return {
+        leaf: { id, status: 'failed', kind: 'conductor', output: `[conductor 展开失败: ${msg}]`, deps, usage: usageAcc },
+        childIds: [], usage: usageAcc,
+      };
     }
 
     // ── 2. 纯展开: D-B 内容寻址 id + D-D 禁嵌套 + 环检测 + 硬顶 ──
@@ -462,11 +542,14 @@ async function executePlan(
       // "没有东西要处理", 是一条真实且常见的信息; conductor 的空是**它没能把这件事分解出来** ——
       // 这里根本到不了 (PlanSchema 要求 ≥1 节点, 空的在 parsePlan 就被拒了), 但万一到了,
       // 判成 done 就是给"没做任何事"发一张成功票, 那是 empty-done 的同一种坏。
-      logger.warn({ node: id, status: expand.status, error: expand.error }, '[omd/executor-dag] conductor 子图被拒');
+      logger.warn({ node: id, round, status: expand.status, error: expand.error }, '[omd/executor-dag] conductor 子图被拒');
       return {
-        id, status: 'failed', kind: 'conductor',
-        output: `[子图被拒 (${expand.status}): ${expand.error ?? '空子图 — conductor 没能分解出任何步骤'}]`,
-        deps, usage: usageAcc,
+        leaf: {
+          id, status: 'failed', kind: 'conductor',
+          output: `[子图被拒 (${expand.status}): ${expand.error ?? '空子图 — conductor 没能分解出任何步骤'}]`,
+          deps, usage: usageAcc,
+        },
+        childIds: [], usage: usageAcc,
       };
     }
     if (expand.truncated > 0) {
@@ -485,6 +568,19 @@ async function executePlan(
     for (const child of expand.children) {
       const inner = (child.node.depends_on ?? []) as string[];
       plan!.nodes[child.id] = { ...child.node, depends_on: [...new Set([...inner, ...deps])] };
+    }
+    // **本节点自己的毒集**落到 resume 面 (D-A: 毒集的新家是节点级 journal, 见 NodeLoopJournal)。
+    // 上一轮被内环 judge 点名的子节点, 崩溃重来时不许靠 checkpoint 当绿跳过 —— 与外层
+    // `dropPoisonedGreens` 同一条纪律, 只是键在这个节点自己的 journal 里。判据用 checkpoint
+    // 存下来的指纹 (通道⑤-b), 不重算。
+    if (poisoned.size > 0) {
+      for (const child of expand.children) {
+        const cp = resumeGreens.get(child.id);
+        if (cp?.fingerprint && poisoned.has(cp.fingerprint)) {
+          resumeGreens.delete(child.id);
+          logger.info({ node: id, child: child.id }, '[omd/executor-dag] 内环毒集命中 → 该子节点强制重跑 (D-A)');
+        }
+      }
     }
     logger.info(
       { node: id, children: expand.children.length, ids: expand.children.map((c) => `${c.originalId}→${c.fingerprint}`) },
@@ -563,14 +659,97 @@ async function executePlan(
       .map((c) => `[${c.originalId}] ${c.status}\n${c.output}`)
       .join('\n\n');
     return {
-      id,
-      status: ok > 0 ? 'done' : 'failed',
-      kind: 'conductor',
-      output: `[conductor 子图: ${ok}/${childIds.length} 成功${expand.truncated ? `, 截断 ${expand.truncated}` : ''}]\n\n${summary}`,
-      deps,
+      leaf: {
+        id,
+        status: ok > 0 ? 'done' : 'failed',
+        kind: 'conductor',
+        output: `[conductor 子图: ${ok}/${childIds.length} 成功${expand.truncated ? `, 截断 ${expand.truncated}` : ''}${failedLocal ? `, 失败 ${failedLocal}` : ''}]\n\n${summary}`,
+        deps,
+        usage: usageAcc,
+      },
+      childIds,
       usage: usageAcc,
-      ...(failedLocal > 0 ? {} : {}),
     };
+  };
+
+  /**
+   * **D-A: 环封在 conductor 节点内** (P3 批次 3 第二次加厚, 2026-07-29)。
+   *
+   * `max_rounds` 缺省 1 = 展开一次就结束, **零回归** —— 于是在外层 fixpoint 还没撤 (D-F) 之前,
+   * 不存在"两层 verify 同时在"的过渡态: 双环只在有人显式写 `max_rounds > 1` 时才出现。
+   * (P1 的 double-loop 教训是两层必须二选一; 撤外层要等环在这里跑通, 反过来会有一段时间两层都不在。)
+   *
+   * 环的语义是**逐轮重展开**, 不是重跑同一张子图 —— 见 `retryCtx` 那段注。
+   *
+   * 状态 (轮次 / 毒集 / 上轮原因) 落**节点级 journal**, 每轮 judge 判完就写。为什么不是
+   * NodeCheckpoint: 那个只在节点 done 时写, 而环没收敛就没有 done, 崩在环中间等于毒集蒸发
+   * —— 正好是要防的那件事。详见 {@link NodeLoopJournal} 的类型注。
+   */
+  const runConductorNode = async (id: string): Promise<LeafResult> => {
+    const node = plan!.nodes[id]!;
+    const deps = node.depends_on ?? [];
+    const maxRounds = node.max_rounds ?? 1;
+    const cm = continuity?.manager;
+
+    // resume: 接回上次的轮次/毒集/上轮原因 (INV-P2-6 同款, 只是键降到了节点级)。
+    const journal = cm && continuity?.resume ? cm.loadNodeLoopJournal(continuity.runId, id) : null;
+    if (journal?.converged) {
+      logger.info({ node: id, rounds: journal.completedRounds }, '[omd/executor-dag] 内环已收敛 (journal) → 直接返上次结论');
+      return { id, status: 'done', kind: 'conductor', output: journal.lastOutput ?? '[内环已收敛]', deps, usage: { in: 0, out: 0 }, skipped: true };
+    }
+    const poisoned = new Set(journal?.poisoned ?? []);
+    let prevReason = journal?.prevReason ?? '';
+    const startRound = (journal?.completedRounds ?? 0) + 1;
+    if (journal) {
+      logger.info({ node: id, startRound, poisoned: poisoned.size }, '[omd/executor-dag] 内环恢复: 接回轮次/毒集 (D-A)');
+    }
+
+    let usageAcc: ModelUsage = { in: 0, out: 0 };
+    let last: LeafResult | null = null;
+
+    for (let round = startRound; round <= maxRounds; round++) {
+      const r = await runConductorRound(id, round, prevReason, poisoned);
+      usageAcc = addUsage(usageAcc, r.usage);
+      last = { ...r.leaf, usage: usageAcc };
+
+      // 单轮档 (max_rounds=1, 缺省): 不请 judge —— 没有下一轮可去, 判了也没有用它的地方,
+      // 白花一次贵座调用。这也是零回归的那一半。
+      if (maxRounds === 1) return last;
+
+      const verdict = await judgeConductorRound(id, node.goal ?? id, r.leaf, round, r.childIds);
+      usageAcc = addUsage(usageAcc, verdict.usage);
+      last = { ...r.leaf, usage: usageAcc };
+
+      // D-4 同款铸票: judge 点名的子节点 → 指纹入毒集 (指纹取 checkpoint 落盘的那份, 通道⑤-b)。
+      for (const cid of verdict.rejected) {
+        const fp = resumeGreens.get(cid)?.fingerprint ?? merkleFingerprints(plan!).get(cid);
+        if (fp) poisoned.add(fp);
+      }
+      prevReason = verdict.reason;
+
+      // **每轮判完就写** journal —— 不是节点结束时写。崩在这之后, 下次 resume 接得回来。
+      if (cm && continuity) {
+        cm.writeNodeLoopJournal(continuity.runId, {
+          runId: continuity.runId,
+          nodeId: id,
+          completedRounds: round,
+          poisoned: [...poisoned],
+          ...(prevReason ? { prevReason } : {}),
+          ...(verdict.converged ? { converged: true, lastOutput: last.output } : {}),
+          updatedAt: new Date().toISOString(),
+          schemaVersion: 1,
+        });
+      }
+      if (verdict.converged) {
+        logger.info({ node: id, round }, '[omd/executor-dag] 内环收敛 (D-A)');
+        return last;
+      }
+      logger.info({ node: id, round, rejected: verdict.rejected.length }, '[omd/executor-dag] 内环未收敛 → 重新展开');
+    }
+
+    // 轮数用尽仍未收敛: 返最后一轮的结果, 但**不谎报收敛** —— 上层 (外层 fixpoint / 调用方) 据此判。
+    logger.warn({ node: id, maxRounds }, '[omd/executor-dag] 内环轮数用尽仍未收敛 (INV-GOAL-4 有界)');
+    return last ?? { id, status: 'failed', kind: 'conductor', output: '[内环一轮都没跑成]', deps, usage: usageAcc };
   };
 
   // ── U1 P1: map 节点运行时展开 (SDD 0009 §2.3 StateMachine) ──────────────────
