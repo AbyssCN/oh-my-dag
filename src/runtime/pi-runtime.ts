@@ -28,7 +28,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import { getModel } from '@earendil-works/pi-ai/compat'; // 0.80: 目录读挪 /compat
 import { logger } from '../logger';
-import { createKimiOAuthExtension } from '../model/kimi-oauth';
+import { kimiOAuthExtensionFor } from '../model/kimi-oauth';
 import type { OmdController } from '../harness/controller';
 import type { AgentRuntime, DispatchOptions, RuntimeEvent, ThinkingLevel } from './types';
 import {
@@ -314,8 +314,10 @@ export class PiRuntime implements AgentRuntime {
 
     // extensionFactories 来源: controller (灵魂注入 + omd 原生 fail-closed 闸)。
     // harness (技能/身份/子代理) 不贡献 extensionFactory —— hook 子进程桥已删 (V2-HOOK), 改原生经 controller。
-    // kimi-coding OAuth 恒挂 (正门注册: 会话 ModelRegistry.refresh 清全局注册表后由它重放, 见 kimi-oauth.ts)。
-    const extensionFactories: ExtensionFactory[] = [createKimiOAuthExtension()];
+    // kimi-coding OAuth **条件挂载** (2026-07-29): 本 session 真解析到 kimi-coding 坐标才挂
+    // (正门注册: ModelRegistry.refresh 清全局注册表后由它重放, 见 kimi-oauth.ts 的条件挂载注)。
+    const kimiExt = kimiOAuthExtensionFor(provider);
+    const extensionFactories: ExtensionFactory[] = kimiExt ? [kimiExt] : [];
     if (controller) extensionFactories.push(...controller.toExtensionFactories());
     if (this.opts.harness && !this.harness) {
       this.harness = installOmdHarness({ cwd, spawn: (def, prompt) => this.spawnSubAgent(def, prompt) });

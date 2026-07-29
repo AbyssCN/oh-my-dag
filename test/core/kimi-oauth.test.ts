@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { createKimiCodingOAuthProvider } from '../../src/model/kimi-oauth';
+import { createKimiCodingOAuthProvider, kimiOAuthExtensionFor } from '../../src/model/kimi-oauth';
 import type { OAuthLoginCallbacks } from '@earendil-works/pi-ai/oauth';
 
 // kimi-coding OAuth 登录件 (device flow + refresh), fake fetch 驱动, 不打真端点。
@@ -51,5 +51,36 @@ describe('kimi-coding OAuth 登录件', () => {
   test('refresh 401 → 明确要求重登录的错误 (不静默)', async () => {
     const { fetch: f } = fakeFetch([{ status: 401, body: { error_description: 'revoked' } }]);
     await expect(createKimiCodingOAuthProvider(f).refreshToken({ access: 'a', refresh: 'r', expires: 0 })).rejects.toThrow(/重新登录/);
+  });
+});
+
+/**
+ * 条件挂载 (2026-07-29): headless 链 (agent-leaf / pi-runtime) 只在**本次坐标真是 kimi-coding**
+ * 时才挂登录件。判据落在坐标上而非"auth.json 有没有凭证" —— 于是渠道恢复、分配表把座位改回
+ * kimi 的那一刻它自动挂回来, 不用改代码。
+ */
+describe('kimi-oauth 条件挂载 (kimiOAuthExtensionFor)', () => {
+  test('kimi 坐标 → 返 factory (全坐标与裸 provider 名都认)', () => {
+    expect(kimiOAuthExtensionFor('kimi-coding:k3')).not.toBeNull();
+    expect(kimiOAuthExtensionFor('kimi-coding')).not.toBeNull();
+    expect(kimiOAuthExtensionFor('  kimi-coding:k3  ')).not.toBeNull();
+  });
+
+  test('非 kimi 坐标 → null (不挂 = 不为一个本次绝不调用的 provider 走全局注册表变更)', () => {
+    for (const coord of ['deepseek:v4-pro', 'opencode-go:mimo-v2.5', 'anthropic:claude-opus-4-5', '']) {
+      expect(kimiOAuthExtensionFor(coord)).toBeNull();
+    }
+  });
+
+  test('前缀相近的 provider 不误命中 (kimi ≠ kimi-coding)', () => {
+    expect(kimiOAuthExtensionFor('kimi:k2')).toBeNull();
+    expect(kimiOAuthExtensionFor('kimi-coding-mirror:k3')).toBeNull();
+  });
+
+  test('返回的 factory 就是真的注册件 (不是空壳)', () => {
+    const registered: string[] = [];
+    const factory = kimiOAuthExtensionFor('kimi-coding:k3')!;
+    factory({ registerProvider: (id: string) => registered.push(id) } as never);
+    expect(registered).toEqual(['kimi-coding']);
   });
 });

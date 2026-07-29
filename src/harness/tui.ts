@@ -422,7 +422,10 @@ const args = userPickedModel ? userArgs : [...ctrl.toModelArgs(), ...userArgs];
 
 await main(args, {
   extensionFactories: [
-    // kimi-coding OAuth 正门注册 (最先挂: ModelRegistry.refresh 会清全局注册表, 见 kimi-oauth.ts)
+    // kimi-coding OAuth 正门注册 (最先挂: ModelRegistry.refresh 会清全局注册表, 见 kimi-oauth.ts)。
+    // **交互主会话刻意恒挂**, 不做 headless 那边的条件挂载 (kimiOAuthExtensionFor): `/login` 菜单项
+    // 正是 registerProvider 提供的, 而 /login 是取得 kimi 凭证的唯一入口 —— 条件挂载会让"不用 kimi
+    // 就再也登不回去"(鸡生蛋)。交互会话一辈子只建一次注册表, 代价是一次调用。
     createKimiOAuthExtension(),
     bannerExt,
     ...ctrl.toExtensionFactories(),
