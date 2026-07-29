@@ -213,8 +213,11 @@ export interface LeafResult {
    * 与 resume 的 `skipped?: boolean` (已绿跳过, status 仍 'done') 是两个正交概念, 不混用。
    */
   status: 'done' | 'failed' | 'skipped';
-  /** 实际执行模式: inproc 单发 / agent 带工具 / command CLI / map 动态扇出 (U1) / primitive 约束选择 (SDD 0013) / research 真 web (D-6)。 */
-  kind: 'inproc' | 'agent' | 'command' | 'map' | 'primitive' | 'research';
+  /**
+   * 实际执行模式: inproc 单发 / agent 带工具 / command CLI / map 动态扇出 (U1) /
+   * primitive 约束选择 (SDD 0013) / research 真 web (D-6) / conductor 运行时异构展开 (P3 D-B/C/D)。
+   */
+  kind: 'inproc' | 'agent' | 'command' | 'map' | 'primitive' | 'research' | 'conductor';
   /** 实际所用模型坐标 (inproc/agent leaf; command 无模型 → undefined)。bandit reward 归因 + 审计用。 */
   model?: string;
   output: string;

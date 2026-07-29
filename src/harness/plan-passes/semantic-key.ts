@@ -67,6 +67,8 @@ export function nodeFieldsKey(node: PlanNode): string {
 		node.research ? JSON.stringify(node.research) : NONE,
 		// map spec 也是语义 (D-21 复用要对 map 节点保守但正确; dedup 层面 map 整节点被排除)。
 		node.map ? JSON.stringify(node.map) : NONE,
+		// D-B/D-D: conductor 节点的子图硬顶是语义 —— 顶不同 = 允许展开的范围不同 = 不同的执行。
+		node.max_nodes ?? NONE,
 	]);
 }
 

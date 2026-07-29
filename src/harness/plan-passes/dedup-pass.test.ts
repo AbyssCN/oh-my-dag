@@ -154,6 +154,7 @@ describe("dedupPass (D-20)", () => {
 			executor: ["leaf", "agent"],
 			command: ["c1", "c2"],
 			expect_exit: [0, 1],
+			max_nodes: [4, 8],
 			kind: ["primitive", undefined],
 			primitive: ["parallel", "judge"],
 			params: [{ p: 1 }, { p: 2 }],
