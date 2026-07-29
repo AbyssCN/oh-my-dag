@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runExecutorDag, type GenerateFn } from '../../src/harness/executor-dag';
 import type { AgentLeafInput } from '../../src/harness/leaf-runners';
+import { CheckpointManager } from '../../src/harness/continuity/checkpoint-manager';
 
 // 产物校验闸 (2026-07-03): agent 写文件节点声称的 filesTouched 必须真实存在 → 测试用真 tmp 文件。
 const TMP = mkdtempSync(join(tmpdir(), 'dag-artifact-'));
@@ -141,5 +142,69 @@ describe('产物校验闸的根 = leaf 自报的 cwd', () => {
       agentRunner: async () => ({ text: 'done', usage: { in: 1, out: 1 }, filesTouched: ['src/nope-xyz.ts'] }),
     });
     expect(res.results.impl!.status).toBe('failed');
+  });
+});
+
+/**
+ * 2026-07-30 live 冒烟挖出来的假阴性: agent 用 **bash 重定向** 写文件时 `filesTouched` 是空的
+ * (它只统计 write/edit 族工具) —— 于是一次**真成功**被产物闸判成 empty-done, judge 跟着判未收敛,
+ * 整个 goal 报 failed。自主环因此收不了尾。
+ *
+ * 救回的条件刻意苛刻, 三条缺一不可: ① 节点自己**声明**了 output_path ② 那个文件此刻在
+ * ③ 它的**内容跟跑之前不一样**。少了 ③ 就是"把一个早就在那儿的文件当成本次产物", 闸等于白设。
+ */
+describe('产物校验闸: 救回经 bash 写入的**声明**产物 (但不放过 empty-done)', () => {
+  const planWith = (node: Record<string, unknown>): string =>
+    JSON.stringify({ name: 'bp', nodes: { impl: { goal: '实现 out.txt', executor: 'agent', output_type: 'file', ...node } } });
+  const genOf = (plan: string): GenerateFn => async ({ model }) =>
+    model === 'c:c' ? { text: plan, usage: { in: 1, out: 1 } } : { text: 'ok', usage: { in: 1, out: 1 } };
+
+  /** 跑一次: agentRunner 不报 filesTouched, 但按 write 回调真写盘 (= bash 重定向的形状)。 */
+  const run = async (opts: { declare: boolean; write: string | null; pre?: string }) => {
+    const dir = mkdtempSync(join(tmpdir(), 'omd-bashwrite-'));
+    if (opts.pre !== undefined) writeFileSync(join(dir, 'out.txt'), opts.pre);
+    const plan = planWith(opts.declare ? { output_path: 'out.txt' } : {});
+    const res = await runExecutorDag('t', {
+      conductorModel: 'c:c',
+      leafModel: 'l:l',
+      generate: genOf(plan),
+      continuity: { manager: new CheckpointManager(dir), runId: 'r', repoRoot: dir },
+      agentRunner: async () => {
+        if (opts.write !== null) writeFileSync(join(dir, 'out.txt'), opts.write);
+        // ⚠ 关键: 真写了盘却**不报** filesTouched —— bash 重定向就是这个形状。
+        return { text: '写完了', usage: { in: 1, out: 1 }, filesTouched: [], cwd: dir };
+      },
+    });
+    const leaf = res.results.impl!;
+    rmSync(dir, { recursive: true, force: true });
+    return leaf;
+  };
+
+  test('声明了 output_path + 真写了新文件 → 救回判 done, 且产物补进 filesTouched', async () => {
+    const leaf = await run({ declare: true, write: 'hello\n' });
+    expect(leaf.status).toBe('done');
+    expect(leaf.filesTouched).toEqual(['out.txt']); // 补上了 → checkpoint/下游拿得到产物锚
+  });
+
+  test('声明了 output_path + 把已有文件**改**了 → 也算真写入', async () => {
+    const leaf = await run({ declare: true, pre: '旧内容\n', write: '新内容\n' });
+    expect(leaf.status).toBe('done');
+  });
+
+  test('声明了 output_path 但文件**内容没变** → 仍 failed (不许拿早就在的文件充产物)', async () => {
+    const leaf = await run({ declare: true, pre: '一直就是这样\n', write: '一直就是这样\n' });
+    expect(leaf.status).toBe('failed');
+    expect(leaf.output).toContain('产物校验失败');
+  });
+
+  test('声明了 output_path 但压根没写 → 仍 failed (empty-done 照拒)', async () => {
+    const leaf = await run({ declare: true, write: null });
+    expect(leaf.status).toBe('failed');
+  });
+
+  test('**没声明** output_path → 不救 (没有可核对的东西, "我做完了"不算证据)', async () => {
+    const leaf = await run({ declare: false, write: 'hello\n' });
+    expect(leaf.status).toBe('failed');
+    expect(leaf.output).toContain('filesTouched 空');
   });
 });

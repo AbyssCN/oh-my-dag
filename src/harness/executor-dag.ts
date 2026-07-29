@@ -1281,6 +1281,18 @@ async function executePlan(
       const staticModel = useAgent ? config.agentLeafModel ?? config.leafModel : config.leafModel;
       const model = node.model ?? tpl?.model ?? (config.router ? config.router.select(bucket, staticModel) : staticModel);
       const t0 = Date.now();
+      // ── 声明产物的**跑前快照** (2026-07-30 live 冒烟挖出来的) ────────────────────
+      // `filesTouched` 只统计 write/edit 族工具。agent 用 **bash 重定向** 写文件时它是空的 ——
+      // 实测: 目标"创建 notes/hello.md"真的成功了 (文件在、内容对), 却被产物闸判成 empty-done,
+      // 于是 judge 判未收敛、整个 goal 报 failed。**假阴性**, 但一样贵: 自主环因此收不了尾。
+      //
+      // 救回的条件刻意苛刻 —— 只认**节点自己声明的** `output_path`, 且要求它**内容变了**:
+      // 光查存在性等于把一个早就在那儿的文件当成本次产物, 闸就白设了 (这正是 empty-done 的同一种坏)。
+      // 没声明产物的节点不救: 那种节点"我做完了"之外没有任何可核对的东西, 该继续 fail。
+      const declaredOut = producesFiles && node.output_path ? String(node.output_path) : '';
+      const preRoot = continuity?.repoRoot ?? process.cwd();
+      const declaredAbsPre = declaredOut ? (declaredOut.startsWith('/') ? declaredOut : `${preRoot}/${declaredOut}`) : '';
+      const declaredHashPre = declaredAbsPre ? hashArtifact(declaredAbsPre) : null;
       let text: string;
       let usage: ModelUsage;
       let filesTouched: string[] = [];
@@ -1309,6 +1321,23 @@ async function executePlan(
         // **必要条件** = 真碰了文件: filesTouched 空 / 声称的路径不存在 → failed (heal 回路可见)。
         if (producesFiles) {
           const root = artifactRoot ?? continuity?.repoRoot ?? process.cwd();
+          // 救回「经非受控工具 (bash 重定向等) 写入」的声明产物, 见上面快照那段注。
+          // 根不一致时**不救**: 快照量的是另一棵树上的文件, 拿它当证据等于没量 (fail-closed)。
+          if (filesTouched.length === 0 && declaredOut) {
+            const abs = declaredOut.startsWith('/') ? declaredOut : `${root}/${declaredOut}`;
+            if (abs !== declaredAbsPre) {
+              logger.warn({ node: id, preRoot, root }, '[omd/executor-dag] 产物根跑前跑后不一致 → 不救 filesTouched 空 (fail-closed)');
+            } else {
+              const after = hashArtifact(abs);
+              if (after && after !== declaredHashPre) {
+                logger.warn(
+                  { node: id, output_path: declaredOut, before: declaredHashPre ?? '(不存在)', after },
+                  '[omd/executor-dag] filesTouched 空但声明产物内容变了 → 判真写入 (疑经 bash 等非受控工具), 补进 filesTouched',
+                );
+                filesTouched = [declaredOut];
+              }
+            }
+          }
           const missing = filesTouched.filter((p) => !existsSync(p.startsWith('/') ? p : `${root}/${p}`));
           if (filesTouched.length === 0 || missing.length > 0) {
             const why = filesTouched.length === 0
