@@ -50,7 +50,7 @@ import {
 } from './fanin-summary';
 // D-21 escalation 跨轮复用: 语义 Merkle 指纹 + 前驱闭包匹配 (semantic-key 单一真源)。
 import { computeReuse, merkleFingerprints } from './plan-passes/semantic-key';
-import { expandConductorNode } from './plan/conductor-expand';
+import { expandConductorNode, subgraphWarnings } from './plan/conductor-expand';
 // D-14v2 多模态媒体管道 (S4): attach_media 执行期从直接前驱输出解析图片 → ContentPart 注入。
 import { collectDepMedia } from './leaf-media';
 import type { ContentPart } from '../model/gateway';
@@ -423,14 +423,22 @@ async function executePlan(
               '你现在就是运行时展开, 已经知道清单了, 直接把步骤列出来即可。',
           },
         ],
-        model: config.conductorModel,
-        thinkingLevel: config.conductorThinkingLevel ?? config.seatThinking?.(config.conductorModel) ?? 'high',
+        // TPL-3 显式最高优先: 手写 plan 钉了 node.model 就用它; 否则走 conductor 座位。
+        // (stamp pass 刻意跳过 conductor 节点 —— 它盖的是 leaf 档坐标, 这里根本不读。)
+        model: node.model ?? config.conductorModel,
+        thinkingLevel: config.conductorThinkingLevel ?? config.seatThinking?.(node.model ?? config.conductorModel) ?? 'high',
         maxTokens: config.conductorMaxTokens ?? (Number(process.env.OMD_CONDUCTOR_MAX_TOKENS) || 32_768),
       });
       usageAcc = addUsage(usageAcc, usage);
       const parsed = parsePlan(text, { knownTemplates: new Set(templates.keys()) });
       if (!parsed.ok) throw new Error(`子图不是有效 plan: ${parsed.error}`);
-      sub = parsed.plan;
+      // ── D-N 展开闸 (前半): 子图过**与外层同一条** pass 管线 (oracle 过滤 → prune → dedup →
+      // evidence → stamp)。此前子图一条 pass 都不过, 后果不是"少了点优化"而是两个实打实的洞:
+      //   ① `tier` 在子节点上是**哑弹** —— stamp 才是把档位翻译成坐标的那一步, 不过它就全部
+      //      掉到静态 leafModel, conductor 写 tier:'strong' 白写。
+      //   ② evidence pass 的硬闸 (UI 交付物必须挂确定性截图闸) 对子图不生效。
+      // 管线抛错 = fail-closed 拒整份子图, 与外层 plan 撞上坏 pass 时同一语义。
+      sub = applyPlanFilters(parsed.plan, config);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.warn({ node: id, err: msg }, '[omd/executor-dag] conductor 节点展开失败 → failed');
@@ -453,6 +461,12 @@ async function executePlan(
     }
     if (expand.truncated > 0) {
       logger.warn({ node: id, truncated: expand.truncated }, '[omd/executor-dag] conductor 子图截断 (no-silent-caps)');
+    }
+    // ── D-N 展开闸 (后半): 结构体检。**刻意只 warn 不拒** —— 这两条都有正当反例
+    // (真的只有一步 / 交付物是文档而非可跑的东西), 没有证据支持一个硬阈值, 就别假装有。
+    // 硬拒的三条 (禁嵌套 / 环 / 非法 plan) 在上面, 那些没有正当反例。
+    for (const w of subgraphWarnings(expand.children)) {
+      logger.warn({ node: id, check: w.check }, `[omd/executor-dag] conductor 子图体检: ${w.message}`);
     }
 
     // ── 3. 子节点挂进 plan.nodes → 复用 runNode 全套 (路由/产物闸/checkpoint/resume) ──
