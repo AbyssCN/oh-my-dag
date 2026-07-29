@@ -114,6 +114,53 @@ function commandBin(command: string): string {
 }
 
 /**
+ * **闸的单一真源** (2026-07-29 抽出): 一条命令串过不过 fail-closed 闸。
+ * 过 → null; 不过 → 一行 `[blocked …]` 原因 (直接当 leaf 输出用)。
+ *
+ * 抽出的理由不是复用好看, 是**别处需要"这条命令跑不跑得起来"这个判断而又不能真跑它** ——
+ * D-I 的验收命令要在规划期就判定可跑 (`goal/acceptance.ts`)。判据若各写一份, 早晚一份先漂:
+ * 规划期说能跑、执行期被拒 = 「假红」(合法验证步被闸拦下, 看起来像测试失败)。
+ *
+ * 含 `&&` 链拆分 (2026-07-20 修: 兑现 conductor prompt 契约 "可 && 链验证步, 每环独立过闸")。
+ * **全链先过闸再执行**是 fail-closed 的要点: 防"合法头环已执行、恶意尾环才被拒"的部分执行。
+ */
+export function commandBlockReason(command: string, allowlist: readonly string[]): string | null {
+  const links = command.split('&&').map((s) => s.trim());
+  if (links.some((l) => !l)) return '[blocked empty link in && chain]';
+  for (const link of links) {
+    // ① fail-closed: 危险命令拦 (复用 V2-HOOK 闸)。
+    const verdict = classifyCommand(link);
+    if (verdict.dangerous) {
+      logger.warn({ command: link, label: verdict.label }, '[omd/command-leaf] 危险命令拦截 (fail-closed)');
+      return `[blocked dangerous: ${verdict.reason ?? verdict.label}]`;
+    }
+    // ② 白名单 (GP-5): 首 token 必须在 allowlist。
+    const bin = commandBin(link);
+    if (!allowlist.includes(bin)) {
+      logger.warn({ command: link, bin, allowlist }, '[omd/command-leaf] 命令不在白名单, 拒绝');
+      return `[blocked not-allowed: '${bin}' ∉ allowlist]`;
+    }
+    // ②.5 shell 元字符拦 (sec-audit 揪出的 CRITICAL): 白名单只查首 token, 整串喂 sh -c → 经
+    // ; | & $() ` 换行 < > () 可在合法 bin 后注入任意命令。拒绝这些元字符 (引号/空格/路径字符仍允许)。
+    // && 已在上方拆链 → 环内残留的单 & 仍在此被拒 (背景执行/注入不放行)。
+    if (/[;&|`$<>(){}\n\r\\]/.test(link)) {
+      logger.warn({ command: link }, '[omd/command-leaf] 命令含 shell 元字符, 拒绝 (防注入)');
+      return '[blocked shell-metachar: ; & | ` $ < > ( ) \\ newline not allowed]';
+    }
+    // ②.6 git 子命令只读闸: bin 在白名单只说明「可以调 git」, 改仓库状态的子命令仍拒
+    // (`git checkout .` 会抹掉 DAG 刚写的文件; `git commit` 越权代 owner 提交)。
+    if (bin === 'git') {
+      const sub = gitSubcommand(link);
+      if (!sub || !GIT_READONLY_SUBCOMMANDS.includes(sub)) {
+        logger.warn({ command: link, sub }, '[omd/command-leaf] git 子命令非只读, 拒绝');
+        return `[blocked git-write: '${sub ?? '(none)'}' ∉ 只读子命令 ${GIT_READONLY_SUBCOMMANDS.join('/')}]`;
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * 造一个确定性命令叶子 runner。每次跑一条命令, fail-closed 闸 + 白名单 + 超时, 捕获 stdout。
  */
 export function createCommandLeafRunner(opts: CommandLeafRunnerOpts): CommandLeafRunner {
@@ -125,57 +172,13 @@ export function createCommandLeafRunner(opts: CommandLeafRunnerOpts): CommandLea
   const memoize = opts.memoize !== false;
   const cache = memoize ? new Map<string, CommandLeafResult>() : null;
 
-  /** 单环三闸 (fail-closed): 危险命令 / 白名单 / shell 元字符。过闸返 null, 拒返 blocked 结果。 */
-  const gateLink = (link: string): CommandLeafResult | null => {
-    // ① fail-closed: 危险命令拦 (复用 V2-HOOK 闸)。
-    const verdict = classifyCommand(link);
-    if (verdict.dangerous) {
-      logger.warn({ command: link, label: verdict.label }, '[omd/command-leaf] 危险命令拦截 (fail-closed)');
-      return { text: `[blocked dangerous: ${verdict.reason ?? verdict.label}]`, usage: { in: 0, out: 0 }, exitCode: -1 };
-    }
-    // ② 白名单 (GP-5): 首 token 必须在 allowlist。
-    const bin = commandBin(link);
-    if (!allowlist.includes(bin)) {
-      logger.warn({ command: link, bin, allowlist }, '[omd/command-leaf] 命令不在白名单, 拒绝');
-      return { text: `[blocked not-allowed: '${bin}' ∉ allowlist]`, usage: { in: 0, out: 0 }, exitCode: -1 };
-    }
-    // ②.5 shell 元字符拦 (sec-audit 揪出的 CRITICAL): 白名单只查首 token, 整串喂 sh -c → 经
-    // ; | & $() ` 换行 < > () 可在合法 bin 后注入任意命令。拒绝这些元字符 (引号/空格/路径字符仍允许)。
-    // && 已在上游拆链 → 环内残留的单 & 仍在此被拒 (背景执行/注入不放行)。
-    if (/[;&|`$<>(){}\n\r\\]/.test(link)) {
-      logger.warn({ command: link }, '[omd/command-leaf] 命令含 shell 元字符, 拒绝 (防注入)');
-      return { text: '[blocked shell-metachar: ; & | ` $ < > ( ) \\ newline not allowed]', usage: { in: 0, out: 0 }, exitCode: -1 };
-    }
-    // ②.6 git 子命令只读闸: bin 在白名单只说明「可以调 git」, 改仓库状态的子命令仍拒
-    // (`git checkout .` 会抹掉 DAG 刚写的文件; `git commit` 越权代 owner 提交)。
-    if (bin === 'git') {
-      const sub = gitSubcommand(link);
-      if (!sub || !GIT_READONLY_SUBCOMMANDS.includes(sub)) {
-        logger.warn({ command: link, sub }, '[omd/command-leaf] git 子命令非只读, 拒绝');
-        return {
-          text: `[blocked git-write: '${sub ?? '(none)'}' ∉ 只读子命令 ${GIT_READONLY_SUBCOMMANDS.join('/')}]`,
-          usage: { in: 0, out: 0 },
-          exitCode: -1,
-        };
-      }
-    }
-    return null;
-  };
-
   return async ({ command }) => {
     // memoize 命中 (确定性只读命令 → 同 run 内同命令同输出)。键 = 原始整串。
     if (cache?.has(command)) return cache.get(command)!;
-    // && 链拆分 (2026-07-20 修: 兑现 conductor prompt 契约 "可 && 链验证步, 每环独立过闸" — 此前
-    // 无拆链实现, 含 && 的命令被元字符闸整串误杀)。先拆后闸: 每环独立 spawn, 无 sh 级注入面。
+    // 先拆后闸: 每环独立 spawn, 无 sh 级注入面 (判据见 commandBlockReason)。
+    const blocked = commandBlockReason(command, allowlist);
+    if (blocked) return { text: blocked, usage: { in: 0, out: 0 }, exitCode: -1 };
     const links = command.split('&&').map((s) => s.trim());
-    if (links.some((l) => !l)) {
-      return { text: '[blocked empty link in && chain]', usage: { in: 0, out: 0 }, exitCode: -1 };
-    }
-    // 全链先过闸再执行 (fail-closed: 任一环非法 → 整链不跑, 防"合法头环已执行、恶意尾环才被拒"的部分执行)。
-    for (const link of links) {
-      const blocked = gateLink(link);
-      if (blocked) return blocked;
-    }
     // ③ 顺序执行, 首败即停 (shell && 语义); 每环独立超时 (Promise.race: 超时返 exitCode 124, 不悬挂 leaf)。
     const outParts: string[] = [];
     let exitCode = 0;

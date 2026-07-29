@@ -14,11 +14,11 @@
 import { join } from 'node:path';
 import { iterateExecutorDag, type IterateResult } from '../plan/iterate';
 import { loadAgentTemplates } from '../agent-templates';
+import { classifyGoal, renderAcceptance, type AcceptanceSpec, type GoalClassification, type GoalTier } from './acceptance';
 import type { ExecutorDagConfig } from '../executor-dag-types';
-import { logger } from '../logger';
 
-/** D-5 轻重路由: simple = 直接 Execute→Verify→Accept; complex = 全 research→spec→execute。 */
-export type GoalTier = 'simple' | 'complex';
+// D-I: 两条轴的类型与分类器都归 ./acceptance (那里是判据轴的单一真源); 此处 re-export 保旧调用面。
+export type { AcceptanceSpec, GoalClassification, GoalTier } from './acceptance';
 
 export type GoalStageName = 'classify' | 'survey' | 'research' | 'spec' | 'execute';
 
@@ -37,14 +37,16 @@ export interface RunGoalConfig {
   maxRounds?: number;
   /** research 节点内环轮数 (有界, INV-GOAL-4)。默认 1。 */
   researchRounds?: number;
-  /** 强制档位; 省略 = 自动分类 (D-5)。 */
+  /** 强制档位 (成本轴); 省略 = 自动分类 (D-5)。**不覆盖判据轴** —— 验收分型仍照跑 (D-I)。 */
   tier?: GoalTier;
+  /** 强制验收分型 (判据轴, D-I); 省略 = 自动分类。 */
+  acceptance?: AcceptanceSpec;
   /** spec 落盘目录 (默认 <cwd>/docs/plan)。 */
   specDir?: string;
   /** 日期串 (spec 文件名)。测试注入; 默认今天 YYYY-MM-DD。 */
   _today?: () => string;
-  /** 注入式分类器 (测试 / 自定义)。 */
-  _classify?: (goal: string) => Promise<GoalTier>;
+  /** 注入式分类器 (测试 / 自定义): 一次出两条轴 (D-I)。 */
+  _classify?: (goal: string) => Promise<GoalClassification>;
   /** 注入式 execute 阶段 (测试传 fake, 不碰 live 模型)。 */
   _iterate?: typeof iterateExecutorDag;
 }
@@ -52,6 +54,8 @@ export interface RunGoalConfig {
 export interface RunGoalResult {
   goal: string;
   tier: GoalTier;
+  /** D-I 验收分型 + 冻结的判卷标准 (执行型带可跑命令; 探索型带学习目标 + 可承受损失)。 */
+  acceptance: AcceptanceSpec;
   stages: GoalStage[];
   /** spec 落盘路径 (simple 档 / 无 agentRunner → undefined)。 */
   specPath?: string;
@@ -80,42 +84,6 @@ export function goalSlug(goal: string): string {
 const todayStr = (): string => new Date().toISOString().slice(0, 10);
 
 /**
- * D-5 分类器。承 router 原语的形状 (一次分类调用 + 只回 label), 但**失败方向相反**:
- * router 原语分类落空是 fail-closed 抛错 (它在一张图中间, 乱选一支会污染下游);
- * 这里落空回落 `complex` —— 保守档跑的是"多做一遍接地", 代价是钱; 而误判成 simple 的代价是
- * 一个没有证据的 spec 被当契约执行。两边不对称, 所以不对称地兜。
- */
-async function classifyGoal(goal: string, config: RunGoalConfig): Promise<GoalTier> {
-  const generate = config.dag.generate;
-  const model = config.dag.conductorModel;
-  if (!generate || !model) return 'complex';
-  try {
-    const { text } = await generate({
-      model,
-      messages: [
-        {
-          role: 'user',
-          content:
-            '把下面这个目标分类到 simple / complex 之一, 只回该词。\n' +
-            'simple = 做法已经确定、验收可机器判 (改一处代码 / 加一个测试 / 重命名);\n' +
-            'complex = 需要先查外部事实或先定契约 (选型 / 新机制 / 跨模块设计)。\n\n' +
-            `目标: ${goal}\n\n只回一个词。`,
-        },
-      ],
-      maxTokens: 16,
-    });
-    const norm = text.trim().toLowerCase();
-    if (norm.includes('simple')) return 'simple';
-    if (norm.includes('complex')) return 'complex';
-    logger.warn({ goal, reply: text.slice(0, 60) }, '[omd/goal] 分类未匹配 → 回落 complex (保守档)');
-    return 'complex';
-  } catch (err) {
-    logger.warn({ err: String(err) }, '[omd/goal] 分类调用失败 → 回落 complex (保守档)');
-    return 'complex';
-  }
-}
-
-/**
  * 跑一个 goal 到底 (INV-GOAL-1)。
  *
  * @returns 每阶段的结论 + spec 路径 + 证据 URL + 收敛情况。**失败不抛** —— 阶段级失败记在
@@ -128,9 +96,26 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   let evidence = '';
   let repoContext = '';
 
-  // ── S0/S-classify: 轻重路由 (D-5) ────────────────────────────────
-  const tier = config.tier ?? (await (config._classify ?? ((g: string) => classifyGoal(g, config)))(goal));
-  stages.push({ stage: 'classify', status: 'done', summary: `tier=${tier}` });
+  // ── S0/S-classify: 轻重路由 (D-5, 成本轴) + **验收分型** (D-I, 判据轴) ──────────
+  //
+  // 一次调用出两条轴。显式配置各自压过分类结果 —— 但 `tier` 只压成本轴, 压不到判据轴:
+  // "我知道这活儿轻" 与 "我知道这活儿怎么判" 是两句不同的话, 说了前一句不等于说了后一句。
+  const classified = await (config._classify ?? ((g: string) => classifyGoal(g, { generate: config.dag.generate, model: config.dag.conductorModel })))(goal);
+  const tier = config.tier ?? classified.tier;
+  const acceptance = config.acceptance ?? classified.acceptance;
+  stages.push({
+    stage: 'classify',
+    // 判成执行型却拿不到可跑命令时, 分类器已降级成探索型 (acceptance.ts 的 fallbackExploratory)
+    // 并把原因写进 learningGoal —— 这里把它抬成 stage 摘要, 别让降级只活在日志里。
+    status: 'done',
+    summary:
+      acceptance.kind === 'executable'
+        ? `tier=${tier} · 验收=执行型 \`${acceptance.command}\` (期望退出码 ${acceptance.expectExit})`
+        : `tier=${tier} · 验收=探索型 · 学习目标: ${acceptance.learningGoal.slice(0, 120)}`,
+  });
+  // 冻结的判卷标准: 同一份文本进 spec 起草与 execute 任务文本 (两处各写一份就会漂,
+  // 而"判据漂了"正是作弊达标最舒服的入口)。
+  const acceptanceBlock = renderAcceptance(acceptance);
 
   if (tier === 'complex') {
     // ── S0.5 Survey (仓内勘察): **agent 节点只读跑一趟仓库**, 产出当 research 的锚点 + spec 的仓内事实。
@@ -226,6 +211,9 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
           ? `\n## 仓内事实 (只读勘察, file:line)\n${repoContext}`
           : '\n## 仓内事实\n(未勘察 — 任何关于"仓里已有什么"的断言都必须进「未决」段, 不许凭印象写)',
         evidence ? `\n## 研究证据 (真 web, 来源见下)\n${evidence}\n\n来源:\n${sources.map((u) => `- ${u}`).join('\n')}` : '\n## 研究证据\n(本次无外部证据 — 只能依据仓内事实; 任何需要外部事实支撑的决策必须进「未决」段)',
+        // D-I: 判卷标准在起草**之前**就已冻结, 起草者的活是把它写进契约的验收段并据它拆步骤,
+        // 不是重新发明一套自己够得着的判据。
+        `\n${acceptanceBlock}`,
         `\n## 落盘路径 (写到这里)\n${path}`,
       ].join('\n');
       try {
@@ -252,18 +240,23 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
 
   // ── S5-S8 Execute + Verify + 1 轮修复: 内层 DAG 的外层 fixpoint。
   // task = spec 全文 (有则) 否则 goal 本身; 执行器读到的是契约, 不是对话。
-  const task = specPath
+  //
+  // D-I: 判卷标准**无条件**附在任务文本末尾 —— 包括 simple 档 (它不产 spec, 判据没有别的落点)
+  // 与 spec 未落盘的降级路径。conductor 据它把验收命令连成图里一个 executor:'command' 节点;
+  // 探索型则据它知道"这次没有机器判据"从而不去伪造一个。
+  const body = specPath
     ? `按下面这份 SDD 契约实施 (契约全文已落盘 ${specPath}):\n\n${evidence}`
     : evidence
       ? `${goal}\n\n参考材料:\n${evidence}`
       : goal;
+  const task = `${body}\n\n${acceptanceBlock}`;
   const iterate = config._iterate ?? iterateExecutorDag;
   let exec: IterateResult;
   try {
     exec = await iterate(task, { ...config.dag, maxRounds: config.maxRounds ?? 2 });
   } catch (err) {
     stages.push({ stage: 'execute', status: 'failed', summary: `execute 抛错: ${String(err).slice(0, 200)}` });
-    return { goal, tier, stages, ...(specPath ? { specPath } : {}), sources, repoContext, converged: false, rounds: 0, reusedNodes: [] };
+    return { goal, tier, acceptance, stages, ...(specPath ? { specPath } : {}), sources, repoContext, converged: false, rounds: 0, reusedNodes: [] };
   }
   // 复用面取**最后一轮** (INV-GOAL-3 问的是"修复轮复用了多少", 首轮恒 0)。
   const reusedNodes = exec.finalRound?.result?.reusedNodes ?? [];
@@ -277,6 +270,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   return {
     goal,
     tier,
+    acceptance,
     stages,
     ...(specPath ? { specPath } : {}),
     sources,
