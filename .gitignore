@@ -30,3 +30,6 @@ __pycache__/
 
 # 长文/文章 — 本地保留, 不随引擎仓发布
 docs/articles/
+
+# 其它 session 的 git worktree (机器本地状态, 不进仓)
+.claude/worktrees/
