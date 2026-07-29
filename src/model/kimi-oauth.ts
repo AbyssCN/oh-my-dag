@@ -5,6 +5,7 @@
  * 凭证依赖外部工具写 auth.json (过期即 401, 无人刷新)。本模块自实现 device flow + 刷新,
  * 三条链全部自包含, 不需要任何外部 CLI:
  *   ① pi 会话 (交互 TUI / agent-leaf): createKimiOAuthExtension 走扩展正门 registerProvider
+ *      (headless 链 agent-leaf / pi-runtime 自 2026-07-29 改**条件挂载**, 见 kimiOAuthExtensionFor)
  *   ② wizard 内联登录: 直接消费 createKimiCodingOAuthProvider
  *   ③ pi-transport 过期刷新: 同上直接消费 (401 快照天花板随之消失)
  *
@@ -138,4 +139,32 @@ export function createKimiOAuthExtension(fetchImpl: typeof fetch = fetch): Exten
       oauth: { name: p.name, login: (cb) => p.login(cb), refreshToken: (c) => p.refreshToken(c), getApiKey: (c) => p.getApiKey(c) },
     });
   };
+}
+
+/** 坐标前半 = provider ('kimi-coding:k3' → 'kimi-coding'; 裸 provider 名原样)。 */
+function providerOfCoord(coord: string): string {
+  const i = coord.indexOf(':');
+  return (i === -1 ? coord : coord.slice(0, i)).trim();
+}
+
+/**
+ * **条件挂载** (2026-07-29): 这次会话真的解析到 kimi-coding 坐标才挂登录件, 否则返 null。
+ *
+ * 此前三条链全是恒挂。恒挂的代价不是"多一个 import" —— `registerProvider` 参与 pi 的
+ * `ModelRegistry.refresh` **全局 wipe+replay** (见上方注与 agent-leaf.ts:228 那条 ctx-stale 教训),
+ * 即每建一个 headless 会话就为一个本次绝不会调用的 provider 走一遍全局注册表变更。kimi 计费周期
+ * 用尽后, 那是纯开销。
+ *
+ * 判据取**已解析出来的坐标**而非"auth.json 里有没有凭证": 座位/池把这次会话派到 kimi 才需要刷新件,
+ * 派到别处就不需要 —— 凭证在不在是另一回事 (起跑自检管那个)。于是 kimi 渠道恢复、分配表把座位改回
+ * `kimi-coding:*` 的那一刻它自动挂回来, **不用改代码**。
+ *
+ * ⚠ 不适用于**交互主会话** (tui main): 那里恒挂是对的 —— `/login` 菜单项正是由 registerProvider
+ * 提供的, 而 `/login` 是取得 kimi 凭证的唯一入口。把它也做成条件挂载 = 一旦不用 kimi 就再也登不回去
+ * (鸡生蛋)。交互会话一辈子只建一次注册表, 代价是一次调用。
+ *
+ * @param coord 'provider:modelId' 坐标或裸 provider 名。
+ */
+export function kimiOAuthExtensionFor(coord: string, fetchImpl: typeof fetch = fetch): ExtensionFactory | null {
+  return providerOfCoord(coord) === 'kimi-coding' ? createKimiOAuthExtension(fetchImpl) : null;
 }

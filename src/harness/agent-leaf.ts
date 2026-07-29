@@ -16,6 +16,7 @@ import {
   DefaultResourceLoader,
   getAgentDir,
   type AgentSession,
+  type ExtensionFactory,
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import { getModel } from '@earendil-works/pi-ai/compat'; // 0.80: 目录读挪 /compat
@@ -25,7 +26,7 @@ import { createHashlineCustomTools, hashlinePatchPaths } from './hashline';
 import { createDriftDetectorHook, type DriftDetectorConfig } from './hooks/drift-detector';
 import { createSandboxedLeafRunner } from './hooks/sandboxed-leaf';
 import { logger } from '../logger';
-import { createKimiOAuthExtension } from '../model/kimi-oauth';
+import { kimiOAuthExtensionFor } from '../model/kimi-oauth';
 import type { ModelUsage } from '../model/types';
 import type { ThinkingLevel } from '../runtime/types';
 import { isStrongCoord } from '../model/model-ratings';
@@ -221,9 +222,6 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       ? null
       : createDriftDetectorHook(typeof opts.driftDetector === 'object' ? opts.driftDetector : {});
 
-  // kimi-coding OAuth 扩展 factory: 无状态 (每次 pi.registerProvider 各自注册), 跨 loader 复用同一个安全。
-  const kimiOAuthFactory = createKimiOAuthExtension();
-
   // ⚠ resourceLoader **每 leaf 建一份, 不缓存复用** —— 曾缓存单例 (省 reload 读盘) 引入 ctx-stale 竞态:
   //   pi 的 ModelRegistry.refresh 是 per-loader 的全局 wipe+replay (kimi-oauth 恒挂重放即为此); 并发/
   //   后续 leaf 共享同一 loader 时, 一个 leaf 建 session 触发的 refresh 会使**其它在飞 leaf 捕获的 ctx
@@ -232,12 +230,12 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
   //   (不缓存) 且无此 bug —— 此处对齐。correctness > 省这次读盘, fan-out 有并发上限故代价有界。
   //   drift-detector 经 in-code extensionFactories 注入; driftFactory 是**工厂** (每 session 起新
   //   ring/flag), 跨 per-leaf loader 复用同一工厂安全。无 extensionDirs 且无 drift → 不建 (纯净 bare session)。
-  const buildLoader = async (): Promise<DefaultResourceLoader> => {
+  const buildLoader = async (kimiExt: ExtensionFactory | null): Promise<DefaultResourceLoader> => {
     const rl = new DefaultResourceLoader({
       cwd,
       agentDir: getAgentDir(),
       additionalExtensionPaths: extensionDirs,
-      extensionFactories: [kimiOAuthFactory, ...(driftFactory ? [driftFactory] : [])],
+      extensionFactories: [...(kimiExt ? [kimiExt] : []), ...(driftFactory ? [driftFactory] : [])],
     });
     await rl.reload();
     return rl;
@@ -246,7 +244,14 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
   return async ({ prompt, model }) => {
     const { provider, modelId } = parseModelRef(model);
     const m = getModel(provider as Parameters<typeof getModel>[0], modelId as never);
-    const resourceLoader = extensionDirs.length > 0 || driftFactory ? await buildLoader() : undefined;
+    // kimi-coding OAuth **条件挂载** (2026-07-29): 判据是**这个 leaf 这次用的坐标**, 不是 runner
+    // 级配置 —— 一个 runner 服务整张图, 每个 leaf 的 model 各不相同 (stamp pass 按档位派), 条件只能
+    // 落在 per-call 上。恒挂的代价见 kimi-oauth.ts 的条件挂载注。
+    // 是 kimi 但既无 extensionDirs 也无 drift → 仍要建 loader (否则刷新件没有挂载点, 过期即 401 ——
+    // 恒挂时代那条"纯净 bare session"路径正是这么漏的)。
+    const kimiExt = kimiOAuthExtensionFor(model);
+    const resourceLoader =
+      extensionDirs.length > 0 || driftFactory || kimiExt ? await buildLoader(kimiExt) : undefined;
     const { session } = await createAgentSession({
       cwd,
       model: m,
