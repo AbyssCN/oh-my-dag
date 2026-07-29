@@ -8,7 +8,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { goalSlug, runGoal, type RunGoalConfig } from './run-goal';
 import type { AcceptanceSpec, GoalClassification, GoalTier } from './acceptance';
-import type { ExecutorDagConfig } from '../executor-dag-types';
+import type { ConductorPlan } from '../conductor-plan';
+import type { ExecutorDagConfig, ExecutorDagResult } from '../executor-dag-types';
 import type { IterateResult } from '../plan/iterate';
 
 /**
@@ -19,6 +20,26 @@ const ACC_EXEC: AcceptanceSpec = { kind: 'executable', command: 'bun test', expe
 const cls =
   (tier: GoalTier, acceptance: AcceptanceSpec = ACC_EXEC) =>
   async (): Promise<GoalClassification> => ({ tier, acceptance });
+
+/**
+ * 造一份「契约段 conductor 节点」的执行结果 (D-G′ 之后 survey/research/spec 都在它的子图里)。
+ * 子节点 id 前缀 `contract::` 是 D-B 内容寻址的形状; runGoal 靠 kind 认出各段。
+ */
+function contractDag(opts: { survey?: string; sources?: string[]; specFile?: string; specText?: string }): ExecutorDagResult {
+  const results: Record<string, unknown> = {};
+  if (opts.survey !== undefined) {
+    results['contract::survey'] = { id: 'contract::survey', status: 'done', kind: 'agent', output: opts.survey, deps: [], usage: { in: 1, out: 1 }, filesTouched: [] };
+  }
+  if (opts.sources) {
+    results['contract::research'] = { id: 'contract::research', status: 'done', kind: 'research', output: '研究终稿', deps: [], usage: { in: 1, out: 1 }, sources: opts.sources };
+  }
+  results['contract'] = {
+    id: 'contract', status: 'done', kind: 'conductor',
+    output: opts.specText ?? '# SDD\n...', deps: [], usage: { in: 1, out: 1 },
+    ...(opts.specFile ? { filesTouched: [opts.specFile] } : {}),
+  };
+  return { plan: { name: 'goal-contract', nodes: {} }, results } as unknown as ExecutorDagResult;
+}
 
 const okIterate = (rounds = 1, reused: string[] = []): IterateResult =>
   ({
@@ -39,41 +60,33 @@ function cfg(dag: Partial<ExecutorDagConfig> = {}, extra: Partial<RunGoalConfig>
 }
 
 describe('runGoal — INV-GOAL-1 全自主 (阶段间零人工介入)', () => {
-  test('complex 档: research → spec → execute 一次跑完, 每阶段留结论', async () => {
+  test('complex 档: 契约段 (conductor 节点) → execute 一次跑完, 每阶段留结论', async () => {
     const seen: string[] = [];
-    let researchGroundTruth: string | undefined;
-    let agentCall = 0;
+    let contractGoal = '';
     const r = await runGoal('给 omd 加一个自主 goal 引擎', {
-      ...cfg({
-        researchRunner: async (i) => {
-          seen.push('research');
-          researchGroundTruth = i.groundTruth;
-          return { text: '研究终稿', usage: { in: 1, out: 1 }, sources: ['https://a.example'], reportPath: '/tmp/r.md' };
-        },
-        agentRunner: async ({ prompt }) => {
-          // 第一次 = 仓内勘察 (只读), 第二次 = spec 起草
-          if (agentCall++ === 0) {
-            seen.push('survey');
-            expect(prompt).toContain('只读不改');
-            return { text: 'src/harness/executor-dag.ts:497 — map 节点已有运行时展开', usage: { in: 1, out: 1 } };
-          }
-          seen.push('spec');
-          expect(prompt).toContain('## 契约 (Contracts)'); // 卡骨架真被用上
-          expect(prompt).toContain('研究终稿'); // 外部证据喂进去
-          expect(prompt).toContain('executor-dag.ts:497'); // 仓内事实也喂进去
-          return { text: '# SDD\n...', usage: { in: 1, out: 1 }, filesTouched: ['docs/plan/2026-07-28-给-omd-加一个自主-goal-引擎.md'] };
-        },
-      }),
+      ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
       _classify: cls('complex'),
+      // D-G′: survey/research/spec 现在是**一个 conductor 节点**的子图 —— 这里注入它的执行结果。
+      _runDag: (async (plan: ConductorPlan) => {
+        seen.push('contract');
+        contractGoal = String(plan.nodes.contract!.goal);
+        return contractDag({
+          survey: 'src/harness/executor-dag.ts:497 — map 节点已有运行时展开',
+          sources: ['https://a.example'],
+          specFile: 'docs/plan/2026-07-28-给-omd-加一个自主-goal-引擎.md',
+        });
+      }) as never,
       _iterate: (async (task: string) => {
         seen.push('execute');
         expect(task).toContain('按下面这份 SDD 契约实施'); // 执行读的是契约不是对话
         return okIterate();
       }) as never,
     });
-    expect(seen).toEqual(['survey', 'research', 'spec', 'execute']); // 阶段序固定, 中间没有人
-    // research 的 leaf 是 inproc 看不见仓库 —— 仓内事实只能这么当锚点喂进去
-    expect(researchGroundTruth).toContain('executor-dag.ts:497');
+    expect(seen).toEqual(['contract', 'execute']); // 阶段序固定, 中间没有人
+    // 契约段的 goal 里该有的三样: 目标 / 起草卡点名 / **冻结的判卷标准** (D-I 方案 A)。
+    expect(contractGoal).toContain('给 omd 加一个自主 goal 引擎');
+    expect(contractGoal).toContain('spec-author');
+    expect(contractGoal).toContain('## 判卷标准');
     expect(r.repoContext).toContain('executor-dag.ts:497');
     expect(r.stages.map((s) => `${s.stage}:${s.status}`)).toEqual([
       'classify:done',
@@ -109,50 +122,51 @@ describe('runGoal — INV-GOAL-1 全自主 (阶段间零人工介入)', () => {
 });
 
 describe('runGoal — 降级路径都留痕, 不假装', () => {
-  test('无 researchRunner → research skipped 且 spec 提示"无外部证据"', async () => {
-    let prompt = '';
+  // D-G′ 之后「要不要调研」由 conductor 自己判 —— 没分解出调研步就是它判了不需要, 如实记 skipped。
+  test('子图里没有调研步 → research skipped (不是失败: 这个分支现在归它判)', async () => {
     const r = await runGoal('设计一个新机制', {
-      ...cfg({
-        agentRunner: async (i) => {
-          prompt = i.prompt;
-          return { text: 'spec', usage: { in: 1, out: 1 }, filesTouched: [] };
-        },
-      }),
+      ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
       _classify: cls('complex'),
+      _runDag: (async () => contractDag({ survey: 'src/x.ts:1 — 事实', specFile: 'docs/plan/2026-07-28-设计一个新机制.md' })) as never,
     });
-    expect(r.stages.find((s) => s.stage === 'research')!.status).toBe('skipped');
-    expect(prompt).toContain('本次无外部证据');
-    expect(prompt).toContain('必须进「未决」段');
+    const s = r.stages.find((x) => x.stage === 'research')!;
+    expect(s.status).toBe('skipped');
+    expect(s.summary).toContain('无需外部调研');
+    expect(r.sources).toEqual([]);
   });
 
-  // 零来源 = 假 grounded (与 research 节点闸同一判据): 记 failed 且**不当证据用**。
-  test('research 零来源 → failed 且证据不进 spec', async () => {
-    let prompt = '';
+  // 零来源 = 假 grounded (与 research 节点闸同一判据): 记 failed, 且那段文字**不当证据用**。
+  test('调研步零来源 → research failed 且不进证据面', async () => {
     const r = await runGoal('查点什么', {
-      ...cfg({
-        researchRunner: async () => ({ text: '看着像研究的一段话', usage: { in: 1, out: 1 }, sources: [] }),
-        agentRunner: async (i) => {
-          prompt = i.prompt;
-          return { text: 'spec', usage: { in: 1, out: 1 }, filesTouched: [] };
-        },
-      }),
+      ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
       _classify: cls('complex'),
+      _runDag: (async () => contractDag({ sources: [], specFile: 'docs/plan/2026-07-28-查点什么.md' })) as never,
     });
     expect(r.stages.find((s) => s.stage === 'research')!.status).toBe('failed');
-    expect(prompt).not.toContain('看着像研究的一段话');
-    expect(prompt).toContain('本次无外部证据');
+    expect(r.sources).toEqual([]); // 零来源的那段不算证据
   });
 
-  test('spec 没真写盘 → failed 但不断流程 (下游改用正文当契约)', async () => {
+  test('契约段没产出文件 → spec failed 但不断流程 (下游改用正文当契约)', async () => {
     const r = await runGoal('做点事', {
-      ...cfg({
-        agentRunner: async () => ({ text: '# SDD 正文', usage: { in: 1, out: 1 }, filesTouched: [] }),
-      }),
+      ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
       _classify: cls('complex'),
+      _runDag: (async () => contractDag({ specText: '# SDD 正文' })) as never, // 无 specFile
     });
     expect(r.stages.find((s) => s.stage === 'spec')!.status).toBe('failed');
     expect(r.specPath).toBeUndefined();
     expect(r.stages.find((s) => s.stage === 'execute')!.status).toBe('done'); // 仍往下跑
+  });
+
+  test('契约段整个抛错 → 记 failed, execute 照跑 (不把异常抛给调用方)', async () => {
+    const r = await runGoal('做点事', {
+      ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
+      _classify: cls('complex'),
+      _runDag: (async () => {
+        throw new Error('契约段崩了');
+      }) as never,
+    });
+    expect(r.stages.find((s) => s.stage === 'spec')!.summary).toContain('契约段崩了');
+    expect(r.stages.find((s) => s.stage === 'execute')!.status).toBe('done');
   });
 
   test('execute 抛错 → 记 failed 并返回 (不把异常抛给调用方)', async () => {
@@ -180,22 +194,23 @@ describe('runGoal — INV-GOAL-4 有界 / INV-GOAL-3 可证', () => {
     expect(seen).toEqual([2, 5]);
   });
 
-  test('research 内环轮数有界且透传 (默认 1)', async () => {
-    const seen: (number | undefined)[] = [];
+  // 合并成子图之后 researchRounds 只能经契约段的 goal 传下去 —— 不传就成了"配了但不生效"的空旋钮。
+  test('research 内环轮数透传进契约段指令 (默认 1, 可覆盖)', async () => {
+    const seen: string[] = [];
     const mk = (rounds?: number) =>
       runGoal('g', {
-        ...cfg({
-          researchRunner: async (i) => {
-            seen.push(i.rounds);
-            return { text: 't', usage: { in: 1, out: 1 }, sources: ['https://x'] };
-          },
-        }),
+        ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
         ...(rounds ? { researchRounds: rounds } : {}),
         _classify: cls('complex'),
+        _runDag: (async (plan: ConductorPlan) => {
+          seen.push(String(plan.nodes.contract!.goal));
+          return contractDag({ specFile: 'docs/plan/2026-07-28-g.md' });
+        }) as never,
       });
     await mk();
     await mk(3);
-    expect(seen).toEqual([1, 3]);
+    expect(seen[0]).toContain('"rounds": 1');
+    expect(seen[1]).toContain('"rounds": 3');
   });
 
   test('最后一轮的复用集进结果 (INV-GOAL-3 可证面)', async () => {
@@ -220,47 +235,41 @@ describe('goalSlug', () => {
 // ── 仓内勘察 (survey): research 的 leaf 是 inproc 看不见仓库, agent 反过来有全套工具没 web。
 // 这一站就是把两边接上 —— 少了它, research 是在不知道"仓里已有什么"的前提下去查外面。
 describe('runGoal — survey 仓内勘察 (inproc 研究与仓库的接点)', () => {
-  test('无 agentRunner → survey skipped, 且 spec 明写"未勘察"禁凭印象', async () => {
-    // agentRunner 缺席时 spec 阶段也不会跑, 故直接看结果与 research 的 groundTruth
-    let gt: string | undefined = 'sentinel';
+  test('无 agentRunner → 整个契约段跳过 (没有工具就没有勘察, 也就写不出有根据的契约)', async () => {
+    let ranDag = false;
     const r = await runGoal('g', {
-      ...cfg({
-        researchRunner: async (i) => {
-          gt = i.groundTruth;
-          return { text: 't', usage: { in: 1, out: 1 }, sources: ['https://x'] };
-        },
-      }),
+      ...cfg({ researchRunner: async () => ({ text: 't', usage: { in: 1, out: 1 }, sources: ['https://x'] }) }),
       _classify: cls('complex'),
+      _runDag: (async () => {
+        ranDag = true;
+        return contractDag({});
+      }) as never,
     });
-    expect(r.stages.find((s) => s.stage === 'survey')!.status).toBe('skipped');
+    expect(ranDag).toBe(false); // 连图都不跑, 不白花一次 conductor 调用
+    for (const st of ['survey', 'research', 'spec'] as const) {
+      expect(r.stages.find((s) => s.stage === st)!.status).toBe('skipped');
+    }
     expect(r.repoContext).toBe('');
-    expect(gt).toBeUndefined(); // 没勘察就别塞空锚点
   });
 
-  test('survey 空输出 → failed 留痕 (不当成"仓里什么都没有")', async () => {
+  test('勘察步跑了但空手而归 → failed 留痕 (与"这次不需要勘察"不是一回事)', async () => {
     const r = await runGoal('g', {
-      ...cfg({ agentRunner: async () => ({ text: '   ', usage: { in: 1, out: 1 } }) }),
+      ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
       _classify: cls('complex'),
+      _runDag: (async () => contractDag({ survey: '   ', specFile: 'docs/plan/2026-07-28-g.md' })) as never,
     });
-    expect(r.stages.find((s) => s.stage === 'survey')!.status).toBe('failed');
+    const s = r.stages.find((x) => x.stage === 'survey')!;
+    expect(s.status).toBe('failed');
+    expect(s.summary).toContain('空输出');
   });
 
-  test('survey 抛错 → 不断流程, 后续阶段照跑', async () => {
-    let ran = false;
+  test('子图里压根没有勘察步 → skipped (与"跑了但空手"分开记)', async () => {
     const r = await runGoal('g', {
-      ...cfg({
-        agentRunner: async () => {
-          throw new Error('勘察崩了');
-        },
-        researchRunner: async () => {
-          ran = true;
-          return { text: 't', usage: { in: 1, out: 1 }, sources: ['https://x'] };
-        },
-      }),
+      ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
       _classify: cls('complex'),
+      _runDag: (async () => contractDag({ specFile: 'docs/plan/2026-07-28-g.md' })) as never,
     });
-    expect(r.stages.find((s) => s.stage === 'survey')!.summary).toContain('勘察崩了');
-    expect(ran).toBe(true);
+    expect(r.stages.find((x) => x.stage === 'survey')!.status).toBe('skipped');
   });
 
   test('simple 档不勘察 (做法已定的活不值一次读仓)', async () => {

@@ -13,7 +13,9 @@
  */
 import { join } from 'node:path';
 import { iterateExecutorDag, type IterateResult } from '../plan/iterate';
-import { loadAgentTemplates } from '../agent-templates';
+import { runExecutorDagWithPlan } from '../executor-dag';
+import type { ConductorPlan } from '../conductor-plan';
+import type { ExecutorDagResult } from '../executor-dag-types';
 import { classifyGoal, renderAcceptance, type AcceptanceSpec, type GoalClassification, type GoalTier } from './acceptance';
 import type { ExecutorDagConfig } from '../executor-dag-types';
 
@@ -37,6 +39,11 @@ export interface RunGoalConfig {
   maxRounds?: number;
   /** research 节点内环轮数 (有界, INV-GOAL-4)。默认 1。 */
   researchRounds?: number;
+  /**
+   * 契约段 (survey/research/spec 那个 conductor 节点) 的内环轮数。默认 1 = 只画一次。
+   * >1 才启用**补调研**: 契约写完若判未达成, 下一轮重画时可以长出一个上一轮没有的调研步 (D-G′/D-A)。
+   */
+  specRounds?: number;
   /** 强制档位 (成本轴); 省略 = 自动分类 (D-5)。**不覆盖判据轴** —— 验收分型仍照跑 (D-I)。 */
   tier?: GoalTier;
   /** 强制验收分型 (判据轴, D-I); 省略 = 自动分类。 */
@@ -49,6 +56,8 @@ export interface RunGoalConfig {
   _classify?: (goal: string) => Promise<GoalClassification>;
   /** 注入式 execute 阶段 (测试传 fake, 不碰 live 模型)。 */
   _iterate?: typeof iterateExecutorDag;
+  /** 注入式**契约段** DAG 执行 (测试传 fake; 默认 runExecutorDagWithPlan)。 */
+  _runDag?: (plan: ConductorPlan, config: RunGoalConfig['dag']) => Promise<ExecutorDagResult>;
 }
 
 export interface RunGoalResult {
@@ -118,119 +127,104 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   const acceptanceBlock = renderAcceptance(acceptance);
 
   if (tier === 'complex') {
-    // ── S0.5 Survey (仓内勘察): **agent 节点只读跑一趟仓库**, 产出当 research 的锚点 + spec 的仓内事实。
+    // ── S0.5–S3 契约段 (D-G′, 2026-07-29): 勘察 → 调研 → 起草 **合成一个 `executor:'conductor'` 节点**。
     //
-    // 为什么必须有这一站: research 节点是 inproc 扇出 (无工具, 只能读喂给它的语料), agent 节点反过来
-    // (有全套读写工具, 无 web)。两边能力互补但**互相看不见** —— 少了这一步, research 就是在不知道
-    // "我们仓里已经有什么"的前提下去查外面, 查回来的东西没法跟既有实现对齐, spec 也就只能凭空写。
-    // 图级组合本来就能表达 (agent 读仓 → research → agent 改码), 这里是把它固化进自主管线。
+    // 推翻的是「预构造这三个节点」: 静态图表达不了"要不要先查外面"这个分支 —— 而 conductor 节点的
+    // **展开调用本身**就是那次判断 (它看着 goal 与仓内情况决定吐哪几步), 分支不需要显式表达。
+    // 更值钱的是**补调研**: `max_rounds > 1` 时环是**逐轮重展开**, 于是"契约写完发现证据不够"可以在
+    // 第 2 轮长出一个第 1 轮压根没有的调研步 —— 不需要回边 (每轮都是一张全新的无环子图)。
+    //
+    // ⚠ **判卷标准刻意留在这个节点之外** (owner 定, 方案 A): 它由 classify 在环外算好, 冻进节点的
+    // goal 当输入。放进子图就等于让**执行体自己的环**去产出判据 —— 而环每轮都重画, 判据也就跟着能变。
+    // D-I 整套防作弊的地基就是那一句「判卷标准是执行体动不了的东西」, 判据进环这句话就没了。
+    // (两条轴本来就是分开的: 成本轴"要不要接地"交给 conductor 判, 判据轴"成没成怎么判"绝不下放。)
     if (config.dag.agentRunner) {
+      const dir = config.specDir ?? join(config.cwd, 'docs', 'plan');
+      const path = join(dir, `${(config._today ?? todayStr)()}-${goalSlug(goal)}.md`);
+      const prepPlan: ConductorPlan = {
+        name: 'goal-contract',
+        nodes: {
+          contract: {
+            executor: 'conductor',
+            ...(config.specRounds && config.specRounds > 1 ? { max_rounds: config.specRounds } : {}),
+            goal: [
+              `为下面这个目标产出一份**可执行的 SDD 契约**, 落盘到 ${path}。`,
+              '',
+              `## 目标\n${goal}`,
+              '',
+              '## 你要分解出的步骤 (按需, 不是必须全有)',
+              '- **仓内勘察** (`executor:"agent"`, 只读): 找出目标在本仓的落点与既有实现, 输出逐行',
+              '  `file:line — 事实`。没有这一步, 后面的调研与起草就是在不知道"我们已经有什么"的前提下进行。',
+              '- **外部调研** (`executor:"research"`): **只在需要外部事实时才加** (选型 / 新机制 / 别人怎么做)。',
+              '  仓内答得出来的问题别用它 —— 它抓不到一个真页面就会失败。',
+              // researchRounds 是公开旋钮 (dag_goal 的入参)。合并成子图之后, 它只能经这句话传下去 ——
+              // 不传就成了一个"配了但不生效"的空旋钮, 正是这仓一直在杀的形态。
+              `  调研深度已定: 该节点必须写 \`"research": { "rounds": ${config.researchRounds ?? 1} }\`。`,
+              '- **契约起草** (`executor:"agent"`, `template:"spec-author"`, `output_type:"file"`,',
+              `  \`output_path:"${path}"\`): 必须用那张卡, 它带着契约骨架与防作弊条款。`,
+              '  它要 depends_on 上面那些步骤 —— 拿不到事实就只能凭空写。',
+              '',
+              // D-I 方案 A: 判据在这里是**输入**, 不是待办。
+              acceptanceBlock,
+              '',
+              '起草者的活是把上面这份判卷标准**原样写进契约的验收段**并据它拆实施步骤 ——',
+              '**不是**重新发明一套自己够得着的判据。它在你开始之前就已经定死了。',
+            ].join('\n'),
+          },
+        },
+      } as ConductorPlan;
       try {
-        const r = await config.dag.agentRunner({
-          prompt: [
-            '你是仓内勘察员。**只读不改**: 不要动任何文件, 不要跑会改状态的命令。',
-            `目标: ${goal}`,
-            '任务: 找出这个目标在**本仓**里的落点与既有实现 —— 相关模块/文件、已有的同类机制、',
-            '会被影响的接缝、以及仓内已经定过的相关约定 (契约/SDD/注释里的裁决)。',
-            '',
-            // 输出形状刻意与 DEFAULT_FANIN_SCHEMA 对位 (tldr / key_points / **artifacts** / open_questions):
-            // survey 将来变成图节点后, 它的输出会经 fan-in **定向摘要**喂给下游。摘要器只对 `artifacts`
-            // 那一类"产物锚"逐字保留, 其余一律压成散文 —— 而本节点最值钱的恰恰是 `file:line` 这种锚。
-            // 更要命的是下游 research 是 **inproc 无工具**: 摘要视图附的"全文在 <path>, 需要细节自己 Read"
-            // 那条逃生口对它是废的, 压丢了就找不回来。所以这里先把事实钉进锚区, 而不是散在正文里。
-            '## 输出格式 (严格照此三段, 不要加别的段)',
-            '### 事实 (逐条一行, 格式 `file:line — 事实`)',
-            '这一段是本次勘察的**产物锚**: 下游据它决定改哪里。只写你真读到的行, 一行一条。',
-            '### 结论 (1-3 句)',
-            '这个目标在本仓的落点是什么、有没有同类机制可复用。',
-            '### 存疑 (无则写"无")',
-            '看不准的接缝 / 相互矛盾的约定 / 没覆盖到的地方。',
-            '',
-            '找不到相关实现就在「事实」段写"仓内无既有实现", 不要编。',
-            '这份结论会当作事实锚喂给后续的外部调研与契约起草 —— 编造的一行会污染整条链。',
-          ].join('\n'),
-          model: config.dag.agentLeafModel ?? config.dag.leafModel,
-        });
-        repoContext = r.text.trim();
+        // 独立 runId 后缀: 与 execute 段共用 runId 会让两张不同的图互相覆盖 `_dag.json`。
+        // 后缀是确定性的 → `dag_goal resume=<runId>` 照样接得回这一段。
+        const dagCfg = config.dag.continuity
+          ? { ...config.dag, continuity: { ...config.dag.continuity, runId: `${config.dag.continuity.runId}-contract` } }
+          : config.dag;
+        const res = await (config._runDag ?? runExecutorDagWithPlan)(prepPlan, dagCfg);
+        const leaf = res.results.contract;
+        const touched = leaf?.filesTouched ?? [];
+        const wrote = touched.some((f) => f.endsWith(`${goalSlug(goal)}.md`));
+        specPath = wrote ? path : undefined;
+        // 子节点里认出各段, 只为把结论如实抬进 stages (给人看的那一面不该因为合并成一个节点而变糊)。
+        // **「压根没这一步」与「跑了但空手而归」要分开记** —— 合成一个 skipped 就把后者藏起来了,
+        // 而后者才是需要人看一眼的那种 (勘察跑了却什么都没找到 ≠ 这次不需要勘察)。
+        const kids = Object.entries(res.results).filter(([k]) => k.startsWith('contract::'));
+        const researched = kids.filter(([, r]) => r.kind === 'research');
+        sources.push(...researched.flatMap(([, r]) => r.sources ?? []));
+        // 勘察步 = 有工具但没写文件的 agent 子节点 (起草步会写文件, 据此区分)。
+        const surveyKid = kids.find(([, r]) => r.kind === 'agent' && !(r.filesTouched ?? []).length)?.[1];
+        repoContext = surveyKid?.output?.trim() ?? '';
+        evidence = leaf?.output ?? '';
         stages.push({
           stage: 'survey',
-          status: repoContext ? 'done' : 'failed',
-          summary: repoContext ? `${repoContext.split('\n').length} 行仓内事实` : 'survey 空输出',
+          status: !surveyKid ? 'skipped' : repoContext ? 'done' : 'failed',
+          summary: !surveyKid
+            ? 'conductor 未分解出勘察步'
+            : repoContext
+              ? `${repoContext.split('\n').length} 行仓内事实`
+              : '勘察步空输出 (跑了但什么都没找到 — 与"不需要勘察"不是一回事)',
+        });
+        stages.push({
+          stage: 'research',
+          status: researched.length === 0 ? 'skipped' : sources.length > 0 ? 'done' : 'failed',
+          summary:
+            researched.length === 0
+              ? 'conductor 判定无需外部调研 (D-G′: 这个分支现在由它自己判)'
+              : sources.length > 0
+                ? `${sources.length} 个来源真抓到正文`
+                : '零来源 — 无真抓取痕迹, 该结果不当证据用',
+        });
+        stages.push({
+          stage: 'spec',
+          // 没真写盘 = 只吐了文本 —— 记 failed 但不断流程 (下游拿正文当契约仍能跑)。
+          status: wrote ? 'done' : 'failed',
+          summary: wrote ? path : 'spec 未落盘 (契约段没产出文件), 下游改用其正文当契约',
         });
       } catch (err) {
-        stages.push({ stage: 'survey', status: 'failed', summary: `survey 抛错: ${String(err).slice(0, 200)}` });
+        stages.push({ stage: 'spec', status: 'failed', summary: `契约段抛错: ${String(err).slice(0, 200)}` });
       }
     } else {
       stages.push({ stage: 'survey', status: 'skipped', summary: '无 agentRunner → 无仓内事实' });
-    }
-
-    // ── S1 Research: 真 web (D-6)。无 runner = 没有 web 能力 → 跳过并留痕, 不假装研究过。
-    if (config.dag.researchRunner) {
-      try {
-        const r = await config.dag.researchRunner({
-          question: goal,
-          // 仓内勘察结论当事实锚 (research 的 leaf 是 inproc, 看不见仓库 —— 只能这么喂进去)。
-          ...(repoContext ? { groundTruth: repoContext } : {}),
-          rounds: config.researchRounds ?? 1,
-        });
-        sources.push(...r.sources);
-        evidence = r.text;
-        stages.push({
-          stage: 'research',
-          status: r.sources.length > 0 ? 'done' : 'failed',
-          summary:
-            r.sources.length > 0
-              ? `${r.sources.length} 个来源真抓到正文${r.reportPath ? ` · ${r.reportPath}` : ''}`
-              : '零来源 — 无真抓取痕迹, 该结果不当证据用',
-        });
-        // 零来源 = 假 grounded, 不进 spec 的证据段 (与 research 节点闸同一判据)。
-        if (r.sources.length === 0) evidence = '';
-      } catch (err) {
-        stages.push({ stage: 'research', status: 'failed', summary: `research 抛错: ${String(err).slice(0, 200)}` });
-      }
-    } else {
-      stages.push({
-        stage: 'research',
-        status: 'skipped',
-        summary: '无 researchRunner (未配 search provider) → 本次 goal 没有外部证据',
-      });
-    }
-
-    // ── S3 PlanSpec: spec-author 卡写 SDD 落盘 (D-7)。
-    if (config.dag.agentRunner) {
-      const tpl = loadAgentTemplates({ root: config.cwd }).get('spec-author');
-      const dir = config.specDir ?? join(config.cwd, 'docs', 'plan');
-      const path = join(dir, `${(config._today ?? todayStr)()}-${goalSlug(goal)}.md`);
-      const prompt = [
-        tpl?.body ?? '把目标结晶成一份可执行的 SDD 契约。',
-        '',
-        `## 目标\n${goal}`,
-        // 两个证据源分开标: 仓内事实是"我们已经有什么", 研究证据是"外面怎么做" —— 混在一起
-        // 会让起草者分不清哪条能直接落地、哪条要先适配。
-        repoContext
-          ? `\n## 仓内事实 (只读勘察, file:line)\n${repoContext}`
-          : '\n## 仓内事实\n(未勘察 — 任何关于"仓里已有什么"的断言都必须进「未决」段, 不许凭印象写)',
-        evidence ? `\n## 研究证据 (真 web, 来源见下)\n${evidence}\n\n来源:\n${sources.map((u) => `- ${u}`).join('\n')}` : '\n## 研究证据\n(本次无外部证据 — 只能依据仓内事实; 任何需要外部事实支撑的决策必须进「未决」段)',
-        // D-I: 判卷标准在起草**之前**就已冻结, 起草者的活是把它写进契约的验收段并据它拆步骤,
-        // 不是重新发明一套自己够得着的判据。
-        `\n${acceptanceBlock}`,
-        `\n## 落盘路径 (写到这里)\n${path}`,
-      ].join('\n');
-      try {
-        const r = await config.dag.agentRunner({ prompt, model: config.dag.agentLeafModel ?? config.dag.leafModel });
-        const wrote = (r.filesTouched ?? []).some((f) => f.endsWith(`${goalSlug(goal)}.md`));
-        specPath = wrote ? path : undefined;
-        stages.push({
-          stage: 'spec',
-          // 没真写盘 = 只吐了文本 —— 记 failed 但不断流程 (下游拿 r.text 当契约仍能跑)。
-          status: wrote ? 'done' : 'failed',
-          summary: wrote ? path : 'spec 未落盘 (agent 只吐了文本), 下游改用其正文当契约',
-        });
-        evidence = r.text || evidence;
-      } catch (err) {
-        stages.push({ stage: 'spec', status: 'failed', summary: `spec 抛错: ${String(err).slice(0, 200)}` });
-      }
-    } else {
+      stages.push({ stage: 'research', status: 'skipped', summary: '无 agentRunner → 契约段整体跳过' });
       stages.push({ stage: 'spec', status: 'skipped', summary: '无 agentRunner → 不产 spec, 直接执行目标' });
     }
   } else {
