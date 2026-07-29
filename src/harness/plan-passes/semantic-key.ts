@@ -71,6 +71,9 @@ export function nodeFieldsKey(node: PlanNode): string {
 		node.max_nodes ?? NONE,
 		// D-A: 内环轮数同理 (跑 1 轮 vs 跑 3 轮 = 不同深度的执行, 成本与产出都不同; 同 research.rounds)。
 		node.max_rounds ?? NONE,
+		// D-F: 终轮必判也是语义 —— 开了就多一次 judge 调用, 且**产出多一条裁决** (LeafResult.converged),
+		// 而调用方拿它当"整体目标成了吗"的答案。判重把两者合成一个 = 悄悄吞掉某一方要的那条裁决。
+		node.judge_final ?? NONE,
 	]);
 }
 

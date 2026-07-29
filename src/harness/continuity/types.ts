@@ -125,6 +125,11 @@ export interface DagMetadata {
 /**
  * **外层 fixpoint 轮journal** (INV-P2-6), 落 `_fixpoint.json`。
  *
+ * ⚠ **D-F (2026-07-30) 之后它只服务两个手动 slash 命令** (`/iterate` · `/execute`)。自主 goal
+ * 引擎的环已搬进 conductor 节点, 状态走下面的 {@link NodeLoopJournal} —— 所以 D-F 说的"作废
+ * `_fixpoint.json`"准确说法是**降级到节点级**, 不是删掉这个概念 (删掉等于把"被拒产出借崩溃
+ * 复活"那个缺陷换个方式重新引入)。
+ *
  * `_dag.json` + per-node checkpoint 记的是**一张内层图**;外层 fixpoint (iterateExecutorDag) 的轮次、
  * 跨轮复用源、D-4 毒集此前全是进程内闭包变量 —— 进程一死全丢, 重跑从第 1 轮起、毒集清零
  * (**被拒的产出会因此复活**, 比不复用更坏)。这个文件就是那份缺失的外层状态。

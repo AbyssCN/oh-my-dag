@@ -16,8 +16,7 @@ import { BUILTIN_AGENT_TEMPLATES } from '../agent-templates-builtin';
 import { runGoal, type RunGoalConfig } from './run-goal';
 import type { AcceptanceSpec, GoalClassification, GoalTier } from './acceptance';
 import type { ConductorPlan } from '../conductor-plan';
-import type { ExecutorDagConfig } from '../executor-dag-types';
-import type { IterateResult } from '../plan/iterate';
+import type { ExecutorDagConfig, ExecutorDagResult } from '../executor-dag-types';
 
 const card = (): string => BUILTIN_AGENT_TEMPLATES.find((t) => t.name === 'spec-author')!.body;
 
@@ -76,8 +75,20 @@ describe('D-J — 防作弊条款, 且必须被抄进契约本身', () => {
 
 // ── D-I 端到端接线 ─────────────────────────────────────────────────────────────
 
-const okIterate = (): IterateResult =>
-  ({ rounds: [{ round: 1, result: {}, verdict: {} }], finalRound: { round: 1, result: { reusedNodes: [] }, verdict: {} }, converged: true, status: 'converged' }) as unknown as IterateResult;
+/** D-F: 执行段也是一张单 conductor 节点的图; 裁决盖在 leaf 的 converged 上。 */
+const okExecute = (): ExecutorDagResult =>
+  ({
+    plan: { name: 'goal-execute', nodes: {} },
+    results: { execute: { id: 'execute', status: 'done', kind: 'conductor', output: 'ok', deps: [], usage: { in: 1, out: 1 }, rounds: 1, converged: true } },
+    reusedNodes: [],
+  }) as unknown as ExecutorDagResult;
+
+/** 两段共用 `_runDag`, 按 plan.name 路由 (契约段没给就返一个"什么都没分解出来"的空结果)。 */
+const router = (h: { contract?: (p: ConductorPlan) => Promise<ExecutorDagResult>; execute?: (p: ConductorPlan) => Promise<ExecutorDagResult> }) =>
+  (async (plan: ConductorPlan) =>
+    plan.name === 'goal-execute'
+      ? await (h.execute ?? (async () => okExecute()))(plan)
+      : await (h.contract ?? (async () => ({ plan: { name: 'goal-contract', nodes: {} }, results: {} }) as unknown as ExecutorDagResult))(plan)) as never;
 
 const cls =
   (tier: GoalTier, acceptance: AcceptanceSpec) =>
@@ -88,7 +99,7 @@ function cfg(dag: Partial<ExecutorDagConfig> = {}, extra: Partial<RunGoalConfig>
     cwd: mkdtempSync(join(tmpdir(), 'omd-dij-')),
     dag: { conductorModel: 'c:m', leafModel: 'l:m', ...dag } as ExecutorDagConfig,
     _today: () => '2026-07-29',
-    _iterate: (async () => okIterate()) as never,
+    _runDag: router({}),
     ...extra,
   };
 }
@@ -107,22 +118,24 @@ describe('D-I — 判卷标准流到每一处该到的地方', () => {
     await runGoal('加一个字段', {
       ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
       _classify: cls('complex', EXEC),
-      _runDag: (async (plan: ConductorPlan) => {
-        contractGoal = String(plan.nodes.contract!.goal);
-        return {
-          plan: { name: 'c', nodes: {} },
-          results: {
-            contract: {
-              id: 'contract', status: 'done', kind: 'conductor', output: '# SDD', deps: [],
-              usage: { in: 1, out: 1 }, filesTouched: ['docs/plan/2026-07-29-加一个字段.md'],
+      _runDag: router({
+        contract: async (plan) => {
+          contractGoal = String(plan.nodes.contract!.goal);
+          return {
+            plan: { name: 'goal-contract', nodes: {} },
+            results: {
+              contract: {
+                id: 'contract', status: 'done', kind: 'conductor', output: '# SDD', deps: [],
+                usage: { in: 1, out: 1 }, filesTouched: ['docs/plan/2026-07-29-加一个字段.md'],
+              },
             },
-          },
-        } as never;
-      }) as never,
-      _iterate: (async (t: string) => {
-        task = t;
-        return okIterate();
-      }) as never,
+          } as unknown as ExecutorDagResult;
+        },
+        execute: async (plan) => {
+          task = String(plan.nodes.execute!.goal);
+          return okExecute();
+        },
+      }),
     });
     for (const text of [contractGoal, task]) {
       expect(text).toContain('## 判卷标准 (冻结 — 执行型)');
@@ -138,10 +151,12 @@ describe('D-I — 判卷标准流到每一处该到的地方', () => {
     await runGoal('重命名', {
       ...cfg(),
       _classify: cls('simple', EXEC),
-      _iterate: (async (t: string) => {
-        task = t;
-        return okIterate();
-      }) as never,
+      _runDag: router({
+        execute: async (plan) => {
+          task = String(plan.nodes.execute!.goal);
+          return okExecute();
+        },
+      }),
     });
     expect(task).toContain('## 判卷标准');
     expect(task).toContain('bun run tsc --noEmit && bun test');
@@ -152,10 +167,12 @@ describe('D-I — 判卷标准流到每一处该到的地方', () => {
     const r = await runGoal('摸清 checkpoint 有哪几种布局', {
       ...cfg(),
       _classify: cls('complex', { kind: 'exploratory', learningGoal: '有哪几种可行布局', affordableLoss: '两轮执行' }),
-      _iterate: (async (t: string) => {
-        task = t;
-        return okIterate();
-      }) as never,
+      _runDag: router({
+        execute: async (plan) => {
+          task = String(plan.nodes.execute!.goal);
+          return okExecute();
+        },
+      }),
     });
     expect(task).toContain('没有机器判据');
     expect(task).toContain('两轮执行');
@@ -188,10 +205,12 @@ describe('D-G′ 方案 A — 契约段合成 conductor 节点, 判据留在环�
     await runGoal('做一件复杂的事', {
       ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
       _classify: cls('complex', acc),
-      _runDag: (async (plan: ConductorPlan) => {
-        contractNode = plan.nodes.contract as unknown as Record<string, unknown>;
-        return { plan: { name: 'c', nodes: {} }, results: { contract: { id: 'contract', status: 'done', kind: 'conductor', output: '#SDD', deps: [], usage: { in: 0, out: 0 }, filesTouched: ['docs/plan/2026-07-29-做一件复杂的事.md'] } } } as never;
-      }) as never,
+      _runDag: router({
+        contract: async (plan) => {
+          contractNode = plan.nodes.contract as unknown as Record<string, unknown>;
+          return { plan: { name: 'goal-contract', nodes: {} }, results: { contract: { id: 'contract', status: 'done', kind: 'conductor', output: '#SDD', deps: [], usage: { in: 0, out: 0 }, filesTouched: ['docs/plan/2026-07-29-做一件复杂的事.md'] } } } as unknown as ExecutorDagResult;
+        },
+      }),
       ...over,
     });
     return contractNode;

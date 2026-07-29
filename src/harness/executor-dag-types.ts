@@ -187,9 +187,19 @@ export interface ExecutorDagConfig {
   /**
    * conductor 升级模型 'provider:modelId' (verifier fail 时用更强模型重规划重跑)。
    * **provider 未注册 (没配对应 API key) → 自动不升级, 维持弱模型** (Nick: 没配 SOTA API 就维持弱)。
-   * 省略 = 永不升级。仅在 config.verifier 存在时有意义。
+   * 省略 = 永不升级。
+   *
+   * 三个消费方: ① executor-dag 内部 verifier-fail 升级; ② 外层 fixpoint 的轮级升级
+   * (`plan/iterate`); ③ **conductor 节点内环的轮级升级** (D-F 之后 —— 撤外层不该顺手把
+   * "多轮不收敛就换更强的脑子"这个能力一起撤掉)。
    */
   conductorEscalationModel?: string;
+  /**
+   * 从第几轮起用 `conductorEscalationModel` 重画 (默认 2 = 第 1 轮弱 conductor, 后续升级)。
+   * 外层 fixpoint 与 conductor 节点内环共用这一个旋钮 —— 两处各写一份默认值就会漂。
+   * 仅在 `conductorEscalationModel` 给定且其 provider 已注册时生效。
+   */
+  escalateAfterRound?: number;
   /** verifier-fail → 升级重规划的最大次数 (默认 1)。每次升级 = 一整轮重规划 + 重跑 leaves。 */
   maxEscalations?: number;
   /**
@@ -249,6 +259,16 @@ export interface LeafResult {
   toolCalls?: number;
   /** 早期心跳闸判停摆 (issue #5): provider 挂起, 未等满硬超时即中止 → settle 记 failureKind='stall'。 */
   stalled?: boolean;
+  /** conductor 节点实跑的内环轮数 (D-A)。其它 kind 缺席。 */
+  rounds?: number;
+  /**
+   * conductor 节点内环 judge 的最终裁决 (D-F)。
+   *
+   * ⚠ **缺席 ≠ 未收敛**: 缺席意思是**没人判过** —— 最后一轮默认不请 judge (省一次贵座调用),
+   * 要裁决得在节点上显式写 `judge_final: true`。调用方拿它当"整体目标成了吗"的答案时,
+   * `converged ?? false` 是对的读法 (没人判过就不许算成), 但别把它读成"judge 说没成"。
+   */
+  converged?: boolean;
 }
 
 /**

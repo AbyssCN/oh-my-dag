@@ -1,6 +1,12 @@
 /**
  * plan/iterate —— omd **内层 DAG** (in-process executor-dag) 的外层 fixpoint 迭代。
  *
+ * ⚠ **自主 goal 引擎已不走这条** (D-F, 2026-07-30): `runGoal` 的两段都改成了一个带内环的
+ * `executor:'conductor'` 节点 (环封节点内, 状态落 `_loop-<nodeId>.json`)。留在这里的调用方只剩
+ * **两个手动 slash 命令** —— `/iterate` (iterate-extension) 与 `/execute` (execute-extension),
+ * 它们喂进来的是一段自由文本任务, 没有节点可挂环。要撤这一层得先把那两条路也搬过去 (有用例再做);
+ * 在那之前 `_fixpoint.json` 仍是它俩的持久化面, **不是死代码**。
+ *
  * 把 runExecutorDag (conductor 规划一次 → fan-out leaves → results, 无迭代) 套进 runFixpoint:
  *
  *   一轮 = 一张静态 applicative 图 (runExecutorDag) → judge 看整轮结果收敛没 →

@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runExecutorDagWithPlan } from '../../src/harness/executor-dag';
 import { CheckpointManager } from '../../src/harness/continuity/checkpoint-manager';
+import { registerProvider } from '../../src/model/providers';
 import type { NodeLoopJournal } from '../../src/harness/continuity/types';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
 import type { ExecutorDagConfig, GenerateFn } from '../../src/harness/executor-dag-types';
@@ -50,7 +51,10 @@ const judgeSendOf = (
   let n = 0;
   return (async (req: { messages: { content: string }[] }) => {
     const v = verdicts[Math.min(n, verdicts.length - 1)]!;
-    onCall?.(String(req.messages[0]?.content ?? ''), n++);
+    // ⚠ 计数器**必须在可选调用之外**自增: 写成 `onCall?.(x, n++)` 时, 不传 onCall 就整个短路,
+    // 连实参都不求值 → n 永远是 0 → 逐轮裁决静默退化成"第一条重复到底"。
+    onCall?.(String(req.messages[0]?.content ?? ''), n);
+    n++;
     return { text: JSON.stringify(v), parsed: { score: v.converged ? 1 : 0, ...v }, usage: { in: 1, out: 1 } };
   }) as never;
 };
@@ -296,10 +300,156 @@ describe('D-21 内环版 — 跨轮复用 (环搬进节点后一度丢了这条)
 
   test('复用不跨越"上游要重跑"这条线 (前驱重跑 → 下游吃到的输入变了, 也得重跑)', async () => {
     const CHAIN = JSON.stringify({ name: 's', nodes: { a: { goal: 'A' }, b: { goal: 'B', depends_on: ['a'] } } });
-    // 点名**上游** a —— judge 视图按结清序排, 无依赖者先结清, 故它排第一。
+    // 点名**上游** a —— judge 视图按**子图拓扑序**排 (上游在前), 故 a 排第一。
+    // ⚠ 这个"故"是 2026-07-30 才成立的: 此前视图顺序是人看的摘要那句 `sort` **原地**留下的
+    // 副作用 = 按内容寻址 id 的字典序 = 哈希序, 谁在前面纯属偶然 (给指纹加一个字段就翻了个个儿)。
     const f = loopFake([{ converged: false, failureReason: 'a 是编的', rejectedNodes: [0] }, { converged: true }], CHAIN);
     await runExecutorDagWithPlan(node({ max_rounds: 2 }), cfg(f.generate, false, true, f.judgeSend));
     // 轮1 跑 2 个; 轮2 上游被毒重跑, 下游因"前驱不可复用"也重跑 → 共 4 次。
     expect(f.leafCalls).toHaveLength(4);
+  });
+});
+
+// ── D-F (2026-07-30): 撤外层 fixpoint 之后, 内环要补上三样原属外层的东西 ─────────────
+//
+// ① 裁决出得来 (`judge_final` → LeafResult.converged) —— 否则没有任何一层再问「整体目标成了吗」;
+// ② 轮级 conductor 升级 —— "多轮不收敛就换更强的脑子"这个能力原先只活在外层;
+// ③ 审计 checkpoint —— 子树碰过的文件此前只活在内存里, 崩了就没。
+
+describe('D-F — 终轮必判 (judge_final): 撤外层之后裁决的唯一出口', () => {
+  test('缺省不判 → leaf 上**没有** converged (缺席 ≠ 未收敛, 是"没人判过")', async () => {
+    const f = fake([P1], [{ converged: true }]);
+    const r = await runExecutorDagWithPlan(node({ max_rounds: 1 }), cfg(f.generate, false, true, f.judgeSend));
+    expect(f.judges()).toBe(0);
+    expect(r.results.C?.converged).toBeUndefined();
+    expect(r.results.C?.rounds).toBe(1);
+  });
+
+  test('judge_final + max_rounds:1 → 判一次, 裁决盖在 leaf 上 (单轮档也拿得到答案)', async () => {
+    const f = fake([P1], [{ converged: true }]);
+    const r = await runExecutorDagWithPlan(node({ max_rounds: 1, judge_final: true }), cfg(f.generate, false, true, f.judgeSend));
+    expect(f.judges()).toBe(1);
+    expect(f.expands()).toBe(1); // 判完没有下一轮可去
+    expect(r.results.C?.converged).toBe(true);
+  });
+
+  test('judge_final 判未收敛 → converged=false 如实带出 (单轮档不因"跑完了"就算成)', async () => {
+    const f = fake([P1], [{ converged: false, failureReason: '产出是编的' }]);
+    const r = await runExecutorDagWithPlan(node({ max_rounds: 1, judge_final: true }), cfg(f.generate, false, true, f.judgeSend));
+    expect(r.results.C?.converged).toBe(false);
+  });
+
+  test('多轮跑满仍未收敛 → converged=false + rounds=实跑轮数 (不谎报收敛)', async () => {
+    const f = fake([P1], [{ converged: false, failureReason: '还是不行' }]);
+    const r = await runExecutorDagWithPlan(node({ max_rounds: 2, judge_final: true }), cfg(f.generate, false, true, f.judgeSend));
+    expect(r.results.C?.converged).toBe(false);
+    expect(r.results.C?.rounds).toBe(2);
+  });
+
+  test('多轮收敛 → converged=true + rounds=收敛在第几轮 (收敛即停)', async () => {
+    const f = fake([P1, P1], [{ converged: false, failureReason: 'r1' }, { converged: true }]);
+    const r = await runExecutorDagWithPlan(node({ max_rounds: 4, judge_final: true }), cfg(f.generate, false, true, f.judgeSend));
+    expect(r.results.C?.converged).toBe(true);
+    expect(r.results.C?.rounds).toBe(2);
+  });
+
+  test('journal 已收敛 → resume 直接返上次结论时也带裁决 (resume 路径不掉字段)', async () => {
+    manager.writeNodeLoopJournal(RUN, {
+      runId: RUN, nodeId: 'C', completedRounds: 2, poisoned: [],
+      converged: true, lastOutput: '[上次的结论]', updatedAt: '2026-07-30T00:00:00Z', schemaVersion: 1,
+    });
+    const f = fake([P1], [{ converged: true }]);
+    const r = await runExecutorDagWithPlan(node({ max_rounds: 3, judge_final: true }), cfg(f.generate, true, true, f.judgeSend));
+    expect(r.results.C?.converged).toBe(true);
+    expect(r.results.C?.rounds).toBe(2);
+  });
+});
+
+describe('D-F — 审计 checkpoint: 落盘但**永不**用于 resume-skip', () => {
+  test('conductor 节点落一份绿 checkpoint (子树干了什么, 崩了之后还查得到)', async () => {
+    const f = fake([P1], [{ converged: true }]);
+    await runExecutorDagWithPlan(node(), cfg(f.generate, false, true, f.judgeSend));
+    const cp = manager.loadCheckpoint(RUN, 'C');
+    expect(cp).toBeTruthy();
+    expect(cp!.leafKind).toBe('conductor');
+    expect(cp!.status).toBe('done');
+  });
+
+  test('有绿 checkpoint 也照样重新展开 —— 纪律: conductor 节点永不整体 resume-skip', async () => {
+    const f1 = fake([P1], [{ converged: true }]);
+    await runExecutorDagWithPlan(node(), cfg(f1.generate, false, true, f1.judgeSend));
+    expect(manager.loadCheckpoint(RUN, 'C')).toBeTruthy();
+    // 同一个 runId 开 resume 再跑: 若 checkpoint 被当成"已绿可跳", 展开次数会是 0。
+    const f2 = fake([P1], [{ converged: true }]);
+    const r = await runExecutorDagWithPlan(node(), cfg(f2.generate, true, true, f2.judgeSend));
+    expect(f2.expands()).toBe(1);
+    expect(r.results.C?.skipped).toBeFalsy();
+  });
+
+  test('环没收敛就崩 → 没有绿 checkpoint, 但毒集仍在 journal 里 (两份状态各司其职)', async () => {
+    const f = fake([P1], [{ converged: false, failureReason: '不行' }]);
+    // 全轮未收敛但子节点跑成了 → 节点 status 仍是 done, 所以这里换个角度证:
+    // journal 是每轮判完就写的, checkpoint 是节点定局才写的 —— 前者的轮次一定 ≥ 后者的存在性。
+    await runExecutorDagWithPlan(node({ max_rounds: 2 }), cfg(f.generate, false, true, f.judgeSend));
+    const j = JSON.parse(readFileSync(join(runDir(), '_loop-C.json'), 'utf-8')) as NodeLoopJournal;
+    expect(j.completedRounds).toBe(2);
+    expect(j.converged).toBeFalsy();
+  });
+});
+
+describe('D-F — 轮级 conductor 升级 (原属外层 fixpoint 的能力, 不能跟着外层一起撤掉)', () => {
+  // 升级闸要求 provider 已注册 (escalationProviderReady) → 注册假 provider, 零真调用。
+  registerProvider('escl', { baseUrl: 'http://127.0.0.1:9', apiKey: 'test-key', api: 'openai-compatible' });
+
+  /** 回收每次**展开**用的坐标 (leaf 调用不算)。 */
+  function modelSpy() {
+    const expandModels: string[] = [];
+    const generate: GenerateFn = async (req) => {
+      const user = req.messages.find((m) => m.role === 'user');
+      const text = typeof user?.content === 'string' ? user.content : '';
+      if (!leafId(text)) {
+        expandModels.push(String((req as { model?: string }).model));
+        return { text: P1, usage: { in: 1, out: 1 } };
+      }
+      return { text: 'ok', usage: { in: 1, out: 1 } };
+    };
+    return { generate, expandModels };
+  }
+
+  test('第 1 轮弱 conductor, 第 2 轮起换升级坐标重画 (画不出来的图再画一遍多半还是画不出来)', async () => {
+    const m = modelSpy();
+    await runExecutorDagWithPlan(node({ max_rounds: 3 }), {
+      ...cfg(m.generate, false, true, judgeSendOf([{ converged: false, failureReason: 'r1' }, { converged: true }])),
+      conductorEscalationModel: 'escl:strong',
+    });
+    expect(m.expandModels).toEqual(['c:m', 'escl:strong']);
+  });
+
+  test('escalateAfterRound 可调 (旋钮与外层共用一个, 两处各写一份默认值就会漂)', async () => {
+    const m = modelSpy();
+    await runExecutorDagWithPlan(node({ max_rounds: 3 }), {
+      ...cfg(m.generate, false, true, judgeSendOf([{ converged: false }, { converged: false }, { converged: true }])),
+      conductorEscalationModel: 'escl:strong',
+      escalateAfterRound: 3,
+    });
+    expect(m.expandModels).toEqual(['c:m', 'c:m', 'escl:strong']);
+  });
+
+  test('升级坐标的 provider 没注册 → 维持弱 conductor (没配 API key 就别假装能升)', async () => {
+    const m = modelSpy();
+    await runExecutorDagWithPlan(node({ max_rounds: 2 }), {
+      ...cfg(m.generate, false, true, judgeSendOf([{ converged: false }, { converged: true }])),
+      conductorEscalationModel: 'nope-not-registered:strong',
+    });
+    expect(m.expandModels).toEqual(['c:m', 'c:m']);
+  });
+
+  test('节点显式钉了 model → 升级压不过它 (TPL-3 显式最高优先)', async () => {
+    const m = modelSpy();
+    await runExecutorDagWithPlan(node({ max_rounds: 2, model: 'pinned:x' }), {
+      ...cfg(m.generate, false, true, judgeSendOf([{ converged: false }, { converged: true }])),
+      conductorEscalationModel: 'escl:strong',
+    });
+    expect(m.expandModels).toEqual(['pinned:x', 'pinned:x']);
   });
 });
