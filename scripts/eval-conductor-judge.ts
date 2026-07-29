@@ -18,12 +18,8 @@ import '../src/harness/script-bootstrap';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { bootstrapModelRuntime } from '../src/model/bootstrap';
 import { send } from '../src/model/gateway';
-import {
-  conductorJudgePrompt,
-  parseConductorVerdict,
-  renderRoundForJudge,
-  CONDUCTOR_JUDGE_MAX_TOKENS,
-} from '../src/harness/plan/conductor-judge';
+import { renderRoundForJudge, splitNamedIds } from '../src/harness/plan/conductor-judge';
+import { makeLlmConvergenceJudge } from '../src/harness/plan/llm-judge';
 import { JUDGE_ROUND_CASES, type JudgeRoundCase } from '../src/eval/tasks/judge-rounds';
 
 const argv = process.argv.slice(2);
@@ -94,28 +90,31 @@ interface Trial {
 
 async function trial(arm: Arm, c: JudgeRoundCase, rep: number): Promise<Trial> {
   const { output, childIds, idOf } = renderConductorRound(c);
-  // 内环判的是**节点自己的 goal** —— 语料的 task 就当那个 goal。
-  const prompt = conductorJudgePrompt(c.task, output, childIds);
   const t0 = Date.now();
   const base = { arm: arm.name, case: c.id, rep };
+  let usage = { in: 0, out: 0 };
+  // 打的是**生产那一条链**: 内环 judge 自 2026-07-29 起复用外层 `makeLlmConvergenceJudge`
+  // (判词 + responseSchema 一并复用), 只有视图渲染与点名过滤是内环特有的。
+  const judge = makeLlmConvergenceJudge<null>({
+    judgeModel: arm.model,
+    task: c.task,
+    extract: () => ({ status: 'done', summary: output }),
+    callModelFn: async (req) => {
+      const r = await send(arm.thinking ? { ...req, thinkingLevel: arm.thinking } : req);
+      usage = { in: usage.in + (r.usage?.in ?? 0), out: usage.out + (r.usage?.out ?? 0) };
+      return r;
+    },
+  });
   try {
-    const r = await send({
-      model: arm.model,
-      messages: [{ role: 'user', content: prompt }],
-      ...(arm.thinking ? { thinkingLevel: arm.thinking } : {}),
-      maxTokens: CONDUCTOR_JUDGE_MAX_TOKENS,
-      temperature: 0.3,
-    });
-    const usage = { in: r.usage?.in ?? 0, out: r.usage?.out ?? 0 };
-    const v = parseConductorVerdict(r.text ?? '', childIds);
+    const v = await judge(null, 1);
+    const { rejected, ghosts } = splitNamedIds(v.rejectedNodes, childIds);
     const verdict: Verdict = v.converged
       ? 'converged'
-      : v.rejected.length > 0
+      : rejected.length > 0
         ? 'minted'
-        : v.ghosts.length > 0
+        : ghosts.length > 0
           ? 'ghost-only'
           : 'blind';
-    // 该点名的那些, 换算成内容寻址 id 之后有没有点全。
     const mustIds = c.mustReject.map((n) => idOf.get(n)!);
     return {
       ...base,
@@ -123,16 +122,16 @@ async function trial(arm: Arm, c: JudgeRoundCase, rep: number): Promise<Trial> {
       usage,
       verdict,
       converged: v.converged,
-      named: v.rejected.length + v.ghosts.length,
-      ghosts: v.ghosts,
+      named: rejected.length + ghosts.length,
+      ghosts,
       verdictRight: v.converged === c.shouldConverge,
-      recallFull: mustIds.every((id) => v.rejected.includes(id)),
+      recallFull: mustIds.every((id) => rejected.includes(id)),
     };
   } catch (e) {
     return {
       ...base,
       latencyMs: Date.now() - t0,
-      usage: { in: 0, out: 0 },
+      usage,
       verdict: 'blind',
       converged: false,
       named: 0,
