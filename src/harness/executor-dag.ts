@@ -696,7 +696,17 @@ async function executePlan(
               depOutputs[cid] = r.output;
               usageAcc = addUsage(usageAcc, r.usage);
               if (r.status === 'failed') failedLocal++;
-              childOut.push({ id: cid, originalId: byId.get(cid)?.originalId ?? cid, status: r.status, output: r.status === 'failed' ? '[failed]' : r.output });
+              // 失败子节点**带上败因** (截断防爆), 不是一个光秃秃的 `[failed]`。
+              // 2026-07-30 live 冒烟实证: 一个写文件的子节点被产物闸拒 (`filesTouched 空 — leaf
+              // 自报完成但未做任何文件写操作`), 而环里看到的只有 `[failed]` —— judge 于是自己编了
+              // 一套猜测 (「可能是 mkdir 没权限」), 下一轮的 conductor 也就照着那个猜测重画。
+              // 环的全部信息通道就是"上一轮为什么没过", 把最确切的那句话挡在通道外, 等于让它盲跑。
+              childOut.push({
+                id: cid,
+                originalId: byId.get(cid)?.originalId ?? cid,
+                status: r.status,
+                output: r.status === 'failed' ? `[failed] ${(r.output || '(无输出)').slice(0, 600)}` : r.output,
+              });
               for (const f of r.filesTouched ?? []) touchedAll.add(f);
               // 子节点绕过外层 settle() → 补发事件 (同 map 子节点)。
               emitNodeEvent({ type: 'settle', id: cid, status: r.status, kind: r.kind, ...(r.model ? { model: r.model } : {}) });

@@ -150,7 +150,16 @@ export function classifyPrompt(goal: string): string {
     '',
     `\`command\` 的首个词必须是这些之一, 否则命令会被安全闸拒绝执行 (看起来像测试失败, 实则没跑):`,
     `  ${DEFAULT_COMMAND_ALLOWLIST.join(' ')}`,
-    '可以用 && 串联 (每环独立过闸); 其它 shell 运算符 (; | $() ` 重定向) 一律拒绝。',
+    '可以用 && 串联 (每环独立过闸); 其它 shell 运算符 **一律拒绝**: 管道 `|` · 重定向 `> <` ·',
+    '`;` · `$(...)` · 反引号 · 花括号 · 反斜杠 · 换行。**没有 shell**, 只有一串独立的命令。',
+    '',
+    // 2026-07-30 live 冒烟: 连着三次判成执行型都因这条降级 (`mkdir` 不在名单 / 用了管道) ——
+    // 模型知道规则却仍写出跑不了的命令, 给它两个**照抄就对**的形状比再讲一遍规则有效。
+    '写得出来的验收长这样 (照这个形状改, 别自己发明):',
+    '  · 文件内容对不对 → `grep -q "期望的那行" 路径/文件`   (匹配不上退出码非 0, 天然就是判据)',
+    '  · 文件在不在     → `cat 路径/文件`',
+    '  · 代码还编不编得过 / 测试绿不绿 → `bun test` · `tsc --noEmit`',
+    '写不出这种单条命令 (要 mkdir、要管道过滤、要人眼看输出) = 这个目标机器判不了 → 老实选 exploratory。',
     '',
     '形状: {"tier":"simple"|"complex","acceptance_kind":"executable"|"exploratory",',
     '       "command"?:string,"learning_goal"?:string,"affordable_loss"?:string}',

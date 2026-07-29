@@ -25,8 +25,10 @@
  * 算好后冻进两个节点的输入的 —— 让它进图就等于让执行体自己的环去产出判据 (D-J 整套防作弊的地基
  * 就是"判卷标准是执行体动不了的东西")。
  */
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { runExecutorDagWithPlan } from '../executor-dag';
+import { makeDefaultGenerate } from '../executor-dag-defaults';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagResult } from '../executor-dag-types';
 import { classifyGoal, renderAcceptance, type AcceptanceSpec, type GoalClassification, type GoalTier } from './acceptance';
@@ -127,7 +129,18 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   //
   // 一次调用出两条轴。显式配置各自压过分类结果 —— 但 `tier` 只压成本轴, 压不到判据轴:
   // "我知道这活儿轻" 与 "我知道这活儿怎么判" 是两句不同的话, 说了前一句不等于说了后一句。
-  const classified = await (config._classify ?? ((g: string) => classifyGoal(g, { generate: config.dag.generate, model: config.dag.conductorModel })))(goal);
+  // ⚠ `generate` 必须**回落到引擎的默认实现**, 不能只读 config.dag.generate ——
+  // 后者是**注入口** (测试传 fake), 生产从来不设它 (`runExecutorDag` 自己 `?? makeDefaultGenerate`)。
+  // 只读它的后果是: 生产每一次 dag_goal 都拿不到分类器 → 静默降级成探索型 → **D-I 的执行型验收
+  // (那条强制可跑命令) 在真实路径上从未成立过**。2026-07-30 第一次 live 冒烟才看见这行:
+  //   「验收分型未成立: 无分类器 (缺 generate/model)」
+  // ——机制在、测试全绿、生产零生效, 正是这仓一直在杀的空旋钮形态, 而这次空掉的是防作弊的地基。
+  const classified = await (config._classify ??
+    ((g: string) =>
+      classifyGoal(g, {
+        generate: config.dag.generate ?? makeDefaultGenerate(config.dag.sessionId ?? randomUUID()),
+        model: config.dag.conductorModel,
+      })))(goal);
   const tier = config.tier ?? classified.tier;
   const acceptance = config.acceptance ?? classified.acceptance;
   stages.push({
