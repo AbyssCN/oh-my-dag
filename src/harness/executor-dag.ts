@@ -51,14 +51,9 @@ import {
 // D-21 escalation 跨轮复用: 语义 Merkle 指纹 + 前驱闭包匹配 (semantic-key 单一真源)。
 import { computeReuse, merkleFingerprints } from './plan-passes/semantic-key';
 import { expandConductorNode, subgraphWarnings } from './plan/conductor-expand';
-import {
-  conductorJudgePrompt,
-  parseConductorVerdict,
-  renderRoundForJudge,
-  CONDUCTOR_JUDGE_THINKING,
-  CONDUCTOR_JUDGE_MAX_TOKENS,
-  type JudgeChildView,
-} from './plan/conductor-judge';
+import { renderRoundForJudge, splitNamedIds, type JudgeChildView } from './plan/conductor-judge';
+import { makeLlmConvergenceJudge } from './plan/llm-judge';
+import { send } from '../model/gateway';
 // D-14v2 多模态媒体管道 (S4): attach_media 执行期从直接前驱输出解析图片 → ContentPart 注入。
 import { collectDepMedia } from './leaf-media';
 import type { ContentPart } from '../model/gateway';
@@ -433,19 +428,29 @@ async function executePlan(
     }
     const judgeCoord = config.judgeModel ?? config.conductorModel;
     try {
-      const { text, usage } = await generate({
-        model: judgeCoord,
+      // **复用外层那份判词** (D-E, 2026-07-29 实测后改): 我原先另写的一份在 `fabricated` 段
+      // 30 次里 9 次谎报完成, 而外层那份 100% —— 差的是它判词里那条「捏造 → converged=false」
+      // 与「先抽出所有明确要求再逐条对照」。详见 plan/conductor-judge.ts 的模块注。
+      // 顺带白拿 responseSchema 强制结构化 (裸 JSON 手抠时 flash 档实测出过解析失败与空裁决)。
+      let usage: ModelUsage = { in: 0, out: 0 };
+      const judge = makeLlmConvergenceJudge<null>({
+        judgeModel: judgeCoord,
+        task: goal,
         // judge 看的是**专门渲染的视图**, 不是节点对下游的 output —— 后者带"N/M 成功"的开场白
-        // (对 judge 是"都好着呢"的暗示) 且只有可读名没有可点名的 id。2026-07-29 实测逼出来的。
-        messages: [{ role: 'user', content: conductorJudgePrompt(goal, renderRoundForJudge(children), childIds) }],
-        thinkingLevel: config.seatThinking?.(judgeCoord) ?? CONDUCTOR_JUDGE_THINKING,
-        maxTokens: CONDUCTOR_JUDGE_MAX_TOKENS,
+        // (对 judge 是"都好着呢"的暗示) 且只有可读名没有可点名的 id。
+        extract: () => ({ status: 'done', summary: renderRoundForJudge(children) }),
+        callModelFn: async (req) => {
+          const r = await (config.judgeSend ?? send)(req);
+          usage = addUsage(usage, r.usage ?? { in: 0, out: 0 });
+          return r;
+        },
       });
-      const v = parseConductorVerdict(text, childIds);
-      if (v.ghosts.length) {
-        logger.warn({ node: id, round, ghosts: v.ghosts }, '[omd/executor-dag] 内环 judge 点名了子图中不存在的 id → 丢弃');
+      const v = await judge(null, round);
+      const { rejected, ghosts } = splitNamedIds(v.rejectedNodes, childIds);
+      if (ghosts.length) {
+        logger.warn({ node: id, round, ghosts }, '[omd/executor-dag] 内环 judge 点名了子图中不存在的 id → 丢弃');
       }
-      return { converged: v.converged, reason: v.reason, rejected: v.rejected, usage };
+      return { converged: v.converged, reason: v.failureReason ?? '', rejected, usage };
     } catch (err) {
       // fail-closed: 判不出来就当没达成。judge 挂掉不该变成"那就算过了吧"。
       logger.warn({ node: id, round, err: String(err) }, '[omd/executor-dag] 内环 judge 无结论 → 判未收敛 (fail-closed)');

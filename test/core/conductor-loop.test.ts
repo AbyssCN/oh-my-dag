@@ -39,8 +39,21 @@ afterEach(() => {
 });
 
 const leafId = (p: string): string => /\[omd leaf: ([^\]]+)\]/.exec(p)?.[1] ?? '';
-const isJudge = (p: string): boolean => p.includes('你在判一个子任务');
 const runDir = (): string => join(root, '.omd', 'continuity', RUN);
+
+/** judge 走 `judgeSend` (responseSchema 通道), 不再经 generate —— 内环自 2026-07-29 复用外层判词。 */
+type Verdict = { converged: boolean; failureReason?: string; rejectedNodes?: string[] };
+const judgeSendOf = (
+  verdicts: readonly Verdict[],
+  onCall?: (prompt: string, n: number) => void,
+): NonNullable<ExecutorDagConfig['judgeSend']> => {
+  let n = 0;
+  return (async (req: { messages: { content: string }[] }) => {
+    const v = verdicts[Math.min(n, verdicts.length - 1)]!;
+    onCall?.(String(req.messages[0]?.content ?? ''), n++);
+    return { text: JSON.stringify(v), parsed: { score: v.converged ? 1 : 0, ...v }, usage: { in: 1, out: 1 } };
+  }) as never;
+};
 
 const node = (over: Record<string, unknown> = {}): ConductorPlan =>
   ({ name: 'outer', nodes: { C: { goal: '把这件事做完', executor: 'conductor', ...over } } }) as ConductorPlan;
@@ -52,16 +65,13 @@ const node = (over: Record<string, unknown> = {}): ConductorPlan =>
  */
 function fake(subplans: string[], verdicts: Array<{ converged: boolean; failureReason?: string; rejectedNodes?: string[] }>) {
   const expandPrompts: string[] = [];
+  const judgePrompts: string[] = [];
   const leafCalls: string[] = [];
   let expandN = 0;
   let judgeN = 0;
   const generate: GenerateFn = async (req) => {
     const user = req.messages.find((m) => m.role === 'user');
     const text = typeof user?.content === 'string' ? user.content : '';
-    if (isJudge(text)) {
-      const v = verdicts[Math.min(judgeN++, verdicts.length - 1)]!;
-      return { text: JSON.stringify(v), usage: { in: 1, out: 1 } };
-    }
     const id = leafId(text);
     if (!id) {
       expandPrompts.push(text);
@@ -71,14 +81,24 @@ function fake(subplans: string[], verdicts: Array<{ converged: boolean; failureR
     leafCalls.push(id);
     return { text: `out:${id}`, usage: { in: 1, out: 1 } };
   };
-  return { generate, expandPrompts, leafCalls, expands: () => expandN, judges: () => judgeN };
+  const judgeSend = judgeSendOf(verdicts, (p) => {
+    judgePrompts.push(p);
+    judgeN++;
+  });
+  return { generate, judgeSend, expandPrompts, judgePrompts, leafCalls, expands: () => expandN, judges: () => judgeN };
 }
 
-const cfg = (generate: GenerateFn, resume = false, withContinuity = true): ExecutorDagConfig => ({
+const cfg = (
+  generate: GenerateFn,
+  resume = false,
+  withContinuity = true,
+  judgeSend?: ExecutorDagConfig['judgeSend'],
+): ExecutorDagConfig => ({
   conductorModel: 'c:m',
   leafModel: 'l:m',
   generate,
   agentTemplates: new Map(),
+  ...(judgeSend ? { judgeSend } : {}),
   ...(withContinuity ? { continuity: { manager, runId: RUN, repoRoot: root, ...(resume ? { resume: true } : {}) } } : {}),
 });
 
@@ -88,7 +108,7 @@ const P2 = JSON.stringify({ name: 's', nodes: { research: { goal: '先把事实�
 describe('D-A 环 — 缺省不带环 (零回归)', () => {
   test('不写 max_rounds → 展开一次, **judge 一次都不调** (没有下一轮, 判了也白判)', async () => {
     const f = fake([P1], [{ converged: true }]);
-    const r = await runExecutorDagWithPlan(node(), cfg(f.generate));
+    const r = await runExecutorDagWithPlan(node(), cfg(f.generate, false, true, f.judgeSend));
     expect(f.expands()).toBe(1);
     expect(f.judges()).toBe(0);
     expect(r.results.C?.status).toBe('done');
@@ -96,7 +116,7 @@ describe('D-A 环 — 缺省不带环 (零回归)', () => {
 
   test('max_rounds:1 显式也一样 (与缺省同语义)', async () => {
     const f = fake([P1], [{ converged: false }]);
-    await runExecutorDagWithPlan(node({ max_rounds: 1 }), cfg(f.generate));
+    await runExecutorDagWithPlan(node({ max_rounds: 1 }), cfg(f.generate, false, true, f.judgeSend));
     expect(f.judges()).toBe(0);
   });
 });
@@ -104,7 +124,7 @@ describe('D-A 环 — 缺省不带环 (零回归)', () => {
 describe('D-A 环 — 逐轮**重展开**, 这是补调研的机制', () => {
   test('未收敛 → 再展开一次, 且上一轮的失败原因回灌进展开 prompt', async () => {
     const f = fake([P1, P2], [{ converged: false, failureReason: '缺少外部事实支撑' }, { converged: true }]);
-    const r = await runExecutorDagWithPlan(node({ max_rounds: 3 }), cfg(f.generate));
+    const r = await runExecutorDagWithPlan(node({ max_rounds: 3 }), cfg(f.generate, false, true, f.judgeSend));
     expect(f.expands()).toBe(2); // 重新画了, 不是重跑
     expect(f.judges()).toBe(2);
     // 第 2 次展开的 prompt 里带着上一轮的败因 + "重新分解"的指令。
@@ -115,7 +135,7 @@ describe('D-A 环 — 逐轮**重展开**, 这是补调研的机制', () => {
 
   test('**补调研**: 第 2 轮的子图可以含一个第 1 轮压根没有的步骤 (不需要回边)', async () => {
     const f = fake([P1, P2], [{ converged: false, failureReason: '没有外部证据' }, { converged: true }]);
-    await runExecutorDagWithPlan(node({ max_rounds: 3 }), cfg(f.generate));
+    await runExecutorDagWithPlan(node({ max_rounds: 3 }), cfg(f.generate, false, true, f.judgeSend));
     // 第 1 轮只有 impl; 第 2 轮多出一个"先把事实查清楚"的步骤 —— 这正是「补调研」的形状。
     const goalsRun = f.leafCalls.length;
     expect(goalsRun).toBe(1 + 2); // 轮1: 1 个; 轮2: 2 个
@@ -123,27 +143,27 @@ describe('D-A 环 — 逐轮**重展开**, 这是补调研的机制', () => {
 
   test('收敛即停 (不跑满 max_rounds)', async () => {
     const f = fake([P1], [{ converged: true }]);
-    await runExecutorDagWithPlan(node({ max_rounds: 4 }), cfg(f.generate));
+    await runExecutorDagWithPlan(node({ max_rounds: 4 }), cfg(f.generate, false, true, f.judgeSend));
     expect(f.expands()).toBe(1);
   });
 
   test('轮数用尽仍未收敛 → 返最后一轮结果, **不谎报收敛** (INV-GOAL-4 有界)', async () => {
     const f = fake([P1], [{ converged: false, failureReason: '还是不行' }]);
-    const r = await runExecutorDagWithPlan(node({ max_rounds: 2 }), cfg(f.generate));
+    const r = await runExecutorDagWithPlan(node({ max_rounds: 2 }), cfg(f.generate, false, true, f.judgeSend));
     expect(f.expands()).toBe(2); // 跑满两轮
     expect(r.results.C).toBeTruthy();
   });
 
-  test('judge 吐不出可解析结论 → fail-closed 判未收敛 (不当作"那就算过了吧")', async () => {
+  test('judge 吐不出结构化裁决 → fail-closed 判未收敛 (不当作"那就算过了吧")', async () => {
     const generate: GenerateFn = async (req) => {
       const user = req.messages.find((m) => m.role === 'user');
       const text = typeof user?.content === 'string' ? user.content : '';
-      if (isJudge(text)) return { text: '我觉得挺好的', usage: { in: 1, out: 1 } };
       if (!leafId(text)) return { text: P1, usage: { in: 1, out: 1 } };
       return { text: 'ok', usage: { in: 1, out: 1 } };
     };
-    const f = { generate };
-    await runExecutorDagWithPlan(node({ max_rounds: 2 }), cfg(f.generate));
+    // schema 没解析出东西 (parsed 缺席) —— 外层判官对这种回 `judge 未结构化输出` 的未收敛。
+    const judgeSend = (async () => ({ text: '我觉得挺好的', usage: { in: 1, out: 1 } })) as never;
+    await runExecutorDagWithPlan(node({ max_rounds: 2 }), cfg(generate, false, true, judgeSend));
     // 判不出来 = 未收敛 → 会去跑第 2 轮 (若被当成收敛就只有 1 轮)。
     // 用 journal 的 completedRounds 判更直接:
     const j = JSON.parse(readFileSync(join(runDir(), '_loop-C.json'), 'utf-8')) as NodeLoopJournal;
@@ -155,7 +175,7 @@ describe('D-A 环 — 逐轮**重展开**, 这是补调研的机制', () => {
 describe('D-A 毒集的新家 — 节点级 journal, 每轮判完就写', () => {
   test('journal 落盘且带轮次/毒集/上轮原因', async () => {
     const f = fake([P1, P1], [{ converged: false, failureReason: '产出是编的', rejectedNodes: [] }, { converged: true }]);
-    await runExecutorDagWithPlan(node({ max_rounds: 3 }), cfg(f.generate));
+    await runExecutorDagWithPlan(node({ max_rounds: 3 }), cfg(f.generate, false, true, f.judgeSend));
     const j = JSON.parse(readFileSync(join(runDir(), '_loop-C.json'), 'utf-8')) as NodeLoopJournal;
     expect(j.nodeId).toBe('C');
     expect(j.completedRounds).toBe(2);
@@ -170,7 +190,6 @@ describe('D-A 毒集的新家 — 节点级 journal, 每轮判完就写', () => 
     const generate: GenerateFn = async (req) => {
       const user = req.messages.find((m) => m.role === 'user');
       const text = typeof user?.content === 'string' ? user.content : '';
-      if (isJudge(text)) return { text: JSON.stringify({ converged: false, failureReason: 'r1 不行' }), usage: { in: 1, out: 1 } };
       if (!leafId(text)) {
         expandN++;
         if (expandN === 2) {
@@ -180,7 +199,10 @@ describe('D-A 毒集的新家 — 节点级 journal, 每轮判完就写', () => 
       }
       return { text: 'ok', usage: { in: 1, out: 1 } };
     };
-    await runExecutorDagWithPlan(node({ max_rounds: 2 }), cfg(generate));
+    await runExecutorDagWithPlan(
+      node({ max_rounds: 2 }),
+      cfg(generate, false, true, judgeSendOf([{ converged: false, failureReason: 'r1 不行' }])),
+    );
     expect(journalAtRound2).toBeTruthy();
     expect(journalAtRound2!.completedRounds).toBe(1); // 第 1 轮判完就已落盘
     expect(journalAtRound2!.prevReason).toContain('r1 不行');
@@ -198,7 +220,7 @@ describe('D-A 毒集的新家 — 节点级 journal, 每轮判完就写', () => 
       schemaVersion: 1,
     });
     const f = fake([P1], [{ converged: true }]);
-    await runExecutorDagWithPlan(node({ max_rounds: 3 }), cfg(f.generate, true));
+    await runExecutorDagWithPlan(node({ max_rounds: 3 }), cfg(f.generate, true, true, f.judgeSend));
     // 从第 2 轮起跑 → 本进程只展开一次 (若毒集/轮次丢了会从第 1 轮起, 展开两次)。
     expect(f.expands()).toBe(1);
     // 上一轮的败因被接回并回灌进展开 prompt。
@@ -215,7 +237,7 @@ describe('D-A 毒集的新家 — 节点级 journal, 每轮判完就写', () => 
       updatedAt: '2026-07-29T00:00:00Z', schemaVersion: 1,
     });
     const f = fake([P1], [{ converged: true }]);
-    const r = await runExecutorDagWithPlan(node({ max_rounds: 3 }), cfg(f.generate, true));
+    const r = await runExecutorDagWithPlan(node({ max_rounds: 3 }), cfg(f.generate, true, true, f.judgeSend));
     expect(f.expands()).toBe(0);
     expect(f.judges()).toBe(0);
     expect(r.results.C?.output).toBe('[上次的结论]');
@@ -223,7 +245,7 @@ describe('D-A 毒集的新家 — 节点级 journal, 每轮判完就写', () => 
 
   test('不带 continuity 也能跑环 (journal 是可选增强, 不是运行前提)', async () => {
     const f = fake([P1, P1], [{ converged: false }, { converged: true }]);
-    const r = await runExecutorDagWithPlan(node({ max_rounds: 3 }), cfg(f.generate, false, false));
+    const r = await runExecutorDagWithPlan(node({ max_rounds: 3 }), cfg(f.generate, false, false, f.judgeSend));
     expect(f.expands()).toBe(2);
     expect(r.results.C?.status).toBe('done');
     expect(existsSync(runDir())).toBe(false);
@@ -233,63 +255,51 @@ describe('D-A 毒集的新家 — 节点级 journal, 每轮判完就写', () => 
 describe('D-21 内环版 — 跨轮复用 (环搬进节点后一度丢了这条)', () => {
   const SUB3 = JSON.stringify({ name: 's', nodes: { a: { goal: 'A' }, b: { goal: 'B' }, c: { goal: 'C' } } });
 
-  /** 逐轮同一份子图 + 逐轮裁决; 回收 leaf 调用。 */
-  function loopFake(verdicts: Array<{ converged: boolean; failureReason?: string; rejectedNodes?: string[] }>) {
+  /** 逐轮同一份子图 + 逐轮裁决; 回收 leaf 调用。裁决里的 rejectedNodes 用**下标**, 跑时翻成真 id。 */
+  function loopFake(verdicts: Array<{ converged: boolean; failureReason?: string; rejectedNodes?: number[] }>, sub = SUB3) {
     const leafCalls: string[] = [];
-    let j = 0;
-    let lastChildIds: string[] = [];
     const generate: GenerateFn = async (req) => {
       const u = req.messages.find((m) => m.role === 'user');
       const t = typeof u?.content === 'string' ? u.content : '';
-      if (isJudge(t)) {
-        // 从 prompt 里抠出本轮可点名的 id, 好让裁决点得中 (judge 只能点内容寻址 id)。
-        lastChildIds = [...t.matchAll(/C::[\w-]+/g)].map((m) => m[0]);
-        const v = verdicts[Math.min(j++, verdicts.length - 1)]!;
-        const named = (v.rejectedNodes ?? []).map((n) => lastChildIds[Number(n)] ?? n);
-        return { text: JSON.stringify({ ...v, rejectedNodes: named }), usage: { in: 1, out: 1 } };
-      }
       const id = leafId(t);
-      if (!id) return { text: SUB3, usage: { in: 1, out: 1 } };
+      if (!id) return { text: sub, usage: { in: 1, out: 1 } };
       leafCalls.push(id);
       return { text: `out:${id}`, usage: { in: 1, out: 1 } };
     };
-    return { generate, leafCalls };
+    let n = 0;
+    const judgeSend = (async (req: { messages: { content: string }[] }) => {
+      // 从 judge 视图里抠出本轮可点名的 id (`### C::xxx [状态]`), 好让下标裁决点得中。
+      const ids = [...String(req.messages[0]?.content ?? '').matchAll(/### (C::[\w-]+)/g)].map((m) => m[1]!);
+      const v = verdicts[Math.min(n++, verdicts.length - 1)]!;
+      const parsed = {
+        converged: v.converged,
+        score: v.converged ? 1 : 0,
+        failureReason: v.failureReason,
+        rejectedNodes: (v.rejectedNodes ?? []).map((i) => ids[i]!).filter(Boolean),
+      };
+      return { text: JSON.stringify(parsed), parsed, usage: { in: 1, out: 1 } };
+    }) as never;
+    return { generate, judgeSend, leafCalls };
   }
 
   test('第 2 轮语义没变的子节点**零 LLM 复用**上轮输出 (3 个子节点两轮 = 3 次调用, 不是 6 次)', async () => {
     const f = loopFake([{ converged: false, failureReason: '再想想' }, { converged: true }]);
-    await runExecutorDagWithPlan(node({ max_rounds: 2 }), cfg(f.generate));
+    await runExecutorDagWithPlan(node({ max_rounds: 2 }), cfg(f.generate, false, true, f.judgeSend));
     expect(f.leafCalls).toHaveLength(3);
   });
 
   test('被 judge 点名的子节点**必须重跑**, 不许被复用抵消掉 (毒集优先于复用)', async () => {
-    // 第 1 轮点名第 0 个子节点 → 第 2 轮它重跑; 另两个复用。
-    const f = loopFake([{ converged: false, failureReason: '第一个是编的', rejectedNodes: ['0'] }, { converged: true }]);
-    await runExecutorDagWithPlan(node({ max_rounds: 2 }), cfg(f.generate));
+    const f = loopFake([{ converged: false, failureReason: '第一个是编的', rejectedNodes: [0] }, { converged: true }]);
+    await runExecutorDagWithPlan(node({ max_rounds: 2 }), cfg(f.generate, false, true, f.judgeSend));
     expect(f.leafCalls).toHaveLength(4); // 3 (轮1) + 1 (轮2 只重跑被毒那个)
   });
 
   test('复用不跨越"上游要重跑"这条线 (前驱重跑 → 下游吃到的输入变了, 也得重跑)', async () => {
     const CHAIN = JSON.stringify({ name: 's', nodes: { a: { goal: 'A' }, b: { goal: 'B', depends_on: ['a'] } } });
-    const leafCalls: string[] = [];
-    let j = 0;
-    let ids: string[] = [];
-    const generate: GenerateFn = async (req) => {
-      const u = req.messages.find((m) => m.role === 'user');
-      const t = typeof u?.content === 'string' ? u.content : '';
-      if (isJudge(t)) {
-        ids = [...t.matchAll(/C::[\w-]+/g)].map((m) => m[0]);
-        // 点名**上游** a (它在 judge 视图里排第一 —— 无依赖者先跑先结清)。
-        const v = j++ === 0 ? { converged: false, failureReason: 'a 是编的', rejectedNodes: [ids[0]] } : { converged: true };
-        return { text: JSON.stringify(v), usage: { in: 1, out: 1 } };
-      }
-      const id = leafId(t);
-      if (!id) return { text: CHAIN, usage: { in: 1, out: 1 } };
-      leafCalls.push(id);
-      return { text: `out:${id}`, usage: { in: 1, out: 1 } };
-    };
-    await runExecutorDagWithPlan(node({ max_rounds: 2 }), cfg(generate));
+    // 点名**上游** a —— judge 视图按结清序排, 无依赖者先结清, 故它排第一。
+    const f = loopFake([{ converged: false, failureReason: 'a 是编的', rejectedNodes: [0] }, { converged: true }], CHAIN);
+    await runExecutorDagWithPlan(node({ max_rounds: 2 }), cfg(f.generate, false, true, f.judgeSend));
     // 轮1 跑 2 个; 轮2 上游被毒重跑, 下游因"前驱不可复用"也重跑 → 共 4 次。
-    expect(leafCalls).toHaveLength(4);
+    expect(f.leafCalls).toHaveLength(4);
   });
 });

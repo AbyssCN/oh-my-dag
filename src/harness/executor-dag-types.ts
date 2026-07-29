@@ -1,4 +1,5 @@
 import type { ContentPart, ModelUsage } from '../model/gateway';
+import type * as Gateway from '../model/gateway';
 import type { AgentTemplate } from './agent-templates';
 import type { ConductorPlan } from './conductor-plan';
 import type { CavemanLevel } from './caveman';
@@ -173,6 +174,11 @@ export interface ExecutorDagConfig {
    *    (判"goal 达成没有"与"怎么分解"同属大脑簇, 回落到 leaf 档会让判决比分解还弱)。
    */
   judgeModel?: string;
+  /**
+   * 注入式 judge 调用 (测试)。默认真 `model/gateway.send` —— 内环 judge 走 `responseSchema`
+   * 强制结构化, 与只回文本的 `generate` 不是同一个接口, 故单开一个注入口。
+   */
+  judgeSend?: typeof Gateway.send;
   /**
    * 跨模型校验器 (model-agnostic skeptic, 见 verifier.ts)。省略 = 不校验 (back-compat 老行为)。
    * 给则 DAG 跑完用它审结果 → fail 且配了可用升级模型时触发 conductor 静默升级重规划。
