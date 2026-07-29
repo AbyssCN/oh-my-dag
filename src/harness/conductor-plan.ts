@@ -81,7 +81,15 @@ const PlanNode = z
     output_path: z.string().optional(),
     output_schema: z.record(z.string(), z.unknown()).optional(),
     // 'map' (U1) = 运行时动态扇出节点 (STUDY Q3): lister → per-element 展开成 applicative 子节点。
-    executor: z.enum(['agent', 'leaf', 'command', 'map', 'research']).optional(),
+    // 'conductor' (P3 D-G′/批次 3) = 运行时**异构**展开: 现场让 conductor 画一张子图再局部调度。
+    //   与 map 的分工: map 扇的是**同一件事的 N 份** (模板 + 运行时清单); conductor 展的是
+    //   **一件事的若干不同步骤** (各有各的 goal/executor/依赖) —— 那是模板表达不了的形状。
+    executor: z.enum(['agent', 'leaf', 'command', 'map', 'research', 'conductor']).optional(),
+    /**
+     * executor='conductor' 的子图节点数硬顶 (D-B/D-D 展开闸)。缺省见 DEFAULT_MAX_CHILDREN=64,
+     * 与 map 的 maxItems 同一个数 —— 没有证据支持给它一个不同的值。
+     */
+    max_nodes: z.number().int().min(1).max(64).optional(),
     /** executor='command' 时要跑的确定性 CLI (如 'codegraph trace X Y')。经 fail-closed 闸 + 白名单。 */
     command: z.string().optional(),
     /**

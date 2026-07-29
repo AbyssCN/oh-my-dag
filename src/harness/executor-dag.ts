@@ -50,6 +50,7 @@ import {
 } from './fanin-summary';
 // D-21 escalation 跨轮复用: 语义 Merkle 指纹 + 前驱闭包匹配 (semantic-key 单一真源)。
 import { computeReuse, merkleFingerprints } from './plan-passes/semantic-key';
+import { expandConductorNode } from './plan/conductor-expand';
 // D-14v2 多模态媒体管道 (S4): attach_media 执行期从直接前驱输出解析图片 → ContentPart 注入。
 import { collectDepMedia } from './leaf-media';
 import type { ContentPart } from '../model/gateway';
@@ -385,6 +386,169 @@ async function executePlan(
     }
   };
 
+  // ── P3 批次 3 第一次加厚: `executor:'conductor'` 运行时**异构**展开 (D-B/D-C/D-D) ───────
+  //
+  // 与 map 的分工: map 扇的是「同一件事的 N 份」(模板 + 运行时清单); conductor 展的是
+  // 「一件事的若干不同步骤」(各有各的 goal/executor/依赖) —— 模板表达不了的形状。
+  //
+  // **本次不带环** (刻意): 第一次加厚只做「展开 + 局部调度」, 跑通为先。环 (D-A: 把外层 fixpoint
+  // 搬进节点内) 留给第二次加厚 —— P1 的 double-loop 教训是两层 verify 必须二选一, 在环搬进来
+  // **之前**先把外层撤掉是错的顺序, 会有一段时间两层都不在。
+  const runConductorNode = async (id: string): Promise<LeafResult> => {
+    const node = plan!.nodes[id]!;
+    const deps = node.depends_on ?? [];
+    let usageAcc: ModelUsage = { in: 0, out: 0 };
+
+    // ── 1. 让 conductor 现场画子图 ──
+    // 上游输出进 prompt (有 fan-in 摘要用摘要), 与 map lister 同形。
+    const depCtx = deps.length
+      ? `\n\n<upstream>\n${deps.map((d) => `[${d}]\n${faninView[d] ?? depOutputs[d] ?? ''}`).join('\n\n')}\n</upstream>`
+      : '';
+    let sub: ConductorPlan;
+    try {
+      const sys = conductorSystemPrompt({
+        ...(config.agents ? { agents: config.agents } : {}),
+        templates: templateRoster(templates),
+        profile: config.conductorPromptProfile ?? (process.env.OMD_CONDUCTOR_PROMPT === 'lean' ? 'lean' : 'full'),
+      });
+      const { text, usage } = await generate({
+        messages: [
+          { role: 'system', content: sys },
+          {
+            role: 'user',
+            content:
+              `${PLAN_BOUNDARY}${node.goal ?? id}${depCtx}\n\n` +
+              // D-D 写进 prompt 而不只靠事后拒: 让它知道边界, 比让它撞上去便宜。
+              '注意: 本次分解出的节点**不得**再用 executor:"conductor" 或 executor:"map" —— ' +
+              '你现在就是运行时展开, 已经知道清单了, 直接把步骤列出来即可。',
+          },
+        ],
+        model: config.conductorModel,
+        thinkingLevel: config.conductorThinkingLevel ?? config.seatThinking?.(config.conductorModel) ?? 'high',
+        maxTokens: config.conductorMaxTokens ?? (Number(process.env.OMD_CONDUCTOR_MAX_TOKENS) || 32_768),
+      });
+      usageAcc = addUsage(usageAcc, usage);
+      const parsed = parsePlan(text, { knownTemplates: new Set(templates.keys()) });
+      if (!parsed.ok) throw new Error(`子图不是有效 plan: ${parsed.error}`);
+      sub = parsed.plan;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn({ node: id, err: msg }, '[omd/executor-dag] conductor 节点展开失败 → failed');
+      return { id, status: 'failed', kind: 'conductor', output: `[conductor 展开失败: ${msg}]`, deps, usage: usageAcc };
+    }
+
+    // ── 2. 纯展开: D-B 内容寻址 id + D-D 禁嵌套 + 环检测 + 硬顶 ──
+    const expand = expandConductorNode(id, sub, node.max_nodes ? { maxNodes: node.max_nodes } : {});
+    if (expand.status !== 'ok') {
+      // 'empty' 也走这条: 与 map 的「空清单 = 成功 0 子」**刻意不同**。map 的空是 lister 如实报告
+      // "没有东西要处理", 是一条真实且常见的信息; conductor 的空是**它没能把这件事分解出来** ——
+      // 这里根本到不了 (PlanSchema 要求 ≥1 节点, 空的在 parsePlan 就被拒了), 但万一到了,
+      // 判成 done 就是给"没做任何事"发一张成功票, 那是 empty-done 的同一种坏。
+      logger.warn({ node: id, status: expand.status, error: expand.error }, '[omd/executor-dag] conductor 子图被拒');
+      return {
+        id, status: 'failed', kind: 'conductor',
+        output: `[子图被拒 (${expand.status}): ${expand.error ?? '空子图 — conductor 没能分解出任何步骤'}]`,
+        deps, usage: usageAcc,
+      };
+    }
+    if (expand.truncated > 0) {
+      logger.warn({ node: id, truncated: expand.truncated }, '[omd/executor-dag] conductor 子图截断 (no-silent-caps)');
+    }
+
+    // ── 3. 子节点挂进 plan.nodes → 复用 runNode 全套 (路由/产物闸/checkpoint/resume) ──
+    // 依赖 = 子图内依赖 (已重写成内容寻址 id) **并上父节点的外层上游** —— 后者保证子节点看得见
+    // conductor 节点本该看见的东西 (同 map 子节点接 `depends_on: deps`)。
+    for (const child of expand.children) {
+      const inner = (child.node.depends_on ?? []) as string[];
+      plan!.nodes[child.id] = { ...child.node, depends_on: [...new Set([...inner, ...deps])] };
+    }
+    logger.info(
+      { node: id, children: expand.children.length, ids: expand.children.map((c) => `${c.originalId}→${c.fingerprint}`) },
+      '[omd/executor-dag] conductor 子图展开 (D-B 内容寻址)',
+    );
+
+    // ── 4. D-C 局部拓扑调度 ──
+    // **不复用外层 ready-set**: 外层的 idSet/indeg/dependents 在 run 开始就算死了, 运行期新增的
+    // 子节点进不去。也**不能用 map 那种扁平队列**: map 的子节点互相无边, conductor 的子节点有边。
+    // 故在子图内自己算一次 ready-set (只认子图内的边; 指向外层的 dep 由外层调度保证已完成)。
+    const childIds = expand.children.map((c) => c.id);
+    const childSet = new Set(childIds);
+    const indegLocal = new Map<string, number>();
+    const dependentsLocal = new Map<string, string[]>();
+    for (const cid of childIds) {
+      const inner = ((plan!.nodes[cid]!.depends_on ?? []) as string[]).filter((d) => childSet.has(d));
+      indegLocal.set(cid, inner.length);
+      for (const d of inner) dependentsLocal.set(d, [...(dependentsLocal.get(d) ?? []), cid]);
+    }
+    const readyLocal = childIds.filter((c) => (indegLocal.get(c) ?? 0) === 0);
+    const capLocal = Math.max(1, config.maxFanout && config.maxFanout > 0 ? config.maxFanout : childIds.length);
+    let runningLocal = 0;
+    let settledLocal = 0;
+    let failedLocal = 0;
+    const childOut: { id: string; originalId: string; status: string; output: string }[] = [];
+    const byId = new Map(expand.children.map((c) => [c.id, c]));
+
+    await new Promise<void>((resolve) => {
+      const pump = (): void => {
+        if (settledLocal === childIds.length) {
+          resolve();
+          return;
+        }
+        while (runningLocal < capLocal && readyLocal.length > 0) {
+          const cid = readyLocal.shift()!;
+          runningLocal++;
+          void runNode(cid)
+            .catch((e): LeafResult => ({
+              id: cid, status: 'failed', kind: 'inproc',
+              output: `[failed] ${e instanceof Error ? e.message : String(e)}`,
+              deps: (plan!.nodes[cid]!.depends_on ?? []) as string[], usage: { in: 0, out: 0 },
+            }))
+            .then((r) => {
+              results[cid] = r;
+              depOutputs[cid] = r.output;
+              usageAcc = addUsage(usageAcc, r.usage);
+              if (r.status === 'failed') failedLocal++;
+              childOut.push({ id: cid, originalId: byId.get(cid)?.originalId ?? cid, status: r.status, output: r.status === 'failed' ? '[failed]' : r.output });
+              // 子节点绕过外层 settle() → 补发事件 (同 map 子节点)。
+              emitNodeEvent({ type: 'settle', id: cid, status: r.status, kind: r.kind, ...(r.model ? { model: r.model } : {}) });
+              // 释放子图内下游。失败也释放 —— 是否执行由下游自己的 requires quorum 判 (D-7v2),
+              // 不在这里替它决定 (与外层 settle 同语义)。
+              for (const dep of dependentsLocal.get(cid) ?? []) {
+                const n = (indegLocal.get(dep) ?? 1) - 1;
+                indegLocal.set(dep, n);
+                if (n === 0) readyLocal.push(dep);
+              }
+              runningLocal--;
+              settledLocal++;
+              pump();
+            });
+        }
+        // 无就绪且无在飞而仍未结清 = 子图内有环 (展开期已查过, 这里是防御性兜底, 不许静默挂起)。
+        if (runningLocal === 0 && readyLocal.length === 0 && settledLocal < childIds.length) {
+          logger.warn({ node: id, settled: settledLocal, total: childIds.length }, '[omd/executor-dag] conductor 局部调度死锁 → 提前结清 (防挂起)');
+          resolve();
+        }
+      };
+      pump();
+    });
+
+    // ── 5. 汇总 (INV-U7 同款: 子节点部分失败 = 部分成功; 全失败才算 conductor 节点失败) ──
+    const ok = childOut.filter((c) => c.status !== 'failed').length;
+    const summary = childOut
+      .sort((a, b) => (a.id < b.id ? -1 : 1))
+      .map((c) => `[${c.originalId}] ${c.status}\n${c.output}`)
+      .join('\n\n');
+    return {
+      id,
+      status: ok > 0 ? 'done' : 'failed',
+      kind: 'conductor',
+      output: `[conductor 子图: ${ok}/${childIds.length} 成功${expand.truncated ? `, 截断 ${expand.truncated}` : ''}]\n\n${summary}`,
+      deps,
+      usage: usageAcc,
+      ...(failedLocal > 0 ? {} : {}),
+    };
+  };
+
   // ── U1 P1: map 节点运行时展开 (SDD 0009 §2.3 StateMachine) ──────────────────
   // lister → expandMapNode(纯) → 子节点入 plan.nodes 复用 runNode 全套(路由/产物闸/checkpoint)
   // → 稳定 key 序 collect。INV-U7: 子节点部分失败 = map partial 成功;只 lister 失败才 fail map。
@@ -594,6 +758,10 @@ async function executePlan(
       if (node.kind === 'primitive' && node.primitive) return runPrimitiveNode(id);
       // U1: map 节点走运行时展开分支 (永不整体 resume-skip — lister 便宜, 子节点各自续)。
       if (node.executor === 'map' && node.map) return runMapNode(id);
+      // P3 批次 3: conductor 节点走运行时**异构**展开。与 map 同理**永不整体 resume-skip** ——
+      // 重新展开是便宜的一次 conductor 调用, 而子节点因 D-B 内容寻址各自命中自己的 checkpoint:
+      // 内容没变 → id 没变 → 子节点全跳过, 只白花一次展开; 内容变了 → id 变了 → 本就该重跑。
+      if (node.executor === 'conductor') return runConductorNode(id);
       // W2 resume: checkpoint done ∧ 代数匹配 ∧ **输入面未变 (D-O)** ∧ 产物存在且 hash 匹配 → 跳过执行。
       if (
         continuity?.resume &&
