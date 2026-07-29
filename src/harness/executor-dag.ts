@@ -1451,6 +1451,21 @@ function dropPoisonedGreens(
       }
     }
   }
+  // **运行时展开出来的子节点一起清** (2026-07-29 补, 通道⑤): 被毒的若是 map / conductor 节点,
+  // 它的子节点 id 是 `${parentId}::${key}` —— 运行期才挂进 plan.nodes, 而本函数跑在 resume 预载
+  // 阶段, 那时 `plan` 里**根本没有它们**, 上面的指纹遍历与前向闭包都够不着。
+  //
+  // 于是原样会漏成这样: judge 拒了 conductor 节点 C → C 的绿被清、C 重新展开 → 内容没变则子节点
+  // 拿到**同样的内容寻址 id** → 各自命中自己那份**被拒的** checkpoint → 整棵子树跳过。
+  // 父节点重跑了, 干活的子节点一个没重跑, 被拒的产出照样交付。
+  //
+  // 判据用 id 前缀而不是重建子图: 子图要重建就得先跑一次展开 (一次模型调用), 而前缀是
+  // `${parentId}::` 这个由 INV-U2/D-B **构造保证**的形状, 不需要跑任何东西就能判。
+  // 与 map 的 `expansionHash` 变更清子树 (`key.startsWith(`${id}::`)`) 是同一手法。
+  for (const parentId of [...blocked]) {
+    const prefix = `${parentId}::`;
+    for (const key of [...greens.keys()]) if (key.startsWith(prefix)) blocked.add(key);
+  }
   const dropped = [...blocked].filter((id) => greens.delete(id));
   if (dropped.length) {
     logger.warn({ dropped }, '[omd/executor-dag] resume: 毒集命中 → 丢弃这些节点的已绿 checkpoint, 强制重跑 (D-4 × W2)');
