@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { BUILTIN_AGENT_TEMPLATES } from '../agent-templates-builtin';
 import { runGoal, type RunGoalConfig } from './run-goal';
 import type { AcceptanceSpec, GoalClassification, GoalTier } from './acceptance';
+import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagConfig } from '../executor-dag-types';
 import type { IterateResult } from '../plan/iterate';
 
@@ -95,29 +96,41 @@ function cfg(dag: Partial<ExecutorDagConfig> = {}, extra: Partial<RunGoalConfig>
 describe('D-I — 判卷标准流到每一处该到的地方', () => {
   const EXEC: AcceptanceSpec = { kind: 'executable', command: 'bun run tsc --noEmit && bun test', expectExit: 0 };
 
-  test('complex 档: spec 起草 prompt 与 execute 任务文本拿到**同一份**判卷标准', async () => {
-    let specPrompt = '';
+  /**
+   * D-G′ 之后契约段变成一个 conductor 节点。owner 定的方案 A: **判卷标准留在那个节点之外**,
+   * 由 classify 在环外算好、冻进它的 goal 当输入 —— 放进子图就等于让执行体自己的环去产出判据,
+   * 而环每轮重画, 判据也就跟着能变。这条测试钉的就是"两处拿到同一份, 且都在动手之前"。
+   */
+  test('complex 档: 契约段 goal 与 execute 任务文本拿到**同一份**判卷标准', async () => {
+    let contractGoal = '';
     let task = '';
-    let agentCall = 0;
     await runGoal('加一个字段', {
-      ...cfg({
-        agentRunner: async ({ prompt }) => {
-          if (agentCall++ === 0) return { text: 'src/x.ts:1 — 事实', usage: { in: 1, out: 1 } };
-          specPrompt = prompt;
-          return { text: '# SDD', usage: { in: 1, out: 1 }, filesTouched: [] };
-        },
-      }),
+      ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
       _classify: cls('complex', EXEC),
+      _runDag: (async (plan: ConductorPlan) => {
+        contractGoal = String(plan.nodes.contract!.goal);
+        return {
+          plan: { name: 'c', nodes: {} },
+          results: {
+            contract: {
+              id: 'contract', status: 'done', kind: 'conductor', output: '# SDD', deps: [],
+              usage: { in: 1, out: 1 }, filesTouched: ['docs/plan/2026-07-29-加一个字段.md'],
+            },
+          },
+        } as never;
+      }) as never,
       _iterate: (async (t: string) => {
         task = t;
         return okIterate();
       }) as never,
     });
-    for (const text of [specPrompt, task]) {
+    for (const text of [contractGoal, task]) {
       expect(text).toContain('## 判卷标准 (冻结 — 执行型)');
       expect(text).toContain('bun run tsc --noEmit && bun test');
       expect(text).toContain('期望退出码: 0');
     }
+    // 判据是**输入**不是待办: 契约段被明确告知不许重新发明一套。
+    expect(contractGoal).toContain('不是**重新发明');
   });
 
   test('simple 档也附判卷标准 —— 它不产 spec, 判据没有别的落点', async () => {
@@ -162,5 +175,55 @@ describe('D-I — 判卷标准流到每一处该到的地方', () => {
     const r = await runGoal('g', { ...cfg(), tier: 'simple', _classify: cls('complex', exploratory) });
     expect(r.tier).toBe('simple'); // 显式压过分类
     expect(r.acceptance).toEqual(exploratory); // 判据轴照旧来自分类
+  });
+});
+
+// ── item 12 (D-G′) 方案 A ─────────────────────────────────────────────────────
+
+describe('D-G′ 方案 A — 契约段合成 conductor 节点, 判据留在环外', () => {
+  const EXEC2: AcceptanceSpec = { kind: 'executable', command: 'bun test', expectExit: 0 };
+
+  const runWith = async (over: Partial<RunGoalConfig> = {}, acc: AcceptanceSpec = EXEC2) => {
+    let contractNode: Record<string, unknown> = {};
+    await runGoal('做一件复杂的事', {
+      ...cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) }),
+      _classify: cls('complex', acc),
+      _runDag: (async (plan: ConductorPlan) => {
+        contractNode = plan.nodes.contract as unknown as Record<string, unknown>;
+        return { plan: { name: 'c', nodes: {} }, results: { contract: { id: 'contract', status: 'done', kind: 'conductor', output: '#SDD', deps: [], usage: { in: 0, out: 0 }, filesTouched: ['docs/plan/2026-07-29-做一件复杂的事.md'] } } } as never;
+      }) as never,
+      ...over,
+    });
+    return contractNode;
+  };
+
+  test('契约段就是一个 executor:"conductor" 节点 (不再是三次手接的编排调用)', async () => {
+    expect((await runWith()).executor).toBe('conductor');
+  });
+
+  test('goal 里点名三步与起草卡, 但**不写死**要不要调研 (那个分支交给它自己判)', async () => {
+    const g = String((await runWith()).goal);
+    expect(g).toContain('仓内勘察');
+    expect(g).toContain('外部调研');
+    expect(g).toContain('spec-author');
+    expect(g).toContain('只在需要外部事实时才加'); // 分支下放, 不是写死
+  });
+
+  test('缺省不带内环; specRounds>1 才开**补调研** (D-A 逐轮重展开)', async () => {
+    expect((await runWith()).max_rounds).toBeUndefined();
+    expect((await runWith({ specRounds: 3 })).max_rounds).toBe(3);
+  });
+
+  test('探索型的判卷标准同样冻进 goal (没有机器判据也要说清楚)', async () => {
+    const g = String((await runWith({}, { kind: 'exploratory', learningGoal: '摸清 X', affordableLoss: '两轮' })).goal);
+    expect(g).toContain('没有机器判据');
+    expect(g).toContain('摸清 X');
+    expect(g).toContain('两轮');
+  });
+
+  test('落盘路径在 goal 里钉死 (起草步照它写, runGoal 据它认产物)', async () => {
+    const g = String((await runWith()).goal);
+    expect(g).toContain('2026-07-29-做一件复杂的事.md');
+    expect(g).toContain('output_path');
   });
 });

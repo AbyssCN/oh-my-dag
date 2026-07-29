@@ -606,6 +606,10 @@ async function executePlan(
     let settledLocal = 0;
     let failedLocal = 0;
     const childOut: { id: string; originalId: string; status: string; output: string }[] = [];
+    // 子树碰过的文件要**冒泡到父节点**: 对外层来说 conductor 节点是一个会产出东西的节点, 而产物
+    // 全落在它内部的子节点上 —— 不冒泡, 父节点的 filesTouched 恒空, 调用方 (如 goal 引擎要找
+    // 子树写的 spec 文件) 与外层的产物观察面就都看不见这棵子树干了什么。同 map 的收集语义。
+    const touchedAll = new Set<string>();
     const byId = new Map(expand.children.map((c) => [c.id, c]));
 
     await new Promise<void>((resolve) => {
@@ -629,6 +633,7 @@ async function executePlan(
               usageAcc = addUsage(usageAcc, r.usage);
               if (r.status === 'failed') failedLocal++;
               childOut.push({ id: cid, originalId: byId.get(cid)?.originalId ?? cid, status: r.status, output: r.status === 'failed' ? '[failed]' : r.output });
+              for (const f of r.filesTouched ?? []) touchedAll.add(f);
               // 子节点绕过外层 settle() → 补发事件 (同 map 子节点)。
               emitNodeEvent({ type: 'settle', id: cid, status: r.status, kind: r.kind, ...(r.model ? { model: r.model } : {}) });
               // 释放子图内下游。失败也释放 —— 是否执行由下游自己的 requires quorum 判 (D-7v2),
@@ -666,6 +671,7 @@ async function executePlan(
         output: `[conductor 子图: ${ok}/${childIds.length} 成功${expand.truncated ? `, 截断 ${expand.truncated}` : ''}${failedLocal ? `, 失败 ${failedLocal}` : ''}]\n\n${summary}`,
         deps,
         usage: usageAcc,
+        ...(touchedAll.size ? { filesTouched: [...touchedAll] } : {}),
       },
       childIds,
       usage: usageAcc,
