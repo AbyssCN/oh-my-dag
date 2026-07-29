@@ -41,6 +41,11 @@ export function summarizeGoal(r: RunGoalResult): string {
   const lines = [
     `goal: ${r.goal}`,
     `tier: ${r.tier} · ${r.converged ? '收敛' : '未收敛'} · ${r.rounds} 轮`,
+    // D-I: 判卷标准进摘要 —— 调用方第一眼就该看见"这次是拿什么判的", 尤其是探索型
+    // (它明说没有机器判据, 于是"收敛"这两个字该被读作 judge 的意见而不是 oracle 的结论)。
+    r.acceptance.kind === 'executable'
+      ? `验收: 执行型 · \`${r.acceptance.command}\` (期望退出码 ${r.acceptance.expectExit})`
+      : `验收: 探索型 (无机器判据) · 学习目标: ${r.acceptance.learningGoal}`,
     ...r.stages.map((s) => `  [${s.status}] ${s.stage} — ${s.summary}`),
   ];
   if (r.repoContext) lines.push(`仓内事实: ${r.repoContext.split('\n').length} 行`);

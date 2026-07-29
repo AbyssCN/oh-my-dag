@@ -7,8 +7,18 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { goalSlug, runGoal, type RunGoalConfig } from './run-goal';
+import type { AcceptanceSpec, GoalClassification, GoalTier } from './acceptance';
 import type { ExecutorDagConfig } from '../executor-dag-types';
 import type { IterateResult } from '../plan/iterate';
+
+/**
+ * D-I: 分类器一次出两条轴 (成本轴 tier + 判据轴 acceptance)。本文件多数用例只关心成本轴,
+ * 判据轴给一个固定的执行型即可 —— 判据轴自己的行为在 `acceptance.test.ts` 里测。
+ */
+const ACC_EXEC: AcceptanceSpec = { kind: 'executable', command: 'bun test', expectExit: 0 };
+const cls =
+  (tier: GoalTier, acceptance: AcceptanceSpec = ACC_EXEC) =>
+  async (): Promise<GoalClassification> => ({ tier, acceptance });
 
 const okIterate = (rounds = 1, reused: string[] = []): IterateResult =>
   ({
@@ -54,7 +64,7 @@ describe('runGoal — INV-GOAL-1 全自主 (阶段间零人工介入)', () => {
           return { text: '# SDD\n...', usage: { in: 1, out: 1 }, filesTouched: ['docs/plan/2026-07-28-给-omd-加一个自主-goal-引擎.md'] };
         },
       }),
-      _classify: async () => 'complex',
+      _classify: cls('complex'),
       _iterate: (async (task: string) => {
         seen.push('execute');
         expect(task).toContain('按下面这份 SDD 契约实施'); // 执行读的是契约不是对话
@@ -82,7 +92,7 @@ describe('runGoal — INV-GOAL-1 全自主 (阶段间零人工介入)', () => {
     let task = '';
     const r = await runGoal('把 foo 重命名成 bar', {
       ...cfg({ researchRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 }, sources: ['https://x'] }) }),
-      _classify: async () => 'simple',
+      _classify: cls('simple'),
       _iterate: (async (t: string) => {
         task = t;
         return okIterate();
@@ -91,7 +101,10 @@ describe('runGoal — INV-GOAL-1 全自主 (阶段间零人工介入)', () => {
     expect(r.tier).toBe('simple');
     expect(r.stages.find((s) => s.stage === 'research')!.status).toBe('skipped');
     expect(r.sources).toEqual([]); // research 没跑 → 没有来源
-    expect(task).toBe('把 foo 重命名成 bar'); // 原样进执行
+    // 目标原文原样进执行, 后面只跟着**冻结的判卷标准** (D-I) —— simple 档不产 spec,
+    // 判据没有别的落点, 不附上去这一档就成了"没有验收的自主执行"。
+    expect(task.startsWith('把 foo 重命名成 bar\n\n## 判卷标准')).toBe(true);
+    expect(task).toContain('bun test');
   });
 });
 
@@ -105,7 +118,7 @@ describe('runGoal — 降级路径都留痕, 不假装', () => {
           return { text: 'spec', usage: { in: 1, out: 1 }, filesTouched: [] };
         },
       }),
-      _classify: async () => 'complex',
+      _classify: cls('complex'),
     });
     expect(r.stages.find((s) => s.stage === 'research')!.status).toBe('skipped');
     expect(prompt).toContain('本次无外部证据');
@@ -123,7 +136,7 @@ describe('runGoal — 降级路径都留痕, 不假装', () => {
           return { text: 'spec', usage: { in: 1, out: 1 }, filesTouched: [] };
         },
       }),
-      _classify: async () => 'complex',
+      _classify: cls('complex'),
     });
     expect(r.stages.find((s) => s.stage === 'research')!.status).toBe('failed');
     expect(prompt).not.toContain('看着像研究的一段话');
@@ -135,7 +148,7 @@ describe('runGoal — 降级路径都留痕, 不假装', () => {
       ...cfg({
         agentRunner: async () => ({ text: '# SDD 正文', usage: { in: 1, out: 1 }, filesTouched: [] }),
       }),
-      _classify: async () => 'complex',
+      _classify: cls('complex'),
     });
     expect(r.stages.find((s) => s.stage === 'spec')!.status).toBe('failed');
     expect(r.specPath).toBeUndefined();
@@ -145,7 +158,7 @@ describe('runGoal — 降级路径都留痕, 不假装', () => {
   test('execute 抛错 → 记 failed 并返回 (不把异常抛给调用方)', async () => {
     const r = await runGoal('做点事', {
       ...cfg(),
-      _classify: async () => 'simple',
+      _classify: cls('simple'),
       _iterate: (async () => {
         throw new Error('conductor 崩了');
       }) as never,
@@ -162,8 +175,8 @@ describe('runGoal — INV-GOAL-4 有界 / INV-GOAL-3 可证', () => {
       seen.push(c.maxRounds!);
       return okIterate();
     }) as never;
-    await runGoal('g', { ...cfg(), _classify: async () => 'simple', _iterate: spy });
-    await runGoal('g', { ...cfg(), maxRounds: 5, _classify: async () => 'simple', _iterate: spy });
+    await runGoal('g', { ...cfg(), _classify: cls('simple'), _iterate: spy });
+    await runGoal('g', { ...cfg(), maxRounds: 5, _classify: cls('simple'), _iterate: spy });
     expect(seen).toEqual([2, 5]);
   });
 
@@ -178,7 +191,7 @@ describe('runGoal — INV-GOAL-4 有界 / INV-GOAL-3 可证', () => {
           },
         }),
         ...(rounds ? { researchRounds: rounds } : {}),
-        _classify: async () => 'complex',
+        _classify: cls('complex'),
       });
     await mk();
     await mk(3);
@@ -188,7 +201,7 @@ describe('runGoal — INV-GOAL-4 有界 / INV-GOAL-3 可证', () => {
   test('最后一轮的复用集进结果 (INV-GOAL-3 可证面)', async () => {
     const r = await runGoal('g', {
       ...cfg(),
-      _classify: async () => 'simple',
+      _classify: cls('simple'),
       _iterate: (async () => okIterate(2, ['a', 'b'])) as never,
     });
     expect(r.reusedNodes).toEqual(['a', 'b']);
@@ -217,7 +230,7 @@ describe('runGoal — survey 仓内勘察 (inproc 研究与仓库的接点)', ()
           return { text: 't', usage: { in: 1, out: 1 }, sources: ['https://x'] };
         },
       }),
-      _classify: async () => 'complex',
+      _classify: cls('complex'),
     });
     expect(r.stages.find((s) => s.stage === 'survey')!.status).toBe('skipped');
     expect(r.repoContext).toBe('');
@@ -227,7 +240,7 @@ describe('runGoal — survey 仓内勘察 (inproc 研究与仓库的接点)', ()
   test('survey 空输出 → failed 留痕 (不当成"仓里什么都没有")', async () => {
     const r = await runGoal('g', {
       ...cfg({ agentRunner: async () => ({ text: '   ', usage: { in: 1, out: 1 } }) }),
-      _classify: async () => 'complex',
+      _classify: cls('complex'),
     });
     expect(r.stages.find((s) => s.stage === 'survey')!.status).toBe('failed');
   });
@@ -244,7 +257,7 @@ describe('runGoal — survey 仓内勘察 (inproc 研究与仓库的接点)', ()
           return { text: 't', usage: { in: 1, out: 1 }, sources: ['https://x'] };
         },
       }),
-      _classify: async () => 'complex',
+      _classify: cls('complex'),
     });
     expect(r.stages.find((s) => s.stage === 'survey')!.summary).toContain('勘察崩了');
     expect(ran).toBe(true);
@@ -259,7 +272,7 @@ describe('runGoal — survey 仓内勘察 (inproc 研究与仓库的接点)', ()
           return { text: 'x', usage: { in: 1, out: 1 } };
         },
       }),
-      _classify: async () => 'simple',
+      _classify: cls('simple'),
     });
     expect(called).toBe(false);
     expect(r.stages.find((s) => s.stage === 'survey')).toBeUndefined();

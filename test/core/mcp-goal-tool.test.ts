@@ -10,6 +10,7 @@ import type { RunGoalResult } from '../../src/harness/goal/run-goal';
 const result = (over: Partial<RunGoalResult> = {}): RunGoalResult => ({
   goal: 'g',
   tier: 'complex',
+  acceptance: { kind: 'executable', command: 'bun test', expectExit: 0 },
   stages: [
     { stage: 'classify', status: 'done', summary: 'tier=complex' },
     { stage: 'research', status: 'done', summary: '3 个来源真抓到正文' },

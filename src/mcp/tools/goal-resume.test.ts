@@ -18,6 +18,7 @@ import type { RunGoalResult } from '../../harness/goal/run-goal';
 const emptyResult = (goal: string): RunGoalResult => ({
   goal,
   tier: 'simple',
+  acceptance: { kind: 'executable', command: 'bun test', expectExit: 0 },
   stages: [],
   sources: [],
   repoContext: '',
