@@ -153,6 +153,7 @@ describe("dedupPass (D-20)", () => {
 			output_schema: [{ x: 1 }, { x: 2 }],
 			executor: ["leaf", "agent"],
 			command: ["c1", "c2"],
+			expect_exit: [0, 1],
 			kind: ["primitive", undefined],
 			primitive: ["parallel", "judge"],
 			params: [{ p: 1 }, { p: 2 }],

@@ -85,6 +85,19 @@ const PlanNode = z
     /** executor='command' 时要跑的确定性 CLI (如 'codegraph trace X Y')。经 fail-closed 闸 + 白名单。 */
     command: z.string().optional(),
     /**
+     * D-K (2026-07-29): command 节点判 done 的**期望退出码**, 缺省 0 (零回归)。
+     *
+     * 存在理由 = **verify-red**: TDD 的第二步要证明"新写的测试现在是红的", 那一步的成功判据恰是
+     * `bun test` 退出非 0。此前表达不出来 —— shell 取反 (`! bun test` / `bun test; [ $? -ne 0 ]`)
+     * 整族元字符被 command-leaf 的注入闸全拒 (`command-leaf.ts:145`), 而"让模型自己说测试红了"
+     * 等于把确定性 oracle 换成 LLM 自证 (正是 command 节点存在的意义的反面)。
+     *
+     * 只在 executor='command' 生效; 设在别的节点上引擎会 WARN (明示即承诺: 不消费就别静默吞)。
+     * 上界 255 = POSIX 退出码域, 顺带把 -1 挡在 schema 外 —— 那是 command-leaf 的**闸拒**返回值
+     * (blocked/危险命令), 绝不能被一个 expect_exit 翻译成 done (执行器另有硬闸, 见 executor-dag)。
+     */
+    expect_exit: z.number().int().min(0).max(255).optional(),
+    /**
      * executor='research' 的旋钮 (D-6)。**rounds 是节点内环的界** (INV-GOAL-4: 环封节点内且必须有界) ——
      * schema 层就钳到 1..4, 不给"跑到满意为止"留口子。
      */
@@ -349,6 +362,9 @@ export function conductorSystemPrompt(
     '            CHEAPEST — use for indexed lookups / scanners / tool retrieval / typecheck+test self-verify.',
     '            You MAY chain sequential verification steps with && (e.g. "bun run tsc --noEmit && bun test");',
     '            each link is gated independently. Other shell operators (; | $() ` redirects) are REJECTED.',
+    '            Field "expect_exit" (0..255, default 0) sets which exit code counts as SUCCESS. Use it for a',
+    '            RED step — "prove the new test fails before the implementation exists" is expect_exit:1 on the',
+    '            test command. Do NOT try to negate a command in the shell (! / ; / $?): those are rejected.',
     '- "map"  = runtime dynamic fan-out (field "map"): a lister enumerates an array AT RUNTIME, then a',
     '            per-element template spawns one child per item. Use when the work-list is unknown until run',
     '            time (see the "Runtime work-list" section below). This is the ONLY node kind that expands itself.',
@@ -468,7 +484,7 @@ export function conductorSystemPrompt(
     // executor/model; 而 conductor 每轮重掷这个字段, 反而系统性打空 D-21 跨轮语义复用
     // (semantic-key 为此把它排除在指纹外)。zod 层仍容忍旧 plan。
     '  "nodes": { "<node_id>": { "goal"?: string, "persona"?: string, "template"?: string,',
-    '    "args"?: object, "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map", "command"?: string, "creative"?: boolean,',
+    '    "args"?: object, "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map", "command"?: string, "expect_exit"?: number, "creative"?: boolean,',
     '    "map"?: { "lister": object, "over": string, "itemVar": string, "keyBy"?: string, "template": object, "maxItems"?: number },',
     // "postcondition" 2026-07-28 从明示 schema 撤下 (同 skill/agent 的理由, 空旋钮全仓扫): 全仓零消费者,
     // 引擎从不检查它。明示它比明示 skill 更坏 —— 那是在请 conductor 给"正确性敏感的节点"写验证条件,

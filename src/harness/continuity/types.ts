@@ -41,8 +41,33 @@ export interface NodeCheckpoint {
   artifactHashes: Record<string, string>;
   /** 模型用量。command leaf = null。 */
   tokenUsage: ModelUsage | null;
-  /** LeafResult.output 截断, ≤800 字符。失败节点 = 错误消息/最后输出截断 (issue #4 败因)。 */
+  /**
+   * LeafResult.output 截断, ≤800 字符。失败节点 = 错误消息/最后输出截断 (issue #4 败因)。
+   *
+   * ⚠ **D-O (2026-07-29) 起 summary 只给人看, 不当数据源** —— 下游吃的输出全文改由
+   * {@link outputText} 指向的制品承载。此前 resume 跳过一个节点时把这 800 字当它的输出注入下游,
+   * 于是每续跑一次, 图上游的信息就被截断一次 (而截断是静默的: 下游只看到一段"看起来完整"的话)。
+   */
   summary: string;
+  /**
+   * **D-O 产出面**: 本节点输出**全文**的落盘路径 (绝对路径, runDir 下的 `out-<nodeId>.txt`)。
+   *
+   * 三个用处: ① resume 跳过时还原全文而非 summary ② 中途直接读产物看成果 ③ 单独重跑某节点时,
+   * 它的上游输入是别的节点的这份文件 (不是 800 字截断)。写失败 → 字段缺席 (fail-open, 退回 summary)。
+   */
+  outputText?: string;
+  /**
+   * **D-O 输入面**: 产出本 checkpoint 时, 每个直接依赖的**输出全文** sha256 前 16 hex。
+   *
+   * 补的是 resume 的一个真漏洞: 此前只有 `generation` (图**形态**签名) 守卫, 形态没变但上游节点
+   * 重跑出了**不同内容**时, 下游 checkpoint 照样被当绿跳过 —— 拿旧输入的产物冒充新输入的产物。
+   * 有它之后判据变成"形态没变 **且** 我吃到的东西没变"。
+   *
+   * 缺席 (老 checkpoint / 无依赖的根节点) → 不做输入面校验 (向后兼容, 退回原语义)。
+   * 锚在**依赖的输出全文**而非"实际注入的 prompt": fan-in 定向摘要是 LLM 现生成的, 拿它做锚
+   * 会让每次 resume 都判 stale。全文没变 = 输入语义没变。
+   */
+  inputHashes?: Record<string, string>;
   /** U1 map 节点: spec hash (INV-U3 两级 resume; spec 变 → 子树作废)。optional。 */
   expansionHash?: string;
   /** noun-gate 注释标签 (W2: 注释 only; W1: 硬闸)。optional。 */

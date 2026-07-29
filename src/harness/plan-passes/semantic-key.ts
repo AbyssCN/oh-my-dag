@@ -36,6 +36,9 @@ export function nodeFieldsKey(node: PlanNode): string {
 		node.model ?? NONE,
 		node.goal ?? NONE,
 		node.command ?? NONE,
+		// D-K: expect_exit 是语义 —— 同一条命令期望绿 (0) 与期望红 (1) 是**相反**的验收,
+		// 不入键会让 verify-red 与 verify-green 两个节点判重 / 跨轮复用串味。
+		node.expect_exit ?? NONE,
 		node.skill ?? NONE,
 		node.output_path ?? NONE,
 		node.persona ?? NONE,
@@ -45,7 +48,13 @@ export function nodeFieldsKey(node: PlanNode): string {
 		node.params ? JSON.stringify(node.params) : NONE,
 		node.output_type ?? NONE,
 		node.tier ?? NONE,
-		// S-T: 推理档是语义 (同 goal 不同档 = 不同的执行, 成本与质量都不同), 入键。
+		// S-T: 推理档入键 —— 但理由要改口 (2026-07-29 实测, `docs/plan/2026-07-29-p2d-empirics.md` 三):
+		// 原记述是"不同档 = 不同的执行, 成本与质量都不同"。在**当前主力家族 deepseek 上这是假的**:
+		// 200 次配对实测, low 与 high 在输出量 (t=0.84) 与正确率上都读不出差, 而两条同配置臂之间
+		// 的差还更大 (t=1.92) —— 官方口径就是 low/medium 等同 high。
+		// 仍然入键的理由换成: 档位在**认档的家族** (mimo 词表实测认 low/medium/high) 上确实是语义,
+		// 而指纹要对所有家族成立。代价是 deepseek 上两个只差档位的节点白白不判重 —— 可接受:
+		// 显式写 thinking 的节点本来就少 (它刻意不进 conductor prompt, 是手写 plan 的逃生口)。
 		node.thinking ?? NONE,
 		node.cluster ?? NONE,
 		node.requires ?? NONE,
