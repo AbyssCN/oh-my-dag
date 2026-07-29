@@ -38,11 +38,16 @@ export interface JudgeChildView {
  *  ② **不给"3/3 成功"这种成功统计做开场白**。那是给人看的摘要, 对 judge 是很强的"都好着呢"暗示;
  *     外层那份拿 100% 的 `summarizeDagResult` 从来没有这一行。
  *
- * 形状**逐字对齐外层判词引用的那个** (`### <id> [状态]`, 见 llm-judge.judgePrompt 的
- * 「逐字照抄」那句) —— 可读别名放在状态之后, 不打断那个模式。
+ * 形状**逐字对齐外层判词引用的那个** (`### <id> [状态]`, 见 llm-judge.judgePrompt 的「逐字照抄」)。
+ *
+ *  ③ **不给可读别名**。这一条也是实测改的: 先前把 conductor 起的名当别名附在状态后
+ *     (`### <id> [done]  (send-report)`), 结果模型照抄那个好读的名字去点名 → **幽灵率 12~17%**,
+ *     而幽灵被过滤掉就等于漏点名, `one-failed` 段的召回全因此从 100% 掉到 50~60%。
+ *     别名在这个视图里**没有任何用处** (它只给 judge 看, 人看的是节点对下游的 output),
+ *     纯粹是个诱饵。删掉。
  */
 export function renderRoundForJudge(children: readonly JudgeChildView[]): string {
-  return children.map((c) => `### ${c.id} [${c.status}]  (${c.originalId})\n${c.output}`).join('\n\n');
+  return children.map((c) => `### ${c.id} [${c.status}]\n${c.output}`).join('\n\n');
 }
 
 /**
