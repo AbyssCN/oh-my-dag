@@ -156,6 +156,51 @@ export function expandConductorNode(
   return { status: 'ok', children, truncated };
 }
 
+/** 一条子图体检结论 (D-N 展开闸的后半)。 */
+export interface SubgraphWarning {
+  check: 'single-node' | 'writes-without-gate';
+  message: string;
+}
+
+/**
+ * **D-N 展开闸的"软"半边**: 子图结构体检。
+ *
+ * ⚠ 这些**只 warn 不拒**, 是刻意的。两条都有正当反例 —— 真的只有一步的活 / 交付物是一份文档
+ * 而不是可跑的东西 —— 而我没有证据支持任何一个硬阈值。**没证据就别假装有**, 那正是交接文
+ * 「没有实证的结论别当调过的」那一条。硬拒留给没有正当反例的三条 (禁嵌套 / 环 / 非法 plan)。
+ */
+export function subgraphWarnings(children: readonly ConductorChild[]): SubgraphWarning[] {
+  const out: SubgraphWarning[] = [];
+
+  if (children.length === 1) {
+    out.push({
+      check: 'single-node',
+      message:
+        'conductor 只展开出 1 个节点 = 它没有分解, 只是把活原样传下去 —— 这次展开的模型调用与这层间接是白花的。' +
+        '若这类目标反复如此, 该在规划期直接写成普通节点 (见 runtime-decomposition 图式的 "NOT when")。',
+    });
+  }
+
+  // 有节点在写文件, 却没有任何确定性验证步 —— 承 ui-evidence 图式那条「地板必须是零模型的」:
+  // 模型判断这一环失败是**静默**的, 而确定性闸没跑就是没跑。
+  const writes = children.filter((c) => {
+    const n = c.node as { output_type?: string; output_path?: string };
+    return n.output_type === 'file' || n.output_type === 'git' || !!n.output_path;
+  });
+  const hasCommandGate = children.some((c) => (c.node as { executor?: string }).executor === 'command');
+  if (writes.length > 0 && !hasCommandGate) {
+    out.push({
+      check: 'writes-without-gate',
+      message:
+        `子图有 ${writes.length} 个写文件节点却没有任何 executor:"command" 验证步 —— ` +
+        '产物对不对将只由模型自述, 而模型判断这一环失败是静默的 (主指标照样全绿)。' +
+        '交付物若是可跑的东西, 补一个确定性闸; 若是文档类, 忽略本条。',
+    });
+  }
+
+  return out;
+}
+
 /**
  * 找一条环 (DFS 三色)。只看子图内部的边, 外部引用不算边 (它们由外层调度保证已完成)。
  * @returns 环上的节点名序列 (首尾同名), 无环 → null。
