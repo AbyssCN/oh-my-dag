@@ -70,6 +70,18 @@ export interface NodeCheckpoint {
   inputHashes?: Record<string, string>;
   /** U1 map 节点: spec hash (INV-U3 两级 resume; spec 变 → 子树作废)。optional。 */
   expansionHash?: string;
+  /**
+   * **落盘时的语义 Merkle 指纹** (2026-07-29, 通道⑤-b)。
+   *
+   * 毒集的键是**指纹**不是 id (指纹刻意不含 id, 这样 conductor 重命名不破匹配)。resume 预载时
+   * 要判"这个绿是不是被拒过的", 原先靠**当场重算** `merkleFingerprints(plan)` —— 对 plan-time
+   * 节点成立, 对**运行时展开的子节点不成立**: map/conductor 的子节点是运行期才挂进 plan 的,
+   * 预载那一刻它们根本不在图里, 重算够不着, 于是 judge 点名过的子节点照样被当绿跳过。
+   *
+   * 存下来就不用重算了。节点的 Merkle 指纹只依赖它的**祖先**, 而祖先在它跑起来的那一刻已经定死,
+   * 所以落盘时算的值与轮末 judge 算的值一致 (后加的无关节点不影响)。
+   */
+  fingerprint?: string;
   /** noun-gate 注释标签 (W2: 注释 only; W1: 硬闸)。optional。 */
   nounAnnotations?: string[];
   /** 节点执行耗时 ms。 */

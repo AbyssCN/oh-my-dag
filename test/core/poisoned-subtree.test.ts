@@ -101,6 +101,34 @@ describe('通道⑤ — 被毒的 conductor 节点, 子树的绿必须一起清'
     expect(r2.leafCalls).toHaveLength(0);
   });
 
+  /**
+   * judge 更可能点名的是**具体坏掉的那个子节点**, 而不是笼统的父节点 —— 它在轮结果里看得见子节点。
+   * 这条钉的就是那个形态: 毒的是子节点本身, 它必须重跑。
+   *
+   * 难点在于毒集的键是**指纹**而非 id, 而子节点的指纹只有在它已经挂进 plan 之后才算得出来 ——
+   * resume 预载阶段它还不在图里。故 `dropPoisonedGreens` 那条"重算指纹再比对"的路对子节点是断的。
+   */
+  test('毒的是**子节点本身** → 它必须重跑 (judge 通常点名的就是具体那个)', async () => {
+    const r1 = fake();
+    const res1 = await runExecutorDagWithPlan(outer(), cfg(r1.generate, false));
+    const childIds = r1.leafCalls.slice().sort();
+    expect(childIds).toHaveLength(2);
+
+    // judge 在**轮结果的 plan** 上翻 id → 指纹 (iterate.ts:125 的做法), 那时子节点已在图里。
+    const fpsAtJudge = merkleFingerprints(res1.plan);
+    const victim = childIds[0]!;
+    const victimFp = fpsAtJudge.get(victim);
+    expect(victimFp).toBeTruthy(); // 前提: 判决时子节点确实在图里, 点得到名
+
+    const r2 = fake();
+    await runExecutorDagWithPlan(
+      outer(),
+      cfg(r2.generate, true),
+      { plan: res1.plan, results: {}, poisoned: new Set([victimFp!]) } as never,
+    );
+    expect(r2.leafCalls).toContain(victim);
+  });
+
   test('毒的是**别的**节点 → 不误伤 conductor 子树', async () => {
     const twoNode = (): ConductorPlan =>
       ({ name: 'outer', nodes: {

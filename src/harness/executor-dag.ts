@@ -350,6 +350,15 @@ async function executePlan(
         if (h) artifactHashes[rp] = h;
       }
       const summary = opts.text.slice(0, 800);
+      // 通道⑤-b: 落盘时把语义指纹一并存下 —— resume 预载判毒时**不用重算**, 于是运行时展开的
+      // 子节点 (预载那刻还不在图里) 也判得了。指纹只依赖祖先, 而祖先此刻已定死 → 与轮末 judge
+      // 算的值一致。fail-open: 算不出来就不存, 退回原语义。
+      let fingerprint: string | undefined;
+      try {
+        fingerprint = merkleFingerprints(plan!).get(opts.id);
+      } catch {
+        /* 指纹算不出 (环等) 不该阻断 checkpoint */
+      }
       // D-O: 全文落制品。写失败 → null → 字段缺席, resume 退回 summary (fail-open, 有留痕)。
       const outputText = continuity.manager.saveNodeOutput(continuity.runId, opts.id, opts.text);
       const inputHashes: Record<string, string> = {};
@@ -374,6 +383,7 @@ async function executePlan(
         tokenUsage: opts.usage,
         summary,
         ...(outputText ? { outputText } : {}),
+        ...(fingerprint ? { fingerprint } : {}),
         ...(Object.keys(inputHashes).length ? { inputHashes } : {}),
         ...(nounAnnotations ? { nounAnnotations } : {}),
         durationMs: Date.now() - opts.t0,
@@ -1440,6 +1450,10 @@ function dropPoisonedGreens(
   if (!poisoned?.size || greens.size === 0) return;
   const blocked = new Set<string>();
   for (const [id, fp] of merkleFingerprints(plan)) if (poisoned.has(fp)) blocked.add(id);
+  // 通道⑤-b: 上面那行只认**图里现在有的**节点, 而 map/conductor 的子节点是运行期才挂进去的 ——
+  // 预载这一刻它们不在图里, 重算够不着。judge 恰恰最可能点名的就是它们 (它在轮结果里看得见
+  // 具体哪个子节点坏了)。改判 checkpoint 自己存下来的指纹, 不依赖当前图的形状。
+  for (const [id, cp] of greens) if (cp.fingerprint && poisoned.has(cp.fingerprint)) blocked.add(id);
   if (blocked.size === 0) return;
   for (let changed = true; changed; ) {
     changed = false;
