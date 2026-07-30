@@ -680,9 +680,13 @@ describe('dag_cancel — 协作式取消的 MCP 面', () => {
     const reg = new RunRegistry();
     reg.register('r1', { goal: 'g' });
     reg.start('r1');
-    reg.cancel('r1', '叫停');
+    reg.cancel('r1', '叫停', '上一次的摘要');
     expect(() => reg.reopenForResume('r1', { goal: 'g' })).not.toThrow();
     expect(reg.getStatus('r1')).toBe('running');
+    // 重开 = 新一次尝试: 上一次的结论**一样不留** (2026-07-30 取消冒烟撞出来的 —— 只清 error
+    // 不清 result, 续跑之后 dag_result 还端着上一次那份摘要, 读的人分不清是这次还是上次)。
+    expect(reg.getRecord('r1')!.result).toBeUndefined();
+    expect(reg.getRecord('r1')!.error).toBeUndefined();
   });
 
   test('未知 / 不在飞的 run → isError, 不假装停到了', async () => {

@@ -303,6 +303,30 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
         judge_final: true,
         goal: task,
       },
+      // ── D-I 的冻结判据: **环外的确定性闸** (2026-07-30 第三次 live 冒烟补上) ──────────
+      //
+      // 此前判卷标准只进任务文本, 指望 conductor 把它连成图里一个 command 节点 —— 实测它没连:
+      // 冻结的是 `grep -qx "hello omd" notes/hello.md`, 它自己画的验证步是 `cat notes/hello.md`。
+      // 于是"执行型验收"这四个字在生产上从没被真跑过, D-J 整套防作弊的地基就只剩一句提醒。
+      //
+      // 放**环外**而不是让内环去跑, 是 D-I 方案 A 那条纪律的直接后果: 判卷标准必须是执行体动不了的
+      // 东西。环每轮重画子图, 判据进环就跟着能变; 挂在环外这一个 command 节点上, 它由 runGoal 构造、
+      // conductor 碰不到、内环 judge 也改不了它。
+      //
+      // 语义是**必要非充分**: 收敛 = 内环 judge 说成了 **且** 这条命令退出码对。judge 说成了而命令
+      // 没过 = 正是 D-I 要抓的那种"作弊达标"; 命令过了而 judge 说没成 = 任务里还有命令覆盖不到的
+      // 明确要求。两侧都 fail-closed。
+      ...(acceptance.kind === 'executable'
+        ? {
+            accept: {
+              executor: 'command',
+              command: acceptance.command,
+              expect_exit: acceptance.expectExit,
+              depends_on: ['execute'],
+              goal: '冻结判据 (环外确定性闸)',
+            },
+          }
+        : {}),
     },
   } as ConductorPlan;
   let exec: ExecutorDagResult;
@@ -314,13 +338,26 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   const execLeaf = exec.results.execute;
   if (!execLeaf) return bail('execute 节点无结果 (引擎没跑到它)');
   // `converged` 缺席 = 没人判过 → 一律**不算成** (judge_final 已保证它在, 缺席意味着引擎跑歪了)。
-  const converged = execLeaf.converged === true;
+  const judgeSaidOk = execLeaf.converged === true;
+  // D-I 环外闸: 执行型才有这个节点。它**没跑**(引擎没走到 / 被 quorum 级联跳过)也算没过 ——
+  // 冻结判据的意义就是"没被证明过就不算成", fail-closed 与 converged 缺席同一条纪律。
+  const acceptLeaf = acceptance.kind === 'executable' ? exec.results.accept : undefined;
+  const oracleOk = acceptance.kind !== 'executable' ? true : acceptLeaf?.status === 'done';
+  const converged = judgeSaidOk && oracleOk;
   const roundCount = execLeaf.rounds ?? 0;
   // INV-GOAL-3 可证面: 复用现在全发生在**内环**里 (子节点内容寻址, 同 id ≡ 同规格 + 同祖先规格)。
   const reusedNodes = exec.reusedNodes ?? [];
   // D-Q / D-P: 两种"没跑完但不是失败"的收尾, 各自如实报 —— 都恒不算收敛 (fail-closed)。
   const blocked = execLeaf.blocked;
   const cancelledReason = exec.cancelled?.reason;
+  // 判词与 oracle **分开报**: 两者不一致时那句话本身就是结论 —— judge 说成了而冻结判据没过,
+  // 正是 D-I 要抓的"作弊达标"; 反过来则是"任务里还有命令覆盖不到的明确要求"。
+  const oracleNote =
+    acceptance.kind !== 'executable'
+      ? ''
+      : oracleOk
+        ? ' · 冻结判据 ✅'
+        : ` · **冻结判据没过** (\`${acceptance.command}\` → ${acceptLeaf?.status ?? '没跑'})`;
   stages.push({
     stage: 'execute',
     status: converged ? 'done' : 'failed',
@@ -329,8 +366,9 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
         converged ? '收敛'
         : cancelledReason ? `被叫停 (${cancelledReason}) — 已跑完的保留, 同 runId 可 resume`
         : blocked ? `阻塞: ${blocked.slice(0, 300)}`
+        : judgeSaidOk && !oracleOk ? '判词说成了但冻结判据没过 (D-I: 以判据为准)'
         : `未收敛 (${execLeaf.status})`
-      }` +
+      }${oracleNote}` +
       `${reusedNodes.length ? ` · 复用 ${reusedNodes.length} 节点` : ''}` +
       `${exec.observations?.length ? ` · 图外观察 ${exec.observations.length} 条` : ''}`,
   });

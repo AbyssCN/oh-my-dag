@@ -48,11 +48,31 @@ function contractDag(opts: { survey?: string; sources?: string[]; specFile?: str
  * `converged` / `rounds` 是内环 judge 盖在 leaf 上的 —— runGoal 的整段结论就取自它俩。
  */
 function executeDag(
-  opts: { converged?: boolean; rounds?: number; reused?: string[]; status?: 'done' | 'failed' } = {},
+  opts: {
+    converged?: boolean;
+    rounds?: number;
+    reused?: string[];
+    status?: 'done' | 'failed';
+    /**
+     * D-I 环外闸 (2026-07-30): 执行型验收会在图上多一个 `accept` command 节点, 它的退出码是
+     * **冻结判据**。缺省 done —— 大部分用例关心的是判词那一侧; 要测"判词说成了但判据没过"
+     * 这个 D-I 核心场景, 显式传 'failed'。
+     */
+    accept?: 'done' | 'failed' | 'absent';
+  } = {},
 ): ExecutorDagResult {
+  const accept = opts.accept ?? 'done';
   return {
     plan: { name: 'goal-execute', nodes: {} },
     results: {
+      ...(accept === 'absent'
+        ? {}
+        : {
+            accept: {
+              id: 'accept', status: accept, kind: 'command', output: accept === 'done' ? '' : '[exit 1]',
+              deps: ['execute'], usage: { in: 0, out: 0 },
+            },
+          }),
       execute: {
         id: 'execute',
         status: opts.status ?? 'done',
@@ -153,6 +173,84 @@ describe('runGoal — INV-GOAL-1 全自主 (阶段间零人工介入)', () => {
     // 判据没有别的落点, 不附上去这一档就成了"没有验收的自主执行"。
     expect(task.startsWith('把 foo 重命名成 bar\n\n## 判卷标准')).toBe(true);
     expect(task).toContain('bun test');
+  });
+});
+
+/**
+ * **D-I 的冻结判据必须真跑** (2026-07-30 第三次 live 冒烟补的环外闸)。
+ *
+ * 实测挖出来的洞: 判卷标准只进任务文本, 指望 conductor 把它连成图里一个 command 节点 —— 它没连。
+ * 冻结的是 `grep -qx "hello omd" notes/hello.md`, 它自己画的验证步是 `cat notes/hello.md`。
+ * 于是"执行型验收"这四个字在生产上**从没被真跑过**, D-J 整套防作弊的地基只剩一句提醒。
+ *
+ * 闸放**环外**是 D-I 方案 A 的直接后果: 判卷标准必须是执行体动不了的东西 —— 环每轮重画子图,
+ * 判据进环就跟着能变。
+ */
+describe('D-I 冻结判据 — 环外确定性闸', () => {
+  const execCfg = (over: Partial<RunGoalConfig> = {}): RunGoalConfig =>
+    cfg({}, {
+      acceptance: { kind: 'executable', command: 'grep -qx "hello" a.md', expectExit: 0 },
+      tier: 'simple',
+      ...over,
+    });
+
+  test('执行型 → 图上多一个 accept 节点, 逐字带着冻结的命令与期望退出码', async () => {
+    let seen: ConductorPlan | undefined;
+    await runGoal('写个文件', execCfg({
+      _runDag: (async (plan: ConductorPlan) => {
+        if (plan.name === 'goal-execute') seen = plan;
+        return executeDag({ converged: true });
+      }) as never,
+    }));
+    const accept = seen!.nodes.accept!;
+    expect(accept.executor).toBe('command');
+    expect(accept.command).toBe('grep -qx "hello" a.md');
+    expect(accept.expect_exit).toBe(0);
+    expect(accept.depends_on).toEqual(['execute']); // 环跑完才判 —— 它是环外的闸不是环内的一步
+  });
+
+  test('判词说成了但**冻结判据没过** → 不算收敛 (D-I 要抓的正是这种"作弊达标")', async () => {
+    const r = await runGoal('写个文件', execCfg({
+      _runDag: (async () => executeDag({ converged: true, accept: 'failed' })) as never,
+    }));
+    expect(r.converged).toBe(false);
+    expect(r.stages.at(-1)!.summary).toContain('冻结判据没过');
+  });
+
+  test('accept 节点**根本没跑** → 也不算收敛 (没被证明过就不算成, 同 converged 缺席那条纪律)', async () => {
+    const r = await runGoal('写个文件', execCfg({
+      _runDag: (async () => executeDag({ converged: true, accept: 'absent' })) as never,
+    }));
+    expect(r.converged).toBe(false);
+  });
+
+  test('判据过了但判词说没成 → 仍不算收敛 (判据是必要非充分)', async () => {
+    const r = await runGoal('写个文件', execCfg({
+      _runDag: (async () => executeDag({ converged: false, accept: 'done' })) as never,
+    }));
+    expect(r.converged).toBe(false);
+  });
+
+  test('两边都过 → 收敛, 摘要里两条结论都在', async () => {
+    const r = await runGoal('写个文件', execCfg({
+      _runDag: (async () => executeDag({ converged: true, accept: 'done' })) as never,
+    }));
+    expect(r.converged).toBe(true);
+    expect(r.stages.at(-1)!.summary).toContain('冻结判据 ✅');
+  });
+
+  test('探索型 → **不加** accept 节点 (没有机器判据就别伪造一个)', async () => {
+    let seen: ConductorPlan | undefined;
+    const r = await runGoal('摸清一个领域', cfg({}, {
+      acceptance: { kind: 'exploratory', learningGoal: '学到什么', affordableLoss: '一轮' },
+      tier: 'simple',
+      _runDag: (async (plan: ConductorPlan) => {
+        if (plan.name === 'goal-execute') seen = plan;
+        return executeDag({ converged: true });
+      }) as never,
+    }));
+    expect(seen!.nodes.accept).toBeUndefined();
+    expect(r.converged).toBe(true); // 探索型只看判词
   });
 });
 

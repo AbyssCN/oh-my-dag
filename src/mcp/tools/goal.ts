@@ -14,6 +14,7 @@ import type { RunGoalResult, GoalTier } from '../../harness/goal/run-goal';
 import type { ExecutorDagConfig } from '../../harness/executor-dag-types';
 import type { CheckpointManager } from '../../harness/continuity/checkpoint-manager';
 import type { RunRegistry } from '../run-registry';
+import type { HudRunRecordLike } from '../../hud/mirror';
 
 export interface GoalToolDeps {
   /** 自主环实现 (默认注入真 runGoal)。 */
@@ -35,6 +36,10 @@ export interface GoalToolDeps {
    * 被拒产出会复活)。
    */
   continuity?: { manager: CheckpointManager; repoRoot: string };
+  /**
+   * omd-hud 活体镜像 (同 dag_run)。省略 = 不写 (HUD 空闲), 不影响执行。
+   */
+  hudMirror?: { write: (runId: string, record: HudRunRecordLike | null, levels?: string[][]) => void };
 }
 
 /** 阶段结论压成宽出摘要 (D-8: 客户端上下文只拿结论, 全文自己 Read spec/report)。 */
@@ -124,6 +129,14 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
       const dagWithContinuity: ExecutorDagConfig = {
         ...dag,
         cancelSignal: deps.runRegistry.attachCancel(runId),
+        // **活体进度** (2026-07-30 取消冒烟撞出来的): `dag_goal` 此前**一个事件都不发** ——
+        // 于是最长活的那条路 (research + 多轮执行, 动辄几分钟) 在 `dag_status` 上全程是
+        // `planned 0 · started 0 · settled 0`, HUD 也是黑的。dag_run/dag_run_plan 一直有这条线,
+        // goal 这条从 P1 起就漏了, 一直没人撞见是因为大家都在看最终结果。
+        onNodeEvent: (e) => {
+          deps.runRegistry.applyNodeEvent(runId, e);
+          deps.hudMirror?.write(runId, deps.runRegistry.getRecord(runId));
+        },
         ...(deps.continuity
           ? {
               continuity: {

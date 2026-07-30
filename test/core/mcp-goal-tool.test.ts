@@ -129,6 +129,40 @@ describe('dag_goal', () => {
   });
 });
 
+/**
+ * **活体进度**: `dag_goal` 此前一个节点事件都不发 —— 最长活的那条路 (research + 多轮执行) 在
+ * `dag_status` 上全程 `planned 0 · started 0 · settled 0`, HUD 也是黑的。2026-07-30 取消冒烟
+ * 撞出来的: 盘上明明有 2 份子节点 checkpoint、沙箱里文件都写了, 进度却报 0。
+ */
+describe('dag_goal 活体进度 (onNodeEvent → registry / HUD)', () => {
+  test('引擎发的事件进 registry, dag_status 看得见节点在跑', async () => {
+    const reg = new RunRegistry();
+    const hudCalls: string[] = [];
+    const r = await call(
+      {
+        runRegistry: reg,
+        hudMirror: { write: (runId) => void hudCalls.push(runId) },
+        runGoal: async (_g, c) => {
+          const cfg = c as unknown as { dag: { onNodeEvent?: (e: unknown) => void } };
+          cfg.dag.onNodeEvent?.({ type: 'planned', nodes: [{ id: 'execute', kind: 'conductor' }] });
+          cfg.dag.onNodeEvent?.({ type: 'expanded', parent: 'execute', nodes: [{ id: 'execute::a', kind: 'agent', deps: [] }] });
+          cfg.dag.onNodeEvent?.({ type: 'start', id: 'execute::a', kind: 'agent' });
+          cfg.dag.onNodeEvent?.({ type: 'settle', id: 'execute::a', status: 'done', kind: 'agent' });
+          return result();
+        },
+      },
+      { goal: 'g' },
+    );
+    const runId = runIdOf(r.content[0]!.text);
+    await settle();
+    const p = reg.getRecord(runId)!.progress!;
+    // 运行时展开的子节点也在 planned 里 (追加不覆盖) —— 否则进度分母永远是 1。
+    expect(p.planned.map((n) => n.id)).toEqual(['execute', 'execute::a']);
+    expect(p.settled.map((s) => s.id)).toEqual(['execute::a']);
+    expect(hudCalls.length).toBeGreaterThan(0);
+  });
+});
+
 describe('summarizeGoal (D-8 宽出)', () => {
   test('阶段结论 + spec + 来源计数 + 复用计数', () => {
     const s = summarizeGoal(result());

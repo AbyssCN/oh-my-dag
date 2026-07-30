@@ -494,6 +494,8 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       cwd,
       buildConfig: buildDefaultConfig,
       continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd },
+      // 活体进度/HUD 与 dag_run 同一条线 (2026-07-30 补: goal 这条从 P1 起就漏了)。
+      hudMirror,
     }),
     ...createMemoryTools({ memory, cwd }),
     // pathfinder 六件套 (TUI-less 决策地图: map/add/tickets/rule/deliver/prefetch, pull 式回流)。
