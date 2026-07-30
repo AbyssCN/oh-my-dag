@@ -54,6 +54,7 @@ import { computeReuse, merkleFingerprints } from './plan-passes/semantic-key';
 import { expandConductorNode, subgraphWarnings } from './plan/conductor-expand';
 import { renderRoundForJudge, splitNamedIds, type JudgeChildView } from './plan/conductor-judge';
 import { collectJudgeArtifacts, DEFAULT_ARTIFACT_BUDGET, type ArtifactBudget } from './plan/judge-artifacts';
+import { staticLintPlan } from './plan/static-lint';
 // D-Q 图外只读观察者的两个确定性 producer (零模型调用): 制品边 lint + 环空转检测。
 import {
   lintArtifactEdges,
@@ -705,6 +706,29 @@ async function executePlan(
     // 硬拒的三条 (禁嵌套 / 环 / 非法 plan) 在上面, 那些没有正当反例。
     for (const w of subgraphWarnings(expand.children)) {
       logger.warn({ node: id, check: w.check }, `[omd/executor-dag] conductor 子图体检: ${w.message}`);
+    }
+
+    // ── A4 跑前静态闸 (2026-07-31, 补 Fowler 2×2 里最空的那格 computational feedforward) ──
+    // 写竞争与缺输入**在跑之前就算得出来**, 而今天要烧一整轮 agent 调用才发现 —— 写竞争甚至
+    // 根本不报错, 只是"有时候产物不对" (谁最后写谁赢, 赢家由调度顺序定)。
+    // 用**规划期可读名**建一张临时 plan 来查: 判据要说给下一轮的 conductor 听, 而它只认自己起的名字
+    // (2026-07-30 那条"建议拿运行期 id 对下一轮说话"的事故买来的纪律)。
+    // 出口与制品 lint 同款: **只报不拦**, 发现进下一轮重展开的 prompt。
+    const staticPlan = {
+      name: 'sub',
+      nodes: Object.fromEntries(expand.children.map((c) => [c.originalId, c.node])),
+    } as ConductorPlan;
+    const staticFindings = staticLintPlan(staticPlan, {
+      fileExists: (rel) => {
+        try {
+          return existsSync(rel.startsWith('/') ? rel : join(artifactLintRoot, rel));
+        } catch {
+          return true; // 探不到就当它在 —— 不猜, 免得把所有 plan 报红
+        }
+      },
+    });
+    if (staticFindings.length) {
+      observe(staticFindings.map((f) => ({ kind: f.kind, nodes: f.nodes, message: f.message })));
     }
 
     // ── 3. 子节点挂进 plan.nodes → 复用 runNode 全套 (路由/产物闸/checkpoint/resume) ──
