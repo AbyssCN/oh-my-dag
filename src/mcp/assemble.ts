@@ -45,6 +45,7 @@ import type { ResearchLeafRunner } from '../harness/leaf-runners';
 import { createModelSourceDistiller } from '../harness/web/distill-source';
 import { createChallengerDistiller } from '../harness/web/distill-challenger';
 import { createPlanLedger, type PlanLedger } from '../harness/plan-ledger';
+import { createDagRecorder, type DagRecorder } from '../harness/dag-record';
 import { runExecutorDag, runExecutorDagWithPlan } from '../harness/executor-dag';
 import type { ExecutorDagConfig } from '../harness/executor-dag-types';
 import type { ConductorPlan } from '../harness/conductor-plan';
@@ -116,6 +117,8 @@ export interface AssembleOmdMcpDeps {
   dream?: DreamPump;
   /** plan-memory 账本接缝 (测试注入 :memory:; 默认 .omd/plan-ledger.db)。 */
   ledger?: PlanLedger;
+  /** DAG 运行留痕接缝 (测试注入 :memory:; 默认 .omd/dag-runs.db)。 */
+  recorder?: DagRecorder;
 }
 
 /**
@@ -481,9 +484,15 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   // 证据门 (issue #10, 2026-08-11): omd_plans 显示任一 family runs≥3 ∧ ok率≥0.8 → 开 Phase B 召回闸。
   const ledger = deps.ledger ?? createPlanLedger({ path: join(cwd, '.omd', 'plan-ledger.db') });
 
+  // DAG 运行留痕 (2026-08-02 接线): 每张跑完的图落 {拓扑层, 每节点 kind/status/deps, conductor+leaf
+  // token, cacheHit} 进 `.omd/dag-runs.db`。**此前它只挂在 TUI 侧的 /cg /audit /iterate 上** ——
+  // MCP 这条从来没接过, 于是生产路径上那个库恒空, 「一次 goal 多少钱」(上线闸 G3) 与「兄弟节点吃到
+  // 多少前缀缓存」两个问题都查不到数据源, 而记录器本身早就写好了。
+  const recorder = deps.recorder ?? createDagRecorder({ path: join(cwd, '.omd', 'dag-runs.db') });
+
   return [
     // continuity 恒开 (D-3): checkpoint 落 <cwd>/.omd/continuity/<runId>/, dag_run_plan resume 可续。
-    ...createDagTools({ engine, runRegistry, cwd, defaultConfig: buildDefaultConfig, continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd }, hudMirror, ledger }),
+    ...createDagTools({ engine, runRegistry, cwd, defaultConfig: buildDefaultConfig, continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd }, hudMirror, ledger, recorder }),
     createDagResearchTool(researchFanout),
     // 自主 goal 环 (P1 / INV-GOAL-1): buildDefaultConfig 传 thunk = 每次调用重解座位 (INV-MODEL-3)。
     // continuity 同 dag_run 恒开: 内层节点 checkpoint + **外层轮 journal** (INV-P2-6),
@@ -496,6 +505,8 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd },
       // 活体进度/HUD 与 dag_run 同一条线 (2026-07-30 补: goal 这条从 P1 起就漏了)。
       hudMirror,
+      // 运行留痕与 dag_run 同一个实例 (2026-08-02 补: 与上面那条同一个形态的漏)。
+      recorder,
     }),
     ...createMemoryTools({ memory, cwd }),
     // pathfinder 六件套 (TUI-less 决策地图: map/add/tickets/rule/deliver/prefetch, pull 式回流)。

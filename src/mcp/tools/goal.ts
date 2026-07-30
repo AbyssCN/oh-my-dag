@@ -15,6 +15,7 @@ import type { ExecutorDagConfig } from '../../harness/executor-dag-types';
 import type { CheckpointManager } from '../../harness/continuity/checkpoint-manager';
 import type { RunRegistry } from '../run-registry';
 import type { HudRunRecordLike } from '../../hud/mirror';
+import { recordDagRun, type DagRecorder } from '../../harness/dag-record';
 
 export interface GoalToolDeps {
   /** 自主环实现 (默认注入真 runGoal)。 */
@@ -40,6 +41,14 @@ export interface GoalToolDeps {
    * omd-hud 活体镜像 (同 dag_run)。省略 = 不写 (HUD 空闲), 不影响执行。
    */
   hudMirror?: { write: (runId: string, record: HudRunRecordLike | null, levels?: string[][]) => void };
+  /**
+   * DAG 运行留痕器 (同 dag_run 那一个实例)。
+   *
+   * goal 这条**一次落两条**: 契约段 `goal-contract` 与执行段 `goal-execute` 各是一张图, `onComplete`
+   * 各响一次, 靠同一个 `runId` 归组 —— 「这次 goal 花了多少 token / 吃到多少缓存」就是这两条相加。
+   * 挂在 `runGoal` 的 `.then()` 上拿不到这个: 那里只剩 `RunGoalResult`, 两张图的用量已经不在了。
+   */
+  recorder?: DagRecorder;
 }
 
 /** 阶段结论压成宽出摘要 (D-8: 客户端上下文只拿结论, 全文自己 Read spec/report)。 */
@@ -146,6 +155,11 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
                 ...(resume ? { resume: true } : {}),
               },
             }
+          : {}),
+        // 运行留痕: 两段图各落一条, 同 runId 归组。链上基座自带的 onComplete (今天没有, 但别让
+        // 以后加的那个被这里悄悄吃掉 —— 这正是 dag_goal 事件面从 P1 漏到 07-30 的那类洞)。
+        ...(deps.recorder
+          ? { onComplete: recordDagRun(deps.recorder, { runId, question: goal }, dag.onComplete) }
           : {}),
       } as ExecutorDagConfig;
 
