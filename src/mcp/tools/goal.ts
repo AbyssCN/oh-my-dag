@@ -18,6 +18,7 @@ import type { CheckpointManager } from '../../harness/continuity/checkpoint-mana
 import type { RunRegistry } from '../run-registry';
 import type { HudRunRecordLike } from '../../hud/mirror';
 import { recordDagRun, type DagRecorder } from '../../harness/dag-record';
+import { renderOwnerDirectives, type OwnerInbox } from '../owner-inbox';
 
 export interface GoalToolDeps {
   /** 自主环实现 (默认注入真 runGoal)。 */
@@ -56,6 +57,11 @@ export interface GoalToolDeps {
    * 与 pathfinder `dispatch.ts` 的 AFK research 同一个 idiom。测试注入替身, **永不起真进程**。
    */
   spawnDetached?: (cmd: string[], opts: { cwd: string; logPath: string }) => number | undefined;
+  /**
+   * S3 owner 收件箱。给了则每轮把**未消费**的 owner 指令逐字注入下一轮 conductor prompt,
+   * 并记账消费轮次 (防同一条指令每轮重放 —— 重放会让 conductor 以为 owner 在反复强调)。
+   */
+  inbox?: OwnerInbox;
 }
 
 /**
@@ -97,6 +103,8 @@ export function summarizeGoal(r: RunGoalResult): string {
   // D-Q/D-P: "没跑完"的两种收尾要第一眼看得见 —— 它们各自对应完全不同的下一步
   // (阻塞 = owner 去看; 取消 = 直接 resume), 混在 stages 里读不出来。
   if (r.blocked) lines.push(`阻塞 (需外部输入): ${r.blocked}`);
+  // 预算停与阻塞刻意分两行念: 前者"加预算 resume 很可能就成", 后者"再多轮都一样, 去看一眼"。
+  if (r.budgetStopped) lines.push(`预算停: ${r.budgetStopped} · 加大预算后 dag_goal resume=<同一 runId>`);
   if (r.cancelled) lines.push(`已叫停: ${r.cancelled} · 续跑 dag_goal resume=<同一 runId>`);
   if (r.repoContext) lines.push(`仓内事实: ${r.repoContext.split('\n').length} 行`);
   if (r.specPath) lines.push(`spec: ${r.specPath}`);
@@ -124,15 +132,28 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         .boolean()
         .optional()
         .describe('Run in a background process that survives this MCP session ending (returns immediately)'),
+      budgetTokens: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe('Stop opening new inner-loop rounds after this many cumulative tokens (soft stop; resume with a bigger budget)'),
+      budgetMinutes: z
+        .number()
+        .positive()
+        .optional()
+        .describe('Stop opening new inner-loop rounds after this many minutes (soft stop; resume to continue)'),
     },
     handler: async (args) => {
-      const { goal, tier, maxRounds, researchRounds, resume, detached } = args as {
+      const { goal, tier, maxRounds, researchRounds, resume, detached, budgetTokens, budgetMinutes } = args as {
         goal?: string;
         tier?: GoalTier;
         maxRounds?: number;
         researchRounds?: number;
         resume?: string;
         detached?: boolean;
+        budgetTokens?: number;
+        budgetMinutes?: number;
       };
       if (!goal?.trim()) {
         return { content: [{ type: 'text' as const, text: 'dag_goal: goal 必填' }], isError: true };
@@ -167,6 +188,8 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           ...(tier ? ['--tier', tier] : []),
           ...(maxRounds ? ['--max-rounds', String(maxRounds)] : []),
           ...(researchRounds ? ['--research-rounds', String(researchRounds)] : []),
+          ...(budgetTokens ? ['--budget-tokens', String(budgetTokens)] : []),
+          ...(budgetMinutes ? ['--budget-minutes', String(budgetMinutes)] : []),
         ];
         let pid: number | undefined;
         try {
@@ -219,6 +242,17 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
       const dagWithContinuity: ExecutorDagConfig = {
         ...dag,
         cancelSignal: deps.runRegistry.attachCancel(runId),
+        // **预算轴接线** (2026-07-31): 上一轮实装了 `loopBudget` 却没有任何调用方传它 —— 按本仓纪律
+        // 那就是空旋钮, 而三态状态表 (✅/🟡/❌) 里它长得像"做完了"。证据七态词表当场把它抓出来:
+        // 它是 `Present` 而不是 `Wired`。这里就是那条 wire。
+        ...(budgetTokens || budgetMinutes
+          ? {
+              loopBudget: {
+                ...(budgetTokens ? { tokens: budgetTokens } : {}),
+                ...(budgetMinutes ? { ms: Math.round(budgetMinutes * 60_000) } : {}),
+              },
+            }
+          : {}),
         // **活体进度** (2026-07-30 取消冒烟撞出来的): `dag_goal` 此前**一个事件都不发** ——
         // 于是最长活的那条路 (research + 多轮执行, 动辄几分钟) 在 `dag_status` 上全程是
         // `planned 0 · started 0 · settled 0`, HUD 也是黑的。dag_run/dag_run_plan 一直有这条线,
@@ -234,6 +268,18 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
                 runId,
                 repoRoot: deps.continuity.repoRoot,
                 ...(resume ? { resume: true } : {}),
+              },
+            }
+          : {}),
+        // S3 (D-S): owner 指令逐字进下一轮。**取完即记账** —— 不记账的话同一条指令每轮重放,
+        // conductor 会读成"owner 在反复强调这件事"。
+        ...(deps.inbox
+          ? {
+              ownerDirectives: (round: number) => {
+                const pending = deps.inbox!.pendingDirectives(runId);
+                if (!pending.length) return '';
+                deps.inbox!.markConsumed(pending.map((d) => d.id), round);
+                return renderOwnerDirectives(pending);
               },
             }
           : {}),

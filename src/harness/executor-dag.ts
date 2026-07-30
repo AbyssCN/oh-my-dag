@@ -617,6 +617,10 @@ async function executePlan(
         '这一轮请**重新分解**: 该补的步骤补上 (包括上一轮压根没有的那种, 比如先去把某个事实查清楚), ' +
         '该改的改掉。原样再画一遍上一轮的图只会再失败一次。'
       : '';
+    // **owner 指令** (S3 / D-S): 与失败原因同一条管道、**独立的块**、**逐字**。
+    // 排在失败原因**之前** —— 人的指令优先级高于机器的观察, 顺序上也该先看见。
+    // ⚠ 一个字都不许加工: 观测者在这条链上只是信使, 它改写了, 失真的地方 owner 自己看不见。
+    const ownerCtx = config.ownerDirectives ? config.ownerDirectives(round) : '';
     // ── 轮级 conductor 升级 (D-F 顺带搬进来的) ────────────────────────────────
     // 外层 fixpoint 有这条: 连着几轮不收敛就换更强的脑子重画 (弱 conductor 画不出来的图, 再画
     // 一遍多半还是画不出来)。撤外层 (D-F) 不该顺手把这个能力一起撤掉 —— 内环是它现在唯一的家。
@@ -646,7 +650,7 @@ async function executePlan(
           {
             role: 'user',
             content:
-              `${PLAN_BOUNDARY}${node.goal ?? id}${depCtx}${retryCtx}\n\n` +
+              `${PLAN_BOUNDARY}${node.goal ?? id}${depCtx}${ownerCtx}${retryCtx}\n\n` +
               // D-D 写进 prompt 而不只靠事后拒: 让它知道边界, 比让它撞上去便宜。
               '注意: 本次分解出的节点**不得**再用 executor:"conductor" 或 executor:"map" —— ' +
               '你现在就是运行时展开, 已经知道清单了, 直接把步骤列出来即可。',

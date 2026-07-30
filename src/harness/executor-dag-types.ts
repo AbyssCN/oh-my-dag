@@ -242,6 +242,17 @@ export interface ExecutorDagConfig {
    *
    * ⚠ 这是**软停不是硬杀**:超了就不开下一轮,已跑完的全保留,`resume` 时给个更大的预算就能接着跑。
    */
+  /**
+   * **owner 指令通道** (S3, 2026-07-31 / D-S)。每开一轮调一次, 返回**已渲染**的一段;
+   * 空串 = 本轮没有 owner 指令。消费记账 (哪条被哪一轮吃掉了) 由实现方做, 引擎不认识收件箱。
+   *
+   * ⚠ 它与失败原因、图外观察**共用同一条运输管道** (环唯一的信息通道), 但**渲染成独立的块**:
+   * 观察者说"我算出一个事实", owner 说"照我说的做" —— 可错性完全不同, 合成一段之后下一轮的
+   * conductor 就分不清哪句必须服从。
+   *
+   * ⚠ 引擎**逐字**把它拼进 prompt, 一个字都不加工 (有测试钉住)。
+   */
+  ownerDirectives?: (round: number) => string;
   loopBudget?: {
     /** 累计 leaf+conductor token(in+out)上限。 */
     tokens?: number;

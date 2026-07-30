@@ -47,6 +47,8 @@ import { createChallengerDistiller } from '../harness/web/distill-challenger';
 import { createPlanLedger, type PlanLedger } from '../harness/plan-ledger';
 import { createDagRecorder, type DagRecorder } from '../harness/dag-record';
 import { createRunStore } from './run-store';
+import { createOwnerInbox, renderOwnerDirectives, type OwnerInbox } from './owner-inbox';
+import { createTriageTools } from './tools/triage';
 import { runExecutorDag, runExecutorDagWithPlan } from '../harness/executor-dag';
 import type { ExecutorDagConfig } from '../harness/executor-dag-types';
 import type { ConductorPlan } from '../harness/conductor-plan';
@@ -120,6 +122,8 @@ export interface AssembleOmdMcpDeps {
   ledger?: PlanLedger;
   /** DAG 运行留痕接缝 (测试注入 :memory:; 默认 .omd/dag-runs.db)。 */
   recorder?: DagRecorder;
+  /** owner 收件箱接缝 (S3; 测试注入 :memory:; 默认与 runs.db 同库)。 */
+  inbox?: OwnerInbox;
 }
 
 /**
@@ -496,6 +500,10 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   // 多少前缀缓存」两个问题都查不到数据源, 而记录器本身早就写好了。
   const recorder = deps.recorder ?? createDagRecorder({ path: join(cwd, '.omd', 'dag-runs.db') });
 
+  // S3 owner 收件箱: 与 runs.db **同一个库** —— 同一个 run 的身份、状态、待决岔口分三个文件
+  // 早晚对不上 (D-P 把取消把手放进 RunRegistry 是同一条理由)。
+  const inbox = deps.inbox ?? createOwnerInbox({ path: join(cwd, '.omd', 'runs.db') });
+
   return [
     // continuity 恒开 (D-3): checkpoint 落 <cwd>/.omd/continuity/<runId>/, dag_run_plan resume 可续。
     ...createDagTools({ engine, runRegistry, cwd, defaultConfig: buildDefaultConfig, continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd }, hudMirror, ledger, recorder }),
@@ -513,6 +521,8 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       hudMirror,
       // 运行留痕与 dag_run 同一个实例 (2026-08-02 补: 与上面那条同一个形态的漏)。
       recorder,
+      // S3: owner 指令通道 —— 每轮取一次未消费指令, 逐字渲染, 取完记账 (防每轮重放)。
+      inbox,
     }),
     ...createMemoryTools({ memory, cwd }),
     // pathfinder 六件套 (TUI-less 决策地图: map/add/tickets/rule/deliver/prefetch, pull 式回流)。
@@ -531,6 +541,8 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     ...createFleetTools({ runRegistry, cwd, spawn: deps.spawn, dream: deps.dream }),
     // runs 工具: 内存 registry ∪ 磁盘 continuity 合并列表。
     ...createRunsTools({ runRegistry, cwd }),
+    // S3 owner 收件箱: dag_triage (看) + dag_rule (裁)。无人值守的产出必须有去处。
+    ...createTriageTools({ inbox, runRegistry }),
     // config 工具族: set_key/apply_preset/set_role/config_status/toggle_hud (omd init 的 MCP 面, 即时生效)。
     ...createConfigTools({ cwd, router }),
     // 组合模式入口 (2026-07-26): 原语与图式递到图外, 让外部 SOTA agent 不必先出图就能用引擎能力。
