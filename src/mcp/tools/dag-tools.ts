@@ -19,6 +19,7 @@ import { topoLevels } from '../../harness/executor-dag.js';
 import { renderProgressAscii } from './dag-ascii.js';
 import type { HudMirror } from '../../hud/mirror.js';
 import type { PlanLedger } from '../../harness/plan-ledger.js';
+import { recordDagRun, type DagRecorder } from '../../harness/dag-record.js';
 import { computeCost } from '../../model/cost-ledger.js';
 
 // renderProgressAscii 已抽到 ./dag-ascii (纯函数, statusline 复用); 此处保留 re-export 兼容既有 importer。
@@ -100,6 +101,17 @@ export interface DagToolDeps {
    * 纯记账零行为改变; record 自身 fail-open。省略 = 不记。
    */
   ledger?: PlanLedger;
+  /**
+   * DAG 运行留痕器 (`.omd/dag-runs.db`)。给则每张图跑完落一条 {拓扑层, 每节点 kind/status/deps,
+   * conductor+leaf token, **cacheHit**}。
+   *
+   * **为什么接在这里而不是 `.then()`**: 留痕器此前只挂在 TUI 侧的 `/cg` `/audit` `/iterate` 上,
+   * MCP 这条 (dag_run / dag_run_plan / dag_goal) 从来没接过 —— 于是 `.omd/dag-runs.db` 在生产路径上
+   * 恒空, 「一次 goal 花了多少」与「兄弟节点吃到多少缓存」两个问题都没有数据源。而 `onComplete`
+   * 是**引擎内**的钩子, `dag_goal` 一次跑两段图时它各响一次; 挂在 `runGoal` 的 `.then()` 上只拿得到
+   * `RunGoalResult`, 两张图的用量在那里已经不见了。
+   */
+  recorder?: DagRecorder;
 }
 
 /**
@@ -208,7 +220,7 @@ function launchPlanRun(
   opts: { resume?: string; leafModel?: string; maxFanout?: number; task?: string; toolName: string },
   deps: DagToolDeps,
 ): { content: { type: 'text'; text: string }[]; isError?: boolean } {
-  const { engine, runRegistry, continuity, hudMirror, ledger } = deps;
+  const { engine, runRegistry, continuity, hudMirror, ledger, recorder } = deps;
   let defaultConfig: Partial<ExecutorDagConfig> | undefined;
   try {
     defaultConfig = resolveDefaults(deps.defaultConfig);
@@ -248,6 +260,10 @@ function launchPlanRun(
     ...(maxFanout ? { maxFanout } : {}),
     ...(continuity
       ? { continuity: { manager: continuity.manager, runId, resume: !!resume, repoRoot: continuity.repoRoot } }
+      : {}),
+    // 运行留痕 (给了 recorder 才记)。链上 defaultConfig 自带的 onComplete —— 留痕不许吃掉别人的钩子。
+    ...(recorder
+      ? { onComplete: recordDagRun(recorder, { runId, ...(task ? { question: task } : {}) }, defaultConfig?.onComplete) }
       : {}),
   } as ExecutorDagConfig;
   if (!config.leafModel) {
@@ -387,7 +403,7 @@ function resolveDefaults(
   return typeof d === 'function' ? d() : d;
 }
 
-function makeDagRun({ engine, runRegistry, continuity, hudMirror, ledger, ...rest }: DagToolDeps): OmdMcpTool {
+function makeDagRun({ engine, runRegistry, continuity, hudMirror, ledger, recorder, ...rest }: DagToolDeps): OmdMcpTool {
   return {
     name: 'dag_run',
     description: 'Execute a task via conductor DAG planning + leaf fan-out. resume=<runId> skips checkpointed nodes.',
@@ -453,6 +469,10 @@ function makeDagRun({ engine, runRegistry, continuity, hudMirror, ledger, ...res
         // D-3 断点续跑: checkpoint 恒落盘; resume 时命中已绿节点跳过 (429 打断不再整图重跑)。
         ...(continuity
           ? { continuity: { manager: continuity.manager, runId, resume: !!resume, repoRoot: continuity.repoRoot } }
+          : {}),
+        // 运行留痕 (与 launchPlanRun 同款; dag_run 是 conductor 路径, 它自己组 config)。
+        ...(recorder
+          ? { onComplete: recordDagRun(recorder, { runId, question: task }, defaultConfig?.onComplete) }
           : {}),
       } as ExecutorDagConfig;
 
