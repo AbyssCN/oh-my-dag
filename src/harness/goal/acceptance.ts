@@ -156,9 +156,16 @@ export function classifyPrompt(goal: string): string {
     // 2026-07-30 live 冒烟: 连着三次判成执行型都因这条降级 (`mkdir` 不在名单 / 用了管道) ——
     // 模型知道规则却仍写出跑不了的命令, 给它两个**照抄就对**的形状比再讲一遍规则有效。
     '写得出来的验收长这样 (照这个形状改, 别自己发明):',
-    '  · 文件内容对不对 → `grep -q "期望的那行" 路径/文件`   (匹配不上退出码非 0, 天然就是判据)',
+    '  · 文件内容对不对 → `grep -qx "期望的那整行" 路径/文件`  (`-x` = 整行匹配, 匹配不上退出码非 0)',
+    '  · 只看包含某段  → `grep -q "期望的片段" 路径/文件`',
     '  · 文件在不在     → `cat 路径/文件`',
     '  · 代码还编不编得过 / 测试绿不绿 → `bun test` · `tsc --noEmit`',
+    // 2026-07-30 第二次 live 冒烟: 模型照上面的形状写了 `grep -q '^hello omd$' notes/hello.md` ——
+    // 形状没错, 锚点里的 `$` 撞了元字符闸。一条 `$` 的连锁是: 命令被拒 → 降级探索型 → 任务文本
+    // 写上"没有机器判据·别伪造" → judge 把**真做完**的活读成捏造执行确认 → 整个 goal 报 failed。
+    // 所以这一行必须明说, 而不是指望"别用元字符"那条通则被想起来。
+    '⚠ **别在 grep 里用正则锚点 `^` `$`** —— `$` 会被安全闸拒 (整条命令因此跑不起来)。',
+    '  要"整行严格相等"就用 `-x`, 它就是干这个的。同理别用 `*` 之外的花哨正则。',
     '写不出这种单条命令 (要 mkdir、要管道过滤、要人眼看输出) = 这个目标机器判不了 → 老实选 exploratory。',
     '',
     '形状: {"tier":"simple"|"complex","acceptance_kind":"executable"|"exploratory",',
@@ -171,6 +178,15 @@ export function classifyPrompt(goal: string): string {
 /**
  * 跑分类 (一次调用出两条轴)。无 generate/model, 或调用/解析失败 → 全保守档
  * (`complex` + 探索型兜底), **不抛** —— 分类是路由不是闸, 挂了该继续往下走。
+ *
+ * **命令被闸拒时带因重试一次** (2026-07-30 第二次 live 冒烟逼出来的): 降级探索型的代价远不止
+ * "少一条命令" —— 探索型会把「本目标没有机器判据, 不要伪造一个」写进任务文本, 而内环 judge 读到
+ * 它之后, 把执行体**真做完**的活 (文件写对了、cat 出来了) 判成了"捏造执行确认", 整个 goal 报
+ * failed。一条 `$` 锚点的连锁能走这么远, 就值得为它多花一次分类调用。
+ *
+ * 重试**必须带上闸的原话**, 不是原样重问 —— 同 L0 重试与内环 prevReason 那条纪律: 原样重放对
+ * 确定性失败是纯烧钱 (模型刚才就是照着规则写的, 它不知道自己踩的是哪一条)。只重试一次: 两次还
+ * 写不出可跑命令, 那多半是这个目标真的机器判不了, 那时降级探索型是**对的答案**而不是失败。
  */
 export async function classifyGoal(
   goal: string,
@@ -180,18 +196,42 @@ export async function classifyGoal(
   if (!generate || !model) {
     return { tier: 'complex', acceptance: fallbackExploratory('无分类器 (缺 generate/model)') };
   }
-  try {
+  const ask = async (correction: string): Promise<GoalClassification> => {
     const { text } = await generate({
       model,
-      messages: [{ role: 'user', content: classifyPrompt(goal) }],
+      messages: [{ role: 'user', content: `${classifyPrompt(goal)}${correction}` }],
       maxTokens: 400,
     });
-    const raw = JSON.parse(extractJsonObject(text)) as RawClassification;
-    return normalizeClassification(raw);
+    return normalizeClassification(JSON.parse(extractJsonObject(text)) as RawClassification);
+  };
+  try {
+    const first = await ask('');
+    // 只在"本来想判执行型、却因命令跑不起来被降级"这一种情况下重试 (fallbackExploratory 的
+    // 原因串是那次降级的唯一凭据)。模型自己老实选的探索型不重试 —— 那是它的判断, 不是失误。
+    const blockedReason = firstBlockedReason(first);
+    if (!blockedReason) return first;
+    logger.info({ blockedReason }, '[omd/goal] 验收命令被闸拒 → 带上闸的原话重问一次 (D-I)');
+    const second = await ask(
+      `\n\n⚠ 你上一次给的验收命令**被安全闸拒了**, 原话是:\n  ${blockedReason}\n` +
+        '换一条能过闸的单条命令 (整行相等用 `grep -qx "整行" 文件`; 别用 `^ $` 锚点、管道、重定向、`$(...)`)。' +
+        '实在写不出能过闸的命令, 就老实选 exploratory —— 别硬凑一条跑不起来的。',
+    );
+    const stillBlocked = firstBlockedReason(second);
+    if (stillBlocked) {
+      logger.warn({ stillBlocked }, '[omd/goal] 重试后仍写不出可跑命令 → 降级探索型 (这次多半是真判不了)');
+    }
+    return second;
   } catch (err) {
     logger.warn({ err: String(err) }, '[omd/goal] 分类调用/解析失败 → 全保守档 (complex + 探索型)');
     return { tier: 'complex', acceptance: fallbackExploratory('分类调用或解析失败') };
   }
+}
+
+/** 这次分类是不是"想判执行型却被闸拒"→ 返闸的原话; 其它情况 → null (不重试)。 */
+function firstBlockedReason(c: GoalClassification): string | null {
+  if (c.acceptance.kind !== 'exploratory') return null;
+  const m = /执行型但命令不可跑 — (\[blocked[^\]]*\])/.exec(c.acceptance.learningGoal);
+  return m?.[1] ?? null;
 }
 
 /** 从模型输出里抠出第一个 JSON 对象 (容忍 ```json 围栏与前后散文)。抠不到 → 原样返 (交给 JSON.parse 抛)。 */

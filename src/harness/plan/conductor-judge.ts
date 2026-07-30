@@ -27,6 +27,13 @@ export interface JudgeChildView {
   originalId: string;
   status: string;
   output: string;
+  /**
+   * **引擎实测到的事实** (2026-07-30 第三次 live 冒烟补的), 与 leaf 的自述**分开**。
+   *
+   * 每行一条, 已经是人话 (如 `写入文件: notes/hello.md`)。渲染时挂在 `[引擎实测]` 下面。
+   * 空/缺席 = 这个节点没有任何机器可核的痕迹 —— 那本身就是判据 (它只有"我做完了"这句话)。
+   */
+  facts?: string[];
 }
 
 /**
@@ -40,6 +47,15 @@ export interface JudgeChildView {
  *
  * 形状**逐字对齐外层判词引用的那个** (`### <id> [状态]`, 见 llm-judge.judgePrompt 的「逐字照抄」)。
  *
+ *  ④ **给引擎实测到的事实, 与 leaf 的自述分开** (2026-07-30 第三次 live 冒烟)。
+ *     实测: 子图 2/2 成功、文件真在盘上 (产物闸查过存在性)、验证步的 `cat` 真打出了期望内容 ——
+ *     而 judge 判"**捏造执行确认**", 理由是"未提供真实的命令与输出, 只有摘要性描述"。它没冤枉谁:
+ *     视图里确实只有 leaf 自己写的一句话。**引擎手上那些机器可核的事实一个都没进视图** ——
+ *     于是反捏造判词 (那条判词是对的, 且是 2026-07-29 实测证明最值钱的一条) 打在了真做完的活上。
+ *     这与该次实测的第①条是同一形态: 让 judge 裁决它看不见的东西。
+ *     ⚠ 只放**引擎自己观测到的**东西 (filesTouched 经产物闸核过存在性; command 节点的退出码是
+ *     确定性 oracle), 不放任何带结论色彩的话 —— 一旦写成"✅ 成功"就又变回第②条那种暗示了。
+ *
  *  ③ **不给可读别名**。这一条也是实测改的: 先前把 conductor 起的名当别名附在状态后
  *     (`### <id> [done]  (send-report)`), 结果模型照抄那个好读的名字去点名 → **幽灵率 12~17%**,
  *     而幽灵被过滤掉就等于漏点名, `one-failed` 段的召回全因此从 100% 掉到 50~60%。
@@ -47,7 +63,12 @@ export interface JudgeChildView {
  *     纯粹是个诱饵。删掉。
  */
 export function renderRoundForJudge(children: readonly JudgeChildView[]): string {
-  return children.map((c) => `### ${c.id} [${c.status}]\n${c.output}`).join('\n\n');
+  return children
+    .map((c) => {
+      const facts = c.facts?.length ? `\n[引擎实测] ${c.facts.join(' · ')}` : '';
+      return `### ${c.id} [${c.status}]${facts}\n${c.output}`;
+    })
+    .join('\n\n');
 }
 
 /**

@@ -300,6 +300,11 @@ export class RunRegistry {
     }
     rec.status = 'running';
     rec.error = undefined;
+    // **result 也得清** (2026-07-30 取消冒烟撞出来的): 重开 = 新一次尝试, 上一次的结论不再作数。
+    // 此前只清 error —— 于是一个被叫停的 run (它**带着 result**: 手上已跑完的东西照记) 续跑之后,
+    // `dag_result` / `dag_status` 还会把上一次那份摘要端出来, 读的人分不清那是这次还是上次的。
+    // failed 那条路上一直有同样的洞, 只是 failed 很少带 result 所以没人撞见。
+    rec.result = undefined;
     rec.progress = undefined;
     rec.updatedAt = new Date().toISOString();
   }

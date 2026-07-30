@@ -117,6 +117,61 @@ describe('分类调用 —— 挂了就往保守档落, 不抛 (分类是路由�
     expect(c.acceptance.kind).toBe('exploratory');
   });
 
+  /**
+   * 2026-07-30 第二次 live 冒烟: 模型照 prompt 的形状写了 `grep -q '^hello omd$' notes/hello.md`
+   * —— 形状没错, 锚点里的 `$` 撞了元字符闸。一条 `$` 的连锁走得很远: 命令被拒 → 降级探索型 →
+   * 任务文本写上「没有机器判据·别伪造」→ 内环 judge 把**真做完**的活 (文件写对了、cat 出来了)
+   * 判成"捏造执行确认" → 整个 goal 报 failed。所以这里补一次**带因重试**。
+   */
+  describe('验收命令被闸拒 → 带上闸的原话重问一次 (D-I)', () => {
+    const twoShot = (first: string, second: string): { gen: GenerateFn; prompts: string[] } => {
+      const prompts: string[] = [];
+      const gen: GenerateFn = async (req) => {
+        const text = String(req.messages[0]?.content ?? '');
+        prompts.push(text);
+        return { text: prompts.length === 1 ? first : second, usage: { in: 1, out: 1 } };
+      };
+      return { gen, prompts };
+    };
+
+    test('第一次给了跑不起来的命令 → 重问一次, 第二次可跑 → **执行型成立**', async () => {
+      const { gen, prompts } = twoShot(
+        JSON.stringify({ tier: 'simple', acceptance_kind: 'executable', command: "grep -q '^hello$' a.md" }),
+        JSON.stringify({ tier: 'simple', acceptance_kind: 'executable', command: 'grep -qx "hello" a.md' }),
+      );
+      const c = await classifyGoal('写个文件', { generate: gen, model: 'c:m' });
+      expect(c.acceptance.kind).toBe('executable');
+      expect(prompts).toHaveLength(2);
+      // 重问必须**带上闸的原话** —— 原样重问对确定性失败是纯烧钱 (模型不知道自己踩的是哪一条)。
+      expect(prompts[1]).toContain('blocked shell-metachar');
+      expect(prompts[1]).toContain('grep -qx');
+    });
+
+    test('重问后仍写不出可跑命令 → 老实降级探索型 (不无限重问)', async () => {
+      const blocked = JSON.stringify({ tier: 'simple', acceptance_kind: 'executable', command: 'cat a.md | grep x' });
+      const { gen, prompts } = twoShot(blocked, blocked);
+      const c = await classifyGoal('写个文件', { generate: gen, model: 'c:m' });
+      expect(c.acceptance.kind).toBe('exploratory');
+      expect(prompts).toHaveLength(2); // 只重问一次
+    });
+
+    test('模型自己老实选的探索型 → **不重问** (那是它的判断, 不是失误)', async () => {
+      const { gen, prompts } = twoShot(
+        JSON.stringify({ tier: 'complex', acceptance_kind: 'exploratory', learning_goal: '摸清选型', affordable_loss: '一轮' }),
+        '不该被调到',
+      );
+      const c = await classifyGoal('选个库', { generate: gen, model: 'c:m' });
+      expect(c.acceptance.kind).toBe('exploratory');
+      expect(prompts).toHaveLength(1);
+    });
+  });
+
+  test('prompt 明说别用 `^ $` 锚点 + 给出 -x 形状 (blocked 的那条路是它自己教出来的)', () => {
+    const p = classifyPrompt('随便一个目标');
+    expect(p).toContain('grep -qx');
+    expect(p).toContain('别在 grep 里用正则锚点');
+  });
+
   test('prompt 把白名单拼进去 —— 不给表就只能猜, 猜错即「假红」(承 conductor prompt 同一教训)', () => {
     const p = classifyPrompt('随便一个目标');
     for (const bin of ['bun', 'tsc', 'git', 'grep']) expect(p).toContain(bin);

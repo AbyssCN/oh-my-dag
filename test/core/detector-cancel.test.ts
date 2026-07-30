@@ -294,7 +294,9 @@ describe('D-12 filesRead → 制品 lint (INV-P2-4) 与读毒 (INV-P2-5)', () =>
         agentRunner: agentRunnerOf(calls),
         // 第一轮只点名写方 (拿它的输出 WROTE 定位), 第二轮收敛。
         judgeSend: judgeSendOf([
-          { converged: false, pick: (ids, prompt) => ids.filter((id) => new RegExp(`### ${id} \\[[^\\]]+\\]\\nWROTE`).test(prompt)) },
+          // 视图形状: `### <id> [状态]` + 可选的 `[引擎实测] …` 行 + 输出正文 → 用 id 与 WROTE 之间
+          // 不含下一个 `###` 来定位 (2026-07-30 视图加了实测行, 硬编码换行数的写法当场就脆)。
+          { converged: false, pick: (ids, prompt) => ids.filter((id) => new RegExp(`### ${id} \\[[^#]*WROTE`).test(prompt)) },
           { converged: true },
         ]),
       }),

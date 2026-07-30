@@ -768,7 +768,7 @@ async function executePlan(
     let runningLocal = 0;
     let settledLocal = 0;
     let failedLocal = 0;
-    const childOut: { id: string; originalId: string; status: string; output: string }[] = [];
+    const childOut: { id: string; originalId: string; status: string; output: string; facts?: string[] }[] = [];
     // 子树碰过的文件要**冒泡到父节点**: 对外层来说 conductor 节点是一个会产出东西的节点, 而产物
     // 全落在它内部的子节点上 —— 不冒泡, 父节点的 filesTouched 恒空, 调用方 (如 goal 引擎要找
     // 子树写的 spec 文件) 与外层的产物观察面就都看不见这棵子树干了什么。同 map 的收集语义。
@@ -817,11 +817,22 @@ async function executePlan(
               // 自报完成但未做任何文件写操作`), 而环里看到的只有 `[failed]` —— judge 于是自己编了
               // 一套猜测 (「可能是 mkdir 没权限」), 下一轮的 conductor 也就照着那个猜测重画。
               // 环的全部信息通道就是"上一轮为什么没过", 把最确切的那句话挡在通道外, 等于让它盲跑。
+              // **引擎实测到的事实**与 leaf 的自述分开带给 judge (2026-07-30 第三次 live 冒烟):
+              // 此前视图里只有 leaf 自己写的那句话, 于是反捏造判词打在了真做完的活上
+              // (子图 2/2 成功、文件真在盘上, judge 判"捏造执行确认" —— 它没冤枉谁, 证据确实没进视图)。
+              // 只放引擎观测到的: filesTouched 经产物闸核过存在性; command 节点 done ≡ 退出码符合 expect_exit。
+              const facts: string[] = [];
+              if (r.filesTouched?.length) facts.push(`写入文件: ${r.filesTouched.join(', ')}`);
+              if (r.filesRead?.length) facts.push(`读取文件: ${r.filesRead.join(', ')}`);
+              if (r.kind === 'command' && r.status === 'done') {
+                facts.push(`命令退出码符合预期 (expect_exit=${plan!.nodes[cid]?.expect_exit ?? 0})`);
+              }
               childOut.push({
                 id: cid,
                 originalId: byId.get(cid)?.originalId ?? cid,
                 status: r.status,
                 output: r.status === 'failed' ? `[failed] ${(r.output || '(无输出)').slice(0, 600)}` : r.output,
+                ...(facts.length ? { facts } : {}),
               });
               for (const f of r.filesTouched ?? []) touchedAll.add(f);
               // 子节点绕过外层 settle() → 补发事件 (同 map 子节点)。
@@ -884,7 +895,9 @@ async function executePlan(
     const settled = new Map(childOut.map((c) => [c.id, c]));
     const orderedChildren = topoOrder.flatMap((cid) => {
       const c = settled.get(cid);
-      return c ? [{ id: c.id, originalId: c.originalId, status: c.status, output: c.output }] : [];
+      return c
+        ? [{ id: c.id, originalId: c.originalId, status: c.status, output: c.output, ...(c.facts?.length ? { facts: c.facts } : {}) }]
+        : [];
     });
     return {
       leaf: {
