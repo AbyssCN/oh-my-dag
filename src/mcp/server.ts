@@ -29,6 +29,37 @@ export function createOmdMcpServer(tools: readonly OmdMcpTool[], info: Implement
   return server;
 }
 
+/**
+ * **客户端能力探针** (2026-07-31, MCP 2026-07-28 无状态化之后加的)。
+ *
+ * 要回答的那一位: **对齐 MCP 的 `Tasks` 扩展值不值**。SDK 1.29 已经带了服务端那半
+ * (`server.experimental.tasks` / `taskSupport:'optional'` / `tasks/get|list|result|status|cancel`),
+ * 而 `taskSupport:'optional'` 的语义是"客户端支持就走 task, 不支持就退回普通调用" —— **零回归**。
+ * 但它有没有意义**完全取决于客户端声不声明这个能力**: 客户端不认, 我们实装的就是一个没有消费者
+ * 的字段, 而且比空旋钮更坏 —— 它会分叉出两套 run 语义 (我们的 runId 三段式 + tasks),
+ * 正是 `iterateExecutorDag` 那笔到今天还在还的债。
+ *
+ * 所以先探再改。这里只**如实打印一行**到 stderr (stdout 是协议通道), 不改任何行为。
+ * ⚠ 读到 `undefined` **不等于**"客户端没能力": 2026-07-28 起协议无握手, 能力改成随每个请求走
+ * `_meta` —— 那时这条探针本身就该换个问法。两种"看不见"要分得开, 故文案里写明。
+ */
+function logClientCapabilities(server: McpServer): void {
+  try {
+    const caps = server.server.getClientCapabilities();
+    if (!caps) {
+      process.stderr.write(
+        '[omd/mcp] 客户端能力: 未声明 (旧握手下 = 客户端没给; 2026-07-28 无状态协议下 = 本探针问法已过时)\n',
+      );
+      return;
+    }
+    const keys = Object.keys(caps);
+    const hasTasks = 'tasks' in caps || 'experimental' in caps;
+    process.stderr.write(`[omd/mcp] 客户端能力: ${keys.join(', ') || '(空)'} · tasks=${hasTasks ? '有' : '无'}\n`);
+  } catch {
+    /* 探针永不阻断 server —— 它只是一行读数 */
+  }
+}
+
 /** stdio 入口 (D-1): 防御式读包版本 (同 tui banner 范式, 失败不阻断) + 挂 stdio 传输。常驻, 生命周期客户端管 (D-9)。
  * 退出双保险 (审核实测: 客户端消失后僵尸 100% CPU 忙转): SDK StdioServerTransport 只挂 stdin data/error,
  * 不听 end/close —— stdin EOF 时 onclose 永不触发, Bun flowing-mode stdin 对已关 fd 空轮询 → 忙转。
@@ -44,6 +75,7 @@ export async function runOmdMcpServer(tools: readonly OmdMcpTool[]): Promise<voi
   } catch { /* 版本读不到 → 兜底版本号, server 照起 */ }
   const server = createOmdMcpServer(tools, { name: 'omd', version });
   await server.connect(new StdioServerTransport());
+  logClientCapabilities(server);
   // connect 在 transport start 后即 resolve —— 挂住直到客户端断开, 否则调用方继续执行 = server 被秒杀。
   await new Promise<void>((resolve) => {
     let settled = false;
