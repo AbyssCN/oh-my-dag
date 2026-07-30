@@ -12,7 +12,8 @@
  *   引擎 (ExecOnce/planAndExecute/runExecutorDag) + barrel re-export 公共面 (30+ 消费方 import './executor-dag' 不变)。
  */
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { ModelUsage } from '../model/gateway';
 import { escalationProviderReady } from './verifier';
 import {
@@ -52,6 +53,7 @@ import {
 import { computeReuse, merkleFingerprints } from './plan-passes/semantic-key';
 import { expandConductorNode, subgraphWarnings } from './plan/conductor-expand';
 import { renderRoundForJudge, splitNamedIds, type JudgeChildView } from './plan/conductor-judge';
+import { collectJudgeArtifacts, DEFAULT_ARTIFACT_BUDGET, type ArtifactBudget } from './plan/judge-artifacts';
 // D-Q 图外只读观察者的两个确定性 producer (零模型调用): 制品边 lint + 环空转检测。
 import {
   lintArtifactEdges,
@@ -304,6 +306,32 @@ async function executePlan(
   };
   /** 制品路径的解析根 (lint 用; 与产物闸的兜底根同一个)。 */
   const artifactLintRoot = config.continuity?.repoRoot ?? process.cwd();
+  /**
+   * S1 产物内容进 judge 视图的预算 (`null` = 关)。
+   *
+   * ⚠ 这段进的是**每一次** judge 调用 —— 无界即是给每轮判决挂一个无界成本, 所以它是预算而不是
+   * 布尔开关。缺省关: 它改的是判决行为本身, 按本仓纪律要先有同语料 A/B 读数才翻默认
+   * (量法见 `scripts/eval-judge-artifacts.ts`)。
+   */
+  const judgeArtifactBudget: ArtifactBudget | null =
+    config.judgeArtifacts === true
+      ? DEFAULT_ARTIFACT_BUDGET
+      : config.judgeArtifacts && typeof config.judgeArtifacts === 'object'
+        ? config.judgeArtifacts
+        : null;
+  /**
+   * 产物读取器。根用 `artifactLintRoot` —— **与制品 lint 同一个根**, 于是也继承它那条诚实边界:
+   * `filesTouched` 的相对根是产出它的那个 leaf 的 cwd, 多 runner 混跑时可能对不上。
+   * 对不上的后果是**读不到**, 而读不到会如实写进视图 (`引擎未能读到`), 不是悄悄跳过 ——
+   * 这个失败方向是安全的: judge 看见"声称写了但引擎读不到", 该拒就拒。
+   */
+  const artifactReader = (p: string): string | null => {
+    try {
+      return readFileSync(p.startsWith('/') ? p : join(artifactLintRoot, p), 'utf-8');
+    } catch {
+      return null;
+    }
+  };
   /** 跑一次制品边 lint (D-12/INV-P2-4) → 新发现的观察条目。零模型调用, 只报告不拦截。 */
   const runArtifactLint = (): DagObservation[] =>
     observe(
@@ -785,7 +813,8 @@ async function executePlan(
     let runningLocal = 0;
     let settledLocal = 0;
     let failedLocal = 0;
-    const childOut: { id: string; originalId: string; status: string; output: string; facts?: string[] }[] = [];
+    // 类型写全 (含 S1 的 artifacts): 写窄了, 下面 `orderedChildren` 那次逐字重建就漏字段而 tsc 不响。
+    const childOut: JudgeChildView[] = [];
     // 子树碰过的文件要**冒泡到父节点**: 对外层来说 conductor 节点是一个会产出东西的节点, 而产物
     // 全落在它内部的子节点上 —— 不冒泡, 父节点的 filesTouched 恒空, 调用方 (如 goal 引擎要找
     // 子树写的 spec 文件) 与外层的产物观察面就都看不见这棵子树干了什么。同 map 的收集语义。
@@ -844,12 +873,20 @@ async function executePlan(
               if (r.kind === 'command' && r.status === 'done') {
                 facts.push(`命令退出码符合预期 (expect_exit=${plan!.nodes[cid]?.expect_exit ?? 0})`);
               }
+              // S1: 上面那三条只回答"文件在不在 / 命令过没过", 而验收在**内容**上的目标问的是
+              // "文件里写了什么" —— judge 看不见它就只能 fail-closed, 于是交付物全对也判未收敛
+              // (2026-07-30 两次带种 live 都是这个形状)。产物内容由**引擎读盘**补进来:
+              // 让 leaf 自己把内容复述进 output 就又回到自证, 而自证正是反捏造判词要杀的东西。
+              const artifacts = judgeArtifactBudget
+                ? collectJudgeArtifacts(r.filesTouched ?? [], artifactReader, judgeArtifactBudget)
+                : [];
               childOut.push({
                 id: cid,
                 originalId: byId.get(cid)?.originalId ?? cid,
                 status: r.status,
                 output: r.status === 'failed' ? `[failed] ${(r.output || '(无输出)').slice(0, 600)}` : r.output,
                 ...(facts.length ? { facts } : {}),
+                ...(artifacts.length ? { artifacts } : {}),
               });
               for (const f of r.filesTouched ?? []) touchedAll.add(f);
               // 子节点绕过外层 settle() → 补发事件 (同 map 子节点)。
@@ -929,10 +966,20 @@ async function executePlan(
       .map((c) => `[${c.originalId}] ${c.status}\n${c.output}`)
       .join('\n\n');
     const settled = new Map(childOut.map((c) => [c.id, c]));
+    // ⚠ 这里**逐字重建**而不是原样传, 于是每加一个视图字段都要在这一行补一次 —— 漏了就是
+    //   "生产者有、消费者拿不到", 而症状是沉默的 (视图里少一段, 读上去像这个改动没用)。
+    //   S1 的 `artifacts` 第一次跑就栽在这儿, 靠 judge-artifacts-wiring 那条网抓出来。
     const orderedChildren = topoOrder.flatMap((cid) => {
       const c = settled.get(cid);
       return c
-        ? [{ id: c.id, originalId: c.originalId, status: c.status, output: c.output, ...(c.facts?.length ? { facts: c.facts } : {}) }]
+        ? [{
+            id: c.id,
+            originalId: c.originalId,
+            status: c.status,
+            output: c.output,
+            ...(c.facts?.length ? { facts: c.facts } : {}),
+            ...(c.artifacts?.length ? { artifacts: c.artifacts } : {}),
+          }]
         : [];
     });
     return {

@@ -7,6 +7,7 @@ import type { AgentLeafRunner, CommandLeafRunner, LeafModelRouter, ResearchLeafR
 import type { CheckpointManager } from './continuity/checkpoint-manager';
 import type { VerifierFn } from './verifier';
 import type { FaninSummaryConfig } from './fanin-summary';
+import type { ArtifactBudget } from './plan/judge-artifacts';
 
 /** omd 本体编排的注入式模型调用 (单一注入点; 默认 callModel, 测试传 fake)。 */
 export type GenerateFn = (req: {
@@ -213,6 +214,20 @@ export interface ExecutorDagConfig {
    * 传 createDagRecorder().record 的闭包 → 自动落 SQLite 运行记录 (node 图谱可回溯)。抛错不阻断返回。
    */
   onComplete?: (result: ExecutorDagResult) => void | Promise<void>;
+  /**
+   * **产物内容进 judge 视图** (S1, 2026-08-03)。`true` = 用默认预算; 给对象 = 自定预算;
+   * 省略/false = 关 (**缺省**)。
+   *
+   * 补的洞: `[引擎实测]` 只给存在性 (`写入文件: X`), 而验收在**内容**上的目标要的是"文件里
+   * 写了什么" —— judge 被要求裁决它看不见的东西 → fail-closed → **交付物全对也判未收敛**
+   * (2026-07-30 两次带种 live 都是这个形状)。产物内容由引擎**读盘**补进来, 不让 leaf 自述
+   * (自述就是自证, 而自证正是反捏造判词要杀的)。
+   *
+   * ⚠ **为什么是预算不是布尔**: 它进的是**每一次** judge 调用, 无界即无界成本。
+   * ⚠ **为什么缺省关**: 它改的是判决行为本身 —— 按本仓纪律要先有同语料 A/B 读数才翻默认
+   * (`scripts/eval-judge-artifacts.ts`)。翻默认前它对生产零影响。
+   */
+  judgeArtifacts?: boolean | ArtifactBudget;
   /**
    * 节点级进度事件 (2026-07-20, MCP 派发简报/活体 status 的数据源):
    *   planned = 图定型 (全部节点 id+kind, 每轮 plan/escalation 重规划各发一次)

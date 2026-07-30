@@ -19,6 +19,8 @@
  *     那个好读的别名, 那些要当幽灵剔掉 (外层的 id 空间就是整张图, 没有这个问题)。
  */
 
+import { renderJudgeArtifacts, type JudgeArtifact } from './judge-artifacts';
+
 /** 一个子节点在 judge 眼里的样子。 */
 export interface JudgeChildView {
   /** 内容寻址 id —— **唯一合法的点名目标** (D-B)。 */
@@ -34,6 +36,14 @@ export interface JudgeChildView {
    * 空/缺席 = 这个节点没有任何机器可核的痕迹 —— 那本身就是判据 (它只有"我做完了"这句话)。
    */
   facts?: string[];
+  /**
+   * **声明产物的内容** (S1, 2026-08-03) —— 引擎读盘拿到的字节, 与 `facts` 的存在性分开。
+   *
+   * `facts` 只回答"文件在不在", 而两次带种 live 的目标问的是"文件里写了什么"。judge 被要求
+   * 裁决它看不见的东西 → fail-closed → 交付物全对却判未收敛。见 `plan/judge-artifacts.ts`。
+   * 空/缺席 = 这个节点没有可读的声明产物 (或该功能关着)。
+   */
+  artifacts?: JudgeArtifact[];
 }
 
 /**
@@ -66,7 +76,10 @@ export function renderRoundForJudge(children: readonly JudgeChildView[]): string
   return children
     .map((c) => {
       const facts = c.facts?.length ? `\n[引擎实测] ${c.facts.join(' · ')}` : '';
-      return `### ${c.id} [${c.status}]${facts}\n${c.output}`;
+      // ⑤ 产物内容排在 leaf 自述**之前** (S1): 两次带种 live 的判词说的是"只有摘要性描述,
+      //    无法逐条对照" —— 让机器可核的那份先出现, 自述退到它后面当补充, 而不是反过来。
+      const arts = c.artifacts?.length ? `\n${renderJudgeArtifacts(c.artifacts)}` : '';
+      return `### ${c.id} [${c.status}]${facts}${arts}\n${c.output}`;
     })
     .join('\n\n');
 }
