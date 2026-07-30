@@ -124,6 +124,14 @@ export interface AssembleOmdMcpDeps {
   recorder?: DagRecorder;
   /** owner 收件箱接缝 (S3; 测试注入 :memory:; 默认与 runs.db 同库)。 */
   inbox?: OwnerInbox;
+  /**
+   * 自主环接缝 (默认真 `runGoal`)。
+   *
+   * ⚠ **`engine` 覆盖不到 `dag_goal`** —— 它走自己的 `runGoal`, 而 `runGoal` 内部才调
+   * `runExecutorDagWithPlan`。于是"注入 fake engine 就能测 goal 这条路"是错的, 装配层的
+   * goal 分支此前**没有任何注入口**(2026-07-31 写 S3 装配集成测试时撞出来的)。
+   */
+  runGoal?: typeof runGoal;
 }
 
 /**
@@ -512,7 +520,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     // continuity 同 dag_run 恒开: 内层节点 checkpoint + **外层轮 journal** (INV-P2-6),
     // dag_goal resume=<runId> 才接得回轮次/毒集/复用源。
     createGoalTool({
-      runGoal,
+      runGoal: deps.runGoal ?? runGoal,
       runRegistry,
       cwd,
       buildConfig: buildDefaultConfig,
