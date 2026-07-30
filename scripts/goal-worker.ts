@@ -78,6 +78,8 @@ const res = (await goalTool.handler(
     ...(opt('tier') ? { tier: opt('tier') } : {}),
     ...(opt('max-rounds') ? { maxRounds: Number(opt('max-rounds')) } : {}),
     ...(opt('research-rounds') ? { researchRounds: Number(opt('research-rounds')) } : {}),
+    ...(opt('budget-tokens') ? { budgetTokens: Number(opt('budget-tokens')) } : {}),
+    ...(opt('budget-minutes') ? { budgetMinutes: Number(opt('budget-minutes')) } : {}),
   } as never,
   {} as never,
 )) as { content: { text: string }[]; isError?: boolean };

@@ -106,6 +106,12 @@ export interface RunGoalResult {
    */
   blocked?: string;
   /**
+   * **环因预算停的** (2026-07-31, Loop Engineering 第四条停止轴)。与 `blocked` 分开的理由是
+   * **下一步不一样**: blocked = 再多轮都一样, 该 owner 看; budgetStopped = 加预算 resume 很可能就成。
+   * 恒与 `converged: false` 同时出现。
+   */
+  budgetStopped?: string;
+  /**
    * **协作式取消** (D-P) 的原因。给了 = 这次是被叫停的, 不是跑完的 —— 已跑完的节点与轮次
    * 全在盘上, `dag_goal resume=<同一个 runId>` 接着跑。
    */
@@ -349,6 +355,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   const reusedNodes = exec.reusedNodes ?? [];
   // D-Q / D-P: 两种"没跑完但不是失败"的收尾, 各自如实报 —— 都恒不算收敛 (fail-closed)。
   const blocked = execLeaf.blocked;
+  const budgetStopped = execLeaf.budgetStopped;
   const cancelledReason = exec.cancelled?.reason;
   // 判词与 oracle **分开报**: 两者不一致时那句话本身就是结论 —— judge 说成了而冻结判据没过,
   // 正是 D-I 要抓的"作弊达标"; 反过来则是"任务里还有命令覆盖不到的明确要求"。
@@ -365,6 +372,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
       `${roundCount} 轮${
         converged ? '收敛'
         : cancelledReason ? `被叫停 (${cancelledReason}) — 已跑完的保留, 同 runId 可 resume`
+        : budgetStopped ? `预算停: ${budgetStopped.slice(0, 300)}`
         : blocked ? `阻塞: ${blocked.slice(0, 300)}`
         : judgeSaidOk && !oracleOk ? '判词说成了但冻结判据没过 (D-I: 以判据为准)'
         : `未收敛 (${execLeaf.status})`
@@ -385,6 +393,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
     rounds: roundCount,
     reusedNodes,
     ...(blocked ? { blocked } : {}),
+    ...(budgetStopped ? { budgetStopped } : {}),
     ...(cancelledReason ? { cancelled: cancelledReason } : {}),
   };
 }

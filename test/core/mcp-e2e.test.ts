@@ -30,6 +30,9 @@ const ALL_TOOLS = [
   'dag_cancel',
   'dag_status',
   'dag_result',
+  // S3 owner 收件箱 (2026-07-31): 无人值守的产出必须有去处 —— dag_triage 看, dag_rule 裁。
+  'dag_triage',
+  'dag_rule',
   'dag_node_output',
   'dag_research',
   'memory_recall',

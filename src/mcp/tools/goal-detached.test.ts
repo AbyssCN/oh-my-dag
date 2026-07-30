@@ -113,3 +113,59 @@ describe('dag_goal detached', () => {
     expect(out.content[0]!.text).toContain('status: running');
   });
 });
+
+describe('预算轴的接线 (七态词表抓出的那个空旋钮)', () => {
+  test('`budgetTokens` / `budgetMinutes` 真的到达引擎 config', async () => {
+    // 缺陷本身: 上一轮实装了 `loopBudget` + 7 条测试, 但**没有任何调用方传它** —— 三态状态表
+    // (✅/🟡/❌) 里它长得像"做完了", 而按证据七态它是 `Present` 不是 `Wired`。这条就是那条 wire 的网。
+    const root = mkdtempSync(join(tmpdir(), 'omd-bud-'));
+    let seen: { loopBudget?: { tokens?: number; ms?: number } } | undefined;
+    const tool = createGoalTool({
+      runGoal: async (goal, cfg) => {
+        seen = cfg.dag as never;
+        return {
+          goal, tier: 'simple', acceptance: { kind: 'executable', command: 'x', expectExit: 0 },
+          stages: [], sources: [], repoContext: '', converged: true, rounds: 1, reusedNodes: [],
+        } satisfies RunGoalResult;
+      },
+      runRegistry: new RunRegistry(),
+      cwd: root,
+      buildConfig: () => ({ conductorModel: 'c:m', leafModel: 'l:m' }),
+      continuity: { manager: new CheckpointManager(root), repoRoot: root },
+    });
+    await call(tool, { goal: 'g', budgetTokens: 50_000, budgetMinutes: 30 });
+    await Bun.sleep(5);
+    expect(seen?.loopBudget?.tokens).toBe(50_000);
+    expect(seen?.loopBudget?.ms).toBe(30 * 60_000); // 分钟 → 毫秒, 别在这一步丢单位
+  });
+
+  test('不给预算 → 不设 loopBudget (老语义零回归)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-bud-'));
+    let seen: { loopBudget?: unknown } | undefined;
+    const tool = createGoalTool({
+      runGoal: async (goal, cfg) => {
+        seen = cfg.dag as never;
+        return {
+          goal, tier: 'simple', acceptance: { kind: 'executable', command: 'x', expectExit: 0 },
+          stages: [], sources: [], repoContext: '', converged: true, rounds: 1, reusedNodes: [],
+        } satisfies RunGoalResult;
+      },
+      runRegistry: new RunRegistry(),
+      cwd: root,
+      buildConfig: () => ({ conductorModel: 'c:m', leafModel: 'l:m' }),
+      continuity: { manager: new CheckpointManager(root), repoRoot: root },
+    });
+    await call(tool, { goal: 'g' });
+    await Bun.sleep(5);
+    expect(seen?.loopBudget).toBeUndefined();
+  });
+
+  test('detached 把预算原样透传给 worker 命令行', async () => {
+    const seen: string[][] = [];
+    const { tool } = make((cmd) => { seen.push(cmd); return 7; });
+    await call(tool, { goal: 'g', detached: true, budgetTokens: 1234, budgetMinutes: 5 });
+    const cmd = seen[0]!;
+    expect(cmd[cmd.indexOf('--budget-tokens') + 1]).toBe('1234');
+    expect(cmd[cmd.indexOf('--budget-minutes') + 1]).toBe('5');
+  });
+});
