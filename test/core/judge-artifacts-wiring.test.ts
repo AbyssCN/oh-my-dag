@@ -73,15 +73,16 @@ const judgeViewOf = async (over: Partial<ExecutorDagConfig>): Promise<string> =>
 };
 
 describe('S1 产物内容进 judge 视图的接线', () => {
-  test('开: 正文出现在视图里 (而 leaf 自述里没有它 —— 只可能来自引擎读盘)', async () => {
-    const view = await judgeViewOf({ judgeArtifacts: true });
+  test('**缺省开**: 正文出现在视图里 (而 leaf 自述里没有它 —— 只可能来自引擎读盘)', async () => {
+    // 缺省 2026-08-03 从关翻到开, 依据是同语料 A/B: 假阴性 16/16 → 0/16, 假阳性 0/48 → 0/48。
+    const view = await judgeViewOf({});
     expect(view).toContain('[产物内容 · 引擎读盘]');
     expect(view).toContain(BODY);
     expect(view).toContain('summary.md');
   });
 
-  test('**缺省关** —— 翻默认要先有同语料 A/B 读数', async () => {
-    const view = await judgeViewOf({});
+  test('显式关 → 退回只有存在性 (对照臂要跑得起来, 否则 A/B 无从复现)', async () => {
+    const view = await judgeViewOf({ judgeArtifacts: false });
     expect(view).not.toContain('[产物内容 · 引擎读盘]');
     expect(view).not.toContain(BODY);
     // 存在性那一行照旧在 (S1 不动 `[引擎实测]`, 它是另一件事)。
