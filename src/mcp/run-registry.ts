@@ -2,8 +2,11 @@
  * src/mcp/run-registry.ts — run 注册表 (SDD run-registry, D-3/D-9).
  *
  * 职责:
- *   - runId → 状态/元数据/结果, 纯内存 (单测零磁盘)
- *   - 持久面: 复用 continuity CheckpointManager (crash resume, D-3/D-9)
+ *   - runId → 状态/元数据/结果, 内存热路径 (不给 store 则单测零磁盘)
+ *   - **身份持久面** (S2, 2026-08-03): 给了 `store` 则 runId/状态写穿 `.omd/runs.db`, 构造时 hydrate ——
+ *     MCP server 是 stdio + 客户端消失即自杀, "重启"是每次会话结束都会发生的事; 此前一重启就
+ *     **没人记得那个 runId 存在过**, 而 checkpoint 一直在盘上。见 run-store.ts
+ *   - 产物持久面: continuity CheckpointManager (crash resume, D-3/D-9)
  *   - 未知 runId 查询 → 明确 MCP error (isError + message), 非 crash
  *   - 活体进度: applyNodeEvent 累积引擎 DagNodeEvent → planned/started/settled
  *
@@ -11,6 +14,7 @@
  */
 
 import type { DagNodeEvent } from '../harness/executor-dag-types';
+import { defaultIsAlive, type RunStore } from './run-store';
 
 /**
  * run 生命周期状态。
@@ -83,8 +87,84 @@ export class RunRegistry {
    */
   private controllers = new Map<string, AbortController>();
 
-  /** @param now clock 注入 (单测可冻); 默认实时。 */
-  constructor(private readonly now: () => Date = () => new Date()) {}
+  /**
+   * S2 持久面 (给了才存)。**内存仍是热路径**, 这里是写穿的镜像 —— 省略 = 老语义, 零磁盘。
+   * 存什么/不存什么, 以及"属主进程"那条为什么是关键而不是记账, 见 `run-store.ts` 模块注。
+   */
+  private readonly store?: RunStore;
+  private readonly isAlive: (pid: number) => boolean;
+  private readonly pid: number;
+
+  /**
+   * @param now clock 注入 (单测可冻); 默认实时。
+   * @param opts.store 持久面; 给了则构造时**先 hydrate** —— server 重启后 runId 还认得出来。
+   */
+  constructor(
+    private readonly now: () => Date = () => new Date(),
+    opts: { store?: RunStore; isAlive?: (pid: number) => boolean; pid?: number } = {},
+  ) {
+    this.store = opts.store;
+    this.isAlive = opts.isAlive ?? defaultIsAlive;
+    this.pid = opts.pid ?? process.pid;
+    if (this.store) this.hydrate();
+  }
+
+  /**
+   * 从持久面恢复 runId → 状态。
+   *
+   * ⚠ **不许原样恢复 `running`**: 那会让重启后出现一个永远"在跑"、却根本没有进程在跑它的 run ——
+   * 比不持久化更坏 (不持久化至少是"不知道", 这是"知道错的")。属主 pid 不存活 = 它跑到一半被打断,
+   * 落 `failed` 并把原因写清 —— 打断之后该干的事与 failed/cancelled 完全一样 (resume), 下一步
+   * 一样就不该造新词 (D-P 给 cancelled 立新词的理由反过来用)。
+   */
+  private hydrate(): void {
+    for (const r of this.store!.all()) {
+      const orphaned = (r.status === 'running' || r.status === 'pending') && (r.ownerPid === null || !this.isAlive(r.ownerPid));
+      this.runs.set(r.runId, {
+        status: (orphaned ? 'failed' : r.status) as RunStatus,
+        goal: r.goal,
+        meta: r.meta,
+        ...(orphaned
+          ? { error: `属主进程已不在 (pid ${r.ownerPid ?? '?'}) — 这次跑没跑完, 直接 resume 接着跑` }
+          : r.error
+            ? { error: r.error }
+            : {}),
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+      });
+    }
+  }
+
+  /**
+   * 把一条记录写穿到持久面 (无 store → no-op)。
+   *
+   * **这里也 fail-open**, 尽管生产的 store 自己已经吞了异常 —— 不变量是"持久化不该把一次真跑
+   * 带走", 它该在**边界**上成立, 而不是靠注进来的 store 恰好有礼貌。
+   */
+  private persist(runId: string): void {
+    if (!this.store) return;
+    const rec = this.runs.get(runId);
+    if (!rec) return;
+    try {
+      this.putRecord(runId, rec);
+    } catch {
+      // 记不下来最多是重启后少认得一个 runId; 把一次在跑的活炸掉要贵得多。
+    }
+  }
+
+  private putRecord(runId: string, rec: RunRecord): void {
+    this.store!.put({
+      runId,
+      status: rec.status,
+      goal: rec.goal,
+      meta: rec.meta,
+      ...(rec.error ? { error: rec.error } : {}),
+      createdAt: rec.createdAt,
+      updatedAt: rec.updatedAt,
+      // 终态记录的 pid 没有意义 (判活只在 pending/running 上做), 存 null 免得误导。
+      ownerPid: rec.status === 'pending' || rec.status === 'running' ? this.pid : null,
+    });
+  }
 
   /** 注册新 run。重复 runId → throw。 */
   register(runId: string, opts: { goal: string; meta?: Record<string, unknown> }): void {
@@ -97,6 +177,7 @@ export class RunRegistry {
       createdAt: now,
       updatedAt: now,
     });
+    this.persist(runId);
   }
 
   /** 状态转换。非法转换 → throw; 未知 runId → throw。 */
@@ -110,6 +191,7 @@ export class RunRegistry {
     rec.updatedAt = new Date().toISOString();
     // 终态 → 取消把手没有意义了, 清掉 (留着 = 一个永远 abort 不到东西的旋钮 + 内存慢慢涨)。
     if (LEGAL_TRANSITIONS[to].length === 0) this.controllers.delete(runId);
+    this.persist(runId);
   }
 
   start(runId: string): void {
@@ -128,6 +210,7 @@ export class RunRegistry {
     if (!rec) throw new Error(`unknown run ${runId}`);
     this.transition(runId, 'failed');
     rec.error = error;
+    this.persist(runId); // transition 已写过一次, 但 error 是它之后才落的
   }
 
   /**
@@ -143,6 +226,7 @@ export class RunRegistry {
     this.transition(runId, 'cancelled');
     rec.error = reason;
     if (result !== undefined) rec.result = result;
+    this.persist(runId); // 同 fail: 原因是 transition 之后才落的
   }
 
   /**
@@ -307,6 +391,9 @@ export class RunRegistry {
     rec.result = undefined;
     rec.progress = undefined;
     rec.updatedAt = new Date().toISOString();
+    // 写穿: 续跑的属主是**本进程**。漏了这一步, 盘上那条还挂着上一个已死进程的 pid ——
+    // 下次 hydrate 会把一个正在跑的 run 判成"被打断", 而它好好地在跑。
+    this.persist(runId);
   }
 
   /** 按状态列 runId; 无参数 → 全部。 */

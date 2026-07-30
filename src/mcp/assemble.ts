@@ -46,6 +46,7 @@ import { createModelSourceDistiller } from '../harness/web/distill-source';
 import { createChallengerDistiller } from '../harness/web/distill-challenger';
 import { createPlanLedger, type PlanLedger } from '../harness/plan-ledger';
 import { createDagRecorder, type DagRecorder } from '../harness/dag-record';
+import { createRunStore } from './run-store';
 import { runExecutorDag, runExecutorDagWithPlan } from '../harness/executor-dag';
 import type { ExecutorDagConfig } from '../harness/executor-dag-types';
 import type { ConductorPlan } from '../harness/conductor-plan';
@@ -283,7 +284,12 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   const env = deps.env ?? process.env;
   const cwd = deps.cwd ?? process.cwd();
   const engine = deps.engine ?? PROD_ENGINE;
-  const runRegistry = deps.runRegistry ?? new RunRegistry();
+  // S2: registry 带上身份持久面 —— MCP server 是 stdio + 客户端消失即自杀, 「重启」是每次会话
+  // 结束都发生的事。此前一重启就没人记得那个 runId 存在过 (而 checkpoint 一直在盘上), 于是
+  // 「掉线了之后接着跑」缺的正是这一格。构造时 hydrate; 属主进程已死的 running 记录会被如实
+  // 判成"被打断", 不会挂成一个永远在跑却没人跑它的幽灵。
+  const runRegistry =
+    deps.runRegistry ?? new RunRegistry(undefined, { store: createRunStore({ path: join(cwd, '.omd', 'runs.db') }) });
   const memory = deps.memory ?? createDefaultMemory(env);
   // 记忆卫生 (TUI prune-scheduler parity — MCP 长驻进程 D-9): 默认 memory 时启动即 TTL 扫一次
   // + 每 6h 一次。注入 memory 的调用方 (测试/宿主) 自管卫生; OMD_MEMORY_PRUNE=0 关闭。
