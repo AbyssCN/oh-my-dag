@@ -277,6 +277,19 @@ async function executePlan(
   const seenObservations = new Set<string>();
   /** conductor 运行时展开出来的子节点 id —— `detector` 的消费者只在内环里, 别处设了要响亮忽略。 */
   const conductorChildIds = new Set<string>();
+  /**
+   * 运行期内容寻址 id → **规划期的可读名** (2026-07-30 live 挖出来的)。
+   *
+   * 制品 lint 的建议原先是"请给 [execute::1dsso0lqe0kky] 补上 [execute::1errm3oj42qds]" ——
+   * 而这句话的唯一读者是**下一轮重画的 conductor**, 它写的是自己起的可读名, 内容寻址 id 是
+   * 展开那一刻才算出来的, 它既没见过也用不了。于是这条真阳性的建议 100% 不可执行:
+   * 报得对, 但按它做不了任何事。
+   *
+   * ⚠ 与命令检测者的别名翻译**同源同向** (那边: 接受可读名并翻回 id; 这边: 把 id 翻回可读名),
+   * 都是"跨过展开这道墙时把名字换成对方认识的那种"。与 judge 视图刻意不给别名不冲突 ——
+   * 那边要的是模型**点名**落在 id 上, 这边是给模型**读**的一句人话。
+   */
+  const runtimeNodeNames = new Map<string, string>();
   const observe = (obs: readonly DagObservation[]): DagObservation[] => {
     const fresh: DagObservation[] = [];
     for (const o of obs) {
@@ -293,7 +306,9 @@ async function executePlan(
   const artifactLintRoot = config.continuity?.repoRoot ?? process.cwd();
   /** 跑一次制品边 lint (D-12/INV-P2-4) → 新发现的观察条目。零模型调用, 只报告不拦截。 */
   const runArtifactLint = (): DagObservation[] =>
-    observe(artifactLintObservations(lintArtifactEdges(plan!.nodes, results, { root: artifactLintRoot })));
+    observe(
+      artifactLintObservations(lintArtifactEdges(plan!.nodes, results, { root: artifactLintRoot }), runtimeNodeNames),
+    );
 
   /**
    * **运行时展开留痕** (观察面补齐, 2026-07-30): map/conductor 把子节点挂进图的那一刻,
@@ -663,6 +678,8 @@ async function executePlan(
       plan!.nodes[child.id] = { ...child.node, depends_on: [...new Set([...inner, ...deps])] };
       // D-Q: 记下"这是 conductor 展开出来的子节点" —— detector 只在环里有消费者, 别处设了要 WARN。
       conductorChildIds.add(child.id);
+      // 可读名留档: 图外观察者的建议要用它渲染, 否则那句话的读者 (下一轮 conductor) 认不出。
+      runtimeNodeNames.set(child.id, child.originalId);
     }
     // 观察面: 图上多了这些点 (活体事件 + `_dag.json` 的 runtimeNodes 留痕)。
     recordRuntimeExpansion(id, expand.children.map((c) => c.id));

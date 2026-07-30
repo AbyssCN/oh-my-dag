@@ -134,8 +134,15 @@ if (!arg('goal') && !seedCase) {
 if (seedCase) {
   const docs = join(sandbox, 'docs');
   console.log(`\n── 产物 (${seedCase.id}) ──`);
-  for (const f of existsSync(docs) ? readdirSync(docs).sort() : []) {
-    console.log(`\n  docs/${f}:\n${readFileSync(join(docs, f), 'utf-8').split('\n').map((l) => `    ${l}`).join('\n')}`);
+  // withFileTypes: 真跑过一次就撞上了 —— agent leaf 会在 docs/ 下建子目录, 对目录 readFileSync
+  // 抛 EISDIR, 于是**整个产物摊开这一段没了**, 而那正是这次冒烟唯一要看的东西。
+  for (const e of existsSync(docs) ? readdirSync(docs, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name)) : []) {
+    if (!e.isFile()) {
+      console.log(`\n  docs/${e.name}/ (目录, 未展开)`);
+      continue;
+    }
+    const body = readFileSync(join(docs, e.name), 'utf-8').split('\n').map((l) => `    ${l}`).join('\n');
+    console.log(`\n  docs/${e.name}:\n${body}`);
   }
   if (!existsSync(docs)) console.log('  (docs/ 不存在 —— 一份都没写出来)');
 }
