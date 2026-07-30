@@ -1104,11 +1104,34 @@ async function executePlan(
     /** 真正跑完的轮次 (取消收尾时要如实报, 不能拿 maxRounds 顶)。 */
     let doneRounds = startRound - 1;
 
+    /** 内环起跑时刻 (预算轴的时间那半)。 */
+    const loopStartedAt = Date.now();
+    /** 环因预算停下的原因 (未超 = undefined)。 */
+    let budgetStopped: string | undefined;
+
     for (let round = startRound; round <= maxRounds; round++) {
       // D-P 取消接缝③: 不开新一轮。已判完的轮次全在 journal 里, resume 从下一轮接着跑。
       if (isCancelled()) {
         logger.warn({ node: id, round }, '[omd/executor-dag] 已取消 → 内环不开新一轮 (D-P 协作式)');
         break;
+      }
+      // **预算轴** (2026-07-31, Loop Engineering 四条停止轴里我们唯一缺的那条): 与取消同一个接缝 ——
+      // 只在轮边界查, 不打断在飞的一轮 (半轮的钱已经花了, 打断只是把产出也扔掉)。
+      // 软停不是硬杀: 已跑完的全保留, resume 时给个更大的预算就接着跑。
+      if (round > startRound) {
+        const spentTokens = usageAcc.in + usageAcc.out;
+        const spentMs = Date.now() - loopStartedAt;
+        const tokenCap = config.loopBudget?.tokens;
+        const msCap = config.loopBudget?.ms;
+        if (tokenCap !== undefined && spentTokens >= tokenCap) {
+          budgetStopped = `token 预算用尽: 已花 ${spentTokens} / 上限 ${tokenCap} (第 ${round - 1} 轮后)`;
+        } else if (msCap !== undefined && spentMs >= msCap) {
+          budgetStopped = `时间预算用尽: 已用 ${Math.round(spentMs / 1000)}s / 上限 ${Math.round(msCap / 1000)}s (第 ${round - 1} 轮后)`;
+        }
+        if (budgetStopped) {
+          logger.warn({ node: id, round, spentTokens, spentMs }, `[omd/executor-dag] ${budgetStopped} → 内环不开新一轮`);
+          break;
+        }
       }
       const r = await runConductorRound(id, round, prevReason, poisoned, prevResults);
       doneRounds = round;
@@ -1179,6 +1202,12 @@ async function executePlan(
     if (isCancelled() && last) {
       logger.warn({ node: id, doneRounds }, '[omd/executor-dag] 内环因取消收尾 (已判轮次全在 journal 里, resume 可续)');
       return settle(last, doneRounds);
+    }
+    // 预算轴出口 (2026-07-31): 与取消同一个形状 —— 已跑完的轮次照原样返, **converged=false 显式给**
+    // (fail-closed: 没跑完就不是成)。`budgetStopped` 与 `blocked` **刻意是两个字段**: 前者加预算
+    // resume 很可能就成, 后者再多钱都一样, 两个不同的下一步不该读同一句话。
+    if (budgetStopped && last) {
+      return { ...settle(last, doneRounds, false), budgetStopped };
     }
 
     // 到这里 = startRound > maxRounds (resume 接回一个已跑满轮数却没收敛的节点): 一轮都没跑,

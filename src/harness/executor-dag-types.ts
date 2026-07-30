@@ -231,6 +231,24 @@ export interface ExecutorDagConfig {
    */
   judgeArtifacts?: boolean | ArtifactBudget;
   /**
+   * **环的预算上限**(2026-07-31)—— Loop Engineering 四条停止轴里我们唯一缺的那条。
+   *
+   * 另外三条早就有:轮数上限(`max_rounds`)· 空转(D-Q 确定性判据)· 完成检查(judge ∧ 环外
+   * `accept`)。缺预算轴的后果很具体:judge 每轮说"还不行",环就一路烧到轮数上限,**全程没有
+   * 任何一处问过"这已经花了多少"**。而实测一次 goal 的执行段 leafIn 是 43 万 token 量级。
+   *
+   * 在**轮边界**上查(与 D-P 取消同一个接缝):不打断在飞的一轮 —— 半轮的钱已经花了,
+   * 打断只是把产出也扔掉。省略 = 不设限(老语义,零回归)。
+   *
+   * ⚠ 这是**软停不是硬杀**:超了就不开下一轮,已跑完的全保留,`resume` 时给个更大的预算就能接着跑。
+   */
+  loopBudget?: {
+    /** 累计 leaf+conductor token(in+out)上限。 */
+    tokens?: number;
+    /** 该节点内环的墙钟毫秒上限。 */
+    ms?: number;
+  };
+  /**
    * 节点级进度事件 (2026-07-20, MCP 派发简报/活体 status 的数据源):
    *   planned = 图定型 (全部节点 id+kind, 每轮 plan/escalation 重规划各发一次)
    *   start   = 节点起跑 (含 map 展开出的子节点)
@@ -345,6 +363,20 @@ export interface LeafResult {
    * `converged` 必为 false (fail-closed: 阻塞更不该被读成成功)。
    */
   blocked?: string;
+  /**
+   * **环因预算停的**(2026-07-31, 承 Loop Engineering 的第四条停止轴)。
+   *
+   * 四条停止轴里我们本来只有三条:轮数上限 · 空转 · 完成检查。缺的是**预算与时间** ——
+   * 于是一个目标只要 judge 每轮都说"还不行",就会一路烧到 `max_rounds` 才停,而没有任何一处
+   * 问过"这已经花了多少"。
+   *
+   * ⚠ 它与 `blocked` 的下一步**不一样**,所以是两个字段不是一个:
+   *   - `blocked` = 判据是确定性的,**再多轮/再多钱都一样**,该 owner 去看;
+   *   - `budgetStopped` = 只是钱/时间用完了,**加预算 resume 很可能就成**。
+   * 混成一个词会让两个完全不同的下一步读同一句话(D-P 给 `cancelled` 单独立词的同一条理由)。
+   * 恒与 `converged: false` 同时出现(fail-closed:没跑完就不是成)。
+   */
+  budgetStopped?: string;
 }
 
 /**
