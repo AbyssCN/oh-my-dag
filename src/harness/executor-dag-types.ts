@@ -310,9 +310,11 @@ export type DagNodeEvent =
 export interface DagObservation {
   /**
    * `undeclared-artifact-dep` = B 读了 A 写的文件但图上无边 (D-12/INV-P2-4);
-   * `loop-no-progress` = 内环重展开得到同一张子图且 judge 拒的还是同一批 (D-Q BLOCKED 判据)。
+   * `loop-no-progress` = 内环重展开得到同一张子图且 judge 拒的还是同一批 (D-Q BLOCKED 判据);
+   * `write-race` / `missing-input` = **跑之前**就能确定性判死的坏 plan (A4, 2026-07-31,
+   * 补 Fowler 2×2 里最空的那格 computational feedforward)。前两个是事后传感, 这两个是事前拦。
    */
-  kind: 'undeclared-artifact-dep' | 'loop-no-progress';
+  kind: 'undeclared-artifact-dep' | 'loop-no-progress' | 'write-race' | 'missing-input';
   /** 涉及的节点 id (lint = [reader, writer]; 空转 = 被反复拒绝的那批)。 */
   nodes: string[];
   /** 人与模型都读的一句话 (进 prompt 的就是它)。 */
