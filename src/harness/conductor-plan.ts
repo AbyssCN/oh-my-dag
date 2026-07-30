@@ -517,17 +517,32 @@ export function conductorSystemPrompt(
     // 结果是**形状率 92% / 使用率 8%** —— conductor 几乎每次都画了那个交叉检查节点, 却几乎从不
     // 标那个字段 (缺口 83%)。所以这一版改成**挂在它已经会画的形状上的祈使句**: 先说"你只要画了
     // 这种节点就必须标", 再说它是干什么的。滥用率上一版是 0%, whenNot 因此收成一行。
+    // 第三版 (2026-07-30 下午): 第二版留下的 20% 缺口**不是"忘了写字段"**, 读原始 plan 看到的是
+    // 三条各不相同的因, 这一版逐条堵:
+    //   ① prompt **自相矛盾**: 「PREFER command 检测者」对上「有 command oracle 就别加 detector」——
+    //      模型自己手写了个 `node -e` 比对命令, 于是判定"我已经有 oracle 了", 不标。那句 whenNot
+    //      本意是"现成的项目检查 (tsc/test)", 却被读成"任何命令"。→ 收窄成 OFF-THE-SHELF, 并正面
+    //      说清: **手写的比对命令本身就是检测者**, 自己写了比较逻辑不替代这个字段, 恰恰需要它。
+    //   ② 「让节点失败 / exit 1」被当成反馈通道 (两个样本都这么写)。→ 明说裁决是**印出来的那一行**,
+    //      不是退出码。(引擎侧同日补了网: 失败检测者印出的裁决不再被吞 —— 但那是兜底, 不是正路。)
+    //   ③ 滥用的唯一形态: **单产出**的"完备性/质量 review"被标 detector (n=15 里 2 次, 两次都只
+    //      依赖 1 个产出节点)。→ ≥2 从"触发条件"提成**硬前提** (NEVER), 与轮末 judge 划清界。
     'RULE — if you draw a node that depends on ≥2 sibling nodes in order to CHECK WHETHER THEY AGREE',
     '(consistency / no-conflict / same-assumptions / cross-check), you MUST put "detector": true on it.',
+    'This holds however you implement it: a hand-written `node -e` / grep / diff command that compares the',
+    'siblings IS the detector — writing the comparison yourself does not replace the field, it is what needs it.',
     'Without that field its findings are just text nobody acts on; with it the engine reads its output as',
     'a VERDICT and feeds it back into the loop:',
     '  `REJECT: <sibling node id>`  → that sibling\'s output is not accepted; the loop redoes it next round',
     '  `BLOCKED: <one-line reason>` → no amount of retrying helps without outside input; the loop stops',
     'Name siblings by the ids YOU write in this plan (the engine translates them to runtime ids).',
+    'The verdict is what you PRINT, not the exit code — print those lines and exit 0. Failing the node',
+    'on a conflict is not the channel; it just adds a red node the loop then has to explain away.',
     'PREFER executor:"command" (`echo "REJECT: <that id>"` is deterministic and cheaper than a model call);',
     'a "leaf" detector works too. It only has an effect inside a conductor node\'s OWN sub-graph.',
-    'Do NOT add a detector when a command oracle already decides (typecheck/test), when there is only one',
-    'producing node, or when the question is "is this good?" (that is the round judge\'s job, not a node).',
+    'NEVER put "detector" on a node with fewer than 2 producing dependencies: a single-producer',
+    '"is it complete / is it good?" review is the ROUND JUDGE\'s job, and marking it just wastes a node.',
+    'Also skip it when an OFF-THE-SHELF project check already decides (tsc / lint / `bun test`).',
     'Keep the graph acyclic.',
     ...roster,
     ...templateSection,
@@ -566,7 +581,12 @@ export function conductorSystemPrompt(
     // detector 进形状 (2026-07-30): 散文里提一嘴不算明示 —— 「明示即承诺」的闸判的就是这份
     // **conductor 照抄的形状**, 而不在形状里的字段它基本不会写。放在 max_nodes 旁边是因为两者
     // 同属"子图那一层"的东西 (顶层图上设 detector 引擎会 WARN 并忽略)。
-    '    "max_nodes"?: number, "detector"?: boolean,',
+    // v4 (2026-07-30 第三臂): v3 的三条散文修完, 缺口里 4/6 仍是**手写 node -e 比对 + 冲突退出 1**,
+    // 2/6 是没有裁决通道的文字比对 —— 也就是散文一条都没转化掉。所以把约束挂到它**逐字照抄的
+    // 那一行**上: 模型写每个节点时对着的是这份形状, 不是 40 行以上的字段说明墙。
+    // 刻意不用 `//` 注释: 这份形状里一条注释都没有, 引进注释语法等于邀请它在输出的 JSON 里也写
+    // 注释 (那会直接解析失败)。用括号补语, 与 "requires"?: "all"|"any"|number 同一个 register。
+    '    "max_nodes"?: number, "detector"?: boolean (MUST be true on any node that cross-checks ≥2 siblings),',
     '    "map"?: { "lister": object, "over": string, "itemVar": string, "keyBy"?: string, "template": object, "maxItems"?: number },',
     // "postcondition" 2026-07-28 从明示 schema 撤下 (同 skill/agent 的理由, 空旋钮全仓扫): 全仓零消费者,
     // 引擎从不检查它。明示它比明示 skill 更坏 —— 那是在请 conductor 给"正确性敏感的节点"写验证条件,
