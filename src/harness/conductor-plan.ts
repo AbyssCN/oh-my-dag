@@ -124,10 +124,14 @@ const PlanNode = z
      *
      * 只在 **conductor 节点展开出来的子图里**生效 (环在那儿); 设在别处引擎会 WARN 而不改变执行
      * (明示即承诺的反面守卫, 同 expect_exit)。首选 `executor:'command'` —— 确定性 oracle 说
-     * "谁坏了"比再请一次 LLM 既便宜又可信。
+     * "谁坏了"比再请一次 LLM 既便宜又可信; 它点名要用**规划期的可读 id** (命令串写死在规划期,
+     * 那时内容寻址 id 还不存在, 引擎负责翻译 —— 见 plan/detector.ts 的 aliases)。
      *
-     * **刻意不进 conductor 的图式引导** (同 thinking): 明示它等于请规划者每张图都塞一个检测者,
-     * 那是一笔没有证据支持的常驻开销。
+     * ⚠ **进 conductor 的明示形状是被迫的** (2026-07-30 当天推翻了自己前一版的"刻意不明示"):
+     * 它只在 conductor 自己画的子图里有消费者, 而子图只有 conductor 画得出来 —— 不告诉它,
+     * 这个字段就没有任何生产者, 那正是本仓一直在猎杀的空旋钮形态 (要么给生产者, 要么删掉,
+     * 中间态最坏)。代价用 prompt 里**比 when 更长的 whenNot** 压: 能用 command oracle 直接判的
+     * 别用它、只有一个产出节点的别用它、"这东西好不好"是轮末 judge 的活不是它的。
      */
     detector: z.boolean().optional(),
     /** executor='command' 时要跑的确定性 CLI (如 'codegraph trace X Y')。经 fail-closed 闸 + 白名单。 */
@@ -504,6 +508,22 @@ export function conductorSystemPrompt(
     '- impl / drafting → senior practitioner + a stance, e.g. "资深 Bun/TS 工程师 (删减优先, 最小接口)".',
     '- mechanical / file / command → OMIT persona (framing adds nothing, just wastes tokens).',
         ]),
+    // D-Q 检测者。**只在 conductor 节点自己画的子图里**有消费者 (环在那儿) —— 顶层图上设了引擎
+    // 会 WARN 并忽略。2026-07-30 撞出来的教训: 一个只有 conductor 能放、却又不告诉 conductor 的
+    // 字段, 就是没有生产者的空旋钮。所以要么明示它, 要么删掉它 —— 中间态最坏。
+    // whenNot 写得比 when 更长是刻意的 (同 runtime-decomposition 图式): 检测者是**额外一个节点**,
+    // 默认不该有; 只在"几段产出必须相互对得上"这个 command oracle 表达不了的形状上才划算。
+    'Cross-node consistency check (field "detector":true) — ONLY inside a conductor node\'s OWN sub-graph:',
+    'A node sees only its own depends_on, so NOTHING in a graph can check whether two siblings AGREE.',
+    'A fan-in node marked detector:true fills that hole: the engine reads its output as a VERDICT —',
+    '  `REJECT: <sibling node id>`  → that sibling\'s output is not accepted; the loop redoes it next round',
+    '  `BLOCKED: <one-line reason>` → no amount of retrying helps without outside input; the loop stops',
+    'PREFER executor:"command" for it (`echo "REJECT: <the id YOU wrote for that node>"` — deterministic,',
+    'and cheaper than a third model call). Name siblings by the ids YOU write in this plan; the engine',
+    'translates them to runtime ids. A "leaf" detector works too (it sees the runtime ids in its prompt).',
+    'Do NOT use it when: a plain command oracle already decides (typecheck/test — just run it); there is',
+    'only one producing node (nothing to cross-check); or the check is "is this good?" (that is the',
+    'round judge\'s job, which runs anyway — a detector duplicating it just costs a node).',
     'Keep the graph acyclic.',
     ...roster,
     ...templateSection,
@@ -539,7 +559,10 @@ export function conductorSystemPrompt(
     // (semantic-key 为此把它排除在指纹外)。zod 层仍容忍旧 plan。
     '  "nodes": { "<node_id>": { "goal"?: string, "persona"?: string, "template"?: string,',
     '    "args"?: object, "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map"|"conductor", "command"?: string, "expect_exit"?: number, "creative"?: boolean,',
-    '    "max_nodes"?: number,',
+    // detector 进形状 (2026-07-30): 散文里提一嘴不算明示 —— 「明示即承诺」的闸判的就是这份
+    // **conductor 照抄的形状**, 而不在形状里的字段它基本不会写。放在 max_nodes 旁边是因为两者
+    // 同属"子图那一层"的东西 (顶层图上设 detector 引擎会 WARN 并忽略)。
+    '    "max_nodes"?: number, "detector"?: boolean,',
     '    "map"?: { "lister": object, "over": string, "itemVar": string, "keyBy"?: string, "template": object, "maxItems"?: number },',
     // "postcondition" 2026-07-28 从明示 schema 撤下 (同 skill/agent 的理由, 空旋钮全仓扫): 全仓零消费者,
     // 引擎从不检查它。明示它比明示 skill 更坏 —— 那是在请 conductor 给"正确性敏感的节点"写验证条件,

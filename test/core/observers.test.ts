@@ -144,6 +144,33 @@ describe('D-Q 检测者输出协议', () => {
     expect(v.ghosts).toEqual([]);
   });
 
+  /**
+   * 命令检测者按构造只知道**规划期的可读 id** (命令串写死在规划期, 那时内容寻址 id 还不存在)。
+   * 不给这条翻译, `REJECT:` 这一半协议对 command 节点等于不存在 —— 它只剩静态的 `BLOCKED:` 能喊。
+   */
+  test('可读别名点名 → 翻成运行期 id (命令检测者唯一能用的点名方式)', () => {
+    const aliases = new Map([['write-a', 'C::9zz'], ['write-b', 'C::8yy']]);
+    const v = parseDetectorVerdict('REJECT: write-a', ['C::9zz', 'C::8yy'], aliases);
+    expect(v.rejected).toEqual(['C::9zz']);
+    expect(v.ghosts).toEqual([]);
+  });
+
+  test('运行期 id 直接点名照样认 (LLM 检测者在 prompt 里看得见它)', () => {
+    const aliases = new Map([['write-a', 'C::9zz']]);
+    expect(parseDetectorVerdict('REJECT: C::9zz', ['C::9zz'], aliases).rejected).toEqual(['C::9zz']);
+  });
+
+  test('翻不出来的名字仍是幽灵 (别名映射不是"什么都认")', () => {
+    const v = parseDetectorVerdict('REJECT: 不存在的名字', ['C::9zz'], new Map([['write-a', 'C::9zz']]));
+    expect(v.rejected).toEqual([]);
+    expect(v.ghosts).toEqual(['不存在的名字']);
+  });
+
+  test('别名与运行期 id 指同一个节点 → 去重 (两种写法各点一次不该毒两遍)', () => {
+    const v = parseDetectorVerdict('REJECT: write-a\nREJECT: C::9zz', ['C::9zz'], new Map([['write-a', 'C::9zz']]));
+    expect(v.rejected).toEqual(['C::9zz']);
+  });
+
   test('多条 BLOCKED → 取第一条 (同一件事的不同说法)', () => {
     const v = parseDetectorVerdict('BLOCKED: 第一条\nBLOCKED: 第二条', []);
     expect(v.blocked).toBe('第一条');

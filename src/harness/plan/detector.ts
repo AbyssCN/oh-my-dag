@@ -14,13 +14,15 @@
  * BLOCKED: <原因>            ← 没有外部输入推不动 (环提前退出, 见 LeafResult.blocked)
  * ```
  *
- * **首选 producer 是 `executor:'command'`** —— 一个脚本 `echo "REJECT: x"` 是确定性的, 而
- * "谁坏了"由确定性 oracle 说出来比由第三次 LLM 调用说出来既便宜又可信 (D-13 不加新 gate 层的
- * 同一条理由)。LLM 检测者也能用: 引擎会把协议附在它的 prompt 末尾 (见 DETECTOR_PROTOCOL)。
+ * **`executor:'command'` 的检测者最硬** (`echo "REJECT: write-a"` 是确定性的, 比第三次 LLM 调用
+ * 便宜且可信), 但它有一条**按构造的限制**: 命令串在规划期就写死了, 那时兄弟的内容寻址 id 还
+ * 不存在 —— 所以命令检测者只能用**规划期的可读 id** 点名 (引擎负责翻译, 见 parseDetectorVerdict
+ * 的 aliases), 否则它一个 `REJECT:` 都发不出来, 只剩 `BLOCKED:` 这种静态字符串能喊。
+ * LLM 检测者没这个限制 (它在 prompt 里看得见运行期 id), 引擎会把协议附在它的 prompt 末尾。
  *
- * ⚠ **刻意不进 conductor prompt** —— 与 `thinking` 同待遇, 是**手写 plan 的逃生口**。理由是
- * 明示它就等于请 conductor 每张图都塞一个检测者, 而那是一笔没有证据支持的常驻开销
- * (D-M/N 的图式引导已经在管"该画什么", 不该由一个新字段再劝一次)。
+ * ⚠ **进 conductor 的明示形状是被迫的** (2026-07-30 当天推翻了自己前一版的"刻意不明示"):
+ * 这个字段只在 conductor 自己画的子图里有消费者, 而子图只有 conductor 画得出来 —— 不告诉它,
+ * 它就没有任何生产者, 那正是本仓一直在猎杀的空旋钮。代价用 prompt 里比 when 更长的 whenNot 压。
  */
 
 /** 检测者节点的输出协议 (引擎附在 detector 节点的 prompt 末尾, 省得每张手写 plan 抄一遍)。 */
@@ -30,8 +32,9 @@ export const DETECTOR_PROTOCOL = [
   '你是这一轮的**检测者**: 上游各节点的产出都在上面, 你的活是看它们**相互之间**对不对得上',
   '(一个节点自己看不见别的节点, 这是你独有的视角)。除了正常的分析文字, 按需追加:',
   '',
-  '- `REJECT: <上游节点 id>` —— 这一段产出本身错了/缺了/是编的。id **逐字照抄**上面出现的那个,',
-  '  一行一个。宁可多点名不可漏点名 (没被点名的产出会被当作已批准结果带进下一轮)。',
+  '- `REJECT: <上游节点 id>` —— 这一段产出本身错了/缺了/是编的。一行一个。',
+  '  id 写**你在这张 plan 里给那个节点起的名字**即可 (引擎会翻成运行期 id); 上面出现的那个长 id 也认。',
+  '  宁可多点名不可漏点名 (没被点名的产出会被当作已批准结果带进下一轮)。',
   '- `BLOCKED: <一句话原因>` —— **没有外部输入就推不动** (前提缺失/要求自相矛盾/需要人拍板)。',
   '  只在"再试多少轮都一样"时写它; 单纯"这轮没做好"用 REJECT, 别用它。',
 ].join('\n');
@@ -52,20 +55,36 @@ const BLOCKED_LINE = /^\s*BLOCKED:\s*(.+?)\s*$/;
 /**
  * 解析检测者输出。**没有协议行 = 没有裁决** (空 verdict), 不是"全批准也不是全拒绝" ——
  * 检测者不喊话时环照原样走 (它是加一层观察, 不是新增一道必过的闸)。
+ *
+ * `aliases` = conductor 规划期写的**可读 id** → 运行期的内容寻址 id。**这条映射是必需的,
+ * 不是方便**: 内容寻址 id 是展开那一刻才算出来的, 而 `executor:'command'` 的命令串在规划期
+ * 就写死了 —— 于是一个命令检测者**永远点不出兄弟的名字**, 除非它能用自己刚写下的那个可读名。
+ * (2026-07-30 撞出来的: 前一版 prompt 写着"首选 command 检测者", 而那种检测者按构造只能喊
+ * `BLOCKED:`, 一个 `REJECT:` 都发不出来。)
+ *
+ * ⚠ 与 judge 视图**刻意不给别名**那条不冲突, 方向相反: 那边是不让模型**看见**别名 (看见就会
+ * 照抄, 而 judge 的点名必须落在内容寻址 id 上); 这边是**接受**别名并翻译回去 —— 检测者写的
+ * 别名不是幻觉, 是它自己在这张子图里给节点起的名字。翻译不出来的仍按幽灵处理。
  */
-export function parseDetectorVerdict(text: string, knownIds: readonly string[]): DetectorVerdict {
+export function parseDetectorVerdict(
+  text: string,
+  knownIds: readonly string[],
+  aliases?: ReadonlyMap<string, string>,
+): DetectorVerdict {
   const known = new Set(knownIds);
+  const resolve = (name: string): string | null => (known.has(name) ? name : (aliases?.get(name) ?? null));
   const rejected: string[] = [];
   const ghosts: string[] = [];
   let blocked: string | undefined;
   for (const line of text.split('\n')) {
     const r = REJECT_LINE.exec(line);
     if (r?.[1]) {
-      const id = r[1];
-      if (known.has(id)) {
+      const named = r[1];
+      const id = resolve(named);
+      if (id) {
         if (!rejected.includes(id)) rejected.push(id);
-      } else if (!ghosts.includes(id)) {
-        ghosts.push(id);
+      } else if (!ghosts.includes(named)) {
+        ghosts.push(named);
       }
       continue;
     }

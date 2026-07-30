@@ -96,8 +96,8 @@ export const REGISTRY: Record<string, FieldEntry> = {
   detector: {
     consumer: 'executor-dag.runConductorRound (parseDetectorVerdict → 毒集 / BLOCKED 出口)',
     fingerprint: 'fields',
-    declared: false,
-    note: 'D-Q: 手写 plan 的逃生口 (同 thinking)。明示它等于请 conductor 每张图都塞一个检测者 = 没有证据支持的常驻开销。',
+    declared: true,
+    note: 'D-Q。⚠ 明示是**被迫的**: 它只在 conductor 自己画的子图里有消费者, 而子图只有 conductor 画得出来 —— 不告诉它就等于这个字段没有任何生产者 (空旋钮)。prompt 里的 whenNot 比 when 长, 压它别每张图都塞一个。',
   },
   command: { consumer: 'executor-dag.runNodeOnce (commandRunner)', fingerprint: 'fields', declared: true, note: '' },
   expect_exit: { consumer: 'executor-dag.runNodeOnce (command 分支判 done 的期望退出码)', fingerprint: 'fields', declared: true, note: 'D-K: 期望绿 (0) 与期望红 (1) 是**相反**的验收, 不入键会让 verify-red / verify-green 判重串味。' },
