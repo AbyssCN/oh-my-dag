@@ -867,7 +867,16 @@ async function executePlan(
     for (const cid of childIds) {
       if (plan!.nodes[cid]?.detector !== true) continue;
       const r = roundResults.get(cid);
-      if (!r || r.status === 'failed') continue; // 检测者自己都没跑成 → 它没有裁决 (不当它说了什么)
+      // ⚠ **失败的检测者仍然要读** (2026-07-30 eval 挖出的静默失效): 前一版这里是
+      // `r.status === 'failed' → continue`, 而 conductor 自发画检查节点时最常见的写法恰恰是
+      // 「发现冲突就 exit 1 / 让节点失败」—— 它把"失败"当成了反馈通道。于是那种节点**印出了**
+      // `REJECT: <兄弟>` 却被这一行整个吞掉: 票没进毒集, 环下一轮不知道该拒谁。
+      //
+      // 读失败节点的输出是安全的, 因为解析本身已经是 fail-closed 的反面 —— **没有协议行 = 没有
+      // 裁决** (parseDetectorVerdict 的语义)。一个真崩了的检测者 (命令语法错/API 报错) 吐的是
+      // 堆栈或空串, 行首不会出现 `REJECT:`/`BLOCKED:`, 解析出来仍是空 verdict。
+      // 只有 `!r` (根本没跑, 级联 skip 前就没有结果) 才是真的"它没说过话"。
+      if (!r) continue;
       // 别名映射 (可读 id → 内容寻址 id): 命令检测者按构造只知道规划期那个可读名 —— 不给它
       // 这条翻译, `REJECT:` 这一半协议对 command 节点等于不存在。
       const aliasToId = new Map(expand.children.map((c) => [c.originalId, c.id]));
@@ -878,7 +887,14 @@ async function executePlan(
       for (const rid of v.rejected) if (!detectorVerdict.rejected.includes(rid)) detectorVerdict.rejected.push(rid);
       if (v.blocked !== undefined && detectorVerdict.blocked === undefined) detectorVerdict.blocked = `[检测者 ${cid}] ${v.blocked}`;
       if (v.rejected.length || v.blocked) {
-        logger.info({ node: id, detector: cid, rejected: v.rejected, blocked: v.blocked }, '[omd/executor-dag] 检测者裁决落进环 (D-Q)');
+        // 分开记"检测者自己失败了但仍有裁决": 这正是上面那条修复救回来的那一类, 不留痕的话
+        // 它与普通路径在日志上长得一模一样 —— 而"从不发生"和"没这个功能"读数相同 (交接文的坑)。
+        logger.info(
+          { node: id, detector: cid, rejected: v.rejected, blocked: v.blocked, detectorFailed: r.status === 'failed' },
+          r.status === 'failed'
+            ? '[omd/executor-dag] 检测者自身 failed 但印出了裁决 → 仍落进环 (D-Q)'
+            : '[omd/executor-dag] 检测者裁决落进环 (D-Q)',
+        );
       }
     }
     const lintFindings = runArtifactLint();
