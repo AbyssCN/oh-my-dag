@@ -513,17 +513,21 @@ export function conductorSystemPrompt(
     // 字段, 就是没有生产者的空旋钮。所以要么明示它, 要么删掉它 —— 中间态最坏。
     // whenNot 写得比 when 更长是刻意的 (同 runtime-decomposition 图式): 检测者是**额外一个节点**,
     // 默认不该有; 只在"几段产出必须相互对得上"这个 command oracle 表达不了的形状上才划算。
-    'Cross-node consistency check (field "detector":true) — ONLY inside a conductor node\'s OWN sub-graph:',
-    'A node sees only its own depends_on, so NOTHING in a graph can check whether two siblings AGREE.',
-    'A fan-in node marked detector:true fills that hole: the engine reads its output as a VERDICT —',
+    // 2026-07-30 实测 (n=12, scripts/eval-detector-usage.ts): 上一版把这段写成"能力介绍",
+    // 结果是**形状率 92% / 使用率 8%** —— conductor 几乎每次都画了那个交叉检查节点, 却几乎从不
+    // 标那个字段 (缺口 83%)。所以这一版改成**挂在它已经会画的形状上的祈使句**: 先说"你只要画了
+    // 这种节点就必须标", 再说它是干什么的。滥用率上一版是 0%, whenNot 因此收成一行。
+    'RULE — if you draw a node that depends on ≥2 sibling nodes in order to CHECK WHETHER THEY AGREE',
+    '(consistency / no-conflict / same-assumptions / cross-check), you MUST put "detector": true on it.',
+    'Without that field its findings are just text nobody acts on; with it the engine reads its output as',
+    'a VERDICT and feeds it back into the loop:',
     '  `REJECT: <sibling node id>`  → that sibling\'s output is not accepted; the loop redoes it next round',
     '  `BLOCKED: <one-line reason>` → no amount of retrying helps without outside input; the loop stops',
-    'PREFER executor:"command" for it (`echo "REJECT: <the id YOU wrote for that node>"` — deterministic,',
-    'and cheaper than a third model call). Name siblings by the ids YOU write in this plan; the engine',
-    'translates them to runtime ids. A "leaf" detector works too (it sees the runtime ids in its prompt).',
-    'Do NOT use it when: a plain command oracle already decides (typecheck/test — just run it); there is',
-    'only one producing node (nothing to cross-check); or the check is "is this good?" (that is the',
-    'round judge\'s job, which runs anyway — a detector duplicating it just costs a node).',
+    'Name siblings by the ids YOU write in this plan (the engine translates them to runtime ids).',
+    'PREFER executor:"command" (`echo "REJECT: <that id>"` is deterministic and cheaper than a model call);',
+    'a "leaf" detector works too. It only has an effect inside a conductor node\'s OWN sub-graph.',
+    'Do NOT add a detector when a command oracle already decides (typecheck/test), when there is only one',
+    'producing node, or when the question is "is this good?" (that is the round judge\'s job, not a node).',
     'Keep the graph acyclic.',
     ...roster,
     ...templateSection,
