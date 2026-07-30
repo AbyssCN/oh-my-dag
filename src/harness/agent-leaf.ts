@@ -289,10 +289,15 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // start 记 toolCallId→path 候选, end 且 !isError 才计入 (失败的写不算产物)。
     // 此前 runner 从不填 filesTouched → executor-dag 产物闸把真交付的文件节点全判 failed (恒空 = "谎报完工")。
     const FILE_WRITE_TOOLS = new Set(['write', 'edit', 'hashline_edit']);
+    // D-12 读采集: **与写监听同一形状** (start 记候选 → end 且 !isError 才计入)。只认单文件读工具 ——
+    // grep/ls/glob 是检索不是消费, 收进来会把 artifact-lint 淹在噪声里 (见 AgentLeafResult.filesRead)。
+    const FILE_READ_TOOLS = new Set(['read', 'hashline_read']);
     const touched = new Set<string>();
+    const readPaths = new Set<string>();
     let toolCalls = 0; // 工具调用计数 (prompt 档的路由效率读数, 见 AgentLeafResult.toolCalls)。
     // toolCallId → 候选写路径 (可多: hashline_edit 一个 patch 多 section 多文件)。end 且 !isError 才计入。
     const pathByCall = new Map<string, string[]>();
+    const readByCall = new Map<string, string>();
     const unsubTouch = (session as { subscribe: (l: (e: { type: string; toolCallId?: string; toolName?: string; args?: { path?: unknown; patch?: unknown }; isError?: boolean }) => void) => () => void }).subscribe((e) => {
       if (e.type === 'tool_execution_start') toolCalls++;
       if (e.type === 'tool_execution_start' && e.toolName && FILE_WRITE_TOOLS.has(e.toolName) && e.toolCallId) {
@@ -304,9 +309,14 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
               ? [e.args.path]
               : [];
         if (paths.length) pathByCall.set(e.toolCallId, paths);
+      } else if (e.type === 'tool_execution_start' && e.toolName && FILE_READ_TOOLS.has(e.toolName) && e.toolCallId) {
+        if (typeof e.args?.path === 'string' && e.args.path.trim()) readByCall.set(e.toolCallId, e.args.path);
       } else if (e.type === 'tool_execution_end' && e.isError === false && e.toolCallId) {
         const ps = pathByCall.get(e.toolCallId);
         if (ps) for (const p of ps) touched.add(p);
+        // 读失败 (文件不存在等) 不算读过 —— 同"失败的写不算产物"。
+        const rp = readByCall.get(e.toolCallId);
+        if (rp) readPaths.add(rp);
       }
     });
     // debug 事件汇 (opt-in): 转发全部事件给 onEvent 抓 transcript。
@@ -353,7 +363,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           'HTTP 状态, 故此处响亮报错而非当成功 (统一-registry C-5b)。',
       );
     }
-    return { text, usage, filesTouched: [...touched], cwd, toolCalls, stalled };
+    return { text, usage, filesTouched: [...touched], filesRead: [...readPaths], cwd, toolCalls, stalled };
   };
 }
 

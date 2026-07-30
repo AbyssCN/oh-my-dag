@@ -74,6 +74,9 @@ export function nodeFieldsKey(node: PlanNode): string {
 		// D-F: 终轮必判也是语义 —— 开了就多一次 judge 调用, 且**产出多一条裁决** (LeafResult.converged),
 		// 而调用方拿它当"整体目标成了吗"的答案。判重把两者合成一个 = 悄悄吞掉某一方要的那条裁决。
 		node.judge_final ?? NONE,
+		// D-Q: detector 是语义 —— 同一个节点开不开检测者协议, 决定它的输出是"一段文字"还是
+		// "一份能铸毒票、能让环 BLOCKED 退出的裁决"。判重把两者合成一个 = 吞掉那份裁决 (同 judge_final)。
+		node.detector ?? NONE,
 	]);
 }
 
@@ -124,11 +127,24 @@ export function computeReuse(
 	poisoned?: ReadonlySet<string>,
 ): Map<string, LeafResult> {
 	const priorFp = merkleFingerprints(prior.plan);
+	// INV-P2-5 制品级毒 (D-12): 被拒节点**写过**的文件是可疑制品; 上一轮**读过**它们的节点,
+	// 哪怕自己没被点名、指纹也没变, 一样不入池 —— 它的产出是吃着一份已判为坏的输入做出来的。
+	// 为什么现有的前驱闭包兜不住: 闭包顺的是**图上的边**, 而这条读根本没有边 (有边就是普通下游,
+	// 早被 `deps.every(check)` 扫掉了)。图外读正是 D-12 的 `filesRead` 让它可见的那条通道。
+	const poisonedArtifacts = new Set<string>();
+	if (poisoned?.size) {
+		for (const [id, f] of priorFp) {
+			if (!poisoned.has(f)) continue;
+			for (const p of prior.results[id]?.filesTouched ?? []) poisonedArtifacts.add(p);
+		}
+	}
+	const readsPoisoned = (r: LeafResult): boolean =>
+		poisonedArtifacts.size > 0 && (r.filesRead ?? []).some((p) => poisonedArtifacts.has(p));
 	const priorByFp = new Map<string, LeafResult>();
 	for (const [id, f] of priorFp) {
 		const r = prior.results[id];
 		if (poisoned?.has(f)) continue; // D-4: 被拒产出不入池 (哪怕 status='done')
-		if (r && r.status === "done" && !priorByFp.has(f)) priorByFp.set(f, r);
+		if (r && r.status === "done" && !readsPoisoned(r) && !priorByFp.has(f)) priorByFp.set(f, r);
 	}
 	const newFp = merkleFingerprints(plan);
 	const reuse = new Map<string, LeafResult>();

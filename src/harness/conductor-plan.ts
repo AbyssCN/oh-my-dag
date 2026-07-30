@@ -114,6 +114,22 @@ const PlanNode = z
      * 时用的旋钮 (谁要裁决谁自己开), 不是让规划者随手打开的东西。
      */
     judge_final: z.boolean().optional(),
+    /**
+     * **图内 fan-in 检测者** (P3 D-Q, 2026-07-30)。缺省 false = 零回归。
+     *
+     * 置 true = 本节点的输出按**检测者协议**读 (`REJECT: <id>` / `BLOCKED: <原因>`,
+     * 见 plan/detector.ts): 点名的兄弟节点直接进内环毒集, `BLOCKED:` 让环提前退出等外部输入。
+     * 它补的是 D-Q 说的那个洞 —— 普通节点只看得见自己的 depends_on, 而一个 fan-in 节点天然
+     * 看得见一批兄弟的产出, 缺的只是让它的判断**落进环**而不是留成一段没人读的文字。
+     *
+     * 只在 **conductor 节点展开出来的子图里**生效 (环在那儿); 设在别处引擎会 WARN 而不改变执行
+     * (明示即承诺的反面守卫, 同 expect_exit)。首选 `executor:'command'` —— 确定性 oracle 说
+     * "谁坏了"比再请一次 LLM 既便宜又可信。
+     *
+     * **刻意不进 conductor 的图式引导** (同 thinking): 明示它等于请规划者每张图都塞一个检测者,
+     * 那是一笔没有证据支持的常驻开销。
+     */
+    detector: z.boolean().optional(),
     /** executor='command' 时要跑的确定性 CLI (如 'codegraph trace X Y')。经 fail-closed 闸 + 白名单。 */
     command: z.string().optional(),
     /**

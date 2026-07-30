@@ -39,6 +39,14 @@ export interface NodeCheckpoint {
   outputPaths: string[];
   /** 每个 outputPath → sha256 前 16 hex 字符。轻量产物完整性检验。 */
   artifactHashes: Record<string, string>;
+  /**
+   * 该节点**读过**的文件路径 (D-12, agent-leaf 从 read 族 tool-call 事件收集)。
+   *
+   * 为什么进 checkpoint 而不只活在内存里: resume 跳过一个节点时, 它的 `filesRead` 本该随之
+   * 还原 —— 否则续跑一次, 制品 lint 与读毒的观察面就静默窄一截 (漏报的正是"上次读过被拒制品"
+   * 那种最该拦的节点)。缺席 = 老 checkpoint / 非 agent 节点 (向后兼容, 退回无观察)。
+   */
+  inputPaths?: string[];
   /** 模型用量。command leaf = null。 */
   tokenUsage: ModelUsage | null;
   /**
@@ -120,6 +128,29 @@ export interface DagMetadata {
   plan?: { name: string; description?: string; nodes: Record<string, unknown> };
   /** plan-memory: 用户任务原文 (family 聚类的匹配键; resume/预构造路径可缺)。 */
   taskText?: string;
+  /**
+   * **运行时展开出来的子节点** (2026-07-30, 观察面补齐): map / conductor 节点在运行期挂进图的那些点。
+   *
+   * ⚠ **刻意与 `nodeIds` / `deps` / `plan` / `generation` 分开存**, 这不是洁癖:
+   * `generation` = `computeDagGeneration({goal, nodeIds, deps})` 是 resume 的一致性锚, 而 resume
+   * 重跑时引擎按**存下来的 plan** 重算一次代数去比对 checkpoint。把运行时子节点并进 nodeIds/plan,
+   * 下一次 resume 算出来的代数就与盘上每一份 checkpoint 都对不上 → **整图全部作废重跑**,
+   * 正是 continuity 存在的意义被自己吃掉。所以这里只是一份**观察记录**: 谁在运行期长出来了、
+   * 挂在谁下面、什么 kind、有哪些边。`dag_resume` 一个字都不读它。
+   *
+   * 累积语义: 同 id 覆盖 (重展开得到同一个内容寻址 id = 同一个点), 不同 id 追加 (多轮重展开会
+   * 留下每一轮的痕迹 —— 那正是"这个环到底试过哪些分解"的唯一记录)。
+   */
+  runtimeNodes?: Array<{
+    /** 内容寻址子节点 id (`<parent>::<fp>`)。 */
+    id: string;
+    /** 展开它的那个 map/conductor 节点。 */
+    parent: string;
+    /** executor kind (leaf/agent/command/…)。 */
+    kind: string;
+    /** 该子节点的依赖 (含并进来的父节点外层上游)。 */
+    deps: string[];
+  }>;
 }
 
 /**

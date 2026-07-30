@@ -157,6 +157,9 @@ describe("dedupPass (D-20)", () => {
 			max_nodes: [4, 8],
 			max_rounds: [1, 3],
 			judge_final: [true, false],
+			// D-Q: 开不开检测者协议决定这个节点的输出是"一段文字"还是"一份能铸毒票 + 让环
+			// BLOCKED 退出的裁决" → 语义 (同 judge_final)。
+			detector: [true, false],
 			kind: ["primitive", undefined],
 			primitive: ["parallel", "judge"],
 			params: [{ p: 1 }, { p: 2 }],
