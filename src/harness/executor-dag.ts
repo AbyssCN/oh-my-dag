@@ -868,7 +868,10 @@ async function executePlan(
       if (plan!.nodes[cid]?.detector !== true) continue;
       const r = roundResults.get(cid);
       if (!r || r.status === 'failed') continue; // 检测者自己都没跑成 → 它没有裁决 (不当它说了什么)
-      const v = parseDetectorVerdict(r.output, childIds);
+      // 别名映射 (可读 id → 内容寻址 id): 命令检测者按构造只知道规划期那个可读名 —— 不给它
+      // 这条翻译, `REJECT:` 这一半协议对 command 节点等于不存在。
+      const aliasToId = new Map(expand.children.map((c) => [c.originalId, c.id]));
+      const v = parseDetectorVerdict(r.output, childIds, aliasToId);
       if (v.ghosts.length) {
         logger.warn({ node: id, detector: cid, ghosts: v.ghosts }, '[omd/executor-dag] 检测者点名了子图中不存在的 id → 丢弃 (D-Q)');
       }

@@ -43,6 +43,7 @@ const DECLARED_CONSUMERS: Record<string, string> = {
   cluster: 'stamp pass (D-22 链亲和) + HUD 分组',
   tier: 'stamp pass (D-17 选池档位)',
   attach_media: 'executor-dag (D-14v2 多模态 content parts)',
+  detector: 'executor-dag.runConductorRound (parseDetectorVerdict → 内环毒集 / BLOCKED 出口, D-Q)',
   kind: 'executor-dag.runPrimitiveNode',
   primitive: 'primitive-registry (compile + run)',
   params: 'primitive-registry (paramsSchema 深校验)',
