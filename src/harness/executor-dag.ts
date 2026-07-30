@@ -310,15 +310,20 @@ async function executePlan(
    * S1 产物内容进 judge 视图的预算 (`null` = 关)。
    *
    * ⚠ 这段进的是**每一次** judge 调用 —— 无界即是给每轮判决挂一个无界成本, 所以它是预算而不是
-   * 布尔开关。缺省关: 它改的是判决行为本身, 按本仓纪律要先有同语料 A/B 读数才翻默认
-   * (量法见 `scripts/eval-judge-artifacts.ts`)。
+   * 布尔开关。
+   *
+   * **缺省开** (2026-08-03 A/B 之后翻的; 在那之前缺省关):
+   * `deepseek-v4-pro` 座位 · 4 段 × 16 次 × 2 臂 —— 假阴性 **16/16 → 0/16** (Fisher p≈1.6e-9),
+   * 假阳性 **0/48 → 0/48** (没被换到另一侧), prompt token +11%。判据见
+   * `scripts/eval-judge-artifacts.ts` 的模块注: 两侧都要满足, 只报"收敛率升了"是自证。
+   * ⚠ **单座位读数** —— 换 judge 座位 (尤其换模型家族) 必须重跑, 别默认它是正收益。
    */
   const judgeArtifactBudget: ArtifactBudget | null =
-    config.judgeArtifacts === true
-      ? DEFAULT_ARTIFACT_BUDGET
+    config.judgeArtifacts === false
+      ? null
       : config.judgeArtifacts && typeof config.judgeArtifacts === 'object'
         ? config.judgeArtifacts
-        : null;
+        : DEFAULT_ARTIFACT_BUDGET;
   /**
    * 产物读取器。根用 `artifactLintRoot` —— **与制品 lint 同一个根**, 于是也继承它那条诚实边界:
    * `filesTouched` 的相对根是产出它的那个 leaf 的 cwd, 多 runner 混跑时可能对不上。

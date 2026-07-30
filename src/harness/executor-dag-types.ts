@@ -215,8 +215,8 @@ export interface ExecutorDagConfig {
    */
   onComplete?: (result: ExecutorDagResult) => void | Promise<void>;
   /**
-   * **产物内容进 judge 视图** (S1, 2026-08-03)。`true` = 用默认预算; 给对象 = 自定预算;
-   * 省略/false = 关 (**缺省**)。
+   * **产物内容进 judge 视图** (S1, 2026-08-03)。省略/`true` = 默认预算 (**缺省开**);
+   * 给对象 = 自定预算; `false` = 关。
    *
    * 补的洞: `[引擎实测]` 只给存在性 (`写入文件: X`), 而验收在**内容**上的目标要的是"文件里
    * 写了什么" —— judge 被要求裁决它看不见的东西 → fail-closed → **交付物全对也判未收敛**
@@ -224,8 +224,10 @@ export interface ExecutorDagConfig {
    * (自述就是自证, 而自证正是反捏造判词要杀的)。
    *
    * ⚠ **为什么是预算不是布尔**: 它进的是**每一次** judge 调用, 无界即无界成本。
-   * ⚠ **为什么缺省关**: 它改的是判决行为本身 —— 按本仓纪律要先有同语料 A/B 读数才翻默认
-   * (`scripts/eval-judge-artifacts.ts`)。翻默认前它对生产零影响。
+   *
+   * **读数** (`scripts/eval-judge-artifacts.ts`, deepseek-v4-pro, 4 段 × 16 次 × 2 臂):
+   * 假阴性 16/16 → **0/16** · 假阳性 0/48 → **0/48** · prompt token **+11%**。
+   * ⚠ 单座位读数, 换 judge 座位必须重跑。⚠ 点名召回 87.5% → 77% (方向一致但 p≈0.29, 在噪声内, 待观察)。
    */
   judgeArtifacts?: boolean | ArtifactBudget;
   /**
