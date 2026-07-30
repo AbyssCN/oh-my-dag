@@ -122,14 +122,32 @@ export function lintArtifactEdges(
   return findings;
 }
 
-/** lint 结果 → 观察条目 (指名两个节点, 照 INV-P2-4 的 GWT)。 */
-export function artifactLintObservations(findings: readonly ArtifactEdgeFinding[]): DagObservation[] {
+/**
+ * lint 结果 → 观察条目 (指名两个节点, 照 INV-P2-4 的 GWT)。
+ *
+ * `names` = 运行期内容寻址 id → **规划期可读名**。给它的理由是 2026-07-30 live 撞出来的:
+ * 这条消息的**唯一读者是下一轮重画的 conductor**, 而它写的是自己起的名字 —— 一句
+ * 「请给 [execute::1dsso0lqe0kky] 补上 [execute::1errm3oj42qds]」它既没见过那两个 id、
+ * 也造不出它们 (内容寻址 id 是展开那一刻才算的)。**报得对但按它做不了任何事**。
+ *
+ * 所以人话部分用可读名, 并且**建议写成通则而不是点名**: 下一轮的节点名可能又变了,
+ * 「读谁的产出就 depends_on 谁」这句照做得了, 「补上 X」不一定。id 仍留在 `nodes` 字段
+ * 里供审计 —— 事实与判词分开, 与 judge 视图那条同源。
+ */
+export function artifactLintObservations(
+  findings: readonly ArtifactEdgeFinding[],
+  names?: ReadonlyMap<string, string>,
+): DagObservation[] {
+  const label = (id: string): string => {
+    const n = names?.get(id);
+    return n && n !== id ? `"${n}"` : `[${id}]`;
+  };
   return findings.map((f) => ({
     kind: 'undeclared-artifact-dep' as const,
     nodes: [f.reader, f.writer],
     message:
-      `未声明的制品依赖: [${f.reader}] 读了 [${f.writer}] 写的 ${f.path}, 但图上没有这条边 —— ` +
-      `请给 [${f.reader}] 的 depends_on 补上 [${f.writer}]`,
+      `未声明的制品依赖: 节点 ${label(f.reader)} 读了 ${label(f.writer)} 写的 ${f.path}, ` +
+      '但图上没有这条边 —— 下一轮画图时请把它画出来: **读了哪个节点产出的文件, 就要 depends_on 它**。',
   }));
 }
 
