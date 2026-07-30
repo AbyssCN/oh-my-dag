@@ -18,7 +18,8 @@ export interface HudDagSnapshot {
   /** 目标 (≤120 字, 状态行标题)。 */
   goal: string;
   /** run 生命周期 (pending 刚登记未出事件; done/failed 终态 → statusline grace 后收起)。 */
-  status: 'pending' | 'running' | 'done' | 'failed';
+  /** 'cancelled' (D-P): 被叫停 —— 与 failed 分开 (没失败, 只是没跑完; 可 dag_resume 续)。 */
+  status: 'pending' | 'running' | 'done' | 'failed' | 'cancelled';
   /** 最后更新时刻 (ISO) — 读侧新鲜度闸的锚: 超 TTL 仍 running = server 疑似崩 → ⚠ stalled。 */
   updatedAt: string;
   /** topo 层级 (dag_run_plan 有 plan 可算; dag_run conductor 路径出图晚 → null → 平铺一行)。 */

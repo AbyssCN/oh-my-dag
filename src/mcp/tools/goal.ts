@@ -49,6 +49,10 @@ export function summarizeGoal(r: RunGoalResult): string {
       : `验收: 探索型 (无机器判据) · 学习目标: ${r.acceptance.learningGoal}`,
     ...r.stages.map((s) => `  [${s.status}] ${s.stage} — ${s.summary}`),
   ];
+  // D-Q/D-P: "没跑完"的两种收尾要第一眼看得见 —— 它们各自对应完全不同的下一步
+  // (阻塞 = owner 去看; 取消 = 直接 resume), 混在 stages 里读不出来。
+  if (r.blocked) lines.push(`阻塞 (需外部输入): ${r.blocked}`);
+  if (r.cancelled) lines.push(`已叫停: ${r.cancelled} · 续跑 dag_goal resume=<同一 runId>`);
   if (r.repoContext) lines.push(`仓内事实: ${r.repoContext.split('\n').length} 行`);
   if (r.specPath) lines.push(`spec: ${r.specPath}`);
   if (r.sources.length) lines.push(`来源 (${r.sources.length}): ${r.sources.slice(0, 5).join(', ')}`);
@@ -98,21 +102,39 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         };
       }
       const runId = resume || randomUUID();
-      deps.runRegistry.register(runId, { goal: goal.slice(0, 200), meta: { tool: 'dag_goal' } });
-      deps.runRegistry.start(runId);
+      if (resume) {
+        // 同一个 runId 重开: `register` 会因重复 id 抛 (server 还记得这个 run 时), 于是续跑一个
+        // **本进程里跑失败/被叫停过**的 goal 原本会当场炸 —— 走 reopenForResume (failed/cancelled/未知
+        // 三种都接得住), 与 dag_run/dag_run_plan 的 resume 同一条路。
+        const rec = deps.runRegistry.getRecord(runId);
+        if (rec && rec.status !== 'failed' && rec.status !== 'cancelled') {
+          return {
+            content: [{ type: 'text' as const, text: `dag_goal resume 拒绝: run ${runId} 当前 ${rec.status} (仅 failed/cancelled/未知可续)` }],
+            isError: true,
+          };
+        }
+        deps.runRegistry.reopenForResume(runId, { goal: goal.slice(0, 200), meta: { tool: 'dag_goal', resumed: true } });
+      } else {
+        deps.runRegistry.register(runId, { goal: goal.slice(0, 200), meta: { tool: 'dag_goal' } });
+        deps.runRegistry.start(runId);
+      }
 
       // INV-P2-6: continuity 给了才落环 journal; resume 时才读它 (与 per-node resume 同一开关)。
-      const dagWithContinuity: ExecutorDagConfig = deps.continuity
-        ? ({
-            ...dag,
-            continuity: {
-              manager: deps.continuity.manager,
-              runId,
-              repoRoot: deps.continuity.repoRoot,
-              ...(resume ? { resume: true } : {}),
-            },
-          } as ExecutorDagConfig)
-        : (dag as ExecutorDagConfig);
+      // D-P: 取消把手一并挂上 —— 自主环是最长活的那条路 (research + 多轮执行), 也是最需要能叫停的。
+      const dagWithContinuity: ExecutorDagConfig = {
+        ...dag,
+        cancelSignal: deps.runRegistry.attachCancel(runId),
+        ...(deps.continuity
+          ? {
+              continuity: {
+                manager: deps.continuity.manager,
+                runId,
+                repoRoot: deps.continuity.repoRoot,
+                ...(resume ? { resume: true } : {}),
+              },
+            }
+          : {}),
+      } as ExecutorDagConfig;
 
       // fire-and-forget: 自主环是长活 (research + spec + 多轮执行), 三段式取结果。
       deps
@@ -126,7 +148,10 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         .then((r) => {
           // 未收敛 = 自主环没达成 goal → 记 failed (**不算完成**): 谎报成功比失败更贵,
           // 调用方据此决定要不要人接手。
+          // D-P 例外: 被叫停的记 cancelled —— 它没失败, 只是没跑完, 而这两者的下一步不一样
+          // (查为什么挂了 vs 直接 resume)。blocked 仍记 failed: 它确实没达成, 只是原因是"要人"。
           if (r.converged) deps.runRegistry.succeed(runId, summarizeGoal(r));
+          else if (r.cancelled) deps.runRegistry.cancel(runId, r.cancelled, summarizeGoal(r));
           else deps.runRegistry.fail(runId, summarizeGoal(r));
         })
         .catch((err) => deps.runRegistry.fail(runId, err instanceof Error ? err.message : String(err)));

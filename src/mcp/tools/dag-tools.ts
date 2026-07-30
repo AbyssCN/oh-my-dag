@@ -220,10 +220,10 @@ function launchPlanRun(
   const runId = resume ?? randomUUID();
   const goal = task?.slice(0, 200) ?? parsedPlan.name ?? 'prebuilt plan';
   if (resume) {
-    // resume 语义: failed run 重开 / server 重启后未知 runId 重登记; 在飞或已 done 的拒绝。
+    // resume 语义: failed/cancelled run 重开 / server 重启后未知 runId 重登记; 在飞或已 done 的拒绝。
     const rec = runRegistry.getRecord(resume);
-    if (rec && rec.status !== 'failed') {
-      return { content: [{ type: 'text', text: `resume 拒绝: run ${resume} 当前 ${rec.status} (仅 failed/未知可续)` }], isError: true };
+    if (rec && rec.status !== 'failed' && rec.status !== 'cancelled') {
+      return { content: [{ type: 'text', text: `resume 拒绝: run ${resume} 当前 ${rec.status} (仅 failed/cancelled/未知可续)` }], isError: true };
     }
     runRegistry.reopenForResume(runId, { goal, meta: { tool: toolName, resumed: true } });
   } else {
@@ -239,6 +239,8 @@ function launchPlanRun(
   const config: ExecutorDagConfig = {
     ...defaultConfig,
     leafModel: leafModel ?? defaultConfig?.leafModel ?? '',
+    // D-P: 取消把手 (dag_cancel 拉它; 引擎在调度接缝上自己停, 不杀在飞节点)。
+    cancelSignal: runRegistry.attachCancel(runId),
     onNodeEvent: (e) => {
       runRegistry.applyNodeEvent(runId, e);
       hudMirror?.write(runId, runRegistry.getRecord(runId), hudLevels);
@@ -256,7 +258,10 @@ function launchPlanRun(
     .runExecutorDagWithPlan(parsedPlan, config)
     .then((result) => {
       runRegistry.setNodeDetails(runId, extractNodeDetails(result));
-      runRegistry.succeed(runId, summarizeResult(result));
+      // D-P: 被叫停的 run **不记 done** —— 它没跑完。手上的结果照样记进去 (已跑完的节点值钱),
+      // 状态用 cancelled 与"跑完了"分开, 调用方据此走 dag_resume 而不是去查为什么挂了。
+      if (result.cancelled) runRegistry.cancel(runId, result.cancelled.reason, summarizeResult(result));
+      else runRegistry.succeed(runId, summarizeResult(result));
       hudMirror?.write(runId, runRegistry.getRecord(runId), hudLevels);
       if (ledger && task) recordPlanRun(ledger, task, result, config.conductorModel);
     })
@@ -307,11 +312,64 @@ function makeDagResume(deps: DagToolDeps): OmdMcpTool {
   };
 }
 
+/**
+ * dag_cancel — **协作式**叫停一个在飞的 run (D-P)。
+ *
+ * 它不杀任何东西: 拉一下取消把手, 引擎在下一个**调度接缝**上停止派新活, 在飞的节点跑到自己
+ * 结束 (产物、checkpoint、账本一样不少), 然后 run 以 `cancelled` 终态收尾。
+ * 因此**这个工具返回时活还没停** —— 回的是"已请求", 不是"已停止"; 真停没停看 `dag_status`。
+ * 停下来之后 `dag_resume runId=<同一个>` 接着跑, 已绿节点全跳过。
+ */
+function makeDagCancel({ runRegistry }: DagToolDeps): OmdMcpTool {
+  return {
+    name: 'dag_cancel',
+    description: 'Cooperatively stop a run: no new nodes dispatched, in-flight ones finish, ends as cancelled (resumable).',
+    inputSchema: {
+      runId: z.string().describe('runId of a running run (see dag_runs)'),
+      reason: z.string().optional().describe('Why — shown in dag_status and recorded on the run'),
+    },
+    handler: async (args) => {
+      const { runId, reason } = args as { runId?: string; reason?: string };
+      if (!runId) throw new McpError(ErrorCode.InvalidParams, 'dag_cancel: missing required param "runId"');
+      const rec = runRegistry.getRecord(runId);
+      if (!rec) {
+        return { content: [{ type: 'text' as const, text: `dag_cancel: unknown run ${runId} (see dag_runs)` }], isError: true };
+      }
+      if (rec.status !== 'running') {
+        return { content: [{ type: 'text' as const, text: `dag_cancel: run ${runId} 当前 ${rec.status} — 不在飞, 无可取消` }], isError: true };
+      }
+      const why = reason?.trim() || '调用方叫停 (dag_cancel)';
+      // 把手不在 = server 重启后内存态丢了 (记录还在, 引擎却已不由本进程持有)。**如实说没停到** ——
+      // 回一句"已取消"而实际没停, 比停不下来更坏。
+      if (!runRegistry.requestCancel(runId, why)) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `dag_cancel: run ${runId} 没有取消把手 (多半是 server 重启后内存态丢了) — **没有停到**。` +
+              '该 run 若仍在别的进程里跑, 只能等它自己结束。',
+          }],
+          isError: true,
+        };
+      }
+      return {
+        content: [{
+          type: 'text' as const,
+          text:
+            `dag_cancel: 已请求取消 ${runId} (${why})\n` +
+            '协作式: 不派新节点, 在飞的跑完才收尾 → 现在还没停, 看 dag_status 等它转 cancelled。\n' +
+            `续跑: dag_resume runId=${runId} (已跑完的节点会被跳过)`,
+        }],
+      };
+    },
+  };
+}
+
 export function createDagTools(deps: DagToolDeps): OmdMcpTool[] {
   return [
     makeDagRun(deps),
     makeDagRunPlan(deps),
     makeDagResume(deps),
+    makeDagCancel(deps),
     makeDagStatus(deps),
     makeDagResult(deps),
     makeDagNodeOutput(deps),
@@ -354,11 +412,11 @@ function makeDagRun({ engine, runRegistry, continuity, hudMirror, ledger, ...res
       const runId = resume ?? randomUUID();
       const goal = task.slice(0, 200);
       if (resume) {
-        // resume 语义: failed run 重开 / server 重启后未知 runId 重登记; 在飞或已 done 的拒绝。
+        // resume 语义: failed/cancelled run 重开 / server 重启后未知 runId 重登记; 在飞或已 done 的拒绝。
         const rec = runRegistry.getRecord(resume);
-        if (rec && rec.status !== 'failed') {
+        if (rec && rec.status !== 'failed' && rec.status !== 'cancelled') {
           return {
-            content: [{ type: 'text' as const, text: `resume 拒绝: run ${resume} 当前 ${rec.status} (仅 failed/未知可续)` }],
+            content: [{ type: 'text' as const, text: `resume 拒绝: run ${resume} 当前 ${rec.status} (仅 failed/cancelled/未知可续)` }],
             isError: true,
           };
         }
@@ -382,6 +440,8 @@ function makeDagRun({ engine, runRegistry, continuity, hudMirror, ledger, ...res
         ...defaultConfig,
         conductorModel: conductorModel ?? defaultConfig?.conductorModel ?? '',
         leafModel: leafModel ?? defaultConfig?.leafModel ?? '',
+        // D-P: 取消把手 (dag_cancel 拉它)。
+        cancelSignal: runRegistry.attachCancel(runId),
         // 活体进度: conductor 出图后引擎发 planned → start/settle 流进 registry (dag_status 实时) +
         // hudMirror 原子写 .omd/hud/dag.json (omd-hud statusline 数据源; conductor 路径无 topo → levels=null 平铺)。
         onNodeEvent: (e) => {
@@ -417,7 +477,9 @@ function makeDagRun({ engine, runRegistry, continuity, hudMirror, ledger, ...res
         .runExecutorDag(task, config)
         .then((result) => {
           runRegistry.setNodeDetails(runId, extractNodeDetails(result));
-          runRegistry.succeed(runId, summarizeResult(result));
+          // D-P: 叫停的不记 done (见 launchPlanRun 同款注)。
+          if (result.cancelled) runRegistry.cancel(runId, result.cancelled.reason, summarizeResult(result));
+          else runRegistry.succeed(runId, summarizeResult(result));
           hudMirror?.write(runId, runRegistry.getRecord(runId)); // 终态 done → statusline grace 后收起
           // plan-memory Phase A: 记一笔 (family 聚类 + 版本 + 战绩)。record 自身 fail-open。
           if (ledger) recordPlanRun(ledger, task, result, config.conductorModel);

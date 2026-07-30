@@ -631,3 +631,77 @@ describe('defaultConfig thunk 抛错 — INV-MODEL-5 响亮但不崩', () => {
     expect(r.content[0]!.text).toContain('起跑自检失败');
   });
 });
+
+// ---------------------------------------------------------------------------
+// dag_cancel (D-P 协作式取消, 2026-07-30)
+// ---------------------------------------------------------------------------
+describe('dag_cancel — 协作式取消的 MCP 面', () => {
+  /** 引擎: 等取消信号被拉起来再返回一个"被叫停"的结果 (真引擎就是这么收尾的)。 */
+  const cancellableEngine = (seen: { signal?: AbortSignal }): DagEngine => {
+    const run = async (_a: unknown, config: ExecutorDagConfig): Promise<ExecutorDagResult> => {
+      seen.signal = config.cancelSignal;
+      await new Promise<void>((r) => {
+        if (config.cancelSignal?.aborted) return r();
+        config.cancelSignal?.addEventListener('abort', () => r(), { once: true });
+      });
+      return {
+        ...stubResult(),
+        cancelled: { reason: String(config.cancelSignal?.reason ?? '?'), at: '2026-07-30T00:00:00Z', notRun: ['later'] },
+      };
+    };
+    return {
+      runExecutorDag: (t, c) => run(t, c),
+      runExecutorDagWithPlan: (p, c) => run(p, c),
+    };
+  };
+
+  test('叫停在飞 run → 引擎收到 signal, run 终态 cancelled 而**不是 failed/done**', async () => {
+    const reg = new RunRegistry();
+    const seen: { signal?: AbortSignal } = {};
+    const tools = createDagTools({ engine: cancellableEngine(seen), runRegistry: reg, cwd: '/tmp', defaultConfig: DEFAULT_CONFIG });
+    const started = await getTool(tools, 'dag_run')({ task: 'long thing' }) as { content: { text: string }[] };
+    const runId = started.content[0]!.text.match(/runId: ([\w-]+)/)![1]!;
+    expect(reg.getRecord(runId)!.status).toBe('running');
+
+    const r = await getTool(tools, 'dag_cancel')({ runId, reason: '不想跑了' }) as { content: { text: string }[]; isError?: boolean };
+    expect(r.isError).toBeUndefined();
+    // 回的是"已请求"而不是"已停止" —— 协作式取消这一刻活还没停。
+    expect(r.content[0]!.text).toContain('已请求取消');
+    expect(seen.signal?.aborted).toBe(true);
+
+    await Bun.sleep(5); // 让 fire-and-forget 的收尾跑完
+    const rec = reg.getRecord(runId)!;
+    expect(rec.status).toBe('cancelled');
+    expect(rec.error).toContain('不想跑了');
+    expect(rec.result).toBeDefined(); // 手上的结果照给 (已跑完的节点值钱)
+  });
+
+  test('cancelled 的 run 可以直接 resume (D-P 的"已跑完的全保留"兑现在这一步)', async () => {
+    const reg = new RunRegistry();
+    reg.register('r1', { goal: 'g' });
+    reg.start('r1');
+    reg.cancel('r1', '叫停');
+    expect(() => reg.reopenForResume('r1', { goal: 'g' })).not.toThrow();
+    expect(reg.getStatus('r1')).toBe('running');
+  });
+
+  test('未知 / 不在飞的 run → isError, 不假装停到了', async () => {
+    const reg = new RunRegistry();
+    const tools = createDagTools({ engine: fakeEngine(stubResult()), runRegistry: reg, cwd: '/tmp', defaultConfig: DEFAULT_CONFIG });
+    const unknown = await getTool(tools, 'dag_cancel')({ runId: 'nope' }) as { content: { text: string }[]; isError?: boolean };
+    expect(unknown.isError).toBe(true);
+    reg.register('r2', { goal: 'g' });
+    reg.start('r2');
+    reg.succeed('r2', 'ok');
+    const doneRun = await getTool(tools, 'dag_cancel')({ runId: 'r2' }) as { content: { text: string }[]; isError?: boolean };
+    expect(doneRun.isError).toBe(true);
+    expect(doneRun.content[0]!.text).toContain('不在飞');
+  });
+
+  test('把手不在 (server 重启后内存态丢) → **如实说没停到**, 不回一句"已取消"', () => {
+    const reg = new RunRegistry();
+    reg.register('r3', { goal: 'g' });
+    reg.start('r3'); // 没 attachCancel → 没有把手
+    expect(reg.requestCancel('r3', 'x')).toBe(false);
+  });
+});

@@ -26,6 +26,8 @@ const ALL_TOOLS = [
   'dag_run',
   'dag_run_plan',
   'dag_resume',
+  // D-P 协作式取消 (2026-07-30): 叫停在飞 run, 不杀在飞节点, 停完可 dag_resume 续。
+  'dag_cancel',
   'dag_status',
   'dag_result',
   'dag_node_output',

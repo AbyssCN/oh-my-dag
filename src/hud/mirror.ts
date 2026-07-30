@@ -25,7 +25,7 @@ const HUD_DIR = '.omd/hud';
  */
 export interface HudRunRecordLike {
   goal: string;
-  status: 'pending' | 'running' | 'done' | 'failed';
+  status: 'pending' | 'running' | 'done' | 'failed' | 'cancelled';
   updatedAt: string;
   progress?: {
     planned: Array<{ id: string; kind: string }>;
