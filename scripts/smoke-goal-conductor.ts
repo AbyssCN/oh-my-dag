@@ -17,12 +17,16 @@
  *   bun run scripts/smoke-goal-conductor.ts --tier complex  # 走契约段 (贵得多: 多一个 conductor 节点)
  *   bun run scripts/smoke-goal-conductor.ts --goal "..."     # 自定目标
  *   bun run scripts/smoke-goal-conductor.ts --rounds 2       # 内环轮数上限 (默认 1: 只看展开+终判)
+ *   bun run scripts/smoke-goal-conductor.ts --case conflicting-specs --rounds 3
+ *                                                          # **带种沙箱**: 先种一对自相矛盾的源材料,
+ *                                                          #   目标/看点由用例自带 (见 live-seed-cases)
  */
-import { mkdtempSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { assembleOmdMcpTools } from '../src/mcp/assemble';
 import { RunRegistry } from '../src/mcp/run-registry';
+import { LIVE_SEED_CASES, liveSeedCaseById } from '../src/eval/tasks/live-seed-cases';
 
 const argv = process.argv.slice(2);
 const arg = (name: string): string | undefined => {
@@ -33,14 +37,30 @@ const arg = (name: string): string | undefined => {
 const tier = (arg('tier') ?? 'simple') as 'simple' | 'complex';
 const rounds = Number.parseInt(arg('rounds') ?? '1', 10);
 const timeoutMs = Number.parseInt(arg('timeout') ?? '600000', 10);
+// 带种用例 (--case): 目标与沙箱初始内容一起来自用例 —— 冲突必须是**输入**给的, 由目标文字
+// 现编一个"你们俩故意写得不一样"是测不出东西的 (见 live-seed-cases 的模块注)。
+const seedCase = arg('case') ? liveSeedCaseById(arg('case')!) : undefined;
+if (arg('case') && !seedCase) {
+  console.error(`没有这个用例: ${arg('case')} (现有: ${LIVE_SEED_CASES.map((c) => c.id).join(', ')})`);
+  process.exit(1);
+}
 const goal =
   arg('goal') ??
+  seedCase?.goal ??
   // 小到能一眼看出真假, 但要求真动手 (写文件) 且有确定性验收 (cat 在命令白名单里)。
   '在当前目录创建文件 notes/hello.md, 内容是一行 "hello omd", 然后用 cat 读出来确认写成功了。';
 
 const sandbox = mkdtempSync(join(tmpdir(), 'omd-smoke-goal-'));
 // 给沙箱一点"像个仓"的样子 —— 勘察步扑空不算失败, 但空目录会让 complex 档没什么可看的。
 writeFileSync(join(sandbox, 'README.md'), '# smoke sandbox\n\n这是 dag_goal live 冒烟用的临时目录。\n');
+for (const [rel, content] of Object.entries(seedCase?.files ?? {})) {
+  mkdirSync(dirname(join(sandbox, rel)), { recursive: true });
+  writeFileSync(join(sandbox, rel), content);
+}
+if (seedCase) {
+  console.log(`用例: ${seedCase.id} · 已种 ${Object.keys(seedCase.files).length} 份源材料`);
+  console.log(`看点: ${seedCase.watchFor}\n`);
+}
 
 console.log(`沙箱: ${sandbox}`);
 console.log(`目标: ${goal}`);
@@ -106,7 +126,17 @@ for (const dir of existsSync(contDir) ? readdirSync(contDir) : []) {
 
 // 目标本身成没成 —— 与 judge 的意见分开看 (它才是 oracle)。
 const wrote = join(sandbox, 'notes', 'hello.md');
-if (!arg('goal')) {
+if (!arg('goal') && !seedCase) {
   console.log(`\n真产物: ${wrote} ${existsSync(wrote) ? `✅\n  ${readFileSync(wrote, 'utf-8').trim()}` : '❌ 不存在'}`);
+}
+// 带种用例: 产物是用例自己的事, 这里只把写出来的东西摊开 —— 判"抓到冲突没有"要看内容,
+// 而**存在 ≠ 对**: 一个硬凑出 "100-500" 的摘要文件同样存在 (那正是最坏的一种)。
+if (seedCase) {
+  const docs = join(sandbox, 'docs');
+  console.log(`\n── 产物 (${seedCase.id}) ──`);
+  for (const f of existsSync(docs) ? readdirSync(docs).sort() : []) {
+    console.log(`\n  docs/${f}:\n${readFileSync(join(docs, f), 'utf-8').split('\n').map((l) => `    ${l}`).join('\n')}`);
+  }
+  if (!existsSync(docs)) console.log('  (docs/ 不存在 —— 一份都没写出来)');
 }
 console.log(`\n沙箱保留在 ${sandbox} (自己看完自己删)。`);
