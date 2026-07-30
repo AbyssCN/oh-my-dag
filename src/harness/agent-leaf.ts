@@ -289,8 +289,11 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // start 记 toolCallId→path 候选, end 且 !isError 才计入 (失败的写不算产物)。
     // 此前 runner 从不填 filesTouched → executor-dag 产物闸把真交付的文件节点全判 failed (恒空 = "谎报完工")。
     const FILE_WRITE_TOOLS = new Set(['write', 'edit', 'hashline_edit']);
-    // D-12 读采集: **与写监听同一形状** (start 记候选 → end 且 !isError 才计入)。只认单文件读工具 ——
-    // grep/ls/glob 是检索不是消费, 收进来会把 artifact-lint 淹在噪声里 (见 AgentLeafResult.filesRead)。
+    // D-12 读采集: **与写监听同一形状** (start 记候选 → end 且 !isError 才计入)。
+    // 词表已核对 (2026-07-30, 扫 pi dist): 内置工具是 read/write/edit/ls/grep/bash + 自定义
+    // hashline_read/hashline_edit —— 单文件读的入口只有 read 与 hashline_read 两个, 这里是完整的。
+    // `grep`/`ls` 刻意不收: 它们是**检索**不是消费 (一次 grep 命中十个文件不等于依赖那十个),
+    // 收进来会把 artifact-lint 淹在噪声里。`bash` 里的 cat 收不到 —— 与写侧漏 bash 重定向同一条边界。
     const FILE_READ_TOOLS = new Set(['read', 'hashline_read']);
     const touched = new Set<string>();
     const readPaths = new Set<string>();
