@@ -8,6 +8,8 @@
  * 测试传 fake 即可端到端跑。
  */
 import { randomUUID } from 'node:crypto';
+import { mkdirSync, openSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import type { OmdMcpTool } from '../server';
 import type { RunGoalResult, GoalTier } from '../../harness/goal/run-goal';
@@ -49,6 +51,35 @@ export interface GoalToolDeps {
    * 挂在 `runGoal` 的 `.then()` 上拿不到这个: 那里只剩 `RunGoalResult`, 两张图的用量已经不在了。
    */
   recorder?: DagRecorder;
+  /**
+   * 脱离会话子进程的起法 (S2 后半)。默认 = `Bun.spawn` detached + stdout/stderr → 日志 + unref,
+   * 与 pathfinder `dispatch.ts` 的 AFK research 同一个 idiom。测试注入替身, **永不起真进程**。
+   */
+  spawnDetached?: (cmd: string[], opts: { cwd: string; logPath: string }) => number | undefined;
+}
+
+/**
+ * worker 脚本路径按**本包安装位置**解析 (goal.ts 在 src/mcp/tools/ → 包根/scripts/)。
+ *
+ * 相对 cwd 拼 'scripts/goal-worker.ts' 在别的 repo 里必然 Script not found, 而错误只进 .log ——
+ * run 会静默卡在"起了但永远不出现"。dispatch.ts 的 dag-research 路径解析踩过同一个坑, 同款修法。
+ */
+function workerScriptPath(): string {
+  return join(import.meta.dir, '..', '..', '..', 'scripts', 'goal-worker.ts');
+}
+
+/** 默认 spawnDetached: Bun.spawn detached, stdout/stderr → 日志文件, unref (母进程不等)。 */
+function defaultSpawnDetached(cmd: string[], opts: { cwd: string; logPath: string }): number | undefined {
+  mkdirSync(dirname(opts.logPath), { recursive: true });
+  const fd = openSync(opts.logPath, 'a');
+  const proc = Bun.spawn(cmd, {
+    cwd: opts.cwd,
+    stdin: 'ignore',
+    stdout: fd as unknown as number,
+    stderr: fd as unknown as number,
+  });
+  proc.unref();
+  return proc.pid;
 }
 
 /** 阶段结论压成宽出摘要 (D-8: 客户端上下文只拿结论, 全文自己 Read spec/report)。 */
@@ -89,14 +120,19 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         .string()
         .optional()
         .describe('runId of an interrupted dag_goal — resume its inner loop rounds (keeps poison set + green nodes)'),
+      detached: z
+        .boolean()
+        .optional()
+        .describe('Run in a background process that survives this MCP session ending (returns immediately)'),
     },
     handler: async (args) => {
-      const { goal, tier, maxRounds, researchRounds, resume } = args as {
+      const { goal, tier, maxRounds, researchRounds, resume, detached } = args as {
         goal?: string;
         tier?: GoalTier;
         maxRounds?: number;
         researchRounds?: number;
         resume?: string;
+        detached?: boolean;
       };
       if (!goal?.trim()) {
         return { content: [{ type: 'text' as const, text: 'dag_goal: goal 必填' }], isError: true };
@@ -108,6 +144,51 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         // 起跑自检 / 座位未配 (INV-MODEL-5): 响亮但不崩 server。
         return { content: [{ type: 'text' as const, text: `dag_goal 拒绝: ${(e as Error).message}` }], isError: true };
       }
+      // ── 脱离会话 (S2 后半 / D-W): 把活交给一个不随本 session 死的进程 ──────────────
+      //
+      // MCP server 是 stdio + 客户端消失即自杀 —— 于是 Claude 会话一结束, 在飞的 goal 就死在半路,
+      // 「无人值守」在这条路上物理上不成立。detached 起一个 `scripts/goal-worker.ts` 子进程,
+      // 它装同一份 assembleOmdMcpTools 调同一个 dag_goal, **零新执行路径**。
+      //
+      // 注意这里**不登记** run: 登记由 worker 做 (它才是属主, pid 判活要认它)。母进程抢先登记会
+      // 让盘上留下一个属主是母进程的记录, 而母进程随时会走 —— 下一个 session hydrate 就把一个
+      // 正在跑的 run 判成"被打断"。代价是有个**毫秒级窗口**: worker 起来之前 dag_status 查无此 run。
+      if (detached) {
+        const spawn = deps.spawnDetached ?? defaultSpawnDetached;
+        const runId = resume || randomUUID();
+        const logPath = join(deps.cwd, '.omd', 'goal-logs', `${runId}.log`);
+        const cmd = [
+          'bun',
+          'run',
+          workerScriptPath(),
+          '--run-id', runId,
+          '--cwd', deps.cwd,
+          '--goal', goal,
+          ...(tier ? ['--tier', tier] : []),
+          ...(maxRounds ? ['--max-rounds', String(maxRounds)] : []),
+          ...(researchRounds ? ['--research-rounds', String(researchRounds)] : []),
+        ];
+        let pid: number | undefined;
+        try {
+          pid = spawn(cmd, { cwd: deps.cwd, logPath });
+        } catch (e) {
+          // 起不来要**当场响亮失败**, 不能回一个永远不会出现的 runId —— 那比不支持 detached 更坏。
+          return {
+            content: [{ type: 'text' as const, text: `dag_goal detached 起跑失败: ${(e as Error).message}` }],
+            isError: true,
+          };
+        }
+        return {
+          content: [{
+            type: 'text' as const,
+            text:
+              `runId: ${runId}\nstatus: detached${pid ? ` (pid ${pid})` : ''}\n` +
+              `日志: ${logPath}\n` +
+              `它不随本会话结束而死。查进度 dag_status runId=${runId} (新会话也查得到; 若刚起跑查无此 run, 等几秒)。`,
+          }],
+        };
+      }
+
       // resume 复用**同一个 runId** —— journal 与 checkpoint 都按 runId 存, 换 id 就等于从零开始。
       if (resume && !deps.continuity) {
         return {
