@@ -34,7 +34,7 @@ import { cavemanRule, leafCavemanLevel } from './caveman';
 import { leafCostReward } from './model-router';
 import { logger } from './logger';
 // ── T2#5 按簇拆出的兄弟文件 (引擎消费) ──
-import type { GenerateFn, ExecutorDagConfig, LeafResult, ExecutorDagResult } from './executor-dag-types';
+import type { GenerateFn, ExecutorDagConfig, LeafResult, ExecutorDagResult, DagObservation } from './executor-dag-types';
 import { makeDefaultGenerate, LEAF_SYSTEM_PREFIX, PONYTAIL_LEAF_DISPOSITION } from './executor-dag-defaults';
 import { topoLevels, buildLeafPrompt, addUsage, filterOracleCommandNodes } from './executor-dag-planner';
 import { loadAgentTemplates, templateRoster, type AgentTemplate } from './agent-templates';
@@ -52,6 +52,15 @@ import {
 import { computeReuse, merkleFingerprints } from './plan-passes/semantic-key';
 import { expandConductorNode, subgraphWarnings } from './plan/conductor-expand';
 import { renderRoundForJudge, splitNamedIds, type JudgeChildView } from './plan/conductor-judge';
+// D-Q 图外只读观察者的两个确定性 producer (零模型调用): 制品边 lint + 环空转检测。
+import {
+  lintArtifactEdges,
+  artifactLintObservations,
+  detectLoopNoProgress,
+  type RoundShape,
+} from './plan/observers';
+// D-Q detector 节点: 图内 fan-in 检测者的输出协议解析 (REJECT: / BLOCKED:)。
+import { parseDetectorVerdict, DETECTOR_PROTOCOL } from './plan/detector';
 import { makeLlmConvergenceJudge } from './plan/llm-judge';
 import { send } from '../model/gateway';
 // D-14v2 多模态媒体管道 (S4): attach_media 执行期从直接前驱输出解析图片 → ContentPart 注入。
@@ -75,6 +84,10 @@ interface ExecOnce {
   results: Record<string, LeafResult>;
   /** 本轮 D-21 复用命中的节点 id (结果面 reusedNodes 的来源)。 */
   reusedNodes: string[];
+  /** D-Q 图外只读观察者本轮的产出 (制品边 lint / 环空转)。 */
+  observations: DagObservation[];
+  /** D-P: 本轮是被叫停的 (给了就非自然结束); notRun = 一个都没起跑过的节点。 */
+  cancelled?: { reason: string; at: string; notRun: string[] };
 
   conductorUsage: ModelUsage;
   leavesIn: number;
@@ -249,6 +262,61 @@ async function executePlan(
     nodes: Object.entries(plan.nodes).map(([id, n]) => ({ id, kind: nodeKind(n) })),
   });
 
+  // ── D-P 协作式取消 (2026-07-30) ────────────────────────────────────────────
+  // 只在**调度接缝**上问一句"还要不要派新活", 不碰在飞的节点 (见 ExecutorDagConfig.cancelSignal)。
+  const isCancelled = (): boolean => config.cancelSignal?.aborted === true;
+  const cancelReason = (): string => {
+    const r = config.cancelSignal?.reason;
+    return typeof r === 'string' && r.trim() ? r : r instanceof Error ? r.message : '调用方叫停';
+  };
+
+  // ── D-Q 图外只读观察者的收集面 ─────────────────────────────────────────────
+  // 同一条观察可能被多轮/多处算出来 (制品 lint 每轮跑一次, 而边一直没补) → 按内容去重,
+  // 否则一个没修的问题会在结果面里刷屏, 把真正的新发现淹掉。
+  const observations: DagObservation[] = [];
+  const seenObservations = new Set<string>();
+  /** conductor 运行时展开出来的子节点 id —— `detector` 的消费者只在内环里, 别处设了要响亮忽略。 */
+  const conductorChildIds = new Set<string>();
+  const observe = (obs: readonly DagObservation[]): DagObservation[] => {
+    const fresh: DagObservation[] = [];
+    for (const o of obs) {
+      const key = `${o.kind}|${o.nodes.join(',')}|${o.message}`;
+      if (seenObservations.has(key)) continue;
+      seenObservations.add(key);
+      observations.push(o);
+      fresh.push(o);
+      logger.warn({ kind: o.kind, nodes: o.nodes }, `[omd/executor-dag] 图外观察者: ${o.message}`);
+    }
+    return fresh;
+  };
+  /** 制品路径的解析根 (lint 用; 与产物闸的兜底根同一个)。 */
+  const artifactLintRoot = config.continuity?.repoRoot ?? process.cwd();
+  /** 跑一次制品边 lint (D-12/INV-P2-4) → 新发现的观察条目。零模型调用, 只报告不拦截。 */
+  const runArtifactLint = (): DagObservation[] =>
+    observe(artifactLintObservations(lintArtifactEdges(plan!.nodes, results, { root: artifactLintRoot })));
+
+  /**
+   * **运行时展开留痕** (观察面补齐, 2026-07-30): map/conductor 把子节点挂进图的那一刻,
+   * ① 发 `expanded` 事件 (活体进度: `dag_status` 的图不再只有父节点一个点)
+   * ② 追加进 `_dag.json` 的 `runtimeNodes` (事后审计; **不碰** nodeIds/deps/plan/generation ——
+   *    动那四样会让下一次 resume 的代数校验全体作废, 见 DagMetadata.runtimeNodes 的注)。
+   * 全程 fail-open: 留痕失败不该影响执行。
+   */
+  const recordRuntimeExpansion = (parent: string, childIds: readonly string[]): void => {
+    try {
+      const nodes = childIds.map((id) => ({
+        id,
+        parent,
+        kind: nodeKind(plan!.nodes[id]!),
+        deps: [...((plan!.nodes[id]!.depends_on ?? []) as string[])],
+      }));
+      emitNodeEvent({ type: 'expanded', parent, nodes });
+      if (continuity) continuity.manager.appendRuntimeNodes(continuity.runId, nodes);
+    } catch (err) {
+      logger.warn({ node: parent, err }, '[omd/executor-dag] 运行时展开留痕失败 (fail-open)');
+    }
+  };
+
   // ── D-21 escalation 跨轮复用: 语义 Merkle 指纹 + 前驱闭包匹配上轮 done 节点 → 零 LLM 注入。
   // 重规划最烧 token 的形态 = 80% 节点语义没变却整图重跑; 指纹按语义不按 id, 重命名不破匹配。
   // D-4 (P1.5): prior.poisoned = 上轮被 judge 点名拒绝的节点指纹, 一律不复用 (前向闭包免费, 见 computeReuse)。
@@ -335,6 +403,8 @@ async function executePlan(
     text: string;
     usage: ModelUsage | null;
     filesTouched: readonly string[];
+    /** D-12: 本节点读过的文件 → checkpoint.inputPaths (resume 跳过时还原, 观察面不因续跑变窄)。 */
+    filesRead?: readonly string[];
     deps: readonly string[];
     t0: number;
     /** noun-gate material (agent/inproc leaf 的完整 prompt); 无则跳过注释。 */
@@ -386,6 +456,7 @@ async function executePlan(
         ...(opts.model ? { model: opts.model } : {}),
         outputPaths,
         artifactHashes,
+        ...(opts.filesRead?.length ? { inputPaths: opts.filesRead.map(rel) } : {}),
         tokenUsage: opts.usage,
         summary,
         ...(outputText ? { outputText } : {}),
@@ -469,7 +540,18 @@ async function executePlan(
     poisoned: ReadonlySet<string>,
     /** 上一轮的子节点结果 (D-21 内环版: 跨轮复用的匹配源, 键 = 内容寻址 id)。 */
     prevResults: ReadonlyMap<string, LeafResult>,
-  ): Promise<{ leaf: LeafResult; children: JudgeChildView[]; usage: ModelUsage; results: Map<string, LeafResult> }> => {
+  ): Promise<{
+    leaf: LeafResult;
+    children: JudgeChildView[];
+    usage: ModelUsage;
+    results: Map<string, LeafResult>;
+    /** D-Q 图内检测者本轮的裁决 (与 judge 的票并进同一个毒集)。 */
+    detector: { rejected: string[]; blocked?: string };
+    /** D-12 制品边 lint 本轮**新**发现的观察条目 (去重后; 进下一轮失败原因)。 */
+    lint: DagObservation[];
+    /** 本轮展开出的子节点 id (D-Q 空转检测的比对面)。 */
+    childIds: string[];
+  }> => {
     const node = plan!.nodes[id]!;
     const deps = node.depends_on ?? [];
     let usageAcc: ModelUsage = { in: 0, out: 0 };
@@ -542,7 +624,7 @@ async function executePlan(
       logger.warn({ node: id, round, err: msg }, '[omd/executor-dag] conductor 节点展开失败 → failed');
       return {
         leaf: { id, status: 'failed', kind: 'conductor', output: `[conductor 展开失败: ${msg}]`, deps, usage: usageAcc },
-        children: [], usage: usageAcc, results: new Map(),
+        children: [], usage: usageAcc, results: new Map(), detector: { rejected: [] }, lint: [], childIds: [],
       };
     }
 
@@ -560,7 +642,7 @@ async function executePlan(
           output: `[子图被拒 (${expand.status}): ${expand.error ?? '空子图 — conductor 没能分解出任何步骤'}]`,
           deps, usage: usageAcc,
         },
-        children: [], usage: usageAcc, results: new Map(),
+        children: [], usage: usageAcc, results: new Map(), detector: { rejected: [] }, lint: [], childIds: [],
       };
     }
     if (expand.truncated > 0) {
@@ -579,7 +661,11 @@ async function executePlan(
     for (const child of expand.children) {
       const inner = (child.node.depends_on ?? []) as string[];
       plan!.nodes[child.id] = { ...child.node, depends_on: [...new Set([...inner, ...deps])] };
+      // D-Q: 记下"这是 conductor 展开出来的子节点" —— detector 只在环里有消费者, 别处设了要 WARN。
+      conductorChildIds.add(child.id);
     }
+    // 观察面: 图上多了这些点 (活体事件 + `_dag.json` 的 runtimeNodes 留痕)。
+    recordRuntimeExpansion(id, expand.children.map((c) => c.id));
     // **本节点自己的毒集**落到 resume 面 (D-A: 毒集的新家是节点级 journal, 见 NodeLoopJournal)。
     // 上一轮被内环 judge 点名的子节点, 崩溃重来时不许靠 checkpoint 当绿跳过 —— 与外层
     // `dropPoisonedGreens` 同一条纪律, 只是键是**内容寻址的子节点 id** (见 NodeLoopJournal 的注:
@@ -599,14 +685,34 @@ async function executePlan(
     // **前驱也得可复用**: 上游若要重跑, 本节点吃到的输入就变了 (与 computeReuse 的 `deps.every` 同理)。
     const reuseLocal = new Map<string, LeafResult>();
     if (prevResults.size > 0) {
+      // ── INV-P2-5 制品级毒**作用在消费方** (D-12, 2026-07-30) ──────────────────
+      // 被拒子节点写过的文件 = 可疑制品。上一轮**读过**这些文件的兄弟节点, 哪怕自己没被点名、
+      // id 也没变, 一样不能复用 —— 它的产出是**吃着一份已被判为坏的输入**做出来的。
+      // 为什么这条不能靠现有的前驱闭包兜: 闭包顺的是**图上的边**, 而这条读根本没有边
+      // (有边的话它就是普通下游, 早被闭包扫掉了)。图外读正是 D-12 让它可见的那条通道。
+      const poisonedArtifacts = new Set<string>();
+      for (const pid of poisoned) {
+        for (const f of prevResults.get(pid)?.filesTouched ?? []) poisonedArtifacts.add(f);
+      }
+      const readsPoisoned = (prev: LeafResult): string | null => {
+        if (poisonedArtifacts.size === 0) return null;
+        return (prev.filesRead ?? []).find((f) => poisonedArtifacts.has(f)) ?? null;
+      };
       const memo = new Map<string, boolean>();
       const canReuse = (cid: string): boolean => {
         const m = memo.get(cid);
         if (m !== undefined) return m;
         memo.set(cid, false); // 环/自引用下界 (展开期已查过环, 这里是纯函数自保)
         const prev = prevResults.get(cid);
+        const tainted = prev ? readsPoisoned(prev) : null;
+        if (tainted) {
+          logger.info(
+            { node: id, child: cid, artifact: tainted },
+            '[omd/executor-dag] 制品级毒命中消费方 → 该子节点不复用 (INV-P2-5: 它读过被拒节点写的文件)',
+          );
+        }
         const inner = ((plan!.nodes[cid]?.depends_on ?? []) as string[]).filter((d) => d.startsWith(`${id}::`));
-        const ok = !!prev && prev.status === 'done' && !poisoned.has(cid) && inner.every(canReuse);
+        const ok = !!prev && prev.status === 'done' && !poisoned.has(cid) && !tainted && inner.every(canReuse);
         memo.set(cid, ok);
         if (ok && prev) reuseLocal.set(cid, prev);
         return ok;
@@ -676,7 +782,17 @@ async function executePlan(
           resolve();
           return;
         }
-        while (runningLocal < capLocal && readyLocal.length > 0) {
+        // D-P 取消接缝②: 不再派新子节点。在飞的跑完 (它们的产物/checkpoint 一样不少),
+        // 全部结清后由下面那条"无就绪且无在飞"的路提前 resolve。
+        if (isCancelled() && runningLocal === 0) {
+          logger.warn(
+            { node: id, round, settled: settledLocal, total: childIds.length },
+            '[omd/executor-dag] 已取消 → 内环停止派新子节点 (D-P 协作式)',
+          );
+          resolve();
+          return;
+        }
+        while (!isCancelled() && runningLocal < capLocal && readyLocal.length > 0) {
           const cid = readyLocal.shift()!;
           runningLocal++;
           const hit = reuseLocal.get(cid);
@@ -731,6 +847,28 @@ async function executePlan(
       pump();
     });
 
+    // ── 4.5 检测者 (D-Q 图内 fan-in) + 制品边 lint (D-12 图外观察者) ────────────
+    //
+    // 两件事都在**判之前**做完: 检测者的票要和 judge 的票并到同一个毒集里 (它俩说的是同一件事
+    // ——"这一段产出不作数"), 而 lint 的发现要能进这一轮的失败原因, 否则下一轮 conductor 看不到
+    // "你少画了一条边"这句话, 就会一直少画。
+    const detectorVerdict: { rejected: string[]; blocked?: string } = { rejected: [] };
+    for (const cid of childIds) {
+      if (plan!.nodes[cid]?.detector !== true) continue;
+      const r = roundResults.get(cid);
+      if (!r || r.status === 'failed') continue; // 检测者自己都没跑成 → 它没有裁决 (不当它说了什么)
+      const v = parseDetectorVerdict(r.output, childIds);
+      if (v.ghosts.length) {
+        logger.warn({ node: id, detector: cid, ghosts: v.ghosts }, '[omd/executor-dag] 检测者点名了子图中不存在的 id → 丢弃 (D-Q)');
+      }
+      for (const rid of v.rejected) if (!detectorVerdict.rejected.includes(rid)) detectorVerdict.rejected.push(rid);
+      if (v.blocked !== undefined && detectorVerdict.blocked === undefined) detectorVerdict.blocked = `[检测者 ${cid}] ${v.blocked}`;
+      if (v.rejected.length || v.blocked) {
+        logger.info({ node: id, detector: cid, rejected: v.rejected, blocked: v.blocked }, '[omd/executor-dag] 检测者裁决落进环 (D-Q)');
+      }
+    }
+    const lintFindings = runArtifactLint();
+
     // ── 5. 汇总 (INV-U7 同款: 子节点部分失败 = 部分成功; 全失败才算 conductor 节点失败) ──
     //
     // ⚠ `[...childOut]` 那个拷贝不是洁癖: `sort` **原地改数组**, 而下面 judge 视图用的是同一个
@@ -761,6 +899,9 @@ async function executePlan(
       children: orderedChildren,
       usage: usageAcc,
       results: roundResults,
+      detector: detectorVerdict,
+      lint: lintFindings,
+      childIds,
     };
   };
 
@@ -833,12 +974,59 @@ async function executePlan(
       return out;
     };
 
+    /**
+     * 节点级环 journal 落盘 —— **每轮判完就写**, 不是节点结束时写 (崩在这之后 resume 接得回来)。
+     * 三个调用点共用: 正常轮末 / 检测者 BLOCKED / 空转 BLOCKED。三处各写一份就会漂。
+     */
+    const writeLoopJournal = (
+      round: number,
+      poisonedNow: ReadonlySet<string>,
+      reason: string,
+      converged: boolean,
+      lastOutput: string,
+    ): void => {
+      if (!cm || !continuity) return;
+      cm.writeNodeLoopJournal(continuity.runId, {
+        runId: continuity.runId,
+        nodeId: id,
+        completedRounds: round,
+        poisoned: [...poisonedNow],
+        ...(reason ? { prevReason: reason } : {}),
+        ...(converged ? { converged: true, lastOutput } : {}),
+        updatedAt: new Date().toISOString(),
+        schemaVersion: 1,
+      });
+    };
+
+    // D-Q 空转检测的比对面 (上一轮的子节点 id 集 + 被拒集)。
+    let prevShape: RoundShape | null = null;
+    /** 真正跑完的轮次 (取消收尾时要如实报, 不能拿 maxRounds 顶)。 */
+    let doneRounds = startRound - 1;
+
     for (let round = startRound; round <= maxRounds; round++) {
+      // D-P 取消接缝③: 不开新一轮。已判完的轮次全在 journal 里, resume 从下一轮接着跑。
+      if (isCancelled()) {
+        logger.warn({ node: id, round }, '[omd/executor-dag] 已取消 → 内环不开新一轮 (D-P 协作式)');
+        break;
+      }
       const r = await runConductorRound(id, round, prevReason, poisoned, prevResults);
+      doneRounds = round;
       prevResults = r.results;
       usageAcc = addUsage(usageAcc, r.usage);
       last = { ...r.leaf, usage: usageAcc };
       const isFinal = round === maxRounds;
+
+      // ── D-Q 图内检测者的票 (与 judge 的票同一个毒集) ────────────────────────
+      // 顺序上**先于** judge: 检测者常是确定性 oracle (command 节点), 它说"这段不作数"比
+      // 一次 LLM 判定更硬; 而两者点到同一个 id 时 Set 天然合并, 不需要谁压过谁。
+      for (const cid of r.detector.rejected) poisoned.add(cid);
+      if (r.detector.blocked !== undefined) {
+        // BLOCKED 异步出口: 图没坏、节点没挂, 是"没有外部输入推不动" —— 剩下的轮数是纯烧钱。
+        // 恒 converged=false (fail-closed: 阻塞更不该被读成成功)。
+        logger.warn({ node: id, round, reason: r.detector.blocked }, '[omd/executor-dag] 检测者判 BLOCKED → 环提前退出 (D-Q)');
+        writeLoopJournal(round, poisoned, prevReason, false, last.output);
+        return { ...settle(last, round, false), blocked: r.detector.blocked };
+      }
 
       // 单轮档 (max_rounds=1, 缺省): 不请 judge —— 没有下一轮可去, 判了也没有用它的地方,
       // 白花一次贵座调用。这也是零回归的那一半。
@@ -855,21 +1043,16 @@ async function executePlan(
 
       // D-4 同款铸票: judge 点名的子节点 → **id** 入毒集 (键取 id 的理由见 NodeLoopJournal 的注)。
       for (const cid of verdict.rejected) poisoned.add(cid);
-      prevReason = verdict.reason;
+      // 检测者与 judge 点的名并在一起当"这一轮谁坏了"; 空转判据看的就是这个合集。
+      const rejectedNow = [...new Set([...verdict.rejected, ...r.detector.rejected])];
+      // 制品 lint 的发现**接在失败原因后面**进下一轮的重展开 prompt —— 环的信息通道只有这一条,
+      // 「你少画了一条边」这句话进不去, conductor 下一轮还会照样少画 (D-12 lint 为主的落点)。
+      prevReason = r.lint.length
+        ? `${verdict.reason}\n\n[图外观察者]\n${r.lint.map((o) => `- ${o.message}`).join('\n')}`
+        : verdict.reason;
 
       // **每轮判完就写** journal —— 不是节点结束时写。崩在这之后, 下次 resume 接得回来。
-      if (cm && continuity) {
-        cm.writeNodeLoopJournal(continuity.runId, {
-          runId: continuity.runId,
-          nodeId: id,
-          completedRounds: round,
-          poisoned: [...poisoned],
-          ...(prevReason ? { prevReason } : {}),
-          ...(verdict.converged ? { converged: true, lastOutput: last.output } : {}),
-          updatedAt: new Date().toISOString(),
-          schemaVersion: 1,
-        });
-      }
+      writeLoopJournal(round, poisoned, prevReason, verdict.converged, last.output);
       if (verdict.converged) {
         logger.info({ node: id, round }, '[omd/executor-dag] 内环收敛 (D-A)');
         return settle(last, round, true);
@@ -879,7 +1062,22 @@ async function executePlan(
         logger.warn({ node: id, maxRounds }, '[omd/executor-dag] 内环轮数用尽仍未收敛 (INV-GOAL-4 有界)');
         return settle(last, round, false);
       }
+      // ── D-Q 空转 → BLOCKED (判在"还有轮可跑"之后): 这一轮重展开得到与上一轮**完全相同**的
+      // 子图 (内容寻址 id 逐个相同) 且拒的还是同一批 → 再转按构造不会有新东西, 剩下的轮是纯烧钱。
+      const shape: RoundShape = { childIds: r.childIds, rejected: rejectedNow };
+      const stuck = detectLoopNoProgress(prevShape, shape);
+      prevShape = shape;
+      if (stuck) {
+        observe([stuck]);
+        return { ...settle(last, round, false), blocked: stuck.message };
+      }
       logger.info({ node: id, round, rejected: verdict.rejected.length }, '[omd/executor-dag] 内环未收敛 → 重新展开');
+    }
+    // D-P: 取消是从这条路出来的 (循环 break)。**不谎报收敛, 也不谎报失败** —— 已跑完的轮次
+    // 是真跑完的, 结果照原样返, converged 缺席 = 没人判过 (调用方按 `?? false` 读)。
+    if (isCancelled() && last) {
+      logger.warn({ node: id, doneRounds }, '[omd/executor-dag] 内环因取消收尾 (已判轮次全在 journal 里, resume 可续)');
+      return settle(last, doneRounds);
     }
 
     // 到这里 = startRound > maxRounds (resume 接回一个已跑满轮数却没收敛的节点): 一轮都没跑,
@@ -973,6 +1171,8 @@ async function executePlan(
       for (const child of expand.children) {
         plan!.nodes[child.id] = { ...(child.node as (typeof plan.nodes)[string]), depends_on: deps };
       }
+      // 观察面: 图上多了这些点 (同 conductor 展开)。
+      recordRuntimeExpansion(id, expand.children.map((c) => c.id));
       // 局部 pump: 并发 = map.concurrency ?? config.maxFanout ?? 全宽。INV-U6: 子集独立, 不进外层 ready-set。
       const childCap = spec.concurrency ?? config.maxFanout ?? expand.children.length;
       const queue = [...expand.children];
@@ -1116,7 +1316,12 @@ async function executePlan(
           logger.warn({ node: id, path: cp.outputText }, '[omd/executor-dag] resume: 输出制品读不到 → 退回 800 字 summary (下游可能因此重跑)');
         }
         logger.info({ node: id, restored: full !== null ? 'full' : 'summary' }, '[omd/executor-dag] continuity resume: 节点已绿, 跳过');
-        return { id, status: 'done', kind: cp.leafKind, output: full ?? cp.summary, deps, usage: { in: 0, out: 0 }, skipped: true, filesTouched: cp.outputPaths };
+        // D-12: 读过的文件一并还原 —— 不还原的话, 续跑一次制品 lint 与读毒的观察面就静默窄一截。
+        return {
+          id, status: 'done', kind: cp.leafKind, output: full ?? cp.summary, deps,
+          usage: { in: 0, out: 0 }, skipped: true, filesTouched: cp.outputPaths,
+          ...(cp.inputPaths?.length ? { filesRead: cp.inputPaths } : {}),
+        };
       }
       // command leaf (方案 A): 确定性 CLI, 零 LLM, 无 caveman/prompt。exitCode 0 = done。
       if (node.executor === 'command') {
@@ -1217,7 +1422,17 @@ async function executePlan(
       const pony = config.leafPonytail && !node.creative ? `\n\n${PONYTAIL_LEAF_DISPOSITION}` : '';
       // fan-in: 有定向摘要的 dep 注入摘要 (faninView 覆盖 depOutputs), 否则全文。
       const basePrompt = buildLeafPrompt(id, node, { ...depOutputs, ...faninView }, tpl ? { name: tpl.name, body: tpl.body } : undefined);
-      const prompt = (cav ? `${basePrompt}\n\n${cav}` : basePrompt) + pony;
+      // D-Q 检测者: 协议附在 prompt 末尾 (省得每张手写 plan 抄一遍)。**只对内环里的子节点** ——
+      // 环外没有消费者, 附了协议却没人读它的裁决 = 又一个"是验证的样子而不是验证"。
+      const detectorNode = node.detector === true;
+      if (detectorNode && !conductorChildIds.has(id)) {
+        logger.warn(
+          { node: id },
+          '[omd/executor-dag] detector 只在 conductor 节点展开出的子图里有消费者 (环在那儿) → 本节点忽略 (D-Q)',
+        );
+      }
+      const detectorNote = detectorNode && conductorChildIds.has(id) ? `\n${DETECTOR_PROTOCOL}` : '';
+      const prompt = (cav ? `${basePrompt}\n\n${cav}` : basePrompt) + pony + detectorNote;
       // 双模分流: executor:'agent' + 有 agentRunner → 带工具子 agent (能改文件); 否则 inproc 单发。
       // M3 bug 修 (2026-06-20): conductor (M3 非确定性) 把"写文件"节点标成 leaf → inproc 不能写文件 →
       //   exit 0 但无产物 (静默假成功)。判别"写文件意图" = output_type:file/git ∨ 有 output_path ∨
@@ -1296,6 +1511,7 @@ async function executePlan(
       let text: string;
       let usage: ModelUsage;
       let filesTouched: string[] = [];
+      let filesRead: string[] = [];
       let toolCalls: number | undefined;
       let artifactRoot: string | undefined;
       if (useAgent) {
@@ -1303,6 +1519,8 @@ async function executePlan(
         text = r.text;
         usage = r.usage;
         filesTouched = r.filesTouched ?? [];
+        // D-12: 图外数据流的观察面 (谁读了谁写的文件)。inproc leaf 无工具 → 恒空。
+        filesRead = r.filesRead ?? [];
         // 产物根: leaf 自报的 cwd 最准 (它就是写文件的那个进程) > continuity 根 > 本进程 cwd。
         artifactRoot = r.cwd;
         toolCalls = r.toolCalls;
@@ -1313,7 +1531,7 @@ async function executePlan(
           return {
             id, status: 'failed', kind: 'agent', model,
             output: `[停摆: 心跳闸提前中止, 疑 provider 挂起/排队] 原输出(${text.length}B): ${text.slice(0, 400)}`,
-            deps: node.depends_on ?? [], usage, filesTouched, stalled: true,
+            deps: node.depends_on ?? [], usage, filesTouched, ...(filesRead.length ? { filesRead } : {}), stalled: true,
           };
         }
         // 产物校验闸 (2026-07-03 实测教训: ultraspeed leaf 4 节点 3 个 empty-done — 自报完成
@@ -1347,7 +1565,7 @@ async function executePlan(
             return {
               id, status: 'failed', kind: 'agent', model,
               output: `[产物校验失败: ${why}] 原输出: ${text.slice(0, 400)}`,
-              deps: node.depends_on ?? [], usage, filesTouched,
+              deps: node.depends_on ?? [], usage, filesTouched, ...(filesRead.length ? { filesRead } : {}),
             };
           }
         }
@@ -1369,7 +1587,7 @@ async function executePlan(
         text = r.text;
         usage = r.usage;
       }
-      const leaf: LeafResult = { id, status: 'done', kind: useAgent ? 'agent' : 'inproc', model, output: text, deps: node.depends_on ?? [], usage, filesTouched, ...(toolCalls !== undefined ? { toolCalls } : {}) };
+      const leaf: LeafResult = { id, status: 'done', kind: useAgent ? 'agent' : 'inproc', model, output: text, deps: node.depends_on ?? [], usage, filesTouched, ...(filesRead.length ? { filesRead } : {}), ...(toolCalls !== undefined ? { toolCalls } : {}) };
       saveDoneCheckpoint({
         id,
         kind: useAgent ? 'agent' : 'inproc',
@@ -1377,6 +1595,7 @@ async function executePlan(
         text,
         usage: useAgent ? null : usage,
         filesTouched,
+        filesRead,
         deps: node.depends_on ?? [],
         t0,
         prompt,
@@ -1671,6 +1890,15 @@ async function executePlan(
           resolve();
           return;
         }
+        // D-P 取消接缝①: 停止派新节点。在飞的跑到自己结束 (产物/checkpoint 一样不少),
+        // 全部结清后从这里出去 —— 未起跑的节点**不伪造结果**, 由 cancelled.notRun 如实列出。
+        if (isCancelled()) {
+          if (running === 0) {
+            logger.warn({ notRun: ready.length }, '[omd/executor-dag] 已取消 → 停止派新节点, 收尾返回 (D-P 协作式)');
+            resolve();
+          }
+          return;
+        }
         if (running >= cap || ready.length === 0) return;
         // kind × channel 双闸内选第一个可起跑节点 (非严格 FIFO: 被闸挡住的节点让位, 保持吞吐)。
         const idx = ready.findIndex((id) => runningByKind[schedKind(id)] < kindCap[schedKind(id)] && !channelBlocked(id));
@@ -1704,7 +1932,23 @@ async function executePlan(
     pump();
   });
 
-  return { plan, levels, results, reusedNodes: [...reuse.keys(), ...innerReused], conductorUsage, leavesIn, leavesOut, leavesCacheHit };
+  // 最后再 lint 一次: 内环每轮跑的那次只覆盖有 conductor 节点的图, 而"B 读了 A 写的文件却没有边"
+  // 在**平铺的普通图**上同样发生 (那种图一个 conductor 节点都没有, 上面那条路根本不经过)。
+  runArtifactLint();
+
+  const notRun = Object.keys(plan.nodes).filter((id) => results[id] === undefined);
+  return {
+    plan,
+    levels,
+    results,
+    reusedNodes: [...reuse.keys(), ...innerReused],
+    observations,
+    ...(isCancelled() ? { cancelled: { reason: cancelReason(), at: new Date().toISOString(), notRun } } : {}),
+    conductorUsage,
+    leavesIn,
+    leavesOut,
+    leavesCacheHit,
+  };
 }
 
 /**
@@ -1869,7 +2113,13 @@ async function runDagInternal(
     verifierUsage = addUsage(verifierUsage, verdict.usage);
 
     let escCount = 0;
-    while (!verdict.pass && escCount < maxEscalations && escalationProviderReady(config.conductorEscalationModel)) {
+    // D-P 取消接缝④: 不开新的升级重规划轮 (那是一整轮重规划 + 重跑, 最贵的一种"新活")。
+    while (
+      !verdict.pass &&
+      config.cancelSignal?.aborted !== true &&
+      escCount < maxEscalations &&
+      escalationProviderReady(config.conductorEscalationModel)
+    ) {
       escCount++;
       attempts++;
       escalated = true;
@@ -1941,6 +2191,8 @@ async function runDagInternal(
     levels: exec.levels,
     results: exec.results,
     reusedNodes: exec.reusedNodes,
+    ...(exec.observations.length ? { observations: exec.observations } : {}),
+    ...(exec.cancelled ? { cancelled: exec.cancelled } : {}),
     usage: {
       conductor: conductorUsage,
       leavesIn,

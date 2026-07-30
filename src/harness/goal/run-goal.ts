@@ -98,6 +98,18 @@ export interface RunGoalResult {
   rounds: number;
   /** 修复轮里被复用的节点 (INV-GOAL-3 可证面; 单轮收敛 = 空)。 */
   reusedNodes: string[];
+  /**
+   * **BLOCKED 异步出口** (D-Q): 环判定"没有外部输入推不动"而提前退出的原因。
+   * 与 `converged: false` 的区别是**该怎么办**: 未收敛 = 轮数用尽/judge 说没达标, 再给几轮可能就成;
+   * blocked = 判据是确定性的 (环空转 / 检测者喊停), 再给多少轮都一样, 该由 owner 看一眼。
+   * 恒与 `converged: false` 同时出现。
+   */
+  blocked?: string;
+  /**
+   * **协作式取消** (D-P) 的原因。给了 = 这次是被叫停的, 不是跑完的 —— 已跑完的节点与轮次
+   * 全在盘上, `dag_goal resume=<同一个 runId>` 接着跑。
+   */
+  cancelled?: string;
 }
 
 /** kebab-case slug (spec 文件名用); 非字母数字折成 '-', 截断 48。 */
@@ -306,12 +318,21 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   const roundCount = execLeaf.rounds ?? 0;
   // INV-GOAL-3 可证面: 复用现在全发生在**内环**里 (子节点内容寻址, 同 id ≡ 同规格 + 同祖先规格)。
   const reusedNodes = exec.reusedNodes ?? [];
+  // D-Q / D-P: 两种"没跑完但不是失败"的收尾, 各自如实报 —— 都恒不算收敛 (fail-closed)。
+  const blocked = execLeaf.blocked;
+  const cancelledReason = exec.cancelled?.reason;
   stages.push({
     stage: 'execute',
     status: converged ? 'done' : 'failed',
     summary:
-      `${roundCount} 轮${converged ? '收敛' : `未收敛 (${execLeaf.status})`}` +
-      `${reusedNodes.length ? ` · 复用 ${reusedNodes.length} 节点` : ''}`,
+      `${roundCount} 轮${
+        converged ? '收敛'
+        : cancelledReason ? `被叫停 (${cancelledReason}) — 已跑完的保留, 同 runId 可 resume`
+        : blocked ? `阻塞: ${blocked.slice(0, 300)}`
+        : `未收敛 (${execLeaf.status})`
+      }` +
+      `${reusedNodes.length ? ` · 复用 ${reusedNodes.length} 节点` : ''}` +
+      `${exec.observations?.length ? ` · 图外观察 ${exec.observations.length} 条` : ''}`,
   });
 
   return {
@@ -325,5 +346,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
     converged,
     rounds: roundCount,
     reusedNodes,
+    ...(blocked ? { blocked } : {}),
+    ...(cancelledReason ? { cancelled: cancelledReason } : {}),
   };
 }

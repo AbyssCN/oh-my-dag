@@ -221,13 +221,57 @@ export interface ExecutorDagConfig {
    * fail-open: 回调抛错被吞, 永不影响执行 (观察者不许扰动被观察者)。
    */
   onNodeEvent?: (e: DagNodeEvent) => void;
+  /**
+   * **协作式取消** (D-P): 叫停这次 run。给了就在每个**调度接缝**上查一次。
+   *
+   * "协作式"是字面意思 —— **不杀在飞的节点**: 已经起跑的 leaf 跑到它自己结束 (它的产物、
+   * checkpoint、账本一样不少), 引擎只是**不再派新活**。理由是杀进程救不回半个产物, 却会
+   * 把一个正在写文件的 agent 留在半路上; 而"停止派新活"这件事在 ready-set 调度器里是免费的。
+   *
+   * 查的四个接缝: ① 外层 pump 派新节点前 ② conductor 内环 pump 派新子节点前 ③ 内环开新一轮前
+   * ④ verifier-fail 升级重规划前。接缝之外一律不查 —— 中途插一刀等于回到"杀"。
+   *
+   * 收尾语义: `ExecutorDagResult.cancelled` 留痕 + `notRun` 列出一个都没起跑过的节点。
+   * **同一个 runId 可以直接 resume** (已绿节点全跳过) —— 这才是"已跑完的节点全保留"的兑现处。
+   */
+  cancelSignal?: AbortSignal;
 }
 
-/** 节点进度事件 (onNodeEvent 载荷)。kind 与 LeafResult.kind 同词表 + 'map'/'primitive'。 */
+/**
+ * 节点进度事件 (onNodeEvent 载荷)。kind 与 LeafResult.kind 同词表 + 'map'/'primitive'。
+ *
+ * `expanded` (2026-07-30): map/conductor 节点**运行时**把子节点挂进图的那一刻发一次。此前观察面
+ * 到此为止就窄了一截 —— 子节点逐个发 start/settle, 但没有任何事件说过"图上多了这些点",
+ * 于是 `dag_status` 的静态图上执行段永远只有一个点 (见 DagMetadata.runtimeNodes 的同款修补)。
+ */
 export type DagNodeEvent =
   | { type: 'planned'; nodes: Array<{ id: string; kind: string }> }
+  | { type: 'expanded'; parent: string; nodes: Array<{ id: string; kind: string; deps: string[] }> }
   | { type: 'start'; id: string; kind: string }
   | { type: 'settle'; id: string; status: 'done' | 'failed' | 'skipped'; kind: string; model?: string };
+
+/**
+ * **图外只读观察者**的一条产出 (P3 D-Q)。
+ *
+ * DAG 里的节点只看得见自己的 `depends_on` —— 谁写了什么、谁读了什么、这一轮和上一轮是不是在
+ * 原地打转, 没有节点站得到那个视角。观察者住在图外, 拿引擎手上现成的事实确定性地算 (零模型调用),
+ * 产出这个。producer 见 `plan/observers.ts`。
+ *
+ * 出口有两个, 都是**前馈**: ① 进 `ExecutorDagResult.observations` 给调用方 ② 进下一轮重展开的
+ * prompt (环的信息通道)。观察者**不铸毒票、不改路由、不改结果** —— 唯一的例外是确定性的
+ * `loop-no-progress` 会让环提前 BLOCKED 退出 (再转一圈按构造不可能有新东西)。
+ */
+export interface DagObservation {
+  /**
+   * `undeclared-artifact-dep` = B 读了 A 写的文件但图上无边 (D-12/INV-P2-4);
+   * `loop-no-progress` = 内环重展开得到同一张子图且 judge 拒的还是同一批 (D-Q BLOCKED 判据)。
+   */
+  kind: 'undeclared-artifact-dep' | 'loop-no-progress';
+  /** 涉及的节点 id (lint = [reader, writer]; 空转 = 被反复拒绝的那批)。 */
+  nodes: string[];
+  /** 人与模型都读的一句话 (进 prompt 的就是它)。 */
+  message: string;
+}
 
 export interface LeafResult {
   id: string;
@@ -251,6 +295,12 @@ export interface LeafResult {
   /** agent leaf 触碰的文件 (来自 AgentLeafResult.filesTouched, checkpoint 产物锚)。 */
   filesTouched?: string[];
   /**
+   * agent leaf **读过**的文件 (D-12, 来自 AgentLeafResult.filesRead)。图外数据流的观察面 ——
+   * `plan/observers.lintArtifactEdges` 据它报「未声明的制品依赖」, 复用滤镜据它拦「读过被拒制品的
+   * 消费方」(INV-P2-4/5)。resume 跳过的节点从 checkpoint 的 `inputPaths` 还原, 观察面不因续跑变窄。
+   */
+  filesRead?: string[];
+  /**
    * research leaf 真抓到正文的 URL (INV-GOAL-2 证据面)。零来源的 research 节点在引擎里已判 failed,
    * 故 done 的 research 结果这里恒非空 —— 下游 gate/审计据此判"这份研究是否真落地过网页"。
    */
@@ -269,6 +319,15 @@ export interface LeafResult {
    * `converged ?? false` 是对的读法 (没人判过就不许算成), 但别把它读成"judge 说没成"。
    */
   converged?: boolean;
+  /**
+   * **BLOCKED 异步出口** (D-Q): 环停在这里不是因为失败, 是因为**没有外部输入就推不动**。
+   *
+   * 与 `converged=false` 的区别在于该怎么办: 未收敛 = 再来一轮可能就好了; blocked = 再来多少轮
+   * 都一样 (判据是确定性的, 见 `plan/observers.detectLoopNoProgress` 与 detector 节点的
+   * `BLOCKED:` 协议), 该由 owner 看一眼。**blocked 恒不算收敛** —— 两个字段一起出现时,
+   * `converged` 必为 false (fail-closed: 阻塞更不该被读成成功)。
+   */
+  blocked?: string;
 }
 
 /**
@@ -313,6 +372,19 @@ export interface ExecutorDagResult {
    * INV-GOAL-3 的"可证"面: 修复轮跑完看这个数, 而不是猜"应该复用了吧"。
    */
   reusedNodes?: string[];
+  /**
+   * **图外只读观察者**本次 run 的全部产出 (D-Q)。空/缺席 = 没观察到异常。
+   * 它们已经在引擎内被前馈进下一轮的重展开 prompt; 这里是给调用方 (与事后审计) 的同一份。
+   */
+  observations?: DagObservation[];
+  /**
+   * **协作式取消** (D-P) 的留痕: 给了就说明本次 run 是被叫停的, 不是自然跑完的。
+   *
+   * ⚠ 调用方**不许把它读成失败, 也不许读成成功**: 已跑完的节点全在 `results` 里、checkpoint 全在盘上,
+   * 该 run 用同一个 runId `resume` 就接着跑。`notRun` 是"一个都没起跑过"的节点 (no-silent-caps:
+   * 少跑了什么必须说出来, 否则调用方会把一份残图当全图读)。
+   */
+  cancelled?: { reason: string; at: string; notRun: string[] };
   /** 校验结果 (仅 config.verifier 存在时有值)。escalated=是否触发过 conductor 升级。 */
   verification?: {
     pass: boolean;

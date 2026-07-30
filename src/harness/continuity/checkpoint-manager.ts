@@ -64,6 +64,29 @@ export class CheckpointManager {
     }
   }
 
+  /**
+   * **运行时展开出来的子节点**追加进 `_dag.json` 的 `runtimeNodes` (2026-07-30 观察面补齐)。
+   *
+   * 只碰 `runtimeNodes` 一个字段 —— `nodeIds` / `deps` / `plan` / `generation` **一个字都不改**。
+   * 理由写在 {@link DagMetadata.runtimeNodes} 上: 那四样是 resume 的一致性锚, 把运行期长出来的点
+   * 并进去等于下次 resume 算出的代数与盘上每份 checkpoint 都对不上 → 整图作废重跑。
+   *
+   * 同 id 覆盖、新 id 追加 (重展开拿到同一个内容寻址 id = 同一个点)。`_dag.json` 还没落盘 (无 meta)
+   * → 静默跳过: 这是纯观察记录, 不值得为它造一份半截元数据。全程 fail-open。
+   */
+  appendRuntimeNodes(runId: string, nodes: readonly NonNullable<DagMetadata['runtimeNodes']>[number][]): void {
+    if (nodes.length === 0) return;
+    try {
+      const meta = this.loadDagMetadata(runId);
+      if (!meta) return;
+      const merged = new Map((meta.runtimeNodes ?? []).map((n) => [n.id, n]));
+      for (const n of nodes) merged.set(n.id, n);
+      this.writeDagMetadata(runId, { ...meta, runtimeNodes: [...merged.values()] });
+    } catch (err) {
+      logger.warn({ err, runId }, 'checkpoint: appendRuntimeNodes failed (fail-open)');
+    }
+  }
+
   /** 读 `_dag.json`。不存在/损坏/parse 失败 → null。 */
   loadDagMetadata(runId: string): DagMetadata | null {
     try {
