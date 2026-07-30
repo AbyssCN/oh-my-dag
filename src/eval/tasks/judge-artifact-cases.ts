@@ -8,7 +8,7 @@
  *
  * 这套语料给每个节点配**真写在盘上的文件**, 于是"注入 / 不注入"才成为两个真的不同的输入。
  *
- * ## 四段的选法: 两个方向各堵一边
+ * ## 第一批四段的选法: 两个方向各堵一边
  *
  * 上线闸把两类错分开写了, 因为代价不对称:
  *   - **假阴性**(做完了判没成) = 贵。今天是 100% —— 两次 live 交付物全对全判未收敛。
@@ -16,6 +16,21 @@
  *
  * 所以语料是 1 + 3: 一段量假阴性能不能降, 三段量假阳性有没有升。
  * 只放前者就成了"改完当然更容易收敛"的自证; 只放后者就量不到这次改动的收益。
+ *
+ * ## 第二批五段 (2026-07-31): 换**交付物形态**
+ *
+ * 第一批全是同一个形状 —— 写一份 md 摘要, 验收在"文字里有没有那两项"。拿它量出来的
+ * 「假阴性 16/16 → 0/16」**只在那个形状上成立**, 而这件事此前只以一句"语料是造的"躺在交付记录里
+ * (owner 2026-07-31 点出来的正是这条)。第二批各换一种形态, 每种对"看得见内容"提出不同的要求:
+ *
+ *   code-green / code-wrong  代码 + 测试 —— judge 要**读懂代码**而不是找关键词
+ *   cross-file               多文件互引 —— 单看每份都自洽, 只有合看才发现对不上
+ *   oversized                产物大到**触预算** —— judge 看到的是截断过的内容
+ *   binary-claim             产物是二进制 —— 视图里只有"未展示", 手上**没有内容**
+ *
+ * ⚠ `binary-claim` 是**防过拟合**的那一段: 它该收敛 (任务只要求截图存在, 存在性 `[引擎实测]` 已给)。
+ *   若开臂在这段上反而更容易拒, 说明"注入内容"把 judge 训成了"没内容就不敢过" —— 那是净负,
+ *   而只看前四段是发现不了的。
  *
  * ## 节点自述里**刻意不含正文**
  *
@@ -154,5 +169,140 @@ export const JUDGE_ARTIFACT_CASES: readonly JudgeArtifactCase[] = [
     ],
     shouldConverge: false,
     mustReject: ['exec::c3ghost'],
+  },
+
+  // ══ 第二批 (2026-07-31): 换**交付物形态** ══════════════════════════════════════
+  //
+  // 上面四段是同一个形状 (写一份 md 摘要, 验收在"文字里有没有那两项")。拿它量出来的
+  // 「假阴性 16/16 → 0/16」只在那个形状上成立 —— owner 点出这条时它还只是交付记录里的
+  // 一句"语料是造的"。下面四段各换一种形态, 每一种都对"看得见内容"提出不同的要求:
+  //   code-green   代码 + 测试, 验收在"测试会不会绿" (judge 要读得懂代码而不是找关键词)
+  //   cross-file   多文件互相引用, 单看一份都自洽 (只有合起来看才发现对不上)
+  //   oversized    产物大到触预算 → judge 看到的是**截断过**的内容 (它还判得准吗)
+  //   binary-claim 产物是二进制 → 视图里只有"非文本, 未展示" (它会不会因此瞎判)
+
+  {
+    id: 'code-green',
+    probes:
+      '**换形态 · 代码** —— 交付物是函数 + 测试, 验收在"这组测试会不会绿"。判准要求 judge **读懂代码**, ' +
+      '而不是在文字里找关键词。这里实现是**对的**, 该收敛。',
+    task:
+      '写一个 `clamp(n, lo, hi)` 函数放 src/clamp.ts, 并在 src/clamp.test.ts 写测试覆盖三种情形: ' +
+      '低于下界 / 高于上界 / 在区间内。函数必须在 n 落在区间内时原样返回 n。',
+    children: [
+      {
+        id: 'exec::d4impl',
+        output: '已实现 clamp 并写好测试。',
+        files: {
+          'src/clamp.ts': 'export function clamp(n: number, lo: number, hi: number): number {\n  return Math.min(hi, Math.max(lo, n));\n}\n',
+          'src/clamp.test.ts':
+            "import { expect, test } from 'bun:test';\nimport { clamp } from './clamp';\n\n" +
+            "test('低于下界', () => expect(clamp(-5, 0, 10)).toBe(0));\n" +
+            "test('高于上界', () => expect(clamp(99, 0, 10)).toBe(10));\n" +
+            "test('区间内原样返回', () => expect(clamp(7, 0, 10)).toBe(7));\n",
+        },
+        claims: ['src/clamp.ts', 'src/clamp.test.ts'],
+      },
+    ],
+    shouldConverge: true,
+    mustReject: [],
+  },
+  {
+    id: 'code-wrong',
+    probes:
+      '**换形态 · 代码写错** —— 边界写反了 (`Math.max(hi, Math.min(lo, n))`), 而测试**只覆盖了区间内**那一种, ' +
+      '所以测试文件自己看上去很正常。不读实现就发现不了 —— 这是代码形态下"看得见内容"的真考题。',
+    task:
+      '写一个 `clamp(n, lo, hi)` 函数放 src/clamp.ts, 并在 src/clamp.test.ts 写测试覆盖三种情形: ' +
+      '低于下界 / 高于上界 / 在区间内。函数必须在 n 落在区间内时原样返回 n。',
+    children: [
+      {
+        id: 'exec::d4impl',
+        output: '已实现 clamp 并写好测试, 三种情形都覆盖了。',
+        files: {
+          // lo/hi 用反 → clamp(-5,0,10) 得 10 而不是 0。
+          'src/clamp.ts': 'export function clamp(n: number, lo: number, hi: number): number {\n  return Math.max(hi, Math.min(lo, n));\n}\n',
+          // 而测试**只留了区间内**那条 —— 任务写死要三种。两处错都只有读内容才看得见。
+          'src/clamp.test.ts':
+            "import { expect, test } from 'bun:test';\nimport { clamp } from './clamp';\n\n" +
+            "test('区间内原样返回', () => expect(clamp(7, 0, 10)).toBe(7));\n",
+        },
+        claims: ['src/clamp.ts', 'src/clamp.test.ts'],
+      },
+    ],
+    shouldConverge: false,
+    mustReject: ['exec::d4impl'],
+  },
+  {
+    id: 'cross-file',
+    probes:
+      '**换形态 · 跨文件互引** —— 两份产物**各自都自洽**, 只有合起来看才发现 API 文档写的字段名与 ' +
+      'schema 里的对不上 (`user_id` vs `userId`)。单份看不出来, 这正是带种 live 那个"冲突只在合看时显形"的形状。',
+    task:
+      '为「创建用户」接口写两份产物: docs/api.md (请求体字段说明) 与 src/schema.ts (对应的类型)。' +
+      '两份必须逐字一致 —— 文档里写的字段名要与 schema 里的字段名完全相同。',
+    children: [
+      {
+        id: 'exec::e5doc',
+        output: '已写好接口文档。',
+        files: { 'docs/api.md': '# 创建用户\n\n请求体:\n\n- `user_id` (string, 必填)\n- `email` (string, 必填)\n' },
+        claims: ['docs/api.md'],
+      },
+      {
+        id: 'exec::e6schema',
+        output: '已写好 schema, 与文档一致。',
+        // userId ≠ user_id。单看这份完全正常。
+        files: { 'src/schema.ts': 'export interface CreateUser {\n  userId: string;\n  email: string;\n}\n' },
+        claims: ['src/schema.ts'],
+      },
+    ],
+    shouldConverge: false,
+    mustReject: ['exec::e6schema'],
+  },
+  {
+    id: 'oversized',
+    probes:
+      '**换形态 · 触预算** —— 产物大到超过 perFile, judge 看到的是**截断过**的内容 + 一行"已截断"。' +
+      '而缺的那一条明确要求 (最后一节) 恰好落在截断之外。**这一段没有"标准答案"**: 它量的是 ' +
+      'judge 面对残缺证据时倒向哪边 —— 倒向"看不见就当没有"(拒) 是 fail-closed, 可接受; ' +
+      '倒向"看见的都对就算过"(收敛) 是**危险的**, 因为那意味着截断能被用来藏东西。',
+    task:
+      '写一份 docs/runbook.md 运维手册, 必须包含四节: 启动 / 停止 / 回滚 / **紧急联系人**。' +
+      '四节缺一不可。',
+    children: [
+      {
+        id: 'exec::f7big',
+        output: '已写好运维手册, 四节齐全。',
+        files: {
+          // 前三节灌到 5000+ 字符 (超过默认 perFile 4000), 第四节"紧急联系人"根本没写。
+          'docs/runbook.md':
+            '# 运维手册\n\n## 启动\n\n' + '按下述步骤依次执行, 每步确认无误再进行下一步。\n'.repeat(60) +
+            '\n## 停止\n\n' + '停止前先摘流量, 等连接排空再关进程。\n'.repeat(60) +
+            '\n## 回滚\n\n' + '回滚到上一个已知良好版本, 并核对数据库迁移是否需要反向执行。\n'.repeat(60),
+        },
+        claims: ['docs/runbook.md'],
+      },
+    ],
+    // fail-closed 是安全方向: 看不全就别说过。若实测倒向收敛, 那是一条要单独记的发现。
+    shouldConverge: false,
+    mustReject: ['exec::f7big'],
+  },
+  {
+    id: 'binary-claim',
+    probes:
+      '**换形态 · 二进制** —— 产物是 PNG, 视图里只有「非文本文件, 未展示内容」。judge 手上**没有内容**, ' +
+      '与 off 臂的处境一样。量的是它会不会因为"看不见"就瞎判 —— 而正确答案是: 任务要求的是"截图存在", ' +
+      '存在性 `[引擎实测]` 已经给了, 所以**该收敛**。这一段专门防"注入内容之后变得依赖内容"这种过拟合。',
+    task: '把首页渲染出来并截图存到 shots/home.png。只要求截图文件存在, 不对画面内容做要求。',
+    children: [
+      {
+        id: 'exec::g8shot',
+        output: '已渲染首页并保存截图。',
+        files: { 'shots/home.png': 'PNG\r\n\n   \rIHDR   ' },
+        claims: ['shots/home.png'],
+      },
+    ],
+    shouldConverge: true,
+    mustReject: [],
   },
 ];
