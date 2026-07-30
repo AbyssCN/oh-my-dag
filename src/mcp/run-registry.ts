@@ -12,8 +12,14 @@
 
 import type { DagNodeEvent } from '../harness/executor-dag-types';
 
-/** run 生命周期状态。 */
-export type RunStatus = 'pending' | 'running' | 'done' | 'failed';
+/**
+ * run 生命周期状态。
+ *
+ * `cancelled` (D-P, 2026-07-30) 刻意与 `failed` 分开: 被叫停的 run **没有失败** —— 已跑完的节点
+ * 全绿、产物全在盘上, 它只是没跑完。混进 failed 会让两个不同的事后动作 (查为什么挂了 / 直接续跑)
+ * 读同一个词, 而它们该走的路不一样。与 failed 同为可 resume 的终态 (见 reopenForResume)。
+ */
+export type RunStatus = 'pending' | 'running' | 'done' | 'failed' | 'cancelled';
 
 
 /** 单节点执行明细。 */
@@ -62,13 +68,20 @@ export interface ToolResult {
 /** 状态机合法转换表。 */
 const LEGAL_TRANSITIONS: Record<RunStatus, RunStatus[]> = {
   pending: ['running'],
-  running: ['done', 'failed'],
+  running: ['done', 'failed', 'cancelled'],
   done: [],
   failed: [],
+  cancelled: [],
 };
 
 export class RunRegistry {
   private runs = new Map<string, RunRecord>();
+  /**
+   * D-P: 在飞 run 的取消把手。住在这里而不是各工具的模块变量里 —— registry 已经是这个 server
+   * 唯一那份"哪些 run 在飞"的真相, 取消把手是同一件事的另一面; 分两处存早晚对不上
+   * (dag_goal 与 dag_run 都要能被取消, 而它们是两个文件)。
+   */
+  private controllers = new Map<string, AbortController>();
 
   /** @param now clock 注入 (单测可冻); 默认实时。 */
   constructor(private readonly now: () => Date = () => new Date()) {}
@@ -95,6 +108,8 @@ export class RunRegistry {
     }
     rec.status = to;
     rec.updatedAt = new Date().toISOString();
+    // 终态 → 取消把手没有意义了, 清掉 (留着 = 一个永远 abort 不到东西的旋钮 + 内存慢慢涨)。
+    if (LEGAL_TRANSITIONS[to].length === 0) this.controllers.delete(runId);
   }
 
   start(runId: string): void {
@@ -113,6 +128,50 @@ export class RunRegistry {
     if (!rec) throw new Error(`unknown run ${runId}`);
     this.transition(runId, 'failed');
     rec.error = error;
+  }
+
+  /**
+   * D-P 协作式取消的**收尾登记** (引擎那侧已经停了派活, 这里只记状态)。
+   *
+   * `result` 照记 —— 被叫停的 run 手上有的东西一样值钱 (已跑完的节点、产物、账本), 拿不到它
+   * 才是取消最贵的代价。`error` 记原因: 它不是错误, 是"为什么停的", 与 failed 的错误消息占同一格
+   * 但由 status 分辨 (查询侧按 status 决定怎么念这句话)。
+   */
+  cancel(runId: string, reason: string, result?: unknown): void {
+    const rec = this.runs.get(runId);
+    if (!rec) throw new Error(`unknown run ${runId}`);
+    this.transition(runId, 'cancelled');
+    rec.error = reason;
+    if (result !== undefined) rec.result = result;
+  }
+
+  /**
+   * D-P: 给这个 run 建一个取消把手, 返回喂给引擎 `cancelSignal` 的 signal。
+   * 同一个 runId 重复调 (resume) → 新把手 (上一次的已随终态清掉)。
+   */
+  attachCancel(runId: string): AbortSignal {
+    const ac = new AbortController();
+    this.controllers.set(runId, ac);
+    return ac.signal;
+  }
+
+  /**
+   * D-P: 请求取消。**只是打个招呼** —— 引擎在下一个调度接缝上自己停下来 (不杀在飞节点),
+   * 终态由引擎跑完后经 {@link cancel} 登记。
+   *
+   * @returns false = 这个 run 没有取消把手 (未知 / 不在飞 / server 重启后内存态丢了) —— 调用方
+   *   该如实告诉用户"没停到", 而不是回一句"已取消"。
+   */
+  requestCancel(runId: string, reason: string): boolean {
+    const ac = this.controllers.get(runId);
+    if (!ac || ac.signal.aborted) return false;
+    ac.abort(reason);
+    return true;
+  }
+
+  /** 该 run 是否已被请求取消 (在飞期间查得到; 终态后把手已清 → false)。 */
+  isCancelRequested(runId: string): boolean {
+    return this.controllers.get(runId)?.signal.aborted === true;
   }
 
   /** 查状态; 未知 → null。 */
@@ -142,6 +201,14 @@ export class RunRegistry {
       case 'planned':
         progress.planned = e.nodes;
         break;
+      // 运行时展开 (map/conductor 子节点): **追加**进 planned, 不覆盖 —— 覆盖等于把父节点从图上抹掉。
+      // 这是"观察面变窄"那条的活体侧: 此前子节点只有 start/settle 两个事件, 于是进度行的分母
+      // (planned 的长度) 里根本没有它们, 一个展开出 5 个子节点的执行段永远显示 "0/1"。
+      case 'expanded': {
+        const known = new Set(progress.planned.map((n) => n.id));
+        for (const n of e.nodes) if (!known.has(n.id)) progress.planned.push({ id: n.id, kind: n.kind });
+        break;
+      }
       case 'start':
         progress.started.push(e.id);
         progress.startedAt[e.id] = this.now().toISOString();
@@ -185,6 +252,14 @@ export class RunRegistry {
     if (rec.status === 'failed' && rec.error) {
       parts.push(`error: ${rec.error}`);
     }
+    // 取消不是失败: 念法不同 (原因 + "怎么接着跑"), 而且手上的结果照样给。
+    if (rec.status === 'cancelled') {
+      parts.push(`cancelled: ${rec.error ?? '调用方叫停'}`);
+      parts.push(`resume: dag_resume runId=${runId} (已跑完的节点会被跳过)`);
+      if (rec.result !== undefined) {
+        parts.push(`partial: ${typeof rec.result === 'string' ? rec.result : JSON.stringify(rec.result)}`);
+      }
+    }
     // running 态活体进度 (applyNodeEvent 累积; D-8 宽出: 计数 + 在跑节点名, 不灌输出)。
     if (rec.status === 'running' && rec.progress) {
       const p = rec.progress;
@@ -208,7 +283,10 @@ export class RunRegistry {
 
   /**
    * resume 入口 (D-3 断点续跑): 未知 runId (server 重启, 内存态丢) → register+start;
-   * failed → 重开为 running (error/progress 清空, 新一次尝试); 其余态由调用方先行拒绝。
+   * failed / **cancelled** → 重开为 running (error/progress 清空, 新一次尝试); 其余态由调用方先行拒绝。
+   *
+   * cancelled 可续是 D-P 的兑现处 —— "已跑完的节点全保留"这句话, 保留在盘上的 checkpoint 里,
+   * 兑现在这一次 resume 上。不让它续, 取消就等于扔掉。
    */
   reopenForResume(runId: string, opts: { goal: string; meta?: Record<string, unknown> }): void {
     const rec = this.runs.get(runId);
@@ -217,7 +295,9 @@ export class RunRegistry {
       this.start(runId);
       return;
     }
-    if (rec.status !== 'failed') throw new Error(`run ${runId} is ${rec.status} — resume 仅适用 failed/未知 run`);
+    if (rec.status !== 'failed' && rec.status !== 'cancelled') {
+      throw new Error(`run ${runId} is ${rec.status} — resume 仅适用 failed/cancelled/未知 run`);
+    }
     rec.status = 'running';
     rec.error = undefined;
     rec.progress = undefined;
