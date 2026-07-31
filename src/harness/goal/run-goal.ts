@@ -118,6 +118,21 @@ export interface RunGoalResult {
    */
   outcome: RunOutcomeKind;
   /**
+   * **两条判据各自说了什么**(N9, 2026-07-31)。`judge` = 收敛判据(judge 判词);
+   * `oracle` = 冻结判据(可执行验收命令的退出码;判据不是可执行式时恒 true)。
+   *
+   * 为什么要把两个布尔单独暴露, 而不是让调用方从 {@link outcome} 反推:**反推不出来**。
+   * 上面那段 outcome 的算式里, `judge` 为假时一律落 `not-converged` ——
+   * **不管 `oracle` 是什么**。于是「judge 说没收敛、而冻结判据其实过了」(= 白转了几轮)
+   * 这一格在词表上根本不存在, 两个布尔算完就被扔了。
+   *
+   * 而那一格恰恰是「收敛判据可不可信」的另一半证据: 只看 `oracle-failed` 只能发现 judge 太松,
+   * 发现不了 judge 太紧。两侧都要看得见, 这条轴才是对称的。
+   *
+   * 契约段就结束(没跑 execute)→ 缺席, 不编 —— 那时两条判据一条都没判过。
+   */
+  criteria?: { judge: boolean; oracle: boolean };
+  /**
    * **BLOCKED 异步出口** (D-Q): 环判定"没有外部输入推不动"而提前退出的原因。
    * 与 `converged: false` 的区别是**该怎么办**: 未收敛 = 轮数用尽/judge 说没达标, 再给几轮可能就成;
    * blocked = 判据是确定性的 (环空转 / 检测者喊停), 再给多少轮都一样, 该由 owner 看一眼。
@@ -447,6 +462,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
     sources,
     repoContext,
     converged,
+    criteria: { judge: judgeSaidOk, oracle: oracleOk },
     rounds: roundCount,
     reusedNodes,
     ...(blocked ? { blocked } : {}),

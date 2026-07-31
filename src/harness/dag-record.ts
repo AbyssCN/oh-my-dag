@@ -141,6 +141,19 @@ export interface DagRunRecord {
    * ⚠ 缺席 = 没记;`reused: 0` = 记了且这次一个都没复用。
    */
   reused?: number;
+  /**
+   * **两条判据各自说了什么**(N9;`RunGoalResult.criteria` 的两位,按 runId 回填)。
+   *
+   * 与 {@link outcome} 的分工是本条存在的**全部**理由:`outcome` 在 `judge` 为假时一律落
+   * `not-converged`,**不管冻结判据过没过** —— 于是「judge 说没收敛而判据其实过了」
+   * (白转了几轮) 这一格在词表上被压掉了。两个布尔存着,那一格才看得见。
+   *
+   * 它是 **goal 级**的:`dag_goal` 一次落两条记录 (契约段 + 执行段),两条都会被回填成同一份;
+   * 读数板据此按 runId 去重再数,**不按行数** —— 按行数会把一次 goal 数成两次。
+   *
+   * ⚠ 缺席 = 这次不是 goal 路径 (`dag_run` 没有 judge/冻结判据两条判据) 或早于本次改动。
+   */
+  criteria?: { judge: boolean; oracle: boolean };
 }
 
 export interface DagRecorder {
@@ -152,6 +165,14 @@ export interface DagRecorder {
   list(limit?: number): DagRunRecord[];
   /** 同一个引擎 runId 的全部记录 (时间序; goal 两段各一条)。 */
   listByRun(runId: string): DagRunRecord[];
+  /**
+   * 回填**两条判据**到该 runId 的全部记录 (N9)。
+   *
+   * 为什么是回填而不是随 `record` 一起写: 冻结判据的结论在**整趟 goal 收尾时**才有,
+   * 而 `record` 是每张图跑完就落的 —— 执行段那张图落盘时, 验收命令还没判。
+   * 一次 goal 的两条记录都写同一份 (读数板按 runId 去重, 不按行数)。
+   */
+  updateCriteria(runId: string, criteria: { judge: boolean; oracle: boolean }): void;
   close(): void;
 }
 
@@ -169,6 +190,7 @@ interface Row {
   outcome: string | null;
   verification: string | null;
   reused: number | null;
+  criteria: string | null;
 }
 
 function rowToRecord(row: Row): DagRunRecord {
@@ -190,6 +212,7 @@ function rowToRecord(row: Row): DagRunRecord {
     ...(row.verification ? { verification: JSON.parse(row.verification) } : {}),
     // `reused: 0` 是"记了且一个没复用", NULL 是"没记" —— 两者不许合并。
     ...(row.reused !== null ? { reused: row.reused } : {}),
+    ...(row.criteria ? { criteria: JSON.parse(row.criteria) } : {}),
   };
 }
 
@@ -246,14 +269,16 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
   // 同上 (N9): 判据轴与效率轴的数据源。老行留 NULL (= 没记)。
   if (!cols.includes('verification')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN verification TEXT`);
   if (!cols.includes('reused')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN reused INTEGER`);
+  if (!cols.includes('criteria')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN criteria TEXT`);
   db.run(`CREATE INDEX IF NOT EXISTS omd_dag_runs_run_id ON omd_dag_runs (run_id)`);
   const ins = db.query(
-    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, levels, nodes, usage, observations, outcome, verification, reused)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, levels, nodes, usage, observations, outcome, verification, reused, criteria)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const byId = db.query(`SELECT * FROM omd_dag_runs WHERE id = ?`);
   const recent = db.query(`SELECT * FROM omd_dag_runs ORDER BY created_at DESC LIMIT ?`);
   const byRun = db.query(`SELECT * FROM omd_dag_runs WHERE run_id = ? ORDER BY created_at ASC`);
+  const upd = db.query(`UPDATE omd_dag_runs SET criteria = ? WHERE run_id = ?`);
 
   return {
     record(result, meta = {}) {
@@ -308,8 +333,13 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
         result.verification ? JSON.stringify({ pass: result.verification.pass, reason: result.verification.reason }) : null,
         // N9 效率轴: 跨轮复用了几个节点。`reusedNodes` 缺席 = 这条链没报 → NULL 而不是 0。
         result.reusedNodes ? result.reusedNodes.length : null,
+        // criteria 在整趟 goal 收尾时才有 → 这里恒 NULL, 由 updateCriteria 回填。
+        null,
       );
       return id;
+    },
+    updateCriteria(runId, criteria) {
+      upd.run(JSON.stringify(criteria), runId);
     },
     get(id) {
       const row = byId.get(id) as Row | null;

@@ -341,6 +341,9 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           ...(tier ? { tier } : {}),
         })
         .then((r) => {
+          // N9 判据轴: 两条判据回填到这个 runId 的全部记录。**在这里而不是随 record 一起写** ——
+          // 冻结判据的结论要整趟收尾才有, 而 record 是每张图跑完就落的 (执行段落盘时验收还没判)。
+          if (r.criteria) deps.recorder?.updateCriteria(runId, r.criteria);
           // 未收敛 = 自主环没达成 goal → 记 failed (**不算完成**): 谎报成功比失败更贵,
           // 调用方据此决定要不要人接手。
           // D-P 例外: 被叫停的记 cancelled —— 它没失败, 只是没跑完, 而这两者的下一步不一样
