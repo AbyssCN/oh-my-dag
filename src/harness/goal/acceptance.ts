@@ -24,7 +24,10 @@
  * 验收分型问的是"怎么判成没成", 是**判据**轴。两条轴此前混在一句 prompt 里 (旧分类器的 simple
  * 描述同时含"做法已确定"与"验收可机器判") —— 一个做法未定但验收可机器判的目标, 在旧口径下无处安放。
  */
-import { DEFAULT_COMMAND_ALLOWLIST, commandBlockReason } from '../command-leaf';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, isAbsolute, join } from 'node:path';
+import { DEFAULT_COMMAND_ALLOWLIST, commandBlockReason, createCommandLeafRunner } from '../command-leaf';
 import { logger } from '../logger';
 import type { GenerateFn } from '../executor-dag-types';
 
@@ -51,9 +54,24 @@ export type AcceptanceSpec =
       affordableLoss: string;
     };
 
+/**
+ * 分类器给的**反面样本**:一份**明显错**的产物长什么样(G4, 2026-07-31)。
+ *
+ * 只在开跑前的判别力探针({@link acceptanceDiscriminationReason})里用,**不进冻结文本** ——
+ * 它是拿来验判据的,不是拿给执行体看的(给了就等于告诉它"照这个的反面写"就能过闸)。
+ */
+export interface NegativeSample {
+  /** 相对路径(探针在临时目录里按它落盘;绝对路径 / `..` 一律拒)。 */
+  path: string;
+  /** 两三行就够 —— 探针只问"这条命令会不会被它满足"。 */
+  content: string;
+}
+
 export interface GoalClassification {
   tier: GoalTier;
   acceptance: AcceptanceSpec;
+  /** 见 {@link NegativeSample}。缺席 = 分类器没给(探针跳过,fail-open)。 */
+  negativeSample?: NegativeSample;
 }
 
 /**
@@ -128,6 +146,84 @@ export async function acceptanceVacuityReason(
 }
 
 /**
+ * **反面样本探针** —— G4 那句「判据必须在**错的答案**上失败」的可执行版(2026-07-31)。
+ *
+ * ## 它补的正是上面那段「⚠ 抓不到什么」
+ *
+ * 空世界自检问的是「活还没干之前它红不红」,而 2026-07-31 live 那条缺陷从这道闸底下走过去了:
+ * `grep -q "相同" docs/from-api.md` 在空世界里文件不存在 → 命令失败 → 自检放行;
+ * 而它事后**照样被「两处不相同」满足**。两道闸问的是**两个不同的问题**:
+ *
+ * | 探针 | 问 | 抓的病 |
+ * |---|---|---|
+ * | 空世界自检 | 什么都没做时它绿不绿 | 判据**恒真**(`cat README.md` 而 README 本来就在) |
+ * | 反面样本(本函数) | 一份**错的**产物能不能骗过它 | 判据**不判别**(对的答案和错的答案都满足) |
+ *
+ * 一条判据要有意义, 这两问都得答对。此前只答了第一问, 而 live 抓到的恰是第二问那一类。
+ *
+ * ## 做法:在一个临时世界里把错答案摆出来
+ *
+ * 分类器除了命令还给一份**明显错**的产物(路径 + 两三行内容)。探针建一个临时目录、把它落盘、
+ * 在那里跑同一条命令 —— **过了就是虚判据**。临时目录是引擎自己建的, 命令仍走同一份白名单闸,
+ * 所以这道探针比空世界自检**更安全**(那一道是在真 cwd 上跑的)。
+ *
+ * ## 诚实边界
+ *
+ * 反面样本是**模型给的**, 所以这道闸的强度上限是"模型能不能想出一个像样的错答案"。
+ * 它给了个和正确答案八竿子打不着的样本 → 探针照样放行一条虚判据。**它不是证明, 是筛子** ——
+ * 筛掉的是那类"连一个显然的错答案都拦不住"的判据, 而 live 抓到的那条正是这一类。
+ *
+ * fail-open: 没样本 / 路径不合法 / 跑不起来 → 返 null(不拦)。同空世界自检:探针是加固不是前置条件。
+ *
+ * @returns null = 判据在这份错答案上失败了(通过探针);否则一行拒因。
+ */
+export async function acceptanceDiscriminationReason(
+  command: string,
+  sample: NegativeSample | undefined,
+  expectExit = 0,
+  deps: { runIn?: (input: { command: string; cwd: string }) => Promise<{ exitCode: number }> } = {},
+): Promise<string | null> {
+  if (!sample?.path || !sample.content) return null;
+  // 相对路径且不许 `..` —— 探针要写盘, 而"分类器给的路径"是**模型产的字符串**, 按不可信处理。
+  // (临时目录本身是隔离的, 这一层是防它把宿主别处的文件覆盖掉。)
+  const rel = sample.path.trim();
+  if (!rel || isAbsolute(rel) || rel.split(/[\\/]/).includes('..')) {
+    logger.warn({ path: sample.path }, '[omd/goal] 反面样本路径不合法 → 跳过判别力探针 (fail-open)');
+    return null;
+  }
+  let dir: string | undefined;
+  try {
+    dir = mkdtempSync(join(tmpdir(), 'omd-negative-'));
+    const file = join(dir, rel);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, sample.content.endsWith('\n') ? sample.content : `${sample.content}\n`, 'utf-8');
+    const run = deps.runIn ?? defaultProbeRunner;
+    const { exitCode } = await run({ command, cwd: dir });
+    // 负码 = 闸拒(命令没跑)→ 探针无话可说, 那件事由 acceptanceCommandBlockReason 管。
+    if (exitCode < 0 || exitCode !== expectExit) return null;
+    return (
+      `[undiscriminating] 这条验收命令在一份**明显错**的产物上**照样通过**(退出码 ${exitCode} = 期望值) —— ` +
+      `对的答案和错的答案都满足它, 因此它判不了成败。反面样本: \`${rel}\` = ${JSON.stringify(sample.content.slice(0, 120))}`
+    );
+  } catch (err) {
+    logger.warn({ command, err: String(err) }, '[omd/goal] 判别力探针跑不起来 → 不拦 (fail-open)');
+    return null;
+  } finally {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * 探针默认 runner:同一份白名单、**根在临时目录**。
+ *
+ * 刻意**不复用**调用方注入的那个 runner:那一个的 cwd 在装配期就烤进去了(= 真工作树),
+ * 而探针的全部意义就是换一个世界跑。也刻意不为此给 `CommandLeafInput` 加一个 `cwd` 口 ——
+ * 那是给节点执行面开一个由模型填的根路径,为一道自检开这种口子不划算。
+ */
+const defaultProbeRunner = async ({ command, cwd }: { command: string; cwd: string }): Promise<{ exitCode: number }> =>
+  createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], cwd, timeoutMs: 30_000 })({ command });
+
+/**
  * 探索型兜底 —— 分型失败 / 执行型拿不到可跑命令时用它, **并把原因原样写进学习目标**。
  *
  * 为什么兜到探索型而不是"执行型但命令留空": 执行型的全部意义就是那条命令, 留空的执行型
@@ -149,6 +245,9 @@ interface RawClassification {
   command?: unknown;
   learning_goal?: unknown;
   affordable_loss?: unknown;
+  /** G4 反面样本(扁平两格 —— 弱模型对嵌套对象的成功率明显低于扁平字段)。 */
+  negative_sample_path?: unknown;
+  negative_sample_content?: unknown;
 }
 
 /**
@@ -171,7 +270,18 @@ export function normalizeClassification(raw: RawClassification): GoalClassificat
     }
     // expectExit 恒 0: 这里定的是**总验收** (绿), 不是 TDD 中途的证红步 (那一步的 expect_exit:1
     // 由 spec 写进图里, 见 spec-author 卡的 TDD 流程段)。
-    return { tier, acceptance: { kind: 'executable', command, expectExit: 0 } };
+    const nPath = typeof raw.negative_sample_path === 'string' ? raw.negative_sample_path.trim() : '';
+    const nBody = typeof raw.negative_sample_content === 'string' ? raw.negative_sample_content : '';
+    // 样本缺席**不降级**: 判别力探针是加固不是前置条件 (同空世界自检的 fail-open)。
+    // 但要留一行 —— 缺席意味着这条判据只过了一道闸而不是两道, 而那两道问的不是同一个问题。
+    if (!nPath || !nBody.trim()) {
+      logger.info({ command }, '[omd/goal] 分类器没给反面样本 → 判别力探针跳过 (这条判据只过了空世界自检)');
+    }
+    return {
+      tier,
+      acceptance: { kind: 'executable', command, expectExit: 0 },
+      ...(nPath && nBody.trim() ? { negativeSample: { path: nPath, content: nBody } } : {}),
+    };
   }
 
   const learningGoal = typeof raw.learning_goal === 'string' ? raw.learning_goal.trim() : '';
@@ -235,8 +345,21 @@ export function classifyPrompt(goal: string): string {
     '  要"整行严格相等"就用 `-x`, 它就是干这个的。同理别用 `*` 之外的花哨正则。',
     '写不出这种单条命令 (要 mkdir、要管道过滤、要人眼看输出) = 这个目标机器判不了 → 老实选 exploratory。',
     '',
+    // G4 (2026-07-31): 上面那条"别断言你自己要写的结论词"是**讲道理**, 而讲道理拦不住 live 里
+    // 真发生的事 (它照样写了 `grep -q "相同"`)。这里改成**让它自己举一个反例** —— 举得出来,
+    // 引擎就能拿去跑一遍: 命令在这份错答案上照样通过 = 这条判据判不了成败, 当场降级。
+    // 顺带的副作用正是想要的: 一条判据要举得出"什么样算错", 它多半本来就想清楚了。
+    '',
+    '判成 executable 时**再给一份反面样本** (`negative_sample_path` + `negative_sample_content`):',
+    '  **一份明显错的产物长什么样** —— 相对路径 + 两三行内容。引擎会把它写进一个临时目录、',
+    '  在那里跑一遍你给的 `command`: **命令必须在这份错答案上失败**。它要是照样通过, 说明这条',
+    '  命令对的错的都满足、判不了成败 —— 那时整个目标会被降级成 exploratory。',
+    '  例: 命令 `grep -q "100" docs/from-api.md` → 反面样本 path=`docs/from-api.md`,',
+    '      content=`本文档汇总了接口支持的格式与限制。` (没有那个数 → 命令失败 → 这条判据是判别的)',
+    '',
     '形状: {"tier":"simple"|"complex","acceptance_kind":"executable"|"exploratory",',
-    '       "command"?:string,"learning_goal"?:string,"affordable_loss"?:string}',
+    '       "command"?:string,"negative_sample_path"?:string,"negative_sample_content"?:string,',
+    '       "learning_goal"?:string,"affordable_loss"?:string}',
     '',
     `目标: ${goal}`,
   ].join('\n');
@@ -293,12 +416,18 @@ export async function classifyGoal(
     });
     return normalizeClassification(JSON.parse(extractJsonObject(text)) as RawClassification);
   };
-  /** 过了闸的执行型再过一次空世界自检; 虚判据 → 降级探索型(理由原样带走)。 */
+  /** 过了闸的执行型再过**两道**探针; 任一响 → 降级探索型(理由原样带走)。 */
   const vet = async (c: GoalClassification): Promise<GoalClassification> => {
-    if (c.acceptance.kind !== 'executable' || !runCommand) return c;
-    const why = await acceptanceVacuityReason(c.acceptance.command, runCommand, c.acceptance.expectExit);
+    if (c.acceptance.kind !== 'executable') return c;
+    // 两道问的**不是同一个问题**, 所以是串联不是二选一:
+    //   ① 空世界自检   —— 活还没干之前它就绿? → 判据**恒真**(需要注入的 runner, 在真 cwd 上跑)
+    //   ② 反面样本探针 —— 一份错的产物骗得过它? → 判据**不判别**(自带 runner, 在临时世界里跑)
+    // ① 抓不到 live 那条 `grep -q "相同"`(空世界里文件不存在 → 命令失败 → 放行), ② 才抓得到。
+    const why =
+      (runCommand ? await acceptanceVacuityReason(c.acceptance.command, runCommand, c.acceptance.expectExit) : null) ??
+      (await acceptanceDiscriminationReason(c.acceptance.command, c.negativeSample, c.acceptance.expectExit));
     if (!why) return c;
-    logger.warn({ command: c.acceptance.command, why }, '[omd/goal] 验收命令是虚判据 → 降级探索型 (G4 反面用例)');
+    logger.warn({ command: c.acceptance.command, why }, '[omd/goal] 验收命令没过判据探针 → 降级探索型 (G4)');
     return { tier: c.tier, acceptance: fallbackExploratory(`${why} 原命令: \`${c.acceptance.command}\``) };
   };
   try {
