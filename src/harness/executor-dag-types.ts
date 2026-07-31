@@ -489,7 +489,14 @@ export interface PriorExec {
 
 export interface ExecutorDagResult {
   plan: ConductorPlan;
-  /** 本次 run 的 Langfuse session id (= config.sessionId 或内部生成的)。回显供调用方做跨平面关联。 */
+  /**
+   * 本次 run 的**跨平面关联键** (= config.sessionId 或内部生成的)。
+   *
+   * 2026-07-31 起它同时是 **Langfuse 的 traceId + sessionId** —— 一次 run 的全部模型调用
+   * (conductor / leaf / judge / verifier / research) 都经 `gateway.send()` 归到这一条 trace 上。
+   * ⚠ 在此之前这句话写的是"Langfuse session id"而实际没有任何导出器, 那是**声明面与执行面
+   * 对不上**; 现在为真, 但**仅当配了 LANGFUSE_* 三个 env** (不配 = 这一位仍只是个关联键)。
+   */
   sessionId: string;
   /** 拓扑层级 (level 0 = 无依赖根; 每 level 内并行)。 */
   levels: string[][];

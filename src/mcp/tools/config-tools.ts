@@ -16,6 +16,7 @@ import { z } from 'zod';
 import type { OmdMcpTool } from '../server';
 import { ROLE_PRESETS } from '../../harness/init/role-presets';
 import { runAutoAssign } from '../../model/auto-assign';
+import { langfuseStatus } from '../../model/langfuse';
 import { checkSeats } from '../../model/role-fallback';
 import {
   TUNABLE_CONFIG_ROLES,
@@ -300,6 +301,10 @@ function makeConfigStatus(router?: ConfigToolDeps['router']): OmdMcpTool {
           lines.push(`  ${c.seat.padEnd(12)} ${(c.coord ?? '—').padEnd(34)} ${state}`);
         }
         if (s.multimodalPool.length) lines.push('', `多模态池: ${s.multimodalPool.join(', ')}`);
+        // 可观测出口 (2026-07-31): **开没开要能一眼看见, 没开要说得出缺哪个 env**。
+        // 这一行本身是在防这个文件治的那个病 —— 一个"配了以为生效、其实没生效"的观测层
+        // 比没有观测层更坏 (你会以为看过了)。
+        lines.push('', `Langfuse trace: ${langfuseStatus(process.env)}`);
         // models.json 自定 provider (统一-registry 单一真源, 两栈共读; pi-native 只读, 经 omd_register_provider 写)。
         const customProviders = listCustomProviderStatus(process.env);
         if (customProviders.length) {
