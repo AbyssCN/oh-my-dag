@@ -367,6 +367,21 @@ export interface LeafResult {
    */
   writeCounts?: [total: number, noop: number];
   /**
+   * `executor:'command'` 节点的退出码。**负数 = command-leaf 的闸拒**(白名单/元字符/git 写/
+   * 危险命令),不是被执行命令的退出码。
+   *
+   * 为什么值得单记一位(2026-07-31,第四跑逼出来的):「节点没过」有**两种成因,后续动作相反** ——
+   *   · 普通失败(exit ≠ want):断言没成立 → 再试一轮可能就好了(`STALLED`)
+   *   · **闸拒**(exit < 0):Harness 拒绝了这个操作 → **再试也没用**,白名单不会因为重试而放行
+   * 书 §4.4 的五态表里,后者正是 `BLOCKED` 的教科书定义(「触碰范围禁区或权限边界 ·
+   * Harness 层拒绝了某个操作 · 停止自动重试,直接升级给人」),而我们今天把它降格成"节点 failed",
+   * 与普通失败混成一堆 —— 连"这一跑被闸拒了几次"都要去读日志。
+   *
+   * ⚠ **本字段只记不判**:是否该据它走 BLOCKED 出口, 取决于「连续几轮找不到一条合法命令」这个数,
+   * 而那个数今天是 0 读数(第三跑实测 conductor 会从闸拒里自愈:拒→拒→过)。先记,再定 K。
+   */
+  exitCode?: number;
+  /**
    * agent leaf **读过**的文件 (D-12, 来自 AgentLeafResult.filesRead)。图外数据流的观察面 ——
    * `plan/observers.lintArtifactEdges` 据它报「未声明的制品依赖」, 复用滤镜据它拦「读过被拒制品的
    * 消费方」(INV-P2-4/5)。resume 跳过的节点从 checkpoint 的 `inputPaths` 还原, 观察面不因续跑变窄。
