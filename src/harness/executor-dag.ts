@@ -73,6 +73,7 @@ import { send } from '../model/gateway';
 // D-14v2 多模态媒体管道 (S4): attach_media 执行期从直接前驱输出解析图片 → ContentPart 注入。
 import { collectDepMedia } from './leaf-media';
 import { recordGeneration, recordSpan } from '../model/langfuse';
+import { ModelError } from '../model';
 import { withFailureKind, upstreamFailureNotice } from './node-failure';
 import { makeRunNonce, fenceUntrusted, trustHeader } from './prompt-fence';
 import type { ContentPart } from '../model/gateway';
@@ -622,11 +623,18 @@ async function executePlan(
     leaf: LeafResult,
     round: number,
     children: readonly JudgeChildView[],
-  ): Promise<{ converged: boolean; reason: string; rejected: string[]; usage: ModelUsage }> => {
+  ): Promise<{
+    converged: boolean;
+    reason: string;
+    rejected: string[];
+    usage: ModelUsage;
+    /** judge **调不通**时的错误原文 (ModelError = 传输/配置层确定性故障); 判词只是解析不了 → null。 */
+    unreachable: string | null;
+  }> => {
     const childIds = children.map((c) => c.id);
     // 整轮就没跑成 → 直接未收敛, 省一次 judge 调用 (同 llm-judge 的 status==='failed' 短路)。
     if (leaf.status === 'failed') {
-      return { converged: false, reason: `整轮失败: ${leaf.output.slice(0, 300)}`, rejected: [], usage: { in: 0, out: 0 } };
+      return { converged: false, reason: `整轮失败: ${leaf.output.slice(0, 300)}`, rejected: [], usage: { in: 0, out: 0 }, unreachable: null };
     }
     const judgeCoord = config.judgeModel ?? config.conductorModel;
     try {
@@ -668,15 +676,22 @@ async function executePlan(
       if (!v.converged && !v.failureReason) {
         logger.warn({ node: id, round }, '[omd/executor-dag] 内环 judge 判未收敛却零理由 → 下一轮反馈为空 (A5, 应由 llm-judge 兜住)');
       }
-      return { converged: v.converged, reason: v.failureReason ?? '', rejected, usage };
+      return { converged: v.converged, reason: v.failureReason ?? '', rejected, usage, unreachable: null as string | null };
     } catch (err) {
       // fail-closed: 判不出来就当没达成。judge 挂掉不该变成"那就算过了吧"。
       logger.warn({ node: id, round, err: String(err) }, '[omd/executor-dag] 内环 judge 无结论 → 判未收敛 (fail-closed)');
+      // **「调不通」与「判词解析不了」不是一回事** (2026-07-31 实测那 65 分钟): 前者是
+      // 传输/配置层的确定性故障 (codex 拒 temperature → 每一轮同样抛), 再转多少轮都一样;
+      // 后者是模型这一发没说清楚, 下一轮可能就好了。此前两者都落"未收敛"、都继续转 ——
+      // 于是一个改配置一分钟能修的事, 烧掉了全部轮数, 而症状看起来像"任务太难"。
+      // 判据取 `ModelError` (仓里既有的传输/配置错类), 不靠猜错误文本。
+      const unreachable = err instanceof ModelError ? String((err as Error).message ?? err) : null;
       // A5: 这句话的读者是**下一轮重画的 conductor**。旧文案 (`judge 无可解析结论 (fail-closed)`)
       // 报得对, 但它是**引擎侧的事故**, 而读者会把出现在「上一轮未通过」里的任何东西当成对自己
       // 方案的评价 —— 于是它会为了迎合一句根本不存在的判词去改图。所以第一句先把这件事撇清。
       return {
         converged: false,
+        unreachable,
         reason:
           '【引擎侧事故, 不是对上一轮方案的评价】judge 这一轮没能给出任何裁决 (调用失败或结论无法解析)。' +
           '也就是说: **上一轮的方案没有被判过**, 没有任何证据说它坏。' +
@@ -1003,6 +1018,21 @@ async function executePlan(
             }))
             .then((r) => {
               results[cid] = r;
+              // 子图节点也发 span (2026-07-31)。此前**只有外层 settle 循环调 recordSpan**, 而
+              // 运行时展开出来的子节点走的是这条内环 —— 于是它们在观测面上只有 generation、没有 span,
+              // 而 generation 又按 nodeId 挂在那个不存在的 span 上 → **全成孤儿**。
+              // 这不是个别情况: 一次 goal 的绝大多数节点正是子图节点。实测那一跑 13 条 observation
+              // 里 10 条孤儿、只有 1 个 span, 「一条 trace 打开是整张图的形状」对 goal 路径基本不成立。
+              // 用同一个 recordSpan 而不是在这儿另拼一份 —— 父子关系仍由 `父::子` 的 id 解出。
+              recordSpan({
+                traceId: obsTraceId,
+                nodeId: cid,
+                kind: r.kind,
+                status: r.status,
+                startTime: new Date(nodeStartedAt.get(cid) ?? Date.now()),
+                endTime: new Date(),
+                ...(r.failureKind ? { failureKind: r.failureKind } : {}),
+              });
               roundResults.set(cid, r);
               depOutputs[cid] = r.output;
               usageAcc = addUsage(usageAcc, r.usage);
@@ -1357,6 +1387,19 @@ async function executePlan(
 
       const verdict = await judgeConductorRound(id, node.goal ?? id, r.leaf, round, r.children);
       usageAcc = addUsage(usageAcc, verdict.usage);
+      // judge **调不通** → 立刻退环, 不把剩下的轮数烧在一个确定性故障上 (2026-07-31)。
+      // 与 §8.4 熔断同一个出口形状, 但 kind 是 `infra-error` 不是 `blocked`: N5 词表里这两格的
+      // 下一步相反 —— blocked 是"要人给外部输入", infra-error 是"引擎自己出事, 该修的是引擎"。
+      // 把它念成 not-converged (此前的行为) 会让人去加轮数, 而加轮数正是最没用的那个动作。
+      if (verdict.unreachable) {
+        logger.warn({ node: id, round, err: verdict.unreachable }, '[omd/executor-dag] judge 调不通 → 环提前退出 (infra-error, 不烧剩余轮数)');
+        writeLoopJournal(round, poisoned, prevReason, false, last.output, {
+          kind: 'infra-error',
+          evidence: `judge 调不通: ${verdict.unreachable}`, // 原话进 journal, 复盘要的是当时看见了什么
+          atRound: round,
+        });
+        return { ...settle(last, round, false), infraStopped: `judge 调不通: ${verdict.unreachable}` };
+      }
       last = { ...r.leaf, usage: usageAcc };
 
       // D-4 同款铸票: judge 点名的子节点 → **id** 入毒集 (键取 id 的理由见 NodeLoopJournal 的注)。
