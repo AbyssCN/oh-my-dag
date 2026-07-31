@@ -284,10 +284,27 @@ flowchart TB
 | Kind | Model? | Tools? | Use for |
 |---|---|---|---|
 | `leaf` | one shot | no | generation, research, judgement, drafting |
-| `agent` | yes | read/edit/write/bash, in a bwrap jail | **the only kind that writes files** |
+| `agent` | yes | read/edit/write/bash — jailed **only** on `branchStrategy: 'branch'` (see below) | **the only kind that writes files** |
 | `command` | **none** | a CLI from an allowlist | gates (`tsc`/tests), scanners, indexed lookups |
 | `map` | mixed | — | runtime fan-out: a lister discovers the work-list, one child per item |
 | `primitive` | mixed | — | 12 control-flow shapes the engine owns |
+
+**Where a run's writes land, and what contains them** — `dag_goal` takes `branchStrategy`:
+
+| | `head` (default) | `branch` |
+|---|---|---|
+| Writes go to | your current working tree | an isolated git worktree on `omd/run/<runId>`; the engine never merges back — you do |
+| Agent leaf **write** face | anchored at the run's cwd, but an **absolute path still escapes** (measured, not theorised) | bwrap jail — the leaf process only sees that worktree, so there is nothing outside to address |
+| Agent leaf **read** face | **your whole filesystem** — no jail | `HOME=/tmp`, `/home` not mounted → `~/.ssh` does not exist inside the jail |
+| Command leaf | allowlist + dangerous-pattern table (both modes) | same |
+
+**This is a deliberate ruling, not an oversight** (2026-07-31): `head` is the "I'm here, I'm
+watching" mode, and reading outside the repo is the reason it exists. If a node were ever hijacked
+— say by injected text inside a fetched web page — the execution face is held by the command
+allowlist (live-verified: rejected twice), but the **read** face in `head` is open by design.
+Run `branchStrategy: 'branch'` for anything unattended, anything that fetches the open web, or
+anything you would not want reading `~/.ssh`. If bwrap is missing on the box, the engine says so
+loudly and degrades to path-level isolation only.
 
 **Plan passes** — pure functions between the plan and execution: `prune` (drop dead nodes) →
 `dedup` (semantic-key merge) → `evidence` (UI pixel-chain gate) → `stamp` (pin a model on every node).
