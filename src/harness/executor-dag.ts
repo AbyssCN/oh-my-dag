@@ -2235,8 +2235,21 @@ async function executePlan(
 
   // warmThenFanout: 全局暖 1 发写共享 leafSystemPrefix 缓存, 再放 pool。
   // (旧法每层暖 1 发 = 深 DAG 暖 N 次且每次阻塞该层; 共享前缀全局相同 → 单次全局暖即覆盖, 命中面更大、阻塞更少。)
-  if (config.warmThenFanout && idSet.size > 1 && ready.length > 0) {
-    const id = ready.shift()!;
+  // ⚠ 2026-07-31 实测修正: 暖发要挑一个**真会打模型**的节点。
+  //
+  // 第一版是 `ready.shift()` —— 拿第一个就绪节点, 不问它是什么。而一张图的 L1 常常全是
+  // command 节点 (跑测试/数文件/取 git log), 那些节点**一次模型都不调** —— 于是暖发把它们
+  // 串行跑一遍, 拿到的 prompt-cache 收益是 **0**, 付出的是实打实的一发延迟。
+  // 重启后第一跑就撞上了: 4 个 command 节点里只有 1 个在跑, 另外 3 个干等着一件与它们无关的事。
+  //
+  // 判据用节点自己的 executor (直接证据), 不拿"排除了别的"凑: command 节点是唯一确定不打模型的。
+  // 一个都挑不出来 (整层都是 command) → **不暖**, 直接全宽放开 —— 没有可暖的东西时,
+  // 暖发的正确行为是消失, 不是随便抓一个。
+  const warmIdx = config.warmThenFanout
+    ? ready.findIndex((rid) => (plan?.nodes[rid] as { executor?: string } | undefined)?.executor !== 'command')
+    : -1;
+  if (config.warmThenFanout && idSet.size > 1 && warmIdx >= 0) {
+    const id = ready.splice(warmIdx, 1)[0]!;
     const r0 = await runNode(id).catch((e) => failedFromThrow(id, e));
     const { r: r1, view } = await maybeFaninView(id, r0); // 扇出≥2 → 摘要 (dependents 释放前)
     if (view) faninView[id] = view;
