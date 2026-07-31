@@ -15,7 +15,7 @@
  * 「真建起来」那半由 `run-worktree.test.ts` 用注入的假 git 覆盖。两边合起来才是完整的。
  */
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createGoalTool } from './goal';
@@ -34,13 +34,30 @@ const emptyResult = (goal: string): RunGoalResult => ({
   reusedNodes: [],
 });
 
-/** 造工具 + 回收 runGoal 实际拿到的 cwd(接线唯一说得清的观察面)。 */
-const make = (opts: { fakeGitRepo?: boolean } = {}) => {
+/**
+ * 造工具 + 回收**两个**观察面:
+ *   `cwds`        —— runGoal 拿到的 cwd
+ *   `buildCwds`   —— buildConfig 被传的 cwd(`undefined` = 没传)
+ *
+ * ⚠ 为什么必须有第二个: 2026-07-31 live 实测抓到 —— 第一版只钉了 `cwds`, 它绿着, 而**产物
+ * 全落在主树**。leaf runner 的 cwd 是**装配期**烤死的, `runGoal` 的 `cwd` 参数只管 spec 落盘目录。
+ * 也就是说那条网验的是"我改的那个旋钮", 不是"真正要紧的性质(文件落在哪)"。
+ * `buildConfig(cwd)` 是重建 runner 的唯一入口, 所以它就是那条性质在装配层的代理。
+ */
+const make = (opts: { fakeGitRepo?: boolean; realGitRepo?: boolean } = {}) => {
   const root = mkdtempSync(join(tmpdir(), 'omd-branch-'));
-  // `.git` 存在 = `prepareRunWorktree` 认它是工作树 → 会真去调 git。本文件只在**不建**的那条路上
-  // 用它, 用来分开"没试"与"试了但失败"两种降级。
+  // `.git` 是**空目录** = prepareRunWorktree 认它是工作树 → 真去调 git → 必失败。
+  // 用来分开"没试"(不是仓)与"试了但失败"两种降级。
   if (opts.fakeGitRepo) mkdirSync(join(root, '.git'), { recursive: true });
+  // 真 git 仓: 隔离档才真的建得起来 —— 那条路上才验得了"runner 有没有被重建"。
+  if (opts.realGitRepo) {
+    writeFileSync(join(root, 'seed.txt'), 'seed\n');
+    for (const args of [['init', '-q'], ['add', '-A'], ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 's']]) {
+      Bun.spawnSync(['git', ...args], { cwd: root, stdout: 'ignore', stderr: 'ignore' });
+    }
+  }
   const cwds: string[] = [];
+  const buildCwds: (string | undefined)[] = [];
   const tool = createGoalTool({
     runGoal: async (goal, cfg) => {
       cwds.push(cfg.cwd);
@@ -48,9 +65,12 @@ const make = (opts: { fakeGitRepo?: boolean } = {}) => {
     },
     runRegistry: new RunRegistry(),
     cwd: root,
-    buildConfig: () => ({ conductorModel: 'c:m', leafModel: 'l:m' }),
+    buildConfig: (cwd) => {
+      buildCwds.push(cwd);
+      return { conductorModel: 'c:m', leafModel: 'l:m' };
+    },
   });
-  return { tool, cwds, root };
+  return { tool, cwds, buildCwds, root };
 };
 
 const textOf = (r: { content: { text?: string }[] }): string => r.content.map((c) => c.text ?? '').join('\n');
@@ -97,6 +117,40 @@ describe('② branch — 建不起来就退回 head, 但必须说出来', () => 
     expect(cwds).toEqual([root]);
     // 这一条与上一条的降级**成因不同**(没试 vs 试了失败), 文案也该不同 —— 两种"看不见"要分得开。
     expect(textOf(r)).toContain('建 worktree 失败');
+  });
+});
+
+describe('②b **真 git 仓里隔离档必须重建 leaf runner** ←第一版漏的就是这一步', () => {
+  test('隔离建起来 → buildConfig 被**再调一次**且带 worktree 路径', async () => {
+    const { tool, cwds, buildCwds, root } = make({ realGitRepo: true });
+    const r = await call(tool, { goal: '干点活', branchStrategy: 'branch' });
+    await settle();
+    const t = textOf(r);
+    expect(t).toContain('隔离 worktree'); // 真建起来了, 不是降级
+    const wt = join(root, '.omd', 'runs');
+    expect(cwds[0]).toContain(wt);
+    // ★ 这条是本文件存在的理由: leaf runner 的 cwd 是装配期烤死的, 只有再过一次 buildConfig
+    //   才换得掉。少了它, 上面那条 `cwds` 照样绿, 而产物落在主树。
+    expect(buildCwds).toHaveLength(2); // ① 起跑自检(无参) ② 隔离重建(带路径)
+    expect(buildCwds[0]).toBeUndefined();
+    expect(buildCwds[1]).toContain(wt);
+    // 清理: worktree + 分支都在临时目录里, 整棵删掉即可。
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test('head 档 → buildConfig **只调一次**(零回归: 不白建一份 runner)', async () => {
+    const { tool, buildCwds, root } = make({ realGitRepo: true });
+    await call(tool, { goal: '干点活' });
+    await settle();
+    expect(buildCwds).toEqual([undefined]);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test('降级(建不起来)→ 也**只调一次** —— 不许拿一个没建成的路径去重建 runner', async () => {
+    const { tool, buildCwds } = make({ fakeGitRepo: true });
+    await call(tool, { goal: '干点活', branchStrategy: 'branch' });
+    await settle();
+    expect(buildCwds).toEqual([undefined]);
   });
 });
 

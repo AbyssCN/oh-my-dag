@@ -377,7 +377,23 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
    * 冻在 boot 那一刻 —— `omd_set_role` / `omd models auto` 改完 config, 下一次 dag_run 仍用旧座,
    * 得杀进程重连才生效 (P0 前的真实症状)。router (bandit, 有状态) 与两个 runner 留在外面复用。
    */
-  const buildDefaultConfig = (): Partial<ExecutorDagConfig> => {
+  /**
+   * @param overrideCwd R2 (2026-07-31): 隔离 worktree 档下**必须重建 leaf runner**。
+   *   `agentRunner`/`commandRunner` 在装配期就把 cwd 烤进去了(上面那两行), 而 `runGoal` 的
+   *   `cwd` 参数只管 spec 落盘目录 —— live 实测到过这个洞: worktree 建起来了、回话说"隔离成功",
+   *   **产物却全落在主树**。声明面动了执行面没跟上, 而读数上看起来是成功的。
+   *   宿主显式注入的 runner (`deps.agentRunner`) 不动: 那是调用方自己选的根, 我们不替它改。
+   */
+  const buildDefaultConfig = (overrideCwd?: string): Partial<ExecutorDagConfig> => {
+    const root = overrideCwd ?? cwd;
+    const agentRunnerForRun =
+      overrideCwd && !deps.agentRunner
+        ? createAgentLeafRunner({ cwd: root, hashlineEdit: true, leafTimeoutMs })
+        : agentRunner;
+    const commandRunnerForRun =
+      overrideCwd && !deps.commandRunner
+        ? createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], cwd: root, timeoutMs: 180_000 })
+        : commandRunner;
     // engine config = 座位三件套 (conductor/leaf/agent, 单一 resolver) + 真改文件 runner 对。
     const models = resolveEngineModels(env);
     // 并发默认接 fleet 层 (此前断路 = 引擎全宽): min(effectiveFanout(env OMD_MAX_FANOUT/CPU 兜底),
@@ -480,8 +496,9 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       seatThinking,
       maxFanout: defaultMaxFanout,
       ...(Object.keys(kindFanout).length ? { kindFanout } : {}),
-      agentRunner,
-      commandRunner,
+      // R2: 隔离档下这两个是**为那棵树重建的**; 无 override 时逐字等于装配期那一对 (零回归)。
+      agentRunner: agentRunnerForRun,
+      commandRunner: commandRunnerForRun,
       ...(researchRunner ? { researchRunner } : {}),
       router,
       planFilters,

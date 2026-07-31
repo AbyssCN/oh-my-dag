@@ -33,7 +33,7 @@ export interface GoalToolDeps {
    * engine config 基座 —— **thunk, 每次调用重解** (INV-MODEL-3 无 boot 冻结: 长驻 server 里
    * 装配期算死的座位会让 omd_set_role 改完不生效)。
    */
-  buildConfig: () => Partial<ExecutorDagConfig>;
+  buildConfig: (cwd?: string) => Partial<ExecutorDagConfig>;
   /**
    * W2 continuity + **节点级环 journal** (INV-P2-6, D-F 后降级到节点级)。给则:节点落 checkpoint,
    * 两个 conductor 节点 (契约段/执行段) 各自的轮次/毒集/上轮原因落 `_loop-<nodeId>.json` ——
@@ -256,6 +256,11 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         runId,
         ...(branchStrategy ? { strategy: branchStrategy } : {}),
       });
+      // ⚠ **隔离档必须重建 leaf runner** (2026-07-31 live 实测揪出): 上面那次 `buildConfig()` 是
+      // 起跑自检, 拿到的 runner 把**装配期**的 cwd 烤死了; 而 `runGoal` 的 `cwd` 参数只管 spec
+      // 落盘目录。第一版就漏了这一步 —— worktree 建起来了、回话说"隔离成功"、**产物全落在主树**。
+      // 声明面动了执行面没跟上, 而读数上看起来是成功的。
+      if (worktree.strategy === 'branch') dag = deps.buildConfig(worktree.cwd);
 
       // INV-P2-6: continuity 给了才落环 journal; resume 时才读它 (与 per-node resume 同一开关)。
       // D-P: 取消把手一并挂上 —— 自主环是最长活的那条路 (research + 多轮执行), 也是最需要能叫停的。
