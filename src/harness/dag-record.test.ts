@@ -174,3 +174,78 @@ describe('recordDagRun (onComplete 钩子工厂)', () => {
     rec.close();
   });
 });
+
+/**
+ * N9 的两位新数据源 (2026-07-31)。
+ *
+ * 加它们是 N9 「在读数板上把 score 四条轴试出来」时当场撞到的:**判据轴与效率轴没有数据源**。
+ * `verification` 缺了,「judge 说没收敛而验收其实过了」那一格就永远看不见;模型坐标缺了,
+ * `computeCost` 查不到价 —— `$/goal` 不是没做, 是算不出来。
+ *
+ * 钉的重点与 `writeCounts` 那条一样, 是**三态不许被抹平**: 没记 / 记了且为假 / 记了且为真,
+ * 三者的结论互不相同, 合并任意两个都会让读数板念出一句错话。
+ */
+describe('N9 · verification / reused / model 的三态', () => {
+  const withVerif = (v: { pass: boolean; reason?: string } | undefined, reused?: string[]) =>
+    ({
+      plan: { name: 'p', nodes: { a: { goal: 'x' } } },
+      levels: [['a']],
+      results: { a: { id: 'a', kind: 'agent', status: 'done', deps: [], output: '', usage: { in: 1, out: 1 }, model: 'deepseek:deepseek-v4-flash' } },
+      ...(reused ? { reusedNodes: reused } : {}),
+      ...(v ? { verification: v } : {}),
+      usage: { conductor: { in: 1, out: 1 }, leavesIn: 10, leavesOut: 5, leavesCacheHit: 2 },
+    }) as unknown as ExecutorDagResult;
+
+  test('验收过了 / 没过 / 压根没验 —— 三态各自可辨', () => {
+    const rec = createDagRecorder({ db: new Database(':memory:') });
+    const pass = rec.get(rec.record(withVerif({ pass: true })))!;
+    const fail = rec.get(rec.record(withVerif({ pass: false, reason: '退出码 1' })))!;
+    const none = rec.get(rec.record(withVerif(undefined)))!;
+    expect(pass.verification).toEqual({ pass: true });
+    expect(fail.verification).toEqual({ pass: false, reason: '退出码 1' });
+    // ★ 没验 ≠ 没过。编一个 `pass:false` 会让读数板把「这次没跑验收」念成「判据没通过」。
+    expect(none.verification).toBeUndefined();
+    rec.close();
+  });
+
+  test('reused: 0 是「记了且一个没复用」, 缺席是「没记」—— 不许合并', () => {
+    const rec = createDagRecorder({ db: new Database(':memory:') });
+    const zero = rec.get(rec.record(withVerif(undefined, [])))!;
+    const two = rec.get(rec.record(withVerif(undefined, ['a', 'b'])))!;
+    const unrecorded = rec.get(rec.record(withVerif(undefined)))!;
+    expect(zero.reused).toBe(0);
+    expect(two.reused).toBe(2);
+    expect(unrecorded.reused).toBeUndefined();
+    rec.close();
+  });
+
+  test('模型坐标原样进留痕 —— 存坐标不存算好的钱 (价表会改, 坐标不会)', () => {
+    const rec = createDagRecorder({ db: new Database(':memory:') });
+    const r = rec.get(rec.record(withVerif({ pass: true })))!;
+    expect(r.nodes[0]!.model).toBe('deepseek:deepseek-v4-flash');
+    // 没打模型的节点 (command 叶) 不编一个坐标出来。
+    const noModel = {
+      plan: { name: 'p', nodes: { c: { goal: 'x', command: 'ls' } } },
+      levels: [['c']],
+      results: { c: { id: 'c', kind: 'command', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 } } },
+      usage: { conductor: { in: 1, out: 1 }, leavesIn: 0, leavesOut: 0, leavesCacheHit: 0 },
+    } as unknown as ExecutorDagResult;
+    expect(rec.get(rec.record(noModel))!.nodes[0]!.model).toBeUndefined();
+    rec.close();
+  });
+
+  test('老库 (无这三列) 就地补列不炸, 老行读回来是「没记」而不是假值', () => {
+    const db = new Database(':memory:');
+    // 造一张 2026-07-31 之前形状的表 (无 verification / reused)。
+    db.run(`CREATE TABLE omd_dag_runs (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, plan_name TEXT NOT NULL,
+            node_count INTEGER NOT NULL, question TEXT, run_id TEXT, levels TEXT NOT NULL, nodes TEXT NOT NULL, usage TEXT NOT NULL)`);
+    db.run(`INSERT INTO omd_dag_runs VALUES ('old', 1, 'p', 1, NULL, NULL, '[]', '[]', '{}')`);
+    const rec = createDagRecorder({ db });
+    const old = rec.get('old')!;
+    expect(old.verification).toBeUndefined();
+    expect(old.reused).toBeUndefined();
+    // 补列之后新记录照常写得进去。
+    expect(rec.get(rec.record(withVerif({ pass: true }, ['a'])))!.verification).toEqual({ pass: true });
+    rec.close();
+  });
+});

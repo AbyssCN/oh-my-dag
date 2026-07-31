@@ -37,6 +37,7 @@
  */
 import { Database } from 'bun:sqlite';
 import { commandRiskTier, RISK_TIER_ORDER, type CommandRiskTier } from '../src/harness/command-leaf';
+import { computeCost } from '../src/model/cost-ledger';
 import type { DagRunNode } from '../src/harness/dag-record';
 import { FAILURE_KIND_INFO, FAILURE_KIND_ORDER, type NodeFailureKind } from '../src/harness/node-failure';
 import { RUN_OUTCOME_INFO, RUN_OUTCOME_ORDER, type RunOutcomeKind } from '../src/harness/run-outcome';
@@ -51,6 +52,8 @@ interface Row {
   usage: string;
   observations: string | null;
   outcome: string | null;
+  verification: string | null;
+  reused: number | null;
 }
 interface Usage {
   conductorIn: number;
@@ -72,6 +75,10 @@ interface RunTotals {
   /** 缓存命中率 = leavesCacheHit / leavesIn。leavesIn=0 → null (没跑过 leaf, 不是 0%)。 */
   cacheRate: number | null;
   failed: number;
+  /** 本次跑里出现过的模型坐标 (N9 定价的前提)。空集 = 这批记录没记坐标 (老数据)。 */
+  models: Set<string>;
+  /** 跨轮复用的节点数。null = 没记 (**不是** 0)。 */
+  reused: number | null;
 }
 
 const flags = parseFlags(Bun.argv.slice(2));
@@ -93,7 +100,7 @@ const haveCols = (db.query(`PRAGMA table_info(omd_dag_runs)`).all() as { name: s
 const optionalCol = (name: string) => (haveCols.includes(name) ? `, ${name}` : `, NULL AS ${name}`);
 const rows = db
   .query(
-    `SELECT id, created_at, plan_name, node_count, run_id, nodes, usage${optionalCol('observations')}${optionalCol('outcome')}` +
+    `SELECT id, created_at, plan_name, node_count, run_id, nodes, usage${optionalCol('observations')}${optionalCol('outcome')}${optionalCol('verification')}${optionalCol('reused')}` +
       ` FROM omd_dag_runs ORDER BY created_at DESC LIMIT ?`,
   )
   .all(limit * 3) as Row[]; // ×3: 一次 goal 最多两条, 留余量再按 runId 截
@@ -121,6 +128,8 @@ for (const r of rows) {
     cacheHit: 0,
     cacheRate: null,
     failed: 0,
+    models: new Set<string>(),
+    reused: null,
   };
   cur.plans.push(r.plan_name);
   cur.nodes += r.node_count;
@@ -128,6 +137,9 @@ for (const r of rows) {
   cur.leavesOut += u.leavesOut;
   cur.cacheHit += u.leavesCacheHit;
   cur.failed += nodes.filter((n) => n.status === 'failed').length;
+  for (const n of nodes) if (n.model) cur.models.add(n.model);
+  // goal 一次两段图各落一条 → 两条的复用数相加; 全都没记才是 null。
+  if (r.reused !== null) cur.reused = (cur.reused ?? 0) + r.reused;
   cur.createdAt = Math.max(cur.createdAt, r.created_at);
   byRun.set(key, cur);
 }
@@ -310,6 +322,68 @@ for (const r of rows) {
 }
 const outcomeRecorded = rows.length - runsUnrecordedOutcome;
 
+// ── ⑩ 四轴试算 (N9 · score 维度在**便宜的板子上**先试) ────────────────────────
+// 为什么先在这儿试而不是直接往 Langfuse 推 score: 维度定错, 后面所有对比都建在错的坐标上,
+// 而这块板是确定性的、重跑不花钱。这一段的产出**不只是四个数**, 更是"哪条轴今天根本没有
+// 数据源" —— 那件事在推 score 之前知道, 比之后知道便宜得多。
+//
+// 四轴逐条的覆盖度各自报, 不合并成一个总分: 合并会让"这条轴没数据"被另一条轴的数掩盖。
+
+// 判据轴 —— 收敛判据(judge) 与 冻结判据(验收命令) **不一致**的那两格才是它的全部意义。
+// ⚠ 一半早就在 ⑨ 的词表里: `oracle-failed` 的定义就是「judge 判收敛, 而环外冻结判据没过」。
+//   缺的是**反方向** —— judge 判未收敛而验收其实过了 (= 白转了几轮), 那格靠 `verification` 列才看得见。
+let critAgree = 0;          // success: 两者都说好
+let critOracleFailed = 0;   // judge 说收敛, 判据没过 (词表已有格)
+let critWastedRounds = 0;   // judge 说没收敛, 判据却过了 (**新列才看得见**)
+let critOtherWithVerif = 0; // 其余终止原因 + 记了 verification
+let critNoVerif = 0;        // 没记 verification (老行, 或这次压根没跑验收)
+for (const r of rows) {
+  if (r.verification === null) {
+    critNoVerif++;
+    continue;
+  }
+  const v = JSON.parse(r.verification) as { pass: boolean };
+  if (r.outcome === 'success') critAgree++;
+  else if (r.outcome === 'oracle-failed') critOracleFailed++;
+  else if (r.outcome === 'not-converged' && v.pass) critWastedRounds++;
+  else critOtherWithVerif++;
+}
+const critRecorded = rows.length - critNoVerif;
+
+// 效率轴 —— $ / cacheHit / 复用率 / 轮数。四格里今天只有前三格有数据源。
+// 定价口径诚实说明: 节点坐标记的是**叶子**的; conductor 自己不是节点, 它的坐标没记 ——
+// 所以这里算的是「叶子那部分的钱」, 不是整跑的钱。混合座位 (一次跑里多个坐标) 不定价,
+// 因为 usage 是聚合的、分不到各坐标头上 —— 硬按其中一个算等于**编一笔账**。
+let pricedRuns = 0;
+let mixedSeatRuns = 0;
+let noCoordRuns = 0;
+let leafUsd = 0;
+let unpricedCoordRuns = 0;
+for (const r of runs) {
+  if (r.models.size === 0) { noCoordRuns++; continue; }
+  if (r.models.size > 1) { mixedSeatRuns++; continue; }
+  const coord = [...r.models][0]!;
+  const c = computeCost({ in: r.leavesIn, out: r.leavesOut, cacheHit: r.cacheHit }, coord);
+  if (c.unpriced) { unpricedCoordRuns++; continue; }
+  pricedRuns++;
+  leafUsd += c.costUsd;
+}
+const reuseRuns = runs.filter((r) => r.reused !== null);
+const reusedTotal = reuseRuns.reduce((a, r) => a + (r.reused ?? 0), 0);
+const reuseNodeBase = reuseRuns.reduce((a, r) => a + r.nodes, 0);
+
+// 诚实轴 —— 引擎有没有在**报告自己做砸了/不知道**。两个率都是"越低越好"但成因不同:
+// empty-artifact 高 = 节点谎报完工被产物闸抓住; unclassified 高 = 归因面自己有洞。
+const emptyArtifact = failureKindCount['empty-artifact'] ?? 0;
+const nodeUnclassified = failureKindCount.unclassified ?? 0;
+const runUnclassified = outcomeCount.unclassified;
+
+// 停止轴 —— 「blocked 与 not-converged 分不分得开」就是 G5 的后半句。
+// 分得开的判据不是"两个数都非零"那么松: 只要有一格恒为 0, 这个区分在生产上就没兑现。
+const stopBlocked = outcomeCount.blocked;
+const stopNotConverged = outcomeCount['not-converged'];
+const stopSeparable = stopBlocked > 0 && stopNotConverged > 0;
+
 // ── ③ 单轮成本异常 (§8.6): 偏离历史中位数 N 倍 ────────────────────────────────
 // 用中位数而非均值: 一次异常本身会把均值抬起来, 于是"异常"检测不出下一次异常。
 const ANOMALY_FACTOR = Number(flags.factor ?? 3);
@@ -324,7 +398,13 @@ if (flags.json) {
         nearMiss: nearMiss.map(([h, c]) => ({ outputHash: h, commands: [...c] })), exactRepeat, writeNodes, unreported, totalWrites, totalNoop, noopNodes, median, anomalyFactor: ANOMALY_FACTOR, anomalies,
         notDoneNodes, failureKindCount, failureKindUnrecorded,
         observations: Object.fromEntries(obsCount), runsWithObs, runsUnrecordedObs,
-        outcomeCount, runsUnrecordedOutcome, outcomeRecorded },
+        outcomeCount, runsUnrecordedOutcome, outcomeRecorded,
+        axes: {
+          criteria: { agree: critAgree, oracleFailed: critOracleFailed, wastedRounds: critWastedRounds, other: critOtherWithVerif, unrecorded: critNoVerif, recorded: critRecorded },
+          efficiency: { pricedRuns, mixedSeatRuns, noCoordRuns, unpricedCoordRuns, leafUsd, reusedTotal, reuseNodeBase, reuseRuns: reuseRuns.length },
+          honesty: { emptyArtifact, nodeUnclassified, runUnclassified, notDoneNodes },
+          stop: { blocked: stopBlocked, notConverged: stopNotConverged, separable: stopSeparable },
+        } },
       null,
       2,
     ),
@@ -517,8 +597,73 @@ if (outcomeRecorded === 0) {
   console.log('     · 若 99% 都落 not-converged → 这张表在上层是镀金, 该收回去。');
 }
 
-console.log(`\n诚实边界: 本板只读留痕库。**它算不出的**: 单节点耗时 (没记)、$ (只有 token,`);
-console.log(`价目表在模型侧)、judge 判词、轮数 (在 _loop-<nodeId>.json 里, 不在这张表)。`);
+// ── ⑩ 四轴 ──────────────────────────────────────────────────────────────────
+console.log('\n⑩ score 四轴试算 (N9 · 先在这块板上试, 别急着推 Langfuse)');
+console.log('   四条轴各报各的覆盖度, **不合成总分** —— 合了以后"这条轴没数据"会被别条的数盖住。\n');
+
+console.log('   判据轴 —— 收敛判据(judge) 与 冻结判据(验收命令) 说的是不是一回事');
+if (critRecorded === 0) {
+  console.log(`     整批 ${rows.length} 条**都没记** verification —— 这一位是 2026-07-31 才加的。`);
+  console.log('     跑一次新的 dag_run / dag_goal 才有这段读数。');
+} else {
+  console.log(`     两者一致 (success)            ${String(critAgree).padStart(4)}  ${pct(critAgree / critRecorded)}`);
+  console.log(`     judge 说收敛·判据没过         ${String(critOracleFailed).padStart(4)}  ${pct(critOracleFailed / critRecorded)}   ← 判据说了不算`);
+  console.log(`     judge 说没收敛·判据却过了     ${String(critWastedRounds).padStart(4)}  ${pct(critWastedRounds / critRecorded)}   ← 白转了几轮`);
+  console.log(`     其余终止原因                  ${String(critOtherWithVerif).padStart(4)}  ${pct(critOtherWithVerif / critRecorded)}`);
+  if (critNoVerif > 0) console.log(`     ? 另有 ${critNoVerif} 条没记 verification (老行 / 这次没跑验收) —— 不算进上面的分母。`);
+  console.log('     读法: 中间两格**加起来**才是「收敛判据可不可信」的答案。两格长期都接近 0 →');
+  console.log('           judge 可以当准绳; 任一格常年有量 → 那一侧的判据得改, 而不是加轮数。');
+}
+
+console.log('\n   效率轴 —— $ / cacheHit / 复用率 / 轮数');
+const allCache = runs.map((r) => r.cacheRate).filter((x): x is number => x !== null);
+const cacheAvg = allCache.length ? allCache.reduce((a, b) => a + b, 0) / allCache.length : null;
+console.log(`     cacheHit (${allCache.length} 跑均值)        ${pct(cacheAvg)}`);
+if (pricedRuns > 0) {
+  console.log(`     $ 叶子部分 (${pricedRuns} 跑合计)      $${leafUsd.toFixed(4)}   均 $${(leafUsd / pricedRuns).toFixed(4)}/跑`);
+} else {
+  console.log('     $ 叶子部分                    —— 没有一跑定得出价');
+}
+const skipped = [
+  mixedSeatRuns ? `${mixedSeatRuns} 跑混合座位(usage 是聚合的, 分不到各坐标头上, 硬算等于编账)` : '',
+  noCoordRuns ? `${noCoordRuns} 跑没记模型坐标(老数据)` : '',
+  unpricedCoordRuns ? `${unpricedCoordRuns} 跑坐标不在价表里` : '',
+].filter(Boolean);
+if (skipped.length) console.log(`     ? 未计价: ${skipped.join(' · ')}`);
+console.log('     ⚠ 这是**叶子那部分**的钱, 不是整跑的钱 —— conductor 自己不是节点, 它的坐标没记。');
+if (reuseRuns.length > 0) {
+  console.log(`     复用率 (${reuseRuns.length} 跑)            ${reusedTotal}/${reuseNodeBase} 节点  ${pct(reuseNodeBase ? reusedTotal / reuseNodeBase : null)}`);
+} else {
+  console.log('     复用率                        整批都没记 (2026-07-31 才加的位)');
+}
+console.log('     轮数                          **无数据源** —— 在 continuity 的 journal 里, 这块板只读留痕库');
+
+console.log('\n   诚实轴 —— 引擎有没有在报告自己做砸了 / 不知道');
+if (notDoneNodes === 0) {
+  console.log('     这批记录里没有一个没过的节点 —— 分母是 0, 这两个率**算不出来**(不是 0%)。');
+} else {
+  console.log(`     empty-artifact                ${String(emptyArtifact).padStart(4)}/${notDoneNodes}  ${pct(emptyArtifact / notDoneNodes)}   谎报完工被产物闸抓住`);
+  console.log(`     节点级 unclassified           ${String(nodeUnclassified).padStart(4)}/${notDoneNodes}  ${pct(nodeUnclassified / notDoneNodes)}   归因面自己的洞`);
+}
+console.log(`     run 级 unclassified           ${String(runUnclassified).padStart(4)}${outcomeRecorded ? `/${outcomeRecorded}  ${pct(runUnclassified / outcomeRecorded)}` : ''}`);
+console.log('     读法: 两个 unclassified 是**缺陷计数**不是分布 —— 它们该趋近 0, 不该"稳定在某个比例"。');
+
+console.log('\n   停止轴 —— blocked 与 not-converged 分不分得开 (= G5 的后半句)');
+console.log(`     blocked        ${String(stopBlocked).padStart(4)}`);
+console.log(`     not-converged  ${String(stopNotConverged).padStart(4)}`);
+if (outcomeRecorded === 0) {
+  console.log('     整批都没记终止原因 —— 这条轴今天读不出来。');
+} else if (stopSeparable) {
+  console.log('     → 两格都有量: 这个区分在生产上**兑现了**。');
+} else {
+  console.log('     → 有一格恒为 0: 区分**还没在生产上兑现**。判据不是"两个数都非零"那么松 ——');
+  console.log('       只要一格空着, 「blocked 被念成 not-converged」这条就还没被证伪。');
+}
+console.log('     内环那一层 (NodeLoopJournal.stop 的 kind/evidence/atRound) **无数据源** —— 同轮数, 在 journal 里。');
+
+console.log(`\n诚实边界: 本板只读留痕库。**它算不出的**: 单节点耗时 (没记)、judge 判词、`);
+console.log(`轮数与内环停止证据 (在 continuity 的 journal 里, 不在这张表)、conductor 那部分的 $`);
+console.log(`(它不是节点, 坐标没记 —— ⑩ 里算的是叶子那部分)。`);
 console.log(`不要因为这里没有就当它不存在 —— 那是 \`Unobserved\` 不是 \`Missing\`。\n`);
 
 db.close();
