@@ -72,6 +72,7 @@ import { makeLlmConvergenceJudge } from './plan/llm-judge';
 import { send } from '../model/gateway';
 // D-14v2 多模态媒体管道 (S4): attach_media 执行期从直接前驱输出解析图片 → ContentPart 注入。
 import { collectDepMedia } from './leaf-media';
+import { recordGeneration } from '../model/langfuse';
 import { withFailureKind, upstreamFailureNotice } from './node-failure';
 import { makeRunNonce, fenceUntrusted, trustHeader } from './prompt-fence';
 import type { ContentPart } from '../model/gateway';
@@ -253,6 +254,10 @@ async function executePlan(
   prior?: PriorExec,
 ): Promise<ExecOnce> {
   const levels = topoLevels(plan);
+  // 观测归组键。与 runExecutorDag 里那一处**同一条口径** (config.sessionId 优先) ——
+  // agent leaf 不经 gateway, 它的观测记录要落到同一条 trace 上才有意义。
+  // runExecutorDag 解析完 sessionId 就写回了 config, 所以这里恒有值; `??` 只为类型收窄。
+  const obsTraceId = config.sessionId ?? `agent-only-${plan.name}`;
   logger.info(
     { plan: plan.name, leafModel: config.leafModel, nodes: Object.keys(plan.nodes).length, levels: levels.length },
     '[omd/executor-dag] planned',
@@ -1476,9 +1481,19 @@ async function executePlan(
         text = r.text;
         usageAcc = addUsage(usageAcc, r.usage);
       } else if (spec.lister.executor === 'agent' && config.agentRunner) {
-        const r = await config.agentRunner({
-          prompt: `${listerGoal}${schemaNote}${depCtx}\n\n只回一个 JSON 对象, 必含数组键 "${spec.over}"。`,
-          model: config.agentLeafModel ?? config.leafModel,
+        const listerPrompt = `${listerGoal}${schemaNote}${depCtx}\n\n只回一个 JSON 对象, 必含数组键 "${spec.over}"。`;
+        const listerModel = config.agentLeafModel ?? config.leafModel;
+        const listerStart = new Date();
+        const r = await config.agentRunner({ prompt: listerPrompt, model: listerModel });
+        recordGeneration({
+          traceId: obsTraceId,
+          name: `map-lister-agent:${id}`,
+          model: listerModel,
+          input: listerPrompt,
+          output: r.text ?? '',
+          ...(r.usage ? { usage: r.usage } : {}),
+          startTime: listerStart,
+          endTime: new Date(),
         });
         text = r.text;
         usageAcc = addUsage(usageAcc, r.usage);
@@ -1892,7 +1907,26 @@ async function executePlan(
       // leaf 这一份尤其值钱 —— 上游材料、围栏、失败前驱的告示全落在它里面。
       logger.debug({ node: id, phase: useAgent ? 'agent-leaf' : 'inproc-leaf', model, prompt }, '[omd/prompt] leaf');
       if (useAgent) {
+        // ── agent leaf 的观测出口 (2026-07-31) ────────────────────────────────────
+        // agent leaf **不经 gateway.send** (它走 pi session 自己的传输), 所以在此之前
+        // 它的 prompt 一个字都不在 Langfuse 上 —— 而这恰恰是唯一会改文件、跑 xhigh、
+        // 最贵的那类节点。"每个节点的 prompt 可审查"少了它就等于没做。
+        // 记的是**这一次调用的边界**: 输入 prompt / 最终文本 / 用量。
+        // ⚠ 诚实边界: 内部工具循环 (每一次 read/edit/bash) **不在这条记录里** ——
+        // 那要接 agent-leaf 的 onEvent 汇, 是另一件事。别把这条读成"agent 的全过程可见"。
+        const agentStart = new Date();
         const r = await config.agentRunner!({ prompt, model });
+        recordGeneration({
+          traceId: obsTraceId,
+          name: `agent:${id}`,
+          model,
+          input: prompt,
+          output: r.text ?? '',
+          ...(r.usage ? { usage: r.usage } : {}),
+          startTime: agentStart,
+          endTime: new Date(),
+          metadata: { filesTouched: r.filesTouched?.length ?? 0, ...(r.stalled ? { stalled: true } : {}) },
+        });
         text = r.text;
         usage = r.usage;
         filesTouched = r.filesTouched ?? [];
@@ -2507,6 +2541,10 @@ async function runDagInternal(
   // sessionId: 本次 run 的 conductor+leaf 全部经 send → 同一 Langfuse session (B2)。
   // 可注入 (config.sessionId): 调用方传则跨平面关联 (派活飞轮 dispatchId ↔ Langfuse session); 省略 → 自生成。
   const sessionId = config.sessionId ?? randomUUID();
+  // **解析完就写回 config**: 下游 executePlan 里 agent leaf 的观测记录 (它不经 gateway) 要落到
+  // 同一条 trace 上。不写回的话, 省略 sessionId 的调用方会得到两条 trace —— 一条模型调用的、
+  // 一条 agent 的, 而它们本来是同一跑。同一件事只该有一个 id, 在这里定死。
+  config = { ...config, sessionId };
   // runLabel = 这一跑的目标, 进 Langfuse 的 trace 名 —— 列表页按 name 认 trace, 全叫一个名字
   // 等于一屏一模一样的行。截断在 langfuse 那一侧做 (那儿才知道上限)。
   const generate = config.generate ?? makeDefaultGenerate(sessionId, typeof task === 'string' ? task : undefined);
