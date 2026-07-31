@@ -26,10 +26,10 @@ export interface NodeCheckpoint {
   status: 'done' | 'failed' | 'skipped';
   /**
    * 失败节点 (issue #4) 的败因分类。**词表与每格判据的唯一定义处是 `../node-failure.ts`** ——
-   * 这里只是把结果上那一位原样存下来 (P1, 2026-08-05: 此前留痕层当场重新推断一遍, 于是同一件事
+   * 这里只是把结果上那一位原样存下来 (P1, 2026-07-31: 此前留痕层当场重新推断一遍, 于是同一件事
    * 有两处独立判断, 天然会漂)。
    *
-   * `'failed'` 是**历史字面量**: 2026-08-05 之前写入的行只有 stall/dep-skip/failed 三档,
+   * `'failed'` 是**历史字面量**: 2026-07-31 之前写入的行只有 stall/dep-skip/failed 三档,
    * 那个 `'failed'` 意思是"这个版本没细分", 与新词表的 `'unclassified'` ("细分了但归不了类")
    * 不是一回事 —— 读老库的时候别把两者并起来数。done 节点 undefined。
    */

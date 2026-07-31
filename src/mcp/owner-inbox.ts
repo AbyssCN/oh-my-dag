@@ -216,7 +216,7 @@ export function createOwnerInbox(opts: { path?: string; db?: Database } = {}): O
  */
 export function renderOwnerDirectives(dirs: readonly OwnerDirective[], nonce: string): string {
   if (!dirs.length) return '';
-  // A8 (2026-08-05): 块**必须带本轮 token**。此前这个块与抓回来的网页正文在同一条 prompt 里、
+  // A8 (2026-07-31): 块**必须带本轮 token**。此前这个块与抓回来的网页正文在同一条 prompt 里、
   // 用同一套带内标记 —— 探针实证一段外部正文可以闭合 `<upstream>` 再原样伪造出这个块,
   // 连"优先级高于你自己的判断"那句都是从这里抄的。token 是伪造品复制不了的那一位。
   return renderTrustedOwnerBlock(nonce, dirs.map((d) => d.text).join('\n'));

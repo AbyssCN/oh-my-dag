@@ -17,7 +17,7 @@ import { bwrapArgs, defaultRoBinds, makePiAgentCopy } from './bwrap';
 const WORKER_REL = 'src/harness/leaf-worker.ts';
 
 /**
- * **worker 到底从哪儿取** (2026-08-05, 一次 live 撞出来的 P0)。
+ * **worker 到底从哪儿取** (2026-07-31, 一次 live 撞出来的 P0)。
  *
  * 原设计只有 {@link WORKER_REL} 一条路, 注释写着「worktree = HEAD checkout, 含此文件」——
  * 那句话对 **eval** 成立 (那里的 worktree 就是 omd 自己的 checkout), 但 R2 (D-Y①) 把这个 jail
@@ -25,7 +25,7 @@ const WORKER_REL = 'src/harness/leaf-worker.ts';
  *
  * 后果不是"少了点隔离", 是**隔离档下 agent leaf 一个都起不来**:
  * `error: Module not found "src/harness/leaf-worker.ts"` × 每个 leaf。
- * 2026-08-05 的 live 上 9 个节点全灭, 产物一份没写 —— 而单元测试与 bwrap 容器性探针**全绿**,
+ * 2026-07-31 的 live 上 9 个节点全灭, 产物一份没写 —— 而单元测试与 bwrap 容器性探针**全绿**,
  * 因为它们测的是 jail 关不关得住, 不是 worker 找不找得到。
  * (这是本轮第三次撞见同一形态: **隔离动了, 消费面没跟上**。)
  *
@@ -89,7 +89,7 @@ export function createSandboxedLeafRunner(opts: AgentLeafRunnerOpts): AgentLeafR
     const argv = ['bwrap', ...bwrapArgs(root, roBinds, piAgentCopy ? { piAgentCopy } : {}), 'bun', 'run', workerPath, payloadRel, resultRel];
     const proc = Bun.spawn(argv, { stdout: 'pipe', stderr: 'pipe', stdin: 'ignore' });
     // 超时 = leaf 硬上界 + 30s buffer (worker 内部还有自己的 leafTimeoutMs/心跳闸兜底)。
-    // ⚠ 判据必须是**我们自己那把刀砍没砍**, 不是 `proc.killed` (2026-08-05 live 抓出来的):
+    // ⚠ 判据必须是**我们自己那把刀砍没砍**, 不是 `proc.killed` (2026-07-31 live 抓出来的):
     // worker 因 `Module not found` 秒级自己死掉时, 那条错误消息照样播报「子进程超时被杀 (3600s)」——
     // 而两种成因的下一步**相反**: 真超时 → 加时间/换池; 起不来 → 修部署, 加多少时间都没用。
     // 这与本轮 A5 普查治的是同一种病, 只是它藏在一个 fail-open 的错误分支里。

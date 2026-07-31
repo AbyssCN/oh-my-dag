@@ -409,7 +409,7 @@ async function executePlan(
   const results: Record<string, LeafResult> = {};
   const depOutputs: Record<string, string> = {};
   /**
-   * **本次运行的信任 token** (A8, 2026-08-05)。整套注入防御只依赖一个假设:
+   * **本次运行的信任 token** (A8, 2026-07-31)。整套注入防御只依赖一个假设:
    * 攻击者写那张网页 / 那个文件的时候, 这个值还不存在。所以它必须是**每次运行现生成**的,
    * 不能来自配置、不能跨运行复用 —— 复用一次就等于把它交给了上一次抓到的任何一段正文。
    */
@@ -457,7 +457,7 @@ async function executePlan(
    * resume 都判 stale。全文没变 = 输入语义没变。还没产出的 dep 不入表 (调度保证不会发生)。
    */
   /**
-   * **一个上游在下游 prompt 里该长什么样** (A5, 2026-08-05)。
+   * **一个上游在下游 prompt 里该长什么样** (A5, 2026-07-31)。
    *
    * 与 `depOutputs` 刻意分开的理由: `depOutputs` 是 **staleness 的语义锚** (`inputsOf` 拿它算
    * 输入面 hash), 而这里是 **给读者看的话**。两者的消费者不同 —— 把告示混进锚里, 一次措辞改动
@@ -474,7 +474,7 @@ async function executePlan(
   };
 
   /**
-   * **上游内容 = 不可信数据** (A8, 2026-08-05)。
+   * **上游内容 = 不可信数据** (A8, 2026-07-31)。
    *
    * 上游里混着 research 节点从真外部网页抓回来的正文, 而它此前与 owner 指令、引擎观察
    * **共用同一套带内标记分块** —— 探针实证一段网页正文可以闭合 `<upstream>` 再伪造一个
@@ -726,7 +726,7 @@ async function executePlan(
         // D-D 写进 prompt 而不只靠事后拒: 让它知道边界, 比让它撞上去便宜。
         '注意: 本次分解出的节点**不得**再用 executor:"conductor" 或 executor:"map" —— ' +
         '你现在就是运行时展开, 已经知道清单了, 直接把步骤列出来即可。';
-      // **prompt 观测面** (2026-08-05)。走 `logger.debug` 而不是新加旋钮/读 env:
+      // **prompt 观测面** (2026-07-31)。走 `logger.debug` 而不是新加旋钮/读 env:
       // 默认 logger 的 debug 是空函数 → 生产零成本; 想看的人 (冒烟脚本 / 排障) 用
       // `setCoreLogger` 注入一个会记的实现即可 —— 现成的接缝, 不新开一个。
       //
@@ -1102,7 +1102,7 @@ async function executePlan(
         id,
         status: ok > 0 ? 'done' : 'failed',
         // 子图全灭 ≠ 这个节点自己坏了 —— 成因在子节点上, 而它们各自已经归好类。
-        // (这一格是 2026-08-05 live 的读数板点名出来的: 它当时落进 unclassified。)
+        // (这一格是 2026-07-31 live 的读数板点名出来的: 它当时落进 unclassified。)
         ...(ok > 0 ? {} : { failureKind: 'subgraph-failed' as const }),
         kind: 'conductor',
         output: `[conductor 子图: ${ok}/${childIds.length} 成功${expand.truncated ? `, 截断 ${expand.truncated}` : ''}${failedLocal ? `, 失败 ${failedLocal}` : ''}]\n\n${summary}`,
@@ -1314,7 +1314,7 @@ async function executePlan(
       const rejectedNow = [...new Set([...verdict.rejected, ...r.detector.rejected])];
       // 制品 lint 的发现**接在失败原因后面**进下一轮的重展开 prompt —— 环的信息通道只有这一条,
       // 「你少画了一条边」这句话进不去, conductor 下一轮还会照样少画 (D-12 lint 为主的落点)。
-      // ── 「产物没变」检测 (2026-08-05, G5 正解) ────────────────────────────────
+      // ── 「产物没变」检测 (2026-07-31, G5 正解) ────────────────────────────────
       // 判在这里而不是和空转判据一起, 是因为**它不拦** —— 它的出口就是下面这条 prompt 通道。
       // 位置在 journal 之前: 这句话必须跟着 prevReason 一起被写进 journal, 否则 resume 接回来
       // 的那一轮会丢掉它 (环唯一的信息通道断一次, 就等于这条检测器白跑)。

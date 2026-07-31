@@ -240,7 +240,7 @@ const exactRepeat = [...byOutput.values()].filter((c) => c.size === 1).length;
 // **三态直接数, 不用补集** (本仓为这条纪律付过五次账):
 //   · 归了类的 → 各自计数
 //   · `unclassified` → 引擎里还有一条没交代自己的失败路径 (**缺陷**, 该去补标注)
-//   · 字段整个缺席 → 早于 2026-08-05 的记录 (**老数据**, 不是缺陷)
+//   · 字段整个缺席 → 早于 2026-07-31 的记录 (**老数据**, 不是缺陷)
 // 后两者读上去都像"不知道", 但结论相反, 所以是两个计数器不是一个。
 const failureKindCount: Record<NodeFailureKind, number> = Object.fromEntries(
   FAILURE_KIND_ORDER.map((k) => [k, 0]),
@@ -272,7 +272,7 @@ for (const r of rows) {
 // ⚠ 「这批记录没有 observations 列/字段」与「跑了但一条观察都没有」是两件事, 分开数。
 const obsCount = new Map<string, number>();
 let runsWithObs = 0; // 记了 observations 的记录数 (哪怕是空数组)
-let runsUnrecordedObs = 0; // 早于 2026-08-05 的记录: 这一位压根没记
+let runsUnrecordedObs = 0; // 早于 2026-07-31 的记录: 这一位压根没记
 for (const r of rows) {
   if (r.observations === null) {
     runsUnrecordedObs++;
@@ -428,7 +428,7 @@ if (notDoneNodes === 0) {
     }
   }
   if (failureKindUnrecorded > 0) {
-    console.log(`   ? 另有 ${failureKindUnrecorded} 个没过的节点**没记**成因(早于 2026-08-05 的记录)——`);
+    console.log(`   ? 另有 ${failureKindUnrecorded} 个没过的节点**没记**成因(早于 2026-07-31 的记录)——`);
     console.log('     与上面的 unclassified 不是一回事: 那个是缺陷, 这个是老数据。别并起来数。');
   }
   console.log('   判据: 若失败常年只落一两格 → 这个词表是镀金, 该收回去;');
@@ -438,7 +438,7 @@ if (notDoneNodes === 0) {
 
 console.log(`\n⑧ 图外观察者命中 (G5 正解「产物没变」的定 K 依据)`);
 if (runsWithObs === 0) {
-  console.log(`   这批 ${runsUnrecordedObs} 条记录**都没记** observations (早于 2026-08-05)。`);
+  console.log(`   这批 ${runsUnrecordedObs} 条记录**都没记** observations (早于 2026-07-31)。`);
   console.log('     ⚠ 那是「没记」不是「一条都没命中」—— 跑一次新的才有这段读数。');
 } else {
   console.log(`   记了的运行 ${runsWithObs} 次${runsUnrecordedObs > 0 ? ` (另有 ${runsUnrecordedObs} 次是旧格式, 不计入)` : ''}`);

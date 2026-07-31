@@ -253,7 +253,7 @@ export interface ExecutorDagConfig {
    *
    * ⚠ 引擎**逐字**把它拼进 prompt, 一个字都不加工 (有测试钉住)。
    *
-   * `nonce` = 本次运行的**信任 token** (A8, 2026-08-05)。owner 块是 prompt 里**唯一带 token 的块**,
+   * `nonce` = 本次运行的**信任 token** (A8, 2026-07-31)。owner 块是 prompt 里**唯一带 token 的块**,
    * 因为它是唯一真可信的那条通道 —— 抓回来的网页正文可以逐字复制这个块的文案 (探针实证过),
    * 但复制不了一个它写那张网页时还不存在的值。渲染方须用它, 见 `renderOwnerDirectives`。
    */
@@ -331,7 +331,7 @@ export interface DagObservation {
    * 补 Fowler 2×2 里最空的那格 computational feedforward)。前两个是事后传感, 这两个是事前拦。
    */
   /**
-   * `loop-no-artifact-change` (2026-08-05, G5 正解) = 两轮下来**盘上的产物逐字节没变**。
+   * `loop-no-artifact-change` (2026-07-31, G5 正解) = 两轮下来**盘上的产物逐字节没变**。
    * 与 `loop-no-progress` 的区别是**判据键在哪**: 后者键在「agent 有没有重复自己」(而 LLM
    * conductor 每轮重画, 从不逐字重复 → D-AD 诊断的死路), 前者键在「盘上有没有位移」——
    * 产物是 agent 不重新生成的东西, 是这个环里唯一稳定的信号。**只报不拦**, 见 detectNoArtifactChange。
@@ -351,7 +351,7 @@ export interface LeafResult {
    */
   status: 'done' | 'failed' | 'skipped';
   /**
-   * **没过的成因** (P1, 2026-08-05)。词表与每格的直接判据见 `node-failure.ts`。
+   * **没过的成因** (P1, 2026-07-31)。词表与每格的直接判据见 `node-failure.ts`。
    *
    * 为什么是**加一位**而不是把 `status` 拆宽: 现有读 `status === 'done'` 的地方有二十多处,
    * 而它们问的都是同一个粗问题("这个节点算成了吗")—— 那个问题的答案没变。粗态由细态推出
@@ -378,7 +378,7 @@ export interface LeafResult {
   /** agent leaf 触碰的文件 (来自 AgentLeafResult.filesTouched, checkpoint 产物锚)。 */
   filesTouched?: string[];
   /**
-   * `filesTouched` 里**相对路径的解析根** (2026-08-05)。
+   * `filesTouched` 里**相对路径的解析根** (2026-07-31)。
    *
    * 为什么它必须跟着路径一起走: 一组相对路径**离开它的根就没有意义**了。产物闸在节点里用的是
    * `r.cwd ?? repoRoot ?? process.cwd()` —— 而 R2 隔离档下 leaf 跑在一棵 worktree 里,
