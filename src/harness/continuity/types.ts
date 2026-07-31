@@ -213,6 +213,8 @@ export interface FixpointJournal {
  *    写入时机同样是**每轮 judge 判完之后**。所以 D-F 的「废 `_fixpoint.json`」准确说法是
  *    **「把 FixpointJournal 从 run 级降到节点级」** —— 概念删掉等于把缺陷换个方式重新引入。
  */
+import type { RunOutcomeKind } from '../run-outcome';
+
 export interface NodeLoopJournal {
   runId: string;
   /** 拥有这个环的节点 id (conductor 节点)。 */
@@ -234,6 +236,26 @@ export interface NodeLoopJournal {
   converged?: boolean;
   /** 上一轮的产出摘要 (收敛后 resume 要拿它当本节点的 output)。 */
   lastOutput?: string;
+  /**
+   * **这个环凭什么停的** (N6, 2026-07-31)。
+   *
+   * 此前 journal 只记「收敛与否」—— 而"没收敛"底下至少压着四种停法, 它们的下一步完全不同:
+   * 轮数用尽(加轮数)· 阻塞(要外部输入, 加轮数没用)· 预算停(先加预算)· 取消(原样续)。
+   * G5 首次触发之后这条更值钱: **一次真 BLOCKED 的证据此前只活在日志里**, resume 读不回来,
+   * 而日志是会滚掉的。
+   *
+   * `kind` 直接借 run 级词表 (N5 的 {@link RunOutcomeKind}) —— 不新造一套词:
+   * 内环的停止轴与 run 级的终止原因问的是同一个问题, 两套词早晚会漂, 而漂了之后
+   * 「journal 说 blocked、摘要说 failed」正是 N5 刚治好的那个病。
+   * `evidence` 是**判成这一格的直接证据原文**(熔断的那句话 / 检测者的判词 / 预算数字),
+   * 不是复述 —— 事后要能拿它复盘"当时到底看见了什么"。
+   */
+  stop?: {
+    kind: RunOutcomeKind;
+    evidence: string;
+    /** 停在第几轮 (与 completedRounds 可能差 1: 停在一轮**判完之后**还是**开跑之前**)。 */
+    atRound: number;
+  };
   updatedAt: string;
   schemaVersion: 1;
 }

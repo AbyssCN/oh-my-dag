@@ -26,7 +26,7 @@ import {
 // S3.6 escalation patch 模式: 补丁解析 + 程序化 merge (未补丁节点字节不动 → D-21 复用按构造成立)。
 import { parsePlanPatch, applyPlanPatch } from './plan-patch';
 import { hashArtifact, hashText, computeDagGeneration } from './continuity/checkpoint-manager';
-import type { NodeCheckpoint } from './continuity/types';
+import type { NodeCheckpoint, NodeLoopJournal } from './continuity/types';
 // noun-gate 接缝(INV-X3):宿主注入(上游宿主传 memory-hub checkNouns);包不依赖 memory-hub。
 type NounGateFn = (args: { text: string; material: string; repoRoot: string; annotate: boolean }) => { novelNouns: string[] };
 let _nounGate: NounGateFn | null = null;
@@ -1198,6 +1198,8 @@ async function executePlan(
       reason: string,
       converged: boolean,
       lastOutput: string,
+      /** N6: 这一轮是不是**停在这儿**, 以及凭什么 (原文证据)。不停就省略。 */
+      stop?: NodeLoopJournal['stop'],
     ): void => {
       if (!cm || !continuity) return;
       cm.writeNodeLoopJournal(continuity.runId, {
@@ -1207,6 +1209,7 @@ async function executePlan(
         poisoned: [...poisonedNow],
         ...(reason ? { prevReason: reason } : {}),
         ...(converged ? { converged: true, lastOutput } : {}),
+        ...(stop ? { stop } : {}),
         updatedAt: new Date().toISOString(),
         schemaVersion: 1,
       });
@@ -1256,6 +1259,12 @@ async function executePlan(
         }
         if (budgetStopped) {
           logger.warn({ node: id, round, spentTokens, spentMs }, `[omd/executor-dag] ${budgetStopped} → 内环不开新一轮`);
+          // 停在**开跑之前** → atRound 记的是没能开成的那一轮 (与 completedRounds 差 1, 见字段注释)。
+          writeLoopJournal(round - 1, poisoned, prevReason, false, last?.output ?? '', {
+            kind: 'budget-exhausted',
+            evidence: budgetStopped,
+            atRound: round,
+          });
           break;
         }
       }
@@ -1279,7 +1288,11 @@ async function executePlan(
         logger.warn({ node: id, round, reason: actionBlock.split('\n')[0] }, '[omd/executor-dag] 动作级熔断 → 环提前退出 (§8.4)');
         // 与检测者 BLOCKED 同一个出口、同一条 fail-closed 纪律 (恒 converged=false):
         // 阻塞更不该被读成成功。
-        writeLoopJournal(round, poisoned, prevReason, false, last.output);
+        writeLoopJournal(round, poisoned, prevReason, false, last.output, {
+          kind: 'blocked',
+          evidence: actionBlock, // 原话进 journal, 不复述 —— 复盘要的是"当时看见了什么"
+          atRound: round,
+        });
         return { ...settle(last, round, false), blocked: actionBlock };
       }
 
@@ -1291,7 +1304,11 @@ async function executePlan(
         // BLOCKED 异步出口: 图没坏、节点没挂, 是"没有外部输入推不动" —— 剩下的轮数是纯烧钱。
         // 恒 converged=false (fail-closed: 阻塞更不该被读成成功)。
         logger.warn({ node: id, round, reason: r.detector.blocked }, '[omd/executor-dag] 检测者判 BLOCKED → 环提前退出 (D-Q)');
-        writeLoopJournal(round, poisoned, prevReason, false, last.output);
+        writeLoopJournal(round, poisoned, prevReason, false, last.output, {
+          kind: 'blocked',
+          evidence: r.detector.blocked,
+          atRound: round,
+        });
         return { ...settle(last, round, false), blocked: r.detector.blocked };
       }
 
@@ -1337,7 +1354,16 @@ async function executePlan(
         : verdict.reason;
 
       // **每轮判完就写** journal —— 不是节点结束时写。崩在这之后, 下次 resume 接得回来。
-      writeLoopJournal(round, poisoned, prevReason, verdict.converged, last.output);
+      writeLoopJournal(
+        round,
+        poisoned,
+        prevReason,
+        verdict.converged,
+        last.output,
+        // 收敛才是"停"; 没收敛只是这一轮判完了, 环还要继续 —— 那时不写 stop
+        // (写了会让 resume 读到一个"已经停过"的环)。
+        verdict.converged ? { kind: 'success', evidence: `judge 判收敛 (第 ${round} 轮)`, atRound: round } : undefined,
+      );
       if (verdict.converged) {
         logger.info({ node: id, round }, '[omd/executor-dag] 内环收敛 (D-A)');
         return settle(last, round, true);
@@ -1345,6 +1371,16 @@ async function executePlan(
       // 轮数用尽仍未收敛 (judge_final 档才走到这): 返最后一轮结果并**如实带上 converged=false**。
       if (isFinal) {
         logger.warn({ node: id, maxRounds }, '[omd/executor-dag] 内环轮数用尽仍未收敛 (INV-GOAL-4 有界)');
+        // N6: 四条停止轴里**最常走**的这一条此前一个字都不留 —— journal 上只看得到
+        // "最后一轮判完没收敛", 与"阻塞"、"预算停"在盘上长得一模一样, 于是 resume 的人分不出
+        // 该加轮数、该加预算、还是该去看一眼。⚠ 这条 return 在轮末 journal **之后**,
+        // 所以要再写一次 (同轮号, 补上 stop) —— 第一版把它写在函数尾部, 而这条 return
+        // 根本走不到那里, 探针一跑就看见 stop 缺席。
+        writeLoopJournal(round, poisoned, prevReason, false, last.output, {
+          kind: 'not-converged',
+          evidence: `轮数用尽仍未收敛 (跑满 ${round} / 上限 ${maxRounds} 轮, judge 最后一轮仍判未达标)`,
+          atRound: round,
+        });
         return settle(last, round, false);
       }
       // ── D-Q 空转 → BLOCKED (判在"还有轮可跑"之后): 这一轮重展开得到与上一轮**完全相同**的
@@ -1354,6 +1390,15 @@ async function executePlan(
       prevShape = shape;
       if (stuck) {
         observe([stuck]);
+        // ⚠ N6 顺手修的一个**真漏**: 这条 BLOCKED 出口此前**压根不写 journal** ——
+        // 而 writeLoopJournal 的文档注释白纸黑字写着"三个调用点共用: 正常轮末 / 检测者 BLOCKED /
+        // **空转 BLOCKED**"。三缺一, 于是空转停下来的环 resume 时读不回自己为什么停,
+        // 只会看到"上一轮没收敛"。又一次声明面与执行面对不上。
+        writeLoopJournal(round, poisoned, prevReason, false, last.output, {
+          kind: 'blocked',
+          evidence: stuck.message,
+          atRound: round,
+        });
         return { ...settle(last, round, false), blocked: stuck.message };
       }
       logger.info({ node: id, round, rejected: verdict.rejected.length }, '[omd/executor-dag] 内环未收敛 → 重新展开');
