@@ -34,6 +34,16 @@ export interface DagRunNode {
    */
   writeCounts?: [total: number, noop: number];
   /**
+   * 这个节点实际打的模型坐标 `provider:modelId`(N9, 2026-07-31)。
+   *
+   * 记它**只为一件事: 让钱算得出来**。`computeCost` 按坐标查价表,而留痕库的 `usage` 只有
+   * token 数 —— 于是「$/goal」这条轴此前**不是没做,是没有数据源**(N9 在读数板上试维度时当场撞到)。
+   * 存坐标而不是存算好的美元数,同 `command` 存原文的那条理由:价表会改,坐标不会。
+   *
+   * 缺席 = 这个节点没打模型(command 叶)或早于本次改动的记录。
+   */
+  model?: string;
+  /**
    * conductor 有没有把这个子节点标成 **D-Q 图内检测者**(`detector: true`)。
    *
    * 记它是为了让「detector 使用率」变成**每次 live 白拿的读数**。今天那个数只有
@@ -109,6 +119,28 @@ export interface DagRunRecord {
    * ⚠ 缺席 = 早于 2026-07-31 的行(**没记**),不是 `'unclassified'`(记了但归不了类)。
    */
   outcome?: RunOutcomeKind;
+  /**
+   * **冻结判据这次判了什么**(N9, 2026-07-31)。`ExecutorDagResult.verification` 的两位。
+   *
+   * 为什么它值得单独一列而不是从 {@link outcome} 推:两者问的是**不同的问题**,而 N9 的
+   * 「判据轴」要的恰恰是**它们不一致的那一格**——
+   * judge 判收敛(`outcome` 说好了)而验收命令没过 = 判据说了不算;
+   * judge 判未收敛而验收命令过了 = 白转了几轮。这两格是「收敛判据可不可信」的**唯一**证据面,
+   * 而它们在任何单独一位上都看不见。
+   *
+   * ⚠ 缺席 = 早于本次改动的行(**没记**),不是 `pass:false`。
+   */
+  verification?: { pass: boolean; reason?: string };
+  /**
+   * 本次跨轮**复用**了几个节点(`ExecutorDagResult.reusedNodes` 的长度)+ 各节点用的模型坐标。
+   *
+   * 复用数进「效率轴」:一次外层重跑里有多少节点是零 LLM 拿上轮结果接住的。
+   * 模型坐标是**定价的前提** —— `computeCost` 按坐标查价表,而 `usage` 只有 token 数;
+   * 不记坐标,`$/goal` 这条轴就永远算不出来(N9 试维度时当场撞到的那一格)。
+   *
+   * ⚠ 缺席 = 没记;`reused: 0` = 记了且这次一个都没复用。
+   */
+  reused?: number;
 }
 
 export interface DagRecorder {
@@ -135,6 +167,8 @@ interface Row {
   usage: string;
   observations: string | null;
   outcome: string | null;
+  verification: string | null;
+  reused: number | null;
 }
 
 function rowToRecord(row: Row): DagRunRecord {
@@ -152,6 +186,10 @@ function rowToRecord(row: Row): DagRunRecord {
     ...(row.observations ? { observations: JSON.parse(row.observations) } : {}),
     // 同上: 缺席不编一个 'unclassified' —— 「没记」与「归不了类」的结论相反。
     ...(row.outcome ? { outcome: row.outcome as RunOutcomeKind } : {}),
+    // 同上 (N9): 缺席不编一个 `pass:false` —— 「没验」与「验了没过」的结论相反。
+    ...(row.verification ? { verification: JSON.parse(row.verification) } : {}),
+    // `reused: 0` 是"记了且一个没复用", NULL 是"没记" —— 两者不许合并。
+    ...(row.reused !== null ? { reused: row.reused } : {}),
   };
 }
 
@@ -205,10 +243,13 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
   if (!cols.includes('observations')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN observations TEXT`);
   // 同上 (N5): 2026-07-31 之前建的表没这一列, 老行留 NULL (= 没记)。
   if (!cols.includes('outcome')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN outcome TEXT`);
+  // 同上 (N9): 判据轴与效率轴的数据源。老行留 NULL (= 没记)。
+  if (!cols.includes('verification')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN verification TEXT`);
+  if (!cols.includes('reused')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN reused INTEGER`);
   db.run(`CREATE INDEX IF NOT EXISTS omd_dag_runs_run_id ON omd_dag_runs (run_id)`);
   const ins = db.query(
-    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, levels, nodes, usage, observations, outcome)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, levels, nodes, usage, observations, outcome, verification, reused)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const byId = db.query(`SELECT * FROM omd_dag_runs WHERE id = ?`);
   const recent = db.query(`SELECT * FROM omd_dag_runs ORDER BY created_at DESC LIMIT ?`);
@@ -239,6 +280,7 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
           ...(typeof r.exitCode === 'number' ? { exitCode: r.exitCode } : {}),
           ...(r.failureKind ? { failureKind: r.failureKind } : {}),
           ...(r.writeCounts ? { writeCounts: r.writeCounts } : {}),
+          ...(r.model ? { model: r.model } : {}),
         };
       });
       const usage = {
@@ -262,6 +304,10 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
         // N5: run 级终止原因。**在这里算而不是让调用方传** —— 两个调用面 (dag_run / dag_goal)
         // 各算一遍就是两处会漂的独立判断, 而 `deriveRunOutcome` 是纯函数、读的就是这份 result。
         deriveRunOutcome(result),
+        // N9 判据轴: 冻结判据的判词。缺席 (引擎没跑验收) → NULL, 不编一个 pass:false。
+        result.verification ? JSON.stringify({ pass: result.verification.pass, reason: result.verification.reason }) : null,
+        // N9 效率轴: 跨轮复用了几个节点。`reusedNodes` 缺席 = 这条链没报 → NULL 而不是 0。
+        result.reusedNodes ? result.reusedNodes.length : null,
       );
       return id;
     },
