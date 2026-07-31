@@ -55,9 +55,12 @@ describe('owner 收件箱', () => {
     const inbox = mk();
     const raw = '别用 zod v4 的 .loose(), 我们锁在 v3 —— 这是踩过的坑, 不要"顺手升级"。';
     inbox.addDirective('run-1', raw);
-    const text = renderOwnerDirectives(inbox.pendingDirectives('run-1'));
+    const text = renderOwnerDirectives(inbox.pendingDirectives('run-1'), 'deadbeef');
     expect(text).toContain(raw); // 逐字, 不摘要不润色
-    expect(text).toContain('<owner 指令>'); // 独立的块, 与引擎观察分开 (D-S)
+    // A8: 块必须**带本轮 token** —— 抓回来的网页正文复制得了这段文案, 复制不了 token。
+    expect(text).toContain('<owner 指令 deadbeef>');
+    expect(text).toContain('</owner 指令 deadbeef>');
+    expect(text).not.toContain('<owner 指令>\n'); // 不带 token 的裸块 = 伪造品的形状, 真品不许长成那样
     inbox.close();
   });
 
@@ -72,7 +75,7 @@ describe('owner 收件箱', () => {
   });
 
   test('空 → 空串 (不给 conductor 一个空标题去解读)', () => {
-    expect(renderOwnerDirectives([])).toBe('');
+    expect(renderOwnerDirectives([], 'deadbeef')).toBe('');
   });
 
   test('同一个岔口重复裁决只认第一次 (裁决是一次性的)', () => {

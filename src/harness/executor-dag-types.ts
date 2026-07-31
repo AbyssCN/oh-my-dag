@@ -252,8 +252,12 @@ export interface ExecutorDagConfig {
    * conductor 就分不清哪句必须服从。
    *
    * ⚠ 引擎**逐字**把它拼进 prompt, 一个字都不加工 (有测试钉住)。
+   *
+   * `nonce` = 本次运行的**信任 token** (A8, 2026-08-05)。owner 块是 prompt 里**唯一带 token 的块**,
+   * 因为它是唯一真可信的那条通道 —— 抓回来的网页正文可以逐字复制这个块的文案 (探针实证过),
+   * 但复制不了一个它写那张网页时还不存在的值。渲染方须用它, 见 `renderOwnerDirectives`。
    */
-  ownerDirectives?: (round: number) => string;
+  ownerDirectives?: (round: number, nonce: string) => string;
   loopBudget?: {
     /** 累计 leaf+conductor token(in+out)上限。 */
     tokens?: number;
