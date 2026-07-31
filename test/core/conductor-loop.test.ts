@@ -18,6 +18,8 @@ import { join } from 'node:path';
 import { runExecutorDagWithPlan } from '../../src/harness/executor-dag';
 import { CheckpointManager } from '../../src/harness/continuity/checkpoint-manager';
 import { registerProvider } from '../../src/model/providers';
+import { ModelError } from '../../src/model';
+import { _peekLangfuseQueue, _resetLangfuseForTest } from '../../src/model/langfuse';
 import type { NodeLoopJournal } from '../../src/harness/continuity/types';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
 import type { ExecutorDagConfig, GenerateFn } from '../../src/harness/executor-dag-types';
@@ -488,5 +490,85 @@ describe('D-F — 环的信息通道: 失败子节点的败因不许在环里丢
     };
     const r = await runExecutorDagWithPlan(node(), cfg(generate, false, true));
     expect(r.results.C?.output).toContain('某个很确切的败因');
+  });
+});
+
+/**
+ * **judge 调不通 ≠ 未收敛**(2026-07-31,一次真跑烧了 65 分钟换来的)。
+ *
+ * 那一跑里 judge 座位在 codex 上恒抛 `Unsupported parameter: temperature`。此前这条路与
+ * 「judge 判词解析不了」走同一个出口:都落 `converged:false` 然后**继续转下一轮** ——
+ * 而下一轮的 judge 会以完全相同的方式再抛一次。于是一个改配置一分钟能修的事,
+ * 烧掉了全部轮数,症状看起来像「任务太难,一直在修」。
+ *
+ * 分界取 `ModelError`(仓里既有的传输/配置错类),不靠猜错误文本:
+ * 传输/配置层的故障是**确定性**的,再转多少轮都一样;判词解析不了则可能下一轮就好了。
+ */
+describe('judge 调不通 → infra-error 提前退环', () => {
+  const modelErrJudge = (): NonNullable<ExecutorDagConfig['judgeSend']> =>
+    (async () => {
+      throw new ModelError('transport', 'pi: Codex error: Unsupported parameter: temperature');
+    }) as never;
+
+  test('★ 第 1 轮就退,不烧剩余轮数 —— 展开只发生一次', async () => {
+    const f = fake([P1], []);
+    const res = await runExecutorDagWithPlan(node({ max_rounds: 3 }), cfg(f.generate, false, true, modelErrJudge()));
+    // 关键读数: max_rounds=3 而展开只跑了 1 次。此前会跑满 3 次。
+    expect(f.expands()).toBe(1);
+    expect(res.results.C!.converged).toBe(false); // fail-closed 不变: 判不出来绝不当成过了
+    expect(res.results.C!.infraStopped).toContain('Unsupported parameter: temperature');
+  });
+
+  test('★ journal 记下 infra-error 与判词原文 —— 而不是 blocked', async () => {
+    const f = fake([P1], []);
+    await runExecutorDagWithPlan(node({ max_rounds: 3 }), cfg(f.generate, false, true, modelErrJudge()));
+    const j = JSON.parse(readFileSync(join(runDir(), '_loop-C.json'), 'utf-8')) as NodeLoopJournal;
+    // N5 词表里这两格的**下一步相反**: blocked 是"要人给外部输入", infra-error 是"引擎该修"。
+    expect(j.stop?.kind).toBe('infra-error');
+    expect(j.stop?.evidence).toContain('judge 调不通');
+    expect(j.stop?.atRound).toBe(1);
+  });
+
+  test('判词只是解析不了 (非 ModelError) → 保持原行为, 继续转', async () => {
+    // 这一条守的是**不要修过头**: 模型这一发没说清楚, 下一轮可能就好了, 不该也提前退。
+    const f = fake([P1], []);
+    const flaky = (async () => {
+      throw new Error('判词 JSON 解析失败');
+    }) as never;
+    const res = await runExecutorDagWithPlan(node({ max_rounds: 3 }), cfg(f.generate, false, true, flaky));
+    expect(f.expands()).toBe(3); // 跑满
+    expect(res.results.C!.infraStopped).toBeUndefined();
+  });
+});
+
+/**
+ * **子图节点也要发 span**(2026-07-31)。
+ *
+ * 此前只有外层 settle 循环调 `recordSpan`,而运行时展开出来的子节点走的是 conductor 内环 ——
+ * 于是它们在观测面上只有 generation、没有 span,而 generation 又按 nodeId 挂在那个不存在的
+ * span 上 → **全成孤儿**。实测一次 goal:13 条 observation 里 10 条孤儿、只有 1 个 span,
+ * 「一条 trace 打开是整张图的形状」这句话对 goal 路径基本不成立。
+ */
+describe('子图节点的 span', () => {
+  const LF = { LANGFUSE_HOST: 'http://127.0.0.1:9', LANGFUSE_PUBLIC_KEY: 'pk', LANGFUSE_SECRET_KEY: 'sk' };
+
+  test('★ 内环里展开的每个子节点都有自己的 span (否则它的 generation 是孤儿)', async () => {
+    const prev = { ...process.env };
+    Object.assign(process.env, LF);
+    _resetLangfuseForTest();
+    try {
+      const f = fake([P2], [{ converged: true }]); // P2 有两个子节点: research → impl
+      await runExecutorDagWithPlan(node({ max_rounds: 1, judge_final: true }), cfg(f.generate, false, true, f.judgeSend));
+      const spans = _peekLangfuseQueue()
+        .filter((e) => e.type === 'span-create')
+        .map((e) => String((e.body as { name: string }).name));
+      // 子节点 id 是内容寻址的 `C::<hash>`, 只断言"有属于 C 子树的 span"而不写死 hash。
+      const childSpans = spans.filter((n) => n.includes('C::'));
+      expect(childSpans.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      _resetLangfuseForTest();
+      for (const k of Object.keys(LF)) delete process.env[k];
+      Object.assign(process.env, prev);
+    }
   });
 });

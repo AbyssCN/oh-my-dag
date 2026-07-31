@@ -408,6 +408,10 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   // D-Q / D-P: 两种"没跑完但不是失败"的收尾, 各自如实报 —— 都恒不算收敛 (fail-closed)。
   const blocked = execLeaf.blocked;
   const budgetStopped = execLeaf.budgetStopped;
+  // **引擎自己出事**导致环提前退出 (今天唯一来源: judge 调不通)。与 blocked 分开的理由是
+  // 下一步相反: blocked 要人给外部输入, 这个要**修引擎** —— 而它此前落 `not-converged`,
+  // 于是读的人会去加轮数, 恰恰是最没用的那个动作。
+  const infraStopped = execLeaf.infraStopped;
   const cancelledReason = exec.cancelled?.reason;
   // 判词与 oracle **分开报**: 两者不一致时那句话本身就是结论 —— judge 说成了而冻结判据没过,
   // 正是 D-I 要抓的"作弊达标"; 反过来则是"任务里还有命令覆盖不到的明确要求"。
@@ -426,10 +430,12 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
     ? 'success'
     : cancelledReason
       ? 'cancelled'
-      : budgetStopped
-        ? 'budget-exhausted'
-        : blocked
-          ? 'blocked'
+      : infraStopped
+        ? 'infra-error'
+        : budgetStopped
+          ? 'budget-exhausted'
+          : blocked
+            ? 'blocked'
           : judgeSaidOk && !oracleOk
             ? 'oracle-failed'
             : 'not-converged';
@@ -444,6 +450,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
         outcome === 'success' ? '收敛'
         : outcome === 'cancelled' ? `被叫停 (${cancelledReason}) — 已跑完的保留, 同 runId 可 resume`
         : outcome === 'budget-exhausted' ? `预算停: ${budgetStopped!.slice(0, 300)}`
+        : outcome === 'infra-error' ? `引擎侧停: ${infraStopped!.slice(0, 300)} —— **别加轮数**, 这是引擎该修的`
         : outcome === 'blocked' ? `阻塞: ${blocked!.slice(0, 300)}`
         : outcome === 'oracle-failed' ? '判词说成了但冻结判据没过 (D-I: 以判据为准)'
         : `未收敛 (${execLeaf.status})`

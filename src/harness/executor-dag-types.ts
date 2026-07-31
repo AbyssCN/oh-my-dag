@@ -487,6 +487,16 @@ export interface LeafResult {
    * 恒与 `converged: false` 同时出现(fail-closed:没跑完就不是成)。
    */
   budgetStopped?: string;
+  /**
+   * **引擎自己出事导致环提前退出**的原因(2026-07-31)。今天唯一的来源: judge 调不通
+   * (`ModelError` —— 传输/配置层的确定性故障, 如 codex 拒 temperature)。
+   *
+   * 与 {@link blocked} 分开的理由是**下一步相反**(同 N5 词表): blocked = 要人给外部输入,
+   * 再多轮都一样; infraStopped = **引擎该修**, 而它此前被念成 `not-converged` ——
+   * 于是读的人会去加轮数, 而加轮数恰恰是最没用的那个动作。实测: 一个改配置一分钟能修的事,
+   * 烧掉了全部轮数, 症状看起来像"任务太难"。
+   */
+  infraStopped?: string;
 }
 
 /**
