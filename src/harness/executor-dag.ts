@@ -64,6 +64,7 @@ import {
 } from './plan/observers';
 // D-Q detector 节点: 图内 fan-in 检测者的输出协议解析 (REJECT: / BLOCKED:)。
 import { parseDetectorVerdict, DETECTOR_PROTOCOL } from './plan/detector';
+import { repeatedActionBlock, type ActionAttempt } from './plan/repeated-action';
 import { makeLlmConvergenceJudge } from './plan/llm-judge';
 import { send } from '../model/gateway';
 // D-14v2 多模态媒体管道 (S4): attach_media 执行期从直接前驱输出解析图片 → ContentPart 注入。
@@ -1136,6 +1137,12 @@ async function executePlan(
     const loopStartedAt = Date.now();
     /** 环因预算停下的原因 (未超 = undefined)。 */
     let budgetStopped: string | undefined;
+    /**
+     * §8.4 动作级熔断的累积面: 本内环里**失败过的 command 节点** (跨轮累积)。
+     * 轮级空转判据看的是"整轮原地踏步"; 这一条看的是"整轮在变, 但**某一条命令**始终以逐字
+     * 相同的方式失败" —— 粒度差一个量级, 前者看不见后者。
+     */
+    const failedActions: ActionAttempt[] = [];
 
     for (let round = startRound; round <= maxRounds; round++) {
       // D-P 取消接缝③: 不开新一轮。已判完的轮次全在 journal 里, resume 从下一轮接着跑。
@@ -1167,6 +1174,23 @@ async function executePlan(
       usageAcc = addUsage(usageAcc, r.usage);
       last = { ...r.leaf, usage: usageAcc };
       const isFinal = round === maxRounds;
+
+      // ── §8.4 动作级熔断 ────────────────────────────────────────────────────
+      // 顺序上**先于**检测者与 judge: 它判的是"这一格上零位移", 是确定性的字节比对, 比任何
+      // 一次 LLM 判定都硬; 而且早一步退环就少烧一次 judge 调用。
+      for (const [cid, res] of r.results) {
+        if (res.kind !== 'command' || res.status !== 'failed') continue;
+        const cmd = (plan!.nodes[cid] as { command?: string } | undefined)?.command;
+        if (cmd) failedActions.push({ command: cmd, output: res.output });
+      }
+      const actionBlock = repeatedActionBlock(failedActions, config.repeatedActionThreshold);
+      if (actionBlock) {
+        logger.warn({ node: id, round, reason: actionBlock.split('\n')[0] }, '[omd/executor-dag] 动作级熔断 → 环提前退出 (§8.4)');
+        // 与检测者 BLOCKED 同一个出口、同一条 fail-closed 纪律 (恒 converged=false):
+        // 阻塞更不该被读成成功。
+        writeLoopJournal(round, poisoned, prevReason, false, last.output);
+        return { ...settle(last, round, false), blocked: actionBlock };
+      }
 
       // ── D-Q 图内检测者的票 (与 judge 的票同一个毒集) ────────────────────────
       // 顺序上**先于** judge: 检测者常是确定性 oracle (command 节点), 它说"这段不作数"比
