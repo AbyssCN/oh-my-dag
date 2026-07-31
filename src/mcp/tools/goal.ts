@@ -18,6 +18,7 @@ import type { CheckpointManager } from '../../harness/continuity/checkpoint-mana
 import type { RunRegistry } from '../run-registry';
 import type { HudRunRecordLike } from '../../hud/mirror';
 import { recordDagRun, type DagRecorder } from '../../harness/dag-record';
+import { RUN_OUTCOME_INFO } from '../../harness/run-outcome';
 import { describeRunWorktree, prepareRunWorktree, type BranchStrategy } from '../../harness/run-worktree';
 import { renderOwnerDirectives, type OwnerInbox } from '../owner-inbox';
 
@@ -99,14 +100,28 @@ export function summarizeGoal(r: RunGoalResult): string {
     r.acceptance.kind === 'executable'
       ? `验收: 执行型 · \`${r.acceptance.command}\` (期望退出码 ${r.acceptance.expectExit})`
       : `验收: 探索型 (无机器判据) · 学习目标: ${r.acceptance.learningGoal}`,
-    ...r.stages.map((s) => `  [${s.status}] ${s.stage} — ${s.summary}`),
+    // ── N5 (2026-07-31): 这一行印的是 **outcome 而不是 status** ────────────────────
+    //
+    // 上一跑 live 里它印的是 `[failed] execute — 2 轮阻塞: …` —— 一次**判定正确**的 BLOCKED
+    // 被念成 failed, 而同一份摘要底下第 106 行那句"阻塞(需外部输入)"读对了。同一份输出两行打架,
+    // 而读的人 (和上线闸 G5「触发**并被正确读**」那半格) 只看得见第一行。
+    //
+    // status 仍在括号里跟着印: 它是全仓 `=== 'done'` 那些消费者判的同一位, 摘要上把两位并排放,
+    // 就能一眼看出"没成"与"为什么没成"是两个问题 —— 这正是 P1 在节点级立的那条规矩。
+    ...r.stages.map((s) => `  [${s.outcome}${s.status === 'done' ? '' : `/${s.status}`}] ${s.stage} — ${s.summary}`),
   ];
   // D-Q/D-P: "没跑完"的两种收尾要第一眼看得见 —— 它们各自对应完全不同的下一步
   // (阻塞 = owner 去看; 取消 = 直接 resume), 混在 stages 里读不出来。
+  // ⚠ N5 之后这三行只报**原因文本**, 不再各自附一句下一步 —— 下一步统一由词表出 (见下),
+  //   否则同一件事有两处措辞, 改了词表这里不跟着改就开始漂。
   if (r.blocked) lines.push(`阻塞 (需外部输入): ${r.blocked}`);
-  // 预算停与阻塞刻意分两行念: 前者"加预算 resume 很可能就成", 后者"再多轮都一样, 去看一眼"。
-  if (r.budgetStopped) lines.push(`预算停: ${r.budgetStopped} · 加大预算后 dag_goal resume=<同一 runId>`);
-  if (r.cancelled) lines.push(`已叫停: ${r.cancelled} · 续跑 dag_goal resume=<同一 runId>`);
+  if (r.budgetStopped) lines.push(`预算停: ${r.budgetStopped}`);
+  if (r.cancelled) lines.push(`已叫停: ${r.cancelled}`);
+  // N5: 终止原因的**下一步**从词表出, 且只在没成的时候印 (成了就没有"下一步"这回事)。
+  if (r.outcome !== 'success') {
+    const info = RUN_OUTCOME_INFO[r.outcome];
+    lines.push(`终止原因: ${r.outcome} (${info.loopState ?? '—'}) · 下一步: ${info.nextAction}`);
+  }
   if (r.repoContext) lines.push(`仓内事实: ${r.repoContext.split('\n').length} 行`);
   if (r.specPath) lines.push(`spec: ${r.specPath}`);
   if (r.sources.length) lines.push(`来源 (${r.sources.length}): ${r.sources.slice(0, 5).join(', ')}`);

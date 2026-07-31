@@ -12,10 +12,10 @@ const result = (over: Partial<RunGoalResult> = {}): RunGoalResult => ({
   tier: 'complex',
   acceptance: { kind: 'executable', command: 'bun test', expectExit: 0 },
   stages: [
-    { stage: 'classify', status: 'done', summary: 'tier=complex' },
-    { stage: 'research', status: 'done', summary: '3 个来源真抓到正文' },
-    { stage: 'spec', status: 'done', summary: 'docs/plan/x.md' },
-    { stage: 'execute', status: 'done', summary: '2 轮收敛 · 复用 4 节点' },
+    { stage: 'classify', status: 'done', outcome: 'success', summary: 'tier=complex' },
+    { stage: 'research', status: 'done', outcome: 'success', summary: '3 个来源真抓到正文' },
+    { stage: 'spec', status: 'done', outcome: 'success', summary: 'docs/plan/x.md' },
+    { stage: 'execute', status: 'done', outcome: 'success', summary: '2 轮收敛 · 复用 4 节点' },
   ],
   specPath: 'docs/plan/x.md',
   sources: ['https://a', 'https://b', 'https://c'],
@@ -23,6 +23,7 @@ const result = (over: Partial<RunGoalResult> = {}): RunGoalResult => ({
   converged: true,
   rounds: 2,
   reusedNodes: ['n1', 'n2', 'n3', 'n4'],
+  outcome: 'success',
   ...over,
 });
 
@@ -57,7 +58,10 @@ describe('dag_goal', () => {
     await settle();
     const rec = reg.getRecord(runIdOf(r.content[0]!.text))!;
     expect(rec.status).toBe('done');
-    expect(String(rec.result)).toContain('[done] research');
+    // N5 (2026-07-31): 这一行印的是 outcome 而不是 status —— 成了的阶段印 `[success]`,
+    // 没成的那些还会跟一个 `/failed`。改这条断言是**跟着一个刻意的行为改动走**:
+    // 上一跑 live 里一次判定正确的 BLOCKED 被 status 念成了 failed, N5 治的就是那个。
+    expect(String(rec.result)).toContain('[success] research');
     expect(String(rec.result)).toContain('docs/plan/x.md');
   });
 
@@ -70,7 +74,7 @@ describe('dag_goal', () => {
         runGoal: async () =>
           result({
             converged: false,
-            stages: [{ stage: 'execute', status: 'failed', summary: '2 轮未收敛 (exhausted)' }],
+            stages: [{ stage: 'execute', status: 'failed', outcome: 'not-converged', summary: '2 轮未收敛 (exhausted)' }],
           }),
       },
       { goal: 'g' },
