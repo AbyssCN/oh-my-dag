@@ -268,4 +268,23 @@ describe('fanin-summary 纯 helper', () => {
     // 无下游目标 → 兜底措辞
     expect(buildFaninSummaryPrompt({ output: 'o', depGoals: [], schema: {} })).toContain('synthesize this with sibling');
   });
+
+  test('★ 按不变性排序: 节点无关的指令+schema 在前, 节点专属的 goal/output 在后 (prompt-cache)', () => {
+    // 此前 `Producer node goal:` 是第一行 —— 同一层兄弟的 prompt **在第一行就分叉**,
+    // 能共享的只剩 system 那一段 (live 实测这层 cacheHit 0%, 隔离复现上限就是 system 的 128 token)。
+    // 钉的是顺序这条性质本身: 改文案可以, 把会变的东西挪到前面去不行。
+    const mk = (goal: string, out: string): string =>
+      buildFaninSummaryPrompt({ producerGoal: goal, output: out, depGoals: [`用 ${goal}`], schema: DEFAULT_FANIN_SCHEMA });
+    // 两个 goal 刻意**无公共前缀** —— 否则分叉点会被测试数据自己的共同开头推后, 量到的是假的。
+    const a = mk('ALPHA', 'AAA');
+    const b = mk('BRAVO', 'BBB');
+
+    let shared = 0;
+    while (shared < a.length && shared < b.length && a[shared] === b[shared]) shared++;
+    // 共享前缀必须把整个 schema 都含进去 (schema 是这段里最长的不变块)。
+    expect(a.slice(0, shared)).toContain(JSON.stringify(DEFAULT_FANIN_SCHEMA));
+    // 且分叉点必须正好落在第一处节点专属内容上。
+    expect(a.slice(shared)).toStartWith('ALPHA');
+    expect(a.indexOf('Producer node goal')).toBeGreaterThan(a.indexOf(JSON.stringify(DEFAULT_FANIN_SCHEMA)));
+  });
 });

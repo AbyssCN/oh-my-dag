@@ -85,11 +85,23 @@ export function buildFaninSummaryPrompt(args: {
   const consumers = depGoals.length
     ? `Downstream consumers will use this output to:\n${depGoals.map((g, i) => `  ${i + 1}. ${g}`).join('\n')}\n`
     : 'Downstream consumers will synthesize this with sibling outputs.\n';
+  // **按不变性排序**(2026-07-31): 节点无关的指令 + schema 先, 节点专属的 goal/consumers/output 后。
+  //
+  // 此前 `Producer node goal:` 是第一行 —— 于是同一层 8 个兄弟的 prompt **在第一行就分叉**,
+  // 能共享的只剩 system 那一段。live 实测这一层 cacheHit 全 0%, 而隔离复现时它稳定命中 128 token
+  // (= system 的长度), 也就是说上限本来就只有 system 那么多。
+  //
+  // ⚠ 别把这条读成"省了很多钱": 实测这一层占整跑 input 的 ~1.2%, 前缀从 451 撑到 784 字符,
+  //   拿回的是 ~700 token/跑。做它是因为**顺序错了**(不变的东西排在会变的后面, 白扔掉可缓存性),
+  //   不是因为收益大。真正的大头在 agent leaf 那边 (84~98%)。
+  //
+  // schema 通常是 DEFAULT_FANIN_SCHEMA(共享);producer 自带 output_schema 时这里分叉 ——
+  // 那种节点本来也不该与兄弟共享前缀, 不比今天差。
   return (
-    `${goalLine}${consumers}\n` +
-    'Summarize the output below, DIRECTED at exactly what those consumers need. ' +
+    'Summarize the producer output below, DIRECTED at exactly what the downstream consumers need. ' +
     'Return ONLY a JSON object with this shape (values are field instructions):\n' +
     `${JSON.stringify(schema)}\n\n` +
+    `${goalLine}${consumers}\n` +
     `--- Producer output (${output.length} chars) ---\n${output}`
   );
 }
