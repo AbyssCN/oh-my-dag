@@ -58,6 +58,14 @@ export type NodeFailureKind =
   /** 依赖未达 `requires` quorum → 级联跳过(D-7v2)。恒伴随 `status: 'skipped'`。 */
   | 'dep-skip'
   /**
+   * conductor 节点的子图**一个都没成**(`ok === 0`)。节点自己没毛病,坏的是它画出来的那些步。
+   *
+   * 这一格是**读数板自己点出来的**(2026-08-05 live:`execute` 与 `contract` 两个 conductor
+   * 节点落进 `unclassified`)—— 那正是 `unclassified` 该起的作用:它不是垃圾桶,是一个指着
+   * "这里还有条没交代的失败路径"的指针。
+   */
+  | 'subgraph-failed'
+  /**
    * **「不知道」的那一格**:节点没过,但没有任何生产点标注成因。
    *
    * 它**不是**兜底垃圾桶,是一个可以被数出来的缺陷指标 —— 读数板上它非零,意思是
@@ -136,6 +144,13 @@ export const FAILURE_KIND_INFO: Record<NodeFailureKind, FailureKindInfo> = {
     evidence: "status='skipped': 依赖失败未达 requires quorum(D-7v2)",
     nextAction: '看上游 —— 这个节点自己没有毛病,零执行零花费',
     retryable: false,
+  },
+  'subgraph-failed': {
+    loopState: null,
+    evidence: 'conductor 子图 0 个子节点成功',
+    nextAction: '去看**子节点**的成因 —— 它们各自已经归好类了; 这个节点的下一步等于它们的下一步',
+    // 聚合体的可重试性是它各部分的函数, 单看这一格答不了 —— 所以是 null 而不是拍一个 true/false。
+    retryable: null,
   },
   unclassified: {
     loopState: 'UNKNOWN',

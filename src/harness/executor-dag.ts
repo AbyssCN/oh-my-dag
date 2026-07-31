@@ -720,18 +720,24 @@ async function executePlan(
         templates: templateRoster(templates),
         profile: config.conductorPromptProfile ?? (process.env.OMD_CONDUCTOR_PROMPT === 'lean' ? 'lean' : 'full'),
       });
+      const userMsg =
+        // A8: token 声明必须排在**任何**不可信内容之前 —— 读者先拿到判据, 再看材料。
+        `${PLAN_BOUNDARY}${trustHeader(runNonce)}${node.goal ?? id}${depCtx}${ownerCtx}${retryCtx}\n\n` +
+        // D-D 写进 prompt 而不只靠事后拒: 让它知道边界, 比让它撞上去便宜。
+        '注意: 本次分解出的节点**不得**再用 executor:"conductor" 或 executor:"map" —— ' +
+        '你现在就是运行时展开, 已经知道清单了, 直接把步骤列出来即可。';
+      // **prompt 观测面** (2026-08-05)。走 `logger.debug` 而不是新加旋钮/读 env:
+      // 默认 logger 的 debug 是空函数 → 生产零成本; 想看的人 (冒烟脚本 / 排障) 用
+      // `setCoreLogger` 注入一个会记的实现即可 —— 现成的接缝, 不新开一个。
+      //
+      // 为什么值得有: 本轮四条缺陷 (A5 三条 + A8 一条) **全部**是靠抓 prompt 抓出来的,
+      // 而 live 上我们对这一面**完全瞎** —— 盘上留下了 plan、结果、checkpoint、journal,
+      // 唯独没留下"模型到底看见了什么"。那恰恰是最能解释它为什么那么画的那一份。
+      logger.debug({ node: id, round, phase: 'conductor', model: conductorCoord, system: sys, prompt: userMsg }, '[omd/prompt] conductor');
       const { text, usage } = await generate({
         messages: [
           { role: 'system', content: sys },
-          {
-            role: 'user',
-            content:
-              // A8: token 声明必须排在**任何**不可信内容之前 —— 读者先拿到判据, 再看材料。
-              `${PLAN_BOUNDARY}${trustHeader(runNonce)}${node.goal ?? id}${depCtx}${ownerCtx}${retryCtx}\n\n` +
-              // D-D 写进 prompt 而不只靠事后拒: 让它知道边界, 比让它撞上去便宜。
-              '注意: 本次分解出的节点**不得**再用 executor:"conductor" 或 executor:"map" —— ' +
-              '你现在就是运行时展开, 已经知道清单了, 直接把步骤列出来即可。',
-          },
+          { role: 'user', content: userMsg },
         ],
         // 坐标 (含轮级升级) 在上面算好, 见 conductorCoord。
         model: conductorCoord,
@@ -1095,6 +1101,9 @@ async function executePlan(
       leaf: {
         id,
         status: ok > 0 ? 'done' : 'failed',
+        // 子图全灭 ≠ 这个节点自己坏了 —— 成因在子节点上, 而它们各自已经归好类。
+        // (这一格是 2026-08-05 live 的读数板点名出来的: 它当时落进 unclassified。)
+        ...(ok > 0 ? {} : { failureKind: 'subgraph-failed' as const }),
         kind: 'conductor',
         output: `[conductor 子图: ${ok}/${childIds.length} 成功${expand.truncated ? `, 截断 ${expand.truncated}` : ''}${failedLocal ? `, 失败 ${failedLocal}` : ''}]\n\n${summary}`,
         deps,
@@ -1815,6 +1824,9 @@ async function executePlan(
       // §8.5 效果指标的压缩形 [总写次数, no-op 次数]。undefined = 这条链上没人报 (inproc 节点),
       // 与 [0,0] (跑了但一次没写) 刻意分开 —— 读数板必须把两者分开念。
       let writeCounts: [number, number] | undefined;
+      // prompt 观测面 (同 conductor 那处: 默认 logger 的 debug 是空函数, 生产零成本)。
+      // leaf 这一份尤其值钱 —— 上游材料、围栏、失败前驱的告示全落在它里面。
+      logger.debug({ node: id, phase: useAgent ? 'agent-leaf' : 'inproc-leaf', model, prompt }, '[omd/prompt] leaf');
       if (useAgent) {
         const r = await config.agentRunner!({ prompt, model });
         text = r.text;
