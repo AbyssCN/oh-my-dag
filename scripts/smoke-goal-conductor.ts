@@ -27,6 +27,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { assembleOmdMcpTools } from '../src/mcp/assemble';
 import { RunRegistry } from '../src/mcp/run-registry';
+import { setCoreLogger } from '../src/harness/logger';
 import { LIVE_SEED_CASES, liveSeedCaseById } from '../src/eval/tasks/live-seed-cases';
 
 const argv = process.argv.slice(2);
@@ -81,6 +82,33 @@ if (wantBranch) {
   console.log('沙箱已 git init + 首次提交 → 隔离档有对象可建\n');
 }
 
+// ── prompt 观测面 (2026-08-05) ───────────────────────────────────────────────
+// live 上我们此前对"模型到底看见了什么"**完全瞎**: 盘上留了 plan / 结果 / checkpoint / journal,
+// 唯独没留 prompt —— 而那恰恰是最能解释它为什么那么画的一份。本轮四条缺陷 (A5 三条 + A8 一条)
+// 全是靠抓 prompt 抓出来的, 却一条也不是在 live 上抓的。
+//
+// 走 `setCoreLogger` 这个现成接缝: 引擎在 `logger.debug` 上发 prompt, 默认实现是空函数
+// (生产零成本), 这里注入一个会记的。不新开旋钮、不读 env。
+const promptDir = join(sandbox, '.omd', 'prompts');
+mkdirSync(promptDir, { recursive: true });
+let promptSeq = 0;
+const promptIndex: { file: string; phase: string; node: string; model: string; bytes: number }[] = [];
+setCoreLogger({
+  debug: (obj) => {
+    const o = obj as { phase?: string; node?: string; model?: string; prompt?: string; system?: string; round?: number };
+    if (!o?.prompt) return;
+    const n = String(promptSeq++).padStart(3, '0');
+    const safeNode = String(o.node ?? 'x').replace(/[^\w.-]/g, '_').slice(0, 40);
+    const file = `${n}-${o.phase}-${safeNode}${o.round === undefined ? '' : `-r${o.round}`}.txt`;
+    const body = (o.system ? `===== SYSTEM =====\n${o.system}\n\n` : '') + `===== USER =====\n${o.prompt}`;
+    writeFileSync(join(promptDir, file), body);
+    promptIndex.push({ file, phase: String(o.phase), node: String(o.node ?? ''), model: String(o.model ?? ''), bytes: body.length });
+  },
+  info: (obj, msg) => console.log(msg ?? '', typeof obj === 'string' ? obj : ''),
+  warn: (obj, msg) => console.warn(msg ?? '', typeof obj === 'string' ? obj : ''),
+  error: (obj, msg) => console.error(msg ?? '', obj),
+});
+
 const registry = new RunRegistry();
 const tools = assembleOmdMcpTools({ cwd: sandbox, runRegistry: registry });
 const goalTool = tools.find((t) => t.name === 'dag_goal');
@@ -129,6 +157,14 @@ for (const dir of existsSync(contDir) ? readdirSync(contDir) : []) {
     const j = JSON.parse(readFileSync(join(d, f), 'utf-8')) as Record<string, unknown>;
     if (f.startsWith('_loop-')) {
       console.log(`  ${f}  轮=${j.completedRounds} 收敛=${j.converged ?? false} 毒集=${(j.poisoned as unknown[])?.length ?? 0}`);
+      // **环唯一的信息通道**摊开: 上一轮的失败原因 + 图外观察者的话就在这里。
+      // 只打轮数等于把这条通道当黑盒 —— 而 A5 普查治的正是"通道里的话读者做不做得了事"。
+      const reason = String(j.prevReason ?? '').trim();
+      if (reason) {
+        console.log(`    ┌ 进下一轮的话 (${reason.length}B):`);
+        for (const line of reason.split('\n').slice(0, 14)) console.log(`    │ ${line.slice(0, 150)}`);
+        if (reason.split('\n').length > 14) console.log('    │ …');
+      }
     } else if (f === '_dag.json') {
       console.log(`  ${f}  节点=${JSON.stringify(j.nodeIds)}`);
     } else if (f === '_goal.json' || f === '_fixpoint.json') {
@@ -167,4 +203,38 @@ if (seedCase) {
   }
   if (!existsSync(docs)) console.log('  (docs/ 不存在 —— 一份都没写出来)');
 }
+// ── prompt 索引 ───────────────────────────────────────────────────────────────
+console.log(`\n── prompt (${promptIndex.length} 份, 全文在 ${promptDir}) ──`);
+for (const p of promptIndex) {
+  console.log(`  ${p.file.padEnd(46)} ${String(p.bytes).padStart(7)}B  ${p.model}`);
+}
+if (promptIndex.length === 0) console.log('  (一份都没记 —— logger 接缝没接上?)');
+else {
+  // A8 的 live 判读: 围栏在**真** prompt 里立住没有。确定性检查, 零模型调用。
+  const all = promptIndex.map((p) => readFileSync(join(promptDir, p.file), 'utf-8'));
+  const fenced = all.filter((t) => /<untrusted src="[^"]*" [0-9a-f]{8}>/.test(t)).length;
+  const withHeader = all.filter((t) => t.includes('信任 token')).length;
+  console.log(`  A8: 带围栏的 prompt ${fenced}/${all.length} · 带 token 声明的 ${withHeader}/${all.length}`);
+  const leaked = all.filter((t) => {
+    const nonce = /<untrusted src="[^"]*" ([0-9a-f]{8})>/.exec(t)?.[1];
+    if (!nonce) return false;
+    const outside = t.split(new RegExp(`<untrusted src="[^"]*" ${nonce}>[\\s\\S]*?</untrusted ${nonce}>`, 'g')).join('');
+    return outside.includes('<owner 指令>'); // 不带 token 的 owner 块出现在围栏外 = 逃逸
+  }).length;
+  console.log(`  A8: 疑似逃逸 (围栏外出现无 token 的 owner 块) ${leaked} 份 ${leaked === 0 ? '✅' : '❌'}`);
+}
+
+// ── 读数板 (本次运行的全部确定性读数, 一次跑完全拿) ────────────────────────────
+// 每次 live 都该白拿这一整版 —— 否则 ⑦⑧ 那些新仪表要等到有人想起来才被读一次。
+const dbPath = join(sandbox, '.omd', 'dag-runs.db');
+if (existsSync(dbPath)) {
+  console.log(`\n══ 读数板 (${dbPath}) ══`);
+  const r = Bun.spawnSync(['bun', 'run', 'scripts/omd-readout.ts', '--db', dbPath], { stdout: 'pipe', stderr: 'pipe' });
+  console.log(new TextDecoder().decode(r.stdout));
+  const err = new TextDecoder().decode(r.stderr).trim();
+  if (err) console.error(err);
+} else {
+  console.log(`\n⚠ 没有留痕库 ${dbPath} —— 读数板这一整版拿不到 (recorder 没接上?)`);
+}
+
 console.log(`\n沙箱保留在 ${sandbox} (自己看完自己删)。`);

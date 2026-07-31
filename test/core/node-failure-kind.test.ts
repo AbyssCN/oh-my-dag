@@ -245,11 +245,19 @@ describe('P1 · 「不知道」是独立的一格, 不并进任何一侧', () =>
     expect(withFailureKind({ status: 'done' }).failureKind).toBeUndefined();
   });
 
-  test('unclassified 的 retryable 是 null 而不是 false —— 不知道就别替 heal 回路做决定', () => {
-    expect(FAILURE_KIND_INFO.unclassified.retryable).toBeNull();
-    // 对照: 其余每一格都表了态
+  test('retryable=null 只给"单节点答不了"的格, 且是**白名单**不是默认值', () => {
+    // 判据收紧成集合相等而不是"unclassified 是 null": 那样加第三个 null 会静默通过,
+    // 而 null 的全部价值在于它稀有 —— 它一旦变成偷懒的默认值, heal 回路就再也用不上这一位。
+    //
+    // 两格允许 null, 理由不同:
+    //   unclassified    —— 真的不知道 (没人判过)
+    //   subgraph-failed —— 答案**存在但不在这一层**: 聚合体的可重试性是它各部分的函数,
+    //                      子节点各自已经归好类; 在这儿拍一个 true/false 两边都是撒谎
+    const nulls = FAILURE_KIND_ORDER.filter((k) => FAILURE_KIND_INFO[k].retryable === null);
+    expect(new Set(nulls)).toEqual(new Set(['unclassified', 'subgraph-failed']));
+    // 其余每一格都必须表态
     for (const k of FAILURE_KIND_ORDER) {
-      if (k === 'unclassified') continue;
+      if (nulls.includes(k)) continue;
       expect(typeof FAILURE_KIND_INFO[k].retryable).toBe('boolean');
     }
   });
