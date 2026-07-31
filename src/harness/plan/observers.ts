@@ -157,6 +157,18 @@ export function artifactLintObservations(
  * `null` = **读不到**(文件不在 / 根对不上 / 读失败)。它是**第三态, 不是"没变"** ——
  * 一个量不到的文件不构成"这一轮什么都没干"的证据, 拿它凑判据就是本仓反复在治的那种补集算法。
  */
+/**
+ * **「声明了要写、盘上却没有」** 的哨兵值 (N7, 2026-07-31)。
+ *
+ * 它与 `null` 刻意是两个值, 因为结论相反:
+ *   · `null`            = **量不到**(读文件抛错)—— 不是证据, 见到就整轮不判;
+ *   · `ARTIFACT_ABSENT` = **确定性事实**: 这个节点声明了产物、而那条路径确实不存在。
+ *
+ * 后者是**可比较的**: 连着两轮"说要写 a.md 却两轮都没写出来", 正是「盘上没有位移」本身 ——
+ * 而在 N7 之前这一类被系统性吃掉了(见 {@link detectNoArtifactChange} 的 population 那段)。
+ */
+export const ARTIFACT_ABSENT = '\u0000absent';
+
 export interface RoundArtifacts {
   hashes: Readonly<Record<string, string | null>>;
 }
@@ -179,8 +191,18 @@ export interface RoundArtifacts {
  *
  * ## 三条纪律 (每一条都是踩过的坑的反面)
  *
- * ① **population 闸**: 只在**两轮都真碰过文件**时判。一轮纯分析(不产文件)没有产物信号 ——
+ * ① **population 闸**: 只在**两轮都有产物信号**时判。一轮纯分析(不产文件)没有产物信号 ——
  *    那是 `Unobserved` 不是"没位移", 直接返 null。少了这条, 所有非文件型的目标会被一路误报。
+ *
+ *    ⚠ **N7 (2026-07-31) 把"产物信号"的定义改宽了一格。** 此前 population 只收 `filesTouched`,
+ *    而**产物闸判 empty-artifact 的节点恰好没有 filesTouched** —— 于是"自报完成却什么都没写"
+ *    这一整类会让 population 归零, 检测器**静默不判**。2026-07-31 两跑 live 的两个 0 里
+ *    第二个就是这么来的: 不是"没卡住", 是**被更具体的仪表先接住之后这条就瞎了**。
+ *    现在声明了产物却不在盘上的路径以 {@link ARTIFACT_ABSENT} 进 population ——
+ *    连着两轮都 absent 就是位移为零的**最强**形态(它连东西都没产出来)。
+ *
+ *    两条检测器的边界因此说得清了: `empty-artifact` 判的是**单个节点这一次**有没有产出;
+ *    本检测器判的是**整个环跨轮**有没有位移。前者仍会先命中(它更具体), 但不再让后者失明。
  * ② **「读不到」不算「没变」**: 任一侧出现 `null` hash 就不判(fail-open, 倾向不报)。
  *    一个量不到的文件不是"没变"的证据。
  * ③ **只报不拦**(至少现在): 出口是观察条目进下一轮 prompt, **不是 BLOCKED**。
@@ -194,7 +216,8 @@ export function detectNoArtifactChange(prev: RoundArtifacts | null, cur: RoundAr
   const curPaths = Object.keys(cur.hashes).sort();
   // ① population 闸: 没有产物就没有产物信号 (Unobserved, 不是"没位移")。
   if (prevPaths.length === 0 || curPaths.length === 0) return null;
-  // ② 任一侧有量不到的 → 不判。
+  // ② 任一侧有**量不到**的 → 不判。⚠ 只挡 null(读文件出错); ARTIFACT_ABSENT 是确定性事实,
+  //    照常参与比较 —— 那正是 N7 要救回来的那一类。
   if ([...prevPaths, ...curPaths].some((p) => (p in prev.hashes ? prev.hashes[p] : cur.hashes[p]) === null)) return null;
   if (prevPaths.length !== curPaths.length || prevPaths.some((p, i) => p !== curPaths[i])) return null;
   if (prevPaths.some((p) => prev.hashes[p] !== cur.hashes[p])) return null;
@@ -204,6 +227,12 @@ export function detectNoArtifactChange(prev: RoundArtifacts | null, cur: RoundAr
     // A5: 读者是下一轮重画的 conductor。所以不播报状态, 直接给它**做得了的事** ——
     // 并且点破它最可能正在做的那件无效功: 换个名字把同样的步骤再排一遍。
     message:
+      (curPaths.every((p) => cur.hashes[p] === ARTIFACT_ABSENT)
+        ? `盘上没有位移, 而且更糟: 这一轮**声明**要产出的 ${curPaths.length} 个文件里, 一个都不在盘上 ` +
+          `(${curPaths.slice(0, 3).join(', ')}${curPaths.length > 3 ? ' 等' : ''}), 上一轮也是。` +
+          '也就是说连着两轮都只是**说做了**。这一轮别再排步骤, 先把其中一个文件真正写出来, ' +
+          '写完用一条跑得起来的命令确认它在盘上。'
+        : '') ||
       `盘上没有位移: 这一轮结束时, ${curPaths.length} 个产物文件的内容与上一轮**逐字节相同** ` +
       `(${curPaths.slice(0, 3).join(', ')}${curPaths.length > 3 ? ' 等' : ''})。` +
       '也就是说上一轮的反馈**一点也没落到产物上** —— 你很可能只是把同样的步骤换个名字重排了一遍。' +

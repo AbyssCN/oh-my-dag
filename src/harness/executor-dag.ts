@@ -62,6 +62,7 @@ import {
   detectLoopNoProgress,
   detectNoArtifactChange,
   type RoundShape,
+  ARTIFACT_ABSENT,
   type RoundArtifacts,
 } from './plan/observers';
 // D-Q detector 节点: 图内 fan-in 检测者的输出协议解析 (REJECT: / BLOCKED:)。
@@ -358,6 +359,19 @@ async function executePlan(
       const root = r.artifactRoot ?? continuity?.repoRoot ?? process.cwd();
       for (const p of r.filesTouched ?? []) {
         hashes[p] = hashArtifact(p.startsWith('/') ? p : join(root, p));
+      }
+      // ── N7 (2026-07-31): **声明了产物却没写出来** 的那一格 ──────────────────────
+      //
+      // 产物闸判 empty-artifact 的节点恰好没有 filesTouched, 于是它对 population 的贡献是 0;
+      // 一轮里若这类占满, population 归零 → 「产物没变」检测器**静默不判**。
+      // 2026-07-31 两跑 live 的第二个 0 就是这么来的 —— 不是没卡住, 是这条瞎了。
+      //
+      // 用**计划里声明的** output_path 补进 population: 文件真不在 → ARTIFACT_ABSENT
+      // (确定性事实, 可跨轮比较); 在 → 照常 hash (它可能只是没记 filesTouched)。
+      const declared = (plan?.nodes[r.id] as { output_path?: string } | undefined)?.output_path;
+      if (declared && !(declared in hashes)) {
+        const abs = declared.startsWith('/') ? declared : join(root, declared);
+        hashes[declared] = existsSync(abs) ? hashArtifact(abs) : ARTIFACT_ABSENT;
       }
     }
     return { hashes };
