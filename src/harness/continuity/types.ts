@@ -9,6 +9,7 @@
  *   - scripts/continuity-writer.ts (W1 回灌)
  */
 import type { ModelUsage } from '../../model/gateway';
+import type { NodeFailureKind } from '../node-failure';
 
 /**
  * 单个 DAG 节点的 checkpoint 快照。
@@ -24,11 +25,15 @@ export interface NodeCheckpoint {
    */
   status: 'done' | 'failed' | 'skipped';
   /**
-   * 失败节点 (issue #4) 的败因分类: 'stall' = 早期心跳闸判 provider 挂起 (issue #5) |
-   * 'failed' = 通用失败 (具体原因见 summary) | 'dep-skip' = 依赖失败级联跳过 (D-7v2)。
-   * done 节点 undefined。
+   * 失败节点 (issue #4) 的败因分类。**词表与每格判据的唯一定义处是 `../node-failure.ts`** ——
+   * 这里只是把结果上那一位原样存下来 (P1, 2026-08-05: 此前留痕层当场重新推断一遍, 于是同一件事
+   * 有两处独立判断, 天然会漂)。
+   *
+   * `'failed'` 是**历史字面量**: 2026-08-05 之前写入的行只有 stall/dep-skip/failed 三档,
+   * 那个 `'failed'` 意思是"这个版本没细分", 与新词表的 `'unclassified'` ("细分了但归不了类")
+   * 不是一回事 —— 读老库的时候别把两者并起来数。done 节点 undefined。
    */
-  failureKind?: 'stall' | 'failed' | 'dep-skip';
+  failureKind?: NodeFailureKind | 'failed';
   /** 实际所用模型坐标 (失败归因; inproc/agent leaf 有, command/无模型 → undefined)。 */
   model?: string;
   /**

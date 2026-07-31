@@ -8,6 +8,7 @@ import type { CheckpointManager } from './continuity/checkpoint-manager';
 import type { VerifierFn } from './verifier';
 import type { FaninSummaryConfig } from './fanin-summary';
 import type { ArtifactBudget } from './plan/judge-artifacts';
+import type { NodeFailureKind } from './node-failure';
 
 /** omd 本体编排的注入式模型调用 (单一注入点; 默认 callModel, 测试传 fake)。 */
 export type GenerateFn = (req: {
@@ -339,6 +340,19 @@ export interface LeafResult {
    * 与 resume 的 `skipped?: boolean` (已绿跳过, status 仍 'done') 是两个正交概念, 不混用。
    */
   status: 'done' | 'failed' | 'skipped';
+  /**
+   * **没过的成因** (P1, 2026-08-05)。词表与每格的直接判据见 `node-failure.ts`。
+   *
+   * 为什么是**加一位**而不是把 `status` 拆宽: 现有读 `status === 'done'` 的地方有二十多处,
+   * 而它们问的都是同一个粗问题("这个节点算成了吗")—— 那个问题的答案没变。粗态由细态推出
+   * (任何 failureKind 都伴随 `status` 为 `'failed'` 或 `'skipped'`), 反过来不成立, 这才是
+   * 细化该走的方向。把 `failed` 拆成五个字面量会让每一处消费者都得改, 且改的是它们**不关心**的那一层。
+   *
+   * ⚠ 恒非空当且仅当 `status !== 'done'` —— settle 出口过 `withFailureKind` 归一化, 没人标的
+   * 显式记 `'unclassified'`。**整个字段缺席 = 早于本次改动的记录**, 与 `'unclassified'`
+   * (记了但归不了类) 是两件事, 读数板必须分开念。
+   */
+  failureKind?: NodeFailureKind;
   /**
    * 实际执行模式: inproc 单发 / agent 带工具 / command CLI / map 动态扇出 (U1) /
    * primitive 约束选择 (SDD 0013) / research 真 web (D-6) / conductor 运行时异构展开 (P3 D-B/C/D)。

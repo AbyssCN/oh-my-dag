@@ -11,6 +11,7 @@ import { Database } from 'bun:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { ExecutorDagResult } from './executor-dag';
+import type { NodeFailureKind } from './node-failure';
 
 export interface DagRunNode {
   id: string;
@@ -56,6 +57,17 @@ export interface DagRunNode {
   outputHash?: string;
   /** command 节点的退出码;**负数 = 闸拒**(与普通失败后续动作相反)。见 `DagNodeResult.exitCode`。 */
   exitCode?: number;
+  /**
+   * **没过的成因**(P1, 2026-08-05;词表与判据在 `node-failure.ts`)。
+   *
+   * 为什么这一位值得进历史记录,而 `command`/`detector` 那两位刻意只存原始事实:因为它**不是
+   * 派生值**。`commandRiskTier(command)` 可以事后重算,而"这个节点为什么没过"事后**算不回来**
+   * —— 退出码、心跳、产物闸的结果散在运行期,记录里只剩一个 `failed`。不当场记下来就永久丢了。
+   *
+   * ⚠ 缺席 ≠ `'unclassified'`:缺席 = 早于 2026-08-05 的记录(**没记**);
+   * `'unclassified'` = 记了但引擎没能归类(**该去补标注的缺陷**)。读数板分开念。
+   */
+  failureKind?: NodeFailureKind;
 }
 export interface DagRunRecord {
   id: string;
@@ -191,6 +203,7 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
           ...(planNodes[r.id]?.detector === true ? { detector: true as const } : {}),
           ...(outHash ? { outputHash: outHash } : {}),
           ...(typeof r.exitCode === 'number' ? { exitCode: r.exitCode } : {}),
+          ...(r.failureKind ? { failureKind: r.failureKind } : {}),
           ...(r.writeCounts ? { writeCounts: r.writeCounts } : {}),
         };
       });
