@@ -200,7 +200,20 @@ export async function classifyGoal(
     const { text } = await generate({
       model,
       messages: [{ role: 'user', content: `${classifyPrompt(goal)}${correction}` }],
-      maxTokens: 400,
+      // 400 会被推理族的 reasoning 吃光 → 正文截断 → JSON.parse 抛 → 全保守档 (complex + 探索型)。
+      // 2026-07-31 S3 live 实测撞到: `deepseek-v4-pro 输出撞到上限 out=400 cap=400 — 正文被截断`,
+      // 后果是**验收分型在这条路上基本判不出执行型**, D-I 又一次形同虚设 —— 与 `$` 锚点链是同一个
+      // 后果、不同的成因。llm-judge.ts:89 早就为同一件事付过一次账 (700 → 空裁决), 这里没照做。
+      //
+      // 为什么是 32_768 而不是"干脆不给": **省略不等于不限**。三条传输路的兜底各不相同 ——
+      // openai-兼容路 (`model/index.ts:243`) 省略 = `max_tokens` 字段根本不发 → 吃 provider 自己的
+      // 默认 (DeepSeek 官方默认 4K 级); pi 路 (`pi-transport.ts:403`) 省略 = 吃 pi 的默认;
+      // 只有 anthropic 路省略才落到该模型官方上限。给显式值反而更稳: 同一处 `Math.min(ceiling)`
+      // 会按 `model-caps` 把它收敛到该座位的官方上限, 超发不会 400。
+      // 32_768 是仓里"实际等于不设限、且在每个已登记座位上都安全"的那个数 (最小已登记上限是
+      // qwen3.7 的 65_536), conductor / plan / synth 用的都是它。输出本身 ~200 字符, 按实发计费,
+      // 抬 cap 不花钱。
+      maxTokens: 32_768,
     });
     return normalizeClassification(JSON.parse(extractJsonObject(text)) as RawClassification);
   };

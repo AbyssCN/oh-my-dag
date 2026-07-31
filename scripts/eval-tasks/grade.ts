@@ -53,7 +53,7 @@ export async function gradeAnswer(
   const r = await send({
     model: grader,
     messages: [{ role: 'user', content: gradePrompt(task, answer) }],
-    maxTokens: 4000,
+    maxTokens: 4096,
     responseSchema: GRADE_SCHEMA,
     meta: { role: 'eval-grade' },
   });

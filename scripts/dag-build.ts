@@ -261,7 +261,7 @@ const judgeCap = Math.max(0, Number(flags['judge-cap'] ?? '2') || 0);
 if (!flags['no-judge'] && judgeCap > 0 && oracle.green) {
   // responseSchema 走 callModel 的 INV-3 校验+纠错重试 (裸 JSON.parse 遇 flash 包裹/截断必 degraded)。
   const judgeGen = async (req: { messages: { role: 'system' | 'user'; content: string }[]; model: string; thinkingLevel?: string }) => {
-    const r = await callModel({ model: req.model, messages: req.messages, temperature: 0, maxTokens: 800, responseSchema: judgeVerdictSchema });
+    const r = await callModel({ model: req.model, messages: req.messages, temperature: 0, maxTokens: 4096, responseSchema: judgeVerdictSchema });
     return { text: JSON.stringify(r.parsed), usage: r.usage };
   };
   let lastLeafStates: LeafState[] = Object.values(res.results)
