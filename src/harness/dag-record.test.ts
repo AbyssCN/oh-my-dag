@@ -249,3 +249,49 @@ describe('N9 · verification / reused / model 的三态', () => {
     rec.close();
   });
 });
+
+/**
+ * N9 判据轴的两位布尔 (2026-07-31 起飞前检查抓到的那条)。
+ *
+ * 起因: 判据轴本来打算用 `outcome` 算, 静态一核发现它**结构上永远是空的** ——
+ * `oracle-failed` 只活在 goal 级而本表的 `outcome` 是按每张图算的; 更要命的是反方向那格
+ * 在词表上根本不存在 (goal 的算式里 judge 为假就一律落 `not-converged`, 不管冻结判据过没过)。
+ * 于是把两个布尔单独存下来 —— 不然那一发 live 跑完, 这条轴照样是空的。
+ */
+describe('N9 · 两条判据按 runId 回填', () => {
+  const graph = (name: string) =>
+    ({
+      plan: { name, nodes: { a: { goal: 'x' } } },
+      levels: [['a']],
+      results: { a: { id: 'a', kind: 'inproc', status: 'done', deps: [], output: '', usage: { in: 1, out: 1 } } },
+      usage: { conductor: { in: 1, out: 1 }, leavesIn: 1, leavesOut: 1, leavesCacheHit: 0 },
+    }) as unknown as ExecutorDagResult;
+
+  test('一次 goal 的两条记录都被回填成同一份 (读数板据此按 runId 去重)', () => {
+    const rec = createDagRecorder({ db: new Database(':memory:') });
+    rec.record(graph('goal-contract'), { runId: 'g1' });
+    rec.record(graph('goal-execute'), { runId: 'g1' });
+    rec.updateCriteria('g1', { judge: false, oracle: true });
+    const both = rec.listByRun('g1');
+    expect(both.length).toBe(2);
+    // ★ 这一格就是「judge 说没成、冻结判据却过了」—— 词表压掉的那一格。
+    for (const r of both) expect(r.criteria).toEqual({ judge: false, oracle: true });
+    rec.close();
+  });
+
+  test('没回填过 → 缺席 (dag_run 没有这两条判据, 不该被编成 false/false)', () => {
+    const rec = createDagRecorder({ db: new Database(':memory:') });
+    const id = rec.record(graph('plain-run'), { runId: 'r1' });
+    expect(rec.get(id)!.criteria).toBeUndefined();
+    rec.close();
+  });
+
+  test('回填只碰本 runId, 不串到别的运行上', () => {
+    const rec = createDagRecorder({ db: new Database(':memory:') });
+    rec.record(graph('a'), { runId: 'g1' });
+    const other = rec.record(graph('b'), { runId: 'g2' });
+    rec.updateCriteria('g1', { judge: true, oracle: false });
+    expect(rec.get(other)!.criteria).toBeUndefined();
+    rec.close();
+  });
+});

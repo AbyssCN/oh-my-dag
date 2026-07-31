@@ -96,7 +96,7 @@ function harness(opts: Partial<ExecuteExtensionOpts> & { cwd: string }, iterateR
         },
         get: () => null,
         list: () => [],
-        listByRun: () => [],
+        listByRun: () => [], updateCriteria: () => {},
         close: () => {},
       }),
     },
@@ -196,7 +196,7 @@ describe('execute-extension', () => {
         iterateExecutorDag: async () => {
           throw new Error('conductor 崩了');
         },
-        createDagRecorder: () => ({ record: () => 'x', get: () => null, list: () => [], listByRun: () => [], close: () => {} }),
+        createDagRecorder: () => ({ record: () => 'x', get: () => null, list: () => [], listByRun: () => [], updateCriteria: () => {}, close: () => {} }),
       },
     )(pi as never);
     await handler!('', { cwd: '/', ui: { notify: (msg: string, level?: string) => notifies.push({ msg, level }), setStatus: () => {} } });

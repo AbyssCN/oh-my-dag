@@ -56,6 +56,7 @@ interface Row {
   outcome: string | null;
   verification: string | null;
   reused: number | null;
+  criteria: string | null;
 }
 interface Usage {
   conductorIn: number;
@@ -102,7 +103,7 @@ const haveCols = (db.query(`PRAGMA table_info(omd_dag_runs)`).all() as { name: s
 const optionalCol = (name: string) => (haveCols.includes(name) ? `, ${name}` : `, NULL AS ${name}`);
 const rows = db
   .query(
-    `SELECT id, created_at, plan_name, node_count, run_id, nodes, usage${optionalCol('observations')}${optionalCol('outcome')}${optionalCol('verification')}${optionalCol('reused')}` +
+    `SELECT id, created_at, plan_name, node_count, run_id, nodes, usage${optionalCol('observations')}${optionalCol('outcome')}${optionalCol('verification')}${optionalCol('reused')}${optionalCol('criteria')}` +
       ` FROM omd_dag_runs ORDER BY created_at DESC LIMIT ?`,
   )
   .all(limit * 3) as Row[]; // ×3: 一次 goal 最多两条, 留余量再按 runId 截
@@ -332,25 +333,35 @@ const outcomeRecorded = rows.length - runsUnrecordedOutcome;
 // 四轴逐条的覆盖度各自报, 不合并成一个总分: 合并会让"这条轴没数据"被另一条轴的数掩盖。
 
 // 判据轴 —— 收敛判据(judge) 与 冻结判据(验收命令) **不一致**的那两格才是它的全部意义。
-// ⚠ 一半早就在 ⑨ 的词表里: `oracle-failed` 的定义就是「judge 判收敛, 而环外冻结判据没过」。
-//   缺的是**反方向** —— judge 判未收敛而验收其实过了 (= 白转了几轮), 那格靠 `verification` 列才看得见。
-let critAgree = 0;          // success: 两者都说好
-let critOracleFailed = 0;   // judge 说收敛, 判据没过 (词表已有格)
-let critWastedRounds = 0;   // judge 说没收敛, 判据却过了 (**新列才看得见**)
-let critOtherWithVerif = 0; // 其余终止原因 + 记了 verification
-let critNoVerif = 0;        // 没记 verification (老行, 或这次压根没跑验收)
+//
+// ⚠ 这条轴**不能用 `outcome` 算** (2026-07-31 起飞前检查抓到的):
+//   ① `oracle-failed` 只活在 goal 级 (`RunGoalResult.outcome`), 而本表的 `outcome` 列是
+//      `deriveRunOutcome` 按**每张图**算的 —— `NODE_TO_RUN` 里没有任何成因映射到那一格,
+//      它在这张表里**永远不会出现**;
+//   ② 更要命的是反方向那格在**词表上就不存在**: goal 的 outcome 算式里 judge 为假就一律落
+//      `not-converged`, **不管冻结判据过没过**。两个布尔算完就被扔了。
+//   所以改用 `criteria` 两位布尔。它是 goal 级的 → **按 runId 去重再数**, 按行数会把一次 goal 数成两次。
+const critSeen = new Map<string, { judge: boolean; oracle: boolean }>();
+let critNoVerif = 0;
 for (const r of rows) {
-  if (r.verification === null) {
-    critNoVerif++;
-    continue;
-  }
-  const v = JSON.parse(r.verification) as { pass: boolean };
-  if (r.outcome === 'success') critAgree++;
-  else if (r.outcome === 'oracle-failed') critOracleFailed++;
-  else if (r.outcome === 'not-converged' && v.pass) critWastedRounds++;
-  else critOtherWithVerif++;
+  if (!r.run_id) continue;
+  if (r.criteria === null) continue;
+  critSeen.set(r.run_id, JSON.parse(r.criteria) as { judge: boolean; oracle: boolean });
 }
-const critRecorded = rows.length - critNoVerif;
+// 分母 = 有 criteria 的 goal 次数; 没有的那些单独报 (不是 0, 是没记)。
+const critRuns = [...new Set(rows.map((r) => r.run_id).filter((x): x is string => !!x))];
+critNoVerif = critRuns.length - critSeen.size;
+let critAgree = 0;          // 两条判据都说成了
+let critOracleFailed = 0;   // judge 说成了, 冻结判据没过 —— 判据说了不算 (judge 太松)
+let critWastedRounds = 0;   // judge 说没成, 冻结判据却过了 —— 白转了几轮 (judge 太紧)
+let critAgreeFail = 0;      // 两条都说没成 (一致, 只是没成)
+for (const c of critSeen.values()) {
+  if (c.judge && c.oracle) critAgree++;
+  else if (c.judge && !c.oracle) critOracleFailed++;
+  else if (!c.judge && c.oracle) critWastedRounds++;
+  else critAgreeFail++;
+}
+const critRecorded = critSeen.size;
 
 // 效率轴 —— $ / cacheHit / 复用率 / 轮数。四格里今天只有前三格有数据源。
 // 定价口径诚实说明: 节点坐标记的是**叶子**的; conductor 自己不是节点, 它的坐标没记 ——
@@ -437,7 +448,7 @@ if (flags.json) {
         observations: Object.fromEntries(obsCount), runsWithObs, runsUnrecordedObs,
         outcomeCount, runsUnrecordedOutcome, outcomeRecorded,
         axes: {
-          criteria: { agree: critAgree, oracleFailed: critOracleFailed, wastedRounds: critWastedRounds, other: critOtherWithVerif, unrecorded: critNoVerif, recorded: critRecorded },
+          criteria: { agree: critAgree, oracleFailed: critOracleFailed, wastedRounds: critWastedRounds, agreeFail: critAgreeFail, unrecorded: critNoVerif, recorded: critRecorded },
           efficiency: { pricedRuns, mixedSeatRuns, noCoordRuns, unpricedCoordRuns, leafUsd, reusedTotal, reuseNodeBase, reuseRuns: reuseRuns.length },
           honesty: { emptyArtifact, nodeUnclassified, runUnclassified, notDoneNodes },
           stop: { blocked: stopBlocked, notConverged: stopNotConverged, separable: stopSeparable,
@@ -641,18 +652,18 @@ console.log('   四条轴各报各的覆盖度, **不合成总分** —— 合�
 
 console.log('   判据轴 —— 收敛判据(judge) 与 冻结判据(验收命令) 说的是不是一回事');
 if (critRecorded === 0) {
-  console.log(`     整批 ${rows.length} 条**都没记** verification —— 这一位是 2026-07-31 才加的。`);
-  console.log('     跑一次新的 dag_run / dag_goal 才有这段读数。');
+  console.log(`     ${critRuns.length} 次运行里**没有一次**记了两条判据。`);
+  console.log('     成因有两种, 后续动作不同: ① 这些是 dag_run —— 它没有 judge / 冻结判据这两条判据,');
+  console.log('     这条轴对它本来就不适用; ② 是 goal 但早于 2026-07-31。跑一次 dag_goal 才有这段读数。');
 } else {
-  console.log(`     两者一致 (success)            ${String(critAgree).padStart(4)}  ${pct(critAgree / critRecorded)}`);
-  console.log(`     judge 说收敛·判据没过         ${String(critOracleFailed).padStart(4)}  ${pct(critOracleFailed / critRecorded)}   ← 判据说了不算`);
-  console.log(`     judge 说没收敛·判据却过了     ${String(critWastedRounds).padStart(4)}  ${pct(critWastedRounds / critRecorded)}   ← 白转了几轮`);
-  console.log(`     其余终止原因                  ${String(critOtherWithVerif).padStart(4)}  ${pct(critOtherWithVerif / critRecorded)}`);
-  if (critNoVerif > 0) console.log(`     ? 另有 ${critNoVerif} 条没记 verification (老行 / 这次没跑验收) —— 不算进上面的分母。`);
-  console.log('     读法: 中间两格**加起来**才是「收敛判据可不可信」的答案。两格长期都接近 0 →');
-  console.log('           judge 可以当准绳; 任一格常年有量 → 那一侧的判据得改, 而不是加轮数。');
+  console.log(`     两条都说成了                  ${String(critAgree).padStart(4)}  ${pct(critAgree / critRecorded)}`);
+  console.log(`     judge 说成了·判据没过         ${String(critOracleFailed).padStart(4)}  ${pct(critOracleFailed / critRecorded)}   ← judge 太**松**`);
+  console.log(`     judge 说没成·判据却过了       ${String(critWastedRounds).padStart(4)}  ${pct(critWastedRounds / critRecorded)}   ← judge 太**紧**, 白转了几轮`);
+  console.log(`     两条都说没成                  ${String(critAgreeFail).padStart(4)}  ${pct(critAgreeFail / critRecorded)}`);
+  if (critNoVerif > 0) console.log(`     ? 另有 ${critNoVerif} 次没记两条判据 (dag_run 不适用 / 老数据) —— 不进分母。`);
+  console.log('     读法: 中间两格是**对称的两种病**, 而此前只有上面那格有名字 (`oracle-failed`) ——');
+  console.log('           于是"judge 太紧"这一侧一直看不见。两格都长期接近 0, judge 才当得起准绳。');
 }
-
 console.log('\n   效率轴 —— $ / cacheHit / 复用率 / 轮数');
 const allCache = runs.map((r) => r.cacheRate).filter((x): x is number => x !== null);
 const cacheAvg = allCache.length ? allCache.reduce((a, b) => a + b, 0) / allCache.length : null;
