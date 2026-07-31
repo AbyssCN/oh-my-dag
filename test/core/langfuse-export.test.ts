@@ -12,13 +12,14 @@
 import { describe, expect, test, beforeEach } from 'bun:test';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import {
   _peekLangfuseQueue,
   _resetLangfuseForTest,
   flushLangfuse,
   langfuseConfigFromEnv,
   langfuseStatus,
+  omdSecretsPath,
   promptVersionOf,
   recordGeneration,
   recordSpan,
@@ -37,28 +38,42 @@ const rec = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+/**
+ * 造一个**没有凭证**的世界。
+ *
+ * 从 chdir 换成注入 `XDG_CONFIG_HOME` 是跟着落点搬家走的:密钥搬出仓树后,"这台机器配没配"
+ * 不再由 cwd 决定而由 config home 决定 —— 而真机上 `~/.config/omd/secrets.json` **是存在的**,
+ * 传 `{}` 会读到它,于是"不配 = 什么都不做"这条用例在开发机上必红、在 CI 上必绿。
+ * (本轮实测:搬家后这三条当场变红,正是这个原因。)
+ */
+const noCreds = (): Record<string, string> => ({ XDG_CONFIG_HOME: mkdtempSync(join(tmpdir(), 'omd-nolf-')) });
+
+/** 造一个只含 `omd/secrets.json` 的假 config home。 */
+const withRawSecrets = (raw: string): Record<string, string> => {
+  const root = mkdtempSync(join(tmpdir(), 'omd-lf-'));
+  mkdirSync(join(root, 'omd'), { recursive: true });
+  writeFileSync(join(root, 'omd', 'secrets.json'), raw);
+  return { XDG_CONFIG_HOME: root };
+};
+const withCreds = (langfuse: Record<string, string>): Record<string, string> =>
+  withRawSecrets(JSON.stringify({ langfuse }));
+
 beforeEach(() => _resetLangfuseForTest());
 
 describe('① 不配 = 真的什么都不做, 且说得出原因', () => {
   test('三个 env 缺任何一个 → 不启用, 且状态里点名缺的是哪个', () => {
-    // 用纯 env 解析: 带文件兜底的那个会读到仓里真实的 .omd/config.json (见函数注释)。
-    // langfuseStatus 同理会读文件, 所以"点名缺哪个"要在一个没有 .omd 的 cwd 里验 —— 见下一条。
+    // 用纯 env 解析: 带文件兜底的那个会读到真机上的凭证文件 (见函数注释)。
+    // langfuseStatus 同理会读文件, 所以"点名缺哪个"要在一个空的 config home 里验 —— 见下一条。
     expect(langfuseConfigFromEnv({})).toBeNull();
     const { LANGFUSE_SECRET_KEY: _drop, ...partial } = ENV;
     expect(langfuseConfigFromEnv(partial)).toBeNull();
   });
 
   test('★ 都没配时状态**点名缺的是哪个** —— "未启用"三个字不够, 那正是让人配了半天才发现没生效的写法', () => {
-    const cwd = process.cwd();
-    process.chdir(mkdtempSync(join(tmpdir(), 'omd-nolf2-')));
-    try {
-      const { LANGFUSE_SECRET_KEY: _drop, ...partial } = ENV;
-      expect(langfuseStatus({})).toContain('LANGFUSE_HOST');
-      expect(langfuseStatus(partial)).toContain('LANGFUSE_SECRET_KEY');
-      expect(langfuseStatus(partial)).not.toContain('LANGFUSE_PUBLIC_KEY');
-    } finally {
-      process.chdir(cwd);
-    }
+    const { LANGFUSE_SECRET_KEY: _drop, ...partial } = ENV;
+    expect(langfuseStatus(noCreds())).toContain('LANGFUSE_HOST');
+    expect(langfuseStatus({ ...noCreds(), ...partial })).toContain('LANGFUSE_SECRET_KEY');
+    expect(langfuseStatus({ ...noCreds(), ...partial })).not.toContain('LANGFUSE_PUBLIC_KEY');
   });
 
   test('齐了 → 启用并回显 host (末尾斜杠归一, 免得拼出 //api/…)', () => {
@@ -67,32 +82,42 @@ describe('① 不配 = 真的什么都不做, 且说得出原因', () => {
   });
 
   test('未配置时 recordGeneration 一个事件都不入队 (主路径零成本)', () => {
-    // 造一份"env 与文件都没有"的世界: 换到一个没有 .omd/config.json 的临时 cwd。
-    const cwd = process.cwd();
-    process.chdir(mkdtempSync(join(tmpdir(), 'omd-nolf-')));
-    try {
-      recordGeneration(rec(), {});
-      expect(_peekLangfuseQueue()).toHaveLength(0);
-    } finally {
-      process.chdir(cwd);
-    }
+    recordGeneration(rec(), noCreds());
+    expect(_peekLangfuseQueue()).toHaveLength(0);
   });
 
-  test('env 没给但 .omd/config.json 给了 → 也算配上 (daemon 由客户端拉起, 加 env 要动客户端配置)', () => {
-    const cwd = process.cwd();
-    const dir = mkdtempSync(join(tmpdir(), 'omd-filelf-'));
-    mkdirSync(join(dir, '.omd'), { recursive: true });
-    writeFileSync(
-      join(dir, '.omd', 'config.json'),
-      JSON.stringify({ observability: { langfuse: { host: 'http://nas:3000', publicKey: 'pk-f', secretKey: 'sk-f' } } }),
-    );
-    process.chdir(dir);
-    try {
-      expect(resolveLangfuseConfig({})?.publicKey).toBe('pk-f');
-      expect(langfuseStatus({})).toContain('.omd/config.json');
-    } finally {
-      process.chdir(cwd);
-    }
+  test('env 没给但凭证文件给了 → 也算配上 (daemon 由客户端拉起, 加 env 要动客户端配置)', () => {
+    const env = withCreds({ host: 'http://nas:3000', publicKey: 'pk-f', secretKey: 'sk-f' });
+    expect(resolveLangfuseConfig(env)?.publicKey).toBe('pk-f');
+    expect(langfuseStatus(env)).toContain('secrets.json');
+  });
+
+  test('文件缺字段 / 不是 JSON → 当没配, 不抛 (观测层不许因配置面残缺而炸主路径)', () => {
+    expect(resolveLangfuseConfig(withCreds({ host: 'http://nas:3000' }))).toBeNull();
+    expect(resolveLangfuseConfig(withRawSecrets('}{ 不是 json'))).toBeNull();
+  });
+});
+
+describe('①.5 凭证落点 —— 密钥不在仓树里 (2026-07-31 搬家)', () => {
+  test('落点 = $XDG_CONFIG_HOME/omd/secrets.json, 缺省 ~/.config/omd/secrets.json', () => {
+    expect(omdSecretsPath({ XDG_CONFIG_HOME: '/x/cfg' })).toBe('/x/cfg/omd/secrets.json');
+    expect(omdSecretsPath({ HOME: '/home/someone' })).toBe('/home/someone/.config/omd/secrets.json');
+  });
+
+  test('★ 落点不在工作树内 —— 这是搬家的**全部**理由: command leaf 收了 cat/grep/jq, 仓树里的密钥它够得着', () => {
+    const p = omdSecretsPath({ HOME: '/home/someone' });
+    expect(p.startsWith(process.cwd())).toBe(false);
+    expect(p).not.toContain(`${sep}.omd${sep}`);
+  });
+
+  test('env 恒压过文件 (两级不是两个真源)', () => {
+    const env = { ...withCreds({ host: 'http://from-file:3000', publicKey: 'pk-f', secretKey: 'sk-f' }), ...ENV };
+    expect(resolveLangfuseConfig(env)?.publicKey).toBe('pk-x');
+  });
+
+  test('env 只给一半 ≠ 半开 —— 三件套不齐就整体落文件', () => {
+    const env = { ...withCreds({ host: 'http://nas:3000', publicKey: 'pk-f', secretKey: 'sk-f' }), LANGFUSE_HOST: 'http://half:3000' };
+    expect(resolveLangfuseConfig(env)?.host).toBe('http://nas:3000');
   });
 });
 

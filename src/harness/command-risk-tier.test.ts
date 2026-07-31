@@ -57,8 +57,14 @@ describe('commandRiskTier — 取链上最重的一级, 未登记即 never', () 
   test('跑项目代码 = scoped_write —— 「跑测试」不因为听起来无害就降级', () => {
     expect(commandRiskTier('bun test')).toBe('scoped_write');
     expect(commandRiskTier('tsc --noEmit')).toBe('scoped_write');
-    // omd 能起整张图, 它的风险是图的风险。
-    expect(commandRiskTier('omd dag-run --goal x')).toBe('scoped_write');
+  });
+
+  test('omd 自己不是 leaf 的工具 —— 摘出白名单后既拒且 never (2026-07-31 the owner 裁)', () => {
+    // 递归起图这条路必须从命令闸上封死: 借道 command leaf 起的子图没有深度上限、没有预算、
+    // 留痕也挂不到父 trace 上。要嵌套走引擎接口。
+    expect(commandBlockReason('omd dag-run --goal x', DEFAULT_COMMAND_ALLOWLIST)).not.toBeNull();
+    expect(commandBlockReason('oh-my-dag dag-run --goal x', DEFAULT_COMMAND_ALLOWLIST)).not.toBeNull();
+    expect(commandRiskTier('omd dag-run --goal x')).toBe('never');
   });
 
   test('&& 链取最重的一级, 而不是第一环', () => {
@@ -94,7 +100,7 @@ describe('登记表的读数 (改了要经过改测试, 不许悄悄发生)', ()
       .filter(([, t]) => t === 'scoped_write')
       .map(([bin]) => bin)
       .sort();
-    expect(scoped).toEqual(['bun', 'node', 'npx', 'oh-my-dag', 'omd', 'tsc']);
+    expect(scoped).toEqual(['bun', 'node', 'npx', 'tsc']);
   });
 
   test('级序是全序且由轻到重 (读数板按它排序)', () => {
