@@ -54,6 +54,8 @@ export interface DagRunNode {
    * 有多少组 (near-miss)。那个数才决定值不值得动键 —— 今天关于"命令会变"只有 n=1。
    */
   outputHash?: string;
+  /** command 节点的退出码;**负数 = 闸拒**(与普通失败后续动作相反)。见 `DagNodeResult.exitCode`。 */
+  exitCode?: number;
 }
 export interface DagRunRecord {
   id: string;
@@ -188,6 +190,7 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
           ...(typeof cmd === 'string' && cmd.trim() ? { command: cmd } : {}),
           ...(planNodes[r.id]?.detector === true ? { detector: true as const } : {}),
           ...(outHash ? { outputHash: outHash } : {}),
+          ...(typeof r.exitCode === 'number' ? { exitCode: r.exitCode } : {}),
           ...(r.writeCounts ? { writeCounts: r.writeCounts } : {}),
         };
       });

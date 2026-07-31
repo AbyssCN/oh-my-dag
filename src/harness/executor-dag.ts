@@ -1536,6 +1536,8 @@ async function executePlan(
             : r.text,
           deps,
           usage: r.usage,
+          // 闸拒(负码)与普通失败(断言没成立)后续动作相反, 记下来才分得开 —— 见 DagNodeResult.exitCode。
+          exitCode: r.exitCode,
         };
       }
       // 明示即承诺的反面守卫: expect_exit 只有 command 分支消费, 设在别处等于一个静默无效的旋钮

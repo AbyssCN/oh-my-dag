@@ -131,6 +131,11 @@ const tierSamples = new Map<CommandRiskTier, Set<string>>();
 let commandNodes = 0;
 /** `never` 里**被闸正确拒掉**的那部分(节点非 done)—— 它不是缺陷, 是闸在干活。 */
 let neverButBlocked = 0;
+/** **闸拒次数** (G5 建议 A 的最小实现): 书 §4.4 里这才是 BLOCKED 的教科书触发条件, 而我们今天
+ *  把它降格成"节点 failed"。先把它数出来 —— 「连续几轮找不到合法命令」那个 K 才有依据可定。 */
+let gateRejections = 0;
+let neverAndRan = 0;
+let neverUnknown = 0;
 for (const r of rows) {
   for (const n of JSON.parse(r.nodes) as DagRunNode[]) {
     if (!n.command) continue;
@@ -143,10 +148,25 @@ for (const r of rows) {
     // 第一版把两者合成一条"不同步"告警, 于是第一次真读数就报了一条假警, 会把人支去修一个
     // 不存在的问题。这正是 A5「sensor 措辞普查」要治的那类 —— 发现对不对之外, 还得问
     // "它的读者拿它做得了什么"。
-    if (tier === 'never' && n.status !== 'done') neverButBlocked++;
+    // ⚠ 2026-07-31 第四跑修: 「节点非 done」有**两种**成因, 后续动作相反 ——
+    //   闸拒 (exitCode < 0): Harness 拒了这个操作, 再试也没用 (书 §4.4 的 BLOCKED 定义)
+    //   普通失败 (exit ≠ want): 断言没成立, 再试一轮可能就好了 (STALLED)
+    // 第一版拿 `status !== 'done'` 当"闸已拒"的判据, 于是把 `grep -qx "3000"` (无任何元字符,
+    // 只是没匹配上) 标成了闸拒 —— **这是本轮第四次把两种成因合成一条**。判据换成 exitCode。
+    const gateRejected = typeof n.exitCode === 'number' && n.exitCode < 0;
+    // **三态直接数, 不用补集** —— 补集会把"不知道"算进某一侧, 而本文件已经为这条栽过两次
+    // (第一次 writeCounts 缺席 vs [0,0]; 第二次这里)。三个计数器互不相减。
+    if (tier === 'never') {
+      if (n.status === 'done') neverAndRan++;        // 未登记的 bin **真跑成了** → 分级表与白名单不同步, 该修
+      else if (gateRejected) neverButBlocked++;      // 闸正确拒了 → 系统在干活
+      else neverUnknown++;                           // 老记录无 exitCode → **不知道**, 明说
+    }
+    // 三态标记, 缺 exitCode 的老记录用 `[未通过]` —— 不知道就说不知道, 别猜成闸拒。
+    const mark = n.status === 'done' ? '' : gateRejected ? '[闸已拒] ' : typeof n.exitCode === 'number' ? `[失败 exit=${n.exitCode}] ` : '[未通过] ';
     const s = tierSamples.get(tier) ?? new Set<string>();
-    if (s.size < 5) s.add(`${n.status === 'done' ? '' : '[闸已拒] '}${n.command.length > 60 ? `${n.command.slice(0, 57)}…` : n.command}`);
+    if (s.size < 5) s.add(`${mark}${n.command.length > 60 ? `${n.command.slice(0, 57)}…` : n.command}`);
     tierSamples.set(tier, s);
+    if (gateRejected) gateRejections++;
   }
 }
 
@@ -213,7 +233,7 @@ const anomalies = median > 0 ? runs.filter((r) => r.leavesIn > median * ANOMALY_
 if (flags.json) {
   console.log(
     JSON.stringify(
-      { dbPath, runs, tierCount, neverButBlocked, commandNodes, conductorChildren, detectorNodes,
+      { dbPath, runs, tierCount, neverButBlocked, neverAndRan, neverUnknown, gateRejections, commandNodes, conductorChildren, detectorNodes,
         nearMiss: nearMiss.map(([h, c]) => ({ outputHash: h, commands: [...c] })), exactRepeat, writeNodes, unreported, totalWrites, totalNoop, noopNodes, median, anomalyFactor: ANOMALY_FACTOR, anomalies },
       null,
       2,
@@ -249,10 +269,14 @@ if (commandNodes === 0) {
     console.log(`   ${tier.padEnd(18)} ${String(n).padStart(4)}  ${pct(n / commandNodes)}  ${bar}`);
     for (const s of tierSamples.get(tier) ?? []) console.log(`       · ${s}`);
   }
-  const neverAndRan = tierCount.never - neverButBlocked;
   if (neverButBlocked > 0) {
-    console.log(`   ℹ never 里有 ${neverButBlocked} 条是**闸正确拒掉**的(节点非 done)—— 系统在干活, 不是缺陷。`);
+    console.log(`   ℹ never 里有 ${neverButBlocked} 条是**闸正确拒掉**的 —— 系统在干活, 不是缺陷。`);
   }
+  if (neverUnknown > 0) {
+    console.log(`   ? never 里有 ${neverUnknown} 条**判不出成因**(老记录无 exitCode)—— 不知道就是不知道, 别当缺陷也别当正常。`);
+  }
+  console.log(`   **闸拒 ${gateRejections} 次** (G5: 书 §4.4 里"Harness 拒绝了某个操作"正是 BLOCKED 的定义,`);
+  console.log(`     而我们今天把它降格成节点 failed。攒 K 值用的就是这个数。)`);
   if (neverAndRan > 0) {
     console.log(`   ⚠ never 里有 ${neverAndRan} 条**跑成了**(节点 done)—— 那才是分级表与白名单不同步, 该修。`);
   }
