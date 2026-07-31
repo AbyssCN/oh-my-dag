@@ -158,6 +158,10 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
       classifyGoal(g, {
         generate: config.dag.generate ?? makeDefaultGenerate(config.dag.sessionId ?? randomUUID()),
         model: config.dag.conductorModel,
+        // **空世界自检** (2026-07-31, G4): 活还没干之前先跑一遍判出的验收命令 —— 这时候就过 =
+        // 它区分不了"做完了"与"还没做"。给不给 runner 决定这层加固在不在, 与 `generate` 那条
+        // 教训同源: 只在测试里接、生产不接, 就是又一个"机制在、生产零生效"的空旋钮。
+        ...(config.dag.commandRunner ? { runCommand: config.dag.commandRunner } : {}),
       })))(goal);
   const tier = config.tier ?? classified.tier;
   const acceptance = config.acceptance ?? classified.acceptance;

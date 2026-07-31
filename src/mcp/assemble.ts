@@ -386,9 +386,22 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
    */
   const buildDefaultConfig = (overrideCwd?: string): Partial<ExecutorDagConfig> => {
     const root = overrideCwd ?? cwd;
+    // R2 第二层 (2026-07-31, live 抓出来的洞): 光换 cwd **拦不住绝对路径**。第三跑实测有一个
+    // agent 的产物落在 `/…/<沙箱>/docs/from-faq.md` —— 隔离树之外。
+    // `sandboxRoot` 那层 (bwrap: 整个 leaf 进程只见这棵树) 机制早就有、eval oracle 一直在用
+    // (`conductor-modelmix.ts` 的注逐字写着"事前 block 写穿 worktree"), **生产从来没接**。
+    // 又是"机制在、生产零生效"。
+    //
+    // 只在**隔离档**接: 你要了隔离就给你真隔离; `head` 档一个字不动 (零回归 —— 给每个 leaf 都套
+    // bwrap 是另一个量级的行为改变, 不该搭这趟车)。
+    // bwrap 不在 → 响亮降级: 隔离仍是"相对路径级"的, 但**调用方必须知道**它没拿到进程级隔离。
+    const jailRoot = overrideCwd && !deps.agentRunner ? (Bun.which('bwrap') ? root : undefined) : undefined;
+    if (overrideCwd && !deps.agentRunner && !jailRoot) {
+      logger.warn({ root }, '[omd/mcp] 隔离档要求进程级 jail 但找不到 bwrap → 降级为相对路径级隔离 (绝对路径写仍能逃出去)');
+    }
     const agentRunnerForRun =
       overrideCwd && !deps.agentRunner
-        ? createAgentLeafRunner({ cwd: root, hashlineEdit: true, leafTimeoutMs })
+        ? createAgentLeafRunner({ cwd: root, hashlineEdit: true, leafTimeoutMs, ...(jailRoot ? { sandboxRoot: jailRoot } : {}) })
         : agentRunner;
     const commandRunnerForRun =
       overrideCwd && !deps.commandRunner

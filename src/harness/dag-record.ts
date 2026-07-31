@@ -40,6 +40,20 @@ export interface DagRunNode {
    * 每次都要重新数一遍。同 `command`: 存原始事实, 派生的比率由读数板现算。
    */
   detector?: true;
+  /**
+   * 失败输出的指纹 (sha1 前 12 位; 只对**失败的 command 节点**记)。
+   *
+   * 存在的理由是回答一个**设计问题**而不是排障: §8.4 熔断的键是「命令 + 逐字相同的失败」,
+   * 而 2026-07-31 live 显示 conductor 每轮会把同一个断言重写一遍 (单引号换双引号), 于是
+   * 「同一条命令」永远凑不齐第二次 —— 熔断够不到这类空转。
+   *
+   * 直觉的改法是「只看输出」, 但那是**错的**: `grep -q` 失败时没有输出, 于是所有静默失败的
+   * grep 会指纹成同一条 —— 两个**不同**的断言各失败一次就误熔断, 比漏报坏得多。
+   *
+   * 所以先不改键, 改成**量**: 记下输出指纹, 让读数板算得出「输出逐字相同但命令文本不同」
+   * 有多少组 (near-miss)。那个数才决定值不值得动键 —— 今天关于"命令会变"只有 n=1。
+   */
+  outputHash?: string;
 }
 export interface DagRunRecord {
   id: string;
@@ -161,6 +175,11 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
       const planNodes = result.plan.nodes as Record<string, { command?: string; detector?: unknown } | undefined>;
       const nodes: DagRunNode[] = Object.values(result.results).map((r) => {
         const cmd = planNodes[r.id]?.command;
+        // 只对失败的 command 节点算 —— 成功的输出不是"零位移"的证据, 记了只是噪声。
+        const outHash =
+          cmd && r.status !== 'done'
+            ? new Bun.CryptoHasher('sha1').update((r.output ?? '').trim()).digest('hex').slice(0, 12)
+            : undefined;
         return {
           id: r.id,
           kind: r.kind,
@@ -168,6 +187,7 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
           deps: r.deps,
           ...(typeof cmd === 'string' && cmd.trim() ? { command: cmd } : {}),
           ...(planNodes[r.id]?.detector === true ? { detector: true as const } : {}),
+          ...(outHash ? { outputHash: outHash } : {}),
           ...(r.writeCounts ? { writeCounts: r.writeCounts } : {}),
         };
       });
