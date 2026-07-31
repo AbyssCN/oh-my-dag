@@ -137,6 +137,19 @@ export interface GenerationRecord {
   traceId: string;
   /** 观测名(角色/节点名,如 `omd-leaf` / `conductor`)。Langfuse 上按它分组看。 */
   name: string;
+  /**
+   * 这一发属于哪个 DAG 节点 —— 给了就挂到那个节点的 span 下,没给就挂 trace 根。
+   *
+   * **为什么是显式字段而不是从 {@link name} 里切**(2026-07-31 修):此前的做法是把
+   * `<相位>:<后缀>` 的后缀当节点 id,注释还写着"认不出 → 挂根上,不硬凑一个父"。
+   * 可它根本认不出来 —— `conductor:<nodeId>`(子图展开,后缀**是**节点)与
+   * `conductor:plan` / `conductor:repair` / `classify:acceptance`(run 级调用,后缀**不是**节点)
+   * 字符串形状完全一样。于是 `conductor:plan` 被凑了个叫 `plan` 的父,而那个 span 从未发出过
+   * —— live trace 上就是一条父指向虚空的孤儿。
+   *
+   * 区分它们的信息只存在于调用点,所以就由调用点给。省略 = 挂根,这次是真的挂根。
+   */
+  nodeId?: string;
   model: string;
   /** 原样的请求消息 —— **这就是我们要审查的 prompt**。 */
   input: unknown;
@@ -188,15 +201,6 @@ const clipDeep = (v: unknown): unknown => (typeof v === 'string' ? clip(v) : JSO
  */
 function observationId(traceId: string, nodeId: string): string {
   return new Bun.CryptoHasher('sha1').update(`${traceId}\u0000${nodeId}`).digest('hex').slice(0, 32);
-}
-
-/**
- * 观测名 → 它属于哪个节点。名字的约定是 `<相位>:<节点id>`(见 GenerateFn.traceName)。
- * 认不出 → null(那一发就挂在 trace 根上,不硬凑一个父)。
- */
-function nodeIdOfName(name: string): string | null {
-  const i = name.indexOf(':');
-  return i > 0 && i < name.length - 1 ? name.slice(i + 1) : null;
 }
 
 /**
@@ -256,6 +260,17 @@ export function promptVersionOf(messages: unknown): string {
     ? (messages as { role?: string; content?: unknown }[]).find((m) => m.role === 'system')?.content
     : undefined;
   const text = typeof sys === 'string' ? sys : sys === undefined ? '' : JSON.stringify(sys);
+  return promptVersionOfText(text);
+}
+
+/**
+ * 同一个哈希, 给**没有 system 段**的调用面用 —— agent leaf 就是这一类:
+ * 它不经 gateway、整份指令都在 user prompt 里, 所以 {@link promptVersionOf} 对它恒返回空串的哈希。
+ *
+ * ⚠ 传进来的必须是**节点无关**的那一段(脚手架), 不是整条 prompt。整条里含本节点的 goal 与上游材料,
+ * 逐节点都不同 —— 那样算出来的"版本"每个节点一个值, 分不了组, 等于没有版本。
+ */
+export function promptVersionOfText(text: string): string {
   return new Bun.CryptoHasher('sha1').update(text).digest('hex').slice(0, 12);
 }
 
@@ -308,8 +323,9 @@ export function recordGeneration(rec: GenerationRecord, env: Record<string, stri
       endTime: rec.endTime.toISOString(),
       input: clipDeep(rec.input),
       output: clip(rec.output),
-      // 挂到本节点的 span 上 —— 两边各算一遍确定性 id, 不用传参 (见 observationId 的注)。
-      ...(nodeIdOfName(rec.name) ? { parentObservationId: observationId(rec.traceId, nodeIdOfName(rec.name)!) } : {}),
+      // 挂到本节点的 span 上 —— span id 两边各算一遍确定性 id, 不用传 (见 observationId 的注);
+      // 但"属不属于某个节点"必须由调用点说 (见 GenerationRecord.nodeId 的注)。
+      ...(rec.nodeId ? { parentObservationId: observationId(rec.traceId, rec.nodeId) } : {}),
       ...(rec.usage
         ? {
             usage: { input: rec.usage.in, output: rec.usage.out, total: rec.usage.in + rec.usage.out, unit: 'TOKENS' },

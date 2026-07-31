@@ -17,6 +17,15 @@ export interface AgentLeafInput {
 export interface AgentLeafResult {
   text: string;
   usage: ModelUsage;
+  /**
+   * 本次调用**脚手架**的版本哈希(2026-07-31)—— 进 Langfuse 的 `promptVersion`。
+   *
+   * 为什么由 runner 报而不是让 executor 从 prompt 反算:runner 按本次模型档在三套脚手架里挑
+   * (strong-core / discipline+tool-routing / off),挑了哪套只有它自己知道;而整条 prompt 里
+   * 含本节点的 goal 与上游材料,**逐节点都不同** —— 拿它算出来的"版本"每个节点一个值,
+   * 分不了组,等于没有版本。省略 = 不登记版本(inproc leaf 那条路由 system 段算,见 promptVersionOf)。
+   */
+  promptVersion?: string;
   /** 本次 leaf 经 write/edit 族工具触碰的文件(continuity 接缝;去重)。**相对路径的根见 cwd。** */
   filesTouched?: string[];
   /**

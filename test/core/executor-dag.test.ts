@@ -1,4 +1,8 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { CheckpointManager } from '../../src/harness/continuity/checkpoint-manager';
 import { runExecutorDag, runExecutorDagWithPlan, topoLevels, type GenerateFn } from '../../src/harness/executor-dag';
 import type { AgentLeafInput } from '../../src/harness/leaf-runners';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
@@ -90,6 +94,29 @@ describe('omd executor-dag (in-process, fake model)', () => {
     const auto = await runExecutorDag('t', { conductorModel: CONDUCTOR, leafModel: LEAF, generate: makeFake(PLAN_JSON).gen });
     expect(auto.sessionId).toBeTruthy();
     expect(auto.sessionId).not.toBe('dispatch-xyz');
+  });
+
+  test('★ 没注入 sessionId 时退 runId, 不另造一个 UUID —— 否则观测面与执行面各持一个 id 互不相认', async () => {
+    // 2026-07-31 live 抓到的: `dag_status` 给的 runId 拿去 Langfuse 查 404, 因为那条 trace 用的是
+    // 自生成的 UUID。两张表没有换算关系 = 从有问题的 trace 回不到是哪一跑, 反之亦然。
+    const dir = mkdtempSync(join(tmpdir(), 'omd-sess-'));
+    const manager = new CheckpointManager(dir);
+    const res = await runExecutorDag('t', {
+      conductorModel: CONDUCTOR,
+      leafModel: LEAF,
+      generate: makeFake(PLAN_JSON).gen,
+      continuity: { manager, runId: 'run-42' },
+    });
+    expect(res.sessionId).toBe('run-42');
+    // 显式注入仍然压过 runId (跨平面关联键由调用方定)。
+    const injected = await runExecutorDag('t', {
+      conductorModel: CONDUCTOR,
+      leafModel: LEAF,
+      generate: makeFake(PLAN_JSON).gen,
+      continuity: { manager, runId: 'run-42' },
+      sessionId: 'dispatch-xyz',
+    });
+    expect(injected.sessionId).toBe('dispatch-xyz');
   });
 
   test('leaf 失败隔离: 抛错的 leaf → failed, 不沉整层', async () => {

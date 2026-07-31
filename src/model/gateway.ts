@@ -48,6 +48,11 @@ export interface GatewayMeta {
   sessionId?: string;
   /** 这一跑在干什么 (人可读, 进 Langfuse 的 trace 名)。只有该 trace 的第一条调用说了算。 */
   runLabel?: string;
+  /**
+   * 这一发属于哪个 DAG 节点 (观测面挂父用)。**run 级调用 (规划/修补/分类) 不给** ——
+   * 给了就等于宣称"我是某个节点的子调用", 而它们不是。见 GenerationRecord.nodeId 的注。
+   */
+  nodeId?: string;
 }
 
 /** 带网关元数据的请求 (ModelRequest 超集; callModel 忽略多余字段)。 */
@@ -96,6 +101,7 @@ export async function send(req: GatewayRequest): Promise<ModelResponse> {
       input: reqWithTrace.messages,
       output: res.text ?? '',
       promptVersion: promptVersionOf(reqWithTrace.messages),
+      ...(reqWithTrace.meta?.nodeId ? { nodeId: reqWithTrace.meta.nodeId } : {}),
       ...(reqWithTrace.meta?.runLabel ? { traceLabel: reqWithTrace.meta.runLabel } : {}),
       ...(res.usage ? { usage: res.usage } : {}),
       startTime,
@@ -111,6 +117,8 @@ export async function send(req: GatewayRequest): Promise<ModelResponse> {
       model: reqWithTrace.model ?? 'unknown',
       input: reqWithTrace.messages,
       output: '',
+      promptVersion: promptVersionOf(reqWithTrace.messages),
+      ...(reqWithTrace.meta?.nodeId ? { nodeId: reqWithTrace.meta.nodeId } : {}),
       startTime,
       endTime: new Date(),
       error: String(err),
