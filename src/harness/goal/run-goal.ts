@@ -32,6 +32,7 @@ import { makeDefaultGenerate } from '../executor-dag-defaults';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagResult } from '../executor-dag-types';
 import { classifyGoal, renderAcceptance, type AcceptanceSpec, type GoalClassification, type GoalTier } from './acceptance';
+import type { RunOutcomeKind } from '../run-outcome';
 import type { ExecutorDagConfig } from '../executor-dag-types';
 
 // D-I: 两条轴的类型与分类器都归 ./acceptance (那里是判据轴的单一真源); 此处 re-export 保旧调用面。
@@ -42,6 +43,14 @@ export type GoalStageName = 'classify' | 'survey' | 'research' | 'spec' | 'execu
 export interface GoalStage {
   stage: GoalStageName;
   status: 'done' | 'failed' | 'skipped';
+  /**
+   * **这一步是怎么结束的** (N5, 2026-07-31)。`status` 一字未动, 这是**加的那一位**。
+   *
+   * 治的是 2026-07-31 第二跑 live 抓到的那行: 一次判定正确的 BLOCKED 被 `status` 念成 `failed`
+   * (`[failed] execute — 2 轮阻塞…`), 而同一份摘要底下另一行写着"阻塞(需外部输入)" ——
+   * 同一份输出里两行互相打架。词表与判据在 {@link RunOutcomeKind}。
+   */
+  outcome: RunOutcomeKind;
   /** 一行人可读结论 (失败原因 / 跳过理由 / 产物指针)。 */
   summary: string;
 }
@@ -98,6 +107,16 @@ export interface RunGoalResult {
   rounds: number;
   /** 修复轮里被复用的节点 (INV-GOAL-3 可证面; 单轮收敛 = 空)。 */
   reusedNodes: string[];
+  /**
+   * **这一趟 goal 是怎么结束的** (N5, 2026-07-31)。词表与每格的下一步在 {@link RunOutcomeKind}。
+   *
+   * 与 `converged` 的关系: `converged` 只答"成没成"这一位, 而没成的那一侧此前要靠调用方
+   * 自己去看 `blocked` / `budgetStopped` / `cancelled` 三个可选字段**有没有值**来拼 ——
+   * 拼错的成本已经见过: 一次正确的 BLOCKED 被念成 failed。这一位把那次拼装收成一处。
+   *
+   * 恒等于最后那个 execute 阶段的 `outcome` (goal 就是以它收尾的)。
+   */
+  outcome: RunOutcomeKind;
   /**
    * **BLOCKED 异步出口** (D-Q): 环判定"没有外部输入推不动"而提前退出的原因。
    * 与 `converged: false` 的区别是**该怎么办**: 未收敛 = 轮数用尽/judge 说没达标, 再给几轮可能就成;
@@ -170,6 +189,9 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
     // 判成执行型却拿不到可跑命令时, 分类器已降级成探索型 (acceptance.ts 的 fallbackExploratory)
     // 并把原因写进 learningGoal —— 这里把它抬成 stage 摘要, 别让降级只活在日志里。
     status: 'done',
+    // 分类器降级 (判执行型却拿不到可跑命令) **不记 empty-result**: 它照样产出了一份可用的判据轴,
+    // 只是换了一型。记成"空手而归"会让读数板把一次正常的探索型分类数成缺陷。
+    outcome: 'success',
     summary:
       acceptance.kind === 'executable'
         ? `tier=${tier} · 验收=执行型 \`${acceptance.command}\` (期望退出码 ${acceptance.expectExit})`
@@ -250,6 +272,10 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
         stages.push({
           stage: 'survey',
           status: !surveyKid ? 'skipped' : repoContext ? 'done' : 'failed',
+          // N5 的原型对: 这两格 **status 都是"没成"那一侧, outcome 相反** ——
+          // 「conductor 没分解出勘察步」= 它判定不需要 (什么都不用做);
+          // 「勘察步跑了但空输出」= 需要人看一眼。旧的 skipped|failed 二选一恰好把这一对压扁过。
+          outcome: !surveyKid ? 'not-needed' : repoContext ? 'success' : 'empty-result',
           summary: !surveyKid
             ? 'conductor 未分解出勘察步'
             : repoContext
@@ -259,6 +285,9 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
         stages.push({
           stage: 'research',
           status: researched.length === 0 ? 'skipped' : sources.length > 0 ? 'done' : 'failed',
+          // 同上那一对: 「判无需外部调研」≠「调研跑了零来源」。后者在节点级是 no-sources,
+          // 在 stage 级与勘察空输出同一个下一步 (重跑/换检索式) → 并进 empty-result。
+          outcome: researched.length === 0 ? 'not-needed' : sources.length > 0 ? 'success' : 'empty-result',
           summary:
             researched.length === 0
               ? 'conductor 判定无需外部调研 (D-G′: 这个分支现在由它自己判)'
@@ -270,19 +299,22 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
           stage: 'spec',
           // 没真写盘 = 只吐了文本 —— 记 failed 但不断流程 (下游拿正文当契约仍能跑)。
           status: wrote ? 'done' : 'failed',
+          outcome: wrote ? 'success' : 'empty-result',
           summary: wrote ? path : 'spec 未落盘 (契约段没产出文件), 下游改用其正文当契约',
         });
       } catch (err) {
-        stages.push({ stage: 'spec', status: 'failed', summary: `契约段抛错: ${String(err).slice(0, 200)}` });
+        // 抛错 = 引擎自己出事, 与"契约写了但没达标"是两回事 (ERROR vs STALLED)。
+        stages.push({ stage: 'spec', status: 'failed', outcome: 'infra-error', summary: `契约段抛错: ${String(err).slice(0, 200)}` });
       }
     } else {
-      stages.push({ stage: 'survey', status: 'skipped', summary: '无 agentRunner → 无仓内事实' });
-      stages.push({ stage: 'research', status: 'skipped', summary: '无 agentRunner → 契约段整体跳过' });
-      stages.push({ stage: 'spec', status: 'skipped', summary: '无 agentRunner → 不产 spec, 直接执行目标' });
+      // 缺件跳过与"不需要"跳过共用 status: 'skipped', 而下一步相反 (补配置 vs 什么都不用做)。
+      stages.push({ stage: 'survey', status: 'skipped', outcome: 'missing-capability', summary: '无 agentRunner → 无仓内事实' });
+      stages.push({ stage: 'research', status: 'skipped', outcome: 'missing-capability', summary: '无 agentRunner → 契约段整体跳过' });
+      stages.push({ stage: 'spec', status: 'skipped', outcome: 'missing-capability', summary: '无 agentRunner → 不产 spec, 直接执行目标' });
     }
   } else {
-    stages.push({ stage: 'research', status: 'skipped', summary: 'simple 档: 直接 Execute→Verify (D-5)' });
-    stages.push({ stage: 'spec', status: 'skipped', summary: 'simple 档: 无需先定契约 (D-5)' });
+    stages.push({ stage: 'research', status: 'skipped', outcome: 'not-needed', summary: 'simple 档: 直接 Execute→Verify (D-5)' });
+    stages.push({ stage: 'spec', status: 'skipped', outcome: 'not-needed', summary: 'simple 档: 无需先定契约 (D-5)' });
   }
 
   // ── S5-S8 Execute + Verify + 1 轮修复: 内层 DAG 的外层 fixpoint。
@@ -297,9 +329,10 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
       ? `${goal}\n\n参考材料:\n${evidence}`
       : goal;
   const task = `${body}\n\n${acceptanceBlock}`;
-  const bail = (summary: string): RunGoalResult => {
-    stages.push({ stage: 'execute', status: 'failed', summary });
-    return { goal, tier, acceptance, stages, ...(specPath ? { specPath } : {}), sources, repoContext, converged: false, rounds: 0, reusedNodes: [] };
+  // 成因由**调用点**给, 不在这里按 summary 文本猜 —— 猜就是又一处会漂的独立判断 (P1 为它付过账)。
+  const bail = (summary: string, outcome: RunOutcomeKind): RunGoalResult => {
+    stages.push({ stage: 'execute', status: 'failed', outcome, summary });
+    return { goal, tier, acceptance, stages, ...(specPath ? { specPath } : {}), sources, repoContext, converged: false, rounds: 0, reusedNodes: [], outcome };
   };
   const execPlan: ConductorPlan = {
     name: 'goal-execute',
@@ -343,10 +376,10 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   try {
     exec = await (config._runDag ?? runExecutorDagWithPlan)(execPlan, config.dag);
   } catch (err) {
-    return bail(`execute 抛错: ${String(err).slice(0, 200)}`);
+    return bail(`execute 抛错: ${String(err).slice(0, 200)}`, 'infra-error');
   }
   const execLeaf = exec.results.execute;
-  if (!execLeaf) return bail('execute 节点无结果 (引擎没跑到它)');
+  if (!execLeaf) return bail('execute 节点无结果 (引擎没跑到它)', 'infra-error');
   // `converged` 缺席 = 没人判过 → 一律**不算成** (judge_final 已保证它在, 缺席意味着引擎跑歪了)。
   const judgeSaidOk = execLeaf.converged === true;
   // D-I 环外闸: 执行型才有这个节点。它**没跑**(引擎没走到 / 被 quorum 级联跳过)也算没过 ——
@@ -369,16 +402,35 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
       : oracleOk
         ? ' · 冻结判据 ✅'
         : ` · **冻结判据没过** (\`${acceptance.command}\` → ${acceptLeaf?.status ?? '没跑'})`;
+  // ── N5: 终止原因**判一次, 两个消费者读同一份** ────────────────────────────────
+  //
+  // 此前这道阶梯只活在下面那句摘要文本里 —— 于是 `status` 那一位不得不用 `converged ? done : failed`
+  // 独立再判一遍, 两处一漂就出现了 2026-07-31 live 那行「一次正确的 BLOCKED 被念成 failed」。
+  // 阶梯顺序一字未改 (外部事件 > 资源轴 > 环的结论 > 判据分歧), 只是把它的结论抬成了一个词。
+  const outcome: RunOutcomeKind = converged
+    ? 'success'
+    : cancelledReason
+      ? 'cancelled'
+      : budgetStopped
+        ? 'budget-exhausted'
+        : blocked
+          ? 'blocked'
+          : judgeSaidOk && !oracleOk
+            ? 'oracle-failed'
+            : 'not-converged';
   stages.push({
     stage: 'execute',
+    // ⚠ `status` 保持原样 (三态一字未动, 全仓 `=== 'done'` 的消费者行为不变) ——
+    // 一次正确的 BLOCKED 在这一位上**仍然**是 failed。念对它是 `outcome` 的职责, 不是这一位的。
     status: converged ? 'done' : 'failed',
+    outcome,
     summary:
       `${roundCount} 轮${
-        converged ? '收敛'
-        : cancelledReason ? `被叫停 (${cancelledReason}) — 已跑完的保留, 同 runId 可 resume`
-        : budgetStopped ? `预算停: ${budgetStopped.slice(0, 300)}`
-        : blocked ? `阻塞: ${blocked.slice(0, 300)}`
-        : judgeSaidOk && !oracleOk ? '判词说成了但冻结判据没过 (D-I: 以判据为准)'
+        outcome === 'success' ? '收敛'
+        : outcome === 'cancelled' ? `被叫停 (${cancelledReason}) — 已跑完的保留, 同 runId 可 resume`
+        : outcome === 'budget-exhausted' ? `预算停: ${budgetStopped!.slice(0, 300)}`
+        : outcome === 'blocked' ? `阻塞: ${blocked!.slice(0, 300)}`
+        : outcome === 'oracle-failed' ? '判词说成了但冻结判据没过 (D-I: 以判据为准)'
         : `未收敛 (${execLeaf.status})`
       }${oracleNote}` +
       `${reusedNodes.length ? ` · 复用 ${reusedNodes.length} 节点` : ''}` +
@@ -390,6 +442,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
     tier,
     acceptance,
     stages,
+    outcome,
     ...(specPath ? { specPath } : {}),
     sources,
     repoContext,

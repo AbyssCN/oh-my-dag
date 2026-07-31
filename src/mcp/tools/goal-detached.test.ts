@@ -96,7 +96,7 @@ describe('dag_goal detached', () => {
     const tool = createGoalTool({
       runGoal: async (goal) => ({
         goal, tier: 'simple', acceptance: { kind: 'executable', command: 'x', expectExit: 0 },
-        stages: [], sources: [], repoContext: '', converged: true, rounds: 1, reusedNodes: [],
+        stages: [], sources: [], repoContext: '', converged: true, rounds: 1, reusedNodes: [], outcome: 'success' as const,
       }),
       runRegistry: new RunRegistry(),
       cwd: root,
@@ -125,7 +125,7 @@ describe('预算轴的接线 (七态词表抓出的那个空旋钮)', () => {
         seen = cfg.dag as never;
         return {
           goal, tier: 'simple', acceptance: { kind: 'executable', command: 'x', expectExit: 0 },
-          stages: [], sources: [], repoContext: '', converged: true, rounds: 1, reusedNodes: [],
+          stages: [], sources: [], repoContext: '', converged: true, rounds: 1, reusedNodes: [], outcome: 'success' as const,
         } satisfies RunGoalResult;
       },
       runRegistry: new RunRegistry(),
@@ -147,7 +147,7 @@ describe('预算轴的接线 (七态词表抓出的那个空旋钮)', () => {
         seen = cfg.dag as never;
         return {
           goal, tier: 'simple', acceptance: { kind: 'executable', command: 'x', expectExit: 0 },
-          stages: [], sources: [], repoContext: '', converged: true, rounds: 1, reusedNodes: [],
+          stages: [], sources: [], repoContext: '', converged: true, rounds: 1, reusedNodes: [], outcome: 'success' as const,
         } satisfies RunGoalResult;
       },
       runRegistry: new RunRegistry(),

@@ -39,6 +39,7 @@ import { Database } from 'bun:sqlite';
 import { commandRiskTier, RISK_TIER_ORDER, type CommandRiskTier } from '../src/harness/command-leaf';
 import type { DagRunNode } from '../src/harness/dag-record';
 import { FAILURE_KIND_INFO, FAILURE_KIND_ORDER, type NodeFailureKind } from '../src/harness/node-failure';
+import { RUN_OUTCOME_INFO, RUN_OUTCOME_ORDER, type RunOutcomeKind } from '../src/harness/run-outcome';
 
 interface Row {
   id: string;
@@ -49,6 +50,7 @@ interface Row {
   nodes: string;
   usage: string;
   observations: string | null;
+  outcome: string | null;
 }
 interface Usage {
   conductorIn: number;
@@ -85,14 +87,14 @@ try {
   process.exit(1);
 }
 
+// 老库没有 observations / outcome 列 → 整条 SELECT 会崩。列在不在是**运行期事实**, 查一次 pragma
+// 再拼 (缺的那列补 NULL —— 正是"这批记录没记"那一格, 与"记了但是空的"分开数)。
+const haveCols = (db.query(`PRAGMA table_info(omd_dag_runs)`).all() as { name: string }[]).map((c) => c.name);
+const optionalCol = (name: string) => (haveCols.includes(name) ? `, ${name}` : `, NULL AS ${name}`);
 const rows = db
-  // 老库没有 observations 列 → 整条 SELECT 会崩。列在不在是运行期事实, 查一次 pragma 再拼。
   .query(
-    `SELECT id, created_at, plan_name, node_count, run_id, nodes, usage${
-      (db.query(`PRAGMA table_info(omd_dag_runs)`).all() as { name: string }[]).some((c) => c.name === 'observations')
-        ? ', observations'
-        : ", NULL AS observations"
-    } FROM omd_dag_runs ORDER BY created_at DESC LIMIT ?`,
+    `SELECT id, created_at, plan_name, node_count, run_id, nodes, usage${optionalCol('observations')}${optionalCol('outcome')}` +
+      ` FROM omd_dag_runs ORDER BY created_at DESC LIMIT ?`,
   )
   .all(limit * 3) as Row[]; // ×3: 一次 goal 最多两条, 留余量再按 runId 截
 
@@ -284,6 +286,30 @@ for (const r of rows) {
   }
 }
 
+// ── ⑨ run 级终止原因分布 (N5 · 五态在上层的证据面) ───────────────────────────
+// ⑦ 数的是**节点**为什么没过, 这一段数的是**整跑**怎么结束的 —— 两张表回答的不是同一个问题:
+// 一跑里九个节点全灭而成因各异, 在 ⑦ 里是九笔账, 在这里只有一笔 (`infra-error`), 而那一笔
+// 才是"这次 run 该怎么办"的答案。
+// 同 ⑦ 的三态数法: 归了类的各自计数 · `unclassified` 是缺陷 · 字段缺席是老数据 (两个计数器)。
+const outcomeCount: Record<RunOutcomeKind, number> = Object.fromEntries(
+  RUN_OUTCOME_ORDER.map((k) => [k, 0]),
+) as Record<RunOutcomeKind, number>;
+let runsUnrecordedOutcome = 0;
+const outcomeSamples = new Map<RunOutcomeKind, Set<string>>();
+for (const r of rows) {
+  if (!r.outcome) {
+    runsUnrecordedOutcome++;
+    continue;
+  }
+  // 老库里可能有本词表之外的字面量 → 不静默丢, 归 unclassified 并留样本 (同 ⑦)。
+  const kind = (r.outcome in outcomeCount ? r.outcome : 'unclassified') as RunOutcomeKind;
+  outcomeCount[kind]++;
+  const set = outcomeSamples.get(kind) ?? new Set<string>();
+  if (set.size < 3) set.add(r.plan_name);
+  outcomeSamples.set(kind, set);
+}
+const outcomeRecorded = rows.length - runsUnrecordedOutcome;
+
 // ── ③ 单轮成本异常 (§8.6): 偏离历史中位数 N 倍 ────────────────────────────────
 // 用中位数而非均值: 一次异常本身会把均值抬起来, 于是"异常"检测不出下一次异常。
 const ANOMALY_FACTOR = Number(flags.factor ?? 3);
@@ -297,7 +323,8 @@ if (flags.json) {
       { dbPath, runs, tierCount, neverButBlocked, neverAndRan, neverUnknown, gateRejections, commandNodes, conductorChildren, detectorNodes,
         nearMiss: nearMiss.map(([h, c]) => ({ outputHash: h, commands: [...c] })), exactRepeat, writeNodes, unreported, totalWrites, totalNoop, noopNodes, median, anomalyFactor: ANOMALY_FACTOR, anomalies,
         notDoneNodes, failureKindCount, failureKindUnrecorded,
-        observations: Object.fromEntries(obsCount), runsWithObs, runsUnrecordedObs },
+        observations: Object.fromEntries(obsCount), runsWithObs, runsUnrecordedObs,
+        outcomeCount, runsUnrecordedOutcome, outcomeRecorded },
       null,
       2,
     ),
@@ -459,6 +486,35 @@ if (runsWithObs === 0) {
   console.log('     · 命中且此后再没位移直到轮数耗尽 → 才谈升 BLOCKED, K 取"连续几轮"的众数。');
   console.log('   ⚠ 现在**只报不拦**: max_rounds ≤ 4, 误拦一次掐死一个本可收敛的 run,');
   console.log('     漏报一次只赔一两轮。这个比价下, 0 读数就上硬闸是拿大风险换小收益。');
+}
+
+console.log(`\n⑨ run 级终止原因 (N5 · 此前这一层只有 plan_name + 一堆节点状态, 没有"这跑怎么结束的")`);
+if (outcomeRecorded === 0) {
+  console.log(`   这批 ${rows.length} 条记录**都没记** outcome (早于 2026-07-31) —— 那是「没记」,`);
+  console.log('     不是「归不了类」。跑一次新的 dag_run / dag_goal 才有这段读数。');
+} else {
+  for (const kind of RUN_OUTCOME_ORDER) {
+    const n = outcomeCount[kind];
+    if (n === 0) continue;
+    const info = RUN_OUTCOME_INFO[kind];
+    const bar = '█'.repeat(Math.round((n / outcomeRecorded) * 24));
+    const resume = info.resumable === null ? 'resume?' : info.resumable ? '可原样 resume' : '**别原样 resume**';
+    console.log(`   ${kind.padEnd(19)} ${String(n).padStart(4)}  ${pct(n / outcomeRecorded).padStart(6)}  ${(info.loopState ?? '—').padEnd(9)} ${resume.padEnd(16)} ${bar}`);
+    console.log(`       判据: ${info.evidence}`);
+    console.log(`       下一步: ${info.nextAction}`);
+    const set = outcomeSamples.get(kind);
+    if (set?.size) console.log(`       图: ${[...set].join(', ')}`);
+  }
+  if (outcomeCount.unclassified > 0) {
+    console.log(`   ⚠ **${outcomeCount.unclassified} 跑归不了类** —— 收尾路径里还有一条没交代自己是怎么回事。`);
+  }
+  if (runsUnrecordedOutcome > 0) {
+    console.log(`   ? 另有 ${runsUnrecordedOutcome} 条**没记**终止原因(早于 2026-07-31)—— 老数据, 不是缺陷。`);
+  }
+  console.log('   判据 (与 ⑦ 分开看, 两段各答各的):');
+  console.log('     · blocked 与 not-converged 长期分得开 → G5「触发并被正确读」那半格才算真站住;');
+  console.log('     · infra-error 常年占一块 → 该修的是引擎, 不是 prompt (那是五态里此前上层空着的格);');
+  console.log('     · 若 99% 都落 not-converged → 这张表在上层是镀金, 该收回去。');
 }
 
 console.log(`\n诚实边界: 本板只读留痕库。**它算不出的**: 单节点耗时 (没记)、$ (只有 token,`);

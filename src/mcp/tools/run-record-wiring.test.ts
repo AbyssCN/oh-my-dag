@@ -51,6 +51,7 @@ describe('dag_goal 的运行留痕接线', () => {
           sources: [],
           repoContext: '',
           converged: true,
+          outcome: 'success' as const,
           rounds: 1,
           reusedNodes: [],
         } satisfies RunGoalResult;
@@ -82,7 +83,7 @@ describe('dag_goal 的运行留痕接线', () => {
         seen = cfg.dag;
         return {
           goal, tier: 'simple', acceptance: { kind: 'executable', command: 'x', expectExit: 0 },
-          stages: [], sources: [], repoContext: '', converged: true, rounds: 1, reusedNodes: [],
+          stages: [], sources: [], repoContext: '', converged: true, rounds: 1, reusedNodes: [], outcome: 'success' as const,
         } satisfies RunGoalResult;
       },
       runRegistry: new RunRegistry(),

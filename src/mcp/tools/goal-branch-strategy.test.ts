@@ -30,6 +30,7 @@ const emptyResult = (goal: string): RunGoalResult => ({
   sources: [],
   repoContext: '',
   converged: true,
+  outcome: 'success' as const,
   rounds: 1,
   reusedNodes: [],
 });

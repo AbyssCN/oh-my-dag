@@ -12,6 +12,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { ExecutorDagResult } from './executor-dag';
 import type { NodeFailureKind } from './node-failure';
+import { deriveRunOutcome, type RunOutcomeKind } from './run-outcome';
 
 export interface DagRunNode {
   id: string;
@@ -97,6 +98,17 @@ export interface DagRunRecord {
    * 缺席 = 早于本次改动的记录。
    */
   observations?: { kind: string; nodes: string[] }[];
+  /**
+   * **这张图是怎么结束的**(N5, 2026-07-31;词表在 `run-outcome.ts`)。
+   *
+   * 与 `nodes[].failureKind` 的分工:那一位是**每个节点**为什么没过,这一位是**整跑**的终止原因。
+   * 后者可以从前者聚合(见 `deriveRunOutcome`),但**聚合规则本身是个判断** —— 一张图里同时有
+   * `infra-error` 与 `assert-failed` 时读的人该先看栈还是先改断言,是这条规则说了算的。
+   * 判断当场记下,读数板才不用每次自己重发明一遍(重发明必漂)。
+   *
+   * ⚠ 缺席 = 早于 2026-07-31 的行(**没记**),不是 `'unclassified'`(记了但归不了类)。
+   */
+  outcome?: RunOutcomeKind;
 }
 
 export interface DagRecorder {
@@ -122,6 +134,7 @@ interface Row {
   nodes: string;
   usage: string;
   observations: string | null;
+  outcome: string | null;
 }
 
 function rowToRecord(row: Row): DagRunRecord {
@@ -137,6 +150,8 @@ function rowToRecord(row: Row): DagRunRecord {
     usage: JSON.parse(row.usage),
     // 缺席 = 早于 2026-07-31 的行。**不编一个 `[]`** —— 那会把「没记」伪装成「一条观察都没有」。
     ...(row.observations ? { observations: JSON.parse(row.observations) } : {}),
+    // 同上: 缺席不编一个 'unclassified' —— 「没记」与「归不了类」的结论相反。
+    ...(row.outcome ? { outcome: row.outcome as RunOutcomeKind } : {}),
   };
 }
 
@@ -188,10 +203,12 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
   if (!cols.includes('run_id')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN run_id TEXT`);
   // 同上: 2026-07-31 之前建的表没这一列, 老行留 NULL (= 没记, 与 '[]' 不是一回事)。
   if (!cols.includes('observations')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN observations TEXT`);
+  // 同上 (N5): 2026-07-31 之前建的表没这一列, 老行留 NULL (= 没记)。
+  if (!cols.includes('outcome')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN outcome TEXT`);
   db.run(`CREATE INDEX IF NOT EXISTS omd_dag_runs_run_id ON omd_dag_runs (run_id)`);
   const ins = db.query(
-    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, levels, nodes, usage, observations)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, levels, nodes, usage, observations, outcome)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const byId = db.query(`SELECT * FROM omd_dag_runs WHERE id = ?`);
   const recent = db.query(`SELECT * FROM omd_dag_runs ORDER BY created_at DESC LIMIT ?`);
@@ -242,6 +259,9 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
         JSON.stringify(nodes),
         JSON.stringify(usage),
         JSON.stringify((result.observations ?? []).map((o) => ({ kind: o.kind, nodes: o.nodes }))),
+        // N5: run 级终止原因。**在这里算而不是让调用方传** —— 两个调用面 (dag_run / dag_goal)
+        // 各算一遍就是两处会漂的独立判断, 而 `deriveRunOutcome` 是纯函数、读的就是这份 result。
+        deriveRunOutcome(result),
       );
       return id;
     },
