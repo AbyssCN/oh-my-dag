@@ -22,6 +22,15 @@ export interface ModelCaps {
   efforts: readonly string[];
   /** 该模型不接受的采样参数 (发了就 400)。 */
   rejects?: readonly ('temperature' | 'topP')[];
+  /**
+   * 这家**报不报** prompt-cache 命中 (2026-08-01)。`false` = 已知不报。
+   *
+   * 登记它是为了把读数板上的「未记录」从**不知道**变成**已知**: 效率轴此前只能说
+   * "N 条没有 cacheHit 字段", 读的人分不清是"引擎漏记了"还是"这家根本不报" ——
+   * 而两者的下一步相反 (去修引擎 vs 接受这半边永远算不出)。
+   * 缺席 = 没验过, **不等于会报** (同这张表其余各位的三态纪律)。
+   */
+  reportsCacheHit?: false;
   source: string;
 }
 
@@ -91,7 +100,11 @@ export const MODEL_CAPS: readonly ModelCaps[] = [
     // 于是 goal 环在这个座位配置下**根本不可能收敛**, 而它表现出来的样子是"任务太难,一直在修"。
     // 实测那一跑空转了 65 分钟。topP 未单独验过, 不凭猜列进来。
     rejects: ['temperature'],
-    source: 'developers.openai.com/api/docs/guides/reasoning (+2026-07-31 实测)',
+    // 2026-08-01 实测: 这家的 usage 里没有 prompt-cache 命中位 —— 一次真跑的 12 条 generation
+    // 里 3 条"未记录", 正是 codex 那几发。**六个强座位的缓存收益因此不可观测**, 而同一跑的
+    // deepseek 侧是 84~98%。登记下来, 读数板才说得出"这家不报"而不是"不知道"。
+    reportsCacheHit: false,
+    source: 'developers.openai.com/api/docs/guides/reasoning (+2026-07-31/08-01 实测)',
   },
 ];
 

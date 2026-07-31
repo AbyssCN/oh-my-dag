@@ -38,6 +38,7 @@
 import { Database } from 'bun:sqlite';
 import { commandRiskTier, RISK_TIER_ORDER, type CommandRiskTier } from '../src/harness/command-leaf';
 import { computeCost } from '../src/model/cost-ledger';
+import { capsFor } from '../src/harness/../model/model-caps';
 import { CheckpointManager } from '../src/harness/continuity/checkpoint-manager';
 import type { NodeLoopJournal } from '../src/harness/continuity/types';
 import type { DagRunNode } from '../src/harness/dag-record';
@@ -668,6 +669,14 @@ console.log('\n   效率轴 —— $ / cacheHit / 复用率 / 轮数');
 const allCache = runs.map((r) => r.cacheRate).filter((x): x is number => x !== null);
 const cacheAvg = allCache.length ? allCache.reduce((a, b) => a + b, 0) / allCache.length : null;
 console.log(`     cacheHit (${allCache.length} 跑均值)        ${pct(cacheAvg)}`);
+// 有座位属于**已知不报缓存**的家族时, 这个均值是**系统性偏低**的: `leavesCacheHit` 把"没报"
+// 与"零命中"加在了同一个分子上。不说的话读的人会以为命中率真的这么低, 去优化一个不存在的问题。
+const mutedRuns = runs.filter((r) => [...r.models].some((m) => capsFor(m.split(':').pop() ?? m)?.reportsCacheHit === false));
+if (mutedRuns.length) {
+  const coords = [...new Set(mutedRuns.flatMap((r) => [...r.models]).filter((m) => capsFor(m.split(':').pop() ?? m)?.reportsCacheHit === false))];
+  console.log(`     ⚠ 其中 ${mutedRuns.length} 跑含**已知不报缓存**的座位 (${coords.join(' · ')}) —— 上面那个均值偏低,`);
+  console.log('       它把"这家不报"和"零命中"加进了同一个分子。这半边算不出来是**已知**, 不是引擎漏记。');
+}
 if (pricedRuns > 0) {
   console.log(`     $ 叶子部分 (${pricedRuns} 跑合计)      $${leafUsd.toFixed(4)}   均 $${(leafUsd / pricedRuns).toFixed(4)}/跑`);
 } else {
