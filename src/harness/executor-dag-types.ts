@@ -171,6 +171,29 @@ export interface ExecutorDagConfig {
    */
   commandRunner?: CommandLeafRunner;
   /**
+   * **冻结判据进环**(2026-08-01)。给了 → conductor 内环**每轮**跑一次这条确定性命令;
+   * 退出码对上 = 这一轮定为最后一轮。省略 = 旧行为(判据只在环外跑一次)。
+   *
+   * ## 为什么要进环
+   *
+   * 此前它是环外节点 (`accept`, depends_on: ['execute']) —— 也就是说**必须先把轮数烧完**,
+   * 那道 30 秒就能判出来的确定性闸才第一次被问到。实测撞过更坏的一档: judge 因为配置错
+   * 恒抛错, 环永远拿不到裁决, 于是判据一次都没跑成, 而它本可以在第 1 轮就判绿。
+   * **确定性判据不该排在不确定的东西下游。**
+   *
+   * ## 三条护栏(缺一条这个改动就会造出更难发现的问题)
+   *
+   * ① **它不进 judge 的视野。** 在环里直接跑, 不作为子节点 —— `renderRoundForJudge` 渲染的是
+   *    children, 而 command 子节点通过时 facts 会写「命令退出码符合预期」。judge 一旦看得见
+   *    判据结论就会**抄答案**: 两条判据永远一致, 而"判据轴"量的恰恰是它们的不一致。
+   *    独立性此前是**结构白给的**(环外够不着), 现在改成**构造上钉住的**(压根不当 child)。
+   * ② **绿了仍然问一次 judge**, 只记录、不改变停止决定。不问的话「judge 太紧」那一格
+   *    (judge 说没成而判据过了) 永远观测不到 —— 从另一头把同一条轴杀掉。
+   *    代价是每**跑**多一发 judge, 不是每轮。
+   * ③ **只有可执行判据配这个字段。** 非可执行判据的 `oracleOk` 恒 true, 给了它就等于第一轮必停。
+   */
+  freezeCriterion?: { command: string; expectExit?: number };
+  /**
    * research-kind leaf 的执行器 (真 web 检索 + 有界内环, D-6)。给则 `executor:'research'` 节点经此跑。
    * 省略 → research 节点失败 —— **刻意不降级成 inproc**: 无 web 的 leaf 只会拿模型记忆编引用,
    * 那是假 grounded (与"写文件节点无 agentRunner → 失败"同一条纪律: 拒绝静默假成功)。
@@ -497,6 +520,16 @@ export interface LeafResult {
    * 烧掉了全部轮数, 症状看起来像"任务太难"。
    */
   infraStopped?: string;
+  /**
+   * **judge 自己那一票**(2026-08-01),与 {@link LeafResult.converged} 分开带。
+   *
+   * 冻结判据进环之后 `converged` 是**判据**说的(D-I 以判据为准),不再等于 judge 说的。
+   * 两者混在一起, 判据轴就会把「判据绿」误记成「judge 也说绿」—— 而那正是它要量的那一格
+   * (judge 太紧: 判据过了而 judge 说没成)。
+   *
+   * 缺席 = 这一跑没走环内判据那条路, 或 judge 调不通(**没投过票, 不是投了反对票**)。
+   */
+  judgeConverged?: boolean;
 }
 
 /**

@@ -389,14 +389,23 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   } as ConductorPlan;
   let exec: ExecutorDagResult;
   try {
-    exec = await (config._runDag ?? runExecutorDagWithPlan)(execPlan, config.dag);
+    // 护栏③: **只有可执行判据**才进环。非可执行判据的 `oracleOk` 恒 true, 给了它就等于第一轮必停。
+    // 环外那个 `accept` 节点保留不动 —— 它仍是收尾时那次权威判定 (`oracleOk` 的取值源没变),
+    // 环内这份只负责"能不能早点停", 两者判的是同一条命令, 不会给出相反的结论。
+    const execCfg =
+      acceptance.kind === 'executable'
+        ? { ...config.dag, freezeCriterion: { command: acceptance.command, ...(acceptance.expectExit !== undefined ? { expectExit: acceptance.expectExit } : {}) } }
+        : config.dag;
+    exec = await (config._runDag ?? runExecutorDagWithPlan)(execPlan, execCfg);
   } catch (err) {
     return bail(`execute 抛错: ${String(err).slice(0, 200)}`, 'infra-error');
   }
   const execLeaf = exec.results.execute;
   if (!execLeaf) return bail('execute 节点无结果 (引擎没跑到它)', 'infra-error');
   // `converged` 缺席 = 没人判过 → 一律**不算成** (judge_final 已保证它在, 缺席意味着引擎跑歪了)。
-  const judgeSaidOk = execLeaf.converged === true;
+  // judge 自己那一票优先: 环内判据绿时 `converged` 是**判据**说的, 不是 judge 说的
+  // (见 LeafResult.judgeConverged)。混用会让判据轴把"判据绿"误记成"judge 也说绿"。
+  const judgeSaidOk = execLeaf.judgeConverged ?? execLeaf.converged === true;
   // D-I 环外闸: 执行型才有这个节点。它**没跑**(引擎没走到 / 被 quorum 级联跳过)也算没过 ——
   // 冻结判据的意义就是"没被证明过就不算成", fail-closed 与 converged 缺席同一条纪律。
   const acceptLeaf = acceptance.kind === 'executable' ? exec.results.accept : undefined;
