@@ -11,6 +11,7 @@
  * 聚合渠道对未知参数往往照单全收 (能过 ≠ 上游真生效), 但**拒绝是确定信号**。
  * 新增一行前请同样先真打一次 API。
  */
+import { logger } from '../logger';
 
 export interface ModelCaps {
   /** 匹配 modelId (小写) 的前缀/正则。 */
@@ -93,6 +94,56 @@ export const MODEL_CAPS: readonly ModelCaps[] = [
     source: 'developers.openai.com/api/docs/guides/reasoning (+2026-07-31 实测)',
   },
 ];
+
+/**
+ * **采样参数按能力过滤, 而且丢弃要出声**(2026-07-31)。两条通道 (原生 / pi) 共用这一处 ——
+ * 各写一份正是今天这个 bug 的成因: 原生那条早就在查表, pi 那条从来没查, 于是 codex 上每一发
+ * 都带 temperature 出门、每一发 400, 而 judge 就坐在那个座位上。
+ *
+ * ## 为什么丢弃必须响
+ *
+ * 静默丢掉 400 是没了, 但换来一个**更安静的失效**: `plan/best-of-n.ts` 与 `plan/distill.ts`
+ * 拿 temperature/topP 当**发散度**旋钮 (一个 lens 一档: 0.25/0.75, topP 0.85/0.9/0.95)。
+ * 这些 lens 若跑在拒绝该参数的坐标上, 旋钮被悄悄吃掉 → **N 个 lens 塌成一模一样的 N 份**,
+ * 你以为在发散, 其实在跑 N 遍同一个。那正是这个仓一直在杀的形状: 机制在、生产零生效。
+ *
+ * 今天是**潜伏**的 (lens/distill 座位现在都是 deepseek, 收 temperature), 但座位是配置,
+ * 迟早有人把 lens 挪到强座位上 —— 到那天这条 WARN 就是唯一的线索。
+ *
+ * 每对 (坐标, 旋钮) **只吼一次**: best-of-N 一轮就是 N 发, 每发都吼会把日志刷成噪音,
+ * 而噪音里没人看得见第一条 (同 langfuse 导出失败的那条纪律)。
+ */
+const droppedShouted = new Set<string>();
+export function samplingFor(
+  modelId: string,
+  req: { temperature?: number; topP?: number },
+): { temperature?: number; topP?: number } {
+  const rejects = capsFor(modelId)?.rejects;
+  const out: { temperature?: number; topP?: number } = {};
+  for (const knob of ['temperature', 'topP'] as const) {
+    const v = req[knob];
+    if (v === undefined) continue; // 调用方没给 = 没有意图被丢, 不作声
+    if (!rejects?.includes(knob)) {
+      out[knob] = v;
+      continue;
+    }
+    const key = `${modelId}::${knob}`;
+    if (droppedShouted.has(key)) continue;
+    droppedShouted.add(key);
+    logger.warn(
+      { model: modelId, knob, value: v },
+      `[omd/model-caps] ${modelId} 拒收 ${knob} → 已丢弃。**调用方要的"发散度"这一发没生效** —— ` +
+        `若这是 best-of-N / distill 的某个 lens, 它与别的 lens 现在跑的是同一档采样。` +
+        `后续同 (坐标,旋钮) 只进 debug。`,
+    );
+  }
+  return out;
+}
+
+/** 测试用: 清"吼过了"标记。 */
+export function _resetDroppedKnobShoutForTest(): void {
+  droppedShouted.clear();
+}
 
 /** 查一个 modelId 的能力; 未登记 → undefined (调用方走保守兜底)。 */
 export function capsFor(modelId: string): ModelCaps | undefined {

@@ -20,7 +20,7 @@ import { emitModelUsage } from './accounting';
 import { resolvePiModel, piRequest, type PiModel } from './pi-transport';
 import { reportProviderFailure } from './provider-health';
 import { reportTruncation } from './truncation';
-import { capsFor, maxOutputFor } from './model-caps';
+import { capsFor, samplingFor, maxOutputFor } from './model-caps';
 
 export type {
   ContentPart,
@@ -231,11 +231,12 @@ async function openaiRequest(
     model: modelId,
     messages: messages.map((m) => ({ role: m.role, content: m.content })),
   };
-  // 采样参数按模型过滤: 个别路由对 temperature/topP 直接 400 (kimi-k3 经 opencode-go 实测),
-  // 发过去不是降级而是整节点挂 —— 宁可不调采样, 也不让一个已知会炸的字段出门。
+  // 采样参数按模型过滤 (判据 + 丢弃告警的单一真源见 `samplingFor`): 个别路由对 temperature/topP
+  // 直接 400 (kimi-k3 经 opencode-go 实测), 发过去不是降级而是整节点挂。
   const caps = capsFor(modelId);
-  if (req.temperature !== undefined && !caps?.rejects?.includes('temperature')) body.temperature = req.temperature;
-  if (req.topP !== undefined && !caps?.rejects?.includes('topP')) body.top_p = req.topP;
+  const sampling = samplingFor(modelId, req);
+  if (sampling.temperature !== undefined) body.temperature = sampling.temperature;
+  if (sampling.topP !== undefined) body.top_p = sampling.topP;
   const effort = reasoningEffortFor(provider, req.thinkingLevel, modelId);
   if (effort) body.reasoning_effort = effort;
   // 上限收敛到该模型官方能力 (不给就用官方上限), 免得朝 glm/qwen 要 deepseek 的 384K。
