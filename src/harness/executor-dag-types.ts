@@ -22,6 +22,16 @@ export type GenerateFn = (req: {
   thinkingLevel?: 'off' | 'low' | 'medium' | 'high' | 'xhigh';
   /** 输出 token 预算 (→ send maxTokens)。省略 = transport 默认 (4096)。conductor plan 输出随任务规模涨, 必须给足。 */
   maxTokens?: number;
+  /**
+   * **这一发是谁打的** (2026-07-31): 进可观测面的观测名, 形如 `conductor:execute` / `leaf:write-a`。
+   *
+   * 加它的原因是第一条真 trace 就暴露了问题: 默认 generate 把 `role` 写死成 `'omd-leaf'`,
+   * 于是 Langfuse 上 conductor 的那一发和干活 leaf 的那一发**同名**, 分不出谁是谁、更看不出
+   * 是哪个节点 —— 而"每个节点的 prompt 可审查"正是接观测的全部目的。
+   *
+   * 省略 = 回落调用方的默认名 (零回归)。**只进观测, 不进 prompt** —— 它不该改变模型看见的东西。
+   */
+  traceName?: string;
 }) => Promise<{ text: string; usage: ModelUsage }>;
 
 export interface ExecutorDagConfig {

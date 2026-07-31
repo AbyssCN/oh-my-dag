@@ -181,3 +181,20 @@ describe('③ 观测不许拖挂主路径', () => {
     expect(_peekLangfuseQueue()).toHaveLength(0);
   });
 });
+
+describe('④ 观测名要认得出是哪个节点 (第一条真 trace 暴露的)', () => {
+  test('★ conductor 与 leaf 不能同名 —— 否则审 prompt 时分不出谁是谁', () => {
+    // 第一条真 trace 上两条 generation 都叫 `omd-leaf`: 一条是 conductor (sol 座, in=5799),
+    // 一条是干活 leaf (flash 座, in=573)。名字一样 = Langfuse 上看不出谁是谁、更看不出是哪个节点,
+    // 而"每个节点的 prompt 可审查"正是接观测的全部目的。
+    recordGeneration(rec({ traceId: 'r', name: 'conductor:execute' }), ENV);
+    recordGeneration(rec({ traceId: 'r', name: 'leaf:write-a' }), ENV);
+    const names = _peekLangfuseQueue().filter((e) => e.type === 'generation-create').map((e) => e.body.name);
+    expect(names).toEqual(['conductor:execute', 'leaf:write-a']);
+  });
+
+  test('没给名字时回落通用名 (零回归) —— 观测名只进观测, 不进 prompt', () => {
+    recordGeneration(rec({ name: 'omd-leaf' }), ENV);
+    expect(_peekLangfuseQueue()[1]!.body.name).toBe('omd-leaf');
+  });
+});

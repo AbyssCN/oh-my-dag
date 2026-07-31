@@ -143,6 +143,7 @@ async function planAndExecute(
       // S-T 优先序: config 显式 > 座位档 (auto-assign 给 decomposer 座的档) > 硬默认。
       thinkingLevel: config.conductorThinkingLevel ?? config.seatThinking?.(conductorModel) ?? 'high',
       maxTokens: conductorMaxTokens,
+      traceName: 'conductor:plan', // 顶层规划那一发 (与节点内重展开分开看)
     });
     conductorUsage = addUsage(conductorUsage, usage);
     const parsed = parsePlan(text, { knownTemplates: new Set(templates.keys()) });
@@ -755,6 +756,7 @@ async function executePlan(
         ],
         // 坐标 (含轮级升级) 在上面算好, 见 conductorCoord。
         model: conductorCoord,
+        traceName: `conductor:${id}`, // 节点内重展开 —— 观测上要认得出是哪个 conductor 节点的第几轮
         thinkingLevel: config.conductorThinkingLevel ?? config.seatThinking?.(conductorCoord) ?? 'high',
         maxTokens: config.conductorMaxTokens ?? (Number(process.env.OMD_CONDUCTOR_MAX_TOKENS) || 32_768),
       });
@@ -1486,6 +1488,7 @@ async function executePlan(
             { role: 'user', content: `${listerGoal}${schemaNote}${depCtx}\n\n只回一个 JSON 对象, 必含数组键 "${spec.over}"。别的不要。` },
           ],
           model: config.leafModel,
+          traceName: `map-lister:${id}`,
           thinkingLevel: config.inprocThinkingLevel ?? config.seatThinking?.(config.leafModel) ?? 'high',
         });
         text = r.text;
@@ -1600,6 +1603,7 @@ async function executePlan(
             { role: 'user', content: `${personaLine}${goal}${depCtx}${cav ? `\n\n${cav}` : ''}` },
           ],
           model: model ?? config.leafModel,
+          traceName: `primitive-leaf:${id}`,
           thinkingLevel:
             config.inprocThinkingLevel ?? config.seatThinking?.(model ?? config.leafModel) ?? 'high',
         });
@@ -1973,6 +1977,7 @@ async function executePlan(
             { role: 'user', content: userContent },
           ],
           model,
+          traceName: `leaf:${id}`, // ← 审 prompt 时要认得出是哪个节点, 这是接观测的全部目的
           // S-T 优先序 (显式永远赢): node.thinking > config 显式档 > 座位档 > 硬默认 high。
           // 座位档来自 auto-assign (量产 worker 座 low / judge·verify 座 xhigh), 老 config 无该段 → 回落 high。
           thinkingLevel: node.thinking ?? config.inprocThinkingLevel ?? config.seatThinking?.(model) ?? 'high',
