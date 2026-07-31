@@ -133,6 +133,16 @@ export const COMMAND_RISK_TIER: Readonly<Record<string, CommandRiskTier>> = {
  *
  * 不调 `commandBlockReason`: 那个函数会 `logger.warn`, 而本函数的主要调用方是**事后读数**
  * (读留痕库里已经跑过的命令), 在读数时刷一屏"命令被拒"的告警是纯噪声。一致性走测试不走调用。
+ *
+ * ⚠ **已知失真: `&&` 拆链不认引号** (2026-07-31 live 实测撞到)。一条
+ * `node -e "… a && b …"` 里引号内的 `&&` 会被当成链分隔符, 于是后半截的首 token 不是登记过的
+ * bin → 整条被判 `never`, 而它真实的 bin 是 `node` (`scoped_write`)。
+ *
+ * **为什么不修**: 拆链规则是**跟着闸走的**(`commandBlockReason` 同款), 而闸那边这个"过度拆分"
+ * 是安全方向 —— 多拆只会多拒, 不会漏放。在这里另写一套认引号的拆法, 就是本文件反复警告的
+ * "抄一份早晚先漂", 而漂的后果比这点读数失真严重得多。
+ * 且**这类命令本来就都过不了闸**(引号里带 `&&` 的必然也带 `( ) $` 等元字符), 所以失真只影响
+ * 读数板上的归类, 不影响任何放行决定 —— 读数板已用 `[闸已拒]` 标出这一格。
  */
 export function commandRiskTier(command: string): CommandRiskTier {
   let worst: CommandRiskTier = 'read_only';
