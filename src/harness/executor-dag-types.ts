@@ -260,6 +260,17 @@ export interface ExecutorDagConfig {
     ms?: number;
   };
   /**
+   * **§8.4 动作级熔断**的阈值 (缺省 2)。同一条命令以**逐字相同**的方式失败到这个次数 →
+   * 内环走 BLOCKED 出口。
+   *
+   * ⚠ 判据里"逐字相同"那一半不是可选的优化, 是它能开着跑的**前提**: omd 里失败的 command
+   * 节点常常就是 oracle (`bun test` 红 = 活没干完), 而修复环的正常形态就是"红→改→再红→再改→绿"。
+   * 只按"同一条命令失败 N 次"熔断会把整个修复回路掐死。判据见 `plan/repeated-action.ts`。
+   *
+   * 设 0 或 1 = 关闭本闸 (阈值 1 等于一失败就熔断, 那不是熔断)。
+   */
+  repeatedActionThreshold?: number;
+  /**
    * 节点级进度事件 (2026-07-20, MCP 派发简报/活体 status 的数据源):
    *   planned = 图定型 (全部节点 id+kind, 每轮 plan/escalation 重规划各发一次)
    *   start   = 节点起跑 (含 map 展开出的子节点)
