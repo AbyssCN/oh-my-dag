@@ -1,0 +1,166 @@
+/**
+ * src/harness/node-failure —— **节点没过的成因词表** (P1, 2026-08-05)。
+ *
+ * ## 为什么要有这个文件
+ *
+ * `LeafResult.status` 只有 `done | failed | skipped`,而 `failed` 里至少混着**四种后续动作
+ * 完全相反**的东西:
+ *
+ *   · 断言没成立(`exit ≠ expect_exit`)   → 再试一轮可能就好了
+ *   · **闸拒**(`exit < 0`)               → 再试也没用,白名单不会因为重试而放行
+ *   · 心跳停摆(provider 挂起)            → 该换池,不是该改 prompt
+ *   · 产物闸判空(自报完成但零改动)        → 该重跑这个节点
+ *
+ * **每一种的检测都已经算出来了**(`exitCode` / `stalled` / 产物闸 / research 来源数),
+ * 只是算完之后被压进同一个 `failed` —— 语义在那一刻丢掉,于是"这一跑被闸拒了几次"这种
+ * 问题要去读日志重数一遍。这个文件是那一刻的挽回:**把已经算出来的判断抬成一等字段。**
+ *
+ * ## 两条纪律(2026-07-31 那一 session 为它们付了五次账)
+ *
+ * ① **每一格的判据必须是它自己的直接证据**,不许拿别的状态的补集凑。
+ *    反例(真踩过):拿 `status !== 'done'` 当"闸已拒"的判据 —— 于是 `grep -qx "3000"`
+ *    这种"只是没匹配上"的普通失败被标成了闸拒。
+ * ② **「不知道」必须是独立的一格**,不许并进任何一侧。这里是 {@link NodeFailureKind}
+ *    的 `unclassified`,以及 `retryable: null`。
+ *
+ * ## 与 Loop Engineering §4.4 五态的关系
+ *
+ * 参照但**不照抄**。书上的五态(SUCCESS/STALLED/BLOCKED/EXHAUSTED/ERROR)描述的是
+ * **一次运行怎么结束的**,而这里描述的是**一个节点为什么没过** —— 前者是环级,后者是节点级。
+ * 每格的 {@link FailureKindInfo.loopState} 记它往上归到五态的哪一格,归不上的老实写 `null`
+ * (`dep-skip` 就是:书上没有"依赖没达 quorum 所以我不跑了"这一格,它是 DAG 特有的)。
+ *
+ * EXHAUSTED / 取消 **不在这个词表里**:那两个是**环级**结论(`budgetStopped` / `cancelled`),
+ * 节点不会因为"预算用完"而失败 —— 它是压根没起跑。别把它们塞进来凑齐五格。
+ */
+
+/**
+ * 节点没过的成因。**每一格都有自己的直接判据**(见 {@link FAILURE_KIND_INFO} 的 `evidence`)。
+ *
+ * ⚠ 加新格之前先回答两个问题:① 它的直接证据是什么(不是"排除了别的")
+ * ② 拿到它的人/回路要做的事,跟现有哪一格都不一样吗 —— 一样就别加,归进去。
+ */
+export type NodeFailureKind =
+  /** command leaf 退出码 ≥0 但 ≠ `expect_exit`:断言没成立。 */
+  | 'assert-failed'
+  /** command leaf 退出码 <0:command-leaf 的闸拒(白名单/元字符/git 写/危险命令)。 */
+  | 'gate-rejected'
+  /** agent leaf 心跳闸判 provider 挂起(`AgentLeafResult.stalled`)。 */
+  | 'stall'
+  /** 产物闸:写文件节点 `filesTouched` 空,或声称的产物不在盘上(empty-done)。 */
+  | 'empty-artifact'
+  /** research leaf 零来源:没有任何真 URL 抓取痕迹(假 grounded)。 */
+  | 'no-sources'
+  /** 配置面缺件:没有 agentRunner/commandRunner/researchRunner,或 attach_media 无可用媒体。 */
+  | 'missing-capability'
+  /** 基础设施异常:节点抛错 / 子图展开失败 / map lister 失败 / primitive 编译失败。 */
+  | 'infra-error'
+  /** 依赖未达 `requires` quorum → 级联跳过(D-7v2)。恒伴随 `status: 'skipped'`。 */
+  | 'dep-skip'
+  /**
+   * **「不知道」的那一格**:节点没过,但没有任何生产点标注成因。
+   *
+   * 它**不是**兜底垃圾桶,是一个可以被数出来的缺陷指标 —— 读数板上它非零,意思是
+   * "引擎里还有一条失败路径没交代自己是怎么回事",那正是该去补标注的地方。
+   * ⚠ 与"字段整个缺席"不是一回事:缺席 = 早于 2026-08-05 的记录(**没记**);
+   * `unclassified` = 记了,但归不了类。合成一个会把老数据读成新缺陷。
+   */
+  | 'unclassified';
+
+export interface FailureKindInfo {
+  /**
+   * 往 Loop Engineering §4.4 五态归到哪一格。`null` = 书上没有对应格(别硬凑)。
+   * `'UNKNOWN'` 是 `unclassified` 专用 —— 它连"归不上"都算不上,是"还没人判过"。
+   */
+  loopState: 'STALLED' | 'BLOCKED' | 'ERROR' | 'UNKNOWN' | null;
+  /** **判成这一格的直接证据**。读的时候当契约看:证据变了,这一格的含义就变了。 */
+  evidence: string;
+  /** 拿到这一格的人/回路该做什么。两格的这一句一样 → 它们大概该合并。 */
+  nextAction: string;
+  /**
+   * 原样重试有没有用。**`null` = 不知道**(唯一取 null 的是 `unclassified`)——
+   * 这一位刻意是三态而不是布尔:把"不知道"记成 false 会让 heal 回路白白放弃一个本可重试的节点。
+   */
+  retryable: boolean | null;
+}
+
+/**
+ * 词表的**唯一定义处**。读数板、heal 回路、人,都从这里读语义,不各自在自己那边重写一份
+ * (重写两份必然漂,而漂了之后没人知道哪份对)。
+ */
+export const FAILURE_KIND_INFO: Record<NodeFailureKind, FailureKindInfo> = {
+  'assert-failed': {
+    loopState: 'STALLED',
+    evidence: 'command leaf 退出码 ≥0 且 ≠ expect_exit',
+    nextAction: '再试一轮可能就好 —— 断言本身可能对,只是这次没成立',
+    retryable: true,
+  },
+  'gate-rejected': {
+    loopState: 'BLOCKED',
+    evidence: 'command leaf 退出码 <0(command-leaf 闸拒,命令未执行)',
+    nextAction: '**别重试** —— 白名单不会因为重试而放行;换一条合法命令,或升 owner 改白名单',
+    retryable: false,
+  },
+  stall: {
+    loopState: 'ERROR',
+    evidence: 'agent leaf 心跳闸提前中止(AgentLeafResult.stalled)',
+    nextAction: '换池 / 重试 —— 是 provider 侧的事,不是 prompt 的事',
+    retryable: true,
+  },
+  'empty-artifact': {
+    loopState: 'STALLED',
+    evidence: '产物闸: filesTouched 空,或声称的产物不在盘上',
+    nextAction: '重跑这个节点(它自报完成但盘上没有对应改动)',
+    retryable: true,
+  },
+  'no-sources': {
+    loopState: 'STALLED',
+    evidence: 'research leaf 返回的 sources 为空',
+    nextAction: '重跑 / 换检索式 —— 零来源的报告是模型记忆,不是检索结果',
+    retryable: true,
+  },
+  'missing-capability': {
+    loopState: 'BLOCKED',
+    evidence: '配置面缺件(无 agentRunner/commandRunner/researchRunner,或 attach_media 无可用媒体)',
+    nextAction: '**别重试** —— 缺的是能力不是运气;补配置/补上游产物再跑',
+    retryable: false,
+  },
+  'infra-error': {
+    loopState: 'ERROR',
+    evidence: '节点抛错 / 子图展开失败 / map lister 失败 / primitive 编译失败',
+    nextAction: '重试 / 换池;连续同因则是引擎缺陷,该看栈',
+    retryable: true,
+  },
+  'dep-skip': {
+    loopState: null,
+    evidence: "status='skipped': 依赖失败未达 requires quorum(D-7v2)",
+    nextAction: '看上游 —— 这个节点自己没有毛病,零执行零花费',
+    retryable: false,
+  },
+  unclassified: {
+    loopState: 'UNKNOWN',
+    evidence: '节点没过,但生产点没有标注成因',
+    nextAction: '**去补标注** —— 这个数非零说明引擎里还有一条没交代自己的失败路径',
+    retryable: null,
+  },
+};
+
+/** 词表全序(读数板按它出分布;确定性顺序,免得每次跑出来的表行序不一样)。 */
+export const FAILURE_KIND_ORDER = Object.keys(FAILURE_KIND_INFO) as NodeFailureKind[];
+
+/**
+ * **归一化闸**:任何 `status !== 'done'` 的结果都必须带 `failureKind`,没带的显式补
+ * `unclassified`。
+ *
+ * 为什么是显式补而不是让字段缺席:缺席在下游读起来跟"这条记录早于本次改动"一模一样,
+ * 而那两件事的结论相反(前者是**引擎缺陷**,后者是**老数据**)。补一个可数的词,
+ * 才能让读数板把它们分开念 —— 同 `writeCounts` 缺席 vs `[0,0]` 的那条纪律。
+ *
+ * 纯函数、不改入参:settle 与测试共用同一份判断,不各写一遍。
+ */
+export function withFailureKind<T extends { status: string; failureKind?: NodeFailureKind }>(
+  r: T,
+): T & { failureKind?: NodeFailureKind } {
+  if (r.status === 'done' || r.failureKind) return r;
+  return { ...r, failureKind: 'unclassified' as const };
+}

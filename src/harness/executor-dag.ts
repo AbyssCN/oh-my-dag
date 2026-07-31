@@ -69,6 +69,7 @@ import { makeLlmConvergenceJudge } from './plan/llm-judge';
 import { send } from '../model/gateway';
 // D-14v2 多模态媒体管道 (S4): attach_media 执行期从直接前驱输出解析图片 → ContentPart 注入。
 import { collectDepMedia } from './leaf-media';
+import { withFailureKind } from './node-failure';
 import type { ContentPart } from '../model/gateway';
 
 /** 上一轮 plan+results (escalation 重规划轮传入, D-21 跨轮复用的匹配源)。 */
@@ -677,7 +678,7 @@ async function executePlan(
       const msg = err instanceof Error ? err.message : String(err);
       logger.warn({ node: id, round, err: msg }, '[omd/executor-dag] conductor 节点展开失败 → failed');
       return {
-        leaf: { id, status: 'failed', kind: 'conductor', output: `[conductor 展开失败: ${msg}]`, deps, usage: usageAcc },
+        leaf: { id, status: 'failed', failureKind: 'infra-error', kind: 'conductor', output: `[conductor 展开失败: ${msg}]`, deps, usage: usageAcc },
         children: [], usage: usageAcc, results: new Map(), detector: { rejected: [] }, lint: [], childIds: [],
       };
     }
@@ -692,7 +693,7 @@ async function executePlan(
       logger.warn({ node: id, round, status: expand.status, error: expand.error }, '[omd/executor-dag] conductor 子图被拒');
       return {
         leaf: {
-          id, status: 'failed', kind: 'conductor',
+          id, status: 'failed', failureKind: 'infra-error', kind: 'conductor',
           output: `[子图被拒 (${expand.status}): ${expand.error ?? '空子图 — conductor 没能分解出任何步骤'}]`,
           deps, usage: usageAcc,
         },
@@ -882,7 +883,7 @@ async function executePlan(
             : runNode(cid)
           )
             .catch((e): LeafResult => ({
-              id: cid, status: 'failed', kind: 'inproc',
+              id: cid, status: 'failed', failureKind: 'infra-error', kind: 'inproc',
               output: `[failed] ${e instanceof Error ? e.message : String(e)}`,
               deps: (plan!.nodes[cid]!.depends_on ?? []) as string[], usage: { in: 0, out: 0 },
             }))
@@ -1265,7 +1266,7 @@ async function executePlan(
     // 到这里 = startRound > maxRounds (resume 接回一个已跑满轮数却没收敛的节点): 一轮都没跑,
     // 没有裁决可报。**不谎报收敛**。
     logger.warn({ node: id, maxRounds, startRound }, '[omd/executor-dag] 内环无轮可跑 (resume 已用尽轮数)');
-    return last ?? { id, status: 'failed', kind: 'conductor', output: '[内环一轮都没跑成]', deps, usage: usageAcc };
+    return last ?? { id, status: 'failed', failureKind: 'infra-error', kind: 'conductor', output: '[内环一轮都没跑成]', deps, usage: usageAcc };
   };
 
   // ── U1 P1: map 节点运行时展开 (SDD 0009 §2.3 StateMachine) ──────────────────
@@ -1332,14 +1333,14 @@ async function executePlan(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.warn({ node: id, err: msg }, '[omd/executor-dag] map lister 失败 → map failed (INV-U7)');
-      return { id, status: 'failed', kind: 'map', output: `[map lister 失败: ${msg}]`, deps, usage: usageAcc };
+      return { id, status: 'failed', failureKind: 'infra-error', kind: 'map', output: `[map lister 失败: ${msg}]`, deps, usage: usageAcc };
     }
 
     // ── 2. 纯展开 (INV-U2/U4/U5/U8 在 expandMapNode 内) ──
     const expand = expandMapNode(id, spec as unknown as Parameters<typeof expandMapNode>[1], listerOutput);
     if (expand.status === 'not_array' || expand.status === 'nested_map') {
       logger.warn({ node: id, error: expand.error }, '[omd/executor-dag] map 展开失败');
-      return { id, status: 'failed', kind: 'map', output: `[map 展开失败: ${expand.error}]`, deps, usage: usageAcc };
+      return { id, status: 'failed', failureKind: 'infra-error', kind: 'map', output: `[map 展开失败: ${expand.error}]`, deps, usage: usageAcc };
     }
     if (expand.truncated > 0) {
       logger.warn({ node: id, truncated: expand.truncated }, '[omd/executor-dag] map 扇出截断 (INV-U4, no-silent-caps)');
@@ -1367,7 +1368,7 @@ async function executePlan(
               if (!child) return;
               // INV-6/INV-U7: 子失败隔离, 不连坐。
               const r = await runNode(child.id).catch((e): LeafResult => ({
-                id: child.id, status: 'failed', kind: 'inproc',
+                id: child.id, status: 'failed', failureKind: 'infra-error', kind: 'inproc',
                 output: `[failed] ${e instanceof Error ? e.message : String(e)}`,
                 deps, usage: { in: 0, out: 0 },
               }));
@@ -1443,7 +1444,7 @@ async function executePlan(
     if (!compiled.ok) {
       // SEL-1 fail-closed: 坏 primitive/params/超 cap → 失败有明确错, 不静默降范围。
       logger.warn({ node: id, err: compiled.error }, '[omd/executor-dag] primitive 编译失败 → failed (SEL-1 fail-closed)');
-      return { id, status: 'failed', kind: 'primitive', output: `[primitive 编译失败: ${compiled.error}]`, deps, usage: usageAcc };
+      return { id, status: 'failed', failureKind: 'infra-error', kind: 'primitive', output: `[primitive 编译失败: ${compiled.error}]`, deps, usage: usageAcc };
     }
     logger.info(
       { node: id, primitive: node.primitive, maxUnits: compiled.invocation.maxUnits },
@@ -1455,7 +1456,7 @@ async function executePlan(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.warn({ node: id, err: msg }, '[omd/executor-dag] primitive run 抛错 → failed');
-      return { id, status: 'failed', kind: 'primitive', output: `[primitive 失败: ${msg}]`, deps, usage: usageAcc };
+      return { id, status: 'failed', failureKind: 'infra-error', kind: 'primitive', output: `[primitive 失败: ${msg}]`, deps, usage: usageAcc };
     }
   };
 
@@ -1509,7 +1510,7 @@ async function executePlan(
       if (node.executor === 'command') {
         if (!config.commandRunner || !node.command) {
           logger.warn({ node: id, hasRunner: !!config.commandRunner, hasCmd: !!node.command }, '[omd/executor-dag] executor:command 缺 commandRunner/command → failed');
-          return { id, status: 'failed', kind: 'command', output: '', deps, usage: { in: 0, out: 0 } };
+          return { id, status: 'failed', failureKind: 'missing-capability', kind: 'command', output: '', deps, usage: { in: 0, out: 0 } };
         }
         const r = await config.commandRunner({ command: node.command });
         // D-K: expect_exit = 判 done 的期望退出码 (缺省 0)。verify-red 靠它表达 —— "证明新测试现在是红的"
@@ -1528,6 +1529,10 @@ async function executePlan(
         return {
           id,
           status: ok ? 'done' : 'failed',
+          // P1: 这是整个词表的**原型格** —— 同一个 `failed`, 两种相反的下一步, 判据是各自的
+          // 直接证据 (`exitCode` 的正负), 不是谁的补集。闸拒 = 再试也没用 (BLOCKED);
+          // 断言没成立 = 再试一轮可能就好 (STALLED)。见 node-failure.ts。
+          ...(ok ? {} : { failureKind: blocked ? ('gate-rejected' as const) : ('assert-failed' as const) }),
           kind: 'command',
           // 期望非 0 却拿到别的码时, 把"想要什么/拿到什么"写进 output —— 否则 verify-red 失败时
           // 下游只看到一串正常的测试输出, 看不出它失败在"本该红却绿了"。
@@ -1551,7 +1556,7 @@ async function executePlan(
       if (node.executor === 'research') {
         if (!config.researchRunner) {
           logger.warn({ node: id }, "[omd/executor-dag] executor:research 缺 researchRunner → failed (拒绝降级 inproc 编引用)");
-          return { id, status: 'failed', kind: 'research', output: '[research 节点无 researchRunner, 无 web 能力]', deps, usage: { in: 0, out: 0 } };
+          return { id, status: 'failed', failureKind: 'missing-capability', kind: 'research', output: '[research 节点无 researchRunner, 无 web 能力]', deps, usage: { in: 0, out: 0 } };
         }
         const groundTruth = deps
           .filter((d) => results[d]?.status === 'done')
@@ -1567,7 +1572,7 @@ async function executePlan(
         });
         if (r.sources.length === 0) {
           logger.warn({ node: id }, '[omd/executor-dag] research 节点零来源 → failed (无真抓取痕迹 = 假 grounded)');
-          return { id, status: 'failed', kind: 'research', output: '[research 零来源: 无真 URL 抓取痕迹]', deps, usage: r.usage };
+          return { id, status: 'failed', failureKind: 'no-sources', kind: 'research', output: '[research 零来源: 无真 URL 抓取痕迹]', deps, usage: r.usage };
         }
         logger.info({ node: id, sources: r.sources.length, reportPath: r.reportPath }, '[omd/executor-dag] research 节点完成');
         // D-O: research 节点此前**没有绿 checkpoint** —— 于是每次 resume 都重跑一遍真联网检索
@@ -1629,7 +1634,7 @@ async function executePlan(
       // 写文件节点但无 agentRunner → 根本无法产物 → 标失败 (拒绝 inproc 静默假成功; oracle/heal 才看得到)。
       if (producesFiles && !config.agentRunner) {
         logger.warn({ node: id, output_type: node.output_type }, '[omd/executor-dag] 写文件节点但无 agentRunner → 失败 (拒绝 inproc 静默假成功)');
-        return { id, status: 'failed', kind: 'inproc', output: '[写文件节点无 agentRunner, 无法产物]', deps: node.depends_on ?? [], usage: { in: 0, out: 0 } };
+        return { id, status: 'failed', failureKind: 'missing-capability', kind: 'inproc', output: '[写文件节点无 agentRunner, 无法产物]', deps: node.depends_on ?? [], usage: { in: 0, out: 0 } };
       }
       const wantAgent = node.executor === 'agent' || producesFiles;
       if (producesFiles && node.executor !== 'agent') {
@@ -1659,7 +1664,7 @@ async function executePlan(
           // 温床 → 显式 failed, heal/escalate 回路可见。前驱失败缺图的形态由 requires quorum 先拦。
           logger.warn({ node: id, missing: media.missing }, '[omd/executor-dag] attach_media 无可用媒体 → failed (D-14v2 fail-closed)');
           return {
-            id, status: 'failed', kind: useAgent ? 'agent' : 'inproc',
+            id, status: 'failed', failureKind: 'missing-capability', kind: useAgent ? 'agent' : 'inproc',
             output: `[attach_media 无可用媒体: 直接前驱输出未解析出存在的图片${media.missing.length ? `; 路径不存在: ${media.missing.join(', ')}` : ''}]`,
             deps, usage: { in: 0, out: 0 },
           };
@@ -1737,7 +1742,7 @@ async function executePlan(
         if (r.stalled) {
           logger.warn({ node: id, model, outLen: text.length }, '[omd/executor-dag] agent leaf 停摆 (心跳闸) → 节点 failed');
           return {
-            id, status: 'failed', kind: 'agent', model,
+            id, status: 'failed', failureKind: 'stall', kind: 'agent', model,
             output: `[停摆: 心跳闸提前中止, 疑 provider 挂起/排队] 原输出(${text.length}B): ${text.slice(0, 400)}`,
             deps: node.depends_on ?? [], usage, filesTouched, ...(filesRead.length ? { filesRead } : {}), stalled: true,
           };
@@ -1771,7 +1776,7 @@ async function executePlan(
               : `声称产物不存在: ${missing.join(', ')}`;
             logger.warn({ node: id, filesTouched, missing }, '[omd/executor-dag] 产物校验失败 → 节点 failed (拒绝 empty-done)');
             return {
-              id, status: 'failed', kind: 'agent', model,
+              id, status: 'failed', failureKind: 'empty-artifact', kind: 'agent', model,
               output: `[产物校验失败: ${why}] 原输出: ${text.slice(0, 400)}`,
               deps: node.depends_on ?? [], usage, filesTouched, ...(filesRead.length ? { filesRead } : {}),
             };
@@ -1978,6 +1983,7 @@ async function executePlan(
     return {
       id,
       status: 'failed',
+      failureKind: 'infra-error',
       kind: node.executor === 'agent' && config.agentRunner ? 'agent' : 'inproc',
       output: `[节点抛错] ${msg}`,
       deps: node.depends_on ?? [],
@@ -1989,10 +1995,14 @@ async function executePlan(
   const settle = (id: string, r: LeafResult | null): void => {
     if (r == null) {
       const node = plan!.nodes[id]!;
-      results[id] = { id, status: 'failed', kind: node.executor === 'agent' && config.agentRunner ? 'agent' : 'inproc', output: '', deps: node.depends_on ?? [], usage: { in: 0, out: 0 } };
+      // settle 收到 null = 引擎侧异常 (runNode 该恒返一个 LeafResult)。这是它自己的**直接证据**,
+      // 不是"排除了别的" —— 归 infra-error 而非 unclassified。
+      results[id] = { id, status: 'failed', failureKind: 'infra-error', kind: node.executor === 'agent' && config.agentRunner ? 'agent' : 'inproc', output: '', deps: node.depends_on ?? [], usage: { in: 0, out: 0 } };
       depOutputs[id] = '[failed]';
     } else {
-      results[id] = r;
+      // P1 归一化闸: 任何没过的节点都必须带 failureKind, 漏标的显式记 'unclassified'
+      // (缺席读起来 = "老记录", 与"引擎里有条没交代的失败路径"结论相反 — 见 node-failure.ts)。
+      results[id] = withFailureKind(r);
       depOutputs[id] = r.output;
       leavesIn += r.usage.in;
       leavesOut += r.usage.out;
@@ -2012,7 +2022,9 @@ async function executePlan(
           nodeId: id,
           leafKind: settled.kind,
           status: settled.status,
-          failureKind: settled.status === 'skipped' ? 'dep-skip' : settled.stalled ? 'stall' : 'failed',
+          // P1: 直接抄结果上那一位 —— 此前这里**当场重新推断**一遍 (三选一: dep-skip/stall/failed),
+          // 于是留痕层的成因和结果上的成因是两处独立判断, 天然会漂。归一化闸保证它恒非空。
+          failureKind: settled.failureKind ?? 'unclassified',
           ...(settled.model ? { model: settled.model } : {}),
           outputPaths: [],
           artifactHashes: {},
@@ -2064,6 +2076,7 @@ async function executePlan(
     return {
       id,
       status: 'skipped',
+      failureKind: 'dep-skip',
       kind: node.executor === 'command' ? 'command' : node.executor === 'agent' && config.agentRunner ? 'agent' : 'inproc',
       output: `[skipped: 依赖未达 quorum (requires=${req}, done ${doneCount}/${deps.length}) — ${bad.join(', ')}]`,
       deps,

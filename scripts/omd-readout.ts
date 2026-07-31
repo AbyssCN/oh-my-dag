@@ -38,6 +38,7 @@
 import { Database } from 'bun:sqlite';
 import { commandRiskTier, RISK_TIER_ORDER, type CommandRiskTier } from '../src/harness/command-leaf';
 import type { DagRunNode } from '../src/harness/dag-record';
+import { FAILURE_KIND_INFO, FAILURE_KIND_ORDER, type NodeFailureKind } from '../src/harness/node-failure';
 
 interface Row {
   id: string;
@@ -223,6 +224,40 @@ for (const r of rows) {
 const nearMiss = [...byOutput.entries()].filter(([, cmds]) => cmds.size > 1);
 const exactRepeat = [...byOutput.values()].filter((c) => c.size === 1).length;
 
+// ── ⑦ 没过的成因分布 (P1 词表细化的**唯一证据面**) ───────────────────────────
+// 这一段回答的就是"细化值不值": 若所有失败常年只落在一两格里, 那这个词表是镀金;
+// 若它照出「闸拒 / 心跳停摆 / 产物闸判空」各占一块, 那此前那个 `failed` 一直在把
+// **三种后续动作相反**的东西混着报给同一个读者。
+//
+// **三态直接数, 不用补集** (本仓为这条纪律付过五次账):
+//   · 归了类的 → 各自计数
+//   · `unclassified` → 引擎里还有一条没交代自己的失败路径 (**缺陷**, 该去补标注)
+//   · 字段整个缺席 → 早于 2026-08-05 的记录 (**老数据**, 不是缺陷)
+// 后两者读上去都像"不知道", 但结论相反, 所以是两个计数器不是一个。
+const failureKindCount: Record<NodeFailureKind, number> = Object.fromEntries(
+  FAILURE_KIND_ORDER.map((k) => [k, 0]),
+) as Record<NodeFailureKind, number>;
+let notDoneNodes = 0;
+/** status≠done 但字段缺席 = 这批记录早于本次改动。**不是** unclassified。 */
+let failureKindUnrecorded = 0;
+const kindSamples = new Map<NodeFailureKind, Set<string>>();
+for (const r of rows) {
+  for (const n of JSON.parse(r.nodes) as DagRunNode[]) {
+    if (n.status === 'done') continue;
+    notDoneNodes++;
+    if (!n.failureKind) {
+      failureKindUnrecorded++;
+      continue;
+    }
+    // 老库里可能有本词表之外的字面量 (schema 会漂) → 不静默丢, 归 unclassified 并留样本。
+    const kind = (n.failureKind in failureKindCount ? n.failureKind : 'unclassified') as NodeFailureKind;
+    failureKindCount[kind]++;
+    const s = kindSamples.get(kind) ?? new Set<string>();
+    if (s.size < 3) s.add(n.id);
+    kindSamples.set(kind, s);
+  }
+}
+
 // ── ③ 单轮成本异常 (§8.6): 偏离历史中位数 N 倍 ────────────────────────────────
 // 用中位数而非均值: 一次异常本身会把均值抬起来, 于是"异常"检测不出下一次异常。
 const ANOMALY_FACTOR = Number(flags.factor ?? 3);
@@ -234,7 +269,8 @@ if (flags.json) {
   console.log(
     JSON.stringify(
       { dbPath, runs, tierCount, neverButBlocked, neverAndRan, neverUnknown, gateRejections, commandNodes, conductorChildren, detectorNodes,
-        nearMiss: nearMiss.map(([h, c]) => ({ outputHash: h, commands: [...c] })), exactRepeat, writeNodes, unreported, totalWrites, totalNoop, noopNodes, median, anomalyFactor: ANOMALY_FACTOR, anomalies },
+        nearMiss: nearMiss.map(([h, c]) => ({ outputHash: h, commands: [...c] })), exactRepeat, writeNodes, unreported, totalWrites, totalNoop, noopNodes, median, anomalyFactor: ANOMALY_FACTOR, anomalies,
+        notDoneNodes, failureKindCount, failureKindUnrecorded },
       null,
       2,
     ),
@@ -335,6 +371,42 @@ if (byOutput.size === 0) {
   }
   console.log(`   判据: near-miss 长期为 0 → 现行「命令+输出」键就够, 别动它;`);
   console.log(`         成规模 → 才值得为它设计一个更宽的键(⚠ 但不是"只看输出" —— grep -q 失败无输出, 会误熔断)。`);
+}
+
+console.log(`\n⑦ 没过的成因分布 (P1 · 此前这 ${notDoneNodes} 个节点在读数上全叫 "failed")`);
+if (notDoneNodes === 0) {
+  console.log('   这批记录里没有 status≠done 的节点。');
+} else {
+  const classified = notDoneNodes - failureKindUnrecorded;
+  if (classified === 0) {
+    console.log(`   ${notDoneNodes} 个没过的节点**全部是旧格式记录**(无 failureKind) —— 那是「没记」,`);
+    console.log('     不是「归不了类」。跑一次新的 dag_run / dag_goal 才有这段读数。');
+  } else {
+    for (const kind of FAILURE_KIND_ORDER) {
+      const n = failureKindCount[kind];
+      if (n === 0) continue;
+      const info = FAILURE_KIND_INFO[kind];
+      const bar = '█'.repeat(Math.round((n / classified) * 24));
+      const state = info.loopState ?? '—';
+      const retry = info.retryable === null ? '重试?' : info.retryable ? '可重试' : '**别重试**';
+      console.log(`   ${kind.padEnd(19)} ${String(n).padStart(4)}  ${pct(n / classified).padStart(6)}  ${state.padEnd(8)} ${retry.padEnd(10)} ${bar}`);
+      console.log(`       判据: ${info.evidence}`);
+      console.log(`       下一步: ${info.nextAction}`);
+      const s = kindSamples.get(kind);
+      if (s?.size) console.log(`       节点: ${[...s].join(', ')}`);
+    }
+    if (failureKindCount.unclassified > 0) {
+      console.log(`   ⚠ **${failureKindCount.unclassified} 个归不了类** —— 引擎里还有一条失败路径没交代自己是怎么回事,`);
+      console.log('     那正是该去补标注的地方。(这个数该趋近 0; 它不为 0 就是缺陷本身。)');
+    }
+  }
+  if (failureKindUnrecorded > 0) {
+    console.log(`   ? 另有 ${failureKindUnrecorded} 个没过的节点**没记**成因(早于 2026-08-05 的记录)——`);
+    console.log('     与上面的 unclassified 不是一回事: 那个是缺陷, 这个是老数据。别并起来数。');
+  }
+  console.log('   判据: 若失败常年只落一两格 → 这个词表是镀金, 该收回去;');
+  console.log('         若 gate-rejected / stall / empty-artifact 各占一块 → 此前那个 `failed`');
+  console.log('         一直在把三种**后续动作相反**的东西报给同一个读者。');
 }
 
 console.log(`\n诚实边界: 本板只读留痕库。**它算不出的**: 单节点耗时 (没记)、$ (只有 token,`);
