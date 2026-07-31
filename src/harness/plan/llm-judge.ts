@@ -92,13 +92,33 @@ export function makeLlmConvergenceJudge<R>(opts: LlmJudgeOpts<R>): FixpointJudge
     const v = r.parsed as
       | { converged: boolean; score: number; failureReason?: string; rejectedNodes?: string[] }
       | undefined;
-    if (!v) return { converged: false, score: 0, failureReason: 'judge 未结构化输出' };
+    // A5 (2026-08-05): 这句话的**读者是下一轮重画的 conductor**, 而它出现在 `<上一轮未通过>` 里 ——
+    // 读者会把那块里的任何东西当成对自己方案的评价, 于是"judge 未结构化输出"会让它去迎合一句
+    // 根本不存在的判词改图。先把这件事撇清, 再给一条它做得了的事。
+    if (!v) {
+      return {
+        converged: false,
+        score: 0,
+        failureReason:
+          '【引擎侧事故, 不是对上一轮方案的评价】judge 没有产出可解析的结构化裁决。' +
+          '也就是说**上一轮的方案没有被判过**, 没有任何证据说它坏 —— ' +
+          '不要为了迎合一句不存在的判词去改图; 若上一轮的产出看起来是完整的, 原样再交一次即可。',
+      };
+    }
     // 信 judge 的 converged 布尔 (threshold 已进 prompt); score 仅记录, 不二次覆盖判断。
     const converged = v.converged === true;
     return {
       converged,
       score: v.score,
-      failureReason: converged ? undefined : v.failureReason ?? '未达收敛标准',
+      // A5: 兜底文案此前是 `'未达收敛标准'` —— 报得对, 但它进下一轮之后读者**什么也做不了**
+      // (它本来就知道没达标, 缺的正是"哪儿不达标")。judge 没说就是没说, **不许替它编一条理由**;
+      // 但"这一轮没有反馈"这件事本身可以说成一句读者用得上的话: 别猜, 回到目标重新审。
+      failureReason: converged
+        ? undefined
+        : v.failureReason ??
+          'judge 判未收敛, **但没有给出理由** —— 这一轮没有可用的失败信息。' +
+            '不要去猜上一轮哪一步错了 (猜错了会连对的那步一起改掉): 请回到目标本身重新审一遍, ' +
+            '优先补上"怎么才算做完"这类可验证的步骤。',
       // D-4: 收敛了就没有毒 (产出全批准); 未收敛才带票。judge 漏填 = 空票, 由绑定层记账 (不静默当"全批准")。
       ...(converged || !v.rejectedNodes?.length ? {} : { rejectedNodes: v.rejectedNodes }),
     };

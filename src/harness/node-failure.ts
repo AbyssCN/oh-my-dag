@@ -158,6 +158,33 @@ export const FAILURE_KIND_ORDER = Object.keys(FAILURE_KIND_INFO) as NodeFailureK
  *
  * 纯函数、不改入参:settle 与测试共用同一份判断,不各写一遍。
  */
+/**
+ * **给下游读者的失败告示**(A5 sensor 措辞普查, 2026-08-05)。
+ *
+ * 治的是一条实证过的静默失真: fan-in 场景下 (`requires: 'any'`, 一个前驱没过另一个过了),
+ * 没过的那个**照样**被注入下游 leaf 的 `Predecessor outputs`, 而且**不带任何标记**。
+ * 探针抓到的两种形态都坏, 后一种更坏:
+ *
+ *   ① 前驱输出为空 → 下游看到一个空标题, 与"产出为空但有效"**不可分**;
+ *   ② 前驱是 empty-artifact → 注入的是 `[产物校验失败: …] 原输出: 我把文件写好了, 内容是三条建议`
+ *      —— 下游拿到的是那个节点**自报完成的假话**, 摆在 "Predecessor outputs" 底下。
+ *
+ * 而 leaf prompt 的末尾恰好写着 "do NOT fabricate data, results, or inputs you were not given"
+ * —— 读者无从知道**这段正是它没真拿到的那个输入**。措辞对不对之外还得问的那句
+ * "它的读者拿它做得了什么", 在这里的答案此前是: **什么也做不了, 而且更可能照着假话往下写。**
+ *
+ * 所以告示给的是**三条可执行的指令**(别引用 / 别转述 / 缺什么就如实写), 不是一句状态播报。
+ * 成因一并给出: 对下游的动作没影响 (都是"不能用"), 但它进产出里那句"缺了什么"时有用。
+ */
+export function upstreamFailureNotice(id: string, kind: NodeFailureKind | undefined, status: string): string {
+  const why = kind ? `${kind} — ${FAILURE_KIND_INFO[kind]?.evidence ?? ''}` : status;
+  return (
+    `[⚠ 前驱 ${id} 未通过 (${why})。下面这段是引擎的判词或它没完成的半成品, **不是可用的材料** —— ` +
+    '不要引用它、不要转述它、更不要把它自报的完成当真。你的产出若依赖这个前驱, ' +
+    '就在产出里如实写明缺了哪一块, 不要替它补。]'
+  );
+}
+
 export function withFailureKind<T extends { status: string; failureKind?: NodeFailureKind }>(
   r: T,
 ): T & { failureKind?: NodeFailureKind } {
