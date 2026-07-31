@@ -1,5 +1,5 @@
 /**
- * src/harness/node-failure —— **节点没过的成因词表** (P1, 2026-08-05)。
+ * src/harness/node-failure —— **节点没过的成因词表** (P1, 2026-07-31)。
  *
  * ## 为什么要有这个文件
  *
@@ -60,7 +60,7 @@ export type NodeFailureKind =
   /**
    * conductor 节点的子图**一个都没成**(`ok === 0`)。节点自己没毛病,坏的是它画出来的那些步。
    *
-   * 这一格是**读数板自己点出来的**(2026-08-05 live:`execute` 与 `contract` 两个 conductor
+   * 这一格是**读数板自己点出来的**(2026-07-31 live:`execute` 与 `contract` 两个 conductor
    * 节点落进 `unclassified`)—— 那正是 `unclassified` 该起的作用:它不是垃圾桶,是一个指着
    * "这里还有条没交代的失败路径"的指针。
    */
@@ -70,7 +70,7 @@ export type NodeFailureKind =
    *
    * 它**不是**兜底垃圾桶,是一个可以被数出来的缺陷指标 —— 读数板上它非零,意思是
    * "引擎里还有一条失败路径没交代自己是怎么回事",那正是该去补标注的地方。
-   * ⚠ 与"字段整个缺席"不是一回事:缺席 = 早于 2026-08-05 的记录(**没记**);
+   * ⚠ 与"字段整个缺席"不是一回事:缺席 = 早于 2026-07-31 的记录(**没记**);
    * `unclassified` = 记了,但归不了类。合成一个会把老数据读成新缺陷。
    */
   | 'unclassified';
@@ -174,7 +174,7 @@ export const FAILURE_KIND_ORDER = Object.keys(FAILURE_KIND_INFO) as NodeFailureK
  * 纯函数、不改入参:settle 与测试共用同一份判断,不各写一遍。
  */
 /**
- * **给下游读者的失败告示**(A5 sensor 措辞普查, 2026-08-05)。
+ * **给下游读者的失败告示**(A5 sensor 措辞普查, 2026-07-31)。
  *
  * 治的是一条实证过的静默失真: fan-in 场景下 (`requires: 'any'`, 一个前驱没过另一个过了),
  * 没过的那个**照样**被注入下游 leaf 的 `Predecessor outputs`, 而且**不带任何标记**。

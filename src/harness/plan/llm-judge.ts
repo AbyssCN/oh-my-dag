@@ -92,7 +92,7 @@ export function makeLlmConvergenceJudge<R>(opts: LlmJudgeOpts<R>): FixpointJudge
     const v = r.parsed as
       | { converged: boolean; score: number; failureReason?: string; rejectedNodes?: string[] }
       | undefined;
-    // A5 (2026-08-05): 这句话的**读者是下一轮重画的 conductor**, 而它出现在 `<上一轮未通过>` 里 ——
+    // A5 (2026-07-31): 这句话的**读者是下一轮重画的 conductor**, 而它出现在 `<上一轮未通过>` 里 ——
     // 读者会把那块里的任何东西当成对自己方案的评价, 于是"judge 未结构化输出"会让它去迎合一句
     // 根本不存在的判词改图。先把这件事撇清, 再给一条它做得了的事。
     if (!v) {

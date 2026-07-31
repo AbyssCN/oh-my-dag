@@ -58,13 +58,13 @@ export interface DagRunNode {
   /** command 节点的退出码;**负数 = 闸拒**(与普通失败后续动作相反)。见 `DagNodeResult.exitCode`。 */
   exitCode?: number;
   /**
-   * **没过的成因**(P1, 2026-08-05;词表与判据在 `node-failure.ts`)。
+   * **没过的成因**(P1, 2026-07-31;词表与判据在 `node-failure.ts`)。
    *
    * 为什么这一位值得进历史记录,而 `command`/`detector` 那两位刻意只存原始事实:因为它**不是
    * 派生值**。`commandRiskTier(command)` 可以事后重算,而"这个节点为什么没过"事后**算不回来**
    * —— 退出码、心跳、产物闸的结果散在运行期,记录里只剩一个 `failed`。不当场记下来就永久丢了。
    *
-   * ⚠ 缺席 ≠ `'unclassified'`:缺席 = 早于 2026-08-05 的记录(**没记**);
+   * ⚠ 缺席 ≠ `'unclassified'`:缺席 = 早于 2026-07-31 的记录(**没记**);
    * `'unclassified'` = 记了但引擎没能归类(**该去补标注的缺陷**)。读数板分开念。
    */
   failureKind?: NodeFailureKind;
@@ -86,7 +86,7 @@ export interface DagRunRecord {
   nodes: DagRunNode[];
   usage: { conductorIn: number; conductorOut: number; leavesIn: number; leavesOut: number; leavesCacheHit: number };
   /**
-   * 图外观察者本次的产出,**压成 {kind, nodes} 两位**(2026-08-05)。
+   * 图外观察者本次的产出,**压成 {kind, nodes} 两位**(2026-07-31)。
    *
    * 为什么不存 `message`: 消息是写给下一轮 conductor 的长句,排障时在 `_loop-<nodeId>.json` 里
    * 有全文;而留痕库该存的是**能长期归组统计**的东西 —— 同 `writeCounts` 压成两个数的那条理由。
@@ -135,7 +135,7 @@ function rowToRecord(row: Row): DagRunRecord {
     levels: JSON.parse(row.levels),
     nodes: JSON.parse(row.nodes),
     usage: JSON.parse(row.usage),
-    // 缺席 = 早于 2026-08-05 的行。**不编一个 `[]`** —— 那会把「没记」伪装成「一条观察都没有」。
+    // 缺席 = 早于 2026-07-31 的行。**不编一个 `[]`** —— 那会把「没记」伪装成「一条观察都没有」。
     ...(row.observations ? { observations: JSON.parse(row.observations) } : {}),
   };
 }
@@ -186,7 +186,7 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
   // 正是 DagRunRecord.runId 契约里说的那一格)。
   const cols = (db.query(`PRAGMA table_info(omd_dag_runs)`).all() as { name: string }[]).map((c) => c.name);
   if (!cols.includes('run_id')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN run_id TEXT`);
-  // 同上: 2026-08-05 之前建的表没这一列, 老行留 NULL (= 没记, 与 '[]' 不是一回事)。
+  // 同上: 2026-07-31 之前建的表没这一列, 老行留 NULL (= 没记, 与 '[]' 不是一回事)。
   if (!cols.includes('observations')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN observations TEXT`);
   db.run(`CREATE INDEX IF NOT EXISTS omd_dag_runs_run_id ON omd_dag_runs (run_id)`);
   const ins = db.query(

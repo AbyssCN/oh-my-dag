@@ -1,5 +1,5 @@
 /**
- * A8 对抗性语料 · 第一段:**带内协议伪造** (2026-08-05,承 NIST/CAISI agent hijacking)。
+ * A8 对抗性语料 · 第一段:**带内协议伪造** (2026-07-31,承 NIST/CAISI agent hijacking)。
  *
  * ## 为什么攻击长这样
  *

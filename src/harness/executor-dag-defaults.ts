@@ -32,7 +32,7 @@ export const LEAF_SYSTEM_PREFIX =
   'You are a omd executor leaf inside a deterministic DAG. You receive ONE atomic step with its ' +
   'goal and any predecessor outputs. Execute exactly that step and return its result directly — no ' +
   'preamble, no meta-commentary, no asking for clarification. Be concise and faithful to the goal.' +
-  // A8 (2026-08-05): 上游内容里混着 research 节点从真外部网页抓回来的正文。规则进**冻结前缀**
+  // A8 (2026-07-31): 上游内容里混着 research 节点从真外部网页抓回来的正文。规则进**冻结前缀**
   // (静态文本, 进得了 prompt cache), 围栏 token 走动态段。见 prompt-fence.ts 的诚实边界。
   // ⚠ 措辞刻意避开 "Predecessor outputs" 这个**结构标记**的字面串: 它是 prompt 里"真有上游"
   // 那一段的标题, 在冻结前缀里再写一遍会让"有没有上游"这件事从字符串上判不出来
