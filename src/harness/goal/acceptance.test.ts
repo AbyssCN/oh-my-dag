@@ -10,6 +10,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   acceptanceCommandBlockReason,
   classifyGoal,
+  acceptanceVacuityReason,
   classifyPrompt,
   isRunnableAcceptanceCommand,
   normalizeClassification,
@@ -202,6 +203,64 @@ describe('分类调用 —— 挂了就往保守档落, 不抛 (分类是路由�
     expect(p).toContain('随便一个目标');
     // 两条轴必须被明说成互相独立, 否则模型会把 complex 顺手读成"判不了"。
     expect(p).toContain('互相独立');
+  });
+});
+
+describe('**空世界自检** (G4 反面用例) —— 活还没干之前它就该是红的', () => {
+  const ok = (exitCode: number) => async () => ({ exitCode });
+
+  test('空世界里就绿 → 判定虚判据', async () => {
+    const why = await acceptanceVacuityReason('bun test', ok(0));
+    expect(why).toContain('vacuous');
+    expect(why).toContain('还没干之前');
+  });
+
+  test('空世界里是红的 → 通过自检 (它至少区分得了做没做)', async () => {
+    expect(await acceptanceVacuityReason('bun test', ok(1))).toBeNull();
+  });
+
+  test('expectExit 非 0 时按期望值判 (TDD 证红步那一档)', async () => {
+    // 期望 1: 空世界里就返 1 = 它也区分不了 —— 同样是虚判据。
+    expect(await acceptanceVacuityReason('bun test', ok(1), 1)).toContain('vacuous');
+    expect(await acceptanceVacuityReason('bun test', ok(0), 1)).toBeNull();
+  });
+
+  test('负退出码 = 闸拒, 自检对它无话可说 (那件事另有人管)', async () => {
+    expect(await acceptanceVacuityReason('curl x', ok(-1))).toBeNull();
+  });
+
+  test('runner 抛错 → fail-open 不拦 (自检是加固不是前置条件)', async () => {
+    const boom = async () => {
+      throw new Error('spawn 失败');
+    };
+    expect(await acceptanceVacuityReason('bun test', boom)).toBeNull();
+  });
+
+  test('接进 classifyGoal: 虚判据 → 降级探索型, 且原命令写进学习目标', async () => {
+    const gen = (async () =>
+      ({ text: '{"tier":"simple","acceptance_kind":"executable","command":"cat README.md"}', usage: { in: 1, out: 1 } })) as never;
+    const c = await classifyGoal('随便', { generate: gen, model: 'm:m', runCommand: ok(0) });
+    expect(c.acceptance.kind).toBe('exploratory');
+    if (c.acceptance.kind === 'exploratory') {
+      expect(c.acceptance.learningGoal).toContain('vacuous');
+      // 原命令必须带走 —— 否则下一步的人不知道被拒的是哪条。
+      expect(c.acceptance.learningGoal).toContain('cat README.md');
+    }
+  });
+
+  test('**不给 runCommand 就不自检**(零回归: 老调用面行为不变)', async () => {
+    const gen = (async () =>
+      ({ text: '{"tier":"simple","acceptance_kind":"executable","command":"cat README.md"}', usage: { in: 1, out: 1 } })) as never;
+    const c = await classifyGoal('随便', { generate: gen, model: 'm:m' });
+    expect(c.acceptance.kind).toBe('executable');
+  });
+
+  test('prompt 教了这条 + 教了"别断言自己要写的结论词"', () => {
+    const p = classifyPrompt('随便一个目标');
+    expect(p).toContain('活还没干之前必须是红的');
+    expect(p).toContain('输入里的值');
+    // 反例要写出来 —— 光说规则不够, live 已经证明过两次了。
+    expect(p).toContain('两头都握着');
   });
 });
 

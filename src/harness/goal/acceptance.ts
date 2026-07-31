@@ -74,6 +74,60 @@ export const isRunnableAcceptanceCommand = (command: string): boolean =>
   acceptanceCommandBlockReason(command) === null;
 
 /**
+ * **空世界自检** (2026-07-31, G4 反面用例的可实现版)。
+ *
+ * ## 它要杀的是什么
+ *
+ * D-I 把判卷标准冻在环外, 防的是**执行体移动球门**。2026-07-31 live 抓到它防不住的另一半:
+ * **球门生下来就是虚的**。那次冻结的命令是 `grep -q "相同" docs/from-api.md` —— 而它匹配得上
+ * 「不相同」, 对的答案和错的答案都满足。命令跑了、退出码 0、G4 那格看上去是绿的, 而它什么都没验。
+ *
+ * **虚判据比没判据坏**: 没判据时任务文本会明说"本目标没有机器判据, 别伪造一个", judge 因此
+ * 会去看别的证据; 有个虚的则让整条链**看起来已被验证**。
+ *
+ * ## 判据: 活还没干之前, 它就该是红的
+ *
+ * 一条真在判事的验收命令, 必须能区分"做完了"与"还没做"。所以在**执行之前**跑一遍它:
+ * **这时候就过 = 它跟这次要做的事无关。**
+ *
+ * 抓得到的真实一类:
+ *   - `bun test` 而测试本来就是绿的 (D-I 的 verify-green 恰恰要求它一开始是红的)
+ *   - `cat README.md` / `test -d docs` 这种"文件在不在"而文件本来就在
+ *   - 断言的内容源材料里本来就有
+ *
+ * ## ⚠ 抓不到什么 (诚实边界, 别把它当万能)
+ *
+ * **抓不到上面那条 live 缺陷本身。** `grep -q "相同" docs/from-api.md` 在空世界里文件还不存在
+ * → grep 失败 → 自检认为它"能区分" —— 而它事后仍被「不相同」满足。
+ * 那一类需要的是**语义知识**(断言的词是不是执行体自己能选的), 确定性检查够不到。
+ * 那一半走 prompt(见 `classifyPrompt` 里"断言要落在**输入里的值**上"那条), 是 inferential 侧。
+ * 两层各管一半, 谁也别声称管全了。
+ *
+ * fail-open: 没有 runner / 跑不起来 → 返 null (不拦)。自检是加固不是前置条件。
+ */
+export async function acceptanceVacuityReason(
+  command: string,
+  runCommand: (input: { command: string }) => Promise<{ exitCode: number }>,
+  expectExit = 0,
+): Promise<string | null> {
+  let exitCode: number;
+  try {
+    ({ exitCode } = await runCommand({ command }));
+  } catch (err) {
+    logger.warn({ command, err: String(err) }, '[omd/goal] 空世界自检跑不起来 → 不拦 (fail-open)');
+    return null;
+  }
+  // 负退出码 = command-leaf 的闸拒返回值, 不是被执行命令的退出码 —— 那说明命令根本没跑,
+  // 自检对它无话可说 (而"跑不起来"这件事已经由 acceptanceCommandBlockReason 管了)。
+  if (exitCode < 0) return null;
+  if (exitCode !== expectExit) return null; // 空世界里是红的 —— 通过自检
+  return (
+    `[vacuous] 这条验收命令在**活还没干之前**就已经满足 (退出码 ${exitCode} = 期望值) —— ` +
+    `它区分不了"做完了"与"还没做", 因此它不是一条判据。`
+  );
+}
+
+/**
  * 探索型兜底 —— 分型失败 / 执行型拿不到可跑命令时用它, **并把原因原样写进学习目标**。
  *
  * 为什么兜到探索型而不是"执行型但命令留空": 执行型的全部意义就是那条命令, 留空的执行型
@@ -170,6 +224,13 @@ export function classifyPrompt(goal: string): string {
     // 形状没错, 锚点里的 `$` 撞了元字符闸。一条 `$` 的连锁是: 命令被拒 → 降级探索型 → 任务文本
     // 写上"没有机器判据·别伪造" → judge 把**真做完**的活读成捏造执行确认 → 整个 goal 报 failed。
     // 所以这一行必须明说, 而不是指望"别用元字符"那条通则被想起来。
+    // 2026-07-31 live: 它写的是 `grep -q "相同" docs/from-api.md` —— 而「相同」是**它自己待会儿
+    // 要写进文件的结论词**, 执行体两头都握着, 于是这条命令必然满足 (而且「不相同」也含「相同」)。
+    // 判据要有意义, 断言的东西就必须是执行体**改不动**的: 源材料里的值、一条命令的退出码。
+    '⚠ **断言要落在「输入里的值」上, 别断言你自己待会儿要写的结论词。**',
+    '  反例: 让摘要写"两处相同"然后 `grep -q "相同" 摘要` —— 你两头都握着, 这条命令必然过, 什么也没验。',
+    '  正例: 断言源材料里那个**具体的数**出现在产物里 (`grep -q "100" docs/from-api.md`)。',
+    '⚠ 这条命令**在活还没干之前必须是红的** —— 它这时候就绿, 说明它跟这次要做的事无关 (会被自检拒)。',
     '⚠ **别在 grep 里用正则锚点 `^` `$`** —— `$` 会被安全闸拒 (整条命令因此跑不起来)。',
     '  要"整行严格相等"就用 `-x`, 它就是干这个的。同理别用 `*` 之外的花哨正则。',
     '写不出这种单条命令 (要 mkdir、要管道过滤、要人眼看输出) = 这个目标机器判不了 → 老实选 exploratory。',
@@ -196,9 +257,18 @@ export function classifyPrompt(goal: string): string {
  */
 export async function classifyGoal(
   goal: string,
-  deps: { generate?: GenerateFn; model?: string },
+  deps: {
+    generate?: GenerateFn;
+    model?: string;
+    /**
+     * 给了则对判出的执行型命令做一次**空世界自检**(见 `acceptanceVacuityReason`):
+     * 活还没干之前它就过 = 它不是判据 → 降级探索型并把原因写进学习目标。
+     * 省略 = 不自检(fail-open;自检是加固不是前置条件)。
+     */
+    runCommand?: (input: { command: string }) => Promise<{ exitCode: number }>;
+  },
 ): Promise<GoalClassification> {
-  const { generate, model } = deps;
+  const { generate, model, runCommand } = deps;
   if (!generate || !model) {
     return { tier: 'complex', acceptance: fallbackExploratory('无分类器 (缺 generate/model)') };
   }
@@ -223,12 +293,20 @@ export async function classifyGoal(
     });
     return normalizeClassification(JSON.parse(extractJsonObject(text)) as RawClassification);
   };
+  /** 过了闸的执行型再过一次空世界自检; 虚判据 → 降级探索型(理由原样带走)。 */
+  const vet = async (c: GoalClassification): Promise<GoalClassification> => {
+    if (c.acceptance.kind !== 'executable' || !runCommand) return c;
+    const why = await acceptanceVacuityReason(c.acceptance.command, runCommand, c.acceptance.expectExit);
+    if (!why) return c;
+    logger.warn({ command: c.acceptance.command, why }, '[omd/goal] 验收命令是虚判据 → 降级探索型 (G4 反面用例)');
+    return { tier: c.tier, acceptance: fallbackExploratory(`${why} 原命令: \`${c.acceptance.command}\``) };
+  };
   try {
     const first = await ask('');
     // 只在"本来想判执行型、却因命令跑不起来被降级"这一种情况下重试 (fallbackExploratory 的
     // 原因串是那次降级的唯一凭据)。模型自己老实选的探索型不重试 —— 那是它的判断, 不是失误。
     const blockedReason = firstBlockedReason(first);
-    if (!blockedReason) return first;
+    if (!blockedReason) return vet(first);
     logger.info({ blockedReason }, '[omd/goal] 验收命令被闸拒 → 带上闸的原话重问一次 (D-I)');
     const second = await ask(
       `\n\n⚠ 你上一次给的验收命令**被安全闸拒了**, 原话是:\n  ${blockedReason}\n` +
@@ -244,7 +322,7 @@ export async function classifyGoal(
     if (stillBlocked) {
       logger.warn({ stillBlocked }, '[omd/goal] 重试后仍写不出可跑命令 → 降级探索型 (这次多半是真判不了)');
     }
-    return second;
+    return vet(second);
   } catch (err) {
     logger.warn({ err: String(err) }, '[omd/goal] 分类调用/解析失败 → 全保守档 (complex + 探索型)');
     return { tier: 'complex', acceptance: fallbackExploratory('分类调用或解析失败') };

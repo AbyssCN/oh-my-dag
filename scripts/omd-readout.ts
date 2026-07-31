@@ -186,6 +186,23 @@ for (const r of rows) {
   }
 }
 
+// ── ⑥ 熔断 near-miss (§8.4 的键该不该改) ─────────────────────────────────────
+// 熔断的键是「命令 + 逐字相同的失败」。2026-07-31 live 显示 conductor 会把同一个断言重写一遍
+// (单引号换双引号) → 「同一条命令」凑不齐第二次。
+// 直觉改法「只看输出」是**错的**: `grep -q` 失败无输出, 所有静默失败会指纹成同一条。
+// 所以先量: **输出逐字相同、命令文本不同** 有多少组 —— 那才是改键能多抓到的population。
+const byOutput = new Map<string, Set<string>>();
+for (const r of rows) {
+  for (const n of JSON.parse(r.nodes) as DagRunNode[]) {
+    if (!n.outputHash || !n.command) continue;
+    const set = byOutput.get(n.outputHash) ?? new Set<string>();
+    set.add(n.command.trim());
+    byOutput.set(n.outputHash, set);
+  }
+}
+const nearMiss = [...byOutput.entries()].filter(([, cmds]) => cmds.size > 1);
+const exactRepeat = [...byOutput.values()].filter((c) => c.size === 1).length;
+
 // ── ③ 单轮成本异常 (§8.6): 偏离历史中位数 N 倍 ────────────────────────────────
 // 用中位数而非均值: 一次异常本身会把均值抬起来, 于是"异常"检测不出下一次异常。
 const ANOMALY_FACTOR = Number(flags.factor ?? 3);
@@ -196,7 +213,8 @@ const anomalies = median > 0 ? runs.filter((r) => r.leavesIn > median * ANOMALY_
 if (flags.json) {
   console.log(
     JSON.stringify(
-      { dbPath, runs, tierCount, neverButBlocked, commandNodes, conductorChildren, detectorNodes, writeNodes, unreported, totalWrites, totalNoop, noopNodes, median, anomalyFactor: ANOMALY_FACTOR, anomalies },
+      { dbPath, runs, tierCount, neverButBlocked, commandNodes, conductorChildren, detectorNodes,
+        nearMiss: nearMiss.map(([h, c]) => ({ outputHash: h, commands: [...c] })), exactRepeat, writeNodes, unreported, totalWrites, totalNoop, noopNodes, median, anomalyFactor: ANOMALY_FACTOR, anomalies },
       null,
       2,
     ),
@@ -280,6 +298,19 @@ if (conductorChildren === 0) {
   } else if (detectorNodes === 0) {
     console.log('   ⚠ 0 个 (记录是新格式, 这个 0 可信) —— 「60% 天花板在生产上兑现成 0」再加一次读数。');
   }
+}
+
+console.log(`\n⑥ 熔断 near-miss (§8.4 的键该不该从「命令+输出」改成别的)`);
+if (byOutput.size === 0) {
+  console.log('   留痕里没有失败的 command 节点 (或早于「记 outputHash」那次改动)。');
+} else {
+  console.log(`   失败输出指纹 ${byOutput.size} 种; 其中**同输出不同命令** ${nearMiss.length} 组`);
+  for (const [h, cmds] of nearMiss.slice(0, 3)) {
+    console.log(`     · ${h}: ${cmds.size} 条不同命令 —— 现行键漏掉的正是这一组`);
+    for (const c of [...cmds].slice(0, 2)) console.log(`         ${c.slice(0, 64)}`);
+  }
+  console.log(`   判据: near-miss 长期为 0 → 现行「命令+输出」键就够, 别动它;`);
+  console.log(`         成规模 → 才值得为它设计一个更宽的键(⚠ 但不是"只看输出" —— grep -q 失败无输出, 会误熔断)。`);
 }
 
 console.log(`\n诚实边界: 本板只读留痕库。**它算不出的**: 单节点耗时 (没记)、$ (只有 token,`);
