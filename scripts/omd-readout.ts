@@ -129,14 +129,23 @@ const runs = [...byRun.values()]
 const tierCount: Record<CommandRiskTier, number> = { read_only: 0, scoped_write: 0, approval_required: 0, never: 0 };
 const tierSamples = new Map<CommandRiskTier, Set<string>>();
 let commandNodes = 0;
+/** `never` 里**被闸正确拒掉**的那部分(节点非 done)—— 它不是缺陷, 是闸在干活。 */
+let neverButBlocked = 0;
 for (const r of rows) {
   for (const n of JSON.parse(r.nodes) as DagRunNode[]) {
     if (!n.command) continue;
     commandNodes++;
     const tier = commandRiskTier(n.command);
     tierCount[tier]++;
+    // ⚠ `never` 有**两种成因, 后果完全相反**(2026-07-31 第二次 live 撞出来的):
+    //   ① 闸正确拒了它 (bin 不在白名单 → 节点 failed) —— 系统工作正常, **不该报警**
+    //   ② bin 登记漏了却真跑成了 (节点 done) —— 分级表与白名单不同步, **该报警**
+    // 第一版把两者合成一条"不同步"告警, 于是第一次真读数就报了一条假警, 会把人支去修一个
+    // 不存在的问题。这正是 A5「sensor 措辞普查」要治的那类 —— 发现对不对之外, 还得问
+    // "它的读者拿它做得了什么"。
+    if (tier === 'never' && n.status !== 'done') neverButBlocked++;
     const s = tierSamples.get(tier) ?? new Set<string>();
-    if (s.size < 5) s.add(n.command.length > 70 ? `${n.command.slice(0, 67)}…` : n.command);
+    if (s.size < 5) s.add(`${n.status === 'done' ? '' : '[闸已拒] '}${n.command.length > 60 ? `${n.command.slice(0, 57)}…` : n.command}`);
     tierSamples.set(tier, s);
   }
 }
@@ -174,7 +183,7 @@ const anomalies = median > 0 ? runs.filter((r) => r.leavesIn > median * ANOMALY_
 if (flags.json) {
   console.log(
     JSON.stringify(
-      { dbPath, runs, tierCount, commandNodes, writeNodes, unreported, totalWrites, totalNoop, noopNodes, median, anomalyFactor: ANOMALY_FACTOR, anomalies },
+      { dbPath, runs, tierCount, neverButBlocked, commandNodes, writeNodes, unreported, totalWrites, totalNoop, noopNodes, median, anomalyFactor: ANOMALY_FACTOR, anomalies },
       null,
       2,
     ),
@@ -209,8 +218,12 @@ if (commandNodes === 0) {
     console.log(`   ${tier.padEnd(18)} ${String(n).padStart(4)}  ${pct(n / commandNodes)}  ${bar}`);
     for (const s of tierSamples.get(tier) ?? []) console.log(`       · ${s}`);
   }
-  if (tierCount.never > 0) {
-    console.log('   ⚠ never > 0: 有命令的 bin 未登记风险级却跑起来了 —— 分级表与白名单不同步。');
+  const neverAndRan = tierCount.never - neverButBlocked;
+  if (neverButBlocked > 0) {
+    console.log(`   ℹ never 里有 ${neverButBlocked} 条是**闸正确拒掉**的(节点非 done)—— 系统在干活, 不是缺陷。`);
+  }
+  if (neverAndRan > 0) {
+    console.log(`   ⚠ never 里有 ${neverAndRan} 条**跑成了**(节点 done)—— 那才是分级表与白名单不同步, 该修。`);
   }
 }
 

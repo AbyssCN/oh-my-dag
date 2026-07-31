@@ -17,6 +17,7 @@
  *   bun run scripts/smoke-goal-conductor.ts --tier complex  # 走契约段 (贵得多: 多一个 conductor 节点)
  *   bun run scripts/smoke-goal-conductor.ts --goal "..."     # 自定目标
  *   bun run scripts/smoke-goal-conductor.ts --rounds 2       # 内环轮数上限 (默认 1: 只看展开+终判)
+ *   bun run scripts/smoke-goal-conductor.ts --branch                # R2: 沙箱 git init + 隔离 worktree 跑
  *   bun run scripts/smoke-goal-conductor.ts --case conflicting-specs --rounds 3
  *                                                          # **带种沙箱**: 先种一对自相矛盾的源材料,
  *                                                          #   目标/看点由用例自带 (见 live-seed-cases)
@@ -66,13 +67,27 @@ console.log(`沙箱: ${sandbox}`);
 console.log(`目标: ${goal}`);
 console.log(`档位: tier=${tier} · max_rounds=${rounds} · 超时 ${Math.round(timeoutMs / 1000)}s\n`);
 
+// R2 (2026-07-31): `--branch` 才让沙箱成为 git 仓并走隔离档。默认不 init ——
+// 隔离档在**非** git 仓里会降级, 而那条降级路本身也值得偶尔真跑一次, 所以两边都留得到。
+const wantBranch = argv.includes('--branch');
+if (wantBranch) {
+  for (const args of [['init', '-q'], ['add', '-A'], ['-c', 'user.email=smoke@omd', '-c', 'user.name=smoke', 'commit', '-q', '-m', 'seed']]) {
+    const r = Bun.spawnSync(['git', ...args], { cwd: sandbox, stdout: 'pipe', stderr: 'pipe' });
+    if (r.exitCode !== 0) {
+      console.error(`沙箱 git ${args[0]} 失败: ${new TextDecoder().decode(r.stderr).trim()}`);
+      process.exit(1);
+    }
+  }
+  console.log('沙箱已 git init + 首次提交 → 隔离档有对象可建\n');
+}
+
 const registry = new RunRegistry();
 const tools = assembleOmdMcpTools({ cwd: sandbox, runRegistry: registry });
 const goalTool = tools.find((t) => t.name === 'dag_goal');
 if (!goalTool) throw new Error('装配里没有 dag_goal (assemble 变了?)');
 
 const out = (await goalTool.handler(
-  { goal, tier, maxRounds: rounds } as never,
+  { goal, tier, maxRounds: rounds, ...(wantBranch ? { branchStrategy: 'branch' } : {}) } as never,
   {} as never,
 )) as { content: { text: string }[]; isError?: boolean };
 const text = out.content[0]?.text ?? '';
@@ -132,7 +147,13 @@ if (!arg('goal') && !seedCase) {
 // 带种用例: 产物是用例自己的事, 这里只把写出来的东西摊开 —— 判"抓到冲突没有"要看内容,
 // 而**存在 ≠ 对**: 一个硬凑出 "100-500" 的摘要文件同样存在 (那正是最坏的一种)。
 if (seedCase) {
-  const docs = join(sandbox, 'docs');
+  // ⚠ **产物根必须跟着 branch strategy 走**(2026-07-31 第二次 live 撞出来的): `--branch` 档下
+  // 活跑在 `.omd/runs/<runId>` 那棵隔离树里, 而这一段原本写死查沙箱主树 —— 于是它报
+  // 「docs/ 不存在, 一份都没写出来」, 而文件明明都在。**冒烟唯一要看的东西被自己的路径写死弄瞎了。**
+  // 与本轮修的那条引擎缺陷是同一形态: 隔离动了, 消费面没跟上。
+  const workRoot = wantBranch ? join(sandbox, '.omd', 'runs', runId) : sandbox;
+  if (wantBranch) console.log(`(隔离档: 产物根 = ${workRoot})`);
+  const docs = join(workRoot, 'docs');
   console.log(`\n── 产物 (${seedCase.id}) ──`);
   // withFileTypes: 真跑过一次就撞上了 —— agent leaf 会在 docs/ 下建子目录, 对目录 readFileSync
   // 抛 EISDIR, 于是**整个产物摊开这一段没了**, 而那正是这次冒烟唯一要看的东西。

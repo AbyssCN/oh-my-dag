@@ -172,6 +172,29 @@ describe('分类调用 —— 挂了就往保守档落, 不抛 (分类是路由�
     expect(p).toContain('别在 grep 里用正则锚点');
   });
 
+  describe('**引号保护不了元字符** —— 2026-07-31 live 抓到的第二次同形失效', () => {
+    // 那次分类器写的是 `grep -qx "支持格式: CSV, JSON, Excel (.xlsx)" docs/from-api.md`:
+    // 括号在**引号里面**, 它显然以为引号保护得了。闸对整条命令串做正则扫描, 不解析引号。
+    // 后果链与 `$` 锚点那次逐字相同 —— 命令被拒 → 降级探索型 → judge 读到"本目标没有机器判据"。
+    const LIVE_CMD = 'grep -qx "支持格式: CSV, JSON, Excel (.xlsx)" docs/from-api.md';
+
+    test('闸确实拒它(先钉事实, 再谈 prompt 该怎么说)', () => {
+      expect(acceptanceCommandBlockReason(LIVE_CMD)).toContain('shell-metachar');
+    });
+
+    test('去掉括号就过 —— 证明拒的是括号本身, 不是中文/空格/冒号', () => {
+      expect(acceptanceCommandBlockReason('grep -q "支持格式: CSV, JSON, Excel" docs/from-api.md')).toBeNull();
+    });
+
+    test('prompt 明说圆括号被拒, 且明说引号不豁免', () => {
+      const p = classifyPrompt('随便一个目标');
+      expect(p).toContain('圆括号');
+      expect(p).toContain('引号保护不了');
+      // 光说"被拒"不够: 得给一条**照做得了**的出路(承制品 lint 那条「建议要可执行」的教训)。
+      expect(p).toContain('grep -q');
+    });
+  });
+
   test('prompt 把白名单拼进去 —— 不给表就只能猜, 猜错即「假红」(承 conductor prompt 同一教训)', () => {
     const p = classifyPrompt('随便一个目标');
     for (const bin of ['bun', 'tsc', 'git', 'grep']) expect(p).toContain(bin);
