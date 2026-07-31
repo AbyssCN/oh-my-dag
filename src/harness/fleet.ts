@@ -35,8 +35,16 @@ export const CPU_FALLBACK_FANOUT = Math.max(1, Math.min(16, availableParallelism
  * TPM-限, 故 cap 取在 raw 并发上限之下)。短 call fan-out 可经 config 调到 128。
  */
 export const DEFAULT_PROVIDER_POOLS: Record<string, number> = {
-  deepseek: 64, // probe ≤256 零 429 (128 无降级); 64 留 TPM 余量, config 可调高
-  'xiaomi-token-plan-ams': 8, // probe: >8 即 429, 硬上限 = 8
+  // 2026-07-31 owner: **DeepSeek 不设并发上限** —— 官方并发 2500, 而我们一张图撑死几十个节点,
+  // 这个 cap 在真实负载下**永远够不着它要防的那件事**, 只是在挡自己。
+  //
+  // 为什么这一格此前是 64: 2026-06-01 的 ramp probe 量到 ≤256 零 429、256 起排队, 于是取了个
+  // "留 TPM 余量"的保守数。今天回看那个数保守错了对象 —— 排队不是失败, 而 429 在 2500 并发下
+  // 根本没出现过。真正需要护的是**本机足迹**(agent leaf 起子进程 / command leaf 起 shell),
+  // 那件事由 `ExecutorDagConfig.kindFanout` 的 per-kind 小闸管着, 与 provider 桶是两回事。
+  // 把两件事压在一个数上, 结果就是为了保护本机而顺手把网络等待型的 inproc 扇出也钳到 64。
+  deepseek: Number.MAX_SAFE_INTEGER,
+  'xiaomi-token-plan-ams': 8, // probe: >8 即 429, 硬上限 = 8 (**这个是真硬顶, 别跟着放**)
 };
 /** 未列出 provider 的兜底 cap。 */
 const FALLBACK_PROVIDER_CAP = 8;

@@ -32,7 +32,7 @@ import { createDagResearchTool, type ResearchFanout } from './tools/research';
 import { createGoalTool } from './tools/goal';
 import { runGoal } from '../harness/goal/run-goal';
 import { createFleetTools, type SpawnFn } from './tools/fleet';
-import { effectiveFanout, resolveProviderCap } from '../harness/fleet';
+import { CPU_FALLBACK_FANOUT, effectiveFanout, resolveProviderCap } from '../harness/fleet';
 import { createRunsTools } from './tools/runs';
 import { createConfigTools } from './tools/config-tools';
 import { createComposeTools } from './tools/compose';
@@ -354,17 +354,24 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   // 无 search provider → undefined = 不挂 → research 节点响亮失败 (见 createDefaultResearchRunner)。
   const researchRunner = deps.researchRunner ?? createDefaultResearchRunner({ cwd, env });
 
-  // per-kind 闸: **代码零默认** (无硬默认教义 — MCP 是中立基础设施, 不烤机器立场; ms02 等
-  // 强机部署天然无限制)。弱机自己的约束写自己的 env: OMD_AGENT_FANOUT / OMD_COMMAND_FANOUT。
+  // per-kind 闸。**2026-07-31 改动: 从"零默认"改成"本机足迹有默认, 网络等待型不设限"。**
+  //
+  // 此前这里刻意零默认 (「MCP 是中立基础设施, 不烤机器立场」), 而本机足迹实际上是被
+  // **provider 桶顺手挡住的** —— `defaultMaxFanout = min(fanout, providerCap)`, DeepSeek 那格是 64,
+  // 于是 agent leaf 的真实并发一直被钳在 64。今天 owner 把 DeepSeek 那格放开 (官方并发 2500),
+  // 那道顺风车就没了: 一个 200 项的 map 节点会同时起 200 个 pi session / bwrap 子进程。
+  //
+  // 两个轴此前压在一个数上, 现在分开写明:
+  //   · **网络等待型** (inproc leaf) —— 不设限, 并发与核数无关, 钳它纯冤枉;
+  //   · **本机足迹型** (agent 起子进程 / command 起 shell) —— 按核数给默认, env 仍可覆盖。
+  // 这不是新加限制, 是把**此前那道搭便车的限制明写出来**并放宽 (64 → 由机器决定)。
   const intEnv = (v: string | undefined): number | undefined => {
     const n = v ? Number.parseInt(v, 10) : NaN;
     return Number.isFinite(n) && n > 0 ? n : undefined;
   };
-  const agentCap = intEnv(env.OMD_AGENT_FANOUT);
-  const commandCap = intEnv(env.OMD_COMMAND_FANOUT);
   const kindFanout = {
-    ...(agentCap ? { agent: agentCap } : {}),
-    ...(commandCap ? { command: commandCap } : {}),
+    agent: intEnv(env.OMD_AGENT_FANOUT) ?? CPU_FALLBACK_FANOUT,
+    command: intEnv(env.OMD_COMMAND_FANOUT) ?? CPU_FALLBACK_FANOUT,
   };
   // B-2 bandit 选型路由 (2026-07-21 MCP 接线 — 此前只 TUI 有, MCP 路径 dag_run 恒静态):
   // env pool (OMD_ROUTER_POOL_*) / config.multimodalPool ≥2 才真学; 未配 → no-op = 静态 (零回归)。
@@ -508,6 +515,17 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       ...models,
       seatThinking,
       maxFanout: defaultMaxFanout,
+      // **暖发**: 全局先串行跑 1 个节点(写 prompt-cache)→ 再放开其余(命中共享冻结前缀)。
+      //
+      // 2026-07-31 打开它的直接原因是并发闸刚被拆掉: cap 64 时同时在飞的最多 64 个,
+      // 现在是"有几个跑几个" —— **thundering herd 变大了, 共享前缀全 miss 的代价跟着变大**。
+      // 一发串行延迟换掉的是 (N−1) 次前缀 miss, 而 DeepSeek 缓存命中价是 0.07 vs 0.27 /M。
+      //
+      // ⚠ 这个机制**早就写好了**(executor-dag.ts 的 warmThenFanout 分支 + `LEAF_SYSTEM_PREFIX`
+      // 那段"字节稳定"的注释), 但默认 false 且**只有两个 eval oracle 开过** —— 生产从来没吃到。
+      // 又一次「机制在、生产零生效」。引擎侧的默认不动(它是中立的), 在生产装配这一层打开。
+      // 单/双节点不吃这一发: 引擎内 `idSet.size > 1` 已经守着。
+      warmThenFanout: true,
       ...(Object.keys(kindFanout).length ? { kindFanout } : {}),
       // R2: 隔离档下这两个是**为那棵树重建的**; 无 override 时逐字等于装配期那一对 (零回归)。
       agentRunner: agentRunnerForRun,
