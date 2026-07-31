@@ -85,7 +85,12 @@ export const MODEL_CAPS: readonly ModelCaps[] = [
     match: /^gpt-5/,
     maxOutput: 128_000,
     efforts: ['low', 'medium', 'high', 'max'],
-    source: 'developers.openai.com/api/docs/guides/reasoning',
+    // Codex 通道一带 temperature 就 400:`Unsupported parameter: temperature`(2026-07-31 实测)。
+    // 这条不是小事: 它撞上的是 **judge 座位** —— 每一轮判词调用直接抛错、环拿不到裁决,
+    // 于是 goal 环在这个座位配置下**根本不可能收敛**, 而它表现出来的样子是"任务太难,一直在修"。
+    // 实测那一跑空转了 65 分钟。topP 未单独验过, 不凭猜列进来。
+    rejects: ['temperature'],
+    source: 'developers.openai.com/api/docs/guides/reasoning (+2026-07-31 实测)',
   },
 ];
 

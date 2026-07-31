@@ -19,6 +19,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { capsFor } from './model-caps';
 import type {
   Api,
   AssistantMessage,
@@ -391,6 +392,12 @@ export async function piRequest(
     );
   }
   const context = toPiContext(messages, model);
+  // 采样参数按模型能力过滤 (2026-07-31)。原生通道 (`model/index.ts`) 早就查这张表了, **pi 这条没查** ——
+  // 于是 codex 座位上每一发都带 temperature 过去、每一发都 400。撞上 judge 座位的后果不是"某次调用失败",
+  // 是**环永远拿不到裁决**: 一跑空转 65 分钟, 而表面症状是"任务难, 一直在修"。
+  // 复用同一张 caps 表而不是在这里另写一份判断: 两处各写一份, 早晚一份先漂。
+  const rejects = capsFor(model.id)?.rejects;
+  const sendTemperature = req.temperature !== undefined && !rejects?.includes('temperature');
   const reasoning: ThinkingLevel | undefined =
     model.reasoning && req.thinkingLevel && req.thinkingLevel !== 'off'
       ? req.thinkingLevel
@@ -399,7 +406,7 @@ export async function piRequest(
   try {
     msg = await d.completeSimple(model, context, {
       apiKey,
-      ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+      ...(sendTemperature ? { temperature: req.temperature } : {}),
       ...(req.maxTokens !== undefined ? { maxTokens: req.maxTokens } : {}),
       ...(req.signal ? { signal: req.signal } : {}),
       ...(reasoning ? { reasoning } : {}),
