@@ -5,7 +5,12 @@ import type { GenerateFn } from './executor-dag-types';
 export const LEAF_OVERFLOW_MODEL = process.env.OMD_LEAF_OVERFLOW_MODEL || 'opencode-go:deepseek-v4-flash';
 
 /**
- * 默认 generate: 经 gateway send() → 自动出 Langfuse trace (B2 预算下沉)。
+ * 默认 generate: 经 gateway send()。
+ *
+ * ⚠ 2026-07-31 修正一句**曾经不成立**的话: 这里原文写着「→ 自动出 Langfuse trace」, 而那时
+ * 全仓没有任何 Langfuse 客户端 —— 那句是从上游 bluebell gateway (它的 middleware 发 trace)
+ * 一起抄过来的, 开源内核按 YAGNI 没搬代码, 注释却搬了。今天 `model/langfuse.ts` 补上了出口,
+ * 这句话**才**开始为真, 且**仅在配了 LANGFUSE_* 三个 env 时**为真 (不配 = 静默 no-op)。
  * **预算下沉**: 不再自包 makeBudgetedCall(callModel) —— 复用 gateway 终端的单一 budgetedCall, 避免双重预算。
  * overflowModel=LEAF_OVERFLOW_MODEL (meta) → 主 leaf provider 满 cap 时溢出不排队 (保留 overflow-spill 接缝;
  *   fleet 单 provider=opencode-go 时 spill 目标同源, 无害; 配跨 provider overflow 仍生效)。

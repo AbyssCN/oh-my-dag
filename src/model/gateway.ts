@@ -12,6 +12,7 @@ import { randomUUID } from 'node:crypto';
 import type { ModelRequest, ModelResponse } from './types';
 import { callModel } from './index';
 import { makeBudgetedCall } from './provider-budget';
+import { recordGeneration } from './langfuse';
 
 // ── 类型 re-export (内核统一从 gateway 取型) ─────────────────────────
 export type {
@@ -29,6 +30,7 @@ export { resolveRoleModel, listRoleModels } from './role-models';
 export { withGoFallback, isGoModel, goFallbackModel } from './go-fallback';
 export { makeBudgetedCall } from './provider-budget';
 export { computeCost } from './cost-ledger';
+export { flushLangfuse, langfuseStatus, resolveLangfuseConfig } from './langfuse';
 
 // ── Gateway 元数据 (跨切面; 内核经 meta 传 overflow/session 归组) ────
 
@@ -71,5 +73,44 @@ const budgetedCall = makeBudgetedCall(callModel);
  */
 export async function send(req: GatewayRequest): Promise<ModelResponse> {
   const reqWithTrace: GatewayRequest = req.traceId ? req : { ...req, traceId: generateTraceId() };
-  return budgetedCall(reqWithTrace, reqWithTrace.meta?.overflowModel);
+  // ── Langfuse 出口 (2026-07-31) ────────────────────────────────────────────────
+  //
+  // 放在这一层而不是 executor-dag 里: 这是**内核唯一的模型入口**, 挂这儿意味着 conductor /
+  // leaf / judge / verifier / research 一个都漏不掉 —— 而"漏不掉"正是 prompt 可审查的前提
+  // (漏掉的那类调用恰好是没人想起来的那类)。
+  //
+  // 未配 env → recordGeneration 直接 return, 主路径零成本。失败 → fail-open, 见 langfuse.ts。
+  // 归组用 meta.sessionId: 一次 run 的全部调用落进同一条 trace; 没给就退回本次 traceId
+  // (孤立调用也该看得见, 只是它自己一条)。
+  const startTime = new Date();
+  const traceId = reqWithTrace.meta?.sessionId ?? reqWithTrace.traceId!;
+  const name = reqWithTrace.meta?.role ?? 'model-call';
+  try {
+    const res = await budgetedCall(reqWithTrace, reqWithTrace.meta?.overflowModel);
+    recordGeneration({
+      traceId,
+      name,
+      model: res.model ?? reqWithTrace.model ?? 'unknown',
+      input: reqWithTrace.messages,
+      output: res.text ?? '',
+      ...(res.usage ? { usage: res.usage } : {}),
+      startTime,
+      endTime: new Date(),
+    });
+    return res;
+  } catch (err) {
+    // **失败的调用比成功的更值得看**: 429/超时/闸拒是 prompt 迭代时最需要的那一批样本,
+    // 而它们恰恰是"只记成功"的观测面永远看不见的。记完原样抛, 不改变错误语义。
+    recordGeneration({
+      traceId,
+      name,
+      model: reqWithTrace.model ?? 'unknown',
+      input: reqWithTrace.messages,
+      output: '',
+      startTime,
+      endTime: new Date(),
+      error: String(err),
+    });
+    throw err;
+  }
 }
