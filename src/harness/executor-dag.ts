@@ -60,7 +60,9 @@ import {
   lintArtifactEdges,
   artifactLintObservations,
   detectLoopNoProgress,
+  detectNoArtifactChange,
   type RoundShape,
+  type RoundArtifacts,
 } from './plan/observers';
 // D-Q detector 节点: 图内 fan-in 检测者的输出协议解析 (REJECT: / BLOCKED:)。
 import { parseDetectorVerdict, DETECTOR_PROTOCOL } from './plan/detector';
@@ -341,6 +343,26 @@ async function executePlan(
       return null;
     }
   };
+  /**
+   * 一轮内环在盘上留下的产物指纹 (G5 正解的输入)。
+   *
+   * ⚠ 读不到就记 `null`, **不跳过** —— 跳过等于把"量不到"悄悄当成"这个文件不存在于本轮",
+   * 而下游判据一比就成了"路径集变了 → 有位移"。那是**拿缺失冒充证据**, 方向还正好反了。
+   * 记 null 之后, 检测器见到任一 null 就整轮不判 (fail-open, 倾向不报)。
+   */
+  const collectRoundArtifacts = (roundResults: ReadonlyMap<string, LeafResult>): RoundArtifacts => {
+    const hashes: Record<string, string | null> = {};
+    for (const r of roundResults.values()) {
+      // **用这个节点自己的根**, 不是引擎进程的 cwd —— R2 隔离档下 leaf 跑在另一棵 worktree 里。
+      // 拿错根去找文件会全部 hash 成 null, 于是检测器在最该用它的配置里静默失效 (端到端用例抓住的)。
+      const root = r.artifactRoot ?? continuity?.repoRoot ?? process.cwd();
+      for (const p of r.filesTouched ?? []) {
+        hashes[p] = hashArtifact(p.startsWith('/') ? p : join(root, p));
+      }
+    }
+    return { hashes };
+  };
+
   /** 跑一次制品边 lint (D-12/INV-P2-4) → 新发现的观察条目。零模型调用, 只报告不拦截。 */
   const runArtifactLint = (): DagObservation[] =>
     observe(
@@ -1183,6 +1205,13 @@ async function executePlan(
 
     // D-Q 空转检测的比对面 (上一轮的子节点 id 集 + 被拒集)。
     let prevShape: RoundShape | null = null;
+    /** 上一轮盘上的产物指纹 (G5 正解的比对源)。 */
+    let prevArtifacts: RoundArtifacts | null = null;
+    /**
+     * 「盘上没位移」**连续**命中几轮。今天只用来出读数 —— 它就是将来把这条从**报**升成
+     * **BLOCKED** 时, K 该取几的那份依据。0 读数时先定 K 等于凭感觉定闸。
+     */
+    let noArtifactChangeRounds = 0;
     /** 真正跑完的轮次 (取消收尾时要如实报, 不能拿 maxRounds 顶)。 */
     let doneRounds = startRound - 1;
 
@@ -1276,8 +1305,26 @@ async function executePlan(
       const rejectedNow = [...new Set([...verdict.rejected, ...r.detector.rejected])];
       // 制品 lint 的发现**接在失败原因后面**进下一轮的重展开 prompt —— 环的信息通道只有这一条,
       // 「你少画了一条边」这句话进不去, conductor 下一轮还会照样少画 (D-12 lint 为主的落点)。
-      prevReason = r.lint.length
-        ? `${verdict.reason}\n\n[图外观察者]\n${r.lint.map((o) => `- ${o.message}`).join('\n')}`
+      // ── 「产物没变」检测 (2026-08-05, G5 正解) ────────────────────────────────
+      // 判在这里而不是和空转判据一起, 是因为**它不拦** —— 它的出口就是下面这条 prompt 通道。
+      // 位置在 journal 之前: 这句话必须跟着 prevReason 一起被写进 journal, 否则 resume 接回来
+      // 的那一轮会丢掉它 (环唯一的信息通道断一次, 就等于这条检测器白跑)。
+      const curArtifacts = collectRoundArtifacts(r.results);
+      const noMove = detectNoArtifactChange(prevArtifacts, curArtifacts);
+      prevArtifacts = curArtifacts;
+      if (noMove) {
+        noArtifactChangeRounds++;
+        logger.warn(
+          { node: id, round, files: Object.keys(curArtifacts.hashes).length, consecutive: noArtifactChangeRounds },
+          '[omd/executor-dag] 盘上没有位移: 产物与上一轮逐字节相同 (只报不拦, 攒 K 用)',
+        );
+        observe([noMove]);
+      } else {
+        noArtifactChangeRounds = 0;
+      }
+      const roundObs = [...r.lint, ...(noMove ? [noMove] : [])];
+      prevReason = roundObs.length
+        ? `${verdict.reason}\n\n[图外观察者]\n${roundObs.map((o) => `- ${o.message}`).join('\n')}`
         : verdict.reason;
 
       // **每轮判完就写** journal —— 不是节点结束时写。崩在这之后, 下次 resume 接得回来。
@@ -1862,7 +1909,9 @@ async function executePlan(
         text = r.text;
         usage = r.usage;
       }
-      const leaf: LeafResult = { id, status: 'done', kind: useAgent ? 'agent' : 'inproc', model, output: text, deps: node.depends_on ?? [], usage, filesTouched, ...(filesRead.length ? { filesRead } : {}), ...(toolCalls !== undefined ? { toolCalls } : {}), ...(writeCounts ? { writeCounts } : {}) };
+      // `artifactRoot` 跟着 `filesTouched` 一起出图: 一组相对路径离开它的根就没有意义,
+      // 而 R2 隔离档下这个根与引擎进程的 cwd 不是同一个 (见 LeafResult.artifactRoot 的注)。
+      const leaf: LeafResult = { id, status: 'done', kind: useAgent ? 'agent' : 'inproc', model, output: text, deps: node.depends_on ?? [], usage, filesTouched, ...(artifactRoot ? { artifactRoot } : {}), ...(filesRead.length ? { filesRead } : {}), ...(toolCalls !== undefined ? { toolCalls } : {}), ...(writeCounts ? { writeCounts } : {}) };
       saveDoneCheckpoint({
         id,
         kind: useAgent ? 'agent' : 'inproc',

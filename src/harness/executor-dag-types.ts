@@ -330,7 +330,13 @@ export interface DagObservation {
    * `write-race` / `missing-input` = **跑之前**就能确定性判死的坏 plan (A4, 2026-07-31,
    * 补 Fowler 2×2 里最空的那格 computational feedforward)。前两个是事后传感, 这两个是事前拦。
    */
-  kind: 'undeclared-artifact-dep' | 'loop-no-progress' | 'write-race' | 'missing-input';
+  /**
+   * `loop-no-artifact-change` (2026-08-05, G5 正解) = 两轮下来**盘上的产物逐字节没变**。
+   * 与 `loop-no-progress` 的区别是**判据键在哪**: 后者键在「agent 有没有重复自己」(而 LLM
+   * conductor 每轮重画, 从不逐字重复 → D-AD 诊断的死路), 前者键在「盘上有没有位移」——
+   * 产物是 agent 不重新生成的东西, 是这个环里唯一稳定的信号。**只报不拦**, 见 detectNoArtifactChange。
+   */
+  kind: 'undeclared-artifact-dep' | 'loop-no-progress' | 'write-race' | 'missing-input' | 'loop-no-artifact-change';
   /** 涉及的节点 id (lint = [reader, writer]; 空转 = 被反复拒绝的那批)。 */
   nodes: string[];
   /** 人与模型都读的一句话 (进 prompt 的就是它)。 */
@@ -371,6 +377,19 @@ export interface LeafResult {
   skipped?: boolean;
   /** agent leaf 触碰的文件 (来自 AgentLeafResult.filesTouched, checkpoint 产物锚)。 */
   filesTouched?: string[];
+  /**
+   * `filesTouched` 里**相对路径的解析根** (2026-08-05)。
+   *
+   * 为什么它必须跟着路径一起走: 一组相对路径**离开它的根就没有意义**了。产物闸在节点里用的是
+   * `r.cwd ?? repoRoot ?? process.cwd()` —— 而 R2 隔离档下 leaf 跑在一棵 worktree 里,
+   * 那个 cwd 与引擎进程的 cwd **不是同一个**。此前这一位没往外传, 于是任何在节点之外
+   * 重新解析 `filesTouched` 的人都在拿错的根去找文件。
+   *
+   * 抓住这条的是「产物没变」检测器的端到端用例: 单元测试全绿, 而真跑一遍**恒命中不了** ——
+   * 因为每个文件都 hash 成 null (在错的根下当然找不到)。fail-open 的方向救了它不误报,
+   * 但它也就此**在最该用它的那个配置里静默失效**。缺席 = 非 agent 节点 / leaf 没报 cwd。
+   */
+  artifactRoot?: string;
   /**
    * **§8.5 效果指标的压缩形** (2026-07-31): `[总写次数, 其中 no-op 的次数]`。
    *
