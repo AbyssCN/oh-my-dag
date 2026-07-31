@@ -238,6 +238,7 @@ export async function haltJudge(
   let verdictObj: JudgeVerdict;
   try {
     const resp = await deps.generate({
+      traceName: 'halt-judge', // 停不停这件事也要能在观测面上单独看
       messages: [
         {
           role: 'system',

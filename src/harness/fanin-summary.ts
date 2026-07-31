@@ -136,10 +136,15 @@ export async function runFaninSummary(args: {
   output: string;
   depGoals: string[];
   schema: Record<string, unknown>;
+  /** 观测名 (哪个节点的 fan-in 摘要)。省略 = 回落通用名。 */
+  traceName?: string;
 }): Promise<{ summaryJson: Record<string, unknown> | null; usage: ModelUsage }> {
-  const { generate, model, producerGoal, output, depGoals, schema } = args;
+  const { generate, model, producerGoal, output, depGoals, schema, traceName } = args;
   const user = buildFaninSummaryPrompt({ producerGoal, output, depGoals, schema });
   const r = await generate({
+    // 这一发此前在观测面上是**匿名**的 —— 重启后第一跑里两条叫 `omd-leaf` 的大调用就是它,
+    // 而它既不是 leaf 也不是 conductor, 是 fan-in 摘要。审 prompt 时最容易被误读成"某个 leaf 很贵"。
+    ...(traceName ? { traceName } : {}),
     messages: [
       { role: 'system', content: FANIN_SUMMARY_SYSTEM },
       { role: 'user', content: user },

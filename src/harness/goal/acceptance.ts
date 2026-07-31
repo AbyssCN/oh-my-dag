@@ -398,6 +398,8 @@ export async function classifyGoal(
   const ask = async (correction: string): Promise<GoalClassification> => {
     const { text } = await generate({
       model,
+      // 判据轴是防作弊的地基, 它那一发尤其该看得见 (D-I / G4 两条闸都压在这个 prompt 上)。
+      traceName: 'classify:acceptance',
       messages: [{ role: 'user', content: `${classifyPrompt(goal)}${correction}` }],
       // 400 会被推理族的 reasoning 吃光 → 正文截断 → JSON.parse 抛 → 全保守档 (complex + 探索型)。
       // 2026-07-31 S3 live 实测撞到: `deepseek-v4-pro 输出撞到上限 out=400 cap=400 — 正文被截断`,

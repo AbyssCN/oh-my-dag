@@ -223,3 +223,28 @@ describe('⑤ trace 名 = 这一跑在干什么 (不是常量)', () => {
     expect((_peekLangfuseQueue()[0]!.body.name as string).length).toBe(120);
   });
 });
+
+describe('⑥ 观测面不许有匿名调用 (结构性守卫)', () => {
+  test('★ 每一处 generate 调用都报了名 —— 匿名那发一定是最难解释的那发', async () => {
+    // 这条是**源码级**守卫, 不是行为断言。理由: 重启后第一跑里两条最贵的调用叫 `omd-leaf`,
+    // 查下去发现既不是 leaf 也不是 conductor, 是 fan-in 摘要 —— 而按名字看它会被误读成
+    // "某个 leaf 很贵"。观测面上一个匿名的格, 就是一条以后一定会被读错的账。
+    const { readFileSync, readdirSync, statSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const walk = (dir: string): string[] =>
+      readdirSync(dir).flatMap((f) => {
+        const p = join(dir, f);
+        return statSync(p).isDirectory() ? walk(p) : p.endsWith('.ts') && !p.endsWith('.test.ts') ? [p] : [];
+      });
+    const offenders: string[] = [];
+    for (const file of walk('src/harness')) {
+      const lines = readFileSync(file, 'utf-8').split('\n');
+      lines.forEach((ln, i) => {
+        if (!/generate\(\{/.test(ln)) return;
+        // 调用块往后 15 行里必须出现 traceName
+        if (!lines.slice(i, i + 15).some((x) => x.includes('traceName'))) offenders.push(`${file}:${i + 1}`);
+      });
+    }
+    expect(offenders).toEqual([]);
+  });
+});

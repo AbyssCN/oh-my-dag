@@ -210,6 +210,7 @@ async function tryPatchReplan(
         { role: 'user', content: `${PLAN_BOUNDARY}${prevPlanJson}\n\n[verification failure] ${reason}${correction}` },
       ],
       model: conductorModel,
+      traceName: 'conductor:repair', // 校验失败后的补丁重试 —— 与首次规划分开看 (它的贵是有原因的)
       thinkingLevel: config.conductorThinkingLevel ?? config.seatThinking?.(conductorModel) ?? 'high',
       maxTokens: config.conductorMaxTokens ?? (Number(process.env.OMD_CONDUCTOR_MAX_TOKENS) || 32_768),
     });
@@ -2137,6 +2138,7 @@ async function executePlan(
       const schema = (node.output_schema as Record<string, unknown> | undefined) ?? DEFAULT_FANIN_SCHEMA;
       const { summaryJson, usage } = await runFaninSummary({
         generate,
+        traceName: `fanin-summary:${id}`,
         model: faninCfg.model ?? config.leafModel,
         producerGoal: node.goal,
         output,
