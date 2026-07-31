@@ -69,7 +69,7 @@ import { makeLlmConvergenceJudge } from './plan/llm-judge';
 import { send } from '../model/gateway';
 // D-14v2 多模态媒体管道 (S4): attach_media 执行期从直接前驱输出解析图片 → ContentPart 注入。
 import { collectDepMedia } from './leaf-media';
-import { withFailureKind } from './node-failure';
+import { withFailureKind, upstreamFailureNotice } from './node-failure';
 import type { ContentPart } from '../model/gateway';
 
 /** 上一轮 plan+results (escalation 重规划轮传入, D-21 跨轮复用的匹配源)。 */
@@ -427,6 +427,23 @@ async function executePlan(
    * 锚在依赖的全文而非"实际注入的 prompt": fan-in 定向摘要是 LLM 现生成的, 拿它当锚会让每次
    * resume 都判 stale。全文没变 = 输入语义没变。还没产出的 dep 不入表 (调度保证不会发生)。
    */
+  /**
+   * **一个上游在下游 prompt 里该长什么样** (A5, 2026-08-05)。
+   *
+   * 与 `depOutputs` 刻意分开的理由: `depOutputs` 是 **staleness 的语义锚** (`inputsOf` 拿它算
+   * 输入面 hash), 而这里是 **给读者看的话**。两者的消费者不同 —— 把告示混进锚里, 一次措辞改动
+   * 就会让全图下游判 stale 重跑; 把锚直接当话给读者, 就是今天这条静默失真。
+   *
+   * 没过的上游**必须带告示**: 探针实证下游此前拿到的要么是个空标题 (与"产出为空但有效"不可分),
+   * 要么是那个节点自报完成的假话。见 `upstreamFailureNotice`。
+   */
+  const upstreamText = (d: string): string => {
+    const body = faninView[d] ?? depOutputs[d] ?? '';
+    const r = results[d];
+    if (!r || r.status === 'done') return body;
+    return `${upstreamFailureNotice(d, r.failureKind, r.status)}\n${body}`;
+  };
+
   const inputsOf = (deps: readonly string[]): Record<string, string> => {
     const out: Record<string, string> = {};
     for (const d of deps) {
@@ -575,11 +592,27 @@ async function executePlan(
       if (ghosts.length) {
         logger.warn({ node: id, round, ghosts }, '[omd/executor-dag] 内环 judge 点名了子图中不存在的 id → 丢弃');
       }
+      // A5: 空理由的兜底在**源头** (`llm-judge` 的 failureReason ??) 补, 不在这里补第二遍 ——
+      // 同一件事两处兜底就是两处会漂。这里若拿到空串, 那是绑定层的缺陷, 不该被静默糊上。
+      if (!v.converged && !v.failureReason) {
+        logger.warn({ node: id, round }, '[omd/executor-dag] 内环 judge 判未收敛却零理由 → 下一轮反馈为空 (A5, 应由 llm-judge 兜住)');
+      }
       return { converged: v.converged, reason: v.failureReason ?? '', rejected, usage };
     } catch (err) {
       // fail-closed: 判不出来就当没达成。judge 挂掉不该变成"那就算过了吧"。
       logger.warn({ node: id, round, err: String(err) }, '[omd/executor-dag] 内环 judge 无结论 → 判未收敛 (fail-closed)');
-      return { converged: false, reason: 'judge 无可解析结论 (fail-closed)', rejected: [], usage: { in: 0, out: 0 } };
+      // A5: 这句话的读者是**下一轮重画的 conductor**。旧文案 (`judge 无可解析结论 (fail-closed)`)
+      // 报得对, 但它是**引擎侧的事故**, 而读者会把出现在「上一轮未通过」里的任何东西当成对自己
+      // 方案的评价 —— 于是它会为了迎合一句根本不存在的判词去改图。所以第一句先把这件事撇清。
+      return {
+        converged: false,
+        reason:
+          '【引擎侧事故, 不是对上一轮方案的评价】judge 这一轮没能给出任何裁决 (调用失败或结论无法解析)。' +
+          '也就是说: **上一轮的方案没有被判过**, 没有任何证据说它坏。' +
+          '不要为了迎合一句不存在的判词去改图 —— 若上一轮的产出看起来是完整的, 原样再交一次即可。',
+        rejected: [],
+        usage: { in: 0, out: 0 },
+      };
     }
   };
 
@@ -610,7 +643,7 @@ async function executePlan(
     // ── 1. 让 conductor 现场画子图 ──
     // 上游输出进 prompt (有 fan-in 摘要用摘要), 与 map lister 同形。
     const depCtx = deps.length
-      ? `\n\n<upstream>\n${deps.map((d) => `[${d}]\n${faninView[d] ?? depOutputs[d] ?? ''}`).join('\n\n')}\n</upstream>`
+      ? `\n\n<upstream>\n${deps.map((d) => `[${d}]\n${upstreamText(d)}`).join('\n\n')}\n</upstream>`
       : '';
     // **环的信息通道**: 上一轮的失败原因回灌给 conductor, 让它**重新画**而不是重跑同一张图。
     // 这是 D-A 环的全部价值 —— 重跑只能把同样的活再干一遍, 重画才补得出上一轮压根没有的步骤
@@ -1297,7 +1330,7 @@ async function executePlan(
         ? `\n输出 JSON 必须符合 schema: ${JSON.stringify(spec.lister.output_schema)}`
         : '';
       const depCtx = deps.length
-        ? `\n\n<upstream>\n${deps.map((d) => `[${d}]\n${faninView[d] ?? depOutputs[d] ?? ''}`).join('\n\n')}\n</upstream>`
+        ? `\n\n<upstream>\n${deps.map((d) => `[${d}]\n${upstreamText(d)}`).join('\n\n')}\n</upstream>`
         : '';
       let text: string;
       if (spec.lister.executor === 'command' && spec.lister.command && config.commandRunner) {
@@ -1417,7 +1450,7 @@ async function executePlan(
     const deps = node.depends_on ?? [];
     let usageAcc: ModelUsage = { in: 0, out: 0 };
     const depCtx = deps.length
-      ? `\n\n<upstream>\n${deps.map((d) => `[${d}]\n${depOutputs[d] ?? ''}`).join('\n\n')}\n</upstream>`
+      ? `\n\n<upstream>\n${deps.map((d) => `[${d}]\n${upstreamText(d)}`).join('\n\n')}\n</upstream>`
       : '';
     const ctx: PrimitiveCtx = {
       maxFanout: config.maxFanout,
@@ -1610,7 +1643,15 @@ async function executePlan(
       // ponytail (构建相位): leaf-only 降代码量, 维二红线不在砍范围。创意节点护交付物 → 不挂 (同 caveman)。
       const pony = config.leafPonytail && !node.creative ? `\n\n${PONYTAIL_LEAF_DISPOSITION}` : '';
       // fan-in: 有定向摘要的 dep 注入摘要 (faninView 覆盖 depOutputs), 否则全文。
-      const basePrompt = buildLeafPrompt(id, node, { ...depOutputs, ...faninView }, tpl ? { name: tpl.name, body: tpl.body } : undefined);
+      // A5: 走 upstreamText —— 没过的上游带告示进 prompt (此前它与"产出为空但有效"不可分)。
+      const basePrompt = buildLeafPrompt(
+        id,
+        node,
+        // 未产出的 dep 仍旧**整条不进** (与旧的 `depResults[d] !== undefined` 过滤等价) ——
+        // 否则会多出一个空标题, 正是本条要治的那种"看不出是怎么回事"。
+        Object.fromEntries((node.depends_on ?? []).filter((d) => depOutputs[d] !== undefined).map((d) => [d, upstreamText(d)])),
+        tpl ? { name: tpl.name, body: tpl.body } : undefined,
+      );
       // D-Q 检测者: 协议附在 prompt 末尾 (省得每张手写 plan 抄一遍)。**只对内环里的子节点** ——
       // 环外没有消费者, 附了协议却没人读它的裁决 = 又一个"是验证的样子而不是验证"。
       const detectorNode = node.detector === true;
