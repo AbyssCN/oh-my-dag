@@ -48,6 +48,7 @@ interface Row {
   run_id: string | null;
   nodes: string;
   usage: string;
+  observations: string | null;
 }
 interface Usage {
   conductorIn: number;
@@ -85,7 +86,14 @@ try {
 }
 
 const rows = db
-  .query(`SELECT id, created_at, plan_name, node_count, run_id, nodes, usage FROM omd_dag_runs ORDER BY created_at DESC LIMIT ?`)
+  // 老库没有 observations 列 → 整条 SELECT 会崩。列在不在是运行期事实, 查一次 pragma 再拼。
+  .query(
+    `SELECT id, created_at, plan_name, node_count, run_id, nodes, usage${
+      (db.query(`PRAGMA table_info(omd_dag_runs)`).all() as { name: string }[]).some((c) => c.name === 'observations')
+        ? ', observations'
+        : ", NULL AS observations"
+    } FROM omd_dag_runs ORDER BY created_at DESC LIMIT ?`,
+  )
   .all(limit * 3) as Row[]; // ×3: 一次 goal 最多两条, 留余量再按 runId 截
 
 if (rows.length === 0) {
@@ -258,6 +266,24 @@ for (const r of rows) {
   }
 }
 
+// ── ⑧ 图外观察者命中分布 (G5 正解「产物没变」定 K 用) ─────────────────────────
+// 这一段的用处是**具体的**: 「产物没变」检测器今天只报不拦, 要不要升成 BLOCKED、K 取几,
+// 取决于它在真跑上多久命中一次。不记就又要靠人去读日志重数一遍。
+// ⚠ 「这批记录没有 observations 列/字段」与「跑了但一条观察都没有」是两件事, 分开数。
+const obsCount = new Map<string, number>();
+let runsWithObs = 0; // 记了 observations 的记录数 (哪怕是空数组)
+let runsUnrecordedObs = 0; // 早于 2026-08-05 的记录: 这一位压根没记
+for (const r of rows) {
+  if (r.observations === null) {
+    runsUnrecordedObs++;
+    continue;
+  }
+  runsWithObs++;
+  for (const o of JSON.parse(r.observations) as { kind: string }[]) {
+    obsCount.set(o.kind, (obsCount.get(o.kind) ?? 0) + 1);
+  }
+}
+
 // ── ③ 单轮成本异常 (§8.6): 偏离历史中位数 N 倍 ────────────────────────────────
 // 用中位数而非均值: 一次异常本身会把均值抬起来, 于是"异常"检测不出下一次异常。
 const ANOMALY_FACTOR = Number(flags.factor ?? 3);
@@ -270,7 +296,8 @@ if (flags.json) {
     JSON.stringify(
       { dbPath, runs, tierCount, neverButBlocked, neverAndRan, neverUnknown, gateRejections, commandNodes, conductorChildren, detectorNodes,
         nearMiss: nearMiss.map(([h, c]) => ({ outputHash: h, commands: [...c] })), exactRepeat, writeNodes, unreported, totalWrites, totalNoop, noopNodes, median, anomalyFactor: ANOMALY_FACTOR, anomalies,
-        notDoneNodes, failureKindCount, failureKindUnrecorded },
+        notDoneNodes, failureKindCount, failureKindUnrecorded,
+        observations: Object.fromEntries(obsCount), runsWithObs, runsUnrecordedObs },
       null,
       2,
     ),
@@ -407,6 +434,31 @@ if (notDoneNodes === 0) {
   console.log('   判据: 若失败常年只落一两格 → 这个词表是镀金, 该收回去;');
   console.log('         若 gate-rejected / stall / empty-artifact 各占一块 → 此前那个 `failed`');
   console.log('         一直在把三种**后续动作相反**的东西报给同一个读者。');
+}
+
+console.log(`\n⑧ 图外观察者命中 (G5 正解「产物没变」的定 K 依据)`);
+if (runsWithObs === 0) {
+  console.log(`   这批 ${runsUnrecordedObs} 条记录**都没记** observations (早于 2026-08-05)。`);
+  console.log('     ⚠ 那是「没记」不是「一条都没命中」—— 跑一次新的才有这段读数。');
+} else {
+  console.log(`   记了的运行 ${runsWithObs} 次${runsUnrecordedObs > 0 ? ` (另有 ${runsUnrecordedObs} 次是旧格式, 不计入)` : ''}`);
+  if (obsCount.size === 0) {
+    console.log('   一条观察都没有 —— 这个 0 可信 (记了, 只是没命中)。');
+  } else {
+    for (const [kind, n] of [...obsCount].sort((a, b) => b[1] - a[1])) {
+      console.log(`   ${kind.padEnd(26)} ${String(n).padStart(4)} 次  (${(n / runsWithObs).toFixed(2)} 次/运行)`);
+    }
+  }
+  const noMove = obsCount.get('loop-no-artifact-change') ?? 0;
+  console.log(`   ▸ **loop-no-artifact-change ${noMove} 次** —— 它是 D-AD 那条死路的绕法:`);
+  console.log('     旧的三个"卡住"检测器全键在「agent 重复自己」上, 而 LLM conductor 每轮重画,');
+  console.log('     从不逐字重复 → 在 live 上恒 0。这一条改键在「盘上有没有位移」, 才可能真命中。');
+  console.log('   判据 (写死在这儿, 免得下次凭感觉定):');
+  console.log('     · 长期 0 次 → 连这条也够不着, 那 G5 的问题不在判据在别处, 别再加检测器;');
+  console.log('     · 命中了但那些 run 后来**自己收敛了** → 说明"没位移"不蕴含"卡死", 维持只报;');
+  console.log('     · 命中且此后再没位移直到轮数耗尽 → 才谈升 BLOCKED, K 取"连续几轮"的众数。');
+  console.log('   ⚠ 现在**只报不拦**: max_rounds ≤ 4, 误拦一次掐死一个本可收敛的 run,');
+  console.log('     漏报一次只赔一两轮。这个比价下, 0 读数就上硬闸是拿大风险换小收益。');
 }
 
 console.log(`\n诚实边界: 本板只读留痕库。**它算不出的**: 单节点耗时 (没记)、$ (只有 token,`);

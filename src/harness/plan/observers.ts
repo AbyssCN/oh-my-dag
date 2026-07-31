@@ -151,6 +151,67 @@ export function artifactLintObservations(
   }));
 }
 
+/**
+ * 一轮内环在**盘上**留下的东西: 路径 → 内容 hash。
+ *
+ * `null` = **读不到**(文件不在 / 根对不上 / 读失败)。它是**第三态, 不是"没变"** ——
+ * 一个量不到的文件不构成"这一轮什么都没干"的证据, 拿它凑判据就是本仓反复在治的那种补集算法。
+ */
+export interface RoundArtifacts {
+  hashes: Readonly<Record<string, string | null>>;
+}
+
+/**
+ * **「产物没变」检测器** (2026-08-05, G5 的正解; D-AD 诊断出的那条死路的绕法)。
+ *
+ * ## 为什么要换判据
+ *
+ * D-AD 的结构性发现: 我们**所有**的"卡住"检测器都键在「agent 重复了自己」上 ——
+ * `detectLoopNoProgress` 要整轮子图逐个相同 · §8.4 熔断要同一条命令逐字相同 ·
+ * detector 要模型自己标。而 **LLM conductor 每轮重画, 从不逐字重复自己**:
+ * 换个引号、换个节点名、把两步合成一步,内容寻址 id 就全变了。
+ * **非确定性从结构上打败了基于"相同"的检测** —— 所以那几条在 live 上恒 0,
+ * 再跑多少次都是 0(拿钱撞一个已诊断的负结果是浪费)。
+ *
+ * 绕法: 换一个 **agent 不重新生成的东西** 当信号。盘上的产物就是那个 ——
+ * 它不是模型每轮重掷的文本, 是这个环里唯一稳定的物证。
+ * **判据从「它有没有重复自己」变成「盘上有没有发生位移」。**
+ *
+ * ## 三条纪律 (每一条都是踩过的坑的反面)
+ *
+ * ① **population 闸**: 只在**两轮都真碰过文件**时判。一轮纯分析(不产文件)没有产物信号 ——
+ *    那是 `Unobserved` 不是"没位移", 直接返 null。少了这条, 所有非文件型的目标会被一路误报。
+ * ② **「读不到」不算「没变」**: 任一侧出现 `null` hash 就不判(fail-open, 倾向不报)。
+ *    一个量不到的文件不是"没变"的证据。
+ * ③ **只报不拦**(至少现在): 出口是观察条目进下一轮 prompt, **不是 BLOCKED**。
+ *    理由是算得清的账 —— `max_rounds ≤ 4`, 误拦一次的代价是**掐死一个本可收敛的 run**,
+ *    而漏报一次的代价上限只有一两轮。在这个比价下, 0 读数时就上硬闸是拿大风险换小收益。
+ *    先记, 攒到分布再定要不要升成 BLOCKED 以及 K 取几 —— 与 `exitCode` 那一位同一条路子。
+ */
+export function detectNoArtifactChange(prev: RoundArtifacts | null, cur: RoundArtifacts): DagObservation | null {
+  if (!prev) return null;
+  const prevPaths = Object.keys(prev.hashes).sort();
+  const curPaths = Object.keys(cur.hashes).sort();
+  // ① population 闸: 没有产物就没有产物信号 (Unobserved, 不是"没位移")。
+  if (prevPaths.length === 0 || curPaths.length === 0) return null;
+  // ② 任一侧有量不到的 → 不判。
+  if ([...prevPaths, ...curPaths].some((p) => (p in prev.hashes ? prev.hashes[p] : cur.hashes[p]) === null)) return null;
+  if (prevPaths.length !== curPaths.length || prevPaths.some((p, i) => p !== curPaths[i])) return null;
+  if (prevPaths.some((p) => prev.hashes[p] !== cur.hashes[p])) return null;
+  return {
+    kind: 'loop-no-artifact-change',
+    nodes: [],
+    // A5: 读者是下一轮重画的 conductor。所以不播报状态, 直接给它**做得了的事** ——
+    // 并且点破它最可能正在做的那件无效功: 换个名字把同样的步骤再排一遍。
+    message:
+      `盘上没有位移: 这一轮结束时, ${curPaths.length} 个产物文件的内容与上一轮**逐字节相同** ` +
+      `(${curPaths.slice(0, 3).join(', ')}${curPaths.length > 3 ? ' 等' : ''})。` +
+      '也就是说上一轮的反馈**一点也没落到产物上** —— 你很可能只是把同样的步骤换个名字重排了一遍。' +
+      '这一轮请改**内容**而不是改结构: 挑一个具体的产物, 说清它哪一处不满足要求, 然后直接改那一处; ' +
+      '若你判断产物其实已经对了, 那就补一个**能判对错的验证步骤**(跑得起来的命令), 别再重排。',
+  };
+}
+
 /** 一轮内环的可比快照 (只取"下一轮会不会不一样"真正取决于的两样东西)。 */
 export interface RoundShape {
   /** 本轮展开出的子节点 id (内容寻址 → 同 id ≡ 同规格 + 同祖先规格)。 */

@@ -85,6 +85,18 @@ export interface DagRunRecord {
   levels: string[][];
   nodes: DagRunNode[];
   usage: { conductorIn: number; conductorOut: number; leavesIn: number; leavesOut: number; leavesCacheHit: number };
+  /**
+   * 图外观察者本次的产出,**压成 {kind, nodes} 两位**(2026-08-05)。
+   *
+   * 为什么不存 `message`: 消息是写给下一轮 conductor 的长句,排障时在 `_loop-<nodeId>.json` 里
+   * 有全文;而留痕库该存的是**能长期归组统计**的东西 —— 同 `writeCounts` 压成两个数的那条理由。
+   *
+   * 记它的直接用处只有一个,而且是具体的:「产物没变」检测器(G5 正解)今天**只报不拦**,
+   * 要不要把它升成 BLOCKED、K 取几,取决于它在真跑上多久命中一次 ——
+   * 不记下来,那个数就又要靠人去读日志重数一遍(而那正是读数板存在的理由)。
+   * 缺席 = 早于本次改动的记录。
+   */
+  observations?: { kind: string; nodes: string[] }[];
 }
 
 export interface DagRecorder {
@@ -109,6 +121,7 @@ interface Row {
   levels: string;
   nodes: string;
   usage: string;
+  observations: string | null;
 }
 
 function rowToRecord(row: Row): DagRunRecord {
@@ -122,6 +135,8 @@ function rowToRecord(row: Row): DagRunRecord {
     levels: JSON.parse(row.levels),
     nodes: JSON.parse(row.nodes),
     usage: JSON.parse(row.usage),
+    // 缺席 = 早于 2026-08-05 的行。**不编一个 `[]`** —— 那会把「没记」伪装成「一条观察都没有」。
+    ...(row.observations ? { observations: JSON.parse(row.observations) } : {}),
   };
 }
 
@@ -171,10 +186,12 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
   // 正是 DagRunRecord.runId 契约里说的那一格)。
   const cols = (db.query(`PRAGMA table_info(omd_dag_runs)`).all() as { name: string }[]).map((c) => c.name);
   if (!cols.includes('run_id')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN run_id TEXT`);
+  // 同上: 2026-08-05 之前建的表没这一列, 老行留 NULL (= 没记, 与 '[]' 不是一回事)。
+  if (!cols.includes('observations')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN observations TEXT`);
   db.run(`CREATE INDEX IF NOT EXISTS omd_dag_runs_run_id ON omd_dag_runs (run_id)`);
   const ins = db.query(
-    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, levels, nodes, usage)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, levels, nodes, usage, observations)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const byId = db.query(`SELECT * FROM omd_dag_runs WHERE id = ?`);
   const recent = db.query(`SELECT * FROM omd_dag_runs ORDER BY created_at DESC LIMIT ?`);
@@ -224,6 +241,7 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
         JSON.stringify(result.levels),
         JSON.stringify(nodes),
         JSON.stringify(usage),
+        JSON.stringify((result.observations ?? []).map((o) => ({ kind: o.kind, nodes: o.nodes }))),
       );
       return id;
     },
