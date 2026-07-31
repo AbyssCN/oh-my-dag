@@ -18,6 +18,7 @@ import type { CheckpointManager } from '../../harness/continuity/checkpoint-mana
 import type { RunRegistry } from '../run-registry';
 import type { HudRunRecordLike } from '../../hud/mirror';
 import { recordDagRun, type DagRecorder } from '../../harness/dag-record';
+import { describeRunWorktree, prepareRunWorktree, type BranchStrategy } from '../../harness/run-worktree';
 import { renderOwnerDirectives, type OwnerInbox } from '../owner-inbox';
 
 export interface GoalToolDeps {
@@ -143,9 +144,16 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         .positive()
         .optional()
         .describe('Stop opening new inner-loop rounds after this many minutes (soft stop; resume to continue)'),
+      branchStrategy: z
+        .enum(['head', 'branch'])
+        .optional()
+        .describe(
+          "Where this run's writes land. 'head' (default) = current working tree, today's behavior. " +
+            "'branch' = isolated git worktree on branch omd/run/<runId>; the engine never merges back — you do.",
+        ),
     },
     handler: async (args) => {
-      const { goal, tier, maxRounds, researchRounds, resume, detached, budgetTokens, budgetMinutes } = args as {
+      const { goal, tier, maxRounds, researchRounds, resume, detached, budgetTokens, budgetMinutes, branchStrategy } = args as {
         goal?: string;
         tier?: GoalTier;
         maxRounds?: number;
@@ -154,6 +162,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         detached?: boolean;
         budgetTokens?: number;
         budgetMinutes?: number;
+        branchStrategy?: BranchStrategy;
       };
       if (!goal?.trim()) {
         return { content: [{ type: 'text' as const, text: 'dag_goal: goal 必填' }], isError: true };
@@ -237,6 +246,17 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         deps.runRegistry.start(runId);
       }
 
+      // ── R2 branch strategy (D-Y① / D-AB): 这次跑的写落在哪 ──────────────────────
+      // 缺省 `head` = 今天的行为, 零回归。`branch` 才建隔离 worktree, 而且**引擎永不自动合回**
+      // (那是写主干, 按 D-AB 属"需批准"那一档; 同 `path_deliver`, 扳机归 owner)。
+      // ⚠ 建不起来会**退回 head 并带 degradedReason** —— 那一格必须念进回话, 否则调用方以为
+      // 写在隔离树里而实际写的是主树, 比不隔离坏得多。
+      const worktree = prepareRunWorktree({
+        cwd: deps.cwd,
+        runId,
+        ...(branchStrategy ? { strategy: branchStrategy } : {}),
+      });
+
       // INV-P2-6: continuity 给了才落环 journal; resume 时才读它 (与 per-node resume 同一开关)。
       // D-P: 取消把手一并挂上 —— 自主环是最长活的那条路 (research + 多轮执行), 也是最需要能叫停的。
       const dagWithContinuity: ExecutorDagConfig = {
@@ -293,7 +313,8 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
       // fire-and-forget: 自主环是长活 (research + spec + 多轮执行), 三段式取结果。
       deps
         .runGoal(goal, {
-          cwd: deps.cwd,
+          // R2: 隔离档下这里就是那棵 worktree; head 档下它逐字等于 deps.cwd (零回归)。
+          cwd: worktree.cwd,
           dag: dagWithContinuity,
           ...(maxRounds ? { maxRounds } : {}),
           ...(researchRounds ? { researchRounds } : {}),
@@ -310,7 +331,15 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         })
         .catch((err) => deps.runRegistry.fail(runId, err instanceof Error ? err.message : String(err)));
 
-      return { content: [{ type: 'text' as const, text: `runId: ${runId}\nstatus: running` }] };
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            // 隔离档必须把目录/分支/合回命令念出来 —— 否则"隔离"退化成"东西不见了"。
+            text: `runId: ${runId}\nstatus: running\n${describeRunWorktree(worktree)}`,
+          },
+        ],
+      };
     },
   };
 }
