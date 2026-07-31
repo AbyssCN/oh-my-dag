@@ -33,6 +33,7 @@
 import { Database } from 'bun:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { renderTrustedOwnerBlock } from '../harness/prompt-fence';
 
 /** 一个待 owner 决策的岔口。 */
 export interface OwnerFork {
@@ -213,8 +214,10 @@ export function createOwnerInbox(opts: { path?: string; db?: Database } = {}): O
  *
  * ⚠ **逐字**。这里不许有任何摘要/改写/润色 —— 有测试逐字比对。
  */
-export function renderOwnerDirectives(dirs: readonly OwnerDirective[]): string {
+export function renderOwnerDirectives(dirs: readonly OwnerDirective[], nonce: string): string {
   if (!dirs.length) return '';
-  return `<owner 指令>\n${dirs.map((d) => d.text).join('\n')}\n</owner 指令>\n` +
-    '以上是**人**给的指令, 优先级高于你自己的判断与下面的引擎观察。照它改。\n';
+  // A8 (2026-08-05): 块**必须带本轮 token**。此前这个块与抓回来的网页正文在同一条 prompt 里、
+  // 用同一套带内标记 —— 探针实证一段外部正文可以闭合 `<upstream>` 再原样伪造出这个块,
+  // 连"优先级高于你自己的判断"那句都是从这里抄的。token 是伪造品复制不了的那一位。
+  return renderTrustedOwnerBlock(nonce, dirs.map((d) => d.text).join('\n'));
 }

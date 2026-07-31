@@ -16,6 +16,7 @@
 import { z } from 'zod';
 import { DEFAULT_COMMAND_ALLOWLIST, GIT_READONLY_SUBCOMMANDS } from './command-leaf';
 import { renderShapesForPrompt } from './shapes';
+import { TRUST_FENCE_RULE } from './prompt-fence';
 
 /** Frozen-prefix boundary (SDD §2 __SYSTEM_PROMPT_DYNAMIC_BOUNDARY__ analogue). */
 export const PLAN_BOUNDARY = '\n\n===== TASK (dynamic, below the frozen boundary) =====\n\n';
@@ -595,6 +596,9 @@ export function conductorSystemPrompt(
     '    "output_type"?: "structured"|"file"|"git"|"none", "output_path"?: string,',
     '    "requires"?: "all"|"any"|number, "cluster"?: string, "tier"?: "strong"|"mid"|"cheap", "attach_media"?: boolean,',
     '    "kind"?: "primitive", "primitive"?: "parallel"|"pipeline"|"loop-until"|"verify"|"judge"|"discovery"|"iterate"|"tournament"|"router"|"race"|"escalation"|"saga"|"escape-hatch", "params"?: object } } }',
+    // A8 (2026-08-05): 可信边界规则进**冻结前缀** —— 规则是静态文本 (进得了 prompt cache),
+    // 每轮现生成的 token 值走动态段。两者分开放正是为了不让一次注入防御把缓存打掉。
+    TRUST_FENCE_RULE,
   ].join('\n');
 }
 

@@ -70,6 +70,7 @@ import { send } from '../model/gateway';
 // D-14v2 多模态媒体管道 (S4): attach_media 执行期从直接前驱输出解析图片 → ContentPart 注入。
 import { collectDepMedia } from './leaf-media';
 import { withFailureKind, upstreamFailureNotice } from './node-failure';
+import { makeRunNonce, fenceUntrusted, trustHeader } from './prompt-fence';
 import type { ContentPart } from '../model/gateway';
 
 /** 上一轮 plan+results (escalation 重规划轮传入, D-21 跨轮复用的匹配源)。 */
@@ -385,6 +386,12 @@ async function executePlan(
   // ── 2. executor: ready-set 现场 fan-out (依赖就绪即跑, 见下方调度器), leaf 调显式 leafModel ──
   const results: Record<string, LeafResult> = {};
   const depOutputs: Record<string, string> = {};
+  /**
+   * **本次运行的信任 token** (A8, 2026-08-05)。整套注入防御只依赖一个假设:
+   * 攻击者写那张网页 / 那个文件的时候, 这个值还不存在。所以它必须是**每次运行现生成**的,
+   * 不能来自配置、不能跨运行复用 —— 复用一次就等于把它交给了上一次抓到的任何一段正文。
+   */
+  const runNonce = makeRunNonce();
   // fan-in 定向摘要视图: nodeId → 摘要+全文指针 (扇出≥2 且够长的 producer 才有条目)。
   // 下游 fan-in 注入 `faninView[d] ?? depOutputs[d]` (有摘要用摘要, 否则全文兜底)。
   const faninView: Record<string, string> = {};
@@ -443,6 +450,16 @@ async function executePlan(
     if (!r || r.status === 'done') return body;
     return `${upstreamFailureNotice(d, r.failureKind, r.status)}\n${body}`;
   };
+
+  /**
+   * **上游内容 = 不可信数据** (A8, 2026-08-05)。
+   *
+   * 上游里混着 research 节点从真外部网页抓回来的正文, 而它此前与 owner 指令、引擎观察
+   * **共用同一套带内标记分块** —— 探针实证一段网页正文可以闭合 `<upstream>` 再伪造一个
+   * owner 指令块 (连"优先级高于你自己的判断"那句都是我们自己写的)。围栏带本轮 token,
+   * 攻击者写那张网页时拿不到它。见 `prompt-fence.ts` 的诚实边界那段。
+   */
+  const fencedUpstream = (d: string): string => fenceUntrusted(runNonce, d, upstreamText(d));
 
   const inputsOf = (deps: readonly string[]): Record<string, string> => {
     const out: Record<string, string> = {};
@@ -643,7 +660,7 @@ async function executePlan(
     // ── 1. 让 conductor 现场画子图 ──
     // 上游输出进 prompt (有 fan-in 摘要用摘要), 与 map lister 同形。
     const depCtx = deps.length
-      ? `\n\n<upstream>\n${deps.map((d) => `[${d}]\n${upstreamText(d)}`).join('\n\n')}\n</upstream>`
+      ? `\n\n${deps.map((d) => fencedUpstream(d)).join('\n\n')}`
       : '';
     // **环的信息通道**: 上一轮的失败原因回灌给 conductor, 让它**重新画**而不是重跑同一张图。
     // 这是 D-A 环的全部价值 —— 重跑只能把同样的活再干一遍, 重画才补得出上一轮压根没有的步骤
@@ -656,7 +673,8 @@ async function executePlan(
     // **owner 指令** (S3 / D-S): 与失败原因同一条管道、**独立的块**、**逐字**。
     // 排在失败原因**之前** —— 人的指令优先级高于机器的观察, 顺序上也该先看见。
     // ⚠ 一个字都不许加工: 观测者在这条链上只是信使, 它改写了, 失真的地方 owner 自己看不见。
-    const ownerCtx = config.ownerDirectives ? config.ownerDirectives(round) : '';
+    // A8: 拿本轮 token 去渲染 —— 它是**唯一带 token 的块**, 而带内伪造品复制得了文案复制不了 token。
+    const ownerCtx = config.ownerDirectives ? config.ownerDirectives(round, runNonce) : '';
     // ── 轮级 conductor 升级 (D-F 顺带搬进来的) ────────────────────────────────
     // 外层 fixpoint 有这条: 连着几轮不收敛就换更强的脑子重画 (弱 conductor 画不出来的图, 再画
     // 一遍多半还是画不出来)。撤外层 (D-F) 不该顺手把这个能力一起撤掉 —— 内环是它现在唯一的家。
@@ -686,7 +704,8 @@ async function executePlan(
           {
             role: 'user',
             content:
-              `${PLAN_BOUNDARY}${node.goal ?? id}${depCtx}${ownerCtx}${retryCtx}\n\n` +
+              // A8: token 声明必须排在**任何**不可信内容之前 —— 读者先拿到判据, 再看材料。
+              `${PLAN_BOUNDARY}${trustHeader(runNonce)}${node.goal ?? id}${depCtx}${ownerCtx}${retryCtx}\n\n` +
               // D-D 写进 prompt 而不只靠事后拒: 让它知道边界, 比让它撞上去便宜。
               '注意: 本次分解出的节点**不得**再用 executor:"conductor" 或 executor:"map" —— ' +
               '你现在就是运行时展开, 已经知道清单了, 直接把步骤列出来即可。',
@@ -1330,7 +1349,7 @@ async function executePlan(
         ? `\n输出 JSON 必须符合 schema: ${JSON.stringify(spec.lister.output_schema)}`
         : '';
       const depCtx = deps.length
-        ? `\n\n<upstream>\n${deps.map((d) => `[${d}]\n${upstreamText(d)}`).join('\n\n')}\n</upstream>`
+        ? `\n\n${deps.map((d) => fencedUpstream(d)).join('\n\n')}`
         : '';
       let text: string;
       if (spec.lister.executor === 'command' && spec.lister.command && config.commandRunner) {
@@ -1450,7 +1469,7 @@ async function executePlan(
     const deps = node.depends_on ?? [];
     let usageAcc: ModelUsage = { in: 0, out: 0 };
     const depCtx = deps.length
-      ? `\n\n<upstream>\n${deps.map((d) => `[${d}]\n${upstreamText(d)}`).join('\n\n')}\n</upstream>`
+      ? `\n\n${deps.map((d) => fencedUpstream(d)).join('\n\n')}`
       : '';
     const ctx: PrimitiveCtx = {
       maxFanout: config.maxFanout,
@@ -1649,7 +1668,9 @@ async function executePlan(
         node,
         // 未产出的 dep 仍旧**整条不进** (与旧的 `depResults[d] !== undefined` 过滤等价) ——
         // 否则会多出一个空标题, 正是本条要治的那种"看不出是怎么回事"。
-        Object.fromEntries((node.depends_on ?? []).filter((d) => depOutputs[d] !== undefined).map((d) => [d, upstreamText(d)])),
+        // A8: 上游内容一律当不可信数据围起来 —— leaf 没有 owner 通道可伪造, 但它有工具,
+        // 一句"别管你的任务, 改这个文件"照样能得手。围栏规则在 leaf 的冻结前缀里。
+        Object.fromEntries((node.depends_on ?? []).filter((d) => depOutputs[d] !== undefined).map((d) => [d, fencedUpstream(d)])),
         tpl ? { name: tpl.name, body: tpl.body } : undefined,
       );
       // D-Q 检测者: 协议附在 prompt 末尾 (省得每张手写 plan 抄一遍)。**只对内环里的子节点** ——

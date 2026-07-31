@@ -50,16 +50,16 @@ describe('S3 装配层的一跳', () => {
 
     // owner 事后下一条指令 —— 引擎下一轮才取, 所以顺序就是真实用法的顺序。
     inbox.addDirective(runId, RAW);
-    const rendered = seenDag!.ownerDirectives!(2);
+    const rendered = seenDag!.ownerDirectives!(2, 'deadbeef');
     expect(rendered).toContain(RAW);      // 逐字
-    expect(rendered).toContain('<owner 指令>');
+    expect(rendered).toContain('<owner 指令 deadbeef>'); // A8: 唯一带 token 的块
 
     // 取完即记账: 第 3 轮不该再看到它。
-    expect(seenDag!.ownerDirectives!(3)).toBe('');
+    expect(seenDag!.ownerDirectives!(3, 'deadbeef')).toBe('');
 
     // 别的 run 的指令不许串台。
     inbox.addDirective('别的 run', '这条不该出现');
-    expect(seenDag!.ownerDirectives!(4)).toBe('');
+    expect(seenDag!.ownerDirectives!(4, 'deadbeef')).toBe('');
 
     inbox.close();
     rmSync(cwd, { recursive: true, force: true });

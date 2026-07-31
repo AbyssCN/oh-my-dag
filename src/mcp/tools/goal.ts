@@ -300,11 +300,11 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         // conductor 会读成"owner 在反复强调这件事"。
         ...(deps.inbox
           ? {
-              ownerDirectives: (round: number) => {
+              ownerDirectives: (round: number, nonce: string) => {
                 const pending = deps.inbox!.pendingDirectives(runId);
                 if (!pending.length) return '';
                 deps.inbox!.markConsumed(pending.map((d) => d.id), round);
-                return renderOwnerDirectives(pending);
+                return renderOwnerDirectives(pending, nonce);
               },
             }
           : {}),
