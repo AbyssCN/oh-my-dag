@@ -642,7 +642,18 @@ async function executePlan(
         // (对 judge 是"都好着呢"的暗示) 且只有可读名没有可点名的 id。
         extract: () => ({ status: 'done', summary: renderRoundForJudge(children) }),
         callModelFn: async (req) => {
-          const r = await (config.judgeSend ?? send)(req);
+          // 观测面接线 (2026-07-31)。此前这一发**不带 meta** —— 而 `send()` 的口径是
+          // `traceId = meta?.sessionId ?? 自生成`、`name = meta?.role ?? 'model-call'`,
+          // 于是内环 judge 每一发都落进**自己的一条孤立 trace**、名字是通用的 `model-call`。
+          //
+          // 这不是"少了个标签"。2026-07-31 实测: judge 座位在 codex 上恒抛
+          // `Unsupported parameter: temperature`, 环每轮拿不到裁决 → 空转 65 分钟,
+          // 而那条 ERROR **不在这次 run 的 trace 里** —— 是靠全库按名字捞才找到的。
+          // 判词是环的承重决定, 它必须在图的那条 trace 上, 且叫得出自己是谁。
+          const r = await (config.judgeSend ?? send)({
+            ...req,
+            meta: { ...req.meta, sessionId: obsTraceId, role: `judge:${id}`, nodeId: id },
+          });
           usage = addUsage(usage, r.usage ?? { in: 0, out: 0 });
           return r;
         },
