@@ -51,6 +51,39 @@ export interface AgentLeafResult {
   /** 早期心跳闸判定的停摆(issue #5): provider 挂起/排队, 未等满硬超时即中止。executor 据此标 failed +
    *  留 stall 败因(而非把近零输出当 done)。省略/false = 正常完成或硬超时。 */
   stalled?: boolean;
+  /**
+   * **效果指标** (2026-07-31, 承 Loop Engineering §8.5「静默失败」)。省略 = 该 runner 不统计。
+   *
+   * `filesTouched` 回答的是「碰过哪些文件」, 而 §8.5 指出那还不够:
+   *
+   * > 工具调用确确实实发生了, 返回码也是成功的, **但产出物没有任何实质变化** …… 比如 agent
+   * > "修改"了一个文件, 但写入的内容和原文件完全一致。这类失败连"报错"这个最基本的警报信号都没有。
+   *
+   * 我们已经为这条链付过两次账, 每次都只补深一级:
+   *   2026-07-29 —— 补「文件**真在盘上**」(反捏造判词打在真做完的活上)
+   *   2026-08-03 S1 —— 补「文件**里写了什么**」(judge 看不见内容 → 内容验收类目标倾向永不收敛)
+   * 第三级就是这一条: **写进去的和原来一样, 等于没写**。前两级都拦不住它 —— 文件在、内容也在,
+   * 只是这次调用什么都没改变。
+   *
+   * 只报不判: 本字段不参与产物闸的通过与否 (一次 no-op 写完全可能是正当的 —— 上一轮已经写对了、
+   * 这一轮复核了一遍)。它的用途是**让"看起来做了"和"真的做了"在读数上分得开**, 判要不要因此
+   * 判失败, 得先有分布。
+   */
+  writeEffects?: FileWriteEffect[];
+}
+/** 一次成功的写调用**实际改变了什么**(§8.5 效果指标)。 */
+export interface FileWriteEffect {
+  /** 写的目标路径(与 filesTouched 同一个 cwd 根)。 */
+  path: string;
+  /** 写后行数 − 写前行数。文件此前不存在 → 写前按 0 行算(于是新建文件的 delta = 全文行数)。 */
+  lineDelta: number;
+  /**
+   * 写完之后内容与写之前**逐字相同** = 这次调用什么都没做。
+   *
+   * ⚠ 新建一个**空文件**也是 `noop: false`(此前不存在 → 现在存在, 那是真变化)。
+   * 判据是「内容变没变」, 不是「delta 是不是 0」—— 换掉同样多的行, delta = 0 而 noop = false。
+   */
+  noop: boolean;
 }
 /** 注入点:executor-dag 的 agent-kind 节点经此跑。 */
 export type AgentLeafRunner = (input: AgentLeafInput) => Promise<AgentLeafResult>;

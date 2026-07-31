@@ -20,6 +20,9 @@ import {
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import { getModel } from '@earendil-works/pi-ai/compat'; // 0.80: 目录读挪 /compat
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
 import { runScopedSession } from '../runtime/pi-runtime';
 import { parseModelRef } from './fleet';
 import { createHashlineCustomTools, hashlinePatchPaths } from './hashline';
@@ -94,8 +97,8 @@ const STRONG_MODEL_CORE = `<house-rules>
 </house-rules>`;
 
 // 类型单一真理源 = leaf-runners.ts (executor-dag 只认接口形状, 不 import 实现) — 这里 re-export 保旧调用面。
-export type { AgentLeafInput, AgentLeafResult, AgentLeafRunner } from './leaf-runners';
-import type { AgentLeafInput, AgentLeafResult, AgentLeafRunner } from './leaf-runners';
+export type { AgentLeafInput, AgentLeafResult, AgentLeafRunner, FileWriteEffect } from './leaf-runners';
+import type { AgentLeafInput, AgentLeafResult, AgentLeafRunner, FileWriteEffect } from './leaf-runners';
 
 export interface AgentLeafRunnerOpts {
   /** 工具落盘的工作根。默认 process.cwd()。每个 agent leaf 应被 scope 到此根下的原子产物。 */
@@ -297,6 +300,11 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     const FILE_READ_TOOLS = new Set(['read', 'hashline_read']);
     const touched = new Set<string>();
     const readPaths = new Set<string>();
+    // §8.5 效果指标: 写**之前**先按住内容, 写完再比 —— 「写完了」和「写变了」是两个数。
+    // 快照只在 start 时取一次: end 时原文已经没了, 事后补不出来 (这是为什么它必须挂在这条链上,
+    // 而不能做成一个跑完之后扫一遍盘的脚本)。
+    const writeEffects: FileWriteEffect[] = [];
+    const snapByCall = new Map<string, Map<string, FileSnapshot>>();
     let toolCalls = 0; // 工具调用计数 (prompt 档的路由效率读数, 见 AgentLeafResult.toolCalls)。
     // toolCallId → 候选写路径 (可多: hashline_edit 一个 patch 多 section 多文件)。end 且 !isError 才计入。
     const pathByCall = new Map<string, string[]>();
@@ -311,12 +319,27 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
             : typeof e.args?.path === 'string' && e.args.path.trim()
               ? [e.args.path]
               : [];
-        if (paths.length) pathByCall.set(e.toolCallId, paths);
+        if (paths.length) {
+          pathByCall.set(e.toolCallId, paths);
+          // 写前快照。读盘失败 (权限 / 目录 / 竞态) 一律当"此前不存在" —— 本采集 fail-open,
+          // 它是读数不是闸, 绝不能因为量不出来就把一次真的写判没了。
+          const snaps = new Map<string, FileSnapshot>();
+          for (const p of paths) snaps.set(p, snapshotFile(cwd, p));
+          snapByCall.set(e.toolCallId, snaps);
+        }
       } else if (e.type === 'tool_execution_start' && e.toolName && FILE_READ_TOOLS.has(e.toolName) && e.toolCallId) {
         if (typeof e.args?.path === 'string' && e.args.path.trim()) readByCall.set(e.toolCallId, e.args.path);
       } else if (e.type === 'tool_execution_end' && e.isError === false && e.toolCallId) {
         const ps = pathByCall.get(e.toolCallId);
-        if (ps) for (const p of ps) touched.add(p);
+        if (ps) {
+          const snaps = snapByCall.get(e.toolCallId);
+          for (const p of ps) {
+            touched.add(p);
+            const before = snaps?.get(p);
+            if (!before) continue; // 没取到快照 (理论上不会) → 不编一个效果数出来
+            writeEffects.push(diffWriteEffect(p, before, snapshotFile(cwd, p)));
+          }
+        }
         // 读失败 (文件不存在等) 不算读过 —— 同"失败的写不算产物"。
         const rp = readByCall.get(e.toolCallId);
         if (rp) readPaths.add(rp);
@@ -366,8 +389,53 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           'HTTP 状态, 故此处响亮报错而非当成功 (统一-registry C-5b)。',
       );
     }
-    return { text, usage, filesTouched: [...touched], filesRead: [...readPaths], cwd, toolCalls, stalled };
+    return { text, usage, filesTouched: [...touched], filesRead: [...readPaths], cwd, toolCalls, stalled, writeEffects };
   };
 }
 
 export type { AgentSession, ToolDefinition };
+
+/** 一次写之前/之后的文件状态 —— §8.5 效果指标的原料。 */
+export interface FileSnapshot {
+  exists: boolean;
+  /** 行数 (末尾无换行的最后一行也算一行; 不存在 = 0)。 */
+  lines: number;
+  /** 内容指纹。不存在 = null,于是"不存在 → 空文件"也判得出是变化。 */
+  hash: string | null;
+}
+
+/**
+ * 按住一个文件此刻的样子。**fail-open**: 读不到 (不存在 / 权限 / 是目录 / 竞态) 一律当"不存在",
+ * 绝不抛 —— 本函数服务的是读数, 让它把一次真的写弄成异常, 是拿正确性换观测性。
+ *
+ * 二进制文件按字节读: 行数对 PNG 之类没有意义(会是个大数), 但 `noop` 仍然准, 而 noop 才是这条
+ * 指标要抓的东西。这与 S1 语料里 `binary-claim` 那一段同一个取舍: 量不准的那一格明说, 别装准。
+ */
+/**
+ * 两张快照 → 一条效果指标 (§8.5)。**纯函数**, 与读盘分开, 于是 noop 的判据本身可以被单独钉住 ——
+ * 而它正是这条指标唯一容易搞错的地方: 直觉会写成 `lineDelta === 0`, 那是错的。
+ */
+export function diffWriteEffect(path: string, before: FileSnapshot, after: FileSnapshot): FileWriteEffect {
+  return {
+    path,
+    lineDelta: after.lines - before.lines,
+    // 判据是「内容变没变」而不是「delta 是不是 0」: 换掉同样多的行 delta=0 但不是 noop;
+    // 新建空文件 lines 都是 0 但 exists 从 false 变 true, 也不是 noop。
+    noop: before.exists === after.exists && before.hash === after.hash,
+  };
+}
+
+export function snapshotFile(cwd: string, path: string): FileSnapshot {
+  try {
+    const full = isAbsolute(path) ? path : join(cwd, path);
+    const buf = readFileSync(full);
+    const text = buf.toString('utf-8');
+    return {
+      exists: true,
+      lines: text === '' ? 0 : text.split('\n').length,
+      hash: createHash('sha1').update(buf).digest('hex'),
+    };
+  } catch {
+    return { exists: false, lines: 0, hash: null };
+  }
+}

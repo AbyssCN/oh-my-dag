@@ -17,6 +17,14 @@ export interface DagRunNode {
   kind: string;
   status: string;
   deps: string[];
+  /**
+   * `executor:'command'` 节点真正跑的那条命令 (其余 kind → undefined)。
+   *
+   * 记它是为了让**风险分级读数**成立 (R1, 2026-07-31): 分级是 `commandRiskTier(command)` 的
+   * 纯函数结果, 所以留痕层只需要存原始命令, 不存级别 —— 级别的定义以后会改, 命令不会。
+   * 存派生值等于把一份会漂的东西写进历史记录里, 而历史记录的全部价值是它不漂。
+   */
+  command?: string;
 }
 export interface DagRunRecord {
   id: string;
@@ -133,12 +141,19 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
     record(result, meta = {}) {
       const id = meta.id ?? crypto.randomUUID();
       const createdAt = meta.now ?? Date.now();
-      const nodes: DagRunNode[] = Object.values(result.results).map((r) => ({
-        id: r.id,
-        kind: r.kind,
-        status: r.status,
-        deps: r.deps,
-      }));
+      // 命令从 **plan** 取而不是从 result 取: result 里没有它 (`DagNodeResult` 只记执行面),
+      // 而 plan 是这次跑的那张图的原文。plan 里没有对应 id (map 动态扇出的子节点) → undefined, 不编。
+      const planNodes = result.plan.nodes as Record<string, { command?: string } | undefined>;
+      const nodes: DagRunNode[] = Object.values(result.results).map((r) => {
+        const cmd = planNodes[r.id]?.command;
+        return {
+          id: r.id,
+          kind: r.kind,
+          status: r.status,
+          deps: r.deps,
+          ...(typeof cmd === 'string' && cmd.trim() ? { command: cmd } : {}),
+        };
+      });
       const usage = {
         conductorIn: result.usage.conductor.in,
         conductorOut: result.usage.conductor.out,

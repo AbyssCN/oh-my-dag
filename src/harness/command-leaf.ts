@@ -61,6 +61,89 @@ export const GIT_READONLY_SUBCOMMANDS: readonly string[] = [
   'status', 'diff', 'log', 'show', 'ls-files', 'ls-tree', 'rev-parse', 'blame', 'describe', 'shortlog', 'cat-file', 'grep',
 ];
 
+/**
+ * **风险分级** (2026-07-31, R1 · 承 Loop Engineering §9.4)。判据逐字照抄那一条:
+ *
+ * > 风险等级不是由「这个操作技术上难不难」决定, 而是由「**做错了之后的代价和可逆性**」决定。
+ *
+ * 为什么值得单立一张表, 而不是继续用白名单的二元判断: 本文件头部第 18-20 行那段「诚实边界」
+ * (白名单是护栏不是沙箱; `bun`/`node`/`npx` 在表内就等价于任意代码执行) 说的正是二元判断的
+ * 失真处 —— `cat` 与 `bun` 同在名单里、同样"放行", 而两者做错了的代价差着数量级。散文形态的
+ * 边界说明没有消费者; 分级有。
+ *
+ * ⚠ **这是分级, 不是闸**。闸只有一个 (`commandBlockReason`), 分级不参与放行决定 —— R1 刻意
+ * 只报不拦 (承自主度阶梯的 report-only 级: 先量真实跑的活里各级占多少, 再谈要不要按级设关卡)。
+ * 两者的一致性由 `command-risk-tier.test.ts` 钉住, 而不是靠这里再抄一遍闸的逻辑 (抄一份早晚先漂)。
+ */
+export type CommandRiskTier =
+  /** 读取文件 / 查询 / 检索。可逆性无限。 */
+  | 'read_only'
+  /** 在契约范围内写 (跑项目自己的代码 → build 产物 / 快照 / 缓存)。git 可回滚。 */
+  | 'scoped_write'
+  /** 做错了不可撤回 (对外发送 / 删数据 / 装依赖 / 付费 API)。**今天这一级是空的** —— 见下。 */
+  | 'approval_required'
+  /** 不允许自动执行 (改闸本身 / 改判卷标准 / push / 部署)。 */
+  | 'never';
+
+/** 由轻到重 —— 一条 `&&` 链取链上最重的一级。 */
+export const RISK_TIER_ORDER: Readonly<Record<CommandRiskTier, number>> = {
+  read_only: 0,
+  scoped_write: 1,
+  approval_required: 2,
+  never: 3,
+};
+
+/**
+ * 每个白名单 bin 的风险级。**加 bin 必须加级**, 否则 `command-risk-tier.test.ts` 红。
+ *
+ * 登记表当场读出来的一条事实值得记进设计: **`approval_required` 这一级今天一个成员都没有。**
+ * 也就是说 omd 现在只有"随便做"和"一律不许"两档, 中间那档 (要问一下才能做) 在执行面**不存在** ——
+ * 这正是 §9.7 误区二 (所有工具调用套用同一套权限逻辑) 的样子, 只不过我们是靠不收危险命令
+ * 来回避它的。要不要补中间那档, 由 R1 的读数决定, 不在这里预先造一个没有消费者的关卡。
+ */
+export const COMMAND_RISK_TIER: Readonly<Record<string, CommandRiskTier>> = {
+  // ① 构建 / 类型 / 测试闸 —— 跑的是项目自己的代码, 会写 (产物 / 快照 / node_modules 缓存)。
+  //    它们同时是"等价于任意代码执行"的那一组, 所以是本表里最重的一档, 而不是因为"跑测试听起来无害"就归只读。
+  bun: 'scoped_write',
+  node: 'scoped_write',
+  tsc: 'scoped_write',
+  npx: 'scoped_write',
+  // ⑤ 项目自有工具。`omd` 能起整张图 → **它的风险等于图的风险**, 不是一条 CLI 的风险。
+  omd: 'scoped_write',
+  'oh-my-dag': 'scoped_write',
+  codegraph: 'read_only',
+  semgrep: 'read_only',
+  // ② 只读检视
+  ls: 'read_only', cat: 'read_only', head: 'read_only', tail: 'read_only', wc: 'read_only',
+  stat: 'read_only', file: 'read_only', du: 'read_only', pwd: 'read_only', realpath: 'read_only',
+  basename: 'read_only', dirname: 'read_only', diff: 'read_only',
+  // ③ 搜索
+  grep: 'read_only', rg: 'read_only', ugrep: 'read_only', find: 'read_only', bfs: 'read_only', fd: 'read_only',
+  // ④ 结构化读取
+  jq: 'read_only',
+  // ⑥ 版本控制 —— 只读子命令由闸保证 (GIT_READONLY_SUBCOMMANDS), 故这里是 read_only;
+  //    写类子命令根本过不了闸, 不需要在本表里再表达一次。
+  git: 'read_only',
+  // ⑦ 回显
+  echo: 'read_only',
+};
+
+/**
+ * 一条命令串的风险级 = `&&` 链上最重的一级。**未登记的 bin 一律 `never`** —— 与白名单闸同向 fail-closed。
+ *
+ * 不调 `commandBlockReason`: 那个函数会 `logger.warn`, 而本函数的主要调用方是**事后读数**
+ * (读留痕库里已经跑过的命令), 在读数时刷一屏"命令被拒"的告警是纯噪声。一致性走测试不走调用。
+ */
+export function commandRiskTier(command: string): CommandRiskTier {
+  let worst: CommandRiskTier = 'read_only';
+  for (const link of command.split('&&')) {
+    const bin = commandBin(link.trim());
+    const tier = COMMAND_RISK_TIER[bin] ?? 'never';
+    if (RISK_TIER_ORDER[tier] > RISK_TIER_ORDER[worst]) worst = tier;
+  }
+  return worst;
+}
+
 export interface CommandLeafRunnerOpts {
   /** 允许的命令首 token 白名单 (GP-5)。空 = 全拒 (必须显式给, 如 ['codegraph'])。 */
   allowlist: string[];

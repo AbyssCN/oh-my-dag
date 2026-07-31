@@ -1679,6 +1679,24 @@ async function executePlan(
         filesTouched = r.filesTouched ?? [];
         // D-12: 图外数据流的观察面 (谁读了谁写的文件)。inproc leaf 无工具 → 恒空。
         filesRead = r.filesRead ?? [];
+        // §8.5 效果指标 (2026-07-31, **只报不判**): 写调用成功 ≠ 真的改了。
+        // 下面那道产物闸查的是「碰了文件」+「文件在盘上」—— 它看不见"写进去的和原来一样"这一类:
+        // 文件在、内容也在, 只是这次调用什么都没改变, 而且返回码是成功的。
+        // 刻意不据此判 failed: 一次 no-op 写完全可能是正当的 (上一轮已经写对了, 这一轮复核了一遍)。
+        // 要不要因此判失败, 得先有分布 —— 这条告警就是攒分布的那一步 (承 R1 的 report-only 纪律)。
+        const effects = r.writeEffects ?? [];
+        const noops = effects.filter((e) => e.noop);
+        if (effects.length > 0 && noops.length === effects.length) {
+          logger.warn(
+            { node: id, model, writes: effects.length, paths: noops.map((e) => e.path) },
+            '[omd/executor-dag] §8.5 效果指标: 本节点的写调用**全部 no-op** (内容与写前逐字相同) — 「看起来做了」',
+          );
+        } else if (noops.length > 0) {
+          logger.info(
+            { node: id, writes: effects.length, noops: noops.length, paths: noops.map((e) => e.path) },
+            '[omd/executor-dag] §8.5 效果指标: 部分写调用 no-op',
+          );
+        }
         // 产物根: leaf 自报的 cwd 最准 (它就是写文件的那个进程) > continuity 根 > 本进程 cwd。
         artifactRoot = r.cwd;
         toolCalls = r.toolCalls;
