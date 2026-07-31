@@ -198,3 +198,28 @@ describe('④ 观测名要认得出是哪个节点 (第一条真 trace 暴露的
     expect(_peekLangfuseQueue()[1]!.body.name).toBe('omd-leaf');
   });
 });
+
+describe('⑤ trace 名 = 这一跑在干什么 (不是常量)', () => {
+  test('第一条 generation 的 traceLabel 定 trace 名', () => {
+    recordGeneration(rec({ traceId: 't1', traceLabel: '把两份摘要写出来' }), ENV);
+    expect(_peekLangfuseQueue()[0]!.body.name).toBe('把两份摘要写出来');
+  });
+
+  test('★ 之后的调用改不了它 —— trace 头只发一次, 否则同一跑会有两个名字', () => {
+    recordGeneration(rec({ traceId: 't2', traceLabel: '第一次说的' }), ENV);
+    recordGeneration(rec({ traceId: 't2', traceLabel: '后来改口' }), ENV);
+    const heads = _peekLangfuseQueue().filter((e) => e.type === 'trace-create');
+    expect(heads).toHaveLength(1);
+    expect(heads[0]!.body.name).toBe('第一次说的');
+  });
+
+  test('没给 → 回落 omd-run (零回归)', () => {
+    recordGeneration(rec({ traceId: 't3' }), ENV);
+    expect(_peekLangfuseQueue()[0]!.body.name).toBe('omd-run');
+  });
+
+  test('超长目标截断 —— 列表页放不下, 而整批被拒比截断坏', () => {
+    recordGeneration(rec({ traceId: 't4', traceLabel: 'x'.repeat(500) }), ENV);
+    expect((_peekLangfuseQueue()[0]!.body.name as string).length).toBe(120);
+  });
+});

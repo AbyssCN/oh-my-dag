@@ -46,6 +46,8 @@ export interface GatewayMeta {
   overflowModel?: string;
   /** 同一次高层运行 (fanout/DAG) 的分组 id (把一波 leaf 调用归到一个 session)。 */
   sessionId?: string;
+  /** 这一跑在干什么 (人可读, 进 Langfuse 的 trace 名)。只有该 trace 的第一条调用说了算。 */
+  runLabel?: string;
 }
 
 /** 带网关元数据的请求 (ModelRequest 超集; callModel 忽略多余字段)。 */
@@ -93,6 +95,7 @@ export async function send(req: GatewayRequest): Promise<ModelResponse> {
       model: res.model ?? reqWithTrace.model ?? 'unknown',
       input: reqWithTrace.messages,
       output: res.text ?? '',
+      ...(reqWithTrace.meta?.runLabel ? { traceLabel: reqWithTrace.meta.runLabel } : {}),
       ...(res.usage ? { usage: res.usage } : {}),
       startTime,
       endTime: new Date(),
