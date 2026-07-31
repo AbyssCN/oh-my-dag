@@ -277,15 +277,28 @@ describe('⑥ 观测面不许有匿名调用 (结构性守卫)', () => {
 });
 
 describe('⑦ 父子结构 + prompt 版本身份', () => {
-  test('★ 节点 span 与它的 generation 用**同一个确定性 id** 对上 —— 一个参数都不用传', () => {
+  test('★ 节点 span 与它的 generation 用**同一个确定性 id** 对上 —— parent id 不用传, 但"属于哪个节点"要传', () => {
     recordSpan({ traceId: 'r', nodeId: 'execute', kind: 'conductor', status: 'done', startTime: new Date(0), endTime: new Date(1) }, ENV);
-    recordGeneration(rec({ traceId: 'r', name: 'conductor:execute' }), ENV);
+    recordGeneration(rec({ traceId: 'r', name: 'conductor:execute', nodeId: 'execute' }), ENV);
     const q = _peekLangfuseQueue();
     const span = q.find((e) => e.type === 'span-create')!.body;
     const gen = q.find((e) => e.type === 'generation-create')!.body;
     // 子调用挂在本节点的 span 上。两边各算一遍 hash(traceId+nodeId), 必然相等 ——
-    // 这就是不用把 parentObservationId 穿过五六层函数签名的理由。
+    // 这就是不用把 parentObservationId 穿过五六层函数签名的理由。传的只是 nodeId 本身。
     expect(gen.parentObservationId).toBe(span.id);
+  });
+
+  test('★ run 级调用挂 trace 根 —— 不给 nodeId 就不许凭空造一个父 (2026-07-31 live 抓到的孤儿)', () => {
+    // 此前 parent 是从**名字**里切出来的: `<相位>:<后缀>` 一律把后缀当节点 id。
+    // 于是 `conductor:plan` 被凑了个叫 `plan` 的父 —— 而 `plan` 不是节点, 那个 span 从未发出过,
+    // live trace 上就是一条父指向虚空的孤儿。而 `conductor:<nodeId>` (子图展开) 与它**字符串同形**,
+    // 区分二者的信息只存在于调用点 —— 所以现在由调用点给 nodeId, 不给就是 run 级。
+    recordGeneration(rec({ traceId: 'r', name: 'conductor:plan' }), ENV);
+    recordGeneration(rec({ traceId: 'r', name: 'classify:acceptance' }), ENV);
+    recordGeneration(rec({ traceId: 'r', name: 'halt-judge' }), ENV);
+    for (const e of _peekLangfuseQueue().filter((x) => x.type === 'generation-create')) {
+      expect(e.body.parentObservationId).toBeUndefined();
+    }
   });
 
   test('子节点 id 里的 `父::子` 就是父子关系 —— 不需要另外记账 (D-B 内容寻址)', () => {

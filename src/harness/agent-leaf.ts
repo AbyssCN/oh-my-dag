@@ -30,6 +30,7 @@ import { createDriftDetectorHook, type DriftDetectorConfig } from './hooks/drift
 import { createSandboxedLeafRunner } from './hooks/sandboxed-leaf';
 import { logger } from '../logger';
 import { kimiOAuthExtensionFor } from '../model/kimi-oauth';
+import { promptVersionOfText } from '../model/langfuse';
 import type { ModelUsage } from '../model/types';
 import type { ThinkingLevel } from '../runtime/types';
 import { isStrongCoord } from '../model/model-ratings';
@@ -95,6 +96,33 @@ const STRONG_MODEL_CORE = `<house-rules>
 ③ 任何 repo identifier (模型坐标/表名/函数名/env 名) 写进代码前先在**本仓**核实存在与拼写 —— 猜错会编译通过但静默失效。
 ④ 不套模板不照抄范式, 命名与注释密度跟周围代码一致。
 </house-rules>`;
+
+/**
+ * **本次调用拼在节点 prompt 之前的那一段**(节点无关的脚手架)。抽成纯函数有两个用处:
+ * ① runner 拿它拼 prompt;② 观测面拿它的哈希当 `promptVersion`。
+ *
+ * 为什么 promptVersion 只能是**这一段**:版本要能分组比较,而整条 prompt 里含本节点的 goal
+ * 与上游材料,逐节点都不同 —— 哈希整条会得到"每个节点一个版本",等于没有版本。
+ *
+ * 档位判据原样保留(TR-INV-5 / 强模型档):强模型只吃 house-rules,弱模型吃全量脚手架,
+ * 两个开关仍是硬关(纯命令叶可全关)。**拼法保持字节稳定**——改这里 = 全 leaf cache 失效。
+ */
+export function agentScaffold(opts: {
+  profile: 'auto' | 'weak' | 'strong' | 'off';
+  model: string;
+  toolRouting: boolean;
+  disciplineCore: boolean;
+}): string {
+  const { profile, model, toolRouting, disciplineCore } = opts;
+  if (profile === 'off') return '';
+  if (profile === 'strong' || (profile === 'auto' && isStrongCoord(model) && (toolRouting || disciplineCore))) {
+    return STRONG_MODEL_CORE;
+  }
+  // 承重纪律核走 tool-routing 之前 (元规则 → 工具细则 → 任务)。
+  return [disciplineCore ? DISCIPLINE_CORE : '', toolRouting ? TOOL_ROUTING_GUIDELINE : '']
+    .filter(Boolean)
+    .join('\n\n');
+}
 
 // 类型单一真理源 = leaf-runners.ts (executor-dag 只认接口形状, 不 import 实现) — 这里 re-export 保旧调用面。
 export type { AgentLeafInput, AgentLeafResult, AgentLeafRunner, FileWriteEffect } from './leaf-runners';
@@ -276,17 +304,11 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     const wantRouting = opts.toolRouting ?? true;
     const wantDiscipline = opts.disciplineCore ?? true;
     const profile = opts.promptProfile ?? 'auto';
-    let disciplined: string;
-    if (profile === 'off') {
-      disciplined = prompt;
-    } else if (profile === 'strong' || (profile === 'auto' && isStrongCoord(model) && (wantRouting || wantDiscipline))) {
-      disciplined = `${STRONG_MODEL_CORE}\n\n${prompt}`;
-    } else {
-      // TR-INV-5: prepend tool-routing guideline → 弱模型重叠区选对工具。
-      const tooled = wantRouting ? `${TOOL_ROUTING_GUIDELINE}\n\n${prompt}` : prompt;
-      // 承重纪律核走 tool-routing 之前 (元规则 → 工具细则 → 任务)。
-      disciplined = wantDiscipline ? `${DISCIPLINE_CORE}\n\n${tooled}` : tooled;
-    }
+    const scaffold = agentScaffold({ profile, model, toolRouting: wantRouting, disciplineCore: wantDiscipline });
+    const disciplined = scaffold ? `${scaffold}\n\n${prompt}` : prompt;
+    // persona 刻意**不进** promptVersion: 它是每个节点自己的角色设定, 属于"这一发在干什么"
+    // 而不是"引擎这一版怎么包装" —— 混进来会让版本逐节点漂, 也就分不了组。
+    const promptVersion = promptVersionOfText(scaffold);
     const routedPrompt = opts.persona ? `<persona>\n${opts.persona}\n</persona>\n\n${disciplined}` : disciplined;
     // filesTouched 采集 (2026-07-20 修产物闸冤杀): 并挂第二个监听收集**成功落盘**的写路径 —
     // start 记 toolCallId→path 候选, end 且 !isError 才计入 (失败的写不算产物)。
@@ -389,7 +411,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           'HTTP 状态, 故此处响亮报错而非当成功 (统一-registry C-5b)。',
       );
     }
-    return { text, usage, filesTouched: [...touched], filesRead: [...readPaths], cwd, toolCalls, stalled, writeEffects };
+    return { text, usage, promptVersion, filesTouched: [...touched], filesRead: [...readPaths], cwd, toolCalls, stalled, writeEffects };
   };
 }
 

@@ -25,7 +25,15 @@ export function makeDefaultGenerate(sessionId: string, runLabel?: string): Gener
       ...(req.maxTokens !== undefined ? { maxTokens: req.maxTokens } : {}),
       // 观测名优先用调用点给的 (`conductor:<id>` / `leaf:<id>`); 没给才回落到旧的通用名。
       // 见 GenerateFn.traceName 的注: 第一条真 trace 上 conductor 与 leaf 同名, 审 prompt 时分不出谁是谁。
-      meta: { role: req.traceName ?? 'omd-leaf', overflowModel: LEAF_OVERFLOW_MODEL, sessionId, ...(runLabel ? { runLabel } : {}) },
+      // traceNodeId 只有节点作用域的调用点会给 —— 规划/修补/分类这类 run 级调用**故意不给**,
+      // 它们该挂 trace 根 (此前靠切名字倒推, 把 `conductor:plan` 凑了个不存在的父)。
+      meta: {
+        role: req.traceName ?? 'omd-leaf',
+        overflowModel: LEAF_OVERFLOW_MODEL,
+        sessionId,
+        ...(runLabel ? { runLabel } : {}),
+        ...(req.traceNodeId ? { nodeId: req.traceNodeId } : {}),
+      },
     });
     return { text: r.text, usage: r.usage };
   };

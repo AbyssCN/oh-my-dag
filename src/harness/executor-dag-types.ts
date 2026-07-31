@@ -32,6 +32,17 @@ export type GenerateFn = (req: {
    * 省略 = 回落调用方的默认名 (零回归)。**只进观测, 不进 prompt** —— 它不该改变模型看见的东西。
    */
   traceName?: string;
+  /**
+   * **这一发属于哪个 DAG 节点** (2026-07-31)。给了 → 观测面上挂到那个节点的 span 下;
+   * 省略 → 挂 trace 根。
+   *
+   * 与 {@link traceName} 分开是因为**名字里切不出这件事**: `conductor:<nodeId>` (子图展开,
+   * 后缀是节点) 与 `conductor:plan` (规划整张图, 后缀不是节点) 形状一模一样。此前靠切名字倒推,
+   * 于是 `conductor:plan` 在 live trace 上挂了个叫 `plan` 的父 —— 而那个 span 从未存在过。
+   *
+   * 所以: **run 级调用(规划/修补/分类/halt-judge)一律不给**, 节点作用域的调用点才给。
+   */
+  traceNodeId?: string;
 }) => Promise<{ text: string; usage: ModelUsage }>;
 
 export interface ExecutorDagConfig {

@@ -763,6 +763,7 @@ async function executePlan(
         // 坐标 (含轮级升级) 在上面算好, 见 conductorCoord。
         model: conductorCoord,
         traceName: `conductor:${id}`, // 节点内重展开 —— 观测上要认得出是哪个 conductor 节点的第几轮
+        traceNodeId: id,
         thinkingLevel: config.conductorThinkingLevel ?? config.seatThinking?.(conductorCoord) ?? 'high',
         maxTokens: config.conductorMaxTokens ?? (Number(process.env.OMD_CONDUCTOR_MAX_TOKENS) || 32_768),
       });
@@ -1505,6 +1506,7 @@ async function executePlan(
           ],
           model: config.leafModel,
           traceName: `map-lister:${id}`,
+          traceNodeId: id,
           thinkingLevel: config.inprocThinkingLevel ?? config.seatThinking?.(config.leafModel) ?? 'high',
         });
         text = r.text;
@@ -1620,6 +1622,7 @@ async function executePlan(
           ],
           model: model ?? config.leafModel,
           traceName: `primitive-leaf:${id}`,
+          traceNodeId: id,
           thinkingLevel:
             config.inprocThinkingLevel ?? config.seatThinking?.(model ?? config.leafModel) ?? 'high',
         });
@@ -1919,9 +1922,14 @@ async function executePlan(
         recordGeneration({
           traceId: obsTraceId,
           name: `agent:${id}`,
+          nodeId: id,
           model,
           input: prompt,
           output: r.text ?? '',
+          // promptVersion 由 runner 报 (2026-07-31 补): 它是**脚手架**的版本, 而脚手架是 runner
+          // 按模型档在三套里挑的 (strong-core / discipline+routing / off) —— 只有它自己知道挑了哪套。
+          // 从这条 prompt 反算不出来: 整条里含本节点的 goal 与上游材料, 逐节点都不同。
+          ...(r.promptVersion ? { promptVersion: r.promptVersion } : {}),
           ...(r.usage ? { usage: r.usage } : {}),
           startTime: agentStart,
           endTime: new Date(),
@@ -2013,6 +2021,7 @@ async function executePlan(
           ],
           model,
           traceName: `leaf:${id}`, // ← 审 prompt 时要认得出是哪个节点, 这是接观测的全部目的
+          traceNodeId: id,
           // S-T 优先序 (显式永远赢): node.thinking > config 显式档 > 座位档 > 硬默认 high。
           // 座位档来自 auto-assign (量产 worker 座 low / judge·verify 座 xhigh), 老 config 无该段 → 回落 high。
           thinkingLevel: node.thinking ?? config.inprocThinkingLevel ?? config.seatThinking?.(model) ?? 'high',
@@ -2173,6 +2182,7 @@ async function executePlan(
       const { summaryJson, usage } = await runFaninSummary({
         generate,
         traceName: `fanin-summary:${id}`,
+        traceNodeId: id,
         model: faninCfg.model ?? config.leafModel,
         producerGoal: node.goal,
         output,
@@ -2553,8 +2563,13 @@ async function runDagInternal(
   prior?: PriorExec,
 ): Promise<ExecutorDagResult> {
   // sessionId: 本次 run 的 conductor+leaf 全部经 send → 同一 Langfuse session (B2)。
-  // 可注入 (config.sessionId): 调用方传则跨平面关联 (派活飞轮 dispatchId ↔ Langfuse session); 省略 → 自生成。
-  const sessionId = config.sessionId ?? randomUUID();
+  // 可注入 (config.sessionId): 调用方传则跨平面关联 (派活飞轮 dispatchId ↔ Langfuse session)。
+  //
+  // **没注入时退 runId 而不是新造一个 UUID** (2026-07-31 修): 自造的那个 id 谁都不认识 ——
+  // 手上拿着 `dag_status` 给的 runId 去 Langfuse 找, 找不到; 反过来在 Langfuse 上看见一条有问题的
+  // trace, 也回不到是哪一跑。观测面与执行面各持一个 id 而没有换算关系, 等于两张互不相认的表。
+  // continuity 的 runId 正是留痕库/checkpoint 用的那一个, 用它 = 三边同名。
+  const sessionId = config.sessionId ?? config.continuity?.runId ?? randomUUID();
   // **解析完就写回 config**: 下游 executePlan 里 agent leaf 的观测记录 (它不经 gateway) 要落到
   // 同一条 trace 上。不写回的话, 省略 sessionId 的调用方会得到两条 trace —— 一条模型调用的、
   // 一条 agent 的, 而它们本来是同一跑。同一件事只该有一个 id, 在这里定死。
