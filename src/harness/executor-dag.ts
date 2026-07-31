@@ -1672,6 +1672,9 @@ async function executePlan(
       let filesRead: string[] = [];
       let toolCalls: number | undefined;
       let artifactRoot: string | undefined;
+      // §8.5 效果指标的压缩形 [总写次数, no-op 次数]。undefined = 这条链上没人报 (inproc 节点),
+      // 与 [0,0] (跑了但一次没写) 刻意分开 —— 读数板必须把两者分开念。
+      let writeCounts: [number, number] | undefined;
       if (useAgent) {
         const r = await config.agentRunner!({ prompt, model });
         text = r.text;
@@ -1686,6 +1689,9 @@ async function executePlan(
         // 要不要因此判失败, 得先有分布 —— 这条告警就是攒分布的那一步 (承 R1 的 report-only 纪律)。
         const effects = r.writeEffects ?? [];
         const noops = effects.filter((e) => e.noop);
+        // runner 没报 writeEffects (旧 runner / 测试替身) → 保持 undefined, 不编一个 [0,0] 出来:
+        // 那会把「没记」伪装成「跑了但没写」, 正是本轮反复在治的那种静默失真。
+        if (r.writeEffects) writeCounts = [effects.length, noops.length];
         if (effects.length > 0 && noops.length === effects.length) {
           logger.warn(
             { node: id, model, writes: effects.length, paths: noops.map((e) => e.path) },
@@ -1763,7 +1769,7 @@ async function executePlan(
         text = r.text;
         usage = r.usage;
       }
-      const leaf: LeafResult = { id, status: 'done', kind: useAgent ? 'agent' : 'inproc', model, output: text, deps: node.depends_on ?? [], usage, filesTouched, ...(filesRead.length ? { filesRead } : {}), ...(toolCalls !== undefined ? { toolCalls } : {}) };
+      const leaf: LeafResult = { id, status: 'done', kind: useAgent ? 'agent' : 'inproc', model, output: text, deps: node.depends_on ?? [], usage, filesTouched, ...(filesRead.length ? { filesRead } : {}), ...(toolCalls !== undefined ? { toolCalls } : {}), ...(writeCounts ? { writeCounts } : {}) };
       saveDoneCheckpoint({
         id,
         kind: useAgent ? 'agent' : 'inproc',
