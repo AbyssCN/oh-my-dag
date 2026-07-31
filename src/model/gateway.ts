@@ -12,7 +12,7 @@ import { randomUUID } from 'node:crypto';
 import type { ModelRequest, ModelResponse } from './types';
 import { callModel } from './index';
 import { makeBudgetedCall } from './provider-budget';
-import { recordGeneration } from './langfuse';
+import { promptVersionOf, recordGeneration } from './langfuse';
 
 // ── 类型 re-export (内核统一从 gateway 取型) ─────────────────────────
 export type {
@@ -95,6 +95,7 @@ export async function send(req: GatewayRequest): Promise<ModelResponse> {
       model: res.model ?? reqWithTrace.model ?? 'unknown',
       input: reqWithTrace.messages,
       output: res.text ?? '',
+      promptVersion: promptVersionOf(reqWithTrace.messages),
       ...(reqWithTrace.meta?.runLabel ? { traceLabel: reqWithTrace.meta.runLabel } : {}),
       ...(res.usage ? { usage: res.usage } : {}),
       startTime,
