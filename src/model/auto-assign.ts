@@ -83,20 +83,26 @@ const NODE_CLASS: Record<string, NodeClass> = {
 };
 
 /**
- * 首选 coord (provider:modelId) 按分类 (D-19 分配表, owner 2026-07-24 定):
- * **2026-07-29 owner 重派: 文本主力整体切 DeepSeek 官网 API** —— mimo token-plan 已烧完、
- * codex 429、kimi 计费周期用尽, 预付/订阅渠道大面积失效, 文本侧的摊销序暂时无对象可排。
- * (**opencode-go 订阅仍在**, 只是不再承文本主力; 多模态轴仍走它 —— 见 config.pools.multimodal。)
- *   - 大脑簇 (decomposer/judge_synth) + 校验 (verify) = deepseek-v4-pro
- *   - 干活 (worker) + dream + reduce = deepseek-v4-flash (量在这里, 且 worker 档已降 low)
- * ⚠ 两条代价, 恢复渠道后应回退: ① **verify 不再跨家族** (INV-3 的跨模型对抗失效 —— 判和证同一个族,
- *   共享盲点); ② 全按量计费, 没有 flat-sub 摊销。渠道恢复后改回这张表即可 (它是唯一的分配真源)。
+ * 首选 coord (provider:modelId) 按分类 (D-19 分配表, owner 2026-07-24 定)。
+ *
+ * **2026-07-31 owner 重派: 落类首选整表压到 `deepseek-v4-flash` 一个坐标。**
+ * 起因是 v4-flash **正式版**上线, 推理能力大幅提升 —— 于是 pro 在这张表里失去了位置:
+ * 它贵一倍 (0.55/2.19 vs 0.27/1.10) 而这里每一格的活 flash 都接得住。
+ * **v4-pro 正式版出来之前一律不用 pro** (今天路上的是预览档)。
+ *
+ * ⚠ 这张表是**落类首选 = 兜底**, 不是最终座位: 稀疏高价值那几座由下面的 `NODE_PREFERRED`
+ * 先派 gpt-5.6-sol, 只有那条渠道够不着时才落到这里。所以"全表 flash"读作
+ * **"渠道断了就全用 flash"**, 而不是"引擎只用 flash"。
+ *
+ * 顺带修回一条 2026-07-29 记下的代价: 那次因渠道大面积失效, verify 与 decomposer 落在同一个
+ * DeepSeek 族里, **INV-3 的跨家族对抗失效**(判和证共享盲点)。本轮 conductor/审核座回到 sol,
+ * 跨家族在**渠道可达时**成立 —— 但落到兜底表时仍然是同族, 这一格没有被消灭, 只是被降低了频率。
  */
 const PREFERRED_COORD: Record<NodeClass, string> = {
-	decomposer: "deepseek:deepseek-v4-pro",
-	judge_synth: "deepseek:deepseek-v4-pro",
+	decomposer: "deepseek:deepseek-v4-flash",
+	judge_synth: "deepseek:deepseek-v4-flash",
 	worker: "deepseek:deepseek-v4-flash",
-	verify: "deepseek:deepseek-v4-pro",
+	verify: "deepseek:deepseek-v4-flash",
 	dream: "deepseek:deepseek-v4-flash",
 };
 
@@ -123,13 +129,20 @@ const PREFERRED_COORD: Record<NodeClass, string> = {
 const NODE_CLASS_THINKING: Record<NodeClass, SeatThinking> = {
 	decomposer: "high",
 	judge_synth: "high",
-	// 2026-07-29 owner 定: worker 降 low。上面②说的「换到档位真有成本差的模型时再调这张表」——
-	// 主力换到 DeepSeek v4 后条件满足了: v4 是推理族, **reasoning token 按 output 计价**, 而 output
-	// 是缓存命中价的 15.7 倍 (0.07 → 1.10 /M, cost-ledger 价表)。实测一天 970 万 flash token 花了
-	// $9.63 (有效 $0.99/M ≈ 纯 output 价), 同期一天 3000 万 token 只花 $3.18 (98% 命中缓存)。
-	// 差别全在 output 占比: 87% vs 1%。量产座是发得最多的一档, 降它收益最大。
+	// 2026-07-31: **改回 high, 且要写清为什么** ——
+	//
+	// 2026-07-29 把它降 low, 理由是"v4 是推理族, reasoning token 按 output 计价, 量产座降档收益最大"。
+	// 那条推理**后来被实测推翻**: 200 次对照下 deepseek-v4 **忽略 `reasoning_effort`**, low/high 的
+	// completion token 与质量都打不出差 (且 low 臂噪声更大)。那次省下来的钱其实来自**缓存命中率**
+	// (一天 3000 万 token 只花 $3.18 = 98% 命中; 另一天 970 万花 $9.63 = output 占 87%), 与这个旋钮无关。
+	//
+	// 于是在"v4-flash 正式版是不是开始认这个旋钮"未知的今天, 两个方向的代价是**不对称**的:
+	//   · 若它仍然忽略 → 填 high 与填 low 完全等价, 改回来零成本;
+	//   · 若正式版开始认了 → 留 low 就是**给全仓量最大的那一档默默降智**, 而省下的是一笔
+	//     实测证明并不存在的钱。
+	// 不对称时选那个"猜错了也不亏"的方向。⚠ 待办: 正式版上重跑一次那 200 次对照, 拿到读数再定。
 	// ⚠ agent leaf 不吃这张表 (agent-leaf.ts 自带 xhigh, owner 早前锁的), 所以改这里不影响改文件的 agent。
-	worker: "low",
+	worker: "high",
 	verify: "high",
 	dream: "high",
 };
@@ -144,6 +157,13 @@ const NODE_PREFERRED: Record<string, string> = {
 	conductor: "openai-codex:gpt-5.6-sol",
 	escalation: "openai-codex:gpt-5.6-sol",
 	judge: "openai-codex:gpt-5.6-sol",
+	// 2026-07-31 owner: **审核那一簇也回 sol**。落类首选整表压到 flash 之后, 若不显式派这三座,
+	// 「判」与「证」会同族 —— 而 INV-3 要的正是跨家族对抗 (同族共享盲点, 证不出对方的错)。
+	// 三座都是**稀疏**的 (verifier 在 goal 路径上显式关闭 · review/review-spec 是人触发的后台角色),
+	// 所以放 flat-sub 订阅里不冲配额 —— 与上面"不含 reason/reduce"是同一条量级判断。
+	verifier: "openai-codex:gpt-5.6-sol",
+	review: "openai-codex:gpt-5.6-sol",
+	"review-spec": "openai-codex:gpt-5.6-sol",
 };
 
 /**

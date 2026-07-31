@@ -56,9 +56,11 @@ describe("autoAssign", () => {
 			ratingsPath,
 		});
 
-		// 2026-07-29 主力切 DeepSeek: 大脑簇 → v4-pro (分配表是唯一真源, 改表即改这里)
+		// 2026-07-31 v4-flash 正式版上线 → **落类首选整表压到 flash** (分配表是唯一真源, 改表即改这里)。
+		// ⚠ 这里断言的是"codex 渠道**不在**时的兜底", 所以 conductor/judge 也落 flash;
+		//   渠道在时它们走 NODE_PREFERRED 的 sol —— 那条由下面那个 "GPT 订阅座位" 用例钉。
 		for (const n of ["conductor", "escalation", "judge", "reason"]) {
-			expect(m[n]!.coord).toBe("deepseek:deepseek-v4-pro");
+			expect(m[n]!.coord).toBe("deepseek:deepseek-v4-flash");
 		}
 
 		// reduce → v4-flash (D-14 够质量的最廉; 高频阶段)
@@ -67,12 +69,15 @@ describe("autoAssign", () => {
 		// worker → v4-flash (量在这里; 档位同时降到 low, 见 NODE_CLASS_THINKING)
 		for (const n of ["leaf", "agent", "lens", "expand", "distill", "overflow"]) {
 			expect(m[n]!.coord).toBe("deepseek:deepseek-v4-flash");
-			expect(m[n]!.thinkingLevel).toBe("low");
+			// 2026-07-31 改回 high: 「worker 降 low 省钱」那条推理被 200 次对照推翻 (v4 忽略这个旋钮,
+			// 省下的钱其实来自缓存命中率)。未知它认不认时, 选"猜错了也不亏"的那个方向 —— 见 NODE_CLASS_THINKING。
+			expect(m[n]!.thinkingLevel).toBe("high");
 		}
 
-		// 校验/dream: verify→v4-pro, dream→v4-flash。⚠ 与大脑同族 (deepseek-only 的代价, 见 INV-3 降级测试)
-		expect(m.verifier!.coord).toBe("deepseek:deepseek-v4-pro");
-		expect(m["review-spec"]!.coord).toBe("deepseek:deepseek-v4-pro");
+		// 校验/dream 同样落 flash。⚠ 与大脑同族 (deepseek-only 兜底的代价, 见 INV-3 降级测试) ——
+		// 这一格没被消灭, 只是频率降低了: 渠道可达时审核座走 sol, 跨家族才成立。
+		expect(m.verifier!.coord).toBe("deepseek:deepseek-v4-flash");
+		expect(m["review-spec"]!.coord).toBe("deepseek:deepseek-v4-flash");
 		expect(m.dream!.coord).toBe("deepseek:deepseek-v4-flash");
 	});
 
@@ -235,9 +240,11 @@ describe("autoAssign", () => {
 			ratingsPath,
 		});
 
-		expect(m.conductor!.coord).toBe("deepseek:deepseek-v4-pro");
-		// 具体数字由命名启发给 (换首选坐标就会变); 这里钉住的是"miss 不崩且给得出分", 不是 45 这个值本身。
-		expect(m.conductor!.intelligence).toBe(45);
+		expect(m.conductor!.coord).toBe("deepseek:deepseek-v4-flash");
+		// 具体数字由命名启发给 (换首选坐标就会变); 这里钉住的是"miss 不崩且给得出分", 不是这个值本身。
+		// 45 → 38: 首选坐标从 v4-pro 换成 v4-flash, 启发式按名字给分, 跟着变是**预期**的 —— 这条用例
+		// 自己写着"不是这个值本身", 所以跟着改数不是在迁就测试。
+		expect(m.conductor!.intelligence).toBe(38);
 	});
 });
 
@@ -262,14 +269,14 @@ describe("runAutoAssign — 端到端 (发现→分配→落盘; configPath 读�
 		const env = { DEEPSEEK_API_KEY: "sk-x", MIMO_API_KEY: "sk-m", PI_AGENT_DIR: home };
 		const map = runAutoAssign(env, { configPath, ratingsPath });
 
-		// 大脑簇 → v4-pro: 分配表是**硬偏好**, 声明持仓只决定"可达不可达", 不改变优先序。
+		// 大脑簇 → v4-flash: 分配表是**硬偏好**, 声明持仓只决定"可达不可达", 不改变优先序。
 		// (deepseek 经 DEEPSEEK_API_KEY 自探可达 → 首选命中, 不再落到声明的 kimi。)
-		expect(map.conductor?.coord).toBe("deepseek:deepseek-v4-pro");
-		expect(map.judge?.coord).toBe("deepseek:deepseek-v4-pro");
+		expect(map.conductor?.coord).toBe("deepseek:deepseek-v4-flash");
+		expect(map.judge?.coord).toBe("deepseek:deepseek-v4-flash");
 		// ⚠ INV-3 在此配置下**不成立**: 判与证同族 (deepseek-only 的代价), 由 autoAssign 打降级告警。
 		expect(map.verifier?.coord.split(":")[0]).toBe("deepseek");
 		// 落盘可读回 (configPath 读写同目标)
 		const persisted = JSON.parse(readFileSync(configPath, "utf8")).autoAssigned;
-		expect(persisted.conductor).toBe("deepseek:deepseek-v4-pro");
+		expect(persisted.conductor).toBe("deepseek:deepseek-v4-flash");
 	});
 });
