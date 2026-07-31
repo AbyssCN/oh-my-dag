@@ -45,8 +45,12 @@ export const DEFAULT_COMMAND_ALLOWLIST: readonly string[] = [
   'grep', 'rg', 'ugrep', 'find', 'bfs', 'fd',
   // ④ 结构化读取
   'jq',
-  // ⑤ 项目自有确定性工具
-  'codegraph', 'semgrep', 'omd', 'oh-my-dag',
+  // ⑤ 项目自有确定性工具 —— 注意 `omd`/`oh-my-dag` **不在**表内 (2026-07-31 the owner 裁: 摘掉)。
+  //    理由不是"它危险", 是**它根本不是 leaf 该有的工具**: command leaf 的定义是「零 LLM 跑一条
+  //    确定性 CLI」, 而 `omd dag-run` 起的是一整张图 —— 烧 LLM、写文件、再生 leaf。放在这张表里,
+  //    一个 conductor 就能让自己的 leaf 递归起图, 深度无上限、成本无上限、留痕挂不到父 trace 上。
+  //    要嵌套图应走引擎自己的接口 (有深度/预算/父子 trace), 不是借道命令闸。
+  'codegraph', 'semgrep',
   // ⑥ 版本控制 —— 仅只读子命令 (见 GIT_READONLY_SUBCOMMANDS)
   'git',
   // ⑦ 回显 (探针 / 占位输出)
@@ -108,9 +112,8 @@ export const COMMAND_RISK_TIER: Readonly<Record<string, CommandRiskTier>> = {
   node: 'scoped_write',
   tsc: 'scoped_write',
   npx: 'scoped_write',
-  // ⑤ 项目自有工具。`omd` 能起整张图 → **它的风险等于图的风险**, 不是一条 CLI 的风险。
-  omd: 'scoped_write',
-  'oh-my-dag': 'scoped_write',
+  // ⑤ 项目自有工具。`omd`/`oh-my-dag` 已从白名单摘除 (它们的风险是**整张图的风险**, 不是一条 CLI 的),
+  //    故本表也不再登记 —— 未登记 = `never`, 与闸同向。
   codegraph: 'read_only',
   semgrep: 'read_only',
   // ② 只读检视
@@ -199,6 +202,43 @@ function gitSubcommand(link: string): string | undefined {
   return undefined;
 }
 
+/**
+ * **凭证文件路径拒**(2026-07-31)。白名单为什么当初不收 `env`/`printenv`, 原话是
+ * 「输出会进模型上下文, 等于把 key 喂出去」—— 而 `cat .env` 从**同一个洞**把**同样的东西**
+ * 喂出去, 只是换了个 bin。这条判据此前只落在 bin 上, 没落在它读的东西上, 是个漏项:
+ * 本仓根 `.env` 里今天就有 6 个 provider key + 一个 OAuth token, 一条 `cat .env` 就全进 prompt、
+ * 进留痕库、再随 trace 进 Langfuse。
+ *
+ * 判据 = **basename**, 不是全串匹配: 拒的是「这个文件」, 不是「这种写法」, 所以 `./.env`、
+ * `../../.env`、`~/.pi/agent/auth.json` 走同一条规则。`.env.example` 一类样例文件显式放行 ——
+ * 它们本来就是给人读的, 拒了只会让验证叶白挂。
+ *
+ * ⚠ **边界诚实**(同本文件头 18-20 行): 这是护栏不是沙箱。`grep -r KEY .` 递归扫到 `.env` 仍会
+ * 打印内容, `bun -e` 更是等价任意代码执行 —— 这条闸挡的是「模型顺手 cat 一下配置」这类**手滑**,
+ * 不是对抗性外泄。真隔离在 agent leaf 的 bwrap jail。别把它当安全边界宣传。
+ */
+const SECRET_BASENAMES: readonly RegExp[] = [
+  /^\.env(\..+)?$/, // .env / .env.local / .env.production
+  /^(secrets|credentials|auth)\.json$/, // omd 凭证落点 / pi auth.json
+  /^\.credentials\.json$/, // claude code
+  /^id_(rsa|dsa|ecdsa|ed25519)$/, // ssh 私钥 —— N3 实测那条链的第一环 (钥匙 → NAS → 39 个容器的 root)
+  /\.(pem|p12|pfx)$/, // 证书/私钥容器
+];
+/** 样例/模板不算凭证 —— 它们生来就是给人读的。 */
+const SECRET_BASENAME_EXEMPT = /^\.env\.(example|sample|template)$/;
+
+/** 命令串里若引用了凭证文件, 返回那个 token(供拒因显示); 否则 null。 */
+export function secretPathInCommand(command: string): string | null {
+  for (const raw of command.trim().split(/\s+/).slice(1)) {
+    const token = raw.replace(/^["']|["']$/g, '');
+    if (!token || token.startsWith('-')) continue;
+    const base = token.slice(token.lastIndexOf('/') + 1);
+    if (SECRET_BASENAME_EXEMPT.test(base)) continue;
+    if (SECRET_BASENAMES.some((re) => re.test(base))) return token;
+  }
+  return null;
+}
+
 /** 命令首 token (路径取 basename) — 用于白名单匹配。 */
 function commandBin(command: string): string {
   const first = command.trim().split(/\s+/)[0] ?? '';
@@ -248,6 +288,13 @@ export function commandBlockReason(command: string, allowlist: readonly string[]
         logger.warn({ command: link, sub }, '[omd/command-leaf] git 子命令非只读, 拒绝');
         return `[blocked git-write: '${sub ?? '(none)'}' ∉ 只读子命令 ${GIT_READONLY_SUBCOMMANDS.join('/')}]`;
       }
+    }
+    // ③ 凭证文件拒 (见 SECRET_BASENAMES): 白名单管「哪个 bin」, 这条管「读的是什么」。
+    //    放行 `cat` 不等于放行 `cat .env` —— 后者与被刻意排除的 `printenv` 是同一件事。
+    const secret = secretPathInCommand(link);
+    if (secret) {
+      logger.warn({ command: link, path: secret }, '[omd/command-leaf] 命令读凭证文件, 拒绝');
+      return `[blocked secret-file: '${secret}' 是凭证文件, 读出来会进模型上下文]`;
     }
   }
   return null;

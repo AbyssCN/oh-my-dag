@@ -43,11 +43,17 @@ describe('N3 · ① 任意代码执行 (RCE)', () => {
 });
 
 describe('N3 · ② 数据外泄', () => {
-  test('读取面: 私钥与 omd 自己的配置都 **放行** (head 档无 jail — N1 已裁的姿态)', () => {
-    expect(allowed('cat /home/nick/.ssh/id_ed25519')).toBe(true);
-    // ⚠ .omd/config.json 现在装着 **Langfuse 密钥** (本轮接观测时写进去的),
-    //   而它对 cat 是敞开的。清单第三节把"密钥换个落点"列成了待办。
+  test('读取面: 凭证文件按 basename 被拒 (2026-07-31 补的那条闸), 但**这只挡手滑**', () => {
+    // 待办已了结: 密钥搬出仓树 (`~/.config/omd/secrets.json`) + 闸上按 basename 拒。
+    expect(gate('cat /home/nick/.ssh/id_ed25519')).toContain('secret-file');
+    expect(gate('cat .env')).toContain('secret-file');
+    expect(gate('cat /home/nick/.config/omd/secrets.json')).toContain('secret-file');
+    // omd 自己的配置面照旧放行 —— 它现在**不再装密钥**了, 拒它只会挡住正当的自检。
     expect(allowed('cat .omd/config.json')).toBe(true);
+    // ★ 而这条闸的边界要说清楚: 它按**文件名**拒, 不按**内容**拒。
+    expect(allowed('grep -r LANGFUSE_SECRET_KEY .')).toBe(true); // 递归扫仍会打印命中行
+    expect(allowed('node -e "1"')).toBe(true); // ① 一旦成立, 读什么都不用过这张表
+    // ⇒ 它挡的是「模型顺手 cat 一下配置」这类手滑, **不是**对抗性外泄。清单第①节仍然成立。
   });
 
   test('最直白的外发通道被拒 —— 但这只挡住了写法', () => {
@@ -65,10 +71,13 @@ describe('N3 · ③ 自动钓鱼 / 自我放大', () => {
     expect(allowed('git log --oneline -1')).toBe(true);
   });
 
-  test('★ `omd` 在白名单里 → 被劫持的节点能递归拉起新的 run (新 run 拥有全部权限)', () => {
-    expect(allowed('omd dag_run --task x')).toBe(true);
-    // 清单第三节的待办: 要么把 omd 从 leaf 的白名单里摘掉 (它本来就不该是 leaf 的工具),
-    // 要么给递归一个深度上限。今天两样都没有。
+  test('`omd` 已摘出白名单 → 递归拉起新 run 这条路被封 (2026-07-31 the owner 裁)', () => {
+    // 待办的两个选项 (摘掉 / 给递归深度上限) 取了前者: 入口封了就没有那条递归,
+    // 深度上限是给"已经允许递归"的世界准备的机制, 这里不需要。
+    expect(gate('omd dag_run --task x')).toContain('not-allowed');
+    expect(gate('oh-my-dag dag_run --task x')).toContain('not-allowed');
+    // ⚠ 同样只挡手滑: `bun run` 起 omd 的入口脚本不经过这张表 (清单第①节)。
+    expect(allowed('bun run src/cli.ts')).toBe(true);
   });
 });
 

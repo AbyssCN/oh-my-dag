@@ -33,6 +33,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { logger } from '../harness/logger';
 import type { ModelUsage } from './types';
@@ -70,33 +71,50 @@ export function langfuseConfigFromEnv(env: Record<string, string | undefined> = 
  * env 优先, 文件兜底。
  *
  * ⚠ **纯 env 那一半单独导出** ({@link langfuseConfigFromEnv}) 不是为了好看:
- * 文件兜底一加进来, 「不配 env = 什么都不做」这条用例就会读到仓里真实的 `.omd/config.json`
- * 而变成随环境绿红 (**写这段时测试当场抓住了**)。env 语义由纯函数验, 文件兜底由临时 cwd 验,
+ * 文件兜底一加进来, 「不配 env = 什么都不做」这条用例就会读到真机上的凭证文件
+ * 而变成随环境绿红 (**写这段时测试当场抓住了**)。env 语义由纯函数验, 文件兜底由临时 HOME 验,
  * 两件事分开测才各自钉得住。
  */
 export function resolveLangfuseConfig(env: Record<string, string | undefined> = process.env): LangfuseConfig | null {
   const fromEnv = langfuseConfigFromEnv(env);
   if (fromEnv) return fromEnv;
-  // env 没给 → 退到 omd 自己的配置面。**这不是"两个真源"**: env 恒压过文件, 文件只是让
-  // "不改 MCP 启动方式也能开观测"成为可能 —— daemon 由客户端拉起, 给它加 env 要动客户端配置,
-  // 而 `.omd/config.json` 是 omd 本来就在读的那一份 (且已 gitignore, 与 .env 同级别的本地文件)。
-  return fileLangfuseConfig();
+  // env 没给 → 退到凭证文件。**这不是"两个真源"**: env 恒压过文件, 文件只是让
+  // "不改 MCP 启动方式也能开观测"成为可能 —— daemon 由客户端拉起, 给它加 env 要动客户端配置。
+  return secretsFileLangfuseConfig(env);
 }
 
-/** `.omd/config.json` 的 `observability.langfuse`。按 mtime 缓存 —— 这函数每次模型调用都会被问到。 */
-let fileCache: { mtimeMs: number; cfg: LangfuseConfig | null } | null = null;
-function fileLangfuseConfig(): LangfuseConfig | null {
-  const path = join(process.cwd(), '.omd', 'config.json');
+/**
+ * 凭证落点 = `$XDG_CONFIG_HOME/omd/secrets.json`(缺省 `~/.config/omd/secrets.json`)。
+ *
+ * **为什么不是 `.omd/config.json`**(2026-07-31 搬家, 首版落在那里):
+ * ① 那份文件在**仓树里**, 而 command leaf 的白名单收了 `cat`/`grep`/`jq` —— 密钥躺在
+ *    模型够得着的路径上, 等于把当初「不收 `printenv`」的判据自己拆了。搬出仓树后,
+ *    模型列目录/递归 grep 都碰不到它(闸上另有 basename 拒, 见 `command-leaf.ts`)。
+ * ② Langfuse 账号是**每台机器一份**, 不是每个仓一份。放 `~/.config` 是配一次全仓生效,
+ *    比每开一个仓重填一遍更省事 —— 安全与便利这次同向, 不用取舍。
+ * ③ gitignore 类机制(含 `.git/info/exclude`)只防"提交进去", 防不住"被读出来"。
+ *    落点搬走才动到后者。
+ *
+ * 按 mtime 缓存 —— 这函数每次模型调用都会被问到。
+ */
+export function omdSecretsPath(env: Record<string, string | undefined> = process.env): string {
+  const base = env.XDG_CONFIG_HOME?.trim() || join(env.HOME ?? homedir(), '.config');
+  return join(base, 'omd', 'secrets.json');
+}
+
+let fileCache: { path: string; mtimeMs: number; cfg: LangfuseConfig | null } | null = null;
+function secretsFileLangfuseConfig(env: Record<string, string | undefined>): LangfuseConfig | null {
+  const path = omdSecretsPath(env);
   try {
     const { mtimeMs } = statSync(path);
-    if (fileCache?.mtimeMs === mtimeMs) return fileCache.cfg;
-    const raw = JSON.parse(readFileSync(path, 'utf-8')) as { observability?: { langfuse?: Partial<LangfuseConfig> } };
-    const lf = raw.observability?.langfuse;
+    if (fileCache?.path === path && fileCache.mtimeMs === mtimeMs) return fileCache.cfg;
+    const raw = JSON.parse(readFileSync(path, 'utf-8')) as { langfuse?: Partial<LangfuseConfig> };
+    const lf = raw.langfuse;
     const cfg =
       lf?.host && lf.publicKey && lf.secretKey
         ? { host: lf.host.trim().replace(/\/+$/, ''), publicKey: lf.publicKey.trim(), secretKey: lf.secretKey.trim() }
         : null;
-    fileCache = { mtimeMs, cfg };
+    fileCache = { path, mtimeMs, cfg };
     return cfg;
   } catch {
     // 文件不在/读不动/不是 JSON → 当没配 (观测层不许因为配置面缺失而抛)
@@ -110,8 +128,8 @@ export function langfuseStatus(env: Record<string, string | undefined> = process
     (k) => !(k === 'LANGFUSE_HOST' ? (env.LANGFUSE_HOST ?? env.LANGFUSE_BASEURL) : env[k])?.trim(),
   );
   const resolved = resolveLangfuseConfig(env);
-  if (!resolved) return `未启用 (env 缺 ${missing.join(' / ')}; .omd/config.json 的 observability.langfuse 也没配)`;
-  return `启用 → ${resolved.host} (来源: ${missing.length ? '.omd/config.json' : 'env'})`;
+  if (!resolved) return `未启用 (env 缺 ${missing.join(' / ')}; ${omdSecretsPath(env)} 的 langfuse 也没配)`;
+  return `启用 → ${resolved.host} (来源: ${missing.length ? omdSecretsPath(env) : 'env'})`;
 }
 
 export interface GenerationRecord {
