@@ -10,10 +10,14 @@
  *      观测面永远看不见它们。
  */
 import { describe, expect, test, beforeEach } from 'bun:test';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   _peekLangfuseQueue,
   _resetLangfuseForTest,
   flushLangfuse,
+  langfuseConfigFromEnv,
   langfuseStatus,
   recordGeneration,
   resolveLangfuseConfig,
@@ -35,13 +39,24 @@ beforeEach(() => _resetLangfuseForTest());
 
 describe('① 不配 = 真的什么都不做, 且说得出原因', () => {
   test('三个 env 缺任何一个 → 不启用, 且状态里点名缺的是哪个', () => {
-    expect(resolveLangfuseConfig({})).toBeNull();
-    expect(langfuseStatus({})).toContain('LANGFUSE_HOST');
+    // 用纯 env 解析: 带文件兜底的那个会读到仓里真实的 .omd/config.json (见函数注释)。
+    // langfuseStatus 同理会读文件, 所以"点名缺哪个"要在一个没有 .omd 的 cwd 里验 —— 见下一条。
+    expect(langfuseConfigFromEnv({})).toBeNull();
     const { LANGFUSE_SECRET_KEY: _drop, ...partial } = ENV;
-    expect(resolveLangfuseConfig(partial)).toBeNull();
-    // ★ 缺谁就点谁的名 —— "未启用"三个字不够, 那正是让人配了半天发现没生效的写法
-    expect(langfuseStatus(partial)).toContain('LANGFUSE_SECRET_KEY');
-    expect(langfuseStatus(partial)).not.toContain('LANGFUSE_PUBLIC_KEY');
+    expect(langfuseConfigFromEnv(partial)).toBeNull();
+  });
+
+  test('★ 都没配时状态**点名缺的是哪个** —— "未启用"三个字不够, 那正是让人配了半天才发现没生效的写法', () => {
+    const cwd = process.cwd();
+    process.chdir(mkdtempSync(join(tmpdir(), 'omd-nolf2-')));
+    try {
+      const { LANGFUSE_SECRET_KEY: _drop, ...partial } = ENV;
+      expect(langfuseStatus({})).toContain('LANGFUSE_HOST');
+      expect(langfuseStatus(partial)).toContain('LANGFUSE_SECRET_KEY');
+      expect(langfuseStatus(partial)).not.toContain('LANGFUSE_PUBLIC_KEY');
+    } finally {
+      process.chdir(cwd);
+    }
   });
 
   test('齐了 → 启用并回显 host (末尾斜杠归一, 免得拼出 //api/…)', () => {
@@ -50,8 +65,32 @@ describe('① 不配 = 真的什么都不做, 且说得出原因', () => {
   });
 
   test('未配置时 recordGeneration 一个事件都不入队 (主路径零成本)', () => {
-    recordGeneration(rec(), {});
-    expect(_peekLangfuseQueue()).toHaveLength(0);
+    // 造一份"env 与文件都没有"的世界: 换到一个没有 .omd/config.json 的临时 cwd。
+    const cwd = process.cwd();
+    process.chdir(mkdtempSync(join(tmpdir(), 'omd-nolf-')));
+    try {
+      recordGeneration(rec(), {});
+      expect(_peekLangfuseQueue()).toHaveLength(0);
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
+  test('env 没给但 .omd/config.json 给了 → 也算配上 (daemon 由客户端拉起, 加 env 要动客户端配置)', () => {
+    const cwd = process.cwd();
+    const dir = mkdtempSync(join(tmpdir(), 'omd-filelf-'));
+    mkdirSync(join(dir, '.omd'), { recursive: true });
+    writeFileSync(
+      join(dir, '.omd', 'config.json'),
+      JSON.stringify({ observability: { langfuse: { host: 'http://nas:3000', publicKey: 'pk-f', secretKey: 'sk-f' } } }),
+    );
+    process.chdir(dir);
+    try {
+      expect(resolveLangfuseConfig({})?.publicKey).toBe('pk-f');
+      expect(langfuseStatus({})).toContain('.omd/config.json');
+    } finally {
+      process.chdir(cwd);
+    }
   });
 });
 

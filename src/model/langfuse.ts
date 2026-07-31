@@ -32,6 +32,8 @@
  * 前提因此是 **self-hosted**(NAS)。指向任何第三方托管实例之前,先想清楚这一句。
  */
 import { randomUUID } from 'node:crypto';
+import { readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { logger } from '../harness/logger';
 import type { ModelUsage } from './types';
 
@@ -57,12 +59,49 @@ export interface LangfuseConfig {
  * 读 env(**每次读,不在模块加载时冻结**)—— 同 INV-MODEL-3 的那条纪律:
  * daemon 长活,配置在运行中被改是常态,boot 冻结会让人改完发现"没生效"。
  */
-export function resolveLangfuseConfig(env: Record<string, string | undefined> = process.env): LangfuseConfig | null {
+export function langfuseConfigFromEnv(env: Record<string, string | undefined> = process.env): LangfuseConfig | null {
   const host = (env.LANGFUSE_HOST ?? env.LANGFUSE_BASEURL ?? '').trim().replace(/\/+$/, '');
   const publicKey = (env.LANGFUSE_PUBLIC_KEY ?? '').trim();
   const secretKey = (env.LANGFUSE_SECRET_KEY ?? '').trim();
-  if (!host || !publicKey || !secretKey) return null;
-  return { host, publicKey, secretKey };
+  return host && publicKey && secretKey ? { host, publicKey, secretKey } : null;
+}
+
+/**
+ * env 优先, 文件兜底。
+ *
+ * ⚠ **纯 env 那一半单独导出** ({@link langfuseConfigFromEnv}) 不是为了好看:
+ * 文件兜底一加进来, 「不配 env = 什么都不做」这条用例就会读到仓里真实的 `.omd/config.json`
+ * 而变成随环境绿红 (**写这段时测试当场抓住了**)。env 语义由纯函数验, 文件兜底由临时 cwd 验,
+ * 两件事分开测才各自钉得住。
+ */
+export function resolveLangfuseConfig(env: Record<string, string | undefined> = process.env): LangfuseConfig | null {
+  const fromEnv = langfuseConfigFromEnv(env);
+  if (fromEnv) return fromEnv;
+  // env 没给 → 退到 omd 自己的配置面。**这不是"两个真源"**: env 恒压过文件, 文件只是让
+  // "不改 MCP 启动方式也能开观测"成为可能 —— daemon 由客户端拉起, 给它加 env 要动客户端配置,
+  // 而 `.omd/config.json` 是 omd 本来就在读的那一份 (且已 gitignore, 与 .env 同级别的本地文件)。
+  return fileLangfuseConfig();
+}
+
+/** `.omd/config.json` 的 `observability.langfuse`。按 mtime 缓存 —— 这函数每次模型调用都会被问到。 */
+let fileCache: { mtimeMs: number; cfg: LangfuseConfig | null } | null = null;
+function fileLangfuseConfig(): LangfuseConfig | null {
+  const path = join(process.cwd(), '.omd', 'config.json');
+  try {
+    const { mtimeMs } = statSync(path);
+    if (fileCache?.mtimeMs === mtimeMs) return fileCache.cfg;
+    const raw = JSON.parse(readFileSync(path, 'utf-8')) as { observability?: { langfuse?: Partial<LangfuseConfig> } };
+    const lf = raw.observability?.langfuse;
+    const cfg =
+      lf?.host && lf.publicKey && lf.secretKey
+        ? { host: lf.host.trim().replace(/\/+$/, ''), publicKey: lf.publicKey.trim(), secretKey: lf.secretKey.trim() }
+        : null;
+    fileCache = { mtimeMs, cfg };
+    return cfg;
+  } catch {
+    // 文件不在/读不动/不是 JSON → 当没配 (观测层不许因为配置面缺失而抛)
+    return null;
+  }
 }
 
 /** 人可读的开没开 + 没开的**原因**(给 `omd_config_status` 与排障用)。 */
@@ -70,8 +109,9 @@ export function langfuseStatus(env: Record<string, string | undefined> = process
   const missing = (['LANGFUSE_HOST', 'LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY'] as const).filter(
     (k) => !(k === 'LANGFUSE_HOST' ? (env.LANGFUSE_HOST ?? env.LANGFUSE_BASEURL) : env[k])?.trim(),
   );
-  if (missing.length) return `未启用 (缺 ${missing.join(' / ')})`;
-  return `启用 → ${resolveLangfuseConfig(env)!.host}`;
+  const resolved = resolveLangfuseConfig(env);
+  if (!resolved) return `未启用 (env 缺 ${missing.join(' / ')}; .omd/config.json 的 observability.langfuse 也没配)`;
+  return `启用 → ${resolved.host} (来源: ${missing.length ? '.omd/config.json' : 'env'})`;
 }
 
 export interface GenerationRecord {
@@ -122,7 +162,9 @@ export function recordGeneration(rec: GenerationRecord, env: Record<string, stri
       type: 'trace-create',
       // sessionId 与 id 同值: 一次 run = 一条 trace, 同时也是一个 session ——
       // 这样按 run 看和按 session 看是同一份东西, 不用在两个概念之间来回翻译。
-      body: { id: rec.traceId, name: 'omd-run', sessionId: rec.traceId, timestamp: now },
+      // tags: 这台 Langfuse 目前只有一个项目 (bluebell/Fusang), omd 的 trace 会与别的产品混在一起 ——
+      // 打上 tag 才筛得出来。等要建**数据集与 score** 时再谈拆项目 (那两样是 project 作用域的)。
+      body: { id: rec.traceId, name: 'omd-run', sessionId: rec.traceId, timestamp: now, tags: ['omd'], metadata: { source: 'oh-my-dag' } },
     });
   }
   queue.push({
