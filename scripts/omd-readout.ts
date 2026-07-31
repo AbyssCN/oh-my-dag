@@ -173,6 +173,19 @@ for (const r of rows) {
   }
 }
 
+// ── ⑤ detector 标注率 (D-Q): conductor 在**真跑**上标了几个 ────────────────────
+// 此前这个数只有 `eval-detector-usage.ts` 量得到, 而它量的是**规划期 prompt 上标没标**。
+// "60% 天花板在生产上兑现成 0/N" 这句话此前每次都要人去读日志重数一遍。
+let conductorChildren = 0; // 内容寻址子节点 (id 含 '::') = conductor 展开出来的
+let detectorNodes = 0;
+for (const r of rows) {
+  for (const n of JSON.parse(r.nodes) as DagRunNode[]) {
+    if (!n.id.includes('::')) continue; // 只看子图里的点; 顶层节点不是 conductor 画的
+    conductorChildren++;
+    if (n.detector) detectorNodes++;
+  }
+}
+
 // ── ③ 单轮成本异常 (§8.6): 偏离历史中位数 N 倍 ────────────────────────────────
 // 用中位数而非均值: 一次异常本身会把均值抬起来, 于是"异常"检测不出下一次异常。
 const ANOMALY_FACTOR = Number(flags.factor ?? 3);
@@ -183,7 +196,7 @@ const anomalies = median > 0 ? runs.filter((r) => r.leavesIn > median * ANOMALY_
 if (flags.json) {
   console.log(
     JSON.stringify(
-      { dbPath, runs, tierCount, neverButBlocked, commandNodes, writeNodes, unreported, totalWrites, totalNoop, noopNodes, median, anomalyFactor: ANOMALY_FACTOR, anomalies },
+      { dbPath, runs, tierCount, neverButBlocked, commandNodes, conductorChildren, detectorNodes, writeNodes, unreported, totalWrites, totalNoop, noopNodes, median, anomalyFactor: ANOMALY_FACTOR, anomalies },
       null,
       2,
     ),
@@ -250,6 +263,23 @@ if (writeNodes === 0) {
     for (const n of noopNodes.slice(0, 8)) console.log(`       · ${n.id}  (${n.noop}/${n.total})`);
   }
   console.log(`   判据: no-op 率长期贴近 0 → 别为它建闸; 成规模 → 产物闸正放过一整类静默失败。`);
+}
+
+console.log(`\n⑤ detector 标注率 (D-Q · conductor 在真跑上标了几个)`);
+if (conductorChildren === 0) {
+  console.log('   留痕里没有 conductor 子节点 (这批 run 没走内环, 或早于「记 detector」那次改动)。');
+} else {
+  console.log(`   子节点 ${conductorChildren} 个, 标了 detector 的 ${detectorNodes} 个 = ${pct(detectorNodes / conductorChildren)}`);
+  console.log(`   对照: eval 上的**规划期**使用率天花板是 60% (v3/v4 同分, 噪声内)。`);
+  // ⚠ 第三次踩同一个坑了 (前两次: writeCounts 缺席 vs [0,0]; never 闸拒 vs 未登记)。
+  // `detector` 在**早于 2026-07-31 的记录**里恒缺席 —— 那个 0 是"没记"不是"没标"。
+  // 用 unreported (agent 节点没报 writeCounts) 当同批老记录的判据: 两个字段同一次改动加的。
+  if (unreported > 0) {
+    console.log(`   ⚠ 这批里有 ${unreported} 个 agent 节点是**旧格式**记录 —— 它们的 detector 恒缺席,`);
+    console.log(`     所以上面这个比率**只在新记录上可信**。别把「没记」读成「没标」。`);
+  } else if (detectorNodes === 0) {
+    console.log('   ⚠ 0 个 (记录是新格式, 这个 0 可信) —— 「60% 天花板在生产上兑现成 0」再加一次读数。');
+  }
 }
 
 console.log(`\n诚实边界: 本板只读留痕库。**它算不出的**: 单节点耗时 (没记)、$ (只有 token,`);
