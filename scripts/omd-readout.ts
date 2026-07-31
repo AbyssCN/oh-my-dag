@@ -38,6 +38,8 @@
 import { Database } from 'bun:sqlite';
 import { commandRiskTier, RISK_TIER_ORDER, type CommandRiskTier } from '../src/harness/command-leaf';
 import { computeCost } from '../src/model/cost-ledger';
+import { CheckpointManager } from '../src/harness/continuity/checkpoint-manager';
+import type { NodeLoopJournal } from '../src/harness/continuity/types';
 import type { DagRunNode } from '../src/harness/dag-record';
 import { FAILURE_KIND_INFO, FAILURE_KIND_ORDER, type NodeFailureKind } from '../src/harness/node-failure';
 import { RUN_OUTCOME_INFO, RUN_OUTCOME_ORDER, type RunOutcomeKind } from '../src/harness/run-outcome';
@@ -384,6 +386,41 @@ const stopBlocked = outcomeCount.blocked;
 const stopNotConverged = outcomeCount['not-converged'];
 const stopSeparable = stopBlocked > 0 && stopNotConverged > 0;
 
+// ── ⑪ 内环 journal (N9 第二处数据源) ─────────────────────────────────────────
+// 轮数与「凭什么停的」**只活在 continuity 的 journal 里** —— 留痕库存的是每张图跑完的结果,
+// 环转了几轮、停在哪一格, 那张表一个字都没有。所以这块板从"读一张表"变成"读两处"。
+//
+// ⚠ 两处的生命周期**不一样长**: 留痕库是永久的, journal 跟着 `.omd/continuity/<runId>/` 走,
+//   清理掉就没了。于是「这一跑没有内环数据」有三种成因, 后续动作不同, 分开数:
+//     ① 这次跑压根没有带内环的节点 (最常见, 不是缺陷)
+//     ② 有 journal 但没有 `stop` 字段 —— 早于 N6 的记录 (老数据)
+//     ③ journal 目录被清了 / 换了机器 —— 观测边界够不着 (Unobserved, 不是 Missing)
+//   ②③ 从这块板上分不开 (都表现为"读不到"), 所以合成一格并**如实说它是合的**, 不假装分得清。
+const cm = new CheckpointManager(String(flags.repo ?? process.cwd()));
+const loopStopCount = new Map<string, number>();
+const loopStopSamples = new Map<string, { evidence: string; atRound: number }>();
+let loopJournals = 0;
+let loopJournalsNoStop = 0;
+let runsWithLoop = 0;
+let runsNoLoopData = 0;
+let roundsTotal = 0;
+for (const r of runs) {
+  if (r.runId.startsWith('(no-runid):')) { runsNoLoopData++; continue; }
+  const js: NodeLoopJournal[] = cm.listNodeLoopJournals(r.runId);
+  if (js.length === 0) { runsNoLoopData++; continue; }
+  runsWithLoop++;
+  for (const j of js) {
+    loopJournals++;
+    roundsTotal += j.completedRounds ?? 0;
+    if (!j.stop) { loopJournalsNoStop++; continue; }
+    loopStopCount.set(j.stop.kind, (loopStopCount.get(j.stop.kind) ?? 0) + 1);
+    if (!loopStopSamples.has(j.stop.kind)) {
+      loopStopSamples.set(j.stop.kind, { evidence: j.stop.evidence, atRound: j.stop.atRound });
+    }
+  }
+}
+const loopStopRecorded = loopJournals - loopJournalsNoStop;
+
 // ── ③ 单轮成本异常 (§8.6): 偏离历史中位数 N 倍 ────────────────────────────────
 // 用中位数而非均值: 一次异常本身会把均值抬起来, 于是"异常"检测不出下一次异常。
 const ANOMALY_FACTOR = Number(flags.factor ?? 3);
@@ -403,7 +440,8 @@ if (flags.json) {
           criteria: { agree: critAgree, oracleFailed: critOracleFailed, wastedRounds: critWastedRounds, other: critOtherWithVerif, unrecorded: critNoVerif, recorded: critRecorded },
           efficiency: { pricedRuns, mixedSeatRuns, noCoordRuns, unpricedCoordRuns, leafUsd, reusedTotal, reuseNodeBase, reuseRuns: reuseRuns.length },
           honesty: { emptyArtifact, nodeUnclassified, runUnclassified, notDoneNodes },
-          stop: { blocked: stopBlocked, notConverged: stopNotConverged, separable: stopSeparable },
+          stop: { blocked: stopBlocked, notConverged: stopNotConverged, separable: stopSeparable,
+            innerLoop: { journals: loopJournals, withoutStop: loopJournalsNoStop, byKind: Object.fromEntries(loopStopCount), runsWithLoop, runsNoLoopData, roundsTotal } },
         } },
       null,
       2,
@@ -636,7 +674,11 @@ if (reuseRuns.length > 0) {
 } else {
   console.log('     复用率                        整批都没记 (2026-07-31 才加的位)');
 }
-console.log('     轮数                          **无数据源** —— 在 continuity 的 journal 里, 这块板只读留痕库');
+if (runsWithLoop > 0) {
+  console.log(`     轮数 (${runsWithLoop} 跑 · ${loopJournals} 个内环)  合计 ${roundsTotal} 轮  均 ${(roundsTotal / loopJournals).toFixed(1)} 轮/内环`);
+} else {
+  console.log('     轮数                          这批里没有一跑读得到内环 journal (见停止轴末尾的三态)');
+}
 
 console.log('\n   诚实轴 —— 引擎有没有在报告自己做砸了 / 不知道');
 if (notDoneNodes === 0) {
@@ -659,11 +701,28 @@ if (outcomeRecorded === 0) {
   console.log('     → 有一格恒为 0: 区分**还没在生产上兑现**。判据不是"两个数都非零"那么松 ——');
   console.log('       只要一格空着, 「blocked 被念成 not-converged」这条就还没被证伪。');
 }
-console.log('     内环那一层 (NodeLoopJournal.stop 的 kind/evidence/atRound) **无数据源** —— 同轮数, 在 journal 里。');
+console.log('');
+console.log('     内环那一层 (NodeLoopJournal.stop) —— 从 continuity journal 读:');
+if (loopStopRecorded === 0) {
+  console.log(`       ${loopJournals} 个内环里没有一个记了 stop` + (loopJournalsNoStop ? ` (${loopJournalsNoStop} 个是早于 N6 的老 journal)` : ''));
+} else {
+  for (const [kind, n] of [...loopStopCount].sort((a, b) => b[1] - a[1])) {
+    const sample = loopStopSamples.get(kind)!;
+    console.log(`       ${kind.padEnd(18)} ${String(n).padStart(3)}  ${pct(n / loopStopRecorded)}  停在第 ${sample.atRound} 轮`);
+    console.log(`         判词原文: ${sample.evidence.slice(0, 96)}${sample.evidence.length > 96 ? '…' : ''}`);
+  }
+  if (loopJournalsNoStop > 0) console.log(`       ? 另有 ${loopJournalsNoStop} 个内环没记 stop (早于 N6) —— 不算进分母。`);
+  console.log('       ★ 这一层与 run 级的 blocked/not-converged **是同一套词表** (N6 刻意借的 N5 词表) ——');
+  console.log('         两层若长期说不同的话, 那本身就是读数: 环里判 blocked 而整跑报 not-converged,');
+  console.log('         正是 N5 治的那个病在下一层复发。');
+}
+console.log(`       覆盖: ${runsWithLoop} 跑读到了内环 · ${runsNoLoopData} 跑读不到`);
+console.log('       ⚠ "读不到"是**合并格**: 这次没有带内环的节点(最常见, 不是缺陷) / journal 目录被清了');
+console.log('         两者在这块板上分不开 —— 留痕库永久而 journal 跟着 .omd/continuity 走。不假装分得清。');
 
-console.log(`\n诚实边界: 本板只读留痕库。**它算不出的**: 单节点耗时 (没记)、judge 判词、`);
-console.log(`轮数与内环停止证据 (在 continuity 的 journal 里, 不在这张表)、conductor 那部分的 $`);
-console.log(`(它不是节点, 坐标没记 —— ⑩ 里算的是叶子那部分)。`);
+console.log(`\n诚实边界: 本板读**两处** —— 留痕库 (永久) + continuity journal (跟着 .omd/continuity 走,`);
+console.log(`清掉就没了)。**它算不出的**: 单节点耗时 (没记)、judge 判词原文 (只存了停止那一条)、`);
+console.log(`conductor 那部分的 $ (它不是节点, 坐标没记 —— ⑩ 里算的是叶子那部分)。`);
 console.log(`不要因为这里没有就当它不存在 —— 那是 \`Unobserved\` 不是 \`Missing\`。\n`);
 
 db.close();

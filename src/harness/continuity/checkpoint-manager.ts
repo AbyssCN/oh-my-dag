@@ -161,6 +161,39 @@ export class CheckpointManager {
     }
   }
 
+  /**
+   * 一次 run 的**全部**节点级环 journal(N9, 2026-07-31)。
+   *
+   * 加它是因为读数板要的两条轴 —— 轮数、内环停止证据(`stop`)—— **只活在这些文件里**:
+   * 留痕库存的是每张图跑完的结果, 环转了几轮、凭什么停的, 那张表一个字都没有。
+   * 而读数板要按 runId 汇总, 手上只有 runId 没有 nodeId, {@link loadNodeLoopJournal} 用不上。
+   *
+   * **按文件内容认 nodeId, 不解析文件名**: {@link loopPath} 的安全化 (`[^\w.-]` → `_`) 是**有损**的,
+   * 从文件名反推 nodeId 会把 `a/b` 与 `a_b` 读成同一个。名字只用来筛出这批文件。
+   *
+   * 目录不存在 / 某个文件坏了 → 跳过那一个, 不抛。读数板是**观察者**, 它读不出东西时的正确
+   * 行为是"这一格没有数据", 不是把主路径拖下水。
+   */
+  listNodeLoopJournals(runId: string): NodeLoopJournal[] {
+    try {
+      const dir = this.runDir(runId);
+      if (!existsSync(dir)) return [];
+      const out: NodeLoopJournal[] = [];
+      for (const name of readdirSync(dir)) {
+        if (!name.startsWith('_loop-') || !name.endsWith('.json')) continue;
+        try {
+          const j = JSON.parse(readFileSync(join(dir, name), 'utf-8')) as NodeLoopJournal;
+          if (typeof j?.nodeId === 'string') out.push(j);
+        } catch {
+          // 坏一个跳一个 —— 一份半截 JSON 不该让整批读数消失。
+        }
+      }
+      return out;
+    } catch {
+      return [];
+    }
+  }
+
   // ── goal 前置阶段 journal (2026-07-29) ───────────────────────────────────
 
   /** 落 `_goal.json` (原子写)。失败 → WARN (fail-open, 与 _dag/_fixpoint 同纪律)。 */
