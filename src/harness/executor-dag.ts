@@ -1383,7 +1383,29 @@ async function executePlan(
       // (撤外层之后没有别的层再问这句), 那就值得为单轮档也多付一次。
       // 多轮档照旧**每轮都判** —— 末轮那次不只是为了下一轮, 它还要写进 journal (resume 据它
       // 判"这个节点上次到底成没成"), 省掉它等于让 resume 拿一个空白的结论重跑。
-      if (maxRounds === 1 && !judgeFinal) return settle(last, round);
+      // 配了冻结判据就一定要问 judge —— 判据轴要的是**两个布尔**, 缺了 judge 那一半,
+      // 「judge 太紧」(判据过了而 judge 说没成) 这一格就永远观测不到。
+      if (maxRounds === 1 && !judgeFinal && !config.freezeCriterion) return settle(last, round);
+
+      // ── 冻结判据进环 (2026-08-01) ────────────────────────────────────────────
+      // **在这儿直接跑, 不作为子节点** —— 这是护栏①: `renderRoundForJudge` 渲染的是 children,
+      // 而 command 子节点通过时 facts 会写「命令退出码符合预期」。judge 一旦看得见判据结论
+      // 就会抄答案, 两条判据永远一致 —— 而判据轴量的恰恰是它们的不一致。
+      // 顺序上先于 judge (同 §8.4 与 D-Q 那两条: 确定性的先问, 早一步就少烧一次贵座调用)。
+      const freezeGreen = await (async (): Promise<boolean | null> => {
+        const fc = config.freezeCriterion;
+        if (!fc || !config.commandRunner) return null; // 没配 = 旧行为, 判据只在环外跑
+        try {
+          const cr = await config.commandRunner({ command: fc.command });
+          const ok = cr.exitCode === (fc.expectExit ?? 0);
+          logger.info({ node: id, round, command: fc.command, exitCode: cr.exitCode, ok }, '[omd/executor-dag] 冻结判据 (环内)');
+          return ok;
+        } catch (e) {
+          // 判据本身跑不起来 ≠ 判据没过 —— 但对停止决定而言两者一样 (不能据此判绿)。
+          logger.warn({ node: id, round, err: String(e) }, '[omd/executor-dag] 冻结判据跑不起来 → 按未过处理');
+          return false;
+        }
+      })();
 
       const verdict = await judgeConductorRound(id, node.goal ?? id, r.leaf, round, r.children);
       usageAcc = addUsage(usageAcc, verdict.usage);
@@ -1391,6 +1413,28 @@ async function executePlan(
       // 与 §8.4 熔断同一个出口形状, 但 kind 是 `infra-error` 不是 `blocked`: N5 词表里这两格的
       // 下一步相反 —— blocked 是"要人给外部输入", infra-error 是"引擎自己出事, 该修的是引擎"。
       // 把它念成 not-converged (此前的行为) 会让人去加轮数, 而加轮数正是最没用的那个动作。
+      // 判据绿 → **这一轮就是最后一轮** (D-I「以判据为准」; 而判据本身已由 G4 的空世界自检 +
+      // 反面样本探针两道筛过, 不是随便一条命令就有停止权)。judge 的票**只记录不决定** ——
+      // 护栏②: 不问的话「judge 太紧」那一格永远观测不到, 等于从另一头把判据轴杀掉。
+      if (freezeGreen === true) {
+        // 护栏④: judge 同时调不通 → 仍然按判据停, 但**出声说这一跑只有一道闸** ——
+        // 不说的话就是"以为两道闸、其实一道", 而那正是这个仓一直在杀的形状。
+        const oneGate = verdict.unreachable ? ` · ⚠ judge 调不通 (${verdict.unreachable}) —— 这一跑只有一道闸` : '';
+        if (verdict.unreachable) logger.warn({ node: id, round }, '[omd/executor-dag] 冻结判据绿但 judge 调不通 → 按判据收敛, 但这一跑只有一道闸');
+        logger.info({ node: id, round, judgeSaid: verdict.converged }, '[omd/executor-dag] 冻结判据绿 → 环提前收敛 (judge 的票只记录)');
+        writeLoopJournal(round, poisoned, prevReason, true, last.output, {
+          kind: 'success',
+          evidence: `冻结判据绿 (${config.freezeCriterion!.command})${oneGate}`,
+          atRound: round,
+        });
+        return {
+          ...settle(last, round, true),
+          // judge 自己那一票**单独带出去**: `converged` 现在是判据说的, 不再等于 judge 说的。
+          // 混在一起会让判据轴把"判据绿"误记成"judge 也说绿" —— 那正是它要量的那一格。
+          ...(verdict.unreachable ? {} : { judgeConverged: verdict.converged }),
+        };
+      }
+
       if (verdict.unreachable) {
         logger.warn({ node: id, round, err: verdict.unreachable }, '[omd/executor-dag] judge 调不通 → 环提前退出 (infra-error, 不烧剩余轮数)');
         writeLoopJournal(round, poisoned, prevReason, false, last.output, {

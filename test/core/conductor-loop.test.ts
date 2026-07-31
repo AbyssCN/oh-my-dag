@@ -572,3 +572,91 @@ describe('子图节点的 span', () => {
     }
   });
 });
+
+/**
+ * **冻结判据进环**(2026-08-01)。此前它是环外节点(`accept`, depends_on: ['execute'])——
+ * 必须先把轮数烧完,那道 30 秒就能判出来的确定性闸才第一次被问到。实测撞过更坏的一档:
+ * judge 因配置错恒抛,环永远拿不到裁决,判据一次都没跑成,而它本可以在第 1 轮就判绿。
+ *
+ * 这一组钉的是**四条护栏**,缺任何一条这个改动都会造出比它解决的更难发现的问题。
+ */
+describe('冻结判据进环 (四条护栏)', () => {
+  /** 假 command runner: 前 n 轮红, 之后绿。 */
+  const freezeRunner = (greenFrom: number) => {
+    let n = 0;
+    return async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode: ++n >= greenFrom ? 0 : 1 });
+  };
+
+  test('★ 判据绿 → 这一轮就是最后一轮, 不烧剩余轮数', async () => {
+    const f = fake([P1], [{ converged: false, failureReason: 'judge 觉得还差点' }]);
+    const res = await runExecutorDagWithPlan(node({ max_rounds: 3 }), {
+      ...cfg(f.generate, false, true, f.judgeSend),
+      commandRunner: freezeRunner(1) as never,
+      freezeCriterion: { command: 'bun test', expectExit: 0 },
+    });
+    expect(f.expands()).toBe(1); // max_rounds=3 而只展开一次
+    expect(res.results.C!.converged).toBe(true); // D-I: 以判据为准
+  });
+
+  test('★ 护栏② 判据绿时**仍然问了一次 judge**, 且它那一票单独带出来', async () => {
+    // 不问的话「judge 太紧」(判据过了而 judge 说没成) 永远观测不到 —— 从另一头杀掉判据轴。
+    const f = fake([P1], [{ converged: false, failureReason: 'judge 说没成' }]);
+    const res = await runExecutorDagWithPlan(node({ max_rounds: 3 }), {
+      ...cfg(f.generate, false, true, f.judgeSend),
+      commandRunner: freezeRunner(1) as never,
+      freezeCriterion: { command: 'bun test', expectExit: 0 },
+    });
+    expect(f.judges()).toBe(1); // 问过
+    expect(res.results.C!.converged).toBe(true); // 判据说了算
+    expect(res.results.C!.judgeConverged).toBe(false); // 而 judge 自己投的是反对 —— 正是那一格
+  });
+
+  test('★ 护栏① judge 的视野里没有判据结论 (否则它会抄答案)', async () => {
+    const f = fake([P1], [{ converged: true }]);
+    await runExecutorDagWithPlan(node({ max_rounds: 3 }), {
+      ...cfg(f.generate, false, true, f.judgeSend),
+      commandRunner: freezeRunner(1) as never,
+      freezeCriterion: { command: 'bun test --coverage', expectExit: 0 },
+    });
+    // 判据的命令原文与"退出码符合预期"那句 facts 都不许出现在判词 prompt 里。
+    const prompt = f.judgePrompts.join('\n');
+    expect(prompt).not.toContain('bun test --coverage');
+    expect(prompt).not.toContain('命令退出码符合预期');
+  });
+
+  test('判据红 → 照常转下一轮 (它只有"停"的权力, 没有"继续"的权力)', async () => {
+    const f = fake([P1], [{ converged: false, failureReason: '还差' }]);
+    const res = await runExecutorDagWithPlan(node({ max_rounds: 3 }), {
+      ...cfg(f.generate, false, true, f.judgeSend),
+      commandRunner: freezeRunner(99) as never, // 恒红
+      freezeCriterion: { command: 'bun test', expectExit: 0 },
+    });
+    expect(f.expands()).toBe(3);
+    expect(res.results.C!.converged).toBe(false);
+  });
+
+  test('★ 护栏④ 判据绿但 judge 调不通 → 仍按判据收敛, 但 journal 写明"只有一道闸"', async () => {
+    const f = fake([P1], []);
+    const dead = (async () => {
+      throw new ModelError('transport', 'pi: Codex error: Unsupported parameter: temperature');
+    }) as never;
+    const res = await runExecutorDagWithPlan(node({ max_rounds: 3 }), {
+      ...cfg(f.generate, false, true, dead),
+      commandRunner: freezeRunner(1) as never,
+      freezeCriterion: { command: 'bun test', expectExit: 0 },
+    });
+    expect(res.results.C!.converged).toBe(true);
+    // judge 没投过票 ≠ 投了反对票 —— 缺席, 不编一个 false。
+    expect(res.results.C!.judgeConverged).toBeUndefined();
+    const j = JSON.parse(readFileSync(join(runDir(), '_loop-C.json'), 'utf-8')) as NodeLoopJournal;
+    expect(j.stop?.kind).toBe('success');
+    expect(j.stop?.evidence).toContain('只有一道闸');
+  });
+
+  test('没配 freezeCriterion → 逐字旧行为 (零回归)', async () => {
+    const f = fake([P1], [{ converged: false, failureReason: '还差' }]);
+    const res = await runExecutorDagWithPlan(node({ max_rounds: 2 }), cfg(f.generate, false, true, f.judgeSend));
+    expect(f.expands()).toBe(2);
+    expect(res.results.C!.judgeConverged).toBeUndefined();
+  });
+});
