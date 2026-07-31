@@ -2492,7 +2492,9 @@ async function runDagInternal(
   // sessionId: 本次 run 的 conductor+leaf 全部经 send → 同一 Langfuse session (B2)。
   // 可注入 (config.sessionId): 调用方传则跨平面关联 (派活飞轮 dispatchId ↔ Langfuse session); 省略 → 自生成。
   const sessionId = config.sessionId ?? randomUUID();
-  const generate = config.generate ?? makeDefaultGenerate(sessionId);
+  // runLabel = 这一跑的目标, 进 Langfuse 的 trace 名 —— 列表页按 name 认 trace, 全叫一个名字
+  // 等于一屏一模一样的行。截断在 langfuse 那一侧做 (那儿才知道上限)。
+  const generate = config.generate ?? makeDefaultGenerate(sessionId, typeof task === 'string' ? task : undefined);
   const maxPlanRetries = config.maxPlanRetries ?? 2;
   const maxEscalations = config.maxEscalations ?? 1;
   // agent 模板注册表: 注入 (测试/宿主) 或加载 (内置+.omd/agents)。每 run 载一次, 规划+执行+升级共用。

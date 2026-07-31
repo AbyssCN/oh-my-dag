@@ -126,6 +126,11 @@ export interface GenerationRecord {
   usage?: ModelUsage;
   startTime: Date;
   endTime: Date;
+  /**
+   * 这条 trace 的人可读名(= 这一跑在干什么)。只有该 trace 的**第一条** generation 说了算,
+   * 之后的忽略 —— trace 头只发一次。省略 = `omd-run`。
+   */
+  traceLabel?: string;
   /** 出错时给,进 Langfuse 的 level/statusMessage(错的那些调用比对的更值得看)。 */
   error?: string;
   metadata?: Record<string, unknown>;
@@ -164,7 +169,9 @@ export function recordGeneration(rec: GenerationRecord, env: Record<string, stri
       // 这样按 run 看和按 session 看是同一份东西, 不用在两个概念之间来回翻译。
       // tags: 这台 Langfuse 目前只有一个项目 (bluebell/Fusang), omd 的 trace 会与别的产品混在一起 ——
       // 打上 tag 才筛得出来。等要建**数据集与 score** 时再谈拆项目 (那两样是 project 作用域的)。
-      body: { id: rec.traceId, name: 'omd-run', sessionId: rec.traceId, timestamp: now, tags: ['omd'], metadata: { source: 'oh-my-dag' } },
+      // name 用这一跑的目标而不是常量 'omd-run': Langfuse 的列表页是按 name 认 trace 的,
+      // 全叫一个名字等于**一屏一模一样的行**, 要点进去才知道哪条是哪条。
+      body: { id: rec.traceId, name: rec.traceLabel?.slice(0, 120) || 'omd-run', sessionId: rec.traceId, timestamp: now, tags: ['omd'], metadata: { source: 'oh-my-dag' } },
     });
   }
   queue.push({
