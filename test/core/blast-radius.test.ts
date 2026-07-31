@@ -72,6 +72,19 @@ describe('N3 · ③ 自动钓鱼 / 自我放大', () => {
   });
 });
 
+describe('N3 · 半径通到 NAS 的 root (2026-07-31 实测那条链)', () => {
+  test('直连工具不在白名单 —— 但这**不构成防御**', () => {
+    // 链条: node -e 过闸 → cat ~/.ssh/id_ed25519 过闸 → 那把钥匙在 NAS 上被授权 →
+    //       那个账号 sudo 免密 → 39 个容器的 root (bluebell / supabase / talous / Langfuse 自己)。
+    // 白名单确实拒了**直接**走这条路的写法:
+    expect(gate('ssh Nick@192.168.50.154 uptime')).toContain('not-allowed');
+    expect(gate('scp x host:/y')).toContain('not-allowed');
+    // 但 ① 一旦成立, `node -e` 里 spawn('ssh', …) 不经过任何白名单 ——
+    // 这一对断言摆在一起, 就是"挡的是写法不是能力"最干净的一份证据。
+    expect(allowed('node -e "1"')).toBe(true);
+  });
+});
+
 describe('N3 · 真正挡住的那几格 (别把清单读成"全裸")', () => {
   test('灾难性删除有专门的危险模式表', () => {
     expect(gate(`rm${' -rf /'}`)).toContain('dangerous');
