@@ -131,6 +131,8 @@ export interface GenerationRecord {
    * 之后的忽略 —— trace 头只发一次。省略 = `omd-run`。
    */
   traceLabel?: string;
+  /** system 段的版本哈希(见 {@link promptVersionOf})。省略 = 不登记版本。 */
+  promptVersion?: string;
   /** 出错时给,进 Langfuse 的 level/statusMessage(错的那些调用比对的更值得看)。 */
   error?: string;
   metadata?: Record<string, unknown>;
@@ -149,8 +151,109 @@ let shoutedOnce = false;
 /** 已经建过 trace 头的 traceId(一条 trace 只发一次 trace-create)。 */
 const seenTraces = new Set<string>();
 
+/** 版本身份进 metadata: prompt 版本 + 引擎 commit。两者一起才定得住"这一发是哪一版跑的"。 */
+const versionMeta = (rec: GenerationRecord): Record<string, string> => ({
+  ...(rec.promptVersion ? { promptVersion: rec.promptVersion } : {}),
+  engineCommit: engineCommitId(),
+});
+
 const clip = (s: string): string => (s.length > MAX_FIELD_CHARS ? `${s.slice(0, MAX_FIELD_CHARS)}\n…[truncated ${s.length - MAX_FIELD_CHARS} chars]` : s);
 const clipDeep = (v: unknown): unknown => (typeof v === 'string' ? clip(v) : JSON.parse(clip(JSON.stringify(v ?? null))) as unknown);
+
+/**
+ * **节点 id → 确定性 observation id**(2026-07-31,父子结构用)。
+ *
+ * 为什么要确定性而不是随机 uuid:父子关系要建立,子调用就得知道父 span 的 id。
+ * 随机 id 意味着要把它从"节点开始执行"一路穿到"每一个模型调用",穿过五六层函数签名 ——
+ * 而**同一条 trace 里同一个节点只有一个 span**,那么 `hash(traceId + nodeId)` 就已经是它的名字了。
+ * 于是父子两边各自算一遍,算出来必然相等,**一个参数都不用传**。
+ */
+function observationId(traceId: string, nodeId: string): string {
+  return new Bun.CryptoHasher('sha1').update(`${traceId}\u0000${nodeId}`).digest('hex').slice(0, 32);
+}
+
+/**
+ * 观测名 → 它属于哪个节点。名字的约定是 `<相位>:<节点id>`(见 GenerateFn.traceName)。
+ * 认不出 → null(那一发就挂在 trace 根上,不硬凑一个父)。
+ */
+function nodeIdOfName(name: string): string | null {
+  const i = name.indexOf(':');
+  return i > 0 && i < name.length - 1 ? name.slice(i + 1) : null;
+}
+
+/**
+ * **父节点**:子节点 id 是 `<父>::<内容寻址后缀>`(D-B),所以父子关系**写在 id 里**,
+ * 不需要另外记账。没有 `::` = 顶层节点,父是 trace 根。
+ */
+function parentNodeIdOf(nodeId: string): string | null {
+  const i = nodeId.indexOf('::');
+  return i > 0 ? nodeId.slice(0, i) : null;
+}
+
+/**
+ * 记一个**节点级 span** —— 让一条 trace 打开就是**整张图的形状**,而不是一串平铺的调用。
+ *
+ * 与 generation 的分工:generation 是"打了一发模型",span 是"这个节点跑了多久、成没成"。
+ * `command` 节点一次模型都不打, 此前在观测面上**完全不存在** —— 而它们常常是验收闸,
+ * 一张图少了它们就不是那张图。
+ */
+export function recordSpan(
+  rec: { traceId: string; nodeId: string; kind: string; status: string; startTime: Date; endTime: Date; failureKind?: string },
+  env: Record<string, string | undefined> = process.env,
+): void {
+  if (!resolveLangfuseConfig(env)) return;
+  const parent = parentNodeIdOf(rec.nodeId);
+  queue.push({
+    id: randomUUID(),
+    timestamp: new Date().toISOString(),
+    type: 'span-create',
+    body: {
+      id: observationId(rec.traceId, rec.nodeId),
+      traceId: rec.traceId,
+      name: `${rec.kind}:${rec.nodeId}`,
+      startTime: rec.startTime.toISOString(),
+      endTime: rec.endTime.toISOString(),
+      ...(parent ? { parentObservationId: observationId(rec.traceId, parent) } : {}),
+      ...(rec.status !== 'done' ? { level: 'WARNING', statusMessage: rec.failureKind ?? rec.status } : {}),
+      metadata: { nodeId: rec.nodeId, kind: rec.kind, status: rec.status },
+    },
+  });
+  scheduleFlush(env);
+}
+
+/**
+ * **prompt 版本身份**(2026-07-31)。
+ *
+ * owner 问要不要把 prompt 登记进 Langfuse 的 Prompt Management —— **不**:那会把真源挪进 UI
+ * (绕过 code review)、并且 UI 里改一个字就打掉全仓的 prompt-cache 而**没有任何 diff 看得见**
+ * (`LEAF_SYSTEM_PREFIX` 那段"字节稳定"的注释正是为它写的)。
+ *
+ * 但"可持续优化迭代"这个需求是对的, 换个给法: 登记的是**版本身份**而不是 prompt 本身 ——
+ * system 段的哈希 + 引擎 commit。于是 Langfuse 上做得了这件事:
+ * 「用 A 版前缀的那 200 次」vs「用 B 版的那 200 次」并排比收敛率/成本/轮数。
+ * 而 prompt 的真源仍在 git、仍要过 review、字节仍然稳定。
+ */
+export function promptVersionOf(messages: unknown): string {
+  const sys = Array.isArray(messages)
+    ? (messages as { role?: string; content?: unknown }[]).find((m) => m.role === 'system')?.content
+    : undefined;
+  const text = typeof sys === 'string' ? sys : sys === undefined ? '' : JSON.stringify(sys);
+  return new Bun.CryptoHasher('sha1').update(text).digest('hex').slice(0, 12);
+}
+
+/** 引擎 commit(懒算一次;算不出 → `unknown`,不猜)。 */
+let engineCommit: string | null = null;
+export function engineCommitId(): string {
+  if (engineCommit === null) {
+    try {
+      const p = Bun.spawnSync(['git', 'rev-parse', '--short', 'HEAD']);
+      engineCommit = p.success ? new TextDecoder().decode(p.stdout).trim() || 'unknown' : 'unknown';
+    } catch {
+      engineCommit = 'unknown';
+    }
+  }
+  return engineCommit;
+}
 
 /**
  * 记一次模型调用。**同步入队即返回** —— 主路径上只有一次 push,网络在后台。
@@ -187,15 +290,17 @@ export function recordGeneration(rec: GenerationRecord, env: Record<string, stri
       endTime: rec.endTime.toISOString(),
       input: clipDeep(rec.input),
       output: clip(rec.output),
+      // 挂到本节点的 span 上 —— 两边各算一遍确定性 id, 不用传参 (见 observationId 的注)。
+      ...(nodeIdOfName(rec.name) ? { parentObservationId: observationId(rec.traceId, nodeIdOfName(rec.name)!) } : {}),
       ...(rec.usage
         ? {
             usage: { input: rec.usage.in, output: rec.usage.out, total: rec.usage.in + rec.usage.out, unit: 'TOKENS' },
             // cacheHit 不进 usage 而进 metadata: Langfuse 的 usage 三格是它自己算钱用的,
             // 塞第四个数进去它不认; 而我们的成本账本来就在 cost-ledger 里算 (那才是真源)。
-            ...(rec.usage.cacheHit !== undefined ? { metadata: { ...rec.metadata, cacheHit: rec.usage.cacheHit } } : {}),
+            ...(rec.usage.cacheHit !== undefined ? { metadata: { ...rec.metadata, cacheHit: rec.usage.cacheHit, ...versionMeta(rec) } } : {}),
           }
         : {}),
-      ...(rec.usage?.cacheHit === undefined && rec.metadata ? { metadata: rec.metadata } : {}),
+      ...(rec.usage?.cacheHit === undefined ? { metadata: { ...rec.metadata, ...versionMeta(rec) } } : {}),
       ...(rec.error ? { level: 'ERROR', statusMessage: clip(rec.error) } : {}),
     },
   });

@@ -72,7 +72,7 @@ import { makeLlmConvergenceJudge } from './plan/llm-judge';
 import { send } from '../model/gateway';
 // D-14v2 多模态媒体管道 (S4): attach_media 执行期从直接前驱输出解析图片 → ContentPart 注入。
 import { collectDepMedia } from './leaf-media';
-import { recordGeneration } from '../model/langfuse';
+import { recordGeneration, recordSpan } from '../model/langfuse';
 import { withFailureKind, upstreamFailureNotice } from './node-failure';
 import { makeRunNonce, fenceUntrusted, trustHeader } from './prompt-fence';
 import type { ContentPart } from '../model/gateway';
@@ -2232,6 +2232,20 @@ async function executePlan(
       leavesCacheHit += r.usage.cacheHit ?? 0;
     }
     const settled = results[id]!;
+    // 节点级 span: 让一条 trace 打开就是**整张图的形状**。父子关系写在 id 里 (`父::子`, D-B),
+    // 所以这里不需要记账 —— recordSpan 自己从 id 解得出。
+    // ⚠ command 节点一次模型都不打, 此前在观测面上**完全不存在**; 而它们常常是验收闸,
+    //   一张图少了它们就不是那张图。
+    recordSpan({
+      traceId: obsTraceId,
+      nodeId: id,
+      kind: settled.kind,
+      status: settled.status,
+      // 复用既有的 nodeStartedAt (毫秒) —— 它记的本来就是同一件事; 另起一份必漂。
+      startTime: new Date(nodeStartedAt.get(id) ?? Date.now()),
+      endTime: new Date(),
+      ...(settled.failureKind ? { failureKind: settled.failureKind } : {}),
+    });
     emitNodeEvent({ type: 'settle', id, status: settled.status, kind: settled.kind, ...(settled.model ? { model: settled.model } : {}) });
     // issue #4: 失败节点留痕。成功节点由 runNode 内成功分支落 checkpoint; failed/抛错节点此前**零记录**
     // (stdout 被 caveman 压掉、dag-runs.db 未启用、continuity 只存绿节点 → judge 截停后无法诊断)。

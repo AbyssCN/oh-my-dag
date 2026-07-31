@@ -19,7 +19,9 @@ import {
   flushLangfuse,
   langfuseConfigFromEnv,
   langfuseStatus,
+  promptVersionOf,
   recordGeneration,
+  recordSpan,
   resolveLangfuseConfig,
 } from '../../src/model/langfuse';
 
@@ -246,5 +248,52 @@ describe('⑥ 观测面不许有匿名调用 (结构性守卫)', () => {
       });
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+describe('⑦ 父子结构 + prompt 版本身份', () => {
+  test('★ 节点 span 与它的 generation 用**同一个确定性 id** 对上 —— 一个参数都不用传', () => {
+    recordSpan({ traceId: 'r', nodeId: 'execute', kind: 'conductor', status: 'done', startTime: new Date(0), endTime: new Date(1) }, ENV);
+    recordGeneration(rec({ traceId: 'r', name: 'conductor:execute' }), ENV);
+    const q = _peekLangfuseQueue();
+    const span = q.find((e) => e.type === 'span-create')!.body;
+    const gen = q.find((e) => e.type === 'generation-create')!.body;
+    // 子调用挂在本节点的 span 上。两边各算一遍 hash(traceId+nodeId), 必然相等 ——
+    // 这就是不用把 parentObservationId 穿过五六层函数签名的理由。
+    expect(gen.parentObservationId).toBe(span.id);
+  });
+
+  test('子节点 id 里的 `父::子` 就是父子关系 —— 不需要另外记账 (D-B 内容寻址)', () => {
+    recordSpan({ traceId: 'r', nodeId: 'P::write-a', kind: 'inproc', status: 'done', startTime: new Date(0), endTime: new Date(1) }, ENV);
+    recordSpan({ traceId: 'r', nodeId: 'P', kind: 'conductor', status: 'done', startTime: new Date(0), endTime: new Date(2) }, ENV);
+    const spans = _peekLangfuseQueue().filter((e) => e.type === 'span-create').map((e) => e.body);
+    const child = spans.find((b) => (b.name as string).endsWith('P::write-a'))!;
+    const parent = spans.find((b) => b.name === 'conductor:P')!;
+    expect(child.parentObservationId).toBe(parent.id);
+    expect(parent.parentObservationId).toBeUndefined(); // 顶层节点挂 trace 根
+  });
+
+  test('command 节点也发 span —— 它不打模型, 此前在观测面上完全不存在', () => {
+    recordSpan({ traceId: 'r', nodeId: 'accept', kind: 'command', status: 'failed', startTime: new Date(0), endTime: new Date(1), failureKind: 'assert-failed' }, ENV);
+    const b = _peekLangfuseQueue().find((e) => e.type === 'span-create')!.body;
+    expect(b.name).toBe('command:accept');
+    expect(b.level).toBe('WARNING');
+    expect(b.statusMessage).toBe('assert-failed');
+  });
+
+  test('★ prompt 版本身份进 metadata, 而 prompt 的真源仍在 git', () => {
+    const v1 = promptVersionOf([{ role: 'system', content: '冻结前缀 A' }, { role: 'user', content: '这次的目标' }]);
+    const v2 = promptVersionOf([{ role: 'system', content: '冻结前缀 A' }, { role: 'user', content: '换一个目标' }]);
+    const v3 = promptVersionOf([{ role: 'system', content: '冻结前缀 B' }, { role: 'user', content: '这次的目标' }]);
+    // 只认 system 段: 每次任务不同的 user 段不该让版本号变 —— 否则"同一版跑了 200 次"永远凑不齐
+    expect(v1).toBe(v2);
+    expect(v1).not.toBe(v3);
+  });
+
+  test('版本身份与 engineCommit 一起进 metadata (两者一起才定得住是哪一版跑的)', () => {
+    recordGeneration(rec({ promptVersion: 'abc123' }), ENV);
+    const md = _peekLangfuseQueue()[1]!.body.metadata as Record<string, string>;
+    expect(md.promptVersion).toBe('abc123');
+    expect(typeof md.engineCommit).toBe('string');
   });
 });
