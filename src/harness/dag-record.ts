@@ -31,6 +31,15 @@ export interface DagRunNode {
    * `[0,0]` = 这个节点跑了但一次文件都没写。
    */
   writeCounts?: [total: number, noop: number];
+  /**
+   * conductor 有没有把这个子节点标成 **D-Q 图内检测者**(`detector: true`)。
+   *
+   * 记它是为了让「detector 使用率」变成**每次 live 白拿的读数**。今天那个数只有
+   * `scripts/eval-detector-usage.ts` 量得到, 而它量的是**规划期 prompt 上标没标**;
+   * 真跑上标没标此前只能靠人读日志 —— 于是 "60% 天花板在生产上兑现成 0/N" 这句话
+   * 每次都要重新数一遍。同 `command`: 存原始事实, 派生的比率由读数板现算。
+   */
+  detector?: true;
 }
 export interface DagRunRecord {
   id: string;
@@ -149,7 +158,7 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
       const createdAt = meta.now ?? Date.now();
       // 命令从 **plan** 取而不是从 result 取: result 里没有它 (`DagNodeResult` 只记执行面),
       // 而 plan 是这次跑的那张图的原文。plan 里没有对应 id (map 动态扇出的子节点) → undefined, 不编。
-      const planNodes = result.plan.nodes as Record<string, { command?: string } | undefined>;
+      const planNodes = result.plan.nodes as Record<string, { command?: string; detector?: unknown } | undefined>;
       const nodes: DagRunNode[] = Object.values(result.results).map((r) => {
         const cmd = planNodes[r.id]?.command;
         return {
@@ -158,6 +167,7 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
           status: r.status,
           deps: r.deps,
           ...(typeof cmd === 'string' && cmd.trim() ? { command: cmd } : {}),
+          ...(planNodes[r.id]?.detector === true ? { detector: true as const } : {}),
           ...(r.writeCounts ? { writeCounts: r.writeCounts } : {}),
         };
       });
