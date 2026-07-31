@@ -76,6 +76,80 @@ describe('dag-record 的 runId 归组', () => {
   });
 });
 
+/**
+ * R1 / §8.5 的两条派生面: 命令原文 与 效果指标计数。
+ *
+ * 两者共用同一条纪律 —— **留痕存原料, 不存派生值**。风险级的定义以后会改, 命令不会;
+ * 所以存 `command` 让读数板现算级别, 而不是把当时算出来的级别写进历史记录。
+ */
+describe('留痕的派生面 — 命令原文 + 效果指标计数', () => {
+  const withNodes = (nodes: Record<string, unknown>, results: Record<string, unknown>): ExecutorDagResult =>
+    ({
+      plan: { name: '图', nodes },
+      levels: [Object.keys(nodes)],
+      results,
+      reusedNodes: [],
+      usage: { conductor: { in: 0, out: 0 }, leavesIn: 0, leavesOut: 0, leavesCacheHit: 0 },
+    }) as unknown as ExecutorDagResult;
+
+  test('command 节点的命令原文进留痕 (读数板据它现算风险级)', () => {
+    const rec = createDagRecorder({ path: ':memory:' });
+    const id = rec.record(
+      withNodes(
+        { v: { goal: 'x', executor: 'command', command: 'bun test' }, a: { goal: 'y' } },
+        {
+          v: { id: 'v', kind: 'command', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 } },
+          a: { id: 'a', kind: 'agent', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 } },
+        },
+      ),
+      { runId: 'run-cmd' },
+    );
+    const nodes = rec.get(id)!.nodes;
+    expect(nodes.find((n) => n.id === 'v')!.command).toBe('bun test');
+    // 非 command 节点不该凭空多一个字段。
+    expect(nodes.find((n) => n.id === 'a')!.command).toBeUndefined();
+    rec.close();
+  });
+
+  test('writeCounts 原样进留痕; **缺席与 [0,0] 不许被抹平**', () => {
+    const rec = createDagRecorder({ path: ':memory:' });
+    const id = rec.record(
+      withNodes(
+        { w: { goal: 'x' }, z: { goal: 'y' }, o: { goal: 'z' } },
+        {
+          // 写了 3 次, 其中 2 次 no-op
+          w: { id: 'w', kind: 'agent', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 }, writeCounts: [3, 2] },
+          // 跑了但一次没写 —— 这是一个**真实读数**, 不是"没记"
+          z: { id: 'z', kind: 'agent', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 }, writeCounts: [0, 0] },
+          // 这条链上没人报 (旧 runner / inproc) —— 与上面那条必须分得开
+          o: { id: 'o', kind: 'inproc', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 } },
+        },
+      ),
+      { runId: 'run-eff' },
+    );
+    const nodes = rec.get(id)!.nodes;
+    expect(nodes.find((n) => n.id === 'w')!.writeCounts).toEqual([3, 2]);
+    expect(nodes.find((n) => n.id === 'z')!.writeCounts).toEqual([0, 0]); // 存在且为零
+    expect(nodes.find((n) => n.id === 'o')!.writeCounts).toBeUndefined(); // 缺席
+    // 这条断言是本用例的全部意义: 两者若被抹成同一个东西, 读数板就会把「没记」念成「跑了但没写」。
+    expect(nodes.find((n) => n.id === 'z')!.writeCounts).not.toBeUndefined();
+    rec.close();
+  });
+
+  test('plan 里没有对应 id 的节点 (map 动态扇出的子节点) 不编命令', () => {
+    const rec = createDagRecorder({ path: ':memory:' });
+    const id = rec.record(
+      withNodes(
+        { parent: { goal: 'x' } },
+        { 'parent#1': { id: 'parent#1', kind: 'agent', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 } } },
+      ),
+      { runId: 'run-map' },
+    );
+    expect(rec.get(id)!.nodes[0]!.command).toBeUndefined();
+    rec.close();
+  });
+});
+
 describe('recordDagRun (onComplete 钩子工厂)', () => {
   test('记一条并带上 runId/question', async () => {
     const rec = createDagRecorder({ path: ':memory:' });

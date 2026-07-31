@@ -141,6 +141,29 @@ for (const r of rows) {
   }
 }
 
+// ── ④ 效果指标 (§8.5): 写调用里有多少是 no-op ────────────────────────────────
+// 这一段回答的是"要不要把它从**报**升成**判**": 若 no-op 写常年 0%, 那把它做成闸就是给一个
+// 不存在的问题加关卡; 若成规模, 那产物闸今天正放过一整类静默失败。
+// **缺席 ≠ [0,0]** —— 分开数, 否则"没记"会被读成"跑了但没写"。
+let writeNodes = 0; // 报了 writeCounts 的节点数
+let unreported = 0; // 该报而没报的 (agent 节点但无 writeCounts = 早于本次改动的记录)
+let totalWrites = 0;
+let totalNoop = 0;
+const noopNodes: { id: string; total: number; noop: number }[] = [];
+for (const r of rows) {
+  for (const n of JSON.parse(r.nodes) as DagRunNode[]) {
+    if (!n.writeCounts) {
+      if (n.kind === 'agent') unreported++;
+      continue;
+    }
+    writeNodes++;
+    const [total, noop] = n.writeCounts;
+    totalWrites += total;
+    totalNoop += noop;
+    if (total > 0 && noop === total) noopNodes.push({ id: n.id, total, noop });
+  }
+}
+
 // ── ③ 单轮成本异常 (§8.6): 偏离历史中位数 N 倍 ────────────────────────────────
 // 用中位数而非均值: 一次异常本身会把均值抬起来, 于是"异常"检测不出下一次异常。
 const ANOMALY_FACTOR = Number(flags.factor ?? 3);
@@ -149,7 +172,13 @@ const median = leafIns.length ? leafIns[Math.floor(leafIns.length / 2)]! : 0;
 const anomalies = median > 0 ? runs.filter((r) => r.leavesIn > median * ANOMALY_FACTOR) : [];
 
 if (flags.json) {
-  console.log(JSON.stringify({ dbPath, runs, tierCount, commandNodes, median, anomalyFactor: ANOMALY_FACTOR, anomalies }, null, 2));
+  console.log(
+    JSON.stringify(
+      { dbPath, runs, tierCount, commandNodes, writeNodes, unreported, totalWrites, totalNoop, noopNodes, median, anomalyFactor: ANOMALY_FACTOR, anomalies },
+      null,
+      2,
+    ),
+  );
   process.exit(0);
 }
 
@@ -194,6 +223,20 @@ if (median === 0) {
   for (const a of anomalies) {
     console.log(`   ${new Date(a.createdAt).toISOString().slice(5, 16).replace('T', ' ')}  leafIn=${k(a.leavesIn)}  (${(a.leavesIn / median).toFixed(1)}× 中位数)  ${[...new Set(a.plans)].join('+')}`);
   }
+}
+
+console.log(`\n④ 效果指标 (§8.5 · 写调用成功 ≠ 真的改了)`);
+if (writeNodes === 0) {
+  console.log(`   没有节点报过 writeCounts。${unreported > 0 ? `⚠ 其中 ${unreported} 个 agent 节点**该报而没报** — 那是早于 2026-07-31 的记录, 不是"它们没写文件"。` : ''}`);
+} else {
+  const rate = totalWrites > 0 ? totalNoop / totalWrites : null;
+  console.log(`   报了的节点 ${writeNodes} 个${unreported > 0 ? ` (另有 ${unreported} 个 agent 节点该报未报 — 旧记录)` : ''}`);
+  console.log(`   写调用 ${totalWrites} 次, 其中 no-op ${totalNoop} 次 = ${pct(rate)}`);
+  if (noopNodes.length > 0) {
+    console.log(`   ⚠ **全部写都是 no-op** 的节点 ${noopNodes.length} 个 —— 「看起来做了」, 而产物闸看不见:`);
+    for (const n of noopNodes.slice(0, 8)) console.log(`       · ${n.id}  (${n.noop}/${n.total})`);
+  }
+  console.log(`   判据: no-op 率长期贴近 0 → 别为它建闸; 成规模 → 产物闸正放过一整类静默失败。`);
 }
 
 console.log(`\n诚实边界: 本板只读留痕库。**它算不出的**: 单节点耗时 (没记)、$ (只有 token,`);

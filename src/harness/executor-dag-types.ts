@@ -343,6 +343,19 @@ export interface LeafResult {
   /** agent leaf 触碰的文件 (来自 AgentLeafResult.filesTouched, checkpoint 产物锚)。 */
   filesTouched?: string[];
   /**
+   * **§8.5 效果指标的压缩形** (2026-07-31): `[总写次数, 其中 no-op 的次数]`。
+   *
+   * 为什么压成两个数而不是把 `FileWriteEffect[]` 原样带上来: 这条链的下游是**留痕库**,
+   * 而留痕库该存的是能长期归组统计的东西。逐条效果里的 `lineDelta` 对单次排障有用, 对
+   * "no-op 写占多少" 这个真问题没用 —— 而后者才是决定"要不要从**报**升成**判**"的那个数。
+   * 逐条仍在日志里(`executor-dag` 的 warn/info), 排障够得着。
+   *
+   * ⚠ **两个数都是 0 与整个字段缺席不是一回事**: 前者 = 这个节点跑了但一次文件都没写;
+   * 后者 = 这条链上没人报(inproc/command 节点, 或早于本次改动的 checkpoint)。
+   * 读数板必须把这两种分开念, 否则"没记"会被读成"没跑过"。
+   */
+  writeCounts?: [total: number, noop: number];
+  /**
    * agent leaf **读过**的文件 (D-12, 来自 AgentLeafResult.filesRead)。图外数据流的观察面 ——
    * `plan/observers.lintArtifactEdges` 据它报「未声明的制品依赖」, 复用滤镜据它拦「读过被拒制品的
    * 消费方」(INV-P2-4/5)。resume 跳过的节点从 checkpoint 的 `inputPaths` 还原, 观察面不因续跑变窄。

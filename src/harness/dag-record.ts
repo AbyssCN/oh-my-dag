@@ -25,6 +25,12 @@ export interface DagRunNode {
    * 存派生值等于把一份会漂的东西写进历史记录里, 而历史记录的全部价值是它不漂。
    */
   command?: string;
+  /**
+   * §8.5 效果指标 `[总写次数, no-op 次数]`(来自 `DagNodeResult.writeCounts`)。
+   * **缺席 ≠ [0,0]**: 缺席 = 这条链上没人报(inproc/command 节点, 或早于 2026-07-31 的记录);
+   * `[0,0]` = 这个节点跑了但一次文件都没写。
+   */
+  writeCounts?: [total: number, noop: number];
 }
 export interface DagRunRecord {
   id: string;
@@ -152,6 +158,7 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
           status: r.status,
           deps: r.deps,
           ...(typeof cmd === 'string' && cmd.trim() ? { command: cmd } : {}),
+          ...(r.writeCounts ? { writeCounts: r.writeCounts } : {}),
         };
       });
       const usage = {
