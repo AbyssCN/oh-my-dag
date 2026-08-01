@@ -1,6 +1,6 @@
 ---
 name: omd-note
-description: 把定型的决策/参考资料轻量记进持久台账 docs/plan/NOTES.md,供 /omd-sdd 收割。记 why 不复制内容、遮敏感信息、追加不覆盖。含 ref 职能。Trigger:/omd-note、记下来、这个决定记一下、留个引用。
+description: 把定型的决策/参考资料轻量记进持久台账 docs/plan/NOTES.md,供 /omd-contract 收割。记 why 不复制内容、遮敏感信息、追加不覆盖。含 ref 职能。Trigger:/omd-note、记下来、这个决定记一下、留个引用。
 ---
 
 # /omd-note — 决策台账
@@ -21,10 +21,10 @@ description: 把定型的决策/参考资料轻量记进持久台账 docs/plan/N
 ## 升级路径
 
 - 决策属于某张 pathfinder 地图的票 → 优先 `/omd-rule` 落到地图(那是更强的真相源);没对应票但成体系 → `/omd-path` 开票再裁。
-- NOTES.md 是**轻量暂存**;审议收敛时 `/omd-sdd` 把这些条目收割进正式 SDD 的 Decisions 段。
+- NOTES.md 是**轻量暂存**;审议收敛时 `/omd-contract` 把这些条目收割进正式 SDD 的 Decisions 段。
 
 ## 与既有 skill 的边界
 
 - `/omd-note` = 轻量记台账(一句话决策 + 引用)。**不用于**:
-  - 结晶成正式 SDD 契约文档 → `/omd-sdd`;
+  - 结晶成正式 SDD 契约文档 → `/omd-contract`;
   - pathfinder 前沿票的裁决落真相文件 → `/omd-rule`(那是带判定纪律的正式裁决,不是随手记)。

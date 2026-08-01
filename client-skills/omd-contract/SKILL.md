@@ -1,9 +1,9 @@
 ---
-name: omd-sdd
-description: 把审议结论结晶成正式 SDD 文档落盘 docs/plan/,当 /omd-execute 的执行契约。承接 /omd-grill 的决策记录表,写给没有对话上下文的执行器看。含 crystallize/crystals 职能。Trigger:/omd-sdd、写成 SDD、结晶、方案定了记下来、列结晶。
+name: omd-contract
+description: 把审议结论结晶成正式契约文档落盘 docs/plan/,当 /omd-execute 的执行契约。承接 /omd-grill 的决策记录表,写给没有对话上下文的执行器看。含 crystallize/crystals 职能。Trigger:/omd-contract、定契约、写成执行契约、写成 SDD、SDD、结晶、方案定了记下来、列结晶。
 ---
 
-# /omd-sdd — 审议结晶成执行契约
+# /omd-contract — 审议结晶成执行契约
 
 对应 pi TUI 的 `/sdd`(并入 `/crystallize`、`/crystals` 职能)。审议(`/omd-grill`、pathfinder 裁决)收敛后,把结论写成结构化 SDD 落盘——它是 `/omd-execute` 的执行契约,写给**没有对话上下文的执行器**看,不是给人读的散文。
 
@@ -43,6 +43,6 @@ description: 把审议结论结晶成正式 SDD 文档落盘 docs/plan/,当 /omd
 
 ## 与既有 skill 的边界
 
-- `/omd-sdd` 把**已收敛**的结论结晶成正式契约;审议过程本身在 `/omd-grill`(问透之前不结晶)。
+- `/omd-contract` 把**已收敛**的结论结晶成正式契约;审议过程本身在 `/omd-grill`(问透之前不结晶)。
 - 一句话的轻量决策/引用 → `/omd-note` 记台账,不必起 SDD。
 - 契约写完的执行 → `/omd-execute`,本 skill 不碰实现。

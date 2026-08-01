@@ -27,7 +27,7 @@ cd <目标repo> && claude mcp add omd -- omd mcp        # 全局安装的 omd; �
 | `/omd-execute` | SDD → DAG 执行 → 交叉验证 checklist → 验收四选一 | MCP `dag_run`/`dag_status`/`dag_result` |
 | `/omd-iterate` | fixpoint 迭代:跑→你评→带失败原因重画,≤3 轮 | MCP `dag_run` 三段式 |
 | `/omd-grill` | 对抗式审问(一次一问/外部标杆逼问)+ 宽解岔口开 council | 方法论(纯技能) |
-| `/omd-sdd` | 审议结晶成 SDD 落盘(承 /omd-grill 决策记录表) | 方法论 + 文件 |
+| `/omd-contract` | 审议结晶成 SDD 落盘(承 /omd-grill 决策记录表) | 方法论 + 文件 |
 | `/omd-note` | 决策/引用记 NOTES.md 台账(引用不复制/遮敏感/追加) | 方法论 + 文件 |
 | `/omd-council` | 多视角议会 + 3-lens 人格 + 领域岔口接地档(反 happy-path) | MCP `dag_research`(council) |
 | `/omd-audit` | 安全专项审计:信任边界清单(注入/认证/fail-open) | MCP `dag_run`(审计 DAG 模板) |
@@ -49,8 +49,8 @@ cd <目标repo> && claude mcp add omd -- omd mcp        # 全局安装的 omd; �
 | `/path` `/tickets` `/rule` `/deliver` | → `/omd-path` `/omd-tickets` `/omd-rule` `/omd-deliver`(经 `path_*` MCP 工具) |
 | `/pathfinder`(shift+tab 模式开关) | **退役** — Claude 没有"模式",`/omd-path` 开图即进入工作流 |
 | `/execute` `/iterate` | → `/omd-execute` `/omd-iterate`(经 `dag_*` 三段式) |
-| `/grill` `/sdd` `/note` `/council` | → `/omd-grill` `/omd-sdd` `/omd-note` `/omd-council` |
-| `/crystallize` `/crystals` | **并入 `/omd-sdd`**(结晶落盘 + 列结晶文档) |
+| `/grill` `/sdd` `/note` `/council` | → `/omd-grill` `/omd-contract` `/omd-note` `/omd-council` |
+| `/crystallize` `/crystals` | **并入 `/omd-contract`**(结晶落盘 + 列结晶文档) |
 | `/ref` | **并入 `/omd-note`**(引用与决策同一台账) |
 | `/audit` `/sast` | → `/omd-audit` `/omd-sast` |
 | `/cg`(codegraph 代码检索) | **退役** — 为弱 runtime 补检索而生;Claude/Codex 原生代码检索更强 |
@@ -85,7 +85,7 @@ cd <目标repo> && claude mcp add omd -- omd mcp        # 全局安装的 omd; �
 ### ② SDD 交接(中大型一次性任务)
 
 ```
-/omd-grill 审议到方案对齐 → (/omd-note 沿途记决策) → /omd-sdd 结晶成契约 → owner 说"执行" → /omd-execute
+/omd-grill 审议到方案对齐 → (/omd-note 沿途记决策) → /omd-contract 结晶成契约 → owner 说"执行" → /omd-execute
   → DAG 跑完 → 你主动验收 (对照 SDD 逐条判): 接受 / 重画(/omd-execute redraw) / 迭代(/omd-iterate) / 直接修
 ```
 

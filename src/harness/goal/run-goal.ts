@@ -2,7 +2,7 @@
  * goal/run-goal —— 自主 goal 引擎的**薄竖切** (SDD 2026-07-28 omd-goal-engine, P1 / D-9)。
  *
  * 一个 goal 进来, 自主走完 research → spec → execute → verify → 1 轮修复, 阶段间零人工介入
- * (INV-GOAL-1)。它替代的是手动技能链 `/omd-research-deep → /omd-grill → /omd-sdd → /omd-execute`。
+ * (INV-GOAL-1)。它替代的是手动技能链 `/omd-research-deep → /omd-grill → /omd-contract → /omd-execute`。
  *
  * **外层严格无环** (D-2): 这里是一条固定的阶段序列, 不画回边。
  *

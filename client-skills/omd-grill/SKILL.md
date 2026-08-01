@@ -1,15 +1,15 @@
 ---
 name: omd-grill
-description: 锁 plan/SDD 前的对抗式审问:沿决策树走、先给推荐答案、事实自查·技术 Decision 自裁·真 owner 岔口才阻塞问、对标外部实现逼问「为何偏离」;宽解岔口就地开 council;产决策记录表喂 /omd-sdd。审议纪律:只讨论不动手。Trigger:/omd-grill、审问、盘问这个方案、把这事讨论清楚、压测计划、stress-test。
+description: 锁 plan/SDD 前的对抗式审问:沿决策树走、先给推荐答案、事实自查·技术 Decision 自裁·真 owner 岔口才阻塞问、对标外部实现逼问「为何偏离」;宽解岔口就地开 council;产决策记录表喂 /omd-contract。审议纪律:只讨论不动手。Trigger:/omd-grill、审问、盘问这个方案、把这事讨论清楚、压测计划、stress-test。
 ---
 
 # /omd-grill — 锁契约前的对抗式审问
 
-对应 pi TUI 的 `/grill`(plan mode 审议纪律的独立版),吸收 Aalto `grill-me` 的逼问纪律。**审议期间只讨论不改代码**(无代码闸,靠自律)。产物不是「共识散文」,是**决策记录表 + 就地落盘的裁决**,直接喂 `/omd-sdd` 或 pathfinder。
+对应 pi TUI 的 `/grill`(plan mode 审议纪律的独立版),吸收 Aalto `grill-me` 的逼问纪律。**审议期间只讨论不改代码**(无代码闸,靠自律)。产物不是「共识散文」,是**决策记录表 + 就地落盘的裁决**,直接喂 `/omd-contract` 或 pathfinder。
 
 ## When to use
 
-一个 plan / 设计方向还停在「大概这样」,锁进 `/omd-sdd` 或开 `/omd-execute` 之前:
+一个 plan / 设计方向还停在「大概这样」,锁进 `/omd-contract` 或开 `/omd-execute` 之前:
 
 - 新模块选型未定;多个方案僵持,想被逼着把每条分支走到底;自觉计划有没想清的洞,要个蓝军。
 
@@ -58,9 +58,9 @@ grill 沿决策树走
 
 ### 3. 边问边落(不堆到最后)
 决策一旦定型,**当场记下它落到哪**:
-- 小事 / 一句话决策 → `/omd-note`(记进 `docs/plan/NOTES.md` 台账,供 `/omd-sdd` 收割);
+- 小事 / 一句话决策 → `/omd-note`(记进 `docs/plan/NOTES.md` 台账,供 `/omd-contract` 收割);
 - 成体系的活 → 开 pathfinder 票 `path_add` 并当场 `/omd-rule` 裁决落盘;
-- 命中将来的**验收标准 / 接口契约** → 记进它该落的 SDD 章节(留给 `/omd-sdd`)。
+- 命中将来的**验收标准 / 接口契约** → 记进它该落的 SDD 章节(留给 `/omd-contract`)。
 
 ### 4. 收尾输出「决策记录」
 审问结束给一张表,**不是散文**:
@@ -68,13 +68,13 @@ grill 沿决策树走
 | # | 决策 | 定论 | 落点(/omd-note · pathfinder 票 · SDD 章节) | 证据 |
 |---|------|------|--------------------------------------------|------|
 
-未解项单列「待 owner / 待实测」。这张表直接喂后续 `/omd-sdd` 结晶或 `/omd-execute`。
+未解项单列「待 owner / 待实测」。这张表直接喂后续 `/omd-contract` 结晶或 `/omd-execute`。
 
 > **不设 ceremonial 确认闸,但决策权不下放**(owner 全自决 + anti-ceremonial):决策记录表直接喂 SDD,不停下等「OK 吗?」。mattpocock 原版第 5 行「confirm 前不动手」的本义是**决策权转移**(人类=建筑师,拍板权归人),不是弱模型护栏——我们移除的只是那层 ceremonial「OK?」,决策权经 Facts/Decisions 分道保留:Decisions(需 owner 业务判断的)一律停下问 owner,authority 没丢。
 
 ## 与既有 skill 的边界
 
 - `/omd-grill` 在 **plan 之前** 把方案问透;`/omd-review` 在 **实装之后** 审代码。
-- 宽解岔口 → `/omd-council`;定型结论 → `/omd-note` 或 `path_rule` 落盘;审议收敛 → `/omd-sdd` 结晶成文档。
+- 宽解岔口 → `/omd-council`;定型结论 → `/omd-note` 或 `path_rule` 落盘;审议收敛 → `/omd-contract` 结晶成文档。
 - 审议对象是 pathfinder 票时:**轮次落票 + 三通道带宽路由(本地/手机/GitHub评论)见 `/omd-path`**(已泛化,任何票通用,不再 grill 专属);裁决后 `path_rule` 落盘。
-- 审问产出的契约由后续 `/omd-sdd` 主写进文档,不在本 skill 内写实现。
+- 审问产出的契约由后续 `/omd-contract` 主写进文档,不在本 skill 内写实现。
