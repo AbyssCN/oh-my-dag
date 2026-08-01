@@ -114,7 +114,6 @@ describe('dag_run 的运行留痕接线', () => {
     const tools = createDagTools({
       engine: engineThatCompletes(stubResult('dag_run 的图', 42, 7)),
       runRegistry: new RunRegistry(),
-      cwd: mkdtempSync(join(tmpdir(), 'omd-rec-')),
       defaultConfig: { conductorModel: 'c:m', leafModel: 'l:m' },
       recorder,
     });
@@ -136,7 +135,6 @@ describe('dag_run 的运行留痕接线', () => {
     const tools = createDagTools({
       engine: engineThatCompletes(stubResult('预构造图', 9, 3)),
       runRegistry: new RunRegistry(),
-      cwd: mkdtempSync(join(tmpdir(), 'omd-rec-')),
       defaultConfig: { conductorModel: 'c:m', leafModel: 'l:m' },
       recorder,
     });

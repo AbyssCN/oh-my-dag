@@ -97,7 +97,6 @@ describe('dag_triage / dag_rule 调用面', () => {
     return {
       triage: t.find((x) => x.name === 'dag_triage')!,
       rule: t.find((x) => x.name === 'dag_rule')!,
-      reg,
     };
   };
   const call = (t: { handler: unknown }, a: Record<string, unknown>) =>

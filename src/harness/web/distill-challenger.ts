@@ -18,7 +18,7 @@
  */
 import { send as defaultCallModel } from '../../model/gateway';
 import { resolveSeatModel } from '../../model/role-models';
-import { DISTILL_DEFAULT_MAX_CHARS, distillDefaultModel, buildDistillPrompt, type SourceDistillInput, type SourceDistillResult, type SourceDistiller } from './distill-source';
+import { DISTILL_DEFAULT_MAX_CHARS, buildDistillPrompt, type SourceDistillInput, type SourceDistillResult, type SourceDistiller } from './distill-source';
 import { z } from 'zod';
 
 /** 与 expert 档同 schema —— 两个 lens 的产物可以直接并排喂给同一个综合层。 */

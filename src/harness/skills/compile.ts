@@ -88,7 +88,7 @@ const HOST_MARKER_RE = /mcp__[a-z]|browser-harness|browser-act|scrapling|lark-cl
  * 其脚本主体仍可确定性执行 → 配方优先。
  */
 export function classifySkill(src: SkillSource): SkillClass {
-  const scripts = src.files.filter((f) => SCRIPT_RE.test(f) && !/^SKILL\.md$/i.test(f));
+  const scripts = src.files.filter((f) => SCRIPT_RE.test(f));
   for (const script of scripts) {
     const base = script.split('/').pop()!;
     if (!src.body.includes(base)) continue;

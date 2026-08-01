@@ -10,7 +10,7 @@
 const ASCII_DOWNSAMPLE_THRESHOLD = 20;
 
 /** Node status symbol map (skipped = D-7v2 quorum 级联跳过)。 */
-const STATUS_SYM: Record<string, string> = { done: '✔', running: '▶', failed: '✘', skipped: '⊘' };
+const STATUS_SYM: Record<string, string> = { done: '✔', failed: '✘', skipped: '⊘' };
 
 /**
  * ASCII层级图 — 宽 ≤maxCols 列。>20 节点降采样为每层计数。

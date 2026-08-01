@@ -1,7 +1,7 @@
 /**
  * src/mcp/tools/memory — memory_recall + memory_remember MCP tools (D-54).
  *
- * Pure-fn factory: createMemoryTools({memory, cwd}) → OmdMcpTool[].
+ * Pure-fn factory: createMemoryTools({memory}) → OmdMcpTool[].
  * Handlers inject OmdMemory seam; recall = hybrid retrieve, remember = validateFactWrite gate → writeFact.
  * Explicit remember bypasses secret scan (user sovereignty — validator §scanSecrets).
  */
@@ -16,12 +16,11 @@ const FactInput = z.record(z.string(), z.unknown());
 /** Dependencies injected into tool handlers. */
 export interface MemoryToolDeps {
   memory: OmdMemory;
-  cwd: string;
 }
 
 /**
  * Build memory_recall + memory_remember tool definitions.
- * Each handler is a pure fn closed over {memory, cwd}.
+ * Each handler is a pure fn closed over {memory}.
  */
 export function createMemoryTools(deps: MemoryToolDeps): OmdMcpTool[] {
   return [makeRecall(deps), makeRemember(deps)];
