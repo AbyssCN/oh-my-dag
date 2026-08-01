@@ -18,7 +18,7 @@ import { createRunStore } from './run-store';
 /** 共享一个 :memory: db 造"同一份磁盘, 两个进程" —— 第二个 registry 就是重启后的 server。 */
 const shared = () => {
   const db = new Database(':memory:');
-  return { db, store: () => createRunStore({ db }) };
+  return { store: () => createRunStore({ db }) };
 };
 
 describe('run 身份持久面', () => {

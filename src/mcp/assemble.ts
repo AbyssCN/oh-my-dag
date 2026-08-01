@@ -47,7 +47,7 @@ import { createChallengerDistiller } from '../harness/web/distill-challenger';
 import { createPlanLedger, type PlanLedger } from '../harness/plan-ledger';
 import { createDagRecorder, type DagRecorder } from '../harness/dag-record';
 import { createRunStore } from './run-store';
-import { createOwnerInbox, renderOwnerDirectives, type OwnerInbox } from './owner-inbox';
+import { createOwnerInbox, type OwnerInbox } from './owner-inbox';
 import { createTriageTools } from './tools/triage';
 import { runExecutorDag, runExecutorDagWithPlan } from '../harness/executor-dag';
 import type { ExecutorDagConfig } from '../harness/executor-dag-types';
@@ -59,7 +59,6 @@ import { evidencePass } from '../harness/plan-passes/evidence-pass';
 import { loadAgentTemplates } from '../harness/agent-templates';
 import { modelFamily } from '../model/channels';
 import { isStrongCoord } from '../model/model-ratings';
-import { assertSeatsUsable } from '../model/role-fallback';
 import {
   resolveRoleModelConfigured,
   resolveMultimodalPool,
@@ -74,17 +73,7 @@ import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../harness/c
 import type { AgentLeafRunner, CommandLeafRunner } from '../harness/leaf-runners';
 import { createOmdMemory, type OmdMemory } from '../harness/memory';
 import { UNIVERSAL_SAFEGUARD } from '../memory/safeguards/namespaces';
-import {
-  researchFanout as runResearchFanout,
-  type ResearchFanoutResult,
-  type ResearchLens,
-} from '../harness/research/fanout';
-import {
-  DEFAULT_COUNCIL_DEEP_CRITERIA,
-  DEFAULT_COUNCIL_DEEP_FRAMINGS,
-  DEFAULT_COUNCIL_DEEP_LENSES,
-} from '../harness/plan/best-of-n';
-import { authorFanoutSpec } from '../harness/research/author-spec';
+import type { ResearchFanoutResult } from '../harness/research/fanout';
 import { logger } from '../harness/logger';
 import type { DreamPump } from '../harness/learning/types';
 
@@ -548,7 +537,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       // 又一次「机制在、生产零生效」。引擎侧的默认不动(它是中立的), 在生产装配这一层打开。
       // 单/双节点不吃这一发: 引擎内 `idSet.size > 1` 已经守着。
       warmThenFanout: true,
-      ...(Object.keys(kindFanout).length ? { kindFanout } : {}),
+      kindFanout,
       // R2: 隔离档下这两个是**为那棵树重建的**; 无 override 时逐字等于装配期那一对 (零回归)。
       agentRunner: agentRunnerForRun,
       commandRunner: commandRunnerForRun,
@@ -600,7 +589,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
 
   return [
     // continuity 恒开 (D-3): checkpoint 落 <cwd>/.omd/continuity/<runId>/, dag_run_plan resume 可续。
-    ...createDagTools({ engine, runRegistry, cwd, defaultConfig: buildDefaultConfig, continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd }, hudMirror, ledger, recorder }),
+    ...createDagTools({ engine, runRegistry, defaultConfig: buildDefaultConfig, continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd }, hudMirror, ledger, recorder }),
     createDagResearchTool(researchFanout),
     // 自主 goal 环 (P1 / INV-GOAL-1): buildDefaultConfig 传 thunk = 每次调用重解座位 (INV-MODEL-3)。
     // continuity 同 dag_run 恒开: 内层节点 checkpoint + **外层轮 journal** (INV-P2-6),
@@ -618,7 +607,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       // S3: owner 指令通道 —— 每轮取一次未消费指令, 逐字渲染, 取完记账 (防每轮重放)。
       inbox,
     }),
-    ...createMemoryTools({ memory, cwd }),
+    ...createMemoryTools({ memory }),
     // pathfinder 六件套 (TUI-less 决策地图: map/add/tickets/rule/deliver/prefetch, pull 式回流)。
     ...createPathfinderTools({
       cwd,
