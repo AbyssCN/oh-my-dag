@@ -96,13 +96,18 @@ describe('依赖声明闸', () => {
   });
 
   /**
-   * 三个 pi 包是**同版本齐发**的(pi-ai / pi-agent-core / pi-coding-agent 现均为 0.80.10)。
+   * pi 包是**同版本齐发**的(现 pi-ai / pi-agent-core 均为 0.80.10)。
    * 版本区间写歪一个, 就会出现"两个 pi 包解析到不同 minor"的诡异局面, 而症状会伪装成别的东西。
+   *
+   * ⚠ 2026-08-01: 下限从 3 改成 2 —— **不是有人漏删了闸, 是保留面真的少了一个**。
+   * TUI 前端出局后 `pi-coding-agent` 已移出 dependencies(`pi-tui` 随之消失), 只剩
+   * `pi-agent-core`(agent leaf 的 runAgentLoop)+ `pi-ai`(provider 注册)。
+   * 「不许再有第三个」由 `src/mcp/no-cli-dep.test.ts` 的全仓闸守, 这里只守**版本齐发**。
    */
-  test('三个 @earendil-works/pi-* 包的版本区间一致', () => {
+  test('两个 @earendil-works/pi-* 包的版本区间一致', () => {
     const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as { dependencies: Record<string, string> };
     const ranges = Object.entries(pkg.dependencies).filter(([k]) => k.startsWith('@earendil-works/pi-'));
-    expect(ranges.length).toBeGreaterThanOrEqual(3); // 少了说明有人把某个删了/改名了
+    expect(ranges.length).toBeGreaterThanOrEqual(2); // 少了说明有人把某个删了/改名了
     expect(new Set(ranges.map(([, v]) => v)).size).toBe(1);
   });
 });

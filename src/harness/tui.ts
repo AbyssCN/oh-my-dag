@@ -1,82 +1,53 @@
 #!/usr/bin/env bun
 /**
- * omd 终端前端 (V2.0 ControllerSkeleton 交付物) —— 交互式 omd on MiMo, 带灵魂。
+ * omd CLI 入口 —— 两个子命令, 零 UI。
  *
- *   bun run omd                 # 交互式 TUI, MiMo + omd 身份
- *   bun run omd -p "<task>"     # print 模式 (pi 原生 -p), 单轮非交互
- *   bun run omd --model <p>/<m> # 覆盖 baked MiMo (透传 pi 的 model 选择)
+ *   omd mcp     # stdio MCP server (**主入口**: Claude Code 等 MCP 客户端 spawn 它)
+ *   omd init    # 首次配置向导 (纯 readline, 写 .env)
  *
- * 机制 (SDD §4 V2.0): 包 pi-coding-agent 的 main(), 注入两样东西 —
- *   ① ctrl.toExtensionFactories() → 灵魂经 before_agent_start append 进每轮 systemPrompt (唯一干净注入口)。
- *   ② ctrl.toModelArgs()          → `--provider/--model` 透传部署默认模型 (用户未显式指定时才注入)。
- * **不 bake 任何模型** (the owner 锁): 模型来自 env (OMD_RUNTIME_*) 或部署默认, controller 缺则抛错。
- * 灵魂 + tool 闸 + 经济层 hooks 后续都挂在 OmdController 字段上, 此前端不变。
+ * ## 为什么这个文件只剩 60 行 (2026-08-01, 交接文 13)
+ *
+ * 此前它是**交互式 TUI 前端**: 包 `pi-coding-agent` 的 `main()`, 挂 21 个 `*-extension.ts`
+ * (banner/theme/hashline/memory/mcp-router/code/cost/verify-gate/…)。owner 裁决 **omd 收成纯 MCP** ——
+ * 对话前端归 Claude Code, omd 只当执行引擎。于是 TUI 外壳与它独占的能力件一起出局,
+ * 只留 `pi-agent-core` (agent leaf 的 runAgentLoop) + `pi-ai` (provider 注册)。
+ *
+ * ⚠ 文件名留作 `tui.ts` 是**刻意的**: `package.json` 的 `bin` 指着它, 改名等于改发布契约,
+ *   而它现在已经不是 TUI 了。名字的债记在这里, 不值得为它动 bin。
+ *
+ * ⚠ `init` 分支不能删: 没有它, 用户配置 omd 的唯一办法是手改 JSON/.env。
+ *   `init/` 是纯 readline 向导, **不依赖 pi-coding-agent** (已核)。
  */
 import '../env-alias';
-// kimi-coding OAuth 登录件经扩展正门挂进 main() (交互主会话的过期刷新与 /login 由它而来, 见 kimi-oauth.ts)。
-import { createKimiOAuthExtension } from '../model/kimi-oauth-extension';
-import { main } from '@earendil-works/pi-coding-agent';
 import { setCoreLogger } from './logger';
-import { createVerifyGateExtension } from './verify-gate-extension';
-import { createTierAdvisoryExtension } from './tier-advisory-extension';
-import { OmdController } from './controller';
-import { ensureMimoApiKey } from './mimo-env';
-import { createCgAuditExtension } from './cg-audit-extension';
-import { createIterateExtension } from './iterate-extension';
-import { resolveVerification } from './verifier';
-import { createModelRouterFromEnv } from './model-router';
-import { createPathfinderModeState, ensurePlanToggleKeyFree } from './plan';
-import { createExecuteExtension } from './execute-extension';
-import { createPathfinderExtension } from './pathfinder-extension';
-import { resolveRoleModelConfigured, tryResolveSeatModel } from '../model/role-models';
-import { createAgentLeafRunner } from './agent-leaf';
-import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from './command-leaf';
-import { createMultimodalRouteExtension } from './multimodal-route-extension';
-import { createBannerExtension, ensureOmdTheme } from './branding';
-import { detectRuntimeConfig, runInitWizard, createReadlineIO } from './init';
-import { createHashlineExtension } from './hashline-extension';
-import { createConfigExtension } from './config-extension';
-import { createMcpStackFromConfig, createOutputSandboxExtension, createOutputStore } from './mcp';
-import { createWebStackFromEnv } from './web';
-import { createWebExtension, fetchWithFallback } from './web/web-extension';
-import { CleaningFetchProvider } from './web/clean';
-import { createCodeExtension, type ToolMap } from './code';
-import { createCostExtension } from './cost-extension';
 import { logger, setLoggerDestination } from '../logger';
-import { registerProvidersFromEnv, registerProvidersFromModelsJson } from '../model/providers';
-import { resolveHashlineEdit } from './tui-config';
-import { readUserProfile, DEFAULT_USER_PROFILE_PATH } from './user-profile';
-import { createOmdMemory } from './memory';
-import { createPruneScheduler } from './memory/prune-scheduler';
-import { createMemoryExtension } from './memory-extension';
-import { createRecallExtension } from './recall-extension';
-import { SkillRegistry } from './skills/registry';
-import { syncSkillsToRegistry } from './skills/scanner';
-import { createSkillFlywheelExtension } from './skills/flywheel-extension';
-import { createBehavioralGroundingExtension } from './behavioral-grounding-extension';
-import { UNIVERSAL_SAFEGUARD } from '../memory/safeguards/namespaces';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
 
-// 核心引擎 logger 接缝: 把宿主 pino 注入包内 console-shell (INV-X3, 恢复结构化日志)。
+// 核心引擎 logger 接缝: 把宿主 pino 注入 pi-agent-core 的 console-shell (INV-X3, 结构化日志)。
 setCoreLogger(logger);
 
-// 用户没显式选模型 (--model / --provider) 才注入 env 默认 flags; 否则尊重用户覆盖。
 const userArgs = process.argv.slice(2);
-const userPickedModel = userArgs.includes('--model') || userArgs.includes('--provider');
 
-// omd mcp: stdio MCP server 入口 (D-1, 同 `omd init` 范式的 args 分流) —— 零 UI, 不进 wizard/TUI boot。
-// stdout 是 MCP 协议通道: pino 默认写 stdout 会腐蚀协议帧 → 日志改道 stderr (warn 级, 引擎尸检可见)。常驻, 客户端管 spawn/kill (D-9)。
-// 工具面 = assembleOmdMcpTools 全装配 (v1 七工具: dag 四件套 + dag_research + memory 两件套, 接缝=真引擎/真记忆/真 research)。
+const USAGE = `omd —— DAG 执行引擎 (纯 MCP)
+
+  omd mcp     stdio MCP server (给 Claude Code 等 MCP 客户端 spawn)
+  omd init    首次配置向导 (写 .env)
+
+交互对话前端已撤除 (2026-08-01): omd 只当执行引擎, 对话归 MCP 客户端。
+`;
+
+// omd mcp: stdio MCP server 入口 (D-1) —— 零 UI, 不进 wizard。
+// stdout 是 MCP 协议通道: pino 默认写 stdout 会腐蚀协议帧 → 日志改道 stderr (warn 级, 引擎尸检可见)。
+// 常驻, 客户端管 spawn/kill (D-9)。工具面 = assembleOmdMcpTools 全装配。
 if (userArgs[0] === 'mcp') {
   setLoggerDestination(2);
   logger.level = 'warn';
-  // mcp 入口不走 TUI boot → provider 注册需自带引导 (同 dag-* 短命进程), 否则引擎 leaf 因
+  // mcp 入口不走任何 boot → provider 注册需自带引导 (同 dag-* 短命进程), 否则引擎 leaf 因
   // 注册表空而全部静默秒败 (settle(null) 空 output, 客户端只见"节点未完成")。stderr 打点协议安全。
   const { bootstrapModelRuntime } = await import('../model/bootstrap');
   bootstrapModelRuntime();
   // 客户端技能自装 (best-effort, 从不抛): 装了 omd MCP 的用户新会话即得 /omd-* 斜杠命令, 免手 cp。
   // 幂等 + 不覆盖用户改过的; opt-out OMD_INSTALL_SKILLS=0。stderr 记一行 (stdout 是协议通道, 不可污)。
+  // ⚠ 装的是 `client-skills/` (Claude Code 侧那套), **不是**已删的 TUI `skills/`。
   try {
     const { installClientSkills, formatInstallSummary } = await import('./client-skills-install');
     const line = formatInstallSummary(installClientSkills());
@@ -88,317 +59,18 @@ if (userArgs[0] === 'mcp') {
   process.exit(0);
 }
 
-// omd 首次配置向导 (boot 前, controller 构造前): `omd init` 显式重配, 或缺 runtime 配置时自动进
-// (替代旧 OmdController fail-fast 崩 — 新用户零配置启动 = 引导而非报错)。wizard 写 .env +
-// 注入 process.env → 本次 boot 立即可用, 无需重启。已配 (.env 预置, Bun 自动加载) → detect ok 跳过。
-{
-  const wantsInit = userArgs[0] === 'init';
-  if (wantsInit || !detectRuntimeConfig().ok) {
-    // headless/RC (无 TTY) 缺配置 → 不进交互 wizard (readline 会 hang), 回退 fail-fast 提示。
-    if (!wantsInit && !process.stdin.isTTY) {
-      logger.error('[omd/init] 缺 runtime 配置且非交互终端 — 设 .env (OMD_RUNTIME_PROVIDER/MODEL + provider key, 兼容 OMD_*) 或在终端跑 `omd init`');
-      process.exit(1);
-    }
-    if (!wantsInit) logger.info('[omd/init] 未检测到 runtime 配置 → 进首次配置向导');
-    const res = await runInitWizard({ io: createReadlineIO() });
-    if (wantsInit) process.exit(res ? 0 : 1); // 显式 init: 配完即退出, 用户再正常启动
-    if (!res) {
-      logger.error('[omd/init] 未完成配置 — 请填 .env (照 .env.example) 或重跑 `omd init`');
-      process.exit(1);
-    }
+// omd init: 首次配置向导。wizard 写 .env, 配完即退出 (用户再正常起 MCP server)。
+if (userArgs[0] === 'init') {
+  // headless/CI (无 TTY) 进不了交互 wizard (readline 会 hang) → fail-fast 提示, 别挂死。
+  if (!process.stdin.isTTY) {
+    logger.error('[omd/init] 非交互终端 — 请在终端跑 `omd init`, 或直接照 .env.example 填 .env');
+    process.exit(1);
   }
+  const { runInitWizard, createReadlineIO } = await import('./init');
+  const ok = await runInitWizard({ io: createReadlineIO() });
+  process.exit(ok ? 0 : 1);
 }
 
-// omd 的对话模型 (= 你在 TUI 里对话的主 agent / 设计大脑, **不是** executor leaf —— leaf 模型
-// per-dispatch 在 fleet/executor-dag 选)。**不 bake 任何模型** (the owner 锁): 纯跟 env (OMD_RUNTIME_*);
-// wizard 已确保配置齐 (或用户预置 .env)。在 wizard 之后读 → 拿到 wizard 注入的值。
-const envProvider = process.env.OMD_RUNTIME_PROVIDER;
-const envModel = process.env.OMD_RUNTIME_MODEL;
-
-// 用户静态档案 (user.md): 部署入口读文件, 传 controller 整段注入 (controller 保持纯不读盘)。
-const userProfile = readUserProfile(process.env.OMD_USER_PROFILE ?? DEFAULT_USER_PROFILE_PATH);
-
-// 交互 omd 显式开 drift-detector (元认知安全网, opt-in 非全局默认 — 见 hooks/index.ts)。
-// ⚠ onSpinning/onRecovered 原本把 drift_stuck / hard_problem 发进自学习信号总线, 该子系统已停到
-//   experimental/self-evolution/ (ADR-0002) → 回调摘掉, detector 本身照跑 (它不属停用件)。
-//   复活时这两个钩子是 hard_problem 信号的现成生产者, 别重写。
-const ctrl = new OmdController({
-  provider: envProvider,
-  model: envModel,
-  userProfile: userProfile ?? undefined,
-  hookConfig: { driftDetector: {} },
-});
-
-// env 桥: MIMO_API_KEY → pi-ai 期望的 XIAOMI_TOKEN_PLAN_AMS_API_KEY (仅 ams region key)。
-ensureMimoApiKey(ctrl.provider);
-
-// 注册 callModel 的 provider (mimo + deepseek from env) → /cg /audit 的 conductor/inproc-leaf 可解析。
-registerProvidersFromEnv();
-// ~/.pi/agent/models.json 自定 provider (统一-registry D-1/D-2, 单一真源): 两栈共读同一份 → callModel 也认
-// agent-leaf 那批 (zhipu/opencode-go/qwen/…)。于 env 之后 → 同名覆盖。preset/MCP omd_register_provider 写它。
-const modelsJsonApis = registerProvidersFromModelsJson();
-if (modelsJsonApis.length)
-  logger.info({ apis: modelsJsonApis }, '[omd/config] 已注册 models.json 自定 provider');
-
-// 跨模型校验 + conductor 静默升级 (verifier.ts)。verifier 默认 resolveRoleModel('verifier')=deepseek
-// (跨 conductor 避盲点); 升级模型 = OMD_CONDUCTOR_ESCALATION_MODEL (没设 / provider 未注册 → 不升级,
-// 维持弱 conductor —— the owner: 没配 SOTA API 就维持弱)。OMD_VERIFY=0 全关。
-const verification = resolveVerification({ enabled: process.env.OMD_VERIFY !== '0' });
-
-// B-2 executor 选型 bandit: 从 OMD_ROUTER_POOL_INPROC/AGENT 读候选池 (逗号分隔, pool[0]=静态默认)。
-// 未配 pool → no-op = 静态 (零回归)。配 ≥2 模型 → ε-greedy 学 + verifier reward 回更, .omd/model-router.db 持久。
-const router = createModelRouterFromEnv();
-
-// /cg /audit slash 命令 (cgRetrieve/secAudit 封装 + dag-record 留痕)。模型 env 可覆盖, 默认 DeepSeek (全可靠)。
-const cgAuditExt = createCgAuditExtension({
-  // 座位链自带 OMD_CG_* 别名 (INV-MODEL-1): 此前这里 `process.env.X ?? 座位` 把 env 抬到 config
-  // 之上, 与引擎路优先序相反 —— 同一个 conductor 在 TUI 与 MCP 解出两个答案。
-  conductorModel: resolveRoleModelConfigured('conductor').model,
-  leafModel: resolveRoleModelConfigured('leaf').model,
-  agentLeafModel: resolveRoleModelConfigured('agent').model,
-  // 内环收敛闸的座位 = `gate` (不给则引擎落回 conductor 座 —— 见 model/seats.ts)。
-  judgeModel: resolveRoleModelConfigured('gate').model,
-  verification,
-  router,
-});
-
-// /iterate slash 命令 (内层 DAG 外层 fixpoint 迭代: 跑→评→重画 直到收敛 + dag-record 留痕)。
-const iterateExt = createIterateExtension({
-  // 同上: OMD_ITER_* 已是座位链的 env 别名, 不再在这里抢跑。
-  conductorModel: resolveRoleModelConfigured('conductor').model,
-  leafModel: resolveRoleModelConfigured('leaf').model,
-  agentLeafModel: resolveRoleModelConfigured('agent').model,
-  // 内环收敛闸的座位 = `gate` (不给则引擎落回 conductor 座 —— 见 model/seats.ts)。
-  judgeModel: resolveRoleModelConfigured('gate').model,
-  // 未收敛多轮 → 轮级升级 conductor (同 /cg /audit 的升级模型; 没配 / provider 未注册 → 维持弱)。
-  conductorEscalationModel: process.env.OMD_CONDUCTOR_ESCALATION_MODEL,
-});
-
-// shift+tab 键释放: pi 0.77 把 shift+tab(=app.thinking.cycle) 列为扩展冲突保留键 → 扩展 shortcut
-// 被静默 skip。boot 前把 thinking-cycle 从 shift+tab 让路 (写 pi keybindings.json), 释放该键给
-// pathfinder 扩展抢占。幂等 + 非破坏性; 失败不阻断 boot (pathfinder 经 /pathfinder 命令仍可进)。
-// (plan-extension 审议座舱 2026-07-25 owner 裁决撤除 — 规划思考归 Claude, TUI 只留执行位。)
-const planKeyFix = ensurePlanToggleKeyFree();
-if (planKeyFix.changed) {
-  logger.info(
-    { path: planKeyFix.path, fallback: planKeyFix.fallbackKey, reason: planKeyFix.reason },
-    `[omd/pathfinder] 已让出 shift+tab (thinking-cycle → ${planKeyFix.fallbackKey}); 本次 boot 即生效`,
-  );
-} else if (planKeyFix.reason === 'parse-error' || planKeyFix.reason === 'write-error') {
-  logger.warn(
-    { path: planKeyFix.path, reason: planKeyFix.reason },
-    '[omd/pathfinder] 无法自动让出 shift+tab (keybindings.json 异常)',
-  );
-}
-// SDD→DAG→runtime 交接: /execute 把 docs/plan 最新 SDD 丢给 conductor 分解执行, 跑完发验收简报给 runtime 模型。
-// 真改文件的叶子执行器 (executeExt + pathfinderExt 共享): 不接 = agent 节点降级纯文本 (空转交付)。
-const agentRunner = createAgentLeafRunner({ cwd: process.cwd(), hashlineEdit: true });
-/**
- * pathfinder leaf 模型 = 'leaf' 座位 (单一 resolver)。座位解不到 → 留空, 让"未配 leafModel"的
- * 引导语可达 (否则用户只看到 raw 的 provider 未注册错误)。
- */
-function resolvePathfinderLeafModel(explicit: string | undefined): { leafModel?: string } {
-  const seat = tryResolveSeatModel('leaf', { ...(explicit ? { explicit } : {}) });
-  return seat ? { leafModel: seat.model } : {};
-}
-const commandRunner = createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], cwd: process.cwd(), timeoutMs: 180_000 });
-const executeExt = createExecuteExtension({
-  // conductorModel 不传: resolveConductorDefault 自会走 OMD_ITER_CONDUCTOR_MODEL > runtime 坐标 (D-8)。
-  // 此处硬编码兜底会让"conductor = runtime 同款"永远不生效 (identity 承诺 vs 实际行为背离)。
-  leafModel: resolveRoleModelConfigured('leaf').model,
-  agentLeafModel: resolveRoleModelConfigured('agent').model,
-  judgeModel: resolveRoleModelConfigured('gate').model,
-  conductorEscalationModel: process.env.OMD_CONDUCTOR_ESCALATION_MODEL,
-  agentRunner,
-  commandRunner,
-});
-
-// pathfinder 模式 (shift+tab, D-1): 决策地图 → 前沿按 type 分派 → 区域散尽编译 slice → executeSlice。
-// planKeyFix (上方 ensurePlanToggleKeyFree) 已让出 shift+tab 供本扩展抢占。
-// onRegionClear 省略 → 默认 wire: compileSlice → executeSlice → 报告 + 标记已交付。
-const pathfinderState = createPathfinderModeState();
-const pathfinderExt = createPathfinderExtension({
-  cwd: process.cwd(),
-  state: pathfinderState,
-  // leafModel: 显式 env 优先; deepseek 兜底只在 key 真的在时给 —— 无 key 时留空,
-  // 让"未配 leafModel"的引导语可达 (否则用户只会看到 raw 的 provider 未注册错误)。
-  ...resolvePathfinderLeafModel(undefined),
-  ...(() => {
-    const a = tryResolveSeatModel('agent');
-    return a ? { agentLeafModel: a.model } : {};
-  })(),
-  agentRunner,
-  commandRunner,
-  finalize: process.env.OMD_PATH_FINALIZE === '1',
-  autoPrefetch: process.env.OMD_PATH_PREFETCH === '1',
-});
-
-// 默认 omd theme (朱砂金太阳): boot 前写 themes/omd.json + (用户没显式选别的主题时) 设为默认。
-// 幂等 + 非破坏性 (用户 /theme 选过别的则只保证文件在, 不抢)。失败不阻断 boot。
-const themeFix = ensureOmdTheme();
-if (themeFix.reason === 'applied') {
-  logger.info({ themePath: themeFix.themePath }, '[omd/branding] 已应用 omd 默认主题');
-} else if (themeFix.reason === 'write-error') {
-  logger.warn({ themePath: themeFix.themePath }, '[omd/branding] omd 主题写入失败 (沿用 pi 默认主题)');
-}
-
-// hashline-in-TUI (V2-TOOLS): 注入 hashline_read/hashline_edit + block 原生 edit。**默认全开**
-// (不按模型门控): hashline 改文件是 model-independent 净赢 (省 token + 防 mismatch/腐烂 + 链式连编)。
-// OMD_HASHLINE_TUI=0 给偏好 native edit 的人显式关。
-const hashlineTui = resolveHashlineEdit({ envValue: process.env.OMD_HASHLINE_TUI });
-const hashlineExt = hashlineTui ? [createHashlineExtension({ cwd: process.cwd() })] : [];
-
-// omd 自我记忆接进 TUI (the owner): `remember` 工具 → ValalMemory(SQLite, 经 validateFactWrite 闸) +
-// 存储 emoji notify + human_verified 弹窗。路径 OMD_MEMORY_PATH (默认 .omd/memory.db)。
-const memoryPath = process.env.OMD_MEMORY_PATH ?? '.omd/memory.db';
-mkdirSync(dirname(memoryPath), { recursive: true });
-// UNIVERSAL_SAFEGUARD: TUI omd 自我记忆 domain-free — 只收 user.*/omd.*, 拒会计 client.* 等。
-const memory = createOmdMemory({ path: memoryPath, safeguard: UNIVERSAL_SAFEGUARD });
-const memoryExt = createMemoryExtension({ memory });
-// recall: ValalMemory 混合检索工具 (与 remember 配对; 复用同一 memory 实例)。卡住先 recall (元认知)。
-// ⚠ onMiss 原本发 recall_miss 信号进自学习总线, 已随子系统停用 (ADR-0002) → 摘掉, 工具本体不变。
-const recallExt = createRecallExtension({ memory });
-// ⚠ tool_failure / user_correction 两个信号生产者 extension 已停到
-//   experimental/self-evolution/learning/ (ADR-0002) —— 它们只往信号总线写, 没有别的作用。
-// TTL GC: session_start 软删 idle>30d 的 tentative fact (live omd.memory 唯一无界增长源)。
-// confident/human 永不动; 刻意只 prune 不 dedup (近义 tentative 已被 TTL+confidence 生命周期覆盖)。
-const pruneSchedulerExt = createPruneScheduler({ memory });
-
-// behavioral-grounding: 每轮 context 检索 omd.* fact 注入行为 —— 置信路由隔离, 仅 agent_confident+
-// (tentative 排除)。fact 来源今天只剩显式 memory_remember —— 自动写 fact 的那条 (信号 → event-store →
-// dream-pump → confidence-adjuster) 已整条停到 experimental/self-evolution/ (ADR-0002)。
-// ⚠ onGrounded 原本把本轮注入的 fact identity 留痕给熔断器归因, 熔断器随 confidence-adjuster 一并停用 → 摘掉。
-const behavioralGroundingExt = createBehavioralGroundingExtension({ memory });
-
-// ⚠ grounding reactive 闸 (weak/grounding-gate) 已停用 (ADR-0002)。它的默认词表是 EMPTY_LEXICON
-//   (零 pattern), 停之前对任何输入都不触发 —— 摘掉不丢任何在跑的行为。
-
-// skill 使用度自动采集: route_hit (read SKILL.md → touchSkill)。
-// 持久 substrate .omd/skills.db (OMD_SKILL_DB 可覆盖); 启动 sync 项目 .claude/skills 给 baseline tier/desc。
-const skillDbPath = process.env.OMD_SKILL_DB ?? '.omd/skills.db';
-mkdirSync(dirname(skillDbPath), { recursive: true });
-const skillRegistry = new SkillRegistry({ path: skillDbPath });
-try {
-  syncSkillsToRegistry(process.env.OMD_SKILLS_ROOT ?? '.claude/skills', { registry: skillRegistry });
-} catch { /* 无 skills root 不阻断启动; route_hit 懒注册兜底 */ }
-// ⚠ LLM episodic skill miner + 它的 scheduler + 候选确认队已停到
-//   experimental/self-evolution/skill-mining/ (ADR-0002)。flywheel 只剩 route_hit 采集这一条。
-const skillFlywheelExt = createSkillFlywheelExtension({ registry: skillRegistry });
-
-// /config (D60): 键盘选 daemon 角色模型 (dream/conductor/leaf) → 持久化 .omd/config.json
-// (跨进程, daemon mtime 重读)。交互-TUI 专属, 不挂 headless agent-leaf。
-const configExt = createConfigExtension();
-
-// MCP 路由层 (D74 轴 A): 从 .omd/mcp-servers.json 装配 — 所有 MCP 收敛一个路由,
-// LLM 只见菜单 + mcp_search/describe/call (完整 schema 藏隐藏索引), 加 MCP 不膨胀 context。
-// `/mcp add` 运行中热加。空配置 (无文件) → 空栈, 仅注册 meta-tool + /mcp 命令 (无害)。
-const { extension: mcpExt, router: mcpRouter } = await createMcpStackFromConfig();
-
-// MCP 轴 B 输出沙箱 (D74): tool_result hook 拦任意工具 >8KB 输出 → 存 FTS5, 只指针进 context;
-// ctx_execute (子进程跑代码只回 stdout) + ctx_search (拉沙箱大输出相关块)。路径 .omd/mcp-outputs.db。
-const outputSandboxExt = createOutputSandboxExtension({ store: createOutputStore({ path: '.omd/mcp-outputs.db' }) });
-
-// web 搜索/抓取栈 (commit 079137e): web_search (多 key 轮换/聚合) + web_fetch (firecrawl/jina + trafilatura)。
-// 无 search key (TAVILY/ANYSEARCH) → createWebStackFromEnv 抛 (池要 ≥1 provider) → 优雅跳过, web 工具不挂, 不崩 boot。
-let webExt: ReturnType<typeof createWebExtension> | null = null;
-let webStack: ReturnType<typeof createWebStackFromEnv> | null = null;
-try {
-  webStack = createWebStackFromEnv();
-  webExt = createWebExtension({ stack: webStack });
-} catch (e) {
-  logger.warn({ err: (e as Error).message }, '[omd/web] 无 search key → web 工具禁用 (设 TAVILY_API_KEY/ANYSEARCH_API_KEY 启用)');
-}
-
-// code mode (一回合多工具编排 + 数据密集活省 token): `code` 工具在隔离子进程跑模型代码, 只回 stdout。
-// 经临时 localhost 桥把编排工具暴露给子进程: mcp_call (永远在, router 总建) + web_search/web_fetch (有 key 才挂)。
-// 子进程另有 Bun 原生 fetch/std 库。无编排工具时 code 仍可用 (纯计算 + 原生 fetch)。
-const codeTools: ToolMap = {
-  mcp_call: async (args) => {
-    const a = (args ?? {}) as { name?: string; args?: Record<string, unknown> };
-    if (!a.name) throw new Error('mcp_call 需要 {name, args}');
-    const res = await mcpRouter.call(a.name, a.args ?? {});
-    return typeof res === 'string' ? res : JSON.stringify(res);
-  },
-};
-if (webStack) {
-  const stack = webStack;
-  codeTools.web_search = async (args) => {
-    const a = (args ?? {}) as { query?: string; k?: number; mode?: 'failover' | 'rotate' | 'aggregate' };
-    if (!a.query) throw new Error('web_search 需要 {query}');
-    const r = await stack.searchPool.search(a.query, a.k ?? 5, { mode: a.mode });
-    return JSON.stringify(r.results);
-  };
-  codeTools.web_fetch = async (args) => {
-    const a = (args ?? {}) as { url?: string; clean?: boolean };
-    if (!a.url) throw new Error('web_fetch 需要 {url}');
-    const provs = a.clean
-      ? stack.fetchProviders.map((fp) => new CleaningFetchProvider(fp, stack.cleaner))
-      : stack.fetchProviders;
-    const { result } = await fetchWithFallback(provs, a.url);
-    return result.title ? `# ${result.title}\n\n${result.text}` : result.text;
-  };
-}
-const codeExt = createCodeExtension({ tools: codeTools });
-
-// V2-ECON 计量回路 (B-1): /cost 看子编排模型花费/token + budget 闸。limit 来自 OMD_BUDGET_USD (省略=无限额)。
-// ledger 经 attachLedger 订阅 callModel 观察者 → conductor/leaf/fanout/cg-audit 花费自动记账。
-const { extension: costExt } = createCostExtension({
-  limitUsd: process.env.OMD_BUDGET_USD ? Number(process.env.OMD_BUDGET_USD) : undefined,
-});
-
-// omd 启动 banner (setHeader 替换 pi 内置 logo header): 字标 + 日轮 + 后端行 + 工作流教程 + 指令速查。
-// 版本从 package.json 防御式读 (失败 → 不显版本号, 不崩)。后端/thinking 取当前会话静态值。
-const omdVersion = await (async () => {
-  try {
-    const pkg = (await import('../../package.json')) as unknown as {
-      version?: string;
-      default?: { version?: string };
-    };
-    return pkg.version ?? pkg.default?.version;
-  } catch {
-    return undefined;
-  }
-})();
-const bannerExt = createBannerExtension({
-  version: omdVersion,
-  provider: ctrl.provider,
-  model: ctrl.model,
-  thinking: 'high',
-  webEnabled: webStack !== null,
-});
-
-const args = userPickedModel ? userArgs : [...ctrl.toModelArgs(), ...userArgs];
-
-await main(args, {
-  extensionFactories: [
-    // kimi-coding OAuth 正门注册 (最先挂: ModelRegistry.refresh 会清全局注册表, 见 kimi-oauth.ts)。
-    // **交互主会话刻意恒挂**, 不做 headless 那边的条件挂载 (kimiOAuthExtensionFor): `/login` 菜单项
-    // 正是 registerProvider 提供的, 而 /login 是取得 kimi 凭证的唯一入口 —— 条件挂载会让"不用 kimi
-    // 就再也登不回去"(鸡生蛋)。交互会话一辈子只建一次注册表, 代价是一次调用。
-    createKimiOAuthExtension(),
-    bannerExt,
-    ...ctrl.toExtensionFactories(),
-    cgAuditExt,
-    iterateExt,
-    executeExt,
-    pathfinderExt,
-    // 多模态路由: 媒体一律走多模态池模型分析, 文本结果回注当前模型 (池空 = no-op)。
-    ...(process.env.OMD_MULTIMODAL_ROUTE !== '0' ? [createMultimodalRouteExtension()] : []),
-    ...hashlineExt,
-    memoryExt,
-    recallExt,
-    pruneSchedulerExt,
-    behavioralGroundingExt,
-    skillFlywheelExt,
-    configExt,
-    mcpExt,
-    outputSandboxExt,
-    ...(webExt ? [webExt] : []),
-    codeExt,
-    costExt,
-    // verify-gate: 写后必验闸 (私有上游 harness 泛化)。默认开; OMD_VERIFY_GATE=0 逃生关。
-    ...(process.env.OMD_VERIFY_GATE !== '0' ? [createVerifyGateExtension()] : []),
-    // tier-advisory: 连续失败 → 注入升级建议 (advisory, 永不 block)。
-    ...(process.env.OMD_TIER_ADVISORY !== '0' ? [createTierAdvisoryExtension()] : []),
-  ],
-});
+// 其余一律打用法 (含裸 `omd`): 没有交互模式可落了。
+process.stderr.write(USAGE);
+process.exit(userArgs.length === 0 ? 0 : 1);

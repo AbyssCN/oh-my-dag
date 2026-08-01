@@ -25,7 +25,7 @@ omd 给它两条派活的路,而且**两条共用同一个底座** —— 换轨
 
 ```mermaid
 flowchart TB
-  AGENT["Your agent<br/>Claude Code · Codex · any MCP client · omd's own TUI"]
+  AGENT["Your agent<br/>Claude Code · Codex · any MCP client"]
 
   subgraph OMD["omd — one engine, two ways in"]
     direction TB
@@ -90,11 +90,13 @@ cd <你的项目> && claude mcp add omd -- omd mcp
 **→ [完整走查](docs/MCP-ONBOARDING.md)** · [命令参考](client-skills/README.md)
 
 <details>
-<summary>另一个入口:自带的终端 agent</summary>
+<summary>怎么配后端</summary>
 
-`bun run omd`(交互)或 `bun run omd -p "..."`(一次性);在 `.env` 里配
-`OMD_RUNTIME_PROVIDER` + `OMD_RUNTIME_MODEL` + 后端密钥(抄 [.env.example](.env.example))。
-MCP server 是正门,这个是顺手。
+跑 `bun run init` 进交互向导,或自己在 `.env` 里配 `OMD_RUNTIME_PROVIDER` +
+`OMD_RUNTIME_MODEL` + 后端密钥(抄 [.env.example](.env.example))。
+
+**没有终端 UI 了。** omd 曾自带一个交互 agent,2026-08-01 撤除 —— 引擎只留一个正门。
+你的 MCP 客户端**就是**前端:对话在那边,omd 只管执行。
 
 </details>
 

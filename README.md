@@ -26,7 +26,7 @@ never costs you reliability:
 
 ```mermaid
 flowchart TB
-  AGENT["Your agent<br/>Claude Code · Codex · any MCP client · omd's own TUI"]
+  AGENT["Your agent<br/>Claude Code · Codex · any MCP client"]
 
   subgraph OMD["omd — one engine, two ways in"]
     direction TB
@@ -95,11 +95,15 @@ edited. Opt out with `OMD_INSTALL_SKILLS=0`.
 **→ [Full walkthrough](docs/MCP-ONBOARDING.md)** · [command reference](client-skills/README.md)
 
 <details>
-<summary>Alternative front-end: the bundled terminal agent</summary>
+<summary>Configuring the backend</summary>
 
-`bun run omd` (interactive) or `bun run omd -p "..."` (one-shot); configure with
-`OMD_RUNTIME_PROVIDER` + `OMD_RUNTIME_MODEL` + your backend key in `.env`
-(copy [.env.example](.env.example)). The MCP server is the primary door; this is a convenience.
+Run `bun run init` for an interactive wizard, or set `OMD_RUNTIME_PROVIDER` +
+`OMD_RUNTIME_MODEL` + your backend key in `.env` by hand (copy
+[.env.example](.env.example)).
+
+**There is no terminal UI.** omd used to ship a bundled interactive agent; it was
+removed on 2026-08-01 so the engine has exactly one front door. Your MCP client
+*is* the front end — the conversation lives there, omd just executes.
 
 </details>
 
