@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { createKimiCodingOAuthProvider, kimiOAuthExtensionFor } from '../../src/model/kimi-oauth';
+import { createKimiCodingOAuthProvider } from '../../src/model/kimi-oauth';
+import { kimiOAuthExtensionFor } from '../../src/model/kimi-oauth-extension';
 import type { OAuthLoginCallbacks } from '@earendil-works/pi-ai/oauth';
 
 // kimi-coding OAuth 登录件 (device flow + refresh), fake fetch 驱动, 不打真端点。

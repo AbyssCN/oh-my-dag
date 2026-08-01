@@ -9,7 +9,7 @@
 import '../src/harness/script-bootstrap';
 import { mutateMap } from '../src/harness/pathfinder/map-store';
 import { compileSlice } from '../src/harness/pathfinder/slice-compiler';
-import { executeSlice } from '../src/harness/execute-extension';
+import { executeSlice } from '../src/harness/execute-slice';
 import { createAgentLeafRunner } from '../src/harness/agent-leaf';
 // commandRunner 故意不接: slice 全 agent 节点, 无 command 执行面 (D-10 安全面不扩, 不新增白名单)。
 import { bootstrapModelRuntime } from '../src/model/bootstrap';

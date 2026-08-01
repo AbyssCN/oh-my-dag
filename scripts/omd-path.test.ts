@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runOmdPath } from './omd-path';
-import { saveMap } from '../src/harness/pathfinder-extension';
+import { saveMap } from '../src/harness/pathfinder/maps';
 
 function collect() {
   const lines: string[] = [];

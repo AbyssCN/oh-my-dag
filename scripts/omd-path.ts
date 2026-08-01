@@ -10,7 +10,7 @@
  * 顶层仅在 import.meta.main 时用 process.cwd() 驱动它。
  */
 import { computeFrontier } from '../src/harness/pathfinder/frontier';
-import { createOrResumeMap, summarizeOpenMaps } from '../src/harness/pathfinder-extension';
+import { createOrResumeMap, summarizeOpenMaps } from '../src/harness/pathfinder/maps';
 import { m } from '../src/harness/i18n';
 
 export const OMD_PATH_USAGE = m({

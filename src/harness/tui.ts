@@ -14,7 +14,7 @@
  */
 import '../env-alias';
 // kimi-coding OAuth 登录件经扩展正门挂进 main() (交互主会话的过期刷新与 /login 由它而来, 见 kimi-oauth.ts)。
-import { createKimiOAuthExtension } from '../model/kimi-oauth';
+import { createKimiOAuthExtension } from '../model/kimi-oauth-extension';
 import { main } from '@earendil-works/pi-coding-agent';
 import { setCoreLogger } from './logger';
 import { createVerifyGateExtension } from './verify-gate-extension';
