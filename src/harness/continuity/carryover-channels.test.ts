@@ -8,7 +8,7 @@
  * 而这条路**只有崩溃才走得到** —— 正常跑一轮不存在"上轮 checkpoint 还在但本轮还没重跑"的时刻,
  * 所以静态审查看不见它, 是故障注入问出来的。
  *
- * 已知通道 (交接文 `2026-07-29-session-handoff.md` 有同一张表):
+ * 已知通道 (交接文 `docs/handoff/2026-07-29-session-handoff.md` 有同一张表):
  *   ① D-21 跨轮复用 `prior.results`     → `computeReuse(…, poisoned)`            ✅
  *   ② continuity resume-skip            → `dropPoisonedGreens` (executor-dag)     ✅
  *   ③ D-O 节点输出全文制品 `outputText` → 骑在②上, 同一个闸 (但赌注更高: 复活的是**完整**产物) ✅
@@ -70,7 +70,7 @@ describe('载体通道④ — `_goal.json` 今天无人堵, 接线即红', () =>
           '(修法 executor-dag.dropPoisonedGreens)。**只堵一条等于没堵。**',
           '',
           '接线时要做的: ① 给这条通道加上与 dropPoisonedGreens 对位的失效判据 (被拒的阶段产出不得复用)',
-          '② 更新 docs/plan/2026-07-29-session-handoff.md 的通道表 ③ 把本用例改成对新闸的断言。',
+          '② 更新 docs/handoff/2026-07-29-session-handoff.md 的通道表 ③ 把本用例改成对新闸的断言。',
         ].join('\n'),
       );
     }
