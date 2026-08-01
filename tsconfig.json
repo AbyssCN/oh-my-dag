@@ -27,5 +27,5 @@
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
   },
-  "exclude": ["node_modules", "spikes", "docs"]
+  "exclude": ["node_modules", "spikes", "docs", "experimental"]
 }

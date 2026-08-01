@@ -50,7 +50,7 @@ import { callModel } from '../model';
 import { resolvePiApiKey, resolvePiModel } from '../model/pi-transport';
 import { promptVersionOfText } from '../model/langfuse';
 import type { ModelUsage } from '../model/types';
-import type { ThinkingLevel } from '../runtime/types';
+import type { ThinkingLevel } from '../model/role-models';
 import { isStrongCoord } from '../model/model-ratings';
 
 /**

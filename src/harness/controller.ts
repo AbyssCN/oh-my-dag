@@ -15,7 +15,7 @@
  *   - V2-TOOLS → tools  (browser-harness + fan-out 原语)
  */
 import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
-import type { ThinkingLevel } from '../runtime/types';
+import type { ThinkingLevel } from '../model/role-models';
 import { OMD_IDENTITY } from './identity';
 import { createIdentityExtension } from './identity-extension';
 import { createOmdHooks, type OmdHookConfig } from './hooks';
