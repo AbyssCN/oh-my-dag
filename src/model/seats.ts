@@ -125,6 +125,12 @@ export const SEATS: readonly SeatSpec[] = [
     // 闸判的是"达成没有", 谎报的代价不对称 (整轮白做且没人知道) → 值得想清楚。
     thinking: 'xhigh',
     // 裁决要**稳定可复现**: 同样的产出不该这一轮过、下一轮不过。低温不是省钱, 是要一致性。
+    //
+    // ⚠ **但它在今天这个坐标上是空的**: 2026-08-01 实测 deepseek-v4-flash 开 reasoning 时
+    // 收下 temperature 但不生效 (temp 0.0 六发出了三个不同值)。已登记进 `model-caps.honorsSampling`,
+    // 每个 (坐标,旋钮) 吼一次。**留着这个意图不是自欺**: 它写的是"这个角色需要什么",
+    // 换到认这个旋钮的模型上立刻生效; 删了才是把需求也一起丢了。
+    // 想要真可复现的裁决, 今天只能靠**换模型**, 不能靠这个字段 —— 这就是那行 WARN 存在的意义。
     sampling: { temperature: 0.2 },
     recommend:
       '判别档的**便宜**模型 (deepseek-v4-flash)。刻意**不**放 codex —— 它每节点每轮一发, 是高频座位, ' +

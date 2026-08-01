@@ -23,6 +23,18 @@ export interface ModelCaps {
   /** 该模型不接受的采样参数 (发了就 400)。 */
   rejects?: readonly ('temperature' | 'topP')[];
   /**
+   * 这家**收下采样参数但不生效** (2026-08-01)。`false` = 已实测无效。
+   *
+   * 与 `rejects` 是**两种不同的坏**, 别混:
+   *   · `rejects` = 发了 400, 整节点白挂 —— 响亮, 一次就发现。
+   *   · 这一条 = 发了没事, **但旋钮是空的** —— 安静, 可以骗人很久。
+   * 后者更危险: 调用方以为自己在控发散度 (best-of-N 的 N 个 lens / 闸要可复现的裁决),
+   * 而实际上什么都没发生。
+   *
+   * 缺席 = **没验过**, 不等于生效 (同 `reportsCacheHit` 的三态纪律)。
+   */
+  honorsSampling?: false;
+  /**
    * 这家**报不报** prompt-cache 命中 (2026-08-01)。`false` = 已知不报。
    *
    * 登记它是为了把读数板上的「未记录」从**不知道**变成**已知**: 效率轴此前只能说
@@ -43,7 +55,11 @@ export const MODEL_CAPS: readonly ModelCaps[] = [
     match: /^deepseek-v4/,
     maxOutput: 384_000,
     efforts: ['low', 'medium', 'high', 'max'],
-    source: 'api-docs.deepseek.com/api/create-chat-completion',
+    // 2026-08-01 实测 (reasoning_effort=max, 同一 prompt 各 6 发): temp 0.0 与 temp 1.8 的输出
+    // **分布一模一样**, 而且 **temp 0.0 本身就不确定** (6 发出了 3 个不同值) —— 后者是决定性的:
+    // 真在生效的话 temp 0 该近乎恒定。与 deepseek-reasoner 官方"不支持 temperature/top_p"一致。
+    honorsSampling: false,
+    source: 'api-docs.deepseek.com/api/create-chat-completion (+2026-08-01 采样探针)',
   },
   {
     // platform.kimi.ai: 上下文 1,048,576 · max_completion_tokens 默认 131,072 (上限 1,048,576)
@@ -131,13 +147,27 @@ export function samplingFor(
   modelId: string,
   req: { temperature?: number; topP?: number },
 ): { temperature?: number; topP?: number } {
-  const rejects = capsFor(modelId)?.rejects;
+  const caps = capsFor(modelId);
+  const rejects = caps?.rejects;
   const out: { temperature?: number; topP?: number } = {};
   for (const knob of ['temperature', 'topP'] as const) {
     const v = req[knob];
     if (v === undefined) continue; // 调用方没给 = 没有意图被丢, 不作声
     if (!rejects?.includes(knob)) {
       out[knob] = v;
+      // **收下但不生效**那一类: 照发不误 (哪天它开始认了就自动生效, 猜错也不亏), 但要出声 ——
+      // 否则"我配了 temperature 0.2 所以裁决可复现"会是一句没人质疑的假话。
+      if (caps?.honorsSampling === false) {
+        const k2 = `${modelId}::${knob}::noop`;
+        if (!droppedShouted.has(k2)) {
+          droppedShouted.add(k2);
+          logger.warn(
+            { model: modelId, knob, value: v },
+            `[omd/model-caps] ${modelId} **收下 ${knob} 但实测不生效** —— 这一发的"发散度/确定性"` +
+              `其实没被控制住。与"拒收"不同, 它不报错, 所以只能靠这行告诉你。同 (坐标,旋钮) 只吼一次。`,
+          );
+        }
+      }
       continue;
     }
     const key = `${modelId}::${knob}`;

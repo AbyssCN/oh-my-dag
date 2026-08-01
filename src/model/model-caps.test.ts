@@ -127,3 +127,18 @@ describe('samplingFor —— 过滤 + 丢弃告警', () => {
     expect(samplingFor('some-unregistered-model', { temperature: 0.5 })).toEqual({ temperature: 0.5 });
   });
 });
+
+describe('★ 收下但不生效 —— 与"拒收"是两种不同的坏 (2026-08-01)', () => {
+  it('honorsSampling:false 的模型仍然照发 (哪天它认了就自动生效)', () => {
+    _resetDroppedKnobShoutForTest();
+    // 拒收 = 丢弃 (发了 400); 不生效 = 照发 (发了没事, 只是没用)。两条路必须分得开。
+    expect(samplingFor('deepseek-v4-flash', { temperature: 0.2 }).temperature).toBe(0.2);
+    expect(samplingFor('gpt-5.6-sol', { temperature: 0.2 }).temperature).toBeUndefined();
+  });
+
+  it('缺席 = 没验过, 不等于生效 (三态纪律)', () => {
+    // 没登记过的模型不许被当成"已知不生效" —— 那会让一条真旋钮被误报成空的。
+    expect(capsFor('mimo-v2.5-pro')?.honorsSampling).toBeUndefined();
+    expect(capsFor('deepseek-v4-flash')?.honorsSampling).toBe(false);
+  });
+});
