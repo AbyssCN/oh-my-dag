@@ -67,7 +67,12 @@ describe('command-leaf && 链', () => {
     expect(calls).toEqual([]);
   });
 
-  test('memoize: 全链绿后同串命中缓存, 不重 spawn', async () => {
+  // 2026-08-01 契约反转: 这条原本断言"第二次全缓存"。缓存已按实测删掉 ——
+  // 收益侧空 (留痕库 12 次真实 run / 25 个 command 节点, 同 run 内重复命令串 0 次),
+  // 危害侧两条会给出**错误绿灯**的路径 (跨 run · 图内 agent 写完之后)。
+  // 这条命令串恰是最不该被缓存的那种: `bun run typecheck && bun test` 是**闸**,
+  // 缓存它等于"这台 daemon 上过一次之后永远绿"。判据与读数见 command-leaf.ts 的注 + 图鉴 S-9。
+  test('不缓存: 同一条 && 链跑两次 → 两次都真 spawn', async () => {
     const { spawn, calls } = fakeSpawn({
       'bun run typecheck': { stdout: 'ok', exitCode: 0 },
       'bun test': { stdout: 'pass', exitCode: 0 },
@@ -75,7 +80,7 @@ describe('command-leaf && 链', () => {
     const run = createCommandLeafRunner({ allowlist: ['bun'], spawn });
     await run({ command: 'bun run typecheck && bun test' });
     await run({ command: 'bun run typecheck && bun test' });
-    expect(calls.length).toBe(2); // 第二次全缓存
+    expect(calls.length).toBe(4); // 两次 × 每次两环, 一次不省
   });
 });
 

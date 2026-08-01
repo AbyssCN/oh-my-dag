@@ -1,23 +1,21 @@
 /**
- * command leaf 的 memo 缓存**寿命**闸 (2026-08-01, live 抓出来的洞)。
+ * command leaf **不许有结果缓存** —— 同一命令串每次都真跑 (2026-08-01, 量过之后删掉了原来那个)。
  *
- * 缓存本身是对的 (确定性只读命令, 同一张图里兄弟节点跑同一条命令不该跑两遍)。错的是它的
- * **寿命由谁决定**: 老论证写着「新调用 = 新 runner = 新缓存」, 而那是个**没人钉住的前提** ——
- * 它只在"每次调用现建 runner"的接线点 (TUI / eval) 成立。MCP 是长驻进程, `assemble` 装配期
- * 建一次 runner, 于是同一个缓存跨了这台 daemon 上的所有 run。
+ * 这里原本有个 per-runner 的确定性 memoize (只缓存 `exitCode===0`)。它的安全论证两环全假,
+ * 而收益侧是空的 —— 三个读数都在生产 MCP 路径上量过:
  *
- * live 实测 (生产 MCP 路径, 三跑):
- *   run#1 `cat probe.txt` → PROBE_V1 · 改盘上文件 · run#2 (新 runId, 同命令串) → **仍是 PROBE_V1**
- *   同图对照组 (命令串只多一个空格 → 缓存键不同) → PROBE_V2_CHANGED = 真读了磁盘
- * 对照组排掉了"下游 leaf 复述时幻觉"这个替代解释, 把变量锁死在缓存键上。
+ * ① **跨 run**:「新调用 = 新 runner = 新缓存」只在每次现建 runner 的接线点成立。MCP 是长驻进程,
+ *    `assemble` 装配期建一次 → 两个 runId 之间改掉盘上文件, 第二跑仍返回旧值。
+ *    (同图对照组: 命令串多一个空格 → 缓存键不同 → 读到新值, 排掉了"下游复述时幻觉"。)
+ * ② **图内**:「单 run 内输入文件不变 → 无 staleness」—— 而这台引擎的本职就是让 agent 节点改文件。
+ *    live: `cat f` → agent 写 f → `cat f`(同一命令串)读回**写之前**的内容。
+ * ③ **收益 = 0**: 留痕库全量 12 次真实 run / 25 个 command 节点, 同一 run 内重复命令串 **0 次**。
+ *    连设计时说的主场景都覆盖不了 —— 「兄弟节点跑同一条命令」是同层并发, 缓存只在命令返回后
+ *    写入, 两个都 miss。
  *
- * 危害方向是最坏的那个: 只缓存 `exitCode===0` ⇒ 红→绿看得见, **绿→红看不见** —— 一条 `bun test`
- * 闸在这台 daemon 上过一次, 之后代码改坏了也照绿。它还顺手废掉了 executor-dag 那条设计
- * (「command 节点刻意不落绿 checkpoint, resume 时重跑一遍比跳过一个闸安全」): 重跑发生了,
- * 结果来自缓存, 闸还是被跳过了, 只是降到没人看的一层。
- *
- * 收口在**引擎**: runDagInternal 每张图开跑前调一次 `resetCache()`。放这儿而不是各接线点,
- * 是因为"每个接线点都记得现建 runner"正是上面那条前提的翻版, 下一个接线点照样会漏。
+ * 于是删掉, 不留旋钮(「要么给生产者, 要么删掉, 中间态最坏」)。本文件是**防它被重新加回来**的闸:
+ * 谁再挂缓存, 下面几条会红。代价(重复命令重跑一遍)正是引擎自己的偏好 ——
+ * 「重跑一遍比跳过一个闸安全」。
  */
 import { describe, expect, test } from 'bun:test';
 import { createCommandLeafRunner } from './command-leaf';
@@ -28,7 +26,7 @@ import type { ExecutorDagConfig, GenerateFn } from './executor-dag-types';
 
 const generate: GenerateFn = async () => ({ text: 'leaf-out', usage: { in: 1, out: 1 } });
 
-/** 真 runner (走真闸/真 memoize), 只把 spawn 换成可改答案的替身 —— 缓存逻辑本体不被替掉。 */
+/** 真 runner (走真闸), 只把 spawn 换成可改答案的替身 —— 「世界会变」这件事由 setOutput 表达。 */
 function probeRunner(): { runner: CommandLeafRunner; setOutput: (s: string) => void; spawns: () => number } {
   let current = 'PROBE_V1';
   let spawns = 0;
@@ -42,15 +40,16 @@ function probeRunner(): { runner: CommandLeafRunner; setOutput: (s: string) => v
   return { runner, setOutput: (s) => (current = s), spawns: () => spawns };
 }
 
-const cfg = (commandRunner: CommandLeafRunner): ExecutorDagConfig => ({
+const cfg = (commandRunner: CommandLeafRunner, extra: Partial<ExecutorDagConfig> = {}): ExecutorDagConfig => ({
   conductorModel: 'c:m',
   leafModel: 'l:m',
   generate,
   agentTemplates: new Map(),
   commandRunner,
+  ...extra,
 });
 
-/** 两个节点跑**同一条**命令串, b 在 a 之后 (串行) —— memoize 的真实生效面。 */
+/** 同一条命令串跑两个节点, b 在 a 之后 —— 老缓存正是在这一格上返旧值。 */
 const plan: ConductorPlan = {
   name: 'p',
   nodes: {
@@ -59,69 +58,59 @@ const plan: ConductorPlan = {
   },
 };
 
-/** 同一条命令串挂两个**无依赖**节点 → 同层并发。 */
-const planParallel: ConductorPlan = {
-  name: 'p-par',
+/** 图内**世界被改动**的形状: 读 → agent 写 → 再读(同一命令串)。live 抓到的就是这张图。 */
+const planWithMutator: ConductorPlan = {
+  name: 'p-mutate',
   nodes: {
-    a: { goal: '读探针', executor: 'command', command: 'echo probe' },
-    b: { goal: '同时再读一次', executor: 'command', command: 'echo probe' },
+    before: { goal: '改之前读一次', executor: 'command', command: 'echo probe' },
+    mutate: { goal: '改掉它', executor: 'agent', depends_on: ['before'] },
+    after: { goal: '改之后再读一次 (同一条命令串)', executor: 'command', command: 'echo probe', depends_on: ['mutate'] },
   },
 };
 
-describe('command leaf memo 缓存的寿命 = 一张图', () => {
-  test('图内串行: 同一条命令串的第二个节点 → 命中缓存, 只 spawn 一次 (memoize 零回归)', async () => {
+describe('command leaf 不缓存结果', () => {
+  test('图内串行: 同一条命令串的第二个节点也真跑 (spawn 两次)', async () => {
     const { runner, spawns } = probeRunner();
     const r = await runExecutorDagWithPlan(plan, cfg(runner));
     expect(r.results.a?.output).toBe('PROBE_V1');
     expect(r.results.b?.output).toBe('PROBE_V1');
-    expect(spawns()).toBe(1);
-  });
-
-  /**
-   * **已知边界** (2026-08-01 量出来的, 不是回归): 缓存只在命令**返回后**写入, 于是同层并发的
-   * 两个相同命令都会 miss → 各跑一遍。而"同一张图里兄弟节点跑同一条命令"恰是这个机制当初
-   * 说的主场景 —— 它实际只覆盖**串行**重复 (跨层 / map 子节点排队跑到)。
-   *
-   * 刻意不在这一轮修 (在飞去重要缓存 promise 而不是结果, 那会改动失败路径的语义: 一次失败的
-   * 在飞调用会被两个节点共享, 而现在的约定是"只缓存 exitCode===0, 失败各自重试")。
-   * 钉在这里是为了让这条边界**有读数**: 谁哪天加了在飞去重, 这条会红, 那时连同上面那条约定一起改。
-   */
-  test('图内并发: 同层两个相同命令各跑一遍 —— 缓存不认在飞的重复 (已知边界)', async () => {
-    const { runner, spawns } = probeRunner();
-    const r = await runExecutorDagWithPlan(planParallel, cfg(runner));
-    expect(r.results.a?.output).toBe('PROBE_V1');
-    expect(r.results.b?.output).toBe('PROBE_V1');
     expect(spawns()).toBe(2);
   });
 
-  test('跨图: 同一个 runner 复用于第二张图, 期间盘上内容变了 → 必须读到新值', async () => {
+  test('图内世界被改动: agent 节点写完之后, 同一命令串必须读到新值 (live ② 的回归)', async () => {
+    const { runner, setOutput } = probeRunner();
+    const agentRunner: ExecutorDagConfig['agentRunner'] = async () => {
+      setOutput('PROBE_V2_CHANGED'); // ← agent 改文件, 正是这台引擎的本职
+      return { text: '改完了', usage: { in: 1, out: 1 } };
+    };
+    const r = await runExecutorDagWithPlan(planWithMutator, cfg(runner, { agentRunner }));
+    expect(r.results.before?.output).toBe('PROBE_V1');
+    // 老缓存在这里返 PROBE_V1 —— 一条"改完之后复核"的验证步就此永远看不见自己的改动。
+    expect(r.results.after?.output).toBe('PROBE_V2_CHANGED');
+  });
+
+  test('跨图: 同一个 runner 复用于第二张图, 期间世界变了 → 必须读到新值 (live ① 的回归)', async () => {
     const { runner, setOutput, spawns } = probeRunner();
     const r1 = await runExecutorDagWithPlan(plan, cfg(runner));
     expect(r1.results.a?.output).toBe('PROBE_V1');
 
-    setOutput('PROBE_V2_CHANGED'); // ← live 里这一步是"盘上文件被改了 / 代码被改坏了"
+    setOutput('PROBE_V2_CHANGED');
     const r2 = await runExecutorDagWithPlan(plan, cfg(runner));
     expect(r2.results.a?.output).toBe('PROBE_V2_CHANGED');
     expect(r2.results.b?.output).toBe('PROBE_V2_CHANGED');
-    // 第二张图重新 spawn 了一次 (图内 b 仍命中缓存 —— 清的是缓存, 不是把 memoize 关掉)。
+    expect(spawns()).toBe(4); // 两张图 × 每张两个节点, 一次不省
+  });
+
+  test('同层并发的两个相同命令各跑一遍 (老缓存连这个主场景都覆盖不了 —— 收益侧为什么是空的)', async () => {
+    const { runner, spawns } = probeRunner();
+    const parallel: ConductorPlan = {
+      name: 'p-par',
+      nodes: {
+        a: { goal: '读探针', executor: 'command', command: 'echo probe' },
+        b: { goal: '同时再读一次', executor: 'command', command: 'echo probe' },
+      },
+    };
+    await runExecutorDagWithPlan(parallel, cfg(runner));
     expect(spawns()).toBe(2);
-  });
-
-  test('反向自检: 摘掉 resetCache 把手 → 陈缓存立刻复现 (证明上面那条闸不是恒绿的)', async () => {
-    const { runner, setOutput } = probeRunner();
-    // 包一层, 只藏掉把手 —— 这就是修复前 MCP 路径上那个 runner 的形状 (长驻 + 无从清)。
-    const noHandle: CommandLeafRunner = (input) => runner(input);
-    await runExecutorDagWithPlan(plan, cfg(noHandle));
-    setOutput('PROBE_V2_CHANGED');
-    const r2 = await runExecutorDagWithPlan(plan, cfg(noHandle));
-    // 盘上是 V2, 拿到的是 V1 —— live 上抓到的正是这一格。
-    expect(r2.results.a?.output).toBe('PROBE_V1');
-  });
-
-  test('memoize:false 的 runner 不挂把手 —— "有没有缓存"从类型面看得出来', () => {
-    const off = createCommandLeafRunner({ allowlist: ['echo'], memoize: false });
-    expect(off.resetCache).toBeUndefined();
-    const on = createCommandLeafRunner({ allowlist: ['echo'] });
-    expect(typeof on.resetCache).toBe('function');
   });
 });
