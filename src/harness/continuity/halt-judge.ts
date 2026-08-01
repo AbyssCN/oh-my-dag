@@ -62,7 +62,7 @@ export interface JudgeInput {
 export interface HaltDeps {
   /** 模型调用函数。driver 应传 GenerateFn (包装 callModel + responseSchema)。 */
   generate: GenerateFn;
-  /** L2 judge 模型坐标。缺省 = 'judge' 座位 (单一 resolver)。 */
+  /** L2 闸模型坐标。缺省 = `gate` 座位 (判"达成没有"的都归它, 见 model/seats.ts)。 */
   judgeModel?: string;
   /** L2 调用配额上限。缺省 2。 */
   judgeCap?: number;
@@ -229,10 +229,10 @@ export async function haltJudge(
 
   // ── L2: goal judge ───────────────────────────────────────────
   // issue #6: 首选 provider 未注册 → 兜底到已注册 provider, 让 L2 真跑, 而非抛错落 L3 oracle 盲从。
-  // 全不可达 → 原样返 → 既有 L3 fail-open 兜底不变。首选坐标 = 'judge' 座位 (单一 resolver)。
-  const model = roleModelWithFallback(resolveSeatModel('judge', {
+  // 全不可达 → 原样返 → 既有 L3 fail-open 兜底不变。首选坐标 = `gate` 座位 (闸类, 见 model/seats.ts)。
+  const model = roleModelWithFallback(resolveSeatModel('gate', {
     ...(deps.judgeModel ? { explicit: deps.judgeModel } : {}),
-  }).model, 'judge');
+  }).model, 'gate');
   const prompt = buildJudgePrompt(judge);
 
   let verdictObj: JudgeVerdict;

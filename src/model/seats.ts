@@ -1,0 +1,308 @@
+/**
+ * src/model/seats —— **座位登记表: 一个文件回答关于座位的全部问题** (2026-08-01)。
+ *
+ * ## 为什么是代码不是 markdown
+ *
+ * 这份表此前散在**四处**, 每一处只知道自己那一半:
+ *   `role-models.NODE_TIER` (分档) · `auto-assign` 的三张 `Record<NodeClass, …>` (首选/推理档/溢出链)
+ *   · `empty-knobs.SEAT_CONSUMERS` (谁在消费) · 各调用点手写的 temperature。
+ * 写成 markdown 只会变成第五处 —— 而这个仓一路撞见的都是同一个形态:
+ * **声明面往前跑了, 消费面没跟上, 两边都不报错**。
+ * 所以真源是这张表, 上面那几处**从它派生**; 人要看的那份由 `scripts/omd-seats.ts` 从它渲染。
+ *
+ * ## 一个座位到底是什么
+ *
+ * **座位 = 模型选择轴, 不是角色轴。** 它回答「这一类活派给哪个模型 / 用多大 effort / 多发散」,
+ * 不回答「这个角色是谁」。所以四个不同的判别类调用可以共用一个 `judge` 座 —— 它们要的是同一档
+ * 的模型, 哪怕干的不是同一件事。反过来, **判"达成没有"的闸**与**判"哪个更好"的择优**要的东西不同
+ * (前者要严格抗谎报, 后者要多视角), 所以它们分了两个座 (`gate` / `judge`)。
+ *
+ * ## 三层旋钮, 各管各的 —— 别混
+ *
+ * | 层 | 谁 | 表达什么 | 真源 |
+ * |---|---|---|---|
+ * | **意图** | 本文件 | 这个角色想要多大 effort / 多发散 | `SEATS[].thinking` / `.sampling` |
+ * | **能力** | `model-caps.ts` | 这个**模型**收不收得下 (拒 `max`? 拒 `temperature`?) | `MODEL_CAPS` |
+ * | **调和** | `pi-transport.piRequest` | 把意图夹进能力 —— 发得出去的那个值 | `reasoningEffortFor` / `samplingFor` |
+ *
+ * 于是「不同模型有不同旋钮」这件事**不在这里处理**: 这里只写"想要 xhigh", 换到 mimo 上自动降 high,
+ * 换到 deepseek 上发 max。**加模型改 `model-caps`, 加角色改这里, 两件事不会互相牵扯。**
+ *
+ * ⚠ 一条容易混的: `sampling` 是**座位的默认发散度**, 不是 best-of-N 的发散度。后者是
+ * **lens/attempt 的属性** (同一个座位跑 N 遍, 每遍一档不同的 temperature, 见 `plan/best-of-n.ts`),
+ * 由调用方逐次给, 压过这里的默认。座位只回答"这个角色平时多稳/多野"。
+ */
+
+/** 经济学分档 (auto-assign 按这个派模型与溢出链; 与 `NodeClass` 同词表)。 */
+export type NodeTier = 'decomposer' | 'judge_synth' | 'worker' | 'verify' | 'dream';
+
+/** 推理档意图 (与 callModel 的 thinkingLevel 同词表 — 不引入第二套词汇)。 */
+export type SeatThinking = 'off' | 'low' | 'medium' | 'high' | 'xhigh';
+
+/** 跨家族要求: 这个座位与"大脑簇"同族时对抗是否失效。 */
+export type CrossFamily =
+  /** 必须异族, 同族即降级告警 (INV-3): 判与证共享盲点 = 证不出对方的错。 */
+  | 'required'
+  /** 异族更好但不强制 (多视角降系统偏见), 同族不告警。 */
+  | 'preferred'
+  /** 与家族无关 (执行/蒸馏类)。 */
+  | 'no';
+
+/** 座位的默认采样意图。`undefined` 字段 = 不发该参数 (让 provider 用自己的默认)。 */
+export interface SeatSampling {
+  temperature?: number;
+  topP?: number;
+}
+
+export interface SeatSpec {
+  /** 座位 id (= config.models 的键 / `OMD_<ID>_MODEL` env 名的来源)。 */
+  readonly id: string;
+  readonly tier: NodeTier;
+  /** 这个座位**干什么** —— 一句话说清判什么/产出什么。 */
+  readonly what: string;
+  /** **消费点** (`文件:符号`)。空 = 这个座位没人读 = 它是个空旋钮, `seats.test.ts` 会红。 */
+  readonly where: readonly string[];
+  /** 调用频率 —— 决定它的经济学 (高频闸 ≠ 低频终审, 不该用同一档模型)。 */
+  readonly frequency: string;
+  readonly crossFamily: CrossFamily;
+  /** effort 意图。transport 按 `model-caps` 夹到该模型收得下的字面量。 */
+  readonly thinking: SeatThinking;
+  /** 采样意图 (座位默认; lens/attempt 级发散由调用方逐次覆盖)。 */
+  readonly sampling: SeatSampling;
+  /** 建议模型 + **为什么**。auto-assign 的 per-node 首选覆盖也读它 (省略 = 走该 tier 的类首选)。 */
+  readonly recommend: string;
+  /** auto-assign per-node 首选坐标覆盖 (稀疏高价值座位才配; 省略 = 类首选 + 渠道经济学)。 */
+  readonly preferredCoord?: string;
+}
+
+/**
+ * ★ **全部座位。改角色只改这里。**
+ *
+ * 顺序 = 展示顺序 = `ALL_SEATS` 顺序 (座位自检、config_status 都按它列)。
+ */
+export const SEATS: readonly SeatSpec[] = [
+  // ── 分解 ────────────────────────────────────────────────────────────────────
+  {
+    id: 'conductor',
+    tier: 'decomposer',
+    what: '把任务拆成 DAG (节点/依赖/executor/验证步)。整张图的质量上限由它定 —— 坏计划让一整轮叶子白干。',
+    where: ['mcp/assemble.resolveEngineModels', 'harness/execute-slice.resolveConductorDefault', 'harness/fleet.resolveSeatModel'],
+    frequency: '每图 1 发 (稀疏, 风险不对称 → 值得用贵的)',
+    crossFamily: 'preferred',
+    thinking: 'high',
+    sampling: {},
+    recommend: 'openai-codex:gpt-5.6-sol —— 稀疏高价值, 放 flat-sub 订阅里不冲配额; 拆解质量的边际收益最高。',
+    preferredCoord: 'openai-codex:gpt-5.6-sol',
+  },
+  {
+    id: 'escalation',
+    tier: 'decomposer',
+    what: 'verifier 判不过时**换它重新规划** (conductor 静默升级)。没配 / provider 不可达 → 不升级, 维持原 conductor。',
+    where: ['harness/verifier.resolveVerification'],
+    frequency: '仅 verifier 判不过时 (罕见)',
+    crossFamily: 'preferred',
+    thinking: 'high',
+    sampling: {},
+    recommend: '同 conductor 或更强 —— 它存在的意义就是"上一个不够好"。',
+    preferredCoord: 'openai-codex:gpt-5.6-sol',
+  },
+
+  // ── 判别: 闸 (判"达成没有") ─────────────────────────────────────────────────
+  {
+    id: 'gate',
+    tier: 'judge_synth',
+    what:
+      '**内环收敛闸**: 一轮子图跑完判「这个节点的 goal 达成了吗」→ {converged, failureReason, rejectedNodes[]}。' +
+      '不达成 → 带理由重画子图, 被点名的子节点进毒集不许复用。也判 continuity 的「该不该停」。',
+    where: [
+      'mcp/assemble (judgeModel)',
+      'harness/tui (iterate/execute/cg 的 judgeModel)',
+      'harness/executor-dag.judgeConductorRound → plan/llm-judge',
+      'harness/continuity/halt-judge (L2)',
+    ],
+    frequency: '**每个 conductor 节点每轮 1 发** —— 全仓最高频的判别调用',
+    crossFamily: 'preferred',
+    // 闸判的是"达成没有", 谎报的代价不对称 (整轮白做且没人知道) → 值得想清楚。
+    thinking: 'xhigh',
+    // 裁决要**稳定可复现**: 同样的产出不该这一轮过、下一轮不过。低温不是省钱, 是要一致性。
+    sampling: { temperature: 0.2 },
+    recommend:
+      '判别档的**便宜**模型 (deepseek-v4-flash)。刻意**不**放 codex —— 它每节点每轮一发, 是高频座位, ' +
+      '与低频的 verifier 经济学完全不同。2026-07-31 那次空转 65 分钟正是"高频闸坐在强座位上"的代价。',
+  },
+
+  // ── 判别: 择优与合成 (判"哪个更好") ─────────────────────────────────────────
+  {
+    id: 'judge',
+    tier: 'judge_synth',
+    what:
+      '**K 维度评判 panel**: 对 N 个综合候选逐维度评「谁更好、该嫁接谁的哪段」, 再由 fusion 收敛成 ' +
+      '{共识/矛盾/覆盖缺口/独特洞察/盲点}。**择优不是闸** —— 它不回答"做完没有"。',
+    where: ['harness/research/fanout (judgeModel · fusionModel)', 'harness/research/web-fanout (graftModel)'],
+    frequency: '每次 research: K 发并行 (K = judgeCriteria 数) + fusion 1 发',
+    // 评判的敌人是单模型系统偏见 → 逐维度换族最强; fanout 已有 judgePool/judgeCriteria[].model 两个口。
+    crossFamily: 'preferred',
+    thinking: 'high',
+    // 择优要能看出差别, 不能太保守; 但也不是创作, 不需要野。
+    sampling: { temperature: 0.3 },
+    recommend:
+      '判别吃推理 → 单价低 + K panel 并行的模型。**真要多视角就配 `judgePool` 跨族轮转**, ' +
+      '那比换这个座位更对症 (座位只给一个默认值)。' +
+      '⚠ 它现在坐在 sol 上是**历史原因**: 内环闸拆出去 (`gate`) 之前, 这个座位同时背着"高频闸", ' +
+      '把它放强模型是为了那一半。现在那一半走了 —— 「judge 要不要从 codex 下来」是一个**待裁的开问题**, ' +
+      '本轮刻意不动 (拆座位与改路由分开做, 否则出了问题分不清是哪一半的)。',
+    preferredCoord: 'openai-codex:gpt-5.6-sol',
+  },
+  {
+    id: 'reason',
+    tier: 'judge_synth',
+    what: 'research 的**综合**: 把各镜头冠军按不同 framing 合成完整方案 (具体到模块/文件/接点)。',
+    where: ['harness/research/fanout (reasonModel · graft 默认)', 'harness/research/author-spec'],
+    frequency: '每次 research: 每个 framing 1 发',
+    crossFamily: 'preferred',
+    thinking: 'high',
+    sampling: {},
+    recommend: '连贯性优先的强模型 —— 它写的是终稿的骨架。',
+  },
+  {
+    id: 'reduce',
+    tier: 'judge_synth',
+    what: 'research 每个镜头内 **V→1 冠军合成** (镜头内机械合并, 不发明新东西)。',
+    where: ['harness/research/fanout (reduceModel)'],
+    frequency: '**每 lens 1 发** (×L, 高频)',
+    crossFamily: 'no',
+    thinking: 'xhigh',
+    sampling: {},
+    recommend:
+      '"够质量的最廉" (D-14)。它是**最大的不可缓存消费** (每 lens 全读 V 个 sub-angle 正文, 永远 unique), ' +
+      '且只是机械合并 —— 下沉到廉价档是单刀最大降本。绝不继承 reason 的贵模型 (mimo-pro 实测 24s×L 爆超时)。',
+  },
+
+  // ── 执行 ────────────────────────────────────────────────────────────────────
+  {
+    id: 'leaf',
+    tier: 'worker',
+    what: '**inproc 单发叶**: 无工具, 一问一答 (生成/研究/判断)。DAG 里量最大的那一类。',
+    where: ['mcp/assemble.resolveEngineModels', 'harness/tui', 'harness/fleet'],
+    frequency: '每图 N 发 (量在这里)',
+    crossFamily: 'no',
+    thinking: 'xhigh',
+    sampling: {},
+    recommend: 'deepseek-v4-flash —— 量产档, 靠缓存命中率而不是靠降 effort 省钱 (200 次对照: v4 忽略 effort 旋钮)。',
+  },
+  {
+    id: 'agent',
+    tier: 'worker',
+    what: '**带工具的叶**: read/write/edit/ls/grep/bash + hashline, **能真改文件**。omd 干活的底座。',
+    where: ['mcp/assemble.resolveEngineModels', 'harness/tui', 'harness/fleet (coding)'],
+    frequency: '每图若干 (比 inproc 少, 但每发更贵更长)',
+    crossFamily: 'no',
+    // ⚠ agent leaf 的 effort **不走座位档**: runner 自带 xhigh (owner 早前锁的, 改文件质量优先)。
+    // 这里写 xhigh 是为了两者一致, 别让人以为改这里能调 agent。
+    thinking: 'xhigh',
+    sampling: {},
+    recommend: '改文件质量优先。注意它的 effort 由 `agent-leaf.ts` 的 runner 默认给, 不读这一档。',
+  },
+  { id: 'lens', tier: 'worker',
+    what: 'research 的 **sub-angle 广度叶**: 一个镜头下的一个角度, 各写各的。',
+    where: ['harness/research/web-fanout (lensModel)', 'mcp/assemble (stampPools.cheap)'],
+    frequency: '每次 research: L×V 发 (最宽的一层)', crossFamily: 'no', thinking: 'xhigh',
+    // 镜头之间要**不一样**才有扇出的意义 —— 但发散度是 lens 逐个给的 (best-of-n.ts 的 0.25/0.4/0.5/0.75),
+    // 座位只给个中性默认。
+    sampling: {},
+    recommend: '广度靠数量不靠单发质量 → 最廉价档。' },
+  { id: 'expand', tier: 'worker',
+    what: '子图展开类的探索叶。**目前只作为 stamp 池 cheap 档的一个坐标被消费**, 没有专属调用点。',
+    where: ['mcp/assemble (stampPools.cheap)'],
+    frequency: '经 stamp 池轮换', crossFamily: 'no', thinking: 'xhigh', sampling: {},
+    recommend: '与 lens 同档。⚠ 它是**池成员**而非独立角色 —— 想改探索类模型, 改 `config.pools.cheap` 更直接。' },
+  { id: 'distill', tier: 'worker',
+    what: '**蒸馏**: 把抓来的网页正文压成要点 (research 的降本层), 以及 plan 的 distill 阶段。',
+    where: ['harness/web/distill-source', 'harness/web/distill-challenger', 'harness/plan/distill', 'mcp/assemble (stampPools.cheap)'],
+    frequency: '每个来源 1 发 (高频)', crossFamily: 'no', thinking: 'xhigh',
+    sampling: { temperature: 0.25 },
+    recommend: '机械提取 → 最廉价档。' },
+  { id: 'overflow', tier: 'worker',
+    what: '溢出档: 主力池打满时的接盘坐标。**目前只作为 stamp 池 mid 档的一个坐标被消费**。',
+    where: ['mcp/assemble (stampPools.mid)'],
+    frequency: '经 stamp 池轮换', crossFamily: 'no', thinking: 'xhigh', sampling: {},
+    recommend: '与 leaf 同档或略强。⚠ 同 expand: 它是池成员不是独立角色。' },
+
+  // ── 验证 ────────────────────────────────────────────────────────────────────
+  {
+    id: 'verifier',
+    tier: 'verify',
+    what:
+      '**整图终审**: DAG 全跑完之后, 拿原任务 + 计划 + 各叶产出, 逐条对照任务的明确要求判 pass/fail。' +
+      '职责是**攻击结果**而不是盖章放行 —— 默认怀疑, 证据不足即不过。不过 → escalation 重规划。',
+    where: ['harness/verifier.resolveVerification', 'mcp/assemble (verification 接线)', 'harness/tui'],
+    frequency: '**每图 1 发** (低频 → 值得用贵的)',
+    // INV-3: 与大脑簇同族则对抗失效 (它造的坏计划自己看不出坏)。auto-assign 同族时会降级告警。
+    crossFamily: 'required',
+    thinking: 'high',
+    // 终审要**稳定**: 同一份产出不该这次过下次不过。
+    sampling: { temperature: 0.2 },
+    recommend:
+      'openai-codex:gpt-5.6-sol —— **必须与 conductor/judge 异族**, 否则判与证共享盲点。' +
+      '低频稀疏, 放 flat-sub 订阅里不冲配额。',
+    preferredCoord: 'openai-codex:gpt-5.6-sol',
+  },
+  { id: 'review-spec', tier: 'verify',
+    what: '`dag_review` 的 **spec 轴**: 做的是不是 SDD 说该做的事 (对照 docs/plan 最新 SDD)。',
+    where: ['harness/review/run (tryResolveSeatModel)'],
+    frequency: '人触发 (稀疏)', crossFamily: 'required', thinking: 'high', sampling: { temperature: 0.2 },
+    recommend: '同 verifier —— 对照契约要严格。', preferredCoord: 'openai-codex:gpt-5.6-sol' },
+  { id: 'review', tier: 'verify',
+    what: '`dag_review` 的**主轴**: 对抗式读码找缺陷 (find 层)。',
+    where: ['harness/review/run.resolveReviewModels'],
+    frequency: '人触发 (稀疏)', crossFamily: 'required', thinking: 'high', sampling: { temperature: 0.2 },
+    recommend: '强模型 + 与被审代码的作者异族。', preferredCoord: 'openai-codex:gpt-5.6-sol' },
+
+  // ── 后台 ────────────────────────────────────────────────────────────────────
+  { id: 'dream', tier: 'dream',
+    what: '记忆巩固: 把近期事件窗压缩进 L0–L6 记忆层, 只留 derived 洞察。也给 skill-miner 起草。',
+    where: ['dream/model-live', 'harness/skills/skill-miner'],
+    frequency: 'session 结束 / 定时 (后台)', crossFamily: 'no', thinking: 'xhigh', sampling: {},
+    recommend: '便宜档 —— 它是背景任务, 慢一点没关系。' },
+  { id: 'continuity', tier: 'worker',
+    what: 'session **交接蒸馏**: 把一段会话压成下一个 session 接得住的 checkpoint。',
+    where: ['harness/session/writer'],
+    frequency: '每次 checkpoint (低频)', crossFamily: 'no', thinking: 'xhigh',
+    sampling: { temperature: 0.2 },
+    recommend: '便宜单发 —— 蒸馏不是创作。' },
+] as const;
+
+// ── 派生视图 (下面这些**不要手写第二份**) ───────────────────────────────────────
+
+export type OmdSeat = (typeof SEATS)[number]['id'];
+
+const BY_ID = new Map(SEATS.map((s) => [s.id, s]));
+
+/** 取一个座位的规格; 未知 id → undefined。 */
+export function seatSpec(id: string): SeatSpec | undefined {
+  return BY_ID.get(id as OmdSeat);
+}
+
+/** 全部座位 id (遍历序 = 展示序)。 */
+export const ALL_SEAT_IDS: readonly OmdSeat[] = SEATS.map((s) => s.id) as readonly OmdSeat[];
+
+/** 座位 → 经济学分档 (auto-assign 的 NodeClass 同表)。 */
+export const SEAT_TIER: Record<string, NodeTier> = Object.fromEntries(SEATS.map((s) => [s.id, s.tier]));
+
+/** 座位 → effort 意图。 */
+export const SEAT_THINKING: Record<string, SeatThinking> = Object.fromEntries(
+  SEATS.map((s) => [s.id, s.thinking]),
+);
+
+/** 座位 → per-node 首选坐标覆盖 (只含显式配了的)。 */
+export const SEAT_PREFERRED_COORD: Record<string, string> = Object.fromEntries(
+  SEATS.filter((s) => s.preferredCoord).map((s) => [s.id, s.preferredCoord!]),
+);
+
+/**
+ * 座位的默认采样意图。**调用方显式给的压过它**; 它再被 `model-caps.samplingFor` 按模型能力夹
+ * (codex 拒 temperature / kimi-k3 拒两者 → 丢弃并出声)。
+ */
+export function seatSampling(id: string): SeatSampling {
+  return BY_ID.get(id as OmdSeat)?.sampling ?? {};
+}

@@ -267,52 +267,17 @@ export function listRoleModels(
 // ---------------------------------------------------------------------------
 // node-level resolution (D-5 classification, 14 nodes)
 // ---------------------------------------------------------------------------
-/** D-5 node tier classification. Each omd daemon node maps to one tier. */
-export type NodeTier = 'decomposer' | 'judge_synth' | 'worker' | 'verify' | 'dream';
-/** All 14 omd daemon nodes (D-2). */
-export type OmdNode =
-  | 'conductor' | 'escalation'
-  | 'judge' | 'reason' | 'reduce'
-  | 'leaf' | 'agent' | 'lens' | 'expand' | 'distill' | 'overflow'
-  | 'verifier' | 'review-spec'
-  | 'dream';
 /**
- * D-5 node→tier mapping. Groups nodes by function for tier-based model selection.
- * decomposer: conductor + escalation (分解/升级)
- * judge_synth: judge + reason + reduce (判断/综合/缩约)
- * worker: leaf/agent/lens/expand/distill/overflow (执行)
- * verify: verifier + review-spec (跨模型校验, ≠ 主力族)
- * dream: dream (独立 consolidation)
+ * ⚠ **座位的真源已搬到 `seats.ts`** (2026-08-01) —— 分档 / 消费点 / effort / 采样 / 建议模型
+ * 全在那一张表里。这里只保留**派生视图**, 别在这里写第二份。
  */
-export const NODE_TIER: Record<OmdNode, NodeTier> = {
-  conductor: 'decomposer',
-  escalation: 'decomposer',
-  judge: 'judge_synth',
-  reason: 'judge_synth',
-  reduce: 'judge_synth',
-  leaf: 'worker',
-  agent: 'worker',
-  lens: 'worker',
-  expand: 'worker',
-  distill: 'worker',
-  overflow: 'worker',
-  verifier: 'verify',
-  'review-spec': 'verify',
-  dream: 'dream',
-};
-/**
- * **全部模型座位** = 14 个 DAG 节点 + 2 个后台角色 (continuity 交接蒸馏 / review find 层)。
- * 单一 resolver 的唯一键空间 (INV-MODEL-1) —— 起跑自检、config UI、auto-assign 都按这张表遍历,
- * 加座位只加这一处就不会漏。
- */
-export type OmdSeat = OmdNode | 'continuity' | 'review';
+export type { NodeTier, OmdSeat } from './seats';
+export { ALL_SEAT_IDS as ALL_SEATS, SEAT_TIER as NODE_TIER, seatSpec, seatSampling } from './seats';
+import { ALL_SEAT_IDS, SEAT_TIER } from './seats';
+import type { OmdSeat } from './seats';
 
-/** 全部座位 (遍历序 = NODE_TIER 序 + 两个后台角色)。 */
-export const ALL_SEATS: readonly OmdSeat[] = [
-  ...(Object.keys(NODE_TIER) as OmdNode[]),
-  'continuity',
-  'review',
-];
+/** 兼容旧命名: 引擎节点座位 = 全部座位 (continuity/review 也是座位, 见 seats.ts)。 */
+export type OmdNode = OmdSeat;
 
 /**
  * 座位的 **env 别名** —— 历史上并行跑着的那几套解析器 (OMD_ITER_* 的 /iterate·/execute·MCP 引擎座、

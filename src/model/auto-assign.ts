@@ -13,6 +13,7 @@
  * Contract: docs/plan/2026-07-24-channel-aware-model-node-routing.md D-19.
  */
 import { discoverChannels as discoverHoldings } from "../config/config-discovery";
+import { SEAT_PREFERRED_COORD, SEAT_THINKING, SEAT_TIER } from "./seats";
 import { logger } from "../logger";
 import {
 	type Channel,
@@ -126,36 +127,15 @@ const PREFERRED_COORD: Record<NodeClass, string> = {
  * ⚠ **agent leaf 是 worker 类里的例外, 不吃座位档**: agent-leaf.ts 的 xhigh 默认是 owner 早前锁的
  * (改文件 + 工具循环, 数量远少于 inproc 扇出, 质量优先)。座位档只下发到 inproc leaf 与 conductor。
  */
-const NODE_CLASS_THINKING: Record<NodeClass, SeatThinking> = {
-	decomposer: "high",
-	judge_synth: "high",
-	// 2026-07-31: **改回 high, 且要写清为什么** ——
-	//
-	// 2026-07-29 把它降 low, 理由是"v4 是推理族, reasoning token 按 output 计价, 量产座降档收益最大"。
-	// 那条推理**后来被实测推翻**: 200 次对照下 deepseek-v4 **忽略 `reasoning_effort`**, low/high 的
-	// completion token 与质量都打不出差 (且 low 臂噪声更大)。那次省下来的钱其实来自**缓存命中率**
-	// (一天 3000 万 token 只花 $3.18 = 98% 命中; 另一天 970 万花 $9.63 = output 占 87%), 与这个旋钮无关。
-	//
-	// 于是在"v4-flash 正式版是不是开始认这个旋钮"未知的今天, 两个方向的代价是**不对称**的:
-	//   · 若它仍然忽略 → 填 high 与填 low 完全等价, 改回来零成本;
-	//   · 若正式版开始认了 → 留 low 就是**给全仓量最大的那一档默默降智**, 而省下的是一笔
-	//     实测证明并不存在的钱。
-	// 不对称时选那个"猜错了也不亏"的方向。
-	// **owner 2026-07-31 裁决: 就用 high, 不重跑那 200 次对照。** 理由是那次重跑的读数
-	// **改变不了我们该做什么** —— 认这个旋钮就该填 high, 不认则填什么都一样, 两条路都指向 high。
-	// (这与 N4「多次尝试下的抗性率」被压到最低优先级是同一条判据: 花钱买一个不改变行动的数。)
-	// ⚠ agent leaf 不吃这张表 (agent-leaf.ts 自带 xhigh, owner 早前锁的), 所以改这里不影响改文件的 agent。
-	//
-	// **2026-08-01 owner 裁: worker 提到 xhigh** (deepseek-v4-flash 上即 reasoning_effort=max)。
-	// 上面那条"上限是 high 不是 xhigh"的理由 —— 「判/证座位溢出到 mimo 时 xhigh 会 400」——
-	// **今天已经不成立**: 两条传输并成一条之后, 每一发都过 `reasoningEffortFor` 按**模型**查
-	// `model-caps` 的实测词表, xhigh 在 mimo/qwen 上自动降到 high, 只在真收 max 的模型上发 max。
-	// 那条注释自己也写着该这么办 (「真需要 max 的座位由 transport 层按 provider 能力表决定」),
-	// 只是当时 pi 那条通道没查表, 所以不敢。现在敢了。
-	worker: "xhigh",
-	verify: "high",
-	dream: "high",
-};
+/**
+ * effort 意图 **按座位**取自 `seats.ts` (不再按 class 一刀切) —— 高频闸与低频终审本就该分开配。
+ * 未登记的座位落 'high' (保守兜底)。
+ *
+ * ⚠ 「不同模型收不收得下这个档」不在这里判: transport 层 `reasoningEffortFor` 按 `model-caps`
+ * 的实测词表夹 (xhigh 在 mimo/qwen 上自动降 high, 在 deepseek/gpt-5 上发 max)。
+ * **加模型改 model-caps, 加角色改 seats, 两件事不互相牵扯。**
+ */
+const seatThinkingOf = (node: string): SeatThinking => (SEAT_THINKING[node] as SeatThinking) ?? "high";
 
 /**
  * per-node 首选覆盖 (owner 2026-07-25: GPT 订阅进图内当 SOTA 大脑): conductor/escalation/judge 三个
@@ -163,18 +143,11 @@ const NODE_CLASS_THINKING: Record<NodeClass, SeatThinking> = {
  * 刻意不含 reason/reduce (每图多发, Plus 配额撑不住) — 量产座位留 k3/mimo 专属桶。
  * 渠道不可达 (未声明持仓/无凭证) → 自然落类首选 k3 链, 老行为不变。
  */
-const NODE_PREFERRED: Record<string, string> = {
-	conductor: "openai-codex:gpt-5.6-sol",
-	escalation: "openai-codex:gpt-5.6-sol",
-	judge: "openai-codex:gpt-5.6-sol",
-	// 2026-07-31 owner: **审核那一簇也回 sol**。落类首选整表压到 flash 之后, 若不显式派这三座,
-	// 「判」与「证」会同族 —— 而 INV-3 要的正是跨家族对抗 (同族共享盲点, 证不出对方的错)。
-	// 三座都是**稀疏**的 (verifier 在 goal 路径上显式关闭 · review/review-spec 是人触发的后台角色),
-	// 所以放 flat-sub 订阅里不冲配额 —— 与上面"不含 reason/reduce"是同一条量级判断。
-	verifier: "openai-codex:gpt-5.6-sol",
-	review: "openai-codex:gpt-5.6-sol",
-	"review-spec": "openai-codex:gpt-5.6-sol",
-};
+/**
+ * per-node 首选坐标覆盖 —— **从 `seats.ts` 的 `preferredCoord` 派生**。
+ * 哪些座位值得"稀疏高价值"待遇 (放 flat-sub 订阅、不冲配额) 写在各座位的 `recommend` 里。
+ */
+const NODE_PREFERRED: Record<string, string> = SEAT_PREFERRED_COORD;
 
 /**
  * reduce 特殊 (D-14 "够质量的最廉"): 高频阶段, 取 MiMo v2.5-pro via Lite plan (替代原 deepseek-pro 位,
@@ -280,7 +253,7 @@ export function autoAssign(input: AutoAssignInput): AssignmentMap {
 					coord: r.coord,
 					channelId: r.channel.id,
 					intelligence: r.rating.intelligence,
-					thinkingLevel: NODE_CLASS_THINKING[nodeClass],
+					thinkingLevel: seatThinkingOf(node),
 				};
 				continue;
 			}
@@ -302,7 +275,7 @@ export function autoAssign(input: AutoAssignInput): AssignmentMap {
 				coord: resolved.coord,
 				channelId: resolved.channel.id,
 				intelligence: resolved.rating.intelligence,
-				thinkingLevel: NODE_CLASS_THINKING[nodeClass],
+				thinkingLevel: seatThinkingOf(node),
 			};
 		} else {
 			// INV-7: 全链不可达 → 不写入, 但 log。

@@ -11,6 +11,7 @@
  */
 import { z } from 'zod';
 import { send } from '../../model/gateway';
+import { seatSampling } from '../../model/seats';
 import type { FixpointJudge, FixpointVerdict } from './fixpoint';
 
 export const CONVERGENCE_VERDICT_SCHEMA = z.object({
@@ -33,6 +34,8 @@ export interface LlmJudgeOpts<R> {
   threshold?: number;
   /** 从一轮 result 抽出 {status, summary}: status='failed' 走未收敛快路径; summary 给 judge 看。 */
   extract: (result: R) => { status: 'done' | 'failed'; summary: string };
+  /** 采样温度覆盖。省略 = `gate` 座的采样意图 (model/seats.ts)。 */
+  temperature?: number;
   /** 注入式 callModel (测试)。默认真 callModel。 */
   callModelFn?: typeof send;
 }
@@ -85,7 +88,8 @@ export function makeLlmConvergenceJudge<R>(opts: LlmJudgeOpts<R>): FixpointJudge
     const r = await call({
       model: opts.judgeModel,
       messages: [{ role: 'user', content: judgePrompt(opts.task, summary, round, threshold) }],
-      temperature: 0.3,
+      // 采样意图取自 `gate` 座 (model/seats.ts): 闸的裁决要可复现。调用方给了就压过它。
+      ...(opts.temperature !== undefined ? { temperature: opts.temperature } : seatSampling('gate')),
       maxTokens: 4096, // 700 会被推理族的 reasoning 吃光 → 空裁决
       responseSchema: CONVERGENCE_VERDICT_SCHEMA,
     });

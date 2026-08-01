@@ -20,6 +20,7 @@
 import { describe, expect, test } from 'bun:test';
 import { conductorSystemPrompt } from './conductor-plan';
 import { ALL_SEATS } from '../model/role-models';
+import { SEATS } from '../model/seats';
 
 /**
  * conductor prompt 明示的每个 node 字段 → 它的引擎消费点。
@@ -93,28 +94,15 @@ describe('明示即承诺 — conductor prompt 里的字段必须有消费者', 
 });
 
 /**
- * 座位 → 解析点。座位不是"auto-assign 派个模型 + 起跑自检查凭证"就算活着 ——
- * 得有人真去解析它, 否则 config 配了不生效 (INV-MODEL-1 要杀的正是这个)。
+ * 座位 → 解析点。座位不是"auto-assign 派个模型 + 起跑自检查凭证"就算活着 —— 得有人真去解析它,
+ * 否则 config 配了不生效 (INV-MODEL-1 要杀的正是这个)。
+ *
+ * ⚠ 2026-08-01: 这张表**从 `model/seats.ts` 派生**, 不再手抄。此前它是第二份必须记得同步的清单,
+ * 而"记得同步"从来不是一个可靠机制 —— 座位的真源 (分档/消费点/effort/采样/建议模型) 现在只有一处。
  */
-const SEAT_CONSUMERS: Record<string, string> = {
-  conductor: 'mcp/assemble.resolveEngineModels',
-  leaf: 'mcp/assemble.resolveEngineModels',
-  agent: 'mcp/assemble.resolveEngineModels',
-  judge: 'mcp/assemble (stampPools.strong)',
-  reason: 'mcp/assemble (stampPools.strong) + research/author-spec',
-  verifier: 'mcp/assemble (stampPools.strong) + harness/verifier',
-  overflow: 'mcp/assemble (stampPools.mid)',
-  lens: 'mcp/assemble (stampPools.cheap) + research/web-fanout',
-  expand: 'mcp/assemble (stampPools.cheap)',
-  distill: 'mcp/assemble (stampPools.cheap)',
-  reduce: 'research fanout (reduce 阶段)',
-  dream: 'dream_consolidate',
-  continuity: 'continuity 交接蒸馏',
-  review: 'harness/review/run.resolveReviewModels',
-  // 2026-07-28 全仓扫补活的两个 (此前纯装饰, 引擎读 env 不读座位):
-  escalation: 'harness/verifier.resolveVerification (tryResolveSeatModel)',
-  'review-spec': 'harness/review/run (tryResolveSeatModel)',
-};
+const SEAT_CONSUMERS: Record<string, string> = Object.fromEntries(
+  SEATS.map((s) => [s.id, s.where.join(' + ')]),
+);
 
 describe('座位即承诺 — ALL_SEATS 里的每个座位都有解析点', () => {
   test('每个座位都登记了消费点', () => {
