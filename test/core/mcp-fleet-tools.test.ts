@@ -15,7 +15,7 @@ import { createRunsTools } from '../../src/mcp/tools/runs';
 import { createDagTools, type DagEngine } from '../../src/mcp/tools/dag-tools';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../../src/harness/executor-dag-types';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
-import type { DreamPump, PumpResult } from '../../src/harness/learning/types';
+import type { DreamPump, PumpResult } from '../../src/mcp/tools/fleet';
 import { CheckpointManager } from '../../src/harness/continuity/checkpoint-manager';
 
 // ---------------------------------------------------------------------------

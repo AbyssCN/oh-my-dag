@@ -75,7 +75,7 @@ import { createOmdMemory, type OmdMemory } from '../harness/memory';
 import { UNIVERSAL_SAFEGUARD } from '../memory/safeguards/namespaces';
 import type { ResearchFanoutResult } from '../harness/research/fanout';
 import { logger } from '../harness/logger';
-import type { DreamPump } from '../harness/learning/types';
+import type { DreamPump } from './tools/fleet';
 
 /** 生产引擎接缝 (真 DAG 引擎)。 */
 const PROD_ENGINE: DagEngine = { runExecutorDag, runExecutorDagWithPlan };

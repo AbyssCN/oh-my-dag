@@ -13,7 +13,30 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { RunRegistry } from '../run-registry.js';
 import type { OmdMcpTool } from '../server.js';
-import type { DreamPump } from '../../harness/learning/types.js';
+
+// ---------------------------------------------------------------------------
+// dream_consolidate 注入面 (contract 归属地 = 这里)
+// ---------------------------------------------------------------------------
+// 这两个 interface 原本住在 `src/harness/learning/types.ts`。那套 per-turn 自学习子系统
+// 已停到 `experimental/self-evolution/`(见 docs/adr/0002-self-evolution-parked.md),但
+// `dream_consolidate` 这个 MCP 工具是 owner 明确要保留的能力 —— 它只需要「谁传进来的东西
+// 长什么样」这一份契约,不需要那套实现。故契约随消费方留在 MCP 侧。
+// 注:目前生产没有任何调用方给 `dream`,该工具一律回 isError('not wired');它是给未来
+// 围绕 run 事件重做的 pump 留的注入口。
+
+/** 一次 pump 的结果 (审计 + 测试断言)。 */
+export interface PumpResult {
+  eventsConsumed: number;
+  factsWritten: number;
+  factsRejected: number;
+  newWatermark: number;
+}
+
+/** dream pump: 增量事件 → consolidate → L2 fact → OmdMemory。 */
+export interface DreamPump {
+  /** 跑一轮。无新事件 → eventsConsumed:0 不调模型 (省 call)。 */
+  pump(): Promise<PumpResult>;
+}
 
 // ---------------------------------------------------------------------------
 // deps + spawn 接缝

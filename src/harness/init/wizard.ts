@@ -507,7 +507,7 @@ export const TUNABLE_ENV_ROLES: readonly { env: string; label: string }[] = [
 ];
 export const TUNABLE_CONFIG_ROLES: readonly { role: ModelRole; label: string }[] = [
   { role: 'verifier', label: '跨模型校验 skeptic (建议 ≠ 主力家族)' },
-  { role: 'dream', label: '记忆整理 (dream/skill-miner, 便宜档即可)' },
+  { role: 'dream', label: '记忆整理 (dream_consolidate, 便宜档即可)' },
 ];
 
 /**

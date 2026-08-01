@@ -17,10 +17,8 @@ import { isResidentSkill } from './bundle';
 import { setDmiInFile, skillMdPath, readDmi } from './dmi';
 import { buildUmbrella } from './umbrella';
 import { exportBundle } from './export';
-import { suggestActions } from './action-driver';
 import { buildTriggerEvalSet } from './eval-set';
 import { splitFrontmatter } from './scanner';
-import { curateSkills } from './skill-curator-adapter';
 
 /** 持久 substrate 路径: --db > env OMD_SKILL_DB > 默认 .omd/skills.db。 */
 function resolveDbPath(args: string[]): string {
@@ -192,21 +190,6 @@ function cmdRecordEvent(args: string[]): number {
   return 0;
 }
 
-function cmdSuggestActions(args: string[]): number {
-  const reg = openSyncedRegistry(args);
-  const actions = suggestActions(reg);
-  if (hasFlag(args, '--json')) {
-    process.stdout.write(JSON.stringify(actions, null, 2) + '\n');
-  } else if (actions.length === 0) {
-    process.stdout.write('\n无建议 — 所有 skill 健康 (无退化/无高频缺 eval/无陈旧)。\n');
-  } else {
-    process.stdout.write(`\n${actions.length} 条建议 (源自 substrate 数据, 非 LLM 猜):\n`);
-    for (const a of actions) process.stdout.write(`  [${a.kind}] ${a.skill} — ${a.reason}\n`);
-  }
-  reg.close();
-  return 0;
-}
-
 function cmdCheckUpstream(args: string[]): number {
   const name = args[1];
   if (!name) { process.stderr.write('usage: check-upstream <skill> [--root <dir>]\n'); return 2; }
@@ -282,24 +265,6 @@ function cmdEvalRun(args: string[]): number {
   return proc.exitCode ?? 1;
 }
 
-async function cmdCurate(args: string[]): Promise<number> {
-  const apply = hasFlag(args, '--apply');
-  const reg = openSyncedRegistry(args);
-  const res = await curateSkills(reg, { dryRun: !apply });
-  const dedup = res.reducers.find((r) => r.kind === 'DEDUP')!;
-  const prune = res.reducers.find((r) => r.kind === 'PRUNE')!;
-  process.stdout.write(`\n${apply ? '' : '[dry-run] '}curate skills (DEDUP + PRUNE, core/rare 豁免)\n`);
-  process.stdout.write(`  DEDUP: ${dedup.skipped ? `skipped (${dedup.reason})` : `${dedup.tombstoned} 近义删`}\n`);
-  process.stdout.write(`  PRUNE: ${prune.tombstoned} 陈旧删\n`);
-  process.stdout.write(`  shrink: ${res.shrink.count_in}→${res.shrink.count_out} skills · ${res.shrink.bytes_in}→${res.shrink.bytes_out} B (held=${res.shrink.held})\n`);
-  if (res.tombstonedIds.length) {
-    process.stdout.write(`  tombstoned: ${res.tombstonedIds.join(', ')}\n`);
-  }
-  process.stdout.write(apply ? `  ✓ 已落 substrate (可 restore 回退)\n` : `  (dry-run; --apply 才真 tombstone)\n`);
-  reg.close();
-  return 0;
-}
-
 function cmdUmbrella(args: string[]): number {
   const root = resolveRoot(args);
   const reg = new SkillRegistry();
@@ -326,13 +291,11 @@ export function runCli(argv: string[]): number | Promise<number> {
     case 'umbrella': return cmdUmbrella(args);
     case 'export': return cmdExport(args);
     case 'record-event': return cmdRecordEvent(args);
-    case 'suggest-actions': return cmdSuggestActions(args);
     case 'eval-generate': return cmdEvalGenerate(args);
     case 'eval-run': return cmdEvalRun(args);
     case 'check-upstream': return cmdCheckUpstream(args);
-    case 'curate': return cmdCurate(args);
     default:
-      process.stderr.write('usage: omd skill <status|set-dmi|tidy|umbrella|export|record-event|suggest-actions|eval-generate|eval-run|check-upstream|curate> [--root <dir>] [--db <path>]\n');
+      process.stderr.write('usage: omd skill <status|set-dmi|tidy|umbrella|export|record-event|eval-generate|eval-run|check-upstream> [--root <dir>] [--db <path>]\n');
       return 2;
   }
 }
