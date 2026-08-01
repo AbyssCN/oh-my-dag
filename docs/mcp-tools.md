@@ -21,6 +21,10 @@ discipline (when to escalate, how to accept, who holds the trigger).
 | `dag_slim` | over-engineering, deletion-only audit fleet, async |
 | `dag_deepen` | architecture-deepening scan: git-hotspot discovery → one agent per hotspot → leverage-ranked HTML report |
 | `dag_debug` | parallel multi-hypothesis root-cause debug fleet, async — reproduce + codegraph → fan out hypotheses |
+| `dag_goal` | autonomous goal loop: research → spec → execute → verify → one repair round |
+| `dag_cancel` | cooperative stop: no new nodes dispatched, in-flight ones finish, ends `cancelled` (resumable) |
+| `dag_triage` | **owner inbox** (read-only): decision forks a running graph raised, plus runs that need a human look |
+| `dag_rule` | rule on one of those forks; the ruling becomes a verbatim owner directive for the run's next round |
 
 **Pathfinder** — persistent planning for foggy, multi-session work:
 
@@ -50,6 +54,11 @@ discipline (when to escalate, how to accept, who holds the trigger).
 | `omd_register_provider` | register an OpenAI-compatible provider (baseUrl + key-env + models) into the shared model registry |
 | `omd_set_key` · `omd_set_model` · `omd_set_role` | set a provider key · a model's attributes · a role→model assignment |
 | `omd_apply_preset` · `omd_toggle_hud` | apply a wizard preset (base-opencode-go / cn-standard / cn-ultimate) · toggle the statusline HUD |
+| `omd_models_auto` | auto-assign per-node models by channel economics → `.omd/config.json`; env still overrides |
+| `omd_shapes` | the graph-shape catalogue — each with trigger conditions, when NOT to use it, and why. Call once before decomposing |
+| `omd_primitive` | run one control-flow primitive directly, no graph needed. For 2–5 step combos; large fan-out goes to `dag_run` |
+| `omd_web` | search + fetch, zero LLM. Full text to disk, returns only the index + fetched URLs. For a synthesised answer use `dag_research` |
+| `omd_distill` | distil insight from text you already have (no fetching). `expert` = faithful extraction, `challenger` = high-temp long-tail |
 
 ### Claude slash commands (the [client-skills](../client-skills/) pack)
 
