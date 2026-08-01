@@ -8,19 +8,13 @@
  * single bounded retry budget (INV-3), validation/parse failures re-prompt with
  * the concrete error, transport failures back off exponentially.
  */
-import type {
-  ModelMessage,
-  ModelRequest,
-  ModelResponse,
-  ModelUsage,
-  ProviderConfig,
-} from './types';
+import type { ModelMessage, ModelRequest, ModelResponse, ModelUsage } from './types';
 import { getProvider } from './providers';
 import { emitModelUsage } from './accounting';
-import { resolvePiModel, piRequest, type PiModel } from './pi-transport';
+import { resolvePiModel, piModelFromProviderConfig, piRequest, type PiModel } from './pi-transport';
 import { reportProviderFailure } from './provider-health';
 import { reportTruncation } from './truncation';
-import { capsFor, samplingFor, maxOutputFor } from './model-caps';
+import { capsFor } from './model-caps';
 
 export type {
   ContentPart,
@@ -70,35 +64,20 @@ interface RawResult {
   finishReason?: string;
 }
 
-/** Map provider-specific finish/stop reasons onto a small shared vocab. */
-function normalizeFinish(raw: string | undefined | null): string | undefined {
-  if (!raw) return undefined;
-  switch (raw) {
-    case 'length':
-    case 'max_tokens':
-      return 'length';
-    case 'stop':
-    case 'end_turn':
-    case 'stop_sequence':
-      return 'stop';
-    case 'tool_calls':
-    case 'tool_use':
-      return 'tool_call';
-    case 'content_filter':
-      return 'content_filter';
-    default:
-      return raw;
-  }
-}
-
 /**
- * 解析目标的判别联合 (统一模型层, 2026-07-19):
- *   own = 自有 registry 命中 (自定网关 / env 注册 provider) — 走本文件 openai/anthropic 直连 (零回归);
- *   pi  = registry 未注册但 pi-ai 目录认识 — 走 pi-transport (协议/env key 映射全交 pi)。
+ * 一个解析好的调用目标 —— **只有一种**(2026-08-01)。
+ *
+ * 此前这里是个判别联合 (`own` 走本文件手写的 HTTP, `pi` 走 pi-transport)。两条传输并成一条之后,
+ * 解析仍是两个来源、但产物同一种: 自有 registry 命中 → 把条目按 pi `Model` 的形状表达出来
+ * (端点与凭证来自 registry, 协议知识来自 pi 目录, 见 `piModelFromProviderConfig`);
+ * 否则探 pi 目录。**"走哪条路"这个问题从此不存在**, 于是"某条路上忘了做某件事"也不存在。
  */
-type ResolvedTarget =
-  | { kind: 'own'; cfg: ProviderConfig; modelId: string; resolved: string }
-  | { kind: 'pi'; piModel: PiModel; resolved: string };
+interface ResolvedTarget {
+  piModel: PiModel;
+  resolved: string;
+  /** 自有 registry 条目自带的 key (注册时必填) —— 有它就不必再去 auth.json/env 里找。 */
+  apiKey?: string;
+}
 
 function resolveModel(req: ModelRequest): ResolvedTarget {
   const raw = req.model;
@@ -116,22 +95,26 @@ function resolveModel(req: ModelRequest): ResolvedTarget {
         `callModel: no model id in '${raw}' and provider '${providerName}' has no defaultModel`,
       );
     }
-    return { kind: 'own', cfg, modelId, resolved: `${providerName}:${modelId}` };
+    return {
+      piModel: piModelFromProviderConfig(providerName, modelId, cfg),
+      resolved: `${providerName}:${modelId}`,
+      apiKey: cfg.apiKey,
+    };
   }
-  // ② pi-ai 目录后备 (新默认): registry 不认识 → 探 pi 目录 (纯目录查询无网络)。
-  // 裸 provider 坐标 (无 ':model') 不走 pi — pi 路必须显式 model id, 保持旧错误语义。
+  // ② pi-ai 目录 (registry 不认识 → 纯目录查询, 无网络)。
+  // 裸 provider 坐标 (无 ':model') 不走这条 — 必须显式 model id, 保持旧错误语义。
   const modelId = sep === -1 ? '' : raw.slice(sep + 1);
   if (modelId) {
     const piModel = resolvePiModel(providerName, modelId);
-    if (piModel) return { kind: 'pi', piModel, resolved: `${providerName}:${modelId}` };
+    if (piModel) return { piModel, resolved: `${providerName}:${modelId}` };
   }
-  // ③ 都不认 → 既有清晰错误 (文案保持不变, 附 pi 提示)。
+  // ③ 都不认 → 既有清晰错误 (文案保持不变)。
   throw new ModelError('config', `callModel: provider '${providerName}' not registered`);
 }
 
 /**
  * 纯解析校验: 坐标能否解析成可调模型 (有 model id 或裸 provider 有 defaultModel)。
- * 解析规则单一真理源 = resolveModel — **两路都查**: 自有 registry 优先, miss 再探 pi-ai 目录
+ * 解析规则单一真理源 = resolveModel — **两个来源都查**: 自有 registry 优先, miss 再探 pi-ai 目录
  * (getModel/getModels 纯查表)。不能解析 → 抛 ModelError('config')。无网络副作用。
  * 用途: wiring 层 (如 resolveVerification) fail-fast —— 把"DAG 跑完才崩"提到"DAG 跑前崩"。
  * `label` 进错误信息, 点名是哪个角色坐标坏 (如 'verifier')。
@@ -143,35 +126,6 @@ export function assertModelResolvable(coord: string, label = 'model'): void {
     const msg = err instanceof ModelError ? err.message : String(err);
     throw new ModelError('config', `${label} 坐标无法解析: ${msg}`);
   }
-}
-
-async function postJson(
-  cfg: ProviderConfig,
-  path: string,
-  body: unknown,
-  signal?: AbortSignal,
-  extraHeaders?: Record<string, string>,
-): Promise<unknown> {
-  const headers: Record<string, string> = { 'content-type': 'application/json', ...(cfg.headers ?? {}) };
-  if (cfg.api === 'openai-compatible') headers.authorization = `Bearer ${cfg.apiKey}`;
-  Object.assign(headers, extraHeaders ?? {});
-
-  let res: Response;
-  try {
-    res = await fetch(`${cfg.baseUrl}${path}`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal,
-    });
-  } catch (e) {
-    throw new ModelError('transport', `fetch failed: ${(e as Error)?.message ?? String(e)}`, { cause: e });
-  }
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    throw new ModelError('http', `HTTP ${res.status}: ${errText.slice(0, 300)}`, { status: res.status });
-  }
-  return res.json();
 }
 
 /**
@@ -220,129 +174,17 @@ export function reasoningEffortFor(
   return undefined;
 }
 
-async function openaiRequest(
-  cfg: ProviderConfig,
-  modelId: string,
-  messages: ModelMessage[],
-  req: ModelRequest,
-  provider: string,
-): Promise<RawResult> {
-  const body: Record<string, unknown> = {
-    model: modelId,
-    messages: messages.map((m) => ({ role: m.role, content: m.content })),
-  };
-  // 采样参数按模型过滤 (判据 + 丢弃告警的单一真源见 `samplingFor`): 个别路由对 temperature/topP
-  // 直接 400 (kimi-k3 经 opencode-go 实测), 发过去不是降级而是整节点挂。
-  const caps = capsFor(modelId);
-  const sampling = samplingFor(modelId, req);
-  if (sampling.temperature !== undefined) body.temperature = sampling.temperature;
-  if (sampling.topP !== undefined) body.top_p = sampling.topP;
-  const effort = reasoningEffortFor(provider, req.thinkingLevel, modelId);
-  if (effort) body.reasoning_effort = effort;
-  // 上限收敛到该模型官方能力 (不给就用官方上限), 免得朝 glm/qwen 要 deepseek 的 384K。
-  const ceiling = caps?.maxOutput;
-  if (req.maxTokens !== undefined) body.max_tokens = ceiling ? Math.min(req.maxTokens, ceiling) : req.maxTokens;
-  if (req.responseSchema) body.response_format = { type: 'json_object' };
-
-  const json = (await postJson(cfg, '/chat/completions', body, req.signal)) as {
-    choices?: { message?: { content?: string }; finish_reason?: string }[];
-    usage?: {
-      prompt_tokens?: number;
-      completion_tokens?: number;
-      input_tokens?: number;
-      output_tokens?: number;
-      // 命中 cache 的 input token, 两种 openai-兼容风格:
-      //   DeepSeek = prompt_cache_hit_tokens (顶层) · MiMo/OpenAI = prompt_tokens_details.cached_tokens
-      prompt_cache_hit_tokens?: number;
-      prompt_tokens_details?: { cached_tokens?: number };
-    };
-  };
-  const text = json?.choices?.[0]?.message?.content ?? '';
-  const u = json?.usage;
-  const cacheHit = u?.prompt_cache_hit_tokens ?? u?.prompt_tokens_details?.cached_tokens;
-  return {
-    text,
-    // Tolerate a gateway that normalises usage to Anthropic naming (INV-4: usage must land).
-    usage: {
-      in: u?.prompt_tokens ?? u?.input_tokens ?? 0,
-      out: u?.completion_tokens ?? u?.output_tokens ?? 0,
-      ...(cacheHit !== undefined ? { cacheHit } : {}),
-    },
-    raw: json,
-    finishReason: normalizeFinish(json?.choices?.[0]?.finish_reason),
-  };
-}
-
-async function anthropicRequest(
-  cfg: ProviderConfig,
-  modelId: string,
-  messages: ModelMessage[],
-  req: ModelRequest,
-): Promise<RawResult> {
-  // anthropic-messages splits the system prompt out of the turn list.
-  // System prompts are text-only; coerce defensively now that content may be multimodal parts.
-  const system = messages
-    .filter((m) => m.role === 'system')
-    .map((m) => (typeof m.content === 'string' ? m.content : ''))
-    .join('\n\n');
-  const turns = messages
-    .filter((m) => m.role !== 'system')
-    .map((m) => ({ role: m.role, content: m.content }));
-  const body: Record<string, unknown> = {
-    model: modelId,
-    // 兜底序: 显式 > 该模型官方上限 > provider 级 > 4096。原来跳过"模型级"直接吃 provider 级
-    // (= 该 provider 内**最大**的那个模型的上限), 对小上限模型是超发, 对没登记的又只有 4096。
-    max_tokens: req.maxTokens ?? maxOutputFor(modelId) ?? cfg.maxTokens ?? 4096,
-    messages: turns,
-  };
-  if (system) body.system = system;
-  if (req.temperature !== undefined) body.temperature = req.temperature;
-  if (req.topP !== undefined) body.top_p = req.topP;
-
-  const json = (await postJson(cfg, '/messages', body, req.signal, {
-    'x-api-key': cfg.apiKey,
-    'anthropic-version': '2023-06-01',
-  })) as {
-    content?: { type?: string; text?: string }[];
-    stop_reason?: string;
-    usage?: {
-      input_tokens?: number;
-      output_tokens?: number;
-      prompt_tokens?: number;
-      completion_tokens?: number;
-      // Anthropic prompt-cache: 读命中 input token (V2-ECON 账本)。
-      cache_read_input_tokens?: number;
-    };
-  };
-  const text = Array.isArray(json?.content)
-    ? json.content.filter((b) => b?.type === 'text').map((b) => b.text ?? '').join('')
-    : '';
-  const u = json?.usage;
-  return {
-    text,
-    usage: {
-      in: u?.input_tokens ?? u?.prompt_tokens ?? 0,
-      out: u?.output_tokens ?? u?.completion_tokens ?? 0,
-      ...(u?.cache_read_input_tokens !== undefined ? { cacheHit: u.cache_read_input_tokens } : {}),
-    },
-    raw: json,
-    finishReason: normalizeFinish(json?.stop_reason),
-  };
-}
-
+/**
+ * 唯一的传输出口 (2026-08-01)。此前这里按 `target.kind` 分叉去两套手写的 HTTP;
+ * 现在没有分叉可分 —— 目标已经是一个 pi `Model`, 协议怎么发是 pi 的事。
+ */
 function doRequest(
   target: ResolvedTarget,
   messages: ModelMessage[],
   req: ModelRequest,
 ): Promise<RawResult> {
-  if (target.kind === 'pi') {
-    // pi-transport 的 PiCallResult 与 RawResult 结构同形 (text/usage/raw/finishReason)。
-    return piRequest(target.piModel, messages, req);
-  }
-  const provider = target.resolved.split(':')[0] ?? '';
-  return target.cfg.api === 'anthropic-messages'
-    ? anthropicRequest(target.cfg, target.modelId, messages, req)
-    : openaiRequest(target.cfg, target.modelId, messages, req, provider);
+  // piRequest 的 PiCallResult 与 RawResult 结构同形 (text/usage/raw/finishReason)。
+  return piRequest(target.piModel, messages, req, target.apiKey ? { apiKey: target.apiKey } : undefined);
 }
 
 /** Strip a ```json … ``` fence if the model wrapped its JSON in one. */

@@ -178,17 +178,17 @@ describe('piUsageToModelUsage · usage 语义对齐', () => {
 });
 
 describe('callModel · 解析序 (registry 优先 → pi 目录 → config 错)', () => {
-  test('registry 命中的 provider 不探 pi (getModel 零调用)', async () => {
-    let piProbed = 0;
-    const { deps } = fakeDeps({
-      getModel: () => {
-        piProbed += 1;
-        return undefined;
-      },
-      getModels: () => {
-        piProbed += 1;
-        return [];
-      },
+  // ⚠ 这条用例 2026-08-01 换过判据。原来钉的是「registry 命中 → **不探** pi 目录」(getModel 零调用),
+  // 那是两条传输时代的形状: 走原生那条就跟 pi 完全无关。并成一条之后目录**必须**探 ——
+  // 它供的是协议知识 (compat 怪癖 / thinkingLevelMap), 而 registry 供的是端点与凭证。
+  // 现在钉的是那条分工本身: **端点和 key 必须来自 registry, 目录只能打底不能盖过它。**
+  test('★ registry 命中 → 端点与凭证用 registry 的 (目录条目只打底)', async () => {
+    const { deps, calls } = fakeDeps({
+      // 目录里同名条目指向**别的**地址 —— 若它盖过 registry, 请求就发错地方了。
+      getModel: (p, m) =>
+        p === 'kimi-coding' && m === 'k3'
+          ? { ...BASE_MODEL, id: 'k3', baseUrl: 'https://catalog.example', api: 'openai-completions' }
+          : undefined,
     });
     setPiTransportDepsForTest(deps);
     registerProvider('kimi-coding', {
@@ -199,7 +199,27 @@ describe('callModel · 解析序 (registry 优先 → pi 目录 → config 错)'
     });
     assertModelResolvable('kimi-coding:k3');
     assertModelResolvable('kimi-coding'); // 裸坐标经 defaultModel — 旧行为原样
-    expect(piProbed).toBe(0);
+    await callModel({ messages: [{ role: 'user', content: 'ping' }], model: 'kimi-coding:k3' });
+    expect(calls[0]?.model.baseUrl).toBe('http://own-gateway');
+    expect(calls[0]?.options?.apiKey).toBe('own'); // registry 自带 key, 不去 auth.json/env 找
+  });
+
+  test('目录不认识的 provider (自建网关) 也能发 —— 从零捏骨架, 按 api 名定协议', async () => {
+    const { deps, calls } = fakeDeps({ getModel: () => undefined, getModels: () => [] });
+    setPiTransportDepsForTest(deps);
+    registerProvider('my-gw', { baseUrl: 'http://gw/v1/', apiKey: 'k', api: 'openai-compatible' });
+    await callModel({ messages: [{ role: 'user', content: 'ping' }], model: 'my-gw:whatever' });
+    expect(calls[0]?.model.api).toBe('openai-completions');
+    expect(calls[0]?.model.baseUrl).toBe('http://gw/v1'); // 尾 / 归一, 与 registerProvider 一致
+    expect(calls[0]?.model.id).toBe('whatever');
+  });
+
+  test('anthropic-messages 条目映到 pi 的 anthropic 协议 (不再是本仓手写那条)', async () => {
+    const { deps, calls } = fakeDeps({ getModel: () => undefined, getModels: () => [] });
+    setPiTransportDepsForTest(deps);
+    registerProvider('ant-gw', { baseUrl: 'http://ant', apiKey: 'k', api: 'anthropic-messages' });
+    await callModel({ messages: [{ role: 'user', content: 'ping' }], model: 'ant-gw:claude-x' });
+    expect(calls[0]?.model.api).toBe('anthropic-messages');
   });
 
   test('未注册但 pi 目录认识 → 走 pi 通道 (completeSimple), ledger 照常触发', async () => {
