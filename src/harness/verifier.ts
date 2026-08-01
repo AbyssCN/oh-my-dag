@@ -73,7 +73,24 @@ export const VERIFIER_VERDICT_SCHEMA = z.object({
   reason: z.coerce.string(),
 });
 
-/** 把 DAG 结果汇成给 verifier 看的一段 (失败节点标注, 每节点截断防爆 prompt)。 */
+/**
+ * 把 DAG 结果汇成给 verifier 看的一段 (失败节点标注, 每节点截断防爆 prompt)。
+ *
+ * **command 节点必须带上命令串与退出码** (2026-08-01, 校准量出来的)。这道闸的判词是
+ * 「默认怀疑, 证据不足时判不通过」, 而此前这里只给 `goal + stdout` —— 于是它看见一个裸的
+ * `93`, 既不知道那是哪条命令跑出来的、也不知道退出码, 只能照自己的判据判不过。
+ * 六条 fixture 的校准里, **唯一一条它判错的**(真做到了却判不过)判词逐字写着:
+ * 「未展示所执行的具体命令与退出码」—— 它要的两样东西**引擎手里都有**
+ * (`plan.nodes[id].command` · `LeafResult.exitCode`), 只是没递给它。
+ *
+ * 这正是 command 节点存在的全部意义: 它是**确定性 oracle** —— 命令串在规划期就定死、退出码
+ * 由内核给。把这两样藏起来, 等于请一个怀疑者来审, 却把唯一不需要信任的证据扣下, 逼他去信
+ * 一段自述。**假红**由此而来, 而假红的下一步是 escalation 重规划 —— 空转的账就是这么记上的。
+ *
+ * ⚠ 失败节点的正文仍是 `(failed)` (原样未动 —— 那条没有校准读数支持, 别搭车改);
+ * 但退出码照给, 因为 `-1`(闸拒, 命令没跑) 与 `1`(命令跑了、断言没成立) 的下一步相反,
+ * 而这个区分此前只能靠下游毒化文案**间接**漏给它。
+ */
 export function summarizeResults(
   plan: ConductorPlan,
   results: Record<string, LeafResult>,
@@ -81,10 +98,16 @@ export function summarizeResults(
 ): string {
   const lines: string[] = [`plan: ${plan.name} · ${Object.keys(results).length} nodes`];
   for (const [id, leaf] of Object.entries(results)) {
-    const goal = plan.nodes[id]?.goal;
-    const head = `### ${id} [${leaf.status}]${goal ? ` — ${goal}` : ''}`;
+    const node = plan.nodes[id];
+    const head = `### ${id} [${leaf.status}]${node?.goal ? ` — ${node.goal}` : ''}`;
+    const meta = [
+      node?.command ? `$ ${node.command}` : '',
+      leaf.exitCode === undefined
+        ? ''
+        : `exit ${leaf.exitCode}${leaf.exitCode < 0 ? ' (command-leaf 闸拒 — 命令未执行)' : ''}`,
+    ].filter(Boolean);
     const body = leaf.status === 'failed' ? '(failed)' : (leaf.output ?? '').slice(0, maxPerNode);
-    lines.push(`${head}\n${body}`);
+    lines.push([head, ...meta, body].join('\n'));
   }
   return lines.join('\n\n');
 }
