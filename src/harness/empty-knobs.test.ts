@@ -14,7 +14,11 @@
  *   2. **座位即承诺**: `ALL_SEATS` 里的每个座位, 必须真的被解析过 (不是只被 auto-assign 派模型
  *      + 被起跑自检查凭证, 然后没人读)。
  *
- * 加字段/加座位而不登记消费点 → 这里红。要撤回一个已明示的东西, 从 prompt 里删掉即可
+ * 加字段/加座位而不登记消费点 → 这里红。
+ *
+ * ⚠ 这道闸只抓「有没有人解析」, 抓不到「解析出来的东西有没有用在它该用的地方」——
+ * 后者是另一个形态 (S-2), 由 `src/mcp/seat-wiring.test.ts` 守。两者的分工与全部同族缺陷
+ * 见 **`docs/silent-failures.md`** (长期台账, 不是 session 记录)。要撤回一个已明示的东西, 从 prompt 里删掉即可
  * (zod 层留容忍不影响本闸 —— 容忍旧 plan 与"邀请 conductor 去写"是两回事)。
  */
 import { describe, expect, test } from 'bun:test';
