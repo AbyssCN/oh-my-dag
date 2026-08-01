@@ -67,6 +67,7 @@
     "dag-deepen": "bun run scripts/dag-deepen.ts",
     "dag-slim": "bun run scripts/dag-slim.ts",
     "omd-debt": "bun run scripts/omd-debt.ts",
+    "plan-doc-check": "bun run scripts/plan-doc-check.ts",
     "omd-render": "bun run scripts/omd-render.ts"
   },
   "dependencies": {
