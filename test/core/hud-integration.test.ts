@@ -77,7 +77,6 @@ describe('omd-hud 写链路 E2E', () => {
     const tools = createDagTools({
       engine: emittingEngine(),
       runRegistry: reg,
-      cwd,
       defaultConfig: { leafModel: 'kimi:k3' },
       hudMirror: new HudMirror(cwd),
     });
@@ -101,7 +100,7 @@ describe('omd-hud 写链路 E2E', () => {
 
   test('无 hudMirror 注入 → 不写 dag.json (HUD 空闲, 零副作用)', async () => {
     const reg = new RunRegistry();
-    const tools = createDagTools({ engine: emittingEngine(), runRegistry: reg, cwd, defaultConfig: { leafModel: 'kimi:k3' } });
+    const tools = createDagTools({ engine: emittingEngine(), runRegistry: reg, defaultConfig: { leafModel: 'kimi:k3' } });
     await call(tools.find((t) => t.name === 'dag_run_plan')!, { plan: PLAN_JSON });
     await Promise.resolve();
     expect(existsSync(join(cwd, '.omd', 'hud', 'dag.json'))).toBe(false);

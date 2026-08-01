@@ -84,7 +84,6 @@ describe('dag_run', () => {
     const tools = createDagTools({
       engine: fakeEngine(stubResult()),
       runRegistry: new RunRegistry(),
-      cwd: '/tmp',
     });
     const handler = getTool(tools, 'dag_run');
     await expect(handler({})).rejects.toThrow('dag_run');
@@ -96,7 +95,6 @@ describe('dag_run', () => {
     const tools = createDagTools({
       engine: fakeEngine(stubResult()),
       runRegistry: reg,
-      cwd: '/tmp',
     });
     const handler = getTool(tools, 'dag_run');
     const result = await handler({ task: 'do stuff' }) as { isError?: boolean; content: { type: string; text: string }[] };
@@ -109,7 +107,6 @@ describe('dag_run', () => {
     const tools = createDagTools({
       engine: fakeEngine(stubResult()),
       runRegistry: reg,
-      cwd: '/tmp',
       defaultConfig: DEFAULT_CONFIG,
     });
     const handler = getTool(tools, 'dag_run');
@@ -131,7 +128,6 @@ describe('dag_run', () => {
     const tools = createDagTools({
       engine: rejectingEngine(new Error('boom')),
       runRegistry: reg,
-      cwd: '/tmp',
       defaultConfig: DEFAULT_CONFIG,
     });
     const handler = getTool(tools, 'dag_run');
@@ -155,7 +151,6 @@ describe('dag_run_plan', () => {
     const tools = createDagTools({
       engine: fakeEngine(stubResult()),
       runRegistry: new RunRegistry(),
-      cwd: '/tmp',
     });
     const handler = getTool(tools, 'dag_run_plan');
     await expect(handler({})).rejects.toThrow('plan');
@@ -165,7 +160,6 @@ describe('dag_run_plan', () => {
     const tools = createDagTools({
       engine: fakeEngine(stubResult()),
       runRegistry: new RunRegistry(),
-      cwd: '/tmp',
     });
     const handler = getTool(tools, 'dag_run_plan');
     await expect(handler({ plan: 'not json at all' })).rejects.toThrow('invalid plan');
@@ -175,7 +169,6 @@ describe('dag_run_plan', () => {
     const tools = createDagTools({
       engine: fakeEngine(stubResult()),
       runRegistry: new RunRegistry(),
-      cwd: '/tmp',
     });
     const handler = getTool(tools, 'dag_run_plan');
     // Missing required fields.
@@ -187,7 +180,6 @@ describe('dag_run_plan', () => {
     const tools = createDagTools({
       engine: fakeEngine(stubResult()),
       runRegistry: reg,
-      cwd: '/tmp',
       defaultConfig: DEFAULT_CONFIG,
     });
     const handler = getTool(tools, 'dag_run_plan');
@@ -205,7 +197,6 @@ describe('dag_run_plan', () => {
     const tools = createDagTools({
       engine: rejectingEngine(new Error('plan exec boom')),
       runRegistry: reg,
-      cwd: '/tmp',
       defaultConfig: DEFAULT_CONFIG,
     });
     const handler = getTool(tools, 'dag_run_plan');
@@ -226,7 +217,6 @@ describe('dag_status', () => {
     const tools = createDagTools({
       engine: fakeEngine(stubResult()),
       runRegistry: new RunRegistry(),
-      cwd: '/tmp',
     });
     const handler = getTool(tools, 'dag_status');
     await expect(handler({})).rejects.toThrow('runId');
@@ -236,7 +226,6 @@ describe('dag_status', () => {
     const tools = createDagTools({
       engine: fakeEngine(stubResult()),
       runRegistry: new RunRegistry(),
-      cwd: '/tmp',
     });
     const handler = getTool(tools, 'dag_status');
     const result = await handler({ runId: 'nope' }) as { isError?: boolean; content: { type: string; text: string }[] };
@@ -251,7 +240,6 @@ describe('dag_status', () => {
     const tools = createDagTools({
       engine: fakeEngine(stubResult()),
       runRegistry: reg,
-      cwd: '/tmp',
     });
     const handler = getTool(tools, 'dag_status');
     const result = await handler({ runId: 'r1' }) as { isError?: boolean; content: { type: string; text: string }[] };
@@ -268,7 +256,6 @@ describe('dag_result', () => {
     const tools = createDagTools({
       engine: fakeEngine(stubResult()),
       runRegistry: new RunRegistry(),
-      cwd: '/tmp',
     });
     const handler = getTool(tools, 'dag_result');
     await expect(handler({})).rejects.toThrow('runId');
@@ -278,7 +265,6 @@ describe('dag_result', () => {
     const tools = createDagTools({
       engine: fakeEngine(stubResult()),
       runRegistry: new RunRegistry(),
-      cwd: '/tmp',
     });
     const handler = getTool(tools, 'dag_result');
     const result = await handler({ runId: 'ghost' }) as { isError?: boolean; content: { type: string; text: string }[] };
@@ -292,7 +278,6 @@ describe('dag_result', () => {
     const tools = createDagTools({
       engine: fakeEngine(stubResult()),
       runRegistry: reg,
-      cwd: '/tmp',
     });
     const handler = getTool(tools, 'dag_result');
     const result = await handler({ runId: 'p1' }) as { isError?: boolean; content: { type: string; text: string }[] };
@@ -309,7 +294,6 @@ describe('dag_result', () => {
     const tools = createDagTools({
       engine: fakeEngine(stubResult()),
       runRegistry: reg,
-      cwd: '/tmp',
     });
     const handler = getTool(tools, 'dag_result');
     const result = await handler({ runId: 'd1' }) as { isError?: boolean; content: { type: string; text: string }[] };
@@ -326,7 +310,6 @@ describe('dag_result', () => {
     const tools = createDagTools({
       engine: fakeEngine(stubResult()),
       runRegistry: reg,
-      cwd: '/tmp',
     });
     const handler = getTool(tools, 'dag_result');
     const result = await handler({ runId: 'f1' }) as { isError?: boolean; content: { type: string; text: string }[] };
@@ -353,7 +336,6 @@ describe('派发简报 + 活体进度', () => {
     const tools = createDagTools({
       engine: fakeEngine(stubResult()),
       runRegistry: new RunRegistry(),
-      cwd: '/tmp',
       defaultConfig: { leafModel: 'fake:leaf', agentLeafModel: 'fake:agent' },
     });
     const res = (await getTool(tools, 'dag_run_plan')({ plan: THREE_NODE_PLAN })) as {
@@ -384,7 +366,7 @@ describe('派发简报 + 活体进度', () => {
         return stubResult();
       },
     };
-    const tools = createDagTools({ engine, runRegistry: reg, cwd: '/tmp', defaultConfig: { leafModel: 'fake:leaf' } });
+    const tools = createDagTools({ engine, runRegistry: reg, defaultConfig: { leafModel: 'fake:leaf' } });
     const runRes = (await getTool(tools, 'dag_run_plan')({ plan: THREE_NODE_PLAN })) as {
       content: { text: string }[];
     };
@@ -443,7 +425,6 @@ describe('continuity 接线 + resume', () => {
     const tools = createDagTools({
       engine,
       runRegistry: new RunRegistry(),
-      cwd: '/tmp',
       defaultConfig: { leafModel: 'fake:leaf' },
       continuity: continuityDeps(),
     });
@@ -458,14 +439,14 @@ describe('continuity 接线 + resume', () => {
     const reg = new RunRegistry();
     const cont = continuityDeps();
     const { engine: failEngine } = capturingEngine('reject');
-    const tools1 = createDagTools({ engine: failEngine, runRegistry: reg, cwd: '/tmp', defaultConfig: { leafModel: 'fake:leaf' }, continuity: cont });
+    const tools1 = createDagTools({ engine: failEngine, runRegistry: reg, defaultConfig: { leafModel: 'fake:leaf' }, continuity: cont });
     const first = (await getTool(tools1, 'dag_run_plan')({ plan: VALID_PLAN_JSON })) as { content: { text: string }[] };
     const runId = /runId: (\S+)/.exec(first.content[0]!.text)![1]!;
     await new Promise((r) => setTimeout(r, 10));
     expect(reg.getRecord(runId)!.status).toBe('failed');
 
     const { engine: okEngine, captured } = capturingEngine('ok');
-    const tools2 = createDagTools({ engine: okEngine, runRegistry: reg, cwd: '/tmp', defaultConfig: { leafModel: 'fake:leaf' }, continuity: cont });
+    const tools2 = createDagTools({ engine: okEngine, runRegistry: reg, defaultConfig: { leafModel: 'fake:leaf' }, continuity: cont });
     const second = (await getTool(tools2, 'dag_run_plan')({ plan: VALID_PLAN_JSON, resume: runId })) as { content: { text: string }[] };
     expect(/runId: (\S+)/.exec(second.content[0]!.text)![1]).toBe(runId);
     await new Promise((r) => setTimeout(r, 10));
@@ -476,7 +457,7 @@ describe('continuity 接线 + resume', () => {
   test('resume 未知 runId (server 重启): 重登记照跑', async () => {
     const { engine, captured } = capturingEngine('ok');
     const reg = new RunRegistry();
-    const tools = createDagTools({ engine, runRegistry: reg, cwd: '/tmp', defaultConfig: { leafModel: 'fake:leaf' }, continuity: continuityDeps() });
+    const tools = createDagTools({ engine, runRegistry: reg, defaultConfig: { leafModel: 'fake:leaf' }, continuity: continuityDeps() });
     const res = (await getTool(tools, 'dag_run_plan')({ plan: VALID_PLAN_JSON, resume: 'lost-after-restart' })) as { content: { text: string }[] };
     expect(res.content[0]!.text).toContain('runId: lost-after-restart');
     await new Promise((r) => setTimeout(r, 10));
@@ -490,7 +471,7 @@ describe('continuity 接线 + resume', () => {
     reg.register('inflight', { goal: 'g' });
     reg.start('inflight');
     const { engine } = capturingEngine('ok');
-    const tools = createDagTools({ engine, runRegistry: reg, cwd: '/tmp', defaultConfig: { leafModel: 'fake:leaf' }, continuity: continuityDeps() });
+    const tools = createDagTools({ engine, runRegistry: reg, defaultConfig: { leafModel: 'fake:leaf' }, continuity: continuityDeps() });
     const res = (await getTool(tools, 'dag_run_plan')({ plan: VALID_PLAN_JSON, resume: 'inflight' })) as { isError?: boolean; content: { text: string }[] };
     expect(res.isError).toBe(true);
     expect(res.content[0]!.text).toContain('running');
@@ -511,7 +492,7 @@ describe('maxFanout 手闸', () => {
 
   test('参数透传引擎 config 且覆盖 defaultConfig; briefing 出 workers 行', async () => {
     const { engine, captured } = engineCapture();
-    const tools = createDagTools({ engine, runRegistry: new RunRegistry(), cwd: '/tmp',
+    const tools = createDagTools({ engine, runRegistry: new RunRegistry(),
       defaultConfig: { leafModel: 'fake:leaf', maxFanout: 3 } });
     const res = (await getTool(tools, 'dag_run_plan')({ plan: VALID_PLAN_JSON, maxFanout: 1 })) as { content: { text: string }[] };
     await new Promise((r) => setTimeout(r, 10));
@@ -521,7 +502,7 @@ describe('maxFanout 手闸', () => {
 
   test('无参数 → defaultConfig (装配层 provider 池) 生效', async () => {
     const { engine, captured } = engineCapture();
-    const tools = createDagTools({ engine, runRegistry: new RunRegistry(), cwd: '/tmp',
+    const tools = createDagTools({ engine, runRegistry: new RunRegistry(),
       defaultConfig: { leafModel: 'fake:leaf', maxFanout: 3 } });
     (await getTool(tools, 'dag_run_plan')({ plan: VALID_PLAN_JSON })) as unknown;
     await new Promise((r) => setTimeout(r, 10));
@@ -534,7 +515,7 @@ describe('maxFanout 手闸', () => {
 describe('dag_result usage 回传', () => {
   test('result 含 conductor/leaves token 计数', async () => {
     const reg = new RunRegistry();
-    const tools = createDagTools({ engine: fakeEngine(stubResult()), runRegistry: reg, cwd: '/tmp', defaultConfig: { leafModel: 'fake:leaf' } });
+    const tools = createDagTools({ engine: fakeEngine(stubResult()), runRegistry: reg, defaultConfig: { leafModel: 'fake:leaf' } });
     const run = (await getTool(tools, 'dag_run_plan')({ plan: VALID_PLAN_JSON })) as { content: { text: string }[] };
     const runId = /runId: (\S+)/.exec(run.content[0]!.text)![1]!;
     await new Promise((r) => setTimeout(r, 10));
@@ -566,7 +547,6 @@ describe('defaultConfig thunk — INV-MODEL-3 无 boot 冻结', () => {
     const tools = createDagTools({
       engine,
       runRegistry: new RunRegistry(),
-      cwd: '/tmp',
       defaultConfig: () => ({ conductorModel: conductor, leafModel: 'l:m' }),
     });
     const run = getTool(tools, 'dag_run');
@@ -589,7 +569,6 @@ describe('defaultConfig thunk — INV-MODEL-3 无 boot 冻结', () => {
     const tools = createDagTools({
       engine,
       runRegistry: new RunRegistry(),
-      cwd: '/tmp',
       defaultConfig: { conductorModel: 'fixed:m', leafModel: 'l:m' },
     });
     await getTool(tools, 'dag_run')({ task: 'x' });
@@ -609,7 +588,6 @@ describe('defaultConfig thunk 抛错 — INV-MODEL-5 响亮但不崩', () => {
     const tools = createDagTools({
       engine: fakeEngine(stubResult()),
       runRegistry: reg,
-      cwd: '/tmp',
       defaultConfig: throwing,
     });
     const r = await getTool(tools, 'dag_run')({ task: 'x' }) as { content: { text: string }[]; isError?: boolean };
@@ -623,7 +601,6 @@ describe('defaultConfig thunk 抛错 — INV-MODEL-5 响亮但不崩', () => {
     const tools = createDagTools({
       engine: fakeEngine(stubResult()),
       runRegistry: new RunRegistry(),
-      cwd: '/tmp',
       defaultConfig: throwing,
     });
     const r = await getTool(tools, 'dag_run_plan')({ plan: VALID_PLAN_JSON }) as { content: { text: string }[]; isError?: boolean };
@@ -658,7 +635,7 @@ describe('dag_cancel — 协作式取消的 MCP 面', () => {
   test('叫停在飞 run → 引擎收到 signal, run 终态 cancelled 而**不是 failed/done**', async () => {
     const reg = new RunRegistry();
     const seen: { signal?: AbortSignal } = {};
-    const tools = createDagTools({ engine: cancellableEngine(seen), runRegistry: reg, cwd: '/tmp', defaultConfig: DEFAULT_CONFIG });
+    const tools = createDagTools({ engine: cancellableEngine(seen), runRegistry: reg, defaultConfig: DEFAULT_CONFIG });
     const started = await getTool(tools, 'dag_run')({ task: 'long thing' }) as { content: { text: string }[] };
     const runId = started.content[0]!.text.match(/runId: ([\w-]+)/)![1]!;
     expect(reg.getRecord(runId)!.status).toBe('running');
@@ -691,7 +668,7 @@ describe('dag_cancel — 协作式取消的 MCP 面', () => {
 
   test('未知 / 不在飞的 run → isError, 不假装停到了', async () => {
     const reg = new RunRegistry();
-    const tools = createDagTools({ engine: fakeEngine(stubResult()), runRegistry: reg, cwd: '/tmp', defaultConfig: DEFAULT_CONFIG });
+    const tools = createDagTools({ engine: fakeEngine(stubResult()), runRegistry: reg, defaultConfig: DEFAULT_CONFIG });
     const unknown = await getTool(tools, 'dag_cancel')({ runId: 'nope' }) as { content: { text: string }[]; isError?: boolean };
     expect(unknown.isError).toBe(true);
     reg.register('r2', { goal: 'g' });

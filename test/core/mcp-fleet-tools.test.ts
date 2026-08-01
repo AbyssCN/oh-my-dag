@@ -243,7 +243,6 @@ describe('dag_run resume', () => {
     const tools1 = createDagTools({
       engine: failEngine,
       runRegistry: reg,
-      cwd: '/tmp',
       defaultConfig: { conductorModel: 'test:conductor', leafModel: 'fake:leaf' },
       continuity: cont,
     });
@@ -256,7 +255,6 @@ describe('dag_run resume', () => {
     const tools2 = createDagTools({
       engine: okEngine,
       runRegistry: reg,
-      cwd: '/tmp',
       defaultConfig: { conductorModel: 'test:conductor', leafModel: 'fake:leaf' },
       continuity: cont,
     });
@@ -275,7 +273,6 @@ describe('dag_run resume', () => {
     const tools = createDagTools({
       engine,
       runRegistry: reg,
-      cwd: '/tmp',
       defaultConfig: { leafModel: 'fake:leaf' },
     });
     const res = (await getTool(tools, 'dag_run')({ task: 'nope', resume: 'inflight' })) as {

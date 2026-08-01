@@ -36,7 +36,7 @@ function getTool(tools: ReturnType<typeof createMemoryTools>, name: string) {
 
 function wire() {
   const memory = createOmdMemory({ path: ':memory:', safeguard: UNIVERSAL_SAFEGUARD });
-  const tools = createMemoryTools({ memory, cwd: process.cwd() });
+  const tools = createMemoryTools({ memory });
   return { memory, remember: getTool(tools, 'memory_remember'), recall: getTool(tools, 'memory_recall') };
 }
 
