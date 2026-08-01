@@ -255,8 +255,13 @@ export const SEATS: readonly SeatSpec[] = [
     frequency: '**每图 1 发** (低频 → 值得用贵的)',
     // INV-3: 与大脑簇同族则对抗失效 (它造的坏计划自己看不出坏)。auto-assign 同族时会降级告警。
     crossFamily: 'required',
+    // ⚠ **这一档在 codex 上是没有效果的** (2026-08-01 实测 xhigh vs off 两臂逐字相同,
+    // `reasoning=undefined` 时 gpt-5 照样推理 —— 那家关不掉思考)。所以这里填什么都一样。
+    // 但**一旦这个座位挪到关得掉思考的模型**, `gate` 那组对照 (关思考 15/15 vs 开思考 8/15,
+    // 核对型判词深想反而更差) 就直接适用 —— **到那天重量一次再定, 别照抄这一格**。
     thinking: 'high',
-    // 终审要**稳定**: 同一份产出不该这次过下次不过。
+    // 终审要**稳定**: 同一份产出不该这次过下次不过。⚠ 坐在 codex 上时这条**发不出去**
+    // (caps: gpt-5 拒收 temperature, 发了 400) —— 意图留着, 换座位即生效。
     sampling: { temperature: 0.2 },
     recommend:
       'openai-codex:gpt-5.6-sol —— **必须与 conductor/judge 异族**, 否则判与证共享盲点。' +
