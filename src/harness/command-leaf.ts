@@ -166,18 +166,30 @@ export interface CommandLeafRunnerOpts {
   cwd?: string;
   /** 注入式 spawn (测试替身)。默认 Bun.spawn 捕获 stdout/stderr/exit。 */
   spawn?: (command: string, cwd: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
-  /**
-   * per-runner 确定性 memoize: 同一 runner 生命周期内 (一次 DAG run / 一次 cg-audit) 相同命令直接返缓存,
-   * 不重跑 CLI (省 wall-clock + CPU; 零 LLM 不变)。**安全 scope**: command-leaf 只读 (无写), 单 run 内
-   * 输入文件不变 → 无 staleness。只缓存 exitCode===0 (失败重试)。默认 true。
-   *
-   * ⚠ **「新调用 = 新 runner = 新缓存」曾是这条安全论证的第三环, 而它是个没人钉住的前提** ——
-   * 长驻进程 (MCP daemon) 装配期建一次 runner, 缓存就跨了所有 run (2026-08-01 live 实测复现)。
-   * 现在由**引擎**在每张图开跑前调 `resetCache()` 兜住 (executor-dag runDagInternal), 不再指望
-   * 每个接线点自己记得现建。完整形态与危害方向见 `leaf-runners.CommandLeafRunner.resetCache` 的注。
-   */
-  memoize?: boolean;
 }
+
+/**
+ * **没有 memo 缓存 —— 这是量出来的决定, 不是遗漏** (2026-08-01)。
+ *
+ * 这里原本有一个 per-runner 的确定性 memoize (相同命令串直接返上次结果, 只缓存 `exitCode===0`)。
+ * 它的安全论证有两环, **两环都是假的**:
+ *
+ * ① 「新调用 = 新 runner = 新缓存」—— 只在每次现建 runner 的接线点成立。MCP 是长驻进程,
+ *    `assemble` 装配期建一次 → 缓存跨了这台 daemon 上的所有 run(live 实测: 两个 runId 之间
+ *    改掉盘上文件, 第二跑仍返回旧值)。
+ * ② 「单 run 内输入文件不变 → 无 staleness」—— 而这台引擎的本职就是**让 agent 节点改文件**。
+ *    live 实测: 同一张图里 `cat f` → agent 写 f → `cat f`(同一命令串)读回的是**写之前**的内容。
+ *
+ * 收益侧则是空的: 留痕库 `.omd/dag-runs.db` 全量 12 次真实 run / 25 个 command 节点,
+ * **同一 run 内重复命令串 = 0** —— 它一次都没有机会命中。而且它连设计时说的主场景都覆盖不了:
+ * 「兄弟节点跑同一条命令」是**同层并发**的, 缓存只在命令返回后写入, 两个都 miss。
+ * conductor prompt 还反向推着走(「把验证尾巴收成一个 command 节点」), 即不该有重复。
+ *
+ * 于是: 零命中 × 两条会给出**错误绿灯**的路径。删掉, 不留旋钮 ——
+ * 「要么给生产者, 要么删掉, 中间态最坏」。代价是重复命令真的重跑一遍, 而这正是引擎
+ * 自己的偏好(`executor-dag` 那条: command 节点刻意不落绿 checkpoint,「重跑一遍比跳过一个闸安全」)。
+ * 反向自检见 `command-leaf-cache-scope.test.ts` —— 谁再加缓存, 那几条会红。
+ */
 
 const defaultSpawn = async (command: string, cwd: string) => {
   const proc = Bun.spawn(['sh', '-c', command], { cwd, stdout: 'pipe', stderr: 'pipe' });
@@ -313,13 +325,9 @@ export function createCommandLeafRunner(opts: CommandLeafRunnerOpts): CommandLea
   const timeoutMs = opts.timeoutMs ?? 60_000;
   const cwd = opts.cwd ?? process.cwd();
   const spawn = opts.spawn ?? defaultSpawn;
-  // per-runner 确定性 memoize (默认开)。键 = 命令串 (cwd 在 runner 内固定)。
-  const memoize = opts.memoize !== false;
-  const cache = memoize ? new Map<string, CommandLeafResult>() : null;
 
-  const run: CommandLeafRunner = async ({ command }) => {
-    // memoize 命中 (确定性只读命令 → 同 run 内同命令同输出)。键 = 原始整串。
-    if (cache?.has(command)) return cache.get(command)!;
+  // **每次调用都真跑** —— 不缓存的判据见上方 CommandLeafRunnerOpts 下的那段注。
+  return async ({ command }) => {
     // 先拆后闸: 每环独立 spawn, 无 sh 级注入面 (判据见 commandBlockReason)。
     const blocked = commandBlockReason(command, allowlist);
     if (blocked) return { text: blocked, usage: { in: 0, out: 0 }, exitCode: -1 };
@@ -339,13 +347,6 @@ export function createCommandLeafRunner(opts: CommandLeafRunnerOpts): CommandLea
       exitCode = code;
       if (exitCode !== 0) break; // && 语义: 前环失败, 后环不跑
     }
-    const result: CommandLeafResult = { text: outParts.join('\n'), usage: { in: 0, out: 0 }, exitCode };
-    // 只缓存成功 (exitCode 0); 失败/超时不缓存 (下次重试)。block 路径在上方已 return, 不入此。
-    if (cache && exitCode === 0) cache.set(command, result);
-    return result;
+    return { text: outParts.join('\n'), usage: { in: 0, out: 0 }, exitCode };
   };
-  // 缓存寿命的把手交给引擎 (它才知道图的边界); 无缓存时不挂 —— 挂一个空方法会让"这个 runner
-  // 到底有没有缓存"从类型上看不出来。
-  if (cache) run.resetCache = () => cache.clear();
-  return run;
 }
