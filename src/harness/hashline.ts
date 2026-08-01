@@ -35,7 +35,7 @@ import {
   type SnapshotStore,
 } from '@oh-my-pi/hashline';
 import { type Static, Type } from 'typebox';
-import { defineTool, type ExtensionFactory, type ToolDefinition } from '@earendil-works/pi-coding-agent';
+import type { AnyOmdTool, OmdTool } from './agent-tools';
 import { logger } from '../logger';
 import { m } from './i18n';
 
@@ -134,9 +134,9 @@ export interface HashlineToolsOpts {
 
 export interface HashlineTools {
   /** `hashline_read` 工具定义。 */
-  readTool: ToolDefinition;
+  readTool: AnyOmdTool;
   /** `hashline_edit` 工具定义。 */
-  editTool: ToolDefinition;
+  editTool: AnyOmdTool;
   /** 共享的快照存储 (read 录 / edit 验)。暴露供测试断言。 */
   snapshots: SnapshotStore;
   /** 共享的文件系统。暴露供测试预置内容 (InMemoryFilesystem.set)。 */
@@ -154,7 +154,7 @@ export function createHashlineTools(opts: HashlineToolsOpts = {}): HashlineTools
   const snapshots: SnapshotStore = opts.snapshots ?? new InMemorySnapshotStore();
   const patcher = new Patcher({ fs, snapshots });
 
-  const readTool = defineTool({
+  const readTool: OmdTool<Record<string, unknown>> = {
     name: 'hashline_read',
     label: 'Hashline Read',
     description: m({
@@ -166,8 +166,8 @@ export function createHashlineTools(opts: HashlineToolsOpts = {}): HashlineTools
     parameters: READ_SCHEMA,
     executionMode: 'parallel', // TR-INV-4: 只读 → 可并发 (对齐 04b isConcurrencySafe)
 
-    async execute(_id: string, params: ReadParams) {
-      const { path, offset, limit } = params;
+    async execute(_id: string, args: unknown) {
+      const { path, offset, limit } = args as ReadParams;
       let raw: string;
       try {
         raw = await fs.readText(path);
@@ -208,9 +208,9 @@ export function createHashlineTools(opts: HashlineToolsOpts = {}): HashlineTools
         renderedTo: end,
       });
     },
-  });
+  };
 
-  const editTool = defineTool({
+  const editTool: OmdTool<Record<string, unknown>> = {
     name: 'hashline_edit',
     label: 'Hashline Edit',
     description: m({
@@ -222,8 +222,8 @@ export function createHashlineTools(opts: HashlineToolsOpts = {}): HashlineTools
     parameters: EDIT_SCHEMA,
     executionMode: 'sequential', // TR-INV-4: 写文件 → 串行 (对齐 04b isConcurrencySafe)
 
-    async execute(_id: string, params: EditParams) {
-      const { patch } = params;
+    async execute(_id: string, args: unknown) {
+      const { patch } = args as EditParams;
 
       let parsed: Patch;
       try {
@@ -282,13 +282,13 @@ export function createHashlineTools(opts: HashlineToolsOpts = {}): HashlineTools
         });
       }
     },
-  }) as unknown as ToolDefinition;
+  };
 
-  return { readTool: readTool as unknown as ToolDefinition, editTool, snapshots, fs };
+  return { readTool, editTool, snapshots, fs };
 }
 
 /** 便捷: 返 customTools 数组直接喂 createAgentLeafRunner({ customTools })。 */
-export function createHashlineCustomTools(opts: HashlineToolsOpts = {}): ToolDefinition[] {
+export function createHashlineCustomTools(opts: HashlineToolsOpts = {}): AnyOmdTool[] {
   const { readTool, editTool } = createHashlineTools(opts);
   return [readTool, editTool];
 }
@@ -297,33 +297,3 @@ export function createHashlineCustomTools(opts: HashlineToolsOpts = {}): ToolDef
 export const HASHLINE_BLOCK_NATIVE_EDIT_REASON =
   '原生 edit 已禁用 (弱模型用它易行错位/腐烂)。改已存在文件请用 hashline_edit: 先 hashline_read ' +
   '拿 `¶PATH#TAG` 头与 `LINE:TEXT` 行号, 再发行锚定 patch (replace/delete/insert before)。新建文件仍用 write。';
-
-/**
- * 造 hashline 的**交互-TUI extension** —— 把 agent-leaf 的
- * `createAgentSession({ customTools: hashline, excludeTools: ['edit'] })` 等价搬到 pi `main()` 路径。
- *
- * 为什么经 extension: 交互 TUI 走 pi `main(args, { extensionFactories })`, **不暴露 customTools/
- * excludeTools** (那是 createAgentSession 才有的)。两侧各补一招:
- *   - 注入侧 → `pi.registerTool(hashline_read/hashline_edit)` (ExtensionAPI 原生支持)。
- *   - 排除侧 → `on('tool_call')` block 原生 `edit` (tool-gate 同款 fail-closed 形态)。
- *     `write` 不拦 (整文件覆写不易行错位, 新建文件还需它) —— 与 agent-leaf `excludeTools:['edit']` 一致。
- *
- * 默认只在驱动**弱 executor** 时挂 (tui.ts 的 resolveHashlineEdit 门控): 弱 MiMo 原生 edit 易错位,
- * hashline 行锚定治它; 强模型 (用户 --model 选 Opus) 原生 edit 够好, 拦它反添摩擦。此工厂只管"挂了即生效"。
- *
- * (plan readonly-gate 已退役 (D-5): 现在**没有**别的写闸拦 hashline_edit/write —— 此 handler 只拦
- * native edit, 是当前唯一的 edit 闸, 不要再假设上游还有一层。)
- */
-export function createHashlineExtension(opts: HashlineToolsOpts = {}): ExtensionFactory {
-  // 共享快照: 建一次, 整 session 复用 (hashline_read 写标签 → hashline_edit 校验同一 store)。
-  const tools = createHashlineCustomTools(opts);
-  return (pi) => {
-    for (const tool of tools) pi.registerTool(tool);
-    pi.on('tool_call', (event) => {
-      if (event.toolName === 'edit') {
-        return { block: true, reason: HASHLINE_BLOCK_NATIVE_EDIT_REASON };
-      }
-      return {};
-    });
-  };
-}

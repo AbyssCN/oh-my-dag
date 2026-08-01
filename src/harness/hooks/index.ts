@@ -14,7 +14,8 @@
  */
 import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
 import { createToolGateHook, type ToolGateConfig } from './tool-gate';
-import { createDriftDetectorHook, type DriftDetectorConfig } from './drift-detector';
+import { type DriftDetectorConfig } from './drift-detector';
+import { createDriftDetectorHook } from './drift-detector-extension';
 
 export interface OmdHookConfig {
   /** L1 工具闸 (dangerous-cmd + 白名单)。省略 = 默认开 (安全侧, 仅 dangerous-cmd guard); 设 null = 整闸关 (逃生)。 */
@@ -41,7 +42,8 @@ export function createOmdHooks(config: OmdHookConfig = {}): ExtensionFactory[] {
 }
 
 export { createToolGateHook, type ToolGateConfig } from './tool-gate';
-export { createDriftDetectorHook, type DriftDetectorConfig } from './drift-detector';
+export { createDriftTracker, computeSig, type DriftTracker, type DriftDetectorConfig } from './drift-detector';
+export { createDriftDetectorHook } from './drift-detector-extension';
 export { createSandboxGuardHook } from './sandbox-guard';
 export {
   classifyCommand,

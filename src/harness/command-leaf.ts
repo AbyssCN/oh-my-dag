@@ -217,7 +217,7 @@ function gitSubcommand(link: string): string | undefined {
  * 打印内容, `bun -e` 更是等价任意代码执行 —— 这条闸挡的是「模型顺手 cat 一下配置」这类**手滑**,
  * 不是对抗性外泄。真隔离在 agent leaf 的 bwrap jail。别把它当安全边界宣传。
  */
-const SECRET_BASENAMES: readonly RegExp[] = [
+export const SECRET_BASENAMES: readonly RegExp[] = [
   /^\.env(\..+)?$/, // .env / .env.local / .env.production
   /^(secrets|credentials|auth)\.json$/, // omd 凭证落点 / pi auth.json
   /^\.credentials\.json$/, // claude code
@@ -225,7 +225,7 @@ const SECRET_BASENAMES: readonly RegExp[] = [
   /\.(pem|p12|pfx)$/, // 证书/私钥容器
 ];
 /** 样例/模板不算凭证 —— 它们生来就是给人读的。 */
-const SECRET_BASENAME_EXEMPT = /^\.env\.(example|sample|template)$/;
+export const SECRET_BASENAME_EXEMPT = /^\.env\.(example|sample|template)$/;
 
 /** 命令串里若引用了凭证文件, 返回那个 token(供拒因显示); 否则 null。 */
 export function secretPathInCommand(command: string): string | null {
