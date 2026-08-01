@@ -5,7 +5,8 @@
  * 修后: fence 只定位起点, 终点一律括号平衡扫描。
  */
 import { describe, expect, test } from 'bun:test';
-import { conductorSystemPrompt, extractPlanJson, parsePlan } from './conductor-plan';
+import { conductorPatchSystemPrompt, conductorSystemPrompt, extractPlanJson, parsePlan } from './conductor-plan';
+import { DEFAULT_COMMAND_ALLOWLIST } from './command-leaf';
 import { topoLevels } from './executor-dag-planner';
 
 const PLAN = { name: 'p', nodes: { a: { goal: 'x' } } };
@@ -124,4 +125,30 @@ describe('S5 conductor prompt: SDD v2 字段 + 前端 motif (G-9)', () => {
     expect(idx('mm_review')).toBeGreaterThan(idx('render'));
     expect(idx('cross_review')).toBeGreaterThan(idx('mm_review'));
   });
+});
+
+/**
+ * **两份 prompt 都得看得见 command leaf 的闸** (2026-08-01, live 抓出来的洞)。
+ *
+ * 白名单当初进规划 prompt 的判据是「conductor 只能猜, 猜错就是假红 (合法验证步被闸拒)」——
+ * 当时只补了规划那一条路。补丁重规划 prompt 是自足的十几行, 这段事实一个字都没有, 于是
+ * **escalation 轮的 conductor 对闸是瞎的**, 而修复轮恰恰专门在改被判失败的验证节点。
+ *
+ * live 三跑 3/3 复现: 它把 `expect_exit:1` 的节点改写成 `grep …; rc=$?; test "$rc" -eq 1`
+ * (规划 prompt 明文禁止的 shell 取反), 把另一个改写成 `$(cat …)` —— 双双撞注入闸 → 假红。
+ */
+describe('command 闸的环境事实 = 两份 prompt 的单一真源', () => {
+  const cases: Array<[string, string]> = [
+    ['规划 prompt', conductorSystemPrompt()],
+    ['补丁重规划 prompt', conductorPatchSystemPrompt()],
+  ];
+  for (const [label, prompt] of cases) {
+    test(`${label} 带白名单全表 + 元字符禁令 + expect_exit 的正确表达`, () => {
+      for (const bin of DEFAULT_COMMAND_ALLOWLIST) expect(prompt).toContain(bin);
+      expect(prompt).toContain('expect_exit');
+      // 「别在 shell 里取反」—— 被改写掉的那两条命令用的正是 `;` `$?` `$()`。
+      expect(prompt).toContain('$?');
+      expect(prompt).toMatch(/rejected/i);
+    });
+  }
 });

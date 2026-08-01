@@ -462,14 +462,7 @@ export function conductorSystemPrompt(
     'run tools; phrasing a leaf goal as "execute …" makes the model fake-perform it and fabricate data.',
     '',
         ]),
-    // command 节点的白名单此前从没进过 prompt —— conductor 只能猜, 猜错就是「假红」(合法验证步被闸拒)。
-    // 白名单是真源导出的常量, 这里拼进 prompt, 表变了 prompt 自动跟着变。
-    `executor:"command" — allowed binaries (first token MUST be one of these, else the node is REJECTED`,
-    `unrun): ${DEFAULT_COMMAND_ALLOWLIST.join(' ')}.`,
-    `Also blocked: shell metacharacters ; | & \` $ ( ) < > \\ and newlines (chain steps with && instead —`,
-    `each link is gated separately); git is READ-ONLY (${GIT_READONLY_SUBCOMMANDS.join('/')} only — never`,
-    'checkout/commit/add/push); no writes (rm/mv/cp/mkdir), no network (curl/wget), no env dumping.',
-    'Need anything outside this set? Use executor:"agent" (it has real tools) — do NOT invent a command.',
+    ...commandGateRules(),
     '',
     'Runtime work-list → executor:"map" (do NOT hallucinate a command that enumerates AND processes):',
     'When the SET of items to process is UNKNOWN at plan time — audit EACH module, research EACH lens,',
@@ -608,6 +601,34 @@ export function conductorSystemPrompt(
  * 改为只输出节点补丁 JSON — 引擎程序化 merge, 未补丁节点字节不动 → 复用按构造成立。
  * 字节稳定冻结前缀 (PLAN-1 同哲学); 上轮 plan JSON + 失败原因走 user 消息动态尾部。
  */
+/**
+ * `executor:"command"` 的**环境事实**(白名单 / 元字符 / git 只读 / expect_exit)——
+ * 规划 prompt 与**补丁重规划 prompt** 共用的单一真源。白名单是真源导出的常量, 表变了两份 prompt
+ * 自动跟着变。
+ *
+ * 立这个函数的理由不是"复用好看", 是 **2026-08-01 live 实测 (3/3 跑) 抓到的洞**: 这段事实此前
+ * 只在规划 prompt 里, 而 `conductorPatchSystemPrompt` 是自足的十几行、一个字都没有 —— 于是
+ * **escalation 重规划轮的 conductor 对闸是瞎的**。实测它把一个合法的 `expect_exit:1` 节点改写成
+ * `grep …; rc=$?; test "$rc" -eq 1` (正是规划 prompt 明文禁止的 shell 取反), 把另一个改写成
+ * `$(cat …)` 命令替换, 两条都撞注入闸 → 退出码 -1 → gate-rejected。
+ *
+ * 后果是**假红**: 合法验证步被闸拦下, 而读数上看起来是"这一步失败了"。这恰是当初把白名单塞进
+ * 规划 prompt 时写下的那条判据 (「conductor 只能猜, 猜错就是假红」) —— 当时只补了一条路,
+ * 修复轮那条一直空着, 而修复轮偏偏是最需要它的时候 (它专门在改被判失败的节点)。
+ */
+export function commandGateRules(): string[] {
+  return [
+    `executor:"command" — allowed binaries (first token MUST be one of these, else the node is REJECTED`,
+    `unrun): ${DEFAULT_COMMAND_ALLOWLIST.join(' ')}.`,
+    `Also blocked: shell metacharacters ; | & \` $ ( ) < > \\ and newlines (chain steps with && instead —`,
+    `each link is gated separately); git is READ-ONLY (${GIT_READONLY_SUBCOMMANDS.join('/')} only — never`,
+    'checkout/commit/add/push); no writes (rm/mv/cp/mkdir), no network (curl/wget), no env dumping.',
+    'A step that must SUCCEED on a non-zero exit (prove a test is red) sets field "expect_exit" (0..255) —',
+    'do NOT express it in the shell (! / ; / $? / $() are all rejected, so such a node can never run).',
+    'Need anything outside this set? Use executor:"agent" (it has real tools) — do NOT invent a command.',
+  ];
+}
+
 export function conductorPatchSystemPrompt(): string {
   return [
     'You are the CONDUCTOR in REPLAN-PATCH mode. A previous run of the plan (given below the boundary)',
@@ -627,6 +648,9 @@ export function conductorPatchSystemPrompt(): string {
     '',
     'Rules: keep the graph acyclic; only fix what the verification failure names — do NOT rewrite,',
     'rephrase, or "improve" nodes that were not blamed (any touched node re-runs and burns tokens).',
+    '',
+    // 修复轮最常改的就是验证节点, 而它此前看不见闸 → 改出来的命令被拒 = 假红 (见 commandGateRules)。
+    ...commandGateRules(),
   ].join('\n');
 }
 
