@@ -1,5 +1,5 @@
 /**
- * src/mcp/tools/fleet —— dag_review / dag_slim / dag_deepen / dag_debug 异步 MCP 工具 + dream_consolidate 同步工具。
+ * src/mcp/tools/fleet —— dag_review / dag_slim / dag_deepen / dag_debug 四个异步 MCP 工具。
  *
  * 受监督子进程包装本仓 scripts/dag-{review,slim,deepen}.ts: Bun.spawn(['bun','run',<script>,...flags])
  * 数组参数非 shell 字符串 (无注入面), flag 白名单构造 + 值拒 `--` 前缀 (防 flag 走私), cwd 注入。
@@ -7,36 +7,12 @@
  *   exit 0  → succeed({summary, reportPath})   (summary = stdout brief 尾段)
  *   exit ≠0 → fail(stderr 尾 400 字)
  * --out 由本模块定 (/tmp/omd-fleet-<tool>-<runId>.md) — 报告路径确定可知, 不靠解析脚本 stdout。
- * dream_consolidate 不注册不进 registry: 同步 await pump(), 直回 PumpResult 统计。
  */
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { RunRegistry } from '../run-registry.js';
 import type { OmdMcpTool } from '../server.js';
 
-// ---------------------------------------------------------------------------
-// dream_consolidate 注入面 (contract 归属地 = 这里)
-// ---------------------------------------------------------------------------
-// 这两个 interface 原本住在 `src/harness/learning/types.ts`。那套 per-turn 自学习子系统
-// 已停到 `experimental/self-evolution/`(见 docs/adr/0002-self-evolution-parked.md),但
-// `dream_consolidate` 这个 MCP 工具是 owner 明确要保留的能力 —— 它只需要「谁传进来的东西
-// 长什么样」这一份契约,不需要那套实现。故契约随消费方留在 MCP 侧。
-// 注:目前生产没有任何调用方给 `dream`,该工具一律回 isError('not wired');它是给未来
-// 围绕 run 事件重做的 pump 留的注入口。
-
-/** 一次 pump 的结果 (审计 + 测试断言)。 */
-export interface PumpResult {
-  eventsConsumed: number;
-  factsWritten: number;
-  factsRejected: number;
-  newWatermark: number;
-}
-
-/** dream pump: 增量事件 → consolidate → L2 fact → OmdMemory。 */
-export interface DreamPump {
-  /** 跑一轮。无新事件 → eventsConsumed:0 不调模型 (省 call)。 */
-  pump(): Promise<PumpResult>;
-}
 
 // ---------------------------------------------------------------------------
 // deps + spawn 接缝
@@ -61,8 +37,6 @@ export interface FleetToolDeps {
   cwd: string;
   /** 覆盖 spawn (测试)。默认 Bun.spawn(['bun','run',...])。 */
   spawn?: SpawnFn;
-  /** dream pump (dream_consolidate)。省略 → 该工具回 isError 不炸。 */
-  dream?: DreamPump;
 }
 
 /** 生产 spawn: 数组参数 + cwd 注入 + stdout/stderr 管道收集。 */
@@ -143,7 +117,7 @@ function reportPathFor(tool: string): string {
 // 工具面
 // ---------------------------------------------------------------------------
 
-/** Build 5 fleet tools: dag_review, dag_slim, dag_deepen, dag_debug, dream_consolidate. */
+/** Build 4 fleet tools: dag_review, dag_slim, dag_deepen, dag_debug. */
 export function createFleetTools(deps: FleetToolDeps): OmdMcpTool[] {
   const spawn = deps.spawn ?? defaultSpawn;
   return [
@@ -151,7 +125,6 @@ export function createFleetTools(deps: FleetToolDeps): OmdMcpTool[] {
     makeDagSlim(deps, spawn),
     makeDagDeepen(deps, spawn),
     makeDagDebug(deps, spawn),
-    makeDreamConsolidate(deps),
   ];
 }
 
@@ -269,21 +242,6 @@ function makeDagDebug(deps: FleetToolDeps, spawn: SpawnFn): OmdMcpTool {
         goal: `debug: ${failure.slice(0, 80)}`,
       });
       return { content: [{ type: 'text' as const, text: `runId: ${runId}\nstatus: running` }] };
-    },
-  };
-}
-
-function makeDreamConsolidate({ dream }: FleetToolDeps): OmdMcpTool {
-  return {
-    name: 'dream_consolidate',
-    description: 'Run one dream consolidation pump round synchronously; returns events/facts stats. Unwired → error.',
-    inputSchema: {},
-    handler: async () => {
-      if (!dream) {
-        return { content: [{ type: 'text' as const, text: 'dream_consolidate: dream pump not wired' }], isError: true };
-      }
-      const result = await dream.pump();
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
     },
   };
 }

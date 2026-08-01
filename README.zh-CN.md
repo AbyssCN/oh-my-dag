@@ -6,7 +6,7 @@
 
 *你的 agent 继续当脑子。omd 提供双手、闸门和记忆。*
 
-[![MCP server: 39 tools](https://img.shields.io/badge/MCP%20server-39%20tools-c9a227?style=flat-square&labelColor=140f0a)](docs/mcp-tools.md)
+[![MCP server: 38 tools](https://img.shields.io/badge/MCP%20server-38%20tools-c9a227?style=flat-square&labelColor=140f0a)](docs/mcp-tools.md)
 [![Clients: Claude Code · Codex · any MCP](https://img.shields.io/badge/clients-Claude%20Code%20%C2%B7%20Codex%20%C2%B7%20any%20MCP-6f9488?style=flat-square&labelColor=140f0a)](client-skills/)
 [![Models: bring your own](https://img.shields.io/badge/models-bring%20your%20own-b3382a?style=flat-square&labelColor=140f0a)](docs/model-layer.md)
 [![Runtime: Bun ≥ 1.3](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.3-b3382a?style=flat-square&labelColor=140f0a)](https://bun.sh)
@@ -122,7 +122,7 @@ flowchart LR
   end
 
   subgraph MEMORY["MEMORY &amp; PLANNING — outlive the context window"]
-    M1["memory_recall · memory_remember<br/>dream_consolidate"]
+    M1["memory_recall · memory_remember"]
     M2["path_map · path_add · path_rule<br/>path_deliver · path_prefetch"]
   end
 
@@ -149,7 +149,7 @@ flowchart LR
 **审查** —— `dag_review`(多维度 diff 审查,每个维度可路由到不同模型家族)· `dag_debug` ·
 `dag_slim`(只删不加的过度工程审计)· `dag_deepen`(架构热点)。
 
-**记忆与规划** —— `memory_recall` / `memory_remember` / `dream_consolidate` ·
+**记忆与规划** —— `memory_recall` / `memory_remember` ·
 `path_map` / `path_add` / `path_rule` / `path_deliver` / `path_prefetch`(一张进 git 的决策地图,
 用带类型的票推进,后台调研在你关掉客户端之后继续跑)。
 

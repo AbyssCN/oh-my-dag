@@ -35,7 +35,6 @@ cd <目标repo> && claude mcp add omd -- omd mcp        # 全局安装的 omd; �
 | `/omd-review` | 对抗式 diff 审查 + 误报裁决程序 + gate ROI 分档 | MCP `dag_review`(三段式) |
 | `/omd-slim` | 精益审计:先 debt 台账、再 global-first 两遍法找过度工程 | `scripts/omd-debt.ts` + MCP `dag_slim` |
 | `/omd-deepen` | git 热点架构加深 → 浅模块去壳加厚 → leverage 排序 | MCP `dag_deepen`(三段式) |
-| `/omd-dream` | 记忆巩固 + 节制三闸 + 层级红线 + 健康比自检 | MCP `dream_consolidate` |
 | `/omd-debug` | 系统化根因调试 8 阶段(无根因不修)+ 修完扫同类;并发多假设派 `dag_debug` | 方法论 + omd `dag_debug` |
 | `/omd-recall` | 推理卡住时主动召回既有记忆(语义+词法混合检索) | MCP `memory_recall` |
 | `/omd-video` | 视频→逐段结构化笔记(MiMo-v2.5 原生吃画面+音频),产 ALL-NOTES.md 交 dag 综合 | 自带 `run.py`(yt-dlp+ffmpeg+mimo API) |
@@ -59,7 +58,6 @@ cd <目标repo> && claude mcp add omd -- omd mcp        # 全局安装的 omd; �
 | `/mcp`(TUI 内 MCP 路由管理) | **退役** — MCP 管理是 runtime 客户端自己的事(`claude mcp …`) |
 | `/cost` | **退役** — 成本随 `dag_result` / research 报告内嵌返回(cost 字段) |
 | `/review` `/slim` `/deepen` | → `/omd-review` `/omd-slim` `/omd-deepen`(经 `dag_review`/`dag_slim`/`dag_deepen` 车队,异步三段式,报告落盘) |
-| `/dream` | → `/omd-dream`(经 `dream_consolidate`,同步返回层统计) |
 
 ## 核心工作流
 

@@ -44,7 +44,6 @@ discipline (when to escalate, how to accept, who holds the trigger).
 |---|---|
 | `memory_recall` | hybrid semantic + lexical search over the fact store; ranked hits with confidence and source |
 | `memory_remember` | store a fact, gated by namespace safeguards (rejects secrets / banned / out-of-namespace) |
-| `dream_consolidate` | one synchronous consolidation round folding the recent event window into L0–L6 layers |
 
 **Config** — model roster, keys, presets, all over MCP:
 
@@ -84,7 +83,6 @@ tool(s) in the right column and adds the workflow discipline.
 | `/slim` | `dag_slim` | deletion-only over-engineering audit |
 | `/deepen` | `dag_deepen` | architecture-hotspot scan → leverage-ranked report |
 | `/debug` | `dag_debug` | root-cause debug fleet: reproduce → multi-hypothesis → verify |
-| `/dream` | `dream_consolidate` | fold recent events into layered memory |
 | `/recall` | `memory_recall` | proactively pull prior facts when reasoning stalls |
 | `/video` | (local) | video → structured per-segment notes (frames + audio) |
 

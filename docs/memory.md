@@ -19,10 +19,13 @@ machines.
   existing same-identity fact only when the new one clears the bar — memory sharpens
   instead of accreting contradictions. Explicit `memory_remember` trusts you and skips
   the secret scan (your sovereignty over your own store).
-- **Dream consolidation.** `dream_consolidate` runs one pump round that folds the
-  recent raw-event window into layered facts (**L0–L6**), returning per-layer stats.
-  Raw noise becomes durable, ranked knowledge — the next session recalls the distilled
-  version, not the transcript.
+> **Removed 2026-08-02 — `dream_consolidate`.** It folded a recent raw-event window into
+> layered facts (L0–L6). The tool is gone because **its input is gone**: the event window was
+> filled by per-turn signal producers that lived in the bundled terminal agent, and that agent
+> was removed. Wiring it anyway would have produced a tool that cheerfully reports
+> "0 events consolidated" forever — worse than no tool, because the zero looks like an answer.
+> Recall and explicit writes below are unaffected. Reviving consolidation means first giving it
+> an MCP-native event source (DAG run events), which is a design task, not a re-wiring one.
 
 ## Session handoff
 

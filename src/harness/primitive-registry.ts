@@ -14,7 +14,6 @@
  */
 import { z } from 'zod';
 import type { ModelUsage } from '../model/gateway';
-import type { ComplexitySignals } from './plan/complexity';
 import { parallel, pipeline, loopUntil, adversarialVerify, judgePanel, type Verdict } from './primitives';
 import { runDiscoveryLoop } from './plan/discovery';
 import { runFixpoint } from './plan/fixpoint';
@@ -38,36 +37,6 @@ export type PrimitiveId =
 /** 静态定界硬顶(SEL-2):任何原语编译期 maxUnits 超此 → fail-closed。各 paramsSchema 已把参数收在此下。 */
 export const PRIMITIVE_UNIT_CAP = 512;
 
-/**
- * Router 的路由信号(承 plan/complexity.ts ComplexitySignals + 原语相关正交轴)。
- * 缺省全 false → Router 无匹配返 null → 降级 LLM Planner → 自由 node-graph(SEL-5 兜底)。
- */
-export interface TaskSignals extends ComplexitySignals {
-  /** 多个**独立**调查/子任务可并行无 handoff → parallel。 */
-  parallelizableInvestigations?: boolean;
-  /** 多个**同类条目**各需**多步**顺序处理 → pipeline。 */
-  uniformMultiStepItems?: boolean;
-  /** 累积产出到一个**目标数/阈值**才停 → loop-until。 */
-  accumulateToTarget?: boolean;
-  /** 有一个**待证伪的断言**需对抗校验 → verify。 */
-  claimToRefute?: boolean;
-  /** **宽解空间**多方案需 taste-judge 择优 → judge。 */
-  wideSolutionSpace?: boolean;
-  /** 发现物**总量/位置未知**,要穷尽召回(连续 K 轮无新增才停)→ discovery。 */
-  unknownScaleRecall?: boolean;
-  /** 单一产物需**反复打磨到达标**(judge 判收敛)→ iterate。 */
-  refineUntilConverged?: boolean;
-  /** **大候选池**需递归淘汰出冠军(bracket)→ tournament。 */
-  largeCandidatePool?: boolean;
-  /** 先**分类**再路由到对应子流 → router。 */
-  needsClassificationRouting?: boolean;
-  /** 多冗余备选,要**最快成功**的那个(投机)→ race。 */
-  needsFastestOfAlternatives?: boolean;
-  /** 廉价方案先试、不达标**逐级升级回退** → escalation。 */
-  needsConditionalFallback?: boolean;
-  /** 多步中途失败要**反向补偿回滚**(distributed-tx / saga)→ saga。 */
-  needsCompensatingRollback?: boolean;
-}
 
 /** compile 拿到的执行上下文:leaf 工厂(单发模型调用,内部累加 usage)+ 上游依赖 + 并发默认。 */
 export interface PrimitiveCtx {
@@ -105,8 +74,6 @@ export interface PrimitiveInvocation {
 /** 一个参数化、可静态定界、compile 成子流的原语模板。 */
 export interface PrimitiveTemplate<P> {
   id: PrimitiveId;
-  /** Rule Router 谓词(确定性, 0 模型)。true = 此任务形状适配本原语。 */
-  when(signals: TaskSignals): boolean;
   /** 参数 schema(必含硬上限;`.strict()` 拒未知键 = 反幻觉禁 model 字段)。 */
   paramsSchema: z.ZodType<P>;
   /**
@@ -187,7 +154,6 @@ interface ParallelParams {
 }
 const parallelTemplate: PrimitiveTemplate<ParallelParams> = {
   id: 'parallel',
-  when: (s) => !!s.parallelizableInvestigations || (s.independentDomains ?? 0) >= 2 || !!s.trueParallelNoHandoff,
   paramsSchema: z
     .object({
       goals: z.array(z.string().min(1)).min(2, '至少 2 个并行子目标').max(64),
@@ -216,7 +182,6 @@ interface PipelineParams {
 }
 const pipelineTemplate: PrimitiveTemplate<PipelineParams> = {
   id: 'pipeline',
-  when: (s) => !!s.uniformMultiStepItems,
   paramsSchema: z
     .object({
       items: z.array(z.string().min(1)).min(1).max(32),
@@ -248,7 +213,6 @@ interface LoopUntilParams {
 }
 const loopUntilTemplate: PrimitiveTemplate<LoopUntilParams> = {
   id: 'loop-until',
-  when: (s) => !!s.accumulateToTarget,
   paramsSchema: z
     .object({
       stepGoal: z.string().min(1),
@@ -281,7 +245,6 @@ interface VerifyParams {
 }
 const verifyTemplate: PrimitiveTemplate<VerifyParams> = {
   id: 'verify',
-  when: (s) => !!s.claimToRefute || !!s.touchesSecurity,
   paramsSchema: z
     .object({
       claim: z.string().min(1),
@@ -321,7 +284,6 @@ interface JudgeParams {
 }
 const judgeTemplate: PrimitiveTemplate<JudgeParams> = {
   id: 'judge',
-  when: (s) => !!s.wideSolutionSpace,
   paramsSchema: z
     .object({
       attempts: z.number().int().min(2, '至少 2 个候选才需 judge').max(8),
@@ -376,7 +338,6 @@ interface DiscoveryParams {
 }
 const discoveryTemplate: PrimitiveTemplate<DiscoveryParams> = {
   id: 'discovery',
-  when: (s) => !!s.unknownScaleRecall,
   paramsSchema: z
     .object({
       roundGoal: z.string().min(1),
@@ -426,7 +387,6 @@ interface IterateParams {
 }
 const iterateTemplate: PrimitiveTemplate<IterateParams> = {
   id: 'iterate',
-  when: (s) => !!s.refineUntilConverged,
   paramsSchema: z
     .object({
       stepGoal: z.string().min(1),
@@ -475,7 +435,6 @@ interface TournamentParams {
 }
 const tournamentTemplate: PrimitiveTemplate<TournamentParams> = {
   id: 'tournament',
-  when: (s) => !!s.largeCandidatePool,
   paramsSchema: z
     .object({
       attempts: z.number().int().min(3, '<3 候选用 judge').max(32),
@@ -527,7 +486,6 @@ interface RouterParams {
 }
 const routerTemplate: PrimitiveTemplate<RouterParams> = {
   id: 'router',
-  when: (s) => !!s.needsClassificationRouting,
   paramsSchema: z
     .object({
       classifyGoal: z.string().min(1),
@@ -559,7 +517,6 @@ interface RaceParams {
 }
 const raceTemplate: PrimitiveTemplate<RaceParams> = {
   id: 'race',
-  when: (s) => !!s.needsFastestOfAlternatives,
   paramsSchema: z
     .object({
       goals: z.array(z.string().min(1)).min(2, '至少 2 个备选').max(8),
@@ -588,7 +545,6 @@ interface EscalationParams {
 }
 const escalationTemplate: PrimitiveTemplate<EscalationParams> = {
   id: 'escalation',
-  when: (s) => !!s.needsConditionalFallback,
   paramsSchema: z
     .object({
       levels: z.array(z.object({ goal: z.string().min(1) }).strict()).min(2, '至少 2 级').max(6),
@@ -634,7 +590,6 @@ interface SagaParams {
 }
 const sagaTemplate: PrimitiveTemplate<SagaParams> = {
   id: 'saga',
-  when: (s) => !!s.needsCompensatingRollback,
   paramsSchema: z
     .object({
       steps: z
@@ -706,7 +661,6 @@ interface EscapeHatchParams {
 const escapeHatchTemplate: PrimitiveTemplate<EscapeHatchParams> = {
   id: 'escape-hatch',
   // Router **永不**自动选(gated 硬 backstop,只显式 conductor/Aalto 选)。
-  when: () => false,
   gate: () => (escapeHatchEnabled() ? null : `逃生舱默认关,需 env ${ESCAPE_HATCH_ENV}=1 显式开启`),
   paramsSchema: z
     .object({
