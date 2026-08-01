@@ -281,8 +281,8 @@ export const SEATS: readonly SeatSpec[] = [
 
   // ── 后台 ────────────────────────────────────────────────────────────────────
   { id: 'dream', tier: 'dream',
-    what: '记忆巩固: 把近期事件窗压缩进 L0–L6 记忆层, 只留 derived 洞察。也给 skill-miner 起草。',
-    where: ['dream/model-live', 'harness/skills/skill-miner'],
+    what: '记忆巩固: 把近期事件窗压缩进 L0–L6 记忆层, 只留 derived 洞察。',
+    where: ['dream/model-live'],
     frequency: 'session 结束 / 定时 (后台)', crossFamily: 'no', thinking: 'xhigh', sampling: {},
     recommend: '便宜档 —— 它是背景任务, 慢一点没关系。' },
   { id: 'continuity', tier: 'worker',

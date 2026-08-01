@@ -53,18 +53,7 @@ import { createRecallExtension } from './recall-extension';
 import { SkillRegistry } from './skills/registry';
 import { syncSkillsToRegistry } from './skills/scanner';
 import { createSkillFlywheelExtension } from './skills/flywheel-extension';
-import { createSkillMiner } from './skills/skill-miner';
-import { createSkillMineScheduler } from './skills/skill-mine-scheduler';
 import { createBehavioralGroundingExtension } from './behavioral-grounding-extension';
-import { createGroundingGateExtension } from './weak';
-import { createEventStore } from './learning/event-store';
-import { createSignalBus } from './learning/signal-bus';
-import { createDreamPump } from './learning/dream-pump';
-import { createDreamPumpScheduler } from './learning/pump-scheduler';
-import { createConfidenceScheduler } from './learning/confidence-scheduler';
-import { createToolFailureSignalExtension } from './learning/tool-failure-signal';
-import { createUserCorrectionSignalExtension } from './learning/user-correction-signal';
-import { LiveDreamModel } from '../dream/model-live';
 import { UNIVERSAL_SAFEGUARD } from '../memory/safeguards/namespaces';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -129,30 +118,15 @@ const envModel = process.env.OMD_RUNTIME_MODEL;
 // 用户静态档案 (user.md): 部署入口读文件, 传 controller 整段注入 (controller 保持纯不读盘)。
 const userProfile = readUserProfile(process.env.OMD_USER_PROFILE ?? DEFAULT_USER_PROFILE_PATH);
 
-// 复利自学习闭环 (Phase 0): runtime 信号持久层 + 总线。drift-detector 检出 spinning → onSpinning
-// → bus.emit → runtime_events SQLite。dream-pump (下方, 需 memory) 增量 consolidate 成 omd.* fact。
-// 路径 OMD_RUNTIME_EVENTS_PATH (默认 .omd/runtime-events.db); 与 memory.db 同目录但独立表空间。
-const eventStore = createEventStore({ path: process.env.OMD_RUNTIME_EVENTS_PATH ?? '.omd/runtime-events.db' });
-const signalBus = createSignalBus(eventStore);
-const runtimeSessionId = `tui-${process.pid}`;
-
-// 抗幻觉 grounding 软提示 = 通用 (model-agnostic), 由 controller 默认挂, 此处无需门控。
 // 交互 omd 显式开 drift-detector (元认知安全网, opt-in 非全局默认 — 见 hooks/index.ts)。
-// onSpinning: 检出 spinning → 发 drift_stuck 信号给 bus (复利自学习入口, 学成 omd.limit blindspot)。
-// onRecovered: 卡住后打破循环继续推进 → 发 hard_problem 信号 (producer #5, clean_completion/hard_problem
-//   的正解): 难题已解开, payload 带 {卡在什么, 怎么逃出} → dream 学成 omd.pattern (worked 食材喂 miner)。
+// ⚠ onSpinning/onRecovered 原本把 drift_stuck / hard_problem 发进自学习信号总线, 该子系统已停到
+//   experimental/self-evolution/ (ADR-0002) → 回调摘掉, detector 本身照跑 (它不属停用件)。
+//   复活时这两个钩子是 hard_problem 信号的现成生产者, 别重写。
 const ctrl = new OmdController({
   provider: envProvider,
   model: envModel,
   userProfile: userProfile ?? undefined,
-  hookConfig: {
-    driftDetector: {
-      onSpinning: ({ sig, sameCount }) =>
-        signalBus.emit({ sessionId: runtimeSessionId, type: 'drift_stuck', payload: { sig, sameCount } }),
-      onRecovered: ({ stuckSig, escapeSigs }) =>
-        signalBus.emit({ sessionId: runtimeSessionId, type: 'hard_problem', payload: { stuckSig, escapeSigs } }),
-    },
-  },
+  hookConfig: { driftDetector: {} },
 });
 
 // env 桥: MIMO_API_KEY → pi-ai 期望的 XIAOMI_TOKEN_PLAN_AMS_API_KEY (仅 ams region key)。
@@ -282,48 +256,24 @@ mkdirSync(dirname(memoryPath), { recursive: true });
 const memory = createOmdMemory({ path: memoryPath, safeguard: UNIVERSAL_SAFEGUARD });
 const memoryExt = createMemoryExtension({ memory });
 // recall: ValalMemory 混合检索工具 (与 remember 配对; 复用同一 memory 实例)。卡住先 recall (元认知)。
-// onMiss: 零命中 = 记忆覆盖缺口 → recall_miss 信号 (复利自学习 producer #3, 闸门 I 白名单)。
-const recallExt = createRecallExtension({
-  memory,
-  onMiss: (query) => signalBus.emit({ sessionId: runtimeSessionId, type: 'recall_miss', payload: { query } }),
-});
-// tool_failure 信号 (producer #2): pi tool_result isError = 工具契约层失败 → 可学教训。观测-only。
-const toolFailureSignalExt = createToolFailureSignalExtension({
-  onFailure: (info) => signalBus.emit({ sessionId: runtimeSessionId, type: 'tool_failure', payload: info }),
-});
-// user_correction 信号 (producer #4, 最高价值): input 文本启发式检出用户纠正 (精度优先, 保守)。观测-only。
-const userCorrectionSignalExt = createUserCorrectionSignalExtension({
-  onCorrection: (info) => signalBus.emit({ sessionId: runtimeSessionId, type: 'user_correction', payload: info }),
-});
+// ⚠ onMiss 原本发 recall_miss 信号进自学习总线, 已随子系统停用 (ADR-0002) → 摘掉, 工具本体不变。
+const recallExt = createRecallExtension({ memory });
+// ⚠ tool_failure / user_correction 两个信号生产者 extension 已停到
+//   experimental/self-evolution/learning/ (ADR-0002) —— 它们只往信号总线写, 没有别的作用。
 // TTL GC: session_start 软删 idle>30d 的 tentative fact (live omd.memory 唯一无界增长源)。
 // confident/human 永不动; 刻意只 prune 不 dedup (近义 tentative 已被 TTL+confidence 生命周期覆盖)。
 const pruneSchedulerExt = createPruneScheduler({ memory });
 
-// 复利自学习闭环消费/驱动端 (复用同一 memory 实例):
-//   ① dream-pump: agent_end 后增量 consolidate runtime 信号 → L2 omd.* fact (tentative)。dream 角色模型
-//      经 resolveRoleModel('dream') 解析 (OMD_DREAM_MODEL / .omd/config.json 可覆盖, 默认部署落 DeepSeek)。
-//   ② behavioral-grounding: 每轮 context 检索 omd.* fact 注入行为 —— 置信路由隔离, 仅 agent_confident+
-//      (tentative 排除: 单 session 学的 drift 不立刻驱动行为, 跨 session 复现升 confident 才注入)。
-const dreamModel = new LiveDreamModel();
-const dreamPump = createDreamPump({ store: eventStore, dream: dreamModel, memory, agentId: runtimeSessionId });
-const pumpSchedulerExt = createDreamPumpScheduler({ pump: dreamPump });
-// onGrounded: 留痕本轮注入的 confident fact identity → 熔断器 session 级归因 (升级后变坏可回滚)。
-const behavioralGroundingExt = createBehavioralGroundingExtension({
-  memory,
-  onGrounded: (ids) => eventStore.recordGroundingApplied(runtimeSessionId, ids),
-});
-//   ③ confidence-scheduler: agent_end 后跑升级闸 (tentative→confident, 跨 session 复现的教训进 grounding)
-//      + 熔断器 (升级后变坏回滚)。这是闭环"真闭"的开关 —— 没它 tentative 永不驱动行为。中道阈值 env 可调。
-const confidenceSchedulerExt = createConfidenceScheduler({ memory, eventStore, sessionId: runtimeSessionId });
+// behavioral-grounding: 每轮 context 检索 omd.* fact 注入行为 —— 置信路由隔离, 仅 agent_confident+
+// (tentative 排除)。fact 来源今天只剩显式 memory_remember —— 自动写 fact 的那条 (信号 → event-store →
+// dream-pump → confidence-adjuster) 已整条停到 experimental/self-evolution/ (ADR-0002)。
+// ⚠ onGrounded 原本把本轮注入的 fact identity 留痕给熔断器归因, 熔断器随 confidence-adjuster 一并停用 → 摘掉。
+const behavioralGroundingExt = createBehavioralGroundingExtension({ memory });
 
-// grounding reactive 闸 (L2 硬闸的 reactive 半边, 配 GROUNDING_NUDGE 软提示): message_end 观测助手
-// 输出, 无源法定数字按 severity 动作。**core 默认 EMPTY_LEXICON + 'annotate'** → domain-free inert,
-// 通用部署不会因裸法定数字被拦。a sibling project 审计部署在自己入口注入 a sibling project + 'block'
-// (+ D 的 RAG verifier), core tui 不 import domain 词表 (R5)。
-const groundingGateExt = createGroundingGateExtension();
+// ⚠ grounding reactive 闸 (weak/grounding-gate) 已停用 (ADR-0002)。它的默认词表是 EMPTY_LEXICON
+//   (零 pattern), 停之前对任何输入都不触发 —— 摘掉不丢任何在跑的行为。
 
-// skill 复利飞轮自驱动 (the owner 2026-06-03: 自动感知+暴露, 人只在 /skill-curate 最后确认):
-//   route_hit 自动采集 (read SKILL.md → touchSkill) + session_start 暴露 optimize 建议 + /skill-curate 人工闸。
+// skill 使用度自动采集: route_hit (read SKILL.md → touchSkill)。
 // 持久 substrate .omd/skills.db (OMD_SKILL_DB 可覆盖); 启动 sync 项目 .claude/skills 给 baseline tier/desc。
 const skillDbPath = process.env.OMD_SKILL_DB ?? '.omd/skills.db';
 mkdirSync(dirname(skillDbPath), { recursive: true });
@@ -331,15 +281,9 @@ const skillRegistry = new SkillRegistry({ path: skillDbPath });
 try {
   syncSkillsToRegistry(process.env.OMD_SKILLS_ROOT ?? '.claude/skills', { registry: skillRegistry });
 } catch { /* 无 skills root 不阻断启动; route_hit 懒注册兜底 */ }
-// 真 LLM episodic miner (Phase 2 闭环最后一段): agent_end 后挖已升 confident 的 omd.pattern → 起草候选
-// skill 进 buffer; flywheel proposer 排空 buffer → 确认队 (起草→quarantine, 仍要人工确认 + eval 才启用)。
-// 复用同一 memory (consolidated 层) + dream 角色模型 (起草轻量)。proposer 注入点见 flywheel SkillFlywheelOpts。
-const skillMiner = createSkillMiner({ memory, registry: skillRegistry });
-const skillMineSchedulerExt = createSkillMineScheduler({ miner: skillMiner });
-const skillFlywheelExt = createSkillFlywheelExtension({
-  registry: skillRegistry,
-  proposer: () => skillMiner.takeCandidates(),
-});
+// ⚠ LLM episodic skill miner + 它的 scheduler + 候选确认队已停到
+//   experimental/self-evolution/skill-mining/ (ADR-0002)。flywheel 只剩 route_hit 采集这一条。
+const skillFlywheelExt = createSkillFlywheelExtension({ registry: skillRegistry });
 
 // /config (D60): 键盘选 daemon 角色模型 (dream/conductor/leaf) → 持久化 .omd/config.json
 // (跨进程, daemon mtime 重读)。交互-TUI 专属, 不挂 headless agent-leaf。
@@ -443,14 +387,8 @@ await main(args, {
     ...hashlineExt,
     memoryExt,
     recallExt,
-    toolFailureSignalExt,
-    userCorrectionSignalExt,
     pruneSchedulerExt,
     behavioralGroundingExt,
-    pumpSchedulerExt,
-    confidenceSchedulerExt,
-    groundingGateExt,
-    skillMineSchedulerExt,
     skillFlywheelExt,
     configExt,
     mcpExt,

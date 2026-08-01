@@ -20,7 +20,6 @@ import { OMD_IDENTITY } from './identity';
 import { createIdentityExtension } from './identity-extension';
 import { createOmdHooks, type OmdHookConfig } from './hooks';
 import type { OmdMemory } from './memory';
-import { createGroundingNudgeExtension } from './weak';
 import { wrapUserProfile } from './user-profile';
 import { createIdentityExtension as createProfileExtension } from './identity-extension';
 
@@ -63,12 +62,9 @@ export interface OmdControllerConfig {
    * Tier-2 domain 记忆经 HostAdapter 注入, 不在 controller 字段。
    */
   memory?: OmdMemory;
-  /**
-   * 通用抗幻觉 grounding 软提示 (法定数字必带源, GROUNDING_NUDGE)。默认 **true** —— model-agnostic
-   * (任何模型记忆都可能 stale), 所有前端默认挂。设 false 关 (纯代码 session 省 token)。
-   * 注: 这是 grounding 的软半边; 真护栏是 L2 硬闸 (checkProseGrounding + 数字-对-源校验)。
-   */
-  groundingNudge?: boolean;
+  // 注: `groundingNudge` (GROUNDING_NUDGE 软提示) 随弱模型脚手架一并停到
+  // experimental/self-evolution/weak/(ADR-0002)。它的硬闸半边默认词表是 EMPTY_LEXICON,
+  // 今天对任何输入都不触发 —— 摘掉不丢任何在跑的行为。复活前提见 ADR-0002「grounding 的单独说明」。
   /**
    * 用户静态档案内容 (user.md, 由部署入口读文件传入 — controller 保持纯, 不自己读盘)。给则在身份后、
    * grounding 前整段注入 ("omd 是谁" → "用户是谁" → "抗幻觉")。省略 = 无静态档案 (靠 user.* 动态学)。
@@ -96,8 +92,6 @@ export class OmdController {
   readonly tools: readonly unknown[];
   /** Tier-1 自我记忆 (V2-MEM)。undefined = 无持久记忆。 */
   readonly memory?: OmdMemory;
-  /** 通用抗幻觉 grounding 软提示是否注入。默认 true (universal)。 */
-  readonly groundingNudge: boolean;
   /** 用户静态档案内容 (user.md)。undefined = 无。 */
   readonly userProfile?: string;
 
@@ -119,7 +113,6 @@ export class OmdController {
     this.hooks = [...createOmdHooks(config.hookConfig), ...(config.hooks ?? [])];
     this.tools = config.tools ?? [];
     this.memory = config.memory;
-    this.groundingNudge = config.groundingNudge ?? true;
     this.userProfile = config.userProfile;
   }
 
@@ -132,8 +125,6 @@ export class OmdController {
       createIdentityExtension(this.systemPrompt),
       // 用户静态档案 (user.md) 排在身份后: "omd 是谁" → "用户是谁"。给则注入。
       ...(this.userProfile ? [createProfileExtension(wrapUserProfile(this.userProfile))] : []),
-      // 通用抗幻觉 grounding 软提示 (model-agnostic, 默认挂)。
-      ...(this.groundingNudge ? [createGroundingNudgeExtension()] : []),
       ...this.hooks,
     ];
   }
