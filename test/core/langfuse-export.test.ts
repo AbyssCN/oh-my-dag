@@ -335,3 +335,49 @@ describe('⑦ 父子结构 + prompt 版本身份', () => {
     expect(typeof md.engineCommit).toBe('string');
   });
 });
+
+/**
+ * **观测层永不带走执行层** (2026-08-01, 一次 574KB diff 审查当场引爆)。
+ *
+ * `clipDeep` 老写法是 `JSON.parse(clip(JSON.stringify(v)))` —— 先序列化、**截断**、再 parse
+ * 那截断过的串。截断过的 JSON 几乎必然非法, 于是它对任何超过 MAX_FIELD_CHARS 的输入
+ * **按构造必崩** (`SyntaxError: Unterminated string`), 只是此前输入都小, 一直没撞上。
+ *
+ * 更坏的是崩的位置: `gateway.send` 的 **catch 块**里也记一发 (失败的调用比成功的更值得看),
+ * 于是这个异常**顶掉了原始错误** —— 看到的是观测层的 JSON 报错, 真正的失败原因一个字都没露面。
+ * 这也是为什么闸立在 `recordGeneration`/`recordSpan` 自己身上而不是四个调用点上:
+ * 其中一个调用点在 catch 里, 那儿抛出去的代价与别处不同, 而"每个调用点都记得包"正是会漏的那种约定。
+ */
+describe('⑦ 观测记录不许抛 (fail-open)', () => {
+  const huge = 'x'.repeat(600_000);
+
+  test('超大输入不抛 —— truncate-then-parse 的回归', () => {
+    expect(() =>
+      recordGeneration(rec({ input: [{ role: 'user', content: huge }], output: huge }), ENV),
+    ).not.toThrow();
+  });
+
+  test('超大**结构化**输入(非字符串)同样不抛 —— 崩点原本就在这条路上', () => {
+    const bigStruct = { messages: Array.from({ length: 400 }, (_, i) => ({ role: 'user', content: `${i}:${'y'.repeat(2000)}` })) };
+    expect(() => recordGeneration(rec({ input: bigStruct }), ENV)).not.toThrow();
+  });
+
+  test('序列化不了的输入(循环引用)不抛', () => {
+    const cyc: Record<string, unknown> = { a: 1 };
+    cyc.self = cyc;
+    expect(() => recordGeneration(rec({ input: cyc }), ENV)).not.toThrow();
+  });
+
+  test('没超限的结构原样保留 (裁剪不该顺手把小输入也拍平成字符串)', () => {
+    // 经 batch 出口观察: 小输入的 input 仍是数组, 不是被 JSON 串替换掉的字符串。
+    recordGeneration(rec(), ENV);
+    const gen = _peekLangfuseQueue()[1]!.body as { input?: unknown };
+    expect(Array.isArray(gen.input)).toBe(true);
+  });
+
+  test('recordSpan 同样不抛 —— 它的调用点在 settle 里, 抛了会整张图 reject', () => {
+    expect(() =>
+      recordSpan({ traceId: 'run-1', nodeId: 'n1', kind: 'command', status: 'done', startTime: new Date(), endTime: new Date() }, ENV),
+    ).not.toThrow();
+  });
+});

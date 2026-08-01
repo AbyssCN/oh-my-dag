@@ -189,7 +189,31 @@ const versionMeta = (rec: GenerationRecord): Record<string, string> => ({
 });
 
 const clip = (s: string): string => (s.length > MAX_FIELD_CHARS ? `${s.slice(0, MAX_FIELD_CHARS)}\n…[truncated ${s.length - MAX_FIELD_CHARS} chars]` : s);
-const clipDeep = (v: unknown): unknown => (typeof v === 'string' ? clip(v) : JSON.parse(clip(JSON.stringify(v ?? null))) as unknown);
+
+/**
+ * 结构化字段的裁剪。**按构造不许抛** —— 它跑在观测路径上, 而观测路径抛错会把执行也带走。
+ *
+ * 老写法是 `JSON.parse(clip(JSON.stringify(v)))` —— **先序列化、截断、再 parse 那截断过的串**。
+ * 截断过的 JSON 几乎必然非法, 于是它对任何超过 MAX_FIELD_CHARS 的输入**按构造必崩**
+ * (`SyntaxError: Unterminated string`), 只是此前的输入都小, 一直没撞上。
+ * 2026-08-01 一次 574KB 的 diff 审查当场引爆: 整张图挂掉, 而崩点在观测层。
+ *
+ * 更坏的是它的调用位置 —— `gateway.send` 的 **catch 块**里也记一发(失败的调用比成功的更值得看)。
+ * 于是这个异常**顶掉了原始错误**: 看到的是观测层的 JSON 报错, 真正的失败原因一个字都没露面。
+ *
+ * 现在的规则: 没超限 → 原样返回(保住结构, Langfuse UI 才展得开); 超限 → 返回**裁过的字符串**,
+ * 绝不 parse 截断结果。序列化不了(循环引用等) → 一个占位串, 同样不抛。
+ */
+const clipDeep = (v: unknown): unknown => {
+  if (typeof v === 'string') return clip(v);
+  let json: string;
+  try {
+    json = JSON.stringify(v ?? null) ?? 'null';
+  } catch {
+    return '[unserializable]';
+  }
+  return json.length > MAX_FIELD_CHARS ? clip(json) : v;
+};
 
 /**
  * **节点 id → 确定性 observation id**(2026-07-31,父子结构用)。
@@ -222,6 +246,19 @@ function parentNodeIdOf(nodeId: string): string | null {
 export function recordSpan(
   rec: { traceId: string; nodeId: string; kind: string; status: string; startTime: Date; endTime: Date; failureKind?: string },
   env: Record<string, string | undefined> = process.env,
+): void {
+  // 与 recordGeneration 同一条契约: 观测永不带走执行。这条的调用点在 `settle` 里,
+  // 而 settle 抛错会被 pump 的 `catch → reject` 接住 —— 一次记账失败会**整张图 reject**。
+  try {
+    recordSpanInner(rec, env);
+  } catch (err) {
+    logger.warn({ err, node: rec.nodeId }, '[omd/langfuse] span 记录失败 (fail-open, 不影响执行)');
+  }
+}
+
+function recordSpanInner(
+  rec: { traceId: string; nodeId: string; kind: string; status: string; startTime: Date; endTime: Date; failureKind?: string },
+  env: Record<string, string | undefined>,
 ): void {
   if (!resolveLangfuseConfig(env)) return;
   const parent = parentNodeIdOf(rec.nodeId);
@@ -293,6 +330,18 @@ export function engineCommitId(): string {
  * 未配置 → 直接返回(零成本)。
  */
 export function recordGeneration(rec: GenerationRecord, env: Record<string, string | undefined> = process.env): void {
+  try {
+    recordGenerationInner(rec, env);
+  } catch (err) {
+    // **观测层永不带走执行层** (2026-08-01 实测: clipDeep 的 truncate-then-parse 让一次 574KB
+    // 输入的调用整跑崩掉)。收口放在这儿而不是四个调用点上 —— 其中一个调用点在 `gateway.send`
+    // 的 catch 块里, 那里抛出去会**顶掉原始错误**, 于是真正的失败原因永远不露面。
+    // 一个接线点记得包 ≠ 下一个也记得; 这个函数的契约就该是"不抛"。
+    logger.warn({ err, name: rec.name, model: rec.model }, '[omd/langfuse] 观测记录失败 (fail-open, 不影响执行)');
+  }
+}
+
+function recordGenerationInner(rec: GenerationRecord, env: Record<string, string | undefined>): void {
   if (!resolveLangfuseConfig(env)) return;
   const now = new Date().toISOString();
   if (!seenTraces.has(rec.traceId)) {
