@@ -71,6 +71,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.80.10",
+    "@earendil-works/pi-agent-core": "^0.80.10",
     "@earendil-works/pi-coding-agent": "^0.80.10",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@oh-my-pi/hashline": "^15.7.6",
@@ -85,6 +86,7 @@
     "@types/bun": "latest",
     "@types/js-yaml": "^4.0.9",
     "playwright-core": "^1.62.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "yaml": "^2.9.0"
   }
 }
