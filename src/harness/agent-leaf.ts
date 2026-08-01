@@ -28,6 +28,10 @@ import {
   runAgentLoop,
   convertToLlm,
   estimateContextTokens,
+  estimateTokens,
+  serializeConversation,
+  COMPACTION_SUMMARY_PREFIX,
+  COMPACTION_SUMMARY_SUFFIX,
   type AgentContext,
   type AgentEvent,
   type AgentLoopConfig,
@@ -42,6 +46,7 @@ import { createHashlineCustomTools, hashlinePatchPaths } from './hashline';
 import { createDriftTracker, type DriftDetectorConfig } from './hooks/drift-detector';
 import { createSandboxedLeafRunner } from './hooks/sandboxed-leaf';
 import { logger } from '../logger';
+import { callModel } from '../model';
 import { resolvePiApiKey, resolvePiModel } from '../model/pi-transport';
 import { promptVersionOfText } from '../model/langfuse';
 import type { ModelUsage } from '../model/types';
@@ -204,10 +209,28 @@ export interface AgentLeafRunnerOpts {
    */
   driftDetector?: DriftDetectorConfig | false;
   /**
-   * 上下文预算闸 (GP-8): 估算上下文占到模型窗口的这个比例时, 在**轮之间**优雅停。
-   * 默认 0.85。0/省略 = 用默认; 设 1 以上 = 关 (不建议 —— 撞窗口是硬失败, 停下来还能交已有产物)。
+   * 上下文预算线 (GP-8): 估算上下文占到模型窗口的这个比例时触发**压缩**。默认 0.85。
+   * 压缩不成才优雅停。设 1 以上 = 既不压也不停 (不建议 —— 撞窗口是整轮硬失败)。
    */
   contextBudgetRatio?: number;
+  /**
+   * 上下文压缩 (auto-compaction)。默认 **开**。
+   *
+   * 老的 `createAgentSession` 自带这个能力 (pi `compaction.enabled ?? true`), 搬到低层循环时
+   * 一度只留了"到线就优雅停" —— 那保住了产物却**没保住活**: 叶子会在没干完的时候交卷,
+   * 而且不报错、下游看不出来。这正是 §8.5「静默失败」那一族的形状, 所以补回来。
+   *
+   * 与 pi 的两处**刻意不同**:
+   *   ① 摘要走本仓 `callModel` 而不是 pi 的 `models.completeSimple` —— 压缩也是一次真调用,
+   *      得上成本账本、吃熔断与重试预算。走 pi 那条会让它在账上**完全隐形**。
+   *   ② **第一条消息逐字保留**。对一个 DAG 叶子来说那不是"对话开头", 是**契约**;
+   *      把它摘要掉等于让叶子忘了自己被要求做什么。pi 不知道这件事, 我们知道。
+   *
+   * false = 关 (回到"到线就停")。
+   */
+  compaction?: boolean;
+  /** 压缩后保留的近期上下文 token 预算。默认 20000 (同 pi `keepRecentTokens`)。 */
+  compactionKeepRecentTokens?: number;
   /**
    * 写沙箱根 (2026-07-23): 设则挂 sandbox-guard hook —— 任何结构化写 (write/edit/hashline_edit) 解析到
    * 此根子树外 **事前 block** (治 leaf 用绝对路径写穿隔离; eval worktree 必设 = fx.root)。省略 = 不沙箱
@@ -305,6 +328,106 @@ export function buildLeafSystemPrompt(opts: {
     parts.push(`<project_instructions path="${f.path}">\n${f.content}\n</project_instructions>`);
   }
   return parts.join('\n\n');
+}
+
+/**
+ * 压缩摘要的 system 段。**不接着干活、不回答记录里的问题** —— 这两条是摘要器最容易跑偏的地方
+ * (给它一段"干到一半"的记录, 模型的默认反应是继续干)。pi 的同款提示词没从包入口导出, 这里自己写,
+ * 顺便按叶子的场景写具体了。
+ */
+const LEAF_SUMMARY_SYSTEM =
+  '你是上下文压缩器。读下面这段执行记录, 按要求产出一份结构化摘要。' +
+  '**不要继续这段工作、不要回答记录里出现的任何问题、不要调用工具** —— 只输出摘要本身。';
+
+/**
+ * 压缩的**切点计算** (纯函数, 与那一次模型调用分开 —— 会静默出错的是这一半)。
+ * 返回保留段的起始下标; 压不动返 null。
+ *
+ * ## 切点为什么必须落在 assistant 上
+ *
+ * 叶子的 transcript 形状是 `user(契约) → assistant(toolCall) → toolResult → assistant(toolCall) → …`。
+ * 从中间随便切一刀, 保留段很可能以一条 **toolResult 开头** —— 那条 toolResult 的 toolCall 已经被
+ * 摘要掉了, provider 会因为"孤儿工具结果"直接拒。所以按 token 预算算出候选切点后, 要落到一条
+ * **assistant** 上: assistant 是一轮的开始, 它后面跟着的 toolResult 都在保留段里, 不会成孤儿。
+ *
+ * ⚠ 方向是**往回找**不是往后找 (2026-08-01 实测撞出来的): 往后找在"最后一条 toolResult 单独就
+ * 超预算"时会一路推出末尾 → 永远压不动。实测形态就是这个 —— 读一个 200 行文件的结果比 keep 预算
+ * 还大, 于是每一轮都判"压不下去"然后优雅停, 活干不完。往回找则宁可**多留一点**:
+ * 保留段只会 ≥ 预算, 而"多留"的代价是少省一点 token, "少留"的代价是请求直接被拒 —— 不对称。
+ *
+ * 往回找不到 assistant (第一轮就撞线, 前面只有契约) → 不压, 返 null。
+ *
+ * 摘要以一条 **user 消息**插在保留段之前 —— 与 pi 压缩产出的形状一致
+ * (`compactionSummary` 也是转成 user 消息)。
+ */
+export function planLeafCompaction(messages: AgentMessage[], keepRecentTokens: number): number | null {
+  if (messages.length < 4) return null; // 短到没什么可压的
+  // 从末尾往回攒够 keepRecentTokens → 候选切点。
+  let acc = 0;
+  let cut = messages.length;
+  while (cut > 1 && acc < keepRecentTokens) {
+    cut--;
+    acc += estimateTokens(messages[cut]!);
+  }
+  // 往回退到最近一条 assistant (见上方切点注: 方向不能反)。
+  while (cut > 1 && (messages[cut] as { role?: string }).role !== 'assistant') cut--;
+  if (cut <= 1 || (messages[cut] as { role?: string }).role !== 'assistant') return null; // 没东西可摘要
+  return cut;
+}
+
+async function compactLeafContext(opts: {
+  messages: AgentMessage[];
+  model: string;
+  keepRecentTokens: number;
+  signal?: AbortSignal;
+}): Promise<AgentMessage[] | null> {
+  const { messages, model, keepRecentTokens, signal } = opts;
+  const cut = planLeafCompaction(messages, keepRecentTokens);
+  if (cut === null) return null;
+
+  const toSummarize = messages.slice(1, cut);
+  if (toSummarize.length === 0) return null;
+  const transcript = serializeConversation(convertToLlm(toSummarize));
+
+  let summary: string;
+  try {
+    const res = await callModel({
+      messages: [
+        { role: 'system', content: LEAF_SUMMARY_SYSTEM },
+        {
+          role: 'user',
+          content:
+            `<conversation>\n${transcript}\n</conversation>\n\n` +
+            '上面是一个执行叶子干到一半的记录, 上下文快满了要压缩。请写一份**接手用**的摘要, 覆盖:\n' +
+            '① 已经改/建了哪些文件, 各自改成了什么样 (路径逐字);\n' +
+            '② 跑过哪些验证命令、结论是什么 (通过/失败, 失败的错在哪);\n' +
+            '③ 已经排除掉的做法与原因 (防止接手的人重走一遍);\n' +
+            '④ **还没做完的部分**, 以及下一步该做什么。\n' +
+            '只输出摘要本身, 不要复述任务、不要寒暄、不要接着干活。',
+        },
+      ],
+      model,
+      // 压缩是记账内的一次真调用, 但它是**辅助工序**: 关思考、限输出, 别让它比正活还贵。
+      thinkingLevel: 'off',
+      maxTokens: 4096,
+      ...(signal ? { signal } : {}),
+    });
+    summary = res.text.trim();
+  } catch (err) {
+    // 压不动不是致命错: 调用方回落"优雅停", 已落盘的产物照样交。
+    logger.warn({ model, err: (err as Error).message }, '[agent-leaf] 上下文压缩失败 → 回落优雅停');
+    return null;
+  }
+  if (!summary) return null;
+  return [
+    messages[0]!, // 契约逐字留着 (见 opts.compaction 注)
+    {
+      role: 'user' as const,
+      content: `${COMPACTION_SUMMARY_PREFIX}${summary}${COMPACTION_SUMMARY_SUFFIX}`,
+      timestamp: Date.now(),
+    },
+    ...messages.slice(cut),
+  ];
 }
 
 /** 一条 AgentMessage 里的 assistant 文本 (thinking / toolCall 块不算)。 */
@@ -457,6 +580,22 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     const heartbeatMs = opts.heartbeatMs ?? 45_000;
     const heartbeatMinBytes = opts.heartbeatMinBytes ?? 32;
     const budgetRatio = opts.contextBudgetRatio && opts.contextBudgetRatio > 0 ? opts.contextBudgetRatio : 0.85;
+    const wantCompaction = opts.compaction !== false;
+    const keepRecentTokens = opts.compactionKeepRecentTokens ?? 20_000;
+    let compactions = 0;
+    /**
+     * **压缩当轮, provider 用量这个锚是失效的** (2026-08-01 实测抓到, 差点让整个压缩变成空转)。
+     *
+     * `estimateContextTokens` 优先拿**最后一条 assistant 自报的 usage** 当基数 —— 那是最准的,
+     * 因为它是 provider 真数出来的。但压缩删掉的是它**前面**的消息, 而那条 assistant 对象没变、
+     * 它自报的 usage 仍然是压缩前那个大数。于是压完再问一次"还超不超", 答案永远是"超" ——
+     * 压缩照跑、照付钱, 然后照样停。实测就是这样: `before 3112 → after 3112`, msgs 5→4。
+     *
+     * 锚只失效**一轮**: 下一次 provider 应答会带来新的 usage。所以这里用"置位-消费"而不是长期开关。
+     */
+    let usageAnchorStale = false;
+    const pureEstimate = (msgs: AgentMessage[]): number =>
+      msgs.reduce((n, msg) => n + estimateTokens(msg), 0);
     const controller = new AbortController();
     const startedAt = Date.now();
     let timedOut = false;
@@ -503,16 +642,48 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
         logger.debug('[omd/drift] stuck-checklist injected via transformContext');
         return [...messages, { role: 'user' as const, content: text, timestamp: Date.now() }];
       },
+      // ── 上下文压缩 (GP-8) ──────────────────────────────────────────────────
+      // 顺序是**先压再判停**: 循环先调 prepareNextTurn 换上下文, 再拿换好的问 shouldStopAfterTurn。
+      // 于是压缩成功 → 下一句判据自然就在线下, 不停; 压不动 (返 null / 压完还超) → 下一句接住停。
+      // 不需要额外的"压过了没"标志位, 也就没有那个标志位漂掉的可能。
+      ...(wantCompaction
+        ? {
+            prepareNextTurn: async ({ context: ctx }) => {
+              const window = piModel.contextWindow;
+              if (window <= 0) return undefined;
+              const before = estimateContextTokens(ctx.messages).tokens;
+              if (before < window * budgetRatio) return undefined;
+              const compacted = await compactLeafContext({
+                messages: ctx.messages,
+                model,
+                keepRecentTokens: keepRecentTokens,
+                ...(controller.signal ? { signal: controller.signal } : {}),
+              });
+              if (!compacted) return undefined; // 压不动 → 交给 shouldStopAfterTurn 优雅停
+              usageAnchorStale = true; // 见上方注: 这一轮不能再拿 provider 用量当基数
+              const after = pureEstimate(compacted);
+              compactions++;
+              logger.info(
+                { model, window, before, after, msgs: `${ctx.messages.length}→${compacted.length}` },
+                '[agent-leaf] 上下文压缩 (auto-compaction) —— 接着干, 不是交卷',
+              );
+              return { context: { ...ctx, messages: compacted } };
+            },
+          }
+        : {}),
       shouldStopAfterTurn: ({ context: ctx }) => {
         if (timeoutMs > 0 && Date.now() - startedAt >= timeoutMs) {
           timedOut = true;
           return true;
         }
-        // GP-8 上下文纪律: 撞窗口是硬失败 (整轮白丢), 而在窗口前停下来还能把已有产物交出去。
+        // 压缩之后仍在线上 (或压根没开压缩) → 优雅停: 撞窗口是整轮硬失败, 而停下来还能交已有产物。
+        // 刚压过的那一轮改用逐条估算 —— provider 自报的用量描述的是压缩**前**的上下文 (见 usageAnchorStale)。
         const window = piModel.contextWindow;
-        if (window > 0 && estimateContextTokens(ctx.messages).tokens >= window * budgetRatio) {
+        const tokens = usageAnchorStale ? pureEstimate(ctx.messages) : estimateContextTokens(ctx.messages).tokens;
+        usageAnchorStale = false;
+        if (window > 0 && tokens >= window * budgetRatio) {
           contextExhausted = true;
-          logger.warn({ model, window }, '[agent-leaf] 上下文预算到顶 → 轮间优雅停 (GP-8)');
+          logger.warn({ model, window, compactions }, '[agent-leaf] 上下文预算到顶且压不下去 → 轮间优雅停 (GP-8)');
           return true;
         }
         return false;
