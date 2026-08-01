@@ -1,8 +1,8 @@
 /**
  * test/core/mcp-fleet-tools.test.ts — fleet + runs tools unit tests.
  *
- * Pure memory: fake spawn/fake dream/in-memory registry, zero real processes or network.
- * Covers: dag_review happy+fail, dream_consolidate stats, dag_runs merge,
+ * Pure memory: fake spawn/in-memory registry, zero real processes or network.
+ * Covers: dag_review happy+fail, dag_runs merge,
  *         dag_run resume via reopenForResume (continuity.resume=true).
  */
 import { describe, expect, test } from 'bun:test';
@@ -15,7 +15,6 @@ import { createRunsTools } from '../../src/mcp/tools/runs';
 import { createDagTools, type DagEngine } from '../../src/mcp/tools/dag-tools';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../../src/harness/executor-dag-types';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
-import type { DreamPump, PumpResult } from '../../src/mcp/tools/fleet';
 import { CheckpointManager } from '../../src/harness/continuity/checkpoint-manager';
 
 // ---------------------------------------------------------------------------
@@ -35,10 +34,6 @@ function fakeSpawn(result: SpawnResult): SpawnFn {
   return async () => result;
 }
 
-/** Fake DreamPump returning fixed stats. */
-function fakeDream(result: PumpResult): DreamPump {
-  return { pump: async () => result };
-}
 
 /** Stub ExecutorDagResult for dag_run resume tests. */
 function stubResult(): ExecutorDagResult {
@@ -115,35 +110,6 @@ describe('dag_review', () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(reg.getStatus(runId)).toBe('failed');
     expect(reg.getRecord(runId)!.error).toContain('lint exploded on line 42');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// ③ dream_consolidate 返回统计
-// ---------------------------------------------------------------------------
-describe('dream_consolidate', () => {
-  test('fake pump → returns events/facts stats JSON', async () => {
-    const stats: PumpResult = { eventsConsumed: 5, factsWritten: 3, factsRejected: 1, newWatermark: 100 };
-    const tools = createFleetTools({
-      runRegistry: new RunRegistry(),
-      cwd: '/tmp',
-      dream: fakeDream(stats),
-    });
-    const handler = getTool(tools, 'dream_consolidate');
-    const res = (await handler()) as { content: { text: string }[] };
-    const parsed = JSON.parse(res.content[0]!.text) as PumpResult;
-    expect(parsed.eventsConsumed).toBe(5);
-    expect(parsed.factsWritten).toBe(3);
-    expect(parsed.factsRejected).toBe(1);
-    expect(parsed.newWatermark).toBe(100);
-  });
-
-  test('dream not wired → isError', async () => {
-    const tools = createFleetTools({ runRegistry: new RunRegistry(), cwd: '/tmp' });
-    const handler = getTool(tools, 'dream_consolidate');
-    const res = (await handler()) as { isError?: boolean; content: { text: string }[] };
-    expect(res.isError).toBe(true);
-    expect(res.content[0]!.text).toContain('not wired');
   });
 });
 

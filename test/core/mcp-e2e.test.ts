@@ -51,7 +51,6 @@ const ALL_TOOLS = [
   'dag_deepen',
   'dag_goal',
   'dag_debug',
-  'dream_consolidate',
   'dag_runs',
   // config 工具族 (omd init 的 MCP 面)
   'omd_set_key',

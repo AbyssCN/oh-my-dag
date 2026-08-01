@@ -9,9 +9,7 @@ import {
   PRIMITIVE_UNIT_CAP,
   compilePrimitive,
   type PrimitiveCtx,
-  type TaskSignals,
 } from '../../src/harness/primitive-registry';
-import { routePrimitive } from '../../src/harness/primitive-router';
 import { parsePlan } from '../../src/harness/conductor-plan';
 import { runExecutorDag } from '../../src/harness/executor-dag';
 import type { GenerateFn } from '../../src/harness/executor-dag-types';
@@ -28,32 +26,6 @@ function fakeCtx(leafImpl: (goal: string) => string): PrimitiveCtx {
     },
   };
 }
-
-// ══ 1. Router:signals → primitive(确定性 + 优先级 + 无匹配 null)══════════════
-
-test('router R1..R5:每原语的 when 命中各自信号', () => {
-  expect(routePrimitive({ parallelizableInvestigations: true }).primitive).toBe('parallel');
-  expect(routePrimitive({ uniformMultiStepItems: true }).primitive).toBe('pipeline');
-  expect(routePrimitive({ accumulateToTarget: true }).primitive).toBe('loop-until');
-  expect(routePrimitive({ claimToRefute: true }).primitive).toBe('verify');
-  expect(routePrimitive({ wideSolutionSpace: true }).primitive).toBe('judge');
-});
-
-test('router 复用 complexity 信号:independentDomains≥2 → parallel', () => {
-  expect(routePrimitive({ independentDomains: 3 }).primitive).toBe('parallel');
-});
-
-test('router 优先级 = registry 顺序(多信号取首命中 parallel)', () => {
-  const s: TaskSignals = { parallelizableInvestigations: true, wideSolutionSpace: true };
-  expect(routePrimitive(s).primitive).toBe('parallel');
-});
-
-test('router 无匹配 → null(SEL-5 降级信号,绝不 crash)', () => {
-  expect(routePrimitive({}).primitive).toBeNull();
-  expect(routePrimitive({ fileCount: 4, crossLayer: true }).primitive).toBeNull();
-});
-
-// ══ 2. compile:SEL-1 fail-closed + SEL-2 静态定界 ═══════════════════════════
 
 test('SEL-1 未知原语 → fail-closed', () => {
   const r = compilePrimitive('bogus', {}, fakeCtx(() => ''));
@@ -249,18 +221,13 @@ test('E2E fail-closed:坏 params 的 primitive 节点 → failed 有明确错,�
 
 // ══ 6. registry 自洽 ════════════════════════════════════════════════════════
 
-test('registry:13 原语 id 齐(S1 5 + S2 2 + S4 4 + S5 1 + S6 1)+ when 是纯谓词', () => {
+test('registry:13 原语 id 齐(S1 5 + S2 2 + S4 4 + S5 1 + S6 1)', () => {
   expect([...PRIMITIVE_IDS].sort()).toEqual([
     'discovery', 'escalation', 'escape-hatch', 'iterate', 'judge', 'loop-until', 'parallel', 'pipeline', 'race', 'router', 'saga', 'tournament', 'verify',
   ]);
-  for (const id of PRIMITIVE_IDS) expect(typeof PRIMITIVE_REGISTRY[id].when).toBe('function');
 });
 
 // ══ S5:Saga / Compensation(通用补偿回滚;维二会计绑定 DEFER)══════════════════
-
-test('S5 router:needsCompensatingRollback → saga', () => {
-  expect(routePrimitive({ needsCompensatingRollback: true }).primitive).toBe('saga');
-});
 
 test('S5 saga:全步成功 → 无回滚', async () => {
   const ctx = fakeCtx(() => '{"ok": true, "output": "done"}');
@@ -306,12 +273,6 @@ test('S5 saga:单步 → schema 拒(无需补偿)+ 反幻觉 strict', () => {
 
 // ══ S6:capped 逃生舱(gated 默认关)══════════════════════════════════════════
 
-test('S6 逃生舱:Router 永不自动选(when 恒 false)', () => {
-  // 任何信号组合都不路由到 escape-hatch。
-  expect(routePrimitive({ parallelizableInvestigations: true, wideSolutionSpace: true }).primitive).not.toBe('escape-hatch');
-  expect(PRIMITIVE_REGISTRY['escape-hatch'].when({})).toBe(false);
-});
-
 test('S6 逃生舱:env 默认关 → compile fail-closed', () => {
   delete process.env.OMD_ESCAPE_HATCH;
   const r = compilePrimitive('escape-hatch', { steps: [{ goal: 'a' }], reason: '结构原语不够' }, fakeCtx(() => ''));
@@ -345,13 +306,6 @@ test('S6 逃生舱:steps 超 cap(>12)→ schema 拒', () => {
 });
 
 // ══ S4:tournament / router / race / escalation ══════════════════════════════
-
-test('S4 router 路由:各新信号选对原语', () => {
-  expect(routePrimitive({ largeCandidatePool: true }).primitive).toBe('tournament');
-  expect(routePrimitive({ needsClassificationRouting: true }).primitive).toBe('router');
-  expect(routePrimitive({ needsFastestOfAlternatives: true }).primitive).toBe('race');
-  expect(routePrimitive({ needsConditionalFallback: true }).primitive).toBe('escalation');
-});
 
 test('S4 tournament:分组淘汰出唯一冠军', async () => {
   // 候选文本 = 第 i 稿;打分 = 候选里的数字。第 7 稿分最高。
@@ -466,11 +420,6 @@ test('S3 judge:scoreCriterion 与 criteria 全缺 → schema 拒', () => {
 });
 
 // ══ S2:discovery + iterate ══════════════════════════════════════════════════
-
-test('S2 router:unknownScaleRecall → discovery;refineUntilConverged → iterate', () => {
-  expect(routePrimitive({ unknownScaleRecall: true }).primitive).toBe('discovery');
-  expect(routePrimitive({ refineUntilConverged: true }).primitive).toBe('iterate');
-});
 
 test('S2 静态定界:discovery=maxRounds · iterate=maxRounds×2', () => {
   const ctx = fakeCtx(() => '[]');

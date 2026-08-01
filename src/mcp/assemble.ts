@@ -12,8 +12,8 @@
  *     写入仍过 validateFactWrite 校验闸, D-5)。
  *   - research 工具: 现有 researchFanout 接缝 (harness/research/fanout) 适配成 MCP 三段返回
  *     {runId, reportPath, summary} (报告全文落盘 .omd/research/, D-8 宽出)。
- *   - fleet 五工具: createFleetTools (dag_review/slim/deepen/debug 异步子进程 + dream_consolidate 同步泵;
- *     spawn 接缝默认 Bun.spawn, dream 接缝注入; runRegistry/cwd 同现有)。
+ *   - fleet 四工具: createFleetTools (dag_review/slim/deepen/debug 异步子进程;
+ *     spawn 接缝默认 Bun.spawn; runRegistry/cwd 同现有)。
  *   - runs 工具: createRunsTools (dag_runs 同步列表: 内存 registry ∪ 磁盘 continuity 合并去重)。
  *
  * 可测: 全部 deps 可选覆盖 (测试传 fake 引擎/内存记忆/fake research, 零网络零磁盘)。
@@ -75,7 +75,6 @@ import { createOmdMemory, type OmdMemory } from '../harness/memory';
 import { UNIVERSAL_SAFEGUARD } from '../memory/safeguards/namespaces';
 import type { ResearchFanoutResult } from '../harness/research/fanout';
 import { logger } from '../harness/logger';
-import type { DreamPump } from './tools/fleet';
 
 /** 生产引擎接缝 (真 DAG 引擎)。 */
 const PROD_ENGINE: DagEngine = { runExecutorDag, runExecutorDagWithPlan };
@@ -106,8 +105,6 @@ export interface AssembleOmdMcpDeps {
   pathfinder?: Partial<Pick<PathfinderToolDeps, 'executeSlice' | 'dispatchFrontier'>>;
   /** fleet spawn 接缝 (测试注入 fake; 生产默认 Bun.spawn)。 */
   spawn?: SpawnFn;
-  /** dream pump 接缝 (dream_consolidate; 省略 → 该工具回 isError 不炸)。 */
-  dream?: DreamPump;
   /** plan-memory 账本接缝 (测试注入 :memory:; 默认 .omd/plan-ledger.db)。 */
   ledger?: PlanLedger;
   /** DAG 运行留痕接缝 (测试注入 :memory:; 默认 .omd/dag-runs.db)。 */
@@ -278,7 +275,7 @@ function renderResearchReport(question: string, runId: string, result: ResearchF
 
 /**
  * 装配 v1 全工具面: dag_run/dag_run_plan/dag_status/dag_result + dag_research +
- * memory_recall/memory_remember + dag_review/dag_slim/dag_deepen/dream_consolidate + dag_runs +
+ * memory_recall/memory_remember + dag_review/dag_slim/dag_deepen + dag_runs +
  * config 工具族 (omd_set_key/omd_apply_preset/omd_set_role/omd_config_status/omd_toggle_hud)。
  * 纯组装: 解析 deps → 调各工厂 → 拍平返回。
  */
@@ -620,8 +617,8 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       memory,
       ...deps.pathfinder,
     }),
-    // fleet 四工具: review/slim/deepen 异步子进程 + dream_consolidate 同步泵。
-    ...createFleetTools({ runRegistry, cwd, spawn: deps.spawn, dream: deps.dream }),
+    // fleet 四工具: review/slim/deepen/debug 异步子进程。
+    ...createFleetTools({ runRegistry, cwd, spawn: deps.spawn }),
     // runs 工具: 内存 registry ∪ 磁盘 continuity 合并列表。
     ...createRunsTools({ runRegistry, cwd }),
     // S3 owner 收件箱: dag_triage (看) + dag_rule (裁)。无人值守的产出必须有去处。
