@@ -38,6 +38,8 @@ import { logger } from './logger';
 import type { GenerateFn, ExecutorDagConfig, LeafResult, ExecutorDagResult, DagObservation } from './executor-dag-types';
 import { makeDefaultGenerate, LEAF_SYSTEM_PREFIX, PONYTAIL_LEAF_DISPOSITION } from './executor-dag-defaults';
 import { topoLevels, buildLeafPrompt, addUsage, filterOracleCommandNodes } from './executor-dag-planner';
+// ready-set 调度器 (拓扑推进 + 三层并发闸 + quorum 判定; 纯同步零 IO, 见 dag-scheduler.ts)。
+import { DagScheduler, type SchedKind, type QuorumVerdict } from './dag-scheduler';
 import { loadAgentTemplates, templateRoster, type AgentTemplate } from './agent-templates';
 import { expandMapNode, mapSpecHash } from './plan/map-expand';
 // SDD 0013 S1 约束选择: primitive 节点 → compile(复用 primitives.ts)→ run。
@@ -2206,29 +2208,13 @@ async function executePlan(
   // 治 M3 深 DAG (实测 7 层) 的逐层 barrier 尾延迟: 旧法每层等最慢叶, 深链时空转损耗叠加。
   // 正确性: indeg 归零 ⟺ 全 dep 已 settle ⟹ buildLeafPrompt 必见全部 dep 输出 (与旧法等价)。
   // levels 仍由 topoLevels 算 (报告 + 环检测), 仅不再驱动执行。INV-6: 单 leaf 抛错隔离成 failed, 不连坐。
-  const idSet = new Set(Object.keys(plan.nodes));
-  const indeg = new Map<string, number>();
-  const dependents = new Map<string, string[]>();
-  for (const id of idSet) {
-    const deps = (plan.nodes[id]!.depends_on ?? []).filter((d) => idSet.has(d)); // 幻象 dep (不存在 id) 视为已满足, 同 topoLevels
-    indeg.set(id, deps.length);
-    for (const d of deps) {
-      const arr = dependents.get(d) ?? [];
-      arr.push(id);
-      dependents.set(d, arr);
-    }
-  }
-  const ready: string[] = [...idSet].filter((id) => (indeg.get(id) ?? 0) === 0);
-  const cap = config.maxFanout && config.maxFanout > 0 ? config.maxFanout : idSet.size || 1;
+  // 调度本体 (indeg/ready/三层并发闸/quorum 判定) 搬去 dag-scheduler.ts —— 它零 IO 零 config,
+  // 于是这些规则第一次可以脱开 LLM 单测 (见 dag-scheduler.test.ts)。这里只留**认识 config 的那部分**:
+  // 节点 → kind / 渠道键 的两个纯映射。
+  //
   // per-kind 并发闸 (fanout 最大化, 2026-07-21): inproc 纯 API 等待默认不限;
   // agent/command 有本地足迹 (工具调用/CLI 抢本机 CPU·磁盘) → 独立小闸。按声明 executor 记账。
-  const kindCap: Record<'agent' | 'command' | 'inproc', number> = {
-    agent: config.kindFanout?.agent ?? Number.POSITIVE_INFINITY,
-    command: config.kindFanout?.command ?? Number.POSITIVE_INFINITY,
-    inproc: config.kindFanout?.inproc ?? Number.POSITIVE_INFINITY,
-  };
-  const runningByKind: Record<'agent' | 'command' | 'inproc', number> = { agent: 0, command: 0, inproc: 0 };
-  const schedKind = (id: string): 'agent' | 'command' | 'inproc' => {
+  const schedKind = (id: string): SchedKind => {
     const n = plan!.nodes[id]!;
     if (n.executor === 'command') return 'command';
     if (n.executor === 'agent') return 'agent';
@@ -2238,9 +2224,6 @@ async function executePlan(
   // ── D-23 per-channel 并发闸 (SDD v2): key = provider 前缀, 调度期由 node.model ?? kind 静态
   // 模型确定性推出 (运行期 router 选择不改记账 — 与 kind 闸「按声明记账」同哲学)。command 无
   // 模型 → 不入渠道闸。未配 channelFanout → 全部不限 (零回归)。
-  const channelCap = config.channelFanout ?? {};
-  const hasChannelCaps = Object.keys(channelCap).length > 0;
-  const runningByChannel = new Map<string, number>();
   const schedChannel = (id: string): string | null => {
     const n = plan!.nodes[id]!;
     if (n.executor === 'command') return null;
@@ -2248,13 +2231,15 @@ async function executePlan(
     const sep = model.indexOf(':');
     return sep >= 0 ? model.slice(0, sep) : model;
   };
-  const channelBlocked = (id: string): boolean => {
-    if (!hasChannelCaps) return false;
-    const ch = schedChannel(id);
-    if (ch == null) return false;
-    const cap = channelCap[ch];
-    return cap !== undefined && (runningByChannel.get(ch) ?? 0) >= cap;
-  };
+
+  const sched = new DagScheduler(plan, {
+    kindOf: schedKind,
+    channelOf: schedChannel,
+    statusOf: (id) => results[id]?.status, // quorum 读它 —— 调度器不持有 results
+    maxFanout: config.maxFanout,
+    kindFanout: config.kindFanout,
+    channelFanout: config.channelFanout,
+  });
 
   // ── fan-in 定向摘要 (扇出≥2 触发) ─────────────────────────────────────────────
   // producer settle 前 (dependents 释放前) 判定并生成: 输出被 ≥2 consumer 消费 ∧ 够长 → 跑 1 发
@@ -2268,7 +2253,7 @@ async function executePlan(
       if (r.kind === 'map') return { r, view: null }; // map 输出是结构化 JSON 数组, 摘要会毁其可解析性
       const node = plan!.nodes[id]!;
       if (node.creative) return { r, view: null }; // 护创意交付物 (best-of-n/judge 候选需全文, 同 caveman off)
-      const consumers = dependents.get(id) ?? [];
+      const consumers = sched.dependentsOf(id);
       if (consumers.length < faninCfg.minFanout) return { r, view: null }; // 扇出闸 (默认 ≥2)
       const output = r.output ?? '';
       if (output.length < faninCfg.minChars) return { r, view: null }; // 短输出摘要纯亏 (摘要器 input 即全文)
@@ -2384,11 +2369,7 @@ async function executePlan(
         logger.warn({ node: id, err }, '[omd/executor-dag] 失败 checkpoint 落盘失败 (fail-open)');
       }
     }
-    for (const dep of dependents.get(id) ?? []) {
-      const n = (indeg.get(dep) ?? 1) - 1;
-      indeg.set(dep, n);
-      if (n === 0) ready.push(dep);
-    }
+    sched.advance(id); // 拓扑推进: 释放 dependents, indeg 归零者已由调度器入 ready
   };
 
   // warmThenFanout: 全局暖 1 发写共享 leafSystemPrefix 缓存, 再放 pool。
@@ -2403,11 +2384,10 @@ async function executePlan(
   // 判据用节点自己的 executor (直接证据), 不拿"排除了别的"凑: command 节点是唯一确定不打模型的。
   // 一个都挑不出来 (整层都是 command) → **不暖**, 直接全宽放开 —— 没有可暖的东西时,
   // 暖发的正确行为是消失, 不是随便抓一个。
-  const warmIdx = config.warmThenFanout
-    ? ready.findIndex((rid) => (plan?.nodes[rid] as { executor?: string } | undefined)?.executor !== 'command')
-    : -1;
-  if (config.warmThenFanout && idSet.size > 1 && warmIdx >= 0) {
-    const id = ready.splice(warmIdx, 1)[0]!;
+  // (挑非 command 的规则在 sched.takeWarmStart; size>1 前置条件留这里 —— 单节点图不值得暖。)
+  const warmId = config.warmThenFanout && sched.size > 1 ? sched.takeWarmStart() : null;
+  if (warmId != null) {
+    const id = warmId;
     const r0 = await runNode(id).catch((e) => failedFromThrow(id, e));
     const { r: r1, view } = await maybeFaninView(id, r0); // 扇出≥2 → 摘要 (dependents 释放前)
     if (view) faninView[id] = view;
@@ -2418,17 +2398,12 @@ async function executePlan(
   // requires 缺省启发: 单依赖 'all' (依赖失败还跑 = 拿 [failed] 文本当正文, 纯浪费 + 静默假成功),
   // 多依赖 fan-in 'any' (宽扇出单叶 429 不陪葬 synth; 反 happy-path: 一律 'all' 比现状更脆)。
   // 不达 quorum → status:'skipped' 级联 (settle 释放下游 → 下游同判), 零 LLM 零 worker 槽。
-  const quorumSkip = (id: string): LeafResult | null => {
+  // 判定本身在 dag-scheduler (sched.takeSkippable, 纯同步零 IO); 这里只做**认识 config 的两件事**:
+  // 打那条 warn + 构造 skipped LeafResult (kind 要读 config.agentRunner)。
+  const skippedByQuorum = (id: string, v: QuorumVerdict): LeafResult => {
     const node = plan!.nodes[id]!;
-    const deps = (node.depends_on ?? []).filter((d) => idSet.has(d));
-    if (deps.length === 0) return null;
-    const doneCount = deps.filter((d) => results[d]?.status === 'done').length;
-    const req = node.requires ?? (deps.length <= 1 ? 'all' : 'any');
-    const ok = req === 'all' ? doneCount === deps.length : req === 'any' ? doneCount >= 1 : doneCount >= req;
-    if (ok) return null;
-    const bad = deps.filter((d) => results[d]?.status !== 'done').map((d) => `${d}(${results[d]?.status ?? '?'})`);
     logger.warn(
-      { node: id, requires: req, done: doneCount, deps: deps.length, bad },
+      { node: id, requires: v.requires, done: v.done, deps: v.deps.length, bad: v.bad },
       '[omd/executor-dag] 依赖未达 quorum → skipped 级联 (D-7v2)',
     );
     return {
@@ -2436,67 +2411,52 @@ async function executePlan(
       status: 'skipped',
       failureKind: 'dep-skip',
       kind: node.executor === 'command' ? 'command' : node.executor === 'agent' && config.agentRunner ? 'agent' : 'inproc',
-      output: `[skipped: 依赖未达 quorum (requires=${req}, done ${doneCount}/${deps.length}) — ${bad.join(', ')}]`,
-      deps,
+      output: `[skipped: 依赖未达 quorum (requires=${v.requires}, done ${v.done}/${v.deps.length}) — ${v.bad.join(', ')}]`,
+      deps: v.deps,
       usage: { in: 0, out: 0 },
     };
   };
 
   // worker pool: 维持 ≤cap 并发, 节点完成即补位 + 释放下游, ready 空且无在跑 → 收敛。
-  let running = 0;
   await new Promise<void>((resolve, reject) => {
     const pump = (): void => {
       for (;;) {
         // ① quorum skip 先于 kind 闸消化 (skip 不运行不占槽, 不该被闸挡; 同步 settle 可能释放
         //    新 ready 甚至清空图 → continue 回到循环头重判收敛, 防全 skip 链上的收敛死锁)。
-        let skippedOne = false;
-        for (let i = 0; i < ready.length; i++) {
-          const sk = quorumSkip(ready[i]!);
-          if (sk) {
-            ready.splice(i, 1);
-            try {
-              settle(sk.id, sk);
-            } catch (e) {
-              reject(e instanceof Error ? e : new Error(String(e)));
-              return;
-            }
-            skippedOne = true;
-            break;
+        const sk = sched.takeSkippable();
+        if (sk) {
+          try {
+            settle(sk.id, skippedByQuorum(sk.id, sk.verdict));
+          } catch (e) {
+            reject(e instanceof Error ? e : new Error(String(e)));
+            return;
           }
+          continue;
         }
-        if (skippedOne) continue;
-        if (ready.length === 0 && running === 0) {
+        if (sched.isDrained()) {
           resolve();
           return;
         }
         // D-P 取消接缝①: 停止派新节点。在飞的跑到自己结束 (产物/checkpoint 一样不少),
         // 全部结清后从这里出去 —— 未起跑的节点**不伪造结果**, 由 cancelled.notRun 如实列出。
         if (isCancelled()) {
-          if (running === 0) {
-            logger.warn({ notRun: ready.length }, '[omd/executor-dag] 已取消 → 停止派新节点, 收尾返回 (D-P 协作式)');
+          if (sched.runningCount === 0) {
+            logger.warn({ notRun: sched.readyCount }, '[omd/executor-dag] 已取消 → 停止派新节点, 收尾返回 (D-P 协作式)');
             resolve();
           }
           return;
         }
-        if (running >= cap || ready.length === 0) return;
-        // kind × channel 双闸内选第一个可起跑节点 (非严格 FIFO: 被闸挡住的节点让位, 保持吞吐)。
-        const idx = ready.findIndex((id) => runningByKind[schedKind(id)] < kindCap[schedKind(id)] && !channelBlocked(id));
-        if (idx < 0) return; // 所有就绪节点都被 kind/channel 闸挡住 → 等 settle 释放
-        const id = ready.splice(idx, 1)[0]!;
-        const kind = schedKind(id);
-        const channel = hasChannelCaps ? schedChannel(id) : null;
-        running++;
-        runningByKind[kind]++;
-        if (channel != null) runningByChannel.set(channel, (runningByChannel.get(channel) ?? 0) + 1);
+        // 全局 cap × kind × channel 三闸内选第一个可起跑节点并记账
+        // (非严格 FIFO: 被闸挡住的节点让位, 保持吞吐)。null = 满闸/ready 空 → 等 settle 释放。
+        const id = sched.takeRunnable();
+        if (id == null) return;
         runNode(id)
           .catch((e) => failedFromThrow(id, e)) // INV-6: leaf 抛错隔离成 failed (保留败因), 不连坐其它节点
           .then(async (r) => {
             // fan-in 定向摘要在 running-- 之前 await: 保持槽位占用跨摘要在飞 → 收敛判据 (running===0)
             // 不会误触发, dependents 也不会在摘要就绪前被释放 (settle 在此后)。fail-open, 永不抛。
             const { r: settledR, view } = await maybeFaninView(id, r);
-            running--;
-            runningByKind[kind]--;
-            if (channel != null) runningByChannel.set(channel, (runningByChannel.get(channel) ?? 1) - 1);
+            sched.release(id);
             if (view) faninView[id] = view;
             try {
               settle(id, settledR);
