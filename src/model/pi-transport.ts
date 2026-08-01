@@ -1,9 +1,20 @@
 /**
- * pi-transport — callModel 的 pi-ai 目录后备通道 (统一模型层, 2026-07-19)。
+ * pi-transport — callModel 的**唯一**传输通道 (2026-08-01 起; 此前它只是"后备"那条)。
  *
- * 解析序 (owner 锁定设计): ① 自有 registry (自定 OpenAI 兼容网关 / env 注册的 mimo·deepseek)
- * ② provider 不在 registry 但 pi-ai 目录认识 → 本通道经 pi `completeSimple()` 调用 —— 协议
- * (anthropic-messages / openai-completions / …) 与 env key 映射全交给 pi; ③ 都不认 → config 错。
+ * ## 为什么从两条并成一条
+ *
+ * 此前 `callModel` 有两条路: 自有 registry 命中走本仓手写的 `POST /chat/completions`,
+ * 认不出来才落到 pi。两条路各自演化, 于是**同一件事要记得做两遍** —— 而漏掉的那一遍
+ * 不是"少了个功能", 是一个隐形故障: `model-caps` 的采样过滤原生那条早就查、pi 这条从来没查
+ * → codex 座位每一发都带 `temperature` 出门、每一发 400。而 judge 就坐在那个座位上 →
+ * **goal 环在那个配置下根本不可能收敛**, 表面症状却是"任务太难, 一直在修"(实测空转 65 分钟)。
+ *
+ * 并成一条之后分工是: **自有 registry 供端点与凭证, pi-ai 供协议知识**
+ * (compat 怪癖 / thinkingLevelMap / 流式解析 / OAuth)。见 {@link piModelFromProviderConfig}。
+ *
+ * 解析序 (owner 锁定设计, 未变): ① 自有 registry (自定网关 / env 注册的 mimo·deepseek /
+ * models.json 自定条目) ② provider 不在 registry 但 pi-ai 目录认识 ③ 都不认 → config 错。
+ * 变的只是 ①② 之后走同一个 {@link piRequest}。
  *
  * 认证事实 (pi-ai 0.77.0 实测 grounding):
  *   - `complete()/completeSimple()` 只认 `options.apiKey ?? getEnvApiKey(provider)`, **不**自动读
@@ -19,7 +30,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { samplingFor } from './model-caps';
+import { capsFor, maxOutputFor, samplingFor } from './model-caps';
 import type {
   Api,
   AssistantMessage,
@@ -41,7 +52,7 @@ import type { OAuthCredentials } from '@earendil-works/pi-ai/oauth';
 import { createKimiCodingOAuthProvider } from './kimi-oauth';
 import { createOpenAICodexOAuthProvider } from './openai-codex-oauth';
 import type { ContentPart, ModelMessage, ModelRequest, ModelUsage } from './types';
-import { ModelError } from './index';
+import { ModelError, reasoningEffortFor } from './index';
 import { logger } from '../logger';
 
 export type PiModel = Model<Api>;
@@ -162,6 +173,70 @@ export function resolvePiModel(provider: string, modelId: string): PiModel | und
   const base = siblings[0];
   if (!base) return undefined;
   return { ...base, id: modelId, name: modelId };
+}
+
+/** ProviderConfig 与目录都没给上下文窗口时的保守兜底 (够放下一次 fan-in, 不敢往大了猜)。 */
+const FALLBACK_CONTEXT_WINDOW = 128_000;
+/** 同上, 输出上限的兜底 (anthropic 协议要求必给 max_tokens, 不能留空)。 */
+const MAX_TOKENS_FALLBACK = 32_768;
+
+/**
+ * 自有 registry 条目 → pi `Model` (2026-08-01, 两条传输并成一条时的接缝)。
+ *
+ * **分工**: registry 供端点与凭证 (它存在的理由就是"pi 不认识这个地址"), pi 目录供协议知识。
+ * 于是这里的做法是: 目录认识这一格 (provider+modelId) 就以目录条目**打底**, 再把 registry 的
+ * baseUrl/headers/上限盖上去; 目录不认识才从零捏一个骨架。
+ *
+ * 为什么不干脆全部自己捏: 目录条目里那些字段不是装饰 —— `compat`(deepseek 的
+ * `requiresReasoningContentOnAssistantMessages` 之类端点怪癖) 与 `thinkingLevelMap`(哪档真存在)
+ * 正是"手写一条 HTTP 通道"迟早会漏的东西, 而漏了不报错, 只是悄悄地不生效。
+ *
+ * 反过来 baseUrl **必须**用 registry 的: `DEEPSEEK_BASE_URL` 指到自建网关时, 目录里那个
+ * 官方地址会把请求送错地方 —— 那是配置的本意, 不是要被目录覆盖的默认值。
+ */
+export function piModelFromProviderConfig(
+  provider: string,
+  modelId: string,
+  cfg: {
+    baseUrl: string;
+    api: string;
+    maxTokens?: number;
+    contextWindow?: number;
+    headers?: Record<string, string>;
+  },
+): PiModel {
+  const api = cfg.api === 'anthropic-messages' ? 'anthropic-messages' : 'openai-completions';
+  const catalog = deps().getModel(provider, modelId);
+  const hit = catalog && catalog.api === api ? catalog : undefined;
+  const base: PiModel = hit ?? {
+    id: modelId,
+    name: modelId,
+    api,
+    provider: provider as PiModel['provider'],
+    baseUrl: cfg.baseUrl,
+    // 目录不认识 → 假定**支持** reasoning: 该发不发是静默降级 (弱模型不思考, 没人看得见),
+    // 该不发发了是 400 (响亮)。而"发什么字面量"由 model-caps 的实测词表兜着, 见 piRequest。
+    reasoning: true,
+    input: ['text', 'image'],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: cfg.contextWindow ?? FALLBACK_CONTEXT_WINDOW,
+    maxTokens: cfg.maxTokens ?? MAX_TOKENS_FALLBACK,
+  };
+  // ⚠ 上限/窗口的优先序是 **per-model 优先, provider 级兜底** —— 反过来会重演 model-caps 治的那个 bug:
+  // `cfg.maxTokens` 是 models.json 条目内**所有模型的最大值**, opencode-go 底下 deepseek 是 384K,
+  // 拿它盖上去, glm(128K)/qwen(65K) 就都变成 384K 了。
+  const maxTokens = maxOutputFor(modelId) ?? hit?.maxTokens ?? cfg.maxTokens ?? MAX_TOKENS_FALLBACK;
+  const contextWindow = hit?.contextWindow ?? cfg.contextWindow ?? FALLBACK_CONTEXT_WINDOW;
+  return {
+    ...base,
+    id: modelId,
+    provider: provider as PiModel['provider'],
+    api,
+    baseUrl: cfg.baseUrl.replace(/\/+$/, ''),
+    contextWindow,
+    maxTokens,
+    ...(cfg.headers ? { headers: { ...base.headers, ...cfg.headers } } : {}),
+  };
 }
 
 // ── 认证 (auth.json → env; 优先序与 pi AuthStorage 一致) ──────────────────────────
@@ -372,19 +447,34 @@ function classifyPiError(message: string): ModelError {
   return new ModelError('transport', `pi: ${message.slice(0, 300)}`);
 }
 
+/** 「这个 api 收不下这个旋钮」只吼一次 (同 model-caps 的丢弃告警纪律: 噪音里没人看得见第一条)。 */
+const topPDropShouted = new Set<string>();
+
 /**
  * pi 通道单发: ModelRequest → completeSimple → PiCallResult。
- * thinkingLevel 直映 pi reasoning ('off'/省略 = 不发; 仅 model.reasoning=true 才发 — 目录事实防坏参);
- * topP pi SimpleStreamOptions 不支持 → 不发 (诚实丢弃, 不伪造)。
+ *
+ * 两条通道并成一条之后, 原来只长在原生那条上的三样**搬到了这里**(而不是丢掉):
+ *   · **effort 词表** (`reasoningEffortFor` + `model-caps.efforts`): 发错 reasoning_effort 不是降级
+ *     而是 400。**只在 caps 登记过这一格时用我们的表** —— 没登记就把档位原样交给 pi, 由它按目录的
+ *     `thinkingLevelMap` 夹 (自家目录它比我们清楚; 而我们的 UNKNOWN 兜底会把所有未登记模型压成 'high')。
+ *   · **输出上限** (`maxOutputFor`): 别朝 glm/qwen 要 deepseek 的 384K。
+ *   · **top_p / response_format**: pi 的 `SimpleStreamOptions` 没有这两项, 但有 `onPayload`
+ *     (发出去之前改 body) —— 这才是它们该走的门。**不能"诚实丢弃"了事**: topP 是 best-of-N /
+ *     distill 的发散度旋钮, 悄悄吃掉它会让 N 个 lens 塌成同一份 (那正是 526bcf4 在治的形状)。
+ *     `onPayload` 只对 chat-completions / anthropic-messages 两种 body 形状生效, 别的 api 照旧
+ *     发不出去 —— 那时**出声**, 不装作发了。
+ *
+ * `apiKey` 覆盖: 自有 registry 的条目自带 key (注册时就要求必填), 不必再去 auth.json/env 里找。
  * stopReason 'error'/'aborted' → ModelError (http 嗅状态码 / transport), 供 callModel 统一重试预算。
  */
 export async function piRequest(
   model: PiModel,
   messages: ModelMessage[],
   req: ModelRequest,
+  opts?: { apiKey?: string },
 ): Promise<PiCallResult> {
   const d = deps();
-  const apiKey = await resolvePiApiKey(model.provider);
+  const apiKey = opts?.apiKey ?? (await resolvePiApiKey(model.provider));
   if (!apiKey) {
     throw new ModelError(
       'config',
@@ -392,23 +482,51 @@ export async function piRequest(
     );
   }
   const context = toPiContext(messages, model);
-  // 采样参数按模型能力过滤 (2026-07-31)。原生通道 (`model/index.ts`) 早就查这张表了, **pi 这条没查** ——
-  // 于是 codex 座位上每一发都带 temperature 过去、每一发都 400。撞上 judge 座位的后果不是"某次调用失败",
-  // 是**环永远拿不到裁决**: 一跑空转 65 分钟, 而表面症状是"任务难, 一直在修"。
-  // 复用同一张 caps 表而不是在这里另写一份判断: 两处各写一份, 早晚一份先漂。
+  // 采样参数按模型能力过滤 (2026-07-31)。个别路由对 temperature/topP 直接 400 (codex 拒 temperature,
+  // kimi-k3 经 opencode-go 拒两者) —— 发过去不是降级而是整节点挂。丢弃要出声, 判据的单一真源在 model-caps。
   const sampling = samplingFor(model.id, req);
+  // effort: caps 登记过 → 用实测词表 (它知道目录不知道的事: 哪些字面量会被拒);
+  // 没登记 → 原样交给 pi 按 thinkingLevelMap 夹。两者都吐 pi 的 ThinkingLevel 字面量。
+  const level = capsFor(model.id)
+    ? reasoningEffortFor(model.provider, req.thinkingLevel, model.id)
+    : req.thinkingLevel;
   const reasoning: ThinkingLevel | undefined =
-    model.reasoning && req.thinkingLevel && req.thinkingLevel !== 'off'
-      ? req.thinkingLevel
+    model.reasoning && level && level !== 'off' ? (level as ThinkingLevel) : undefined;
+  // 上限收敛到该模型官方能力 (调用方没给就不发, 由 pi 用目录的 maxTokens)。
+  const ceiling = maxOutputFor(model.id);
+  const maxTokens =
+    req.maxTokens !== undefined && ceiling ? Math.min(req.maxTokens, ceiling) : req.maxTokens;
+  // body 直改 (pi SimpleStreamOptions 表达不了的两项)。
+  const bodyShaped = model.api === 'openai-completions' || model.api === 'anthropic-messages';
+  if (sampling.topP !== undefined && !bodyShaped && !topPDropShouted.has(model.api)) {
+    topPDropShouted.add(model.api);
+    logger.warn(
+      { model: model.id, api: model.api, topP: sampling.topP },
+      `[omd/pi] ${model.api} 的请求体形状不在 top_p 注入范围内 → 本次 topP **没发出去**。` +
+        '若这是 best-of-N / distill 的某个 lens, 它与别的 lens 现在跑的是同一档采样。同 api 只吼一次。',
+    );
+  }
+  const wantTopP = bodyShaped ? sampling.topP : undefined;
+  // JSON 模式: 原生那条一直在发, 并成一条不能把它丢了 (丢了只是让 parse 重试变多, 是最难察觉的那类退步)。
+  const wantJsonObject = !!req.responseSchema && model.api === 'openai-completions';
+  const onPayload =
+    wantTopP !== undefined || wantJsonObject
+      ? (payload: unknown): unknown => {
+          const body = payload as Record<string, unknown>;
+          if (wantTopP !== undefined) body.top_p = wantTopP;
+          if (wantJsonObject) body.response_format = { type: 'json_object' };
+          return body;
+        }
       : undefined;
   let msg: AssistantMessage;
   try {
     msg = await d.completeSimple(model, context, {
       apiKey,
       ...(sampling.temperature !== undefined ? { temperature: sampling.temperature } : {}),
-      ...(req.maxTokens !== undefined ? { maxTokens: req.maxTokens } : {}),
+      ...(maxTokens !== undefined ? { maxTokens } : {}),
       ...(req.signal ? { signal: req.signal } : {}),
       ...(reasoning ? { reasoning } : {}),
+      ...(onPayload ? { onPayload } : {}),
     });
   } catch (e) {
     if (e instanceof ModelError) throw e;

@@ -81,12 +81,15 @@ export function registerProvidersFromModelsJson(
   for (const entry of readCustomProviders(env)) {
     const maxTokens =
       entry.models.reduce((mx, m) => Math.max(mx, m.maxTokens ?? 0), 0) || MAX_TOKENS_DEFAULT;
+    // 上下文窗口同口径 (条目内最大值)。models.json 没登记 → 不设, 由 pi 目录的同名条目供。
+    const contextWindow = entry.models.reduce((mx, m) => Math.max(mx, m.contextWindow ?? 0), 0);
     registerProvider(entry.id, {
       baseUrl: entry.baseUrl,
       apiKey: entry.apiKey,
       api: entry.api === 'anthropic-messages' ? 'anthropic-messages' : 'openai-compatible',
       ...(entry.models[0]?.id ? { defaultModel: entry.models[0].id } : {}),
       maxTokens,
+      ...(contextWindow > 0 ? { contextWindow } : {}),
     });
     registered.push(entry.id);
   }

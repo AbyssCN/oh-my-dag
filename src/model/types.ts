@@ -28,6 +28,13 @@ export interface ProviderConfig {
   defaultModel?: string;
   /** anthropic-messages requires max_tokens; default 4096. */
   maxTokens?: number;
+  /**
+   * 上下文窗口 (token)。省略 = 由 pi 目录的同名条目供, 都没有则用保守兜底。
+   *
+   * 两条传输并成一条之后它有了真消费方: 合成出来的 pi `Model` 要带这个数, 而 agent leaf 的
+   * 上下文预算闸 (GP-8, 轮间优雅停) 正是拿它当分母 —— 猜大了会撞窗口硬失败, 猜小了会早停。
+   */
+  contextWindow?: number;
   /** Extra headers merged into every request (e.g. self-hosted gateway auth). */
   headers?: Record<string, string>;
 }
