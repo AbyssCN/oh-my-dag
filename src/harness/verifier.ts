@@ -23,7 +23,7 @@ import { z } from 'zod';
 import { send, listProviders, assertModelResolvable } from '../model/gateway';
 import { resolveRoleModel, listRoleModels } from '../model/gateway';
 import { tryResolveSeatModel } from '../model/role-models';
-import { seatSampling } from '../model/seats';
+import { seatSampling, seatSpec } from '../model/seats';
 import { withGoFallback } from '../model/gateway';
 import { logger } from './logger';
 import type { ModelUsage } from '../model/gateway';
@@ -146,7 +146,11 @@ export function createDefaultVerifier(opts: DefaultVerifierOpts): VerifierFn {
         ...seatSampling('verifier'),
         // xhigh 推理档 + 700 预算 = reasoning 必吃光正文 (这是审查 oracle 闸, 空裁决最伤)。
         maxTokens: 8192,
-        thinkingLevel: opts.thinkingLevel ?? 'xhigh',
+        // 档由**座位登记表**驱动 (同 gate: 别让 seats.ts 写的东西到不了调用上)。
+        // ⚠ 它今天坐在 codex 上, 而那家**关不掉思考** —— 2026-08-01 实测 xhigh 与 off 两臂逐字相同,
+        // `reasoning=undefined` 时 gpt-5 照样内部推理。所以这个旋钮此刻是**没有效果**的, 不是没接。
+        // 一旦这个座位挪到关得掉思考的模型 (如 deepseek), gate 那组对照就直接适用 —— **重量一次再定档**。
+        thinkingLevel: opts.thinkingLevel ?? seatSpec('verifier')?.thinking ?? 'xhigh',
         responseSchema: VERIFIER_VERDICT_SCHEMA,
       }),
     );
