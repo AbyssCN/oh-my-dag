@@ -7,7 +7,7 @@
  *   `role-models.NODE_TIER` (分档) · `auto-assign` 的三张 `Record<NodeClass, …>` (首选/推理档/溢出链)
  *   · `empty-knobs.SEAT_CONSUMERS` (谁在消费) · 各调用点手写的 temperature。
  * 写成 markdown 只会变成第五处 —— 而这个仓一路撞见的都是同一个形态:
- * **声明面往前跑了, 消费面没跟上, 两边都不报错**。
+ * **声明面往前跑了, 消费面没跟上, 两边都不报错**(图鉴见 `docs/silent-failures.md` S-1/S-4)。
  * 所以真源是这张表, 上面那几处**从它派生**; 人要看的那份由 `scripts/omd-seats.ts` 从它渲染。
  *
  * ## 一个座位到底是什么
