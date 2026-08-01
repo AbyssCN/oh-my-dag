@@ -176,3 +176,46 @@ describe('find -delete 危险闸 (白名单收了 find/bfs/fd 之后的配套)',
     expect(r.exitCode).toBe(0);
   });
 });
+
+/**
+ * **两条流都要留** (2026-08-01, verifier 校准逼出来的)。
+ *
+ * 原本是 `stdout || stderr` —— stdout 非空就把 stderr 整个扔掉。而这条闸最该跑的那个命令
+ * 正好踩中: `bun test` 把版本横幅写 stdout、把 `N pass / N fail` 汇总**写 stderr**。
+ * 于是一个验证节点的全文输出只有 `bun test v1.3.14`, 通过/失败数从没进过 DAG、下游、
+ * verifier 或留痕库 —— 而退出码 0 照给, 一切看起来正常。
+ * 失败时更糟: 失败详情也在 stderr, "红了"这件事只剩一个退出码, 说不出红在哪。
+ */
+describe('command-leaf 输出捕获: stdout 与 stderr 都要', () => {
+  test('两条流都有内容时一条都不丢 (bun test 的真实形状)', async () => {
+    const { spawn } = fakeSpawn({
+      'bun test': { stdout: 'bun test v1.3.14', stderr: ' 5 pass\n 0 fail\nRan 5 tests across 1 file.', exitCode: 0 },
+    });
+    const run = createCommandLeafRunner({ allowlist: ['bun'], spawn });
+    const r = await run({ command: 'bun test' });
+    expect(r.text).toContain('bun test v1.3.14'); // stdout
+    expect(r.text).toContain('5 pass'); // ← 老实现在这里把它丢了
+    expect(r.text).toContain('0 fail');
+  });
+
+  test('失败时的详情 (在 stderr) 同样留下来 —— 否则"红了"说不出红在哪', async () => {
+    const { spawn } = fakeSpawn({
+      'bun test': { stdout: 'bun test v1.3.14', stderr: '✗ 闸: 版本号已更新\nExpected: "1.1.0"\n 1 pass\n 2 fail', exitCode: 1 },
+    });
+    const run = createCommandLeafRunner({ allowlist: ['bun'], spawn });
+    const r = await run({ command: 'bun test' });
+    expect(r.exitCode).toBe(1);
+    expect(r.text).toContain('2 fail');
+    expect(r.text).toContain('版本号已更新');
+  });
+
+  test('只有一条流有内容时不留空行 (stdout 空 / stderr 空 各一例)', async () => {
+    const { spawn } = fakeSpawn({
+      'bun x tsc': { stdout: '', stderr: 'TS2304: Cannot find name', exitCode: 2 },
+      'bun run build': { stdout: 'built', stderr: '', exitCode: 0 },
+    });
+    const run = createCommandLeafRunner({ allowlist: ['bun'], spawn });
+    expect((await run({ command: 'bun x tsc' })).text).toBe('TS2304: Cannot find name');
+    expect((await run({ command: 'bun run build' })).text).toBe('built');
+  });
+});
