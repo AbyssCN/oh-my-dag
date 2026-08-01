@@ -1,7 +1,7 @@
 /**
  * src/mcp/tools/dag-tools — dag_run / dag_run_plan / dag_status / dag_result MCP tools (D-8 宽出).
  *
- * Pure-fn factory: createDagTools({engine, runRegistry, clock}) → OmdMcpTool[].
+ * Pure-fn factory: createDagTools({engine, runRegistry}) → OmdMcpTool[].
  * Handlers inject engine seam (runExecutorDag / runExecutorDagWithPlan) + RunRegistry.
  * runExecutorDag is fire-and-forget: register → start → execute → succeed/fail (in background).
  * dag_status / dag_result query RunRegistry; unknown runId → isError (never crash).
@@ -76,8 +76,6 @@ export interface DagEngine {
 export interface DagToolDeps {
   engine: DagEngine;
   runRegistry: RunRegistry;
-  /** Clock seam — injectable for deterministic tests. Default: () => new Date().toISOString(). */
-  clock?: () => string;
   /**
    * Default ExecutorDagConfig base (leafModel, conductorModel, etc.) — spread with per-call overrides.
    *
@@ -208,7 +206,7 @@ function summarizeResult(result: ExecutorDagResult): Record<string, unknown> {
 
 /**
  * Build 5 dag tools: dag_run, dag_run_plan, dag_status, dag_result, dag_node_output.
- * Each handler is a pure fn closed over {engine, runRegistry, clock}.
+ * Each handler is a pure fn closed over {engine, runRegistry}.
  */
 /**
  * Shared plan-launch: register/reopen the run, wire live progress + continuity, fire the engine

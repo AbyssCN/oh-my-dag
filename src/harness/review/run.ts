@@ -43,13 +43,11 @@ export function resolveReviewModels(
  * (同家族的训练数据/偏好/思维定式), 五维看着宽实则窄。不同家族的模型各扫一遍, 才是真的多视角。
  *
  * 配法: `OMD_REVIEW_DIM_MODELS="correctness=openai-codex:gpt-5.6-sol,security=kimi-coding:k3"`
- * (逗号分隔 `维度=坐标`)。未列出的维度回落 findModel; spec 轴仍走 OMD_REVIEW_SPEC_MODEL。
+ * (逗号分隔 `维度=坐标`)。未列出的维度**由调用方回落** findModel(不在本函数里, 本函数只解析显式配的那些);
+ * spec 轴仍走 OMD_REVIEW_SPEC_MODEL。
  * 坐标不可达 → roleModelWithFallback 顺延 (无凭证环境不炸整轮审查)。
  */
-export function resolveDimensionModels(
-  env: Record<string, string | undefined>,
-  fallback: string,
-): Record<string, string> {
+export function resolveDimensionModels(env: Record<string, string | undefined>): Record<string, string> {
   const raw = env.OMD_REVIEW_DIM_MODELS?.trim();
   if (!raw) return {};
   const out: Record<string, string> = {};
@@ -58,7 +56,6 @@ export function resolveDimensionModels(
     if (!dim || !coord || !coord.includes(':')) continue;
     out[dim] = roleModelWithFallback(coord, 'review', env);
   }
-  void fallback;
   return out;
 }
 
@@ -168,7 +165,7 @@ export async function runReview(opts: RunReviewOpts): Promise<RunReviewResult> {
   // 整个审查阶段 → roleModelWithFallback 顺延到已注册 provider。全不可达才原样返 (下游报错语义不变)。
   // find→review 角色, verify→verifier 角色(跨模型), 单一真源 resolveReviewModels(无硬编码坐标)。
   const { findModel, verifyModel } = resolveReviewModels(opts, env);
-  const dimModels = resolveDimensionModels(env, findModel);
+  const dimModels = resolveDimensionModels(env);
   const findEffort = (env.OMD_REVIEW_FIND_EFFORT as ReviewEffort) || 'high';
   // spec 轴模型 = `review-spec` **座位** (spec 对照吃长上下文, 可路由长窗模型), 解不到回落 find 层。
   // 经单一 resolver (INV-MODEL-1): config.models['review-spec'] → OMD_REVIEW_SPEC_MODEL (座位正名 env)
