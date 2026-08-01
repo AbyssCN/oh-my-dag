@@ -1,7 +1,7 @@
 {
   "name": "oh-my-dag",
   "version": "0.3.0",
-  "description": "oh-my-dag — a complete harness for the pi coding-agent runtime, in the oh-my-* tradition. A DAG execution engine (typed nodes → concurrent fan-out → cross-model verify → escalate on failure), pathfinder mode (persistent decision maps for multi-session work), an agent-template registry, a self-consolidating memory layer, an edit→verify tool gate, an MCP router, and a 22-skill bundle. Ships a bundled terminal agent; any OpenAI-compatible backend plugs in, plus OAuth providers via the pi-ai catalog.",
+  "description": "oh-my-dag — a DAG execution engine exposed as an MCP server. Typed nodes → concurrent fan-out → cross-model verify → escalate on failure; pathfinder mode (persistent decision maps for multi-session work), an agent-template registry, a memory layer, and a bundle of /omd-* client skills that install themselves into your MCP client. Any OpenAI-compatible backend plugs in, plus OAuth providers via the pi-ai catalog. No terminal UI: your MCP client is the front end.",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -40,12 +40,9 @@
     "!src/**/*.test.ts",
     "scripts",
     "!scripts/**/*.test.ts",
-    "skills",
     "client-skills",
     "templates",
     "substrate",
-    "umbrella.md",
-    "manifest.json",
     "tsconfig.json",
     ".env.example",
     "README.md",
@@ -73,7 +70,6 @@
   "dependencies": {
     "@earendil-works/pi-ai": "^0.80.10",
     "@earendil-works/pi-agent-core": "^0.80.10",
-    "@earendil-works/pi-coding-agent": "^0.80.10",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@oh-my-pi/hashline": "^15.7.6",
     "@sinclair/typebox": "^0.34.49",

@@ -233,8 +233,10 @@ export const SEATS: readonly SeatSpec[] = [
     frequency: '经 stamp 池轮换', crossFamily: 'no', thinking: 'xhigh', sampling: {},
     recommend: '与 lens 同档。⚠ 它是**池成员**而非独立角色 —— 想改探索类模型, 改 `config.pools.cheap` 更直接。' },
   { id: 'distill', tier: 'worker',
-    what: '**蒸馏**: 把抓来的网页正文压成要点 (research 的降本层), 以及 plan 的 distill 阶段。',
-    where: ['harness/web/distill-source', 'harness/web/distill-challenger', 'harness/plan/distill', 'mcp/assemble (stampPools.cheap)'],
+    what: '**蒸馏**: 把抓来的网页正文压成要点 (research 的降本层)。',
+    // 2026-08-01: 摘掉 `harness/plan/distill` —— 它是 TUI 侧的 plan distill 阶段, 随 TUI 前端一并删除
+    // (交接文 13)。蒸馏能力本身没丢: MCP 的 `omd_distill` 走 web/distill-{source,challenger}。
+    where: ['harness/web/distill-source', 'harness/web/distill-challenger', 'mcp/assemble (stampPools.cheap)'],
     frequency: '每个来源 1 发 (高频)', crossFamily: 'no', thinking: 'xhigh',
     sampling: { temperature: 0.25 },
     recommend: '机械提取 → 最廉价档。' },
