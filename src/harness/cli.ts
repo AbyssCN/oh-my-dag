@@ -12,11 +12,15 @@
  * 对话前端归 Claude Code, omd 只当执行引擎。于是 TUI 外壳与它独占的能力件一起出局,
  * 只留 `pi-agent-core` (agent leaf 的 runAgentLoop) + `pi-ai` (provider 注册)。
  *
- * ⚠ 文件名留作 `tui.ts` 是**刻意的**: `package.json` 的 `bin` 指着它, 改名等于改发布契约,
- *   而它现在已经不是 TUI 了。名字的债记在这里, 不值得为它动 bin。
- *
  * ⚠ `init` 分支不能删: 没有它, 用户配置 omd 的唯一办法是手改 JSON/.env。
  *   `init/` 是纯 readline 向导, **不依赖 pi-coding-agent** (已核)。
+ *
+ * ## 名字 (2026-08-02 从 `tui.ts` 改过来)
+ *
+ * 砍完 TUI 的那一轮我把文件名留作 `tui.ts`, 理由写的是「`bin` 指着它, 改名等于改发布契约」——
+ * **那条理由是错的**: 发布契约是 `bin` 的**键**(`omd` / `oh-my-dag`, 用户敲的就是这个),
+ * 值只是仓内路径, 换个路径对已安装的用户完全不可见。于是这里没有契约问题, 只有一个
+ * 叫 `tui.ts` 却删光了 TUI 的文件 —— 本轮改名 `cli.ts`, 同目录, 相对 import 一个没动。
  */
 import '../env-alias';
 import { setCoreLogger } from './logger';

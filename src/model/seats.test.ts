@@ -33,7 +33,7 @@ describe('登记表本身填齐了', () => {
   it('★ 消费点写的文件必须真的存在 —— 否则登记的是一句过时的话', () => {
     for (const s of SEATS) {
       for (const w of s.where) {
-        // 形如 `mcp/assemble.resolveEngineModels` / `harness/tui (…)` → 取到第一个 . ( 空格之前
+        // 形如 `mcp/assemble.resolveEngineModels` / `harness/fleet (…)` → 取到第一个 . ( 空格之前
         const file = w.split(/[ (]/)[0]!.replace(/\.[A-Za-z_$][\w$]*$/, '');
         const hit = ['ts', 'tsx'].some((ext) => {
           try {

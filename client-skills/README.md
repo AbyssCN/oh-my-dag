@@ -11,7 +11,7 @@
 
 ```bash
 cd <目标repo> && claude mcp add omd -- omd mcp        # 全局安装的 omd; 首次起 server 即自装技能
-# 或源码: claude mcp add omd -- bun run <omd路径>/src/harness/tui.ts mcp
+# 或源码: claude mcp add omd -- bun run <omd路径>/src/harness/cli.ts mcp
 ```
 
 **Codex**:没有 skills 机制——把需要的 SKILL.md 正文并入目标 repo 的 `AGENTS.md`,或作为 prompt 片段引用。

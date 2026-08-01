@@ -72,7 +72,7 @@ describe('createOmdMcpServer 注册面', () => {
 });
 
 // ——— D-9 回归 (审核实测抓过 3 个僵尸进程 100% CPU 忙转): 客户端消失/stdin EOF → server ≤5s 干净自退。
-// 真起子进程 `bun run src/harness/tui.ts mcp` (非 InMemory), 先 initialize 握手证明 server 活着
+// 真起子进程 `bun run src/harness/cli.ts mcp` (非 InMemory), 先 initialize 握手证明 server 活着
 // (排除 boot 即崩的假绿), 再关 stdin 断言自退。
 
 /** 从 stdout 协议流里读到指定 id 的响应 (deadline 内); 读不到/流断回 false。 */
@@ -106,7 +106,7 @@ async function readResponseId(stdout: ReadableStream<Uint8Array>, id: number, ti
 
 describe('omd mcp 进程生命周期 (D-9 回归)', () => {
   test('客户端消失 (stdin 关闭) → ≤5s 干净自退 exit 0, 不留僵尸忙转', async () => {
-    const tuiPath = fileURLToPath(new URL('../../src/harness/tui.ts', import.meta.url));
+    const tuiPath = fileURLToPath(new URL('../../src/harness/cli.ts', import.meta.url));
     const proc = Bun.spawn(['bun', 'run', tuiPath, 'mcp'], {
       stdin: 'pipe',
       stdout: 'pipe',

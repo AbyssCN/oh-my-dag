@@ -116,7 +116,6 @@ export const SEATS: readonly SeatSpec[] = [
       '不达成 → 带理由重画子图, 被点名的子节点进毒集不许复用。也判 continuity 的「该不该停」。',
     where: [
       'mcp/assemble (judgeModel)',
-      'harness/tui (iterate/execute/cg 的 judgeModel)',
       'harness/executor-dag.judgeConductorRound → plan/llm-judge',
       'harness/continuity/halt-judge (L2)',
     ],
@@ -199,7 +198,7 @@ export const SEATS: readonly SeatSpec[] = [
     id: 'leaf',
     tier: 'worker',
     what: '**inproc 单发叶**: 无工具, 一问一答 (生成/研究/判断)。DAG 里量最大的那一类。',
-    where: ['mcp/assemble.resolveEngineModels', 'harness/tui', 'harness/fleet'],
+    where: ['mcp/assemble.resolveEngineModels', 'harness/fleet'],
     frequency: '每图 N 发 (量在这里)',
     crossFamily: 'no',
     thinking: 'xhigh',
@@ -210,7 +209,7 @@ export const SEATS: readonly SeatSpec[] = [
     id: 'agent',
     tier: 'worker',
     what: '**带工具的叶**: read/write/edit/ls/grep/bash + hashline, **能真改文件**。omd 干活的底座。',
-    where: ['mcp/assemble.resolveEngineModels', 'harness/tui', 'harness/fleet (coding)'],
+    where: ['mcp/assemble.resolveEngineModels', 'harness/fleet (coding)'],
     frequency: '每图若干 (比 inproc 少, 但每发更贵更长)',
     crossFamily: 'no',
     // ⚠ agent leaf 的 effort **不走座位档**: runner 自带 xhigh (owner 早前锁的, 改文件质量优先)。
@@ -253,7 +252,7 @@ export const SEATS: readonly SeatSpec[] = [
     what:
       '**整图终审**: DAG 全跑完之后, 拿原任务 + 计划 + 各叶产出, 逐条对照任务的明确要求判 pass/fail。' +
       '职责是**攻击结果**而不是盖章放行 —— 默认怀疑, 证据不足即不过。不过 → escalation 重规划。',
-    where: ['harness/verifier.resolveVerification', 'mcp/assemble (verification 接线)', 'harness/tui'],
+    where: ['harness/verifier.resolveVerification', 'mcp/assemble (verification 接线)'],
     frequency: '**每图 1 发** (低频 → 值得用贵的)',
     // INV-3: 与大脑簇同族则对抗失效 (它造的坏计划自己看不出坏)。auto-assign 同族时会降级告警。
     crossFamily: 'required',

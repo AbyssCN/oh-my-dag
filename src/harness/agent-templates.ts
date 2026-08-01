@@ -22,7 +22,7 @@
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { splitFrontmatter } from './skills/scanner';
+import { splitFrontmatter } from './skills/frontmatter';
 import { BUILTIN_AGENT_TEMPLATES } from './agent-templates-builtin';
 import { logger } from './logger';
 
