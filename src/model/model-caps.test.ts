@@ -2,7 +2,7 @@
  * per-model 能力表回归 (owner 2026-07-28)。
  * 锁住的是"发错一个字面量就 400 整节点挂"的那类错配 —— 数字与词表全部对官网 + 实打探针。
  */
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import { capsFor, maxOutputFor, samplingFor, _resetDroppedKnobShoutForTest } from './model-caps';
 import { logger } from '../logger';
 import { reasoningEffortFor } from './index';
@@ -129,16 +129,34 @@ describe('samplingFor —— 过滤 + 丢弃告警', () => {
 });
 
 describe('★ 收下但不生效 —— 与"拒收"是两种不同的坏 (2026-08-01)', () => {
-  it('honorsSampling:false 的模型仍然照发 (哪天它认了就自动生效)', () => {
+  it('拒收 = 丢弃 (发了 400); 不生效 = 照发 (发了没事, 只是没用)。两条路必须分得开', () => {
     _resetDroppedKnobShoutForTest();
-    // 拒收 = 丢弃 (发了 400); 不生效 = 照发 (发了没事, 只是没用)。两条路必须分得开。
-    expect(samplingFor('deepseek-v4-flash', { temperature: 0.2 }).temperature).toBe(0.2);
+    expect(samplingFor('deepseek-v4-flash', { temperature: 0.2 }, { thinking: true }).temperature).toBe(0.2);
     expect(samplingFor('gpt-5.6-sol', { temperature: 0.2 }).temperature).toBeUndefined();
+  });
+
+  it('★ 限定词是这条登记的要害: **关了思考同一个坐标就认** (官方口径)', () => {
+    // 这条断言钉的不是某个返回值 —— 两种情况下 temperature 都照发。钉的是**告警只在开思考时响**,
+    // 因为"这个模型不认 temperature"与"思考模式不认 temperature"是两句不同的话,
+    // 而前者会顺手抹掉"关掉思考就能调温"这个真实存在的选择。
+    const warns: string[] = [];
+    const spy = spyOn(logger, 'warn').mockImplementation(((_o: unknown, m?: string) => {
+      warns.push(String(m ?? _o));
+    }) as never);
+    try {
+      _resetDroppedKnobShoutForTest();
+      samplingFor('deepseek-v4-flash', { temperature: 0.2 }, { thinking: false });
+      expect(warns.filter((w) => w.includes('不生效'))).toHaveLength(0);
+      samplingFor('deepseek-v4-flash', { temperature: 0.2 }, { thinking: true });
+      expect(warns.filter((w) => w.includes('不生效'))).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('缺席 = 没验过, 不等于生效 (三态纪律)', () => {
     // 没登记过的模型不许被当成"已知不生效" —— 那会让一条真旋钮被误报成空的。
-    expect(capsFor('mimo-v2.5-pro')?.honorsSampling).toBeUndefined();
-    expect(capsFor('deepseek-v4-flash')?.honorsSampling).toBe(false);
+    expect(capsFor('mimo-v2.5-pro')?.samplingIgnoredWhenThinking).toBeUndefined();
+    expect(capsFor('deepseek-v4-flash')?.samplingIgnoredWhenThinking).toBe(true);
   });
 });

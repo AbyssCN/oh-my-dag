@@ -484,7 +484,6 @@ export async function piRequest(
   const context = toPiContext(messages, model);
   // 采样参数按模型能力过滤 (2026-07-31)。个别路由对 temperature/topP 直接 400 (codex 拒 temperature,
   // kimi-k3 经 opencode-go 拒两者) —— 发过去不是降级而是整节点挂。丢弃要出声, 判据的单一真源在 model-caps。
-  const sampling = samplingFor(model.id, req);
   // effort: caps 登记过 → 用实测词表 (它知道目录不知道的事: 哪些字面量会被拒);
   // 没登记 → 原样交给 pi 按 thinkingLevelMap 夹。两者都吐 pi 的 ThinkingLevel 字面量。
   const level = capsFor(model.id)
@@ -492,6 +491,10 @@ export async function piRequest(
     : req.thinkingLevel;
   const reasoning: ThinkingLevel | undefined =
     model.reasoning && level && level !== 'off' ? (level as ThinkingLevel) : undefined;
+  // ⚠ **采样必须算在 reasoning 之后**: 「收下但不生效」是思考模式的性质, 不是模型的固有属性
+  // (deepseek 官方: 思考模式不支持 temperature/top_p, 不报错也不生效)。同一个坐标关了思考就认 ——
+  // 所以判它生不生效, 得先知道这一发到底开没开思考。
+  const sampling = samplingFor(model.id, req, { thinking: reasoning !== undefined });
   // 上限收敛到该模型官方能力 (调用方没给就不发, 由 pi 用目录的 maxTokens)。
   const ceiling = maxOutputFor(model.id);
   const maxTokens =
