@@ -182,6 +182,8 @@ const cgAuditExt = createCgAuditExtension({
   conductorModel: resolveRoleModelConfigured('conductor').model,
   leafModel: resolveRoleModelConfigured('leaf').model,
   agentLeafModel: resolveRoleModelConfigured('agent').model,
+  // 内环收敛 judge 的座位 (不给则引擎落回 conductor 座 —— 见 assemble.ts 同处注)。
+  judgeModel: resolveRoleModelConfigured('judge').model,
   verification,
   router,
 });
@@ -192,6 +194,8 @@ const iterateExt = createIterateExtension({
   conductorModel: resolveRoleModelConfigured('conductor').model,
   leafModel: resolveRoleModelConfigured('leaf').model,
   agentLeafModel: resolveRoleModelConfigured('agent').model,
+  // 内环收敛 judge 的座位 (不给则引擎落回 conductor 座 —— 见 assemble.ts 同处注)。
+  judgeModel: resolveRoleModelConfigured('judge').model,
   // 未收敛多轮 → 轮级升级 conductor (同 /cg /audit 的升级模型; 没配 / provider 未注册 → 维持弱)。
   conductorEscalationModel: process.env.OMD_CONDUCTOR_ESCALATION_MODEL,
 });
@@ -229,6 +233,7 @@ const executeExt = createExecuteExtension({
   // 此处硬编码兜底会让"conductor = runtime 同款"永远不生效 (identity 承诺 vs 实际行为背离)。
   leafModel: resolveRoleModelConfigured('leaf').model,
   agentLeafModel: resolveRoleModelConfigured('agent').model,
+  judgeModel: resolveRoleModelConfigured('judge').model,
   conductorEscalationModel: process.env.OMD_CONDUCTOR_ESCALATION_MODEL,
   agentRunner,
   commandRunner,

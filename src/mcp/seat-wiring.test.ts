@@ -1,21 +1,25 @@
 /**
- * **verify 闸真的挂在 MCP 上了吗** (2026-08-01 点亮那一刻起)。
+ * **座位真的接到引擎上了吗** —— 判据取引擎**真收到的 config** (2026-08-01)。
  *
- * ## 这条闸为什么必须存在
+ * ## 为什么要专门为这件事立一条闸
  *
- * `executor-dag` 里那段跨模型校验 + conductor 静默升级写着「`config.verifier` 给则启用」——
- * 而 MCP 那条装配路径**从来没给过**。它只挂在 TUI 上 (`tui.ts` 调 resolveVerification),
- * 于是生产上跑的每一张图, verify 那一段都是空过。证据不用推理: `tools/dag-tools.ts` 里
- * 「MCP 路径无 verifier」那行注释, 就是当年照着这个事实改下游判据时留下的。
- *
- * 而这个洞**三道现成的闸一个都抓不住**:
- *   · 座位自检 16/16 ✓ —— 它问的是"座位解析得出来吗", 而 verifier 座位确实被解析了 (被借去组
+ * 一个座位可以同时是"解析得出来的"和"没接上的", 而现有的闸全都只管前一半:
+ *   · 座位自检 16/16 ✓ —— 它问的是"座位解析得出来吗"。verifier 座位确实被解析了 (被借去组
  *     `stampPools.strong` 那个池)。**坐标被人用 ≠ 它代表的机制在跑。**
- *   · `empty-knobs` 的「座位即承诺」 —— 同上, 它只要求座位被解析过。
- *   · tsc / 类型 —— `verifier` 本来就是可选字段。
- * 所以只能专门为"它到底挂上没有"立一条, 就是这个文件。
+ *   · `empty-knobs` 的「座位即承诺」 —— 同上, 只要求座位被解析过。
+ *   · tsc —— 这些都是**可选**字段, 不给就是不给。
  *
- * 判据取**引擎真收到的 config**, 不是"assemble 里有没有那行代码" —— 后者是看着像验了。
+ * 这个形态本轮抓到两例, 都在 MCP 这条路上、都活了很久:
+ *   ① **verifier**: `executor-dag` 那段跨模型校验 + conductor 静默升级写着「config.verifier
+ *      给则启用」, 而装配层从来没给过 —— 它只挂在 `tui.ts`。证据不用推理:
+ *      `tools/dag-tools.ts` 里「MCP 路径无 verifier」那行注释, 就是当年照着这个事实
+ *      改下游 ok 判据时留下的。
+ *   ② **judge**: 引擎落回 `config.judgeModel ?? config.conductorModel`, 而两条路都不给
+ *      judgeModel —— 于是「判这一轮收敛没有」的那一发一直骑在 **conductor 座位**上,
+ *      改 judge 座位不生效, 而配置面明明写着有这个座位。
+ *
+ * 两例的共同点: **没有任何红灯**, 而且症状会伪装成别的东西 (①"任务好像没人管"
+ * ②"改了配置没反应")。所以判据必须是"引擎收到了什么", 不能是"装配层有没有那行代码"。
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { assembleOmdMcpTools, type AssembleOmdMcpDeps } from './assemble';
@@ -152,5 +156,15 @@ describe('verify 闸挂在 MCP 装配上', () => {
     });
     await tools.find((t) => t.name === 'dag_run')!.handler({ task: 'override probe' } as never, {} as never);
     expect(seen.verifier).toBe(mine as never);
+  });
+});
+
+describe('内环收敛 judge 的座位', () => {
+  test('★ dag_run 的 config 带 judgeModel = judge 座位 (不再默默骑在 conductor 座上)', async () => {
+    withFakeProvider();
+    const cfg = await configSeenByEngine({ ...FAKE_ENV });
+    expect(cfg.judgeModel).toBe('faux:judge');
+    // 同一次装配里两个座位必须真的分得开 —— 否则这条断言在"两座恰好同模型"时会假绿。
+    expect(cfg.conductorModel).toBe('faux:conductor');
   });
 });

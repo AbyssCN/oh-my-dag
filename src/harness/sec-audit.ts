@@ -14,6 +14,8 @@ import type { LeafModelRouter } from './model-router';
 export interface SecAuditOpts {
   /** conductor 模型 'provider:modelId'。必填, 无硬默认。 */
   conductorModel: string;
+  /** 内环收敛 judge 座位 (省略 → 引擎落回 conductor 座)。 */
+  judgeModel?: string;
   /** inproc leaf 模型 'provider:modelId' (综合报告用)。必填, 无硬默认。 */
   leafModel: string;
   /** agent leaf 模型 (带工具审查文件)。省略 = leafModel ('agent' 座位由装配层解析)。 */
@@ -66,6 +68,7 @@ export async function secAudit(
     ...opts.verification,
     router: opts.router,
     conductorModel: opts.conductorModel,
+    ...(opts.judgeModel ? { judgeModel: opts.judgeModel } : {}),
     leafModel: opts.leafModel,
     agentLeafModel: opts.agentLeafModel,
     agentRunner: createAgentLeafRunner({ cwd: opts.cwd ?? process.cwd() }),

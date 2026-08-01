@@ -22,6 +22,8 @@ import { m } from './i18n';
 export interface CgAuditExtensionOpts {
   /** conductor 模型 'provider:modelId', 透传给 cgRetrieve / secAudit。 */
   conductorModel: string;
+  /** 内环收敛 judge 座位 (省略 → 引擎落回 conductor 座; 见 assemble.ts 同处注)。 */
+  judgeModel?: string;
   /** inproc leaf 模型 'provider:modelId' (合成/报告用)。 */
   leafModel: string;
   /** agent leaf 模型 (仅 secAudit 用, 带工具审查文件)。省略 = leafModel。 */
@@ -78,6 +80,7 @@ export function createCgAuditExtension(
         try {
           const r = await (deps?.cgRetrieve ?? cgRetrieve)(trimmed, {
             conductorModel: opts.conductorModel,
+            ...(opts.judgeModel ? { judgeModel: opts.judgeModel } : {}),
             leafModel: opts.leafModel,
             cwd: opts.cwd ?? ctx.cwd,
             verification: opts.verification,
@@ -107,6 +110,7 @@ export function createCgAuditExtension(
         try {
           const r = await (deps?.secAudit ?? secAudit)(target, {
             conductorModel: opts.conductorModel,
+            ...(opts.judgeModel ? { judgeModel: opts.judgeModel } : {}),
             leafModel: opts.leafModel,
             agentLeafModel: opts.agentLeafModel,
             cwd: opts.cwd ?? ctx.cwd,
@@ -137,6 +141,7 @@ export function createCgAuditExtension(
         try {
           const r = await (deps?.sastScan ?? sastScan)(target, {
             conductorModel: opts.conductorModel,
+            ...(opts.judgeModel ? { judgeModel: opts.judgeModel } : {}),
             leafModel: opts.leafModel,
             cwd: opts.cwd ?? ctx.cwd,
             onComplete: (res) => {
