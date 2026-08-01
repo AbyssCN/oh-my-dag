@@ -170,25 +170,39 @@ export interface AgentLeafRunnerOpts {
    */
   promptProfile?: 'auto' | 'weak' | 'strong' | 'off';
   /**
-   * agent loop 有界超时 (ms)。默认 240_000 (4min, 原子叶子充裕上界)。0/省略 = 不限 (慎用)。
+   * 总墙钟**兜底**上限 (ms)。默认 3_600_000 (1h)。0 = 不设。
    *
-   * **两级实现** (2026-08-01 搬家后): ① `shouldStopAfterTurn` —— 超时后在**轮之间**优雅停,
-   * 已跑完的工具与已落盘的产物完整保留; ② `AbortSignal` —— 单轮自己跑过头时的硬兜底
-   * (流被 abort, `stopReason:'aborted'`)。此前只有 ② 的粗暴版 (外部 SIGKILL), 因为高层
-   * `prompt()` 既无 maxTurns 也不收 signal。**有界性本身一步没少, 换的是它长在哪。**
+   * ⚠ 这不是"叶子该跑多久"的策略, 是**跑飞了的最后一道刹车**。「这个叶子还活着吗」由
+   * {@link idleTimeoutMs} 回答 —— 那条按**有没有在动**判, 不按跑了多久判。
+   *
+   * 2026-08-01 从 240s 提到 1h (owner): 4 分钟是一条**伪装成安全网的策略** —— 它真正在执行的是
+   * "不许一个叶子干超过 4 分钟的活", 而那不是超时该表达的东西。生产 MCP 路径本来就传 1h
+   * (`assemble.ts` 的 `OMD_LEAF_TIMEOUT_MS ?? 3_600_000`), 只有 TUI / sec-audit / review 这几个
+   * 不传的调用点在吃 240s —— 同一个叶子在两条路上两个寿命, 也是一种"配了不生效"。
+   *
+   * 实现仍是两级: `shouldStopAfterTurn` 轮间优雅停 (产物完整保留) + `AbortSignal` 单轮硬兜底。
    */
   leafTimeoutMs?: number;
   /**
-   * 早期停摆闸 (issue #5): 启动后 heartbeatMs 内累积输出仍近零且无工具活动 → 判 provider 挂起,
-   * 提前 abort 标 stall, 不白等满 leafTimeoutMs (K3 停摆实测: 240s 只累积 24 字节 → 前 30s 即可判死)。
-   * 默认 45_000 (45s, 保守避误杀)。0 = 关。
+   * **进展看门狗** (ms): 连续这么久**一个循环事件都没有**、且**没有工具在跑** → 判 provider 挂起,
+   * abort 并标 `stalled`。默认 180_000 (3min)。0 = 关。
    *
-   * 搬家时**刻意留着**: 它治的是「provider 端排队/挂起」, 与「循环停不下来」是两回事 —— 后者被
-   * signal + shouldStopAfterTurn 根治了, 前者没有; 删掉它只会让一个死 provider 白烧满 4 分钟墙钟。
+   * ## 为什么换掉原来那条 (2026-08-01)
+   *
+   * 老判据是「启动后 45s 内**累积文本**不足 32 字节 → 判死」。两个毛病, 第二个是致命的:
+   *   ① 只在**启动那一次**看一眼 —— 中途才挂起的 provider 它抓不到;
+   *   ② **只数 `text_delta`**。模型在推理时发的是 `thinking_delta`, 对这条判据完全隐形。
+   *      worker 档提到 xhigh (deepseek 上 = `reasoning_effort: max`) 之后, 一个正常思考 50 秒的
+   *      叶子会被当成挂死杀掉 —— 判据把"在想"读成了"没反应"。
+   *
+   * 新判据只问一件事: **它还在动吗**。任何循环事件都算动 (文本增量 / **推理增量** / 工具开始或结束 /
+   * 轮边界), 来一个就重置窗口。**工具在飞时不计时** —— 一条跑 10 分钟的 `bun test` 期间本来就没有
+   * 事件, 那是正当工作不是挂起。
+   *
+   * 于是「没跑起来」与「跑得久」第一次分得开: 前者是**零事件**, 后者是**事件一直来**。
+   * 真死的 provider 仍在 3 分钟内被抓到, 真在干活的叶子想跑多久跑多久。
    */
-  heartbeatMs?: number;
-  /** 停摆闸输出下限 (字节)。默认 32。 */
-  heartbeatMinBytes?: number;
+  idleTimeoutMs?: number;
   /**
    * 角色 persona 前缀 (P1 三层角色): **设计型/推理型** leaf 传 TASTE_CORE 或
    * composeTastePersona(role) 拔高品味判断; 纯执行型 leaf 省略 = 最小思考忠实执行。
@@ -505,8 +519,8 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     const writeEffects: FileWriteEffect[] = [];
     const snapByCall = new Map<string, Map<string, FileSnapshot>>();
     let toolCalls = 0; // 工具调用计数 (prompt 档的路由效率读数, 见 AgentLeafResult.toolCalls)。
-    let toolActivity = false; // 任何工具调用 = 模型已应答 → 停摆闸豁免
-    let streamedChars = 0; // 已流出的正文字节数 (停摆闸的另一半判据)
+    let pendingTools = 0; // 在飞工具数 —— >0 时看门狗不计时 (跑 10 分钟的 bun test 是正当工作)
+    let streamedChars = 0; // 已流出的正文字节数 (只作读数, 不再当判据)
     // toolCallId → 候选写路径 (可多: hashline_edit 一个 patch 多 section 多文件)。end 且 !isError 才计入。
     const pathByCall = new Map<string, string[]>();
     const readByCall = new Map<string, string>();
@@ -518,11 +532,14 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
         : createDriftTracker(typeof opts.driftDetector === 'object' ? opts.driftDetector : {});
 
     const emit = (e: AgentEvent): void => {
+      // **进展信号**: 任何事件都算"它还在动" —— 包括 `thinking_delta` (模型在推理)。
+      // 老判据只数 text_delta, 于是"在想"被读成"没反应"; effort 提到 max 之后那是必然误杀。
+      noteProgress();
       if (e.type === 'message_update' && e.assistantMessageEvent.type === 'text_delta') {
         streamedChars += e.assistantMessageEvent.delta.length;
       } else if (e.type === 'tool_execution_start') {
         toolCalls++;
-        toolActivity = true;
+        pendingTools++;
         drift?.note(e.toolName, e.args);
         const args = (e.args ?? {}) as { path?: unknown; patch?: unknown };
         if (FILE_WRITE_TOOLS.has(e.toolName)) {
@@ -545,7 +562,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           if (typeof args.path === 'string' && args.path.trim()) readByCall.set(e.toolCallId, args.path);
         }
       } else if (e.type === 'tool_execution_end') {
-        toolActivity = true;
+        pendingTools = Math.max(0, pendingTools - 1);
         if (!e.isError) {
           const ps = pathByCall.get(e.toolCallId);
           if (ps) {
@@ -576,9 +593,8 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // ① shouldStopAfterTurn: 超时/上下文预算到了 → 在**轮之间**优雅停, 已落盘的产物完整保留。
     // ② AbortSignal: 单轮自己跑过头 (provider 挂着不返) 的硬兜底。
     // 此前这两件事都只能靠外部秒表 + SIGKILL —— 高层 prompt() 既没有 maxTurns 也不收 signal。
-    const timeoutMs = opts.leafTimeoutMs ?? 240_000;
-    const heartbeatMs = opts.heartbeatMs ?? 45_000;
-    const heartbeatMinBytes = opts.heartbeatMinBytes ?? 32;
+    const timeoutMs = opts.leafTimeoutMs ?? 3_600_000;
+    const idleTimeoutMs = opts.idleTimeoutMs ?? 180_000;
     const budgetRatio = opts.contextBudgetRatio && opts.contextBudgetRatio > 0 ? opts.contextBudgetRatio : 0.85;
     const wantCompaction = opts.compaction !== false;
     const keepRecentTokens = opts.compactionKeepRecentTokens ?? 20_000;
@@ -608,17 +624,25 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
             controller.abort();
           }, timeoutMs)
         : null;
-    // 停摆闸 (issue #5): 一次性早检 —— provider 端排队/挂起时前 45s 就零/近零 token, 不必白等满硬超时。
-    // 工具活动豁免 (合法慢叶子跑长 bash 时静默但已应答)。
-    const stallTimer =
-      heartbeatMs > 0
-        ? setTimeout(() => {
-            if (streamedChars < heartbeatMinBytes && !toolActivity) {
-              stalled = true;
-              controller.abort();
-            }
-          }, heartbeatMs)
-        : null;
+    // 进展看门狗: **滚动**窗口 (每来一个事件就重置), 不是启动时看一眼。
+    // 工具在飞 → 不判死, 只把窗口往后推 (工具执行期间本来就没有事件)。
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    const armIdle = (): void => {
+      if (idleTimeoutMs <= 0) return;
+      idleTimer = setTimeout(() => {
+        if (pendingTools > 0) {
+          armIdle(); // 有工具在跑 = 在干活, 续窗口
+          return;
+        }
+        stalled = true;
+        controller.abort();
+      }, idleTimeoutMs);
+    };
+    function noteProgress(): void {
+      if (idleTimer) clearTimeout(idleTimer);
+      armIdle();
+    }
+    armIdle();
 
     const context: AgentContext = {
       systemPrompt,
@@ -701,7 +725,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       );
     } finally {
       if (hardTimer) clearTimeout(hardTimer);
-      if (stallTimer) clearTimeout(stallTimer);
+      if (idleTimer) clearTimeout(idleTimer);
     }
 
     const text = messages.map(assistantText).join('');
@@ -740,7 +764,10 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       );
     }
     if (stalled) {
-      logger.warn({ heartbeatMs, outLen: streamedChars }, '[agent-leaf] leaf 停摆 (窗口内近零输出+无工具活动, 疑 provider 挂起)');
+      logger.warn(
+        { idleTimeoutMs, outLen: streamedChars, toolCalls },
+        '[agent-leaf] leaf 停摆 (看门狗: 连续无任何循环事件且无工具在跑 → 疑 provider 挂起)',
+      );
     } else if (timedOut) {
       logger.warn({ timeoutMs, outLen: streamedChars }, '[agent-leaf] leaf 超时中止 (有界停, 返已累积输出)');
     }

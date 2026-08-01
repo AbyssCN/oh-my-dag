@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { reasoningEffortFor } from "./index";
 import { autoAssign, type SeatThinking } from "./auto-assign";
 import { persistAutoAssigned, resolveSeatThinking } from "./role-models";
 
@@ -19,7 +20,7 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe("auto-assign 下发座位档", () => {
-	test("每条分配都带 thinkingLevel; 上限是 high 不是 xhigh (mimo 实测 max→400)", () => {
+	test("每条分配都带 thinkingLevel", () => {
 		const map = autoAssign({
 			channels: [
 				{ provider: "kimi-coding", kind: "prepaid", rate: 1 },
@@ -29,9 +30,25 @@ describe("auto-assign 下发座位档", () => {
 		});
 		if (Object.keys(map).length === 0) return; // 无评级快照的环境: 分配为空, 该用例不适用
 		for (const a of Object.values(map)) expect(a.thinkingLevel).toBeDefined();
-		// 任何座位都不得配 xhigh: 它在 transport 层映 'max', 而 mimo (worker 首选 + 多条溢出链的落点)
-		// 实测只接受 low/medium/high, 'max' → HTTP 400 = 整节点白挂。
-		for (const a of Object.values(map)) expect(a.thinkingLevel).not.toBe("xhigh");
+	});
+
+	/**
+	 * ★ **约束搬层了, 断言跟着搬** (2026-08-01)。
+	 *
+	 * 这里原来钉的是「任何座位都不得配 xhigh」, 理由是 xhigh 在 transport 层映 'max',
+	 * 而 mimo (多条溢出链的落点) 实测拒 'max' → HTTP 400 整节点白挂。那条断言是**在分配表上
+	 * 防传输层的坑** —— 当时只能这么防, 因为 pi 那条通道根本不查 `model-caps`。
+	 *
+	 * 两条传输并成一条之后 (2026-08-01), 每一发都过 `reasoningEffortFor` 按**模型**查实测词表。
+	 * 于是防线挪到了它该在的地方: **分配表表达意图 (尽力想), transport 表达能力 (发得出什么)**。
+	 * 删掉旧断言而不补这一条, 就是把一道真闸换成了没有闸。
+	 */
+	test("★ xhigh 的安全性现在由 transport 保证: mimo/qwen 自动降 high, 只有真收 max 的才发 max", () => {
+		// 拒 'max' 的两家 —— 分配表配 xhigh 也发不出 max。
+		expect(reasoningEffortFor("mimo", "xhigh", "mimo-v2.5-pro")).toBe("high");
+		expect(reasoningEffortFor("opencode-go", "xhigh", "qwen3.7-plus")).toBe("high");
+		// 收 'max' 的 —— 意图原样出门。
+		expect(reasoningEffortFor("deepseek", "xhigh", "deepseek-v4-flash")).toBe("max");
 	});
 });
 

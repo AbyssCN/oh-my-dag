@@ -73,7 +73,9 @@ export function createSandboxedLeafRunner(opts: AgentLeafRunnerOpts): AgentLeafR
   const { argvPath: workerPath, extraRoBinds } = resolveWorker(root);
   const roBinds = [...defaultRoBinds(root), ...extraRoBinds];
   const optsJson = serializableOpts(opts);
-  const timeoutMs = opts.leafTimeoutMs ?? 240_000;
+  // 与 agent-leaf 的默认同源 (2026-08-01 一起从 240s 提到 1h): 这里若还留 240s,
+  // 隔离档的叶子会被父进程在 4.5 分钟处杀掉, 而 in-process 档能跑 1 小时 —— 同一个叶子两个寿命。
+  const timeoutMs = opts.leafTimeoutMs ?? 3_600_000;
 
   return async (input: AgentLeafInput): Promise<AgentLeafResult> => {
     const id = `${process.pid}-${++seq}`;
@@ -88,7 +90,7 @@ export function createSandboxedLeafRunner(opts: AgentLeafRunnerOpts): AgentLeafR
     // bwrap [binds] bun run <worker> <payloadRel> <resultRel> —— 相对路径, cwd=worktree (bwrap --chdir)。
     const argv = ['bwrap', ...bwrapArgs(root, roBinds, piAgentCopy ? { piAgentCopy } : {}), 'bun', 'run', workerPath, payloadRel, resultRel];
     const proc = Bun.spawn(argv, { stdout: 'pipe', stderr: 'pipe', stdin: 'ignore' });
-    // 超时 = leaf 硬上界 + 30s buffer (worker 内部还有自己的 leafTimeoutMs/心跳闸兜底)。
+    // 超时 = leaf 硬上界 + 30s buffer (worker 内部还有自己的 leafTimeoutMs / 进展看门狗兜底)。
     // ⚠ 判据必须是**我们自己那把刀砍没砍**, 不是 `proc.killed` (2026-07-31 live 抓出来的):
     // worker 因 `Module not found` 秒级自己死掉时, 那条错误消息照样播报「子进程超时被杀 (3600s)」——
     // 而两种成因的下一步**相反**: 真超时 → 加时间/换池; 起不来 → 修部署, 加多少时间都没用。
