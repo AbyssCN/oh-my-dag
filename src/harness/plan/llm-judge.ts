@@ -11,7 +11,7 @@
  */
 import { z } from 'zod';
 import { send } from '../../model/gateway';
-import { seatSampling } from '../../model/seats';
+import { seatSampling, seatSpec } from '../../model/seats';
 import type { FixpointJudge, FixpointVerdict } from './fixpoint';
 
 export const CONVERGENCE_VERDICT_SCHEMA = z.object({
@@ -36,6 +36,15 @@ export interface LlmJudgeOpts<R> {
   extract: (result: R) => { status: 'done' | 'failed'; summary: string };
   /** 采样温度覆盖。省略 = `gate` 座的采样意图 (model/seats.ts)。 */
   temperature?: number;
+  /**
+   * 思考档。省略 = **不发** → deepseek 侧落 `thinking:{type:"disabled"}`。
+   *
+   * ⚠ 这个字段 2026-08-01 才补上。此前这里**根本不传档**, 于是 `seats.ts` 写的 `gate.thinking`
+   * 是个空旋钮 —— 配置面说闸在 xhigh 上想问题, 实际每一发都关着思考。
+   * (顺带: 关着思考才是 temperature 生效的前提, 见 model-caps.samplingIgnoredWhenThinking。
+   * 两个旋钮**互斥**, 所以"闸要深想"与"闸要可复现"今天只能二选一。)
+   */
+  thinkingLevel?: 'off' | 'low' | 'medium' | 'high' | 'xhigh';
   /** 注入式 callModel (测试)。默认真 callModel。 */
   callModelFn?: typeof send;
 }
@@ -90,6 +99,8 @@ export function makeLlmConvergenceJudge<R>(opts: LlmJudgeOpts<R>): FixpointJudge
       messages: [{ role: 'user', content: judgePrompt(opts.task, summary, round, threshold) }],
       // 采样意图取自 `gate` 座 (model/seats.ts): 闸的裁决要可复现。调用方给了就压过它。
       ...(opts.temperature !== undefined ? { temperature: opts.temperature } : seatSampling('gate')),
+      // 档由**座位登记表**驱动 (不是"什么都不传碰巧关着")。gate 座实测定在 off, 理由见 seats.ts。
+      thinkingLevel: opts.thinkingLevel ?? seatSpec('gate')?.thinking ?? 'off',
       maxTokens: 4096, // 700 会被推理族的 reasoning 吃光 → 空裁决
       responseSchema: CONVERGENCE_VERDICT_SCHEMA,
     });
