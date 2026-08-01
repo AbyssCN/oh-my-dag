@@ -20,77 +20,17 @@ import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { m } from './i18n';
-import { executeSlice as realExecuteSlice, resolveConductorDefault as realResolveConductorDefault, type ExecuteSliceOpts } from './execute-extension';
+import { executeSlice as realExecuteSlice, resolveConductorDefault as realResolveConductorDefault, type ExecuteSliceOpts } from './execute-slice';
 import type { AgentLeafRunner, CommandLeafRunner } from './leaf-runners';
 import { countDispatchedResearch, dispatchFrontier as realDispatchFrontier } from './pathfinder/dispatch';
 import { reflowResearchResults as realReflowResearchResults } from './pathfinder/afk-hook';
 import { resolveBackend } from './pathfinder/backend';
 import { computeFrontier } from './pathfinder/frontier';
 import { loadMap, mutateMap, saveMap } from './pathfinder/map-store';
+import { createOrResumeMap, slugifyDestination, summarizeOpenMaps } from './pathfinder/maps';
 import { compileSlice as realCompileSlice, regionIsClear, specGateViolation } from './pathfinder/slice-compiler';
 import type { PathMap } from './pathfinder/types';
 import { createPathfinderModeState, type PathfinderModeState } from './plan/mode';
-
-// 地图 IO 的真身迁到 map-store (单写口 mutateMap 所在); re-export 兼容既有 import (omd-path CLI / 测试)。
-export { loadMap, mutateMap, saveMap } from './pathfinder/map-store';
-
-// ── 纯/薄-IO helpers (CLI omd-path 复用) ──────────────────────────────────────
-
-/** 目的地 → 稳定 slug (markdown 文件名 + db 主键)。与 plan crystallize 同风格, 小写化。 */
-export function slugifyDestination(destination: string): string {
-  return (
-    destination
-      .trim()
-      .replace(/[^\p{L}\p{N}]+/gu, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 40)
-      .toLowerCase() || 'map'
-  );
-}
-
-/** 一张开放地图的摘要 (CLI/status 用)。 */
-export interface OpenMapSummary {
-  slug: string;
-  destination: string;
-  /** 未裁决 (非 ruled/escalated) 的票数。 */
-  openCount: number;
-  /** 当前前沿 (可动) 票数 (computeFrontier)。 */
-  frontierCount: number;
-}
-
-/** 扫 docs/plan/pathfinder/*.md, 每图算 open/frontier 计数。目录不存在 → []。按 slug 排序。 */
-export function summarizeOpenMaps(cwd: string): OpenMapSummary[] {
-  const dir = join(cwd, 'docs', 'plan', 'pathfinder');
-  let files: string[];
-  try {
-    files = readdirSync(dir).filter((f) => f.endsWith('.md'));
-  } catch {
-    return [];
-  }
-  const out: OpenMapSummary[] = [];
-  for (const f of files.sort()) {
-    const slug = f.slice(0, -3);
-    const map = loadMap(cwd, slug);
-    if (!map) continue;
-    out.push({
-      slug: map.slug || slug,
-      destination: map.destination,
-      openCount: map.tickets.filter((t) => t.status !== 'ruled' && t.status !== 'escalated').length,
-      frontierCount: computeFrontier(map).length,
-    });
-  }
-  return out;
-}
-
-/** 开/建一张地图: slug 已存在 → resume (created=false); 否则建空图并落盘 (created=true)。 */
-export function createOrResumeMap(cwd: string, destination: string): { map: PathMap; created: boolean } {
-  const slug = slugifyDestination(destination);
-  const existing = loadMap(cwd, slug);
-  if (existing) return { map: existing, created: false };
-  const map: PathMap = { destination, slug, tickets: [], decisionsLog: [] };
-  saveMap(map, cwd);
-  return { map, created: true };
-}
 
 // ── extension ────────────────────────────────────────────────────────────────
 

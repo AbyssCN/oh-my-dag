@@ -15,9 +15,9 @@ import type { OmdMcpTool } from '../server';
 import {
   executeSlice as realExecuteSlice,
   type ExecuteSliceOpts,
-} from '../../harness/execute-extension';
+} from '../../harness/execute-slice';
 import type { AgentLeafRunner, CommandLeafRunner } from '../../harness/leaf-runners';
-import { slugifyDestination } from '../../harness/pathfinder-extension';
+import { slugifyDestination } from '../../harness/pathfinder/maps';
 import {
   resolveBackend as realResolveBackend,
   type PathBackend,

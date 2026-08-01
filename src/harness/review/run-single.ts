@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { buildGateReview, buildSpecReviewPrompt, screenFinding, DIMS_BY_GATE } from './index';
 import { resolveReviewModels, type ReviewFinding, type RunReviewOpts, type RunReviewResult } from './run';
 import { verifyFindings as realVerifyFindings } from './verify';
-import { findLatestSdd } from '../execute-extension';
+import { findLatestSdd } from '../execute-slice';
 import { createAgentLeafRunner } from '../agent-leaf';
 
 type ReviewEffort = 'off' | 'low' | 'medium' | 'high' | 'xhigh';

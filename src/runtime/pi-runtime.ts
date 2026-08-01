@@ -28,7 +28,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import { getModel } from '@earendil-works/pi-ai/compat'; // 0.80: 目录读挪 /compat
 import { logger } from '../logger';
-import { kimiOAuthExtensionFor } from '../model/kimi-oauth';
+import { kimiOAuthExtensionFor } from '../model/kimi-oauth-extension';
 import type { OmdController } from '../harness/controller';
 import type { AgentRuntime, DispatchOptions, RuntimeEvent, ThinkingLevel } from './types';
 import {

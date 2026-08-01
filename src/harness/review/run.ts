@@ -14,7 +14,7 @@
 import { join } from 'node:path';
 import { buildReviewPrompt, buildSpecReviewPrompt, screenFinding, type ReviewDimension, type ReviewGate } from './index';
 import { verifyFindings, type VerifiedFinding, type ReviewSendFn } from './verify';
-import { findLatestSdd } from '../execute-extension';
+import { findLatestSdd } from '../execute-slice';
 import { send } from '../../model/gateway';
 import { roleModelWithFallback } from '../../model/role-fallback';
 import { resolveRoleModel, tryResolveSeatModel } from '../../model/role-models';

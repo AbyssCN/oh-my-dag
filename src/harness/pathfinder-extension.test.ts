@@ -4,12 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   createPathfinderExtension,
-  loadMap,
-  saveMap,
-  summarizeOpenMaps,
   type PathfinderExtensionDeps,
   type PathfinderExtensionOpts,
 } from './pathfinder-extension';
+import { loadMap, saveMap, summarizeOpenMaps } from './pathfinder/maps';
 import { createPathfinderModeState } from './plan/mode';
 import type { ReflowOutcome } from './pathfinder/afk-hook';
 import type { PathMap, Ticket } from './pathfinder/types';

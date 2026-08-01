@@ -19,7 +19,7 @@ import { dirname, join } from 'node:path';
 import type { GhResult, GhRunner, PathBackend } from './backend';
 import { resolveBackend } from './backend';
 import { createGhBackend } from './backend-gh';
-import { slugifyDestination } from '../pathfinder-extension';
+import { slugifyDestination } from './maps';
 
 // ── 常量 ────────────────────────────────────────────────────────────────────────
 

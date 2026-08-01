@@ -8,14 +8,14 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resetConfigCache } from '../model/role-models';
+import { createExecuteExtension } from './execute-extension';
 import {
-  createExecuteExtension,
   findLatestSdd,
   resolveConductorDefault,
   finalizePlan,
   executeSlice,
   type ExecuteExtensionOpts,
-} from './execute-extension';
+} from './execute-slice';
 import type { IterateResult } from './plan/iterate';
 import type { ExecutorDagResult, GenerateFn } from './executor-dag';
 import type { ConductorPlan } from './conductor-plan';
