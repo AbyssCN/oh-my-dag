@@ -69,6 +69,7 @@ import {
   type ThinkingLevel,
 } from '../model/role-models';
 import { createAgentLeafRunner } from '../harness/agent-leaf';
+import { resolveVerification } from '../harness/verifier';
 import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../harness/command-leaf';
 import type { AgentLeafRunner, CommandLeafRunner } from '../harness/leaf-runners';
 import { createOmdMemory, type OmdMemory } from '../harness/memory';
@@ -416,6 +417,27 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
         : commandRunner;
     // engine config = 座位三件套 (conductor/leaf/agent, 单一 resolver) + 真改文件 runner 对。
     const models = resolveEngineModels(env);
+    // ── 跨模型校验闸 (2026-08-01 点亮) ──────────────────────────────────────────
+    //
+    // **这道闸此前只挂在 TUI 上** (`tui.ts` 调 resolveVerification), MCP 这条从来没接过 ——
+    // 于是 `config.verifier` 恒 undefined, executor-dag 那段 verify + conductor 静默升级
+    // (executor-dag.ts:2696「config.verifier 给则启用」) 在生产路径上**一次都没跑过**。
+    // 证据不用推理: `mcp/tools/dag-tools.ts:119` 那行注释自己写着「MCP 路径无 verifier」,
+    // 下游的 ok 判据当年就是照着这个事实改的。
+    //
+    // 这不是"少了个可选增强"。auto-assign 的 INV-3 把**跨家族独立性押在 verifier 身上**
+    // (`auto-assign.ts:10`), 而它从没上过场; 生产里唯一的跨家族对抗是 judge 碰巧坐在 codex 上 ——
+    // 那是意外, 不是设计。座位分工本来是: judge 管 synth 阶段的择优, verifier 管**代码 review 级**
+    // 的终审。少了后者, 整条链上没有任何一个环节在问"这活到底做没做对"。
+    //
+    // ⚠ 为什么"座位自检 16/16 ✓"看不出这个洞: 那张表问的是**座位解析得出来吗**, 而 verifier 座位
+    // 在 MCP 上确实被解析了 —— 被借去组 `stampPools.strong`。**坐标被人用 ≠ 它代表的机制在跑**。
+    // 同理 `empty-knobs` 的「座位即承诺」闸也是绿的 (它只要求座位被解析过)。这两道闸都不为此负责,
+    // 别指望它们下次替你抓住同一件事。
+    //
+    // 关法与 TUI 同一个旋钮: OMD_VERIFY=0。坐标坏了怎么办 (fail-fast vs 优雅降级) 全在
+    // resolveVerification 里判, 这里不重复一份。
+    const verification = resolveVerification({ enabled: env.OMD_VERIFY !== '0', env });
     // 并发默认接 fleet 层 (此前断路 = 引擎全宽): min(effectiveFanout(env OMD_MAX_FANOUT/CPU 兜底),
     // agent 模型 provider 的并发池 cap)。工具参数 maxFanout 仍最高优先 (dag-tools 内覆盖)。
     const agentProvider = (models.agentLeafModel ?? models.leafModel ?? '').split(':')[0] ?? '';
@@ -537,6 +559,13 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       ...(stampPools.mid.length >= 2 ? { primitiveCandidates: stampPools.mid } : {}),
       ...(Object.keys(channelFanout).length ? { channelFanout } : {}),
       ...conductorTuning,
+      // 校验闸 (verifier + conductor 静默升级 + maxEscalations)。**排在 configOverrides 之前** ——
+      // 调用方显式传 verifier/escalation 时仍然压得过默认装配 (测试注入假 verifier 靠这条)。
+      ...(verification.verifier ? { verifier: verification.verifier } : {}),
+      ...(verification.conductorEscalationModel
+        ? { conductorEscalationModel: verification.conductorEscalationModel }
+        : {}),
+      ...(verification.maxEscalations !== undefined ? { maxEscalations: verification.maxEscalations } : {}),
       ...deps.configOverrides,
     };
     return defaultConfig;
