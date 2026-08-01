@@ -342,7 +342,18 @@ export function createCommandLeafRunner(opts: CommandLeafRunnerOpts): CommandLea
           setTimeout(() => resolve({ stdout: '', stderr: `[timeout ${timeoutMs}ms]`, exitCode: 124 }), timeoutMs),
         ),
       ]);
-      const part = (stdout || stderr).trim();
+      // **两条流都要**, 不是二选一 (2026-08-01, verifier 校准逼出来的)。
+      //
+      // 原本是 `(stdout || stderr)` —— stdout 非空就把 stderr 整个扔掉。而这条闸最该跑的那个命令
+      // 正好踩中: `bun test` 把版本横幅写 stdout、把 **`5 pass / 0 fail` 汇总写 stderr**。
+      // 于是一个验证节点的全文输出只有 `bun test v1.3.14`, 通过/失败数**从没进过** DAG、下游、
+      // verifier 或留痕库 —— 退出码 0 照给, 一切看起来正常。conductor prompt 偏偏还教它
+      // 「把验证尾巴收成一个 `bun run tsc --noEmit && bun test` 节点」, 即最推荐的用法丢得最干净。
+      // 失败时更糟: 失败详情也在 stderr, 于是"红了"这件事只剩一个退出码, 说不出红在哪。
+      //
+      // 怎么发现的: verifier 判一条"真做到了"的 fixture 不过, 判词说「输出只有 planned 日志,
+      // 没有测试数量与通过/失败汇总」—— 它是对的, 是台架把证据吃了。**这正是这道闸的用处**。
+      const part = [stdout.trim(), stderr.trim()].filter(Boolean).join('\n');
       if (part) outParts.push(part);
       exitCode = code;
       if (exitCode !== 0) break; // && 语义: 前环失败, 后环不跑
