@@ -9,7 +9,7 @@ description: 把已定的 SDD/规划交给 omd DAG 引擎执行(经 MCP dag_run 
 
 ## 流程
 
-1. **取契约**:找 `docs/plan/` 下最新 SDD(`YYYY-MM-DD-<slug>.md`,由 `/omd-sdd` 落盘);用户直接给了任务文本也行,但大活先 `/omd-sdd`。
+1. **取契约**:找 `docs/plan/` 下最新 SDD(`YYYY-MM-DD-<slug>.md`,由 `/omd-contract` 落盘);用户直接给了任务文本也行,但大活先 `/omd-contract`。
 2. **执行**:`dag_run` 传 task = SDD 全文(或任务文本)。conductor 分解成带类型节点的 DAG(agent 叶子改文件、command 叶子跑验证),并发扇出。拿 `runId` 后 `dag_status` 轮询、`dag_result` 取产物——可能几分钟,耐心轮询,别重复发起。
 3. **验收(必须主动做,不等 owner 催)**:先跑下面的**交叉验证 checklist**,再按成本四选一。
 
@@ -39,4 +39,4 @@ description: 把已定的 SDD/规划交给 omd DAG 引擎执行(经 MCP dag_run 
 ## 与既有 skill 的边界
 
 - `/omd-execute` = 把**已定**的 SDD/plan 交 DAG 执行 + 四选一验收。
-- 不用于:pathfinder 已散尽区域的增量交付(权力闸)→ `/omd-deliver`;plan 前把方案审议透 → `/omd-grill`;fixpoint 反复迭代 → `/omd-iterate`(它是本 skill 的循环包装);结论落成 SDD → `/omd-sdd`。
+- 不用于:pathfinder 已散尽区域的增量交付(权力闸)→ `/omd-deliver`;plan 前把方案审议透 → `/omd-grill`;fixpoint 反复迭代 → `/omd-iterate`(它是本 skill 的循环包装);结论落成 SDD → `/omd-contract`。

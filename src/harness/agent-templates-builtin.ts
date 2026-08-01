@@ -158,7 +158,7 @@ export const BUILTIN_AGENT_TEMPLATES: AgentTemplate[] = [
   {
     // D-7 (自主 goal-engine P1): spec 节点 = 卡, **不是新 executor kind** —— 它要的全部东西
     // (吃 fan-in、写一个文件、按固定骨架输出) 现有 agent 节点都有, 差的只是"写成什么样"。
-    // 骨架逐字承 /omd-sdd (client-skills/omd-sdd/SKILL.md): 同一份契约格式, 人写与机器写不分叉。
+    // 骨架逐字承 /omd-contract (client-skills/omd-contract/SKILL.md): 同一份契约格式, 人写与机器写不分叉。
     name: 'spec-author',
     description: 'Crystallize goal + research evidence + critique into ONE executable SDD contract (docs/plan/*.md)',
     body: [

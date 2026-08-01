@@ -109,7 +109,7 @@ describe('pathfinder MCP tools', () => {
       const deliver = await call('path_deliver');
       expect(deliver.isError).toBe(true);
       expect(deliver.text).toContain('docs/plan/');
-      expect(deliver.text).toContain('/omd-sdd');
+      expect(deliver.text).toContain('/omd-contract');
       expect(executed).toBe(0); // 拦下时无 dag 执行调用
     } finally {
       rmSync(dir, { recursive: true, force: true });

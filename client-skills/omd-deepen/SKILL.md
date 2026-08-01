@@ -29,9 +29,9 @@ description: git 热点架构加深扫描:经 omd dag_deepen 确定性挑高摩�
 
 ## 转述纪律
 
-候选是**输入不是结论**:dag_deepen 从不改文件、不开 PR。按 leverage 讲给 owner,不替他拍板改哪个;真要动某模块,先 `/omd-grill` 或 `/omd-sdd` 把方案钉死再走 `/omd-execute`。
+候选是**输入不是结论**:dag_deepen 从不改文件、不开 PR。按 leverage 讲给 owner,不替他拍板改哪个;真要动某模块,先 `/omd-grill` 或 `/omd-contract` 把方案钉死再走 `/omd-execute`。
 
 ## 与既有 skill 的边界
 
 - `/omd-deepen` = git 热点**架构加深**(浅模块去壳加厚 / 收敛复杂度),只出候选不动手。
-- 不用于:审 diff 找 bug → `/omd-review`;删镀金/过度工程 → `/omd-slim`;把候选钉成方案 → `/omd-grill` + `/omd-sdd`。
+- 不用于:审 diff 找 bug → `/omd-review`;删镀金/过度工程 → `/omd-slim`;把候选钉成方案 → `/omd-grill` + `/omd-contract`。

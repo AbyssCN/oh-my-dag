@@ -144,7 +144,7 @@ export function specGateViolation(tickets: Ticket[]): string | null {
     : `${taskCount} 张 task 票 (≥3)`;
   return [
     `◈ deliver 拦截: 复杂区域 (${why}) 缺契约引用 —— 无任何票的 ruling 含 docs/plan/ 章节引用。`,
-    '  复杂活必须有契约: 先 /omd-sdd 结晶契约, 把 ruling 补上 docs/plan/ 章节引用后重试;',
+    '  复杂活必须有契约: 先 /omd-contract 结晶契约, 把 ruling 补上 docs/plan/ 章节引用后重试;',
     '  简单区域 (<3 票且无 agent 节点) 不受此闸约束。',
   ].join('\n');
 }

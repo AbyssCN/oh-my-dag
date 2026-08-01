@@ -144,7 +144,7 @@ describe('specGateViolation', () => {
     const v = specGateViolation(ts);
     expect(v).toBeTruthy();
     expect(v).toContain('docs/plan/');
-    expect(v).toContain('/omd-sdd');
+    expect(v).toContain('/omd-contract');
   });
 
   test('agent 节点且无 docs/plan/ 引用 → 拦截 (即便 <3 票)', () => {
