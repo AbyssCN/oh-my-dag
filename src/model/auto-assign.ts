@@ -145,7 +145,14 @@ const NODE_CLASS_THINKING: Record<NodeClass, SeatThinking> = {
 	// **改变不了我们该做什么** —— 认这个旋钮就该填 high, 不认则填什么都一样, 两条路都指向 high。
 	// (这与 N4「多次尝试下的抗性率」被压到最低优先级是同一条判据: 花钱买一个不改变行动的数。)
 	// ⚠ agent leaf 不吃这张表 (agent-leaf.ts 自带 xhigh, owner 早前锁的), 所以改这里不影响改文件的 agent。
-	worker: "high",
+	//
+	// **2026-08-01 owner 裁: worker 提到 xhigh** (deepseek-v4-flash 上即 reasoning_effort=max)。
+	// 上面那条"上限是 high 不是 xhigh"的理由 —— 「判/证座位溢出到 mimo 时 xhigh 会 400」——
+	// **今天已经不成立**: 两条传输并成一条之后, 每一发都过 `reasoningEffortFor` 按**模型**查
+	// `model-caps` 的实测词表, xhigh 在 mimo/qwen 上自动降到 high, 只在真收 max 的模型上发 max。
+	// 那条注释自己也写着该这么办 (「真需要 max 的座位由 transport 层按 provider 能力表决定」),
+	// 只是当时 pi 那条通道没查表, 所以不敢。现在敢了。
+	worker: "xhigh",
 	verify: "high",
 	dream: "high",
 };

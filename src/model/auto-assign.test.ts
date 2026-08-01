@@ -66,12 +66,13 @@ describe("autoAssign", () => {
 		// reduce → v4-flash (D-14 够质量的最廉; 高频阶段)
 		expect(m.reduce!.coord).toBe("deepseek:deepseek-v4-flash");
 
-		// worker → v4-flash (量在这里; 档位同时降到 low, 见 NODE_CLASS_THINKING)
+		// worker → v4-flash (量在这里)
 		for (const n of ["leaf", "agent", "lens", "expand", "distill", "overflow"]) {
 			expect(m[n]!.coord).toBe("deepseek:deepseek-v4-flash");
-			// 2026-07-31 改回 high: 「worker 降 low 省钱」那条推理被 200 次对照推翻 (v4 忽略这个旋钮,
-			// 省下的钱其实来自缓存命中率)。未知它认不认时, 选"猜错了也不亏"的那个方向 —— 见 NODE_CLASS_THINKING。
-			expect(m[n]!.thinkingLevel).toBe("high");
+			// 2026-08-01 owner: worker 提到 xhigh (deepseek 上 = reasoning_effort=max)。
+			// 敢配 xhigh 的前提是 transport 层按**模型**夹 —— 见 seat-thinking.test.ts 那条
+			// 「约束搬层了」的用例, 它钉住 xhigh 在 mimo/qwen 上会自动降到 high。
+			expect(m[n]!.thinkingLevel).toBe("xhigh");
 		}
 
 		// 校验/dream 同样落 flash。⚠ 与大脑同族 (deepseek-only 兜底的代价, 见 INV-3 降级测试) ——
