@@ -21,6 +21,8 @@ import type { RuntimeSignal, EventStore, SignalBus } from './types';
  * - hard_problem       : 难题已解开 (卡住→打破循环推进; drift-detector onRecovered 复合信号) ── WIRED
  * - clean_completion   : 干净完成 (正向强化) ── DEFER 非目标: 每回合 fire = dream-pump 每轮跑模型 (成本陷阱);
  *                        其高价值版本 (卡住后完成) 已被 hard_problem (drift recovery) 覆盖。纯"每回合成功"不学。
+ *                        ⚠ 2026-08-01: 白名单里**曾经收着它** —— 与本条决定相反。今天没有 emitter 所以无害,
+ *                        但哪天有人接上 producer, 上面那句警告的成本陷阱就直接生效。已撤条目, 让代码与决定一致。
  *
  * 刻意 EXCLUDE: crash / timeout / db_error / 任何基础设施故障 —— 噪声, 不是行为教训。
  */
@@ -29,7 +31,6 @@ export const DREAM_ALLOWED_EVENT_TYPES: ReadonlySet<string> = new Set([
   'user_correction',
   'tool_failure',
   'recall_miss',
-  'clean_completion',
   'hard_problem',
 ]);
 
