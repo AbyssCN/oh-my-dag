@@ -169,7 +169,12 @@ export interface CommandLeafRunnerOpts {
   /**
    * per-runner 确定性 memoize: 同一 runner 生命周期内 (一次 DAG run / 一次 cg-audit) 相同命令直接返缓存,
    * 不重跑 CLI (省 wall-clock + CPU; 零 LLM 不变)。**安全 scope**: command-leaf 只读 (无写), 单 run 内
-   * 输入文件不变 → 无 staleness; 新调用 = 新 runner = 新缓存。只缓存 exitCode===0 (失败重试)。默认 true。
+   * 输入文件不变 → 无 staleness。只缓存 exitCode===0 (失败重试)。默认 true。
+   *
+   * ⚠ **「新调用 = 新 runner = 新缓存」曾是这条安全论证的第三环, 而它是个没人钉住的前提** ——
+   * 长驻进程 (MCP daemon) 装配期建一次 runner, 缓存就跨了所有 run (2026-08-01 live 实测复现)。
+   * 现在由**引擎**在每张图开跑前调 `resetCache()` 兜住 (executor-dag runDagInternal), 不再指望
+   * 每个接线点自己记得现建。完整形态与危害方向见 `leaf-runners.CommandLeafRunner.resetCache` 的注。
    */
   memoize?: boolean;
 }
@@ -312,7 +317,7 @@ export function createCommandLeafRunner(opts: CommandLeafRunnerOpts): CommandLea
   const memoize = opts.memoize !== false;
   const cache = memoize ? new Map<string, CommandLeafResult>() : null;
 
-  return async ({ command }) => {
+  const run: CommandLeafRunner = async ({ command }) => {
     // memoize 命中 (确定性只读命令 → 同 run 内同命令同输出)。键 = 原始整串。
     if (cache?.has(command)) return cache.get(command)!;
     // 先拆后闸: 每环独立 spawn, 无 sh 级注入面 (判据见 commandBlockReason)。
@@ -339,4 +344,8 @@ export function createCommandLeafRunner(opts: CommandLeafRunnerOpts): CommandLea
     if (cache && exitCode === 0) cache.set(command, result);
     return result;
   };
+  // 缓存寿命的把手交给引擎 (它才知道图的边界); 无缓存时不挂 —— 挂一个空方法会让"这个 runner
+  // 到底有没有缓存"从类型上看不出来。
+  if (cache) run.resetCache = () => cache.clear();
+  return run;
 }

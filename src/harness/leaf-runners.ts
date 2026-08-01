@@ -108,7 +108,26 @@ export interface CommandLeafResult {
   exitCode: number;
 }
 /** 注入点:executor-dag 的 command-kind 节点经此跑。 */
-export type CommandLeafRunner = (input: CommandLeafInput) => Promise<CommandLeafResult>;
+export interface CommandLeafRunner {
+  (input: CommandLeafInput): Promise<CommandLeafResult>;
+  /**
+   * 清掉本 runner 的确定性 memo 缓存。**引擎在每张图开跑前调一次**(executor-dag runDagInternal)。
+   *
+   * 为什么这个把手必须存在(2026-08-01 live 实测抓出来的):memoize 的安全论证是「一次 DAG run 内
+   * 输入文件不变 → 无 staleness;新调用 = 新 runner = 新缓存」—— 那个「新 runner」是个**没人钉住的
+   * 前提**。TUI / eval 每次调用现建 runner,前提成立;而 MCP 是长驻进程,`assemble` 装配期建一次,
+   * 于是同一个缓存跨了这台 daemon 上的**所有** run。实测:两个不同 runId 之间改掉探针文件内容,
+   * 第二跑的 command 节点仍返回第一跑的旧值(同图对照组:命令串多一个空格 → 缓存未命中 → 读到新值)。
+   *
+   * 危害的方向是**最坏的那个**:只缓存 `exitCode===0`,所以红→绿看得见,**绿→红看不见** ——
+   * 一条 `bun test` 闸在这台 daemon 上过一次,之后就永远返回那次的绿,代码改坏了也照绿。
+   * 它还顺手废掉了 executor-dag「command 节点刻意不落绿 checkpoint,resume 时重跑一遍比跳过一个闸
+   * 安全」那条设计:重跑发生了,但结果来自缓存,闸还是被跳过了,只是降到没人看的一层。
+   *
+   * 省略 = 该 runner 无缓存(测试替身 / memoize:false),引擎的调用是 no-op。
+   */
+  resetCache?: () => void;
+}
 
 // ── research leaf(真 web 检索 + 有界内环的研究节点)──────────────────
 export interface ResearchLeafInput {

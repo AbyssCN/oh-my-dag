@@ -2660,6 +2660,17 @@ async function runDagInternal(
   /** 上一**外层轮**的 {plan, results} (D-21 跨轮复用)。轮内 escalation 的 prior 另在下方组装。 */
   prior?: PriorExec,
 ): Promise<ExecutorDagResult> {
+  // command leaf 的确定性 memo 缓存**按图清一次** (2026-08-01 live 抓出来的洞)。
+  //
+  // 那个缓存的安全论证是「同一 runner 生命周期 = 一次 DAG run」, 而生命周期由**谁构造它**决定:
+  // TUI/eval 每次现建 → 成立; MCP 是长驻进程, assemble 装配期建一次 → 缓存跨了这台 daemon 上的
+  // 所有 run。实测两个 runId 之间改掉文件内容, 第二跑的 command 节点仍返回第一跑的旧值。
+  // 只缓存成功码, 所以坏的方向恰是**绿→红看不见**: 一条 `bun test` 闸过一次就永远绿。
+  //
+  // 收口放在引擎而不是各接线点: 图的边界只有引擎知道, 而"每个接线点都记得现建 runner"正是
+  // 上面那条前提的翻版 —— 下一个接线点照样会漏。escalation 重规划轮会再次经过这里 (runDagInternal
+  // 是两个公开入口的唯一内部收口), 重跑一个便宜的确定性闸比端着上一轮的缓存安全。
+  config.commandRunner?.resetCache?.();
   // sessionId: 本次 run 的 conductor+leaf 全部经 send → 同一 Langfuse session (B2)。
   // 可注入 (config.sessionId): 调用方传则跨平面关联 (派活飞轮 dispatchId ↔ Langfuse session)。
   //
