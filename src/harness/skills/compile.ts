@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { join, relative } from 'node:path';
 import { z } from 'zod';
 import { KNOWN_EVIDENCE_CLASSES } from '../agent-templates';
-import { splitFrontmatter } from './scanner';
+import { splitFrontmatter } from './frontmatter';
 import { logger } from '../logger';
 
 // ---------------------------------------------------------------------------
