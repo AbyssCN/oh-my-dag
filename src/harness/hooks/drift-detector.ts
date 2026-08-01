@@ -11,7 +11,6 @@
  * fail-open 侧: 无 config/null config → inert, 不影响正常流程。
  * 默认阈值 4 次相同签 → 标记 spinning (覆盖实验: read+read+read+read; bash+bash+bash+bash)。
  */
-import type { ExtensionFactory, ToolCallEvent } from '@earendil-works/pi-coding-agent';
 import { logger } from '../../logger';
 
 export interface DriftDetectorConfig {
@@ -47,22 +46,28 @@ const DEFAULT_MAX_SLOTS = 20;
 const DEFAULT_THRESHOLD = 4;
 const DEFAULT_RECOVERY_THRESHOLD = 2;
 
-/** 从 tool_call 事件计算归一化签名。含目标参数值 (不含 transient 字段如 timeout)。*/
-function computeSig(event: ToolCallEvent): string {
+/**
+ * 从一次工具调用计算归一化签名。含目标参数值 (不含 transient 字段如 timeout)。
+ *
+ * 入参是 **(工具名, 参数对象)** 而不是某个宿主的事件类型 —— 检测逻辑与"事件长什么样"无关,
+ * 而两个宿主 (agent leaf 的低层循环 / 交互 TUI 的 extension) 的事件字段名恰好不同
+ * (`args` vs `input`)。绑死其中一个, 另一个就得再抄一份, 而抄出来的那份迟早先漂。
+ */
+export function computeSig(toolName: string, input: unknown): string {
+  const args = (input ?? {}) as Record<string, unknown>;
   // bash: 命令前缀比参数键更区分是否 spinning
-  if (event.toolName === 'bash') {
-    const cmd = (event.input as { command?: string })?.command ?? '';
+  if (toolName === 'bash') {
+    const cmd = typeof args.command === 'string' ? args.command : '';
     const prefix = cmd.replace(/[\n\r]/g, ' ').slice(0, 50);
     return `bash:${prefix}`;
   }
   // read/write/edit/grep/ls/find: 含目标路径或模式第一参数
-  const input = event.input as Record<string, unknown> | undefined;
-  const path = input?.file_path ?? input?.path ?? input?.pattern;
+  const path = args.file_path ?? args.path ?? args.pattern;
   if (typeof path === 'string' && path.length > 0) {
-    return `${event.toolName}:${path.slice(0, 60)}`;
+    return `${toolName}:${path.slice(0, 60)}`;
   }
-  const keys = Object.keys(input ?? {}).sort().join(',');
-  return `${event.toolName}:${keys}`;
+  const keys = Object.keys(args).sort().join(',');
+  return `${toolName}:${keys}`;
 }
 
 /** stuck-checklist 文本 (omd caveman 斗模式)。*/
@@ -74,36 +79,43 @@ const STUCK_CHECKLIST = `⚠️ [omd/drift] 检测到工具调用模式重复, �
 ⑤ 卡 3 次以上 → 输出当前认知+已试方案, 寻求新方向。`;
 
 /**
- * 造 drift-detector extension。每个 agent 循环内跟踪 tool_call 签名,
- * 检测 spinning 后经 context 事件注入 stuck-checklist。
+ * 检测核 —— **与宿主无关的状态机**。宿主只需在每次工具调用后 `note()`, 在每次 LLM 调用前
+ * `takeInjection()`; 返回非 null 就把那段文本作为一条 user 消息注进去。
  */
-export function createDriftDetectorHook(config: DriftDetectorConfig = {}): ExtensionFactory {
+export interface DriftTracker {
+  /** 记一次工具调用 (spinning 判定 + 恢复判定都在这里推进)。 */
+  note(toolName: string, input: unknown): void;
+  /** 本次 LLM 调用前是否要注 stuck-checklist; 要注则返文本 (并按 repeatedInjection 复位)。 */
+  takeInjection(): string | null;
+  /** 新一轮 agent 开始 (清全部状态)。 */
+  reset(): void;
+}
+
+/** 造一个 drift 检测核 (per-session 状态; 每个 leaf / session 建一份)。 */
+export function createDriftTracker(config: DriftDetectorConfig = {}): DriftTracker {
   const maxSlots = config.maxSlots ?? DEFAULT_MAX_SLOTS;
   const threshold = config.threshold ?? DEFAULT_THRESHOLD;
   const repeatedInjection = config.repeatedInjection ?? false;
   const recoveryThreshold = config.recoveryThreshold ?? DEFAULT_RECOVERY_THRESHOLD;
 
-  return (pi) => {
-    // --- per-session 易变状态 ---
-    let ring: string[] = [];
-    let spinningDetected = false;
-    // 恢复追踪 (producer #5): 卡在 stuckSig 后, 收集打破循环的不同新签名。
-    let stuckSig: string | null = null;
-    let escapeSigs: string[] = [];
-    let recoveryEmitted = false; // 每个 spin 回合至多发一次恢复
+  let ring: string[] = [];
+  let spinningDetected = false;
+  // 恢复追踪 (producer #5): 卡在 stuckSig 后, 收集打破循环的不同新签名。
+  let stuckSig: string | null = null;
+  let escapeSigs: string[] = [];
+  let recoveryEmitted = false; // 每个 spin 回合至多发一次恢复
 
-    const reset = () => {
+  return {
+    reset() {
       ring = [];
       spinningDetected = false;
       stuckSig = null;
       escapeSigs = [];
       recoveryEmitted = false;
-    };
+    },
 
-    pi.on('agent_start', reset);
-
-    pi.on('tool_call', (event, _ctx) => {
-      const sig = computeSig(event);
+    note(toolName, input) {
+      const sig = computeSig(toolName, input);
 
       ring.push(sig);
       if (ring.length > maxSlots) ring.shift();
@@ -116,10 +128,7 @@ export function createDriftDetectorHook(config: DriftDetectorConfig = {}): Exten
           stuckSig = sig;
           escapeSigs = [];
           recoveryEmitted = false;
-          logger.warn(
-            { toolName: event.toolName, sig, sameCount, ringSize: ring.length },
-            '[omd/drift] spinning detected',
-          );
+          logger.warn({ toolName, sig, sameCount, ringSize: ring.length }, '[omd/drift] spinning detected');
           // 复利自学习 seam: 发 drift 事件给 bus 持久化 → dream 学成 omd.limit。回调抛不阻断检测。
           try {
             config.onSpinning?.({ sig, sameCount });
@@ -144,21 +153,13 @@ export function createDriftDetectorHook(config: DriftDetectorConfig = {}): Exten
           stuckSig = null; // 回合结束, 等下一次 spin 才重开
         }
       }
-      // 观察者模式: 不 block, 不放行 (返回 {} = pass through)。
-      return {};
-    });
+    },
 
-    pi.on('context', (event, _ctx) => {
-      if (!spinningDetected) return;
-      const checklistMsg = {
-        role: 'user' as const,
-        content: [{ type: 'text' as const, text: STUCK_CHECKLIST }],
-      };
-      event.messages.push(checklistMsg as never);
-      logger.debug('[omd/drift] stuck-checklist injected via context');
-      // reportedInjection=false 则注入一次后不再注 (repeatedInjection=true 持续监控)。
+    takeInjection() {
+      if (!spinningDetected) return null;
+      // repeatedInjection=false 则注入一次后不再注 (true 持续监控)。
       if (!repeatedInjection) spinningDetected = false;
-      return { messages: event.messages };
-    });
+      return STUCK_CHECKLIST;
+    },
   };
 }

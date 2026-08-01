@@ -2,49 +2,51 @@
  * src/harness/agent-leaf —— 双模 leaf 的 **agent 模式** runner(executor-dag 的 `executor:'agent'` 节点用)。
  *
  * inproc leaf = 单发 callModel(无工具,生成/研究/判断)。
- * agent  leaf = 这里 —— 起一个**带工具的 pi 子 agent**(read / edit / write / bash),**能真改文件**。
+ * agent  leaf = 这里 —— 起一个**带工具的子 agent**(read / write / edit / ls / grep / bash),**能真改文件**。
  * 二者经 primitives 的 LeafFn 统一(mimo-leaf 契约 INV-5: 同一原语既驱动 callModel 也驱动 spawn_agent)。
  *
  * scope 原子化(契约 §granularity): 每个 agent leaf 应锁定**一个原子产物**(如一个文件),并行 leaf 改
  * 不重叠文件 = 天然原子;冲突走 DAG 依赖串行。cwd = 工作根,工具直接落盘。
  *
- * ⚠ usage(in/out)pi AgentSession 当前不向上吐 → 暂记 {0,0}(V2-ECON 账本缺口, 与 PiRuntime 同)。
+ * ## 2026-08-01: 从 `pi-coding-agent` 搬到 `pi-agent-core` 的 `runAgentLoop`
+ *
+ * 此前这里靠 `createAgentSession` —— 那是 **CLI 包**的高层门面 (steering 队列 / 可变会话状态 /
+ * extension 运行时 / 资源加载器), 而 leaf 要的只是「给一段 prompt, 带工具跑到底, 返消息」。
+ * 为了那一个循环, headless 的 MCP 路径整个挂在一个交互式前端上, 并且被迫用它的形状表达纪律:
+ *
+ *   · **有界性靠外面的秒表**: 高层 `prompt()` 没有 maxTurns 也不收 signal, 跑飞了只能 SIGKILL,
+ *     于是有了 `runScopedSession` 那套 timeout+heartbeat+abort 的疤。低层循环原生收 `AbortSignal`
+ *     且有 `shouldStopAfterTurn`(「turn 之间优雅停」)—— 有界性现在长在循环里, **不是外挂**。
+ *   · **闸靠 extension 从外面贴**: 危险命令 / 凭证 basename 拒此前是 `tool-gate` 贴在通用工具上的,
+ *     贴漏了就是 `cat .env` 那个洞。现在工具是我们自己的 (`agent-tools.ts`), **闸长在工具里**。
+ *   · **静默吞错**: `createAgentSession` 失败返 0-token 空文本、不上抛 HTTP 状态 (C-5b 那道 loud-error
+ *     闸就是为它加的)。低层循环把 `stopReason:'error'` 连同 `errorMessage` 原样交回 → 直接抛得出真因。
+ *
+ * 换来的代价是系统提示与工具集要自己拼 —— 而那恰恰是想要的: 见 `buildLeafSystemPrompt`。
  */
 import {
-  createAgentSession,
-  SessionManager,
-  DefaultResourceLoader,
-  getAgentDir,
-  type AgentSession,
-  type ExtensionFactory,
-  type ToolDefinition,
-} from '@earendil-works/pi-coding-agent';
-import { getModel } from '@earendil-works/pi-ai/compat'; // 0.80: 目录读挪 /compat
+  runAgentLoop,
+  convertToLlm,
+  estimateContextTokens,
+  type AgentContext,
+  type AgentEvent,
+  type AgentLoopConfig,
+  type AgentMessage,
+} from '@earendil-works/pi-agent-core';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
-import { runScopedSession } from '../runtime/pi-runtime';
+import { dirname, isAbsolute, join } from 'node:path';
 import { parseModelRef } from './fleet';
+import { createOmdAgentTools, type AnyOmdTool } from './agent-tools';
 import { createHashlineCustomTools, hashlinePatchPaths } from './hashline';
-import { createDriftDetectorHook, type DriftDetectorConfig } from './hooks/drift-detector';
+import { createDriftTracker, type DriftDetectorConfig } from './hooks/drift-detector';
 import { createSandboxedLeafRunner } from './hooks/sandboxed-leaf';
 import { logger } from '../logger';
-import { kimiOAuthExtensionFor } from '../model/kimi-oauth';
+import { resolvePiApiKey, resolvePiModel } from '../model/pi-transport';
 import { promptVersionOfText } from '../model/langfuse';
 import type { ModelUsage } from '../model/types';
 import type { ThinkingLevel } from '../runtime/types';
 import { isStrongCoord } from '../model/model-ratings';
-
-/**
- * 默认零嵌入扩展 (2026-07-19 删 pi-rtk-optimizer/pi-lsp: 二者非依赖, 每次 spawn 都 WARN 未装;
- * 输出压缩由 caveman 路由承担, 符号导航由 codegraph 承担 — 均已在编)。
- * 要挂 pi 扩展包的宿主经 opts.extensionDirs 显式传目录。
- *
- * 注: caveman (输出压缩) **不在这里** —— 它要 per-leaf 路由 (创意节点关/干活节点开, 全局扩展做不到),
- * 故走 executor-dag 的 caveman 路由 (per-leaf prompt 注入, src/harness/caveman.ts)。pi-caveman 扩展只给
- * 交互式 omd TUI (/caveman 命令 + 全局 config)。
- */
-const DEFAULT_EXTENSION_DIRS: string[] = [];
 
 /**
  * Tool-routing guideline (TR-INV-5, docs/plan/omd-tool-routing-contract.md) —— 治弱模型 matching:
@@ -134,20 +136,15 @@ export interface AgentLeafRunnerOpts {
   /** thinking 档位。默认 xhigh (agent leaf 改文件/工具循环, 质量优先; 见下方赋值处注)。 */
   thinkingLevel?: ThinkingLevel;
   /**
-   * 工具白名单(CC frontmatter 风格)。**省略 = pi 默认全工具(含 read/edit/write/bash, 能改文件)。**
-   * 给则限定(如只读 ['read','bash'] 用于研究型 agent leaf)。
+   * 工具白名单(CC frontmatter 风格)。**省略 = 全套自有工具(read/write/edit/ls/grep/bash, 能改文件)。**
+   * 给则限定(如只读 ['read','grep','bash'] 用于研究型 agent leaf)。
    */
   tools?: string[];
-  /**
-   * 嵌入的 pi 扩展包目录 (经 additionalExtensionPaths 加载)。默认 `[]` 零嵌入 —— 宿主要挂
-   * pi 扩展包时显式传绝对目录数组。
-   */
-  extensionDirs?: string[];
   /**
    * 自定义工具 (与内置工具并存)。如 hashline_read/hashline_edit (行锚定 patch, 治弱模型 edit 腐烂)。
    * 经 createHashlineCustomTools() 造。省略 = 仅内置工具。
    */
-  customTools?: ToolDefinition[];
+  customTools?: AnyOmdTool[];
   /**
    * 注入 tool-routing guideline (TR-INV-5, 弱模型 matching 治理: 查代码/改文件重叠区路由 + 两步法)。
    * 默认 true。纯研究型只读 leaf 或纯命令执行 leaf 可关 (省那几行 token)。
@@ -168,18 +165,24 @@ export interface AgentLeafRunnerOpts {
    */
   promptProfile?: 'auto' | 'weak' | 'strong' | 'off';
   /**
-   * agent loop 有界超时 (ms): 弱模型 (DeepSeek) loop 偶尔写完产物后空转不退出 (pi 无 maxTurns,
-   * prompt() 永不 resolve → 外部 SIGKILL)。超时 → session.abort() settle 流, 返已累积输出 (产物多已落盘)。
-   * 默认 240_000 (4min, 原子叶子充裕上界)。0/省略 = 不限 (慎用)。
+   * agent loop 有界超时 (ms)。默认 240_000 (4min, 原子叶子充裕上界)。0/省略 = 不限 (慎用)。
+   *
+   * **两级实现** (2026-08-01 搬家后): ① `shouldStopAfterTurn` —— 超时后在**轮之间**优雅停,
+   * 已跑完的工具与已落盘的产物完整保留; ② `AbortSignal` —— 单轮自己跑过头时的硬兜底
+   * (流被 abort, `stopReason:'aborted'`)。此前只有 ② 的粗暴版 (外部 SIGKILL), 因为高层
+   * `prompt()` 既无 maxTurns 也不收 signal。**有界性本身一步没少, 换的是它长在哪。**
    */
   leafTimeoutMs?: number;
   /**
-   * 早期心跳闸 (issue #5): 启动后 heartbeatMs 累积输出仍近零且无工具活动 → 判 provider 挂起 (停摆),
-   * 提前中止标 stall, 不白等满 leafTimeoutMs (K3 停摆实测: 240s 只累积 24 字节 → 前 30s 即可判死)。
+   * 早期停摆闸 (issue #5): 启动后 heartbeatMs 内累积输出仍近零且无工具活动 → 判 provider 挂起,
+   * 提前 abort 标 stall, 不白等满 leafTimeoutMs (K3 停摆实测: 240s 只累积 24 字节 → 前 30s 即可判死)。
    * 默认 45_000 (45s, 保守避误杀)。0 = 关。
+   *
+   * 搬家时**刻意留着**: 它治的是「provider 端排队/挂起」, 与「循环停不下来」是两回事 —— 后者被
+   * signal + shouldStopAfterTurn 根治了, 前者没有; 删掉它只会让一个死 provider 白烧满 4 分钟墙钟。
    */
   heartbeatMs?: number;
-  /** 心跳闸输出下限 (字节)。默认 32。 */
+  /** 停摆闸输出下限 (字节)。默认 32。 */
   heartbeatMinBytes?: number;
   /**
    * 角色 persona 前缀 (P1 三层角色): **设计型/推理型** leaf 传 TASTE_CORE 或
@@ -195,10 +198,16 @@ export interface AgentLeafRunnerOpts {
    */
   hashlineEdit?: boolean;
   /**
-   * drift 检测 hook (代码级 spinning 防护): agent-leaf 是 headless 工具循环 = spin 高发面,
-   * 默认开 (low-invasive: 仅同调用同参重复 ≥阈值才经 context 注 stuck-checklist)。false 关; 对象调阈值。
+   * drift 检测 (代码级 spinning 防护): agent-leaf 是 headless 工具循环 = spin 高发面,
+   * 默认开 (low-invasive: 仅同调用同参重复 ≥阈值才经 transformContext 注 stuck-checklist)。
+   * false 关; 对象调阈值。
    */
   driftDetector?: DriftDetectorConfig | false;
+  /**
+   * 上下文预算闸 (GP-8): 估算上下文占到模型窗口的这个比例时, 在**轮之间**优雅停。
+   * 默认 0.85。0/省略 = 用默认; 设 1 以上 = 关 (不建议 —— 撞窗口是硬失败, 停下来还能交已有产物)。
+   */
+  contextBudgetRatio?: number;
   /**
    * 写沙箱根 (2026-07-23): 设则挂 sandbox-guard hook —— 任何结构化写 (write/edit/hashline_edit) 解析到
    * 此根子树外 **事前 block** (治 leaf 用绝对路径写穿隔离; eval worktree 必设 = fx.root)。省略 = 不沙箱
@@ -206,8 +215,8 @@ export interface AgentLeafRunnerOpts {
    */
   sandboxRoot?: string;
   /**
-   * debug 事件汇 (2026-07-23): 设则订阅 session **全部**事件转发给它 (tool_call 参数 / 工具结果 / 消息),
-   * 用于捕获 leaf transcript 挖 empty-done 根因。省略 = 不订阅 (零开销)。仅排障用, 非生产热路径。
+   * debug 事件汇 (2026-07-23): 设则把循环**全部**事件转发给它 (tool_call 参数 / 工具结果 / 消息),
+   * 用于捕获 leaf transcript 挖 empty-done 根因。省略 = 不转发 (零开销)。仅排障用, 非生产热路径。
    */
   onEvent?: (event: { type: string; [k: string]: unknown }) => void;
 }
@@ -230,75 +239,120 @@ export function mapSessionUsage(tokens?: { input?: number; output?: number; cach
   return { in: (tokens.input ?? 0) + cacheHit, out: tokens.output ?? 0, cacheHit };
 }
 
+/**
+ * 项目上下文文件 (AGENTS.md / CLAUDE.md) —— 从 cwd 逐级往上收, **外层在前**。
+ *
+ * 此前这一段是 pi `DefaultResourceLoader` 顺手做的, 搬家后要自己做。刻意保留而不是省掉:
+ * agent leaf 干的是在**别人的仓库里改代码**, 而那些文件正是那个仓库对"该怎么改"的说明书;
+ * 省掉它等于让每个 leaf 从零猜项目约定。每级只取第一个命中 (AGENTS 优先于 CLAUDE, 同 pi)。
+ */
+const CONTEXT_FILE_NAMES = ['AGENTS.md', 'AGENTS.MD', 'CLAUDE.md', 'CLAUDE.MD'];
+
+function loadProjectContext(cwd: string, maxDepth = 8): { path: string; content: string }[] {
+  const found: { path: string; content: string }[] = [];
+  let dir = isAbsolute(cwd) ? cwd : join(process.cwd(), cwd);
+  for (let i = 0; i < maxDepth; i++) {
+    for (const name of CONTEXT_FILE_NAMES) {
+      const full = join(dir, name);
+      try {
+        found.unshift({ path: full, content: readFileSync(full, 'utf-8') });
+        break; // 每级只取第一个命中
+      } catch {
+        /* 没有就没有 —— 上下文缺席不是错误 */
+      }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return found;
+}
+
+/**
+ * leaf 的**系统提示**。搬家前这一段由 pi CLI 的 `buildSystemPrompt` 拼, 里面有大半页
+ * 「你在 pi 里面工作 / pi 的文档在这些路径 / 被问到 extension 时去读 docs/extensions.md」——
+ * 对一个只负责写一个文件的 DAG 叶子来说, 那是纯噪声还占着最贵的那段缓存前缀。
+ *
+ * 现在只留三样**模型自己推不出来**的: ① 它是什么(一个有界的执行叶子, 不是聊天助手);
+ * ② 有哪些工具、各自干什么(工具自带 `promptSnippet`, 加一个工具不必再改这里);
+ * ③ 工作根在哪 + 这个仓库自己的说明书。
+ *
+ * ⚠ **字节稳定**: 这段是每个 leaf 请求的最前缀, 改它 = 全 leaf prompt-cache 失效
+ * (实测宽扇出命中 84~98%, 那是真钱)。cwd 与项目上下文随环境变是没办法的事, 排在后面;
+ * 前面那两段对同一批 leaf 逐字相同。
+ */
+export function buildLeafSystemPrompt(opts: {
+  cwd: string;
+  tools: readonly AnyOmdTool[];
+  contextFiles?: readonly { path: string; content: string }[];
+}): string {
+  const snippets = opts.tools
+    .filter((t) => t.promptSnippet)
+    .map((t) => `- ${t.promptSnippet}`)
+    .join('\n');
+  const guidelines = [...new Set(opts.tools.flatMap((t) => t.promptGuidelines ?? []))]
+    .map((g) => `- ${g}`)
+    .join('\n');
+  const parts = [
+    '你是 omd 的一个**执行叶子**: 拿到一个有界目标, 用下面的工具把它做完, 然后停。' +
+      '不寒暄、不复述任务、不问"要不要我继续" —— 没有人在对面等着回话。' +
+      '做完把**关键结论与改了哪些文件**写在最后一条消息里 (下游节点只看得到那条)。',
+    `可用工具:\n${snippets || '(无)'}`,
+  ];
+  if (guidelines) parts.push(`工具守则:\n${guidelines}`);
+  parts.push(`工作根: ${opts.cwd.replace(/\\/g, '/')} (相对路径都对它解析)`);
+  for (const f of opts.contextFiles ?? []) {
+    parts.push(`<project_instructions path="${f.path}">\n${f.content}\n</project_instructions>`);
+  }
+  return parts.join('\n\n');
+}
+
+/** 一条 AgentMessage 里的 assistant 文本 (thinking / toolCall 块不算)。 */
+function assistantText(msg: AgentMessage): string {
+  if ((msg as { role?: string }).role !== 'assistant') return '';
+  const content = (msg as { content?: unknown }).content;
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter((b): b is { type: 'text'; text: string } => (b as { type?: string })?.type === 'text')
+    .map((b) => b.text)
+    .join('');
+}
+
 export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeafRunner {
   // sandboxRoot 设 → subprocess-per-leaf under bwrap: 整个 leaf 进程关进只见 worktree 的文件系统视图
-  // (cwd=worktree, 主 repo 物理不可见) → pi 所有命令通道 (bash / 模型幻觉的 shell / 未来工具) + git-show
-  // oracle 泄漏一次性全封, 不逐工具打地鼠。前置委托: 下面 in-process 装配 (工具/hook/session) 全不需要。
+  // (cwd=worktree, 主 repo 物理不可见) → 所有命令通道 (bash / 模型幻觉的 shell / 未来工具) + git-show
+  // oracle 泄漏一次性全封, 不逐工具打地鼠。前置委托: 下面 in-process 装配 (工具/hook/循环) 全不需要。
   if (opts.sandboxRoot) return createSandboxedLeafRunner(opts);
   const cwd = opts.cwd ?? process.cwd();
   // agent leaf 默认 max thinking (the owner 锁): agent leaf 改文件/工具循环, 质量优先 (数量少于 inproc fan-out,
   // max 成本可控)。inproc leaf 才走 high (mass fan-out 省成本)。可经 opts 覆盖。
   const thinkingLevel = opts.thinkingLevel ?? 'xhigh';
-  const extensionDirs = opts.extensionDirs ?? DEFAULT_EXTENSION_DIRS;
 
-  // hashline 编辑模式: 注入 hashline 工具 (共享快照, 建一次复用整 runner) + 排除内置 edit 强制走行锚定。
+  // 工具集: 自有六件 + hashline (开则注入并**排除内置 edit**, 强制行锚定 patch) + 调用方自定。
+  // 建一次复用整 runner: hashline 的快照 store 要跨 read/edit 共享, 而 runner 的 cwd 是固定的。
+  const baseTools = createOmdAgentTools({ cwd });
   const hashlineTools = opts.hashlineEdit ? createHashlineCustomTools({ cwd }) : [];
-  const customTools = [...hashlineTools, ...(opts.customTools ?? [])];
-  const excludeTools = opts.hashlineEdit ? ['edit'] : undefined;
+  const excluded = new Set(opts.hashlineEdit ? ['edit'] : []);
+  const allowlist = opts.tools ? new Set(opts.tools) : null;
+  const tools = [...baseTools, ...hashlineTools, ...(opts.customTools ?? [])].filter(
+    (t) => !excluded.has(t.name) && (!allowlist || allowlist.has(t.name)),
+  );
 
-  // drift 检测 (默认开): 建一次复用整 runner —— factory 内部是 per-session 闭包, 每 createAgentSession
-  // 调它起一份新 ring/flag, 故跨 leaf 复用同一 factory 安全。agent-leaf = headless 工具循环 spin 高发面。
-  const driftFactory =
-    opts.driftDetector === false
-      ? null
-      : createDriftDetectorHook(typeof opts.driftDetector === 'object' ? opts.driftDetector : {});
-
-  // ⚠ resourceLoader **每 leaf 建一份, 不缓存复用** —— 曾缓存单例 (省 reload 读盘) 引入 ctx-stale 竞态:
-  //   pi 的 ModelRegistry.refresh 是 per-loader 的全局 wipe+replay (kimi-oauth 恒挂重放即为此); 并发/
-  //   后续 leaf 共享同一 loader 时, 一个 leaf 建 session 触发的 refresh 会使**其它在飞 leaf 捕获的 ctx
-  //   失效** → 8/8 工具报 "ctx is stale after session replacement or reload", filesTouched 空
-  //   (2026-07-24 dogfood 实证: slice-2 并发 impl 全挂)。pi-runtime.ts 一贯 per-session 建 loader
-  //   (不缓存) 且无此 bug —— 此处对齐。correctness > 省这次读盘, fan-out 有并发上限故代价有界。
-  //   drift-detector 经 in-code extensionFactories 注入; driftFactory 是**工厂** (每 session 起新
-  //   ring/flag), 跨 per-leaf loader 复用同一工厂安全。无 extensionDirs 且无 drift → 不建 (纯净 bare session)。
-  const buildLoader = async (kimiExt: ExtensionFactory | null): Promise<DefaultResourceLoader> => {
-    const rl = new DefaultResourceLoader({
-      cwd,
-      agentDir: getAgentDir(),
-      additionalExtensionPaths: extensionDirs,
-      extensionFactories: [...(kimiExt ? [kimiExt] : []), ...(driftFactory ? [driftFactory] : [])],
-    });
-    await rl.reload();
-    return rl;
-  };
+  // 项目说明书读一次复用整 runner (cwd 固定; 一次 fan-out 里几十个 leaf 不该各读一遍盘)。
+  const contextFiles = loadProjectContext(cwd);
+  const systemPrompt = buildLeafSystemPrompt({ cwd, tools, contextFiles });
 
   return async ({ prompt, model }) => {
     const { provider, modelId } = parseModelRef(model);
-    const m = getModel(provider as Parameters<typeof getModel>[0], modelId as never);
-    // kimi-coding OAuth **条件挂载** (2026-07-29): 判据是**这个 leaf 这次用的坐标**, 不是 runner
-    // 级配置 —— 一个 runner 服务整张图, 每个 leaf 的 model 各不相同 (stamp pass 按档位派), 条件只能
-    // 落在 per-call 上。恒挂的代价见 kimi-oauth.ts 的条件挂载注。
-    // 是 kimi 但既无 extensionDirs 也无 drift → 仍要建 loader (否则刷新件没有挂载点, 过期即 401 ——
-    // 恒挂时代那条"纯净 bare session"路径正是这么漏的)。
-    const kimiExt = kimiOAuthExtensionFor(model);
-    const resourceLoader =
-      extensionDirs.length > 0 || driftFactory || kimiExt ? await buildLoader(kimiExt) : undefined;
-    const { session } = await createAgentSession({
-      cwd,
-      model: m,
-      thinkingLevel,
-      // cwd 必须传进 inMemory: SessionManager 的 cwd 绑内置工具 (write/read/ls/edit) 的相对路径解析。
-      // 缺省 = process.cwd() (eval 时 = 主 repo) → 相对写逃出 worktree 污染主树 (2026-07-23 md5 实证)。
-      sessionManager: SessionManager.inMemory(cwd),
-      // 嵌入扩展 (caveman 压输出 + rtk 压工具输出) 经 resourceLoader 注入 agent leaf session。
-      ...(resourceLoader ? { resourceLoader } : {}),
-      // tools 省略 = pi 默认全工具(能改文件); 给则限定。
-      ...(opts.tools ? { tools: opts.tools } : {}),
-      // 自定义工具 (hashline 读改等), 与内置并存。
-      ...(customTools.length > 0 ? { customTools } : {}),
-      // hashline 模式排除内置 edit (强制行锚定路径)。
-      ...(excludeTools ? { excludeTools } : {}),
-    });
+    // 坐标解析与单发通道 (`callModel`) 走**同一个** resolver —— 两栈各解析一次正是"座位在这条路上
+    // 能解出来、在那条路上解不出来"的来源。
+    const piModel = resolvePiModel(provider, modelId);
+    if (!piModel) {
+      throw new Error(
+        `[agent-leaf] 坐标 '${model}' 解析不出模型: provider '${provider}' 既不在自有 registry 也不在 pi-ai 目录。`,
+      );
+    }
     // prompt 档随**本次 leaf 的模型档**分派 (同 conductor S-P): 强模型只吃 house-rules,
     // 弱模型吃全量脚手架。opts 的两个开关仍是硬关 (纯命令叶可全关)。
     const wantRouting = opts.toolRouting ?? true;
@@ -310,13 +364,13 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // 而不是"引擎这一版怎么包装" —— 混进来会让版本逐节点漂, 也就分不了组。
     const promptVersion = promptVersionOfText(scaffold);
     const routedPrompt = opts.persona ? `<persona>\n${opts.persona}\n</persona>\n\n${disciplined}` : disciplined;
-    // filesTouched 采集 (2026-07-20 修产物闸冤杀): 并挂第二个监听收集**成功落盘**的写路径 —
-    // start 记 toolCallId→path 候选, end 且 !isError 才计入 (失败的写不算产物)。
+
+    // filesTouched 采集 (2026-07-20 修产物闸冤杀): start 记 toolCallId→path 候选,
+    // end 且 !isError 才计入 (失败的写不算产物)。
     // 此前 runner 从不填 filesTouched → executor-dag 产物闸把真交付的文件节点全判 failed (恒空 = "谎报完工")。
     const FILE_WRITE_TOOLS = new Set(['write', 'edit', 'hashline_edit']);
     // D-12 读采集: **与写监听同一形状** (start 记候选 → end 且 !isError 才计入)。
-    // 词表已核对 (2026-07-30, 扫 pi dist): 内置工具是 read/write/edit/ls/grep/bash + 自定义
-    // hashline_read/hashline_edit —— 单文件读的入口只有 read 与 hashline_read 两个, 这里是完整的。
+    // 词表与 `agent-tools.ts` 的工具集对齐: 单文件读的入口只有 read 与 hashline_read 两个。
     // `grep`/`ls` 刻意不收: 它们是**检索**不是消费 (一次 grep 命中十个文件不等于依赖那十个),
     // 收进来会把 artifact-lint 淹在噪声里。`bash` 里的 cat 收不到 —— 与写侧漏 bash 重定向同一条边界。
     const FILE_READ_TOOLS = new Set(['read', 'hashline_read']);
@@ -328,94 +382,200 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     const writeEffects: FileWriteEffect[] = [];
     const snapByCall = new Map<string, Map<string, FileSnapshot>>();
     let toolCalls = 0; // 工具调用计数 (prompt 档的路由效率读数, 见 AgentLeafResult.toolCalls)。
+    let toolActivity = false; // 任何工具调用 = 模型已应答 → 停摆闸豁免
+    let streamedChars = 0; // 已流出的正文字节数 (停摆闸的另一半判据)
     // toolCallId → 候选写路径 (可多: hashline_edit 一个 patch 多 section 多文件)。end 且 !isError 才计入。
     const pathByCall = new Map<string, string[]>();
     const readByCall = new Map<string, string>();
-    const unsubTouch = (session as { subscribe: (l: (e: { type: string; toolCallId?: string; toolName?: string; args?: { path?: unknown; patch?: unknown }; isError?: boolean }) => void) => () => void }).subscribe((e) => {
-      if (e.type === 'tool_execution_start') toolCalls++;
-      if (e.type === 'tool_execution_start' && e.toolName && FILE_WRITE_TOOLS.has(e.toolName) && e.toolCallId) {
-        // hashline_edit 路径嵌在 patch 头 (`¶PATH#TAG`), 不是顶层 path —— 必须解析 patch, 否则漏记 → 假 empty-done。
-        const paths =
-          e.toolName === 'hashline_edit' && typeof e.args?.patch === 'string'
-            ? hashlinePatchPaths(e.args.patch)
-            : typeof e.args?.path === 'string' && e.args.path.trim()
-              ? [e.args.path]
-              : [];
-        if (paths.length) {
-          pathByCall.set(e.toolCallId, paths);
-          // 写前快照。读盘失败 (权限 / 目录 / 竞态) 一律当"此前不存在" —— 本采集 fail-open,
-          // 它是读数不是闸, 绝不能因为量不出来就把一次真的写判没了。
-          const snaps = new Map<string, FileSnapshot>();
-          for (const p of paths) snaps.set(p, snapshotFile(cwd, p));
-          snapByCall.set(e.toolCallId, snaps);
-        }
-      } else if (e.type === 'tool_execution_start' && e.toolName && FILE_READ_TOOLS.has(e.toolName) && e.toolCallId) {
-        if (typeof e.args?.path === 'string' && e.args.path.trim()) readByCall.set(e.toolCallId, e.args.path);
-      } else if (e.type === 'tool_execution_end' && e.isError === false && e.toolCallId) {
-        const ps = pathByCall.get(e.toolCallId);
-        if (ps) {
-          const snaps = snapByCall.get(e.toolCallId);
-          for (const p of ps) {
-            touched.add(p);
-            const before = snaps?.get(p);
-            if (!before) continue; // 没取到快照 (理论上不会) → 不编一个效果数出来
-            writeEffects.push(diffWriteEffect(p, before, snapshotFile(cwd, p)));
+
+    // drift 检测 (默认开): **每个 leaf 一份** ring/flag —— 跨 leaf 复用会把别人的工具序列算进自己的环。
+    const drift =
+      opts.driftDetector === false
+        ? null
+        : createDriftTracker(typeof opts.driftDetector === 'object' ? opts.driftDetector : {});
+
+    const emit = (e: AgentEvent): void => {
+      if (e.type === 'message_update' && e.assistantMessageEvent.type === 'text_delta') {
+        streamedChars += e.assistantMessageEvent.delta.length;
+      } else if (e.type === 'tool_execution_start') {
+        toolCalls++;
+        toolActivity = true;
+        drift?.note(e.toolName, e.args);
+        const args = (e.args ?? {}) as { path?: unknown; patch?: unknown };
+        if (FILE_WRITE_TOOLS.has(e.toolName)) {
+          // hashline_edit 路径嵌在 patch 头 (`¶PATH#TAG`), 不是顶层 path —— 必须解析 patch, 否则漏记 → 假 empty-done。
+          const paths =
+            e.toolName === 'hashline_edit' && typeof args.patch === 'string'
+              ? hashlinePatchPaths(args.patch)
+              : typeof args.path === 'string' && args.path.trim()
+                ? [args.path]
+                : [];
+          if (paths.length) {
+            pathByCall.set(e.toolCallId, paths);
+            // 写前快照。读盘失败 (权限 / 目录 / 竞态) 一律当"此前不存在" —— 本采集 fail-open,
+            // 它是读数不是闸, 绝不能因为量不出来就把一次真的写判没了。
+            const snaps = new Map<string, FileSnapshot>();
+            for (const p of paths) snaps.set(p, snapshotFile(cwd, p));
+            snapByCall.set(e.toolCallId, snaps);
           }
+        } else if (FILE_READ_TOOLS.has(e.toolName)) {
+          if (typeof args.path === 'string' && args.path.trim()) readByCall.set(e.toolCallId, args.path);
         }
-        // 读失败 (文件不存在等) 不算读过 —— 同"失败的写不算产物"。
-        const rp = readByCall.get(e.toolCallId);
-        if (rp) readPaths.add(rp);
+      } else if (e.type === 'tool_execution_end') {
+        toolActivity = true;
+        if (!e.isError) {
+          const ps = pathByCall.get(e.toolCallId);
+          if (ps) {
+            const snaps = snapByCall.get(e.toolCallId);
+            for (const p of ps) {
+              touched.add(p);
+              const before = snaps?.get(p);
+              if (!before) continue; // 没取到快照 (理论上不会) → 不编一个效果数出来
+              writeEffects.push(diffWriteEffect(p, before, snapshotFile(cwd, p)));
+            }
+          }
+          // 读失败 (文件不存在等) 不算读过 —— 同"失败的写不算产物"。
+          const rp = readByCall.get(e.toolCallId);
+          if (rp) readPaths.add(rp);
+        }
       }
-    });
-    // debug 事件汇 (opt-in): 转发全部事件给 onEvent 抓 transcript。
-    const unsubDebug = opts.onEvent
-      ? (session as { subscribe: (l: (e: { type: string; [k: string]: unknown }) => void) => () => void }).subscribe(
-          (e) => opts.onEvent!(e),
-        )
-      : null;
-    // 有界中止 (默认 4min): 治弱模型 loop 写完空转不退出 → 外部 SIGKILL 的 bug。
-    // 早期心跳闸 (issue #5, 默认 45s): provider 挂起时不白等满硬超时, 提前标 stall。
-    let text: string;
+      // debug 事件汇 (opt-in): 转发全部事件抓 transcript。回调抛错不许打断循环。
+      if (opts.onEvent) {
+        try {
+          opts.onEvent(e as unknown as { type: string; [k: string]: unknown });
+        } catch (err) {
+          logger.warn({ err: (err as Error).message }, '[agent-leaf] onEvent 回调抛错 (已吞, 不打断循环)');
+        }
+      }
+    };
+
+    // ── 有界性 (两级) ────────────────────────────────────────────────────────────
+    // ① shouldStopAfterTurn: 超时/上下文预算到了 → 在**轮之间**优雅停, 已落盘的产物完整保留。
+    // ② AbortSignal: 单轮自己跑过头 (provider 挂着不返) 的硬兜底。
+    // 此前这两件事都只能靠外部秒表 + SIGKILL —— 高层 prompt() 既没有 maxTurns 也不收 signal。
+    const timeoutMs = opts.leafTimeoutMs ?? 240_000;
+    const heartbeatMs = opts.heartbeatMs ?? 45_000;
+    const heartbeatMinBytes = opts.heartbeatMinBytes ?? 32;
+    const budgetRatio = opts.contextBudgetRatio && opts.contextBudgetRatio > 0 ? opts.contextBudgetRatio : 0.85;
+    const controller = new AbortController();
+    const startedAt = Date.now();
+    let timedOut = false;
     let stalled = false;
+    let contextExhausted = false;
+    const hardTimer =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+          }, timeoutMs)
+        : null;
+    // 停摆闸 (issue #5): 一次性早检 —— provider 端排队/挂起时前 45s 就零/近零 token, 不必白等满硬超时。
+    // 工具活动豁免 (合法慢叶子跑长 bash 时静默但已应答)。
+    const stallTimer =
+      heartbeatMs > 0
+        ? setTimeout(() => {
+            if (streamedChars < heartbeatMinBytes && !toolActivity) {
+              stalled = true;
+              controller.abort();
+            }
+          }, heartbeatMs)
+        : null;
+
+    const context: AgentContext = {
+      systemPrompt,
+      messages: [],
+      tools,
+    };
+    const config: AgentLoopConfig = {
+      model: piModel,
+      convertToLlm,
+      // thinking: 'off' = 不发该字段 (与 pi-transport 同语义); 其余直映 pi 的 reasoning 档,
+      // 由 pi 按模型 thinkingLevelMap 再夹一次 (它比我们更清楚自家目录里哪档存在)。
+      ...(thinkingLevel !== 'off' ? { reasoning: thinkingLevel } : {}),
+      // 凭证**每轮现取** (auth.json → env, 与单发通道同一条解析): OAuth token 会在长工具阶段中途过期,
+      // 起跑时取一次的写法到那时就是 401。
+      getApiKey: (p: string) => resolvePiApiKey(p),
+      // drift 注入走 transformContext: 它只改**这一次请求**看到的消息, 不写回 context ——
+      // 于是"检出 spin → 注一次"是天然的边沿行为, 不会在 transcript 里堆成 N 份 checklist。
+      transformContext: async (messages: AgentMessage[]) => {
+        const text = drift?.takeInjection();
+        if (!text) return messages;
+        logger.debug('[omd/drift] stuck-checklist injected via transformContext');
+        return [...messages, { role: 'user' as const, content: text, timestamp: Date.now() }];
+      },
+      shouldStopAfterTurn: ({ context: ctx }) => {
+        if (timeoutMs > 0 && Date.now() - startedAt >= timeoutMs) {
+          timedOut = true;
+          return true;
+        }
+        // GP-8 上下文纪律: 撞窗口是硬失败 (整轮白丢), 而在窗口前停下来还能把已有产物交出去。
+        const window = piModel.contextWindow;
+        if (window > 0 && estimateContextTokens(ctx.messages).tokens >= window * budgetRatio) {
+          contextExhausted = true;
+          logger.warn({ model, window }, '[agent-leaf] 上下文预算到顶 → 轮间优雅停 (GP-8)');
+          return true;
+        }
+        return false;
+      },
+    };
+
+    let messages: AgentMessage[];
     try {
-      text = await runScopedSession(
-        session as unknown as Parameters<typeof runScopedSession>[0],
-        routedPrompt,
-        {
-          timeoutMs: opts.leafTimeoutMs ?? 240_000,
-          heartbeatMs: opts.heartbeatMs ?? 45_000,
-          ...(opts.heartbeatMinBytes !== undefined ? { heartbeatMinBytes: opts.heartbeatMinBytes } : {}),
-          onOutcome: (o) => { stalled = o.stalled; },
-        },
+      messages = await runAgentLoop(
+        [{ role: 'user', content: routedPrompt, timestamp: Date.now() }],
+        context,
+        config,
+        emit,
+        controller.signal,
       );
     } finally {
-      unsubTouch();
-      unsubDebug?.();
+      if (hardTimer) clearTimeout(hardTimer);
+      if (stallTimer) clearTimeout(stallTimer);
     }
-    // usage: pi session 累计 token (getSessionStats().tokens) → ModelUsage (2026-07-21 补 V2-ECON 缺口 —
-    // 此前恒 {in:0,out:0}, agent 节点成本量不到; 这是 ④ model-mix 经济学的前置)。
-    const stats = (session as {
-      getSessionStats?: () => { tokens?: { input?: number; output?: number; cacheRead?: number } };
-    }).getSessionStats?.();
-    const usage = mapSessionUsage(stats?.tokens);
-    // C-5b loud-error 闸 (统一-registry, issue #13): pi createAgentSession **静默吞错** —— 失败
-    // (401/404/空响应, 或 reasoning 截断吞正文) 返 0-token 空文本、不上抛 HTTP 状态, 是本次 mimo 排查绕
-    // 5 轮的元凶。session 空文本 + 无文件写入 + 非停摆 → **抛响亮错** (executor-dag failedFromThrow 接住,
-    // 保留败因入 heal 回路), 不把 empty-done 当成功。GWT-2 的 agent-leaf 侧。
-    // 双闸对齐避免误判: stalled 由心跳闸下游标 failed (此处不抛, 原样保 stalled 语义); producesFiles 由
-    // 产物闸下游校验 —— 此处只在**零文件写入**时抛, 有落盘即真产物, 交产物闸判 (不双重误杀)。
-    if (!text.trim() && touched.size === 0 && !stalled) {
+
+    const text = messages.map(assistantText).join('');
+    // usage: 循环把每一轮的 assistant 消息连同 usage 一并交回 → 逐轮累加即整个 leaf 的账
+    // (此前只能问 session 要一个汇总数)。口径换算见 mapSessionUsage。
+    const totals = { input: 0, output: 0, cacheRead: 0 };
+    for (const m of messages) {
+      const u = (m as { usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } }).usage;
+      if (!u) continue;
+      // cacheWrite 并进 input: 本仓价表无写价字段, 按全价计 (诚实近似, 不虚构字段; 同 pi-transport)。
+      totals.input += (u.input ?? 0) + (u.cacheWrite ?? 0);
+      totals.output += u.output ?? 0;
+      totals.cacheRead += u.cacheRead ?? 0;
+    }
+    const usage = mapSessionUsage(totals);
+
+    // **响亮失败** (承 C-5b): 低层循环对 provider 错误不抛 —— 它把 `stopReason:'error'` 连同
+    // errorMessage 放进最后一条 assistant 消息就返回了 (agent-loop.js 的 error 分支)。
+    // 那正是 empty-done 伪装成功的入口, 所以这里**主动查**: 有真错就带着 provider 的原话抛,
+    // 而不是像从前那样只能猜"疑 401/404/空响应"。
+    const last = messages[messages.length - 1] as
+      | { role?: string; stopReason?: string; errorMessage?: string }
+      | undefined;
+    if (last?.role === 'assistant' && last.stopReason === 'error') {
       throw new Error(
-        `[agent-leaf] 0-token empty-done (model=${model}): session 返回空文本、无文件写入、非停摆 — ` +
-          '疑 provider 静默失败 (401/404/空响应, 或 reasoning 截断吞了正文)。pi createAgentSession 不上抛 ' +
-          'HTTP 状态, 故此处响亮报错而非当成功 (统一-registry C-5b)。',
+        `[agent-leaf] provider 报错 (model=${model}): ${last.errorMessage ?? '(无 errorMessage)'}`,
       );
+    }
+    // 零产出兜底: 没错误、没正文、没落盘、也不是被我们停下来的 → 仍然响亮失败
+    // (executor-dag failedFromThrow 接住, 保留败因入 heal 回路), 不把 empty-done 当成功。
+    // stalled / 超时 / 上下文到顶都**不在此列**: 它们有各自的语义, 由下游按语义判。
+    if (!text.trim() && touched.size === 0 && !stalled && !timedOut && !contextExhausted) {
+      throw new Error(
+        `[agent-leaf] 0-token empty-done (model=${model}): 循环返回空文本、无文件写入、非停摆非超时 — ` +
+          '疑 provider 静默失败 (空响应, 或 reasoning 截断吞了正文)。',
+      );
+    }
+    if (stalled) {
+      logger.warn({ heartbeatMs, outLen: streamedChars }, '[agent-leaf] leaf 停摆 (窗口内近零输出+无工具活动, 疑 provider 挂起)');
+    } else if (timedOut) {
+      logger.warn({ timeoutMs, outLen: streamedChars }, '[agent-leaf] leaf 超时中止 (有界停, 返已累积输出)');
     }
     return { text, usage, promptVersion, filesTouched: [...touched], filesRead: [...readPaths], cwd, toolCalls, stalled, writeEffects };
   };
 }
-
-export type { AgentSession, ToolDefinition };
 
 /** 一次写之前/之后的文件状态 —— §8.5 效果指标的原料。 */
 export interface FileSnapshot {

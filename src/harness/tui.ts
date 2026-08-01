@@ -34,11 +34,11 @@ import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from './command-le
 import { createMultimodalRouteExtension } from './multimodal-route-extension';
 import { createBannerExtension, ensureOmdTheme } from './branding';
 import { detectRuntimeConfig, runInitWizard, createReadlineIO } from './init';
-import { createHashlineExtension } from './hashline';
+import { createHashlineExtension } from './hashline-extension';
 import { createConfigExtension } from './config-extension';
 import { createMcpStackFromConfig, createOutputSandboxExtension, createOutputStore } from './mcp';
-import { createWebStackFromEnv, createWebExtension } from './web';
-import { fetchWithFallback } from './web/web-extension';
+import { createWebStackFromEnv } from './web';
+import { createWebExtension, fetchWithFallback } from './web/web-extension';
 import { CleaningFetchProvider } from './web/clean';
 import { createCodeExtension, type ToolMap } from './code';
 import { createCostExtension } from './cost-extension';

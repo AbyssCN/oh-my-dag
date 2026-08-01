@@ -34,7 +34,9 @@ export { JinaProvider } from './providers/jina';
 export { SearxngProvider } from './providers/searxng';
 export { PlainFetchProvider } from './providers/plain';
 
-export { createWebExtension, fetchWithFallback } from './web-extension';
+// ⚠ `web-extension` (交互-TUI 的 pi extension) **刻意不从这个 barrel 出去**: 它 import
+// `pi-coding-agent`, 而 MCP 那条路径经 assemble.ts 进本 barrel —— 从这里再导一次, 整个 CLI 包
+// 就跟着被拉进一个零 UI 的 stdio server。要它的只有 tui.ts, 让它直接 import 那个文件。
 export { fetchRacing, defaultTier } from './fetch-racing';
 export type { FetchTier } from './fetch-racing';
 export { retrieveWeb, buildMarkdown } from './retrieve';

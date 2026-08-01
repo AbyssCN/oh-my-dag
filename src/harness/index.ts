@@ -129,12 +129,14 @@ export {
 } from './model-router';
 export {
   createAgentLeafRunner,
+  buildLeafSystemPrompt,
   type AgentLeafRunner,
   type AgentLeafInput,
   type AgentLeafResult,
   type AgentLeafRunnerOpts,
-  type ToolDefinition,
 } from './agent-leaf';
+// agent leaf 的自有工具集 (read/write/edit/ls/grep/bash, 闸长在工具里)。
+export { createOmdAgentTools, type OmdTool, type AnyOmdTool, type OmdAgentToolsOpts } from './agent-tools';
 export { cavemanRule, leafCavemanLevel, type CavemanLevel } from './caveman';
 export {
   createCommandLeafRunner,
@@ -147,12 +149,13 @@ export {
 export {
   createHashlineTools,
   createHashlineCustomTools,
-  createHashlineExtension,
   HASHLINE_GUIDELINES,
   HASHLINE_BLOCK_NATIVE_EDIT_REASON,
   type HashlineToolsOpts,
   type HashlineTools,
 } from './hashline';
+// hashline 的交互-TUI 接线单独一个文件 (只有它需要 pi-coding-agent, 见该文件头)。
+export { createHashlineExtension } from './hashline-extension';
 // cg-retrieve: omd 监督式自装产物 (DeepSeek agent leaf 写, omd verify) — codegraph 并行检索能力。
 export { cgRetrieve, type CgRetrieveOpts } from './cg-retrieve';
 // sec-audit: omd 监督式自装产物 — 多 lens 并行安全审计 (piolium 方法论 → DAG)。
