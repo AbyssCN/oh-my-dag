@@ -44,9 +44,9 @@ describe("checkSeats — 全座位自检 (纯读, 不抛)", () => {
 		expect(out.find((c) => c.seat === "dream")!.status).toBe("unset");
 	});
 
-	test("覆盖全部 16 个座位 (加座位不会漏检)", () => {
+	test("覆盖全部座位 (加座位不会漏检)", () => {
 		const env = envWithConfig({});
-		expect(withEnv(env, () => checkSeats(env))).toHaveLength(16);
+		expect(withEnv(env, () => checkSeats(env))).toHaveLength(17);
 	});
 });
 

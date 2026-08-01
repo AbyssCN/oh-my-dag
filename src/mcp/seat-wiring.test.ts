@@ -159,12 +159,14 @@ describe('verify 闸挂在 MCP 装配上', () => {
   });
 });
 
-describe('内环收敛 judge 的座位', () => {
-  test('★ dag_run 的 config 带 judgeModel = judge 座位 (不再默默骑在 conductor 座上)', async () => {
+describe('内环收敛闸的座位', () => {
+  test('★ dag_run 的 config 带 judgeModel = **gate** 座 (不是 judge 座, 更不是默默骑 conductor)', async () => {
     withFakeProvider();
     const cfg = await configSeenByEngine({ ...FAKE_ENV });
-    expect(cfg.judgeModel).toBe('faux:judge');
-    // 同一次装配里两个座位必须真的分得开 —— 否则这条断言在"两座恰好同模型"时会假绿。
+    expect(cfg.judgeModel).toBe('faux:gate');
+    // 三个座位在同一次装配里必须真的分得开 —— 否则"恰好同模型"时这条断言会假绿。
+    // 这三者是三个不同角色: 分解 / 择优 / 闸 (见 model/seats.ts)。
     expect(cfg.conductorModel).toBe('faux:conductor');
+    expect(cfg.judgeModel).not.toBe('faux:judge');
   });
 });
