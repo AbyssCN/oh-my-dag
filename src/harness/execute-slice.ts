@@ -17,7 +17,7 @@
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { iterateExecutorDag, summarizeDagResult, type IterateResult } from './plan/iterate';
+import { iterateExecutorDag, type IterateResult } from './plan/iterate';
 import { createDagRecorder } from './dag-record';
 import { runExecutorDagWithPlan, type ExecutorDagResult, type GenerateFn } from './executor-dag';
 import { resolveSeatThinking } from '../model/role-models';
@@ -27,7 +27,6 @@ import type { AgentLeafRunner, CommandLeafRunner } from './leaf-runners';
 import { callModel, type ModelRequest, type ModelResponse } from '../model';
 import { logger } from './logger';
 import { tryResolveSeatModel } from '../model/role-models';
-import { m } from './i18n';
 
 /**
  * D-8: conductor 模型的默认 = **'conductor' 座位** (单一 resolver, INV-MODEL-1)。
@@ -104,19 +103,6 @@ export function findLatestSdd(planDir: string): { path: string; text: string } |
   }
 }
 
-/** 汇总 fixpoint 全轮 token 用量 (conductor + leaves; cacheHit ⊆ in)。 */
-function sumUsage(r: IterateResult): string {
-  let cin = 0, cout = 0, lin = 0, lout = 0, hit = 0;
-  for (const round of r.rounds) {
-    const u = round.result.usage;
-    cin += u.conductor.in;
-    cout += u.conductor.out;
-    lin += u.leavesIn;
-    lout += u.leavesOut;
-    hit += u.leavesCacheHit;
-  }
-  return `conductor ${cin}→${cout} · leaves ${lin}→${lout} (cache hit ${hit})`;
-}
 
 /**
  * 验收指令块 (交接协议第 3 步, 活在 harness prompt 非代码): runtime 模型收到 brief 后
