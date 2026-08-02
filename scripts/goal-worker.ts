@@ -35,6 +35,7 @@ import { bootstrapModelRuntime } from '../src/model/bootstrap';
 import { assembleOmdMcpTools } from '../src/mcp/assemble';
 import { RunRegistry } from '../src/mcp/run-registry';
 import { createRunStore } from '../src/mcp/run-store';
+import { verifyTerminalPersisted } from '../src/mcp/terminal-verify';
 import { join } from 'node:path';
 
 const argv = process.argv.slice(2);
@@ -102,8 +103,11 @@ const TERMINAL = new Set(['done', 'failed', 'cancelled']);
 for (;;) {
   const st = registry.getStatus(runId);
   if (st && TERMINAL.has(st)) {
-    console.error(`goal-worker: runId=${runId} 终态 ${st}`);
-    process.exit(st === 'done' ? 0 : 1);
+    // 终态写穿核验 (S-12 的灯, 2026-08-02): 内存终态 ≠ 盘上终态 —— 两次 live 在这儿静默丢过。
+    // 必须用**全新连接**核验与修复 (本进程的长命连接正是嫌疑面), 修不动才带着响亮日志退非零。
+    const verdict = verifyTerminalPersisted(join(cwd, '.omd', 'runs.db'), runId, st);
+    console.error(`goal-worker: runId=${runId} 终态 ${st} (写穿核验: ${verdict})`);
+    process.exit(verdict === 'unrecoverable' ? 3 : st === 'done' ? 0 : 1);
   }
   await Bun.sleep(2000);
 }
