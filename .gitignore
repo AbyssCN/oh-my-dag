@@ -33,3 +33,12 @@ docs/articles/
 
 # 其它 session 的 git worktree (机器本地状态, 不进仓)
 .claude/worktrees/
+
+# 内部工作文档 (2026-08-02): 交接/SDD/调研/安全审计/会话记录只在本地, 不进公开仓
+docs/adr/
+docs/handoff/
+docs/knowledge/
+docs/plan/
+docs/reference/
+docs/security/
+docs/session/
