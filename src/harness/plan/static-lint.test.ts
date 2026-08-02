@@ -4,12 +4,36 @@
  * 这条网盯两个方向:
  *  ① **该报的报**: 写竞争 (它不报错, 只是"有时候产物不对" —— 静默不确定性是最贵的一种);
  *  ② **不该报的一个都不许报**: 静态检查一旦开始猜, 它就是第三个 judge, 而且是个没有证据的。
+ *  ③ **命令引用缺失**: executor:'command' 节点引用了 cwd 内不存在的脚本或未定义的 package script —— 同样跑之前就能判死。
  */
-import { describe, expect, test } from 'bun:test';
+import { afterAll, describe, expect, test } from 'bun:test';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { staticLintPlan } from './static-lint';
 import type { ConductorPlan } from '../conductor-plan';
+import type { StaticFinding } from './static-lint';
 
 const plan = (nodes: Record<string, unknown>): ConductorPlan => ({ name: 'p', nodes } as ConductorPlan);
+/** 真实 command 节点形态: schema (conductor-plan) 里没有 type 字段, 判别键是 executor:'command'。 */
+const cmdNode = (command: string, cwd?: string): Record<string, unknown> => ({ executor: 'command', command, ...(cwd ? { cwd } : {}) });
+
+/** 内建临时目录 fixture: 每个用例一个独立 cwd, 不读仓内 package.json/scripts (hermetic)。 */
+const tmpRoots: string[] = [];
+const tmpFixture = (files: Record<string, string>): string => {
+  const root = mkdtempSync(join(tmpdir(), 'static-lint-'));
+  tmpRoots.push(root);
+  for (const [rel, content] of Object.entries(files)) {
+    const p = join(root, rel);
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, content, 'utf8');
+  }
+  return root;
+};
+afterAll(() => { for (const r of tmpRoots) rmSync(r, { recursive: true, force: true }); });
+
+/** 仓库根 (集成用例的 cwd): 读**真实** scripts/dag-slim.ts 与根 package.json, 不用复制 fixture。 */
+const REPO_ROOT = join(import.meta.dir, '..', '..', '..');
 
 describe('写竞争', () => {
   test('两个能并行的节点写同一个文件 → 报, 且**说清怎么改**', () => {
@@ -90,5 +114,126 @@ describe('缺输入', () => {
   test('探测抛错 → 当它存在 (失败方向安全: 漏报好过把所有 plan 报红)', () => {
     const f = staticLintPlan(P, { fileExists: () => { throw new Error('权限'); } });
     expect(f).toHaveLength(0);
+  });
+});
+
+describe('缺命令目标', () => {
+  test('引用 cwd 内不存在的脚本 → 恰一条, 只报不拦, 含节点 id、路径与改法', () => {
+    const id = 'nope';
+    const cwd = tmpFixture({}); // 空 cwd —— 任何相对脚本都不存在, 不依赖仓内实际文件
+    let f: StaticFinding[] = [];
+    expect(() => { f = staticLintPlan(plan({ [id]: cmdNode('scripts/nope.ts', cwd) })); }).not.toThrow();
+    expect(f).toHaveLength(1);
+    expect(f[0]!.kind as string).toBe('missing-command-target');
+    expect(f[0]!.nodes).toEqual([id]);
+    expect(f[0]!.message).toContain(id);
+    expect(f[0]!.message).toContain('scripts/nope.ts');
+    expect(f[0]!.message).toContain('改法');
+  });
+
+  test('引用真实存在的脚本 (fixture 里写好) → 不报', () => {
+    const cwd = tmpFixture({ 'scripts/dag-slim.ts': "console.log('ok');\n" });
+    expect(staticLintPlan(plan({ a: cmdNode('scripts/dag-slim.ts', cwd) }))).toHaveLength(0);
+  });
+
+  test('bun run 已定义的 package script (fixture scripts 里有) → 不报', () => {
+    const cwd = tmpFixture({ 'package.json': JSON.stringify({ scripts: { 'dag-slim': 'bun run scripts/dag-slim.ts' } }) });
+    expect(staticLintPlan(plan({ a: cmdNode('bun run dag-slim', cwd) }))).toHaveLength(0);
+  });
+
+  test('bun run 未定义的 package script → 报, 含节点 id、脚本名与改法', () => {
+    const cwd = tmpFixture({ 'package.json': JSON.stringify({ scripts: { other: 'true' } }) });
+    const f = staticLintPlan(plan({ a: cmdNode('bun run nosuchscript', cwd) }));
+    expect(f).toHaveLength(1);
+    expect(f[0]!.kind as string).toBe('missing-command-target');
+    expect(f[0]!.nodes).toEqual(['a']);
+    expect(f[0]!.message).toContain('a');
+    expect(f[0]!.message).toContain('nosuchscript');
+    expect(f[0]!.message).toContain('改法');
+  });
+
+  test('npm run 未定义的 package script → 报 (契约 2b 的 npm 半边)', () => {
+    const cwd = tmpFixture({ 'package.json': JSON.stringify({ scripts: { other: 'true' } }) });
+    const f = staticLintPlan(plan({ a: cmdNode('npm run nosuchscript', cwd) }));
+    expect(f).toHaveLength(1);
+    expect(f[0]!.kind as string).toBe('missing-command-target');
+    expect(f[0]!.message).toContain('nosuchscript');
+    expect(f[0]!.message).toContain('改法');
+  });
+
+  test('npm run 已定义的 package script → 不报', () => {
+    const cwd = tmpFixture({ 'package.json': JSON.stringify({ scripts: { 'dag-slim': 'bun run scripts/dag-slim.ts' } }) });
+    expect(staticLintPlan(plan({ a: cmdNode('npm run dag-slim', cwd) }))).toHaveLength(0);
+  });
+
+  test('type-only 防伪: 只有 type:"command" 没有 executor → 不报 (schema 无 type 字段, executor 是唯一真实判定)', () => {
+    const cwd = tmpFixture({});
+    expect(staticLintPlan(plan({ a: { type: 'command', command: 'scripts/nope.ts', cwd } }))).toHaveLength(0);
+  });
+
+  test('executor/type 冲突: type:"leaf" + executor:"command" → 报 (executor 赢, type 不参与判定)', () => {
+    const cwd = tmpFixture({});
+    const f = staticLintPlan(plan({ a: { type: 'leaf', executor: 'command', command: 'scripts/nope.ts', cwd } }));
+    expect(f).toHaveLength(1);
+    expect(f[0]!.kind as string).toBe('missing-command-target');
+    expect(f[0]!.nodes).toEqual(['a']);
+  });
+
+  test('非 command executor 带 command 字段 (executor:"leaf") → 不报: 引擎不消费它, 不猜', () => {
+    const cwd = tmpFixture({});
+    expect(staticLintPlan(plan({ a: { executor: 'leaf', command: 'scripts/nope.ts', cwd } }))).toHaveLength(0);
+  });
+
+  test('白名单扩展名外 (scripts/nope.md) → 不报: 只认 .ts/.js/.sh/.py, 不确定的不猜', () => {
+    const cwd = tmpFixture({});
+    expect(staticLintPlan(plan({ a: cmdNode('node scripts/nope.md', cwd) }))).toHaveLength(0);
+  });
+
+  test('shell 变量/命令替换/管道/重定向/复合 → 整条跳过不报: 静态解析不了的不猜', () => {
+    const skip: string[] = [
+      'echo $FILE',
+      'node scripts/x.ts ${FILE}',
+      'bun run scripts/x.ts $(date)',
+      'bun run `pwd`',
+      'cat a | grep x',
+      'node x.js > out.log',
+      'a && b',
+    ];
+    for (const command of skip) {
+      expect(staticLintPlan(plan({ a: cmdNode(command) })), command).toHaveLength(0);
+    }
+  });
+
+  test('../x.ts 与 C:\\x.ts → 不报: 逃出 cwd / 盘符, 不是可判死的仓内相对脚本', () => {
+    expect(staticLintPlan(plan({ a: cmdNode('node ../x.ts') }))).toHaveLength(0);
+    expect(staticLintPlan(plan({ a: cmdNode('node C:\\x.ts') }))).toHaveLength(0);
+  });
+
+  test('裸 bin (rg foo) → 不报: 不是 cwd 内相对脚本, 不猜', () => {
+    expect(staticLintPlan(plan({ a: cmdNode('rg foo') }))).toHaveLength(0);
+  });
+
+  test('绝对路径 (/usr/bin/foo) → 不报: 仓外无从判断', () => {
+    expect(staticLintPlan(plan({ a: cmdNode('/usr/bin/foo') }))).toHaveLength(0);
+  });
+});
+
+describe('缺命令目标 · 仓库真实集成 (cwd=REPO_ROOT, 真实 scripts/dag-slim.ts + 根 package.json)', () => {
+  test('真实 scripts/dag-slim.ts 存在 → 不报', () => {
+    expect(staticLintPlan(plan({ a: cmdNode('scripts/dag-slim.ts', REPO_ROOT) }))).toHaveLength(0);
+  });
+
+  test('真实 dag-slim script (根 package.json 定义 "bun run scripts/dag-slim.ts") → 不报', () => {
+    expect(staticLintPlan(plan({ a: cmdNode('bun run dag-slim', REPO_ROOT) }))).toHaveLength(0);
+  });
+
+  test('仓库根下不存在的 scripts/nope.ts → 恰一条: 真实 executor 形态 + 真实 cwd, 不存在路径必须被检出', () => {
+    const f = staticLintPlan(plan({ a: cmdNode('scripts/nope.ts', REPO_ROOT) }));
+    expect(f).toHaveLength(1);
+    expect(f[0]!.kind as string).toBe('missing-command-target');
+    expect(f[0]!.nodes).toEqual(['a']);
+    expect(f[0]!.message).toContain('a');
+    expect(f[0]!.message).toContain('scripts/nope.ts');
+    expect(f[0]!.message).toContain('改法');
   });
 });

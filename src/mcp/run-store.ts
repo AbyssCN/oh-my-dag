@@ -28,6 +28,7 @@
  * 造新词**。故打断的 run 落 `failed`, 原因写清是进程没了而不是活干砸了。
  */
 import { Database } from 'bun:sqlite';
+import { logger } from '../logger';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
@@ -118,8 +119,18 @@ export function createRunStore(opts: { path?: string; db?: Database } = {}): Run
           rec.updatedAt,
           rec.ownerPid,
         );
-      } catch {
+      } catch (e) {
         // fail-open: 持久化不该把一次真跑带走。
+        //
+        // ⚠ **但静默的 fail-open 是另一回事** (2026-08-02 实测教训): 一次 30 分钟的 live
+        // `dag_goal` 在这里丢了终态 —— 内存已是 `done` (worker 据此报"终态 done"并退出),
+        // 盘上永远停在 `running`, **两层 catch 一声不吭**, 于是"跑完了"与"没人知道跑完了"
+        // 无法区分。对 detached run 这不是"重启后少认得一个 runId", 盘上那条**就是**唯一的出口。
+        // 吞掉异常仍然对 (不炸真跑), 吞掉**证据**不对。
+        logger.warn(
+          { runId: rec.runId, status: rec.status, err: (e as Error).message },
+          '[omd/run-store] run 状态落盘失败 —— 内存与盘上从此不一致 (fail-open 继续跑)',
+        );
       }
     },
     all() {

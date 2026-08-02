@@ -18,6 +18,7 @@
  *   也就是**每次跑结果可能不同**。这是最坏的一种: 它不报错, 只是有时候产物不对。
  * - 节点依赖的输入文件**不存在**且图里没有任何节点产出它 → 那一步注定失败。
  * - `depends_on` 指向图里不存在的节点 → 编译期已有闸, 这里不重复。
+ * - command 节点引用的 cwd 内脚本**不存在**, 或 package script **未定义** → 那一步同样注定失败。
  *
  * ## 纪律: 只报能**确定性判死**的, 不猜
  *
@@ -34,11 +35,13 @@
  * 说清是哪两个节点、哪个文件、以及**该怎么改**,而不是只报一个"冲突"。
  */
 import type { ConductorPlan } from '../conductor-plan';
+import { readFileSync, statSync } from 'node:fs';
+import { join, resolve, sep } from 'node:path';
 
 type PlanNodeLike = ConductorPlan['nodes'][string];
 
 export interface StaticFinding {
-  kind: 'write-race' | 'missing-input';
+  kind: 'write-race' | 'missing-input' | 'missing-command-target';
   /** 涉及的节点 (规划期可读名 —— 下一轮 conductor 认得出的那个名字体系)。 */
   nodes: string[];
   /** 已经是人话, 且带**怎么改**。 */
@@ -67,6 +70,90 @@ function canRunConcurrently(plan: ConductorPlan, a: string, b: string, memo: Map
 function declaredOutput(n: PlanNodeLike): string | undefined {
   const p = (n as { output_path?: unknown }).output_path;
   return typeof p === 'string' && p.trim() ? p.trim() : undefined;
+}
+
+/** 命令掺了任何 shell 语法/变量/引号/glob → 整条跳过, 静态解析不了的不猜。 */
+function hasShellSyntax(cmd: string): boolean {
+  return /[$`"'\\&|;<>*?[\]{}]|\r|\n/.test(cmd);
+}
+
+/** 白名单脚本扩展名。 */
+const SCRIPT_EXT = /\.(ts|js|sh|py)$/;
+
+/**
+ * 候选引用是否是**词法上安全**的 cwd 内相对脚本路径:
+ * 以 .ts/.js/.sh/.py 结尾, 相对 (无 /、\、~、盘符、URL scheme 前缀),
+ * 去掉可选 `./` 后每段非空且不是 `.` / `..`。
+ */
+function isSafeRelativeScript(ref: string | undefined): ref is string {
+  if (typeof ref !== 'string' || !SCRIPT_EXT.test(ref)) return false;
+  if (ref.startsWith('/') || ref.startsWith('\\') || ref.startsWith('~')) return false;
+  if (/^[A-Za-z]:[\\/]/.test(ref)) return false;        // 盘符
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(ref)) return false; // URL scheme
+  const cleaned = ref.startsWith('./') ? ref.slice(2) : ref;
+  if (!cleaned) return false;
+  for (const seg of cleaned.split('/')) {
+    if (!seg || seg === '.' || seg === '..') return false;
+  }
+  return true;
+}
+
+/** 拼接 cwd 并规范化后仍**词法位于 cwd 内** (防 `..` 逃逸, 虽然上面已拦, 这里兜底)。 */
+function staysInsideCwd(cwd: string, ref: string): boolean {
+  try {
+    const base = resolve(cwd);
+    const abs = resolve(cwd, ref);
+    return abs === base || abs.startsWith(base + sep);
+  } catch {
+    return false;
+  }
+}
+
+/** 报告一条 direct-script 缺失 finding (存在 → 不报; 只有 ENOENT 才判死, 读不到 → 跳过)。 */
+function checkDirectScript(cwd: string, ref: string, id: string, out: StaticFinding[]): void {
+  if (!staysInsideCwd(cwd, ref)) return;
+  try {
+    statSync(join(cwd, ref)); // 存在 → 不报
+    return;
+  } catch (e) {
+    // existsSync 在 EACCES/EPERM 下吞错返回 false → 会把"读不到"误报成"文件不存在"。改用 statSync:
+    // 只有 ENOENT 是确定性判死; 权限/其他错误 → 跳过, 不猜。
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') return;
+  }
+  out.push({
+    kind: 'missing-command-target',
+    nodes: [id],
+    message:
+      `命令引用缺失: 节点 "${id}" 引用 cwd 内脚本 "${ref}", 但文件不存在。` +
+      `改法: **创建该脚本**, 或者**把 command 改成 cwd 内真实存在的相对脚本路径**。`,
+  });
+}
+
+/** 读 package.json 的 scripts 表 (缺失/不可读/JSON 非法/scripts 非对象 → undefined, 不猜)。 */
+function packageScripts(cwd: string): Record<string, unknown> | undefined {
+  let scripts: unknown;
+  try {
+    scripts = (JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8')) as { scripts?: unknown }).scripts;
+  } catch {
+    return undefined; // 缺失/不可读/JSON 非法 → 不猜
+  }
+  if (typeof scripts !== 'object' || scripts === null || Array.isArray(scripts)) return undefined;
+  return scripts as Record<string, unknown>;
+}
+
+/** 报告一条 package script 缺失 finding (读不到/scripts 非对象 → 跳过)。 */
+function checkPackageScript(cwd: string, name: string, id: string, out: StaticFinding[]): void {
+  const scripts = packageScripts(cwd);
+  if (!scripts) return;
+  if (typeof scripts[name] === 'string') return; // 已定义
+  out.push({
+    kind: 'missing-command-target',
+    nodes: [id],
+    message:
+      `命令引用缺失: 节点 "${id}" 引用 package script "${name}" ` +
+      `(${join(cwd, 'package.json')}#scripts.${name}), 但该脚本未定义。` +
+      `改法: **在 package.json 的 scripts 中定义 "${name}"**, 或者**把 command 改成已有 script 名**。`,
+  });
 }
 
 /**
@@ -137,6 +224,50 @@ export function staticLintPlan(
             `这一步注定失败。改法: **加一个先产出它的节点并 depends_on 它**, 或者改用一个真实存在的路径。`,
         });
       }
+    }
+  }
+
+  // ── ③ 缺命令目标 ────────────────────────────────────────────────────────────
+  // command 节点引用 cwd 内不存在的脚本、或未定义的 package script → 同样跑之前就能判死。
+  // 只碰**简单命令** (`<相对脚本> [args]`、`node/bun/python/bash/sh <相对脚本>`、`bun run <name>`、
+  // `npm run <name>`); 掺变量/引号/管道/重定向/glob 的整条跳过, 不递归分析 script 内容。
+  for (const id of ids) {
+    const n = plan.nodes[id]!;
+    if (n.executor !== 'command') continue;                   // 唯一真实判定 = executor (schema 无 type; 非 command 节点带 command 字段也忽略)
+    const command = (n as { command?: unknown }).command;
+    if (typeof command !== 'string' || command.trim() === '') continue;
+    if (hasShellSyntax(command)) continue;
+    const tokens = command.trim().split(/\s+/);
+    const rawCwd = (n as { cwd?: unknown }).cwd;
+    const cwd = typeof rawCwd === 'string' && rawCwd !== '' ? rawCwd : '.';
+
+    const [t0, t1, t2] = tokens;
+    let directRef: string | undefined;
+    let pkgName: string | undefined;
+    if (t0 === 'bun' && t1 === 'run' && tokens.length === 3) {
+      // 三词 `bun run X`: 长得像相对脚本 → 先查同名 package script (bun 优先解析它; 已定义就不查
+      // 文件, 否则 `bun run lint.js` 会误报"文件不存在"); 没有才按文件查; 否则按 script 名查。
+      if (isSafeRelativeScript(t2)) {
+        if (typeof packageScripts(cwd)?.[t2] === 'string') continue;
+        directRef = t2;
+      } else if (t2 !== undefined && /^[A-Za-z0-9:_-]+$/.test(t2)) pkgName = t2;
+    } else if (t0 === 'npm' && t1 === 'run' && tokens.length === 3 && t2 !== undefined && /^[A-Za-z0-9:_-]+$/.test(t2)) {
+      pkgName = t2;
+    } else if (t0 === 'bun' && t1 === 'run' && tokens.length > 3) {
+      directRef = t2;                                         // `bun run <脚本> [args...]`
+    } else if (t0 === 'bun') {
+      directRef = t1;                                         // `bun <脚本> [args...]`
+    } else if (t0 === 'node' || t0 === 'python' || t0 === 'python3' || t0 === 'bash' || t0 === 'sh') {
+      directRef = t1;
+    } else {
+      directRef = t0;                                         // 裸 `<相对脚本> [args...]`
+    }
+
+    if (directRef !== undefined) {
+      if (!isSafeRelativeScript(directRef)) continue;         // 绝对路径/裸 bin/../x.ts/不确定 → 不猜
+      checkDirectScript(cwd, directRef, id, out);
+    } else if (pkgName !== undefined) {
+      checkPackageScript(cwd, pkgName, id, out);
     }
   }
 
