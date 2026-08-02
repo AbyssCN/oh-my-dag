@@ -32,6 +32,7 @@ import { computeFrontier } from '../../harness/pathfinder/frontier';
 import { compileSlice, regionIsClear, specGateViolation } from '../../harness/pathfinder/slice-compiler';
 import type { PathMap, Ticket, TicketType } from '../../harness/pathfinder/types';
 import type { OmdMemory } from '../../harness/memory/store';
+import type { DagRecorder } from '../../harness/dag-record';
 import type { HudMirror } from '../../hud/mirror';
 import { compactFog } from '../../hud/fog';
 
@@ -58,6 +59,12 @@ export interface PathfinderToolDeps {
   memory?: Pick<OmdMemory, 'writeFact'>;
   /** path_init 执行接缝覆盖 (测试注入 probes/gh/canary 替身; 省略 = 生产默认 gh/git/env 探测)。 */
   initOverrides?: Partial<InitDeps>;
+  /**
+   * 运行留痕器 (2026-08-02 补)。**此前 `path_deliver` 一次都没记过** —— 它是四个会真跑图的入口里
+   * 唯一不进账本的那个,于是「各入口占比」这个读数会**系统性缺慢回路那一块**,
+   * 而缺一个入口与"没人用这个入口"在读数上长得一模一样。省略 = 不留痕 (纯导航测试无需)。
+   */
+  recorder?: DagRecorder;
 }
 
 /** 七工具: path_init + path_map / path_add / path_tickets / path_rule / path_deliver / path_prefetch。 */
@@ -435,6 +442,10 @@ function makeDeliver(deps: PathfinderToolDeps): OmdMcpTool {
           agentRunner: deps.agentRunner,
           commandRunner: deps.commandRunner,
           cwd,
+          // 运行留痕 (2026-08-02): 慢回路这条此前完全不进账本。runId 在这里现造 ——
+          // pathfinder 没有 RunRegistry (它的身份是**票**不是 run), 但 executeSlice 可能落多条
+          // 记录 (iterate 每轮一张图), 不给个共同的 runId 就归不成"这一次交付"的账。
+          ...(deps.recorder ? { recorder: deps.recorder, entry: 'path_deliver', runId: crypto.randomUUID() } : {}),
         };
         const result = await exec(plan, opts);
         const nodeStates = Object.values(result?.results ?? {});

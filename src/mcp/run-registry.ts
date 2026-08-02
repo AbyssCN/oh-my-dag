@@ -15,6 +15,7 @@
 
 import type { DagNodeEvent } from '../harness/executor-dag-types';
 import { defaultIsAlive, type RunStore } from './run-store';
+import { logger } from '../logger';
 
 /**
  * run 生命周期状态。
@@ -147,8 +148,16 @@ export class RunRegistry {
     if (!rec) return;
     try {
       this.putRecord(runId, rec);
-    } catch {
-      // 记不下来最多是重启后少认得一个 runId; 把一次在跑的活炸掉要贵得多。
+    } catch (e) {
+      // fail-open 的判断不变: 把一次在跑的活炸掉要贵得多。**但不许无声** ——
+      // 2026-08-02 一次 live 在这条路上丢了终态, 而两层 catch (这里 + run-store.put) 都不出声,
+      // 于是唯一的症状是"盘上停在 running 而 worker 说 done", 排查时无从下手。
+      // ⚠ 注释原文"最多是重启后少认得一个 runId"**低估了代价**: detached run 的盘上记录
+      // 就是它唯一的出口, 丢了等于这次跑的结论没有任何人看得到。
+      logger.warn(
+        { runId, status: rec.status, err: (e as Error).message },
+        '[omd/run-registry] persist 失败 —— 内存已是新状态而盘上没有 (fail-open 继续跑)',
+      );
     }
   }
 

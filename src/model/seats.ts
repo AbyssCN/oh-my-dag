@@ -34,7 +34,7 @@
  */
 
 /** 经济学分档 (auto-assign 按这个派模型与溢出链; 与 `NodeClass` 同词表)。 */
-export type NodeTier = 'decomposer' | 'judge_synth' | 'worker' | 'verify' | 'dream';
+export type NodeTier = 'decomposer' | 'judge_synth' | 'worker' | 'verify';
 
 /** 推理档意图 (与 callModel 的 thinkingLevel 同词表 — 不引入第二套词汇)。 */
 export type SeatThinking = 'off' | 'low' | 'medium' | 'high' | 'xhigh';
@@ -281,11 +281,8 @@ export const SEATS: readonly SeatSpec[] = [
     recommend: '强模型 + 与被审代码的作者异族。', preferredCoord: 'openai-codex:gpt-5.6-sol' },
 
   // ── 后台 ────────────────────────────────────────────────────────────────────
-  { id: 'dream', tier: 'dream',
-    what: '记忆巩固: 把近期事件窗压缩进 L0–L6 记忆层, 只留 derived 洞察。',
-    where: ['dream/model-live'],
-    frequency: 'session 结束 / 定时 (后台)', crossFamily: 'no', thinking: 'xhigh', sampling: {},
-    recommend: '便宜档 —— 它是背景任务, 慢一点没关系。' },
+  // `dream` 座位 2026-08-02 摘除 (ADR-0003): 唯一解析点 `dream/model-live` 随 src/dream/
+  // 一起停到 experimental/ —— 留着座位等于给用户一个配了没有任何效果的旋钮。复活见该 ADR。
   { id: 'continuity', tier: 'worker',
     what: 'session **交接蒸馏**: 把一段会话压成下一个 session 接得住的 checkpoint。',
     where: ['harness/session/writer'],

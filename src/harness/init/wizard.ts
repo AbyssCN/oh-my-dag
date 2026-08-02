@@ -507,7 +507,8 @@ export const TUNABLE_ENV_ROLES: readonly { env: string; label: string }[] = [
 ];
 export const TUNABLE_CONFIG_ROLES: readonly { role: ModelRole; label: string }[] = [
   { role: 'verifier', label: '跨模型校验 skeptic (建议 ≠ 主力家族)' },
-  { role: 'dream', label: '记忆整理 (便宜档即可; ⚠ 2026-08-02 起 dream_consolidate 工具已摘, 此座位暂无活消费者)' },
+  // `dream` 2026-08-02 摘除 (ADR-0003): 工具摘掉后实现随之停到 experimental/, 再问用户"记忆整理
+  // 用哪个模型"就是在卖一个配了不生效的旋钮 —— 正是 empty-knobs 闸要杀的形态, 不该自己制造。
 ];
 
 /**

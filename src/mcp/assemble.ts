@@ -615,6 +615,9 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       hudMirror,
       // 裁决增益: path_rule 成功后经同款 OmdMemory 写 omd.pattern fact (memory_recall 消费端可召回)。
       memory,
+      // 运行留痕与 dag_run / dag_goal 同一个实例 (2026-08-02 补: path_deliver 是四个会真跑图的
+      // 入口里最后一个没接的 —— 缺它, 「各入口占比」会系统性看不见慢回路那一块)。
+      recorder,
       ...deps.pathfinder,
     }),
     // fleet 四工具: review/slim/deepen/debug 异步子进程。

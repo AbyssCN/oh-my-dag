@@ -10,10 +10,11 @@
  * **有实现、零调用方**是这个仓反复撞见的形态, 只能靠"从工具面打进去"的测试拦住。
  */
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createGoalTool } from './goal';
+import { createPathfinderTools, type PathfinderToolDeps } from './pathfinder';
 import { createDagTools, type DagEngine } from './dag-tools';
 import { RunRegistry } from '../run-registry';
 import { createDagRecorder } from '../../harness/dag-record';
@@ -69,6 +70,8 @@ describe('dag_goal 的运行留痕接线', () => {
     const group = recorder.listByRun(runId);
     expect(group.map((r) => r.planName)).toEqual(['goal-contract', 'goal-execute']);
     expect(group.every((r) => r.question === '干点活')).toBe(true);
+    // 入口是**一次调用**不是一张图: 两段都记 dag_goal, 读数板按 runId 去重才不会数成两次。
+    expect(group.map((r) => r.entry)).toEqual(['dag_goal', 'dag_goal']);
     // 这两个和数就是 G3 (这次多少钱) 与前缀缓存 (兄弟间命中多少) 的读数来源。
     expect(group.reduce((s, r) => s + r.usage.leavesIn, 0)).toBe(1000);
     expect(group.reduce((s, r) => s + r.usage.leavesCacheHit, 0)).toBe(520);
@@ -125,6 +128,7 @@ describe('dag_run 的运行留痕接线', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.question).toBe('把活干了');
     expect(rows[0]!.usage.leavesCacheHit).toBe(7);
+    expect(rows[0]!.entry).toBe('dag_run');
     recorder.close();
   });
 
@@ -143,7 +147,105 @@ describe('dag_run 的运行留痕接线', () => {
     const out = (await dagRunPlan.handler({ plan } as never, {} as never)) as { content: { text: string }[] };
     await Bun.sleep(5);
 
-    expect(recorder.listByRun(runIdOf(out.content[0]!.text))).toHaveLength(1);
+    const rows = recorder.listByRun(runIdOf(out.content[0]!.text));
+    expect(rows).toHaveLength(1);
+    // entry 复用 launchPlanRun 已有的 toolName —— 不是另造的一套分类法。
+    expect(rows[0]!.entry).toBe('dag_run_plan');
     recorder.close();
+  });
+});
+
+/**
+ * `path_deliver` 的留痕接线 (2026-08-02 新接)。
+ *
+ * 它是四个**会真跑图**的入口里最后一个不进账本的。这一格空着的后果不是"少一列":
+ * 「各入口占比」会**系统性看不见慢回路那一块**,而"缺一个入口"与"没人用这个入口"
+ * 在读数上长得一模一样 —— 正是本文件头注说的那种沉默。
+ *
+ * ⚠ **这条网的边界**: 它钉的是 `path_deliver → executeSlice` 那一跳传对了 recorder/entry/runId。
+ * `executeSlice` 内部把 `opts.entry` 转进 `record()` meta 的那几行**没有网**
+ * (它要真跑 `iterateExecutorDag`,建夹具不成比例)。所以别把这条的绿读成"端到端记上了"。
+ */
+describe('path_deliver 的运行留痕接线', () => {
+  test('把 recorder / entry / runId 传进 executeSlice —— 慢回路这条此前完全不进账本', async () => {
+    const recorder = createDagRecorder({ path: ':memory:' });
+    const dir = mkdtempSync(join(tmpdir(), 'omd-pf-rec-'));
+    let seen: Record<string, unknown> | undefined;
+
+    const deps: PathfinderToolDeps = {
+      cwd: dir,
+      env: {},
+      models: { conductorModel: '', leafModel: 'fake:leaf' },
+      agentRunner: (async () => ({ text: '', usage: { in: 0, out: 0 } })) as PathfinderToolDeps['agentRunner'],
+      commandRunner: (async () => ({
+        text: '', usage: { in: 0, out: 0 }, exitCode: 0,
+      })) as PathfinderToolDeps['commandRunner'],
+      dispatchFrontier: (() => ({ dispatched: [], reported: [] })) as unknown as PathfinderToolDeps['dispatchFrontier'],
+      executeSlice: (async (plan: { nodes: Record<string, unknown> }, opts: Record<string, unknown>) => {
+        seen = opts;
+        return { results: Object.fromEntries(Object.keys(plan.nodes).map((id) => [id, { status: 'done' }])) };
+      }) as unknown as PathfinderToolDeps['executeSlice'],
+      recorder,
+    };
+    const byName = new Map(createPathfinderTools(deps).map((t) => [t.name, t]));
+    const call = async (n: string, a: Record<string, unknown> = {}) =>
+      (await byName.get(n)!.handler(a as never, {} as never)) as { content: { text: string }[]; isError?: boolean };
+
+    await call('path_map', { destination: 'Ship X' });
+    await call('path_add', { title: 'build the thing', type: 'task' });
+    await call('path_rule', { ticketId: 't1', ruling: 'do it with bun' });
+    const deliver = await call('path_deliver');
+
+    expect(deliver.isError).not.toBe(true);
+    expect(seen?.recorder).toBe(recorder);
+    expect(seen?.entry).toBe('path_deliver');
+    // runId 现造: executeSlice 可能落多条 (iterate 每轮一张图), 没有共同 runId 就归不成"这一次交付"。
+    expect(typeof seen?.runId).toBe('string');
+    recorder.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('没给 recorder → 不传 recorder/entry, 也不炸 (留痕是可选项)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omd-pf-rec-'));
+    let seen: Record<string, unknown> | undefined;
+    const deps: PathfinderToolDeps = {
+      cwd: dir,
+      env: {},
+      models: { conductorModel: '', leafModel: 'fake:leaf' },
+      agentRunner: (async () => ({ text: '', usage: { in: 0, out: 0 } })) as PathfinderToolDeps['agentRunner'],
+      commandRunner: (async () => ({
+        text: '', usage: { in: 0, out: 0 }, exitCode: 0,
+      })) as PathfinderToolDeps['commandRunner'],
+      dispatchFrontier: (() => ({ dispatched: [], reported: [] })) as unknown as PathfinderToolDeps['dispatchFrontier'],
+      executeSlice: (async (plan: { nodes: Record<string, unknown> }, opts: Record<string, unknown>) => {
+        seen = opts;
+        return { results: Object.fromEntries(Object.keys(plan.nodes).map((id) => [id, { status: 'done' }])) };
+      }) as unknown as PathfinderToolDeps['executeSlice'],
+    };
+    const byName = new Map(createPathfinderTools(deps).map((t) => [t.name, t]));
+    const call = async (n: string, a: Record<string, unknown> = {}) =>
+      (await byName.get(n)!.handler(a as never, {} as never)) as { content: { text: string }[]; isError?: boolean };
+
+    await call('path_map', { destination: 'Ship Y' });
+    await call('path_add', { title: 'x', type: 'task' });
+    await call('path_rule', { ticketId: 't1', ruling: 'go' });
+    await call('path_deliver');
+
+    // **不许编一个 entry** —— 没 recorder 时这两位一律缺席 (同 DagRunRecord.entry 的纪律)。
+    expect(seen?.recorder).toBeUndefined();
+    expect(seen?.entry).toBeUndefined();
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('entry 缺席 ≠ 编造', () => {
+  test('没传 entry 的记录读出来是 undefined, 不是 "unknown" —— 老行同理', () => {
+    // 「这条链没接」与「跑了但认不出入口」结论相反: 前者是缺陷要去补接线, 后者是事实。
+    // 编一个 'unknown' 会把前者伪装成后者, 读数板就再也报不出"还有入口没接"。
+    const rec = createDagRecorder({ path: ':memory:' });
+    const id = rec.record(stubResult('无入口的图', 1, 0), { runId: 'r-noentry' });
+    expect(rec.get(id)!.entry).toBeUndefined();
+    expect('entry' in rec.get(id)!).toBe(false);
+    rec.close();
   });
 });

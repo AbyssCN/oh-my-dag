@@ -120,9 +120,11 @@ describe('明示即承诺 — conductor prompt 里的字段必须有消费者', 
  * `resolveSeatModel('<id>')` / `tryResolveSeatModel` / `resolveRoleModelConfigured` / `resolveRoleModel`。
  *
  * ⚠ **这条闸的诚实边界**: 它查"有没有人解析", 查不出"解析它的那个文件本身有没有人调"。
- *   已知实例: `dream` 座位解析在 `src/dream/model-live.ts`, 而该文件在 import 图上是孤儿
- *   (2026-08-02 摘掉 `dream_consolidate` 工具后再无入口)。要连这层一起守, 得先有可达性分析,
- *   本轮没做 —— **别把这条闸的绿当成"这个座位真的在生产里跑"**。
+ *   曾经的假阳性: `dream` 座位解析在 `src/dream/model-live.ts`, 而该文件在 import 图上是孤儿
+ *   (2026-08-02 摘掉 `dream_consolidate` 工具后再无入口) —— 这条闸看不出来, 照样给绿。
+ *   **这个盲点已补上**: 那一层由 `src/harness/reachability.test.ts` 守(该座位随 ADR-0003 摘除,
+ *   实现停到 `experimental/`)。两条闸合起来才等于"配了真的会生效":
+ *   本闸问「有没有人解析」, 可达性闸问「解析它的文件从生产入口到得了吗」。
  *   同族分工: 「解析出来用没用对地方」由 `src/mcp/seat-wiring.test.ts` 守(判据是引擎真收到的 config)。
  */
 const SEAT_RESOLVERS = /(?:resolveSeatModel|tryResolveSeatModel|resolveRoleModelConfigured|resolveRoleModel)\(\s*['"]([a-z-]+)['"]/g;

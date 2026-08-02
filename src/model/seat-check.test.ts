@@ -41,12 +41,12 @@ describe("checkSeats — 全座位自检 (纯读, 不抛)", () => {
 		expect(conductor.coord).toBe("nosuchvendor:m1");
 		expect(conductor.status).toBe("no-credential");
 		// 其余座位这份 config 一个没配, 且无 defaultModel → unset
-		expect(out.find((c) => c.seat === "dream")!.status).toBe("unset");
+		expect(out.find((c) => c.seat === "continuity")!.status).toBe("unset");
 	});
 
 	test("覆盖全部座位 (加座位不会漏检)", () => {
 		const env = envWithConfig({});
-		expect(withEnv(env, () => checkSeats(env))).toHaveLength(17);
+		expect(withEnv(env, () => checkSeats(env))).toHaveLength(16);
 	});
 });
 
