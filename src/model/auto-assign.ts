@@ -13,7 +13,7 @@
  * Contract: docs/plan/2026-07-24-channel-aware-model-node-routing.md D-19.
  */
 import { discoverChannels as discoverHoldings } from "../config/config-discovery";
-import { SEAT_PREFERRED_COORD, SEAT_THINKING } from "./seats";
+import { SEAT_PREFERRED_COORD, SEAT_THINKING, SEAT_TIER } from "./seats";
 import { logger } from "../logger";
 import {
 	type Channel,
@@ -61,25 +61,29 @@ export interface AutoAssignInput {
 
 // ── 配置常量 (D-19 分配表) ────────────────────────────────────────────
 
-/** 按 node 名归类。未列出的 node → worker。 */
-const NODE_CLASS: Record<string, NodeClass> = {
-	conductor: "decomposer",
-	escalation: "decomposer",
-	judge: "judge_synth",
-	reason: "judge_synth",
-	reduce: "judge_synth",
-	leaf: "worker",
-	agent: "worker",
-	lens: "worker",
-	expand: "worker",
-	distill: "worker",
-	overflow: "worker",
-	verifier: "verify",
-	"review-spec": "verify",
-	// 两个后台角色也是座位 (ALL_SEATS): 不给它们分配 = 起跑自检恒报缺, review/continuity 用不了。
-	review: "verify", // review find 层 = 对抗读码, 跨家族同 verify 类
-	continuity: "worker", // session 交接蒸馏 = 便宜单发
-};
+/**
+ * 按 node 名归类。**从 `seats.ts` 的 `tier` 派生** (2026-08-02),不再手抄第二份。
+ *
+ * ## 为什么改成派生
+ *
+ * 此前这里是一张手抄表,而 {@link autoAssign} 遍历的是 `Object.keys(NODE_CLASS)` ——
+ * 也就是说引擎派活照的是**它自己那份手抄清单**,不是 `ALL_SEATS`。两边对不上就静默漏分配,
+ * 而后果这张表自己的注释写着:「不给它们分配 = 起跑自检恒报缺」。
+ *
+ * **它已经漂了**:2026-08-01 加的 `gate` 座位(内环收敛闸从 judge 拆出)进了 `seats.ts`、
+ * 漏了这里 —— `ALL_SEATS` 16 vs `NODE_CLASS` 15,于是 `gate` 拿不到 auto-assign 分配。
+ * 没有任何东西比对这两张表,所以它漂了一整轮没人发现。
+ *
+ * ⚠ **与 15 号那条教训的关系(容易读反,写清楚)**:那次的结论是
+ * 「消除重复之前先问这份重复是不是正在**当交叉验证用**」—— 座位闸从真源派生之后变成恒真式,
+ * 是因为那份重复**正在当交叉验证用**。这里相反:**没有任何东西比对这两张表**,
+ * 它不是交叉验证,只是漂。所以这里该派生,并**另外**补一条真的交叉验证闸
+ * (`NODE_CLASS ⊇ ALL_SEATS`,见 `auto-assign.test.ts`)——
+ * 派生消掉漂移,闸守住"新座位有没有被想过归哪一类"。
+ *
+ * 未列出的 node → worker(保留:`SEAT_TIER` 之外的图内临时 node 名仍走这条兜底)。
+ */
+const NODE_CLASS: Record<string, NodeClass> = SEAT_TIER as Record<string, NodeClass>;
 
 /**
  * 首选 coord (provider:modelId) 按分类 (D-19 分配表, owner 2026-07-24 定)。

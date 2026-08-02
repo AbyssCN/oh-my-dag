@@ -12,6 +12,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import type { DeclaredPlan } from "./channels";
 import { logger } from "../logger";
 import { autoAssign, runAutoAssign } from "./auto-assign";
+import { ALL_SEATS } from "./role-models";
 
 /** 造 DeclaredPlan 的 shorthand。 */
 const ch = (
@@ -36,6 +37,37 @@ function writeRatings(ratings: unknown[]): string {
 }
 
 describe("autoAssign", () => {
+	/**
+	 * ★ **每个座位都真的被派到** (2026-08-02)。
+	 *
+	 * 缺陷:`NODE_CLASS` 曾是手抄的第二份座位表,而 `autoAssign` 遍历的是
+	 * `Object.keys(NODE_CLASS)` —— 照**它自己那份清单**派活,不是照 `ALL_SEATS`。
+	 * 两边对不上就**静默漏分配**,后果那张表自己的注释写着:
+	 * 「不给它们分配 = 起跑自检恒报缺」。
+	 *
+	 * 它真的漂了:2026-08-01 加的 `gate` 座位进了 `seats.ts`、漏了 `NODE_CLASS`
+	 * (16 vs 15),一整轮没人发现 —— **因为没有任何东西比对这两张表**。
+	 *
+	 * `NODE_CLASS` 现已从 `SEAT_TIER` 派生,漂移在结构上消掉;这条闸是**另外**那半。
+	 * ⚠ 判据刻意取自 `autoAssign` 的**输出**而不是两张表的比对 —— 后者在派生之后是恒真式
+	 * (15 号刚栽过一次同形态)。这里问的是「这个座位真的拿到模型了吗」。
+	 */
+	test("★ ALL_SEATS 里每个座位都拿到分配 (加座位没想过归哪一类 → 这里红)", () => {
+		const ratingsPath = writeRatings([
+			{ name: "deepseek v4 flash", intelligence: 38, costUsd: 0.01, speedTokS: null },
+		]);
+		const m = autoAssign({ channels: [ch("deepseek", "token")], ratingsPath });
+		const missing = ALL_SEATS.filter((s) => !m[s]);
+		expect(
+			missing.length === 0
+				? ""
+				: `以下座位没拿到 auto-assign 分配 —— 起跑自检会恒报它们缺:\n  ${missing.join("\n  ")}\n` +
+					"修法: 去 seats.ts 给它写对 tier (NODE_CLASS 从 SEAT_TIER 派生, 不要在 auto-assign 里手抄第二份)。",
+		).toBe("");
+		// 扫描面自检: 一个都没派到 = 夹具坏了, 而不是"全仓座位都漏了"。
+		expect(Object.keys(m).length).toBeGreaterThan(10);
+	});
+
 	test("D-19 首选全可达: 大脑簇/校验→v4-pro · 量产+reduce→v4-flash (2026-07-29 表)", () => {
 		const ratingsPath = writeRatings([
 			{ name: "deepseek v4 pro", intelligence: 44, costUsd: 0.04, speedTokS: null },
