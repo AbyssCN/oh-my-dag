@@ -58,8 +58,12 @@ describe('terminal-verify', () => {
     done();
   });
 
-  test('库不可写 (路径不存在的目录) → unrecoverable, 不抛', () => {
+  test('库不可写 (路径不存在的目录) → 重试尽后 unrecoverable, 不抛', () => {
+    // ⚠ 这条同时是重试路径的网: 三次尝试全失败才判死 (瞬态失效不该一次判死, 见模块头注)。
+    const t0 = Date.now();
     expect(verifyTerminalPersisted('/nonexistent-dir-omd/x.db', 'r1', 'done')).toBe('unrecoverable');
+    // 两次退避 1s + 3s ⇒ 真的重试过 (不是一次就返回)。放宽下界防慢机器抖动。
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(3500);
   });
 
   test('expected 非终态 → 抛 (调用错误不是运行时条件)', () => {
