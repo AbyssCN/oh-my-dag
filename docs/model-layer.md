@@ -33,7 +33,6 @@ writes the result to `.omd/config.json`, where it is readable and hand-editable.
 | `judge_synth` | `judge` · `reason` · `reduce` | pick winners, synthesize, fold per-lens results |
 | `worker` | `leaf` · `agent` · `lens` · `expand` · `distill` · `overflow` | the mass fan-out |
 | `verify` | `verifier` · `review-spec` | adversarial falsification; spec-vs-diff comparison |
-| `dream` | `dream` | memory consolidation |
 
 `verifier` and `review-spec` are **different things** that happen to share a strength
 class: `verifier` is the in-graph skeptic gating a DAG run, `review-spec` is the model for

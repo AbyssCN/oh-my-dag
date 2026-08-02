@@ -86,7 +86,8 @@ describe('applyPresetHeadless', () => {
     expect(cfg.models.conductor).toBe('kimi-coding:k3');
     expect(cfg.models.leaf).toBe('deepseek:deepseek-v4-flash');
     expect(cfg.models.verifier).toBe('kimi-coding:k3');
-    expect(cfg.models.dream).toBe('deepseek:deepseek-v4-flash');
+    // dream 座 2026-08-02 摘除 (ADR-0003) —— preset 不该再往 config 里写它。
+    expect(cfg.models.dream).toBeUndefined();
     expect(cfg.models.plan).toBeUndefined();
     expect(cfg.multimodalPool).toEqual(['mimo:mimo-v2.5']);
   });

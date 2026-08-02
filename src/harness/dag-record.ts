@@ -92,6 +92,22 @@ export interface DagRunRecord {
    * 想算「这次 goal 花了多少」就按它归组, 而不是按主键。null = 记录方没给 (老行/图外调用)。
    */
   runId: string | null;
+  /**
+   * **这次执行是从哪个入口进来的** (2026-08-02)。取值 = MCP 工具名:
+   * `dag_run` · `dag_run_plan` · `dag_resume` · `dag_goal` · `path_deliver`。
+   *
+   * 为什么值得单独一列: omd 今天有**四个会真跑图的入口**, 底下是同一台引擎 (全部收敛到
+   * `runExecutorDagWithPlan`), 但**账本里认不出它们** —— 于是「入口是不是太多/会不会选错」
+   * 只能靠感觉答, 没有读数。这一列把它变成可量的三件事:
+   *   ① 各入口实际占比 (从来没人用的入口 = 该删的那个);
+   *   ② `dag_run` 与 `dag_goal` 的结果分布差异 —— 前者失败率显著高 = 该走 goal 的活走了 run,
+   *      **那就是"选错入口"的证据**, 而不是引擎不行;
+   *   ③ 同一入口内的成本/轮数分布 (G3 按入口分层, 否则 goal 的两段账会把 dag_run 的均值带偏)。
+   *
+   * ⚠ 缺席 = 早于本次改动的行 (**没记**)。**不编一个 `'unknown'`** —— 那会把"这条链没接"
+   * 伪装成"跑了但认不出入口", 而前者是缺陷后者是事实 (同 `observations` / `outcome` 的那条纪律)。
+   */
+  entry?: string;
   /** 拓扑层 (node 图谱模式) — 可据此重建执行结构。 */
   levels: string[][];
   nodes: DagRunNode[];
@@ -158,7 +174,10 @@ export interface DagRunRecord {
 
 export interface DagRecorder {
   /** 落一次运行, 返回这条记录的主键 (**不是** runId — 见 DagRunRecord.runId)。 */
-  record(result: ExecutorDagResult, meta?: { question?: string; id?: string; now?: number; runId?: string }): string;
+  record(
+    result: ExecutorDagResult,
+    meta?: { question?: string; id?: string; now?: number; runId?: string; entry?: string },
+  ): string;
   /** 取一次运行 (重建 node 图谱)。 */
   get(id: string): DagRunRecord | null;
   /** 最近 N 次运行 (默认 50)。 */
@@ -183,6 +202,7 @@ interface Row {
   node_count: number;
   question: string | null;
   run_id: string | null;
+  entry: string | null;
   levels: string;
   nodes: string;
   usage: string;
@@ -201,6 +221,8 @@ function rowToRecord(row: Row): DagRunRecord {
     nodeCount: row.node_count,
     question: row.question,
     runId: row.run_id ?? null,
+    // 缺席 = 早于 2026-08-02 的行 (没记)。**不编 'unknown'** —— 见 DagRunRecord.entry 的注。
+    ...(row.entry ? { entry: row.entry } : {}),
     levels: JSON.parse(row.levels),
     nodes: JSON.parse(row.nodes),
     usage: JSON.parse(row.usage),
@@ -224,15 +246,24 @@ function rowToRecord(row: Row): DagRunRecord {
  * 就永远算不出来 (goal 一次落两条, 不按 runId 归组就是两笔无主的账)。
  *
  * `prev` 给了就先调它 —— 调用方自己的 onComplete 不许被留痕悄悄吃掉。
+ *
+ * `entry` **刻意必填** (2026-08-02): 它的用处全在「各入口的分布/对比」上, 而分布最怕的不是
+ * 缺一列, 是**缺一个入口** —— 少接一处的症状是那个入口在读数里凭空消失, 与"没人用它"长得一模一样
+ * (`dag_run` / `dag_run_plan` 第一版就漏过一处, 见本文件头注)。设成必填 = 新增入口时 tsc 当场红,
+ * 逼你回答"这个入口叫什么", 而不是让它静默落 NULL。
  */
 export function recordDagRun(
   recorder: DagRecorder,
-  meta: { runId: string; question?: string },
+  meta: { runId: string; entry: string; question?: string },
   prev?: (result: ExecutorDagResult) => void | Promise<void>,
 ): (result: ExecutorDagResult) => Promise<void> {
   return async (result) => {
     if (prev) await prev(result);
-    recorder.record(result, { runId: meta.runId, ...(meta.question ? { question: meta.question } : {}) });
+    recorder.record(result, {
+      runId: meta.runId,
+      entry: meta.entry,
+      ...(meta.question ? { question: meta.question } : {}),
+    });
   };
 }
 
@@ -270,10 +301,12 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
   if (!cols.includes('verification')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN verification TEXT`);
   if (!cols.includes('reused')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN reused INTEGER`);
   if (!cols.includes('criteria')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN criteria TEXT`);
+  // 入口轴 (2026-08-02): 2026-08-02 之前建的表没这一列, 老行留 NULL (= 没记, 不是 'unknown')。
+  if (!cols.includes('entry')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN entry TEXT`);
   db.run(`CREATE INDEX IF NOT EXISTS omd_dag_runs_run_id ON omd_dag_runs (run_id)`);
   const ins = db.query(
-    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, levels, nodes, usage, observations, outcome, verification, reused, criteria)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage, observations, outcome, verification, reused, criteria)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const byId = db.query(`SELECT * FROM omd_dag_runs WHERE id = ?`);
   const recent = db.query(`SELECT * FROM omd_dag_runs ORDER BY created_at DESC LIMIT ?`);
@@ -322,6 +355,7 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
         Object.keys(result.plan.nodes).length,
         meta.question ?? null,
         meta.runId ?? null,
+        meta.entry ?? null,
         JSON.stringify(result.levels),
         JSON.stringify(nodes),
         JSON.stringify(usage),

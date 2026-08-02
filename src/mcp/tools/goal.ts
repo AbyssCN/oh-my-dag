@@ -326,7 +326,11 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         // 运行留痕: 两段图各落一条, 同 runId 归组。链上基座自带的 onComplete (今天没有, 但别让
         // 以后加的那个被这里悄悄吃掉 —— 这正是 dag_goal 事件面从 P1 漏到 07-30 的那类洞)。
         ...(deps.recorder
-          ? { onComplete: recordDagRun(deps.recorder, { runId, question: goal }, dag.onComplete) }
+          ? {
+              // 两段图 (goal-contract / goal-execute) 都记 'dag_goal' —— 入口是**一次调用**,
+              // 不是一张图; 读数板按 runId 去重, 与 criteria 那条同口径。
+              onComplete: recordDagRun(deps.recorder, { runId, entry: 'dag_goal', question: goal }, dag.onComplete),
+            }
           : {}),
       } as ExecutorDagConfig;
 

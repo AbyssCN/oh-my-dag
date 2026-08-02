@@ -35,10 +35,10 @@ import { logger } from '../logger';
  * **角色 = 座位的子集** (INV-MODEL-1, P0 2026-07-28): 角色路与节点路自此是同一个 resolver
  * ({@link resolveSeatModel}) 的两个门面, 不再是两条会跑出不同答案的链。
  */
-export type ModelRole = 'conductor' | 'leaf' | 'verifier' | 'dream' | 'continuity' | 'review';
+export type ModelRole = 'conductor' | 'leaf' | 'verifier' | 'continuity' | 'review';
 
-/** UX 顺序 (config 列表 / onboard 页展示): 执行 → 校验 → 做梦。 */
-export const MODEL_ROLES: readonly ModelRole[] = ['conductor', 'leaf', 'verifier', 'dream'];
+/** UX 顺序 (config 列表 / onboard 页展示): 执行 → 校验。 */
+export const MODEL_ROLES: readonly ModelRole[] = ['conductor', 'leaf', 'verifier'];
 
 export type RoleModelSource = SeatModelSource;
 
@@ -273,7 +273,6 @@ export function listRoleModels(
  */
 export type { NodeTier, OmdSeat } from './seats';
 export { ALL_SEAT_IDS as ALL_SEATS, SEAT_TIER as NODE_TIER, seatSpec, seatSampling } from './seats';
-import { ALL_SEAT_IDS, SEAT_TIER } from './seats';
 import type { OmdSeat } from './seats';
 
 /** 兼容旧命名: 引擎节点座位 = 全部座位 (continuity/review 也是座位, 见 seats.ts)。 */

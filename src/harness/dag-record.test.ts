@@ -153,9 +153,10 @@ describe('留痕的派生面 — 命令原文 + 效果指标计数', () => {
 describe('recordDagRun (onComplete 钩子工厂)', () => {
   test('记一条并带上 runId/question', async () => {
     const rec = createDagRecorder({ path: ':memory:' });
-    await recordDagRun(rec, { runId: 'run-D', question: '问题' })(fakeResult('图'));
+    await recordDagRun(rec, { runId: 'run-D', entry: 'dag_run', question: '问题' })(fakeResult('图'));
     const [row] = rec.listByRun('run-D');
     expect(row!.question).toBe('问题');
+    expect(row!.entry).toBe('dag_run');
     rec.close();
   });
 
@@ -164,7 +165,7 @@ describe('recordDagRun (onComplete 钩子工厂)', () => {
     // 与 `dag_goal` 的节点事件从 P1 漏到 07-30 是同一个形态 (接线时顺手覆盖了别人的钩子)。
     const rec = createDagRecorder({ path: ':memory:' });
     const order: string[] = [];
-    const hook = recordDagRun(rec, { runId: 'run-E' }, async () => {
+    const hook = recordDagRun(rec, { runId: 'run-E', entry: 'dag_run' }, async () => {
       order.push('prev');
     });
     await hook(fakeResult('图'));
