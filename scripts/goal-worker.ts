@@ -103,8 +103,11 @@ const TERMINAL = new Set(['done', 'failed', 'cancelled']);
 for (;;) {
   const st = registry.getStatus(runId);
   if (st && TERMINAL.has(st)) {
-    // 终态写穿核验 (S-12 的灯, 2026-08-02): 内存终态 ≠ 盘上终态 —— 两次 live 在这儿静默丢过。
+    // 终态写穿核验 (S-12 的灯, 2026-08-02): 内存终态 ≠ 盘上终态 —— 三次 live 在这儿静默丢过。
     // 必须用**全新连接**核验与修复 (本进程的长命连接正是嫌疑面), 修不动才带着响亮日志退非零。
+    // ⚠ 先 `registry.close()`: 干净关闭会 checkpoint WAL, 且核验时进程内只剩一条写连接
+    // (2026-08-03 实测那次修复报 `disk I/O error` 时, 本进程这条还开着)。
+    registry.close();
     const verdict = verifyTerminalPersisted(join(cwd, '.omd', 'runs.db'), runId, st);
     console.error(`goal-worker: runId=${runId} 终态 ${st} (写穿核验: ${verdict})`);
     process.exit(verdict === 'unrecoverable' ? 3 : st === 'done' ? 0 : 1);
