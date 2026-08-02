@@ -259,8 +259,16 @@ function launchPlanRun(
       ? { continuity: { manager: continuity.manager, runId, resume: !!resume, repoRoot: continuity.repoRoot } }
       : {}),
     // 运行留痕 (给了 recorder 才记)。链上 defaultConfig 自带的 onComplete —— 留痕不许吃掉别人的钩子。
+    // `entry` 复用**已有的** toolName ('dag_run_plan' / 'dag_resume') —— 这个函数本来就为
+    // runRegistry.meta.tool 算过一次入口身份, 不另造一套分类法 (两份会漂)。
     ...(recorder
-      ? { onComplete: recordDagRun(recorder, { runId, ...(task ? { question: task } : {}) }, defaultConfig?.onComplete) }
+      ? {
+          onComplete: recordDagRun(
+            recorder,
+            { runId, entry: toolName, ...(task ? { question: task } : {}) },
+            defaultConfig?.onComplete,
+          ),
+        }
       : {}),
   } as ExecutorDagConfig;
   if (!config.leafModel) {
@@ -469,7 +477,13 @@ function makeDagRun({ engine, runRegistry, continuity, hudMirror, ledger, record
           : {}),
         // 运行留痕 (与 launchPlanRun 同款; dag_run 是 conductor 路径, 它自己组 config)。
         ...(recorder
-          ? { onComplete: recordDagRun(recorder, { runId, question: task }, defaultConfig?.onComplete) }
+          ? {
+              onComplete: recordDagRun(
+                recorder,
+                { runId, entry: 'dag_run', question: task },
+                defaultConfig?.onComplete,
+              ),
+            }
           : {}),
       } as ExecutorDagConfig;
 

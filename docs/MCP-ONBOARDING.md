@@ -79,7 +79,7 @@ cd <your-project> && claude mcp add omd -- omd mcp
 agent knows the disciplines (who rules, who delivers, how to iterate):
 
 ```bash
-cp -r client-skills/{path,tickets,rule,deliver,execute,iterate,grill,sdd,note,council,audit,sast,review,slim,deepen,dream} ~/.claude/skills/
+cp -r client-skills/omd-* ~/.claude/skills/
 ```
 
 Codex has no skills mechanism — merge the SKILL.md bodies you need into the target
@@ -113,8 +113,9 @@ the full command-migration table and workflows.
 | `path_prefetch` | dispatch frontier research to detached background processes — they keep running after you close the client |
 
 **Memory group**: `memory_recall` / `memory_remember` — persistent fact store with
-namespace safeguards; `dream_consolidate` — one synchronous dream-pump round folding
-the recent event window into L0–L6 memory layers (returns per-layer stats).
+namespace safeguards. (`dream_consolidate` was removed 2026-08-02 — under pure-MCP usage
+not a single signal producer remained, so it could only ever have returned `0 events`.
+See [ADR-0003](adr/0003-dream-parked.md).)
 
 ## 5 · Five-minute walkthrough
 
@@ -151,5 +152,5 @@ agent:  (path_deliver) 3 nodes done, tickets delivered. Here's the diff — plea
 **装**:`git clone … && bun install && bun link`(需 Bun ≥1.3)。
 **配**:`omd init` 向导写 `.env`;模型是 `provider:model` 坐标,任何 OpenAI 兼容后端可用,不锁厂商。
 **接**:目标 repo 放 `.mcp.json`(本仓库带模板)或 `claude mcp add omd -- omd mcp`;**server 的 cwd = 它作用的仓库**。技能包:`cp -r client-skills/... ~/.claude/skills/`,获得 `/path` `/rule` `/deliver` `/execute` 等斜杠工作流。
-**得到什么**:19 个工具三组——DAG 引擎组(任务分解成类型化节点图、廉价模型车队并发真改文件、三段式异步、review/slim/deepen 质量车队与 `dag_runs` 运行台账)、pathfinder 组(持久决策地图、AFK 后台研究关了客户端还在跑、显式交付闸)、记忆组(跨 session 事实库 + `dream_consolidate` 同步巩固)。
+**得到什么**:38 个工具三组——DAG 引擎组(任务分解成类型化节点图、廉价模型车队并发真改文件、三段式异步、review/slim/deepen 质量车队与 `dag_runs` 运行台账)、pathfinder 组(持久决策地图、AFK 后台研究关了客户端还在跑、显式交付闸)、记忆组(跨 session 事实库 `memory_recall` / `memory_remember`)。
 **边界**:裁决与执行永远等 owner 显式指令;自续研究受预算约束(`OMD_PATH_RESEARCH_BUDGET`,默认 12);状态全在磁盘,换客户端零损失。

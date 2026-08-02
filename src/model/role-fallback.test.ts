@@ -42,13 +42,13 @@ describe('roleModelWithFallback (issue #6)', () => {
 
   test('无凭证的裸 deepseek → 兜底', () => {
     registerProvider('mimo', { ...FAKE, defaultModel: 'mimo-v2.5-pro' });
-    expect(roleModelWithFallback('deepseek', 'dream', {})).toBe('mimo');
+    expect(roleModelWithFallback('deepseek', 'continuity', {})).toBe('mimo');
   });
 
   test('顺延取注册表首个 (插入序) 有凭证 provider', () => {
     registerProvider('mimo', { ...FAKE, defaultModel: 'mimo-v2.5-pro' });
     registerProvider('kimi', { ...FAKE, defaultModel: 'k' });
-    expect(roleModelWithFallback('deepseek', 'dream', {})).toBe('mimo'); // 插入序首个
+    expect(roleModelWithFallback('deepseek', 'continuity', {})).toBe('mimo'); // 插入序首个
   });
 
   test('env 提供凭证 → 视为有凭证, 不兜底', () => {
@@ -58,7 +58,7 @@ describe('roleModelWithFallback (issue #6)', () => {
   });
 
   test('全不可达 (空注册表, 无凭证) → 原样返首选 (下游 fail-loud/降级)', () => {
-    expect(roleModelWithFallback('deepseek:deepseek-v4-flash', 'dream', {})).toBe('deepseek:deepseek-v4-flash');
+    expect(roleModelWithFallback('deepseek:deepseek-v4-flash', 'continuity', {})).toBe('deepseek:deepseek-v4-flash');
   });
 
   test('首选有凭证但**运行时熔断中** → 顺延到健康 provider (健康维度)', () => {

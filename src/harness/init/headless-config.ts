@@ -200,7 +200,7 @@ export function applyPresetHeadless(presetId: string, deps: HeadlessDeps = {}): 
   if (preset.multimodalPool?.length) persistMultimodalPool(preset.multimodalPool);
   if (preset.multimodalPoolPremium?.length) persistMultimodalPoolPremium(preset.multimodalPoolPremium);
 
-  // ④ config 角色 (conductor/leaf/verifier/dream) → config.json (mtime 重读即时)。
+  // ④ config 角色 (conductor/leaf/verifier) → config.json (mtime 重读即时)。
   for (const cr of preset.configRoles ?? []) persistRoleModel(cr.role, cr.coord);
 
   // ⑤ native provider 重注册 (新 env 生效) + models.json 自定 provider 重注册。
@@ -229,8 +229,8 @@ export function applyPresetHeadless(presetId: string, deps: HeadlessDeps = {}): 
 // setRoleHeadless — 单角色覆盖 → config.json (mtime 重读即时)。
 // ---------------------------------------------------------------------------
 
-/** MCP 可调 config 角色 (canonical 5 去 plan — 审议座舱由 Opus 顶替)。 */
-export const TUNABLE_CONFIG_ROLES: readonly ModelRole[] = ['conductor', 'leaf', 'verifier', 'dream'];
+/** MCP 可调 config 角色 (= {@link MODEL_ROLES}; plan 座由 Opus 顶替, dream 2026-08-02 摘 ADR-0003)。 */
+export const TUNABLE_CONFIG_ROLES: readonly ModelRole[] = ['conductor', 'leaf', 'verifier'];
 
 export function setRoleHeadless(role: string, coord: string): { role: string; coord: string } {
   const r = role.trim() as ModelRole;

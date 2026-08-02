@@ -36,7 +36,7 @@ function writeRatings(ratings: unknown[]): string {
 }
 
 describe("autoAssign", () => {
-	test("D-19 首选全可达: 大脑簇/校验→v4-pro · 量产+reduce+dream→v4-flash (2026-07-29 表)", () => {
+	test("D-19 首选全可达: 大脑簇/校验→v4-pro · 量产+reduce→v4-flash (2026-07-29 表)", () => {
 		const ratingsPath = writeRatings([
 			{ name: "deepseek v4 pro", intelligence: 44, costUsd: 0.04, speedTokS: null },
 			{ name: "deepseek v4 flash", intelligence: 38, costUsd: 0.01, speedTokS: null },
@@ -75,11 +75,10 @@ describe("autoAssign", () => {
 			expect(m[n]!.thinkingLevel).toBe("xhigh");
 		}
 
-		// 校验/dream 同样落 flash。⚠ 与大脑同族 (deepseek-only 兜底的代价, 见 INV-3 降级测试) ——
+		// 校验座同样落 flash。⚠ 与大脑同族 (deepseek-only 兜底的代价, 见 INV-3 降级测试) ——
 		// 这一格没被消灭, 只是频率降低了: 渠道可达时审核座走 sol, 跨家族才成立。
 		expect(m.verifier!.coord).toBe("deepseek:deepseek-v4-flash");
 		expect(m["review-spec"]!.coord).toBe("deepseek:deepseek-v4-flash");
-		expect(m.dream!.coord).toBe("deepseek:deepseek-v4-flash");
 	});
 
 	test("GPT 订阅座位 (owner 2026-07-25): codex 渠道在 → conductor/escalation/judge→sol, reason 留 k3, 量产不动", () => {
@@ -218,7 +217,6 @@ describe("autoAssign", () => {
 			"overflow",
 			"verifier",
 			"review-spec",
-			"dream",
 		];
 		for (const node of expected) {
 			expect(m[node]).toBeDefined();

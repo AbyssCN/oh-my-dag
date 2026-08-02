@@ -22,7 +22,6 @@ per-node path, and the engine-default path all resolve a seat to the same coordi
     "judge":     "openai-codex:gpt-5.6-sol",
     "reason":    "kimi-coding:k3",
     "verifier":  "opencode-go:glm-5.2",
-    "dream":     "opencode-go:glm-5.2",
     "reduce":    "mimo:mimo-v2.5-pro",
     "lens":      "mimo:mimo-v2.5-pro",
     "expand":    "mimo:mimo-v2.5-pro",
@@ -48,7 +47,7 @@ explicit (script flag / node.model in the plan)
         → hardcoded tier default
 ```
 
-Role path (`conductor/leaf/verifier/dream/continuity/review`) and node path
+Role path (`conductor/leaf/verifier/continuity/review`) and node path
 (`judge/reason/reduce/lens/…`) now share the **same `models` table at the same priority** — that
 is the fix that makes a seat's model consistent across every code path
 (`resolveRoleModel`, `resolveRoleModelConfigured`, and the engine's `resolveEngineModels`).
@@ -85,7 +84,6 @@ answer: **verify** (a checker from the author's own family shares its blind spot
 | `overflow` | worker | Fallback when a channel is saturated | Cheap | Safety valve, not a quality seat. |
 | `verifier` | verify | Cross-family adversarial check | Mid **· cross-family** | **Must differ** from the author's family (INV-3). |
 | `review-spec` | verify | Spec/contract review | Mid · cross-family | Same cross-family rule. |
-| `dream` | dream | Memory consolidation distillation | Cheap–Mid | Background, opt-in. |
 
 **Why most worker seats land on one cheap model (e.g. `mimo-v2.5-pro`)** — the six worker seats are
 the highest-frequency traffic. Auto-assign keeps them on a big-quota **flat/prepaid** channel because
