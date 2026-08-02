@@ -7,8 +7,8 @@
  * **声明面往前跑了, 消费面没跟上, 两边都不报错。** 一张没人守的真源表迟早变成第五份会漂的文档。
  */
 import { describe, expect, it } from 'bun:test';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, resolve, sep } from 'node:path';
 import { SEATS, SEAT_PREFERRED_COORD, SEAT_THINKING, SEAT_TIER, seatSampling, seatSpec } from './seats';
 import { capsFor } from './model-caps';
 import { reasoningEffortFor } from './index';
@@ -30,25 +30,24 @@ describe('登记表本身填齐了', () => {
     expect(new Set(SEATS.map((s) => s.id)).size).toBe(SEATS.length);
   });
 
-  it('★ 消费点写的文件必须真的存在 —— 否则登记的是一句过时的话', () => {
+  it('★ 消费点按 `文件:符号` 登记 —— 文件在 src/ 下存在, 符号字面在场', () => {
+    // 冻结语法: 相对 src/ 的无扩展名路径 + 冒号 + 标识符。旧的点号/空格/括号写法会把
+    // 冒号条目解成 `*.ts:Symbol.ts` 之类的假文件名 (ENOENT), 这里直接按规范解析。
+    const entry = /^([A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*):([A-Za-z_$][A-Za-z0-9_$]*)$/;
+    const srcRoot = resolve(REPO, 'src');
     for (const s of SEATS) {
       for (const w of s.where) {
-        // 形如 `mcp/assemble.resolveEngineModels` / `harness/fleet (…)` → 取到第一个 . ( 空格之前
-        const file = w.split(/[ (]/)[0]!.replace(/\.[A-Za-z_$][\w$]*$/, '');
-        const hit = ['ts', 'tsx'].some((ext) => {
-          try {
-            readFileSync(join(REPO, 'src', `${file}.${ext}`));
-            return true;
-          } catch {
-            try {
-              readFileSync(join(REPO, 'src', file, `index.${ext}`));
-              return true;
-            } catch {
-              return false;
-            }
-          }
-        });
-        expect(hit, `${s.id}.where 里的 "${w}" → src/${file}.ts 不存在`).toBe(true);
+        const m = entry.exec(w);
+        expect(m, `${s.id}.where 的 "${w}" 不符合 文件:符号 语法`).not.toBeNull();
+        const file = m![1]!;
+        const symbol = m![2]!;
+        const abs = resolve(srcRoot, `${file}.ts`);
+        // 语法里没有 `..`; 这里再钉一次: 解析结果必须落在 src/ 之下。
+        expect(abs.startsWith(`${srcRoot}${sep}`), `${s.id}.where 的 "${w}" 越出 src/`).toBe(true);
+        expect(existsSync(abs), `${s.id}.where 的 "${w}" → src/${file}.ts 不存在`).toBe(true);
+        const text = readFileSync(abs, 'utf8');
+        // 光有文件不算数: 登记的是消费点, 符号必须字面出现在文件里, 否则又是一句过时的话。
+        expect(text.includes(symbol), `${s.id}.where 的 "${w}" → src/${file}.ts 里没有符号 ${symbol}`).toBe(true);
       }
     }
   });
