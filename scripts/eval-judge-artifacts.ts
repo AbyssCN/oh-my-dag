@@ -34,7 +34,7 @@ import { send } from '../src/model/gateway';
 import { makeLlmConvergenceJudge } from '../src/harness/plan/llm-judge';
 import { renderRoundForJudge, type JudgeChildView } from '../src/harness/plan/conductor-judge';
 import { collectJudgeArtifacts, DEFAULT_ARTIFACT_BUDGET } from '../src/harness/plan/judge-artifacts';
-import { JUDGE_ARTIFACT_CASES, type JudgeArtifactCase } from '../src/eval/tasks/judge-artifact-cases';
+import { JUDGE_ARTIFACT_CASES, assessRejectedNodes, type JudgeArtifactCase } from '../src/eval/tasks/judge-artifact-cases';
 
 const argv = process.argv.slice(2);
 const opt = (name: string): string | undefined => {
@@ -113,6 +113,10 @@ interface Trial {
   falsePos: boolean;
   /** mustReject 点全了没有 (该收敛的段恒 true)。 */
   recallFull: boolean;
+  /** mustNotName 诱饵被点了几个 (精确点名, 缺省 0)。点名诱饵 = 漏点真凶。 */
+  forbiddenNamed: number;
+  /** 点名对不对: 该点的点全了 且 一个诱饵都没点。 */
+  namingRight: boolean;
   named: string[];
   /** 判词全文。**必须记** —— 2026-07-30 那次就是读了判词才知道 judge 没冤枉谁 (它拒的是它看不见的
    *  东西), 只看收敛布尔会把"它拒得有道理"误读成"它坏了"。 */
@@ -139,7 +143,7 @@ async function trial(root: string, c: JudgeArtifactCase, arm: 'off' | 'on', rep:
   const base = { arm, case: c.id, rep, usage, latencyMs: 0 };
   try {
     const v = await judge(summary, 1);
-    const named = (v.rejectedNodes ?? []).filter((x): x is string => typeof x === 'string');
+    const assessed = assessRejectedNodes(c, v.rejectedNodes ?? []);
     const right = v.converged === c.shouldConverge;
     return {
       ...base,
@@ -149,8 +153,10 @@ async function trial(root: string, c: JudgeArtifactCase, arm: 'off' | 'on', rep:
       verdictRight: right,
       falseNeg: c.shouldConverge && !v.converged,
       falsePos: !c.shouldConverge && v.converged,
-      recallFull: c.mustReject.every((id) => named.includes(id)),
-      named,
+      recallFull: assessed.recallFull,
+      forbiddenNamed: assessed.forbiddenNamed,
+      namingRight: assessed.namingRight,
+      named: assessed.named,
       reason: (v.failureReason ?? '').slice(0, 600),
     };
   } catch (e) {
@@ -164,6 +170,8 @@ async function trial(root: string, c: JudgeArtifactCase, arm: 'off' | 'on', rep:
       falseNeg: c.shouldConverge,
       falsePos: false,
       recallFull: false,
+      forbiddenNamed: 0,
+      namingRight: false,
       named: [],
       reason: '',
       error: e instanceof Error ? e.message : String(e),
@@ -216,6 +224,7 @@ async function main(): Promise<void> {
         假阴性: c.shouldConverge ? pct(ct.filter((x) => x.falseNeg).length, ct.length) : '—',
         假阳性: c.shouldConverge ? '—' : pct(ct.filter((x) => x.falsePos).length, ct.length),
         召回全: c.shouldConverge ? '—' : pct(ct.filter((x) => x.recallFull).length, ct.length),
+        诱饵点名: pct(ct.filter((x) => x.forbiddenNamed > 0).length, ct.length),
         平均in: Math.round(ct.reduce((s, x) => s + x.usage.in, 0) / Math.max(1, ct.length)),
         平均out: Math.round(ct.reduce((s, x) => s + x.usage.out, 0) / Math.max(1, ct.length)),
         错: ct.filter((x) => x.error).length,

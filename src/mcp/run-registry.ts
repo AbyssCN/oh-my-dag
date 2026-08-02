@@ -405,6 +405,25 @@ export class RunRegistry {
     this.persist(runId);
   }
 
+  /**
+   * 关掉持久面连接 (幂等; 无 store → no-op)。
+   *
+   * **给短命进程用的** (goal-worker / run-worker 退出前)。两个理由,后一条是实测买来的:
+   * ① 干净关闭会 checkpoint WAL —— 盘上那份不再依赖 `-wal`/`-shm` 才算真落地;
+   * ② 2026-08-03 实测: worker 退出时 `terminal-verify` 要新开一条写连接核验/修复, 而**本进程
+   *    这条长命连接还开着** —— 同进程、同 WAL 文件、两条写连接。那次修复报的正是
+   *    `disk I/O error`。先关掉它, 核验时进程内就只剩一条连接。
+   *    ⚠ 这**不是**已证的根因 (同一现场还有别的嫌疑: 长跑内存压力下 shm mmap 失败也会报同一个
+   *    错, 而两个库同时丢正符合"进程级"而非"库级"), 但少一条并发连接在任何机理下都不会更差。
+   */
+  close(): void {
+    try {
+      this.store?.close();
+    } catch {
+      /* 关不上不值得抛: 调用点是退出路径 */
+    }
+  }
+
   /** 按状态列 runId; 无参数 → 全部。 */
   listRuns(status?: RunStatus): string[] {
     const entries = [...this.runs.entries()];
