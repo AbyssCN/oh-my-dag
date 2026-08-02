@@ -41,7 +41,8 @@ flowchart TB
     subgraph T2["Track 2 · GRAPH — hand off a whole fan-out"]
       G1["dag_run<br/>a conductor decomposes for you"]
       G2["dag_run_plan<br/>you wrote the graph, just run it"]
-      G3["dag_review / dag_debug / dag_slim / dag_deepen<br/>pre-shaped fleets"]
+      G3["dag_goal<br/>state a goal — plan → execute → judge,<br/>looped to convergence, survives your session"]
+      G4["dag_review / dag_debug / dag_slim / dag_deepen<br/>pre-shaped fleets"]
     end
 
     BASE["Shared substrate<br/>typed plan · deterministic passes · oracle gates · cross-family verifier<br/>checkpoints · model pools · cost accounting"]
@@ -59,7 +60,7 @@ flowchart TB
   classDef base fill:#E1F5EE,stroke:#0F6E56,color:#04342C
   classDef ext fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
   class C1,C2,C3,C4 compose
-  class G1,G2,G3 dagmode
+  class G1,G2,G3,G4 dagmode
   class BASE base
   class AGENT,MODELS ext
 ```
@@ -88,7 +89,7 @@ omd init                     # wizard: keys, model presets, reachability probe �
 cd <your-project> && claude mcp add omd -- omd mcp
 ```
 
-The slash-command pack (`/omd-path`, `/omd-review`, … 20 skills) installs itself into
+The slash-command pack (`/omd-path`, `/omd-review`, … 19 skills) installs itself into
 `~/.claude/skills/` on first server start — idempotent, and it never overwrites a skill you
 edited. Opt out with `OMD_INSTALL_SKILLS=0`.
 
@@ -112,7 +113,7 @@ removed on 2026-08-01 so the engine has exactly one front door. Your MCP client
 ```mermaid
 flowchart LR
   subgraph EXEC["EXECUTE — get the work done"]
-    E1["dag_run · dag_run_plan · dag_resume<br/>dag_status · dag_result · dag_runs"]
+    E1["dag_run · dag_run_plan · dag_resume<br/>dag_goal · dag_cancel · dag_triage · dag_rule<br/>dag_status · dag_result · dag_runs"]
     E2["omd_primitive<br/>12 control-flow shapes"]
   end
 
@@ -147,8 +148,13 @@ flowchart LR
 ```
 
 **Execution** — `dag_run` (a conductor decomposes for you) · `dag_run_plan` (you wrote the graph)
-· `dag_resume` (pick up where a broken run stopped) · `omd_primitive` (one control-flow shape, no
-graph required) · `dag_status` / `dag_result` / `dag_node_output` / `dag_runs`.
+· `dag_resume` (pick up where a broken run stopped) · `dag_goal` (state the goal; the engine plans,
+executes, judges and repairs until it converges — four stop axes: rounds, no-progress, judge ∧ accept,
+token/minute budget; `detached: true` hands it to a worker process that outlives your session) ·
+`dag_cancel` (cooperative stop, resumable) · `dag_triage` / `dag_rule` (owner inbox: a running graph
+raises a decision fork with the assumption it is proceeding on; your ruling enters the next round
+verbatim) · `omd_primitive` (one control-flow shape, no graph required) · `dag_status` /
+`dag_result` / `dag_node_output` / `dag_runs`.
 
 **Research** — `omd_web` (search + fetch, **zero LLM**; full text to disk, only an index comes
 back) · `omd_distill` (two lenses over text you already have: one faithful, one adversarial) ·
@@ -368,16 +374,16 @@ main structural difference from a subagent, where "who" and "how" are welded int
 
 ### The seats at a glance
 
-omd routes work to 14 named seats in five functional classes. Pin any of them once in
+omd routes work to 16 named seats in four functional classes. Pin any of them once in
 `.omd/config.json` `models` and every resolver reads that one value. Rule of thumb: **strong where
 being wrong is expensive and rare; cheap where volume is high and an oracle catches mistakes.**
 
 | Class | Seats | Does | Reach for |
 |---|---|---|---|
 | decomposer | `conductor` · `escalation` | shapes / repairs the plan graph | **strong** (SOTA brain) |
-| judge_synth | `judge` · `reason` · `reduce` | picks winners, reasons, folds results | **strong** to judge; cheaper to fold |
-| worker | `leaf` · `agent` · `lens` · `expand` · `distill` · `overflow` | volume execution behind a gate | **cheap–mid** (family ≠ quality here) |
-| verify | `verifier` · `review-spec` | adversarial cross-check | **mid, different family** from the author |
+| judge_synth | `judge` · `gate` · `reason` · `reduce` | picks winners, closes the goal loop, folds results | **strong** to judge; cheaper to fold |
+| worker | `leaf` · `agent` · `lens` · `expand` · `distill` · `overflow` · `continuity` | volume execution behind a gate | **cheap–mid** (family ≠ quality here) |
+| verify | `verifier` · `review-spec` · `review` | adversarial cross-check | **mid, different family** from the author |
 
 Auto-assign fills these by **channel economics**, not by scattering families — diversity is spent only
 where it changes the answer (verify is off the author's family on purpose; research `lens` seats want
@@ -425,7 +431,7 @@ Three corollaries that decide real designs:
 | [Architecture](docs/architecture.md) | passes, scheduling, fault boundaries, checkpoint & resume |
 | [Primitives](docs/primitives.md) | the 12 control-flow shapes, and when to use plain nodes instead |
 | [Model layer](docs/model-layer.md) | seats, pools, stamp rules, reasoning effort, multi-perspective review |
-| [MCP tools](docs/mcp-tools.md) | all 33, grouped |
+| [MCP tools](docs/mcp-tools.md) | all 38, grouped |
 | [Memory](docs/memory.md) | fact store, hybrid recall |
 | [Diagrams](docs/diagrams/) | Mermaid source of truth for every figure above |
 
