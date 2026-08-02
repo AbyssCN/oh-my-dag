@@ -378,7 +378,6 @@ being wrong is expensive and rare; cheap where volume is high and an oracle catc
 | judge_synth | `judge` · `reason` · `reduce` | picks winners, reasons, folds results | **strong** to judge; cheaper to fold |
 | worker | `leaf` · `agent` · `lens` · `expand` · `distill` · `overflow` | volume execution behind a gate | **cheap–mid** (family ≠ quality here) |
 | verify | `verifier` · `review-spec` | adversarial cross-check | **mid, different family** from the author |
-| dream | `dream` | memory consolidation | cheap–mid |
 
 Auto-assign fills these by **channel economics**, not by scattering families — diversity is spent only
 where it changes the answer (verify is off the author's family on purpose; research `lens` seats want
@@ -427,7 +426,7 @@ Three corollaries that decide real designs:
 | [Primitives](docs/primitives.md) | the 12 control-flow shapes, and when to use plain nodes instead |
 | [Model layer](docs/model-layer.md) | seats, pools, stamp rules, reasoning effort, multi-perspective review |
 | [MCP tools](docs/mcp-tools.md) | all 33, grouped |
-| [Memory](docs/memory.md) | fact store, hybrid recall, dream consolidation |
+| [Memory](docs/memory.md) | fact store, hybrid recall |
 | [Diagrams](docs/diagrams/) | Mermaid source of truth for every figure above |
 
 ## License

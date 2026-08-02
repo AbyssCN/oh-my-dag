@@ -30,7 +30,7 @@ flowchart LR
   end
 
   subgraph MEMORY["MEMORY &amp; PLANNING — outlive the context window"]
-    M1["memory_recall · memory_remember<br/>dream_consolidate"]
+    M1["memory_recall · memory_remember"]
     M2["path_map · path_add · path_rule<br/>path_deliver · path_prefetch"]
   end
 

@@ -370,7 +370,7 @@ flowchart TB
 | [原语](docs/primitives.md) | 12 个控制流形状,以及什么时候该用普通节点 |
 | [模型层](docs/model-layer.md) | 座位、池、stamp 规则、推理档、多视角审查 |
 | [MCP 工具](docs/mcp-tools.md) | 全部 33 个,分组 |
-| [记忆](docs/memory.md) | 事实库、混合召回、dream 巩固 |
+| [记忆](docs/memory.md) | 事实库、混合召回 |
 | [图](docs/diagrams/) | 上面每张图的 Mermaid 真理源 |
 
 ## 许可

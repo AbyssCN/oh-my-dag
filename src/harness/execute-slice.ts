@@ -242,7 +242,16 @@ export interface ExecuteSliceOpts {
   /** 工作目录 (预留: continuity repoRoot; 当前 P1 不落 continuity)。 */
   cwd?: string;
   /** dag-record 留痕器 (execute-extension 已建的 recorder)。省略 = 不留痕。 */
-  recorder?: { record: (res: ExecutorDagResult, meta?: { question?: string }) => string };
+  recorder?: {
+    record: (res: ExecutorDagResult, meta?: { question?: string; runId?: string; entry?: string }) => string;
+  };
+  /**
+   * 入口名 (进 `DagRunRecord.entry`)。`path_deliver` 传 `'path_deliver'`。
+   * 省略 = 留 NULL,而不是编一个 —— 见 `DagRunRecord.entry` 的注。
+   */
+  entry?: string;
+  /** 引擎 runId (进 `DagRunRecord.runId`,按它归组一次交付的账)。 */
+  runId?: string;
   /** runtime-finalize 开关 (默认 OFF)。 */
   finalize?: boolean;
   /** runtime-finalize 模型 (省略 = conductorModel / runtime 坐标)。 */
@@ -304,7 +313,11 @@ export async function executeSlice(
     seatThinking: (coord: string) => resolveSeatThinking(coord),
     onComplete: opts.recorder
       ? (res) => {
-          opts.recorder!.record(res, { question: `executeSlice ${finalPlan.name}` });
+          opts.recorder!.record(res, {
+            question: `executeSlice ${finalPlan.name}`,
+            ...(opts.entry ? { entry: opts.entry } : {}),
+            ...(opts.runId ? { runId: opts.runId } : {}),
+          });
         }
       : undefined,
   });

@@ -216,7 +216,7 @@ export const ROLE_PRESETS: readonly RolePreset[] = [
   },
   {
     // ④ 三家档 cn-trio —— Opus 座舱下的 MCP 引擎配置 (掌舵实为 Claude, 引擎内部角色分三家):
-    //   kimi k3 掌 conductor/judge, ds-flash 铺 fleet/dream, mimo ultraspeed 管 synth + 多模态。
+    //   kimi k3 掌 conductor/judge, ds-flash 铺 fleet, mimo ultraspeed 管 synth + 多模态。
     //   无 OMD_PLAN_MODEL/plan 角色 —— 审议座舱由 Opus 4.8 顶替, plan 在 MCP 模式冗余 (仅独立 TUI 消费)。
     //   kimi-coding 认证走 ~/.pi/agent/auth.json (api_key 或 pi OAuth), 免 env key。
     id: 'cn-trio',
@@ -245,18 +245,17 @@ export const ROLE_PRESETS: readonly RolePreset[] = [
       OMD_ROUTER_POOL_INPROC: `${DS_FLASH},${MIMO_25}`,
     },
     multimodalPool: [MIMO_25],
-    // canonical config 角色 (role-models.ts 5 角色去 plan): conductor/leaf/verifier/dream。
+    // canonical config 角色 (role-models.ts MODEL_ROLES): conductor/leaf/verifier。
     // verifier 默认 k3 (Nick: k3 或 codex; k3 与掌舵同源, codex 为跨家族避盲点备选)。
     configRoles: [
       { role: 'conductor', coord: KIMI_CODING_K3 },
       { role: 'leaf', coord: DS_FLASH },
       { role: 'verifier', coord: KIMI_CODING_K3 },
-      { role: 'dream', coord: DS_FLASH },
     ],
     // kimi-coding 走 pi 通道 (auth.json api_key 或 OAuth) — 免 env key, 就绪判定走 auth.json。
     oauthProviders: ['kimi-coding'],
     keyPrompts: [
-      { env: 'DEEPSEEK_API_KEY', label: 'DeepSeek API key (fleet 执行 + dream)', provider: 'deepseek' },
+      { env: 'DEEPSEEK_API_KEY', label: 'DeepSeek API key (fleet 执行)', provider: 'deepseek' },
       { env: 'MIMO_API_KEY', label: 'MiMo API key (synth 合成 + 多模态池)', provider: 'mimo' },
       // kimi-coding 走 auth.json (api_key/OAuth), 免 env key → 不入 keyPrompts。
     ],

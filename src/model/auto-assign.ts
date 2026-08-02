@@ -13,7 +13,7 @@
  * Contract: docs/plan/2026-07-24-channel-aware-model-node-routing.md D-19.
  */
 import { discoverChannels as discoverHoldings } from "../config/config-discovery";
-import { SEAT_PREFERRED_COORD, SEAT_THINKING, SEAT_TIER } from "./seats";
+import { SEAT_PREFERRED_COORD, SEAT_THINKING } from "./seats";
 import { logger } from "../logger";
 import {
 	type Channel,
@@ -31,8 +31,7 @@ export type NodeClass =
 	| "decomposer" // conductor + escalation
 	| "judge_synth" // judge + reason + reduce
 	| "worker" // leaf/agent/lens/expand/distill/overflow
-	| "verify" // verifier + review-spec
-	| "dream"; // dream (独立)
+	| "verify"; // verifier + review-spec
 
 /** 推理档 (与 GenerateFn/callModel 的 thinkingLevel 同词表 — 别引入第二套词汇)。 */
 export type SeatThinking = "off" | "low" | "medium" | "high" | "xhigh";
@@ -77,7 +76,6 @@ const NODE_CLASS: Record<string, NodeClass> = {
 	overflow: "worker",
 	verifier: "verify",
 	"review-spec": "verify",
-	dream: "dream",
 	// 两个后台角色也是座位 (ALL_SEATS): 不给它们分配 = 起跑自检恒报缺, review/continuity 用不了。
 	review: "verify", // review find 层 = 对抗读码, 跨家族同 verify 类
 	continuity: "worker", // session 交接蒸馏 = 便宜单发
@@ -104,7 +102,6 @@ const PREFERRED_COORD: Record<NodeClass, string> = {
 	judge_synth: "deepseek:deepseek-v4-flash",
 	worker: "deepseek:deepseek-v4-flash",
 	verify: "deepseek:deepseek-v4-flash",
-	dream: "deepseek:deepseek-v4-flash",
 };
 
 /**
@@ -164,7 +161,6 @@ const FALLBACK_COORDS: Record<NodeClass, string[]> = {
 	judge_synth: ["opencode-go:kimi-k3", "opencode-go:glm-5.2"],
 	worker: ["opencode-go:mimo-v2.5", "opencode-go:deepseek-v4-flash"],
 	verify: ["opencode-go:qwen3.7-max", "opencode-go:glm-5.1"],
-	dream: ["opencode-go:qwen3.7-max", "opencode-go:deepseek-v4-flash"],
 };
 
 // ── 内部 helpers ───────────────────────────────────────────────────────
