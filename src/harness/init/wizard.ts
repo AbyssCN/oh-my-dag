@@ -13,8 +13,8 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import type { OAuthCredentials, OAuthLoginCallbacks } from '@earendil-works/pi-ai/oauth';
-// 0.80: 目录读挪 /compat (deprecated shim); getEnvApiKey 不再导出 → 本仓 piEnvApiKey (pi-transport)。
-import { getProviders as piGetProviders } from '@earendil-works/pi-ai/compat';
+// 0.80: 目录读挪 /providers/all (compat shim deprecated); getEnvApiKey 不再导出 → 本仓 piEnvApiKey (pi-transport)。
+import { getBuiltinProviders } from '@earendil-works/pi-ai/providers/all';
 import { piEnvApiKey } from '../../model/pi-transport';
 import { createKimiCodingOAuthProvider } from '../../model/kimi-oauth';
 import { bold, dim, fg } from '../branding/palette';
@@ -176,7 +176,7 @@ export function runProviderOverviewStep(
 ): void {
   let provs: string[] = [];
   try {
-    provs = (deps.getProviders ?? (piGetProviders as () => string[]))();
+    provs = (deps.getProviders ?? (getBuiltinProviders as () => string[]))();
   } catch {
     return; // 目录不可用不砖向导
   }
