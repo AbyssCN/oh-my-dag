@@ -40,7 +40,8 @@ flowchart TB
     subgraph T2["Track 2 · GRAPH — hand off a whole fan-out"]
       G1["dag_run<br/>a conductor decomposes for you"]
       G2["dag_run_plan<br/>you wrote the graph, just run it"]
-      G3["dag_review / dag_debug / dag_slim / dag_deepen<br/>pre-shaped fleets"]
+      G3["dag_goal<br/>state a goal — plan → execute → judge,<br/>looped to convergence, survives your session"]
+      G4["dag_review / dag_debug / dag_slim / dag_deepen<br/>pre-shaped fleets"]
     end
 
     BASE["Shared substrate<br/>typed plan · deterministic passes · oracle gates · cross-family verifier<br/>checkpoints · model pools · cost accounting"]
@@ -58,7 +59,7 @@ flowchart TB
   classDef base fill:#E1F5EE,stroke:#0F6E56,color:#04342C
   classDef ext fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
   class C1,C2,C3,C4 compose
-  class G1,G2,G3 dagmode
+  class G1,G2,G3,G4 dagmode
   class BASE base
   class AGENT,MODELS ext
 ```
@@ -84,7 +85,7 @@ omd init                     # 向导:密钥、模型预设、可达性探测 �
 cd <你的项目> && claude mcp add omd -- omd mcp
 ```
 
-斜杠命令包(`/omd-path`、`/omd-review` 等 20 个 skill)在 server 首次启动时自动装进
+斜杠命令包(`/omd-path`、`/omd-review` 等 19 个 skill)在 server 首次启动时自动装进
 `~/.claude/skills/` —— 幂等,且**绝不覆盖你改过的 skill**。`OMD_INSTALL_SKILLS=0` 可关。
 
 **→ [完整走查](docs/MCP-ONBOARDING.md)** · [命令参考](client-skills/README.md)
@@ -105,7 +106,7 @@ cd <你的项目> && claude mcp add omd -- omd mcp
 ```mermaid
 flowchart LR
   subgraph EXEC["EXECUTE — get the work done"]
-    E1["dag_run · dag_run_plan · dag_resume<br/>dag_status · dag_result · dag_runs"]
+    E1["dag_run · dag_run_plan · dag_resume<br/>dag_goal · dag_cancel · dag_triage · dag_rule<br/>dag_status · dag_result · dag_runs"]
     E2["omd_primitive<br/>12 control-flow shapes"]
   end
 
@@ -140,7 +141,11 @@ flowchart LR
 ```
 
 **执行** —— `dag_run`(conductor 替你分解)· `dag_run_plan`(图你自己写好了)· `dag_resume`
-(从断掉的地方接着跑)· `omd_primitive`(单跑一个控制流形状,不必先有图)· `dag_status` /
+(从断掉的地方接着跑)· `dag_goal`(只给目标;引擎自己画图、执行、判卷、修复,直到收敛 ——
+四条停止轴:轮数上限、空转判据、judge ∧ accept、token/分钟预算;`detached: true` 交给一个
+比你会话活得久的 worker 进程)· `dag_cancel`(协作式叫停,可续跑)· `dag_triage` / `dag_rule`
+(owner 收件箱:跑着的图把领域岔口连同它正按什么假设继续跑一起摆出来,你的裁决逐字进下一轮)·
+`omd_primitive`(单跑一个控制流形状,不必先有图)· `dag_status` /
 `dag_result` / `dag_node_output` / `dag_runs`。
 
 **研究** —— `omd_web`(搜 + 抓,**零 LLM**;全文落盘,只回索引)· `omd_distill`(对你已有的
@@ -369,7 +374,7 @@ flowchart TB
 | [架构](docs/architecture.md) | pass 管线、调度、故障边界、checkpoint 与续跑 |
 | [原语](docs/primitives.md) | 12 个控制流形状,以及什么时候该用普通节点 |
 | [模型层](docs/model-layer.md) | 座位、池、stamp 规则、推理档、多视角审查 |
-| [MCP 工具](docs/mcp-tools.md) | 全部 33 个,分组 |
+| [MCP 工具](docs/mcp-tools.md) | 全部 38 个,分组 |
 | [记忆](docs/memory.md) | 事实库、混合召回 |
 | [图](docs/diagrams/) | 上面每张图的 Mermaid 真理源 |
 
