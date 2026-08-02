@@ -115,7 +115,7 @@ the full command-migration table and workflows.
 **Memory group**: `memory_recall` / `memory_remember` — persistent fact store with
 namespace safeguards. (`dream_consolidate` was removed 2026-08-02 — under pure-MCP usage
 not a single signal producer remained, so it could only ever have returned `0 events`.
-See [ADR-0003](adr/0003-dream-parked.md).)
+Ruled in internal ADR-0003.)
 
 ## 5 · Five-minute walkthrough
 

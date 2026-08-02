@@ -147,7 +147,7 @@ URL, first-hand sources separated from second-hand.
 
 **Sample output**: the reconstructed System-B claim set is in
 [`docs/examples/deep-research-mcp-2026.md`](examples/deep-research-mcp-2026.md). Full A/B methodology
-and raw readings live in the internal [`eval-findings.md`](plan/eval-findings.md).
+and raw readings live in an internal findings document (not in the public tree).
 
 > The one line to take away: **reliability comes from outside the model.** In deep research that
 > outside is the deterministic retrieval floor — which is exactly why a cheap stack keeps up.
