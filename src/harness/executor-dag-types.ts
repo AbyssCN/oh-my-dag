@@ -371,8 +371,9 @@ export interface DagObservation {
   /**
    * `undeclared-artifact-dep` = B 读了 A 写的文件但图上无边 (D-12/INV-P2-4);
    * `loop-no-progress` = 内环重展开得到同一张子图且 judge 拒的还是同一批 (D-Q BLOCKED 判据);
-   * `write-race` / `missing-input` = **跑之前**就能确定性判死的坏 plan (A4, 2026-07-31,
-   * 补 Fowler 2×2 里最空的那格 computational feedforward)。前两个是事后传感, 这两个是事前拦。
+   * `write-race` / `missing-input` / `missing-command-target` = **跑之前**就能确定性判死的坏 plan
+   * (A4, 2026-07-31, 补 Fowler 2×2 里最空的那格 computational feedforward; 后者是 command 节点
+   * 引用 cwd 内不存在的脚本或未定义的 package script)。前两个是事后传感, 这些是事前拦。
    */
   /**
    * `loop-no-artifact-change` (2026-07-31, G5 正解) = 两轮下来**盘上的产物逐字节没变**。
@@ -380,7 +381,7 @@ export interface DagObservation {
    * conductor 每轮重画, 从不逐字重复 → D-AD 诊断的死路), 前者键在「盘上有没有位移」——
    * 产物是 agent 不重新生成的东西, 是这个环里唯一稳定的信号。**只报不拦**, 见 detectNoArtifactChange。
    */
-  kind: 'undeclared-artifact-dep' | 'loop-no-progress' | 'write-race' | 'missing-input' | 'loop-no-artifact-change';
+  kind: 'undeclared-artifact-dep' | 'loop-no-progress' | 'write-race' | 'missing-input' | 'missing-command-target' | 'loop-no-artifact-change';
   /** 涉及的节点 id (lint = [reader, writer]; 空转 = 被反复拒绝的那批)。 */
   nodes: string[];
   /** 人与模型都读的一句话 (进 prompt 的就是它)。 */
