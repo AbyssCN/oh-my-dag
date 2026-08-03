@@ -163,12 +163,26 @@ function fromDeclared(cwd: string, path: string, sources: string[]): Invoker[] {
 /** 调度配置里**逐字出现过的**脚本路径 —— 反向查的起点。 */
 const SCRIPT_PATH_TOKEN = /[\w./-]+\.(?:ts|js|sh|py)/g;
 
-function schedulerNamedPaths(cwd: string): string[] {
-  const texts: string[] = [];
+/**
+ * ⚠ **必须带上来源种类, 不许抹平成"调度配置"** (2026-08-03, 实测教训)。
+ *
+ * 第一版把四处来源的命中合并成一个字符串列表, 于是渲染出来只剩「出现在调度配置里」。
+ * `indirect` 档实测: 拿到了 import 链的 `edit-mailer-default-sender` **仍然 0/3** ——
+ * 因为「调度配置」既可能是 CI 的测试任务 (人不在场也无所谓), 也可能是生产 crontab,
+ * 而模型读成前者**完全合理**。件本来知道这个区别 (它是在哪个文件里找到的), 是收集时丢了。
+ *
+ * 这是又一次「把两件不同的事压成一件」—— 同 `NULL ≠ 0`、`vacuity-only vs skipped`、
+ * `无此行 vs 库不可读`。**证据的价值全在分辨率上, 抹平一档就等于没给。**
+ */
+function schedulerNamedPaths(cwd: string): { path: string; via: string }[] {
+  const texts: { body: string; via: string }[] = [];
   const pkg = readOrNull(join(cwd, 'package.json'));
   if (pkg !== null) {
     try {
-      texts.push(Object.values((JSON.parse(pkg) as { scripts?: Record<string, string> }).scripts ?? {}).join('\n'));
+      texts.push({
+        body: Object.values((JSON.parse(pkg) as { scripts?: Record<string, string> }).scripts ?? {}).join('\n'),
+        via: 'package.json 的 scripts (由开发者手动 `bun run` 触发)',
+      });
     } catch { /* 坏 JSON 不是这里该管的 */ }
   }
   const wf = join(cwd, '.github', 'workflows');
@@ -176,37 +190,38 @@ function schedulerNamedPaths(cwd: string): string[] {
     try {
       for (const f of readdirSync(wf).filter((x) => x.endsWith('.yml') || x.endsWith('.yaml'))) {
         const b = readOrNull(join(wf, f));
-        if (b !== null) texts.push(b.split('\n').filter((l) => !isCommented(l)).join('\n'));
+        if (b !== null) texts.push({ body: b.split('\n').filter((l) => !isCommented(l)).join('\n'), via: `CI workflow .github/workflows/${f}` });
       }
     } catch { /* 同上 */ }
   }
   for (const rel of ['crontab', 'Crontab', 'deploy/crontab', 'ops/crontab']) {
     const b = readOrNull(join(cwd, rel));
-    if (b !== null) texts.push(b.split('\n').filter((l) => !isCommented(l)).join('\n'));
+    if (b !== null) texts.push({ body: b.split('\n').filter((l) => !isCommented(l)).join('\n'), via: `仓内 cron 文件 ${rel} (按表自动执行)` });
   }
   const cfg = readOrNull(join(cwd, '.omd', 'config.json'));
   if (cfg !== null) {
     try {
-      texts.push(Object.keys((JSON.parse(cfg) as { invokedBy?: Record<string, string> }).invokedBy ?? {}).join('\n'));
+      const d = (JSON.parse(cfg) as { invokedBy?: Record<string, string> }).invokedBy ?? {};
+      for (const [k, note] of Object.entries(d)) texts.push({ body: k, via: `owner 声明的外部调度器 — ${note}` });
     } catch { /* 同上 */ }
   }
-  const out = new Set<string>();
-  for (const t of texts) for (const m of t.match(SCRIPT_PATH_TOKEN) ?? []) out.add(m);
-  return [...out];
+  const out = new Map<string, string>();
+  for (const t of texts) for (const m of t.body.match(SCRIPT_PATH_TOKEN) ?? []) if (!out.has(m)) out.set(m, t.via);
+  return [...out].map(([path, via]) => ({ path, via }));
 }
 
 /**
  * 每个调度入口的可达闭包 —— **按 cwd 记忆**。走图要读文件, 而一张图上每个节点都会问一次,
  * 不缓存就是把同一次 BFS 跑 N 遍。
  */
-const reachCache = new Map<string, { entry: string; reach: Set<string> }[]>();
+const reachCache = new Map<string, { entry: string; via: string; reach: Set<string> }[]>();
 
-function entryReachSets(cwd: string): { entry: string; reach: Set<string> }[] {
+function entryReachSets(cwd: string): { entry: string; via: string; reach: Set<string> }[] {
   const hit = reachCache.get(cwd);
   if (hit) return hit;
   const sets = schedulerNamedPaths(cwd)
-    .filter((p) => p.endsWith('.ts')) // 只有 TS 走得了 import 图; sh/py 不在这张图上
-    .map((entry) => ({ entry, reach: reachableFrom([join(cwd, entry)]) }));
+    .filter((e) => e.path.endsWith('.ts')) // 只有 TS 走得了 import 图; sh/py 不在这张图上
+    .map((e) => ({ entry: e.path, via: e.via, reach: reachableFrom([join(cwd, e.path)]) }));
   reachCache.set(cwd, sets);
   return sets;
 }
@@ -228,7 +243,11 @@ function fromImportChain(cwd: string, path: string, sources: string[]): Invoker[
   const abs = join(cwd, path);
   return sets
     .filter((s) => s.reach.has(abs))
-    .map((s) => ({ kind: 'import-chain' as const, where: `被 ${s.entry} 经 import 到达, 而 ${s.entry} 出现在调度配置里` }));
+    .map((s) => ({
+      kind: 'import-chain' as const,
+      // **带上那个入口的来源种类** —— "CI 测试任务"与"生产 cron"对后果的含义完全不同, 抹平就等于没给。
+      where: `被 ${s.entry} 经 import 到达, 而 ${s.entry} 出现在 ${s.via}`,
+    }));
 }
 
 /** 采一个路径的全部结构事实。**纯读, 零 LLM。** */

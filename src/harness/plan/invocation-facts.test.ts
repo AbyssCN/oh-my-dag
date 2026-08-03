@@ -210,3 +210,52 @@ describe('间接可达 (import 图一跳到直接命名点)', () => {
     done();
   });
 });
+
+/**
+ * 来源种类必须**穿过 import 链带出来** —— 抹平成"调度配置"等于没给。
+ *
+ * 实测教训 (2026-08-03): 第一版把四处来源合并成一个路径列表, 渲染出来只剩「出现在调度配置里」。
+ * `indirect` 档量到: 拿到了 import 链的 `edit-mailer-default-sender` **仍然 0/3** ——
+ * 「调度配置」既可能是 CI 的测试任务, 也可能是生产 crontab, 模型读成前者完全合理。
+ * 件本来知道这个区别 (它是在哪个文件里找到的), 是收集时丢了。
+ * **证据的价值全在分辨率上。**
+ */
+describe('来源种类不许被抹平', () => {
+  test('手动触发的 package script 与自动执行的 cron, 链里必须说得出区别', () => {
+    const manual = world({
+      'package.json': JSON.stringify({ scripts: { d: 'bun scripts/tool.ts' } }),
+      'scripts/tool.ts': "import { x } from '../src/lib';\n",
+      'src/lib.ts': 'export const x = 1;\n',
+    });
+    const mText = renderInvocationFacts(invocationFactsFor(manual.cwd, 'src/lib.ts'));
+    expect(mText).toContain('手动');
+    manual.done();
+
+    const auto = world({
+      crontab: '0 2 * * * bun scripts/tool.ts\n',
+      'scripts/tool.ts': "import { x } from '../src/lib';\n",
+      'src/lib.ts': 'export const x = 1;\n',
+    });
+    const aText = renderInvocationFacts(invocationFactsFor(auto.cwd, 'src/lib.ts'));
+    expect(aText).toContain('自动执行');
+    expect(aText).not.toContain('手动');
+    auto.done();
+  });
+
+  test('owner 声明的外部调度器把说明原样带进链 (那句话是唯一的信息源)', () => {
+    const { cwd, done } = world({
+      '.omd/config.json': JSON.stringify({ invokedBy: { 'scripts/tool.ts': '生产 crontab 每晚 02:00' } }),
+      'scripts/tool.ts': "import { x } from '../src/lib';\n",
+      'src/lib.ts': 'export const x = 1;\n',
+    });
+    expect(renderInvocationFacts(invocationFactsFor(cwd, 'src/lib.ts'))).toContain('生产 crontab 每晚 02:00');
+    done();
+  });
+
+  test('反向自检: 抹平后这条闸会红 (不是恒真式)', () => {
+    // 若渲染退回成不带种类的老形状, 上面两条的 manual/auto 断言必然同时失效。
+    const flattened = '被 scripts/tool.ts 经 import 到达, 而 scripts/tool.ts 出现在调度配置里';
+    expect(flattened).not.toContain('手动');
+    expect(flattened).not.toContain('自动执行');
+  });
+});
