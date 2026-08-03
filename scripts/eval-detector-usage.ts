@@ -46,6 +46,12 @@ if (!CONDUCTOR_SEAT) {
   process.exit(2);
 }
 
+/**
+ * 「这个读数属于哪个座位」的凭据 —— 起跑打一次, 且**写进 report.md**。
+ * 只打 stderr 不够: 报告是留下来的那份, 而座位漂了正是从报告里看不出来的 (见 seat-sourced.test.ts)。
+ */
+const SEAT_PROVENANCE = opt('model') ? ' (--model 覆盖)' : ` (conductor 座 · 来源 ${conductorSeat?.source})`;
+
 const log = (s: string): void => void process.stderr.write(s + '\n');
 
 /** 与 runConductorRound 第 1 步同形的展开调用 (系统 prompt 逐字同源, 用户消息见文件头的简化说明)。 */
@@ -119,7 +125,10 @@ async function main(): Promise<void> {
       });
     }
   }
-  log(`跑 ${jobs.length} 次展开 (${DETECTOR_GOAL_CASES.length} 目标 × ${N} 采样, 并发 ${CONCURRENCY}, 座位 ${CONDUCTOR_SEAT})…`);
+  log(
+    `跑 ${jobs.length} 次展开 (${DETECTOR_GOAL_CASES.length} 目标 × ${N} 采样, 并发 ${CONCURRENCY}) · ` +
+      `座位 ${CONDUCTOR_SEAT}${SEAT_PROVENANCE}…`,
+  );
   const rows: Row[] = [];
   let cursor = 0;
   await Promise.all(
@@ -140,7 +149,13 @@ async function main(): Promise<void> {
 
   const pct = (a: number, b: number): string => (b === 0 ? '—' : `${Math.round((a / b) * 100)}%`);
   const group = (kind: DetectorGoalCase['kind']): Row[] => rows.filter((r) => r.kind === kind);
-  const lines: string[] = ['', '## detector 自发使用率 (展开调用, 不跑执行)', ''];
+  const lines: string[] = [
+    '',
+    '## detector 自发使用率 (展开调用, 不跑执行)',
+    '',
+    `座位 \`${CONDUCTOR_SEAT}\`${SEAT_PROVENANCE} · ${DETECTOR_GOAL_CASES.length} 目标 × ${N} 采样`,
+    '',
+  ];
   lines.push('| 组 | 样本 | 标了 detector | 画出检查形状 | **形状对了没标字段** |');
   lines.push('|---|---|---|---|---|');
   for (const kind of ['worthy', 'control'] as const) {
