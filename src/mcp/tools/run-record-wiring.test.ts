@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { createGoalTool } from './goal';
 import { createPathfinderTools, type PathfinderToolDeps } from './pathfinder';
 import { createDagTools, type DagEngine } from './dag-tools';
+import { createComposeTools } from './compose';
 import { RunRegistry } from '../run-registry';
 import { createDagRecorder } from '../../harness/dag-record';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../../harness/executor-dag-types';
@@ -247,5 +248,72 @@ describe('entry 缺席 ≠ 编造', () => {
     expect(rec.get(id)!.entry).toBeUndefined();
     expect('entry' in rec.get(id)!).toBe(false);
     rec.close();
+  });
+});
+
+/**
+ * `omd_primitive` 的运行留痕接线 (T6, 2026-08-03) —— **第五个入口**, S0 当时刻意留的那格。
+ *
+ * S0 的理由是「它没有 runId, 记进去是无主的账」。今天不成立了: `dag_run` 早就是自己 `randomUUID`
+ * 的成例, 而账本要回答的是"**哪个入口跑了一次**", 不是"调用方能不能拿这个 id 回来查"。
+ * 一个从不落账的入口, 在 entry 分布里与"没人用这个入口"**长得一模一样**(D-AM 立 entry 必填时
+ * 点名的就是这个形态)。
+ *
+ * ⚠ 边界同上: 这条钉的是 `omd_primitive → runPlan` 那一跳把 onComplete 挂上了、entry 是
+ * `'omd_primitive'`、且**没有吃掉**调用方自己的 onComplete。引擎内部真调用 onComplete 那一段
+ * 由 dag-record 自己的测试守。
+ */
+describe('omd_primitive 的运行留痕接线', () => {
+  test('挂上 onComplete, entry=omd_primitive, 且不吃掉调用方自己的钩子', async () => {
+    const recorder = createDagRecorder({ path: ':memory:' });
+    let seenConfig: Record<string, unknown> | undefined;
+    let prevCalled = false;
+    const prev = (): void => void (prevCalled = true);
+
+    const tools = createComposeTools({
+      runPlan: (async (_plan: unknown, config: Record<string, unknown>) => {
+        seenConfig = config;
+        return { results: { p: { status: 'done', output: 'ok' } }, usage: {} };
+      }) as never,
+      baseConfig: () => ({ onComplete: prev }) as Record<string, unknown>,
+      recorder,
+    });
+    const primitive = tools.find((t) => t.name === 'omd_primitive')!;
+    const res = (await primitive.handler({ primitive: 'verify', params: { claim: 'x' } } as never, {} as never)) as {
+      isError?: boolean;
+    };
+    expect(res.isError).not.toBe(true);
+
+    // 留痕挂上了, 且**不是**调用方原来那个 (它被链在里面, 不是被替掉)。
+    expect(typeof seenConfig?.onComplete).toBe('function');
+    expect(seenConfig?.onComplete).not.toBe(prev);
+
+    // 真跑一次 onComplete: 调用方的钩子仍被叫到, 账本落一条且 entry 对。
+    await (seenConfig!.onComplete as (r: unknown) => Promise<void>)({
+      plan: { name: 'primitive:verify', nodes: { p: { goal: 'x' } } },
+      levels: [['p']],
+      results: { p: { id: 'p', kind: 'inproc', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 } } },
+      usage: { conductor: { in: 0, out: 0 }, leavesIn: 0, leavesOut: 0, leavesCacheHit: 0 },
+    });
+    expect(prevCalled).toBe(true);
+    const rows = recorder.list();
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.entry).toBe('omd_primitive');
+    recorder.close();
+  });
+
+  test('没给 recorder → 不挂 onComplete 留痕, 调用方的钩子原样在 (留痕是可选项)', async () => {
+    let seenConfig: Record<string, unknown> | undefined;
+    const prev = (): void => {};
+    const tools = createComposeTools({
+      runPlan: (async (_plan: unknown, config: Record<string, unknown>) => {
+        seenConfig = config;
+        return { results: { p: { status: 'done', output: 'ok' } }, usage: {} };
+      }) as never,
+      baseConfig: () => ({ onComplete: prev }) as Record<string, unknown>,
+    });
+    const primitive = tools.find((t) => t.name === 'omd_primitive')!;
+    await primitive.handler({ primitive: 'verify', params: { claim: 'x' } } as never, {} as never);
+    expect(seenConfig?.onComplete).toBe(prev); // 一个字都没动
   });
 });

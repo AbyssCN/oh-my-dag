@@ -133,6 +133,8 @@ async function trial(root: string, c: JudgeArtifactCase, arm: 'off' | 'on', rep:
   const judge = makeLlmConvergenceJudge<string>({
     judgeModel: MODEL,
     task: c.task,
+    // 证据词表 (2026-08-03 A/B 后默认开): `--no-legend` 关掉 = 复现旧基线。
+    ...(argv.includes('--no-legend') ? { evidenceLegend: false } : {}),
     extract: () => ({ status: 'done', summary }),
     callModelFn: async (req) => {
       const r = await send(req);

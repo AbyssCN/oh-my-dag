@@ -652,6 +652,9 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       runPlan: (plan, config) =>
         engine.runExecutorDagWithPlan(plan, config as unknown as Parameters<typeof runExecutorDagWithPlan>[1]),
       baseConfig: () => buildDefaultConfig() as Record<string, unknown>,
+      // T6 (2026-08-03): 第五个入口进账本。S0 当时的理由「它没有 runId」已不成立 ——
+      // 入口分布里"从不落账"与"没人用"长得一模一样, 而那正是 entry 轴要分开的两件事。
+      recorder,
     }),
     // plan-memory 账本可观测 (Phase A 证据门仪表, issue #10)。
     createPlansTool(ledger),
