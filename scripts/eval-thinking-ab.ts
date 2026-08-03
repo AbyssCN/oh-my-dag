@@ -26,7 +26,7 @@ import { send } from '../src/model/gateway';
 import { computeCost } from '../src/model/cost-ledger';
 import { LEAF_SYSTEM_PREFIX } from '../src/harness/executor-dag-defaults';
 import { WORKER_TASKS, type WorkerGrade } from '../src/eval/tasks/worker-quality';
-import type { ThinkingLevel } from '../src/model/role-models';
+import { tryResolveSeatModel, type ThinkingLevel } from '../src/model/role-models';
 
 const argv = process.argv.slice(2);
 const opt = (name: string): string | undefined => {
@@ -34,7 +34,15 @@ const opt = (name: string): string | undefined => {
   return i >= 0 ? argv[i + 1] : undefined;
 };
 const N = Math.max(1, Number(opt('n') ?? '5'));
-const MODEL = opt('model') ?? 'deepseek:deepseek-v4-flash';
+// 默认跟 `leaf` 座走 (2026-08-03): 这个脚本量的是"worker 档的 thinking 旋钮有没有用",
+// 而 worker 主力就是 leaf 座。坐标仍可 --model 覆盖 —— 它本来就是这个实验的自变量。
+const leafSeat = tryResolveSeatModel('leaf');
+const MODEL = opt('model') ?? leafSeat?.model;
+if (!MODEL) {
+  process.stderr.write('eval-thinking-ab: `leaf` 座位解析不出模型, 且没给 --model\n');
+  process.exit(2);
+}
+const MODEL_COORD: string = MODEL;
 const CONCURRENCY = Math.max(1, Number(opt('concurrency') ?? '4'));
 const OUT = opt('out') ?? '.omd/eval/thinking-ab';
 const only = opt('tasks')?.split(',').map((s) => s.trim()).filter(Boolean);
@@ -73,7 +81,7 @@ async function trial(arm: Arm, task: (typeof WORKER_TASKS)[number], rep: number)
   const base = { arm: arm.name, task: task.id, kind: task.kind, rep };
   try {
     const r = await send({
-      model: MODEL,
+      model: MODEL_COORD,
       // 与 inproc leaf 同一 system 前缀 —— 那是量产座位真实吃到的上下文, 换一个就不是在测同一件事。
       messages: [
         { role: 'system', content: LEAF_SYSTEM_PREFIX },
@@ -91,7 +99,7 @@ async function trial(arm: Arm, task: (typeof WORKER_TASKS)[number], rep: number)
       formatOk: g.formatOk,
       ...(g.note ? { note: g.note } : {}),
       usage,
-      costUsd: computeCost({ in: usage.in, out: usage.out, cacheHit: usage.cacheHit }, MODEL).costUsd,
+      costUsd: computeCost({ in: usage.in, out: usage.out, cacheHit: usage.cacheHit }, MODEL_COORD).costUsd,
       latencyMs: Date.now() - t0,
       outputChars: text.length,
     };

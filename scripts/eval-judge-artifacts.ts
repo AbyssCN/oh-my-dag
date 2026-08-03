@@ -32,6 +32,7 @@ import { dirname, join } from 'node:path';
 import { bootstrapModelRuntime } from '../src/model/bootstrap';
 import { send } from '../src/model/gateway';
 import { makeLlmConvergenceJudge } from '../src/harness/plan/llm-judge';
+import { tryResolveSeatModel } from '../src/model/role-models';
 import { renderRoundForJudge, type JudgeChildView } from '../src/harness/plan/conductor-judge';
 import { collectJudgeArtifacts, DEFAULT_ARTIFACT_BUDGET } from '../src/harness/plan/judge-artifacts';
 import { JUDGE_ARTIFACT_CASES, assessRejectedNodes, type JudgeArtifactCase } from '../src/eval/tasks/judge-artifact-cases';
@@ -42,7 +43,23 @@ const opt = (name: string): string | undefined => {
   return i >= 0 ? argv[i + 1] : undefined;
 };
 const N = Math.max(1, Number(opt('n') ?? '8'));
-const MODEL = opt('model') ?? 'deepseek:deepseek-v4-pro';
+/**
+ * 座位解析, **不硬编码坐标** (2026-08-03 修)。
+ *
+ * ⚠ 这个脚本量的是**内环收敛闸**那一发, 而它在生产上骑的是 **`gate` 座**
+ * (`assemble.ts` 的 `judgeModel: roleCoord('gate')`, 2026-08-01 从 `judge` 座拆出来的:
+ * gate 判"达成没有" · judge 判"哪个更好", 频率差一个量级 → 一个座位一个经济学)。
+ *
+ * **此前这里硬编码 `deepseek:deepseek-v4-pro`** —— 既不是 `gate` 也不是 `judge`, 于是
+ * 2026-08-03 那批读数 (含证据词表 0/8→8/8) 全部量在一个**生产上根本不存在**的座位上。
+ * 硬编码的默认坐标就是一处会漂的第二真源, 与 `NODE_CLASS` 手抄座位表同形 —— 改成解析座位。
+ */
+const seatModel = tryResolveSeatModel('gate');
+const MODEL = opt('model') ?? seatModel?.model;
+if (!MODEL) {
+  process.stderr.write('eval-judge-artifacts: `gate` 座位解析不出模型, 且没给 --model —— 配 .omd/config.json 的 models.gate 或显式传坐标\n');
+  process.exit(2);
+}
 const CONCURRENCY = Math.max(1, Number(opt('concurrency') ?? '4'));
 const only = opt('cases')?.split(',').map((s) => s.trim()).filter(Boolean);
 const OUT = opt('out');
@@ -204,7 +221,7 @@ async function main(): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), 'omd-s1-eval-'));
   for (const c of cases) materialize(root, c);
 
-  log(`[S1 A/B] 座位 ${MODEL} · ${cases.length} 段 × ${N} 次 × 2 臂 = ${cases.length * N * 2} 次判决`);
+  log(`[S1 A/B] 座位 ${MODEL}${opt('model') ? ' (--model 覆盖)' : ` (gate 座 · 来源 ${seatModel?.source})`} · ${cases.length} 段 × ${N} 次 × 2 臂 = ${cases.length * N * 2} 次判决`);
   log(`[S1 A/B] 沙箱 ${root}`);
 
   const jobs: (() => Promise<Trial>)[] = [];
