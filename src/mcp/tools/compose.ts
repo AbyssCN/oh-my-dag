@@ -19,6 +19,8 @@ import { z } from 'zod';
 import type { OmdMcpTool } from '../server';
 import type { ConductorPlan } from '../../harness/conductor-plan';
 import { GRAPH_SHAPES, shapeById } from '../../harness/shapes';
+import { recordDagRun, type DagRecorder } from '../../harness/dag-record';
+import { randomUUID } from 'node:crypto';
 
 /** 可从图外直接调的原语 (escape-hatch 刻意不列: 它是 gated 的最后手段, 不该被顺手调到)。 */
 const COMPOSABLE = [
@@ -61,6 +63,15 @@ export interface ComposeToolDeps {
   /** 引擎基础 config (模型坐标 / runner / planFilters …)。 */
   /** 每次调用重解 (INV-MODEL-3 无 boot 冻结) — 见 assemble.buildDefaultConfig。 */
   baseConfig: () => Record<string, unknown>;
+  /**
+   * 运行留痕 (T6, 2026-08-03)。缺省 = 不记, 也不炸 (同其余入口: 留痕是可选项不是执行前提)。
+   *
+   * **S0 当时刻意没接这条**, 理由记在交付节里:「它没有 runId, 记进去是无主的账」。
+   * 那条理由今天不成立了 —— `dag_run` 早就是**自己生成 runId** 的成例 (`randomUUID`),
+   * 而 `entry` 轴要回答的正是"哪个入口在被用"; 一个从不落账的入口在分布里与
+   * "没人用这个入口"**长得一模一样**(D-AM 立 `entry` 必填时点名的就是这个形态)。
+   */
+  recorder?: DagRecorder;
 }
 
 /** 把一个原语包成单节点 plan —— 复用图内全部机器, 不新建执行路径。 */
@@ -102,7 +113,18 @@ export function createComposeTools(deps: ComposeToolDeps): OmdMcpTool[] {
         const params = (args.params ?? {}) as Record<string, unknown>;
         const model = typeof args.model === 'string' ? args.model : undefined;
         try {
-          const res = await deps.runPlan(primitivePlan(primitive, params, model), deps.baseConfig());
+          // T6 留痕: runId 本地生成 (同 dag_run 成例) —— 这个入口没有三段式 runId, 但账本要的是
+          // "哪个入口跑了一次", 不是"调用方能不能拿这个 id 回来查"。链上 baseConfig 自带的
+          // onComplete: 留痕是搭车的, 不许吃掉调用方自己的钩子 (S0 那条纪律)。
+          const cfg = deps.baseConfig();
+          if (deps.recorder) {
+            cfg.onComplete = recordDagRun(
+              deps.recorder,
+              { runId: randomUUID(), entry: 'omd_primitive', question: `${primitive} ${JSON.stringify(params).slice(0, 160)}` },
+              cfg.onComplete as Parameters<typeof recordDagRun>[2],
+            );
+          }
+          const res = await deps.runPlan(primitivePlan(primitive, params, model), cfg);
           const leaf = res.results.p;
           if (!leaf || leaf.status !== 'done') {
             return {

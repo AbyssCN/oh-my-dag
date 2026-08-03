@@ -47,14 +47,56 @@ export interface LlmJudgeOpts<R> {
   thinkingLevel?: 'off' | 'low' | 'medium' | 'high' | 'xhigh';
   /** 注入式 callModel (测试)。默认真 callModel。 */
   callModelFn?: typeof send;
+  /**
+   * **证据词表**: 把视图里各块的来源(引擎产的事实 vs 执行体的自述)显式告诉 judge。**默认开**。
+   *
+   * 病灶是判词自己说出来的 (2026-08-03, 不是猜的): 拒绝理由逐字写着
+   * 「提供的文件内容**并非真实从磁盘读取**的产物, 而是引擎模拟的文本」「未提供实际写入证据」——
+   * 也就是 judge **看得见** `[产物内容 · 引擎读盘]` 那一块, 却**不知道该不该信它**。
+   *
+   * 病根在 prompt 的静态段: 它讲了收敛标准 (第 2 条反捏造很硬), **却从没说过视图里哪些块是
+   * 引擎产的、哪些是执行体说的**。judge 拿不准, 而 fail-closed 的默认就是拒 —— 于是 S1
+   * 花钱注入的那份证据, 在它眼里与"执行体自己吹的"没有区别。
+   *
+   * 这与 D-S 是同一族缺陷 (owner 指令 vs 引擎观察必须在 prompt 里可区分), 只是换了一对:
+   * **引擎事实 vs 执行体主张**。
+   *
+   * **默认开** (2026-08-03 A/B 之后翻的)。5 段 × 8 次 × 两档实测:
+   * | | 关 | 开 |
+   * |---|---|---|
+   * | 点名召回全 `content-contradicts` | **0/8** | **8/8** |
+   * | 点名召回全 `claimed-not-written` | **1/8** | **8/8** |
+   * | 假阴性 / 假阳性 | 0 / 0 | 0 / 0 |
+   * | prompt token | — | +7% |
+   *
+   * ⚠ **真效果在点名不在收敛**: 两档假阴性都是 0 (我先前记的"残余 19%"没在同口径基线上复现,
+   * 那是 n=8 噪声, 已在 SDD 更正)。而**平均点名数两档都是 1.0** —— 它不是"多点几个蒙对",
+   * 是点得**更准**。这条正好打在 SDD 标着「S1 之后的下一个目标」的那个回归上 (召回 88.3%→70%),
+   * 后果是硬的: 漏点名 → 毒集点不准 → 环在坏结果上继续盖。
+   */
+  evidenceLegend?: boolean;
 }
 
-function judgePrompt(task: string, summary: string, round: number, threshold: number): string {
+/**
+ * 证据词表 —— 各块的来源与可信度。**只陈述事实来源, 不指示裁决方向**:
+ * 说"这是引擎读盘拿到的字节"是事实,说"所以你该通过"就是在替 judge 做判断,
+ * 那会把假阴性换成假阳性 (S1 的两侧判据钉的正是这个)。
+ */
+export const EVIDENCE_LEGEND = `视图里各块的来源 (读结果前先认清, 别把它们当同一种东西):
+- \`[引擎实测] …\` —— **引擎自己观测到的事实** (如"写入文件: x.md"), 机器记录, 不是执行体的话。
+- \`[产物内容 · 引擎读盘]\` 下面的 \`--- <路径> ---\` 段 —— **引擎从磁盘读出来的真实字节**, 逐字原样, 引擎不加工。
+  文件不存在或读不出来时, 引擎会明写"未能读到"; 没有这句就说明盘上真有这些内容。
+- 每段结尾那段自由文字 —— **执行体的自述**, 它是一个**主张**, 不是证据。
+
+所以: 判"是不是捏造/假执行确认"时, 以前两类为准; 自述与它们冲突, 信前两类。
+自述说得再漂亮也不算数, 但**引擎读盘拿到了内容, 就不该再判它"没真做"**。`;
+
+function judgePrompt(task: string, summary: string, round: number, threshold: number, legend = true): string {
   return `你在评判一个多步任务第 ${round} 轮的执行结果是否**收敛** (质量已达可交付, 再迭代不会实质变好)。
 
 判定**必须先做一步**: 从原始任务里抽出所有**明确要求** —— 步数 (如"3 步")、字数/篇幅、必须标注的东西 (如"标依赖")、格式、约束、应产出的体裁 (设计/分析/清单, 而非假装执行的结果)。**逐条**对照本轮结果。
 
-收敛标准 (bar):
+${legend ? `${EVIDENCE_LEGEND}\n\n` : ''}收敛标准 (bar):
 1. **任一明确要求未满足 → converged=false** (即使整体质量尚可)。failureReason 必须点名缺了哪条要求。
 2. 结果是**真实交付物**而非捏造的数据/假执行确认 (如凭空编客户数据、"已发送/已录入" 这类没真做却声称做了的); 捏造 → converged=false。
 3. 以上都过, 再看质量分 ≥ ${threshold} 视作收敛 —— 你须**内化这个标准**后给出 converged 布尔。
@@ -96,7 +138,7 @@ export function makeLlmConvergenceJudge<R>(opts: LlmJudgeOpts<R>): FixpointJudge
     }
     const r = await call({
       model: opts.judgeModel,
-      messages: [{ role: 'user', content: judgePrompt(opts.task, summary, round, threshold) }],
+      messages: [{ role: 'user', content: judgePrompt(opts.task, summary, round, threshold, opts.evidenceLegend ?? true) }],
       // 采样意图取自 `gate` 座 (model/seats.ts): 闸的裁决要可复现。调用方给了就压过它。
       ...(opts.temperature !== undefined ? { temperature: opts.temperature } : seatSampling('gate')),
       // 档由**座位登记表**驱动 (不是"什么都不传碰巧关着")。gate 座实测定在 off, 理由见 seats.ts。

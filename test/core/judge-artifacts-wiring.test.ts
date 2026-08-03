@@ -83,8 +83,12 @@ describe('S1 产物内容进 judge 视图的接线', () => {
 
   test('显式关 → 退回只有存在性 (对照臂要跑得起来, 否则 A/B 无从复现)', async () => {
     const view = await judgeViewOf({ judgeArtifacts: false });
-    expect(view).not.toContain('[产物内容 · 引擎读盘]');
-    expect(view).not.toContain(BODY);
+    // ⚠ 断言面**收窄到"本轮执行结果"那一段** (2026-08-03): 证据词表默认开之后, 整条 prompt 里
+    // 逐字提到 `[产物内容 · 引擎读盘]` 是**正常的** —— 词表要教 judge 认这个标记, 不提反而是缺陷。
+    // 老断言拿整条 prompt 比, 于是把"词表提到了它"误报成"产物块进来了"。要守的一直是**视图**。
+    const round = view.split('本轮执行结果:')[1] ?? '';
+    expect(round).not.toContain('[产物内容 · 引擎读盘]');
+    expect(round).not.toContain(BODY);
     // 存在性那一行照旧在 (S1 不动 `[引擎实测]`, 它是另一件事)。
     expect(view).toContain('写入文件: summary.md');
   });
