@@ -165,13 +165,13 @@ async function main(): Promise<void> {
     const gap = g.filter((r) => r.shaped && !r.marked).length;
     lines.push(`| ${kind === 'worthy' ? '该用 (worthy)' : '不该用 (control)'} | ${g.length} | ${marked} (${pct(marked, g.length)}) | ${shaped} (${pct(shaped, g.length)}) | ${gap} (${pct(gap, g.length)}) |`);
   }
-  lines.push('', '### 逐目标', '', '| 目标 | 组 | marked/样本 | shaped/样本 |', '|---|---|---|---|');
+  lines.push('', '### 逐目标', '', '| 目标 | 组 | marked/样本 | shaped/样本 | 解析失败 |', '|---|---|---|---|---|');
   for (const c of DETECTOR_GOAL_CASES) {
     const g = rows.filter((r) => r.case === c.id);
-    lines.push(`| ${c.id} | ${c.kind} | ${g.filter((r) => r.marked).length}/${g.length} | ${g.filter((r) => r.shaped).length}/${g.length} |`);
+    lines.push(`| ${c.id} | ${c.kind} | ${g.filter((r) => r.marked).length}/${g.length} | ${g.filter((r) => r.shaped).length}/${g.length} | ${g.filter((r) => r.parseError).length}/${g.length} |`);
   }
   const bad = rows.filter((r) => r.parseError).length;
-  if (bad) lines.push('', `⚠ ${bad} 次展开没产出有效 plan (计入分母, 按"没标"算)。`);
+  if (bad) lines.push('', `⚠ ${bad} 次展开没产出有效 plan (计入分母, 按"没标"算); 解析失败留在各目标分母里, 具体落在哪个目标见上表「解析失败」列。`);
   const report = lines.join('\n');
   writeFileSync(`${OUT}/report.md`, report + '\n');
   writeFileSync(`${OUT}/rows.json`, JSON.stringify(rows, null, 1));
