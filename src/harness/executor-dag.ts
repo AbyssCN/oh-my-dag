@@ -2066,6 +2066,20 @@ async function executePlan(
         toolCalls = r.toolCalls;
         // 早期心跳闸 (issue #5): provider 挂起判停摆 → 标 failed (不把近零输出当 done), 附 stall 标记
         // 供 settle 记 failureKind='stall' (issue #4 败因留痕)。heal 回路可据此重试/换池。
+        // G5 频率读数 (2026-08-03): leaf 在自己的工具循环里反复发同一个动作。**只报不拦** ——
+        // 观察者的契约就是不铸毒票不改路由, 这一条也不例外。它进 observations 是为了让
+        // 「要不要升成 BLOCKED、K 取几」有真跑上的频率可依, 而不是靠讲道理定。
+        if (r.spin && r.spin.spinEvents > 0) {
+          observe([
+            {
+              kind: 'leaf-spin',
+              nodes: [id],
+              message:
+                `节点 ${id} 的 leaf 在工具循环里空转 ${r.spin.spinEvents} 个回合 ` +
+                `(最高同签名重复 ${r.spin.maxSameCount} 次; 卡在 ${r.spin.stuckSigs.slice(0, 3).join(' / ') || '未记'})`,
+            },
+          ]);
+        }
         if (r.stalled) {
           logger.warn({ node: id, model, outLen: text.length }, '[omd/executor-dag] agent leaf 停摆 (心跳闸) → 节点 failed');
           return {

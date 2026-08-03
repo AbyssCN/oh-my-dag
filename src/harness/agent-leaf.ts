@@ -771,7 +771,12 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     } else if (timedOut) {
       logger.warn({ timeoutMs, outLen: streamedChars }, '[agent-leaf] leaf 超时中止 (有界停, 返已累积输出)');
     }
-    return { text, usage, promptVersion, filesTouched: [...touched], filesRead: [...readPaths], cwd, toolCalls, stalled, writeEffects };
+    // spin 只在真卡过时带出去 —— 全 0 的字段进 JSON 只是噪声 (同 observations「缺席 ≠ 0」的口径)。
+    const spinSummary = drift?.summary();
+    return {
+      text, usage, promptVersion, filesTouched: [...touched], filesRead: [...readPaths], cwd, toolCalls, stalled, writeEffects,
+      ...(spinSummary && spinSummary.spinEvents > 0 ? { spin: spinSummary } : {}),
+    };
   };
 }
 
