@@ -43,6 +43,11 @@ if (!MODEL) {
   process.exit(2);
 }
 const MODEL_COORD: string = MODEL;
+/**
+ * 「这个读数属于哪个座位」的凭据 —— 起跑打一次, 且**写进 report.md**。
+ * 只打 stderr 不够: 报告是留下来的那份, 而座位漂了正是从报告里看不出来的 (见 seat-sourced.test.ts)。
+ */
+const SEAT_PROVENANCE = opt('model') ? ' (--model 覆盖)' : ` (leaf 座 · 来源 ${leafSeat?.source})`;
 const CONCURRENCY = Math.max(1, Number(opt('concurrency') ?? '4'));
 const OUT = opt('out') ?? '.omd/eval/thinking-ab';
 const only = opt('tasks')?.split(',').map((s) => s.trim()).filter(Boolean);
@@ -130,7 +135,7 @@ async function pooled<T>(jobs: (() => Promise<T>)[], width: number): Promise<T[]
 
 bootstrapModelRuntime();
 const tasks = WORKER_TASKS.filter((t) => !only || only.includes(t.id));
-log(`thinking A/B: ${MODEL} · ${ARMS.length} 臂 × ${tasks.length} 题 × ${N} 次 = ${ARMS.length * tasks.length * N} 次调用`);
+log(`thinking A/B: ${MODEL}${SEAT_PROVENANCE} · ${ARMS.length} 臂 × ${tasks.length} 题 × ${N} 次 = ${ARMS.length * tasks.length * N} 次调用`);
 
 const jobs: (() => Promise<Trial>)[] = [];
 for (const arm of ARMS) for (const t of tasks) for (let r = 0; r < N; r++) jobs.push(() => trial(arm, t, r));
@@ -149,7 +154,7 @@ const mean = (xs: number[]): number => (xs.length ? xs.reduce((a, b) => a + b, 0
 const pct = (x: number): string => `${(x * 100).toFixed(0).padStart(3)}%`;
 const byArm = (name: string): Trial[] => trials.filter((t) => t.arm === name);
 
-const lines: string[] = ['', `════════ 量产座位 thinking 档 A/B (${MODEL} · 确定性判据, 无判官) ════════`, ''];
+const lines: string[] = ['', `════════ 量产座位 thinking 档 A/B (${MODEL}${SEAT_PROVENANCE} · 确定性判据, 无判官) ════════`, ''];
 for (const a of ARMS) lines.push(`${a.name.padEnd(12)} thinking=${a.thinking ?? '(不发)'} —— ${a.note}`);
 lines.push('');
 lines.push('臂            题次  正确分  满分率  格式守  平均out  平均in  $/1000次  中位延迟');

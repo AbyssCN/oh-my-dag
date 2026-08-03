@@ -60,6 +60,8 @@ if (!MODEL) {
   process.stderr.write('eval-judge-artifacts: `gate` 座位解析不出模型, 且没给 --model —— 配 .omd/config.json 的 models.gate 或显式传坐标\n');
   process.exit(2);
 }
+/** 起跑行同源的座位凭据 (--model 覆盖 / gate 座来源), 一并写进 trials.json —— 漂了从读数里看得见。 */
+const SEAT_PROVENANCE = opt('model') ? '--model 覆盖' : `gate 座 · 来源 ${seatModel?.source}`;
 const CONCURRENCY = Math.max(1, Number(opt('concurrency') ?? '4'));
 const only = opt('cases')?.split(',').map((s) => s.trim()).filter(Boolean);
 const OUT = opt('out');
@@ -287,7 +289,7 @@ async function main(): Promise<void> {
 
   if (OUT) {
     mkdirSync(OUT, { recursive: true });
-    writeFileSync(join(OUT, 'trials.json'), JSON.stringify({ model: MODEL, n: N, trials }, null, 2));
+    writeFileSync(join(OUT, 'trials.json'), JSON.stringify({ model: MODEL, seat: SEAT_PROVENANCE, n: N, trials }, null, 2));
     log(`原始读数 → ${join(OUT, 'trials.json')}`);
   }
   rmSync(root, { recursive: true, force: true });
