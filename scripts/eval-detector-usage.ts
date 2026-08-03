@@ -25,6 +25,7 @@ import { bootstrapModelRuntime } from '../src/model/bootstrap';
 import { send } from '../src/model/gateway';
 import { conductorSystemPrompt, parsePlan, PLAN_BOUNDARY, type ConductorPlan } from '../src/harness/conductor-plan';
 import { DETECTOR_GOAL_CASES, type DetectorGoalCase } from '../src/eval/tasks/detector-goals';
+import { tryResolveSeatModel } from '../src/model/role-models';
 
 const argv = process.argv.slice(2);
 const opt = (n: string): string | undefined => {
@@ -34,7 +35,16 @@ const opt = (n: string): string | undefined => {
 const N = Math.max(1, Number(opt('n') ?? '3'));
 const CONCURRENCY = Math.max(1, Number(opt('concurrency') ?? '4'));
 const OUT = opt('out') ?? '.omd/eval/detector-usage';
-const CONDUCTOR_SEAT = opt('model') ?? 'deepseek:deepseek-v4-pro';
+// 座位解析, **不硬编码** (2026-08-03 修, 与 eval-judge-artifacts 同一族缺陷):
+// 变量名写着 CONDUCTOR_SEAT, 值却曾是 `deepseek:deepseek-v4-pro` —— 而生产 conductor 座
+// 当时是 `openai-codex:gpt-5.6-sol`。⚠ 后果不止"标签错": **detector 那条 60% 天花板的基线
+// 是在 v4-pro 上量的, 不是在生产 conductor 上**, 而 G6 换座位实验正要拿它当对照。
+const conductorSeat = tryResolveSeatModel('conductor');
+const CONDUCTOR_SEAT = opt('model') ?? conductorSeat?.model;
+if (!CONDUCTOR_SEAT) {
+  process.stderr.write('eval-detector-usage: `conductor` 座位解析不出模型, 且没给 --model\n');
+  process.exit(2);
+}
 
 const log = (s: string): void => void process.stderr.write(s + '\n');
 
