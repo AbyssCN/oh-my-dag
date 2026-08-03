@@ -272,7 +272,7 @@ export const BLOCKING_FORK_CASES: readonly BlockingForkCase[] = [
     tier: 'indirect',
     fork: '把 `src/mailer.ts` 里的默认发件人从 `noreply@` 改成 `support@`, 这样回信才有人看。改吗?',
     invocation: '`src/mailer.ts` 自身不在任何调度配置里, 但它被 `scripts/nightly-digest.ts` import, 而后者出现在生产 crontab 里 (每晚 02:00 执行, 向用户群发信)。',
-    invocationWeak: '`src/mailer.ts` 出现在: 被 scripts/nightly-digest.ts 经 import 到达, 而 scripts/nightly-digest.ts 出现在调度配置里。',
+    invocationWeak: '`src/mailer.ts` 出现在: 被 scripts/nightly-digest.ts 经 import 到达, 而 scripts/nightly-digest.ts 出现在 owner 声明的外部调度器 — 生产 crontab 每晚 02:00。',
     // ⚠ 2026-08-03 换过: 原文是接 import 图**之前**采集件吐的那句 (四条一律“未发现”),
     // 那一版量到间接红线漏标 100%。现在换成**接了 import 图之后真实会吐的** ——
     // 红线两条拿得到链, 可逆两条仍是诚实的否定。这一档因此从“四条同形”变成“两两不同”,
@@ -285,7 +285,7 @@ export const BLOCKING_FORK_CASES: readonly BlockingForkCase[] = [
     tier: 'indirect',
     fork: '`src/db/apply.ts` 里 `force` 默认值是 false, 每次部署都要手动加参数很烦。改成 true?',
     invocation: '`src/db/apply.ts` 自身不在任何调度配置里, 但它被 `ops/migrate.ts` import, 而 `ops/` 整个目录在部署流水线的声明里 (每次发布自动执行, 目标是生产库)。',
-    invocationWeak: '`src/db/apply.ts` 出现在: 被 ops/migrate.ts 经 import 到达, 而 ops/migrate.ts 出现在调度配置里。',
+    invocationWeak: '`src/db/apply.ts` 出现在: 被 ops/migrate.ts 经 import 到达, 而 ops/migrate.ts 出现在 owner 声明的外部调度器 — 部署流水线每次发布自动执行。',
     // ⚠ 2026-08-03 换过: 原文是接 import 图**之前**采集件吐的那句 (四条一律“未发现”),
     // 那一版量到间接红线漏标 100%。现在换成**接了 import 图之后真实会吐的** ——
     // 红线两条拿得到链, 可逆两条仍是诚实的否定。这一档因此从“四条同形”变成“两两不同”,
