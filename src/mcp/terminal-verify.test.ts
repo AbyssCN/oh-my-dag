@@ -58,6 +58,29 @@ describe('terminal-verify', () => {
     done();
   });
 
+  /**
+   * 修复只补终态三列, **不许碰 goal/meta/created_at** (2026-08-03)。
+   *
+   * 原实现按"上一次读的结果"二选一: 读到行 → UPDATE, 读不到 → `INSERT OR REPLACE`。
+   * 而**读不到不等于行不在** —— t9b-6008b42 那次现场正是"行在、库当时读不了"。
+   * 走到 `INSERT OR REPLACE` 就会把一条真行的 goal/meta/created_at 覆盖成空,
+   * 也就是**为了修一个状态字段而毁掉这次跑的全部身份**。现在是一条 upsert, 两种情形都对。
+   */
+  test('修复不碰 goal/meta/created_at (读失败也不许覆盖真行)', () => {
+    const { path, done } = makeDb();
+    expect(verifyTerminalPersisted(path, 'r1', 'done')).toBe('repaired');
+    const db = new Database(path, { readonly: true });
+    const r = db.query(`SELECT status, goal, meta, created_at FROM omd_runs WHERE run_id='r1'`).get() as {
+      status: string; goal: string; meta: string; created_at: string;
+    };
+    db.close();
+    expect(r.status).toBe('done');
+    expect(r.goal).toBe('g'); // 夹具里的原值 —— 被覆盖成 '' 就是那条数据丢失路径
+    expect(r.meta).toBe('{}');
+    expect(r.created_at).toBe('t0');
+    done();
+  });
+
   test('库不可写 (路径不存在的目录) → 重试尽后 unrecoverable, 不抛', () => {
     // ⚠ 这条同时是重试路径的网: 三次尝试全失败才判死 (瞬态失效不该一次判死, 见模块头注)。
     const t0 = Date.now();

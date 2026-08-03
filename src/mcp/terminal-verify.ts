@@ -41,18 +41,42 @@ function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-/** 用全新只读连接读一个 run 的盘上状态; 库/表/行不存在 → null。 */
-function readDiskStatus(dbPath: string, runId: string): string | null {
+/**
+ * 一次盘上读的三种结局。**分开是刚需, 不是洁癖** (2026-08-03 第二次复现付的学费):
+ * 「行不在」指向写路径, 「库读不了」指向并发/文件系统 —— **诊断方向相反**。
+ *
+ * 原实现两者都返回 `null`, 且 `catch` 是空的 (异常连同它的消息一起丢掉),
+ * 报错行只好印成 `无此行/库不可读` 这样一句带斜杠的话。
+ * ⚠ **那正是 S-12 自己的形状** —— 这盏灯是为抓「fail-open 吞掉的不是异常是证据」而建的,
+ * 而它在读盘这一步吞掉了唯一能定方向的那条证据。
+ *
+ * t9b-6008b42 那次现场: 事后查 `omd_runs` 里**行在**(status=running, 属主 pid 已死),
+ * 库也读得动 —— 所以当时的 `null` 只可能来自**读失败**。那条被扔掉的异常就是全部诊断。
+ */
+type DiskRead =
+  | { kind: 'row'; status: string }
+  | { kind: 'no-row' }
+  | { kind: 'unreadable'; error: string };
+
+/** 用全新只读连接读一个 run 的盘上状态。 */
+function readDiskStatus(dbPath: string, runId: string): DiskRead {
   let db: Database | null = null;
   try {
     db = new Database(dbPath, { readonly: true });
     const row = db.query('SELECT status FROM omd_runs WHERE run_id = ?').get(runId) as { status: string } | null;
-    return row?.status ?? null;
-  } catch {
-    return null;
+    return row ? { kind: 'row', status: row.status } : { kind: 'no-row' };
+  } catch (e) {
+    return { kind: 'unreadable', error: e instanceof Error ? e.message : String(e) };
   } finally {
     try { db?.close(); } catch { /* 关不上不值得抛 */ }
   }
+}
+
+/** 报错行里那一格 —— 三种结局各说各的, 不再压成一个 null。 */
+function describeDiskRead(r: DiskRead): string {
+  if (r.kind === 'row') return r.status;
+  if (r.kind === 'no-row') return '无此行 (库读得动, 指向写路径)';
+  return `库读不了: ${r.error} (指向并发/文件系统, 不是写路径)`;
 }
 
 /**
@@ -63,10 +87,10 @@ export function verifyTerminalPersisted(dbPath: string, runId: string, expected:
   if (!TERMINAL.has(expected)) throw new Error(`terminal-verify: expected 必须是终态, 收到 ${expected}`);
 
   const onDisk = readDiskStatus(dbPath, runId);
-  if (onDisk !== null && TERMINAL.has(onDisk)) return 'consistent';
+  if (onDisk.kind === 'row' && TERMINAL.has(onDisk.status)) return 'consistent';
 
   console.error(
-    `[omd/terminal-verify] 🔴 终态写穿丢失: runId=${runId} 内存=${expected} 盘上=${onDisk ?? '无此行/库不可读'} — ` +
+    `[omd/terminal-verify] 🔴 终态写穿丢失: runId=${runId} 内存=${expected} 盘上=${describeDiskRead(onDisk)} — ` +
       '这是 S-12 那条 (两库同丢·灯零命中) 的现场; 正在用新连接直写修复',
   );
 
@@ -78,16 +102,18 @@ export function verifyTerminalPersisted(dbPath: string, runId: string, expected:
     try {
       db = new Database(dbPath);
       // 行在 → 只补终态三列; 行不在 (连 register 都丢了) → 插一条最小行, 缺的列如实留白。
+      //
+      // ⚠ 一条 upsert 而不是「先读再二选一」(2026-08-03): 原实现按上面那次读的结果分支,
+      // 而那次读**可能是失败的**——读不到不等于行不在。旧写法在读失败时走 `INSERT OR REPLACE`,
+      // 于是一条真行的 goal/meta/created_at 会被空值覆盖掉。upsert 在两种情形下都对,
+      // 且不依赖"上一次读是准的"这个前提。
       const now = new Date().toISOString();
-      if (onDisk === null) {
-        db.run(
-          `INSERT OR REPLACE INTO omd_runs (run_id, status, goal, meta, error, created_at, updated_at, owner_pid)
-           VALUES (?, ?, '', '{}', NULL, ?, ?, NULL)`,
-          [runId, expected, now, now],
-        );
-      } else {
-        db.run(`UPDATE omd_runs SET status = ?, updated_at = ?, owner_pid = NULL WHERE run_id = ?`, [expected, now, runId]);
-      }
+      db.run(
+        `INSERT INTO omd_runs (run_id, status, goal, meta, error, created_at, updated_at, owner_pid)
+         VALUES (?, ?, '', '{}', NULL, ?, ?, NULL)
+         ON CONFLICT(run_id) DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at, owner_pid = NULL`,
+        [runId, expected, now, now],
+      );
       lastErr = '';
       break;
     } catch (e) {
@@ -105,10 +131,10 @@ export function verifyTerminalPersisted(dbPath: string, runId: string, expected:
   if (lastErr) return 'unrecoverable';
 
   const after = readDiskStatus(dbPath, runId);
-  if (after !== null && TERMINAL.has(after)) {
-    console.error(`[omd/terminal-verify] ✅ 已修复: runId=${runId} 盘上=${after}`);
+  if (after.kind === 'row' && TERMINAL.has(after.status)) {
+    console.error(`[omd/terminal-verify] ✅ 已修复: runId=${runId} 盘上=${after.status}`);
     return 'repaired';
   }
-  console.error(`[omd/terminal-verify] 🔴 修复后复核仍不对: 盘上=${after ?? '无'} — unrecoverable`);
+  console.error(`[omd/terminal-verify] 🔴 修复后复核仍不对: 盘上=${describeDiskRead(after)} — unrecoverable`);
   return 'unrecoverable';
 }
