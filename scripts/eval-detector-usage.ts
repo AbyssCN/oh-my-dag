@@ -24,7 +24,12 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { bootstrapModelRuntime } from '../src/model/bootstrap';
 import { send } from '../src/model/gateway';
 import { conductorSystemPrompt, parsePlan, PLAN_BOUNDARY, type ConductorPlan } from '../src/harness/conductor-plan';
-import { DETECTOR_GOAL_CASES, type DetectorGoalCase } from '../src/eval/tasks/detector-goals';
+import {
+  DETECTOR_GOAL_CASES,
+  classify,
+  type DetectorGoalCase,
+  type Verdict,
+} from '../src/eval/tasks/detector-goals';
 import { tryResolveSeatModel } from '../src/model/role-models';
 
 const argv = process.argv.slice(2);
@@ -75,33 +80,6 @@ async function expandOnce(goal: string): Promise<{ plan: ConductorPlan | null; r
   const text = r.text ?? '';
   const parsed = parsePlan(text, { knownTemplates: new Set() });
   return parsed.ok ? { plan: parsed.plan, raw: text } : { plan: null, raw: text, err: parsed.error };
-}
-
-/** 一张子图上的三个判定。 */
-interface Verdict {
-  /** 有节点标了 detector:true。 */
-  marked: boolean;
-  /**
-   * 画出了**形状**: 依赖 ≥2 个兄弟, 且目标像"检查/核对/一致性"。
-   *
-   * ⚠ 这是**启发式**, 不是真值 —— 词表命中即算。它只用来算"形状对了但没标字段"这个差,
-   * 差本身才是要看的信号; 别把这个数当成"conductor 有没有想到交叉检查"的精确测量。
-   */
-  shaped: boolean;
-  nodes: number;
-}
-
-const CHECK_WORDS =
-  /(一致|口径|冲突|交叉|核对|对照|比对|校验|检查|consisten|cross|verif|compar|reconcil|conflict|mismatch)/i;
-
-function classify(plan: ConductorPlan): Verdict {
-  const entries = Object.entries(plan.nodes);
-  const marked = entries.some(([, n]) => (n as { detector?: unknown }).detector === true);
-  const shaped = entries.some(([, n]) => {
-    const node = n as { depends_on?: string[]; goal?: string };
-    return (node.depends_on?.length ?? 0) >= 2 && CHECK_WORDS.test(node.goal ?? '');
-  });
-  return { marked, shaped, nodes: entries.length };
 }
 
 interface Row extends Verdict {
