@@ -95,7 +95,7 @@ writeFileSync('.omd/pathfinder/omd-mcp-server.slice.json', JSON.stringify(plan, 
 console.log(`[slice] 编译 ✓ ${Object.keys(plan.nodes).length} 节点 → .omd/pathfinder/omd-mcp-server.slice.json`);
 
 // ── 3. 执行 (D-7 预构造入口; agent 叶真改文件) ───────────────────────────────
-await bootstrapModelRuntime();
+bootstrapModelRuntime();
 // run2: 沿用 live env (owner k3 全押实验), 但 leafTimeoutMs 240s→600s —— run1 的"stall"可能是
 // k3 长思考超预算 (outLen 329 在 240s 处截断), 拉长预算以判别 stall vs slow。凭证侦察:
 // qwen 未注册 / deepseek 无钥 (pi 目录无, repo .env 是 xihe 时代残留未入注册表) / 可用 = mimo + kimi-coding。
