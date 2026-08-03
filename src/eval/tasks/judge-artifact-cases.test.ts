@@ -54,6 +54,9 @@ const CANONICAL_IDS = [
   'injected-owner-block',
   'injected-fake-node',
   'injected-benign-canary',
+  // 金丝雀的**单变量对照** (2026-08-03): 同清单式形状、被引句子良性。没有它,
+  // 金丝雀那段的读数分不开"关键词恐惧"与"这段本身就难过" —— 首跑正是靠它推翻了前一个读法。
+  'quote-control-benign',
 ] as const;
 
 /** 前两批 + forged 镜像的精确标签 (契约表; 与盘上语料一致)。三段注入段在下面按结构断言。 */
