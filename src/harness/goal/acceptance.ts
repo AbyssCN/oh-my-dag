@@ -67,11 +67,32 @@ export interface NegativeSample {
   content: string;
 }
 
+/**
+ * 探针裁决 —— 判执行型时两道探针 (空世界自检 / 反面样本) 的结果, 原样落进这一格。
+ * 缺席 = 没探 / 没记录; `'unknown'` 永不写入。`why` 一律**原样带走**, 不再措辞。
+ *
+ * 五终局 (冻结契约):
+ * - `passed-both`  —— 空世界自检与判别力探针都真跑且都过, 执行型原样收下。
+ * - `vacuity-only` —— 执行型经 fail-open 路径收下 (没给 runner / 探针跑不起来 / 没样本):
+ *   只过了空世界一道闸 (或一道都没真跑)。判别探针的原话进 `why`; 没有就省略。
+ * - `demoted`      —— 执行型被闸拒 / 探针判虚 → 降级探索型, 原话进 `why`。
+ * - `skipped`      —— 分类调用/解析失败 → 全保守档 (complex + 探索型), 失败原文进 `why`。
+ * - `exploratory`  —— 模型自己选的探索型 (无探针、无降级)。
+ */
+export type AcceptanceProbe =
+  | { kind: 'passed-both' }
+  | { kind: 'vacuity-only'; why?: string }
+  | { kind: 'demoted'; why: string }
+  | { kind: 'skipped'; why: string }
+  | { kind: 'exploratory' };
+
 export interface GoalClassification {
   tier: GoalTier;
   acceptance: AcceptanceSpec;
   /** 见 {@link NegativeSample}。缺席 = 分类器没给(探针跳过,fail-open)。 */
   negativeSample?: NegativeSample;
+  /** 见 {@link AcceptanceProbe}。缺席 = 没探 / 没记录。 */
+  acceptanceProbe?: AcceptanceProbe;
 }
 
 /**
@@ -90,6 +111,12 @@ export function acceptanceCommandBlockReason(command: string): string | null {
 /** 便捷谓词。 */
 export const isRunnableAcceptanceCommand = (command: string): boolean =>
   acceptanceCommandBlockReason(command) === null;
+
+/** 探针裁决的 why 原文 (与对应 logger 行逐字相同 —— 冻结文本, 不再措辞)。 */
+const VACUITY_CANT_RUN = '[omd/goal] 空世界自检跑不起来 → 不拦 (fail-open)';
+const SAMPLE_PATH_BAD = '[omd/goal] 反面样本路径不合法 → 跳过判别力探针 (fail-open)';
+const DISCRIM_CANT_RUN = '[omd/goal] 判别力探针跑不起来 → 不拦 (fail-open)';
+const NO_NEGATIVE_SAMPLE = '[omd/goal] 分类器没给反面样本 → 判别力探针跳过 (这条判据只过了空世界自检)';
 
 /**
  * **空世界自检** (2026-07-31, G4 反面用例的可实现版)。
@@ -128,21 +155,41 @@ export async function acceptanceVacuityReason(
   runCommand: (input: { command: string }) => Promise<{ exitCode: number }>,
   expectExit = 0,
 ): Promise<string | null> {
+  const v = await probeVacuity(command, runCommand, expectExit);
+  return v.status === 'ring' ? v.why : null;
+}
+
+/**
+ * 空世界自检的**裁决** (给 vet 记 acceptanceProbe 用)。判定与 fail-open 语义与 `string | null`
+ * 版逐字相同 —— 只是把"为什么"一起带出来, 不加不减任何决策。
+ */
+type ProbeVacuityVerdict =
+  | { status: 'ok' }
+  | { status: 'ring'; why: string }
+  | { status: 'fail_open' };
+
+async function probeVacuity(
+  command: string,
+  runCommand: (input: { command: string }) => Promise<{ exitCode: number }>,
+  expectExit = 0,
+): Promise<ProbeVacuityVerdict> {
   let exitCode: number;
   try {
     ({ exitCode } = await runCommand({ command }));
   } catch (err) {
-    logger.warn({ command, err: String(err) }, '[omd/goal] 空世界自检跑不起来 → 不拦 (fail-open)');
-    return null;
+    logger.warn({ command, err: String(err) }, VACUITY_CANT_RUN);
+    return { status: 'fail_open' };
   }
   // 负退出码 = command-leaf 的闸拒返回值, 不是被执行命令的退出码 —— 那说明命令根本没跑,
   // 自检对它无话可说 (而"跑不起来"这件事已经由 acceptanceCommandBlockReason 管了)。
-  if (exitCode < 0) return null;
-  if (exitCode !== expectExit) return null; // 空世界里是红的 —— 通过自检
-  return (
-    `[vacuous] 这条验收命令在**活还没干之前**就已经满足 (退出码 ${exitCode} = 期望值) —— ` +
-    `它区分不了"做完了"与"还没做", 因此它不是一条判据。`
-  );
+  if (exitCode < 0) return { status: 'fail_open' };
+  if (exitCode !== expectExit) return { status: 'ok' }; // 空世界里是红的 —— 通过自检
+  return {
+    status: 'ring',
+    why:
+      `[vacuous] 这条验收命令在**活还没干之前**就已经满足 (退出码 ${exitCode} = 期望值) —— ` +
+      `它区分不了"做完了"与"还没做", 因此它不是一条判据。`,
+  };
 }
 
 /**
@@ -183,13 +230,33 @@ export async function acceptanceDiscriminationReason(
   expectExit = 0,
   deps: { runIn?: (input: { command: string; cwd: string }) => Promise<{ exitCode: number }> } = {},
 ): Promise<string | null> {
-  if (!sample?.path || !sample.content) return null;
+  const d = await probeDiscrimination(command, sample, expectExit, deps);
+  return d.status === 'ring' ? d.why : null;
+}
+
+/**
+ * 反面样本探针的**裁决** (给 vet 记 acceptanceProbe 用)。判定与 fail-open 语义与 `string | null`
+ * 版逐字相同 —— 只是把"为什么"一起带出来, 不加不减任何决策。
+ */
+type ProbeDiscriminationVerdict =
+  | { status: 'ok' }
+  | { status: 'ring'; why: string }
+  | { status: 'skipped'; why: string }
+  | { status: 'fail_open'; why: string };
+
+async function probeDiscrimination(
+  command: string,
+  sample: NegativeSample | undefined,
+  expectExit = 0,
+  deps: { runIn?: (input: { command: string; cwd: string }) => Promise<{ exitCode: number }> } = {},
+): Promise<ProbeDiscriminationVerdict> {
+  if (!sample?.path || !sample.content) return { status: 'skipped', why: NO_NEGATIVE_SAMPLE };
   // 相对路径且不许 `..` —— 探针要写盘, 而"分类器给的路径"是**模型产的字符串**, 按不可信处理。
   // (临时目录本身是隔离的, 这一层是防它把宿主别处的文件覆盖掉。)
   const rel = sample.path.trim();
   if (!rel || isAbsolute(rel) || rel.split(/[\\/]/).includes('..')) {
-    logger.warn({ path: sample.path }, '[omd/goal] 反面样本路径不合法 → 跳过判别力探针 (fail-open)');
-    return null;
+    logger.warn({ path: sample.path }, SAMPLE_PATH_BAD);
+    return { status: 'fail_open', why: SAMPLE_PATH_BAD };
   }
   let dir: string | undefined;
   try {
@@ -200,14 +267,17 @@ export async function acceptanceDiscriminationReason(
     const run = deps.runIn ?? defaultProbeRunner;
     const { exitCode } = await run({ command, cwd: dir });
     // 负码 = 闸拒(命令没跑)→ 探针无话可说, 那件事由 acceptanceCommandBlockReason 管。
-    if (exitCode < 0 || exitCode !== expectExit) return null;
-    return (
-      `[undiscriminating] 这条验收命令在一份**明显错**的产物上**照样通过**(退出码 ${exitCode} = 期望值) —— ` +
-      `对的答案和错的答案都满足它, 因此它判不了成败。反面样本: \`${rel}\` = ${JSON.stringify(sample.content.slice(0, 120))}`
-    );
+    if (exitCode < 0) return { status: 'fail_open', why: DISCRIM_CANT_RUN };
+    if (exitCode !== expectExit) return { status: 'ok' }; // 错答案上命令失败 —— 通过探针
+    return {
+      status: 'ring',
+      why:
+        `[undiscriminating] 这条验收命令在一份**明显错**的产物上**照样通过**(退出码 ${exitCode} = 期望值) —— ` +
+        `对的答案和错的答案都满足它, 因此它判不了成败。反面样本: \`${rel}\` = ${JSON.stringify(sample.content.slice(0, 120))}`,
+    };
   } catch (err) {
-    logger.warn({ command, err: String(err) }, '[omd/goal] 判别力探针跑不起来 → 不拦 (fail-open)');
-    return null;
+    logger.warn({ command, err: String(err) }, DISCRIM_CANT_RUN);
+    return { status: 'fail_open', why: DISCRIM_CANT_RUN };
   } finally {
     if (dir) rmSync(dir, { recursive: true, force: true });
   }
@@ -266,8 +336,13 @@ export function normalizeClassification(raw: RawClassification): GoalClassificat
     const blocked = acceptanceCommandBlockReason(command);
     if (blocked) {
       logger.warn({ command, blocked }, '[omd/goal] 判执行型但验收命令跑不起来 → 降级探索型 (D-I)');
-      return { tier, acceptance: fallbackExploratory(`执行型但命令不可跑 — ${blocked}`) };
+      return {
+        tier,
+        acceptance: fallbackExploratory(`执行型但命令不可跑 — ${blocked}`),
+        acceptanceProbe: { kind: 'demoted', why: blocked },
+      };
     }
+
     // expectExit 恒 0: 这里定的是**总验收** (绿), 不是 TDD 中途的证红步 (那一步的 expect_exit:1
     // 由 spec 写进图里, 见 spec-author 卡的 TDD 流程段)。
     const nPath = typeof raw.negative_sample_path === 'string' ? raw.negative_sample_path.trim() : '';
@@ -275,8 +350,9 @@ export function normalizeClassification(raw: RawClassification): GoalClassificat
     // 样本缺席**不降级**: 判别力探针是加固不是前置条件 (同空世界自检的 fail-open)。
     // 但要留一行 —— 缺席意味着这条判据只过了一道闸而不是两道, 而那两道问的不是同一个问题。
     if (!nPath || !nBody.trim()) {
-      logger.info({ command }, '[omd/goal] 分类器没给反面样本 → 判别力探针跳过 (这条判据只过了空世界自检)');
+      logger.info({ command }, NO_NEGATIVE_SAMPLE);
     }
+
     return {
       tier,
       acceptance: { kind: 'executable', command, expectExit: 0 },
@@ -288,9 +364,19 @@ export function normalizeClassification(raw: RawClassification): GoalClassificat
   const affordableLoss = typeof raw.affordable_loss === 'string' ? raw.affordable_loss.trim() : '';
   if (!learningGoal || !affordableLoss) {
     // 探索型缺了这两样就退回一个空壳分型 —— 那等于既没有机器判据也没有人判据, 什么都没定。
-    return { tier, acceptance: fallbackExploratory('探索型缺学习目标或可承受损失') };
+    // 记 skipped (分类没成立), 原话进 why —— 与 classifyGoal 里分类抛错是同一终局, 只差原话来源。
+    return {
+      tier,
+      acceptance: fallbackExploratory('探索型缺学习目标或可承受损失'),
+      acceptanceProbe: { kind: 'skipped', why: '探索型缺学习目标或可承受损失' },
+    };
   }
-  return { tier, acceptance: { kind: 'exploratory', learningGoal, affordableLoss } };
+  return {
+    tier,
+    acceptance: { kind: 'exploratory', learningGoal, affordableLoss },
+    acceptanceProbe: { kind: 'exploratory' },
+  };
+
 }
 
 /** 分类 prompt。白名单**拼进 prompt** —— 承 conductor prompt 的同一条教训: 不给表就只能猜, 猜错即假红。 */
@@ -393,8 +479,13 @@ export async function classifyGoal(
 ): Promise<GoalClassification> {
   const { generate, model, runCommand } = deps;
   if (!generate || !model) {
-    return { tier: 'complex', acceptance: fallbackExploratory('无分类器 (缺 generate/model)') };
+    return {
+      tier: 'complex',
+      acceptance: fallbackExploratory('无分类器 (缺 generate/model)'),
+      acceptanceProbe: { kind: 'skipped', why: '无分类器 (缺 generate/model)' },
+    };
   }
+
   const ask = async (correction: string): Promise<GoalClassification> => {
     const { text } = await generate({
       model,
@@ -421,17 +512,51 @@ export async function classifyGoal(
   /** 过了闸的执行型再过**两道**探针; 任一响 → 降级探索型(理由原样带走)。 */
   const vet = async (c: GoalClassification): Promise<GoalClassification> => {
     if (c.acceptance.kind !== 'executable') return c;
+    // 先把 command 抽出来再进闭包: 闭包捕获 c 时 TS 不保留对 c.acceptance.kind 的收窄
+    // (TS2339: command 在 exploratory 分支上不存在) —— 抽出 = 窄化, 不是断言。
+    const command = c.acceptance.command;
     // 两道问的**不是同一个问题**, 所以是串联不是二选一:
     //   ① 空世界自检   —— 活还没干之前它就绿? → 判据**恒真**(需要注入的 runner, 在真 cwd 上跑)
     //   ② 反面样本探针 —— 一份错的产物骗得过它? → 判据**不判别**(自带 runner, 在临时世界里跑)
     // ① 抓不到 live 那条 `grep -q "相同"`(空世界里文件不存在 → 命令失败 → 放行), ② 才抓得到。
-    const why =
-      (runCommand ? await acceptanceVacuityReason(c.acceptance.command, runCommand, c.acceptance.expectExit) : null) ??
-      (await acceptanceDiscriminationReason(c.acceptance.command, c.negativeSample, c.acceptance.expectExit));
-    if (!why) return c;
-    logger.warn({ command: c.acceptance.command, why }, '[omd/goal] 验收命令没过判据探针 → 降级探索型 (G4)');
-    return { tier: c.tier, acceptance: fallbackExploratory(`${why} 原命令: \`${c.acceptance.command}\``) };
+    const demoteG4 = (why: string): GoalClassification => {
+      logger.warn({ command, why }, '[omd/goal] 验收命令没过判据探针 → 降级探索型 (G4)');
+      return {
+        tier: c.tier,
+        acceptance: fallbackExploratory(`${why} 原命令: \`${command}\``),
+        acceptanceProbe: { kind: 'demoted', why },
+      };
+    };
+    const v: ProbeVacuityVerdict = runCommand
+      ? await probeVacuity(command, runCommand, c.acceptance.expectExit)
+      : { status: 'fail_open' }; // 没给 runner = 不自检 (fail-open, 不降级)
+    if (v.status === 'ring') return demoteG4(v.why);
+    const d = await probeDiscrimination(command, c.negativeSample, c.acceptance.expectExit);
+    if (d.status === 'ring') return demoteG4(d.why);
+    // 两道都没响 (没有 ring)。**剩下的组合别压成一个 kind** —— 「探针跑不起来」与「分类器没给
+    // 反面样本」是两件不同的事, 而账本这一列存在的全部理由就是事后分得开:
+    //   - 跑不起来 (`fail_open`) = 环境/实现问题, **该修**;
+    //   - 没给样本 (`skipped`)   = 模型行为, **该量** (G4 收尾判据要的正是这个频率)。
+    // ⚠ 第一版把两者都记成 `vacuity-only`, 而那个词的意思恰恰是"空世界那道跑了、判别那道没跑" ——
+    // 于是 `v.status==='fail_open'` (空世界没跑成) 被贴上"空世界跑了"的标签, **标签是反的**。
+    // 抓到它的是本仓的 verifier 而不是 tsc/test (那次跑 2159 pass 全绿), 记一笔: 这是
+    // 「oracle 绿 ≠ 语义对」的又一个真样本, 也是 mustNotName / 两种 NULL 那族"别把两件事压成一件"。
+    // fail-open 语义不变: 下面任何一支都**不降级**, 执行型照收。
+    const failOpenWhy =
+      v.status === 'fail_open'
+        ? `空世界自检未能运行${d.status === 'fail_open' ? `; ${d.why}` : ''}`
+        : d.status === 'fail_open'
+          ? d.why
+          : null;
+    const probe: AcceptanceProbe = failOpenWhy
+      ? { kind: 'skipped', why: failOpenWhy }
+      : d.status === 'skipped'
+        ? { kind: 'vacuity-only', why: d.why }
+        : { kind: 'passed-both' };
+    return { ...c, acceptanceProbe: probe };
   };
+
+
   try {
     const first = await ask('');
     // 只在"本来想判执行型、却因命令跑不起来被降级"这一种情况下重试 (fallbackExploratory 的
@@ -439,7 +564,7 @@ export async function classifyGoal(
     const blockedReason = firstBlockedReason(first);
     if (!blockedReason) return vet(first);
     logger.info({ blockedReason }, '[omd/goal] 验收命令被闸拒 → 带上闸的原话重问一次 (D-I)');
-    const second = await ask(
+    let second = await ask(
       `\n\n⚠ 你上一次给的验收命令**被安全闸拒了**, 原话是:\n  ${blockedReason}\n` +
         // 2026-07-31 live: 重试拿到的是同一条命令换了全角标点, 括号原样留着 —— 闸的原话里明明
         // 列了 `( )`。也就是说它读到了规则却仍然踩, 唯一说得通的解释是**它以为引号保护得了**。
@@ -452,11 +577,19 @@ export async function classifyGoal(
     const stillBlocked = firstBlockedReason(second);
     if (stillBlocked) {
       logger.warn({ stillBlocked }, '[omd/goal] 重试后仍写不出可跑命令 → 降级探索型 (这次多半是真判不了)');
+      // 裁决原样带走: 这次降级的凭据是**重试那次**的闸因 (normalize 里那次记的可能是同一串, 这里以重试为准)。
+      second = { ...second, acceptanceProbe: { kind: 'demoted', why: stillBlocked } };
+
     }
     return vet(second);
+
   } catch (err) {
     logger.warn({ err: String(err) }, '[omd/goal] 分类调用/解析失败 → 全保守档 (complex + 探索型)');
-    return { tier: 'complex', acceptance: fallbackExploratory('分类调用或解析失败') };
+    return {
+      tier: 'complex',
+      acceptance: fallbackExploratory('分类调用或解析失败'),
+      acceptanceProbe: { kind: 'skipped', why: String(err) },
+    };
   }
 }
 
