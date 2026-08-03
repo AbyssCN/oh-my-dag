@@ -13,6 +13,8 @@
  *    每张图多一个节点就是多一次调用 —— 而 prompt 里 whenNot 写得比 when 长, 就是冲它来的。
  */
 
+import type { ConductorPlan } from '../../harness/conductor-plan';
+
 export interface DetectorGoalCase {
   id: string;
   /** 'worthy' = 该用检测者; 'control' = 不该用 (出现即滥用)。 */
@@ -78,3 +80,29 @@ export const DETECTOR_GOAL_CASES: readonly DetectorGoalCase[] = [
     why: '只有一个产出节点; 要判的是"写得好不好", 那是轮末 judge 的活, 不是检测者的。',
   },
 ];
+
+/** 一张子图上的三个判定。 */
+export interface Verdict {
+  /** 有节点标了 detector:true。 */
+  marked: boolean;
+  /**
+   * 画出了**形状**: 依赖 ≥2 个兄弟, 且目标像"检查/核对/一致性"。
+   *
+   * ⚠ 这是**启发式**, 不是真值 —— 词表命中即算。它只用来算"形状对了但没标字段"这个差,
+   * 差本身才是要看的信号; 别把这个数当成"conductor 有没有想到交叉检查"的精确测量。
+   */
+  shaped: boolean;
+  nodes: number;
+}
+
+export const CHECK_WORDS = /(一致|口径|冲突|交叉|核对|对照|比对|校验|检查|consisten|cross|verif|compar|reconcil|conflict|mismatch)/i;
+
+export function classify(plan: ConductorPlan): Verdict {
+  const entries = Object.entries(plan.nodes);
+  const marked = entries.some(([, n]) => (n as { detector?: unknown }).detector === true);
+  const shaped = entries.some(([, n]) => {
+    const node = n as { depends_on?: string[]; goal?: string };
+    return (node.depends_on?.length ?? 0) >= 2 && CHECK_WORDS.test(node.goal ?? '');
+  });
+  return { marked, shaped, nodes: entries.length };
+}
