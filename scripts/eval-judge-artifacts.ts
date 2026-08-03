@@ -219,7 +219,7 @@ async function pump<T>(jobs: (() => Promise<T>)[], cap: number): Promise<T[]> {
 const pct = (n: number, d: number): string => (d ? `${((n / d) * 100).toFixed(0)}%` : '—');
 
 async function main(): Promise<void> {
-  await bootstrapModelRuntime();
+  bootstrapModelRuntime();
   const root = mkdtempSync(join(tmpdir(), 'omd-s1-eval-'));
   for (const c of cases) materialize(root, c);
 

@@ -112,7 +112,7 @@ interface Row extends Verdict {
 }
 
 async function main(): Promise<void> {
-  await bootstrapModelRuntime();
+  bootstrapModelRuntime();
   mkdirSync(OUT, { recursive: true });
   const jobs: Array<() => Promise<Row>> = [];
   for (const c of DETECTOR_GOAL_CASES) {
