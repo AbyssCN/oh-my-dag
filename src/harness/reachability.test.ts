@@ -38,7 +38,8 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { join } from 'node:path';
+import { reachableFrom, tsFiles } from './plan/import-reach';
 
 const ROOT = new URL('../..', import.meta.url).pathname.replace(/\/$/, '');
 
@@ -65,48 +66,11 @@ const DYNAMIC_ENTRIES: Record<string, string> = {
     '存在的唯一理由就是当靶子; 删它会同时打断两个 fixture。',
 };
 
-/** `from 'x'` / `import 'x'`(副作用)/ `import('x')` / `require('x')`。 */
-const IMPORT_SPEC = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*)['"]([^'"]+)['"]/g;
-
-function tsFiles(dir: string, acc: string[] = []): string[] {
-  for (const e of readdirSync(dir)) {
-    if (e === 'node_modules') continue;
-    const p = join(dir, e);
-    if (statSync(p).isDirectory()) tsFiles(p, acc);
-    else if (p.endsWith('.ts') && !p.endsWith('.test.ts')) acc.push(p);
-  }
-  return acc;
-}
-
-/** 相对 specifier → 真文件(裸 / `.ts` / `index.ts`)。非相对(裸包名)返 null。 */
-function resolveSpec(fromFile: string, spec: string): string | null {
-  if (!spec.startsWith('.')) return null;
-  const base = resolve(dirname(fromFile), spec);
-  for (const c of [base, `${base}.ts`, join(base, 'index.ts')]) {
-    if (existsSync(c) && statSync(c).isFile()) return c;
-  }
-  return null;
-}
-
-/** 从给定根做 BFS, 返回可达文件绝对路径集。 */
-function reachableFrom(roots: string[]): Set<string> {
-  const seen = new Set<string>();
-  const queue = roots.filter((f) => existsSync(f));
-  while (queue.length) {
-    const f = queue.pop()!;
-    if (seen.has(f)) continue;
-    seen.add(f);
-    IMPORT_SPEC.lastIndex = 0;
-    const src = readFileSync(f, 'utf8');
-    let m: RegExpExecArray | null;
-    while ((m = IMPORT_SPEC.exec(src))) {
-      const t = resolveSpec(f, m[1]!);
-      if (t && !seen.has(t)) queue.push(t);
-    }
-  }
-  return seen;
-}
-
+// ⚠ 走图的四件 (`IMPORT_SPEC` / `tsFiles` / `resolveSpec` / `reachableFrom`) 2026-08-03
+// **提取到 `plan/import-reach.ts`** —— 它们原本只有本闸一个消费者 (S-1 的味道), 而
+// `invocation-facts` 需要同一张图回答"哪些调度入口到得了这个文件"。
+// **本闸现在反过来 import 那份**: 于是"抽出来的与原来行为一致"由本闸自己保住,
+// 而不是靠两份平行实现互相祈祷不漂。
 const rel = (abs: string) => abs.slice(ROOT.length + 1);
 
 /** 生产入口: bin 的 cli.ts + package.json scripts 指向的 `scripts/*.ts`。 */
