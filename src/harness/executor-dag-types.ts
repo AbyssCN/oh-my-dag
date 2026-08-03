@@ -394,7 +394,15 @@ export interface DagObservation {
    * **只报不拦**(与 `loop-no-artifact-change` 同档): 要不要把它升成 BLOCKED、K 取几,
    * 取决于它在真跑上多久命中一次 —— 先有读数再谈判据, 别反过来。
    */
-  kind: 'undeclared-artifact-dep' | 'loop-no-progress' | 'write-race' | 'missing-input' | 'missing-command-target' | 'loop-no-artifact-change' | 'leaf-spin';
+  /**
+   * `scheduled-artifact` (2026-08-03, R3 前置) = 这张图要改的某个文件**会被自动执行**
+   * (package script / CI workflow / cron / owner 声明的外部调度器)。
+   *
+   * 为什么值一条观察: 三臂 eval 实测, 模型判「这个岔口的后果可不可逆」时缺的正是这条事实 ——
+   * 它停在"改动落在工作树里"就下结论, 漏标 25–33%; 补上这条结构事实后 **0%**,
+   * 且**只要结构关系那一环就够**(不需要因果链)。**只报不拦**, 出口是下一轮的 prompt。
+   */
+  kind: 'undeclared-artifact-dep' | 'loop-no-progress' | 'write-race' | 'missing-input' | 'missing-command-target' | 'loop-no-artifact-change' | 'leaf-spin' | 'scheduled-artifact';
   /** 涉及的节点 id (lint = [reader, writer]; 空转 = 被反复拒绝的那批)。 */
   nodes: string[];
   /** 人与模型都读的一句话 (进 prompt 的就是它)。 */

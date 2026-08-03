@@ -52,6 +52,8 @@
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import type { ConductorPlan } from '../conductor-plan';
+import { declaredOutput } from './static-lint';
 
 /** 一条「谁会执行它」的结构事实。 */
 export interface Invoker {
@@ -183,4 +185,36 @@ export function renderInvocationFacts(f: InvocationFacts): string {
       : `\`${f.path}\`: 在 ${f.sources.join(' · ')} 中未发现自动调用它的配置。`;
   }
   return `\`${f.path}\` 出现在: ${f.invokers.map((i) => i.where).join(' · ')}。`;
+}
+
+/**
+ * 一张图上「要改的文件里, 哪些会被自动执行」—— 出口是**观察**, 不是闸。
+ *
+ * 为什么值得进环: 观察者的产出会进**下一轮重展开的 prompt**(环唯一的信息通道), 而
+ * 三臂 eval 实测正是这条事实把漏标从 25–33% 降到 0%。也就是说这不是"多报一句",
+ * 是把模型缺的那一块补上 —— 而且它**只要结构关系**, 不需要因果链。
+ *
+ * ⚠ 只报**真扫到调用方**的。"未发现"不进观察 —— 那会让每张图都挂一串噪声,
+ * 而噪声会把真信号淹掉(同 static-lint「拿不准一律不报」)。
+ */
+export function scheduledArtifactFindings(
+  plan: ConductorPlan,
+  cwd: string,
+): { kind: 'scheduled-artifact'; nodes: string[]; message: string }[] {
+  const out: { kind: 'scheduled-artifact'; nodes: string[]; message: string }[] = [];
+  for (const [id, node] of Object.entries(plan.nodes)) {
+    const path = declaredOutput(node);
+    if (!path) continue;
+    const f = invocationFactsFor(cwd, path);
+    if (f.invokers.length === 0) continue;
+    out.push({
+      kind: 'scheduled-artifact',
+      nodes: [id],
+      message:
+        `节点 "${id}" 要改的 ${renderInvocationFacts(f)} ` +
+        `也就是说这次改动的效果会**在下一次那个调用发生时生效**, 而不是停在工作树里。` +
+        `如果这一步的选择错了, 想清楚它到那时还收不收得回来。`,
+    });
+  }
+  return out;
 }

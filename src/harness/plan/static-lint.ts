@@ -67,7 +67,8 @@ function canRunConcurrently(plan: ConductorPlan, a: string, b: string, memo: Map
 }
 
 /** 节点声明的产出路径 (只认显式声明的 —— 猜不算)。 */
-function declaredOutput(n: PlanNodeLike): string | undefined {
+/** 导出给 invocation-facts 复用 —— "哪个字段是写目标"抄第二份早晚先漂。 */
+export function declaredOutput(n: PlanNodeLike): string | undefined {
   const p = (n as { output_path?: unknown }).output_path;
   return typeof p === 'string' && p.trim() ? p.trim() : undefined;
 }
