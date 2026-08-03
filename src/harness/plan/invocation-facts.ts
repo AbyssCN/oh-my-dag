@@ -54,10 +54,11 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ConductorPlan } from '../conductor-plan';
 import { declaredOutput } from './static-lint';
+import { reachableFrom } from './import-reach';
 
 /** 一条「谁会执行它」的结构事实。 */
 export interface Invoker {
-  kind: 'package-script' | 'ci-workflow' | 'repo-cron' | 'declared';
+  kind: 'package-script' | 'ci-workflow' | 'repo-cron' | 'declared' | 'import-chain';
   /** 在哪找到的 —— 人与模型都要能顺着它去核。 */
   where: string;
 }
@@ -159,15 +160,88 @@ function fromDeclared(cwd: string, path: string, sources: string[]): Invoker[] {
   }
 }
 
-/** 采一个路径的全部结构事实。**纯读, 零 LLM, 毫秒级。** */
+/** 调度配置里**逐字出现过的**脚本路径 —— 反向查的起点。 */
+const SCRIPT_PATH_TOKEN = /[\w./-]+\.(?:ts|js|sh|py)/g;
+
+function schedulerNamedPaths(cwd: string): string[] {
+  const texts: string[] = [];
+  const pkg = readOrNull(join(cwd, 'package.json'));
+  if (pkg !== null) {
+    try {
+      texts.push(Object.values((JSON.parse(pkg) as { scripts?: Record<string, string> }).scripts ?? {}).join('\n'));
+    } catch { /* 坏 JSON 不是这里该管的 */ }
+  }
+  const wf = join(cwd, '.github', 'workflows');
+  if (existsSync(wf)) {
+    try {
+      for (const f of readdirSync(wf).filter((x) => x.endsWith('.yml') || x.endsWith('.yaml'))) {
+        const b = readOrNull(join(wf, f));
+        if (b !== null) texts.push(b.split('\n').filter((l) => !isCommented(l)).join('\n'));
+      }
+    } catch { /* 同上 */ }
+  }
+  for (const rel of ['crontab', 'Crontab', 'deploy/crontab', 'ops/crontab']) {
+    const b = readOrNull(join(cwd, rel));
+    if (b !== null) texts.push(b.split('\n').filter((l) => !isCommented(l)).join('\n'));
+  }
+  const cfg = readOrNull(join(cwd, '.omd', 'config.json'));
+  if (cfg !== null) {
+    try {
+      texts.push(Object.keys((JSON.parse(cfg) as { invokedBy?: Record<string, string> }).invokedBy ?? {}).join('\n'));
+    } catch { /* 同上 */ }
+  }
+  const out = new Set<string>();
+  for (const t of texts) for (const m of t.match(SCRIPT_PATH_TOKEN) ?? []) out.add(m);
+  return [...out];
+}
+
+/**
+ * 每个调度入口的可达闭包 —— **按 cwd 记忆**。走图要读文件, 而一张图上每个节点都会问一次,
+ * 不缓存就是把同一次 BFS 跑 N 遍。
+ */
+const reachCache = new Map<string, { entry: string; reach: Set<string> }[]>();
+
+function entryReachSets(cwd: string): { entry: string; reach: Set<string> }[] {
+  const hit = reachCache.get(cwd);
+  if (hit) return hit;
+  const sets = schedulerNamedPaths(cwd)
+    .filter((p) => p.endsWith('.ts')) // 只有 TS 走得了 import 图; sh/py 不在这张图上
+    .map((entry) => ({ entry, reach: reachableFrom([join(cwd, entry)]) }));
+  reachCache.set(cwd, sets);
+  return sets;
+}
+
+/**
+ * **间接可达**: 目标自己没被逐字提到, 但某个被逐字提到的调度入口**经 import 图到得了它**。
+ *
+ * 为什么必须有这一层(有读数, 不是想当然): `indirect` 档实验里, 只给直接命名事实的 `weak` 臂
+ * 在间接红线上**漏标 100%**(0/3, 0/3), 而给完整链的 `on` 臂 100% 修好 ——
+ * **信息是够用的, 缺的就是这一跳**。
+ *
+ * ⚠ 只报**一跳到直接命名点**这件事本身, 不解释后果 —— 渲染出来的句子会进模型输入,
+ * 掺结论就是把答案写进去 (闸: `invocation-facts.test.ts`)。
+ */
+function fromImportChain(cwd: string, path: string, sources: string[]): Invoker[] {
+  const sets = entryReachSets(cwd);
+  if (sets.length === 0) return [];
+  sources.push(`import 图 (${sets.length} 个调度入口)`);
+  const abs = join(cwd, path);
+  return sets
+    .filter((s) => s.reach.has(abs))
+    .map((s) => ({ kind: 'import-chain' as const, where: `被 ${s.entry} 经 import 到达, 而 ${s.entry} 出现在调度配置里` }));
+}
+
+/** 采一个路径的全部结构事实。**纯读, 零 LLM。** */
 export function invocationFactsFor(cwd: string, path: string): InvocationFacts {
   const sources: string[] = [];
-  const invokers = [
+  const direct = [
     ...fromPackageScripts(cwd, path, sources),
     ...fromCiWorkflows(cwd, path, sources),
     ...fromRepoCron(cwd, path, sources),
     ...fromDeclared(cwd, path, sources),
   ];
+  // 直接命中就不必走图 —— 省一次 BFS, 且直接证据本来就更强。
+  const invokers = direct.length > 0 ? direct : [...direct, ...fromImportChain(cwd, path, sources)];
   return { path, invokers, sources };
 }
 
@@ -184,7 +258,13 @@ export function renderInvocationFacts(f: InvocationFacts): string {
       ? `\`${f.path}\`: 未能查询任何调用来源。`
       : `\`${f.path}\`: 在 ${f.sources.join(' · ')} 中未发现自动调用它的配置。`;
   }
-  return `\`${f.path}\` 出现在: ${f.invokers.map((i) => i.where).join(' · ')}。`;
+  // ⚠ 截断: 这句会进下一轮 conductor 的 prompt。一个被十几处 import 的公共模块会列出十几条链,
+  // 而**多列几条不改变结论, 只把真信号淹掉**(同 observations「压成能归组统计的东西」那条)。
+  // 3 条足够让人顺着去核, 剩下的报个数。
+  const CAP = 3;
+  const shown = f.invokers.slice(0, CAP).map((i) => i.where).join(' · ');
+  const rest = f.invokers.length - CAP;
+  return `\`${f.path}\` 出现在: ${shown}${rest > 0 ? ` (另有 ${rest} 处同类)` : ''}。`;
 }
 
 /**

@@ -158,3 +158,55 @@ describe('scheduledArtifactFindings (plan 级)', () => {
     done();
   });
 });
+
+describe('间接可达 (import 图一跳到直接命名点)', () => {
+  /**
+   * 这一层的存在有读数背书, 不是想当然: `indirect` 档实验里只给直接命名事实的 weak 臂
+   * 在间接红线上**漏标 100%** (0/3, 0/3), 而给完整链的 on 臂 100% 修好 ——
+   * 信息够用, 缺的就是这一跳。
+   */
+  test('目标没被逐字提到, 但调度入口经 import 到得了它 → 报 import-chain', () => {
+    const { cwd, done } = world({
+      'package.json': JSON.stringify({ scripts: { digest: 'bun scripts/digest.ts' } }),
+      'scripts/digest.ts': "import { send } from '../src/mailer';\nsend();\n",
+      'src/mailer.ts': 'export const send = () => {};\n',
+    });
+    const f = invocationFactsFor(cwd, 'src/mailer.ts');
+    expect(f.invokers.map((i) => i.kind)).toEqual(['import-chain']);
+    expect(f.invokers[0]!.where).toContain('scripts/digest.ts');
+    done();
+  });
+
+  test('直接命中时**不走图** —— 直接证据更强, 且省一次 BFS', () => {
+    const { cwd, done } = world({
+      'package.json': JSON.stringify({ scripts: { d: 'bun scripts/digest.ts' } }),
+      'scripts/digest.ts': 'export const x = 1;\n',
+    });
+    expect(invocationFactsFor(cwd, 'scripts/digest.ts').invokers.map((i) => i.kind)).toEqual(['package-script']);
+    done();
+  });
+
+  test('反向自检: 图上到不了 → 仍是"未发现" (这一层不许把所有文件都算成可达)', () => {
+    const { cwd, done } = world({
+      'package.json': JSON.stringify({ scripts: { d: 'bun scripts/digest.ts' } }),
+      'scripts/digest.ts': 'export const x = 1;\n',
+      'src/lonely.ts': 'export const y = 2;\n',
+    });
+    const f = invocationFactsFor(cwd, 'src/lonely.ts');
+    expect(f.invokers).toEqual([]);
+    expect(f.sources.some((x) => x.includes('import 图'))).toBe(true); // 但**查过**这一层
+    done();
+  });
+
+  test('链多时截断到 3 条 + 报个数 (它进 prompt, 列一长串会把真信号淹掉)', () => {
+    const files: Record<string, string> = {
+      'package.json': JSON.stringify({ scripts: Object.fromEntries([1, 2, 3, 4, 5].map((i) => [`s${i}`, `bun scripts/e${i}.ts`])) }),
+      'src/shared.ts': 'export const s = 1;\n',
+    };
+    for (const i of [1, 2, 3, 4, 5]) files[`scripts/e${i}.ts`] = "import { s } from '../src/shared';\n";
+    const { cwd, done } = world(files);
+    const text = renderInvocationFacts(invocationFactsFor(cwd, 'src/shared.ts'));
+    expect(text).toContain('另有 2 处同类');
+    done();
+  });
+});
