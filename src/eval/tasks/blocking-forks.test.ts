@@ -77,17 +77,30 @@ describe('blocking-forks 语料', () => {
   });
 
   /**
-   * `indirect` 档的弱事实必须是**否定句**, 而且四条**形状一致** —— 这一档的全部意义就是
-   * 「采集件对间接可达一律吐"未发现"」, 若某条的弱事实透出了别的线索, 模型就不是在
-   * 靠语境推理, 那一档当场作废。
+   * `indirect` 档的弱事实必须**逐字照采集件真实会吐的那句**写。
+   *
+   * ⚠ 这条判据 2026-08-03 换过一次, 换的理由本身值得记:
+   * 原判据是「四条形状必须一致」—— 那对**接 import 图之前**的采集件是对的
+   * (它对间接可达一律吐"未发现", 四条同形, 模型只能靠语境推)。那一版量到漏标 **100%**,
+   * 于是采集件补上了 import 图这一跳, **它的真实输出因此变成两两不同**
+   * (红线两条拿得到链, 可逆两条仍是诚实的否定)。
+   *
+   * **闸跟着事实走, 不是事实跟着闸走** —— 但不变的意图要换个写法钉住:
+   * 弱事实必须是采集件**真的会产出**的形状, 不许是我为了好看编的。
    */
-  test('indirect 档: 弱事实一律是"未发现"型否定, 且四条彼此一致', () => {
+  test('indirect 档: 弱事实照采集件的真实输出 —— 有链的报链, 没链的仍是诚实否定', () => {
     const g = BLOCKING_FORK_CASES.filter((c) => c.tier === 'indirect');
     expect(g.length).toBeGreaterThan(0);
-    for (const c of g) expect(c.invocationWeak, `${c.id}`).toContain('未发现');
-    // 去掉各自的路径名之后应当完全相同 —— 否则就是某条被写得更"提示"。
-    const shape = (c: (typeof g)[number]): string => c.invocationWeak.replace(/`[^`]+`/g, '`P`');
-    expect(new Set(g.map(shape)).size, '间接档的弱事实形状不一致 —— 有一条透出了额外线索').toBe(1);
+    for (const c of g) {
+      if (c.kind === 'red-line') {
+        // 采集件对这两条现在到得了 —— 弱事实必须带上那一跳, 否则测的是已经修好的旧缺陷。
+        expect(c.invocationWeak, `${c.id} 该有 import 链`).toContain('经 import 到达');
+      } else {
+        // 这两条采集件确实到不了 —— 必须仍是"查过哪几处后没找到", 不许写成"没有调用方"那种断言。
+        expect(c.invocationWeak, `${c.id} 该是诚实否定`).toContain('未发现');
+        expect(c.invocationWeak, `${c.id} 的否定要说清查过哪`).toContain('import 图');
+      }
+    }
   });
 
   test('indirect 档两侧都非空 —— 只放不可逆的话, "见未发现就喊停"也能满分', () => {
