@@ -377,3 +377,61 @@ describe('omd-readout · 排序与 limit (草案 §2/§4)', () => {
     expect(tables()).toEqual(before.tables); // 没建表
   });
 });
+
+describe('闸的分母不搭展示窗口的车 (2026-08-03)', () => {
+  /**
+   * 上线闸里 G3 要「20 次 live」、G4 要「采样 ≥10 次」, 而 run 表按冻结契约只显示**最早 limit 个**。
+   * 两者一旦搭在一起: 历史 run 超过 limit 之后, **以后每跑一次都落在窗口外**, 闸的分母永远停在
+   * 同一个数 —— 而板上看不出它停了。2026-08-03 连跑三次 live, `--limit 20` 下 entry 分布一动不动。
+   *
+   * 这条闸钉的就是「展示归展示, 判据归判据」: 把 limit 收到比 run 数还小, 闸的分母**不许跟着缩**。
+   */
+  test('limit 缩到 1, G3/G4 分母仍是全量 (窗口只截 runs 表)', () => {
+    const db = new Database(':memory:');
+    const rec = createDagRecorder({ db });
+    for (let i = 0; i < 4; i++) {
+      rec.record(fakeResult({ planName: `图${i}`, plan: { n1: { goal: 'g' } }, done: ['n1'] }), {
+        runId: `gr-${i}`,
+        entry: 'dag_goal',
+        now: 1000 + i,
+      });
+    }
+    const wide = readout({ db, limit: 20 });
+    const narrow = readout({ db, limit: 1 });
+    expect(narrow.runs.length).toBe(1); // 展示窗口确实缩了
+    expect(wide.runs.length).toBe(4);
+    // …但闸的分母一个都不许少。
+    expect(narrow.gate_denominators.g3LiveRuns).toBe(4);
+    expect(narrow.gate_denominators.g3LiveRuns).toBe(wide.gate_denominators.g3LiveRuns);
+    expect(narrow.g4_sampling.denominator).toBe(wide.g4_sampling.denominator);
+    rec.close();
+  });
+
+  test('反向自检: 窗口真的会截 runs 表 (闸不是恒真式)', () => {
+    const db = new Database(':memory:');
+    const rec = createDagRecorder({ db });
+    for (let i = 0; i < 3; i++) {
+      rec.record(fakeResult({ planName: `图${i}`, plan: { n1: { goal: 'g' } }, done: ['n1'] }), {
+        runId: `x-${i}`,
+        entry: 'dag_run',
+        now: 1000 + i,
+      });
+    }
+    expect(readout({ db, limit: 1 }).runs.length).toBe(1);
+    expect(readout({ db, limit: 9 }).runs.length).toBe(3);
+    rec.close();
+  });
+
+  test('ledgerGap: 注入夹具没有盘上兄弟库 → null (不知道), 不编 0', () => {
+    const db = new Database(':memory:');
+    const rec = createDagRecorder({ db });
+    rec.record(fakeResult({ planName: '图', plan: { n1: { goal: 'g' } }, done: ['n1'] }), {
+      runId: 'r',
+      entry: 'dag_goal',
+      now: 1000,
+    });
+    // 编 0 会把"没查成"说成"没有" —— 本仓 S-12 那条纪律明确禁止。
+    expect(readout({ db }).gate_denominators.ledgerGap).toBeNull();
+    rec.close();
+  });
+});

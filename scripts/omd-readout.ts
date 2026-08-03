@@ -51,6 +51,8 @@
  *   bun run scripts/omd-readout.ts --json               # 机器可读 (给以后的 A/B 用)
  */
 import { Database } from 'bun:sqlite';
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { commandRiskTier, RISK_TIER_ORDER, type CommandRiskTier } from '../src/harness/command-leaf';
 import { computeCost } from '../src/model/cost-ledger';
 import { capsFor } from '../src/harness/../model/model-caps';
@@ -142,7 +144,8 @@ export interface ReadoutResult {
   };
   /** 分子 = 记录为 reused 的节点 (并集); 分母 = DAG 全量节点 (含 `未记`); total_nodes=0 → rate null。 */
   /**
-   * G4 采样 (冻结契约 §5): 分母 = 窗口内 entry='dag_goal' 且 acceptance_probe 非 NULL 的 run。
+   * G4 采样 (冻结契约 §5): 分母 = **全量** entry='dag_goal' 且 acceptance_probe 非 NULL 的 run
+   * (2026-08-03 起不再受展示窗口截断 —— 闸的判据不搭展示的车, 理由见计算处的注)。
    * 老行/未接探针的 run (NULL) 不进分母, 不编 'unknown'; exploratory 是派生数
    * (= demoted + skipped + exploratory 三条 kind 之和)。
    */
@@ -153,6 +156,35 @@ export interface ReadoutResult {
     demoted: number;
     skipped: number;
     exploratory: number;
+  };
+  /**
+   * **闸的分母** (2026-08-03) —— 全量, **不受展示窗口截断**。
+   *
+   * 为什么单列一格: 上线闸里 G3 要「20 次 live」、G4 要「采样 ≥10 次」, 而这块板的 run 表
+   * 按冻结契约只显示**最早 limit 个**。两者搭在一起的后果是: 历史 run 一超过 limit,
+   * **以后每跑一次都落在窗口外**, 闸的分母永远停在同一个数 —— 而板上看不出它停了。
+   * 2026-08-03 连跑三次 live, `--limit 20` 下 entry 分布一动不动, `--limit 40` 才看得见。
+   *
+   * `ledgerGap` = **跑了但没记上**的条数: 在 run 注册表 (`runs.db`) 里有、而在留痕库
+   * (`dag-runs.db`) 里没有的 run。S-12 的写穿失败就长这样 —— 那次跑烧了钱、交付了正确产物,
+   * 却在留痕库里零行, 于是它在板上**和"没跑"长得一模一样**。分母的缺口不等于"少跑了几次"。
+   * ⚠ 读不到注册表 (路径不在 / 打不开) → `null` = **不知道**, 不编 0 (编 0 就是把"没查"
+   * 说成"没有")。
+   */
+  gate_denominators: {
+    /** G3: 带 `entry` 的 distinct run (全量)。 */
+    g3LiveRuns: number;
+    /** G4: entry='dag_goal' 且探针非空的 distinct run (全量, = g4_sampling.denominator)。 */
+    g4Samples: number;
+    /**
+     * 跑了但留痕库里没有的条数; null = 注册表读不到, **不知道**。
+     *
+     * ⚠ **`total` 里混着合法缺席**, 别直接当缺陷数读: 一次在跑到 DAG 之前就失败的 run
+     * 本来就没有留痕可记, 一个 `running` 的孤儿也还没有终态。**可行动的是 `done`** ——
+     * 注册表说它跑完了, 留痕库里却一行都没有, 那是量具真漏了一次 (S-12 那条的形状)。
+     * 2026-08-03 首测: total 5 / done 3 (t3a · t5a · t9b), 也就是说这个缺口**不是偶发**。
+     */
+    ledgerGap: { total: number; done: number } | null;
   };
   reuse_rate: { reused_nodes: number; total_nodes: number; rate: number | null };
 }
@@ -213,6 +245,8 @@ function emptyWorld(meta: ReadoutResult['meta']): ReadoutResult {
     criteria_consistency: { agree: 0, oracleFailed: 0, wastedRounds: 0, agreeFail: 0, unrecorded: 0, recorded: 0 },
     g4_sampling: { denominator: 0, passedBoth: 0, vacuityOnly: 0, demoted: 0, skipped: 0, exploratory: 0 },
     reuse_rate: { reused_nodes: 0, total_nodes: 0, rate: null },
+    // 空世界: 闸分母全 0, ledgerGap 记 null = **不知道** (空留痕库不代表没跑过, 只代表这里没有)。
+    gate_denominators: { g3LiveRuns: 0, g4Samples: 0, ledgerGap: null },
   };
 }
 
@@ -276,6 +310,37 @@ function parseAcceptanceProbe(raw: string | null): AcceptanceProbe | null {
  * 可以是留痕器正活着的连接 (测试夹具), 读后行数与 schema 原样。CLI 打开真库用
  * `{ readonly: true }` + query_only (见 main)。
  */
+/**
+ * 「跑了但没记上」—— 在 run 注册表 (`runs.db`) 里有、而留痕库 (`dag-runs.db`) 里没有的条数。
+ *
+ * S-12 的写穿失败就长这样: 那次跑烧了钱、交付了正确产物, 却在留痕库里**零行** ——
+ * 于是它在读数板上**和"没跑"长得一模一样**, 而两者对 G3 的含义完全不同
+ * (一个是"还差几次", 一个是"量具漏了几次")。
+ *
+ * ⚠ 全程 fail-open 且**不编 0**: 注册表不在 / 打不开 / 表结构不认 → 返回 `null` = **不知道**。
+ * 返回 0 会把"没查成"说成"没有", 那正是本仓 S-12 那条纪律禁止的。
+ */
+function countLedgerGap(
+  dagDbPath: string | null,
+  knownRunIds: Set<string>,
+): { total: number; done: number } | null {
+  if (!dagDbPath || dagDbPath === '(injected)') return null; // 注入夹具没有盘上的兄弟库
+  try {
+    const regPath = join(dirname(dagDbPath), 'runs.db');
+    if (!existsSync(regPath)) return null;
+    const reg = new Database(regPath, { readonly: true });
+    try {
+      const rows = reg.query('SELECT run_id, status FROM omd_runs').all() as { run_id: string; status: string }[];
+      const missing = rows.filter((r) => r.run_id && !knownRunIds.has(r.run_id));
+      return { total: missing.length, done: missing.filter((r) => r.status === 'done').length };
+    } finally {
+      try { reg.close(); } catch { /* 关不上不值得抛 */ }
+    }
+  } catch {
+    return null; // 表不在 / 库坏 / 权限 —— 一律"不知道"
+  }
+}
+
 export function readout(opts: { db: Database; limit?: number; dbPath?: string }): ReadoutResult {
   const limit = opts.limit ?? 20;
   const meta: ReadoutResult['meta'] = { db: opts.dbPath ?? '(injected)', limit, readonly: true };
@@ -472,8 +537,14 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string })
 
   // ── G4 采样 (冻结契约 §5): 分母 = entry 为 dag_goal 且 acceptance_probe 非 NULL 的 run ──
   // NULL (老行 / 非 dag_goal / 解析失败) 一律不进分母 —— 没记 ≠ 失败, 不编 'unknown'。
+  //
+  // ⚠ **走 `allRuns` 不走 `shown`** (2026-08-03 修): 展示窗口取的是**最早 limit 个**
+  // (冻结契约刻意钉死的截断端), 而这是**闸的判据** —— G4 收尾判据要「采样 ≥10 次」。
+  // 搭窗口的车会让历史 run 一超 limit 之后, **以后每跑一次都落在窗口外**, 分母永远停在同一个数,
+  // 而板上看不出它停了。同一个坑当天先咬了 G3 的分母一次 (见 gate_denominators 的注)。
+  // **展示归展示, 判据归判据**: 窗口只管那张 run 表, 闸的数一律全量。
   const g4_sampling: ReadoutResult['g4_sampling'] = { denominator: 0, passedBoth: 0, vacuityOnly: 0, demoted: 0, skipped: 0, exploratory: 0 };
-  for (const run of shown) {
+  for (const run of allRuns) {
     if (run.entry !== 'dag_goal' || run.acceptanceProbe === null) continue;
     g4_sampling.denominator++;
     switch (run.acceptanceProbe.kind) {
@@ -497,6 +568,15 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string })
     }
   }
 
+  // ── 闸的分母 (2026-08-03): 全量, 不搭展示窗口的车 —— 见 gate_denominators 的注 ──
+  const g3LiveRuns = allRuns.filter((r) => r.entry !== null && r.entry !== '未记').length;
+  const gate_denominators: ReadoutResult['gate_denominators'] = {
+    g3LiveRuns,
+    g4Samples: g4_sampling.denominator,
+    // 「跑了但没记上」: 注册表里有、留痕库里没有。读不到 → null (不知道), **不编 0**。
+    ledgerGap: countLedgerGap(opts.dbPath ?? null, new Set(allRuns.map((r) => r.run_id))),
+  };
+
   const total_nodes = universe.size;
   const reused_nodes = reused.size;
 
@@ -509,6 +589,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string })
     criteria_grid: { four_grid, two_grid_risk },
     criteria_consistency,
     g4_sampling,
+    gate_denominators,
     reuse_rate: { reused_nodes, total_nodes, rate: total_nodes > 0 ? reused_nodes / total_nodes : null },
   };
 }
@@ -600,6 +681,15 @@ function printReadoutHuman(r: ReadoutResult, dbPath: string): void {
   console.log(`   风险格: ${r.criteria_grid.two_grid_risk.map((t) => `${t.risk_level} ${t.executed}/${t.not_executed}`).join(' · ')}`);
   const c = r.criteria_consistency;
   console.log(`   criteria: agree ${c.agree} · oracleFailed ${c.oracleFailed} · wastedRounds ${c.wastedRounds} · agreeFail ${c.agreeFail} · recorded ${c.recorded} · unrecorded ${c.unrecorded}`);
+  const gd = r.gate_denominators;
+  console.log(
+    `   闸分母 (全量, **不受上面那张表的窗口截断**): G3 live run ${gd.g3LiveRuns}/20 · G4 采样 ${gd.g4Samples}/10 · ` +
+      `跑了但没记上 ${
+        gd.ledgerGap === null
+          ? '不知道 (注册表读不到)'
+          : `${gd.ledgerGap.done} 条 done 无留痕 (另有 ${gd.ledgerGap.total - gd.ledgerGap.done} 条未跑到留痕就终止, 属合法缺席)`
+      }`,
+  );
   const g4 = r.g4_sampling;
   console.log(
     `   G4 采样 (分母 = entry 为 dag_goal 且 acceptance_probe 非 NULL 的 run, 共 ${g4.denominator} 个): ` +

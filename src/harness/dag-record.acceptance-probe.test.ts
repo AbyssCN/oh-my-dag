@@ -250,14 +250,27 @@ describe('readout · 同 runId 多次 attempt 的探针归并', () => {
   });
 });
 
-describe('readout · 窗口 (最早 limit 个 run) 之外的探针不进分母', () => {
-  test('探针 run 落在窗口外 → 分母不含它; limit 放大后含', () => {
+/**
+ * ⚠ 这一组原本断言的是**反过来的行为**(「窗口外的探针不进分母」), 2026-08-03 当天改掉。
+ *
+ * 那是 T11 那一跑随新列一起产出的, 逻辑上自洽 —— 但它把**闸的判据**搭在了**展示窗口**上。
+ * run 表按冻结契约只显示「最早 limit 个」, 于是历史 run 一超过 limit,
+ * **以后每跑一次都落在窗口外**, G4 的采样分母永远停在同一个数, 而板上看不出它停了。
+ * 同一个坑当天先咬了 G3 的分母一次 (连跑三次 live, `--limit 20` 下 entry 分布一动不动)。
+ *
+ * 现在的契约是**展示归展示, 判据归判据**: 窗口只截那张 run 表, `g4_sampling` 与
+ * `gate_denominators` 一律全量。窗口本身没改 —— 它是刻意钉死的截断端, 不动。
+ */
+describe('readout · 闸的采样分母不受展示窗口截断', () => {
+  test('探针 run 落在展示窗口外, 分母照样含它 (窗口只截 runs 表)', () => {
     const db = new Database(':memory:');
     const rec = createDagRecorder({ db });
     rec.record(fakeResult('a'), { runId: 'r1', entry: 'dag_run', now: 100 });
     rec.record(fakeResult('b'), { runId: 'r2', entry: 'dag_run', now: 200 });
     rec.record(fakeResult('c'), { runId: 'g1', entry: 'dag_goal', now: 300, acceptanceProbe: { kind: 'passed-both' } });
-    expect(readout({ db, limit: 2 }).g4_sampling.denominator).toBe(0); // 窗口 = 最早 2 个 run, 探针在外
+    // limit=2 → runs 表只显示最早两条 (r1/r2), 但 g1 的探针**必须**照样进分母。
+    expect(readout({ db, limit: 2 }).runs.map((x) => x.run_id)).toEqual(['r1', 'r2']); // 窗口确实截了
+    expect(readout({ db, limit: 2 }).g4_sampling.denominator).toBe(1); // …而判据没跟着缩
     expect(readout({ db, limit: 3 }).g4_sampling.denominator).toBe(1);
     rec.close();
   });
