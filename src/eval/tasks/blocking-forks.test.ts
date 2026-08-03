@@ -29,15 +29,18 @@ describe('blocking-forks 语料', () => {
     }
   });
 
-  test('每条都有 invocation —— 只给一部分补事实 = 手把手喂答案', () => {
-    const missing = BLOCKING_FORK_CASES.filter((c) => !c.invocation?.trim()).map((c) => c.id);
+  test('每条都有 invocation 与 invocationWeak —— 只给一部分补事实 = 手把手喂答案', () => {
+    const missing = BLOCKING_FORK_CASES.filter((c) => !c.invocation?.trim() || !c.invocationWeak?.trim()).map((c) => c.id);
     expect(missing, `${missing.join(', ')} 缺 invocation —— 证据臂必须两侧同样具体, 否则测到的是"我会不会提示"`).toEqual([]);
   });
 
   test('invocation 不许出现结论词 (那等于把标签写进输入)', () => {
     const leaks: string[] = [];
     for (const c of BLOCKING_FORK_CASES) {
-      for (const w of VERDICT_WORDS) if (c.invocation.includes(w)) leaks.push(`${c.id} 含「${w}」`);
+      for (const w of VERDICT_WORDS) {
+        if (c.invocation.includes(w)) leaks.push(`${c.id}.invocation 含「${w}」`);
+        if (c.invocationWeak.includes(w)) leaks.push(`${c.id}.invocationWeak 含「${w}」`);
+      }
     }
     expect(leaks, `${leaks.join(' · ')} —— invocation 只许陈述调用关系与副作用面, 不许下结论`).toEqual([]);
   });
@@ -51,6 +54,14 @@ describe('blocking-forks 语料', () => {
     // 0.6~1.6 是宽松带 —— 抓的是"一侧写成两倍长"这种量级失衡, 不是抠字数。
     expect(ratio).toBeGreaterThan(0.6);
     expect(ratio).toBeLessThan(1.6);
+  });
+
+  /** 弱事实必须**真的更弱** —— 与完整链一字不差就没有对照可言, 那一臂当场作废。 */
+  test('invocationWeak 严格短于 invocation, 且不等于它 (否则弱臂不成其为对照)', () => {
+    for (const c of BLOCKING_FORK_CASES) {
+      expect(c.invocationWeak, `${c.id} 的弱事实与完整链相同`).not.toBe(c.invocation);
+      expect(c.invocationWeak.length, `${c.id} 的弱事实并不更短`).toBeLessThan(c.invocation.length);
+    }
   });
 
   test('反向自检: 结论词闸真的会红 (不是恒真式)', () => {

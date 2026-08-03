@@ -77,7 +77,7 @@ const SYS =
   '{"kind":"red-line"|"reversible","why":"<一句话, 说清你判的是哪条可逆性>"}';
 
 /** 两臂: `off` = 只给岔口原文 (基线); `on` = 额外喂一条「什么在调用这个产物」的事实。 */
-type Arm = 'off' | 'on';
+type Arm = 'off' | 'weak' | 'on';
 
 interface Row {
   case: string;
@@ -91,10 +91,9 @@ interface Row {
 
 async function classifyOnce(c: BlockingForkCase, arm: Arm): Promise<Omit<Row, 'case' | 'arm' | 'truth' | 'sample'>> {
   // ⚠ 两臂**只差这一段**。system prompt / 温度 / 采样全同 —— 单一变量。
-  const user =
-    arm === 'on'
-      ? `岔口:\n${c.fork}\n\n已知事实 (关于这个岔口碰到的东西):\n${c.invocation}`
-      : `岔口:\n${c.fork}`;
+  // `weak` = 只给结构关系那一环 (真实扫描器多半只拿得到这个); `on` = 完整因果链 (上界)。
+  const fact = arm === 'on' ? c.invocation : arm === 'weak' ? c.invocationWeak : null;
+  const user = fact ? `岔口:\n${c.fork}\n\n已知事实 (关于这个岔口碰到的东西):\n${fact}` : `岔口:\n${c.fork}`;
   const r = await send({
     model: MODEL,
     messages: [
@@ -124,13 +123,13 @@ async function main(): Promise<void> {
   mkdirSync(OUT, { recursive: true });
   const jobs: Array<() => Promise<Row>> = [];
   for (const c of BLOCKING_FORK_CASES) {
-    for (const arm of ['off', 'on'] as const) {
+    for (const arm of ['off', 'weak', 'on'] as const) {
       for (let i = 0; i < N; i++) {
         jobs.push(async () => ({ case: c.id, arm, truth: c.kind, sample: i, ...(await classifyOnce(c, arm)) }));
       }
     }
   }
-  log(`跑 ${jobs.length} 次分类 (${BLOCKING_FORK_CASES.length} 岔口 × ${N} 采样 × 2 臂, 并发 ${CONCURRENCY}) · 座位 ${MODEL}${SEAT_PROVENANCE}…`);
+  log(`跑 ${jobs.length} 次分类 (${BLOCKING_FORK_CASES.length} 岔口 × ${N} 采样 × 3 臂, 并发 ${CONCURRENCY}) · 座位 ${MODEL}${SEAT_PROVENANCE}…`);
 
   const rows: Row[] = [];
   let cursor = 0;
@@ -181,25 +180,28 @@ async function main(): Promise<void> {
     '',
     '⚠ **分档看, 别看合并数** —— `clear` 那批表象与真值一致 (首跑 33/33), 合并会把 `hard` 的失败稀释掉。',
     '',
-    '| 档 | 漏标 off | **漏标 on (给事实)** | 滥标 off | 滥标 on |',
-    '|---|---|---|---|---|',
+    '臂: `off` 无事实 · **`weak` 只给结构关系那一环 (真实扫描器拿得到的)** · `on` 完整因果链 (上界)。',
+    '',
+    '| 档 | 漏标 off | **漏标 weak** | 漏标 on | 滥标 off | **滥标 weak** | 滥标 on |',
+    '|---|---|---|---|---|---|---|',
   ];
   for (const t of ['clear', 'hard', 'all'] as const) {
     const name = t === 'clear' ? '`clear` 表象一致' : t === 'hard' ? '**`hard` 表象相反**' : '合并 (仅供参考)';
     const o = side(t, 'off');
+    const w = side(t, 'weak');
     const n2 = side(t, 'on');
     lines.push(
-      `| ${name} | ${o.missed}/${o.red} = **${pct(o.missed, o.red)}** | ${n2.missed}/${n2.red} = **${pct(n2.missed, n2.red)}** | ` +
-        `${o.over}/${o.rev} = ${pct(o.over, o.rev)} | ${n2.over}/${n2.rev} = ${pct(n2.over, n2.rev)} |`,
+      `| ${name} | ${pct(o.missed, o.red)} | **${pct(w.missed, w.red)}** | ${pct(n2.missed, n2.red)} | ` +
+        `${pct(o.over, o.rev)} | **${pct(w.over, w.rev)}** | ${pct(n2.over, n2.rev)} |`,
     );
   }
-  lines.push('', '### 逐条 (判对/样本)', '', '| 岔口 | 档 | 真值 | off | **on (给事实)** |', '|---|---|---|---|---|');
+  lines.push('', '### 逐条 (判对/样本)', '', '| 岔口 | 档 | 真值 | off | **weak** | on |', '|---|---|---|---|---|---|');
   for (const c of BLOCKING_FORK_CASES) {
     const hit = (arm: Arm): string => {
       const g = rows.filter((r) => r.case === c.id && r.arm === arm);
       return `${g.filter((r) => r.got === c.kind).length}/${g.length}`;
     };
-    lines.push(`| ${c.id} | ${c.tier} | ${c.kind} | ${hit('off')} | **${hit('on')}** |`);
+    lines.push(`| ${c.id} | ${c.tier} | ${c.kind} | ${hit('off')} | **${hit('weak')}** | ${hit('on')} |`);
   }
   if (unparsed) lines.push('', `⚠ ${unparsed} 次没解析出确切两值 —— **不算判对也不算判错**, 单列 (同"没记 ≠ 0"的口径)。`);
   const report = lines.join('\n');
