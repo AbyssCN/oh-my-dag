@@ -12,7 +12,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { invocationFactsFor, renderInvocationFacts } from './invocation-facts';
+import { invocationFactsFor, renderInvocationFacts, scheduledArtifactFindings } from './invocation-facts';
 
 const world = (files: Record<string, string>): { cwd: string; done: () => void } => {
   const cwd = mkdtempSync(join(tmpdir(), 'omd-invfacts-'));
@@ -119,6 +119,42 @@ describe('invocation-facts', () => {
     const { cwd, done } = world({ 'package.json': '{ 坏', '.omd/config.json': 'nope' });
     expect(() => invocationFactsFor(cwd, 'x.ts')).not.toThrow();
     expect(invocationFactsFor(cwd, 'x.ts').invokers).toEqual([]);
+    done();
+  });
+});
+
+describe('scheduledArtifactFindings (plan 级)', () => {
+  const planOf = (nodes: Record<string, unknown>): never => ({ name: 'p', nodes }) as never;
+
+  test('要改的文件有调用方 → 报; 没有 → 不报 (未发现不进观察, 免得噪声淹掉真信号)', () => {
+    const { cwd, done } = world({
+      'package.json': JSON.stringify({ scripts: { digest: 'bun scripts/nightly-digest.ts' } }),
+    });
+    const found = scheduledArtifactFindings(
+      planOf({
+        risky: { goal: '改默认收件范围', output_path: 'scripts/nightly-digest.ts' },
+        safe: { goal: '改内部工具', output_path: 'src/util.ts' },
+      }),
+      cwd,
+    );
+    expect(found.map((f) => f.nodes[0])).toEqual(['risky']); // safe 那条一个字都不该出现
+    expect(found[0]!.kind).toBe('scheduled-artifact');
+    expect(found[0]!.message).toContain('package.json:scripts.digest');
+    done();
+  });
+
+  test('消息不含结论词 —— 它会进下一轮 conductor 的 prompt, 下结论等于替它判了', () => {
+    const { cwd, done } = world({
+      'package.json': JSON.stringify({ scripts: { d: 'bun scripts/x.ts' } }),
+    });
+    const [f] = scheduledArtifactFindings(planOf({ n: { goal: 'g', output_path: 'scripts/x.ts' } }), cwd);
+    for (const w of ['可逆', '不可逆', '红线', '该停', '必须问']) expect(f!.message).not.toContain(w);
+    done();
+  });
+
+  test('反向自检: 没有任何节点声明写目标 → 空 (闸不是恒真式)', () => {
+    const { cwd, done } = world({ 'package.json': JSON.stringify({ scripts: { d: 'bun scripts/x.ts' } }) });
+    expect(scheduledArtifactFindings(planOf({ n: { goal: '只读活' } }), cwd)).toEqual([]);
     done();
   });
 });

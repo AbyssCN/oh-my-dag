@@ -57,6 +57,7 @@ import { expandConductorNode, subgraphWarnings } from './plan/conductor-expand';
 import { renderRoundForJudge, splitNamedIds, type JudgeChildView } from './plan/conductor-judge';
 import { collectJudgeArtifacts, DEFAULT_ARTIFACT_BUDGET, type ArtifactBudget } from './plan/judge-artifacts';
 import { staticLintPlan } from './plan/static-lint';
+import { scheduledArtifactFindings } from './plan/invocation-facts';
 // D-Q 图外只读观察者的两个确定性 producer (零模型调用): 制品边 lint + 环空转检测。
 import {
   lintArtifactEdges,
@@ -863,6 +864,10 @@ async function executePlan(
     if (staticFindings.length) {
       observe(staticFindings.map((f) => ({ kind: f.kind, nodes: f.nodes, message: f.message })));
     }
+    // 「要改的文件里哪些会被自动执行」—— 确定性、零 LLM、只报不拦。进环是因为下一轮 conductor
+    // 判"这一步的后果可不可逆"时缺的正是这条事实 (三臂 eval: 漏标 25–33% → 0%)。
+    const scheduled = scheduledArtifactFindings(staticPlan, artifactLintRoot);
+    if (scheduled.length) observe(scheduled);
 
     // ── 3. 子节点挂进 plan.nodes → 复用 runNode 全套 (路由/产物闸/checkpoint/resume) ──
     // 依赖 = 子图内依赖 (已重写成内容寻址 id) **并上父节点的外层上游** —— 后者保证子节点看得见
