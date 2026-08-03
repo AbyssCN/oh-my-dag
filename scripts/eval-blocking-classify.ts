@@ -157,7 +157,7 @@ async function main(): Promise<void> {
    * ⚠ **必须按 tier 分开算**: `clear` 那批首跑 33/33, 合并统计会把 `hard` 的失败
    * 稀释在满分里 —— 那正是本仓「加尺子必然让数难看, 别只留合并数」那条纪律说的事。
    */
-  const side = (tier: 'clear' | 'hard' | 'all', arm: Arm) => {
+  const side = (tier: 'clear' | 'hard' | 'indirect' | 'all', arm: Arm) => {
     const armed = rows.filter((r) => r.arm === arm);
     const pool = tier === 'all' ? armed : armed.filter((r) => tierOf.get(r.case) === tier);
     const red = pool.filter((r) => r.truth === 'red-line');
@@ -185,8 +185,12 @@ async function main(): Promise<void> {
     '| 档 | 漏标 off | **漏标 weak** | 漏标 on | 滥标 off | **滥标 weak** | 滥标 on |',
     '|---|---|---|---|---|---|---|',
   ];
-  for (const t of ['clear', 'hard', 'all'] as const) {
-    const name = t === 'clear' ? '`clear` 表象一致' : t === 'hard' ? '**`hard` 表象相反**' : '合并 (仅供参考)';
+  for (const t of ['clear', 'hard', 'indirect', 'all'] as const) {
+    const name =
+      t === 'clear' ? '`clear` 表象一致'
+      : t === 'hard' ? '`hard` 表象相反'
+      : t === 'indirect' ? '**`indirect` 间接可达 (weak 一律「未发现」)**'
+      : '合并 (仅供参考)';
     const o = side(t, 'off');
     const w = side(t, 'weak');
     const n2 = side(t, 'on');

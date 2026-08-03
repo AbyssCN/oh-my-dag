@@ -22,7 +22,7 @@ describe('blocking-forks 语料', () => {
   test('id 唯一; 两档两侧都非空 (免得哪档被误删后读数静静变成 —)', () => {
     const ids = BLOCKING_FORK_CASES.map((c) => c.id);
     expect(new Set(ids).size).toBe(ids.length);
-    for (const tier of ['clear', 'hard'] as const) {
+    for (const tier of ['clear', 'hard', 'indirect'] as const) {
       const g = BLOCKING_FORK_CASES.filter((c) => c.tier === tier);
       expect(g.filter((c) => c.kind === 'red-line').length).toBeGreaterThan(0);
       expect(g.filter((c) => c.kind === 'reversible').length).toBeGreaterThan(0);
@@ -56,12 +56,44 @@ describe('blocking-forks 语料', () => {
     expect(ratio).toBeLessThan(1.6);
   });
 
-  /** 弱事实必须**真的更弱** —— 与完整链一字不差就没有对照可言, 那一臂当场作废。 */
-  test('invocationWeak 严格短于 invocation, 且不等于它 (否则弱臂不成其为对照)', () => {
+  /**
+   * 弱事实必须**真的更弱** —— 与完整链一字不差就没有对照可言, 那一臂当场作废。
+   *
+   * ⚠ 判据按档不同, 而这是 2026-08-03 加 `indirect` 档时被闸咬出来的:
+   * 原判据是"严格更短", 用字数当信息量的廉价代理。在 clear/hard 上成立(弱事实是完整链的截断),
+   * 但在 `indirect` 上**反了** —— 那一档的弱事实是一句**否定**("在这几处未发现"),
+   * 信息量更少而字数更多。**没有为了让新用例过就把闸放宽**, 而是给每档换上贴切的判据。
+   */
+  test('invocationWeak 与 invocation 必须不同 (否则弱臂不成其为对照)', () => {
     for (const c of BLOCKING_FORK_CASES) {
       expect(c.invocationWeak, `${c.id} 的弱事实与完整链相同`).not.toBe(c.invocation);
+    }
+  });
+
+  test('clear/hard 档: 弱事实是完整链的截断 → 严格更短', () => {
+    for (const c of BLOCKING_FORK_CASES.filter((x) => x.tier !== 'indirect')) {
       expect(c.invocationWeak.length, `${c.id} 的弱事实并不更短`).toBeLessThan(c.invocation.length);
     }
+  });
+
+  /**
+   * `indirect` 档的弱事实必须是**否定句**, 而且四条**形状一致** —— 这一档的全部意义就是
+   * 「采集件对间接可达一律吐"未发现"」, 若某条的弱事实透出了别的线索, 模型就不是在
+   * 靠语境推理, 那一档当场作废。
+   */
+  test('indirect 档: 弱事实一律是"未发现"型否定, 且四条彼此一致', () => {
+    const g = BLOCKING_FORK_CASES.filter((c) => c.tier === 'indirect');
+    expect(g.length).toBeGreaterThan(0);
+    for (const c of g) expect(c.invocationWeak, `${c.id}`).toContain('未发现');
+    // 去掉各自的路径名之后应当完全相同 —— 否则就是某条被写得更"提示"。
+    const shape = (c: (typeof g)[number]): string => c.invocationWeak.replace(/`[^`]+`/g, '`P`');
+    expect(new Set(g.map(shape)).size, '间接档的弱事实形状不一致 —— 有一条透出了额外线索').toBe(1);
+  });
+
+  test('indirect 档两侧都非空 —— 只放不可逆的话, "见未发现就喊停"也能满分', () => {
+    const g = BLOCKING_FORK_CASES.filter((c) => c.tier === 'indirect');
+    expect(g.filter((c) => c.kind === 'red-line').length).toBeGreaterThan(0);
+    expect(g.filter((c) => c.kind === 'reversible').length).toBeGreaterThan(0);
   });
 
   test('反向自检: 结论词闸真的会红 (不是恒真式)', () => {
