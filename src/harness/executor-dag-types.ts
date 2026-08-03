@@ -381,7 +381,20 @@ export interface DagObservation {
    * conductor 每轮重画, 从不逐字重复 → D-AD 诊断的死路), 前者键在「盘上有没有位移」——
    * 产物是 agent 不重新生成的东西, 是这个环里唯一稳定的信号。**只报不拦**, 见 detectNoArtifactChange。
    */
-  kind: 'undeclared-artifact-dep' | 'loop-no-progress' | 'write-race' | 'missing-input' | 'missing-command-target' | 'loop-no-artifact-change';
+  /**
+   * `leaf-spin` (2026-08-03, G5 频率读数) = 一个 agent leaf 在自己的工具循环里**反复发同一个动作**
+   * (drift-detector 的 spinning 判据: 同一签名在环里 ≥threshold 次)。
+   *
+   * ⚠ **它与 `loop-no-progress` 键在不同的层上, 这正是它的价值**: 后者键在**外环** ——
+   * conductor 每轮重画, 从不逐字重复, 所以那条判据在 live 上恒 0 (D-AD 诊断的死路, 也是 G5
+   * 三跑 0 样本的原因)。而 `leaf-spin` 键在**内环**, 同样的键在那一层**工作得很好**:
+   * 2026-08-03 单次 live 命中 16 个回合, 最高同签名重复 39 次。
+   * 也就是说 G5 的 0 未必是"这类检测器天然失效", 更可能是**信号在错的层上被观察**。
+   *
+   * **只报不拦**(与 `loop-no-artifact-change` 同档): 要不要把它升成 BLOCKED、K 取几,
+   * 取决于它在真跑上多久命中一次 —— 先有读数再谈判据, 别反过来。
+   */
+  kind: 'undeclared-artifact-dep' | 'loop-no-progress' | 'write-race' | 'missing-input' | 'missing-command-target' | 'loop-no-artifact-change' | 'leaf-spin';
   /** 涉及的节点 id (lint = [reader, writer]; 空转 = 被反复拒绝的那批)。 */
   nodes: string[];
   /** 人与模型都读的一句话 (进 prompt 的就是它)。 */

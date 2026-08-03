@@ -89,6 +89,28 @@ export interface DriftTracker {
   takeInjection(): string | null;
   /** 新一轮 agent 开始 (清全部状态)。 */
   reset(): void;
+  /**
+   * 本次 leaf 至今的空转累计 (2026-08-03, G5)。
+   *
+   * **为什么是数据而不是回调**: `onSpinning`/`onRecovered` 是函数, 而隔离档的 leaf 跑在
+   * bwrap 子进程里, opts 只透传 **JSON 安全**的部分 (`sandboxed-leaf.ts` 的 `serializableOpts`
+   * 明确剔除函数)。也就是说那两个回调在隔离档上**结构性接不了** —— 这就是为什么它们至今
+   * 零消费者: 不是忘了接, 是那条路上接不了。信号要出 leaf, 只能随结果**以数据形式**回来。
+   *
+   * ⚠ 只报不数: 这里给的是频率读数, **不带任何停机语义**。要不要把它升成 BLOCKED、K 取几,
+   * 得先有"它在真跑上多久命中一次"的读数 —— 那正是这个字段存在的理由 (同 observations 的注)。
+   */
+  summary(): DriftSummary;
+}
+
+/** 一次 leaf 的空转累计 —— 只报不拦, 进 `observations` 当频率读数。 */
+export interface DriftSummary {
+  /** 检出 spinning 的回合数 (卡住→逃出算一回合)。 */
+  spinEvents: number;
+  /** 单个签名在环里重复的最高次数 —— 卡得多深。 */
+  maxSameCount: number;
+  /** 卡住过的签名 (去重, 截断保平); 排障时"卡在什么上"比"卡了几次"更有用。 */
+  stuckSigs: string[];
 }
 
 /** 造一个 drift 检测核 (per-session 状态; 每个 leaf / session 建一份)。 */
@@ -100,6 +122,11 @@ export function createDriftTracker(config: DriftDetectorConfig = {}): DriftTrack
 
   let ring: string[] = [];
   let spinningDetected = false;
+  // 空转累计 (G5 读数, 只报不拦) —— 跨 reset **不清**: 它量的是"这个 leaf 整场卡了多少",
+  // 而 reset 是每轮 agent 开始时清环用的; 跟着清就只剩最后一轮, 那不是要问的问题。
+  let spinEvents = 0;
+  let maxSameCount = 0;
+  const stuckSigsSeen: string[] = [];
   // 恢复追踪 (producer #5): 卡在 stuckSig 后, 收集打破循环的不同新签名。
   let stuckSig: string | null = null;
   let escapeSigs: string[] = [];
@@ -112,6 +139,11 @@ export function createDriftTracker(config: DriftDetectorConfig = {}): DriftTrack
       stuckSig = null;
       escapeSigs = [];
       recoveryEmitted = false;
+      // ⚠ spinEvents / maxSameCount / stuckSigsSeen **刻意不清** —— 见 DriftTracker.summary 的注。
+    },
+
+    summary() {
+      return { spinEvents, maxSameCount, stuckSigs: [...stuckSigsSeen] };
     },
 
     note(toolName, input) {
@@ -124,6 +156,10 @@ export function createDriftTracker(config: DriftDetectorConfig = {}): DriftTrack
         const sameCount = ring.filter((s) => s === sig).length;
         if (sameCount >= threshold) {
           spinningDetected = true;
+          // G5 读数累计 (只报不拦): 回合数 + 卡得多深 + 卡在什么上。
+          spinEvents++;
+          if (sameCount > maxSameCount) maxSameCount = sameCount;
+          if (!stuckSigsSeen.includes(sig) && stuckSigsSeen.length < 12) stuckSigsSeen.push(sig);
           // 新 spin 回合: 记住卡在什么, 重置恢复窗口 (即便上回合已恢复, 这次又卡了 = 新难题)。
           stuckSig = sig;
           escapeSigs = [];

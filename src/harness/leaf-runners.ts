@@ -61,6 +61,14 @@ export interface AgentLeafResult {
    *  留 stall 败因(而非把近零输出当 done)。省略/false = 正常完成或硬超时。 */
   stalled?: boolean;
   /**
+   * 本次 leaf 的空转累计 (2026-08-03, G5)。缺席 = 没跑 drift 检测 (关掉了 / 非 agent leaf)。
+   *
+   * **以数据回传而不是回调**: drift 的 `onSpinning`/`onRecovered` 是函数, 而隔离档的 leaf
+   * 跑在 bwrap 子进程里, 只有 JSON 安全的东西过得了那道边界 —— 那两个回调在隔离档上
+   * 结构性接不了, 这就是它们至今零消费者的原因。**只报不拦**: 这是频率读数, 不带停机语义。
+   */
+  spin?: { spinEvents: number; maxSameCount: number; stuckSigs: string[] };
+  /**
    * **效果指标** (2026-07-31, 承 Loop Engineering §8.5「静默失败」)。省略 = 该 runner 不统计。
    *
    * `filesTouched` 回答的是「碰过哪些文件」, 而 §8.5 指出那还不够:
