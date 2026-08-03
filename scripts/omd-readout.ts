@@ -57,6 +57,7 @@ import { capsFor } from '../src/harness/../model/model-caps';
 import { CheckpointManager } from '../src/harness/continuity/checkpoint-manager';
 import type { NodeLoopJournal } from '../src/harness/continuity/types';
 import type { DagRunNode } from '../src/harness/dag-record';
+import type { AcceptanceProbe } from '../src/harness/goal/acceptance';
 import { FAILURE_KIND_INFO, FAILURE_KIND_ORDER, type NodeFailureKind } from '../src/harness/node-failure';
 import { RUN_OUTCOME_INFO, RUN_OUTCOME_ORDER, type RunOutcomeKind } from '../src/harness/run-outcome';
 
@@ -92,6 +93,8 @@ export interface RunReadout {
   entry: string;
   /** 冻结判据两位 (goal 级回填, 同 runId 各记录同份); 缺席 → null (不编 false/false)。 */
   criteria: { judge: boolean; oracle: boolean } | null;
+  /** 冻结契约的验收探针结局 (仅 dag_goal 记); 解析失败/词表外 → null = 没记, 不编桶。 */
+  acceptanceProbe: AcceptanceProbe | null;
 }
 
 /** 统一契约的完整读数 (测试钉死的形状)。 */
@@ -138,6 +141,19 @@ export interface ReadoutResult {
     recorded: number;
   };
   /** 分子 = 记录为 reused 的节点 (并集); 分母 = DAG 全量节点 (含 `未记`); total_nodes=0 → rate null。 */
+  /**
+   * G4 采样 (冻结契约 §5): 分母 = 窗口内 entry='dag_goal' 且 acceptance_probe 非 NULL 的 run。
+   * 老行/未接探针的 run (NULL) 不进分母, 不编 'unknown'; exploratory 是派生数
+   * (= demoted + skipped + exploratory 三条 kind 之和)。
+   */
+  g4_sampling: {
+    denominator: number;
+    passedBoth: number;
+    vacuityOnly: number;
+    demoted: number;
+    skipped: number;
+    exploratory: number;
+  };
   reuse_rate: { reused_nodes: number; total_nodes: number; rate: number | null };
 }
 
@@ -152,6 +168,7 @@ interface ReadoutRow {
   outcome: string | null;
   reused: number | null;
   criteria: string | null;
+  acceptance_probe: string | null;
 }
 
 interface ParsedRow {
@@ -165,6 +182,7 @@ interface ParsedRow {
   outcome: string | null;
   reused: number | null;
   criteria: { judge: boolean; oracle: boolean } | null;
+  acceptanceProbe: AcceptanceProbe | null;
 }
 
 /** 词表校验 (老库可能有词表之外的字面量 → 归 unclassified, 同 ⑦ 段的三态纪律)。 */
@@ -193,6 +211,7 @@ function emptyWorld(meta: ReadoutResult['meta']): ReadoutResult {
     cost_per_success: [],
     criteria_grid: { four_grid: { executed_success: 0, executed_failure: 0, reused_success: 0, 未记: 0 }, two_grid_risk: zeroTwoGridRisk() },
     criteria_consistency: { agree: 0, oracleFailed: 0, wastedRounds: 0, agreeFail: 0, unrecorded: 0, recorded: 0 },
+    g4_sampling: { denominator: 0, passedBoth: 0, vacuityOnly: 0, demoted: 0, skipped: 0, exploratory: 0 },
     reuse_rate: { reused_nodes: 0, total_nodes: 0, rate: null },
   };
 }
@@ -219,6 +238,39 @@ function parseCriteria(raw: string | null): { judge: boolean; oracle: boolean } 
   return null;
 }
 
+
+/** acceptance_probe 只认五条终局的**确切形状** (见 src/harness/goal/acceptance.ts 的 AcceptanceProbe):
+ * 解析失败 / JSON null / 词表外 kind / 多余键 / why 非字符串 → null (= 没记, 不编桶, 不炸整块板)。
+ * 同 dag-record 的读取纪律: 坏值不是 'unknown', 也不是某个新桶。 */
+function parseAcceptanceProbe(raw: string | null): AcceptanceProbe | null {
+  if (raw === null) return null;
+  let p: unknown;
+  try {
+    p = JSON.parse(raw);
+  } catch {
+    return null; // 解析失败 = 没记
+  }
+  if (typeof p !== 'object' || p === null) return null;
+  const o = p as Record<string, unknown>;
+  const keys = Object.keys(o);
+  switch (o.kind) {
+    case 'passed-both':
+      return keys.length === 1 ? { kind: 'passed-both' } : null;
+    case 'exploratory':
+      return keys.length === 1 ? { kind: 'exploratory' } : null;
+    case 'vacuity-only':
+      // why 缺席合法 (探针没原话); 在就必须是字符串, 不许是 null。
+      if (keys.length === 1) return { kind: 'vacuity-only' };
+      return keys.length === 2 && typeof o.why === 'string' ? { kind: 'vacuity-only', why: o.why } : null;
+    case 'demoted':
+      return keys.length === 2 && typeof o.why === 'string' ? { kind: 'demoted', why: o.why } : null;
+    case 'skipped':
+      return keys.length === 2 && typeof o.why === 'string' ? { kind: 'skipped', why: o.why } : null;
+    default:
+      return null; // 词表外的 kind = 没记 (schema 漂移, 不发明新桶)
+  }
+}
+
 /**
  * 读数板**唯一实现** (纯函数)。只读: 只 SELECT, 不建表、不迁移、不写 pragma —— 注入的 db
  * 可以是留痕器正活着的连接 (测试夹具), 读后行数与 schema 原样。CLI 打开真库用
@@ -237,7 +289,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string })
   const optionalCol = (name: string) => (haveCols.includes(name) ? `, ${name}` : `, NULL AS ${name}`);
   const rows = db
     .query(
-      `SELECT id, created_at, run_id, levels, nodes, usage${optionalCol('entry')}${optionalCol('outcome')}${optionalCol('reused')}${optionalCol('criteria')}` +
+      `SELECT id, created_at, run_id, levels, nodes, usage${optionalCol('entry')}${optionalCol('outcome')}${optionalCol('reused')}${optionalCol('criteria')}${optionalCol('acceptance_probe')}` +
         ` FROM omd_dag_runs ORDER BY created_at ASC`,
     )
     .all() as ReadoutRow[];
@@ -284,6 +336,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string })
       outcome: r.outcome,
       reused: r.reused,
       criteria: parseCriteria(r.criteria),
+      acceptanceProbe: parseAcceptanceProbe(r.acceptance_probe),
     };
   });
 
@@ -417,6 +470,33 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string })
   }
   criteria_consistency.unrecorded = shown.length - criteria_consistency.recorded;
 
+  // ── G4 采样 (冻结契约 §5): 分母 = entry 为 dag_goal 且 acceptance_probe 非 NULL 的 run ──
+  // NULL (老行 / 非 dag_goal / 解析失败) 一律不进分母 —— 没记 ≠ 失败, 不编 'unknown'。
+  const g4_sampling: ReadoutResult['g4_sampling'] = { denominator: 0, passedBoth: 0, vacuityOnly: 0, demoted: 0, skipped: 0, exploratory: 0 };
+  for (const run of shown) {
+    if (run.entry !== 'dag_goal' || run.acceptanceProbe === null) continue;
+    g4_sampling.denominator++;
+    switch (run.acceptanceProbe.kind) {
+      case 'passed-both':
+        g4_sampling.passedBoth++;
+        break;
+      case 'vacuity-only':
+        g4_sampling.vacuityOnly++;
+        break;
+      case 'demoted':
+        g4_sampling.demoted++;
+        g4_sampling.exploratory++;
+        break;
+      case 'skipped':
+        g4_sampling.skipped++;
+        g4_sampling.exploratory++;
+        break;
+      case 'exploratory':
+        g4_sampling.exploratory++;
+        break;
+    }
+  }
+
   const total_nodes = universe.size;
   const reused_nodes = reused.size;
 
@@ -428,6 +508,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string })
     cost_per_success,
     criteria_grid: { four_grid, two_grid_risk },
     criteria_consistency,
+    g4_sampling,
     reuse_rate: { reused_nodes, total_nodes, rate: total_nodes > 0 ? reused_nodes / total_nodes : null },
   };
 }
@@ -482,6 +563,7 @@ function mergeRun(runId: string, recs: ParsedRow[]): RunReadout {
     reused,
     entry: recs.find((r) => r.entry !== null)?.entry ?? '未记',
     criteria: recs.find((r) => r.criteria !== null)?.criteria ?? null,
+    acceptanceProbe: recs.find((r) => r.acceptanceProbe !== null)?.acceptanceProbe ?? null,
   };
 }
 
@@ -518,6 +600,12 @@ function printReadoutHuman(r: ReadoutResult, dbPath: string): void {
   console.log(`   风险格: ${r.criteria_grid.two_grid_risk.map((t) => `${t.risk_level} ${t.executed}/${t.not_executed}`).join(' · ')}`);
   const c = r.criteria_consistency;
   console.log(`   criteria: agree ${c.agree} · oracleFailed ${c.oracleFailed} · wastedRounds ${c.wastedRounds} · agreeFail ${c.agreeFail} · recorded ${c.recorded} · unrecorded ${c.unrecorded}`);
+  const g4 = r.g4_sampling;
+  console.log(
+    `   G4 采样 (分母 = entry 为 dag_goal 且 acceptance_probe 非 NULL 的 run, 共 ${g4.denominator} 个): ` +
+      `passed-both ${g4.passedBoth} · vacuity-only ${g4.vacuityOnly} · demoted ${g4.demoted} · skipped ${g4.skipped} · exploratory ${g4.exploratory}` +
+      (g4.denominator === 0 ? '  (这批没有探针记录 —— 老数据或还没接 acceptance_probe)' : '  (exploratory = demoted + skipped + exploratory)'),
+  );
   const rr = r.reuse_rate;
   console.log(`   复用率: ${rr.reused_nodes}/${rr.total_nodes} 节点${rr.rate === null ? ' (分母 0, 算不出)' : ` = ${(rr.rate * 100).toFixed(1)}%`}`);
 }

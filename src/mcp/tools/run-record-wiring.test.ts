@@ -40,9 +40,14 @@ describe('dag_goal 的运行留痕接线', () => {
     const recorder = createDagRecorder({ path: ':memory:' });
     const root = mkdtempSync(join(tmpdir(), 'omd-rec-'));
     const tool = createGoalTool({
-      // 真 runGoal 会跑两张图 (契约段 + 执行段), 引擎在每张跑完时各调一次 onComplete。
-      // 这里照那个形状驱动: 接线对了, 两条记录就带着同一个 runId 落进库。
+      // 真 runGoal 先回传定稿分类, 再跑两张图 (契约段 + 执行段), 引擎各调一次 onComplete。
+      // 这里照生产顺序驱动: 接线对了, 两条记录就带着同一个 runId 与探针结局落进库。
       runGoal: async (goal, cfg) => {
+        cfg.onClassified?.({
+          tier: 'simple',
+          acceptance: { kind: 'executable', command: 'bun test', expectExit: 0 },
+          acceptanceProbe: { kind: 'passed-both' },
+        });
         await cfg.dag.onComplete?.(stubResult('goal-contract', 300, 120));
         await cfg.dag.onComplete?.(stubResult('goal-execute', 700, 400));
         return {
@@ -73,6 +78,7 @@ describe('dag_goal 的运行留痕接线', () => {
     expect(group.every((r) => r.question === '干点活')).toBe(true);
     // 入口是**一次调用**不是一张图: 两段都记 dag_goal, 读数板按 runId 去重才不会数成两次。
     expect(group.map((r) => r.entry)).toEqual(['dag_goal', 'dag_goal']);
+    expect(group.map((r) => r.acceptanceProbe)).toEqual([{ kind: 'passed-both' }, { kind: 'passed-both' }]);
     // 这两个和数就是 G3 (这次多少钱) 与前缀缓存 (兄弟间命中多少) 的读数来源。
     expect(group.reduce((s, r) => s + r.usage.leavesIn, 0)).toBe(1000);
     expect(group.reduce((s, r) => s + r.usage.leavesCacheHit, 0)).toBe(520);

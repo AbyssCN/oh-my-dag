@@ -106,7 +106,11 @@ describe('分类调用 —— 挂了就往保守档落, 不抛 (分类是路由�
 
   test('无 generate/model → 全保守档, 不抛', async () => {
     const c = await classifyGoal('g', {});
-    expect(c).toEqual({ tier: 'complex', acceptance: expect.objectContaining({ kind: 'exploratory' }) });
+    expect(c).toEqual({
+      tier: 'complex',
+      acceptance: expect.objectContaining({ kind: 'exploratory' }),
+      acceptanceProbe: { kind: 'skipped', why: '无分类器 (缺 generate/model)' },
+    });
   });
 
   test('模型吐垃圾 / 抛错 → 全保守档, 不抛', async () => {

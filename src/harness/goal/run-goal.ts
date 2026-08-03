@@ -82,6 +82,12 @@ export interface RunGoalConfig {
   /** 注入式分类器 (测试 / 自定义): 一次出两条轴 (D-I)。 */
   _classify?: (goal: string) => Promise<GoalClassification>;
   /**
+   * 分类定稿回调 (判据轴证据钩子): 分类成功 (含降级 / fail-open / 探索型) 后**恰好调一次**,
+   * 在 `_runDag` 与任何运行记录之前 —— 调用方可在此持久化探针裁决 (`acceptanceProbe`)。
+   * 分类器抛错时**不调** (那时没有定稿的分类可持久化)。
+   */
+  onClassified?: (classified: GoalClassification) => void;
+  /**
    * 注入式 DAG 执行 (测试传 fake; 默认 runExecutorDagWithPlan)。
    * **契约段与执行段共用这一个注入口** —— 两段都是一张单 conductor 节点的图 (D-F),
    * 靠 `plan.name` (`goal-contract` / `goal-execute`) 分辨是谁在调。
@@ -197,6 +203,9 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
         // 教训同源: 只在测试里接、生产不接, 就是又一个"机制在、生产零生效"的空旋钮。
         ...(config.dag.commandRunner ? { runCommand: config.dag.commandRunner } : {}),
       })))(goal);
+  // 探针裁决钩子: 分类定稿后恰好调一次 (含 fallback / 探索型), 进 `_runDag` 与任何运行记录之前。
+  // `_classify` 抛错时这行到不了 → 天然不调, 不存在"抛错也硬调"的路径。
+  config.onClassified?.(classified);
   const tier = config.tier ?? classified.tier;
   const acceptance = config.acceptance ?? classified.acceptance;
   stages.push({

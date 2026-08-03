@@ -13,6 +13,7 @@ import { dirname } from 'node:path';
 import type { ExecutorDagResult } from './executor-dag';
 import type { NodeFailureKind } from './node-failure';
 import { deriveRunOutcome, type RunOutcomeKind } from './run-outcome';
+import type { AcceptanceProbe } from './goal/acceptance';
 
 export interface DagRunNode {
   id: string;
@@ -170,13 +171,29 @@ export interface DagRunRecord {
    * ⚠ 缺席 = 这次不是 goal 路径 (`dag_run` 没有 judge/冻结判据两条判据) 或早于本次改动。
    */
   criteria?: { judge: boolean; oracle: boolean };
+  /**
+   * **这次 goal 的验收探针结论**(entry:'dag_goal' 专列;词表在 `goal/acceptance.ts` 的
+   * `AcceptanceProbe`, 这里不重写)。存的是它的**逐字 JSON** —— 五条分支怎么判出来的、
+   * 降级/跳过时的原话 `why` 全部原样落盘, 读数板按它算 G4 分母与各分支占比。
+   *
+   * 取值矩阵 (entry × 列值) —— 两格 NULL 语义**不同**, 读数板按 entry 念, 不猜值:
+   *   `dag_goal` + 有效 JSON = 那次 goal 的探针逐字 JSON (分类证据, 进 G4 分母)。
+   *   `dag_goal` + NULL      = 历史行 / 探针没跑的行 —— 结局**没记** (无回填), 不进分母。
+   *   其它入口 (如 `dag_run`) + NULL = 探针对非 goal 入口**不适用**, 不是"没记"。
+   *   其它入口 + 有效 JSON   = 写方状态错 (探针只该由 dag_goal 写) —— 读数板忽略这一格, 不进分母。
+   *   entry 缺席 (NULL)      = 历史 / 无法归类的行, 一律不进分母。
+   *
+   * ⚠ `'unknown'` **永不写入** —— 把「这条链没接」伪装成「记了但认不出分支」的那一格不存在。
+   *   坏 JSON / 词表外形状 (读到) = 按 NULL 读 (视为未记录), 读数不崩。
+   */
+  acceptanceProbe?: AcceptanceProbe;
 }
 
 export interface DagRecorder {
   /** 落一次运行, 返回这条记录的主键 (**不是** runId — 见 DagRunRecord.runId)。 */
   record(
     result: ExecutorDagResult,
-    meta?: { question?: string; id?: string; now?: number; runId?: string; entry?: string },
+    meta?: { question?: string; id?: string; now?: number; runId?: string; entry?: string; acceptanceProbe?: AcceptanceProbe },
   ): string;
   /** 取一次运行 (重建 node 图谱)。 */
   get(id: string): DagRunRecord | null;
@@ -211,9 +228,42 @@ interface Row {
   verification: string | null;
   reused: number | null;
   criteria: string | null;
+  acceptance_probe: string | null;
+}
+
+/** 只认 `AcceptanceProbe` 五条终局的**确切形状**; 词表外 kind / 形状不对 / JSON null → undefined (= 未记录)。 */
+function parseAcceptanceProbe(raw: string): AcceptanceProbe | undefined {
+  let p: unknown;
+  try {
+    p = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (typeof p !== 'object' || p === null) return undefined;
+  const o = p as Record<string, unknown>;
+  const keys = Object.keys(o);
+  switch (o.kind) {
+    case 'passed-both':
+      return keys.length === 1 ? { kind: 'passed-both' } : undefined;
+    case 'exploratory':
+      return keys.length === 1 ? { kind: 'exploratory' } : undefined;
+    case 'vacuity-only':
+      // why 缺席合法 (探针没原话); 在就必须是字符串, 不许是 null。
+      if (keys.length === 1) return { kind: 'vacuity-only' };
+      return keys.length === 2 && typeof o.why === 'string' ? { kind: 'vacuity-only', why: o.why } : undefined;
+    case 'demoted':
+      return keys.length === 2 && typeof o.why === 'string' ? { kind: 'demoted', why: o.why } : undefined;
+    case 'skipped':
+      return keys.length === 2 && typeof o.why === 'string' ? { kind: 'skipped', why: o.why } : undefined;
+    default:
+      return undefined;
+  }
 }
 
 function rowToRecord(row: Row): DagRunRecord {
+  // 探针列按**五条终局的确切形状**校验后读: 坏 JSON / 词表外 kind / 形状不对 / JSON null → undefined
+  // (= 未记录) —— 一条写坏的记录不许让整张读数板崩, 也不许读出一个编造的分支。
+  const probe = row.acceptance_probe ? parseAcceptanceProbe(row.acceptance_probe) : undefined;
   return {
     id: row.id,
     createdAt: row.created_at,
@@ -235,6 +285,8 @@ function rowToRecord(row: Row): DagRunRecord {
     // `reused: 0` 是"记了且一个没复用", NULL 是"没记" —— 两者不许合并。
     ...(row.reused !== null ? { reused: row.reused } : {}),
     ...(row.criteria ? { criteria: JSON.parse(row.criteria) } : {}),
+    // 取值矩阵见 DagRunRecord.acceptanceProbe 的注: NULL = 没记 (非 goal / 探针没跑 / 老行); 坏 JSON 已按 NULL 读。
+    ...(probe ? { acceptanceProbe: probe } : {}),
   };
 }
 
@@ -251,10 +303,13 @@ function rowToRecord(row: Row): DagRunRecord {
  * 缺一列, 是**缺一个入口** —— 少接一处的症状是那个入口在读数里凭空消失, 与"没人用它"长得一模一样
  * (`dag_run` / `dag_run_plan` 第一版就漏过一处, 见本文件头注)。设成必填 = 新增入口时 tsc 当场红,
  * 逼你回答"这个入口叫什么", 而不是让它静默落 NULL。
+ *
+ * `acceptanceProbe` 只在 `entry === 'dag_goal'` 时传入并持久化; 其它入口即使误传也会被丢弃、
+ * 列留 NULL —— 见 DagRunRecord.acceptanceProbe 的取值矩阵。
  */
 export function recordDagRun(
   recorder: DagRecorder,
-  meta: { runId: string; entry: string; question?: string },
+  meta: { runId: string; entry: string; question?: string; acceptanceProbe?: AcceptanceProbe },
   prev?: (result: ExecutorDagResult) => void | Promise<void>,
 ): (result: ExecutorDagResult) => Promise<void> {
   return async (result) => {
@@ -263,6 +318,7 @@ export function recordDagRun(
       runId: meta.runId,
       entry: meta.entry,
       ...(meta.question ? { question: meta.question } : {}),
+      ...(meta.entry === 'dag_goal' && meta.acceptanceProbe ? { acceptanceProbe: meta.acceptanceProbe } : {}),
     });
   };
 }
@@ -303,10 +359,13 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
   if (!cols.includes('criteria')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN criteria TEXT`);
   // 入口轴 (2026-08-02): 2026-08-02 之前建的表没这一列, 老行留 NULL (= 没记, 不是 'unknown')。
   if (!cols.includes('entry')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN entry TEXT`);
+  // 同上 (goal 验收探针): 之前建的表没这一列, 老行留 NULL (= 没记, 不是 'unknown')。
+  // 只由 entry='dag_goal' 的 recordDagRun 写入 —— 见 DagRunRecord.acceptanceProbe 的取值矩阵。
+  if (!cols.includes('acceptance_probe')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN acceptance_probe TEXT`);
   db.run(`CREATE INDEX IF NOT EXISTS omd_dag_runs_run_id ON omd_dag_runs (run_id)`);
   const ins = db.query(
-    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage, observations, outcome, verification, reused, criteria)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage, observations, outcome, verification, reused, criteria, acceptance_probe)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const byId = db.query(`SELECT * FROM omd_dag_runs WHERE id = ?`);
   const recent = db.query(`SELECT * FROM omd_dag_runs ORDER BY created_at DESC LIMIT ?`);
@@ -369,6 +428,9 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
         result.reusedNodes ? result.reusedNodes.length : null,
         // criteria 在整趟 goal 收尾时才有 → 这里恒 NULL, 由 updateCriteria 回填。
         null,
+        // goal 验收探针 (契约): 只持久化 entry='dag_goal'; 其它入口即使误传也必须留 NULL。
+        // 缺席 → NULL, 不编 'unknown'; 存一份紧凑 JSON, 绝不双编码。
+        meta.entry === 'dag_goal' && meta.acceptanceProbe !== undefined ? JSON.stringify(meta.acceptanceProbe) : null,
       );
       return id;
     },

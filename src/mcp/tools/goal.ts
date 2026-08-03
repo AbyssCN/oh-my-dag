@@ -12,12 +12,13 @@ import { mkdirSync, openSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import type { OmdMcpTool } from '../server';
-import type { RunGoalResult, GoalTier } from '../../harness/goal/run-goal';
+import type { RunGoalResult, GoalTier, GoalClassification } from '../../harness/goal/run-goal';
 import type { ExecutorDagConfig } from '../../harness/executor-dag-types';
 import type { CheckpointManager } from '../../harness/continuity/checkpoint-manager';
 import type { RunRegistry } from '../run-registry';
 import type { HudRunRecordLike } from '../../hud/mirror';
 import { recordDagRun, type DagRecorder } from '../../harness/dag-record';
+import type { AcceptanceProbe } from '../../harness/goal/acceptance';
 import { RUN_OUTCOME_INFO } from '../../harness/run-outcome';
 import { describeRunWorktree, prepareRunWorktree, type BranchStrategy } from '../../harness/run-worktree';
 import { renderOwnerDirectives, type OwnerInbox } from '../owner-inbox';
@@ -26,7 +27,7 @@ export interface GoalToolDeps {
   /** 自主环实现 (默认注入真 runGoal)。 */
   runGoal: (
     goal: string,
-    config: { cwd: string; dag: ExecutorDagConfig; maxRounds?: number; researchRounds?: number; tier?: GoalTier },
+    config: { cwd: string; dag: ExecutorDagConfig; maxRounds?: number; researchRounds?: number; tier?: GoalTier; onClassified?: (classified: GoalClassification) => void },
   ) => Promise<RunGoalResult>;
   runRegistry: RunRegistry;
   cwd: string;
@@ -279,6 +280,15 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
 
       // INV-P2-6: continuity 给了才落环 journal; resume 时才读它 (与 per-node resume 同一开关)。
       // D-P: 取消把手一并挂上 —— 自主环是最长活的那条路 (research + 多轮执行), 也是最需要能叫停的。
+
+      // goal 验收探针 (冻结契约 §4): 探针分支在**分类期**就定了, 而 recordDagRun 的 closure 到
+      // record 时才读 meta.acceptanceProbe —— 所以这里持同一个可变对象, 分类回调 (onClassified)
+      // 里填进去, 两段图的记录就都带上; 非 dag_goal 入口不传 → 列 NULL (见 DagRunRecord 取值矩阵)。
+      const goalMeta: { runId: string; entry: 'dag_goal'; question: string; acceptanceProbe?: AcceptanceProbe } = {
+        runId,
+        entry: 'dag_goal',
+        question: goal,
+      };
       const dagWithContinuity: ExecutorDagConfig = {
         ...dag,
         cancelSignal: deps.runRegistry.attachCancel(runId),
@@ -328,8 +338,9 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         ...(deps.recorder
           ? {
               // 两段图 (goal-contract / goal-execute) 都记 'dag_goal' —— 入口是**一次调用**,
-              // 不是一张图; 读数板按 runId 去重, 与 criteria 那条同口径。
-              onComplete: recordDagRun(deps.recorder, { runId, entry: 'dag_goal', question: goal }, dag.onComplete),
+              // 不是一张图; 读数板按 runId 去重, 与 criteria 那条同口径。探针走 goalMeta
+              // (closure 在 record 时才读它的 acceptanceProbe —— 见 goalMeta 的注)。
+              onComplete: recordDagRun(deps.recorder, goalMeta, dag.onComplete),
             }
           : {}),
       } as ExecutorDagConfig;
@@ -340,6 +351,11 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           // R2: 隔离档下这里就是那棵 worktree; head 档下它逐字等于 deps.cwd (零回归)。
           cwd: worktree.cwd,
           dag: dagWithContinuity,
+          // 分类裁决早于第一张图落盘 → 探针从这里进 goalMeta (recordDagRun 的 closure 在 record
+          // 时才读 meta.acceptanceProbe, 于是两段图的记录都带上同一份)。
+          onClassified: (classified) => {
+            goalMeta.acceptanceProbe = classified.acceptanceProbe;
+          },
           ...(maxRounds ? { maxRounds } : {}),
           ...(researchRounds ? { researchRounds } : {}),
           ...(tier ? { tier } : {}),
