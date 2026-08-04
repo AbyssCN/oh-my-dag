@@ -58,6 +58,7 @@ import { expandConductorNode, subgraphWarnings } from './plan/conductor-expand';
 import { renderRoundForJudge, splitNamedIds, type JudgeChildView } from './plan/conductor-judge';
 import { collectJudgeArtifacts, DEFAULT_ARTIFACT_BUDGET, type ArtifactBudget } from './plan/judge-artifacts';
 import { staticLintPlan } from './plan/static-lint';
+import { leafTierGateFindings } from './plan/leaf-tier-gate';
 import { scheduledArtifactFindings } from './plan/invocation-facts';
 // D-Q 图外只读观察者的两个确定性 producer (零模型调用): 制品边 lint + 环空转检测。
 import {
@@ -136,13 +137,20 @@ async function planAndExecute(
   let plan: ConductorPlan | null = null;
   let conductorUsage: ModelUsage = { in: 0, out: 0 };
   let lastErr = '';
+  let correction = '';
+  // g1 leaf 档位闸 (图 #9): parse 重试与闸拒回**分开记账** —— 闸拒回是"计划合法但档位派错",
+  // 吃 parse 预算会让一次违规偷走真正的格式重试。有界重问, 用尽 fail-open 放行 + 响亮留证
+  // (仓规: fail-open 可以吞异常, 不许吞证据)。patch 重规划轮 (tryPatchReplan) 不过闸:
+  // 补丁只改局部字段, 首轮整图已闸过。
+  const LEAF_TIER_MAX_REJECTS = 2;
+  let parseFails = 0;
+  let gateRejects = 0;
   // conductor 输出预算 (2026-07-25 实证修): plan JSON 随任务规模涨, thinking 模型 (k3) 的推理还可能
   // 计入 completion 预算 — transport 默认 4096 必截断 (Unterminated string 重试耗尽整轮报废)。
   // 默认 8192 = deepseek 系安全顶 (同 fanout SYNTH_MAX 语义); k3 等高容量 conductor 经 config/env 升。
   const conductorMaxTokens =
     config.conductorMaxTokens ?? (Number(process.env.OMD_CONDUCTOR_MAX_TOKENS) || 32_768);
-  for (let attempt = 1; attempt <= maxPlanRetries + 1; attempt++) {
-    const correction = attempt === 1 ? '' : `\n\n上次回复不是有效 plan (${lastErr})。只回 JSON 对象, 别的不要。`;
+  for (;;) {
     const { text, usage } = await generate({
       messages: [{ role: 'system', content: sys }, { role: 'user', content: `${PLAN_BOUNDARY}${task}${correction}` }],
       model: conductorModel,
@@ -153,11 +161,34 @@ async function planAndExecute(
     });
     conductorUsage = addUsage(conductorUsage, usage);
     const parsed = parsePlan(text, { knownTemplates: new Set(templates.keys()) });
-    if (parsed.ok) {
-      plan = parsed.plan;
-      break;
+    if (!parsed.ok) {
+      lastErr = parsed.error;
+      if (++parseFails > maxPlanRetries) break; // 预算同旧语义: 共 maxPlanRetries+1 次 parse 尝试
+      correction = `\n\n上次回复不是有效 plan (${lastErr})。只回 JSON 对象, 别的不要。`;
+      continue;
     }
-    lastErr = parsed.error;
+    if (config.leafTierGate) {
+      const findings = leafTierGateFindings(parsed.plan, {
+        ...(config.leafTierThresholdBytes !== undefined ? { thresholdBytes: config.leafTierThresholdBytes } : {}),
+      });
+      if (findings.length > 0 && gateRejects < LEAF_TIER_MAX_REJECTS) {
+        gateRejects++;
+        logger.info(
+          { nodes: findings.flatMap((f) => f.nodes), rejects: gateRejects },
+          '[omd/executor-dag] leaf 档位闸拒回 plan → 带改写建议重问 (g1 图#9)',
+        );
+        correction = `\n\n上一版 plan 被 leaf 档位闸拒回 (可修, 不是格式问题):\n${findings.map((f) => `- ${f.message}`).join('\n')}\n按建议改写后只回完整 plan JSON 对象, 别的不要。`;
+        continue;
+      }
+      if (findings.length > 0) {
+        logger.warn(
+          { rejects: gateRejects, findings: findings.map((f) => f.message) },
+          '[omd/executor-dag] leaf 档位闸重问预算用尽仍违规 → fail-open 放行 (证据在此, g1)',
+        );
+      }
+    }
+    plan = parsed.plan;
+    break;
   }
   if (!plan) throw new Error(`executor-dag: conductor (${conductorModel}) 未产出有效 plan: ${lastErr}`);
 

@@ -81,6 +81,12 @@ const PlanNode = z
     output_type: z.enum(['structured', 'file', 'git', 'none']).optional(),
     output_path: z.string().optional(),
     output_schema: z.record(z.string(), z.unknown()).optional(),
+    /**
+     * g1 (图 #9): 本节点须摄入的内容总字节预估 (goal 里路径不可 stat 时的体量声明, lister 侧信息可给)。
+     * 消费者 = plan/leaf-tier-gate (选「单 cat+leaf」还是「conductor 展开 per-item 对」的路)。
+     * 体量提示不改节点语义 → 不入指纹。
+     */
+    content_bytes: z.number().int().positive().optional(),
     // 'map' (U1) = 运行时动态扇出节点 (STUDY Q3): lister → per-element 展开成 applicative 子节点。
     // 'conductor' (P3 D-G′/批次 3) = 运行时**异构**展开: 现场让 conductor 画一张子图再局部调度。
     //   与 map 的分工: map 扇的是**同一件事的 N 份** (模板 + 运行时清单); conductor 展的是
@@ -433,6 +439,17 @@ export function conductorSystemPrompt(
     '  (set output_path too). A "leaf" CANNOT touch the filesystem — a leaf told to write a file silently',
     '  produces NOTHING (returns text, node reports done, no artifact). NEVER use "leaf" for an',
     '  implementation/build node. "Default to leaf" applies only to text-deliverable nodes (analysis/design/research).',
+    // g1 leaf 档位判据 (图「引擎墙钟与 leaf 档位」#9, 2026-08-04)。这段是**教学**, 执法在
+    // plan/leaf-tier-gate.ts (prompt 规则不可证伪, 闸红/绿可证伪 —— 违规 plan 会被拒回重画)。
+    'HARD RULE — big content enters via PROMPT (billed once), never via an agent tool loop (the loop',
+    '  re-sends the whole conversation EVERY turn — measured 6x token replay on a 1.2MB corpus): if a',
+    '  node only READS paths already determinate (named in the goal, or produced by a lister) and its',
+    '  deliverable is structured output with NO file writes, do NOT use executor:"agent". Emit a',
+    '  "command" node (cat <paths>) feeding a "leaf" via depends_on — content reaches the leaf prompt at',
+    '  one-time cost. Keep "agent" for nodes that must DECIDE what to read next from content, modify',
+    '  files, or run verification. Explore-then-hand-off: an agent/lister may LOCATE, but re-reading goes',
+    '  to command+leaf pairs (via executor:"conductor" when the list exists only at run time). Optional',
+    '  field "content_bytes" (estimated bytes the node must ingest) helps the engine pick the route.',
     '',
     'Scheduling / allocation fields (all optional; the engine enforces them — set only where the default is wrong):',
     '- "requires": how many done dependencies a node needs to run: "all" (default for ≤1 dep — any failed dep',
@@ -587,6 +604,7 @@ export function conductorSystemPrompt(
     // 写完没人看: 是验证的样子而不是验证, 还会把它从**真的会跑**的 command / judge 节点那条路上引开。
     // zod 层仍容忍旧 plan; 指纹已排除 (semantic-key)。
     '    "output_type"?: "structured"|"file"|"git"|"none", "output_path"?: string,',
+    '    "content_bytes"?: number (estimated bytes of content this node must ingest — see the big-content HARD RULE),',
     '    "requires"?: "all"|"any"|number, "cluster"?: string, "tier"?: "strong"|"mid"|"cheap", "attach_media"?: boolean,',
     '    "kind"?: "primitive", "primitive"?: "parallel"|"pipeline"|"loop-until"|"verify"|"judge"|"discovery"|"iterate"|"tournament"|"router"|"race"|"escalation"|"saga"|"escape-hatch", "params"?: object } } }',
     // A8 (2026-07-31): 可信边界规则进**冻结前缀** —— 规则是静态文本 (进得了 prompt cache),

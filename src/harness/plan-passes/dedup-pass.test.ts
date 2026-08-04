@@ -141,7 +141,9 @@ describe("dedupPass (D-20)", () => {
 		// (入键会系统性打空 D-21 跨轮复用, 见 semantic-key.ts 注)。
 		// postcondition / leaf 2026-07-28 加入 (空旋钮全仓扫): 引擎零消费者, 明示已撤, zod 留容忍。
 		// 零消费者字段入键 = 纯噪声打空跨轮复用 (与 agent 同一形态)。要重新入键, 先给它一个消费者。
-		const EXCLUDED = new Set(["map", "agent", "postcondition", "leaf"]);
+		// content_bytes (g1, 2026-08-04) = 体量**提示** (消费者是规划期的 leaf-tier-gate, 不是执行):
+		// 两节点只差体量预估 = 同一件活, 判重合并正确; 入键反而让预估抖动打空 D-21 (同 agent 教训)。
+		const EXCLUDED = new Set(["map", "agent", "postcondition", "leaf", "content_bytes"]);
 		// 每字段一对「仅此字段不同」的取值 (B 可为 undefined = 字段省略)。
 		const pairs: Record<string, [unknown, unknown]> = {
 			skill: ["s1", "s2"],

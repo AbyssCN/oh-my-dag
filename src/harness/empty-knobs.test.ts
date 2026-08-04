@@ -46,6 +46,7 @@ const DECLARED_CONSUMERS: Record<string, string> = {
   map: 'executor-dag.runMapNode',
   output_type: 'executor-dag (producesFiles 判定)',
   output_path: 'executor-dag (producesFiles 判定 + 产物闸)',
+  content_bytes: 'plan/leaf-tier-gate (g1 体量声明 → 改写建议选路)',
   requires: 'executor-dag (D-7v2 quorum 级联)',
   cluster: 'stamp pass (D-22 链亲和) + HUD 分组',
   tier: 'stamp pass (D-17 选池档位)',
