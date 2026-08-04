@@ -61,3 +61,65 @@ export function scoreF2(answers: Record<string, string>): {
   }
   return { hit, total: F2_ITEMS.length, misses, kwHit, srcHit };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 第三维: **引文可逐字定位** (2026-08-04 加的新尺 —— 老两维读数照旧分开写)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 任务文本明写「答案要在原文里**可逐字定位**」,而此前评分器**从来没查过这件事** ——
+ * 它只查 `acceptKeywords` 子串,那是**逐字接地的代理指标**,不是逐字接地本身。
+ * 代理指标的问题在本程实测到了:出处维度饱和后 `总分 ≡ 关键词分`,而关键词维度噪声主导,
+ * 于是整把尺失去判别力。这一维直接查真东西:**答案里引的那句话,在它自己声明的那个文件里吗?**
+ *
+ * 判据(确定性,零 LLM,拿不准不算命中):
+ *   · 从答案里抠 ≥20 字符的引号片段(三种引号,同 observers.extractQuotedSpans 的量级);
+ *   · 空白归一(原文有换行/多空格,引文往往被压成一行)后做子串比对;
+ *   · **只要有一段能在所声明的 sourceFile 里找到** → 该题这一维命中。
+ *
+ * ⚠ **加这一维必然让数变难看**(它比关键词严格得多)——那正是它有用的原因:
+ * 拒绝加尺子才是作弊。读数按「老两维 + 新增维」分开报,别合并。
+ */
+const normWS = (s: string): string => s.replace(/\s+/g, ' ').trim().toLowerCase();
+
+/** 从一段回答里抠够长的引号片段(≥minLen,空白归一后计长)。 */
+export function quotedSpans(answer: string, minLen = 20): string[] {
+  const out: string[] = [];
+  for (const re of [/"([^"\n]+)"/g, /[“]([^”\n]+)[”]/g, /`([^`\n]+)`/g]) {
+    for (const m of answer.matchAll(re)) {
+      const s = normWS(m[1] ?? '');
+      if (s.length >= minLen) out.push(s);
+    }
+  }
+  return out;
+}
+
+/**
+ * 逐字定位维度评分。`readSource(fileName)` 返回该语料原文;读不到 → 该题**不算命中也不算失败**
+ * (记进 `unreadable`,与"引不出来"分开 —— 仓规 NULL ≠ 0 ≠ 不适用)。
+ */
+export function scoreF2Grounding(
+  answers: Record<string, string>,
+  readSource: (fileName: string) => string | null,
+): { hit: number; total: number; noQuote: string[]; notFound: string[]; unreadable: string[] } {
+  let hit = 0;
+  const noQuote: string[] = [];
+  const notFound: string[] = [];
+  const unreadable: string[] = [];
+  for (const item of F2_ITEMS) {
+    const spans = quotedSpans(answers[item.id] ?? '');
+    if (spans.length === 0) {
+      noQuote.push(item.id);
+      continue;
+    }
+    const raw = readSource(item.sourceFile);
+    if (raw === null) {
+      unreadable.push(item.id);
+      continue;
+    }
+    const hay = normWS(raw);
+    if (spans.some((s) => hay.includes(s))) hit++;
+    else notFound.push(item.id);
+  }
+  return { hit, total: F2_ITEMS.length, noQuote, notFound, unreadable };
+}
