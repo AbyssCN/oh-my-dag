@@ -79,7 +79,11 @@ describe('U1 map 节点运行时(fake model)', () => {
     const map = res.results['audit']!;
     expect(map.status).toBe('done');
     const collected = JSON.parse(map.output) as { key: string; status: string; output: string }[];
-    expect(collected.find((c) => c.key === 'alv')!.output).toBe('[failed]');
+    // 2026-08-04 契约更新: 失败子项不再是光秃 '[failed]', 要带败因截断 —— repair 轮/下游 fan-in
+    // 修不对因的教训 (ed4dbe39: 防注入闸拒因被吞)。标记开头不变, 因随后。
+    const alv = collected.find((c) => c.key === 'alv')!.output;
+    expect(alv.startsWith('[failed]')).toBe(true);
+    expect(alv).toContain('leaf boom: alv');
     expect(collected.filter((c) => c.status === 'done').length).toBe(2);
     expect(res.results['synth']!.status).toBe('done'); // 下游照跑
   });

@@ -1734,7 +1734,10 @@ async function executePlan(
               emitNodeEvent({ type: 'settle', id: child.id, status: r.status, kind: r.kind, ...(r.model ? { model: r.model } : {}) });
               usageAcc = addUsage(usageAcc, r.usage);
               if (r.status === 'failed') failedCount++;
-              childResults.push({ key: child.key, item: child.item, status: r.status, output: r.status === 'failed' ? '[failed]' : r.output });
+              // 失败子项带败因截断 (2026-08-04): 此前压成光秃 '[failed]', 下游 fan-in 与 repair 轮
+              // 都看不见 10 个子项**为什么**全灭 (ed4dbe39: 防注入闸拒的原话被吞, reconcile 只能说
+              // "无任何论文原文") —— 环的信息通道就是败因, 同 conductor 子图 childOut 的纪律。
+              childResults.push({ key: child.key, item: child.item, status: r.status, output: r.status === 'failed' ? `[failed] ${(r.output || '(无输出)').slice(0, 300)}` : r.output });
             }
           })(),
         );
