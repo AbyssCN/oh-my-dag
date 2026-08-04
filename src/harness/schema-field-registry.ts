@@ -79,6 +79,12 @@ export const REGISTRY: Record<string, FieldEntry> = {
     declared: false,
     note: '⚠ 只在 **map.lister** 那一层被明示; node 顶层的同名字段不邀请 conductor 写 (它是 fan-in 摘要的形状约束, 由接线层/手写 plan 给)。',
   },
+  content_bytes: {
+    consumer: 'plan/leaf-tier-gate.leafTierGateFindings (g1 图#9: 体量声明帮闸在「单 cat+leaf」与「conductor 展开 per-item 对」间选路)',
+    fingerprint: false,
+    declared: true,
+    note: '体量**提示**不改节点语义 —— 入键会让预估值抖动打空 D-21 跨轮复用 (同 agent 字段的教训)。',
+  },
   executor: { consumer: 'executor-dag.runNodeOnce (agent/command/research/map/conductor 分流)', fingerprint: 'fields', declared: true, note: '缺省归一为 leaf (省略与显式 leaf 同指纹)。' },
   max_nodes: { consumer: 'executor-dag.runConductorRound → plan/conductor-expand (子图硬顶)', fingerprint: 'fields', declared: true, note: 'D-B/D-D: 顶不同 = 允许展开的范围不同 = 不同的执行。' },
   max_rounds: {

@@ -535,6 +535,12 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       // 又一次「机制在、生产零生效」。引擎侧的默认不动(它是中立的), 在生产装配这一层打开。
       // 单/双节点不吃这一发: 引擎内 `idSet.size > 1` 已经守着。
       warmThenFanout: true,
+      // g1 leaf 档位闸 (图 #9, 2026-08-04): 大内容进 prompt (单次计费) 不进工具环 (每轮重放,
+      // r2 实测 6 倍)。判据/改写建议在 plan/leaf-tier-gate.ts, 拒回环在 executor-dag planAndExecute。
+      // 阈值 = 实测之半: deepseek-v4-flash 探针收 3.04MB (56 万 token) 未撞限, 取 1.5MB 留
+      // goal/上游注入/输出余量。OMD_LEAF_TIER_GATE=0 关; OMD_LEAF_TIER_THRESHOLD_BYTES 覆盖阈值。
+      leafTierGate: env.OMD_LEAF_TIER_GATE !== '0',
+      leafTierThresholdBytes: intEnv(env.OMD_LEAF_TIER_THRESHOLD_BYTES) ?? 1_500_000,
       kindFanout,
       // R2: 隔离档下这两个是**为那棵树重建的**; 无 override 时逐字等于装配期那一对 (零回归)。
       agentRunner: agentRunnerForRun,

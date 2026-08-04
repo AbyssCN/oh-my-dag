@@ -85,6 +85,19 @@ export interface ExecutorDagConfig {
   leafPonytail?: boolean;
   /** conductor 规划无效输出的有界重试 (默认 2 → ≤3 次)。 */
   maxPlanRetries?: number;
+  /**
+   * g1 leaf 档位闸 (图「引擎墙钟与 leaf 档位」#9, 2026-08-04): 计划落地前拒
+   * 「executor:'agent' 读确定路径 + 无写意图 + 结构化产出」的节点/map 模板, 带改写建议重问
+   * conductor (有界), 用尽 fail-open 放行并响亮留证。判据本体 plan/leaf-tier-gate.ts。
+   * 缺省关 (引擎中立); 生产装配层 (mcp/assemble) 开, OMD_LEAF_TIER_GATE=0 关。
+   */
+  leafTierGate?: boolean;
+  /**
+   * g1「塞得下单 leaf prompt」阈值 (字节), 决定改写建议走「单 cat+leaf」还是「conductor 展开
+   * per-item 对」。按座位实测定 (2026-08-04 探针: deepseek-v4-flash 收 3.04MB=56 万 token 未撞限),
+   * 装配层给实测值之半; 缺省不做体量分支 (建议文案给两条路)。
+   */
+  leafTierThresholdBytes?: number;
   /** 限定 conductor 可派的 agent roster (进规划 system prompt)。 */
   agents?: string[];
   /**
