@@ -1,0 +1,14 @@
+{
+ "id": "dc46c885-list-loop-journals",
+ "fixSha": "dc46c88585d2006e92a215f8d9ed96c6bae5c4ec",
+ "baseSha": "9e17b90d149e8d1002d54404bbb2173bfd5336a6",
+ "title": "feat(readout): 把 continuity journal 接进读数板 —— 轮数与内环停止证据补齐",
+ "statement": "本仓存在一个缺陷。issue 描述(来自修复该缺陷的 commit 标题):\n  feat(readout): 把 continuity journal 接进读数板 —— 轮数与内环停止证据补齐\n\n判据:`bun test src/harness/continuity/list-loop-journals.test.ts` 必须通过。\n⚠ **不许改动测试文件 `src/harness/continuity/list-loop-journals.test.ts`** —— 判分前会逐字节核对, 改了这一跑作废。\n相关实现文件:src/harness/continuity/checkpoint-manager.ts",
+ "implPaths": [
+  "src/harness/continuity/checkpoint-manager.ts"
+ ],
+ "testPaths": [
+  "src/harness/continuity/list-loop-journals.test.ts"
+ ],
+ "command": "bun test src/harness/continuity/list-loop-journals.test.ts"
+}
