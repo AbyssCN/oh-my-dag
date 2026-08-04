@@ -55,6 +55,9 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { commandRiskTier, RISK_TIER_ORDER, type CommandRiskTier } from '../src/harness/command-leaf';
 import { TOOL_RENAMES } from '../src/mcp/tool-renames';
+import { readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
+import { parseMapMarkdown } from '../src/harness/pathfinder/map-store';
 import { computeCost } from '../src/model/cost-ledger';
 import { capsFor } from '../src/harness/../model/model-caps';
 import { CheckpointManager } from '../src/harness/continuity/checkpoint-manager';
@@ -103,6 +106,20 @@ export interface RunReadout {
 /** 统一契约的完整读数 (测试钉死的形状)。 */
 export interface ReadoutResult {
   meta: { db: string; limit: number; readonly: true };
+  /**
+   * S-1 片d (2026-08-04): 建议接受率 — 扫 docs/plan/pathfinder/*.md 的 suggestionsLog 聚合。
+   * rate = (accepted+edited)/decided, decided = accepted+edited+rejected (人的处置);
+   * deduped 单列 (机器去重不是人的决定, 混进分母会虚高接受率)。
+   * null = 没给 mapsCwd 或没有任何处置史 (「没数据」≠ 0%)。
+   */
+  suggestion_acceptance: {
+    decided: number;
+    accepted: number;
+    edited: number;
+    rejected: number;
+    deduped: number;
+    rate: number | null;
+  } | null;
   runs: RunReadout[];
   /** 按 run 去重 (一个 run 多 attempt 只计一次); total = 本窗口 distinct run 数 (含 `未记`)。 */
   outcome_distribution: Record<RunOutcomeKind, number> & { 未记: number; total: number };
@@ -245,6 +262,7 @@ function emptyWorld(meta: ReadoutResult['meta']): ReadoutResult {
     criteria_grid: { four_grid: { executed_success: 0, executed_failure: 0, reused_success: 0, 未记: 0 }, two_grid_risk: zeroTwoGridRisk() },
     criteria_consistency: { agree: 0, oracleFailed: 0, wastedRounds: 0, agreeFail: 0, unrecorded: 0, recorded: 0 },
     g4_sampling: { denominator: 0, passedBoth: 0, vacuityOnly: 0, demoted: 0, skipped: 0, exploratory: 0 },
+    suggestion_acceptance: null,
     reuse_rate: { reused_nodes: 0, total_nodes: 0, rate: null },
     // 空世界: 闸分母全 0, ledgerGap 记 null = **不知道** (空留痕库不代表没跑过, 只代表这里没有)。
     gate_denominators: { g3LiveRuns: 0, g4Samples: 0, ledgerGap: null },
@@ -347,7 +365,41 @@ function normalizeEntry(e: string | null): string | null {
   return e === null ? null : (TOOL_RENAMES[e] ?? e);
 }
 
-export function readout(opts: { db: Database; limit?: number; dbPath?: string }): ReadoutResult {
+/** S-1 片d: 扫图聚合建议处置台账 (纯读; 图目录缺失/空 → null)。 */
+export function aggregateSuggestionAcceptance(mapsCwd: string): ReadoutResult['suggestion_acceptance'] {
+  const dir = `${mapsCwd}/docs/plan/pathfinder`;
+  let files: string[];
+  try {
+    files = readdirSync(dir).filter((f) => f.endsWith('.md'));
+  } catch {
+    return null;
+  }
+  const acc = { decided: 0, accepted: 0, edited: 0, rejected: 0, deduped: 0, rate: null as number | null };
+  let any = false;
+  for (const f of files) {
+    let log;
+    try {
+      log = parseMapMarkdown(readFileSync(`${dir}/${f}`, 'utf8')).suggestionsLog;
+    } catch {
+      continue; // 单图损坏不拖垮读数板 (与账本行解析同款容错)
+    }
+    for (const e of log ?? []) {
+      any = true;
+      if (e.outcome === 'deduped') acc.deduped++;
+      else {
+        acc.decided++;
+        if (e.outcome === 'accepted') acc.accepted++;
+        else if (e.outcome === 'edited') acc.edited++;
+        else acc.rejected++;
+      }
+    }
+  }
+  if (!any) return null;
+  acc.rate = acc.decided > 0 ? (acc.accepted + acc.edited) / acc.decided : null;
+  return acc;
+}
+
+export function readout(opts: { db: Database; limit?: number; dbPath?: string; mapsCwd?: string }): ReadoutResult {
   const limit = opts.limit ?? 20;
   const meta: ReadoutResult['meta'] = { db: opts.dbPath ?? '(injected)', limit, readonly: true };
   const db = opts.db;
@@ -597,6 +649,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string })
     criteria_grid: { four_grid, two_grid_risk },
     criteria_consistency,
     g4_sampling,
+    suggestion_acceptance: opts.mapsCwd !== undefined ? aggregateSuggestionAcceptance(opts.mapsCwd) : null,
     gate_denominators,
     reuse_rate: { reused_nodes, total_nodes, rate: total_nodes > 0 ? reused_nodes / total_nodes : null },
   };
@@ -704,6 +757,14 @@ function printReadoutHuman(r: ReadoutResult, dbPath: string): void {
       `passed-both ${g4.passedBoth} · vacuity-only ${g4.vacuityOnly} · demoted ${g4.demoted} · skipped ${g4.skipped} · exploratory ${g4.exploratory}` +
       (g4.denominator === 0 ? '  (这批没有探针记录 —— 老数据或还没接 acceptance_probe)' : '  (exploratory = demoted + skipped + exploratory)'),
   );
+  const sa = r.suggestion_acceptance;
+  if (sa !== null) {
+    // S-1 片d: 接受率是「要不要全自动」的判据 (交接 18 S-1 立项理由); deduped 单列不进分母。
+    console.log(
+      `   建议接受率: ${sa.accepted + sa.edited}/${sa.decided} (accepted ${sa.accepted} · edited ${sa.edited} · rejected ${sa.rejected})` +
+        `${sa.rate === null ? '' : ` = ${(sa.rate * 100).toFixed(0)}%`} · deduped ${sa.deduped} (机器去重, 不进分母)`,
+    );
+  }
   const rr = r.reuse_rate;
   console.log(`   复用率: ${rr.reused_nodes}/${rr.total_nodes} 节点${rr.rate === null ? ' (分母 0, 算不出)' : ` = ${(rr.rate * 100).toFixed(1)}%`}`);
 }
@@ -785,7 +846,7 @@ if (import.meta.main) {
 
   // 表不存在 = 一笔记录都没有 (合法空态, 契约要求 exit 0; 老 CLI 会在这里 SELECT 崩掉)。
   if (!hasTable) {
-    const contract = readout({ db, limit, dbPath });
+    const contract = readout({ db, limit, dbPath, mapsCwd: process.cwd() });
     if (flags.json) console.log(JSON.stringify({ dbPath, readout: contract }, null, 2));
     else {
       console.log(`留痕库 ${dbPath} 里还没有 omd_dag_runs 表 —— 一次记录都没有 (合法空态, exit 0)。`);
@@ -794,7 +855,7 @@ if (import.meta.main) {
     db.close();
     process.exit(0);
   }
-  const contract = readout({ db, limit, dbPath });
+  const contract = readout({ db, limit, dbPath, mapsCwd: process.cwd() });
 
   // 老库没有 observations / outcome 列 → 整条 SELECT 会崩。列在不在是**运行期事实**, 查一次 pragma
   // 再拼 (缺的那列补 NULL —— 正是"这批记录没记"那一格, 与"记了但是空的"分开数)。

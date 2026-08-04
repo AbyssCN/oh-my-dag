@@ -436,3 +436,45 @@ describe('闸的分母不搭展示窗口的车 (2026-08-03)', () => {
     rec.close();
   });
 });
+
+// ── S-1 片d: 建议接受率聚合 (2026-08-04) ─────────────────────────────────────
+
+import { aggregateSuggestionAcceptance } from '../../scripts/omd-readout';
+import { renderMapMarkdown as renderForSugg } from './pathfinder/map-store';
+import { mkdtempSync as mkdtempSugg, mkdirSync as mkdirSugg, writeFileSync as writeSugg, rmSync as rmSugg } from 'node:fs';
+import { tmpdir as tmpdirSugg } from 'node:os';
+import { join as joinSugg } from 'node:path';
+
+describe('omd-readout · 建议接受率 (S-1 片d)', () => {
+  test('聚合多图 suggestionsLog: rate=(accepted+edited)/decided, deduped 单列; 无处置史 → null', () => {
+    const cwd = mkdtempSugg(joinSugg(tmpdirSugg(), 'sugg-acc-'));
+    const dir = joinSugg(cwd, 'docs', 'plan', 'pathfinder');
+    mkdirSugg(dir, { recursive: true });
+    writeSugg(joinSugg(dir, 'a.md'), renderForSugg({
+      destination: 'A', slug: 'a', tickets: [], decisionsLog: [],
+      suggestionsLog: [
+        { ticketId: 's1', outcome: 'accepted', at: 't', runId: 'r1' },
+        { ticketId: 's2', outcome: 'edited', at: 't', runId: 'r1' },
+        { ticketId: 's3', outcome: 'rejected', at: 't', runId: 'r1' },
+        { ticketId: 't0', outcome: 'deduped', at: 't', runId: 'r1' },
+      ],
+    }));
+    writeSugg(joinSugg(dir, 'b.md'), renderForSugg({
+      destination: 'B', slug: 'b', tickets: [], decisionsLog: [],
+      suggestionsLog: [{ ticketId: 's1', outcome: 'rejected', at: 't', runId: 'r2' }],
+    }));
+    const sa = aggregateSuggestionAcceptance(cwd)!;
+    expect(sa).toEqual({ decided: 4, accepted: 1, edited: 1, rejected: 2, deduped: 1, rate: 0.5 });
+    rmSugg(cwd, { recursive: true, force: true });
+  });
+
+  test('图目录不存在 / 有图无台账 → null (「没数据」≠ 0%)', () => {
+    const cwd = mkdtempSugg(joinSugg(tmpdirSugg(), 'sugg-acc-'));
+    expect(aggregateSuggestionAcceptance(cwd)).toBeNull();
+    const dir = joinSugg(cwd, 'docs', 'plan', 'pathfinder');
+    mkdirSugg(dir, { recursive: true });
+    writeSugg(joinSugg(dir, 'a.md'), renderForSugg({ destination: 'A', slug: 'a', tickets: [], decisionsLog: [] }));
+    expect(aggregateSuggestionAcceptance(cwd)).toBeNull();
+    rmSugg(cwd, { recursive: true, force: true });
+  });
+});
