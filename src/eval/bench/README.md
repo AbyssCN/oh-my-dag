@@ -92,10 +92,21 @@ gap 大 = 靠运气(有时对但路径不稳);gap 小 = 决策路径稳定收敛
 ## 用法
 
 ```bash
-bun run scripts/omd-bench.ts extract --limit 400 --max 6   # 扫历史挑候选, 逐个证合约, 合格的才落盘
-bun run scripts/omd-bench.ts list                          # 列题库
-bun run scripts/omd-bench.ts validate                      # 题库体检(合约重证), 红了非 0 退出 → 可当 CI 闸
+bun run bench:extract      # 扫历史挑候选, 逐个证合约, **合格的才落盘**
+bun run bench -- list      # 列题库
+bun run bench:validate     # 题库体检(合约重证), 红了非 0 退出 → 可当闸
+bun run bench:selftest     # **证明防作弊闸真的会红**(端到端, 不烧模型)
+bun run bench -- run --id <taskId> --arm a|b [--regression]
 ```
+
+### 已跑通的读数(2026-08-05)
+
+- `extract`:36 个形状干净的候选 → **拒 32 收 4**(拒绝率 89%,全靠第四条合约)。
+- `validate`:4 道题合约全部重证通过,退出码 0。
+- `run --arm b`(单 agent)在那道真 `fix(conductor)` 上 **143 秒判 pass**,
+  判词正确写着「全量回归**未跑**」(`null`,不是「通过」)。
+- `selftest`:一个把受保护测试改成永远绿、命令 exit 0 的候选 → 判 **`invalid` 而不是 `pass`**。
+  **这条闸平时永远沉默,而沉默与失灵长得一模一样** —— 所以做成可随时重跑的自检。
 
 ## loop:这套 bench 怎么持续迭代
 
@@ -114,4 +125,9 @@ bun run scripts/omd-bench.ts validate                      # 题库体检(合约
    正确行为是**不改**并说明。他们自己在这个平衡上迭代了好几轮。**当前题库全是正例,这是已知缺口。**
 2. **capability → regression 的流转**:新题先进 capability(低通过率),通过率高了升级进 regression(≈100%)。
    现在只有一个池。
-3. **两臂真跑**:主判据与闸都在了,但还没烧过一次模型。跑之前先定预算配平口径。
+3. **两臂对比还没出读数**:`run` 路径已通(B 臂实测 pass),但**没跑过完整矩阵**。
+   跑之前先定预算配平口径,且**每题 ≥3 次重复** —— 交接 23 的教训:k=1 不许用来比较两臂。
+4. **题库只有 4 道**。`--limit 400` 只扫到 36 个形状干净的候选;扩容要放宽
+   「1 实现 + 1 测试」这条约束,而放宽会让任务边界变脏 —— 真权衡,没定。
+5. **A 臂的 token 账没接**:`cost.tokensIn/Out` 现在记 0,而那是「未采集」不是「真 0」
+   (note 里写着 runId)。**比 cost 之前必须先接上**,否则会把 0 读成"omd 更省"。

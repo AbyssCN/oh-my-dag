@@ -139,7 +139,135 @@ function loadTasks(): BenchTask[] {
     .map((f) => JSON.parse(readFileSync(join(TASKS_DIR, f), 'utf8')) as BenchTask);
 }
 
+/**
+ * 起一个**候选世界**:base=父提交(有缺陷) + 覆盖上修复提交的测试文件。
+ * 这正是 RED 世界 —— 被测方要做的就是把它变绿。**worktree 不清理**(调用方拿到路径后自己收),
+ * 因为跑完还要在里面核对受保护路径与跑回归。
+ */
+function makeCandidateWorld(t: BenchTask): string {
+  const dir = mkdtempSync(join(tmpdir(), 'omd-bench-run-'));
+  git(['worktree', 'add', '--detach', '--quiet', dir, t.baseSha]);
+  const nm = join(REPO, 'node_modules');
+  if (existsSync(nm)) symlinkSync(nm, join(dir, 'node_modules'), 'dir');
+  // ⚠ `.omd/config.json` 是 **cwd 相对且 gitignored** —— worktree 里没有它, omd 引擎起不来
+  //    (本仓已知坑: 后台 agent / --worktree 全中)。拷一份进去, 让 A 臂能跑。
+  const cfg = join(REPO, '.omd', 'config.json');
+  if (existsSync(cfg)) {
+    mkdirSync(join(dir, '.omd'), { recursive: true });
+    writeFileSync(join(dir, '.omd', 'config.json'), readFileSync(cfg, 'utf8'));
+  }
+  for (const p of t.testPaths) {
+    const body = git(['show', `${t.fixSha}:${p}`]);
+    mkdirSync(dirname(join(dir, p)), { recursive: true });
+    writeFileSync(join(dir, p), body);
+  }
+  return dir;
+}
+
+function dropWorld(dir: string): void {
+  try { git(['worktree', 'remove', '--force', dir]); } catch { /* ignore */ }
+  rmSync(dir, { recursive: true, force: true });
+}
+
+/** 受保护路径**逐字节**核对(与题目锚定的 `fixSha` 版本比)。返回被改动的路径。 */
+function touchedProtected(t: BenchTask, dir: string): string[] {
+  return t.testPaths.filter((p) => {
+    const want = git(['show', `${t.fixSha}:${p}`]);
+    let got = '';
+    try { got = readFileSync(join(dir, p), 'utf8'); } catch { return true; } // 删掉也算改动
+    return got !== want;
+  });
+}
+
+/** 交给被测方的题面 —— 两臂**逐字相同**,否则量到的是提示词差异不是编排差异。 */
+function candidatePrompt(t: BenchTask): string {
+  return (
+    `${t.statement}\n\n` +
+    `工作目录就是当前仓库。改完之后本地跑一次 \`${t.command}\` 自查。\n` +
+    '只改实现, 不要改测试文件。'
+  );
+}
+
+/** 一臂跑完的**代价读数**(不判对错, 但两臂比较全靠它 —— 承 Claw-Eval:token efficiency 是一等公民)。 */
+interface ArmCost { wallMs: number; tokensIn: number; tokensOut: number; toolCalls: number | null; seat: string; note: string }
+
+async function runArm(t: BenchTask, arm: 'a' | 'b', dir: string): Promise<ArmCost> {
+  const { bootstrapModelRuntime } = await import('../src/model/bootstrap');
+  const { resolveEngineModels } = await import('../src/mcp/assemble');
+  bootstrapModelRuntime();
+  const seats = resolveEngineModels(process.env);
+  const started = Date.now();
+
+  if (arm === 'b') {
+    const { createAgentLeafRunner } = await import('../src/harness/agent-leaf');
+    const model = seats.agentLeafModel ?? seats.leafModel;
+    const runner = createAgentLeafRunner({ cwd: dir, hashlineEdit: true, leafTimeoutMs: 1_800_000 });
+    const r = await runner({ prompt: candidatePrompt(t), model });
+    return {
+      wallMs: Date.now() - started,
+      tokensIn: r.usage.in, tokensOut: r.usage.out,
+      // 三态: 有数 / 真零 / 采不到。**采不到记 null 不记 0**(本仓栽过: 采集器自己撒谎)。
+      toolCalls: typeof r.toolCalls === 'number' ? r.toolCalls : null,
+      seat: model, note: String(r.text ?? '').slice(-400),
+    };
+  }
+
+  const { assembleOmdMcpTools } = await import('../src/mcp/assemble');
+  const { RunRegistry } = await import('../src/mcp/run-registry');
+  const registry = new RunRegistry();
+  const tools = assembleOmdMcpTools({ cwd: dir, runRegistry: registry });
+  const tool = tools.find((x) => x.name === 'dag_run');
+  if (!tool) throw new Error('omd-bench: 装不出 dag_run');
+  const res = (await tool.handler({ task: candidatePrompt(t) } as never, {} as never)) as {
+    content: { text: string }[]; isError?: boolean;
+  };
+  const runId = /runId: (\S+)/.exec(res.content[0]?.text ?? '')?.[1];
+  if (!runId || res.isError) throw new Error(`A 臂起跑失败: ${res.content[0]?.text}`);
+  const TERMINAL = new Set(['done', 'failed', 'cancelled']);
+  for (;;) {
+    const st = registry.getStatus(runId);
+    if (st && TERMINAL.has(st)) break;
+    await Bun.sleep(3000);
+  }
+  return {
+    wallMs: Date.now() - started,
+    // A 臂的 token 账在 run 结果里, 这里先记 0 并在 note 里留 runId —— **别编一个看起来像真的数**。
+    tokensIn: 0, tokensOut: 0, toolCalls: null,
+    seat: seats.agentLeafModel ?? seats.leafModel,
+    note: `dag_run runId=${runId} status=${registry.getStatus(runId)} (⚠ token 账未接, 记 0 是"未采集"不是"真 0")`,
+  };
+}
+
 async function main(): Promise<void> {
+  if (cmdName === 'run') {
+    const id = opt('id');
+    const arm = (opt('arm') ?? '') as 'a' | 'b';
+    if (!id || (arm !== 'a' && arm !== 'b')) { log('用法: run --id <taskId> --arm a|b [--regression]'); process.exit(2); }
+    const t = loadTasks().find((x) => x.id === id);
+    if (!t) { log(`没有这道题: ${id}`); process.exit(2); }
+    const dir = makeCandidateWorld(t);
+    log(`题 ${t.id} · 臂 ${arm} · 世界 ${dir}`);
+    try {
+      const cost = await runArm(t, arm, dir);
+      const run = runCommand(t.command, dir);
+      const touched = touchedProtected(t, dir);
+      // 回归**默认不跑**(全量测试很慢); 没跑就记 null, **不记通过**(仓规 NULL≠0)。
+      const regressionGreen = argv.includes('--regression') ? runCommand('bun test', dir, 900_000).exitCode === 0 : null;
+      const { scoreCandidate } = await import('../src/eval/bench/task');
+      const verdict = scoreCandidate({ task: t, run, protectedPathsTouched: touched, regressionGreen });
+      const out = join(REPO, '.omd', 'eval', 'omd-bench');
+      mkdirSync(out, { recursive: true });
+      const stamp = `${t.id}-${arm}-${Date.now()}`;
+      writeFileSync(join(out, `${stamp}.json`), JSON.stringify({ task: t.id, arm, verdict, run, touched, regressionGreen, cost }, null, 1));
+      console.log(`${verdict.verdict === 'pass' ? '✅' : verdict.verdict === 'invalid' ? '⚠' : '✘'} ${t.id} [臂 ${arm}] ${verdict.verdict}`);
+      console.log(`   ${verdict.reason}`);
+      console.log(`   墙钟 ${(cost.wallMs / 1000).toFixed(0)}s · 判分命令 exit ${run.exitCode} · 落盘 ${join(out, `${stamp}.json`)}`);
+    } finally {
+      dropWorld(dir);
+    }
+    return;
+  }
+
   if (cmdName === 'extract') {
     const limit = Number(opt('limit') ?? '300');
     const max = Number(opt('max') ?? '8');
@@ -174,6 +302,40 @@ async function main(): Promise<void> {
     const ts = loadTasks();
     console.log(`题库 ${ts.length} 道 (${TASKS_DIR})`);
     for (const t of ts) console.log(`  ${t.id}\n    ${t.title}\n    cmd: ${t.command}  ·  受保护: ${t.testPaths.join(',')}`);
+    return;
+  }
+
+  /**
+   * 端到端自检:**证明防作弊闸真的会红**。
+   *
+   * 单元测试证的是判据逻辑,证不了「起世界 → 读文件 → 比字节」这条管子接对了。
+   * 而这条闸平时永远沉默(正常候选不改测试),沉默与失灵长得一模一样 ——
+   * 本仓栽过的正是这个形态(采集器自己撒谎)。所以做成可随时重跑的自检。
+   */
+  if (cmdName === 'selftest') {
+    const t = loadTasks()[0];
+    if (!t) { log('题库为空(先跑 extract)'); process.exit(2); }
+    const { scoreCandidate } = await import('../src/eval/bench/task');
+    const dir = makeCandidateWorld(t);
+    try {
+      const clean = touchedProtected(t, dir);
+      // 扮演一个作弊候选: 把受保护的测试文件改成永远绿。
+      writeFileSync(join(dir, t.testPaths[0]!), 'import { test, expect } from "bun:test";\ntest("绿", () => expect(1).toBe(1));\n');
+      const dirty = touchedProtected(t, dir);
+      const cheated = scoreCandidate({
+        task: t,
+        run: { command: t.command, exitCode: 0, durationMs: 1, tail: '\n 1 pass\n 0 fail\n' },
+        protectedPathsTouched: dirty,
+        regressionGreen: true,
+      });
+      const ok = clean.length === 0 && dirty.length === 1 && cheated.verdict === 'invalid';
+      console.log(`${ok ? '✅' : '✘'} 防作弊闸端到端自检(题 ${t.id})`);
+      console.log(`   未改动时: touched=${JSON.stringify(clean)}(应为 [])`);
+      console.log(`   改了测试并让命令变绿后: touched=${JSON.stringify(dirty)} → 判 ${cheated.verdict}(应为 invalid, **不是 pass**)`);
+      if (!ok) process.exit(1);
+    } finally {
+      dropWorld(dir);
+    }
     return;
   }
 
