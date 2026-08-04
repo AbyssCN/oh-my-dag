@@ -21,6 +21,7 @@
  */
 import { execSync } from 'node:child_process';
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const OUT_DIR = '.omd/eval/no-graph-baseline';
@@ -55,6 +56,30 @@ function workDirPath(t: string, a: string, p: number): string {
   return join(cwd, OUT_DIR, `${t}-${a}-${p}-work`);
 }
 
+/**
+ * 答案文件落**仓树之外的每对独立目录**(2026-08-04,查 inputPaths 查出来的真污染)。
+ *
+ * 老跑 `b3817112`(f2-a-**2**)的 `write_answer` 节点读了 `f2-a-1-answer.md` ——
+ * **上一对的答案**。三对本应是独立重复,而至少一对在写自己的答案前看过另一对的。
+ * 同一个目录里躺着所有对的答案,一次 `ls` 就全见,这是「上轮产出的载体通道」的教科书形态。
+ * 起跑前删本对残留(已有)只堵了自己那条,跨对那条没堵 —— 只堵一条等于没堵。
+ *
+ * 现在:每对一个 `/tmp` 目录,仓树里不再有任何答案文件。**诚实边界**:这是"不再撞见",
+ * 不是"不可能读到"(臂拿得到自己的绝对路径,理论上能猜邻居的)。真隔离要沙箱,那是另一件事。
+ * 产物头记 `answerFile:`,评分按它取;老产物回落旧路径(不破既有读数)。
+ */
+function answerPath(t: string, a: string, p: number): string {
+  return join(tmpdir(), 'omd-eval-answers', `${t}-${a}-${p}`, 'answer.md');
+}
+/** 评分侧解析: 优先产物头记的路径, 其次新默认, 最后旧的仓内路径 (老产物兼容)。 */
+function resolveAnswerPath(head: string, t: string, a: string, p: number): string {
+  const declared = /answerFile: (.+)/.exec(head)?.[1]?.trim();
+  if (declared && existsSync(declared)) return declared;
+  const fresh = answerPath(t, a, p);
+  if (existsSync(fresh)) return fresh;
+  return outPath(t, a, p).replace(/\.md$/, '-answer.md');
+}
+
 /** f1 作业面: 快照导出 (无 .git)。其余任务: 本仓只读。 */
 async function materialize(t: string, a: string, p: number): Promise<{ workCwd: string; taskText: string }> {
   const taskText = readFileSync(join(cwd, TASK_DIR, `${t}-task.md`), 'utf8');
@@ -84,7 +109,9 @@ async function runArmB(t: string, p: number): Promise<void> {
   const seats = resolveEngineModels(process.env);
   const model = seats.agentLeafModel ?? seats.leafModel;
   const { workCwd, taskText } = await materialize(t, 'b', p);
-  const answerFile = outPath(t, 'b', p).replace(/\.md$/, '-answer.md');
+  const answerFile = answerPath(t, 'b', p);
+  mkdirSync(join(answerFile, '..'), { recursive: true });
+  rmSync(answerFile, { force: true });
   const runner = createAgentLeafRunner({ cwd: workCwd, hashlineEdit: true, leafTimeoutMs: 3_600_000 });
   const started = Date.now();
   const r = await runner({ prompt: armPrompt(t, taskText, answerFile), model });
@@ -92,6 +119,7 @@ async function runArmB(t: string, p: number): Promise<void> {
   writeFileSync(
     outPath(t, 'b', p),
     `arm: b (no-graph 单 agent)\nseat: ${model}\ntask: ${t} pair: ${p}\nwallMs: ${Date.now() - started}\n` +
+      `answerFile: ${answerFile}\n` +
       `usage: in=${r.usage.in} out=${r.usage.out}\nworkDir: ${workCwd}\n\n---\n\n${r.text.slice(0, 4000)}`,
   );
   console.log(`b 臂完成: ${outPath(t, 'b', p)}`);
@@ -105,7 +133,8 @@ async function runArmA(t: string, p: number): Promise<void> {
   bootstrapModelRuntime();
   const seats = resolveEngineModels(process.env);
   const { workCwd, taskText } = await materialize(t, armKey('a'), p);
-  const answerFile = outPath(t, armKey('a'), p).replace(/\.md$/, '-answer.md');
+  const answerFile = answerPath(t, armKey('a'), p);
+  mkdirSync(join(answerFile, '..'), { recursive: true });
   // 陈旧产物清场 (2026-08-04 实测污染): pair3 复测的 write 节点发现上一跑的答案文件"已验证"
   // 便不再写, 评分评到了旧引擎的答案 (Langfuse ed4dbe39: "Existing … prior run, 16:50")。
   // 重跑必须从空白开始, 否则"分数"量的是磁盘残留不是本跑。
@@ -132,7 +161,8 @@ async function runArmA(t: string, p: number): Promise<void> {
     outPath(t, armKey('a'), p),
     `arm: ${armKey('a')} (omd ${toolName})\nseat: ${(seats.agentLeafModel ?? seats.leafModel)}\n` +
       `task: ${t} pair: ${p} engine: ${engine}\n` +
-      `wallMs: ${Date.now() - started}\nrunId: ${runId}\nstatus: ${registry.getStatus(runId)}\nworkDir: ${workCwd}\n`,
+      `wallMs: ${Date.now() - started}\nrunId: ${runId}\nstatus: ${registry.getStatus(runId)}\nworkDir: ${workCwd}\n` +
+      `answerFile: ${answerFile}\n`,
   );
   console.log(`a 臂完成: ${outPath(t, armKey('a'), p)} (${registry.getStatus(runId)})`);
 }
@@ -183,7 +213,7 @@ async function score(t: string, p: number): Promise<void> {
       const s = scoreF1(workDirPath(t, a, p));
       console.log(`${t}-${a}-${p}: ${s.hit}/${s.total}${s.misses.length ? ` · 首漏 ${s.misses[0]}` : ''}`);
     } else {
-      const ansFile = outPath(t, a, p).replace(/\.md$/, '-answer.md');
+      const ansFile = resolveAnswerPath(head, t, a, p);
       const ans = existsSync(ansFile) ? readFileSync(ansFile, 'utf8') : head;
       const mod = t === 'f2' ? await import('../src/eval/tasks/no-graph-baseline/f2-checklist')
         : t === 'g1' ? await import('../src/eval/tasks/no-graph-baseline/g1-rubric')
