@@ -118,7 +118,12 @@ export interface ReadoutResult {
     edited: number;
     rejected: number;
     deduped: number;
+    /** t3: 图上当前待确认的 suggested 票数 (雾中带存量)。 */
+    pending: number;
     rate: number | null;
+    /** t3 重跑重复率: deduped / (deduped + decided + pending) — 建议管线的去重扣住了多少比例的车轱辘话。
+     *  高 = 上游在重复发现 (或阈值太紧); 一直 0 = 没有重跑压力或去重失效 — 两头都值得看。 */
+    dedupe_rate: number | null;
   } | null;
   runs: RunReadout[];
   /** 按 run 去重 (一个 run 多 attempt 只计一次); total = 本窗口 distinct run 数 (含 `未记`)。 */
@@ -374,16 +379,20 @@ export function aggregateSuggestionAcceptance(mapsCwd: string): ReadoutResult['s
   } catch {
     return null;
   }
-  const acc = { decided: 0, accepted: 0, edited: 0, rejected: 0, deduped: 0, rate: null as number | null };
+  const acc = { decided: 0, accepted: 0, edited: 0, rejected: 0, deduped: 0, pending: 0, rate: null as number | null, dedupe_rate: null as number | null };
   let any = false;
   for (const f of files) {
-    let log;
+    let parsed;
     try {
-      log = parseMapMarkdown(readFileSync(`${dir}/${f}`, 'utf8')).suggestionsLog;
+      parsed = parseMapMarkdown(readFileSync(`${dir}/${f}`, 'utf8'));
     } catch {
       continue; // 单图损坏不拖垮读数板 (与账本行解析同款容错)
     }
-    for (const e of log ?? []) {
+    // t3: pending = 图上仍待确认的 suggested 票 (有存量也算有建议史)。
+    const pendingHere = parsed.tickets.filter((t) => t.status === 'suggested').length;
+    if (pendingHere > 0) any = true;
+    acc.pending += pendingHere;
+    for (const e of parsed.suggestionsLog ?? []) {
       any = true;
       if (e.outcome === 'deduped' || e.outcome === 'deduped-semantic') acc.deduped++;
       else {
@@ -396,6 +405,8 @@ export function aggregateSuggestionAcceptance(mapsCwd: string): ReadoutResult['s
   }
   if (!any) return null;
   acc.rate = acc.decided > 0 ? (acc.accepted + acc.edited) / acc.decided : null;
+  const denom = acc.deduped + acc.decided + acc.pending;
+  acc.dedupe_rate = denom > 0 ? acc.deduped / denom : null;
   return acc;
 }
 
@@ -762,7 +773,8 @@ function printReadoutHuman(r: ReadoutResult, dbPath: string): void {
     // S-1 片d: 接受率是「要不要全自动」的判据 (交接 18 S-1 立项理由); deduped 单列不进分母。
     console.log(
       `   建议接受率: ${sa.accepted + sa.edited}/${sa.decided} (accepted ${sa.accepted} · edited ${sa.edited} · rejected ${sa.rejected})` +
-        `${sa.rate === null ? '' : ` = ${(sa.rate * 100).toFixed(0)}%`} · deduped ${sa.deduped} (机器去重, 不进分母)`,
+        `${sa.rate === null ? '' : ` = ${(sa.rate * 100).toFixed(0)}%`} · 待确认 ${sa.pending}` +
+        ` · 重复率 ${sa.deduped}/${sa.deduped + sa.decided + sa.pending}${sa.dedupe_rate === null ? '' : ` = ${(sa.dedupe_rate * 100).toFixed(0)}%`} (机器去重扣住的车轱辘话)`,
     );
   }
   const rr = r.reuse_rate;
