@@ -32,7 +32,7 @@ import { createDagResearchTool, type ResearchFanout } from './tools/research';
 import { createGoalTool } from './tools/goal';
 import { runGoal } from '../harness/goal/run-goal';
 import { createFleetTools, type SpawnFn } from './tools/fleet';
-import { CPU_FALLBACK_FANOUT, effectiveFanout, resolveProviderCap } from '../harness/fleet';
+import { AGENT_DEFAULT_FANOUT, CPU_FALLBACK_FANOUT, effectiveFanout, resolveProviderCap } from '../harness/fleet';
 import { createRunsTools } from './tools/runs';
 import { createConfigTools } from './tools/config-tools';
 import { createComposeTools } from './tools/compose';
@@ -358,7 +358,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     return Number.isFinite(n) && n > 0 ? n : undefined;
   };
   const kindFanout = {
-    agent: intEnv(env.OMD_AGENT_FANOUT) ?? CPU_FALLBACK_FANOUT,
+    agent: intEnv(env.OMD_AGENT_FANOUT) ?? AGENT_DEFAULT_FANOUT,
     command: intEnv(env.OMD_COMMAND_FANOUT) ?? CPU_FALLBACK_FANOUT,
   };
   // B-2 bandit 选型路由 (2026-07-21 MCP 接线 — 此前只 TUI 有, MCP 路径 dag_run 恒静态):
