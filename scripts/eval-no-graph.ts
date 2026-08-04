@@ -163,7 +163,24 @@ async function score(t: string, p: number): Promise<void> {
         : t === 'g1'
           ? (() => { const r = (mod as { scoreG1: (x: string) => { hits: string[]; total: number } }).scoreG1(ans); return { hit: r.hits.length, total: r.total }; })()
           : (() => { const r = (mod as { scoreG2: (x: string) => { hits: string[]; total: number } }).scoreG2(ans); return { hit: r.hits.length, total: r.total }; })();
-      console.log(`${t}-${a}-${p}: ${s.hit}/${s.total}`);
+      // **诊断第二读数** (2026-08-04): 官方分保持严格 —— 任务文本明写 `qN: …`, 违约就是违约,
+      // 不因为难看就放宽。但只留一个数会把**两种不同的失败**读成同一种: 一次实测 (pair2,
+      // run c042df95) 内容 6/8 正确却因行首用全角 `｜` 官方 0/8。那是"没遵守输出契约",
+      // 不是"没找到事实", 而报告要按这两件事分别归因 (格式违约 → 契约/闸问题;
+      // 事实缺失 → 检索/综合问题)。故: 宽分隔符只在**严格解析不足 8 题**时作为诊断印出,
+      // 明标 `诊断` 二字, 永不替代官方分。
+      let diag = '';
+      if (t === 'f2') {
+        const strictLines = [...ans.matchAll(/^(q\d+):\s*(.+)$/gm)].length;
+        if (strictLines < 8) {
+          const tolerant = Object.fromEntries(
+            [...ans.matchAll(/^(q\d+)\s*[:：｜|]\s*(.+)$/gm)].map((m) => [m[1]!, m[2]!]),
+          );
+          const st = (mod as { scoreF2: (x: Record<string, string>) => { hit: number; total: number } }).scoreF2(tolerant);
+          diag = ` · 诊断(宽分隔符, 非官方): 解析 ${Object.keys(tolerant).length} 题 → 内容 ${st.hit}/${st.total}`;
+        }
+      }
+      console.log(`${t}-${a}-${p}: ${s.hit}/${s.total}${diag}`);
     }
   }
 }
