@@ -20,7 +20,7 @@
  *   bun --env-file=.env run scripts/eval-no-graph.ts --score --task f2 --arm a --engine solve --pair 1
  */
 import { execSync } from 'node:child_process';
-import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 const OUT_DIR = '.omd/eval/no-graph-baseline';
@@ -137,6 +137,38 @@ async function runArmA(t: string, p: number): Promise<void> {
   console.log(`a 臂完成: ${outPath(t, armKey('a'), p)} (${registry.getStatus(runId)})`);
 }
 
+/**
+ * 节点健康一行 (2026-08-04 加的第二把尺)。
+ *
+ * 为什么需要: 产物头里的 `status` 是 **run 生命周期**状态 ("图跑完了"), 不是交付成败 ——
+ * 实测 run 6adb28ab 报 `done`, 而它的终端 write 节点 `failed`、交付物是一份 REJECT 判词。
+ * 再叠上"磁盘残留旧答案"(已修), 就成了「评分评到上一跑的产物, 而一切读数看起来正常」。
+ * 于是分数旁边必须有一列**图自己的健康**, 让「图跑干净但事实答错」与「图塌了」当场分得开。
+ *
+ * 读 continuity checkpoint (跳过 `__r<K>` 归档 —— 那是旧轮留证, 见 t1)。读不到 → 空串, 不猜。
+ */
+function nodeHealth(artifactHead: string): string {
+  const runId = /runId: (\S+)/.exec(artifactHead)?.[1];
+  if (!runId) return '';
+  const dir = join(cwd, '.omd', 'continuity', runId);
+  if (!existsSync(dir)) return '';
+  const tally: Record<string, number> = {};
+  try {
+    for (const f of readdirSync(dir)) {
+      // `_` 前缀 = 引擎日志不是节点 (`_dag` / `_goal` / `_loop-*`); `__r<K>` = 旧轮归档 (t1)。
+      // 两者都**不适用**于节点健康 —— 把它们数成 `?` 就是拿"这条不适用"冒充"状态未知",
+      // 而 `?` 要留给**真节点 checkpoint 却没有 status** 这一种真异常 (仓规: NULL ≠ 0 ≠ 不适用)。
+      if (!f.endsWith('.json') || f.startsWith('_') || /\.__r\d+\.json$/.test(f)) continue;
+      const st = (JSON.parse(readFileSync(join(dir, f), 'utf8')) as { status?: string }).status ?? '?';
+      tally[st] = (tally[st] ?? 0) + 1;
+    }
+  } catch {
+    return '';
+  }
+  const parts = Object.entries(tally).sort().map(([k, v]) => `${k} ${v}`);
+  return parts.length ? ` · 节点 ${parts.join('/')}` : '';
+}
+
 async function score(t: string, p: number): Promise<void> {
   // 显式 --arm = 只评这一个 (补充实验的非默认档位是单臂产物, 没有配对的另一臂)。
   const arms = arm ? [armKey(arm)] : ['a', 'b'];
@@ -180,7 +212,7 @@ async function score(t: string, p: number): Promise<void> {
           diag = ` · 诊断(宽分隔符, 非官方): 解析 ${Object.keys(tolerant).length} 题 → 内容 ${st.hit}/${st.total}`;
         }
       }
-      console.log(`${t}-${a}-${p}: ${s.hit}/${s.total}${diag}`);
+      console.log(`${t}-${a}-${p}: ${s.hit}/${s.total}${diag}${nodeHealth(head)}`);
     }
   }
 }
