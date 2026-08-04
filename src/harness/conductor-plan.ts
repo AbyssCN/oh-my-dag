@@ -489,6 +489,8 @@ export function conductorSystemPrompt(
     'and a per-element "template" fans out one child node per item. Shape (field "map"):',
     '  { "lister": { "goal"?, "executor"?: "leaf"|"agent"|"command", "command"?, "output_schema"? },',
     '    "over": "<array key the lister returns>", "itemVar": "<var the template interpolates, e.g. item>",',
+    '    Template strings interpolate ${item.field} / {{item.field}} (both accepted; also ${key}) in',
+    '    goal / command / persona / output_path — the engine substitutes REAL item values at expansion.',
     '    "keyBy"?: "<stable-identity path for resume, e.g. path>", "template": { <a normal node, NOT a map> },',
     '    "maxItems"?: number }.',
     '  Prefer a lister that REUSES indexed infra (executor:"command" over codegraph / scanners) over a model',
