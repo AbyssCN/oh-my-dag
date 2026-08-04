@@ -284,9 +284,10 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
       // goal 验收探针 (冻结契约 §4): 探针分支在**分类期**就定了, 而 recordDagRun 的 closure 到
       // record 时才读 meta.acceptanceProbe —— 所以这里持同一个可变对象, 分类回调 (onClassified)
       // 里填进去, 两段图的记录就都带上; 非 dag_goal 入口不传 → 列 NULL (见 DagRunRecord 取值矩阵)。
-      const goalMeta: { runId: string; entry: 'dag_goal'; question: string; acceptanceProbe?: AcceptanceProbe } = {
+      // entry 词表 (t7, 2026-08-04): 'solve' (旧 'dag_goal' 只在历史行里, 读侧归一合并)。
+      const goalMeta: { runId: string; entry: 'solve'; question: string; acceptanceProbe?: AcceptanceProbe } = {
         runId,
-        entry: 'dag_goal',
+        entry: 'solve',
         question: goal,
       };
       const dagWithContinuity: ExecutorDagConfig = {

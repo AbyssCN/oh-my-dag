@@ -54,6 +54,7 @@ import { Database } from 'bun:sqlite';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { commandRiskTier, RISK_TIER_ORDER, type CommandRiskTier } from '../src/harness/command-leaf';
+import { TOOL_RENAMES } from '../src/mcp/tool-renames';
 import { computeCost } from '../src/model/cost-ledger';
 import { capsFor } from '../src/harness/../model/model-caps';
 import { CheckpointManager } from '../src/harness/continuity/checkpoint-manager';
@@ -144,7 +145,7 @@ export interface ReadoutResult {
   };
   /** 分子 = 记录为 reused 的节点 (并集); 分母 = DAG 全量节点 (含 `未记`); total_nodes=0 → rate null。 */
   /**
-   * G4 采样 (冻结契约 §5): 分母 = **全量** entry='dag_goal' 且 acceptance_probe 非 NULL 的 run
+   * G4 采样 (冻结契约 §5): 分母 = **全量** entry='solve' (旧 'dag_goal' 归一后同) 且 acceptance_probe 非 NULL 的 run
    * (2026-08-03 起不再受展示窗口截断 —— 闸的判据不搭展示的车, 理由见计算处的注)。
    * 老行/未接探针的 run (NULL) 不进分母, 不编 'unknown'; exploratory 是派生数
    * (= demoted + skipped + exploratory 三条 kind 之和)。
@@ -174,7 +175,7 @@ export interface ReadoutResult {
   gate_denominators: {
     /** G3: 带 `entry` 的 distinct run (全量)。 */
     g3LiveRuns: number;
-    /** G4: entry='dag_goal' 且探针非空的 distinct run (全量, = g4_sampling.denominator)。 */
+    /** G4: entry='solve' (含归一的旧 'dag_goal') 且探针非空的 distinct run (全量, = g4_sampling.denominator)。 */
     g4Samples: number;
     /**
      * 跑了但留痕库里没有的条数; null = 注册表读不到, **不知道**。
@@ -341,6 +342,11 @@ function countLedgerGap(
   }
 }
 
+/** entry 词表归一 (t7): 旧词折新词, 表外原样, NULL 原样 (「没记」≠ 任何入口)。 */
+function normalizeEntry(e: string | null): string | null {
+  return e === null ? null : (TOOL_RENAMES[e] ?? e);
+}
+
 export function readout(opts: { db: Database; limit?: number; dbPath?: string }): ReadoutResult {
   const limit = opts.limit ?? 20;
   const meta: ReadoutResult['meta'] = { db: opts.dbPath ?? '(injected)', limit, readonly: true };
@@ -394,7 +400,9 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string })
       id: r.id,
       createdAt: r.created_at,
       runId: r.run_id,
-      entry: r.entry,
+      // entry 词表归一 (t7, 2026-08-04): 历史行的旧词 (dag_run/dag_goal/path_deliver) 折进新词
+      // (run/solve/map_deliver) —— 同一入口不因改名在分布里裂成两行。真源 = TOOL_RENAMES 同一张表。
+      entry: normalizeEntry(r.entry),
       levelIds,
       nodes,
       usage,
@@ -535,7 +543,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string })
   }
   criteria_consistency.unrecorded = shown.length - criteria_consistency.recorded;
 
-  // ── G4 采样 (冻结契约 §5): 分母 = entry 为 dag_goal 且 acceptance_probe 非 NULL 的 run ──
+  // ── G4 采样 (冻结契约 §5): 分母 = entry 为 solve (旧 dag_goal 已归一) 且 acceptance_probe 非 NULL 的 run ──
   // NULL (老行 / 非 dag_goal / 解析失败) 一律不进分母 —— 没记 ≠ 失败, 不编 'unknown'。
   //
   // ⚠ **走 `allRuns` 不走 `shown`** (2026-08-03 修): 展示窗口取的是**最早 limit 个**
@@ -545,7 +553,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string })
   // **展示归展示, 判据归判据**: 窗口只管那张 run 表, 闸的数一律全量。
   const g4_sampling: ReadoutResult['g4_sampling'] = { denominator: 0, passedBoth: 0, vacuityOnly: 0, demoted: 0, skipped: 0, exploratory: 0 };
   for (const run of allRuns) {
-    if (run.entry !== 'dag_goal' || run.acceptanceProbe === null) continue;
+    if (run.entry !== 'solve' || run.acceptanceProbe === null) continue;
     g4_sampling.denominator++;
     switch (run.acceptanceProbe.kind) {
       case 'passed-both':
@@ -692,7 +700,7 @@ function printReadoutHuman(r: ReadoutResult, dbPath: string): void {
   );
   const g4 = r.g4_sampling;
   console.log(
-    `   G4 采样 (分母 = entry 为 dag_goal 且 acceptance_probe 非 NULL 的 run, 共 ${g4.denominator} 个): ` +
+    `   G4 采样 (分母 = entry 为 solve 且 acceptance_probe 非 NULL 的 run, 共 ${g4.denominator} 个): ` +
       `passed-both ${g4.passedBoth} · vacuity-only ${g4.vacuityOnly} · demoted ${g4.demoted} · skipped ${g4.skipped} · exploratory ${g4.exploratory}` +
       (g4.denominator === 0 ? '  (这批没有探针记录 —— 老数据或还没接 acceptance_probe)' : '  (exploratory = demoted + skipped + exploratory)'),
   );

@@ -172,7 +172,7 @@ export interface DagRunRecord {
    */
   criteria?: { judge: boolean; oracle: boolean };
   /**
-   * **这次 goal 的验收探针结论**(entry:'dag_goal' 专列;词表在 `goal/acceptance.ts` 的
+   * **这次 goal 的验收探针结论**(entry:'solve' 专列, 历史行为 'dag_goal';词表在 `goal/acceptance.ts` 的
    * `AcceptanceProbe`, 这里不重写)。存的是它的**逐字 JSON** —— 五条分支怎么判出来的、
    * 降级/跳过时的原话 `why` 全部原样落盘, 读数板按它算 G4 分母与各分支占比。
    *
@@ -304,7 +304,7 @@ function rowToRecord(row: Row): DagRunRecord {
  * (`dag_run` / `dag_run_plan` 第一版就漏过一处, 见本文件头注)。设成必填 = 新增入口时 tsc 当场红,
  * 逼你回答"这个入口叫什么", 而不是让它静默落 NULL。
  *
- * `acceptanceProbe` 只在 `entry === 'dag_goal'` 时传入并持久化; 其它入口即使误传也会被丢弃、
+ * `acceptanceProbe` 只在 `entry === 'solve'` (旧 'dag_goal', 已是历史行专词) 时传入并持久化; 其它入口即使误传也会被丢弃、
  * 列留 NULL —— 见 DagRunRecord.acceptanceProbe 的取值矩阵。
  */
 export function recordDagRun(
@@ -318,7 +318,8 @@ export function recordDagRun(
       runId: meta.runId,
       entry: meta.entry,
       ...(meta.question ? { question: meta.question } : {}),
-      ...(meta.entry === 'dag_goal' && meta.acceptanceProbe ? { acceptanceProbe: meta.acceptanceProbe } : {}),
+      // t7 词表迁移 (2026-08-04): goal 入口现写 'solve'; 'dag_goal' 只存在于历史行 (读侧归一), 写侧不再产生。
+      ...(meta.entry === 'solve' && meta.acceptanceProbe ? { acceptanceProbe: meta.acceptanceProbe } : {}),
     });
   };
 }
@@ -360,7 +361,7 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
   // 入口轴 (2026-08-02): 2026-08-02 之前建的表没这一列, 老行留 NULL (= 没记, 不是 'unknown')。
   if (!cols.includes('entry')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN entry TEXT`);
   // 同上 (goal 验收探针): 之前建的表没这一列, 老行留 NULL (= 没记, 不是 'unknown')。
-  // 只由 entry='dag_goal' 的 recordDagRun 写入 —— 见 DagRunRecord.acceptanceProbe 的取值矩阵。
+  // 只由 entry='solve' (历史行 'dag_goal') 的 recordDagRun 写入 —— 见 DagRunRecord.acceptanceProbe 的取值矩阵。
   if (!cols.includes('acceptance_probe')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN acceptance_probe TEXT`);
   db.run(`CREATE INDEX IF NOT EXISTS omd_dag_runs_run_id ON omd_dag_runs (run_id)`);
   const ins = db.query(
@@ -430,7 +431,8 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
         null,
         // goal 验收探针 (契约): 只持久化 entry='dag_goal'; 其它入口即使误传也必须留 NULL。
         // 缺席 → NULL, 不编 'unknown'; 存一份紧凑 JSON, 绝不双编码。
-        meta.entry === 'dag_goal' && meta.acceptanceProbe !== undefined ? JSON.stringify(meta.acceptanceProbe) : null,
+        // t7 词表: 'solve' (写侧新词; 'dag_goal' 只在历史行, 写侧不再产生)。
+        meta.entry === 'solve' && meta.acceptanceProbe !== undefined ? JSON.stringify(meta.acceptanceProbe) : null,
       );
       return id;
     },

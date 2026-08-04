@@ -480,7 +480,9 @@ function makeDagRun({ engine, runRegistry, continuity, hudMirror, ledger, record
           ? {
               onComplete: recordDagRun(
                 recorder,
-                { runId, entry: 'dag_run', question: task },
+                // entry 词表 (t7, 2026-08-04): 与工具新名同词 —— 'run' (旧 'dag_run' 只在历史行里,
+                // 读侧经 TOOL_RENAMES 归一合并)。
+                { runId, entry: 'run', question: task },
                 defaultConfig?.onComplete,
               ),
             }

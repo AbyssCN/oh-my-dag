@@ -221,11 +221,12 @@ describe('omd-readout · entry 分组 (2026-08-02 入口轴)', () => {
   test('不同 entry 完全分组, 缺席 entry 单列「未记」', () => {
     const { readoutNow } = makeFixture();
     const r = readoutNow();
+    // fixture 写的是**旧词** (dag_goal/dag_run) —— 断言新词 (solve/run) 正是在钉读侧归一合并 (t7)。
     expect(r.entry_distribution).toEqual([
-      { entry: 'dag_goal', runs: 1, attempts: 2 }, // run-A 的两段合成一次 goal
-      { entry: 'dag_resume', runs: 1, attempts: 2 }, // run-B 的两条 resume 链
+      { entry: 'solve', runs: 1, attempts: 2 }, // run-A 的两段合成一次 goal (旧词 dag_goal 归一)
+      { entry: 'dag_resume', runs: 1, attempts: 2 }, // run-B 的两条 resume 链 (表外, 原样)
       { entry: '未记', runs: 2, attempts: 2 }, // run-C (没传 entry) + 老行 —— 各自成 run, 不互相合并
-      { entry: 'dag_run', runs: 1, attempts: 1 }, // run-D (闸拒 → blocked); 顺序 = 首次出现 (created_at)
+      { entry: 'run', runs: 1, attempts: 1 }, // run-D (闸拒 → blocked); 顺序 = 首次出现 (created_at)
     ]);
     // runs[] 里每个 run 也带 entry; 没记 entry 的用「未记」, 不编一个 'unknown'。
     expect(r.runs.filter((x) => x.entry === '未记').map((x) => x.run_id)).toEqual(['run-C', '(no-runid):old-1']);
@@ -307,10 +308,10 @@ describe('omd-readout · cost-per-success (原任务 ①, 2026-08-02 补)', () =
     const { readoutNow } = makeFixture();
     const cs = readoutNow().cost_per_success;
     // 顺序与 entry_distribution 一致 (首次出现序)。
-    expect(cs.map((x) => x.entry)).toEqual(['dag_goal', 'dag_resume', '未记', 'dag_run']);
+    expect(cs.map((x) => x.entry)).toEqual(['solve', 'dag_resume', '未记', 'run']); // 旧词已归一 (t7)
     const goal = cs[0]!;
     expect(goal).toEqual({
-      entry: 'dag_goal',
+      entry: 'solve',
       runs: 1,
       success_runs: 1, // 两条记录、一个 success run —— 分母是 run 数不是行数
       unmeasured_runs: 0,
@@ -344,7 +345,7 @@ describe('omd-readout · cost-per-success (原任务 ①, 2026-08-02 补)', () =
     const cs = readout({ db }).cost_per_success;
     expect(cs).toHaveLength(1);
     expect(cs[0]).toEqual({
-      entry: 'dag_run',
+      entry: 'run',
       runs: 2,
       success_runs: 2,
       unmeasured_runs: 1, // m2 的 usage 坏了 → 没记, 不是 0

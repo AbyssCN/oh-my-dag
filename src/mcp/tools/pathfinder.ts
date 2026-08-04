@@ -445,7 +445,8 @@ function makeDeliver(deps: PathfinderToolDeps): OmdMcpTool {
           // 运行留痕 (2026-08-02): 慢回路这条此前完全不进账本。runId 在这里现造 ——
           // pathfinder 没有 RunRegistry (它的身份是**票**不是 run), 但 executeSlice 可能落多条
           // 记录 (iterate 每轮一张图), 不给个共同的 runId 就归不成"这一次交付"的账。
-          ...(deps.recorder ? { recorder: deps.recorder, entry: 'path_deliver', runId: crypto.randomUUID() } : {}),
+          // entry 词表 (t7, 2026-08-04): 'map_deliver' (旧 'path_deliver' 只在历史行里, 读侧归一合并)。
+          ...(deps.recorder ? { recorder: deps.recorder, entry: 'map_deliver', runId: crypto.randomUUID() } : {}),
         };
         const result = await exec(plan, opts);
         const nodeStates = Object.values(result?.results ?? {});

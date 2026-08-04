@@ -77,7 +77,7 @@ describe('迁移 · 老库就地补 acceptance_probe 列', () => {
 
     // 补列之后新 dag_goal 带探针照常写得进去。
     const fresh = rec.record(fakeResult('goal-contract'), {
-      runId: 'g-new', entry: 'dag_goal', now: 2, acceptanceProbe: { kind: 'passed-both' },
+      runId: 'g-new', entry: 'solve', now: 2, acceptanceProbe: { kind: 'passed-both' },
     });
     expect(rec.get(fresh)!.acceptanceProbe).toEqual({ kind: 'passed-both' });
     rec.close();
@@ -102,7 +102,7 @@ describe('dag_goal · 探针经生产 recordDagRun 落盘, 逐字读回 (正向)
     const db = new Database(':memory:');
     const rec = createDagRecorder({ db });
     for (const [i, probe] of ALL_KINDS.entries()) {
-      const hook = recordDagRun(rec, { runId: `g-${i}`, entry: 'dag_goal', acceptanceProbe: probe });
+      const hook = recordDagRun(rec, { runId: `g-${i}`, entry: 'solve', acceptanceProbe: probe });
       await hook(fakeResult('goal-contract'));
       const [row] = rec.listByRun(`g-${i}`);
       expect(row!.acceptanceProbe).toEqual(probe); // 读回 = 原对象 (词表内确切形状)
@@ -117,7 +117,7 @@ describe('dag_goal · 探针经生产 recordDagRun 落盘, 逐字读回 (正向)
     const db = new Database(':memory:');
     const rec = createDagRecorder({ db });
     const probe: AcceptanceProbe = { kind: 'demoted', why: 'command_block' };
-    const hook = recordDagRun(rec, { runId: 'g1', entry: 'dag_goal', acceptanceProbe: probe });
+    const hook = recordDagRun(rec, { runId: 'g1', entry: 'solve', acceptanceProbe: probe });
     await hook(fakeResult('goal-contract'));
     await hook(fakeResult('goal-execute'));
     const both = rec.listByRun('g1');
@@ -140,7 +140,7 @@ describe('缺席 → SQL NULL (历史/未记), 不是任何编出来的分支', 
   test('dag_goal 但探针没跑 (没传) → 列 NULL, 读回缺席', async () => {
     const db = new Database(':memory:');
     const rec = createDagRecorder({ db });
-    await recordDagRun(rec, { runId: 'g-noprobe', entry: 'dag_goal', question: 'x' })(fakeResult('goal-contract'));
+    await recordDagRun(rec, { runId: 'g-noprobe', entry: 'solve', question: 'x' })(fakeResult('goal-contract'));
     const [row] = rec.listByRun('g-noprobe');
     expect(row!.acceptanceProbe).toBeUndefined();
     expect(rawProbe(db, row!.id)).toBeNull();
@@ -161,7 +161,7 @@ describe('反向自检 · 非 dag_goal 入口不许拿到 acceptance_probe', () 
   test('dag_run / dag_run_plan / dag_resume / path_deliver → SQL 层真 NULL, TS 读回缺席', async () => {
     const db = new Database(':memory:');
     const rec = createDagRecorder({ db });
-    const entries = ['dag_run', 'dag_run_plan', 'dag_resume', 'path_deliver'] as const;
+    const entries = ['run', 'dag_run_plan', 'dag_resume', 'map_deliver'] as const;
     for (const entry of entries) {
       await recordDagRun(rec, { runId: `r-${entry}`, entry, question: '图', acceptanceProbe: { kind: 'passed-both' } })(fakeResult(entry));
     }
@@ -176,8 +176,8 @@ describe('反向自检 · 非 dag_goal 入口不许拿到 acceptance_probe', () 
   test('同一连接上先落带探针的 goal、紧邻再落 dag_run —— 探针不串行', async () => {
     const db = new Database(':memory:');
     const rec = createDagRecorder({ db });
-    await recordDagRun(rec, { runId: 'g1', entry: 'dag_goal', acceptanceProbe: { kind: 'passed-both' } })(fakeResult('goal-contract'));
-    await recordDagRun(rec, { runId: 'r1', entry: 'dag_run' })(fakeResult('plain-run'));
+    await recordDagRun(rec, { runId: 'g1', entry: 'solve', acceptanceProbe: { kind: 'passed-both' } })(fakeResult('goal-contract'));
+    await recordDagRun(rec, { runId: 'r1', entry: 'run' })(fakeResult('plain-run'));
     expect(rawProbe(db, rec.listByRun('g1')[0]!.id)).toBe('{"kind":"passed-both"}');
     expect(rawProbe(db, rec.listByRun('r1')[0]!.id)).toBeNull(); // 同库、紧邻写入, 仍 NULL
     rec.close();
@@ -188,14 +188,14 @@ describe('NULL 两义 · 同一列 NULL, 两种含义, entry 分得开', () => {
   test('dag_goal+NULL (历史/未记) 与 dag_run+NULL (不适用) 在读数板上都能认回各自入口, 都进不了分母', async () => {
     const db = new Database(':memory:');
     const rec = createDagRecorder({ db });
-    await recordDagRun(rec, { runId: 'g-hist', entry: 'dag_goal', question: '老 goal' })(fakeResult('goal-contract'));
-    await recordDagRun(rec, { runId: 'r1', entry: 'dag_run' })(fakeResult('plain-run'));
+    await recordDagRun(rec, { runId: 'g-hist', entry: 'solve', question: '老 goal' })(fakeResult('goal-contract'));
+    await recordDagRun(rec, { runId: 'r1', entry: 'run' })(fakeResult('plain-run'));
     const r = readout({ db });
     const goal = r.runs.find((x) => x.run_id === 'g-hist')!;
     const run = r.runs.find((x) => x.run_id === 'r1')!;
     // 两格在列上都是 NULL (都没记探针) —— 但含义不同: 「没记」vs「不适用」, 读数板按 entry 念, 不猜值。
-    expect(goal.entry).toBe('dag_goal');
-    expect(run.entry).toBe('dag_run');
+    expect(goal.entry).toBe('solve');
+    expect(run.entry).toBe('run');
     expect(goal.acceptanceProbe).toBeNull();
     expect(run.acceptanceProbe).toBeNull();
     // 两种 NULL 都进不了 G4 分母 —— 分母只认「dag_goal 且探针非 NULL」, 没有 'unknown' 桶。
@@ -219,10 +219,10 @@ describe('readout · G4 采样: 五条 kind → 三个展示桶, 每 run 一次'
       { runId: 'g-expl', probe: { kind: 'exploratory' } },
     ];
     for (const { runId, probe } of probes) {
-      await recordDagRun(rec, { runId, entry: 'dag_goal', acceptanceProbe: probe })(fakeResult('goal-contract'));
+      await recordDagRun(rec, { runId, entry: 'solve', acceptanceProbe: probe })(fakeResult('goal-contract'));
     }
-    await recordDagRun(rec, { runId: 'g-hist', entry: 'dag_goal', question: 'x' })(fakeResult('goal-contract'));
-    await recordDagRun(rec, { runId: 'r1', entry: 'dag_run' })(fakeResult('plain-run'));
+    await recordDagRun(rec, { runId: 'g-hist', entry: 'solve', question: 'x' })(fakeResult('goal-contract'));
+    await recordDagRun(rec, { runId: 'r1', entry: 'run' })(fakeResult('plain-run'));
 
     const g = readout({ db }).g4_sampling;
     expect(g).toEqual({ denominator: 6, passedBoth: 1, vacuityOnly: 2, demoted: 1, skipped: 1, exploratory: 3 });
@@ -237,11 +237,11 @@ describe('readout · 同 runId 多次 attempt 的探针归并', () => {
     const db = new Database(':memory:');
     const rec = createDagRecorder({ db });
     // 两段都带探针且**不同**: 归并取最早那段 (created_at 100), 不许挑后写的。
-    rec.record(fakeResult('goal-contract'), { runId: 'g-merge', entry: 'dag_goal', now: 100, acceptanceProbe: { kind: 'passed-both' } });
-    rec.record(fakeResult('goal-execute'), { runId: 'g-merge', entry: 'dag_goal', now: 200, acceptanceProbe: { kind: 'exploratory' } });
+    rec.record(fakeResult('goal-contract'), { runId: 'g-merge', entry: 'solve', now: 100, acceptanceProbe: { kind: 'passed-both' } });
+    rec.record(fakeResult('goal-execute'), { runId: 'g-merge', entry: 'solve', now: 200, acceptanceProbe: { kind: 'exploratory' } });
     // 第一段没探、第二段才有 → 归并 = 第二段 (首个非 NULL, 不是"最早那条记录")。
-    rec.record(fakeResult('goal-contract'), { runId: 'g-late', entry: 'dag_goal', now: 300 });
-    rec.record(fakeResult('goal-execute'), { runId: 'g-late', entry: 'dag_goal', now: 400, acceptanceProbe: { kind: 'skipped', why: '分类调用或解析失败' } });
+    rec.record(fakeResult('goal-contract'), { runId: 'g-late', entry: 'solve', now: 300 });
+    rec.record(fakeResult('goal-execute'), { runId: 'g-late', entry: 'solve', now: 400, acceptanceProbe: { kind: 'skipped', why: '分类调用或解析失败' } });
 
     const runs = readout({ db }).runs;
     expect(runs.find((x) => x.run_id === 'g-merge')!.acceptanceProbe).toEqual({ kind: 'passed-both' });
@@ -265,9 +265,9 @@ describe('readout · 闸的采样分母不受展示窗口截断', () => {
   test('探针 run 落在展示窗口外, 分母照样含它 (窗口只截 runs 表)', () => {
     const db = new Database(':memory:');
     const rec = createDagRecorder({ db });
-    rec.record(fakeResult('a'), { runId: 'r1', entry: 'dag_run', now: 100 });
-    rec.record(fakeResult('b'), { runId: 'r2', entry: 'dag_run', now: 200 });
-    rec.record(fakeResult('c'), { runId: 'g1', entry: 'dag_goal', now: 300, acceptanceProbe: { kind: 'passed-both' } });
+    rec.record(fakeResult('a'), { runId: 'r1', entry: 'run', now: 100 });
+    rec.record(fakeResult('b'), { runId: 'r2', entry: 'run', now: 200 });
+    rec.record(fakeResult('c'), { runId: 'g1', entry: 'solve', now: 300, acceptanceProbe: { kind: 'passed-both' } });
     // limit=2 → runs 表只显示最早两条 (r1/r2), 但 g1 的探针**必须**照样进分母。
     expect(readout({ db, limit: 2 }).runs.map((x) => x.run_id)).toEqual(['r1', 'r2']); // 窗口确实截了
     expect(readout({ db, limit: 2 }).g4_sampling.denominator).toBe(1); // …而判据没跟着缩
