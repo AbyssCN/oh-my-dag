@@ -20,7 +20,7 @@
  *   bun --env-file=.env run scripts/eval-no-graph.ts --score --task f2 --arm a --engine solve --pair 1
  */
 import { execSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 const OUT_DIR = '.omd/eval/no-graph-baseline';
@@ -106,6 +106,10 @@ async function runArmA(t: string, p: number): Promise<void> {
   const seats = resolveEngineModels(process.env);
   const { workCwd, taskText } = await materialize(t, armKey('a'), p);
   const answerFile = outPath(t, armKey('a'), p).replace(/\.md$/, '-answer.md');
+  // 陈旧产物清场 (2026-08-04 实测污染): pair3 复测的 write 节点发现上一跑的答案文件"已验证"
+  // 便不再写, 评分评到了旧引擎的答案 (Langfuse ed4dbe39: "Existing … prior run, 16:50")。
+  // 重跑必须从空白开始, 否则"分数"量的是磁盘残留不是本跑。
+  rmSync(answerFile, { force: true });
   const registry = new RunRegistry();
   const tools = assembleOmdMcpTools({ cwd: workCwd, runRegistry: registry });
   const toolName = engine === 'solve' ? 'dag_goal' : 'dag_run';
