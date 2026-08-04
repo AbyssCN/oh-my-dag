@@ -26,8 +26,24 @@
 import { describe, expect, test } from 'bun:test';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { TOOL_RENAMES } from './tool-renames';
 
 const ROOT = new URL('../..', import.meta.url).pathname;
+
+/**
+ * 真实注册面 = 源码字面量经 TOOL_RENAMES 映射(新名)∪ 表内旧名(deprecated alias 仍注册)。
+ * 与 assemble 出口的 applyToolRenames 用**同一张表**做同一变换 —— 闸和装配不可能各说各话。
+ * (2026-08-04 t7: 装配层改名后, 只数字面量的闸会对新名 solve/run/map_* 视而不见。)
+ */
+function registeredNames(sourceNames: Set<string>): Set<string> {
+  const out = new Set<string>();
+  for (const n of sourceNames) {
+    const renamed = TOOL_RENAMES[n];
+    out.add(renamed ?? n);
+    if (renamed) out.add(n); // 旧名以 alias 身份仍在注册面上
+  }
+  return out;
+}
 
 function tsFiles(dir: string, acc: string[] = []): string[] {
   for (const e of readdirSync(dir)) {
@@ -47,9 +63,10 @@ describe('MCP 工具表完整性', () => {
       }
     }
     expect(names.size).toBeGreaterThan(30); // 抓不到名字说明正则漂了, 而不是"工具变少了"
+    const registered = registeredNames(names);
 
     const doc = readFileSync(join(ROOT, 'docs', 'mcp-tools.md'), 'utf8');
-    const missing = [...names].filter((n) => !doc.includes(`\`${n}\``)).sort();
+    const missing = [...registered].filter((n) => !doc.includes(`\`${n}\``)).sort();
     expect(
       missing.length === 0
         ? ''
@@ -64,6 +81,7 @@ describe('MCP 工具表完整性', () => {
         names.add(m[1]!);
       }
     }
+    const registered = registeredNames(names);
 
     // 徽章里数字出现**两次**: alt 文字 `MCP server: N tools` 与 URL 里的 `MCP%20server-N%20tools`。
     // 两处都查 —— 只改一处会得到一个"文字对、图片错"的徽章, 比全错还难发现。
@@ -77,7 +95,7 @@ describe('MCP 工具表完整性', () => {
         continue;
       }
       for (const [where, got] of [['alt 文字', alt], ['徽章 URL', url]] as const) {
-        for (const g of got) if (g !== names.size) wrong.push(`${file} 的${where}写 ${g}, 实际注册 ${names.size}`);
+        for (const g of got) if (g !== registered.size) wrong.push(`${file} 的${where}写 ${g}, 实际注册 ${registered.size}`);
       }
     }
     expect(

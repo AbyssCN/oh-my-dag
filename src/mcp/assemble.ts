@@ -75,6 +75,7 @@ import { createOmdMemory, type OmdMemory } from '../harness/memory';
 import { UNIVERSAL_SAFEGUARD } from '../memory/safeguards/namespaces';
 import type { ResearchFanoutResult } from '../harness/research/fanout';
 import { logger } from '../harness/logger';
+import { applyToolRenames } from './tool-renames';
 
 /** 生产引擎接缝 (真 DAG 引擎)。 */
 const PROD_ENGINE: DagEngine = { runExecutorDag, runExecutorDagWithPlan };
@@ -584,7 +585,9 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   // 早晚对不上 (D-P 把取消把手放进 RunRegistry 是同一条理由)。
   const inbox = deps.inbox ?? createOwnerInbox({ path: join(cwd, '.omd', 'runs.db') });
 
-  return [
+  // 三层改名 (owner 2026-08-04, t7): 表内工具挂新名 map_*/solve/run, 旧名留 deprecated alias。
+  // 真源 = tool-renames.ts 一张表; 文档/徽章两条闸 import 同表, 注册面与闸不可能漂移。
+  return applyToolRenames([
     // continuity 恒开 (D-3): checkpoint 落 <cwd>/.omd/continuity/<runId>/, dag_run_plan resume 可续。
     ...createDagTools({ engine, runRegistry, defaultConfig: buildDefaultConfig, continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd }, hudMirror, ledger, recorder }),
     createDagResearchTool(researchFanout),
@@ -658,5 +661,5 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     }),
     // plan-memory 账本可观测 (Phase A 证据门仪表, issue #10)。
     createPlansTool(ledger),
-  ];
+  ]);
 }

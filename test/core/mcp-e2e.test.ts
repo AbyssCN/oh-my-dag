@@ -20,6 +20,7 @@ import type { ConductorPlan } from '../../src/harness/conductor-plan';
 import type { AgentLeafRunner, CommandLeafRunner } from '../../src/harness/leaf-runners';
 import { Database } from 'bun:sqlite';
 import { createPlanLedger } from '../../src/harness/plan-ledger';
+import { TOOL_RENAMES } from '../../src/mcp/tool-renames';
 
 /** v1 工具面全清单 (SDD §工具面 P1 期)。 */
 const ALL_TOOLS = [
@@ -66,6 +67,15 @@ const ALL_TOOLS = [
   // plan-memory 账本 (Phase A 证据门仪表)
   'omd_plans',
   'omd_primitive',
+].sort();
+
+/**
+ * 真实注册面 = ALL_TOOLS 经 TOOL_RENAMES 变换 (t7, 2026-08-04): 表内工具挂新名
+ * map_* · solve · run, 旧名留 deprecated alias —— 与 assemble 出口同一张表同一变换,
+ * 这里**不手抄新名清单** (手抄就是第二真源, 必漂)。
+ */
+const REGISTERED_TOOLS = [
+  ...new Set(ALL_TOOLS.flatMap((n) => (TOOL_RENAMES[n] ? [TOOL_RENAMES[n]!, n] : [n]))),
 ].sort();
 
 /** Minimal valid ConductorPlan (同 mcp-dag-tools.test.ts 形状)。 */
@@ -151,7 +161,7 @@ describe('omd MCP e2e (InMemoryTransport 双端)', () => {
   test('tools/list: v1 全工具在, 每个 description 非空且 ≤120 字符 (D-11)', async () => {
     const { client, memory } = await wire();
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual([...ALL_TOOLS].sort());
+    expect(tools.map((t) => t.name).sort()).toEqual([...REGISTERED_TOOLS].sort());
     for (const t of tools) {
       expect(typeof t.description).toBe('string');
       expect(t.description!.length).toBeGreaterThan(0);
@@ -191,7 +201,7 @@ describe('omd MCP e2e (InMemoryTransport 双端)', () => {
 
     // server 未崩: 注册面仍可枚举。
     const { tools } = await client.listTools();
-    expect(tools).toHaveLength(ALL_TOOLS.length);
+    expect(tools).toHaveLength(REGISTERED_TOOLS.length);
     await client.close();
     memory.close();
   });
