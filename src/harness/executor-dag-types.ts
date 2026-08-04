@@ -391,6 +391,9 @@ export interface DagObservation {
    * 2026-08-03 单次 live 命中 16 个回合, 最高同签名重复 39 次。
    * 也就是说 G5 的 0 未必是"这类检测器天然失效", 更可能是**信号在错的层上被观察**。
    *
+   * `novelty-collapse` (r1 片3, 2026-08-04) = 修复轮发现文本的**簇数连续 K 轮不增** —— 环在原地打转。
+   * 只报不拦 (INV-R1-3: 判据是第三票, 终止权归轮数/预算/冻结判据); 警告行经 prevReason 进下一轮 prompt。
+   *
    * **只报不拦**(与 `loop-no-artifact-change` 同档): 要不要把它升成 BLOCKED、K 取几,
    * 取决于它在真跑上多久命中一次 —— 先有读数再谈判据, 别反过来。
    */
@@ -402,7 +405,7 @@ export interface DagObservation {
    * 它停在"改动落在工作树里"就下结论, 漏标 25–33%; 补上这条结构事实后 **0%**,
    * 且**只要结构关系那一环就够**(不需要因果链)。**只报不拦**, 出口是下一轮的 prompt。
    */
-  kind: 'undeclared-artifact-dep' | 'loop-no-progress' | 'write-race' | 'missing-input' | 'missing-command-target' | 'loop-no-artifact-change' | 'leaf-spin' | 'scheduled-artifact';
+  kind: 'undeclared-artifact-dep' | 'loop-no-progress' | 'write-race' | 'missing-input' | 'missing-command-target' | 'loop-no-artifact-change' | 'leaf-spin' | 'scheduled-artifact' | 'novelty-collapse';
   /** 涉及的节点 id (lint = [reader, writer]; 空转 = 被反复拒绝的那批)。 */
   nodes: string[];
   /** 人与模型都读的一句话 (进 prompt 的就是它)。 */

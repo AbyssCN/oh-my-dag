@@ -62,3 +62,30 @@ describe('hasCollapsed (GWT-R1-2, INV-R1-2)', () => {
     expect(hasCollapsed([3, 5], 1)).toBe(false);
   });
 });
+
+// ── r1 片3/4: pushNoveltyRound (C2 接线的纯核) ──────────────────────────────
+
+import { pushNoveltyRound, NOVELTY_COLLAPSE_LINE } from './proximity';
+
+describe('pushNoveltyRound (r1 片3/4)', () => {
+  test('新方向的发现 → 簇数涨 → 不坍塌; 同话重复两轮 → 坍塌', () => {
+    const texts: string[] = [];
+    const seq: number[] = [];
+    expect(pushNoveltyRound(texts, seq, 'tsc error in module alpha')).toBe(false); // [1]
+    expect(pushNoveltyRound(texts, seq, 'database migration missing table')).toBe(false); // [1,2]
+    expect(pushNoveltyRound(texts, seq, 'tsc error in module alpha again')).toBe(false); // [1,2,2] 一次不增不算
+    expect(pushNoveltyRound(texts, seq, 'database migration missing table still')).toBe(true); // [1,2,2,2] 连续两轮
+    expect(seq).toEqual([1, 2, 2, 2]);
+  });
+
+  test('文本截 400 字 (只喂词袋, journal 不吃全文)', () => {
+    const texts: string[] = [];
+    pushNoveltyRound(texts, [], 'x'.repeat(1000));
+    expect(texts[0]!.length).toBe(400);
+  });
+
+  test('警告行常量非空且是建议语气 (INV-R1-3 词面自检)', () => {
+    expect(NOVELTY_COLLAPSE_LINE).toContain('新颖性坍塌');
+    expect(NOVELTY_COLLAPSE_LINE).toContain('考虑'); // 建议, 不是命令
+  });
+});

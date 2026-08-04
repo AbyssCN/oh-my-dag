@@ -232,6 +232,10 @@ export interface NodeLoopJournal {
   poisoned: string[];
   /** 上一轮的失败原因 —— 注入下一轮**重展开**的 prompt (环的信息通道就是它)。 */
   prevReason?: string;
+  /** r1 片3 (INV-R1-4): 各轮发现文本 (截 400 字, 只喂词袋聚类) — noveltySeq 的计算底料。 */
+  noveltyTexts?: string[];
+  /** r1 片3: 累计簇数序列 (每轮一个) — hasCollapsed 的输入; 从不触发或总触发都读得出来。 */
+  noveltySeq?: number[];
   /** 已判收敛 (resume 时无事可做, 直接返上次结论)。 */
   converged?: boolean;
   /** 上一轮的产出摘要 (收敛后 resume 要拿它当本节点的 output)。 */

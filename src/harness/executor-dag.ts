@@ -34,6 +34,7 @@ export function setNounGate(fn: NounGateFn | null): void { _nounGate = fn; }
 import { cavemanRule, leafCavemanLevel } from './caveman';
 import { leafCostReward } from './model-router';
 import { logger } from './logger';
+import { NOVELTY_COLLAPSE_LINE, pushNoveltyRound } from './pathfinder/proximity';
 // ── T2#5 按簇拆出的兄弟文件 (引擎消费) ──
 import type { GenerateFn, ExecutorDagConfig, LeafResult, ExecutorDagResult, DagObservation } from './executor-dag-types';
 import { makeDefaultGenerate, LEAF_SYSTEM_PREFIX, PONYTAIL_LEAF_DISPOSITION } from './executor-dag-defaults';
@@ -1225,6 +1226,9 @@ async function executePlan(
     }
     const poisoned = new Set(journal?.poisoned ?? []);
     let prevReason = journal?.prevReason ?? '';
+    // r1 片3/4 (INV-R1-4 + C2): 各轮发现文本→累计簇数; resume 接回旧序列 (journal 持久)。
+    const noveltyTexts: string[] = journal?.noveltyTexts ? [...journal.noveltyTexts] : [];
+    const noveltySeq: number[] = journal?.noveltySeq ? [...journal.noveltySeq] : [];
     const startRound = (journal?.completedRounds ?? 0) + 1;
     if (journal) {
       logger.info({ node: id, startRound, poisoned: poisoned.size }, '[omd/executor-dag] 内环恢复: 接回轮次/毒集 (D-A)');
@@ -1279,6 +1283,7 @@ async function executePlan(
         completedRounds: round,
         poisoned: [...poisonedNow],
         ...(reason ? { prevReason: reason } : {}),
+        ...(noveltyTexts.length ? { noveltyTexts: [...noveltyTexts], noveltySeq: [...noveltySeq] } : {}),
         ...(converged ? { converged: true, lastOutput } : {}),
         ...(stop ? { stop } : {}),
         updatedAt: new Date().toISOString(),
@@ -1480,6 +1485,13 @@ async function executePlan(
       prevReason = roundObs.length
         ? `${verdict.reason}\n\n[图外观察者]\n${roundObs.map((o) => `- ${o.message}`).join('\n')}`
         : verdict.reason;
+      // r1 C2 (INV-R1-3): 簇数连续 K 轮不增 → 警告行**追加进 prevReason** (环唯一的信息通道,
+      // 只进 prompt 不进控制流; 终止权仍归轮数/预算/判据)。同时落 observation 进账本 (INV-R1-4)。
+      if (pushNoveltyRound(noveltyTexts, noveltySeq, prevReason)) {
+        logger.info({ node: id, round, seq: noveltySeq }, '[omd/executor-dag] 新颖性坍塌 (簇数连续不增) → 建议行进下一轮 prompt');
+        observe([{ kind: 'novelty-collapse', nodes: [id], message: `簇数序列 [${noveltySeq.join(',')}] 连续 2 轮不增` }]);
+        prevReason = `${prevReason}\n\n${NOVELTY_COLLAPSE_LINE}`;
+      }
 
       // **每轮判完就写** journal —— 不是节点结束时写。崩在这之后, 下次 resume 接得回来。
       writeLoopJournal(
