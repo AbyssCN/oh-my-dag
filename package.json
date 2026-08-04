@@ -65,7 +65,8 @@
     "dag-slim": "bun run scripts/dag-slim.ts",
     "omd-debt": "bun run scripts/omd-debt.ts",
     "plan-doc-check": "bun run scripts/plan-doc-check.ts",
-    "omd-render": "bun run scripts/omd-render.ts"
+    "omd-render": "bun run scripts/omd-render.ts",
+    "omd-deliver": "bun run scripts/omd-deliver.ts"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.80.10",
