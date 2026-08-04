@@ -1,0 +1,14 @@
+{
+ "id": "abb9b6c9-blocking-forks",
+ "fixSha": "abb9b6c90e8f23307927462d71c031ab9c4cf753",
+ "baseSha": "98b832a67f5b3809646f66cc38e0cc194209bd63",
+ "title": "feat: blocking eval 加证据臂 (给「什么在调用这个产物」这条事实) + 防泄题闸",
+ "statement": "本仓存在一个缺陷。issue 描述(来自修复该缺陷的 commit 标题):\n  feat: blocking eval 加证据臂 (给「什么在调用这个产物」这条事实) + 防泄题闸\n\n判据:`bun test src/eval/tasks/blocking-forks.test.ts` 必须通过。\n⚠ **不许改动测试文件 `src/eval/tasks/blocking-forks.test.ts`** —— 判分前会逐字节核对, 改了这一跑作废。\n相关实现文件:src/eval/tasks/blocking-forks.ts",
+ "implPaths": [
+  "src/eval/tasks/blocking-forks.ts"
+ ],
+ "testPaths": [
+  "src/eval/tasks/blocking-forks.test.ts"
+ ],
+ "command": "bun test src/eval/tasks/blocking-forks.test.ts"
+}
