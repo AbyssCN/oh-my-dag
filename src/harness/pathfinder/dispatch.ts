@@ -287,6 +287,11 @@ export function goalDispatchedPath(cwd: string, slug: string, ticketId: string):
   return join(cwd, '.omd', 'pathfinder', 'results', slug, `${ticketId}.goal-dispatched`);
 }
 
+/** not-converged 续跑锚 (内容 = 上次 runId): 回流清在途标记时改写成这个, 再派时读到 → resume 续跑 (GWT-G1-3)。 */
+export function goalResumePath(cwd: string, slug: string, ticketId: string): string {
+  return join(cwd, '.omd', 'pathfinder', 'results', slug, `${ticketId}.goal-resume`);
+}
+
 /** goal-worker 脚本按本包安装位置解析 (同 researchScriptPath 的理由: 相对 cwd 在别的 repo 必炸)。 */
 export function goalWorkerPath(): string {
   return join(import.meta.dir, '..', '..', '..', 'scripts', 'goal-worker.ts');
@@ -323,13 +328,18 @@ export function dispatchGoalTicket(
   if (existsSync(marker)) {
     return { runId: readFileSync(marker, 'utf8').trim(), already: true };
   }
-  const runId = (deps.makeRunId ?? (() => crypto.randomUUID()))();
+  // GWT-G1-3: 上次 not-converged 留下的续跑锚 → 用旧 runId 续 (journal/毒集/绿节点都按 runId 存)。
+  const resumeAnchor = goalResumePath(cwd, slug, ticketId);
+  const resumeId = existsSync(resumeAnchor) ? readFileSync(resumeAnchor, 'utf8').trim() : undefined;
+  const runId = resumeId ?? (deps.makeRunId ?? (() => crypto.randomUUID()))();
   const rounds = env.OMD_TICKET_GOAL_ROUNDS ?? '2';
   const minutes = env.OMD_TICKET_GOAL_MINUTES ?? '30';
   mkdirSync(dirname(marker), { recursive: true });
   const spawn = deps.spawnDetached ?? defaultGoalSpawn;
   spawn(
-    ['bun', 'run', goalWorkerPath(), '--run-id', runId, '--goal', ruling, '--cwd', cwd, '--max-rounds', rounds, '--budget-minutes', minutes],
+    ['bun', 'run', goalWorkerPath(), '--run-id', runId, '--goal', ruling, '--cwd', cwd,
+      '--max-rounds', rounds, '--budget-minutes', minutes,
+      '--result-out', researchResultPath(cwd, slug, ticketId)],
     { cwd, logPath: researchLogPath(cwd, slug, ticketId) },
   );
   // spawn 之后才写标记: spawn 抛错时不留"已派"假象 (标记假阳性 = 票永远卡死在"在飞")。

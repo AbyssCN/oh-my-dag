@@ -81,6 +81,7 @@ const res = (await goalTool.handler(
     ...(opt('research-rounds') ? { researchRounds: Number(opt('research-rounds')) } : {}),
     ...(opt('budget-tokens') ? { budgetTokens: Number(opt('budget-tokens')) } : {}),
     ...(opt('budget-minutes') ? { budgetMinutes: Number(opt('budget-minutes')) } : {}),
+    ...(opt('result-out') ? { resultOut: opt('result-out') } : {}),
   } as never,
   {} as never,
 )) as { content: { text: string }[]; isError?: boolean };

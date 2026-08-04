@@ -8,7 +8,7 @@
  * 测试传 fake 即可端到端跑。
  */
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, openSync } from 'node:fs';
+import { mkdirSync, openSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import type { OmdMcpTool } from '../server';
@@ -22,6 +22,7 @@ import type { AcceptanceProbe } from '../../harness/goal/acceptance';
 import { RUN_OUTCOME_INFO } from '../../harness/run-outcome';
 import { describeRunWorktree, prepareRunWorktree, type BranchStrategy } from '../../harness/run-worktree';
 import { renderOwnerDirectives, type OwnerInbox } from '../owner-inbox';
+import { logger } from '../../harness/logger';
 
 export interface GoalToolDeps {
   /** 自主环实现 (默认注入真 runGoal)。 */
@@ -149,6 +150,10 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         .boolean()
         .optional()
         .describe('Run in a background process that survives this MCP session ending (returns immediately)'),
+      resultOut: z
+        .string()
+        .optional()
+        .describe("D-G1.3: on terminal state, write 'outcome: <kind>' header + summarizeGoal to this path (pathfinder reflow source)"),
       budgetTokens: z
         .number()
         .int()
@@ -169,13 +174,14 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         ),
     },
     handler: async (args) => {
-      const { goal, tier, maxRounds, researchRounds, resume, detached, budgetTokens, budgetMinutes, branchStrategy } = args as {
+      const { goal, tier, maxRounds, researchRounds, resume, detached, budgetTokens, budgetMinutes, branchStrategy, resultOut } = args as {
         goal?: string;
         tier?: GoalTier;
         maxRounds?: number;
         researchRounds?: number;
         resume?: string;
         detached?: boolean;
+        resultOut?: string;
         budgetTokens?: number;
         budgetMinutes?: number;
         branchStrategy?: BranchStrategy;
@@ -215,6 +221,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           ...(researchRounds ? ['--research-rounds', String(researchRounds)] : []),
           ...(budgetTokens ? ['--budget-tokens', String(budgetTokens)] : []),
           ...(budgetMinutes ? ['--budget-minutes', String(budgetMinutes)] : []),
+          ...(resultOut ? ['--result-out', resultOut] : []),
         ];
         let pid: number | undefined;
         try {
@@ -372,8 +379,26 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           if (r.converged) deps.runRegistry.succeed(runId, summarizeGoal(r));
           else if (r.cancelled) deps.runRegistry.cancel(runId, r.cancelled, summarizeGoal(r));
           else deps.runRegistry.fail(runId, summarizeGoal(r));
+          // D-G1.3: 结果落盘 (pathfinder goal 票回流源)。首行 outcome 头 = RUN_OUTCOME_INFO 键,
+          // afk-hook 按它三态映射。写失败只警告 —— 结果文件是回流增益, run 本身已终态落库。
+          if (resultOut) {
+            try {
+              mkdirSync(dirname(resultOut), { recursive: true });
+              writeFileSync(resultOut, `outcome: ${r.outcome}\nrunId: ${runId}\n\n${summarizeGoal(r)}`);
+            } catch (e) {
+              logger.warn({ err: (e as Error).message, resultOut }, '[dag_goal] resultOut 写失败 (回流将看不到这跑)');
+            }
+          }
         })
-        .catch((err) => deps.runRegistry.fail(runId, err instanceof Error ? err.message : String(err)));
+        .catch((err) => {
+          deps.runRegistry.fail(runId, err instanceof Error ? err.message : String(err));
+          if (resultOut) {
+            try {
+              mkdirSync(dirname(resultOut), { recursive: true });
+              writeFileSync(resultOut, `outcome: error\nrunId: ${runId}\n\n${err instanceof Error ? err.message : String(err)}`);
+            } catch { /* 同上: 增益通道, 不掩主失败 */ }
+          }
+        });
 
       return {
         content: [

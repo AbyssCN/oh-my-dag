@@ -98,3 +98,84 @@ describe('path_deliver 分流 (GWT-G1-1)', () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 });
+
+// ── c2 波: 回流三态映射 (GWT-G1-2/3) ─────────────────────────────────────────
+
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { reflowGoalResults } from './afk-hook';
+import { goalResumePath, researchResultPath } from './dispatch';
+
+const writeResult = (cwd: string, slug: string, id: string, outcome: string, body = '摘要') => {
+  const p = researchResultPath(cwd, slug, id);
+  mkdirSync(join(p, '..'), { recursive: true });
+  writeFileSync(p, `outcome: ${outcome}\nrunId: run-${id}\n\n${body}`);
+};
+
+const goalMapOn = (cwd: string, id = 'g9'): void => {
+  const map: PathMap = {
+    destination: '图', slug: 'm1', decisionsLog: [],
+    tickets: [t({ id, executorKind: 'goal' })],
+  };
+  saveMap(map, cwd);
+};
+
+const mdBackend = (cwd: string) => resolveBackend(cwd, { env: { OMD_PATH_BACKEND: 'md' } });
+
+describe('reflowGoalResults 三态映射 (D-G1.4, GWT-G1-2)', () => {
+  test('success → 票 delivered, 结果文件归档 .done, 标记清空', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'goal-rf-'));
+    goalMapOn(cwd);
+    writeResult(cwd, 'm1', 'g9', 'success');
+    const out = reflowGoalResults(mdBackend(cwd), cwd, 'm1');
+    expect(out).toEqual([{ ticketId: 'g9', disposition: 'delivered', outcome: 'success', runId: 'run-g9' }]);
+    expect(mdBackend(cwd).readMap(cwd, 'm1')!.tickets[0]!.status).toBe('delivered');
+    expect(existsSync(researchResultPath(cwd, 'm1', 'g9'))).toBe(false);
+    expect(existsSync(`${researchResultPath(cwd, 'm1', 'g9')}.done`)).toBe(true);
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  test('blocked → 票 escalated (需人)', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'goal-rf-'));
+    goalMapOn(cwd);
+    writeResult(cwd, 'm1', 'g9', 'blocked', '要 owner 给凭证');
+    const out = reflowGoalResults(mdBackend(cwd), cwd, 'm1');
+    expect(out[0]!.disposition).toBe('escalated');
+    expect(mdBackend(cwd).readMap(cwd, 'm1')!.tickets[0]!.status).toBe('escalated');
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  test('not-converged → 票留 ruled + 续跑锚落盘 + 结果归档 .attempt (不重复折入)', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'goal-rf-'));
+    goalMapOn(cwd);
+    writeResult(cwd, 'm1', 'g9', 'not-converged');
+    const out = reflowGoalResults(mdBackend(cwd), cwd, 'm1');
+    expect(out[0]!.disposition).toBe('resumable');
+    expect(mdBackend(cwd).readMap(cwd, 'm1')!.tickets[0]!.status).toBe('ruled');
+    expect(readFileSync(goalResumePath(cwd, 'm1', 'g9'), 'utf8')).toBe('run-g9');
+    // 幂等: 再折一次无事发生 (结果文件已归档)
+    expect(reflowGoalResults(mdBackend(cwd), cwd, 'm1')).toEqual([]);
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  test('GWT-G1-3: not-converged 后再派 → 用旧 runId 续 (resume 语义), 不造新 run', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'goal-rf-'));
+    goalMapOn(cwd);
+    writeResult(cwd, 'm1', 'g9', 'not-converged');
+    reflowGoalResults(mdBackend(cwd), cwd, 'm1');
+    const spawns: string[][] = [];
+    const d = dispatchGoalTicket(cwd, 'm1', 'g9', '继续收敛', { spawnDetached: (c) => (spawns.push(c), 1), makeRunId: () => 'run-NEW' });
+    expect(d.runId).toBe('run-g9'); // 旧 runId, 不是 run-NEW
+    expect(spawns[0]!.join(' ')).toContain('--run-id run-g9');
+    expect(spawns[0]!.join(' ')).toContain('--result-out'); // 结果通道接上
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  test('research 票的结果文件不走 goal 路 (语义分离)', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'goal-rf-'));
+    const map: PathMap = { destination: '图', slug: 'm1', decisionsLog: [], tickets: [{ id: 'r9', type: 'research', title: '查', blockedBy: [], status: 'open' }] };
+    saveMap(map, cwd);
+    writeResult(cwd, 'm1', 'r9', 'success');
+    expect(reflowGoalResults(mdBackend(cwd), cwd, 'm1')).toEqual([]); // 不碰 research
+    rmSync(cwd, { recursive: true, force: true });
+  });
+});
