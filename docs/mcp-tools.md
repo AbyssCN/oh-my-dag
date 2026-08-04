@@ -41,6 +41,7 @@ discipline (when to escalate, how to accept, who holds the trigger).
 | `map_add` (alias: `path_add`) | add typed tickets (research / grill / prototype / task) with dependency edges |
 | `map_tickets` (alias: `path_tickets`) | show the frontier; folds in landed background results first |
 | `map_rule` (alias: `path_rule`) | adjudicate a decision onto the map (owner's call) |
+| `map_confirm` | confirm a machine-suggested ticket: accept (optionally retitle) into the frontier, or reject — logged for the acceptance-rate readout |
 | `map_deliver` (alias: `path_deliver`) | **the power gate**: compile the clear region to a slice, run the DAG, mark delivered only on full success |
 | `map_prefetch` (alias: `path_prefetch`) | dispatch frontier research to detached background processes that outlive the client |
 

@@ -93,3 +93,132 @@ describe('序列化往返 (md 真相源 + db 索引)', () => {
     expect(back.decisionsLog).toEqual([]);
   });
 });
+
+// ── 片 b: suggest/confirm 纯核 + 工具面 (GWT-2~8) ────────────────────────────
+
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { applySuggestions, computeFingerprint, confirmSuggestion } from './suggest';
+import { resolveBackend } from './backend';
+import { saveMap } from './maps';
+import { createPathfinderTools } from '../../mcp/tools/pathfinder';
+
+const AT = '2026-08-04T12:00:00Z';
+
+describe('applySuggestions (GWT-2/6/7)', () => {
+  const base = (): PathMap => ({ destination: 'd', slug: 'm', tickets: [], decisionsLog: [] });
+
+  test('GWT-2: 缺 suggestedBy → 整批响亮拒绝, 报错含字段名', () => {
+    expect(() =>
+      applySuggestions(base(), [{ type: 'task', title: 'x', suggestedBy: '' }], { at: AT }),
+    ).toThrow(/suggestedBy/);
+  });
+
+  test('正常入图: suggested 态 + 溯源 + 指纹', () => {
+    const m = base();
+    const r = applySuggestions(m, [{ type: 'research', title: '查一下 X', suggestedBy: 'run-1' }], { at: AT });
+    expect(r.added).toHaveLength(1);
+    const tk = m.tickets[0]!;
+    expect(tk.status).toBe('suggested');
+    expect(tk.suggestedBy).toBe('run-1');
+    expect(tk.fingerprint).toBe(computeFingerprint('research', '查一下 X'));
+    expect(tk.id).toBe('s1');
+  });
+
+  test('GWT-6: 指纹撞任意状态既有票 → 不入图, deduped 留痕指向撞上的票', () => {
+    const m = base();
+    m.tickets.push({ id: 't9', type: 'task', title: '同一件事', blockedBy: [], status: 'delivered', fingerprint: computeFingerprint('task', '同一件事') });
+    const r = applySuggestions(m, [{ type: 'task', title: '同一件事', suggestedBy: 'run-2' }], { at: AT });
+    expect(r.added).toHaveLength(0);
+    expect(r.deduped).toEqual([{ draftTitle: '同一件事', hitTicketId: 't9' }]);
+    expect(m.suggestionsLog).toEqual([{ ticketId: 't9', outcome: 'deduped', at: AT, runId: 'run-2' }]);
+    expect(m.tickets).toHaveLength(1); // 没多票
+  });
+
+  test('GWT-7: perRunCap=5 时 8 条只进 5, 摘要念出「丢弃 3」', () => {
+    const m = base();
+    const drafts = Array.from({ length: 8 }, (_, i) => ({ type: 'task' as const, title: `建议 ${i}`, suggestedBy: 'run-3' }));
+    const r = applySuggestions(m, drafts, { at: AT, perRunCap: 5 });
+    expect(r.added).toHaveLength(5);
+    expect(r.dropped).toBe(3);
+    expect(r.summary).toContain('丢弃 3');
+  });
+
+  test('pendingCap: 图上已有 20 张 pending → 新建议全丢弃且摘要说明', () => {
+    const m = base();
+    for (let i = 0; i < 20; i++) m.tickets.push({ id: `s${i + 1}`, type: 'task', title: `旧建议 ${i}`, blockedBy: [], status: 'suggested', suggestedBy: 'r0', fingerprint: computeFingerprint('task', `旧建议 ${i}`) });
+    const r = applySuggestions(m, [{ type: 'task', title: '新的', suggestedBy: 'run-4' }], { at: AT, pendingCap: 20 });
+    expect(r.added).toHaveLength(0);
+    expect(r.dropped).toBe(1);
+    expect(r.summary).toContain('丢弃 1');
+  });
+});
+
+describe('confirmSuggestion (GWT-3/4/5)', () => {
+  const withSugg = (): PathMap => {
+    const m: PathMap = { destination: 'd', slug: 'm', tickets: [], decisionsLog: [] };
+    applySuggestions(m, [{ type: 'task', title: '待确认', suggestedBy: 'run-9' }], { at: AT });
+    return m;
+  };
+
+  test('GWT-3: accept → open + accepted 行; 二次 confirm 同票 → throw (幂等拒绝)', () => {
+    const m = withSugg();
+    const e = confirmSuggestion(m, 's1', 'accept', { at: AT });
+    expect(e).toEqual({ ticketId: 's1', outcome: 'accepted', at: AT, runId: 'run-9' });
+    expect(m.tickets[0]!.status).toBe('open');
+    expect(() => confirmSuggestion(m, 's1', 'accept', { at: AT })).toThrow(/suggested/);
+  });
+
+  test('GWT-4: accept + 改题 → edited 且 title 已换', () => {
+    const m = withSugg();
+    const e = confirmSuggestion(m, 's1', 'accept', { at: AT, title: '改后题' });
+    expect(e.outcome).toBe('edited');
+    expect(m.tickets[0]!.title).toBe('改后题');
+  });
+
+  test('GWT-5: reject → 票移除但台账有 rejected 行 (拒绝不是无痕)', () => {
+    const m = withSugg();
+    confirmSuggestion(m, 's1', 'reject', { at: AT });
+    expect(m.tickets).toHaveLength(0);
+    expect(m.suggestionsLog!.some((x) => x.ticketId === 's1' && x.outcome === 'rejected')).toBe(true);
+  });
+});
+
+describe('工具面: map_confirm + map_rule 挡 suggested (GWT-8)', () => {
+  const wireTmp = () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'sugg-'));
+    const m: PathMap = { destination: '图', slug: 'm1', tickets: [], decisionsLog: [] };
+    applySuggestions(m, [{ type: 'task', title: '机器建议', suggestedBy: 'run-7' }], { at: AT });
+    saveMap(m, cwd);
+    const tools = createPathfinderTools({
+      cwd,
+      env: { OMD_PATH_BACKEND: 'md' },
+      models: { conductorModel: 'x', leafModel: 'x' },
+      agentRunner: (async () => ({ text: '', usage: { in: 0, out: 0 } })) as never,
+      commandRunner: (async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode: 0 })) as never,
+      resolveBackend: (c) => resolveBackend(c, { env: { OMD_PATH_BACKEND: 'md' } }),
+    });
+    const call = async (name: string, args: Record<string, unknown>) =>
+      (await tools.find((t) => t.name === name)!.handler(args, {} as never)) as { content: { text: string }[]; isError?: boolean };
+    return { cwd, call };
+  };
+
+  test('GWT-8: map_rule 打 suggested 票 → isError 含 confirm, 状态不变', async () => {
+    const { cwd, call } = wireTmp();
+    const r = await call('path_rule', { ticketId: 's1', ruling: '直接裁' });
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toContain('map_confirm');
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  test('map_confirm accept 走通并渲染新状态; 再 rule 就许了', async () => {
+    const { cwd, call } = wireTmp();
+    const c = await call('map_confirm', { ticketId: 's1', action: 'accept' });
+    expect(c.isError).not.toBe(true);
+    expect(c.content[0]!.text).toContain('accepted');
+    const r = await call('path_rule', { ticketId: 's1', ruling: '现在可以裁了' });
+    expect(r.isError).not.toBe(true);
+    rmSync(cwd, { recursive: true, force: true });
+  });
+});

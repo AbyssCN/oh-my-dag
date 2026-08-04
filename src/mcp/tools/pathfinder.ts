@@ -67,9 +67,9 @@ export interface PathfinderToolDeps {
   recorder?: DagRecorder;
 }
 
-/** 七工具: path_init + path_map / path_add / path_tickets / path_rule / path_deliver / path_prefetch。 */
+/** 八工具: path_init + path_map / path_add / path_tickets / path_rule / path_deliver / path_prefetch + map_confirm (S-1)。 */
 export function createPathfinderTools(deps: PathfinderToolDeps): OmdMcpTool[] {
-  return [makeInit(deps), makeMap(deps), makeAdd(deps), makeTickets(deps), makeRule(deps), makeDeliver(deps), makePrefetch(deps)];
+  return [makeInit(deps), makeMap(deps), makeAdd(deps), makeTickets(deps), makeRule(deps), makeConfirm(deps), makeDeliver(deps), makePrefetch(deps)];
 }
 
 // ── 共享 helpers ──────────────────────────────────────────────────────────────
@@ -152,6 +152,11 @@ function renderStatus(map: PathMap, hudMirror?: HudMirror): string {
      fr.length === 0 ? '前沿空 (全裁决/受阻/已交付)。' : `前沿 (${fr.length}):`,
      ...fr.map((t) => `  ${ticketLine(t)}`),
   ];
+  const suggested = map.tickets.filter((t) => t.status === 'suggested');
+  if (suggested.length > 0) {
+    lines.push(`✋ 待确认建议 (${suggested.length}) — map_confirm accept/reject:`);
+    for (const t of suggested) lines.push(`  • [${t.type}] ${t.id}: ${t.title} (来源 ${t.suggestedBy ?? '?'})`);
+  }
   const region = readyRegion(map);
   if (region) {
     try {
@@ -388,6 +393,12 @@ function makeRule(deps: PathfinderToolDeps): OmdMcpTool {
       const r = resolveSlug(backend, deps.cwd, slug as string | undefined);
       if ('error' in r) return err(r.error);
       const reflow = reflowOnce(deps, backend, r.slug); // 先折回流, 避免在过期视图上裁
+      // GWT-8 (INV-S1-1): suggested 票不许绕过人确认直接裁 — rule 是裁决, confirm 才是收件。
+      const pre = backend.readMap(deps.cwd, r.slug);
+      const target = pre?.tickets.find((t) => t.id === ticketId);
+      if (target?.status === 'suggested') {
+        return err(`票 "${ticketId}" 是机器建议 (suggested) — 先 map_confirm accept/reject, 确认后才可裁决`);
+      }
       try {
         backend.rule(deps.cwd, r.slug, ticketId as string, ruling as string);
       } catch (e) {
@@ -403,6 +414,38 @@ function makeRule(deps: PathfinderToolDeps): OmdMcpTool {
           renderStatus(map, deps.hudMirror),
         ].join('\n'),
       );
+    },
+  };
+}
+
+// ── map_confirm (S-1 片b) ────────────────────────────────────────────────────
+
+function makeConfirm(deps: PathfinderToolDeps): OmdMcpTool {
+  return {
+    // 新工具直接用新词表名 (t7 后出生, 无旧名无 alias)。
+    name: 'map_confirm',
+    description: 'Confirm a machine-suggested ticket: accept (optional retitle) into frontier, or reject. Logged for acceptance rate.',
+    inputSchema: {
+      ticketId: z.string().describe('Suggested ticket id to confirm'),
+      action: z.enum(['accept', 'reject']).describe('accept → open (frontier lifecycle); reject → removed, logged'),
+      title: z.string().optional().describe('accept only: replace title (logged as edited)'),
+      slug: z.string().optional().describe('Map slug (omit = the single open map)'),
+    },
+    handler: async ({ ticketId, action, title, slug }) => {
+      const backend = backendOf(deps);
+      const r = resolveSlug(backend, deps.cwd, slug as string | undefined);
+      if ('error' in r) return err(r.error);
+      if (!backend.confirmSuggestion) return err(`后端 ${backend.kind} 未实装 confirmSuggestion (S-1 片e) — md 后端可用`);
+      try {
+        const entry = backend.confirmSuggestion(deps.cwd, r.slug, ticketId as string, action as 'accept' | 'reject', {
+          at: new Date().toISOString(),
+          ...(title !== undefined ? { title: title as string } : {}),
+        });
+        const map = backend.readMap(deps.cwd, r.slug)!;
+        return ok([`✓ 建议 ${ticketId} → ${entry.outcome}`, renderStatus(map, deps.hudMirror)].join('\n'));
+      } catch (e) {
+        return err(errMsg(e));
+      }
     },
   };
 }
