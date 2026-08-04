@@ -33,14 +33,14 @@ flowchart TB
     subgraph T1["Track 1 · COMPOSE — call one capability at a time"]
       C1["omd_primitive<br/>judge · verify · parallel · tournament · 12 shapes"]
       C2["omd_web / omd_distill<br/>fetch pages · distil insight"]
-      C3["memory_recall / path_map<br/>facts that outlive the window"]
+      C3["memory_recall / map_open<br/>facts that outlive the window"]
       C4["omd_shapes<br/>proven decompositions, and when NOT to use them"]
     end
 
     subgraph T2["Track 2 · GRAPH — hand off a whole fan-out"]
-      G1["dag_run<br/>a conductor decomposes for you"]
+      G1["run<br/>a conductor decomposes for you"]
       G2["dag_run_plan<br/>you wrote the graph, just run it"]
-      G3["dag_goal<br/>state a goal — plan → execute → judge,<br/>looped to convergence, survives your session"]
+      G3["solve<br/>state a goal — plan → execute → judge,<br/>looped to convergence, survives your session"]
       G4["dag_review / dag_debug / dag_slim / dag_deepen<br/>pre-shaped fleets"]
     end
 
@@ -106,7 +106,7 @@ cd <你的项目> && claude mcp add omd -- omd mcp
 ```mermaid
 flowchart LR
   subgraph EXEC["EXECUTE — get the work done"]
-    E1["dag_run · dag_run_plan · dag_resume<br/>dag_goal · dag_cancel · dag_triage · dag_rule<br/>dag_status · dag_result · dag_runs"]
+    E1["run · dag_run_plan · dag_resume<br/>solve · dag_cancel · dag_triage · dag_rule<br/>dag_status · dag_result · dag_runs"]
     E2["omd_primitive<br/>12 control-flow shapes"]
   end
 
@@ -124,7 +124,7 @@ flowchart LR
 
   subgraph MEMORY["MEMORY &amp; PLANNING — outlive the context window"]
     M1["memory_recall · memory_remember"]
-    M2["path_map · path_add · path_rule<br/>path_deliver · path_prefetch"]
+    M2["map_open · map_add · map_rule<br/>map_deliver · map_prefetch"]
   end
 
   subgraph KNOW["KNOWLEDGE — stop reinventing the shape"]
@@ -140,8 +140,8 @@ flowchart LR
   class R2,M1,M2 llm
 ```
 
-**执行** —— `dag_run`(conductor 替你分解)· `dag_run_plan`(图你自己写好了)· `dag_resume`
-(从断掉的地方接着跑)· `dag_goal`(只给目标;引擎自己画图、执行、判卷、修复,直到收敛 ——
+**执行** —— `run`(conductor 替你分解)· `dag_run_plan`(图你自己写好了)· `dag_resume`
+(从断掉的地方接着跑)· `solve`(只给目标;引擎自己画图、执行、判卷、修复,直到收敛 ——
 四条停止轴:轮数上限、空转判据、judge ∧ accept、token/分钟预算;`detached: true` 交给一个
 比你会话活得久的 worker 进程)· `dag_cancel`(协作式叫停,可续跑)· `dag_triage` / `dag_rule`
 (owner 收件箱:跑着的图把领域岔口连同它正按什么假设继续跑一起摆出来,你的裁决逐字进下一轮)·
@@ -155,7 +155,7 @@ flowchart LR
 `dag_slim`(只删不加的过度工程审计)· `dag_deepen`(架构热点)。
 
 **记忆与规划** —— `memory_recall` / `memory_remember` ·
-`path_map` / `path_add` / `path_rule` / `path_deliver` / `path_prefetch`(一张进 git 的决策地图,
+`map_open` / `map_add` / `map_rule` / `map_deliver` / `map_prefetch`(一张进 git 的决策地图,
 用带类型的票推进,后台调研在你关掉客户端之后继续跑)。
 
 **知识** —— `omd_shapes`(经验证的图式,每条都带触发条件**和"什么时候别用"**)·

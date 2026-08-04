@@ -9,9 +9,9 @@ description: 外层 fixpoint 迭代执行:跑 omd DAG → 评结果 → 带失�
 
 ## 流程
 
-1. `dag_run`(omd MCP;未加载先 ToolSearch "dag_run")执行任务,`dag_status`/`dag_result` 拿本轮产物。
+1. `run`(omd MCP;未加载先 ToolSearch "run")执行任务,`dag_status`/`dag_result` 拿本轮产物。
 2. **你当收敛 judge**:对照任务目标逐项评估本轮结果——达标即收敛,报告并停;未达标则写出**具体失败原因**(哪个节点产物不合格、缺什么)。
-3. 未收敛 → 重画:新一轮 `dag_run`,task = 原任务 + `[上一轮未收敛] <失败原因>\n请针对性重新分解修复`。
+3. 未收敛 → 重画:新一轮 `run`,task = 原任务 + `[上一轮未收敛] <失败原因>\n请针对性重新分解修复`。
 4. 默认最多 3 轮;到上限仍未收敛 → 停下向 owner 报告卡点和建议(升级模型/改任务/人工介入),不要无限烧。
 
 ## 与 /omd-execute 的分工

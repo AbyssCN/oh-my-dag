@@ -20,17 +20,17 @@ cd <目标repo> && claude mcp add omd -- omd mcp        # 全局安装的 omd; �
 
 | 技能 | 干什么 | 靠什么 |
 |---|---|---|
-| `/omd-path` | 开/建/列 pathfinder 决策地图 + 开票 + 预取 | MCP `path_map` `path_add` `path_prefetch` |
-| `/omd-tickets` | 看前沿 + 拉 AFK 研究回流(预算内自续) | MCP `path_tickets` |
-| `/omd-rule` | 裁决前沿票 + 终裁判定树(真源三层/灰态三画法/敏感清单) | MCP `path_rule` |
-| `/omd-deliver` | **权力闸**:执行已散尽区域 + delivered✅≠东西真在核对 | MCP `path_deliver` |
-| `/omd-execute` | SDD → DAG 执行 → 交叉验证 checklist → 验收四选一 | MCP `dag_run`/`dag_status`/`dag_result` |
-| `/omd-iterate` | fixpoint 迭代:跑→你评→带失败原因重画,≤3 轮 | MCP `dag_run` 三段式 |
+| `/omd-path` | 开/建/列 pathfinder 决策地图 + 开票 + 预取 | MCP `map_open` `map_add` `map_prefetch` |
+| `/omd-tickets` | 看前沿 + 拉 AFK 研究回流(预算内自续) | MCP `map_tickets` |
+| `/omd-rule` | 裁决前沿票 + 终裁判定树(真源三层/灰态三画法/敏感清单) | MCP `map_rule` |
+| `/omd-deliver` | **权力闸**:执行已散尽区域 + delivered✅≠东西真在核对 | MCP `map_deliver` |
+| `/omd-execute` | SDD → DAG 执行 → 交叉验证 checklist → 验收四选一 | MCP `run`/`dag_status`/`dag_result` |
+| `/omd-iterate` | fixpoint 迭代:跑→你评→带失败原因重画,≤3 轮 | MCP `run` 三段式 |
 | `/omd-grill` | 对抗式审问(一次一问/外部标杆逼问)+ 宽解岔口开 council | 方法论(纯技能) |
 | `/omd-contract` | 审议结晶成 SDD 落盘(承 /omd-grill 决策记录表) | 方法论 + 文件 |
 | `/omd-note` | 决策/引用记 NOTES.md 台账(引用不复制/遮敏感/追加) | 方法论 + 文件 |
 | `/omd-council` | 多视角议会 + 3-lens 人格 + 领域岔口接地档(反 happy-path) | MCP `dag_research`(council) |
-| `/omd-audit` | 安全专项审计:信任边界清单(注入/认证/fail-open) | MCP `dag_run`(审计 DAG 模板) |
+| `/omd-audit` | 安全专项审计:信任边界清单(注入/认证/fail-open) | MCP `run`(审计 DAG 模板) |
 | `/omd-sast` | 确定性 semgrep 静态扫描 | Bash semgrep |
 | `/omd-review` | 对抗式 diff 审查 + 误报裁决程序 + gate ROI 分档 | MCP `dag_review`(三段式) |
 | `/omd-slim` | 精益审计:先 debt 台账、再 global-first 两遍法找过度工程 | `scripts/omd-debt.ts` + MCP `dag_slim` |
@@ -45,7 +45,7 @@ cd <目标repo> && claude mcp add omd -- omd mcp        # 全局安装的 omd; �
 
 | 原 TUI 命令 | 去向 |
 |---|---|
-| `/path` `/tickets` `/rule` `/deliver` | → `/omd-path` `/omd-tickets` `/omd-rule` `/omd-deliver`(经 `path_*` MCP 工具) |
+| `/path` `/tickets` `/rule` `/deliver` | → `/omd-path` `/omd-tickets` `/omd-rule` `/omd-deliver`(经 `map_*` MCP 工具) |
 | `/pathfinder`(shift+tab 模式开关) | **退役** — Claude 没有"模式",`/omd-path` 开图即进入工作流 |
 | `/execute` `/iterate` | → `/omd-execute` `/omd-iterate`(经 `dag_*` 三段式) |
 | `/grill` `/sdd` `/note` `/council` | → `/omd-grill` `/omd-contract` `/omd-note` `/omd-council` |
@@ -64,9 +64,9 @@ cd <目标repo> && claude mcp add omd -- omd mcp        # 全局安装的 omd; �
 ### ① pathfinder 循环(大而模糊的多 session 工作)
 
 ```
-/omd-path <目的地>            开图, 和 owner 把目的地拆成票 (path_add: research/omd-grill/prototype/task + blockedBy)
+/omd-path <目的地>            开图, 和 owner 把目的地拆成票 (map_add: research/omd-grill/prototype/task + blockedBy)
    │
-   ├─ research 票 ── path_prefetch → detached AFK 后台自动跑 → /omd-tickets 拉回流
+   ├─ research 票 ── map_prefetch → detached AFK 后台自动跑 → /omd-tickets 拉回流
    │                  结果自动裁决母票 + 孵子票 (## children), 预算内自续 (OMD_PATH_RESEARCH_BUDGET, 默认 12)
    │
    ├─ grill 票 ────── /omd-grill 和 owner 审问对齐 → owner 定夺 → /omd-rule 落盘

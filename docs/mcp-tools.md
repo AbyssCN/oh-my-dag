@@ -61,7 +61,7 @@ discipline (when to escalate, how to accept, who holds the trigger).
 | `omd_apply_preset` · `omd_toggle_hud` | apply a wizard preset (base-opencode-go / cn-standard / cn-ultimate) · toggle the statusline HUD |
 | `omd_models_auto` | auto-assign per-node models by channel economics → `.omd/config.json`; env still overrides |
 | `omd_shapes` | the graph-shape catalogue — each with trigger conditions, when NOT to use it, and why. Call once before decomposing |
-| `omd_primitive` | run one control-flow primitive directly, no graph needed. For 2–5 step combos; large fan-out goes to `dag_run` |
+| `omd_primitive` | run one control-flow primitive directly, no graph needed. For 2–5 step combos; large fan-out goes to `run` |
 | `omd_web` | search + fetch, zero LLM. Full text to disk, returns only the index + fetched URLs. For a synthesised answer use `dag_research` |
 | `omd_distill` | distil insight from text you already have (no fetching). `expert` = faithful extraction, `challenger` = high-temp long-tail |
 
@@ -72,18 +72,18 @@ tool(s) in the right column and adds the workflow discipline.
 
 | Command | Wraps | What it adds |
 |---|---|---|
-| `/path` | `path_map` · `path_add` | open or resume a decision map, break a goal into tickets |
-| `/tickets` | `path_tickets` · `path_prefetch` | show the frontier, pull landed research, dispatch background work |
-| `/rule` | `map_rule` (alias: `path_rule`) | adjudicate a decision onto the map — owner's explicit call |
-| `/deliver` | `map_deliver` (alias: `path_deliver`) | the delivery gate: compile the clear zone and run it |
+| `/path` | `map_open` · `map_add` | open or resume a decision map, break a goal into tickets |
+| `/tickets` | `map_tickets` · `map_prefetch` | show the frontier, pull landed research, dispatch background work |
+| `/rule` | `map_rule` | adjudicate a decision onto the map — owner's explicit call |
+| `/deliver` | `map_deliver` | the delivery gate: compile the clear zone and run it |
 | `/sdd` | writes spec to `docs/plan/` | crystallize the conversation into a spec on disk before building |
-| `/execute` | `dag_run` → `dag_status`/`dag_result` | run a spec as a DAG, then actively accept the result against it |
-| `/iterate` | `dag_run` (fixpoint loop) | re-run to convergence — your agent is the judge |
+| `/execute` | `run` → `dag_status`/`dag_result` | run a spec as a DAG, then actively accept the result against it |
+| `/iterate` | `run` (fixpoint loop) | re-run to convergence — your agent is the judge |
 | `/resume` | `dag_runs` · `dag_resume` | list failed/interrupted runs, pick one, resume it from disk |
-| `/grill` | deliberation → `path_rule` | interrogate an idea before it's locked; land the ruling |
-| `/note` | `path_add` · `path_rule` | a decision ledger for the conversation |
+| `/grill` | deliberation → `map_rule` | interrogate an idea before it's locked; land the ruling |
+| `/note` | `map_add` · `map_rule` | a decision ledger for the conversation |
 | `/council` | `dag_research` (--council) | judged multi-persona debate over a hard call |
-| `/audit` | `dag_run` (security lenses) | multi-lens security audit as a DAG |
+| `/audit` | `run` (security lenses) | multi-lens security audit as a DAG |
 | `/sast` | semgrep (local) | deterministic static scan, no LLM |
 | `/review` | `dag_review` | adversarial diff-review fleet, gate G0–G3 |
 | `/slim` | `dag_slim` | deletion-only over-engineering audit |

@@ -5,7 +5,7 @@ description: 裁决 omd pathfinder 前沿票(记录 owner 决策到真相文件)
 
 # /omd-rule — 裁决一张票
 
-调 omd MCP `path_rule`(可能带前缀 `mcp__omd__`;未加载先 ToolSearch "path_rule"),参数 `ticketId` + `ruling`(多图带 `slug`)。
+调 omd MCP `map_rule`(可能带前缀 `mcp__omd__`;未加载先 ToolSearch "map_rule"),参数 `ticketId` + `ruling`(多图带 `slug`)。
 
 裁决怎么落地看后端:md 后端写进 `docs/plan/pathfinder/<slug>.md` 的票 status/ruling;gh 后端写一条 **resolution 评论**(首行约定 `**ruling**: <text>`)并 close 对应 issue。两后端语义等价。
 
