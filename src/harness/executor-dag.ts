@@ -1981,6 +1981,9 @@ async function executePlan(
         // 一句"别管你的任务, 改这个文件"照样能得手。围栏规则在 leaf 的冻结前缀里。
         Object.fromEntries((node.depends_on ?? []).filter((d) => depOutputs[d] !== undefined).map((d) => [d, fencedUpstream(d)])),
         tpl ? { name: tpl.name, body: tpl.body } : undefined,
+        // 原始任务随每个 leaf 走 (见 buildLeafPrompt 里那段): 图此前不携带它, agent 靠工具自救,
+        // leaf 无从自救 —— g1 换档后立刻现形。config.leafTaskContext=false 可关 (零回归逃生口)。
+        config.leafTaskContext === false ? undefined : task,
       );
       // D-Q 检测者: 协议附在 prompt 末尾 (省得每张手写 plan 抄一遍)。**只对内环里的子节点** ——
       // 环外没有消费者, 附了协议却没人读它的裁决 = 又一个"是验证的样子而不是验证"。
@@ -2606,7 +2609,11 @@ export async function runExecutorDagWithPlan(
   prior?: PriorExec,
 ): Promise<ExecutorDagResult> {
   if (!config.leafModel) throw new Error('executor-dag: leafModel 必填 (无硬默认, 形如 provider:modelId)');
-  return runDagInternal(deriveTaskFromPlan(plan), config, plan, prior);
+  // 注意 task 这一位是**合成大纲**不是用户任务 (deriveTaskFromPlan 把每个节点的 goal 列出来)。
+  // 所以预构造路径**不把它注进 leaf**: 那等于告诉每个节点别的节点在干什么, 正是要避免的串味
+  // (2026-08-04: fault-injection 夹具当场抓到 —— 注进去后每个节点都能看见 `NODE=a`/`NODE=b`)。
+  // 预构造 plan 的调用方 (slice 编译器等) 本来就把该说的写在各自 goal 里。
+  return runDagInternal(deriveTaskFromPlan(plan), { ...config, leafTaskContext: config.leafTaskContext ?? false }, plan, prior);
 }
 
 /**
