@@ -26,16 +26,38 @@ export const F2_ITEMS: F2Item[] = [
   { id: 'q8', question: 'GraphRAG-bench 那篇里, 简单检索任务上图结构带来的主要成本体现在哪个量的膨胀?', acceptKeywords: ['prompt length', 'token'], sourceFile: 'graphrag-bench-2506.05690.txt' },
 ];
 
-/** 评分器: answers = {id → 自由文本回答(含出处)}。 */
-export function scoreF2(answers: Record<string, string>): { hit: number; total: number; misses: string[] } {
+/**
+ * 评分器: answers = {id → 自由文本回答(含出处)}。
+ *
+ * `hit` 是**官方分**(判据 INV-R2-2 冻结, 一个字没改): 关键词 ∧ 出处 都中才算 1 分。
+ *
+ * `kwHit` / `srcHit` 是 2026-08-04 加的**分项读数**, 判据本身不动 —— 加它的理由是实测:
+ * 总分在 n=3 上**全在噪声里**(同一对同配置两跑 8/8 vs 5/8, 差 3 分; 而当时的臂间均值差
+ * 只有 2.67 分), 而同一批跑的**出处分项**却给出了 0/8 → 24/24 的定向变化, 远超噪声。
+ * 也就是说: **两个维度捆成一个数会把能看见的信号淹掉**。要判"某次改动有没有效",
+ * 分项比总分可靠得多 —— 本程的两个修复正是靠出处分项才判得出来。
+ */
+export function scoreF2(answers: Record<string, string>): {
+  hit: number;
+  total: number;
+  misses: string[];
+  /** 关键词(逐字锚点)命中数。 */
+  kwHit: number;
+  /** 出处(点对文件名)命中数。 */
+  srcHit: number;
+} {
   let hit = 0;
+  let kwHit = 0;
+  let srcHit = 0;
   const misses: string[] = [];
   for (const item of F2_ITEMS) {
     const a = (answers[item.id] ?? '').toLowerCase();
     const kw = item.acceptKeywords.some((k) => a.includes(k.toLowerCase()));
     const src = a.includes(item.sourceFile.toLowerCase().replace('.txt', '')) || a.includes(item.sourceFile.toLowerCase());
+    if (kw) kwHit++;
+    if (src) srcHit++;
     if (kw && src) hit++;
     else misses.push(`${item.id}: 关键词${kw ? '✓' : '✗'} 出处${src ? '✓' : '✗'}`);
   }
-  return { hit, total: F2_ITEMS.length, misses };
+  return { hit, total: F2_ITEMS.length, misses, kwHit, srcHit };
 }
