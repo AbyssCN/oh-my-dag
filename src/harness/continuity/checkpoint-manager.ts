@@ -230,9 +230,19 @@ export class CheckpointManager {
     try {
       const dir = this.runDir(runId);
       this.ensureDir(dir);
+      const target = join(dir, `${cp.nodeId}.json`);
+      // t1 (图#11, 2026-08-04): 同名覆写前留存旧轮 —— f2-a-1 的教训: 两轮 run (verifier拒→repair)
+      // 的 checkpoint 按 nodeId 逐轮覆写, 第一轮尾链从事后时间轴上整体消失 (「547s 空洞」伪影)。
+      // 归档名 `<nodeId>.__r<K>.json` (`__r` 防与含点 nodeId 撞名); resume 语义不变:
+      // loadAllGreen 明确跳过归档, loadCheckpoint 按 nodeId 只认最新。
+      if (existsSync(target)) {
+        let k = 1;
+        while (existsSync(join(dir, `${cp.nodeId}.__r${k}.json`))) k++;
+        renameSync(target, join(dir, `${cp.nodeId}.__r${k}.json`));
+      }
       const tmp = join(dir, `${cp.nodeId}.tmp`);
       writeFileSync(tmp, JSON.stringify(cp, null, 2), 'utf-8');
-      renameSync(tmp, join(dir, `${cp.nodeId}.json`));
+      renameSync(tmp, target);
     } catch (err) {
       logger.warn({ err, runId, nodeId: cp.nodeId }, 'checkpoint: saveCheckpoint failed (fail-open)');
     }
@@ -318,6 +328,7 @@ export class CheckpointManager {
       for (const entry of entries) {
         if (!entry.endsWith('.json') || entry === '_dag.json') continue;
         if (entry.endsWith('.tmp')) continue; // 未完成 writes → 安全丢弃
+        if (/\.__r\d+\.json$/.test(entry)) continue; // t1 覆写归档 (旧轮留证) — resume 只认最新
 
         const nodeId = entry.slice(0, -5); // 去掉 `.json`
         const cp = this.loadCheckpoint(runId, nodeId);
