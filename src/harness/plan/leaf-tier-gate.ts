@@ -105,16 +105,35 @@ export interface LeafTierGateOpts {
   thresholdBytes?: number;
 }
 
+/**
+ * 多文件读盘命令。**单文件用 `cat`,多文件必须用 `tail -v -n +1`** —— 后者每份前面打
+ * `==> 路径 <==` 头,`cat` 不打。
+ *
+ * 这条是 2026-08-04 实测买来的:本闸第一版的建议逐字写着 `cat <路径1> <路径2> …`,
+ * conductor 照做,于是 10 篇论文被拼成一个**无分隔的字节流**;下游 leaf 关键词答对 5/8,
+ * 而「出处」8/8 全错 —— 它只能按内容猜论文标题(答成 `Accelerating…Co-Scientist.pdf`,
+ * 语料里根本没这个文件)。老的「每篇一个分片」形状出处全对,因为分片自己知道它读的是谁。
+ * **省钱的读法不许把逐源身份一起省掉**:两条命令都过闸、都零 LLM,差别只在那一行头。
+ */
+export const bundleReadCommand = (paths: string[]): string =>
+  paths.length <= 1 ? `cat ${paths.join(' ')}` : `tail -v -n +1 ${paths.join(' ')}`;
+
 const REWRITE_SMALL = (paths: string[], totalBytes: number): string =>
   `总量 ${Math.round(totalBytes / 1024)}KB 塞得下单个 leaf prompt → 改成两个节点: ` +
-  `① \`executor:'command'\` 节点 \`cat ${paths.join(' ')}\`(确定性读盘,零 LLM); ` +
+  `① \`executor:'command'\` 节点 \`${bundleReadCommand(paths)}\`(确定性读盘,零 LLM` +
+  `${paths.length > 1 ? ';`tail -v -n +1` 会给每份打 `==> 路径 <==` 头 —— 多文件**不许**用裸 `cat`,' +
+  '那样拼出来的字节流没有逐源身份,下游只能猜出处' : ''}); ` +
   `② 原节点降为**无 executor 的普通 leaf**(inproc),depends_on 指向 ①,内容经 depOutputs ` +
-  `注入 prompt(单消费者不触发 fan-in 摘要,全文直达)。`;
+  `注入 prompt(单消费者不触发 fan-in 摘要,全文直达)。` +
+  `③ 若下游要按来源归因(引用/出处/逐源核对),**保持逐份扇出**(map 模板 ` +
+  `\`command: "cat {{item.path}}"\`,每个子节点自带路径),别把 N 份合并成一个装料节点。`;
 
 const REWRITE_BIG = (totalNote: string): string =>
   `${totalNote}塞不下单个 leaf → 用 \`executor:'conductor'\` 运行期展开: 先用 command(ls/cat 清单)或 ` +
   `agent lister **只做定位**,conductor 子图按清单为每一份内容画一对节点 ` +
-  `\`command cat <路径>\` → \`leaf 提炼\`(内容进 prompt 只计费一次)。探索与重读分开: ` +
+  `\`command cat <单个路径>\` → \`leaf 提炼\`(内容进 prompt 只计费一次)。` +
+  `**一份内容一个节点**,不要合并成一条多文件命令 —— 合并会洗掉逐源身份(裸 \`cat\` 不打文件名), ` +
+  `真要一次读多份就用 \`tail -v -n +1\`。探索与重读分开: ` +
   `agent 只在"需要按内容决定下一步/改文件/跑验证"时保留。`;
 
 /**
