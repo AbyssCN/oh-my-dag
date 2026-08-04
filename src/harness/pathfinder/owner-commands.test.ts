@@ -40,21 +40,24 @@ describe('reflowOwnerCommands', () => {
   });
 
   test('rule 抛错 → 该条失败不拖垮其余', () => {
-    const { b, ruled } = fakeBackend(
+    const applied: string[] = [];
+    const { b } = fakeBackend(
       [
         { ticketId: '#7', command: 'rule', text: 'x' },
         { ticketId: '#9', command: 'rule', text: 'y' },
       ],
-      { rule: (_c, _s, id, r) => { if (id === '#7') throw new Error('炸'); (b as never as { _r: string[][] }); ruledPush(id, r); } } as never,
+      {
+        rule: (_c: string, _s: string, id: string, r: string) => {
+          if (id === '#7') throw new Error('炸');
+          applied.push(`${id}:${r}`);
+        },
+      } as Partial<PathBackend>,
     );
-    // 简化: 用可抛错的 rule 变体
-    const calls: string[][] = [];
-    function ruledPush(id: string, r: string) { calls.push([id, r]); }
     const out = reflowOwnerCommands(b, '/tmp', '1');
     expect(out[0]!.applied).toBe(false);
     expect(out[0]!.note).toContain('折入失败');
     expect(out[1]!.applied).toBe(true);
-    void ruled;
+    expect(applied).toEqual(['#9:y']);
   });
 
   test('md 后端 (无 collectOwnerCommands) → 空, 零副作用', () => {
