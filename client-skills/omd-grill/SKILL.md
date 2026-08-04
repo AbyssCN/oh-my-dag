@@ -59,7 +59,7 @@ grill 沿决策树走
 ### 3. 边问边落(不堆到最后)
 决策一旦定型,**当场记下它落到哪**:
 - 小事 / 一句话决策 → `/omd-note`(记进 `docs/plan/NOTES.md` 台账,供 `/omd-contract` 收割);
-- 成体系的活 → 开 pathfinder 票 `path_add` 并当场 `/omd-rule` 裁决落盘;
+- 成体系的活 → 开 pathfinder 票 `map_add` 并当场 `/omd-rule` 裁决落盘;
 - 命中将来的**验收标准 / 接口契约** → 记进它该落的 SDD 章节(留给 `/omd-contract`)。
 
 ### 4. 收尾输出「决策记录」
@@ -75,6 +75,6 @@ grill 沿决策树走
 ## 与既有 skill 的边界
 
 - `/omd-grill` 在 **plan 之前** 把方案问透;`/omd-review` 在 **实装之后** 审代码。
-- 宽解岔口 → `/omd-council`;定型结论 → `/omd-note` 或 `path_rule` 落盘;审议收敛 → `/omd-contract` 结晶成文档。
-- 审议对象是 pathfinder 票时:**轮次落票 + 三通道带宽路由(本地/手机/GitHub评论)见 `/omd-path`**(已泛化,任何票通用,不再 grill 专属);裁决后 `path_rule` 落盘。
+- 宽解岔口 → `/omd-council`;定型结论 → `/omd-note` 或 `map_rule` 落盘;审议收敛 → `/omd-contract` 结晶成文档。
+- 审议对象是 pathfinder 票时:**轮次落票 + 三通道带宽路由(本地/手机/GitHub评论)见 `/omd-path`**(已泛化,任何票通用,不再 grill 专属);裁决后 `map_rule` 落盘。
 - 审问产出的契约由后续 `/omd-contract` 主写进文档,不在本 skill 内写实现。

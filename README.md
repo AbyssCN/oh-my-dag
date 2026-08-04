@@ -34,14 +34,14 @@ flowchart TB
     subgraph T1["Track 1 · COMPOSE — call one capability at a time"]
       C1["omd_primitive<br/>judge · verify · parallel · tournament · 12 shapes"]
       C2["omd_web / omd_distill<br/>fetch pages · distil insight"]
-      C3["memory_recall / path_map<br/>facts that outlive the window"]
+      C3["memory_recall / map_open<br/>facts that outlive the window"]
       C4["omd_shapes<br/>proven decompositions, and when NOT to use them"]
     end
 
     subgraph T2["Track 2 · GRAPH — hand off a whole fan-out"]
-      G1["dag_run<br/>a conductor decomposes for you"]
+      G1["run<br/>a conductor decomposes for you"]
       G2["dag_run_plan<br/>you wrote the graph, just run it"]
-      G3["dag_goal<br/>state a goal — plan → execute → judge,<br/>looped to convergence, survives your session"]
+      G3["solve<br/>state a goal — plan → execute → judge,<br/>looped to convergence, survives your session"]
       G4["dag_review / dag_debug / dag_slim / dag_deepen<br/>pre-shaped fleets"]
     end
 
@@ -113,7 +113,7 @@ removed on 2026-08-01 so the engine has exactly one front door. Your MCP client
 ```mermaid
 flowchart LR
   subgraph EXEC["EXECUTE — get the work done"]
-    E1["dag_run · dag_run_plan · dag_resume<br/>dag_goal · dag_cancel · dag_triage · dag_rule<br/>dag_status · dag_result · dag_runs"]
+    E1["run · dag_run_plan · dag_resume<br/>solve · dag_cancel · dag_triage · dag_rule<br/>dag_status · dag_result · dag_runs"]
     E2["omd_primitive<br/>12 control-flow shapes"]
   end
 
@@ -131,7 +131,7 @@ flowchart LR
 
   subgraph MEMORY["MEMORY &amp; PLANNING — outlive the context window"]
     M1["memory_recall · memory_remember"]
-    M2["path_map · path_add · path_rule<br/>path_deliver · path_prefetch"]
+    M2["map_open · map_add · map_rule<br/>map_deliver · map_prefetch"]
   end
 
   subgraph KNOW["KNOWLEDGE — stop reinventing the shape"]
@@ -147,8 +147,8 @@ flowchart LR
   class R2,M1,M2 llm
 ```
 
-**Execution** — `dag_run` (a conductor decomposes for you) · `dag_run_plan` (you wrote the graph)
-· `dag_resume` (pick up where a broken run stopped) · `dag_goal` (state the goal; the engine plans,
+**Execution** — `run` (a conductor decomposes for you) · `dag_run_plan` (you wrote the graph)
+· `dag_resume` (pick up where a broken run stopped) · `solve` (state the goal; the engine plans,
 executes, judges and repairs until it converges — four stop axes: rounds, no-progress, judge ∧ accept,
 token/minute budget; `detached: true` hands it to a worker process that outlives your session) ·
 `dag_cancel` (cooperative stop, resumable) · `dag_triage` / `dag_rule` (owner inbox: a running graph
@@ -165,7 +165,7 @@ model family) · `dag_debug` · `dag_slim` (deletion-only over-engineering audit
 (architecture hotspots).
 
 **Memory & planning** — `memory_recall` / `memory_remember` ·
-`path_map` / `path_add` / `path_rule` / `path_deliver` / `path_prefetch` (a decision map in git,
+`map_open` / `map_add` / `map_rule` / `map_deliver` / `map_prefetch` (a decision map in git,
 advanced by typed tickets, with background research that outlives your client).
 
 **Knowledge** — `omd_shapes` (proven graph shapes, each with the trigger *and* the "not when")
@@ -299,7 +299,7 @@ flowchart TB
 | `map` | mixed | — | runtime fan-out: a lister discovers the work-list, one child per item |
 | `primitive` | mixed | — | 12 control-flow shapes the engine owns |
 
-**Where a run's writes land, and what contains them** — `dag_goal` takes `branchStrategy`:
+**Where a run's writes land, and what contains them** — `solve` takes `branchStrategy`:
 
 | | `head` (default) | `branch` |
 |---|---|---|

@@ -5,7 +5,7 @@ description: 执行 omd pathfinder 已散尽区域(编译 slice → 跑 DAG 真�
 
 # /omd-deliver — 显式交付闸
 
-调 omd MCP `path_deliver`(可能带前缀 `mcp__omd__`;未加载先 ToolSearch "path_deliver")。多图带 `slug`。
+调 omd MCP `map_deliver`(可能带前缀 `mcp__omd__`;未加载先 ToolSearch "map_deliver")。多图带 `slug`。
 
 ## 这是权力闸,不是普通命令
 

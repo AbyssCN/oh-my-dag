@@ -1,15 +1,15 @@
 ---
 name: omd-audit
-description: 安全专项审计:经 omd dag_run 派多视角安全审查 DAG,按信任边界清单扫注入/认证/fail-open + untrusted 入口校验覆盖率,产按严重度排序的结构化报告。Trigger:/omd-audit、安全审计、查漏洞、信任边界、security review。
+description: 安全专项审计:经 omd run 派多视角安全审查 DAG,按信任边界清单扫注入/认证/fail-open + untrusted 入口校验覆盖率,产按严重度排序的结构化报告。Trigger:/omd-audit、安全审计、查漏洞、信任边界、security review。
 ---
 
 # /omd-audit — 安全专项审计
 
-经 omd MCP 的 `dag_run`(未加载先 ToolSearch "dag_run")派一张**多视角安全审查** DAG:每个信任边界维度一个并行节点,末节点汇总去重成按严重度排序的报告。**只查安全**,通用正确性走 `/omd-review`,规则扫描走 `/omd-sast`。
+经 omd MCP 的 `run`(未加载先 ToolSearch "run")派一张**多视角安全审查** DAG:每个信任边界维度一个并行节点,末节点汇总去重成按严重度排序的报告。**只查安全**,通用正确性走 `/omd-review`,规则扫描走 `/omd-sast`。
 
 ## 用法
 
-`dag_run` 的 task 按此模板(按目标裁剪维度),优先扫外部输入入口:`路由/接口层`、`回调/webhook`、`消息入口`、`SQL/schema`。
+`run` 的 task 按此模板(按目标裁剪维度),优先扫外部输入入口:`路由/接口层`、`回调/webhook`、`消息入口`、`SQL/schema`。
 
 ```
 对 <目标路径/模块> 做安全审计, 每维度一个并行节点, 末节点汇总去重成结构化报告。
@@ -41,4 +41,4 @@ description: 安全专项审计:经 omd dag_run 派多视角安全审查 DAG,按
 
 - `/omd-audit` = **安全**专项(信任边界/注入/认证/fail-open/越权)。
 - 通用正确性 / bug / contract 审查 → `/omd-review`;确定性 semgrep 规则扫描(零 LLM,便宜)→ `/omd-sast`,可先 sast 后 audit;某次失败的根因 → `/omd-debug`。
-- 审出的高危项定型后 → `/omd-note` 记录或开 pathfinder 票 `path_add` 排修。
+- 审出的高危项定型后 → `/omd-note` 记录或开 pathfinder 票 `map_add` 排修。

@@ -1,16 +1,16 @@
 ---
 name: omd-execute
-description: 把已定的 SDD/规划交给 omd DAG 引擎执行(经 MCP dag_run 三段式),完成后按交叉验证 checklist 逐条判、四选一验收。Trigger:/omd-execute、开始执行、按 SDD 干、执行计划。
+description: 把已定的 SDD/规划交给 omd DAG 引擎执行(经 MCP run 三段式),完成后按交叉验证 checklist 逐条判、四选一验收。Trigger:/omd-execute、开始执行、按 SDD 干、执行计划。
 ---
 
 # /omd-execute — SDD → DAG → 验收闭环
 
-经 omd MCP 的 `dag_run` / `dag_status` / `dag_result` 三段式工具(可能带 `mcp__omd__` 前缀;未加载先 ToolSearch "dag_run")。把契约交引擎执行,再**主动**按 checklist 验收——不是跑完就算完。
+经 omd MCP 的 `run` / `dag_status` / `dag_result` 三段式工具(可能带 `mcp__omd__` 前缀;未加载先 ToolSearch "run")。把契约交引擎执行,再**主动**按 checklist 验收——不是跑完就算完。
 
 ## 流程
 
 1. **取契约**:找 `docs/plan/` 下最新 SDD(`YYYY-MM-DD-<slug>.md`,由 `/omd-contract` 落盘);用户直接给了任务文本也行,但大活先 `/omd-contract`。
-2. **执行**:`dag_run` 传 task = SDD 全文(或任务文本)。conductor 分解成带类型节点的 DAG(agent 叶子改文件、command 叶子跑验证),并发扇出。拿 `runId` 后 `dag_status` 轮询、`dag_result` 取产物——可能几分钟,耐心轮询,别重复发起。
+2. **执行**:`run` 传 task = SDD 全文(或任务文本)。conductor 分解成带类型节点的 DAG(agent 叶子改文件、command 叶子跑验证),并发扇出。拿 `runId` 后 `dag_status` 轮询、`dag_result` 取产物——可能几分钟,耐心轮询,别重复发起。
 3. **验收(必须主动做,不等 owner 催)**:先跑下面的**交叉验证 checklist**,再按成本四选一。
 
 ## 交叉验证 checklist(每次至少跑一遍——「验收」的可执行化)
@@ -30,7 +30,7 @@ description: 把已定的 SDD/规划交给 omd DAG 引擎执行(经 MCP dag_run 
 | 结果 | 动作 |
 |---|---|
 | **接受** | checklist 全过 + SDD 的 GWT 验收点/不变量逐条 pass → 向 owner 报「做了什么 + 为什么」 |
-| **重画** | 契约级失败(方向/分解错)→ 带失败要点重 `dag_run`,task 末尾附 `===== REDRAW FEEDBACK =====\n<要点>`,conductor 针对性重分解 |
+| **重画** | 契约级失败(方向/分解错)→ 带失败要点重 `run`,task 末尾附 `===== REDRAW FEEDBACK =====\n<要点>`,conductor 针对性重分解 |
 | **迭代** | 部分收敛、差在收尾 → 交 `/omd-iterate` 定点收敛 |
 | **直接修** | 小缺口 → 自己动手改 + 验证,比再派 DAG 便宜 |
 

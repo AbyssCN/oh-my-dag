@@ -36,7 +36,7 @@ description: 把审议结论结晶成正式契约文档落盘 docs/plan/,当 /om
 
 ## 纪律
 
-- 只写**已定型**的决策;未决进 Open 段(或直接 `path_add` 开票),不把猜测写成结论。
+- 只写**已定型**的决策;未决进 Open 段(或直接 `map_add` 开票),不把猜测写成结论。
 - 决策记录表里没证据的行,先补证据或降级进 Open,不裸奔进 Contracts。
 - 写完提示 owner:确认后 `/omd-execute` 交 DAG 执行。
 - 用户要看已有结晶(原 `/crystals`)→ `ls docs/plan/*.md` 按时间列给他。

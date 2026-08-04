@@ -32,4 +32,4 @@ description: 多视角专家议会:宽解空间的设计/决策问题,经 omd da
 
 ## 与既有 skill 的边界
 - omd-council = 宽解空间**横向铺宽**多方案择优。**纵向掘深单条决策线** → /omd-grill(岔口可 fire council);**审已写代码** → /omd-review;**根因调试** → /omd-debug。
-- 单一明确解直接做;定型结论走 /omd-note 或 path_rule(/omd-rule)落盘。
+- 单一明确解直接做;定型结论走 /omd-note 或 map_rule(/omd-rule)落盘。
