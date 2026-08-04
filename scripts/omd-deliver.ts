@@ -23,14 +23,14 @@ import { join } from 'node:path';
 
 function usage(): never {
   console.error(
-    'usage: omd-deliver rule <ticketId> "<ruling>" [--slug <slug>]\n       omd-deliver deliver [--slug <slug>]',
+    'usage: omd-deliver rule <ticketId> "<ruling>" [--slug <slug>]\n       omd-deliver confirm <ticketId> <accept|reject> ["新题"] [--slug <slug>]\n       omd-deliver deliver [--slug <slug>]',
   );
   process.exit(2);
 }
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
-if (cmd !== 'rule' && cmd !== 'deliver') usage();
+if (cmd !== 'rule' && cmd !== 'deliver' && cmd !== 'confirm') usage();
 const slugIdx = argv.indexOf('--slug');
 const slug = slugIdx >= 0 ? argv[slugIdx + 1] : undefined;
 // --slug 成对剔除后的位置参数。
@@ -65,6 +65,10 @@ if (cmd === 'rule') {
   const [ticketId, ruling] = pos;
   if (!ticketId || !ruling) usage();
   out((await tool('path_rule').handler({ ticketId, ruling, ...(slug ? { slug } : {}) }, extra)) as never);
+} else if (cmd === 'confirm') {
+  const [ticketId, action, title] = pos;
+  if (!ticketId || (action !== 'accept' && action !== 'reject')) usage();
+  out((await tool('map_confirm').handler({ ticketId, action, ...(title ? { title } : {}), ...(slug ? { slug } : {}) }, extra)) as never);
 } else {
   out((await tool('path_deliver').handler(slug ? { slug } : {}, extra)) as never);
 }

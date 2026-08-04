@@ -17,7 +17,15 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { researchResultPath } from './dispatch';
 import { loadMap, mutateMap, saveMap } from './map-store';
-import type { ExecutorKind, PathMap, Ticket, TicketType } from './types';
+import type { ExecutorKind, PathMap, SuggestionLogEntry, Ticket, TicketType } from './types';
+import {
+  applySuggestions,
+  confirmSuggestion as confirmSuggestionPure,
+  type ApplySuggestionsOpts,
+  type ApplySuggestionsResult,
+  type ConfirmAction,
+  type SuggestionDraft,
+} from './suggest';
 import { createGhBackend } from './backend-gh';
 
 // ── 端口类型 ────────────────────────────────────────────────────────────────────
@@ -53,6 +61,10 @@ export interface PathBackend {
   createMap(cwd: string, destination: string, slug: string): PathMap;
   /** 加一张票, 回填后的 Ticket (含稳定 id)。map 不存在 / blockedBy 悬空 → throw。 */
   addTicket(cwd: string, slug: string, t: NewTicket): Ticket;
+  /** S-1 (可选, gh 片 e 才实装): 机器建议入图 → suggested 态。缺 = 工具层响亮报「后端未实装」。 */
+  suggest?(cwd: string, slug: string, drafts: SuggestionDraft[], opts: ApplySuggestionsOpts): ApplySuggestionsResult;
+  /** S-1 (可选, 同上): 人确认 suggested 票 (accept/±title/reject), 台账 append-only。 */
+  confirmSuggestion?(cwd: string, slug: string, ticketId: string, action: ConfirmAction, opts: { at: string; title?: string }): SuggestionLogEntry;
   /** 裁一张票 (记决策)。票不存在 → throw。 */
   rule(cwd: string, slug: string, ticketId: string, ruling: string): void;
   /** 把一批已裁票翻 delivered (终态)。 */
@@ -160,6 +172,16 @@ function createMdBackend(): PathBackend {
         }
         return t;
       });
+      if (!mutated) throw new Error(`找不到地图 "${slug}"`);
+      return mutated.result;
+    },
+    suggest: (cwd, slug, drafts, opts) => {
+      const mutated = mutateMap(cwd, slug, (map) => applySuggestions(map, drafts, opts));
+      if (!mutated) throw new Error(`找不到地图 "${slug}"`);
+      return mutated.result;
+    },
+    confirmSuggestion: (cwd, slug, ticketId, action, opts) => {
+      const mutated = mutateMap(cwd, slug, (map) => confirmSuggestionPure(map, ticketId, action, opts));
       if (!mutated) throw new Error(`找不到地图 "${slug}"`);
       return mutated.result;
     },
