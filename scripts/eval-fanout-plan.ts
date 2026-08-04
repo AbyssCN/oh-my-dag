@@ -49,6 +49,7 @@ import { dagShape, fanoutDemand, scoringPoints, type FanOutQuestion } from '../s
 import {
   bucketOf,
   classifyPlanShape,
+  judgeScaleInvariance,
   tally,
   DEMAND_BUCKETS,
   type PlanShapeClass,
@@ -64,6 +65,14 @@ const N = Math.max(1, Number(opt('n') ?? '20'));
 const SEED = Number(opt('seed') ?? '20260805');
 const CONCURRENCY = Math.max(1, Number(opt('concurrency') ?? '4'));
 const OUT = opt('out') ?? '.omd/eval/fanout-plan-shape';
+/**
+ * 同题重复规划次数(交接 23)。**1 = 老行为**(每题一发, 无方差)。
+ *
+ * 存在理由:交接 22 量到「引擎 plan 规模不随需求长」, 但每题只打了一发 —— 那个 r 完全可能
+ * 整个是单次采样的噪声。本仓已经在这上面栽过一次(交接 21 §五之一:同配置两跑差 3 分,
+ * 大过臂间均值差, 两个方向的结论一起作废)。**没有重复就没有方差, 没有方差就没有结论。**
+ */
+const REPEAT = Math.max(1, Number(opt('repeat') ?? '1'));
 
 // 座位解析不硬编码 (seat-sourced 闸): 这一发打的是**生产 conductor 座**, 换了座位读数就换了地基。
 const conductorSeat = tryResolveSeatModel('conductor');
@@ -117,6 +126,8 @@ function stratify(qs: readonly FanOutQuestion[], n: number, seed: number): FanOu
 interface Row {
   id: string;
   question: string;
+  /** 第几次重复规划(0 起)。`--repeat 1` 时恒为 0。 */
+  repeat: number;
   goldWidth: number;
   goldDepth: number;
   goldNodes: number;
@@ -161,10 +172,16 @@ async function planOnce(task: string): Promise<{ plan: ConductorPlan | null; raw
  * 「读数量在一个生产上不存在的座位上」那条老账的自动化版。座位不符 → 当没有缓存, 重打。
  * `--fresh` 强制全部重打。
  */
-function cached(id: string): { plan: ConductorPlan | null; raw: string; err?: string } | null {
+/**
+ * 一次采样的落盘名。**重复 #0 沿用不带后缀的老名字** —— 交接 22 那 20 份 plan 就落在那里,
+ * 于是重复采样的第一片直接命中缓存, 只有 #1 起才真花时间。
+ */
+const sampleFile = (id: string, repeat: number): string => `${OUT}/${id}${repeat === 0 ? '' : `-r${repeat}`}.json`;
+
+function cached(id: string, repeat: number): { plan: ConductorPlan | null; raw: string; err?: string } | null {
   if (argv.includes('--fresh')) return null;
   try {
-    const j = JSON.parse(readFileSync(`${OUT}/${id}.json`, 'utf8')) as {
+    const j = JSON.parse(readFileSync(sampleFile(id, repeat), 'utf8')) as {
       seat?: string; raw?: string; plan?: ConductorPlan | null; parseError?: string;
     };
     if (j.seat !== SEAT) return null; // 含 seat 缺席(旧格式): 来源不可考 → 不复用
@@ -180,23 +197,30 @@ async function main(): Promise<void> {
   mkdirSync(OUT, { recursive: true });
   const dev = JSON.parse(readFileSync(DATA, 'utf8')) as FanOutQuestion[];
   const picked = stratify(dev, N, SEED);
-  log(`跑 ${picked.length} 题 (分层抽样 seed ${SEED}, 并发 ${CONCURRENCY}) · 座位 ${SEAT}${SEAT_PROVENANCE}…`);
+  // 作业面 = 题 × 重复。**重复展开成独立作业**(不是每题内部串三次): 同题的三发落进不同并发槽,
+  // 一发慢不会把它的两个兄弟一起拖住。
+  const jobs = picked.flatMap((q) => Array.from({ length: REPEAT }, (_, r) => ({ q, repeat: r })));
+  log(
+    `跑 ${picked.length} 题 × ${REPEAT} 次重复 = ${jobs.length} 发 ` +
+      `(分层抽样 seed ${SEED}, 并发 ${CONCURRENCY}) · 座位 ${SEAT}${SEAT_PROVENANCE}…`,
+  );
 
   const rows: Row[] = [];
   let cursor = 0;
-  /** 复用了几题的旧 plan —— **必须进报告**: 缓存来源不写, 读者就分不清这批读数打了几发新的。 */
+  /** 复用了几发的旧 plan —— **必须进报告**: 缓存来源不写, 读者就分不清这批读数打了几发新的。 */
   let fromCache = 0;
   await Promise.all(
-    Array.from({ length: Math.min(CONCURRENCY, picked.length) }, async () => {
+    Array.from({ length: Math.min(CONCURRENCY, jobs.length) }, async () => {
       for (;;) {
         const i = cursor++;
-        if (i >= picked.length) return;
-        const q = picked[i]!;
+        if (i >= jobs.length) return;
+        const { q, repeat } = jobs[i]!;
         const gold = dagShape(q.decomposition ?? []);
         const demand = fanoutDemand(q);
         const base = {
           id: q.id,
           question: q.question,
+          repeat,
           goldWidth: gold.width,
           goldDepth: gold.depth,
           goldNodes: gold.nodes,
@@ -205,11 +229,11 @@ async function main(): Promise<void> {
           bucket: bucketOf(demand),
         };
         try {
-          const hit = cached(q.id);
+          const hit = cached(q.id, repeat);
           const { plan, raw, err } = hit ?? (await planOnce(fanoutTaskText(q.question)));
           if (hit) fromCache++;
           writeFileSync(
-            `${OUT}/${q.id}.json`,
+            sampleFile(q.id, repeat),
             JSON.stringify({ ...base, seat: SEAT, raw, plan, ...(err ? { parseError: err } : {}) }, null, 1),
           );
           if (!plan) {
@@ -229,12 +253,12 @@ async function main(): Promise<void> {
             });
           }
           const r = rows[rows.length - 1]!;
-          log(`  [${rows.length}/${picked.length}] 需求${r.demand} → ${r.cls} (引擎 ${r.planNodes} 节点/宽 ${r.planWidth}/深 ${r.planDepth})${r.gateWouldReject ? ' ⚠g1闸拒' : ''}${hit ? ' [缓存]' : ''}`);
+          log(`  [${rows.length}/${jobs.length}] 需求${r.demand}#r${repeat} → ${r.cls} (引擎 ${r.planNodes} 节点/宽 ${r.planWidth}/深 ${r.planDepth})${r.gateWouldReject ? ' ⚠g1闸拒' : ''}${hit ? ' [缓存]' : ''}`);
         } catch (e) {
           // fail-open 可以吞异常, 不许吞证据 (仓规 3.2): 题号 + 错误原文都留下, 且计入分母。
           const msg = e instanceof Error ? e.message : String(e);
           rows.push({ ...base, cls: 'parse-failed', planNodes: 0, planWidth: 0, planDepth: 0, runtimeFanoutNodes: [], gateWouldReject: false, gateMessages: [], parseError: `调用失败: ${msg}` });
-          log(`  ✘ ${q.id}: ${msg}`);
+          log(`  ✘ ${q.id}#r${repeat}: ${msg}`);
         }
       }
     }),
@@ -330,6 +354,57 @@ async function main(): Promise<void> {
     '阳性对照高而引擎那条平/负, 是"值得当假设"的强度, 不是"已证实"的强度。',
     '要坐实: 同题重复 ≥3 次规划再看 r 的分布。',
   );
+
+  // ── 重复采样: 上面那个 r 到底稳不稳 (交接 23) ────────────────────────────
+  //
+  // 判据**在跑之前写死在交接 23 §一**, 这里只贴读数 + 照抄那张表判一格, 不许事后改线。
+  if (REPEAT > 1) {
+    const slices = Array.from({ length: REPEAT }, (_, k) => ok.filter((r) => r.repeat === k));
+    const rk = slices.map((s) => corr(s.map((r) => r.demand), s.map((r) => r.planNodes)));
+    const rGold = corr(ok.map((r) => r.demand), ok.map((r) => r.goldNodes));
+    const finite = rk.filter((v) => Number.isFinite(v));
+    const spread = finite.length ? Math.max(...finite) - Math.min(...finite) : Number.NaN;
+    // 判据本体在 plan-shape.judgeScaleInvariance (纯函数, 三格各有已知样本证明它会亮)。
+    // **刻意不在这里重写一遍** —— 判据有两份就必然漂, 而漂了的那份还会自洽。
+    const jv = judgeScaleInvariance({ rk, rGold });
+    const repeatVerdict = `${
+      { confirmed: '**坐实**「引擎规划规模不随任务规模长」', retracted: '**撤回**(交接 22 那条结论不成立)', 'no-verdict': '**没读判据**' }[jv.verdict]
+    } —— ${jv.reason}`;
+
+    // 同题跨重复的散布 —— 交接 21 §五之一那条死穴的结构侧对应物。
+    const byQ = new Map<string, Row[]>();
+    for (const r of ok) byQ.set(r.id, [...(byQ.get(r.id) ?? []), r]);
+    const flips = [...byQ.values()].filter((g) => new Set(g.map((r) => r.cls)).size > 1).length;
+    const ranges = [...byQ.values()].map((g) => Math.max(...g.map((r) => r.planNodes)) - Math.min(...g.map((r) => r.planNodes)));
+    const maxRange = ranges.length ? Math.max(...ranges) : 0;
+
+    lines.push(
+      '',
+      `## 重复采样 (${REPEAT} 次/题) —— 交接 23 的判定`,
+      '',
+      `### 判定: ${repeatVerdict}`,
+      '',
+      `逐片 \`r_k = corr(需求, 引擎 plan 节点数)\`: ${rk.map((v, k) => `r_${k}=${fmt(v)}`).join(' · ')} ` +
+        `(跨度 ${Number.isNaN(spread) ? '—' : spread.toFixed(3)})`,
+      `阳性对照 \`corr(需求, 金标节点数)\` = **${fmt(rGold)}**`,
+      '',
+      '### 副读数(不参与判定, 但必须报 —— 它们能让上面那格作废)',
+      '',
+      `- **分类翻转率**: ${flips}/${byQ.size} 题在 ${REPEAT} 次重复里落进过不同的格。` +
+        '高 = 结构分类本身噪声主导, 那么分类占比那一节的所有数都要打折。',
+      `- **同题节点数极差**: 最大 ${maxRange}(逐题 ${ranges.join('/')})。` +
+        '若它 ≥ 组间差, 组间比较作废(交接 21 §五之一:单臂同题极差 > 臂间差 → 两个方向的结论一起死)。',
+      '',
+      '| 题(需求) | 三次的节点数 | 三次的格 |',
+      '|---|---|---|',
+      ...[...byQ.values()]
+        .sort((a, b) => a[0]!.demand - b[0]!.demand)
+        .map((g) => {
+          const s = [...g].sort((a, b) => a.repeat - b.repeat);
+          return `| \`${s[0]!.id.slice(0, 8)}\` (${s[0]!.demand}) | ${s.map((r) => r.planNodes).join(' / ')} | ${s.map((r) => r.cls).join(' / ')} |`;
+        }),
+    );
+  }
 
   const gateHits = ok.filter((r) => r.gateWouldReject).length;
   lines.push('', `## g1 leaf 档位闸(顺手攒的数, 本探针只记不重问)`, '', `会被拒的 plan: ${gateHits}/${ok.length} (${pct(gateHits, ok.length)})`);

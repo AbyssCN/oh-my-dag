@@ -11,7 +11,14 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ConductorPlan } from '../../../harness/conductor-plan';
-import { classifyPlanShape, tally, bucketOf, FANOUT_MIN_WIDTH, type PlanShapeClass } from './plan-shape';
+import {
+  classifyPlanShape,
+  tally,
+  bucketOf,
+  judgeScaleInvariance,
+  FANOUT_MIN_WIDTH,
+  type PlanShapeClass,
+} from './plan-shape';
 import { dagShape, fanoutDemand, scoringPoints, type FanOutQuestion } from './gold-dag';
 import { fanoutTaskText } from './task-text';
 
@@ -194,6 +201,59 @@ describe('fanoutDemand: 金标宽度与答案键数各自会漏的那一半', ()
     expect(narrow).toBe(3);
     // 反向自检: 主峰确实在宽端 (免得上面那条靠"分类器恒 0"过关)
     expect(dev.filter((q) => fanoutDemand(q) >= 5).length).toBeGreaterThan(200);
+  });
+});
+
+/**
+ * 判定函数的**三格全亮自检**(交接 23)。
+ *
+ * 这条闸存在的理由很具体:判据原本写在脚本里, 只有真跑一次(半小时 + 24 发模型调用)
+ * 才知道某一格会不会亮。**一条永远不亮的判据比没有判据坏** —— 它让整条链看起来已被验证。
+ */
+describe('judgeScaleInvariance: 三格各有一个已知样本证明它会亮', () => {
+  test('坐实: 全片 r < 0.3 且阳性对照 ≥ 0.8', () => {
+    const v = judgeScaleInvariance({ rk: [-0.32, -0.11, 0.05], rGold: 0.87 });
+    expect(v.verdict).toBe('confirmed');
+  });
+
+  test('撤回: 有一片 r ≥ 0.5(哪怕另外两片都低)', () => {
+    const v = judgeScaleInvariance({ rk: [-0.30, 0.62, -0.05], rGold: 0.87 });
+    expect(v.verdict).toBe('retracted');
+  });
+
+  test('没读判据: 跨度 > 1.0 = 方差压过效应', () => {
+    const v = judgeScaleInvariance({ rk: [-0.9, 0.2, 0.45], rGold: 0.87 });
+    expect(v.verdict).toBe('no-verdict');
+    expect(v.reason).toContain('跨度');
+  });
+
+  test('没读判据: 阳性对照塌了 → 轴本身没载住信号, 不许判引擎', () => {
+    const v = judgeScaleInvariance({ rk: [-0.32, -0.11, 0.05], rGold: 0.4 });
+    expect(v.verdict).toBe('no-verdict');
+    expect(v.reason).toContain('阳性对照');
+  });
+
+  test('没读判据: 最高片落在 [0.30, 0.50) 中间带', () => {
+    expect(judgeScaleInvariance({ rk: [0.1, 0.35, 0.2], rGold: 0.87 }).verdict).toBe('no-verdict');
+  });
+
+  test('没读判据: 有片算不出 r (NaN) —— 缺席不许当 0 (NULL≠0)', () => {
+    expect(judgeScaleInvariance({ rk: [-0.3, Number.NaN, -0.1], rGold: 0.87 }).verdict).toBe('no-verdict');
+  });
+
+  test('⚠ 顺序: 撤回优先于坐实 —— 不许拿"三片里两片低"去凑', () => {
+    // 若顺序反了, 这组会被判成 confirmed (因为有两片 < 0.3)。
+    const v = judgeScaleInvariance({ rk: [0.01, 0.02, 0.55], rGold: 0.9 });
+    expect(v.verdict).toBe('retracted');
+  });
+
+  test('反向自检: 三格真的都到得了 (判据不是常函数)', () => {
+    const seen = new Set([
+      judgeScaleInvariance({ rk: [-0.3, -0.1, 0], rGold: 0.9 }).verdict,
+      judgeScaleInvariance({ rk: [0.7, 0.7, 0.7], rGold: 0.9 }).verdict,
+      judgeScaleInvariance({ rk: [0.35, 0.35, 0.35], rGold: 0.9 }).verdict,
+    ]);
+    expect(seen).toEqual(new Set(['confirmed', 'retracted', 'no-verdict']));
   });
 });
 

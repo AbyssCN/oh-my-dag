@@ -159,3 +159,55 @@ export const DEMAND_BUCKETS: ReadonlyArray<{ label: string; lo: number; hi: numb
 export function bucketOf(demand: number): string {
   return DEMAND_BUCKETS.find((b) => demand >= b.lo && demand <= b.hi)?.label ?? DEMAND_BUCKETS[0]!.label;
 }
+
+// ── 重复采样的判定(交接 23)────────────────────────────────────────────────
+
+/**
+ * 「引擎规划规模随不随任务规模长」的判定 —— **判据在跑之前写死,这里只是它的可执行版**。
+ *
+ * ## 为什么要抽成纯函数
+ *
+ * 判据留在脚本里 = 只有真跑一次(半小时 + 24 发模型调用)才知道它会不会亮,
+ * 而**一条永远不亮的判据比没有判据坏**(本仓 §Q4 那条,以及 G4 虚判据的教训)。
+ * 抽出来之后三格各有一个已知样本证明它会亮,见 `plan-shape.test.ts`。
+ *
+ * ## 判据本身(逐字对应交接 23 §一 那张表)
+ *
+ * | 判定 | 条件 |
+ * |---|---|
+ * | `confirmed` | 三片 `r_k` **全部 < +0.30**,**且**阳性对照 `rGold ≥ +0.80` |
+ * | `retracted` | 任一 `r_k ≥ +0.50` |
+ * | `no-verdict` | 其余一切(含跨度 > 1.0 = 方差压过效应、含 r 算不出来) |
+ *
+ * ⚠ 顺序有意义:**先判撤回再判坐实**。一片 r 高到 +0.5 时,即便另外两片都低,
+ * 也不许拿"三片里两片低"去凑坐实 —— 那正是挑读数。
+ */
+export type RepeatVerdict = 'confirmed' | 'retracted' | 'no-verdict';
+
+/** 三片 r 跨度的上限:超过它就是方差压过效应,无论落哪格都降级成"要更多题"。 */
+export const REPEAT_SPREAD_MAX = 1.0;
+
+export function judgeScaleInvariance(input: {
+  /** 每一片重复各自的 `corr(需求, 引擎 plan 节点数)`;算不出来的片给 `NaN`。 */
+  rk: readonly number[];
+  /** 阳性对照 `corr(需求, 金标节点数)`。 */
+  rGold: number;
+}): { verdict: RepeatVerdict; reason: string } {
+  const finite = input.rk.filter((v) => Number.isFinite(v));
+  if (finite.length === 0 || finite.length < input.rk.length) {
+    return { verdict: 'no-verdict', reason: '有重复片算不出 r(样本太少或全相同)' };
+  }
+  const hi = Math.max(...finite);
+  const spread = hi - Math.min(...finite);
+  if (hi >= 0.5) return { verdict: 'retracted', reason: `有一片 r=${hi.toFixed(3)} ≥ +0.50` };
+  if (spread > REPEAT_SPREAD_MAX) {
+    return { verdict: 'no-verdict', reason: `三片跨度 ${spread.toFixed(3)} > ${REPEAT_SPREAD_MAX},方差压过效应` };
+  }
+  if (hi < 0.3 && input.rGold >= 0.8) {
+    return { verdict: 'confirmed', reason: `全片 r < +0.30(最高 ${hi.toFixed(3)})且阳性对照 ${input.rGold.toFixed(3)} ≥ +0.80` };
+  }
+  return {
+    verdict: 'no-verdict',
+    reason: hi >= 0.3 ? `最高片 r=${hi.toFixed(3)} 落在 [0.30, 0.50) 中间带` : `阳性对照 ${input.rGold.toFixed(3)} < +0.80,轴本身没载住信号`,
+  };
+}
