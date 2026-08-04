@@ -270,19 +270,31 @@ async function main(): Promise<void> {
   const pct = (a: number, b: number): string => (b === 0 ? '—' : `${Math.round((a / b) * 100)}%`);
   const runtimeRate = ok.length === 0 ? 0 : t['runtime-fanout'] / ok.length;
   // **判据在跑之前就写死了**(见文件头), 这里只是把读数往上一贴, 不许事后改线。
+  //
+  // ⚠ **REPEAT>1 时不许判 H1**(2026-08-05 当天修): H1 的线是按"一题一发、n=20"画的,
+  //   而重复采样把分母吹成 题×重复 —— 8 题 × 3 次的 15/24=63% 会印出"H1 成立",
+  //   同一批题一发一题时却是 45%「没读判据」。**分母换了还沿用旧线 = 换了尺子还报旧刻度。**
+  //   何况当天量到分类翻转率 4/8: 同题重复都换格, 拿混合样本算占比根本没有意义。
   const verdict =
-    runtimeRate >= 0.6
-      ? '**H1 成立**(runtime-fanout ≥ 60%)'
-      : runtimeRate < 0.3 && t['static-parallel-unbound'] + t.collapsed > ok.length / 2
-        ? '**H1 塌**(< 30% 且编清单/塌缩占多数)'
-        : '**没读判据**(落在 30–60% 中间带, 或塌的形态不符)—— 记读数, 不下结论';
+    REPEAT > 1
+      ? `**不判**(本批每题重复 ${REPEAT} 次, 分母是「题×重复」而 H1 的线按「一题一发」画的; ` +
+        '重复批只判「重复采样」那一节。占比仅供参考: ' +
+        `runtime-fanout ${t['runtime-fanout']}/${ok.length})`
+      : runtimeRate >= 0.6
+        ? '**H1 成立**(runtime-fanout ≥ 60%)'
+        : runtimeRate < 0.3 && t['static-parallel-unbound'] + t.collapsed > ok.length / 2
+          ? '**H1 塌**(< 30% 且编清单/塌缩占多数)'
+          : '**没读判据**(落在 30–60% 中间带, 或塌的形态不符)—— 记读数, 不下结论';
 
   const lines: string[] = [
     '',
     '# 引擎的 plan vs FanOutQA 金标 DAG(规划期结构探针)',
     '',
-    `座位 \`${SEAT}\`${SEAT_PROVENANCE} · ${picked.length} 题(分层抽样 seed ${SEED}) · 只打首次规划那一发, 不跑执行`,
-    `本次新打 ${picked.length - fromCache} 发 · 复用同座位旧 plan ${fromCache} 题(\`--fresh\` 全部重打)`,
+    `座位 \`${SEAT}\`${SEAT_PROVENANCE} · ${picked.length} 题 × ${REPEAT} 次重复 = ${jobs.length} 发` +
+      `(分层抽样 seed ${SEED}) · 只打首次规划那一发, 不跑执行`,
+    // 分母是**发**不是**题** —— 初版这里写 `picked.length - fromCache`, 重复批直接印出
+    // 「本次新打 -16 发」。负数至少还看得见; 若重复次数再小一点, 它会印出一个**似是而非的正数**。
+    `本次新打 ${jobs.length - fromCache} 发 · 复用同座位旧 plan ${fromCache} 发(\`--fresh\` 全部重打)`,
     '',
     `## 判定: ${verdict}`,
     '',
@@ -334,6 +346,7 @@ async function main(): Promise<void> {
     return sx === 0 || sy === 0 ? Number.NaN : cov / (sx * sy);
   };
   const dem = ok.map((r) => r.demand);
+  const rGoldAll = corr(dem, ok.map((r) => r.goldNodes));
   const fmt = (v: number): string => (Number.isNaN(v) ? '—' : v.toFixed(3));
   const meanOf = (xs: number[]): string => (xs.length ? (xs.reduce((a, b) => a + b, 0) / xs.length).toFixed(2) : '—');
   lines.push(
@@ -342,7 +355,14 @@ async function main(): Promise<void> {
     '',
     '| 与「扇出需求」的相关系数 | r | 读法 |',
     '|---|---|---|',
-    `| **金标节点数**(阳性对照) | ${fmt(corr(dem, ok.map((r) => r.goldNodes)))} | 人的图随需求长 → **这根轴载得动信号** |`,
+    // ⚠ 「读法」这一列**必须跟着数走**。初版把"人的图随需求长 → 这根轴载得动信号"
+    //   写成了硬编码字符串, 于是 2026-08-05 那批 r_gold=0.360(轴根本没载住)照样印着
+    //   "载得动信号" —— 报告自洽、结论相反。本仓 §3.3「oracle 绿 ≠ 语义对」的报告版。
+    `| **金标节点数**(阳性对照) | ${fmt(rGoldAll)} | ${
+      rGoldAll >= 0.8
+        ? '人的图随需求长 → **这根轴载得动信号**'
+        : `**⚠ 阳性对照没到 +0.80 → 这批题上这根轴没载住信号**, 下面两行不能拿来判引擎`
+    } |`,
     `| 引擎 plan 节点数 | ${fmt(corr(dem, ok.map((r) => r.planNodes)))} | |`,
     `| 引擎 plan 静态宽 | ${fmt(corr(dem, ok.map((r) => r.planWidth)))} | |`,
     '',
@@ -350,9 +370,13 @@ async function main(): Promise<void> {
       `引擎节点数 mean ${meanOf(ok.map((r) => r.planNodes))} · 引擎静态宽 mean ${meanOf(ok.map((r) => r.planWidth))} · ` +
       `金标节点数 mean ${meanOf(ok.map((r) => r.goldNodes))}`,
     '',
-    '⚠ 每题只规划**一次**, 没有重复采样 → **没有方差估计**(交接 21 §五之一那条死穴)。',
-    '阳性对照高而引擎那条平/负, 是"值得当假设"的强度, 不是"已证实"的强度。',
-    '要坐实: 同题重复 ≥3 次规划再看 r 的分布。',
+    ...(REPEAT > 1
+      ? ['方差见下面「重复采样」那节 —— **判定以那节为准**, 本节的单一 r 只是把全部样本混在一起算的粗读。']
+      : [
+          '⚠ 每题只规划**一次**, 没有重复采样 → **没有方差估计**(交接 21 §五之一那条死穴)。',
+          '阳性对照高而引擎那条平/负, 是"值得当假设"的强度, 不是"已证实"的强度。',
+          '要坐实: 同题重复 ≥3 次规划再看 r 的分布(`--repeat 3`)。',
+        ]),
   );
 
   // ── 重复采样: 上面那个 r 到底稳不稳 (交接 23) ────────────────────────────
