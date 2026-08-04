@@ -77,7 +77,7 @@ describe('dag_goal 的运行留痕接线', () => {
     expect(group.map((r) => r.planName)).toEqual(['goal-contract', 'goal-execute']);
     expect(group.every((r) => r.question === '干点活')).toBe(true);
     // 入口是**一次调用**不是一张图: 两段都记 dag_goal, 读数板按 runId 去重才不会数成两次。
-    expect(group.map((r) => r.entry)).toEqual(['dag_goal', 'dag_goal']);
+    expect(group.map((r) => r.entry)).toEqual(['solve', 'solve']); // entry 新词表 (t7)
     expect(group.map((r) => r.acceptanceProbe)).toEqual([{ kind: 'passed-both' }, { kind: 'passed-both' }]);
     // 这两个和数就是 G3 (这次多少钱) 与前缀缓存 (兄弟间命中多少) 的读数来源。
     expect(group.reduce((s, r) => s + r.usage.leavesIn, 0)).toBe(1000);
@@ -135,7 +135,7 @@ describe('dag_run 的运行留痕接线', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.question).toBe('把活干了');
     expect(rows[0]!.usage.leavesCacheHit).toBe(7);
-    expect(rows[0]!.entry).toBe('dag_run');
+    expect(rows[0]!.entry).toBe('run'); // entry 新词表 (t7)
     recorder.close();
   });
 
@@ -205,7 +205,7 @@ describe('path_deliver 的运行留痕接线', () => {
 
     expect(deliver.isError).not.toBe(true);
     expect(seen?.recorder).toBe(recorder);
-    expect(seen?.entry).toBe('path_deliver');
+    expect(seen?.entry).toBe('map_deliver'); // entry 新词表 (t7)
     // runId 现造: executeSlice 可能落多条 (iterate 每轮一张图), 没有共同 runId 就归不成"这一次交付"。
     expect(typeof seen?.runId).toBe('string');
     recorder.close();
