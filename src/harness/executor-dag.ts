@@ -66,6 +66,7 @@ import {
   artifactLintObservations,
   detectLoopNoProgress,
   detectNoArtifactChange,
+  detectVerbatimDrop,
   type RoundShape,
   ARTIFACT_ABSENT,
   type RoundArtifacts,
@@ -2411,6 +2412,16 @@ async function executePlan(
       leavesIn += r.usage.in;
       leavesOut += r.usage.out;
       leavesCacheHit += r.usage.cacheHit ?? 0;
+      // #13 逐字保真探针 (只报不拦, 与制品 lint 同一出口)。判在 settle 里是因为这一刻**同时**
+      // 拿得到本节点输出与全部上游输出 —— 换个地方就得再存一份。零模型调用、纯子串比对。
+      // 只对 done 的多入节点判; 判据本身在 detectVerbatimDrop 里(拿不准一律不报)。
+      if (r.status === 'done') {
+        const ups = (plan!.nodes[id]?.depends_on ?? [])
+          .map((d) => depOutputs[d])
+          .filter((t): t is string => typeof t === 'string' && t.length > 0);
+        const vd = detectVerbatimDrop(id, ups, r.output ?? '');
+        if (vd) observe([vd]);
+      }
     }
     const settled = results[id]!;
     // 节点级 span: 让一条 trace 打开就是**整张图的形状**。父子关系写在 id 里 (`父::子`, D-B),

@@ -428,7 +428,19 @@ export interface DagObservation {
    * 它停在"改动落在工作树里"就下结论, 漏标 25–33%; 补上这条结构事实后 **0%**,
    * 且**只要结构关系那一环就够**(不需要因果链)。**只报不拦**, 出口是下一轮的 prompt。
    */
-  kind: 'undeclared-artifact-dep' | 'loop-no-progress' | 'write-race' | 'missing-input' | 'missing-command-target' | 'loop-no-artifact-change' | 'leaf-spin' | 'scheduled-artifact' | 'novelty-collapse';
+  /**
+   * `verbatim-drop` (#13, 2026-08-04, r2 逐跳取证) = **汇总节点把上游的逐字引文转述没了**。
+   *
+   * 出处: F2 三对复测里 11 个失分**无一例外**是「关键词✗ 出处✓」—— 而关键词是从英文原文
+   * 逐字核过的锚点。沿链查(run 02971fc7): `answer_q5` 产出含 `budget` 原句 ✓,
+   * 紧邻的 `assemble_draft`(8→1 汇总)✗,之后三跳皆无。**图在第 2 跳已经拿到带锚点的
+   * 正确答案,又用汇总跳把它丢了** —— 对逐字接地类任务,每次 fan-in 都是一次有损重编码。
+   *
+   * 判据刻意保守(拿不准不报,同 static-lint):只在**上游确有引文、而本节点一条都不剩**时报。
+   * **只报不拦** —— 转述在多数任务上是正当的(摘要就是要转述),它只在"下游要逐字定位"时才是错。
+   * 引擎判不了任务性不性质,所以这条只把事实说出来,让下一轮 conductor 自己权衡。
+   */
+  kind: 'undeclared-artifact-dep' | 'loop-no-progress' | 'write-race' | 'missing-input' | 'missing-command-target' | 'loop-no-artifact-change' | 'leaf-spin' | 'scheduled-artifact' | 'novelty-collapse' | 'verbatim-drop';
   /** 涉及的节点 id (lint = [reader, writer]; 空转 = 被反复拒绝的那批)。 */
   nodes: string[];
   /** 人与模型都读的一句话 (进 prompt 的就是它)。 */

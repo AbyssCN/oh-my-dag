@@ -285,3 +285,68 @@ export function detectLoopNoProgress(prev: RoundShape | null, cur: RoundShape): 
       '需要外部输入 (改目标 / 补事实 / 换做法)。',
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #13 逐字引文丢失探针 (2026-08-04, r2 逐跳取证驱动)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 从文本里抠**逐字引文**片段。
+ *
+ * 认三种引号对(直角双引号 / 中文弯引号 / 反引号),只收**够长**的片段:
+ * 短引号绝大多数是术语标注(`"budget"`)而不是引文,把它们算进来会让判据在任何图上都命中。
+ * 长度阈值取 24 —— 不是调出来的,是"一句可定位的原文"的量级下限;拿不准就不报(同 static-lint)。
+ */
+export function extractQuotedSpans(text: string, minLen = 24): string[] {
+  const out: string[] = [];
+  for (const re of [/"([^"\n]{24,})"/g, /[“]([^”\n]{24,})[”]/g, /`([^`\n]{24,})`/g]) {
+    for (const m of text.matchAll(re)) {
+      const s = m[1]!.trim();
+      if (s.length >= minLen) out.push(s);
+    }
+  }
+  return out;
+}
+
+/** 一个汇总节点的逐字保真读数。 */
+export interface VerbatimCheck {
+  /** 汇总节点 id。 */
+  node: string;
+  /** 上游合计的引文片段数。 */
+  upstreamSpans: number;
+  /** 本节点输出里**原样留下**的片段数 (子串命中)。 */
+  kept: number;
+}
+
+/**
+ * 判「汇总跳把上游逐字引文转述没了」。
+ *
+ * 只在三条同时成立时报(拿不准不报):
+ *   ① 本节点 ≥2 个上游 —— 单入不是汇总,是接力;
+ *   ② 上游合计 ≥3 段够长引文 —— 一两段可能只是碰巧;
+ *   ③ 本节点输出**一段都没留** —— 留了一部分说明它知道要保真,判据不该管它留几段
+ *      (那是质量问题,不是"通道断了"这个确定性事实)。
+ *
+ * 返回 null = 不报。**只报不拦**:转述在多数任务上正当,引擎判不了任务性质。
+ */
+export function detectVerbatimDrop(
+  nodeId: string,
+  upstreamOutputs: readonly string[],
+  ownOutput: string,
+): DagObservation | null {
+  if (upstreamOutputs.length < 2) return null;
+  const spans = upstreamOutputs.flatMap((t) => extractQuotedSpans(t));
+  if (spans.length < 3) return null;
+  const kept = spans.filter((s) => ownOutput.includes(s)).length;
+  if (kept > 0) return null;
+  return {
+    kind: 'verbatim-drop',
+    nodes: [nodeId],
+    message:
+      `汇总跳丢逐字引文: 节点 [${nodeId}] 的 ${upstreamOutputs.length} 个上游合计带了 ${spans.length} 段逐字引文, ` +
+      '而本节点的输出**一段都没留下** —— 全部改写成了自己的话。' +
+      '如果下游要按原文逐字定位 (引用/出处核对/证据链), 这一跳就把它要的东西弄没了。' +
+      '改法: 让汇总节点**原样透传引文**(把引文放进结构化字段, 或在 goal 里明确"逐字保留原句, 不要转述"), ' +
+      '或者干脆别在证据与交付物之间加这一跳。',
+  };
+}
