@@ -28,7 +28,7 @@ import {
   dispatchFrontier as realDispatchFrontier,
   dispatchGoalTicket as realDispatchGoalTicket,
 } from '../../harness/pathfinder/dispatch';
-import { reflowGoalResults, reflowResearchResults } from '../../harness/pathfinder/afk-hook';
+import { reflowGoalResults, reflowOwnerCommands, reflowResearchResults } from '../../harness/pathfinder/afk-hook';
 import { computeFrontier } from '../../harness/pathfinder/frontier';
 import { compileSlice, regionIsClear, specGateViolation } from '../../harness/pathfinder/slice-compiler';
 import type { PathMap, Ticket, TicketType } from '../../harness/pathfinder/types';
@@ -206,6 +206,11 @@ function reflowOnce(deps: PathfinderToolDeps, backend: PathBackend, slug: string
   const dispatch = deps.dispatchFrontier ?? realDispatchFrontier;
   const outcomes = reflowResearchResults(backend, cwd, slug);
   const lines: string[] = [];
+  // 评论裁决先折 (第五程): owner 在 GitHub 评论区写的 /rule /confirm 先落, 后面的 goal/research
+  // 折入与区域计算才看得见最新裁决 (顺序错了会在过期视图上算前沿)。
+  for (const oc of reflowOwnerCommands(backend, cwd, slug)) {
+    lines.push(`◈ 评论裁决 ${oc.ticketId} [${oc.command}]: ${oc.applied ? '✓' : '✗'} ${oc.note}`);
+  }
   // D-G1.3/G1.4: goal 票回流 (交付语义) — 与 research (蒸馏语义) 两条折入并行, 同一次 pull。
   for (const g of reflowGoalResults(backend, cwd, slug)) {
     const label = g.disposition === 'delivered' ? '已交付' : g.disposition === 'escalated' ? '需人 (escalated)' : `可续跑 (${g.outcome})`;

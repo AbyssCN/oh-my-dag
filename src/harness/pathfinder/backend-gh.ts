@@ -114,7 +114,7 @@ function readMapQuery(nativeDeps: boolean): string {
       subIssues(first:100){ nodes{
         number title body state
         labels(first:20){ nodes{ name } }
-        comments(first:50){ nodes{ body } }
+        comments(first:50){ nodes{ body author{ login } } }
         subIssues(first:100){ nodes{ number } }${blockedByField}
       }}
     }
@@ -135,7 +135,7 @@ interface GqlSubTicket {
   body: string | null;
   state: string;
   labels: { nodes: GqlLabel[] };
-  comments: { nodes: Array<{ body: string }> };
+  comments: { nodes: Array<{ body: string; author?: { login: string } | null }> };
   subIssues: { nodes: Array<{ number: number }> };
   /** native 策略专属: 原生 issue-dependencies 前置票 (legacy 策略该字段不查, 为 undefined)。 */
   blockedBy?: { nodes: Array<{ number: number }> };
@@ -322,6 +322,32 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false): PathBackend {
     // S3 折入入料: 带 research-done label 的 sub-issue → body = 评论堆里**最后一条**含结果形状 (`## 终稿`)
     // 的正文 (S2 workflow 贴的即 result.md 原文)。有 label 但无结果评论 (被删/异常) → body 空串,
     // 让编排标警告不 ack (留待下轮), 绝不静默跳过。一次 GraphQL 抓齐 label+评论 (与 readMap 同查询)。
+    collectOwnerCommands: (_cwd, slug) => {
+      const mapNumber = Number(bareNumber(slug));
+      if (!Number.isFinite(mapNumber)) return [];
+      const issue = fetchMap(mapNumber);
+      if (!issue) return [];
+      const out: Array<{ ticketId: string; command: 'rule' | 'confirm-accept' | 'confirm-reject'; text: string }> = [];
+      for (const sub of issue.subIssues.nodes) {
+        // 幂等锚: 只收 open 票 (rule 落地后状态翻转, 下轮天然不再收)。
+        if (baseStatus(sub.state, sub.labels.nodes.map((l) => l.name)) !== 'open') continue;
+        // 每票取**最后一条** owner 指令评论 (改主意以最新为准)。
+        let hit: { command: 'rule' | 'confirm-accept' | 'confirm-reject'; text: string } | null = null;
+        for (const c of sub.comments.nodes) {
+          // 层间人解锁只认 owner 本人 —— 非 owner (协作者/bot/路人) 的指令评论**永不**生效。
+          if (c.author?.login !== owner) continue;
+          const rule = c.body.match(/^\/rule\s+([\s\S]+)$/);
+          if (rule) {
+            hit = { command: 'rule', text: rule[1]!.trim() };
+            continue;
+          }
+          const confirm = c.body.match(/^\/confirm\s+(accept|reject)\s*$/);
+          if (confirm) hit = { command: confirm[1] === 'accept' ? 'confirm-accept' : 'confirm-reject', text: '' };
+        }
+        if (hit) out.push({ ticketId: `#${sub.number}`, ...hit });
+      }
+      return out;
+    },
     collectResearchResults: (_cwd, slug) => {
       const mapNumber = Number(bareNumber(slug));
       if (!Number.isFinite(mapNumber)) return [];

@@ -18,6 +18,14 @@ import { join } from 'node:path';
 import { researchResultPath } from './dispatch';
 import { loadMap, mutateMap, saveMap } from './map-store';
 import type { ExecutorKind, PathMap, SuggestionLogEntry, Ticket, TicketType } from './types';
+
+/** 一条 owner 评论指令 (collectOwnerCommands 的输出形状)。 */
+export interface OwnerCommand {
+  ticketId: string;
+  command: 'rule' | 'confirm-accept' | 'confirm-reject';
+  /** rule 的裁决正文 (confirm 无正文 = 空串)。 */
+  text: string;
+}
 import {
   applySuggestions,
   confirmSuggestion as confirmSuggestionPure,
@@ -65,6 +73,12 @@ export interface PathBackend {
   suggest?(cwd: string, slug: string, drafts: SuggestionDraft[], opts: ApplySuggestionsOpts): ApplySuggestionsResult;
   /** S-1 (可选, 同上): 人确认 suggested 票 (accept/±title/reject), 台账 append-only。 */
   confirmSuggestion?(cwd: string, slug: string, ticketId: string, action: ConfirmAction, opts: { at: string; title?: string }): SuggestionLogEntry;
+  /**
+   * 评论裁决 (可选, gh 专属 — md 无评论面): 收 **repo owner 本人**在 open 票下写的指令评论
+   * (`/rule <text>` · `/confirm accept|reject`), 每票取最后一条。幂等锚 = 状态翻转
+   * (rule 落地后票非 open, 下轮不再收)。非 owner 的评论**永不**成为指令 (层间人解锁只认 owner)。
+   */
+  collectOwnerCommands?(cwd: string, slug: string): OwnerCommand[];
   /** 裁一张票 (记决策)。票不存在 → throw。 */
   rule(cwd: string, slug: string, ticketId: string, ruling: string): void;
   /** D-G1.4 (可选, gh 片 e 才实装): goal 票 solve 报 blocked → 票翻 escalated (需人)。 */

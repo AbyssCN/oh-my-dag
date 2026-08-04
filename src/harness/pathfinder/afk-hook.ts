@@ -398,3 +398,47 @@ export function reflowGoalResults(backend: PathBackend, cwd: string, slug: strin
 }
 
 import { writeFileSync as writeFileSyncGoal } from 'node:fs';
+
+// ── 评论裁决折入 (第五程 2026-08-04: 手机纯评论管引擎的那半边) ─────────────────
+
+/** 一条评论指令的折入结局。 */
+export interface OwnerCommandOutcome {
+  ticketId: string;
+  command: string;
+  applied: boolean;
+  note: string;
+}
+
+/**
+ * owner 评论指令折入: `/rule <text>` → backend.rule (裁决=评论原文逐字, **层间人解锁经评论成立**);
+ * `/confirm accept|reject` → backend.confirmSuggestion (gh 未实装 suggested 前 warn 不动)。
+ * 收集与 owner 过滤在 backend.collectOwnerCommands (gh 专属); md 后端无评论面 → 天然空。
+ */
+export function reflowOwnerCommands(backend: PathBackend, cwd: string, slug: string, opts: { at?: string } = {}): OwnerCommandOutcome[] {
+  if (!backend.collectOwnerCommands) return [];
+  const at = opts.at ?? new Date().toISOString();
+  const outcomes: OwnerCommandOutcome[] = [];
+  for (const cmd of backend.collectOwnerCommands(cwd, slug)) {
+    try {
+      if (cmd.command === 'rule') {
+        if (!cmd.text) {
+          outcomes.push({ ticketId: cmd.ticketId, command: cmd.command, applied: false, note: '/rule 空正文 — 忽略' });
+          continue;
+        }
+        backend.rule(cwd, slug, cmd.ticketId, cmd.text);
+        outcomes.push({ ticketId: cmd.ticketId, command: cmd.command, applied: true, note: `裁决 = 评论原文 (${cmd.text.slice(0, 60)})` });
+      } else {
+        if (!backend.confirmSuggestion) {
+          outcomes.push({ ticketId: cmd.ticketId, command: cmd.command, applied: false, note: `后端 ${backend.kind} 未实装 confirmSuggestion (S-1 片e) — 指令搁置` });
+          continue;
+        }
+        const action = cmd.command === 'confirm-accept' ? 'accept' : 'reject';
+        const entry = backend.confirmSuggestion(cwd, slug, cmd.ticketId, action, { at });
+        outcomes.push({ ticketId: cmd.ticketId, command: cmd.command, applied: true, note: `确认 → ${entry.outcome}` });
+      }
+    } catch (e) {
+      outcomes.push({ ticketId: cmd.ticketId, command: cmd.command, applied: false, note: `折入失败: ${e instanceof Error ? e.message : String(e)}` });
+    }
+  }
+  return outcomes;
+}
