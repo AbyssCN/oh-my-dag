@@ -86,7 +86,8 @@ describe('leaf-tier-gate (g1)', () => {
     expect(findings).toHaveLength(0);
   });
 
-  test('红: 静态 agent 节点读确定路径 + structured + 无写意图; 塞得下 → command cat + leaf 建议', () => {
+  // 2026-08-04 契约更新: 多文件建议由 `cat a b` 改成 `tail -v -n +1 a b`(逐源身份, 见下方两条)。
+  test('红: 静态 agent 节点读确定路径 + structured + 无写意图; 塞得下 → command 读盘 + leaf 建议', () => {
     const findings = leafTierGateFindings(
       plan({
         ext: { executor: 'agent', output_type: 'structured', goal: '完整阅读 /corpus/paper1.txt 与 /corpus/paper2.txt,提取证据。' },
@@ -96,7 +97,7 @@ describe('leaf-tier-gate (g1)', () => {
     expect(findings).toHaveLength(1);
     expect(findings[0]!.kind).toBe('agent-deterministic-read');
     expect(findings[0]!.totalBytes).toBe(240_000);
-    expect(findings[0]!.message).toContain('cat /corpus/paper1.txt /corpus/paper2.txt');
+    expect(findings[0]!.message).toContain('tail -v -n +1 /corpus/paper1.txt /corpus/paper2.txt');
   });
 
   test('红: 总量超阈值 → 改走 conductor 运行期展开建议 (不是单 cat)', () => {
@@ -138,6 +139,28 @@ describe('leaf-tier-gate (g1)', () => {
       { statPath: fakeStat },
     );
     expect(findings).toHaveLength(0);
+  });
+
+  // 2026-08-04 生产实测买来的一条: 本闸第一版建议逐字写 `cat <p1> <p2> …`, conductor 照做 →
+  // 10 篇论文拼成无分隔字节流 → 关键词 5/8 对而**出处 8/8 全错**(编出语料里不存在的文件名)。
+  // 老的逐篇扇出形状出处全对。省钱的读法不许把逐源身份一起省掉。
+  test('多文件建议必须用 tail -v -n +1(带文件名头), 不许裸 cat 拼流', () => {
+    const findings = leafTierGateFindings(
+      plan({ ext: { executor: 'agent', output_type: 'structured', goal: '读 /corpus/paper1.txt 和 /corpus/paper2.txt 提取证据' } }),
+      { statPath: fakeStat, thresholdBytes: 1_000_000 },
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.message).toContain('tail -v -n +1 /corpus/paper1.txt /corpus/paper2.txt');
+    expect(findings[0]!.message).not.toContain('cat /corpus/paper1.txt /corpus/paper2.txt');
+    expect(findings[0]!.message).toContain('保持逐份扇出'); // 归因任务不许合并扇出
+  });
+
+  test('单文件仍用 cat(不为一份内容付 tail 的怪相)', () => {
+    const findings = leafTierGateFindings(
+      plan({ ext: { executor: 'agent', output_type: 'structured', goal: '读 /corpus/paper1.txt 提取证据' } }),
+      { statPath: fakeStat, thresholdBytes: 1_000_000 },
+    );
+    expect(findings[0]!.message).toContain('cat /corpus/paper1.txt');
   });
 
   test('extractPathTokens: 中文语境 + 标点尾巴里抠出路径', () => {
