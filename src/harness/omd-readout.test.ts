@@ -464,7 +464,8 @@ describe('omd-readout · 建议接受率 (S-1 片d)', () => {
       suggestionsLog: [{ ticketId: 's1', outcome: 'rejected', at: 't', runId: 'r2' }],
     }));
     const sa = aggregateSuggestionAcceptance(cwd)!;
-    expect(sa).toEqual({ decided: 4, accepted: 1, edited: 1, rejected: 2, deduped: 1, rate: 0.5 });
+    // t3: pending=0 (fixture 图上无 suggested 存量); dedupe_rate = 1/(1+4+0) = 0.2
+    expect(sa).toEqual({ decided: 4, accepted: 1, edited: 1, rejected: 2, deduped: 1, pending: 0, rate: 0.5, dedupe_rate: 0.2 });
     rmSugg(cwd, { recursive: true, force: true });
   });
 
