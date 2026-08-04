@@ -291,12 +291,29 @@ async function score(t: string, p: number): Promise<void> {
       }
       // **分项与总分并排印**(2026-08-04): 总分在 n=3 上全在噪声里(同一对同配置两跑差 3 分),
       // 而分项给得出定向信号(出处 0/8→24/24)。判"某次改动有没有效"看分项, 别看总分。
+      // 第三维「引文可逐字定位」(2026-08-04 新增尺): 直接查答案里引的那句话在不在它声明的原文里。
+      // **老两维读数照旧单独印**, 不合并 —— 新尺必然让数难看, 合并会把"第一次量到旧盲点"
+      // 读成"引擎变差了"(仓规: 新增探针后按老段+新增段分开写)。
+      let grounded = '';
+      if (t === 'f2' && 'scoreF2Grounding' in mod) {
+        const g = (mod as { scoreF2Grounding: (a: Record<string, string>, r: (f: string) => string | null) => { hit: number; total: number; noQuote: string[]; notFound: string[]; unreadable: string[] } }).scoreF2Grounding(
+          Object.fromEntries([...ans.matchAll(/^(q\d+):\s*(.+)$/gm)].map((m) => [m[1]!, m[2]!])),
+          (f) => {
+            try {
+              return readFileSync(join(cwd, 'docs/reference/agentic-graph-2026-08/raw', f), 'utf8');
+            } catch {
+              return null; // 读不到 → 该题记 unreadable, 不算命中也不算失败
+            }
+          },
+        );
+        grounded = ` · 新尺[逐字可定位 ${g.hit}/${g.total}${g.noQuote.length ? ` · 无引文 ${g.noQuote.length}` : ''}${g.notFound.length ? ` · 引文对不上原文 ${g.notFound.length}` : ''}${g.unreadable.length ? ` · 原文读不到 ${g.unreadable.length}` : ''}]`;
+      }
       const d = s as { kwHit?: number; srcHit?: number };
       const dims =
         d.kwHit !== undefined && d.srcHit !== undefined
           ? ` · 分项[出处 ${d.srcHit}/${s.total} · 关键词 ${d.kwHit}/${s.total}]`
           : '';
-      console.log(`${t}-${a}-${p}: ${s.hit}/${s.total}${dims}${diag}${nodeHealth(head)}`);
+      console.log(`${t}-${a}-${p}: ${s.hit}/${s.total}${dims}${grounded}${diag}${nodeHealth(head)}`);
     }
   }
 }
