@@ -60,6 +60,10 @@ const DYNAMIC_ENTRIES: Record<string, string> = {
   'src/eval/tasks/oracle-plan-filter.ts':
     'eval fixture: 消费方是 colocated 的 `.test.ts`(worktree 隔离 → 清空目标模块 → fleet 照 SPEC 重建)。' +
     '**生产零消费者是它的设计**, 不是缺陷 —— 它量的就是"照 spec 重建"这件事本身。',
+  'src/eval/tasks/no-graph-baseline/f1-check.ts':
+    'r2 对照实验的点位校验器: 实验协议按**路径字符串**跑 `bun run <它> --dir <快照目录>` ' +
+    '(设计 docs/plan/2026-08-04-r2-no-graph-baseline-design.md 片1); 语料规范表 = colocated ' +
+    'f1-registry.test.ts。生产零 import 是设计 —— 它只在实验会话被点名。',
   'src/harness/dag-mermaid.ts':
     '**benchmark 靶子**: `eval/tasks/medium.ts` 与 `large.ts` 都把这个路径列进目标集 —— ' +
     'eval 会清空它让 fleet 照 SPEC 重建。⚠ `planToMermaid` 生产零消费者, ' +
