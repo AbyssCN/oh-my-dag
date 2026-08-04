@@ -3,7 +3,10 @@
  *
  * 默认零部署档: search = tavily/anysearch (各自 key 额度) + duckduckgo (keyless 兜底);
  *               fetch  = firecrawl (key) + jina (keyless)。
- * searxng 不打包 (the owner 定); crawl4ai/scrapling/trafilatura/browser-act = 高级自部署档, 另立。
+ * 自部署档 (2026-08-04 接上, 有对应 env 才入栈): search 加 searxng, fetch 加 crawl4ai —— 两者都在
+ * NAS 上, 零 key 零边际成本, 于是 crawl4ai 排在 firecrawl **之前**、searxng 排在有 key 的搜索源**之后**
+ * (搜索按"额度贵的先用完"排, 抓取按"免费的先用"排 —— 方向相反是刻意的)。
+ * scrapling/trafilatura/browser-act 仍另立; 知乎等中文社媒走独立采集面 (deploy/mediacrawler/), 不进本栈。
  *
  * createWebStackFromEnv: 据 env 有哪些 key 自动装配 — 缺 key 的 provider 不入栈, 不报错。
  */
@@ -20,6 +23,7 @@ import { AnySearchProvider } from './providers/anysearch';
 import { FirecrawlProvider } from './providers/firecrawl';
 import { JinaProvider } from './providers/jina';
 import { SearxngProvider } from './providers/searxng';
+import { Crawl4aiProvider } from './providers/crawl4ai';
 import { PlainFetchProvider } from './providers/plain';
 import { resolveCleaner, type Cleaner } from './clean';
 
@@ -32,6 +36,7 @@ export { AnySearchProvider } from './providers/anysearch';
 export { FirecrawlProvider } from './providers/firecrawl';
 export { JinaProvider } from './providers/jina';
 export { SearxngProvider } from './providers/searxng';
+export { Crawl4aiProvider } from './providers/crawl4ai';
 export { PlainFetchProvider } from './providers/plain';
 
 // ⚠ `web-extension` (交互-TUI 的 pi extension) **刻意不从这个 barrel 出去**: 它 import
@@ -95,6 +100,11 @@ export function createWebStackFromEnv(
   });
 
   const fetchProviders: FetchProvider[] = [];
+  // 自托管 Crawl4AI (NAS `:11235`) 排**最前**: 与 firecrawl 同档 (服务端渲染+清洗), 但零 key、
+  // 零边际成本、内网直连 —— 云 API 只当它不在时的降级位, 不是首选。
+  if (env.CRAWL4AI_URL) {
+    fetchProviders.push(new Crawl4aiProvider({ baseUrl: env.CRAWL4AI_URL, apiToken: env.CRAWL4AI_TOKEN }));
+  }
   if (env.FIRECRAWL_API_KEY) fetchProviders.push(new FirecrawlProvider({ apiKey: env.FIRECRAWL_API_KEY }));
   fetchProviders.push(new JinaProvider({ apiKey: env.JINA_API_KEY })); // keyless ok
   // 零 key、零依赖、零子进程的最终兜底: 内置 fetch + clean。排最后 —— 它不执行 JS 也不过反爬,
