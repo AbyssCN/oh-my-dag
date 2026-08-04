@@ -22,8 +22,22 @@ export interface OmdConcurrencyConfig {
   providerPools?: Record<string, number>;
 }
 
-/** CPU-derived fallback (旧默认, 现仅兜底): min(16, cores−2), 至少 1。 */
+/** CPU-derived fallback (旧默认, 现仅 command 档兜底): min(16, cores−2), 至少 1。 */
 export const CPU_FALLBACK_FANOUT = Math.max(1, Math.min(16, availableParallelism() - 2));
+
+/**
+ * agent 档默认并发 (owner 裁决 2026-08-04, r2 实测驱动)。
+ *
+ * **为什么脱离 CPU 派生值**: 这道闸原本与 command 共用 `CPU_FALLBACK_FANOUT`, 理由是"agent leaf
+ * 有本地足迹(起子进程抢 CPU·磁盘)"。r2 的时间轴推翻了这个画像 —— agent leaf 的 32–142s 里
+ * 绝大部分是**等 API**, 不是烧 CPU。按核数派生等于用错了尺子量。command 档留在 CPU 派生值不动:
+ * 那一档是真在跑本地 shell。
+ *
+ * ⚠ **别把这个数读成"墙钟会变快"**: r2 实测并发只到 ~4, 而当时的闸是 16 —— 闸从没被撞到。
+ * 真正的串行化源头未查明(见图「引擎墙钟与 leaf 档位」r1 票)。这里放宽只是**移走一个将来会
+ * 挡路的东西**, 不是修复。
+ */
+export const AGENT_DEFAULT_FANOUT = 36;
 
 /**
  * per-provider 默认 cap (the owner 锁: DeepSeek 开大, MiMo 压小)。
