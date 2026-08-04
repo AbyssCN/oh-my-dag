@@ -268,23 +268,28 @@ async function main(): Promise<void> {
   const ok = rows.filter((r) => r.cls !== 'parse-failed');
   const t = tally(ok.map((r) => ({ cls: r.cls as PlanShapeClass })));
   const pct = (a: number, b: number): string => (b === 0 ? '—' : `${Math.round((a / b) * 100)}%`);
-  const runtimeRate = ok.length === 0 ? 0 : t['runtime-fanout'] / ok.length;
-  // **判据在跑之前就写死了**(见文件头), 这里只是把读数往上一贴, 不许事后改线。
+  // ── ⚠ H1 那条通过线已**退役**(2026-08-05, 三个独立来源指同一处错)────────────
   //
-  // ⚠ **REPEAT>1 时不许判 H1**(2026-08-05 当天修): H1 的线是按"一题一发、n=20"画的,
-  //   而重复采样把分母吹成 题×重复 —— 8 题 × 3 次的 15/24=63% 会印出"H1 成立",
-  //   同一批题一发一题时却是 45%「没读判据」。**分母换了还沿用旧线 = 换了尺子还报旧刻度。**
-  //   何况当天量到分类翻转率 4/8: 同题重复都换格, 拿混合样本算占比根本没有意义。
+  // 原判据: `runtime-fanout ≥ 60%` = 成立 / `< 30%` = 塌。它把 `runtime-fanout` 立成"期望格",
+  // **那是在给路径打分**, 而三份独立材料都说这条不成立:
+  //
+  //  · Anthropic《Demystifying evals for AI agents》:「**评估结果而非路径**。人们通常本能地
+  //    想检查 Agent 是否按非常具体的步骤操作…这太死板了, Agent 经常找到设计者没预料到的有效方法。」
+  //  · Claw-Eval《大模型测试的下半场》:「**承认一题多解**…强行规定必须按某条路径走
+  //    会反过来损害评估的公正性。」
+  //  · AWS EvalAgent(arXiv 2605.11378)的三大翻车模式之一「计划与代码脱节」同族。
+  //
+  // **但分类器本身不退役**: 它当**诊断**是正当的 —— 端到端读数分不开"拆错了"与"执行掉链子",
+  // 而 Anthropic 同样强调必须读 transcript 才知道失败在哪。不正当的只是"拿形状当分数"。
+  //
+  // 退役 ≠ 改线。退役前最后一次读数照实留在这里, 不许埋掉:
+  //   · 一题一发 n=20 → runtime-fanout 9/20 = 45%(按旧线是「没读判据」)
+  //   · 8 题 × 3 次重复 → 15/24 = 63%, 而**分类翻转率 4/8** —— 同题重复一半会换格。
+  const runtimeRate = ok.length === 0 ? 0 : t['runtime-fanout'] / ok.length;
   const verdict =
-    REPEAT > 1
-      ? `**不判**(本批每题重复 ${REPEAT} 次, 分母是「题×重复」而 H1 的线按「一题一发」画的; ` +
-        '重复批只判「重复采样」那一节。占比仅供参考: ' +
-        `runtime-fanout ${t['runtime-fanout']}/${ok.length})`
-      : runtimeRate >= 0.6
-        ? '**H1 成立**(runtime-fanout ≥ 60%)'
-        : runtimeRate < 0.3 && t['static-parallel-unbound'] + t.collapsed > ok.length / 2
-          ? '**H1 塌**(< 30% 且编清单/塌缩占多数)'
-          : '**没读判据**(落在 30–60% 中间带, 或塌的形态不符)—— 记读数, 不下结论';
+    '**不判**(H1 通过线已退役 —— 它给的是**路径分**, 见代码注释里的三个出处)。' +
+    `本节改作**诊断分布**: runtime-fanout ${t['runtime-fanout']}/${ok.length} (${Math.round(runtimeRate * 100)}%)。` +
+    (REPEAT > 1 ? '' : ' ⚠ 每题只一发, 无稳定性读数 —— 加 `--repeat 3` 才看得到翻转率。');
 
   const lines: string[] = [
     '',
@@ -414,8 +419,15 @@ async function main(): Promise<void> {
       '',
       '### 副读数(不参与判定, 但必须报 —— 它们能让上面那格作废)',
       '',
-      `- **分类翻转率**: ${flips}/${byQ.size} 题在 ${REPEAT} 次重复里落进过不同的格。` +
-        '高 = 结构分类本身噪声主导, 那么分类占比那一节的所有数都要打折。',
+      // ⚠ **口径升级(2026-08-05)**: 翻转率原来只当"噪声"记。两份材料指出它本身就是**一等指标** ——
+      //    Anthropic 的 `pass^k`(k 次全成的概率)与 Claw-Eval 的 `Pass-all-k` 是同一个东西,
+      //    而 Claw-Eval 明写「pass@k 与 pass-all-k 的 **gap** 才是最有意思的:
+      //    gap 大 = 靠运气、路径不稳定; gap 小 = 决策路径稳定收敛」。
+      //    → 「同题重复会不会换格」量的正是**规划路径的稳定性**, 不是尺子坏了。两种读法都要写。
+      `- **分类翻转率(= 结构侧的 pass^k 反面)**: ${flips}/${byQ.size} 题在 ${REPEAT} 次重复里落进过不同的格。` +
+        '**两种读法都成立, 别只取一种**: ① 当尺子读 —— 分类占比那一节的所有数都要打折; ' +
+        '② 当能力读 —— 它就是「规划路径稳不稳」, 对应 Anthropic 的 `pass^k` / Claw-Eval 的 `Pass-all-k`, ' +
+        '而后者明写「pass@k 与 pass-all-k 的 gap 大 = 靠运气」。',
       `- **同题节点数极差**: 最大 ${maxRange}(逐题 ${ranges.join('/')})。` +
         '若它 ≥ 组间差, 组间比较作废(交接 21 §五之一:单臂同题极差 > 臂间差 → 两个方向的结论一起死)。',
       '',
