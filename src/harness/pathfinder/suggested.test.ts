@@ -222,3 +222,39 @@ describe('工具面: map_confirm + map_rule 挡 suggested (GWT-8)', () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 });
+
+// ── r1 片2: C1 语义档 (GWT-R1-3) ─────────────────────────────────────────────
+
+describe('C1 语义去重 (GWT-R1-3)', () => {
+  const base = (): PathMap => ({ destination: 'd', slug: 'm', tickets: [], decisionsLog: [] });
+
+  test('草稿与既有票语义近邻 → 不入图, deduped-semantic 留痕指向撞上的票', () => {
+    const m = base();
+    m.tickets.push({ id: 't1', type: 'task', title: 'deploy the api server', blockedBy: [], status: 'open' });
+    const r = applySuggestions(m, [{ type: 'task', title: 'deploy api server now', suggestedBy: 'run-c1' }], { at: AT });
+    expect(r.added).toHaveLength(0);
+    expect(r.deduped).toEqual([{ draftTitle: 'deploy api server now', hitTicketId: 't1' }]);
+    expect(m.suggestionsLog).toEqual([{ ticketId: 't1', outcome: 'deduped-semantic', at: AT, runId: 'run-c1' }]);
+  });
+
+  test('semanticThreshold=0 关语义档 → 近邻照常入图 (只留指纹档)', () => {
+    const m = base();
+    m.tickets.push({ id: 't1', type: 'task', title: 'deploy the api server', blockedBy: [], status: 'open' });
+    const r = applySuggestions(m, [{ type: 'task', title: 'deploy api server now', suggestedBy: 'run-c1' }], { at: AT, semanticThreshold: 0 });
+    expect(r.added).toHaveLength(1);
+  });
+
+  test('语义无关草稿正常入图 (智能档不误杀)', () => {
+    const m = base();
+    m.tickets.push({ id: 't1', type: 'task', title: 'deploy the api server', blockedBy: [], status: 'open' });
+    const r = applySuggestions(m, [{ type: 'research', title: 'database migration plan', suggestedBy: 'run-c1' }], { at: AT });
+    expect(r.added).toHaveLength(1);
+  });
+
+  test('deduped-semantic 过 md 序列化往返', () => {
+    const m = base();
+    m.suggestionsLog = [{ ticketId: 't1', outcome: 'deduped-semantic', at: AT, runId: 'r1' }];
+    const back = parseMapMarkdown(renderMapMarkdown(m));
+    expect(back.suggestionsLog).toEqual(m.suggestionsLog);
+  });
+});

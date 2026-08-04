@@ -149,7 +149,7 @@ export function parseMapMarkdown(md: string): PathMap {
       slug = slugM[1]!;
       continue;
     }
-    const logM = line.match(/^- log: (\S+) (accepted|edited|rejected|deduped) (\S+) (\S+)$/);
+    const logM = line.match(/^- log: (\S+) (accepted|edited|rejected|deduped-semantic|deduped) (\S+) (\S+)$/);
     if (logM && cur.id === undefined) {
       suggestionsLog.push({ ticketId: logM[1]!, outcome: logM[2] as 'accepted', at: logM[3]!, runId: logM[4]! });
       continue;

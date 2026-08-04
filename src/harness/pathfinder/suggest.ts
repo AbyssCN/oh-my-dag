@@ -10,6 +10,7 @@
  */
 import { createHash } from 'node:crypto';
 import type { PathMap, SuggestionLogEntry, Ticket, TicketType } from './types';
+import { semanticHit } from './proximity';
 
 /** D-S1.5: 指纹 = sha256(type + NFC(title))。t3 扩 body 级前,先堵「同题重开」。 */
 export function computeFingerprint(type: TicketType, title: string): string {
@@ -32,6 +33,11 @@ export interface ApplySuggestionsOpts {
   perRunCap?: number;
   /** INV-S1-5: 图上 pending suggested 总上限(默认 20)。 */
   pendingCap?: number;
+  /**
+   * r1 C1 语义档: 草稿与任一既有票 title 的 cosine ≥ 此值 → 按 deduped-semantic 留痕不入图。
+   * 默认 0.6 (与 proximity 同档); 0 = 关 (只留指纹档)。数字上限仍保底 (智能档不替兜底)。
+   */
+  semanticThreshold?: number;
 }
 
 export interface ApplySuggestionsResult {
@@ -71,6 +77,17 @@ export function applySuggestions(map: PathMap, drafts: SuggestionDraft[], opts: 
       deduped.push({ draftTitle: d.title, hitTicketId: hit });
       log.push({ ticketId: hit, outcome: 'deduped', at: opts.at, runId: d.suggestedBy });
       continue;
+    }
+    // r1 C1 (GWT-R1-3): 语义近邻去重 — 指纹(同题逐字)档之后、预算之前。留痕指向撞上的票。
+    if ((opts.semanticThreshold ?? 0.6) > 0) {
+      const titles = map.tickets.map((t) => t.title);
+      const hitIdx = semanticHit(d.title, titles, { threshold: opts.semanticThreshold ?? 0.6 });
+      if (hitIdx !== null) {
+        const hitId = map.tickets[hitIdx]!.id;
+        deduped.push({ draftTitle: d.title, hitTicketId: hitId });
+        log.push({ ticketId: hitId, outcome: 'deduped-semantic', at: opts.at, runId: d.suggestedBy });
+        continue;
+      }
     }
     // INV-S1-5 双上限(去重后才计数:重复项不占预算)。
     if (added.length >= perRunCap || pending >= pendingCap) {

@@ -71,6 +71,21 @@ export function clusterCount(texts: string[], opts: ProximityOpts = {}): number 
 }
 
 /**
+ * C1 用:text 与 candidates 里第一条 cosine ≥ threshold 的下标(无 → null)。
+ * 「加入后不产生新簇」⇔「与任一既有条目连边」——单条加入时二者等价,且这版还能报出撞上了谁
+ * (INV-S1-4 同族:语义去重也要留痕指向撞上的票)。
+ */
+export function semanticHit(text: string, candidates: string[], opts: ProximityOpts = {}): number | null {
+  const embed = opts.embed ?? ((t: string) => hashEmbed(t));
+  const threshold = opts.threshold ?? 0.6;
+  const v = embed(text);
+  for (let i = 0; i < candidates.length; i++) {
+    if (cosine(v, embed(candidates[i]!)) >= threshold) return i;
+  }
+  return null;
+}
+
+/**
  * 坍塌判定(INV-R1-2):簇数序列**最后 k 个增量全部 ≤0** → true。
  * k 默认 2;序列不足 k+1 个观测 → false(单轮不增不算——可能是慢,不是干)。
  *

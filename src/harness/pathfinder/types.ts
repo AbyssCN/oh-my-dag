@@ -54,10 +54,10 @@ export interface PathMap {
   suggestionsLog?: SuggestionLogEntry[];
 }
 
-/** S-1: 一条建议处置记录。outcome 词表与契约 GWT 同 (accepted/edited/rejected/deduped)。 */
+/** S-1: 一条建议处置记录。outcome 词表与契约 GWT 同; deduped=指纹撞车, deduped-semantic=语义近邻 (r1 C1) — 分开数才调得动阈值。 */
 export interface SuggestionLogEntry {
   ticketId: string;
-  outcome: 'accepted' | 'edited' | 'rejected' | 'deduped';
+  outcome: 'accepted' | 'edited' | 'rejected' | 'deduped' | 'deduped-semantic';
   /** ISO 时间戳 (调用方给, 引擎不自取 Date.now — 可重放)。 */
   at: string;
   /** 建议来源 runId (与 Ticket.suggestedBy 同源)。 */

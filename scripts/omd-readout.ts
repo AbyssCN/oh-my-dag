@@ -385,7 +385,7 @@ export function aggregateSuggestionAcceptance(mapsCwd: string): ReadoutResult['s
     }
     for (const e of log ?? []) {
       any = true;
-      if (e.outcome === 'deduped') acc.deduped++;
+      if (e.outcome === 'deduped' || e.outcome === 'deduped-semantic') acc.deduped++;
       else {
         acc.decided++;
         if (e.outcome === 'accepted') acc.accepted++;
