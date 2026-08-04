@@ -119,7 +119,25 @@ async function runArmB(t: string, p: number): Promise<void> {
   const answerFile = answerPath(t, 'b', p);
   mkdirSync(join(answerFile, '..'), { recursive: true });
   rmSync(answerFile, { force: true });
-  const runner = createAgentLeafRunner({ cwd: workCwd, hashlineEdit: true, leafTimeoutMs: 3_600_000 });
+  // **全工具痕迹**(2026-08-04 补): `filesRead` 只认 read/hashline_read 工具 —— agent-leaf 自己的
+  // 注就写着「bash 里的 cat 收不到」。而 B 臂实测主要用 bash 读语料, 于是它的 filesRead 是空的,
+  // 看起来像"没读文件却答对了"。留痕不全 = 审计是假的, 所以这里挂 onEvent 把**每次工具调用**
+  // 的名字与首段参数记下来, 让 B 臂和 A 臂的 inputPaths 对称可查。
+  const toolTrace: string[] = [];
+  const runner = createAgentLeafRunner({
+    cwd: workCwd,
+    hashlineEdit: true,
+    leafTimeoutMs: 3_600_000,
+    onEvent: (e) => {
+      // 事件名是 `tool_execution_start` (agent-leaf.ts:540)。第一版我按猜的名字过滤, 结果
+      // toolCalls=24 而 trace 空, 判词还印着"零工具调用 = 纯记忆作答" —— **尺子自己在撒谎**。
+      // 所以下面那行判词现在拿 r.toolCalls 交叉验: 采集不到与真没调用是两件事。
+      if (e.type !== 'tool_execution_start') return;
+      const name = String((e as { toolName?: unknown }).toolName ?? '?');
+      const args = JSON.stringify((e as { args?: unknown }).args ?? '').slice(0, 140);
+      toolTrace.push(`${name}:${args}`);
+    },
+  });
   const started = Date.now();
   const r = await runner({ prompt: armPrompt(t, taskText, answerFile), model });
   mkdirSync(join(cwd, OUT_DIR), { recursive: true });
@@ -133,6 +151,16 @@ async function runArmB(t: string, p: number): Promise<void> {
       // 恰好是查不了的那一臂」。runner 本来就返 filesRead, 只是没人记 —— 记下来即可对称审计。
       `filesRead: ${(r.filesRead ?? []).join(' | ') || '(无)'}\n` +
       `filesTouched: ${(r.filesTouched ?? []).join(' | ') || '(无)'}\n` +
+      `toolCalls: ${r.toolCalls ?? '?'}\n` +
+      // 三态分清 (仓规 NULL ≠ 0 ≠ 不适用): 有痕迹 / 真的零调用 / **调了但没采到**。
+      // 最后一种是采集器自己坏了, 绝不能印成"纯记忆作答"。
+      `toolTrace: ${
+        toolTrace.length
+          ? toolTrace.join(' ;; ')
+          : (r.toolCalls ?? 0) === 0
+            ? '(真零工具调用 = 纯记忆作答)'
+            : `(采集失效: toolCalls=${r.toolCalls} 却一条没采到 — 事件名可能又变了, 别把这行读成"没读文件")`
+      }\n` +
       `usage: in=${r.usage.in} out=${r.usage.out}\nworkDir: ${workCwd}\n\n---\n\n${r.text.slice(0, 4000)}`,
   );
   console.log(`b 臂完成: ${outPath(t, 'b', p)}`);
