@@ -281,3 +281,78 @@ export function reflowResearchResults(backend: PathBackend, cwd: string, slug: s
   }
   return outcomes;
 }
+
+// ── goal 票回流 (D-G1.3/G1.4, c2 波 2026-08-04) ──────────────────────────────
+
+import { renameSync, rmSync as rmSyncGoal } from 'node:fs';
+import { goalDispatchedPath, goalResumePath } from './dispatch';
+
+/** goal 票一次折入的结局 (与 ReflowOutcome 分开: 语义是交付不是蒸馏)。 */
+export interface GoalReflowOutcome {
+  ticketId: string;
+  /** 三态映射结果: delivered / escalated / resumable; warning = 后端缺操作等异常。 */
+  disposition: 'delivered' | 'escalated' | 'resumable';
+  outcome: string;
+  runId: string;
+  warning?: string;
+}
+
+/** 结果文件头解析: `outcome: <kind>` + `runId: <id>` (dag_goal resultOut 写的形状)。 */
+function parseGoalResult(text: string): { outcome: string; runId: string } | null {
+  const m = text.match(/^outcome: (\S+)\nrunId: (\S+)\n/);
+  return m ? { outcome: m[1]!, runId: m[2]! } : null;
+}
+
+/**
+ * goal 档票的回流三态映射 (D-G1.4):
+ *   success → markDelivered;blocked → escalated (需人);其余 (not-converged/error/预算停) →
+ *   票留 ruled + 写续跑锚 (`.goal-resume` = runId, 再 deliver 时 resume 续跑)。
+ * 处理过的结果文件改名归档 (`.md.done` / `.md.escalated` / `.attempt.md`) —— 再次回流不重复处理。
+ * research 票不经此路 (它们的结果由 reflowResearchResults 以蒸馏语义折入)。
+ */
+export function reflowGoalResults(backend: PathBackend, cwd: string, slug: string): GoalReflowOutcome[] {
+  const map = backend.readMap(cwd, slug);
+  if (!map) return [];
+  const outcomes: GoalReflowOutcome[] = [];
+  for (const t of map.tickets) {
+    if (t.status !== 'ruled') continue;
+    const isGoal = t.executorKind === 'goal' || (t.type === 'prototype' && t.executorKind === undefined);
+    if (!isGoal) continue;
+    const resultFile = researchResultPath(cwd, slug, t.id);
+    if (!existsSync(resultFile)) continue;
+    const text = readFileSync(resultFile, 'utf8');
+    const head = parseGoalResult(text);
+    if (!head) {
+      outcomes.push({ ticketId: t.id, disposition: 'resumable', outcome: '(无头)', runId: '(unknown)', warning: '结果文件缺 outcome 头 — 未处理, 待人查' });
+      continue; // 不动文件: 人查完修头或删文件
+    }
+    const marker = goalDispatchedPath(cwd, slug, t.id);
+    const anchor = goalResumePath(cwd, slug, t.id);
+    if (head.outcome === 'success') {
+      backend.markDelivered(cwd, slug, [t.id]);
+      renameSync(resultFile, `${resultFile}.done`);
+      rmSyncGoal(marker, { force: true });
+      rmSyncGoal(anchor, { force: true });
+      outcomes.push({ ticketId: t.id, disposition: 'delivered', outcome: head.outcome, runId: head.runId });
+    } else if (head.outcome === 'blocked') {
+      if (!backend.escalate) {
+        outcomes.push({ ticketId: t.id, disposition: 'escalated', outcome: head.outcome, runId: head.runId, warning: `后端 ${backend.kind} 未实装 escalate — 票留 ruled, 待人处理` });
+        continue; // 文件不动: 下轮仍可见 (响亮重复好过静默丢失)
+      }
+      backend.escalate(cwd, slug, t.id);
+      renameSync(resultFile, `${resultFile}.escalated`);
+      rmSyncGoal(marker, { force: true });
+      rmSyncGoal(anchor, { force: true });
+      outcomes.push({ ticketId: t.id, disposition: 'escalated', outcome: head.outcome, runId: head.runId });
+    } else {
+      // not-converged / error / budget-stop: 票留 ruled, 续跑锚落盘, 在途标记清掉 (deliver 可再派)。
+      writeFileSyncGoal(anchor, head.runId);
+      rmSyncGoal(marker, { force: true });
+      renameSync(resultFile, resultFile.replace(/\.md$/, '.attempt.md'));
+      outcomes.push({ ticketId: t.id, disposition: 'resumable', outcome: head.outcome, runId: head.runId });
+    }
+  }
+  return outcomes;
+}
+
+import { writeFileSync as writeFileSyncGoal } from 'node:fs';

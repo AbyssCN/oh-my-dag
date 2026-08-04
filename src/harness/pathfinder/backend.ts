@@ -67,6 +67,8 @@ export interface PathBackend {
   confirmSuggestion?(cwd: string, slug: string, ticketId: string, action: ConfirmAction, opts: { at: string; title?: string }): SuggestionLogEntry;
   /** 裁一张票 (记决策)。票不存在 → throw。 */
   rule(cwd: string, slug: string, ticketId: string, ruling: string): void;
+  /** D-G1.4 (可选, gh 片 e 才实装): goal 票 solve 报 blocked → 票翻 escalated (需人)。 */
+  escalate?(cwd: string, slug: string, ticketId: string): void;
   /** 把一批已裁票翻 delivered (终态)。 */
   markDelivered(cwd: string, slug: string, ticketIds: string[]): void;
   /**
@@ -184,6 +186,15 @@ function createMdBackend(): PathBackend {
       const mutated = mutateMap(cwd, slug, (map) => confirmSuggestionPure(map, ticketId, action, opts));
       if (!mutated) throw new Error(`找不到地图 "${slug}"`);
       return mutated.result;
+    },
+    escalate: (cwd, slug, ticketId) => {
+      const mutated = mutateMap(cwd, slug, (map): boolean => {
+        const tk = map.tickets.find((t) => t.id === ticketId);
+        if (!tk) return false;
+        tk.status = 'escalated';
+        return true;
+      });
+      if (!mutated || !mutated.result) throw new Error(`escalate: 找不到票 "${ticketId}" (图 "${slug}")`);
     },
     rule: (cwd, slug, ticketId, ruling) => {
       const mutated = mutateMap(cwd, slug, (map): boolean => {

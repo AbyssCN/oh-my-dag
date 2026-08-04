@@ -28,7 +28,7 @@ import {
   dispatchFrontier as realDispatchFrontier,
   dispatchGoalTicket as realDispatchGoalTicket,
 } from '../../harness/pathfinder/dispatch';
-import { reflowResearchResults } from '../../harness/pathfinder/afk-hook';
+import { reflowGoalResults, reflowResearchResults } from '../../harness/pathfinder/afk-hook';
 import { computeFrontier } from '../../harness/pathfinder/frontier';
 import { compileSlice, regionIsClear, specGateViolation } from '../../harness/pathfinder/slice-compiler';
 import type { PathMap, Ticket, TicketType } from '../../harness/pathfinder/types';
@@ -206,6 +206,11 @@ function reflowOnce(deps: PathfinderToolDeps, backend: PathBackend, slug: string
   const dispatch = deps.dispatchFrontier ?? realDispatchFrontier;
   const outcomes = reflowResearchResults(backend, cwd, slug);
   const lines: string[] = [];
+  // D-G1.3/G1.4: goal 票回流 (交付语义) — 与 research (蒸馏语义) 两条折入并行, 同一次 pull。
+  for (const g of reflowGoalResults(backend, cwd, slug)) {
+    const label = g.disposition === 'delivered' ? '已交付' : g.disposition === 'escalated' ? '需人 (escalated)' : `可续跑 (${g.outcome})`;
+    lines.push(`◈ goal 票 ${g.ticketId} 回流: ${label} · runId ${g.runId}${g.warning ? ` ⚠ ${g.warning}` : ''}`);
+  }
   let hadResearchChildren = false;
   for (const o of outcomes) {
     if (o.warning !== undefined) {
