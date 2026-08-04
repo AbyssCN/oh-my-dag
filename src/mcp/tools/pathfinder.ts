@@ -209,7 +209,7 @@ function reflowOnce(deps: PathfinderToolDeps, backend: PathBackend, slug: string
   // D-G1.3/G1.4: goal 票回流 (交付语义) — 与 research (蒸馏语义) 两条折入并行, 同一次 pull。
   for (const g of reflowGoalResults(backend, cwd, slug)) {
     const label = g.disposition === 'delivered' ? '已交付' : g.disposition === 'escalated' ? '需人 (escalated)' : `可续跑 (${g.outcome})`;
-    lines.push(`◈ goal 票 ${g.ticketId} 回流: ${label} · runId ${g.runId}${g.warning ? ` ⚠ ${g.warning}` : ''}`);
+    lines.push(`◈ goal 票 ${g.ticketId} 回流: ${label} · runId ${g.runId}${g.suggested ? ` · 发现物→${g.suggested}` : ''}${g.warning ? ` ⚠ ${g.warning}` : ''}`);
   }
   let hadResearchChildren = false;
   for (const o of outcomes) {

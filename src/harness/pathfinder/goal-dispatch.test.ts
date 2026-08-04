@@ -179,3 +179,63 @@ describe('reflowGoalResults 三态映射 (D-G1.4, GWT-G1-2)', () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 });
+
+// ── c3 波: 发现物提取 → 建议票 (D-G1.5, GWT-G1-2 后半) ───────────────────────
+
+import { extractGoalDiscoveries } from './afk-hook';
+
+describe('extractGoalDiscoveries 词表 (D-G1.5)', () => {
+  test('三类行各提一条; success stage 不提', () => {
+    const body = [
+      'goal: 干活',
+      'tier: complex · 未收敛 · 2 轮',
+      '  [success] research — 查完了',
+      '  [oracle-failed/failed] execute — tsc 两处红',
+      '阻塞 (需外部输入): 要 GCP 凭证',
+      '预算停: 30 分钟到顶',
+    ].join('\n');
+    expect(extractGoalDiscoveries(body)).toEqual([
+      { type: 'task', title: '[未收敛·execute] tsc 两处红' },
+      { type: 'grill', title: '[阻塞] 要 GCP 凭证' },
+      { type: 'task', title: '[预算停] 30 分钟到顶' },
+    ]);
+  });
+
+  test('无失败面 → 空 (success 结果不产建议)', () => {
+    expect(extractGoalDiscoveries('goal: x\n  [success] execute — 全绿')).toEqual([]);
+  });
+});
+
+describe('c3 折入端到端: 发现物入图 suggested 态', () => {
+  test('blocked 结果 → escalated + [阻塞] suggested 票溯源 runId + 台账留痕', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'goal-c3-'));
+    goalMapOn(cwd);
+    writeResult(cwd, 'm1', 'g9', 'blocked', '干到一半\n阻塞 (需外部输入): 要 owner 给 API key');
+    const out = reflowGoalResults(mdBackend(cwd), cwd, 'm1', { at: '2026-08-04T12:00:00Z' });
+    expect(out[0]!.disposition).toBe('escalated');
+    expect(out[0]!.suggested).toContain('建议入图 1');
+    const m = mdBackend(cwd).readMap(cwd, 'm1')!;
+    const sugg = m.tickets.find((x) => x.status === 'suggested')!;
+    expect(sugg.title).toBe('[阻塞] 要 owner 给 API key');
+    expect(sugg.type).toBe('grill');
+    expect(sugg.suggestedBy).toBe('run-g9');
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  test('同一发现物重复折入 (两张 goal 票同病) → 第二次被指纹/语义档去重, 不翻倍', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'goal-c3-'));
+    const map: PathMap = {
+      destination: '图', slug: 'm1', decisionsLog: [],
+      tickets: [t({ id: 'g1', executorKind: 'goal' }), t({ id: 'g2', executorKind: 'goal' })],
+    };
+    saveMap(map, cwd);
+    writeResult(cwd, 'm1', 'g1', 'not-converged', '  [oracle-failed] execute — tsc 红');
+    writeResult(cwd, 'm1', 'g2', 'not-converged', '  [oracle-failed] execute — tsc 红');
+    const out = reflowGoalResults(mdBackend(cwd), cwd, 'm1', { at: '2026-08-04T12:00:00Z' });
+    expect(out).toHaveLength(2);
+    const m = mdBackend(cwd).readMap(cwd, 'm1')!;
+    expect(m.tickets.filter((x) => x.status === 'suggested')).toHaveLength(1); // 只入一张
+    expect(m.suggestionsLog!.some((e) => e.outcome === 'deduped' || e.outcome === 'deduped-semantic')).toBe(true); // 去重有痕
+    rmSync(cwd, { recursive: true, force: true });
+  });
+});

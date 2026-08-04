@@ -294,7 +294,38 @@ export interface GoalReflowOutcome {
   disposition: 'delivered' | 'escalated' | 'resumable';
   outcome: string;
   runId: string;
+  /** D-G1.5 (c3): 本次折入产出的建议票摘要 (applySuggestions 的 summary; 无发现物/后端缺 suggest = undefined)。 */
+  suggested?: string;
   warning?: string;
+}
+
+/**
+ * D-G1.5 发现物词表 (第一版规则式, 从 summarizeGoal 的结构化行拿):
+ *   ① `阻塞 (需外部输入): X`      → [阻塞] X       (grill: 要人讨论)
+ *   ② `预算停: X`                → [预算停] X     (task: 加预算或拆小)
+ *   ③ stage 行 `  [<outcome>[/status]] <stage> — <summary>` 且 outcome≠success
+ *                                → [未收敛·<stage>] <summary> (task)
+ * 提取质量由接受率读数说话 (S-1 片 d), 差再上蒸馏档 (spec 未决第 1 条)。
+ */
+export function extractGoalDiscoveries(body: string): Array<{ type: 'grill' | 'task'; title: string }> {
+  const drafts: Array<{ type: 'grill' | 'task'; title: string }> = [];
+  for (const line of body.split('\n')) {
+    const blocked = line.match(/^阻塞 \(需外部输入\): (.+)$/);
+    if (blocked) {
+      drafts.push({ type: 'grill', title: `[阻塞] ${blocked[1]!.trim()}` });
+      continue;
+    }
+    const budget = line.match(/^预算停: (.+)$/);
+    if (budget) {
+      drafts.push({ type: 'task', title: `[预算停] ${budget[1]!.trim()}` });
+      continue;
+    }
+    const stage = line.match(/^\s+\[([a-z-]+)(?:\/[a-z-]+)?\] (\S+) — (.+)$/);
+    if (stage && stage[1] !== 'success') {
+      drafts.push({ type: 'task', title: `[未收敛·${stage[2]}] ${stage[3]!.trim()}` });
+    }
+  }
+  return drafts;
 }
 
 /** 结果文件头解析: `outcome: <kind>` + `runId: <id>` (dag_goal resultOut 写的形状)。 */
@@ -310,9 +341,18 @@ function parseGoalResult(text: string): { outcome: string; runId: string } | nul
  * 处理过的结果文件改名归档 (`.md.done` / `.md.escalated` / `.attempt.md`) —— 再次回流不重复处理。
  * research 票不经此路 (它们的结果由 reflowResearchResults 以蒸馏语义折入)。
  */
-export function reflowGoalResults(backend: PathBackend, cwd: string, slug: string): GoalReflowOutcome[] {
+export function reflowGoalResults(backend: PathBackend, cwd: string, slug: string, opts: { at?: string } = {}): GoalReflowOutcome[] {
   const map = backend.readMap(cwd, slug);
   if (!map) return [];
+  const at = opts.at ?? new Date().toISOString();
+  // D-G1.5: 失败面结果 (blocked/resumable) 提取发现物草稿 → suggested 态 (人确认才成真票)。
+  // 去重/上限/溯源全部由 applySuggestions 管 (S-1 管线), 这里只做词表提取。
+  const suggestFrom = (body: string, runId: string): string | undefined => {
+    if (!backend.suggest) return undefined;
+    const drafts = extractGoalDiscoveries(body).map((d) => ({ ...d, suggestedBy: runId }));
+    if (drafts.length === 0) return undefined;
+    return backend.suggest(cwd, slug, drafts, { at }).summary;
+  };
   const outcomes: GoalReflowOutcome[] = [];
   for (const t of map.tickets) {
     if (t.status !== 'ruled') continue;
@@ -340,16 +380,18 @@ export function reflowGoalResults(backend: PathBackend, cwd: string, slug: strin
         continue; // 文件不动: 下轮仍可见 (响亮重复好过静默丢失)
       }
       backend.escalate(cwd, slug, t.id);
+      const sugE = suggestFrom(text, head.runId);
       renameSync(resultFile, `${resultFile}.escalated`);
       rmSyncGoal(marker, { force: true });
       rmSyncGoal(anchor, { force: true });
-      outcomes.push({ ticketId: t.id, disposition: 'escalated', outcome: head.outcome, runId: head.runId });
+      outcomes.push({ ticketId: t.id, disposition: 'escalated', outcome: head.outcome, runId: head.runId, ...(sugE ? { suggested: sugE } : {}) });
     } else {
       // not-converged / error / budget-stop: 票留 ruled, 续跑锚落盘, 在途标记清掉 (deliver 可再派)。
+      const sugR = suggestFrom(text, head.runId);
       writeFileSyncGoal(anchor, head.runId);
       rmSyncGoal(marker, { force: true });
       renameSync(resultFile, resultFile.replace(/\.md$/, '.attempt.md'));
-      outcomes.push({ ticketId: t.id, disposition: 'resumable', outcome: head.outcome, runId: head.runId });
+      outcomes.push({ ticketId: t.id, disposition: 'resumable', outcome: head.outcome, runId: head.runId, ...(sugR ? { suggested: sugR } : {}) });
     }
   }
   return outcomes;
