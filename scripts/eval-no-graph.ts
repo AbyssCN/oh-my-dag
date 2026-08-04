@@ -5,8 +5,9 @@
  *
  * 两臂,同任务文本、同座位、同预算面:
  *   **B 臂 (no-graph)** = 单个 agent-leaf 一杆到底(自带工具环 = "Claude Code 式单 agent 长上下文")。
- *   **A 臂 (omd)**     = f1/f2 走 `dag_run`(conductor 扇出),g1/g2 走 `dag_goal`(solve)——
+ *   **A 臂 (omd)**     = 默认 f1/f2 走 `dag_run`(conductor 扇出),g1/g2 走 `dag_goal`(solve)——
  *                        经 assembleOmdMcpTools 生产装配,零第二套语义。
+ *                        `--engine run|solve` 可脱离这个默认(拆 "档位 × 题型" 混淆,见下)。
  *
  * 作业面:f1 在 `git archive` 导出的快照目录(防翻史抄答案,GWT-R2-4);f2/g1/g2 在本仓只读 +
  * 答案写 out 文件。产物头部记座位行(GWT-R2-1 的 --verify-seats 读它)。
@@ -15,6 +16,8 @@
  *   bun --env-file=.env run scripts/eval-no-graph.ts --task f1 --arm b --pair 1
  *   bun --env-file=.env run scripts/eval-no-graph.ts --verify-seats --task f1 --pair 1
  *   bun --env-file=.env run scripts/eval-no-graph.ts --score --task f1 --pair 1
+ *   bun --env-file=.env run scripts/eval-no-graph.ts --task f2 --arm a --engine solve --pair 1   # 补充实验
+ *   bun --env-file=.env run scripts/eval-no-graph.ts --score --task f2 --arm a --engine solve --pair 1
  */
 import { execSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
@@ -31,6 +34,19 @@ const arm = (opt('arm') ?? '') as 'a' | 'b';
 const pair = Number(opt('pair') ?? '1');
 const cwd = process.cwd();
 const TASK_DIR = 'src/eval/tasks/no-graph-baseline';
+
+/**
+ * A 臂的引擎档位。**原设计把它和任务格绑死了**(F 格→run,G 格→solve)——于是
+ * "solve vs run" 与 "封闭题 vs 开放题" 两个变量捆在一起,读数分不清是谁的功劳。
+ * `--engine` 就是拆这个混淆用的:同一道题跑两个档位。
+ *
+ * 非默认档位的产物落**另一套文件名**(`f2-a-solve-1.md`),不覆盖原对照的产物。
+ */
+type Engine = 'run' | 'solve';
+const defaultEngine = (t: string): Engine => (t === 'g1' || t === 'g2' ? 'solve' : 'run');
+const engine: Engine = (opt('engine') as Engine | undefined) ?? defaultEngine(task);
+/** 文件名里的臂标识: 默认档位保持 `a`/`b` 不变(旧产物不失效), 非默认档位加后缀。 */
+const armKey = (a: string): string => (engine === defaultEngine(task) ? a : `${a}-${engine}`);
 
 function outPath(t: string, a: string, p: number): string {
   return join(cwd, OUT_DIR, `${t}-${a}-${p}.md`);
@@ -88,11 +104,11 @@ async function runArmA(t: string, p: number): Promise<void> {
   const { bootstrapModelRuntime } = await import('../src/model/bootstrap');
   bootstrapModelRuntime();
   const seats = resolveEngineModels(process.env);
-  const { workCwd, taskText } = await materialize(t, 'a', p);
-  const answerFile = outPath(t, 'a', p).replace(/\.md$/, '-answer.md');
+  const { workCwd, taskText } = await materialize(t, armKey('a'), p);
+  const answerFile = outPath(t, armKey('a'), p).replace(/\.md$/, '-answer.md');
   const registry = new RunRegistry();
   const tools = assembleOmdMcpTools({ cwd: workCwd, runRegistry: registry });
-  const toolName = t === 'g1' || t === 'g2' ? 'dag_goal' : 'dag_run';
+  const toolName = engine === 'solve' ? 'dag_goal' : 'dag_run';
   const tool = tools.find((x) => x.name === toolName)!;
   const started = Date.now();
   const args = toolName === 'dag_goal'
@@ -109,15 +125,18 @@ async function runArmA(t: string, p: number): Promise<void> {
   }
   mkdirSync(join(cwd, OUT_DIR), { recursive: true });
   writeFileSync(
-    outPath(t, 'a', p),
-    `arm: a (omd ${toolName})\nseat: ${(seats.agentLeafModel ?? seats.leafModel)}\ntask: ${t} pair: ${p}\n` +
+    outPath(t, armKey('a'), p),
+    `arm: ${armKey('a')} (omd ${toolName})\nseat: ${(seats.agentLeafModel ?? seats.leafModel)}\n` +
+      `task: ${t} pair: ${p} engine: ${engine}\n` +
       `wallMs: ${Date.now() - started}\nrunId: ${runId}\nstatus: ${registry.getStatus(runId)}\nworkDir: ${workCwd}\n`,
   );
-  console.log(`a 臂完成: ${outPath(t, 'a', p)} (${registry.getStatus(runId)})`);
+  console.log(`a 臂完成: ${outPath(t, armKey('a'), p)} (${registry.getStatus(runId)})`);
 }
 
 async function score(t: string, p: number): Promise<void> {
-  for (const a of ['a', 'b'] as const) {
+  // 显式 --arm = 只评这一个 (补充实验的非默认档位是单臂产物, 没有配对的另一臂)。
+  const arms = arm ? [armKey(arm)] : ['a', 'b'];
+  for (const a of arms) {
     const head = existsSync(outPath(t, a, p)) ? readFileSync(outPath(t, a, p), 'utf8') : '';
     if (!head) {
       console.log(`${t}-${a}-${p}: 产物缺席`);
