@@ -86,6 +86,16 @@ export interface ExecutorDagConfig {
   /** conductor 规划无效输出的有界重试 (默认 2 → ≤3 次)。 */
   maxPlanRetries?: number;
   /**
+   * 每个 leaf 的 prompt 是否携带**原始任务全文** (默认 true, 见 buildLeafPrompt 的注)。
+   *
+   * 补的是图的一条结构缺口而不是加上下文: 节点的世界原本只有「自己的 goal + 上游输出」,
+   * 而 conductor 看着任务写 goal, 会写出「从可信任务上下文复制题目」这种节点根本做不到的话。
+   * agent 档靠工具自己去翻任务文件把这个洞盖住了 (实测老跑 5-6 个节点真去读了任务文件),
+   * g1 换成 command+leaf 后洞就露出来: 33 节点全绿而交付物是「未提供题义」。
+   * 设 false = 回到旧行为 (逃生口, 不建议)。
+   */
+  leafTaskContext?: boolean;
+  /**
    * g1 leaf 档位闸 (图「引擎墙钟与 leaf 档位」#9, 2026-08-04): 计划落地前拒
    * 「executor:'agent' 读确定路径 + 无写意图 + 结构化产出」的节点/map 模板, 带改写建议重问
    * conductor (有界), 用尽 fail-open 放行并响亮留证。判据本体 plan/leaf-tier-gate.ts。

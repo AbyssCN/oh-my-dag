@@ -31,14 +31,41 @@ export function topoLevels(plan: ConductorPlan): string[][] {
  * (system前缀+模板body) 的字节稳定前奏 → warmThenFanout 暖发后跨 sibling 命中 prompt-cache
  * (id 行在前会让前缀在 ~12 字符处分叉, 白丢整段模板的 cache 面)。
  */
+/** 原始任务注入的字符上限 (超出显式标注截断 —— No-silent-caps)。 */
+export const TASK_CONTEXT_MAX_CHARS = 4000;
+
 export function buildLeafPrompt(
   id: string,
   node: ConductorPlan['nodes'][string],
   depResults: Record<string, string>,
   template?: { name: string; body: string },
+  taskContext?: string,
 ): string {
   const parts: string[] = [];
   if (template) parts.push(`<agent-template name="${template.name}">\n${template.body.trim()}\n</agent-template>`);
+  // ── 原始任务上下文 (2026-08-04, r2 实测买来的) ──────────────────────────────────
+  //
+  // 此前 leaf 的**全部世界**是「自己的 goal + 上游输出」—— 原始任务文本一个字都不进。
+  // 而 conductor 是看着任务写 goal 的, 于是它理所当然地写出「从可信任务上下文逐字复制 q1–q8
+  // 题义」这种 goal。那句话对它成立, 对节点不成立: 那个上下文根本没传下去。
+  //
+  // **为什么此前没炸**: agent 档的节点有工具, 它会自己跑去把任务文件翻出来读 —— 实测老的两跑
+  // 24 节点里 6 个、18 节点里 5 个真的读了 `f2-task.md`。也就是说图从来没携带过题目,
+  // 是 agent 在替图自救。g1 把读盘换成 command+leaf 之后自救通道断了, 立刻现形:
+  // 一次 33 节点全绿的跑, 交付物是「未提供题义, 无法作答」(run 39450211)。
+  //
+  // 所以这不是"给 leaf 多点上下文"的优化, 是补一条**图本该有而一直没有的信息通道**。
+  // 放在模板卡之后、id 之前: 一次 run 内所有 leaf 的这一段字节完全相同 → 前缀缓存吃得到。
+  // 明确框成**背景**并让 Goal 紧随其后, 免得节点改去做整个任务 (收尾那句"只交本步产出"仍在)。
+  if (taskContext?.trim()) {
+    const t = taskContext.trim();
+    const clipped = t.length > TASK_CONTEXT_MAX_CHARS;
+    parts.push(
+      `<original-task note="背景: 这是本次 run 的原始任务全文。你只负责下面 Goal 那一步; 引用它来补全 goal 里没写全的细节 (题目/格式/约束), 不要替别的节点干活。">\n` +
+        `${clipped ? `${t.slice(0, TASK_CONTEXT_MAX_CHARS)}\n…[原始任务过长, 已截断 ${t.length - TASK_CONTEXT_MAX_CHARS} 字符]` : t}\n` +
+        `</original-task>`,
+    );
+  }
   parts.push(`[omd leaf: ${id}]`);
   // 专家框定前置 (persona conditioning, 同 fanout 技法): 把弱 executor 拉进专家区。conductor 仅对吃
   // 专家视角的 leaf 设 (research/judgement/design/drafting), 缺省则无 (机械/file/command 节点不需)。
