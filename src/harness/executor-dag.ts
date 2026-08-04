@@ -1665,7 +1665,11 @@ async function executePlan(
       const childCap = spec.concurrency ?? config.maxFanout ?? expand.children.length;
       const queue = [...expand.children];
       const runners: Promise<void>[] = [];
-      for (let w = 0; w < Math.max(1, Math.min(childCap, queue.length)); w++) {
+      // worker 数在起 worker **之前**一次算死: 每个 worker 的同步序里就有 `queue.shift()`, 上界若引用
+      // 活的 queue.length 就会边生成边缩 —— r1 实测 (2026-08-04) cap≥N/2 时恰好只起 ⌈N/2⌉ 个
+      // (f2 三跑 + 合成复现: 10 片恒 5 槽), 且 cap 放得越大越触发。回归闸: map-concurrency.test.ts。
+      const workerCount = Math.max(1, Math.min(childCap, queue.length));
+      for (let w = 0; w < workerCount; w++) {
         runners.push(
           (async () => {
             for (;;) {
