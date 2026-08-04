@@ -122,3 +122,31 @@ export function scoringPoints(answer: unknown): number {
   if (typeof answer === 'object') return Object.keys(answer as Record<string, unknown>).length;
   return 1; // str / int / bool = 单点
 }
+
+/**
+ * 一道题**内在需要几次独立查证**的下界(2026-08-05 实测得出, 见下)。
+ *
+ * ## 为什么不是「金标宽度」
+ *
+ * 金标宽度量的是**人把分解写得多细**, 不是这题需要多宽。实测:
+ * 宽 ≤2 的 21 题里只有 3 题的答案是标量, 其余 18 题答案有 3–11 个键 ——
+ * 人只是把「5 个国家的人口」写成了**一条**子问题。
+ * (例:`What is the population of the five smallest countries…` → 金标宽 1, 答案 5 个键。)
+ *
+ * ## 为什么也不是「答案键数」
+ *
+ * 反向同样漏:标量答案会把一次宽扇出藏起来。
+ * (例:`How many of the last five mayors of Philadelphia were born there` → 答案 `2`,
+ * 一个判分点, 但金标宽 5 —— 五位市长各查一次才数得出来。)
+ *
+ * ## 所以取两者的 max
+ *
+ * 两个数各是一个**下界**:人认出了 N 条独立子问题 → 至少 N 次;答案里有 K 个不同实体 → 至少 K 次。
+ * 取大的那个仍是下界, 但比任一单独用都紧。全集 256/310 两者相等, 剩下 54 题正是上面两族。
+ *
+ * ⚠ **它仍只是下界**, 不是真值:没有任何字段记着"这题客观需要几次查证"。
+ * 拿它分档可以(档与档之间差得远), 别拿它当分母算比率。
+ */
+export function fanoutDemand(q: Pick<FanOutQuestion, 'decomposition' | 'answer'>): number {
+  return Math.max(dagShape(q.decomposition ?? []).width, scoringPoints(q.answer));
+}
