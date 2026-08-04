@@ -26,6 +26,7 @@ import { makeInitDeps, runInit, type InitDeps } from '../../harness/pathfinder/i
 import {
   countDispatchedResearch,
   dispatchFrontier as realDispatchFrontier,
+  dispatchGoalTicket as realDispatchGoalTicket,
 } from '../../harness/pathfinder/dispatch';
 import { reflowResearchResults } from '../../harness/pathfinder/afk-hook';
 import { computeFrontier } from '../../harness/pathfinder/frontier';
@@ -46,6 +47,8 @@ export interface PathfinderToolDeps {
   /** 注入接缝 (测试传替身, 永不真执行/真 spawn)。 */
   executeSlice?: typeof realExecuteSlice;
   dispatchFrontier?: typeof realDispatchFrontier;
+  /** D-G1.2 注入接缝 (测试传替身, 永不起真 solve 进程)。 */
+  dispatchGoal?: typeof realDispatchGoalTicket;
   /** 后端解析器 (省略 = resolveBackend(cwd, {env}): env OMD_PATH_BACKEND > 仓库配置 > md)。测试注入 gh 替身。 */
   resolveBackend?: (cwd: string) => PathBackend;
   /** omd-hud 迷雾镜像 (给则每次 renderStatus 把当前地图迷雾原子写 .omd/hud/fog.json)。省略 = 不写。 */
@@ -159,22 +162,38 @@ function renderStatus(map: PathMap, hudMirror?: HudMirror): string {
   }
   const region = readyRegion(map);
   if (region) {
-    try {
-      compileSlice(map, region);
-      lines.push(`★ 区域散尽 (${region.length} 张 ruled task 票, 编译通过) — path_deliver 执行交付。`);
-    } catch (e) {
-      lines.push(`★ 区域散尽但 slice 编译失败: ${String(e)}`);
+    const parts: string[] = [];
+    if (region.slice.length > 0) {
+      try {
+        compileSlice(map, region.slice);
+        parts.push(`slice ${region.slice.length} 张编译通过`);
+      } catch (e) {
+        parts.push(`slice 编译失败: ${String(e)}`);
+      }
     }
+    if (region.goals.length > 0) parts.push(`goal 档 ${region.goals.length} 张待 fire solve`);
+    lines.push(`★ 区域散尽 (${parts.join(' · ')}) — path_deliver 执行交付。`);
   }
   return lines.join('\n');
 }
 
-/** 可交付区域 = 全部 ruled task 票 (delivered 终态不复入 → 不重复执行); 未散尽 → null。
+/** goal 档判定 (D-G1.1): 显式 executorKind='goal', 或 prototype 票未显式选档 (spike 默认要收敛)。 */
+function isGoalKind(t: Ticket): boolean {
+  return t.executorKind === 'goal' || (t.type === 'prototype' && t.executorKind === undefined);
+}
+
+/** 可交付区域, 分流形状 (D-G1.2): slice = 编入 DAG 的票; goals = 逐张走 detached solve 的票。
+ * ruled 的 task/prototype 票进区域 (delivered 终态不复入); 未散尽 → null。
  * export 给 suggested.test 钉 INV-S1-1 (suggested 永不入区域); 生产只有本文件消费。 */
-export function readyRegion(map: PathMap): string[] | null {
-  const ruled = map.tickets.filter((t) => t.type === 'task' && t.status === 'ruled').map((t) => t.id);
+export function readyRegion(map: PathMap): { slice: string[]; goals: string[] } | null {
+  const ruled = map.tickets.filter((t) => (t.type === 'task' || t.type === 'prototype') && t.status === 'ruled');
   if (ruled.length === 0) return null;
-  return regionIsClear(map, ruled).clear ? ruled : null;
+  const ids = ruled.map((t) => t.id);
+  if (!regionIsClear(map, ids).clear) return null;
+  return {
+    slice: ruled.filter((t) => !isGoalKind(t)).map((t) => t.id),
+    goals: ruled.filter(isGoalKind).map((t) => t.id),
+  };
 }
 
 /**
@@ -329,7 +348,7 @@ function makeAdd(deps: PathfinderToolDeps): OmdMcpTool {
       slug: z.string().optional().describe('Map slug (omit = the single open map)'),
       id: z.string().optional().describe('Stable ticket id (omit = auto t1/r1/…)'),
       blockedBy: z.array(z.string()).default([]).describe('Prerequisite ticket ids'),
-      executorKind: z.enum(['command', 'inproc', 'agent', 'map', 'primitive']).optional().describe('task only: slice executor kind (default inproc)'),
+      executorKind: z.enum(['command', 'inproc', 'agent', 'map', 'primitive', 'goal']).optional().describe("task/prototype: executor kind (default inproc; 'goal' = converge via detached solve, D-G1)"),
     },
     handler: async ({ title, type, slug, id, blockedBy, executorKind }) => {
       // 防御缺省 (schema default 只在 SDK 层生效; 直调 handler 也要稳)。
@@ -468,13 +487,34 @@ function makeDeliver(deps: PathfinderToolDeps): OmdMcpTool {
       const map = backend.readMap(cwd, r.slug)!;
       const region = readyRegion(map);
       if (!region) return err('无可交付区域: 没有已散尽的 ruled task 票 (先 path_rule 把前沿裁完)。');
+      // D-G1.2: goal 档票逐张 fire detached solve (幂等: .goal-dispatched 标记), 票留 ruled 在飞;
+      // 结果经 afk-hook 回流三态映射 (c2 波)。slice 票照旧编 DAG。
+      const goalLines: string[] = [];
+      if (region.goals.length > 0) {
+        const fireGoal = deps.dispatchGoal ?? realDispatchGoalTicket;
+        for (const gid of region.goals) {
+          const gt = map.tickets.find((t) => t.id === gid)!;
+          const goalText = gt.ruling ?? gt.title;
+          try {
+            const d = fireGoal(cwd, r.slug, gid, goalText);
+            goalLines.push(`◈ goal 票 ${gid} → solve ${d.already ? '已在飞' : '已 fire'} (runId ${d.runId})`);
+          } catch (e) {
+            goalLines.push(`✗ goal 票 ${gid} fire 失败: ${errMsg(e)}`);
+          }
+        }
+      }
+      if (region.slice.length === 0) {
+        // 纯 goal 区域: 没有 slice 可执行, 汇报 fire 结果即完成 (票留 ruled 等回流)。
+        if (goalLines.length === 0) return err('区域为空 (不该发生: readyRegion 非 null 但两侧都空)。');
+        return ok([...goalLines, renderStatus(backend.readMap(cwd, r.slug)!, deps.hudMirror)].join('\n'));
+      }
       // deliver spec 护栏 (编译前, fail-loud): 复杂区域缺 docs/plan/ 契约引用 → 不编译不执行 (D-E)。
-      const gate = specGateViolation(map.tickets.filter((t) => region.includes(t.id)));
+      const gate = specGateViolation(map.tickets.filter((t) => region.slice.includes(t.id)));
       if (gate) return err(gate);
       if (!models.leafModel) return err('未配 leaf 模型 — 设 OMD_ITER_LEAF_MODEL (或 OMD_RUNTIME_PROVIDER/MODEL) 后再 path_deliver。');
       let plan;
       try {
-        plan = compileSlice(map, region);
+        plan = compileSlice(map, region.slice);
       } catch (e) {
         return err(`slice 编译失败: ${String(e)}`);
       }
@@ -499,8 +539,12 @@ function makeDeliver(deps: PathfinderToolDeps): OmdMcpTool {
         if (failed > 0 || pass === false) {
           return err(`slice "${plan.name}" 执行有 ${failed}/${nodeStates.length} 节点未完成${pass === false ? ' · 校验未过' : ''} — 区域未标记交付, 修复后可再 path_deliver。`);
         }
-        backend.markDelivered(cwd, r.slug, region);
-        return ok(`◈ slice "${plan.name}" 已执行 (${Object.keys(plan.nodes ?? {}).length} 节点) — 区域 [${region.join(', ')}] 已交付。\n${renderStatus(backend.readMap(cwd, r.slug)!, deps.hudMirror)}`);
+        backend.markDelivered(cwd, r.slug, region.slice);
+        return ok([
+          ...goalLines,
+          `◈ slice "${plan.name}" 已执行 (${Object.keys(plan.nodes ?? {}).length} 节点) — 区域 [${region.slice.join(', ')}] 已交付。`,
+          renderStatus(backend.readMap(cwd, r.slug)!, deps.hudMirror),
+        ].join('\n'));
       } catch (e) {
         return err(`slice 执行失败: ${String(e)}`);
       }

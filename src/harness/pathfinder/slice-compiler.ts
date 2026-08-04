@@ -25,6 +25,10 @@ import type { ExecutorKind, PathMap, Ticket } from './types';
  */
 function toPlanExecutor(kind: ExecutorKind | undefined): 'agent' | 'leaf' | 'command' | 'map' {
   switch (kind ?? 'inproc') {
+    // D-G1.2: goal 档票不进 slice 图 — 走到这里 = deliver 没分流, 响亮炸而不是静默降级成 leaf
+    // (静默降级会把"要收敛的子目标"跑成单发调用, 症状是沉默的)。
+    case 'goal':
+      throw new Error('goal 档票不进 slice 图 (D-G1.2) — path_deliver 应先分流走 detached solve');
     case 'command':
       return 'command';
     case 'agent':
@@ -115,7 +119,8 @@ export function regionIsClear(map: PathMap, regionTicketIds: string[]): { clear:
   for (const id of regionTicketIds) {
     const t = byId.get(id);
     if (!t) return { clear: false, reason: `未知票 "${id}"` };
-    if (t.type !== 'task') return { clear: false, reason: `票 "${id}" 非 task (type=${t.type})` };
+    // D-G1.1: prototype 票可进区域 (goal 档默认载体); 其余类型仍拒 (research/grill 不是交付单位)。
+    if (t.type !== 'task' && t.type !== 'prototype') return { clear: false, reason: `票 "${id}" 非 task/prototype (type=${t.type})` };
     if (t.status !== 'ruled') return { clear: false, reason: `票 "${id}" 未裁 (status=${t.status})` };
     for (const dep of t.blockedBy) {
       if (!ruled.has(dep)) return { clear: false, reason: `票 "${id}" 的前置 "${dep}" 未裁 (open blocker 指进来)` };

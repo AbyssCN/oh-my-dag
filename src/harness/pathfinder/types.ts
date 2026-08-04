@@ -14,8 +14,9 @@ export type TicketType = 'research' | 'grill' | 'prototype' | 'task';
 /** 票状态: suggested=机器建议待人确认(S-1) / open=前沿可动 / blocked=前置未散 / ruled=已裁决 / delivered=slice 已交付(终态) / escalated=`?` 上报 owner。 */
 export type TicketStatus = 'suggested' | 'open' | 'blocked' | 'ruled' | 'delivered' | 'escalated';
 
-/** slice 编译器消费的执行器种类 (D-9, 裁票时定; 与 ConductorPlan.executor 不同枚举, 编译期映射)。 */
-export type ExecutorKind = 'command' | 'inproc' | 'agent' | 'map' | 'primitive';
+/** slice 编译器消费的执行器种类 (D-9, 裁票时定; 与 ConductorPlan.executor 不同枚举, 编译期映射)。
+ * 'goal' (D-G1.1): 票是要收敛的子目标 — deliver 分流走 detached solve, **永不进 slice 图**。 */
+export type ExecutorKind = 'command' | 'inproc' | 'agent' | 'map' | 'primitive' | 'goal';
 
 /** 一张决策票 = 决策 DAG 的一个节点。 */
 export interface Ticket {
