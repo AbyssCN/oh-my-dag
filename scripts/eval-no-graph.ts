@@ -21,7 +21,7 @@
  */
 import { execSync } from 'node:child_process';
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const OUT_DIR = '.omd/eval/no-graph-baseline';
@@ -69,15 +69,22 @@ function workDirPath(t: string, a: string, p: number): string {
  * 产物头记 `answerFile:`,评分按它取;老产物回落旧路径(不破既有读数)。
  */
 function answerPath(t: string, a: string, p: number): string {
-  return join(tmpdir(), 'omd-eval-answers', `${t}-${a}-${p}`, 'answer.md');
+  // 用 $HOME 不用 `tmpdir()`: 后者跟着 TMPDIR 走, 环境一变**历史答案就找不着**,
+  // 而找不着会被下游读成 0/8 (实测踩过, 见下面那条缺席判词)。实验归档要住在稳定的地方。
+  return join(homedir(), '.omd-eval-answers', `${t}-${a}-${p}`, 'answer.md');
 }
 /** 评分侧解析: 优先产物头记的路径, 其次新默认, 最后旧的仓内路径 (老产物兼容)。 */
 function resolveAnswerPath(head: string, t: string, a: string, p: number): string {
   const declared = /answerFile: (.+)/.exec(head)?.[1]?.trim();
   if (declared && existsSync(declared)) return declared;
-  const fresh = answerPath(t, a, p);
-  if (existsSync(fresh)) return fresh;
-  return outPath(t, a, p).replace(/\.md$/, '-answer.md');
+  for (const c of [
+    answerPath(t, a, p),
+    join(tmpdir(), 'omd-eval-answers', `${t}-${a}-${p}`, 'answer.md'), // 2026-08-04 迁移中转位置
+    outPath(t, a, p).replace(/\.md$/, '-answer.md'), // 仓内旧位置 (老产物)
+  ]) {
+    if (existsSync(c)) return c;
+  }
+  return ''; // 一个都没有 —— 调用方必须把"缺席"和"0 分"分开报 (仓规: NULL ≠ 0 ≠ 不适用)
 }
 
 /** f1 作业面: 快照导出 (无 .git)。其余任务: 本仓只读。 */
@@ -214,7 +221,13 @@ async function score(t: string, p: number): Promise<void> {
       console.log(`${t}-${a}-${p}: ${s.hit}/${s.total}${s.misses.length ? ` · 首漏 ${s.misses[0]}` : ''}`);
     } else {
       const ansFile = resolveAnswerPath(head, t, a, p);
-      const ans = existsSync(ansFile) ? readFileSync(ansFile, 'utf8') : head;
+      if (!ansFile) {
+        // **缺席 ≠ 0 分**。此前这里回落去解析产物头, 解析出 0 题 → 报 0/8, 与"答案全错"
+        // 读起来一模一样 (本程实测踩过: 归档换了个目录, 三跑齐刷刷 0/8, 差点当成引擎塌了)。
+        console.log(`${t}-${a}-${p}: 答案文件缺席 (不是 0 分 — 查过归档/中转/仓内三处)`);
+        continue;
+      }
+      const ans = readFileSync(ansFile, 'utf8');
       const mod = t === 'f2' ? await import('../src/eval/tasks/no-graph-baseline/f2-checklist')
         : t === 'g1' ? await import('../src/eval/tasks/no-graph-baseline/g1-rubric')
         : await import('../src/eval/tasks/no-graph-baseline/g2-registry');
