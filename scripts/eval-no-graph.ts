@@ -127,6 +127,12 @@ async function runArmB(t: string, p: number): Promise<void> {
     outPath(t, 'b', p),
     `arm: b (no-graph 单 agent)\nseat: ${model}\ntask: ${t} pair: ${p}\nwallMs: ${Date.now() - started}\n` +
       `answerFile: ${answerFile}\n` +
+      // **B 臂留痕**(2026-08-04 补的证据链空洞): A 臂每个节点的 checkpoint 记 `inputPaths`,
+      // 所以「它读没读过别的跑的答案」查得出来; 而 B 臂是单 agent-leaf 直发、不落 checkpoint ——
+      // 此前它读了什么**无从查证**。于是出现过一句很难看的话:「看起来更好的那一臂,
+      // 恰好是查不了的那一臂」。runner 本来就返 filesRead, 只是没人记 —— 记下来即可对称审计。
+      `filesRead: ${(r.filesRead ?? []).join(' | ') || '(无)'}\n` +
+      `filesTouched: ${(r.filesTouched ?? []).join(' | ') || '(无)'}\n` +
       `usage: in=${r.usage.in} out=${r.usage.out}\nworkDir: ${workCwd}\n\n---\n\n${r.text.slice(0, 4000)}`,
   );
   console.log(`b 臂完成: ${outPath(t, 'b', p)}`);
