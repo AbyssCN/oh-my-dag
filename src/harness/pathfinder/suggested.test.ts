@@ -45,7 +45,7 @@ describe('GWT-1 · INV-S1-1: suggested 无执行力', () => {
 
   test('readyRegion 不含 suggested, 且 suggested 在图上不阻塞区域交付', () => {
     const region = readyRegion(mapWithSuggested());
-    expect(region).toEqual(['t1']); // s1 不在; 且 region 非 null — 雾中带不挡路
+    expect(region).toEqual({ slice: ['t1'], goals: [] }); // s1 不在; 且 region 非 null — 雾中带不挡路
   });
 
   test('slice 编译只吃 region 票 — suggested 编不进图', () => {

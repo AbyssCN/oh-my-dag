@@ -279,3 +279,69 @@ export function dispatchFrontier(map: PathMap, ctx: DispatchCtx, deps: DispatchD
   }
   return { dispatched, reported };
 }
+
+// ── goal 档票分派 (D-G1.2, 2026-08-04) ────────────────────────────────────────
+
+/** goal 票在途标记 (内容 = runId): 防重复 fire 同一票的 solve (双跑 = 双倍烧钱 + 竞写结果)。 */
+export function goalDispatchedPath(cwd: string, slug: string, ticketId: string): string {
+  return join(cwd, '.omd', 'pathfinder', 'results', slug, `${ticketId}.goal-dispatched`);
+}
+
+/** goal-worker 脚本按本包安装位置解析 (同 researchScriptPath 的理由: 相对 cwd 在别的 repo 必炸)。 */
+export function goalWorkerPath(): string {
+  return join(import.meta.dir, '..', '..', '..', 'scripts', 'goal-worker.ts');
+}
+
+export interface DispatchGoalDeps {
+  /** 注入接缝 (测试传替身, 永不起真进程)。默认 = Bun.spawn detached + unref。 */
+  spawnDetached?: (cmd: string[], opts: { cwd: string; logPath: string }) => number | undefined;
+  /** runId 工厂 (测试定值)。默认 crypto.randomUUID。 */
+  makeRunId?: () => string;
+}
+
+export interface DispatchGoalResult {
+  runId: string;
+  /** true = 已在飞 (幂等命中, 未新 spawn)。 */
+  already: boolean;
+}
+
+/**
+ * fire 一张 goal 档票的 detached solve (D-G1.2/G1.6)。
+ * - 幂等: `.goal-dispatched` 标记存在 → 返回其中 runId, 不重 spawn。
+ * - goal-worker 对未知 runId 走 reopenForResume = register+start (自注册, 母进程不等)。
+ * - 预算默认档 (D-G1.6): OMD_TICKET_GOAL_ROUNDS (默认 2) / OMD_TICKET_GOAL_MINUTES (默认 30)。
+ */
+export function dispatchGoalTicket(
+  cwd: string,
+  slug: string,
+  ticketId: string,
+  ruling: string,
+  deps: DispatchGoalDeps = {},
+  env: NodeJS.ProcessEnv = process.env,
+): DispatchGoalResult {
+  const marker = goalDispatchedPath(cwd, slug, ticketId);
+  if (existsSync(marker)) {
+    return { runId: readFileSync(marker, 'utf8').trim(), already: true };
+  }
+  const runId = (deps.makeRunId ?? (() => crypto.randomUUID()))();
+  const rounds = env.OMD_TICKET_GOAL_ROUNDS ?? '2';
+  const minutes = env.OMD_TICKET_GOAL_MINUTES ?? '30';
+  mkdirSync(dirname(marker), { recursive: true });
+  const spawn = deps.spawnDetached ?? defaultGoalSpawn;
+  spawn(
+    ['bun', 'run', goalWorkerPath(), '--run-id', runId, '--goal', ruling, '--cwd', cwd, '--max-rounds', rounds, '--budget-minutes', minutes],
+    { cwd, logPath: researchLogPath(cwd, slug, ticketId) },
+  );
+  // spawn 之后才写标记: spawn 抛错时不留"已派"假象 (标记假阳性 = 票永远卡死在"在飞")。
+  writeFileSync(marker, runId);
+  return { runId, already: false };
+}
+
+/** 默认 goal spawn: detached + stdout/stderr → log + unref (母进程不等, 同 research 范式)。 */
+function defaultGoalSpawn(cmd: string[], opts: { cwd: string; logPath: string }): number | undefined {
+  mkdirSync(dirname(opts.logPath), { recursive: true });
+  const fd = openSync(opts.logPath, 'a');
+  const proc = Bun.spawn(cmd, { cwd: opts.cwd, stdout: fd, stderr: fd, stdin: 'ignore' });
+  proc.unref();
+  return proc.pid;
+}
