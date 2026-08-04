@@ -266,7 +266,7 @@ async function score(t: string, p: number): Promise<void> {
         : t === 'g1' ? await import('../src/eval/tasks/no-graph-baseline/g1-rubric')
         : await import('../src/eval/tasks/no-graph-baseline/g2-registry');
       const s = t === 'f2'
-        ? (mod as { scoreF2: (x: Record<string, string>) => { hit: number; total: number } }).scoreF2(
+        ? (mod as { scoreF2: (x: Record<string, string>) => { hit: number; total: number; kwHit?: number; srcHit?: number } }).scoreF2(
             Object.fromEntries([...ans.matchAll(/^(q\d+):\s*(.+)$/gm)].map((m) => [m[1]!, m[2]!])),
           )
         : t === 'g1'
@@ -289,7 +289,14 @@ async function score(t: string, p: number): Promise<void> {
           diag = ` · 诊断(宽分隔符, 非官方): 解析 ${Object.keys(tolerant).length} 题 → 内容 ${st.hit}/${st.total}`;
         }
       }
-      console.log(`${t}-${a}-${p}: ${s.hit}/${s.total}${diag}${nodeHealth(head)}`);
+      // **分项与总分并排印**(2026-08-04): 总分在 n=3 上全在噪声里(同一对同配置两跑差 3 分),
+      // 而分项给得出定向信号(出处 0/8→24/24)。判"某次改动有没有效"看分项, 别看总分。
+      const d = s as { kwHit?: number; srcHit?: number };
+      const dims =
+        d.kwHit !== undefined && d.srcHit !== undefined
+          ? ` · 分项[出处 ${d.srcHit}/${s.total} · 关键词 ${d.kwHit}/${s.total}]`
+          : '';
+      console.log(`${t}-${a}-${p}: ${s.hit}/${s.total}${dims}${diag}${nodeHealth(head)}`);
     }
   }
 }

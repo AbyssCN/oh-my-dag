@@ -28,4 +28,32 @@ describe('F2 语料规范表', () => {
     const bad = { q1: '初始分 1500, 见 sgh-2604.11378' };
     expect(scoreF2(bad).hit).toBe(0);
   });
+
+  // 分项读数 (2026-08-04): 官方分不变, 两维分开报。加它的理由是实测 —— 总分在 n=3 上全在
+  // 噪声里 (同对同配置两跑 8/8 vs 5/8), 而出处分项给出 0/8 → 24/24 的定向变化。
+  // 两维捆成一个数会把能看见的信号淹掉。
+  test('分项: 出处对而关键词错 → 官方 0 分, 但 srcHit 记 1 (信号不被淹)', () => {
+    const r = scoreF2({ q1: '初始分写错了, 见 co-scientist-2502.18864' });
+    expect(r.hit).toBe(0);        // 官方判据没松
+    expect(r.srcHit).toBe(1);     // 出处这一维确实中了
+    expect(r.kwHit).toBe(0);
+  });
+
+  test('分项: 关键词对而出处错 → 反过来', () => {
+    const r = scoreF2({ q1: '初始 Elo 是 1200, 见 sgh-2604.11378' });
+    expect(r.hit).toBe(0);
+    expect(r.srcHit).toBe(0);
+    expect(r.kwHit).toBe(1);
+  });
+
+  test('分项与总分的关系: hit ≤ min(kwHit, srcHit) (两维都中才计分)', () => {
+    const r = scoreF2({
+      q1: '初始 Elo 是 1200, 见 co-scientist-2502.18864',
+      q2: '裁决靠 evidence, 见 sgh-2604.11378',   // 关键词中, 出处错
+    });
+    expect(r.hit).toBe(1);
+    expect(r.kwHit).toBe(2);
+    expect(r.srcHit).toBe(1);
+    expect(r.hit).toBeLessThanOrEqual(Math.min(r.kwHit, r.srcHit));
+  });
 });
