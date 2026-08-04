@@ -19,6 +19,8 @@ import type { PathMap, Ticket, TicketStatus } from './types';
  * 未知前置 id 不在 ruledSet → 视为未满足 → blocked。
  */
 export function deriveStatus(ticket: Ticket, ruledSet: ReadonlySet<string>): TicketStatus {
+  // INV-S1-1: suggested 不参与就绪推导 — 人确认前它既不 open 也不 blocked, 就是 suggested。
+  if (ticket.status === 'suggested') return 'suggested';
   if (ticket.status === 'ruled' || ticket.status === 'delivered' || ticket.status === 'escalated') return ticket.status;
   const ready = ticket.blockedBy.every((id) => ruledSet.has(id));
   return ready ? 'open' : 'blocked';
@@ -37,6 +39,8 @@ export function computeFrontier(map: PathMap): Ticket[] {
   const ruled = ruledSetOf(map);
   return map.tickets.filter(
     (t) =>
+      // INV-S1-1: suggested 永不进前沿 — 机器产的票在人确认前没有任何执行力。
+      t.status !== 'suggested' &&
       t.status !== 'ruled' &&
       t.status !== 'delivered' &&
       t.status !== 'escalated' &&

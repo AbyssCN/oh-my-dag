@@ -164,8 +164,9 @@ function renderStatus(map: PathMap, hudMirror?: HudMirror): string {
   return lines.join('\n');
 }
 
-/** 可交付区域 = 全部 ruled task 票 (delivered 终态不复入 → 不重复执行); 未散尽 → null。 */
-function readyRegion(map: PathMap): string[] | null {
+/** 可交付区域 = 全部 ruled task 票 (delivered 终态不复入 → 不重复执行); 未散尽 → null。
+ * export 给 suggested.test 钉 INV-S1-1 (suggested 永不入区域); 生产只有本文件消费。 */
+export function readyRegion(map: PathMap): string[] | null {
   const ruled = map.tickets.filter((t) => t.type === 'task' && t.status === 'ruled').map((t) => t.id);
   if (ruled.length === 0) return null;
   return regionIsClear(map, ruled).clear ? ruled : null;

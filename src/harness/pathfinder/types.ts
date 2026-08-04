@@ -11,8 +11,8 @@
 /** 票类型 (D-9): research=AFK 后台调研 / grill=HITL 审议 (纪律不动手, 无代码闸) / prototype=沙盒 spike / task=待编译施工。 */
 export type TicketType = 'research' | 'grill' | 'prototype' | 'task';
 
-/** 票状态: open=前沿可动 / blocked=前置未散 / ruled=已裁决 / delivered=slice 已交付(终态) / escalated=`?` 上报 owner。 */
-export type TicketStatus = 'open' | 'blocked' | 'ruled' | 'delivered' | 'escalated';
+/** 票状态: suggested=机器建议待人确认(S-1) / open=前沿可动 / blocked=前置未散 / ruled=已裁决 / delivered=slice 已交付(终态) / escalated=`?` 上报 owner。 */
+export type TicketStatus = 'suggested' | 'open' | 'blocked' | 'ruled' | 'delivered' | 'escalated';
 
 /** slice 编译器消费的执行器种类 (D-9, 裁票时定; 与 ConductorPlan.executor 不同枚举, 编译期映射)。 */
 export type ExecutorKind = 'command' | 'inproc' | 'agent' | 'map' | 'primitive';
@@ -35,6 +35,10 @@ export interface Ticket {
   children?: string[];
   /** 溯源到决策记录 (D-numbers)。 */
   dNumber?: string;
+  /** S-1 (INV-S1-2): 建议来源 runId — suggested 出生时必填, 确认后保留作溯源。 */
+  suggestedBy?: string;
+  /** t3 预留 (D-S1.5): 内容寻址指纹 = sha256(type + NFC(title)); suggested 入图时算并全状态查重。 */
+  fingerprint?: string;
 }
 
 /** 一张决策地图 = 一个目的地的完整决策 DAG (稳定 key = slug, 一 repo 多图)。 */
@@ -46,4 +50,16 @@ export interface PathMap {
   tickets: Ticket[];
   /** 决策日志 (索引非存储, D-3): 已散尽决策的一行摘要。 */
   decisionsLog: { ticketId: string; gist: string }[];
+  /** S-1 (INV-S1-3): 建议处置台账 (append-only) — 接受率读数的数据源。缺省 = 无建议史 (旧图兼容)。 */
+  suggestionsLog?: SuggestionLogEntry[];
+}
+
+/** S-1: 一条建议处置记录。outcome 词表与契约 GWT 同 (accepted/edited/rejected/deduped)。 */
+export interface SuggestionLogEntry {
+  ticketId: string;
+  outcome: 'accepted' | 'edited' | 'rejected' | 'deduped';
+  /** ISO 时间戳 (调用方给, 引擎不自取 Date.now — 可重放)。 */
+  at: string;
+  /** 建议来源 runId (与 Ticket.suggestedBy 同源)。 */
+  runId: string;
 }
