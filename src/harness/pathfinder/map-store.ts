@@ -31,7 +31,7 @@ export function defaultDbPath(cwd: string): string {
 // ── markdown render / parse (纯, byte-stable, roundtrip 属性) ─────────────────
 
 /** 渲染的状态分组顺序 (固定 → byte-stable)。 */
-const STATUS_ORDER: TicketStatus[] = ['open', 'blocked', 'ruled', 'delivered', 'escalated'];
+const STATUS_ORDER: TicketStatus[] = ['suggested', 'open', 'blocked', 'ruled', 'delivered', 'escalated'];
 const KNOWN_STATUS: ReadonlySet<string> = new Set(STATUS_ORDER);
 
 /** 转义自由文本里的换行/反斜杠 (单遍, 与 unesc 互逆) → 保证一票一行不被撑破。 */
@@ -49,6 +49,8 @@ function renderTicket(t: Ticket): string {
   if (t.executorKind !== undefined) lines.push(`- executorKind: ${t.executorKind}`);
   if (t.children !== undefined) lines.push(`- children: ${t.children.join(', ')}`);
   if (t.dNumber !== undefined) lines.push(`- dNumber: ${t.dNumber}`);
+  if (t.suggestedBy !== undefined) lines.push(`- suggestedBy: ${t.suggestedBy}`);
+  if (t.fingerprint !== undefined) lines.push(`- fingerprint: ${t.fingerprint}`);
   return lines.join('\n');
 }
 
@@ -62,6 +64,13 @@ export function renderMapMarkdown(map: PathMap): string {
     out.push('_(none yet)_', '');
   } else {
     for (const d of map.decisionsLog) out.push(`- [${d.ticketId}] ${esc(d.gist)}`);
+    out.push('');
+  }
+  if (map.suggestionsLog !== undefined && map.suggestionsLog.length > 0) {
+    // S-1 (INV-S1-3): 处置台账 append-only。行首用 `- log:` 与决策日志的 `- [id]` 形状区分,
+    // 否则 parser 在 cur.id 未开时会把它吞进 decisionsLog。
+    out.push('## Suggestions log', '');
+    for (const e of map.suggestionsLog) out.push(`- log: ${e.ticketId} ${e.outcome} ${e.at} ${e.runId}`);
     out.push('');
   }
   out.push('## Tickets', '');
@@ -107,6 +116,7 @@ export function parseMapMarkdown(md: string): PathMap {
   let destination = '';
   let slug = '';
   const decisionsLog: { ticketId: string; gist: string }[] = [];
+  const suggestionsLog: PathMap['suggestionsLog'] = [];
   const tickets: Ticket[] = [];
   let cur: Partial<Ticket> & { id?: string } = {};
 
@@ -122,6 +132,8 @@ export function parseMapMarkdown(md: string): PathMap {
         ...(cur.executorKind !== undefined ? { executorKind: cur.executorKind } : {}),
         ...(cur.children !== undefined ? { children: cur.children } : {}),
         ...(cur.dNumber !== undefined ? { dNumber: cur.dNumber } : {}),
+        ...(cur.suggestedBy !== undefined ? { suggestedBy: cur.suggestedBy } : {}),
+        ...(cur.fingerprint !== undefined ? { fingerprint: cur.fingerprint } : {}),
       });
     }
     cur = {};
@@ -135,6 +147,11 @@ export function parseMapMarkdown(md: string): PathMap {
     const slugM = line.match(/^<!-- slug: (.*) -->$/);
     if (slugM) {
       slug = slugM[1]!;
+      continue;
+    }
+    const logM = line.match(/^- log: (\S+) (accepted|edited|rejected|deduped) (\S+) (\S+)$/);
+    if (logM && cur.id === undefined) {
+      suggestionsLog.push({ ticketId: logM[1]!, outcome: logM[2] as 'accepted', at: logM[3]!, runId: logM[4]! });
       continue;
     }
     const decM = line.match(/^- \[(.+?)\] (.*)$/);
@@ -161,10 +178,12 @@ export function parseMapMarkdown(md: string): PathMap {
     else if ((v = fieldValue(line, 'executorKind')) !== null) cur.executorKind = v as ExecutorKind;
     else if ((v = fieldValue(line, 'children')) !== null) cur.children = splitIds(v);
     else if ((v = fieldValue(line, 'dNumber')) !== null) cur.dNumber = v;
+    else if ((v = fieldValue(line, 'suggestedBy')) !== null) cur.suggestedBy = v;
+    else if ((v = fieldValue(line, 'fingerprint')) !== null) cur.fingerprint = v;
   }
   flush();
 
-  return { destination, slug, tickets, decisionsLog };
+  return { destination, slug, tickets, decisionsLog, ...(suggestionsLog.length > 0 ? { suggestionsLog } : {}) };
 }
 
 // ── SQLite 索引 (镜像 dag-record.ts idiom; :memory: 传 Database 句柄) ──────────
@@ -197,9 +216,17 @@ function ensureSchema(db: Database): void {
       executor_kind TEXT,
       children      TEXT,
       d_number      TEXT,
+      suggested_by  TEXT,
+      fingerprint   TEXT,
       PRIMARY KEY (map_slug, id)
     )
   `);
+  // S-1 就地迁移 (老索引库无新列; 索引可重建, 但别让 INSERT 在老库上炸)。
+  const tcols = (db.query(`PRAGMA table_info(tickets)`).all() as { name: string }[]).map((c) => c.name);
+  if (!tcols.includes('suggested_by')) db.run(`ALTER TABLE tickets ADD COLUMN suggested_by TEXT`);
+  if (!tcols.includes('fingerprint')) db.run(`ALTER TABLE tickets ADD COLUMN fingerprint TEXT`);
+  const mcols = (db.query(`PRAGMA table_info(pathmaps)`).all() as { name: string }[]).map((c) => c.name);
+  if (!mcols.includes('suggestions_log')) db.run(`ALTER TABLE pathmaps ADD COLUMN suggestions_log TEXT`);
 }
 
 /** 落一张图到 db (幂等: 先删同 slug 的旧行)。map = 内存 PathMap, dbPath = 路径或 Database 句柄。 */
@@ -209,14 +236,15 @@ export function saveMapDb(map: PathMap, dbPath: string | Database): void {
     ensureSchema(db);
     db.run('DELETE FROM pathmaps WHERE slug = ?', [map.slug]);
     db.run('DELETE FROM tickets WHERE map_slug = ?', [map.slug]);
-    db.query('INSERT INTO pathmaps (slug, destination, decisions_log) VALUES (?, ?, ?)').run(
+    db.query('INSERT INTO pathmaps (slug, destination, decisions_log, suggestions_log) VALUES (?, ?, ?, ?)').run(
       map.slug,
       map.destination,
       JSON.stringify(map.decisionsLog),
+      map.suggestionsLog !== undefined ? JSON.stringify(map.suggestionsLog) : null,
     );
     const ins = db.query(
-      `INSERT INTO tickets (map_slug, ord, id, type, title, blocked_by, status, ruling, executor_kind, children, d_number)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tickets (map_slug, ord, id, type, title, blocked_by, status, ruling, executor_kind, children, d_number, suggested_by, fingerprint)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     map.tickets.forEach((t, i) => {
       ins.run(
@@ -231,6 +259,8 @@ export function saveMapDb(map: PathMap, dbPath: string | Database): void {
         t.executorKind ?? null,
         t.children !== undefined ? JSON.stringify(t.children) : null,
         t.dNumber ?? null,
+        t.suggestedBy ?? null,
+        t.fingerprint ?? null,
       );
     });
   } finally {
@@ -242,6 +272,7 @@ interface MapRow {
   slug: string;
   destination: string;
   decisions_log: string;
+  suggestions_log: string | null;
 }
 interface TicketRow {
   id: string;
@@ -253,6 +284,8 @@ interface TicketRow {
   executor_kind: string | null;
   children: string | null;
   d_number: string | null;
+  suggested_by: string | null;
+  fingerprint: string | null;
 }
 
 /**
@@ -280,12 +313,17 @@ export function loadMapDb(dbPath: string | Database, slug?: string): PathMap {
       ...(r.executor_kind !== null ? { executorKind: r.executor_kind as ExecutorKind } : {}),
       ...(r.children !== null ? { children: JSON.parse(r.children) as string[] } : {}),
       ...(r.d_number !== null ? { dNumber: r.d_number } : {}),
+      ...(r.suggested_by !== null ? { suggestedBy: r.suggested_by } : {}),
+      ...(r.fingerprint !== null ? { fingerprint: r.fingerprint } : {}),
     }));
     return {
       destination: mapRow.destination,
       slug: mapRow.slug,
       tickets,
       decisionsLog: JSON.parse(mapRow.decisions_log) as { ticketId: string; gist: string }[],
+      ...(mapRow.suggestions_log !== null && mapRow.suggestions_log !== undefined
+        ? { suggestionsLog: JSON.parse(mapRow.suggestions_log) as PathMap['suggestionsLog'] }
+        : {}),
     };
   } finally {
     if (owned) db.close();
