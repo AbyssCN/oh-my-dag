@@ -296,11 +296,45 @@ export function renderInvocationFacts(f: InvocationFacts): string {
  * ⚠ 只报**真扫到调用方**的。"未发现"不进观察 —— 那会让每张图都挂一串噪声,
  * 而噪声会把真信号淹掉(同 static-lint「拿不准一律不报」)。
  */
+/**
+ * t4 (交接 18 §六.1): `invokedBy` 声明的**空泛性 lint** —— 链的第三跳 (部署关系) 靠声明承载,
+ * 「声明写得糊链就断」此前没有任何闸。确定性判据 (fail-open, 出观察不拦):
+ *   空泛 = note 去空白后 <8 字, **或**不含任何执行机制信号词 (cron/CI/workflow/bun/npm/手动/每/
+ *   定时/schedule/systemd/launchd/deploy)。机制词表是启发式下限 —— 它拦的是「会被执行」这类
+ *   零信息声明, 不是文风闸。
+ */
+export function lintInvokerDeclarations(cwd: string): { prefix: string; note: string; problem: string }[] {
+  const raw = readOrNull(join(cwd, '.omd', 'config.json'));
+  if (raw === null) return [];
+  let decl: Record<string, string>;
+  try {
+    decl = (JSON.parse(raw) as { invokedBy?: Record<string, string> }).invokedBy ?? {};
+  } catch {
+    return [];
+  }
+  const MECHANISM = /(cron|\bCI\b|workflow|bun |npm |pnpm |手动|每|定时|schedule|systemd|launchd|deploy|action)/i;
+  const out: { prefix: string; note: string; problem: string }[] = [];
+  for (const [prefix, note] of Object.entries(decl)) {
+    const t = (note ?? '').trim();
+    if (t.length < 8) out.push({ prefix, note: t, problem: `声明过短 (${t.length} 字) — 承载不了"谁在何时执行"` });
+    else if (!MECHANISM.test(t)) out.push({ prefix, note: t, problem: '声明不含执行机制信号 (cron/CI/手动/定时/…) — 第三跳糊了链就断' });
+  }
+  return out;
+}
+
 export function scheduledArtifactFindings(
   plan: ConductorPlan,
   cwd: string,
 ): { kind: 'scheduled-artifact'; nodes: string[]; message: string }[] {
   const out: { kind: 'scheduled-artifact'; nodes: string[]; message: string }[] = [];
+  // t4: 空泛声明 lint 搭同一趟观察者车 (每 plan 一次, 不按节点重复)。
+  for (const bad of lintInvokerDeclarations(cwd)) {
+    out.push({
+      kind: 'scheduled-artifact',
+      nodes: [],
+      message: `⚠ invokedBy["${bad.prefix}"] 声明质量: ${bad.problem} (原文: "${bad.note}")`,
+    });
+  }
   for (const [id, node] of Object.entries(plan.nodes)) {
     const path = declaredOutput(node);
     if (!path) continue;

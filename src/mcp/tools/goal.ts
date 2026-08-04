@@ -379,6 +379,27 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           if (r.converged) deps.runRegistry.succeed(runId, summarizeGoal(r));
           else if (r.cancelled) deps.runRegistry.cancel(runId, r.cancelled, summarizeGoal(r));
           else deps.runRegistry.fail(runId, summarizeGoal(r));
+          // t4 (S-3): BLOCKED = 需外部输入 = **红线岔口进收件箱** —— openFork 的第一个生产喂入点
+          // (S3 建好收件箱后引擎从没铸过 fork; 无人值守的 BLOCKED 此前只活在 run 摘要里)。
+          // blocking=true 语义成立: goal 环判 blocked 时已真停 (证据链 = R3 验证过的采集件, 见
+          // invocation-facts 进观察者通道), 不是"带着假设跑"那一档。铸失败只警告 (收件箱是出口不是链路)。
+          if (r.blocked && deps.inbox) {
+            try {
+              deps.inbox.openFork({
+                id: `${runId}-blocked`,
+                runId,
+                // goal 级岔口: 不属于单个节点/轮 —— nodeId 用 goal 语义位, round 用总轮数。
+                nodeId: 'goal',
+                round: r.rounds,
+                question: `[BLOCKED] ${r.blocked}`,
+                recommendation: RUN_OUTCOME_INFO.blocked.nextAction,
+                assumption: '图已停在这里 (无假设继续跑)',
+                blocking: true,
+              });
+            } catch (e) {
+              logger.warn({ runId, err: (e as Error).message }, '[dag_goal] BLOCKED fork 铸造失败 (run 已终态, 岔口丢给了日志)');
+            }
+          }
           // D-G1.3: 结果落盘 (pathfinder goal 票回流源)。首行 outcome 头 = RUN_OUTCOME_INFO 键,
           // afk-hook 按它三态映射。写失败只警告 —— 结果文件是回流增益, run 本身已终态落库。
           if (resultOut) {

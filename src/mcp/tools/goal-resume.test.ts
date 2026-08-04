@@ -86,3 +86,37 @@ describe('dag_goal 外层 journal 接线', () => {
     expect(seen[0]?.dag?.continuity).toBeUndefined();
   });
 });
+
+// ── t4 (S-3): BLOCKED → 红线岔口进收件箱 (openFork 第一个生产喂入点) ──────────
+
+describe('BLOCKED fork 铸造 (t4)', () => {
+  test('blocked 结果 → inbox.openFork(blocking:true, nodeId=goal); 非 blocked 不铸', async () => {
+    const forks: Record<string, unknown>[] = [];
+    const root = mkdtempSync(join(tmpdir(), 'omd-goal-'));
+    const blockedResult = (goal: string): RunGoalResult => ({
+      ...emptyResult(goal),
+      converged: false,
+      outcome: 'blocked' as never,
+      blocked: '要 GCP 凭证才能继续',
+      rounds: 2,
+    });
+    let nextBlocked = true;
+    const tool = createGoalTool({
+      runGoal: async (goal) => (nextBlocked ? blockedResult(goal) : emptyResult(goal)),
+      runRegistry: new RunRegistry(),
+      cwd: root,
+      buildConfig: () => ({ conductorModel: 'c:m', leafModel: 'l:m' }),
+      inbox: { openFork: (f: Record<string, unknown>) => (forks.push(f), f) } as never,
+    });
+    await call(tool, { goal: '干活' });
+    await Bun.sleep(10); // fire-and-forget 的 .then
+    expect(forks).toHaveLength(1);
+    expect(forks[0]).toMatchObject({ nodeId: 'goal', round: 2, blocking: true });
+    expect(String(forks[0]!.question)).toContain('要 GCP 凭证');
+    // 非 blocked: 不铸
+    nextBlocked = false;
+    await call(tool, { goal: '干别的' });
+    await Bun.sleep(10);
+    expect(forks).toHaveLength(1);
+  });
+});
