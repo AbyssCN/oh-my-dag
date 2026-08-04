@@ -262,6 +262,22 @@ async function tryPatchReplan(
       lastErr = applied.error;
       continue;
     }
+    // g1 闸对补丁轮同样生效 (2026-08-04 当天实测堵洞): 首版设计只闸首轮, 结果 f2 复测 pair1 的
+    // escalation 补丁把被拒的 agent 读盘模板**原样带了回来** (run 6d3f9e9b, 每篇又烧 19-141s)。
+    // 违规补丁按无效补丁处理 → 重试带建议; 用尽 → exec:null 回落整图重规划 (那条路有闸)。
+    if (config.leafTierGate) {
+      const gateFindings = leafTierGateFindings(applied.applied.plan, {
+        ...(config.leafTierThresholdBytes !== undefined ? { thresholdBytes: config.leafTierThresholdBytes } : {}),
+      });
+      if (gateFindings.length > 0) {
+        lastErr = `leaf 档位闸拒 (大内容进 prompt 不进工具环): ${gateFindings.map((f) => f.message).join(' | ')}`;
+        logger.info(
+          { nodes: gateFindings.flatMap((f) => f.nodes) },
+          '[omd/executor-dag] escalation 补丁被 leaf 档位闸拒 → 带建议重试 (g1 图#9)',
+        );
+        continue;
+      }
+    }
     const { plan, changed, removed, added } = applied.applied;
     logger.info(
       { changed, removed, added, total: Object.keys(plan.nodes).length },

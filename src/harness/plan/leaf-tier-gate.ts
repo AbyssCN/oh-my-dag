@@ -134,7 +134,10 @@ export function leafTierGateFindings(plan: ConductorPlan, opts: LeafTierGateOpts
       const tpl = node.map.template as { executor?: string; goal?: string; output_path?: string; output_type?: string };
       const itemVar = node.map.itemVar ?? 'item';
       const refsItem = typeof tpl.goal === 'string' && tpl.goal.includes(`{{${itemVar}.`);
-      if (tpl.executor === 'agent' && refsItem && !tpl.output_path && tpl.output_type === 'structured') {
+      // 不要求 output_type==='structured' (静态分支才要): 写文件的模板按 schema 硬规则必须声明
+      // output_path, 所以 !output_path 已守住写意图; 多要一个 output_type 合取 = 白送一条
+      // 「丢掉该字段即绕过」的路 (2026-08-04 复测时差点被这么绕)。
+      if (tpl.executor === 'agent' && refsItem && !tpl.output_path) {
         out.push({
           kind: 'map-agent-deterministic-read',
           nodes: [id],

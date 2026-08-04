@@ -49,6 +49,43 @@ describe('leaf-tier-gate (g1)', () => {
     expect(findings[0]!.message).toContain("executor:'conductor'");
   });
 
+  test('红: map 模板丢掉 output_type 也照拒 (2026-08-04 差点被这么绕过)', () => {
+    const findings = leafTierGateFindings(
+      plan({
+        read_all: {
+          executor: 'map',
+          map: {
+            lister: { goal: '列清单', executor: 'agent' },
+            over: 'papers',
+            itemVar: 'paper',
+            template: { executor: 'agent', goal: 'Read {{paper.path}} completely and return its full contents verbatim.' },
+          },
+        },
+      }),
+      { statPath: fakeStat },
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.kind).toBe('map-agent-deterministic-read');
+  });
+
+  test('绿: map 模板声明 output_path (逐项写文件) → 不报', () => {
+    const findings = leafTierGateFindings(
+      plan({
+        gen: {
+          executor: 'map',
+          map: {
+            lister: { goal: '列清单', executor: 'agent' },
+            over: 'items',
+            itemVar: 'it',
+            template: { executor: 'agent', goal: '为 {{it.path}} 生成迁移文件', output_path: 'out/{{it.name}}.ts' },
+          },
+        },
+      }),
+      { statPath: fakeStat },
+    );
+    expect(findings).toHaveLength(0);
+  });
+
   test('红: 静态 agent 节点读确定路径 + structured + 无写意图; 塞得下 → command cat + leaf 建议', () => {
     const findings = leafTierGateFindings(
       plan({
