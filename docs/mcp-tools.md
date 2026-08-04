@@ -7,11 +7,17 @@ The MCP tools below are the raw API; the slash commands in
 [client-skills](../client-skills/) are thin workflow wrappers that call these and add the
 discipline (when to escalate, how to accept, who holds the trigger).
 
+> **Naming (2026-08-04)** — the three layers now say their own promise: `map_*`
+> (slow-loop decision maps, human in the loop) ⊃ `solve` (goal convergence with repair
+> rounds, was `dag_goal`) ⊃ `run` (execute a settled plan, was `dag_run`); `path_*` became
+> `map_*` (`path_map` → `map_open`). Old names still work as **deprecated aliases** for one
+> release — same schema, same handler, `[deprecated → new]` in the description.
+
 **Engine** — delegate work to the cheap fleet:
 
 | Tool | What it does |
 |---|---|
-| `dag_run` | task → conductor decomposes into a typed DAG → concurrent execution (agent leaves really write files, command leaves run tsc/tests) |
+| `run` (alias: `dag_run`) | task → conductor decomposes into a typed DAG → concurrent execution (agent leaves really write files, command leaves run tsc/tests) |
 | `dag_run_plan` | skip the conductor: execute a pre-built plan JSON directly; `resume=<runId>` skips checkpointed done nodes |
 | `dag_resume` | one-step resume: reload a failed run's plan from its on-disk checkpoint and re-run, skipping green nodes |
 | `dag_status` · `dag_result` · `dag_node_output` | three-phase async: dispatch, keep chatting, poll, fetch artifacts |
@@ -21,7 +27,7 @@ discipline (when to escalate, how to accept, who holds the trigger).
 | `dag_slim` | over-engineering, deletion-only audit fleet, async |
 | `dag_deepen` | architecture-deepening scan: git-hotspot discovery → one agent per hotspot → leverage-ranked HTML report |
 | `dag_debug` | parallel multi-hypothesis root-cause debug fleet, async — reproduce + codegraph → fan out hypotheses |
-| `dag_goal` | autonomous goal loop: research → spec → execute → verify → one repair round |
+| `solve` (alias: `dag_goal`) | autonomous goal loop: research → spec → execute → verify → one repair round |
 | `dag_cancel` | cooperative stop: no new nodes dispatched, in-flight ones finish, ends `cancelled` (resumable) |
 | `dag_triage` | **owner inbox** (read-only): decision forks a running graph raised, plus runs that need a human look |
 | `dag_rule` | rule on one of those forks; the ruling becomes a verbatim owner directive for the run's next round |
@@ -30,13 +36,13 @@ discipline (when to escalate, how to accept, who holds the trigger).
 
 | Tool | What it does |
 |---|---|
-| `path_init` | initialize the pathfinder backend: no args → probe + recommendation; or set the backend (git-markdown / issues) |
-| `path_map` | list / create / resume decision maps |
-| `path_add` | add typed tickets (research / grill / prototype / task) with dependency edges |
-| `path_tickets` | show the frontier; folds in landed background results first |
-| `path_rule` | adjudicate a decision onto the map (owner's call) |
-| `path_deliver` | **the power gate**: compile the clear region to a slice, run the DAG, mark delivered only on full success |
-| `path_prefetch` | dispatch frontier research to detached background processes that outlive the client |
+| `map_init` (alias: `path_init`) | initialize the pathfinder backend: no args → probe + recommendation; or set the backend (git-markdown / issues) |
+| `map_open` (alias: `path_map`) | list / create / resume decision maps |
+| `map_add` (alias: `path_add`) | add typed tickets (research / grill / prototype / task) with dependency edges |
+| `map_tickets` (alias: `path_tickets`) | show the frontier; folds in landed background results first |
+| `map_rule` (alias: `path_rule`) | adjudicate a decision onto the map (owner's call) |
+| `map_deliver` (alias: `path_deliver`) | **the power gate**: compile the clear region to a slice, run the DAG, mark delivered only on full success |
+| `map_prefetch` (alias: `path_prefetch`) | dispatch frontier research to detached background processes that outlive the client |
 
 **Memory** — persistence across sessions:
 
@@ -68,8 +74,8 @@ tool(s) in the right column and adds the workflow discipline.
 |---|---|---|
 | `/path` | `path_map` · `path_add` | open or resume a decision map, break a goal into tickets |
 | `/tickets` | `path_tickets` · `path_prefetch` | show the frontier, pull landed research, dispatch background work |
-| `/rule` | `path_rule` | adjudicate a decision onto the map — owner's explicit call |
-| `/deliver` | `path_deliver` | the delivery gate: compile the clear zone and run it |
+| `/rule` | `map_rule` (alias: `path_rule`) | adjudicate a decision onto the map — owner's explicit call |
+| `/deliver` | `map_deliver` (alias: `path_deliver`) | the delivery gate: compile the clear zone and run it |
 | `/sdd` | writes spec to `docs/plan/` | crystallize the conversation into a spec on disk before building |
 | `/execute` | `dag_run` → `dag_status`/`dag_result` | run a spec as a DAG, then actively accept the result against it |
 | `/iterate` | `dag_run` (fixpoint loop) | re-run to convergence — your agent is the judge |
