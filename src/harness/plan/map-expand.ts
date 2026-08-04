@@ -99,7 +99,7 @@ function sanitizeKey(raw: string): string {
 
 /** ${itemVar}/${itemVar.field}/${key} 插值; 未解析的 token 保留字面 (可见失败, 便于调试)。 */
 function interpolate(str: string, bindings: { itemVar: string; item: unknown; key: string }): string {
-  return str.replace(/\$\{([^}]+)\}/g, (whole, expr: string) => {
+  const sub = (whole: string, expr: string): string => {
     const e = expr.trim();
     if (e === 'key') return bindings.key;
     if (e === bindings.itemVar) {
@@ -111,7 +111,12 @@ function interpolate(str: string, bindings: { itemVar: string; item: unknown; ke
       return v === undefined ? whole : String(v);
     }
     return whole;
-  });
+  };
+  // 两种语法都吃 (2026-08-04 实测): 本函数原本只认 `${var.f}`, 而 conductor 的先验是 mustache ——
+  // 当天 4/4 生产 plan 全写 `{{paper.path}}`, 插值在生产**从没发生过**。agent 子节点侥幸能跑
+  // (它会自己翻目录, 额外烧探索轮); command 子节点带着字面 `{{}}` 撞防注入闸秒死
+  // (「命令含 shell 元字符」×10, run ed4dbe39)。只教 prompt 不改引擎 = 赌所有模型改先验, 赌输重罚。
+  return str.replace(/\$\{([^}]+)\}/g, sub).replace(/\{\{([^}]+)\}\}/g, sub);
 }
 
 /** 扩展名前插 key: 'audit.md' + 'a' → 'audit.a.md' (INV-U8 唯一化)。 */

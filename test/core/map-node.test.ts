@@ -149,6 +149,26 @@ describe('U1 展开 · 插值 + 路径唯一 (INV-U8)', () => {
     expect(r.children[0]!.node.goal).toBe('a ${nope} b');
   });
 
+  // 2026-08-04 生产实锤补的语法: interpolate 原本只认 `${var.f}`, 而 conductor 先验是 mustache ——
+  // 当天 4/4 生产 plan 全写 `{{paper.path}}`, 插值在生产从没发生过; command 模板带字面 `{{}}`
+  // 撞防注入闸 10/10 秒死 (run ed4dbe39)。本组在修复前引擎上跑过并按预期红。
+  test('{{itemVar.field}} (mustache) 同样插值 — goal 与 command 两个字段', () => {
+    const s: MapSpecLike = {
+      over: 'papers',
+      itemVar: 'paper',
+      template: { executor: 'command', command: 'cat {{paper.path}}', goal: '读 {{paper.path}}' },
+    };
+    const r = expandMapNode('m', s, { papers: [{ path: 'docs/a.txt' }] });
+    expect(r.children[0]!.node.command).toBe('cat docs/a.txt');
+    expect(r.children[0]!.node.goal).toBe('读 docs/a.txt');
+  });
+
+  test('mustache 未解析 token 同样保留字面 (可见失败, 不静默半插)', () => {
+    const s: MapSpecLike = { over: 'xs', itemVar: 'x', template: { goal: 'a {{nope}} b {{x}}' } };
+    const r = expandMapNode('m', s, { xs: ['q'] });
+    expect(r.children[0]!.node.goal).toBe('a {{nope}} b q');
+  });
+
   test('G10 路径唯一: 模板 output_path 不含 key → 按 key 唯一化, N 子路径互不撞', () => {
     const items = [{ path: 'a' }, { path: 'b' }, { path: 'c' }];
     const r = expandMapNode('m', baseSpec, { modules: items }); // output_path: 'audit.md' (无 token)
