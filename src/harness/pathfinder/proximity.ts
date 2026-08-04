@@ -85,6 +85,19 @@ export function semanticHit(text: string, candidates: string[], opts: ProximityO
   return null;
 }
 
+/** C2 (INV-R1-3): 坍塌时给下一轮 conductor 的**建议行** — 只进 prompt, 不进控制流。 */
+export const NOVELTY_COLLAPSE_LINE = '⚠ 新颖性坍塌: 上两轮未出现新的发现簇 — 你在原地打转。考虑收敛结论, 或换一个此前没试过的方向。';
+
+/**
+ * r1 片3: 追加一轮发现文本并重算累计簇数 (直改两个数组; 文本截 400 字只喂词袋)。
+ * 返回本轮后是否坍塌 (hasCollapsed(seq, k))。
+ */
+export function pushNoveltyRound(texts: string[], seq: number[], reason: string, k = 2): boolean {
+  texts.push(reason.slice(0, 400));
+  seq.push(clusterCount(texts));
+  return hasCollapsed(seq, k);
+}
+
 /**
  * 坍塌判定(INV-R1-2):簇数序列**最后 k 个增量全部 ≤0** → true。
  * k 默认 2;序列不足 k+1 个观测 → false(单轮不增不算——可能是慢,不是干)。
