@@ -75,6 +75,42 @@ describe('事实行的往返(渲染 ↔ 判据)', () => {
   });
 });
 
+// ── ①.2 退出码归因(2026-08-05 跨模型审查抓到的真洞)──────────────────────────
+
+describe('★ 退出码归不到那条校验命令头上时,不算支撑', () => {
+  const supports = (command: string, exitCode = 0): boolean =>
+    recordSupportsVerification([renderShellRunFact({ command, exitCode })]);
+
+  test('`|| true` 吞掉失败 → 整体 exit 0 与测试过没过无关', () => {
+    // 这是最省事的一种"让闸闭嘴": 命令里带着 `bun test` 几个字, 退出码恒 0。
+    expect(supports('bun test || true')).toBe(false);
+  });
+
+  test('`;` 串联 → 退出码是最后一条的, 不是测试的', () => {
+    expect(supports('bun test; echo done')).toBe(false);
+  });
+
+  test('管道 → 退出码是最后一级的(没开 pipefail)', () => {
+    expect(supports('bun test | tee log.txt')).toBe(false);
+  });
+
+  test('`&&` 链**算数** —— 全链成功才 exit 0', () => {
+    expect(supports('cd packages/core && bun test')).toBe(true);
+  });
+
+  test('★ 命令里只是**出现**那几个字不算(锚在命令位置上)', () => {
+    // `grep -rn "bun test" src/` 退出码 0 只说明搜到了, 与跑没跑测试无关。
+    expect(supports('grep -rn "bun test" src/')).toBe(false);
+    expect(supports('echo bun test')).toBe(false);
+    expect(supports('cat scripts/run-tests.sh')).toBe(false);
+  });
+
+  test('执行器前缀照常识别(`npx tsc` / `bunx vitest`)', () => {
+    expect(supports('npx tsc --noEmit')).toBe(true);
+    expect(supports('bunx vitest run')).toBe(true);
+  });
+});
+
 // ── ①.5 采集器:事件流 → ShellRun(命令与退出码分属两个事件,配对是有判断的) ──────
 
 describe('bash 痕迹采集器(工具事件流的配对)', () => {
@@ -205,6 +241,20 @@ describe('端到端:同一句声称,跑没跑过测试决定报不报', () => {
   test('一条命令都没跑 → 照报(与补这条通道之前同行为, 零回归)', async () => {
     const { kinds, root } = await run([]);
     expect(kinds).toContain('unsupported-claim');
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test('★ 校验类命令排在第 7 条(超出展示上限)→ 仍然不许被反报成"无据"', async () => {
+    // ⚠ 上限是**展示预算**, 而这几行同时是**判据的输入面**。按时间序截断时, 一次真的
+    //   `bun test` 只要排在第 7 位就会被截掉, 于是诚实自验被反报成无据 —— 截断只许丢展示
+    //   信息, 不许丢判据证据。(2026-08-05 跨模型审查抓到; 修法是校验类优先排序。)
+    const runs: ShellRun[] = [
+      ...Array.from({ length: 6 }, (_, i) => ({ command: `ls dir${i}`, exitCode: 0, ok: true })),
+      { command: 'bun test', exitCode: 0, ok: true },
+    ];
+    const { views, kinds, root } = await run(runs);
+    expect(kinds).not.toContain('unsupported-claim');
+    expect(views.some((v) => v.includes('执行命令: bun test (exit 0)'))).toBe(true);
     rmSync(root, { recursive: true, force: true });
   });
 

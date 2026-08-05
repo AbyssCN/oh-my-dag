@@ -116,16 +116,31 @@ const NON_ASSERTIVE: ReadonlyArray<{ name: string; re: RegExp }> = [
  *
  * ⚠ 只剥**成对**的引号;单个孤立引号原样留着(剥了会把半句话吃掉)。
  * 报给判官的仍是**原句**(带引文)——证据要逐字,剥引号只发生在匹配这一步。
+ *
+ * ## 两条实测出来的坑(2026-08-05 跨模型审查抓到)
+ *
+ * ① **必须在切句之前剥**,而且剥出来的东西要**等长**。引文里可以含句号
+ *    (「测试通过。无缺陷」)——先切句就把成对引号切成了两个落单的引号,剥不掉,
+ *    于是引文里的话被当成断言。等长遮蔽(换成空格而不是删掉)让下标仍然对得上原文,
+ *    切句在遮蔽后的串上做,报证据时按同一段下标回原文取 —— 匹配面干净、证据仍逐字。
+ * ② **ASCII 撇号不是引号**。`'[^']*'` 会把 `User's input isn't sanitized` 里
+ *    第一个撇号到第二个撇号之间整段吃掉(连带中间任何声称)。英文单引号在这类文本里
+ *    远不如撇号常见,所以**整条不要**;中日引号、双引号、反引号照留。
  */
-function stripQuoted(text: string): string {
-  return text
-    .replace(/「[^」]*」/g, ' ')
-    .replace(/『[^』]*』/g, ' ')
-    .replace(/“[^”]*”/g, ' ')
-    .replace(/《[^》]*》/g, ' ')
-    .replace(/"[^"\n]*"/g, ' ')
-    .replace(/'[^'\n]*'/g, ' ')
-    .replace(/`[^`\n]*`/g, ' ');
+const QUOTE_SPANS: readonly RegExp[] = [
+  /「[^」]*」/g,
+  /『[^』]*』/g,
+  /“[^”]*”/g,
+  /《[^》]*》/g,
+  /"[^"\n]*"/g,
+  /`[^`\n]*`/g,
+];
+
+/** 把引文内容换成**等长**空格(下标不变),供切句与匹配使用。 */
+function maskQuoted(text: string): string {
+  let out = text;
+  for (const re of QUOTE_SPANS) out = out.replace(re, (m) => ' '.repeat(m.length));
+  return out;
 }
 
 /**
@@ -166,7 +181,36 @@ function parseShellRunFact(fact: string): { command: string; exitCode: number | 
  * 漏认的后果只是"照旧报出来",与补这条通道之前一样,不产生新盲点。
  */
 const VERIFICATION_COMMAND =
-  /(?:^|[\s;&|(])(?:(?:bun|npm|pnpm|yarn|deno)\s+(?:run\s+)?(?:test|typecheck|lint|check)|vitest|jest|pytest|mocha|tsc|eslint|biome|(?:go|cargo)\s+test|make\s+(?:test|check|lint))\b/i;
+  /^(?:(?:bun|npm|pnpm|yarn|deno)\s+(?:run\s+)?(?:test|typecheck|lint|check)|vitest|jest|pytest|mocha|tsc|eslint|biome|(?:go|cargo)\s+test|make\s+(?:test|check|lint))\b/i;
+
+/** 一层执行器前缀(`npx tsc` / `bunx vitest`)。剥掉再判,否则锚定会把它们全判成非校验。 */
+const RUNNER_PREFIX = /^(?:npx|bunx|pnpm\s+dlx|yarn\s+dlx|uvx)\s+/i;
+
+/**
+ * **退出码归不到那条校验命令头上**的复合形状 —— 命中即不算支撑(2026-08-05 跨模型审查抓到)。
+ *
+ * `bun test || true` 退出码恒 0 而测试可能全红;`bun test; echo done` 的退出码是 `echo` 的;
+ * `bun test | tee log` 的退出码是 `tee` 的(没开 pipefail)。这三种都会把「整体 exit 0」
+ * 错误归因给里面那条测试命令 —— 而这条判据的**全部作用**就是"引擎真核对过一次"。
+ *
+ * `&&` **不在**此列:全链都得成功才会 exit 0,`cd pkg && bun test` 的 0 确实意味着测试过了。
+ */
+const EXIT_CODE_NOT_ATTRIBUTABLE = /\|\||;|(?<!\|)\|(?!\|)/;
+
+/**
+ * 这条 bash 记录能不能支撑「校验通过」类声称。
+ *
+ * 判据两条,都**刻意窄**(漏认的后果只是"照旧报出来",与补这条通道之前一样,不产生新盲点):
+ * ① 命令**以**校验类程序开头(`&&` 分段后逐段看)—— `grep -rn "bun test" src/` 不算,
+ *    它只是文本里出现了那几个字;② 退出码归得到它头上(见 EXIT_CODE_NOT_ATTRIBUTABLE)。
+ */
+export function isVerificationRun(run: { command: string; exitCode?: number }): boolean {
+  if (run.exitCode !== 0) return false;
+  if (EXIT_CODE_NOT_ATTRIBUTABLE.test(run.command)) return false;
+  // `&&` 链: 全链成功才 exit 0, 所以任一段是校验命令就算数。
+  // 剥掉一层执行器前缀 (`npx tsc` / `bunx vitest`) —— 不剥的话锚定判据会把它们全判成非校验。
+  return run.command.split('&&').some((seg) => VERIFICATION_COMMAND.test(seg.trim().replace(RUNNER_PREFIX, '')));
+}
 
 /**
  * 引擎记录里**能够支撑「校验通过」类声称**的事实。两种形状:
@@ -186,17 +230,30 @@ export function recordSupportsVerification(facts: readonly string[] | undefined)
     if (VERIFICATION_FACT.test(f)) return true;
     const run = parseShellRunFact(f);
     // 退出码非 0 **不算支撑**: 「跑了测试但红了」与「跑过且过了」是相反的两件事 ——
-    // 前者若配上「测试全部通过」的声称, 那是比无据更硬的矛盾。
-    return run !== null && run.exitCode === 0 && VERIFICATION_COMMAND.test(run.command);
+    // 前者若配上「测试全部通过」的声称, 那是比无据更硬的矛盾。(判据本体见 isVerificationRun)
+    return run !== null && isVerificationRun({ command: run.command, ...(run.exitCode === null ? {} : { exitCode: run.exitCode }) });
   });
 }
 
-/** 按句读切分(中英文都切)。空句丢掉。 */
-function sentences(text: string): string[] {
-  return text
-    .split(/[。；;！!？?\n]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+/** 句读分隔符(中英文都切)。 */
+const SENTENCE_DELIM = /[。；;！!？?\n]+/g;
+
+/**
+ * 在**遮蔽后**的串上切句,回一批 `[start, end)` 下标。
+ *
+ * 为什么要下标而不是直接要子串:匹配要用遮蔽串(引文不算数),而报出去的证据要用**原文**
+ * (逐字)。等长遮蔽让同一对下标在两个串上都成立,于是两件事各取所需而不会错位。
+ */
+function sentenceSpans(masked: string): { start: number; end: number }[] {
+  const out: { start: number; end: number }[] = [];
+  let cursor = 0;
+  SENTENCE_DELIM.lastIndex = 0;
+  for (let m = SENTENCE_DELIM.exec(masked); m !== null; m = SENTENCE_DELIM.exec(masked)) {
+    if (m.index > cursor) out.push({ start: cursor, end: m.index });
+    cursor = m.index + m[0].length;
+  }
+  if (cursor < masked.length) out.push({ start: cursor, end: masked.length });
+  return out;
 }
 
 /**
@@ -211,9 +268,12 @@ function sentences(text: string): string[] {
  */
 export function detectClaimedVerifications(text: string, source: string): ClaimedVerification[] {
   const out: ClaimedVerification[] = [];
-  for (const raw of sentences(text)) {
-    const s = stripQuoted(raw);
-    if (!s.trim()) continue; // 整句都是引文 = 全在提及别人的话
+  // ⚠ 先遮蔽再切句(等长遮蔽,下标不变): 引文里可以含句号, 先切句就把成对引号切散了。
+  const masked = maskQuoted(text);
+  for (const span of sentenceSpans(masked)) {
+    const s = masked.slice(span.start, span.end);
+    const raw = text.slice(span.start, span.end).trim();
+    if (!s.trim() || !raw) continue; // 整句都是引文 = 全在提及别人的话
     const nonAssertive = NON_ASSERTIVE.some((v) => v.re.test(s));
     for (const r of RULES) {
       if (!r.re.test(s)) continue;
@@ -347,6 +407,11 @@ export function renderUnsupportedClaims(findings: readonly UnsupportedClaimFindi
  *    (要让它可支撑,得先有**节点级**的校验记录;`postcondition` 那个字段至今零消费者。)
  * 5. **一次校验赦免全部声称**。见 {@link recordSupportsVerification} 的注:节点级布尔,
  *    不是逐条声称配对应记录。
+ * 6. **语气否决是整句一票**(2026-08-05 跨模型审查提出,**明知而不改**)。同一句里只要有一处
+ *    指令/条件从句,整句放过 —— 于是「如果测试通过就合并,本次已由引擎实测通过」躲得过。
+ *    不改的理由是**方向**:改成逐从句判会把误伤面重新放大(判据的匹配窗口本来就跨逗号,
+ *    如 `已由引擎实测运行测试套件, 3/3 全部通过` 就横跨两个从句,按从句切会把它判散),
+ *    而这条闸的第一优先级是**不误伤正常交付**。它属于「对抗性绕过」那一档,不是"顺手编一句"。
  */
 export const KNOWN_OUT_OF_SCOPE = [
   'human-actions',
@@ -356,4 +421,5 @@ export const KNOWN_OUT_OF_SCOPE = [
   // 而按错的成因去修就会去补一条补了也不管用的记录通道。
   'verifier-verdict-is-run-level',
   'node-level-boolean-not-per-claim',
+  'mood-veto-is-whole-sentence',
 ] as const;

@@ -63,6 +63,7 @@ import {
   checkableFromJudgeView,
   findUnsupportedClaims,
   renderClaimObservation,
+  isVerificationRun,
   renderShellRunFact,
   type UnsupportedClaimFinding,
 } from './plan/claimed-actions';
@@ -1155,10 +1156,15 @@ async function executePlan(
               // 的主要形状, 而引擎此前对它零记录 —— 于是真跑过测试的节点在 facts 上与顺手编一句的
               // 节点长得一模一样。渲染走 `renderShellRunFact` (读它的判据在同一个文件, 格式不会漂)。
               // ⚠ 上限是硬的, 超出的**列出条数**不静默丢 (no-silent-caps): 这段进的是每一次 judge 调用。
+              // ⚠ **能支撑声称的那些排在前面** (2026-08-05 跨模型审查抓到的真洞): 上限是展示预算,
+              //   而这段字**同时是判据的输入面** —— 按时间序截断时, 第 7 条才跑的 `bun test` 会被
+              //   截掉, 于是一次诚实自验被反报成"无据"。截断只许丢展示信息, 不许丢**判据证据**。
+              //   代价是这几行不再是时间序; 换来的是"截断永远不会制造误报"。
               const runs = r.shellRuns ?? [];
-              for (const s of runs.slice(0, SHELL_FACT_CAP)) facts.push(renderShellRunFact(s));
+              const ordered = [...runs].sort((a, b) => Number(isVerificationRun(b)) - Number(isVerificationRun(a)));
+              for (const s of ordered.slice(0, SHELL_FACT_CAP)) facts.push(renderShellRunFact(s));
               if (runs.length > SHELL_FACT_CAP) {
-                facts.push(`(另有 ${runs.length - SHELL_FACT_CAP} 条命令未展示)`);
+                facts.push(`(另有 ${runs.length - SHELL_FACT_CAP} 条命令未展示; 已优先展示校验类)`);
               }
               // S1: 上面那三条只回答"文件在不在 / 命令过没过", 而验收在**内容**上的目标问的是
               // "文件里写了什么" —— judge 看不见它就只能 fail-closed, 于是交付物全对也判未收敛
