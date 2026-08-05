@@ -83,12 +83,13 @@ export const LENS_DIVERGENCE_POOL = [
 export const LENS_DIVERGENCE_WEIGHTS: Record<string, number> = {};
 /** judge panel 跨族池: K 维度逐个轮不同族, 降单模型系统偏见。
  * 2026-07-28: GPT(openai-codex/Codex) 在 research 大输入聚合上反复 "An error occurred processing your
- * request"/context 溢出 → 移出研究判优池 (1M 上下文打头 + glm/kimi 保跨族)。GPT 仍是 dag_run 的 conductor/review。
+ * request"/context 溢出 → 移出研究判优池。GPT 仍是 dag_run 的 conductor/review。
  *
- * ⚠ 2026-08-05: 打头那位从 `xiaomi-token-plan-ams:mimo-v2.5-pro` 换成 `opencode-go:minimax-m3`
- * (理由同上池)。**换的时候盯的是"1M 上下文"这条约束不是模型名** —— minimax-m3 同为 1M 上下文
- * (`model-caps.ts`),而那正是 mimo 当初被选中打头的原因(大输入聚合会撑爆小窗口)。 */
-export const JUDGE_PANEL_POOL = ['opencode-go:minimax-m3', 'opencode-go:glm-5.2', 'kimi-coding:k3'];
+ * **2026-08-05 owner 定盘: 判优只用 `glm-5.2` 与 `qwen3.8-max`,别的都不许进这个池。**
+ * (我这一版先自作主张换成了 minimax-m3 —— 被当场驳回。判优池不是"找个 1M 上下文的填上",
+ * 它是 owner 按判优质量圈定的白名单;能连通 ≠ 该用。)
+ * kimi-k3 同时撤出。 */
+export const JUDGE_PANEL_POOL = ['opencode-go:glm-5.2', 'opencode-go:qwen3.8-max'];
 
 export interface WebFanoutOpts extends RetrieveOpts {
   /** true → conductor (authorFanoutSpec) 按问题+语料自动分解 lens/framing/judge, 替代默认 3 视角。 */
