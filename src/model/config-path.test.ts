@@ -102,3 +102,69 @@ describe("configPath — INV-MODEL-4 确定性路径", () => {
 		expect(configPath()).toBe(join(b.root, ".omd", "config.json"));
 	});
 });
+
+// ── linked worktree (2026-08-05 实测补的那一格) ────────────────────────────────
+//
+// ⚠ **linked worktree 的 `.git` 是文件不是目录**, 而 `existsSync` 对文件也返 true ——
+//   于是发现停在 worktree 根, 而 `.omd/` 是 gitignored, worktree 里按定义没有它。
+//   实测 (真 `git worktree add`): configPath() 指向一个不存在的文件 → 座位全部
+//   SeatUnresolvedError, **omd 在任何 linked worktree 下开跑即死** (后台 agent /
+//   `--worktree` / Claude Code 的 worktree 全中)。下面这组钉的就是那条回主仓的路。
+
+/** 造「主仓 + linked worktree」的形状 (不需要真 git: 判据只看 `.git` 文件的内容)。 */
+function worktreeTree(opts: { gitdir?: string; worktreeHasOwnConfig?: boolean } = {}): {
+	main: string;
+	wt: string;
+} {
+	const base = realpathSync(mkdtempSync(join(tmpdir(), "omd-wt-")));
+	const main = join(base, "main");
+	const wt = join(base, "wt");
+	mkdirSync(join(main, ".omd"), { recursive: true });
+	writeFileSync(join(main, ".omd", "config.json"), '{"version":2,"models":{"leaf":"main:cfg"}}\n');
+	mkdirSync(join(main, ".git"), { recursive: true });
+	mkdirSync(wt, { recursive: true });
+	// worktree 的 `.git` 是**文件**, 内容是指回主仓 gitdir 的一行
+	const gitdir = opts.gitdir ?? join(main, ".git", "worktrees", "wt");
+	writeFileSync(join(wt, ".git"), `gitdir: ${gitdir}\n`);
+	if (opts.worktreeHasOwnConfig) {
+		mkdirSync(join(wt, ".omd"), { recursive: true });
+		writeFileSync(join(wt, ".omd", "config.json"), '{"version":2,"models":{"leaf":"wt:own"}}\n');
+	}
+	return { main, wt };
+}
+
+const pathFrom = (dir: string): string => {
+	delete process.env.OMD_CONFIG_PATH;
+	process.chdir(dir);
+	resetConfigCache();
+	return configPath();
+};
+
+describe("configPath — linked worktree 回主仓", () => {
+	test("★ worktree 里没有自己的 .omd → 解析到**主仓**的 config", () => {
+		const { main, wt } = worktreeTree();
+		expect(pathFrom(wt)).toBe(join(main, ".omd", "config.json"));
+	});
+
+	test("★ worktree **有**自己的 .omd → 用自己的 (规则①仍然先赢)", () => {
+		// 这一条守的是"worktree 里跑 = 用 worktree 自己的"那条既有语义没被这次修改吃掉。
+		const { wt } = worktreeTree({ worktreeHasOwnConfig: true });
+		expect(pathFrom(wt)).toBe(join(wt, ".omd", "config.json"));
+	});
+
+	test("★ submodule 的 `.git` 也是文件, 但**不许**重定向到宿主仓", () => {
+		// submodule 是另一个仓, 它的配置本就不该跟宿主共用。判据只认 `/.git/worktrees/` 那一种。
+		const { wt } = worktreeTree({ gitdir: "../.git/modules/foo" });
+		expect(pathFrom(wt)).toBe(join(wt, ".omd", "config.json"));
+	});
+
+	test("`.git` 文件内容读不懂 → 回落原行为, 不抛 (fail-open)", () => {
+		const { wt } = worktreeTree({ gitdir: "" });
+		expect(pathFrom(wt)).toBe(join(wt, ".omd", "config.json"));
+	});
+
+	test("普通仓 (`.git` 是目录) 行为不变", () => {
+		const { main } = worktreeTree();
+		expect(pathFrom(main)).toBe(join(main, ".omd", "config.json"));
+	});
+});
