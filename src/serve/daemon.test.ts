@@ -129,6 +129,30 @@ describe('读侧 (纯磁盘契约)', () => {
 });
 
 describe('命令面 (装配层桥)', () => {
+  test('/board: 200 html, 六列齐全, 且**不被 SPA 回落吃掉**', async () => {
+    const r = await fetchFn(new Request('http://x/board'));
+    expect(r.status).toBe(200);
+    expect(r.headers.get('content-type')).toContain('text/html');
+    const html = await r.text();
+    // 列序 = 票的生命周期。少一列 = 有一种状态的票在板上永远看不见 (静默漏掉一整格)。
+    for (const label of ['待 owner 决断', '机器建议待确认', '前沿可动', '前置未散', '已裁决', '已交付']) {
+      expect(html).toContain(label);
+    }
+  });
+
+  test('★ /board 零写回: 页面脚本里一个写方法都没有 (纪律③ 的闸)', async () => {
+    // 看板一旦能写就有两份真相 (真相文件是 docs/plan/pathfinder/*.md)。这条闸钉的是
+    // **投影只读**这件事本身, 不是某一处代码长什么样。
+    // 证伪: 在 board-page.ts 的 SCRIPT 里加一个 method:'POST' 的 fetch → 当场红。
+    const html = await (await fetchFn(new Request('http://x/board'))).text();
+    for (const w of ['POST', 'PUT', 'DELETE', 'PATCH']) expect(html).not.toContain(w);
+  });
+
+  test('/board 只认 GET: POST 落 404, 不被当成页面请求静默返 200', async () => {
+    const r = await fetchFn(new Request('http://x/board', { method: 'POST' }));
+    expect(r.status).toBe(404);
+  });
+
   test('★ POST /api/tools/:name 直调 handler;未知工具 404', async () => {
     const r = (await (await post('/api/tools/echo', { text: 'hi' })).json()) as { content: { text: string }[] };
     expect(r.content[0]!.text).toBe('echo:hi');
