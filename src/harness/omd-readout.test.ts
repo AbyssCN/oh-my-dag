@@ -30,7 +30,7 @@ import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { createDagRecorder } from './dag-record';
 import type { ExecutorDagResult } from './executor-dag-types';
-import { readout, type ReadoutResult } from '../../scripts/omd-readout';
+import { CLAIM_CHECK_MIN_NODES, faceSufficiency, readout, type ReadoutResult } from '../../scripts/omd-readout';
 
 interface FakeNode {
   goal: string;
@@ -548,5 +548,40 @@ describe('omd-readout · ⑧.5 检出器活体读数的分母', () => {
       [{ kind: 'loop-no-artifact-change', nodes: ['n1'], message: '盘上没位移' }],
     );
     expect(cc.samples).toEqual([]);
+  });
+
+  // ── 样本量门槛 (2026-08-05, **在数据到达之前**钉的) ────────────────────────────
+  //
+  // 上面那组钉的是「分母怎么数」, 这一组钉的是「分母多大才够下结论」。缺了后者, 读数板在
+  // N=2 个节点时也会印出一个 0.0% —— 而等数攒起来再定"多少算够"就是事后编判据 (§五 第 1 条)。
+  // 证伪: 把 CLAIM_CHECK_MIN_NODES 改成 0 → 「不足」那两条当场红 (short/enough 全翻)。
+
+  test('★ 样本不足时 enough=false, 且**自己算出还差多少**(不靠人心算)', () => {
+    const cc = withCC('r6', { conductor: { rounds: 1, nodes: 4, findings: 0 }, flat: { nodes: 2, findings: 0 } });
+    expect(cc.sufficiency.conductor).toEqual({ nodes: 4, short: CLAIM_CHECK_MIN_NODES - 4, enough: false });
+    expect(cc.sufficiency.flat).toEqual({ nodes: 2, short: CLAIM_CHECK_MIN_NODES - 2, enough: false });
+    // ⚠ 比例照常算得出 —— 「算得出」与「够得着结论」是两件事, 不许把前者当后者。
+    expect(cc.flat.rate).toBe(0);
+  });
+
+  test('★ 两面**各自**判够不够 —— 一面够了不代表另一面够了', () => {
+    const cc = withCC('r7', {
+      conductor: { rounds: 1, nodes: CLAIM_CHECK_MIN_NODES, findings: 0 },
+      flat: { nodes: 1, findings: 0 },
+    });
+    expect(cc.sufficiency.conductor.enough).toBe(true);
+    expect(cc.sufficiency.conductor.short).toBe(0);
+    expect(cc.sufficiency.flat.enough).toBe(false);
+  });
+
+  test('边界: 恰好等于门槛就算够 (>=, 不是 >)', () => {
+    expect(faceSufficiency(CLAIM_CHECK_MIN_NODES).enough).toBe(true);
+    expect(faceSufficiency(CLAIM_CHECK_MIN_NODES - 1).enough).toBe(false);
+    expect(faceSufficiency(CLAIM_CHECK_MIN_NODES - 1).short).toBe(1);
+  });
+
+  test('没记这一位的跑 → 两面都是 0 节点, 即「不足」而不是「够了且零检出」', () => {
+    const cc = withCC('r8', undefined);
+    expect(cc.sufficiency.flat).toEqual({ nodes: 0, short: CLAIM_CHECK_MIN_NODES, enough: false });
   });
 });
