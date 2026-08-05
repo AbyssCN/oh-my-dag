@@ -22,7 +22,8 @@ import {
 	orderByAmortization,
 } from "./channels";
 import { type ModelRating, lookupRating } from "./model-ratings";
-import { persistAutoAssigned } from "./role-models";
+import { persistAutoAssigned, resolveConfiguredPools, type PoolTier } from "./role-models";
+import { POOL_DEFAULTS } from "./pool-defaults";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -157,18 +158,33 @@ const NODE_PREFERRED: Record<string, string> = SEAT_PREFERRED_COORD;
 const REDUCE_COORD = "deepseek:deepseek-v4-flash";
 
 /**
- * 按 NodeClass 排列的溢出候选 (D-19 溢出列): 专属桶烧穿 → 落 **Go flat-sub** (opencode-go, cost=0,
- * 一价多模型) 作通用溢出目标。Go 里 kimi-k3/glm/qwen/mimo/deepseek 全可达。
+ * 按 NodeClass 排列的溢出候选 —— **值与理由都在 `pool-defaults.ts`**(2026-08-05 搬家)。
+ * 专属桶烧穿 → 落 Go flat-sub (cost=0, 一价多模型)。
  */
-const FALLBACK_COORDS: Record<NodeClass, string[]> = {
-	decomposer: ["opencode-go:kimi-k3", "opencode-go:glm-5.2"],
-	judge_synth: ["opencode-go:kimi-k3", "opencode-go:glm-5.2"],
-	// ⚠ 2026-08-05 撤掉 `opencode-go:mimo-v2.5`: **mimo 只用于多模态**(owner 口径),
-	//   而 worker 是纯文本活 —— 溢出兜底同样受这条口径管, 不因为"只是兜底"就例外
-	//   (兜底恰恰是没人盯着的那条路: 主桶烧穿时它才生效, 违规会静默发生)。
-	worker: ["opencode-go:deepseek-v4-flash", "opencode-go:glm-5.2"],
-	verify: ["opencode-go:qwen3.7-max", "opencode-go:glm-5.1"],
+const FALLBACK_COORDS: Record<NodeClass, readonly string[]> = {
+	decomposer: POOL_DEFAULTS.fallbackDecomposer ?? [],
+	judge_synth: POOL_DEFAULTS.fallbackJudgeSynth ?? [],
+	worker: POOL_DEFAULTS.fallbackWorker ?? [],
+	verify: POOL_DEFAULTS.fallbackVerify ?? [],
 };
+
+/**
+ * 溢出候选的解析口 —— **config 可覆盖**(2026-08-05)。
+ *
+ * 解析序: `.omd/config.json` 的 `pools.fallback<Class>`(或 `OMD_POOL_FALLBACK_<CLASS>`)> 上面的源码默认。
+ * 搬这一层的理由与判优池同: 这是**选择**不是事实表,而改一个选择不该要改代码+提交。
+ * 源码默认留着是给「还没 init 的仓」用的,不是"真源在代码里"。
+ */
+const POOL_KEY_BY_CLASS: Record<NodeClass, PoolTier> = {
+	decomposer: "fallbackDecomposer",
+	judge_synth: "fallbackJudgeSynth",
+	worker: "fallbackWorker",
+	verify: "fallbackVerify",
+};
+
+function fallbackCoords(cls: NodeClass, env: Record<string, string | undefined> = process.env): readonly string[] {
+	return resolveConfiguredPools(undefined, env)[POOL_KEY_BY_CLASS[cls]] ?? FALLBACK_COORDS[cls];
+}
 
 // ── 内部 helpers ───────────────────────────────────────────────────────
 
@@ -265,7 +281,7 @@ export function autoAssign(input: AutoAssignInput): AssignmentMap {
 
 		// per-node 覆盖 → 类首选 → 溢出链。
 		const preferred = PREFERRED_COORD[nodeClass];
-		const fallbacks = FALLBACK_COORDS[nodeClass] ?? [];
+		const fallbacks = fallbackCoords(nodeClass);
 		const nodeOverride = NODE_PREFERRED[node];
 		const candidates =
 			node === "reduce"

@@ -133,7 +133,7 @@ interface ConfigFile {
    * 是空转, sibling 跨家族分散也没有对象可散。池是「档位里有哪些模型」, 座位是「哪个角色用哪个模型」——
    * 两件事, 分开配。
    */
-  pools?: { strong?: string[]; mid?: string[]; cheap?: string[]; multimodal?: string[]; multimodalStrong?: string[] };
+  pools?: Partial<Record<string, string[]>>;
   /** auto-assign 落盘的 node → coord (D-17 一次性填, 可读可改)。resolveRoleModelConfigured 的 auto 层读它。 */
   autoAssigned?: Record<string, string>;
   /**
@@ -556,7 +556,30 @@ export function persistMultimodalPoolPremium(coords: string[], path = configPath
  * 读 .omd/config.json 的显式档位池 (`pools` 段)。每档独立 —— 只配了 cheap 就只覆盖 cheap,
  * 其余仍走座位推导 (调用方以 `?? 座位推导` 兜)。坏值/非坐标条目丢弃 (fail-open)。
  */
-export const POOL_TIERS = ['strong', 'mid', 'cheap', 'multimodal', 'multimodalStrong'] as const;
+export const POOL_TIERS = [
+  'strong',
+  'mid',
+  'cheap',
+  'multimodal',
+  'multimodalStrong',
+  // ── 2026-08-05: 原本**硬写在源码里**的那几个池搬进来 ──────────────────────────
+  // 为什么搬: 它们是**选择**不是事实表(价表/能力表/评分那类才该留在代码里),而改一个选择
+  // 却要改代码+跑测试+提交。今天一天里 owner 连续三次撞到同一堵墙:研究判优池里躺着一个
+  // 429 的死座位、溢出兜底在拿 mimo 跑文本活 —— 全靠 grep 才翻出来。
+  //
+  // ⚠ 它们**沿用 pools 这条轴的既有语义**(见 checkPools 的注):不经过座位链,
+  //   `OMD_POOL_*` 压过 config,坏值丢弃 fail-open。少造一套机制就少一处会漂。
+  /** 研究判优池(judge panel,K 维度逐个轮不同族)。 */
+  'judge',
+  /** 跨家族发散池(lens gen + synth framing)。 */
+  'lens',
+  // auto-assign 的**溢出兜底**(专属桶烧穿后落哪几个坐标)。按 NodeClass 分。
+  // 兜底恰恰是没人盯着的那条路 —— 主桶烧穿时才生效,配错会静默发生。
+  'fallbackDecomposer',
+  'fallbackJudgeSynth',
+  'fallbackWorker',
+  'fallbackVerify',
+] as const;
 export type PoolTier = (typeof POOL_TIERS)[number];
 
 /** 档位正名 env key: `OMD_POOL_<TIER>` (驼峰 → 下划线大写)。逗号分隔多个坐标。 */
@@ -564,19 +587,57 @@ export function poolEnvKey(tier: PoolTier): string {
   return `OMD_POOL_${tier.replace(/([a-z])([A-Z])/g, '$1_$2').toUpperCase()}`;
 }
 
+/**
+ * 与 {@link resolveConfiguredPools} 同一次解析,但**带上来源层**(2026-08-05)。
+ *
+ * 为什么要它:`resolveConfiguredPools` 只回"配了什么",回不出"这个值是谁给的"。
+ * 而 owner 今天连撞三次的正是后者 —— 一个坐标到底来自 env、config、还是硬写在某个源码文件里,
+ * 只能靠 grep 全仓才答得上来。读数板要能一眼答,这一层就得先答得上来。
+ */
+export function describeConfiguredPools(
+  path = configPath(),
+  env: Record<string, string | undefined> = process.env,
+): Partial<Record<PoolTier, { coords: string[]; source: 'env' | 'config' }>> {
+  const raw = fileConfig(path).pools;
+  const fromFile = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const out: Partial<Record<PoolTier, { coords: string[]; source: 'env' | 'config' }>> = {};
+  for (const tier of POOL_TIERS) {
+    const fromEnv = cleanCoordList(env[poolEnvKey(tier)]);
+    if (fromEnv) {
+      out[tier] = { coords: fromEnv, source: 'env' };
+      continue;
+    }
+    const fromCfg = cleanCoordList(fromFile[tier]);
+    if (fromCfg) out[tier] = { coords: fromCfg, source: 'config' };
+  }
+  return out;
+}
+
+/** 坐标列表清洗 (逗号串或数组 → 去重的坐标数组; 无有效项 → undefined)。坏值丢弃 fail-open。 */
+function cleanCoordList(xs: unknown): string[] | undefined {
+  const arr = typeof xs === 'string' ? xs.split(',') : xs;
+  if (!Array.isArray(arr)) return undefined;
+  const out = [
+    ...new Set(
+      arr
+        .filter((x): x is string => typeof x === 'string')
+        .map((x) => x.trim())
+        .filter((x) => x.includes(':')),
+    ),
+  ];
+  return out.length ? out : undefined;
+}
+
 export function resolveConfiguredPools(
   path = configPath(),
   env: Record<string, string | undefined> = process.env,
-): { strong?: string[]; mid?: string[]; cheap?: string[]; multimodal?: string[]; multimodalStrong?: string[] } {
+): Partial<Record<PoolTier, string[]>> {
   const raw = fileConfig(path).pools;
   const fromFile = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
-  const clean = (xs: unknown): string[] | undefined => {
-    const arr = typeof xs === 'string' ? xs.split(',') : xs;
-    if (!Array.isArray(arr)) return undefined;
-    const out = [...new Set(arr.filter((x): x is string => typeof x === 'string').map((x) => x.trim()).filter((x) => x.includes(':')))];
-    return out.length ? out : undefined;
-  };
-  const out: Record<string, string[]> = {};
+  // ⚠ 清洗器与 describeConfiguredPools **共用同一个** (cleanCoordList): 两份清洗规则早晚各漂各的,
+  //   而"读数板说配了、执行期说没配"是这条链上最难查的一种。
+  const clean = cleanCoordList;
+  const out: Partial<Record<PoolTier, string[]>> = {};
   for (const tier of POOL_TIERS) {
     // env **压过** config.pools —— 与座位那条 env 别名的方向相反, 是刻意的:
     // 座位的 env 是**历史别名** (OMD_ITER_* 等), 当年它们压过 config 造成"改了 config 还是老模型",

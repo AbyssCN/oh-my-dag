@@ -51,7 +51,7 @@ function resolvable(coord: string): boolean {
  * 凭证: 有 key/OAuth (credentialed)。健康: 不在熔断冷却窗内 (inCooldown, 补 provider-health)。
  * 任一不满足 → 视为不可用 → roleModelWithFallback 顺延兜底。
  */
-function usable(coord: string, env: Record<string, string | undefined>): boolean {
+export function usable(coord: string, env: Record<string, string | undefined>): boolean {
   const p = providerOf(coord);
   return credentialed(p, env) && !channelInCooldown(p);
 }
