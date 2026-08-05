@@ -137,7 +137,10 @@ describe("autoAssign", () => {
 		}
 		// NODE_PREFERRED 只覆盖那三座; 其余仍走类首选表 (此 fixture 无 deepseek 渠道 → 落 Go 溢出链)
 		expect(m.reason!.coord).toBe("opencode-go:kimi-k3");
-		expect(m.leaf!.coord).toBe("opencode-go:mimo-v2.5");
+		// ⚠ 2026-08-05 由 `opencode-go:mimo-v2.5` 改成这个: owner 口径「**mimo 只用于多模态**」,
+		//   而 leaf 是纯文本 worker。这条断言此前**钉住的正是那个违规值** —— 改它不是为了变绿,
+		//   是因为口径变了; 判据在 FALLBACK_COORDS.worker 那行注释里。
+		expect(m.leaf!.coord).toBe("opencode-go:deepseek-v4-flash");
 	});
 
 	test("溢出链降级: kimi-coding 无渠道 → 大脑簇降级到 Go(opencode-go:kimi-k3)", () => {
