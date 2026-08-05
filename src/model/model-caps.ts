@@ -106,6 +106,18 @@ export const MODEL_CAPS: readonly ModelCaps[] = [
     source: 'qwencloud.com/models/qwen3.7-max (+2026-07-28 探针: max→400)',
   },
   {
+    // qwen3.8-max (2026-08-05 进 judge 判优池时补的条目)。
+    // ⚠ **不是照抄 3.7**: 同一发探针在 3.8 上 `max` 档**通过**了(3.7 是 400 拒),所以这条
+    //   的 efforts 比 3.7 宽一格。两条各写各的 —— 合并成 `/^qwen3\.[78]/` 就等于把 3.8 封到
+    //   high,白丢一档;反过来把 3.7 放开则是"发错就挂"。
+    // ⚠ `maxOutput` **沿用 3.7 的 65.53K 且未实测**:它是保守值,少要不会挂、多要会。
+    //   哪天判优输出被截断,先来查这一行。
+    match: /^qwen3\.8/,
+    maxOutput: 65_536,
+    efforts: ['low', 'medium', 'high', 'max'],
+    source: '2026-08-05 探针: effort max→200 OK; maxOutput 沿用 3.7 未实测',
+  },
+  {
     // mimo.mi.com/models/zh-CN/mimo-v2.5-pro: 1M 上下文 · 最大输出 128K
     // · thinking 走 extra_body {"type":"disabled"}。
     // effort 词表: 直连端点 2026-07-25 实测只认 low/medium/high ('max'/'minimal' 均 400)。
