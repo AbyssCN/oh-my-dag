@@ -31,12 +31,13 @@ setCoreLogger(logger);
 
 const userArgs = process.argv.slice(2);
 
-const USAGE = `omd —— DAG 执行引擎 (纯 MCP)
+const USAGE = `omd —— DAG 执行引擎 (纯 MCP + web 控制台)
 
   omd mcp     stdio MCP server (给 Claude Code 等 MCP 客户端 spawn)
+  omd serve   web 控制台 daemon (127.0.0.1:4517; --port N 改端口)
   omd init    首次配置向导 (写 .env)
 
-交互对话前端已撤除 (2026-08-01): omd 只当执行引擎, 对话归 MCP 客户端。
+交互对话前端已撤除 (2026-08-01): omd 只当执行引擎, 对话归 MCP 客户端或 omd serve。
 `;
 
 // omd mcp: stdio MCP server 入口 (D-1) —— 零 UI, 不进 wizard。
@@ -63,8 +64,47 @@ if (userArgs[0] === 'mcp') {
   process.exit(0);
 }
 
+// omd serve: web 控制台 daemon —— 与 mcp 同一装配面 (一个控制面, 两个传输), 外加读侧磁盘契约 + chat。
+// 长驻进程, 不挂 stdio 自杀双保险 (那是 MCP 进程的设计; serve 由用户 Ctrl-C / kill 管生命周期)。
+if (userArgs[0] === 'serve') {
+  setLoggerDestination(2);
+  const { bootstrapModelRuntime } = await import('../model/bootstrap');
+  bootstrapModelRuntime(); // 同 mcp 入口: 不引导则 leaf 因注册表空而静默秒败
+  const { assembleOmdMcpTools, resolveEngineModels } = await import('../mcp/assemble');
+  const { createConductorChatTools } = await import('../serve/chat-tools');
+  const { startDaemon } = await import('../serve/daemon');
+  const { ChatStore } = await import('./chat/store');
+  const { createPlanLedger } = await import('./plan-ledger');
+  const { existsSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const cwd = process.cwd();
+  const tools = assembleOmdMcpTools();
+  const portFlag = userArgs.indexOf('--port');
+  const staticDir = join(cwd, 'web', 'dist');
+  startDaemon(
+    {
+      cwd,
+      tools,
+      chatStore: new ChatStore(cwd),
+      ledger: createPlanLedger({ path: join(cwd, '.omd', 'plan-ledger.db') }),
+      // conductor 座每请求现解 (INV-MODEL-3): omd_set_role 改完, 下一句 chat 就换座。
+      resolveChatModel: () => resolveEngineModels(process.env).conductorModel,
+      chatTools: createConductorChatTools(tools),
+      ...(existsSync(staticDir) ? { staticDir } : {}),
+    },
+    { ...(portFlag >= 0 && userArgs[portFlag + 1] ? { port: Number(userArgs[portFlag + 1]) } : {}) },
+  );
+  // Bun.serve 常驻 —— 不 process.exit; SIGINT 默认行为即优雅退。
+} else if (userArgs[0] === 'init') {
+  await runInit();
+} else {
+  // 其余一律打用法 (含裸 `omd`): 没有交互模式可落了。(mcp 分支在上方早退, 到不了这里)
+  process.stderr.write(USAGE);
+  process.exit(userArgs.length === 0 ? 0 : 1);
+}
+
 // omd init: 首次配置向导。wizard 写 .env, 配完即退出 (用户再正常起 MCP server)。
-if (userArgs[0] === 'init') {
+async function runInit(): Promise<void> {
   // headless/CI (无 TTY) 进不了交互 wizard (readline 会 hang) → fail-fast 提示, 别挂死。
   if (!process.stdin.isTTY) {
     logger.error('[omd/init] 非交互终端 — 请在终端跑 `omd init`, 或直接照 .env.example 填 .env');
@@ -74,7 +114,3 @@ if (userArgs[0] === 'init') {
   const ok = await runInitWizard({ io: createReadlineIO() });
   process.exit(ok ? 0 : 1);
 }
-
-// 其余一律打用法 (含裸 `omd`): 没有交互模式可落了。
-process.stderr.write(USAGE);
-process.exit(userArgs.length === 0 ? 0 : 1);

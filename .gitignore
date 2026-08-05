@@ -33,3 +33,7 @@ docs/articles/
 
 # 其它 session 的 git worktree (机器本地状态, 不进仓)
 .claude/worktrees/
+
+# web 前端产物 (daemon 托管 dist, 构建产物不进 git)
+web/dist/
+web/node_modules/
