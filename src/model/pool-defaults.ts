@@ -79,5 +79,9 @@ export const POOL_FALLBACK_NOTE: Partial<Record<PoolTier, string>> = {
   mid: '座位推导',
   cheap: '座位推导',
   multimodal: '座位推导 / config.multimodalPool',
-  multimodalStrong: '座位推导',
+  // ⚠ 这一格此前写 '座位推导', **是错的** (2026-08-05 读代码抓到): stamp-pass 见 multimodalStrong
+  //   为空是**回落 multimodal 池** (stamp-pass.ts: 判 length>0 不成立就走 pools.multimodal),
+  //   根本走不到座位推导那一层。差别不是措辞: 照原话去查会以为改座位能影响强档看图节点, 而实际
+  //   得改 multimodal 池 —— 也正因为这条耦合, owner 2026-08-05 把它显式钉进 config.pools。
+  multimodalStrong: '回落 multimodal 池',
 };

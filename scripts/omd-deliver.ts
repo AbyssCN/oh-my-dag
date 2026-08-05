@@ -19,7 +19,6 @@ import { createAgentLeafRunner } from '../src/harness/agent-leaf';
 import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../src/harness/command-leaf';
 import { createPathfinderTools } from '../src/mcp/tools/pathfinder';
 import { resolveEngineModels } from '../src/mcp/assemble';
-import { join } from 'node:path';
 
 function usage(): never {
   console.error(
@@ -38,7 +37,8 @@ const pos = argv.slice(1).filter((a, i, arr) => a !== '--slug' && arr[i - 1] !==
 
 const cwd = process.cwd();
 const env = process.env;
-const recorder = createDagRecorder({ path: join(cwd, '.omd', 'dag-runs.db') });
+// 位置不吃 cwd —— 同 assemble 那处, 真源在 dag-record.ledgerPath()。
+const recorder = createDagRecorder();
 const tools = createPathfinderTools({
   cwd,
   env,

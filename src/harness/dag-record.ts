@@ -9,7 +9,8 @@
  */
 import { Database } from 'bun:sqlite';
 import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
+import { omdRepoRoot } from './repo-root';
 import type { ExecutorDagResult } from './executor-dag';
 import type { NodeFailureKind } from './node-failure';
 import { deriveRunOutcome, type RunOutcomeKind } from './run-outcome';
@@ -342,10 +343,28 @@ export function recordDagRun(
 }
 
 /**
- * 造一个运行留痕器。path 默认 '.omd/dag-runs.db' (持久); ':memory:' 或注入 db = 瞬时/测试。
+ * 引擎读数留痕库的**唯一**位置 —— 锚在 **omd 自己的仓根**, 不随 cwd 走。
+ *
+ * 2026-08-05 之前是 `join(cwd, '.omd', 'dag-runs.db')`(三个调用点各写一份)。那条口径的洞:
+ * omd 经 MCP 可以从**任何** repo 的 session 发跑, 于是从别的 repo 发的跑, 记录进的是**那个
+ * repo** 的 `.omd/dag-runs.db`。实测: `/home/nick/repos/bluebell` 底下真有一份, 而且是老
+ * schema、**连 `claim_check` 列都没有** —— 想靠"日常使用被动攒样本"时, 攒到的是一堆互相看
+ * 不见的碎库, 而读数板只读其中一份。**那种缺数长得像"引擎没记"**, 是本仓最贵的一类静默失效。
+ *
+ * ⚠ 代价 (明写, 不是漏): 别的项目的跑也进这张表, `question` / `plan_name` 会出现别仓的任务。
+ *   要按项目分开看只能靠这两列 —— 表本身不再按 repo 分区。这是 owner 2026-08-05 的取舍:
+ *   这张表量的是**引擎自身**的行为 (claim_check / outcome / criteria), 不是"当前项目的工作态";
+ *   后者 (runs.db / continuity / hud) 仍然 per-repo, 一个字没改。
+ */
+export function ledgerPath(): string {
+  return join(omdRepoRoot(), '.omd', 'dag-runs.db');
+}
+
+/**
+ * 造一个运行留痕器。path 默认 `ledgerPath()` (持久); ':memory:' 或注入 db = 瞬时/测试。
  */
 export function createDagRecorder(opts: { path?: string; db?: Database } = {}): DagRecorder {
-  const path = opts.path ?? '.omd/dag-runs.db';
+  const path = opts.path ?? ledgerPath();
   if (!opts.db && path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
   const db = opts.db ?? new Database(path);
   db.run('PRAGMA journal_mode = WAL');
