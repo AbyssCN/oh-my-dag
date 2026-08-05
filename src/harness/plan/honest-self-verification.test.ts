@@ -17,7 +17,7 @@
  *    这一条是整条通道的验收 —— 采集、透传、渲染、判据缺任何一环它都会红。
  */
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { recordSupportsVerification, renderShellRunFact } from './claimed-actions';
@@ -332,5 +332,76 @@ describe('★ 平铺图(无 conductor 节点)也要被扫到', () => {
     const { kinds, claimCheck } = await runFlat('已实现 clamp 并写好测试');
     expect(kinds).not.toContain('unsupported-claim');
     expect(claimCheck).toEqual({ conductor: { rounds: 0, nodes: 0, findings: 0 }, flat: { nodes: 1, findings: 0 } });
+  });
+});
+
+// ── ⑤ 产物闸救援②: 从 bash 命令认写目标 + 落盘核实 ────────────────────────────
+
+describe('★ 产物闸救回经 bash 写入的产物(必须有盘上证据)', () => {
+  const writePlan = { name: 'p', nodes: { w: { goal: '写文件', executor: 'agent', output_type: 'file' } } } as unknown as ConductorPlan;
+
+  async function runIn(
+    root: string,
+    shellRuns: ShellRun[],
+    /** agent **执行期间**才写盘 —— 真实形状: 文件的 mtime 必须落在本节点窗口内。 */
+    writeDuring?: () => void,
+  ): Promise<{ status: string; files: string[]; output: string }> {
+    const cfg = {
+      conductorModel: 'c:m',
+      leafModel: 'l:m',
+      agentLeafModel: 'a:m',
+      generate: async () => ({ text: '写好了', usage: { in: 1, out: 1 } }),
+      agentTemplates: new Map(),
+      continuity: { manager: new CheckpointManager(root), runId: 'r', repoRoot: root },
+      agentRunner: async () => {
+        writeDuring?.();
+        return { text: '已写好 docs/x.md', usage: { in: 1, out: 1 }, filesTouched: [], cwd: root, shellRuns };
+      },
+    } as unknown as ExecutorDagConfig;
+    const r = await runExecutorDagWithPlan(writePlan, cfg);
+    return { status: r.results.w?.status ?? '?', files: r.results.w?.filesTouched ?? [], output: r.results.w?.output ?? '' };
+  }
+
+  test('★ 命令点名的文件在本节点窗口内被改过 → 救回(此前这一格判 empty-artifact 失败)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-rescue-'));
+    mkdirSync(join(root, 'docs'), { recursive: true });
+    const r = await runIn(root, [{ command: "cat > docs/x.md <<'EOF'", exitCode: 0, ok: true }], () =>
+      writeFileSync(join(root, 'docs/x.md'), '正文\n'),
+    );
+    expect(r.status).toBe('done');
+    expect(r.files).toEqual(['docs/x.md']);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test('★ 文件在盘上但**早于**本节点(mtime 在窗口外)→ **不救**(否则 empty-done 被洗成成功)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-rescue-'));
+    mkdirSync(join(root, 'docs'), { recursive: true });
+    writeFileSync(join(root, 'docs/x.md'), '早就在了\n');
+    // 把 mtime 推回一小时前 —— 这个节点没碰过它
+    const old = new Date(Date.now() - 3_600_000);
+    utimesSync(join(root, 'docs/x.md'), old, old);
+    // ⚠ 命令必须是**写形状**, 否则解析器不产候选, 这条用例就走不到 mtime 判据 ——
+    //   第一版用的是 `cat docs/x.md`(读), 于是拆掉 mtime 判据它照样绿。
+    //   反例的形状不对, 闸就是装饰(同今天写进 S-14 的那条)。
+    const r = await runIn(root, [{ command: 'echo x > docs/x.md', exitCode: 0, ok: true }]);
+    expect(r.status).toBe('failed');
+    expect(r.output).toContain('产物校验失败');
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test('★ 命令点名的文件根本不在盘上 → 不救(没证据不救, 与救援①同一条性质)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-rescue-'));
+    const r = await runIn(root, [{ command: 'echo hi > docs/ghost.md', exitCode: 0, ok: true }]);
+    expect(r.status).toBe('failed');
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test('只跑过读命令 → 认不出写目标 → 照旧失败(纯读不该被救)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-rescue-'));
+    mkdirSync(join(root, 'docs'), { recursive: true });
+    writeFileSync(join(root, 'docs/x.md'), '正文\n');
+    const r = await runIn(root, [{ command: 'ls -la docs', exitCode: 0, ok: true }]);
+    expect(r.status).toBe('failed');
+    rmSync(root, { recursive: true, force: true });
   });
 });
