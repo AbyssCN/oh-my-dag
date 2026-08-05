@@ -218,6 +218,8 @@ export interface ReadoutResult {
    * 而 `dag_run` 那条路整张图可以一个 conductor 都没有 —— 判据结构上够不着,而当时账本记出来的
    * `observations: []` 与"查过零检出"逐字相同,于是约一半流量进错分母,基率被算低近一倍。
    * ⚠ 两面**宽度不同,不许相加**:conductor 含产物内容读盘,flat 只有 output+facts。
+   * ⚠ 样本不够时**不许下结论** —— 见 `CLAIM_CHECK_MIN_NODES`。这一位是 2026-08-05 在**数据到达
+   *   之前**钉的:那之前这段在 N=2 个节点时也照样印「检出 0 条 [0.0%]」,而那个 0% 没有信息量。
    */
   claim_check: {
     /** 记了这一位的跑数(判据够得着 → 进分母)。 */
@@ -228,7 +230,37 @@ export interface ReadoutResult {
     flat: { nodes: number; findings: number; rate: number | null };
     /** 检出原句样本(拨闸靠逐条读它判是不是误伤)。 */
     samples: { runId: string | null; message: string }[];
+    /** 两面各自「够不够下结论」。**分开算** —— 一面够了不代表另一面够了。 */
+    sufficiency: { conductor: FaceSufficiency; flat: FaceSufficiency };
   };
+}
+
+/** 单面的样本充分性(`enough=false` 时这一面的比例**不许当结论读**)。 */
+export interface FaceSufficiency {
+  nodes: number;
+  /** 还差多少个节点(已够 → 0)。读数板直接印它,免得靠人心算。 */
+  short: number;
+  enough: boolean;
+}
+
+/**
+ * 一面要多少节点才谈得上读「基率」—— **在数据到达之前钉死**(2026-08-05)。
+ *
+ * 依据是 rule of three:0 检出 / N 节点时,真实基率的 95% 上界 ≈ 3/N。60 → **5%**。
+ *
+ * 为什么门槛取 5% 而不是 1%:按 ⑧ 段同一套比价(误拦一次掐死一个本可收敛的 run,漏报一次
+ * 只赔一两轮),**1% 的基率本来就不值得上硬拦** —— 所以要分辨的是「0% 还是 5%」,不是
+ * 「0% 还是 1%」。1% 需要 N≥300,按 flat 面每跑 2~5 个节点算是 60~150 跑,被动攒够不着;
+ * 那是拿一个够不着的门槛换一份用不上的精度。
+ *
+ * ⚠ 这个数**先于数据**写下来才有意义。等数攒起来再定"多少算够" = 事后编判据,
+ *   本仓 §五 第 1 条治的就是这个。要改它,改前先说清为什么,别改完再补理由。
+ */
+export const CLAIM_CHECK_MIN_NODES = 60;
+
+/** 单面充分性判定(纯函数 —— 读数板与闸共用同一处,两处各算一份必漂)。 */
+export function faceSufficiency(nodes: number): FaceSufficiency {
+  return { nodes, short: Math.max(0, CLAIM_CHECK_MIN_NODES - nodes), enough: nodes >= CLAIM_CHECK_MIN_NODES };
 }
 
 interface ReadoutRow {
@@ -295,6 +327,7 @@ function emptyWorld(meta: ReadoutResult['meta']): ReadoutResult {
       conductor: { rounds: 0, nodes: 0, findings: 0, rate: null },
       flat: { nodes: 0, findings: 0, rate: null },
       samples: [],
+      sufficiency: { conductor: faceSufficiency(0), flat: faceSufficiency(0) },
     },
     // 空世界: 闸分母全 0, ledgerGap 记 null = **不知道** (空留痕库不代表没跑过, 只代表这里没有)。
     gate_denominators: { g3LiveRuns: 0, g4Samples: 0, ledgerGap: null },
@@ -725,6 +758,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
       conductor: { rounds: ccAcc.condRounds, nodes: ccAcc.condNodes, findings: ccAcc.condFindings, rate: ccRate(ccAcc.condFindings, ccAcc.condNodes) },
       flat: { nodes: ccAcc.flatNodes, findings: ccAcc.flatFindings, rate: ccRate(ccAcc.flatFindings, ccAcc.flatNodes) },
       samples: ccSamples,
+      sufficiency: { conductor: faceSufficiency(ccAcc.condNodes), flat: faceSufficiency(ccAcc.flatNodes) },
     },
     outcome_distribution,
     entry_distribution,
@@ -1481,12 +1515,25 @@ if (import.meta.main) {
     console.log(`   conductor 面 (output+facts+产物内容): ${cc.conductor.nodes} 节点 / ${cc.conductor.rounds} 轮 → 检出 ${cc.conductor.findings} 条  [${fmt(cc.conductor.rate)}]`);
     console.log(`   flat 面      (output+facts, 不读产物): ${cc.flat.nodes} 节点            → 检出 ${cc.flat.findings} 条  [${fmt(cc.flat.rate)}]`);
     console.log('   ⚠ 两面**不许相加**: 宽度不同 (一个读盘一个不读), 加起来的比例没有意义。');
+    // 样本够不够 —— 门槛先于数据钉死 (CLAIM_CHECK_MIN_NODES 上面那段写了为什么是 60)。
+    for (const [face, s] of [['conductor', cc.sufficiency.conductor], ['flat', cc.sufficiency.flat]] as const) {
+      console.log(
+        s.enough
+          ? `   ${face.padEnd(9)} 样本**够了** (${s.nodes} ≥ ${CLAIM_CHECK_MIN_NODES} 节点) → 上面那个比例可以当结论读`
+          : `   ${face.padEnd(9)} 样本**不足**, 还差 ${s.short} 个节点 (${s.nodes}/${CLAIM_CHECK_MIN_NODES}) → 上面那个比例**不是结论**`,
+      );
+    }
+    if (!cc.sufficiency.conductor.enough && !cc.sufficiency.flat.enough) {
+      console.log('     两面都不足 = 现在**还不到拨闸的时候**, 继续被动攒 (正常使用即可, 不必专门发跑)。');
+    }
   }
   if (cc.samples.length > 0) {
     console.log(`   检出原句 (前 ${cc.samples.length} 条 —— **拨闸靠逐条读它判是不是误伤**):`);
     for (const smp of cc.samples) console.log(`     · [${smp.runId ?? '无 runId'}] ${smp.message.slice(0, 150)}`);
   }
   console.log('   判据 (写死在这儿, 免得事后编):');
+  console.log(`     · **先过样本关**: 该面 ≥ ${CLAIM_CHECK_MIN_NODES} 节点才谈得上读基率 (rule of three:`);
+  console.log('       0 检出 / 60 节点 → 真实基率 95% 上界 5%)。不够就是不够, 不许"看着差不多";');
   console.log('     · 活体误伤 = 0 (逐条人工核对) **且** 扩语料全绿 → 才谈得上拨成硬拦;');
   console.log('     · 活体基率 ≈ 0 (真跑里几乎没有伪造声称) → **维持 report-only 是合法结论**,');
   console.log('       那是"这条闸没有值得付的对象", 记下来收尾, 不是拖延。');
