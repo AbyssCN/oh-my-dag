@@ -163,7 +163,10 @@ const REDUCE_COORD = "deepseek:deepseek-v4-flash";
 const FALLBACK_COORDS: Record<NodeClass, string[]> = {
 	decomposer: ["opencode-go:kimi-k3", "opencode-go:glm-5.2"],
 	judge_synth: ["opencode-go:kimi-k3", "opencode-go:glm-5.2"],
-	worker: ["opencode-go:mimo-v2.5", "opencode-go:deepseek-v4-flash"],
+	// ⚠ 2026-08-05 撤掉 `opencode-go:mimo-v2.5`: **mimo 只用于多模态**(owner 口径),
+	//   而 worker 是纯文本活 —— 溢出兜底同样受这条口径管, 不因为"只是兜底"就例外
+	//   (兜底恰恰是没人盯着的那条路: 主桶烧穿时它才生效, 违规会静默发生)。
+	worker: ["opencode-go:deepseek-v4-flash", "opencode-go:glm-5.2"],
 	verify: ["opencode-go:qwen3.7-max", "opencode-go:glm-5.1"],
 };
 
