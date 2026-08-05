@@ -672,6 +672,18 @@ export interface ExecutorDagResult {
    */
   observations?: DagObservation[];
   /**
+   * 「声称 vs 引擎记录」检出器这一跑**跑过没有**(2026-08-05)。
+   *
+   * ⚠ **缺席 ≠ 零检出**:那条判据只活在 conductor 内环里,而 `dag_run` 那条路可以整张图
+   * 一个 conductor 节点都没有 —— 检出器结构上够不着。首次 shadow 真跑正是这种:6 个节点无一
+   * conductor,账本记成 `observations: []`,与"检查过、零检出"逐字相同。按 entry 数,
+   * 约一半流量走这条路 → 活体基率的分母会错近一倍。
+   *
+   * 三态(仓规第一条 `NULL ≠ 0 ≠ 不适用`):
+   *   缺席 = 这条路**不适用**(不进分母)· `findings: 0` = 检查过零检出 · `findings > 0` = 检出。
+   */
+  claimCheck?: { rounds: number; nodes: number; findings: number };
+  /**
    * **协作式取消** (D-P) 的留痕: 给了就说明本次 run 是被叫停的, 不是自然跑完的。
    *
    * ⚠ 调用方**不许把它读成失败, 也不许读成成功**: 已跑完的节点全在 `results` 里、checkpoint 全在盘上,
