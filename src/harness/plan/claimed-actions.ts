@@ -68,8 +68,59 @@ const RULES: ReadonlyArray<{ name: string; re: RegExp }> = [
  */
 const VERIFICATION_FACT = /命令退出码符合预期/;
 
+/**
+ * agent leaf 经 bash 跑过的命令,渲染成一行引擎事实(2026-08-05)。
+ *
+ * **写的人和读的人在同一个文件里**,这是刻意的:`命令退出码符合预期` 那一行今天由
+ * `executor-dag` 写、由这里的正则读,格式没有共同真源 —— 改一处静默失效。新加的这条不再犯。
+ *
+ * ⚠ 退出码缺席(闸拒 / 起不来 / 被中止)写成「无退出码记录」而不是 `exit 0`:
+ * 「跑了但没拿到结果」与「跑通了」是两件事,编一个 0 就把前者伪装成后者。
+ */
+export function renderShellRunFact(run: { command: string; exitCode?: number }): string {
+  // 命令里的换行/连续空白压平 —— 事实是**一行**, 多行会把后面的行读成独立事实。
+  const cmd = run.command.replace(/\s+/g, ' ').trim().slice(0, 160);
+  return `执行命令: ${cmd} (${run.exitCode === undefined ? '无退出码记录' : `exit ${run.exitCode}`})`;
+}
+
+/** {@link renderShellRunFact} 的反向:从事实行取回命令与退出码(取不出 → null)。 */
+function parseShellRunFact(fact: string): { command: string; exitCode: number | null } | null {
+  const m = /^执行命令: (.+) \((?:exit (-?\d+)|无退出码记录)\)$/.exec(fact);
+  if (!m) return null;
+  return { command: m[1]!, exitCode: m[2] === undefined ? null : Number(m[2]) };
+}
+
+/**
+ * 「这条命令算不算一次校验」——**刻意很窄**,与判据本体同一条纪律。
+ *
+ * 宽在这里的代价与判据那边**方向相反**:判据宽 = 误伤正常交付;这张表宽 = **让判据闭嘴**
+ * (一个 `ls` 就赦免整个节点的全部声称)。所以宁可漏认几个真校验命令 ——
+ * 漏认的后果只是"照旧报出来",与补这条通道之前一样,不产生新盲点。
+ */
+const VERIFICATION_COMMAND =
+  /(?:^|[\s;&|(])(?:(?:bun|npm|pnpm|yarn|deno)\s+(?:run\s+)?(?:test|typecheck|lint|check)|vitest|jest|pytest|mocha|tsc|eslint|biome|(?:go|cargo)\s+test|make\s+(?:test|check|lint))\b/i;
+
+/**
+ * 引擎记录里**能够支撑「校验通过」类声称**的事实。两种形状:
+ *
+ * ① command 节点按预期退出码收尾(规划期定死的命令,引擎执行并核对);
+ * ② agent leaf 经 bash 真跑过一条**校验类命令且退出码为 0**(2026-08-05 补的「诚实自验」通道)。
+ *
+ * `写入文件` / `读取文件` 支撑不了 —— 它们只说"东西在盘上",不说"跑过且过了"。
+ *
+ * ⚠ **已知的粗**:这是**节点级的一个布尔**,不是逐条声称去配对应记录。于是一个真跑过
+ * `bun test` 的节点,它说的**任何**校验类声称(包括「已过 verifier 复核」)都会被一并放过。
+ * 文件头那个谓词本来是逐动作的子集关系;收成布尔是 command 节点那版就有的粗,补通道时
+ * **刻意没顺手改** —— 改判据本身要单独量(否则记录变宽与判据变严两个变量一起动,读数分不清)。
+ */
 export function recordSupportsVerification(facts: readonly string[] | undefined): boolean {
-  return (facts ?? []).some((f) => VERIFICATION_FACT.test(f));
+  return (facts ?? []).some((f) => {
+    if (VERIFICATION_FACT.test(f)) return true;
+    const run = parseShellRunFact(f);
+    // 退出码非 0 **不算支撑**: 「跑了测试但红了」与「跑过且过了」是相反的两件事 ——
+    // 前者若配上「测试全部通过」的声称, 那是比无据更硬的矛盾。
+    return run !== null && run.exitCode === 0 && VERIFICATION_COMMAND.test(run.command);
+  });
 }
 
 /** 按句读切分(中英文都切)。空句丢掉。 */
@@ -201,12 +252,21 @@ export function renderUnsupportedClaims(findings: readonly UnsupportedClaimFindi
  * 2. **英文之外的其它语言**。规则是中英双语的,别的语种会静默漏过。
  * 3. **改写成不含"通过/无误"的等价说法**(如「零缺陷」「一切正常」)。
  *    这条是真漏洞:判据靠词形,不靠语义。**它拦的是"顺手编一句",不是对抗性绕过。**
- * 4. **facts 里没有 verifier 记录这件事本身**。引擎今天不记录 verifier 跑没跑,
- *    于是任何 verifier 声称都判"无据" —— 方向是对的,但根子上该补的是**记录通道**。
+ * 4. **verifier 类声称在节点级恒判"无据"** —— 而这**不是记录通道缺失**(2026-08-05 查清)。
+ *    引擎其实记 verifier 裁决:`ExecutorDagResult.verification` + 留痕库的 `verification` 列。
+ *    真正的原因是**次序**:那一发是 **run 级**的、跑在整张图**判完之后**,而这条判据在每一轮
+ *    judge **之前**求差集。于是一个子节点在第 N 轮说「已过 verifier 复核」时,本次运行里
+ *    压根还不存在任何 verifier 裁决可供比对 —— 判"无据"是对的,而且没有记录通道能改变它。
+ *    (要让它可支撑,得先有**节点级**的校验记录;`postcondition` 那个字段至今零消费者。)
+ * 5. **一次校验赦免全部声称**。见 {@link recordSupportsVerification} 的注:节点级布尔,
+ *    不是逐条声称配对应记录。
  */
 export const KNOWN_OUT_OF_SCOPE = [
   'human-actions',
   'non-cjk-en-languages',
   'paraphrase-without-pass-word',
-  'no-verifier-fact-channel',
+  // 原名 `no-verifier-fact-channel` —— 那个名字把成因说反了(通道是有的,次序不对),
+  // 而按错的成因去修就会去补一条补了也不管用的记录通道。
+  'verifier-verdict-is-run-level',
+  'node-level-boolean-not-per-claim',
 ] as const;

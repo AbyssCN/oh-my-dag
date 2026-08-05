@@ -139,15 +139,19 @@ export interface DagRunRecord {
    */
   outcome?: RunOutcomeKind;
   /**
-   * **冻结判据这次判了什么**(N9, 2026-07-31)。`ExecutorDagResult.verification` 的两位。
+   * **DAG 级 verifier 这次判了什么**(N9, 2026-07-31;⚠ 名字勘误见下)。
    *
-   * 为什么它值得单独一列而不是从 {@link outcome} 推:两者问的是**不同的问题**,而 N9 的
-   * 「判据轴」要的恰恰是**它们不一致的那一格**——
-   * judge 判收敛(`outcome` 说好了)而验收命令没过 = 判据说了不算;
-   * judge 判未收敛而验收命令过了 = 白转了几轮。这两格是「收敛判据可不可信」的**唯一**证据面,
-   * 而它们在任何单独一位上都看不见。
+   * 来源逐字是 `ExecutorDagResult.verification`,而那一位**只由 `config.verifier` 写**
+   * (executor-dag 里 `verification = { pass: verdict.pass, … }` 那一行是唯一的写点)——
+   * 也就是跑完整张图之后那一发**跨模型 review 级审查**,不是冻结判据。
    *
-   * ⚠ 缺席 = 早于本次改动的行(**没记**),不是 `pass:false`。
+   * ⚠ **2026-08-05 勘误**:这段原文写的是「冻结判据这次判了什么」,并把 {@link criteria} 那条
+   * 「judge 与验收命令不一致的那一格」的理由抄在了这里。两者是**两个闸**:冻结判据的读数在
+   * `criteria.oracle`(goal 路径按 runId 回填),本列从来不是它。按原文去读这一列,会把
+   * 「verifier 说没过」念成「验收命令没过」—— 而这两件事的下一步相反(前者去看 review 意见,
+   * 后者去看验收命令)。同图鉴里「注释写对了、断言写反了」那一族:标签错在读数上是静默的。
+   *
+   * ⚠ 缺席 = 这次没配 verifier(`dag_run` 早期路径)或早于本次改动,**不是** `pass:false`。
    */
   verification?: { pass: boolean; reason?: string };
   /**

@@ -132,8 +132,8 @@ export function agentScaffold(opts: {
 }
 
 // 类型单一真理源 = leaf-runners.ts (executor-dag 只认接口形状, 不 import 实现) — 这里 re-export 保旧调用面。
-export type { AgentLeafInput, AgentLeafResult, AgentLeafRunner, FileWriteEffect } from './leaf-runners';
-import type { AgentLeafInput, AgentLeafResult, AgentLeafRunner, FileWriteEffect } from './leaf-runners';
+export type { AgentLeafInput, AgentLeafResult, AgentLeafRunner, FileWriteEffect, ShellRun } from './leaf-runners';
+import type { AgentLeafInput, AgentLeafResult, AgentLeafRunner, FileWriteEffect, ShellRun } from './leaf-runners';
 
 export interface AgentLeafRunnerOpts {
   /** 工具落盘的工作根。默认 process.cwd()。每个 agent leaf 应被 scope 到此根下的原子产物。 */
@@ -513,6 +513,9 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     const FILE_READ_TOOLS = new Set(['read', 'hashline_read']);
     const touched = new Set<string>();
     const readPaths = new Set<string>();
+    // bash 痕迹采集 (2026-08-05)。配对逻辑抽成纯件 (见 createShellRunCollector) —— 它是这条链上
+    // 唯一有判断的地方 (缺退出码不许编 0 · 闸拒的命令也要记), 留在闭包里就只能"接上了"而验不了。
+    const shell = createShellRunCollector();
     // §8.5 效果指标: 写**之前**先按住内容, 写完再比 —— 「写完了」和「写变了」是两个数。
     // 快照只在 start 时取一次: end 时原文已经没了, 事后补不出来 (这是为什么它必须挂在这条链上,
     // 而不能做成一个跑完之后扫一遍盘的脚本)。
@@ -561,8 +564,10 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
         } else if (FILE_READ_TOOLS.has(e.toolName)) {
           if (typeof args.path === 'string' && args.path.trim()) readByCall.set(e.toolCallId, args.path);
         }
+        shell.note(e);
       } else if (e.type === 'tool_execution_end') {
         pendingTools = Math.max(0, pendingTools - 1);
+        shell.note(e); // ⚠ 在 `!isError` 之外记 —— 理由见 createShellRunCollector 的注
         if (!e.isError) {
           const ps = pathByCall.get(e.toolCallId);
           if (ps) {
@@ -776,6 +781,9 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     return {
       text, usage, promptVersion, filesTouched: [...touched], filesRead: [...readPaths], cwd, toolCalls, stalled, writeEffects,
       ...(spinSummary && spinSummary.spinEvents > 0 ? { spin: spinSummary } : {}),
+      // 一条都没跑 → **缺席**而不是 `[]`: 「这个 leaf 没用过 bash」与「这条采集没接」在读数上
+      // 必须分得开 (同 spin / observations 那条口径)。
+      ...(shell.runs().length ? { shellRuns: shell.runs() } : {}),
     };
   };
 }
@@ -796,6 +804,46 @@ export interface FileSnapshot {
  * 二进制文件按字节读: 行数对 PNG 之类没有意义(会是个大数), 但 `noop` 仍然准, 而 noop 才是这条
  * 指标要抓的东西。这与 S1 语料里 `binary-claim` 那一段同一个取舍: 量不准的那一格明说, 别装准。
  */
+/**
+ * **bash 痕迹采集器** (2026-08-05) —— 把工具事件流配对成 {@link ShellRun}。
+ *
+ * 补的是「诚实自验在引擎记录里不存在」这个洞: agent 手里有 bash,「我跑了 `bun test`, 全过」
+ * 是合法自验的主要形状, 而引擎此前只记 `toolCalls` 的**次数** —— 数不出跑的是什么、过没过。
+ *
+ * 抽成纯件是因为这里有**三个会静默错的判断**, 留在 runner 闭包里就只验得了"接上了":
+ *   ① **命令与退出码分属两个事件** (start 带 args.command, end 带 result.details.exitCode),
+ *      必须按 toolCallId 配对 —— 配错就是把 A 的退出码安到 B 头上。
+ *   ② **退出码拿不到时不许编 0**。闸拒 (工具抛错, 压根没有 details) / 平台没给, 都是**缺席**;
+ *      编个 0 出来就是把"没记"伪装成"跑通了", 而这条通道存在的意义正是分开这两者。
+ *   ③ **闸拒的命令也要记**。写/读那两条采集只记成功是对的 (失败的写不是产物), 而这里记的是
+ *      **动作发生过** —— 「跑了但被拒」与「压根没跑」是两件事, 只记成功就把它们抹平了。
+ */
+export function createShellRunCollector(): {
+  note(e: { type: string; toolCallId?: string; toolName?: string; args?: unknown; result?: unknown; isError?: boolean }): void;
+  runs(): ShellRun[];
+} {
+  const out: ShellRun[] = [];
+  const byCall = new Map<string, string>();
+  return {
+    note(e) {
+      if (e.toolName !== 'bash' || !e.toolCallId) return;
+      if (e.type === 'tool_execution_start') {
+        const cmd = (e.args as { command?: unknown } | undefined)?.command;
+        if (typeof cmd === 'string' && cmd.trim()) byCall.set(e.toolCallId, cmd.trim());
+        return;
+      }
+      if (e.type !== 'tool_execution_end') return;
+      const command = byCall.get(e.toolCallId);
+      if (command === undefined) return; // 没见过 start (事件丢了) → 不编一条出来
+      byCall.delete(e.toolCallId);
+      const details = e.isError ? undefined : (e.result as { details?: { exitCode?: unknown } } | undefined)?.details;
+      const exitCode = typeof details?.exitCode === 'number' ? details.exitCode : undefined;
+      out.push({ command, ...(exitCode === undefined ? {} : { exitCode }), ok: exitCode === 0 });
+    },
+    runs: () => out,
+  };
+}
+
 /**
  * 两张快照 → 一条效果指标 (§8.5)。**纯函数**, 与读盘分开, 于是 noop 的判据本身可以被单独钉住 ——
  * 而它正是这条指标唯一容易搞错的地方: 直觉会写成 `lineDelta === 0`, 那是错的。
