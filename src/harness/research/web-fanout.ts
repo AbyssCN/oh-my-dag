@@ -67,21 +67,28 @@ export const DEFAULT_WEB_STABLE_PREFIX =
 
 /**
  * 跨家族发散池 (owner 2026-07-27): lens gen + synth framing 逐单元轮不同模型族 (「同族 N 单元共享盲点」)。
- * mimo-v2.5-pro 权重 3 → 占 50% (走订阅, cost≈0), 另 50% 由 qwen/minimax/deepseek 三付费 Go 家族分。
+ *
+ * ⚠ **2026-08-05 撤掉 `xiaomi-token-plan-ams:mimo-v2.5-pro`**(原占 50% 权重)。两条理由:
+ *   ① 该座实测 `429 quota exhausted`,留着就是让整轮 fanout 有一半概率挂;
+ *   ② 路由口径:**mimo 只走 opencode-go,且只用于多模态** —— 这里是纯文本活。
+ * 撤掉之后权重表空了 (它当初就只为 mimo 那一条存在),三个 Go 家族均分。
+ * 发散本身不是质量瓶颈:2026-07-28 跨家族发散 eval 的结论是「无互补盲点,只有能力排序」
+ * (79% vs 81% 在噪声内),所以少一个家族不值得再买一份订阅。
  */
 export const LENS_DIVERGENCE_POOL = [
   'opencode-go:qwen3.7-plus',
   'opencode-go:minimax-m3',
   'opencode-go:deepseek-v4-pro',
-  'xiaomi-token-plan-ams:mimo-v2.5-pro', // mimo 真订阅 (token-plan, cost0); ≠ sk- 按量端点 (已打光)
 ];
-export const LENS_DIVERGENCE_WEIGHTS: Record<string, number> = {
-  'xiaomi-token-plan-ams:mimo-v2.5-pro': 3,
-};
+export const LENS_DIVERGENCE_WEIGHTS: Record<string, number> = {};
 /** judge panel 跨族池: K 维度逐个轮不同族, 降单模型系统偏见。
  * 2026-07-28: GPT(openai-codex/Codex) 在 research 大输入聚合上反复 "An error occurred processing your
- * request"/context 溢出 → 移出研究判优池 (mimo 1M 打头 + glm/kimi 保跨族)。GPT 仍是 dag_run 的 conductor/review。 */
-export const JUDGE_PANEL_POOL = ['xiaomi-token-plan-ams:mimo-v2.5-pro', 'opencode-go:glm-5.2', 'kimi-coding:k3'];
+ * request"/context 溢出 → 移出研究判优池 (1M 上下文打头 + glm/kimi 保跨族)。GPT 仍是 dag_run 的 conductor/review。
+ *
+ * ⚠ 2026-08-05: 打头那位从 `xiaomi-token-plan-ams:mimo-v2.5-pro` 换成 `opencode-go:minimax-m3`
+ * (理由同上池)。**换的时候盯的是"1M 上下文"这条约束不是模型名** —— minimax-m3 同为 1M 上下文
+ * (`model-caps.ts`),而那正是 mimo 当初被选中打头的原因(大输入聚合会撑爆小窗口)。 */
+export const JUDGE_PANEL_POOL = ['opencode-go:minimax-m3', 'opencode-go:glm-5.2', 'kimi-coding:k3'];
 
 export interface WebFanoutOpts extends RetrieveOpts {
   /** true → conductor (authorFanoutSpec) 按问题+语料自动分解 lens/framing/judge, 替代默认 3 视角。 */
