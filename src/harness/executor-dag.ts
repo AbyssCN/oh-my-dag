@@ -362,6 +362,20 @@ async function executePlan(
   // 同一条观察可能被多轮/多处算出来 (制品 lint 每轮跑一次, 而边一直没补) → 按内容去重,
   // 否则一个没修的问题会在结果面里刷屏, 把真正的新发现淹掉。
   const observations: DagObservation[] = [];
+  /**
+   * 「声称 vs 引擎记录」检出器**跑过没有**(2026-08-05,一次真跑逼出来的)。
+   *
+   * ⚠ 那条判据只活在 conductor 内环里。而首次 shadow 真跑是 `dag_run` 路径:6 个节点**没有一个是
+   * conductor** —— 检出器结构上够不着,账本却记成 `observations: []`,与"检查过、零检出"**逐字相同**。
+   * 按 entry 数了一下,`run`+`dag_run` 有 17 跑走这条路、`dag_goal`+`solve` 14 跑走另一条 ——
+   * 也就是说**约一半流量的分母是错的**,活体基率会被算低近一倍。
+   *
+   * 这就是仓规第一条(`NULL ≠ 0 ≠ 不适用`)的实例:「这条路不适用」被压进了「跑了但零检出」。
+   * 三态由此分开:计数缺席 = 不适用 · rounds>0 且 findings=0 = 检查过零检出 · findings>0 = 检出。
+   */
+  let claimCheckRounds = 0;
+  let claimCheckedNodes = 0;
+  let claimFindings = 0;
   const seenObservations = new Set<string>();
   /** conductor 运行时展开出来的子节点 id —— `detector` 的消费者只在内环里, 别处设了要响亮忽略。 */
   const conductorChildIds = new Set<string>();
@@ -1292,6 +1306,10 @@ async function executePlan(
     // 账本这一侧走 observe (按内容去重 + 出声): 活体基率数的是**不同的发现**, 同一条重复几轮
     // 不该被数成几次。进 prompt 的那一侧用全量, 见返回类型上 claimObs 的注。
     observe(claimObs);
+    // 「检出器到底跑没跑过」的三态计数 —— 见 claimCheckRounds 的声明处。
+    claimCheckRounds++;
+    claimCheckedNodes += orderedChildren.length;
+    claimFindings += claims.length;
     return {
       leaf: {
         id,
@@ -2671,6 +2689,11 @@ async function executePlan(
     results,
     reusedNodes: [...reuse.keys(), ...innerReused],
     observations,
+    // 三态: 缺席 = 这条路上没有 conductor 子图 (检出器**不适用**, 不该进活体基率的分母);
+    // rounds>0 且 findings=0 = 检查过、零检出; findings>0 = 真检出。见 claimCheckRounds 的声明处。
+    ...(claimCheckRounds > 0
+      ? { claimCheck: { rounds: claimCheckRounds, nodes: claimCheckedNodes, findings: claimFindings } }
+      : {}),
     ...(isCancelled() ? { cancelled: { reason: cancelReason(), at: new Date().toISOString(), notRun } } : {}),
     conductorUsage,
     leavesIn,
