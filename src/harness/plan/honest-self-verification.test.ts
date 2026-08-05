@@ -303,3 +303,34 @@ describe('★ 产物闸不许把"闸看不见"说成"它没做"', () => {
     expect(out).toContain('未做任何文件写操作');
   });
 });
+
+// ── ④ 平铺图那道扫描(dag_run 那条路, 此前完全没有覆盖)──────────────────────────
+
+describe('★ 平铺图(无 conductor 节点)也要被扫到', () => {
+  const flatPlan = { name: 'p', nodes: { a: { goal: '干活' } } } as unknown as ConductorPlan;
+
+  async function runFlat(text: string): Promise<{ kinds: string[]; claimCheck: unknown }> {
+    const cfg = {
+      conductorModel: 'c:m',
+      leafModel: 'l:m',
+      generate: async () => ({ text, usage: { in: 1, out: 1 } }),
+      agentTemplates: new Map(),
+    } as unknown as ExecutorDagConfig;
+    const r = await runExecutorDagWithPlan(flatPlan, cfg);
+    return { kinds: (r.observations ?? []).map((o) => o.kind), claimCheck: r.claimCheck };
+  }
+
+  test('★ 平铺图里的伪造声称照样被记进账本(此前这条路一条都收不到)', async () => {
+    // 2026-08-05 首次真跑就是这种图: 6 个节点无一 conductor, 检出器结构上够不着,
+    // 而账本记出来与"查过零检出"逐字相同 —— 按 entry 数它占一半流量。
+    const { kinds, claimCheck } = await runFlat('本次已由引擎实测通过全部单元测试');
+    expect(kinds).toContain('unsupported-claim');
+    expect(claimCheck).toEqual({ conductor: { rounds: 0, nodes: 0, findings: 0 }, flat: { nodes: 1, findings: 1 } });
+  });
+
+  test('干净产出 → 记了、零检出(与"够不着"分得开)', async () => {
+    const { kinds, claimCheck } = await runFlat('已实现 clamp 并写好测试');
+    expect(kinds).not.toContain('unsupported-claim');
+    expect(claimCheck).toEqual({ conductor: { rounds: 0, nodes: 0, findings: 0 }, flat: { nodes: 1, findings: 0 } });
+  });
+});
