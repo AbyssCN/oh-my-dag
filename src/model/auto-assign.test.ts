@@ -200,6 +200,51 @@ describe("autoAssign", () => {
 		expect(fam(m.verifier!.coord)).toBe(fam(m.judge!.coord));
 	});
 
+	test("S-18 座位降级可见: 首选够不着 → via='fallback' 且必须 warn, 不许与首选命中长得一样", () => {
+		// 症状 (改前): 一次成功的降级与一次首选命中的返回值**逐字相同** —— 只有一个 coord。
+		// 于是「首选够不着, 用了备胎」读成「我们选了这个座位」, 而换座位实验与基线对比
+		// 全都假定座位是首选的。安全侧路是好事, **它冒充主路才是缺陷**。
+		const ratingsPath = writeRatings([
+			{ name: "kimi k3", intelligence: 57, costUsd: 0.95, speedTokS: 33 },
+			{ name: "glm 5.2", intelligence: 51, costUsd: 0.32, speedTokS: 179 },
+		]);
+		const warned: unknown[] = [];
+		const spy = spyOn(logger, "warn").mockImplementation(((o: unknown) => {
+			warned.push(o);
+		}) as never);
+		try {
+			// 无 deepseek 渠道 → 类首选 deepseek:deepseek-v4-flash 不可达, 落 Go 溢出链。
+			const m = autoAssign({ channels: [ch("opencode-go", "flat")], ratingsPath });
+			expect(m.conductor!.coord).toBe("opencode-go:kimi-k3");
+			expect(m.conductor!.via).toBe("fallback");
+			const seatWarns = warned.filter((o) => (o as { degraded?: string })?.degraded === "seat-fallback");
+			expect(seatWarns.length).toBeGreaterThan(0);
+			// 判词要说得出**跳过了什么**, 否则"降级了"仍然不够读的人复原当时的条件。
+			expect((seatWarns[0] as { skipped?: string[] }).skipped).toContain("deepseek:deepseek-v4-flash");
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	test("S-18 反向自检: 首选可达 → via='preferred' 且**一条 seat-fallback warn 都没有**", () => {
+		// 上一条断言"降级会响"只有在这一条成立时才有意义 —— 否则它可能是个恒响的铃。
+		const ratingsPath = writeRatings([
+			{ name: "deepseek v4 flash", intelligence: 38, costUsd: 0.01, speedTokS: null },
+		]);
+		const warned: unknown[] = [];
+		const spy = spyOn(logger, "warn").mockImplementation(((o: unknown) => {
+			warned.push(o);
+		}) as never);
+		try {
+			const m = autoAssign({ channels: [ch("deepseek", "token")], ratingsPath });
+			expect(m.leaf!.coord).toBe("deepseek:deepseek-v4-flash");
+			expect(m.leaf!.via).toBe("preferred");
+			expect(warned.some((o) => (o as { degraded?: string })?.degraded === "seat-fallback")).toBe(false);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
 	test("INV-3 降级可见: 只有一个家族可达 → 判与证同族, autoAssign 必须打 warn 而非静默", () => {
 		const ratingsPath = writeRatings([
 			{ name: "deepseek v4 pro", intelligence: 44, costUsd: 0.04, speedTokS: null },

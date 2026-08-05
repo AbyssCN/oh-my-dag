@@ -47,6 +47,22 @@ export interface NodeAssignment {
 	readonly intelligence: number;
 	/** S-T 座位推理档 (随座位下发, 见 NODE_CLASS_THINKING)。 */
 	readonly thinkingLevel: SeatThinking;
+	/**
+	 * **这个座位是候选链上的第几档命中的**(S-18, 2026-08-05)。
+	 *
+	 * `override` = per-node 覆盖 · `preferred` = 类首选 · `fallback` = **首选够不着, 落到了溢出链**。
+	 *
+	 * 为什么要单记这一位:溢出链是**安全侧路** —— 它让跑活下去, 那是好事。但一次成功的降级
+	 * 与一次首选命中在此前的返回值里**逐字相同** (都只有一个 `coord`), 于是读的人把
+	 * 「首选够不着, 我们用了备胎」读成「我们选了这个座位」。
+	 *
+	 * 这一位对本仓不是锦上添花: G6 换座位、以及「基线不在同一条件上整个对比作废」那条纪律,
+	 * 全都建立在**座位是已知的**之上。一次静默溢出会让 A/B 两臂在不知情下跑在同一个座位上。
+	 *
+	 * 注释里的 INV-7 一直写着「未命中/**降级**必 log」—— 此前只兑现了"未命中"那半句
+	 * (全链不可达才 warn), 溢出链降级一个字都没留。INV-3 降级有 warn, 这一格没有, 是不对称。
+	 */
+	readonly via: "override" | "preferred" | "fallback";
 }
 
 /** autoAssign 输出: node 名 → 分配。 */
@@ -218,6 +234,8 @@ interface ResolvedCandidate {
 	coord: string;
 	channel: Channel;
 	rating: ModelRating;
+	/** 命中的候选在 `candidates` 里的下标 (0 = 第一档)。见 {@link NodeAssignment.via}。 */
+	index: number;
 }
 
 function resolveFirstReachable(
@@ -225,12 +243,14 @@ function resolveFirstReachable(
 	channels: readonly Channel[],
 	ratingsPath?: string,
 ): ResolvedCandidate | null {
-	for (const coord of candidates) {
+	for (const [index, coord] of candidates.entries()) {
 		const ch = findChannel(coord, channels);
 		if (!ch) continue;
 		const rating = lookupRating(coord, ratingsPath);
 		if (!rating) continue;
-		return { coord, channel: ch, rating };
+		// index 是**命中位次**, 不是"有没有命中"。调用方靠它把"首选命中"和"降级命中"分开 ——
+		// 此前两者返回值逐字相同, 于是一次静默降级长得像一次正常分配 (S-18)。
+		return { coord, channel: ch, rating, index };
 	}
 	return null;
 }
@@ -273,6 +293,7 @@ export function autoAssign(input: AutoAssignInput): AssignmentMap {
 					channelId: r.channel.id,
 					intelligence: r.rating.intelligence,
 					thinkingLevel: seatThinkingOf(node),
+					via: "preferred", // 单元素链, 命中即 D-14 首选
 				};
 				continue;
 			}
@@ -290,12 +311,27 @@ export function autoAssign(input: AutoAssignInput): AssignmentMap {
 
 		const resolved = resolveFirstReachable(candidates, channels, ratingsPath);
 		if (resolved) {
+			// 候选链的构成: [per-node 覆盖?] + 类首选 + 溢出链。命中位次 → via。
+			// reduce 走的是纯溢出链 (它的首选在上面那条特殊路径里已经试过并落空了)。
+			const overrides = node === "reduce" ? 0 : nodeOverride ? 1 : 0;
+			const via: NodeAssignment["via"] =
+				node === "reduce" ? "fallback" : resolved.index < overrides ? "override" : resolved.index === overrides ? "preferred" : "fallback";
 			result[node] = {
 				coord: resolved.coord,
 				channelId: resolved.channel.id,
 				intelligence: resolved.rating.intelligence,
 				thinkingLevel: seatThinkingOf(node),
+				via,
 			};
+			if (via === "fallback") {
+				// INV-7 的后半句 (「降级必 log」) 此前没兑现 —— 成功的降级与首选命中长得一模一样。
+				// 与 INV-3 那条同款: 不可避免不等于可以静默。
+				logger.warn(
+					{ node, nodeClass, coord: resolved.coord, skipped: candidates.slice(overrides, resolved.index), degraded: "seat-fallback" },
+					`auto-assign: **座位降级** —— ${node} 的首选够不着, 落到溢出链第 ${resolved.index - overrides} 档 (${resolved.coord})。` +
+						`换座位实验与基线对比都假定座位是首选, 这一跑不是。`,
+				);
+			}
 		} else {
 			// INV-7: 全链不可达 → 不写入, 但 log。
 			logger.warn(
