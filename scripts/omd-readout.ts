@@ -210,6 +210,25 @@ export interface ReadoutResult {
     ledgerGap: { total: number; done: number } | null;
   };
   reuse_rate: { reused_nodes: number; total_nodes: number; rate: number | null };
+  /**
+   * 「声称 vs 引擎记录」检出器的活体读数(2026-08-05)。report-only 那条判据要不要升成硬拦,
+   * 就看这一段:① 活体基率 ② 活体误伤(靠 `samples` 里的原句逐条人工核对)。
+   *
+   * ⚠ **分母只算 `claim_check` 非空的跑**。这个口径错过一次:那条判据原本只活在 conductor 内环,
+   * 而 `dag_run` 那条路整张图可以一个 conductor 都没有 —— 判据结构上够不着,而当时账本记出来的
+   * `observations: []` 与"查过零检出"逐字相同,于是约一半流量进错分母,基率被算低近一倍。
+   * ⚠ 两面**宽度不同,不许相加**:conductor 含产物内容读盘,flat 只有 output+facts。
+   */
+  claim_check: {
+    /** 记了这一位的跑数(判据够得着 → 进分母)。 */
+    recordedRuns: number;
+    /** 没记这一位的跑数(早于该列 → **不进分母**,不是零检出)。 */
+    unrecordedRuns: number;
+    conductor: { rounds: number; nodes: number; findings: number; rate: number | null };
+    flat: { nodes: number; findings: number; rate: number | null };
+    /** 检出原句样本(拨闸靠逐条读它判是不是误伤)。 */
+    samples: { runId: string | null; message: string }[];
+  };
 }
 
 interface ReadoutRow {
@@ -223,6 +242,8 @@ interface ReadoutRow {
   outcome: string | null;
   reused: number | null;
   criteria: string | null;
+  claim_check: string | null;
+  observations: string | null;
   acceptance_probe: string | null;
 }
 
@@ -269,6 +290,12 @@ function emptyWorld(meta: ReadoutResult['meta']): ReadoutResult {
     g4_sampling: { denominator: 0, passedBoth: 0, vacuityOnly: 0, demoted: 0, skipped: 0, exploratory: 0 },
     suggestion_acceptance: null,
     reuse_rate: { reused_nodes: 0, total_nodes: 0, rate: null },
+    claim_check: {
+      recordedRuns: 0, unrecordedRuns: 0,
+      conductor: { rounds: 0, nodes: 0, findings: 0, rate: null },
+      flat: { nodes: 0, findings: 0, rate: null },
+      samples: [],
+    },
     // 空世界: 闸分母全 0, ledgerGap 记 null = **不知道** (空留痕库不代表没跑过, 只代表这里没有)。
     gate_denominators: { g3LiveRuns: 0, g4Samples: 0, ledgerGap: null },
   };
@@ -423,7 +450,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
   const optionalCol = (name: string) => (haveCols.includes(name) ? `, ${name}` : `, NULL AS ${name}`);
   const rows = db
     .query(
-      `SELECT id, created_at, run_id, levels, nodes, usage${optionalCol('entry')}${optionalCol('outcome')}${optionalCol('reused')}${optionalCol('criteria')}${optionalCol('acceptance_probe')}` +
+      `SELECT id, created_at, run_id, levels, nodes, usage${optionalCol('observations')}${optionalCol('entry')}${optionalCol('outcome')}${optionalCol('reused')}${optionalCol('criteria')}${optionalCol('claim_check')}${optionalCol('acceptance_probe')}` +
         ` FROM omd_dag_runs ORDER BY created_at ASC`,
     )
     .all() as ReadoutRow[];
@@ -651,9 +678,54 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
   const total_nodes = universe.size;
   const reused_nodes = reused.size;
 
+  // ⑧.5 检出器活体读数 —— **只有这一处算**, CLI 从这里渲染 (两处各算一份必漂)。
+  let ccRecorded = 0;
+  let ccUnrecorded = 0;
+  const ccAcc = { condRounds: 0, condNodes: 0, condFindings: 0, flatNodes: 0, flatFindings: 0 };
+  const ccSamples: { runId: string | null; message: string }[] = [];
+  for (const r of rows) {
+    if (!r.claim_check) {
+      ccUnrecorded++;
+    } else {
+      ccRecorded++;
+      try {
+        const v = JSON.parse(r.claim_check) as {
+          conductor?: { rounds?: number; nodes?: number; findings?: number };
+          flat?: { nodes?: number; findings?: number };
+        };
+        ccAcc.condRounds += v.conductor?.rounds ?? 0;
+        ccAcc.condNodes += v.conductor?.nodes ?? 0;
+        ccAcc.condFindings += v.conductor?.findings ?? 0;
+        ccAcc.flatNodes += v.flat?.nodes ?? 0;
+        ccAcc.flatFindings += v.flat?.findings ?? 0;
+      } catch {
+        // 坏 JSON 不该让整块读数崩; 它已计进 recordedRuns, 差额自然显示为算不出。
+      }
+    }
+    if (!r.observations) continue;
+    try {
+      for (const o of JSON.parse(r.observations) as { kind: string; message?: string }[]) {
+        if (o.kind === 'unsupported-claim' && o.message && ccSamples.length < 20) {
+          ccSamples.push({ runId: r.run_id, message: o.message });
+        }
+      }
+    } catch {
+      /* 同上 */
+    }
+  }
+  /** 每节点检出率。分母 0 → null(**算不出 ≠ 0**,同 tokens_per_success 那条纪律)。 */
+  const ccRate = (findings: number, nodes: number): number | null => (nodes > 0 ? findings / nodes : null);
+
   return {
     meta,
     runs: shown,
+    claim_check: {
+      recordedRuns: ccRecorded,
+      unrecordedRuns: ccUnrecorded,
+      conductor: { rounds: ccAcc.condRounds, nodes: ccAcc.condNodes, findings: ccAcc.condFindings, rate: ccRate(ccAcc.condFindings, ccAcc.condNodes) },
+      flat: { nodes: ccAcc.flatNodes, findings: ccAcc.flatFindings, rate: ccRate(ccAcc.flatFindings, ccAcc.flatNodes) },
+      samples: ccSamples,
+    },
     outcome_distribution,
     entry_distribution,
     cost_per_success,
@@ -795,6 +867,7 @@ interface Row {
   verification: string | null;
   reused: number | null;
   criteria: string | null;
+  claim_check: string | null;
 }
 interface Usage {
   conductorIn: number;
@@ -1074,6 +1147,10 @@ if (import.meta.main) {
     }
   }
 
+  // ⑧.5 的聚合**在 readout() 里**(纯函数那一份), 这里只渲染 —— 两处各算一份必漂,
+  // 而"读数板说 A、执行期说 B"比没有读数板更坏。
+  const cc = contract.claim_check;
+
   // ── ⑨ run 级终止原因分布 (N5 · 五态在上层的证据面) ───────────────────────────
   // ⑦ 数的是**节点**为什么没过, 这一段数的是**整跑**怎么结束的 —— 两张表回答的不是同一个问题:
   // 一跑里九个节点全灭而成因各异, 在 ⑦ 里是九笔账, 在这里只有一笔 (`infra-error`), 而那一笔
@@ -1221,6 +1298,7 @@ if (import.meta.main) {
           nearMiss: nearMiss.map(([h, c]) => ({ outputHash: h, commands: [...c] })), exactRepeat, writeNodes, unreported, totalWrites, totalNoop, noopNodes, median, anomalyFactor: ANOMALY_FACTOR, anomalies,
           notDoneNodes, failureKindCount, failureKindUnrecorded,
           observations: Object.fromEntries(obsCount), runsWithObs, runsUnrecordedObs,
+          claimCheck: cc,
           outcomeCount, runsUnrecordedOutcome, outcomeRecorded,
           axes: {
             criteria: { agree: critAgree, oracleFailed: critOracleFailed, wastedRounds: critWastedRounds, agreeFail: critAgreeFail, unrecorded: critNoVerif, recorded: critRecorded },
@@ -1391,6 +1469,28 @@ if (import.meta.main) {
     console.log('   ⚠ 现在**只报不拦**: max_rounds ≤ 4, 误拦一次掐死一个本可收敛的 run,');
     console.log('     漏报一次只赔一两轮。这个比价下, 0 读数就上硬闸是拿大风险换小收益。');
   }
+
+  console.log(`\n⑧.5 「声称 vs 引擎记录」检出器 (report-only —— 拨不拨闸就看这段)`);
+  if (cc.recordedRuns === 0) {
+    console.log(`   这批 ${cc.unrecordedRuns} 条记录**都没记** claim_check (早于 2026-08-05)。`);
+    console.log('     ⚠ 那是「没记」不是「零检出」, 也不是「判据够不着」—— 跑一次新的才有这段读数。');
+    console.log('     ⚠ 若刚改过引擎却仍然没记: **先怀疑 MCP daemon 跑的是旧代码**, 别先怀疑代码。');
+  } else {
+    console.log(`   判据够得着的运行 ${cc.recordedRuns} 次${cc.unrecordedRuns > 0 ? ` (另有 ${cc.unrecordedRuns} 次没记这一位, **不进分母**)` : ''}`);
+    const fmt = (r: number | null): string => (r === null ? '算不出 (分母 0)' : `${(r * 100).toFixed(1)}%`);
+    console.log(`   conductor 面 (output+facts+产物内容): ${cc.conductor.nodes} 节点 / ${cc.conductor.rounds} 轮 → 检出 ${cc.conductor.findings} 条  [${fmt(cc.conductor.rate)}]`);
+    console.log(`   flat 面      (output+facts, 不读产物): ${cc.flat.nodes} 节点            → 检出 ${cc.flat.findings} 条  [${fmt(cc.flat.rate)}]`);
+    console.log('   ⚠ 两面**不许相加**: 宽度不同 (一个读盘一个不读), 加起来的比例没有意义。');
+  }
+  if (cc.samples.length > 0) {
+    console.log(`   检出原句 (前 ${cc.samples.length} 条 —— **拨闸靠逐条读它判是不是误伤**):`);
+    for (const smp of cc.samples) console.log(`     · [${smp.runId ?? '无 runId'}] ${smp.message.slice(0, 150)}`);
+  }
+  console.log('   判据 (写死在这儿, 免得事后编):');
+  console.log('     · 活体误伤 = 0 (逐条人工核对) **且** 扩语料全绿 → 才谈得上拨成硬拦;');
+  console.log('     · 活体基率 ≈ 0 (真跑里几乎没有伪造声称) → **维持 report-only 是合法结论**,');
+  console.log('       那是"这条闸没有值得付的对象", 记下来收尾, 不是拖延。');
+  console.log('     ⚠ report-only ≠ 零影响: 三条出口里只有账本是真零影响, judge 视图那一路仍会改判词。');
 
   console.log(`\n⑨ run 级终止原因 (N5 · 此前这一层只有 plan_name + 一堆节点状态, 没有"这跑怎么结束的")`);
   if (outcomeRecorded === 0) {
