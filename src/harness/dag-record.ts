@@ -149,6 +149,16 @@ export interface DagRunRecord {
    */
   artifactMove?: { transitions: number; unobserved: number; findings: number };
   /**
+   * **运行时**写竞争这一跑撞得上几次、真撞了几次(2026-08-06)。
+   *
+   * ⚠ 与 `observations` 里那条 `write-race` **同名不同义**:那一条是 `static-lint` 跑前按
+   * `output_path` 声明判死的坏 plan;这一条是真跑时两个并发 leaf 撞在同一条**谁都没声明过**的
+   * 路径上。前者改图,后者要问这两个 leaf 为什么碰同一个文件 —— **下一步相反,所以分开记**。
+   *
+   * 三态: 缺席 = 没记(老行)· `overlaps:0` = 这一跑压根没并发 · `pairs>0` = 真有撞得上的机会。
+   */
+  writeRace?: { overlaps: number; pairs: number; findings: number };
+  /**
    * **这张图是怎么结束的**(N5, 2026-07-31;词表在 `run-outcome.ts`)。
    *
    * 与 `nodes[].failureKind` 的分工:那一位是**每个节点**为什么没过,这一位是**整跑**的终止原因。
@@ -255,6 +265,7 @@ interface Row {
   verification: string | null;
   claim_check: string | null;
   artifact_move: string | null;
+  write_race: string | null;
   reused: number | null;
   criteria: string | null;
   acceptance_probe: string | null;
@@ -314,6 +325,8 @@ function rowToRecord(row: Row): DagRunRecord {
     ...(row.claim_check ? { claimCheck: JSON.parse(row.claim_check) } : {}),
     // 同上: 缺席不编一个 `transitions:0` —— 「没记」与「一次都没判得了」的下一步不同。
     ...(row.artifact_move ? { artifactMove: JSON.parse(row.artifact_move) } : {}),
+    // 同上: 缺席不编一个 `overlaps:0` —— 「没记」与「这一跑没并发」的下一步不同。
+    ...(row.write_race ? { writeRace: JSON.parse(row.write_race) } : {}),
     // `reused: 0` 是"记了且一个没复用", NULL 是"没记" —— 两者不许合并。
     ...(row.reused !== null ? { reused: row.reused } : {}),
     ...(row.criteria ? { criteria: JSON.parse(row.criteria) } : {}),
@@ -409,6 +422,8 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
   if (!cols.includes('claim_check')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN claim_check TEXT`);
   // 同上 (2026-08-06): 「产物没变」判据的分母。老行留 NULL (= 没记, 不是 transitions:0)。
   if (!cols.includes('artifact_move')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN artifact_move TEXT`);
+  // 同上 (2026-08-06): 运行时写竞争。老行留 NULL (= 没记, 不是 overlaps:0)。
+  if (!cols.includes('write_race')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN write_race TEXT`);
   if (!cols.includes('reused')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN reused INTEGER`);
   if (!cols.includes('criteria')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN criteria TEXT`);
   // 入口轴 (2026-08-02): 2026-08-02 之前建的表没这一列, 老行留 NULL (= 没记, 不是 'unknown')。
@@ -418,8 +433,8 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
   if (!cols.includes('acceptance_probe')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN acceptance_probe TEXT`);
   db.run(`CREATE INDEX IF NOT EXISTS omd_dag_runs_run_id ON omd_dag_runs (run_id)`);
   const ins = db.query(
-    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage, observations, claim_check, artifact_move, outcome, verification, reused, criteria, acceptance_probe)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage, observations, claim_check, artifact_move, write_race, outcome, verification, reused, criteria, acceptance_probe)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const byId = db.query(`SELECT * FROM omd_dag_runs WHERE id = ?`);
   const recent = db.query(`SELECT * FROM omd_dag_runs ORDER BY created_at DESC LIMIT ?`);
@@ -482,6 +497,8 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
         // 三态同上一列: NULL = 没记; transitions:0 = 这一跑连一次跨轮比较都没发生 (判据够不着);
         // transitions-unobserved > 0 = 真判过, 那时 findings 才是活体基率的分子。
         result.artifactMove ? JSON.stringify(result.artifactMove) : null,
+        // 三态同上: NULL = 没记; overlaps:0 = 这一跑压根没并发; pairs>0 = 真有撞得上的机会。
+        result.writeRace ? JSON.stringify(result.writeRace) : null,
         // N5: run 级终止原因。**在这里算而不是让调用方传** —— 两个调用面 (dag_run / dag_goal)
         // 各算一遍就是两处会漂的独立判断, 而 `deriveRunOutcome` 是纯函数、读的就是这份 result。
         deriveRunOutcome(result),

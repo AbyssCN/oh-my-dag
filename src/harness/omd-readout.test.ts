@@ -651,6 +651,54 @@ describe('omd-readout · ⑧ 「产物没变」判据的分母 (2026-08-06)', ()
   });
 });
 
+/**
+ * ⑧.6 运行时写竞争 —— 这条通道 2026-08-06 之前**根本不存在**。
+ *
+ * 台账把「leaf 级写竞争频率」标成「等读数」,而 ⑧ 段那 4 次 `write-race` 出自 `static-lint`
+ * (跑之前按 `output_path` 声明判死的坏 plan)。**同名不同义**,而两者的下一步相反 ——
+ * 交接 30 §五 第 2 条。再等也不会有数,因为没有一行代码写它。
+ */
+describe('omd-readout · ⑧.6 运行时写竞争的分母 (2026-08-06)', () => {
+  const withWR = (runId: string, writeRace: { overlaps: number; pairs: number; findings: number } | undefined) => {
+    const db = new Database(':memory:');
+    const rec = createDagRecorder({ db });
+    rec.record(
+      {
+        ...fakeResult({ planName: 'p', plan: { a: { goal: 'x' } }, done: ['a'], reused: [], usage: {} }),
+        ...(writeRace ? { writeRace } : {}),
+      } as never,
+      { runId, entry: 'dag_run', now: 1000 },
+    );
+    return readout({ db, limit: 50 }).write_race;
+  };
+
+  test('★ 没记 → 进 unrecorded, rate=null', () => {
+    const wr = withWR('w1', undefined);
+    expect(wr.recordedRuns).toBe(0);
+    expect(wr.unrecordedRuns).toBe(1);
+    expect(wr.rate).toBeNull();
+  });
+
+  test('★ 记了但没并发 (overlaps:0) → recorded=1 而 rate 仍是 null —— 与上一格分得开', () => {
+    const wr = withWR('w2', { overlaps: 0, pairs: 0, findings: 0 });
+    expect(wr.recordedRuns).toBe(1);
+    expect(wr.overlaps).toBe(0);
+    expect(wr.rate).toBeNull();
+  });
+
+  test('★ 撞车基率的分母是 pairs, **不是** overlaps —— 看不见的那部分不许充数', () => {
+    const wr = withWR('w3', { overlaps: 10, pairs: 4, findings: 1 });
+    expect(wr.rate).toBeCloseTo(0.25, 5); // 1/4, 不是 1/10
+    expect(wr.rate).not.toBeCloseTo(0.1, 5);
+  });
+
+  test('★ 两个槽各自判 —— 「有并发但看不见谁写了什么」与「有机会但没撞上」下一步不同', () => {
+    const wr = withWR('w4', { overlaps: LOOP_NO_MOVE_MIN_N, pairs: 0, findings: 0 });
+    expect(wr.sufficiency.overlaps.enough).toBe(true); // 并发这件事本身可以判了
+    expect(wr.sufficiency.pairs.enough).toBe(false); // 但一次机会都没有 → 基率仍不许读
+  });
+});
+
 describe('omd-readout · 消耗口径分桶 (LoopX 对照, 2026-08-05)', () => {
   /** 一个只含指定 outcome 的最小世界 (每 run 一条记录, 一个节点)。 */
   const world = (runs: { runId: string; failureKind?: string; tokens: number | null }[]): ReadoutResult => {

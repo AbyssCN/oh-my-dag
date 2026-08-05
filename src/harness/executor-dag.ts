@@ -87,6 +87,7 @@ import {
   artifactLintObservations,
   detectLoopNoProgress,
   classifyArtifactMove,
+  detectRuntimeWriteRace,
   detectVerbatimDrop,
   type RoundShape,
   ARTIFACT_ABSENT,
@@ -128,6 +129,8 @@ interface ExecOnce {
   claimCheck: NonNullable<ExecutorDagResult['claimCheck']>;
   /** 「产物没变」判据判得了多少次 (分母; 见 ExecutorDagResult.artifactMove)。 */
   artifactMove: NonNullable<ExecutorDagResult['artifactMove']>;
+  /** 运行时写竞争的机会与命中 (见 ExecutorDagResult.writeRace)。 */
+  writeRace: NonNullable<ExecutorDagResult['writeRace']>;
   /** D-P: 本轮是被叫停的 (给了就非自然结束); notRun = 一个都没起跑过的节点。 */
   cancelled?: { reason: string; at: string; notRun: string[] };
 
@@ -392,6 +395,19 @@ async function executePlan(
   let moveTransitions = 0;
   let moveUnobserved = 0;
   let moveFindings = 0;
+  /**
+   * **执行窗口真重叠过的节点对**(2026-08-06)—— 运行时写竞争的机会面。
+   *
+   * 今天 `write-race` 这个名字下只有**跑前静态**那一半(`static-lint`, 看 `output_path` 声明)。
+   * 一个 leaf 经 bash 写出去的文件不在任何声明里, 于是两个并发兄弟真撞了**没有任何一处知道** ——
+   * 而台账一直把静态那几次读数当成运行时这条的证据。两者的下一步相反, 所以要各记各的。
+   *
+   * 键取排序后的 `a b`, 于是同一对只记一次(重叠是无向的)。窗口 = [起跑, leaf 返回],
+   * **不含** fan-in 摘要那段(摘要期不写产物, 算进去会造出假重叠)。
+   */
+  const liveNow = new Set<string>();
+  /** 键 = 排序后的两个 id 拼串(只为去重);值 = 那两个 id 本身 —— **不从键上拆回来**。 */
+  const overlapPairs = new Map<string, [string, string]>();
   /** 内环那道已经检过的子节点 id —— 平铺那道跳过它们, 两个分母**不重叠**。 */
   const claimCheckedIds = new Set<string>();
   let flatCheckedNodes = 0;
@@ -2721,9 +2737,18 @@ async function executePlan(
         // (非严格 FIFO: 被闸挡住的节点让位, 保持吞吐)。null = 满闸/ready 空 → 等 settle 释放。
         const id = sched.takeRunnable();
         if (id == null) return;
+        // 运行时写竞争的机会面: 起跑这一刻还在飞的每一个节点, 都与本节点的窗口重叠过。
+        for (const y of liveNow) {
+          const [p1, p2] = [id, y].sort() as [string, string];
+          overlapPairs.set(`${p1}\u0000${p2}`, [p1, p2]);
+        }
+        liveNow.add(id);
         runNode(id)
           .catch((e) => failedFromThrow(id, e)) // INV-6: leaf 抛错隔离成 failed (保留败因), 不连坐其它节点
           .then(async (r) => {
+            // 写窗口到此为止 —— **不等 sched.release**: 那之后还有 fan-in 摘要那段 await,
+            // 而摘要期一个字都不往产物上写, 算进去只会造出假重叠。
+            liveNow.delete(id);
             // fan-in 定向摘要在 running-- 之前 await: 保持槽位占用跨摘要在飞 → 收敛判据 (running===0)
             // 不会误触发, dependents 也不会在摘要就绪前被释放 (settle 在此后)。fail-open, 永不抛。
             const { r: settledR, view } = await maybeFaninView(id, r);
@@ -2745,6 +2770,23 @@ async function executePlan(
   // 最后再 lint 一次: 内环每轮跑的那次只覆盖有 conductor 节点的图, 而"B 读了 A 写的文件却没有边"
   // 在**平铺的普通图**上同样发生 (那种图一个 conductor 节点都没有, 上面那条路根本不经过)。
   runArtifactLint();
+
+  // ── 运行时写竞争 (2026-08-06, 只报不拦) ────────────────────────────────────────
+  // 此前 `write-race` 只有**跑前静态**那一半 (看 output_path 声明), 于是两个并发兄弟经 bash
+  // 撞在同一条没声明的路径上时, 没有任何一处知道。判据与分母都在 detectRuntimeWriteRace 上。
+  // ⚠ 路径解析用**这个节点自己的产物根** —— 同 collectRoundArtifacts 那条: R2 隔离档下两个 leaf
+  //   各在自己的 worktree 里写 out.md, 比相对路径会把整个隔离档报成一片红。
+  const raceProbe = (() => {
+    const absPaths = (id: string): ReadonlySet<string> => {
+      const r = results[id];
+      if (!r?.filesTouched?.length) return new Set();
+      const root = r.artifactRoot ?? continuity?.repoRoot ?? process.cwd();
+      return new Set(r.filesTouched.map((p) => (p.startsWith('/') ? p : join(root, p))));
+    };
+    const pairs = [...overlapPairs.values()].map(([a, b]) => ({ a, b, aPaths: absPaths(a), bPaths: absPaths(b) }));
+    return detectRuntimeWriteRace(pairs);
+  })();
+  observe(raceProbe.observations);
 
   // 最后再扫一次「声称 vs 引擎记录」—— **与上面那条 lint 同一个理由**: 内环那道只覆盖有 conductor
   // 节点的图, 而平铺的普通图 (`dag_run` 那条路) 一个 conductor 都没有, 上面那条路根本不经过。
@@ -2791,6 +2833,8 @@ async function executePlan(
     },
     // 同上一条纪律 (2026-08-06): 「产物没变」判据的分母 —— 可比较的跨轮次数, 不是运行次数。
     artifactMove: { transitions: moveTransitions, unobserved: moveUnobserved, findings: moveFindings },
+    // 同上 (2026-08-06): 运行时写竞争 —— overlaps 是有没有并发, pairs 才是撞得上的机会。
+    writeRace: { overlaps: raceProbe.overlaps, pairs: raceProbe.pairs, findings: raceProbe.findings },
     ...(isCancelled() ? { cancelled: { reason: cancelReason(), at: new Date().toISOString(), notRun } } : {}),
     conductorUsage,
     leavesIn,
@@ -3060,6 +3104,7 @@ async function runDagInternal(
     claimCheck: exec.claimCheck,
     // 同上那条警告: 不透传 = 账本那一列恒 NULL, 而 NULL 读上去是"早于该改动", 症状全静默。
     artifactMove: exec.artifactMove,
+    writeRace: exec.writeRace,
     ...(exec.cancelled ? { cancelled: exec.cancelled } : {}),
     usage: {
       conductor: conductorUsage,
