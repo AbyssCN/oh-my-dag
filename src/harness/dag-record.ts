@@ -114,17 +114,19 @@ export interface DagRunRecord {
   nodes: DagRunNode[];
   usage: { conductorIn: number; conductorOut: number; leavesIn: number; leavesOut: number; leavesCacheHit: number };
   /**
-   * 图外观察者本次的产出,**压成 {kind, nodes} 两位**(2026-07-31)。
+   * 图外观察者本次的产出:`{kind, nodes}` 归组统计 + **原句**(2026-07-31 立,2026-08-05 补原句)。
    *
-   * 为什么不存 `message`: 消息是写给下一轮 conductor 的长句,排障时在 `_loop-<nodeId>.json` 里
-   * 有全文;而留痕库该存的是**能长期归组统计**的东西 —— 同 `writeCounts` 压成两个数的那条理由。
+   * 记它的直接用处很具体:这些检测器今天全是**只报不拦**,要不要升成闸、阈值取几,
+   * 取决于它在真跑上多久命中一次 —— 不记下来,那个数就要靠人去读日志重数一遍。
    *
-   * 记它的直接用处只有一个,而且是具体的:「产物没变」检测器(G5 正解)今天**只报不拦**,
-   * 要不要把它升成 BLOCKED、K 取几,取决于它在真跑上多久命中一次 ——
-   * 不记下来,那个数就又要靠人去读日志重数一遍(而那正是读数板存在的理由)。
+   * ⚠ **原句是 2026-08-05 补的,补的是一个真缺口**:立这一列时的理由是"全文在
+   * `_loop-<nodeId>.json` 里"。而那份 journal ① 只在 `max_rounds > 1`(会请 judge)时才写,
+   * 单轮档整个不存在;② **每轮覆写**。于是「不报只拦不下来的那半」——**逐条人工核对**——
+   * 在最常见的形状上根本无处可查。而 `unsupported-claim` 这类判据的拨闸决定,
+   * 靠的正是逐条读原句判它是不是误伤。截到 400 字符:归组统计不需要长句,人工核对够用。
    * 缺席 = 早于本次改动的记录。
    */
-  observations?: { kind: string; nodes: string[] }[];
+  observations?: { kind: string; nodes: string[]; message?: string }[];
   /**
    * **这张图是怎么结束的**(N5, 2026-07-31;词表在 `run-outcome.ts`)。
    *
@@ -419,7 +421,9 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
         JSON.stringify(result.levels),
         JSON.stringify(nodes),
         JSON.stringify(usage),
-        JSON.stringify((result.observations ?? []).map((o) => ({ kind: o.kind, nodes: o.nodes }))),
+        JSON.stringify(
+          (result.observations ?? []).map((o) => ({ kind: o.kind, nodes: o.nodes, message: o.message.slice(0, 400) })),
+        ),
         // N5: run 级终止原因。**在这里算而不是让调用方传** —— 两个调用面 (dag_run / dag_goal)
         // 各算一遍就是两处会漂的独立判断, 而 `deriveRunOutcome` 是纯函数、读的就是这份 result。
         deriveRunOutcome(result),

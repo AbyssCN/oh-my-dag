@@ -126,6 +126,61 @@ export function findUnsupportedClaims(nodes: readonly CheckableNode[]): Unsuppor
   return out;
 }
 
+/**
+ * judge 视图里一个子节点的样子(与 `JudgeChildView` 同形,**刻意结构化**不 import 它:本件是纯判据)。
+ */
+export interface JudgeViewLikeNode {
+  id: string;
+  output: string;
+  facts?: readonly string[];
+  artifacts?: ReadonlyArray<{ path: string; body: string; readable: boolean }>;
+}
+
+/**
+ * judge 视图 → 可检节点。**这个转换只许有一份**(eval 与生产共用)。
+ *
+ * ⚠ `readable: false` 的那些**不是文件内容**,是一句说明文字(「引擎未能读到该文件」/
+ * 「非文本文件, 未展示内容」/「超出本节点产物预算」)。拿它去匹配就是在占位符上产生假命中 ——
+ * 2026-08-05 eval 期实测踩过。判据的输入面漏了这道筛,读数就不是判据的读数。
+ */
+export function checkableFromJudgeView(children: readonly JudgeViewLikeNode[]): CheckableNode[] {
+  return children.map((c) => ({
+    id: c.id,
+    output: c.output,
+    ...(c.facts ? { facts: c.facts } : {}),
+    ...(c.artifacts
+      ? { artifacts: c.artifacts.filter((a) => a.readable).map((a) => ({ path: a.path, content: a.body })) }
+      : {}),
+  }));
+}
+
+/**
+ * 把证据块接在 judge 视图后面 —— **生产与 eval 必须是同一个形状**。
+ *
+ * eval(`scripts/eval-judge-artifacts.ts --claim-check`)量到的 3/4 类召回 0→94~100% 是
+ * **这个拼法**的读数。生产另拼一份,那批数就不再是生产的数(同「基线不在同一条件上」那族坑)。
+ * 空发现 → 原样返回,一个字都不加(视图里出现"未发现问题"就是替判官下结论)。
+ */
+export function appendClaimEvidence(base: string, findings: readonly UnsupportedClaimFinding[]): string {
+  const evidence = renderUnsupportedClaims(findings);
+  return evidence ? `${base}\n\n${evidence}` : base;
+}
+
+/**
+ * 一条发现压成**一行人话** —— 给账本(`DagObservation.message`)和下一轮 prompt 用。
+ *
+ * 与 {@link renderUnsupportedClaims} 的分工:那份是给判官的多行证据块(按节点分组、逐条列),
+ * 这份是给「图外观察者」通道的一行(账本按行归组统计,长句在那里读不成表)。
+ * **两份都带原句** —— 事后人工核对误伤,靠的就是原句。
+ */
+export function renderClaimObservation(f: UnsupportedClaimFinding): string {
+  const list = f.claims.map((c) => `${c.source} 「${c.sentence.slice(0, 120)}」`).join(' · ');
+  return (
+    `[引擎记录核对 · 只报不拦] ${f.nodeId} 有 ${f.claims.length} 处「声称引擎已校验通过」, ` +
+    `而引擎记录里没有对应事实(只记了写入/读取文件): ${list}`
+  );
+}
+
 /** 报给判官/调用方的证据文本 —— **带原句**,不是"有问题"三个字。 */
 export function renderUnsupportedClaims(findings: readonly UnsupportedClaimFinding[]): string {
   if (!findings.length) return '';

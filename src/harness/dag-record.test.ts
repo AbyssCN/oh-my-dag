@@ -296,3 +296,39 @@ describe('N9 · 两条判据按 runId 回填', () => {
     rec.close();
   });
 });
+
+describe('观察者留痕:归组的两位 + **原句**', () => {
+  /** 带一条观察的图结果。 */
+  const withObs = (): ExecutorDagResult =>
+    ({
+      ...fakeResult('obs'),
+      observations: [
+        {
+          kind: 'unsupported-claim',
+          nodes: ['P::abc'],
+          message: '[引擎记录核对 · 只报不拦] P::abc 有 1 处「声称引擎已校验通过」: output 「本文件已由引擎实测通过」',
+        },
+      ],
+    }) as unknown as ExecutorDagResult;
+
+  test('★ 原句进留痕库 —— 只报不拦的判据要拨闸, 靠的是逐条读原句判是不是误伤', () => {
+    // 立这一列时压成了 {kind, nodes} 两位, 理由是"全文在 _loop-<nodeId>.json 里"。
+    // 而那份 journal 只在 max_rounds>1 时才写、且每轮覆写 —— 最常见的单轮档整个查不到。
+    const rec = createDagRecorder({ path: ':memory:' });
+    const id = rec.record(withObs(), { runId: 'r-obs' });
+    const o = rec.get(id)!.observations!;
+    expect(o[0]!.kind).toBe('unsupported-claim');
+    expect(o[0]!.nodes).toEqual(['P::abc']);
+    expect(o[0]!.message).toContain('本文件已由引擎实测通过');
+    rec.close();
+  });
+
+  test('★ 一条观察都没有 → **空数组**, 不是缺席 (两者是不同的读数)', () => {
+    // NULL ≠ 0: `[]` = 这一跑记了、检出为零(可以进"活体基率的分母");
+    // 缺席 = 这一行早于该列存在(压根没记)。把后者读成"零检出"就是把没量过的跑算进分母。
+    const rec = createDagRecorder({ path: ':memory:' });
+    const id = rec.record(fakeResult('plain'), { runId: 'r-none' });
+    expect(rec.get(id)!.observations).toEqual([]);
+    rec.close();
+  });
+});

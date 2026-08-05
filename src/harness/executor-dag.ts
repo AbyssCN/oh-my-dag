@@ -57,6 +57,13 @@ import { computeReuse, merkleFingerprints } from './plan-passes/semantic-key';
 import { expandConductorNode, subgraphWarnings } from './plan/conductor-expand';
 import { renderRoundForJudge, splitNamedIds, type JudgeChildView } from './plan/conductor-judge';
 import { collectJudgeArtifacts, DEFAULT_ARTIFACT_BUDGET, type ArtifactBudget } from './plan/judge-artifacts';
+import {
+  appendClaimEvidence,
+  checkableFromJudgeView,
+  findUnsupportedClaims,
+  renderClaimObservation,
+  type UnsupportedClaimFinding,
+} from './plan/claimed-actions';
 import { staticLintPlan } from './plan/static-lint';
 import { leafTierGateFindings } from './plan/leaf-tier-gate';
 import { scheduledArtifactFindings } from './plan/invocation-facts';
@@ -675,6 +682,12 @@ async function executePlan(
     leaf: LeafResult,
     round: number,
     children: readonly JudgeChildView[],
+    /**
+     * 「声称的引擎动作 ⊄ 引擎记录」本轮的确定性检出 (2026-08-05, report-only)。
+     * 由 {@link runConductorRound} 从**同一个** children 数组算出来后传进来 —— 在这里重算会
+     * 多一份可漂的输入面 (那正是 `orderedChildren` 逐字重建踩过的坑)。
+     */
+    claims: readonly UnsupportedClaimFinding[],
   ): Promise<{
     converged: boolean;
     reason: string;
@@ -700,7 +713,12 @@ async function executePlan(
         task: goal,
         // judge 看的是**专门渲染的视图**, 不是节点对下游的 output —— 后者带"N/M 成功"的开场白
         // (对 judge 是"都好着呢"的暗示) 且只有可读名没有可点名的 id。
-        extract: () => ({ status: 'done', summary: renderRoundForJudge(children) }),
+        // 确定性差集当**显式证据**接在视图后面 (2026-08-05)。judge 对"产物断言了一件引擎没做过
+        // 的事"基线召回 0/64, 而把这条差集**显式说给它听**之后 3/4 类伪装升到 94~100% ——
+        // 也就是说那不是"模型不行", 是**证据没进视图** (与 S1 产物内容、`[引擎实测]` 那行同源)。
+        // 拼法逐字沿用 eval 的 `--claim-check` 臂 (appendClaimEvidence), 生产与读数同形状。
+        // ⚠ 它**只是证据**: 判还是 judge 判, 引擎这一档一票不铸 (report-only)。
+        extract: () => ({ status: 'done', summary: appendClaimEvidence(renderRoundForJudge(children), claims) }),
         callModelFn: async (req) => {
           // 观测面接线 (2026-07-31)。此前这一发**不带 meta** —— 而 `send()` 的口径是
           // `traceId = meta?.sessionId ?? 自生成`、`name = meta?.role ?? 'model-call'`,
@@ -771,6 +789,20 @@ async function executePlan(
     detector: { rejected: string[]; blocked?: string };
     /** D-12 制品边 lint 本轮**新**发现的观察条目 (去重后; 进下一轮失败原因)。 */
     lint: DagObservation[];
+    /**
+     * 「声称的引擎动作 ⊄ 引擎记录」本轮的确定性检出 (2026-08-05, report-only)。
+     * 判官视图那一路由 {@link judgeConductorRound} 消费; 这里返出来是给账本与下一轮 prompt。
+     */
+    claims: UnsupportedClaimFinding[];
+    /**
+     * 上面那批压成的观察条目 —— **本轮全量, 不是增量**。
+     *
+     * ⚠ 与 `lint` 那条 (只回 observe 判新的) 刻意不同: journal **每轮覆写**, 而
+     * 「上一轮未通过」是本轮快照不是增量。只在首次出现那轮进 prevReason 的话, 盘上留下的最后
+     * 一轮就**没有它** —— 而 report-only 的全部价值正是事后能拿原句人工核对误伤。
+     * 账本那一侧照旧去重 (observe 内部按 kind|nodes|message)。
+     */
+    claimObs: DagObservation[];
     /** 本轮展开出的子节点 id (D-Q 空转检测的比对面)。 */
     childIds: string[];
   }> => {
@@ -860,7 +892,7 @@ async function executePlan(
       logger.warn({ node: id, round, err: msg }, '[omd/executor-dag] conductor 节点展开失败 → failed');
       return {
         leaf: { id, status: 'failed', failureKind: 'infra-error', kind: 'conductor', output: `[conductor 展开失败: ${msg}]`, deps, usage: usageAcc },
-        children: [], usage: usageAcc, results: new Map(), detector: { rejected: [] }, lint: [], childIds: [],
+        children: [], usage: usageAcc, results: new Map(), detector: { rejected: [] }, lint: [], claims: [], claimObs: [], childIds: [],
       };
     }
 
@@ -878,7 +910,7 @@ async function executePlan(
           output: `[子图被拒 (${expand.status}): ${expand.error ?? '空子图 — conductor 没能分解出任何步骤'}]`,
           deps, usage: usageAcc,
         },
-        children: [], usage: usageAcc, results: new Map(), detector: { rejected: [] }, lint: [], childIds: [],
+        children: [], usage: usageAcc, results: new Map(), detector: { rejected: [] }, lint: [], claims: [], claimObs: [], childIds: [],
       };
     }
     if (expand.truncated > 0) {
@@ -1217,6 +1249,23 @@ async function executePlan(
           }]
         : [];
     });
+    // ── 4.6 「声称的引擎动作 vs 引擎记录」确定性核对 (2026-08-05, **只报不拦**) ──────
+    //
+    // 算在 `orderedChildren` 上而不是 childOut: 判官看的就是这个数组, 两者取不同的输入面
+    // 就会出现"报的和判的不是同一批产出" (逐字重建那道坑的下一种形态)。
+    //
+    // 它求的是差集「产物声称的引擎校验动作 ⊆ 引擎记录的动作」, 不是判断题 —— 引擎精确知道
+    // 自己记了什么。判据很窄且**已知会误伤良性语域** (指令句「确保测试通过」、整改回执
+    // 「已按 verifier 意见修改」), 所以这一档三条出口一票不铸: 视图 / 账本 / 下一轮 prompt。
+    const claims = findUnsupportedClaims(checkableFromJudgeView(orderedChildren));
+    const claimObs: DagObservation[] = claims.map((f) => ({
+      kind: 'unsupported-claim' as const,
+      nodes: [f.nodeId],
+      message: renderClaimObservation(f),
+    }));
+    // 账本这一侧走 observe (按内容去重 + 出声): 活体基率数的是**不同的发现**, 同一条重复几轮
+    // 不该被数成几次。进 prompt 的那一侧用全量, 见返回类型上 claimObs 的注。
+    observe(claimObs);
     return {
       leaf: {
         id,
@@ -1235,6 +1284,8 @@ async function executePlan(
       results: roundResults,
       detector: detectorVerdict,
       lint: lintFindings,
+      claims,
+      claimObs,
       childIds,
     };
   };
@@ -1467,7 +1518,7 @@ async function executePlan(
         }
       })();
 
-      const verdict = await judgeConductorRound(id, node.goal ?? id, r.leaf, round, r.children);
+      const verdict = await judgeConductorRound(id, node.goal ?? id, r.leaf, round, r.children, r.claims);
       usageAcc = addUsage(usageAcc, verdict.usage);
       // judge **调不通** → 立刻退环, 不把剩下的轮数烧在一个确定性故障上 (2026-07-31)。
       // 与 §8.4 熔断同一个出口形状, 但 kind 是 `infra-error` 不是 `blocked`: N5 词表里这两格的
@@ -1529,7 +1580,13 @@ async function executePlan(
       } else {
         noArtifactChangeRounds = 0;
       }
-      const roundObs = [...r.lint, ...(noMove ? [noMove] : [])];
+      // ⚠ `r.claimObs` 用**全量**而不是 observe 判新的那批 (lint 走的是后者): journal 每轮覆写,
+      // 「上一轮未通过」是本轮快照。只在首次出现那轮进 prevReason 的话, 盘上留下的最后一轮就
+      // 没有它 —— 而 report-only 唯一的价值就是事后拿原句人工核对误伤 (见 claimObs 的类型注)。
+      // ⚠ 顺带记一笔耦合: prevReason 也是**新颖性坍塌**判据的输入 (pushNoveltyRound 取前 400 字)。
+      // 一条逐轮重复的发现会让各轮文本更像, 于是簇数更容易不增 —— 那条同样只报不拦 (只追加一行
+      // 建议进 prompt), 所以不改控制流; 但它的读数从此不是纯净的, 解读时要知道有这一路输入。
+      const roundObs = [...r.lint, ...r.claimObs, ...(noMove ? [noMove] : [])];
       prevReason = roundObs.length
         ? `${verdict.reason}\n\n[图外观察者]\n${roundObs.map((o) => `- ${o.message}`).join('\n')}`
         : verdict.reason;

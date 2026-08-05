@@ -35,7 +35,7 @@ import { makeLlmConvergenceJudge } from '../src/harness/plan/llm-judge';
 import { tryResolveSeatModel } from '../src/model/role-models';
 import { renderRoundForJudge, type JudgeChildView } from '../src/harness/plan/conductor-judge';
 import { collectJudgeArtifacts, DEFAULT_ARTIFACT_BUDGET } from '../src/harness/plan/judge-artifacts';
-import { findUnsupportedClaims, renderUnsupportedClaims } from '../src/harness/plan/claimed-actions';
+import { appendClaimEvidence, checkableFromJudgeView, findUnsupportedClaims } from '../src/harness/plan/claimed-actions';
 import { JUDGE_ARTIFACT_CASES, assessRejectedNodes, type JudgeArtifactCase } from '../src/eval/tasks/judge-artifact-cases';
 
 const argv = process.argv.slice(2);
@@ -130,19 +130,11 @@ function viewOf(root: string, c: JudgeArtifactCase, withArtifacts: boolean): str
   });
   const base = renderRoundForJudge(children);
   if (!CLAIM_CHECK) return base;
-  const evidence = renderUnsupportedClaims(
-    findUnsupportedClaims(
-      children.map((ch) => ({
-        id: ch.id,
-        output: ch.output,
-        facts: ch.facts,
-        // ⚠ 只扫 `readable` 的: 读不到时那一条是**一句说明文字**(「读不到内容/非文本/超预算」),
-        //    拿它去匹配等于在占位符上产生假命中。
-        artifacts: ch.artifacts?.filter((a) => a.readable).map((a) => ({ path: a.path, content: a.body })),
-      })),
-    ),
-  );
-  return evidence ? `${base}\n\n${evidence}` : base;
+  // ⚠ 转换与拼法都走**生产同一份**(2026-08-05 接线后):`checkableFromJudgeView` 里有
+  //   「只扫 readable」那道筛(占位符会假命中),`appendClaimEvidence` 是拼法。
+  //   这里另抄一份的话,这条臂量的就不再是生产跑的那个东西 —— 而这份读数的全部用处
+  //   正是"生产接上之后会怎样"。
+  return appendClaimEvidence(base, findUnsupportedClaims(checkableFromJudgeView(children)));
 }
 
 interface Trial {
