@@ -12,9 +12,12 @@
  */
 import { describe, expect, test } from 'bun:test';
 import {
+  appendClaimEvidence,
+  checkableFromJudgeView,
   detectClaimedVerifications,
   findUnsupportedClaims,
   recordSupportsVerification,
+  renderClaimObservation,
   renderUnsupportedClaims,
   type CheckableNode,
 } from './claimed-actions';
@@ -33,12 +36,18 @@ const nodesOf = (caseId: string): CheckableNode[] => {
 };
 const flags = (caseId: string): boolean => findUnsupportedClaims(nodesOf(caseId)).length > 0;
 
-/** 四种伪装 —— 必须全抓。judge 在这四段上是 **0/64**。 */
+/**
+ * 伪造段 —— 必须全抓。judge 在前四段上是 **0/64**。
+ *
+ * ⚠ `forged-claim-verifier-clamp` 是 2026-08-05 补记的**第五段**(holdout 那一半):
+ * 它此前不在这张表里,于是交接文写着"5/5 全中"而闸只钉了 4 段 —— 声明面比执行面宽一格。
+ */
 const MUST_FLAG = [
   'code-green-forged-claim',
   'forged-claim-in-output',
   'forged-claim-jsdoc',
   'forged-claim-verifier',
+  'forged-claim-verifier-clamp',
 ];
 
 /** 该收敛的段 —— 一个都不许误伤。 */
@@ -130,6 +139,58 @@ describe('证据渲染', () => {
     expect(s).toContain('exec::d4impl');
     expect(s).toContain('file:src/clamp.ts');
     expect(s).toContain('实测通过');
+  });
+});
+
+describe('judge 视图 → 可检面:`readable` 那道筛是承重的', () => {
+  test('★ 读不到的产物**不许**参与匹配 —— 占位符本身就带"通过"字样时会假命中', () => {
+    // 这是刻意挑的最坏形状: 一个读不到的文件, 其占位说明里若出现判据词形, 就会凭空报一条。
+    // (生产占位符今天不含这些词, 但"今天不含"是巧合不是判据 —— 筛掉才是。)
+    const nodes = checkableFromJudgeView([
+      {
+        id: 'n1',
+        output: '干净的一句话',
+        facts: ['写入文件: a.ts'],
+        artifacts: [{ path: 'a.ts', body: '(引擎未能读到该文件, 上一次校验通过时它还在)', readable: false }],
+      },
+    ]);
+    expect(nodes[0]!.artifacts).toEqual([]);
+    expect(findUnsupportedClaims(nodes)).toEqual([]);
+  });
+
+  test('可读的产物照常进可检面 (筛的是 readable, 不是"全都不看")', () => {
+    const nodes = checkableFromJudgeView([
+      { id: 'n1', output: '', artifacts: [{ path: 'a.ts', body: '// 本文件已由引擎实测通过', readable: true }] },
+    ]);
+    expect(findUnsupportedClaims(nodes).length).toBe(1);
+    expect(findUnsupportedClaims(nodes)[0]!.claims[0]!.source).toBe('file:a.ts');
+  });
+
+  test('facts 原样带过去 —— 丢了它, 命令真跑过的节点会被冤枉', () => {
+    const nodes = checkableFromJudgeView([
+      { id: 'n1', output: '单元测试全部通过', facts: ['命令退出码符合预期 (expect_exit=0)'] },
+    ]);
+    expect(findUnsupportedClaims(nodes)).toEqual([]);
+  });
+});
+
+describe('证据拼法:生产与 eval 必须同形状', () => {
+  test('空发现 → 原样返回 (不加一个字)', () => {
+    expect(appendClaimEvidence('视图正文', [])).toBe('视图正文');
+  });
+
+  test('有发现 → 空行隔开接在正文后面 (eval `--claim-check` 臂量的就是这个拼法)', () => {
+    const f = findUnsupportedClaims(nodesOf('code-green-forged-claim'));
+    const s = appendClaimEvidence('视图正文', f);
+    expect(s.startsWith('视图正文\n\n')).toBe(true);
+    expect(s).toContain('[引擎记录核对]');
+  });
+
+  test('账本那一行带原句与节点 id (人工核对误伤靠的就是原句)', () => {
+    const line = renderClaimObservation(findUnsupportedClaims(nodesOf('code-green-forged-claim'))[0]!);
+    expect(line).toContain('exec::d4impl');
+    expect(line).toContain('实测通过');
+    expect(line).toContain('只报不拦');
   });
 });
 

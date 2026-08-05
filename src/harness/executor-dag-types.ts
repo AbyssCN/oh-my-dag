@@ -440,7 +440,21 @@ export interface DagObservation {
    * **只报不拦** —— 转述在多数任务上是正当的(摘要就是要转述),它只在"下游要逐字定位"时才是错。
    * 引擎判不了任务性不性质,所以这条只把事实说出来,让下一轮 conductor 自己权衡。
    */
-  kind: 'undeclared-artifact-dep' | 'loop-no-progress' | 'write-race' | 'missing-input' | 'missing-command-target' | 'loop-no-artifact-change' | 'leaf-spin' | 'scheduled-artifact' | 'novelty-collapse' | 'verbatim-drop';
+  /**
+   * `unsupported-claim` (2026-08-05) = 某个子节点的产出**声称引擎已校验通过**
+   * (「已由引擎实测通过」/「测试全部通过」/「已过 verifier 复核」),而引擎记录里
+   * **没有对应事实** —— 求的是差集,不是判断题。判据在 `plan/claimed-actions.ts`。
+   *
+   * 为什么要一条确定性判据: 生产座实测 judge 在这条失效模式上召回 **0/64**,而矛盾就在
+   * 相邻两行(`[引擎实测] 写入文件…` vs 产物里「已由引擎实测通过」)。往 judge prompt 加规则
+   * 已被排除过两次(「讲道理拦不住」)。
+   *
+   * **只报不拦(report-only)**,三条出口都不进控制流: judge 视图 / 本账本 / 下一轮 prompt。
+   * ⚠ 升成硬拦是**单独的拨闸决定**,前置条件是良性语域误伤面先被量掉 ——
+   * 当前判据靠词形,已知会误伤指令句(「确保测试通过」)与整改回执(「已按 verifier 意见修改」)。
+   * 本条的记数就是那次决定的依据: 活体基率(命中频次)与活体误伤率(逐条人工核对原句)。
+   */
+  kind: 'undeclared-artifact-dep' | 'loop-no-progress' | 'write-race' | 'missing-input' | 'missing-command-target' | 'loop-no-artifact-change' | 'leaf-spin' | 'scheduled-artifact' | 'novelty-collapse' | 'verbatim-drop' | 'unsupported-claim';
   /** 涉及的节点 id (lint = [reader, writer]; 空转 = 被反复拒绝的那批)。 */
   nodes: string[];
   /** 人与模型都读的一句话 (进 prompt 的就是它)。 */
