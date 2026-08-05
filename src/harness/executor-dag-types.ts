@@ -3,7 +3,7 @@ import type * as Gateway from '../model/gateway';
 import type { AgentTemplate } from './agent-templates';
 import type { ConductorPlan } from './conductor-plan';
 import type { CavemanLevel } from './caveman';
-import type { AgentLeafRunner, CommandLeafRunner, LeafModelRouter, ResearchLeafRunner } from './leaf-runners';
+import type { AgentLeafRunner, CommandLeafRunner, LeafModelRouter, ResearchLeafRunner, ShellRun } from './leaf-runners';
 import type { CheckpointManager } from './continuity/checkpoint-manager';
 import type { VerifierFn } from './verifier';
 import type { FaninSummaryConfig } from './fanin-summary';
@@ -549,6 +549,17 @@ export interface LeafResult {
   sources?: string[];
   /** agent leaf 的工具调用次数 (来自 AgentLeafResult.toolCalls; prompt 档的路由效率读数)。 */
   toolCalls?: number;
+  /**
+   * agent leaf 经 **bash 工具**跑过的命令 + 退出码 (2026-08-05, 来自 AgentLeafResult.shellRuns)。
+   *
+   * 它补的是**「诚实自验」这条记录通道**: agent 手里有 bash,「我跑了 `bun test`,3/3 通过」
+   * 是合法自验的主要形状 —— 而引擎此前只记 `toolCalls` 的**次数**, 数不出跑的是什么、过没过。
+   * 于是 `plan/claimed-actions` 那个谓词 (「声称的引擎校验动作 ⊆ 引擎记录的动作」) 的**记录集
+   * 缺了主要合法元素**, 真跑过测试的节点与顺手编一句的节点在 facts 上分不开。
+   *
+   * ⚠ 缺席 = 这条链上没人报 (inproc leaf / 旧 runner), 与 `[]` (跑了但一次没用 bash) 是两件事。
+   */
+  shellRuns?: ShellRun[];
   /** 早期心跳闸判停摆 (issue #5): provider 挂起, 未等满硬超时即中止 → settle 记 failureKind='stall'。 */
   stalled?: boolean;
   /** conductor 节点实跑的内环轮数 (D-A)。其它 kind 缺席。 */

@@ -57,13 +57,24 @@ import { computeReuse, merkleFingerprints } from './plan-passes/semantic-key';
 import { expandConductorNode, subgraphWarnings } from './plan/conductor-expand';
 import { renderRoundForJudge, splitNamedIds, type JudgeChildView } from './plan/conductor-judge';
 import { collectJudgeArtifacts, DEFAULT_ARTIFACT_BUDGET, type ArtifactBudget } from './plan/judge-artifacts';
+import type { ShellRun } from './leaf-runners';
 import {
   appendClaimEvidence,
   checkableFromJudgeView,
   findUnsupportedClaims,
   renderClaimObservation,
+  renderShellRunFact,
   type UnsupportedClaimFinding,
 } from './plan/claimed-actions';
+
+/**
+ * 一个子节点最多往 judge 视图里放几条 bash 命令记录。
+ *
+ * 这段进的是**每一次** judge 调用 —— 没有上限就是给每轮判决挂一个无界成本 (同 S1 产物预算
+ * 那条理由)。取 6 是结构性取值不是实测值: 够放下一次典型自验 (装依赖 + 跑测试 + 跑 tsc),
+ * 超出的条数如实列出来, 不静默丢。
+ */
+const SHELL_FACT_CAP = 6;
 import { staticLintPlan } from './plan/static-lint';
 import { leafTierGateFindings } from './plan/leaf-tier-gate';
 import { scheduledArtifactFindings } from './plan/invocation-facts';
@@ -1140,6 +1151,15 @@ async function executePlan(
               if (r.kind === 'command' && r.status === 'done') {
                 facts.push(`命令退出码符合预期 (expect_exit=${plan!.nodes[cid]?.expect_exit ?? 0})`);
               }
+              // agent leaf 经 bash 跑过的命令 (2026-08-05): 「我跑了 `bun test`, 全过」是**诚实自验**
+              // 的主要形状, 而引擎此前对它零记录 —— 于是真跑过测试的节点在 facts 上与顺手编一句的
+              // 节点长得一模一样。渲染走 `renderShellRunFact` (读它的判据在同一个文件, 格式不会漂)。
+              // ⚠ 上限是硬的, 超出的**列出条数**不静默丢 (no-silent-caps): 这段进的是每一次 judge 调用。
+              const runs = r.shellRuns ?? [];
+              for (const s of runs.slice(0, SHELL_FACT_CAP)) facts.push(renderShellRunFact(s));
+              if (runs.length > SHELL_FACT_CAP) {
+                facts.push(`(另有 ${runs.length - SHELL_FACT_CAP} 条命令未展示)`);
+              }
               // S1: 上面那三条只回答"文件在不在 / 命令过没过", 而验收在**内容**上的目标问的是
               // "文件里写了什么" —— judge 看不见它就只能 fail-closed, 于是交付物全对也判未收敛
               // (2026-07-30 两次带种 live 都是这个形状)。产物内容由**引擎读盘**补进来:
@@ -2134,6 +2154,9 @@ async function executePlan(
       let filesTouched: string[] = [];
       let filesRead: string[] = [];
       let toolCalls: number | undefined;
+      // agent leaf 经 bash 跑过的命令 + 退出码 (2026-08-05)。undefined = 这条链上没人报
+      // (inproc leaf / 旧 runner / 测试替身), 与 `[]` (跑了但一次没用 bash) 刻意分开。
+      let shellRuns: ShellRun[] | undefined;
       let artifactRoot: string | undefined;
       // §8.5 效果指标的压缩形 [总写次数, no-op 次数]。undefined = 这条链上没人报 (inproc 节点),
       // 与 [0,0] (跑了但一次没写) 刻意分开 —— 读数板必须把两者分开念。
@@ -2196,6 +2219,10 @@ async function executePlan(
         // 产物根: leaf 自报的 cwd 最准 (它就是写文件的那个进程) > continuity 根 > 本进程 cwd。
         artifactRoot = r.cwd;
         toolCalls = r.toolCalls;
+        // 「诚实自验」的记录通道 (2026-08-05): agent 真跑过 `bun test` 这件事此前在引擎记录里
+        // **完全不存在** —— 于是「产物声称的引擎校验动作 ⊆ 引擎记录的动作」这个谓词的记录集
+        // 缺了主要合法元素, 诚实节点与顺手编一句的节点在 facts 上长得一模一样。
+        shellRuns = r.shellRuns;
         // 早期心跳闸 (issue #5): provider 挂起判停摆 → 标 failed (不把近零输出当 done), 附 stall 标记
         // 供 settle 记 failureKind='stall' (issue #4 败因留痕)。heal 回路可据此重试/换池。
         // G5 频率读数 (2026-08-03): leaf 在自己的工具循环里反复发同一个动作。**只报不拦** ——
@@ -2277,7 +2304,7 @@ async function executePlan(
       }
       // `artifactRoot` 跟着 `filesTouched` 一起出图: 一组相对路径离开它的根就没有意义,
       // 而 R2 隔离档下这个根与引擎进程的 cwd 不是同一个 (见 LeafResult.artifactRoot 的注)。
-      const leaf: LeafResult = { id, status: 'done', kind: useAgent ? 'agent' : 'inproc', model, output: text, deps: node.depends_on ?? [], usage, filesTouched, ...(artifactRoot ? { artifactRoot } : {}), ...(filesRead.length ? { filesRead } : {}), ...(toolCalls !== undefined ? { toolCalls } : {}), ...(writeCounts ? { writeCounts } : {}) };
+      const leaf: LeafResult = { id, status: 'done', kind: useAgent ? 'agent' : 'inproc', model, output: text, deps: node.depends_on ?? [], usage, filesTouched, ...(artifactRoot ? { artifactRoot } : {}), ...(filesRead.length ? { filesRead } : {}), ...(toolCalls !== undefined ? { toolCalls } : {}), ...(shellRuns ? { shellRuns } : {}), ...(writeCounts ? { writeCounts } : {}) };
       saveDoneCheckpoint({
         id,
         kind: useAgent ? 'agent' : 'inproc',

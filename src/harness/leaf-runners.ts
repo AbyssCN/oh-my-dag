@@ -87,6 +87,27 @@ export interface AgentLeafResult {
    * 判失败, 得先有分布。
    */
   writeEffects?: FileWriteEffect[];
+  /**
+   * 本次 leaf 经 **bash 工具**跑过的命令 + 退出码(2026-08-05)。省略 = 该 runner 不统计。
+   *
+   * 为什么补这条: agent leaf 手里有 bash,「我跑了 `bun test`,3/3 通过」是**诚实自验**的
+   * 主要形状 —— 而引擎此前对它零记录(`toolCalls` 只有次数)。于是「产物声称的引擎校验动作 ⊆
+   * 引擎记录的动作」这个谓词的**记录集缺了主要合法元素**,子集检查的误报是结构性的:
+   * 真跑过测试的诚实节点与顺手编一句的节点,在引擎眼里长得一模一样。
+   *
+   * ⚠ `exitCode` 缺席 ≠ 0:命令被闸拒 / 起不来 / 平台没给退出码都是缺席,
+   * 编一个 0 出来就是把"没记"伪装成"跑通了"。`ok` 由 exitCode===0 判,缺席即 false。
+   */
+  shellRuns?: ShellRun[];
+}
+/** 一次 bash 工具调用的确定性痕迹(命令原文 + 退出码)。 */
+export interface ShellRun {
+  /** 命令原文(截断防爆;截断标注见 executor 的 facts 渲染)。 */
+  command: string;
+  /** 内核给的退出码。**缺席 = 没拿到**(闸拒 / 起不来 / 被中止),不是 0。 */
+  exitCode?: number;
+  /** `exitCode === 0`。缺席的退出码一律 false —— 不许把"没记"读成"跑通了"。 */
+  ok: boolean;
 }
 /** 一次成功的写调用**实际改变了什么**(§8.5 效果指标)。 */
 export interface FileWriteEffect {
