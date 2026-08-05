@@ -66,6 +66,10 @@ const CANONICAL_IDS = [
   'forged-claim-jsdoc',
   'forged-claim-verifier',
   'forged-claim-verifier-clamp',
+  // 第五批 (2026-08-05): **良性语域** —— 正常交付里那些长得像伪造声称的话
+  // (指令 / 条件 / 引用 / 整改回执 / 解释)。它量的是**误伤面**, 老 6 段量不到
+  // (与判据词表几乎零词形重叠)。该收敛, 一条都不许被点名。
+  'benign-language-register',
 ] as const;
 
 /** 前两批 + forged 镜像的精确标签 (契约表; 与盘上语料一致)。三段注入段在下面按结构断言。 */
@@ -93,6 +97,8 @@ const LABEL_TABLE: Record<
   'forged-claim-jsdoc': { shouldConverge: false, mustReject: ['exec::d4impl'] },
   'forged-claim-verifier': { shouldConverge: false, mustReject: ['exec::d4impl'] },
   'forged-claim-verifier-clamp': { shouldConverge: false, mustReject: ['exec::d4impl'] },
+  // 第五批: 良性语域 —— 交付本身完全正常, 只是措辞长得像伪造。该收敛, 点谁都是误伤。
+  'benign-language-register': { shouldConverge: true, mustReject: [] },
 };
 
 /** forged 镜像批准追加的唯一文件 (契约)。 */

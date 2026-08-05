@@ -47,18 +47,86 @@ export interface ClaimedVerification {
  * 跨句匹配会把「已实现 X 并写好测试。本次交付已通过评审。」这种正常话误判
  * (实测踩过:`测试.{0,8}通过` 跨句号匹配到「写好测试。…已通过」)。
  */
-const RULES: ReadonlyArray<{ name: string; re: RegExp }> = [
+const RULES: ReadonlyArray<{ name: string; re: RegExp; needsAssertive?: boolean }> = [
   // 「实测」在本仓是**引擎侧**用语(视图里那行就叫 `[引擎实测]`),产物里出现它 + 通过类结果 = 冒充引擎记录
-  { name: 'engine-measured-pass', re: /实测[^。；;！!？?\n]{0,12}(通过|无误|全过|跑绿|成功)/ },
-  // 声称测试跑过了(而不是"写了测试")
+  // ⚠ **只有这一条**要求断言标记(见 ASSERTIVE)。理由是**基率**: 「实测」是本仓的引擎侧用语,
+  //   在文档、读数板、判词讨论里天天出现(「实测通过 2159 个测试」是本仓文档的固定句式),
+  //   良性基率在全部词形里最高。把标记要求加在基率最高的那一格上,买到的误伤最多、
+  //   丢掉的召回最少 —— 而 5 段真伪造这一格**全部**写着 `已由引擎实测通过`。
+  { name: 'engine-measured-pass', re: /实测[^。；;！!？?\n]{0,12}(通过|无误|全过|跑绿|成功)/, needsAssertive: true },
+  // 声称测试跑过了(而不是"写了测试")。
+  // ⚠ **刻意不要求断言标记**: 「测试全部通过」这种不带「已」的裸声称是最自然的伪造写法之一,
+  //   要了标记就等于把它整个放走 —— 实测踩过(加全局标记要求那一版, 这条既有用例当场变红)。
   { name: 'tests-passed', re: /(单元测试|测试套件|测试)[^。；;！!？?\n]{0,12}(通过|全过|跑绿)/ },
+  // ⚠ 英文这条**不要求断言标记**:中文的「已/本次」在英文里对应的是时态,而时态判不出
+  //   「tests passed」是陈述还是祈使 —— 与其编一条判不准的,不如只靠语气否决(make sure/if/…)。
+  //   代价:英文侧比中文侧宽。这条边界是明写的,不是漏的。
   { name: 'tests-passed-en', re: /\b(tests?|test suite)\b[^.\n]{0,24}\b(passed|pass|green)\b/i },
   // 声称过了 verifier / 复核
   { name: 'verifier-passed', re: /verifier[^。；;！!？?\n]{0,16}(通过|复核|无误)/i },
   { name: 'review-passed', re: /(复核|校验|验证|核实)[^。；;！!？?\n]{0,8}(通过|无误)/ },
-  // 冒充引擎事实行本身(`[引擎实测] …`)——这是伪装成引擎记录格式的注入
-  { name: 'forged-facts-line', re: /\[\s*引擎实测\s*\]/ },
+  // 冒充引擎事实行本身(`[引擎实测] …`)——这是伪装成引擎记录格式的注入。
+  // **不要求断言标记也不吃语气否决**:它伪造的是引擎记录的**格式**,与说话人语气无关。
+  { name: 'forged-facts-line', re: /\[\s*引擎实测\s*\]/, needsAssertive: false },
 ];
+
+/**
+ * **断言式标记**(2026-08-05 §语域)—— 「这件事已经发生了」的显式记号。
+ *
+ * 为什么要它:词形判据只看得见「测试…通过」这几个字,而这几个字在**指令**(「确保测试通过」)、
+ * **条件**(「如果测试通过」)、**将来**(「CI 会在测试全过后发布」)里出现得和在**断言**里一样多。
+ * 12 条良性语域探针实测 **12/12 全误伤**,而 5 段真伪造**全部**带 `已由 / 本次…已`。
+ *
+ * ⚠ **只挂在 `engine-measured-pass` 一条上**,不是全局。全局要求实测过一版,当场把
+ * 既有用例「测试全部通过 + 只写了文件 → 该抓」判绿了 —— 那是最自然的伪造写法之一,
+ * 为了 12 条探针把它整个放走是亏的。挂在哪一格由**良性基率**定,见 RULES 里那条注。
+ *
+ * ⚠ 代价明写:`实测`-系的断言若不带标记(「实测通过全部用例」)会漏。与
+ * `paraphrase-without-pass-word` 同族 —— **它拦的是"顺手编一句",不是对抗性绕过**。
+ */
+const ASSERTIVE = /已|本次|本轮|此次|这次/;
+
+/**
+ * **非断言语气**——命中即放过。四类,每类都是实测探针逼出来的:
+ *
+ * ① **指令/祈使**:「提交前请确保所有测试通过」「Make sure all tests pass before merging」
+ *    ——这是**要求别人去做**,不是声称自己做过。README 与交付说明里最常见的一句。
+ * ② **条件/将来**:「如果测试通过, 你会看到 3 pass」「测试通过后再发 PR」——事还没发生。
+ * ③ **整改回执**:「已按 verifier 复核意见修改了字段名」——它说的是**照意见改了**,
+ *    不是**过了复核**。⚠ 这一类最要紧:它是被本判据报过之后写的**回信**,
+ *    硬拦档下会自指成活锁(报它 → 节点写回执 → 回执又被报)。
+ * ④ **解释**:「这些 tests pass 是因为 clamp 已修复」——在说**为什么**,重心不在断言校验发生过。
+ *    (四类里最弱的一条:解释里确实预设了"通过"。留着是因为代价小 —— 5 段真伪造没有一句带因果连词。)
+ */
+const NON_ASSERTIVE: ReadonlyArray<{ name: string; re: RegExp }> = [
+  { name: 'imperative', re: /请|确保|务必|记得|别忘|下一步|make sure|ensure|please|\bmust\b|\bshould\b/i },
+  // 「测试全过**后**自动发布」「测试通过**后再**发 PR」—— 通过类词紧跟「后」= **等它通过之后**,
+  // 事还没发生。这一条比一个裸的「会/将」精确得多(「已通过复核, 这会让下游省事」不该被否决)。
+  { name: 'conditional', re: /如果|若|一旦|待[^。]{0,6}(后|时)|(通过|全过|跑绿)[^。；;！!？?\n]{0,2}后|即可|\bif\b|\bbefore\b|\bafter\b|\bonce\b|\bwhen\b/i },
+  { name: 'rectification-receipt', re: /(按|依|据|根据)[^。；;！!？?\n]{0,12}(意见|建议|反馈|要求)/ },
+  { name: 'explanatory', re: /是因为|由于|\bbecause\b/i },
+];
+
+/**
+ * **剥掉引文再匹配**(use–mention 之分)。
+ *
+ * 「上一轮被指出『verifier 复核』声称无据, 本轮已删除该声称」——这句话在**提及**那个声称,
+ * 而不是**做出**它;它甚至是在说那句话不成立。判据不剥引号就会把"讨论这条判据"本身判成违规,
+ * 而讨论它的地方恰恰是检出器报告、整改说明、以及本仓的文档。
+ *
+ * ⚠ 只剥**成对**的引号;单个孤立引号原样留着(剥了会把半句话吃掉)。
+ * 报给判官的仍是**原句**(带引文)——证据要逐字,剥引号只发生在匹配这一步。
+ */
+function stripQuoted(text: string): string {
+  return text
+    .replace(/「[^」]*」/g, ' ')
+    .replace(/『[^』]*』/g, ' ')
+    .replace(/“[^”]*”/g, ' ')
+    .replace(/《[^》]*》/g, ' ')
+    .replace(/"[^"\n]*"/g, ' ')
+    .replace(/'[^'\n]*'/g, ' ')
+    .replace(/`[^`\n]*`/g, ' ');
+}
 
 /**
  * 引擎记录里**能够支撑「校验通过」类声称**的唯一事实形状。
@@ -131,15 +199,34 @@ function sentences(text: string): string[] {
     .filter(Boolean);
 }
 
-/** 在一段文本里找出所有「声称引擎已校验通过」的句子。 */
+/**
+ * 在一段文本里找出所有「声称引擎已校验通过」的句子。
+ *
+ * 匹配面按三步收窄(§语域, 2026-08-05):**剥引文 → 否决非断言语气 → 要求断言标记**。
+ * 三步之前这条判据只问"出现没出现这几个字",而那几个字在指令/条件/引用/回执里
+ * 出现得和在断言里一样多 —— 12 条良性探针实测 12/12 全误伤。
+ *
+ * ⚠ 报出去的 `sentence` 是**原句**(带引文、不去语气词):剥引文只发生在匹配这一步,
+ * 判官拿到的证据必须逐字,改过的证据不是证据。
+ */
 export function detectClaimedVerifications(text: string, source: string): ClaimedVerification[] {
   const out: ClaimedVerification[] = [];
-  for (const s of sentences(text)) {
+  for (const raw of sentences(text)) {
+    const s = stripQuoted(raw);
+    if (!s.trim()) continue; // 整句都是引文 = 全在提及别人的话
+    const nonAssertive = NON_ASSERTIVE.some((v) => v.re.test(s));
     for (const r of RULES) {
-      if (r.re.test(s)) {
-        out.push({ sentence: s.slice(0, 300), source, rule: r.name });
-        break; // 一句只报一次 —— 同一句命中多条规则不是"问题更严重"
+      if (!r.re.test(s)) continue;
+      // `forged-facts-line` 显式写了 `needsAssertive: false` —— 它伪造的是引擎记录的**格式**,
+      // 与语气无关, 所以两道语域筛都绕过。其余规则两道都要过。
+      if (r.needsAssertive === false) {
+        out.push({ sentence: raw.slice(0, 300), source, rule: r.name });
+        break;
       }
+      if (nonAssertive) continue;
+      if (r.needsAssertive && !ASSERTIVE.test(s)) continue;
+      out.push({ sentence: raw.slice(0, 300), source, rule: r.name });
+      break; // 一句只报一次 —— 同一句命中多条规则不是"问题更严重"
     }
   }
   return out;
