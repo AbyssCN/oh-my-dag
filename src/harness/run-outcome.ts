@@ -86,9 +86,38 @@ export type RunOutcomeKind =
    */
   | 'unclassified';
 
+/**
+ * **这一跑花的钱,该不该算进「每次成功要花多少」的分子**(LoopX 对照, 2026-08-05)。
+ *
+ * 来源是 LoopX 那条 quota 纪律:`spend-slot` 只在**验证 + 写回**之后调用,静默 skip /
+ * preflight 失败 / dry-run **不消耗额度**。omd 没有额度制,它的对应物是**读数板的分母口径** ——
+ * 今天 `cost_per_success` 的分子是该组**全部** run 的 token,于是一次 429、一次配置缺件、
+ * 一次"这步不必跑",和一次真跑一样重。那让「每次成功的成本」同时在量引擎效率和环境噪声。
+ *
+ * ⚠ 这四格**不是** `nextAction` 的粗化(那条「两格下一步一样才该合并」的规矩管的是
+ * {@link RunOutcomeKind} 本身)。这里问的是**另一个问题**,只有一句:
+ *
+ *   > 这笔消耗,是"为了达成目标而花的"吗?
+ *
+ * 所以 `not-needed`(什么都不用做)和 `infra-error`(修基建)下一步完全不同,在这条轴上
+ * 却是同一格 —— 两者都不是"为达成目标花的钱"。细粒度的分辨仍由 `RunOutcomeKind` 保留,
+ * 这一层只是它在**成本口径**上的投影。
+ */
+export type SpendBucket =
+  /** 为达成目标而花的。**没成也算** —— 轮数用尽、判据没过、预算触顶都是引擎真在试。 */
+  | 'delivery'
+  /** 花了,但被**外部**挡住:再多的钱也换不来这一格的进展。单独一桶,别并进 overhead。 */
+  | 'blocked'
+  /** 引擎/配置/外部事件的开销:压根没起来、判定不必跑、基建出事、owner 叫停。 */
+  | 'overhead'
+  /** 引擎没交代自己怎么收的尾 —— **不许**并进任何一桶(并了就再也分不出来)。 */
+  | 'unclassified';
+
 export interface RunOutcomeInfo {
   /** 往 Loop Engineering §4.4 五态归到哪一格。`null` = 书上没有对应格(别硬凑)。 */
   loopState: 'SUCCESS' | 'STALLED' | 'BLOCKED' | 'EXHAUSTED' | 'ERROR' | 'UNKNOWN' | null;
+  /** 见 {@link SpendBucket}。加新 outcome 格时类型会强制回答这一位 —— 那是有意的。 */
+  spendBucket: SpendBucket;
   /** **判成这一格的直接证据**。当契约看:证据变了,这一格的含义就变了。 */
   evidence: string;
   /** 拿到这一格的人该做什么。两格的这一句一样 → 它们大概该合并。 */
@@ -108,18 +137,21 @@ export interface RunOutcomeInfo {
  */
 export const RUN_OUTCOME_INFO: Record<RunOutcomeKind, RunOutcomeInfo> = {
   success: {
+    spendBucket: 'delivery',
     loopState: 'SUCCESS',
     evidence: 'goal: judge 判收敛 且 冻结判据退出码符合期望;run: 全部节点 status=done;stage: 该阶段拿到了它该产的东西',
     nextAction: '收工 —— 去看产物',
     resumable: false,
   },
   'not-converged': {
+    spendBucket: 'delivery',
     loopState: 'STALLED',
     evidence: '轮数用尽而 judge 判未达标(且 blocked/budgetStopped/cancelled 三者皆空)',
     nextAction: '加 maxRounds 后 resume —— 再给几轮可能就成;连续两次落这格再去看是不是任务本身没写清',
     resumable: true,
   },
   'oracle-failed': {
+    spendBucket: 'delivery',
     loopState: 'STALLED',
     evidence: 'judge 判收敛,而环外冻结判据节点 status ≠ done(D-I)',
     nextAction:
@@ -128,18 +160,21 @@ export const RUN_OUTCOME_INFO: Record<RunOutcomeKind, RunOutcomeInfo> = {
     resumable: null,
   },
   blocked: {
+    spendBucket: 'blocked',
     loopState: 'BLOCKED',
     evidence: 'LeafResult.blocked 非空(环空转 / §8.4 动作级熔断 / 图外检测者喊停)',
     nextAction: '**别加轮数** —— 判据是确定性的,再转多少轮都一样;由 owner 看一眼并给外部输入',
     resumable: false,
   },
   'budget-exhausted': {
+    spendBucket: 'delivery',
     loopState: 'EXHAUSTED',
     evidence: 'LeafResult.budgetStopped 非空(预算轴触顶而停)',
     nextAction: '**先加预算**再 resume=<同一 runId> —— 原样接着跑会立刻再次撞上限',
     resumable: false,
   },
   cancelled: {
+    spendBucket: 'overhead',
     // 书上五态描述的是"环自己怎么收的尾", 协作式取消是**外部事件**打断了它 —— 硬归进 EXHAUSTED
     // 会让读数板把"人叫停的"和"资源耗尽的"混成一笔账, 而那两笔账的下一步完全不同。
     loopState: null,
@@ -148,30 +183,35 @@ export const RUN_OUTCOME_INFO: Record<RunOutcomeKind, RunOutcomeInfo> = {
     resumable: true,
   },
   'infra-error': {
+    spendBucket: 'overhead',
     loopState: 'ERROR',
     evidence: '阶段抛错 / execute 节点无结果(引擎没跑到它)/ 节点级归到 infra-error 或 stall',
     nextAction: '看栈 / 换池;连续同因 = 引擎缺陷,不是运气',
     resumable: true,
   },
   'missing-capability': {
+    spendBucket: 'overhead',
     loopState: 'BLOCKED',
     evidence: '配置面缺件(无 agentRunner / commandRunner / researchRunner)',
     nextAction: '**别重试** —— 缺的是能力不是运气;补配置再跑',
     resumable: false,
   },
   'not-needed': {
+    spendBucket: 'overhead',
     loopState: null,
     evidence: '档位或 conductor 判定这一步不必跑(simple 档不产 spec / conductor 判无需外部调研)',
     nextAction: '什么都不用做 —— 这不是缺口',
     resumable: false,
   },
   'empty-result': {
+    spendBucket: 'delivery',
     loopState: 'STALLED',
     evidence: '这一步跑了,但产出为空(勘察空输出 / research 零来源 / spec 未落盘)',
     nextAction: '重跑这一步 / 换检索式 —— **它跑了却什么都没找到, 与「不需要」不是一回事**',
     resumable: true,
   },
   unclassified: {
+    spendBucket: 'unclassified',
     loopState: 'UNKNOWN',
     evidence: '结束了,但生产点没有标注原因',
     nextAction: '**去补标注** —— 这个数非零说明引擎里还有一条没交代自己的收尾路径',

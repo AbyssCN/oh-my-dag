@@ -65,7 +65,7 @@ import type { NodeLoopJournal } from '../src/harness/continuity/types';
 import type { DagRunNode } from '../src/harness/dag-record';
 import type { AcceptanceProbe } from '../src/harness/goal/acceptance';
 import { FAILURE_KIND_INFO, FAILURE_KIND_ORDER, type NodeFailureKind } from '../src/harness/node-failure';
-import { RUN_OUTCOME_INFO, RUN_OUTCOME_ORDER, type RunOutcomeKind } from '../src/harness/run-outcome';
+import { RUN_OUTCOME_INFO, RUN_OUTCOME_ORDER, type RunOutcomeKind, type SpendBucket } from '../src/harness/run-outcome';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 统一契约 (src/harness/omd-readout.test.ts 钉死): readout() 是**唯一读数实现**, CLI 只做
@@ -136,6 +136,73 @@ export interface ReadoutResult {
    * NULL 纪律同上: usage 没记的 run 进 unmeasured_runs 而不是被当 0 加进 tokens;
    * success_runs=0 → tokens_per_success=null (算不出 ≠ 0)。顺序与 entry_distribution 一致。
    */
+  /**
+   * **注意力轴** (LoopX 对照, 2026-08-05) —— 引擎花掉的**owner 的时间**。
+   *
+   * 来源是 LoopX 的 `project_reward = f(quantity, quality, token_cost, user_attention_cost)`。
+   * 本仓此前四轴(判据/效率/诚实/停止)量的全是**引擎侧**;owner 这一侧的消耗一格没量,
+   * 而它恰恰是「这个 loop 值不值得继续开着」的主要成本 —— token 便宜, 人的注意力不便宜。
+   *
+   * ⚠ **只放今天真有数据源的格**。LoopX 那份模型里的 `avoidable_reasks`(到达 owner 的重复
+   * 提问)在本仓**没有数据源**:`deduped` 量的是**被机器挡下的**重复建议, 挡不住而真的问到
+   * owner 面前的那些, 账本里一条都没有。所以这里不给它留一个恒 null 的字段 —— 那是空旋钮,
+   * 本仓专门有闸在猎它。要量它得先有产生它的记录, 那是另一件事。
+   */
+  attention_axis: {
+    /** 环把球踢回给 owner 的次数(outcome=blocked 的 run 数)。 */
+    blocked_runs: number;
+    /** 分母 = 本窗口 distinct run 数(含「未记」)。 */
+    total_runs: number;
+    /** blocked_runs ÷ total_runs。**多大比例的跑最后要 owner 出手。** total=0 → null。 */
+    handback_rate: number | null;
+    /**
+     * 图上待 owner 确认的建议票(存量)。
+     *
+     * ⚠ null 有**三种**成因(继承自 {@link suggestion_acceptance},此处不另立口径):没给
+     * `mapsCwd` · 没有 `docs/plan/pathfinder` 目录 · 有图但既无处置史也无 suggested 存量。
+     * 三者今天在同一个 null 里 —— 这一格**分不出来**,别把它读成「图上没有票」。
+     */
+    pending_tickets: number | null;
+    /** owner 真处置过的建议数(accepted+edited+rejected)。null 的三种成因同上。 */
+    decided_tickets: number | null;
+    /** 其中被拒的 —— **看了、花了时间、没换来东西**的那部分。 */
+    rejected_tickets: number | null;
+    /**
+     * rejected ÷ decided:owner 的处置里有多大比例是白看的。
+     * 高 = 建议管线在拿 owner 当过滤器。decided=0 → null。
+     */
+    wasted_review_share: number | null;
+  };
+  /**
+   * **消耗口径** (LoopX 对照, 2026-08-05): 把 token 按 {@link SpendBucket} 分桶,
+   * 于是「每次成功要花多少」这个数问的是**引擎效率**, 而不是引擎效率 + 环境噪声的混合。
+   *
+   * 移植自 LoopX 的 quota 纪律 (`spend-slot` 只在验证 + 写回之后调用, 静默 skip /
+   * preflight 失败 / dry-run 不消耗额度)。omd 没有额度制, 对应物就是这里的分母口径。
+   *
+   * ⚠ **两个口径并排给, 老的一个字不动**。仓规「加尺子必然让数难看」的记法: 新口径会让
+   * `tokens_per_success` 变小 (分子剔掉了 overhead), 只留新数会读成"引擎突然变便宜了"。
+   * 差额本身才是读数 —— 它等于 {@link overhead_share} 那部分钱。
+   *
+   * ⚠ 口径与 {@link cost_per_success} 一样取**展示窗口** (`shown`) 而非全量: 两个数要能
+   * 直接相减, grain 不同就没法比。这不是闸的判据, 所以不适用「闸的数一律全量」那条。
+   */
+  spend_discipline: {
+    /** 每桶: run 数 / token 求和 / usage 没记的 run 数 (不进求和, 不当 0)。 */
+    buckets: Record<SpendBucket | '未记', { runs: number; tokens: number; unmeasured_runs: number }>;
+    /** 四桶 + 未记的 token 总和 (= 老口径的分子)。 */
+    total_tokens: number;
+    /** success run 数 (两个口径共用的分母)。 */
+    success_runs: number;
+    /** **老口径**: 全部 token ÷ success。改动前 `cost_per_success` 用的就是这个算法。 */
+    tokens_per_success_all: number | null;
+    /** **新口径**: 只有 delivery 桶 ÷ success。success=0 → null (算不出 ≠ 0)。 */
+    tokens_per_success_delivery: number | null;
+    /** overhead ÷ total。**多少钱花在了根本没在试图达成目标的跑上**。total=0 → null。 */
+    overhead_share: number | null;
+    /** blocked ÷ total。高 = 环经常被外部挡住 —— 那是 owner 注意力的账, 不是引擎的账。 */
+    blocked_share: number | null;
+  };
   cost_per_success: {
     entry: string;
     runs: number;
@@ -316,6 +383,10 @@ function emptyWorld(meta: ReadoutResult['meta']): ReadoutResult {
     runs: [],
     outcome_distribution: zeroOutcomeDistribution(),
     entry_distribution: [],
+    // 空世界: 没有跑也没有图 —— 五个"不知道"全是 null, **不编 0**(0 次踢回 ≠ 没量过)。
+    attention_axis: { blocked_runs: 0, total_runs: 0, handback_rate: null, pending_tickets: null, decided_tickets: null, rejected_tickets: null, wasted_review_share: null },
+    // 空世界: 五桶全 0, 三个比率全 null —— **算不出 ≠ 0%**(同 tokens_per_success 那条纪律)。
+    spend_discipline: computeSpendDiscipline([]),
     cost_per_success: [],
     criteria_grid: { four_grid: { executed_success: 0, executed_failure: 0, reused_success: 0, 未记: 0 }, two_grid_risk: zeroTwoGridRisk() },
     criteria_consistency: { agree: 0, oracleFailed: 0, wastedRounds: 0, agreeFail: 0, unrecorded: 0, recorded: 0 },
@@ -654,6 +725,8 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
     };
   });
 
+  const spend_discipline = computeSpendDiscipline(shown);
+
   const criteria_consistency: ReadoutResult['criteria_consistency'] = { agree: 0, oracleFailed: 0, wastedRounds: 0, agreeFail: 0, unrecorded: 0, recorded: 0 };
   for (const run of shown) {
     const c = run.criteria;
@@ -749,6 +822,19 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
   /** 每节点检出率。分母 0 → null(**算不出 ≠ 0**,同 tokens_per_success 那条纪律)。 */
   const ccRate = (findings: number, nodes: number): number | null => (nodes > 0 ? findings / nodes : null);
 
+  // 注意力轴 (LoopX 对照): blocked 来自 outcome 分布 (引擎侧记录), 票的三个数来自 suggestionsLog
+  // (owner 侧记录) —— 两个来源不重叠, 各自的缺席各自报 null, 不互相填。
+  const sa = opts.mapsCwd !== undefined ? aggregateSuggestionAcceptance(opts.mapsCwd) : null;
+  const attention_axis: ReadoutResult['attention_axis'] = {
+    blocked_runs: outcome_distribution.blocked,
+    total_runs: outcome_distribution.total,
+    handback_rate: outcome_distribution.total > 0 ? outcome_distribution.blocked / outcome_distribution.total : null,
+    pending_tickets: sa?.pending ?? null,
+    decided_tickets: sa?.decided ?? null,
+    rejected_tickets: sa?.rejected ?? null,
+    wasted_review_share: sa && sa.decided > 0 ? sa.rejected / sa.decided : null,
+  };
+
   return {
     meta,
     runs: shown,
@@ -762,13 +848,57 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
     },
     outcome_distribution,
     entry_distribution,
+    attention_axis,
+    spend_discipline,
     cost_per_success,
     criteria_grid: { four_grid, two_grid_risk },
     criteria_consistency,
     g4_sampling,
-    suggestion_acceptance: opts.mapsCwd !== undefined ? aggregateSuggestionAcceptance(opts.mapsCwd) : null,
+    suggestion_acceptance: sa,
     gate_denominators,
     reuse_rate: { reused_nodes, total_nodes, rate: total_nodes > 0 ? reused_nodes / total_nodes : null },
+  };
+}
+
+/**
+ * 消耗分桶 (LoopX 对照)。桶的归属**只从 {@link RUN_OUTCOME_INFO} 读**, 这里不另写一份映射 ——
+ * 词表加新格时忘了同步的那种漂移, 是本仓 S-1/S-15 的同一族。
+ *
+ * `未记` (outcome 列 NULL, 早于 2026-07-31 的老行) 单列第五桶: 它不是 `unclassified`
+ * (那格是「引擎跑完了但没交代」), 是「这条记录压根没有这个字段」。两者的下一步不同 ——
+ * 前者去补引擎的标注, 后者只能等新数据。**编成同一桶就再也分不开。**
+ */
+function computeSpendDiscipline(shown: RunReadout[]): ReadoutResult['spend_discipline'] {
+  const zero = () => ({ runs: 0, tokens: 0, unmeasured_runs: 0 });
+  const buckets: ReadoutResult['spend_discipline']['buckets'] = {
+    delivery: zero(),
+    blocked: zero(),
+    overhead: zero(),
+    unclassified: zero(),
+    未记: zero(),
+  };
+  for (const run of shown) {
+    const key: SpendBucket | '未记' = run.status === '未记' ? '未记' : RUN_OUTCOME_INFO[run.status].spendBucket;
+    const b = buckets[key];
+    b.runs++;
+    if (run.usage === null) {
+      // 缺席 ≠ 0: 不加进 tokens, 单独计数。同 cost_per_success 的 unmeasured_runs。
+      b.unmeasured_runs++;
+      continue;
+    }
+    b.tokens += run.usage.conductorIn + run.usage.conductorOut + run.usage.leavesIn + run.usage.leavesOut;
+  }
+  const total_tokens = Object.values(buckets).reduce((a, b) => a + b.tokens, 0);
+  const success_runs = shown.filter((run) => run.status === 'success').length;
+  const share = (n: number): number | null => (total_tokens > 0 ? n / total_tokens : null);
+  return {
+    buckets,
+    total_tokens,
+    success_runs,
+    tokens_per_success_all: success_runs > 0 ? total_tokens / success_runs : null,
+    tokens_per_success_delivery: success_runs > 0 ? buckets.delivery.tokens / success_runs : null,
+    overhead_share: share(buckets.overhead.tokens),
+    blocked_share: share(buckets.blocked.tokens),
   };
 }
 
@@ -854,6 +984,26 @@ function printReadoutHuman(r: ReadoutResult, dbPath: string): void {
         ` · 每 success ${cs.tokens_per_success === null ? '算不出 (0 success)' : Math.round(cs.tokens_per_success).toString()}`,
     );
   }
+  const aa = r.attention_axis;
+  const n = (x: number | null): string => (x === null ? '没数据' : String(x)); // 三种成因合一, 见 attention_axis 注
+  console.log(
+    `   注意力轴: 踢回 owner ${aa.blocked_runs}/${aa.total_runs} 跑 (${aa.handback_rate === null ? '算不出' : `${(aa.handback_rate * 100).toFixed(1)}%`})` +
+      ` · 票: 待确认 ${n(aa.pending_tickets)} / 已处置 ${n(aa.decided_tickets)} / 其中拒 ${n(aa.rejected_tickets)}` +
+      ` (白看 ${aa.wasted_review_share === null ? '算不出' : `${(aa.wasted_review_share * 100).toFixed(1)}%`})`,
+  );
+  console.log('             ⚠ 「到达 owner 的重复提问」这一格**没有数据源** —— deduped 量的是被机器挡下的那些。');
+  const sd = r.spend_discipline;
+  const pct = (x: number | null): string => (x === null ? '算不出' : `${(x * 100).toFixed(1)}%`);
+  const per = (x: number | null): string => (x === null ? '算不出 (0 success)' : Math.round(x).toString());
+  console.log(
+    `   消耗口径: ${(['delivery', 'blocked', 'overhead', 'unclassified', '未记'] as const)
+      .map((k) => `${k} ${sd.buckets[k].runs}run/${sd.buckets[k].tokens}tok${sd.buckets[k].unmeasured_runs > 0 ? `(+${sd.buckets[k].unmeasured_runs}没记)` : ''}`)
+      .join(' · ')}`,
+  );
+  console.log(
+    `             每 success: 老口径(全部) ${per(sd.tokens_per_success_all)} → 新口径(只 delivery) ${per(sd.tokens_per_success_delivery)}` +
+      ` · overhead 占 ${pct(sd.overhead_share)} · blocked 占 ${pct(sd.blocked_share)}`,
+  );
   const g = r.criteria_grid.four_grid;
   console.log(`   四格:   executed_success ${g.executed_success} · executed_failure ${g.executed_failure} · reused_success ${g.reused_success} · 未记 ${g['未记']} (= ${g.executed_success + g.executed_failure + g.reused_success + g['未记']})`);
   console.log(`   风险格: ${r.criteria_grid.two_grid_risk.map((t) => `${t.risk_level} ${t.executed}/${t.not_executed}`).join(' · ')}`);

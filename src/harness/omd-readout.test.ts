@@ -585,3 +585,115 @@ describe('omd-readout · ⑧.5 检出器活体读数的分母', () => {
     expect(cc.sufficiency.flat).toEqual({ nodes: 0, short: CLAIM_CHECK_MIN_NODES, enough: false });
   });
 });
+
+describe('omd-readout · 消耗口径分桶 (LoopX 对照, 2026-08-05)', () => {
+  /** 一个只含指定 outcome 的最小世界 (每 run 一条记录, 一个节点)。 */
+  const world = (runs: { runId: string; failureKind?: string; tokens: number | null }[]): ReadoutResult => {
+    const db = new Database(':memory:');
+    const rec = createDagRecorder({ db });
+    let now = 1000;
+    for (const r of runs) {
+      now += 100;
+      if (r.tokens === null) {
+        // usage 列恒 NOT NULL, 「没记」在本仓的实况是**记坏了** —— 走 readout 既有的那条防御路径
+        // (先例: 上面「usage 记坏」那条)。这一格量的是"分不出成本的 run", 不是 0 成本的 run。
+        db.run(
+          `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage, observations, outcome, verification, reused, criteria)
+           VALUES (?, ?, '图-null', 1, NULL, ?, 'dag_run', '[["n1"]]', ?, '{"oops":1}', NULL, 'success', NULL, NULL, NULL)`,
+          [r.runId, now, r.runId, JSON.stringify([{ id: 'n1', kind: 'command', status: 'done', deps: [], command: 'ls' }])],
+        );
+        continue;
+      }
+      rec.record(
+        fakeResult({
+          planName: `图-${r.runId}`,
+          plan: { n1: { goal: 'x', executor: 'command', command: 'ls' } },
+          ...(r.failureKind ? { failed: [{ id: 'n1', failureKind: r.failureKind }] } : { done: ['n1'] }),
+          usage: { leavesIn: r.tokens },
+        }),
+        { runId: r.runId, entry: 'dag_run', now },
+      );
+    }
+    return readout({ db });
+  };
+
+  test('分桶只从 RUN_OUTCOME_INFO 读; 「未记」单列第五桶, 不并进 unclassified', () => {
+    const { readoutNow } = makeFixture();
+    const b = readoutNow().spend_discipline.buckets;
+    // run-A/run-B success + run-C not-converged → delivery 3 run; run-D blocked; old-1 outcome 列 NULL → 未记。
+    expect(b.delivery).toEqual({ runs: 3, tokens: 1450, unmeasured_runs: 0 });
+    expect(b.blocked).toEqual({ runs: 1, tokens: 0, unmeasured_runs: 0 });
+    expect(b['未记'].runs).toBe(1);
+    // 「这条记录没有这个字段」不是「引擎没交代」—— 编成同一桶就再也分不开。
+    expect(b.unclassified.runs).toBe(0);
+  });
+
+  test('两个口径并排: overhead 的钱不进新分子, 差额 = overhead tokens', () => {
+    const sd = world([
+      { runId: 'ok', tokens: 100 },
+      { runId: 'boom', failureKind: 'stall', tokens: 900 }, // stall → infra-error → overhead
+    ]).spend_discipline;
+    expect(sd.buckets.delivery.tokens).toBe(100);
+    expect(sd.buckets.overhead.tokens).toBe(900);
+    expect(sd.success_runs).toBe(1);
+    expect(sd.tokens_per_success_all).toBe(1000);      // 老口径: 一次 429 让"每次成功"贵了 10 倍
+    expect(sd.tokens_per_success_delivery).toBe(100);  // 新口径: 引擎效率本身
+    expect(sd.overhead_share).toBe(0.9);
+    expect(sd.blocked_share).toBe(0);
+  });
+
+  test('反向自检: 分桶失效则两口径必然重合 —— 没有 overhead 的世界里它们相等', () => {
+    // 上一条断言"两数不等"只有在这一条成立时才有意义: 它证明差额是**分桶造出来的**,
+    // 不是一个恒不等的式子。分桶要是塌了 (全归 delivery), 上一条会红而这一条照绿。
+    const sd = world([
+      { runId: 'ok1', tokens: 100 },
+      { runId: 'ok2', tokens: 300 },
+    ]).spend_discipline;
+    expect(sd.buckets.overhead.tokens).toBe(0);
+    expect(sd.tokens_per_success_all).toBe(sd.tokens_per_success_delivery);
+  });
+
+  test('usage 没记的 run 进 unmeasured_runs, 不被当 0 加进 tokens', () => {
+    const sd = world([
+      { runId: 'ok', tokens: 200 },
+      { runId: 'nousage', tokens: null },
+    ]).spend_discipline;
+    expect(sd.buckets.delivery).toEqual({ runs: 2, tokens: 200, unmeasured_runs: 1 });
+  });
+
+  test('0 success → 两个每-success 都是 null (算不出 ≠ 0); 空世界三个比率全 null', () => {
+    const sd = world([{ runId: 'boom', failureKind: 'stall', tokens: 900 }]).spend_discipline;
+    expect(sd.success_runs).toBe(0);
+    expect(sd.tokens_per_success_all).toBeNull();
+    expect(sd.tokens_per_success_delivery).toBeNull();
+    expect(sd.overhead_share).toBe(1); // 分母非 0, 这个数算得出来
+
+    const empty = world([]).spend_discipline;
+    expect(empty.total_tokens).toBe(0);
+    expect(empty.overhead_share).toBeNull();
+    expect(empty.blocked_share).toBeNull();
+  });
+});
+
+describe('omd-readout · 注意力轴 (LoopX 对照, 2026-08-05)', () => {
+  test('踢回率来自 outcome 分布; 没给 mapsCwd → 票的三个数是 null (不知道), 不编 0', () => {
+    const { readoutNow } = makeFixture();
+    const aa = readoutNow().attention_axis;
+    // 夹具 5 跑里 run-D 是 blocked —— 环把球踢回给 owner 的那一格。
+    expect(aa.blocked_runs).toBe(1);
+    expect(aa.total_runs).toBe(5);
+    expect(aa.handback_rate).toBe(0.2);
+    // 没给 mapsCwd = 没看图, 不是"图上没有票"。
+    expect(aa.pending_tickets).toBeNull();
+    expect(aa.decided_tickets).toBeNull();
+    expect(aa.wasted_review_share).toBeNull();
+  });
+
+  test('空世界: 踢回率 null (算不出 ≠ 0%) —— 0 次踢回与没量过不是一回事', () => {
+    const db = new Database(':memory:');
+    createDagRecorder({ db });
+    const aa = readout({ db }).attention_axis;
+    expect(aa.total_runs).toBe(0);
+    expect(aa.handback_rate).toBeNull();
+  });
+});
