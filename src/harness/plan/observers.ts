@@ -165,13 +165,35 @@ export function artifactLintObservations(
  *   · `ARTIFACT_ABSENT` = **确定性事实**: 这个节点声明了产物、而那条路径确实不存在。
  *
  * 后者是**可比较的**: 连着两轮"说要写 a.md 却两轮都没写出来", 正是「盘上没有位移」本身 ——
- * 而在 N7 之前这一类被系统性吃掉了(见 {@link detectNoArtifactChange} 的 population 那段)。
+ * 而在 N7 之前这一类被系统性吃掉了(见 {@link classifyArtifactMove} 的 population 那段)。
  */
 export const ARTIFACT_ABSENT = '\u0000absent';
 
 export interface RoundArtifacts {
   hashes: Readonly<Record<string, string | null>>;
 }
+
+/**
+ * 一次**跨轮比较**的三态结论 —— 分母就藏在这一层(2026-08-06)。
+ *
+ * 为什么不能只返回「有没有观察条目」: 读数板 ⑧ 段此前把 `loop-no-artifact-change` 的 0 次
+ * 除以**运行次数**当活体基率读。而这条判据的机会单位根本不是"一次运行" —— 它住在 conductor
+ * 内环里, 一次比较要同时满足 ① 有上一轮(`max_rounds > 1` 且真的转了第二圈)② 两轮都有产物信号
+ * ③ 两侧都读得到。多数生产流量(`dag_run` 的单轮档 / 内环首轮就收敛)**一次比较都没有**,
+ * 于是那个 0 是「够不着」而不是「查过零检出」。
+ *
+ * 这正是 ⑧.5 已经付过一次学费的形状(`claimCheck` 的 conductor 面): 判据只活在内环, 而账本
+ * 记出来的空数组与"查过零检出"逐字相同。仓规第一条 —— NULL ≠ 0 ≠ 不适用。
+ *
+ * 三态的读法:
+ *   · `unobserved` = **判不了**(不进分母);`why` 分得出是哪一种够不着;
+ *   · `moved`      = 判了, 盘上有位移(进分母, 不是发现);
+ *   · `no-move`    = 判了, 盘上没位移(进分母, 是发现)。
+ */
+export type ArtifactMoveVerdict =
+  | { kind: 'unobserved'; why: 'first-round' | 'no-population' | 'unreadable' }
+  | { kind: 'moved' }
+  | { kind: 'no-move'; observation: DagObservation };
 
 /**
  * **「产物没变」检测器** (2026-07-31, G5 的正解; D-AD 诊断出的那条死路的绕法)。
@@ -209,35 +231,52 @@ export interface RoundArtifacts {
  *    理由是算得清的账 —— `max_rounds ≤ 4`, 误拦一次的代价是**掐死一个本可收敛的 run**,
  *    而漏报一次的代价上限只有一两轮。在这个比价下, 0 读数时就上硬闸是拿大风险换小收益。
  *    先记, 攒到分布再定要不要升成 BLOCKED 以及 K 取几 —— 与 `exitCode` 那一位同一条路子。
+ *
+ * ## 为什么返回三态而不是 `DagObservation | null`(2026-08-06)
+ *
+ * 见 {@link ArtifactMoveVerdict}。一句话: `null` 此前把「这次判不了」和「判了, 有位移」压成了
+ * 同一个值, 于是**分母在返回值里就不存在了** —— 读数板只能拿运行次数当分母, 而那是错的单位。
  */
-export function detectNoArtifactChange(prev: RoundArtifacts | null, cur: RoundArtifacts): DagObservation | null {
-  if (!prev) return null;
+export function classifyArtifactMove(prev: RoundArtifacts | null, cur: RoundArtifacts): ArtifactMoveVerdict {
+  // ⓪ 没有上一轮就没有"跨轮"可言 —— 这不是一次比较, 连轮转都不算。
+  if (!prev) return { kind: 'unobserved', why: 'first-round' };
   const prevPaths = Object.keys(prev.hashes).sort();
   const curPaths = Object.keys(cur.hashes).sort();
   // ① population 闸: 没有产物就没有产物信号 (Unobserved, 不是"没位移")。
-  if (prevPaths.length === 0 || curPaths.length === 0) return null;
+  if (prevPaths.length === 0 || curPaths.length === 0) return { kind: 'unobserved', why: 'no-population' };
   // ② 任一侧有**量不到**的 → 不判。⚠ 只挡 null(读文件出错); ARTIFACT_ABSENT 是确定性事实,
   //    照常参与比较 —— 那正是 N7 要救回来的那一类。
-  if ([...prevPaths, ...curPaths].some((p) => (p in prev.hashes ? prev.hashes[p] : cur.hashes[p]) === null)) return null;
-  if (prevPaths.length !== curPaths.length || prevPaths.some((p, i) => p !== curPaths[i])) return null;
-  if (prevPaths.some((p) => prev.hashes[p] !== cur.hashes[p])) return null;
+  //
+  //    ⚠ 这里原本写的是 `p in prev.hashes ? prev.hashes[p] : cur.hashes[p]` —— 只要路径在上一轮
+  //    出现过, **本轮那侧的 null 就永远看不到**。旧接口下这个洞是隐形的: 漏掉的那一格会往下掉进
+  //    "hash 不等 → 有位移", 而两条路的返回值都是 `null`(不报), 于是既有用例照样全绿。
+  //    改成三态之后它当场红了 —— 因为两条路现在的**结论**不同: 一个是"判不了"(不进分母),
+  //    一个是"判了, 有位移"(进分母)。拿一次量不到的轮次去撑基率的分母, 正是这次改动要治的病。
+  if ([...prevPaths, ...curPaths].some((p) => prev.hashes[p] === null || cur.hashes[p] === null))
+    return { kind: 'unobserved', why: 'unreadable' };
+  // ③ 到这里两侧都可比了 —— 下面每一条出口都**进分母**, 差别只在判成"有位移"还是"没位移"。
+  if (prevPaths.length !== curPaths.length || prevPaths.some((p, i) => p !== curPaths[i])) return { kind: 'moved' };
+  if (prevPaths.some((p) => prev.hashes[p] !== cur.hashes[p])) return { kind: 'moved' };
   return {
-    kind: 'loop-no-artifact-change',
-    nodes: [],
-    // A5: 读者是下一轮重画的 conductor。所以不播报状态, 直接给它**做得了的事** ——
-    // 并且点破它最可能正在做的那件无效功: 换个名字把同样的步骤再排一遍。
-    message:
-      (curPaths.every((p) => cur.hashes[p] === ARTIFACT_ABSENT)
-        ? `盘上没有位移, 而且更糟: 这一轮**声明**要产出的 ${curPaths.length} 个文件里, 一个都不在盘上 ` +
-          `(${curPaths.slice(0, 3).join(', ')}${curPaths.length > 3 ? ' 等' : ''}), 上一轮也是。` +
-          '也就是说连着两轮都只是**说做了**。这一轮别再排步骤, 先把其中一个文件真正写出来, ' +
-          '写完用一条跑得起来的命令确认它在盘上。'
-        : '') ||
-      `盘上没有位移: 这一轮结束时, ${curPaths.length} 个产物文件的内容与上一轮**逐字节相同** ` +
-      `(${curPaths.slice(0, 3).join(', ')}${curPaths.length > 3 ? ' 等' : ''})。` +
-      '也就是说上一轮的反馈**一点也没落到产物上** —— 你很可能只是把同样的步骤换个名字重排了一遍。' +
-      '这一轮请改**内容**而不是改结构: 挑一个具体的产物, 说清它哪一处不满足要求, 然后直接改那一处; ' +
-      '若你判断产物其实已经对了, 那就补一个**能判对错的验证步骤**(跑得起来的命令), 别再重排。',
+    kind: 'no-move',
+    observation: {
+      kind: 'loop-no-artifact-change',
+      nodes: [],
+      // A5: 读者是下一轮重画的 conductor。所以不播报状态, 直接给它**做得了的事** ——
+      // 并且点破它最可能正在做的那件无效功: 换个名字把同样的步骤再排一遍。
+      message:
+        (curPaths.every((p) => cur.hashes[p] === ARTIFACT_ABSENT)
+          ? `盘上没有位移, 而且更糟: 这一轮**声明**要产出的 ${curPaths.length} 个文件里, 一个都不在盘上 ` +
+            `(${curPaths.slice(0, 3).join(', ')}${curPaths.length > 3 ? ' 等' : ''}), 上一轮也是。` +
+            '也就是说连着两轮都只是**说做了**。这一轮别再排步骤, 先把其中一个文件真正写出来, ' +
+            '写完用一条跑得起来的命令确认它在盘上。'
+          : '') ||
+        `盘上没有位移: 这一轮结束时, ${curPaths.length} 个产物文件的内容与上一轮**逐字节相同** ` +
+        `(${curPaths.slice(0, 3).join(', ')}${curPaths.length > 3 ? ' 等' : ''})。` +
+        '也就是说上一轮的反馈**一点也没落到产物上** —— 你很可能只是把同样的步骤换个名字重排了一遍。' +
+        '这一轮请改**内容**而不是改结构: 挑一个具体的产物, 说清它哪一处不满足要求, 然后直接改那一处; ' +
+        '若你判断产物其实已经对了, 那就补一个**能判对错的验证步骤**(跑得起来的命令), 别再重排。',
+    },
   };
 }
 

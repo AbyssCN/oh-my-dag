@@ -12,9 +12,14 @@
  * 这份网钉的就是那一格:声明了产物却没写出来,连着两轮 → **判为没位移**,而不是静默跳过。
  */
 import { describe, expect, test } from 'bun:test';
-import { ARTIFACT_ABSENT, detectNoArtifactChange } from '../../src/harness/plan/observers';
+import { ARTIFACT_ABSENT, classifyArtifactMove, type RoundArtifacts } from '../../src/harness/plan/observers';
 
 const round = (hashes: Record<string, string | null>) => ({ hashes });
+/** 旧接口的等价物 (命中→观察条目, 其余→null)。三态本身在 no-artifact-change.test.ts 里钉。 */
+const detectNoArtifactChange = (prev: RoundArtifacts | null, cur: RoundArtifacts) => {
+  const v = classifyArtifactMove(prev, cur);
+  return v.kind === 'no-move' ? v.observation : null;
+};
 
 describe('N7 · 「声明了却没写出来」不再被吃掉', () => {
   test('★ 连着两轮都 absent → 判为没位移 (此前 population 归零 → 静默不判)', () => {
