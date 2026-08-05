@@ -12,7 +12,7 @@
  *   引擎 (ExecOnce/planAndExecute/runExecutorDag) + barrel re-export 公共面 (30+ 消费方 import './executor-dag' 不变)。
  */
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ModelUsage } from '../model/gateway';
 import { escalationProviderReady } from './verifier';
@@ -77,6 +77,7 @@ import {
  * 超出的条数如实列出来, 不静默丢。
  */
 const SHELL_FACT_CAP = 6;
+import { shellWriteTargets } from './shell-writes';
 import { staticLintPlan } from './plan/static-lint';
 import { leafTierGateFindings } from './plan/leaf-tier-gate';
 import { scheduledArtifactFindings } from './plan/invocation-facts';
@@ -2285,6 +2286,44 @@ async function executePlan(
                 );
                 filesTouched = [declaredOut];
               }
+            }
+          }
+          // 救援②: **从本 leaf 自己跑过的 bash 命令里认写目标** (2026-08-05)。
+          //
+          // 救援① 要求节点声明 `output_path`, 而 conductor 常常不给 —— 于是经 bash 写入的产物
+          // 彻底隐形, 闸把干完的活判成 empty-artifact (两次真跑两次中招, 一次还连累下游全 skip)。
+          //
+          // ⚠ **安全性质与救援①逐字相同: 没有盘上证据就不救**。候选只是候选, 必须同时满足
+          //   ① 文件真在盘上 ② mtime 落在**本节点的执行窗口**内 —— 否则一个早就存在的文件
+          //   会把 empty-done (自报完成、零改动) 洗成成功, 那正是这道闸唯一要拦的东西。
+          // ⚠ 候选只取**本 leaf 自己命令里出现的路径**, 不是"窗口内变过的所有文件" ——
+          //   后者在并发 fan-out 下会互相认领。这条约束把并发误认压到"另一个 leaf 恰好写了
+          //   本 leaf 命令里点名的同一个路径"才会发生。
+          if (filesTouched.length === 0 && (shellRuns?.length ?? 0) > 0) {
+            // ⚠ **容差不是洁癖**: 文件系统 mtime 与 `Date.now()` 不是同一个钟。实测(写完立刻 stat)
+            //   mtime 比写之前取的时刻还小 **3.58ms** —— 严格 `>=` 会把一次刚发生的写判成"窗口外",
+            //   于是这条救援在真实形状上恒不触发(第一版就是这么写的, 闸当场抓到)。
+            //   取 2s: 远大于时钟偏斜, 又远小于任何 agent 的执行时长, 所以"一小时前就存在的文件"
+            //   仍然救不回来 —— 那一格有单独的用例钉着。
+            const MTIME_SKEW_TOLERANCE_MS = 2_000;
+            const startedAt = (nodeStartedAt.get(id) ?? 0) - MTIME_SKEW_TOLERANCE_MS;
+            const rescued: string[] = [];
+            for (const cand of [...new Set((shellRuns ?? []).flatMap((r) => shellWriteTargets(r.command)))]) {
+              const abs = cand.startsWith('/') ? cand : `${root}/${cand}`;
+              try {
+                const st = statSync(abs);
+                if (st.isFile() && st.mtimeMs >= startedAt) rescued.push(cand);
+              } catch {
+                // 不在盘上 = 没证据 = 不救。**这条 catch 不吞证据**: 没救到的候选会体现在
+                // 下面那句判词里 (它列得出跑过哪些命令), 不是静默消失。
+              }
+            }
+            if (rescued.length > 0) {
+              logger.warn(
+                { node: id, rescued, startedAt },
+                '[omd/executor-dag] filesTouched 空, 但 bash 命令点名的文件在本节点窗口内被改过 → 判真写入, 补进 filesTouched',
+              );
+              filesTouched = rescued;
             }
           }
           const missing = filesTouched.filter((p) => !existsSync(p.startsWith('/') ? p : `${root}/${p}`));
