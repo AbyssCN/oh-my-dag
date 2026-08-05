@@ -135,7 +135,7 @@ export interface DagRunRecord {
    * 与"检查过零检出"逐字相同。按 entry 数约一半流量走这条路 → **活体基率分母会错近一倍**。
    * 三态: 缺席 = 不适用(不进分母)· findings:0 = 检查过零检出 · findings>0 = 检出。
    */
-  claimCheck?: { rounds: number; nodes: number; findings: number };
+  claimCheck?: { conductor: { rounds: number; nodes: number; findings: number }; flat: { nodes: number; findings: number } };
   /**
    * **这张图是怎么结束的**(N5, 2026-07-31;词表在 `run-outcome.ts`)。
    *

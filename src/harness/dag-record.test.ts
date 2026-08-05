@@ -337,27 +337,31 @@ describe('★ 检出器三态: 不适用 / 查过零检出 / 检出', () => {
   // 首次 shadow 真跑撞到的坑: `dag_run` 那条路整张图没有 conductor 节点 —— 检出器结构上够不着,
   // 而账本记成 `observations: []`, 与"检查过、零检出"**逐字相同**。按 entry 数约一半流量走这条路,
   // 于是活体基率的分母会错近一倍。仓规第一条: NULL ≠ 0 ≠ 不适用。
-  const withClaimCheck = (cc?: { rounds: number; nodes: number; findings: number }): ExecutorDagResult =>
-    ({ ...fakeResult('cc'), ...(cc ? { claimCheck: cc } : {}) }) as unknown as ExecutorDagResult;
+  const cc = (conductor: [number, number, number], flat: [number, number]) => ({
+    conductor: { rounds: conductor[0], nodes: conductor[1], findings: conductor[2] },
+    flat: { nodes: flat[0], findings: flat[1] },
+  });
+  const withClaimCheck = (v?: ReturnType<typeof cc>): ExecutorDagResult =>
+    ({ ...fakeResult('cc'), ...(v ? { claimCheck: v } : {}) }) as unknown as ExecutorDagResult;
 
-  test('★ 这条路没有 conductor 子图 → **缺席**(不进分母), 不是 findings:0', () => {
+  test('★ 早于本次改动的记录 → **缺席**(不进分母), 不是 findings:0', () => {
     const rec = createDagRecorder({ path: ':memory:' });
     const id = rec.record(withClaimCheck(), { runId: 'r-na' });
     expect(rec.get(id)!.claimCheck).toBeUndefined();
     rec.close();
   });
 
-  test('检查过、零检出 → findings:0(**这一格才进分母**)', () => {
+  test('两道分开记: conductor 面含产物内容, flat 面只有 output+facts —— 合并即错', () => {
     const rec = createDagRecorder({ path: ':memory:' });
-    const id = rec.record(withClaimCheck({ rounds: 2, nodes: 5, findings: 0 }), { runId: 'r-clean' });
-    expect(rec.get(id)!.claimCheck).toEqual({ rounds: 2, nodes: 5, findings: 0 });
+    const id = rec.record(withClaimCheck(cc([2, 5, 0], [3, 0])), { runId: 'r-clean' });
+    expect(rec.get(id)!.claimCheck).toEqual(cc([2, 5, 0], [3, 0]));
     rec.close();
   });
 
   test('真检出 → findings>0, 轮数与节点数一并留痕(基率的分子分母都在这一行上)', () => {
     const rec = createDagRecorder({ path: ':memory:' });
-    const id = rec.record(withClaimCheck({ rounds: 1, nodes: 3, findings: 2 }), { runId: 'r-hit' });
-    expect(rec.get(id)!.claimCheck).toEqual({ rounds: 1, nodes: 3, findings: 2 });
+    const id = rec.record(withClaimCheck(cc([1, 3, 2], [4, 1])), { runId: 'r-hit' });
+    expect(rec.get(id)!.claimCheck).toEqual(cc([1, 3, 2], [4, 1]));
     rec.close();
   });
 
@@ -367,8 +371,8 @@ describe('★ 检出器三态: 不适用 / 查过零检出 / 检出', () => {
       id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, plan_name TEXT NOT NULL,
       node_count INTEGER NOT NULL, question TEXT, levels TEXT NOT NULL, nodes TEXT NOT NULL, usage TEXT NOT NULL)`);
     const rec = createDagRecorder({ db });
-    const id = rec.record(withClaimCheck({ rounds: 1, nodes: 1, findings: 0 }), { runId: 'r-old' });
-    expect(rec.get(id)!.claimCheck).toEqual({ rounds: 1, nodes: 1, findings: 0 });
+    const id = rec.record(withClaimCheck(cc([1, 1, 0], [0, 0])), { runId: 'r-old' });
+    expect(rec.get(id)!.claimCheck).toEqual(cc([1, 1, 0], [0, 0]));
     rec.close();
   });
 });

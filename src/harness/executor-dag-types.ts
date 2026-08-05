@@ -672,17 +672,25 @@ export interface ExecutorDagResult {
    */
   observations?: DagObservation[];
   /**
-   * 「声称 vs 引擎记录」检出器这一跑**跑过没有**(2026-08-05)。
+   * 「声称 vs 引擎记录」检出器这一跑查了多少、检出多少 —— **两道分开记**(2026-08-05)。
    *
-   * ⚠ **缺席 ≠ 零检出**:那条判据只活在 conductor 内环里,而 `dag_run` 那条路可以整张图
-   * 一个 conductor 节点都没有 —— 检出器结构上够不着。首次 shadow 真跑正是这种:6 个节点无一
-   * conductor,账本记成 `observations: []`,与"检查过、零检出"逐字相同。按 entry 数,
-   * 约一半流量走这条路 → 活体基率的分母会错近一倍。
+   * ⚠ 两道的**面宽度不同,合并即错**:
+   *   - `conductor` = 内环那道,面 = output + facts + **产物内容**(judge 视图读盘的那份);
+   *   - `flat`      = 整图那道,面 = output + facts,**不读产物内容**(读盘是 judge 视图专有预算)。
+   * 两个分母**不重叠**:内环检过的子节点被平铺那道跳过。
    *
-   * 三态(仓规第一条 `NULL ≠ 0 ≠ 不适用`):
-   *   缺席 = 这条路**不适用**(不进分母)· `findings: 0` = 检查过零检出 · `findings > 0` = 检出。
+   * 加 `flat` 的理由是一次真跑撞出来的:那条判据原本只活在 conductor 内环,而 `dag_run` 那条路
+   * 整张图可以一个 conductor 节点都没有 —— 检出器结构上够不着,账本却记成"零检出"。
+   * 按 entry 数约一半流量走那条路 → 活体基率会被算低近一倍。
+   * `flat` 那道**只进账本、不进任何 prompt**(纯测量,零行为风险);要不要让它也喂 DAG 级
+   * verifier 是**单独的拨闸决定**,不在这里顺手做。
+   *
+   * ⚠ 缺席 = 早于本次改动的记录(不是"零检出")。
    */
-  claimCheck?: { rounds: number; nodes: number; findings: number };
+  claimCheck?: {
+    conductor: { rounds: number; nodes: number; findings: number };
+    flat: { nodes: number; findings: number };
+  };
   /**
    * **协作式取消** (D-P) 的留痕: 给了就说明本次 run 是被叫停的, 不是自然跑完的。
    *

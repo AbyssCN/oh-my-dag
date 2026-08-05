@@ -166,6 +166,46 @@ export function renderShellRunFact(run: { command: string; exitCode?: number }):
   return `执行命令: ${cmd} (${run.exitCode === undefined ? '无退出码记录' : `exit ${run.exitCode}`})`;
 }
 
+/**
+ * 一个节点结果 → **引擎记录的那几行事实**(2026-08-05 收成一份)。
+ *
+ * 为什么抽出来:这段字有**两个消费者** —— conductor 内环的 judge 视图,和整图那道
+ * report-only 扫描。两处各写一份的话,同一个节点在两条路上会得到不同的"引擎记录",
+ * 于是「声称 ⊆ 记录」这个谓词在两条路上判出不同答案,而差异是静默的。
+ * (同 `renderShellRunFact` 的写者与读者同文件那条理由。)
+ *
+ * 只放**引擎自己观测到的**:filesTouched 经产物闸核过存在性;command 节点 done ≡ 退出码符合
+ * expect_exit;bash 痕迹带命令与退出码。不放任何带结论色彩的话 —— 一旦写成"✅ 成功"
+ * 就变成了替判官下结论(2026-07-29 实测删掉过那种暗示,代价是三成谎报完成)。
+ */
+export function engineFacts(
+  r: {
+    filesTouched?: readonly string[];
+    filesRead?: readonly string[];
+    kind?: string;
+    status?: string;
+    shellRuns?: readonly { command: string; exitCode?: number }[];
+  },
+  opts: { expectExit?: number; shellCap: number },
+): string[] {
+  const facts: string[] = [];
+  if (r.filesTouched?.length) facts.push(`写入文件: ${r.filesTouched.join(', ')}`);
+  if (r.filesRead?.length) facts.push(`读取文件: ${r.filesRead.join(', ')}`);
+  if (r.kind === 'command' && r.status === 'done') {
+    facts.push(`命令退出码符合预期 (expect_exit=${opts.expectExit ?? 0})`);
+  }
+  // ⚠ **能支撑声称的排在前面**: 上限是展示预算, 而这段字同时是判据的输入面 —— 按时间序截断时,
+  //   第 7 条才跑的 `bun test` 会被截掉, 一次诚实自验被反报成"无据"。截断只许丢展示信息,
+  //   不许丢判据证据。代价是这几行不再是时间序。
+  const runs = r.shellRuns ?? [];
+  const ordered = [...runs].sort((a, b) => Number(isVerificationRun(b)) - Number(isVerificationRun(a)));
+  for (const s of ordered.slice(0, opts.shellCap)) facts.push(renderShellRunFact(s));
+  if (runs.length > opts.shellCap) {
+    facts.push(`(另有 ${runs.length - opts.shellCap} 条命令未展示; 已优先展示校验类)`);
+  }
+  return facts;
+}
+
 /** {@link renderShellRunFact} 的反向:从事实行取回命令与退出码(取不出 → null)。 */
 function parseShellRunFact(fact: string): { command: string; exitCode: number | null } | null {
   const m = /^执行命令: (.+) \((?:exit (-?\d+)|无退出码记录)\)$/.exec(fact);

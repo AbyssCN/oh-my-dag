@@ -61,6 +61,7 @@ import type { ShellRun } from './leaf-runners';
 import {
   appendClaimEvidence,
   checkableFromJudgeView,
+  engineFacts,
   findUnsupportedClaims,
   renderClaimObservation,
   isVerificationRun,
@@ -122,6 +123,8 @@ interface ExecOnce {
   reusedNodes: string[];
   /** D-Q 图外只读观察者本轮的产出 (制品边 lint / 环空转)。 */
   observations: DagObservation[];
+  /** 「声称 vs 引擎记录」两道扫描各自查了多少、检出多少 (见 ExecutorDagResult.claimCheck)。 */
+  claimCheck: NonNullable<ExecutorDagResult['claimCheck']>;
   /** D-P: 本轮是被叫停的 (给了就非自然结束); notRun = 一个都没起跑过的节点。 */
   cancelled?: { reason: string; at: string; notRun: string[] };
 
@@ -376,6 +379,10 @@ async function executePlan(
   let claimCheckRounds = 0;
   let claimCheckedNodes = 0;
   let claimFindings = 0;
+  /** 内环那道已经检过的子节点 id —— 平铺那道跳过它们, 两个分母**不重叠**。 */
+  const claimCheckedIds = new Set<string>();
+  let flatCheckedNodes = 0;
+  let flatFindings = 0;
   const seenObservations = new Set<string>();
   /** conductor 运行时展开出来的子节点 id —— `detector` 的消费者只在内环里, 别处设了要响亮忽略。 */
   const conductorChildIds = new Set<string>();
@@ -1160,26 +1167,12 @@ async function executePlan(
               // 此前视图里只有 leaf 自己写的那句话, 于是反捏造判词打在了真做完的活上
               // (子图 2/2 成功、文件真在盘上, judge 判"捏造执行确认" —— 它没冤枉谁, 证据确实没进视图)。
               // 只放引擎观测到的: filesTouched 经产物闸核过存在性; command 节点 done ≡ 退出码符合 expect_exit。
-              const facts: string[] = [];
-              if (r.filesTouched?.length) facts.push(`写入文件: ${r.filesTouched.join(', ')}`);
-              if (r.filesRead?.length) facts.push(`读取文件: ${r.filesRead.join(', ')}`);
-              if (r.kind === 'command' && r.status === 'done') {
-                facts.push(`命令退出码符合预期 (expect_exit=${plan!.nodes[cid]?.expect_exit ?? 0})`);
-              }
-              // agent leaf 经 bash 跑过的命令 (2026-08-05): 「我跑了 `bun test`, 全过」是**诚实自验**
-              // 的主要形状, 而引擎此前对它零记录 —— 于是真跑过测试的节点在 facts 上与顺手编一句的
-              // 节点长得一模一样。渲染走 `renderShellRunFact` (读它的判据在同一个文件, 格式不会漂)。
-              // ⚠ 上限是硬的, 超出的**列出条数**不静默丢 (no-silent-caps): 这段进的是每一次 judge 调用。
-              // ⚠ **能支撑声称的那些排在前面** (2026-08-05 跨模型审查抓到的真洞): 上限是展示预算,
-              //   而这段字**同时是判据的输入面** —— 按时间序截断时, 第 7 条才跑的 `bun test` 会被
-              //   截掉, 于是一次诚实自验被反报成"无据"。截断只许丢展示信息, 不许丢**判据证据**。
-              //   代价是这几行不再是时间序; 换来的是"截断永远不会制造误报"。
-              const runs = r.shellRuns ?? [];
-              const ordered = [...runs].sort((a, b) => Number(isVerificationRun(b)) - Number(isVerificationRun(a)));
-              for (const s of ordered.slice(0, SHELL_FACT_CAP)) facts.push(renderShellRunFact(s));
-              if (runs.length > SHELL_FACT_CAP) {
-                facts.push(`(另有 ${runs.length - SHELL_FACT_CAP} 条命令未展示; 已优先展示校验类)`);
-              }
+              // 引擎记录的那几行 —— **构造器与整图那道扫描共用一份** (见 engineFacts 的注:
+              // 两处各写一份的话, 同一个节点在两条路上会得到不同的"引擎记录", 而差异是静默的)。
+              const facts = engineFacts(r, {
+                expectExit: plan!.nodes[cid]?.expect_exit ?? 0,
+                shellCap: SHELL_FACT_CAP,
+              });
               // S1: 上面那三条只回答"文件在不在 / 命令过没过", 而验收在**内容**上的目标问的是
               // "文件里写了什么" —— judge 看不见它就只能 fail-closed, 于是交付物全对也判未收敛
               // (2026-07-30 两次带种 live 都是这个形状)。产物内容由**引擎读盘**补进来:
@@ -1310,6 +1303,7 @@ async function executePlan(
     claimCheckRounds++;
     claimCheckedNodes += orderedChildren.length;
     claimFindings += claims.length;
+    for (const c of orderedChildren) claimCheckedIds.add(c.id);
     return {
       leaf: {
         id,
@@ -2694,6 +2688,36 @@ async function executePlan(
   // 在**平铺的普通图**上同样发生 (那种图一个 conductor 节点都没有, 上面那条路根本不经过)。
   runArtifactLint();
 
+  // 最后再扫一次「声称 vs 引擎记录」—— **与上面那条 lint 同一个理由**: 内环那道只覆盖有 conductor
+  // 节点的图, 而平铺的普通图 (`dag_run` 那条路) 一个 conductor 都没有, 上面那条路根本不经过。
+  // 按 entry 数它占**一半流量**, 而此前它在账本上与"查过零检出"逐字相同 (2026-08-05 首次真跑撞到)。
+  //
+  // ⚠ **只进账本, 不进任何 prompt**: 平铺路没有内环 judge 可喂, 也**刻意不喂** DAG 级 verifier ——
+  //   那是拨闸决定不是顺手, 而这一道是**纯测量**, 零行为风险。
+  // ⚠ 面比内环那道**窄**: 只扫 output + facts, **不读产物内容** (读盘是 judge 视图专有的预算)。
+  //   所以两道的数**分开记** —— 合并等于把两把不同宽度的尺子加在一起。
+  {
+    const nodes = Object.entries(results)
+      // ⚠ **跳过 conductor 节点本身**: 它的 output 是子节点输出的**拼接**, 于是子节点那句声称
+      //   会被父节点原样复述一遍 —— 而父节点手里没有子节点的 facts (bash 痕迹/退出码全在子节点上),
+      //   于是一次**已经被内环放过**的诚实自验, 会在父节点这一格被反报成"无据"。
+      //   (写这道扫描时当场被两条既有用例抓到, 不是推理出来的。)
+      .filter(
+        ([id, r]) => r !== undefined && r.status !== 'skipped' && r.kind !== 'conductor' && !claimCheckedIds.has(id),
+      )
+      .map(([id, r]) => ({
+        id,
+        output: r!.output ?? '',
+        facts: engineFacts(r!, { expectExit: plan.nodes[id]?.expect_exit ?? 0, shellCap: SHELL_FACT_CAP }),
+      }));
+    const found = findUnsupportedClaims(nodes);
+    flatCheckedNodes = nodes.length;
+    flatFindings = found.length;
+    observe(
+      found.map((f) => ({ kind: 'unsupported-claim' as const, nodes: [f.nodeId], message: renderClaimObservation(f) })),
+    );
+  }
+
   const notRun = Object.keys(plan.nodes).filter((id) => results[id] === undefined);
   return {
     plan,
@@ -2701,11 +2725,12 @@ async function executePlan(
     results,
     reusedNodes: [...reuse.keys(), ...innerReused],
     observations,
-    // 三态: 缺席 = 这条路上没有 conductor 子图 (检出器**不适用**, 不该进活体基率的分母);
-    // rounds>0 且 findings=0 = 检查过、零检出; findings>0 = 真检出。见 claimCheckRounds 的声明处。
-    ...(claimCheckRounds > 0
-      ? { claimCheck: { rounds: claimCheckRounds, nodes: claimCheckedNodes, findings: claimFindings } }
-      : {}),
+    // 两道分开记 (宽度不同, 合并即错): conductor = output+facts+产物内容; flat = output+facts。
+    // 两个分母**不重叠** (内环检过的子节点被平铺那道跳过)。缺席 = 早于本次改动的记录。
+    claimCheck: {
+      conductor: { rounds: claimCheckRounds, nodes: claimCheckedNodes, findings: claimFindings },
+      flat: { nodes: flatCheckedNodes, findings: flatFindings },
+    },
     ...(isCancelled() ? { cancelled: { reason: cancelReason(), at: new Date().toISOString(), notRun } } : {}),
     conductorUsage,
     leavesIn,
@@ -2970,6 +2995,9 @@ async function runDagInternal(
     results: exec.results,
     reusedNodes: exec.reusedNodes,
     ...(exec.observations.length ? { observations: exec.observations } : {}),
+    // ⚠ 这一行是**逐字重建**的又一格: executePlan 算出来了, 外层不透传就等于没有 ——
+    //   而症状是沉默的 (账本里那一列恒 NULL, 读上去像"早于该改动")。写这道扫描时当场被闸抓到。
+    claimCheck: exec.claimCheck,
     ...(exec.cancelled ? { cancelled: exec.cancelled } : {}),
     usage: {
       conductor: conductorUsage,
