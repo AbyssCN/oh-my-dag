@@ -35,6 +35,7 @@ import { makeLlmConvergenceJudge } from '../src/harness/plan/llm-judge';
 import { tryResolveSeatModel } from '../src/model/role-models';
 import { renderRoundForJudge, type JudgeChildView } from '../src/harness/plan/conductor-judge';
 import { collectJudgeArtifacts, DEFAULT_ARTIFACT_BUDGET } from '../src/harness/plan/judge-artifacts';
+import { findUnsupportedClaims, renderUnsupportedClaims } from '../src/harness/plan/claimed-actions';
 import { JUDGE_ARTIFACT_CASES, assessRejectedNodes, type JudgeArtifactCase } from '../src/eval/tasks/judge-artifact-cases';
 
 const argv = process.argv.slice(2);
@@ -90,6 +91,17 @@ function materialize(root: string, c: JudgeArtifactCase): void {
   }
 }
 
+/**
+ * `--claim-check`(2026-08-05): 把**确定性的引擎记录核对结果**当证据追加进视图。
+ *
+ * 为什么要单独量这一发: 基线实测 judge 在"伪造引擎事实"上 **0/64**, 而矛盾
+ * (`[引擎实测] 写入文件…` vs 产物里「已由引擎实测通过」)**本来就在相邻两行**。
+ * 于是问题变成: **把这条差集显式说给它听, 它会不会用?**
+ * 不动 → 说明这条必须硬拦(模型明说了也不接), 那是与"讲道理拦不住"一致的第三次实证;
+ * 动了 → 说明"证据要显式"而非"模型不行", 那可以只报不拦。**两边都值钱。**
+ */
+const CLAIM_CHECK = argv.includes('--claim-check');
+
 /** 语料 → judge 视图。`withArtifacts` 是两臂唯一的差别。 */
 function viewOf(root: string, c: JudgeArtifactCase, withArtifacts: boolean): string {
   const children: JudgeChildView[] = c.children.map((ch) => {
@@ -116,7 +128,21 @@ function viewOf(root: string, c: JudgeArtifactCase, withArtifacts: boolean): str
       ...(artifacts.length ? { artifacts } : {}),
     };
   });
-  return renderRoundForJudge(children);
+  const base = renderRoundForJudge(children);
+  if (!CLAIM_CHECK) return base;
+  const evidence = renderUnsupportedClaims(
+    findUnsupportedClaims(
+      children.map((ch) => ({
+        id: ch.id,
+        output: ch.output,
+        facts: ch.facts,
+        // ⚠ 只扫 `readable` 的: 读不到时那一条是**一句说明文字**(「读不到内容/非文本/超预算」),
+        //    拿它去匹配等于在占位符上产生假命中。
+        artifacts: ch.artifacts?.filter((a) => a.readable).map((a) => ({ path: a.path, content: a.body })),
+      })),
+    ),
+  );
+  return evidence ? `${base}\n\n${evidence}` : base;
 }
 
 interface Trial {
