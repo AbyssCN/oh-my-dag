@@ -20,6 +20,7 @@
  *   bun --env-file=.env run scripts/eval-no-graph.ts --score --task f2 --arm a --engine solve --pair 1
  */
 import { execSync } from 'node:child_process';
+import { readArmVisibleTask } from '../src/eval/tasks/no-graph-baseline/task-text';
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -89,7 +90,10 @@ function resolveAnswerPath(head: string, t: string, a: string, p: number): strin
 
 /** f1 作业面: 快照导出 (无 .git)。其余任务: 本仓只读。 */
 async function materialize(t: string, a: string, p: number): Promise<{ workCwd: string; taskText: string }> {
-  const taskText = readFileSync(join(cwd, TASK_DIR, `${t}-task.md`), 'utf8');
+  // ⚠ **切掉夹具注记再喂臂** (2026-08-05): 题面里混着给人看的防泄题登记 (答案清单在哪个文件 /
+  //   参考答案的 commit hash), 此前整份读进 prompt —— 也就是把答案位置逐字告诉了臂。
+  //   切法与闸共用 `armVisibleTaskText`, 各写一份就会出现"闸查切过的、臂拿到没切的"。
+  const taskText = readArmVisibleTask(join(cwd, TASK_DIR, `${t}-task.md`));
   if (t === 'f1') {
     const { F1_SNAPSHOT_BEFORE } = await import('../src/eval/tasks/no-graph-baseline/f1-check');
     const d = workDirPath(t, a, p);
