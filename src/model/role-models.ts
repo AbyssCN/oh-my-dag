@@ -24,7 +24,9 @@
  * INV: 永不返硬编码 URL — 只返 'provider' / 'provider:modelId' 坐标, callModel 经注册 provider 解析。
  */
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, parse, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, parse, resolve } from 'node:path';
+// worktree → 主仓的识别与留痕库锚点同源 (src/harness/repo-root), 两处各算一份必漂。
+import { mainRepoRootOfWorktree } from '../harness/repo-root';
 import { logger } from '../logger';
 
 /**
@@ -122,29 +124,6 @@ function discoverConfigPath(cwd: string, envPath: string | undefined): string {
     dir = dirname(dir);
   }
   return join(cwd, DEFAULT_CONFIG_REL);
-}
-
-/**
- * linked worktree 的 `.git` **文件** → 主仓根目录(不是 worktree 就返 null)。
- *
- * 文件内容形如 `gitdir: /path/to/main/.git/worktrees/<name>`。判据取 `/.git/worktrees/` 这个
- * 中缀 —— **submodule 的 `.git` 也是文件**(`gitdir: ../.git/modules/foo`),而 submodule 是
- * 另一个仓,它的配置本就不该跟宿主仓共用。只认 worktree 那一种,别的原样走老路。
- *
- * fail-open: 读不到 / 格式不认 → null → 回落原行为(宁可"没修好", 不可因为读一个文件失败就崩)。
- */
-function mainRepoRootOfWorktree(gitPath: string): string | null {
-  try {
-    if (statSync(gitPath).isDirectory()) return null; // 普通仓, 不是 worktree
-    const m = /^gitdir:\s*(.+)$/m.exec(readFileSync(gitPath, 'utf8'));
-    const gitdir = m?.[1]?.trim();
-    if (!gitdir) return null;
-    const marker = `${sep}.git${sep}worktrees${sep}`;
-    const at = gitdir.indexOf(marker);
-    return at > 0 ? gitdir.slice(0, at) : null;
-  } catch {
-    return null;
-  }
 }
 
 interface ConfigFile {

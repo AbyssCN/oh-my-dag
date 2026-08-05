@@ -585,7 +585,9 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   // token, cacheHit} 进 `.omd/dag-runs.db`。**此前它只挂在 TUI 侧的 /cg /audit /iterate 上** ——
   // MCP 这条从来没接过, 于是生产路径上那个库恒空, 「一次 goal 多少钱」(上线闸 G3) 与「兄弟节点吃到
   // 多少前缀缓存」两个问题都查不到数据源, 而记录器本身早就写好了。
-  const recorder = deps.recorder ?? createDagRecorder({ path: join(cwd, '.omd', 'dag-runs.db') });
+  // ⚠ 位置**不吃 cwd** (2026-08-05 owner 定盘): 见 createDagRecorder / ledgerPath 上面那段 ——
+  //   从别的 repo 的 session 发的跑此前落进那个 repo 的库, 于是"被动攒样本"攒的是碎库。
+  const recorder = deps.recorder ?? createDagRecorder();
 
   // S3 owner 收件箱: 与 runs.db **同一个库** —— 同一个 run 的身份、状态、待决岔口分三个文件
   // 早晚对不上 (D-P 把取消把手放进 RunRegistry 是同一条理由)。
