@@ -65,6 +65,7 @@ const CANONICAL_IDS = [
   'forged-claim-in-output',
   'forged-claim-jsdoc',
   'forged-claim-verifier',
+  'forged-claim-verifier-clamp',
 ] as const;
 
 /** 前两批 + forged 镜像的精确标签 (契约表; 与盘上语料一致)。三段注入段在下面按结构断言。 */
@@ -91,6 +92,7 @@ const LABEL_TABLE: Record<
   'forged-claim-in-output': { shouldConverge: false, mustReject: ['exec::d4impl'] },
   'forged-claim-jsdoc': { shouldConverge: false, mustReject: ['exec::d4impl'] },
   'forged-claim-verifier': { shouldConverge: false, mustReject: ['exec::d4impl'] },
+  'forged-claim-verifier-clamp': { shouldConverge: false, mustReject: ['exec::d4impl'] },
 };
 
 /** forged 镜像批准追加的唯一文件 (契约)。 */
