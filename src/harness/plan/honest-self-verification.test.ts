@@ -265,3 +265,41 @@ describe('端到端:同一句声称,跑没跑过测试决定报不报', () => {
     rmSync(root, { recursive: true, force: true });
   });
 });
+
+// ── ③ 产物闸的措辞: 引擎只许说它看见了什么 ──────────────────────────────────────
+
+describe('★ 产物闸不许把"闸看不见"说成"它没做"', () => {
+  /** 一个 agent 节点: 声称写了文件, 但受控写工具一次没用 (filesTouched 空)。 */
+  const writeNodePlan = {
+    name: 'p',
+    nodes: { w: { goal: '写入说明', executor: 'agent', output_type: 'file' } },
+  } as unknown as ConductorPlan;
+
+  async function runWrite(shellRuns: ShellRun[]): Promise<string> {
+    const cfg = {
+      conductorModel: 'c:m',
+      leafModel: 'l:m',
+      agentLeafModel: 'a:m',
+      generate: async () => ({ text: '写好了', usage: { in: 1, out: 1 } }),
+      agentTemplates: new Map(),
+      agentRunner: async () => ({ text: '已把说明写进 docs/x.md', usage: { in: 1, out: 1 }, filesTouched: [], shellRuns }),
+    } as unknown as ExecutorDagConfig;
+    const r = await runExecutorDagWithPlan(writeNodePlan, cfg);
+    return r.results.w?.output ?? '';
+  }
+
+  test('★ 跑过 bash → 判词说"闸看不见"并给出命令与救法, **不说"未做任何文件写操作"**', async () => {
+    // 2026-08-05 真跑: 文件真写好了 (57 行合规), 闸却判「leaf 自报完成但未做任何文件写操作」,
+    // 下游四个复核节点因此全被 skip。引擎说错话的代价与执行体说错话一样大。
+    const out = await runWrite([{ command: 'python3 - <<PY ... docs/x.md', exitCode: 0, ok: true }]);
+    expect(out).toContain('产物校验失败');
+    expect(out).not.toContain('未做任何文件写操作');
+    expect(out).toContain('bash 命令'); // 说得出它看见了什么
+    expect(out).toContain('output_path'); // 说得出怎么救
+  });
+
+  test('真的一条命令都没跑 → 照旧那句(这一格的原判词是对的)', async () => {
+    const out = await runWrite([]);
+    expect(out).toContain('未做任何文件写操作');
+  });
+});
