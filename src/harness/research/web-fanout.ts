@@ -15,7 +15,8 @@
 import { z } from 'zod';
 import { researchFanout, type ProbeYield, type ResearchFanoutConfig, type ResearchFanoutResult, type ResearchLens } from './fanout';
 import { send } from '../../model/gateway';
-import { resolveRoleModelConfigured } from '../../model/role-models';
+import { resolveConfiguredPools as configuredPools, resolveRoleModelConfigured } from '../../model/role-models';
+import { POOL_DEFAULTS } from '../../model/pool-defaults';
 import { authorFanoutSpec } from './author-spec';
 import { retrieveWeb, type RetrieveOpts, type RetrieveResult } from '../web/retrieve';
 import { CleaningFetchProvider } from '../web/clean';
@@ -66,30 +67,16 @@ export const DEFAULT_WEB_STABLE_PREFIX =
   '(3) 语料不足以回答的部分明说"语料未覆盖", 不要编。';
 
 /**
- * 跨家族发散池 (owner 2026-07-27): lens gen + synth framing 逐单元轮不同模型族 (「同族 N 单元共享盲点」)。
+ * 跨家族发散池 / judge panel 跨族池 —— **值与理由都在 `model/pool-defaults.ts`**(2026-08-05 搬家)。
  *
- * ⚠ **2026-08-05 撤掉 `xiaomi-token-plan-ams:mimo-v2.5-pro`**(原占 50% 权重)。两条理由:
- *   ① 该座实测 `429 quota exhausted`,留着就是让整轮 fanout 有一半概率挂;
- *   ② 路由口径:**mimo 只走 opencode-go,且只用于多模态** —— 这里是纯文本活。
- * 撤掉之后权重表空了 (它当初就只为 mimo 那一条存在),三个 Go 家族均分。
- * 发散本身不是质量瓶颈:2026-07-28 跨家族发散 eval 的结论是「无互补盲点,只有能力排序」
- * (79% vs 81% 在噪声内),所以少一个家族不值得再买一份订阅。
+ * 这里只保留导出名(eval 脚本按名引用)。搬家的理由见那个文件的头注:池是**选择**不是事实表,
+ * 而"改一个选择要改代码+提交"正是 owner 撞了一整天的那堵墙。
+ * 运行期解析序:调用方显式 > `OMD_POOL_LENS`/`OMD_POOL_JUDGE` > `.omd/config.json` 的 pools 段 > 这里。
  */
-export const LENS_DIVERGENCE_POOL = [
-  'opencode-go:qwen3.7-plus',
-  'opencode-go:minimax-m3',
-  'opencode-go:deepseek-v4-pro',
-];
+export const LENS_DIVERGENCE_POOL = [...(POOL_DEFAULTS.lens ?? [])];
+/** 发散权重 (coord→权重)。今天为空 —— 它当初只为那条已撤掉的 mimo 订阅坐标存在。 */
 export const LENS_DIVERGENCE_WEIGHTS: Record<string, number> = {};
-/** judge panel 跨族池: K 维度逐个轮不同族, 降单模型系统偏见。
- * 2026-07-28: GPT(openai-codex/Codex) 在 research 大输入聚合上反复 "An error occurred processing your
- * request"/context 溢出 → 移出研究判优池。GPT 仍是 dag_run 的 conductor/review。
- *
- * **2026-08-05 owner 定盘: 判优只用 `glm-5.2` 与 `qwen3.8-max`,别的都不许进这个池。**
- * (我这一版先自作主张换成了 minimax-m3 —— 被当场驳回。判优池不是"找个 1M 上下文的填上",
- * 它是 owner 按判优质量圈定的白名单;能连通 ≠ 该用。)
- * kimi-k3 同时撤出。 */
-export const JUDGE_PANEL_POOL = ['opencode-go:glm-5.2', 'opencode-go:qwen3.8-max'];
+export const JUDGE_PANEL_POOL = [...(POOL_DEFAULTS.judge ?? [])];
 
 export interface WebFanoutOpts extends RetrieveOpts {
   /** true → conductor (authorFanoutSpec) 按问题+语料自动分解 lens/framing/judge, 替代默认 3 视角。 */
@@ -401,9 +388,11 @@ export async function researchWebFanout(
     reduceModel: opts.reduceModel,
     judgeModel: opts.judgeModel,
     // 跨家族发散 (统一 rotateFamilies): lens+synth 走发散池, judge panel 走 judge 池; 终局 fusion/graft 单强不发散。
-    divergePool: opts.divergePool ?? LENS_DIVERGENCE_POOL,
+    // 解析序: 调用方显式 > `.omd/config.json` 的 pools 段 (或 OMD_POOL_LENS/OMD_POOL_JUDGE) > 源码默认。
+    // 中间那层是 2026-08-05 加的 —— 在那之前改一个判优池要改代码+跑测试+提交, 而池是**选择**不是事实表。
+    divergePool: opts.divergePool ?? configuredPools().lens ?? LENS_DIVERGENCE_POOL,
     divergeWeights: opts.divergeWeights ?? LENS_DIVERGENCE_WEIGHTS,
-    judgePool: opts.judgePool ?? JUDGE_PANEL_POOL,
+    judgePool: opts.judgePool ?? configuredPools().judge ?? JUDGE_PANEL_POOL,
     fusionModel: opts.fusionModel,
     graftModel: opts.graftModel ?? resolveRoleModelConfigured('judge').model,
     maxFanout: opts.maxFanout,

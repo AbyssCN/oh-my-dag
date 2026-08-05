@@ -17,7 +17,8 @@ import type { OmdMcpTool } from '../server';
 import { ROLE_PRESETS } from '../../harness/init/role-presets';
 import { runAutoAssign } from '../../model/auto-assign';
 import { langfuseStatus } from '../../model/langfuse';
-import { checkSeats } from '../../model/role-fallback';
+import { checkSeats, usable as coordUsable } from '../../model/role-fallback';
+import { renderPoolReport, reportPools } from '../../model/pool-report';
 import {
   TUNABLE_CONFIG_ROLES,
   applyPresetHeadless,
@@ -301,6 +302,12 @@ function makeConfigStatus(router?: ConfigToolDeps['router']): OmdMcpTool {
           lines.push(`  ${c.seat.padEnd(12)} ${(c.coord ?? '—').padEnd(34)} ${state}`);
         }
         if (s.multimodalPool.length) lines.push('', `多模态池: ${s.multimodalPool.join(', ')}`);
+        // ── 池: 生效坐标 + **来自哪一层** (2026-08-05) ──────────────────────────
+        // owner 一天内连撞三处漂移, 每处都得 grep 全仓才翻得出来 —— 缺的不是配置项,
+        // 是一处"能一眼看全 + 说得出来源"的读数。池不经过座位链, 上面那张座位表看不见它们。
+        const poolRows = reportPools(process.env);
+        lines.push('', '池 (不经过座位链 — 座位表看不见它们):');
+        lines.push(...renderPoolReport(poolRows, (c) => `${c}${coordUsable(c, process.env) ? '' : ' ✗无凭证'}`));
         // 可观测出口 (2026-07-31): **开没开要能一眼看见, 没开要说得出缺哪个 env**。
         // 这一行本身是在防这个文件治的那个病 —— 一个"配了以为生效、其实没生效"的观测层
         // 比没有观测层更坏 (你会以为看过了)。
