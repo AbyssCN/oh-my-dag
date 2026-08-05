@@ -14,6 +14,7 @@
  */
 import type { AgentEvent } from '@earendil-works/pi-agent-core';
 import { logger } from '../logger';
+import { boardHtml } from './board-page';
 import type { OmdMcpTool } from '../mcp/server';
 import type { PlanLedger } from '../harness/plan-ledger';
 import type { AnyOmdTool } from '../harness/agent-tools';
@@ -68,6 +69,14 @@ export function createDaemonFetch(deps: DaemonDeps): (req: Request) => Promise<R
     const parts = url.pathname.split('/').filter(Boolean); // ['api','runs',...]
     try {
       if (parts[0] === 'api') return await api(req, url, parts.slice(1));
+      // /board 必须在 staticPage 之前: 那条路径会被 SPA history 回落吃掉 (返 index.html)。
+      // 只认 GET —— 这一页是只读投影, 别的方法一律落到 404 而不是被静默当成页面请求。
+      if (url.pathname === '/board') {
+        // 非 GET 显式 404, 而**不是**落到 staticPage 的兜底页 —— 那条路径对任何方法都返 200,
+        // 于是一次误发的写请求会拿到一个成功状态码, 读上去像"写进去了"。
+        if (req.method !== 'GET') return notFound(url.pathname);
+        return new Response(boardHtml(), { headers: { 'content-type': 'text/html; charset=utf-8' } });
+      }
       return staticPage(deps, url.pathname);
     } catch (err) {
       // 边界闸 (非法 id/slug) 抛的是 Error → 400; 其余 500 带真因 (localhost 单用户, 不藏栈)。
