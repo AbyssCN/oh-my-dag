@@ -404,4 +404,34 @@ describe('★ 产物闸救回经 bash 写入的产物(必须有盘上证据)', (
     expect(r.status).toBe('failed');
     rmSync(root, { recursive: true, force: true });
   });
+
+  // ⑥ 脚本内部的写 (2026-08-05): 解析器那侧有单测, 这里钉的是**误杀真的停了** ——
+  // 解析器绿不等于闸放行 (救援还要过盘上存在 + mtime 两道)。
+  test('★ 脚本内部的写(heredoc + open(f,"w"))→ 救回, 此前这一格是真误杀', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-rescue-'));
+    mkdirSync(join(root, 'docs'), { recursive: true });
+    const r = await runIn(
+      root,
+      [{ command: "python3 - <<'PY'\nopen('docs/x.md','w').write('正文')\nPY", exitCode: 0, ok: true }],
+      () => writeFileSync(join(root, 'docs/x.md'), '正文\n'),
+    );
+    expect(r.status).toBe('done');
+    expect(r.files).toEqual(['docs/x.md']);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test('★ 脚本只**读**那个文件 → 不救(哪怕文件恰好在窗口内被别人改过)', async () => {
+    // 这条守的是"不多认"那一半在**整道闸上**也成立: 并发扇出下另一个 leaf 恰好写了同名
+    // 文件时, 一个纯读脚本不该被洗成成功。反例形状必须落在 open() 上 —— 用 `cat` 那种
+    // 根本不产候选的命令充数, 拆掉判据它照样绿。
+    const root = mkdtempSync(join(tmpdir(), 'omd-rescue-'));
+    mkdirSync(join(root, 'docs'), { recursive: true });
+    const r = await runIn(
+      root,
+      [{ command: "python3 - <<'PY'\nprint(open('docs/x.md').read())\nPY", exitCode: 0, ok: true }],
+      () => writeFileSync(join(root, 'docs/x.md'), '别人写的\n'), // 窗口内, 但不是这个节点写的
+    );
+    expect(r.status).toBe('failed');
+    rmSync(root, { recursive: true, force: true });
+  });
 });

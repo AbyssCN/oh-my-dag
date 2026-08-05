@@ -76,10 +76,53 @@ describe('★ 不许多认(多认一个 = 可能救回一个本该失败的节�
   });
 });
 
+// ── ⑥ 脚本内部的写 (2026-08-05: 从"已知盲点"收窄成"认得出") ─────────────────────
+//
+// 这曾是这条通道最大的漏口: agent 最常用的写法之一, 写完了却被判 empty-artifact (真误杀,
+// 不是判词问题)。收窄的前提是**安全性质一个字没放宽** —— 产的仍只是候选, 调用方仍要求
+// 盘上存在 + mtime 在本节点窗口内。
+//
+// 证伪 (立闸时跑过): 拿掉 INLINE_SCRIPT_WRITES 那个循环 → 下面 ★ 那四条当场红;
+// 把 python 那条的模式串判据 `[wax]` 去掉 → 「只读的 open 不认」当场红 (那条才是真正
+// 守住"不多认"的闸 —— 反例形状必须落在 open() 上, 不能拿 `cat` 之类根本不产候选的命令充数)。
+describe('⑥ 脚本内部的写 —— 认得出, 但只认带写指示器的', () => {
+  test('★ python heredoc: open(f, "w")', () => {
+    expect(t("python3 - <<'PY'\nopen('docs/x.md','w').write('hi')\nPY")).toEqual(['docs/x.md']);
+  });
+
+  test('★ python: Path(f).write_text / 追加模式 / 二进制模式', () => {
+    expect(t('python3 -c "from pathlib import Path; Path(\'out/a.md\').write_text(x)"')).toEqual(['out/a.md']);
+    expect(t("python3 - <<'PY'\nopen('log/b.txt','a').write('x')\nPY")).toEqual(['log/b.txt']);
+    expect(t("python3 - <<'PY'\nopen('bin/c.dat','wb').write(b'')\nPY")).toEqual(['bin/c.dat']);
+  });
+
+  test('★ node/bun: writeFileSync / Bun.write / 反引号字面量', () => {
+    expect(t('bun -e "writeFileSync(\'src/gen.ts\', code)"')).toEqual(['src/gen.ts']);
+    expect(t('bun -e "await Bun.write(`docs/y.md`, s)"')).toEqual(['docs/y.md']);
+  });
+
+  test('★ **只读的 open 不认** —— 判据挂在模式串上, 不挂在"引号里像路径"上', () => {
+    // 这条是"不多认"那一半的闸。多认一个读路径的后果: 并发扇出下另一个 leaf 恰好写过它,
+    // 就会把一个 empty-done 洗成成功 —— 那正是这道闸唯一要拦的东西。
+    expect(t("python3 - <<'PY'\ndata = open('docs/src.md').read()\nPY")).toEqual([]);
+    expect(t("python3 - <<'PY'\nopen('docs/src.md','r').read()\nPY")).toEqual([]);
+    expect(t("python3 - <<'PY'\nopen('docs/src.md','rb').read()\nPY")).toEqual([]);
+  });
+
+  test('读一个写一个 —— 只认写的那个', () => {
+    expect(t("python3 - <<'PY'\ns = open('a.md').read()\nopen('b.md','w').write(s)\nPY")).toEqual(['b.md']);
+  });
+
+  test('变量/模板展开仍然不猜(与 ①~⑤ 同一条口径)', () => {
+    expect(t('bun -e "writeFileSync(`${dir}/x.md`, s)"')).toEqual([]);
+    expect(t("python3 - <<'PY'\nopen(target,'w').write('x')\nPY")).toEqual([]); // 非字面量, 不匹配
+  });
+});
+
 describe('已知盲点(明写的边界, 不是漏)', () => {
-  test('脚本内部的写认不出 —— 后果是照旧判失败, 不产生新盲点', () => {
-    // 这是 agent 最常用的写法之一, 也是这条通道最大的漏口。明写在 SHELL_WRITE_BLIND_SPOTS。
-    expect(t("python3 - <<'PY'\nopen('docs/x.md','w').write('hi')\nPY")).toEqual([]);
+  test('没覆盖到的脚本写调用仍认不出 —— 后果是照旧判失败, 不产生新盲点', () => {
+    // 收窄 ≠ 消失: 只列了四种最常用的调用, shutil / os.rename 之类照旧认不出。
+    expect(t("python3 - <<'PY'\nimport shutil; shutil.copy('a.md','b.md')\nPY")).toEqual([]);
   });
 
   test('打补丁认不出(目标在补丁内容里)', () => {

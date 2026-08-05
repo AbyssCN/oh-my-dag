@@ -19,7 +19,9 @@
  * ## 判据刻意窄(窄是设计)
  *
  * 认得出:`> f` / `>> f`(含 `1>` `2>` `&>`)· `tee [-a] f` · `sed -i … f` · `cp/mv … dst` ·
- * `touch f`。**认不出**:`python3 - <<PY … open('f','w')`、`git apply`、`patch`、任意脚本内部的写。
+ * `touch f` · **脚本内部的写**(`open(f,'w')` / `Path(f).write_text` / `writeFileSync(f` /
+ * `Bun.write(f`,2026-08-05 补)。**认不出**:`git apply`、`patch`、`> "$OUT"` 这类展开后
+ * 才知道的目标、目录级 `rsync`。
  * 漏认的后果只是**照旧判失败**(与补这条之前一样,不产生新盲点);而多认一个的后果是
  * 可能救回一个本该失败的节点 —— 所以宁可漏。
  */
@@ -27,14 +29,34 @@
 /** 明显不是产物的写目标(认出来也直接丢)。 */
 const NOT_ARTIFACT = /^\/dev\/|^\/proc\/|^\/sys\/|^-$/;
 
-/** 去掉包裹的引号(`'f'` / `"f"` → `f`)。 */
+/** 去掉包裹的引号(`'f'` / `"f"` / `` `f` `` → `f`)。 */
 function unquote(tok: string): string {
   const t = tok.trim();
-  if (t.length >= 2 && ((t[0] === "'" && t.endsWith("'")) || (t[0] === '"' && t.endsWith('"')))) {
+  if (
+    t.length >= 2 &&
+    ((t[0] === "'" && t.endsWith("'")) || (t[0] === '"' && t.endsWith('"')) || (t[0] === '`' && t.endsWith('`')))
+  ) {
     return t.slice(1, -1);
   }
   return t;
 }
+
+/**
+ * 脚本内部的**写调用** → 第一个捕获组是路径字面量。
+ *
+ * 判据挂在**写指示器**上,不挂在"引号里像路径"上 —— `open(f)`(只读)刻意不匹配:
+ * 模式串必须含 `w`/`a`/`x`,`'r'` / `'rb'` / `'r+'` 一个都进不来。
+ */
+const INLINE_SCRIPT_WRITES: readonly RegExp[] = [
+  // python: open(<path>, <含 w/a/x 的模式>) —— 覆盖 'w' 'wb' 'a' 'x' 'w+' 等
+  /\bopen\(\s*("[^"]+"|'[^']+')\s*,\s*(?:mode\s*=\s*)?("[^"]*[wax][^"]*"|'[^']*[wax][^']*')/g,
+  // python: Path(<path>).write_text(...) / .write_bytes(...)
+  /\bPath\(\s*("[^"]+"|'[^']+')\s*\)\s*\.\s*write_(?:text|bytes)\b/g,
+  // node/bun: writeFileSync / appendFileSync / writeFile / appendFile / createWriteStream
+  /\b(?:writeFileSync|appendFileSync|writeFile|appendFile|createWriteStream)\(\s*("[^"]+"|'[^']+'|`[^`]+`)/g,
+  // bun: Bun.write(<path>, …)
+  /\bBun\.write\(\s*("[^"]+"|'[^']+'|`[^`]+`)/g,
+];
 
 /** 看起来像个路径的 token(排除选项、变量展开、通配)。 */
 function plausiblePath(tok: string): boolean {
@@ -50,6 +72,27 @@ function plausiblePath(tok: string): boolean {
  */
 export function shellWriteTargets(command: string): string[] {
   const out = new Set<string>();
+
+  // ⑥ **脚本内部的写**(2026-08-05 补;此前是 SHELL_WRITE_BLIND_SPOTS 里最大的那个漏口)。
+  //
+  // `python3 - <<PY … open('docs/x.md','w') … PY` 是 agent 最常用的写法之一, 而它的写目标
+  // 在脚本体里, 不在任何 shell 写位置上 —— 于是产物闸认不出、照旧判 empty-artifact。那不是
+  // 判词问题 (判词 dd301df 已改准), 是**真误杀**。
+  //
+  // ⚠ **整条命令一起扫, 不进下面的分段循环**: heredoc 体里有换行和 `|`, 分段器会把它切碎。
+  // ⚠ **安全性质与 ①~⑤ 逐字相同, 一个字没放宽**: 这里产的仍然只是候选, 调用方 (executor-dag
+  //   救援②) 仍要求 ① 文件真在盘上 ② mtime 落在本节点执行窗口内。候选来源仍是**本 leaf 自己
+  //   命令里出现的路径**, 并发扇出下不互相认领那条约束没动。
+  // ⚠ **只认带写指示器的字面量, 不认"引号里所有像路径的东西"**: 后者会把脚本**读**的路径也
+  //   变成候选, 而并发下另一个 leaf 恰好写过它就会被认领 —— 那正是这道闸唯一要拦的东西
+  //   (empty-done: 自报完成、零改动)。宁可漏, 不可多认。
+  for (const re of INLINE_SCRIPT_WRITES) {
+    for (const m of command.matchAll(re)) {
+      const p = unquote(m[1]!);
+      if (plausiblePath(p)) out.add(p);
+    }
+  }
+
   for (const rawSeg of command.split(/\n|;|&&|\|\||\|/)) {
     const seg = rawSeg.trim();
     if (!seg) continue;
@@ -88,15 +131,20 @@ export function shellWriteTargets(command: string): string[] {
 /**
  * **明写的判据边界** —— 认不出这些,写在这里免得有人以为它管:
  *
- * 1. **脚本内部的写**(`python3 - <<PY … open(f,'w')` / `bun -e "…writeFileSync…"`)。
- *    这是 agent 最常用的写法之一,也是这条通道最大的漏口。
- * 2. **`git apply` / `patch` / 各类打补丁**:目标在补丁内容里,不在命令行上。
- * 3. **`>` 后面带变量或通配**(`> "$OUT"` / `> out/*.md`):展开后才知道,这里不猜。
- * 4. **目录级操作**(`rsync -a src/ dst/`):认出来也是目录不是产物文件。
+ * 1. **`git apply` / `patch` / 各类打补丁**:目标在补丁内容里,不在命令行上。
+ * 2. **`>` 后面带变量或通配**(`> "$OUT"` / `> out/*.md`):展开后才知道,这里不猜。
+ * 3. **目录级操作**(`rsync -a src/ dst/`):认出来也是目录不是产物文件。
+ * 4. **认不出的脚本写法**:上面 `INLINE_SCRIPT_WRITES` 只列了四种最常用的调用
+ *    (`open(…,'w')` / `Path().write_text` / `writeFileSync` / `Bun.write`)。
+ *    `shutil.copy` / `os.rename` / `subprocess` 再起一层 shell 之类仍然认不出 ——
+ *    **这条边界是收窄了不是消失了**:漏认照旧判失败,不产生新盲点。
+ *
+ * ⚠ 曾经的第 1 条「脚本内部的写」**已在 2026-08-05 收窄**(见 `INLINE_SCRIPT_WRITES`)。
+ *   它此前是这条通道最大的漏口 —— agent 最常用的写法之一,写完了却被判 empty-artifact。
  */
 export const SHELL_WRITE_BLIND_SPOTS = [
-  'inline-script-writes',
   'patch-application',
   'expanded-or-globbed-targets',
   'directory-level-copies',
+  'uncovered-script-write-calls',
 ] as const;
