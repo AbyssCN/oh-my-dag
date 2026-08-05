@@ -710,6 +710,23 @@ export interface ExecutorDagResult {
    */
   artifactMove?: { transitions: number; unobserved: number; findings: number };
   /**
+   * **运行时**写竞争这一跑撞得上几次、真撞了几次(2026-08-06;判据见 `detectRuntimeWriteRace`)。
+   *
+   * ⚠ 与 `static-lint` 那条 `write-race` **同名不同义**,而两者的下一步相反:那一条是**跑之前**
+   * 按 `output_path` 声明判死的坏 plan(改法是改图),这一条是**真跑时**两个并发 leaf 撞在同一条
+   * (谁都没声明过的)路径上。台账此前拿前者的 4 次读数当后者的证据 —— 而后者的通道当时根本不存在。
+   *
+   * 三个数别互相替代:
+   *   `overlaps` = 执行窗口真重叠过的节点**对**数(有没有并发本身);
+   *   `pairs`    = 其中**两侧都报过写**的对数 —— **只有它是"撞得上"的机会**;
+   *   `findings` = 其中路径真相交的对数。
+   * `overlaps - pairs` 是看不见的那部分(一侧没报写:可能真没写,也可能写了而 `filesTouched`
+   * 够不着,如 command 节点走 shell)。两者今天分不开,所以**不进机会分母**。
+   *
+   * ⚠ 缺席 = 早于本次改动的记录;`overlaps: 0` = 这一跑压根没有并发(常见:窄图/链式图)。
+   */
+  writeRace?: { overlaps: number; pairs: number; findings: number };
+  /**
    * **协作式取消** (D-P) 的留痕: 给了就说明本次 run 是被叫停的, 不是自然跑完的。
    *
    * ⚠ 调用方**不许把它读成失败, 也不许读成成功**: 已跑完的节点全在 `results` 里、checkpoint 全在盘上,

@@ -332,6 +332,31 @@ export interface ReadoutResult {
     /** 同一个门槛(`LOOP_NO_MOVE_MIN_N`)读三个槽 —— 三个 0 的下一步相反,见该常量。 */
     sufficiency: { runs: FaceSufficiency; transitions: FaceSufficiency; comparable: FaceSufficiency };
   };
+  /**
+   * **运行时**写竞争(2026-08-06)—— 这条通道此前**根本不存在**。
+   *
+   * 台账把「leaf 级写竞争频率」标成「等读数」,而 ⑧ 段那 4 次 `write-race` 出自
+   * `static-lint`(跑之前按 `output_path` 声明判死的坏 plan),**不是运行时并发撞车**。
+   * 同名不同义,而两者的下一步相反:前者改图,后者要问这两个 leaf 为什么碰同一个文件。
+   * 交接 30 §五 第 2 条说的就是这一格 —— 再等也不会有数,因为没有一行代码写它。
+   *
+   * ⚠ 三个数别互相替代:`pairs`(两侧都报过写的重叠对)才是"撞得上"的机会;
+   *   `overlaps - pairs` 是**看不见的那部分**(一侧没报写:真没写 or 写了而 `filesTouched`
+   *   够不着),两者今天分不开,所以不进机会分母。
+   */
+  write_race: {
+    recordedRuns: number;
+    unrecordedRuns: number;
+    /** 执行窗口真重叠过的节点对数(有没有并发本身)。 */
+    overlaps: number;
+    /** 其中两侧都报过写的对数 —— **机会分母**。 */
+    pairs: number;
+    findings: number;
+    /** `findings / pairs`;分母 0 → null(**算不出 ≠ 0%**)。 */
+    rate: number | null;
+    /** 同 ⑧ 用 `LOOP_NO_MOVE_MIN_N`:两个槽的 0 下一步不同(没并发 vs 有并发没撞上)。 */
+    sufficiency: { overlaps: FaceSufficiency; pairs: FaceSufficiency };
+  };
 }
 
 /** 单面的样本充分性(`enough=false` 时这一面的比例**不许当结论读**)。 */
@@ -397,6 +422,7 @@ interface ReadoutRow {
   criteria: string | null;
   claim_check: string | null;
   artifact_move: string | null;
+  write_race: string | null;
   observations: string | null;
   acceptance_probe: string | null;
 }
@@ -463,6 +489,11 @@ function emptyWorld(meta: ReadoutResult['meta']): ReadoutResult {
         transitions: faceSufficiency(0, LOOP_NO_MOVE_MIN_N),
         comparable: faceSufficiency(0, LOOP_NO_MOVE_MIN_N),
       },
+    },
+    // 同上: 没并发过 ≠ 并发过但没撞上, 两个 0 分开印。
+    write_race: {
+      recordedRuns: 0, unrecordedRuns: 0, overlaps: 0, pairs: 0, findings: 0, rate: null,
+      sufficiency: { overlaps: faceSufficiency(0, LOOP_NO_MOVE_MIN_N), pairs: faceSufficiency(0, LOOP_NO_MOVE_MIN_N) },
     },
     // 空世界: 闸分母全 0, ledgerGap 记 null = **不知道** (空留痕库不代表没跑过, 只代表这里没有)。
     gate_denominators: { g3LiveRuns: 0, g4Samples: 0, ledgerGap: null },
@@ -618,7 +649,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
   const optionalCol = (name: string) => (haveCols.includes(name) ? `, ${name}` : `, NULL AS ${name}`);
   const rows = db
     .query(
-      `SELECT id, created_at, run_id, levels, nodes, usage${optionalCol('observations')}${optionalCol('entry')}${optionalCol('outcome')}${optionalCol('reused')}${optionalCol('criteria')}${optionalCol('claim_check')}${optionalCol('artifact_move')}${optionalCol('acceptance_probe')}` +
+      `SELECT id, created_at, run_id, levels, nodes, usage${optionalCol('observations')}${optionalCol('entry')}${optionalCol('outcome')}${optionalCol('reused')}${optionalCol('criteria')}${optionalCol('claim_check')}${optionalCol('artifact_move')}${optionalCol('write_race')}${optionalCol('acceptance_probe')}` +
         ` FROM omd_dag_runs ORDER BY created_at ASC`,
     )
     .all() as ReadoutRow[];
@@ -857,7 +888,24 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
   let amRecorded = 0;
   let amUnrecorded = 0;
   const amAcc = { transitions: 0, unobserved: 0, findings: 0 };
+  // ⑧.6 运行时写竞争的分母 (2026-08-06)。同上: overlaps 是有没有并发, pairs 才是撞得上的机会。
+  let wrRecorded = 0;
+  let wrUnrecorded = 0;
+  const wrAcc = { overlaps: 0, pairs: 0, findings: 0 };
   for (const r of rows) {
+    if (!r.write_race) {
+      wrUnrecorded++;
+    } else {
+      wrRecorded++;
+      try {
+        const v = JSON.parse(r.write_race) as { overlaps?: number; pairs?: number; findings?: number };
+        wrAcc.overlaps += v.overlaps ?? 0;
+        wrAcc.pairs += v.pairs ?? 0;
+        wrAcc.findings += v.findings ?? 0;
+      } catch {
+        // 同下: 坏 JSON 不该让整块读数崩。
+      }
+    }
     if (!r.artifact_move) {
       amUnrecorded++;
     } else {
@@ -940,6 +988,18 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
         runs: faceSufficiency(amRecorded, LOOP_NO_MOVE_MIN_N),
         transitions: faceSufficiency(amAcc.transitions, LOOP_NO_MOVE_MIN_N),
         comparable: faceSufficiency(Math.max(0, amAcc.transitions - amAcc.unobserved), LOOP_NO_MOVE_MIN_N),
+      },
+    },
+    write_race: {
+      recordedRuns: wrRecorded,
+      unrecordedRuns: wrUnrecorded,
+      overlaps: wrAcc.overlaps,
+      pairs: wrAcc.pairs,
+      findings: wrAcc.findings,
+      rate: wrAcc.pairs > 0 ? wrAcc.findings / wrAcc.pairs : null,
+      sufficiency: {
+        overlaps: faceSufficiency(wrAcc.overlaps, LOOP_NO_MOVE_MIN_N),
+        pairs: faceSufficiency(wrAcc.pairs, LOOP_NO_MOVE_MIN_N),
       },
     },
     outcome_distribution,
@@ -1578,7 +1638,7 @@ if (import.meta.main) {
           nearMiss: nearMiss.map(([h, c]) => ({ outputHash: h, commands: [...c] })), exactRepeat, writeNodes, unreported, totalWrites, totalNoop, noopNodes, median, anomalyFactor: ANOMALY_FACTOR, anomalies,
           notDoneNodes, failureKindCount, failureKindUnrecorded,
           observations: Object.fromEntries(obsCount), runsWithObs, runsUnrecordedObs,
-          claimCheck: cc, artifactMove: contract.artifact_move,
+          claimCheck: cc, artifactMove: contract.artifact_move, writeRace: contract.write_race,
           outcomeCount, runsUnrecordedOutcome, outcomeRecorded,
           axes: {
             criteria: { agree: critAgree, oracleFailed: critOracleFailed, wastedRounds: critWastedRounds, agreeFail: critAgreeFail, unrecorded: critNoVerif, recorded: critRecorded },
@@ -1817,6 +1877,39 @@ if (import.meta.main) {
   console.log('     · 活体基率 ≈ 0 (真跑里几乎没有伪造声称) → **维持 report-only 是合法结论**,');
   console.log('       那是"这条闸没有值得付的对象", 记下来收尾, 不是拖延。');
   console.log('     ⚠ report-only ≠ 零影响: 三条出口里只有账本是真零影响, judge 视图那一路仍会改判词。');
+
+  console.log(`\n⑧.6 运行时写竞争 (2026-08-06 新通道 —— 此前这条路上一行代码都没有)`);
+  console.log('   ⚠ 上面那张表里的 `write-race` 是**跑之前**按 output_path 声明判死的坏 plan (static-lint),');
+  console.log('     **不是**运行时并发撞车。同名不同义, 而两者的下一步相反: 前者改图, 后者要问');
+  console.log('     这两个 leaf 为什么碰同一个文件。台账此前拿前者的数当后者的证据。');
+  const wr = contract.write_race;
+  if (wr.recordedRuns === 0) {
+    console.log(`   这批 ${wr.unrecordedRuns} 条记录**都没记** (早于 2026-08-06)。跑一次新的才有这段读数。`);
+  } else {
+    console.log(`   记了的运行 ${wr.recordedRuns} 次${wr.unrecordedRuns > 0 ? ` (另有 ${wr.unrecordedRuns} 次没记, **不进分母**)` : ''}`);
+    console.log(`     执行窗口重叠的节点对 ${wr.overlaps} 对 → 其中**两侧都报过写** ${wr.pairs} 对 (= 撞得上的机会)`);
+    console.log(`     → 真撞了 ${wr.findings} 对  [${wr.rate === null ? '算不出 (分母 0)' : `${(wr.rate * 100).toFixed(1)}%`}]`);
+    console.log(`     ⚠ ${wr.overlaps - wr.pairs} 对是**看不见的**: 一侧没报写 —— 可能真没写, 也可能写了而 filesTouched`);
+    console.log('       够不着 (command 节点走 shell 就是这样)。两者今天分不开, 所以**不进机会分母**。');
+    for (const [name, s, meaning] of [
+      ['重叠对数', wr.sufficiency.overlaps, '"这台引擎到底并不并发"可以判了'],
+      ['机会对数', wr.sufficiency.pairs, '**撞车基率**可以当结论读了'],
+    ] as const) {
+      console.log(
+        s.enough
+          ? `     ${name} 够了 (${s.nodes} ≥ ${LOOP_NO_MOVE_MIN_N}) → ${meaning}`
+          : `     ${name} **不足**, 还差 ${s.short} (${s.nodes}/${LOOP_NO_MOVE_MIN_N}) → 这一槽还判不了`,
+      );
+    }
+  }
+  console.log('   判据 (在数据到达之前钉的):');
+  console.log(`     · 重叠对数 ≥ ${LOOP_NO_MOVE_MIN_N} 而机会对数 ≈ 0 → 并发是有的, 但**引擎看不见谁写了什么**`);
+  console.log('       (filesTouched 覆盖不到 command/shell) → 该补的是写的可见性, 不是这条判据;');
+  console.log(`     · 机会对数 ≥ ${LOOP_NO_MOVE_MIN_N} 且真撞 0 → 并发写在真跑上不发生, 这条收尾, 别升成闸;`);
+  console.log('     · 真撞 > 0 → 逐条读: 撞的是不是同一个"共享目录"型文件 (那是图的形状问题),');
+  console.log('       还是两个 leaf 各自的产物恰好同名 (那是命名问题)。两者的改法不一样。');
+  console.log('   ⚠ **只报不拦**: 出口是账本 + 观察条目。窗口取 [起跑, leaf 返回], 比真正的写窗口宽 ——');
+  console.log('     方向是宁可多算一对重叠 (多算落在**分母**上, 把基率往低了报, 不会凭空造出命中)。');
 
   console.log(`\n⑨ run 级终止原因 (N5 · 此前这一层只有 plan_name + 一堆节点状态, 没有"这跑怎么结束的")`);
   if (outcomeRecorded === 0) {

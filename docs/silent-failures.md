@@ -545,6 +545,9 @@ harness 也在读,**读的方式错了** —— 缺了切分这一步。
 > 读数板要印一个比率之前先问:**这个分母是哪一行代码写出来的?** 答不出来 = 你正在替它挑一个。
 > 证伪:把 `classifyArtifactMove` 的三条 `unobserved` 出口改回 `moved` → 三态组当场红,而「响不响」那组照绿(证明铃不是恒响的)。
 
+**同一天的第二个实例**(同形,值得单列因为它连**通道**都没有):台账把「leaf 级写竞争频率」标成「等读数」,而 ⑧ 段那 4 次 `write-race` 出自 `static-lint`(**跑之前**按 `output_path` 声明判死的坏 plan)—— **同名不同义**。一个 leaf 经 bash 写出去的文件不在任何声明里,于是两个并发兄弟真撞了没有任何一处知道。**「等读数」的前提是有一行代码会写出这个数**,而这里一行都没有。已建运行时通道(`detectRuntimeWriteRace`,只报不拦):引擎按 `[起跑, leaf 返回]` 记执行窗口重叠对,跑完比双方 `filesTouched` 的**绝对路径**;三个数 `overlaps`/`pairs`/`findings` 从第一天就一起记 —— `overlaps - pairs` 是「有并发但引擎看不见谁写了什么」,不进机会分母。闸:`test/core/runtime-write-race.test.ts`(10 条)。
+> ⚠ 建这条时**当场栽进另一个静默坑**:去重键 `join` 与解析 `split` 用了不同的分隔符(一个是 ` ` 一个是空格),于是每一对都解析成 `[整串, undefined]` → `filesTouched` 查不到 → **机会分母恒 0,而 `overlaps` 照常涨**。单元测试全绿(判据本身没错),端到端那两条才红。**又一次:把两个数据表示之间的转换写成字符串往返,错了不报错,只是数变小。**
+
 ## 已立的闸(可执行的那部分)
 
 | 闸 | 位置 | 守什么 | 抓哪几条 |
@@ -568,6 +571,7 @@ harness 也在读,**读的方式错了** —— 缺了切分这一步。
 | 账本只有一个位置 | `src/harness/repo-root.test.ts` | `ledgerPath()` 锚在 omd 仓根、与 cwd 无关;linked worktree 回主仓、submodule 不回、找不到锚点 fail-open(**带反向自检**:改回 `join(cwd,…)` → 红;拿掉 worktree 重定向 → 红) | S-17 |
 | 安全侧路不许冒充主路 | `src/model/auto-assign.test.ts` | 座位降级必须在返回值里留位次(`via`)并 warn,判词要说出跳过了哪些坐标(**带反向自检**:`via` 恒设 `preferred` → 红;首选可达那条照绿) | S-18 |
 | 判据的分母要有人写 | `test/core/no-artifact-change.test.ts` · `src/harness/dag-record.test.ts` · `src/harness/omd-readout.test.ts` | 「判不了」与「判了有位移」分开返回、分开落账、分开印;基率分母只认 `transitions - unobserved`(**带反向自检**:三条 `unobserved` 出口改回 `moved` → 三态组红,「响不响」那组照绿) | S-19 S-15 |
+| 运行时写竞争(与静态那条同名不同义) | `test/core/runtime-write-race.test.ts` | 重叠窗口 × 双方**绝对路径**才算撞(隔离档同名不同根不报);`overlaps`/`pairs`/`findings` 三个数分开(**带反向自检**:删掉「一侧没报写就跳过」那行 → 机会分母被污染当场红) | S-19 S-7 |
 
 **S-12 没有闸,只有纪律** —— 它是运行时条件不是结构,写不出会红的断言。
 落在代码里的是两处 `logger.warn`(`run-store.put` / `RunRegistry.persist`),

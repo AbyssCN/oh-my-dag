@@ -418,3 +418,39 @@ describe('★ 「产物没变」判据的分母三态: 没记 / 一次都没判�
     rec.close();
   });
 });
+
+describe('★ 运行时写竞争: 与静态那条同名不同义, 所以分开落账', () => {
+  // 台账把 static-lint 的 4 次 `write-race` 当成了运行时那条的证据 —— 而运行时通道当时根本不存在。
+  // 两者的下一步相反 (前者改图, 后者要问这两个 leaf 为什么碰同一个文件), 合成一列就永远分不开。
+  const wr = (overlaps: number, pairs: number, findings: number) => ({ overlaps, pairs, findings });
+  const withRace = (v?: ReturnType<typeof wr>): ExecutorDagResult =>
+    ({ ...fakeResult('wr'), ...(v ? { writeRace: v } : {}) }) as unknown as ExecutorDagResult;
+
+  test('★ 老行 → 缺席, 不是 overlaps:0', () => {
+    const rec = createDagRecorder({ path: ':memory:' });
+    expect(rec.get(rec.record(withRace(), { runId: 'wr-na' }))!.writeRace).toBeUndefined();
+    rec.close();
+  });
+
+  test('★ overlaps:0 = 这一跑压根没并发 —— 与「没记」在账本里分得开', () => {
+    const rec = createDagRecorder({ path: ':memory:' });
+    expect(rec.get(rec.record(withRace(wr(0, 0, 0)), { runId: 'wr-zero' }))!.writeRace).toEqual(wr(0, 0, 0));
+    rec.close();
+  });
+
+  test('看不见的那部分 (overlaps - pairs) 留在账本上 —— 它是"该补写的可见性"的读数', () => {
+    const rec = createDagRecorder({ path: ':memory:' });
+    expect(rec.get(rec.record(withRace(wr(7, 2, 1)), { runId: 'wr-mix' }))!.writeRace).toEqual(wr(7, 2, 1));
+    rec.close();
+  });
+
+  test('老库 (无该列) 就地补列不炸', () => {
+    const db = new Database(':memory:');
+    db.run(`CREATE TABLE omd_dag_runs (
+      id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, plan_name TEXT NOT NULL,
+      node_count INTEGER NOT NULL, question TEXT, levels TEXT NOT NULL, nodes TEXT NOT NULL, usage TEXT NOT NULL)`);
+    const rec = createDagRecorder({ db });
+    expect(rec.get(rec.record(withRace(wr(1, 1, 0)), { runId: 'wr-old' }))!.writeRace).toEqual(wr(1, 1, 0));
+    rec.close();
+  });
+});

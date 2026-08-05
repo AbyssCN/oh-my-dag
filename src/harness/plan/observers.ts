@@ -151,6 +151,73 @@ export function artifactLintObservations(
   }));
 }
 
+/** 一对**执行窗口真重叠过**的节点, 连同各自写过的绝对路径。 */
+export interface OverlapPair {
+  a: string;
+  b: string;
+  /** a 写过的绝对路径; 空集 = 这一侧没报过写(见 {@link detectRuntimeWriteRace} 的三态那段)。 */
+  aPaths: ReadonlySet<string>;
+  bPaths: ReadonlySet<string>;
+}
+
+/**
+ * **运行时写竞争**的读数(2026-08-06)—— 连同它的分母一起。
+ *
+ * ## 为什么要有它:今天这个名字下只有静态那一半
+ *
+ * `static-lint.ts` 的 `write-race` 判的是**跑之前**就看得出的坏 plan:两个节点各自 `output_path`
+ * 声明写同一个文件、而图上没有依赖边。它报得早、报得准 —— 但它只看**声明**。
+ * 一个 leaf 用 bash 写出去的文件不在任何 `output_path` 里,于是两个并发兄弟真撞在同一条路径上时,
+ * **没有任何一处会知道**。台账把静态那 4 次读数当成了运行时那条的证据,而两者的下一步相反:
+ * 前者要改 plan(加边或改文件名),后者要问"这两个 leaf 为什么会碰同一个文件"。
+ * **同名不同义比没名字更坏**(交接 30 §五 第 2 条)。
+ *
+ * ## 分母(S-19 的教训:先想清楚这个 0 会被除以什么)
+ *
+ * 三个数,读的时候别互相替代:
+ *   `overlaps` = 执行窗口真重叠过的节点**对**数 —— 有没有并发这件事本身;
+ *   `pairs`    = 其中**两侧都报过写**的对数 —— 只有它才是"撞得上"的机会;
+ *   `findings` = 其中路径集真相交的对数。
+ * `overlaps - pairs` 是**看不见的那部分**:一侧没报写既可能是真没写,也可能是写了而
+ * `filesTouched` 够不着(command 节点走 shell 就是这样)。这两者今天分不开,所以**不进机会分母** ——
+ * 编一个进去就是拿"可能没写"冒充"确实没写"。
+ *
+ * ⚠ 窗口取的是 [起跑, leaf 返回],**比真正的写窗口宽**(engine 不记每次写的时刻)。
+ *   方向是宁可多算一对重叠:多算落在**分母**上,把基率往低了报,不会凭空造出 finding。
+ * ⚠ 路径要**解析成绝对路径再比**:R2 隔离档下两个 leaf 各在自己的 worktree 里写 `out.md`,
+ *   那不是竞争。比相对路径会把整个隔离档报成一片红。
+ *
+ * **只报不拦**:出口是账本 + 观察条目。要不要拦是单独的拨闸决定,而今天连读数都还没有。
+ */
+export function detectRuntimeWriteRace(pairs: readonly OverlapPair[]): {
+  overlaps: number;
+  pairs: number;
+  findings: number;
+  observations: DagObservation[];
+} {
+  const observations: DagObservation[] = [];
+  let opportunity = 0;
+  for (const p of pairs) {
+    if (p.aPaths.size === 0 || p.bPaths.size === 0) continue; // 看不见的那部分, 不进分母
+    opportunity++;
+    const shared = [...p.aPaths].filter((x) => p.bPaths.has(x)).sort();
+    if (shared.length === 0) continue;
+    observations.push({
+      kind: 'write-race',
+      nodes: [p.a, p.b].sort(),
+      message:
+        `运行时写竞争: 节点 [${p.a}] 与 [${p.b}] 的执行窗口重叠, 而它们都写了 ` +
+        `${shared.slice(0, 3).join(', ')}${shared.length > 3 ? ` 等 ${shared.length} 个文件` : ''} —— ` +
+        '谁最后写谁赢, 而赢家由调度顺序决定, 同一张图每次跑可能不一样。' +
+        '⚠ 这一条与跑前静态那条**同名不同义**: 这两个节点谁都没在 `output_path` 里声明过这个文件, ' +
+        '所以静态检查看不见它。改法二选一: **让它们写不同的文件**, 或者**加一条 depends_on 让顺序确定**。',
+    });
+  }
+  // 确定性序 (同一张图两次跑给出同一份报告; 观察面不许有并发时序的痕迹 —— 同上面那条 lint)。
+  observations.sort((x, y) => (x.message < y.message ? -1 : x.message > y.message ? 1 : 0));
+  return { overlaps: pairs.length, pairs: opportunity, findings: observations.length, observations };
+}
+
 /**
  * 一轮内环在**盘上**留下的东西: 路径 → 内容 hash。
  *
