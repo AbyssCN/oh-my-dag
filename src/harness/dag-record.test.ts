@@ -376,3 +376,45 @@ describe('★ 检出器三态: 不适用 / 查过零检出 / 检出', () => {
     rec.close();
   });
 });
+
+describe('★ 「产物没变」判据的分母三态: 没记 / 一次都没判得了 / 真判过', () => {
+  // 同上一组是**同一条纪律的第二个实例**, 而这次藏得更深: 那条判据不但要有 conductor,
+  // 还要内环**真转到第二圈**且两轮都有产物信号。读数板 ⑧ 段此前拿运行次数当分母, 把 53 跑 0 命中
+  // 读成"活体基率 ≈ 0" —— 而真正的分母 (可比较的跨轮次数) 一次都没被记过。
+  const am = (transitions: number, unobserved: number, findings: number) => ({ transitions, unobserved, findings });
+  const withMove = (v?: ReturnType<typeof am>): ExecutorDagResult =>
+    ({ ...fakeResult('am'), ...(v ? { artifactMove: v } : {}) }) as unknown as ExecutorDagResult;
+
+  test('★ 老行 → **缺席**, 不是 transitions:0 (「没记」与「够不着」的下一步不同)', () => {
+    const rec = createDagRecorder({ path: ':memory:' });
+    const id = rec.record(withMove(), { runId: 'am-na' });
+    expect(rec.get(id)!.artifactMove).toBeUndefined();
+    rec.close();
+  });
+
+  test('★ transitions:0 = 这一跑一次跨轮比较都没发生 —— 记得下来, 不许被当成没记', () => {
+    // 单轮档的 dag_run / 首轮即绿的 goal 全长这样。它与上一条在账本里必须分得开。
+    const rec = createDagRecorder({ path: ':memory:' });
+    const id = rec.record(withMove(am(0, 0, 0)), { runId: 'am-zero' });
+    expect(rec.get(id)!.artifactMove).toEqual(am(0, 0, 0));
+    rec.close();
+  });
+
+  test('判不了的那部分单独留痕 —— 基率分母是 transitions - unobserved, 不是 transitions', () => {
+    const rec = createDagRecorder({ path: ':memory:' });
+    const id = rec.record(withMove(am(5, 3, 1)), { runId: 'am-mixed' });
+    expect(rec.get(id)!.artifactMove).toEqual(am(5, 3, 1));
+    rec.close();
+  });
+
+  test('老库 (无该列) 就地补列不炸', () => {
+    const db = new Database(':memory:');
+    db.run(`CREATE TABLE omd_dag_runs (
+      id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, plan_name TEXT NOT NULL,
+      node_count INTEGER NOT NULL, question TEXT, levels TEXT NOT NULL, nodes TEXT NOT NULL, usage TEXT NOT NULL)`);
+    const rec = createDagRecorder({ db });
+    const id = rec.record(withMove(am(2, 0, 2)), { runId: 'am-old' });
+    expect(rec.get(id)!.artifactMove).toEqual(am(2, 0, 2));
+    rec.close();
+  });
+});

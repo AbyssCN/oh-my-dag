@@ -300,6 +300,38 @@ export interface ReadoutResult {
     /** 两面各自「够不够下结论」。**分开算** —— 一面够了不代表另一面够了。 */
     sufficiency: { conductor: FaceSufficiency; flat: FaceSufficiency };
   };
+  /**
+   * ⑧「产物没变」判据(`loop-no-artifact-change`)的**分母**(2026-08-06)。
+   *
+   * 为什么单开一段而不是接着数 `observations` 里的次数:那一栏只有分子。⑧ 段此前把
+   * 「53 跑 0 次命中」读成活体基率 ≈ 0,而**运行次数根本不是这条判据的机会单位** ——
+   * 它住在 conductor 内环,一次比较要同时满足①内环真转到第二圈②两轮都有产物信号③两侧都读得到。
+   * 单轮档的 `dag_run`(`max_rounds` 缺省 1)与首轮即绿的 goal **一次机会都没有**。
+   *
+   * 同表其他 kind 有数**不能反证这条够得着**:`undeclared-artifact-dep` / `write-race` 是
+   * 跑之前的静态判死,`leaf-spin` 住在 leaf 自己的工具循环里 —— 三条**没有一条**经过
+   * conductor 的跨轮路径。拿它们当"仪器是活的"的证据,证的是别的仪器。
+   *
+   * ⚠ 三个数别相加、别互相替代:`comparable = transitions - unobserved` 才是基率分母。
+   */
+  artifact_move: {
+    /** 记了这一位的跑数(2026-08-06 起)。 */
+    recordedRuns: number;
+    /** 没记这一位的跑数(老行)—— **不进任何分母**,不是 transitions:0。 */
+    unrecordedRuns: number;
+    /** 有上一轮可比的轮转次数(首轮不算)。 */
+    transitions: number;
+    /** 其中判不了的(population 空 / 有读不到的文件)。 */
+    unobserved: number;
+    /** 真判过的次数 = `transitions - unobserved`。**活体基率的分母就是它**。 */
+    comparable: number;
+    /** 其中判成"盘上没位移"的次数。 */
+    findings: number;
+    /** `findings / comparable`;分母 0 → null(**算不出 ≠ 0%**)。 */
+    rate: number | null;
+    /** 同一个门槛(`LOOP_NO_MOVE_MIN_N`)读三个槽 —— 三个 0 的下一步相反,见该常量。 */
+    sufficiency: { runs: FaceSufficiency; transitions: FaceSufficiency; comparable: FaceSufficiency };
+  };
 }
 
 /** 单面的样本充分性(`enough=false` 时这一面的比例**不许当结论读**)。 */
@@ -325,9 +357,31 @@ export interface FaceSufficiency {
  */
 export const CLAIM_CHECK_MIN_NODES = 60;
 
-/** 单面充分性判定(纯函数 —— 读数板与闸共用同一处,两处各算一份必漂)。 */
-export function faceSufficiency(nodes: number): FaceSufficiency {
-  return { nodes, short: Math.max(0, CLAIM_CHECK_MIN_NODES - nodes), enough: nodes >= CLAIM_CHECK_MIN_NODES };
+/**
+ * ⑧「产物没变」判据的样本门槛 —— **同样在数据到达之前钉死**(2026-08-06)。
+ *
+ * 与 `CLAIM_CHECK_MIN_NODES` 同数同理由(rule of three:0/60 → 95% 上界 5%;⑧ 段那笔账
+ * 「误拦一次掐死一个本可收敛的 run,漏报一次只赔一两轮」与 ⑧.5 逐字相同,所以要分辨的
+ * 同样是「0% 还是 5%」)。**同数不是巧合,是同一套比价** —— 但两处刻意各写一个常量:
+ * 它们量的是不同的东西,以后其中一个该改时不该顺手拖着另一个。
+ *
+ * ⚠ 这一个数要**读三个槽**,因为 ⑧ 的 0 可以出自三个完全不同的地方,而它们的下一步相反:
+ *   ① `recordedRuns` —— 机会**存不存在**。长期 < 5% 的跑产生过跨轮比较 → 这条判据在生产形状
+ *      上够不着(内环 `max_rounds` 缺省 1 / 首轮就收敛),该收掉,不是再等;
+ *   ② `transitions`  —— 轮转发生了,但 population 闸吃掉了多少(环里没有产物信号);
+ *   ③ `comparable`   —— 真判过多少次。**只有它才是活体基率的分母**。
+ * 旧版拿「运行次数」当分母,而运行次数与这三个都不是一回事 —— 那是 ⑧.5 已经付过学费的形状。
+ */
+export const LOOP_NO_MOVE_MIN_N = 60;
+
+/**
+ * 单面充分性判定(纯函数 —— 读数板与闸共用同一处,两处各算一份必漂)。
+ *
+ * `min` 留了参数是因为 ⑧ 与 ⑧.5 两段共用这一份算法而门槛各有各的常量;**别在调用处写字面量**,
+ * 传常量 —— 门槛的理由写在常量头上,字面量把理由甩掉了。
+ */
+export function faceSufficiency(nodes: number, min: number = CLAIM_CHECK_MIN_NODES): FaceSufficiency {
+  return { nodes, short: Math.max(0, min - nodes), enough: nodes >= min };
 }
 
 interface ReadoutRow {
@@ -342,6 +396,7 @@ interface ReadoutRow {
   reused: number | null;
   criteria: string | null;
   claim_check: string | null;
+  artifact_move: string | null;
   observations: string | null;
   acceptance_probe: string | null;
 }
@@ -399,6 +454,15 @@ function emptyWorld(meta: ReadoutResult['meta']): ReadoutResult {
       flat: { nodes: 0, findings: 0, rate: null },
       samples: [],
       sufficiency: { conductor: faceSufficiency(0), flat: faceSufficiency(0) },
+    },
+    // 空世界: 三个槽全 0, rate 记 null = **算不出**(0 次比较不等于 0% 基率)。
+    artifact_move: {
+      recordedRuns: 0, unrecordedRuns: 0, transitions: 0, unobserved: 0, comparable: 0, findings: 0, rate: null,
+      sufficiency: {
+        runs: faceSufficiency(0, LOOP_NO_MOVE_MIN_N),
+        transitions: faceSufficiency(0, LOOP_NO_MOVE_MIN_N),
+        comparable: faceSufficiency(0, LOOP_NO_MOVE_MIN_N),
+      },
     },
     // 空世界: 闸分母全 0, ledgerGap 记 null = **不知道** (空留痕库不代表没跑过, 只代表这里没有)。
     gate_denominators: { g3LiveRuns: 0, g4Samples: 0, ledgerGap: null },
@@ -554,7 +618,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
   const optionalCol = (name: string) => (haveCols.includes(name) ? `, ${name}` : `, NULL AS ${name}`);
   const rows = db
     .query(
-      `SELECT id, created_at, run_id, levels, nodes, usage${optionalCol('observations')}${optionalCol('entry')}${optionalCol('outcome')}${optionalCol('reused')}${optionalCol('criteria')}${optionalCol('claim_check')}${optionalCol('acceptance_probe')}` +
+      `SELECT id, created_at, run_id, levels, nodes, usage${optionalCol('observations')}${optionalCol('entry')}${optionalCol('outcome')}${optionalCol('reused')}${optionalCol('criteria')}${optionalCol('claim_check')}${optionalCol('artifact_move')}${optionalCol('acceptance_probe')}` +
         ` FROM omd_dag_runs ORDER BY created_at ASC`,
     )
     .all() as ReadoutRow[];
@@ -789,7 +853,24 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
   let ccUnrecorded = 0;
   const ccAcc = { condRounds: 0, condNodes: 0, condFindings: 0, flatNodes: 0, flatFindings: 0 };
   const ccSamples: { runId: string | null; message: string }[] = [];
+  // ⑧ 的分母 (2026-08-06)。与 ccAcc 同一趟扫: 两段量的是两条判据, 但"缺席≠0"的数法一模一样。
+  let amRecorded = 0;
+  let amUnrecorded = 0;
+  const amAcc = { transitions: 0, unobserved: 0, findings: 0 };
   for (const r of rows) {
+    if (!r.artifact_move) {
+      amUnrecorded++;
+    } else {
+      amRecorded++;
+      try {
+        const v = JSON.parse(r.artifact_move) as { transitions?: number; unobserved?: number; findings?: number };
+        amAcc.transitions += v.transitions ?? 0;
+        amAcc.unobserved += v.unobserved ?? 0;
+        amAcc.findings += v.findings ?? 0;
+      } catch {
+        // 坏 JSON 不该让整块读数崩; 已计进 recordedRuns, 差额自然显示为算不出 (同下面那条)。
+      }
+    }
     if (!r.claim_check) {
       ccUnrecorded++;
     } else {
@@ -845,6 +926,21 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
       flat: { nodes: ccAcc.flatNodes, findings: ccAcc.flatFindings, rate: ccRate(ccAcc.flatFindings, ccAcc.flatNodes) },
       samples: ccSamples,
       sufficiency: { conductor: faceSufficiency(ccAcc.condNodes), flat: faceSufficiency(ccAcc.flatNodes) },
+    },
+    artifact_move: {
+      recordedRuns: amRecorded,
+      unrecordedRuns: amUnrecorded,
+      transitions: amAcc.transitions,
+      unobserved: amAcc.unobserved,
+      // ⚠ 夹到 ≥0: 坏 JSON 让两个数各自缺一半时, 差可能是负的 —— 负分母比算不出更坏。
+      comparable: Math.max(0, amAcc.transitions - amAcc.unobserved),
+      findings: amAcc.findings,
+      rate: amAcc.transitions - amAcc.unobserved > 0 ? amAcc.findings / (amAcc.transitions - amAcc.unobserved) : null,
+      sufficiency: {
+        runs: faceSufficiency(amRecorded, LOOP_NO_MOVE_MIN_N),
+        transitions: faceSufficiency(amAcc.transitions, LOOP_NO_MOVE_MIN_N),
+        comparable: faceSufficiency(Math.max(0, amAcc.transitions - amAcc.unobserved), LOOP_NO_MOVE_MIN_N),
+      },
     },
     outcome_distribution,
     entry_distribution,
@@ -1482,7 +1578,7 @@ if (import.meta.main) {
           nearMiss: nearMiss.map(([h, c]) => ({ outputHash: h, commands: [...c] })), exactRepeat, writeNodes, unreported, totalWrites, totalNoop, noopNodes, median, anomalyFactor: ANOMALY_FACTOR, anomalies,
           notDoneNodes, failureKindCount, failureKindUnrecorded,
           observations: Object.fromEntries(obsCount), runsWithObs, runsUnrecordedObs,
-          claimCheck: cc,
+          claimCheck: cc, artifactMove: contract.artifact_move,
           outcomeCount, runsUnrecordedOutcome, outcomeRecorded,
           axes: {
             criteria: { agree: critAgree, oracleFailed: critOracleFailed, wastedRounds: critWastedRounds, agreeFail: critAgreeFail, unrecorded: critNoVerif, recorded: critRecorded },
@@ -1642,17 +1738,50 @@ if (import.meta.main) {
         console.log(`   ${kind.padEnd(26)} ${String(n).padStart(4)} 次  (${(n / runsWithObs).toFixed(2)} 次/运行)`);
       }
     }
-    const noMove = obsCount.get('loop-no-artifact-change') ?? 0;
-    console.log(`   ▸ **loop-no-artifact-change ${noMove} 次** —— 它是 D-AD 那条死路的绕法:`);
+    const noMoveObs = obsCount.get('loop-no-artifact-change') ?? 0;
+    console.log(`   ▸ **loop-no-artifact-change ${noMoveObs} 次** —— 它是 D-AD 那条死路的绕法:`);
     console.log('     旧的三个"卡住"检测器全键在「agent 重复自己」上, 而 LLM conductor 每轮重画,');
     console.log('     从不逐字重复 → 在 live 上恒 0。这一条改键在「盘上有没有位移」, 才可能真命中。');
-    console.log('   判据 (写死在这儿, 免得下次凭感觉定):');
-    console.log('     · 长期 0 次 → 连这条也够不着, 那 G5 的问题不在判据在别处, 别再加检测器;');
-    console.log('     · 命中了但那些 run 后来**自己收敛了** → 说明"没位移"不蕴含"卡死", 维持只报;');
-    console.log('     · 命中且此后再没位移直到轮数耗尽 → 才谈升 BLOCKED, K 取"连续几轮"的众数。');
-    console.log('   ⚠ 现在**只报不拦**: max_rounds ≤ 4, 误拦一次掐死一个本可收敛的 run,');
-    console.log('     漏报一次只赔一两轮。这个比价下, 0 读数就上硬闸是拿大风险换小收益。');
   }
+  // ── 这个 0 除以什么 (2026-08-06) ────────────────────────────────────────────
+  // 到这一版之前, 上面那个次数一直是**只有分子**: 判词说"长期 0 次 → 别再加检测器", 而"长期"
+  // 被默读成了运行次数。可这条判据住在 conductor 内环, 一次比较要同时有上一轮 + 两轮都有产物信号
+  // —— 单轮档的 dag_run 与首轮即绿的 goal 一次机会都没有。同表其他 kind 有数也证不了它够得着:
+  // undeclared-artifact-dep / write-race 是跑前静态判死, leaf-spin 在 leaf 自己的工具循环里,
+  // 三条没有一条经过跨轮那条路。所以分母单独记、单独印。
+  const am = contract.artifact_move;
+  if (am.recordedRuns === 0) {
+    console.log(`   分母: 这批 ${am.unrecordedRuns} 条记录**都没记** 机会计数 (早于 2026-08-06)。`);
+    console.log('     ⚠ 于是上面那个次数**只有分子** —— 在补上之前, 它既不能读成"活体基率 0",');
+    console.log('       也不能读成"判据够不着"。跑一次新的才有这段读数 (改过引擎记得先重连 MCP)。');
+  } else {
+    console.log(`   分母 (机会计数, ${am.recordedRuns} 跑记了${am.unrecordedRuns > 0 ? ` · 另有 ${am.unrecordedRuns} 跑没记, **不进分母**` : ''}):`);
+    console.log(`     跨轮比较机会 ${am.transitions} 次 → 判不了 ${am.unobserved} 次 (产物信号为空/有读不到的)`);
+    console.log(`     → **真判过 ${am.comparable} 次**, 其中判成"没位移" ${am.findings} 次` +
+      `  [${am.rate === null ? '算不出 (分母 0)' : `${(am.rate * 100).toFixed(1)}%`}]`);
+    // 三个槽各自够不够 —— 三个 0 的下一步相反, 所以分开印, 不合成一句"样本不足"。
+    const slot = (name: string, s: FaceSufficiency, meaning: string) =>
+      console.log(
+        s.enough
+          ? `     ${name.padEnd(10)} 够了 (${s.nodes} ≥ ${LOOP_NO_MOVE_MIN_N}) → ${meaning}`
+          : `     ${name.padEnd(10)} **不足**, 还差 ${s.short} (${s.nodes}/${LOOP_NO_MOVE_MIN_N}) → 这一槽还判不了`,
+      );
+    slot('记了的跑', am.sufficiency.runs, '"机会存不存在"这一问可以判了');
+    slot('轮转次数', am.sufficiency.transitions, 'population 闸吃掉多少可以判了');
+    slot('可比较数', am.sufficiency.comparable, '**活体基率**可以当结论读了');
+  }
+  console.log('   判据 (2026-08-06 改写 —— 旧版把上面那个次数除以运行次数, 那是错的单位):');
+  console.log(`     · 可比较数 < ${LOOP_NO_MOVE_MIN_N} → **还不到判的时候**。今天缺的不是命中, 是**机会**;`);
+  console.log(`     · 可比较数 ≥ ${LOOP_NO_MOVE_MIN_N} 且检出 0 → 连"盘上位移"这个信号也够不着,`);
+  console.log('       那 G5 的问题不在判据在别处, 别再加同类检测器 (这才是原判词那一条的兑现);');
+  console.log('     · 检出 > 0 → 照原来两条读: 那些 run 后来**自己收敛了** → "没位移"不蕴含"卡死", 维持只报;');
+  console.log('       一直没位移直到轮数耗尽 → 才谈升 BLOCKED, K 取"连续几轮"的众数。');
+  console.log('   ▸ 两个"卡在半路"的读法 (它们的下一步不一样):');
+  console.log(`     · 记了的跑 ≥ ${LOOP_NO_MOVE_MIN_N} 而轮转次数仍 ≈ 0 → 瓶颈是**环只转一圈**`);
+  console.log('       (max_rounds 缺省 1 / 首轮就收敛) —— 那是引擎形状的事实, 再等也不会有数;');
+  console.log('     · 轮转在涨而可比较数不涨 → 瓶颈是 population 闸: 环里根本没有产物信号。');
+  console.log('   ⚠ 现在**只报不拦**: max_rounds ≤ 4, 误拦一次掐死一个本可收敛的 run,');
+  console.log('     漏报一次只赔一两轮。这个比价下, 0 读数就上硬闸是拿大风险换小收益。');
 
   console.log(`\n⑧.5 「声称 vs 引擎记录」检出器 (report-only —— 拨不拨闸就看这段)`);
   if (cc.recordedRuns === 0) {

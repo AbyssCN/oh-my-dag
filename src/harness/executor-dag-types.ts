@@ -692,6 +692,24 @@ export interface ExecutorDagResult {
     flat: { nodes: number; findings: number };
   };
   /**
+   * 「产物没变」判据(`loop-no-artifact-change`)这一跑**有过多少次判得了的机会**(2026-08-06)。
+   *
+   * 加它是因为读数板 ⑧ 段一直在拿**错的分母**读那个 0:53 跑 0 次命中被当成"活体基率 ≈ 0",
+   * 而这条判据的机会单位不是"一次运行" —— 它住在 conductor 内环, 一次比较要同时满足
+   * ① 内环真转到了第二圈(`max_rounds > 1` 且首轮没收敛)② 两轮都有产物信号 ③ 两侧都读得到。
+   * 单轮档的 `dag_run` 与首轮即绿的 goal **一次机会都没有**, 于是那个 0 是「够不着」。
+   *
+   * 三个数的关系(读的时候别相加):
+   *   `transitions` = 有上一轮可比的轮转次数(首轮不算 —— 那不是一次跨轮);
+   *   `unobserved`  = 其中**判不了**的(population 空 / 有读不到的文件)—— 不进基率分母;
+   *   `findings`    = 其中判成"没位移"的。
+   *   → 基率分母 = `transitions - unobserved`;分子 = `findings`。
+   *
+   * ⚠ 缺席 = 早于本次改动的记录(**不是** transitions:0)。`transitions: 0` 是"这一跑确实
+   *   一次跨轮比较都没发生", 与"没记"的下一步不同: 前者要问环为什么只转一圈, 后者只是老数据。
+   */
+  artifactMove?: { transitions: number; unobserved: number; findings: number };
+  /**
    * **协作式取消** (D-P) 的留痕: 给了就说明本次 run 是被叫停的, 不是自然跑完的。
    *
    * ⚠ 调用方**不许把它读成失败, 也不许读成成功**: 已跑完的节点全在 `results` 里、checkpoint 全在盘上,

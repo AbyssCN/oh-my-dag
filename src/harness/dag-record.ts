@@ -138,6 +138,17 @@ export interface DagRunRecord {
    */
   claimCheck?: { conductor: { rounds: number; nodes: number; findings: number }; flat: { nodes: number; findings: number } };
   /**
+   * 「产物没变」判据(`loop-no-artifact-change`)这一跑**判得了多少次**(2026-08-06)。
+   *
+   * ⚠ 与上一位是**同一条纪律的第二个实例**,而这次它藏得更深:那条判据不但要有 conductor,
+   * 还要那个内环**真的转到第二圈**且两轮都有产物信号。读数板 ⑧ 段此前拿运行次数当分母,
+   * 把 53 跑 0 命中读成了"活体基率 ≈ 0" —— 可真正的分母(可比较的跨轮次数)一次都没被记过。
+   *
+   * 三态: 缺席 = 没记(老行)· `transitions:0` = 这一跑一次跨轮比较都没发生(**够不着**)·
+   * `transitions-unobserved > 0` = 真判过, 那时 `findings` 才是活体基率的分子。
+   */
+  artifactMove?: { transitions: number; unobserved: number; findings: number };
+  /**
    * **这张图是怎么结束的**(N5, 2026-07-31;词表在 `run-outcome.ts`)。
    *
    * 与 `nodes[].failureKind` 的分工:那一位是**每个节点**为什么没过,这一位是**整跑**的终止原因。
@@ -243,6 +254,7 @@ interface Row {
   outcome: string | null;
   verification: string | null;
   claim_check: string | null;
+  artifact_move: string | null;
   reused: number | null;
   criteria: string | null;
   acceptance_probe: string | null;
@@ -300,6 +312,8 @@ function rowToRecord(row: Row): DagRunRecord {
     // 同上 (N9): 缺席不编一个 `pass:false` —— 「没验」与「验了没过」的结论相反。
     ...(row.verification ? { verification: JSON.parse(row.verification) } : {}),
     ...(row.claim_check ? { claimCheck: JSON.parse(row.claim_check) } : {}),
+    // 同上: 缺席不编一个 `transitions:0` —— 「没记」与「一次都没判得了」的下一步不同。
+    ...(row.artifact_move ? { artifactMove: JSON.parse(row.artifact_move) } : {}),
     // `reused: 0` 是"记了且一个没复用", NULL 是"没记" —— 两者不许合并。
     ...(row.reused !== null ? { reused: row.reused } : {}),
     ...(row.criteria ? { criteria: JSON.parse(row.criteria) } : {}),
@@ -393,6 +407,8 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
   // 同上 (N9): 判据轴与效率轴的数据源。老行留 NULL (= 没记)。
   if (!cols.includes('verification')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN verification TEXT`);
   if (!cols.includes('claim_check')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN claim_check TEXT`);
+  // 同上 (2026-08-06): 「产物没变」判据的分母。老行留 NULL (= 没记, 不是 transitions:0)。
+  if (!cols.includes('artifact_move')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN artifact_move TEXT`);
   if (!cols.includes('reused')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN reused INTEGER`);
   if (!cols.includes('criteria')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN criteria TEXT`);
   // 入口轴 (2026-08-02): 2026-08-02 之前建的表没这一列, 老行留 NULL (= 没记, 不是 'unknown')。
@@ -402,8 +418,8 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
   if (!cols.includes('acceptance_probe')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN acceptance_probe TEXT`);
   db.run(`CREATE INDEX IF NOT EXISTS omd_dag_runs_run_id ON omd_dag_runs (run_id)`);
   const ins = db.query(
-    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage, observations, claim_check, outcome, verification, reused, criteria, acceptance_probe)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage, observations, claim_check, artifact_move, outcome, verification, reused, criteria, acceptance_probe)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const byId = db.query(`SELECT * FROM omd_dag_runs WHERE id = ?`);
   const recent = db.query(`SELECT * FROM omd_dag_runs ORDER BY created_at DESC LIMIT ?`);
@@ -463,6 +479,9 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
         // findings:0 = 检查过零检出; findings>0 = 检出。**不编一个 0** —— 那正是首次 shadow 真跑
         // 撞到的坑: `observations: []` 把"够不着"伪装成了"查过没发现"。
         result.claimCheck ? JSON.stringify(result.claimCheck) : null,
+        // 三态同上一列: NULL = 没记; transitions:0 = 这一跑连一次跨轮比较都没发生 (判据够不着);
+        // transitions-unobserved > 0 = 真判过, 那时 findings 才是活体基率的分子。
+        result.artifactMove ? JSON.stringify(result.artifactMove) : null,
         // N5: run 级终止原因。**在这里算而不是让调用方传** —— 两个调用面 (dag_run / dag_goal)
         // 各算一遍就是两处会漂的独立判断, 而 `deriveRunOutcome` 是纯函数、读的就是这份 result。
         deriveRunOutcome(result),

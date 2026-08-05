@@ -30,7 +30,7 @@ import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { createDagRecorder } from './dag-record';
 import type { ExecutorDagResult } from './executor-dag-types';
-import { CLAIM_CHECK_MIN_NODES, faceSufficiency, readout, type ReadoutResult } from '../../scripts/omd-readout';
+import { CLAIM_CHECK_MIN_NODES, LOOP_NO_MOVE_MIN_N, faceSufficiency, readout, type ReadoutResult } from '../../scripts/omd-readout';
 
 interface FakeNode {
   goal: string;
@@ -583,6 +583,71 @@ describe('omd-readout · ⑧.5 检出器活体读数的分母', () => {
   test('没记这一位的跑 → 两面都是 0 节点, 即「不足」而不是「够了且零检出」', () => {
     const cc = withCC('r8', undefined);
     expect(cc.sufficiency.flat).toEqual({ nodes: 0, short: CLAIM_CHECK_MIN_NODES, enough: false });
+  });
+});
+
+/**
+ * ⑧ 段「产物没变」判据的**分母**(2026-08-06)。
+ *
+ * 与上一段是同一条纪律的第二个实例,而这次错得更久:⑧ 段一直只有分子。判词写着
+ * 「长期 0 次 → 别再加检测器」,而"长期"被默读成了**运行次数** —— 可这条判据住在 conductor
+ * 内环,一次比较要同时有上一轮 + 两轮都有产物信号。单轮档的 `dag_run` 与首轮即绿的 goal
+ * 一次机会都没有,于是 53 跑 0 命中是「够不着」而不是「查过零检出」。
+ *
+ * 同表其他 kind 有数**不能反证它够得着**:`undeclared-artifact-dep`/`write-race` 是跑前静态判死,
+ * `leaf-spin` 在 leaf 自己的工具循环里 —— 三条没有一条经过跨轮那条路。
+ */
+describe('omd-readout · ⑧ 「产物没变」判据的分母 (2026-08-06)', () => {
+  const withAM = (runId: string, artifactMove: { transitions: number; unobserved: number; findings: number } | undefined) => {
+    const db = new Database(':memory:');
+    const rec = createDagRecorder({ db });
+    rec.record(
+      {
+        ...fakeResult({ planName: 'p', plan: { a: { goal: 'x' } }, done: ['a'], reused: [], usage: {} }),
+        ...(artifactMove ? { artifactMove } : {}),
+      } as never,
+      { runId, entry: 'dag_run', now: 1000 },
+    );
+    return readout({ db, limit: 50 }).artifact_move;
+  };
+
+  test('★ 没记这一位 → 进 unrecorded, rate=null(**算不出 ≠ 0%**)', () => {
+    const am = withAM('m1', undefined);
+    expect(am.recordedRuns).toBe(0);
+    expect(am.unrecordedRuns).toBe(1);
+    expect(am.rate).toBeNull();
+  });
+
+  test('★ 记了但一次跨轮都没发生 → recorded=1 而 comparable=0, rate 仍是 null', () => {
+    // 这一格与上一格在旧读数板里长得一模一样 (都只表现为"0 次命中"), 而下一步相反:
+    // 上一格要跑一次新的才有数, 这一格已经在说话了 —— 它说的是"这条判据够不着"。
+    const am = withAM('m2', { transitions: 0, unobserved: 0, findings: 0 });
+    expect(am.recordedRuns).toBe(1);
+    expect(am.comparable).toBe(0);
+    expect(am.rate).toBeNull();
+  });
+
+  test('★ 基率分母是 comparable, **不是** transitions —— 判不了的那些不许充数', () => {
+    const am = withAM('m3', { transitions: 10, unobserved: 6, findings: 1 });
+    expect(am.comparable).toBe(4);
+    expect(am.rate).toBeCloseTo(0.25, 5); // 1/4, 不是 1/10
+    expect(am.rate).not.toBeCloseTo(0.1, 5);
+  });
+
+  test('★ 三个槽各自判够不够 —— 三个 0 的下一步相反, 不许合成一句「样本不足」', () => {
+    // 证伪: 把 LOOP_NO_MOVE_MIN_N 改成 0 → 「不足」那两条当场红 (enough 全翻)。
+    const am = withAM('m4', { transitions: LOOP_NO_MOVE_MIN_N, unobserved: LOOP_NO_MOVE_MIN_N, findings: 0 });
+    expect(am.sufficiency.transitions.enough).toBe(true); // 轮转够了: population 闸吃掉多少可以判了
+    expect(am.sufficiency.comparable.enough).toBe(false); // 但一次都没判得了 → 基率仍不许读
+    expect(am.sufficiency.comparable.short).toBe(LOOP_NO_MOVE_MIN_N);
+    expect(am.sufficiency.runs.enough).toBe(false); // 才 1 跑
+  });
+
+  test('边界: 恰好等于门槛就算够 (>=, 不是 >), 且门槛与 ⑧.5 那个是两个常量', () => {
+    expect(faceSufficiency(LOOP_NO_MOVE_MIN_N, LOOP_NO_MOVE_MIN_N).enough).toBe(true);
+    expect(faceSufficiency(LOOP_NO_MOVE_MIN_N - 1, LOOP_NO_MOVE_MIN_N).short).toBe(1);
+    // 今天两处同数 (同一套比价), 但**各写一个常量** —— 以后其中一个该改时不该拖着另一个。
+    expect(faceSufficiency(5, LOOP_NO_MOVE_MIN_N).short).toBe(LOOP_NO_MOVE_MIN_N - 5);
   });
 });
 

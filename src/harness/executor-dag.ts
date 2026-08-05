@@ -86,7 +86,7 @@ import {
   lintArtifactEdges,
   artifactLintObservations,
   detectLoopNoProgress,
-  detectNoArtifactChange,
+  classifyArtifactMove,
   detectVerbatimDrop,
   type RoundShape,
   ARTIFACT_ABSENT,
@@ -126,6 +126,8 @@ interface ExecOnce {
   observations: DagObservation[];
   /** 「声称 vs 引擎记录」两道扫描各自查了多少、检出多少 (见 ExecutorDagResult.claimCheck)。 */
   claimCheck: NonNullable<ExecutorDagResult['claimCheck']>;
+  /** 「产物没变」判据判得了多少次 (分母; 见 ExecutorDagResult.artifactMove)。 */
+  artifactMove: NonNullable<ExecutorDagResult['artifactMove']>;
   /** D-P: 本轮是被叫停的 (给了就非自然结束); notRun = 一个都没起跑过的节点。 */
   cancelled?: { reason: string; at: string; notRun: string[] };
 
@@ -380,6 +382,16 @@ async function executePlan(
   let claimCheckRounds = 0;
   let claimCheckedNodes = 0;
   let claimFindings = 0;
+  /**
+   * 「产物没变」判据的**机会计数**(2026-08-06)—— 见 `ExecutorDagResult.artifactMove`。
+   *
+   * 与上面 `claimCheck` 那三个是同一条纪律的第二个实例: 那次是「整图没有 conductor → 判据够不着」
+   * 被记成了零检出; 这次是「内环没转到第二圈 / 两轮都没有产物信号 → 判据够不着」被记成零检出。
+   * 读数板 ⑧ 段拿运行次数当分母读了 53 跑, 而真正的分母(可比较的跨轮次数)一次都没被记过。
+   */
+  let moveTransitions = 0;
+  let moveUnobserved = 0;
+  let moveFindings = 0;
   /** 内环那道已经检过的子节点 id —— 平铺那道跳过它们, 两个分母**不重叠**。 */
   const claimCheckedIds = new Set<string>();
   let flatCheckedNodes = 0;
@@ -1607,9 +1619,16 @@ async function executePlan(
       // 位置在 journal 之前: 这句话必须跟着 prevReason 一起被写进 journal, 否则 resume 接回来
       // 的那一轮会丢掉它 (环唯一的信息通道断一次, 就等于这条检测器白跑)。
       const curArtifacts = collectRoundArtifacts(r.results);
-      const noMove = detectNoArtifactChange(prevArtifacts, curArtifacts);
+      const move = classifyArtifactMove(prevArtifacts, curArtifacts);
       prevArtifacts = curArtifacts;
+      // ── 机会计数 (2026-08-06): 判据**够不够得着**要与「够得着且没命中」分开记 ─────────
+      // 少了这三行, 一次 `loop-no-artifact-change: 0` 在账本里与"这个环压根没走到能判的地方"
+      // 长得一模一样 —— 而两者的下一步相反 (前者该收掉这条检测器, 后者该问环为什么只转一圈)。
+      if (move.kind !== 'unobserved' || move.why !== 'first-round') moveTransitions++;
+      if (move.kind === 'unobserved' && move.why !== 'first-round') moveUnobserved++;
+      const noMove = move.kind === 'no-move' ? move.observation : null;
       if (noMove) {
+        moveFindings++;
         noArtifactChangeRounds++;
         logger.warn(
           { node: id, round, files: Object.keys(curArtifacts.hashes).length, consecutive: noArtifactChangeRounds },
@@ -2770,6 +2789,8 @@ async function executePlan(
       conductor: { rounds: claimCheckRounds, nodes: claimCheckedNodes, findings: claimFindings },
       flat: { nodes: flatCheckedNodes, findings: flatFindings },
     },
+    // 同上一条纪律 (2026-08-06): 「产物没变」判据的分母 —— 可比较的跨轮次数, 不是运行次数。
+    artifactMove: { transitions: moveTransitions, unobserved: moveUnobserved, findings: moveFindings },
     ...(isCancelled() ? { cancelled: { reason: cancelReason(), at: new Date().toISOString(), notRun } } : {}),
     conductorUsage,
     leavesIn,
@@ -3037,6 +3058,8 @@ async function runDagInternal(
     // ⚠ 这一行是**逐字重建**的又一格: executePlan 算出来了, 外层不透传就等于没有 ——
     //   而症状是沉默的 (账本里那一列恒 NULL, 读上去像"早于该改动")。写这道扫描时当场被闸抓到。
     claimCheck: exec.claimCheck,
+    // 同上那条警告: 不透传 = 账本那一列恒 NULL, 而 NULL 读上去是"早于该改动", 症状全静默。
+    artifactMove: exec.artifactMove,
     ...(exec.cancelled ? { cancelled: exec.cancelled } : {}),
     usage: {
       conductor: conductorUsage,
