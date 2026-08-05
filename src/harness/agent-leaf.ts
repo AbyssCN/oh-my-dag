@@ -41,6 +41,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import { parseModelRef } from './fleet';
+import { LEAF_HARNESS_CORE } from './harness-prompts';
 import { createOmdAgentTools, type AnyOmdTool } from './agent-tools';
 import { createHashlineCustomTools, hashlinePatchPaths } from './hashline';
 import { createDriftTracker, type DriftDetectorConfig } from './hooks/drift-detector';
@@ -119,14 +120,25 @@ export function agentScaffold(opts: {
   model: string;
   toolRouting: boolean;
   disciplineCore: boolean;
+  /**
+   * harness 补焊块 (LEAF_HARNESS_CORE: 三层真源/绿≠对/脏场景枚举/? 阀)。默认 **false** ——
+   * 开它 = 换尺子 (全 leaf cache 失效 + eval 读数不可比), 上线必须走 A/B, 不默认漂。
+   * 'off' 档不受此开关影响 (裸基线保持纯净, A/B 的对照臂不能被染指)。
+   */
+  harnessCore?: boolean;
 }): string {
   const { profile, model, toolRouting, disciplineCore } = opts;
+  const harness = opts.harnessCore ?? false;
   if (profile === 'off') return '';
-  if (profile === 'strong' || (profile === 'auto' && isStrongCoord(model) && (toolRouting || disciplineCore))) {
-    return STRONG_MODEL_CORE;
+  if (
+    profile === 'strong' ||
+    (profile === 'auto' && isStrongCoord(model) && (toolRouting || disciplineCore || harness))
+  ) {
+    // 强模型档: 补焊块的四条全是「模型再强也不自带」类 (同 house-rules 的入选判据), 开则跟在房规后。
+    return harness ? `${STRONG_MODEL_CORE}\n\n${LEAF_HARNESS_CORE}` : STRONG_MODEL_CORE;
   }
-  // 承重纪律核走 tool-routing 之前 (元规则 → 工具细则 → 任务)。
-  return [disciplineCore ? DISCIPLINE_CORE : '', toolRouting ? TOOL_ROUTING_GUIDELINE : '']
+  // 承重纪律核走 tool-routing 之前 (元规则 → 补焊 → 工具细则 → 任务)。
+  return [disciplineCore ? DISCIPLINE_CORE : '', harness ? LEAF_HARNESS_CORE : '', toolRouting ? TOOL_ROUTING_GUIDELINE : '']
     .filter(Boolean)
     .join('\n\n');
 }
@@ -160,6 +172,12 @@ export interface AgentLeafRunnerOpts {
    * 默认 true (治裸跑执行器无纪律)。纯命令执行 leaf 可关 (省 token)。
    */
   disciplineCore?: boolean;
+  /**
+   * 注入 harness 补焊块 (LEAF_HARNESS_CORE: 三层真源/绿≠对/脏场景枚举/? 阀 —— fleet-playbook
+   * ✅ 表里 DISCIPLINE_CORE 未覆盖的四条)。默认 **false**: 开它 = 换 leaf prompt 尺子
+   * (cache 面全失效 + eval 读数不可比), 默认接线前必须走 A/B 读数。
+   */
+  harnessCore?: boolean;
   /**
    * prompt 档强制覆盖 (eval 用)。缺省 `'auto'` = 按本次 leaf 的模型档自选 (强模型走
    * STRONG_MODEL_CORE, 其余走全量脚手架)。**A/B 必须能把档位固定住**, 否则换模型时档位跟着变,
@@ -284,8 +302,9 @@ export function mapSessionUsage(tokens?: { input?: number; output?: number; cach
  * 省掉它等于让每个 leaf 从零猜项目约定。每级只取第一个命中 (AGENTS 优先于 CLAUDE, 同 pi)。
  */
 const CONTEXT_FILE_NAMES = ['AGENTS.md', 'AGENTS.MD', 'CLAUDE.md', 'CLAUDE.MD'];
+// (chat conductor 复用同一条向上走的加载路 → export;两处各读一份会漂)。
 
-function loadProjectContext(cwd: string, maxDepth = 8): { path: string; content: string }[] {
+export function loadProjectContext(cwd: string, maxDepth = 8): { path: string; content: string }[] {
   const found: { path: string; content: string }[] = [];
   let dir = isAbsolute(cwd) ? cwd : join(process.cwd(), cwd);
   for (let i = 0; i < maxDepth; i++) {
@@ -444,8 +463,8 @@ async function compactLeafContext(opts: {
   ];
 }
 
-/** 一条 AgentMessage 里的 assistant 文本 (thinking / toolCall 块不算)。 */
-function assistantText(msg: AgentMessage): string {
+/** 一条 AgentMessage 里的 assistant 文本 (thinking / toolCall 块不算)。chat agent 复用 → export。 */
+export function assistantText(msg: AgentMessage): string {
   if ((msg as { role?: string }).role !== 'assistant') return '';
   const content = (msg as { content?: unknown }).content;
   if (typeof content === 'string') return content;
@@ -495,7 +514,13 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     const wantRouting = opts.toolRouting ?? true;
     const wantDiscipline = opts.disciplineCore ?? true;
     const profile = opts.promptProfile ?? 'auto';
-    const scaffold = agentScaffold({ profile, model, toolRouting: wantRouting, disciplineCore: wantDiscipline });
+    const scaffold = agentScaffold({
+      profile,
+      model,
+      toolRouting: wantRouting,
+      disciplineCore: wantDiscipline,
+      harnessCore: opts.harnessCore ?? false,
+    });
     const disciplined = scaffold ? `${scaffold}\n\n${prompt}` : prompt;
     // persona 刻意**不进** promptVersion: 它是每个节点自己的角色设定, 属于"这一发在干什么"
     // 而不是"引擎这一版怎么包装" —— 混进来会让版本逐节点漂, 也就分不了组。
