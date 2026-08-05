@@ -479,3 +479,74 @@ describe('omd-readout · 建议接受率 (S-1 片d)', () => {
     rmSugg(cwd, { recursive: true, force: true });
   });
 });
+
+/**
+ * ⑧.5 「声称 vs 引擎记录」检出器的活体读数(2026-08-05)。
+ *
+ * 这一段的口径**已经错过一次**:交接文里原本写「`observations: []` = 记了零检出,可进分母」——
+ * 而 `dag_run` 那条路整张图可以一个 conductor 节点都没有,判据结构上够不着,账本记出来一模一样。
+ * 按 entry 数约一半流量因此进错分母,基率会被算低近一倍。所以这里钉的是**分母怎么数**。
+ */
+describe('omd-readout · ⑧.5 检出器活体读数的分母', () => {
+  const withCC = (
+    runId: string,
+    claimCheck: { conductor: { rounds: number; nodes: number; findings: number }; flat: { nodes: number; findings: number } } | undefined,
+    observations?: { kind: string; nodes: string[]; message?: string }[],
+  ) => {
+    const db = new Database(':memory:');
+    const rec = createDagRecorder({ db });
+    rec.record(
+      {
+        ...fakeResult({ planName: 'p', plan: { a: { goal: 'x' } }, done: ['a'], reused: [], usage: {} }),
+        ...(claimCheck ? { claimCheck } : {}),
+        ...(observations ? { observations } : {}),
+      } as never,
+      { runId, entry: 'dag_run', now: 1000 },
+    );
+    return readout({ db, limit: 50 }).claim_check;
+  };
+
+  test('★ 没记这一位 → 进 unrecorded, **不进分母**(不是零检出)', () => {
+    const cc = withCC('r1', undefined);
+    expect(cc.recordedRuns).toBe(0);
+    expect(cc.unrecordedRuns).toBe(1);
+    expect(cc.conductor.rate).toBeNull(); // 算不出 ≠ 0%
+    expect(cc.flat.rate).toBeNull();
+  });
+
+  test('记了且零检出 → 进分母, 比例是**真的 0%**(与上一条分得开)', () => {
+    const cc = withCC('r2', { conductor: { rounds: 1, nodes: 4, findings: 0 }, flat: { nodes: 2, findings: 0 } });
+    expect(cc.recordedRuns).toBe(1);
+    expect(cc.unrecordedRuns).toBe(0);
+    expect(cc.conductor.rate).toBe(0);
+    expect(cc.flat.rate).toBe(0);
+  });
+
+  test('★ 两面各算各的比例 —— 宽度不同, **不许相加**', () => {
+    const cc = withCC('r3', { conductor: { rounds: 2, nodes: 4, findings: 1 }, flat: { nodes: 10, findings: 1 } });
+    expect(cc.conductor.rate).toBeCloseTo(0.25, 5);
+    expect(cc.flat.rate).toBeCloseTo(0.1, 5);
+    // 合并口径 (2/14 ≈ 0.143) 两边都不是 —— 它没有意义, 所以读数板压根不提供这个数。
+    expect(cc.conductor.rate).not.toBeCloseTo(2 / 14, 5);
+  });
+
+  test('★ 检出原句捞得出来(拨闸靠逐条读它判是不是误伤)', () => {
+    const cc = withCC(
+      'r4',
+      { conductor: { rounds: 1, nodes: 1, findings: 1 }, flat: { nodes: 0, findings: 0 } },
+      [{ kind: 'unsupported-claim', nodes: ['n1'], message: '[引擎记录核对 · 只报不拦] n1 有 1 处「本次已由引擎实测通过」' }],
+    );
+    expect(cc.samples).toHaveLength(1);
+    expect(cc.samples[0]!.message).toContain('实测通过');
+    expect(cc.samples[0]!.runId).toBe('r4');
+  });
+
+  test('别的 kind 的观察不进这段样本(它问的是这一条判据)', () => {
+    const cc = withCC(
+      'r5',
+      { conductor: { rounds: 1, nodes: 1, findings: 0 }, flat: { nodes: 0, findings: 0 } },
+      [{ kind: 'loop-no-artifact-change', nodes: ['n1'], message: '盘上没位移' }],
+    );
+    expect(cc.samples).toEqual([]);
+  });
+});
