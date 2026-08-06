@@ -567,6 +567,58 @@ export const CLAIM_CHECK_MIN_NODES = 60;
 export const LOOP_NO_MOVE_MIN_N = 60;
 
 /**
+ * 内环 journal 的**轮数分布**(2026-08-06)—— ⑧.1 那四格里**可回溯**的第二格。
+ *
+ * ## 为什么它值得单独抽出来
+ *
+ * ⑧.1 首版把 ②③④ 整段标成「要跑一次新的才有数」,而那是**错的**:
+ * `.omd/continuity/<runId>/_loop-*.json` 里的 `completedRounds` 一直就记着内环跑了几轮,
+ * 读数板甚至**早就在读它**(算 `roundsTotal`)—— 只是从没接到「环到底转没转第二圈」这个问题上。
+ * 那是 S-21 的同一形状(数在渲染层、没接到它能回答的问题上),而这一次**是我自己刚立完
+ * 「可回溯的那一格要先算」这条纪律之后又犯的**(交接 32 §五 第 2 条)。
+ *
+ * ## 两格的证据强度不同,别合并
+ *
+ * · `turned`(`completedRounds ≥ 2`)= **内环真转了第二圈**,无歧义;
+ * · `oneRound`(`= 1`)**压着三种情况分不开**:`max_rounds=1` 撞上熔断/blocked/预算而写了
+ *   journal · `max_rounds=1` 配了 `judge_final`/冻结判据跑完一轮 · `max_rounds>1` 首轮就收敛。
+ *   拆开它要的正是账本新加的 `maxRounds` 那一位。
+ *
+ * ⚠ **`turned` ≠ 跨轮比较真发生过**:退出路径决定它有没有走到比较点
+ *   (`success` 与 `blocked` 的 return 在比较之前;`not-converged` / `budget-exhausted` 之后)。
+ *   所以这里**只记原料**(按 `stop.kind` 分组),判词在渲染层解释 —— 那一层的知识绑在具体
+ *   代码路径上,存进派生值会在退出路径改动时静默过期。
+ */
+export interface LoopRoundSummary {
+  journals: number;
+  turned: number;
+  oneRound: number;
+  /** `turned` 按 `stop.kind` 分组;缺席的 stop 归 `'(没记)'`(早于 N6 的记录)。 */
+  turnedByStop: Record<string, number>;
+}
+
+/** 纯函数(IO 在调用方)—— 见 {@link LoopRoundSummary}。 */
+export function summarizeLoopRounds(
+  js: readonly { completedRounds?: number; stop?: { kind: string } }[],
+): LoopRoundSummary {
+  const turnedByStop: Record<string, number> = {};
+  let turned = 0;
+  let oneRound = 0;
+  for (const j of js) {
+    const r = j.completedRounds ?? 0;
+    if (r >= 2) {
+      turned++;
+      const k = j.stop?.kind ?? '(没记)';
+      turnedByStop[k] = (turnedByStop[k] ?? 0) + 1;
+    } else if (r === 1) {
+      oneRound++;
+    }
+    // r <= 0 = 没记 / 坏值: 一格都不进 (缺席 ≠ 0 轮)
+  }
+  return { journals: js.length, turned, oneRound, turnedByStop };
+}
+
+/**
  * 单面充分性判定(纯函数 —— 读数板与闸共用同一处,两处各算一份必漂)。
  *
  * `min` 留了参数是因为 ⑧ 与 ⑧.5 两段共用这一份算法而门槛各有各的常量;**别在调用处写字面量**,
@@ -1967,6 +2019,8 @@ if (import.meta.main) {
   let runsWithLoop = 0;
   let runsNoLoopData = 0;
   let roundsTotal = 0;
+  /** ⑧.1 那格**可回溯**的原料 —— 见 summarizeLoopRounds。 */
+  const allJournals: NodeLoopJournal[] = [];
   for (const r of runs) {
     if (r.runId.startsWith('(no-runid):')) { runsNoLoopData++; continue; }
     const js: NodeLoopJournal[] = cm.listNodeLoopJournals(r.runId);
@@ -1975,6 +2029,7 @@ if (import.meta.main) {
     for (const j of js) {
       loopJournals++;
       roundsTotal += j.completedRounds ?? 0;
+      allJournals.push(j);
       if (!j.stop) { loopJournalsNoStop++; continue; }
       loopStopCount.set(j.stop.kind, (loopStopCount.get(j.stop.kind) ?? 0) + 1);
       if (!loopStopSamples.has(j.stop.kind)) {
@@ -2307,7 +2362,7 @@ if (import.meta.main) {
     console.log(`   有 conductor 的跑 ${lsr.runsWithConductor} 次, 共 ${lsr.conductorNodes} 个 conductor 节点:`);
     if (lsr.conductorNodes === lsr.unrecordedNodes) {
       console.log(`      这 ${lsr.conductorNodes} 个**都没记** rounds/maxRounds (早于 2026-08-06)。`);
-      console.log('      ⚠ 那是「没记」不是「单轮档」—— 下面 ②③④ 要跑一次新的才有数。');
+      console.log('      ⚠ 那是「没记」不是「单轮档」—— ②③ 要跑一次新的才分得开。');
     } else {
       const d = lsr.conductorNodes - lsr.unrecordedNodes;
       console.log(
@@ -2326,6 +2381,35 @@ if (import.meta.main) {
         console.log(`      (另有 ${lsr.unrecordedNodes} 个没记这两位, **不进上面三格的分母** —— 老行 / conductor 异常退出)`);
       }
     }
+  }
+  // ── ⑧.1 的**第二个可回溯面**: 内环 journal (2026-08-06) ────────────────────
+  //
+  // ⚠ 首版把 ②③④ 整段标成「要跑一次新的」, 而那是**错的**: `_loop-*.json` 里的
+  //   `completedRounds` 一直就记着内环跑了几轮, 这块板甚至早就在读它 (算 roundsTotal),
+  //   只是从没接到「环到底转没转第二圈」这个问题上。**这一次是刚立完「可回溯的那一格要先算」
+  //   之后又犯的同一个错**(交接 32 §五 第 2 条), 所以判词里把它写明白。
+  const lr = summarizeLoopRounds(allJournals);
+  if (lr.journals > 0) {
+    console.log(
+      `   ▸ **可回溯的第二个面**: 内环 journal ${lr.journals} 份 (\`.omd/continuity/<runId>/_loop-*.json\`)` +
+        `\n     ⚠ 口径: **只覆盖上面那 ${runs.length} 个窗口内的 run** —— 盘上 continuity 目录通常比窗口多,` +
+        '\n       所以这个数是**下界**。要看全量请直接数 `.omd/continuity/*/_loop-*.json`。',
+    );
+    console.log(`      **真转了第二圈 ${lr.turned} 份** ← ④ 那一格**不用等新跑**, 历史里就有`);
+    console.log(`      只跑完 1 轮      ${lr.oneRound} 份  —— **压着三种情况分不开** (max_rounds=1 撞熔断/blocked/预算 ·`);
+    console.log('                        max_rounds=1 配了 judge_final/冻结判据 · max_rounds>1 首轮就收敛),');
+    console.log('                        拆开它要的正是账本新加的 maxRounds 那一位;');
+    if (lr.turned > 0) {
+      const by = Object.entries(lr.turnedByStop).sort((a, b) => b[1] - a[1]);
+      console.log(`      转了第二圈的按停止原因分: ${by.map(([k, v]) => `${k} ${v}`).join(' · ')}`);
+      // 这一句的知识**绑在具体退出路径上** —— 所以它写在判词里而不是存成派生值 (会静默过期)。
+      const pass = (lr.turnedByStop['not-converged'] ?? 0) + (lr.turnedByStop['budget-exhausted'] ?? 0);
+      console.log(`      ⚠ **转了第二圈 ≠ 跨轮比较真发生过**: \`success\` 与 \`blocked\` 的 return 在比较点**之前**,`);
+      console.log(`        \`not-converged\` / \`budget-exhausted\` 在**之后** → 真走到比较点的约 **${pass} 份**。`);
+      console.log('        (这条对应关系绑在 executor-dag 的退出路径上, 改那几处时要一起看。)');
+    }
+    console.log(`   ▸ **于是 ⑧ 的机会不是结构性为零** —— 环确实会转第二圈 (历史 ${lr.turned} 次)。`);
+    console.log('     那条判据长期 0 检出, 该读成"够得着但没命中"还是"够不着", 由 ⑧ 段的可比较数说了算。');
   }
   console.log('   判据 (在数据到达之前钉的 —— 它判的是「⑧ 这条检测器值不值得留」):');
   console.log('     · ① 占多数 → 内环根本不是主流形状, **别在检测器上再投**, 去看 ⑧.5/⑧.6 那两条平铺面的;');

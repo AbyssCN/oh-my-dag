@@ -30,7 +30,7 @@ import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { createDagRecorder } from './dag-record';
 import type { ExecutorDagResult } from './executor-dag-types';
-import { CLAIM_CHECK_MIN_NODES, LOOP_NO_MOVE_MIN_N, faceSufficiency, readout, type ReadoutResult } from '../../scripts/omd-readout';
+import { CLAIM_CHECK_MIN_NODES, LOOP_NO_MOVE_MIN_N, faceSufficiency, readout, summarizeLoopRounds, type ReadoutResult } from '../../scripts/omd-readout';
 
 interface FakeNode {
   goal: string;
@@ -791,6 +791,58 @@ describe('omd-readout · ⑧.6 运行时写竞争的分母 (2026-08-06)', () => 
     expect(wr.sufficiency.overlaps.enough).toBe(true);
     expect(wr.sufficiency.pairs.enough).toBe(false); // 严格口径仍不够
     expect(wr.sufficiency.pairsInferred.enough).toBe(true); // 推断口径够了 → 那一档的基率可以读
+  });
+});
+
+/**
+ * ⑧.1 的**第二个可回溯面**:内环 journal 的轮数分布(2026-08-06)。
+ *
+ * ⑧.1 首版把 ②③④ 整段标成「要跑一次新的才有数」,而那是**错的** ——
+ * `.omd/continuity/<runId>/_loop-*.json` 里的 `completedRounds` 一直就记着内环跑了几轮,
+ * 读数板甚至早就在读它(算 `roundsTotal`),只是从没接到「环转没转第二圈」这个问题上。
+ *
+ * ⚠ **这一次是刚立完「可回溯的那一格要先算」之后又犯的同一个错**(交接 32 §五 第 2 条)。
+ * 所以这组用例的重心在:`turned`(无歧义)与 `oneRound`(**压着三种情况分不开**)不许合并。
+ */
+describe('omd-readout · ⑧.1 内环 journal 的轮数分布 (2026-08-06)', () => {
+  test('★ completedRounds ≥ 2 → turned (**内环真转了第二圈**, 无歧义)', () => {
+    const r = summarizeLoopRounds([{ completedRounds: 2 }, { completedRounds: 4 }]);
+    expect(r.turned).toBe(2);
+    expect(r.oneRound).toBe(0);
+  });
+
+  test('★ completedRounds === 1 → oneRound, **不许算进 turned** (它压着三种情况)', () => {
+    // max_rounds=1 撞熔断/blocked/预算 · max_rounds=1 配 judge_final · max_rounds>1 首轮收敛
+    // —— 三者从 journal 里分不开, 拆开要账本那一位 `maxRounds`。
+    const r = summarizeLoopRounds([{ completedRounds: 1 }, { completedRounds: 1 }]);
+    expect(r.oneRound).toBe(2);
+    expect(r.turned).toBe(0);
+  });
+
+  test('★ 缺席 / 0 / 坏值 → **一格都不进** (缺席 ≠ 0 轮)', () => {
+    const r = summarizeLoopRounds([{}, { completedRounds: 0 }]);
+    expect(r.journals).toBe(2); // 份数照数
+    expect(r.turned).toBe(0);
+    expect(r.oneRound).toBe(0); // ← 两格都不进, 不许把"没记"塞进任何一格
+  });
+
+  test('★ turned 按 stop.kind 分组 —— 因为**转了第二圈 ≠ 跨轮比较真发生过**', () => {
+    // success/blocked 的 return 在比较点之前, not-converged/budget-exhausted 在之后。
+    // 这层对应关系绑在 executor-dag 的退出路径上, 所以只存原料、判词在渲染层解释。
+    const r = summarizeLoopRounds([
+      { completedRounds: 2, stop: { kind: 'success' } },
+      { completedRounds: 2, stop: { kind: 'not-converged' } },
+      { completedRounds: 3, stop: { kind: 'not-converged' } },
+      { completedRounds: 2 }, // 早于 N6: 没记 stop
+    ]);
+    expect(r.turned).toBe(4);
+    expect(r.turnedByStop).toEqual({ success: 1, 'not-converged': 2, '(没记)': 1 });
+  });
+
+  test('journals 数的是**份数**, 与 turned/oneRound 之和可以不等 (差额就是"没记")', () => {
+    const r = summarizeLoopRounds([{ completedRounds: 2 }, { completedRounds: 1 }, {}]);
+    expect(r.journals).toBe(3);
+    expect(r.turned + r.oneRound).toBe(2); // ← 差的那 1 份是"没记", 它有意义
   });
 });
 
