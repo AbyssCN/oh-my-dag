@@ -929,6 +929,25 @@ describe('omd-readout · ⓪ 导航分桶 (2026-08-06)', () => {
     expect(summarizeFaces(base()).waiting.some((l) => l.includes('⑧.6'))).toBe(true);
   });
 
+  test('★★ 判据轴的**非零检出**直接进「能下结论」—— 它不受 60 那个门槛管', () => {
+    // 2026-08-06 建 ⓪ 时**漏了这一格**, 而漏的原因值得记: 我只按门槛型的格子想了。
+    // `LOOP_NO_MOVE_MIN_N = 60` 管的是**把 0 读成基率**要多少样本 (rule of three);
+    // 而「judge 太紧 4 次」是**非零检出** —— 已经发生了 4 次, 不需要再攒到 60 才算数。
+    // 混着用的代价: 一条真实存在的浪费被"样本不足"挡在导航外, 埋在 430 行板子的中段。
+    const c = base();
+    c.criteria_axis = { ...c.criteria_axis, wastedRounds: 4, recorded: 13 };
+    const { ready } = summarizeFaces(c);
+    expect(ready.some((l) => l.includes('判据轴') && l.includes('4/13') && l.includes('judge 太紧'))).toBe(true);
+  });
+
+  test('★ 判据轴两格都为 0 → **不进任何桶** (它不是"在等", 是查过没有)', () => {
+    const c = base();
+    c.criteria_axis = { ...c.criteria_axis, wastedRounds: 0, oracleFailed: 0, recorded: 13 };
+    const { ready, waiting } = summarizeFaces(c);
+    expect(ready.some((l) => l.includes('判据轴'))).toBe(false);
+    expect(waiting.some((l) => l.includes('判据轴'))).toBe(false);
+  });
+
   test('★ ⑧.1 ① 只要有跑就能下结论 —— 它只看 kind, **可回溯**', () => {
     const c = base();
     c.loop_shape = { ...c.loop_shape, runsWithoutConductor: 7, runsWithConductor: 3 };
