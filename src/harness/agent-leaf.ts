@@ -37,6 +37,9 @@ import {
   type AgentLoopConfig,
   type AgentMessage,
 } from '@earendil-works/pi-agent-core';
+// 0.84 起 `runAgentLoop` 第 6 参 streamFn **必填** (0.81.0 breaking: "made low-level loop stream
+// functions required")。0.80 省略时的内部默认就是这个 `streamSimple` —— 显式传 = 行为等价。
+import { streamSimple } from '@earendil-works/pi-ai/compat';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
@@ -752,6 +755,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
         config,
         emit,
         controller.signal,
+        streamSimple,
       );
     } finally {
       if (hardTimer) clearTimeout(hardTimer);
