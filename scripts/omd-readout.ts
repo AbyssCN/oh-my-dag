@@ -357,6 +357,41 @@ export interface ReadoutResult {
     /** 同 ⑧ 用 `LOOP_NO_MOVE_MIN_N`:两个槽的 0 下一步不同(没并发 vs 有并发没撞上)。 */
     sufficiency: { overlaps: FaceSufficiency; pairs: FaceSufficiency };
   };
+  /**
+   * ⑧.1 **内环的形状**(2026-08-06)—— 「⑧ 那个 0 为什么是 0」的分母。
+   *
+   * ## 为什么它得单开一段
+   *
+   * ⑧ 段补上分母之后,判词变成「记了的跑 ≥ N 而**轮转次数**仍 ≈ 0 → 瓶颈是环只转一圈」。
+   * 可「轮转次数 = 0」本身**至少压着四件下一步不同的事**:
+   *   ① 图里根本没有 conductor 节点 → 判据**不适用**(与检测器好不好无关);
+   *   ② 有 conductor 而 `max_rounds` 缺省 1 → 环存在但**结构上**不可能转第二圈;
+   *   ③ `max_rounds > 1` 而首轮就收敛 → 环正常工作,这条检测器**确实没有付费对象**;
+   *   ④ 进了第二圈却在比较点之前退环(§8.4 熔断 / D-Q blocked / 预算轴)。
+   * ② 的下一步是「改缺省或收掉检测器」,③ 是「收掉检测器」的**正面证据**,
+   * ④ 则根本不该记在这条检测器头上。判词此前把 ②③ 并成一个括号、①④ 一字未提。
+   *
+   * **这是 S-19 的同一形状再走一层**:分母有了,而「分母为什么是 0」仍然没有分母。
+   *
+   * ⚠ ① 靠 `kind` 就分得出,**回溯既有记录也成立**;②③④ 要 `rounds`/`maxRounds` 两位,
+   *   只有 2026-08-06 之后的跑才有 → 老行进 `unrecordedNodes`,**不进任何一格**。
+   */
+  loop_shape: {
+    /** 图里一个 conductor 节点都没有的跑 —— ⑧ 那条判据在这些跑上**不适用**(可回溯)。 */
+    runsWithoutConductor: number;
+    /** 至少有一个 conductor 节点的跑(可回溯)。 */
+    runsWithConductor: number;
+    /** conductor 节点总数(可回溯)。下面四格之和 = 它。 */
+    conductorNodes: number;
+    /** 其中**没记**这两位的(老行 / conductor 异常退出没跑到 settle)。缺席 ≠ 0。 */
+    unrecordedNodes: number;
+    /** `maxRounds === 1`:单轮档,**结构上**没有跨轮比较的机会。 */
+    singleRound: number;
+    /** `maxRounds > 1 && rounds <= 1`:有机会而首轮就收敛。 */
+    firstRoundConverged: number;
+    /** `rounds >= 2`:真转了第二圈 —— ⑧ 的机会**只可能出自这一格**。 */
+    turned: number;
+  };
 }
 
 /** 单面的样本充分性(`enough=false` 时这一面的比例**不许当结论读**)。 */
@@ -494,6 +529,12 @@ function emptyWorld(meta: ReadoutResult['meta']): ReadoutResult {
     write_race: {
       recordedRuns: 0, unrecordedRuns: 0, overlaps: 0, pairs: 0, findings: 0, rate: null,
       sufficiency: { overlaps: faceSufficiency(0, LOOP_NO_MOVE_MIN_N), pairs: faceSufficiency(0, LOOP_NO_MOVE_MIN_N) },
+    },
+    // 空世界: 七格全 0。⚠ 别把 `runsWithoutConductor: 0` 读成"每张图都有 conductor" ——
+    // 空库里它与"一跑都没有"是同一个 0, 那是 meta.limit 那一层的事, 不是这一段的。
+    loop_shape: {
+      runsWithoutConductor: 0, runsWithConductor: 0, conductorNodes: 0,
+      unrecordedNodes: 0, singleRound: 0, firstRoundConverged: 0, turned: 0,
     },
     // 空世界: 闸分母全 0, ledgerGap 记 null = **不知道** (空留痕库不代表没跑过, 只代表这里没有)。
     gate_denominators: { g3LiveRuns: 0, g4Samples: 0, ledgerGap: null },
@@ -892,6 +933,42 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
   let wrRecorded = 0;
   let wrUnrecorded = 0;
   const wrAcc = { overlaps: 0, pairs: 0, findings: 0 };
+  // ⑧.1 内环形状 (2026-08-06) —— 「⑧ 那个 0 为什么是 0」的分母, 见 ReadoutResult.loop_shape。
+  //
+  // ⚠ 这一段扫 **parsed** 而不是 rows: 它读的是节点面 (kind / rounds / maxRounds), 不是 run 级那三个
+  //   JSON 列。① 那一格 (图里没有 conductor) 只用 kind, 所以**老行也算得出** —— 这是它与 ⑧/⑧.6
+  //   的关键差别: 那两段得等新跑, 这一格今天就有答案。
+  const ls = {
+    runsWithoutConductor: 0,
+    runsWithConductor: 0,
+    conductorNodes: 0,
+    unrecordedNodes: 0,
+    singleRound: 0,
+    firstRoundConverged: 0,
+    turned: 0,
+  };
+  for (const p of parsed) {
+    const conds = p.nodes.filter((n) => n.kind === 'conductor');
+    if (conds.length === 0) {
+      ls.runsWithoutConductor++;
+      continue;
+    }
+    ls.runsWithConductor++;
+    for (const c of conds) {
+      ls.conductorNodes++;
+      // 缺席 ≠ 0 ≠ 不适用: 两位**任一**缺席就归"没记" —— 少一位就判不出是 ② 还是 ③,
+      // 拿 `?? 1` 顶上去等于把"没记"洗成"单轮档", 而那正是这一段要拆开的东西。
+      if (typeof c.rounds !== 'number' || typeof c.maxRounds !== 'number') {
+        ls.unrecordedNodes++;
+      } else if (c.maxRounds <= 1) {
+        ls.singleRound++;
+      } else if (c.rounds <= 1) {
+        ls.firstRoundConverged++;
+      } else {
+        ls.turned++;
+      }
+    }
+  }
   for (const r of rows) {
     if (!r.write_race) {
       wrUnrecorded++;
@@ -1002,6 +1079,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
         pairs: faceSufficiency(wrAcc.pairs, LOOP_NO_MOVE_MIN_N),
       },
     },
+    loop_shape: { ...ls },
     outcome_distribution,
     entry_distribution,
     attention_axis,
@@ -1838,10 +1916,59 @@ if (import.meta.main) {
   console.log('       一直没位移直到轮数耗尽 → 才谈升 BLOCKED, K 取"连续几轮"的众数。');
   console.log('   ▸ 两个"卡在半路"的读法 (它们的下一步不一样):');
   console.log(`     · 记了的跑 ≥ ${LOOP_NO_MOVE_MIN_N} 而轮转次数仍 ≈ 0 → 瓶颈是**环只转一圈**`);
-  console.log('       (max_rounds 缺省 1 / 首轮就收敛) —— 那是引擎形状的事实, 再等也不会有数;');
+  console.log('       —— 到底是哪一种"只转一圈", 看下面 ⑧.1 (那句话此前把四件事并成了一个括号);');
   console.log('     · 轮转在涨而可比较数不涨 → 瓶颈是 population 闸: 环里根本没有产物信号。');
   console.log('   ⚠ 现在**只报不拦**: max_rounds ≤ 4, 误拦一次掐死一个本可收敛的 run,');
   console.log('     漏报一次只赔一两轮。这个比价下, 0 读数就上硬闸是拿大风险换小收益。');
+
+  // ── ⑧.1 内环的形状 (2026-08-06) ────────────────────────────────────────────
+  // 上面那句「瓶颈是环只转一圈」把四件下一步不同的事并成了一个括号。这一段把它们拆开 ——
+  // 而 ① 那一格只用 `kind`, 所以**老记录也算得出**: 不必等新跑就有第一个答案。
+  const lsr = contract.loop_shape;
+  const lsRuns = lsr.runsWithoutConductor + lsr.runsWithConductor;
+  console.log(`\n⑧.1 内环的形状 (⑧ 那个 0 出自哪一格 —— 四格的下一步互不相同)`);
+  if (lsRuns === 0) {
+    console.log('   这批记录一条都没有 —— 没什么可拆的。');
+  } else {
+    const pct = (n: number, d: number) => (d > 0 ? `${((n / d) * 100).toFixed(0)}%` : '—');
+    console.log(
+      `   ① 图里**没有 conductor 节点**   ${String(lsr.runsWithoutConductor).padStart(4)} 跑 / ${lsRuns}  (${pct(lsr.runsWithoutConductor, lsRuns)})` +
+        '  → ⑧ 这条判据**不适用**',
+    );
+    console.log('      这一格与检测器好不好无关 —— 它说的是"跑的是什么图"。它**可回溯**(只看 kind),');
+    console.log('      所以是四格里唯一今天就有答案的。占比高 = G5 的着力点根本不在内环上。');
+    console.log(`   有 conductor 的跑 ${lsr.runsWithConductor} 次, 共 ${lsr.conductorNodes} 个 conductor 节点:`);
+    if (lsr.conductorNodes === lsr.unrecordedNodes) {
+      console.log(`      这 ${lsr.conductorNodes} 个**都没记** rounds/maxRounds (早于 2026-08-06)。`);
+      console.log('      ⚠ 那是「没记」不是「单轮档」—— 下面 ②③④ 要跑一次新的才有数。');
+    } else {
+      const d = lsr.conductorNodes - lsr.unrecordedNodes;
+      console.log(
+        `      ② max_rounds = 1 (缺省)      ${String(lsr.singleRound).padStart(4)} / ${d}  (${pct(lsr.singleRound, d)})` +
+          '  → **结构上**没有跨轮比较的机会',
+      );
+      console.log(
+        `      ③ 多轮档而首轮就收敛        ${String(lsr.firstRoundConverged).padStart(4)} / ${d}  (${pct(lsr.firstRoundConverged, d)})` +
+          '  → 环正常, 检测器没有付费对象',
+      );
+      console.log(
+        `      ④ **真转了第二圈**          ${String(lsr.turned).padStart(4)} / ${d}  (${pct(lsr.turned, d)})` +
+          '  → ⑧ 的机会**只可能出自这一格**',
+      );
+      if (lsr.unrecordedNodes > 0) {
+        console.log(`      (另有 ${lsr.unrecordedNodes} 个没记这两位, **不进上面三格的分母** —— 老行 / conductor 异常退出)`);
+      }
+    }
+  }
+  console.log('   判据 (在数据到达之前钉的 —— 它判的是「⑧ 这条检测器值不值得留」):');
+  console.log('     · ① 占多数 → 内环根本不是主流形状, **别在检测器上再投**, 去看 ⑧.5/⑧.6 那两条平铺面的;');
+  console.log('     · ② 占多数 → 是**缺省值**掐死了这条判据, 不是判据不行。要么改缺省 (那是独立的');
+  console.log('       设计决定, 有它自己的代价), 要么承认这条检测器在今天的缺省下够不着而收掉;');
+  console.log('     · ③ 占多数 → 环给了机会而首轮就收敛 —— 这是"没有付费对象"的**正面证据**, 收掉;');
+  console.log('     · ④ > 0 而 ⑧ 的可比较数仍 ≈ 0 → 转是转了, 卡在 population 闸或提前退环');
+  console.log('       (§8.4 熔断 / D-Q blocked / 预算轴), 该去查的是那三条, 不是这条检测器。');
+  console.log('   ⚠ 四格**不许合并**: 它们的下一步分别是"别投/改缺省/收掉/查别处"。');
+  console.log('     合成一句"环只转一圈"正是这一段要拆的那个动作 (S-19 的同一形状再走一层)。');
 
   console.log(`\n⑧.5 「声称 vs 引擎记录」检出器 (report-only —— 拨不拨闸就看这段)`);
   if (cc.recordedRuns === 0) {

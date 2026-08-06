@@ -699,6 +699,102 @@ describe('omd-readout · ⑧.6 运行时写竞争的分母 (2026-08-06)', () => 
   });
 });
 
+/**
+ * ⑧.1 内环的形状(2026-08-06)—— 「⑧ 那个 0 为什么是 0」的分母。
+ *
+ * ⑧ 段补上分母之后判词说「轮转次数 ≈ 0 → 瓶颈是环只转一圈」,而那句话把**四件下一步不同
+ * 的事**并成了一个括号:① 图里没有 conductor(判据不适用)② `max_rounds` 缺省 1(结构上
+ * 没机会)③ 多轮档首轮收敛(检测器没有付费对象)④ 转了却提前退环(该查别处)。
+ *
+ * 本段每条钉的都是**某两格不许互相冒充**。整段的反向自检在 `dag-record.test.ts` 那四条上:
+ * 留痕层一旦拿 `?? 1` 把「不知道」补成「单轮档」,这里的 ② 与「没记」就永久分不开了。
+ */
+describe('omd-readout · ⑧.1 内环的形状 (2026-08-06)', () => {
+  /** 一个只含指定 conductor 形状的最小世界。`c` 缺席 = plan 里没有这个 id(map 动态扇出)。 */
+  const world = (
+    nodes: { id: string; kind: string; rounds?: number; inPlan?: { max_rounds?: number } }[],
+  ): ReadoutResult['loop_shape'] => {
+    const db = new Database(':memory:');
+    const rec = createDagRecorder({ db });
+    const plan: Record<string, unknown> = {};
+    const results: Record<string, unknown> = {};
+    for (const n of nodes) {
+      if (n.inPlan) plan[n.id] = { goal: 'x', ...n.inPlan };
+      results[n.id] = {
+        id: n.id, kind: n.kind, status: 'done', deps: [], output: '', usage: { in: 0, out: 0 },
+        ...(n.rounds === undefined ? {} : { rounds: n.rounds }),
+      };
+    }
+    rec.record(
+      {
+        plan: { name: 'p', nodes: plan },
+        levels: [nodes.map((n) => n.id)],
+        results,
+        reusedNodes: [],
+        usage: { conductor: { in: 0, out: 0 }, leavesIn: 0, leavesOut: 0, leavesCacheHit: 0 },
+      } as unknown as ExecutorDagResult,
+      { runId: 'ls', entry: 'dag_run', now: 1000 },
+    );
+    return readout({ db, limit: 50 }).loop_shape;
+  };
+
+  test('★ ① 图里没有 conductor → 这一跑进 runsWithoutConductor, **不进任何一格分母**', () => {
+    // 这一格是四格里唯一**可回溯**的 (只看 kind) —— 2026-08-06 实测 54 跑里 33 跑是它。
+    const ls = world([{ id: 'a', kind: 'agent', inPlan: {} }]);
+    expect(ls.runsWithoutConductor).toBe(1);
+    expect(ls.runsWithConductor).toBe(0);
+    expect(ls.conductorNodes).toBe(0);
+  });
+
+  test('★ ② max_rounds=1 (缺省) → singleRound。**结构上**没有跨轮比较的机会', () => {
+    const ls = world([{ id: 'c', kind: 'conductor', rounds: 1, inPlan: {} }]);
+    expect(ls.singleRound).toBe(1);
+    expect(ls.firstRoundConverged).toBe(0);
+    expect(ls.turned).toBe(0);
+    expect(ls.unrecordedNodes).toBe(0);
+  });
+
+  test('★ ③ 多轮档而首轮就收敛 → firstRoundConverged, **不是** singleRound', () => {
+    // 这两格的下一步相反: ② 是"缺省值掐死了判据", ③ 是"判据没有付费对象"的正面证据。
+    const ls = world([{ id: 'c', kind: 'conductor', rounds: 1, inPlan: { max_rounds: 3 } }]);
+    expect(ls.firstRoundConverged).toBe(1);
+    expect(ls.singleRound).toBe(0);
+  });
+
+  test('★ ④ 真转了第二圈 → turned。⑧ 的机会只可能出自这一格', () => {
+    const ls = world([{ id: 'c', kind: 'conductor', rounds: 2, inPlan: { max_rounds: 4 } }]);
+    expect(ls.turned).toBe(1);
+    expect(ls.firstRoundConverged).toBe(0);
+  });
+
+  test('★ 「没记」不许被念成「单轮档」—— 缺任一位就进 unrecordedNodes', () => {
+    // 本段最重要的一条。老行 (2026-08-06 之前) 与 conductor 异常退出都落这一格, 而它与 ②
+    // 在旧读数板里长得一模一样: 都表现为"⑧ 一次机会都没有"。下一步却相反 ——
+    // 「没记」要跑一次新的, 「单轮档」已经在说话了。
+    const ls = world([
+      { id: 'c1', kind: 'conductor', inPlan: { max_rounds: 2 } }, // 没报 rounds (异常退出)
+      { id: 'c2', kind: 'conductor', rounds: 1 }, // plan 里没有它 → 上限不知道
+    ]);
+    expect(ls.unrecordedNodes).toBe(2);
+    expect(ls.singleRound).toBe(0);
+    expect(ls.firstRoundConverged).toBe(0);
+    expect(ls.turned).toBe(0);
+  });
+
+  test('四格之和 = conductorNodes (不重不漏 —— 一个节点只落一格)', () => {
+    const ls = world([
+      { id: 'a', kind: 'agent', inPlan: {} },
+      { id: 'c1', kind: 'conductor', rounds: 1, inPlan: {} },
+      { id: 'c2', kind: 'conductor', rounds: 1, inPlan: { max_rounds: 3 } },
+      { id: 'c3', kind: 'conductor', rounds: 3, inPlan: { max_rounds: 3 } },
+      { id: 'c4', kind: 'conductor', inPlan: { max_rounds: 3 } },
+    ]);
+    expect(ls.conductorNodes).toBe(4);
+    expect(ls.singleRound + ls.firstRoundConverged + ls.turned + ls.unrecordedNodes).toBe(ls.conductorNodes);
+    expect([ls.singleRound, ls.firstRoundConverged, ls.turned, ls.unrecordedNodes]).toEqual([1, 1, 1, 1]);
+  });
+});
+
 describe('omd-readout · 消耗口径分桶 (LoopX 对照, 2026-08-05)', () => {
   /** 一个只含指定 outcome 的最小世界 (每 run 一条记录, 一个节点)。 */
   const world = (runs: { runId: string; failureKind?: string; tokens: number | null }[]): ReadoutResult => {

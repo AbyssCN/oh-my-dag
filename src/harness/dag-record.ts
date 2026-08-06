@@ -81,6 +81,38 @@ export interface DagRunNode {
    * `'unclassified'` = 记了但引擎没能归类(**该去补标注的缺陷**)。读数板分开念。
    */
   failureKind?: NodeFailureKind;
+  /**
+   * conductor 内环**实跑完的轮数**(2026-08-06)。其它 kind 缺席。
+   *
+   * ## 为什么它值得单独一列:⑧ 那个 0 至今分不出四件事
+   *
+   * 读数板 ⑧ 段的判词写着「记了的跑 ≥ N 而**轮转次数**仍 ≈ 0 → 瓶颈是环只转一圈」。
+   * 而「轮转次数」今天等于 `artifactMove.transitions`,那个数是 0 时至少压着四种情况,
+   * **它们的下一步各不相同**:
+   *   ① 图里根本没有 conductor 节点 —— 判据**不适用**(2026-08-06 实测:54 跑里 33 跑是这种);
+   *   ② 有 conductor 但 `max_rounds` 缺省 1 —— 环存在而结构上不可能转第二圈
+   *      (`executor-dag` 单轮档在跨轮比较**之前**就 return 了);
+   *   ③ `max_rounds > 1` 而首轮就收敛 —— 环工作正常,这条判据确实没有付费对象;
+   *   ④ 进了第二圈却在比较点之前退环(§8.4 熔断 / D-Q blocked / 预算轴)。
+   * ① 靠 `kind` 就分得出(回溯既有记录也成立),②③④ 要的正是这两位。
+   *
+   * 这是 S-19 的同一形状落在**判词的读法**上:分母有了,而「分母为什么是 0」仍然没有分母。
+   *
+   * ⚠ 缺席 ≠ 0 ≠ 不适用:缺席 = 非 conductor 节点 / 早于本次改动的记录 / conductor 异常退出
+   *   (`settle` 没跑到);`1` = 真的只跑完一轮。读数板分开念。
+   */
+  rounds?: number;
+  /**
+   * 这个 conductor 节点 plan 上写的内环**轮数上限**(`max_rounds ?? 1`)。
+   *
+   * 与 `rounds` 一起才分得出上面的 ②(`maxRounds === 1`:结构上没机会)和
+   * ③(`maxRounds > 1 && rounds === 1`:有机会而首轮就收敛)—— 两者的下一步相反:
+   * 前者要么改缺省要么收掉检测器,后者是「检测器没有付费对象」的**正面证据**。
+   *
+   * 存 `1` 而不是在 plan 没写时留空:缺省 1 是引擎**真正执行**的值(`executor-dag` 那一行),
+   * 不是猜的。plan 里压根没有这个 id(map 动态扇出的子节点)才缺席 —— 那种才是真不知道。
+   */
+  maxRounds?: number;
 }
 export interface DagRunRecord {
   id: string;
@@ -447,9 +479,23 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
       const createdAt = meta.now ?? Date.now();
       // 命令从 **plan** 取而不是从 result 取: result 里没有它 (`DagNodeResult` 只记执行面),
       // 而 plan 是这次跑的那张图的原文。plan 里没有对应 id (map 动态扇出的子节点) → undefined, 不编。
-      const planNodes = result.plan.nodes as Record<string, { command?: string; detector?: unknown } | undefined>;
+      const planNodes = result.plan.nodes as Record<
+        string,
+        { command?: string; detector?: unknown; max_rounds?: unknown } | undefined
+      >;
       const nodes: DagRunNode[] = Object.values(result.results).map((r) => {
         const cmd = planNodes[r.id]?.command;
+        // 内环形状 (2026-08-06): 只对 conductor 记 —— 别的 kind 上这两位没有意义, 记了就是编。
+        // `maxRounds` 从 **plan** 取 (同 command 那条): result 里没有它, 而缺省 1 是引擎真跑的值。
+        // plan 里没有这个 id (map 动态扇出) → 两位都缺席, 那才是真不知道。
+        const planNode = planNodes[r.id];
+        const loopShape =
+          r.kind === 'conductor'
+            ? {
+                ...(typeof r.rounds === 'number' ? { rounds: r.rounds } : {}),
+                ...(planNode ? { maxRounds: typeof planNode.max_rounds === 'number' ? planNode.max_rounds : 1 } : {}),
+              }
+            : {};
         // 只对失败的 command 节点算 —— 成功的输出不是"零位移"的证据, 记了只是噪声。
         const outHash =
           cmd && r.status !== 'done'
@@ -467,6 +513,7 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
           ...(r.failureKind ? { failureKind: r.failureKind } : {}),
           ...(r.writeCounts ? { writeCounts: r.writeCounts } : {}),
           ...(r.model ? { model: r.model } : {}),
+          ...loopShape,
         };
       });
       const usage = {
