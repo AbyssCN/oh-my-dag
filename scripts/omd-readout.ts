@@ -604,7 +604,13 @@ export interface RetroWriteRace {
    * 单轮跑没有这个问题:所有 checkpoint 都来自同一轮。
    */
   clean: { overlaps: number; pairs: number; findings: number; rate: number | null };
-  /** **多轮跑**那一面 —— 数**不可信**(可能是跨轮伪影),单独摆,不许并进上面。 */
+  /**
+   * **认不出轮次的多轮跑**那一面 —— 数**不可信**(可能是跨轮伪影),单独摆,不许并进上面。
+   *
+   * ⚠ 2026-08-06 之后的记录里 `NodeCheckpoint.round` 有值,于是**多轮跑也能进可信面** ——
+   * 判据从「是不是多轮」改成「**认不认得出轮次**」:两侧都有轮次时不同轮的对被直接排除,
+   * 那一跑就没有跨轮伪影可言了。这一格于是会随着老记录被清掉而自然缩小。
+   */
   ambiguous: { overlaps: number; pairs: number; findings: number; runs: number };
   /** 两面合计的重叠对数(只用来算"看不见的那部分",**不当基率分母**)。 */
   overlaps: number;
@@ -655,7 +661,7 @@ export interface LoopRoundSummary {
  *   把两个 run 的节点混进一个数组会凭空造出撞车。
  */
 export function reconstructWriteRace(
-  runs: readonly { runId: string; nodes: readonly NodeWindow[]; multiRound?: boolean }[],
+  runs: readonly { runId: string; nodes: readonly NodeWindow[]; multiRound?: boolean; roundsKnown?: boolean }[],
   stats: { dirs: number; checkpoints: number; checkpointsWithPaths: number },
 ): RetroWriteRace {
   const clean = { overlaps: 0, pairs: 0, findings: 0 };
@@ -665,9 +671,11 @@ export function reconstructWriteRace(
   for (const r of runs) {
     if (r.nodes.length < 2) continue;
     dirsUsable++;
-    // 多轮跑: checkpoint 不记轮次且按 nodeId 覆写 → 两份可能来自不同的轮, 配对即伪影。
-    const acc = r.multiRound ? ambiguous : clean;
-    if (r.multiRound) ambiguous.runs++;
+    // 判据是「**认不认得出轮次**」不是「是不是多轮」: 多轮 + 每个节点都有 round →
+    // 不同轮的对已在 overlapPairsFromWindows 里排掉, 那一跑就没有跨轮伪影可言。
+    const risky = r.multiRound === true && r.roundsKnown !== true;
+    const acc = risky ? ambiguous : clean;
+    if (risky) ambiguous.runs++;
     // **判据一个字都不重写**: 配对之后喂给实时那条用的同一个函数 (父子守卫也在那儿)。
     const probe = detectRuntimeWriteRace(overlapPairsFromWindows(r.nodes));
     acc.overlaps += probe.overlaps;
@@ -694,6 +702,20 @@ export function reconstructWriteRace(
     findings: clean.findings + ambiguous.findings,
     samples,
   };
+}
+
+/**
+ * 一份 checkpoint 文件 → 它是**第几轮**的(2026-08-06)。
+ *
+ * 两个来源, 缺一不可:
+ *   · 文件名 `<nodeId>.__r<K>.json` —— 覆写前归档的**旧轮**(这条**回溯也成立**, 老记录也有);
+ *   · 字段 `round` —— 2026-08-06 起写的**最新那一轮**(纯 `<nodeId>.json` 的文件名说不出轮次)。
+ * 两者都没有 = 认不出(顶层节点 / 老的最新份)→ 调用方据此判这一跑进不进可信面。
+ */
+function roundOf(file: string, field: number | undefined): number | undefined {
+  const m = /\.__r(\d+)\.json$/.exec(file);
+  if (m) return Number(m[1]);
+  return typeof field === 'number' ? field : undefined;
 }
 
 /** 纯函数(IO 在调用方)—— 见 {@link LoopRoundSummary}。 */
@@ -2526,7 +2548,7 @@ if (import.meta.main) {
   const retro = (() => {
     const base = join(String(flags.repo ?? process.cwd()), '.omd', 'continuity');
     const stats = { dirs: 0, checkpoints: 0, checkpointsWithPaths: 0 };
-    const runsIn: { runId: string; nodes: NodeWindow[]; multiRound: boolean }[] = [];
+    const runsIn: { runId: string; nodes: NodeWindow[]; multiRound: boolean; roundsKnown: boolean }[] = [];
     let dirNames: string[] = [];
     try {
       dirNames = readdirSync(base);
@@ -2558,19 +2580,21 @@ if (import.meta.main) {
       for (const f of files) {
         try {
           const j = JSON.parse(readFileSync(join(base, d, f), 'utf8')) as {
-            nodeId?: string; createdAt?: string; durationMs?: number; outputPaths?: string[];
+            nodeId?: string; createdAt?: string; durationMs?: number; outputPaths?: string[]; round?: number;
           };
           const end = Date.parse(j.createdAt ?? '');
           if (!Number.isFinite(end) || !j.nodeId) continue;
           const paths = Array.isArray(j.outputPaths) ? j.outputPaths : [];
           stats.checkpoints++;
           if (paths.length) stats.checkpointsWithPaths++;
-          nodes.push({ id: j.nodeId, startMs: end - (j.durationMs ?? 0), endMs: end, paths });
+          nodes.push({ id: j.nodeId, startMs: end - (j.durationMs ?? 0), endMs: end, paths, ...(roundOf(f, j.round) !== undefined ? { round: roundOf(f, j.round) } : {}) });
         } catch {
           // 坏 JSON 不该让整块读数崩 (同上面几处); 它不计进 checkpoints, 于是也不假装看过。
         }
       }
-      if (nodes.length) runsIn.push({ runId: d, nodes, multiRound });
+      // 子图节点 (`::`) 全都带 round → 跨轮的对已被排掉, 这一跑没有伪影可言 (见 RetroWriteRace.ambiguous)。
+      const roundsKnown = nodes.every((n) => !n.id.includes('::') || n.round !== undefined);
+      if (nodes.length) runsIn.push({ runId: d, nodes, multiRound, roundsKnown });
     }
     return reconstructWriteRace(runsIn, stats);
   })();
@@ -2590,11 +2614,13 @@ if (import.meta.main) {
         ? `     机会对 够了 (${suf.nodes} ≥ ${LOOP_NO_MOVE_MIN_N}) → **这一面的撞车基率可以当结论读了**`
         : `     机会对 **不足**, 还差 ${suf.short} (${suf.nodes}/${LOOP_NO_MOVE_MIN_N}) → 基率还不许当结论`,
     );
-    console.log(`   ▸ **多轮跑那一面 (数不可信)**: ${am.runs} 跑 · 重叠 ${am.overlaps} → 机会 ${am.pairs} → 撞车 ${am.findings}`);
-    console.log('     ⚠ **不许并进上面** —— `NodeCheckpoint` **不记轮次**, 而 checkpoint 按 nodeId **覆写**:');
-    console.log('       多轮跑里两份 checkpoint 可能来自**不同的轮**, 把它们的窗口配成一对就是**跨轮伪影**,');
-    console.log('       而"两个节点在不同轮里各跑一次"根本不是并发。单轮跑没有这个问题。');
-    console.log('     → 想让这一面也可信, 要给 checkpoint 加一位**轮次**(那是一行代码的事, 但得改引擎)。');
+    console.log(`   ▸ **认不出轮次的多轮跑 (数不可信)**: ${am.runs} 跑 · 重叠 ${am.overlaps} → 机会 ${am.pairs} → 撞车 ${am.findings}`);
+    console.log('     ⚠ **不许并进上面** —— checkpoint 按 nodeId **覆写**, 而这些记录**没记轮次**:');
+    console.log('       两份 checkpoint 可能来自**不同的轮**, 把窗口配成一对就是**跨轮伪影**,');
+    console.log('       而"两个节点在不同轮里各跑一次"根本不是并发。');
+    console.log('     → **2026-08-06 起 `NodeCheckpoint.round` 有值了**: 两侧都有轮次时不同轮的对被直接排除,');
+    console.log('       于是**多轮跑也进可信面**。判据是「认不认得出轮次」不是「是不是多轮」——');
+    console.log('       这一格会随着老记录被清掉自然缩小到 0。');
     for (const s of retro.samples) {
       console.log(`     · ${s.runId.slice(0, 8)} ${s.a} × ${s.b}: ${s.shared.join(', ')}` +
         `${s.multiRound ? '   ⚠ **落在多轮跑那一面 —— 无法排除是跨轮伪影**' : ''}`);

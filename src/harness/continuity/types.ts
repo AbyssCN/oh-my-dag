@@ -41,6 +41,24 @@ export interface NodeCheckpoint {
    * agent-leaf 从 tool-call 事件收集 Edit/Write file_path。
    * inproc/command leaf / 失败节点 → []。
    */
+  /**
+   * 这份 checkpoint 出自 conductor 内环的**第几轮**(2026-08-06, D-A)。
+   *
+   * ## 为什么它值得一位
+   *
+   * checkpoint 按 `(runId, nodeId)` **覆写**, 而多轮内环里同一个节点会跑好几次 ——
+   * 于是盘上留下的那一份**说不出它是第几轮的**。后果不是审计洁癖:
+   * 读数板 ⑧.7 拿 `createdAt - durationMs` 重建执行窗口来数并发写竞争, 而在多轮跑里
+   * 两份 checkpoint 可能来自**不同的轮**, 把它们的窗口配成一对就是**跨轮伪影** ——
+   * 「两个节点在不同轮里各跑一次」根本不是并发。
+   *
+   * 2026-08-06 实测代价: 历史上唯一那条"撞车"**整条落在多轮跑那一面** (单轮面 0/21,
+   * 多轮面 1/9) —— 也就是说"并发写竞争确实发生"这个结论当时**排除不掉伪影**。
+   *
+   * ⚠ **缺席 ≠ 第 1 轮**: 缺席 = 这个节点不在 conductor 子图里(顶层节点没有"轮"这回事),
+   *   或早于本次改动的记录。读数板分开念。
+   */
+  round?: number;
   outputPaths: string[];
   /** 每个 outputPath → sha256 前 16 hex 字符。轻量产物完整性检验。 */
   artifactHashes: Record<string, string>;
