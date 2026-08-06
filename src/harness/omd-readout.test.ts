@@ -982,7 +982,12 @@ describe('omd-readout · ⓪ 导航分桶 (2026-08-06)', () => {
     const c = base();
     c.criteria_axis = { ...c.criteria_axis, wastedRounds: 4, recorded: 13 };
     const { ready } = summarizeFaces(c);
-    expect(ready.some((l) => l.includes('判据轴') && l.includes('4/13') && l.includes('judge 太紧'))).toBe(true);
+    expect(ready.some((l) => l.includes('判据轴') && l.includes('4/13') && l.includes('judge 比确定性判据严'))).toBe(true);
+    // ⚠ **不许再说"白转了几轮"**(2026-08-06 核代码改的): `acceptance.command` 作为
+    //   `freezeCriterion` 传进内环, 而内环**判据绿就直接收敛、judge 的票只记录** ——
+    //   那几次**一轮都没白转**。它量的是 judge 的**校准**, 而它的价值在反面:
+    //   要是只有 judge 没有判据, 这几次就会一直转到轮数耗尽。
+    expect(summarizeFaces(c).ready.join('')).not.toContain('白转');
   });
 
   test('★ 判据轴两格都为 0 → **不进任何桶** (它不是"在等", 是查过没有)', () => {
