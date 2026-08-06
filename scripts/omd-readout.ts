@@ -594,16 +594,26 @@ export interface RetroWriteRace {
   checkpoints: number;
   /** 其中报了 `outputPaths` 的份数(没报的那些进不了机会分母)。 */
   checkpointsWithPaths: number;
-  /** 重叠对数(**已滤掉父子对**,同 ⑧.6)。 */
+  /**
+   * **单轮跑**那一面 —— 这一面**没有跨轮歧义,数是可信的**。
+   *
+   * ⚠ 为什么必须与多轮跑分开(2026-08-06,核第一条 finding 时撞到的):
+   * `NodeCheckpoint` **不记轮次**,而 checkpoint 按 nodeId **覆写**。于是在多轮跑里,
+   * 两份 checkpoint 可能来自**不同的轮**,把它们的窗口配成一对就是**跨轮伪影** ——
+   * 而"两个节点在不同轮里各跑一次"根本不是并发。
+   * 单轮跑没有这个问题:所有 checkpoint 都来自同一轮。
+   */
+  clean: { overlaps: number; pairs: number; findings: number; rate: number | null };
+  /** **多轮跑**那一面 —— 数**不可信**(可能是跨轮伪影),单独摆,不许并进上面。 */
+  ambiguous: { overlaps: number; pairs: number; findings: number; runs: number };
+  /** 两面合计的重叠对数(只用来算"看不见的那部分",**不当基率分母**)。 */
   overlaps: number;
-  /** 两侧都报了写的对数 = 机会分母。 */
+  /** 两面合计的机会对数。 */
   pairs: number;
-  /** 其中路径真相交的对数。 */
+  /** 两面合计的撞车对数。 */
   findings: number;
-  /** `findings / pairs`;分母 0 → null。 */
-  rate: number | null;
-  /** 前 3 条撞车的原料(人工核对用)。 */
-  samples: { runId: string; a: string; b: string; shared: string[] }[];
+  /** 前 3 条撞车的原料(人工核对用;`multiRound` 标出它落在哪一面)。 */
+  samples: { runId: string; a: string; b: string; shared: string[]; multiRound: boolean }[];
 }
 
 /**
@@ -645,29 +655,31 @@ export interface LoopRoundSummary {
  *   把两个 run 的节点混进一个数组会凭空造出撞车。
  */
 export function reconstructWriteRace(
-  runs: readonly { runId: string; nodes: readonly NodeWindow[] }[],
+  runs: readonly { runId: string; nodes: readonly NodeWindow[]; multiRound?: boolean }[],
   stats: { dirs: number; checkpoints: number; checkpointsWithPaths: number },
 ): RetroWriteRace {
-  let overlaps = 0;
-  let pairs = 0;
-  let findings = 0;
+  const clean = { overlaps: 0, pairs: 0, findings: 0 };
+  const ambiguous = { overlaps: 0, pairs: 0, findings: 0, runs: 0 };
   let dirsUsable = 0;
   const samples: RetroWriteRace['samples'] = [];
   for (const r of runs) {
     if (r.nodes.length < 2) continue;
     dirsUsable++;
+    // 多轮跑: checkpoint 不记轮次且按 nodeId 覆写 → 两份可能来自不同的轮, 配对即伪影。
+    const acc = r.multiRound ? ambiguous : clean;
+    if (r.multiRound) ambiguous.runs++;
     // **判据一个字都不重写**: 配对之后喂给实时那条用的同一个函数 (父子守卫也在那儿)。
     const probe = detectRuntimeWriteRace(overlapPairsFromWindows(r.nodes));
-    overlaps += probe.overlaps;
-    pairs += probe.pairs;
-    findings += probe.findings;
+    acc.overlaps += probe.overlaps;
+    acc.pairs += probe.pairs;
+    acc.findings += probe.findings;
     if (probe.findings > 0 && samples.length < 3) {
       // 从观察条目里取回是哪两个节点 —— 判词由那边生成, 这里只拆节点名与共享路径。
       const o = probe.observations[0]!;
       const byId = new Map(r.nodes.map((n) => [n.id, new Set(n.paths)]));
       const [a, b] = o.nodes as [string, string];
       const shared = [...(byId.get(a) ?? [])].filter((p) => byId.get(b)?.has(p)).sort();
-      samples.push({ runId: r.runId, a, b, shared: shared.slice(0, 3) });
+      samples.push({ runId: r.runId, a, b, shared: shared.slice(0, 3), multiRound: r.multiRound === true });
     }
   }
   return {
@@ -675,10 +687,11 @@ export function reconstructWriteRace(
     dirsUsable,
     checkpoints: stats.checkpoints,
     checkpointsWithPaths: stats.checkpointsWithPaths,
-    overlaps,
-    pairs,
-    findings,
-    rate: pairs > 0 ? findings / pairs : null,
+    clean: { ...clean, rate: clean.pairs > 0 ? clean.findings / clean.pairs : null },
+    ambiguous,
+    overlaps: clean.overlaps + ambiguous.overlaps,
+    pairs: clean.pairs + ambiguous.pairs,
+    findings: clean.findings + ambiguous.findings,
     samples,
   };
 }
@@ -2513,7 +2526,7 @@ if (import.meta.main) {
   const retro = (() => {
     const base = join(String(flags.repo ?? process.cwd()), '.omd', 'continuity');
     const stats = { dirs: 0, checkpoints: 0, checkpointsWithPaths: 0 };
-    const runsIn: { runId: string; nodes: NodeWindow[] }[] = [];
+    const runsIn: { runId: string; nodes: NodeWindow[]; multiRound: boolean }[] = [];
     let dirNames: string[] = [];
     try {
       dirNames = readdirSync(base);
@@ -2521,13 +2534,26 @@ if (import.meta.main) {
       return null; // 没有 continuity 目录 = 这一面不适用 (不是 0)
     }
     for (const d of dirNames) {
-      let files: string[];
+      let all: string[];
       try {
-        files = readdirSync(join(base, d)).filter((f) => f.endsWith('.json') && !f.startsWith('_'));
+        all = readdirSync(join(base, d));
       } catch {
         continue; // 不是目录 / 读不了 —— 跳过, 不计进 dirs
       }
+      const files = all.filter((f) => f.endsWith('.json') && !f.startsWith('_'));
       stats.dirs++;
+      // 这一跑转过第二圈没有 —— 决定它落"可信"还是"不可信"那一面 (见 RetroWriteRace.clean)。
+      let multiRound = false;
+      for (const f of all.filter((x) => x.startsWith('_loop-'))) {
+        try {
+          const j = JSON.parse(readFileSync(join(base, d, f), 'utf8')) as { completedRounds?: number };
+          if ((j.completedRounds ?? 1) >= 2) multiRound = true;
+        } catch {
+          // 读不出轮数 → 保守当**多轮**处理 (宁可把它摆进"不可信"那一面, 也不许混进可信面)
+          multiRound = true;
+        }
+      }
+
       const nodes: NodeWindow[] = [];
       for (const f of files) {
         try {
@@ -2544,7 +2570,7 @@ if (import.meta.main) {
           // 坏 JSON 不该让整块读数崩 (同上面几处); 它不计进 checkpoints, 于是也不假装看过。
         }
       }
-      if (nodes.length) runsIn.push({ runId: d, nodes });
+      if (nodes.length) runsIn.push({ runId: d, nodes, multiRound });
     }
     return reconstructWriteRace(runsIn, stats);
   })();
@@ -2554,17 +2580,25 @@ if (import.meta.main) {
   } else {
     console.log(`   扫了 ${retro.dirs} 个 continuity 目录 · ${retro.checkpoints} 份节点 checkpoint`);
     console.log(`     其中报了 outputPaths 的 ${retro.checkpointsWithPaths} 份;有 ≥2 个节点的目录 ${retro.dirsUsable} 个`);
-    console.log(`   重叠对 ${retro.overlaps} (**已滤掉父子对**) → 机会对 ${retro.pairs} (两侧都报了写)`);
-    console.log(`     → **真撞车 ${retro.findings} 对**  [${retro.rate === null ? '算不出 (分母 0)' : `${(retro.rate * 100).toFixed(1)}%`}]`);
-    for (const s of retro.samples) {
-      console.log(`     · ${s.runId.slice(0, 8)} ${s.a} × ${s.b}: ${s.shared.join(', ')}`);
-    }
-    const suf = faceSufficiency(retro.pairs, LOOP_NO_MOVE_MIN_N);
+    const c = retro.clean;
+    const am = retro.ambiguous;
+    console.log(`   ▸ **单轮跑那一面 (数可信)**: 重叠 ${c.overlaps} → 机会 ${c.pairs} → **真撞车 ${c.findings}**` +
+      `  [${c.rate === null ? '算不出 (分母 0)' : `${(c.rate * 100).toFixed(1)}%`}]`);
+    const suf = faceSufficiency(c.pairs, LOOP_NO_MOVE_MIN_N);
     console.log(
       suf.enough
         ? `     机会对 够了 (${suf.nodes} ≥ ${LOOP_NO_MOVE_MIN_N}) → **这一面的撞车基率可以当结论读了**`
         : `     机会对 **不足**, 还差 ${suf.short} (${suf.nodes}/${LOOP_NO_MOVE_MIN_N}) → 基率还不许当结论`,
     );
+    console.log(`   ▸ **多轮跑那一面 (数不可信)**: ${am.runs} 跑 · 重叠 ${am.overlaps} → 机会 ${am.pairs} → 撞车 ${am.findings}`);
+    console.log('     ⚠ **不许并进上面** —— `NodeCheckpoint` **不记轮次**, 而 checkpoint 按 nodeId **覆写**:');
+    console.log('       多轮跑里两份 checkpoint 可能来自**不同的轮**, 把它们的窗口配成一对就是**跨轮伪影**,');
+    console.log('       而"两个节点在不同轮里各跑一次"根本不是并发。单轮跑没有这个问题。');
+    console.log('     → 想让这一面也可信, 要给 checkpoint 加一位**轮次**(那是一行代码的事, 但得改引擎)。');
+    for (const s of retro.samples) {
+      console.log(`     · ${s.runId.slice(0, 8)} ${s.a} × ${s.b}: ${s.shared.join(', ')}` +
+        `${s.multiRound ? '   ⚠ **落在多轮跑那一面 —— 无法排除是跨轮伪影**' : ''}`);
+    }
   }
   console.log('   ⚠ **它与 ⑧.6 那两档不是同一个仪器, 数不许相加**:');
   console.log('     · 窗口来源不同 —— 这里是 `结束 - 时长` (整个节点的执行时长), ⑧.6 是调度器实时记的;');
@@ -2572,8 +2606,10 @@ if (import.meta.main) {
   console.log('     · 覆盖不同 —— 只覆盖开了 continuity 的跑, 目录被清掉就没了 (与留痕库寿命不一样长)。');
   console.log('   ⚠ 判据**一个字都没重写**: 窗口配对后喂给 `detectRuntimeWriteRace` 那同一个函数');
   console.log('     (父子守卫 / 机会分母 / 撞车判定全在那儿) —— 两处各算一份必漂。');
-  console.log('   判据: 真撞车 > 0 → **并发写竞争在生产上确实发生**, 不是理论风险;');
-  console.log('         逐条读它撞的是"共享目录型文件"(图的形状问题) 还是"产物恰好同名"(命名问题)。');
+  console.log('   判据 (按**单轮跑**那一面读 —— 多轮跑那一面在能分辨轮次之前不作数):');
+  console.log('     · 单轮面撞车 > 0 → **并发写竞争在生产上确实发生**, 不是理论风险;');
+  console.log(`     · 单轮面机会 ≥ ${LOOP_NO_MOVE_MIN_N} 且撞车 0 → 并发写在真跑上不发生, 这条可以收尾;`);
+  console.log('     · 撞车逐条读: 撞的是"共享目录型文件"(图的形状问题) 还是"产物恰好同名"(命名问题)。');
 
   console.log(`\n⑧.5 「声称 vs 引擎记录」检出器 (report-only —— 拨不拨闸就看这段)`);
   if (cc.recordedRuns === 0) {

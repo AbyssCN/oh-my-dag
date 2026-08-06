@@ -29,16 +29,29 @@ import { reconstructWriteRace } from '../omd-readout';
 
 const base = join(process.env.OMD_REPO ?? process.cwd(), '.omd', 'continuity');
 const stats = { dirs: 0, checkpoints: 0, checkpointsWithPaths: 0 };
-const runs: { runId: string; nodes: NodeWindow[] }[] = [];
+const runs: { runId: string; nodes: NodeWindow[]; multiRound: boolean }[] = [];
 
 for (const d of readdirSync(base)) {
-  let files: string[];
+  let all: string[];
   try {
-    files = readdirSync(join(base, d)).filter((f) => f.endsWith('.json') && !f.startsWith('_'));
+    all = readdirSync(join(base, d));
   } catch {
     continue; // 不是目录 / 读不了 —— 跳过, 不计进 dirs
   }
+  const files = all.filter((f) => f.endsWith('.json') && !f.startsWith('_'));
   stats.dirs++;
+  // 这一跑转过第二圈没有 —— 决定它落"可信"还是"不可信"那一面 (见 RetroWriteRace.clean)。
+  let multiRound = false;
+  for (const f of all.filter((x) => x.startsWith('_loop-'))) {
+    try {
+      const j = JSON.parse(readFileSync(join(base, d, f), 'utf8')) as { completedRounds?: number };
+      if ((j.completedRounds ?? 1) >= 2) multiRound = true;
+    } catch {
+      // 读不出轮数 → 保守当**多轮**处理 (宁可把它摆进"不可信"那一面, 也不许混进可信面)
+      multiRound = true;
+    }
+  }
+
   const nodes: NodeWindow[] = [];
   for (const f of files) {
     try {
@@ -55,13 +68,16 @@ for (const d of readdirSync(base)) {
       // 坏 JSON 不该让整块读数崩; 它不计进 checkpoints, 于是也不假装看过。
     }
   }
-  if (nodes.length) runs.push({ runId: d, nodes });
+  if (nodes.length) runs.push({ runId: d, nodes, multiRound });
 }
 
 const r = reconstructWriteRace(runs, stats);
 console.log(`continuity 目录 ${r.dirs} 个, 其中 ≥2 个节点 checkpoint 的 ${r.dirsUsable} 个`);
 console.log(`节点 checkpoint ${r.checkpoints} 份, 其中报了 outputPaths 的 ${r.checkpointsWithPaths} 份`);
-console.log(`\n重叠对  ${r.overlaps}   ← **已滤掉父子对** (守卫在 detectRuntimeWriteRace 里)`);
-console.log(`机会对  ${r.pairs}   ← 两侧都报了 outputPaths`);
-console.log(`真撞车  ${r.findings}${r.rate === null ? '' : `   [${(r.rate * 100).toFixed(1)}%]`}`);
-for (const s of r.samples) console.log(`   · ${s.runId.slice(0, 8)} ${s.a} × ${s.b}: ${s.shared.join(', ')}`);
+console.log(`\n单轮跑 (数可信)  重叠 ${r.clean.overlaps} · 机会 ${r.clean.pairs} · 撞车 ${r.clean.findings}` +
+  `${r.clean.rate === null ? '' : `   [${(r.clean.rate * 100).toFixed(1)}%]`}`);
+console.log(`多轮跑 (不可信)  ${r.ambiguous.runs} 跑 · 重叠 ${r.ambiguous.overlaps} · 机会 ${r.ambiguous.pairs} · 撞车 ${r.ambiguous.findings}`);
+console.log('   ⚠ checkpoint **不记轮次**且按 nodeId 覆写 → 多轮跑里两份可能来自不同的轮, 配对即伪影。');
+for (const s of r.samples) {
+  console.log(`   · ${s.runId.slice(0, 8)} ${s.a} × ${s.b}: ${s.shared.join(', ')}${s.multiRound ? '  ⚠ 多轮跑, 无法排除伪影' : ''}`);
+}
