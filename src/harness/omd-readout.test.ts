@@ -796,6 +796,45 @@ describe('omd-readout · ⑧.6 运行时写竞争的分母 (2026-08-06)', () => 
 });
 
 /**
+ * **老库(缺后加的列)不许把读数板打崩**(2026-08-06 收尾自查时撞到的)。
+ *
+ * `readout()` 的注释一直写着「老库可能缺后加的列 → 查一次 pragma 再拼」,而它
+ * **只对一部分列这么做了**:`run_id` 同样是后加的列,却躺在**必选**那一半。
+ * 于是一个 `createDagRecorder` 认得、打开就会自动迁移的老库,在**只读**的读数板上直接崩
+ * (`dag-record.test.ts` 里就有一个正是这种 schema 的夹具)。
+ *
+ * **读侧不迁移,所以读侧必须容忍。** 只有建表那一刻就有的列
+ * (`id`/`created_at`/`levels`/`nodes`/`usage`)才留在必选那一半。
+ */
+describe('omd-readout · 老库兼容 (只读侧不迁移, 所以必须容忍)', () => {
+  test('★ 建表期那套最小 schema(无 run_id / 无任何后加列)→ **跑得出来, 不崩**', () => {
+    const db = new Database(':memory:');
+    db.run(`
+      CREATE TABLE omd_dag_runs (
+        id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, plan_name TEXT NOT NULL,
+        node_count INTEGER NOT NULL, question TEXT, levels TEXT NOT NULL,
+        nodes TEXT NOT NULL, usage TEXT NOT NULL
+      )
+    `);
+    db.run(
+      `INSERT INTO omd_dag_runs VALUES ('old-1', 1, '老图', 1, NULL, '[["n1"]]', ?, ?)`,
+      [
+        JSON.stringify([{ id: 'n1', kind: 'command', status: 'done', deps: [] }]),
+        '{"conductorIn":0,"conductorOut":0,"leavesIn":0,"leavesOut":0,"leavesCacheHit":0}',
+      ],
+    );
+    const r = readout({ db, limit: 50 });
+    expect(r.runs.length).toBe(1);
+    // 后加的那些位全部**如实为「没记」**, 而不是编一个 0 出来
+    expect(r.rollback.recordedRuns).toBe(0);
+    expect(r.rollback.unrecordedRuns).toBe(1);
+    expect(r.write_race.recordedRuns).toBe(0);
+    expect(r.artifact_move.recordedRuns).toBe(0);
+    expect(r.runs[0]!.entry).toBe('未记');
+  });
+});
+
+/**
  * ⑧.7 回溯重建的写竞争(2026-08-06)。
  *
  * 这一面的**全部价值**是「历史里已经有答案,不用等新跑」。所以这组用例的重心是两条:
