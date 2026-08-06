@@ -226,7 +226,20 @@ export interface ReadoutResult {
      */
     two_grid_risk: { risk_level: CommandRiskTier; executed: number; not_executed: number }[];
   };
-  /** 判据轴 {judge, oracle} 四格, 按 runId 去重数 (不按行数); 缺席单列 unrecorded (不编 false/false)。 */
+  /**
+   * **全量口径**的判据轴(2026-08-06 补)—— 与下面 `criteria_consistency` **同形但口径不同**。
+   *
+   * ⚠ 两个都留着, 是因为它们答的**不是同一个问题**:
+   *   · `criteria_consistency` 走**展示窗口**(最早 `limit` 个 run)—— ⑫ 那一段整体是窗口口径,
+   *     它得跟着那一段走, 否则同一段里混两种口径;
+   *   · `criteria_axis` 走**全量** —— 「judge 太紧过几次」是"有没有发生过、发生过几次",
+   *     那不是一个窗口问题。⑩ 段与 ⓪ 导航都读这一个。
+   *
+   * ⚠ 2026-08-06 实测两者相差 **2/7 vs 4/13** —— 不标口径就是同一页两个数(⑨/⑫ 那个形状的
+   *   第三次)。而 ⑩ 那张表此前**根本不在契约里**(算在渲染层, 没人闸得着), 那同时是个 S-21。
+   */
+  criteria_axis: { agree: number; oracleFailed: number; wastedRounds: number; agreeFail: number; recorded: number; unrecorded: number };
+  /** 判据轴 {judge, oracle} 四格, **展示窗口内**, 按 runId 去重数; 缺席单列 unrecorded (不编 false/false)。 */
   criteria_consistency: {
     agree: number;
     oracleFailed: number;
@@ -650,6 +663,20 @@ export function summarizeFaces(c: ReadoutResult): { ready: string[]; waiting: st
   if (bk.opportunities > 0) {
     ready.push(`⑥      真机会 ${bk.opportunities} 组 · 现行键抓得到 ${bk.exactRepeat} · 漏掉 ${bk.nearMiss} → **方向已定** (n 小, 别当基率读)`);
   }
+  // 判据轴: **非零检出本身就是证据, 不用等大 N** (2026-08-06 补 —— 建 ⓪ 时漏了这一格)。
+  //
+  // ⚠ 这一格与门槛型的那几个**读法相反**, 而这正是当初漏掉它的原因:
+  //   `LOOP_NO_MOVE_MIN_N = 60` 那个门槛管的是**把 0 读成基率**要多少样本 (rule of three);
+  //   而「judge 太紧 4 次」是**非零检出** —— 它已经发生了 4 次, 不需要再攒到 60 才算数。
+  //   把两种混着用, 一条真实存在的浪费就会被"样本不足"挡在导航之外, 埋在 430 行板子的中段。
+  const cc2 = c.criteria_axis; // **全量口径** —— 见该字段的注(窗口那个答的是另一个问题)
+  if (cc2.wastedRounds > 0 || cc2.oracleFailed > 0) {
+    const n = cc2.recorded;
+    const bits: string[] = [];
+    if (cc2.wastedRounds > 0) bits.push(`**judge 太紧** ${cc2.wastedRounds}/${n} (判据过了而 judge 说没成 → 白转了几轮)`);
+    if (cc2.oracleFailed > 0) bits.push(`**judge 太松** ${cc2.oracleFailed}/${n} (judge 说成了而判据没过)`);
+    ready.push(`判据轴  ${bits.join(' · ')} → **非零检出, 不用等大 N**`);
+  }
   // ⑬: 有数就报 —— 「有没有退路」不需要攒到 60 才有意义, 它每一跑都是一次真判断
   if (c.rollback.recordedRuns > 0) {
     const clean = c.rollback.byKind.clean;
@@ -861,6 +888,7 @@ function emptyWorld(meta: ReadoutResult['meta']): ReadoutResult {
     spend_discipline: computeSpendDiscipline([]),
     cost_per_success: [],
     criteria_grid: { four_grid: { executed_success: 0, executed_failure: 0, reused_success: 0, 未记: 0 }, two_grid_risk: zeroTwoGridRisk() },
+    criteria_axis: { agree: 0, oracleFailed: 0, wastedRounds: 0, agreeFail: 0, recorded: 0, unrecorded: 0 },
     criteria_consistency: { agree: 0, oracleFailed: 0, wastedRounds: 0, agreeFail: 0, unrecorded: 0, recorded: 0 },
     g4_sampling: { denominator: 0, passedBoth: 0, vacuityOnly: 0, demoted: 0, skipped: 0, exploratory: 0 },
     suggestion_acceptance: null,
@@ -1255,6 +1283,21 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
   }
   criteria_consistency.unrecorded = shown.length - criteria_consistency.recorded;
 
+  // 全量口径 (⑩ 与 ⓪ 用): 按 runId 去重, 不截窗口 —— 「judge 太紧过几次」不是窗口问题。
+  const criteria_axis: ReadoutResult['criteria_axis'] = { agree: 0, oracleFailed: 0, wastedRounds: 0, agreeFail: 0, recorded: 0, unrecorded: 0 };
+  {
+    const seen = new Map<string, { judge: boolean; oracle: boolean }>();
+    for (const p of parsed) if (p.criteria && p.runId) seen.set(p.runId, p.criteria);
+    for (const c of seen.values()) {
+      criteria_axis.recorded++;
+      if (c.judge && c.oracle) criteria_axis.agree++;
+      else if (c.judge && !c.oracle) criteria_axis.oracleFailed++;
+      else if (!c.judge && c.oracle) criteria_axis.wastedRounds++;
+      else criteria_axis.agreeFail++;
+    }
+    criteria_axis.unrecorded = new Set(parsed.map((p) => p.runId).filter((x): x is string => !!x)).size - criteria_axis.recorded;
+  }
+
   // ── G4 采样 (冻结契约 §5): 分母 = entry 为 solve (旧 dag_goal 已归一) 且 acceptance_probe 非 NULL 的 run ──
   // NULL (老行 / 非 dag_goal / 解析失败) 一律不进分母 —— 没记 ≠ 失败, 不编 'unknown'。
   //
@@ -1603,6 +1646,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
     spend_discipline,
     cost_per_success,
     criteria_grid: { four_grid, two_grid_risk },
+    criteria_axis,
     criteria_consistency,
     g4_sampling,
     suggestion_acceptance: sa,
