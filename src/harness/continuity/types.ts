@@ -263,6 +263,23 @@ export interface FixpointJournal {
  */
 import type { RunOutcomeKind } from '../run-outcome';
 
+/**
+ * 内环**一轮**里两道闸各自的裁决(2026-08-06)。三态与两态刻意都不压平:
+ *
+ * · `criterion: 'none'` = 这一跑**没配**冻结判据 —— 不是"判据没过";
+ * · `judge: 'unreachable'` = judge 调不通 —— 不是"judge 说没成"。
+ *
+ * 两处若各自并进"没过"那一侧,`判据红 ∧ judge 说收敛` 这个要观测的组合就会被噪声灌满。
+ */
+export interface RoundVerdict {
+  /** 第几轮(与 `NodeCheckpoint.round` 同一套编号)。 */
+  round: number;
+  /** 冻结判据这一道:绿 / 红 / 没配。 */
+  criterion: 'green' | 'red' | 'none';
+  /** judge 这一道:说收敛 / 说没成 / 调不通。 */
+  judge: 'converged' | 'rejected' | 'unreachable';
+}
+
 export interface NodeLoopJournal {
   runId: string;
   /** 拥有这个环的节点 id (conductor 节点)。 */
@@ -284,6 +301,25 @@ export interface NodeLoopJournal {
   noveltyTexts?: string[];
   /** r1 片3: 累计簇数序列 (每轮一个) — hasCollapsed 的输入; 从不触发或总触发都读得出来。 */
   noveltySeq?: number[];
+  /**
+   * **每一轮两道闸各说了什么** (2026-08-06)。
+   *
+   * ## 它解锁的是一个**早就写好、却一直判不了**的决定
+   *
+   * D-I「以判据为准」今天只在**绿**的方向兑现: 判据绿 → 直接收敛, judge 的票只记录。
+   * 红的方向没有对称守卫 —— 判据红时 `if (verdict.converged)` 仍能让 judge 宣布收敛。
+   * 上一程查过要不要补, 判据先钉死在「出现过 `判据红 ∧ judge 说收敛` 才补」,
+   * 免得给一个够不着的分支加兜底 (本仓 `loop-engineering-audit` ❌-9)。
+   *
+   * **而那个条件到今天都判不了 —— 因为逐轮的两个布尔谁都没记。**
+   * journal 里的 `converged` 是**节点级最终结论**, 答不了"第 2 轮判据红时 judge 说了什么"。
+   * 这一位就是补那个缺口: 记下来之后, 那条预先声明的判据变成一次 grep。
+   *
+   * ⚠ **只记不判**: 环的行为一个字没改。攒到条件成立再补守卫, 不成立就把这条从待办里划掉。
+   * ⚠ 缺席 = 老记录 / 这个环没走到判决点。`criterion: 'none'` = **没配冻结判据**
+   *   (与"配了但红了"是两件事, 别合并 —— 前者是这条通道不适用, 后者才是判据红)。
+   */
+  verdicts?: RoundVerdict[];
   /** 已判收敛 (resume 时无事可做, 直接返上次结论)。 */
   converged?: boolean;
   /** 上一轮的产出摘要 (收敛后 resume 要拿它当本节点的 output)。 */
