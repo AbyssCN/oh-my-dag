@@ -835,6 +835,60 @@ describe('omd-readout · 老库兼容 (只读侧不迁移, 所以必须容忍)',
 });
 
 /**
+ * **「记了但读不出」≠「没记」** —— 坏 JSON 与 NULL 列必须落两个不同的格(2026-08-06 补网)。
+ *
+ * 这是本仓最在意的那条区分(CLAUDE.md 第 1 条:`NULL` ≠ 0 ≠ 不适用),而读数板那几个
+ * `catch` 里的行为**此前没有任何一条闸钉着**。查过之后行为是**对的** —— 但对而没网,
+ * 下次有人"顺手"把 catch 里改成 `unrecorded++` 就静默塌了,而那正好把
+ * **缺陷(记坏了)伪装成历史(还没记)**:前者要去查谁写坏的,后者只要等。
+ */
+describe('omd-readout · 坏 JSON 算「记了但读不出」, 不算「没记」', () => {
+  const world = (claim: string | null, am: string | null, wr: string | null, rb: string | null) => {
+    const db = new Database(':memory:');
+    db.run(`CREATE TABLE omd_dag_runs (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, plan_name TEXT NOT NULL,
+      node_count INTEGER NOT NULL, question TEXT, run_id TEXT, entry TEXT, levels TEXT NOT NULL, nodes TEXT NOT NULL,
+      usage TEXT NOT NULL, observations TEXT, outcome TEXT, claim_check TEXT, artifact_move TEXT, write_race TEXT, rollback TEXT)`);
+    db.run(
+      `INSERT INTO omd_dag_runs VALUES ('r1',1,'p',1,NULL,'run-1','dag_run','[["n1"]]',?,?,NULL,'success',?,?,?,?)`,
+      [
+        JSON.stringify([{ id: 'n1', kind: 'command', status: 'done', deps: [] }]),
+        '{"conductorIn":0,"conductorOut":0,"leavesIn":0,"leavesOut":0,"leavesCacheHit":0}',
+        claim, am, wr, rb,
+      ],
+    );
+    return readout({ db, limit: 50 });
+  };
+
+  test('★ 坏 JSON → **recorded** 那一格(它记了,只是读不出)', () => {
+    const r = world('{坏', '{坏', '{坏', '{坏');
+    expect(r.artifact_move.recordedRuns).toBe(1);
+    expect(r.artifact_move.unrecordedRuns).toBe(0);
+    expect(r.write_race.recordedRuns).toBe(1);
+    expect(r.rollback.recordedRuns).toBe(1);
+    // rollback 还要落进 unknown —— **不许落 clean**(那会让 owner 以为有退路)
+    expect(r.rollback.byKind.unknown).toBe(1);
+    expect(r.rollback.byKind.clean).toBe(0);
+  });
+
+  test('★ 列为 NULL → **unrecorded** 那一格(这一跑压根没记)', () => {
+    const r = world(null, null, null, null);
+    expect(r.artifact_move.unrecordedRuns).toBe(1);
+    expect(r.artifact_move.recordedRuns).toBe(0);
+    expect(r.write_race.unrecordedRuns).toBe(1);
+    expect(r.rollback.unrecordedRuns).toBe(1);
+    // 这一行是两条用例合起来的意义: 「没记」不许被算成 unknown ——
+    // 前者只要等, 后者要去查谁写坏的, 下一步不一样。
+    expect(r.rollback.byKind.unknown).toBe(0);
+  });
+
+  test('坏 JSON 不许把整块读数打崩 (fail-open, 其余段照常出数)', () => {
+    const r = world('{坏', '{坏', '{坏', '{坏');
+    expect(r.runs.length).toBe(1);
+    expect(r.outcome_distribution.success).toBe(1);
+  });
+});
+
+/**
  * ⑧.7 回溯重建的写竞争(2026-08-06)。
  *
  * 这一面的**全部价值**是「历史里已经有答案,不用等新跑」。所以这组用例的重心是两条:
