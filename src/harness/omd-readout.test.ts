@@ -30,7 +30,7 @@ import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { createDagRecorder } from './dag-record';
 import type { ExecutorDagResult } from './executor-dag-types';
-import { CLAIM_CHECK_MIN_NODES, LOOP_NO_MOVE_MIN_N, faceSufficiency, readout, reconstructWriteRace, summarizeLoopRounds, type ReadoutResult } from '../../scripts/omd-readout';
+import { CLAIM_CHECK_MIN_NODES, LOOP_NO_MOVE_MIN_N, faceSufficiency, readout, reconstructWriteRace, summarizeFaces, summarizeLoopRounds, type ReadoutResult } from '../../scripts/omd-readout';
 import type { NodeWindow } from './plan/observers';
 
 interface FakeNode {
@@ -885,6 +885,54 @@ describe('omd-readout · 坏 JSON 算「记了但读不出」, 不算「没记�
     const r = world('{坏', '{坏', '{坏', '{坏');
     expect(r.runs.length).toBe(1);
     expect(r.outcome_distribution.success).toBe(1);
+  });
+});
+
+/**
+ * ⓪ **今天哪几格能下结论** —— 导航的分桶(2026-08-06)。
+ *
+ * 这块板 400+ 行,一大半是"在等数据"的段。加导航的理由与本仓治的那些静默失效同源:
+ * **一份没人读得完的读数板等于没有**。
+ *
+ * 这组用例钉的是**分桶不许串**:「有答案」与「在等」下一步完全不同(据此决策 vs 继续攒),
+ * 而把一格放错桶,读的人要么白等、要么拿一个还不能读的数去做决定。
+ */
+describe('omd-readout · ⓪ 导航分桶 (2026-08-06)', () => {
+  /** 空世界当底,逐格改成想要的形状 —— 只测分桶,不测各段自己的算法。 */
+  const base = (): ReadoutResult => readout({ db: new Database(':memory:'), limit: 50 });
+
+  test('★ 空世界 → 一格都不"能下结论", 而那本身是读数(不是错误)', () => {
+    const { ready } = summarizeFaces(base());
+    expect(ready).toHaveLength(0);
+  });
+
+  test('★ ⑬ 有数就进「能下结论」—— 「有没有退路」不需要攒到 60', () => {
+    // 与门槛型的那几格刻意不同: 每一跑的 rollback 都是一次**完整的**判断, 不是一次采样。
+    const c = base();
+    c.rollback = { ...c.rollback, recordedRuns: 3, byKind: { ...c.rollback.byKind, clean: 0, 'dirty-tracked': 3 } };
+    const { ready, waiting } = summarizeFaces(c);
+    expect(ready.some((l) => l.includes('⑬'))).toBe(true);
+    expect(ready.some((l) => l.includes('一次都没有'))).toBe(true); // clean=0 要点破
+    expect(waiting.some((l) => l.includes('⑬'))).toBe(false); // 不许同时出现在两个桶
+  });
+
+  test('★ ⑬ 一跑没记 → 进「在等」, 且提示**重连 MCP**(那是最常见的真因)', () => {
+    const { ready, waiting } = summarizeFaces(base());
+    expect(waiting.some((l) => l.includes('⑬') && l.includes('重连 MCP'))).toBe(true);
+    expect(ready.some((l) => l.includes('⑬'))).toBe(false);
+  });
+
+  test('★ 门槛型的几格: 不够 → 「在等」, 够了 → **不再出现在等待列表**', () => {
+    const c = base();
+    c.write_race = { ...c.write_race, pairs: LOOP_NO_MOVE_MIN_N, sufficiency: { ...c.write_race.sufficiency, pairs: faceSufficiency(LOOP_NO_MOVE_MIN_N, LOOP_NO_MOVE_MIN_N) } };
+    expect(summarizeFaces(c).waiting.some((l) => l.includes('⑧.6'))).toBe(false);
+    expect(summarizeFaces(base()).waiting.some((l) => l.includes('⑧.6'))).toBe(true);
+  });
+
+  test('★ ⑧.1 ① 只要有跑就能下结论 —— 它只看 kind, **可回溯**', () => {
+    const c = base();
+    c.loop_shape = { ...c.loop_shape, runsWithoutConductor: 7, runsWithConductor: 3 };
+    expect(summarizeFaces(c).ready.some((l) => l.includes('⑧.1 ①') && l.includes('7/10'))).toBe(true);
   });
 });
 

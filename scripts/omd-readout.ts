@@ -623,6 +623,56 @@ export interface RetroWriteRace {
 }
 
 /**
+ * ⓪ **今天哪几格能下结论** —— 从契约派生的导航(2026-08-06)。
+ *
+ * 这块板已经 400+ 行,而一大半是**在等数据**的段:读的人 5 秒内看不出今天哪一格能用。
+ * **一份没人读得完的读数板等于没有** —— 加这一段的理由与本仓治的那些静默失效同源。
+ *
+ * ⚠ **纯函数,只吃 `ReadoutResult`** —— 一行原始数据都不碰。否则就是又造一个 S-21
+ *   (数在渲染层、没人闸得着),而这一程刚为那条形状立过条目。
+ * ⚠ 它**只做导航,不替任何一段下结论**:每一格具体是「在等」还是「不适用」,
+ *   由它自己那一段的判词说了算。
+ */
+export function summarizeFaces(c: ReadoutResult): { ready: string[]; waiting: string[] } {
+  const ready: string[] = [];
+  const waiting: string[] = [];
+  const need = (n: number, min = LOOP_NO_MOVE_MIN_N) => `${n}/${min}`;
+
+  // ⑧.1 ①: 只看 kind, **可回溯** —— 这一格从第一天就有答案
+  const ls = c.loop_shape;
+  const lsRuns = ls.runsWithoutConductor + ls.runsWithConductor;
+  if (lsRuns > 0) {
+    const pct = ((ls.runsWithoutConductor / lsRuns) * 100).toFixed(0);
+    ready.push(`⑧.1 ①  图里没有 conductor 的跑 ${ls.runsWithoutConductor}/${lsRuns} (${pct}%) → ⑧ 那条判据在这些跑上**不适用**`);
+  }
+  // ⑥: 真机会分母 —— 小 n 也已经把方向定了 (旧判词是反的)
+  const bk = c.breaker_key;
+  if (bk.opportunities > 0) {
+    ready.push(`⑥      真机会 ${bk.opportunities} 组 · 现行键抓得到 ${bk.exactRepeat} · 漏掉 ${bk.nearMiss} → **方向已定** (n 小, 别当基率读)`);
+  }
+  // ⑬: 有数就报 —— 「有没有退路」不需要攒到 60 才有意义, 它每一跑都是一次真判断
+  if (c.rollback.recordedRuns > 0) {
+    const clean = c.rollback.byKind.clean;
+    ready.push(
+      `⑬      起跑时有完整回滚对象 ${clean}/${c.rollback.recordedRuns}` +
+        `${clean === 0 ? ' → **一次都没有**: D-AB 那句「git 就是 rollback」在这些跑上不成立' : ''}`,
+    );
+  }
+
+  if (!c.artifact_move.sufficiency.comparable.enough) waiting.push(`⑧      可比较的跨轮次数 ${need(c.artifact_move.comparable)}`);
+  if (!c.claim_check.sufficiency.conductor.enough || !c.claim_check.sufficiency.flat.enough) {
+    waiting.push(`⑧.5    conductor ${need(c.claim_check.conductor.nodes, CLAIM_CHECK_MIN_NODES)} · flat ${need(c.claim_check.flat.nodes, CLAIM_CHECK_MIN_NODES)}`);
+  }
+  if (!c.write_race.sufficiency.pairs.enough) waiting.push(`⑧.6    严格机会对 ${need(c.write_race.pairs)} (推断口径 ${c.write_race.pairsInferred ?? '没记'})`);
+  if (c.detector_writes.observed < LOOP_NO_MOVE_MIN_N) {
+    waiting.push(`⑤.1    记了 writeCounts 的 agent 检测者 ${need(c.detector_writes.observed)} (其中写过 ${c.detector_writes.wroteControlled})`);
+  }
+  if (c.rollback.recordedRuns === 0) waiting.push('⑬      起跑时的 git 状态: **一跑都没记**(改过引擎要重连 MCP, 否则 daemon 跑旧代码)');
+  if (ls.conductorNodes > 0 && ls.conductorNodes === ls.unrecordedNodes) waiting.push(`⑧.1 ②③ conductor 的 rounds/maxRounds: ${ls.conductorNodes} 个**都没记**`);
+  return { ready, waiting };
+}
+
+/**
  * 内环 journal 的**轮数分布**(2026-08-06)—— ⑧.1 那四格里**可回溯**的第二格。
  *
  * ## 为什么它值得单独抽出来
@@ -2206,6 +2256,22 @@ if (import.meta.main) {
   const k = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
 
   console.log(`\n═══ omd 读数板 · ${dbPath} · 最近 ${runs.length} 次运行 ═══\n`);
+
+  // ── ⓪ 先看这里 (2026-08-06) ──────────────────────────────────────────────────
+  // 分桶判据抽在 `summarizeFaces` 上 (纯函数, 有闸) —— 渲染只负责印。
+  {
+    const { ready, waiting } = summarizeFaces(contract);
+    console.log('⓪ 先看这里 —— 今天哪几格能下结论 (其余的在等数据, 不必逐段翻)');
+    console.log(`   ✅ **能下结论** (${ready.length})`);
+    for (const l of ready) console.log(`      ${l}`);
+    if (ready.length === 0) console.log('      (一格都没有 —— 那本身是读数: 这块板还没攒到能说话的地步)');
+    console.log(`   ⏳ **在等数据** (${waiting.length}) —— 门槛的理由见 LOOP_NO_MOVE_MIN_N / CLAIM_CHECK_MIN_NODES`);
+    for (const l of waiting) console.log(`      ${l}`);
+    console.log('   ⚠ **有数但不可信**: ⑧.7 的「认不出轮次的多轮跑」那一面 —— 排除不掉跨轮伪影,');
+    console.log('     在能分辨轮次之前不作数 (2026-08-06 起新跑自动进可信面)。');
+    console.log('   ⚠ 「在等」与「不适用」**不是一回事**: 前者继续用就会涨, 后者再等也不会有数。');
+    console.log('     每一格具体属于哪种, 看它自己那一段的判词 —— 这里只给导航, 不替它下结论。\n');
+  }
 
   console.log('① 每次运行的账 (按 runId 归组; goal 一次两段图算一次)');
   console.log('   时间              节点  leafIn   leafOut  cacheHit  失败  plan');
