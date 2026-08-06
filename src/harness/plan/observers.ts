@@ -218,7 +218,18 @@ export function detectRuntimeWriteRace(pairs: readonly OverlapPair[]): {
   let opportunity = 0;
   let opportunityInferred = 0;
   let findingsStrict = 0;
-  for (const p of pairs) {
+  // 父子对**先滤掉再计总**: 它们不是"并发"的观察 —— 父节点只是子节点的容器, 两者窗口
+  // 必然重叠。算进 `overlaps` 会让「看不见的那部分」(`overlaps - pairsInferred`) 虚高,
+  // 而那个差额正是判词用来说"该补写的可见性"的那个数。
+  const real = pairs.filter((p) => !(p.a.startsWith(`${p.b}::`) || p.b.startsWith(`${p.a}::`)));
+  for (const p of real) {
+    // **父子不算一对**(2026-08-06 补;与 `lintArtifactEdges` 里那条同一个理由与同一个判据)。
+    // conductor/map 父节点的 `filesTouched` 是**子树并集** —— 它自己一个字都没写, 那个写就是
+    // 子节点那一次。拿父亲的聚合写去配子节点的写, 等于把同一次写数了两遍, 报出来还是一条
+    // **改不了**的"竞争"(让父子写不同文件 / 给父子加边, 两条建议对父子关系都不成立)。
+    // 判据用内容寻址 id 的 `<parent>::` 前缀 —— 那是 INV-U2/D-B 构造保证的形状。
+    // ⚠ 回溯验过这条的代价: 拿 checkpoint 重建历史窗口时**没有**这条守卫, 46 条"撞车"里
+    //   一眼就能看到 `execute × execute::<hash>` 这种父子对。
     // 推断集缺席 = 调用方没接这一层 → 退回严格集。**不是空集** —— 那会把"没给"读成"没写"。
     const aInf = p.aInferred ?? p.aPaths;
     const bInf = p.bInferred ?? p.bPaths;
@@ -253,7 +264,7 @@ export function detectRuntimeWriteRace(pairs: readonly OverlapPair[]): {
   // 确定性序 (同一张图两次跑给出同一份报告; 观察面不许有并发时序的痕迹 —— 同上面那条 lint)。
   observations.sort((x, y) => (x.message < y.message ? -1 : x.message > y.message ? 1 : 0));
   return {
-    overlaps: pairs.length,
+    overlaps: real.length,
     pairs: opportunity,
     findings: findingsStrict,
     pairsInferred: opportunityInferred,

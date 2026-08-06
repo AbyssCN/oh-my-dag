@@ -1159,6 +1159,18 @@ async function executePlan(
         while (!isCancelled() && runningLocal < capLocal && readyLocal.length > 0) {
           const cid = readyLocal.shift()!;
           runningLocal++;
+          // ── 运行时写竞争: **子图这一层也要进重叠集** (2026-08-06 补) ────────────────
+          // 首版只在外层 pump 上记 `liveNow`, 于是 ⑧.6 只看得见**顶层调度的节点**;
+          // 而 conductor 扇出正是并发的主要来源 —— 两个真并发的兄弟撞同一个文件时
+          // `overlaps` 照样是 0。那个 0 意思是"没往那儿看", 不是"没发生"。
+          // ⚠ 父节点 (这个 conductor) 此刻也在外层的 `liveNow` 里, 于是会配出
+          //   `C × C::child` 这种父子对 —— 判据层有守卫把它跳掉 (父的 filesTouched 是子树并集)。
+          for (const y of liveNow) {
+            if (y === cid) continue;
+            const [p1, p2] = [cid, y].sort() as [string, string];
+            overlapPairs.set(`${p1}\u0000${p2}`, [p1, p2]);
+          }
+          liveNow.add(cid);
           const hit = reuseLocal.get(cid);
           void (hit
             ? // 复用命中: 注入上轮输出, 零 LLM 零工具 (id/deps 归本轮, skipped 同 resume 语义)。
@@ -1171,6 +1183,7 @@ async function executePlan(
               deps: (plan!.nodes[cid]!.depends_on ?? []) as string[], usage: { in: 0, out: 0 },
             }))
             .then((r) => {
+              liveNow.delete(cid); // 写窗口到此为止 (同外层那条: 不含之后的摘要/记账)
               results[cid] = r;
               // 子图节点也发 span (2026-07-31)。此前**只有外层 settle 循环调 recordSpan**, 而
               // 运行时展开出来的子节点走的是这条内环 —— 于是它们在观测面上只有 generation、没有 span,
