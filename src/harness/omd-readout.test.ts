@@ -749,6 +749,112 @@ describe('omd-readout · ⑧.6 运行时写竞争的分母 (2026-08-06)', () => 
 });
 
 /**
+ * ⑥ §8.4 熔断的键该不该改 —— 以及它的**机会分母**(2026-08-06 修正)。
+ *
+ * 这一段此前把结论**读反了**,而它是 S-19/S-20 那一族的第三个实例:
+ * 旧算法只分 `nearMiss`(同输出不同命令)与 `exactRepeat`(同输出同命令)两格,可后者对一个
+ * **只出现过一次**的指纹同样成立 —— 熔断按构造要「≥2 次」,单次失败两种键都抓不到。
+ * 于是 singleton 被算进了"现行键抓得到的那一格",读的人算出"现行键覆盖 88% → 够用",
+ * 而在真机会分母上现行键**一组都没抓到**。
+ *
+ * 另外两格同样是这次照出来的:**跨 run 凑出来的 near-miss 不是真机会**(§8.4 是环内累计),
+ * **空输出那个桶是反例不是机会**(所有 `grep -q` 式静默失败指纹成同一条)。
+ */
+describe('omd-readout · ⑥ 熔断键的机会分母 (2026-08-06 修正)', () => {
+  /** 一个只含指定「失败 command 节点」的最小世界。同 hash 同 run 的进同一格。 */
+  const world = (
+    runs: { runId: string; nodes: { command: string; output: string }[] }[],
+  ): ReadoutResult['breaker_key'] => {
+    const db = new Database(':memory:');
+    const rec = createDagRecorder({ db });
+    let now = 1000;
+    for (const r of runs) {
+      now += 100;
+      const plan: Record<string, unknown> = {};
+      const results: Record<string, unknown> = {};
+      r.nodes.forEach((n, i) => {
+        const id = `n${i}`;
+        plan[id] = { goal: 'x', executor: 'command', command: n.command };
+        // status ≠ done 才记 outputHash —— 成功的输出不是"零位移"的证据 (见 dag-record 那条注)
+        results[id] = { id, kind: 'command', status: 'failed', deps: [], output: n.output, usage: { in: 0, out: 0 } };
+      });
+      rec.record(
+        {
+          plan: { name: 'p', nodes: plan },
+          levels: [Object.keys(plan)],
+          results,
+          reusedNodes: [],
+          usage: { conductor: { in: 0, out: 0 }, leavesIn: 0, leavesOut: 0, leavesCacheHit: 0 },
+        } as unknown as ExecutorDagResult,
+        { runId: r.runId, entry: 'dag_run', now },
+      );
+    }
+    return readout({ db, limit: 50 }).breaker_key;
+  };
+
+  test('★ 只失败过一次的指纹是 **singleton**, 不许算进"现行键抓得到的那一格"', () => {
+    // 这条就是旧版读反结论的那一格。证伪: 把 exactRepeat 的 `e.hits >= 2` 去掉 → 当场红。
+    const bk = world([{ runId: 'r1', nodes: [{ command: 'a', output: 'X' }, { command: 'b', output: 'Y' }] }]);
+    expect(bk.fingerprints).toBe(2);
+    expect(bk.singletons).toBe(2);
+    expect(bk.opportunities).toBe(0); // 一次机会都没有
+    expect(bk.exactRepeat).toBe(0); // ← 旧版这里会是 2
+    expect(bk.rate).toBeNull(); // 分母 0 → 算不出, 不是 0%
+  });
+
+  test('★ 同输出同命令重复 ≥2 次 → exactRepeat (现行键真抓得到的)', () => {
+    const bk = world([{ runId: 'r1', nodes: [{ command: 'a', output: 'X' }, { command: 'a', output: 'X' }] }]);
+    expect(bk.opportunities).toBe(1);
+    expect(bk.exactRepeat).toBe(1);
+    expect(bk.nearMiss).toBe(0);
+    expect(bk.rate).toBe(0); // 有机会而没 near-miss = **查过零检出**, 与上一条的 null 分得开
+  });
+
+  test('★ 同输出不同命令 → near-miss (现行键漏掉的)', () => {
+    const bk = world([{ runId: 'r1', nodes: [{ command: 'a', output: 'X' }, { command: 'b', output: 'X' }] }]);
+    expect(bk.nearMiss).toBe(1);
+    expect(bk.nearMissSameRun).toBe(1);
+    expect(bk.nearMissCrossRun).toBe(0);
+    expect(bk.rate).toBe(1);
+  });
+
+  test('★ 跨 run 凑出来的 near-miss **不是真机会** —— §8.4 是同一次 run 的环内累计', () => {
+    const bk = world([
+      { runId: 'r1', nodes: [{ command: 'a', output: 'X' }] },
+      { runId: 'r2', nodes: [{ command: 'b', output: 'X' }] },
+    ]);
+    expect(bk.nearMiss).toBe(1);
+    expect(bk.nearMissCrossRun).toBe(1);
+    // 这一行是本用例的全部意义: 两次失败在不同的 run 里, 根本碰不到一起
+    expect(bk.nearMissSameRun).toBe(0);
+  });
+
+  test('★ **空输出**那个桶是反例不是机会 —— 不进任何一格', () => {
+    // `grep -q` 那族失败没有输出 → 全指纹成 sha1('')。按输出合并会把两个不同断言
+    // 各失败一次判成同一条在空转 —— 那是误熔断, 正是"只看输出"这条改法要避开的。
+    const bk = world([{ runId: 'r1', nodes: [{ command: 'grep -q A f', output: '' }, { command: 'grep -q B g', output: '' }] }]);
+    expect(bk.emptyOutputCommands).toBe(2);
+    expect(bk.fingerprints).toBe(0); // 空输出那格不算进指纹种数
+    expect(bk.nearMiss).toBe(0); // ← 不算进 near-miss, 否则读成"改宽键能多抓到它们"
+    expect(bk.opportunities).toBe(0);
+  });
+
+  test('三格互斥且穷尽: singletons + opportunities === fingerprints, nearMiss + exactRepeat === opportunities', () => {
+    const bk = world([
+      { runId: 'r1', nodes: [
+        { command: 'solo', output: 'S' }, // singleton
+        { command: 'same', output: 'R' }, { command: 'same', output: 'R' }, // exactRepeat
+        { command: 'p', output: 'N' }, { command: 'q', output: 'N' }, // nearMiss
+        { command: 'grep -q z f', output: '' }, // 空输出: 不进任何一格
+      ] },
+    ]);
+    expect(bk.singletons + bk.opportunities).toBe(bk.fingerprints);
+    expect(bk.nearMiss + bk.exactRepeat).toBe(bk.opportunities);
+    expect([bk.singletons, bk.exactRepeat, bk.nearMiss]).toEqual([1, 1, 1]);
+  });
+});
+
+/**
  * ⑧.1 内环的形状(2026-08-06)—— 「⑧ 那个 0 为什么是 0」的分母。
  *
  * ⑧ 段补上分母之后判词说「轮转次数 ≈ 0 → 瓶颈是环只转一圈」,而那句话把**四件下一步不同
