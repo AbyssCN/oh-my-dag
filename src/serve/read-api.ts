@@ -15,6 +15,7 @@ import { logger } from '../logger';
 import { readDagView, readFog, type DagView } from '../hud/load';
 import type { HudFogSnapshot } from '../hud/types';
 import { loadMap } from '../harness/pathfinder/map-store';
+import { computeFog, type FogView } from '../harness/pathfinder/fog';
 import type { PathMap } from '../harness/pathfinder/types';
 
 /** runId 是目录名、nodeId 是文件名成分 —— 皆来自 HTTP 边界,白名单闸(动态子节点含 `::` 与 `.`)。 */
@@ -258,8 +259,20 @@ export function listPathMaps(cwd: string): PathMapListRow[] {
   return rows.sort((a, b) => a.slug.localeCompare(b.slug));
 }
 
-/** 整张地图原样透传 (tickets 自带 blockedBy/status/suggestedBy/executorKind — 星图数据源)。 */
-export function readPathMap(cwd: string, slug: string): PathMap | null {
+/** 地图 + 雾档读数 (前端要的两样东西一次给全, 免得它自己算第二份)。 */
+export interface PathMapView extends PathMap {
+  /**
+   * 雾档 —— **服务端算**(SDD 2026-08-06 §4)。
+   *
+   * 判据留在 `pathfinder/fog.ts` 一处:前端只渲染不判断。放前端算等于让判据出现两份
+   * (CLI/未来别的客户端各一份), 而两处各算一份必漂 —— 本仓已经为这条付过账。
+   */
+  fog: FogView;
+}
+
+/** 整张地图 + 雾档 (tickets 自带 blockedBy/status/suggestedBy/executorKind — 星图数据源)。 */
+export function readPathMap(cwd: string, slug: string): PathMapView | null {
   if (!SLUG_RE.test(slug)) throw new Error(`非法 slug: ${JSON.stringify(slug)}`);
-  return loadMap(cwd, slug);
+  const map = loadMap(cwd, slug);
+  return map ? { ...map, fog: computeFog(map) } : null;
 }
