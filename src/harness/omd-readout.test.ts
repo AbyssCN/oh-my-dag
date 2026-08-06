@@ -795,6 +795,63 @@ describe('omd-readout · ⑧.6 运行时写竞争的分母 (2026-08-06)', () => 
 });
 
 /**
+ * ⑬ 跑坏了回得去吗(D1,2026-08-06)。
+ *
+ * D-AB 说「范围内写」可以放手是因为 **git 就是 rollback**,而 R2 给的隔离档默认关着、
+ * 只挂在一个入口上、**实测从来没被用过一次**。于是那句话的真实条件是「起跑时树干净」——
+ * 这一段量的就是那个条件。五态的下一步互不相同,**不许合并成"有/没有"两格**。
+ */
+describe('omd-readout · ⑬ 跑坏了回得去吗 (2026-08-06)', () => {
+  const withRB = (runId: string, rollback: { kind: string } | undefined) => {
+    const db = new Database(':memory:');
+    const rec = createDagRecorder({ db });
+    rec.record(
+      {
+        ...fakeResult({ planName: 'p', plan: { a: { goal: 'x' } }, done: ['a'], reused: [], usage: {} }),
+        ...(rollback ? { rollback } : {}),
+      } as never,
+      { runId, entry: 'dag_run', now: 1000 },
+    );
+    return readout({ db, limit: 50 }).rollback;
+  };
+
+  test('★ 老行没记 → 进 unrecorded, cleanRate=null(**算不出 ≠ 0%**)', () => {
+    const rb = withRB('r1', undefined);
+    expect(rb.recordedRuns).toBe(0);
+    expect(rb.unrecordedRuns).toBe(1);
+    expect(rb.cleanRate).toBeNull();
+    expect(rb.byKind.unknown).toBe(0); // ← 「没记」不许被算成 unknown, 两者下一步不同
+  });
+
+  test('★ 记了 clean → 进分母且 cleanRate=1', () => {
+    const rb = withRB('r2', { kind: 'clean' });
+    expect(rb.recordedRuns).toBe(1);
+    expect(rb.byKind.clean).toBe(1);
+    expect(rb.cleanRate).toBe(1);
+  });
+
+  test('★ dirty-untracked **不算 clean** —— 它只有半个回滚', () => {
+    const rb = withRB('r3', { kind: 'dirty-untracked' });
+    expect(rb.byKind['dirty-untracked']).toBe(1);
+    expect(rb.byKind.clean).toBe(0);
+    expect(rb.cleanRate).toBe(0); // 记了而没有完整回滚 = 0%, 与上面那条的 null 分得开
+  });
+
+  test('★ unknown 单独成格 —— 它进分母(记了)但不算 clean', () => {
+    const rb = withRB('r4', { kind: 'unknown' });
+    expect(rb.recordedRuns).toBe(1);
+    expect(rb.byKind.unknown).toBe(1);
+    expect(rb.cleanRate).toBe(0);
+  });
+
+  test('★ 词表外的字面量(老库/坏值)→ 归 unknown, **不许归 clean**', () => {
+    const rb = withRB('r5', { kind: '随便什么' });
+    expect(rb.byKind.unknown).toBe(1);
+    expect(rb.byKind.clean).toBe(0);
+  });
+});
+
+/**
  * ⑤.1 检查者只读吗(D4 / §7.3,2026-08-06)—— 以及它的机会分母。
  *
  * §7.3 说检查者应当只读,而 D-Q 检测者是**图内节点**:与被它检查的兄弟共享同一棵 worktree,

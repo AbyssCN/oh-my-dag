@@ -60,6 +60,7 @@ import { readFileSync } from 'node:fs';
 import { parseMapMarkdown } from '../src/harness/pathfinder/map-store';
 import { computeCost } from '../src/model/cost-ledger';
 import { shellWriteTargets } from '../src/harness/shell-writes';
+import type { RollbackAnchorKind } from '../src/harness/rollback-anchor';
 import { capsFor } from '../src/harness/../model/model-caps';
 import { CheckpointManager } from '../src/harness/continuity/checkpoint-manager';
 import type { NodeLoopJournal } from '../src/harness/continuity/types';
@@ -408,6 +409,30 @@ export interface ReadoutResult {
    *   只有 2026-08-06 之后的跑才有 → 老行进 `unrecordedNodes`,**不进任何一格**。
    */
   /**
+   * ⑬ **跑坏了回得去吗**(D1,2026-08-06)—— 起跑那一刻 git 状态的分布。
+   *
+   * D-AB 说「范围内写」那一级可以放手,理由是**git 就是 rollback**。而 R2 给的隔离档
+   * (独立 worktree + 分支)**默认关着、只挂在 `dag_goal` 一个入口上**,2026-08-06 实测
+   * `git branch --list 'omd/run/*'` **0 条 —— 从来没被用过一次**(S-3 那一族,这次有读数)。
+   *
+   * 于是绝大多数跑落在 `head` 档直接写当前工作树,而在那一档上「git 就是 rollback」
+   * **不是恒假的,是有条件的**:条件就是起跑时那棵树干不干净。这一段量的就是那个条件。
+   *
+   * ⚠ 五态下一步互不相同,**别合并成"有/没有"两格**:
+   *   `clean` = 真能整还原 · `dirty-tracked` = **没有回滚对象** · `dirty-untracked` = 半个
+   *   (`git clean -fd` 会删掉原有的未跟踪文件)· `not-a-repo` = git 这条路不存在 ·
+   *   `unknown` = **查不了,不是干净**。
+   * ⚠ `unrecordedRuns`(老行没记)**不进任何分母** —— 它与 `unknown` 也是两件事:
+   *   前者是"这条链当时还没接",后者是"接了但那一次查失败了"。
+   */
+  rollback: {
+    recordedRuns: number;
+    unrecordedRuns: number;
+    byKind: Record<RollbackAnchorKind, number>;
+    /** 「起跑时有完整回滚对象」的比例 = `clean / recordedRuns`;分母 0 → null。 */
+    cleanRate: number | null;
+  };
+  /**
    * ⑤.1 **检查者只读吗**(D4 / §7.3,2026-08-06)—— 以及它的机会分母。
    *
    * §7.3 说检查者应当只读。而 D-Q 检测者是**图内节点**:它和被它检查的兄弟共享同一棵
@@ -565,6 +590,7 @@ interface ReadoutRow {
   claim_check: string | null;
   artifact_move: string | null;
   write_race: string | null;
+  rollback: string | null;
   observations: string | null;
   acceptance_probe: string | null;
 }
@@ -643,6 +669,11 @@ function emptyWorld(meta: ReadoutResult['meta']): ReadoutResult {
         pairs: faceSufficiency(0, LOOP_NO_MOVE_MIN_N),
         pairsInferred: faceSufficiency(0, LOOP_NO_MOVE_MIN_N),
       },
+    },
+    // 空世界: 五格全 0, cleanRate=null (**算不出 ≠ 0%**)。
+    rollback: {
+      recordedRuns: 0, unrecordedRuns: 0, cleanRate: null,
+      byKind: { clean: 0, 'dirty-tracked': 0, 'dirty-untracked': 0, 'not-a-repo': 0, unknown: 0 },
     },
     // 空世界: 分母 0 → rate=null (**算不出 ≠ 0%**)。
     detector_writes: { detectors: 0, agentDetectors: 0, observed: 0, wroteControlled: 0, findings: 0, rate: null },
@@ -811,7 +842,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
   const optionalCol = (name: string) => (haveCols.includes(name) ? `, ${name}` : `, NULL AS ${name}`);
   const rows = db
     .query(
-      `SELECT id, created_at, run_id, levels, nodes, usage${optionalCol('observations')}${optionalCol('entry')}${optionalCol('outcome')}${optionalCol('reused')}${optionalCol('criteria')}${optionalCol('claim_check')}${optionalCol('artifact_move')}${optionalCol('write_race')}${optionalCol('acceptance_probe')}` +
+      `SELECT id, created_at, run_id, levels, nodes, usage${optionalCol('observations')}${optionalCol('entry')}${optionalCol('outcome')}${optionalCol('reused')}${optionalCol('criteria')}${optionalCol('claim_check')}${optionalCol('artifact_move')}${optionalCol('write_race')}${optionalCol('rollback')}${optionalCol('acceptance_probe')}` +
         ` FROM omd_dag_runs ORDER BY created_at ASC`,
     )
     .all() as ReadoutRow[];
@@ -1077,6 +1108,34 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
   //   "现行键抓得到的那一格"。实测 54 跑: 指纹 25 · singleton 22 · 真机会 3 ·
   //   near-miss 3 · 真重复 **0** —— 旧读法给出"覆盖 88% → 够用", 真相是现行键**一组没抓到**。
   // ⚠ 计算挪进这里(而不是留在渲染层)也是这次的教训之一: 那一段独立数了一遍, 谁都没闸它。
+  // ── ⑬ 跑坏了回得去吗 (D1, 2026-08-06) ────────────────────────────────────────
+  // 老行没记 → **不进任何分母** (它与 `unknown` 是两件事: 前者这条链当时还没接,
+  // 后者接了但那一次查失败了 —— 后者是缺陷线索, 前者只是历史)。
+  const rbKind: Record<RollbackAnchorKind, number> =
+    { clean: 0, 'dirty-tracked': 0, 'dirty-untracked': 0, 'not-a-repo': 0, unknown: 0 };
+  let rbRecorded = 0;
+  let rbUnrecorded = 0;
+  for (const r of rows) {
+    if (!r.rollback) {
+      rbUnrecorded++;
+      continue;
+    }
+    rbRecorded++;
+    try {
+      const v = JSON.parse(r.rollback) as { kind?: string };
+      if (v.kind && v.kind in rbKind) rbKind[v.kind as RollbackAnchorKind]++;
+      else rbKind.unknown++; // 词表外的字面量 (老库) → 归 unknown, 同 ⑦ 段的三态纪律
+    } catch {
+      rbKind.unknown++; // 坏 JSON: 记了但读不出 —— 那是 unknown 不是 clean
+    }
+  }
+  const rollback: ReadoutResult['rollback'] = {
+    recordedRuns: rbRecorded,
+    unrecordedRuns: rbUnrecorded,
+    byKind: rbKind,
+    cleanRate: rbRecorded > 0 ? rbKind.clean / rbRecorded : null,
+  };
+
   // ── ⑤.1 检查者只读吗 (D4 / §7.3) —— 分母在节点面, 分子在观察面 ────────────────
   // inproc 检测者**不进分母**: 它没有写工具, 那是"不可能"不是"没发生" (S-19 那一族)。
   const dw = { detectors: 0, agentDetectors: 0, observed: 0, wroteControlled: 0 };
@@ -1306,6 +1365,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
       },
       commandWrites,
     },
+    rollback,
     detector_writes,
     breaker_key,
     loop_shape: { ...ls },
@@ -2037,6 +2097,39 @@ if (import.meta.main) {
       console.log('   ⚠ 0 个 (记录是新格式, 这个 0 可信) —— 「60% 天花板在生产上兑现成 0」再加一次读数。');
     }
   }
+
+  // ── ⑬ 跑坏了回得去吗 (D1, 2026-08-06) ────────────────────────────────────────
+  const rb = contract.rollback;
+  console.log(`\n⑬ 跑坏了回得去吗 (D1 —— D-AB 那句「git 就是 rollback」的真实条件)`);
+  console.log('   ⚠ R2 给的隔离档 (独立 worktree + 分支) **默认关着, 且只挂在 dag_goal 一个入口上**。');
+  console.log("     2026-08-06 实测 `git branch --list 'omd/run/*'` **0 条 —— 从来没被用过一次**");
+  console.log('     (S-3「机制写好了但默认关着 / 只挂在一条路上」那一族, 这次有读数)。');
+  console.log('     于是绝大多数跑直接写当前工作树, 而那一档的回滚**有条件**: 起跑时树干不干净。');
+  if (rb.recordedRuns === 0) {
+    console.log(`   这批 ${rb.unrecordedRuns} 条记录**都没记** (早于 2026-08-06)。跑一次新的才有这段读数。`);
+  } else {
+    console.log(`   记了的运行 ${rb.recordedRuns} 次${rb.unrecordedRuns > 0 ? ` (另有 ${rb.unrecordedRuns} 次没记, **不进分母**)` : ''}`);
+    const rows: [RollbackAnchorKind, string][] = [
+      ['clean', '**有**完整回滚: `git checkout -- . && git clean -fd`'],
+      ['dirty-tracked', '**没有**回滚对象 —— 这次的写与你的改动混在同一片 diff 里'],
+      ['dirty-untracked', '**半个** —— `git clean -fd` 会删掉你原有的未跟踪文件'],
+      ['not-a-repo', 'git 这条路不存在 (branchStrategy 在这里也退回 head)'],
+      ['unknown', '**查不了** —— 既不是干净也不是脏, 别据它下判断'],
+    ];
+    for (const [k, meaning] of rows) {
+      const n = rb.byKind[k];
+      if (n === 0) continue;
+      console.log(`     ${k.padEnd(16)} ${String(n).padStart(4)}  ${pct(n / rb.recordedRuns).padStart(6)}  ${meaning}`);
+    }
+    console.log(`   ▸ **起跑时有完整回滚对象的比例: ${rb.cleanRate === null ? '算不出' : pct(rb.cleanRate)}**`);
+  }
+  console.log('   判据 (在数据到达之前钉的):');
+  console.log('     · clean 占绝大多数 → D-AB 那句「git 就是 rollback」在生产上**站得住**, D1 可收尾;');
+  console.log('     · dirty-tracked 成规模 → 那句话在生产上**不成立**, 而下一步不是"加个闸拦住脏树"');
+  console.log('       (那会把最常见的用法整个挡掉), 是**把隔离档变成够用的缺省** —— 而它今天连一次都没被用过,');
+  console.log('       所以先要问的是"为什么没人用", 不是"为什么不默认开";');
+  console.log('     · unknown 成规模 → 先修观测, 别读上面任何一格 (查不了不是一种状态, 是没查到)。');
+  console.log('   ⚠ **只报不拦**: 它不阻断任何一次跑, 只让 owner 在动手之前知道有没有退路。');
 
   // ── ⑤.1 检查者只读吗 (D4 / §7.3, 2026-08-06) ──────────────────────────────
   const dwr = contract.detector_writes;

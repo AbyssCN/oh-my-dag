@@ -9,6 +9,7 @@ import type { VerifierFn } from './verifier';
 import type { FaninSummaryConfig } from './fanin-summary';
 import type { ArtifactBudget } from './plan/judge-artifacts';
 import type { NodeFailureKind } from './node-failure';
+import type { RollbackAnchor } from './rollback-anchor';
 
 /** omd 本体编排的注入式模型调用 (单一注入点; 默认 callModel, 测试传 fake)。 */
 export type GenerateFn = (req: {
@@ -765,6 +766,20 @@ export interface ExecutorDagResult {
    *
    * ⚠ 缺席 = 早于本次改动的记录;`overlaps: 0` = 这一跑压根没有并发(常见:窄图/链式图)。
    */
+  /**
+   * **这次跑坏了回得去吗**(D1, 2026-08-06)—— 起跑那一刻的 git 状态快照。
+   *
+   * D-AB 说「范围内写」可以放手, 理由是 git 就是 rollback。而 R2 的隔离档默认关着、
+   * 只挂在 `dag_goal` 一个入口上, 实测**从来没被用过一次** —— 所以绝大多数跑直接写当前
+   * 工作树, 而那一档上「git 就是 rollback」是**有条件的**: 条件是起跑时树干不干净。
+   *
+   * ⚠ 四态下一步互不相同, 别压平(判词见 `describeRollback`):
+   *   `clean` = 真能整还原 · `dirty-tracked` = **没有回滚对象**(写混在同一片 diff 里) ·
+   *   `dirty-untracked` = 半个(`git clean -fd` 会删掉你原有的未跟踪文件) ·
+   *   `not-a-repo` = git 这条路不存在 · `unknown` = **查不了, 什么都别断言**。
+   * ⚠ 缺席 = 早于本次改动的记录。**只报不拦**。
+   */
+  rollback?: RollbackAnchor;
   writeRace?: {
     overlaps: number;
     pairs: number;
