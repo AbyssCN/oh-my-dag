@@ -390,6 +390,54 @@ export interface ReadoutResult {
    * ⚠ ① 靠 `kind` 就分得出,**回溯既有记录也成立**;②③④ 要 `rounds`/`maxRounds` 两位,
    *   只有 2026-08-06 之后的跑才有 → 老行进 `unrecordedNodes`,**不进任何一格**。
    */
+  /**
+   * ⑥ **§8.4 熔断的键该不该改** —— 以及它的机会分母(2026-08-06 修正)。
+   *
+   * ## 此前这一段把结论读反了
+   *
+   * 熔断的键是「命令 + 逐字相同的失败」,而 conductor 每轮会把同一个断言重写一遍
+   * (单引号换双引号)→ 「同一条命令」凑不齐第二次。要不要改键,取决于**改了能多抓到多少**。
+   *
+   * 旧算法只分两格:`nearMiss`(同输出不同命令)与 `exactRepeat`(同输出同命令)。
+   * 可后者对一个**只出现过一次**的指纹同样成立 —— 而熔断按构造要「≥2 次」,
+   * 单次失败**两种键都抓不到**。于是 singleton 被算进了"现行键抓得到的那一格"。
+   *
+   * 实测(2026-08-06,54 跑):指纹 25 种 · singleton **22** · 真有机会 **3** ·
+   * near-miss **3** · 真重复 **0**。旧读法给出"现行键覆盖 88% → 够用",
+   * 而在真机会分母上现行键**一组都没抓到**。**方向相反,而没有任何一层报错。**
+   *
+   * ⚠ 三格互斥且穷尽:`singletons + opportunities === fingerprints`,
+   *   `nearMiss + exactRepeat === opportunities`。合并任意两格都会重演上面那次误读。
+   */
+  breaker_key: {
+    /** 失败输出指纹种数(**不含空输出那一格**;也**不是**机会分母 —— 那正是旧版拿错的数)。 */
+    fingerprints: number;
+    /**
+     * **空输出**那个桶里有多少条不同命令 —— 它是**反例不是机会**。
+     *
+     * 留痕按 `sha1(output.trim())` 指纹,于是所有没有输出的失败(`grep -q` 那族)全落进
+     * 同一个桶。把它算进 near-miss 等于说"改成更宽的键能多抓到它们",而事实相反:
+     * 那正是设计注里警告过的**误熔断** —— 两个不同断言各失败一次会被判成同一条在空转。
+     * **这个数越大,「只看输出」那条改法越危险。**
+     */
+    emptyOutputCommands: number;
+    /** 其中只出现过 1 次的 —— 两种键都抓不到,**不是机会**。 */
+    singletons: number;
+    /** 出现 ≥2 次的指纹 = **熔断的机会分母**。 */
+    opportunities: number;
+    /** 其中同输出**不同**命令(现行键漏掉的那些)。 */
+    nearMiss: number;
+    /** 其中同输出**同**命令(现行键真抓得到的那些)。 */
+    exactRepeat: number;
+    /** near-miss 里跨多个 run 凑出来的 —— §8.4 是环内累计,**不是真熔断机会**。 */
+    nearMissCrossRun: number;
+    /** near-miss 里落在同一个 run 内的 —— **只有它是真机会**。 */
+    nearMissSameRun: number;
+    /** `nearMiss / opportunities`;分母 0 → null(**算不出 ≠ 0%**)。 */
+    rate: number | null;
+    /** 前 3 组 near-miss 的原料(人工核对用:改键之前得先看清漏掉的到底长什么样)。 */
+    samples: { outputHash: string; commands: string[]; sameRun: boolean }[];
+  };
   loop_shape: {
     /** 图里一个 conductor 节点都没有的跑 —— ⑧ 那条判据在这些跑上**不适用**(可回溯)。 */
     runsWithoutConductor: number;
@@ -549,6 +597,11 @@ function emptyWorld(meta: ReadoutResult['meta']): ReadoutResult {
         pairs: faceSufficiency(0, LOOP_NO_MOVE_MIN_N),
         pairsInferred: faceSufficiency(0, LOOP_NO_MOVE_MIN_N),
       },
+    },
+    // 空世界: 三格全 0, rate=null (**算不出 ≠ 0%**)。
+    breaker_key: {
+      fingerprints: 0, singletons: 0, opportunities: 0, nearMiss: 0, exactRepeat: 0,
+      nearMissCrossRun: 0, nearMissSameRun: 0, rate: null, samples: [], emptyOutputCommands: 0,
     },
     // 空世界: 七格全 0。⚠ 别把 `runsWithoutConductor: 0` 读成"每张图都有 conductor" ——
     // 空库里它与"一跑都没有"是同一个 0, 那是 meta.limit 那一层的事, 不是这一段的。
@@ -968,6 +1021,57 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
     firstRoundConverged: 0,
     turned: 0,
   };
+  // ── ⑥ §8.4 熔断的键该不该改 —— 连同它的**机会分母**(2026-08-06 修正) ──────────
+  //
+  // ⚠ 此前这一段(住在 CLI 渲染里)把结论读反了: 只分 `nearMiss`(同输出不同命令)与
+  //   `exactRepeat`(同输出同命令)两格, 而后者对一个**只出现过一次**的指纹同样成立 ——
+  //   熔断按构造要「≥2 次」, 单次失败两种键都抓不到。于是 singleton 被算进了
+  //   "现行键抓得到的那一格"。实测 54 跑: 指纹 25 · singleton 22 · 真机会 3 ·
+  //   near-miss 3 · 真重复 **0** —— 旧读法给出"覆盖 88% → 够用", 真相是现行键**一组没抓到**。
+  // ⚠ 计算挪进这里(而不是留在渲染层)也是这次的教训之一: 那一段独立数了一遍, 谁都没闸它。
+  const bkBy = new Map<string, { cmds: Set<string>; hits: number; runs: Set<string> }>();
+  for (const p of parsed) {
+    for (const n of p.nodes) {
+      if (!n.outputHash || !n.command) continue;
+      let e = bkBy.get(n.outputHash);
+      if (!e) bkBy.set(n.outputHash, (e = { cmds: new Set(), hits: 0, runs: new Set() }));
+      e.cmds.add(n.command.trim());
+      e.hits++;
+      e.runs.add(p.id);
+    }
+  }
+  // **空输出那一格是反例, 不是机会**(2026-08-06 第二层修正, 渲染出来当场照出的)。
+  // `dag-record` 按 `sha1(output.trim())` 指纹, 于是所有**没有输出**的失败(`grep -q` 那族)
+  // 全落在同一个桶里 —— 实测这个桶里有两条毫不相干的命令。把它算进 near-miss 等于说
+  // "改成更宽的键能多抓到它们", 而事实恰恰相反: 那正是设计注里警告过的**误熔断**
+  // (两个不同断言各失败一次 → 被判成同一条在空转)。算出来不写死, 免得哪天改了 hash 算法。
+  const EMPTY_OUTPUT_FP = new Bun.CryptoHasher('sha1').update('').digest('hex').slice(0, 12);
+  const bkEmpty = bkBy.get(EMPTY_OUTPUT_FP);
+  const bkAll = [...bkBy.entries()].filter(([h]) => h !== EMPTY_OUTPUT_FP);
+  // 三格**互斥且穷尽**: singleton(没机会)/ 真重复(现行键抓得到)/ near-miss(现行键漏掉)。
+  const bkNearMiss = bkAll.filter(([, e]) => e.cmds.size > 1);
+  const bkExactRepeat = bkAll.filter(([, e]) => e.hits >= 2 && e.cmds.size === 1).length;
+  const bkSingletons = bkAll.filter(([, e]) => e.hits < 2).length;
+  // §8.4 熔断是**同一次 run 的环内**累计 —— 跨 run 凑出来的那组不是真机会, 单独报。
+  const bkCrossRun = bkNearMiss.filter(([, e]) => e.runs.size > 1).length;
+  const bkOpp = bkNearMiss.length + bkExactRepeat;
+  const breaker_key: ReadoutResult['breaker_key'] = {
+    fingerprints: bkAll.length,
+    emptyOutputCommands: bkEmpty ? bkEmpty.cmds.size : 0,
+    singletons: bkSingletons,
+    opportunities: bkOpp,
+    nearMiss: bkNearMiss.length,
+    exactRepeat: bkExactRepeat,
+    nearMissCrossRun: bkCrossRun,
+    nearMissSameRun: bkNearMiss.length - bkCrossRun,
+    rate: bkOpp > 0 ? bkNearMiss.length / bkOpp : null,
+    samples: bkNearMiss.slice(0, 3).map(([h, e]) => ({
+      outputHash: h,
+      commands: [...e.cmds].slice(0, 2).map((c) => c.slice(0, 64)),
+      sameRun: e.runs.size === 1,
+    })),
+  };
+
   for (const p of parsed) {
     const conds = p.nodes.filter((n) => n.kind === 'conductor');
     if (conds.length === 0) {
@@ -1113,6 +1217,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
         pairsInferred: faceSufficiency(wrAcc.pairsInferred, LOOP_NO_MOVE_MIN_N),
       },
     },
+    breaker_key,
     loop_shape: { ...ls },
     outcome_distribution,
     entry_distribution,
@@ -1535,17 +1640,8 @@ if (import.meta.main) {
   // (单引号换双引号) → 「同一条命令」凑不齐第二次。
   // 直觉改法「只看输出」是**错的**: `grep -q` 失败无输出, 所有静默失败会指纹成同一条。
   // 所以先量: **输出逐字相同、命令文本不同** 有多少组 —— 那才是改键能多抓到的population。
-  const byOutput = new Map<string, Set<string>>();
-  for (const r of rows) {
-    for (const n of JSON.parse(r.nodes) as DagRunNode[]) {
-      if (!n.outputHash || !n.command) continue;
-      const set = byOutput.get(n.outputHash) ?? new Set<string>();
-      set.add(n.command.trim());
-      byOutput.set(n.outputHash, set);
-    }
-  }
-  const nearMiss = [...byOutput.entries()].filter(([, cmds]) => cmds.size > 1);
-  const exactRepeat = [...byOutput.values()].filter((c) => c.size === 1).length;
+  // ⑥ 熔断 near-miss 的计算已挪进 readout() (契约 `breaker_key`) —— 两处各算一份必漂,
+  // 而这一段恰恰是靠一次误算把结论读反了三个月的那一段。渲染只读契约, 不再自己数。
 
   // ── ⑦ 没过的成因分布 (P1 词表细化的**唯一证据面**) ───────────────────────────
   // 这一段回答的就是"细化值不值": 若所有失败常年只落在一两格里, 那这个词表是镀金;
@@ -1747,7 +1843,7 @@ if (import.meta.main) {
         { dbPath, readout: contract,
           statWindows: '节点统计 (four_grid/风险格/复用率) = 全量记录; run 统计 (分布/判据/entry) = 窗口 (最早 limit 个 run, 按 first_at)',
           runs, tierCount, neverButBlocked, neverAndRan, neverUnknown, gateRejections, commandNodes, conductorChildren, detectorNodes,
-          nearMiss: nearMiss.map(([h, c]) => ({ outputHash: h, commands: [...c] })), exactRepeat, writeNodes, unreported, totalWrites, totalNoop, noopNodes, median, anomalyFactor: ANOMALY_FACTOR, anomalies,
+          breakerKey: contract.breaker_key, writeNodes, unreported, totalWrites, totalNoop, noopNodes, median, anomalyFactor: ANOMALY_FACTOR, anomalies,
           notDoneNodes, failureKindCount, failureKindUnrecorded,
           observations: Object.fromEntries(obsCount), runsWithObs, runsUnrecordedObs,
           claimCheck: cc, artifactMove: contract.artifact_move, writeRace: contract.write_race,
@@ -1849,17 +1945,39 @@ if (import.meta.main) {
   }
 
   console.log(`\n⑥ 熔断 near-miss (§8.4 的键该不该从「命令+输出」改成别的)`);
-  if (byOutput.size === 0) {
+  const bk = contract.breaker_key;
+  if (bk.fingerprints === 0) {
     console.log('   留痕里没有失败的 command 节点 (或早于「记 outputHash」那次改动)。');
   } else {
-    console.log(`   失败输出指纹 ${byOutput.size} 种; 其中**同输出不同命令** ${nearMiss.length} 组`);
-    for (const [h, cmds] of nearMiss.slice(0, 3)) {
-      console.log(`     · ${h}: ${cmds.size} 条不同命令 —— 现行键漏掉的正是这一组`);
-      for (const c of [...cmds].slice(0, 2)) console.log(`         ${c.slice(0, 64)}`);
+    console.log(`   失败输出指纹 ${bk.fingerprints} 种 (不含空输出那一格) —— ⚠ **这不是机会分母** (2026-08-06 修正):`);
+    console.log(`     · 只失败过 1 次 (singleton)  ${String(bk.singletons).padStart(4)} 种  → 熔断按构造要「≥2 次」, **两种键都抓不到**`);
+    console.log(`     · **真有机会的**             ${String(bk.opportunities).padStart(4)} 种  ← 下面两格的分母`);
+    console.log(`        ├ 同输出**同**命令 (现行键抓得到)   ${String(bk.exactRepeat).padStart(4)}`);
+    console.log(`        └ 同输出**不同**命令 (现行键漏掉)   ${String(bk.nearMiss).padStart(4)}` +
+      `  [${bk.rate === null ? '算不出 (分母 0)' : `${(bk.rate * 100).toFixed(1)}%`}]`);
+    if (bk.nearMissCrossRun > 0) {
+      console.log(`     ⚠ 上面那 ${bk.nearMiss} 组里有 ${bk.nearMissCrossRun} 组是**跨 run 凑出来的** —— §8.4 熔断是`);
+      console.log(`       同一次 run 的环内累计, 跨 run 的两次失败根本碰不到一起。**真机会只有 ${bk.nearMissSameRun} 组。**`);
     }
-    console.log(`   判据: near-miss 长期为 0 → 现行「命令+输出」键就够, 别动它;`);
-    console.log(`         成规模 → 才值得为它设计一个更宽的键(⚠ 但不是"只看输出" —— grep -q 失败无输出, 会误熔断)。`);
+    for (const s of bk.samples) {
+      console.log(`     · ${s.outputHash}: ${s.commands.length} 条不同命令${s.sameRun ? '' : ' (跨 run, 不是真机会)'}`);
+      for (const c of s.commands) console.log(`         ${c}`);
+    }
+    if (bk.emptyOutputCommands > 1) {
+      console.log(`     ⚠ 另有一个**空输出**桶, 里面有 ${bk.emptyOutputCommands} 条互不相干的命令 (\`grep -q\` 那族失败没有输出,`);
+      console.log('       全指纹成同一条)。它**不进上面任何一格** —— 那是"只看输出"这条改法的**反例不是机会**:');
+      console.log('       按输出合并会把两个不同断言各失败一次判成同一条在空转, 当场误熔断。');
+    }
+    console.log('   ⚠ **旧版这一段把结论读反了**: 它只印"指纹 N 种 / near-miss M 组", 而 N 里绝大多数是');
+    console.log('     singleton。读的人据此算出"现行键覆盖 (N-M)/N" —— 而在真机会分母上现行键的覆盖是');
+    console.log(`     ${bk.opportunities > 0 ? `${bk.exactRepeat}/${bk.opportunities}` : '0/0'}。**方向相反, 而没有任何一层报错**(同 S-19/S-20 那一族)。`);
   }
+  console.log('   判据 (按**真机会分母**读, 不是按指纹种数):');
+  console.log('     · 真机会 = 0 → 还不到判的时候。今天缺的不是 near-miss, 是**重复失败本身**;');
+  console.log('     · 真机会 > 0 而 near-miss 占其中一小半以下 → 现行「命令+输出」键就够, 别动它;');
+  console.log('     · near-miss 占**大多数**(尤其真重复 = 0)→ 现行键在真跑上基本抓不到东西,');
+  console.log('       那才值得为它设计一个更宽的键(⚠ 但不是"只看输出" —— `grep -q` 失败无输出,');
+  console.log('       所有静默失败会指纹成同一条, 两个不同断言各失败一次就误熔断, 比漏报坏得多)。');
 
   console.log(`\n⑦ 没过的成因分布 (P1 · 此前这 ${notDoneNodes} 个节点在读数上全叫 "failed")`);
   if (notDoneNodes === 0) {
