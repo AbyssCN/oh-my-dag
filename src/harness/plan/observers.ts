@@ -262,6 +262,83 @@ export function detectRuntimeWriteRace(pairs: readonly OverlapPair[]): {
   };
 }
 
+/** 一个 D-Q 图内检测者节点在写这件事上的执行面。 */
+export interface DetectorWriteFacts {
+  id: string;
+  /** leaf kind —— 只有 `agent` 手里有写工具;`inproc`/`command` 没有,不进机会分母。 */
+  kind: string;
+  /** 受控写工具的**次数**(`writeCounts[0]`)。缺席 = 这条链没人报,与 `0` 是两件事。 */
+  writes?: number;
+  /** 从命令原文认出并经盘上核实的写目标(**推断**,见 `DagNodeResult.writeCandidates`)。 */
+  writeCandidates?: readonly string[];
+}
+
+/**
+ * **检查者写了东西吗**(D4 / §7.3「检查者只读」,2026-08-06)—— 连同它的分母。
+ *
+ * ## 这一格今天靠运气成立
+ *
+ * §7.3 说检查者应当只读。而 omd 的 D-Q 检测者是**图内节点**:它和被它检查的兄弟共享同一棵
+ * worktree,并且当 conductor 把它排成 `executor: 'agent'` 时,它手里**就是有写工具的**。
+ * 实测(2026-08-06,54 跑):23 个 detector 节点里 7 个是 agent,其中**记了 `writeCounts` 的 4 个
+ * 全是 `[0,0]`**(另 3 个是 `skipped`,没记那一位 → 进 `unobserved`,不算「没写」)—— 它们**有机会写却没写**。也就是说这条纪律今天成立,但成立的方式是运气,
+ * 不是不变量:**一旦有一个检测者真的写了,没有任何一处会知道。**
+ *
+ * ## 分母(同 ⑧/⑧.6 那条:先想清楚这个 0 会被除以什么)
+ *
+ * `opportunities` = 手里**真有写工具**的检测者数(`kind === 'agent'`)。
+ * `inproc` 检测者一个写工具都没有,把它算进分母会把基率往低了报 —— 那是拿"不可能"冒充"没发生"。
+ *
+ * ⚠ 两档证据同 ⑧.6:`writes > 0` 是受控写工具的**事实**;`writeCandidates` 是**推断**
+ *   (命令点名要写 + 盘上核实过)。判词分档写,因为下一步不同 —— 前者确凿,后者要先确认
+ *   命令真跑到了那一步。
+ * ⚠ **缺席 ≠ 0**:`writes` 缺席 = 这条链没人报(旧 runner),它**不算"没写"**,进 `unobserved`。
+ *
+ * **只报不拦**:出口是观察条目 + 账本。要不要把检测者的写工具真收掉是**单独的拨闸决定**,
+ * 而今天 n=4,离得出基率还差得远(rule of three:0/4 的 95% 上界是 75%)。
+ */
+export function detectDetectorWrites(detectors: readonly DetectorWriteFacts[]): {
+  detectors: number;
+  opportunities: number;
+  unobserved: number;
+  findings: number;
+  observations: DagObservation[];
+} {
+  const observations: DagObservation[] = [];
+  let opportunities = 0;
+  let unobserved = 0;
+  for (const d of detectors) {
+    // 没有写工具 = **不可能**写, 不是"没写" —— 不进机会分母 (同 ⑧.6 那条纪律)。
+    if (d.kind !== 'agent') continue;
+    if (d.writes === undefined && d.writeCandidates === undefined) {
+      unobserved++; // 这条链没人报: 既不算机会也不算命中
+      continue;
+    }
+    opportunities++;
+    const controlled = d.writes ?? 0;
+    const inferred = d.writeCandidates ?? [];
+    if (controlled === 0 && inferred.length === 0) continue;
+    const how =
+      controlled > 0
+        ? `受控写工具 ${controlled} 次`
+        : `**推断**: 命令原文点名要写 ${inferred.slice(0, 3).join(', ')} 且它在本节点执行窗口内变过`;
+    observations.push({
+      kind: 'detector-wrote',
+      nodes: [d.id],
+      message:
+        `图内检测者 [${d.id}] **写了东西** (${how}) —— §7.3 说检查者只读, 而 D-Q 检测者与被它检查的` +
+        '兄弟共享同一棵 worktree。检查者一旦动手改盘, 它给出的裁决就不再是对"兄弟们产出了什么"的' +
+        '观察, 而是对"它自己也参与之后的结果"的观察。' +
+        (controlled > 0
+          ? ''
+          : '⚠ 这一条是**推断**的, 先确认那条命令真跑到了写那一步。') +
+        '⚠ **只报不拦**: 要不要把检测者的写工具收掉是单独的拨闸决定, 判据与分母见 detectDetectorWrites。',
+    });
+  }
+  observations.sort((x, y) => (x.message < y.message ? -1 : x.message > y.message ? 1 : 0));
+  return { detectors: detectors.length, opportunities, unobserved, findings: observations.length, observations };
+}
+
 /**
  * 一轮内环在**盘上**留下的东西: 路径 → 内容 hash。
  *

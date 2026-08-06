@@ -795,6 +795,71 @@ describe('omd-readout · ⑧.6 运行时写竞争的分母 (2026-08-06)', () => 
 });
 
 /**
+ * ⑤.1 检查者只读吗(D4 / §7.3,2026-08-06)—— 以及它的机会分母。
+ *
+ * §7.3 说检查者应当只读,而 D-Q 检测者是**图内节点**:与被它检查的兄弟共享同一棵 worktree,
+ * conductor 把它排成 `agent` 时它手里就是有写工具的。这一段的重心全在**分母**上 ——
+ * `inproc` 检测者一个写工具都没有,把它算进去会把基率往低了报(拿"不可能"冒充"没发生")。
+ */
+describe('omd-readout · ⑤.1 检查者只读吗 (2026-08-06)', () => {
+  const world = (nodes: { id: string; kind: string; detector?: boolean; writeCounts?: [number, number] }[]) => {
+    const db = new Database(':memory:');
+    const rec = createDagRecorder({ db });
+    const plan: Record<string, unknown> = {};
+    const results: Record<string, unknown> = {};
+    for (const n of nodes) {
+      plan[n.id] = { goal: 'x', ...(n.detector ? { detector: true } : {}) };
+      results[n.id] = {
+        id: n.id, kind: n.kind, status: 'done', deps: [], output: '', usage: { in: 0, out: 0 },
+        ...(n.writeCounts ? { writeCounts: n.writeCounts } : {}),
+      };
+    }
+    rec.record(
+      {
+        plan: { name: 'p', nodes: plan }, levels: [nodes.map((n) => n.id)], results, reusedNodes: [],
+        usage: { conductor: { in: 0, out: 0 }, leavesIn: 0, leavesOut: 0, leavesCacheHit: 0 },
+      } as unknown as ExecutorDagResult,
+      { runId: 'dw', entry: 'dag_run', now: 1000 },
+    );
+    return readout({ db, limit: 50 }).detector_writes;
+  };
+
+  test('★ inproc 检测者**不进机会分母** —— 它没有写工具, 那是"不可能"不是"没发生"', () => {
+    // 少了这条, 留痕里那 16 个 inproc 检测者会把分母灌大 3 倍, 把一个没量过的 0 说成很可信。
+    const dw = world([{ id: 'c', kind: 'inproc', detector: true, writeCounts: [0, 0] }]);
+    expect(dw.detectors).toBe(1);
+    expect(dw.agentDetectors).toBe(0);
+    expect(dw.rate).toBeNull(); // 算不出, 不是 0%
+  });
+
+  test('★ agent 检测者没记 writeCounts → 不进分母 (「没记」不是「没写」)', () => {
+    const dw = world([{ id: 'c', kind: 'agent', detector: true }]);
+    expect(dw.agentDetectors).toBe(1);
+    expect(dw.observed).toBe(0); // ← 这一格与下一条的 0 长得一样而下一步相反
+    expect(dw.rate).toBeNull();
+  });
+
+  test('★ agent 检测者记了且为 0 → 进分母, rate=0 (**查过零检出**, 与上一条分得开)', () => {
+    const dw = world([{ id: 'c', kind: 'agent', detector: true, writeCounts: [0, 0] }]);
+    expect(dw.observed).toBe(1);
+    expect(dw.wroteControlled).toBe(0);
+    expect(dw.rate).toBe(0);
+  });
+
+  test('★ agent 检测者真写了 → wroteControlled 数得出来 (证明这条不是恒 0)', () => {
+    const dw = world([
+      { id: 'c1', kind: 'agent', detector: true, writeCounts: [2, 0] },
+      { id: 'c2', kind: 'agent', detector: true, writeCounts: [0, 0] },
+      { id: 'w', kind: 'agent', writeCounts: [5, 0] }, // 不是检测者, 一格都不进
+    ]);
+    expect(dw.detectors).toBe(2);
+    expect(dw.observed).toBe(2);
+    expect(dw.wroteControlled).toBe(1);
+    expect(dw.rate).toBe(0.5);
+  });
+});
+
+/**
  * ⑥ §8.4 熔断的键该不该改 —— 以及它的**机会分母**(2026-08-06 修正)。
  *
  * 这一段此前把结论**读反了**,而它是 S-19/S-20 那一族的第三个实例:
