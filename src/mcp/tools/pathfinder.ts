@@ -508,6 +508,23 @@ function makeDeliver(deps: PathfinderToolDeps): OmdMcpTool {
           try {
             const d = fireGoal(cwd, r.slug, gid, goalText);
             goalLines.push(`◈ goal 票 ${gid} → solve ${d.already ? '已在飞' : '已 fire'} (runId ${d.runId})`);
+            // ⚠ **prototype 票的隔离今天没生效** (2026-08-06 查实的三环):
+            //   ① D-13 给 prototype 设计的隔离 worktree 住在 `pathfinder/dispatch.ts` 的
+            //      `case 'prototype'` 里, 而它**没有生产调用者** —— `dispatchFrontier` 只自动派
+            //      research 票, 注释说 prototype "仅 reported 给 UI 由人显式触发", 而那个触发口
+            //      **从来没建过** (盘上 `.omd/pathfinder/proto/` 一个目录都没有);
+            //   ② prototype 票实际走的是这条路 (readyRegion → 这里 → detached solve);
+            //   ③ 这条路**不传 branchStrategy** → 缺省 `head` → **直接写主树**。
+            //   于是"沙盒 spike, 试验码不污主树"这句话在生产上是反的。**先让它看得见**:
+            //   要不要改成隔离是单独的决定 (隔离树看不见未提交的活, 见 run-worktree 那条),
+            //   不是一行 default 的事。
+            if (gt.type === 'prototype') {
+              goalLines.push(
+                `   ⚠ 这是 **prototype (沙盒 spike) 票**, 而它正在**直接写主树** —— D-13 说的隔离 worktree ` +
+                  '在这条路上没有生效 (那段代码没有生产调用者)。跑坏了能不能回滚, 见读数板 ⑬ 段: ' +
+                  '起跑时工作树干净才有完整回滚对象。',
+              );
+            }
           } catch (e) {
             goalLines.push(`✗ goal 票 ${gid} fire 失败: ${errMsg(e)}`);
           }
