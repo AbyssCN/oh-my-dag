@@ -127,6 +127,32 @@ describe('失败留痕加厚 —— 盘上真有那一位吗 (2026-08-06)', () =
     expect(cp.failurePaths).toEqual(['src/harness/failure-trace.ts']);
   });
 
+  test('失败节点也记"读过什么" —— empty-artifact 里"验过没改" vs "什么都没干"全靠这一位分', async () => {
+    const root = process.cwd();
+    const dir = mkdtempSync(join(tmpdir(), 'dag-fail-read-'));
+    const manager = new CheckpointManager(dir);
+    // 产物闸判空的形状: 声明了 output_path、读了它、但一个字都没写。
+    const plan = JSON.stringify({
+      name: 's',
+      nodes: { n1: { goal: '把它改好', executor: 'agent', output_type: 'file', output_path: 'a.md' } },
+    });
+    await runExecutorDag('t', {
+      conductorModel: CONDUCTOR,
+      leafModel: LEAF,
+      generate: gen(plan),
+      agentRunner: async () => ({
+        text: '文件已是目标状态, 未作改动',
+        usage: { in: 1, out: 1 },
+        filesTouched: [],
+        filesRead: ['a.md', 'b.ts'],
+      }),
+      continuity: { manager, runId: 'run-read', repoRoot: root, resume: false },
+    });
+    const cp = manager.loadCheckpoint('run-read', 'n1')!;
+    expect(cp.failureKind).toBe('empty-artifact');
+    expect(cp.inputPaths).toEqual(['a.md', 'b.ts']); // ← 改动前恒缺席 (盘上 0/21)
+  });
+
   test('语义失败 (输出里没有文件) → failurePaths 缺席, 不硬凑一个', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'dag-fail-nopath-'));
     const manager = new CheckpointManager(dir);
