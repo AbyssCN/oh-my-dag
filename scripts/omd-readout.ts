@@ -1748,6 +1748,8 @@ interface Row {
   usage: string;
   observations: string | null;
   outcome: string | null;
+  /** 入口 (2026-08-06 起 ⑨ 段用它拆「blocked 了然后呢」)。老行 NULL = 没记。 */
+  entry: string | null;
   verification: string | null;
   reused: number | null;
   criteria: string | null;
@@ -1832,7 +1834,7 @@ if (import.meta.main) {
   const optionalCol = (name: string) => (haveCols.includes(name) ? `, ${name}` : `, NULL AS ${name}`);
   const rows = db
     .query(
-      `SELECT id, created_at, plan_name, node_count, run_id, nodes, usage${optionalCol('observations')}${optionalCol('outcome')}${optionalCol('verification')}${optionalCol('reused')}${optionalCol('criteria')}` +
+      `SELECT id, created_at, plan_name, node_count, run_id, nodes, usage${optionalCol('observations')}${optionalCol('outcome')}${optionalCol('entry')}${optionalCol('verification')}${optionalCol('reused')}${optionalCol('criteria')}` +
         ` FROM omd_dag_runs ORDER BY created_at DESC LIMIT ?`,
     )
     .all(limit * 3) as Row[]; // ×3: 一次 goal 最多两条, 留余量再按 runId 截
@@ -2787,6 +2789,23 @@ if (import.meta.main) {
     }
     if (runsUnrecordedOutcome > 0) {
       console.log(`   ? 另有 ${runsUnrecordedOutcome} 条**没记**终止原因(早于 2026-07-31)—— 老数据, 不是缺陷。`);
+    }
+    // ── blocked 了, 然后呢 (S3 收件箱的分母, 2026-08-06) ──────────────────────
+    // S3 建收件箱的理由是「无人值守的产出必须有去处」。而唯一的铸票点在 `goal.ts`:
+    // **goal 跑以 blocked 收场**才铸 fork。于是 `dag_run` 那条路上的 blocked 没有去处 ——
+    // 那不一定是缺陷 (dag_run 是同步的, 调用方就在跟前), 但**它决定了收件箱的分母**。
+    // 实测 2026-08-06: blocked 4 次**全部来自 dag_run**, 于是收件箱 0 forks / 0 directives。
+    // ⚠ 那是「**没机会**」不是「路断了」—— 两者的下一步相反 (前者继续等, 后者去修链路)。
+    if (outcomeCount.blocked > 0) {
+      const byEntry = rows.filter((r) => r.outcome === 'blocked').map((r) => normalizeEntry(r.entry) ?? '(没记)');
+      const goalish = byEntry.filter((e) => e === 'solve' || e === 'dag_goal').length;
+      console.log(`   ▸ **blocked 了, 然后呢** (S3 收件箱的分母): ${outcomeCount.blocked} 次 blocked,`);
+      console.log(`     其中来自 goal 路径的 **${goalish} 次** ← **只有它们会铸 fork 进 owner 收件箱**`);
+      console.log(`     (其余 ${outcomeCount.blocked - goalish} 次来自 ${[...new Set(byEntry.filter((e) => e !== 'solve' && e !== 'dag_goal'))].join('/')} —— 同步入口, 调用方就在跟前, 不铸票)`);
+      if (goalish === 0) {
+        console.log('     ⚠ 于是收件箱至今**一行都没有过**。那是「**没机会**」不是「路断了」——');
+        console.log('       两者的下一步相反: 前者继续等, 后者去修链路。别把这个 0 读成后者。');
+      }
     }
     console.log('   判据 (与 ⑦ 分开看, 两段各答各的):');
     console.log('     · blocked 与 not-converged 长期分得开 → G5「触发并被正确读」那半格才算真站住;');
