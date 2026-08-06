@@ -78,6 +78,7 @@ import {
  */
 const SHELL_FACT_CAP = 6;
 import { verifiedShellWriteTargets } from './shell-writes';
+import { blamePathCandidates, failureExcerpt } from './failure-trace';
 import { captureRollbackAnchor } from './rollback-anchor';
 import { staticLintPlan } from './plan/static-lint';
 import { leafTierGateFindings } from './plan/leaf-tier-gate';
@@ -2690,6 +2691,21 @@ async function executePlan(
     if (settled.status !== 'done' && continuity) {
       try {
         const startedAt = nodeStartedAt.get(id);
+        const failText = settled.output ?? '';
+        // **失败留痕加厚** (2026-08-06, failure-trace.ts):
+        //   ① 全文落 `fail-<id>.txt` —— 改动前 150 份非绿 checkpoint 带全文的 **0** 份,
+        //      事后诊断只有被砍过的 800 字头。
+        //   ② summary 改**头+尾** —— 盘上撞 800 上限的 2 份全部是 `a && b && c` 链, 成功段
+        //      刷屏占满预算、失败判词在尾巴上被切掉。短于预算原样返回, 另外 61 份逐字不变。
+        //   ③ `failurePaths` = 输出里点名且盘上真有的文件 —— 「路径 → 谁写的」反查的起点。
+        //      **只进可见性**: 节点成败/闸/judge 一律不看它 (同 writeCandidates 那一档)。
+        const failOutputText = failText ? continuity.manager.saveNodeFailureOutput(continuity.runId, id, failText) : null;
+        let failurePaths: string[] = [];
+        try {
+          failurePaths = blamePathCandidates(failText, { root: continuity.repoRoot ?? process.cwd() });
+        } catch (err) {
+          logger.warn({ node: id, err }, '[omd/executor-dag] 失败路径认领失败 (fail-open, 只丢可见性)');
+        }
         continuity.manager.saveCheckpoint(continuity.runId, {
           nodeId: id,
           leafKind: settled.kind,
@@ -2701,7 +2717,9 @@ async function executePlan(
           outputPaths: [],
           artifactHashes: {},
           tokenUsage: settled.usage ?? null,
-          summary: (settled.output ?? '').slice(0, 800),
+          summary: failureExcerpt(failText),
+          ...(failOutputText ? { outputText: failOutputText } : {}),
+          ...(failurePaths.length ? { failurePaths } : {}),
           durationMs: startedAt ? Date.now() - startedAt : 0,
           createdAt: new Date().toISOString(),
           ...(dagGeneration ? { generation: dagGeneration } : {}),
