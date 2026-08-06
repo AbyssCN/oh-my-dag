@@ -872,6 +872,63 @@ describe('omd-readout · ⑧.7 回溯重建的写竞争 (2026-08-06)', () => {
     expect(r.samples[0]!.multiRound).toBe(true); // 样本要标出它落在哪一面
   });
 
+  test('★★ 两侧都有轮次且**不同轮** → 不算一对 (跨轮伪影的直接修法)', () => {
+    // checkpoint 按 nodeId 覆写, 多轮跑里两份可能来自不同的轮 —— 而"两个节点在不同轮里
+    // 各跑一次"根本不是并发。2026-08-06 起 `NodeCheckpoint.round` 记下了轮次, 于是排得掉。
+    const diff = reconstructWriteRace(
+      [{ runId: 'r', multiRound: true, roundsKnown: true, nodes: [
+        { ...w('C::a', 0, 100, ['x.md']), round: 1 },
+        { ...w('C::b', 50, 150, ['x.md']), round: 2 },
+      ] }],
+      st,
+    );
+    expect(diff.clean).toMatchObject({ overlaps: 0, pairs: 0, findings: 0 });
+    expect(diff.ambiguous.runs).toBe(0); // 认得出轮次 → 这一跑**进可信面**, 不再是"不可信"
+
+    const same = reconstructWriteRace(
+      [{ runId: 'r', multiRound: true, roundsKnown: true, nodes: [
+        { ...w('C::a', 0, 100, ['x.md']), round: 2 },
+        { ...w('C::b', 50, 150, ['x.md']), round: 2 },
+      ] }],
+      st,
+    );
+    expect(same.clean.findings).toBe(1); // 同一轮 → 真并发, 照报
+  });
+
+  test('★ 一侧缺轮次(顶层节点没有"轮")→ **不许据此排除** —— 它们确实可能真并发', () => {
+    const r = reconstructWriteRace(
+      [{ runId: 'r', multiRound: true, roundsKnown: true, nodes: [
+        w('top', 0, 200, ['x.md']), // 顶层节点: 没有 round
+        { ...w('C::a', 50, 150, ['x.md']), round: 2 },
+      ] }],
+      st,
+    );
+    expect(r.clean.findings).toBe(1);
+  });
+
+  test('★ 多轮但**认不出轮次**(老记录)→ 仍落不可信面', () => {
+    const r = reconstructWriteRace(
+      [{ runId: 'r', multiRound: true, roundsKnown: false, nodes: [w('C::a', 0, 100, ['x.md']), w('C::b', 50, 150, ['x.md'])] }],
+      st,
+    );
+    expect(r.ambiguous).toMatchObject({ runs: 1, findings: 1 });
+    expect(r.clean.findings).toBe(0);
+  });
+
+  test('★ **同一个节点不能和自己撞车** —— checkpoint 归档会让一个 nodeId 在盘上有好几份', () => {
+    // 覆写前引擎会把上一轮归档成 `<nodeId>.__r<K>.json`, 于是同一个 nodeId 有多份 checkpoint
+    // (实测: 9 个目录 / 43 个节点)。不滤掉就会把「同一节点的第 1 轮与第 2 轮」配成一对,
+    // 而两轮写的通常正是同一批文件 → **保证撞车**。
+    // ⚠ 诚实说明: 这个隐患在 2026-08-06 那批历史数据上**没有兑现** —— 不同轮的窗口在墙钟上
+    //   本来就不重叠 (轮是串行的)。守卫是构造性防护, 不是对已观测错数的修正。
+    const r = reconstructWriteRace(
+      [{ runId: 'r', nodes: [w('C::a', 0, 100, ['x.md']), w('C::a', 50, 150, ['x.md'])] }],
+      st,
+    );
+    expect(r.overlaps).toBe(0);
+    expect(r.findings).toBe(0);
+  });
+
   test('dirsUsable 只数「有 ≥2 个节点」的 —— 单节点的 run 连对都配不出来', () => {
     const r = reconstructWriteRace(
       [{ runId: 'r1', nodes: [w('a', 0, 100, ['x'])] }, { runId: 'r2', nodes: [w('a', 0, 100, ['x']), w('b', 0, 100, ['y'])] }],

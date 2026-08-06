@@ -180,6 +180,15 @@ export interface NodeWindow {
   endMs: number;
   /** 这个节点写过的路径(同一批窗口之间必须**同一个基准**,见下)。 */
   paths: readonly string[];
+  /**
+   * 这一次是 conductor 内环的**第几轮**(2026-08-06)。缺席 = 顶层节点(没有"轮"这回事)
+   * 或早于该字段的记录。
+   *
+   * ⚠ 它在这里的唯一用处是**把不同轮的两个节点排除掉**:checkpoint 按 nodeId 覆写,
+   *   多轮跑里两份可能来自不同的轮,而「两个节点在不同轮里各跑一次」根本不是并发。
+   *   **只在两侧都有轮次且不相等时才排除** —— 一侧缺席(顶层节点)时它们确实可能真并发。
+   */
+  round?: number;
 }
 
 /**
@@ -207,6 +216,15 @@ export function overlapPairsFromWindows(nodes: readonly NodeWindow[]): OverlapPa
     for (let k = i + 1; k < nodes.length; k++) {
       const a = nodes[i]!;
       const b = nodes[k]!;
+      // **同一个节点不能和自己撞车**(2026-08-06 实测揪出)。事后重建时这不是理论情况:
+      // checkpoint 覆写前会把上一轮归档成 `<nodeId>.__r<K>.json`, 于是同一个 nodeId 在盘上
+      // 有好几份 —— 不滤掉就会把「同一个节点的第 1 轮与第 2 轮」配成一对, 而两轮写的
+      // 通常正是同一批文件 → **保证撞车**。实测: 9 个目录 / 43 个节点有多份。
+      if (a.id === b.id) continue;
+      // **不同轮的两个节点不算一对**: 它们在时间上不可能真并发, 窗口看着重叠是因为
+      // checkpoint 按 nodeId 覆写、两份来自不同的轮。⚠ 只在**两侧都有轮次**时才排除 ——
+      // 一侧缺席 (顶层节点没有"轮") 时它们确实可能与子图节点真并发。
+      if (a.round !== undefined && b.round !== undefined && a.round !== b.round) continue;
       // 半开区间相交: 严格 `<` 两侧 —— 首尾相接(前一个结束正好是后一个起跑)不算重叠。
       if (!(a.startMs < b.endMs && b.startMs < a.endMs)) continue;
       const [p, q] = a.id <= b.id ? [a, b] : [b, a];

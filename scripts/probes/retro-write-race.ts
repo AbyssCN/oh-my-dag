@@ -27,9 +27,23 @@ import { join } from 'node:path';
 import type { NodeWindow } from '../../src/harness/plan/observers';
 import { reconstructWriteRace } from '../omd-readout';
 
+/**
+ * 一份 checkpoint 文件 → 它是**第几轮**的(2026-08-06)。
+ *
+ * 两个来源, 缺一不可:
+ *   · 文件名 `<nodeId>.__r<K>.json` —— 覆写前归档的**旧轮**(这条**回溯也成立**, 老记录也有);
+ *   · 字段 `round` —— 2026-08-06 起写的**最新那一轮**(纯 `<nodeId>.json` 的文件名说不出轮次)。
+ * 两者都没有 = 认不出(顶层节点 / 老的最新份)→ 调用方据此判这一跑进不进可信面。
+ */
+function roundOf(file: string, field: number | undefined): number | undefined {
+  const m = /\.__r(\d+)\.json$/.exec(file);
+  if (m) return Number(m[1]);
+  return typeof field === 'number' ? field : undefined;
+}
+
 const base = join(process.env.OMD_REPO ?? process.cwd(), '.omd', 'continuity');
 const stats = { dirs: 0, checkpoints: 0, checkpointsWithPaths: 0 };
-const runs: { runId: string; nodes: NodeWindow[]; multiRound: boolean }[] = [];
+const runs: { runId: string; nodes: NodeWindow[]; multiRound: boolean; roundsKnown: boolean }[] = [];
 
 for (const d of readdirSync(base)) {
   let all: string[];
@@ -56,19 +70,21 @@ for (const d of readdirSync(base)) {
   for (const f of files) {
     try {
       const j = JSON.parse(readFileSync(join(base, d, f), 'utf8')) as {
-        nodeId?: string; createdAt?: string; durationMs?: number; outputPaths?: string[];
+        nodeId?: string; createdAt?: string; durationMs?: number; outputPaths?: string[]; round?: number;
       };
       const end = Date.parse(j.createdAt ?? '');
       if (!Number.isFinite(end) || !j.nodeId) continue;
       const paths = Array.isArray(j.outputPaths) ? j.outputPaths : [];
       stats.checkpoints++;
       if (paths.length) stats.checkpointsWithPaths++;
-      nodes.push({ id: j.nodeId, startMs: end - (j.durationMs ?? 0), endMs: end, paths });
+      nodes.push({ id: j.nodeId, startMs: end - (j.durationMs ?? 0), endMs: end, paths, ...(roundOf(f, j.round) !== undefined ? { round: roundOf(f, j.round) } : {}) });
     } catch {
       // 坏 JSON 不该让整块读数崩; 它不计进 checkpoints, 于是也不假装看过。
     }
   }
-  if (nodes.length) runs.push({ runId: d, nodes, multiRound });
+  // 子图节点 (`::`) 全都带 round → 跨轮的对已被排掉, 这一跑没有伪影可言。
+  const roundsKnown = nodes.every((n) => !n.id.includes('::') || n.round !== undefined);
+  if (nodes.length) runs.push({ runId: d, nodes, multiRound, roundsKnown });
 }
 
 const r = reconstructWriteRace(runs, stats);
@@ -76,8 +92,9 @@ console.log(`continuity 目录 ${r.dirs} 个, 其中 ≥2 个节点 checkpoint �
 console.log(`节点 checkpoint ${r.checkpoints} 份, 其中报了 outputPaths 的 ${r.checkpointsWithPaths} 份`);
 console.log(`\n单轮跑 (数可信)  重叠 ${r.clean.overlaps} · 机会 ${r.clean.pairs} · 撞车 ${r.clean.findings}` +
   `${r.clean.rate === null ? '' : `   [${(r.clean.rate * 100).toFixed(1)}%]`}`);
-console.log(`多轮跑 (不可信)  ${r.ambiguous.runs} 跑 · 重叠 ${r.ambiguous.overlaps} · 机会 ${r.ambiguous.pairs} · 撞车 ${r.ambiguous.findings}`);
-console.log('   ⚠ checkpoint **不记轮次**且按 nodeId 覆写 → 多轮跑里两份可能来自不同的轮, 配对即伪影。');
+console.log(`认不出轮次的多轮跑 (不可信)  ${r.ambiguous.runs} 跑 · 重叠 ${r.ambiguous.overlaps} · 机会 ${r.ambiguous.pairs} · 撞车 ${r.ambiguous.findings}`);
+console.log('   ⚠ checkpoint 按 nodeId 覆写, 而这些**老记录没记轮次** → 两份可能来自不同的轮, 配对即伪影。');
+console.log('     2026-08-06 起 `NodeCheckpoint.round` 有值 → 不同轮的对被直接排除, 多轮跑也进可信面。');
 for (const s of r.samples) {
-  console.log(`   · ${s.runId.slice(0, 8)} ${s.a} × ${s.b}: ${s.shared.join(', ')}${s.multiRound ? '  ⚠ 多轮跑, 无法排除伪影' : ''}`);
+  console.log(`   · ${s.runId.slice(0, 8)} ${s.a} × ${s.b}: ${s.shared.join(', ')}${s.multiRound ? '  ⚠ 认不出轮次的多轮跑, 无法排除伪影' : ''}`);
 }

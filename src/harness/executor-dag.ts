@@ -707,6 +707,10 @@ async function executePlan(
         nodeId: opts.id,
         leafKind: opts.kind,
         status: 'done',
+        // **这份 checkpoint 是第几轮的** (2026-08-06): checkpoint 按 nodeId 覆写, 多轮内环里
+        // 同一个节点跑好几次, 盘上那一份此前说不出自己是第几轮 —— 于是事后拿窗口重建并发
+        // (读数板 ⑧.7) 会把不同轮的两份配成一对。缺席 = 顶层节点 (没有"轮"这回事) 或老记录。
+        ...(roundOfNode.has(opts.id) ? { round: roundOfNode.get(opts.id)! } : {}),
         ...(opts.model ? { model: opts.model } : {}),
         outputPaths,
         artifactHashes,
@@ -1171,6 +1175,7 @@ async function executePlan(
             overlapPairs.set(`${p1}\u0000${p2}`, [p1, p2]);
           }
           liveNow.add(cid);
+          roundOfNode.set(cid, round); // 这一次是第几轮 —— 见 NodeCheckpoint.round
           const hit = reuseLocal.get(cid);
           void (hit
             ? // 复用命中: 注入上轮输出, 零 LLM 零工具 (id/deps 归本轮, skipped 同 resume 语义)。
@@ -1972,6 +1977,14 @@ async function executePlan(
 
   // 节点起跑时刻 (issue #4: 失败 checkpoint 的 durationMs 用; settle 在 runNode 各早退分支之外, 需独立捕获)。
   const nodeStartedAt = new Map<string, number>();
+  /**
+   * conductor 子图节点 → **它这一次是第几轮跑的**(2026-08-06)。
+   *
+   * 只在内环 pump 里写。同一个 cid 在多轮里会被覆写成最新那一轮 —— 与 checkpoint 本身
+   * 「按 nodeId 覆写」的语义一致(盘上那一份就是最后一次的,轮次也该是最后一次的)。
+   * ⚠ 不做成一个全局 `currentRound`:顶层可以同时跑**多个** conductor,各有各的轮计数。
+   */
+  const roundOfNode = new Map<string, number>();
   // ── 起跑时照一张「跑坏了回得去吗」的快照 (D1, 2026-08-06) ──────────────────────
   //
   // D-AB 说「范围内写」那一级可以放手, 理由是**git 就是 rollback**。而 R2 给的隔离档
