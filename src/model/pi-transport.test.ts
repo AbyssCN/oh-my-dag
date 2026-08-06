@@ -339,6 +339,17 @@ describe('pi 通道 · 错误分类与认证', () => {
     await run('402 {"code":"402","message":"Insufficient account balance"}');
     expect(inCooldown('kimi-coding:k3')).toBe(true); // ← 改动前是 false, 于是兜底永远不接管
 
+    // 403 RegionError (同一天第三跑撞上): key 是好的、认证过了, 是这个**坐标**不给你用。
+    // 「认证通过但不给服务」= 换一个能成 → 该熔断。⚠ 401(没认证上)刻意仍不熔断: 悄悄绕过去
+    // 会把一个该让人去修的 key 配置错误藏起来。
+    resetProviderCooldowns();
+    await run('403 {"type":"RegionError","message":"only available hosted in China"}');
+    expect(inCooldown('kimi-coding:k3')).toBe(true);
+
+    resetProviderCooldowns();
+    await run('401 unauthorized');
+    expect(inCooldown('kimi-coding:k3')).toBe(false); // key 坏了该响, 不该被兜底盖住
+
     // 对照: 400 是**请求**错, 换后端也不解决 —— 熔断只针对"这个后端此刻不健康"。
     resetProviderCooldowns();
     await run('400 bad request');
