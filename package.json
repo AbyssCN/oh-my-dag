@@ -73,8 +73,8 @@
     "bench:selftest": "bun run scripts/omd-bench.ts selftest"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.80.10",
-    "@earendil-works/pi-agent-core": "^0.80.10",
+    "@earendil-works/pi-ai": "^0.84.0",
+    "@earendil-works/pi-agent-core": "^0.84.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@oh-my-pi/hashline": "^15.7.6",
     "@sinclair/typebox": "^0.34.49",

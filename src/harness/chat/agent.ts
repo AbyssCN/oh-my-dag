@@ -21,6 +21,8 @@ import {
   type AgentLoopConfig,
   type AgentMessage,
 } from '@earendil-works/pi-agent-core';
+// 0.84 起 `runAgentLoop` 第 6 参 streamFn **必填** (同 agent-leaf 头注)。0.80 的内部默认就是它。
+import { streamSimple } from '@earendil-works/pi-ai/compat';
 import { assistantText, loadProjectContext } from '../agent-leaf';
 import type { AnyOmdTool } from '../agent-tools';
 import { buildConductorChatSystemPrompt } from '../harness-prompts';
@@ -99,6 +101,7 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
     config,
     (e) => opts.onEvent?.(e),
     opts.signal,
+    streamSimple,
   );
 
   // provider 错误响亮上抛 (C-5b 同纪律): error 轮不算成功, 不落盘。
