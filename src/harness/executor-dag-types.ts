@@ -562,6 +562,35 @@ export interface LeafResult {
   shellRuns?: ShellRun[];
   /** 早期心跳闸判停摆 (issue #5): provider 挂起, 未等满硬超时即中止 → settle 记 failureKind='stall'。 */
   stalled?: boolean;
+  /**
+   * **引擎推断的写目标**(2026-08-06):命令原文点名要写、且那个文件在本节点执行窗口内变过。
+   * 与 `filesTouched` 同一个 `artifactRoot` 根。
+   *
+   * ## 为什么它与 `filesTouched` 刻意是两位
+   *
+   * `filesTouched` 是**事实**(受控写工具 write/edit/hashline 的记录);这一位含**推断** ——
+   * `a && b > x` 里 `a` 失败时 `x` 并没有被写,而同窗口另一个节点写了它就会被认领。
+   * 证据强度不同的两类压成一个字段之后,「这条 finding 是真的还是推出来的」就永久分不开了。
+   *
+   * ## 它补的是哪个盲点
+   *
+   * `filesTouched` 只认受控写工具,于是 ① `command` 节点那一路**从不填这一位**
+   * ② agent leaf 既用受控工具又用 bash 写时,bash 那部分隐形(产物闸的救援② 只在
+   * `filesTouched` **空**时才跑)。⑧.6 运行时写竞争的机会分母因此长期够不着。
+   *
+   * ⚠ **它只进可见性,不参与任何判定** —— 产物闸、节点成败、judge 一律不看它。
+   *   放宽产物闸是另一件事(那条闸的安全性质是「没有盘上证据就不救」,挡的是 empty-done);
+   *   这一位要的是**看见**,不是**放行**。两者刻意不共用一条通道。
+   *
+   * ⚠ 缺席 = 这条链上没人报(inproc leaf / 没跑过 shell / 旧记录),与 `[]`(跑了 shell 但
+   *   一个写目标都没核实过)是两件事。
+   *
+   * ⚠ **command 节点的根是仓根**:`CommandLeafResult` 不报 cwd,所以相对目标一律按
+   *   `repoRoot ?? process.cwd()` 解析。一条 `cd 别处 && > x.md` 的相对目标会解析到仓根、
+   *   核不过、于是**不产候选** —— 漏认不误认,方向与整条通道一致(agent leaf 有 `cwd`,
+   *   走 `artifactRoot`,没有这个问题)。
+   */
+  writeCandidates?: string[];
   /** conductor 节点实跑的内环轮数 (D-A)。其它 kind 缺席。 */
   rounds?: number;
   /**
@@ -725,7 +754,22 @@ export interface ExecutorDagResult {
    *
    * ⚠ 缺席 = 早于本次改动的记录;`overlaps: 0` = 这一跑压根没有并发(常见:窄图/链式图)。
    */
-  writeRace?: { overlaps: number; pairs: number; findings: number };
+  writeRace?: {
+    overlaps: number;
+    pairs: number;
+    findings: number;
+    /**
+     * 把**推断**的写目标(`DagNodeResult.writeCandidates`)并进来之后的机会 / 命中数
+     * (2026-08-06 补)。缺席 = 早于本次改动的记录。
+     *
+     * ⚠ 与严格那两个**不许相加也不许互相替代**:严格口径是受控写工具的事实,这两个含推断
+     *   (`a && b > x` 里 a 失败时 x 并没有被写)。`pairsInferred - pairs` 是**只有推断才看得见**
+     *   的那一块 —— 要把这条升成闸的人必须先知道那一块有多大。
+     *   而 `overlaps - pairsInferred` 才是今天两条判据都够不着的那部分。
+     */
+    pairsInferred?: number;
+    findingsInferred?: number;
+  };
   /**
    * **协作式取消** (D-P) 的留痕: 给了就说明本次 run 是被叫停的, 不是自然跑完的。
    *

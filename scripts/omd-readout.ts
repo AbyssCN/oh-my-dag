@@ -349,13 +349,27 @@ export interface ReadoutResult {
     unrecordedRuns: number;
     /** 执行窗口真重叠过的节点对数(有没有并发本身)。 */
     overlaps: number;
-    /** 其中两侧都报过写的对数 —— **机会分母**。 */
+    /** 其中两侧都报过**受控写**的对数 —— **严格**机会分母。 */
     pairs: number;
     findings: number;
     /** `findings / pairs`;分母 0 → null(**算不出 ≠ 0%**)。 */
     rate: number | null;
-    /** 同 ⑧ 用 `LOOP_NO_MOVE_MIN_N`:两个槽的 0 下一步不同(没并发 vs 有并发没撞上)。 */
-    sufficiency: { overlaps: FaceSufficiency; pairs: FaceSufficiency };
+    /**
+     * **推断口径**(2026-08-06 补):把「命令原文点名要写、且那个文件在本节点执行窗口内变过」
+     * 的候选并进来之后的机会 / 命中数。它补的是 `filesTouched` 只认受控写工具留下的两个盲点:
+     * `command` 节点那一路从不填、agent 既用受控工具又用 bash 写时 bash 那部分隐形。
+     *
+     * ⚠ 与严格那两个**不许相加也不许互相替代**:这一档含推断(`a && b > x` 里 `a` 失败时
+     *   `x` 并没有被写)。`pairsInferred - pairs` = 只有推断才看得见的那一块,
+     *   `overlaps - pairsInferred` = 两条判据都够不着的那部分。**要升闸的人必须先看见这个分野。**
+     * ⚠ 缺席(null)= 早于本次改动的行,不是 0。
+     */
+    pairsInferred: number | null;
+    findingsInferred: number | null;
+    /** `findingsInferred / pairsInferred`;分母 0 或缺席 → null。 */
+    rateInferred: number | null;
+    /** 同 ⑧ 用 `LOOP_NO_MOVE_MIN_N`:三个槽的 0 下一步各不相同。 */
+    sufficiency: { overlaps: FaceSufficiency; pairs: FaceSufficiency; pairsInferred: FaceSufficiency };
   };
   /**
    * ⑧.1 **内环的形状**(2026-08-06)—— 「⑧ 那个 0 为什么是 0」的分母。
@@ -528,7 +542,13 @@ function emptyWorld(meta: ReadoutResult['meta']): ReadoutResult {
     // 同上: 没并发过 ≠ 并发过但没撞上, 两个 0 分开印。
     write_race: {
       recordedRuns: 0, unrecordedRuns: 0, overlaps: 0, pairs: 0, findings: 0, rate: null,
-      sufficiency: { overlaps: faceSufficiency(0, LOOP_NO_MOVE_MIN_N), pairs: faceSufficiency(0, LOOP_NO_MOVE_MIN_N) },
+      // 空世界: 推断口径记 null = **没记**(一跑都没有),与"记了而推断口径为 0"分得开。
+      pairsInferred: null, findingsInferred: null, rateInferred: null,
+      sufficiency: {
+        overlaps: faceSufficiency(0, LOOP_NO_MOVE_MIN_N),
+        pairs: faceSufficiency(0, LOOP_NO_MOVE_MIN_N),
+        pairsInferred: faceSufficiency(0, LOOP_NO_MOVE_MIN_N),
+      },
     },
     // 空世界: 七格全 0。⚠ 别把 `runsWithoutConductor: 0` 读成"每张图都有 conductor" ——
     // 空库里它与"一跑都没有"是同一个 0, 那是 meta.limit 那一层的事, 不是这一段的。
@@ -932,7 +952,8 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
   // ⑧.6 运行时写竞争的分母 (2026-08-06)。同上: overlaps 是有没有并发, pairs 才是撞得上的机会。
   let wrRecorded = 0;
   let wrUnrecorded = 0;
-  const wrAcc = { overlaps: 0, pairs: 0, findings: 0 };
+  // ⚠ 推断口径两位单独数 **记了这一位的跑**: 老行缺席不是 0, 混进来会把基率往低了报。
+  const wrAcc = { overlaps: 0, pairs: 0, findings: 0, pairsInferred: 0, findingsInferred: 0, inferredRuns: 0 };
   // ⑧.1 内环形状 (2026-08-06) —— 「⑧ 那个 0 为什么是 0」的分母, 见 ReadoutResult.loop_shape。
   //
   // ⚠ 这一段扫 **parsed** 而不是 rows: 它读的是节点面 (kind / rounds / maxRounds), 不是 run 级那三个
@@ -975,10 +996,18 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
     } else {
       wrRecorded++;
       try {
-        const v = JSON.parse(r.write_race) as { overlaps?: number; pairs?: number; findings?: number };
+        const v = JSON.parse(r.write_race) as {
+          overlaps?: number; pairs?: number; findings?: number; pairsInferred?: number; findingsInferred?: number;
+        };
         wrAcc.overlaps += v.overlaps ?? 0;
         wrAcc.pairs += v.pairs ?? 0;
         wrAcc.findings += v.findings ?? 0;
+        // 缺席 = 这一跑早于推断口径 → **整跑不进推断那两个数**(不是当 0 加进去)。
+        if (typeof v.pairsInferred === 'number') {
+          wrAcc.inferredRuns++;
+          wrAcc.pairsInferred += v.pairsInferred;
+          wrAcc.findingsInferred += v.findingsInferred ?? 0;
+        }
       } catch {
         // 同下: 坏 JSON 不该让整块读数崩。
       }
@@ -1074,9 +1103,14 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
       pairs: wrAcc.pairs,
       findings: wrAcc.findings,
       rate: wrAcc.pairs > 0 ? wrAcc.findings / wrAcc.pairs : null,
+      // 一跑都没记这一位 → null(**没记 ≠ 0 对**),不是 0。
+      pairsInferred: wrAcc.inferredRuns > 0 ? wrAcc.pairsInferred : null,
+      findingsInferred: wrAcc.inferredRuns > 0 ? wrAcc.findingsInferred : null,
+      rateInferred: wrAcc.inferredRuns > 0 && wrAcc.pairsInferred > 0 ? wrAcc.findingsInferred / wrAcc.pairsInferred : null,
       sufficiency: {
         overlaps: faceSufficiency(wrAcc.overlaps, LOOP_NO_MOVE_MIN_N),
         pairs: faceSufficiency(wrAcc.pairs, LOOP_NO_MOVE_MIN_N),
+        pairsInferred: faceSufficiency(wrAcc.pairsInferred, LOOP_NO_MOVE_MIN_N),
       },
     },
     loop_shape: { ...ls },
@@ -2016,11 +2050,28 @@ if (import.meta.main) {
     console.log(`   记了的运行 ${wr.recordedRuns} 次${wr.unrecordedRuns > 0 ? ` (另有 ${wr.unrecordedRuns} 次没记, **不进分母**)` : ''}`);
     console.log(`     执行窗口重叠的节点对 ${wr.overlaps} 对 → 其中**两侧都报过写** ${wr.pairs} 对 (= 撞得上的机会)`);
     console.log(`     → 真撞了 ${wr.findings} 对  [${wr.rate === null ? '算不出 (分母 0)' : `${(wr.rate * 100).toFixed(1)}%`}]`);
-    console.log(`     ⚠ ${wr.overlaps - wr.pairs} 对是**看不见的**: 一侧没报写 —— 可能真没写, 也可能写了而 filesTouched`);
-    console.log('       够不着 (command 节点走 shell 就是这样)。两者今天分不开, 所以**不进机会分母**。');
+    // ── 推断口径 (2026-08-06 补: 写的可见性) ──────────────────────────────────
+    // 上面那两个数只认**受控写工具**。command 节点那一路从不填 filesTouched, agent 既用受控
+    // 工具又用 bash 写时 bash 那部分也隐形 —— 于是「看不见的那部分」里混着一大块**其实认得出**
+    // 的写。这一档把它挖出来, 但**单独记**: 它的证据比受控写弱, 而升不升闸恰恰要看这个分野。
+    if (wr.pairsInferred === null) {
+      console.log(`     ⚠ ${wr.overlaps - wr.pairs} 对是**看不见的**: 一侧没报写 —— 可能真没写, 也可能写了而 filesTouched`);
+      console.log('       够不着 (command 节点走 shell 就是这样)。这批记录都没记推断口径 (早于 2026-08-06),');
+      console.log('       所以这一块今天还分不开。跑一次新的就有下面那一档。');
+    } else {
+      console.log(`     ─ 推断口径 (并进"命令点名要写 + 盘上核实过"的候选, 证据比受控写**弱**):`);
+      console.log(`       机会 ${wr.pairsInferred} 对 → 真撞 ${wr.findingsInferred} 对` +
+        `  [${wr.rateInferred === null ? '算不出 (分母 0)' : `${(wr.rateInferred * 100).toFixed(1)}%`}]`);
+      console.log(`       其中 ${wr.pairsInferred - wr.pairs} 对**只有推断才看得见** (command 节点 / agent 的 bash 写)。`);
+      console.log(`     ⚠ 还剩 ${wr.overlaps - wr.pairsInferred} 对是**两条判据都够不着**的: 一侧连命令原文里都没有写目标`);
+      console.log('       (`git apply` / `> "$OUT"` / 目录级 rsync —— 见 SHELL_WRITE_BLIND_SPOTS)。**不进任何机会分母**。');
+      console.log('     ⚠ 严格与推断两档**不许相加也不许互相替代**: 前者是受控写工具的事实, 后者含推断');
+      console.log('       (`a && b > x` 里 a 失败时 x 并没有被写)。要升闸先看 findingsInferred - findings 有多大。');
+    }
     for (const [name, s, meaning] of [
       ['重叠对数', wr.sufficiency.overlaps, '"这台引擎到底并不并发"可以判了'],
-      ['机会对数', wr.sufficiency.pairs, '**撞车基率**可以当结论读了'],
+      ['机会对数', wr.sufficiency.pairs, '**严格口径**的撞车基率可以当结论读了'],
+      ['推断机会', wr.sufficiency.pairsInferred, '**推断口径**的撞车基率可以当结论读了'],
     ] as const) {
       console.log(
         s.enough
@@ -2030,8 +2081,10 @@ if (import.meta.main) {
     }
   }
   console.log('   判据 (在数据到达之前钉的):');
-  console.log(`     · 重叠对数 ≥ ${LOOP_NO_MOVE_MIN_N} 而机会对数 ≈ 0 → 并发是有的, 但**引擎看不见谁写了什么**`);
-  console.log('       (filesTouched 覆盖不到 command/shell) → 该补的是写的可见性, 不是这条判据;');
+  console.log(`     · 重叠对数 ≥ ${LOOP_NO_MOVE_MIN_N} 而**推断**机会仍 ≈ 0 → 并发是有的, 而两条判据都看不见谁写了什么`);
+  console.log('       → 该补的是**认得出的写法**(SHELL_WRITE_BLIND_SPOTS 那四条), 不是这条判据;');
+  console.log('     · 推断机会在涨而**严格**机会不涨 → 写全在 command/bash 那一侧。那本身是一条读数:');
+  console.log('       它说的是"这台引擎上的写主要不经受控工具", 而受控工具正是产物闸的视野所在;');
   console.log(`     · 机会对数 ≥ ${LOOP_NO_MOVE_MIN_N} 且真撞 0 → 并发写在真跑上不发生, 这条收尾, 别升成闸;`);
   console.log('     · 真撞 > 0 → 逐条读: 撞的是不是同一个"共享目录"型文件 (那是图的形状问题),');
   console.log('       还是两个 leaf 各自的产物恰好同名 (那是命名问题)。两者的改法不一样。');

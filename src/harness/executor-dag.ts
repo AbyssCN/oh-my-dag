@@ -77,7 +77,7 @@ import {
  * 超出的条数如实列出来, 不静默丢。
  */
 const SHELL_FACT_CAP = 6;
-import { shellWriteTargets } from './shell-writes';
+import { verifiedShellWriteTargets } from './shell-writes';
 import { staticLintPlan } from './plan/static-lint';
 import { leafTierGateFindings } from './plan/leaf-tier-gate';
 import { scheduledArtifactFindings } from './plan/invocation-facts';
@@ -2036,6 +2036,17 @@ async function executePlan(
           usage: r.usage,
           // 闸拒(负码)与普通失败(断言没成立)后续动作相反, 记下来才分得开 —— 见 DagNodeResult.exitCode。
           exitCode: r.exitCode,
+          // **写的可见性** (2026-08-06): command 节点从来不填 filesTouched, 于是两个并发 command
+          // 真撞在同一条路径上时 ⑧.6 只看得见 overlaps, 机会分母恒 0。这一位补的就是它 ——
+          // **只进可见性, 不参与任何判定** (上面那个 ok/status 是退出码说了算, 一个字没动)。
+          // 根取仓根: command leaf 跑在仓根, 它没有自己的 cwd 通道 (CommandLeafResult 不报)。
+          ...(() => {
+            const cands = verifiedShellWriteTargets([node.command!], {
+              root: continuity?.repoRoot ?? process.cwd(),
+              startedAt: nodeStartedAt.get(id) ?? 0,
+            });
+            return cands.length ? { writeCandidates: cands } : {};
+          })(),
         };
       }
       // 明示即承诺的反面守卫: expect_exit 只有 command 分支消费, 设在别处等于一个静默无效的旋钮
@@ -2340,22 +2351,15 @@ async function executePlan(
             //   于是这条救援在真实形状上恒不触发(第一版就是这么写的, 闸当场抓到)。
             //   取 2s: 远大于时钟偏斜, 又远小于任何 agent 的执行时长, 所以"一小时前就存在的文件"
             //   仍然救不回来 —— 那一格有单独的用例钉着。
-            const MTIME_SKEW_TOLERANCE_MS = 2_000;
-            const startedAt = (nodeStartedAt.get(id) ?? 0) - MTIME_SKEW_TOLERANCE_MS;
-            const rescued: string[] = [];
-            for (const cand of [...new Set((shellRuns ?? []).flatMap((r) => shellWriteTargets(r.command)))]) {
-              const abs = cand.startsWith('/') ? cand : `${root}/${cand}`;
-              try {
-                const st = statSync(abs);
-                if (st.isFile() && st.mtimeMs >= startedAt) rescued.push(cand);
-              } catch {
-                // 不在盘上 = 没证据 = 不救。**这条 catch 不吞证据**: 没救到的候选会体现在
-                // 下面那句判词里 (它列得出跑过哪些命令), 不是静默消失。
-              }
-            }
+            // 判据抽在 `shell-writes.verifiedShellWriteTargets` 上 —— ⑧.6 的推断口径是它的
+            // 第二个消费者, 两处各写一份必漂 (而漂的方向最坏: 没人说得清某次放行核过什么)。
+            const rescued = verifiedShellWriteTargets(
+              (shellRuns ?? []).map((r) => r.command),
+              { root, startedAt: nodeStartedAt.get(id) ?? 0 },
+            );
             if (rescued.length > 0) {
               logger.warn(
-                { node: id, rescued, startedAt },
+                { node: id, rescued, startedAt: nodeStartedAt.get(id) },
                 '[omd/executor-dag] filesTouched 空, 但 bash 命令点名的文件在本节点窗口内被改过 → 判真写入, 补进 filesTouched',
               );
               filesTouched = rescued;
@@ -2406,9 +2410,19 @@ async function executePlan(
         text = r.text;
         usage = r.usage;
       }
+      // **写的可见性** (2026-08-06): 与救援② 用同一条判据, 但**不受它那道门限制** ——
+      // 救援② 只在 `filesTouched` 空时才跑, 于是「用 write 工具写了 a.md, 又用 bash 写了 b.md」
+      // 这一路里 b.md 永远隐形。这一位独立算, 且**只进可见性不参与任何判定** (产物闸的判词与
+      // 放行条件一个字没动 —— 放宽那条闸是另一件事, 它挡的是 empty-done)。
+      const writeCandidates = shellRuns?.length
+        ? verifiedShellWriteTargets(
+            shellRuns.map((r) => r.command),
+            { root: artifactRoot ?? continuity?.repoRoot ?? process.cwd(), startedAt: t0 },
+          )
+        : [];
       // `artifactRoot` 跟着 `filesTouched` 一起出图: 一组相对路径离开它的根就没有意义,
       // 而 R2 隔离档下这个根与引擎进程的 cwd 不是同一个 (见 LeafResult.artifactRoot 的注)。
-      const leaf: LeafResult = { id, status: 'done', kind: useAgent ? 'agent' : 'inproc', model, output: text, deps: node.depends_on ?? [], usage, filesTouched, ...(artifactRoot ? { artifactRoot } : {}), ...(filesRead.length ? { filesRead } : {}), ...(toolCalls !== undefined ? { toolCalls } : {}), ...(shellRuns ? { shellRuns } : {}), ...(writeCounts ? { writeCounts } : {}) };
+      const leaf: LeafResult = { id, status: 'done', kind: useAgent ? 'agent' : 'inproc', model, output: text, deps: node.depends_on ?? [], usage, filesTouched, ...(artifactRoot ? { artifactRoot } : {}), ...(filesRead.length ? { filesRead } : {}), ...(toolCalls !== undefined ? { toolCalls } : {}), ...(shellRuns ? { shellRuns } : {}), ...(writeCounts ? { writeCounts } : {}), ...(writeCandidates.length ? { writeCandidates } : {}) };
       saveDoneCheckpoint({
         id,
         kind: useAgent ? 'agent' : 'inproc',
@@ -2777,13 +2791,24 @@ async function executePlan(
   // ⚠ 路径解析用**这个节点自己的产物根** —— 同 collectRoundArtifacts 那条: R2 隔离档下两个 leaf
   //   各在自己的 worktree 里写 out.md, 比相对路径会把整个隔离档报成一片红。
   const raceProbe = (() => {
-    const absPaths = (id: string): ReadonlySet<string> => {
+    // 两档证据**分开算**: 严格 = 受控写工具的事实; 推断 = 严格 ∪「命令点名要写且盘上核实过」。
+    // 合并会让「这条 finding 是真的还是推出来的」永久分不开 —— 而升不升闸恰恰要看这个分野。
+    const abs = (id: string, which: 'strict' | 'inferred'): ReadonlySet<string> => {
       const r = results[id];
-      if (!r?.filesTouched?.length) return new Set();
+      if (!r) return new Set();
+      const paths = which === 'strict' ? (r.filesTouched ?? []) : [...(r.filesTouched ?? []), ...(r.writeCandidates ?? [])];
+      if (!paths.length) return new Set();
       const root = r.artifactRoot ?? continuity?.repoRoot ?? process.cwd();
-      return new Set(r.filesTouched.map((p) => (p.startsWith('/') ? p : join(root, p))));
+      return new Set(paths.map((p) => (p.startsWith('/') ? p : join(root, p))));
     };
-    const pairs = [...overlapPairs.values()].map(([a, b]) => ({ a, b, aPaths: absPaths(a), bPaths: absPaths(b) }));
+    const pairs = [...overlapPairs.values()].map(([a, b]) => ({
+      a,
+      b,
+      aPaths: abs(a, 'strict'),
+      bPaths: abs(b, 'strict'),
+      aInferred: abs(a, 'inferred'),
+      bInferred: abs(b, 'inferred'),
+    }));
     return detectRuntimeWriteRace(pairs);
   })();
   observe(raceProbe.observations);
@@ -2834,7 +2859,13 @@ async function executePlan(
     // 同上一条纪律 (2026-08-06): 「产物没变」判据的分母 —— 可比较的跨轮次数, 不是运行次数。
     artifactMove: { transitions: moveTransitions, unobserved: moveUnobserved, findings: moveFindings },
     // 同上 (2026-08-06): 运行时写竞争 —— overlaps 是有没有并发, pairs 才是撞得上的机会。
-    writeRace: { overlaps: raceProbe.overlaps, pairs: raceProbe.pairs, findings: raceProbe.findings },
+    writeRace: {
+      overlaps: raceProbe.overlaps,
+      pairs: raceProbe.pairs,
+      findings: raceProbe.findings,
+      pairsInferred: raceProbe.pairsInferred,
+      findingsInferred: raceProbe.findingsInferred,
+    },
     ...(isCancelled() ? { cancelled: { reason: cancelReason(), at: new Date().toISOString(), notRun } } : {}),
     conductorUsage,
     leavesIn,

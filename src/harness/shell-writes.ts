@@ -26,6 +26,8 @@
  * 可能救回一个本该失败的节点 —— 所以宁可漏。
  */
 
+import { statSync } from 'node:fs';
+
 /** 明显不是产物的写目标(认出来也直接丢)。 */
 const NOT_ARTIFACT = /^\/dev\/|^\/proc\/|^\/sys\/|^-$/;
 
@@ -126,6 +128,64 @@ export function shellWriteTargets(command: string): string[] {
     }
   }
   return [...out];
+}
+
+/**
+ * **mtime 与 `Date.now()` 不是同一个钟**的容差(2026-08-05 实测:写完立刻 `stat`,mtime 比写
+ * 之前取的时刻还小 **3.58ms**)。严格 `>=` 会把一次刚发生的写判成"窗口外" —— 第一版就是这么
+ * 写的,闸当场抓到。取 2s:远大于时钟偏斜,又远小于任何 leaf 的执行时长,所以"一小时前就
+ * 存在的文件"仍然核不过。
+ */
+export const MTIME_SKEW_TOLERANCE_MS = 2_000;
+
+/**
+ * 一组命令 → 其中**经盘上核实**的写目标(2026-08-06 抽出)。
+ *
+ * 核实 = ① 认出来的路径在盘上是个文件 ② 它的 mtime 落在 `[startedAt - 容差, ∞)` 内。
+ * 两条缺一不可 —— 少了 ②,一个一小时前就存在的文件会被当成"本节点写的"。
+ *
+ * ## 为什么抽成一处
+ *
+ * 这段判据有**两个**消费者,而它们要的东西不同:
+ *   · 产物闸的救援②(`executor-dag`)—— 用它**放行**一个 `filesTouched` 为空的节点;
+ *   · ⑧.6 运行时写竞争的推断口径 —— 只用它**看见**,不改变任何判定。
+ * 两处各写一份必漂,而漂的方向恰恰最坏:救援那条的安全性质(没有盘上证据就不救)
+ * 一旦与可见性那条各自演化,就没人说得清某次放行到底核过什么。
+ *
+ * ⚠ 它产的是**推断**不是事实:`a && b > x` 里 `a` 失败时 `x` 并没有被写,而同窗口另一个
+ *   节点写了它就会被认领。调用方必须知道自己拿到的是哪一档证据 —— 这也是 ⑧.6 把严格与
+ *   推断分成两套数的原因。
+ *
+ * @param root 相对路径的解析根(绝对路径原样)。
+ * @param startedAt 本节点起跑时刻(ms);容差在函数内部扣。
+ * @returns 核实通过的路径,**保持候选原样**(相对的仍是相对的)—— 解析根由调用方掌握。
+ */
+export function verifiedShellWriteTargets(
+  commands: readonly string[],
+  opts: { root: string; startedAt: number; statFile?: (p: string) => { isFile: boolean; mtimeMs: number } | null },
+): string[] {
+  const since = startedAt(opts);
+  const stat = opts.statFile ?? defaultStat;
+  const out: string[] = [];
+  for (const cand of [...new Set(commands.flatMap(shellWriteTargets))]) {
+    const abs = cand.startsWith('/') ? cand : `${opts.root}/${cand}`;
+    const st = stat(abs);
+    // 不在盘上 / 读不到 = 没证据 = 不算。**这条不吞证据**: 没核过的候选不会静默消失 ——
+    // 调用方手里仍有命令原文, 判词列得出跑过哪些命令 (同救援② 那条 catch 的注)。
+    if (st?.isFile && st.mtimeMs >= since) out.push(cand);
+  }
+  return out;
+}
+function startedAt(o: { startedAt: number }): number {
+  return o.startedAt - MTIME_SKEW_TOLERANCE_MS;
+}
+function defaultStat(p: string): { isFile: boolean; mtimeMs: number } | null {
+  try {
+    const st = statSync(p);
+    return { isFile: st.isFile(), mtimeMs: st.mtimeMs };
+  } catch {
+    return null;
+  }
 }
 
 /**

@@ -158,6 +158,17 @@ export interface OverlapPair {
   /** a 写过的绝对路径; 空集 = 这一侧没报过写(见 {@link detectRuntimeWriteRace} 的三态那段)。 */
   aPaths: ReadonlySet<string>;
   bPaths: ReadonlySet<string>;
+  /**
+   * **推断口径**的绝对路径(2026-08-06 补):`aPaths` ∪「命令点名要写、且那个文件在本节点
+   * 执行窗口内变过」的候选。缺席 = 调用方没给这一层 → 退回严格集(见下面 `inferred` 那段)。
+   *
+   * ⚠ 与 `aPaths` **刻意分两位, 不合并**:证据强度不同。`aPaths` 是受控写工具的**事实**
+   * (确实写了);这一位含**推断** —— `a && b > x` 里 `a` 失败时 `x` 没被写,而同窗口另一个
+   * 节点写了它就会被认领。两者压成一个集合之后,「要不要把 ⑧.6 升成闸」这个问题就再也
+   * 没法回答了(升闸的人必须先看得见有多少 finding 是推断来的)。
+   */
+  aInferred?: ReadonlySet<string>;
+  bInferred?: ReadonlySet<string>;
 }
 
 /**
@@ -174,13 +185,19 @@ export interface OverlapPair {
  *
  * ## 分母(S-19 的教训:先想清楚这个 0 会被除以什么)
  *
- * 三个数,读的时候别互相替代:
- *   `overlaps` = 执行窗口真重叠过的节点**对**数 —— 有没有并发这件事本身;
- *   `pairs`    = 其中**两侧都报过写**的对数 —— 只有它才是"撞得上"的机会;
- *   `findings` = 其中路径集真相交的对数。
- * `overlaps - pairs` 是**看不见的那部分**:一侧没报写既可能是真没写,也可能是写了而
- * `filesTouched` 够不着(command 节点走 shell 就是这样)。这两者今天分不开,所以**不进机会分母** ——
- * 编一个进去就是拿"可能没写"冒充"确实没写"。
+ * 五个数,读的时候别互相替代:
+ *   `overlaps`         = 执行窗口真重叠过的节点**对**数 —— 有没有并发这件事本身;
+ *   `pairs`            = 其中**两侧都报过受控写**的对数 —— **严格**口径的机会;
+ *   `findings`         = 其中路径集真相交的对数(严格);
+ *   `pairsInferred`    = 把「命令点名要写 + 盘上核实过」的候选并进来之后的机会数;
+ *   `findingsInferred` = 推断口径下真相交的对数。
+ *
+ * `overlaps - pairsInferred` 才是**今天真正看不见的那部分**(两条判据都够不着)。
+ * 而 `pairsInferred - pairs` 是**只有推断才看得见**的那部分 —— 它单独有意义:
+ * 那一块的证据比受控写弱(见 `OverlapPair.aInferred`),要升闸的人得先知道有多大一块靠推断。
+ *
+ * ⚠ 严格那两个数**一个字都没改口径**(2026-08-06 首版逐字同义)。补推断口径时最容易犯的
+ *   错就是顺手把它们一起放宽 —— 那样一来「基率是真的还是推出来的」就永久分不开了。
  *
  * ⚠ 窗口取的是 [起跑, leaf 返回],**比真正的写窗口宽**(engine 不记每次写的时刻)。
  *   方向是宁可多算一对重叠:多算落在**分母**上,把基率往低了报,不会凭空造出 finding。
@@ -193,15 +210,31 @@ export function detectRuntimeWriteRace(pairs: readonly OverlapPair[]): {
   overlaps: number;
   pairs: number;
   findings: number;
+  pairsInferred: number;
+  findingsInferred: number;
   observations: DagObservation[];
 } {
   const observations: DagObservation[] = [];
   let opportunity = 0;
+  let opportunityInferred = 0;
+  let findingsStrict = 0;
   for (const p of pairs) {
-    if (p.aPaths.size === 0 || p.bPaths.size === 0) continue; // 看不见的那部分, 不进分母
-    opportunity++;
-    const shared = [...p.aPaths].filter((x) => p.bPaths.has(x)).sort();
+    // 推断集缺席 = 调用方没接这一层 → 退回严格集。**不是空集** —— 那会把"没给"读成"没写"。
+    const aInf = p.aInferred ?? p.aPaths;
+    const bInf = p.bInferred ?? p.bPaths;
+    const strictOk = p.aPaths.size > 0 && p.bPaths.size > 0;
+    const inferredOk = aInf.size > 0 && bInf.size > 0;
+    if (strictOk) opportunity++;
+    if (inferredOk) opportunityInferred++;
+    if (!inferredOk) continue; // 两条判据都够不着 = 真正看不见的那部分, 不进任何分母
+
+    const sharedStrict = strictOk ? [...p.aPaths].filter((x) => p.bPaths.has(x)) : [];
+    if (sharedStrict.length > 0) findingsStrict++;
+    const shared = [...aInf].filter((x) => bInf.has(x)).sort();
     if (shared.length === 0) continue;
+    // 判词要说出**这一条的证据是哪一档** —— 下一步不同: 受控写是确凿的撞车, 推断来的
+    // 那条还得先确认命令真跑到了那一步 (见 OverlapPair.aInferred 里 `a && b > x` 那例)。
+    const inferredOnly = sharedStrict.length === 0;
     observations.push({
       kind: 'write-race',
       nodes: [p.a, p.b].sort(),
@@ -209,13 +242,24 @@ export function detectRuntimeWriteRace(pairs: readonly OverlapPair[]): {
         `运行时写竞争: 节点 [${p.a}] 与 [${p.b}] 的执行窗口重叠, 而它们都写了 ` +
         `${shared.slice(0, 3).join(', ')}${shared.length > 3 ? ` 等 ${shared.length} 个文件` : ''} —— ` +
         '谁最后写谁赢, 而赢家由调度顺序决定, 同一张图每次跑可能不一样。' +
+        (inferredOnly
+          ? '⚠ **这一条是推断出来的**: 证据是"命令原文点名要写这个文件, 且它在本节点执行窗口内变过", ' +
+            '不是受控写工具的记录。先确认命令真跑到了那一步 (`a && b > x` 里 a 失败时 x 并没有被写)。'
+          : '') +
         '⚠ 这一条与跑前静态那条**同名不同义**: 这两个节点谁都没在 `output_path` 里声明过这个文件, ' +
         '所以静态检查看不见它。改法二选一: **让它们写不同的文件**, 或者**加一条 depends_on 让顺序确定**。',
     });
   }
   // 确定性序 (同一张图两次跑给出同一份报告; 观察面不许有并发时序的痕迹 —— 同上面那条 lint)。
   observations.sort((x, y) => (x.message < y.message ? -1 : x.message > y.message ? 1 : 0));
-  return { overlaps: pairs.length, pairs: opportunity, findings: observations.length, observations };
+  return {
+    overlaps: pairs.length,
+    pairs: opportunity,
+    findings: findingsStrict,
+    pairsInferred: opportunityInferred,
+    findingsInferred: observations.length,
+    observations,
+  };
 }
 
 /**
