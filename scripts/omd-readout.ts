@@ -408,6 +408,34 @@ export interface ReadoutResult {
    *   只有 2026-08-06 之后的跑才有 → 老行进 `unrecordedNodes`,**不进任何一格**。
    */
   /**
+   * ⑤.1 **检查者只读吗**(D4 / §7.3,2026-08-06)—— 以及它的机会分母。
+   *
+   * §7.3 说检查者应当只读。而 D-Q 检测者是**图内节点**:它和被它检查的兄弟共享同一棵
+   * worktree,并且 conductor 把它排成 `executor:'agent'` 时它手里**就是有写工具的**。
+   * 实测(54 跑):23 个 detector 里 **7 个是 agent**(记了 `writeCounts` 的 4 个),而那 4 个一次都没写 ——
+   * 这条纪律今天成立,但成立的方式是**运气不是不变量**。
+   *
+   * ⚠ **分子与分母来自两个不同的列**,读的时候要知道:
+   *   分母(`agentDetectors`)来自**节点面**(`nodes[].detector` + `kind` + `writeCounts`);
+   *   分子(`findings`)来自**观察面**(`observations` 里的 `detector-wrote`)。
+   *   于是「老行没记 observations」与「老行没记 writeCounts」是两个独立的缺口,各自单列。
+   * ⚠ `inproc` 检测者**不进分母** —— 它没有写工具,那是"不可能"不是"没发生"(S-19 那一族)。
+   */
+  detector_writes: {
+    /** 标了 `detector: true` 的节点总数(所有 kind)。 */
+    detectors: number;
+    /** 其中 `kind === 'agent'` 的 —— **手里真有写工具**,这才是机会分母。 */
+    agentDetectors: number;
+    /** 其中**记了** `writeCounts` 的(缺席 = 这条链没人报,不算"没写")。 */
+    observed: number;
+    /** 其中 `writeCounts[0] > 0` 的 —— 受控写工具真动过手。 */
+    wroteControlled: number;
+    /** 观察面上的 `detector-wrote` 条数(含推断口径;与上一位来自不同的列)。 */
+    findings: number;
+    /** `wroteControlled / observed`;分母 0 → null(**算不出 ≠ 0%**)。 */
+    rate: number | null;
+  };
+  /**
    * ⑥ **§8.4 熔断的键该不该改** —— 以及它的机会分母(2026-08-06 修正)。
    *
    * ## 此前这一段把结论读反了
@@ -616,6 +644,8 @@ function emptyWorld(meta: ReadoutResult['meta']): ReadoutResult {
         pairsInferred: faceSufficiency(0, LOOP_NO_MOVE_MIN_N),
       },
     },
+    // 空世界: 分母 0 → rate=null (**算不出 ≠ 0%**)。
+    detector_writes: { detectors: 0, agentDetectors: 0, observed: 0, wroteControlled: 0, findings: 0, rate: null },
     // 空世界: 三格全 0, rate=null (**算不出 ≠ 0%**)。
     breaker_key: {
       fingerprints: 0, singletons: 0, opportunities: 0, nearMiss: 0, exactRepeat: 0,
@@ -1047,6 +1077,36 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
   //   "现行键抓得到的那一格"。实测 54 跑: 指纹 25 · singleton 22 · 真机会 3 ·
   //   near-miss 3 · 真重复 **0** —— 旧读法给出"覆盖 88% → 够用", 真相是现行键**一组没抓到**。
   // ⚠ 计算挪进这里(而不是留在渲染层)也是这次的教训之一: 那一段独立数了一遍, 谁都没闸它。
+  // ── ⑤.1 检查者只读吗 (D4 / §7.3) —— 分母在节点面, 分子在观察面 ────────────────
+  // inproc 检测者**不进分母**: 它没有写工具, 那是"不可能"不是"没发生" (S-19 那一族)。
+  const dw = { detectors: 0, agentDetectors: 0, observed: 0, wroteControlled: 0 };
+  for (const p of parsed) {
+    for (const n of p.nodes) {
+      if (n.detector !== true) continue;
+      dw.detectors++;
+      if (n.kind !== 'agent') continue;
+      dw.agentDetectors++;
+      if (!n.writeCounts) continue; // 缺席 ≠ 0: 这条链没人报
+      dw.observed++;
+      if (n.writeCounts[0] > 0) dw.wroteControlled++;
+    }
+  }
+  // 分子来自**观察面**那一列 (与上面的分母不同源, 见 detector_writes 的注)。
+  let dwFindings = 0;
+  for (const r of rows) {
+    if (!r.observations) continue;
+    try {
+      for (const o of JSON.parse(r.observations) as { kind?: string }[]) if (o.kind === 'detector-wrote') dwFindings++;
+    } catch {
+      // 坏 JSON 不该让整块读数崩 (同上面几处)。
+    }
+  }
+  const detector_writes: ReadoutResult['detector_writes'] = {
+    ...dw,
+    findings: dwFindings,
+    rate: dw.observed > 0 ? dw.wroteControlled / dw.observed : null,
+  };
+
   // command 节点这一侧写不写文件 —— 见 write_race.commandWrites 的注(「正确的零」那段)。
   const cwAll: string[] = [];
   for (const p of parsed) for (const n of p.nodes) if (n.command?.trim()) cwAll.push(n.command);
@@ -1246,6 +1306,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
       },
       commandWrites,
     },
+    detector_writes,
     breaker_key,
     loop_shape: { ...ls },
     outcome_distribution,
@@ -1976,6 +2037,34 @@ if (import.meta.main) {
       console.log('   ⚠ 0 个 (记录是新格式, 这个 0 可信) —— 「60% 天花板在生产上兑现成 0」再加一次读数。');
     }
   }
+
+  // ── ⑤.1 检查者只读吗 (D4 / §7.3, 2026-08-06) ──────────────────────────────
+  const dwr = contract.detector_writes;
+  console.log(`\n⑤.1 检查者只读吗 (D4 / §7.3 —— 这条纪律今天靠运气成立, 不是不变量)`);
+  if (dwr.detectors === 0) {
+    console.log('   留痕里一个 detector 节点都没有 —— 见上面 ⑤ 段的标注率。');
+  } else {
+    console.log(`   detector 节点 ${dwr.detectors} 个, 其中 **kind=agent 的 ${dwr.agentDetectors} 个** ← 手里真有写工具`);
+    console.log(`     (其余是 inproc/command: 一个写工具都没有, **不进机会分母** —— 那是"不可能"不是"没发生")`);
+    if (dwr.observed === 0) {
+      console.log(`     ⚠ 这 ${dwr.agentDetectors} 个**都没记** writeCounts —— 那是「没记」不是「没写」, 跑一次新的才有。`);
+    } else {
+      console.log(`     记了 writeCounts 的 ${dwr.observed} 个 → 其中**受控写工具动过手的 ${dwr.wroteControlled} 个**` +
+        `  [${dwr.rate === null ? '算不出 (分母 0)' : `${(dwr.rate * 100).toFixed(1)}%`}]`);
+      if (dwr.agentDetectors > dwr.observed) {
+        console.log(`     (另有 ${dwr.agentDetectors - dwr.observed} 个没记这一位, **不进分母**)`);
+      }
+    }
+    console.log(`   观察面上的 detector-wrote 条数: ${dwr.findings}`);
+    console.log('     ⚠ 它与上面那个数**不同源**: 分母来自节点面 (writeCounts), 这一个来自观察面');
+    console.log('       (含**推断**口径 —— 检测者走 bash 写的那部分只有这一路看得见)。');
+  }
+  console.log('   判据 (在数据到达之前钉的):');
+  console.log(`     · agent 检测者 < ${LOOP_NO_MOVE_MIN_N} 个 → **还不到判的时候**。今天 n 太小 (rule of three: 0/7 的 95% 上界是 43%);`);
+  console.log(`     · ≥ ${LOOP_NO_MOVE_MIN_N} 且检出 0 → 检查者事实上就是只读的, **维持现状是合法结论**, 不必去收它的写工具;`);
+  console.log('     · 检出 > 0 → 逐条读: 它写的是**自己的草稿**(那只是没归位的临时文件, 改法是给检查者一个 scratch 目录),');
+  console.log('       还是**被它检查的那个产物**(那才是 §7.3 说的问题 —— 裁决不再是对兄弟产出的观察)。两者的改法不一样。');
+  console.log('   ⚠ **只报不拦**: 真把检测者的写工具收掉是单独的拨闸决定。今天先把这件事变成看得见的。');
 
   console.log(`\n⑥ 熔断 near-miss (§8.4 的键该不该从「命令+输出」改成别的)`);
   const bk = contract.breaker_key;

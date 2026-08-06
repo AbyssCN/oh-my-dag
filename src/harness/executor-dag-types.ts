@@ -454,7 +454,18 @@ export interface DagObservation {
    * 当前判据靠词形,已知会误伤指令句(「确保测试通过」)与整改回执(「已按 verifier 意见修改」)。
    * 本条的记数就是那次决定的依据: 活体基率(命中频次)与活体误伤率(逐条人工核对原句)。
    */
-  kind: 'undeclared-artifact-dep' | 'loop-no-progress' | 'write-race' | 'missing-input' | 'missing-command-target' | 'loop-no-artifact-change' | 'leaf-spin' | 'scheduled-artifact' | 'novelty-collapse' | 'verbatim-drop' | 'unsupported-claim';
+  /**
+   * `detector-wrote` (D4 / §7.3, 2026-08-06) = **图内检测者自己动手改了盘**。
+   *
+   * D-Q 检测者是图内节点, 与被它检查的兄弟共享同一棵 worktree; conductor 把它排成
+   * `executor:'agent'` 时它手里**就是有写工具的**。实测 54 跑: 23 个 detector 里 7 个是 agent (记了 writeCounts 的 4 个),
+   * 而那 4 个一次都没写 —— 也就是说这条纪律今天成立, 但成立的方式是**运气不是不变量**,
+   * 而且一旦有一个真写了, 此前**没有任何一处会知道**。
+   *
+   * **只报不拦** (同上面几条): 要不要真把检测者的写工具收掉是单独的拨闸决定, 而今天 n=4,
+   * 离读得出基率还差得远。判据与分母见 `plan/observers.detectDetectorWrites`。
+   */
+  kind: 'undeclared-artifact-dep' | 'loop-no-progress' | 'write-race' | 'missing-input' | 'missing-command-target' | 'loop-no-artifact-change' | 'leaf-spin' | 'scheduled-artifact' | 'novelty-collapse' | 'verbatim-drop' | 'unsupported-claim' | 'detector-wrote';
   /** 涉及的节点 id (lint = [reader, writer]; 空转 = 被反复拒绝的那批)。 */
   nodes: string[];
   /** 人与模型都读的一句话 (进 prompt 的就是它)。 */

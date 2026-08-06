@@ -88,6 +88,7 @@ import {
   detectLoopNoProgress,
   classifyArtifactMove,
   detectRuntimeWriteRace,
+  detectDetectorWrites,
   detectVerbatimDrop,
   type RoundShape,
   ARTIFACT_ABSENT,
@@ -2812,6 +2813,24 @@ async function executePlan(
     return detectRuntimeWriteRace(pairs);
   })();
   observe(raceProbe.observations);
+
+  // ── 检查者写了东西吗 (D4 / §7.3, 2026-08-06, 只报不拦) ─────────────────────────
+  // D-Q 检测者是**图内节点**: 与被它检查的兄弟共享同一棵 worktree, 而 conductor 把它排成
+  // `executor:'agent'` 时它手里就是有写工具的。实测 54 跑: 23 个 detector 里 7 个是 agent (记了 writeCounts 的 4 个),
+  // 那 4 个一次都没写 —— 这条纪律今天成立, 但成立的方式是**运气不是不变量**,
+  // 而且真写了此前没有任何一处会知道。判据与分母都在 detectDetectorWrites 上。
+  const detectorProbe = detectDetectorWrites(
+    Object.values(results)
+      .filter((r) => (plan?.nodes[r.id] as { detector?: unknown } | undefined)?.detector === true)
+      .map((r) => ({
+        id: r.id,
+        kind: r.kind,
+        // 缺席 ≠ 0: 这条链没人报 (旧 runner) 与"跑了但没写"是两件事, 前者进 unobserved。
+        ...(r.writeCounts ? { writes: r.writeCounts[0] } : {}),
+        ...(r.writeCandidates ? { writeCandidates: r.writeCandidates } : {}),
+      })),
+  );
+  observe(detectorProbe.observations);
 
   // 最后再扫一次「声称 vs 引擎记录」—— **与上面那条 lint 同一个理由**: 内环那道只覆盖有 conductor
   // 节点的图, 而平铺的普通图 (`dag_run` 那条路) 一个 conductor 都没有, 上面那条路根本不经过。
