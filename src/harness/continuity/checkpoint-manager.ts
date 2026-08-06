@@ -286,6 +286,38 @@ export class CheckpointManager {
     return this.saveTextArtifact(runId, 'out-', nodeId, text);
   }
 
+  /**
+   * **失败节点输出全文**落 `<runDir>/fail-<nodeId>.txt` (2026-08-06)。改动前失败节点只有
+   * 800 字 summary, 盘上 150 份非绿 checkpoint 带全文的 **0** 份。
+   *
+   * 两处刻意与 {@link saveNodeOutput} 不同:
+   *   ① **前缀不同** (`fail-` 而非 `out-`): 多轮内环里同一个 nodeId 先失败后成功时, 同名会让
+   *      成功全文覆盖失败全文, 而失败那份 checkpoint 已被归档成 `<nodeId>.__r<k>.json` 并仍
+   *      指着那条路径 —— 指针活着、内容被换掉, 正是本仓在治的那种静默失效。
+   *   ② **同名不覆写而是先归档** (`fail-<nodeId>.__r<k>.txt`): 同一节点连失败两轮时, 第一轮的
+   *      失败全文是"这个环到底试过什么"的唯一记录 (与 `saveCheckpoint` 的 `__r` 归档同因)。
+   *
+   * 失败 → null (fail-open: checkpoint 无 outputText 字段, 退回 summary, 有 WARN 留痕)。
+   */
+  saveNodeFailureOutput(runId: string, nodeId: string, text: string): string | null {
+    try {
+      const dir = this.runDir(runId);
+      this.ensureDir(dir);
+      const safe = nodeId.replace(/[^\w.-]/g, '_');
+      const target = join(dir, `fail-${safe}.txt`);
+      if (existsSync(target)) {
+        let k = 1;
+        while (existsSync(join(dir, `fail-${safe}.__r${k}.txt`))) k++;
+        renameSync(target, join(dir, `fail-${safe}.__r${k}.txt`));
+      }
+    } catch (err) {
+      // fail-open 可以吞异常, 不许吞证据: 归档没做成 → 下面那次写会覆盖上一轮的失败全文,
+      // 读的人得知道这一点 (仓规坑 #2)。
+      logger.warn({ err, runId, nodeId }, 'checkpoint: 失败全文归档失败 → 本轮将覆盖上一轮 (fail-open)');
+    }
+    return this.saveTextArtifact(runId, 'fail-', nodeId, text);
+  }
+
   /** 读回 {@link saveNodeOutput} 落的全文 (传 checkpoint 里存的绝对路径)。不存在/读失败 → null。 */
   loadNodeOutput(path: string): string | null {
     try {
