@@ -116,6 +116,39 @@ describe('pathfinder MCP tools', () => {
     }
   });
 
+  /**
+   * **prototype 票的隔离今天没生效, 而回话得说出来**(2026-08-06 查实)。
+   *
+   * D-13 给 prototype 设计的隔离 worktree 住在 `pathfinder/dispatch.ts` 的 `case 'prototype'` 里,
+   * 而它**没有生产调用者** —— `dispatchFrontier` 只自动派 research 票, 注释说 prototype
+   * 「仅 reported 给 UI 由人显式触发」,**而那个触发口从来没建过**
+   * (盘上 `.omd/pathfinder/proto/` 一个目录都没有)。
+   *
+   * prototype 票实际走的是 `readyRegion → path_deliver → detached solve`, 而这条路
+   * **不传 `branchStrategy`** → 缺省 `head` → **直接写主树**。
+   * 于是「沙盒 spike, 试验码不污主树」这句话在生产上是反的。
+   *
+   * ⚠ 这条只钉**说出来**, 不钉改行为 —— 改成隔离是单独的决定 (隔离树看不见未提交的活),
+   *   不是一行 default 的事。
+   */
+  test('★ prototype 票 fire 时, 回话必须说出「它正在直接写主树」', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pf-proto-'));
+    try {
+      const { call } = tools(dir, {
+        dispatchGoal: (() => ({ runId: 'r-proto', already: false })) as unknown as PathfinderToolDeps['dispatchGoal'],
+      });
+      await call('path_map', { destination: 'Ship X' });
+      await call('path_add', { title: 'spike 一下', type: 'prototype', id: 'p1' });
+      await call('path_rule', { ticketId: 'p1', ruling: '试一版看看' });
+      const deliver = await call('path_deliver');
+      expect(deliver.text).toContain('prototype');
+      expect(deliver.text).toContain('直接写主树'); // ← 本用例的全部意义
+      expect(deliver.text).toContain('D-13');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('path_init 引导两步流: 无 backend → 报告; md 全参 → 执行建本地图', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'pf-mcp-'));
     try {
