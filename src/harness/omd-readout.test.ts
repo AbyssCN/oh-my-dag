@@ -738,6 +738,52 @@ describe('omd-readout · ⑧.6 运行时写竞争的分母 (2026-08-06)', () => 
     expect(wr.pairsInferred).not.toBeNull(); // ← 与上面 w5 那条相反, 两格不许被抹平
   });
 
+  /**
+   * command 节点这一侧写不写文件 —— 「推断口径为什么不涨」的先行答案。
+   *
+   * 那个 0 有两种成因,下一步相反:判据太窄(该收窄盲点)vs **这些命令本来就不写文件**。
+   * 实测(2026-08-06,258 次执行 / 113 条不重复命令):认得出写目标的 **0 条**,
+   * 而拆开看全是 grep/rg/cat/`bun test`/`tsc` —— 这台引擎的 command leaf 就是拿来读和断言的。
+   */
+  test('★ command 节点全是读和断言 → withTargets=0, 而那是**正确的零**不是判据漏认', () => {
+    const db = new Database(':memory:');
+    const rec = createDagRecorder({ db });
+    rec.record(
+      fakeResult({
+        planName: 'p',
+        plan: {
+          a: { goal: 'x', executor: 'command', command: 'grep -q FOO src/a.ts' },
+          b: { goal: 'y', executor: 'command', command: 'bun test && bunx tsc --noEmit' },
+        },
+        done: ['a', 'b'],
+      }),
+      { runId: 'cw1', entry: 'dag_run', now: 1000 },
+    );
+    const cw = readout({ db, limit: 50 }).write_race.commandWrites;
+    expect(cw.commands).toBe(2);
+    expect(cw.distinct).toBe(2);
+    expect(cw.withTargets).toBe(0);
+  });
+
+  test('★ command 节点真写文件时 withTargets 数得出来 —— 证明上面那个 0 不是恒 0', () => {
+    // 反向自检: 少了这条, 上面那条与"判据整个失灵"逐字相同 (一条永远绿的闸不是闸)。
+    const db = new Database(':memory:');
+    const rec = createDagRecorder({ db });
+    rec.record(
+      fakeResult({
+        planName: 'p',
+        plan: {
+          a: { goal: 'x', executor: 'command', command: 'echo hi > out/note.md' },
+          b: { goal: 'y', executor: 'command', command: 'grep -q FOO src/a.ts' },
+        },
+        done: ['a', 'b'],
+      }),
+      { runId: 'cw2', entry: 'dag_run', now: 1000 },
+    );
+    const cw = readout({ db, limit: 50 }).write_race.commandWrites;
+    expect(cw.withTargets).toBe(1); // 只有重定向那条
+  });
+
   test('推断机会也有自己的门槛槽 —— 三个 0 的下一步各不相同', () => {
     const wr = withWR('w8', {
       overlaps: LOOP_NO_MOVE_MIN_N, pairs: 0, findings: 0, pairsInferred: LOOP_NO_MOVE_MIN_N, findingsInferred: 0,
