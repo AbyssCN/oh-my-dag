@@ -30,7 +30,8 @@ import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { createDagRecorder } from './dag-record';
 import type { ExecutorDagResult } from './executor-dag-types';
-import { CLAIM_CHECK_MIN_NODES, LOOP_NO_MOVE_MIN_N, faceSufficiency, readout, summarizeLoopRounds, type ReadoutResult } from '../../scripts/omd-readout';
+import { CLAIM_CHECK_MIN_NODES, LOOP_NO_MOVE_MIN_N, faceSufficiency, readout, reconstructWriteRace, summarizeLoopRounds, type ReadoutResult } from '../../scripts/omd-readout';
+import type { NodeWindow } from './plan/observers';
 
 interface FakeNode {
   goal: string;
@@ -791,6 +792,74 @@ describe('omd-readout · ⑧.6 运行时写竞争的分母 (2026-08-06)', () => 
     expect(wr.sufficiency.overlaps.enough).toBe(true);
     expect(wr.sufficiency.pairs.enough).toBe(false); // 严格口径仍不够
     expect(wr.sufficiency.pairsInferred.enough).toBe(true); // 推断口径够了 → 那一档的基率可以读
+  });
+});
+
+/**
+ * ⑧.7 回溯重建的写竞争(2026-08-06)。
+ *
+ * 这一面的**全部价值**是「历史里已经有答案,不用等新跑」。所以这组用例的重心是两条:
+ * ① 它**必须复用** `detectRuntimeWriteRace`(父子守卫白拿,两处各算一份必漂);
+ * ② 输入**必须按 runId 分好组** —— `outputPaths` 相对该 run 的根,把两个 run 混进一个
+ *    数组会**凭空造出撞车**,而那个约束在类型上表达不出来。
+ */
+describe('omd-readout · ⑧.7 回溯重建的写竞争 (2026-08-06)', () => {
+  const st = { dirs: 1, checkpoints: 2, checkpointsWithPaths: 2 };
+  const w = (id: string, startMs: number, endMs: number, paths: string[]): NodeWindow => ({ id, startMs, endMs, paths });
+
+  test('★ 窗口重叠 + 两侧都写了同一个文件 → 撞车', () => {
+    const r = reconstructWriteRace([{ runId: 'r1', nodes: [w('a', 0, 100, ['x.md']), w('b', 50, 150, ['x.md'])] }], st);
+    expect(r.overlaps).toBe(1);
+    expect(r.pairs).toBe(1);
+    expect(r.findings).toBe(1);
+    expect(r.rate).toBe(1);
+    expect(r.samples[0]).toMatchObject({ runId: 'r1', shared: ['x.md'] });
+  });
+
+  test('★ 窗口不重叠 → 一格都不进 (串行不是竞争)', () => {
+    const r = reconstructWriteRace([{ runId: 'r1', nodes: [w('a', 0, 50, ['x.md']), w('b', 50, 150, ['x.md'])] }], st);
+    expect(r.overlaps).toBe(0); // 首尾相接**不算**重叠 (半开区间)
+    expect(r.findings).toBe(0);
+    expect(r.rate).toBeNull();
+  });
+
+  test('★ 父子对**一格都不进** —— 守卫是从 detectRuntimeWriteRace 白拿的', () => {
+    // 这条同时钉着"复用而不是重写": 这里一行守卫代码都没有, 它照样得滤掉。
+    // 实测代价: 不带守卫时历史上 46 条"撞车"里 45 条是这种父子对。
+    const r = reconstructWriteRace([{ runId: 'r1', nodes: [w('C', 0, 200, ['x.md']), w('C::kid', 10, 100, ['x.md'])] }], st);
+    expect(r.overlaps).toBe(0);
+    expect(r.findings).toBe(0);
+  });
+
+  test('★ 一侧没报写 → 算重叠但**不算机会** (同 ⑧.6 的三态)', () => {
+    const r = reconstructWriteRace([{ runId: 'r1', nodes: [w('a', 0, 100, ['x.md']), w('b', 50, 150, [])] }], st);
+    expect(r.overlaps).toBe(1);
+    expect(r.pairs).toBe(0);
+    expect(r.rate).toBeNull();
+  });
+
+  test('★★ 两个**不同 run** 的同名路径**不是**撞车 —— 按 runId 分组是硬约束', () => {
+    // `outputPaths` 相对该 run 的根: 两个 run 里的 `src/a.ts` 是两回事。
+    // 调用方把它们混进一个数组就会凭空造出撞车 —— 而类型表达不出这个约束, 所以用例钉着它。
+    const grouped = reconstructWriteRace(
+      [{ runId: 'r1', nodes: [w('a', 0, 100, ['src/a.ts'])] }, { runId: 'r2', nodes: [w('b', 0, 100, ['src/a.ts'])] }],
+      st,
+    );
+    expect(grouped.findings).toBe(0); // 分了组 → 各自只有一个节点, 连对都配不出来
+
+    const mixed = reconstructWriteRace(
+      [{ runId: '混着的', nodes: [w('a', 0, 100, ['src/a.ts']), w('b', 0, 100, ['src/a.ts'])] }],
+      st,
+    );
+    expect(mixed.findings).toBe(1); // ← 混进一个数组就报了。这就是那条约束的代价
+  });
+
+  test('dirsUsable 只数「有 ≥2 个节点」的 —— 单节点的 run 连对都配不出来', () => {
+    const r = reconstructWriteRace(
+      [{ runId: 'r1', nodes: [w('a', 0, 100, ['x'])] }, { runId: 'r2', nodes: [w('a', 0, 100, ['x']), w('b', 0, 100, ['y'])] }],
+      st,
+    );
+    expect(r.dirsUsable).toBe(1);
   });
 });
 

@@ -171,6 +171,51 @@ export interface OverlapPair {
   bInferred?: ReadonlySet<string>;
 }
 
+/** 一个节点的**执行窗口 + 写过的路径**,用来事后重建重叠对。 */
+export interface NodeWindow {
+  id: string;
+  /** 起跑时刻(ms)。 */
+  startMs: number;
+  /** 结束时刻(ms)。 */
+  endMs: number;
+  /** 这个节点写过的路径(同一批窗口之间必须**同一个基准**,见下)。 */
+  paths: readonly string[];
+}
+
+/**
+ * 一批节点窗口 → **两两重叠的对**(2026-08-06)。
+ *
+ * ## 它存在的理由:让回溯与实时**共用同一个判据**
+ *
+ * `.omd/continuity/<runId>/<nodeId>.json` 里有 `createdAt` + `durationMs`(还原得出窗口)
+ * 与 `outputPaths`,于是**历史上的写竞争是可以重建的**。但重建出来的东西**必须喂给
+ * {@link detectRuntimeWriteRace} 那同一个判据**,而不是另写一份数法 ——
+ * 两处各算一份必漂,而漂了之后"回溯说 1 条、实时说 0 条"就没人分得清是引擎变了还是数法变了。
+ *
+ * 所以这里只做**一件事**:把窗口两两配对。父子怎么滤、机会怎么算、撞车怎么判,
+ * 全在下面那个函数里,一个字都不重复。
+ *
+ * ⚠ **同一批窗口的 `paths` 必须同一个基准**。checkpoint 的 `outputPaths` 是相对**该 run 的根**
+ *   算的 —— 于是**同一个 runId 内可比,跨 run 不可比**(两个 run 里的 `src/a.ts` 是两回事)。
+ *   调用方必须按 runId 分组之后再进来。
+ * ⚠ 窗口取 `[结束 - 时长, 结束]`,与实时那条同样**比真正的写窗口宽**(节点执行时长里
+ *   大部分时间不在写)。方向一致:多算落在分母上,把基率往低了报。
+ */
+export function overlapPairsFromWindows(nodes: readonly NodeWindow[]): OverlapPair[] {
+  const out: OverlapPair[] = [];
+  for (let i = 0; i < nodes.length; i++) {
+    for (let k = i + 1; k < nodes.length; k++) {
+      const a = nodes[i]!;
+      const b = nodes[k]!;
+      // 半开区间相交: 严格 `<` 两侧 —— 首尾相接(前一个结束正好是后一个起跑)不算重叠。
+      if (!(a.startMs < b.endMs && b.startMs < a.endMs)) continue;
+      const [p, q] = a.id <= b.id ? [a, b] : [b, a];
+      out.push({ a: p.id, b: q.id, aPaths: new Set(p.paths), bPaths: new Set(q.paths) });
+    }
+  }
+  return out;
+}
+
 /**
  * **运行时写竞争**的读数(2026-08-06)—— 连同它的分母一起。
  *
