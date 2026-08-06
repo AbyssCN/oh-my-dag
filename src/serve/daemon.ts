@@ -24,6 +24,8 @@ import {
   listPathMaps,
   listRuns,
   readHudState,
+  readReadout,
+  readAttention,
   readNodeOutput,
   readPathMap,
   readRun,
@@ -110,6 +112,9 @@ export function createDaemonFetch(deps: DaemonDeps): (req: Request) => Promise<R
 
     // ── 读侧: hud / 地图 ──
     if (p[0] === 'hud' && req.method === 'GET') return json(readHudState(cwd));
+    // 读数板 + 跨图注意力: 首页那五问的数据源。
+    if (p[0] === 'readout' && req.method === 'GET') return json(readReadout(cwd));
+    if (p[0] === 'attention' && req.method === 'GET') return json(readAttention(cwd));
     if (p[0] === 'maps' && req.method === 'GET') {
       if (p.length === 1) return json(listPathMaps(cwd));
       const map = readPathMap(cwd, p[1]!);
