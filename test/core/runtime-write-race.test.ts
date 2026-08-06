@@ -23,7 +23,7 @@ import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { detectRuntimeWriteRace, type OverlapPair } from '../../src/harness/plan/observers';
-import { runExecutorDag, type GenerateFn } from '../../src/harness/executor-dag';
+import { runExecutorDag, runExecutorDagWithPlan, type GenerateFn } from '../../src/harness/executor-dag';
 
 const pair = (a: string, b: string, aPaths: string[], bPaths: string[]): OverlapPair => ({
   a,
@@ -97,6 +97,42 @@ describe('★ 运行时写竞争 · 三个数分得开 (S-19: 分母要有人写
   });
 });
 
+/**
+ * **父子不算一对** + **子图那一层也要看得见**(2026-08-06 补,两条一起,因为它们互为前提)。
+ *
+ * 首版只在**外层 pump** 上记 `liveNow`,于是 ⑧.6 只看得见顶层调度的节点 —— 而 conductor
+ * 扇出正是并发的主要来源。两个真并发的兄弟撞同一个文件时 `overlaps` 照样是 **0**,
+ * 而那个 0 的意思是"没往那儿看",不是"没发生"。
+ *
+ * 把子图接进来之后立刻出现第二个问题:父 conductor 此刻也在 `liveNow` 里,于是配出
+ * `C × C::child` 这种**父子对** —— 而父节点的 `filesTouched` 是**子树并集**,它自己一个字
+ * 都没写。不滤掉就会把同一次写数两遍,报出一条**改不了**的"竞争"
+ * (「让它们写不同文件」「加一条 depends_on」对父子关系都不成立)。
+ *
+ * ⚠ 这条守卫的代价是量过的:拿 checkpoint 重建历史窗口时**没有**它,46 条"撞车"里
+ *   一眼就能看到 `execute × execute::<hash>` 这种父子对。
+ */
+describe('运行时写竞争 · 父子不算一对 (判据本身)', () => {
+  test('★ 父 × 它自己的子节点 → **一格都不进**(连 overlaps 都不算)', () => {
+    const r = detectRuntimeWriteRace([pair('C', 'C::abc', ['/w/a.md'], ['/w/a.md'])]);
+    expect(r.overlaps).toBe(0); // ← 父子窗口必然重叠, 那不是"并发"的观察
+    expect(r.pairs).toBe(0);
+    expect(r.findings).toBe(0);
+  });
+
+  test('★ 两个兄弟子节点 → 照常报 (证明守卫没把真竞争一起滤掉)', () => {
+    const r = detectRuntimeWriteRace([pair('C::a', 'C::b', ['/w/x.md'], ['/w/x.md'])]);
+    expect(r.overlaps).toBe(1);
+    expect(r.findings).toBe(1);
+  });
+
+  test('★ 前缀相同但不是父子 (`C2` vs `C2x::a`) 不许被误滤', () => {
+    // 判据挂在 `<parent>::` 这个**构造保证**的形状上, 不是"名字像"。
+    const r = detectRuntimeWriteRace([pair('C2', 'C2x::a', ['/w/x.md'], ['/w/x.md'])]);
+    expect(r.findings).toBe(1);
+  });
+});
+
 describe('运行时写竞争 · 接在引擎上 (真跑一遍)', () => {
   /**
    * 两个**无依赖**的 agent leaf, 各自都往同一个文件里写 —— 谁都没在 `output_path` 里声明它,
@@ -145,5 +181,59 @@ describe('运行时写竞争 · 接在引擎上 (真跑一遍)', () => {
     expect(res.writeRace!.pairs).toBe(1);
     expect(res.writeRace!.findings).toBe(0);
     expect(res.observations?.some((o) => o.kind === 'write-race')).toBeFalsy();
+  });
+});
+
+/**
+ * **子图那一层看得见吗**(2026-08-06 补)—— 端到端。
+ *
+ * 判据对 ≠ 通道通(交接 31 §五 第 4 条)。上面那三条钉的是"父子不算一对"这条**判据**,
+ * 而下面这条钉的是**引擎真把子节点喂进了重叠集** —— 首版没喂,于是判据再对也永远收不到料。
+ */
+describe('★ 运行时写竞争 · conductor 子图那一层 (端到端)', () => {
+  const SUB = JSON.stringify({
+    name: 's',
+    nodes: { w1: { goal: '写一', executor: 'agent' }, w2: { goal: '写二', executor: 'agent' } },
+  });
+
+  const runSub = async (mode: 'collide' | 'separate') => {
+    const dir = mkdtempSync(join(tmpdir(), 'wrace-sub-'));
+    let nth = 0;
+    const res = await runExecutorDagWithPlan(
+      { name: 'outer', nodes: { C: { goal: '干活', executor: 'conductor' } } } as never,
+      {
+        conductorModel: 'c:m',
+        leafModel: 'l:m',
+        agentTemplates: new Map(),
+        generate: (async () => ({ text: SUB, usage: { in: 1, out: 1 } })) as GenerateFn,
+        agentRunner: async () => {
+          const i = nth++;
+          const file = mode === 'collide' ? 'shared.md' : `own-${i}.md`;
+          await new Promise((r) => setTimeout(r, 20)); // 保证两个子节点窗口真重叠
+          writeFileSync(join(dir, file), `第 ${i} 个`);
+          return { text: 'ok', usage: { in: 1, out: 1 }, filesTouched: [file], cwd: dir };
+        },
+      } as never,
+    );
+    return res;
+  };
+
+  test('★ 两个并发**子节点**撞同一个文件 → 报, 且父子对没混进任何一格', async () => {
+    // 证伪: 把内环 pump 里的 `liveNow.add(cid)` 删掉 → overlaps 归 0, 这条当场红
+    // (首版就是这个状态 —— 判据一直是对的, 只是从来没有料喂进来)。
+    const res = await runSub('collide');
+    expect(res.writeRace!.overlaps).toBe(1); // ← 只有兄弟那一对; 两个父子对已在判据层滤掉
+    expect(res.writeRace!.pairs).toBe(1);
+    expect(res.writeRace!.findings).toBe(1);
+    const hit = (res.observations ?? []).filter((o) => o.kind === 'write-race');
+    expect(hit.length).toBe(1);
+    // 报的必须是**两个子节点**, 不是父亲 —— 报了父亲那条建议就没法照做
+    expect(hit[0]!.nodes.every((n) => n.startsWith('C::'))).toBe(true);
+  });
+
+  test('★ 子节点各写各的 → 不报, 而**机会照样计数**', async () => {
+    const res = await runSub('separate');
+    expect(res.writeRace!.pairs).toBe(1);
+    expect(res.writeRace!.findings).toBe(0);
   });
 });
