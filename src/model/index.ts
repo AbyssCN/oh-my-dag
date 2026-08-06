@@ -213,13 +213,29 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * 该错误是否 = provider 运行时故障 (值得熔断该 provider): fetch 失败 (非 abort) 或 HTTP 429/5xx。
+ * 该错误是否 = provider 运行时故障 (值得熔断该 provider): fetch 失败 (非 abort) 或 HTTP 402/429/5xx。
  * abort = 调用方意图停止 (非后端故障) → 不熔断。config/parse/validation/truncation = 请求/内容问题,
  * 换 provider 也不解决 → 不熔断 (熔断只针对「这个后端此刻不健康」)。
+ *
+ * ## ⚠ 402 是 2026-08-06 两次真跑买来的
+ *
+ * 同一天两跑、两个不同 provider、同一个形状 —— **钱的问题不让熔断跳,于是自动兜底从不接管**:
+ *   · `pi: Codex error: The usage limit has been reached`(额度用尽)
+ *   · `pi: 402: {"code":"402","message":"Insufficient account balance"}`(余额不足)
+ * 后果不是"这一发失败"而是**整趟白跑**:`roleModelWithFallback` 有一条现成的顺延链,
+ * 而它只在 `usable()` 判首选不可用时才走,`usable()` = 有凭证 ∧ 不在冷却窗 —— 熔断不跳就永远可用。
+ * 实测代价:4 个座位是人手工换的,而引擎本来有能力自己绕过去。
+ *
+ * **402 = 「这个后端在你付钱之前不会服务你」**,正是"此刻不健康"的定义,重试同一个座位必然同样失败。
+ *
+ * ⚠ 只加 402,**没加 401/403**:那两个是凭证配错(换 provider 能绕过,但更该让人去修 key),
+ *   而我手上一次实测都没有。没数就不加 —— 又一条"机制在、零消费者"的入口。
+ * ⚠ Codex 那条**这里仍然接不住**:它经 pi 传上来时不带 HTTP status。别去匹配 "usage limit"
+ *   字符串(那是给每个 provider 的措辞打地鼠)—— 探针见交接 34 §四之二。
  */
 function isProviderFault(err: ModelError): boolean {
   if (err.kind === 'transport') return !String(err.message).includes('abort');
-  if (err.kind === 'http') return err.status === 429 || (err.status ?? 0) >= 500;
+  if (err.kind === 'http') return err.status === 402 || err.status === 429 || (err.status ?? 0) >= 500;
   return false;
 }
 
