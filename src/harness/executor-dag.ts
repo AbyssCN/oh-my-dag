@@ -26,7 +26,7 @@ import {
 // S3.6 escalation patch 模式: 补丁解析 + 程序化 merge (未补丁节点字节不动 → D-21 复用按构造成立)。
 import { parsePlanPatch, applyPlanPatch } from './plan-patch';
 import { hashArtifact, hashText, computeDagGeneration } from './continuity/checkpoint-manager';
-import type { NodeCheckpoint, NodeLoopJournal } from './continuity/types';
+import type { NodeCheckpoint, NodeLoopJournal, RoundVerdict } from './continuity/types';
 // noun-gate 接缝(INV-X3):宿主注入(上游宿主传 memory-hub checkNouns);包不依赖 memory-hub。
 type NounGateFn = (args: { text: string; material: string; repoRoot: string; annotate: boolean }) => { novelNouns: string[] };
 let _nounGate: NounGateFn | null = null;
@@ -1470,6 +1470,11 @@ async function executePlan(
      * 节点级环 journal 落盘 —— **每轮判完就写**, 不是节点结束时写 (崩在这之后 resume 接得回来)。
      * 三个调用点共用: 正常轮末 / 检测者 BLOCKED / 空转 BLOCKED。三处各写一份就会漂。
      */
+    /**
+     * 逐轮两道闸的裁决(2026-08-06)。resume 时接回旧的 —— 断在第 2 轮再续跑,
+     * 第 1 轮那条不能凭空消失(整段的价值就在于"这个环历史上有没有出现过某个组合")。
+     */
+    const roundVerdicts: RoundVerdict[] = journal?.verdicts ? [...journal.verdicts] : [];
     const writeLoopJournal = (
       round: number,
       poisonedNow: ReadonlySet<string>,
@@ -1487,6 +1492,8 @@ async function executePlan(
         poisoned: [...poisonedNow],
         ...(reason ? { prevReason: reason } : {}),
         ...(noveltyTexts.length ? { noveltyTexts: [...noveltyTexts], noveltySeq: [...noveltySeq] } : {}),
+        // 逐轮两道闸的裁决 —— 解锁 D-I 那条"判据红 ∧ judge 说收敛才补守卫"的预设判据 (只记不判)。
+        ...(roundVerdicts.length ? { verdicts: [...roundVerdicts] } : {}),
         ...(converged ? { converged: true, lastOutput } : {}),
         ...(stop ? { stop } : {}),
         updatedAt: new Date().toISOString(),
@@ -1624,6 +1631,13 @@ async function executePlan(
 
       const verdict = await judgeConductorRound(id, node.goal ?? id, r.leaf, round, r.children, r.claims);
       usageAcc = addUsage(usageAcc, verdict.usage);
+      // 两道闸各说了什么, 逐轮记一条。**只记不判** —— 下面的收敛判定一个字没改。
+      // 三态/两态不压平的理由见 `RoundVerdict`: 「没配判据」≠「判据红」,「judge 调不通」≠「judge 说没成」。
+      roundVerdicts.push({
+        round,
+        criterion: freezeGreen === null ? 'none' : freezeGreen ? 'green' : 'red',
+        judge: verdict.unreachable ? 'unreachable' : verdict.converged ? 'converged' : 'rejected',
+      });
       // judge **调不通** → 立刻退环, 不把剩下的轮数烧在一个确定性故障上 (2026-07-31)。
       // 与 §8.4 熔断同一个出口形状, 但 kind 是 `infra-error` 不是 `blocked`: N5 词表里这两格的
       // 下一步相反 —— blocked 是"要人给外部输入", infra-error 是"引擎自己出事, 该修的是引擎"。
