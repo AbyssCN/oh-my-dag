@@ -9,7 +9,7 @@
  * ⚠ **反向自检**(仓规:一条永远绿的闸不是闸)。逐条证伪方式:
  *   · `failureExcerpt` 短文原样 → 把实现改成无条件切头(`text.slice(0, 800)`),
  *     "尾巴留住"那条立刻红(它就是原实现,红的正是它该抓的那次丢失)。
- *   · `blamePathCandidates` 落盘核实 → 把 `isFile` 恒 true,"不存在的路径不算"立刻红。
+ *   · `blamePathCandidates` 写盘核实 → 把 `isFile` 恒 true,"不存在的路径不算"立刻红。
  *   · 后缀白名单 → 把 `PATH_TOKEN` 放宽成 `\S+\.\w+`,"版本号不是路径"立刻红。
  */
 import { describe, expect, test } from 'bun:test';
