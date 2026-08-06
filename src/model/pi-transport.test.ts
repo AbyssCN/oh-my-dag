@@ -18,6 +18,7 @@ import {
   type PiTransportDeps,
 } from './pi-transport';
 import { assertModelResolvable, callModel, ModelError } from './index';
+import { inCooldown, resetProviderCooldowns } from './provider-health';
 import { clearProviders, registerProvider } from './providers';
 import { observeModelUsage } from './accounting';
 
@@ -307,6 +308,42 @@ describe('pi 通道 · 错误分类与认证', () => {
       expect((err as ModelError).kind).toBe(kind);
       expect((err as ModelError).status).toBe(status as number | undefined);
     }
+  });
+
+  /**
+   * **402 要让熔断跳**(2026-08-06,两次真跑买来的)。
+   *
+   * 同一天两跑、两个不同 provider、同一个形状 —— 钱的问题不让熔断跳,于是自动兜底从不接管:
+   * Codex「usage limit reached」· deepseek「402 Insufficient account balance」。
+   * 后果不是"这一发失败"而是**整趟白跑**:`roleModelWithFallback` 那条顺延链只在
+   * `usable()` 判首选不可用时才走,而 `usable()` = 有凭证 ∧ 不在冷却窗 —— 熔断不跳就永远"可用"。
+   *
+   * ⚠ 反向自检:把 `isProviderFault` 里的 `err.status === 402` 去掉 → 第一条断言立刻红
+   *   (那正是改动前的行为);把 402 换成 400 → 第二条(对照)红。
+   */
+  test('402 余额不足 → 熔断跳 (而 400 请求错不跳: 换 provider 也不解决)', async () => {
+    resetProviderCooldowns();
+    const run = async (emsg: string): Promise<void> => {
+      const { deps } = fakeDeps({
+        completeSimple: async () => assistantMsg({ stopReason: 'error', errorMessage: emsg }),
+      });
+      setPiTransportDepsForTest(deps);
+      await callModel({
+        messages: [{ role: 'user', content: 'x' }],
+        model: 'kimi-coding:k3',
+        maxRetries: 0,
+        retryDelayMs: 0,
+      }).catch(() => undefined);
+    };
+
+    await run('402 {"code":"402","message":"Insufficient account balance"}');
+    expect(inCooldown('kimi-coding:k3')).toBe(true); // ← 改动前是 false, 于是兜底永远不接管
+
+    // 对照: 400 是**请求**错, 换后端也不解决 —— 熔断只针对"这个后端此刻不健康"。
+    resetProviderCooldowns();
+    await run('400 bad request');
+    expect(inCooldown('kimi-coding:k3')).toBe(false);
+    resetProviderCooldowns();
   });
 
   test('auth.json oauth access 未过期 → 直接用 (kimi-coding 无内置刷新件语义)', async () => {
