@@ -2511,6 +2511,17 @@ if (import.meta.main) {
       console.log('       先看这一格有没有变** —— 今天推断口径的输入几乎全来自 agent leaf 的 bash 写。');
     }
   }
+  // ── 2026-08-06 回溯验过一次 (不是这块板算的, 是拿 checkpoint 重建的) ──────────────
+  console.log('   ▸ **历史回溯的一次实测** (2026-08-06, 拿 `.omd/continuity/*/` 的 checkpoint 重建):');
+  console.log('     checkpoint 里有 `createdAt` + `durationMs`(可还原执行窗口)与 `outputPaths`');
+  console.log('     (= `filesTouched` 相对化到该 run 的根)→ **历史上的重叠/机会/撞车可以重建**。');
+  console.log('     69 个 continuity 目录 · 730 份节点 checkpoint → **重叠 1648 · 机会 30 · 真撞车 1**');
+  console.log('     (`execute::repair_acceptance_probe_contract` 与另一个兄弟都碰了 `goal/acceptance.ts`)。');
+  console.log('     ⚠ **必须带父子守卫**: 不带的话"撞车"是 46 条, 其中 45 条是 `execute × execute::<hash>`');
+  console.log('       这种父子对 —— 父节点的 outputPaths 是子树并集, 它自己一个字都没写。');
+  console.log('     → **并发写竞争在生产上确实发生**, 不是理论风险。上面那两档口径攒够之前,');
+  console.log('       这条历史读数是目前唯一的活体证据; 把它接成一个常驻读数面是下一步该做的事');
+  console.log('       (⚠ 接的时候要像 ⑨/⑫ 那样**标口径**: 它与上面两档的窗口来源和路径基准都不同)。');
   console.log('   判据 (在数据到达之前钉的):');
   console.log(`     · 重叠对数 ≥ ${LOOP_NO_MOVE_MIN_N} 而**推断**机会仍 ≈ 0 → 并发是有的, 而两条判据都看不见谁写了什么`);
   console.log('       → 该补的是**认得出的写法**(SHELL_WRITE_BLIND_SPOTS 那四条), 不是这条判据;');
