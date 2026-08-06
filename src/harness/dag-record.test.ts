@@ -148,6 +148,83 @@ describe('留痕的派生面 — 命令原文 + 效果指标计数', () => {
     expect(rec.get(id)!.nodes[0]!.command).toBeUndefined();
     rec.close();
   });
+
+  /**
+   * ⑧.1 内环形状 —— 这四条钉的是**四格不许互相冒充**。
+   *
+   * 反向自检:把 `maxRounds` 写成 `planNode?.max_rounds ?? 1`(不检查 planNode 在不在)会让
+   * 第 4 条红 —— map 动态扇出的 conductor 会被记成 `maxRounds: 1`,读数板于是把「不知道」
+   * 念成「单轮档」。把 `rounds` 的 `typeof === 'number'` 换成真值判断会让第 3 条红。
+   */
+  test('conductor 的内环形状 (rounds/maxRounds) 进留痕; 其它 kind 不该多出这两位', () => {
+    const rec = createDagRecorder({ path: ':memory:' });
+    const id = rec.record(
+      withNodes(
+        { c: { goal: 'x', max_rounds: 3 }, a: { goal: 'y' } },
+        {
+          c: { id: 'c', kind: 'conductor', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 }, rounds: 2 },
+          // agent 也可能带 rounds (别的语义) —— 这两位只对 conductor 有意义, 别的 kind 记了就是编
+          a: { id: 'a', kind: 'agent', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 }, rounds: 7 },
+        },
+      ),
+      { runId: 'run-loop' },
+    );
+    const nodes = rec.get(id)!.nodes;
+    expect(nodes.find((n) => n.id === 'c')!.rounds).toBe(2);
+    expect(nodes.find((n) => n.id === 'c')!.maxRounds).toBe(3);
+    expect(nodes.find((n) => n.id === 'a')!.rounds).toBeUndefined();
+    expect(nodes.find((n) => n.id === 'a')!.maxRounds).toBeUndefined();
+    rec.close();
+  });
+
+  test('plan 没写 max_rounds → 记 1 (缺省是引擎**真跑**的值, 不是猜的)', () => {
+    const rec = createDagRecorder({ path: ':memory:' });
+    const id = rec.record(
+      withNodes(
+        { c: { goal: 'x' } },
+        { c: { id: 'c', kind: 'conductor', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 }, rounds: 1 } },
+      ),
+      { runId: 'run-loop-default' },
+    );
+    expect(rec.get(id)!.nodes[0]!.maxRounds).toBe(1);
+    rec.close();
+  });
+
+  test('conductor 没报 rounds (异常退出, 没跑到 settle) → 那一位缺席, **不补 0 也不补 1**', () => {
+    const rec = createDagRecorder({ path: ':memory:' });
+    const id = rec.record(
+      withNodes(
+        { c: { goal: 'x', max_rounds: 2 } },
+        { c: { id: 'c', kind: 'conductor', status: 'failed', deps: [], output: '', usage: { in: 0, out: 0 } } },
+      ),
+      { runId: 'run-loop-crash' },
+    );
+    const n = rec.get(id)!.nodes[0]!;
+    expect(n.rounds).toBeUndefined(); // 「没记」
+    expect(n.maxRounds).toBe(2); // 上限来自 plan, 跑没跑到都知道
+    rec.close();
+  });
+
+  test('plan 里没有这个 conductor (map 动态扇出) → maxRounds 也缺席, 不拿缺省顶', () => {
+    const rec = createDagRecorder({ path: ':memory:' });
+    const id = rec.record(
+      withNodes(
+        { parent: { goal: 'x' } },
+        {
+          'parent#1': {
+            id: 'parent#1', kind: 'conductor', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 }, rounds: 1,
+          },
+        },
+      ),
+      { runId: 'run-loop-fanout' },
+    );
+    const n = rec.get(id)!.nodes[0]!;
+    expect(n.rounds).toBe(1); // 这一位引擎报了, 是真的
+    // 这条是本用例的全部意义: plan 里没有它 → 上限**不知道**。补一个 1 会让读数板把
+    // 「不知道」念成「单轮档」, 而后者的下一步是"改缺省或收掉检测器" —— 结论完全不同。
+    expect(n.maxRounds).toBeUndefined();
+    rec.close();
+  });
 });
 
 describe('recordDagRun (onComplete 钩子工厂)', () => {
