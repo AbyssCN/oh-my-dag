@@ -228,14 +228,26 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  *
  * **402 = 「这个后端在你付钱之前不会服务你」**,正是"此刻不健康"的定义,重试同一个座位必然同样失败。
  *
- * ⚠ 只加 402,**没加 401/403**:那两个是凭证配错(换 provider 能绕过,但更该让人去修 key),
- *   而我手上一次实测都没有。没数就不加 —— 又一条"机制在、零消费者"的入口。
+ * ## 403 是同一天第三跑加的(当天下午还刻意没加它)
+ *
+ * 上一版这里写着「没加 401/403,因为我手上一次实测都没有」。**第三跑就撞上了**:
+ * `pi: 403: {"type":"RegionError","message":"The latest version of this model is only
+ * available hosted in China and requires explicit opt in"}` —— judge 与 6 个子节点里的 5 个全挂在它上面。
+ *
+ * 它**不是凭证配错**:key 是好的、认证过了,是这个**坐标**不给你用。
+ * 「认证通过但不给服务」正是熔断该管的那格 —— 重试同一个坐标必然同样失败,而换一个能成。
+ *
+ * ⚠ **401 仍然不加**:401 = 没认证上 = key 配错,悄悄绕过去会把一个该让人去修的配置错误藏起来
+ *   (熔断的语义是"这个后端此刻不健康",不是"替你隐瞒你的 key 坏了")。同样,没实测就不加。
  * ⚠ Codex 那条**这里仍然接不住**:它经 pi 传上来时不带 HTTP status。别去匹配 "usage limit"
  *   字符串(那是给每个 provider 的措辞打地鼠)—— 探针见交接 34 §四之二。
  */
 function isProviderFault(err: ModelError): boolean {
   if (err.kind === 'transport') return !String(err.message).includes('abort');
-  if (err.kind === 'http') return err.status === 402 || err.status === 429 || (err.status ?? 0) >= 500;
+  if (err.kind === 'http') {
+    const s = err.status ?? 0;
+    return s === 402 || s === 403 || s === 429 || s >= 500;
+  }
   return false;
 }
 
