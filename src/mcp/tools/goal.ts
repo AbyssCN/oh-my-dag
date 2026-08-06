@@ -21,6 +21,7 @@ import { recordDagRun, type DagRecorder } from '../../harness/dag-record';
 import type { AcceptanceProbe } from '../../harness/goal/acceptance';
 import { RUN_OUTCOME_INFO } from '../../harness/run-outcome';
 import { describeRunWorktree, prepareRunWorktree, type BranchStrategy } from '../../harness/run-worktree';
+import { captureRollbackAnchor, describeRollback } from '../../harness/rollback-anchor';
 import { renderOwnerDirectives, type OwnerInbox } from '../owner-inbox';
 import { logger } from '../../harness/logger';
 
@@ -426,7 +427,17 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           {
             type: 'text' as const,
             // 隔离档必须把目录/分支/合回命令念出来 —— 否则"隔离"退化成"东西不见了"。
-            text: `runId: ${runId}\nstatus: running\n${describeRunWorktree(worktree)}`,
+            // ⚠ **回滚状态要在起跑这一刻说, 不是跑完在读数板上说**(2026-08-06, D1 / ⑬)。
+            //   引擎起跑时已经照过一张同样的快照并落进账本, 但那是**给读数板看的** ——
+            //   而需要知道"这次跑坏了回不回得去"的人是**此刻正在按下去的 owner**。
+            //   同 `uncommittedWarning` 那条(`run-worktree`): 知识存在, 拿不到它的人正是要用它的人。
+            //   ⚠ 多算一次 git(实测仓内 3.4ms), 值 —— 一次 goal 跑动辄几分钟。
+            //   ⚠ **只报不拦**: 脏树照跑, 只是把"没有回滚对象"这件事摆在扣扳机之前。
+            //   实测 (2026-08-06 首批 4 跑): **4/4 都是 dirty-tracked** —— D-AB 那句
+            //   「范围内写可以放手, 因为 git 就是 rollback」在生产上一次都没成立过。
+            text:
+              `runId: ${runId}\nstatus: running\n${describeRunWorktree(worktree)}\n` +
+              describeRollback(captureRollbackAnchor({ cwd: worktree.cwd })),
           },
         ],
       };

@@ -23,7 +23,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createGoalTool } from './goal';
@@ -110,6 +110,56 @@ describe('★ S3 收件箱第一环: goal 跑 blocked → 岔口进收件箱', (
       // 这一行是本用例的全部意义: 票铸出来但 triage 看不见 = 链断在两环之间, 而那正是
       // 生产上没跑通过所以谁也没发现的那种断点。
       expect(text).toContain('缺一个外部凭证');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * **回滚状态要在起跑那一刻说** —— D1 / ⑬ 的落点(2026-08-06)。
+ *
+ * 引擎起跑时已经照过一张 git 快照并落进账本,但那是**给读数板看的**;而需要知道
+ * 「这次跑坏了回不回得去」的人是**此刻正在按下去的 owner**。同 `run-worktree` 里
+ * `uncommittedWarning` 那条:知识存在,拿不到它的人正是要用它的人。
+ *
+ * ⚠ 实测(2026-08-06 首批 4 跑):**4/4 都是 `dirty-tracked`** —— D-AB 那句
+ * 「范围内写可以放手,因为 git 就是 rollback」在生产上**一次都没成立过**。
+ * 所以这句话不是文案洁癖,它是那条自主度理由在真实条件下的读数。
+ */
+describe('★ 起跑回话里说得出「跑坏了回不回得去」', () => {
+  test('★ 脏树起跑 → 回话明说**没有回滚对象**, 而且给得出怎么才有', async () => {
+    const { tool, root } = make((g) => result(g));
+    try {
+      // 造一个"已跟踪文件有未提交改动"的仓 —— 那是生产上最常见的形状
+      for (const args of [['init', '-q'], ['add', '-A'], ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 's']]) {
+        Bun.spawnSync(['git', ...args], { cwd: root, stdout: 'ignore', stderr: 'ignore' });
+      }
+      writeFileSync(join(root, 'seed.txt'), 'seed\n');
+      Bun.spawnSync(['git', 'add', '-A'], { cwd: root, stdout: 'ignore', stderr: 'ignore' });
+      Bun.spawnSync(['git', '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'seed'], { cwd: root, stdout: 'ignore', stderr: 'ignore' });
+      writeFileSync(join(root, 'seed.txt'), '改了但没提交\n');
+
+      const r = await call(tool, { goal: '干点活' });
+      const text = r.content.map((c) => c.text ?? '').join('\n');
+      expect(text).toContain('回滚');
+      expect(text).toContain('没有'); // ← 本用例的全部意义: 在扣扳机之前说出来
+      expect(text).toContain('git stash'); // 并给得出怎么才有回滚对象
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('★ 干净树起跑 → 说**有**完整回滚 (证明这句不是恒说"没有")', async () => {
+    const { tool, root } = make((g) => result(g));
+    try {
+      writeFileSync(join(root, 'seed.txt'), 'seed\n');
+      for (const args of [['init', '-q'], ['add', '-A'], ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 's']]) {
+        Bun.spawnSync(['git', ...args], { cwd: root, stdout: 'ignore', stderr: 'ignore' });
+      }
+      const r = await call(tool, { goal: '干点活' });
+      const text = r.content.map((c) => c.text ?? '').join('\n');
+      expect(text).toContain('git checkout -- . && git clean -fd');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
