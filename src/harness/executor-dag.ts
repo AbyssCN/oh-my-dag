@@ -2784,6 +2784,14 @@ async function executePlan(
           summary: failureExcerpt(failText),
           ...(failOutputText ? { outputText: failOutputText } : {}),
           ...(failurePaths.length ? { failurePaths } : {}),
+          // **这个节点读过什么** (2026-08-06)。成功节点一直有这一位 (盘上 265/322 = 82%),
+          // 失败节点 **0/21** —— 而它恰恰是 `empty-artifact` 里最要紧的那个分辨:
+          //   · 「读了声明的产物, 发现它已经是目标状态, 于是正确地没写」 → 不该判失败
+          //   · 「什么都没读也没写, 却报『写完了』」                    → 正是闸要拦的 empty-done
+          // 盘上看这两者**长得一模一样**(filesTouched 都空、盘上都没位移), 而下一步相反。
+          // 今天分不开不是因为难, 是因为**没人记那一位**。先记, 攒够了再判要不要动闸。
+          // ⚠ 只记不判: 产物闸一个字没改。
+          ...(settled.filesRead?.length ? { inputPaths: settled.filesRead } : {}),
           durationMs: startedAt ? Date.now() - startedAt : 0,
           createdAt: new Date().toISOString(),
           ...(dagGeneration ? { generation: dagGeneration } : {}),
