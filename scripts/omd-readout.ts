@@ -1834,6 +1834,12 @@ function printReadoutHuman(r: ReadoutResult, dbPath: string): void {
   );
   const g = r.criteria_grid.four_grid;
   console.log(`   四格:   executed_success ${g.executed_success} · executed_failure ${g.executed_failure} · reused_success ${g.reused_success} · 未记 ${g['未记']} (= ${g.executed_success + g.executed_failure + g.reused_success + g['未记']})`);
+  // ⚠ 与 ⑦ 段那个"没过的节点数"**不是同一个数**(2026-08-06 对账时发现, 此前谁都没说):
+  //   ⑦ 按**节点实例**数 —— 同一个节点在两条记录里各失败一次 = 2;
+  //   这里按**去重的节点 id** 数, 且判据是「**有没有成功过**」—— 先失败后成功的算 success。
+  //   两个都对, 答的不是同一个问题, 而只看数字会以为哪边算漏了 (⑨/⑫ 那个形状的第五次)。
+  console.log('   ⚠ `executed_failure` 与 ⑦ 段那个"没过的节点"**不可比**: 这里是**去重 id** 且判「有没有成功过」,');
+  console.log('     ⑦ 是**节点实例**计数(同一节点失败两次算两次)。先失败后成功的节点在这里进 success、在 ⑦ 里仍留一笔。')
   console.log(`   风险格: ${r.criteria_grid.two_grid_risk.map((t) => `${t.risk_level} ${t.executed}/${t.not_executed}`).join(' · ')}`);
   const c = r.criteria_consistency;
   console.log(`   criteria: agree ${c.agree} · oracleFailed ${c.oracleFailed} · wastedRounds ${c.wastedRounds} · agreeFail ${c.agreeFail} · recorded ${c.recorded} · unrecorded ${c.unrecorded}`);
