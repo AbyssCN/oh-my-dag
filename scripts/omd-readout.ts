@@ -61,6 +61,7 @@ import { parseMapMarkdown } from '../src/harness/pathfinder/map-store';
 import { computeCost } from '../src/model/cost-ledger';
 import { shellWriteTargets } from '../src/harness/shell-writes';
 import type { RollbackAnchorKind } from '../src/harness/rollback-anchor';
+import { detectRuntimeWriteRace, overlapPairsFromWindows, type NodeWindow } from '../src/harness/plan/observers';
 import { capsFor } from '../src/harness/../model/model-caps';
 import { CheckpointManager } from '../src/harness/continuity/checkpoint-manager';
 import type { NodeLoopJournal } from '../src/harness/continuity/types';
@@ -567,6 +568,45 @@ export const CLAIM_CHECK_MIN_NODES = 60;
 export const LOOP_NO_MOVE_MIN_N = 60;
 
 /**
+ * ⑧.7 **回溯重建的写竞争**(2026-08-06)—— 拿 checkpoint 把历史上的并发撞车算出来。
+ *
+ * ## 为什么值得单开
+ *
+ * ⑧.6 那两档(严格 / 推断)都要等新跑攒够。而 `.omd/continuity/<runId>/<nodeId>.json` 里
+ * 一直有 **`createdAt` + `durationMs`**(还原得出执行窗口)与 **`outputPaths`**
+ * (= `filesTouched` 相对化到该 run 的根)—— **历史上的重叠/机会/撞车是可以重建的**。
+ *
+ * ⚠ **它与 ⑧.6 那两档不是同一个仪器,数不许相加**:
+ *   · 窗口来源不同:这里是 `结束 - 时长`(整个节点的执行时长),⑧.6 是调度器实时记的;
+ *   · 路径基准不同:这里相对**该 run 的根** —— **同一 runId 内可比,跨 run 不可比**;
+ *   · 覆盖不同:只覆盖**开了 continuity 的跑**,目录被清掉就没了(与留痕库的寿命不一样长)。
+ *
+ * ⚠ 判据**一个字都不重写**:窗口配对之后喂给 `detectRuntimeWriteRace` 那同一个函数
+ *   (父子守卫、机会分母、撞车判定全在那儿)。两处各算一份必漂,而漂了之后
+ *   「回溯说 1 条、实时说 0 条」就没人分得清是引擎变了还是数法变了。
+ */
+export interface RetroWriteRace {
+  /** 扫过的 continuity 目录数。 */
+  dirs: number;
+  /** 其中有 ≥2 份节点 checkpoint 的(**只有它们可能产生重叠对**)。 */
+  dirsUsable: number;
+  /** 读到的节点 checkpoint 份数。 */
+  checkpoints: number;
+  /** 其中报了 `outputPaths` 的份数(没报的那些进不了机会分母)。 */
+  checkpointsWithPaths: number;
+  /** 重叠对数(**已滤掉父子对**,同 ⑧.6)。 */
+  overlaps: number;
+  /** 两侧都报了写的对数 = 机会分母。 */
+  pairs: number;
+  /** 其中路径真相交的对数。 */
+  findings: number;
+  /** `findings / pairs`;分母 0 → null。 */
+  rate: number | null;
+  /** 前 3 条撞车的原料(人工核对用)。 */
+  samples: { runId: string; a: string; b: string; shared: string[] }[];
+}
+
+/**
  * 内环 journal 的**轮数分布**(2026-08-06)—— ⑧.1 那四格里**可回溯**的第二格。
  *
  * ## 为什么它值得单独抽出来
@@ -595,6 +635,52 @@ export interface LoopRoundSummary {
   oneRound: number;
   /** `turned` 按 `stop.kind` 分组;缺席的 stop 归 `'(没记)'`(早于 N6 的记录)。 */
   turnedByStop: Record<string, number>;
+}
+
+/**
+ * 一批 run 的节点窗口 → 回溯写竞争读数(**纯函数**,IO 在调用方)。
+ *
+ * ⚠ 输入**必须按 runId 分好组**:`outputPaths` 相对该 run 的根,跨 run 的同名路径不是同一个
+ *   文件(见 {@link RetroWriteRace} 那段)。这个约束在类型上表达不出来,所以写在这里 ——
+ *   把两个 run 的节点混进一个数组会凭空造出撞车。
+ */
+export function reconstructWriteRace(
+  runs: readonly { runId: string; nodes: readonly NodeWindow[] }[],
+  stats: { dirs: number; checkpoints: number; checkpointsWithPaths: number },
+): RetroWriteRace {
+  let overlaps = 0;
+  let pairs = 0;
+  let findings = 0;
+  let dirsUsable = 0;
+  const samples: RetroWriteRace['samples'] = [];
+  for (const r of runs) {
+    if (r.nodes.length < 2) continue;
+    dirsUsable++;
+    // **判据一个字都不重写**: 配对之后喂给实时那条用的同一个函数 (父子守卫也在那儿)。
+    const probe = detectRuntimeWriteRace(overlapPairsFromWindows(r.nodes));
+    overlaps += probe.overlaps;
+    pairs += probe.pairs;
+    findings += probe.findings;
+    if (probe.findings > 0 && samples.length < 3) {
+      // 从观察条目里取回是哪两个节点 —— 判词由那边生成, 这里只拆节点名与共享路径。
+      const o = probe.observations[0]!;
+      const byId = new Map(r.nodes.map((n) => [n.id, new Set(n.paths)]));
+      const [a, b] = o.nodes as [string, string];
+      const shared = [...(byId.get(a) ?? [])].filter((p) => byId.get(b)?.has(p)).sort();
+      samples.push({ runId: r.runId, a, b, shared: shared.slice(0, 3) });
+    }
+  }
+  return {
+    dirs: stats.dirs,
+    dirsUsable,
+    checkpoints: stats.checkpoints,
+    checkpointsWithPaths: stats.checkpointsWithPaths,
+    overlaps,
+    pairs,
+    findings,
+    rate: pairs > 0 ? findings / pairs : null,
+    samples,
+  };
 }
 
 /** 纯函数(IO 在调用方)—— 见 {@link LoopRoundSummary}。 */
@@ -2420,6 +2506,74 @@ if (import.meta.main) {
   console.log('       (§8.4 熔断 / D-Q blocked / 预算轴), 该去查的是那三条, 不是这条检测器。');
   console.log('   ⚠ 四格**不许合并**: 它们的下一步分别是"别投/改缺省/收掉/查别处"。');
   console.log('     合成一句"环只转一圈"正是这一段要拆的那个动作 (S-19 的同一形状再走一层)。');
+
+  // ── ⑧.7 回溯重建的写竞争 (2026-08-06) ────────────────────────────────────────
+  // IO 在这里 (扫 `.omd/continuity/*/`), 判据全在 reconstructWriteRace → detectRuntimeWriteRace。
+  // ⚠ **不按 run 窗口截**: 这一面的全部价值就是"历史里已经有答案", 截了就白截。
+  const retro = (() => {
+    const base = join(String(flags.repo ?? process.cwd()), '.omd', 'continuity');
+    const stats = { dirs: 0, checkpoints: 0, checkpointsWithPaths: 0 };
+    const runsIn: { runId: string; nodes: NodeWindow[] }[] = [];
+    let dirNames: string[] = [];
+    try {
+      dirNames = readdirSync(base);
+    } catch {
+      return null; // 没有 continuity 目录 = 这一面不适用 (不是 0)
+    }
+    for (const d of dirNames) {
+      let files: string[];
+      try {
+        files = readdirSync(join(base, d)).filter((f) => f.endsWith('.json') && !f.startsWith('_'));
+      } catch {
+        continue; // 不是目录 / 读不了 —— 跳过, 不计进 dirs
+      }
+      stats.dirs++;
+      const nodes: NodeWindow[] = [];
+      for (const f of files) {
+        try {
+          const j = JSON.parse(readFileSync(join(base, d, f), 'utf8')) as {
+            nodeId?: string; createdAt?: string; durationMs?: number; outputPaths?: string[];
+          };
+          const end = Date.parse(j.createdAt ?? '');
+          if (!Number.isFinite(end) || !j.nodeId) continue;
+          const paths = Array.isArray(j.outputPaths) ? j.outputPaths : [];
+          stats.checkpoints++;
+          if (paths.length) stats.checkpointsWithPaths++;
+          nodes.push({ id: j.nodeId, startMs: end - (j.durationMs ?? 0), endMs: end, paths });
+        } catch {
+          // 坏 JSON 不该让整块读数崩 (同上面几处); 它不计进 checkpoints, 于是也不假装看过。
+        }
+      }
+      if (nodes.length) runsIn.push({ runId: d, nodes });
+    }
+    return reconstructWriteRace(runsIn, stats);
+  })();
+  console.log(`\n⑧.7 回溯重建的写竞争 (拿 checkpoint 把历史算出来 —— 不用等新跑)`);
+  if (!retro || retro.dirs === 0) {
+    console.log('   没有 `.omd/continuity/` 目录 —— 这一面**不适用**(不是 0)。');
+  } else {
+    console.log(`   扫了 ${retro.dirs} 个 continuity 目录 · ${retro.checkpoints} 份节点 checkpoint`);
+    console.log(`     其中报了 outputPaths 的 ${retro.checkpointsWithPaths} 份;有 ≥2 个节点的目录 ${retro.dirsUsable} 个`);
+    console.log(`   重叠对 ${retro.overlaps} (**已滤掉父子对**) → 机会对 ${retro.pairs} (两侧都报了写)`);
+    console.log(`     → **真撞车 ${retro.findings} 对**  [${retro.rate === null ? '算不出 (分母 0)' : `${(retro.rate * 100).toFixed(1)}%`}]`);
+    for (const s of retro.samples) {
+      console.log(`     · ${s.runId.slice(0, 8)} ${s.a} × ${s.b}: ${s.shared.join(', ')}`);
+    }
+    const suf = faceSufficiency(retro.pairs, LOOP_NO_MOVE_MIN_N);
+    console.log(
+      suf.enough
+        ? `     机会对 够了 (${suf.nodes} ≥ ${LOOP_NO_MOVE_MIN_N}) → **这一面的撞车基率可以当结论读了**`
+        : `     机会对 **不足**, 还差 ${suf.short} (${suf.nodes}/${LOOP_NO_MOVE_MIN_N}) → 基率还不许当结论`,
+    );
+  }
+  console.log('   ⚠ **它与 ⑧.6 那两档不是同一个仪器, 数不许相加**:');
+  console.log('     · 窗口来源不同 —— 这里是 `结束 - 时长` (整个节点的执行时长), ⑧.6 是调度器实时记的;');
+  console.log('     · 路径基准不同 —— 这里相对**该 run 的根**, 所以**同一 runId 内可比、跨 run 不可比**;');
+  console.log('     · 覆盖不同 —— 只覆盖开了 continuity 的跑, 目录被清掉就没了 (与留痕库寿命不一样长)。');
+  console.log('   ⚠ 判据**一个字都没重写**: 窗口配对后喂给 `detectRuntimeWriteRace` 那同一个函数');
+  console.log('     (父子守卫 / 机会分母 / 撞车判定全在那儿) —— 两处各算一份必漂。');
+  console.log('   判据: 真撞车 > 0 → **并发写竞争在生产上确实发生**, 不是理论风险;');
+  console.log('         逐条读它撞的是"共享目录型文件"(图的形状问题) 还是"产物恰好同名"(命名问题)。');
 
   console.log(`\n⑧.5 「声称 vs 引擎记录」检出器 (report-only —— 拨不拨闸就看这段)`);
   if (cc.recordedRuns === 0) {
