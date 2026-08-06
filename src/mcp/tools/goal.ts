@@ -20,6 +20,7 @@ import type { HudRunRecordLike } from '../../hud/mirror';
 import { recordDagRun, type DagRecorder } from '../../harness/dag-record';
 import type { AcceptanceProbe } from '../../harness/goal/acceptance';
 import { RUN_OUTCOME_INFO } from '../../harness/run-outcome';
+import { summarizeGoalFailure } from '../../harness/goal/summarize-goal-failure';
 import { describeRunWorktree, prepareRunWorktree, type BranchStrategy } from '../../harness/run-worktree';
 import { captureRollbackAnchor, describeRollback } from '../../harness/rollback-anchor';
 import { renderOwnerDirectives, type OwnerInbox } from '../owner-inbox';
@@ -379,7 +380,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           // (查为什么挂了 vs 直接 resume)。blocked 仍记 failed: 它确实没达成, 只是原因是"要人"。
           if (r.converged) deps.runRegistry.succeed(runId, summarizeGoal(r));
           else if (r.cancelled) deps.runRegistry.cancel(runId, r.cancelled, summarizeGoal(r));
-          else deps.runRegistry.fail(runId, summarizeGoal(r));
+          else deps.runRegistry.fail(runId, summarizeGoalFailure(r));
           // t4 (S-3): BLOCKED = 需外部输入 = **红线岔口进收件箱** —— openFork 的第一个生产喂入点
           // (S3 建好收件箱后引擎从没铸过 fork; 无人值守的 BLOCKED 此前只活在 run 摘要里)。
           // blocking=true 语义成立: goal 环判 blocked 时已真停 (证据链 = R3 验证过的采集件, 见
