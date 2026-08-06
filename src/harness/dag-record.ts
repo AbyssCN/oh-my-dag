@@ -114,6 +114,24 @@ export interface DagRunNode {
    * 不是猜的。plan 里压根没有这个 id(map 动态扇出的子节点)才缺席 —— 那种才是真不知道。
    */
   maxRounds?: number;
+  /**
+   * 这个节点这一跑是**被复用**的(D-21 跨轮复用:零 LLM 拿上轮结果接住),2026-08-06。
+   *
+   * ## 为什么非记不可:不记就只能靠推,而推的前提是假的
+   *
+   * 留痕层此前只存 run 级的 `reused` **计数**,节点面一个字都没有。读数板于是"按可证语义推":
+   * 「节点在 plan 里、**不在执行结果里**、且更早跑过 → 那是复用」。
+   * **而那个前提不成立** —— 复用节点**就在结果里**(引擎给它 `skipped: true` 并照常写进
+   * `results`)。于是那条推断**恒返空集**,读数板印出「复用率 **0.0%**」和四格
+   * `reused_success **0**`,而同一批记录里 32 条声明过复用、共 ~123 个节点。
+   *
+   * **那是个假零, 而且它读起来像"复用根本没在工作"** —— 与 ⑩ 段按 run 级计数算的
+   * 21.9% 直接打架(同一页两个数,S-19 那一族)。
+   *
+   * ⚠ 缺席 ≠ `false`:缺席 = 早于本次改动的记录(那些行**推不出来也不许当 0**);
+   *   `true` = 这一跑确实复用了它。
+   */
+  reused?: true;
 }
 export interface DagRunRecord {
   id: string;
@@ -504,6 +522,8 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
         string,
         { command?: string; detector?: unknown; max_rounds?: unknown } | undefined
       >;
+      // 这一跑复用了哪些节点 —— 引擎给的是 id 列表, 留痕层此前只存了它的**长度**。
+      const reusedIds = new Set(result.reusedNodes ?? []);
       const nodes: DagRunNode[] = Object.values(result.results).map((r) => {
         const cmd = planNodes[r.id]?.command;
         // 内环形状 (2026-08-06): 只对 conductor 记 —— 别的 kind 上这两位没有意义, 记了就是编。
@@ -535,6 +555,8 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
           ...(r.writeCounts ? { writeCounts: r.writeCounts } : {}),
           ...(r.model ? { model: r.model } : {}),
           ...loopShape,
+          // 复用面 (2026-08-06): 不记就只能靠推, 而推的前提是假的 —— 见 DagRunNode.reused。
+          ...(reusedIds.has(r.id) ? { reused: true as const } : {}),
         };
       });
       const usage = {

@@ -292,7 +292,15 @@ export interface ReadoutResult {
      */
     ledgerGap: { total: number; done: number } | null;
   };
-  reuse_rate: { reused_nodes: number; total_nodes: number; rate: number | null };
+  /**
+   * 复用率 —— 分母**只认记了节点级复用的跑**(2026-08-06 改)。
+   *
+   * ⚠ 此前它是"推"出来的,而推的前提是假的(复用节点其实**在**执行结果里),于是恒为
+   * **0.0%** —— 一个读起来像"复用根本没在工作"的假零。改成读 `DagRunNode.reused`。
+   * ⚠ `unknownRuns` = 声明了复用而节点面没标的跑(老行)——**它们算不出,不进分母**,
+   *   与"记了而没复用"是两件事。
+   */
+  reuse_rate: { reused_nodes: number; total_nodes: number; rate: number | null; unknownRuns: number };
   /**
    * 「声称 vs 引擎记录」检出器的活体读数(2026-08-05)。report-only 那条判据要不要升成硬拦,
    * 就看这一段:① 活体基率 ② 活体误伤(靠 `samples` 里的原句逐条人工核对)。
@@ -892,7 +900,7 @@ function emptyWorld(meta: ReadoutResult['meta']): ReadoutResult {
     criteria_consistency: { agree: 0, oracleFailed: 0, wastedRounds: 0, agreeFail: 0, unrecorded: 0, recorded: 0 },
     g4_sampling: { denominator: 0, passedBoth: 0, vacuityOnly: 0, demoted: 0, skipped: 0, exploratory: 0 },
     suggestion_acceptance: null,
-    reuse_rate: { reused_nodes: 0, total_nodes: 0, rate: null },
+    reuse_rate: { reused_nodes: 0, total_nodes: 0, rate: null, unknownRuns: 0 },
     claim_check: {
       recordedRuns: 0, unrecordedRuns: 0,
       conductor: { rounds: 0, nodes: 0, findings: 0, rate: null },
@@ -1192,14 +1200,34 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
       universe.set(n.id, info);
     }
   }
+  // ⚠ **2026-08-06 修:此前这里是"按可证语义推",而那个前提是假的。**
+  //
+  //   旧判据:「节点在 plan 里、**不在执行结果里**、且更早跑过 → 那是复用」。
+  //   而复用节点**就在结果里** —— 引擎给它 `skipped: true` 并照常写进 `results`。
+  //   于是那条推断**恒返空集**,读数板印出「复用率 0.0%」与四格 `reused_success 0`,
+  //   而同一批记录里 32 条声明过复用、共 ~123 个节点。**那是个假零**,
+  //   而且它与 ⑩ 段按 run 级计数算的 21.9% 直接打架(同一页两个数,S-19 那一族)。
+  //
+  //   现在改成读节点面那一位(`DagRunNode.reused`,2026-08-06 起记)。
+  //   ⚠ 老行没有那一位 → **它们的复用面算不出**,而"算不出"不许写成 0:
+  //     `reusedUnknownRuns` 单独数,下面 `reuse_rate` 的分母只认**记了这一位的跑**。
   const reused = new Set<string>();
+  let reusedKnownRuns = 0;
+  let reusedUnknownRuns = 0;
+  const reusedBase = new Set<string>();
   for (const r of parsed) {
-    if (r.reused === null || r.reused <= 0) continue;
-    const execIds = new Set(r.nodes.map((n) => n.id));
-    for (const id of r.levelIds) {
-      if (execIds.has(id)) continue;
-      const info = universe.get(id);
-      if (info?.executed && info.firstExecAt < r.createdAt) reused.add(id);
+    // 「这一跑记没记节点级复用」= 它的 nodes 里有没有可能带这一位。老行整批没有 →
+    // 用 run 级 `reused` 计数当旁证:声明了复用却一个节点都没标 = 这一跑是老格式。
+    const marked = r.nodes.filter((n) => n.reused === true);
+    const declares = (r.reused ?? 0) > 0;
+    if (declares && marked.length === 0) {
+      reusedUnknownRuns++; // 老行:声明了复用而节点面没标 —— **算不出**,不进分母
+      continue;
+    }
+    reusedKnownRuns++;
+    for (const n of r.nodes) {
+      reusedBase.add(n.id);
+      if (n.reused === true) reused.add(n.id);
     }
   }
 
@@ -1340,7 +1368,8 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
     ledgerGap: countLedgerGap(opts.dbPath ?? null, new Set(allRuns.map((r) => r.run_id))),
   };
 
-  const total_nodes = universe.size;
+  // 分母**只认记了节点级复用的跑** —— 拿全集当分母会把老行的"算不出"稀释成"没复用"。
+  const total_nodes = reusedBase.size;
   const reused_nodes = reused.size;
 
   // ⑧.5 检出器活体读数 —— **只有这一处算**, CLI 从这里渲染 (两处各算一份必漂)。
@@ -1651,7 +1680,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
     g4_sampling,
     suggestion_acceptance: sa,
     gate_denominators,
-    reuse_rate: { reused_nodes, total_nodes, rate: total_nodes > 0 ? reused_nodes / total_nodes : null },
+    reuse_rate: { reused_nodes, total_nodes, rate: total_nodes > 0 ? reused_nodes / total_nodes : null, unknownRuns: reusedUnknownRuns },
   };
 }
 
@@ -1833,7 +1862,17 @@ function printReadoutHuman(r: ReadoutResult, dbPath: string): void {
     );
   }
   const rr = r.reuse_rate;
-  console.log(`   复用率: ${rr.reused_nodes}/${rr.total_nodes} 节点${rr.rate === null ? ' (分母 0, 算不出)' : ` = ${(rr.rate * 100).toFixed(1)}%`}`);
+  console.log(
+    `   复用率: ${rr.reused_nodes}/${rr.total_nodes} 节点${rr.rate === null ? ' (分母 0, **算不出**)' : ` = ${(rr.rate * 100).toFixed(1)}%`}` +
+      `${rr.unknownRuns > 0 ? `  ⚠ 另有 ${rr.unknownRuns} 跑**算不出**(声明了复用而节点面没记, 老行)—— **不进分母**` : ''}`,
+  );
+  if (rr.unknownRuns > 0) {
+    // ⚠ 2026-08-06 之前这一格是**假零**: 旧实现按"节点在 plan 里但不在结果里"推复用,
+    //   而复用节点**就在结果里** → 推断恒返空集 → 印出 0.0%, 读起来像"复用根本没在工作",
+    //   而 ⑩ 段按 run 级计数算的是 21.9%。同一页两个数, 且 0 那个是错的。
+    console.log('     ⚠ 与 ⑩ 段那个「复用率」**不是同一个数**: 那边按 run 自报的 `reused` 计数算(口径粗但覆盖老行),');
+    console.log('       这边按**节点面**算(准, 但只覆盖 2026-08-06 之后的记录)。老行在这边算不出, 别读成 0。');
+  }
 }
 
 
