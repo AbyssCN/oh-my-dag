@@ -39,6 +39,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { logger } from './logger';
+import { captureRollbackAnchor, type RollbackAnchor } from './rollback-anchor';
 
 export type BranchStrategy = 'head' | 'branch';
 
@@ -51,6 +52,18 @@ export interface RunWorktree {
   strategy: BranchStrategy;
   /** 退回 `head` 的原因(生效即请求时为 undefined)。 */
   degradedReason?: string;
+  /**
+   * **起跑时主树上有未提交的东西**(2026-08-06)—— 隔离档才有,且**必须念进回话**。
+   *
+   * `git worktree add` 出来的是**该 ref 的干净 checkout**:主树上没提交的改动在那边**看不见**。
+   * 头注早就写了这条边界,可它只写在头注里 —— **调用它的 owner 在回话里一个字都看不到**。
+   * 于是「带着未提交的活起一次隔离跑」会**静默**地从 HEAD 开始:agent 看不见你刚写的东西,
+   * 可能把它重做一遍、或者基于旧版本给出结论,而回话只说"隔离成功"。
+   *
+   * ⚠ **fail-open,不拒**:隔离是加固不是前置条件(同 `degradedReason` 那条)。这一位只保证
+   *   下次看得见 —— 但它必须进 `describeRunWorktree`,否则和写在头注里没有区别。
+   */
+  uncommittedWarning?: string;
   /** 弃用这棵树(`head` 档 = 空操作)。**不自动调**,见头注。 */
   dispose: () => void;
 }
@@ -60,6 +73,8 @@ export interface RunWorktreeDeps {
   git?: (args: string[], opts: { cwd: string }) => void;
   /** 判断某目录是不是 git 工作树。默认查 `.git` 是否存在。 */
   isGitRepo?: (cwd: string) => boolean;
+  /** 查主树上有没有未提交的东西(见 `RunWorktree.uncommittedWarning`)。默认 `captureRollbackAnchor`。 */
+  checkTree?: (cwd: string) => RollbackAnchor;
 }
 
 /** 默认 git: 非零退出即抛(建/删 worktree 失败必须显性, 悄悄退回 head 会让隔离静默失效)。 */
@@ -117,11 +132,25 @@ export function prepareRunWorktree(
     logger.warn({ cwd, runId, dir, branch }, `[omd/run-worktree] ${why}`);
     return { ...noop, degradedReason: why };
   }
+  // **未提交的活在隔离树里看不见** —— 头注写了这条边界, 但只写在头注里。这里把它变成
+  // 回话里的一句话 (2026-08-06): 带着未提交改动起隔离跑, agent 看到的是 HEAD 那一版,
+  // 而回话此前只说"隔离成功"。fail-open, 不拒。
+  const anchor = (deps.checkTree ?? ((c: string) => captureRollbackAnchor({ cwd: c })))(cwd);
+  const dirty = (anchor.dirtyTracked ?? 0) + (anchor.untracked ?? 0);
+  const uncommittedWarning =
+    anchor.kind === 'dirty-tracked' || anchor.kind === 'dirty-untracked'
+      ? `⚠ 主树上有 ${dirty} 处未提交的东西, 而隔离 worktree 是 **HEAD 那一版的干净 checkout** —— ` +
+        '它们在这次跑里**看不见**。agent 可能把你刚写的活重做一遍, 或基于旧版本下结论。' +
+        '要让它看见: 先 `git commit` (或 `git stash` 后在隔离树里 `git stash apply`)。'
+      : undefined;
+  if (uncommittedWarning) logger.warn({ runId, dir, branch, dirty }, `[omd/run-worktree] ${uncommittedWarning}`);
+
   logger.info({ runId, dir, branch }, '[omd/run-worktree] 本次 run 落在隔离 worktree (R2 · D-Y①)');
   return {
     cwd: dir,
     branch,
     strategy: 'branch',
+    ...(uncommittedWarning ? { uncommittedWarning } : {}),
     dispose: () => {
       try {
         git(['worktree', 'remove', '--force', dir], { cwd });
@@ -143,6 +172,9 @@ export function describeRunWorktree(w: RunWorktree): string {
   return [
     `工作目录: **隔离 worktree** ${w.cwd}`,
     `分支: ${w.branch}`,
+    // 这一行**必须在合回/弃用之前**: 它说的是"这次跑看见的世界不是你以为的那个",
+    // 排在操作命令后面等于让人先动手再发现前提不对。
+    ...(w.uncommittedWarning ? [w.uncommittedWarning] : []),
     `合回主树由你扣扳机(引擎刻意不自动合): \`git merge ${w.branch}\``,
     `不要了: \`git worktree remove --force ${w.cwd} && git branch -D ${w.branch}\``,
   ].join('\n');
