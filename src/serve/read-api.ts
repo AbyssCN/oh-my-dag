@@ -16,6 +16,9 @@ import { readDagView, readFog, type DagView } from '../hud/load';
 import type { HudFogSnapshot } from '../hud/types';
 import { loadMap } from '../harness/pathfinder/map-store';
 import { computeFog, type FogView } from '../harness/pathfinder/fog';
+import { ledgerPath } from '../harness/dag-record';
+import { readout, type ReadoutResult } from '../../scripts/omd-readout';
+import { Database } from 'bun:sqlite';
 import type { PathMap } from '../harness/pathfinder/types';
 
 /** runId 是目录名、nodeId 是文件名成分 —— 皆来自 HTTP 边界,白名单闸(动态子节点含 `::` 与 `.`)。 */
@@ -275,4 +278,93 @@ export function readPathMap(cwd: string, slug: string): PathMapView | null {
   if (!SLUG_RE.test(slug)) throw new Error(`非法 slug: ${JSON.stringify(slug)}`);
   const map = loadMap(cwd, slug);
   return map ? { ...map, fog: computeFog(map) } : null;
+}
+
+
+// ── 读数板 (⑫ 统一契约读数) ───────────────────────────────────────────────────
+//
+// 这块数此前**只有 CLI 看得到** —— 而它恰恰是「站在慢回路观测 agent」要看的东西
+// (消耗口径 / 注意力轴 / 停止轴 / 诚实轴 / 判据四格 / 检出率)。这里只是把
+// `readout()` 这个**唯一读数实现**接上 HTTP, 一个字的统计逻辑都不在这边重写。
+//
+// ⚠ 只读加固与 CLI 同款: readonly 连接 + `PRAGMA query_only`。
+
+/** 读数板算一次要扫全表, 而首页会轮询 —— 缓存一小段, 免得每 5s 全表扫一遍。 */
+let readoutCache: { at: number; value: ReadoutResult } | null = null;
+const READOUT_TTL_MS = 8_000;
+
+export function readReadout(cwd: string, nowMs: number = Date.now()): ReadoutResult | null {
+  if (readoutCache && nowMs - readoutCache.at < READOUT_TTL_MS) return readoutCache.value;
+  const dbPath = ledgerPath();
+  let db: Database;
+  try {
+    db = new Database(dbPath, { readonly: true });
+    db.run('PRAGMA query_only = ON');
+  } catch (err) {
+    // 库还不存在 = 一次都没跑过, 不是错误。null 让前端说「还没有读数」而不是报错。
+    logger.warn({ dbPath, err: String(err) }, '[serve/read] 留痕库打不开 (证据在此)');
+    return null;
+  }
+  try {
+    const value = readout({ db, limit: 200, dbPath, mapsCwd: cwd });
+    readoutCache = { at: nowMs, value };
+    return value;
+  } finally {
+    db.close();
+  }
+}
+
+// ── 跨图注意力聚合 ───────────────────────────────────────────────────────────
+//
+// 首页要回答的第一问是「**哪一步需要人判断**」, 而票分散在多张图里。
+// 这里把每张图的雾档汇总, 并**带出待决票的原话** —— LoopX 看板纪律④:
+// 那一格装的是具体问题, 不是「等 owner」。
+
+export interface AttentionTicket {
+  slug: string;
+  destination: string;
+  ticketId: string;
+  /** 原话, **不截断** —— 它就是要 owner 回答的那句。 */
+  title: string;
+  type: string;
+}
+
+export interface MapFogSummary {
+  slug: string;
+  destination: string;
+  total: number;
+  bands: Record<string, number>;
+  phantoms: number;
+}
+
+export interface AttentionView {
+  /** 等你落印的票 (跨全部图, 按图名稳定排序)。 */
+  awaiting: AttentionTicket[];
+  /** 现在就能派的前沿票。 */
+  frontier: AttentionTicket[];
+  /** 机器建议待确认。 */
+  suggested: AttentionTicket[];
+  /** 每张图一行的雾档汇总。 */
+  maps: MapFogSummary[];
+}
+
+export function readAttention(cwd: string): AttentionView {
+  const out: AttentionView = { awaiting: [], frontier: [], suggested: [], maps: [] };
+  for (const row of listPathMaps(cwd)) {
+    const view = readPathMap(cwd, row.slug);
+    if (!view) continue;
+    const bands: Record<string, number> = {};
+    const byId = new Map(view.tickets.map((t) => [t.id, t]));
+    for (const c of view.fog.cells) {
+      bands[c.band] = (bands[c.band] ?? 0) + 1;
+      const t = byId.get(c.ticketId);
+      if (!t) continue;
+      const entry: AttentionTicket = { slug: row.slug, destination: view.destination, ticketId: t.id, title: t.title, type: t.type };
+      if (c.band === 'awaiting-owner') out.awaiting.push(entry);
+      else if (c.band === 'frontier') out.frontier.push(entry);
+      else if (c.band === 'suggested') out.suggested.push(entry);
+    }
+    out.maps.push({ slug: row.slug, destination: view.destination, total: view.tickets.length, bands, phantoms: view.fog.phantoms.length });
+  }
+  return out;
 }
