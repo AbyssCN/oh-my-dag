@@ -165,6 +165,61 @@ describe('P1 · 心跳停摆 vs 产物闸判空 (换池 vs 重跑该节点)', ()
     expect(res.results['n1']!.status).toBe('done');
     expect(res.results['n1']!.failureKind).toBeUndefined();
   });
+
+  /**
+   * **产物闸只认显式声明**(2026-08-06)。
+   *
+   * 盘上 21 份 `empty-artifact` 里 **6 份**的节点从没声明过产物 —— 它们是被 goal 文本正则
+   * 抓进来的,而那 6 个 goal 开头写着「**只读**检查 / **只读**检索 / **只读**勘察」。
+   * 正则命中的是**名词**:「只读检查非测试**实现文件** `…/proximity.ts`」里的「实现」+ `.ts`。
+   *
+   * 代价不止那 6 个:`empty-artifact` 是级联跳过的**头号可识别根因**
+   * (78 份 `dep-skip` 里 28 份上游是它,对比 `assert-failed` 2 份)。
+   *
+   * ⚠ 反向自检:把闸的判据从 `declaredArtifact` 改回 `producesFiles` → 第一条立刻红
+   * (那正是改动前的行为);把 `declaredArtifact` 写成恒 false → 第二、三条红(闸整个失效)。
+   */
+  test('只读节点(goal 正则命中但没声明产物)零写入 → done, 不判 empty-artifact', async () => {
+    // 盘上真实 goal 的形状: 「只读」开头, 而「实现文件 xxx.ts」把路由正则勾住了。
+    const READONLY_PLAN = JSON.stringify({
+      name: 's',
+      nodes: {
+        n1: {
+          goal: '只读检查非测试实现文件 src/harness/pathfinder/proximity.ts, 产出结构化发现, 零修改',
+          executor: 'agent',
+        },
+      },
+    });
+    const res = await runExecutorDag('t', {
+      conductorModel: CONDUCTOR,
+      leafModel: LEAF,
+      generate: gen(READONLY_PLAN),
+      agentRunner: async (_i: AgentLeafInput) => ({ text: '# 结构化发现 (只读检查, 零修改)', usage: { in: 1, out: 1 }, filesTouched: [] }),
+    });
+    const r = res.results['n1']!;
+    expect(r.status).toBe('done'); // ← 改动前这里是 failed / empty-artifact
+    expect(r.failureKind).toBeUndefined();
+  });
+
+  test('闸没被拆坏: 声明了 output_path 却零写入 → 照旧 empty-artifact', async () => {
+    const res = await runExecutorDag('t', {
+      conductorModel: CONDUCTOR,
+      leafModel: LEAF,
+      generate: gen(WRITE_PLAN), // 有 output_type:file + output_path
+      agentRunner: async (_i: AgentLeafInput) => ({ text: '写完了', usage: { in: 1, out: 1 }, filesTouched: [] }),
+    });
+    expect(res.results['n1']!.failureKind).toBe('empty-artifact');
+  });
+
+  test('闸没被拆坏: 只声明 output_type:file(无 output_path)零写入 → 照旧 empty-artifact', async () => {
+    const res = await runExecutorDag('t', {
+      conductorModel: CONDUCTOR,
+      leafModel: LEAF,
+      generate: gen(JSON.stringify({ name: 's', nodes: { n1: { goal: '干活', executor: 'agent', output_type: 'file' } } })),
+      agentRunner: async (_i: AgentLeafInput) => ({ text: '好了', usage: { in: 1, out: 1 }, filesTouched: [] }),
+    });
+    expect(res.results['n1']!.failureKind).toBe('empty-artifact');
+  });
 });
 
 describe('P1 · 其余各格各有自己的直接判据', () => {

@@ -2229,6 +2229,29 @@ async function executePlan(
         node.output_type === 'git' ||
         !!node.output_path ||
         /(?:实现|创建|新建|写入|生成|修改|实装|落地)[^。\n]{0,40}\.(?:ts|tsx|js|jsx|mjs|cjs|sql|json|md|css|html|py|go|rs)\b/.test(node.goal ?? '');
+      /**
+       * **产物闸的触发条件 ≠ 路由的触发条件**(2026-08-06 拆开)。
+       *
+       * 上面那个 `producesFiles` 的用途是**路由**(M3 bug 修:conductor 把写文件节点标成
+       * `leaf` → inproc 不能写文件 → 静默假成功),所以它**故意宽**,连 goal 文本正则都算数 ——
+       * 宽在路由上没有代价:多分一个节点去 agent 档,最坏是贵一点。
+       *
+       * 而它同时被**产物闸**当判据用,宽在那里的代价是**判一个没做错事的节点失败**。
+       * 盘上实测(21 份 `empty-artifact`):
+       *   · `output_path` 触发 14 · `output_type` 触发 1 · **只被 goal 正则触发 6**。
+       * 那 6 个的 goal 逐条读,开头写着「**只读**检查」「**只读**检索」「**只读**勘察」——
+       * 节点从没声明过它要写文件,而闸要求它必须写。正则命中的是**名词**:
+       * 「只读检查非测试**实现文件** `src/harness/pathfinder/proximity.ts`」里的
+       * 「实现」+ 40 字内的 `.ts`。
+       *
+       * 代价不止那 6 个节点:`empty-artifact` 是级联跳过的**头号可识别根因**
+       * (78 份 `dep-skip` 里 28 份的上游是它,对比 `assert-failed` 2 份)。
+       *
+       * ⇒ **闸只认显式声明**(`output_path` / `output_type: file|git`)。
+       * 一个节点要被要求"必须产出文件",得有人**明说**它产出文件 —— 从 goal 文本里猜出来的
+       * 意图可以拿去选执行档,不能拿去判失败。
+       */
+      const declaredArtifact = node.output_type === 'file' || node.output_type === 'git' || !!node.output_path;
       // 写文件节点但无 agentRunner → 根本无法产物 → 标失败 (拒绝 inproc 静默假成功; oracle/heal 才看得到)。
       if (producesFiles && !config.agentRunner) {
         logger.warn({ node: id, output_type: node.output_type }, '[omd/executor-dag] 写文件节点但无 agentRunner → 失败 (拒绝 inproc 静默假成功)');
@@ -2396,7 +2419,9 @@ async function executePlan(
         // 产物校验闸 (2026-07-03 实测教训: ultraspeed leaf 4 节点 3 个 empty-done — 自报完成
         // 却零改动, oracle 因"新文件没接线"照样绿 → 谎报完工静默漏过)。写文件节点 done 的
         // **必要条件** = 真碰了文件: filesTouched 空 / 声称的路径不存在 → failed (heal 回路可见)。
-        if (producesFiles) {
+        // ⚠ 判据是 `declaredArtifact` 而**不是** `producesFiles` —— 见上面那段注: 后者宽在路由上
+        //   没代价, 宽在这里的代价是判一个只读节点失败 (盘上 6/21)。
+        if (declaredArtifact) {
           const root = artifactRoot ?? continuity?.repoRoot ?? process.cwd();
           // 救回「经非受控工具 (bash 重定向等) 写入」的声明产物, 见上面快照那段注。
           // 根不一致时**不救**: 快照量的是另一棵树上的文件, 拿它当证据等于没量 (fail-closed)。
