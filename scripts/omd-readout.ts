@@ -1338,7 +1338,11 @@ function printReadoutHuman(r: ReadoutResult, dbPath: string): void {
   }
   // 统计口径标注 (审查 F3): 一份报告两个宇宙, 不标读者会以为同一窗口 —— 节点统计是全量,
   // run 统计是窗口 (最早 limit 个, 按 first_at; 冻结契约钉死的截断端, 不许两头都读成"最近")。
-  console.log(`   统计口径: 节点统计 (四格/风险格/复用率) = 全量记录; run 统计 (分布/判据/entry) = 窗口 (最早 ${r.meta.limit} 个 run, 按 first_at)。`);
+  console.log(`   统计口径: 节点统计 (四格/风险格/复用率) = 全量记录; **本段**的 run 统计 (分布/判据/entry) = 窗口 (最早 ${r.meta.limit} 个 run, 按 first_at) 且按 runId 归并。`);
+  // ⚠ 「**本段**」这两个字是 2026-08-06 补的, 补的是一次真误导: 这句话原本读起来像是在替
+  //   整份报告作口径声明, 而 ⑨ 段同样是 run 级分布、同样带判据, 却**既不归并也不截窗**
+  //   (全量留痕记录)。于是同一页上两个 `outcome` 数差了 2.8 倍而没有一处说明白。
+  console.log('   ⚠ ⑨ 段的 outcome 分布**口径不同**(全量留痕记录, 不归并)—— 两处的数**不可比**, 各自标了口径。');
   console.log('   run                 attempts   first_at→last_at        status           entry         reused');
   for (const run of r.runs) {
     console.log(
@@ -2210,6 +2214,22 @@ if (import.meta.main) {
   console.log('     方向是宁可多算一对重叠 (多算落在**分母**上, 把基率往低了报, 不会凭空造出命中)。');
 
   console.log(`\n⑨ run 级终止原因 (N5 · 此前这一层只有 plan_name + 一堆节点状态, 没有"这跑怎么结束的")`);
+  // ⚠ **口径警示 (2026-08-06 补)**: 这一段与 ⑫ 那行 `outcome:` 数的**不是同一批东西**, 而它们
+  //   印在同一页上、用同一个词。差在两处:
+  //     ① 单位 —— 这里数**留痕记录**, ⑫ 按 **runId 归并** (`dag_goal` 一次跑落两条记录);
+  //     ② 窗口 —— 这里是**全量**, ⑫ 只取最早 `limit` 个 run。
+  //   ⑫ 上面那句「run 统计 (分布/判据/entry) = 窗口」描述的是它自己那一段, 而本段同样是
+  //   run 级分布、同样带判据, 却既不归并也不截窗 —— 于是那句话反过来会让人以为这里也是窗口。
+  //   实测 (2026-08-06): 56 条记录 / 53 个 runId (3 个 runId 各落 2 条), 而 ⑫ 那行只有 20。
+  //   **归并的失真很小, 窗口的差是 2.8 倍** —— 后者才是会让人读错的那一个。
+  {
+    const runIds = new Set(rows.map((r) => r.run_id ?? r.id));
+    console.log(
+      `   口径: **全量留痕记录** ${rows.length} 条 / ${runIds.size} 个 runId` +
+        `${rows.length !== runIds.size ? ` (${rows.length - runIds.size} 条是 dag_goal 的第二段)` : ''}` +
+        ` —— ⚠ 与 ⑫ 那行 \`outcome:\` **不可比**: 那一行按 runId 归并且只取最早 ${limit} 个 run。`,
+    );
+  }
   if (outcomeRecorded === 0) {
     console.log(`   这批 ${rows.length} 条记录**都没记** outcome (早于 2026-07-31) —— 那是「没记」,`);
     console.log('     不是「归不了类」。跑一次新的 dag_run / dag_goal 才有这段读数。');
@@ -2227,7 +2247,7 @@ if (import.meta.main) {
       if (set?.size) console.log(`       图: ${[...set].join(', ')}`);
     }
     if (outcomeCount.unclassified > 0) {
-      console.log(`   ⚠ **${outcomeCount.unclassified} 跑归不了类** —— 收尾路径里还有一条没交代自己是怎么回事。`);
+      console.log(`   ⚠ **${outcomeCount.unclassified} 条记录归不了类** —— 收尾路径里还有一条没交代自己是怎么回事。`);
     }
     if (runsUnrecordedOutcome > 0) {
       console.log(`   ? 另有 ${runsUnrecordedOutcome} 条**没记**终止原因(早于 2026-07-31)—— 老数据, 不是缺陷。`);
