@@ -30,7 +30,8 @@
  *   bun run scripts/omd-failure-readout.ts <root> [root…]   # 显式 root (如 OMD_DATA_HOME 投影)
  */
 import { readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
+import { homedir } from 'node:os';
 import type { NodeCheckpoint, NodeLoopJournal, RoundVerdict } from '../src/harness/continuity/types';
 
 /** ① 的分母排除集: 见文件头口径纪律 —— 这两格的"失败"结构上带不出 failurePaths。 */
@@ -156,9 +157,20 @@ function readLoopJournal(path: string, out: FailureReadout): void {
 }
 
 if (import.meta.main) {
-  // 无参 → 默认扫 cwd/.omd/continuity (checkpoint-manager 的约定落盘处); 有参 → 逐个 root 扫。
-  const roots = Bun.argv.length > 2 ? Bun.argv.slice(2) : [join(process.cwd(), '.omd', 'continuity')];
+  // 无参 → 扫**两个**约定根: 仓内 `.omd/continuity` 与 `~/.omd/projects/<slug>/continuity`。
+  //
+  // ⚠ 这一行原本只扫仓内那个, 而那**恰恰是本脚本要治的那种少数**: 实测默认 73 个 run 目录、
+  //   带两个根 87 个 (empty-artifact 20 vs 21)。`checkpoint-manager.runDir` 的两条落点是
+  //   `OMD_DATA_HOME` 设与未设的分野 —— 按最显然的方式跑它的人拿到少数的读数, 而没有任何东西
+  //   告诉他。少的那一半不是噪声, 是另一半生产数据。
+  //   不存在的根由 `failureReadout` 自己跳过 (它对缺失目录 fail-open), 所以多给一个是安全的。
+  const defaultRoots = [
+    join(process.cwd(), '.omd', 'continuity'),
+    join(homedir(), '.omd', 'projects', basename(process.cwd()), 'continuity'),
+  ];
+  const roots = Bun.argv.length > 2 ? Bun.argv.slice(2) : defaultRoots;
   const r = failureReadout(roots);
+  console.log(`root: ${roots.join(' · ')}`); // 报出量的是哪几棵树 —— 换根就换数, 不说等于读数没有出处
   const pct = (n: number | null) => (n === null ? '—' : `${(n * 100).toFixed(1)}%`);
   console.log(`omd-failure-readout — ${r.runDirs} 个 run 目录, 读坏 ${r.unreadable} 份 (fail-open 跳过)`);
   console.log(`  ① failurePaths 非空  ${r.failurePaths.withPaths}/${r.failurePaths.denominator} (${pct(r.failurePaths.rate)})`);
