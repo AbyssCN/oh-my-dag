@@ -32,6 +32,12 @@
  *
  * EXHAUSTED / 取消 **不在这个词表里**:那两个是**环级**结论(`budgetStopped` / `cancelled`),
  * 节点不会因为"预算用完"而失败 —— 它是压根没起跑。别把它们塞进来凑齐五格。
+ *
+ * ⚠ **2026-08-06 有一格例外,而例外的判据是"手里有没有上一次的结果"**:
+ * `rounds-exhausted`。预算/取消这两条出口**都拿得出 `last`**(已跑完的轮次照原样返,
+ * 只是 `converged=false`)—— 所以它们确实不构成节点失败。而内环轮数用尽的**resume 重入**
+ * 手里**什么都没有**(`last` 为 null:这一次一轮都没跑),它只能返一条失败记录。
+ * 那条记录是真实的节点级事件,不是环级结论的替身。
  */
 
 /**
@@ -65,6 +71,22 @@ export type NodeFailureKind =
    * "这里还有条没交代的失败路径"的指针。
    */
   | 'subgraph-failed'
+  /**
+   * **内环轮数已用尽,而这次重入一轮都没跑**(2026-08-06)。
+   *
+   * 直接证据:`journal.completedRounds + 1 > node.max_rounds` 且 `last === null`(零执行)。
+   *
+   * ## 为什么它必须与 `infra-error` 分开
+   *
+   * 盘上实测:10 条 `infra-error` 里 **9 条是这一格**,而且是**同一个 run 的同一个节点**
+   * 在 8 小时里被重入 9 次、每次 **0–1ms** 死在同一行。而 `infra-error` 的判词写着
+   * 「重试 / 换池」—— 对这一格**重试一万次都是同样的 0ms 死**,两者的下一步正好相反。
+   * 更坏的是 `run-outcome` 让 `infra-error` **优先念**(止损以最强那条为准),
+   * 于是整跑的结论被报成"引擎出事",而真相是"这个节点在本 run 里已经没有轮次可用了"。
+   *
+   * ⚠ **它只在 resume 路径上出现**:journal 只有 `continuity.resume` 时才加载。
+   */
+  | 'rounds-exhausted'
   /**
    * **「不知道」的那一格**:节点没过,但没有任何生产点标注成因。
    *
@@ -151,6 +173,15 @@ export const FAILURE_KIND_INFO: Record<NodeFailureKind, FailureKindInfo> = {
     nextAction: '去看**子节点**的成因 —— 它们各自已经归好类了; 这个节点的下一步等于它们的下一步',
     // 聚合体的可重试性是它各部分的函数, 单看这一格答不了 —— 所以是 null 而不是拍一个 true/false。
     retryable: null,
+  },
+  'rounds-exhausted': {
+    loopState: 'BLOCKED',
+    evidence: '内环 journal 的 completedRounds 已达 max_rounds, 本次重入零执行 (last === null)',
+    nextAction:
+      '**别原样重试** —— 重试恒 0ms 同样死。两条出口二选一: ① 调高该节点的 `max_rounds` ' +
+      '(schema 上界 4) ② 删掉这一跑该节点的内环 journal `<runDir>/_loop-<nodeId>.json` 让轮次归零。' +
+      '⚠ 先想清楚要哪一个: ① 是"再给它几轮", ② 是"忘掉之前几轮的毒集与上轮原因重头来"。',
+    retryable: false,
   },
   unclassified: {
     loopState: 'UNKNOWN',

@@ -126,8 +126,15 @@ export class CheckpointManager {
 
   // ── 节点级环 journal (P3 D-A, 2026-07-29) ────────────────────────────────
 
-  /** `_loop-<安全化 nodeId>.json` —— 每个带内环的节点一份。 */
-  private loopPath(runId: string, nodeId: string): string {
+  /**
+   * `_loop-<安全化 nodeId>.json` —— 每个带内环的节点一份。
+   *
+   * ⚠ **公开的原因不是"顺手"**(2026-08-06):轮数用尽时判词要**指名道姓**告诉人删哪个文件。
+   * 此前那条判词只说「内环一轮都没跑成」,而唯一的出口就是删这份 journal —— 人得自己去猜
+   * 文件名(还得猜对 `nodeId` 的安全化规则:`map` 子节点的 `::` 会被换成 `_`)。
+   * **一个只有作者猜得到出口的错误,等于没有出口。**
+   */
+  loopPath(runId: string, nodeId: string): string {
     return join(this.runDir(runId), `_loop-${nodeId.replace(/[^\w.-]/g, '_')}.json`);
   }
 

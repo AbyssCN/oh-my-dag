@@ -1420,7 +1420,21 @@ async function executePlan(
     const noveltySeq: number[] = journal?.noveltySeq ? [...journal.noveltySeq] : [];
     const startRound = (journal?.completedRounds ?? 0) + 1;
     if (journal) {
-      logger.info({ node: id, startRound, poisoned: poisoned.size }, '[omd/executor-dag] 内环恢复: 接回轮次/毒集 (D-A)');
+      // **内环重入探针** (2026-08-06): 盘上实测同一个 run 的同一个节点被重入 16 次, 其中 9 次
+      // 0ms 死在下面那条 `startRound > maxRounds` 上 —— 而**每次 0ms 死亡都紧挨着一次成功执行**
+      // (`__r9` 0ms → 22 秒后 `__r10` done)。那个机制这批数据**答不了**: 判它需要的
+      // `{startRound, maxRounds, resume, journal 何时写的}` 四位当时一位都没记。
+      // 这一行就是补那四位。**纯留痕, 不改任何行为** —— 先让那个数有人写, 再判要不要改。
+      logger.info(
+        {
+          node: id, startRound, maxRounds, poisoned: poisoned.size,
+          resume: continuity?.resume === true,
+          journalUpdatedAt: journal.updatedAt,
+          journalStop: journal.stop?.kind,
+          exhausted: startRound > maxRounds,
+        },
+        '[omd/executor-dag] 内环恢复: 接回轮次/毒集 (D-A)',
+      );
     }
 
     let usageAcc: ModelUsage = { in: 0, out: 0 };
@@ -1760,8 +1774,33 @@ async function executePlan(
 
     // 到这里 = startRound > maxRounds (resume 接回一个已跑满轮数却没收敛的节点): 一轮都没跑,
     // 没有裁决可报。**不谎报收敛**。
-    logger.warn({ node: id, maxRounds, startRound }, '[omd/executor-dag] 内环无轮可跑 (resume 已用尽轮数)');
-    return last ?? { id, status: 'failed', failureKind: 'infra-error', kind: 'conductor', output: '[内环一轮都没跑成]', deps, usage: usageAcc };
+    //
+    // ⚠ **2026-08-06 改判**: 此前这条归 `infra-error`, 而 infra-error 的判词是「重试 / 换池」——
+    // 对这一格**重试一万次都是同样的 0ms 死**。盘上实测: 10 条 infra-error 里 9 条是这一格,
+    // 同一个 run 的同一个节点在 8 小时里被重入 9 次, 每次 0–1ms。且 infra-error 在
+    // run 级 severity 里排第一 → 整跑结论被一个"没轮次了"盖成"引擎坏了"。
+    // 现在归 `rounds-exhausted` (→ run 级 `blocked`, 同 gate-rejected: 再试也没用, 要改条件本身),
+    // 并且**判词里指名道姓给出两条出口**, 其中删 journal 那条要带真实路径 —— 猜不到的出口等于没出口。
+    const journalPath = cm ? cm.loopPath(continuity!.runId, id) : '(无 continuity, 无 journal 文件)';
+    logger.warn(
+      { node: id, maxRounds, startRound, journalPath, completedRounds: journal?.completedRounds },
+      '[omd/executor-dag] 内环无轮可跑 (resume 已用尽轮数) → rounds-exhausted, 别重试',
+    );
+    return (
+      last ?? {
+        id,
+        status: 'failed',
+        failureKind: 'rounds-exhausted',
+        kind: 'conductor',
+        output:
+          `[内环轮数已用尽: journal 记 ${journal?.completedRounds ?? 0} 轮 / 上限 ${maxRounds} 轮, 本次重入一轮都没跑]\n` +
+          '**原样重试没有用** —— 每次都会在同一个位置零执行返回。两条出口二选一:\n' +
+          `  ① 调高该节点的 max_rounds (schema 上界 4) —— 意思是"再给它几轮";\n` +
+          `  ② 删掉 ${journalPath} 让轮次归零 —— 意思是"忘掉之前几轮的毒集与上轮原因, 重头来"。`,
+        deps,
+        usage: usageAcc,
+      }
+    );
   };
 
   // ── U1 P1: map 节点运行时展开 (SDD 0009 §2.3 StateMachine) ──────────────────

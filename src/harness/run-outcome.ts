@@ -241,6 +241,10 @@ const NODE_TO_RUN: Record<NodeFailureKind, RunOutcomeKind | null> = {
   'infra-error': 'infra-error',
   'dep-skip': null,
   'subgraph-failed': null,
+  // 2026-08-06: 轮数用尽走 `blocked` 而**不是** `infra-error` —— 它与 `gate-rejected` 同类
+  // (再试也没用, 要改的是条件本身), 与"引擎出事该看栈"正相反。此前它顶着 infra-error,
+  // 而 infra-error 在 RUN_OUTCOME_SEVERITY 里排第一 → 整跑结论被一个"没轮次了"盖成"引擎坏了"。
+  'rounds-exhausted': 'blocked',
   unclassified: 'unclassified',
 };
 
