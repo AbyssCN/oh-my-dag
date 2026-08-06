@@ -78,6 +78,7 @@ import {
  */
 const SHELL_FACT_CAP = 6;
 import { verifiedShellWriteTargets } from './shell-writes';
+import { captureRollbackAnchor } from './rollback-anchor';
 import { staticLintPlan } from './plan/static-lint';
 import { leafTierGateFindings } from './plan/leaf-tier-gate';
 import { scheduledArtifactFindings } from './plan/invocation-facts';
@@ -130,6 +131,8 @@ interface ExecOnce {
   claimCheck: NonNullable<ExecutorDagResult['claimCheck']>;
   /** 「产物没变」判据判得了多少次 (分母; 见 ExecutorDagResult.artifactMove)。 */
   artifactMove: NonNullable<ExecutorDagResult['artifactMove']>;
+  /** 起跑时「跑坏了回得去吗」的快照 (D1; 见 ExecutorDagResult.rollback)。 */
+  rollback: NonNullable<ExecutorDagResult['rollback']>;
   /** 运行时写竞争的机会与命中 (见 ExecutorDagResult.writeRace)。 */
   writeRace: NonNullable<ExecutorDagResult['writeRace']>;
   /** D-P: 本轮是被叫停的 (给了就非自然结束); notRun = 一个都没起跑过的节点。 */
@@ -1956,6 +1959,17 @@ async function executePlan(
 
   // 节点起跑时刻 (issue #4: 失败 checkpoint 的 durationMs 用; settle 在 runNode 各早退分支之外, 需独立捕获)。
   const nodeStartedAt = new Map<string, number>();
+  // ── 起跑时照一张「跑坏了回得去吗」的快照 (D1, 2026-08-06) ──────────────────────
+  //
+  // D-AB 说「范围内写」那一级可以放手, 理由是**git 就是 rollback**。而 R2 给的隔离档
+  // (独立 worktree + 分支) **默认关着且只挂在 dag_goal 一个入口上** —— 2026-08-06 实测:
+  // `git branch --list 'omd/run/*'` **0 条**, 从来没被用过一次 (S-3 那一族, 这次有读数)。
+  // 于是几乎所有跑都落在 `head` 档直接写当前工作树, 而在那一档上「git 就是 rollback」
+  // **不是恒假的, 是有条件的** —— 条件就是起跑时那棵树干不干净。这一位此前没人记。
+  //
+  // ⚠ **只报不拦, 且只照一次**: 它不阻断任何一次跑, 也不在跑中重复查 (那会把 agent 自己的写
+  //   算进"起跑时就脏"里, 判词当场失真)。
+  const rollback = captureRollbackAnchor({ cwd: continuity?.repoRoot ?? process.cwd() });
 
   // runNodeOnce: **单次尝试** (resume-skip / primitive / map / command / agent / inproc + checkpoint)。
   // 重试策略在下方 runNode 包一层 —— 这里只管跑一次, 不认识 max_retry。
@@ -2878,6 +2892,7 @@ async function executePlan(
     // 同上一条纪律 (2026-08-06): 「产物没变」判据的分母 —— 可比较的跨轮次数, 不是运行次数。
     artifactMove: { transitions: moveTransitions, unobserved: moveUnobserved, findings: moveFindings },
     // 同上 (2026-08-06): 运行时写竞争 —— overlaps 是有没有并发, pairs 才是撞得上的机会。
+    rollback,
     writeRace: {
       overlaps: raceProbe.overlaps,
       pairs: raceProbe.pairs,
@@ -3154,6 +3169,7 @@ async function runDagInternal(
     claimCheck: exec.claimCheck,
     // 同上那条警告: 不透传 = 账本那一列恒 NULL, 而 NULL 读上去是"早于该改动", 症状全静默。
     artifactMove: exec.artifactMove,
+    rollback: exec.rollback,
     writeRace: exec.writeRace,
     ...(exec.cancelled ? { cancelled: exec.cancelled } : {}),
     usage: {

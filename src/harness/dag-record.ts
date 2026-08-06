@@ -15,6 +15,7 @@ import type { ExecutorDagResult } from './executor-dag';
 import type { NodeFailureKind } from './node-failure';
 import { deriveRunOutcome, type RunOutcomeKind } from './run-outcome';
 import type { AcceptanceProbe } from './goal/acceptance';
+import type { RollbackAnchor } from './rollback-anchor';
 
 export interface DagRunNode {
   id: string;
@@ -196,6 +197,17 @@ export interface DagRunRecord {
    */
   writeRace?: { overlaps: number; pairs: number; findings: number; pairsInferred?: number; findingsInferred?: number };
   /**
+   * **这次跑坏了回得去吗**(D1, 2026-08-06)—— 起跑那一刻的 git 状态。
+   *
+   * 记它是为了让「从脏树起跑的比例」变成读数。D-AB 说「范围内写」可以放手是因为 git 就是
+   * rollback,而 R2 的隔离档默认关着、只挂在一个入口上、**实测从来没被用过一次** ——
+   * 所以那句话的真实条件是「起跑时树干净」,而这一位此前没人记,于是那个比例根本算不出来。
+   *
+   * ⚠ 五态别压平:`clean` / `dirty-tracked`(**没有回滚对象**)/ `dirty-untracked`(半个)/
+   *   `not-a-repo` / `unknown`(查不了,**不是干净**)。缺席 = 早于本次改动的行。
+   */
+  rollback?: RollbackAnchor;
+  /**
    * **这张图是怎么结束的**(N5, 2026-07-31;词表在 `run-outcome.ts`)。
    *
    * 与 `nodes[].failureKind` 的分工:那一位是**每个节点**为什么没过,这一位是**整跑**的终止原因。
@@ -303,6 +315,7 @@ interface Row {
   claim_check: string | null;
   artifact_move: string | null;
   write_race: string | null;
+  rollback: string | null;
   reused: number | null;
   criteria: string | null;
   acceptance_probe: string | null;
@@ -364,6 +377,7 @@ function rowToRecord(row: Row): DagRunRecord {
     ...(row.artifact_move ? { artifactMove: JSON.parse(row.artifact_move) } : {}),
     // 同上: 缺席不编一个 `overlaps:0` —— 「没记」与「这一跑没并发」的下一步不同。
     ...(row.write_race ? { writeRace: JSON.parse(row.write_race) } : {}),
+    ...(row.rollback ? { rollback: JSON.parse(row.rollback) } : {}),
     // `reused: 0` 是"记了且一个没复用", NULL 是"没记" —— 两者不许合并。
     ...(row.reused !== null ? { reused: row.reused } : {}),
     ...(row.criteria ? { criteria: JSON.parse(row.criteria) } : {}),
@@ -461,6 +475,8 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
   if (!cols.includes('artifact_move')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN artifact_move TEXT`);
   // 同上 (2026-08-06): 运行时写竞争。老行留 NULL (= 没记, 不是 overlaps:0)。
   if (!cols.includes('write_race')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN write_race TEXT`);
+  // D1 (2026-08-06): 起跑时「回得去吗」。老行留 NULL = **没记**, 不是 'clean'。
+  if (!cols.includes('rollback')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN rollback TEXT`);
   if (!cols.includes('reused')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN reused INTEGER`);
   if (!cols.includes('criteria')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN criteria TEXT`);
   // 入口轴 (2026-08-02): 2026-08-02 之前建的表没这一列, 老行留 NULL (= 没记, 不是 'unknown')。
@@ -470,8 +486,8 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
   if (!cols.includes('acceptance_probe')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN acceptance_probe TEXT`);
   db.run(`CREATE INDEX IF NOT EXISTS omd_dag_runs_run_id ON omd_dag_runs (run_id)`);
   const ins = db.query(
-    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage, observations, claim_check, artifact_move, write_race, outcome, verification, reused, criteria, acceptance_probe)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage, observations, claim_check, artifact_move, write_race, rollback, outcome, verification, reused, criteria, acceptance_probe)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const byId = db.query(`SELECT * FROM omd_dag_runs WHERE id = ?`);
   const recent = db.query(`SELECT * FROM omd_dag_runs ORDER BY created_at DESC LIMIT ?`);
@@ -551,6 +567,7 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
         result.artifactMove ? JSON.stringify(result.artifactMove) : null,
         // 三态同上: NULL = 没记; overlaps:0 = 这一跑压根没并发; pairs>0 = 真有撞得上的机会。
         result.writeRace ? JSON.stringify(result.writeRace) : null,
+        result.rollback ? JSON.stringify(result.rollback) : null,
         // N5: run 级终止原因。**在这里算而不是让调用方传** —— 两个调用面 (dag_run / dag_goal)
         // 各算一遍就是两处会漂的独立判断, 而 `deriveRunOutcome` 是纯函数、读的就是这份 result。
         deriveRunOutcome(result),
