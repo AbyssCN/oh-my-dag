@@ -2771,8 +2771,13 @@ if (import.meta.main) {
       console.log(`       机会 ${wr.pairsInferred} 对 → 真撞 ${wr.findingsInferred} 对` +
         `  [${wr.rateInferred === null ? '算不出 (分母 0)' : `${(wr.rateInferred * 100).toFixed(1)}%`}]`);
       console.log(`       其中 ${wr.pairsInferred - wr.pairs} 对**只有推断才看得见** (command 节点 / agent 的 bash 写)。`);
-      console.log(`     ⚠ 还剩 ${wr.overlaps - wr.pairsInferred} 对是**两条判据都够不着**的: 一侧连命令原文里都没有写目标`);
-      console.log('       (`git apply` / `> "$OUT"` / 目录级 rsync —— 见 SHELL_WRITE_BLIND_SPOTS)。**不进任何机会分母**。');
+      console.log(`     ⚠ 还剩 ${wr.overlaps - wr.pairsInferred} 对是**一侧没有可见的写**。这一格压着**两件下一步相反的事**:`);
+      console.log('       ① **真的没写** —— 那一侧本来就是只读的 (实测: command 节点 113/113 条命令都不写,');
+      console.log('          它们是拿来读和断言的)。这种"看不见"是**正确的**, 不该去补什么;');
+      console.log('       ② **写了但看不见** —— 命令原文里认不出写目标 (`git apply` / `> "$OUT"` /');
+      console.log('          目录级 rsync, 见 SHELL_WRITE_BLIND_SPOTS)。这种才该补判据。');
+      console.log('       ⚠ 今天**分不开这两件** (引擎不记"这个节点有没有打算写")。所以这一格');
+      console.log('         **不进任何机会分母** —— 但也别读成"有一大块写看不见", 那是只念了 ②。');
       console.log('     ⚠ 严格与推断两档**不许相加也不许互相替代**: 前者是受控写工具的事实, 后者含推断');
       console.log('       (`a && b > x` 里 a 失败时 x 并没有被写)。要升闸先看 findingsInferred - findings 有多大。');
     }
