@@ -1011,11 +1011,16 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
 
   // 老库可能缺后加的列 → 查一次 pragma 再拼, 缺的列补 NULL (正是"这批记录没记"那一格,
   // 与"记了但为空"分开数; 同 CLI ⑦ 段的做法, 不另起一套)。
+  //
+  // ⚠ **`run_id` 也在这条里** (2026-08-06 修): 它同样是后加的列, 而此前它躺在**必选**那一半 ——
+  //   于是一个 `createDagRecorder` 认得、会自动迁移的老库, 在**只读**的读数板上直接崩
+  //   (`dag-record.test.ts` 里就有一个正是这种 schema 的夹具)。读侧不迁移, 所以读侧必须容忍。
+  //   只有建表那一刻就有的列 (id/created_at/levels/nodes/usage) 才留在必选那一半。
   const haveCols = (db.query(`PRAGMA table_info(omd_dag_runs)`).all() as { name: string }[]).map((c) => c.name);
   const optionalCol = (name: string) => (haveCols.includes(name) ? `, ${name}` : `, NULL AS ${name}`);
   const rows = db
     .query(
-      `SELECT id, created_at, run_id, levels, nodes, usage${optionalCol('observations')}${optionalCol('entry')}${optionalCol('outcome')}${optionalCol('reused')}${optionalCol('criteria')}${optionalCol('claim_check')}${optionalCol('artifact_move')}${optionalCol('write_race')}${optionalCol('rollback')}${optionalCol('acceptance_probe')}` +
+      `SELECT id, created_at, levels, nodes, usage${optionalCol('run_id')}${optionalCol('observations')}${optionalCol('entry')}${optionalCol('outcome')}${optionalCol('reused')}${optionalCol('criteria')}${optionalCol('claim_check')}${optionalCol('artifact_move')}${optionalCol('write_race')}${optionalCol('rollback')}${optionalCol('acceptance_probe')}` +
         ` FROM omd_dag_runs ORDER BY created_at ASC`,
     )
     .all() as ReadoutRow[];
@@ -1830,11 +1835,13 @@ if (import.meta.main) {
 
   // 老库没有 observations / outcome 列 → 整条 SELECT 会崩。列在不在是**运行期事实**, 查一次 pragma
   // 再拼 (缺的那列补 NULL —— 正是"这批记录没记"那一格, 与"记了但是空的"分开数)。
+  // ⚠ **`run_id` 同理** (2026-08-06 修, 与 readout() 里那条同源): 它也是后加的列,
+  //   而此前躺在必选那一半 —— 于是一个 recorder 认得、会自动迁移的老库在只读的读数板上直接崩。
   const haveCols = (db.query(`PRAGMA table_info(omd_dag_runs)`).all() as { name: string }[]).map((c) => c.name);
   const optionalCol = (name: string) => (haveCols.includes(name) ? `, ${name}` : `, NULL AS ${name}`);
   const rows = db
     .query(
-      `SELECT id, created_at, plan_name, node_count, run_id, nodes, usage${optionalCol('observations')}${optionalCol('outcome')}${optionalCol('entry')}${optionalCol('verification')}${optionalCol('reused')}${optionalCol('criteria')}` +
+      `SELECT id, created_at, plan_name, node_count, nodes, usage${optionalCol('run_id')}${optionalCol('observations')}${optionalCol('outcome')}${optionalCol('entry')}${optionalCol('verification')}${optionalCol('reused')}${optionalCol('criteria')}` +
         ` FROM omd_dag_runs ORDER BY created_at DESC LIMIT ?`,
     )
     .all(limit * 3) as Row[]; // ×3: 一次 goal 最多两条, 留余量再按 runId 截
