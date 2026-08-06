@@ -188,8 +188,13 @@ export interface DagRunRecord {
    * 路径上。前者改图,后者要问这两个 leaf 为什么碰同一个文件 —— **下一步相反,所以分开记**。
    *
    * 三态: 缺席 = 没记(老行)· `overlaps:0` = 这一跑压根没并发 · `pairs>0` = 真有撞得上的机会。
+   *
+   * ⚠ `pairsInferred`/`findingsInferred`(2026-08-06 补)是**推断口径**:把「命令原文点名要写、
+   * 且那个文件在本节点执行窗口内变过」的候选并进来之后的数。它们与严格那两个**不许相加也不许
+   * 互相替代** —— `pairsInferred - pairs` 是只有推断才看得见的那一块(证据更弱),
+   * `overlaps - pairsInferred` 才是两条判据都够不着的那部分。缺席 = 早于本次改动的行。
    */
-  writeRace?: { overlaps: number; pairs: number; findings: number };
+  writeRace?: { overlaps: number; pairs: number; findings: number; pairsInferred?: number; findingsInferred?: number };
   /**
    * **这张图是怎么结束的**(N5, 2026-07-31;词表在 `run-outcome.ts`)。
    *

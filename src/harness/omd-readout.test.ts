@@ -659,7 +659,12 @@ describe('omd-readout · ⑧ 「产物没变」判据的分母 (2026-08-06)', ()
  * 交接 30 §五 第 2 条。再等也不会有数,因为没有一行代码写它。
  */
 describe('omd-readout · ⑧.6 运行时写竞争的分母 (2026-08-06)', () => {
-  const withWR = (runId: string, writeRace: { overlaps: number; pairs: number; findings: number } | undefined) => {
+  const withWR = (
+    runId: string,
+    writeRace:
+      | { overlaps: number; pairs: number; findings: number; pairsInferred?: number; findingsInferred?: number }
+      | undefined,
+  ) => {
     const db = new Database(':memory:');
     const rec = createDagRecorder({ db });
     rec.record(
@@ -696,6 +701,50 @@ describe('omd-readout · ⑧.6 运行时写竞争的分母 (2026-08-06)', () => 
     const wr = withWR('w4', { overlaps: LOOP_NO_MOVE_MIN_N, pairs: 0, findings: 0 });
     expect(wr.sufficiency.overlaps.enough).toBe(true); // 并发这件事本身可以判了
     expect(wr.sufficiency.pairs.enough).toBe(false); // 但一次机会都没有 → 基率仍不许读
+  });
+
+  /**
+   * **推断口径**(2026-08-06 补:写的可见性)。
+   *
+   * `filesTouched` 只认受控写工具,于是 command 节点那一路从不填、agent 的 bash 写也隐形 ——
+   * 「看不见的那部分」里混着一大块其实**认得出**的写。补上之后两档必须**分得开**:
+   * 推断那一档的证据更弱(`a && b > x` 里 a 失败时 x 并没有被写),而升不升闸恰恰要看这个分野。
+   */
+  test('★ 老行没记推断口径 → null(**没记 ≠ 0**),严格那两个照常读得出', () => {
+    const wr = withWR('w5', { overlaps: 5, pairs: 2, findings: 1 });
+    expect(wr.pairs).toBe(2);
+    expect(wr.pairsInferred).toBeNull();
+    expect(wr.findingsInferred).toBeNull();
+    expect(wr.rateInferred).toBeNull();
+  });
+
+  test('★ 两档分开算 —— 推断口径更宽,而严格那两个**一个字都不许变**', () => {
+    // 证伪: 让 readout 把 pairsInferred 累加进 pairs → 这条第一行当场红。
+    const wr = withWR('w6', { overlaps: 10, pairs: 2, findings: 0, pairsInferred: 8, findingsInferred: 3 });
+    expect(wr.pairs).toBe(2); // 严格: command/bash 那侧看不见
+    expect(wr.findings).toBe(0);
+    expect(wr.rate).toBe(0); // 严格口径查过零检出
+    expect(wr.pairsInferred).toBe(8); // 推断: 把认得出的写并进来
+    expect(wr.findingsInferred).toBe(3);
+    expect(wr.rateInferred).toBeCloseTo(3 / 8, 5);
+    // 这一行是本用例的全部意义: 「只有推断才看得见」的那一块单独有大小, 不许被合并掉
+    expect(wr.pairsInferred! - wr.pairs).toBe(6);
+  });
+
+  test('★ 记了推断口径且为 0 → 是 0 不是 null(与"老行没记"分得开)', () => {
+    const wr = withWR('w7', { overlaps: 3, pairs: 0, findings: 0, pairsInferred: 0, findingsInferred: 0 });
+    expect(wr.pairsInferred).toBe(0); // 记了, 只是一次机会都没有
+    expect(wr.rateInferred).toBeNull(); // 分母 0 → 算不出
+    expect(wr.pairsInferred).not.toBeNull(); // ← 与上面 w5 那条相反, 两格不许被抹平
+  });
+
+  test('推断机会也有自己的门槛槽 —— 三个 0 的下一步各不相同', () => {
+    const wr = withWR('w8', {
+      overlaps: LOOP_NO_MOVE_MIN_N, pairs: 0, findings: 0, pairsInferred: LOOP_NO_MOVE_MIN_N, findingsInferred: 0,
+    });
+    expect(wr.sufficiency.overlaps.enough).toBe(true);
+    expect(wr.sufficiency.pairs.enough).toBe(false); // 严格口径仍不够
+    expect(wr.sufficiency.pairsInferred.enough).toBe(true); // 推断口径够了 → 那一档的基率可以读
   });
 });
 
