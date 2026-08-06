@@ -59,6 +59,14 @@ const fakeResult = (o: FakeOpts): ExecutorDagResult => {
   for (const f of o.failed ?? []) {
     results[f.id] = { id: f.id, kind: nodeKind(o.plan[f.id]), status: 'failed', failureKind: f.failureKind, deps: [], output: '', usage: { in: 0, out: 0 } };
   }
+  // ⚠ **复用节点也要进 `results`**(2026-08-06 修夹具)。此前它们只出现在 `reusedNodes` 里,
+  //   而真引擎是 `results[cid] = { ...上轮结果, skipped: true }` —— 复用节点**就在结果里**。
+  //   旧夹具照着读数板那条"推断"的假设造(在 plan 里、不在结果里 = 复用), 于是
+  //   **推断与它的测试一起错、并且互相背书** —— 正是本仓 CLAUDE.md 警告的那一条
+  //   (「测试与实装由同一次改动一起产出时会一起错」)。真数据上那条推断恒返空集。
+  for (const id of o.reused ?? []) {
+    results[id] = { id, kind: nodeKind(o.plan[id]), status: 'done', deps: [], output: '', usage: { in: 0, out: 0 }, skipped: true };
+  }
   return {
     plan: { name: o.planName, nodes: o.plan },
     levels: [Object.keys(o.plan)],
@@ -277,10 +285,47 @@ describe('omd-readout · 判据一致性: {judge, oracle} 四格 (原任务 ③)
   });
 });
 
-describe('omd-readout · 复用率 (草案 T8)', () => {
-  test('分子 = 记录为 reused 的节点, 分母 = DAG 全量节点 (含未记); 空世界 rate = null', () => {
+/**
+ * 复用率(草案 T8;**2026-08-06 大改口径,理由在下面那条用例里**)。
+ *
+ * 旧实现是"按可证语义推":「节点在 plan 里、**不在执行结果里**、且更早跑过 → 那是复用」。
+ * **而那个前提是假的** —— 复用节点**就在结果里**(引擎给它 `skipped: true` 并照常写进
+ * `results`)。真数据上那条推断**恒返空集**,读数板于是印出「复用率 **0.0%**」与四格
+ * `reused_success **0**`,而同一批记录里 32 条声明过复用、共 ~123 个节点。
+ *
+ * ⚠ **它的夹具是照着那个假前提造的**(`done: ['y'], reused: ['x']`,x 不进 results),
+ *   于是推断在夹具上"работает"、在生产上恒零 ——
+ *   **实装与测试一起错、并且互相背书**,正是本仓 CLAUDE.md 警告的那一条。
+ *   夹具已改成像真引擎(复用节点进 `results` 并带 `skipped`)。
+ */
+describe('omd-readout · 复用率 (草案 T8 · 2026-08-06 改口径)', () => {
+  test('分子/分母都只认**节点面记了复用的跑**; 空世界 rate = null', () => {
     const { readoutNow } = makeFixture();
-    expect(readoutNow().reuse_rate).toEqual({ reused_nodes: 1, total_nodes: 8, rate: 1 / 8 });
+    // total 从 8 → 7: 旧分母是 `universe`(plan 全集, 含从未执行的 z), 新分母是
+    // **记了这一位的跑里出现过的节点** —— z 那种"在 plan 里但从没跑过"的不该进复用率的分母。
+    expect(readoutNow().reuse_rate).toEqual({ reused_nodes: 1, total_nodes: 7, rate: 1 / 7, unknownRuns: 0 });
+  });
+
+  test('★★ 老行(声称复用而节点面没标)→ **算不出, 不进分母**, 不许当 0 复用', () => {
+    // 这条是这次改口径的**全部意义**: 旧实现把这类跑算成"跑了但没复用", 于是
+    // 复用率恒 0.0% —— 一个读起来像"复用根本没在工作"的假零, 而 ⑩ 段按 run 级计数
+    // 算出来是 21.9%。**同一页两个数, 而 0 那个是错的。**
+    const db = new Database(':memory:');
+    const rec = createDagRecorder({ db });
+    // 老格式: reused 列 > 0, 而 nodes 里一个 `reused: true` 都没有
+    db.run(`INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage, reused)
+            VALUES ('old-1', 1, 'p', 2, NULL, 'run-old', 'dag_run', '[["a","b"]]', ?, ?, 2)`, [
+      JSON.stringify([
+        { id: 'a', kind: 'command', status: 'done', deps: [] },
+        { id: 'b', kind: 'command', status: 'done', deps: [] },
+      ]),
+      '{"conductorIn":0,"conductorOut":0,"leavesIn":0,"leavesOut":0,"leavesCacheHit":0}',
+    ]);
+    const rr = readout({ db, limit: 50 }).reuse_rate;
+    expect(rr.unknownRuns).toBe(1); // ← 单独数
+    expect(rr.total_nodes).toBe(0); // ← **不进分母**
+    expect(rr.rate).toBeNull(); // ← 算不出, 而不是 0.0%
+    rec.close();
     // 空世界: 建了表但一条记录都没有 → 分母 0, rate 是 null 不是 0 (草案 T14 的空世界是成功)。
     const emptyDb = new Database(':memory:');
     createDagRecorder({ db: emptyDb });
@@ -300,7 +345,7 @@ describe('omd-readout · 复用率 (草案 T8)', () => {
       { risk_level: 'approval_required', executed: 0, not_executed: 0 },
       { risk_level: 'never', executed: 0, not_executed: 0 },
     ]);
-    expect(empty.reuse_rate).toEqual({ reused_nodes: 0, total_nodes: 0, rate: null });
+    expect(empty.reuse_rate).toEqual({ reused_nodes: 0, total_nodes: 0, rate: null, unknownRuns: 0 });
   });
 });
 
