@@ -17,14 +17,24 @@ import {
   runWorktreeDir,
   type RunWorktreeDeps,
 } from './run-worktree';
+import type { RollbackAnchor } from './rollback-anchor';
 
-/** 假 git: 记下每条命令; `fail` 给了就抛(模拟 worktree 已存在 / 分支重名之类)。 */
-function fakeGit(fail?: string): { deps: RunWorktreeDeps; calls: string[][] } {
+/**
+ * 假 git: 记下每条命令; `fail` 给了就抛(模拟 worktree 已存在 / 分支重名之类)。
+ *
+ * ⚠ `checkTree` **必须也是假的**: 不给它的话默认实现会真起一个 git 子进程去查
+ * `/repo` —— 用例既不 hermetic 也白慢一截。缺省给 `clean`(= 不产警告, 老用例行为不变)。
+ */
+function fakeGit(fail?: string, tree: RollbackAnchor = { kind: 'clean', head: 'abc', dirtyTracked: 0, untracked: 0 }): {
+  deps: RunWorktreeDeps;
+  calls: string[][];
+} {
   const calls: string[][] = [];
   return {
     calls,
     deps: {
       isGitRepo: () => true,
+      checkTree: () => tree,
       git: (args) => {
         calls.push(args);
         if (fail) throw new Error(fail);
@@ -145,5 +155,57 @@ describe('非目标: merge-to-head 明确不做', () => {
     // 这条断言不是锁死设计, 是让"我们加了自动合回"必须显式发生。
     const strategies = ['head', 'branch'];
     expect(strategies).not.toContain('merge-to-head');
+  });
+});
+
+/**
+ * **未提交的活在隔离树里看不见**(2026-08-06)。
+ *
+ * `git worktree add` 出来的是该 ref 的**干净 checkout** —— 主树上没提交的改动在那边看不见。
+ * 这条边界在本模块头注里写了很久,可它**只写在头注里**:调用它的 owner 在回话里一个字都看不到。
+ * 于是「带着未提交的活起一次隔离跑」会**静默**从 HEAD 开始,而回话只说"隔离成功"。
+ *
+ * 这一格与 `degradedReason` 同一条纪律:**声明面与执行面对不上时,必须念进回话**。
+ */
+describe('⑤ 未提交的活在隔离树里看不见 — 必须念进回话', () => {
+  test('★ 主树有已跟踪的未提交改动 → 带警告, 且**回话里念得出来**', () => {
+    const { deps } = fakeGit(undefined, { kind: 'dirty-tracked', head: 'abc', dirtyTracked: 3, untracked: 0 });
+    const w = prepareRunWorktree({ cwd: '/repo', runId: 'r1', strategy: 'branch' }, deps);
+    expect(w.strategy).toBe('branch'); // fail-open: 不拒, 隔离照建
+    expect(w.uncommittedWarning).toContain('3 处未提交');
+    expect(w.uncommittedWarning).toContain('看不见');
+    // 这一行是本用例的全部意义: 写在头注里等于没写, 得进 owner 真会读的那段
+    expect(describeRunWorktree(w)).toContain('看不见');
+  });
+
+  test('★ 只有未跟踪文件也要警告 —— 它们同样进不了隔离树', () => {
+    const { deps } = fakeGit(undefined, { kind: 'dirty-untracked', head: 'abc', dirtyTracked: 0, untracked: 2 });
+    const w = prepareRunWorktree({ cwd: '/repo', runId: 'r1', strategy: 'branch' }, deps);
+    expect(w.uncommittedWarning).toContain('2 处未提交');
+  });
+
+  test('★ 干净树 → **没有**这条警告 (证明它不是恒响的)', () => {
+    const { deps } = fakeGit();
+    const w = prepareRunWorktree({ cwd: '/repo', runId: 'r1', strategy: 'branch' }, deps);
+    expect(w.uncommittedWarning).toBeUndefined();
+    expect(describeRunWorktree(w)).not.toContain('看不见');
+  });
+
+  test('★ 查不了 (unknown) → **不警告也不谎报干净** —— 那一格什么都不说', () => {
+    // 与上一条的区别: 上面是"查过, 干净"; 这里是"没查成"。两者都不出警告, 但成因不同 ——
+    // 若哪天要把这条升成闸, unknown 必须与 clean 分得开 (今天先不编一个假警告出来)。
+    const { deps } = fakeGit(undefined, { kind: 'unknown', why: 'git 起不来' });
+    const w = prepareRunWorktree({ cwd: '/repo', runId: 'r1', strategy: 'branch' }, deps);
+    expect(w.uncommittedWarning).toBeUndefined();
+  });
+
+  test('head 档不查树 —— 它本来就写在主树上, 没有"看不见"这回事', () => {
+    let checked = 0;
+    const w = prepareRunWorktree(
+      { cwd: '/repo', runId: 'r1', strategy: 'head' },
+      { isGitRepo: () => true, git: () => {}, checkTree: () => { checked++; return { kind: 'dirty-tracked' }; } },
+    );
+    expect(w.uncommittedWarning).toBeUndefined();
+    expect(checked).toBe(0);
   });
 });
