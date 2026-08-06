@@ -87,6 +87,18 @@
   > **盘上数得出来的 0**。找同类的办法也一并记下:**问这个机制在盘上会留下什么痕迹,
   > 然后去数那个痕迹** —— worktree 留目录、分支留 ref、缓存留文件。数不出痕迹的机制,
   > 「有没有人用」就永远只能靠印象。
+- **D-13 的 prototype 隔离 worktree —— 这一条比"零痕迹"再强一格:它在 import 图上没有可达的调用者**
+  (2026-08-06,查 backlog S4 的前置时撞到)。那段代码住在 `pathfinder/dispatch.ts` 的
+  `case 'prototype'` 里,而唯一调 `dispatchTicket` 的 `dispatchFrontier` **只自动派 research 票** ——
+  注释写着 prototype「仅 reported 给 UI 由人显式触发」,**而那个触发口从来没建过**。
+  prototype 票实际走的是 `readyRegion → path_deliver → detached solve`,那条路不传
+  `branchStrategy` → 缺省 `head` → **直接写主树**。
+  **「沙盒 spike,试验码不污主树」这句话在生产上是反的。**
+  > **于是找同类的办法扩一条:除了数盘上的痕迹,还可以数它有没有调用者。**
+  > 前者答"没人用",后者答"**没人用得了**" —— 后一个是结构事实,不受采样期影响。
+  > ⚠ 修法**不是把 default 翻成隔离**:隔离 worktree 是 HEAD 那一版的干净 checkout,
+  > **看不见未提交的活**(同日查实)。带着未提交改动跑 spike,改成隔离只会让它看不见自己的活。
+  > 今天先把这件事**在回话里说出来**(闸:`src/mcp/tools/pathfinder.test.ts`)。
 
 **怎么抓**:没有通用闸。可操作的替代是一条**提问纪律**:
 > 写完一个机制,先回答「**它在生产的哪一次调用上会被执行**」。答不出具体路径 = 它还没上线。
