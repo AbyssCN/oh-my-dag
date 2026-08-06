@@ -59,6 +59,7 @@ import { readdirSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import { parseMapMarkdown } from '../src/harness/pathfinder/map-store';
 import { computeCost } from '../src/model/cost-ledger';
+import { shellWriteTargets } from '../src/harness/shell-writes';
 import { capsFor } from '../src/harness/../model/model-caps';
 import { CheckpointManager } from '../src/harness/continuity/checkpoint-manager';
 import type { NodeLoopJournal } from '../src/harness/continuity/types';
@@ -370,6 +371,22 @@ export interface ReadoutResult {
     rateInferred: number | null;
     /** 同 ⑧ 用 `LOOP_NO_MOVE_MIN_N`:三个槽的 0 下一步各不相同。 */
     sufficiency: { overlaps: FaceSufficiency; pairs: FaceSufficiency; pairsInferred: FaceSufficiency };
+    /**
+     * **command 节点这一侧到底写不写文件**(2026-08-06)—— 「推断口径为什么不涨」的先行答案。
+     *
+     * ⑧.6 的推断口径靠 `shellWriteTargets` 从**命令原文**认写目标。那条判据认不出东西时,
+     * 有两种完全不同的成因:① 判据太窄(该收窄盲点)② **这些命令本来就不写文件**。
+     * 两者的下一步相反,而只看 `pairsInferred` 分不开 —— 于是这一格直接数命令原文。
+     *
+     * 实测(2026-08-06,56 跑 / 258 个 command 节点 / 113 条不重复命令):
+     * **认得出写目标的 0 条**,而拆开看 85 条是纯读(grep/rg/cat/wc)、18 条是
+     * `bun test`/`tsc` 验收、5 条脚本也全是验收 —— 也就是说这台引擎上的 command leaf
+     * **就是拿来读和断言的,它不写**。那个 0 是**正确的零**,不是判据漏认。
+     *
+     * ⚠ 于是 ⑧.6 推断口径的输入几乎全来自 **agent leaf 的 bash 写**,不来自 command 节点。
+     *   想靠收窄 `SHELL_WRITE_BLIND_SPOTS` 抬这个分母,**先看这一格有没有变**。
+     */
+    commandWrites: { commands: number; distinct: number; withTargets: number };
   };
   /**
    * ⑧.1 **内环的形状**(2026-08-06)—— 「⑧ 那个 0 为什么是 0」的分母。
@@ -592,6 +609,7 @@ function emptyWorld(meta: ReadoutResult['meta']): ReadoutResult {
       recordedRuns: 0, unrecordedRuns: 0, overlaps: 0, pairs: 0, findings: 0, rate: null,
       // 空世界: 推断口径记 null = **没记**(一跑都没有),与"记了而推断口径为 0"分得开。
       pairsInferred: null, findingsInferred: null, rateInferred: null,
+      commandWrites: { commands: 0, distinct: 0, withTargets: 0 },
       sufficiency: {
         overlaps: faceSufficiency(0, LOOP_NO_MOVE_MIN_N),
         pairs: faceSufficiency(0, LOOP_NO_MOVE_MIN_N),
@@ -1029,6 +1047,16 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
   //   "现行键抓得到的那一格"。实测 54 跑: 指纹 25 · singleton 22 · 真机会 3 ·
   //   near-miss 3 · 真重复 **0** —— 旧读法给出"覆盖 88% → 够用", 真相是现行键**一组没抓到**。
   // ⚠ 计算挪进这里(而不是留在渲染层)也是这次的教训之一: 那一段独立数了一遍, 谁都没闸它。
+  // command 节点这一侧写不写文件 —— 见 write_race.commandWrites 的注(「正确的零」那段)。
+  const cwAll: string[] = [];
+  for (const p of parsed) for (const n of p.nodes) if (n.command?.trim()) cwAll.push(n.command);
+  const cwDistinct = [...new Set(cwAll)];
+  const commandWrites = {
+    commands: cwAll.length,
+    distinct: cwDistinct.length,
+    withTargets: cwDistinct.filter((c) => shellWriteTargets(c).length > 0).length,
+  };
+
   const bkBy = new Map<string, { cmds: Set<string>; hits: number; runs: Set<string> }>();
   for (const p of parsed) {
     for (const n of p.nodes) {
@@ -1216,6 +1244,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
         pairs: faceSufficiency(wrAcc.pairs, LOOP_NO_MOVE_MIN_N),
         pairsInferred: faceSufficiency(wrAcc.pairsInferred, LOOP_NO_MOVE_MIN_N),
       },
+      commandWrites,
     },
     breaker_key,
     loop_shape: { ...ls },
@@ -2200,6 +2229,20 @@ if (import.meta.main) {
           ? `     ${name} 够了 (${s.nodes} ≥ ${LOOP_NO_MOVE_MIN_N}) → ${meaning}`
           : `     ${name} **不足**, 还差 ${s.short} (${s.nodes}/${LOOP_NO_MOVE_MIN_N}) → 这一槽还判不了`,
       );
+    }
+  }
+  // ── command 节点那一侧到底写不写 (2026-08-06) ─────────────────────────────
+  // 「推断口径不涨」有两种成因, 下一步相反: 判据太窄 vs 这些命令本来就不写文件。
+  // 这一格直接数命令原文, 于是不必等 ⑧.6 攒够就答得出来。
+  const cw = contract.write_race.commandWrites;
+  if (cw.distinct > 0) {
+    console.log(`   ▸ command 节点这一侧: ${cw.commands} 次执行 / ${cw.distinct} 条不重复命令,`);
+    console.log(`     其中**认得出写目标的 ${cw.withTargets} 条**` +
+      `${cw.withTargets === 0 ? '  ← 这台引擎的 command leaf 是拿来读和断言的, **它不写**' : ''}`);
+    if (cw.withTargets === 0) {
+      console.log('     ⚠ 这个 0 是**正确的零, 不是判据漏认** (实测拆开: 纯读 grep/rg/cat/wc 占大头,');
+      console.log('       其余是 bun test / tsc 验收)。→ **想靠收窄 SHELL_WRITE_BLIND_SPOTS 抬推断分母,');
+      console.log('       先看这一格有没有变** —— 今天推断口径的输入几乎全来自 agent leaf 的 bash 写。');
     }
   }
   console.log('   判据 (在数据到达之前钉的):');
