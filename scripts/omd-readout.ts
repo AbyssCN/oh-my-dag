@@ -681,7 +681,17 @@ export function summarizeFaces(c: ReadoutResult): { ready: string[]; waiting: st
   if (cc2.wastedRounds > 0 || cc2.oracleFailed > 0) {
     const n = cc2.recorded;
     const bits: string[] = [];
-    if (cc2.wastedRounds > 0) bits.push(`**judge 太紧** ${cc2.wastedRounds}/${n} (判据过了而 judge 说没成 → 白转了几轮)`);
+    // ⚠ **不是"白转了几轮"** (2026-08-06 核代码改的, 此前那句是错的): `acceptance.command`
+    //   作为 `freezeCriterion` 传进内环, 而内环**判据绿就直接收敛, judge 的票只记录**
+    //   (`executor-dag`: 「冻结判据绿 → 环提前收敛」)。所以这几次**一轮都没白转**。
+    //   它真正的含义是**judge 的校准**: judge 与确定性判据分歧, 且方向恒为"更严"。
+    //   而它的价值在反面 —— **要是只有 judge 没有判据, 这几次就会一直转到轮数耗尽**。
+    if (cc2.wastedRounds > 0) {
+      bits.push(
+        `**judge 比确定性判据严** ${cc2.wastedRounds}/${n} (判据绿而 judge 说没成) ——` +
+          ' 环已按判据收敛, **没白转**; 它量的是 judge 的校准, 也是"判据救了几次"',
+      );
+    }
     if (cc2.oracleFailed > 0) bits.push(`**judge 太松** ${cc2.oracleFailed}/${n} (judge 说成了而判据没过)`);
     ready.push(`判据轴  ${bits.join(' · ')} → **非零检出, 不用等大 N**`);
   }
