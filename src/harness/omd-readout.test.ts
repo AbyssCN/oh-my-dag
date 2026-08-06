@@ -812,15 +812,15 @@ describe('omd-readout · ⑧.7 回溯重建的写竞争 (2026-08-06)', () => {
     expect(r.overlaps).toBe(1);
     expect(r.pairs).toBe(1);
     expect(r.findings).toBe(1);
-    expect(r.rate).toBe(1);
-    expect(r.samples[0]).toMatchObject({ runId: 'r1', shared: ['x.md'] });
+    expect(r.clean.rate).toBe(1);
+    expect(r.samples[0]).toMatchObject({ runId: 'r1', shared: ['x.md'], multiRound: false });
   });
 
   test('★ 窗口不重叠 → 一格都不进 (串行不是竞争)', () => {
     const r = reconstructWriteRace([{ runId: 'r1', nodes: [w('a', 0, 50, ['x.md']), w('b', 50, 150, ['x.md'])] }], st);
     expect(r.overlaps).toBe(0); // 首尾相接**不算**重叠 (半开区间)
     expect(r.findings).toBe(0);
-    expect(r.rate).toBeNull();
+    expect(r.clean.rate).toBeNull();
   });
 
   test('★ 父子对**一格都不进** —— 守卫是从 detectRuntimeWriteRace 白拿的', () => {
@@ -835,7 +835,7 @@ describe('omd-readout · ⑧.7 回溯重建的写竞争 (2026-08-06)', () => {
     const r = reconstructWriteRace([{ runId: 'r1', nodes: [w('a', 0, 100, ['x.md']), w('b', 50, 150, [])] }], st);
     expect(r.overlaps).toBe(1);
     expect(r.pairs).toBe(0);
-    expect(r.rate).toBeNull();
+    expect(r.clean.rate).toBeNull();
   });
 
   test('★★ 两个**不同 run** 的同名路径**不是**撞车 —— 按 runId 分组是硬约束', () => {
@@ -852,6 +852,24 @@ describe('omd-readout · ⑧.7 回溯重建的写竞争 (2026-08-06)', () => {
       st,
     );
     expect(mixed.findings).toBe(1); // ← 混进一个数组就报了。这就是那条约束的代价
+  });
+
+  test('★★ 多轮跑的数落在 **ambiguous** 面, **不许并进可信面**', () => {
+    // 2026-08-06 核第一条 finding 时撞到的: `NodeCheckpoint` **不记轮次**, 而 checkpoint 按
+    // nodeId **覆写** —— 多轮跑里两份可能来自**不同的轮**, 配成一对就是**跨轮伪影**,
+    // 而"两个节点在不同轮里各跑一次"根本不是并发。
+    // ⚠ 实测代价: 历史上唯一那条撞车**整条落在这一面** (单轮面 0/21, 多轮面 1/9) ——
+    //   合着读就会把一条排除不掉伪影的证据说成"并发写竞争确实发生"。
+    const r = reconstructWriteRace(
+      [
+        { runId: 'single', nodes: [w('a', 0, 100, ['x.md']), w('b', 50, 150, ['y.md'])] },
+        { runId: 'multi', multiRound: true, nodes: [w('a', 0, 100, ['z.md']), w('b', 50, 150, ['z.md'])] },
+      ],
+      st,
+    );
+    expect(r.clean).toMatchObject({ pairs: 1, findings: 0, rate: 0 }); // 可信面: 查过零检出
+    expect(r.ambiguous).toMatchObject({ runs: 1, pairs: 1, findings: 1 }); // 不可信面: 单独摆
+    expect(r.samples[0]!.multiRound).toBe(true); // 样本要标出它落在哪一面
   });
 
   test('dirsUsable 只数「有 ≥2 个节点」的 —— 单节点的 run 连对都配不出来', () => {
