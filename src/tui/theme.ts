@@ -76,6 +76,8 @@ export interface OmdTuiTheme {
     accent: (t: string) => string;
     warn: (t: string) => string;
     user: (t: string) => string;
+    /** 字标 / 标题 —— 整屏最亮的一处。 */
+    brand: (t: string) => string;
   };
 }
 
@@ -84,14 +86,25 @@ export function createTheme(opts: { color?: boolean; truecolor?: boolean } = {})
   const tc = opts.truecolor ?? truecolorEnabled();
   /** 16 色码 + Mocha hex 成对给:认 24 位就用 hex,不认就回落,关色就是恒等。 */
   const c = (code: string, hex?: string) => (!on ? identity : tc && hex ? fg24(hex) : sgr(code));
+  /**
+   * ★ **蓝色主调**(S-2,2026-08-07,owner 点名对标 Kun)。
+   *
+   * 改的是**语义色指向哪个色名**,不是新加一堆常量:`accent` 从 sky 换成 blue、
+   * `user` 从 green 换成 sky —— 于是主色调是一条蓝(blue → sky),绿只留给"成功"这类
+   * 真正的语义,不再兼职当"用户说的话"。
+   *
+   * ⚠ `warn` 保持黄:警告色跟着主题走会让"这条要注意"读不出来。**主题管好看,语义管对错。**
+   */
   const dim = c('2', MOCHA.overlay1);
-  const accent = c('36', MOCHA.sky);
+  const accent = c('94', MOCHA.blue);
   const warn = c('33', MOCHA.yellow);
-  const user = c('32', MOCHA.green);
+  const user = c('96', MOCHA.sky);
+  /** 字标 / 标题:亮蓝加粗,整屏最亮的一处 —— 首屏第一眼该落在这儿。 */
+  const brand = c('1;94', MOCHA.blue);
 
   const theme: OmdTuiTheme = {
     markdown: {
-      heading: c('1;36', MOCHA.mauve),
+      heading: brand,
       link: c('4;36', MOCHA.blue),
       linkUrl: dim,
       code: c('33', MOCHA.yellow),
@@ -107,7 +120,9 @@ export function createTheme(opts: { color?: boolean; truecolor?: boolean } = {})
       underline: c('4'),
     },
     editor: {
-      borderColor: dim,
+      // ⚠ 原来是 dim —— 于是输入框的上下两条线暗到几乎看不见, owner 截图里"没有输入框"
+      //   就是这个。框一直在(`editor.js:382` 画 `─`), 只是被调没了。
+      borderColor: accent,
       selectList: {
         selectedPrefix: accent,
         selectedText: c('1', MOCHA.text),
@@ -116,7 +131,7 @@ export function createTheme(opts: { color?: boolean; truecolor?: boolean } = {})
         noMatch: dim,
       },
     },
-    chrome: { dim, accent, warn, user },
+    chrome: { dim, accent, warn, user, brand },
   };
   // S7: 代码高亮挂在 theme 上 —— 组件不认识 highlight 这回事, 换主题即换高亮配色。
   // 后挂是因为 highlightCode 要拿到 chrome 那几档语义色, 而它们就在这个对象里。

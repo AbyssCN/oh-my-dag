@@ -45,7 +45,9 @@ function arg(name, fallback) {
 const OUT = arg('out', '/tmp/omd-tui-shot.png');
 const COLS = Number(arg('cols', '120'));
 const ROWS = Number(arg('rows', '40'));
-const CMD = arg('cmd', `cd ${ROOT} && bun run --env-file=.env src/harness/cli.ts tui`);
+// ⚠ COLORTERM 必须给：tmux 自己不设它，于是被测的 TUI 会**回落到 16 色** ——
+//   截出来的图就不是现代终端里的样子，判配色就全错了。
+const CMD = arg('cmd', `cd ${ROOT} && COLORTERM=truecolor bun run --env-file=.env src/harness/cli.ts tui`);
 const STEPS = arg('steps', 'wait:3000');
 
 /** tmux 一发。`check` 为真时非零退出即抛 —— 静默失败会产出一张"上一次的"图。 */
@@ -129,9 +131,12 @@ function applySgr(st, params) {
       const target = p === 38 ? 'fg' : 'bg';
       if (params[i + 1] === 5) { st[target] = xterm256(params[i + 2] ?? 0); i += 2; }
       else if (params[i + 1] === 2) {
-        const [r, g, b] = [params[i + 3] ?? 0, params[i + 4] ?? 0, params[i + 5] ?? 0];
+        // ⚠ `38;2;r;g;b` → params = [38, 2, r, g, b],所以 r 在 i+2 不是 i+3。
+        //   第一版差了一格,截出来整屏是**假颜色**(蓝色主题拍成了黄绿) ——
+        //   而它看起来完全像一张正常的图,只有拿已知色值对一下才发现。
+        const [r, g, b] = [params[i + 2] ?? 0, params[i + 3] ?? 0, params[i + 4] ?? 0];
         st[target] = `#${[r, g, b].map((x) => x.toString(16).padStart(2, '0')).join('')}`;
-        i += 5;
+        i += 4;
       }
     }
   }
@@ -192,8 +197,11 @@ function pageHtml(bodyHtml, cols) {
   return `<!doctype html><meta charset="utf-8"><style>
   html,body{margin:0;padding:0;background:${TERM_BG}}
   pre{margin:0;padding:14px 16px;background:${TERM_BG};color:#cdd6f4;
-      font-family:'Noto Sans Mono CJK SC','DejaVu Sans Mono',monospace;
-      font-size:15px;line-height:1.32;white-space:pre;
+      /* ⚠ DejaVu 排在前面 + 行高 1.0:真终端里每个字格是一个矩形, 全块字符撑满整格。
+         CJK 字体优先 + 行高 1.2 时方块之间会留缝, 字标被切成一条条 —— 那是**快照失真**,
+         不是 TUI 画错了(纯文本读出来一直是对的)。CJK 由后面的 Noto 兜。 */
+      font-family:'DejaVu Sans Mono','Noto Sans Mono CJK SC',monospace;
+      font-size:15px;line-height:1.0;white-space:pre;
       width:${cols}ch;box-sizing:content-box}
   </style><pre id="s">${bodyHtml}</pre>`;
 }

@@ -120,6 +120,18 @@ export class ChatLog implements Component {
   }
 
   /**
+   * **原样进屏,不加前缀、不套语义色**(S-3:欢迎屏字标走这条)。
+   *
+   * 为什么不复用 `appendNotice`:那条会加 `!` 前缀并整块染成警告黄 —— 一个黄色的、
+   * 前面还挂着感叹号的字标,读起来像"出事了"。前缀与颜色由调用方自己定,
+   * 是因为**这一类内容本来就不属于任何一种消息角色**,它是 chrome。
+   */
+  appendBanner(text: string): void {
+    this.closeStreaming();
+    this.entries.push({ role: 'notice', component: new Text(text), buffer: text, open: false });
+  }
+
+  /**
    * 后端/引擎说的话。`reason` 那一类(断链说明卡)走这里。
    */
   appendNotice(text: string): void {
