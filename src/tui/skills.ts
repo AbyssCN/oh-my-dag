@@ -20,8 +20,11 @@
  * 也**不写进 ChatStore** —— 否则一条 skill 会在往后每一轮里重复出现。
  */
 import { existsSync, readdirSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadSkillSource } from '../harness/skills/compile';
+import { COMMAND_NAMES } from './commands';
 import { fitLine } from './render/line';
 
 /** 注入块的定界符。两端都要有(同 memory-inject:只有开头的话正文会被读成 skill 内容)。 */
@@ -38,28 +41,118 @@ export function skillsRoot(): string {
   return fileURLToPath(new URL('../../client-skills', import.meta.url));
 }
 
+/**
+ * 用户级 skill 目录(`~/.claude/skills`)。
+ *
+ * ⚠ 这是 owner 明确要的那一半:"下载了 skill 自动发现"。包内 `client-skills/` 是 omd 自带的
+ * 方法论,用户装的那 100 多条在这里 —— 只认包内的话,`/lark` 这种永远出不来。
+ */
+export function userSkillsRoot(): string {
+  return join(homedir(), '.claude', 'skills');
+}
+
+/** 默认扫描顺序。**包内在前** —— 同名时包内那份赢(它是一等公民,版本跟着 omd 走)。 */
+export function defaultSkillRoots(): string[] {
+  return [skillsRoot(), userSkillsRoot()];
+}
+
 export interface SkillMeta {
   name: string;
   /** frontmatter 的 description(一句话)。缺 → `null`,**不拿正文首行冒充**。 */
   description: string | null;
+  /** 它是从哪个根扫出来的 —— `loadSkillBlock` 要靠它回到正确的目录。 */
+  root: string;
 }
 
-/** 列出全部一等公民 skill。目录不在(瘦包)→ 空数组。 */
-export function listSkills(root = skillsRoot()): SkillMeta[] {
-  if (!existsSync(root)) return [];
+/**
+ * 列出全部可唤起的 skill(包内 + 用户级)。目录不在(瘦包 / 没装过 Claude Code)→ 跳过。
+ *
+ * ⚠ 同名**先到先得**:包内排在前面,所以 omd 自带的那份赢。反过来的话,
+ * 用户目录里一个同名的旧副本会静默顶掉包内的新版 —— 而两者长得一模一样,查不出来。
+ */
+export function listSkills(roots: readonly string[] = defaultSkillRoots()): SkillMeta[] {
   const out: SkillMeta[] = [];
-  for (const e of readdirSync(root, { withFileTypes: true })) {
-    if (!e.isDirectory() || e.name.startsWith('.')) continue;
-    const src = loadSkillSource(root, e.name);
-    if (!src) continue; // 没有 SKILL.md 的目录不是 skill
-    const d = src.fm.description;
-    out.push({ name: e.name, description: typeof d === 'string' && d.trim() ? d.trim() : null });
+  const seen = new Set<string>();
+  for (const root of roots) {
+    if (!existsSync(root)) continue;
+    for (const e of readdirSync(root, { withFileTypes: true })) {
+      // ⚠ **不能用 `e.isDirectory()` 过滤**:`withFileTypes` 给的是 lstat 语义,
+      //   符号链接一律返回 false。实测 `~/.claude/skills` 里 119 条有 **77 条是符号链接**
+      //   (指向别的仓), 于是 `lark-*` 整族被静默跳过 —— `/lark` 永远出不来,
+      //   而屏幕上只是"少了几条", 看不出是被过滤掉的。
+      //   真正的判据是**有没有 SKILL.md**, 而那件事 `loadSkillSource` 已经在做(existsSync 跟随链接)。
+      //   `.` / `_` 开头仍然跳过:那是约定的非 skill 目录(`_registry`、点文件)。
+      if (e.name.startsWith('.') || e.name.startsWith('_')) continue;
+      if (seen.has(e.name)) continue;
+      const src = loadSkillSource(root, e.name);
+      if (!src) continue; // 没有 SKILL.md 的目录不是 skill
+      seen.add(e.name);
+      const d = src.fm.description;
+      out.push({ name: e.name, description: typeof d === 'string' && d.trim() ? d.trim() : null, root });
+    }
   }
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** `/skill` 的解析。三态:列表 / 唤起 / 不是这条命令。 */
-export type SkillCommand = { kind: 'list' } | { kind: 'invoke'; name: string; rest: string } | null;
+/**
+ * ★ **成组的最小成员数。**
+ *
+ * 实测这台机器上的前缀分布:`lark-` 26 · `omd-` 21 · `xihe-` 4 · `skill-` 3,
+ * 之后是一条长尾(大量只出现一两次的前缀)。门槛压到 1 或 2 会造出**几十个只有一个成员的组** ——
+ * 那不是分组,是把一份扁平清单换了个更长的写法。3 是照读数定的,不是拍的。
+ */
+export const GROUP_MIN = 3;
+
+/** 内置命令占掉的名字(裸名)。组名撞上它们就不成组 —— 见 `groupSkills` 的说明。 */
+export function reservedGroupNames(): string[] {
+  return COMMAND_NAMES.map((n) => n.replace(/^\//, ''));
+}
+
+export interface SkillGroup {
+  /** 组名 = 第一个 `-` 之前那一段(`lark-im` → `lark`)。 */
+  name: string;
+  members: SkillMeta[];
+}
+
+/** 分组结果。**单体不是"杂项组"** —— 它们就是没有组的 skill,合成一个假组会误导。 */
+export interface SkillGrouping {
+  groups: SkillGroup[];
+  loners: SkillMeta[];
+}
+
+/**
+ * 按前缀分组。成员数不够 {@link GROUP_MIN} 的前缀**不成组**,其成员留作单体。
+ */
+export function groupSkills(skills: readonly SkillMeta[], reserved: readonly string[] = reservedGroupNames()): SkillGrouping {
+  const byPrefix = new Map<string, SkillMeta[]>();
+  const loners: SkillMeta[] = [];
+  for (const s of skills) {
+    const i = s.name.indexOf('-');
+    if (i <= 0) {
+      loners.push(s);
+      continue;
+    }
+    const p = s.name.slice(0, i);
+    const arr = byPrefix.get(p);
+    if (arr) arr.push(s);
+    else byPrefix.set(p, [s]);
+  }
+  const groups: SkillGroup[] = [];
+  for (const [name, members] of byPrefix) {
+    // ⚠ **撞了内置命令名的前缀不成组。** 实测撞到:`skill-*` 有 3 条,够门槛,
+    //   于是画出一个 `/skill` 组入口 —— 而 `/skill` 已经是内置命令, 分发轮不到组这一层。
+    //   结果是一个**看得见但点不动**的入口, 比不画它更糟。
+    //   这些成员退回单体, 仍然可以 `/skill <全名>` 唤起, 一条都没丢。
+    if (members.length >= GROUP_MIN && !reserved.includes(name)) groups.push({ name, members });
+    else loners.push(...members);
+  }
+  groups.sort((a, b) => b.members.length - a.members.length || a.name.localeCompare(b.name));
+  loners.sort((a, b) => a.name.localeCompare(b.name));
+  return { groups, loners };
+}
+
+/** `/skill` 的解析。四态:分组总览 / 全表 / 唤起 / 不是这条命令。 */
+export type SkillCommand = { kind: 'list' } | { kind: 'all' } | { kind: 'invoke'; name: string; rest: string } | null;
 
 export function parseSkillCommand(text: string): SkillCommand {
   const t = text.trim();
@@ -67,7 +160,32 @@ export function parseSkillCommand(text: string): SkillCommand {
   const parts = t.slice('/skill'.length).trim();
   if (!parts) return { kind: 'list' };
   const [name, ...rest] = parts.split(/\s+/);
+  // `/skill all` 是**逃生口**:分组总览默认不铺单体, 但"到底有哪些"必须问得出来。
+  if (name === 'all' && rest.length === 0) return { kind: 'all' };
   return { kind: 'invoke', name: name as string, rest: rest.join(' ') };
+}
+
+/**
+ * 组命令的解析:`/lark` 列成员,`/lark im 帮我发条消息` 唤起 `lark-im` 并把补充带上。
+ *
+ * ⚠ 成员名**可写全名也可写后缀**(`/omd council` 与 `/omd omd-council` 都成立)——
+ * 人记得住的是后者的短形,而补全给出的是全名,两种都得认。
+ *
+ * @param groupNames 当前真实存在的组名。**不认清单外的名字** —— 否则 `/help` 这类
+ *   命令会被当成组名吃掉,而症状是"某条命令忽然不响应了"。
+ */
+export function parseGroupCommand(
+  text: string,
+  groupNames: readonly string[],
+): { group: string; member: string | null; rest: string } | null {
+  const t = text.trim();
+  if (!t.startsWith('/')) return null;
+  const [head, ...tail] = t.slice(1).split(/\s+/);
+  if (!head || !groupNames.includes(head)) return null;
+  if (tail.length === 0) return { group: head, member: null, rest: '' };
+  const raw = tail[0] as string;
+  const member = raw.startsWith(`${head}-`) ? raw : `${head}-${raw}`;
+  return { group: head, member, rest: tail.slice(1).join(' ') };
 }
 
 /**
@@ -95,10 +213,40 @@ function clip(s: string, budget = LIST_DESC_BUDGET): string {
  * 放抬头的话它是第一个被顶掉的 —— 而它恰恰是这条命令最容易被误解的地方
  * (唤起 ≠ 立刻执行)。位置在这里是判据不是口味。
  */
+/**
+ * ★ **分组总览**(S-6 umbrella)。默认视图,不铺全表。
+ *
+ * 起因是实测:这台机器上包内 21 条 + 用户级 119 条,扁平铺开是 **140 行**,
+ * 而全屏视口只有 20 出头 —— 头部直接被顶掉,人看到的是半截清单。
+ * 分组之后默认视图是"几个组 + 一行单体计数",全表留给 `/skill all`。
+ *
+ * ⚠ 单体只报数不报名:报名就退回成那面墙了。要名字的人打 `/skill all`。
+ */
 export function formatSkillList(skills: SkillMeta[]): string {
-  if (skills.length === 0) return 'client-skills 目录不在或为空 (瘦包?) —— 没有可唤起的 skill';
-  const lines = skills.map((s) => `  ${s.name}: ${s.description ? clip(s.description) : '-'}`);
+  if (skills.length === 0) return '没有可唤起的 skill (包内 client-skills/ 与 ~/.claude/skills 都不在或为空)';
+  const { groups, loners } = groupSkills(skills);
+  const lines: string[] = [];
+  for (const g of groups) {
+    lines.push(`  /${g.name}  (${g.members.length} 条)  —— /${g.name} 列成员, /${g.name} <成员> 唤起`);
+  }
+  if (loners.length > 0) lines.push(`  另有 ${loners.length} 条单体 skill —— /skill all 列全表`);
   return `${lines.join('\n')}\n用法: /skill <name> [补充说明] —— 唤起后注入**本轮**纪律, 不写进会话`;
+}
+
+/** 全表(`/skill all`)。一行一条,描述按可见宽度截断。 */
+export function formatSkillAll(skills: SkillMeta[]): string {
+  if (skills.length === 0) return '没有可唤起的 skill';
+  const lines = skills.map((s) => `  ${s.name}: ${s.description ? clip(s.description) : '-'}`);
+  return `${lines.join('\n')}\n共 ${skills.length} 条。用法: /skill <name> [补充说明] —— 注入**本轮**纪律, 不写进会话`;
+}
+
+/** 一个组的成员表(`/lark`)。组名前缀去掉 —— 每行重复一遍 `lark-` 只是噪音。 */
+export function formatGroupMembers(group: SkillGroup): string {
+  const lines = group.members.map((m) => {
+    const short = m.name.slice(group.name.length + 1);
+    return `  ${short}: ${m.description ? clip(m.description) : '-'}`;
+  });
+  return `${group.name} (${group.members.length} 条):\n${lines.join('\n')}\n用法: /${group.name} <成员> [补充说明]`;
 }
 
 export interface LoadedSkill {
@@ -112,8 +260,23 @@ export interface LoadedSkill {
  *
  * @param rest 用户在 skill 名之后补的话 —— 原样带上,那通常是"用它来做什么"。
  */
-export function loadSkillBlock(name: string, rest: string, root = skillsRoot()): LoadedSkill | null {
-  const src = loadSkillSource(root, name);
+/**
+ * 逐根找一条 skill 的源码。找不到 → `null`。
+ *
+ * 抽出来是因为 `loadSkillBlock`(给人用, 包一层纪律说明)与 `read_skill` 工具(给模型用,
+ * 只要正文)**必须走同一条解析** —— 两处各写一份的话, 人看到的和模型读到的会是两条不同的 skill。
+ */
+export function loadSkillSourceByName(name: string, roots: readonly string[] = defaultSkillRoots()) {
+  for (const root of roots) {
+    const src = loadSkillSource(root, name);
+    if (src) return src;
+  }
+  return null;
+}
+
+export function loadSkillBlock(name: string, rest: string, roots: readonly string[] = defaultSkillRoots()): LoadedSkill | null {
+  // 与 read_skill 工具**同一条解析** —— 两处各写一份的话, 人看到的与模型读到的会是两条不同的 skill。
+  const src = loadSkillSourceByName(name, roots);
   if (!src) return null;
   const head =
     `${SKILL_OPEN}\n` +

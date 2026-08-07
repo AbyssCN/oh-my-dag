@@ -421,14 +421,18 @@ async function scenarioSeat() {
 
     // S15 (A7): /skill 列出包内那批方法论 skill, 唤起后挂到**下一句**上。
     p.write('/skill\r');
-    // ⚠ 判据挑的是**列表末尾**那条(`omd-video`)与末行的"本轮",不是抬头那几条。
-    //   全屏之后视口只有 22 行左右, 而扁平列表有 21 条 —— 头几条(omd-audit / omd-council)
-    //   **画得出来但被顶出视口**, 于是累积缓冲里根本没有它们。这不是判据放水:
-    //   "列出了 skill" 这个主张照样被证;真正的缺陷是**列表本身太长**,
-    //   由 skill umbrella(按前缀分组, 一组一行)去修, 不是由判据去将就。
+    // S-6 umbrella: `/skill` 出的是**分组总览**(一组一行), 不再是那面 21 条的墙。
+    // 判据同时钉两件事: 组入口画出来了 + "只管本轮"那句还在(它最容易在改版里丢)。
     check(
-      await waitFor(p, (t) => t.includes('omd-video') && t.includes('本轮')),
-      'S15-1 /skill 列出方法论 skill(说清只管本轮)',
+      await waitFor(p, (t) => t.includes('/omd') && t.includes('本轮')),
+      'S15-1 /skill 出分组总览(组入口 + 说清只管本轮)',
+      p.text().slice(-800),
+    );
+    // ★ 组命令本身:`/omd` 列成员, 且成员名**去掉组前缀**(每行重复一遍 omd- 只是噪音)。
+    p.write('/omd\r');
+    check(
+      await waitFor(p, (t) => t.includes('council') && t.includes('用法: /omd')),
+      'S15-1b ★ /omd 是一条真命令, 列出组成员',
       p.text().slice(-800),
     );
     p.write('/skill omd-council 审这批座位\r');

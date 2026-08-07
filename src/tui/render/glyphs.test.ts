@@ -130,7 +130,7 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
     // ⚠ **不把真 skill 列表放进来**:那些 description 来自 20 个 SKILL.md,是**数据不是 chrome**。
     //    实测它们里面就有 `✅` 和 `≠` —— 数据本来就可以是任意字形, 要求它干净是错的判据。
     //    数据侧要保的是"渲染它不会超宽", 见下面那个 describe。
-    ['skillList(干净数据)', formatSkillList([{ name: 'omd-x', description: '一句话' }])],
+    ['skillList(干净数据)', formatSkillList([{ name: 'omd-x', description: '一句话', root: '/r' }])],
     ['pressure(窗口未知)', formatPressure({ systemTokens: 4000, harnessTokens: 0, historyTokens: 1000, usedTokens: 5000, windowTokens: 0, ratio: null }) as string],
     ['footer', CHROME.footer('embedded://deepseek:deepseek-v4-flash')],
     ['footerArmed', CHROME.footerArmed('embedded://deepseek:deepseek-v4-flash')],
@@ -169,8 +169,8 @@ describe('★ chrome 与**数据**是两条不同的判据', () => {
    */
   test('skill 列表里带 emoji / 未量字形, 渲染出来仍不超宽', () => {
     const dirty = formatSkillList([
-      { name: 'omd-a', description: '带 ✅ 与 ≠ 与 🔥 的描述' },
-      { name: 'omd-b', description: null },
+      { name: 'omd-a', description: '带 ✅ 与 ≠ 与 🔥 的描述', root: '/r' },
+      { name: 'omd-b', description: null, root: '/r' },
     ]);
     for (const w of [20, 40, 80]) {
       for (const line of dirty.split('\n')) {

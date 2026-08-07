@@ -44,7 +44,7 @@ import { renderLogo } from './render/logo';
 import { summarizeToolArg } from './render/tool-arg';
 import { formatPressure } from './render/pressure';
 import { renderTable } from './render/table';
-import { formatSkillList, listSkills, loadSkillBlock, parseSkillCommand } from './skills';
+import { formatGroupMembers, formatSkillAll, formatSkillList, groupSkills, listSkills, loadSkillBlock, parseGroupCommand, parseSkillCommand } from './skills';
 import { type OmdTuiTheme, colorEnabled, createTheme, truecolorEnabled } from './theme';
 
 /**
@@ -240,7 +240,9 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   // 补全:**行首 `/` 出命令,其余出文件** —— 走 pi-tui 的 `CombinedAutocompleteProvider`。
   // ⚠ 此前只挂了自写的文件补全, 于是打 `/settings` 弹出来的是一堆文件名(owner 截图抓到的)。
   //   斜杠开头本该出命令, 而这件事 pi-tui 本来就做好了。
-  editor.setAutocompleteProvider(new CombinedAutocompleteProvider(slashCommands(), opts.cwd));
+  // S-6: skill 组也进补全(`/omd` `/lark` …)。**启动时算一次** —— 见 commands.ts 的说明。
+  const startupGroups = groupSkills(listSkills()).groups.map((g) => ({ name: g.name, count: g.members.length }));
+  editor.setAutocompleteProvider(new CombinedAutocompleteProvider(slashCommands(startupGroups), opts.cwd));
   const footer = new StatusLine(CHROME.footer(opts.backend.connection.url));
   // 上下文压力行:**跑过一轮才画**(还没跑过时 formatPressure 返回 null → 这一行是空串,
   // 而不是一行全零 —— 全零会读成"跑过了、没花钱")。
@@ -596,22 +598,49 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    * ⚠ 唤起 ≠ 执行:它把 skill 正文挂到**下一句**上,作为那一轮的额外纪律。
    * 立刻发一轮是错的 —— 用户唤起 skill 是为了"接下来按这套办",而不是"现在就照它跑一遍"。
    */
+  /** 唤起一条 skill 并画回执。找不到就说没有 —— **不静默注入空块**。 */
+  function armSkill(name: string, rest: string): void {
+    const loaded = loadSkillBlock(name, rest);
+    if (!loaded) {
+      chatLog.appendNotice(CHROME.skillMissing(name));
+      return;
+    }
+    pendingSkill = loaded.block;
+    chatLog.appendNotice(CHROME.skillArmed(loaded.name));
+  }
+
   function handleSkill(text: string): boolean {
     const cmd = parseSkillCommand(text);
     if (!cmd) return false;
     chatLog.appendUser(text);
     editor.setText('');
-    if (cmd.kind === 'list') {
-      chatLog.appendNotice(formatSkillList(listSkills()));
-    } else {
-      const loaded = loadSkillBlock(cmd.name, cmd.rest);
-      // 找不到就说没有 —— **不静默注入一个空块**(那会让下一轮以为纪律已经在了)。
-      if (!loaded) chatLog.appendNotice(CHROME.skillMissing(cmd.name));
-      else {
-        pendingSkill = loaded.block;
-        chatLog.appendNotice(CHROME.skillArmed(loaded.name));
-      }
-    }
+    if (cmd.kind === 'list') chatLog.appendNotice(formatSkillList(listSkills()));
+    else if (cmd.kind === 'all') chatLog.appendNotice(formatSkillAll(listSkills()));
+    else armSkill(cmd.name, cmd.rest);
+    tui.requestRender();
+    return true;
+  }
+
+  /**
+   * ★ **组命令**(S-6 umbrella,owner 点名):`/lark` 列成员,`/lark im ...` 唤起。
+   *
+   * 组名是**运行时从磁盘扫出来的**,不是写死的清单 —— owner 要的是"下载了 skill 自动发现",
+   * 写死一份清单等于每装一条 skill 都要改一次代码。
+   *
+   * ⚠ 组名每次现算而不是启动时算死:装了新 skill 之后不用重启 TUI 就认得出。
+   * 代价是每条斜杠命令多一次目录扫描 —— 一百来个目录的 readdir,量级上无所谓。
+   */
+  function handleSkillGroup(text: string): boolean {
+    const skills = listSkills();
+    const { groups } = groupSkills(skills);
+    const cmd = parseGroupCommand(text, groups.map((g) => g.name));
+    if (!cmd) return false;
+    chatLog.appendUser(text);
+    editor.setText('');
+    const group = groups.find((g) => g.name === cmd.group);
+    if (!group) return true; // parseGroupCommand 只认清单内的名字, 走不到这里
+    if (cmd.member === null) chatLog.appendNotice(formatGroupMembers(group));
+    else armSkill(cmd.member, cmd.rest);
     tui.requestRender();
     return true;
   }
@@ -732,6 +761,8 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     }
     if (handleSeat(prompt)) return;
     if (handleSkill(prompt)) return;
+    // S-6: 组命令排在 handleSkill 之后 —— `/skill` 本身不是组名, 顺序上不会互吃。
+    if (handleSkillGroup(prompt)) return;
     if (parseSettingsCommand(prompt)) {
       void handleSettings(prompt);
       return;

@@ -23,6 +23,7 @@ import { createOmdAgentTools } from '../../harness/agent-tools';
 import type { OmdMcpTool } from '../../mcp/server';
 import { createConductorChatTools } from '../../serve/chat-tools';
 import { createCodegraphTools } from './codegraph';
+import { createSkillTools } from './skill-tool';
 
 /**
  * ★ **对话位必须有的六只手。**
@@ -51,6 +52,8 @@ export function createChatSeatTools(o: ChatSeatToolsOpts): AnyOmdTool[] {
     ...createConductorChatTools(o.mcpTools),
     // S17: 符号能力是**探测式**的 —— 探不到就一个工具都不挂(不是挂了、调了才失败)。
     ...createCodegraphTools({ cwd: o.cwd }),
+    // S-6: 让模型自己取 skill 正文。一条 skill 都没有时不挂(同上:恒失败的工具比没有更糟)。
+    ...createSkillTools(),
     ...(o.extTools ?? []),
   ];
 }
