@@ -52,21 +52,44 @@ export function createSkillTools(deps: SkillToolDeps = {}): AnyOmdTool[] {
   if (skills.length === 0) return []; // 没有 skill 就不挂这个工具 —— 恒失败的工具比没有更糟
   const { groups } = groupSkills(skills);
   const groupNames = groups.map((g) => g.name);
-  const overview = groups.map((g) => `${g.name}(${g.members.length})`).join(' · ');
 
   const tool: OmdTool<{ name: string; found: boolean }> = {
     name: 'read_skill',
     label: 'read_skill',
     description:
       'Read the full text of a methodology skill. Use it when a task matches a skill\'s trigger — ' +
-      'the skill describes how to do that kind of work. Accepts "omd-council" or "omd council".',
-    // ⚠ promptSnippet 里带上**组总览**:模型不知道有哪些组的话, 这个工具它一次都不会调。
-    promptSnippet: `read_skill(name) —— 读一条方法论 skill 的正文。现有分组: ${overview || '(无)'}`,
+      'the skill describes how to do that kind of work. Accepts "omd-council" or "omd council". ' +
+      'Call it with a bare group name (e.g. "omd") to list that group\'s members.',
+    /**
+     * ★ **这一行必须是静态的。**(2026-08-07 自查修)
+     *
+     * 第一版往这里嵌了**启动时扫盘算出的组总览**(`lark(26) · omd(21) · xihe(4)`)。
+     * 而 prompt cache 是**逐字节前缀匹配**:tools → system → messages,第 N 位差一个字节,
+     * **N 之后的所有断点全失效**;工具定义又属于前缀最前面那一段。
+     * 于是**装一条新 skill 就废掉整个前缀的缓存** —— 包括后面那两份 CLAUDE.md。
+     * 官方对这件事的说法是"别中途改工具集,要减工具就延迟加载而不是移除"。
+     *
+     * 组总览没有消失,它挪进了**工具的返回值**(见 `execute` 的裸组名分支)——
+     * 返回值在 messages 里、是追加的,不会让前缀失效。
+     */
+    promptSnippet:
+      'read_skill(name) —— 读一条方法论 skill 的正文(名字形如 `<组>-<成员>`, 如 omd-council)。' +
+      '不知道有哪些组时, 用裸组名调一次会列出该组成员。',
     parameters: SCHEMA,
     executionMode: 'parallel',
     async execute(_id, params) {
       const { name } = params as Static<typeof SCHEMA>;
-      const resolved = normalizeSkillName(name, groupNames);
+      const bare = name.trim();
+      // 裸组名 → 列成员。**这条是上面那段注释的另一半**:组总览从冻结前缀挪到了这里。
+      const hitGroup = groups.find((g) => g.name === bare);
+      if (hitGroup) {
+        const rows = hitGroup.members.map((m) => `- ${m.name}: ${m.description ?? '-'}`).join('\n');
+        return {
+          content: [{ type: 'text', text: `${bare} 组共 ${hitGroup.members.length} 条:\n${rows}` }],
+          details: { name: bare, found: true },
+        };
+      }
+      const resolved = normalizeSkillName(bare, groupNames);
       const src = loadSkillSourceByName(resolved, roots);
       if (!src) {
         // 找不到就说找不到并给出可选项 —— **不返回空串**:空串会被读成"这条 skill 没内容"。
