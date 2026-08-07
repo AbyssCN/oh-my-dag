@@ -110,8 +110,13 @@ export interface FaninAnchorLoss {
  *
  * **只印不拦**(同 S-12 的处理):它不改变任何执行路径。
  */
+/** 抽出去重 + 字典序的路径锚全集 (同一输入两次给同一份)。 */
+export function extractPathAnchors(text: string): string[] {
+  return [...new Set(text.match(PATH_ANCHOR) ?? [])].sort();
+}
+
 export function faninAnchorLoss(full: string, view: string): FaninAnchorLoss {
-  const found = [...new Set(full.match(PATH_ANCHOR) ?? [])].sort();
+  const found = extractPathAnchors(full);
   const lostList = found.filter((p) => !view.includes(p));
   return {
     anchors: found.length,
@@ -187,12 +192,56 @@ export function composeFaninView(
   summary: Record<string, unknown>,
   fullPath: string | null,
   fullLen: number,
+  anchors?: readonly string[],
 ): string {
   const body = JSON.stringify(summary);
   const pointer = fullPath
     ? `\n[full output ${fullLen} chars → ${fullPath} — Read it if you need detail beyond this summary]`
     : '';
-  return `<fan-in-summary>\n${body}${pointer}\n</fan-in-summary>`;
+  return `<fan-in-summary>\n${body}${composeAnchorBlock(body, anchors)}${pointer}\n</fan-in-summary>`;
+}
+
+/**
+ * **锚上限**。超过就不全列 —— 实测依据(2026-08-07, n=9):
+ * 一份 427 锚的源文件清单全列要 ~15k 字符, **比 13634 字的原文还长**;
+ * 而 ≤40 锚的那几份全列不到 1.5k。50 这个数在两者之间, **跟着读数改, 不是拍死的**。
+ */
+export const FANIN_ANCHOR_CAP = 50;
+
+/**
+ * **混合视图的那一半:散文交给 LLM, 锚交给程序**(2026-08-07)。
+ *
+ * ## 为什么是补丁而不是替换
+ *
+ * 实测(`scripts/probes/fanin-loss-measure.ts`, n=9 / 685 锚 / 真实语料):
+ *   · LLM 定向摘要保留 31.8%(去掉一份主导样本后 84.5%), **双峰** —— 4/9 一个不丢, 2/9 丢光;
+ *   · 纯程序化抽取保留 100%, 但视图/原文从 0.29 涨到 0.48, 锚密集时视图比原文还长。
+ * 两条路各有各的不成立之处, 所以**取交集**:压缩散文这件事 LLM 干得好且值那一发,
+ * 保产物锚这件事程序做得到 100% —— 那就别把它交给一个便宜模型去"尽量"。
+ *
+ * 这条不需要 producer 改任何东西 —— 绕开了 `output_schema` **采纳率 0/571 节点**那条死路。
+ *
+ * ## 为什么值得(严重性的分母)
+ *
+ * fan-in consumer 里**无工具的占 47%**(场景级 54% 至少有一个)。全文指针对它们无效:
+ * 摘要丢了的锚, 它们**没有任何办法拿回来**。
+ *
+ * ## 两条设计纪律
+ *
+ * ① **只补摘要没含的** —— LLM 已经保住的不重复一遍。实测 4/9 的样本因此**零新增字节**。
+ * ② **截断必须明说** —— 超过上限时写出还有多少个没列。静默丢正是本仓一直在猎的那族。
+ */
+export function composeAnchorBlock(body: string, anchors?: readonly string[], cap = FANIN_ANCHOR_CAP): string {
+  if (!anchors?.length) return '';
+  const missing = anchors.filter((a) => !body.includes(a));
+  if (!missing.length) return ''; // 纪律①: 摘要已经保住了, 一个字节都不加
+  const shown = missing.slice(0, cap);
+  const rest = missing.length - shown.length;
+  // 纪律②: `rest` 那句话不是装饰 —— 没有它, "列了 50 个"和"一共只有 50 个"分不开。
+  return (
+    `\n[artifacts ${shown.length}/${missing.length} — 摘要未含, 程序逐字补回] ${shown.join(' ')}` +
+    (rest > 0 ? ` … 另有 ${rest} 个未列(超过 ${cap} 上限), 见全文` : '')
+  );
 }
 
 /**

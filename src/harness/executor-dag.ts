@@ -50,6 +50,7 @@ import {
   normalizeFaninConfig,
   runFaninSummary,
   composeFaninView,
+  extractPathAnchors,
   faninAnchorLoss,
   DEFAULT_FANIN_SCHEMA,
 } from './fanin-summary';
@@ -2687,11 +2688,13 @@ async function executePlan(
       if (!summaryJson) return { r, view: null }; // 解析失败 → 全文兜底
       // 全文指针: continuity 在则落盘留 path (agent consumer 可自 Read); 否则仅摘要 (artifacts 字段保产物锚)。
       const fullPath = continuity ? continuity.manager.saveFaninFull(continuity.runId, id, output) : null;
-      const view = composeFaninView(summaryJson, fullPath, output.length);
-      // 产物锚保留率 (2026-08-07): 量这段代码**自己声明的承诺**兑现没有 —— system prompt 里那句
-      // "PRESERVE VERBATIM … file paths" 与 schema 里那句「逐字保留」, 此前没人查。
-      // **只印不拦**: 是基率不是闸 (anchors:0 = 全文没有路径锚, 不是无损; 见 faninAnchorLoss 的头)。
-      const anchorLoss = faninAnchorLoss(output, view);
+      // 混合视图 (2026-08-07): 散文交给 LLM, **产物锚交给程序**。
+      // 依据是同一批真实语料的实测 —— LLM 摘要保锚 31.8%(双峰: 4/9 不丢, 2/9 丢光), 而
+      // fan-in consumer 里**无工具的占 47%**, 全文指针对它们无效, 丢了就永久丢。
+      // 只补摘要没含的 → 摘要保住了就零新增字节 (见 composeAnchorBlock)。
+      const view = composeFaninView(summaryJson, fullPath, output.length, extractPathAnchors(output));
+      // 保留率读数留着: 它现在量的是**LLM 那一半**做得如何 (补回之前), 仍是基率不是闸。
+      const anchorLoss = faninAnchorLoss(output, JSON.stringify(summaryJson));
       logger.info(
         {
           node: id, consumers: consumers.length, fullLen: output.length, viewLen: view.length, persisted: !!fullPath,
