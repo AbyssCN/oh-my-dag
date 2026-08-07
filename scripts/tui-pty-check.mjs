@@ -333,6 +333,29 @@ async function scenarioSeat() {
     // ★ 列的是**座位视图**不是裸模型列表: 职责那一行来自座位登记表。
     check(p.text().includes('职责:'), 'S12-2 ★ 列的是座位视图(带职责/建议), 不是裸模型名');
 
+    // ⚠ 裸 `/seat` 现在会**开选择器**(2026-08-07 加的对话框)。它拿走焦点, 不 Esc 的话
+    //   后面所有输入都进框里 —— 第一次跑就是这么红的 (SESS-1/2 收不到任何东西)。
+    check(
+      await waitFor(p, (t) => t.includes('改哪个座位')),
+      'S12-2b ★ 裸 /seat 开出座位选择器',
+      p.text().slice(0, 900),
+    );
+    // ⚠ 判据不能写成"Esc 之后那句话消失" —— 这条 lane 的 oracle 是**累积缓冲**不是屏幕快照,
+    //   打印过的字永远在 `p.text()` 里。要证明框关了, 得证明**输入回到了编辑器**。
+    // ⚠ Esc 之后**必须留间隔**再发下一个字符: 终端的序列解析器会把 `\x1b` + `b` 读成
+    //   `Alt+b` **一个**序列, 于是 Esc 根本没到。真人按键之间天然有间隔, 脚本里得补上。
+    //   (第一次跑就是这么红的: 框画出来了、Esc 发了、什么都没发生。)
+    p.write('\x1b');
+    await new Promise((r) => setTimeout(r, 200));
+    p.write('backhome');
+    check(
+      await waitFor(p, (t) => t.includes('backhome'), 10000),
+      'S12-2c ★ Esc 之后输入回到编辑器(框真的关了)',
+      p.text().slice(-400),
+    );
+    // 清掉刚打的那几个字, 免得跟着下一条命令一起提交。
+    for (let i = 0; i < 8; i++) p.write('\x7f');
+
     // /session: 列会话 + 新开(fixture 后端也实现了 listSessions/loadHistory)。
     p.write('/session\r');
     check(
@@ -340,6 +363,8 @@ async function scenarioSeat() {
       'SESS-1 /session 列出会话(标出当前那条)',
       p.text().slice(0, 800),
     );
+    p.write('\x1b'); // /session 也开选择器 —— 同样 Esc 出来再继续(间隔同上)
+    await new Promise((r) => setTimeout(r, 300));
     p.write('/session new mysess\r');
     check(
       await waitFor(p, (t) => t.includes('已新开会话 mysess')),
