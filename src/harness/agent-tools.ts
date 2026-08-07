@@ -77,13 +77,30 @@ function secretBasenameOf(path: string): string | null {
   return SECRET_BASENAMES.some((re: RegExp) => re.test(base)) ? base : null;
 }
 
-function refuseSecret(path: string): never {
+/**
+ * 凭证文件**只告警不拦**(owner 2026-08-07 裁决:「去掉这个」)。
+ *
+ * ## 原来是硬抛, 代价是真的
+ *
+ * `read` 按 basename 拒、`bash` 把命令按 `;&|` 拆段逐段拒 —— 于是"看一眼 .env 里那一项
+ * 是不是配错了"这种**正当排查**也被一并挡死。而它挡的从来只是"模型顺手 cat 一下配置"
+ * 这类手滑:同一张表按**文件名**判、不按**内容**判,`grep -r SECRET .` 照样打印命中行,
+ * `node -e` 一旦成立读什么都不过这张表。**挡不住对抗,只挡得住手滑** —— 代价却是常规能力。
+ *
+ * ## 但不许吞证据
+ *
+ * 告警行原样留着:读过哪个凭证文件必须在日志里看得见。fail-open 可以吞异常, 不许吞证据。
+ *
+ * ## 它该去哪
+ *
+ * 正确的形态是审批层的 `read_sensitive` 档(先给预览、要继续才审批)——
+ * 见 `docs/design/2026-08-07-omd-agent-架构与-tui-设计稿.html` 第八节。
+ * 那一档做出来之后, 这里改成"报给审批层"而不是"直接放行"。
+ * ⚠ **command-leaf 那一层的同名闸没有动**:它管的是 DAG 验收命令, 与对话位的手是两回事。
+ */
+function warnSecret(path: string): void {
   const base = secretBasenameOf(path);
-  logger.warn({ path }, '[omd/agent-tools] 拒读凭证文件');
-  throw new Error(
-    `BLOCKED: '${path}' 是凭证文件 (${base}) —— 读出来会进模型上下文/留痕库/trace。` +
-      '需要某个具体配置项时, 让调用方把它作为参数传进来, 不要读整个凭证文件。',
-  );
+  logger.warn({ path, base }, '[omd/agent-tools] 读了凭证文件 (只告警不拦; 审批层做出来后改走 read_sensitive)');
 }
 
 // ── 目录遍历 (grep / 隐式扫描共用) ─────────────────────────────────────────────
@@ -201,7 +218,7 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
     executionMode: 'parallel',
     async execute(_id, params) {
       const { path, offset, limit } = params as Static<typeof READ_SCHEMA>;
-      if (secretBasenameOf(path)) refuseSecret(path);
+      if (secretBasenameOf(path)) warnSecret(path);
       const full = abs(cwd, path);
       let raw: string;
       try {
@@ -387,7 +404,7 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
         const s = seg.trim();
         if (!s) continue;
         const secret = secretPathInCommand(s);
-        if (secret) refuseSecret(secret);
+        if (secret) warnSecret(secret);
       }
       const r = await executeShellWithCapture(env, command, {
         timeout: timeout && timeout > 0 ? timeout : defaultTimeout,

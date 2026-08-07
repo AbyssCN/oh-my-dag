@@ -31,33 +31,38 @@ const run = (t: AnyOmdTool, args: unknown): Promise<{ content: { type: string; t
 const text = (r: { content: { type: string; text?: string }[] }): string =>
   r.content.map((c) => (c.type === 'text' ? c.text ?? '' : '')).join('');
 
-describe('工具集就是闸 —— 凭证文件', () => {
-  it('★ read 拒 .env (拿到工具就拿到闸, 不靠外面挂 hook)', async () => {
+describe('凭证文件:只告警不拦 (owner 2026-08-07 裁决「去掉这个」)', () => {
+  /**
+   * 这一段**原来断言的是硬拒**(read/bash 见 .env 即抛 BLOCKED)。改掉的理由不是"闸不重要",
+   * 是**它挡的和它拦的不成比例**:按 basename 判、不按内容判 ——
+   * `grep -r SECRET .` 照样打印命中行、`node -e` 一旦成立读什么都不过这张表,
+   * 所以它挡的从来只是"顺手 cat 一下配置"这类手滑;代价却是"看一眼 .env 里那一项配错没"
+   * 这种正当排查也做不了。
+   *
+   * ⚠ 正确形态是审批层的 `read_sensitive`(先预览、要继续才审批), 见设计稿第八节。
+   *   那一档做出来之后, 这几条要再改一次 —— 改成"触发审批", 不是"直接放行"。
+   * ⚠ **command-leaf 那一层的同名闸没有动**(见 test/core/blast-radius.test.ts):
+   *   它管 DAG 验收命令, 与对话位的手是两回事。
+   */
+  it('★ read 能读 .env 了 —— 不再抛 BLOCKED', async () => {
     const root = fixture();
     const { read } = toolset(root);
-    expect(run(read!, { path: '.env' })).rejects.toThrow(/BLOCKED.*凭证文件/);
+    expect(text(await run(read!, { path: '.env' }))).toContain('DEEPSEEK_API_KEY');
   });
 
-  it('★ bash 拒 `cat .env` —— 换个 bin 从同一个洞喂出去的那条路', async () => {
+  it('★ bash 能 `cat .env` 了 —— 换 bin 那条路同样放行', async () => {
     const root = fixture();
     const { bash } = toolset(root);
-    expect(run(bash!, { command: 'cat .env' })).rejects.toThrow(/BLOCKED.*凭证文件/);
+    expect(text(await run(bash!, { command: 'cat .env' }))).toContain('DEEPSEEK_API_KEY');
   });
 
-  it('拒因落在 basename 上, 所以绕路写法一样被拒', async () => {
-    const root = fixture();
-    const { read, bash } = toolset(root);
-    expect(run(read!, { path: '.env' })).rejects.toThrow(/BLOCKED/);
-    expect(run(bash!, { command: 'cat ../../.env' })).rejects.toThrow(/BLOCKED/);
-  });
-
-  it('★ `&&` 链的**尾环**也要被看见 (只看首环 = 合法头环放行整条链)', async () => {
+  it('★ `&&` 链的尾环也不再被拦', async () => {
     const root = fixture();
     const { bash } = toolset(root);
-    expect(run(bash!, { command: 'ls && cat .env' })).rejects.toThrow(/BLOCKED.*凭证文件/);
+    expect(text(await run(bash!, { command: 'ls && cat .env' }))).toContain('DEEPSEEK_API_KEY');
   });
 
-  it('.env.example 放行 —— 样例文件生来就是给人读的, 拒了只会让验证叶白挂', async () => {
+  it('.env.example 照旧放行 —— 样例文件生来就是给人读的', async () => {
     const root = fixture();
     const { read } = toolset(root);
     expect(text(await run(read!, { path: '.env.example' }))).toContain('DEEPSEEK_API_KEY');
