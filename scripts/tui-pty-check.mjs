@@ -333,6 +333,26 @@ async function scenarioSeat() {
     // ★ 列的是**座位视图**不是裸模型列表: 职责那一行来自座位登记表。
     check(p.text().includes('职责:'), 'S12-2 ★ 列的是座位视图(带职责/建议), 不是裸模型名');
 
+    // S15 (A7): /skill 列出包内那批方法论 skill, 唤起后挂到**下一句**上。
+    p.write('/skill\r');
+    check(
+      await waitFor(p, (t) => t.includes('omd-council') && t.includes('本轮')),
+      'S15-1 /skill 列出方法论 skill(说清只管本轮)',
+      p.text().slice(0, 800),
+    );
+    p.write('/skill omd-council 审这批座位\r');
+    check(
+      await waitFor(p, (t) => t.includes('已挂上 skill')),
+      'S15-2 ★ 唤起 = 挂到下一句上, 不是立刻跑一轮',
+      p.text().slice(0, 800),
+    );
+    p.write('/skill 根本没有这条\r');
+    check(
+      await waitFor(p, (t) => t.includes('没有这条 skill')),
+      'S15-3 ★ 找不到就说没有(不静默注入空块)',
+      p.text().slice(0, 800),
+    );
+
     // S14: fixture 后端**没有** run 能力 —— 键不出现, 而不是点了没反应。
     p.write('/runs\r');
     check(

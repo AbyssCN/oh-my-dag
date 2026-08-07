@@ -36,6 +36,7 @@ import { type PathReader, PathHud, createPathReader } from './components/path-hu
 import { StatusLine } from './components/status-line';
 import { type ContextFile, formatContextLine, loadConductorContext } from './context';
 import { formatSeatRows, parseSeatCommand, seatRows } from './seat-picker';
+import { formatSkillList, listSkills, loadSkillBlock, parseSkillCommand } from './skills';
 import { type OmdTuiTheme, createTheme } from './theme';
 
 /** 双击 Ctrl+C 的窗口。openclaw / pi 一致,不发明新数。 */
@@ -79,6 +80,9 @@ export const CHROME = {
   seatFailed: (reason: string) => `座位没改成: ${reason}`,
   /** 座位读不出来 (没配过 omd 的仓)。原因原样贴出来 —— 那一格的真值就是解析不到。 */
   seatUnresolved: (reason: string) => `当前座位解析不到: ${reason}`,
+  /** skill 已挂在**下一句**上 —— 说清它什么时候生效, 别让人以为已经跑了。 */
+  skillArmed: (name: string) => `已挂上 skill 「${name}」: 它会作为**下一句**的额外纪律注入 (只这一轮, 不写进会话)`,
+  skillMissing: (name: string) => `没有这条 skill: ${name} (用 /skill 看有哪些)`,
   /** 这个后端没有 run 能力(fixture / 远程未实现)。**说出缺的是什么**,不画一个点了没反应的入口。 */
   noRunCapability: (what: string) => `这个后端没有 ${what} 能力 (能力探测: 该方法不存在)`,
   resumeStarted: (runId: string, text: string) => `续跑 ${runId}: ${text}`,
@@ -189,6 +193,8 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
 
   const sessionId = opts.sessionId ?? 'tui';
   const seats = opts.seats ?? defaultSeatFace();
+  /** 已唤起、等着挂到下一句上的 skill 正文。**用完即清** —— 一条 skill 只管一轮。 */
+  let pendingSkill: string | null = null;
   let armedAt: number | null = null;
   let exiting = false;
   let resolveExit: () => void = () => {};
@@ -225,11 +231,14 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    */
   async function submit(prompt: string): Promise<void> {
     chatLog.appendUser(prompt);
+    // A7: skill 正文前置到这一句上。**用完即清** —— 不清的话它会在往后每一轮里重复出现。
+    const withSkill = pendingSkill ? `${pendingSkill}\n\n${prompt}` : prompt;
+    pendingSkill = null;
     editor.setText('');
     editor.addToHistory(prompt);
     tui.requestRender();
     try {
-      const res = await opts.backend.sendChat({ sessionId, prompt });
+      const res = await opts.backend.sendChat({ sessionId, prompt: withSkill });
       // `ok:false` 是**响亮的否**, 不是空回复。
       if (!res.ok) chatLog.appendNotice(CHROME.refused(opts.backend.connection.url));
     } catch (err) {
@@ -359,10 +368,37 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     return true;
   }
 
+  /**
+   * `/skill` —— 唤起一条**方法论**(A7)。
+   *
+   * ⚠ 唤起 ≠ 执行:它把 skill 正文挂到**下一句**上,作为那一轮的额外纪律。
+   * 立刻发一轮是错的 —— 用户唤起 skill 是为了"接下来按这套办",而不是"现在就照它跑一遍"。
+   */
+  function handleSkill(text: string): boolean {
+    const cmd = parseSkillCommand(text);
+    if (!cmd) return false;
+    chatLog.appendUser(text);
+    editor.setText('');
+    if (cmd.kind === 'list') {
+      chatLog.appendNotice(formatSkillList(listSkills()));
+    } else {
+      const loaded = loadSkillBlock(cmd.name, cmd.rest);
+      // 找不到就说没有 —— **不静默注入一个空块**(那会让下一轮以为纪律已经在了)。
+      if (!loaded) chatLog.appendNotice(CHROME.skillMissing(cmd.name));
+      else {
+        pendingSkill = loaded.block;
+        chatLog.appendNotice(CHROME.skillArmed(loaded.name));
+      }
+    }
+    tui.requestRender();
+    return true;
+  }
+
   editor.onSubmit = (text: string) => {
     const prompt = text.trim();
     if (!prompt) return; // 空回车不算一轮 —— 否则会往会话里塞空消息
     if (handleSeat(prompt)) return;
+    if (handleSkill(prompt)) return;
     void handleRuns(prompt).then((handled) => {
       if (!handled) void submit(prompt);
     });
