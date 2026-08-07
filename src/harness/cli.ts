@@ -39,8 +39,6 @@ const USAGE = `omd —— DAG 执行引擎 (纯 MCP + web 控制台)
   omd init    首次配置向导 (写 .env)
 
 终端对话前端: 原 pi TUI 2026-08-01 撤除, 2026-08-07 以自建 TUI 回归。
-⚠ 当前 omd tui 是 **UI 壳** (切片 S2): 起得来、收键、Ctrl+C 两次退出, 但**引擎后端未接通**
-(S10 才接 runChatTurn)。现在要真对话走 MCP 客户端 (Claude Code 等) 或 omd serve 的 web 控制台。
 
 裸 omd 打印本用法, 不直接进 TUI。
 `;
@@ -80,8 +78,34 @@ if (userArgs[0] === 'tui') {
   logger.info({ file: tuiLog.path }, '[omd/tui] 日志改道生效, 本程日志不进终端');
   try {
     const { runOmdTui } = await import('../tui/tui');
-    const { createStubBackend } = await import('../tui/backend-stub');
-    await runOmdTui({ backend: createStubBackend(), cwd });
+    const { loadConductorContext } = await import('../tui/context');
+    // 上下文只装配一次, 同一个数组既进屏幕又进 system prompt —— 两处各读一份必漂 (S4)。
+    const contextFiles = loadConductorContext(cwd);
+
+    // L3 接缝 (SDD §9): PTY lane 要证明 UI 循环通, 但**不能**因此去打真模型。
+    // 只有显式设了这个环境变量才装 fixture; 它自报家门 (footer 上写着 fixture://l3-test)。
+    let backend: import('../tui/backend').OmdBackend;
+    if (process.env.OMD_TUI_BACKEND === 'fixture') {
+      const { createFixtureBackend } = await import('../tui/backend-fixture');
+      backend = createFixtureBackend();
+    } else {
+      // 与 `omd serve` 同一条路: 同一个 runChatTurn、同一批 chatTools、同一条座位解析。
+      const { bootstrapModelRuntime } = await import('../model/bootstrap');
+      bootstrapModelRuntime(); // 不引导则注册表空, 一句话都发不出去
+      const { assembleOmdMcpTools, resolveEngineModels } = await import('../mcp/assemble');
+      const { createConductorChatTools } = await import('../serve/chat-tools');
+      const { ChatStore } = await import('./chat/store');
+      const { createEmbeddedBackend } = await import('../tui/backend-embedded');
+      backend = createEmbeddedBackend({
+        cwd,
+        store: new ChatStore(cwd),
+        tools: createConductorChatTools(assembleOmdMcpTools()),
+        // 座位每轮现解 (INV-MODEL-3): omd_set_role / `/seat` 改完, 下一句就换座。
+        resolveModel: () => resolveEngineModels(process.env).conductorModel,
+        contextFiles,
+      });
+    }
+    await runOmdTui({ backend, cwd, contextFiles });
   } finally {
     tuiLog.close();
   }
