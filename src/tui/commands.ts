@@ -62,3 +62,22 @@ HUD 节点多时:Alt+↑ / Alt+↓ 滚动,Alt+Home 回到跟随。`;
 
 /** 启动提示 —— **必须提到 `/help`**,否则命令仍然发现不了。 */
 export const STARTUP_HINT = '打字后回车发一轮;`/help` 看命令;Ctrl+C 两次退出。';
+
+/**
+ * 给 pi-tui 的 `CombinedAutocompleteProvider` 用的形状。
+ *
+ * ⚠ **这一段是补一个真 bug**:此前输入框只挂了自写的文件补全,于是打 `/settings`
+ * 弹出来的是一堆**文件名**(`wt-settings-full.json`、`.claude/settings.json.bak-*`)——
+ * owner 的截图里就是这个。斜杠开头本该出**命令**。
+ *
+ * pi-tui 本来就有这件事的现成件(行首 `/` 走命令、其余走文件),我却自己写了一份文件补全 ——
+ * 那 140 行本可以不写。记在这儿:**先翻依赖再动手**。
+ */
+export function slashCommands(): { name: string; description: string; argumentHint?: string }[] {
+  return COMMANDS.map((c) => ({
+    // pi-tui 那边自己补前导 `/`,这里给裸名。
+    name: c.name.replace(/^\//, ''),
+    description: c.what,
+    ...(c.args ? { argumentHint: c.args } : {}),
+  }));
+}

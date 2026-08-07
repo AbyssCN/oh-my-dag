@@ -27,7 +27,7 @@
  * 双击判定是纯函数({@link decideCtrlC}),不碰 `Date.now`;硬退走注入的 `exit`。
  * 于是 L1 能直接测判定,L3 只需要验"真 PTY 里这条链接得起来"。
  */
-import { Container, Editor, ProcessTerminal, TuiMainScreen, type Terminal } from '@earendil-works/pi-tui';
+import { CombinedAutocompleteProvider, Container, Editor, ProcessTerminal, TuiMainScreen, type Terminal } from '@earendil-works/pi-tui';
 import { logger } from '../logger';
 import type { OmdBackend } from './backend';
 import { ChatLog } from './components/chat-log';
@@ -38,11 +38,11 @@ import { StatusLine } from './components/status-line';
 import { type ContextFile, formatContextLine, loadConductorContext } from './context';
 import { formatSeatRows, parseSeatCommand, seatRows } from './seat-picker';
 import { formatSessions, newSessionId, parseSessionCommand } from './sessions';
-import { STARTUP_HINT, formatHelp, parseHelpCommand } from './commands';
-import { createFileCompleteProvider } from './file-complete';
+import { buildSettings, formatSettings, parseSettingsCommand } from './settings';
+import { STARTUP_HINT, formatHelp, parseHelpCommand, slashCommands } from './commands';
 import { formatPressure } from './render/pressure';
 import { formatSkillList, listSkills, loadSkillBlock, parseSkillCommand } from './skills';
-import { type OmdTuiTheme, createTheme } from './theme';
+import { type OmdTuiTheme, colorEnabled, createTheme, truecolorEnabled } from './theme';
 
 /**
  * HUD 滚动键 → 位移(`0` = 回顶/跟随)。
@@ -171,6 +171,11 @@ export interface RunOmdTuiOpts {
   };
   /** pathfinder 读侧(A4)。省略 → `createPathReader(cwd)` 扫 `docs/plan/pathfinder/`。 */
   pathReader?: PathReader;
+  /**
+   * 扩展加载结果(S15a)。**被拒的也要传进来** —— 设置面板要说出缺了什么,
+   * 藏在日志里等于加载期硬失败白做了。
+   */
+  extensions?: { name: string; ok: boolean; sandboxed?: boolean; missing?: string[] }[];
 }
 
 /**
@@ -199,8 +204,10 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   const pathHud = new PathHud(theme, opts.pathReader ?? createPathReader(opts.cwd));
   pathHud.refresh();
   const editor = new Editor(tui, theme.editor);
-  // 模糊文件补全(原生实现 pi-fff 那个能力):打 `@` 或够长的一段路径就弹。
-  editor.setAutocompleteProvider(createFileCompleteProvider({ cwd: opts.cwd }));
+  // 补全:**行首 `/` 出命令,其余出文件** —— 走 pi-tui 的 `CombinedAutocompleteProvider`。
+  // ⚠ 此前只挂了自写的文件补全, 于是打 `/settings` 弹出来的是一堆文件名(owner 截图抓到的)。
+  //   斜杠开头本该出命令, 而这件事 pi-tui 本来就做好了。
+  editor.setAutocompleteProvider(new CombinedAutocompleteProvider(slashCommands(), opts.cwd));
   const footer = new StatusLine(CHROME.footer(opts.backend.connection.url));
   // 上下文压力行:**跑过一轮才画**(还没跑过时 formatPressure 返回 null → 这一行是空串,
   // 而不是一行全零 —— 全零会读成"跑过了、没花钱")。
@@ -257,6 +264,8 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   const seats = opts.seats ?? defaultSeatFace();
   /** 已唤起、等着挂到下一句上的 skill 正文。**用完即清** —— 一条 skill 只管一轮。 */
   let pendingSkill: string | null = null;
+  /** 最近一轮的上下文压力 —— 设置面板要显示它。`null` = 还没跑过一轮(**不是 0**)。 */
+  let lastPressure: import('../harness/chat/usage').ContextPressure | null = null;
   let armedAt: number | null = null;
   let exiting = false;
   let resolveExit: () => void = () => {};
@@ -347,6 +356,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     if (e.event === 'session') {
       chatLog.closeStreaming();
       const p = e.payload as { pressure?: import('../harness/chat/usage').ContextPressure; usage?: import('../model/types').ModelUsage };
+      lastPressure = p?.pressure ?? lastPressure;
       const line = formatPressure(p?.pressure ?? null, p?.usage ?? null);
       if (line) pressureLine.setText(line);
       // 一轮跑完可能动过地图 (conductor 有 map_* 工具) → 重读一次。
@@ -551,6 +561,54 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     return true;
   }
 
+  /**
+   * `/settings` —— owner 指出"设置完全没有"。
+   *
+   * 面板只列**真的有数**的项:每一项都答得出"现在是什么值"。答不上来的不进表 ——
+   * 一堆"点了没反应"的行正是断链说明卡禁止的东西。
+   */
+  async function handleSettings(text: string): Promise<boolean> {
+    if (!parseSettingsCommand(text)) return false;
+    chatLog.appendUser(text);
+    editor.setText('');
+    const { current, err } = readSeats();
+    let sessionCount: number | null = null;
+    try {
+      sessionCount = (await opts.backend.listSessions()).length;
+    } catch {
+      // 读不到就是 null —— 与"一条都没有"分得开(本仓 NULL ≠ 0)。
+    }
+    const items = buildSettings({
+      seats: current,
+      seatsError: err,
+      sessionId,
+      sessionCount,
+      pressure: lastPressure,
+      color: colorEnabled(),
+      truecolor: truecolorEnabled(),
+      extensions: opts.extensions ?? [],
+    });
+    chatLog.appendNotice(formatSettings(items));
+    tui.requestRender();
+
+    const pick = await dialogSelect(dialogs, theme, {
+      title: '改哪一项?',
+      options: items.map((it) => ({
+        value: it.action ? it.key : '',
+        label: `${it.action ? '' : '(只读) '}${it.label}: ${it.value}`,
+        ...(it.detail ? { description: it.detail } : {}),
+      })),
+      maxVisible: 12,
+    });
+    // 只读行的 value 是空串 —— 选中它什么都不做, 这是刻意的(它本来就只是现状)。
+    if (pick === null || pick === '') return true;
+    if (pick.startsWith('seat:')) await seatPicker();
+    else if (pick === 'session') await handleSession('/session');
+    else if (pick === 'ext') chatLog.appendNotice('扩展清单在 `.omd/extensions.json`(入口写绝对路径)。改完重启 omd tui 生效。');
+    tui.requestRender();
+    return true;
+  }
+
   editor.onSubmit = (text: string) => {
     const prompt = text.trim();
     if (!prompt) return; // 空回车不算一轮 —— 否则会往会话里塞空消息
@@ -563,6 +621,10 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     }
     if (handleSeat(prompt)) return;
     if (handleSkill(prompt)) return;
+    if (parseSettingsCommand(prompt)) {
+      void handleSettings(prompt);
+      return;
+    }
     void handleSession(prompt).then((handledSession) => {
       if (handledSession) return;
       void handleRuns(prompt).then((handled) => {

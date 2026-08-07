@@ -85,6 +85,8 @@ if (userArgs[0] === 'tui') {
     // L3 接缝 (SDD §9): PTY lane 要证明 UI 循环通, 但**不能**因此去打真模型。
     // 只有显式设了这个环境变量才装 fixture; 它自报家门 (footer 上写着 fixture://l3-test)。
     let backend: import('../tui/backend').OmdBackend;
+    // 扩展加载结果要传给 UI(设置面板), 所以声明在 if/else 之外。
+    let extStatus: { name: string; ok: boolean; sandboxed?: boolean; missing?: string[] }[] = [];
     if (process.env.OMD_TUI_BACKEND === 'fixture') {
       const { createFixtureBackend } = await import('../tui/backend-fixture');
       backend = createFixtureBackend();
@@ -98,9 +100,11 @@ if (userArgs[0] === 'tui') {
       // S15a 扩展宿主: 每个扩展一个子进程 (bwrap 在就沙箱)。**加载期硬失败** ——
       // 碰了没实现的 API 就拒绝并逐条列出, 不半残地跑起来。
       const { loadExtension, readExtensionList } = await import('../tui/ext/host');
-      const { extTools, exts } = await (async () => {
+      const { extTools, exts, extStatus: st } = await (async () => {
         const loaded: import('../tui/ext/host').LoadedExtension[] = [];
         const toolList: import('./agent-tools').AnyOmdTool[] = [];
+        // 加载结果**也要给 UI** —— 被拒的缺什么, 藏在日志里等于加载期硬失败白做了。
+        const status: { name: string; ok: boolean; sandboxed?: boolean; missing?: string[] }[] = [];
         for (const spec of readExtensionList(cwd)) {
           const r = await loadExtension(spec.name, spec.entry, { cwd });
           if (!r.ok) {
@@ -108,8 +112,10 @@ if (userArgs[0] === 'tui') {
               { ext: spec.name, missing: r.rejected.missing, reason: r.rejected.reason },
               '[omd/ext] 扩展**拒绝加载**(缺的 API 已逐条列出, 不半残地跑)',
             );
+            status.push({ name: spec.name, ok: false, missing: r.rejected.missing });
             continue;
           }
+          status.push({ name: spec.name, ok: true, sandboxed: r.ext.sandboxed });
           loaded.push(r.ext);
           for (const t of r.ext.tools) {
             toolList.push({
@@ -126,7 +132,7 @@ if (userArgs[0] === 'tui') {
           }
           logger.info({ ext: spec.name, tools: r.ext.tools.length, sandboxed: r.ext.sandboxed }, '[omd/ext] 扩展已加载');
         }
-        return { extTools: toolList, exts: loaded };
+        return { extTools: toolList, exts: loaded, extStatus: status };
       })();
       const { ChatStore } = await import('./chat/store');
       const { createEmbeddedBackend } = await import('../tui/backend-embedded');
@@ -158,10 +164,11 @@ if (userArgs[0] === 'tui') {
         resolveModel: () => resolveEngineModels(process.env).conductorModel,
         contextFiles,
       });
+      extStatus = st;
       sink = embedded;
       backend = embedded;
     }
-    await runOmdTui({ backend, cwd, contextFiles });
+    await runOmdTui({ backend, cwd, contextFiles, ...(extStatus.length > 0 ? { extensions: extStatus } : {}) });
   } finally {
     tuiLog.close();
   }

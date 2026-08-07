@@ -378,6 +378,35 @@ async function scenarioSeat() {
       p.text().slice(0, 800),
     );
 
+    // /settings: owner 指出"设置完全没有"。面板 + 选择器, 只读项标出来。
+    p.write('/settings\r');
+    check(
+      await waitFor(p, (t) => t.includes('座位 conductor') && t.includes('字形白名单')),
+      'SET-1 ★ /settings 列出真有数的项(座位/会话/上下文/配色字形/扩展)',
+      p.text().slice(0, 1100),
+    );
+    check(
+      await waitFor(p, (t) => t.includes('改哪一项')),
+      'SET-2 设置选择器开出来了',
+      p.text().slice(-500),
+    );
+    check(p.text().includes('(只读)'), 'SET-3 ★ 只读项标出来(选中它什么都不做, 这是刻意的)');
+    p.write('\x1b');
+    await new Promise((r) => setTimeout(r, 300));
+
+    // ★ 斜杠补全: owner 截图抓到的 bug —— 打 /se 弹出来的必须是**命令**不是文件名。
+    // ⚠ 判据必须挑一个**此前从未打印过**的串 —— oracle 是累积缓冲, 用 `/seat` 之类
+    //   会被前面设置面板打印过的同名文字满足。实跑证伪时它纹丝不动(第二次踩同一个坑)。
+    //   `<runId>` 是 `/resume` 的 argumentHint, 只有命令补全弹窗会画出来。
+    p.write('/res');
+    check(
+      await waitFor(p, (t) => t.includes('<runId>'), 8000),
+      'SET-4 ★ 斜杠开头补的是**命令**不是文件名(owner 截图里那个 bug)',
+      p.text().slice(-600),
+    );
+    for (let i = 0; i < 4; i++) p.write('\x7f');
+    await new Promise((r) => setTimeout(r, 200));
+
     // /help: 四条命令得发现得了 —— 启动提示提到它, 它列出全部。
     p.write('/help\r');
     check(
