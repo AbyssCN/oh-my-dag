@@ -23,11 +23,48 @@ export function colorEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.NO_COLOR === undefined;
 }
 
+/**
+ * 终端认不认 24 位色。认 → 用 Catppuccin 的逐值 hex;不认 → 回落 16 色。
+ *
+ * ⚠ **不认的时候回落而不是照发** —— 老终端会把 `38;2;...` 原样吐成可见垃圾字符,
+ * 那比没有颜色难看得多,而且会把宽度算错(垃圾字符是要占列的)。
+ */
+export function truecolorEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const c = env.COLORTERM ?? '';
+  return c.includes('truecolor') || c.includes('24bit');
+}
+
 const identity = (t: string) => t;
 
 /** SGR 包一层。收尾一律 `\x1b[0m` —— §9.2:行末会被 TUI 追加 reset,**样式不许跨行**。 */
 function sgr(code: string): (t: string) => string {
   return (t: string) => `\x1b[${code}m${t}\x1b[0m`;
+}
+
+/**
+ * **Catppuccin Mocha 逐值**(A9)。只列 chrome 真的用到的那几档 —— 铺全 26 个色名
+ * 会造出一堆没有消费者的常量(本仓可达性纪律的同一条:没消费者的东西不先加)。
+ *
+ * 值来自 Catppuccin 官方 Mocha 调色板。
+ */
+export const MOCHA = {
+  text: '#cdd6f4',
+  subtext0: '#a6adc8',
+  overlay1: '#7f849c',
+  blue: '#89b4fa',
+  sky: '#89dceb',
+  green: '#a6e3a1',
+  yellow: '#f9e2af',
+  red: '#f38ba8',
+  mauve: '#cba6f7',
+} as const;
+
+/** `#rrggbb` → 24 位前景 SGR。非法 hex 直接抛 —— 那是打字错误,不是运行时状况。 */
+export function fg24(hex: string): (t: string) => string {
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  if (!m) throw new Error(`fg24: 非法 hex ${JSON.stringify(hex)}`);
+  const [r, g, b] = [m[1], m[2], m[3]].map((x) => Number.parseInt(x as string, 16));
+  return sgr(`38;2;${r};${g};${b}`);
 }
 
 export interface OmdTuiTheme {
@@ -42,20 +79,22 @@ export interface OmdTuiTheme {
   };
 }
 
-export function createTheme(opts: { color?: boolean } = {}): OmdTuiTheme {
+export function createTheme(opts: { color?: boolean; truecolor?: boolean } = {}): OmdTuiTheme {
   const on = opts.color ?? colorEnabled();
-  const c = (code: string) => (on ? sgr(code) : identity);
-  const dim = c('2');
-  const accent = c('36'); // cyan
-  const warn = c('33'); // yellow
-  const user = c('32'); // green
+  const tc = opts.truecolor ?? truecolorEnabled();
+  /** 16 色码 + Mocha hex 成对给:认 24 位就用 hex,不认就回落,关色就是恒等。 */
+  const c = (code: string, hex?: string) => (!on ? identity : tc && hex ? fg24(hex) : sgr(code));
+  const dim = c('2', MOCHA.overlay1);
+  const accent = c('36', MOCHA.sky);
+  const warn = c('33', MOCHA.yellow);
+  const user = c('32', MOCHA.green);
 
   const theme: OmdTuiTheme = {
     markdown: {
-      heading: c('1;36'),
-      link: c('4;36'),
+      heading: c('1;36', MOCHA.mauve),
+      link: c('4;36', MOCHA.blue),
       linkUrl: dim,
-      code: c('33'),
+      code: c('33', MOCHA.yellow),
       codeBlock: identity, // 代码块正文交给 highlightCode (S7);这里不再叠一层底色
       codeBlockBorder: dim,
       quote: dim,
@@ -71,7 +110,7 @@ export function createTheme(opts: { color?: boolean } = {}): OmdTuiTheme {
       borderColor: dim,
       selectList: {
         selectedPrefix: accent,
-        selectedText: c('1'),
+        selectedText: c('1', MOCHA.text),
         description: dim,
         scrollInfo: dim,
         noMatch: dim,
