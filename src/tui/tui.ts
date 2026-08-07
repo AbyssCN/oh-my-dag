@@ -29,6 +29,7 @@
  */
 import { Container, ProcessTerminal, Text, TuiMainScreen, type Terminal } from '@earendil-works/pi-tui';
 import type { OmdBackend } from './backend';
+import { StatusLine } from './components/status-line';
 import { type ContextFile, formatContextLine, loadConductorContext } from './context';
 
 /** 双击 Ctrl+C 的窗口。openclaw / pi 一致,不发明新数。 */
@@ -95,10 +96,12 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
 
   const contextFiles = opts.contextFiles ?? loadConductorContext(opts.cwd);
 
-  const header = new Text(`omd tui — ${opts.cwd}`);
-  const harness = new Text(formatContextLine(contextFiles, { cwd: opts.cwd }));
+  // 三条状态行走 StatusLine (截断, 不折行) —— 状态行一折, 下面所有东西的行号整体下移,
+  // 而 HUD 是按行差分画的, 结果是布局错位。正文走 Text (折行是对的)。
+  const header = new StatusLine(`omd tui — ${opts.cwd}`);
+  const harness = new StatusLine(formatContextLine(contextFiles, { cwd: opts.cwd }));
   const body = new Text('输入任意字符会在这里回显。');
-  const footer = new Text(`[${opts.backend.connection.url}]  Ctrl+C 两次退出`);
+  const footer = new StatusLine(`[${opts.backend.connection.url}]  Ctrl+C 两次退出`);
 
   const root = new Container();
   root.addChild(header);
