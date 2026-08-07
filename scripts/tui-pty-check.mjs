@@ -189,6 +189,23 @@ async function scenarioHappyPath() {
       'S10-2 流式回复装配进对话记录',
       p.text().slice(0, 500),
     );
+    // S11: HUD 吃到了 DAG 节点事件 —— 逐节点变 + 角色关系行 (owner 裁决 ③)。
+    check(
+      await waitFor(p, (t) => t.includes('DAG fixture-run')),
+      'S11-1 HUD 出现(有 run 才画, 没 run 恒缺席)',
+      p.text().slice(0, 600),
+    );
+    check(
+      await waitFor(p, (t) => /conductor .* -> leaf 1 -> verifier 1/.test(t)),
+      'S11-2 ★ 角色关系行数对了(leaf 1 / verifier 1)',
+      p.text().slice(0, 600),
+    );
+    check(
+      await waitFor(p, (t) => t.includes('fixture-model')),
+      'S11-3 节点跑完之后模型名进了表(逐节点变)',
+      p.text().slice(0, 600),
+    );
+
     // ★ 两片必须合成**一条**消息。
     // ⚠ 初版写的是"'已收到。' 只出现一次" —— **那是条假闸**: 每片各开一条消息时,
     //   两片文本各自仍只出现一次, 证伪时它纹丝不动 (2026-08-07 实跑抓到)。

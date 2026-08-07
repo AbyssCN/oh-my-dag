@@ -96,14 +96,20 @@ if (userArgs[0] === 'tui') {
       const { createConductorChatTools } = await import('../serve/chat-tools');
       const { ChatStore } = await import('./chat/store');
       const { createEmbeddedBackend } = await import('../tui/backend-embedded');
-      backend = createEmbeddedBackend({
+      // ⚠ 先有工具面才有 backend (工具要交给 runChatTurn), 而节点事件要灌回 backend ——
+      // 所以这里用一个**延迟指针**接环, 不是循环依赖。装配完成前引擎不可能发事件。
+      let sink: { pushDagEvent(runId: string, e: unknown): void } | null = null;
+      const tools = assembleOmdMcpTools({ onNodeEvent: (runId, e) => sink?.pushDagEvent(runId, e) });
+      const embedded = createEmbeddedBackend({
         cwd,
         store: new ChatStore(cwd),
-        tools: createConductorChatTools(assembleOmdMcpTools()),
+        tools: createConductorChatTools(tools),
         // 座位每轮现解 (INV-MODEL-3): omd_set_role / `/seat` 改完, 下一句就换座。
         resolveModel: () => resolveEngineModels(process.env).conductorModel,
         contextFiles,
       });
+      sink = embedded;
+      backend = embedded;
     }
     await runOmdTui({ backend, cwd, contextFiles });
   } finally {

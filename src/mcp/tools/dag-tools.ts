@@ -11,7 +11,8 @@ import { z } from 'zod';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import type { NodeDetail, RunRegistry } from '../run-registry.js';
 import type { OmdMcpTool } from '../server.js';
-import type { ExecutorDagConfig, ExecutorDagResult } from '../../harness/executor-dag-types.js';
+import type { DagNodeEvent, ExecutorDagConfig, ExecutorDagResult } from '../../harness/executor-dag-types.js';
+import { logger } from '../../logger';
 import type { CheckpointManager } from '../../harness/continuity/checkpoint-manager.js';
 import type { ConductorPlan } from '../../harness/conductor-plan.js';
 import { parsePlan } from '../../harness/conductor-plan.js';
@@ -93,6 +94,16 @@ export interface DagToolDeps {
    * statusline 数据源)。fail-open 不影响执行; 省略 = 不写 (HUD 空闲)。
    */
   hudMirror?: HudMirror;
+  /**
+   * **进程内节点事件旁路**(TUI SDD §6,切片 S11):给了就在 hud 镜像写盘**之后**原样转一份。
+   *
+   * 为什么不让 TUI 去读 `.omd/hud/dag.json`:owner 已拍板进程内直订阅 —— 零文件 IO、零延迟。
+   * 为什么仍然写那个文件:它是 statusline 的数据源,**加 TUI 不许把 statusline 断掉**。
+   * 两条路各有各的消费者,不是重复。
+   *
+   * fail-open 且不吞证据:订阅者抛错记一行、不打断执行(HUD 画不出来不该拖垮 DAG)。
+   */
+  onNodeEvent?: (runId: string, e: DagNodeEvent) => void;
   /**
    * plan-memory Phase A 账本 (给则每个完成 run 记一笔: family 聚类 + 版本去重 + 战绩)。
    * 纯记账零行为改变; record 自身 fail-open。省略 = 不记。
@@ -217,7 +228,7 @@ function launchPlanRun(
   opts: { resume?: string; leafModel?: string; maxFanout?: number; task?: string; toolName: string },
   deps: DagToolDeps,
 ): { content: { type: 'text'; text: string }[]; isError?: boolean } {
-  const { engine, runRegistry, continuity, hudMirror, ledger, recorder } = deps;
+  const { engine, runRegistry, continuity, hudMirror, ledger, recorder, onNodeEvent } = deps;
   let defaultConfig: Partial<ExecutorDagConfig> | undefined;
   try {
     defaultConfig = resolveDefaults(deps.defaultConfig);
@@ -253,6 +264,15 @@ function launchPlanRun(
     onNodeEvent: (e) => {
       runRegistry.applyNodeEvent(runId, e);
       hudMirror?.write(runId, runRegistry.getRecord(runId), hudLevels);
+      // 旁路在镜像写盘**之后** —— 顺序是判据不是口味: 订阅者再慢也不许让 statusline 的
+      // 数据源等它, 而反过来 statusline 写盘失败 (fail-open) 也不该吃掉这一份转发。
+      if (onNodeEvent) {
+        try {
+          onNodeEvent(runId, e);
+        } catch (err) {
+          logger.warn({ runId, err: (err as Error).message }, '[omd/dag-tools] onNodeEvent 订阅者抛错 (已吞, 不打断执行)');
+        }
+      }
     },
     ...(maxFanout ? { maxFanout } : {}),
     ...(continuity
@@ -408,7 +428,7 @@ function resolveDefaults(
   return typeof d === 'function' ? d() : d;
 }
 
-function makeDagRun({ engine, runRegistry, continuity, hudMirror, ledger, recorder, ...rest }: DagToolDeps): OmdMcpTool {
+function makeDagRun({ engine, runRegistry, continuity, hudMirror, ledger, recorder, onNodeEvent, ...rest }: DagToolDeps): OmdMcpTool {
   return {
     name: 'dag_run',
     description: 'Execute a task via conductor DAG planning + leaf fan-out. resume=<runId> skips checkpointed nodes.',
@@ -468,6 +488,16 @@ function makeDagRun({ engine, runRegistry, continuity, hudMirror, ledger, record
         onNodeEvent: (e) => {
           runRegistry.applyNodeEvent(runId, e);
           hudMirror?.write(runId, runRegistry.getRecord(runId));
+          // ⚠ **两处都要接**: `dag_run` (conductor 路径) 与 `dag_run_plan` (预构造 plan 路径)
+          // 是两个各自组 config 的函数 —— 只接一处的症状与完全没接一模一样, 换个工具就没事件。
+          // (run-record-wiring.test.ts 的注释记的就是这个坑, 本片差点原样再踩一次。)
+          if (onNodeEvent) {
+            try {
+              onNodeEvent(runId, e);
+            } catch (err) {
+              logger.warn({ runId, err: (err as Error).message }, '[omd/dag-tools] onNodeEvent 订阅者抛错 (已吞, 不打断执行)');
+            }
+          }
         },
         // 并发手闸: 参数 > defaultConfig (装配层 provider 池) > 引擎全宽。
         ...(maxFanout ? { maxFanout } : {}),

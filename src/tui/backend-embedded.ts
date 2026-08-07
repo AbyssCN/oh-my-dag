@@ -41,7 +41,18 @@ export interface EmbeddedBackendDeps {
   runTurn?: typeof runChatTurn;
 }
 
-export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend {
+/**
+ * 引擎节点事件 → `OmdTuiEvent`(S11)。
+ *
+ * ⚠ 这个函数由 **`cli.ts` 装配时挂到 `assembleOmdMcpTools({ onNodeEvent })` 上** ——
+ * 它不是 backend 的一个方法,因为工具面是在 backend **之前**装配好的
+ * (工具要先存在才能交给 `runChatTurn`)。所以后端出一个"往里灌事件"的口子。
+ */
+export interface DagEventSink {
+  pushDagEvent(runId: string, e: unknown): void;
+}
+
+export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & DagEventSink {
   const runTurn = deps.runTurn ?? runChatTurn;
   /** 每会话一个 controller —— `abortChat` 要能只掐一条会话,不是掐全部。 */
   const inflight = new Map<string, AbortController>();
@@ -88,6 +99,10 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend {
     },
     get onEvent() {
       return onEvent;
+    },
+    /** 引擎侧灌进来的节点事件。`runId` 一起带上 —— UI 要能分辨换了一个 run。 */
+    pushDagEvent(runId: string, e: unknown) {
+      emit('dag', { runId, node: e });
     },
     start() {},
     async stop() {

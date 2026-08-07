@@ -31,6 +31,7 @@ import { Container, Editor, ProcessTerminal, TuiMainScreen, type Terminal } from
 import { logger } from '../logger';
 import type { OmdBackend } from './backend';
 import { ChatLog } from './components/chat-log';
+import { DagHud } from './components/dag-hud';
 import { StatusLine } from './components/status-line';
 import { type ContextFile, formatContextLine, loadConductorContext } from './context';
 import { type OmdTuiTheme, createTheme } from './theme';
@@ -118,6 +119,8 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   const header = new StatusLine(CHROME.header(opts.cwd));
   const harness = new StatusLine(formatContextLine(contextFiles, { cwd: opts.cwd }));
   const chatLog = new ChatLog(theme);
+  // HUD 在没有 run 的时候 `render()` 返回空数组 (无源恒缺席), 所以恒挂着不用条件添加。
+  const dagHud = new DagHud(theme, () => opts.backend.connection.url.replace(/^embedded:\/\//, '') || null);
   const editor = new Editor(tui, theme.editor);
   const footer = new StatusLine(CHROME.footer(opts.backend.connection.url));
 
@@ -127,6 +130,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   root.addChild(header);
   root.addChild(harness);
   root.addChild(chatLog);
+  root.addChild(dagHud);
   root.addChild(editor);
   root.addChild(footer);
   tui.addChild(root);
@@ -207,6 +211,14 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       const p = e.payload as { phase?: string; name?: string; ok?: boolean };
       const name = p?.name ?? '?';
       chatLog.appendNotice(p?.phase === 'start' ? CHROME.toolStart(name) : CHROME.toolEnd(name, p?.ok !== false));
+      tui.requestRender();
+      return;
+    }
+    if (e.event === 'dag') {
+      const p = e.payload as { runId?: string; node?: { type?: string } };
+      // 换了 run → 清空上一个 run 的节点, 否则两个 run 的节点混成一张表。
+      if (p?.node?.type === 'planned' && p.runId) dagHud.beginRun(p.runId);
+      if (p?.node) dagHud.apply(p.node as never);
       tui.requestRender();
       return;
     }
