@@ -34,6 +34,7 @@ import { ChatLog } from './components/chat-log';
 import { DagHud } from './components/dag-hud';
 import { StatusLine } from './components/status-line';
 import { type ContextFile, formatContextLine, loadConductorContext } from './context';
+import { formatSeatRows, parseSeatCommand, seatRows } from './seat-picker';
 import { type OmdTuiTheme, createTheme } from './theme';
 
 /** 双击 Ctrl+C 的窗口。openclaw / pi 一致,不发明新数。 */
@@ -72,9 +73,37 @@ export const CHROME = {
   /** 工具在跑 / 跑完。真事件真名字, 没有事件就不画这一行。 */
   toolStart: (name: string) => `${name} ...`,
   toolEnd: (name: string, ok: boolean) => `${name} ${ok ? 'ok' : '失败'}`,
+  /** 切座位成功 —— 说出改了哪个文件, 别让人猜它生效了没。 */
+  seatChanged: (role: string, coord: string) => `座位已改: ${role} -> ${coord} (写入 .omd/config.json, 下一句生效)`,
+  seatFailed: (reason: string) => `座位没改成: ${reason}`,
+  /** 座位读不出来 (没配过 omd 的仓)。原因原样贴出来 —— 那一格的真值就是解析不到。 */
+  seatUnresolved: (reason: string) => `当前座位解析不到: ${reason}`,
   footer: (url: string) => `[${url}]  Ctrl+C 两次退出`,
   footerArmed: (url: string) => `[${url}]  再按一次 Ctrl+C 退出`,
 } as const;
+
+/**
+ * 真座位面:读 `resolveEngineModels`,写 `.omd/config.json`。
+ *
+ * 动态 import 是为了让**测试注入替身时这两个模块根本不被加载** —— 它们会碰真机配置。
+ */
+function defaultSeatFace(): NonNullable<RunOmdTuiOpts['seats']> {
+  return {
+    read: () => {
+      // 同步读: 这条路径在渲染回调里, 不能 await。两个模块在 `omd tui` 启动时已被 cli 加载过。
+      const { resolveEngineModels } = require('../mcp/assemble') as typeof import('../mcp/assemble');
+      const m = resolveEngineModels(process.env);
+      // ⚠ `resolveEngineModels` 只出 conductor / leaf 两档 —— verifier 不在它的返回里。
+      // 那一格**留空让视图画 `(未解析)`**,不拿 leafModel 冒充:冒充之后
+      // "verifier 到底用的什么"这个问题就再也问不出真答案了。
+      return { conductor: m.conductorModel, leaf: m.leafModel };
+    },
+    set: (role: string, coord: string) => {
+      const { setRoleHeadless } = require('../harness/init/headless-config') as typeof import('../harness/init/headless-config');
+      return setRoleHeadless(role, coord);
+    },
+  };
+}
 
 export interface RunOmdTuiOpts {
   /** 唯一接缝(SDD §3.1)。S2 只用它的 `connection` / `start` / `stop`。 */
@@ -97,6 +126,16 @@ export interface RunOmdTuiOpts {
   theme?: OmdTuiTheme;
   /** 会话 id。S10 之前只有一条会话,给个稳定默认值即可。 */
   sessionId?: string;
+  /**
+   * 座位面(S12)。`read` 给当前三个可调座位的坐标,`set` 写 `.omd/config.json`。
+   *
+   * 走注入而不是直接 import,是因为**测试不许改真机的 config.json** ——
+   * 而这条路径的判据恰恰是"文件真被改了"。省略 → 真的那一套。
+   */
+  seats?: {
+    read: () => Record<string, string>;
+    set: (role: string, coord: string) => { role: string; coord: string };
+  };
 }
 
 /**
@@ -138,6 +177,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   tui.setFocus(editor);
 
   const sessionId = opts.sessionId ?? 'tui';
+  const seats = opts.seats ?? defaultSeatFace();
   let armedAt: number | null = null;
   let exiting = false;
   let resolveExit: () => void = () => {};
@@ -228,9 +268,53 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     }
   };
 
+  /**
+   * `/seat` —— **本地处理,不发给模型**(S12)。
+   *
+   * ⚠ 这不是一个 slash 命令注册表(那个方案 SDD L117 已裁决撤回),就是一个前缀判断。
+   * 之所以不让 conductor 去调工具改座位:改座位是**有后果的动作**,而且用户此刻要的是
+   * 立刻看到 footer 变,不是等一轮模型往返。
+   */
+  function handleSeat(text: string): boolean {
+    const cmd = parseSeatCommand(text);
+    if (!cmd) return false;
+    chatLog.appendUser(text);
+    editor.setText('');
+    if (cmd.kind === 'list') {
+      // ⚠ `resolveEngineModels` 在座位没配时**抛** (INV-MODEL-5 计划期响亮失败) ——
+      // 那对 DAG 起跑是对的, 但对"我就想看看现在都是什么座位"这条只读路径不对:
+      // 一个没配过 omd 的仓里敲 /seat 会直接把 UI 掀掉 (PTY 第一跑就是这么红的)。
+      // ⇒ 读失败按**未解析**处理并把原因原样贴出来, 不吞也不崩。
+      let current: Record<string, string> = {};
+      let readErr: string | null = null;
+      try {
+        current = seats.read();
+      } catch (err) {
+        readErr = err instanceof Error ? err.message : String(err);
+      }
+      chatLog.appendNotice(formatSeatRows(seatRows(current)));
+      if (readErr) chatLog.appendNotice(CHROME.seatUnresolved(readErr));
+    } else if (cmd.kind === 'usage') {
+      chatLog.appendNotice(cmd.reason);
+    } else {
+      try {
+        const r = seats.set(cmd.role, cmd.coord);
+        chatLog.appendNotice(CHROME.seatChanged(r.role, r.coord));
+        // footer 重读 `connection.url` —— backend 那边是 getter, 座位一改它就变。
+        footer.setText(CHROME.footer(opts.backend.connection.url));
+      } catch (err) {
+        // 拒绝的原因原样进屏 (非法 role / 坐标格式不对), 不吞成一句"失败了"。
+        chatLog.appendNotice(CHROME.seatFailed(err instanceof Error ? err.message : String(err)));
+      }
+    }
+    tui.requestRender();
+    return true;
+  }
+
   editor.onSubmit = (text: string) => {
     const prompt = text.trim();
     if (!prompt) return; // 空回车不算一轮 —— 否则会往会话里塞空消息
+    if (handleSeat(prompt)) return;
     void submit(prompt);
   };
 
