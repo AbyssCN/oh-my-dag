@@ -12,9 +12,11 @@
  *   一轮 = 一张静态 applicative 图 (runExecutorDag) → judge 看整轮结果收敛没 →
  *   不满意把失败原因注入下一轮 task → conductor 据此重画 → 直到收敛 / 触 maxRounds。
  *
- * 这是 **workflow 级 fixpoint** (重画整张内层图)。node 级 refine (重跑单 leaf) 是 PG DAG verifier
- * 路径的事 (宿主宏观引擎 外层), 不在 omd in-process 这层 —— in-process leaf 无 per-node postcondition,
- * 整轮 judge 是最自然的收敛粒度。
+ * 这是 **workflow 级 fixpoint** (重画整张内层图), 不是 node 级 refine (重跑单 leaf) ——
+ * in-process leaf 无 per-node postcondition, 整轮 judge 是最自然的收敛粒度。
+ *
+ * ⚠ 原注释把 node 级 refine 归给"PG DAG verifier 路径(宿主宏观引擎 外层)" —— **那一层从来没建过**,
+ * 见 `dag/engine.ts` 头注。所以这里不是"分工", 是 omd 这一层**只做 workflow 级**这一个事实。
  *
  * 默认收敛 judge 共用 plan/llm-judge (与 replanner 同一套); 全注入 (_runDag / judge) → 无 DB /
  * 无模型即可完整测试。onComplete 由本层闭包**每轮**显式调用 (不依赖 _runDag 实现透传)。

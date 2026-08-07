@@ -4,8 +4,12 @@
  * 把每次 runExecutorDag 的 ExecutorDagResult 落独立 SQLite (omd_dag_runs 表): plan / 拓扑层 /
  * 每 node {kind, status, deps} / token usage。→ 运行记录 + 审计 + **node 图谱可回溯重建**。
  *
- * 跟 OmdMemory (facts, Tier-1) 分开: 这是操作/审计数据, 不是认知 facts。也跟 omd PG DAG 分开:
- * 这只留**记录** (轻量), 不做 CAS/lease/多租户/跨进程 resume (那是 omd 的活)。三同心圈的中间地带。
+ * 跟 OmdMemory (facts, Tier-1) 分开: 这是操作/审计数据, 不是认知 facts。
+ * 这只留**记录** (轻量), 不做 CAS/lease/多租户/跨进程 resume。
+ *
+ * ⚠ 原注释还说"也跟 omd PG DAG 分开" —— **那个东西从来没建过**(Valinor 初版计划中的一层
+ * Postgres 跨轮工作流, 表 valinor_workflow_nodes 全仓零命中)。拿一个不存在的东西当参照物,
+ * 读的人只会以为自己漏了什么, 故删。见 `dag/engine.ts` 头注。
  */
 import { Database } from 'bun:sqlite';
 import { mkdirSync } from 'node:fs';
