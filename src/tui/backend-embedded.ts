@@ -31,6 +31,14 @@ export interface EmbeddedBackendDeps {
   /** chat 位工具白名单(`createConductorChatTools` 的产物)。 */
   tools: AnyOmdTool[];
   /**
+   * 装配层的**全套** MCP 工具(S14)。`dag_runs` / `dag_resume` 从这里取。
+   *
+   * ⚠ 与 `tools` 不是一回事:那是 chat 位的白名单(指挥位,不给文件工具);
+   * 这里是 UI **自己**要直调的两个只读/续跑口 —— 不经过模型。
+   * 省略 → `listRuns` / `resumeRun` 两个能力**不存在**(UI 那边键就不出现)。
+   */
+  mcpTools?: readonly { readonly name: string; readonly handler: (args: never, extra: never) => unknown }[];
+  /**
    * 座位**每轮现解**(INV-MODEL-3):`/seat` 改完,下一句就换座。
    * 起跑时解一次的写法会让切座位在当前会话里静默无效。
    */
@@ -52,8 +60,26 @@ export interface DagEventSink {
   pushDagEvent(runId: string, e: unknown): void;
 }
 
+interface McpToolLike {
+  readonly name: string;
+  readonly handler: (args: never, extra: never) => unknown;
+}
+interface McpResult {
+  content?: { type: string; text?: string }[];
+  isError?: boolean;
+}
+
+const textOf = (r: McpResult): string =>
+  (r.content ?? [])
+    .map((c) => c.text ?? '')
+    .filter(Boolean)
+    .join('\n');
+
 export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & DagEventSink {
   const runTurn = deps.runTurn ?? runChatTurn;
+  const mcpTool = (name: string): McpToolLike | undefined => deps.mcpTools?.find((t) => t.name === name);
+  const invokeText = async (t: McpToolLike, args: unknown): Promise<string> =>
+    textOf((await t.handler(args as never, {} as never)) as McpResult);
   /** 每会话一个 controller —— `abortChat` 要能只掐一条会话,不是掐全部。 */
   const inflight = new Map<string, AbortController>();
   let seq = 0;
@@ -146,6 +172,27 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
     async loadHistory({ sessionId }): Promise<AgentMessage[]> {
       return deps.store.load(sessionId)?.messages ?? [];
     },
+
+    // ── S14: run 历史与续跑 ────────────────────────────────────────────────
+    // 只在装配层工具真的给了的时候才挂上去 —— **能力探测面靠字段在不在**,
+    // 不靠一个 `capabilities` 标志位 (两处声明同一件事必漂)。
+    ...(mcpTool('dag_runs')
+      ? {
+          async listRuns(): Promise<string> {
+            return invokeText(mcpTool('dag_runs') as McpToolLike, {});
+          },
+        }
+      : {}),
+    ...(mcpTool('dag_resume')
+      ? {
+          async resumeRun({ runId }: { runId: string }): Promise<{ ok: boolean; text: string }> {
+            const res = (await (mcpTool('dag_resume') as McpToolLike).handler({ runId } as never, {} as never)) as McpResult;
+            // `isError` 是 MCP 侧的**明确否**(没有 checkpoint / 状态不对), 原样带出去 ——
+            // 吞成 ok:false 会让"为什么续不了"这个问题问不出答案。
+            return { ok: !res.isError, text: textOf(res) };
+          },
+        }
+      : {}),
 
     async listSessions(): Promise<TuiSessionMeta[]> {
       return deps.store.list().map((m) => ({

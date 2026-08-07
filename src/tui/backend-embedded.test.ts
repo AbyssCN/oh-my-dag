@@ -187,3 +187,46 @@ describe('会话读侧', () => {
     expect((await backend.listSessions()).map((m) => m.id)).toEqual(['s1']);
   });
 });
+
+describe('★ S14: run 能力靠字段在不在探测, 不靠标志位', () => {
+  const runsTool = (text: string, isError = false) => ({
+    name: 'dag_runs',
+    handler: () => ({ content: [{ type: 'text', text }], ...(isError ? { isError: true } : {}) }),
+  });
+  const resumeTool = (text: string, isError = false) => ({
+    name: 'dag_resume',
+    handler: (a: { runId: string }) => ({
+      content: [{ type: 'text', text: `${text}${a?.runId ? ` (${a.runId})` : ''}` }],
+      ...(isError ? { isError: true } : {}),
+    }),
+  });
+
+  test('★ 没给 mcpTools → 两个方法**不存在**(UI 那边键就不出现, 不是点了没反应)', () => {
+    const { backend } = make();
+    expect(backend.listRuns).toBeUndefined();
+    expect(backend.resumeRun).toBeUndefined();
+  });
+
+  test('★ 只给了 dag_runs → 只有 listRuns 存在(逐个探测, 不是一个总开关)', () => {
+    const { backend } = make({ mcpTools: [runsTool('r1 done')] as never });
+    expect(typeof backend.listRuns).toBe('function');
+    expect(backend.resumeRun).toBeUndefined();
+  });
+
+  test('listRuns 把工具的文本原样带出来', async () => {
+    const { backend } = make({ mcpTools: [runsTool('r1  failed  2026  把活干了')] as never });
+    expect(await backend.listRuns?.()).toBe('r1  failed  2026  把活干了');
+  });
+
+  test('resumeRun 把 runId 传下去', async () => {
+    const { backend } = make({ mcpTools: [resumeTool('resuming')] as never });
+    expect(await backend.resumeRun?.({ runId: 'abc' })).toEqual({ ok: true, text: 'resuming (abc)' });
+  });
+
+  test('★ 工具说 isError → ok:false 且**原因原样带出**(吞掉就问不出为什么续不了)', async () => {
+    const { backend } = make({ mcpTools: [resumeTool('no checkpoint for run abc', true)] as never });
+    const r = await backend.resumeRun?.({ runId: 'abc' });
+    expect(r?.ok).toBe(false);
+    expect(r?.text).toContain('no checkpoint');
+  });
+});
