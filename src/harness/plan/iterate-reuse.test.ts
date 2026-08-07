@@ -8,10 +8,10 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { iterateExecutorDag } from './iterate';
-import { runExecutorDagWithPlan } from '../executor-dag';
+import { runExecutorDagWithPlan } from '../dag/engine';
 import { merkleFingerprints } from '../plan-passes/semantic-key';
 import type { ConductorPlan } from '../conductor-plan';
-import type { ExecutorDagConfig, ExecutorDagResult, GenerateFn, PriorExec } from '../executor-dag-types';
+import type { ExecutorDagConfig, ExecutorDagResult, GenerateFn, PriorExec } from '../dag/types';
 
 const stub = (plan: ConductorPlan, ids: string[], reused: string[] = []): ExecutorDagResult =>
   ({

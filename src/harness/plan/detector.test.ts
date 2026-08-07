@@ -13,11 +13,11 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { parseDetectorVerdict } from './detector';
-import { runExecutorDagWithPlan } from '../executor-dag';
+import { runExecutorDagWithPlan } from '../dag/engine';
 import type { ConductorPlan } from '../conductor-plan';
 import { PLAN_BOUNDARY } from '../conductor-plan';
 import type { ContentPart } from '../../model/gateway';
-import type { ExecutorDagConfig, GenerateFn } from '../executor-dag-types';
+import type { ExecutorDagConfig, GenerateFn } from '../dag/types';
 
 // ── ① 协议格式契约 ────────────────────────────────────────────────────────────
 

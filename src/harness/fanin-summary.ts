@@ -17,7 +17,7 @@
  * 本模块 = 纯逻辑 + 注入式 generate (触发判定 / 落盘 / usage 折算留在 executor-dag, 因需 plan/continuity)。
  * fail-open: 摘要器失败 / 解析失败 → 调用方回退全文注入, 绝不断 DAG。
  */
-import type { GenerateFn } from './executor-dag-types';
+import type { GenerateFn } from './dag/types';
 import type { ModelUsage } from '../model/gateway';
 
 export interface FaninSummaryConfig {

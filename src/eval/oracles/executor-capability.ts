@@ -6,7 +6,7 @@
  * 所以能测的东西也更硬: 不是"看起来好不好", 是"过没过、改了几行、有没有违规"。
  */
 import { $ } from 'bun';
-import type { ExecutorDagResult, LeafResult } from '../../harness/executor-dag-types';
+import type { ExecutorDagResult, LeafResult } from '../../harness/dag/types';
 
 // ── 指令遵循: 把散文约束变成可判的谓词 ────────────────────────────────────────
 /**

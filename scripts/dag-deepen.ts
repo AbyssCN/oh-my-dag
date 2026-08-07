@@ -22,7 +22,7 @@ import '../src/harness/script-bootstrap';
 import { computeHotspots } from '../src/harness/arch/hotspots';
 import { buildDeepenPlan, SYNTH_NODE_ID } from '../src/harness/arch/deepen-plan';
 import { renderDeepenReport } from '../src/harness/arch/deepen-report';
-import { runExecutorDagWithPlan } from '../src/harness/executor-dag';
+import { runExecutorDagWithPlan } from '../src/harness/dag/engine';
 import { createAgentLeafRunner } from '../src/harness/agent-leaf';
 import { bootstrapModelRuntime } from '../src/model/bootstrap';
 import { $ } from 'bun';

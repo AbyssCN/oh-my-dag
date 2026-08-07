@@ -5,7 +5,7 @@
 import { describe, expect, test } from 'bun:test';
 import { runDebug } from './run-debug';
 import { JUDGE_NODE_ID, HYPOTHESES_NODE_ID } from './debug-plan';
-import type { ExecutorDagResult } from '../executor-dag-types';
+import type { ExecutorDagResult } from '../dag/types';
 
 /** 造一个 fake DAG 结果: 给 judge 输出 + 若干假设子节点裁决。 */
 function fakeResult(judgeOutput: string, verdicts: Record<string, string> = {}): ExecutorDagResult {

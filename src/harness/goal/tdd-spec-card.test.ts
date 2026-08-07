@@ -16,7 +16,7 @@ import { BUILTIN_AGENT_TEMPLATES } from '../agent-templates-builtin';
 import { runGoal, type RunGoalConfig } from './run-goal';
 import type { AcceptanceSpec, GoalClassification, GoalTier } from './classify-acceptance';
 import type { ConductorPlan } from '../conductor-plan';
-import type { ExecutorDagConfig, ExecutorDagResult } from '../executor-dag-types';
+import type { ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
 
 const card = (): string => BUILTIN_AGENT_TEMPLATES.find((t) => t.name === 'spec-author')!.body;
 

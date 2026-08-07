@@ -12,10 +12,10 @@ import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runExecutorDagWithPlan } from '../../src/harness/executor-dag';
+import { runExecutorDagWithPlan } from '../../src/harness/dag/engine';
 import { CheckpointManager } from '../../src/harness/continuity/checkpoint-manager';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
-import type { ExecutorDagConfig, GenerateFn } from '../../src/harness/executor-dag-types';
+import type { ExecutorDagConfig, GenerateFn } from '../../src/harness/dag/types';
 
 const RUN = 's1-run';
 const BODY = '单次上限 100 条 · 支持 CSV 与 JSON';

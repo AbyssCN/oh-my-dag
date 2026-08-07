@@ -20,7 +20,7 @@
 import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { createDagRecorder, recordDagRun } from './dag-record';
-import type { ExecutorDagResult } from './executor-dag-types';
+import type { ExecutorDagResult } from './dag/types';
 import type { AcceptanceProbe } from './goal/acceptance-gate';
 import { readout } from '../../scripts/omd-readout';
 

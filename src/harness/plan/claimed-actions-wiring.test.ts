@@ -23,13 +23,13 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runExecutorDagWithPlan } from '../executor-dag';
+import { runExecutorDagWithPlan } from '../dag/engine';
 import { PLAN_BOUNDARY } from '../conductor-plan';
 import { CheckpointManager } from '../continuity/checkpoint-manager';
 import type { NodeLoopJournal } from '../continuity/types';
 import type { ContentPart } from '../../model/gateway';
 import type { ConductorPlan } from '../conductor-plan';
-import type { ExecutorDagConfig, GenerateFn } from '../executor-dag-types';
+import type { ExecutorDagConfig, GenerateFn } from '../dag/types';
 
 const contentText = (c: string | ContentPart[] | undefined): string =>
   typeof c === 'string' ? (c ?? '') : (c ?? []).map((p) => (p.type === 'text' ? p.text : '')).join('\n');

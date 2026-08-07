@@ -6,7 +6,7 @@
  */
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { describe, expect, test } from 'bun:test';
-import type { DagNodeEvent } from '../../harness/executor-dag-types';
+import type { DagNodeEvent } from '../../harness/dag/types';
 import { createTheme } from '../theme';
 import { DagHud, roleOf } from './dag-hud';
 

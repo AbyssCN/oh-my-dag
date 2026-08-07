@@ -13,7 +13,7 @@
  * 两个 producer 都**零模型调用**: 一个查制品的读写交叉, 一个比两轮的子节点 id 集合。
  * 观察者要是自己也得请一次 LLM, 它就成了第三层 judge —— D-13 明确不加新 gate 层。
  */
-import type { DagObservation } from '../executor-dag-types';
+import type { DagObservation } from '../dag/types';
 
 /** lint 认得的最小节点形状 (不 import ConductorPlan: 纯函数只要边)。 */
 export interface LintNode {
@@ -35,7 +35,7 @@ export interface LintResult {
  * 不是误报, 与"闸拿错根去查存在性"那种误杀不同。lint 只 warn 不拒, 这个失败方向是可接受的。
  */
 function normPath(p: string, root: string): string {
-  const s = p.startsWith('./') ? p.slice(2) : p;
+  const s = p.startsWith('.') ? p.slice(2) : p;
   return s.startsWith('/') ? s : `${root}/${s}`;
 }
 

@@ -9,7 +9,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runExecutorDag, type GenerateFn } from '../../src/harness/executor-dag';
+import { runExecutorDag, type GenerateFn } from '../../src/harness/dag/engine';
 import type { AgentLeafInput } from '../../src/harness/leaf-runners';
 import { CheckpointManager } from '../../src/harness/continuity/checkpoint-manager';
 

@@ -3,7 +3,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import type { ConductorPlan } from "../conductor-plan";
-import type { LeafResult } from "../executor-dag-types";
+import type { LeafResult } from "../dag/types";
 import { merkleFingerprints, computeReuse } from "./semantic-key";
 
 const plan = (nodes: ConductorPlan["nodes"]): ConductorPlan => ({ name: "t", nodes });

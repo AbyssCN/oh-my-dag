@@ -7,7 +7,7 @@
  * 自主引擎就有一条不停机的路径。所以这里逐个构造点名, 而不是抽查。
  */
 import { describe, expect, test } from 'bun:test';
-import { topoLevels } from '../executor-dag-planner';
+import { topoLevels } from '../dag/planner';
 import { parsePlan } from '../conductor-plan';
 import type { ConductorPlan } from '../conductor-plan';
 import { PRIMITIVE_IDS, PRIMITIVE_REGISTRY } from '../primitive-registry';

@@ -27,7 +27,7 @@
  * 后者要花模型钱,且按 NIST Insight #4 得**重复多次**才算数(单次 57% → 25 次 80%)。
  */
 import { describe, expect, test } from 'bun:test';
-import { runExecutorDag, type GenerateFn } from '../../src/harness/executor-dag';
+import { runExecutorDag, type GenerateFn } from '../../src/harness/dag/engine';
 import { fenceUntrusted, makeRunNonce, renderTrustedOwnerBlock } from '../../src/harness/prompt-fence';
 
 const CONDUCTOR = 'mimo:mimo-v2.5-pro';

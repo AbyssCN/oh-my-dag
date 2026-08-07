@@ -11,9 +11,9 @@ import { GRAPH_SHAPES, renderShapesForPrompt, shapeById } from '../../src/harnes
 import { conductorSystemPrompt } from '../../src/harness/conductor-plan';
 import { subgraphWarnings, expandConductorNode } from '../../src/harness/plan/conductor-expand';
 import { stampPass } from '../../src/harness/plan-passes/stamp-pass';
-import { runExecutorDagWithPlan } from '../../src/harness/executor-dag';
+import { runExecutorDagWithPlan } from '../../src/harness/dag/engine';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
-import type { ExecutorDagConfig, GenerateFn } from '../../src/harness/executor-dag-types';
+import type { ExecutorDagConfig, GenerateFn } from '../../src/harness/dag/types';
 
 const leafId = (p: string): string => /\[omd leaf: ([^\]]+)\]/.exec(p)?.[1] ?? '';
 const plan = (nodes: Record<string, unknown>): ConductorPlan => ({ name: 's', nodes }) as unknown as ConductorPlan;

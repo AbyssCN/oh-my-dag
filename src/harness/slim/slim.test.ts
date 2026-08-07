@@ -17,7 +17,7 @@ import {
 import { splitDiffByFile, buildLocalPlan, SYNTH_NODE_ID } from './local-plan';
 import { extractFindingLines, formatReport } from './findings';
 import { PlanSchema } from '../conductor-plan';
-import { runExecutorDagWithPlan, type GenerateFn } from '../executor-dag';
+import { runExecutorDagWithPlan, type GenerateFn } from '../dag/engine';
 
 const REPO_ROOT = join(import.meta.dir, '..', '..', '..');
 const SCRIPT = join(REPO_ROOT, 'scripts', 'dag-slim.ts');

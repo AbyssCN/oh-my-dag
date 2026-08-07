@@ -14,7 +14,7 @@
  *  INV-11 链上模型切换最小化: 单消费者链同档继承上游模型; 切换只在 cluster 边界/档位跳变 (D-22)。
  */
 import type { ConductorPlan } from "../conductor-plan";
-import { topoLevels } from "../executor-dag-planner";
+import { topoLevels } from "../dag/planner";
 import { rotateFamilies } from "../../model/family-rotate";
 
 /** 四池模型坐标 (接线层注入; 坐标形如 'provider:model', familyOf 给家族)。 */

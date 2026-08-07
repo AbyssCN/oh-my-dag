@@ -6,11 +6,11 @@
  * 二选一的结果: 留 `max_retry` 并实装, 删 `on_failure` / `fallback`。
  */
 import { describe, expect, test } from 'bun:test';
-import { runExecutorDagWithPlan } from './executor-dag';
+import { runExecutorDagWithPlan } from './dag/engine';
 import { PlanSchema } from './conductor-plan';
 import { nodeFieldsKey } from './plan-passes/semantic-key';
 import type { ConductorPlan } from './conductor-plan';
-import type { ExecutorDagConfig, GenerateFn } from './executor-dag-types';
+import type { ExecutorDagConfig, GenerateFn } from './dag/types';
 
 /** 前 `failTimes` 次调用抛错 (模拟 429/网络抖动), 之后成功。回收每次拿到的 prompt。 */
 const flakyGenerate = (failTimes: number, prompts: string[]): GenerateFn => {

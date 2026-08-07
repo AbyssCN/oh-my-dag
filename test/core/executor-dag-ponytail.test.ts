@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { runExecutorDag, PONYTAIL_LEAF_DISPOSITION, type GenerateFn } from '../../src/harness/executor-dag';
+import { runExecutorDag, PONYTAIL_LEAF_DISPOSITION, type GenerateFn } from '../../src/harness/dag/engine';
 
 // C: ponytail 注入 leaf (构建相位) — leafPonytail 开时 leaf prompt 末附 disposition, conductor 永不挂。
 // 创意节点 (node.creative) 不挂 (护交付物, 同 caveman)。

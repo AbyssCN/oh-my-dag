@@ -31,13 +31,13 @@
 import { appendFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CheckpointManager } from '../../src/harness/continuity/checkpoint-manager';
-import { runExecutorDagWithPlan } from '../../src/harness/executor-dag';
+import { runExecutorDagWithPlan } from '../../src/harness/dag/engine';
 import { expandConductorNode } from '../../src/harness/plan/conductor-expand';
 import { PLAN_BOUNDARY } from '../../src/harness/conductor-plan';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
 import type { AgentLeafRunner } from '../../src/harness/leaf-runners';
 import type { ContentPart } from '../../src/model/gateway';
-import type { ExecutorDagConfig, GenerateFn } from '../../src/harness/executor-dag-types';
+import type { ExecutorDagConfig, GenerateFn } from '../../src/harness/dag/types';
 
 // checkpoint 落 <root>/.omd/continuity/<runId>/ —— 夹具自持, 不受宿主 OMD_DATA_HOME 影响。
 delete process.env.OMD_DATA_HOME;

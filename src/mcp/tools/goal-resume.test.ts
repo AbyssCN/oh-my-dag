@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { createGoalTool } from './goal';
 import { RunRegistry } from '../run-registry';
 import { CheckpointManager } from '../../harness/continuity/checkpoint-manager';
-import type { ExecutorDagConfig } from '../../harness/executor-dag-types';
+import type { ExecutorDagConfig } from '../../harness/dag/types';
 import type { RunGoalResult } from '../../harness/goal/run-goal';
 
 const emptyResult = (goal: string): RunGoalResult => ({

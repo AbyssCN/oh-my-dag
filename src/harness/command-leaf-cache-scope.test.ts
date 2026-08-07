@@ -19,10 +19,10 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { createCommandLeafRunner } from './command-leaf';
-import { runExecutorDagWithPlan } from './executor-dag';
+import { runExecutorDagWithPlan } from './dag/engine';
 import type { ConductorPlan } from './conductor-plan';
 import type { CommandLeafRunner } from './leaf-runners';
-import type { ExecutorDagConfig, GenerateFn } from './executor-dag-types';
+import type { ExecutorDagConfig, GenerateFn } from './dag/types';
 
 const generate: GenerateFn = async () => ({ text: 'leaf-out', usage: { in: 1, out: 1 } });
 

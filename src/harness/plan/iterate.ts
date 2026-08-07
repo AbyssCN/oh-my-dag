@@ -29,8 +29,8 @@ import {
   runExecutorDag,
   type ExecutorDagConfig,
   type ExecutorDagResult,
-} from '../executor-dag';
-import type { PriorExec } from '../executor-dag-types';
+} from '../dag/engine';
+import type { PriorExec } from '../dag/types';
 import {
   runFixpoint,
   DEFAULT_MAX_ROUNDS,

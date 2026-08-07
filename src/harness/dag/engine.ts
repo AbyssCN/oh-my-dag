@@ -1,50 +1,60 @@
 /**
- * src/harness/executor-dag —— omd 本体的**内部 executor-DAG**(现场 fan-out, ⊥ 宿主宏观引擎 宏观 PG DAG)。
+ * src/harness/dag/engine —— **DAG 执行引擎**(2026-08-07 由 `executor-dag.ts` 改名并入 `dag/`)。
  *
- * 这是 omd agent **本体 runtime 底层**自包含的编排循环 (Nick 2026-06-01 锁定「两者都要, 先 in-process」):
- *   task ──conductor──▶ plan(leaves + deps) ──executor──▶ 现场 fan-out ──▶ results
+ * omd agent 本体 runtime 的自包含编排循环:
+ *   task ──conductor──▶ plan(leaves + deps) ──engine──▶ 现场 fan-out ──▶ results
  *
- * 设计锁 (Nick): 无硬默认 (conductorModel/leafModel 必填) · model-agnostic (经 src/model callModel) ·
- *   不碰 PG/conduct()/claude -p · 现场 in-process (leaves 经 primitives.parallel, 不落宿主宏观 workflow 表)。
+ * ## 为什么不再叫 `executor-dag`
  *
- * T2#5 (2026-06-23): 682行 god-file 按簇拆 4 文件 —— 契约类型→executor-dag-types, 默认/prompt 常量→
- *   executor-dag-defaults, 纯 helper(topoLevels/buildLeafPrompt/addUsage)→executor-dag-planner; 本文件留
- *   引擎 (ExecOnce/planAndExecute/runExecutorDag) + barrel re-export 公共面 (30+ 消费方 import './executor-dag' 不变)。
+ * 旧名的 `executor-` 前缀是用来跟**「宏观 PG DAG」**区分的 —— Valinor 初版(`10f4b3b`,2026-06-04)
+ * 计划中的一层 Postgres 支撑的跨轮持久化工作流(表 `valinor_workflow_nodes`),原文写着「= 后续外层」。
+ * **那一层从来没有建过**:表名全仓零命中,唯一的 postgres 残留是 `project-scope.ts` 里一个零调用方的
+ * `upsertProjectRegistry`。**一个前缀在区分一个从未存在的东西**,读的人只会以为自己漏了什么。
+ *
+ * 设计锁(Nick 2026-06-01):无硬默认(conductorModel/leafModel 必填)· model-agnostic(经 `src/model` callModel)·
+ *   现场 in-process(leaves 经 `primitives.parallel`)。
+ *
+ * ## 家族四件(T2#5, 2026-06-23 由 682 行 god-file 按簇拆开)
+ *
+ * - `engine.ts`(本文件)—— ExecOnce / planAndExecute / runDag + barrel re-export 公共面
+ * - `types.ts` —— 契约类型(消费方最多的一个:74 处)
+ * - `defaults.ts` —— 默认值与 prompt 常量
+ * - `planner.ts` —— 纯 helper(topoLevels / buildLeafPrompt / addUsage)
  */
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ModelUsage } from '../model/gateway';
-import { escalationProviderReady } from './verifier';
+import type { ModelUsage } from '../../model/gateway';
+import { escalationProviderReady } from '../verifier';
 import {
   conductorSystemPrompt,
   conductorPatchSystemPrompt,
   parsePlan,
   PLAN_BOUNDARY,
   type ConductorPlan,
-} from './conductor-plan';
+} from '../conductor-plan';
 // S3.6 escalation patch 模式: 补丁解析 + 程序化 merge (未补丁节点字节不动 → D-21 复用按构造成立)。
-import { parsePlanPatch, applyPlanPatch } from './plan-patch';
-import { hashArtifact, hashText, computeDagGeneration } from './continuity/checkpoint-manager';
-import type { NodeCheckpoint, NodeLoopJournal, RoundVerdict } from './continuity/types';
+import { parsePlanPatch, applyPlanPatch } from '../plan-patch';
+import { hashArtifact, hashText, computeDagGeneration } from '../continuity/checkpoint-manager';
+import type { NodeCheckpoint, NodeLoopJournal, RoundVerdict } from '../continuity/types';
 // noun-gate 接缝(INV-X3):宿主注入(上游宿主传 memory-hub checkNouns);包不依赖 memory-hub。
 type NounGateFn = (args: { text: string; material: string; repoRoot: string; annotate: boolean }) => { novelNouns: string[] };
 let _nounGate: NounGateFn | null = null;
 export function setNounGate(fn: NounGateFn | null): void { _nounGate = fn; }
-import { cavemanRule, leafCavemanLevel } from './caveman';
-import { leafCostReward } from './model-router';
-import { logger } from './logger';
-import { NOVELTY_COLLAPSE_LINE, pushNoveltyRound } from './pathfinder/proximity';
+import { cavemanRule, leafCavemanLevel } from '../caveman';
+import { leafCostReward } from '../model-router';
+import { logger } from '../logger';
+import { NOVELTY_COLLAPSE_LINE, pushNoveltyRound } from '../pathfinder/proximity';
 // ── T2#5 按簇拆出的兄弟文件 (引擎消费) ──
-import type { GenerateFn, ExecutorDagConfig, LeafResult, ExecutorDagResult, DagObservation } from './executor-dag-types';
-import { makeDefaultGenerate, LEAF_SYSTEM_PREFIX, PONYTAIL_LEAF_DISPOSITION } from './executor-dag-defaults';
-import { topoLevels, buildLeafPrompt, addUsage, filterOracleCommandNodes } from './executor-dag-planner';
+import type { GenerateFn, ExecutorDagConfig, LeafResult, ExecutorDagResult, DagObservation } from './types';
+import { makeDefaultGenerate, LEAF_SYSTEM_PREFIX, PONYTAIL_LEAF_DISPOSITION } from './defaults';
+import { topoLevels, buildLeafPrompt, addUsage, filterOracleCommandNodes } from './planner';
 // ready-set 调度器 (拓扑推进 + 三层并发闸 + quorum 判定; 纯同步零 IO, 见 dag-scheduler.ts)。
-import { DagScheduler, type SchedKind, type QuorumVerdict } from './dag-scheduler';
-import { loadAgentTemplates, templateRoster, type AgentTemplate } from './agent-templates';
-import { expandMapNode, mapSpecHash } from './plan/map-expand';
+import { DagScheduler, type SchedKind, type QuorumVerdict } from '../dag-scheduler';
+import { loadAgentTemplates, templateRoster, type AgentTemplate } from '../agent-templates';
+import { expandMapNode, mapSpecHash } from '../plan/map-expand';
 // SDD 0013 S1 约束选择: primitive 节点 → compile(复用 primitives.ts)→ run。
-import { compilePrimitive, type PrimitiveCtx } from './primitive-registry';
+import { compilePrimitive, type PrimitiveCtx } from '../primitive-registry';
 // fan-in 定向摘要 (扇出≥2 → 摘要替全文注入, 见 fanin-summary.ts)。
 import {
   normalizeFaninConfig,
@@ -53,13 +63,13 @@ import {
   extractPathAnchors,
   faninAnchorLoss,
   DEFAULT_FANIN_SCHEMA,
-} from './fanin-summary';
+} from '../fanin-summary';
 // D-21 escalation 跨轮复用: 语义 Merkle 指纹 + 前驱闭包匹配 (semantic-key 单一真源)。
-import { computeReuse, merkleFingerprints } from './plan-passes/semantic-key';
-import { expandConductorNode, subgraphWarnings } from './plan/conductor-expand';
-import { renderRoundForJudge, splitNamedIds, type JudgeChildView } from './plan/conductor-judge';
-import { collectJudgeArtifacts, DEFAULT_ARTIFACT_BUDGET, type ArtifactBudget } from './plan/judge-artifacts';
-import type { ShellRun } from './leaf-runners';
+import { computeReuse, merkleFingerprints } from '../plan-passes/semantic-key';
+import { expandConductorNode, subgraphWarnings } from '../plan/conductor-expand';
+import { renderRoundForJudge, splitNamedIds, type JudgeChildView } from '../plan/conductor-judge';
+import { collectJudgeArtifacts, DEFAULT_ARTIFACT_BUDGET, type ArtifactBudget } from '../plan/judge-artifacts';
+import type { ShellRun } from '../leaf-runners';
 import {
   appendClaimEvidence,
   checkableFromJudgeView,
@@ -69,7 +79,7 @@ import {
   isVerificationRun,
   renderShellRunFact,
   type UnsupportedClaimFinding,
-} from './plan/claimed-actions';
+} from '../plan/claimed-actions';
 
 /**
  * 一个子节点最多往 judge 视图里放几条 bash 命令记录。
@@ -79,12 +89,12 @@ import {
  * 超出的条数如实列出来, 不静默丢。
  */
 const SHELL_FACT_CAP = 6;
-import { verifiedShellWriteTargets } from './shell-writes';
-import { blamePathCandidates, failureExcerpt } from './failure-trace';
-import { captureRollbackAnchor } from './rollback-anchor';
-import { staticLintPlan } from './plan/static-lint';
-import { leafTierGateFindings } from './plan/leaf-tier-gate';
-import { scheduledArtifactFindings } from './plan/invocation-facts';
+import { verifiedShellWriteTargets } from '../shell-writes';
+import { blamePathCandidates, failureExcerpt } from '../failure-trace';
+import { captureRollbackAnchor } from '../rollback-anchor';
+import { staticLintPlan } from '../plan/static-lint';
+import { leafTierGateFindings } from '../plan/leaf-tier-gate';
+import { scheduledArtifactFindings } from '../plan/invocation-facts';
 // D-Q 图外只读观察者的两个确定性 producer (零模型调用): 制品边 lint + 环空转检测。
 import {
   lintArtifactEdges,
@@ -97,29 +107,29 @@ import {
   type RoundShape,
   ARTIFACT_ABSENT,
   type RoundArtifacts,
-} from './plan/observers';
+} from '../plan/observers';
 // D-Q detector 节点: 图内 fan-in 检测者的输出协议解析 (REJECT: / BLOCKED:)。
-import { parseDetectorVerdict, DETECTOR_PROTOCOL } from './plan/detector';
-import { repeatedActionBlock, type ActionAttempt } from './plan/repeated-action';
-import { makeLlmConvergenceJudge } from './plan/llm-judge';
-import { send } from '../model/gateway';
+import { parseDetectorVerdict, DETECTOR_PROTOCOL } from '../plan/detector';
+import { repeatedActionBlock, type ActionAttempt } from '../plan/repeated-action';
+import { makeLlmConvergenceJudge } from '../plan/llm-judge';
+import { send } from '../../model/gateway';
 // D-14v2 多模态媒体管道 (S4): attach_media 执行期从直接前驱输出解析图片 → ContentPart 注入。
-import { collectDepMedia } from './leaf-media';
-import { recordGeneration, recordSpan } from '../model/langfuse';
-import { ModelError } from '../model';
-import { classifyCommandExit, withFailureKind, upstreamFailureNotice } from './node-failure';
-import { makeRunNonce, fenceUntrusted, trustHeader } from './prompt-fence';
-import type { ContentPart } from '../model/gateway';
+import { collectDepMedia } from '../leaf-media';
+import { recordGeneration, recordSpan } from '../../model/langfuse';
+import { ModelError } from '../../model';
+import { classifyCommandExit, withFailureKind, upstreamFailureNotice } from '../node-failure';
+import { makeRunNonce, fenceUntrusted, trustHeader } from '../prompt-fence';
+import type { ContentPart } from '../../model/gateway';
 
 /** 上一轮 plan+results (escalation 重规划轮传入, D-21 跨轮复用的匹配源)。 */
-import type { PriorExec } from './executor-dag-types';
+import type { PriorExec } from './types';
 
 // ── barrel re-export: 保持 ./executor-dag 公共面稳定 (importer-closure, 消费方零改) ──
-export type { GenerateFn, ExecutorDagConfig, ExecutorDagResult, LeafResult, DagNodeEvent } from './executor-dag-types';
-export { topoLevels } from './executor-dag-planner';
-export { loadAgentTemplates, templateRoster, AGENT_TEMPLATE_DIR } from './agent-templates';
-export type { AgentTemplate } from './agent-templates';
-export { PONYTAIL_LEAF_DISPOSITION } from './executor-dag-defaults';
+export type { GenerateFn, ExecutorDagConfig, ExecutorDagResult, LeafResult, DagNodeEvent } from './types';
+export { topoLevels } from './planner';
+export { loadAgentTemplates, templateRoster, AGENT_TEMPLATE_DIR } from '../agent-templates';
+export type { AgentTemplate } from '../agent-templates';
+export { PONYTAIL_LEAF_DISPOSITION } from './defaults';
 
 /** 一轮 plan+execute 的产物 (verify/升级编排在 runExecutorDag 外层组装)。 */
 interface ExecOnce {

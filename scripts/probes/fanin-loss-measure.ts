@@ -45,7 +45,7 @@
 import '../../src/harness/script-bootstrap';
 import { execSync } from 'node:child_process';
 import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
-import { makeDefaultGenerate } from '../../src/harness/executor-dag-defaults';
+import { makeDefaultGenerate } from '../../src/harness/dag/defaults';
 import {
   DEFAULT_FANIN_SCHEMA,
   composeFaninView,

@@ -10,9 +10,9 @@
  * 教训是两层 verify 必须二选一, 在环搬进来**之前**先撤外层是错的顺序。
  */
 import { describe, expect, test } from 'bun:test';
-import { runExecutorDagWithPlan } from '../../src/harness/executor-dag';
+import { runExecutorDagWithPlan } from '../../src/harness/dag/engine';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
-import type { DagNodeEvent, ExecutorDagConfig, GenerateFn } from '../../src/harness/executor-dag-types';
+import type { DagNodeEvent, ExecutorDagConfig, GenerateFn } from '../../src/harness/dag/types';
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 const leafId = (p: string): string => /\[omd leaf: ([^\]]+)\]/.exec(p)?.[1] ?? '';

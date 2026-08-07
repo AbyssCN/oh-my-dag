@@ -14,7 +14,7 @@ import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ConductorPlan } from '../../harness/conductor-plan';
-import type { DagNodeEvent, ExecutorDagConfig, ExecutorDagResult } from '../../harness/executor-dag-types';
+import type { DagNodeEvent, ExecutorDagConfig, ExecutorDagResult } from '../../harness/dag/types';
 import { HudMirror } from '../../hud/mirror';
 import { RunRegistry } from '../run-registry';
 import { type DagEngine, createDagTools } from './dag-tools';

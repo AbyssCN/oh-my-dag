@@ -21,13 +21,13 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { recordSupportsVerification, renderShellRunFact } from './claimed-actions';
-import { runExecutorDagWithPlan } from '../executor-dag';
+import { runExecutorDagWithPlan } from '../dag/engine';
 import { createShellRunCollector } from '../agent-leaf';
 import { PLAN_BOUNDARY } from '../conductor-plan';
 import { CheckpointManager } from '../continuity/checkpoint-manager';
 import type { ContentPart } from '../../model/gateway';
 import type { ConductorPlan } from '../conductor-plan';
-import type { ExecutorDagConfig, GenerateFn } from '../executor-dag-types';
+import type { ExecutorDagConfig, GenerateFn } from '../dag/types';
 import type { ShellRun } from '../leaf-runners';
 
 // ── ① 往返:写出去的那行字,读得回来 ──────────────────────────────────────────

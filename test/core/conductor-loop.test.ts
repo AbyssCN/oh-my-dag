@@ -15,14 +15,14 @@ import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runExecutorDagWithPlan } from '../../src/harness/executor-dag';
+import { runExecutorDagWithPlan } from '../../src/harness/dag/engine';
 import { CheckpointManager } from '../../src/harness/continuity/checkpoint-manager';
 import { registerProvider } from '../../src/model/providers';
 import { ModelError } from '../../src/model';
 import { _peekLangfuseQueue, _resetLangfuseForTest } from '../../src/model/langfuse';
 import type { NodeLoopJournal } from '../../src/harness/continuity/types';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
-import type { ExecutorDagConfig, GenerateFn } from '../../src/harness/executor-dag-types';
+import type { ExecutorDagConfig, GenerateFn } from '../../src/harness/dag/types';
 
 const RUN = 'loop-run';
 let root: string;

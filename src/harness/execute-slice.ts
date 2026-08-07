@@ -19,7 +19,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { iterateExecutorDag, type IterateResult } from './plan/iterate';
 import { createDagRecorder } from './dag-record';
-import { runExecutorDagWithPlan, type ExecutorDagResult, type GenerateFn } from './executor-dag';
+import { runExecutorDagWithPlan, type ExecutorDagResult, type GenerateFn } from './dag/engine';
 import { resolveSeatThinking } from '../model/role-models';
 import { parsePlan, type ConductorPlan } from './conductor-plan';
 import type { VerifierFn } from './verifier';

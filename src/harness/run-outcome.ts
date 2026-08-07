@@ -38,7 +38,7 @@
  * 这张表描述的是**五态**(SUCCESS/STALLED/BLOCKED/EXHAUSTED/ERROR),成了也要占一格。
  */
 import type { NodeFailureKind } from './node-failure';
-import type { ExecutorDagResult } from './executor-dag-types';
+import type { ExecutorDagResult } from './dag/types';
 
 /**
  * 一次运行 / 一个阶段**怎么结束的**。

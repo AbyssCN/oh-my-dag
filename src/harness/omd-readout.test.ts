@@ -29,7 +29,7 @@
 import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { createDagRecorder } from './dag-record';
-import type { ExecutorDagResult } from './executor-dag-types';
+import type { ExecutorDagResult } from './dag/types';
 import { CLAIM_CHECK_MIN_NODES, LOOP_NO_MOVE_MIN_N, faceSufficiency, readout, reconstructWriteRace, summarizeFaces, summarizeLoopRounds, type ReadoutResult } from '../../scripts/omd-readout';
 import type { NodeWindow } from './plan/observers';
 

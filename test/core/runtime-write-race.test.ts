@@ -23,7 +23,7 @@ import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { detectRuntimeWriteRace, type OverlapPair } from '../../src/harness/plan/observers';
-import { runExecutorDag, runExecutorDagWithPlan, type GenerateFn } from '../../src/harness/executor-dag';
+import { runExecutorDag, runExecutorDagWithPlan, type GenerateFn } from '../../src/harness/dag/engine';
 
 const pair = (a: string, b: string, aPaths: string[], bPaths: string[]): OverlapPair => ({
   a,

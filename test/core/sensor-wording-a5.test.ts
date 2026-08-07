@@ -10,7 +10,7 @@
  * "do NOT fabricate ... inputs you were not given"。它无从知道这段正是它没真拿到的。
  */
 import { describe, expect, test } from 'bun:test';
-import { runExecutorDag, type GenerateFn } from '../../src/harness/executor-dag';
+import { runExecutorDag, type GenerateFn } from '../../src/harness/dag/engine';
 import { makeLlmConvergenceJudge } from '../../src/harness/plan/llm-judge';
 
 const CONDUCTOR = 'mimo:mimo-v2.5-pro';

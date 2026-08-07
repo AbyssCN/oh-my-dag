@@ -14,12 +14,12 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { actionFingerprint, repeatedActionBlock, type ActionAttempt } from './repeated-action';
-import { runExecutorDagWithPlan } from '../executor-dag';
+import { runExecutorDagWithPlan } from '../dag/engine';
 import { CheckpointManager } from '../continuity/checkpoint-manager';
 import { PLAN_BOUNDARY } from '../conductor-plan';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ContentPart } from '../../model/gateway';
-import type { ExecutorDagConfig, GenerateFn } from '../executor-dag-types';
+import type { ExecutorDagConfig, GenerateFn } from '../dag/types';
 
 const a = (command: string, output: string): ActionAttempt => ({ command, output });
 

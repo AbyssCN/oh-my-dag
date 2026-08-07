@@ -52,9 +52,9 @@ describe('detectVerbatimDrop (#13)', () => {
 });
 
 // ── 接线: 真跑一张 3→1 的汇总图, 探针必须点火并进 observations ──────────────────
-import { runExecutorDagWithPlan } from '../executor-dag';
+import { runExecutorDagWithPlan } from '../dag/engine';
 import type { ConductorPlan } from '../conductor-plan';
-import type { ExecutorDagConfig, GenerateFn } from '../executor-dag-types';
+import type { ExecutorDagConfig, GenerateFn } from '../dag/types';
 
 const LONG = (s: string): string => `${s} ${'补足长度到阈值以上的原文片段内容'.repeat(2)}`;
 

@@ -11,7 +11,7 @@ import { Database } from 'bun:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { omdRepoRoot } from './repo-root';
-import type { ExecutorDagResult } from './executor-dag';
+import type { ExecutorDagResult } from './dag/engine';
 import type { NodeFailureKind } from './node-failure';
 import { deriveRunOutcome, type RunOutcomeKind } from './run-outcome';
 import type { AcceptanceProbe } from './goal/acceptance-gate';

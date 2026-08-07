@@ -4,7 +4,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { parseBunTest, scoreRun, type OracleProbe } from './scorer';
-import type { ExecutorDagResult } from '../harness/executor-dag-types';
+import type { ExecutorDagResult } from '../harness/dag/types';
 
 describe('parseBunTest', () => {
   test('全绿 → fraction 1', () => {

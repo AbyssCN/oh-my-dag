@@ -16,7 +16,7 @@
 import { describe, expect, test } from 'bun:test';
 import { createDefaultVerifier, summarizeResults } from './verifier';
 import type { ConductorPlan } from './conductor-plan';
-import type { LeafResult } from './executor-dag';
+import type { LeafResult } from './dag/engine';
 
 const plan: ConductorPlan = {
   name: 'p',

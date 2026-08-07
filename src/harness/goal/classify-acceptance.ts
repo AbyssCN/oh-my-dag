@@ -21,7 +21,7 @@
  */
 import { DEFAULT_COMMAND_ALLOWLIST } from '../command-leaf';
 import { logger } from '../logger';
-import type { GenerateFn } from '../executor-dag-types';
+import type { GenerateFn } from '../dag/types';
 import {
   type AcceptanceProbe,
   type NegativeSample,

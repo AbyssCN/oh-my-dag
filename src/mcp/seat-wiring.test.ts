@@ -32,8 +32,8 @@ import { createOwnerInbox } from './owner-inbox';
 import { registerProvider, clearProviders } from '../model/providers';
 import { ALL_SEATS, resetConfigCache, seatEnvKey } from '../model/role-models';
 import type { DagEngine } from './tools/dag-tools';
-import type { ExecutorDagConfig } from '../harness/executor-dag-types';
-import type { ExecutorDagResult } from '../harness/executor-dag-types';
+import type { ExecutorDagConfig } from '../harness/dag/types';
+import type { ExecutorDagResult } from '../harness/dag/types';
 import type { AgentLeafRunner, CommandLeafRunner } from '../harness/leaf-runners';
 import { Database } from 'bun:sqlite';
 

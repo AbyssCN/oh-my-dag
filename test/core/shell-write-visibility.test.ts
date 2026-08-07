@@ -26,7 +26,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runExecutorDag, type GenerateFn } from '../../src/harness/executor-dag';
+import { runExecutorDag, type GenerateFn } from '../../src/harness/dag/engine';
 
 /** 两个**无依赖**的 command 节点, 各自用 shell 重定向写文件 —— 谁都没在 output_path 里声明它。 */
 const runCommandPair = async (mode: 'collide' | 'separate') => {

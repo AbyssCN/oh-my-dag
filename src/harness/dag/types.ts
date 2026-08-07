@@ -1,15 +1,15 @@
-import type { ContentPart, ModelUsage } from '../model/gateway';
-import type * as Gateway from '../model/gateway';
-import type { AgentTemplate } from './agent-templates';
-import type { ConductorPlan } from './conductor-plan';
-import type { CavemanLevel } from './caveman';
-import type { AgentLeafRunner, CommandLeafRunner, LeafModelRouter, ResearchLeafRunner, ShellRun } from './leaf-runners';
-import type { CheckpointManager } from './continuity/checkpoint-manager';
-import type { VerifierFn } from './verifier';
-import type { FaninSummaryConfig } from './fanin-summary';
-import type { ArtifactBudget } from './plan/judge-artifacts';
-import type { NodeFailureKind } from './node-failure';
-import type { RollbackAnchor } from './rollback-anchor';
+import type { ContentPart, ModelUsage } from '../../model/gateway';
+import type * as Gateway from '../../model/gateway';
+import type { AgentTemplate } from '../agent-templates';
+import type { ConductorPlan } from '../conductor-plan';
+import type { CavemanLevel } from '../caveman';
+import type { AgentLeafRunner, CommandLeafRunner, LeafModelRouter, ResearchLeafRunner, ShellRun } from '../leaf-runners';
+import type { CheckpointManager } from '../continuity/checkpoint-manager';
+import type { VerifierFn } from '../verifier';
+import type { FaninSummaryConfig } from '../fanin-summary';
+import type { ArtifactBudget } from '../plan/judge-artifacts';
+import type { NodeFailureKind } from '../node-failure';
+import type { RollbackAnchor } from '../rollback-anchor';
 
 /** omd 本体编排的注入式模型调用 (单一注入点; 默认 callModel, 测试传 fake)。 */
 export type GenerateFn = (req: {

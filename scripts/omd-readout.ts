@@ -62,7 +62,7 @@ import { computeCost } from '../src/model/cost-ledger';
 import { shellWriteTargets } from '../src/harness/shell-writes';
 import type { RollbackAnchorKind } from '../src/harness/rollback-anchor';
 import { detectRuntimeWriteRace, overlapPairsFromWindows, type NodeWindow } from '../src/harness/plan/observers';
-import { capsFor } from '../src/harness/../model/model-caps';
+import { capsFor } from '../src/model/model-caps';
 import { CheckpointManager } from '../src/harness/continuity/checkpoint-manager';
 import type { NodeLoopJournal } from '../src/harness/continuity/types';
 import type { DagRunNode } from '../src/harness/dag-record';

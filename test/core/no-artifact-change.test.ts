@@ -25,7 +25,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { classifyArtifactMove, type RoundArtifacts } from '../../src/harness/plan/observers';
-import { runExecutorDag, type GenerateFn } from '../../src/harness/executor-dag';
+import { runExecutorDag, type GenerateFn } from '../../src/harness/dag/engine';
 
 const A = (hashes: Record<string, string | null>): RoundArtifacts => ({ hashes });
 /** 旧接口的等价物 (命中→观察条目, 其余→null) —— 让"响不响"那一层的用例保持原样可读。 */

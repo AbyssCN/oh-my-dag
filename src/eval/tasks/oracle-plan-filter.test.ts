@@ -35,7 +35,7 @@ test('目标模块被清空 (impl 移除, 换成 EVAL FIXTURE 桩头)', async ()
 test('sibling 依赖 + 测试在 worktree 里在位 (裸 /tmp 拷法解决不了的正是这个)', async () => {
   // 测试 import 的 sibling —— 全量 checkout 保证可解析
   expect(await exists(join(fx!.root, 'src/harness/conductor-plan.ts'))).toBe(true);
-  expect(await exists(join(fx!.root, 'src/harness/executor-dag.ts'))).toBe(true);
+  expect(await exists(join(fx!.root, 'src/harness/dag/engine.ts'))).toBe(true);
   // oracle 测试文件原样在位 (判分依据)
   const testFile = await readFile(join(fx!.root, 'src/harness/oracle-plan-filter.test.ts'), 'utf8');
   expect(testFile).toContain('filterOracleCommandNodes');

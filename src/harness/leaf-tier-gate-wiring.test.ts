@@ -5,8 +5,8 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { join } from 'node:path';
-import { runExecutorDag } from './executor-dag';
-import type { ExecutorDagConfig, GenerateFn } from './executor-dag-types';
+import { runExecutorDag } from './dag/engine';
+import type { ExecutorDagConfig, GenerateFn } from './dag/types';
 
 /** 真实存在的文件 (仓根 README) —— 闸的 stat 走真盘, 确定路径必须真的存在才触发。 */
 const REAL_FILE = join(process.cwd(), 'README.md');

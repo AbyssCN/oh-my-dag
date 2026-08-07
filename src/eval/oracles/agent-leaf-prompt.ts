@@ -38,7 +38,7 @@ import { $ } from 'bun';
 // 2026-07-26 全栈首轮就是栽在这: contract 节点 (inproc) 抛 "provider 'mimo' not registered",
 // 整张图级联 skip, 6 次跑全废 —— 而且 agent-leaf-prompt 的固定图里没有 inproc leaf, 所以从没暴露。
 import { bootstrapModelRuntime } from '../../model/bootstrap';
-import { runExecutorDagWithPlan } from '../../harness/executor-dag';
+import { runExecutorDagWithPlan } from '../../harness/dag/engine';
 import type { ConductorPlan } from '../../harness/conductor-plan';
 import { createAgentLeafRunner } from '../../harness/agent-leaf';
 import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../../harness/command-leaf';

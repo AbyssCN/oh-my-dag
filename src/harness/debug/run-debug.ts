@@ -18,8 +18,8 @@
  */
 import { $ } from 'bun';
 import { compileDebugPlan, JUDGE_NODE_ID, HYPOTHESES_NODE_ID } from './debug-plan';
-import { runExecutorDagWithPlan } from '../executor-dag';
-import type { ExecutorDagConfig, ExecutorDagResult } from '../executor-dag-types';
+import { runExecutorDagWithPlan } from '../dag/engine';
+import type { ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
 
 /** 复现证据 / judge 输出截断上限(护 prompt + 报告尺寸)。 */
 const RED_MAX = 4000;
