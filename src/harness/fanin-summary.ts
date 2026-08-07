@@ -63,6 +63,64 @@ export const DEFAULT_FANIN_SCHEMA: Record<string, unknown> = {
   open_questions: ['string — 遗留问题 / 矛盾 / 未覆盖项 (无则空数组)'],
 };
 
+// ── 产物锚保留率 (2026-08-07) ─────────────────────────────────────────────────
+/**
+ * **保守的路径锚**: 必须含 `/` 且以扩展名结尾。散文里几乎不会误命中
+ * (`and/or` 没扩展名 · `3.14` 没斜杠 · `http://x` 的域名段没扩展名时不进)。
+ *
+ * 刻意**只认路径**, 不认符号名/接口名: 后两者与普通英文单词分不开, 宽了就会把摘要里
+ * 本来就该丢的散文算成"锚", 于是这把尺子量的是自己的正则而不是摘要质量。
+ */
+const PATH_ANCHOR = /(?:[\w@.-]+\/)+[\w.-]+\.[A-Za-z]\w{0,5}/g;
+
+/** 一次 fan-in 压缩的产物锚保留读数。 */
+export interface FaninAnchorLoss {
+  /** 全文里认出的**去重**路径锚数。 */
+  anchors: number;
+  /** 其中在注入视图里**逐字**还在的。 */
+  kept: number;
+  lost: number;
+  /** 丢掉的样本 (最多 8 个, 字典序 → 同一输入两次给同一份)。 */
+  lostSample: string[];
+}
+
+/**
+ * 量 fan-in 摘要**兑现没兑现它自己的承诺**。
+ *
+ * 承诺是这段代码自己写的, 两处逐字:
+ *   · `FANIN_SUMMARY_SYSTEM`: "PRESERVE VERBATIM every concrete artifact a consumer could
+ *     need: file paths, symbol/function/type names, interface or contract names, numbers,
+ *     and identifiers — never paraphrase these."
+ *   · `DEFAULT_FANIN_SCHEMA.artifacts`: "产出的文件路径 / 符号 / 接口 / 契约名 (逐字保留…)"
+ * 「明示即承诺」在本仓一向是可查的 —— 这一条此前没人查。
+ *
+ * ## 为什么值得量 (分母, 2026-08-07 实测)
+ *
+ * 盘上已发生 **76 次** fan-in 压缩, 涉及 24/77 个 run;被压缩的全文长度
+ * **p50 7,129 · p90 372,868 · max 2,315,991 字符**。
+ * 37 万字符压进几百 token 的 JSON, 而丢了什么**今天一个数都没有**。
+ *
+ * ## ⚠ 它是基率不是闸 —— 三态要分清
+ *
+ * · `anchors: 0` = **全文里没有路径锚**, 不是"无损"。别把它读成满分。
+ * · `lost > 0` **不等于**摘要坏:摘要本来就该丢东西。有用的是
+ *   ① 同一条链上的**趋势** ② `lostSample` —— 只有看一眼丢的是什么, 才判得出要不要紧。
+ * · 全文另存了一份并留了指针, 带工具的 agent consumer 可以自己 Read 回去 ——
+ *   所以"丢"的严重性对 agent consumer 与 inproc consumer **不是一回事**。
+ *
+ * **只印不拦**(同 S-12 的处理):它不改变任何执行路径。
+ */
+export function faninAnchorLoss(full: string, view: string): FaninAnchorLoss {
+  const found = [...new Set(full.match(PATH_ANCHOR) ?? [])].sort();
+  const lostList = found.filter((p) => !view.includes(p));
+  return {
+    anchors: found.length,
+    kept: found.length - lostList.length,
+    lost: lostList.length,
+    lostSample: lostList.slice(0, 8),
+  };
+}
+
 /**
  * 冻结 system 前缀 (字节稳定 → 跨 fan-in 节点命中 prompt-cache; 改这段 = 全 fan-in 摘要 cache 失效)。
  */
