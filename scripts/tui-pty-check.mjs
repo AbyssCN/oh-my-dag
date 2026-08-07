@@ -148,6 +148,23 @@ async function scenarioHappyPath() {
     // stub 串是刻意断言的: 它一旦变成别的, 说明有人在 S10 之前偷偷接了个假后端。
     check(p.text().includes('stub://engine-not-wired'), 'S2-2 footer 说出自己没接引擎(断链说明卡, 零假数据)');
 
+    // S4: 这条 lane 的 cwd 就是 omd 仓, 仓里有 .claude/CLAUDE.md ——
+    // 「0 份」正是 SDD §5.1 实测到的那个洞 (两份 harness 一个字都没进过 system prompt)。
+    // 断言不钉具体份数: 全局那份取决于跑的人, 钉死份数会变成一条挑机器的闸。
+    check(
+      /harness [1-9]\d* 份/.test(p.text()),
+      'S4-1 头部报出装配到的 harness 份数(不为 0 —— 0 份就是 §5.1 那个洞)',
+      p.text().slice(0, 300),
+    );
+    // ⚠ 这条最初写成 `includes('.claude/CLAUDE.md')` —— **是条假闸**:
+    // 全局那份显示成 `~/.claude/CLAUDE.md`, 同一个子串照样命中。实跑证伪时它纹丝不动。
+    // 项目那份是相对 cwd 显示的, 所以要连它前面的分隔符一起钉, 才分得开两档。
+    check(
+      /[:,] \.claude\/CLAUDE\.md/.test(p.text()),
+      'S4-2 ★ 项目那份 .claude/CLAUDE.md 真的装进来了(不是被全局那份顶替)',
+      p.text().slice(0, 300),
+    );
+
     p.write('hej');
     check(await waitFor(p, (t) => t.includes('> hej')), 'S2-3 按键有回显', p.text().slice(0, 200));
 

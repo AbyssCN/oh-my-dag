@@ -29,6 +29,7 @@
  */
 import { Container, ProcessTerminal, Text, TuiMainScreen, type Terminal } from '@earendil-works/pi-tui';
 import type { OmdBackend } from './backend';
+import { type ContextFile, formatContextLine, loadConductorContext } from './context';
 
 /** 双击 Ctrl+C 的窗口。openclaw / pi 一致,不发明新数。 */
 export const CTRL_C_WINDOW_MS = 500;
@@ -71,6 +72,13 @@ export interface RunOmdTuiOpts {
   now?: () => number;
   /** 硬退注入:第二次 `requestExit` 的兜底路径,测试里不许真杀进程。 */
   exit?: (code: number) => void;
+  /**
+   * conductor 的上下文装配(S4)。省略 → `loadConductorContext(cwd)`。
+   *
+   * 现在只用来**显示装了哪几份**;S10 接 `runChatTurn` 时同一个数组原样传进
+   * `contextFiles` —— 屏上看到的与模型吃到的是同一份,不会各读各的。
+   */
+  contextFiles?: ContextFile[];
 }
 
 /**
@@ -85,12 +93,16 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   const terminal = opts.terminal ?? new ProcessTerminal();
   const tui = new TuiMainScreen(terminal);
 
+  const contextFiles = opts.contextFiles ?? loadConductorContext(opts.cwd);
+
   const header = new Text(`omd tui — ${opts.cwd}`);
+  const harness = new Text(formatContextLine(contextFiles, { cwd: opts.cwd }));
   const body = new Text('输入任意字符会在这里回显。');
   const footer = new Text(`[${opts.backend.connection.url}]  Ctrl+C 两次退出`);
 
   const root = new Container();
   root.addChild(header);
+  root.addChild(harness);
   root.addChild(body);
   root.addChild(footer);
   tui.addChild(root);
