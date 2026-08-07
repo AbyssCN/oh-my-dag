@@ -31,9 +31,15 @@ export const ACCEPT_CRITERIA: readonly string[] = [
 
 /**
  * G 闸轮数硬上限 (防"verify 一下没坏处"的 slop 心态; 第 2 轮起 ROI ↘↘)。
- *   G1 Plan    — 1 轮固定 (PASS 进 phase / BLOCK omd 修后不复审)
- *   G2 Phase   — 1 轮固定 per phase end (fix 顺带下一 phase, 不 spawn r2)
- *   G3 Release — 1 轮 + max 1 修复 cycle = 2 轮上限
+ *
+ * ⚠ 分档轴 = **blast radius**, 不是行数、不是成本档、不是生命周期阶段 (真源
+ * `harness/docs/GATES.md`; 运行时同一套在 harness-prompts.ts CONDUCTOR_HARNESS_CORE
+ * <gates> 与 scripts/dag-review.ts)。此前本注释按 Plan/Phase/Release 命名 = 第三套轴,
+ * 已消歧 —— 三处说 G2 必须指同一件事, 否则 conductor 同时吃到两套会精分。
+ *   G1 骨架 (新模块脚手架/签名/接线)            — 1 轮固定
+ *   G2 常规逻辑 (普通业务码/带行为测试的重构)   — 1 轮固定
+ *   G3 敏感: schema · 认证 · 安全边界 · 不可逆  — 1 轮 + max 1 修复 cycle = 2 轮上限
+ * G0 (文档/机械) 不在此表: 它是**免审短路**, 不发模型 —— 见 scripts/dag-review.ts 的 G0 分支。
  */
 export const ROUND_CAPS = { G1: 1, G2: 1, G3: 2 } as const;
 export type ReviewGate = keyof typeof ROUND_CAPS;

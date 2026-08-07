@@ -3,8 +3,9 @@
  *
  * 一个控制面原则:daemon 的 HTTP 桥、MCP 客户端、chat agent 三方调用**同一批 assembled handler**;
  * 这里只做形状转换(MCP 的 zod 注册面 → pi AgentTool 的 typebox 面),零业务逻辑。
- * 白名单收窄:chat 位是指挥位不是执行位 —— 给 run/solve/status/output/地图/图库/取消,
+ * 白名单收窄:chat 位是指挥位不是执行位 —— 给 run/solve/status/output/地图/图库/取消/记忆召回,
  * **不给** leaf 的文件工具(改文件走图,不走对话;这是 THE-LOOP 的角色红线,Fleet 才动文件)。
+ * 记忆只给 recall 不给 remember:召回是读,写记忆是有后果的动作,不放在对话位自主调。
  *
  * 工具名承接改名表后的新名 (run/solve/map_*); 找不到点名的工具 → 装配时响亮抛
  * (静默少一个工具 = chat 位悄悄残废, 那是最贵的静默失效)。
@@ -66,6 +67,7 @@ export function createConductorChatTools(tools: readonly OmdMcpTool[]): AnyOmdTo
   const cancelTool = must(tools, 'dag_cancel');
   const ticketsTool = must(tools, 'map_tickets');
   const plansTool = must(tools, 'omd_plans');
+  const recallTool = must(tools, 'memory_recall');
 
   return [
     textTool(
@@ -127,6 +129,16 @@ export function createConductorChatTools(tools: readonly OmdMcpTool[]): AnyOmdTo
       'omd_plans() — 看 plan 图库 (family/版本/战绩)',
       Type.Object({}),
       () => invoke(plansTool, {}),
+    ),
+    textTool(
+      'omd_recall',
+      'Recall facts from omd self-memory (semantic + lexical hybrid). Returns ranked hits with confidence and source. A hit is a lead, not ground truth — verify low-confidence hits against the real source before relying on them.',
+      'omd_recall(query, k?) — 查既有记忆 (召回是线索不是真理, 低 confidence 落到依据前先核真源)',
+      Type.Object({
+        query: Type.String({ description: 'Natural-language search query' }),
+        k: Type.Optional(Type.Number({ description: 'Max results (default 10)' })),
+      }),
+      (p) => invoke(recallTool, { query: p.query, k: p.k ?? 10 }),
     ),
   ];
 }
