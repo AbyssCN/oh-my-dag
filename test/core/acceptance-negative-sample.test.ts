@@ -10,12 +10,8 @@
  * 两道问的不是同一个问题,少哪一道都漏掉一整类。
  */
 import { describe, expect, test } from 'bun:test';
-import {
-  acceptanceDiscriminationReason,
-  acceptanceVacuityReason,
-  classifyGoal,
-  normalizeClassification,
-} from '../../src/harness/goal/acceptance';
+import { acceptanceDiscriminationReason, acceptanceVacuityReason } from '../../src/harness/goal/acceptance-gate';
+import { classifyGoal, normalizeClassification } from '../../src/harness/goal/classify-acceptance';
 
 /** 探针注入 runner:把"命令 + 那个临时世界"翻成一个退出码,不真起子进程(测的是判据逻辑)。 */
 const grepIn =

@@ -28,7 +28,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { classifyGoal } from './acceptance';
+import { classifyGoal } from './classify-acceptance';
 import { runGoal, type RunGoalConfig } from './run-goal';
 import type { GenerateFn, ExecutorDagConfig, ExecutorDagResult } from '../executor-dag-types';
 import type { CommandLeafRunner } from '../leaf-runners';

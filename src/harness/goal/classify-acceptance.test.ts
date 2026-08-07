@@ -7,16 +7,8 @@
  * 留一个空判据 ③ 探索型必须有学习目标 + 可承受损失 (判不了成败, 至少定得了亏损上限)。
  */
 import { describe, expect, test } from 'bun:test';
-import {
-  acceptanceCommandBlockReason,
-  classifyGoal,
-  acceptanceVacuityReason,
-  classifyPrompt,
-  isRunnableAcceptanceCommand,
-  normalizeClassification,
-  renderAcceptance,
-  type AcceptanceSpec,
-} from './acceptance';
+import { acceptanceCommandBlockReason, acceptanceVacuityReason, isRunnableAcceptanceCommand } from './acceptance-gate';
+import { classifyGoal, classifyPrompt, normalizeClassification, renderAcceptance, type AcceptanceSpec } from './classify-acceptance';
 import { DEFAULT_COMMAND_ALLOWLIST } from '../command-leaf';
 import type { GenerateFn } from '../executor-dag-types';
 

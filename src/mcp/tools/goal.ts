@@ -18,7 +18,7 @@ import type { CheckpointManager } from '../../harness/continuity/checkpoint-mana
 import type { RunRegistry } from '../run-registry';
 import type { HudRunRecordLike } from '../../hud/mirror';
 import { recordDagRun, type DagRecorder } from '../../harness/dag-record';
-import type { AcceptanceProbe } from '../../harness/goal/acceptance';
+import type { AcceptanceProbe } from '../../harness/goal/acceptance-gate';
 import { RUN_OUTCOME_INFO } from '../../harness/run-outcome';
 import { summarizeGoalFailure } from '../../harness/goal/summarize-goal-failure';
 import { describeRunWorktree, prepareRunWorktree, type BranchStrategy } from '../../harness/run-worktree';

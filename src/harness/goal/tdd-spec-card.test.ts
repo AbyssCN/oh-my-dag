@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BUILTIN_AGENT_TEMPLATES } from '../agent-templates-builtin';
 import { runGoal, type RunGoalConfig } from './run-goal';
-import type { AcceptanceSpec, GoalClassification, GoalTier } from './acceptance';
+import type { AcceptanceSpec, GoalClassification, GoalTier } from './classify-acceptance';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../executor-dag-types';
 

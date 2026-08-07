@@ -10,7 +10,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { goalSlug, runGoal, type RunGoalConfig } from './run-goal';
-import type { AcceptanceSpec, GoalClassification, GoalTier } from './acceptance';
+import type { AcceptanceSpec, GoalClassification, GoalTier } from './classify-acceptance';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../executor-dag-types';
 
