@@ -94,6 +94,7 @@ if (userArgs[0] === 'tui') {
       bootstrapModelRuntime(); // 不引导则注册表空, 一句话都发不出去
       const { assembleOmdMcpTools, resolveEngineModels } = await import('../mcp/assemble');
       const { createConductorChatTools } = await import('../serve/chat-tools');
+      const { createCodegraphTools } = await import('../tui/tools/codegraph');
       const { ChatStore } = await import('./chat/store');
       const { createEmbeddedBackend } = await import('../tui/backend-embedded');
       // ⚠ 先有工具面才有 backend (工具要交给 runChatTurn), 而节点事件要灌回 backend ——
@@ -106,7 +107,8 @@ if (userArgs[0] === 'tui') {
         cwd,
         store: new ChatStore(cwd),
         memory: createOmdMemory(),
-        tools: createConductorChatTools(tools),
+        // S17: 符号能力是**探测式**的 —— 探不到就一个工具都不挂 (不是挂了调了才失败)。
+        tools: [...createConductorChatTools(tools), ...createCodegraphTools({ cwd })],
         // S14: UI 自己直调 dag_runs / dag_resume (不经模型)。给了才有那两个能力。
         mcpTools: tools,
         // 座位每轮现解 (INV-MODEL-3): omd_set_role / `/seat` 改完, 下一句就换座。
