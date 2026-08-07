@@ -136,6 +136,40 @@ describe('留痕的派生面 — 命令原文 + 效果指标计数', () => {
     rec.close();
   });
 
+  /**
+   * fan-in 产物锚账的三态。形状与上面 `writeCounts` 那条同源, 单列是因为**第二格的含义不同**:
+   * `writeCounts:[0,0]` = 跑了没写; `faninAnchors:[0,0]` = 摘要做了但**全文里没有路径锚**,
+   * 也就是**这把尺子不适用** —— 抹平之后读数板会把"不适用"念成"一个都没丢", 那是本仓 S-15 那族。
+   */
+  test('faninAnchors 三态: 缺席(没做摘要) / [0,0](做了但没锚) / [N,k] 都分得开', () => {
+    const rec = createDagRecorder({ path: ':memory:' });
+    const id = rec.record(
+      withNodes(
+        { a: { goal: 'x' }, b: { goal: 'y' }, c: { goal: 'z' } },
+        {
+          // 摘要做了, 21 个锚里 LLM 丢了 20 个 (真实语料里量到过的形状)
+          a: { id: 'a', kind: 'agent', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 }, faninAnchors: [21, 20] },
+          // 摘要做了, 但全文一个路径锚都没有 → **尺子不适用**, 不是满分
+          b: { id: 'b', kind: 'agent', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 }, faninAnchors: [0, 0] },
+          // 压根没做过 fan-in 摘要 (扇出 <2 或输出太短) —— 绝大多数节点是这一格
+          c: { id: 'c', kind: 'agent', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 } },
+        },
+      ),
+      { runId: 'run-fanin' },
+    );
+    const nodes = rec.get(id)!.nodes;
+    expect(nodes.find((n) => n.id === 'a')!.faninAnchors).toEqual([21, 20]);
+    expect(nodes.find((n) => n.id === 'c')!.faninAnchors).toBeUndefined();
+    // ★ 本用例的全部意义在这两条: `[0,0]` 必须**存在**且不等于缺席。
+    //   证伪方式(**实跑过**): 把 dag-record 的判据改成查元素 `r.faninAnchors?.[0] ?` → 这条红。
+    //   ⚠ 首版写的证伪方式是"改回真值判断 `r.faninAnchors ?`", **那条是错的** ——
+    //     数组恒为真值, 换过去 34 条照样全绿。变异验证当场抓出来, 才换成上面这条真会红的。
+    //     教训: 证伪方式不实跑一遍, 它自己就是一句没验过的断言。
+    expect(nodes.find((n) => n.id === 'b')!.faninAnchors).toEqual([0, 0]);
+    expect(nodes.find((n) => n.id === 'b')!.faninAnchors).not.toBeUndefined();
+    rec.close();
+  });
+
   test('plan 里没有对应 id 的节点 (map 动态扇出的子节点) 不编命令', () => {
     const rec = createDagRecorder({ path: ':memory:' });
     const id = rec.record(

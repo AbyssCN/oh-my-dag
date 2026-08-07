@@ -37,6 +37,12 @@ export interface DagRunNode {
    */
   writeCounts?: [total: number, noop: number];
   /**
+   * fan-in 产物锚账 `[路径锚总数, LLM 摘要没保住的个数]`(来自 `LeafResult.faninAnchors`)。
+   * **三态**(缺席 = 没做过摘要 · `[0,0]` = 做了但全文没有锚, 尺子不适用 · `[N,k]` = 丢了 k 个)
+   * 与该字段的完整理由见 `executor-dag-types.ts` 的定义处, 这里不复述。
+   */
+  faninAnchors?: [anchors: number, lostByLlm: number];
+  /**
    * 这个节点实际打的模型坐标 `provider:modelId`(N9, 2026-07-31)。
    *
    * 记它**只为一件事: 让钱算得出来**。`computeCost` 按坐标查价表,而留痕库的 `usage` 只有
@@ -553,6 +559,13 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
           ...(typeof r.exitCode === 'number' ? { exitCode: r.exitCode } : {}),
           ...(r.failureKind ? { failureKind: r.failureKind } : {}),
           ...(r.writeCounts ? { writeCounts: r.writeCounts } : {}),
+          // 缺席 = 这个节点没做过 fan-in 摘要;`[0,0]` 是**有意义的一格**(做了但全文没有锚)。
+          // 用 `!== undefined` 是为了把这个意图写出来 —— ⚠ 不是因为真值判断会出错:
+          // 数组恒为真值(`[]` 也是), 所以 `r.faninAnchors ?` 在这里**行为完全一样**
+          // (`writeCounts` 那条用的就是它)。首版注释在这里写反了, 是变异验证当场抓出来的。
+          // 真正会抹平这一格的是**查元素**的写法, 例如 `r.faninAnchors?.[0] ?` —— 那种
+          // "顺手优化掉没用的零" 会把「不适用」变成「没记」。dag-record.test.ts 那条用例钉的就是它。
+          ...(r.faninAnchors !== undefined ? { faninAnchors: r.faninAnchors } : {}),
           ...(r.model ? { model: r.model } : {}),
           ...loopShape,
           // 复用面 (2026-08-06): 不记就只能靠推, 而推的前提是假的 —— 见 DagRunNode.reused。
