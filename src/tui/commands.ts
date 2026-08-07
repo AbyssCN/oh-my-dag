@@ -40,6 +40,7 @@ export interface CommandDoc {
 export const COMMANDS: readonly CommandDoc[] = [
   { handler: 'parseHelpCommand', name: '/help', args: null, what: '列出这张表' },
   { handler: 'handleSkill', name: '/skill', args: '[name] [补充]', what: '按组列出 skill(包内 + ~/.claude/skills);`/skill all` 全表;给名字则挂到**下一句**上' },
+  { handler: 'handleModels', name: '/models', args: null, what: '给对话位换模型:列出已配 provider 的全部模型(可打字搜索,当前项带 ✓)' },
   { handler: 'handleSeat', name: '/seat', args: '[role] [provider:model]', what: '列出可调座位;给参数则改 `.omd/config.json`(**有副作用**,立刻生效)' },
   { handler: 'handleSettings', name: '/settings', args: null, what: '设置面板:座位 / 会话 / 上下文 / 配色字形 / 扩展(只读项会标出来)' },
   { handler: 'handleSession', name: '/session', args: '[id | new [id]]', what: '列出会话;给 id 则切过去并回放它的历史;`new` 新开一条' },

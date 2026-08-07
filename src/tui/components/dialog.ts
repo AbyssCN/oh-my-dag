@@ -55,7 +55,7 @@ const ENTER = new Set(['\r', '\n']);
 export function select(
   host: DialogHost,
   theme: OmdTuiTheme,
-  opts: { title: string; options: readonly SelectOption[]; maxVisible?: number },
+  opts: { title: string; options: readonly SelectOption[]; maxVisible?: number; search?: boolean },
 ): Promise<string | null> {
   return new Promise((resolve) => {
     if (opts.options.length === 0) {
@@ -68,9 +68,36 @@ export function select(
       opts.maxVisible ?? 10,
       theme.editor.selectList,
     );
-    const box = new DialogBox(theme, `${opts.title}  (↑↓ 选, Enter 确认, Esc 取消)`, list, (data) => {
+    /**
+     * S-7:**可搜索**。四十个模型里靠上下箭头找一个是不能用的。
+     *
+     * ⚠ 只收**可打印字符**。控制序列(方向键是 `\x1b[A` 这样的多字节)必须原样交给
+     * `SelectList` —— 把它们当成查询串会出现"按一下下箭头, 搜索框里多了个 `[A`"。
+     */
+    let query = '';
+    const titleOf = (): string => {
+      const hint = opts.search ? '打字搜索, ↑↓ 选, Enter 确认, Esc 取消' : '↑↓ 选, Enter 确认, Esc 取消';
+      const q = opts.search && query ? `  「${query}」` : '';
+      return `${opts.title}${q}  (${hint})`;
+    };
+    const box = new DialogBox(theme, titleOf(), list, (data) => {
       if (ESC.has(data)) return finish(null);
       if (ENTER.has(data)) return finish(list.getSelectedItem()?.value ?? null);
+      if (opts.search && (data === '\x7f' || data === '\b')) {
+        query = query.slice(0, -1);
+        list.setFilter(query);
+        box.setTitle(titleOf());
+        host.requestRender();
+        return undefined;
+      }
+      // 可打印 ASCII + 非控制的多字节(中文)都算查询串;`\x1b` 开头的一律不是。
+      if (opts.search && data.length > 0 && !data.startsWith('\x1b') && !/^[\x00-\x1f]/.test(data)) {
+        query += data;
+        list.setFilter(query);
+        box.setTitle(titleOf());
+        host.requestRender();
+        return undefined;
+      }
       list.handleInput(data);
       host.requestRender();
       return undefined;
@@ -138,6 +165,11 @@ export class DialogBox implements Component {
     private body: Component,
     private onKey: (data: string) => void | undefined,
   ) {}
+
+  /** 改标题(搜索态把查询串与命中计数画在标题上 —— 不另占一行)。 */
+  setTitle(title: string): void {
+    this.title = title;
+  }
 
   render(width: number): string[] {
     return [this.theme.chrome.accent(fitLine(this.title, width)), ...this.body.render(width)];

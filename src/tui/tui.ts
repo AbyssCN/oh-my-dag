@@ -40,6 +40,7 @@ import { formatSeatRows, parseSeatCommand, seatRows } from './seat-picker';
 import { formatSessions, newSessionId, parseSessionCommand } from './sessions';
 import { buildSettings, formatSettings, parseSettingsCommand } from './settings';
 import { STARTUP_HINT, formatHelp, parseHelpCommand, slashCommands } from './commands';
+import { choiceLabel, listModelChoices, parseModelsCommand, sortChoices } from './model-picker';
 import { renderLogo } from './render/logo';
 import { summarizeToolArg } from './render/tool-arg';
 import { formatPressure } from './render/pressure';
@@ -529,12 +530,61 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     });
     if (role === null) return; // Esc:什么都不改
     const now = rows.find((r) => r.role === role)?.coord ?? '';
-    const coord = await dialogInput(dialogs, theme, {
-      title: `${role} 换成哪个坐标? (provider:model)`,
-      initial: now.startsWith('(') ? '' : now,
-    });
+    const coord = await modelPicker(role, now);
     if (coord === null || !coord.trim()) return; // Esc 或空:什么都不改
     applySeat(role, coord.trim());
+  }
+
+  /** 目录里没有的坐标走这条 —— 手输仍然保留,不是所有 provider 都在 models.json 里登记过。 */
+  const MANUAL_COORD = '\u0000manual';
+
+  /**
+   * ★ **模型选单**(S-7)。此前这里是一个 `dialogInput`:让人**凭记忆敲** `provider:model`。
+   *
+   * 敲错一个字符的代价不是报错,是座位被改成一个**不存在的坐标**而回执照样说"改好了"
+   * (applySeat 只写文件,不校验坐标可解析)—— 那正是必须用选单的理由。
+   *
+   * ⚠ 目录空(没配 models.json / provider 没注册)时**退回手输**,不开空框。
+   * 开一个空框等于把人锁在一个只能按 Esc 的界面里。
+   */
+  async function modelPicker(role: string, now: string): Promise<string | null> {
+    const current = now.startsWith('(') ? null : now;
+    const choices = sortChoices(listModelChoices(), current);
+    const manual = (): Promise<string | null> =>
+      dialogInput(dialogs, theme, {
+        title: `${role} 换成哪个坐标? (provider:model)`,
+        initial: current ?? '',
+      });
+    if (choices.length === 0) return manual();
+    const picked = await dialogSelect(dialogs, theme, {
+      title: `${role} 换成哪个模型? (${choices.length} 个)`,
+      options: [
+        ...choices.map((c) => ({ value: c.coord, label: choiceLabel(c, current) })),
+        { value: MANUAL_COORD, label: '手动输入坐标…', description: '目录里没有登记的 provider:model' },
+      ],
+      search: true,
+      maxVisible: 12,
+    });
+    if (picked === null) return null;
+    return picked === MANUAL_COORD ? manual() : picked;
+  }
+
+  /**
+   * `/models` —— 直接给**对话位**(conductor)换模型。
+   *
+   * 与 `/seat` 的分野:`/seat` 是"改哪个座位"(先选角色), `/models` 是最常做的那件事的直达口 ——
+   * 人想换模型时想的是"换个模型", 不是"改 conductor 这个座位的坐标"。
+   */
+  async function handleModels(text: string): Promise<void> {
+    const t = text.trim();
+    chatLog.appendUser(t);
+    editor.setText('');
+    tui.requestRender();
+    const { current } = readSeats();
+    const now = current.conductor ?? '';
+    const coord = await modelPicker('conductor', now);
+    if (coord !== null && coord.trim()) applySeat('conductor', coord.trim());
+    tui.requestRender();
   }
 
   function handleSeat(text: string): boolean {
@@ -760,6 +810,11 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       return;
     }
     if (handleSeat(prompt)) return;
+    // 与 `/settings` 同一条形状:解析是同步的, 处理是异步的 —— 分发这一层不是 async。
+    if (parseModelsCommand(prompt)) {
+      void handleModels(prompt);
+      return;
+    }
     if (handleSkill(prompt)) return;
     // S-6: 组命令排在 handleSkill 之后 —— `/skill` 本身不是组名, 顺序上不会互吃。
     if (handleSkillGroup(prompt)) return;
