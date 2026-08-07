@@ -61,8 +61,8 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { createAgentLeafRunner } from '../src/harness/agent-leaf';
 import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../src/harness/command-leaf';
 import type { ConductorPlan } from '../src/harness/conductor-plan';
-import { runExecutorDagWithPlan, type runExecutorDag } from '../src/harness/executor-dag';
-import type { ExecutorDagResult } from '../src/harness/executor-dag-types';
+import { runExecutorDagWithPlan, type runExecutorDag } from '../src/harness/dag/engine';
+import type { ExecutorDagResult } from '../src/harness/dag/types';
 import { bootstrapModelRuntime } from '../src/model/bootstrap';
 import { onTruncation } from '../src/model/truncation';
 import {

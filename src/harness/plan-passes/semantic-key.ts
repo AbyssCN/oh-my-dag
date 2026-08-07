@@ -9,7 +9,7 @@
  * 纯函数: 零 IO、零 logger、不变异输入。
  */
 import type { ConductorPlan } from "../conductor-plan";
-import type { LeafResult } from "../executor-dag-types";
+import type { LeafResult } from "../dag/types";
 
 type PlanNode = ConductorPlan["nodes"][string];
 

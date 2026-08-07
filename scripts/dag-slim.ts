@@ -24,7 +24,7 @@ import '../src/harness/script-bootstrap';
 import { buildGlobalPrompt, GLOBAL_KINDS, LOCAL_KINDS } from '../src/harness/slim/prompts';
 import { splitDiffByFile, buildLocalPlan, SYNTH_NODE_ID } from '../src/harness/slim/local-plan';
 import { extractFindingLines, formatReport } from '../src/harness/slim/findings';
-import { runExecutorDagWithPlan } from '../src/harness/executor-dag';
+import { runExecutorDagWithPlan } from '../src/harness/dag/engine';
 import { verifyFindings } from '../src/harness/review/verify';
 import { bootstrapModelRuntime } from '../src/model/bootstrap';
 import { send } from '../src/model/gateway';

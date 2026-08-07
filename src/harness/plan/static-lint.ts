@@ -91,7 +91,7 @@ function isSafeRelativeScript(ref: string | undefined): ref is string {
   if (ref.startsWith('/') || ref.startsWith('\\') || ref.startsWith('~')) return false;
   if (/^[A-Za-z]:[\\/]/.test(ref)) return false;        // 盘符
   if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(ref)) return false; // URL scheme
-  const cleaned = ref.startsWith('./') ? ref.slice(2) : ref;
+  const cleaned = ref.startsWith('.') ? ref.slice(2) : ref;
   if (!cleaned) return false;
   for (const seg of cleaned.split('/')) {
     if (!seg || seg === '.' || seg === '..') return false;

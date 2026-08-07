@@ -1,5 +1,5 @@
-import { send } from '../model/gateway';
-import type { GenerateFn } from './executor-dag-types';
+import { send } from '../../model/gateway';
+import type { GenerateFn } from './types';
 
 // leaf 满 cap 溢出目标。Nick 2026-06-23: fleet 走 GO 订阅 → 溢出也 GO DeepSeek flash; 非该模型直接放行。
 export const LEAF_OVERFLOW_MODEL = process.env.OMD_LEAF_OVERFLOW_MODEL || 'opencode-go:deepseek-v4-flash';

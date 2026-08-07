@@ -15,7 +15,7 @@ import { RunRegistry } from '../../src/mcp/run-registry';
 import { createOmdMemory } from '../../src/harness/memory';
 import { UNIVERSAL_SAFEGUARD } from '../../src/memory/safeguards/namespaces';
 import type { DagEngine } from '../../src/mcp/tools/dag-tools';
-import type { ExecutorDagResult } from '../../src/harness/executor-dag-types';
+import type { ExecutorDagResult } from '../../src/harness/dag/types';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
 import type { AgentLeafRunner, CommandLeafRunner } from '../../src/harness/leaf-runners';
 import { Database } from 'bun:sqlite';

@@ -21,7 +21,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ChatStore } from '../harness/chat/store';
 import type { ConductorPlan } from '../harness/conductor-plan';
-import type { DagNodeEvent, ExecutorDagConfig, ExecutorDagResult } from '../harness/executor-dag-types';
+import type { DagNodeEvent, ExecutorDagConfig, ExecutorDagResult } from '../harness/dag/types';
 import { assembleOmdMcpTools } from '../mcp/assemble';
 import { createEmbeddedBackend } from './backend-embedded';
 import { DagHud } from './components/dag-hud';

@@ -7,7 +7,7 @@
 import { describe, expect, test } from 'bun:test';
 import { conductorPatchSystemPrompt, conductorSystemPrompt, extractPlanJson, parsePlan } from './conductor-plan';
 import { DEFAULT_COMMAND_ALLOWLIST } from './command-leaf';
-import { topoLevels } from './executor-dag-planner';
+import { topoLevels } from './dag/planner';
 
 const PLAN = { name: 'p', nodes: { a: { goal: 'x' } } };
 

@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CheckpointManager } from '../../src/harness/continuity/checkpoint-manager';
-import { runExecutorDag, runExecutorDagWithPlan, topoLevels, type GenerateFn } from '../../src/harness/executor-dag';
+import { runExecutorDag, runExecutorDagWithPlan, topoLevels, type GenerateFn } from '../../src/harness/dag/engine';
 import type { AgentLeafInput } from '../../src/harness/leaf-runners';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
 

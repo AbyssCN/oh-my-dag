@@ -30,7 +30,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { classifyGoal } from './classify-acceptance';
 import { runGoal, type RunGoalConfig } from './run-goal';
-import type { GenerateFn, ExecutorDagConfig, ExecutorDagResult } from '../executor-dag-types';
+import type { GenerateFn, ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
 import type { CommandLeafRunner } from '../leaf-runners';
 
 const gen = (text: string): GenerateFn => async () => ({ text, usage: { in: 1, out: 1 } });

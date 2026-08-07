@@ -7,7 +7,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runExecutorDag, type GenerateFn } from '../../src/harness/executor-dag';
+import { runExecutorDag, type GenerateFn } from '../../src/harness/dag/engine';
 import { CheckpointManager } from '../../src/harness/continuity/checkpoint-manager';
 
 const CONDUCTOR = 'mimo:mimo-v2.5-pro';

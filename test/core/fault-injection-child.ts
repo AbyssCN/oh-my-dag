@@ -22,7 +22,7 @@
 import { appendFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CheckpointManager } from '../../src/harness/continuity/checkpoint-manager';
-import { runExecutorDagWithPlan } from '../../src/harness/executor-dag';
+import { runExecutorDagWithPlan } from '../../src/harness/dag/engine';
 import { iterateExecutorDag } from '../../src/harness/plan/iterate';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
 import type { AgentLeafRunner } from '../../src/harness/leaf-runners';

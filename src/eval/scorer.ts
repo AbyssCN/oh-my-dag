@@ -13,7 +13,7 @@
  * 可测性: 编排 (scoreRun) 的模型/IO 全走注入接缝 (runDag / probe) —— 单测不起真模型也能验 4 量结构
  * 与 heal 循环 (承 "单测不烧 $, 真 build 留给 Phase ④")。纯解析 (parseBunTest) 独立可测。
  */
-import type { ExecutorDagResult } from '../harness/executor-dag-types';
+import type { ExecutorDagResult } from '../harness/dag/types';
 import { classifyOracle, type OracleSnapshot } from '../harness/build/oracle-classify';
 
 /** `bun test` 汇总计数。total = pass+fail (skip 不计); fraction = pass/total, 无测试 → 0 (保守: 无信号≠满分)。 */

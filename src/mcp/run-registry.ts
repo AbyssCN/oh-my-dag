@@ -13,7 +13,7 @@
  * 状态机: pending → running → done | failed (不可逆; 非法转换抛)
  */
 
-import type { DagNodeEvent } from '../harness/executor-dag-types';
+import type { DagNodeEvent } from '../harness/dag/types';
 import { defaultIsAlive, type RunStore } from './run-store';
 import { logger } from '../logger';
 

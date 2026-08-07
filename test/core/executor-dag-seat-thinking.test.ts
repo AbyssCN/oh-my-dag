@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { runExecutorDag, type GenerateFn } from '../../src/harness/executor-dag';
+import { runExecutorDag, type GenerateFn } from '../../src/harness/dag/engine';
 
 // S-T 座位推理档随座位下发 (SDD 2026-07-25 skills-compile-evidence-gate S-T) 的执行期证明。
 // 优先序 (显式永远赢, 同 TPL-3 model 哲学): node.thinking > config 显式档 > 座位档 > 硬默认 'high'。

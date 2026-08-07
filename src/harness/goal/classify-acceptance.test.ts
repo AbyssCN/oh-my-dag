@@ -10,7 +10,7 @@ import { describe, expect, test } from 'bun:test';
 import { acceptanceCommandBlockReason, acceptanceVacuityReason, isRunnableAcceptanceCommand } from './acceptance-gate';
 import { classifyGoal, classifyPrompt, normalizeClassification, renderAcceptance, type AcceptanceSpec } from './classify-acceptance';
 import { DEFAULT_COMMAND_ALLOWLIST } from '../command-leaf';
-import type { GenerateFn } from '../executor-dag-types';
+import type { GenerateFn } from '../dag/types';
 
 const gen = (text: string): GenerateFn => async () => ({ text, usage: { in: 1, out: 1 } });
 

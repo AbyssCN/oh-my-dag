@@ -19,7 +19,7 @@ import { runGoal, type RunGoalConfig } from '../../src/harness/goal/run-goal';
 import { summarizeGoal } from '../../src/mcp/tools/goal';
 import { createDagRecorder } from '../../src/harness/dag-record';
 import { RUN_OUTCOME_INFO, RUN_OUTCOME_ORDER, deriveRunOutcome, type RunOutcomeKind } from '../../src/harness/run-outcome';
-import type { ExecutorDagResult } from '../../src/harness/executor-dag-types';
+import type { ExecutorDagResult } from '../../src/harness/dag/types';
 
 // ── goal 侧夹具: simple 档 (不走契约段) + 注入式 _runDag, 一个 execute 节点定生死 ──────
 const leaf = (over: Record<string, unknown>) => ({ id: 'execute', kind: 'conductor', deps: [], output: '', usage: { in: 1, out: 1 }, rounds: 2, ...over });

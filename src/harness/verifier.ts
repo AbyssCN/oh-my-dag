@@ -28,7 +28,7 @@ import { withGoFallback } from '../model/gateway';
 import { logger } from './logger';
 import type { ModelUsage } from '../model/gateway';
 import type { ConductorPlan } from './conductor-plan';
-import type { LeafResult } from './executor-dag';
+import type { LeafResult } from './dag/engine';
 
 export interface VerifierVerdict {
   /** 结果是否满足任务的全部明确要求 (true = 放行)。 */

@@ -24,7 +24,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { bootstrapModelRuntime } from '../src/model/bootstrap';
 import { send } from '../src/model/gateway';
 import { computeCost } from '../src/model/cost-ledger';
-import { LEAF_SYSTEM_PREFIX } from '../src/harness/executor-dag-defaults';
+import { LEAF_SYSTEM_PREFIX } from '../src/harness/dag/defaults';
 import { WORKER_TASKS, type WorkerGrade } from '../src/eval/tasks/worker-quality';
 import { tryResolveSeatModel, type ThinkingLevel } from '../src/model/role-models';
 

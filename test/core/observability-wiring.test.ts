@@ -22,11 +22,11 @@ import { Database } from 'bun:sqlite';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runExecutorDagWithPlan } from '../../src/harness/executor-dag';
+import { runExecutorDagWithPlan } from '../../src/harness/dag/engine';
 import { CheckpointManager } from '../../src/harness/continuity/checkpoint-manager';
 import { createDagRecorder } from '../../src/harness/dag-record';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
-import type { ExecutorDagConfig } from '../../src/harness/executor-dag-types';
+import type { ExecutorDagConfig } from '../../src/harness/dag/types';
 
 /** conductor 子图: 两个**无依赖**的兄弟(会并发)+ 其中一个标 detector。 */
 const SUB = JSON.stringify({

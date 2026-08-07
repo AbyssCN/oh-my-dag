@@ -11,11 +11,11 @@ import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runExecutorDagWithPlan } from '../../src/harness/executor-dag';
+import { runExecutorDagWithPlan } from '../../src/harness/dag/engine';
 import { CheckpointManager, hashText } from '../../src/harness/continuity/checkpoint-manager';
 import type { NodeCheckpoint } from '../../src/harness/continuity/types';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
-import type { ExecutorDagConfig, GenerateFn } from '../../src/harness/executor-dag-types';
+import type { ExecutorDagConfig, GenerateFn } from '../../src/harness/dag/types';
 
 const RUN = 'do-run';
 let root: string;

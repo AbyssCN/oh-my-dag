@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { runExecutorDag, type GenerateFn } from '../../src/harness/executor-dag';
+import { runExecutorDag, type GenerateFn } from '../../src/harness/dag/engine';
 
 // ready-set 依赖驱动调度 (取代逐层 barrier) 的行为证明 — fake generate, 不碰 live 模型/PG。
 // 关键: 旧逐层 barrier 下, 一个节点必须等"同层"所有节点 (含与它无关的慢节点) 才能进下一层;
@@ -68,7 +68,7 @@ describe('executor-dag ready-set 调度 (依赖驱动, 无层 barrier)', () => {
 
 // ── per-kind 并发闸 (fanout 最大化, 2026-07-21) ──────────────────────────────────
 
-import { runExecutorDagWithPlan as runWithPlanKind, type GenerateFn as GenKind } from '../../src/harness/executor-dag';
+import { runExecutorDagWithPlan as runWithPlanKind, type GenerateFn as GenKind } from '../../src/harness/dag/engine';
 import type { ConductorPlan as PlanKind } from '../../src/harness/conductor-plan';
 
 describe('kindFanout per-kind 闸', () => {

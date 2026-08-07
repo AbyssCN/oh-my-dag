@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { runExecutorDagWithPlan, type DagNodeEvent, type GenerateFn } from '../../src/harness/executor-dag';
+import { runExecutorDagWithPlan, type DagNodeEvent, type GenerateFn } from '../../src/harness/dag/engine';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
 
 // onNodeEvent 进度接缝 (MCP 派发简报/活体 status 数据源): planned → start×n → settle×n, fail-open。

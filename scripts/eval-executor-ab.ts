@@ -19,8 +19,8 @@
 import '../src/harness/script-bootstrap';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { $ } from 'bun';
-import { runExecutorDag, runExecutorDagWithPlan } from '../src/harness/executor-dag';
-import type { ExecutorDagResult } from '../src/harness/executor-dag-types';
+import { runExecutorDag, runExecutorDagWithPlan } from '../src/harness/dag/engine';
+import type { ExecutorDagResult } from '../src/harness/dag/types';
 import type { ConductorPlan } from '../src/harness/conductor-plan';
 import { createAgentLeafRunner } from '../src/harness/agent-leaf';
 import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../src/harness/command-leaf';

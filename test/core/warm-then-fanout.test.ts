@@ -12,9 +12,9 @@
  * 判据用节点自己的 `executor`(直接证据),而不是"排除了别的"。
  */
 import { describe, expect, test } from 'bun:test';
-import { runExecutorDagWithPlan } from '../../src/harness/executor-dag';
+import { runExecutorDagWithPlan } from '../../src/harness/dag/engine';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
-import type { ExecutorDagConfig } from '../../src/harness/executor-dag-types';
+import type { ExecutorDagConfig } from '../../src/harness/dag/types';
 
 /** 记最大同时在飞数 —— 「并行没并行」的唯一硬判据。 */
 function makeCommandRunner() {

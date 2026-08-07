@@ -47,7 +47,7 @@ describe('工具集就是闸 —— 凭证文件', () => {
   it('拒因落在 basename 上, 所以绕路写法一样被拒', async () => {
     const root = fixture();
     const { read, bash } = toolset(root);
-    expect(run(read!, { path: './.env' })).rejects.toThrow(/BLOCKED/);
+    expect(run(read!, { path: '.env' })).rejects.toThrow(/BLOCKED/);
     expect(run(bash!, { command: 'cat ../../.env' })).rejects.toThrow(/BLOCKED/);
   });
 

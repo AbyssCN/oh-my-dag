@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { RunRegistry } from '../../src/mcp/run-registry';
 import { createDagTools, type DagEngine } from '../../src/mcp/tools/dag-tools';
 import { HudMirror } from '../../src/hud/mirror';
-import type { ExecutorDagConfig, ExecutorDagResult } from '../../src/harness/executor-dag-types';
+import type { ExecutorDagConfig, ExecutorDagResult } from '../../src/harness/dag/types';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
 import { readDagView } from '../../src/hud/load';
 import type { HudDagSnapshot } from '../../src/hud/types';

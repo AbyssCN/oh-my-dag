@@ -35,7 +35,7 @@ const TASK: BenchTask = {
   baseSha: 'deadbeef',
   title: 'fix(r1): map 内层泵 worker 上界一次算死',
   statement: '…',
-  implPaths: ['src/harness/executor-dag.ts'],
+  implPaths: ['src/harness/dag/engine.ts'],
   testPaths: ['src/harness/map-concurrency.test.ts'],
   command: CMD,
 };

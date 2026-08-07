@@ -9,10 +9,10 @@
  * 反向自检:本组在加这条通道**之前**跑过 —— 「leaf prompt 里有原始任务」按预期红。
  */
 import { describe, expect, test } from 'bun:test';
-import { buildLeafPrompt, TASK_CONTEXT_MAX_CHARS } from './executor-dag-planner';
-import { runExecutorDag, runExecutorDagWithPlan } from './executor-dag';
+import { buildLeafPrompt, TASK_CONTEXT_MAX_CHARS } from './dag/planner';
+import { runExecutorDag, runExecutorDagWithPlan } from './dag/engine';
 import type { ConductorPlan } from './conductor-plan';
-import type { ExecutorDagConfig, GenerateFn } from './executor-dag-types';
+import type { ExecutorDagConfig, GenerateFn } from './dag/types';
 
 const node = { goal: '按契约作答' } as ConductorPlan['nodes'][string];
 

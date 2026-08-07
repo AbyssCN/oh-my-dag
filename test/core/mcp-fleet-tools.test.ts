@@ -13,7 +13,7 @@ import { RunRegistry } from '../../src/mcp/run-registry';
 import { createFleetTools, type SpawnFn, type SpawnResult } from '../../src/mcp/tools/fleet';
 import { createRunsTools } from '../../src/mcp/tools/runs';
 import { createDagTools, type DagEngine } from '../../src/mcp/tools/dag-tools';
-import type { ExecutorDagConfig, ExecutorDagResult } from '../../src/harness/executor-dag-types';
+import type { ExecutorDagConfig, ExecutorDagResult } from '../../src/harness/dag/types';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
 import { CheckpointManager } from '../../src/harness/continuity/checkpoint-manager';
 

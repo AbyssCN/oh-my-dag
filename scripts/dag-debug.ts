@@ -17,7 +17,7 @@
  */
 import '../src/harness/script-bootstrap';
 import { runDebug } from '../src/harness/debug/run-debug';
-import { runExecutorDagWithPlan } from '../src/harness/executor-dag';
+import { runExecutorDagWithPlan } from '../src/harness/dag/engine';
 import { createAgentLeafRunner } from '../src/harness/agent-leaf';
 import { bootstrapModelRuntime } from '../src/model/bootstrap';
 import { $ } from 'bun';

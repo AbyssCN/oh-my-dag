@@ -11,9 +11,9 @@
  * 一次算死) 后转绿。cap=3 那条在修复前后都绿 —— 它钉住的是"修复不许把 cap 语义修没了"。
  */
 import { describe, expect, test } from 'bun:test';
-import { runExecutorDagWithPlan } from './executor-dag';
+import { runExecutorDagWithPlan } from './dag/engine';
 import type { ConductorPlan } from './conductor-plan';
-import type { ExecutorDagConfig, GenerateFn } from './executor-dag-types';
+import type { ExecutorDagConfig, GenerateFn } from './dag/types';
 
 const N = 10;
 const LIST_JSON = JSON.stringify({ items: Array.from({ length: N }, (_, i) => ({ k: `p${i}` })) });

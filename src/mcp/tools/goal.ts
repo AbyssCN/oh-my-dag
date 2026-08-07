@@ -13,7 +13,7 @@ import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import type { OmdMcpTool } from '../server';
 import type { RunGoalResult, GoalTier, GoalClassification } from '../../harness/goal/run-goal';
-import type { ExecutorDagConfig } from '../../harness/executor-dag-types';
+import type { ExecutorDagConfig } from '../../harness/dag/types';
 import type { CheckpointManager } from '../../harness/continuity/checkpoint-manager';
 import type { RunRegistry } from '../run-registry';
 import type { HudRunRecordLike } from '../../hud/mirror';

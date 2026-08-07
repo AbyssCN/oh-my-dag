@@ -1,5 +1,5 @@
-import type { ConductorPlan } from './conductor-plan';
-import type { ModelUsage } from '../model/gateway';
+import type { ConductorPlan } from '../conductor-plan';
+import type { ModelUsage } from '../../model/gateway';
 
 /**
  * 拓扑分层 (Kahn): level k = 所有依赖都在 level <k 的节点。环 → 抛错 (conductor 应产 DAG)。
@@ -98,4 +98,4 @@ export function addUsage(a: ModelUsage, b: ModelUsage): ModelUsage {
 }
 
 // ── plan 过滤器 (plan 落地后、执行前的确定性挂点) ────────────────────────────
-export { filterOracleCommandNodes } from './oracle-plan-filter';
+export { filterOracleCommandNodes } from '../oracle-plan-filter';

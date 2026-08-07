@@ -50,7 +50,7 @@
 import { resolveVerification, summarizeResults } from '../src/harness/verifier';
 import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../src/harness/command-leaf';
 import type { ConductorPlan } from '../src/harness/conductor-plan';
-import type { LeafResult } from '../src/harness/executor-dag';
+import type { LeafResult } from '../src/harness/dag/engine';
 
 const argv = process.argv.slice(2);
 const argOf = (flag: string): string | undefined => {

@@ -13,7 +13,7 @@ import { iterateExecutorDag } from './iterate';
 import { merkleFingerprints } from '../plan-passes/semantic-key';
 import { CheckpointManager } from '../continuity/checkpoint-manager';
 import type { ConductorPlan } from '../conductor-plan';
-import type { ExecutorDagResult, PriorExec } from '../executor-dag-types';
+import type { ExecutorDagResult, PriorExec } from '../dag/types';
 
 const plan: ConductorPlan = { name: 'p', nodes: { a: { goal: '不变的活' }, b: { goal: '要修的活' } } };
 

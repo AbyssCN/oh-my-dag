@@ -14,11 +14,11 @@ import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runExecutorDagWithPlan } from '../../src/harness/executor-dag';
+import { runExecutorDagWithPlan } from '../../src/harness/dag/engine';
 import { CheckpointManager } from '../../src/harness/continuity/checkpoint-manager';
 import { computeReuse } from '../../src/harness/plan-passes/semantic-key';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
-import type { DagNodeEvent, ExecutorDagConfig, GenerateFn, LeafResult } from '../../src/harness/executor-dag-types';
+import type { DagNodeEvent, ExecutorDagConfig, GenerateFn, LeafResult } from '../../src/harness/dag/types';
 import type { DagMetadata } from '../../src/harness/continuity/types';
 
 const RUN = 'b4-run';

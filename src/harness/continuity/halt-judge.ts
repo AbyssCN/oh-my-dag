@@ -22,7 +22,7 @@
  */
 
 import { z } from 'zod';
-import type { GenerateFn } from '../executor-dag';
+import type { GenerateFn } from '../dag/engine';
 import type { HaltVerdict, JudgeVerdict } from './types';
 import { logger } from '../logger';
 import { roleModelWithFallback } from '../../model/role-fallback';

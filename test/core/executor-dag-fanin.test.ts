@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { runExecutorDagWithPlan, type GenerateFn } from '../../src/harness/executor-dag';
+import { runExecutorDagWithPlan, type GenerateFn } from '../../src/harness/dag/engine';
 import { CheckpointManager } from '../../src/harness/continuity/checkpoint-manager';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
 import {

@@ -10,7 +10,7 @@
 import { describe, expect, test } from 'bun:test';
 import { RunRegistry } from '../../src/mcp/run-registry';
 import { createDagTools, type DagEngine } from '../../src/mcp/tools/dag-tools';
-import type { ExecutorDagConfig, ExecutorDagResult } from '../../src/harness/executor-dag-types';
+import type { ExecutorDagConfig, ExecutorDagResult } from '../../src/harness/dag/types';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
 
 /** Minimal valid ConductorPlan for dag_run_plan tests. */
@@ -320,7 +320,7 @@ describe('dag_result', () => {
 
 // ── round4: 派发简报 + 活体进度 (briefing + onNodeEvent 接线) ─────────────────────
 
-import type { DagNodeEvent } from '../../src/harness/executor-dag-types';
+import type { DagNodeEvent } from '../../src/harness/dag/types';
 
 describe('派发简报 + 活体进度', () => {
   const THREE_NODE_PLAN = JSON.stringify({

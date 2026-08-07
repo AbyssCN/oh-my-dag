@@ -27,7 +27,7 @@
  *   ⚠️ fleet 会改工作树 → 默认要求 git 干净 (--allow-dirty 跳过)。跑完审 diff 再 commit, 脚本不自动提交。
  */
 import '../src/harness/script-bootstrap';
-import { runExecutorDag } from '../src/harness/executor-dag';
+import { runExecutorDag } from '../src/harness/dag/engine';
 import { createAgentLeafRunner } from '../src/harness/agent-leaf';
 import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../src/harness/command-leaf';
 import { runReview, type ReviewGate } from '../src/harness/review';

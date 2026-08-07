@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { assembleOmdMcpTools } from '../../src/mcp/assemble';
 import { RunRegistry } from '../../src/mcp/run-registry';
 import { createOwnerInbox } from '../../src/mcp/owner-inbox';
-import type { ExecutorDagConfig } from '../../src/harness/executor-dag-types';
+import type { ExecutorDagConfig } from '../../src/harness/dag/types';
 
 const RAW = '别动 test/ 目录 —— 那批夹具是手写的, 重生成会把 golden 冲掉。';
 

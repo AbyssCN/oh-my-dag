@@ -9,11 +9,11 @@
  * 那是安全拒绝, 不是命令的退出码, 不许被一个 expect_exit 翻译成 done。
  */
 import { describe, expect, test } from 'bun:test';
-import { runExecutorDagWithPlan } from './executor-dag';
+import { runExecutorDagWithPlan } from './dag/engine';
 import { PlanSchema, conductorSystemPrompt } from './conductor-plan';
 import { nodeFieldsKey } from './plan-passes/semantic-key';
 import type { ConductorPlan } from './conductor-plan';
-import type { ExecutorDagConfig, GenerateFn } from './executor-dag-types';
+import type { ExecutorDagConfig, GenerateFn } from './dag/types';
 
 const generate: GenerateFn = async () => ({ text: 'leaf-out', usage: { in: 1, out: 1 } });
 

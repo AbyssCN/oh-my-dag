@@ -21,7 +21,7 @@
  * 画一个空表格 / 画一条 0% 的进度条都会让人以为"有个 run 但没动"。
  */
 import type { Component } from '@earendil-works/pi-tui';
-import type { DagNodeEvent } from '../../harness/executor-dag-types';
+import type { DagNodeEvent } from '../../harness/dag/types';
 import { fitLine } from '../render/line';
 import { renderBar } from '../render/bar';
 import { renderTable } from '../render/table';

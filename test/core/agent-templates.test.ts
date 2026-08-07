@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import { loadAgentTemplates, templateRoster, type AgentTemplate } from '../../src/harness/agent-templates';
 import { BUILTIN_AGENT_TEMPLATES } from '../../src/harness/agent-templates-builtin';
 import { conductorSystemPrompt, parsePlan } from '../../src/harness/conductor-plan';
-import { buildLeafPrompt } from '../../src/harness/executor-dag-planner';
-import { runExecutorDag, type GenerateFn } from '../../src/harness/executor-dag';
+import { buildLeafPrompt } from '../../src/harness/dag/planner';
+import { runExecutorDag, type GenerateFn } from '../../src/harness/dag/engine';
 
 // agent 模板注册表 (本地 Agent Registry): 内置+项目卡加载 → 规划期 enum 校验 (TPL-2) →
 // 执行期 body 注入 leaf prompt 前缀 + 卡片 model 路由 (TPL-3)。全程 fake generate, 不碰 live 模型。
@@ -189,7 +189,7 @@ describe('executor-dag e2e (fake model)', () => {
   });
 
   test('TPL-2 执行层兜底: 预构造 plan 带未知模板 → 忽略继续跑 (fail-open)', async () => {
-    const { runExecutorDagWithPlan } = await import('../../src/harness/executor-dag');
+    const { runExecutorDagWithPlan } = await import('../../src/harness/dag/engine');
     const { gen, calls } = makeFake('unused');
     const res = await runExecutorDagWithPlan(
       { name: 'p', nodes: { a: { agent: 'x', goal: 'g', template: 'ghost' } } },

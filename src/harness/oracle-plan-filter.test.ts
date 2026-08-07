@@ -11,7 +11,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import type { ConductorPlan } from './conductor-plan';
-import { topoLevels } from './executor-dag';
+import { topoLevels } from './dag/engine';
 import { createCommandLeafRunner } from './command-leaf';
 
 // ── 待实现 (import 即红) ──────────────────────────────────────────────────────

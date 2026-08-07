@@ -9,12 +9,12 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { RunRegistry } from '../../src/mcp/run-registry';
-import type { DagNodeEvent } from '../../src/harness/executor-dag-types';
+import type { DagNodeEvent } from '../../src/harness/dag/types';
 import { renderProgressAscii, dispatchBriefing } from '../../src/mcp/tools/dag-tools';
 import { fogBar } from '../../src/mcp/tools/pathfinder';
 import type { PathMap, Ticket } from '../../src/harness/pathfinder/types';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
-import type { ExecutorDagConfig } from '../../src/harness/executor-dag-types';
+import type { ExecutorDagConfig } from '../../src/harness/dag/types';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 

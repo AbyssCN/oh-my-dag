@@ -7,11 +7,11 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runExecutorDagWithPlan } from './executor-dag';
-import type { ConductorPlan } from './conductor-plan';
-import type { ContentPart } from '../model/gateway';
-import { registerProvider } from '../model/providers';
-import type { DagNodeEvent, ExecutorDagConfig, GenerateFn } from './executor-dag-types';
+import { runExecutorDagWithPlan } from './engine';
+import type { ConductorPlan } from '../conductor-plan';
+import type { ContentPart } from '../../model/gateway';
+import { registerProvider } from '../../model/providers';
+import type { DagNodeEvent, ExecutorDagConfig, GenerateFn } from './types';
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 

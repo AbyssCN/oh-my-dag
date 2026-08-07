@@ -26,7 +26,7 @@ import { assembleOmdMcpTools } from '../src/mcp/assemble';
 import { RunRegistry } from '../src/mcp/run-registry';
 import { createRunStore } from '../src/mcp/run-store';
 import { createOwnerInbox } from '../src/mcp/owner-inbox';
-import { makeDefaultGenerate } from '../src/harness/executor-dag-defaults';
+import { makeDefaultGenerate } from '../src/harness/dag/defaults';
 import { bootstrapModelRuntime } from '../src/model/bootstrap';
 
 const argv = process.argv.slice(2);

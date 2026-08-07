@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { goalSlug, runGoal, type RunGoalConfig } from './run-goal';
 import type { AcceptanceSpec, GoalClassification, GoalTier } from './classify-acceptance';
 import type { ConductorPlan } from '../conductor-plan';
-import type { ExecutorDagConfig, ExecutorDagResult } from '../executor-dag-types';
+import type { ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
 
 /**
  * D-I: 分类器一次出两条轴 (成本轴 tier + 判据轴 acceptance)。本文件多数用例只关心成本轴,
