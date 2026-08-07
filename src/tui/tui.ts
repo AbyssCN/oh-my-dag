@@ -63,6 +63,24 @@ export function printableOnly(data: string): string {
   return withoutEscapes.replace(/[\x00-\x1f\x7f]/g, '');
 }
 
+/**
+ * **全部 chrome 文案的唯一出处**(S6)。
+ *
+ * 集中在一处不是整洁癖:字形闸(`render/glyphs.test.ts`)就扫这一个对象。
+ * 文案散在 `runOmdTui` 里的话,闸只能扫到我记得列进去的那几条 —— 而漏掉的那条
+ * 正好是会超宽的那条。**新增任何 chrome 文案都加到这里**,否则它不过闸。
+ *
+ * ⚠ 头部原本用 em dash `—`,S6 探针当场判它**歧义宽度**(EAW = A:CJK locale 画 2 列、
+ * 别处画 1 列),已改 ASCII `-`。这是探针抓到的第一个真问题。
+ */
+export const CHROME = {
+  header: (cwd: string) => `omd tui - ${cwd}`,
+  body: '输入任意字符会在这里回显。',
+  echo: (typed: string) => `> ${typed}`,
+  footer: (url: string) => `[${url}]  Ctrl+C 两次退出`,
+  footerArmed: (url: string) => `[${url}]  再按一次 Ctrl+C 退出`,
+} as const;
+
 export interface RunOmdTuiOpts {
   /** 唯一接缝(SDD §3.1)。S2 只用它的 `connection` / `start` / `stop`。 */
   backend: OmdBackend;
@@ -98,10 +116,10 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
 
   // 三条状态行走 StatusLine (截断, 不折行) —— 状态行一折, 下面所有东西的行号整体下移,
   // 而 HUD 是按行差分画的, 结果是布局错位。正文走 Text (折行是对的)。
-  const header = new StatusLine(`omd tui — ${opts.cwd}`);
+  const header = new StatusLine(CHROME.header(opts.cwd));
   const harness = new StatusLine(formatContextLine(contextFiles, { cwd: opts.cwd }));
-  const body = new Text('输入任意字符会在这里回显。');
-  const footer = new StatusLine(`[${opts.backend.connection.url}]  Ctrl+C 两次退出`);
+  const body = new Text(CHROME.body);
+  const footer = new StatusLine(CHROME.footer(opts.backend.connection.url));
 
   const root = new Container();
   root.addChild(header);
@@ -147,7 +165,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         requestExit();
       } else {
         armedAt = now();
-        footer.setText(`[${opts.backend.connection.url}]  再按一次 Ctrl+C 退出`);
+        footer.setText(CHROME.footerArmed(opts.backend.connection.url));
         tui.requestRender();
       }
       return { consume: true };
@@ -157,7 +175,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     const printable = printableOnly(data);
     if (printable) {
       typed += printable;
-      body.setText(`> ${typed}`);
+      body.setText(CHROME.echo(typed));
       // ⚠ `setText` 只清组件自己的行缓存, **不触发重绘** (实读 `components/text.js:20-25`)。
       // 少了这一句, 屏幕会停在首帧, 而组件状态其实一直在变 —— 一个"看起来 UI 挂了"
       // 而实际逻辑全对的假象。S2 的 PTY lane 第一次跑就是死在这里。
