@@ -341,7 +341,9 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     if (e.event === 'tool') {
       const p = e.payload as { phase?: string; name?: string; ok?: boolean };
       const name = p?.name ?? '?';
-      chatLog.appendNotice(p?.phase === 'start' ? CHROME.toolStart(name) : CHROME.toolEnd(name, p?.ok !== false));
+      // 一个工具**一行**, end 原地更新 —— 不再 start/end 各追加一条 notice。
+      if (p?.phase === 'start') chatLog.toolStart(name);
+      else chatLog.toolEnd(name, p?.ok !== false);
       tui.requestRender();
       return;
     }
