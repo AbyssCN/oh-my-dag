@@ -7,7 +7,9 @@
  */
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { describe, expect, test } from 'bun:test';
-import { renderBar } from './bar';
+import { BAR_DONE, BAR_TODO, renderBar } from './bar';
+import { SAFE_GLYPH_WIDTHS } from './glyph-table';
+import { findRiskyGlyphs } from './glyphs';
 import { COL_SEP, renderTable } from './table';
 
 describe('renderTable', () => {
@@ -65,9 +67,9 @@ describe('renderBar', () => {
 
   test('比例对得上(inner = width - 计数宽 - 3, 四舍五入)', () => {
     // width 20, 标签 '5/10' 占 4 → inner = 13 → filled = round(0.5*13) = 7。
-    expect(renderBar(5, 10, 20)).toBe('[#######------] 5/10');
-    expect(renderBar(0, 10, 20)).toBe('[-------------] 0/10');
-    expect(renderBar(10, 10, 20)).toBe('[#############] 10/10'.replace('#############', '#'.repeat(12)));
+    expect(renderBar(5, 10, 20)).toBe(`[${BAR_DONE.repeat(7)}${BAR_TODO.repeat(6)}] 5/10`);
+    expect(renderBar(0, 10, 20)).toBe(`[${BAR_TODO.repeat(13)}] 0/10`);
+    expect(renderBar(10, 10, 20)).toBe(`[${BAR_DONE.repeat(12)}] 10/10`);
   });
 
   test('★ total=0 时是 0/0 —— 与"一个都没跑完"(0/N)不是一回事', () => {
@@ -83,7 +85,16 @@ describe('renderBar', () => {
     expect(renderBar(3, 10, 4)).toBe('3/10');
   });
 
-  test('只用 S6 白名单里的字形(ASCII)—— block 元素全在「待真终端」档', () => {
-    expect(/^[\x20-\x7e]*$/.test(renderBar(3, 10, 30))).toBe(true);
+  test('★ 画出来的每个字形都判得准 —— 换字形的前提是读数, 不是好看', () => {
+    // ⚠ 初版写的是 `SAFE_GLYPH_WIDTHS.has(ch)` —— **太严**: 那张表只装**探针显式量过的**字形,
+    // 而 `[` `/` 数字这些普通 ASCII 从来不在候选集里 (它们由 classifyGlyph 的兜底规则放行)。
+    // 要钉的语义是"画得准", 那就用真闸 `findRiskyGlyphs`, 别自己另写一个更严的判据。
+    // 表要是回到没量过真终端的状态 (block 元素退回 needs-tty), 这条当场红。
+    expect(findRiskyGlyphs(renderBar(3, 10, 30))).toEqual([]);
+    expect(SAFE_GLYPH_WIDTHS.has(BAR_DONE) && SAFE_GLYPH_WIDTHS.has(BAR_TODO), '填充字符必须是显式量过的').toBe(true);
+  });
+
+  test('比例与边界在换字形之后仍然对', () => {
+    expect(renderBar(5, 10, 20)).toBe(`[${BAR_DONE.repeat(7)}${BAR_TODO.repeat(6)}] 5/10`);
   });
 });

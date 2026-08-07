@@ -4,11 +4,13 @@
  * ⚠ **生成文件,别手改。** 重新生成:
  *   `bun run scripts/tui-glyph-probe.ts --emit-ts > src/tui/render/glyph-table.ts`
  *
- * 真终端读数(第三套读数):**未量** ——
- * 自动化 lane 后面没有终端模拟器, 没人回答 CSI 6n。想量真值在真终端里跑 `--tty`。
+ * 真终端读数(第三套读数):**已量** ——
+ * 量于 Windows Terminal · xterm-256color · C.UTF-8,2026-08-07。
+ * ⚠ 这份读数只对**那套终端 + 那套字体**成立:Nerd Font 私用区只有 `Mono` 变体才是 1 列;
+ * 歧义宽度只有非 CJK locale 才是 1 列。换机器要重量。
  *
  * 判定三态(**不是两态**):
- *  - `SAFE` —— 两把尺子(pi-tui / Unicode EAW)一致;
+ *  - `SAFE` —— 两把尺子(pi-tui / Unicode EAW)一致,且真终端同意;
  *  - `NEEDS_TTY` —— **歧义宽度**(EAW = A):CJK locale 画 2 列、别处画 1 列。
  *    不是"不安全",是**这台机器上答不了** —— 两者压成一个黑名单就再也分不开;
  *  - `UNSAFE` —— 字体私用区 / emoji / ZWJ:各终端与各字体分歧最大,一律不做 UI 骨架。
@@ -34,57 +36,58 @@ export const SAFE_GLYPH_WIDTHS: ReadonlyMap<string, number> = new Map([
   ['\u{ff1a}', 2], // U+FF1A
   ['\u{ff08}', 2], // U+FF08
   ['\u{3011}', 2], // U+3011
+  ['\u{2588}', 1], // U+2588
+  ['\u{2593}', 1], // U+2593
+  ['\u{2592}', 1], // U+2592
   ['\u{2591}', 1], // U+2591
+  ['\u{2581}', 1], // U+2581
+  ['\u{2584}', 1], // U+2584
+  ['\u{2580}', 1], // U+2580
+  ['\u{258f}', 1], // U+258F
+  ['\u{258e}', 1], // U+258E
+  ['\u{2500}', 1], // U+2500
+  ['\u{2502}', 1], // U+2502
+  ['\u{250c}', 1], // U+250C
+  ['\u{2510}', 1], // U+2510
+  ['\u{2514}', 1], // U+2514
+  ['\u{2518}', 1], // U+2518
+  ['\u{251c}', 1], // U+251C
+  ['\u{2524}', 1], // U+2524
+  ['\u{252c}', 1], // U+252C
+  ['\u{2534}', 1], // U+2534
+  ['\u{2550}', 1], // U+2550
+  ['\u{2551}', 1], // U+2551
+  ['\u{2192}', 1], // U+2192
+  ['\u{2190}', 1], // U+2190
+  ['\u{2191}', 1], // U+2191
+  ['\u{2193}', 1], // U+2193
+  ['\u{21d2}', 1], // U+21D2
+  ['\u{25b6}', 1], // U+25B6
   ['\u{25b8}', 1], // U+25B8
+  ['\u{25cf}', 1], // U+25CF
+  ['\u{25cb}', 1], // U+25CB
+  ['\u{25c6}', 1], // U+25C6
+  ['\u{25c7}', 1], // U+25C7
+  ['\u{2014}', 1], // U+2014
+  ['\u{2026}', 1], // U+2026
+  ['\u{b7}', 1], // U+00B7
+  ['\u{d7}', 1], // U+00D7
   ['\u{2713}', 1], // U+2713
   ['\u{2717}', 1], // U+2717
+  ['\u{2605}', 1], // U+2605
+  ['\u{2606}', 1], // U+2606
   ['\u{26a0}', 1], // U+26A0
+  ['\u{a7}', 1], // U+00A7
+  ['\u{b0}', 1], // U+00B0
   ['e\u{301}', 1], // U+0065 U+0301
   ['a\u{308}', 1], // U+0061 U+0308
+  ['\u{e9}', 1], // U+00E9
   ['\u{e4}', 1], // U+00E4
 ]);
 
 /** 歧义宽度:**未量**,不是不安全。要用它得先在真终端上量一次。 */
 export const NEEDS_TTY_GLYPHS: ReadonlySet<string> = new Set([
-  '\u{2588}', // U+2588 · block · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{2593}', // U+2593 · block · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{2592}', // U+2592 · block · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{2581}', // U+2581 · block · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{2584}', // U+2584 · block · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{2580}', // U+2580 · block · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{258f}', // U+258F · block · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{258e}', // U+258E · block · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{2500}', // U+2500 · box · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{2502}', // U+2502 · box · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{250c}', // U+250C · box · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{2510}', // U+2510 · box · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{2514}', // U+2514 · box · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{2518}', // U+2518 · box · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{251c}', // U+251C · box · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{2524}', // U+2524 · box · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{252c}', // U+252C · box · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{2534}', // U+2534 · box · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{2550}', // U+2550 · box · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{2551}', // U+2551 · box · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{2192}', // U+2192 · arrow · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{2190}', // U+2190 · arrow · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{2191}', // U+2191 · arrow · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{2193}', // U+2193 · arrow · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{21d2}', // U+21D2 · arrow · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{25b6}', // U+25B6 · arrow · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{25cf}', // U+25CF · arrow · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{25cb}', // U+25CB · arrow · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{25c6}', // U+25C6 · arrow · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{25c7}', // U+25C7 · arrow · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{2014}', // U+2014 · ambiguous · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{2026}', // U+2026 · ambiguous · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{b7}', // U+00B7 · ambiguous · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{d7}', // U+00D7 · ambiguous · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{2605}', // U+2605 · ambiguous · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{2606}', // U+2606 · ambiguous · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{a7}', // U+00A7 · ambiguous · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{b0}', // U+00B0 · ambiguous · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
-  '\u{e9}', // U+00E9 · combining · 歧义宽度 (East Asian Width = A): CJK locale 下 2 列、别处 1 列 —— 只有真终端答得了
+
 ]);
 
 /** 确定不用:字体/终端相关,量了也只对这一台机器成立。 */
@@ -101,4 +104,14 @@ export const UNSAFE_GLYPHS: ReadonlySet<string> = new Set([
   '\u{f061}', // U+F061 · nerdfont · Nerd Font 私用区: Unicode 表不知道它多宽, 完全取决于装没装字体
   '\u{e725}', // U+E725 · nerdfont · Nerd Font 私用区: Unicode 表不知道它多宽, 完全取决于装没装字体
 ]);
+
+/**
+ * 这份表**是不是**由真终端裁决过。
+ *
+ * ⚠ 它决定 `NEEDS_TTY_GLYPHS` 为空该怎么读:
+ * `true` + 空 = 歧义那一档**已被裁决完**(全部并进 SAFE 或 UNSAFE);
+ * `false` + 空 = **生成脚本出问题了**(候选集里明明有歧义字形)。
+ * 两者读数长得一样,靠这个字段分 —— 本仓 `NULL ≠ 0 ≠ 不适用`。
+ */
+export const GROUND_TRUTH = true;
 
