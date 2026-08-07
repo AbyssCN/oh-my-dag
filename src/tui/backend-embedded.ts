@@ -45,6 +45,11 @@ export interface EmbeddedBackendDeps {
   resolveModel: () => string;
   /** conductor 的上下文装配(S4)。屏上显示的与模型吃到的必须是同一份数组。 */
   contextFiles?: ContextFile[];
+  /**
+   * omd 自记忆(S16,A8)。给了就每轮召回一次注在消息末尾(advisory)。
+   * 省略 = 不注入 —— 与"注入了但一条都没召回到"**不是一回事**。
+   */
+  memory?: import('../harness/memory/store').OmdMemory;
   /** 测试接缝:替换真轮子。生产不传。 */
   runTurn?: typeof runChatTurn;
 }
@@ -149,6 +154,7 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
           tools: deps.tools,
           onEvent: mapAgentEvent,
           signal: controller.signal,
+          ...(deps.memory ? { memory: deps.memory } : {}),
           ...(deps.contextFiles ? { contextFiles: deps.contextFiles } : {}),
         };
         const r = await runTurn(turn);
