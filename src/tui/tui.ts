@@ -32,6 +32,7 @@ import { logger } from '../logger';
 import type { OmdBackend } from './backend';
 import { ChatLog } from './components/chat-log';
 import { DagHud } from './components/dag-hud';
+import { type PathReader, PathHud, createPathReader } from './components/path-hud';
 import { StatusLine } from './components/status-line';
 import { type ContextFile, formatContextLine, loadConductorContext } from './context';
 import { formatSeatRows, parseSeatCommand, seatRows } from './seat-picker';
@@ -136,6 +137,8 @@ export interface RunOmdTuiOpts {
     read: () => Record<string, string>;
     set: (role: string, coord: string) => { role: string; coord: string };
   };
+  /** pathfinder 读侧(A4)。省略 → `createPathReader(cwd)` 扫 `docs/plan/pathfinder/`。 */
+  pathReader?: PathReader;
 }
 
 /**
@@ -160,6 +163,9 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   const chatLog = new ChatLog(theme);
   // HUD 在没有 run 的时候 `render()` 返回空数组 (无源恒缺席), 所以恒挂着不用条件添加。
   const dagHud = new DagHud(theme, () => opts.backend.connection.url.replace(/^embedded:\/\//, '') || null);
+  // A4: pathfinder 前沿票。一张图都没有时 `render()` 返回空数组, 所以恒挂着。
+  const pathHud = new PathHud(theme, opts.pathReader ?? createPathReader(opts.cwd));
+  pathHud.refresh();
   const editor = new Editor(tui, theme.editor);
   const footer = new StatusLine(CHROME.footer(opts.backend.connection.url));
 
@@ -170,6 +176,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   root.addChild(harness);
   root.addChild(chatLog);
   root.addChild(dagHud);
+  root.addChild(pathHud);
   root.addChild(editor);
   root.addChild(footer);
   tui.addChild(root);
@@ -264,6 +271,9 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     }
     if (e.event === 'session') {
       chatLog.closeStreaming();
+      // 一轮跑完可能动过地图 (conductor 有 map_* 工具) → 重读一次。
+      // 不在 render 里读盘: render 每帧都调, 那会变成每帧一次目录扫描。
+      pathHud.refresh();
       tui.requestRender();
     }
   };
