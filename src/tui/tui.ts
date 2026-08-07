@@ -31,6 +31,7 @@ import { Container, Editor, ProcessTerminal, TuiMainScreen, type Terminal } from
 import { logger } from '../logger';
 import type { OmdBackend } from './backend';
 import { ChatLog } from './components/chat-log';
+import { type DialogHost, confirm as dialogConfirm, input as dialogInput, select as dialogSelect } from './components/dialog';
 import { DagHud } from './components/dag-hud';
 import { type PathReader, PathHud, createPathReader } from './components/path-hud';
 import { StatusLine } from './components/status-line';
@@ -207,18 +208,50 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
 
   chatLog.appendNotice(CHROME.hint);
 
+  // editor 住在自己的容器里 —— 对话框**换掉容器内容**而不是叠 overlay(SDD §7.1 已裁决:
+  // 0.84 的 overlay 焦点恢复状态机会在下一次按键夺回焦点, 换 container 没有那个状态机)。
+  const editorContainer = new Container();
+  editorContainer.addChild(editor);
+
   const root = new Container();
   root.addChild(header);
   root.addChild(harness);
   root.addChild(chatLog);
   root.addChild(dagHud);
   root.addChild(pathHud);
-  root.addChild(editor);
+  root.addChild(editorContainer);
   root.addChild(pressureLine);
   root.addChild(footer);
   tui.addChild(root);
   // 焦点给 editor: 打字直接进输入框。Ctrl+C 仍抢在它前面 (input listener 先于焦点分派)。
   tui.setFocus(editor);
+
+  /**
+   * 对话框宿主。**一次只开一个** —— 叠加之后"哪个在收键""Esc 关哪个"都说不清。
+   */
+  let dialogOpen = false;
+  const dialogs: DialogHost = {
+    get busy() {
+      return dialogOpen;
+    },
+    open(component, focus) {
+      if (dialogOpen) return false;
+      dialogOpen = true;
+      editorContainer.clear();
+      editorContainer.addChild(component);
+      tui.setFocus(focus);
+      return true;
+    },
+    close() {
+      if (!dialogOpen) return; // 幂等
+      dialogOpen = false;
+      editorContainer.clear();
+      editorContainer.addChild(editor);
+      tui.setFocus(editor);
+      tui.requestRender();
+    },
+    requestRender: () => tui.requestRender(),
+  };
 
   let sessionId = opts.sessionId ?? 'tui';
   const seats = opts.seats ?? defaultSeatFace();
@@ -330,38 +363,74 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    * 之所以不让 conductor 去调工具改座位:改座位是**有后果的动作**,而且用户此刻要的是
    * 立刻看到 footer 变,不是等一轮模型往返。
    */
+  /** 读当前座位。读不出按「未解析」处理并留原因 —— 没配过 omd 的仓里敲 /seat 不该把 UI 掀掉。 */
+  function readSeats(): { current: Record<string, string>; err: string | null } {
+    // ⚠ `resolveEngineModels` 在座位没配时**抛** (INV-MODEL-5 计划期响亮失败) ——
+    // 那对 DAG 起跑是对的, 但对"我就想看看现在都是什么座位"这条只读路径不对
+    // (PTY 第一跑就是这么红的)。
+    try {
+      return { current: seats.read(), err: null };
+    } catch (err) {
+      return { current: {}, err: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  function applySeat(role: string, coord: string): void {
+    try {
+      const r = seats.set(role, coord);
+      chatLog.appendNotice(CHROME.seatChanged(r.role, r.coord));
+      // footer 重读 `connection.url` —— backend 那边是 getter, 座位一改它就变。
+      footer.setText(CHROME.footer(opts.backend.connection.url));
+    } catch (err) {
+      // 拒绝的原因原样进屏 (非法 role / 坐标格式不对), 不吞成一句"失败了"。
+      chatLog.appendNotice(CHROME.seatFailed(err instanceof Error ? err.message : String(err)));
+    }
+    tui.requestRender();
+  }
+
+  /**
+   * 座位选择器:先挑座位,再改坐标。
+   *
+   * ⚠ 两步都能 Esc 取消,取消**什么都不改** —— 一个改了一半的座位比没改更糟。
+   */
+  async function seatPicker(): Promise<void> {
+    const { current } = readSeats();
+    const rows = seatRows(current);
+    const role = await dialogSelect(dialogs, theme, {
+      title: '改哪个座位?',
+      options: rows.map((r) => ({
+        value: r.role,
+        label: `${r.role}  ${r.coord}`,
+        ...(r.recommend ? { description: r.recommend } : {}),
+      })),
+    });
+    if (role === null) return; // Esc:什么都不改
+    const now = rows.find((r) => r.role === role)?.coord ?? '';
+    const coord = await dialogInput(dialogs, theme, {
+      title: `${role} 换成哪个坐标? (provider:model)`,
+      initial: now.startsWith('(') ? '' : now,
+    });
+    if (coord === null || !coord.trim()) return; // Esc 或空:什么都不改
+    applySeat(role, coord.trim());
+  }
+
   function handleSeat(text: string): boolean {
     const cmd = parseSeatCommand(text);
     if (!cmd) return false;
     chatLog.appendUser(text);
     editor.setText('');
     if (cmd.kind === 'list') {
-      // ⚠ `resolveEngineModels` 在座位没配时**抛** (INV-MODEL-5 计划期响亮失败) ——
-      // 那对 DAG 起跑是对的, 但对"我就想看看现在都是什么座位"这条只读路径不对:
-      // 一个没配过 omd 的仓里敲 /seat 会直接把 UI 掀掉 (PTY 第一跑就是这么红的)。
-      // ⇒ 读失败按**未解析**处理并把原因原样贴出来, 不吞也不崩。
-      let current: Record<string, string> = {};
-      let readErr: string | null = null;
-      try {
-        current = seats.read();
-      } catch (err) {
-        readErr = err instanceof Error ? err.message : String(err);
-      }
+      // 列表照旧进记录(它是可回看的文本), **再**开选择器 —— 两者不互斥:
+      // 记录留痕给以后翻, 选择器给现在改。
+      const { current, err } = readSeats();
       chatLog.appendNotice(formatSeatRows(seatRows(current)));
-      if (readErr) chatLog.appendNotice(CHROME.seatUnresolved(readErr));
-    } else if (cmd.kind === 'usage') {
-      chatLog.appendNotice(cmd.reason);
-    } else {
-      try {
-        const r = seats.set(cmd.role, cmd.coord);
-        chatLog.appendNotice(CHROME.seatChanged(r.role, r.coord));
-        // footer 重读 `connection.url` —— backend 那边是 getter, 座位一改它就变。
-        footer.setText(CHROME.footer(opts.backend.connection.url));
-      } catch (err) {
-        // 拒绝的原因原样进屏 (非法 role / 坐标格式不对), 不吞成一句"失败了"。
-        chatLog.appendNotice(CHROME.seatFailed(err instanceof Error ? err.message : String(err)));
-      }
+      if (err) chatLog.appendNotice(CHROME.seatUnresolved(err));
+      tui.requestRender();
+      void seatPicker();
+      return true;
     }
+    if (cmd.kind === 'usage') chatLog.appendNotice(cmd.reason);
+    else applySeat(cmd.role, cmd.coord);
     tui.requestRender();
     return true;
   }
@@ -433,6 +502,14 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    * 于是模型看到的(ChatStore 里那条)与人看到的(屏上这堆)是两回事 ——
    * 两边都"有内容"、只是不是同一份,那是最难查的一种。
    */
+  /** 切过去 + 回放。抽出来是因为**文本命令与选择器两条路都要走它** —— 两份必漂。 */
+  async function switchTo(id: string): Promise<void> {
+    const history = await opts.backend.loadHistory({ sessionId: id });
+    sessionId = id;
+    chatLog.replay(history as never);
+    chatLog.appendNotice(CHROME.sessionSwitched(id, history.length));
+  }
+
   async function handleSession(text: string): Promise<boolean> {
     const cmd = parseSessionCommand(text);
     if (!cmd) return false;
@@ -441,7 +518,19 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     tui.requestRender();
     try {
       if (cmd.kind === 'list') {
-        chatLog.appendNotice(formatSessions(await opts.backend.listSessions(), sessionId));
+        const list = await opts.backend.listSessions();
+        chatLog.appendNotice(formatSessions(list, sessionId));
+        tui.requestRender();
+        // 列表留痕 + 选择器现挑。一条都没有时 `select` 自己不开框(开个空框让人按 Esc 是耍人)。
+        const pick = await dialogSelect(dialogs, theme, {
+          title: '切到哪条会话?',
+          options: list.map((m) => ({
+            value: m.id,
+            label: `${m.id === sessionId ? '* ' : '  '}${m.id}`,
+            ...(m.title ? { description: m.title } : {}),
+          })),
+        });
+        if (pick !== null && pick !== sessionId) await switchTo(pick);
       } else if (cmd.kind === 'usage') {
         chatLog.appendNotice(cmd.reason);
       } else if (cmd.kind === 'new') {
@@ -449,10 +538,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         chatLog.clear();
         chatLog.appendNotice(CHROME.sessionNew(sessionId));
       } else {
-        const history = await opts.backend.loadHistory({ sessionId: cmd.id });
-        sessionId = cmd.id;
-        chatLog.replay(history as never);
-        chatLog.appendNotice(CHROME.sessionSwitched(cmd.id, history.length));
+        await switchTo(cmd.id);
       }
     } catch (err) {
       // 切失败时**不许改 sessionId** —— 半切过去会让下一句发进一条不存在的会话。

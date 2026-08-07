@@ -118,6 +118,9 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
     ['sessionSwitched', CHROME.sessionSwitched('s-1', 4)],
     ['sessionNew', CHROME.sessionNew('s-2')],
     ['sessionFailed', CHROME.sessionFailed('no such session')],
+    // 对话框标题也是 chrome —— ↑↓ 已在白名单(真终端读数量过)。
+    ['dialog:select', '挑一个  (↑↓ 选, Enter 确认, Esc 取消)'],
+    ['dialog:input', '输入  (Enter 确认, Esc 取消)'],
     ['seatRows', formatSeatRows(seatRows({ conductor: 'a:1' }))],
     ['skillList(空)', formatSkillList([])],
     // ⚠ **不把真 skill 列表放进来**:那些 description 来自 20 个 SKILL.md,是**数据不是 chrome**。
