@@ -95,8 +95,7 @@ if (userArgs[0] === 'tui') {
       const { bootstrapModelRuntime } = await import('../model/bootstrap');
       bootstrapModelRuntime(); // 不引导则注册表空, 一句话都发不出去
       const { assembleOmdMcpTools, resolveEngineModels } = await import('../mcp/assemble');
-      const { createConductorChatTools } = await import('../serve/chat-tools');
-      const { createCodegraphTools } = await import('../tui/tools/codegraph');
+      const { createChatSeatTools } = await import('../tui/tools/chat-seat');
       // S15a 扩展宿主: 每个扩展一个子进程 (bwrap 在就沙箱)。**加载期硬失败** ——
       // 碰了没实现的 API 就拒绝并逐条列出, 不半残地跑起来。
       const { loadExtension, readExtensionList } = await import('../tui/ext/host');
@@ -146,8 +145,9 @@ if (userArgs[0] === 'tui') {
         cwd,
         store: new ChatStore(cwd),
         memory: createOmdMemory(),
-        // S17: 符号能力是**探测式**的 —— 探不到就一个工具都不挂 (不是挂了调了才失败)。
-        tools: [...createConductorChatTools(tools), ...createCodegraphTools({ cwd }), ...extTools],
+        // S-4: 对话位的工具面(含六只手)。装配在 `tui/tools/chat-seat`, 那里有闸盯着 ——
+        // 长在这个内联块里的话, "对话位到底拿到了哪些工具"没有任何测试看得见(坑 #7 同族)。
+        tools: createChatSeatTools({ cwd, mcpTools: tools, extTools }),
         ...(exts.length > 0
           ? {
               // 多个扩展**串起来**追加:每个都只能在前一个的结果上追加, 顺序 = 清单顺序。
