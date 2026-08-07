@@ -36,11 +36,27 @@ import { type PathReader, PathHud, createPathReader } from './components/path-hu
 import { StatusLine } from './components/status-line';
 import { type ContextFile, formatContextLine, loadConductorContext } from './context';
 import { formatSeatRows, parseSeatCommand, seatRows } from './seat-picker';
+import { formatSessions, newSessionId, parseSessionCommand } from './sessions';
 import { STARTUP_HINT, formatHelp, parseHelpCommand } from './commands';
 import { createFileCompleteProvider } from './file-complete';
 import { formatPressure } from './render/pressure';
 import { formatSkillList, listSkills, loadSkillBlock, parseSkillCommand } from './skills';
 import { type OmdTuiTheme, createTheme } from './theme';
+
+/**
+ * HUD 滚动键 → 位移(`0` = 回顶/跟随)。
+ *
+ * 各终端对 Alt 组合的编码不止一种,所以**几种都收** —— 只认一种的话
+ * 换个终端这个功能就静默没了(而 UI 上还写着 `Alt+↑↓ 滚动`)。
+ */
+const HUD_SCROLL: Record<string, number> = {
+  '\x1b[1;3A': -1, // Alt+↑ (xterm 修饰键)
+  '\x1b[1;3B': 1, // Alt+↓
+  '\x1b\x1b[A': -1, // Alt+↑ (ESC 前缀式, 部分终端)
+  '\x1b\x1b[B': 1,
+  '\x1b[1;3H': 0, // Alt+Home
+  '\x1b[1;3~': 0,
+};
 
 /** 双击 Ctrl+C 的窗口。openclaw / pi 一致,不发明新数。 */
 export const CTRL_C_WINDOW_MS = 500;
@@ -83,6 +99,10 @@ export const CHROME = {
   seatFailed: (reason: string) => `座位没改成: ${reason}`,
   /** 座位读不出来 (没配过 omd 的仓)。原因原样贴出来 —— 那一格的真值就是解析不到。 */
   seatUnresolved: (reason: string) => `当前座位解析不到: ${reason}`,
+  /** 切会话回执 —— 说清切到哪、回放了几条,别让人猜切没切成。 */
+  sessionSwitched: (id: string, n: number) => `已切到会话 ${id}(回放 ${n} 条历史)`,
+  sessionNew: (id: string) => `已新开会话 ${id}(说第一句话时才真正建文件)`,
+  sessionFailed: (reason: string) => `切不过去: ${reason}`,
   /** skill 已挂在**下一句**上 —— 说清它什么时候生效, 别让人以为已经跑了。 */
   skillArmed: (name: string) => `已挂上 skill 「${name}」: 它会作为**下一句**的额外纪律注入 (只这一轮, 不写进会话)`,
   skillMissing: (name: string) => `没有这条 skill: ${name} (用 /skill 看有哪些)`,
@@ -200,7 +220,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   // 焦点给 editor: 打字直接进输入框。Ctrl+C 仍抢在它前面 (input listener 先于焦点分派)。
   tui.setFocus(editor);
 
-  const sessionId = opts.sessionId ?? 'tui';
+  let sessionId = opts.sessionId ?? 'tui';
   const seats = opts.seats ?? defaultSeatFace();
   /** 已唤起、等着挂到下一句上的 skill 正文。**用完即清** —— 一条 skill 只管一轮。 */
   let pendingSkill: string | null = null;
@@ -406,6 +426,45 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     return true;
   }
 
+  /**
+   * `/session` —— 列 / 切 / 新开(2026-08-07)。
+   *
+   * ⚠ **切过去必须清屏并回放那条会话的历史**。不清的话上一条的消息会留着冒充这一条的上下文,
+   * 于是模型看到的(ChatStore 里那条)与人看到的(屏上这堆)是两回事 ——
+   * 两边都"有内容"、只是不是同一份,那是最难查的一种。
+   */
+  async function handleSession(text: string): Promise<boolean> {
+    const cmd = parseSessionCommand(text);
+    if (!cmd) return false;
+    chatLog.appendUser(text);
+    editor.setText('');
+    tui.requestRender();
+    try {
+      if (cmd.kind === 'list') {
+        chatLog.appendNotice(formatSessions(await opts.backend.listSessions(), sessionId));
+      } else if (cmd.kind === 'usage') {
+        chatLog.appendNotice(cmd.reason);
+      } else if (cmd.kind === 'new') {
+        sessionId = cmd.id ?? newSessionId();
+        chatLog.clear();
+        chatLog.appendNotice(CHROME.sessionNew(sessionId));
+      } else {
+        const history = await opts.backend.loadHistory({ sessionId: cmd.id });
+        sessionId = cmd.id;
+        chatLog.replay(history as never);
+        chatLog.appendNotice(CHROME.sessionSwitched(cmd.id, history.length));
+      }
+    } catch (err) {
+      // 切失败时**不许改 sessionId** —— 半切过去会让下一句发进一条不存在的会话。
+      const reason = err instanceof Error ? err.message : String(err);
+      logger.warn({ err: reason, cmd: text }, '[omd/tui] session 命令抛了');
+      chatLog.appendNotice(CHROME.sessionFailed(reason));
+    }
+    footer.setText(CHROME.footer(opts.backend.connection.url));
+    tui.requestRender();
+    return true;
+  }
+
   editor.onSubmit = (text: string) => {
     const prompt = text.trim();
     if (!prompt) return; // 空回车不算一轮 —— 否则会往会话里塞空消息
@@ -418,9 +477,13 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     }
     if (handleSeat(prompt)) return;
     if (handleSkill(prompt)) return;
-    void handleRuns(prompt).then((handled) => {
-      if (!handled) void submit(prompt);
+    void handleSession(prompt).then((handledSession) => {
+      if (handledSession) return;
+      void handleRuns(prompt).then((handled) => {
+        if (!handled) void submit(prompt);
+      });
     });
+    return;
   };
 
   // ⚠ 必须走 addInputListener 而不是组件的 handleInput: 实读 `tui.js:558`,
@@ -435,6 +498,16 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         footer.setText(CHROME.footerArmed(opts.backend.connection.url));
         tui.requestRender();
       }
+      return { consume: true };
+    }
+    // HUD 滚动:Alt+↑ / Alt+↓ / Alt+Home。
+    // ⚠ 为什么走 input listener 而不是组件的 handleInput:焦点在 editor 上,
+    // 组件路由不到这几个键。这里在**焦点分派之前**截,与 Ctrl+C 同一条路。
+    // ⚠ 为什么选 Alt 组合:PgUp/PgDn 与方向键都可能是 editor 的绑定,抢了会让输入框残废。
+    const scrolled = HUD_SCROLL[data];
+    if (scrolled !== undefined) {
+      const moved = scrolled === 0 ? dagHud.scrollToTop() : dagHud.scrollBy(scrolled);
+      if (moved) tui.requestRender();
       return { consume: true };
     }
     // 任何非 Ctrl+C 的键都解除预备 —— 否则"按了 C、过一会儿又按 C"会被当成双击。

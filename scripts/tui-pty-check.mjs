@@ -333,6 +333,26 @@ async function scenarioSeat() {
     // ★ 列的是**座位视图**不是裸模型列表: 职责那一行来自座位登记表。
     check(p.text().includes('职责:'), 'S12-2 ★ 列的是座位视图(带职责/建议), 不是裸模型名');
 
+    // /session: 列会话 + 新开(fixture 后端也实现了 listSessions/loadHistory)。
+    p.write('/session\r');
+    check(
+      await waitFor(p, (t) => t.includes('会话') && t.includes('/session <id> 切换')),
+      'SESS-1 /session 列出会话(标出当前那条)',
+      p.text().slice(0, 800),
+    );
+    p.write('/session new mysess\r');
+    check(
+      await waitFor(p, (t) => t.includes('已新开会话 mysess')),
+      'SESS-2 ★ 新开会话有回执',
+      p.text().slice(0, 800),
+    );
+    p.write('/session ../逃逸\r');
+    check(
+      await waitFor(p, (t) => t.includes('会话 id 非法')),
+      'SESS-3 ★ 非法 id 给人话, 不是抛一个栈',
+      p.text().slice(0, 800),
+    );
+
     // /help: 四条命令得发现得了 —— 启动提示提到它, 它列出全部。
     p.write('/help\r');
     check(

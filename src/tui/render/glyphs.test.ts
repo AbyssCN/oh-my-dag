@@ -15,6 +15,7 @@ import { GROUND_TRUTH, NEEDS_TTY_GLYPHS, SAFE_GLYPH_WIDTHS, UNSAFE_GLYPHS } from
 import { classifyGlyph, findRiskyGlyphs } from './glyphs';
 import { formatHelp } from '../commands';
 import { formatSeatRows, seatRows } from '../seat-picker';
+import { formatSessions } from '../sessions';
 import { formatSkillList, listSkills } from '../skills';
 import { fitLine } from './line';
 import { formatPressure } from './pressure';
@@ -112,6 +113,11 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
     // 上下文压力行也是 chrome —— 新增文案一律进这张表, 否则它不过字形闸。
     ['pressure', formatPressure({ systemTokens: 12000, harnessTokens: 8000, historyTokens: 34000, usedTokens: 46000, windowTokens: 200000, ratio: 0.23 }, { in: 46000, out: 800, cacheHit: 41000 }) as string],
     ['help', formatHelp()],
+    ['sessions(空)', formatSessions([], 'tui')],
+    ['sessions(有)', formatSessions([{ id: 's-1', title: '标题', updatedAt: 1760000000000 }], 's-1')],
+    ['sessionSwitched', CHROME.sessionSwitched('s-1', 4)],
+    ['sessionNew', CHROME.sessionNew('s-2')],
+    ['sessionFailed', CHROME.sessionFailed('no such session')],
     ['seatRows', formatSeatRows(seatRows({ conductor: 'a:1' }))],
     ['skillList(空)', formatSkillList([])],
     // ⚠ **不把真 skill 列表放进来**:那些 description 来自 20 个 SKILL.md,是**数据不是 chrome**。

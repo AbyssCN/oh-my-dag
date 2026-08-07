@@ -15,12 +15,17 @@ const TUI_SRC = readFileSync(join(import.meta.dir, 'tui.ts'), 'utf8');
 describe('★ 接线闸:清单 ↔ 分发,两个方向都查', () => {
   // 反向自检 (2026-08-07 实跑): 从 COMMANDS 里删掉 /runs → 「装了但没列」当场红;
   // 往 COMMANDS 里加一条 tui.ts 不认的 /nope → 「列了但没接」当场红。
-  test('清单里每条命令, tui.ts 里都真的有人接(不许列一条打了没反应的)', () => {
-    const unwired = COMMAND_NAMES.filter((n) => {
-      if (n === '/help') return !TUI_SRC.includes('parseHelpCommand');
-      return !TUI_SRC.includes(`'${n}'`) && !TUI_SRC.includes(`${n} `) && !TUI_SRC.includes(`${n}'`);
-    });
-    expect(unwired, '这些命令列在 /help 里但没人接').toEqual([]);
+  test('★ 清单里每条命令, tui.ts 里都真的**调了它的 handler**', () => {
+    // ⚠ 第一版这条是靠"命令名在 tui.ts 里出现过"判的 —— 而 `/seat` `/skill` 的解析器
+    //   住在别的文件里, 它们只在**注释**里出现。于是那条闸靠注释蒙混过关:
+    //   把 handler 删掉、注释留着, 它照样绿。加 `/session` 时它才终于红。
+    //   现在钉的是**真正的分发点**(`CommandDoc.handler`), 注释帮不了忙。
+    // ⚠⚠ 第二版仍然不够:正则会匹配到**函数定义**(`async function handleSession(`)——
+    //     一个定义了却从没被调用的 handler 照样绿。证伪时把调用点删掉、定义留着, 它纹丝不动。
+    //     ⇒ 先把定义整行剔掉, 剩下的才是**调用点**。(同一条闸收紧了三次, 每次都是被证伪逼的。)
+    const callSites = TUI_SRC.replace(/^\s*(?:export\s+)?(?:async\s+)?function\s+\w+\s*\(/gm, '');
+    const unwired = COMMANDS.filter((c) => !new RegExp(`\\b${c.handler}\\s*\\(`).test(callSites));
+    expect(unwired.map((c) => c.name), '这些命令列在 /help 里但 tui.ts 没**调用**它的 handler').toEqual([]);
   });
 
   test('★ tui.ts 里接了的命令, 清单里都要有(没列 = 发现不了 = 等于没装)', () => {
