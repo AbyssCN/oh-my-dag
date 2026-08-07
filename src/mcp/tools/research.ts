@@ -4,6 +4,7 @@
  * 缺 question → MCP InvalidParams 错误。
  */
 import { z } from 'zod';
+import { withHeartbeat } from '../progress';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import type { OmdMcpTool } from '../server.js';
 
@@ -28,7 +29,8 @@ export function createDagResearchTool(researchFanout: ResearchFanout): OmdMcpToo
       k: z.number().optional().describe('Top-k results to return'),
       rounds: z.number().int().min(1).max(4).optional().describe('Second-pass rounds cap (default 1; engine stops early when no new material)'),
     },
-    handler: async (args) => {
+    // ⚠ 第二个参数 `extra` 以前没接 —— 那正是它被客户端判死的原因(见 src/mcp/progress.ts 头注)。
+    handler: async (args, extra) => {
       const { question, council, super: superMode, k, rounds } = args as {
         question?: string;
         council?: boolean;
@@ -39,7 +41,9 @@ export function createDagResearchTool(researchFanout: ResearchFanout): OmdMcpToo
       if (!question) {
         throw new McpError(ErrorCode.InvalidParams, 'dag_research: missing required param "question"');
       }
-      const result = await researchFanout({ question, council, super: superMode, k, rounds });
+      const result = await withHeartbeat(extra as never, 'dag_research', () =>
+        researchFanout({ question, council, super: superMode, k, rounds }),
+      );
       return {
         content: [{ type: 'text', text: JSON.stringify(result) }],
       };
