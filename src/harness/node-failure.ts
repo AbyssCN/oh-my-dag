@@ -49,6 +49,27 @@
 export type NodeFailureKind =
   /** command leaf 退出码 ≥0 但 ≠ `expect_exit`:断言没成立。 */
   | 'assert-failed'
+  /**
+   * **命令超时,没跑出判词**(2026-08-07,X-4)。直接证据:退出码 `124` 且 ≠ `expect_exit`
+   * —— 那是 omd 自己在 `command-leaf.ts` 的 `Promise.race` 里设的超时哨
+   * (也是 GNU `timeout(1)` 的标准码,所以命令自带 `timeout` 时同样落这里,处置相同)。
+   *
+   * ## 为什么必须与 `assert-failed` 分开
+   *
+   * 两者的**读法正相反**。`assert-failed` 说「被测的东西给出了错答案」→ 去看代码。
+   * 这一格说「**没有答案**」→ 代码可能一个字都没问题,缺的是时间。
+   * 把后者读成前者,一次环境抖动就被记成一次真回归;而闸一旦拿"真回归"当理由拦,
+   * 它就再也解不开 —— **混同的代价是死锁,不是误报**。
+   *
+   * ⚠ **别把这一格扩成"环境问题都归它"**。它只认**退出码本身排他地表示没跑成**的那个码。
+   * 「DB 没起 / 端口占用 / 网络抖」照样从测试框架里出 `exit 1`,与断言失败**在退出码上
+   * 不可分** —— 那部分只能靠写图的人显式分开(拆一个探活 command 节点当依赖),
+   * 引擎替不了。**宁可窄而准,不靠输出正则去猜。**
+   *
+   * ⚠ 命令找不到 / 不可执行(`127` / `126`)**不在这一格**:它们的下一步与
+   * `missing-capability` 逐字相同(别重试,补上缺的东西再跑),按本文件的规则 ② 归了进去。
+   */
+  | 'timed-out'
   /** command leaf 退出码 <0:command-leaf 的闸拒(白名单/元字符/git 写/危险命令)。 */
   | 'gate-rejected'
   /** agent leaf 心跳闸判 provider 挂起(`AgentLeafResult.stalled`)。 */
@@ -125,6 +146,15 @@ export const FAILURE_KIND_INFO: Record<NodeFailureKind, FailureKindInfo> = {
     nextAction: '再试一轮可能就好 —— 断言本身可能对,只是这次没成立',
     retryable: true,
   },
+  'timed-out': {
+    // STALLED 而非 ERROR: 引擎本身没出事, 是这一步没走完 (同 assert-failed 的环级归属)。
+    loopState: 'STALLED',
+    evidence: 'command leaf 退出码 124 (超时哨) 且 ≠ expect_exit',
+    nextAction:
+      '**先别读成回归** —— 没跑完不等于跑出了错答案。看超时上限与这条命令的真实耗时, ' +
+      '重试或调高上限;⚠ **不要**去改被测代码,它这一次根本没被测到',
+    retryable: true,
+  },
   'gate-rejected': {
     loopState: 'BLOCKED',
     evidence: 'command leaf 退出码 <0(command-leaf 闸拒,命令未执行)',
@@ -151,8 +181,12 @@ export const FAILURE_KIND_INFO: Record<NodeFailureKind, FailureKindInfo> = {
   },
   'missing-capability': {
     loopState: 'BLOCKED',
-    evidence: '配置面缺件(无 agentRunner/commandRunner/researchRunner,或 attach_media 无可用媒体)',
-    nextAction: '**别重试** —— 缺的是能力不是运气;补配置/补上游产物再跑',
+    // 2026-08-07 (X-4) 加了第二条证据路径: 退出码 127/126。同一格盖两条路径是允许的
+    // (`infra-error` 早有先例), 判据是**下一步一样** —— 两者都是"补上缺的东西再跑, 重试无用"。
+    evidence:
+      '配置面缺件(无 agentRunner/commandRunner/researchRunner,或 attach_media 无可用媒体);' +
+      '或 command leaf 退出码 127/126(命令找不到 / 不可执行 —— 它压根没被执行)',
+    nextAction: '**别重试** —— 缺的是能力不是运气;补配置/装依赖/修 PATH/补上游产物再跑',
     retryable: false,
   },
   'infra-error': {
@@ -190,6 +224,36 @@ export const FAILURE_KIND_INFO: Record<NodeFailureKind, FailureKindInfo> = {
     retryable: null,
   },
 };
+
+/**
+ * omd 自己的超时哨(`command-leaf.ts` 的 `Promise.race`);也是 GNU `timeout(1)` 的标准码。
+ *
+ * ⚠ **不许往 X-4 这条路上加"看着像环境问题"的码**。加之前要能回答:
+ * 「这个码本身是否**排他地**表示没跑成?」`1` / `2` 答不了(测试框架用它们报断言失败),
+ * 所以它们永远不进来 —— 那正是这条判据窄而准的代价与价值。
+ */
+export const TIMEOUT_EXIT = 124;
+
+/**
+ * **命令根本没被执行**的 POSIX 退出码:`127` 找不到,`126` 找到了但不可执行。
+ * 归 `missing-capability` 而不是自成一格 —— 下一步与它逐字相同(别重试,补上缺的东西再跑)。
+ */
+export const NOT_EXECUTED_EXITS: ReadonlySet<number> = new Set([126, 127]);
+
+/**
+ * command leaf 退出码 → 成因。**三格各有自己的直接证据,没有一格是别人的补集**
+ * (这条纪律见文件头 ①,曾为它付过账)。
+ *
+ * ⚠ 调用前提:调用方已判定 `!ok`(即 `exitCode !== expect_exit`)。所以一个把
+ * `expect_exit` 显式写成 124/127 的节点**到不了这里** —— 它命中期望就是 done,
+ * 这一格不会去抢它。
+ */
+export function classifyCommandExit(exitCode: number): NodeFailureKind {
+  if (exitCode < 0) return 'gate-rejected'; // command-leaf 闸拒: 命令未执行
+  if (exitCode === TIMEOUT_EXIT) return 'timed-out'; // 跑了但没跑完: 没有判词
+  if (NOT_EXECUTED_EXITS.has(exitCode)) return 'missing-capability'; // 压根没执行: 缺可执行文件
+  return 'assert-failed'; // 跑了, 判词是"不对"
+}
 
 /** 词表全序(读数板按它出分布;确定性顺序,免得每次跑出来的表行序不一样)。 */
 export const FAILURE_KIND_ORDER = Object.keys(FAILURE_KIND_INFO) as NodeFailureKind[];

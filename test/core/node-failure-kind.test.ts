@@ -91,6 +91,84 @@ describe('P1 · 闸拒 vs 断言没成立 (整个词表的原型格)', () => {
     expect(res.results['n1']!.failureKind).toBeUndefined();
   });
 
+  // ── X-4 (2026-08-07): 「环境跑不成」≠「测试失败」 ────────────────────────────
+  // 反向自检 (四条都当场证伪过):
+  //   · 把 classifyCommandExit 的 124 分支删掉 → 第 1 条红 (退回 assert-failed);
+  //   · 把 127/126 分支删掉               → 第 2 条红;
+  //   · 让 timed-out 的 retryable 抄 gate-rejected 的 false → 第 3 条红;
+  //   · 把 1 也加进 TIMEOUT/NOT_EXECUTED  → 第 4 条红 (断言失败被吞成环境问题)。
+  test('★ 退出码 124 (超时哨) → timed-out, 不是 assert-failed —— 没跑完 ≠ 跑出了错答案', async () => {
+    const res = await runExecutorDag('t', {
+      conductorModel: CONDUCTOR,
+      leafModel: LEAF,
+      generate: gen(cmdPlan('bun test')),
+      // 124 = command-leaf 的 Promise.race 超时哨 (也是 GNU timeout(1) 的标准码)。
+      commandRunner: async () => ({ text: '[timeout 600000ms]', usage: { in: 0, out: 0 }, exitCode: 124 }),
+    });
+    const r = res.results['n1']!;
+    expect(r.status).toBe('failed');
+    expect(r.failureKind).toBe('timed-out');
+    // 值钱的地方在判词: 它必须把读者从"去改代码"上拉开。
+    expect(FAILURE_KIND_INFO['timed-out'].nextAction).toContain('不要');
+  });
+
+  test('★ 退出码 127/126 → missing-capability(压根没执行), 归进已有格而不是新开一格', async () => {
+    for (const exitCode of [127, 126]) {
+      const res = await runExecutorDag('t', {
+        conductorModel: CONDUCTOR,
+        leafModel: LEAF,
+        generate: gen(cmdPlan('pytest')),
+        commandRunner: async () => ({ text: 'command not found', usage: { in: 0, out: 0 }, exitCode }),
+      });
+      const r = res.results['n1']!;
+      expect(r.failureKind, `exit ${exitCode}`).toBe('missing-capability');
+      expect(FAILURE_KIND_INFO['missing-capability'].retryable).toBe(false); // 重试恒同样死
+    }
+  });
+
+  test('★ 超时与断言失败的下一步不同 —— 那是这一格值得存在的全部理由', async () => {
+    const run = async (exitCode: number) => {
+      const res = await runExecutorDag('t', {
+        conductorModel: CONDUCTOR,
+        leafModel: LEAF,
+        generate: gen(cmdPlan('bun test')),
+        commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode }),
+      });
+      return res.results['n1']!;
+    };
+    const timedOut = await run(124);
+    const asserted = await run(1);
+    expect(timedOut.status).toBe(asserted.status); // 旧词表上一模一样
+    expect(timedOut.failureKind).not.toBe(asserted.failureKind);
+    // 两句判词必须真的不同 —— 一样的话按本文件的规则 ② 就该合并, 这一格不成立。
+    expect(FAILURE_KIND_INFO['timed-out'].nextAction).not.toBe(FAILURE_KIND_INFO['assert-failed'].nextAction);
+  });
+
+  test('★ 判据窄而准: 1 / 2 永远是 assert-failed —— 不许靠猜把断言失败吞成环境问题', async () => {
+    // X-4 的边界: 「DB 没起 / 端口占用」也从测试框架出 exit 1, 与断言失败**在退出码上不可分**。
+    // 把 1 划进"环境问题"会让真回归被静默放行 —— 那比死锁更贵, 所以这一格宁可漏不可错。
+    for (const exitCode of [1, 2, 3, 125, 128, 255]) {
+      const res = await runExecutorDag('t', {
+        conductorModel: CONDUCTOR,
+        leafModel: LEAF,
+        generate: gen(cmdPlan('bun test')),
+        commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode }),
+      });
+      expect(res.results['n1']!.failureKind, `exit ${exitCode}`).toBe('assert-failed');
+    }
+  });
+
+  test('expect_exit 显式写成 124 → done, 这一格不去抢它', async () => {
+    const res = await runExecutorDag('t', {
+      conductorModel: CONDUCTOR,
+      leafModel: LEAF,
+      generate: gen(cmdPlan('sleep 999', 124)),
+      commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode: 124 }),
+    });
+    expect(res.results['n1']!.status).toBe('done');
+    expect(res.results['n1']!.failureKind).toBeUndefined();
+  });
+
   test('负码恒 gate-rejected, expect_exit 不许把闸拒翻译成别的格', async () => {
     // 「让 expect_exit 把一次安全拒绝翻译成 done」有两层闸: schema 的 min(0) 挡住 conductor 写 -1,
     // 运行期的 `exitCode < 0` 恒 failed 挡住预构造 plan。这里走第二层 —— 期望非 0 而实得负码时,

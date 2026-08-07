@@ -233,6 +233,10 @@ export const RUN_OUTCOME_ORDER = Object.keys(RUN_OUTCOME_INFO) as RunOutcomeKind
  */
 const NODE_TO_RUN: Record<NodeFailureKind, RunOutcomeKind | null> = {
   'assert-failed': 'not-converged',
+  // 2026-08-07 (X-4): 超时**也**是 not-converged —— 这一跑确实没到绿。但它在**节点级**
+  // 与 assert-failed 分开, 因为读的人要做的事不同 (看耗时/上限 vs 看代码)。
+  // 刻意不给它自己的 run 级格: run 级只回答"这跑成没成", 成因分辨在节点级那张表里。
+  'timed-out': 'not-converged',
   'gate-rejected': 'blocked',
   stall: 'infra-error',
   'empty-artifact': 'not-converged',

@@ -105,7 +105,7 @@ import { send } from '../model/gateway';
 import { collectDepMedia } from './leaf-media';
 import { recordGeneration, recordSpan } from '../model/langfuse';
 import { ModelError } from '../model';
-import { withFailureKind, upstreamFailureNotice } from './node-failure';
+import { classifyCommandExit, withFailureKind, upstreamFailureNotice } from './node-failure';
 import { makeRunNonce, fenceUntrusted, trustHeader } from './prompt-fence';
 import type { ContentPart } from '../model/gateway';
 
@@ -2117,10 +2117,10 @@ async function executePlan(
         return {
           id,
           status: ok ? 'done' : 'failed',
-          // P1: 这是整个词表的**原型格** —— 同一个 `failed`, 两种相反的下一步, 判据是各自的
-          // 直接证据 (`exitCode` 的正负), 不是谁的补集。闸拒 = 再试也没用 (BLOCKED);
-          // 断言没成立 = 再试一轮可能就好 (STALLED)。见 node-failure.ts。
-          ...(ok ? {} : { failureKind: blocked ? ('gate-rejected' as const) : ('assert-failed' as const) }),
+          // P1: 这是整个词表的**原型格** —— 同一个 `failed`, 三种不同的下一步, 判据是各自的
+          // 直接证据 (`exitCode` 落在哪), 不是谁的补集。闸拒 = 再试也没用 (BLOCKED);
+          // 没跑出判词 = 别读成回归 (X-4); 断言没成立 = 再试一轮可能就好 (STALLED)。见 node-failure.ts。
+          ...(ok ? {} : { failureKind: classifyCommandExit(r.exitCode) }),
           kind: 'command',
           // 期望非 0 却拿到别的码时, 把"想要什么/拿到什么"写进 output —— 否则 verify-red 失败时
           // 下游只看到一串正常的测试输出, 看不出它失败在"本该红却绿了"。
