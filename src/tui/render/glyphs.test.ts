@@ -98,6 +98,8 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
   const samples: [string, string][] = [
     ['header', CHROME.header('/home/nick/repos/oh-my-dag')],
     ['hint', CHROME.hint],
+    // S-3: 欢迎屏正文。字标本身在 logo.test.ts 单独扫 —— 两处都要, 因为它们是两段不同的文案。
+    ['welcomeBody', CHROME.welcomeBody({ engine: 'embedded://deepseek:deepseek-v4-flash', session: 'tui', width: 100 })],
     ['refused', CHROME.refused('embedded://deepseek:deepseek-v4-flash')],
     ['failed', CHROME.failed('ECONNREFUSED')],
     ['toolStart', CHROME.toolStart('run')],

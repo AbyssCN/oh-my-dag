@@ -40,7 +40,9 @@ import { formatSeatRows, parseSeatCommand, seatRows } from './seat-picker';
 import { formatSessions, newSessionId, parseSessionCommand } from './sessions';
 import { buildSettings, formatSettings, parseSettingsCommand } from './settings';
 import { STARTUP_HINT, formatHelp, parseHelpCommand, slashCommands } from './commands';
+import { renderLogo } from './render/logo';
 import { formatPressure } from './render/pressure';
+import { renderTable } from './render/table';
 import { formatSkillList, listSkills, loadSkillBlock, parseSkillCommand } from './skills';
 import { type OmdTuiTheme, colorEnabled, createTheme, truecolorEnabled } from './theme';
 
@@ -88,6 +90,28 @@ export function decideCtrlC(armedAt: number | null, now: number, windowMs = CTRL
 export const CHROME = {
   header: (cwd: string) => `omd tui - ${cwd}`,
   hint: STARTUP_HINT,
+  /**
+   * 欢迎屏的**正文**(字标由 `render/logo` 出,颜色由调用方分层上)。
+   *
+   * ⚠ 只列**这一屏之外看不到**的事实(引擎坐标 / 会话 id),不复述顶栏已经写着的 cwd ——
+   * 首屏重复一遍同一件事,读者会以为那是两个不同的东西。
+   *
+   * ⚠ 提示行用 ASCII `>` 而不是 Kun 那个 `›`:后者(U+203A)**没进过字形表**,
+   * 判定是 `unmeasured` —— 好看程度不值得拿一个没量过的字形去赌布局。
+   */
+  welcomeBody: (o: { engine: string; session: string; width: number }) =>
+    [
+      ...renderTable(
+        [
+          ['引擎', o.engine],
+          ['会话', o.session],
+        ],
+        o.width,
+      ),
+      '',
+      `  > ${STARTUP_HINT}`,
+      '  > PgUp / PgDn 回看历史',
+    ].join('\n'),
   /** 后端明确拒绝(**断链说明卡**):说出是谁拒的,不编一个回复。 */
   refused: (url: string) => `后端拒绝了这一轮 (${url}): 引擎尚未接通, 这一轮没有发给任何模型`,
   /** 后端抛了:错误原文进屏,同时进日志文件。 */
@@ -221,7 +245,27 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   // 而不是一行全零 —— 全零会读成"跑过了、没花钱")。
   const pressureLine = new StatusLine('');
 
-  chatLog.appendNotice(CHROME.hint);
+  /**
+   * 欢迎屏(S-3)。字标走 brand(整屏最亮的一处),正文走 dim —— **分层是判据不是口味**:
+   * 一屏里两处同等亮度就没有"第一眼落在哪"这回事了。
+   *
+   * ⚠ 宽度取的是**启动那一刻**的列数。终端后来被拉窄不会重画这一块(它已经是历史消息了),
+   * 但字标本身不折行、窄了会被 ChatLog 截断,不会顶花布局。
+   */
+  const bannerWidth = terminal.columns || 100;
+  chatLog.appendBanner(
+    [
+      ...renderLogo(bannerWidth).map(theme.chrome.brand),
+      '',
+      ...CHROME.welcomeBody({
+        engine: opts.backend.connection.url,
+        session: opts.sessionId ?? 'tui',
+        width: bannerWidth,
+      })
+        .split('\n')
+        .map(theme.chrome.dim),
+    ].join('\n'),
+  );
 
   // editor 住在自己的容器里 —— 对话框**换掉容器内容**而不是叠 overlay(SDD §7.1 已裁决:
   // 0.84 的 overlay 焦点恢复状态机会在下一次按键夺回焦点, 换 container 没有那个状态机)。
