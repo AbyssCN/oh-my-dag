@@ -100,9 +100,12 @@ if (userArgs[0] === 'tui') {
       // 所以这里用一个**延迟指针**接环, 不是循环依赖。装配完成前引擎不可能发事件。
       let sink: { pushDagEvent(runId: string, e: unknown): void } | null = null;
       const tools = assembleOmdMcpTools({ onNodeEvent: (runId, e) => sink?.pushDagEvent(runId, e) });
+      // S16: 自记忆与装配层共用同一个库 (D-5 共库) —— 两处各开一个会得到两份互不可见的记忆。
+      const { createOmdMemory } = await import('./memory/store');
       const embedded = createEmbeddedBackend({
         cwd,
         store: new ChatStore(cwd),
+        memory: createOmdMemory(),
         tools: createConductorChatTools(tools),
         // S14: UI 自己直调 dag_runs / dag_resume (不经模型)。给了才有那两个能力。
         mcpTools: tools,
