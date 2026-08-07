@@ -30,7 +30,8 @@
  * 那正是"讲一遍规则"这条路的上限所在。若它反复出现, 该换机制(让分类器把候选命令先过一次
  * `commandBlockReason` 再交出来), 而不是再改一次措辞。
  */
-import { classifyGoal, acceptanceCommandBlockReason } from '../src/harness/goal/acceptance';
+import { acceptanceCommandBlockReason } from '../src/harness/goal/acceptance-gate';
+import { classifyGoal } from '../src/harness/goal/classify-acceptance';
 import { bootstrapModelRuntime } from '../src/model/bootstrap';
 import { send } from '../src/model/gateway';
 import { resolveEngineModels } from '../src/mcp/assemble';

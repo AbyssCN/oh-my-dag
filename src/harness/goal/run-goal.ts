@@ -31,12 +31,12 @@ import { runExecutorDagWithPlan } from '../executor-dag';
 import { makeDefaultGenerate } from '../executor-dag-defaults';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagResult } from '../executor-dag-types';
-import { classifyGoal, renderAcceptance, type AcceptanceSpec, type GoalClassification, type GoalTier } from './acceptance';
+import { classifyGoal, renderAcceptance, type AcceptanceSpec, type GoalClassification, type GoalTier } from './classify-acceptance';
 import type { RunOutcomeKind } from '../run-outcome';
 import type { ExecutorDagConfig } from '../executor-dag-types';
 
 // D-I: 两条轴的类型与分类器都归 ./acceptance (那里是判据轴的单一真源); 此处 re-export 保旧调用面。
-export type { AcceptanceSpec, GoalClassification, GoalTier } from './acceptance';
+export type { AcceptanceSpec, GoalClassification, GoalTier } from './classify-acceptance';
 
 export type GoalStageName = 'classify' | 'survey' | 'research' | 'spec' | 'execute';
 

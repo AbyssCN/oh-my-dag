@@ -66,7 +66,7 @@ import { capsFor } from '../src/harness/../model/model-caps';
 import { CheckpointManager } from '../src/harness/continuity/checkpoint-manager';
 import type { NodeLoopJournal } from '../src/harness/continuity/types';
 import type { DagRunNode } from '../src/harness/dag-record';
-import type { AcceptanceProbe } from '../src/harness/goal/acceptance';
+import type { AcceptanceProbe } from '../src/harness/goal/acceptance-gate';
 import { FAILURE_KIND_INFO, FAILURE_KIND_ORDER, type NodeFailureKind } from '../src/harness/node-failure';
 import { RUN_OUTCOME_INFO, RUN_OUTCOME_ORDER, type RunOutcomeKind, type SpendBucket } from '../src/harness/run-outcome';
 

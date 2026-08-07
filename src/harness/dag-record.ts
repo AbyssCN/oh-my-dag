@@ -14,7 +14,7 @@ import { omdRepoRoot } from './repo-root';
 import type { ExecutorDagResult } from './executor-dag';
 import type { NodeFailureKind } from './node-failure';
 import { deriveRunOutcome, type RunOutcomeKind } from './run-outcome';
-import type { AcceptanceProbe } from './goal/acceptance';
+import type { AcceptanceProbe } from './goal/acceptance-gate';
 import type { RollbackAnchor } from './rollback-anchor';
 
 export interface DagRunNode {
