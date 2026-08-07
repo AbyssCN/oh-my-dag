@@ -411,13 +411,47 @@ export function planLeafCompaction(messages: AgentMessage[], keepRecentTokens: n
   return cut;
 }
 
-async function compactLeafContext(opts: {
+/**
+ * 摘要器的两段提示词。**默认是叶子口径**;chat conductor 走同一条压缩路但换措辞
+ * (它压的是一段对话,不是"干到一半的执行记录")—— 见 `opts.prompt`。
+ *
+ * ⚠ 为什么是**换措辞**而不是各写一套压缩:会静默出错的是**切点**那一半
+ * (切出孤儿 toolResult → provider 直接 400),而切点逻辑两边一模一样。
+ * 复制一份出去,`planLeafCompaction` 的每次修正都要记得改两处 —— 本仓已经吃过那个形状。
+ */
+export interface CompactionPrompt {
+  system: string;
+  instruction: string;
+}
+
+const LEAF_COMPACTION_PROMPT: CompactionPrompt = {
+  system: LEAF_SUMMARY_SYSTEM,
+  instruction:
+    '上面是一个执行叶子干到一半的记录, 上下文快满了要压缩。请写一份**接手用**的摘要, 覆盖:\n' +
+    '① 已经改/建了哪些文件, 各自改成了什么样 (路径逐字);\n' +
+    '② 跑过哪些验证命令、结论是什么 (通过/失败, 失败的错在哪);\n' +
+    '③ 已经排除掉的做法与原因 (防止接手的人重走一遍);\n' +
+    '④ **还没做完的部分**, 以及下一步该做什么。\n' +
+    '只输出摘要本身, 不要复述任务、不要寒暄、不要接着干活。',
+};
+
+export async function compactLeafContext(opts: {
   messages: AgentMessage[];
   model: string;
   keepRecentTokens: number;
   signal?: AbortSignal;
+  /** 省略 → 叶子口径。chat conductor 传自己那一套(切点逻辑不变)。 */
+  prompt?: CompactionPrompt;
+  /**
+   * 摘要那一次模型调用。省略 → 真 `callModel`(**账本挂在它出口上**,换掉默认值
+   * 等于把这次花的钱从账上抹掉)。只有测试该传:全局 provider 注册表是跨测试文件
+   * 共享的可变状态,靠它做隔离单文件绿、全量红(2026-08-07 实测)。
+   */
+  callModelFn?: typeof callModel;
 }): Promise<AgentMessage[] | null> {
   const { messages, model, keepRecentTokens, signal } = opts;
+  const prompt = opts.prompt ?? LEAF_COMPACTION_PROMPT;
+  const call = opts.callModelFn ?? callModel;
   const cut = planLeafCompaction(messages, keepRecentTokens);
   if (cut === null) return null;
 
@@ -427,20 +461,10 @@ async function compactLeafContext(opts: {
 
   let summary: string;
   try {
-    const res = await callModel({
+    const res = await call({
       messages: [
-        { role: 'system', content: LEAF_SUMMARY_SYSTEM },
-        {
-          role: 'user',
-          content:
-            `<conversation>\n${transcript}\n</conversation>\n\n` +
-            '上面是一个执行叶子干到一半的记录, 上下文快满了要压缩。请写一份**接手用**的摘要, 覆盖:\n' +
-            '① 已经改/建了哪些文件, 各自改成了什么样 (路径逐字);\n' +
-            '② 跑过哪些验证命令、结论是什么 (通过/失败, 失败的错在哪);\n' +
-            '③ 已经排除掉的做法与原因 (防止接手的人重走一遍);\n' +
-            '④ **还没做完的部分**, 以及下一步该做什么。\n' +
-            '只输出摘要本身, 不要复述任务、不要寒暄、不要接着干活。',
-        },
+        { role: 'system', content: prompt.system },
+        { role: 'user', content: `<conversation>\n${transcript}\n</conversation>\n\n${prompt.instruction}` },
       ],
       model,
       // 压缩是记账内的一次真调用, 但它是**辅助工序**: 关思考、限输出, 别让它比正活还贵。
