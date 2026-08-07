@@ -143,6 +143,50 @@ describe('MediaCrawlerProvider — search', () => {
   });
 });
 
+describe('MediaCrawlerProvider — fetch 的 detail 模式 (2026-08-07 补)', () => {
+  const ZHIHU = 'https://zhuanlan.zhihu.com/p/123';
+
+  // ★ 这条就是 detail 模式存在的理由:memo 里没有, 但 URL 归本平台管 → 直接按 URL 采一次。
+  //   反向自检: 把 fetch 里的 `await this.detail([url])` 去掉 → 这条当场红。
+  test('★ memo 未命中且归本平台 → 走 detail 采集并拿到正文', async () => {
+    const { fetchImpl, calls, sleepImpl } = fakeServer({
+      appendOnStart: [[{ content_id: 'p123', content_url: ZHIHU, title: '知乎标题', content_text: '知乎正文' }]],
+    });
+    const p = new MediaCrawlerProvider({ baseUrl: 'http://n', fetchImpl, sleepImpl, cookies: 'ck' });
+    const r = await p.fetch(ZHIHU);
+    expect(r.text).toBe('知乎正文');
+    expect(r.title).toBe('知乎标题');
+    const start = calls.find((c) => c.url.includes('/api/crawler/start'));
+    expect((start?.body as { crawler_type?: string })?.crawler_type).toBe('detail');
+    expect((start?.body as { specified_ids?: string })?.specified_ids).toBe(ZHIHU);
+  });
+
+  // ★★ 护栏。一次 detail 是**分钟级**的真浏览器任务 —— 不看域名的话, 任何 memo 未命中的 URL
+  //     (哪怕是个 GitHub README)都会起一次采集, 把整条 fetch 链从毫秒拖成分钟, 而调用方
+  //     只会看到"这次抓取好慢"。反向自检: 把 ownsUrl 判断去掉 → 这条当场红。
+  test('★★ 不归本平台的 URL 立即抛, **绝不触发采集**', async () => {
+    const { fetchImpl, calls, sleepImpl } = fakeServer({});
+    const p = new MediaCrawlerProvider({ baseUrl: 'http://n', fetchImpl, sleepImpl });
+    await expect(p.fetch('https://github.com/x/y')).rejects.toThrow(/不归本平台/);
+    expect(calls.filter((c) => c.url.includes('/api/crawler/start'))).toHaveLength(0);
+  });
+
+  test('解析不了的 URL 也不触发采集(不猜)', async () => {
+    const { fetchImpl, calls, sleepImpl } = fakeServer({});
+    const p = new MediaCrawlerProvider({ baseUrl: 'http://n', fetchImpl, sleepImpl });
+    await expect(p.fetch('不是一个 URL')).rejects.toThrow();
+    expect(calls.filter((c) => c.url.includes('/api/crawler/start'))).toHaveLength(0);
+  });
+
+  test('子域名算数(zhuanlan.zhihu.com 与 www.zhihu.com 都归 zhihu)', async () => {
+    const { fetchImpl, calls, sleepImpl } = fakeServer({ appendOnStart: [[]] });
+    const p = new MediaCrawlerProvider({ baseUrl: 'http://n', fetchImpl, sleepImpl });
+    // 采不到正文 → 抛, 但**采集确实被触发了**(与上面那条"不触发"分得开)
+    await expect(p.fetch('https://www.zhihu.com/question/1/answer/2')).rejects.toThrow(/没拿到正文/);
+    expect(calls.filter((c) => c.url.includes('/api/crawler/start'))).toHaveLength(1);
+  });
+});
+
 describe('MediaCrawlerProvider — fetch (只从 memo 供)', () => {
   test('采过的 URL → 全文', async () => {
     const srv = fakeServer({ appendOnStart: [[rec('1')]] });
@@ -153,8 +197,14 @@ describe('MediaCrawlerProvider — fetch (只从 memo 供)', () => {
     expect(r.title).toBe('标题1');
   });
 
-  test('★ 没采过的 URL → 抛, 让 pool 降级 (绝不回落到会撞登录墙的抓取)', async () => {
-    const p = new MediaCrawlerProvider({ baseUrl: 'http://n', fetchImpl: (async () => new Response('')) as unknown as typeof fetch });
+  /**
+   * ⚠ 这条**原来断言的是"没采过就抛"**。2026-08-07 接了 detail 模式之后契约变了:
+   * 归本平台的 URL 会**先去采一次**, 采不到才抛。"抛给 pool 降级"这一半没变 ——
+   * 变的是"抛之前先试一次"。不归本平台的那半在上面那个 describe 里单独钉。
+   */
+  test('★ 采不到正文仍然抛, 让 pool 降级 (绝不回落到会撞登录墙的抓取)', async () => {
+    const { fetchImpl, sleepImpl } = fakeServer({ appendOnStart: [[]] }); // 采了, 但没新增
+    const p = new MediaCrawlerProvider({ baseUrl: 'http://n', fetchImpl, sleepImpl });
     expect(p.fetch('https://www.zhihu.com/answer/999')).rejects.toThrow(ProviderError);
   });
 });

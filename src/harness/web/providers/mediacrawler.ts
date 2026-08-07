@@ -85,11 +85,93 @@ export class MediaCrawlerProvider implements SearchProvider, FetchProvider {
     return run;
   }
 
-  /** 只从 memo 供正文 —— 没有就抛, 让 pool 降级 (绝不回落到会撞登录墙的抓取)。 */
+  /**
+   * 本平台的域名 —— **只有它们才允许触发 detail 采集**。
+   *
+   * ⚠ 这条护栏不是可选的:一次 detail 采集是**分钟级**的真浏览器任务。
+   * 不看域名的话, 任何一个 memo 未命中的 URL(哪怕是个 GitHub README)都会起一次采集,
+   * 把整条 fetch 链从毫秒级拖成分钟级 —— 而调用方只会看到"这次抓取好慢"。
+   */
+  private static readonly PLATFORM_HOSTS: Readonly<Record<string, readonly string[]>> = {
+    zhihu: ['zhihu.com', 'zhuanlan.zhihu.com'],
+    xhs: ['xiaohongshu.com', 'xhslink.com'],
+    weibo: ['weibo.com', 'weibo.cn'],
+    bili: ['bilibili.com', 'b23.tv'],
+    dy: ['douyin.com'],
+    ks: ['kuaishou.com'],
+    tieba: ['tieba.baidu.com'],
+  };
+
+  /** 这个 URL 归本 provider 的平台管吗。解析不了的 URL 一律不归(不猜)。 */
+  private ownsUrl(url: string): boolean {
+    const hosts = MediaCrawlerProvider.PLATFORM_HOSTS[this.opts.platform ?? 'zhihu'] ?? [];
+    try {
+      const h = new URL(url).hostname.toLowerCase();
+      return hosts.some((d) => h === d || h.endsWith(`.${d}`));
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 先从 memo 供;**memo 没有且 URL 归本平台管 → 走 `detail` 模式按 URL 直取**(2026-08-07 补)。
+   *
+   * ## 补的是什么
+   *
+   * 此前只有"采过才供", 于是「给我这 8 篇知乎的正文」这种最常见的需求走不通 ——
+   * 而上游本来就支持 `crawler_type:'detail'` + `specified_ids`(按 URL 直取), provider 没接。
+   * (实测:这条路 8/8 命中, 6.8 万字。)
+   *
+   * ⚠ **不归本平台的 URL 立即抛**, 让 pool 降级到 crawl4ai/firecrawl/jina ——
+   * 绝不回落到会撞登录墙的通用抓取, 也绝不为一个无关 URL 起一次分钟级采集。
+   */
   async fetch(url: string): Promise<FetchResult> {
     const hit = this.corpus.get(url);
-    if (!hit) throw new ProviderError(this.name, undefined, `未采集过此 URL: ${url}`);
-    return { url, text: hit.text, title: hit.title, contentType: 'text/plain' };
+    if (hit) return { url, text: hit.text, title: hit.title, contentType: 'text/plain' };
+    if (!this.ownsUrl(url)) {
+      throw new ProviderError(this.name, undefined, `未采集过此 URL 且不归本平台管: ${url}`);
+    }
+    await this.detail([url]);
+    const fresh = this.corpus.get(url);
+    if (!fresh) throw new ProviderError(this.name, undefined, `detail 采集没拿到正文: ${url}`);
+    return { url, text: fresh.text, title: fresh.title, contentType: 'text/plain' };
+  }
+
+  /**
+   * `detail` 模式:按 URL 直取正文, 结果进 memo。
+   *
+   * 与 `collect`(search 模式)共用同一条排队 + 同一套"只取新增"的 diff ——
+   * 上游是**单任务串行**的, 两条路各排各的队会互相把对方挤掉。
+   */
+  private async detail(urls: readonly string[]): Promise<void> {
+    const run = this.chain.then(
+      () => this.collectDetail(urls),
+      () => this.collectDetail(urls),
+    );
+    this.chain = run.catch(() => undefined);
+    await run;
+  }
+
+  private async collectDetail(urls: readonly string[]): Promise<void> {
+    const platform = this.opts.platform ?? 'zhihu';
+    const before = new Set((await this.readRecords(platform)).map((r) => r.content_id));
+    const res = await this.api('/api/crawler/start', undefined, {
+      platform,
+      login_type: this.opts.cookies ? 'cookie' : 'qrcode',
+      cookies: this.opts.cookies ?? '',
+      crawler_type: 'detail',
+      specified_ids: urls.join(','),
+      enable_comments: false,
+      save_option: 'json',
+      headless: true,
+    });
+    if (!res.ok) throw new ProviderError(this.name, res.status, `起 detail 采集失败: ${await res.text()}`);
+    await this.waitIdle();
+    for (const r of await this.readRecords(platform)) {
+      if (!r.content_url || before.has(r.content_id)) continue;
+      const text = (r.content_text ?? '').trim();
+      if (text) this.corpus.set(r.content_url, { text, title: r.title });
+    }
   }
 
   private async collect(query: string, maxResults: number, signal?: AbortSignal): Promise<SearchResult[]> {
