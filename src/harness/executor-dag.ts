@@ -2703,7 +2703,12 @@ async function executePlan(
         },
         '[omd/executor-dag] fan-in 定向摘要 (扇出≥2 → 摘要替全文注入)',
       );
-      return { r: { ...r, usage: addUsage(r.usage, usage) }, view };
+      // 进账本: 两个原始计数, 供读数板判 `FANIN_ANCHOR_CAP` 该不该调 (三态见类型定义处)。
+      // 只在**真做了摘要**这条路上设 —— 上面每一个 early return 都保持字段缺席, 那正是三态的第一格。
+      return {
+        r: { ...r, usage: addUsage(r.usage, usage), faninAnchors: [anchorLoss.anchors, anchorLoss.lost] as [number, number] },
+        view,
+      };
     } catch (err) {
       logger.warn(
         { node: id, err: err instanceof Error ? err.message : String(err) },
