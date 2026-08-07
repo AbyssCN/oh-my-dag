@@ -50,7 +50,7 @@ import { createRunStore } from './run-store';
 import { createOwnerInbox, type OwnerInbox } from './owner-inbox';
 import { createTriageTools } from './tools/triage';
 import { runExecutorDag, runExecutorDagWithPlan } from '../harness/executor-dag';
-import type { ExecutorDagConfig } from '../harness/executor-dag-types';
+import type { DagNodeEvent, ExecutorDagConfig } from '../harness/executor-dag-types';
 import type { ConductorPlan } from '../harness/conductor-plan';
 import { prunePass } from '../harness/plan-passes/prune-pass';
 import { dedupPass } from '../harness/plan-passes/dedup-pass';
@@ -106,6 +106,11 @@ export interface AssembleOmdMcpDeps {
   pathfinder?: Partial<Pick<PathfinderToolDeps, 'executeSlice' | 'dispatchFrontier'>>;
   /** fleet spawn 接缝 (测试注入 fake; 生产默认 Bun.spawn)。 */
   spawn?: SpawnFn;
+  /**
+   * **进程内节点事件旁路** (TUI SDD §6, 切片 S11): TUI 的 HUD 靠它拿活体进度。
+   * 给了不改任何执行行为, 只是在 hud 镜像写盘之后多转一份。省略 = 不转。
+   */
+  onNodeEvent?: (runId: string, e: DagNodeEvent) => void;
   /** plan-memory 账本接缝 (测试注入 :memory:; 默认 .omd/plan-ledger.db)。 */
   ledger?: PlanLedger;
   /** DAG 运行留痕接缝 (测试注入 :memory:; 默认 .omd/dag-runs.db)。 */
@@ -597,7 +602,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   // 真源 = tool-renames.ts 一张表; 文档/徽章两条闸 import 同表, 注册面与闸不可能漂移。
   return applyToolRenames([
     // continuity 恒开 (D-3): checkpoint 落 <cwd>/.omd/continuity/<runId>/, dag_run_plan resume 可续。
-    ...createDagTools({ engine, runRegistry, defaultConfig: buildDefaultConfig, continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd }, hudMirror, ledger, recorder }),
+    ...createDagTools({ engine, runRegistry, defaultConfig: buildDefaultConfig, continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd }, hudMirror, ledger, recorder, ...(deps.onNodeEvent ? { onNodeEvent: deps.onNodeEvent } : {}) }),
     createDagResearchTool(researchFanout),
     // 自主 goal 环 (P1 / INV-GOAL-1): buildDefaultConfig 传 thunk = 每次调用重解座位 (INV-MODEL-3)。
     // continuity 同 dag_run 恒开: 内层节点 checkpoint + **外层轮 journal** (INV-P2-6),

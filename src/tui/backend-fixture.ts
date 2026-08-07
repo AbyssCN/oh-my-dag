@@ -25,6 +25,9 @@ export const FIXTURE_URL = 'fixture://l3-test';
 /** 固定回复分两片发 —— 流式装配的判据要的就是"分批到达仍恰好出现一次"。 */
 export const FIXTURE_CHUNKS = ['已收到。', '这是 fixture 后端, 没有发给任何模型。'] as const;
 
+/** fixture 的 run id —— PTY 断言它出现在 HUD 顶行。 */
+export const FIXTURE_RUN_ID = 'fixture-run';
+
 export function createFixtureBackend(): OmdBackend {
   let seq = 0;
   let onEvent: ((e: OmdTuiEvent) => void) | undefined;
@@ -51,6 +54,12 @@ export function createFixtureBackend(): OmdBackend {
       // 工具事件也发一对: PTY 要能验"工具在跑"这条线也接得上。
       emit('tool', { phase: 'start', name: 'fixture_tool' });
       emit('tool', { phase: 'end', name: 'fixture_tool', ok: true });
+      // DAG 节点事件 (S11): 让 L3 能验 HUD 逐节点变。形状与引擎的 `DagNodeEvent` 逐字一致 ——
+      // 不一致的话 PTY 绿而生产红, 那正是 fixture 最容易变成假闸的地方。
+      const push = (node: unknown) => emit('dag', { runId: FIXTURE_RUN_ID, node });
+      push({ type: 'planned', nodes: [{ id: 'fx-leaf', kind: 'agent' }, { id: 'fx-judge', kind: 'judge' }] });
+      push({ type: 'start', id: 'fx-leaf', kind: 'agent' });
+      push({ type: 'settle', id: 'fx-leaf', status: 'done', kind: 'agent', model: 'fixture-model' });
       for (const text of FIXTURE_CHUNKS) emit('chat', { type: 'delta', text });
       emit('session', { sessionId, messageCount: msgs.length + 1 });
       sessions.set(sessionId, msgs);
