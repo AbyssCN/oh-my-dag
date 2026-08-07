@@ -108,16 +108,18 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
       emit('chat', { type: 'delta', text: e.assistantMessageEvent.delta });
       return;
     }
+    // ⚠ `id` 是 pi 的 `toolCallId`, **必须带上**:UI 靠它把 end 对回 start 那一行。
+    //   此前对回去靠的是**工具名** —— 同一个工具连调两次时, 第一个 end 会去更新
+    //   最后一条同名行, 于是屏上"先跑完的那个"标记落在"后开始的那一行"上。
+    // ⚠ `args` 原样透传, 由 UI 去挑那半句 —— 后端不做展示决策(挑哪一格是排版, 不是数据)。
     if (e.type === 'tool_execution_start') {
-      emit('tool', { phase: 'start', name: (e as { toolName?: string }).toolName ?? '?' });
+      const t = e as { toolName?: string; toolCallId?: string; args?: unknown };
+      emit('tool', { phase: 'start', name: t.toolName ?? '?', id: t.toolCallId, args: t.args });
       return;
     }
     if (e.type === 'tool_execution_end') {
-      emit('tool', {
-        phase: 'end',
-        name: (e as { toolName?: string }).toolName ?? '?',
-        ok: !(e as { isError?: boolean }).isError,
-      });
+      const t = e as { toolName?: string; toolCallId?: string; isError?: boolean };
+      emit('tool', { phase: 'end', name: t.toolName ?? '?', id: t.toolCallId, ok: !t.isError });
     }
   };
 

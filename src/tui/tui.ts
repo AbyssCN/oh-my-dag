@@ -41,6 +41,7 @@ import { formatSessions, newSessionId, parseSessionCommand } from './sessions';
 import { buildSettings, formatSettings, parseSettingsCommand } from './settings';
 import { STARTUP_HINT, formatHelp, parseHelpCommand, slashCommands } from './commands';
 import { renderLogo } from './render/logo';
+import { summarizeToolArg } from './render/tool-arg';
 import { formatPressure } from './render/pressure';
 import { renderTable } from './render/table';
 import { formatSkillList, listSkills, loadSkillBlock, parseSkillCommand } from './skills';
@@ -255,6 +256,8 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   const bannerWidth = terminal.columns || 100;
   chatLog.appendBanner(
     [
+      // 顶栏与字标之间留一行 —— 贴着画时字标第一行读起来像是顶栏的一部分。
+      '',
       ...renderLogo(bannerWidth).map(theme.chrome.brand),
       '',
       ...CHROME.welcomeBody({
@@ -444,11 +447,12 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       return;
     }
     if (e.event === 'tool') {
-      const p = e.payload as { phase?: string; name?: string; ok?: boolean };
+      const p = e.payload as { phase?: string; name?: string; ok?: boolean; id?: string; args?: unknown };
       const name = p?.name ?? '?';
       // 一个工具**一行**, end 原地更新 —— 不再 start/end 各追加一条 notice。
-      if (p?.phase === 'start') chatLog.toolStart(name);
-      else chatLog.toolEnd(name, p?.ok !== false);
+      // S-5: 带上参数那半句 —— 只画 `✓ read` 的话, 改对文件和改错文件在屏上长得一模一样。
+      if (p?.phase === 'start') chatLog.toolStart(name, { id: p?.id, detail: summarizeToolArg(p?.args) });
+      else chatLog.toolEnd(name, p?.ok !== false, { id: p?.id });
       tui.requestRender();
       return;
     }
