@@ -50,6 +50,7 @@ import {
   normalizeFaninConfig,
   runFaninSummary,
   composeFaninView,
+  faninAnchorLoss,
   DEFAULT_FANIN_SCHEMA,
 } from './fanin-summary';
 // D-21 escalation 跨轮复用: 语义 Merkle 指纹 + 前驱闭包匹配 (semantic-key 单一真源)。
@@ -2687,8 +2688,16 @@ async function executePlan(
       // 全文指针: continuity 在则落盘留 path (agent consumer 可自 Read); 否则仅摘要 (artifacts 字段保产物锚)。
       const fullPath = continuity ? continuity.manager.saveFaninFull(continuity.runId, id, output) : null;
       const view = composeFaninView(summaryJson, fullPath, output.length);
+      // 产物锚保留率 (2026-08-07): 量这段代码**自己声明的承诺**兑现没有 —— system prompt 里那句
+      // "PRESERVE VERBATIM … file paths" 与 schema 里那句「逐字保留」, 此前没人查。
+      // **只印不拦**: 是基率不是闸 (anchors:0 = 全文没有路径锚, 不是无损; 见 faninAnchorLoss 的头)。
+      const anchorLoss = faninAnchorLoss(output, view);
       logger.info(
-        { node: id, consumers: consumers.length, fullLen: output.length, viewLen: view.length, persisted: !!fullPath },
+        {
+          node: id, consumers: consumers.length, fullLen: output.length, viewLen: view.length, persisted: !!fullPath,
+          pathAnchors: anchorLoss.anchors, anchorsLost: anchorLoss.lost,
+          ...(anchorLoss.lost > 0 ? { anchorsLostSample: anchorLoss.lostSample } : {}),
+        },
         '[omd/executor-dag] fan-in 定向摘要 (扇出≥2 → 摘要替全文注入)',
       );
       return { r: { ...r, usage: addUsage(r.usage, usage) }, view };
