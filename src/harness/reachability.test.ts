@@ -68,6 +68,11 @@ const DYNAMIC_ENTRIES: Record<string, string> = {
     '「4 个 hook + writer 放 docs/examples/claude-code/hooks/ 作 opt-in 例子**不强制接线**」)—— ' +
     '搬进 scripts/ 会让它变成默认接线的东西, 那是改产品决定, 不是修闸。\n' +
     '消费点若哪天进了 `src/` 或 `scripts/`, 请删掉本条豁免。',
+  'src/tui/ext/runner.ts':
+    '扩展子进程的入口, 按**路径字符串**拉起: `tui/ext/host.ts` 的 ' +
+    '`join(import.meta.dir, \'runner.ts\')` → `bwrap [binds] bun run <它> <扩展入口>`。\n' +
+    '⚠ 它是**唯一 import 第三方扩展代码的地方**, 而宿主 (host.ts) 永远不 import 扩展 —— ' +
+    '这条边界正是沙箱成立的前提, 所以它必须在子进程里, 也就必然不在静态 import 图上。',
   'src/harness/dag-mermaid.ts':
     '**benchmark 靶子**: `eval/tasks/medium.ts` 与 `large.ts` 都把这个路径列进目标集 —— ' +
     'eval 会清空它让 fleet 照 SPEC 重建。⚠ `planToMermaid` 生产零消费者, ' +

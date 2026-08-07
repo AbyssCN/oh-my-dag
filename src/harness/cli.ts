@@ -95,6 +95,39 @@ if (userArgs[0] === 'tui') {
       const { assembleOmdMcpTools, resolveEngineModels } = await import('../mcp/assemble');
       const { createConductorChatTools } = await import('../serve/chat-tools');
       const { createCodegraphTools } = await import('../tui/tools/codegraph');
+      // S15a 扩展宿主: 每个扩展一个子进程 (bwrap 在就沙箱)。**加载期硬失败** ——
+      // 碰了没实现的 API 就拒绝并逐条列出, 不半残地跑起来。
+      const { loadExtension, readExtensionList } = await import('../tui/ext/host');
+      const { extTools, exts } = await (async () => {
+        const loaded: import('../tui/ext/host').LoadedExtension[] = [];
+        const toolList: import('./agent-tools').AnyOmdTool[] = [];
+        for (const spec of readExtensionList(cwd)) {
+          const r = await loadExtension(spec.name, spec.entry, { cwd });
+          if (!r.ok) {
+            logger.warn(
+              { ext: spec.name, missing: r.rejected.missing, reason: r.rejected.reason },
+              '[omd/ext] 扩展**拒绝加载**(缺的 API 已逐条列出, 不半残地跑)',
+            );
+            continue;
+          }
+          loaded.push(r.ext);
+          for (const t of r.ext.tools) {
+            toolList.push({
+              name: t.name,
+              label: t.name,
+              description: t.description,
+              promptSnippet: t.promptSnippet ?? t.description,
+              parameters: t.parameters,
+              executionMode: 'sequential',
+              async execute(_id: string, params: unknown) {
+                return { content: [{ type: 'text', text: await (r.ext as import('../tui/ext/host').LoadedExtension).callTool(t.name, params) }], details: undefined };
+              },
+            } as import('./agent-tools').AnyOmdTool);
+          }
+          logger.info({ ext: spec.name, tools: r.ext.tools.length, sandboxed: r.ext.sandboxed }, '[omd/ext] 扩展已加载');
+        }
+        return { extTools: toolList, exts: loaded };
+      })();
       const { ChatStore } = await import('./chat/store');
       const { createEmbeddedBackend } = await import('../tui/backend-embedded');
       // ⚠ 先有工具面才有 backend (工具要交给 runChatTurn), 而节点事件要灌回 backend ——
@@ -108,7 +141,17 @@ if (userArgs[0] === 'tui') {
         store: new ChatStore(cwd),
         memory: createOmdMemory(),
         // S17: 符号能力是**探测式**的 —— 探不到就一个工具都不挂 (不是挂了调了才失败)。
-        tools: [...createConductorChatTools(tools), ...createCodegraphTools({ cwd })],
+        tools: [...createConductorChatTools(tools), ...createCodegraphTools({ cwd }), ...extTools],
+        ...(exts.length > 0
+          ? {
+              // 多个扩展**串起来**追加:每个都只能在前一个的结果上追加, 顺序 = 清单顺序。
+              systemPromptHook: async (p0: string) => {
+                let out = p0;
+                for (const e of exts) out = await e.beforeAgentStart(out);
+                return out;
+              },
+            }
+          : {}),
         // S14: UI 自己直调 dag_runs / dag_resume (不经模型)。给了才有那两个能力。
         mcpTools: tools,
         // 座位每轮现解 (INV-MODEL-3): omd_set_role / `/seat` 改完, 下一句就换座。

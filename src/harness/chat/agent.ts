@@ -77,6 +77,13 @@ export interface ChatTurnOpts {
    * 不写回会话(召回内容不该落进 ChatStore 当成用户说过的话)。省略 = 不注入。
    */
   memory?: import('../memory/store').OmdMemory;
+  /**
+   * system prompt 钩子(S15a:扩展的 `before_agent_start` 落点)。
+   *
+   * ⚠ **只能追加**的校验不在这里 —— 在 `tui/ext/host.ts` 的父侧。这里只认"给我一个串"。
+   * 校验放在调用方是刻意的:这条 opts 将来可能有别的消费者,而那条纪律是**扩展**专属的。
+   */
+  systemPromptHook?: (prompt: string) => Promise<string>;
 }
 
 export interface ChatTurnResult {
@@ -172,15 +179,20 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
     }
   }
 
-  const context: AgentContext = {
-    systemPrompt: buildConductorChatSystemPrompt({
-      cwd: opts.cwd,
-      tools,
-      contextFiles: opts.contextFiles ?? loadProjectContext(opts.cwd),
-    }),
-    messages: session.messages,
+  let systemPrompt = buildConductorChatSystemPrompt({
+    cwd: opts.cwd,
     tools,
-  };
+    contextFiles: opts.contextFiles ?? loadProjectContext(opts.cwd),
+  });
+  if (opts.systemPromptHook) {
+    // fail-open: 钩子挂了不该让这一句发不出去; 但不吞证据。
+    try {
+      systemPrompt = await opts.systemPromptHook(systemPrompt);
+    } catch (err) {
+      logger.warn({ err: (err as Error).message }, '[chat-agent] systemPrompt 钩子抛了 → 用原串');
+    }
+  }
+  const context: AgentContext = { systemPrompt, messages: session.messages, tools };
   const thinking = opts.thinkingLevel ?? 'high';
   const config: AgentLoopConfig = {
     model: piModel,

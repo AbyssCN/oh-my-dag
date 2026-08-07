@@ -50,6 +50,8 @@ export interface EmbeddedBackendDeps {
    * 省略 = 不注入 —— 与"注入了但一条都没召回到"**不是一回事**。
    */
   memory?: import('../harness/memory/store').OmdMemory;
+  /** 扩展的 `before_agent_start` 钩子(S15a)。省略 = 没装扩展。 */
+  systemPromptHook?: (prompt: string) => Promise<string>;
   /** 测试接缝:替换真轮子。生产不传。 */
   runTurn?: typeof runChatTurn;
 }
@@ -155,6 +157,7 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
           onEvent: mapAgentEvent,
           signal: controller.signal,
           ...(deps.memory ? { memory: deps.memory } : {}),
+          ...(deps.systemPromptHook ? { systemPromptHook: deps.systemPromptHook } : {}),
           ...(deps.contextFiles ? { contextFiles: deps.contextFiles } : {}),
         };
         const r = await runTurn(turn);

@@ -442,11 +442,52 @@ async function scenarioSeat() {
   }
 }
 
+/**
+ * 场景 5:**真后端起得来**(2026-08-07 补的盲区)。
+ *
+ * ## 为什么这条非补不可
+ *
+ * 前面所有场景跑的都是 `OMD_TUI_BACKEND=fixture` —— 那是**刻意**的(L3 不许打真模型)。
+ * 但代价是:**生产那条启动路径从来没进过闸**。而它做的事比 fixture 多得多 ——
+ * `bootstrapModelRuntime` / `assembleOmdMcpTools` / `ChatStore` / `createOmdMemory` /
+ * codegraph 探测 / 扩展加载,任何一处在启动时抛都会让 `omd tui` 打不开,
+ * 而 fixture lane 一条都不碰。owner 报"起不来"的那一刻我才发现这个洞。
+ *
+ * ## 它只验"起得来 + 退得掉",**一个模型请求都不发**
+ *
+ * 装配与探测都是本地的;真正花钱的只有 `sendChat`,而这条场景**不按回车**。
+ */
+async function scenarioRealBackendBoots() {
+  // ⚠ 不设 OMD_TUI_BACKEND —— 这正是与其它场景的唯一区别, 也是这条的全部意义。
+  const p = startPty(BUN, ['run', CLI, 'tui'], { env: { OMD_TUI_BACKEND: '' } });
+  try {
+    check(
+      await waitFor(p, (t) => t.includes('omd tui'), 40000),
+      'REAL-1 ★ 真后端(不是 fixture)也起得来',
+      p.text().slice(0, 600),
+    );
+    // footer 必须是 embedded:// —— 是 fixture:// 的话说明环境变量没清干净, 这条就白测了。
+    check(
+      /\[embedded:\/\/[^\]]+\]/.test(p.text()),
+      'REAL-2 ★ footer 是 embedded://<座位>(证明真走了生产装配, 不是 fixture)',
+      p.text().slice(-300),
+    );
+    p.write('\x03');
+    await waitFor(p, (t) => t.includes('再按一次'));
+    p.write('\x03');
+    const code = await Promise.race([p.exitedP, new Promise((r) => setTimeout(() => r('TIMEOUT'), 20000))]);
+    check(code === 0, 'REAL-3 真后端下 Ctrl+C 两次也干净退出', `实得 ${code}`);
+  } finally {
+    p.kill();
+  }
+}
+
 selfTestOracle();
 await scenarioHappyPath();
 await scenarioArmReset();
 await scenarioLogRedirect();
 await scenarioSeat();
+await scenarioRealBackendBoots();
 
 if (failures.length) {
   console.error(`\n✗ L3 PTY: ${failures.length} 条不过 —— ${failures.join(' / ')}`);
