@@ -672,7 +672,62 @@ harness 也在读,**读的方式错了** —— 缺了切分这一步。
 > → 所以第一步永远是**标口径**,不是"统一算法":统一算法会把四对合法的差异抹平,
 >   同时把那一对缺陷藏得更深。
 
-### P-1 · **写的人自己的偏差** —— 倾向于把事情说得比实际更简单、更乐观
+### S-24 · 上游的**类型面**兑现了契约,**实现面**没有 —— 于是 tsc 替它背书
+
+**形状**:一个**第三方包**导出的 API。类型签名齐全、JSDoc 写着它做什么、`tsc` 一片绿、
+IDE 补全把每个方法都列出来 —— 而实现是空的 / 是 `reject` / 是一份没人调用的 schema。
+**我们是消费者,所以"声明面"根本不在我们仓里**,仓内任何一条闸都扫不到它。
+
+**和已有几条哪里不一样**:S-1 是**我们自己**声明了字段而**我们自己**没有消费者
+(两端都在仓内,`empty-knobs` 那条闸够得着);这一条**声明端在 node_modules 里**,
+我们只有消费端 —— 仓内的可达性/消费点闸**结构上不可能覆盖它**。
+S-11 是我们的模块没有入口(静态图看得见);这一条**静态图完全正常**,
+import 得到、类型对得上、调用写得出来。
+
+**为什么没红灯**:`.d.ts` 就是这一族的"绿灯发生器"。类型系统检查的是**形状**,
+而这一族的缺陷恰好**形状全对**。更糟的是 JSDoc —— 它读起来像规格,实际是**意图**,
+和本图鉴开头那句「注释和命名是意图,不是事实」同源,只是这次那句注释**不是我们写的**。
+
+**⚠ 与本族其余各条的一处诚实差别**:这一条**未必到运行时还静默**。
+下面三个实例里,①在第一次调用时就响亮抛,②③才是一路静默到底。
+把它收进来是因为**发现它的时机**属于本族:**在写代码的那一刻,没有任何一层告诉你它是空的** ——
+而那一刻正是决定要不要把架构压在它身上的时刻。
+
+**本仓实例(2026-08-07 立项 omd agent 前的清点,全部逐个读过实现)**
+- **`AgentHarness` 的执行面全是 `unavailable()`** —— `@earendil-works/pi-agent-core@0.84.0`
+  的 `dist/harness/agent-harness.js`:`prompt` / `steer` / `resume` / `abort` / `compact` /
+  `runToCompletion` / `watch` / `lane` …**22 个方法**统一走
+  `Promise.reject(new HarnessNotImplemented(op))`;`hooks.on` / `events.on` 直接抛。
+  **交接文档里记的是「8 个操作」——实际数是 22,是数少了。**
+  最阴的是**配置面是真的**:`getModel`/`setModel`/`getTools`/`setTools`/`setThinkingLevel`
+  全是能用的内存状态。于是你可以 new 出来、配好模型和工具面、一切看起来就绪 ——
+  **直到调 `prompt()`**。⇒ 实际能用的是 `Agent` / `runAgentLoop`,不是它。
+- **`SessionRepo.open()` 的 JSDoc 说 "acquires any backend writer claim",JSONL 实现里没有**
+  —— `dist/harness/session/types.d.ts:321` 写着这句;`jsonl/repo.js:32` 的实现整个是
+  `return new Session(await this.loadStorage(metadata))`。判据可复跑:
+  `ugrep -rn 'claim|lock|exclusive|acquire' dist/harness/session/` —— **整个 session 目录只命中
+  那两行 `.d.ts` 注释,没有任何一行实现**。omd 是多进程(MCP server + serve daemon + 各种
+  短命 `scripts/*`),照签名理解会以为并发开同一 session 是安全的。
+  ⚠ **「两进程同开会静默损坏」这句是推断,本程没有实测** —— 已核实的只有「没有实现 claim」。
+  别把推断记成读数(这正是 P-2)。
+- **telemetry 只有 schema,零埋点** —— `dist/harness/telemetry.js` **507 行**,导出
+  `AI_TELEMETRY_SCHEMA` / `HARNESS_TELEMETRY_SCHEMA` / `startAiSpan` / `startHarnessSpan`。
+  判据可复跑:在 `pi-agent-core/dist` **与** `pi-ai/dist` 里 grep `startAiSpan|startHarnessSpan`
+  并排除定义文件本身 —— **两个包都是零调用点**。`import` 进来 ≠ 有可观测性;
+  这 507 行是**给宿主填的一张表**,不是一套已经在跑的埋点。
+
+**怎么抓**:**没有闸**,只有一条前置动作 —— 和 S-12 同样的处境(它是外部依赖的状态,
+不是我们仓的结构,写不出会红的断言)。
+
+> **把架构压到一个上游 API 上之前,读它的 `.js`,不是它的 `.d.ts`。**
+> 成本判据同 P-2:`cat node_modules/<pkg>/dist/<file>.js` 是一条命令的事,
+> **没有任何理由用签名推**。三个最便宜的读法:
+> ① 实现体里有没有 `NotImplemented` / `reject` / 空函数体;
+> ② JSDoc 里的动词(acquires / ensures / validates)在实现里**grep 得到对应的东西吗**;
+> ③ 一个导出的 helper,在**它自己的包里**有没有调用点 —— 零调用点 = 它在等宿主,不是在工作。
+>
+> ⚠ **这一族的实例天生倾向于被低估**:上一程记「8 个操作」而实际 22,方向和 P-1 一致
+> (说得比实际更轻)。**数不该从印象里来** —— 数一遍再写。
 
 > ⚠ 这一条与上面 S-* 那些**不同类**:S-* 是**代码/记录**的静默失效,这一条是**写这些东西的人**
 > 的失效。放在同一份图鉴里,是因为它的后果一模一样 —— **报得对、读起来正常、没有任何一层报错**,
@@ -795,6 +850,9 @@ harness 也在读,**读的方式错了** —— 缺了切分这一步。
 | 复用率不许再"推" | `src/harness/omd-readout.test.ts` | 分子分母都只认**节点面记了复用的跑**;老行算不出**不进分母**(**带反向自检**:把老行当 0 复用 → 红);夹具已改成像真引擎(复用节点进 `results`) | S-23 S-19 |
 | 回溯读数的单位 | `src/harness/omd-readout.test.ts` | 不同轮不算一对 · 同一节点不能和自己撞车 · 按 runId 分组(跨 run 的同名路径不是同一个文件)(**带反向自检**:拿掉跨轮排除 → 红;拿掉自配对守卫 → 红) | S-22 S-19 |
 | 熔断键的机会分母 | `src/harness/omd-readout.test.ts` | singleton(没机会)/ 真重复 / near-miss 三格互斥且穷尽;跨 run 的 near-miss 不算真机会;**空输出那桶是反例不进任何一格**(**带反向自检**:`exactRepeat` 去掉 `hits >= 2` → 两条红) | S-21 S-19 S-20 |
+
+**S-24 也没有闸** —— 声明端在 `node_modules` 里,仓内的消费点/可达性闸**结构上够不着**。
+落在纪律上的是一条前置动作:**压架构之前读上游的 `.js` 不读 `.d.ts`**(三条便宜读法见该条)。
 
 **S-12 没有闸,只有纪律** —— 它是运行时条件不是结构,写不出会红的断言。
 落在代码里的是两处 `logger.warn`(`run-store.put` / `RunRegistry.persist`),
