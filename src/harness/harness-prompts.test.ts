@@ -6,7 +6,7 @@
  * 补焊块重复 DISCIPLINE_CORE 词条 → 互补钉红。
  */
 import { describe, expect, test } from 'bun:test';
-import { CONDUCTOR_HARNESS_CORE, LEAF_HARNESS_CORE, buildConductorChatSystemPrompt } from './harness-prompts';
+import { CONDUCTOR_HARNESS_CORE, CONDUCTOR_SITUATIONAL, LEAF_HARNESS_CORE, buildConductorChatSystemPrompt } from './harness-prompts';
 import { agentScaffold } from './agent-leaf';
 import { promptVersionOfText } from '../model/langfuse';
 
@@ -48,8 +48,36 @@ describe('conductor 档:冻结前缀在前,动态尾在后(cache 面结构)', ()
     for (const anchor of [
       '<stance>', '<roles>', '<core-discipline>', '<final-ruling>',
       '<gates>', '<dispatch>', '<owner>', '<recommendation-restraint>',
+      // 2026-08-07 第三趟清点的 F-1..F-4 (skill 方法论进 conductor)
+      '<question-triage>', '<deliberation-order>', '<absent-upstream>', '<external-baseline>',
     ]) {
       expect(CONDUCTOR_HARNESS_CORE).toContain(anchor);
+    }
+  });
+
+  test('★ 情境段拼在冻结核之后、工具快照之前(两个常量构成稳定前缀)', () => {
+    const tools = [{ name: 'dag_status', promptSnippet: 'dag_status: 查一个 run 的进度' }];
+    const p = buildConductorChatSystemPrompt({ cwd: '/w', tools });
+    // 反向自检: 把 CONDUCTOR_SITUATIONAL 从 parts 里拿掉 → 第一条红;
+    // 挪到 tools 之后 → 第二条红 (顺序钉的是 cache 面结构, 不是"在不在")。
+    expect(p).toContain(CONDUCTOR_SITUATIONAL);
+    expect(p.indexOf(CONDUCTOR_SITUATIONAL)).toBeLessThan(p.indexOf('Available tools'));
+    expect(p.startsWith(`${CONDUCTOR_HARNESS_CORE}\n\n${CONDUCTOR_SITUATIONAL}`)).toBe(true);
+  });
+
+  test('情境段覆盖 Y-1..Y-5 五条(丢一条当场红)', () => {
+    for (const anchor of [
+      '<cross-validation>', '<recall-discipline>', '<iteration-bound>',
+      '<vertical-slicing>', '<scope-lock>',
+    ]) {
+      expect(CONDUCTOR_SITUATIONAL).toContain(anchor);
+    }
+  });
+
+  test('★ 情境段与冻结核不重复(重复 = 每轮付两遍 token 且蒸馏走样)', () => {
+    // 核里已焊的承重词不许在情境段再现 —— 分野是"常驻价值", 重复即分野失效。
+    for (const dup of ['<gates>', '3 strikes', 'Anti-happy-path', 'ceremonial asking']) {
+      expect(CONDUCTOR_SITUATIONAL).not.toContain(dup);
     }
   });
 });
