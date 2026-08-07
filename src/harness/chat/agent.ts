@@ -16,6 +16,8 @@
 import {
   runAgentLoop,
   convertToLlm,
+  estimateContextTokens,
+  estimateTokens,
   type AgentContext,
   type AgentEvent,
   type AgentLoopConfig,
@@ -24,6 +26,8 @@ import {
 // 0.84 起 `runAgentLoop` 第 6 参 streamFn **必填** (同 agent-leaf 头注)。0.80 的内部默认就是它。
 import { streamSimple } from '@earendil-works/pi-ai/compat';
 import { assistantText, loadProjectContext } from '../agent-leaf';
+import { logger } from '../../logger';
+import { type CompactionCallModel, compactChatMessages } from './compaction';
 import type { AnyOmdTool } from '../agent-tools';
 import { buildConductorChatSystemPrompt } from '../harness-prompts';
 import { parseModelRef } from '../fleet';
@@ -51,6 +55,17 @@ export interface ChatTurnOpts {
    * 测试接缝:替换真循环(真循环要真模型)。生产不传。
    */
   loopFn?: typeof runAgentLoop;
+  /**
+   * 上下文预算占比(S9)。超过 `contextWindow × 这个比例`就压缩。默认 0.85,与 leaf 同。
+   * 传 `0` 关掉压缩 —— **关掉不是省钱,是撞窗口时整轮硬失败**。
+   */
+  contextBudgetRatio?: number;
+  /** 压缩时尾部保留的 token 预算。默认 20k,与 leaf 同。 */
+  compactionKeepRecentTokens?: number;
+  /**
+   * 测试接缝:摘要那一次模型调用。省略 → 真 `callModel`(账本挂在它出口上)。生产不传。
+   */
+  compactionCallModel?: CompactionCallModel;
 }
 
 export interface ChatTurnResult {
@@ -59,6 +74,13 @@ export interface ChatTurnResult {
   reply: string;
   /** 本轮新增消息(含 user prompt 本身)。 */
   newMessages: AgentMessage[];
+  /**
+   * 本轮压缩了几次(轮前 + 轮内合计)。
+   *
+   * ⚠ `0` 与"没开压缩"是两件事,后者看 `compactionRatio === 0` —— 别把两种情形
+   * 都读成"这轮没压"(本仓 `NULL ≠ 0 ≠ 不适用`)。
+   */
+  compactions: number;
 }
 
 /** 首条消息 → 会话标题(列表页显示用,截断即可)。 */
@@ -76,6 +98,61 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
 
   const session = opts.store.load(opts.sessionId) ?? opts.store.create(opts.sessionId, titleOf(opts.prompt));
   const tools = opts.tools ?? [];
+
+  // ── 上下文压缩 (S9) ────────────────────────────────────────────────────────
+  // 两处都要, 管的不是同一件事:
+  //  ① **轮前** —— 管**跨轮**增长。prepareNextTurn 只改这一次 run 内的上下文, 而下一轮
+  //     从 ChatStore 重新载入时省下的 token 全回来了。真正让持久会话瘦下来的是这一条。
+  //  ② **prepareNextTurn** —— 管**单轮内**工具循环的爆炸式增长 (一轮几十次工具调用)。
+  const budgetRatio = opts.contextBudgetRatio ?? 0.85;
+  const keepRecentTokens = opts.compactionKeepRecentTokens ?? 20_000;
+  const window = piModel.contextWindow;
+  const wantCompaction = budgetRatio > 0 && window > 0;
+  let compactions = 0;
+  /**
+   * 压缩当轮, provider 自报的用量这个锚是**失效**的 (agent-leaf 2026-08-01 实测):
+   * 压缩删的是最后一条 assistant **前面**的消息, 而那条 assistant 自报的 usage 仍是压缩前的大数
+   * → 压完再问"还超不超"永远答"超" —— 压缩照跑照付钱, 然后照样停。锚只失效一轮。
+   */
+  let usageAnchorStale = false;
+  const pureEstimate = (msgs: AgentMessage[]): number => msgs.reduce((n, m) => n + estimateTokens(m), 0);
+  const overBudget = (msgs: AgentMessage[]): boolean => {
+    const tokens = usageAnchorStale ? pureEstimate(msgs) : estimateContextTokens(msgs).tokens;
+    usageAnchorStale = false;
+    return tokens >= window * budgetRatio;
+  };
+
+  if (wantCompaction && overBudget(session.messages)) {
+    const before = pureEstimate(session.messages);
+    const compacted = await compactChatMessages({
+      messages: session.messages,
+      model: opts.model,
+      keepRecentTokens,
+      ...(opts.signal ? { signal: opts.signal } : {}),
+      ...(opts.compactionCallModel ? { callModelFn: opts.compactionCallModel } : {}),
+    });
+    if (compacted) {
+      compactions++;
+      const beforeCount = session.messages.length;
+      // 立刻**写回会话**: 不写回的话下一轮载入的还是老的那一堆, 这次压缩等于白花钱。
+      session.messages = compacted;
+      opts.store.save(session);
+      logger.info(
+        {
+          sessionId: opts.sessionId,
+          window,
+          tokens: `${before}→${pureEstimate(compacted)}`,
+          msgs: `${beforeCount}→${compacted.length}`,
+        },
+        '[chat-agent] 轮前上下文压缩 —— 已写回会话',
+      );
+    } else {
+      // 压不动不是致命错: 这一轮照跑, 撞窗口由 provider 报。但**不许静默** ——
+      // "压缩开着却一次没压成"与"没开压缩"读数上长得一样, 分不开就查不出。
+      logger.warn({ sessionId: opts.sessionId, window }, '[chat-agent] 超预算但压不动 (消息太少或切不出点)');
+    }
+  }
+
   const context: AgentContext = {
     systemPrompt: buildConductorChatSystemPrompt({
       cwd: opts.cwd,
@@ -92,6 +169,34 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
     ...(thinking !== 'off' ? { reasoning: thinking } : {}),
     // 凭证每轮现取(同 agent-leaf: OAuth token 会在长会话中途过期)。
     getApiKey: (p: string) => resolvePiApiKey(p),
+    // ② 单轮内压缩。顺序是**先压再判停**: 循环先调 prepareNextTurn 换上下文, 再拿换好的
+    //    问 shouldStopAfterTurn。于是压成功 → 下一句判据自然在线下, 不停;
+    //    压不动 → 下一句接住优雅停。不需要额外的"压过了没"标志位, 也就没有它漂掉的可能。
+    ...(wantCompaction
+      ? {
+          prepareNextTurn: async ({ context: ctx }) => {
+            if (!overBudget(ctx.messages)) return undefined;
+            const compacted = await compactChatMessages({
+              messages: ctx.messages,
+              model: opts.model,
+              keepRecentTokens,
+              ...(opts.signal ? { signal: opts.signal } : {}),
+              ...(opts.compactionCallModel ? { callModelFn: opts.compactionCallModel } : {}),
+            });
+            if (!compacted) return undefined; // 压不动 → 交给 shouldStopAfterTurn 优雅停
+            usageAnchorStale = true;
+            compactions++;
+            logger.info(
+              { sessionId: opts.sessionId, msgs: `${ctx.messages.length}→${compacted.length}` },
+              '[chat-agent] 轮内上下文压缩 —— 接着跑, 不是交卷',
+            );
+            // ⚠ 只换 messages。`systemPrompt` 原样带过去 —— 它是冻结前缀, 动一个字
+            // 就是 conductor 侧 prompt-cache 全失效, 而压缩本来是为了省钱。
+            return { context: { ...ctx, messages: compacted } };
+          },
+          shouldStopAfterTurn: ({ context: ctx }) => overBudget(ctx.messages),
+        }
+      : {}),
   };
 
   const loop = opts.loopFn ?? runAgentLoop;
@@ -115,5 +220,5 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
   session.messages.push(...returned);
   opts.store.save(session);
   const reply = returned.map(assistantText).join('');
-  return { session, reply, newMessages: returned };
+  return { session, reply, newMessages: returned, compactions };
 }
