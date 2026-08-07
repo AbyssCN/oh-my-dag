@@ -169,10 +169,20 @@ if (userArgs[0] === 'tui') {
       backend = embedded;
     }
     await runOmdTui({ backend, cwd, contextFiles, ...(extStatus.length > 0 ? { extensions: extStatus } : {}) });
+  } catch (err) {
+    // S-4b: 起不来的时候说人话。**实测撞出来的** —— 空仓里跑 `omd tui`, 第一屏是
+    // `role-models.ts:433` 的行号和 `^` 指针(座位是逐仓配的, 所以除了 omd 自己这个仓,
+    // 任何仓第一次跑都会撞上)。抛得对, 但那不是给人看的第一屏。原话原样带着, 只加一层翻译。
+    const { formatBootFailure } = await import('../tui/boot');
+    process.stderr.write(formatBootFailure(err, cwd));
+    logger.error({ err: err instanceof Error ? err.message : String(err) }, '[omd/tui] 启动失败');
+    process.exitCode = 1;
   } finally {
     tuiLog.close();
   }
-  process.exit(0);
+  // ⚠ 不能写死 0:上面的 catch 刚把 exitCode 设成 1, 写死会把它盖掉 ——
+  //   症状是"报了错但退出码是成功", 脚本里就再也判不出起没起来。
+  process.exit(process.exitCode ?? 0);
 }
 
 // omd serve: web 控制台 daemon —— 与 mcp 同一装配面 (一个控制面, 两个传输), 外加读侧磁盘契约 + chat。
