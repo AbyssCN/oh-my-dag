@@ -31,6 +31,18 @@ interface Entry {
   open: boolean;
 }
 
+/** 从 pi 的消息 content 取纯文本。取不出 → `null`(**不编一个占位**)。 */
+function plainText(content: unknown): string | null {
+  if (typeof content === 'string') return content.trim() || null;
+  if (!Array.isArray(content)) return null;
+  const t = content
+    .map((c) => (c as { type?: string; text?: string }).text ?? '')
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+  return t || null;
+}
+
 /** 前缀一律纯 ASCII —— S6 的白名单里 `>` `!` 都在,箭头/圆点那些全在「待真终端」档。 */
 const PREFIX: Record<ChatRole, string> = { user: '> ', assistant: '', notice: '! ' };
 
@@ -47,6 +59,11 @@ export class ChatLog implements Component {
   /** 最后一条的完整文本(测试与流式收尾用)。没有条目时返回 `null`,不是空串。 */
   get lastText(): string | null {
     return this.entries.at(-1)?.buffer ?? null;
+  }
+
+  /** 清空(切会话时用)。**不清的话上一条会话的消息会留在屏上冒充这一条的历史。** */
+  clear(): void {
+    this.entries = [];
   }
 
   appendUser(text: string): void {
@@ -97,6 +114,28 @@ export class ChatLog implements Component {
   closeStreaming(): void {
     const last = this.entries.at(-1);
     if (last?.open) last.open = false;
+  }
+
+  /**
+   * 把一段已存会话**回放**进记录(切会话 / 启动时恢复)。
+   *
+   * ⚠ 回放的是**历史不是新消息**:每条都直接定型(`open: false`),
+   * 不走流式追加 —— 否则最后一条会是"开着的",下一轮的第一片会续到它后面。
+   *
+   * 认不出的角色(toolResult 等)**跳过不画**:把一条工具结果画成助手发言,
+   * 读起来就像模型说过它没说过的话。
+   */
+  replay(messages: readonly { role?: string; content?: unknown }[]): void {
+    this.clear();
+    for (const m of messages) {
+      const text = plainText(m.content);
+      if (!text) continue;
+      if (m.role === 'user') this.appendUser(text);
+      else if (m.role === 'assistant') {
+        this.appendAssistantChunk(text);
+        this.closeStreaming();
+      }
+    }
   }
 
   render(width: number): string[] {

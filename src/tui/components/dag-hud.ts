@@ -68,11 +68,19 @@ const STATUS_LABEL: Record<NodeState['status'], string> = {
 };
 
 /** 表里最多画几行 —— 一个 200 节点的 map 会把整屏吃光,而 HUD 是配角。 */
-const MAX_ROWS = 12;
+export const MAX_ROWS = 12;
 
 export class DagHud implements Component {
   private nodes = new Map<string, NodeState>();
   private runLabel: string | null = null;
+  /**
+   * 滚动窗口的起点。
+   *
+   * ⚠ `0` = **跟随模式**:排序是「在跑的排最前」,所以窗口停在 0 就自动跟着活动节点走。
+   * 一旦用户滚动过(offset > 0),窗口就**钉住** —— 新节点进来不许把他正在看的那一屏顶走。
+   * 想回到跟随:`scrollToTop()`(Alt+Home)。
+   */
+  private offset = 0;
 
   constructor(
     private theme: OmdTuiTheme,
@@ -94,6 +102,33 @@ export class DagHud implements Component {
   beginRun(label: string): void {
     this.nodes.clear();
     this.runLabel = label;
+    this.offset = 0; // 换 run 回到跟随:上一个 run 的滚动位置对新图没有意义
+  }
+
+  /**
+   * 滚动。**夹在 `[0, max(0, total - MAX_ROWS)]`** —— 滚过头留一屏空白比什么都不显示更糟:
+   * 那看起来像"节点都没了"。
+   *
+   * @returns 位置有没有真的变(没变时调用方可以不重绘)
+   */
+  scrollBy(delta: number): boolean {
+    const max = Math.max(0, this.nodes.size - MAX_ROWS);
+    const next = Math.min(Math.max(0, this.offset + delta), max);
+    if (next === this.offset) return false;
+    this.offset = next;
+    return true;
+  }
+
+  /** 回到跟随模式(窗口重新跟着在跑的节点走)。 */
+  scrollToTop(): boolean {
+    if (this.offset === 0) return false;
+    this.offset = 0;
+    return true;
+  }
+
+  /** @internal 测试观测口。 */
+  get scrollOffset(): number {
+    return this.offset;
   }
 
   apply(e: DagNodeEvent): void {
@@ -137,14 +172,22 @@ export class DagHud implements Component {
     // 在跑的排前面 —— HUD 是用来看"现在怎么样"的, 不是流水账。
     const order: Record<NodeState['status'], number> = { running: 0, failed: 1, pending: 2, done: 3, skipped: 4 };
     const sorted = [...all].sort((a, b) => order[a.status] - order[b.status]);
-    const shown = sorted.slice(0, MAX_ROWS);
+    // 节点变少时(换 run / 重规划)把越界的 offset 收回来 —— 否则会画出一屏空白。
+    const max = Math.max(0, sorted.length - MAX_ROWS);
+    if (this.offset > max) this.offset = max;
+    const shown = sorted.slice(this.offset, this.offset + MAX_ROWS);
     const rows = [
       ['节点', '角色', '状态', '模型'],
       ...shown.map((n) => [n.id, roleOf(n.kind), STATUS_LABEL[n.status], n.model ?? '-']),
     ];
     out.push(...renderTable(rows, width));
-    if (sorted.length > shown.length) {
-      out.push(this.theme.chrome.dim(fitLine(`... 另有 ${sorted.length - shown.length} 个节点`, width)));
+    if (sorted.length > MAX_ROWS) {
+      // ⚠ 画的是**窗口位置**不只是"还有多少" —— 只说"另有 N 个"的话,滚动之后
+      // 你不知道自己在哪一段,也不知道还能不能往下滚。
+      const from = this.offset + 1;
+      const to = this.offset + shown.length;
+      const follow = this.offset === 0 ? ' 跟随中' : '';
+      out.push(this.theme.chrome.dim(fitLine(`节点 ${from}-${to} / ${sorted.length}${follow}  Alt+↑↓ 滚动, Alt+Home 回顶`, width)));
     }
     return out;
   }

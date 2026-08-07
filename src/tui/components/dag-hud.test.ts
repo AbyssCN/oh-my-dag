@@ -112,9 +112,86 @@ describe('宽度', () => {
     }
   });
 
-  test('★ 节点多到画不下时说"另有 N 个", 不是静默截断', () => {
+  test('★ 节点多到画不下时画**窗口位置**, 不是静默截断', () => {
+    // 只说"另有 N 个"是不够的: 滚动之后你不知道自己在哪一段, 也不知道还能不能往下滚。
     const h = make();
     h.apply(planned(...(Array.from({ length: 40 }, (_, i) => [`n${i}`, 'agent'] as [string, string]))));
-    expect(text(h)).toContain('另有 28 个节点');
+    expect(text(h)).toContain('节点 1-12 / 40');
+    expect(text(h)).toContain('跟随中');
+  });
+});
+
+describe('★ 滚动', () => {
+  // 反向自检 (2026-08-07 实跑): 把 render 里的 `slice(this.offset, ...)` 改回 `slice(0, MAX_ROWS)`
+  // → 「滚动之后看到的是后一段」当场红(滚了但画面不动 = 一个假的滚动)。
+  const big = (n: number) => {
+    const h = make();
+    h.apply(planned(...(Array.from({ length: n }, (_, i) => [`n${String(i).padStart(2, '0')}`, 'agent'] as [string, string]))));
+    return h;
+  };
+
+  test('★ 滚动之后看到的是**后一段** —— 不动的话就是个假滚动', () => {
+    const h = big(40);
+    expect(text(h)).toContain('n00');
+    expect(h.scrollBy(12)).toBe(true);
+    const out = text(h);
+    expect(out).not.toContain('n00');
+    expect(out).toContain('n12');
+    expect(out).toContain('节点 13-24 / 40');
+  });
+
+  test('★ 夹在两端 —— 滚过头留一屏空白比什么都不显示更糟(看起来像节点都没了)', () => {
+    const h = big(40);
+    h.scrollBy(999);
+    expect(h.scrollOffset).toBe(28); // 40 - 12
+    expect(text(h)).toContain('节点 29-40 / 40');
+    h.scrollBy(-999);
+    expect(h.scrollOffset).toBe(0);
+  });
+
+  test('★ 到边界后再滚返回 false(调用方据此不重绘)', () => {
+    const h = big(40);
+    expect(h.scrollBy(-1)).toBe(false); // 已在顶
+    h.scrollBy(999);
+    expect(h.scrollBy(1)).toBe(false); // 已在底
+  });
+
+  test('★ offset=0 是**跟随模式**, 滚过之后钉住 —— 新节点不许把正在看的那一屏顶走', () => {
+    const h = big(40);
+    expect(text(h)).toContain('跟随中');
+    h.scrollBy(5);
+    expect(text(h)).not.toContain('跟随中');
+    // 又来一批节点: 窗口位置不动
+    h.apply(planned(['zz', 'agent']));
+    expect(h.scrollOffset).toBe(5);
+  });
+
+  test('scrollToTop 回到跟随', () => {
+    const h = big(40);
+    h.scrollBy(9);
+    expect(h.scrollToTop()).toBe(true);
+    expect(h.scrollOffset).toBe(0);
+    expect(h.scrollToTop()).toBe(false); // 幂等
+  });
+
+  test('★ 换 run 回到跟随 —— 上一个 run 的滚动位置对新图没有意义', () => {
+    const h = big(40);
+    h.scrollBy(10);
+    h.beginRun('r2');
+    expect(h.scrollOffset).toBe(0);
+  });
+
+  test('★ 节点变少时越界的 offset 被收回 —— 否则画出一屏空白', () => {
+    const h = big(40);
+    h.scrollBy(28);
+    h.beginRun('r2');
+    h.apply(planned(...(Array.from({ length: 3 }, (_, i) => [`s${i}`, 'agent'] as [string, string]))));
+    const out = text(h);
+    expect(out).toContain('s0'); // 真的画出来了, 不是空白
+  });
+
+  test('节点没超过一屏时不画滚动行(那是噪声)', () => {
+    const h = big(3);
+    expect(text(h)).not.toContain('Alt+');
   });
 });
