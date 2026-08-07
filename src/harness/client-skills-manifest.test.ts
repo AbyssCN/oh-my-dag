@@ -38,6 +38,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { loadSkillSource } from './skills/compile';
 
 const ROOT = new URL('../..', import.meta.url).pathname.replace(/\/$/, '');
 const SKILLS_DIR = join(ROOT, 'client-skills');
@@ -78,5 +79,27 @@ describe('client-skills 出厂清单', () => {
       const m = /^name:\s*(\S+)\s*$/m.exec(text);
       expect(m?.[1], `${dir}/SKILL.md 缺 frontmatter name:`).toBe(dir);
     }
+  });
+});
+
+describe('★ 每个 skill 都 load 得出来 (2026-08-07 加, 当场抓到 omd-slim)', () => {
+  /**
+   * 这条闸是 TUI 的 `/skill` (A7) 逼出来的: 出厂清单只核"目录/README/name 对不对得上",
+   * **没有人核过 frontmatter 能不能被 YAML 解出来**。
+   *
+   * 抓到的真问题: `omd-slim` 的 description 里有个**没加引号的 `ponytail:`** ——
+   * 冒号让 YAML 把它读成嵌套 mapping → `bad indentation of a mapping entry` →
+   * `loadSkillSource` 返回 null。后果不止 TUI 看不到它: skill 编译器 (`/omd-distill`)、
+   * agent 模板卡走的都是同一个函数, **它对所有消费者都是坏的**, 只是从来没人量过。
+   *
+   * 反向自检: 把 omd-slim description 的引号去掉 → 这条当场红。
+   */
+  test('client-skills/ 里每个目录的 SKILL.md 都能被 loadSkillSource 解出来', () => {
+    const bad: string[] = [];
+    for (const e of readdirSync(SKILLS_DIR, { withFileTypes: true })) {
+      if (!e.isDirectory() || e.name.startsWith('.')) continue;
+      if (!loadSkillSource(SKILLS_DIR, e.name)) bad.push(e.name);
+    }
+    expect(bad, `这些 skill 的 frontmatter 解不出来 (多半是没加引号的冒号)`).toEqual([]);
   });
 });

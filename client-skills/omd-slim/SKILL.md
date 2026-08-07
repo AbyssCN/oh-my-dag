@@ -1,6 +1,6 @@
 ---
 name: omd-slim
-description: 精益审计:先扫 ponytail: 债务台账记已知欠账,再经 omd dag_slim 派车队按 global-first 两遍法找过度工程(镀金/过度抽象/死复杂度),只删不加。Trigger:/omd-slim、找过度工程、瘦身、YAGNI 检查、债务台账。
+description: '精益审计:先扫 ponytail: 债务台账记已知欠账,再经 omd dag_slim 派车队按 global-first 两遍法找过度工程(镀金/过度抽象/死复杂度),只删不加。Trigger:/omd-slim、找过度工程、瘦身、YAGNI 检查、债务台账。'
 ---
 
 # /omd-slim — 精益审计(先债后瘦)
