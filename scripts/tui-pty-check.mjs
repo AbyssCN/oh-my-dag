@@ -179,9 +179,11 @@ async function scenarioHappyPath() {
     p.write('\r');
     check(await waitFor(p, (t) => t.includes('> hej')), 'S8-1 回车后用户消息进对话记录', p.text().slice(0, 400));
     // S10: 后端事件真的装配成了屏幕内容 —— 工具行 + 分两片到达的流式回复。
+    // ⚠ 工具现在是**一行原地更新**(2026-08-07): start 画 `· name`, end 改成 `✓ name`。
+    //   此前是 start/end 各追加一条 notice —— 一轮十次调用二十行噪音。
     check(
-      await waitFor(p, (t) => t.includes('fixture_tool ok')),
-      'S10-1 工具事件画出来了(start/end 两条真事件)',
+      await waitFor(p, (t) => t.includes('✓ fixture_tool')),
+      'S10-1 ★ 工具跑完的那一行标记变了(一个工具一行, 不是两条)',
       p.text().slice(0, 500),
     );
     check(

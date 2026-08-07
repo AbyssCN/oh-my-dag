@@ -19,10 +19,12 @@
 import { type Component, Markdown, Text } from '@earendil-works/pi-tui';
 import type { OmdTuiTheme } from '../theme';
 
-export type ChatRole = 'user' | 'assistant' | 'notice';
+export type ChatRole = 'user' | 'assistant' | 'notice' | 'tool';
 
 interface Entry {
   role: ChatRole;
+  /** tool 条目的键 —— `toolEnd` 靠它**原地更新**而不是再追加一条。 */
+  toolKey?: string;
   /** assistant 用 Markdown,其余用 Text —— 两者都实现 `Component`。 */
   component: Component;
   /** 流式累积缓冲;只有 assistant 用得上。 */
@@ -43,8 +45,14 @@ function plainText(content: unknown): string | null {
   return t || null;
 }
 
-/** 前缀一律纯 ASCII —— S6 的白名单里 `>` `!` 都在,箭头/圆点那些全在「待真终端」档。 */
-const PREFIX: Record<ChatRole, string> = { user: '> ', assistant: '', notice: '! ' };
+/**
+ * 角色前缀。字形全在 S6 白名单里(`✓ ✗ ·` 由 2026-08-07 的真终端读数解锁)。
+ *
+ * ⚠ 三种角色三种前缀不是装饰:一条工具输出被画成助手发言,读起来就像模型说了它没说过的话。
+ */
+const PREFIX: Record<ChatRole, string> = { user: '> ', assistant: '', notice: '! ', tool: '' };
+/** 工具行三态。**跑着的与跑完的必须看得出区别** —— 否则你不知道它是在忙还是卡住了。 */
+export const TOOL_MARK = { running: '·', ok: '✓', fail: '✗' } as const;
 
 export class ChatLog implements Component {
   private entries: Entry[] = [];
@@ -64,6 +72,41 @@ export class ChatLog implements Component {
   /** 清空(切会话时用)。**不清的话上一条会话的消息会留在屏上冒充这一条的历史。** */
   clear(): void {
     this.entries = [];
+  }
+
+  /**
+   * 工具开跑 —— **一个工具一行**,`toolEnd` 原地改这一行。
+   *
+   * ⚠ 此前 start/end 各追加一条 notice:一轮十次调用就是二十行噪音,
+   * 把真正的回复挤出屏幕。transcript 是用来读对话的,不是流水账。
+   */
+  toolStart(name: string): void {
+    this.closeStreaming();
+    this.entries.push({
+      role: 'tool',
+      toolKey: name,
+      component: new Text(this.theme.chrome.dim(`${TOOL_MARK.running} ${name}`)),
+      buffer: name,
+      open: false,
+    });
+  }
+
+  /** 工具跑完 —— **原地更新**那一行。找不到对应行就补一条(总比丢掉强)。 */
+  toolEnd(name: string, ok: boolean): void {
+    const mark = ok ? TOOL_MARK.ok : TOOL_MARK.fail;
+    const text = `${mark} ${name}`;
+    const hit = [...this.entries].reverse().find((e) => e.role === 'tool' && e.toolKey === name);
+    if (hit) {
+      (hit.component as Text).setText(ok ? this.theme.chrome.dim(text) : this.theme.chrome.warn(text));
+      return;
+    }
+    this.entries.push({
+      role: 'tool',
+      toolKey: name,
+      component: new Text(ok ? this.theme.chrome.dim(text) : this.theme.chrome.warn(text)),
+      buffer: name,
+      open: false,
+    });
   }
 
   appendUser(text: string): void {
@@ -139,8 +182,14 @@ export class ChatLog implements Component {
   }
 
   render(width: number): string[] {
-    // 条目之间空一行:没有分隔的话两条消息读起来是一段。首条前面不空。
-    return this.entries.flatMap((e, i) => (i === 0 ? e.component.render(width) : ['', ...e.component.render(width)]));
+    // 条目之间空一行:没有分隔的话两条消息读起来是一段。
+    // ⚠ 例外:**连续的工具行不空行** —— 一串工具本来就是一组,每行之间插空会把它们
+    //   拆成看起来互不相关的十件事。首条前面也不空。
+    return this.entries.flatMap((e, i) => {
+      const prev = this.entries[i - 1];
+      const gap = i > 0 && !(e.role === 'tool' && prev?.role === 'tool');
+      return gap ? ['', ...e.component.render(width)] : e.component.render(width);
+    });
   }
 
   invalidate(): void {

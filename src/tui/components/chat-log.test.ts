@@ -7,7 +7,8 @@
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { describe, expect, test } from 'bun:test';
 import { createTheme } from '../theme';
-import { ChatLog } from './chat-log';
+import { ChatLog, TOOL_MARK } from './chat-log';
+import { findRiskyGlyphs } from '../render/glyphs';
 
 const theme = createTheme({ color: false });
 const text = (log: ChatLog, w = 60) => log.render(w).join('\n');
@@ -107,5 +108,70 @@ describe('宽度约束', () => {
     const lines = log.render(40);
     expect(lines[0]).not.toBe('');
     expect(lines).toContain('');
+  });
+});
+
+describe('★ 工具行:一个工具一行, 原地更新', () => {
+  // 反向自检 (2026-08-07 实跑): 把 toolEnd 的"找到就原地改"分支去掉(改成恒追加)
+  // → 「跑完不新增一行」当场红。那正是改之前的样子: 一轮十次调用二十行噪音。
+  test('★ start 一行, end **不新增行**只改标记', () => {
+    const log = new ChatLog(theme);
+    log.toolStart('run');
+    expect(log.length).toBe(1);
+    expect(text(log)).toContain(`${TOOL_MARK.running} run`);
+    log.toolEnd('run', true);
+    expect(log.length).toBe(1); // ← 关键: 还是一行
+    expect(text(log)).toContain(`${TOOL_MARK.ok} run`);
+    expect(text(log)).not.toContain(`${TOOL_MARK.running} run`);
+  });
+
+  test('★ 跑着的与跑完的看得出区别(否则不知道是在忙还是卡住)', () => {
+    expect(TOOL_MARK.running).not.toBe(TOOL_MARK.ok);
+    expect(TOOL_MARK.ok).not.toBe(TOOL_MARK.fail);
+  });
+
+  test('失败用另一个标记', () => {
+    const log = new ChatLog(theme);
+    log.toolStart('run');
+    log.toolEnd('run', false);
+    expect(text(log)).toContain(`${TOOL_MARK.fail} run`);
+  });
+
+  test('★ 没有对应 start 的 end 也补一行 —— 丢掉比多一行更糟', () => {
+    const log = new ChatLog(theme);
+    log.toolEnd('orphan', true);
+    expect(text(log)).toContain(`${TOOL_MARK.ok} orphan`);
+  });
+
+  test('同名工具跑两次 → 两行, end 只改**最近**那一行', () => {
+    const log = new ChatLog(theme);
+    log.toolStart('run');
+    log.toolEnd('run', true);
+    log.toolStart('run');
+    expect(log.length).toBe(2);
+    log.toolEnd('run', false);
+    expect(log.length).toBe(2);
+    const out = text(log);
+    expect(out).toContain(`${TOOL_MARK.ok} run`); // 第一次仍是成功
+    expect(out).toContain(`${TOOL_MARK.fail} run`); // 第二次是失败
+  });
+
+  test('★ 连续的工具行**不空行** —— 一串工具是一组, 插空会拆成十件不相关的事', () => {
+    const log = new ChatLog(theme);
+    log.toolStart('a');
+    log.toolStart('b');
+    log.toolStart('c');
+    expect(log.render(60).filter((l) => l === '')).toHaveLength(0);
+  });
+
+  test('工具行与消息之间**要**空行', () => {
+    const log = new ChatLog(theme);
+    log.appendUser('q');
+    log.toolStart('a');
+    expect(log.render(60)).toContain('');
+  });
+
+  test('★ 工具行用到的字形都在白名单里', () => {
+    for (const m of Object.values(TOOL_MARK)) expect(findRiskyGlyphs(m)).toEqual([]);
   });
 });
