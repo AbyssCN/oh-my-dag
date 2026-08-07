@@ -28,6 +28,8 @@
  * 用法:`node scripts/tui-pty-check.mjs`(退出码 0 = 全过)。
  */
 import { spawn } from '@lydell/node-pty';
+import { mkdtempSync, readFileSync, readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -75,14 +77,15 @@ function selfTestOracle() {
 // PTY 驱动
 // ---------------------------------------------------------------------------
 
-function startTui() {
-  const pty = spawn(BUN, ['run', CLI, 'tui'], {
+/** 起一个 PTY 子进程并收全部输出。`startTui` 与日志正对照都走它,免得两处各写一份收流逻辑。 */
+function startPty(file, args, opts = {}) {
+  const pty = spawn(file, args, {
     name: 'xterm-256color',
     // 尺寸锁死:不锁的话不同机器折行位置不同, 断言就成了碰运气 (SDD §9「锁死环境」)。
     cols: 100,
     rows: 30,
-    cwd: ROOT,
-    env: { ...process.env, NO_COLOR: '1', OMD_INSTALL_SKILLS: '0' },
+    cwd: opts.cwd ?? ROOT,
+    env: { ...process.env, NO_COLOR: '1', OMD_INSTALL_SKILLS: '0', ...(opts.env ?? {}) },
   });
   let buf = '';
   let exited = null;
@@ -108,6 +111,10 @@ function startTui() {
       }
     },
   };
+}
+
+function startTui(opts = {}) {
+  return startPty(BUN, ['run', CLI, 'tui'], opts);
 }
 
 /** 轮询等到 `pred(可见文本)` 成立。超时**返回 false 不抛** —— 让调用点去说哪里不对。 */
@@ -176,9 +183,75 @@ async function scenarioArmReset() {
   }
 }
 
+/**
+ * 场景 3(切片 S3):**日志一个字节都不许进终端**,但日志文件里要有。
+ *
+ * ## 为什么先跑一条正对照
+ *
+ * "终端上找不到那句话" 有两种成因:改道生效了(想要的),或者**这条 lane 根本就看不见 pino**
+ * (oracle 坏了 / 子进程压根没打日志)。后者会让这条闸永远绿 —— 本仓最贵的那一族。
+ * 所以先在同一个 PTY、同一个 NODE_ENV 下让 logger 打一句,**证明它本来是看得见的**,
+ * 再去断言 TUI 那句看不见。
+ *
+ * ## 为什么钉死 NODE_ENV=development
+ *
+ * 那是 `loadEnv()` 的**默认值**,也正是原先的死路:dev 模式下 pino-pretty 走 worker transport
+ * 写死 fd 2,`setLoggerDestination` 对它无效。不钉死这个值,CI 上换个 NODE_ENV 就绕开了病灶。
+ */
+async function scenarioLogRedirect() {
+  const DEV = { NODE_ENV: 'development' };
+  const MARK = '日志改道生效';
+
+  // ── 正对照:不改道时,pino 在这条 lane 上**是看得见的** ──
+  const control = startPty(BUN, ['-e', `const m = await import(${JSON.stringify(join(ROOT, 'src/logger.ts'))}); m.logger.warn('OMD-PTY-LOG-CONTROL');`], { env: DEV });
+  try {
+    check(
+      await waitFor(control, (t) => t.includes('OMD-PTY-LOG-CONTROL'), 20000),
+      'S3-0 正对照: 未改道的 pino 在 PTY 里看得见(否则下面两条是假闸)',
+      control.text().slice(0, 200),
+    );
+  } finally {
+    control.kill();
+  }
+
+  // ── 真判据:TUI 起来之后,那句启动日志在屏上找不到,在文件里找得到 ──
+  // cwd 用临时目录: 日志文件写进 <cwd>/.omd/logs/, 不许拿仓库当草稿纸。
+  const cwd = mkdtempSync(join(tmpdir(), 'omd-tui-pty-'));
+  const p = startTui({ cwd, env: DEV });
+  try {
+    check(await waitFor(p, (t) => t.includes('omd tui')), 'S3-1 (场景3) TUI 起来', p.text().slice(0, 200));
+    check(p.text().includes(MARK) === false, 'S3-2 ★ 启动日志不在终端上(改道生效)', p.text().slice(0, 400));
+
+    p.write('\x03');
+    await waitFor(p, (t) => t.includes('再按一次'));
+    p.write('\x03');
+    const code = await Promise.race([p.exitedP, new Promise((r) => setTimeout(() => r('TIMEOUT'), 15000))]);
+    check(code === 0, 'S3-3 (场景3) 干净退出', `实得 ${code}`);
+
+    const logDir = join(cwd, '.omd', 'logs');
+    let files = [];
+    let readErr = null;
+    try {
+      files = readdirSync(logDir);
+    } catch (err) {
+      readErr = err.message; // 吞异常可以, 吞证据不行 —— 原文进判词。
+    }
+    check(
+      files.length === 1,
+      'S3-4 ★ 日志文件恰好建出一个',
+      readErr ? `读 ${logDir} 失败: ${readErr}` : `实得 ${JSON.stringify(files)}`,
+    );
+    const body = files.map((f) => readFileSync(join(logDir, f), 'utf8')).join('');
+    check(body.includes(MARK), 'S3-5 ★ 那句日志确实写进了文件(不是被丢了)', body.slice(0, 300) || '(没有可读内容)');
+  } finally {
+    p.kill();
+  }
+}
+
 selfTestOracle();
 await scenarioHappyPath();
 await scenarioArmReset();
+await scenarioLogRedirect();
 
 if (failures.length) {
   console.error(`\n✗ L3 PTY: ${failures.length} 条不过 —— ${failures.join(' / ')}`);
