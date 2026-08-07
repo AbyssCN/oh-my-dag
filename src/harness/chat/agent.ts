@@ -27,7 +27,10 @@ import {
 import { streamSimple } from '@earendil-works/pi-ai/compat';
 import { assistantText, loadProjectContext } from '../agent-leaf';
 import { logger } from '../../logger';
+import { emitModelUsage } from '../../model/accounting';
+import type { ModelUsage } from '../../model/types';
 import { type CompactionCallModel, compactChatMessages } from './compaction';
+import { type ContextPressure, analyzeContextPressure, sumUsage, turnUsages } from './usage';
 import { createMemoryTransform } from './memory-inject';
 import type { AnyOmdTool } from '../agent-tools';
 import { buildConductorChatSystemPrompt } from '../harness-prompts';
@@ -82,6 +85,14 @@ export interface ChatTurnResult {
   reply: string;
   /** 本轮新增消息(含 user prompt 本身)。 */
   newMessages: AgentMessage[];
+  /**
+   * 本轮总用量。**逐条进账本、这里给合计** —— UI 显示要一个数,账本要每一次调用。
+   *
+   * ⚠ 全零 = provider 一次用量都没报,**不是"没花钱"**(fake loop 的测试就是这种)。
+   */
+  usage: ModelUsage;
+  /** 这一轮结束时的上下文压力(给 UI 显示"离满还有多远")。 */
+  pressure: ContextPressure;
   /**
    * 本轮压缩了几次(轮前 + 轮内合计)。
    *
@@ -227,8 +238,27 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
     throw new Error(`[chat-agent] provider 错误: ${errored.errorMessage ?? '(无 errorMessage)'}`);
   }
 
+  // ── 用量进账本 (2026-08-07) ─────────────────────────────────────────────────
+  // ⚠ 逐条 emit 不汇总: `returned` 里每条 assistant 都是**一次独立的 provider 调用**,
+  // 汇总成一笔会让账本的 `calls` 少算 —— 而 `calls` 是"这一轮打了几次模型"的唯一读数。
+  // fail-open: 记账不下沉主流程 (ECON-3), 但不吞证据。
+  const usages = turnUsages(returned);
+  for (const u of usages) {
+    try {
+      emitModelUsage(u, opts.model);
+    } catch (err) {
+      logger.warn({ err: (err as Error).message, model: opts.model }, '[chat-agent] 用量入账失败 (已吞, 不影响这一轮)');
+    }
+  }
+
   session.messages.push(...returned);
   opts.store.save(session);
   const reply = returned.map(assistantText).join('');
-  return { session, reply, newMessages: returned, compactions };
+  const pressure = analyzeContextPressure({
+    systemPrompt: context.systemPrompt,
+    ...(opts.contextFiles ? { contextFiles: opts.contextFiles } : {}),
+    messages: session.messages,
+    windowTokens: window,
+  });
+  return { session, reply, newMessages: returned, compactions, usage: sumUsage(usages), pressure };
 }

@@ -13,6 +13,7 @@ import { formatContextLine } from '../context';
 import { CHROME } from '../tui';
 import { GROUND_TRUTH, NEEDS_TTY_GLYPHS, SAFE_GLYPH_WIDTHS, UNSAFE_GLYPHS } from './glyph-table';
 import { classifyGlyph, findRiskyGlyphs } from './glyphs';
+import { formatPressure } from './pressure';
 
 describe('★ 回归钉: 探针读数 vs 今天的 pi-tui', () => {
   // 反向自检: 把 glyph-table 里 '你' 的 2 改成 1 → 这条当场红。
@@ -99,6 +100,9 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
     ['resumeRefused', CHROME.resumeRefused('abc', 'no checkpoint')],
     ['skillArmed', CHROME.skillArmed('omd-council')],
     ['skillMissing', CHROME.skillMissing('omd-nope')],
+    // 上下文压力行也是 chrome —— 新增文案一律进这张表, 否则它不过字形闸。
+    ['pressure', formatPressure({ systemTokens: 12000, harnessTokens: 8000, historyTokens: 34000, usedTokens: 46000, windowTokens: 200000, ratio: 0.23 }, { in: 46000, out: 800, cacheHit: 41000 }) as string],
+    ['pressure(窗口未知)', formatPressure({ systemTokens: 4000, harnessTokens: 0, historyTokens: 1000, usedTokens: 5000, windowTokens: 0, ratio: null }) as string],
     ['footer', CHROME.footer('embedded://deepseek:deepseek-v4-flash')],
     ['footerArmed', CHROME.footerArmed('embedded://deepseek:deepseek-v4-flash')],
     ['harness(有)', formatContextLine([{ path: '/x/.claude/CLAUDE.md', content: '' }], { cwd: '/x', home: '/h' })],

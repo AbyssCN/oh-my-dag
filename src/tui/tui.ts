@@ -36,6 +36,8 @@ import { type PathReader, PathHud, createPathReader } from './components/path-hu
 import { StatusLine } from './components/status-line';
 import { type ContextFile, formatContextLine, loadConductorContext } from './context';
 import { formatSeatRows, parseSeatCommand, seatRows } from './seat-picker';
+import { createFileCompleteProvider } from './file-complete';
+import { formatPressure } from './render/pressure';
 import { formatSkillList, listSkills, loadSkillBlock, parseSkillCommand } from './skills';
 import { type OmdTuiTheme, createTheme } from './theme';
 
@@ -175,7 +177,12 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   const pathHud = new PathHud(theme, opts.pathReader ?? createPathReader(opts.cwd));
   pathHud.refresh();
   const editor = new Editor(tui, theme.editor);
+  // 模糊文件补全(原生实现 pi-fff 那个能力):打 `@` 或够长的一段路径就弹。
+  editor.setAutocompleteProvider(createFileCompleteProvider({ cwd: opts.cwd }));
   const footer = new StatusLine(CHROME.footer(opts.backend.connection.url));
+  // 上下文压力行:**跑过一轮才画**(还没跑过时 formatPressure 返回 null → 这一行是空串,
+  // 而不是一行全零 —— 全零会读成"跑过了、没花钱")。
+  const pressureLine = new StatusLine('');
 
   chatLog.appendNotice(CHROME.hint);
 
@@ -186,6 +193,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   root.addChild(dagHud);
   root.addChild(pathHud);
   root.addChild(editor);
+  root.addChild(pressureLine);
   root.addChild(footer);
   tui.addChild(root);
   // 焦点给 editor: 打字直接进输入框。Ctrl+C 仍抢在它前面 (input listener 先于焦点分派)。
@@ -284,6 +292,9 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     }
     if (e.event === 'session') {
       chatLog.closeStreaming();
+      const p = e.payload as { pressure?: import('../harness/chat/usage').ContextPressure; usage?: import('../model/types').ModelUsage };
+      const line = formatPressure(p?.pressure ?? null, p?.usage ?? null);
+      if (line) pressureLine.setText(line);
       // 一轮跑完可能动过地图 (conductor 有 map_* 工具) → 重读一次。
       // 不在 render 里读盘: render 每帧都调, 那会变成每帧一次目录扫描。
       pathHud.refresh();
