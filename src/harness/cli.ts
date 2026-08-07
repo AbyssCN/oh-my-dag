@@ -34,10 +34,12 @@ const userArgs = process.argv.slice(2);
 const USAGE = `omd —— DAG 执行引擎 (纯 MCP + web 控制台)
 
   omd mcp     stdio MCP server (给 Claude Code 等 MCP 客户端 spawn)
-  omd serve   web 控制台 daemon (127.0.0.1:4517; --port N 改端口)
+  omd serve   web 控制台 daemon —— 引擎 API + conductor 对话 (127.0.0.1:4517; --port N 改端口)
   omd init    首次配置向导 (写 .env)
 
-交互对话前端已撤除 (2026-08-01): omd 只当执行引擎, 对话归 MCP 客户端或 omd serve。
+没有终端对话前端 (原 pi TUI 2026-08-01 撤除)。要对话有两条路: 装了 omd MCP 的客户端
+(Claude Code 等), 或 omd serve 的 web 控制台 —— 后者自带 conductor 聊天页
+(web/ 下 bun install && bun run build 后重启才有前端; 未构建时只有 /api/chat)。
 `;
 
 // omd mcp: stdio MCP server 入口 (D-1) —— 零 UI, 不进 wizard。
