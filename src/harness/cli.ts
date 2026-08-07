@@ -104,6 +104,8 @@ if (userArgs[0] === 'tui') {
         cwd,
         store: new ChatStore(cwd),
         tools: createConductorChatTools(tools),
+        // S14: UI 自己直调 dag_runs / dag_resume (不经模型)。给了才有那两个能力。
+        mcpTools: tools,
         // 座位每轮现解 (INV-MODEL-3): omd_set_role / `/seat` 改完, 下一句就换座。
         resolveModel: () => resolveEngineModels(process.env).conductorModel,
         contextFiles,

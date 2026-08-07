@@ -333,6 +333,14 @@ async function scenarioSeat() {
     // ★ 列的是**座位视图**不是裸模型列表: 职责那一行来自座位登记表。
     check(p.text().includes('职责:'), 'S12-2 ★ 列的是座位视图(带职责/建议), 不是裸模型名');
 
+    // S14: fixture 后端**没有** run 能力 —— 键不出现, 而不是点了没反应。
+    p.write('/runs\r');
+    check(
+      await waitFor(p, (t) => t.includes('没有 listRuns 能力')),
+      'S14-1 ★ 后端没有 run 能力时说出缺的是什么(能力探测面, 不是假入口)',
+      p.text().slice(0, 700),
+    );
+
     p.write('/seat conductor omdtest:model-x\r');
     check(
       await waitFor(p, (t) => t.includes('座位已改')),

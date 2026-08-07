@@ -79,6 +79,10 @@ export const CHROME = {
   seatFailed: (reason: string) => `座位没改成: ${reason}`,
   /** 座位读不出来 (没配过 omd 的仓)。原因原样贴出来 —— 那一格的真值就是解析不到。 */
   seatUnresolved: (reason: string) => `当前座位解析不到: ${reason}`,
+  /** 这个后端没有 run 能力(fixture / 远程未实现)。**说出缺的是什么**,不画一个点了没反应的入口。 */
+  noRunCapability: (what: string) => `这个后端没有 ${what} 能力 (能力探测: 该方法不存在)`,
+  resumeStarted: (runId: string, text: string) => `续跑 ${runId}: ${text}`,
+  resumeRefused: (runId: string, text: string) => `续不了 ${runId}: ${text}`,
   footer: (url: string) => `[${url}]  Ctrl+C 两次退出`,
   footerArmed: (url: string) => `[${url}]  再按一次 Ctrl+C 退出`,
 } as const;
@@ -321,11 +325,47 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     return true;
   }
 
+  /**
+   * `/runs` 与 `/resume <runId>` —— **本地直调装配层工具,不经模型**(S14)。
+   *
+   * 能力靠**字段在不在**探测(`backend.listRuns ?`),不靠标志位。
+   * 后端没有这个能力时说出缺的是什么,而不是画一个点了没反应的入口。
+   */
+  async function handleRuns(text: string): Promise<boolean> {
+    const t = text.trim();
+    if (t !== '/runs' && !t.startsWith('/resume')) return false;
+    chatLog.appendUser(t);
+    editor.setText('');
+    tui.requestRender();
+    try {
+      if (t === '/runs') {
+        if (!opts.backend.listRuns) chatLog.appendNotice(CHROME.noRunCapability('listRuns'));
+        else chatLog.appendNotice(await opts.backend.listRuns());
+      } else {
+        const runId = t.split(/\s+/)[1];
+        if (!runId) chatLog.appendNotice('用法: /resume <runId> (先 /runs 看有哪些)');
+        else if (!opts.backend.resumeRun) chatLog.appendNotice(CHROME.noRunCapability('resumeRun'));
+        else {
+          const r = await opts.backend.resumeRun({ runId });
+          chatLog.appendNotice(r.ok ? CHROME.resumeStarted(runId, r.text) : CHROME.resumeRefused(runId, r.text));
+        }
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      logger.warn({ err: reason, cmd: t }, '[omd/tui] run 命令抛了');
+      chatLog.appendNotice(CHROME.failed(reason));
+    }
+    tui.requestRender();
+    return true;
+  }
+
   editor.onSubmit = (text: string) => {
     const prompt = text.trim();
     if (!prompt) return; // 空回车不算一轮 —— 否则会往会话里塞空消息
     if (handleSeat(prompt)) return;
-    void submit(prompt);
+    void handleRuns(prompt).then((handled) => {
+      if (!handled) void submit(prompt);
+    });
   };
 
   // ⚠ 必须走 addInputListener 而不是组件的 handleInput: 实读 `tui.js:558`,

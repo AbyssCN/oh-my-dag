@@ -67,4 +67,12 @@ export interface OmdBackend {
   abortChat(o: { sessionId: string }): Promise<{ ok: boolean; aborted: boolean }>;
   loadHistory(o: { sessionId: string }): Promise<AgentMessage[]>;
   listSessions(): Promise<TuiSessionMeta[]>;
+
+  // ── 可选能力 (S14):**用 `backend.listRuns ?` 探测,不加 capabilities 标志位** ──
+  // 两处声明同一件事必漂 (本仓 D-2 刚为此付过账)。fixture 后端不实现这两个 →
+  // UI 那边键**不出现**, 而不是出现一个点了没反应的入口。
+  /** 列出 run(内存注册表 + 磁盘 checkpoint 合并)。 */
+  listRuns?(): Promise<string>;
+  /** 续跑一个断掉的 run —— 从磁盘 checkpoint 重载 plan,跳过已绿节点。 */
+  resumeRun?(o: { runId: string }): Promise<{ ok: boolean; text: string }>;
 }
