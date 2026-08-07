@@ -36,6 +36,7 @@ import { type PathReader, PathHud, createPathReader } from './components/path-hu
 import { StatusLine } from './components/status-line';
 import { type ContextFile, formatContextLine, loadConductorContext } from './context';
 import { formatSeatRows, parseSeatCommand, seatRows } from './seat-picker';
+import { STARTUP_HINT, formatHelp, parseHelpCommand } from './commands';
 import { createFileCompleteProvider } from './file-complete';
 import { formatPressure } from './render/pressure';
 import { formatSkillList, listSkills, loadSkillBlock, parseSkillCommand } from './skills';
@@ -69,7 +70,7 @@ export function decideCtrlC(armedAt: number | null, now: number, windowMs = CTRL
  */
 export const CHROME = {
   header: (cwd: string) => `omd tui - ${cwd}`,
-  hint: '打字后回车发一轮;Ctrl+C 两次退出。',
+  hint: STARTUP_HINT,
   /** 后端明确拒绝(**断链说明卡**):说出是谁拒的,不编一个回复。 */
   refused: (url: string) => `后端拒绝了这一轮 (${url}): 引擎尚未接通, 这一轮没有发给任何模型`,
   /** 后端抛了:错误原文进屏,同时进日志文件。 */
@@ -408,6 +409,13 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   editor.onSubmit = (text: string) => {
     const prompt = text.trim();
     if (!prompt) return; // 空回车不算一轮 —— 否则会往会话里塞空消息
+    if (parseHelpCommand(prompt)) {
+      chatLog.appendUser(prompt);
+      editor.setText('');
+      chatLog.appendNotice(formatHelp());
+      tui.requestRender();
+      return;
+    }
     if (handleSeat(prompt)) return;
     if (handleSkill(prompt)) return;
     void handleRuns(prompt).then((handled) => {

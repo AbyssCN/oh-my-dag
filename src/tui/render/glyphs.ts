@@ -115,6 +115,10 @@ export function classifyGlyph(glyph: string): GlyphVerdict {
   const cp = glyph.codePointAt(0) ?? 0;
   if ([...glyph].some((c) => SEQUENCE_MODIFIERS.has(c))) return 'unsafe';
   if (cp >= EMOJI_PLANE_START) return 'unsafe';
+  // 换行是**行分隔符不是字形** —— 多行文案 (如 `/help`、座位表) 本来就该有它,
+  // 它不占列、由 Text/ChatLog 折行处理。⚠ 但 **tab 不放行**: 制表位宽度是终端相关的,
+  // 那正是 `fitLine` 要把它拍平的原因。
+  if (glyph === '\n' || glyph === '\r\n') return 'safe';
   if (cp >= 0x20 && cp < 0x7f) return 'safe';
   if (visibleWidth(glyph) === 2) return 'safe';
   return 'unmeasured';

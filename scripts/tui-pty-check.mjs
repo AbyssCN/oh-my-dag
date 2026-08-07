@@ -333,6 +333,16 @@ async function scenarioSeat() {
     // ★ 列的是**座位视图**不是裸模型列表: 职责那一行来自座位登记表。
     check(p.text().includes('职责:'), 'S12-2 ★ 列的是座位视图(带职责/建议), 不是裸模型名');
 
+    // /help: 四条命令得发现得了 —— 启动提示提到它, 它列出全部。
+    p.write('/help\r');
+    check(
+      await waitFor(p, (t) => t.includes('/seat') && t.includes('/runs') && t.includes('/skill')),
+      'HELP-1 ★ /help 列出全部命令(否则四条命令发现不了)',
+      p.text().slice(0, 800),
+    );
+    // ⚠ 提示里 `/help` 带反引号, 归一化后仍在 —— 断言别把反引号漏掉 (初版就漏了)。
+    check(p.text().includes('看命令'), 'HELP-2 启动提示指向 /help', p.text().slice(0, 300));
+
     // S15 (A7): /skill 列出包内那批方法论 skill, 唤起后挂到**下一句**上。
     p.write('/skill\r');
     check(

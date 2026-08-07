@@ -13,6 +13,10 @@ import { formatContextLine } from '../context';
 import { CHROME } from '../tui';
 import { GROUND_TRUTH, NEEDS_TTY_GLYPHS, SAFE_GLYPH_WIDTHS, UNSAFE_GLYPHS } from './glyph-table';
 import { classifyGlyph, findRiskyGlyphs } from './glyphs';
+import { formatHelp } from '../commands';
+import { formatSeatRows, seatRows } from '../seat-picker';
+import { formatSkillList, listSkills } from '../skills';
+import { fitLine } from './line';
 import { formatPressure } from './pressure';
 
 describe('★ 回归钉: 探针读数 vs 今天的 pi-tui', () => {
@@ -79,6 +83,11 @@ describe('classifyGlyph —— 四态各自认得出来', () => {
   test('探针没覆盖到的窄非 ASCII 报 unmeasured, 不冒充 safe', () => {
     expect(classifyGlyph('ʧ')).toBe('unmeasured');
   });
+
+  test('★ 换行放行(它是行分隔符不是字形), 但 **tab 不放行**(制表位宽度终端相关)', () => {
+    expect(classifyGlyph('\n')).toBe('safe');
+    expect(classifyGlyph('\t')).toBe('unmeasured');
+  });
 });
 
 describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', () => {
@@ -102,6 +111,13 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
     ['skillMissing', CHROME.skillMissing('omd-nope')],
     // 上下文压力行也是 chrome —— 新增文案一律进这张表, 否则它不过字形闸。
     ['pressure', formatPressure({ systemTokens: 12000, harnessTokens: 8000, historyTokens: 34000, usedTokens: 46000, windowTokens: 200000, ratio: 0.23 }, { in: 46000, out: 800, cacheHit: 41000 }) as string],
+    ['help', formatHelp()],
+    ['seatRows', formatSeatRows(seatRows({ conductor: 'a:1' }))],
+    ['skillList(空)', formatSkillList([])],
+    // ⚠ **不把真 skill 列表放进来**:那些 description 来自 20 个 SKILL.md,是**数据不是 chrome**。
+    //    实测它们里面就有 `✅` 和 `≠` —— 数据本来就可以是任意字形, 要求它干净是错的判据。
+    //    数据侧要保的是"渲染它不会超宽", 见下面那个 describe。
+    ['skillList(干净数据)', formatSkillList([{ name: 'omd-x', description: '一句话' }])],
     ['pressure(窗口未知)', formatPressure({ systemTokens: 4000, harnessTokens: 0, historyTokens: 1000, usedTokens: 5000, windowTokens: 0, ratio: null }) as string],
     ['footer', CHROME.footer('embedded://deepseek:deepseek-v4-flash')],
     ['footerArmed', CHROME.footerArmed('embedded://deepseek:deepseek-v4-flash')],
@@ -125,5 +141,35 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
 
   test('同一个字形只报一次, 按首次出现顺序', () => {
     expect(findRiskyGlyphs('🔥❌🔥').map((r) => r.glyph)).toEqual(['🔥', '❌']);
+  });
+});
+
+describe('★ chrome 与**数据**是两条不同的判据', () => {
+  /**
+   * 上面那个闸管的是 **chrome** —— 我写死在代码里的字符串。
+   * 而 skill 描述、座位坐标、run 列表是**数据**:来自文件、工具、模型,里面可以是任意字形
+   * (真跑一次就看到了:`client-skills` 的 description 里有 `✅` 和 `≠`)。
+   *
+   * ⇒ 对数据要求"干净"是错的判据。数据侧要保的是 **UI 扛得住脏数据**:渲染出来不超宽。
+   * (残余风险说清楚:一个 `unmeasured` 字形上 `visibleWidth` 可能与真终端不一致 ——
+   *  那对任意数据是**消不掉**的,只能靠"每行都过 fitLine/wrap"把伤害限制在一行内。)
+   */
+  test('skill 列表里带 emoji / 未量字形, 渲染出来仍不超宽', () => {
+    const dirty = formatSkillList([
+      { name: 'omd-a', description: '带 ✅ 与 ≠ 与 🔥 的描述' },
+      { name: 'omd-b', description: null },
+    ]);
+    for (const w of [20, 40, 80]) {
+      for (const line of dirty.split('\n')) {
+        expect(visibleWidth(fitLine(line, w)), `w=${w}`).toBeLessThanOrEqual(w);
+      }
+    }
+  });
+
+  test('真 skill 列表(数据脏)渲染出来也不超宽', () => {
+    const real = formatSkillList(listSkills());
+    for (const line of real.split('\n')) {
+      expect(visibleWidth(fitLine(line, 80))).toBeLessThanOrEqual(80);
+    }
   });
 });
