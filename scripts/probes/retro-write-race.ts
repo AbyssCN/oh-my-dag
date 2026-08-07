@@ -93,9 +93,17 @@ for (const d of readdirSync(base)) {
 
 const r = reconstructWriteRace(runs, stats);
 console.log(`continuity 目录 ${r.dirs} 个, 其中 ≥2 个节点 checkpoint 的 ${r.dirsUsable} 个`);
-console.log(`节点 checkpoint ${r.checkpoints} 份, 其中报了 outputPaths 的 ${r.checkpointsWithPaths} 份`);
+console.log(`节点 checkpoint ${r.checkpoints} 份, 其中报了 outputPaths 的 ${r.checkpointsWithPaths} 份` +
+  `  ↳ **写可见性 ${r.checkpoints ? ((r.checkpointsWithPaths / r.checkpoints) * 100).toFixed(0) : '0'}%**`);
 console.log(`\n单轮跑 (数可信)  重叠 ${r.clean.overlaps} · 机会 ${r.clean.pairs} · 撞车 ${r.clean.findings}` +
   `${r.clean.rate === null ? '' : `   [${(r.clean.rate * 100).toFixed(1)}%]`}`);
+// 「数可信」这个标签只管**伪影**(轮次分得清), **不管覆盖** —— 2026-08-07 差点被读成
+// 「omd 没有写竞争」。把覆盖率印在紧挨着的位置, 下一个读的人不必自己算这个除法。
+console.log(`   ⚠ 「数可信」管的是伪影, **不是覆盖**: 判据够得着的只有 ` +
+  `${r.clean.overlaps ? ((r.clean.pairs / r.clean.overlaps) * 100).toFixed(1) : '0'}% 的重叠对 ` +
+  `(${r.clean.overlaps - r.clean.pairs} 对两条判据都够不着)。`);
+console.log(`     ⇒ 撞车 ${r.clean.findings} 的分母是 ${r.clean.pairs} **不是** ${r.clean.overlaps};` +
+  ` 空集 = 这一侧没报过写, **不是没写**(observers.ts \`OverlapPair.aPaths\`)。`);
 console.log(`认不出轮次的多轮跑 (不可信)  ${r.ambiguous.runs} 跑 · 重叠 ${r.ambiguous.overlaps} · 机会 ${r.ambiguous.pairs} · 撞车 ${r.ambiguous.findings}`);
 console.log('   ⚠ checkpoint 按 nodeId 覆写, 而这些**老记录没记轮次** → 两份可能来自不同的轮, 配对即伪影。');
 console.log('     2026-08-06 起 `NodeCheckpoint.round` 有值 → 不同轮的对被直接排除, 多轮跑也进可信面。');
