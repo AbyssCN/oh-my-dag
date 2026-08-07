@@ -11,7 +11,7 @@ import { visibleWidth } from '@earendil-works/pi-tui';
 import { describe, expect, test } from 'bun:test';
 import { formatContextLine } from '../context';
 import { CHROME } from '../tui';
-import { NEEDS_TTY_GLYPHS, SAFE_GLYPH_WIDTHS, UNSAFE_GLYPHS } from './glyph-table';
+import { GROUND_TRUTH, NEEDS_TTY_GLYPHS, SAFE_GLYPH_WIDTHS, UNSAFE_GLYPHS } from './glyph-table';
 import { classifyGlyph, findRiskyGlyphs } from './glyphs';
 
 describe('★ 回归钉: 探针读数 vs 今天的 pi-tui', () => {
@@ -28,10 +28,29 @@ describe('★ 回归钉: 探针读数 vs 今天的 pi-tui', () => {
     }
   });
 
-  test('探针真的量到了东西 —— 三张表都不为空(防止生成脚本静默产出空表)', () => {
+  test('探针真的量到了东西 —— SAFE / UNSAFE 都不为空(防止生成脚本静默产出空表)', () => {
     expect(SAFE_GLYPH_WIDTHS.size).toBeGreaterThan(10);
-    expect(NEEDS_TTY_GLYPHS.size).toBeGreaterThan(10);
     expect(UNSAFE_GLYPHS.size).toBeGreaterThan(0);
+  });
+
+  test('★ NEEDS_TTY 为空只有在**真终端裁决过**时才合法', () => {
+    // ⚠ 这条判据是 2026-08-07 拿到真终端读数之后**改过**的, 记下为什么:
+    // 原来写的是"三张表都不为空", 意图是防生成脚本静默产出空表。拿到真值之后
+    // 歧义那一档被裁决完了 (43 个全部并进 SAFE), NEEDS_TTY 合法地空了 ——
+    // 老判据会红, 而那**不是回归**。
+    // 但"空"仍有两种读法, 靠 GROUND_TRUTH 分 (本仓 NULL ≠ 0 ≠ 不适用):
+    //   true + 空  = 裁决完了 ✅
+    //   false + 空 = 生成脚本出问题 (候选集里明明有歧义字形) ❌
+    if (NEEDS_TTY_GLYPHS.size === 0) expect(GROUND_TRUTH, 'NEEDS_TTY 空但没量过真终端 = 生成脚本坏了').toBe(true);
+  });
+
+  test('★ 真终端裁决过的表里, 歧义字形必须**已归档** —— 不许两边都不在', () => {
+    // 候选集里的歧义字形 (em dash / box drawing / block) 要么进 SAFE 要么进 UNSAFE,
+    // 悬空 = 探针漏了它, 而漏了的字形会走 classifyGlyph 的兜底路径判成 unmeasured。
+    if (!GROUND_TRUTH) return;
+    for (const g of ['—', '─', '█', '→']) {
+      expect(SAFE_GLYPH_WIDTHS.has(g) || UNSAFE_GLYPHS.has(g), `${g} 两边都不在`).toBe(true);
+    }
   });
 });
 
@@ -42,9 +61,12 @@ describe('classifyGlyph —— 四态各自认得出来', () => {
     expect(classifyGlyph('龘')).toBe('safe'); // 不在探针表里, 但 EAW = W 不歧义
   });
 
-  test('★ 歧义宽度是 needs-tty, 不是 unsafe —— 两者不是一回事', () => {
-    expect(classifyGlyph('—')).toBe('needs-tty');
-    expect(classifyGlyph('─')).toBe('needs-tty');
+  test('★ 歧义宽度: 真终端裁决过 → safe; 没裁决过 → needs-tty(两者不是一回事)', () => {
+    // 2026-08-07 起本机读数已进表, 所以这里是 safe。GROUND_TRUTH 为假时它该是 needs-tty ——
+    // 判据跟着表走, 不写死一个答案。
+    const expected = GROUND_TRUTH ? 'safe' : 'needs-tty';
+    expect(classifyGlyph('—')).toBe(expected);
+    expect(classifyGlyph('─')).toBe(expected);
   });
 
   test('emoji / ZWJ / 变体选择符是 unsafe', () => {
@@ -89,12 +111,15 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
     });
   }
 
-  test('闸本身会红 —— 给它一个歧义字形, 它必须报出来', () => {
+  test('闸本身会红 —— 给它一个画不准的字形, 它必须报出来', () => {
     // 一条永远绿的闸比没有闸更坏, 所以在这里当场证伪一次。
-    expect(findRiskyGlyphs('omd tui — /x')).toEqual([{ glyph: '—', codepoint: 'U+2014', verdict: 'needs-tty' }]);
+    // ⚠ 这条原来用 em dash `—`。2026-08-07 真终端读数进表之后它变 safe 了, 这条就绿得没意义 ——
+    // 换成 emoji: 它**无论真终端量出什么都判 unsafe**(字体/终端相关, 量了也只对一台机器成立),
+    // 所以这条自证伪不会再因为表更新而失效。
+    expect(findRiskyGlyphs('omd tui 🔥 /x')).toEqual([{ glyph: '🔥', codepoint: 'U+1F525', verdict: 'unsafe' }]);
   });
 
   test('同一个字形只报一次, 按首次出现顺序', () => {
-    expect(findRiskyGlyphs('—→—').map((r) => r.glyph)).toEqual(['—', '→']);
+    expect(findRiskyGlyphs('🔥❌🔥').map((r) => r.glyph)).toEqual(['🔥', '❌']);
   });
 });

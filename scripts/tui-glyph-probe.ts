@@ -72,40 +72,100 @@ print(json.dumps(out))
 // 读数 ③:真终端 —— 只在 stdin 是 TTY 时可用
 // ---------------------------------------------------------------------------
 
-/** @returns 每个字形实际推进的列数;拿不到真终端时返回 `null`(**不是 0,不是猜的数**)。 */
+/**
+ * @returns 每个字形实际推进的列数;拿不到真终端时返回 `null`(**不是 0,不是猜的数**)。
+ *
+ * ⚠ 走 **`/dev/tty` 而不是 stdin/stdout**。第一版用 `process.stdin.isTTY` 判断 +
+ * 往 stdout 写 `CSI 6n` —— 那样 `--tty --json > out.json` 会把转义序列写进**文件**,
+ * 终端根本没收到,于是"量不到"。而 `--json` 重定向恰恰是自动化取这份读数的唯一办法
+ * (实测踩到:窗口开起来了、退出码 0、`groundTruth` 还是 false)。
+ * `/dev/tty` 永远指向控制终端,与重定向无关。
+ */
 async function terminalWidths(glyphs: string[]): Promise<number[] | null> {
-  if (!process.stdin.isTTY || !process.stdout.isTTY) return null;
-  process.stdin.setRawMode(true);
-  const readCol = () =>
-    new Promise<number>((resolve) => {
+  const { openSync, writeSync } = await import('node:fs');
+  const tty = await import('node:tty');
+  let fd: number;
+  try {
+    fd = openSync('/dev/tty', 'r+');
+  } catch {
+    return null; // 没有控制终端 (CI / 管道里跑) → 明说没量到
+  }
+  const input = new tty.ReadStream(fd);
+  const restore = (): void => {
+    try {
+      input.setRawMode(false);
+      // ⚠ **只 destroy,不再 closeSync(fd)**:ReadStream 拥有这个 fd,destroy 已经关掉它,
+      // 再关一次是 `EBADF`。而那个错是**流拆解时异步抛的**,落不进这里的 try ——
+      // 实测症状:第一条命令 `process.exit(0)` 抢在它前面所以看不见,第二条命令退出码变 1。
+      input.destroy();
+    } catch {
+      /* 清理不是判据 */
+    }
+  };
+  try {
+    input.setRawMode(true);
+  } catch {
+    restore();
+    return null; // 不是真终端 (fd 打得开但不支持 termios)
+  }
+
+  const readCol = (): Promise<number | null> =>
+    new Promise((resolve) => {
       let buf = '';
-      const onData = (d: Buffer) => {
+      const timer = setTimeout(() => {
+        input.off('data', onData);
+        resolve(null); // ⚠ 超时返回 null 不是 0 —— 「没人回答」与「第 0 列」是两件事
+      }, 2000);
+      const onData = (d: Buffer): void => {
         buf += d.toString();
         const m = /\x1b\[\d+;(\d+)R/.exec(buf);
         if (m) {
-          process.stdin.off('data', onData);
+          clearTimeout(timer);
+          input.off('data', onData);
           resolve(Number(m[1]));
         }
       };
-      process.stdin.on('data', onData);
-      process.stdout.write('\x1b[6n');
+      input.on('data', onData);
+      writeSync(fd, '\x1b[6n');
     });
+
   const out: number[] = [];
-  for (const g of glyphs) {
-    process.stdout.write('\r\x1b[2K');
-    const before = await readCol();
-    process.stdout.write(g);
-    const after = await readCol();
-    out.push(after - before);
+  try {
+    for (const g of glyphs) {
+      writeSync(fd, '\r\x1b[2K');
+      const before = await readCol();
+      if (before === null) return null; // 终端不答 6n → 整份读数作废, 不拿半份充数
+      writeSync(fd, g);
+      const after = await readCol();
+      if (after === null) return null;
+      out.push(after - before);
+    }
+    writeSync(fd, '\r\x1b[2K');
+    return out;
+  } finally {
+    restore();
   }
-  process.stdout.write('\r\x1b[2K');
-  process.stdin.setRawMode(false);
-  return out;
 }
 
 // ---------------------------------------------------------------------------
 // 比对
 // ---------------------------------------------------------------------------
+
+/**
+ * 真终端读数的**出处**。「已量」不能是一句没有来源的断言 —— 这份读数只对**这套终端 + 这套字体**
+ * 成立(Nerd Font 私用区只有 `Mono` 变体才是 1 列;歧义宽度只有非 CJK locale 才是 1 列)。
+ * 换机器要重量,而重量之前得知道上一次是在哪量的。
+ */
+function provenance(): string {
+  const bits = [
+    process.env.WT_SESSION ? 'Windows Terminal' : undefined,
+    process.env.TERM_PROGRAM,
+    process.env.TERM,
+    process.env.LANG,
+    process.env.COLORTERM ? `COLORTERM=${process.env.COLORTERM}` : undefined,
+  ].filter(Boolean);
+  return bits.length ? bits.join(' · ') : '(环境变量里看不出终端身份)';
+}
 
 const flat = GLYPH_CANDIDATES.flatMap((c) => c.glyphs.map((g) => ({ group: c.group, glyph: g })));
 const py = pythonWidths(flat.map((f) => f.glyph));
@@ -154,7 +214,8 @@ if (process.argv.includes('--emit-ts')) {
  *   \`bun run scripts/tui-glyph-probe.ts --emit-ts > src/tui/render/glyph-table.ts\`
  *
  * 真终端读数(第三套读数):**${tty !== null ? '已量' : '未量'}** ——
- * ${tty !== null ? '本表的 needs-tty 一档已由真终端裁决。' : '自动化 lane 后面没有终端模拟器, 没人回答 CSI 6n。想量真值在真终端里跑 `--tty`。'}
+ * ${tty !== null ? `量于 ${provenance()},${new Date().toISOString().slice(0, 10)}。` : '自动化 lane 后面没有终端模拟器, 没人回答 CSI 6n。想量真值在真终端里跑 `--tty`。'}
+ * ${tty !== null ? '⚠ 这份读数只对**那套终端 + 那套字体**成立:Nerd Font 私用区只有 `Mono` 变体才是 1 列;\n * 歧义宽度只有非 CJK locale 才是 1 列。换机器要重量。' : ''}
  *
  * 判定三态(**不是两态**):
  *  - \`SAFE\` —— 两把尺子(pi-tui / Unicode EAW)一致${tty !== null ? ',且真终端同意' : ''};
@@ -177,6 +238,16 @@ ${list('needs-tty')}
 export const UNSAFE_GLYPHS: ReadonlySet<string> = new Set([
 ${list('unsafe')}
 ]);
+
+/**
+ * 这份表**是不是**由真终端裁决过。
+ *
+ * ⚠ 它决定 \`NEEDS_TTY_GLYPHS\` 为空该怎么读:
+ * \`true\` + 空 = 歧义那一档**已被裁决完**(全部并进 SAFE 或 UNSAFE);
+ * \`false\` + 空 = **生成脚本出问题了**(候选集里明明有歧义字形)。
+ * 两者读数长得一样,靠这个字段分 —— 本仓 \`NULL ≠ 0 ≠ 不适用\`。
+ */
+export const GROUND_TRUTH = ${tty !== null};
 `);
   process.exit(0);
 }

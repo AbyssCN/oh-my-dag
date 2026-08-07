@@ -3,18 +3,24 @@
  *
  * ## 只用白名单里的字形
  *
- * S6 的读数把 `█ ▓ ▒ ▁` 这些 block 元素**全部**判成「待真终端」——
- * 它们是歧义宽度(EAW = A):CJK locale 下画 2 列、别处 1 列,同一份代码在两台机器上不一样宽。
- * 所以这里用 `#` 与 `-`(白名单里的 ASCII)。真终端读数补上之后再换字形,那时只改这一个常量。
+ * S6 初版这里是 ASCII `#` / `-`:block 元素是歧义宽度(EAW = A),CJK locale 画 2 列、
+ * 别处 1 列,**没量过真终端之前不敢用**。
+ *
+ * 2026-08-07 真终端读数进表(`glyph-table.ts` 的 `GROUND_TRUTH = true`,量于 Windows Terminal +
+ * JetBrainsMono Nerd Font Mono):那 43 个歧义字形实测**全是 1 列、与 pi-tui 一致** ——
+ * `█ ░` 于是进了白名单,这里换成它们。
+ *
+ * ⚠ **换字形的前提是那条读数,不是好看。** `bar.test.ts` 有一条闸钉住
+ * "用到的字形必须在 `SAFE_GLYPH_WIDTHS` 里" —— 表要是回到没量过的状态,这里当场红。
  *
  * ⚠ 别拿 `src/hud/fog.ts` 的 `fogBar` 来用:那一条是给 statusline 的,statusline 跑在**用户自己
  * 配好的**终端里,而 TUI 要对任意终端负责。两处判据不同,不是重复。
  */
 import { visibleWidth } from '@earendil-works/pi-tui';
 
-/** 已完成 / 未完成的填充字符。**都在 S6 白名单里**(ASCII,所有终端一致 1 列)。 */
-export const BAR_DONE = '#';
-export const BAR_TODO = '-';
+/** 已完成 / 未完成的填充字符。**必须都在 `SAFE_GLYPH_WIDTHS` 里**(闸在 `table.test.ts`)。 */
+export const BAR_DONE = '█';
+export const BAR_TODO = '░';
 
 /**
  * `[####------] 4/10` 形状的一行进度条。
