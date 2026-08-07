@@ -312,10 +312,58 @@ async function scenarioLogRedirect() {
   }
 }
 
+/**
+ * 场景 4(切片 S12):`/seat` —— 列座位视图 + 真改 `.omd/config.json`。
+ *
+ * `OMD_CONFIG_PATH` 指到临时文件:这条 lane **绝不许**去动真机的 config。
+ */
+async function scenarioSeat() {
+  const cwd = mkdtempSync(join(tmpdir(), 'omd-tui-seat-'));
+  const cfg = join(cwd, 'omd-config.json');
+  const p = startTui({ cwd, env: { OMD_CONFIG_PATH: cfg } });
+  try {
+    check(await waitFor(p, (t) => t.includes('omd tui')), 'S12-0 (场景4) 启动');
+
+    p.write('/seat\r');
+    check(
+      await waitFor(p, (t) => t.includes('可调座位') && t.includes('.omd/config.json')),
+      'S12-1 /seat 列出座位视图(说清改的是哪个文件)',
+      p.text().slice(0, 700),
+    );
+    // ★ 列的是**座位视图**不是裸模型列表: 职责那一行来自座位登记表。
+    check(p.text().includes('职责:'), 'S12-2 ★ 列的是座位视图(带职责/建议), 不是裸模型名');
+
+    p.write('/seat conductor omdtest:model-x\r');
+    check(
+      await waitFor(p, (t) => t.includes('座位已改')),
+      'S12-3 切座位有回执',
+      p.text().slice(0, 700),
+    );
+    // ★ 真改了文件 —— 屏幕上说改了不算数。
+    let body = '';
+    const wrote = await waitFor(
+      { text: () => '' },
+      () => {
+        try {
+          body = readFileSync(cfg, 'utf-8');
+          return body.includes('omdtest:model-x');
+        } catch {
+          return false;
+        }
+      },
+      8000,
+    );
+    check(wrote, 'S12-4 ★ .omd/config.json 真被改了(屏幕上说改了不算数)', `实得: ${body.slice(0, 200)}`);
+  } finally {
+    p.kill();
+  }
+}
+
 selfTestOracle();
 await scenarioHappyPath();
 await scenarioArmReset();
 await scenarioLogRedirect();
+await scenarioSeat();
 
 if (failures.length) {
   console.error(`\n✗ L3 PTY: ${failures.length} 条不过 —— ${failures.join(' / ')}`);
