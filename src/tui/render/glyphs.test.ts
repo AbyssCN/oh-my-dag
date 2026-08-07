@@ -64,10 +64,10 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
   const samples: [string, string][] = [
     ['header', CHROME.header('/home/nick/repos/oh-my-dag')],
     ['hint', CHROME.hint],
-    ['refused', CHROME.refused('stub://engine-not-wired')],
+    ['refused', CHROME.refused('embedded://deepseek:deepseek-v4-flash')],
     ['failed', CHROME.failed('ECONNREFUSED')],
-    ['footer', CHROME.footer('stub://engine-not-wired')],
-    ['footerArmed', CHROME.footerArmed('stub://engine-not-wired')],
+    ['footer', CHROME.footer('embedded://deepseek:deepseek-v4-flash')],
+    ['footerArmed', CHROME.footerArmed('embedded://deepseek:deepseek-v4-flash')],
     ['harness(有)', formatContextLine([{ path: '/x/.claude/CLAUDE.md', content: '' }], { cwd: '/x', home: '/h' })],
     ['harness(无)', formatContextLine([], { cwd: '/x', home: '/h' })],
   ];

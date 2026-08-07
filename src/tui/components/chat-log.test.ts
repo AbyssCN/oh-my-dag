@@ -91,7 +91,7 @@ describe('宽度约束', () => {
   test('★ 任意窄屏下每一行都不超宽(含 CJK 与长 URL)', () => {
     const log = new ChatLog(theme);
     log.appendUser('你好世界'.repeat(10));
-    log.appendNotice(`后端拒绝了这一轮 (stub://engine-not-wired)`);
+    log.appendNotice(`后端拒绝了这一轮 (embedded://deepseek:deepseek-v4-flash)`);
     log.appendAssistantChunk('```ts\nconst x = "一段很长的中文字符串, 用来把代码块顶出边界";\n```');
     for (const w of [20, 40, 80]) {
       for (const line of log.render(w)) {

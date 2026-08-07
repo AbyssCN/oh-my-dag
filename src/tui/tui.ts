@@ -68,6 +68,9 @@ export const CHROME = {
   refused: (url: string) => `后端拒绝了这一轮 (${url}): 引擎尚未接通, 这一轮没有发给任何模型`,
   /** 后端抛了:错误原文进屏,同时进日志文件。 */
   failed: (reason: string) => `这一轮发不出去: ${reason}`,
+  /** 工具在跑 / 跑完。真事件真名字, 没有事件就不画这一行。 */
+  toolStart: (name: string) => `${name} ...`,
+  toolEnd: (name: string, ok: boolean) => `${name} ${ok ? 'ok' : '失败'}`,
   footer: (url: string) => `[${url}]  Ctrl+C 两次退出`,
   footerArmed: (url: string) => `[${url}]  再按一次 Ctrl+C 退出`,
 } as const;
@@ -172,7 +175,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     tui.requestRender();
     try {
       const res = await opts.backend.sendChat({ sessionId, prompt });
-      // `ok:false` 是**响亮的否**, 不是空回复。stub 后端现在走的就是这条。
+      // `ok:false` 是**响亮的否**, 不是空回复。
       if (!res.ok) chatLog.appendNotice(CHROME.refused(opts.backend.connection.url));
     } catch (err) {
       // fail-open 可以吞异常, 不许吞证据: 错误原文进屏, 同时进日志文件 (已改道)。
@@ -180,8 +183,38 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       logger.warn({ err: reason, sessionId }, '[omd/tui] sendChat 抛了');
       chatLog.appendNotice(CHROME.failed(reason));
     }
+    // 无论成败都收尾: 抛错那条路上 `session` 事件不会来, 不收尾的话下一轮会续进这条气泡。
+    chatLog.closeStreaming();
     tui.requestRender();
   }
+
+  /**
+   * 后端事件 → 屏幕。**这是流式装配的落点**(S8 的 ChatLog 在这里被喂)。
+   *
+   * ⚠ `chat/delta` 走 `appendAssistantChunk`(追加进**同一条**消息),
+   * `session` 事件收尾。收尾这一下不能省:少了它,下一轮的第一片会续到上一轮的气泡里。
+   */
+  opts.backend.onEvent = (e) => {
+    if (e.event === 'chat') {
+      const p = e.payload as { type?: string; text?: string };
+      if (p?.type === 'delta' && p.text) {
+        chatLog.appendAssistantChunk(p.text);
+        tui.requestRender();
+      }
+      return;
+    }
+    if (e.event === 'tool') {
+      const p = e.payload as { phase?: string; name?: string; ok?: boolean };
+      const name = p?.name ?? '?';
+      chatLog.appendNotice(p?.phase === 'start' ? CHROME.toolStart(name) : CHROME.toolEnd(name, p?.ok !== false));
+      tui.requestRender();
+      return;
+    }
+    if (e.event === 'session') {
+      chatLog.closeStreaming();
+      tui.requestRender();
+    }
+  };
 
   editor.onSubmit = (text: string) => {
     const prompt = text.trim();

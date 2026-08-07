@@ -15,9 +15,11 @@
  *
  * ## 它证明什么 / 不证明什么(SDD §9.1 边界声明)
  *
- * 证明:UI 循环起得来 · 真 pi-tui 渲染出东西 · 按键收得到 · Ctrl+C 两次**干净退出**。
- * **不证明**:引擎行为、真模型、会话持久化、DAG 执行 —— 这一片的后端是 stub,
- * 它自己写着 `stub://engine-not-wired`。拿这条 lane 声称别的,就是本仓 S-1 那一族。
+ * 证明:UI 循环起得来 · 真 pi-tui 渲染出东西 · 按键收得到 · 流式事件装配得对 ·
+ * Ctrl+C 两次**干净退出**。
+ * **不证明**:引擎行为、真模型、会话持久化、DAG 执行 —— 这条 lane 跑的是
+ * `OMD_TUI_BACKEND=fixture`(S10 之后的 L3 接缝),后端自报 `fixture://l3-test`。
+ * 拿它声称别的,就是本仓 S-1 那一族。**真引擎那一层是 L4,默认不跑。**
  *
  * ## 永不做 ANSI 快照
  *
@@ -36,6 +38,9 @@ import { fileURLToPath } from 'node:url';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = join(ROOT, 'src/harness/cli.ts');
 const BUN = process.env.BUN_PATH ?? 'bun';
+// 与 `src/tui/backend-fixture.ts` 的 FIXTURE_CHUNKS 逐字一致 —— 这条 lane 是 node 跑的,
+// 不 import TS 源;两处不一致时 S10-2/S10-3 会红,而那正是想要的信号。
+const FIXTURE_REPLY = ['已收到。', '这是 fixture 后端, 没有发给任何模型。'];
 
 // ---------------------------------------------------------------------------
 // oracle:归一化可见文本 + 它自己的反测
@@ -85,7 +90,8 @@ function startPty(file, args, opts = {}) {
     cols: 100,
     rows: 30,
     cwd: opts.cwd ?? ROOT,
-    env: { ...process.env, NO_COLOR: '1', OMD_INSTALL_SKILLS: '0', ...(opts.env ?? {}) },
+    // L3 恒用 fixture 后端: 这条 lane 不许打真模型 (要钱、要网、读数还不稳)。
+    env: { ...process.env, NO_COLOR: '1', OMD_INSTALL_SKILLS: '0', OMD_TUI_BACKEND: 'fixture', ...(opts.env ?? {}) },
   });
   let buf = '';
   let exited = null;
@@ -145,8 +151,9 @@ async function scenarioHappyPath() {
   const p = startTui();
   try {
     check(await waitFor(p, (t) => t.includes('omd tui')), 'S2-1 启动后 TUI 壳出现', p.text().slice(0, 200));
-    // stub 串是刻意断言的: 它一旦变成别的, 说明有人在 S10 之前偷偷接了个假后端。
-    check(p.text().includes('stub://engine-not-wired'), 'S2-2 footer 说出自己没接引擎(断链说明卡, 零假数据)');
+    // 这条 lane 用的是 fixture 后端, footer 上必须**自报家门** ——
+    // 一旦这里变成 embedded://, 说明 L3 在打真模型 (要钱, 且读数不再稳定)。
+    check(p.text().includes('fixture://l3-test'), 'S2-2 footer 自报 fixture 后端(L3 不打真模型)');
 
     // S4: 这条 lane 的 cwd 就是 omd 仓, 仓里有 .claude/CLAUDE.md ——
     // 「0 份」正是 SDD §5.1 实测到的那个洞 (两份 harness 一个字都没进过 system prompt)。
@@ -171,12 +178,24 @@ async function scenarioHappyPath() {
     // S8: 回车发一轮 —— 用户消息进记录, 后端 (stub) **响亮地拒绝**。
     p.write('\r');
     check(await waitFor(p, (t) => t.includes('> hej')), 'S8-1 回车后用户消息进对话记录', p.text().slice(0, 400));
-    // ⚠ 这条钉的是**断链说明卡**: 引擎没接通时必须说出来, 绝不许编一个看起来对的回复。
+    // S10: 后端事件真的装配成了屏幕内容 —— 工具行 + 分两片到达的流式回复。
     check(
-      await waitFor(p, (t) => t.includes('后端拒绝了这一轮')),
-      'S8-2 ★ 后端拒绝被画出来(零假数据, 不是一个编出来的回复)',
-      p.text().slice(0, 400),
+      await waitFor(p, (t) => t.includes('fixture_tool ok')),
+      'S10-1 工具事件画出来了(start/end 两条真事件)',
+      p.text().slice(0, 500),
     );
+    check(
+      await waitFor(p, (t) => t.includes('这是 fixture 后端')),
+      'S10-2 流式回复装配进对话记录',
+      p.text().slice(0, 500),
+    );
+    // ★ 两片必须合成**一条**消息。
+    // ⚠ 初版写的是"'已收到。' 只出现一次" —— **那是条假闸**: 每片各开一条消息时,
+    //   两片文本各自仍只出现一次, 证伪时它纹丝不动 (2026-08-07 实跑抓到)。
+    //   分成两条会在中间插一个空行 (ChatLog 的条目间隔), 归一化后变成一个空格;
+    //   合成一条则两片**紧挨着**。所以要钉的是拼接后的那个串。
+    const merged = FIXTURE_REPLY.join('');
+    check(p.text().includes(merged), 'S10-3 ★ 两片流式合成一条消息(中间没有条目间隔)', p.text().slice(0, 500));
 
     p.write('\x03');
     check(await waitFor(p, (t) => t.includes('再按一次')), 'S2-4 第一次 Ctrl+C 只预备, 不退');
