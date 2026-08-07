@@ -33,13 +33,16 @@ const userArgs = process.argv.slice(2);
 
 const USAGE = `omd —— DAG 执行引擎 (纯 MCP + web 控制台)
 
+  omd tui     交互式 conductor 前端 (自建 TUI)
   omd mcp     stdio MCP server (给 Claude Code 等 MCP 客户端 spawn)
   omd serve   web 控制台 daemon —— 引擎 API + conductor 对话 (127.0.0.1:4517; --port N 改端口)
   omd init    首次配置向导 (写 .env)
 
-没有终端对话前端 (原 pi TUI 2026-08-01 撤除)。要对话有两条路: 装了 omd MCP 的客户端
-(Claude Code 等), 或 omd serve 的 web 控制台 —— 后者自带 conductor 聊天页
-(web/ 下 bun install && bun run build 后重启才有前端; 未构建时只有 /api/chat)。
+终端对话前端: 原 pi TUI 2026-08-01 撤除, 2026-08-07 以自建 TUI 回归。
+⚠ 当前 omd tui 是 **UI 壳** (切片 S2): 起得来、收键、Ctrl+C 两次退出, 但**引擎后端未接通**
+(S10 才接 runChatTurn)。现在要真对话走 MCP 客户端 (Claude Code 等) 或 omd serve 的 web 控制台。
+
+裸 omd 打印本用法, 不直接进 TUI。
 `;
 
 // omd mcp: stdio MCP server 入口 (D-1) —— 零 UI, 不进 wizard。
@@ -63,6 +66,16 @@ if (userArgs[0] === 'mcp') {
   const { runOmdMcpServer } = await import('../mcp/server');
   const { assembleOmdMcpTools } = await import('../mcp/assemble');
   await runOmdMcpServer(assembleOmdMcpTools());
+  process.exit(0);
+}
+
+// omd tui: 自建交互前端 (TUI SDD 切片 S2 —— 目前只有 UI 壳, 引擎后端 S10 才接)。
+// ⚠ 动态 import: TUI 那一坨 (pi-tui + 组件树) 不进 mcp/serve 两条常驻路径的内存。
+// ⚠ 日志改道是 S3 的活 —— 在那之前这条路径**不许**打日志到 stdout/stderr, 一条 pino 就把 UI 打花。
+if (userArgs[0] === 'tui') {
+  const { runOmdTui } = await import('../tui/tui');
+  const { createStubBackend } = await import('../tui/backend-stub');
+  await runOmdTui({ backend: createStubBackend(), cwd: process.cwd() });
   process.exit(0);
 }
 
