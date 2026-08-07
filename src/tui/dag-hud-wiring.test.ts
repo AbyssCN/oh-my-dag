@@ -66,7 +66,7 @@ function wireEverything() {
     store: new ChatStore(cwd),
     tools: [],
     resolveModel: () => 'fake:conductor',
-    runTurn: (async () => ({ session: { messages: [] }, reply: '', newMessages: [], compactions: 0 })) as never,
+    runTurn: (async () => ({ session: { messages: [] }, reply: '', newMessages: [], compactions: 0, usage: { in: 0, out: 0 }, pressure: { systemTokens: 0, harnessTokens: 0, historyTokens: 0, usedTokens: 0, windowTokens: 0, ratio: null } })) as never,
   });
   sink = backend; // createEmbeddedBackend 的返回类型含 DagEventSink
 

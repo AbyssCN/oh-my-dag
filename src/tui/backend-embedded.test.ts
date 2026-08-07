@@ -23,7 +23,7 @@ function fakeTurn(opts: { events?: AgentEvent[]; onCall?: (o: ChatTurnOpts) => v
     opts.onCall?.(o);
     for (const e of opts.events ?? []) o.onEvent?.(e);
     if (opts.throws) throw opts.throws;
-    return { session: { messages: [1, 2] } as never, reply: '答', newMessages: [], compactions: 0 };
+    return { session: { messages: [1, 2] } as never, reply: '答', newMessages: [], compactions: 0, usage: { in: 0, out: 0 }, pressure: { systemTokens: 0, harnessTokens: 0, historyTokens: 0, usedTokens: 0, windowTokens: 0, ratio: null } };
   }) as never;
 }
 
@@ -135,7 +135,7 @@ describe('失败与中断', () => {
       runTurn: (async (o: ChatTurnOpts) => {
         seen.set(o.sessionId, o.signal as AbortSignal);
         await new Promise((r) => setTimeout(r, 30));
-        return { session: { messages: [] } as never, reply: '', newMessages: [], compactions: 0 };
+        return { session: { messages: [] } as never, reply: '', newMessages: [], compactions: 0, usage: { in: 0, out: 0 }, pressure: { systemTokens: 0, harnessTokens: 0, historyTokens: 0, usedTokens: 0, windowTokens: 0, ratio: null } };
       }) as never,
     });
     const a = backend.sendChat({ sessionId: 'A', prompt: 'x' });
@@ -153,7 +153,7 @@ describe('失败与中断', () => {
       runTurn: (async (o: ChatTurnOpts) => {
         seen.push(o.signal as AbortSignal);
         await new Promise((r) => setTimeout(r, 30));
-        return { session: { messages: [] } as never, reply: '', newMessages: [], compactions: 0 };
+        return { session: { messages: [] } as never, reply: '', newMessages: [], compactions: 0, usage: { in: 0, out: 0 }, pressure: { systemTokens: 0, harnessTokens: 0, historyTokens: 0, usedTokens: 0, windowTokens: 0, ratio: null } };
       }) as never,
     });
     const p = backend.sendChat({ sessionId: 'A', prompt: 'x' });

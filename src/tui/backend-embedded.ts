@@ -158,7 +158,14 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
           ...(deps.contextFiles ? { contextFiles: deps.contextFiles } : {}),
         };
         const r = await runTurn(turn);
-        emit('session', { sessionId, messageCount: r.session.messages.length, compactions: r.compactions });
+        // pressure / usage 一起发 —— UI 靠它画"离满还有多远、这一轮花了多少"。
+        emit('session', {
+          sessionId,
+          messageCount: r.session.messages.length,
+          compactions: r.compactions,
+          pressure: r.pressure,
+          usage: r.usage,
+        });
         return { ok: true };
       } finally {
         // ⚠ finally 不是 catch: 抛出去的错要**原样**上到 UI (那里画成 notice 并记日志),
