@@ -16,6 +16,7 @@
  * ⚠ 关色之后 `visibleWidth` 读数不变(ANSI 本来就不计宽),所以宽度闸两种模式同一个结论。
  */
 import type { EditorTheme, MarkdownTheme } from '@earendil-works/pi-tui';
+import { createHighlightCode } from './render/highlight';
 
 /** `NO_COLOR` 约定:**只要这个变量存在**(哪怕是空串)就关色。 */
 export function colorEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -49,7 +50,7 @@ export function createTheme(opts: { color?: boolean } = {}): OmdTuiTheme {
   const warn = c('33'); // yellow
   const user = c('32'); // green
 
-  return {
+  const theme: OmdTuiTheme = {
     markdown: {
       heading: c('1;36'),
       link: c('4;36'),
@@ -78,4 +79,8 @@ export function createTheme(opts: { color?: boolean } = {}): OmdTuiTheme {
     },
     chrome: { dim, accent, warn, user },
   };
+  // S7: 代码高亮挂在 theme 上 —— 组件不认识 highlight 这回事, 换主题即换高亮配色。
+  // 后挂是因为 highlightCode 要拿到 chrome 那几档语义色, 而它们就在这个对象里。
+  theme.markdown.highlightCode = createHighlightCode(theme);
+  return theme;
 }
