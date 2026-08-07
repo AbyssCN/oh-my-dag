@@ -27,7 +27,7 @@
  * 双击判定是纯函数({@link decideCtrlC}),不碰 `Date.now`;硬退走注入的 `exit`。
  * 于是 L1 能直接测判定,L3 只需要验"真 PTY 里这条链接得起来"。
  */
-import { CombinedAutocompleteProvider, Container, Editor, ProcessTerminal, TuiMainScreen, type Terminal } from '@earendil-works/pi-tui';
+import { CombinedAutocompleteProvider, Container, Editor, ProcessTerminal, ScrollView, TuiAltScreen, VStack, type Terminal } from '@earendil-works/pi-tui';
 import { logger } from '../logger';
 import type { OmdBackend } from './backend';
 import { ChatLog } from './components/chat-log';
@@ -188,7 +188,15 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   const now = opts.now ?? Date.now;
   const hardExit = opts.exit ?? ((code: number) => process.exit(code));
   const terminal = opts.terminal ?? new ProcessTerminal();
-  const tui = new TuiMainScreen(terminal);
+  /**
+   * **全屏**(S-1,2026-08-07)。立项时裁的是"不做全屏",那条被 owner 的新判据翻掉:
+   * 输入框钉底 + 左侧栏这两件事在 inline 模式下**做不出来** —— inline 只能从上往下堆,
+   * 底下永远是空的(基线截图 40 行里空了 25 行,就是这个)。
+   *
+   * ⚠ 代价是终端 scrollback 不再留对话 → 由 {@link dumpTranscript} 在退出时补回主屏。
+   * 那是 owner 明确要的约束,不是可选项:一退什么都没了比不好看严重得多。
+   */
+  const tui = new TuiAltScreen(terminal);
 
   const contextFiles = opts.contextFiles ?? loadConductorContext(opts.cwd);
   const theme = opts.theme ?? createTheme();
@@ -219,17 +227,54 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   // 0.84 的 overlay 焦点恢复状态机会在下一次按键夺回焦点, 换 container 没有那个状态机)。
   const editorContainer = new Container();
   editorContainer.addChild(editor);
+  /**
+   * 对话框自己的槽位 —— **编辑器一直挂着,不再被换出去**(S-1 修回归)。
+   *
+   * 原来的做法是 `editorContainer.clear()` 把 editor 摘掉、放进对话框,关掉再放回来。
+   * 换成全屏布局树之后这条路有个**静默**症状:对话框开关一轮之后,编辑器还能打字、
+   * 还有焦点,但**斜杠补全再也不弹**(实测:不开对话框直接打 `/res` 弹得出 `→ resume <runId>`;
+   * 开一次 `/settings` 再 Esc 关掉,同样打 `/res` 就什么都没有)。单变量对照过 ——
+   * 只按 Esc 不开对话框,补全正常,所以怪的是摘挂不是 Esc。
+   *
+   * 不去猜 pi-tui 内部为什么:**编辑器根本不该被摘下来**。对话框开在它上方的独立槽位,
+   * 它只是不收键 —— claude code / pi 的选择器也都是这个形状(输入框一直在)。
+   */
+  const dialogSlot = new Container();
 
-  const root = new Container();
-  root.addChild(header);
-  root.addChild(harness);
-  root.addChild(chatLog);
-  root.addChild(dagHud);
-  root.addChild(pathHud);
-  root.addChild(editorContainer);
-  root.addChild(pressureLine);
-  root.addChild(footer);
-  tui.addChild(root);
+  /**
+   * 对话区吃掉**所有剩余高度** —— 于是输入框与状态行被顶到屏底(rubric V3)。
+   *
+   * ⚠ `grow` 必须给在 ScrollView 上,不能给 chatLog:chatLog 的高度就是内容高度,
+   * 给它 grow 只会让它长出屏幕外。"占住位置且可滚"是 viewport 的语义,不是内容的。
+   */
+  const transcript = new ScrollView(chatLog, { follow: 'end', primary: true, scrollbar: 'auto' });
+
+  /**
+   * ★ **只有 transcript 可压,chrome 一律 `shrink: 0`。**
+   *
+   * `allocateStackSizes` 的规则(实读 `components/stack.js:99`):先取各条目的**固有高度**,
+   * 总和小于屏高就按 `grow` 分,**大于屏高就按 `shrink` 压** —— 而默认是人人可压。
+   * transcript 的固有高度是**全部对话的行数**,只要说过几句话就必然超屏,
+   * 于是每一条 chrome 都跟着被按比例压掉。
+   *
+   * 症状极阴,我为此走了两个错假设:输入框还在、还能打字、还有焦点,但**斜杠补全不弹了**——
+   * 因为补全是编辑器多长出来的那一行,而它恰好被压没了。空对话时不复现(那时是 grow 不是
+   * shrink),一回车就复现。**HEAD 原版正常、我的版本坏**,对照实验才把它钉住。
+   */
+  const chrome = { shrink: 0 } as const;
+  const root = new VStack();
+  root.addChild(header, chrome);
+  root.addChild(harness, chrome);
+  root.addChild(transcript, { grow: 1, shrink: 1, minSize: 3 });
+  root.addChild(dagHud, chrome);
+  root.addChild(pathHud, chrome);
+  root.addChild(dialogSlot, chrome);
+  root.addChild(editorContainer, chrome);
+  root.addChild(pressureLine, chrome);
+  root.addChild(footer, chrome);
+  // 全屏走 `setLayoutRoot` 而不是 `addChild` —— 后者进的是隐式 ScrollView, 于是
+  // `grow` 无处可分(可用高度是"内容高度"而不是"一屏"), 布局会退化回 inline 的样子。
+  tui.setLayoutRoot(root);
   // 焦点给 editor: 打字直接进输入框。Ctrl+C 仍抢在它前面 (input listener 先于焦点分派)。
   tui.setFocus(editor);
 
@@ -244,16 +289,14 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     open(component, focus) {
       if (dialogOpen) return false;
       dialogOpen = true;
-      editorContainer.clear();
-      editorContainer.addChild(component);
+      dialogSlot.addChild(component);
       tui.setFocus(focus);
       return true;
     },
     close() {
       if (!dialogOpen) return; // 幂等
       dialogOpen = false;
-      editorContainer.clear();
-      editorContainer.addChild(editor);
+      dialogSlot.clear();
       tui.setFocus(editor);
       tui.requestRender();
     },
@@ -287,7 +330,25 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     // 等 S11 的 HUD 有了动画, 这里已经是对的位置, 不用再想一次。
     stopAnimations();
     tui.stop();
+    dumpTranscript();
     resolveExit();
+  }
+
+  /**
+   * 退出时把 transcript 吐回主屏(owner 2026-08-07 明确约束)。
+   *
+   * 全屏退出会**还原主屏**,于是这一程的对话在终端里一个字都不剩。那比"不好看"严重得多:
+   * 人是靠 scrollback 回看刚才发生过什么的。所以停完之后按当前宽度把 ChatLog 整个重画一遍
+   * 写进 stdout,让它留在主屏里。
+   *
+   * ⚠ 必须在 `tui.stop()` **之后**:停之前写 stdout 会被渲染器的下一帧覆盖掉,
+   * 症状是"偶尔留下半截"。
+   */
+  function dumpTranscript(): void {
+    const width = Math.max(20, terminal.columns || 80);
+    const lines = chatLog.render(width);
+    if (lines.length === 0) return;
+    process.stdout.write(`${lines.join('\n')}\n`);
   }
 
   /** S2 无动画;保留这个函数是为了让 §4.1 第 5 条的**顺序**先于动画存在。 */
