@@ -22,6 +22,7 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadSkillSource } from '../harness/skills/compile';
+import { fitLine } from './render/line';
 
 /** 注入块的定界符。两端都要有(同 memory-inject:只有开头的话正文会被读成 skill 内容)。 */
 export const SKILL_OPEN = '<omd-skill>';
@@ -69,11 +70,35 @@ export function parseSkillCommand(text: string): SkillCommand {
   return { kind: 'invoke', name: name as string, rest: rest.join(' ') };
 }
 
-/** 列表渲染。缺 description 画 `-`,不编。 */
+/**
+ * 一条 skill 的描述在列表里最多占多少字符。超出截断。
+ *
+ * ⚠ 这不是排版洁癖。frontmatter 的 description 动辄 200 字(含 Trigger/Skip 全文),
+ * 20 条铺开就是 80 行 —— 全屏之后**头部直接被顶出视口**,人看到的是半截列表。
+ * 列表的职责是"有哪些",不是"每条讲什么";要细节的人会去唤起它。
+ */
+const LIST_DESC_BUDGET = 58;
+
+/**
+ * ⚠ 截断按**可见宽度**不按字符数。第一版按 `length` 截,中文一个字占两列,
+ * 于是 58 个字符画出来是 116 列 —— 照样折行,墙一点没矮。走 `fitLine` 是因为
+ * 本仓「宽度只有一把尺子」(`src/tui/AGENTS.md`),自己数字符就是第二把。
+ */
+function clip(s: string, budget = LIST_DESC_BUDGET): string {
+  return fitLine(s.replace(/\s+/g, ' ').trim(), budget, '…');
+}
+
+/**
+ * 列表渲染。缺 description 画 `-`,不编。
+ *
+ * ★ **"只管本轮"那句话放在最后一行,不放抬头。** 全屏视口只留得住尾部,
+ * 放抬头的话它是第一个被顶掉的 —— 而它恰恰是这条命令最容易被误解的地方
+ * (唤起 ≠ 立刻执行)。位置在这里是判据不是口味。
+ */
 export function formatSkillList(skills: SkillMeta[]): string {
   if (skills.length === 0) return 'client-skills 目录不在或为空 (瘦包?) —— 没有可唤起的 skill';
-  const lines = skills.map((s) => `  ${s.name}: ${s.description ?? '-'}`);
-  return `omd 方法论 skill (唤起后注入**本轮**纪律, 不写进会话):\n${lines.join('\n')}\n用法: /skill <name> [补充说明]`;
+  const lines = skills.map((s) => `  ${s.name}: ${s.description ? clip(s.description) : '-'}`);
+  return `${lines.join('\n')}\n用法: /skill <name> [补充说明] —— 唤起后注入**本轮**纪律, 不写进会话`;
 }
 
 export interface LoadedSkill {
