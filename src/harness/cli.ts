@@ -71,11 +71,20 @@ if (userArgs[0] === 'mcp') {
 
 // omd tui: 自建交互前端 (TUI SDD 切片 S2 —— 目前只有 UI 壳, 引擎后端 S10 才接)。
 // ⚠ 动态 import: TUI 那一坨 (pi-tui + 组件树) 不进 mcp/serve 两条常驻路径的内存。
-// ⚠ 日志改道是 S3 的活 —— 在那之前这条路径**不许**打日志到 stdout/stderr, 一条 pino 就把 UI 打花。
 if (userArgs[0] === 'tui') {
-  const { runOmdTui } = await import('../tui/tui');
-  const { createStubBackend } = await import('../tui/backend-stub');
-  await runOmdTui({ backend: createStubBackend(), cwd: process.cwd() });
+  const cwd = process.cwd();
+  // S3 日志改道 —— **必须在 runOmdTui 之前**。TUI 独占终端, stdout 与 stderr 都会花屏,
+  // 所以这里不是 mcp 那样的 setLoggerDestination(2), 而是整程改到文件 (src/tui/logging.ts)。
+  const { redirectTuiLogs } = await import('../tui/logging');
+  const tuiLog = redirectTuiLogs({ cwd });
+  logger.info({ file: tuiLog.path }, '[omd/tui] 日志改道生效, 本程日志不进终端');
+  try {
+    const { runOmdTui } = await import('../tui/tui');
+    const { createStubBackend } = await import('../tui/backend-stub');
+    await runOmdTui({ backend: createStubBackend(), cwd });
+  } finally {
+    tuiLog.close();
+  }
   process.exit(0);
 }
 
