@@ -75,7 +75,11 @@ describe('★ 流式:一条消息, 不是一堆消息', () => {
     log.appendAssistantChunk('前半');
     log.appendUser('打断');
     log.appendAssistantChunk('后半');
-    expect(log.length).toBe(3);
+    // ⚠ 判据是**内容**不是条数。原来断言 length===3, 而 S-5 加了回合分界线之后条数变 4 ——
+    //   一条会被无关排版件改红的判据是脆的。"续没续到旧气泡里"只有看最后一条的正文才答得了:
+    //   真续进去了的话 lastText 会是 '前半后半'。
+    expect(log.lastText).toBe('后半');
+    expect(log.length).toBe(4); // 前半 · 分界线 · 打断 · 后半
   });
 
   test('closeStreaming 幂等, 空记录上调也不炸', () => {
@@ -173,5 +177,88 @@ describe('★ 工具行:一个工具一行, 原地更新', () => {
 
   test('★ 工具行用到的字形都在白名单里', () => {
     for (const m of Object.values(TOOL_MARK)) expect(findRiskyGlyphs(m)).toEqual([]);
+  });
+
+  test('工具行带参数 —— 只画名字的话, 改对文件和改错文件长得一模一样', () => {
+    const log = new ChatLog(theme);
+    log.toolStart('read', { id: 't1', detail: 'config.txt' });
+    expect(text(log)).toContain('read config.txt');
+  });
+
+  // ★ 反向自检 (实跑): 把 toolEnd 里的 `hit?.toolText ??` 去掉 → 这条当场红 (参数被擦成光名字)。
+  test('★ end 保住 start 那半句参数 —— end 事件不带 args', () => {
+    const log = new ChatLog(theme);
+    log.toolStart('read', { id: 't1', detail: 'config.txt' });
+    log.toolEnd('read', true, { id: 't1' });
+    expect(text(log)).toContain(`${TOOL_MARK.ok} read config.txt`);
+    expect(log.length).toBe(1); // 原地更新, 不是再追加一条
+  });
+
+  // ★ 这条钉的是一个**潜伏 bug**:原来按工具名对回去, 同一个工具连调两次时
+  //   先跑完的那个会去更新最后一条同名行 —— 两行长得一样, 屏上看不出标记落错了。
+  test('★ 同名工具并发时按 toolCallId 对回各自那一行', () => {
+    const log = new ChatLog(theme);
+    log.toolStart('read', { id: 'a', detail: '甲.ts' });
+    log.toolStart('read', { id: 'b', detail: '乙.ts' });
+    log.toolEnd('read', true, { id: 'a' });
+    const out = text(log);
+    expect(out).toContain(`${TOOL_MARK.ok} read 甲.ts`);
+    expect(out).toContain(`${TOOL_MARK.running} read 乙.ts`);
+  });
+
+  // ★ 反向自检 (实跑): 把 closeStreaming 里的 pop 去掉 → 这条当场红。
+  //   起因是实测截图: 模型那一轮只发工具调用不发文字, 开出一条空气泡, 它画出来什么都没有
+  //   却占着条目位, 把"连续工具行不空行"从中间劈开。
+  test('★ 一个字都没收到的助手气泡不占位 —— 否则它把连续工具行劈开', () => {
+    const log = new ChatLog(theme);
+    log.toolStart('read', { id: '1', detail: 'a.ts' });
+    log.toolEnd('read', true, { id: '1' });
+    log.appendAssistantChunk(''); // 只发了工具调用的那一轮
+    log.toolStart('ls', { id: '2' });
+    expect(log.length).toBe(2);
+    expect(log.render(60).filter((l) => l === '')).toHaveLength(0);
+  });
+
+  test('有正文的助手消息照常留着 —— 丢的只是空的那种', () => {
+    const log = new ChatLog(theme);
+    log.appendAssistantChunk('有话说');
+    log.closeStreaming();
+    expect(log.length).toBe(1);
+  });
+});
+
+describe('回合分界线 (S-5)', () => {
+  const at = (hhmmStr: string) => {
+    const [h, m] = hhmmStr.split(':').map(Number);
+    const d = new Date(2026, 7, 7, h as number, m as number, 30);
+    return () => d.getTime();
+  };
+
+  test('★ user 消息前面有一条分界线, 右端带时间', () => {
+    const log = new ChatLog(theme, at('09:05'));
+    log.appendUser('你好');
+    expect(text(log)).toContain('09:05');
+    expect(log.length).toBe(2); // 分界线 + 用户消息
+  });
+
+  test('★ 分界线**恰好占满宽度**, 不多不少 —— 超一列就换行, 少一列就有豁口', () => {
+    const log = new ChatLog(theme, at('09:05'));
+    log.appendUser('你好');
+    for (const w of [20, 40, 80, 120]) {
+      const line = log.render(w)[0] as string;
+      expect(visibleWidth(line)).toBe(w);
+    }
+  });
+
+  test('分界线与紧随的 user 之间不空行 —— 它标的是下一轮的头, 不是上一轮的尾', () => {
+    const log = new ChatLog(theme, at('09:05'));
+    log.appendUser('你好');
+    expect(log.render(60).filter((l) => l === '')).toHaveLength(0);
+  });
+
+  test('★ 分界线字形在白名单里', () => {
+    const log = new ChatLog(theme, at('09:05'));
+    log.appendUser('x');
+    expect(findRiskyGlyphs((log.render(40)[0] as string))).toEqual([]);
   });
 });

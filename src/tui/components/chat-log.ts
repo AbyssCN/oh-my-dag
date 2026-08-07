@@ -16,15 +16,23 @@
  * 64 个 token 变成 64 条记录 —— 屏幕上看着像在动,其实是错的。判据就是
  * "整段文本恰好出现一次"(`chat-log.test.ts`)。
  */
-import { type Component, Markdown, Text } from '@earendil-works/pi-tui';
+import { type Component, Markdown, Text, visibleWidth } from '@earendil-works/pi-tui';
 import type { OmdTuiTheme } from '../theme';
 
-export type ChatRole = 'user' | 'assistant' | 'notice' | 'tool';
+export type ChatRole = 'user' | 'assistant' | 'notice' | 'tool' | 'divider';
+
+/** 工具行的可选料。`id` = pi 的 `toolCallId`;`detail` = 参数里那半句(由 `render/tool-arg` 挑)。 */
+export interface ToolLineOpts {
+  id?: string | undefined;
+  detail?: string | null | undefined;
+}
 
 interface Entry {
   role: ChatRole;
   /** tool 条目的键 —— `toolEnd` 靠它**原地更新**而不是再追加一条。 */
   toolKey?: string;
+  /** 工具行不含标记的正文(`read config.txt`)。end 复用它, 免得把参数擦掉。 */
+  toolText?: string;
   /** assistant 用 Markdown,其余用 Text —— 两者都实现 `Component`。 */
   component: Component;
   /** 流式累积缓冲;只有 assistant 用得上。 */
@@ -50,14 +58,48 @@ function plainText(content: unknown): string | null {
  *
  * ⚠ 三种角色三种前缀不是装饰:一条工具输出被画成助手发言,读起来就像模型说了它没说过的话。
  */
-const PREFIX: Record<ChatRole, string> = { user: '> ', assistant: '', notice: '! ', tool: '' };
+const PREFIX: Record<ChatRole, string> = { user: '> ', assistant: '', notice: '! ', tool: '', divider: '' };
 /** 工具行三态。**跑着的与跑完的必须看得出区别** —— 否则你不知道它是在忙还是卡住了。 */
 export const TOOL_MARK = { running: '·', ok: '✓', fail: '✗' } as const;
+
+/** `HH:MM`。秒不画 —— 对话不是日志, 秒只增加噪音。 */
+export function hhmm(ms: number): string {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/**
+ * 回合分界线:一整行 `─`,**时间戳嵌在右端**。
+ *
+ * ⚠ 分界与时间戳合成一行是刻意的。两件事各占一行的话,一屏 40 行里光分隔就吃掉 1/5 ——
+ * 而 transcript 的每一行都在跟对话内容抢位置。
+ *
+ * 宽度由 `render(width)` 现算:状态行那套"算死一个宽度"的做法在这里会在改窗口时错位。
+ */
+export class TurnDivider implements Component {
+  constructor(
+    private label: string,
+    private paint: (t: string) => string,
+  ) {}
+
+  render(width: number): string[] {
+    if (width <= 0) return [];
+    const label = this.label ? ` ${this.label}` : '';
+    const dashes = Math.max(0, width - visibleWidth(label));
+    return [this.paint('\u2500'.repeat(dashes) + label)];
+  }
+
+  invalidate(): void {}
+}
 
 export class ChatLog implements Component {
   private entries: Entry[] = [];
 
-  constructor(private theme: OmdTuiTheme) {}
+  /** 时钟从外面给 —— 时间戳要可测, 不能靠在测试里 sleep 出一个不确定的读数。 */
+  constructor(
+    private theme: OmdTuiTheme,
+    private now: () => number = Date.now,
+  ) {}
 
   /** @returns 条目数 —— 测试用它区分"追加进同一条"与"新开一条"。 */
   get length(): number {
@@ -80,37 +122,53 @@ export class ChatLog implements Component {
    * ⚠ 此前 start/end 各追加一条 notice:一轮十次调用就是二十行噪音,
    * 把真正的回复挤出屏幕。transcript 是用来读对话的,不是流水账。
    */
-  toolStart(name: string): void {
+  toolStart(name: string, opts: ToolLineOpts = {}): void {
     this.closeStreaming();
+    const text = opts.detail ? `${name} ${opts.detail}` : name;
     this.entries.push({
       role: 'tool',
-      toolKey: name,
-      component: new Text(this.theme.chrome.dim(`${TOOL_MARK.running} ${name}`)),
-      buffer: name,
+      toolKey: opts.id ?? name,
+      toolText: text,
+      component: new Text(this.theme.chrome.dim(`${TOOL_MARK.running} ${text}`)),
+      buffer: text,
       open: false,
     });
   }
 
-  /** 工具跑完 —— **原地更新**那一行。找不到对应行就补一条(总比丢掉强)。 */
-  toolEnd(name: string, ok: boolean): void {
+  /**
+   * 工具跑完 —— **原地更新**那一行。找不到对应行就补一条(总比丢掉强)。
+   *
+   * ⚠ 对回哪一行看 `opts.id`(pi 的 `toolCallId`)。**只按工具名对是错的**:
+   * 同一个工具连调两次时,先跑完的那个会去更新最后一条同名行 ——
+   * 屏上标记落在错的行上,而两行长得一样,看不出来。
+   */
+  toolEnd(name: string, ok: boolean, opts: ToolLineOpts = {}): void {
+    const key = opts.id ?? name;
     const mark = ok ? TOOL_MARK.ok : TOOL_MARK.fail;
-    const text = `${mark} ${name}`;
-    const hit = [...this.entries].reverse().find((e) => e.role === 'tool' && e.toolKey === name);
+    const hit = [...this.entries].reverse().find((e) => e.role === 'tool' && e.toolKey === key);
+    // 参数那半句以 start 那一行为准 —— end 事件不带 args, 拿不到就别把已经画对的擦掉。
+    const body = hit?.toolText ?? (opts.detail ? `${name} ${opts.detail}` : name);
+    const text = `${mark} ${body}`;
+    const paint = (t: string) => (ok ? this.theme.chrome.dim(t) : this.theme.chrome.warn(t));
     if (hit) {
-      (hit.component as Text).setText(ok ? this.theme.chrome.dim(text) : this.theme.chrome.warn(text));
+      (hit.component as Text).setText(paint(text));
       return;
     }
-    this.entries.push({
-      role: 'tool',
-      toolKey: name,
-      component: new Text(ok ? this.theme.chrome.dim(text) : this.theme.chrome.warn(text)),
-      buffer: name,
-      open: false,
-    });
+    this.entries.push({ role: 'tool', toolKey: key, toolText: body, component: new Text(paint(text)), buffer: body, open: false });
   }
 
+  /**
+   * 用户说的话。**前面先插一条回合分界线**(S-5)——
+   * 此前两条消息之间只有一个空行, 一屏滚下来读不出"这是第几轮"。
+   */
   appendUser(text: string): void {
     this.closeStreaming();
+    this.entries.push({
+      role: 'divider',
+      component: new TurnDivider(hhmm(this.now()), this.theme.chrome.dim),
+      buffer: '',
+      open: false,
+    });
     this.entries.push({
       role: 'user',
       component: new Text(this.theme.chrome.user(PREFIX.user + text)),
@@ -165,10 +223,20 @@ export class ChatLog implements Component {
     });
   }
 
-  /** 收尾当前流式消息。**幂等** —— 没有开着的消息时什么都不做。 */
+  /**
+   * 收尾当前流式消息。**幂等** —— 没有开着的消息时什么都不做。
+   *
+   * ⚠ **一个字都没收到的气泡直接丢掉**(S-5)。模型在一轮里只发工具调用、不发文字时,
+   * 流式会开出一条空的 assistant 条目 —— 它画出来什么都没有,却仍占一个条目位,
+   * 于是"连续工具行不空行"那条规则被它从中间劈开:实测截图里
+   * `✓ read config.txt` 与 `✓ ls` 之间就多了一行空。
+   * 丢掉是安全的:没有正文的助手消息本来就不该占位置。
+   */
   closeStreaming(): void {
     const last = this.entries.at(-1);
-    if (last?.open) last.open = false;
+    if (!last?.open) return;
+    last.open = false;
+    if (last.role === 'assistant' && !last.buffer.trim()) this.entries.pop();
   }
 
   /**
@@ -199,7 +267,10 @@ export class ChatLog implements Component {
     //   拆成看起来互不相关的十件事。首条前面也不空。
     return this.entries.flatMap((e, i) => {
       const prev = this.entries[i - 1];
-      const gap = i > 0 && !(e.role === 'tool' && prev?.role === 'tool');
+      // 连续工具行不空行(一串工具是一组);分界线与紧随的 user 之间也不空 ——
+      // 空了的话分界线看起来像是属于上一轮的尾巴, 而它标的是下一轮的头。
+      const glued = (e.role === 'tool' && prev?.role === 'tool') || (e.role === 'user' && prev?.role === 'divider');
+      const gap = i > 0 && !glued;
       return gap ? ['', ...e.component.render(width)] : e.component.render(width);
     });
   }
