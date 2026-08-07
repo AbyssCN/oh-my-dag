@@ -9,7 +9,16 @@ description: 对一批 diff 做对抗式审查:默认多维并行召回 + 确定
 
 ## 用法(异步三段式)
 
-- `gate`:`G0` 浅扫(快/便宜)· `G1` 轻量 · `G2` 默认(branch diff 全维度)· `G3` release 闸(spec 轴强制对照 SDD)。不给 = G2。
+- `gate`:**按 blast radius 选,不按行数**(真源 `harness/docs/GATES.md`,与引擎 `scripts/dag-review.ts` 逐档一致)。不给 = G2。
+
+  | gate | 什么改动 | 实际跑什么 |
+  |---|---|---|
+  | `G0` | 文档 / 机械(注释、配置、纯改名、格式) | ⚠ **免审短路**——不取 diff、不发模型、直接 exit 0。**它不是"便宜的浅扫",是"不审"**;要便宜的召回选 G1 |
+  | `G1` | 骨架(新模块脚手架、签名、接线) | `contract` + `boundary` 两维 |
+  | `G2` | 常规逻辑(普通业务码、带行为测试的重构) | `correctness` + `security` + `boundary` 三维 |
+  | `G3` | 敏感:schema · 认证 · 安全边界 · 不可逆 | G2 三维 + `contract` + **`spec` 轴强制**(对照 SDD,`--no-spec` 在 G3 直接报错)+ owner 终审 |
+
+  轮数硬上限:G1/G2 各 1 轮,G3 = 1 轮 + 至多 1 个修复 cycle。
 - `scope`:收窄审查范围(路径/模块);不给 = 当前 branch diff 全量。
 - `deep`:**深审档**(`true`)。一个 pi agent 读全仓 + **实测**(库/runtime API 主张必跑 `bun -e` 复现,治外部 API 幻觉)→ 确定性跨模型 verify。比默认贵,但**精度更高、自然去重**。
 
@@ -40,7 +49,8 @@ description: 对一批 diff 做对抗式审查:默认多维并行召回 + 确定
 审核 ROI = P(缺陷) × 逃逸代价 ÷ 成本。
 - **P(缺陷)高** = 机械铺量 / 敏感接缝(会计写·状态机·迁移)/ 大 diff。
 - **逃逸代价高** = 账面污染 / 绕审计——错了是灾难,再贵也审(上 G3)。
-- 小改 + 自己写 + typecheck/test 全绿 → G0/G1 够,别 G3。
+- ROI 决定的是**审不审、审多深**;**分档轴仍是 blast radius**——骨架接线 + typecheck/test 全绿 → G1 够,别 G3。
+  但**别拿 G0 当"小改的便宜档"**:G0 = 不审,只对文档/机械改动成立。
 - 0 P0/P1 ≠ 白审,可能是"插错位置"信号:过程审(写码前判定)> 结果审(post-code gate)。
 
 ## 与既有 skill 的边界

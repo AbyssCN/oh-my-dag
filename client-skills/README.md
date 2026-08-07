@@ -4,7 +4,7 @@
 
 ## 安装
 
-**Claude Code**:**无需手动拷贝**。注册 omd MCP 后,`omd mcp` server 首次启动时自动把这 16 个技能
+**Claude Code**:**无需手动拷贝**。注册 omd MCP 后,`omd mcp` server 首次启动时自动把这 20 个技能
 (统一 `omd-` 前缀,避免和你既有 skill 撞名)幂等铺进用户级 `~/.claude/skills/` —— 新会话即得
 `/omd-path`、`/omd-deliver` 等。自装幂等、随包升级更新,且**从不覆盖你改过的技能**(按内容 hash 判定,
 用户动过即跳过)。关掉自装:环境变量 `OMD_INSTALL_SKILLS=0`。机制在 `src/harness/client-skills-install.ts`。
@@ -16,7 +16,11 @@ cd <目标repo> && claude mcp add omd -- omd mcp        # 全局安装的 omd; �
 
 **Codex**:没有 skills 机制——把需要的 SKILL.md 正文并入目标 repo 的 `AGENTS.md`,或作为 prompt 片段引用。
 
-## 技能一览(19 个)
+## 技能一览(20 个)
+
+> 这张表**必须与本目录 `ls` 逐个对上** —— 表里有而目录没有 = 用户装了却拿不到,
+> 目录有而表里没有 = 出厂了没人知道。两种都是静默失效。
+> 复跑判据:`ls client-skills/ | grep -c '^omd-'` 与本表行数相等。
 
 | 技能 | 干什么 | 靠什么 |
 |---|---|---|
@@ -30,6 +34,7 @@ cd <目标repo> && claude mcp add omd -- omd mcp        # 全局安装的 omd; �
 | `/omd-contract` | 审议结晶成 SDD 落盘(承 /omd-grill 决策记录表) | 方法论 + 文件 |
 | `/omd-note` | 决策/引用记 NOTES.md 台账(引用不复制/遮敏感/追加) | 方法论 + 文件 |
 | `/omd-council` | 多视角议会 + 3-lens 人格 + 领域岔口接地档(反 happy-path) | MCP `dag_research`(council) |
+| `/omd-research-deep` | 终极档:种子作者化多角度抓 + council + 多轮缺口补挖 | MCP `dag_research`(`super` + `rounds`) |
 | `/omd-audit` | 安全专项审计:信任边界清单(注入/认证/fail-open) | MCP `run`(审计 DAG 模板) |
 | `/omd-sast` | 确定性 semgrep 静态扫描 | Bash semgrep |
 | `/omd-review` | 对抗式 diff 审查 + 误报裁决程序 + gate ROI 分档 | MCP `dag_review`(三段式) |
@@ -37,7 +42,14 @@ cd <目标repo> && claude mcp add omd -- omd mcp        # 全局安装的 omd; �
 | `/omd-deepen` | git 热点架构加深 → 浅模块去壳加厚 → leverage 排序 | MCP `dag_deepen`(三段式) |
 | `/omd-debug` | 系统化根因调试 8 阶段(无根因不修)+ 修完扫同类;并发多假设派 `dag_debug` | 方法论 + omd `dag_debug` |
 | `/omd-recall` | 推理卡住时主动召回既有记忆(语义+词法混合检索) | MCP `memory_recall` |
+| `/omd-resume` | 列断掉/失败的 run 让 owner 挑一个从 checkpoint 续跑(跳过已绿节点) | MCP `dag_runs` + `run`(resume) |
 | `/omd-video` | 视频→逐段结构化笔记(MiMo-v2.5 原生吃画面+音频),产 ALL-NOTES.md 交 dag 综合 | 自带 `run.py`(yt-dlp+ffmpeg+mimo API) |
+
+### 明确**不**出厂的(别以为漏了)
+
+| 名字 | 为什么不出厂 |
+|---|---|
+| `omd-investigate` | 与 `/omd-debug` **逐字近乎重复**,且是落后版本(没有 `dag_debug` 并发多假设那一段)。同一条方法论只留一个入口 —— 用 `/omd-debug`。老机器上残留的本地副本可以删。 |
 
 ## 原 pi TUI 27 条斜杠命令 → 去向全表
 
