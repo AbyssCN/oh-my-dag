@@ -63,8 +63,9 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
   // → 这条当场红, 判词直接指出 U+2014 needs-tty。**这就是它第一次抓到的那个真问题。**
   const samples: [string, string][] = [
     ['header', CHROME.header('/home/nick/repos/oh-my-dag')],
-    ['body', CHROME.body],
-    ['echo', CHROME.echo('hej')],
+    ['hint', CHROME.hint],
+    ['refused', CHROME.refused('stub://engine-not-wired')],
+    ['failed', CHROME.failed('ECONNREFUSED')],
     ['footer', CHROME.footer('stub://engine-not-wired')],
     ['footerArmed', CHROME.footerArmed('stub://engine-not-wired')],
     ['harness(有)', formatContextLine([{ path: '/x/.claude/CLAUDE.md', content: '' }], { cwd: '/x', home: '/h' })],

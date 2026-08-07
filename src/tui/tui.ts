@@ -27,10 +27,13 @@
  * 双击判定是纯函数({@link decideCtrlC}),不碰 `Date.now`;硬退走注入的 `exit`。
  * 于是 L1 能直接测判定,L3 只需要验"真 PTY 里这条链接得起来"。
  */
-import { Container, ProcessTerminal, Text, TuiMainScreen, type Terminal } from '@earendil-works/pi-tui';
+import { Container, Editor, ProcessTerminal, TuiMainScreen, type Terminal } from '@earendil-works/pi-tui';
+import { logger } from '../logger';
 import type { OmdBackend } from './backend';
+import { ChatLog } from './components/chat-log';
 import { StatusLine } from './components/status-line';
 import { type ContextFile, formatContextLine, loadConductorContext } from './context';
+import { type OmdTuiTheme, createTheme } from './theme';
 
 /** 双击 Ctrl+C 的窗口。openclaw / pi 一致,不发明新数。 */
 export const CTRL_C_WINDOW_MS = 500;
@@ -49,21 +52,6 @@ export function decideCtrlC(armedAt: number | null, now: number, windowMs = CTRL
 }
 
 /**
- * 可打印输入的过滤。**两步,顺序重要**:
- *  ① 先整条剥掉 ESC 序列(CSI `\x1b[...` / SS3 `\x1bO...` / 裸 ESC);
- *  ② 再剥剩下的单个控制字符。
- *
- * ⚠ 只做 ② 是不够的 —— 那样上箭头 `\x1b[A` 会剩下 `[A` 画在屏上,
- * 一个**看起来像用户真打了字**的假回显。剥就要整条剥。
- */
-export function printableOnly(data: string): string {
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: 终端输入本来就是控制码
-  const withoutEscapes = data.replace(/\x1b(?:\[[0-9;?]*[ -/]*[@-~]|O.|.)?/g, '');
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: 同上
-  return withoutEscapes.replace(/[\x00-\x1f\x7f]/g, '');
-}
-
-/**
  * **全部 chrome 文案的唯一出处**(S6)。
  *
  * 集中在一处不是整洁癖:字形闸(`render/glyphs.test.ts`)就扫这一个对象。
@@ -75,8 +63,11 @@ export function printableOnly(data: string): string {
  */
 export const CHROME = {
   header: (cwd: string) => `omd tui - ${cwd}`,
-  body: '输入任意字符会在这里回显。',
-  echo: (typed: string) => `> ${typed}`,
+  hint: '打字后回车发一轮;Ctrl+C 两次退出。',
+  /** 后端明确拒绝(**断链说明卡**):说出是谁拒的,不编一个回复。 */
+  refused: (url: string) => `后端拒绝了这一轮 (${url}): 引擎尚未接通, 这一轮没有发给任何模型`,
+  /** 后端抛了:错误原文进屏,同时进日志文件。 */
+  failed: (reason: string) => `这一轮发不出去: ${reason}`,
   footer: (url: string) => `[${url}]  Ctrl+C 两次退出`,
   footerArmed: (url: string) => `[${url}]  再按一次 Ctrl+C 退出`,
 } as const;
@@ -98,6 +89,10 @@ export interface RunOmdTuiOpts {
    * `contextFiles` —— 屏上看到的与模型吃到的是同一份,不会各读各的。
    */
   contextFiles?: ContextFile[];
+  /** 主题注入(S18 换 Catppuccin 逐值;测试用它固定关色)。省略 → `createTheme()`。 */
+  theme?: OmdTuiTheme;
+  /** 会话 id。S10 之前只有一条会话,给个稳定默认值即可。 */
+  sessionId?: string;
 }
 
 /**
@@ -113,22 +108,29 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   const tui = new TuiMainScreen(terminal);
 
   const contextFiles = opts.contextFiles ?? loadConductorContext(opts.cwd);
+  const theme = opts.theme ?? createTheme();
 
   // 三条状态行走 StatusLine (截断, 不折行) —— 状态行一折, 下面所有东西的行号整体下移,
-  // 而 HUD 是按行差分画的, 结果是布局错位。正文走 Text (折行是对的)。
+  // 而 HUD 是按行差分画的, 结果是布局错位。对话正文走 ChatLog (折行是对的)。
   const header = new StatusLine(CHROME.header(opts.cwd));
   const harness = new StatusLine(formatContextLine(contextFiles, { cwd: opts.cwd }));
-  const body = new Text(CHROME.body);
+  const chatLog = new ChatLog(theme);
+  const editor = new Editor(tui, theme.editor);
   const footer = new StatusLine(CHROME.footer(opts.backend.connection.url));
+
+  chatLog.appendNotice(CHROME.hint);
 
   const root = new Container();
   root.addChild(header);
   root.addChild(harness);
-  root.addChild(body);
+  root.addChild(chatLog);
+  root.addChild(editor);
   root.addChild(footer);
   tui.addChild(root);
+  // 焦点给 editor: 打字直接进输入框。Ctrl+C 仍抢在它前面 (input listener 先于焦点分派)。
+  tui.setFocus(editor);
 
-  let typed = '';
+  const sessionId = opts.sessionId ?? 'tui';
   let armedAt: number | null = null;
   let exiting = false;
   let resolveExit: () => void = () => {};
@@ -156,6 +158,37 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   /** S2 无动画;保留这个函数是为了让 §4.1 第 5 条的**顺序**先于动画存在。 */
   function stopAnimations(): void {}
 
+  /**
+   * 提交一轮。**这里是 S10 唯一要换的地方** —— 换掉的是 `opts.backend` 的实现,
+   * 不是这段代码:UI 只认 `OmdBackend` 那一个形状(SDD §3.1)。
+   *
+   * ⚠ 拒绝要**画成 notice 不是 assistant**:一句"引擎没接通"若被画成助手发言,
+   * 读起来就像模型在回答 —— 那正是本仓 S-1 那一族(看起来在动,其实一次都没生效)。
+   */
+  async function submit(prompt: string): Promise<void> {
+    chatLog.appendUser(prompt);
+    editor.setText('');
+    editor.addToHistory(prompt);
+    tui.requestRender();
+    try {
+      const res = await opts.backend.sendChat({ sessionId, prompt });
+      // `ok:false` 是**响亮的否**, 不是空回复。stub 后端现在走的就是这条。
+      if (!res.ok) chatLog.appendNotice(CHROME.refused(opts.backend.connection.url));
+    } catch (err) {
+      // fail-open 可以吞异常, 不许吞证据: 错误原文进屏, 同时进日志文件 (已改道)。
+      const reason = err instanceof Error ? err.message : String(err);
+      logger.warn({ err: reason, sessionId }, '[omd/tui] sendChat 抛了');
+      chatLog.appendNotice(CHROME.failed(reason));
+    }
+    tui.requestRender();
+  }
+
+  editor.onSubmit = (text: string) => {
+    const prompt = text.trim();
+    if (!prompt) return; // 空回车不算一轮 —— 否则会往会话里塞空消息
+    void submit(prompt);
+  };
+
   // ⚠ 必须走 addInputListener 而不是组件的 handleInput: 实读 `tui.js:558`,
   // input listener 在**焦点分派之前**跑, 且 `consume: true` 能截住 —— Ctrl+C 必须
   // 抢在任何组件之前, 否则将来 editor 一拿到焦点就把它吃了。
@@ -171,17 +204,14 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       return { consume: true };
     }
     // 任何非 Ctrl+C 的键都解除预备 —— 否则"按了 C、过一会儿又按 C"会被当成双击。
-    armedAt = null;
-    const printable = printableOnly(data);
-    if (printable) {
-      typed += printable;
-      body.setText(CHROME.echo(typed));
-      // ⚠ `setText` 只清组件自己的行缓存, **不触发重绘** (实读 `components/text.js:20-25`)。
-      // 少了这一句, 屏幕会停在首帧, 而组件状态其实一直在变 —— 一个"看起来 UI 挂了"
-      // 而实际逻辑全对的假象。S2 的 PTY lane 第一次跑就是死在这里。
+    if (armedAt !== null) {
+      armedAt = null;
+      footer.setText(CHROME.footer(opts.backend.connection.url));
       tui.requestRender();
     }
-    return { consume: true };
+    // ⚠ **不 consume** —— 键要接着往下走到 editor。S2 时这里是 `consume: true` 加自己回显,
+    // 那是"还没有输入框"时的临时形态;现在截住等于键盘全废。
+    return undefined;
   });
 
   opts.backend.start();

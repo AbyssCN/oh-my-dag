@@ -166,7 +166,17 @@ async function scenarioHappyPath() {
     );
 
     p.write('hej');
-    check(await waitFor(p, (t) => t.includes('> hej')), 'S2-3 按键有回显', p.text().slice(0, 200));
+    check(await waitFor(p, (t) => t.includes('hej')), 'S2-3 按键有回显', p.text().slice(0, 200));
+
+    // S8: 回车发一轮 —— 用户消息进记录, 后端 (stub) **响亮地拒绝**。
+    p.write('\r');
+    check(await waitFor(p, (t) => t.includes('> hej')), 'S8-1 回车后用户消息进对话记录', p.text().slice(0, 400));
+    // ⚠ 这条钉的是**断链说明卡**: 引擎没接通时必须说出来, 绝不许编一个看起来对的回复。
+    check(
+      await waitFor(p, (t) => t.includes('后端拒绝了这一轮')),
+      'S8-2 ★ 后端拒绝被画出来(零假数据, 不是一个编出来的回复)',
+      p.text().slice(0, 400),
+    );
 
     p.write('\x03');
     check(await waitFor(p, (t) => t.includes('再按一次')), 'S2-4 第一次 Ctrl+C 只预备, 不退');
@@ -186,8 +196,9 @@ async function scenarioArmReset() {
     check(await waitFor(p, (t) => t.includes('omd tui')), 'S2-6 (场景2) 启动');
     p.write('\x03');
     check(await waitFor(p, (t) => t.includes('再按一次')), 'S2-7 (场景2) 进入预备');
-    p.write('x');
-    check(await waitFor(p, (t) => t.includes('> x')), 'S2-8 打字解除预备并回显');
+    // 打的字进输入框 (S8 之后不再是自绘回显)。用一个不会撞上任何 chrome 文案的串。
+    p.write('zebra');
+    check(await waitFor(p, (t) => t.includes('zebra')), 'S2-8 打字解除预备并回显', p.text().slice(0, 300));
     p.write('\x03');
     // 给它 2s 去"错误地退出"; 没退才算过。
     const died = await Promise.race([
