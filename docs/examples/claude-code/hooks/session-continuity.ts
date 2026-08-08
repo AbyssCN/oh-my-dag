@@ -16,11 +16,15 @@
  *
  * 本文件可与标准 hook 输入(stdin JSON)与 transcript 同文件读取,再调 W3 `parseStopLedger`
  * (冻结授权);决策本身是纯函数,不触碰文件系统、不 grep transcript 原文。
+ * S1 接线(SDD 契约 D-4):解析成功后经 `appendLedger`(src/harness/session/ledger.ts)
+ * 把本轮记账 serialized 进 ledger.jsonl —— W1 writer 尾读的唯一数据源;全程 fail-open,
+ * 写失败只记 stderr,不影响决策输出。
  *
  * @module
  */
 
 import { parseStopLedger, type StopLedger } from '../../../../src/harness/session/stop-ledger';
+import { appendLedger } from '../../../../src/harness/session/ledger';
 
 // ─── Public types(冻结 API)─────────────────────────────────────────────────
 
@@ -94,6 +98,14 @@ async function main(): Promise<void> {
     } else {
       const parsed = parseStopLedger(await Bun.file(input.transcript_path).text());
       out = parsed.ok ? evaluateSessionContinuityStop(input, parsed.ledger) : {};
+      if (parsed.ok) {
+        // S1 接缝(SDD 契约 D-4):W2 → W1 writer 的 caller 链 —— serializer + ledger.jsonl append
+        // (每轮记账)。任何失败 fail-open 跳过:不改变决策、不抛、不阻断 hook 链。
+        const sessionId = typeof input.session_id === 'string' ? input.session_id : '';
+        const cwd = typeof input.cwd === 'string' ? input.cwd : undefined;
+        const appended = appendLedger({ ledger: parsed.ledger, sessionId, cwd });
+        if (!appended.ok) console.error(`[session-continuity] ledger append skipped (fail-open): ${appended.error}`);
+      }
     }
   } catch {
     out = {}; // 输入/transcript 不可读或畸形 → fail-open:不抛、不决策、零写入

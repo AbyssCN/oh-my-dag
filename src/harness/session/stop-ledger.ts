@@ -11,13 +11,13 @@
  *   缺键/缺失/非对象/非有限数 → null(best-effort,不伪造数、不溢出成 Infinity);
  * - assistantText = text 块逐字按序 + tool_use 抽取材料(Bash command / 文件路径,同 W1 excerpt 约定),
  *   抽取材料逐字不截断;无内容 → null;
- * - user 行(含 `<system-reminder` / `<task-notification` 精确前缀)与未知 line.type
+ * - user 行(含 `<system-reminder` / `<task-notification` / skill 前导 精确前缀)与未知 line.type
  *   (GWT-3 allowlist)不产生 entry、不报错、不污染 assistantText;合法 JSON 但非 record 同忽略;
  * - lastUserAsk(仅从 `type:'user'` 记录提取, 完整解析成功后按源行逆序选择):
  *   content 非空 string → 原串;array 含任一 `tool_result` → 该记录无 candidate;
  *   否则取首个非空 `text` 原串;其余形状无 candidate(不 trim、不折叠、不解析);
- *   原始 `startsWith("<system-reminder")` / `startsWith("<task-notification")` 跳过继续,
- *   `startsWith("Base directory for this skill:")` → `blocked-skill-preamble` 并停止,
+ *   原始 `startsWith("<system-reminder")` / `startsWith("<task-notification")` /
+ *   `startsWith("Base directory for this skill:")` 三前缀均跳过继续(精确前缀, 不 trim/不折叠/不泛化),
  *   其他 candidate → `found`(value 为原串 `.slice(0,200)`), 耗尽 → `empty`;
  * - 空行/全空白跳过;malformed 非空行 → typed error(1-based 源行号 + 非空 message),
  *   含 `type:'assistant'` 但 message 非对象的结构损坏行同样 typed error,绝不静默跳过也不抛异常
@@ -36,8 +36,7 @@ export interface StopLedgerEntry {
 
 export type LastUserAsk =
   | Readonly<{ status: 'found'; value: string; sourceLine: number }>
-  | Readonly<{ status: 'empty'; value: null; sourceLine: null }>
-  | Readonly<{ status: 'blocked-skill-preamble'; value: null; sourceLine: number }>;
+  | Readonly<{ status: 'empty'; value: null; sourceLine: null }>;
 
 export interface StopLedger {
   readonly entries: readonly StopLedgerEntry[];
@@ -120,13 +119,16 @@ const TASK_NOTIFICATION_PREFIX = '<task-notification';
 const SYSTEM_REMINDER_PREFIX = '<system-reminder';
 const SKILL_PREAMBLE_PREFIX = 'Base directory for this skill:';
 
-/** 逆序状态机(D-2):完整解析成功后选最后真实 ask;blocked 即停, 耗尽 → empty。 */
+/** 逆序状态机(D-2):完整解析成功后选最后真实 ask;三精确前缀 skip+continue 逆扫, 耗尽 → empty。 */
 function selectLastUserAsk(candidates: readonly { line: number; value: string }[]): LastUserAsk {
   for (let i = candidates.length - 1; i >= 0; i--) {
     const c = candidates[i]!;
-    if (c.value.startsWith(SYSTEM_REMINDER_PREFIX) || c.value.startsWith(TASK_NOTIFICATION_PREFIX)) continue;
-    if (c.value.startsWith(SKILL_PREAMBLE_PREFIX)) {
-      return { status: 'blocked-skill-preamble', value: null, sourceLine: c.line };
+    if (
+      c.value.startsWith(SYSTEM_REMINDER_PREFIX) ||
+      c.value.startsWith(TASK_NOTIFICATION_PREFIX) ||
+      c.value.startsWith(SKILL_PREAMBLE_PREFIX)
+    ) {
+      continue;
     }
     return { status: 'found', value: c.value.slice(0, 200), sourceLine: c.line };
   }
