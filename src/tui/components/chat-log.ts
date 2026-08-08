@@ -107,6 +107,19 @@ export class ChatLog implements Component {
     return this.entries.length;
   }
 
+  /**
+   * **人有没有真开口说话** —— 判据是有没有 `user` 角色的条目,不是 `length > 0`。
+   *
+   * ⚠ 两者不是一回事:欢迎屏字标走 `appendBanner`,它也进 `entries`。
+   * 拿 `length > 0` 当"有对话"的话,首屏一起来就是真 —— 那正是本仓最怕的那种判据
+   * (读起来对、量的是另一件事)。
+   *
+   * 消费者:侧栏 pathfinder 摘要**有对话之后就收起**(P3 件3 轮1 的 critic 判词)。
+   */
+  get hasDialogue(): boolean {
+    return this.entries.some((e) => e.role === 'user');
+  }
+
   /** 最后一条的完整文本(测试与流式收尾用)。没有条目时返回 `null`,不是空串。 */
   get lastText(): string | null {
     return this.entries.at(-1)?.buffer ?? null;

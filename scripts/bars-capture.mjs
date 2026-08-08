@@ -31,7 +31,7 @@
  * `--live` 才采 `08-streaming` / `09-long-scroll`;不给就照旧记进 `_MISSING.md`。
  */
 import { spawn } from '@lydell/node-pty';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -313,7 +313,16 @@ async function main() {
         sc.env = rest;
       }
       if (sc.live && !live) {
-        missing.push({ family: name, id: sc.id, desc: sc.desc, reason: '需要真跑一轮模型; 未带 --live' });
+        // ⚠ **三态别压成一态**(本仓 NULL ≠ 0 ≠ 不适用): 「这一跑没采但盘上有帧」与
+        //   「采不到」是两件事。第一版都记成"采不到", 于是 `--family omd` 之后 `_MISSING.md`
+        //   写着 omd 的 08/09 采不到 —— 而那两张帧明明在盘上(上一次 --live 采的)。
+        const had = existsSync(join(dir, `${sc.id}.txt`));
+        missing.push({
+          family: name,
+          id: sc.id,
+          desc: sc.desc,
+          reason: had ? '这一跑没采(未带 --live); **盘上有上一次 --live 采的帧**' : '需要真跑一轮模型; 未带 --live, 盘上也没有',
+        });
         continue;
       }
       process.stdout.write(`采 ${name}/${sc.id} … `);
@@ -335,15 +344,36 @@ async function main() {
     }
   }
 
-  if (missing.length) {
+  {
+    /**
+     * ⚠ **单家采集不许把别家的记录冲掉。**
+     * 第一版是整份覆写:跑一次 `--family omd` 之后,`_MISSING.md` 里
+     * 「openclaw / hermes 的 08-09 采不到」那两行就没了 —— 而 gauntlet 报告正靠它们
+     * 说明"表里画 — 是没采到、不是表现差"。本仓图鉴 S-17 的形状(记在别处 → 长得像没记)。
+     * ⇒ 现在只**替换本次处理过的那几家**的行,其余原样留下。
+     */
+    const touched = new Set(Object.keys(FAMILIES).filter((n) => !only || only === n));
+    const kept = [];
+    const prevPath = join(OUT_ROOT, '_MISSING.md');
+    if (existsSync(prevPath)) {
+      for (const line of readFileSync(prevPath, 'utf-8').split('\n')) {
+        // ⚠ 表头分隔行 `|---|---|` 也匹配 `[A-Za-z0-9_-]+`(`-` 在字符类里)——
+        //   第一版把它当成一行数据留了下来,产出的表里于是有两条分隔线。先排掉它。
+        if (/^\|\s*-+\s*\|/.test(line)) continue;
+        const m = /^\|\s*([A-Za-z0-9_-]+)\s*\|/.exec(line);
+        if (m && !touched.has(m[1])) kept.push(line);
+      }
+    }
+    const rows = [...kept, ...missing.map((m) => `| ${m.family} | ${m.id} | ${m.desc} | ${m.reason} |`)];
     const md = [
-      '# 采不到的帧',
+      '# 采不到 / 这一跑没采的帧',
       '',
       '> 按采集纪律:采不到就记采不到,**不用文字描述代替帧**。',
+      '> **本文件由 `scripts/bars-capture.mjs` 生成**;单家采集只替换该家的行,别家原样保留。',
       '',
       '| 家 | 场景 | 说明 | 原因 |',
       '|---|---|---|---|',
-      ...missing.map((m) => `| ${m.family} | ${m.id} | ${m.desc} | ${m.reason} |`),
+      ...rows,
       '',
     ].join('\n');
     mkdirSync(OUT_ROOT, { recursive: true });

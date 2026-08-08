@@ -130,7 +130,22 @@ export function toPiItems(
   ctx: { items: readonly SettingItem[]; painters: readonly string[] },
   subFactory: (item: SettingItem, sub: 'seat' | 'text') => PiSettingItem['submenu'],
 ): PiSettingItem[] {
-  return ctx.items.map((item) => {
+  /**
+   * ★ **只读现状行一律排到末尾**(2026-08-08,P3 件2 轮1 的 critic 判词)。
+   *
+   * 盲比判词:「'改哪一项?' 菜单里混入 3 个只读项(上下文/配色/字形白名单),
+   * 与可改项并列同级,干扰'改'这一动作的目标」。核过帧(`07-settings` 行 18-20):
+   * 那三行确实**夹在**可改项中间 —— `(只读)` 标记有,但位置没分开。
+   * 标题问的是"改哪一项",于是先给能改的,只读的沉到底下。
+   *
+   * ⚠ 只动**顺序**,不动内容、不删项:那三行是唯一能看到字形白名单读数的地方。
+   * ⚠ PTY 的 SET-10 是"↓ 最多 16 下直到光标落在那一行",不锚固定下移次数 ⇒ 重排不动它。
+   */
+  const ordered = [...ctx.items].sort((x, y) => {
+    const inert = (i: SettingItem): number => (shapeOf(i, { painters: ctx.painters }).kind === 'inert' ? 1 : 0);
+    return inert(x) - inert(y);
+  });
+  return ordered.map((item) => {
     const shape = shapeOf(item, { painters: ctx.painters });
     const base: PiSettingItem = {
       id: item.key,

@@ -262,3 +262,35 @@ describe('回合分界线 (S-5)', () => {
     expect(findRiskyGlyphs((log.render(40)[0] as string))).toEqual([]);
   });
 });
+
+describe('★ hasDialogue —— "人开口了"与"屏上有东西"是两件事(P3 件3 轮1)', () => {
+  /**
+   * 消费者:侧栏 pathfinder 摘要有对话之后收起。这条判据错一格的代价是**首屏就把摘要藏了**
+   * (欢迎屏字标也进 `entries`)⇒ 判据必须是 `user` 条目而不是条目数。
+   *
+   * 证伪方式(实跑过):把 `hasDialogue` 改成 `this.entries.length > 0` → 「只有欢迎屏字标」那条当场红。
+   */
+  test('空的 → 假', () => {
+    expect(new ChatLog(theme).hasDialogue).toBe(false);
+  });
+
+  test('★ 只有欢迎屏字标(appendBanner)→ 仍然是假', () => {
+    const log = new ChatLog(theme);
+    log.appendBanner('OH MY DAG');
+    expect(log.length).toBeGreaterThan(0); // 屏上有东西
+    expect(log.hasDialogue).toBe(false); // 但人还没开口
+  });
+
+  test('appendUser 之后 → 真', () => {
+    const log = new ChatLog(theme);
+    log.appendUser('hej');
+    expect(log.hasDialogue).toBe(true);
+  });
+
+  test('切会话 clear 之后 → 回到假(不然新会话一起来就把摘要藏了)', () => {
+    const log = new ChatLog(theme);
+    log.appendUser('hej');
+    log.clear();
+    expect(log.hasDialogue).toBe(false);
+  });
+})

@@ -22,6 +22,7 @@ import { computeFrontier } from '../../harness/pathfinder/frontier';
 import { loadMap, summarizeOpenMaps } from '../../harness/pathfinder/maps';
 import { fitLine } from '../render/line';
 import { renderBar } from '../render/bar';
+import { BAR_MAX_COLS } from '../design/tokens';
 import { renderTable } from '../render/table';
 import type { OmdTuiTheme } from '../theme';
 
@@ -106,7 +107,9 @@ export class PathHud implements Component {
     const s = this.snap;
     const out = [
       this.theme.chrome.accent(fitLine(`地图 ${s.destination}`, width)),
-      this.theme.chrome.dim(fitLine(renderBar(s.ruled, s.total, width), width)),
+      // ⚠ 进度条**不占满全宽**(`BAR_MAX_COLS`)—— 见 token 那一条的理由:
+      //   盲比两跑都把"110 列的条子只表达 8/23"指成我方最大的缺口。
+      this.theme.chrome.dim(fitLine(renderBar(s.ruled, s.total, Math.min(width, BAR_MAX_COLS)), width)),
     ];
     if (s.frontier.length === 0) {
       // 灰常量即真值: 0 是这一格的真答案。但要说清**为什么**是 0。

@@ -310,3 +310,54 @@ describe('★ 子层:退一级不退到底(交接 40 §4.3/§4.4)', () => {
     expect(text(panel)).not.toContain('换成哪个模型?');
   });
 });
+
+describe('★ 只读现状行排在末尾(P3 件2 轮1 的 critic 判词)', () => {
+  /**
+   * 判词原文:「'改哪一项?' 菜单里混入 3 个只读项(上下文/配色/字形白名单),与可改项并列同级」。
+   * 判据钉的是**分区**(可改的一律在只读的前面),不是某几个 key 的固定位置 ——
+   * 钉 key 的话以后加一项就得改判据,而分区才是这条判词要的那个不变量。
+   *
+   * 证伪方式(实跑过):把 `toPiItems` 里那个 `sort` 去掉 → 这一条当场红。
+   */
+  /**
+   * ⚠ **夹具必须是交错的。** 第一版直接用 `sampleItems()`,而它本来就把唯一的只读项摆在末尾 ——
+   * 于是去掉 `sort` 之后这条闸**照样 28 pass / 0 fail**(实跑过),空转。
+   * 真实 `buildSettings` 是交错的(`07-settings` 帧行 18-20 夹在可改项中间),夹具照它的形。
+   */
+  const interleaved = (): SettingItem[] => [
+    { key: 'seat:conductor', label: '座位 conductor', value: 'a:1', action: 'seat' },
+    { key: 'ctx', label: '上下文', value: '(还没跑过一轮)' },
+    { key: 'ui-sidebar', label: '左栏 DAG 默认', value: '开', action: 'ui-sidebar' },
+    { key: 'theme', label: '配色', value: '16 色回退' },
+    { key: 'approval-ttl', label: '审批 token TTL', value: '900s', action: 'approval-ttl' },
+    { key: 'glyphs', label: '字形白名单', value: '94 可用 / 0 待量 / 11 不用' },
+  ];
+
+  const isReadonly = (id: string, items: readonly SettingItem[], painters: readonly string[]): boolean => {
+    const it = items.find((x) => x.key === id);
+    return it ? shapeOf(it, { painters }).kind === 'inert' : false;
+  };
+
+  test('可改项一律排在只读项之前', () => {
+    const items = interleaved();
+    const pi = toPiItems({ items, painters: PAINTERS }, () => undefined);
+    const flags = pi.map((x) => isReadonly(x.id, items, PAINTERS));
+    // 一旦出现只读, 后面不许再有可改的。
+    const firstReadonly = flags.indexOf(true);
+    expect(firstReadonly, '样例里得有只读项, 否则这条闸是空的').toBeGreaterThanOrEqual(0);
+    expect(flags.slice(firstReadonly).some((f) => !f)).toBe(false);
+  });
+
+  test('一项都没丢(只重排, 不删)', () => {
+    const items = interleaved();
+    const pi = toPiItems({ items, painters: PAINTERS }, () => undefined);
+    expect(pi.length).toBe(items.length);
+    expect(new Set(pi.map((x) => x.id))).toEqual(new Set(items.map((x) => x.key)));
+  });
+
+  test('只读项仍带 (只读) 标记(重排不代替标记, 两样都要)', () => {
+    const items = interleaved();
+    const pi = toPiItems({ items, painters: PAINTERS }, () => undefined);
+    for (const x of pi) if (isReadonly(x.id, items, PAINTERS)) expect(x.label).toContain('(只读)');
+  });
+});

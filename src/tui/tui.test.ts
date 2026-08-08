@@ -9,7 +9,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import type { Component } from '@earendil-works/pi-tui';
-import { CTRL_C_WINDOW_MS, decideCtrlC, withLeftGutter } from './tui';
+import { CTRL_C_WINDOW_MS, decideCtrlC, pathHudVisible, withLeftGutter } from './tui';
 
 describe('Ctrl+C 双击判定 (§4.1 第 1 条)', () => {
   // 反向自检: 把 decideCtrlC 改成恒 'exit' → 「单击只预备」红;
@@ -85,3 +85,27 @@ describe('★ 左槽 —— 正文不许贴着终端左边缘(P1)', () => {
     expect(out.join('\n')).toContain('x'.repeat(70));
   });
 });
+
+describe('★ 侧栏 pathfinder 摘要的可见判据(P3 件3 轮1)', () => {
+  /**
+   * 判词:「流式回答下方混入与本题无关的仪表盘内容(进度条 8/23、前沿票工单表、阻塞集)」——
+   * 三跑全部判我方输。核过帧 `08-streaming` 行 22-26:那 5 行夹在回答与输入框之间。
+   *
+   * ⚠ 为什么是这条闸而不是 PTY:pi-tui 差分重绘 ⇒ "还在屏上"在累积字节流里看不见,
+   * 我先写的那条 PTY 断言在注入下没红(空转),已撤。重绘那一半的证据是重采的帧。
+   *
+   * 证伪方式(实跑过):把 `pathHudVisible` 改成 `!s.pathFullOn` → 「有对话就收起」当场红。
+   */
+  test('还没开口 → 画', () => {
+    expect(pathHudVisible({ pathFullOn: false, hasDialogue: false })).toBe(true);
+  });
+
+  test('★ 有对话 → 收起', () => {
+    expect(pathHudVisible({ pathFullOn: false, hasDialogue: true })).toBe(false);
+  });
+
+  test('全屏散雾图开着 → 不重复画(同一张图画两遍会读成两张)', () => {
+    expect(pathHudVisible({ pathFullOn: true, hasDialogue: false })).toBe(false);
+    expect(pathHudVisible({ pathFullOn: true, hasDialogue: true })).toBe(false);
+  });
+})

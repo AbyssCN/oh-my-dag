@@ -228,6 +228,8 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
     })(),
     ['harness(有)', formatContextLine([{ path: '/x/.claude/CLAUDE.md', content: '' }], { cwd: '/x', home: '/h' })],
     ['harness(无)', formatContextLine([], { cwd: '/x', home: '/h' })],
+    // 空输入框里的提示符(`HintedEditor`)—— P3 件6 轮1 的 critic 判词逼出来的那一行。
+    ['editorHint', CHROME.editorHint],
   ];
 
   for (const [name, text] of samples) {
@@ -246,6 +248,28 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
 
   test('同一个字形只报一次, 按首次出现顺序', () => {
     expect(findRiskyGlyphs('🔥❌🔥').map((r) => r.glyph)).toEqual(['🔥', '❌']);
+  });
+
+  /**
+   * ★ **完整性闸:`CHROME` 里每个字符串常量都得在上面那张样本表里出现。**
+   *
+   * 上面那张表是**手列的**。而 `tui.ts` 的注释写着「新增任何 chrome 文案都加到这里,
+   * 否则它不过闸」—— 那句话只约束得住记得读它的人。本仓图鉴 **S-25**(一族上限里有一个不报)
+   * 就是这个形状:一族里 N−1 个都被覆盖,漏掉的那一个**静默**escape。
+   *
+   * 这一条把"漏了"变成一条会红的断言。函数型的 `CHROME` 成员各自要造参数,不在此列
+   * (它们仍靠手列),但**字符串常量**是最容易顺手加的那一类,先把它钉住。
+   *
+   * 反向自检(实跑过):把 `['editorHint', CHROME.editorHint]` 从样本表里删掉 → 这条当场红,
+   * 判词直接点出 `editorHint`。
+   */
+  test('★ CHROME 的字符串常量一个都不许漏出这张样本表(S-25 形状)', () => {
+    const listed = samples.map(([, text]) => text);
+    const missing = Object.entries(CHROME)
+      .filter(([, v]) => typeof v === 'string')
+      .filter(([, v]) => !listed.some((t) => t.includes(v as string)))
+      .map(([k]) => k);
+    expect(missing).toEqual([]);
   });
 });
 

@@ -28,7 +28,8 @@
  * 于是 L1 能直接测判定,L3 只需要验"真 PTY 里这条链接得起来"。
  */
 import { hostname } from 'node:os';
-import { type Component, Container, Editor, HStack, Loader, ProcessTerminal, ScrollView, Spacer, Text, TuiAltScreen, VStack, type Terminal } from '@earendil-works/pi-tui';
+import { type Component, Container, HStack, Loader, ProcessTerminal, ScrollView, Spacer, Text, TuiAltScreen, VStack, type Terminal } from '@earendil-works/pi-tui';
+import { HintedEditor } from './components/hinted-editor';
 import { logger } from '../logger';
 import type { ApprovalDecision, ApprovalGate, ApprovalRequest } from './approval/gate';
 import { approvalBody, approvalTitle } from './approval/card';
@@ -105,6 +106,19 @@ export function decideCtrlC(armedAt: number | null, now: number, windowMs = CTRL
  * ⚠ 头部原本用 em dash `—`,S6 探针当场判它**歧义宽度**(EAW = A:CJK locale 画 2 列、
  * 别处画 1 列),已改 ASCII `-`。这是探针抓到的第一个真问题。
  */
+/**
+ * 侧栏 pathfinder 摘要画不画 —— **抽成纯函数是为了有一条能红的闸**。
+ *
+ * ⚠ 这里踩过一次:我先在 L3 PTY 里写了「有对话之后 `地图 ` 不再出现」那条断言,
+ * 它**在注入下照样绿**(把条件删掉,闸没红)。根因是 pi-tui **差分重绘** ——
+ * 还留在屏上、内容没变的行**不会再进字节流**,于是"它还在屏上"这件事
+ * 在累积缓冲里根本看不见。⇒ 那条闸撤了(本仓不留看运气/空转的闸),
+ * 换成这个纯函数的单测 + `docs/bars/refs/omd/08-streaming.txt` 那张重采帧当证据。
+ */
+export function pathHudVisible(s: { pathFullOn: boolean; hasDialogue: boolean }): boolean {
+  return !s.pathFullOn && !s.hasDialogue;
+}
+
 export const CHROME = {
   hint: STARTUP_HINT,
   /**
@@ -129,6 +143,14 @@ export const CHROME = {
       `  > ${STARTUP_HINT}`,
       '  > PgUp / PgDn 回看历史',
     ].join('\n'),
+  /**
+   * 空输入框里的提示符(`HintedEditor`)。
+   *
+   * ⚠ 它治的是一条**外部盲评量出来的**缺口:空态时输入框是「上框/空行/下框」,
+   * 屏上读成"两条一样的线中间空无一物"(P3 件6 轮1,账本有原文与帧号)。
+   * 文案只许 ASCII + 已量过的 CJK —— 这一行同样过字形闸。
+   */
+  editorHint: '问点什么, 或按 / 看命令 · Ctrl+C 两次退出',
   /** 后端明确拒绝(**断链说明卡**):说出是谁拒的,不编一个回复。 */
   refused: (url: string) => `后端拒绝了这一轮 (${url}): 引擎尚未接通, 这一轮没有发给任何模型`,
   /** 后端抛了:错误原文进屏,同时进日志文件。 */
@@ -342,7 +364,8 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   const basePathReader = opts.pathReader ?? createPathReader(opts.cwd);
   const pathHud = new PathHud(theme, () => (pathSlugSel ? createPathReader(opts.cwd, pathSlugSel)() : basePathReader()));
   pathHud.refresh();
-  const editor = new Editor(tui, theme.editor);
+  // 空态在框里画一句提示符 —— 见 `components/hinted-editor.ts` 文件头(gauntlet critic 的判词)。
+  const editor = new HintedEditor(tui, theme.editor, { hint: CHROME.editorHint, paint: theme.chrome.dim });
   // 补全:**行首 `/` 出命令,其余出文件** —— 底座是 pi-tui 的 `CombinedAutocompleteProvider`。
   // ⚠ 此前只挂了自写的文件补全, 于是打 `/settings` 弹出来的是一堆文件名(owner 截图抓到的)。
   //   斜杠开头本该出命令, 而这件事 pi-tui 本来就做好了。
@@ -518,21 +541,50 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   });
   waiting.stop(); // 构造里会 start;没在等的时候不许有定时器在跑
 
+  /**
+   * Ctrl+C 预备时刻(`null` = 没在预备)。
+   *
+   * ⚠ **声明必须在 `root` 装配之前**:底栏第三行的 `visible` 闭包读它,而 `let` 有 TDZ ——
+   * 装配到声明之间只要发生一次同步渲染就是 `ReferenceError`。tsc 看不出这一类。
+   */
+  let armedAt: number | null = null;
+
   const root = new VStack();
   root.addChild(harness, chrome);
   root.addChild(body, { grow: 1, shrink: 1, minSize: 3, visible: () => !fullOn && !pathFullOn });
   root.addChild(fullView, { grow: 1, shrink: 1, minSize: 3, visible: () => fullOn && !pathFullOn });
   root.addChild(pathView, { grow: 1, shrink: 1, minSize: 3, visible: () => pathFullOn });
   root.addChild(dagHud, { shrink: 0, visible: (vp: { width: number }) => !fullOn && !pathFullOn && !sidebarPainting(vp.width) });
-  // 全屏散雾图开着时侧栏那份 pathfinder 摘要不重复画 (同一张图画两遍会读成两张)。
-  root.addChild(pathHud, { shrink: 0, visible: () => !pathFullOn });
+  /**
+   * 侧栏 pathfinder 摘要:**只在还没开口说话的时候画**(2026-08-08,P3 件3 轮1)。
+   *
+   * 盲比 `08-streaming` 三跑**全部**判我方输(opencode×3),三条判词指的是同一件事:
+   * 「流式回答下方混入与本题无关的仪表盘内容(进度条 8/23、前沿票工单表、阻塞集)」。
+   * 核过帧(`08-streaming` 行 22-26):那 5 行确实**夹在回答与输入框之间**。
+   *
+   * ⇒ 它属于欢迎屏,不属于对话主屏。有对话之后收起,想看按 **Ctrl+P** 开全屏散雾图
+   * (那条路一个字没动,PF-1…PF-5 全在)。
+   * ⚠ 判据是 `chatLog.hasDialogue`(有 `user` 条目)**不是** `length > 0` —— 后者被欢迎屏字标满足。
+   * ⚠ 全屏散雾图开着时同样不画(同一张图画两遍会读成两张)。
+   */
+  root.addChild(pathHud, { shrink: 0, visible: () => pathHudVisible({ pathFullOn, hasDialogue: chatLog.hasDialogue }) });
   root.addChild(waiting, { shrink: 0, visible: () => waitingOn });
   root.addChild(dialogSlot, chrome);
   root.addChild(editorContainer, chrome);
   root.addChild(healthLine, { shrink: 0, visible: () => health.line() !== null });
   root.addChild(statusLine, chrome);
   root.addChild(usageLine, chrome);
-  root.addChild(footer, chrome);
+  /**
+   * ★ 底栏第三行**只在它真有话说的时候出现**(2026-08-08,P3 件6 轮3)。
+   *
+   * 盲比 6 跑里 **5 跑**把我方缺口指成同一件事:「底部状态/提示信息叠了 3 行
+   * (两行状态加一行快捷键提示),拥挤且没有主次之分」。而那第三行是**静态**的
+   * `omd tui · /help 看命令 · Ctrl+C 两次退出` —— 它说的两件事现在都在空输入框的提示符里,
+   * 于是同一屏把 `/help` 说了三遍(欢迎屏、提示符、底栏)。
+   * ⇒ 常态收掉,只留**预备退出**那一句(`再按一次 Ctrl+C 退出`)—— 那句是状态不是装饰。
+   * PTY 的 `S2-4 / S2-7` 断言的正是 `再按一次`,所以这条路径一个字没动。
+   */
+  root.addChild(footer, { shrink: 0, visible: () => armedAt !== null });
   // 全屏走 `setLayoutRoot` 而不是 `addChild` —— 后者进的是隐式 ScrollView, 于是
   // `grow` 无处可分(可用高度是"内容高度"而不是"一屏"), 布局会退化回 inline 的样子。
   tui.setLayoutRoot(withLeftGutter(root));
@@ -660,7 +712,6 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   let pendingSkill: string | null = null;
   /** 最近一轮的上下文压力 —— 设置面板要显示它。`null` = 还没跑过一轮(**不是 0**)。 */
   let lastPressure: import('../harness/chat/usage').ContextPressure | null = null;
-  let armedAt: number | null = null;
   let exiting = false;
   let resolveExit: () => void = () => {};
   const done = new Promise<void>((resolve) => {

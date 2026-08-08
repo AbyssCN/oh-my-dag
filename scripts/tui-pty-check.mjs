@@ -148,11 +148,28 @@ function check(ok, label, extra = '') {
 // 场景
 // ---------------------------------------------------------------------------
 
+/**
+ * **壳起来了**的探针。
+ *
+ * ⚠ 2026-08-08 换过一次判据,记下为什么:原来等的是底栏那句静态
+ * `omd tui · /help 看命令 · Ctrl+C 两次退出`。P3 件6 轮3 的盲比 6 跑里 5 跑把
+ * 「底部叠了 3 行」指成我方最大缺口,于是那一行**常态收掉了**(只在预备退出时出现)——
+ * 而它当时正兼着 10 条「启动」判据的启动信号,一收就是 10 条同时红。
+ *
+ * 现在等的是欢迎屏那张表的 `引擎` 标签(`CHROME.welcomeBody`)。它比底栏那句更该当这个信号:
+ * 它证明的是**首屏画出来了**,而不是"某句装饰文案在"。
+ * ⚠ 别换成刚加的输入框提示符 —— 那一行会因为终端太窄而**故意不画**,
+ * 拿它当启动信号会在窄终端场景(DG-10)偶发红。
+ */
+function bootReady(t) {
+  return t.includes('引擎');
+}
+
 /** 场景 1:起得来 → 有回显 → Ctrl+C 两次干净退出。 */
 async function scenarioHappyPath() {
   const p = startTui();
   try {
-    check(await waitFor(p, (t) => t.includes('omd tui')), 'S2-1 启动后 TUI 壳出现', p.text().slice(0, 200));
+    check(await waitFor(p, (t) => bootReady(t)), 'S2-1 启动后 TUI 壳出现', p.text().slice(0, 200));
     // 这条 lane 用的是 fixture 后端, footer 上必须**自报家门** ——
     // 一旦这里变成 embedded://, 说明 L3 在打真模型 (要钱, 且读数不再稳定)。
     // ⚠ 2026-08-08:后端坐标从 footer 挪走了(P1 密度), 现在由**行①** 自报。标签跟着改 ——
@@ -275,7 +292,7 @@ async function scenarioHappyPath() {
 async function scenarioArmReset() {
   const p = startTui();
   try {
-    check(await waitFor(p, (t) => t.includes('omd tui')), 'S2-6 (场景2) 启动');
+    check(await waitFor(p, (t) => bootReady(t)), 'S2-6 (场景2) 启动');
     p.write('\x03');
     check(await waitFor(p, (t) => t.includes('再按一次')), 'S2-7 (场景2) 进入预备');
     // 打的字进输入框 (S8 之后不再是自绘回显)。用一个不会撞上任何 chrome 文案的串。
@@ -329,7 +346,7 @@ async function scenarioLogRedirect() {
   const cwd = mkdtempSync(join(tmpdir(), 'omd-tui-pty-'));
   const p = startTui({ cwd, env: DEV });
   try {
-    check(await waitFor(p, (t) => t.includes('omd tui')), 'S3-1 (场景3) TUI 起来', p.text().slice(0, 200));
+    check(await waitFor(p, (t) => bootReady(t)), 'S3-1 (场景3) TUI 起来', p.text().slice(0, 200));
     check(p.text().includes(MARK) === false, 'S3-2 ★ 启动日志不在终端上(改道生效)', p.text().slice(0, 400));
 
     p.write('\x03');
@@ -368,7 +385,7 @@ async function scenarioSeat() {
   const cfg = join(cwd, 'omd-config.json');
   const p = startTui({ cwd, env: { OMD_CONFIG_PATH: cfg } });
   try {
-    check(await waitFor(p, (t) => t.includes('omd tui')), 'S12-0 (场景4) 启动');
+    check(await waitFor(p, (t) => bootReady(t)), 'S12-0 (场景4) 启动');
 
     p.write('/seat\r');
     check(
@@ -679,7 +696,7 @@ async function scenarioSeat() {
 async function scenarioSkillComplete() {
   const p = startTui();
   try {
-    check(await waitFor(p, (t) => t.includes('omd tui')), 'SKC-0 (场景4.8) 启动');
+    check(await waitFor(p, (t) => bootReady(t)), 'SKC-0 (场景4.8) 启动');
     p.write('/omd-');
     check(
       await waitFor(p, (t) => t.includes('omd-council'), 8000),
@@ -724,7 +741,7 @@ async function scenarioSkillComplete() {
 async function scenarioPathfinder() {
   const p = startTui();
   try {
-    check(await waitFor(p, (t) => t.includes('omd tui')), 'PF-0 (场景4.9) 启动');
+    check(await waitFor(p, (t) => bootReady(t)), 'PF-0 (场景4.9) 启动');
     p.write('\x10'); // Ctrl+P
     check(
       await waitFor(p, (t) => t.includes('切到哪张地图') || t.includes('雾退线')),
@@ -771,7 +788,7 @@ async function scenarioPathfinder() {
 async function scenarioDagViews() {
   const p = startTui();
   try {
-    check(await waitFor(p, (t) => t.includes('omd tui')), 'DG-0 (场景4.6) 启动');
+    check(await waitFor(p, (t) => bootReady(t)), 'DG-0 (场景4.6) 启动');
     p.write('fixture:dag\r');
     check(await waitFor(p, (t) => t.includes('fan-out 演示图已发完')), 'DG-1 fan-out 演示 run 发完', p.text().slice(-400));
     check(
@@ -852,7 +869,7 @@ async function scenarioDagViews() {
 async function scenarioDagNarrow() {
   const p = startTui({ cols: 80 });
   try {
-    check(await waitFor(p, (t) => t.includes('omd tui')), 'DG-10 (场景4.7) 80 列启动');
+    check(await waitFor(p, (t) => bootReady(t)), 'DG-10 (场景4.7) 80 列启动');
     p.write('fixture:dag\r');
     check(await waitFor(p, (t) => t.includes('fan-out 演示图已发完')), 'DG-11 演示 run 发完');
     // 底部那张表要回来 (它列节点行) —— 等它先出现, 再断言树没画。
@@ -878,7 +895,7 @@ async function scenarioApproval() {
   const target = join(dir, 'approved.txt');
   const p = startTui({ env: { OMD_TUI_FIXTURE_DIR: dir } });
   try {
-    check(await waitFor(p, (t) => t.includes('omd tui')), 'AP-0 (场景4.5) 启动');
+    check(await waitFor(p, (t) => bootReady(t)), 'AP-0 (场景4.5) 启动');
 
     // ── 第一轮: 拒绝 ──
     p.write('fixture:write\r');
@@ -967,7 +984,7 @@ async function scenarioRealBackendBoots() {
   const p = startPty(BUN, ['run', CLI, 'tui'], { env: { OMD_TUI_BACKEND: '' } });
   try {
     check(
-      await waitFor(p, (t) => t.includes('omd tui'), 40000),
+      await waitFor(p, (t) => bootReady(t), 40000),
       'REAL-1 ★ 真后端(不是 fixture)也起得来',
       p.text().slice(0, 600),
     );

@@ -120,3 +120,34 @@ describe('宽度', () => {
     expect(h.render(100).join('\n')).toContain('另有 7 张前沿票');
   });
 });
+
+describe('★ 进度条不占满全宽(P3 件6 轮2 的 critic 判词)', () => {
+  /**
+   * 盲比两跑给我方同一条缺口:「进度条占满约 120 列全宽来显示仅 8/23 的进度」
+   * (帧 `01-empty` 行 22 实测宽 110 列、`04-narrow-80` 行 14 实测 80 列 —— 判词是真的)。
+   *
+   * 判据钉**字面量 44** 而不是 `BAR_MAX_COLS`:拿常量验自己的话,把常量改回 `width`
+   * 判据会跟着变(本仓图鉴 S-26 就是那一族,左槽第一版栽在这里)。
+   * 证伪方式(实跑过):`Math.min(width, BAR_MAX_COLS)` 改回 `width` → 宽终端那条当场红。
+   */
+  const barLine = (w: number): string => {
+    const h = hudFor(world([ticket('a', { status: 'ruled' }), ticket('b'), ticket('c')]));
+    return h.render(w).find((l) => l.includes('█') || l.includes('░')) ?? '';
+  };
+
+  test('宽终端(110 列)条子不铺满 —— 上限 44 列', () => {
+    const line = barLine(110);
+    expect(line).not.toBe('');
+    expect(visibleWidth(line.replace(/\s+$/, ''))).toBeLessThanOrEqual(44);
+  });
+
+  test('窄终端(40 列)按终端宽收,不溢出', () => {
+    const line = barLine(40);
+    expect(visibleWidth(line.replace(/\s+$/, ''))).toBeLessThanOrEqual(40);
+  });
+
+  test('计数还在(收窄不许把 N/M 挤掉 —— 那是这一行唯一的信息)', () => {
+    expect(barLine(110)).toContain('1/3');
+    expect(barLine(40)).toContain('1/3');
+  });
+});
