@@ -28,7 +28,7 @@
  * 于是 L1 能直接测判定,L3 只需要验"真 PTY 里这条链接得起来"。
  */
 import { hostname } from 'node:os';
-import { type Component, Container, Editor, HStack, ProcessTerminal, ScrollView, Spacer, Text, TuiAltScreen, VStack, type Terminal } from '@earendil-works/pi-tui';
+import { type Component, Container, Editor, HStack, Loader, ProcessTerminal, ScrollView, Spacer, Text, TuiAltScreen, VStack, type Terminal } from '@earendil-works/pi-tui';
 import { logger } from '../logger';
 import type { ApprovalDecision, ApprovalGate, ApprovalRequest } from './approval/gate';
 import { approvalBody, approvalTitle } from './approval/card';
@@ -47,6 +47,7 @@ import { type ContextFile, formatContextLine, loadConductorContext } from './con
 import { formatSeatRows, parseSeatCommand, seatRows } from './seat-picker';
 import { forkSessionId, formatSessions, newSessionId, parseSessionCommand } from './sessions';
 import { createSettingsPanel } from './components/settings-panel';
+import { SPINNER_FRAMES } from './design/tokens';
 import { installOmdKeybindings } from './keys';
 import { buildSettings, parseSettingsCommand } from './settings';
 import { STARTUP_HINT, formatHelp, parseHelpCommand, slashCommands } from './commands';
@@ -159,6 +160,8 @@ export const CHROME = {
    * **两份常驻的同一个串是纯浪费**,而行① 那份带着仓名/分支/窗口用量, 信息量严格更大。
    * ⇒ 砍这一份。首屏那份是一次性的介绍, 不算重复, 留着。
    */
+  /** 等待态那一行。措辞要说清**在等什么** —— 只画一个转圈等于没说。 */
+  waiting: '在等模型回话…(Esc 打断)',
   footer: () => 'omd tui · /help 看命令 · Ctrl+C 两次退出',
   footerArmed: () => 'omd tui · 再按一次 Ctrl+C 退出',
   // ── 审批层(切片①)。裁决回执要进对话记录 —— 卡片关掉之后, "刚才批没批过"得能回看。 ──
@@ -497,6 +500,24 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   body.addChild(dagTree, { basis: SIDEBAR_WIDTH, shrink: 0, visible: (vp: { width: number }) => sidebarPainting(vp.width) });
   body.addChild(transcript, { grow: 1, shrink: 1, minSize: 3 });
 
+  /**
+   * ★ **等待指示器**(2026-08-08,还 `Loader` 那笔欠账)。
+   *
+   * 发出一句到第一片回来之间,屏上此前**没有任何会动的东西** —— 而参照物三家都有等待态
+   * (`docs/bars/pi-tui-模块台账.md` 那条欠账的原话)。"看起来没反应"与"真没反应"
+   * 在屏幕上长得一样,这正是本仓最怕的那一族。
+   *
+   * ⚠ **帧在 `design/tokens.ts` 的 `SPINNER_FRAMES`,不在这里** ——
+   * 「框线字形不散在组件里」那条闸把方块字形写进本文件判为违规,而它判得对。
+   * 不用 pi-tui 的默认帧(盲文点阵,不在白名单里)的理由也写在那边。
+   */
+  let waitingOn = false;
+  const waiting = new Loader(tui, theme.chrome.accent, theme.chrome.dim, CHROME.waiting, {
+    frames: [...SPINNER_FRAMES],
+    intervalMs: 120,
+  });
+  waiting.stop(); // 构造里会 start;没在等的时候不许有定时器在跑
+
   const root = new VStack();
   root.addChild(harness, chrome);
   root.addChild(body, { grow: 1, shrink: 1, minSize: 3, visible: () => !fullOn && !pathFullOn });
@@ -505,6 +526,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   root.addChild(dagHud, { shrink: 0, visible: (vp: { width: number }) => !fullOn && !pathFullOn && !sidebarPainting(vp.width) });
   // 全屏散雾图开着时侧栏那份 pathfinder 摘要不重复画 (同一张图画两遍会读成两张)。
   root.addChild(pathHud, { shrink: 0, visible: () => !pathFullOn });
+  root.addChild(waiting, { shrink: 0, visible: () => waitingOn });
   root.addChild(dialogSlot, chrome);
   root.addChild(editorContainer, chrome);
   root.addChild(healthLine, { shrink: 0, visible: () => health.line() !== null });
@@ -677,6 +699,13 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    * ⚠ 拒绝要**画成 notice 不是 assistant**:一句"引擎没接通"若被画成助手发言,
    * 读起来就像模型在回答 —— 那正是本仓 S-1 那一族(看起来在动,其实一次都没生效)。
    */
+  /** 关等待态。**幂等** —— delta 与 submit 收尾都会调它, 而定时器只该停一次。 */
+  function stopWaiting(): void {
+    if (!waitingOn) return;
+    waitingOn = false;
+    waiting.stop();
+  }
+
   async function submit(prompt: string): Promise<void> {
     chatLog.appendUser(prompt);
     // A7: skill 正文前置到这一句上。**用完即清** —— 不清的话它会在往后每一轮里重复出现。
@@ -684,6 +713,9 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     pendingSkill = null;
     editor.setText('');
     editor.addToHistory(prompt);
+    // 等待态开:到第一片回来为止(见 `onEvent` 的 delta 分支)。
+    waitingOn = true;
+    waiting.start();
     tui.requestRender();
     try {
       const res = await opts.backend.sendChat({ sessionId, prompt: withSkill });
@@ -696,6 +728,9 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       chatLog.appendNotice(CHROME.failed(reason));
     }
     // 无论成败都收尾: 抛错那条路上 `session` 事件不会来, 不收尾的话下一轮会续进这条气泡。
+    // ⚠ 等待态也在这里关 —— **`finally` 语义**:抛错那条路上 delta 永远不会来,
+    //   只在 delta 分支关的话, 一次失败就会留下一个**永远在转**的指示器。
+    stopWaiting();
     chatLog.closeStreaming();
     tui.requestRender();
   }
@@ -710,6 +745,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     if (e.event === 'chat') {
       const p = e.payload as { type?: string; text?: string };
       if (p?.type === 'delta' && p.text) {
+        stopWaiting(); // 第一片回来了 —— 从这一刻起"在动"的是正文本身
         chatLog.appendAssistantChunk(p.text);
         tui.requestRender();
       }
