@@ -67,6 +67,9 @@ export const DEFAULT_APPROVAL_CONFIG: ApprovalPolicyConfig = {
     omd_map_tickets: 'read',
     omd_plans: 'read',
     omd_recall: 'read',
+    // `ask_user` 是**问用户一句话**, 它什么都不碰。归 write 的话就成了
+    // "要先请用户批准, 才能请用户回答" —— 荒谬, 而且未登记的工具 fail-closed 正好归 write。
+    ask_user: 'read',
     // 写半区。omd_run / omd_solve 会派整张图出去真改文件,与 write 同档(v5 表)。
     write: 'write',
     edit: 'write',

@@ -23,6 +23,7 @@ import { createOmdAgentTools } from '../../harness/agent-tools';
 import type { OmdMcpTool } from '../../mcp/server';
 import { createConductorChatTools } from '../../serve/chat-tools';
 import type { ApprovalGate } from '../approval/gate';
+import { type AskUserResolver, createAskUserTool } from './ask-user';
 import { createCodegraphTools } from './codegraph';
 import { createSkillTools } from './skill-tool';
 
@@ -50,6 +51,12 @@ export interface ChatSeatToolsOpts {
    * `chat-seat.test.ts` 钉这条。
    */
   approvals?: ApprovalGate;
+  /**
+   * `ask_user` 的 UI 取法(**惰性** —— 工具面装在 TUI 之前, 见 `ask-user.ts` 的说明)。
+   * **省略 = 这条装配路径没有 `ask_user` 这个能力**(工具列表里根本没这个名字)——
+   * `omd serve` / `mcp` 那两条路没有对话框, 挂上去只会是个必然问不出来的工具。
+   */
+  askUser?: AskUserResolver;
 }
 
 /**
@@ -64,6 +71,9 @@ export function createChatSeatTools(o: ChatSeatToolsOpts): AnyOmdTool[] {
     ...createCodegraphTools({ cwd: o.cwd }),
     // S-6: 让模型自己取 skill 正文。一条 skill 都没有时不挂(同上:恒失败的工具比没有更糟)。
     ...createSkillTools(),
+    // ★ `ask_user`(2026-08-08):让它能反问一句。**没有 host 就不挂** ——
+    //   能力探测面靠"工具在不在", 挂一个必然问不出来的工具比没有更糟(同 codegraph 那条)。
+    ...(o.askUser ? createAskUserTool(o.askUser) : []),
     ...(o.extTools ?? []),
   ];
   return o.approvals ? o.approvals.wrap(all) : all;

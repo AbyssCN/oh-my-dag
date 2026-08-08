@@ -203,6 +203,15 @@ function defaultSeatFace(): NonNullable<RunOmdTuiOpts['seats']> {
 }
 
 export interface RunOmdTuiOpts {
+  /**
+   * ★ UI 建好之后回调一次,把**对话框宿主 / 主题 / 记录口**交出去(2026-08-08)。
+   *
+   * 存在的理由是装配环:工具面必须在 backend 之前装好, 而 backend 又要先于 TUI ——
+   * 于是 `ask_user` 这类**要用 UI 的工具**在装配时拿不到 UI。装配层给一个延迟指针,
+   * 这里在 UI 就绪的那一刻把它填上(与 `sink` 那根指针同一个形状)。
+   * 省略 = 装配层不需要(`omd serve` / `mcp` 那两条路没有对话框)。
+   */
+  onUi?: (ui: { host: DialogHost; theme: OmdTuiTheme; appendNotice: (text: string) => void }) => void;
   /** 唯一接缝(SDD §3.1)。S2 只用它的 `connection` / `start` / `stop`。 */
   backend: OmdBackend;
   cwd: string;
@@ -532,6 +541,15 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     },
     requestRender: () => tui.requestRender(),
   };
+  // UI 就绪 —— 把三件交给装配层的延迟指针(`ask_user` 靠它才问得出来)。
+  opts.onUi?.({
+    host: dialogs,
+    theme,
+    appendNotice: (text: string) => {
+      chatLog.appendNotice(text);
+      tui.requestRender();
+    },
+  });
 
   /**
    * ★ 审批单(切片①,G-1)。**占住输入区**(v5:审批单那张图),键位自绘:
