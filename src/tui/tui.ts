@@ -28,7 +28,7 @@
  * 于是 L1 能直接测判定,L3 只需要验"真 PTY 里这条链接得起来"。
  */
 import { hostname } from 'node:os';
-import { CombinedAutocompleteProvider, Container, Editor, ProcessTerminal, ScrollView, Text, TuiAltScreen, VStack, type Terminal } from '@earendil-works/pi-tui';
+import { CombinedAutocompleteProvider, type Component, Container, Editor, HStack, ProcessTerminal, ScrollView, Text, TuiAltScreen, VStack, type Terminal } from '@earendil-works/pi-tui';
 import { logger } from '../logger';
 import type { ApprovalDecision, ApprovalGate, ApprovalRequest } from './approval/gate';
 import { approvalBody, approvalTitle } from './approval/card';
@@ -36,7 +36,11 @@ import type { OmdBackend } from './backend';
 import { ChatLog } from './components/chat-log';
 import { DialogBox, ESC as DIALOG_ESC, type DialogHost, confirm as dialogConfirm, input as dialogInput, select as dialogSelect } from './components/dialog';
 import { DagHud } from './components/dag-hud';
+import { DagTree } from './components/dag-tree';
 import { type PathReader, PathHud, createPathReader } from './components/path-hud';
+import { renderGantt } from './render/dag-gantt';
+import { fitLine } from './render/line';
+import { renderLayers } from './render/dag-layers';
 import { StatusLine } from './components/status-line';
 import { type ContextFile, formatContextLine, loadConductorContext } from './context';
 import { formatSeatRows, parseSeatCommand, seatRows } from './seat-picker';
@@ -256,6 +260,8 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   const chatLog = new ChatLog(theme);
   // HUD 在没有 run 的时候 `render()` 返回空数组 (无源恒缺席), 所以恒挂着不用条件添加。
   const dagHud = new DagHud(theme, () => opts.backend.connection.url.replace(/^embedded:\/\//, '') || null);
+  // 切片③: 左栏树 + 三画法共用的数据模型。与 dagHud 吃同一批事件 (两个消费者都得喂, 坑 #7 同族)。
+  const dagTree = new DagTree(theme, opts.now);
   // A4: pathfinder 前沿票。一张图都没有时 `render()` 返回空数组, 所以恒挂着。
   const pathHud = new PathHud(theme, opts.pathReader ?? createPathReader(opts.cwd));
   pathHud.refresh();
@@ -335,10 +341,48 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    * shrink),一回车就复现。**HEAD 原版正常、我的版本坏**,对照实验才把它钉住。
    */
   const chrome = { shrink: 0 } as const;
+
+  /**
+   * ★ **左侧栏 + 全屏图**(切片③,G-3)。
+   *
+   * - 侧栏(画法 A 树):`/hud` 开关(默认开),**且**要 ① 有 run ② 屏够宽 才画 ——
+   *   80 列的终端里再切 34 列给侧栏,剩下的对话区就没法读了(窄终端自动收起)。
+   * - 全屏:`Ctrl+G` 开关,`Tab` 在 树 / 泳道甘特 / 分层依赖 三画法间循环。
+   * - 侧栏或全屏画着时**不再画底部那张表** —— 同一份 DAG 画两遍,人会以为是两个 run。
+   */
+  let sidebarOn = true;
+  let fullOn = false;
+  let painterIdx = 0; // 0=树 1=甘特 2=分层
+  const SIDEBAR_WIDTH = 34;
+  /** 低于这个总宽不给侧栏。= 侧栏 34 + 对话区至少 56。 */
+  const SIDEBAR_MIN_TOTAL = 90;
+  const sidebarPainting = (vpWidth: number): boolean => sidebarOn && dagTree.active && vpWidth >= SIDEBAR_MIN_TOTAL;
+
+  /** 全屏视图:一个薄 Component,按当前画法把快照交给对应的纯渲染函数。 */
+  const PAINTERS = ['树', '泳道甘特', '分层依赖'] as const;
+  const fullView: Component = {
+    render: (width: number): string[] => {
+      if (!dagTree.active) return [fitLine('(还没有 run —— 发一个再 Ctrl+G)', width)];
+      const height = Math.max(6, (terminal.rows || 30) - 10);
+      const hint = theme.chrome.dim(fitLine(`Tab 切画法 (当前: ${PAINTERS[painterIdx]}) · Ctrl+G 退出`, width));
+      if (painterIdx === 0) return [...dagTree.render(width).slice(0, height), hint];
+      const snap = dagTree.snapshot();
+      const lines = painterIdx === 1 ? renderGantt(snap, { width, height, now: now() }) : renderLayers(snap, { width, height });
+      return [...lines, hint];
+    },
+    handleInput: () => {},
+    invalidate: () => dagTree.invalidate(),
+  };
+
+  const body = new HStack([], { gap: 1 });
+  body.addChild(dagTree, { basis: SIDEBAR_WIDTH, shrink: 0, visible: (vp: { width: number }) => sidebarPainting(vp.width) });
+  body.addChild(transcript, { grow: 1, shrink: 1, minSize: 3 });
+
   const root = new VStack();
   root.addChild(harness, chrome);
-  root.addChild(transcript, { grow: 1, shrink: 1, minSize: 3 });
-  root.addChild(dagHud, chrome);
+  root.addChild(body, { grow: 1, shrink: 1, minSize: 3, visible: () => !fullOn });
+  root.addChild(fullView, { grow: 1, shrink: 1, minSize: 3, visible: () => fullOn });
+  root.addChild(dagHud, { shrink: 0, visible: (vp: { width: number }) => !fullOn && !sidebarPainting(vp.width) });
   root.addChild(pathHud, chrome);
   root.addChild(dialogSlot, chrome);
   root.addChild(editorContainer, chrome);
@@ -553,8 +597,16 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     if (e.event === 'dag') {
       const p = e.payload as { runId?: string; node?: { type?: string } };
       // 换了 run → 清空上一个 run 的节点, 否则两个 run 的节点混成一张表。
-      if (p?.node?.type === 'planned' && p.runId) dagHud.beginRun(p.runId);
-      if (p?.node) dagHud.apply(p.node as never);
+      if (p?.node?.type === 'planned' && p.runId) {
+        dagHud.beginRun(p.runId);
+        dagTree.beginRun(p.runId);
+      }
+      if (p?.node) {
+        dagHud.apply(p.node as never);
+        // 切片③: 同一批事件两个消费者。**不能只喂一个** —— 交接 37 坑 #7 同族:
+        // 只接一处的话左栏是一张永远空的图, 而它看起来只是"还没开始跑"。
+        dagTree.apply(p.node as never);
+      }
       tui.requestRender();
       return;
     }
@@ -661,6 +713,27 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     });
     if (picked === null) return null;
     return picked === MANUAL_COORD ? manual() : picked;
+  }
+
+  /**
+   * `/hud` —— 开关左侧栏的 DAG 树(切片③)。
+   *
+   * ⚠ 关掉时**不清空图** —— 图是 run 的状态不是 UI 的状态,关掉再开该看到同一张图。
+   * 清空会让人以为"关一下把 run 弄没了"。
+   */
+  function handleHud(text: string): boolean {
+    const t = text.trim();
+    if (t !== '/hud') return false;
+    chatLog.appendUser(t);
+    editor.setText('');
+    sidebarOn = !sidebarOn;
+    chatLog.appendNotice(
+      sidebarOn
+        ? `左栏 DAG 图:开(有 run 且终端宽度不低于 ${SIDEBAR_MIN_TOTAL} 列才画;窄了自动收起)`
+        : '左栏 DAG 图:关(底部那张表回来了)',
+    );
+    tui.requestRender();
+    return true;
   }
 
   /**
@@ -903,6 +976,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       tui.requestRender();
       return;
     }
+    if (handleHud(prompt)) return;
     if (handleSeat(prompt)) return;
     // 与 `/settings` 同一条形状:解析是同步的, 处理是异步的 —— 分发这一层不是 async。
     if (parseModelsCommand(prompt)) {
@@ -937,6 +1011,22 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         footer.setText(CHROME.footerArmed(opts.backend.connection.url));
         tui.requestRender();
       }
+      return { consume: true };
+    }
+    // 切片③: Ctrl+G (\x07) 开关全屏 DAG; 全屏时 Tab 循环三画法。
+    // ⚠ Tab 只在全屏时截 —— 平时它是 editor 的补全键, 抢了会让输入框残废。
+    if (data === '\x07') {
+      if (!dagTree.active && !fullOn) {
+        chatLog.appendNotice('还没有 run —— 发一个再 Ctrl+G 看图');
+      } else {
+        fullOn = !fullOn;
+      }
+      tui.requestRender();
+      return { consume: true };
+    }
+    if (fullOn && data === '\t') {
+      painterIdx = (painterIdx + 1) % 3;
+      tui.requestRender();
       return { consume: true };
     }
     // HUD 滚动:Alt+↑ / Alt+↓ / Alt+Home。

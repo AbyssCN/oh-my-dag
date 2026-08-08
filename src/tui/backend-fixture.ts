@@ -34,6 +34,10 @@ export const FIXTURE_RUN_ID = 'fixture-run';
 
 /** 触发审批演示的暗号(切片① L3)。PTY 打这一句 → 真 gate 弹真卡片 → 真写/真拒。 */
 export const FIXTURE_WRITE_PROMPT = 'fixture:write';
+/** 触发 fan-out 图演示的暗号(切片③ L3)。发一个带 map 分裂的 run —— 左栏树要画得出 ├─ └─。 */
+export const FIXTURE_DAG_PROMPT = 'fixture:dag';
+/** fan-out 演示 run 的 id。 */
+export const FIXTURE_DAG_RUN_ID = 'fixture-fanout';
 /** 审批演示写的文件名(目录由 `OMD_TUI_FIXTURE_DIR` 给;没给就不真写,只报没处写)。 */
 export const FIXTURE_WRITE_FILE = 'approved.txt';
 
@@ -110,6 +114,28 @@ export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend 
           emit('tool', { phase: 'end', name: 'write', ok: false });
           emit('chat', { type: 'delta', text: `write 没有执行: ${(err as Error).message}` });
         }
+        emit('session', { sessionId, messageCount: msgs.length + 1 });
+        sessions.set(sessionId, msgs);
+        return { ok: true };
+      }
+      // ── 切片③: fan-out 图演示。形状与引擎 DagNodeEvent 逐字一致 (planned 无 deps,
+      //    expanded 带 parent+deps —— 不一致的话 PTY 绿而生产红)。
+      if (prompt.trim() === FIXTURE_DAG_PROMPT) {
+        const push = (node: unknown) => emit('dag', { runId: FIXTURE_DAG_RUN_ID, node });
+        push({ type: 'planned', nodes: [{ id: 'plan', kind: 'conductor' }, { id: 'extract', kind: 'map' }, { id: 'merge', kind: 'map' }] });
+        push({ type: 'start', id: 'plan', kind: 'conductor' });
+        push({ type: 'settle', id: 'plan', status: 'done', kind: 'conductor', model: 'fixture-model' });
+        push({ type: 'expanded', parent: 'extract', nodes: [
+          { id: 'shard-1', kind: 'agent', deps: [] },
+          { id: 'shard-2', kind: 'agent', deps: [] },
+          { id: 'shard-3', kind: 'agent', deps: ['shard-1', 'shard-2'] },
+        ] });
+        push({ type: 'start', id: 'shard-1', kind: 'agent' });
+        push({ type: 'settle', id: 'shard-1', status: 'done', kind: 'agent', model: 'fixture-model' });
+        push({ type: 'start', id: 'shard-2', kind: 'agent' });
+        push({ type: 'settle', id: 'shard-2', status: 'failed', kind: 'agent', model: 'fixture-model' });
+        push({ type: 'start', id: 'shard-3', kind: 'agent' });
+        emit('chat', { type: 'delta', text: 'fan-out 演示图已发完。' });
         emit('session', { sessionId, messageCount: msgs.length + 1 });
         sessions.set(sessionId, msgs);
         return { ok: true };
