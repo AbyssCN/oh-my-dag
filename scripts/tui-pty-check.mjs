@@ -422,6 +422,41 @@ async function scenarioSeat() {
       'S12-2c ★ Esc 之后输入回到编辑器(框真的关了)',
       p.text().slice(-400),
     );
+
+    /**
+     * ★★ **P2 verify 的第三条:三个入口进的是同一个子页**(plan §3 P2 原话
+     * 「三个入口进的是同一个子页(PTY 断言同一屏)」)。
+     *
+     * `/settings` 与 `/seat` 两条已由 SET-8 / S12-2b2 各自钉过, **`/models` 此前一条断言都没有** ——
+     * 而它正是那三个入口里最容易漂开的一个(它走的是一次性 Promise, 不是面板子层)。
+     *
+     * 判据锚**同一个标题串**:三处都由 `seatModelOpts()` 生成, 所以标题逐字相同才叫"同一个子页";
+     * 任何一处自己拼标题(= 又养了一套实现)这条就红。
+     * ⚠ 仍锚 `lastIndexOf` 的先后 —— 累积缓冲里这个串前面已经出现过两次。
+     * ⚠ **位置很重要**:必须等座位面板真的关掉、输入回到编辑器之后再发 ——
+     *   第一版插在面板还开着的地方, `/models` 被面板当按键吃掉了, 于是闸红。
+     *   **那次红是我的时序错, 不是产品缺陷**(隔离探针证明它进的就是同一个子页)。
+     */
+    // ⚠ S12-2c 往编辑器里打了 `backhome` 且没回车 —— **先清干净**, 否则发出去的是
+    //   `backhome/models`(第二版就是这么红的, 还顺带把后面的 HELP-1 带红了)。
+    for (let i = 0; i < 10; i++) p.write('\x7f');
+    await new Promise((r) => setTimeout(r, 200));
+    // ⚠ **两种标题都要认** —— 这条 lane 的 cwd 里座位没配、模型目录为空, 三个入口都会
+    //   退回手输框(`换成哪个坐标`)。兄弟闸 SET-8 / S12-2b2 早就是这么写的;
+    //   第三版只认 `换成哪个模型` 所以红 —— **那是我的判据挑食, 不是产品缺陷**。
+    //   ⚠ 代价说清楚:目录为空时这条只能证明"进的是同形状的子页", 分不出是哪一个 ——
+    //   与那两条兄弟闸同一个标准, 不更强也不更弱。
+    const titleAt = (t) => Math.max(t.lastIndexOf('conductor 换成哪个模型'), t.lastIndexOf('conductor 换成哪个坐标'));
+    const beforeModels = titleAt(p.text());
+    p.write('/models\r');
+    check(
+      await waitFor(p, (t) => titleAt(t) > beforeModels),
+      'S12-2d ★★ /models 进的是**同一个子页**(与 /seat、/settings 逐字同一个标题 = 一份实现三个入口)',
+      p.text().slice(-700),
+    );
+    p.write('\x1b');
+    await new Promise((r) => setTimeout(r, 250));
+
     // 清掉刚打的那几个字, 免得跟着下一条命令一起提交。
     for (let i = 0; i < 8; i++) p.write('\x7f');
 
