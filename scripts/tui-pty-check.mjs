@@ -525,6 +525,21 @@ async function scenarioSkillComplete() {
       'SKC-2 ★ /omd + 空格出**不带前缀**的成员(裸名 council)',
       p.text().slice(-500),
     );
+    for (let i = 0; i < 6; i++) p.write('\x7f'); // 清掉 /omd c
+    await new Promise((r) => setTimeout(r, 200));
+
+    // ── 切片⑤: 上下文健康度一行 (顺在同一场景里: 计数属于同一条会话)。
+    check(p.text().includes('上下文健康度') === false, 'CH-1 ★ 平时不占位(触发前那一行不存在)');
+    p.write('fixture:reads\r');
+    check(
+      await waitFor(p, (t) => t.includes('上下文健康度') && t.includes('已 3 次')),
+      'CH-2 ★ 同一文件 read 3 次 → 健康度一行亮, 带路径与次数',
+      p.text().slice(-500),
+    );
+    // 新开会话 → 计数清零, 一行摘掉 (状态跟会话走)。屏上历史里那句还在 —— 判据用**当前可见帧**
+    // 不好取, 退而断言回执出现 (reset 逻辑由 health.test.ts 钉)。
+    p.write('/session new\r');
+    check(await waitFor(p, (t) => t.includes('已新开会话')), 'CH-3 换会话有回执(计数清零走 L1 闸)');
   } finally {
     p.kill();
   }

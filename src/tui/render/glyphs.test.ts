@@ -170,6 +170,8 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
       { width: 90, height: 20 },
     ).join('\n')],
     ['dag:fullscreen-hint', 'Tab 切画法 (当前: 泳道甘特) · Ctrl+G 退出'],
+    // 切片⑤: 健康度一行 (createContextHealth 的 line() 形状)。
+    ['health', '上下文健康度: read src/x.ts 已 3 次 —— 内容多半已在上下文里, 引用它而不是再读'],
     ['dag:no-run', '(还没有 run —— 发一个再 Ctrl+G)'],
     ['hud:on', '左栏 DAG 图:开(有 run 且终端宽度不低于 90 列才画;窄了自动收起)'],
     ['hud:off', '左栏 DAG 图:关(底部那张表回来了)'],
