@@ -155,7 +155,9 @@ async function scenarioHappyPath() {
     check(await waitFor(p, (t) => t.includes('omd tui')), 'S2-1 启动后 TUI 壳出现', p.text().slice(0, 200));
     // 这条 lane 用的是 fixture 后端, footer 上必须**自报家门** ——
     // 一旦这里变成 embedded://, 说明 L3 在打真模型 (要钱, 且读数不再稳定)。
-    check(p.text().includes('fixture://l3-test'), 'S2-2 footer 自报 fixture 后端(L3 不打真模型)');
+    // ⚠ 2026-08-08:后端坐标从 footer 挪走了(P1 密度), 现在由**行①** 自报。标签跟着改 ——
+    //   标签与实际锚点对不上的闸, 红的时候会把人指向错的地方。
+    check(p.text().includes('fixture://l3-test'), 'S2-2 行①自报 fixture 后端(L3 不打真模型)');
 
     // S4: 这条 lane 的 cwd 就是 omd 仓, 仓里有 .claude/CLAUDE.md ——
     // 「0 份」正是 SDD §5.1 实测到的那个洞 (两份 harness 一个字都没进过 system prompt)。
@@ -869,10 +871,18 @@ async function scenarioRealBackendBoots() {
       'REAL-1 ★ 真后端(不是 fixture)也起得来',
       p.text().slice(0, 600),
     );
-    // footer 必须是 embedded:// —— 是 fixture:// 的话说明环境变量没清干净, 这条就白测了。
+    /**
+     * 后端坐标必须是 `embedded://` —— 是 `fixture://` 的话说明环境变量没清干净, 这条就白测了。
+     *
+     * ⚠ **2026-08-08 判据换了锚点**:footer 不再带 `[后端坐标]`(P1 密度:同一屏 3 次 → 2 次),
+     * 坐标现在只在**行①** 上。老判据锚的是 `[embedded://…]` 那个方括号形状,砍掉之后它会红 ——
+     * 而这正是想要的:**它是一条真闸,不是随改动一起漂的装饰**。
+     * ⚠ 换锚点时**不许顺手放宽**:仍然要求出现 `embedded://`,并**显式要求不出现** `fixture://`
+     * (只查前者的话, 两个后端都挂着时它照样绿)。
+     */
     check(
-      /\[embedded:\/\/[^\]]+\]/.test(p.text()),
-      'REAL-2 ★ footer 是 embedded://<座位>(证明真走了生产装配, 不是 fixture)',
+      /embedded:\/\/\S+/.test(p.text()) && !p.text().includes('fixture://'),
+      'REAL-2 ★ 行①的后端坐标是 embedded://<座位>, 且全程没有 fixture://(证明真走了生产装配)',
       p.text().slice(-300),
     );
     p.write('\x03');
