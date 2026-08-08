@@ -8,7 +8,8 @@
  * 快照会因任何布局微调全红,等于没有测试。
  */
 import { describe, expect, test } from 'bun:test';
-import { CTRL_C_WINDOW_MS, decideCtrlC } from './tui';
+import type { Component } from '@earendil-works/pi-tui';
+import { CTRL_C_WINDOW_MS, decideCtrlC, withLeftGutter } from './tui';
 
 describe('Ctrl+C 双击判定 (§4.1 第 1 条)', () => {
   // 反向自检: 把 decideCtrlC 改成恒 'exit' → 「单击只预备」红;
@@ -28,5 +29,59 @@ describe('Ctrl+C 双击判定 (§4.1 第 1 条)', () => {
 
   test('★ 超窗的第二击重新预备, 不是退出 —— 否则"隔十分钟按两次"会误退', () => {
     expect(decideCtrlC(1000, 99999)).toBe('arm');
+  });
+});
+
+describe('★ 左槽 —— 正文不许贴着终端左边缘(P1)', () => {
+  /**
+   * ## 为什么值得一条单测(而不是只看帧)
+   *
+   * `docs/bars/refs/omd/*` 的帧是**证据不是闸**(`bars-capture.mjs` 文件头写着理由),
+   * 所以"正文有没有贴边"如果只有帧看得见,它就会静默回归。这条把它变成会红的东西。
+   *
+   * ## 实测读数(同一把尺子,七张重采过的帧)
+   *
+   * 起始列为 0 的行数:`01-empty` 11→**0** · `02` 13→**0** · `03` 11→**0** ·
+   * `04-narrow-80` 11→**0** · `05` 11→**0** · `06` 11→**0** · `07-settings` 26→**0**。
+   * ⚠ `08-streaming` / `09-long-scroll` **没重采**(那两格要 `--live` 真打模型),
+   * 所以它们不算数 —— 别把没重采的帧算进改善。
+   *
+   * **证伪方式**:把 `GUTTER_COLS` 改成 0 → 第一条当场红(已实跑验证)。
+   * ⚠ 第一版的判据写成 `c >= GUTTER_COLS`, **拿常量验自己**, 槽宽归 0 时恒真 —— 那种闸永远不会红。
+   */
+  const fake = (lines: string[]): Component => ({
+    render: () => lines,
+    invalidate: () => {},
+  });
+  const startCol = (line: string): number => {
+    const plain = line.replace(/\x1b\[[0-9;]*m/g, '').replace(/\x1b\]8;;\x07/g, '');
+    const m = /\S/.exec(plain);
+    return m ? m.index : -1;
+  };
+
+  test('包了左槽之后, 每一行内容都不在第 0 列', () => {
+    const out = withLeftGutter(fake(['AAA', 'BBB', '引擎  embedded://x'])).render(60);
+    const cols = out.map(startCol).filter((c) => c >= 0);
+    expect(cols.length).toBeGreaterThan(0);
+    // ⚠ 判据是**字面量 0**, 不是 `GUTTER_COLS` —— 第一版写的是 `c >= GUTTER_COLS`,
+    //   那是拿常量自己去验自己:把 `GUTTER_COLS` 改成 0 之后 `c >= 0` 恒真, 闸永远绿。
+    //   实跑证伪过一次才发现(2026-08-08)。**闸要钉不变量, 不是复述常量。**
+    for (const c of cols) expect(c).toBeGreaterThan(0);
+  });
+
+  test('★ 反测:槽宽 0 时内容**回到第 0 列** —— 证明这条闸量的是槽, 不是别的', () => {
+    const out = withLeftGutter(fake(['AAA']), 0).render(60);
+    expect(out.map(startCol).filter((c) => c >= 0)).toContain(0);
+  });
+
+  test('内容一个字都没丢(槽只挪位置, 不吃字)', () => {
+    const out = withLeftGutter(fake(['引擎  embedded://kimi-coding:k3'])).render(60).join('\n');
+    expect(out).toContain('引擎  embedded://kimi-coding:k3');
+  });
+
+  test('窄屏(80 列)下槽仍在, 且没把可用宽度吃穿', () => {
+    const out = withLeftGutter(fake(['x'.repeat(70)])).render(80);
+    expect(out.map(startCol).filter((c) => c >= 0).every((c) => c > 0)).toBe(true);
+    expect(out.join('\n')).toContain('x'.repeat(70));
   });
 });

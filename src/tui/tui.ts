@@ -28,7 +28,7 @@
  * 于是 L1 能直接测判定,L3 只需要验"真 PTY 里这条链接得起来"。
  */
 import { hostname } from 'node:os';
-import { type Component, Container, Editor, HStack, ProcessTerminal, ScrollView, Text, TuiAltScreen, VStack, type Terminal } from '@earendil-works/pi-tui';
+import { type Component, Container, Editor, HStack, ProcessTerminal, ScrollView, Spacer, Text, TuiAltScreen, VStack, type Terminal } from '@earendil-works/pi-tui';
 import { logger } from '../logger';
 import type { ApprovalDecision, ApprovalGate, ApprovalRequest } from './approval/gate';
 import { approvalBody, approvalTitle } from './approval/card';
@@ -252,6 +252,40 @@ export interface RunOmdTuiOpts {
  * ⚠ 刻意**不靠事件循环空转返回** —— 那样"什么时候算结束"取决于有没有别的东西还挂着
  * 定时器,是隐式的。这里只由 `requestExit()` 兑现一个 Promise,结束条件是显式的一处。
  */
+/**
+ * ★ 左槽宽度(P1)。取 1 不取 2:窄屏(80 列)下每一列都算数,而"不贴边"这件事 1 列就成立
+ * —— 参照物里 pi 的正文起始列就是 `1`。
+ */
+export const GUTTER_COLS = 1;
+
+/**
+ * ★ **左槽**(P1,2026-08-08)。正文不许贴着终端左边缘。
+ *
+ * ## 这是量出来的,不是审美
+ *
+ * 三家同一条提示词、同一个 110x32(`docs/bars/refs/<家>/08-streaming.txt`):
+ * **正文起始列 opencode `5` / pi `1` / omd `0`** —— omd 是唯一贴边的。
+ * 逐帧数过之后更难看:七张 omd 帧里,**每张都有 11–26 行起始列是 0**
+ * (`01-empty` 11 行 / `07-settings` 26 行)。"又挤又平"的成因里,这一条是可定位的那个。
+ *
+ * ## 用 `Spacer` 而不是手拼空格
+ *
+ * ⚠ **实测过才敢这么用**:pi-tui 的 `Spacer.render()` 返回的是 **`lines` 个空串**
+ * (`spacer.js:14-20`)—— 它本身是**纵向**留白,不是横向 padding。
+ * 但把它当 `HStack` 的**首个子项** + 给一个固定 `basis`,`HStack` 会给它分配宽度并把
+ * 后面的子项排在 `childWidth + gap` 之后(`h-stack.js:38`)⇒ 这就是左槽。
+ * 实测(`basis: 1` + 既有 `gap: 1`)正文落在**第 2 列**,且**不引入行位移**
+ * (对照组"无 spacer"在同一个探针里也有那一行首空行 —— 那是探针的,不是槽的)。
+ *
+ * ⇒ 顺带还掉台账里 `Spacer` 那笔欠账(omd 全仓曾是 **0** 引用)。
+ */
+export function withLeftGutter(root: Component, cols: number = GUTTER_COLS): Component {
+  const shell = new HStack([], { gap: 0 });
+  shell.addChild(new Spacer(1), { basis: cols, shrink: 0 });
+  shell.addChild(root, { grow: 1, shrink: 1, minSize: 10 });
+  return shell;
+}
+
 export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   const now = opts.now ?? Date.now;
   const hardExit = opts.exit ?? ((code: number) => process.exit(code));
@@ -463,7 +497,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   root.addChild(footer, chrome);
   // 全屏走 `setLayoutRoot` 而不是 `addChild` —— 后者进的是隐式 ScrollView, 于是
   // `grow` 无处可分(可用高度是"内容高度"而不是"一屏"), 布局会退化回 inline 的样子。
-  tui.setLayoutRoot(root);
+  tui.setLayoutRoot(withLeftGutter(root));
   // 焦点给 editor: 打字直接进输入框。Ctrl+C 仍抢在它前面 (input listener 先于焦点分派)。
   tui.setFocus(editor);
 
