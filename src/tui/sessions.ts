@@ -15,11 +15,12 @@
  */
 import type { TuiSessionMeta } from './backend';
 
-/** `/session` 的解析。四态。 */
+/** `/session` 的解析。五态(切片⑦ 加 fork)。 */
 export type SessionCommand =
   | { kind: 'list' }
   | { kind: 'switch'; id: string }
   | { kind: 'new'; id: string | null }
+  | { kind: 'fork'; id: string | null }
   | { kind: 'usage'; reason: string }
   | null;
 
@@ -32,10 +33,10 @@ export function parseSessionCommand(text: string): SessionCommand {
   if (t === '/session' || t === '/sessions') return { kind: 'list' };
   const parts = t.split(/\s+/).slice(1);
   const first = parts[0] as string;
-  if (first === 'new') {
+  if (first === 'new' || first === 'fork') {
     const id = parts[1];
     if (id && !ID_RE.test(id)) return { kind: 'usage', reason: `会话 id 非法: ${id}(只许字母数字 _ -,≤64 字符)` };
-    return { kind: 'new', id: id ?? null };
+    return { kind: first, id: id ?? null };
   }
   if (!ID_RE.test(first)) return { kind: 'usage', reason: `会话 id 非法: ${first}(只许字母数字 _ -,≤64 字符)` };
   return { kind: 'switch', id: first };
@@ -54,12 +55,21 @@ export function formatSessions(list: readonly TuiSessionMeta[], current: string)
   const rows = list.map((s) => {
     const mark = s.id === current ? '*' : ' ';
     const when = s.updatedAt > 0 ? new Date(s.updatedAt).toISOString().slice(0, 16).replace('T', ' ') : '—';
-    return `  ${mark} ${s.id}  ${when}  ${s.title || '(无标题)'}`;
+    // fork 的 lineage 画在行尾 (切片⑦): 树的边是数据不是装饰, 有 parent 才画。
+    const lineage = s.parent ? `  <- fork 自 ${s.parent}` : '';
+    return `  ${mark} ${s.id}  ${when}  ${s.title || '(无标题)'}${lineage}`;
   });
-  return `会话(\`*\` = 当前):\n${rows.join('\n')}\n用法: /session <id> 切换 · /session new [id] 新开`;
+  return `会话(\`*\` = 当前):\n${rows.join('\n')}\n用法: /session <id> 切换 · /session new [id] 新开 · /session fork [id] 分支`;
 }
 
 /** 新会话 id:`s-<秒级时间戳>`。**不用随机串** —— 列表里按时间读得出先后。 */
 export function newSessionId(now: () => number = Date.now): string {
   return `s-${Math.floor(now() / 1000)}`;
+}
+
+/** fork 分支的默认 id:`<源>-f<秒级时间戳>` —— 名字自带 lineage, 列表里一眼读得出从哪长出来。 */
+export function forkSessionId(fromId: string, now: () => number = Date.now): string {
+  const base = `${fromId}-f${Math.floor(now() / 1000)}`;
+  // id 白名单上限 64: 源 id 很长时截头保尾 (尾部是时间戳, 是区分度所在)。
+  return base.length <= 64 ? base : base.slice(base.length - 64);
 }

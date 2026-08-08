@@ -85,3 +85,43 @@ describe('损坏处置(吞异常不吞证据的分工)', () => {
     expect(metas.map((m) => m.messageCount)).toEqual([2, 1]);
   });
 });
+
+describe('切片⑦: fork(会话树)', () => {
+  test('★ fork 拷贝消息 + 记 parent 边 + 立刻落盘', () => {
+    const src = store.create('root-1');
+    src.messages.push(msg('hej'), msg('again'));
+    store.save(src);
+    const forked = store.fork('root-1', 'root-1-f1');
+    expect(forked.messages.length).toBe(2);
+    expect(forked.parent).toEqual({ id: 'root-1', atMessage: 2 });
+    // 立刻落盘: 不用 save 就能 load 回来
+    expect(store.load('root-1-f1')?.parent?.id).toBe('root-1');
+    // list 带 parent (树的列表面)
+    expect(store.list().find((m) => m.id === 'root-1-f1')?.parent).toBe('root-1');
+    expect(store.list().find((m) => m.id === 'root-1')?.parent).toBeUndefined();
+  });
+
+  test('★ 互不污染: 分支加消息, 源会话磁盘上纹丝不动', () => {
+    const src = store.create('root-2');
+    src.messages.push(msg('one'));
+    store.save(src);
+    const forked = store.fork('root-2', 'root-2-f1');
+    forked.messages.push(msg('branch-only'));
+    store.save(forked);
+    expect(store.load('root-2')?.messages.length).toBe(1); // 源没长
+    expect(store.load('root-2-f1')?.messages.length).toBe(2);
+    // 反向: 内存引用也不共享 (structuredClone) —— 改分支第一条不影响源
+    const again = store.fork('root-2', 'root-2-f2');
+    (again.messages[0] as { content: string }).content = 'mutated';
+    expect(store.load('root-2')?.messages[0]).toMatchObject({ content: 'one' });
+  });
+
+  test('源不存在 / 目标已存在 → 响亮抛(fork 不存在的东西是 bug 不是缺席)', () => {
+    expect(() => store.fork('nope', 'x1')).toThrow('不存在');
+    const src = store.create('root-3');
+    src.messages.push(msg('a'));
+    store.save(src);
+    store.fork('root-3', 'taken');
+    expect(() => store.fork('root-3', 'taken')).toThrow('已存在');
+  });
+});

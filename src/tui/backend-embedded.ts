@@ -227,7 +227,19 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
         id: m.id,
         title: m.title,
         updatedAt: Date.parse(m.updatedAt) || 0,
+        ...(m.parent ? { parent: m.parent } : {}),
       }));
+    },
+
+    // 切片⑦: fork 直调 store (显式动作, 立刻写盘)。错误转成 ok:false + 原因原文 ——
+    // "为什么 fork 不了"这个问题必须答得出来 (源没写过盘 / id 冲突是两个不同的答案)。
+    async forkSession({ fromId, newId }): Promise<{ ok: boolean; text: string }> {
+      try {
+        const s = deps.store.fork(fromId, newId);
+        return { ok: true, text: `已从 ${fromId} fork 出 ${s.id} (${s.messages.length} 条消息)` };
+      } catch (err) {
+        return { ok: false, text: err instanceof Error ? err.message : String(err) };
+      }
     },
   };
 }

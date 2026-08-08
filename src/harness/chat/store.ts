@@ -36,6 +36,15 @@ export interface ChatSession {
   createdAt: string;
   updatedAt: string;
   messages: AgentMessage[];
+  /**
+   * 会话树(切片⑦):从哪条会话的第几条消息 fork 出来。缺席 = 根会话。
+   *
+   * ⚠ **偏离 Q1 的记录**:Q1 裁的是「搬 pi 的 SessionManager(append-only jsonl +
+   * **消息级** parentID)」。这里先做**会话级** parent 指针 —— fork/切回/互不污染三条
+   * 用户可见判据全部成立,而消息级 jsonl 要同时动 store/agent/daemon 三条生产路径,
+   * 值一个独立切片。存储形态换成 jsonl 时本字段语义不变(树的边不动,粒度变细)。
+   */
+  parent?: { id: string; atMessage: number };
 }
 
 export interface ChatSessionMeta {
@@ -44,6 +53,8 @@ export interface ChatSessionMeta {
   createdAt: string;
   updatedAt: string;
   messageCount: number;
+  /** fork 来源会话 id。缺席 = 根会话(树的列表面靠它画 lineage)。 */
+  parent?: string;
 }
 
 export class ChatStore {
@@ -91,6 +102,33 @@ export class ChatStore {
     rmSync(this.file(id), { force: true });
   }
 
+  /**
+   * fork 一条分支(切片⑦):把 `fromId` 的全部消息拷进新会话,记 parent 边,**立刻写盘**
+   * (fork 是显式动作,不适用"首条消息才写盘"的空会话规则 —— 一个 fork 出来就消失的
+   * 分支比空会话文件更让人困惑)。
+   *
+   * 互不污染是构造出来的:两条会话各自一个文件,此后各写各的。
+   * 源会话不存在 → **响亮抛**(fork 一个不存在的东西是调用方的 bug,不是可吞的缺席)。
+   */
+  fork(fromId: string, newId: string): ChatSession {
+    const src = this.load(fromId);
+    if (!src) throw new Error(`[chat-store] fork 失败: 会话 ${fromId} 不存在 (还没写过盘的会话没有可 fork 的内容)`);
+    if (existsSync(this.file(newId))) throw new Error(`[chat-store] fork 失败: 会话 ${newId} 已存在`);
+    const now = new Date().toISOString();
+    const forked: ChatSession = {
+      schema: CHAT_SCHEMA,
+      id: newId,
+      title: src.title ? `${src.title} (fork)` : '',
+      createdAt: now,
+      updatedAt: now,
+      // structuredClone: 拷贝而不是共享引用 —— 共享的话内存里改一条等于改两条 (最静默的污染)。
+      messages: structuredClone(src.messages),
+      parent: { id: fromId, atMessage: src.messages.length },
+    };
+    this.save(forked);
+    return forked;
+  }
+
   /** 按 updatedAt 降序。单个坏文件跳过但留证据(path + 错误原文),不杀整个列表。 */
   list(): ChatSessionMeta[] {
     const dir = this.dir();
@@ -107,6 +145,7 @@ export class ChatStore {
           createdAt: s.createdAt,
           updatedAt: s.updatedAt,
           messageCount: s.messages.length,
+          ...(s.parent ? { parent: s.parent.id } : {}),
         });
       } catch (err) {
         logger.warn({ file: join(dir, name), err: String(err) }, '[chat-store] 跳过损坏会话文件 (证据在此, 文件未动)');
