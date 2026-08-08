@@ -10,7 +10,7 @@ import { describe, expect, it } from 'bun:test';
 import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createOmdAgentTools, type AnyOmdTool } from './agent-tools';
+import { createOmdAgentTools, shouldSkipDir, type AnyOmdTool } from './agent-tools';
 
 function fixture(): string {
   const root = mkdtempSync(join(tmpdir(), 'omd-agent-tools-'));
@@ -135,6 +135,39 @@ describe('读写改的基本语义', () => {
    * 这里把上限注进来(`grepWalkLimit`)以便用 4 个文件量,不用真造 20_000 个。
    * **证伪方式**:把 `walkFiles` 的 `capped` 恒设成 `false`(等于回到老版)→ 三条全红。
    */
+  /**
+   * ★ **venv 变体要跳掉**(2026-08-08 实测:精确匹配一个都没拦住)。
+   *
+   * `SKIP_DIRS` 只有 `.venv`, 而真实的名字是 `.venv-crawl4ai` / `.venv-seuranta` / `.venv-pg`。
+   * 代价:talous-v2 那个 `.venv-crawl4ai` 一个目录占全仓 SKIP_DIRS 口径文件数的 **58%**
+   * (11,150 / 19,177), 遍历预算全烧在 site-packages 上, 而那里没有一行是这个仓的代码。
+   *
+   * **证伪方式**:把 `shouldSkipDir` 改回 `SKIP_DIRS.has(name)` → 前两条红。
+   */
+  it('★ .venv 的各种变体都跳掉(精确匹配漏光了)', () => {
+    for (const n of ['.venv', '.venv-crawl4ai', '.venv-seuranta', '.venv-pg', 'venv', '.venv.bak', 'venv_old']) {
+      expect(shouldSkipDir(n)).toBe(true);
+    }
+  });
+
+  it('★ 反测:名字里带 venv 的**正常源码目录**不许被误跳', () => {
+    // 收敛处要求分隔符 —— 否则 `venvironment/` 这种目录会被静默跳过, 而那是真代码。
+    for (const n of ['venvironment', 'venvs-docs', 'myvenv', 'convention', 'src', 'lib']) {
+      expect(shouldSkipDir(n)).toBe(false);
+    }
+  });
+
+  it('grep 真的不进 venv 变体目录 —— 判定接上了遍历, 不只是个没人调的函数', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-agent-venv-'));
+    mkdirSync(join(root, '.venv-crawl4ai'));
+    writeFileSync(join(root, '.venv-crawl4ai', 'site.ts'), `const q = 'venvskip_needle';\n`);
+    writeFileSync(join(root, 'real.ts'), `const q = 'venvskip_needle';\n`);
+    const { grep } = toolset(root);
+    const out = text(await run(grep!, { pattern: 'venvskip_needle' }));
+    expect(out).toContain('real.ts:1:');
+    expect(out).not.toContain('.venv-crawl4ai');
+  });
+
   it('★ grep 走到遍历上限时说出来 —— 「没走到那儿」不许抹成「那儿没有」', async () => {
     const root = mkdtempSync(join(tmpdir(), 'omd-agent-walkcap-'));
     // 4 个文件, 上限设 2 → 必然被截。needle 只在其中一个里, 命中与否取决于遍历序,
