@@ -100,6 +100,14 @@ if (userArgs[0] === 'tui') {
     // OMD_TUI_USAGE_DIR: 测试接缝 —— PTY lane 的 fixture 记账不许污染真仓的 5h 窗口。
     const usage = createTuiUsageLedger({ dir: process.env.OMD_TUI_USAGE_DIR || joinPath(cwd, '.omd') });
     observeModelUsage((u, model) => usage.record(u, model, 'engine'));
+    /**
+     * `ask_user` 要的 UI(对话框宿主 / 主题 / 记录口)—— **延迟指针**。
+     *
+     * 声明在**分支之外**:填它的 `runOmdTui` 在分支外调用, 而用它的工具面装在
+     * 非 fixture 分支里。⚠ fixture 分支不装对话位工具面, 所以那条路上它恒为 null ——
+     * 那是对的:那条 lane 本来就没有 `ask_user`。
+     */
+    let askUserUi: import('../tui/tools/ask-user').AskUserUi | null = null;
     if (process.env.OMD_TUI_BACKEND === 'fixture') {
       const { createFixtureBackend } = await import('../tui/backend-fixture');
       backend = createFixtureBackend({ approvals, usage });
@@ -161,7 +169,9 @@ if (userArgs[0] === 'tui') {
         // S-4: 对话位的工具面(含六只手)。装配在 `tui/tools/chat-seat`, 那里有闸盯着 ——
         // 长在这个内联块里的话, "对话位到底拿到了哪些工具"没有任何测试看得见(坑 #7 同族)。
         // 切片①: 审批闸包住整个工具面; 六只手的内层危险命令闸随之交给 admin 档 (闸永远有一层)。
-        tools: createChatSeatTools({ cwd, mcpTools: tools, extTools, approvals }),
+        // ★ `ask_user`(2026-08-08):UI 走**惰性取** —— 工具面装在 TUI 之前, 那时 dialogs
+        //   还不存在(同上面那个"延迟指针接环"的理由)。`runOmdTui` 起来后把它填上。
+        tools: createChatSeatTools({ cwd, mcpTools: tools, extTools, approvals, askUser: () => askUserUi }),
         ...(exts.length > 0
           ? {
               // 多个扩展**串起来**追加:每个都只能在前一个的结果上追加, 顺序 = 清单顺序。
@@ -184,7 +194,18 @@ if (userArgs[0] === 'tui') {
       sink = embedded;
       backend = embedded;
     }
-    await runOmdTui({ backend, cwd, contextFiles, approvals, usage, ...(extStatus.length > 0 ? { extensions: extStatus } : {}) });
+    await runOmdTui({
+      backend,
+      cwd,
+      contextFiles,
+      approvals,
+      usage,
+      // 延迟指针的另一端:UI 就绪即填, `ask_user` 从此问得出来。
+      onUi: (ui) => {
+        askUserUi = ui;
+      },
+      ...(extStatus.length > 0 ? { extensions: extStatus } : {}),
+    });
   } catch (err) {
     // S-4b: 起不来的时候说人话。**实测撞出来的** —— 空仓里跑 `omd tui`, 第一屏是
     // `role-models.ts:433` 的行号和 `^` 指针(座位是逐仓配的, 所以除了 omd 自己这个仓,
