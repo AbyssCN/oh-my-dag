@@ -106,8 +106,13 @@ function warnSecret(path: string): void {
 
 // ── 目录遍历 (grep / 隐式扫描共用) ─────────────────────────────────────────────
 
-/** 遍历默认跳过的目录名 —— 扫进去只会把真命中淹掉 (且 node_modules 动辄十万文件)。 */
-const SKIP_DIRS = new Set([
+/**
+ * 遍历默认跳过的目录名 —— 扫进去只会把真命中淹掉 (且 node_modules 动辄十万文件)。
+ *
+ * export 是给 `scripts/probes/repo-file-count.ts` 用的:「这个仓离遍历上限还有多远」
+ * 必须按**实装的同一张表**算, 探针里抄一份就会与 agent 真正走的树漂开。
+ */
+export const SKIP_DIRS = new Set([
   '.git', 'node_modules', 'dist', 'build', 'out', 'coverage', '.next', '.turbo', '.cache', '.venv',
   '__pycache__', 'target', 'vendor',
 ]);
