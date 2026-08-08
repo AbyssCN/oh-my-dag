@@ -20,7 +20,7 @@
  * 对话框开着时再开一个 → **拒绝并说明**,不是叠上去。叠加之后"哪个在收键"就说不清了,
  * 而 Esc 会关掉哪一个也说不清。
  */
-import { type Component, Input, SelectList, Text, visibleWidth } from '@earendil-works/pi-tui';
+import { type Component, Input, SelectList, Text, getKeybindings, visibleWidth } from '@earendil-works/pi-tui';
 import { StatusLine } from './status-line';
 import { card } from '../design/tokens';
 import { fitLine } from '../render/line';
@@ -43,11 +43,39 @@ export interface SelectOption {
   description?: string;
 }
 
-/** Esc 的所有常见编码。只认一种的话某些终端上就关不掉 —— 那是个开着出不来的框。
- * (export 给审批单等自绘键位的框用 —— 同一张编码表,不抄第二份。) */
-export const ESC = new Set(['\x1b', '\x1b\x1b']);
-/** 回车。 */
-const ENTER = new Set(['\r', '\n']);
+/**
+ * ★ **取消键 / 确认键的判定,换成 pi-tui 的键位表**(2026-08-08,还台账最后一笔欠账)。
+ *
+ * ## 为什么不是"手列表换成 `matchesKey`"那么简单
+ *
+ * 台账原文写的是「换成 `matchesKey(data, Key.escape)`」,而本程实测把那条更正了
+ * (台账 §1.1):**两张表各缺对方一种** —— omd 手列的认 `\x1b\x1b`(双 ESC)而 pi-tui 不认;
+ * pi-tui 认 kitty 的 `\x1b[27u` 而 omd 不认。**照原文直接换会静默丢掉双 ESC。**
+ *
+ * 现在能换,是因为缺的那一种**已经用 pi-tui 自己的机制补进去了**:
+ * `src/tui/keys.ts` 的 `installOmdKeybindings()` 把 `ctrl+alt+[`(= `\x1b\x1b` 这两个字节)
+ * 加进了 `tui.select.cancel`。⇒ 走键位表**三种编码全认**,而且只剩一处真源。
+ *
+ * ⚠ `tui.select.cancel` 里还有 `ctrl+c`。对话框收不到它 —— Ctrl+C 由 input listener
+ * **先于焦点分派**截走(`tui.ts` 焦点那一段)。所以"两次 Ctrl+C 退出"那条路不受影响。
+ * ⚠ 这两个判定**必须在 `installOmdKeybindings()` 之后**才认双 ESC。生产里 `runOmdTui`
+ * 开头就装;测试里各自 `beforeAll` 装(踩过一次:靠跨文件顺序变绿)。
+ */
+function isCancel(data: string): boolean {
+  return getKeybindings().matches(data, 'tui.select.cancel');
+}
+function isConfirm(data: string): boolean {
+  return getKeybindings().matches(data, 'tui.select.confirm');
+}
+
+/**
+ * Esc 判定。**export 给审批单等自绘键位的框用** —— 同一处判据,不抄第二份。
+ *
+ * ⚠ 从 `Set` 换成函数是有意的:`Set.has` 只能比裸字节,而 kitty 协议下 Esc 是
+ * `\x1b[27u` 这样的多字节序列 —— 用集合永远收不齐。
+ */
+export const ESC = { has: isCancel };
+const ENTER = { has: isConfirm };
 
 export interface SelectOpts {
   title: string;

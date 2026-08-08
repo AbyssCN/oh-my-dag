@@ -8,9 +8,10 @@
  * Esc 与"选了空值"分不分得开 · 一次只开一个 · 关掉之后 editor 回不回来。
  */
 import type { Component } from '@earendil-works/pi-tui';
-import { describe, expect, test } from 'bun:test';
+import { beforeAll, describe, expect, test } from 'bun:test';
 import { type DialogBox, type DialogHost, confirm, input, inputComponent, select } from './dialog';
 import { createTheme } from '../theme';
+import { installOmdKeybindings } from '../keys';
 
 const theme = createTheme({ color: false });
 
@@ -214,5 +215,45 @@ describe('★ 输入框换成 pi-tui `Input`(2026-08-08,还台账最大的那笔
     const out = shown(box);
     expect(out).toContain('****');
     expect(out).not.toContain('sk-x'); // ★ 一个字符都不许上屏
+  });
+});
+
+describe('★ 取消/确认键走 pi-tui 键位表(2026-08-08,还台账最后一笔欠账)', () => {
+  /**
+   * 判据钉的是**三种编码全认** —— 而这正是换之前做不到的:
+   * 手列的 `Set` 认 `\x1b` 与 `\x1b\x1b`,**不认 kitty 的 `\x1b[27u`**(多字节序列, 集合收不齐)。
+   *
+   * **证伪方式**:把 `isCancel` 改回 `new Set(['\x1b','\x1b\x1b']).has` → kitty 那条当场红。
+   * ⚠ 双 ESC 那条能绿, 靠的是 `installOmdKeybindings()` 把 `ctrl+alt+[` 加进了
+   * `tui.select.cancel`(`keys.ts`)—— 所以这里**必须先装**, 否则是在量别的东西。
+   */
+  beforeAll(() => installOmdKeybindings());
+
+  const cancelWith = async (key: string): Promise<string | null> => {
+    const h = fakeHost();
+    const p = select(h.host, theme, { title: 'x', options: [{ value: 'a', label: 'A' }] });
+    h.key(key);
+    return p;
+  };
+
+  test('裸 ESC 关得掉', async () => {
+    expect(await cancelWith('\x1b')).toBeNull();
+  });
+
+  test('★ 双 ESC 关得掉(pi-tui 默认表不认它 —— 靠 keys.ts 补的)', async () => {
+    expect(await cancelWith('\x1b\x1b')).toBeNull();
+  });
+
+  test('★ kitty 协议的 ESC 关得掉(手列 Set **收不齐**的那一种)', async () => {
+    expect(await cancelWith('\x1b[27u')).toBeNull();
+  });
+
+  test('确认键:回车与换行都认', async () => {
+    for (const k of ['\r', '\n']) {
+      const h = fakeHost();
+      const p = select(h.host, theme, { title: 'x', options: [{ value: 'a', label: 'A' }] });
+      h.key(k);
+      expect(await p).toBe('a');
+    }
   });
 });
