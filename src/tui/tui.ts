@@ -39,6 +39,7 @@ import { DagHud } from './components/dag-hud';
 import { DagTree } from './components/dag-tree';
 import { type PathReader, PathHud, createPathReader } from './components/path-hud';
 import { renderGantt } from './render/dag-gantt';
+import { type PathViewData, buildPathViewData, renderDelta, renderFogLine } from './render/path-fog';
 import { fitLine } from './render/line';
 import { renderLayers } from './render/dag-layers';
 import { StatusLine } from './components/status-line';
@@ -165,6 +166,8 @@ export const CHROME = {
   sessionForked: (text: string) => `${text} —— 已切到分支; 原会话未动, /session 可切回`,
   sessionForkFailed: (reason: string) => `fork 不了: ${reason}`,
   approvalTtlWritten: (sec: number, path: string) => `审批 token TTL -> ${sec}s 已写入 ${path} (重启生效)`,
+  /** 切片⑧: 一张图都没有时说真话 (画一个空雾场会读成"有图但没散")。 */
+  noPathMaps: () => '还没有 pathfinder 地图 (docs/plan/pathfinder/ 为空) —— 用 /omd-path 开一张',
 } as const;
 
 /**
@@ -274,7 +277,10 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   // 切片③: 左栏树 + 三画法共用的数据模型。与 dagHud 吃同一批事件 (两个消费者都得喂, 坑 #7 同族)。
   const dagTree = new DagTree(theme, opts.now);
   // A4: pathfinder 前沿票。一张图都没有时 `render()` 返回空数组, 所以恒挂着。
-  const pathHud = new PathHud(theme, opts.pathReader ?? createPathReader(opts.cwd));
+  // 切片⑧: Ctrl+P 选了图之后侧栏跟着换 (pathSlugSel); 没选时保持"前沿最多"的默认。
+  let pathSlugSel: string | null = null;
+  const basePathReader = opts.pathReader ?? createPathReader(opts.cwd);
+  const pathHud = new PathHud(theme, () => (pathSlugSel ? createPathReader(opts.cwd, pathSlugSel)() : basePathReader()));
   pathHud.refresh();
   const editor = new Editor(tui, theme.editor);
   // 补全:**行首 `/` 出命令,其余出文件** —— 底座是 pi-tui 的 `CombinedAutocompleteProvider`。
@@ -397,16 +403,49 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     invalidate: () => dagTree.invalidate(),
   };
 
+  /**
+   * ★ **pathfinder 全屏散雾图**(切片⑧,owner 裁决主 C 副 B):`Ctrl+P` 选图进全屏,
+   * C(雾退线)默认,`Tab` 切 B(三角洲),A 不做。数据在开图与每轮结束时重读。
+   */
+  let pathFullOn = false;
+  let pathPainter = 0; // 0=C 雾退线 1=B 三角洲
+  let pathSelected = 0;
+  let pathData: PathViewData | null = null;
+  function reloadPathData(): void {
+    if (!pathSlugSel) return;
+    try {
+      const { loadMap } = require('../harness/pathfinder/maps') as typeof import('../harness/pathfinder/maps');
+      const map = loadMap(opts.cwd, pathSlugSel);
+      pathData = map ? buildPathViewData(map) : null;
+      if (pathData && pathSelected >= pathData.frontier.length) pathSelected = Math.max(0, pathData.frontier.length - 1);
+    } catch (err) {
+      pathData = null;
+      logger.warn({ err: (err as Error).message, slug: pathSlugSel }, '[omd/tui] pathfinder 图读不出来');
+    }
+  }
+  const pathView: Component = {
+    render: (width: number): string[] => {
+      if (!pathData) return [fitLine('(图读不出来 —— 日志里有原因)', width)];
+      const height = Math.max(6, (terminal.rows || 30) - 10);
+      const o = { width, height, selected: pathSelected };
+      return pathPainter === 0 ? renderFogLine(pathData, o) : renderDelta(pathData, o);
+    },
+    handleInput: () => {},
+    invalidate: () => {},
+  };
+
   const body = new HStack([], { gap: 1 });
   body.addChild(dagTree, { basis: SIDEBAR_WIDTH, shrink: 0, visible: (vp: { width: number }) => sidebarPainting(vp.width) });
   body.addChild(transcript, { grow: 1, shrink: 1, minSize: 3 });
 
   const root = new VStack();
   root.addChild(harness, chrome);
-  root.addChild(body, { grow: 1, shrink: 1, minSize: 3, visible: () => !fullOn });
-  root.addChild(fullView, { grow: 1, shrink: 1, minSize: 3, visible: () => fullOn });
-  root.addChild(dagHud, { shrink: 0, visible: (vp: { width: number }) => !fullOn && !sidebarPainting(vp.width) });
-  root.addChild(pathHud, chrome);
+  root.addChild(body, { grow: 1, shrink: 1, minSize: 3, visible: () => !fullOn && !pathFullOn });
+  root.addChild(fullView, { grow: 1, shrink: 1, minSize: 3, visible: () => fullOn && !pathFullOn });
+  root.addChild(pathView, { grow: 1, shrink: 1, minSize: 3, visible: () => pathFullOn });
+  root.addChild(dagHud, { shrink: 0, visible: (vp: { width: number }) => !fullOn && !pathFullOn && !sidebarPainting(vp.width) });
+  // 全屏散雾图开着时侧栏那份 pathfinder 摘要不重复画 (同一张图画两遍会读成两张)。
+  root.addChild(pathHud, { shrink: 0, visible: () => !pathFullOn });
   root.addChild(dialogSlot, chrome);
   root.addChild(editorContainer, chrome);
   root.addChild(healthLine, { shrink: 0, visible: () => health.line() !== null });
@@ -647,6 +686,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       // 一轮跑完可能动过地图 (conductor 有 map_* 工具) → 重读一次。
       // 不在 render 里读盘: render 每帧都调, 那会变成每帧一次目录扫描。
       pathHud.refresh();
+      if (pathSlugSel) reloadPathData(); // 切片⑧: 全屏图的数据同一时机重读
       tui.requestRender();
     }
   };
@@ -964,6 +1004,78 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   }
 
   /**
+   * `Ctrl+P` 的选图 + 全屏(切片⑧)。多张图先挑, 一张直接进, 零张说真话。
+   */
+  async function openPathView(): Promise<void> {
+    const { summarizeOpenMaps } = require('../harness/pathfinder/maps') as typeof import('../harness/pathfinder/maps');
+    let maps: import('../harness/pathfinder/maps').OpenMapSummary[] = [];
+    try {
+      maps = summarizeOpenMaps(opts.cwd);
+    } catch (err) {
+      chatLog.appendNotice(CHROME.failed(err instanceof Error ? err.message : String(err)));
+      tui.requestRender();
+      return;
+    }
+    if (maps.length === 0) {
+      chatLog.appendNotice(CHROME.noPathMaps());
+      tui.requestRender();
+      return;
+    }
+    let slug = maps[0]!.slug;
+    if (maps.length > 1) {
+      const picked = await dialogSelect(dialogs, theme, {
+        title: '切到哪张地图?',
+        options: maps.map((m) => ({
+          value: m.slug,
+          label: `${m.slug === pathSlugSel ? '* ' : '  '}${m.slug}`,
+          description: `前沿 ${m.frontierCount} · open ${m.openCount} —— ${m.destination}`,
+        })),
+        search: true,
+      });
+      if (picked === null) return; // Esc: 不切不开
+      slug = picked;
+    }
+    pathSlugSel = slug;
+    pathSelected = 0;
+    reloadPathData();
+    pathHud.refresh(); // 侧栏跟着换图
+    pathFullOn = true;
+    tui.requestRender();
+  }
+
+  /**
+   * 票的动作弹窗(切片⑧,三方案稿共用交互)。四动作 g/d/c/r。
+   *
+   * ⚠ **与稿的显式偏离**:稿里选完动作弹「现在执行? y/n」并直接派 run。这里选完把
+   * 对应指令**预填进输入框**,回车才发 —— 二段确认由"预填不发送"承担,执行走
+   * conductor 既有的 map/run 工具面, 不在 UI 里长第二条派活路径。
+   */
+  async function openTicketActions(t: { id: string; type: string; title: string }): Promise<void> {
+    const slug = pathSlugSel ?? '';
+    const act = await dialogSelect(dialogs, theme, {
+      title: `票 ${t.id} · ${t.title}`,
+      options: [
+        { value: 'g', label: 'g 审问 (grill)', description: '拆岔口给 owner 裁决' },
+        { value: 'd', label: 'd 做 (派 dag_goal/dag_run)', description: '把这张票交给引擎收敛' },
+        { value: 'c', label: 'c 评论', description: 'owner 备注写回地图' },
+        { value: 'r', label: 'r research', description: '跑 dag_research 收证据' },
+      ],
+    });
+    if (act === null) return; // Esc: 返回
+    const prompts: Record<string, string> = {
+      g: `对地图 ${slug} 的票 ${t.id}「${t.title}」做对抗式审问 (grill): 沿决策树拆岔口, 先给推荐答案, 把要我裁决的问题列出来`,
+      d: `把地图 ${slug} 的票 ${t.id}「${t.title}」交给引擎做掉 (用 omd_run 或 omd_solve), 完成后把结果与该票的裁决建议报回来`,
+      c: `给地图 ${slug} 的票 ${t.id} 记一条 owner 备注: `,
+      r: `针对地图 ${slug} 的票 ${t.id}「${t.title}」跑一轮 research 收证据, 汇总后给出裁决建议`,
+    };
+    // 预填不发送 —— 回车那一下才是"现在执行"。
+    pathFullOn = false;
+    editor.setText(prompts[act] ?? '');
+    tui.setFocus(editor);
+    tui.requestRender();
+  }
+
+  /**
    * `/login` —— 给一个 provider 落 key(切片⑥)。
    *
    * 复用 `setKeyHeadless`(auth.json / .env 双路由 + 活注入,与 `omd_set_key` MCP 同一条),
@@ -1149,6 +1261,32 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         tui.requestRender();
       }
       return { consume: true };
+    }
+    // 切片⑧: Ctrl+P (\x10) 开关 pathfinder 全屏; 全屏时 Tab 切画法, 上下键选票, Enter 动作。
+    // ⚠ 弹窗开着时 (dialogs.busy) 这些键要让给弹窗 —— 抢了的话动作选单收不到 Enter。
+    if (data === '\x10' && !dialogs.busy) {
+      if (pathFullOn) pathFullOn = false;
+      else void openPathView();
+      tui.requestRender();
+      return { consume: true };
+    }
+    if (pathFullOn && !dialogs.busy) {
+      if (data === '\t') {
+        pathPainter = (pathPainter + 1) % 2;
+        tui.requestRender();
+        return { consume: true };
+      }
+      if (data === '\x1b[A' || data === '\x1b[B') {
+        const n = pathData?.frontier.length ?? 0;
+        if (n > 0) pathSelected = (pathSelected + (data === '\x1b[A' ? -1 : 1) + n) % n;
+        tui.requestRender();
+        return { consume: true };
+      }
+      if (data === '\r' || data === '\n') {
+        const t = pathData?.frontier[pathSelected];
+        if (t) void openTicketActions(t);
+        return { consume: true };
+      }
     }
     // 切片③: Ctrl+G (\x07) 开关全屏 DAG; 全屏时 Tab 循环三画法。
     // ⚠ Tab 只在全屏时截 —— 平时它是 editor 的补全键, 抢了会让输入框残废。

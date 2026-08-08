@@ -44,12 +44,15 @@ export type PathReader = () => PathSnapshot | null;
  *
  * ⚠ 为什么是"前沿最多"而不是"第一张":按 slug 排序的第一张很可能是一张早就散完雾的老图,
  * 那样 HUD 会长期显示一张与当下无关的地图 —— 一个看起来在工作、其实指着别处的仪表盘。
+ *
+ * @param slug 切片⑧:显式选一张图(Ctrl+P 切图)。给了就读它;读不到 → null(缺席不是错误)。
  */
-export function createPathReader(cwd: string): PathReader {
+export function createPathReader(cwd: string, slug?: string): PathReader {
   return () => {
     const maps = summarizeOpenMaps(cwd);
     if (maps.length === 0) return null; // 一张图都没有 → 恒缺席
-    const pick = maps.reduce((a, b) => (b.frontierCount > a.frontierCount ? b : a));
+    const pick = slug ? maps.find((m) => m.slug === slug) : maps.reduce((a, b) => (b.frontierCount > a.frontierCount ? b : a));
+    if (!pick) return null;
     const map = loadMap(cwd, pick.slug);
     if (!map) return null;
     const frontier = computeFrontier(map);
