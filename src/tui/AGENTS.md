@@ -46,6 +46,12 @@
 本程还上两笔:**`SettingsList`**(设置页 → `components/settings-panel.ts`)·
 **`getKeybindings`**(`keys.ts` 补 pi-tui 认不出的双 ESC)。
 
+**同一条原则也管 `pi-agent-core`** —— 台账在 `docs/bars/pi-agent-core-模块台账.md`。
+现状:导出 **347**,omd `import` 了 **20**。四笔欠账按顺序是
+**`Session` 全族**(append-only JSONL + `parentId` + lane 分叉,`chat/store.ts` 手搓了整文件覆写版)→
+**`compaction`**(`findTurnStartIndex` split-turn + 结构化摘要段名,两者 omd 都没有)→
+**`branch-summarization`** → **`messages` 构造器**。后三笔的前置都是第一笔。
+
 剩下最大的一笔:**`Input`** —— 手搓的输入框(`dialog.ts input()`)没有光标移动 / undo /
 按词操作 / 粘贴处理。⚠ `Input` **不支持遮蔽**,所以 `/login` 落 key 那处必须保留手搓,
 换的时候要在代码里写明这个理由。
