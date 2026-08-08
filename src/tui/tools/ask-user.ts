@@ -25,6 +25,8 @@
  * 3. **档位必须是 `read`** —— 否则"想问用户一句话"这件事本身要先请用户批准一次,
  *    而那是荒谬的(而且未登记的工具按 fail-closed 归 `write`,不登记就会撞上)。
  * 4. **选项至少两个** —— 一个选项的"选择"不是选择;schema 上就拦住,不进运行期。
+ * 5. **「先聊聊这个」与 Esc 必须分得开**(owner 裁决 R5)。抹成同一个回值 = 告诉模型
+ *    "随便挑一个吧",而那正是用户按这一项时最不想要的。见 `ASK_USER_DISCUSS`。
  */
 import { Type } from 'typebox';
 import type { AnyOmdTool } from '../../harness/agent-tools';
@@ -36,6 +38,23 @@ import type { OmdTuiTheme } from '../theme';
 export const ASK_USER_CANCELLED = '用户没有选(按了 Esc)。这不是错误 —— 请你自己判断:要么按最合理的默认继续, 要么说明你需要什么再问一次。';
 /** 框被占时的回值。同样是答案不是错误。 */
 export const ASK_USER_BUSY = '问不出来:界面上已经开着另一个对话框。请先不要问, 按最合理的默认继续, 或者等这一轮结束再问。';
+
+/**
+ * ★ **「先聊聊这个」** —— owner 裁决 R5(`docs/plan/2026-08-08-tui-gauntlet-重建-plan.md` §1):
+ * 「问答弹窗要有 **"Chat about this"** 选项」。
+ *
+ * 它与 Esc **不是一回事**, 这一点是这条裁决的全部价值:
+ * - **Esc** = 「我不选, 你自己拿主意」⇒ 模型该按默认继续;
+ * - **先聊聊** = 「你这几个选项本身有问题 / 我想先弄清楚再选」⇒ 模型**不该**按默认继续,
+ *   该把选项背后的取舍讲出来, 等人回话。
+ *
+ * 抹成同一个回值, 就等于告诉模型"随便挑一个吧" —— 而那正是用户按这一项时最不想要的。
+ */
+export const ASK_USER_DISCUSS =
+  '用户选了「先聊聊这个」—— 他**不想现在做选择**。不要按默认继续, 也不要重复问同一个问题。' +
+  '请把这几个选项背后的取舍讲清楚(各自的代价与前提), 然后等他回话。';
+/** 「先聊聊」那一项的 value。用不可能与序号撞的串。 */
+const DISCUSS = '\u0000discuss';
 
 const SCHEMA = Type.Object({
   question: Type.String({ description: 'The question to ask. One sentence, concrete.' }),
@@ -88,17 +107,25 @@ export function createAskUserTool(resolve: AskUserResolver): AnyOmdTool[] {
       if (!deps || deps.host.busy) {
         return { content: [{ type: 'text' as const, text: ASK_USER_BUSY }], details: { answered: false, reason: 'busy' } };
       }
-      const opts: SelectOption[] = options.map((o, i) => ({
-        // value 用**序号**不用 label:label 可能重复, 也可能带模型自己加的空白。
-        value: String(i),
-        label: o.label,
-        ...(o.description ? { description: o.description } : {}),
-      }));
+      const opts: SelectOption[] = [
+        ...options.map((o, i) => ({
+          // value 用**序号**不用 label:label 可能重复, 也可能带模型自己加的空白。
+          value: String(i),
+          label: o.label,
+          ...(o.description ? { description: o.description } : {}),
+        })),
+        // ★ R5:恒在最后一项。**不由模型决定给不给** —— 它是用户的退路, 不是模型的选项之一。
+        { value: DISCUSS, label: '先聊聊这个(不做选择)', description: '选项本身有问题, 或者想先弄清楚再决定' },
+      ];
       deps.appendNotice(`问你一句: ${question}`);
       const picked = await select(deps.host, deps.theme, { title: question, options: opts, maxVisible: 8 });
       if (picked === null) {
         deps.appendNotice('(你没选 —— 已告诉它自己拿主意)');
         return { content: [{ type: 'text' as const, text: ASK_USER_CANCELLED }], details: { answered: false, reason: 'cancelled' } };
+      }
+      if (picked === DISCUSS) {
+        deps.appendNotice('(你选了先聊聊 —— 已让它把取舍讲清楚再等你)');
+        return { content: [{ type: 'text' as const, text: ASK_USER_DISCUSS }], details: { answered: false, reason: 'discuss' } };
       }
       const idx = Number(picked);
       const chosen = options[idx];
