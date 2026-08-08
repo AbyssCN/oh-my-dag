@@ -131,10 +131,50 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(`(^|/)${re}$`);
 }
 
-async function walkFiles(root: string, limit: number): Promise<string[]> {
+/**
+ * 遍历结果。**`capped` 必须往上报** —— 见下面那段。
+ */
+export interface WalkResult {
+  files: string[];
+  /** 走到 `limit` 就停了 = **命中可能不全**。`false` 才代表"整棵树都走过了"。 */
+  capped: boolean;
+}
+
+/**
+ * 走一棵树,最多 `limit` 个文件。
+ *
+ * ## ★ 2026-08-08:这里原来**吞证据**
+ *
+ * 老版签名是 `Promise<string[]>`,走到 20_000 就 `return out`,**没有任何回报**。
+ * 于是 `grep` 在大仓里会报 `(无命中)`,而真相是"needle 在盘上,只是没走到那儿" ——
+ * 而 agent 收到"无命中"的合理反应就是**认定这个符号不存在**。
+ *
+ * 实测(单一变量 = 文件数,`/tmp/omd-scale/probe2.ts`):
+ *
+ * | 盘上文件数 | grep 走到并命中 | 漏 | 输出提到上限了吗 |
+ * |---|---|---|---|
+ * | 5,000 | 5,000 | 0 | — |
+ * | 25,000 | **20,000** | **5,000** | **一个字都没说** |
+ *
+ * 而且不是假想:本机 `repos/talous-v2` 去掉 SKIP_DIRS 之后 **19,177** 个文件 = 上限的 96%。
+ *
+ * ⇒ 本仓 §3.2「**fail-open 可以吞异常,不许吞证据**」的一条实例。修法不是把上限调大
+ * (那只是把同一个静默失效推远一点),是**让它说出来**。
+ *
+ * ## `filter` 在**走的时候**就用上,不是走完再筛
+ *
+ * 老版是 `walkFiles(...)` 之后再 `files.filter(globRe)` —— 于是 `grep(x, glob:'*.ts')`
+ * 在大仓里先走 20_000 个**任意**文件(哈希序,不是你想要的那 20_000 个)再筛,
+ * **glob 一点都帮不上逃出上限**。现在 filter 进了走的过程,上限只数候选文件。
+ */
+async function walkFiles(root: string, limit: number, filter?: (path: string) => boolean): Promise<WalkResult> {
   const out: string[] = [];
   const stack = [root];
-  while (stack.length > 0 && out.length < limit) {
+  // ★ 多收**一个**再判:`out.length > limit` 才叫"还有更多"。
+  //   直接在 `>= limit` 处 return 分不开"刚好 limit 个"与"还有第 limit+1 个" ——
+  //   而那两件事一个该报 capped 一个不该(本仓 NULL ≠ 0 的同一条:别把两种状态抹成一种)。
+  const probe = limit + 1;
+  outer: while (stack.length > 0) {
     const dir = stack.pop()!;
     let entries: Dirent[];
     try {
@@ -147,12 +187,14 @@ async function walkFiles(root: string, limit: number): Promise<string[]> {
       if (e.isDirectory()) {
         if (!SKIP_DIRS.has(e.name)) stack.push(full);
       } else if (e.isFile()) {
+        if (filter && !filter(full)) continue;
         out.push(full);
-        if (out.length >= limit) break;
+        if (out.length >= probe) break outer;
       }
     }
   }
-  return out;
+  if (out.length > limit) return { files: out.slice(0, limit), capped: true };
+  return { files: out, capped: false };
 }
 
 // ── 工具 schema ────────────────────────────────────────────────────────────────
@@ -195,7 +237,25 @@ export interface OmdAgentToolsOpts {
   dangerousCommandGuard?: boolean;
   /** bash 单条命令默认超时 (秒)。默认 120。 */
   bashTimeoutSec?: number;
+  /**
+   * `grep` 一次最多走多少个文件。默认 {@link GREP_WALK_LIMIT}。
+   *
+   * ⚠ **存在的理由是"让上限可测"**,不是给人调的旋钮:上限一旦静默,症状就是
+   * 大仓里 `(无命中)` 骗过 agent(见 `walkFiles` 文件注释里的实测表)。
+   * 真要在生产里改这个数,先量一遍时间与内存 —— 别照猜改。
+   */
+  grepWalkLimit?: number;
 }
+
+/**
+ * `grep` 的遍历上限。
+ *
+ * ⚠ **这个数没有被论证过,它是个够用的护栏**:本机最大的仓
+ * (`repos/talous-v2`,去掉 SKIP_DIRS)是 **19,177** 个文件 = 上限的 96% ——
+ * 也就是说**再大一点的仓就会撞上**。撞上不再是静默的(会带 `[⚠ 只走到前 N 个…]`),
+ * 但"该调多大"仍是个没量过的问题,别在这里凭感觉加零。
+ */
+export const GREP_WALK_LIMIT = 20_000;
 
 /**
  * 造一套 scope 到 cwd 的 agent 工具。**每个 leaf 建一份** (cwd 各不同, 且 NodeExecutionEnv 持
@@ -205,6 +265,7 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
   const cwd = resolve(opts.cwd);
   const guardDangerous = opts.dangerousCommandGuard !== false;
   const defaultTimeout = opts.bashTimeoutSec ?? 120;
+  const walkLimit = opts.grepWalkLimit ?? GREP_WALK_LIMIT;
   const env = new NodeExecutionEnv({ cwd });
 
   const read: OmdTool<{ path: string; lines: number; truncated: boolean }> = {
@@ -320,7 +381,7 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
     },
   };
 
-  const grep: OmdTool<{ matches: number; files: number }> = {
+  const grep: OmdTool<{ matches: number; files: number; walked: number; walkCapped: boolean }> = {
     name: 'grep',
     label: 'grep',
     description:
@@ -342,11 +403,13 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
         throw new Error(`grep 失败: 正则不合法 ${pattern}: ${(err as Error).message}`);
       }
       const globRe = glob ? globToRegExp(glob) : null;
-      let files: string[];
       const info = await stat(root).catch(() => null);
       if (!info) throw new Error(`grep 失败: 路径不存在 ${display(cwd, root)}`);
-      files = info.isDirectory() ? await walkFiles(root, 20_000) : [root];
-      if (globRe) files = files.filter((f) => globRe.test(f.split(sep).join('/')));
+      // glob 进遍历(不是走完再筛)—— 否则上限数的是**任意** 20_000 个文件, glob 帮不上忙。
+      const walked = info.isDirectory()
+        ? await walkFiles(root, walkLimit, globRe ? (f) => globRe.test(f.split(sep).join('/')) : undefined)
+        : { files: [root], capped: false };
+      const files = walked.files;
       const hits: string[] = [];
       let filesWithHits = 0;
       for (const f of files) {
@@ -369,7 +432,23 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
       }
       const head = hits.length === 0 ? `(无命中) ${pattern}` : hits.join('\n');
       const more = hits.length >= cap ? `\n[已达 limit ${cap}, 可能还有更多命中]` : '';
-      return textResult(`${head}${more}`, { matches: hits.length, files: filesWithHits });
+      /**
+       * ★ **走到上限必须说出来** —— 尤其在 `(无命中)` 那一支上。
+       *
+       * 「没走到那儿」与「那儿没有」是两件事,抹成一句 `(无命中)` 之后,agent 收到的
+       * 是"这个符号不存在"这个**错误结论**,而它没有任何线索去怀疑。
+       */
+      const cut = walked.capped
+        ? `\n[⚠ 只走到前 ${files.length} 个文件就到遍历上限了 —— **命中很可能不全**` +
+          `${hits.length === 0 ? '(上面那句"无命中"因此不代表它不存在)' : ''}。用 path= 收窄目录, 或 glob= 收窄文件名]`
+        : '';
+      return textResult(`${head}${more}${cut}`, {
+        matches: hits.length,
+        files: filesWithHits,
+        // 走了几个 / 有没有被截 —— 让调用方也能程序化地看见, 不只靠读那句话。
+        walked: files.length,
+        walkCapped: walked.capped,
+      });
     },
   };
 

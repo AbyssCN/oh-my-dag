@@ -124,6 +124,54 @@ describe('读写改的基本语义', () => {
     expect(readFileSync(join(root, 'hello.ts'), 'utf-8')).toContain('const b = 3');
   });
 
+  /**
+   * ★★ **走到遍历上限必须说出来**(2026-08-08 实测发现的静默失效)。
+   *
+   * 老版 `walkFiles` 走到 20_000 就 `return out`,**一个字都不报**。单一变量实测
+   * (只改文件数):5,000 个文件 → 命中 5,000 / 漏 0;25,000 个 → 命中 **20,000** / 漏 **5,000**,
+   * 而输出里没有任何提示。于是大仓里 agent 收到的是 `(无命中)`,
+   * 它的合理反应就是**认定这个符号不存在** —— 本仓 §3.2「fail-open 可以吞异常,不许吞证据」。
+   *
+   * 这里把上限注进来(`grepWalkLimit`)以便用 4 个文件量,不用真造 20_000 个。
+   * **证伪方式**:把 `walkFiles` 的 `capped` 恒设成 `false`(等于回到老版)→ 三条全红。
+   */
+  it('★ grep 走到遍历上限时说出来 —— 「没走到那儿」不许抹成「那儿没有」', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-agent-walkcap-'));
+    // 4 个文件, 上限设 2 → 必然被截。needle 只在其中一个里, 命中与否取决于遍历序,
+    // 所以判据锚的**不是**有没有命中, 是"有没有承认被截" —— 那才是这条要治的东西。
+    for (const n of ['a', 'b', 'c', 'd']) writeFileSync(join(root, `${n}.ts`), `const x = 'walkcap_needle';\n`);
+    const capped = createOmdAgentTools({ cwd: root, grepWalkLimit: 2 }).find((t) => t.name === 'grep');
+    const out = await run(capped!, { pattern: 'walkcap_needle' });
+    expect(text(out)).toContain('遍历上限');
+    expect(text(out)).toContain('命中很可能不全');
+    // `details` 也要看得见 —— 不能只靠人去读那句话。
+    expect((out as unknown as { details: { walkCapped: boolean; walked: number } }).details).toMatchObject({
+      walkCapped: true,
+      walked: 2,
+    });
+  });
+
+  it('★ 没被截的时候**不许**画那句警告 —— 一条永远在的警告等于没有警告', async () => {
+    const root = fixture();
+    const { grep } = toolset(root);
+    const out = await run(grep!, { pattern: 'needle' });
+    expect(text(out)).not.toContain('遍历上限');
+    expect((out as unknown as { details: { walkCapped: boolean } }).details.walkCapped).toBe(false);
+  });
+
+  it('★ glob 在**遍历时**就生效 —— 否则上限数的是任意文件, glob 逃不出上限', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-agent-globwalk-'));
+    // 3 个 .md 干扰 + 1 个 .ts 真目标。上限设 2:
+    //   走完再筛 → 先收 2 个任意文件(很可能全是 .md), 筛完剩 0 → 报"无命中"
+    //   走时就筛 → 只有 .ts 进得来, 1 个候选, 没到上限 ⇒ 找得到且**不报被截**
+    for (const n of ['x', 'y', 'z']) writeFileSync(join(root, `${n}.md`), 'const q = 1;\n');
+    writeFileSync(join(root, 'target.ts'), `const q = 'globwalk_needle';\n`);
+    const g = createOmdAgentTools({ cwd: root, grepWalkLimit: 2 }).find((t) => t.name === 'grep');
+    const out = await run(g!, { pattern: 'globwalk_needle', glob: '*.ts' });
+    expect(text(out)).toContain('target.ts:1:');
+    expect(text(out)).not.toContain('遍历上限');
+  });
+
   it('grep 返 `路径:行号: 内容`, 支持 glob 与 literal', async () => {
     const root = fixture();
     const { grep } = toolset(root);
