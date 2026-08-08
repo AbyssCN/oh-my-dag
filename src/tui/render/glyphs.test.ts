@@ -19,7 +19,7 @@ import { formatSessions } from '../sessions';
 import { buildSettings, formatSettings } from '../settings';
 import { formatSkillList, listSkills } from '../skills';
 import { fitLine } from './line';
-import { formatPressure } from './pressure';
+import { formatStatusLine, formatUsageLine } from './statusbar';
 import { approvalBody, approvalTitle } from '../approval/card';
 import type { ApprovalRequest } from '../approval/gate';
 
@@ -95,10 +95,10 @@ describe('classifyGlyph —— 四态各自认得出来', () => {
 });
 
 describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', () => {
-  // 反向自检 (2026-08-07 实跑): 把 CHROME.header 的 '-' 换回 em dash '—'
+  // 反向自检 (2026-08-07 实跑): 把 chrome 里的 '-' 换回 em dash '—'
   // → 这条当场红, 判词直接指出 U+2014 needs-tty。**这就是它第一次抓到的那个真问题。**
+  // (原样本 CHROME.header 已随顶栏在切片②去掉 —— 信息下沉进底栏行①。)
   const samples: [string, string][] = [
-    ['header', CHROME.header('/home/nick/repos/oh-my-dag')],
     ['hint', CHROME.hint],
     // S-3: 欢迎屏正文。字标本身在 logo.test.ts 单独扫 —— 两处都要, 因为它们是两段不同的文案。
     ['welcomeBody', CHROME.welcomeBody({ engine: 'embedded://deepseek:deepseek-v4-flash', session: 'tui', width: 100 })],
@@ -115,8 +115,28 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
     ['resumeRefused', CHROME.resumeRefused('abc', 'no checkpoint')],
     ['skillArmed', CHROME.skillArmed('omd-council')],
     ['skillMissing', CHROME.skillMissing('omd-nope')],
-    // 上下文压力行也是 chrome —— 新增文案一律进这张表, 否则它不过字形闸。
-    ['pressure', formatPressure({ systemTokens: 12000, harnessTokens: 8000, historyTokens: 34000, usedTokens: 46000, windowTokens: 200000, ratio: 0.23 }, { in: 46000, out: 800, cacheHit: 41000 }) as string],
+    // 底栏行①② (切片②) 也是 chrome —— 新增文案一律进这张表, 否则它不过字形闸。
+    ['statusbar:行①', formatStatusLine({
+      ws: { repo: 'oh-my-dag', branch: 'main', dirty: 2, worktree: 'fanin' },
+      seat: 'kimi-coding:k3',
+      pressure: { systemTokens: 12000, harnessTokens: 8000, historyTokens: 34000, usedTokens: 46000, windowTokens: 200000, ratio: 0.23 },
+      session: { costUsd: 0.83, unpriced: false, calls: 3 },
+      win: { since: 0, calls: 5, in: 312000, out: 18400, cacheHit: 276000, costUsd: 0.42, unpriced: false, byProvider: [] },
+    })],
+    ['statusbar:行①(窗口未知)', formatStatusLine({
+      ws: { repo: 'x', branch: null, dirty: 0, worktree: null },
+      seat: 'a:b',
+      pressure: { systemTokens: 4000, harnessTokens: 0, historyTokens: 1000, usedTokens: 5000, windowTokens: 0, ratio: null },
+      session: null,
+      win: null,
+    })],
+    ['statusbar:行②', formatUsageLine(
+      { since: 0, calls: 5, in: 312000, out: 18400, cacheHit: 276000, costUsd: 1.62, unpriced: true, byProvider: [
+        { provider: 'kimi-coding', calls: 3, in: 200000, out: 10000, cacheHit: 180000, costUsd: 0, unpriced: false },
+        { provider: 'deepseek', calls: 2, in: 112000, out: 8400, cacheHit: 96000, costUsd: 1.2, unpriced: false },
+      ] },
+      { ssh: 'ms02', tmux: true },
+    )],
     ['help', formatHelp()],
     ['sessions(空)', formatSessions([], 'tui')],
     ['sessions(有)', formatSessions([{ id: 's-1', title: '标题', updatedAt: 1760000000000 }], 's-1')],
@@ -133,7 +153,6 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
     //    实测它们里面就有 `✅` 和 `≠` —— 数据本来就可以是任意字形, 要求它干净是错的判据。
     //    数据侧要保的是"渲染它不会超宽", 见下面那个 describe。
     ['skillList(干净数据)', formatSkillList([{ name: 'omd-x', description: '一句话', root: '/r' }])],
-    ['pressure(窗口未知)', formatPressure({ systemTokens: 4000, harnessTokens: 0, historyTokens: 1000, usedTokens: 5000, windowTokens: 0, ratio: null }) as string],
     ['footer', CHROME.footer('embedded://deepseek:deepseek-v4-flash')],
     ['footerArmed', CHROME.footerArmed('embedded://deepseek:deepseek-v4-flash')],
     // 切片①: 审批卡片与裁决回执。detail 区是数据不是 chrome, 卡片 chrome 只到键位行为止。

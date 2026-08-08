@@ -27,6 +27,7 @@
  * 双击判定是纯函数({@link decideCtrlC}),不碰 `Date.now`;硬退走注入的 `exit`。
  * 于是 L1 能直接测判定,L3 只需要验"真 PTY 里这条链接得起来"。
  */
+import { hostname } from 'node:os';
 import { CombinedAutocompleteProvider, Container, Editor, ProcessTerminal, ScrollView, Text, TuiAltScreen, VStack, type Terminal } from '@earendil-works/pi-tui';
 import { logger } from '../logger';
 import type { ApprovalDecision, ApprovalGate, ApprovalRequest } from './approval/gate';
@@ -45,8 +46,10 @@ import { STARTUP_HINT, formatHelp, parseHelpCommand, slashCommands } from './com
 import { choiceLabel, listModelChoices, parseModelsCommand, sortChoices } from './model-picker';
 import { renderLogo } from './render/logo';
 import { summarizeToolArg } from './render/tool-arg';
-import { formatPressure } from './render/pressure';
+import { formatStatusLine, formatUsageLine } from './render/statusbar';
 import { renderTable } from './render/table';
+import type { TuiUsageLedger } from './usage/ledger';
+import { inTmux, readWorkspaceInfo, sshSegment } from './workspace';
 import { formatGroupMembers, formatSkillAll, formatSkillList, groupSkills, listSkills, loadSkillBlock, parseGroupCommand, parseSkillCommand } from './skills';
 import { type OmdTuiTheme, colorEnabled, createTheme, truecolorEnabled } from './theme';
 
@@ -92,7 +95,6 @@ export function decideCtrlC(armedAt: number | null, now: number, windowMs = CTRL
  * 别处画 1 列),已改 ASCII `-`。这是探针抓到的第一个真问题。
  */
 export const CHROME = {
-  header: (cwd: string) => `omd tui - ${cwd}`,
   hint: STARTUP_HINT,
   /**
    * 欢迎屏的**正文**(字标由 `render/logo` 出,颜色由调用方分层上)。
@@ -139,8 +141,9 @@ export const CHROME = {
   noRunCapability: (what: string) => `这个后端没有 ${what} 能力 (能力探测: 该方法不存在)`,
   resumeStarted: (runId: string, text: string) => `续跑 ${runId}: ${text}`,
   resumeRefused: (runId: string, text: string) => `续不了 ${runId}: ${text}`,
-  footer: (url: string) => `[${url}]  Ctrl+C 两次退出`,
-  footerArmed: (url: string) => `[${url}]  再按一次 Ctrl+C 退出`,
+  // 行③帮助条。`omd tui` 字样留在这 —— 顶栏没了(v5: 信息下沉), 这一串同时是 PTY 的启动信标。
+  footer: (url: string) => `omd tui · /help 看命令 · Ctrl+C 两次退出  [${url}]`,
+  footerArmed: (url: string) => `omd tui · 再按一次 Ctrl+C 退出  [${url}]`,
   // ── 审批层(切片①)。裁决回执要进对话记录 —— 卡片关掉之后, "刚才批没批过"得能回看。 ──
   approvalDenied: (summary: string) => `审批: 已拒绝 ${summary}`,
   approvalOnce: (summary: string) => `审批: 已批准这一次 ${summary}`,
@@ -216,6 +219,11 @@ export interface RunOmdTuiOpts {
    * 省略 = 没有审批面(fixture 之外的生产装配都该给)。
    */
   approvals?: ApprovalGate;
+  /**
+   * 调用账本(切片②)。底栏行①的「会话/5h」与行②的 in/out/cache + provider 段全从它取。
+   * 省略 = 那些段**不画**(没有账本不是 $0 —— segment 模型)。
+   */
+  usage?: TuiUsageLedger;
 }
 
 /**
@@ -241,9 +249,9 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   const contextFiles = opts.contextFiles ?? loadConductorContext(opts.cwd);
   const theme = opts.theme ?? createTheme();
 
-  // 三条状态行走 StatusLine (截断, 不折行) —— 状态行一折, 下面所有东西的行号整体下移,
+  // 状态行走 StatusLine (截断, 不折行) —— 状态行一折, 下面所有东西的行号整体下移,
   // 而 HUD 是按行差分画的, 结果是布局错位。对话正文走 ChatLog (折行是对的)。
-  const header = new StatusLine(CHROME.header(opts.cwd));
+  // ⚠ 顶栏(`omd tui - cwd`)已去掉 —— v5 裁决: 信息下沉到底部三行, 仓名/分支在行①。
   const harness = new StatusLine(formatContextLine(contextFiles, { cwd: opts.cwd }));
   const chatLog = new ChatLog(theme);
   // HUD 在没有 run 的时候 `render()` 返回空数组 (无源恒缺席), 所以恒挂着不用条件添加。
@@ -259,9 +267,10 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   const startupGroups = groupSkills(listSkills()).groups.map((g) => ({ name: g.name, count: g.members.length }));
   editor.setAutocompleteProvider(new CombinedAutocompleteProvider(slashCommands(startupGroups), opts.cwd));
   const footer = new StatusLine(CHROME.footer(opts.backend.connection.url));
-  // 上下文压力行:**跑过一轮才画**(还没跑过时 formatPressure 返回 null → 这一行是空串,
-  // 而不是一行全零 —— 全零会读成"跑过了、没花钱")。
-  const pressureLine = new StatusLine('');
+  // 底栏行①② (切片②, v5 第一节样张)。segment 模型: 没数据的段不画,
+  // 所以启动时行②多半是空串 (窗口里没记录) —— 那不是 bug, 是「还没烧过」的真值。
+  const statusLine = new StatusLine('');
+  const usageLine = new StatusLine('');
 
   /**
    * 欢迎屏(S-3)。字标走 brand(整屏最亮的一处),正文走 dim —— **分层是判据不是口味**:
@@ -327,14 +336,14 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    */
   const chrome = { shrink: 0 } as const;
   const root = new VStack();
-  root.addChild(header, chrome);
   root.addChild(harness, chrome);
   root.addChild(transcript, { grow: 1, shrink: 1, minSize: 3 });
   root.addChild(dagHud, chrome);
   root.addChild(pathHud, chrome);
   root.addChild(dialogSlot, chrome);
   root.addChild(editorContainer, chrome);
-  root.addChild(pressureLine, chrome);
+  root.addChild(statusLine, chrome);
+  root.addChild(usageLine, chrome);
   root.addChild(footer, chrome);
   // 全屏走 `setLayoutRoot` 而不是 `addChild` —— 后者进的是隐式 ScrollView, 于是
   // `grow` 无处可分(可用高度是"内容高度"而不是"一屏"), 布局会退化回 inline 的样子。
@@ -414,6 +423,29 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
 
   let sessionId = opts.sessionId ?? 'tui';
   const seats = opts.seats ?? defaultSeatFace();
+
+  /**
+   * 底栏行①②的取数与重画(切片②)。**只在启动时与每轮结束后调**,不在 render 里 ——
+   * 它会 spawn git 三次、扫一遍账本,每帧一次就是自找的卡顿。
+   */
+  const sshHost = sshSegment(process.env, hostname());
+  const tmux = inTmux();
+  let ws = readWorkspaceInfo(opts.cwd);
+  function updateStatusBar(o: { refreshGit?: boolean } = {}): void {
+    if (o.refreshGit) ws = readWorkspaceInfo(opts.cwd);
+    const win = opts.usage?.window() ?? null;
+    const session = opts.usage?.sessionTotal() ?? null;
+    statusLine.setText(
+      formatStatusLine({
+        ws,
+        seat: opts.backend.connection.url.replace(/^embedded:\/\//, ''),
+        pressure: lastPressure,
+        session: session && session.calls > 0 ? session : null,
+        win,
+      }),
+    );
+    usageLine.setText(formatUsageLine(win, { ssh: sshHost, tmux }));
+  }
   /** 已唤起、等着挂到下一句上的 skill 正文。**用完即清** —— 一条 skill 只管一轮。 */
   let pendingSkill: string | null = null;
   /** 最近一轮的上下文压力 —— 设置面板要显示它。`null` = 还没跑过一轮(**不是 0**)。 */
@@ -530,14 +562,16 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       chatLog.closeStreaming();
       const p = e.payload as { pressure?: import('../harness/chat/usage').ContextPressure; usage?: import('../model/types').ModelUsage };
       lastPressure = p?.pressure ?? lastPressure;
-      const line = formatPressure(p?.pressure ?? null, p?.usage ?? null);
-      if (line) pressureLine.setText(line);
+      // 切片②: 一轮跑完 → 底栏行①②重取数 (账本刚被 backend 记过, git 可能被这一轮改过)。
+      updateStatusBar({ refreshGit: true });
       // 一轮跑完可能动过地图 (conductor 有 map_* 工具) → 重读一次。
       // 不在 render 里读盘: render 每帧都调, 那会变成每帧一次目录扫描。
       pathHud.refresh();
       tui.requestRender();
     }
   };
+  // 启动即画一次: git 段立刻可见, 5h 窗口读的是账本落盘的历史 (跨重启存活正是它的意义)。
+  updateStatusBar();
 
   /**
    * `/seat` —— **本地处理,不发给模型**(S12)。
@@ -562,8 +596,9 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     try {
       const r = seats.set(role, coord);
       chatLog.appendNotice(CHROME.seatChanged(r.role, r.coord));
-      // footer 重读 `connection.url` —— backend 那边是 getter, 座位一改它就变。
+      // footer 与行① 重读 `connection.url` —— backend 那边是 getter, 座位一改它就变。
       footer.setText(CHROME.footer(opts.backend.connection.url));
+      updateStatusBar();
     } catch (err) {
       // 拒绝的原因原样进屏 (非法 role / 坐标格式不对), 不吞成一句"失败了"。
       chatLog.appendNotice(CHROME.seatFailed(err instanceof Error ? err.message : String(err)));

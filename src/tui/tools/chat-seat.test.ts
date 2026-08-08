@@ -96,8 +96,10 @@ describe('接线闸:cli.ts 真的走这条装配', () => {
   test('★ 切片①:tui 分支把审批闸接进了工具面与 UI 两处(接一处 = 没接,坑 #7 同族)', () => {
     const b = tuiBranch();
     expect(b).toContain('createApprovalGate(');
-    expect(b).toContain('approvals });'); // createChatSeatTools({ …, approvals })
-    expect(b).toMatch(/runOmdTui\(\{[^}]*approvals/); // UI 那半也接了
+    // ⚠ 判据锚在**各自的调用点**上 —— 初版写的是裸子串 'approvals });',
+    //   它匹配到的其实是 fixture 那行, 切片②往那行加了个参数它就红了(判据松 = 碰运气)。
+    expect(b).toMatch(/createChatSeatTools\(\{[^)]*approvals/); // 工具面那半
+    expect(b).toMatch(/runOmdTui\(\{[^)]*approvals/); // UI 那半
   });
 });
 

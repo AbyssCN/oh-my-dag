@@ -44,7 +44,16 @@ export interface FixtureBackendDeps {
    * 不给 → 暗号退化成普通回显(能力探测面:没有闸就没有这条演示)。
    */
   approvals?: ApprovalGate;
+  /**
+   * 调用账本(切片②)。给了 → 每轮 sendChat 记一笔**固定读数**的假用量
+   * (model=`fixture:model`),好让 PTY 能对底栏行①②断言真数字。
+   * 它走与生产同一条 `record → 落盘 → window()` 链,假的只有数字本身。
+   */
+  usage?: import('./usage/ledger').TuiUsageLedger;
 }
+
+/** fixture 每轮记的固定用量 —— PTY 的行②断言就对着这三个数。 */
+export const FIXTURE_USAGE = { in: 3120, out: 184, cacheHit: 2760 } as const;
 
 export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend {
   let seq = 0;
@@ -115,6 +124,8 @@ export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend 
       push({ type: 'start', id: 'fx-leaf', kind: 'agent' });
       push({ type: 'settle', id: 'fx-leaf', status: 'done', kind: 'agent', model: 'fixture-model' });
       for (const text of FIXTURE_CHUNKS) emit('chat', { type: 'delta', text });
+      // 切片②: 上账本 (固定读数), 让 session 事件之后底栏行①②有真数可画。
+      deps.usage?.record(FIXTURE_USAGE, 'fixture:model', 'chat');
       emit('session', { sessionId, messageCount: msgs.length + 1 });
       sessions.set(sessionId, msgs);
       return { ok: true };

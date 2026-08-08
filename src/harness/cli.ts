@@ -92,9 +92,17 @@ if (userArgs[0] === 'tui') {
     const { createApprovalGate } = await import('../tui/approval/gate');
     const { loadApprovalConfig } = await import('../tui/approval/policy');
     const approvals = createApprovalGate({ config: loadApprovalConfig(cwd) });
+    // 切片②: 调用账本。engine 侧 (gateway callModel) 走观察者钩子; chat 侧由 backend 补记 ——
+    // 两条路径不相交 (pi loop vs gateway), 不会重复计账。
+    const { createTuiUsageLedger } = await import('../tui/usage/ledger');
+    const { observeModelUsage } = await import('../model/accounting');
+    const { join: joinPath } = await import('node:path');
+    // OMD_TUI_USAGE_DIR: 测试接缝 —— PTY lane 的 fixture 记账不许污染真仓的 5h 窗口。
+    const usage = createTuiUsageLedger({ dir: process.env.OMD_TUI_USAGE_DIR || joinPath(cwd, '.omd') });
+    observeModelUsage((u, model) => usage.record(u, model, 'engine'));
     if (process.env.OMD_TUI_BACKEND === 'fixture') {
       const { createFixtureBackend } = await import('../tui/backend-fixture');
-      backend = createFixtureBackend({ approvals });
+      backend = createFixtureBackend({ approvals, usage });
     } else {
       // 与 `omd serve` 同一条路: 同一个 runChatTurn、同一批 chatTools、同一条座位解析。
       const { bootstrapModelRuntime } = await import('../model/bootstrap');
@@ -169,12 +177,14 @@ if (userArgs[0] === 'tui') {
         // 座位每轮现解 (INV-MODEL-3): omd_set_role / `/seat` 改完, 下一句就换座。
         resolveModel: () => resolveEngineModels(process.env).conductorModel,
         contextFiles,
+        // 切片②: chat 轮补记进调用账本 (engine 侧走 observeModelUsage, 两路不相交)。
+        usage,
       });
       extStatus = st;
       sink = embedded;
       backend = embedded;
     }
-    await runOmdTui({ backend, cwd, contextFiles, approvals, ...(extStatus.length > 0 ? { extensions: extStatus } : {}) });
+    await runOmdTui({ backend, cwd, contextFiles, approvals, usage, ...(extStatus.length > 0 ? { extensions: extStatus } : {}) });
   } catch (err) {
     // S-4b: 起不来的时候说人话。**实测撞出来的** —— 空仓里跑 `omd tui`, 第一屏是
     // `role-models.ts:433` 的行号和 `^` 指针(座位是逐仓配的, 所以除了 omd 自己这个仓,
