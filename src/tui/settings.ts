@@ -123,7 +123,9 @@ export function buildSettings(i: SettingsInput): SettingItem[] {
       key: 'approval-ttl',
       label: '审批 token TTL',
       value: `${i.approvalTtlSec}s`,
-      detail: '「a 批准同档」的免审窗口; 写进 tui.approvals.tokenTtlSec, **重启生效**(闸启动时读一次)',
+      // ⚠ 这里**不写 markdown**:选择器的 description 是纯文本, `**x**` 会原样带着星号上屏
+      //   (2026-08-08 帧库实测抓到的)。要强调就用词序,不用星号。
+      detail: '「a 批准同档」的免审窗口; 写进 tui.approvals.tokenTtlSec, 重启才生效(闸启动时读一次)',
       action: 'approval-ttl',
     });
   }

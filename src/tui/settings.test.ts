@@ -163,7 +163,10 @@ describe('切片⑥: 可改组(界面/审批/provider)', () => {
     expect(sidebar?.action).toBe('ui-sidebar');
     const ttl = find(items, 'approval-ttl');
     expect(ttl?.value).toBe('600s');
-    expect(ttl?.detail).toContain('重启生效'); // 闸启动时读一次 —— 现状要说真话
+    expect(ttl?.detail).toContain('重启才生效'); // 闸启动时读一次 —— 现状要说真话
+    // ⚠ detail 是**纯文本**(选择器 description 不渲染 markdown): 带星号会原样上屏。
+    //   2026-08-08 帧库实测抓到过 `**重启生效**`。这条钉住不再回去。
+    expect(ttl?.detail).not.toContain('**');
     const prov = find(items, 'providers');
     expect(prov?.value).toBe('1 已配 / 1 未配');
     expect(prov?.detail).toContain('kimi-coding');

@@ -46,7 +46,7 @@ import { StatusLine } from './components/status-line';
 import { type ContextFile, formatContextLine, loadConductorContext } from './context';
 import { formatSeatRows, parseSeatCommand, seatRows } from './seat-picker';
 import { forkSessionId, formatSessions, newSessionId, parseSessionCommand } from './sessions';
-import { buildSettings, formatSettings, parseSettingsCommand } from './settings';
+import { buildSettings, parseSettingsCommand } from './settings';
 import { STARTUP_HINT, formatHelp, parseHelpCommand, slashCommands } from './commands';
 import { choiceLabel, listModelChoices, parseModelsCommand, sortChoices } from './model-picker';
 import { createOmdAutocompleteProvider } from './skill-complete';
@@ -733,22 +733,43 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    *
    * ⚠ 两步都能 Esc 取消,取消**什么都不改** —— 一个改了一半的座位比没改更糟。
    */
+  /**
+   * ★ **Esc 退一级,不是退到底**(2026-08-08,owner 点名)。
+   *
+   * 原来是一趟直线:选座位 → 选模型 → 返回。于是模型选择器里按 Esc 会**一路退回编辑器**,
+   * 座位列表也没了 —— owner 的原话是"设置页里选 model 按 Esc 直接退出整个 settings"。
+   *
+   * 病根在架构不在这一行:`dialogSelect` 是**一次性 Promise**,确认时就 `host.close()`,
+   * 所以子选择器打开时父选择器**已经不在了**,没有"上一层"可退。
+   *
+   * 这里用最小的做法补上:**父层套一个循环** —— 子层返回 `null`(Esc)就重开父层。
+   * 用户看到的就是"退回上一级"。opencode 也是这个形状(它把返回目标当参数传,
+   * 而不是维护 history —— `feature-plugins/system/diff-viewer.tsx:1065`)。
+   *
+   * ⚠ 这不是终局。真正的结构解是让父层变成**常驻组件、自己托管子态**
+   * (pi-tui 的 `SettingsList` + `item.submenu` 就是现成的,且与 overlay 无关)——
+   * 见 `docs/bars/P0-综合.md` §1.2b。那一步连同 token 层一起做。
+   */
   async function seatPicker(): Promise<void> {
-    const { current } = readSeats();
-    const rows = seatRows(current);
-    const role = await dialogSelect(dialogs, theme, {
-      title: '改哪个座位?',
-      options: rows.map((r) => ({
-        value: r.role,
-        label: `${r.role}  ${r.coord}`,
-        ...(r.recommend ? { description: r.recommend } : {}),
-      })),
-    });
-    if (role === null) return; // Esc:什么都不改
-    const now = rows.find((r) => r.role === role)?.coord ?? '';
-    const coord = await modelPicker(role, now);
-    if (coord === null || !coord.trim()) return; // Esc 或空:什么都不改
-    applySeat(role, coord.trim());
+    for (;;) {
+      const { current } = readSeats();
+      const rows = seatRows(current);
+      const role = await dialogSelect(dialogs, theme, {
+        title: '改哪个座位?',
+        options: rows.map((r) => ({
+          value: r.role,
+          label: `${r.role}  ${r.coord}`,
+          ...(r.recommend ? { description: r.recommend } : {}),
+        })),
+      });
+      if (role === null) return; // Esc 在**这一层**:整个座位面板收工
+      const now = rows.find((r) => r.role === role)?.coord ?? '';
+      const coord = await modelPicker(role, now);
+      // Esc 或空 → 不改,**回到座位列表**(而不是退到编辑器)。
+      if (coord === null || !coord.trim()) continue;
+      applySeat(role, coord.trim());
+      return;
+    }
   }
 
   /** 目录里没有的坐标走这条 —— 手输仍然保留,不是所有 provider 都在 models.json 里登记过。 */
@@ -1131,6 +1152,18 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     if (!parseSettingsCommand(text)) return false;
     chatLog.appendUser(text);
     editor.setText('');
+    // 同 seatPicker:改完一项**回到设置页**,不是掉回编辑器。每轮重读现状,
+    // 于是刚改完的值当场就显示成新的(原来那份文本快照做不到这件事)。
+    for (;;) {
+      const done = await settingsOnce();
+      if (done) break;
+    }
+    tui.requestRender();
+    return true;
+  }
+
+  /** 走一遍设置页。返回 `true` = 用户按 Esc 收工;`false` = 改完一项,外层重开。 */
+  async function settingsOnce(): Promise<boolean> {
     const { current, err } = readSeats();
     let sessionCount: number | null = null;
     try {
@@ -1164,9 +1197,6 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       approvalTtlSec,
       providers,
     });
-    chatLog.appendNotice(formatSettings(items));
-    tui.requestRender();
-
     const pick = await dialogSelect(dialogs, theme, {
       title: '改哪一项?',
       options: items.map((it) => ({
@@ -1176,8 +1206,10 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       })),
       maxVisible: 12,
     });
+    if (pick === null) return true; // Esc:收工
     // 只读行的 value 是空串 —— 选中它什么都不做, 这是刻意的(它本来就只是现状)。
-    if (pick === null || pick === '') return true;
+    // 但**留在设置页**:选了一行结果整页关掉, 会读成"我按错了什么"。
+    if (pick === '') return false;
     if (pick.startsWith('seat:')) await seatPicker();
     else if (pick === 'session') await handleSession('/session');
     else if (pick === 'ext') chatLog.appendNotice('扩展清单在 `.omd/extensions.json`(入口写绝对路径)。改完重启 omd tui 生效。');
@@ -1211,7 +1243,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       await handleLogin('/login');
     }
     tui.requestRender();
-    return true;
+    return false; // 改完一项 → 外层重开设置页(退一级, 不是退到底)
   }
 
   editor.onSubmit = (text: string) => {
