@@ -32,6 +32,7 @@ import { uuidv7 } from '@earendil-works/pi-ai';
 import { JsonlSessionRepo, buildSessionContext, type AgentMessage, type Session } from '@earendil-works/pi-agent-core';
 import { NodeExecutionEnv } from '@earendil-works/pi-agent-core/node';
 import { dataPath } from '../project-scope';
+import { acquireWriteLock, type LockDeps } from './session-lock';
 import type { ChatSessionMeta } from './store';
 
 const CHAT_DIR = '.omd/chat';
@@ -95,7 +96,11 @@ function sessionsRootFor(repoRoot: string): string {
 
 const iso = (ms: number): string => new Date(ms).toISOString();
 
-export function createOmdSessionStore(repoRoot: string): OmdSessionStore {
+/**
+ * @param lockDeps 跨进程写锁的依赖(pid / host / 探活 / 陈旧阈值)。
+ *   生产里省略;测试注入 —— 「另一个进程持锁」在单进程里只能靠注入造出来。
+ */
+export function createOmdSessionStore(repoRoot: string, lockDeps?: LockDeps): OmdSessionStore {
   const fs = new NodeExecutionEnv({ cwd: repoRoot });
   const repo = new JsonlSessionRepo({ fs, sessionsRoot: sessionsRootFor(repoRoot) });
 
@@ -129,16 +134,31 @@ export function createOmdSessionStore(repoRoot: string): OmdSessionStore {
    */
   const branch = (s: Session): ReturnType<Session['findEntriesOnBranch']> => s.findEntriesOnBranch({ order: 'oldestFirst' });
 
-  const wrap = (id: string, s: Session): OmdSession => ({
+  /**
+   * ★ **写锁是懒抢的**:第一次写才抢,读(`list` / `messages`)永不上锁 ——
+   * 看历史不该被另一个进程挡住(SDD 片 B 的取舍 1)。
+   * 抢不到就**抛**,判词里带持有者 pid:静默降级成"只读"会让人以为消息发出去了。
+   */
+  const locks = new Map<string, () => void>();
+  const ensureWritable = (path: string): void => {
+    if (locks.has(path)) return;
+    const got = lockDeps ? acquireWriteLock(path, lockDeps) : acquireWriteLock(path);
+    if (!got.ok) throw new Error(`[session-store] 这份会话现在不能写:${got.why}`);
+    locks.set(path, got.release);
+  };
+
+  const wrap = (id: string, s: Session, path: string): OmdSession => ({
     id,
     entries: () => branch(s),
     async messages() {
       return buildSessionContext(await branch(s)).messages;
     },
     async append(m) {
+      ensureWritable(path);
       await s.appendMessage(m);
     },
     async appendCompaction(x) {
+      ensureWritable(path);
       // `ProvisionedEntry` = Omit<Entry,'parentId'|'seq'|'timestamp'> ⇒ 只用给 id 与内容。
       // id 用 pi 自己的 `uuidv7`(**借,不手搓** —— 它就是 Session 默认 idGenerator 用的那个)。
       await s.appendEntry({
@@ -177,7 +197,7 @@ export function createOmdSessionStore(repoRoot: string): OmdSessionStore {
       const found = await metaOf(id);
       if (!found) return null;
       const s = await hold(found.path, () => repo.open(found.meta));
-      return wrap(id, s);
+      return wrap(id, s, found.path);
     },
 
     async create(id, title = '') {
@@ -185,7 +205,7 @@ export function createOmdSessionStore(repoRoot: string): OmdSessionStore {
       const s = await repo.create({ id, cwd: repoRoot, metadata: { title } });
       const meta = (await s.getMetadata()) as { path: string };
       SESSIONS.set(meta.path, s);
-      return wrap(id, s);
+      return wrap(id, s, meta.path);
     },
 
     async fork(fromId, newId) {
@@ -196,7 +216,7 @@ export function createOmdSessionStore(repoRoot: string): OmdSessionStore {
       const s = await repo.fork(src.meta, { id: newId, cwd: repoRoot });
       const meta = (await s.getMetadata()) as { path: string };
       SESSIONS.set(meta.path, s);
-      return wrap(newId, s);
+      return wrap(newId, s, meta.path);
     },
 
     async delete(id) {
@@ -204,6 +224,8 @@ export function createOmdSessionStore(repoRoot: string): OmdSessionStore {
       const found = await metaOf(id);
       if (!found) return; // 与 ChatStore.delete 同语义:删不存在的不报错
       SESSIONS.delete(found.path);
+      locks.get(found.path)?.();
+      locks.delete(found.path);
       await repo.delete(found.meta);
     },
   };
