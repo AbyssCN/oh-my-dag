@@ -32,16 +32,28 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const TASK = [
+/**
+ * ★ **单一变量就是最后那一句**(`--no-verify-hint` 去掉它)。
+ *
+ * 前两格(§2.4 / §2.4b)我都在任务里写了「自己跑 `bun test …`」——**判据是我给的,不是它找的**。
+ * 而"能不能独立干活"的核心恰恰是**它自己知不知道该怎么验**。
+ * 这是本仓能做出的最干净的一次对照:**有/无一句话**,其余(仓/座位/审批/工具面)全同。
+ */
+const TASK_BASE = [
   '本仓 `src/harness/agent-tools.ts` 里有一个 `shouldSkipDir(name)`,它决定 grep 遍历时跳过哪些目录。',
   '现在请让它**同时跳过 Python 的缓存目录 `.mypy_cache` 与 `.pytest_cache`**。',
   '要求:',
   '1. 改 `shouldSkipDir` 本身(别去改调用方);',
   '2. 在 `src/harness/agent-tools.test.ts` 里加**一条新测试**证明这两个目录真的被跳过;',
   '3. ⚠ 不许误伤:像 `mypy_cache_utils` 这种正常源码目录名**必须仍然不被跳过**,请一并断言;',
+];
+/** 被删掉的那一句 —— 唯一的变量。 */
+const VERIFY_HINT = [
   '4. 改完**自己跑一遍** `bun test src/harness/agent-tools.test.ts`,确认全绿再回复。',
   '最后告诉我你跑测试的结果。',
-].join('\n');
+];
+const NO_HINT = process.argv.includes('--no-verify-hint');
+const TASK = [...TASK_BASE, ...(NO_HINT ? [] : VERIFY_HINT)].join('\n');
 
 interface Verdict {
   oracleSkips: boolean;
@@ -163,7 +175,11 @@ console.log(JSON.stringify(r));
   // ② 测试真的绿吗(我自己跑, 不信它的回执)
   const testRun = await sh('bun test src/harness/agent-tools.test.ts 2>&1 | tail -5');
   // ③ 它自己跑过测试没有
-  const selfRanTests = toolCalls.some((c) => c.startsWith('bash') && /bun\s+test|vitest|npm\s+test/.test(c));
+  // ★ 判据 ③:它**自己**跑了验证没有。
+  //   ⚠ 只认这个仓**真正的**验收命令(`bun test`)—— 自己编一个 `node -e` 冒充验证不算
+  //   (那是"看起来验了"而不是"验了", 本仓最怕的那一族)。
+  const selfRanTests = toolCalls.some((c) => c.startsWith('bash') && /bun\s+test/.test(c));
+  const fakeVerify = toolCalls.some((c) => c.startsWith('bash') && /node\s+-e|bun\s+-e|bun\s+run\s+-e/.test(c));
   const status = await sh('git status --short');
   const diffstat = await sh('git diff --stat');
 
@@ -177,12 +193,12 @@ console.log(JSON.stringify(r));
 
   writeFileSync(join(process.env.OMD_DATA_HOME as string, 'answer.txt'), `--- 正文 ---\n${out}\n--- thinking ---\n${thinking}\n`);
 
-  console.log(`\n${'═'.repeat(78)}\n写任务 @ ${repo}`);
+  console.log(`\n${'═'.repeat(78)}\n写任务 @ ${repo}   [验收提示: ${NO_HINT ? '**已删掉** (4.1c 条件)' : '给了 (基线条件)'}]`);
   console.log(`  判据: ${ok ? '✓ 成' : '✗ **不成**'}${crash ? ` (抛异常: ${crash})` : ''}`);
   console.log(`    ① .mypy_cache/.pytest_cache 真被跳过 : ${v.oracleSkips ? '✓' : '**✗**'}  (量到 ${JSON.stringify(parsed)})`);
   console.log(`    ② mypy_cache_utils 没被误伤          : ${v.oracleNoFalseSkip ? '✓' : '**✗**'}`);
   console.log(`    ③ 测试真的绿(我自己跑)             : ${v.testsGreen ? '✓' : '**✗**'}`);
-  console.log(`    ④ 它自己跑过测试                     : ${v.selfRanTests ? '✓' : '**✗ 只写没验**'}`);
+  console.log(`    ④ 它自己跑过**本仓真正的**验收命令   : ${v.selfRanTests ? '✓' : '**✗ 只写没验**'}${fakeVerify ? '  ⚠ 但它跑过 node -e/bun -e —— 自造的验证不算' : ''}`);
   console.log(`  工具调用 ${toolCalls.length} 次:`);
   for (const [i, c] of toolCalls.entries()) console.log(`    ${String(i + 1).padStart(2)}. ${c}`);
   console.log(`  审批: 放行 ${allowed} · 拒 ${denied}${tiers.length ? `  档位=[${tiers.join(' | ')}]` : ''}`);
