@@ -19,7 +19,12 @@ import { join } from 'node:path';
 
 const REFS = 'docs/bars/refs';
 const FAMS = ['omd', 'pi', 'opencode', 'openclaw', 'hermes'] as const;
-const SCENES = ['01-empty', '02-slash-menu', '03-help', '04-narrow-80', '05-no-color', '07-settings'] as const;
+/**
+ * ⚠ `08-streaming` / `09-long-scroll` 只有 omd / pi / opencode 有
+ * (openclaw 只认 OPENAI/ANTHROPIC key 停在向导, hermes 网关未起 —— 记在 `refs/_MISSING.md`)。
+ * 缺的家在表里画 `—` 并**不参与该格评比**, 不拿"没采到"冒充"表现差"。
+ */
+const SCENES = ['01-empty', '02-slash-menu', '03-help', '04-narrow-80', '05-no-color', '07-settings', '08-streaming', '09-long-scroll'] as const;
 
 const strip = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
 function lines(fam: string, sc: string): string[] | null {
