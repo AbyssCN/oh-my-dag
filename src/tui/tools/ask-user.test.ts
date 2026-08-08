@@ -17,7 +17,7 @@ import type { Component } from '@earendil-works/pi-tui';
 import { DEFAULT_APPROVAL_CONFIG, classifyToolCall } from '../approval/policy';
 import type { DialogHost } from '../components/dialog';
 import { createTheme } from '../theme';
-import { ASK_USER_BUSY, ASK_USER_CANCELLED, type AskUserUi, createAskUserTool } from './ask-user';
+import { ASK_USER_BUSY, ASK_USER_CANCELLED, ASK_USER_DISCUSS, type AskUserUi, createAskUserTool } from './ask-user';
 
 const THEME = createTheme({ color: false });
 
@@ -101,6 +101,42 @@ describe('ask_user', () => {
   test('反测:未登记的工具确实 fail-closed 归 write —— 证明上一条不是白给的', () => {
     // 上一条若换成任何没登记的名字就该是 write。这条钉的是"那张表真的在起作用"。
     expect(classifyToolCall('some_unregistered_tool', {}, DEFAULT_APPROVAL_CONFIG).tier).toBe('write');
+  });
+
+
+  /**
+   * ★★ **owner 裁决 R5**(plan §1):「问答弹窗要有 "Chat about this" 选项」。
+   *
+   * 这一组钉的**不是"有这一项"**, 而是**它与 Esc 分得开** —— 那才是这条裁决的价值:
+   * Esc =「你自己拿主意」;先聊聊 =「别拿主意, 先把取舍讲清楚」。
+   * 抹成同一个回值就等于告诉模型"随便挑一个吧"。
+   *
+   * **证伪方式**:让 DISCUSS 分支返回 `ASK_USER_CANCELLED` → 第二条当场红。
+   */
+  test('★ R5:选项表末尾恒有「先聊聊这个」, 且不由模型决定给不给', async () => {
+    const host = fakeHost();
+    const p = mk({ host, theme: THEME, appendNotice: () => {} }).run(QUESTION);
+    await Bun.sleep(0);
+    const shownText = (host.opened as { render: (w: number) => string[] }).render(70).join('\n');
+    expect(shownText).toContain('先聊聊这个');
+    host.press('\x1b');
+    await p;
+  });
+
+  test('★★ R5:「先聊聊」与 Esc **回的不是同一句话**', async () => {
+    const host = fakeHost();
+    const p = mk({ host, theme: THEME, appendNotice: () => {} }).run(QUESTION);
+    await Bun.sleep(0);
+    // 两个真选项 + 「先聊聊」= 第 3 项;↓↓ 到它
+    host.press('\x1b[B');
+    host.press('\x1b[B');
+    host.press('\r');
+    const r = await p;
+    expect(text(r)).toBe(ASK_USER_DISCUSS);
+    expect(text(r)).not.toBe(ASK_USER_CANCELLED); // ★ 分得开
+    expect(r.details).toMatchObject({ answered: false, reason: 'discuss' });
+    // 措辞要让模型看得懂"别按默认继续"
+    expect(text(r)).toContain('不要按默认继续');
   });
 
   test('schema 要求 2–8 个选项 —— 一个选项的"选择"不是选择', () => {
