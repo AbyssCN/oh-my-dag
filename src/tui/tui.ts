@@ -59,6 +59,8 @@ import { loadTuiUiConfig, setApprovalTokenTtl, setTuiUi } from './ui-config';
 import { renderLogo } from './render/logo';
 import { summarizeToolArg } from './render/tool-arg';
 import { formatStatusLine } from './render/statusbar';
+// ⚠ 进屏的 provider 错误一律先压成一行 —— 原文照旧进各处的 logger.warn(压呈现不压证据)。
+import { humanizeProviderError } from './render/error-text';
 import { renderTable } from './render/table';
 import type { TuiUsageLedger } from './usage/ledger';
 import { inTmux, readWorkspaceInfo, sshSegment } from './workspace';
@@ -787,7 +789,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       // fail-open 可以吞异常, 不许吞证据: 错误原文进屏, 同时进日志文件 (已改道)。
       const reason = err instanceof Error ? err.message : String(err);
       logger.warn({ err: reason, sessionId }, '[omd/tui] sendChat 抛了');
-      chatLog.appendNotice(CHROME.failed(reason));
+      chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
     }
     // 无论成败都收尾: 抛错那条路上 `session` 事件不会来, 不收尾的话下一轮会续进这条气泡。
     // ⚠ 等待态也在这里关 —— **`finally` 语义**:抛错那条路上 delta 永远不会来,
@@ -1077,7 +1079,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       logger.warn({ err: reason, cmd: t }, '[omd/tui] run 命令抛了');
-      chatLog.appendNotice(CHROME.failed(reason));
+      chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
     }
     tui.requestRender();
     return true;
@@ -1218,7 +1220,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     try {
       maps = summarizeOpenMaps(opts.cwd);
     } catch (err) {
-      chatLog.appendNotice(CHROME.failed(err instanceof Error ? err.message : String(err)));
+      chatLog.appendNotice(CHROME.failed(humanizeProviderError(err instanceof Error ? err.message : String(err))));
       tui.requestRender();
       return;
     }
@@ -1319,7 +1321,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       logger.warn({ err: reason }, '[omd/tui] /login 抛了');
-      chatLog.appendNotice(CHROME.failed(reason));
+      chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
     }
     tui.requestRender();
     return true;
@@ -1476,7 +1478,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         chatLog.appendNotice(CHROME.approvalTtlWritten(sec, path));
         return `${sec}s`;
       } catch (err2) {
-        chatLog.appendNotice(CHROME.failed(err2 instanceof Error ? err2.message : String(err2)));
+        chatLog.appendNotice(CHROME.failed(humanizeProviderError(err2 instanceof Error ? err2.message : String(err2))));
         return old; // ★ 拒了就回显旧值
       }
     }
