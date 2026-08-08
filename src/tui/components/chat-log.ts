@@ -17,6 +17,7 @@
  * "整段文本恰好出现一次"(`chat-log.test.ts`)。
  */
 import { type Component, Markdown, Text, visibleWidth } from '@earendil-works/pi-tui';
+import { rule } from '../design/tokens';
 import type { OmdTuiTheme } from '../theme';
 
 export type ChatRole = 'user' | 'assistant' | 'notice' | 'tool' | 'divider';
@@ -86,7 +87,7 @@ export class TurnDivider implements Component {
     if (width <= 0) return [];
     const label = this.label ? ` ${this.label}` : '';
     const dashes = Math.max(0, width - visibleWidth(label));
-    return [this.paint('\u2500'.repeat(dashes) + label)];
+    return [this.paint(rule(dashes) + label)];
   }
 
   invalidate(): void {}

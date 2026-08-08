@@ -16,6 +16,7 @@
  * 3. **本地估算要标注** —— 「本地 N+」与官方读数在屏上分得开。
  */
 import type { ContextPressure } from '../../harness/chat/usage';
+import { BORDER } from '../design/tokens';
 import type { WindowSummary } from '../usage/ledger';
 import { humanTokens } from './pressure';
 
@@ -57,7 +58,7 @@ export interface StatusBarInput {
   win: WindowSummary | null;
 }
 
-const SEP = ' │ ';
+const SEP = ` ${BORDER.v} `;
 
 /** `$0.83` / `$12.4`;未计价的调用在场时 → `$…+`(后缀 + = 下界,不冒充真值;`≥` 是未量字形不能用)。 */
 export function fmtUsd(costUsd: number, unpriced: boolean): string {

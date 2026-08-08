@@ -22,6 +22,7 @@
  */
 import { type Component, SelectList, Text, visibleWidth } from '@earendil-works/pi-tui';
 import { StatusLine } from './status-line';
+import { card } from '../design/tokens';
 import { fitLine } from '../render/line';
 import type { OmdTuiTheme } from '../theme';
 
@@ -179,12 +180,10 @@ export class DialogBox implements Component {
     if (width < 16) return [this.theme.chrome.accent(fitLine(this.title, width)), ...this.body.render(width)];
     const innerW = width - 4;
     const t = fitLine(this.title, innerW - 2);
-    const top = `┌─ ${t} ${'─'.repeat(Math.max(0, width - visibleWidth(t) - 5))}┐`;
-    const side = (l: string): string => `│ ${l}${' '.repeat(Math.max(0, innerW - visibleWidth(l)))} │`;
     return [
-      this.theme.chrome.accent(fitLine(top, width)),
-      ...this.body.render(innerW).map((l) => fitLine(side(l), width)),
-      this.theme.chrome.dim(`└${'─'.repeat(width - 2)}┘`),
+      this.theme.chrome.accent(fitLine(card.top(t, width, visibleWidth(t)), width)),
+      ...this.body.render(innerW).map((l) => fitLine(card.side(l, innerW - visibleWidth(l)), width)),
+      this.theme.chrome.dim(card.bottom(width)),
     ];
   }
 

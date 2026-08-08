@@ -8,7 +8,14 @@
  * ⚠ 字形纪律:这里的每一句 chrome 都进 `render/glyphs.test.ts` 的样本表;
  * 详情区是**数据**(模型给的内容),不要求干净,靠 Text 组件折行兜住宽度。
  */
+import { rule } from '../design/tokens';
 import type { ApprovalRequest } from './gate';
+
+/**
+ * 详情分隔线的宽度。**定宽而不是跟着终端宽** —— 卡片正文是一段不认识宽度的字符串
+ * (宽度在渲染那层才知道),这里跟着宽会要求把宽度一路传进来,不值得。
+ */
+const PREVIEW_RULE_WIDTH = 8;
 
 /** 对话框标题行。 */
 export function approvalTitle(req: ApprovalRequest): string {
@@ -25,7 +32,7 @@ export function approvalKeysLine(req: ApprovalRequest): string {
 export function approvalBody(req: ApprovalRequest, o: { detail: boolean }): string {
   const lines = [`要做什么  ${req.summary}`, `触发原因  ${req.reasons.join(' + ') || req.tier}`, approvalKeysLine(req)];
   if (o.detail && req.preview.length > 0) {
-    lines.push('────────', ...req.preview);
+    lines.push(rule(PREVIEW_RULE_WIDTH), ...req.preview);
   }
   return lines.join('\n');
 }
