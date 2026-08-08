@@ -114,6 +114,10 @@ function warnSecret(path: string): void {
  */
 export const SKIP_DIRS = new Set([
   '.git', 'node_modules', 'dist', 'build', 'out', 'coverage', '.next', '.turbo', '.cache', '.venv',
+  // Python 缓存。⚠ 这两个**留在精确匹配里**是有理由的:真实世界里就叫这两个名字, 没有
+  //   `.venv-xxx` 那样的变体, 所以不该塞进 `shouldSkipDir` 的正则去 ——
+  //   正则收得越宽, 误跳正常源码目录(`mypy_cache_utils/`)的面就越大。
+  '.mypy_cache', '.pytest_cache',
   '__pycache__', 'target', 'vendor',
 ]);
 

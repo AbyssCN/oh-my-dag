@@ -157,6 +157,25 @@ describe('读写改的基本语义', () => {
     }
   });
 
+  /**
+   * ★ mypy / pytest 缓存目录也跳掉。
+   *
+   * ⚠ **出处**:这一条与它对应的实装改动是 2026-08-08 那次「写任务」端到端实验里
+   * **omd 自己的对话位写出来的**(`scripts/probes/write-task-e2e-probe.ts`),
+   * 我独立复核过行为与 diff 之后照搬进主仓。留这行是为了让来源可追,不是为了好看。
+   *
+   * 它当时的判断也对:这两个名字**留在精确匹配里**而不是塞进 `shouldSkipDir` 的正则 ——
+   * 真实世界里就叫这两个名字,没有 `.venv-xxx` 那样的变体。
+   * **证伪方式**:把两个名字从 `SKIP_DIRS` 删回 → 第一条红。
+   */
+  it('★ .mypy_cache / .pytest_cache 跳掉', () => {
+    for (const n of ['.mypy_cache', '.pytest_cache']) expect(shouldSkipDir(n)).toBe(true);
+  });
+
+  it('★ 反测:名字里带 mypy_cache 的**正常源码目录**不许被误跳', () => {
+    for (const n of ['mypy_cache_utils', 'pytest_cache_helpers']) expect(shouldSkipDir(n)).toBe(false);
+  });
+
   it('grep 真的不进 venv 变体目录 —— 判定接上了遍历, 不只是个没人调的函数', async () => {
     const root = mkdtempSync(join(tmpdir(), 'omd-agent-venv-'));
     mkdirSync(join(root, '.venv-crawl4ai'));
