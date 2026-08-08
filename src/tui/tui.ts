@@ -34,7 +34,7 @@ import type { ApprovalDecision, ApprovalGate, ApprovalRequest } from './approval
 import { approvalBody, approvalTitle } from './approval/card';
 import type { OmdBackend } from './backend';
 import { ChatLog } from './components/chat-log';
-import { DialogBox, ESC as DIALOG_ESC, type DialogHost, confirm as dialogConfirm, input as dialogInput, select as dialogSelect } from './components/dialog';
+import { DialogBox, ESC as DIALOG_ESC, type DialogHost, type InputOpts, type SelectOpts, confirm as dialogConfirm, input as dialogInput, select as dialogSelect } from './components/dialog';
 import { DagHud } from './components/dag-hud';
 import { DagTree } from './components/dag-tree';
 import { type PathReader, PathHud, createPathReader } from './components/path-hud';
@@ -770,68 +770,21 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   }
 
   /**
-   * 座位选择器:先挑座位,再改坐标。
+   * ★ **座位模型选单的唯一定义**(P2 IA 收敛,2026-08-08)。
    *
-   * ⚠ 两步都能 Esc 取消,取消**什么都不改** —— 一个改了一半的座位比没改更糟。
+   * 三个入口(`/settings` 的座位子层 · `/seat` · `/models`)此前各拼一份标题与选项,
+   * 于是"手动输入坐标…"那一行的措辞、`(N 个)` 的计数、搜索开不开,**三处各写各的**。
+   * 照 hermes `ModelPicker` 的形收成一份:**一份实现,三个入口**
+   * (`docs/bars/hermes.md` —— 那正是 P0 单独拿出来记的一条)。
+   *
+   * 返回 `null` = 目录空(没配 models.json / provider 没注册)⇒ 调用方**退回手输**,
+   * 不开空框(开空框等于把人锁在一个只能按 Esc 的界面里)。
    */
-  /**
-   * ★ **Esc 退一级,不是退到底**(2026-08-08,owner 点名)。
-   *
-   * 原来是一趟直线:选座位 → 选模型 → 返回。于是模型选择器里按 Esc 会**一路退回编辑器**,
-   * 座位列表也没了 —— owner 的原话是"设置页里选 model 按 Esc 直接退出整个 settings"。
-   *
-   * 病根在架构不在这一行:`dialogSelect` 是**一次性 Promise**,确认时就 `host.close()`,
-   * 所以子选择器打开时父选择器**已经不在了**,没有"上一层"可退。
-   *
-   * 这里用最小的做法补上:**父层套一个循环** —— 子层返回 `null`(Esc)就重开父层。
-   * 用户看到的就是"退回上一级"。opencode 也是这个形状(它把返回目标当参数传,
-   * 而不是维护 history —— `feature-plugins/system/diff-viewer.tsx:1065`)。
-   *
-   * ⚠ 这不是终局。真正的结构解是让父层变成**常驻组件、自己托管子态**
-   * (pi-tui 的 `SettingsList` + `item.submenu` 就是现成的,且与 overlay 无关)——
-   * 见 `docs/bars/P0-综合.md` §1.2b。那一步连同 token 层一起做。
-   */
-  async function seatPicker(): Promise<void> {
-    for (;;) {
-      const { current } = readSeats();
-      const rows = seatRows(current);
-      const role = await dialogSelect(dialogs, theme, {
-        title: '改哪个座位?',
-        options: rows.map((r) => ({
-          value: r.role,
-          label: `${r.role}  ${r.coord}`,
-          ...(r.recommend ? { description: r.recommend } : {}),
-        })),
-      });
-      if (role === null) return; // Esc 在**这一层**:整个座位面板收工
-      const now = rows.find((r) => r.role === role)?.coord ?? '';
-      const coord = await modelPicker(role, now);
-      // Esc 或空 → 不改,**回到座位列表**(而不是退到编辑器)。
-      if (coord === null || !coord.trim()) continue;
-      applySeat(role, coord.trim());
-      return;
-    }
-  }
-
-  /**
-   * ★ **模型选单**(S-7)。此前这里是一个 `dialogInput`:让人**凭记忆敲** `provider:model`。
-   *
-   * 敲错一个字符的代价不是报错,是座位被改成一个**不存在的坐标**而回执照样说"改好了"
-   * (applySeat 只写文件,不校验坐标可解析)—— 那正是必须用选单的理由。
-   *
-   * ⚠ 目录空(没配 models.json / provider 没注册)时**退回手输**,不开空框。
-   * 开一个空框等于把人锁在一个只能按 Esc 的界面里。
-   */
-  async function modelPicker(role: string, now: string): Promise<string | null> {
-    const current = now.startsWith('(') ? null : now;
+  function seatModelOpts(role: string, now: string): SelectOpts | null {
+    const current = now.startsWith('(') || !now ? null : now;
     const choices = sortChoices(listModelChoices(), current);
-    const manual = (): Promise<string | null> =>
-      dialogInput(dialogs, theme, {
-        title: `${role} 换成哪个坐标? (provider:model)`,
-        initial: current ?? '',
-      });
-    if (choices.length === 0) return manual();
-    const picked = await dialogSelect(dialogs, theme, {
+    if (choices.length === 0) return null;
+    return {
       title: `${role} 换成哪个模型? (${choices.length} 个)`,
       options: [
         ...choices.map((c) => ({ value: c.coord, label: choiceLabel(c, current) })),
@@ -839,9 +792,78 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       ],
       search: true,
       maxVisible: 12,
-    });
+    };
+  }
+
+  /** 手输坐标那条退路 —— 同样只此一份。 */
+  function seatManualOpts(role: string, now: string): InputOpts {
+    return { title: `${role} 换成哪个坐标? (provider:model)`, initial: now.startsWith('(') ? '' : now };
+  }
+
+  /**
+   * `/models` 的一次性形态(它要 Promise:`handleModels` 是一趟直线,没有父层要留在栈里)。
+   * **选项与标题全部来自 `seatModelOpts`** —— 这里只负责"把它开成一个一次性对话框"。
+   */
+  async function modelPicker(role: string, now: string): Promise<string | null> {
+    const manual = (): Promise<string | null> => dialogInput(dialogs, theme, seatManualOpts(role, now));
+    const optsSel = seatModelOpts(role, now);
+    if (optsSel === null) return manual();
+    const picked = await dialogSelect(dialogs, theme, optsSel);
     if (picked === null) return null;
     return picked === MANUAL_COORD ? manual() : picked;
+  }
+
+  /**
+   * ★ **`/seat` 与 `/settings` 收成同一个组件**(P2 IA 收敛,2026-08-08)。
+   *
+   * ## 收的是什么
+   *
+   * 迁 `SettingsList` 那一程只收了一半:`/settings` 里每个座位**自己就是一行**,
+   * Enter 直接开模型子层(**两层**);而 `/seat` 还是老的三层
+   * (选座位列表 → 选模型 → 返回,靠 `for(;;)` 重开父层)。
+   * **两套并存,而且差异是那一程自己造成的** —— 越留越贵:改一处子层行为要记得改两处,
+   * 而"记得"正是本仓一再吃亏的东西。
+   *
+   * ## 现在
+   *
+   * `/seat` = **同一个面板,只是把项过滤成座位行**。于是:
+   * 退一级的行为、选中行不丢、写盘失败回显真值 —— 三件全都自动一致,不需要各自实现一遍。
+   * 少掉的那一层(`改哪个座位?`)不是功能,是老做法的产物:面板里每行**就是**一个座位。
+   */
+  async function openSeatPanel(): Promise<void> {
+    const { current, err } = readSeats();
+    const items = buildSettings({
+      seats: current,
+      seatsError: err,
+      sessionId,
+      sessionCount: null,
+      pressure: null,
+      color: colorEnabled(),
+      truecolor: truecolorEnabled(),
+      extensions: [],
+    }).filter((it) => it.action === 'seat');
+    await new Promise<void>((resolve) => {
+      const panel = createSettingsPanel({
+        theme,
+        items,
+        painters: PAINTERS,
+        maxVisible: 12,
+        title: '改哪个座位?  (↑↓ 选, Enter 换模型, Esc 取消)',
+        seatChoices: seatModelOpts,
+        seatManual: seatManualOpts,
+        textPrompt: (_id, cur) => ({ title: '?', initial: cur }), // 座位面板里没有文本项
+        apply: (id, value) => applySetting(id, value),
+        activate: () => {}, // 同上:过滤后只剩座位行, 没有"跳走"的项
+        onCancel: () => {
+          dialogs.close();
+          resolve();
+        },
+        requestRender: () => tui.requestRender(),
+      });
+      if (!dialogs.open(panel, panel)) resolve();
+      else tui.requestRender();
+    });
+    tui.requestRender();
   }
 
   /**
@@ -895,7 +917,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       chatLog.appendNotice(formatSeatRows(seatRows(current)));
       if (err) chatLog.appendNotice(CHROME.seatUnresolved(err));
       tui.requestRender();
-      void seatPicker();
+      void openSeatPanel();
       return true;
     }
     if (cmd.kind === 'usage') chatLog.appendNotice(cmd.reason);
@@ -1256,22 +1278,9 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         items,
         painters: PAINTERS,
         maxVisible: 12,
-        // 座位子层 = 模型选单。**与 `/seat` `/models` 同一份目录与同一种排序**
-        // (`model-picker.ts`)—— 三个入口一份实现, 不是三份。
-        seatChoices: (role, current) => {
-          const choices = sortChoices(listModelChoices(), current || null);
-          if (choices.length === 0) return null; // 目录空 → 面板自己退回手输框
-          return {
-            title: `${role} 换成哪个模型? (${choices.length} 个)`,
-            options: [
-              ...choices.map((c) => ({ value: c.coord, label: choiceLabel(c, current || null) })),
-              { value: MANUAL_COORD, label: '手动输入坐标…', description: '目录里没有登记的 provider:model' },
-            ],
-            search: true,
-            maxVisible: 12,
-          };
-        },
-        seatManual: (role, current) => ({ title: `${role} 换成哪个坐标? (provider:model)`, initial: current }),
+        // 座位子层 = 模型选单。**三个入口一份实现**(P2 IA 收敛)—— 定义在 `seatModelOpts`。
+        seatChoices: seatModelOpts,
+        seatManual: seatManualOpts,
         // `审批 token TTL` 的值带单位(`30s`), 而输入框里该是**可编辑的数**, 不是带单位的串。
         textPrompt: (_id, current) => ({ title: '审批 token TTL(秒)', initial: current.replace(/s$/, '') }),
         apply: (id, value) => applySetting(id, value),

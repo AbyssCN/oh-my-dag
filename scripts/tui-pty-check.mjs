@@ -381,8 +381,31 @@ async function scenarioSeat() {
     //   后面所有输入都进框里 —— 第一次跑就是这么红的 (SESS-1/2 收不到任何东西)。
     check(
       await waitFor(p, (t) => t.includes('改哪个座位')),
-      'S12-2b ★ 裸 /seat 开出座位选择器',
+      'S12-2b ★ 裸 /seat 开出座位面板',
       p.text().slice(0, 900),
+    );
+    /**
+     * ★★ **P2 IA 收敛(2026-08-08):`/seat` 与 `/settings` 现在是同一个组件。**
+     *
+     * 老路三层:`改哪个座位?` 列表 →(Enter)→ 模型选单 →(Esc)→ 靠 `for(;;)` 重开父层。
+     * 新路两层:面板里**每行就是一个座位**, Enter **直接**开模型子层。
+     *
+     * ⚠ 判据锚 `lastIndexOf` 的**先后**, 不锚子串 —— oracle 是累积缓冲,
+     * `改哪个座位` 前面早就打印过, `includes` 无论收没收敛都是真(本文件头那一族假绿)。
+     */
+    const seatPanelAt = p.text().lastIndexOf('改哪个座位');
+    p.write('\r');
+    check(
+      await waitFor(p, (t) => Math.max(t.lastIndexOf('换成哪个模型'), t.lastIndexOf('换成哪个坐标')) > seatPanelAt),
+      'S12-2b2 ★★ /seat 里 Enter **直接**开模型子层(中间那层没了 = 与 /settings 同一个组件)',
+      p.text().slice(-900),
+    );
+    p.write('\x1b');
+    await new Promise((r) => setTimeout(r, 200));
+    check(
+      await waitFor(p, (t) => t.lastIndexOf('改哪个座位') > Math.max(t.lastIndexOf('换成哪个模型'), t.lastIndexOf('换成哪个坐标'))),
+      'S12-2b3 ★ 子层 Esc → 回**座位面板**(退一级, 与设置页同一套行为)',
+      p.text().slice(-900),
     );
     // ⚠ 判据不能写成"Esc 之后那句话消失" —— 这条 lane 的 oracle 是**累积缓冲**不是屏幕快照,
     //   打印过的字永远在 `p.text()` 里。要证明框关了, 得证明**输入回到了编辑器**。
