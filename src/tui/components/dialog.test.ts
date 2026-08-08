@@ -9,7 +9,7 @@
  */
 import type { Component } from '@earendil-works/pi-tui';
 import { describe, expect, test } from 'bun:test';
-import { type DialogHost, confirm, input, select } from './dialog';
+import { type DialogBox, type DialogHost, confirm, input, inputComponent, select } from './dialog';
 import { createTheme } from '../theme';
 
 const theme = createTheme({ color: false });
@@ -158,5 +158,61 @@ describe('input', () => {
     const p = input(h.host, theme, { title: 'x', initial: '预填' });
     h.key('\r');
     expect(await p).toBe('预填');
+  });
+});
+
+describe('★ 输入框换成 pi-tui `Input`(2026-08-08,还台账最大的那笔欠账)', () => {
+  /**
+   * 每条钉的都是**手搓那版根本做不到**的事 —— 所以这一组的证伪方式统一是:
+   * 把 `inputComponent` 的非遮蔽分支改回手搓的 buf 版 → **前四条全红**。
+   * (遮蔽那条相反:它钉的是"这一档**仍然**是手搓的",改成走 `Input` 会红。)
+   */
+  const THEME = createTheme({ color: false });
+  const drive = (opts: { initial?: string; mask?: boolean }, keys: string[]): { value: string | null; box: DialogBox } => {
+    let value: string | null = null;
+    let settled = false;
+    const box = inputComponent(THEME, { title: 't', ...opts }, (v) => {
+      value = v;
+      settled = true;
+    }, () => {});
+    for (const k of keys) {
+      if (settled) break;
+      box.handleInput(k);
+    }
+    return { value, box };
+  };
+  const shown = (box: DialogBox): string => box.render(60).join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+
+  test('★ 光标能往回移, 在中间插字(手搓版做不到 —— 它只能往后加)', () => {
+    // 打 abc → ← ← → 在 a 与 b 之间插 X → 期望 aXbc
+    const { value } = drive({}, ['a', 'b', 'c', '\x1b[D', '\x1b[D', 'X', '\r']);
+    expect(value).toBe('aXbc');
+  });
+
+  test('★ 按词删除(ctrl+w)—— 手搓版只有退一格', () => {
+    const { value } = drive({}, ['h', 'e', 'j', ' ', 'd', 'u', '\x17', '\r']);
+    expect(value).toBe('hej ');
+  });
+
+  test('★ undo(ctrl+-)撤掉刚打的', () => {
+    const { value } = drive({}, ['a', 'b', 'c', '\x1f', '\r']);
+    // 撤掉之后不该还是 abc —— 具体撤到哪由 Input 的 undo 栈定, 这里只钉"它真的变了"。
+    expect(value).not.toBe('abc');
+  });
+
+  test('Esc 仍然返回 null(与"输入了空串"分得开)', () => {
+    const { value } = drive({}, ['a', '\x1b']);
+    expect(value).toBeNull();
+  });
+
+  test('initial 会被带进去, 直接回车原样返回', () => {
+    expect(drive({ initial: '900' }, ['\r']).value).toBe('900');
+  });
+
+  test('★ 遮蔽档**仍然是手搓的**, 且真的打星(`Input` 不支持遮蔽, 已核实)', () => {
+    const { box } = drive({ mask: true }, ['s', 'k', '-', 'x']);
+    const out = shown(box);
+    expect(out).toContain('****');
+    expect(out).not.toContain('sk-x'); // ★ 一个字符都不许上屏
   });
 });
