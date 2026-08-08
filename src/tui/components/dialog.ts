@@ -20,7 +20,7 @@
  * 对话框开着时再开一个 → **拒绝并说明**,不是叠上去。叠加之后"哪个在收键"就说不清了,
  * 而 Esc 会关掉哪一个也说不清。
  */
-import { type Component, SelectList, Text } from '@earendil-works/pi-tui';
+import { type Component, SelectList, Text, visibleWidth } from '@earendil-works/pi-tui';
 import { StatusLine } from './status-line';
 import { fitLine } from '../render/line';
 import type { OmdTuiTheme } from '../theme';
@@ -174,7 +174,18 @@ export class DialogBox implements Component {
   }
 
   render(width: number): string[] {
-    return [this.theme.chrome.accent(fitLine(this.title, width)), ...this.body.render(width)];
+    // 卡片框形 (v5 审批单那张图的形): ┌─ 标题 ─…┐ / │ 内容 │ / └──┘。全部字形在白名单。
+    // 窄到画不下框 (<16 列) 时退回无框 —— 框吃掉 4 列, 窄屏里内容比框重要。
+    if (width < 16) return [this.theme.chrome.accent(fitLine(this.title, width)), ...this.body.render(width)];
+    const innerW = width - 4;
+    const t = fitLine(this.title, innerW - 2);
+    const top = `┌─ ${t} ${'─'.repeat(Math.max(0, width - visibleWidth(t) - 5))}┐`;
+    const side = (l: string): string => `│ ${l}${' '.repeat(Math.max(0, innerW - visibleWidth(l)))} │`;
+    return [
+      this.theme.chrome.accent(fitLine(top, width)),
+      ...this.body.render(innerW).map((l) => fitLine(side(l), width)),
+      this.theme.chrome.dim(`└${'─'.repeat(width - 2)}┘`),
+    ];
   }
 
   handleInput(data: string): void {

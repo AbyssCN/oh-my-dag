@@ -37,11 +37,11 @@ const map = (): PathMap => ({
 });
 
 describe('buildPathViewData', () => {
-  test('凝固代按 decisionsLog 顺序; 前沿/阻塞/散雾计数对', () => {
+  test('凝固代按 decisionsLog 顺序 (id+gist); 前沿/阻塞/散雾计数对', () => {
     const d = buildPathViewData(map());
-    expect(d.gens).toEqual([['d01', 'd05']]);
+    expect(d.gens).toEqual([[{ id: 'd01', gist: 'stdio' }, { id: 'd05', gist: 'memory' }]]);
     expect(d.frontier.map((t) => t.id)).toEqual(['t9', 'g4']);
-    expect(d.blocked).toBe(1);
+    expect(d.blockedTickets).toEqual([{ id: 'b1', title: '会话树 fork' }]);
     expect(d.ruled).toBe(2);
     expect(d.total).toBe(5);
   });
@@ -55,18 +55,30 @@ describe('buildPathViewData', () => {
 });
 
 describe('画法 C 雾退线', () => {
-  test('三层齐 + 选中票带 > + run 注记 + 键位行', () => {
+  test('★ 空间构图: 地层带 gist + 票钉在线上 (选中 [] 包) + 指针行 + 详情行 + 雾层渐变 + 底部读数', () => {
     const out = renderFogLine(buildPathViewData(map()), { width: 100, height: 30, selected: 0 });
     const body = out.join('\n');
     expect(out[0]).toContain('雾退线');
     expect(out[0]).toContain('本图被 1 个 run 推进过');
-    expect(body).toContain('凝固层');
-    expect(body).toContain('gen-1  d01 · d05');
-    expect(body).toContain('> ● t9 task');
-    expect(body).toContain('<- run run-78f1');
-    expect(body).toContain('雾层');
-    expect(body).toContain('? ? ?');
+    expect(body).toContain('gen-1  d01 stdio · d05 memory'); // 地层 = id + gist (稿的形)
+    // 票钉在一条横线上, 选中的 [] 包 (结构可见, 不靠颜色); 阻塞票 x 前缀也钉着
+    expect(body).toMatch(/前沿线 ═\[t9●[^\]]*\]──g4◆[^─]*─/);
+    expect(body).toContain('xb1');
+    expect(body).toContain('↓'); // 指针行: 票往雾里指
+    expect(body).toContain('> ● t9 task  审批层四档  <- run run-78f1'); // 选中详情行带全文与 run
     expect(body).toContain('阻塞集 1 张');
+    expect(body).toContain('? ? ?');
+    expect(body).toMatch(/散雾 40% [█░]+ · open 2 · blocked 1 · run x1/); // 底部读数条
+  });
+
+  test('颜色钩子: 给了 paint 时选中行走 sel 通道 (NO_COLOR/测试下恒等仍可读)', () => {
+    const tag = (n: string) => (s: string) => `<${n}>${s}</${n}>`;
+    const out = renderFogLine(buildPathViewData(map()), {
+      width: 100, height: 30, selected: 0,
+      paint: { accent: tag('a'), dim: tag('d'), warn: tag('w'), sel: tag('s') },
+    }).join('\n');
+    expect(out).toContain('<s>> ● t9');
+    expect(out).toContain('<w>  阻塞集');
   });
 
   test('前沿空时说清为什么(灰常量即真值)', () => {
@@ -86,14 +98,18 @@ describe('画法 C 雾退线', () => {
 });
 
 describe('画法 B 三角洲', () => {
-  test('主干 + 凝固支流 + 梢头挂票 + 雾场', () => {
+  test('★ 河系构图: 主干 + 实线支流 (带 gist) + 虚段梢头 + 每行右侧雾场列', () => {
     const out = renderDelta(buildPathViewData(map()), { width: 100, height: 30, selected: 1 });
     const body = out.join('\n');
     expect(out[0]).toContain('三角洲');
-    expect(body).toContain('◆ omd-agent-tui (goal)');
-    expect(body).toContain('└─── d01 ── d05');
-    expect(body).toContain('>  · · ◆ g4'); // selected=1 → 第二张票带 >
-    expect(body).toContain('雾场');
+    expect(body).toContain('● omd-agent-tui (goal)');
+    expect(body).toContain('├── d01 stdio ── d05 memory'); // 支流链带 gist
+    expect(body).toMatch(/├···· t9●/); // 梢头虚段
+    expect(body).toMatch(/└···· \[g4◆[^\]]*\]/); // 选中梢头 [] 包
+    expect(body).toMatch(/x?b1.*blocked/); // 阻塞梢头
+    // 每一行右侧都有雾场列 (░ 或 ▒ 结尾附近)
+    const tipRow = out.find((l) => l.includes('t9●'));
+    expect(tipRow && /[░▒]/.test(tipRow)).toBe(true);
   });
 });
 
