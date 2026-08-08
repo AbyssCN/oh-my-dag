@@ -69,8 +69,9 @@ function display(cwd: string, absolute: string): string {
 /**
  * **凭证文件拒** —— 判据是 basename, 与 command-leaf 同一张表 (`SECRET_BASENAMES`)。
  * 两处各写一份早晚一份先漂, 而漂掉的那份就是下一个 `cat .env`。
+ * (export 给 TUI 审批层的 `read_sensitive` 分类用 —— 同一个判据, 不抄第二份。)
  */
-function secretBasenameOf(path: string): string | null {
+export function secretBasenameOf(path: string): string | null {
   const norm = path.replace(/\\/g, '/');
   const base = norm.slice(norm.lastIndexOf('/') + 1);
   if (SECRET_BASENAME_EXEMPT.test(base)) return null;

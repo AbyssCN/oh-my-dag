@@ -42,8 +42,9 @@ export interface SelectOption {
   description?: string;
 }
 
-/** Esc 的所有常见编码。只认一种的话某些终端上就关不掉 —— 那是个开着出不来的框。 */
-const ESC = new Set(['\x1b', '\x1b\x1b']);
+/** Esc 的所有常见编码。只认一种的话某些终端上就关不掉 —— 那是个开着出不来的框。
+ * (export 给审批单等自绘键位的框用 —— 同一张编码表,不抄第二份。) */
+export const ESC = new Set(['\x1b', '\x1b\x1b']);
 /** 回车。 */
 const ENTER = new Set(['\r', '\n']);
 

@@ -16,7 +16,11 @@
  * 判据不是"有没有编内容",是"读的人会不会误以为这是真的"。生产路径上它装不进来
  * (env 没设就走 embedded),PTY 上它写在屏幕正中间。
  */
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
+import type { AnyOmdTool } from '../harness/agent-tools';
+import type { ApprovalGate } from './approval/gate';
 import type { OmdBackend, OmdTuiEvent, TuiSessionMeta } from './backend';
 
 /** footer 上会显示这一串。PTY 断言它 —— 生产里出现即说明装错了后端。 */
@@ -28,7 +32,21 @@ export const FIXTURE_CHUNKS = ['已收到。', '这是 fixture 后端, 没有发
 /** fixture 的 run id —— PTY 断言它出现在 HUD 顶行。 */
 export const FIXTURE_RUN_ID = 'fixture-run';
 
-export function createFixtureBackend(): OmdBackend {
+/** 触发审批演示的暗号(切片① L3)。PTY 打这一句 → 真 gate 弹真卡片 → 真写/真拒。 */
+export const FIXTURE_WRITE_PROMPT = 'fixture:write';
+/** 审批演示写的文件名(目录由 `OMD_TUI_FIXTURE_DIR` 给;没给就不真写,只报没处写)。 */
+export const FIXTURE_WRITE_FILE = 'approved.txt';
+
+export interface FixtureBackendDeps {
+  /**
+   * 审批闸(切片①)。给了 → `fixture:write` 那条暗号会经它调一个真会写盘的假 write 工具:
+   * 卡片、键位、拒绝则不改、批准则改,整条链与生产同一个 gate。
+   * 不给 → 暗号退化成普通回显(能力探测面:没有闸就没有这条演示)。
+   */
+  approvals?: ApprovalGate;
+}
+
+export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend {
   let seq = 0;
   let onEvent: ((e: OmdTuiEvent) => void) | undefined;
   const sessions = new Map<string, AgentMessage[]>();
@@ -37,6 +55,26 @@ export function createFixtureBackend(): OmdBackend {
     seq += 1;
     onEvent?.({ event, payload, seq });
   };
+
+  /**
+   * 审批演示用的假 write:名字叫 `write` 是刻意的 —— gate 的分类按名字走,
+   * 名字不同的话 PTY 验的就不是生产那条 `write → 审批` 的分类路径。
+   */
+  const fixtureWrite: AnyOmdTool = {
+    name: 'write',
+    label: 'write',
+    description: 'fixture write (approval demo)',
+    parameters: undefined as never,
+    executionMode: 'sequential',
+    async execute(_id: string, params: unknown) {
+      const p = params as { path: string; content: string };
+      const dir = process.env.OMD_TUI_FIXTURE_DIR;
+      if (!dir) return { content: [{ type: 'text', text: '(OMD_TUI_FIXTURE_DIR 未设, 没处写)' }], details: undefined };
+      writeFileSync(join(dir, p.path), p.content);
+      return { content: [{ type: 'text', text: `✓ 写入 ${p.path}` }], details: undefined };
+    },
+  } as AnyOmdTool;
+  const wrappedWrite = deps.approvals ? deps.approvals.wrap([fixtureWrite])[0] : undefined;
 
   return {
     connection: { url: FIXTURE_URL },
@@ -51,6 +89,22 @@ export function createFixtureBackend(): OmdBackend {
     async sendChat({ sessionId, prompt }) {
       const msgs = sessions.get(sessionId) ?? [];
       msgs.push({ role: 'user', content: prompt, timestamp: Date.now() } as AgentMessage);
+      // ── 切片① 审批演示: 真 gate → 真卡片 → 真写/真拒。放在流式回显之前, 先审后答。 ──
+      if (prompt.trim() === FIXTURE_WRITE_PROMPT && wrappedWrite) {
+        emit('tool', { phase: 'start', name: 'write', args: { path: FIXTURE_WRITE_FILE } });
+        try {
+          const r = await wrappedWrite.execute('fx-approval', { path: FIXTURE_WRITE_FILE, content: 'approved\n' }, undefined, undefined as never);
+          emit('tool', { phase: 'end', name: 'write', ok: true });
+          const text = (r.content ?? []).map((c) => ('text' in c ? c.text : '')).join('');
+          emit('chat', { type: 'delta', text: `write 已执行: ${text}` });
+        } catch (err) {
+          emit('tool', { phase: 'end', name: 'write', ok: false });
+          emit('chat', { type: 'delta', text: `write 没有执行: ${(err as Error).message}` });
+        }
+        emit('session', { sessionId, messageCount: msgs.length + 1 });
+        sessions.set(sessionId, msgs);
+        return { ok: true };
+      }
       // 工具事件也发一对: PTY 要能验"工具在跑"这条线也接得上。
       emit('tool', { phase: 'start', name: 'fixture_tool' });
       emit('tool', { phase: 'end', name: 'fixture_tool', ok: true });

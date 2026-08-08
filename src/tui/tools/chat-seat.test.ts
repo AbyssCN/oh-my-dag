@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'bun:test';
 import { assembleOmdMcpTools } from '../../mcp/assemble';
 import { buildConductorChatSystemPrompt } from '../../harness/harness-prompts';
+import { createApprovalGate } from '../approval/gate';
 import { HAND_TOOLS, createChatSeatTools } from './chat-seat';
 
 const seat = () => createChatSeatTools({ cwd: process.cwd(), mcpTools: assembleOmdMcpTools() });
@@ -90,5 +91,52 @@ describe('接线闸:cli.ts 真的走这条装配', () => {
 
   test('★ 反过来:tui 分支不再自己拼工具面 —— 两处各拼一份必漂', () => {
     expect(tuiBranch()).not.toContain('createConductorChatTools(');
+  });
+
+  test('★ 切片①:tui 分支把审批闸接进了工具面与 UI 两处(接一处 = 没接,坑 #7 同族)', () => {
+    const b = tuiBranch();
+    expect(b).toContain('createApprovalGate(');
+    expect(b).toContain('approvals });'); // createChatSeatTools({ …, approvals })
+    expect(b).toMatch(/runOmdTui\(\{[^}]*approvals/); // UI 那半也接了
+  });
+});
+
+describe('切片①:审批闸包在工具面外(不变量:闸永远有一层)', () => {
+  test('★ 有闸:write 走审批 —— 拒绝则不执行(抛 [approval], 不是静默空结果)', async () => {
+    const gate = createApprovalGate({});
+    gate.setAsk(async () => 'deny');
+    const tools = createChatSeatTools({ cwd: process.cwd(), mcpTools: assembleOmdMcpTools(), approvals: gate });
+    const write = tools.find((t) => t.name === 'write');
+    await expect(write!.execute('t', { path: '/tmp/omd-approval-should-not-exist.txt', content: 'x' } as never)).rejects.toThrow(
+      '[approval] 用户拒绝',
+    );
+  });
+
+  test('★ 有闸:bash 不可逆命令走 admin 档审批(内层硬拒已交给外层)——拒绝时报 [approval] 而不是 BLOCKED', async () => {
+    const gate = createApprovalGate({});
+    gate.setAsk(async () => 'deny');
+    const tools = createChatSeatTools({ cwd: process.cwd(), mcpTools: assembleOmdMcpTools(), approvals: gate });
+    const bash = tools.find((t) => t.name === 'bash');
+    await expect(bash!.execute('t', { command: 'git push --force origin main' } as never)).rejects.toThrow('[approval]');
+  });
+
+  test('★ 无闸:内层危险命令闸保持原样(fail-closed 硬拒)—— 两层不会同时缺席', async () => {
+    const tools = createChatSeatTools({ cwd: process.cwd(), mcpTools: assembleOmdMcpTools() });
+    const bash = tools.find((t) => t.name === 'bash');
+    await expect(bash!.execute('t', { command: 'git push --force origin main' } as never)).rejects.toThrow('BLOCKED');
+  });
+
+  test('有闸:read 不经审批直接执行(G-1: read 全程不弹框)', async () => {
+    const gate = createApprovalGate({});
+    let askedCount = 0;
+    gate.setAsk(async () => {
+      askedCount += 1;
+      return 'deny';
+    });
+    const tools = createChatSeatTools({ cwd: process.cwd(), mcpTools: assembleOmdMcpTools(), approvals: gate });
+    const read = tools.find((t) => t.name === 'read');
+    const r = await read!.execute('t', { path: 'package.json' } as never);
+    expect(askedCount).toBe(0);
+    expect((r.content[0] as { text: string }).text).toContain('oh-my-dag');
   });
 });

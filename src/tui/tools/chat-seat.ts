@@ -22,6 +22,7 @@ import type { AnyOmdTool } from '../../harness/agent-tools';
 import { createOmdAgentTools } from '../../harness/agent-tools';
 import type { OmdMcpTool } from '../../mcp/server';
 import { createConductorChatTools } from '../../serve/chat-tools';
+import type { ApprovalGate } from '../approval/gate';
 import { createCodegraphTools } from './codegraph';
 import { createSkillTools } from './skill-tool';
 
@@ -40,6 +41,15 @@ export interface ChatSeatToolsOpts {
   mcpTools: readonly OmdMcpTool[];
   /** 扩展带进来的工具(S15a)。没有扩展就省略。 */
   extTools?: readonly AnyOmdTool[];
+  /**
+   * 审批闸(切片①)。给了 → **整个工具面**被包一层四档审批,且六只手的内层
+   * `dangerousCommandGuard` 关掉,由审批的 admin 档接管(v5:「bash 不可逆子集 → 强制审批」)。
+   * 省略 → 内层闸保持原样(硬拒不可逆命令)。
+   *
+   * ⚠ **不变量:闸永远有一层** —— 要么内层硬拒,要么外层审批,不存在两层都没有的装配。
+   * `chat-seat.test.ts` 钉这条。
+   */
+  approvals?: ApprovalGate;
 }
 
 /**
@@ -47,8 +57,8 @@ export interface ChatSeatToolsOpts {
  * 手在最前(最常用),然后指挥面,再符号面,最后扩展。
  */
 export function createChatSeatTools(o: ChatSeatToolsOpts): AnyOmdTool[] {
-  return [
-    ...createOmdAgentTools({ cwd: o.cwd }),
+  const all = [
+    ...createOmdAgentTools({ cwd: o.cwd, ...(o.approvals ? { dangerousCommandGuard: false } : {}) }),
     ...createConductorChatTools(o.mcpTools),
     // S17: 符号能力是**探测式**的 —— 探不到就一个工具都不挂(不是挂了、调了才失败)。
     ...createCodegraphTools({ cwd: o.cwd }),
@@ -56,4 +66,5 @@ export function createChatSeatTools(o: ChatSeatToolsOpts): AnyOmdTool[] {
     ...createSkillTools(),
     ...(o.extTools ?? []),
   ];
+  return o.approvals ? o.approvals.wrap(all) : all;
 }

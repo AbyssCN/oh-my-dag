@@ -87,9 +87,14 @@ if (userArgs[0] === 'tui') {
     let backend: import('../tui/backend').OmdBackend;
     // 扩展加载结果要传给 UI(设置面板), 所以声明在 if/else 之外。
     let extStatus: { name: string; ok: boolean; sandboxed?: boolean; missing?: string[] }[] = [];
+    // 切片①: 审批闸。两条装配路都建 —— fixture 那条也要能在 PTY 里弹真的审批单
+    // (卡片 UI + 键位 + 拒绝则不改/批准则改, 全走与生产同一个 gate)。
+    const { createApprovalGate } = await import('../tui/approval/gate');
+    const { loadApprovalConfig } = await import('../tui/approval/policy');
+    const approvals = createApprovalGate({ config: loadApprovalConfig(cwd) });
     if (process.env.OMD_TUI_BACKEND === 'fixture') {
       const { createFixtureBackend } = await import('../tui/backend-fixture');
-      backend = createFixtureBackend();
+      backend = createFixtureBackend({ approvals });
     } else {
       // 与 `omd serve` 同一条路: 同一个 runChatTurn、同一批 chatTools、同一条座位解析。
       const { bootstrapModelRuntime } = await import('../model/bootstrap');
@@ -147,7 +152,8 @@ if (userArgs[0] === 'tui') {
         memory: createOmdMemory(),
         // S-4: 对话位的工具面(含六只手)。装配在 `tui/tools/chat-seat`, 那里有闸盯着 ——
         // 长在这个内联块里的话, "对话位到底拿到了哪些工具"没有任何测试看得见(坑 #7 同族)。
-        tools: createChatSeatTools({ cwd, mcpTools: tools, extTools }),
+        // 切片①: 审批闸包住整个工具面; 六只手的内层危险命令闸随之交给 admin 档 (闸永远有一层)。
+        tools: createChatSeatTools({ cwd, mcpTools: tools, extTools, approvals }),
         ...(exts.length > 0
           ? {
               // 多个扩展**串起来**追加:每个都只能在前一个的结果上追加, 顺序 = 清单顺序。
@@ -168,7 +174,7 @@ if (userArgs[0] === 'tui') {
       sink = embedded;
       backend = embedded;
     }
-    await runOmdTui({ backend, cwd, contextFiles, ...(extStatus.length > 0 ? { extensions: extStatus } : {}) });
+    await runOmdTui({ backend, cwd, contextFiles, approvals, ...(extStatus.length > 0 ? { extensions: extStatus } : {}) });
   } catch (err) {
     // S-4b: 起不来的时候说人话。**实测撞出来的** —— 空仓里跑 `omd tui`, 第一屏是
     // `role-models.ts:433` 的行号和 `^` 指针(座位是逐仓配的, 所以除了 omd 自己这个仓,

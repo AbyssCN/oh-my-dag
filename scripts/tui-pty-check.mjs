@@ -30,7 +30,7 @@
  * 用法:`node scripts/tui-pty-check.mjs`(退出码 0 = 全过)。
  */
 import { spawn } from '@lydell/node-pty';
-import { mkdtempSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -483,6 +483,71 @@ async function scenarioSeat() {
 }
 
 /**
+ * 场景 4.5:**审批层**(切片①,G-1 的 PTY 半):真 gate → 真卡片 → 真键位 → 真写/真拒。
+ *
+ * fixture 的 `fixture:write` 暗号会经**生产同一个 ApprovalGate** 调一个真会写盘的
+ * write 工具(写进 `OMD_TUI_FIXTURE_DIR`)。于是「拒绝则不改、批准则改」在这里是
+ * **文件系统上的读数**,不是屏幕上的一句话。
+ *
+ * 反向自检(实跑):把 tui.ts 里 `opts.approvals.setAsk(askApproval)` 那行注释掉 →
+ * AP-1(卡片出现)当场红 —— gate fail-closed 拒绝, 卡片不弹, 文件也不写。
+ */
+async function scenarioApproval() {
+  const dir = mkdtempSync(join(tmpdir(), 'omd-tui-approval-'));
+  const target = join(dir, 'approved.txt');
+  const p = startTui({ env: { OMD_TUI_FIXTURE_DIR: dir } });
+  try {
+    check(await waitFor(p, (t) => t.includes('omd tui')), 'AP-0 (场景4.5) 启动');
+
+    // ── 第一轮: 拒绝 ──
+    p.write('fixture:write\r');
+    check(
+      await waitFor(p, (t) => t.includes('需要审批') && t.includes('要做什么')),
+      'AP-1 ★ write 弹出审批单(占住输入区)',
+      p.text().slice(-600),
+    );
+    check(p.text().includes('y 批准这一次'), 'AP-2 卡片带键位行(y/a/d/Esc)', p.text().slice(-400));
+    p.write('\x1b'); // Esc = 拒绝
+    check(
+      await waitFor(p, (t) => t.includes('已拒绝') && t.includes('write 没有执行')),
+      'AP-3 ★ 拒绝有回执且工具报被拒',
+      p.text().slice(-600),
+    );
+    check(existsSync(target) === false, 'AP-4 ★ 拒绝则不改 —— 文件系统上真的没有那个文件');
+
+    // ── 第二轮: 看详情 + 批准 ──
+    p.write('fixture:write\r');
+    check(await waitFor(p, (t) => t.includes('需要审批')), 'AP-5 同一操作重新要审批(y/Esc 不留 token)');
+    p.write('d'); // 展开详情 (内容预览)
+    // ⚠ 判据是详情分隔线, 不是 'approved' —— 后者在**拒绝回执**里也出现 (approved.txt),
+    //   证伪跑(去掉 setAsk 接线)时抓到这条在假绿。
+    check(await waitFor(p, (t) => t.includes('────────'), 8000), 'AP-6 d 展开详情(分隔线 + 内容预览)', p.text().slice(-400));
+    p.write('y'); // 批准这一次
+    check(
+      await waitFor(p, (t) => t.includes('已批准这一次') && t.includes('write 已执行')),
+      'AP-7 ★ 批准有回执且工具真跑了',
+      p.text().slice(-600),
+    );
+    let content = '';
+    const wrote = await waitFor(
+      { text: () => '' },
+      () => {
+        try {
+          content = readFileSync(target, 'utf-8');
+          return content.includes('approved');
+        } catch {
+          return false;
+        }
+      },
+      8000,
+    );
+    check(wrote, 'AP-8 ★ 批准则改 —— 文件真的写上盘了(屏幕上说写了不算数)', `实得: ${content.slice(0, 100)}`);
+  } finally {
+    p.kill();
+  }
+}
+
+/**
  * 场景 5:**真后端起得来**(2026-08-07 补的盲区)。
  *
  * ## 为什么这条非补不可
@@ -527,6 +592,7 @@ await scenarioHappyPath();
 await scenarioArmReset();
 await scenarioLogRedirect();
 await scenarioSeat();
+await scenarioApproval();
 await scenarioRealBackendBoots();
 
 if (failures.length) {

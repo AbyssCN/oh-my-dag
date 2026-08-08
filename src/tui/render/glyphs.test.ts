@@ -20,6 +20,8 @@ import { buildSettings, formatSettings } from '../settings';
 import { formatSkillList, listSkills } from '../skills';
 import { fitLine } from './line';
 import { formatPressure } from './pressure';
+import { approvalBody, approvalTitle } from '../approval/card';
+import type { ApprovalRequest } from '../approval/gate';
 
 describe('★ 回归钉: 探针读数 vs 今天的 pi-tui', () => {
   // 反向自检: 把 glyph-table 里 '你' 的 2 改成 1 → 这条当场红。
@@ -134,6 +136,29 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
     ['pressure(窗口未知)', formatPressure({ systemTokens: 4000, harnessTokens: 0, historyTokens: 1000, usedTokens: 5000, windowTokens: 0, ratio: null }) as string],
     ['footer', CHROME.footer('embedded://deepseek:deepseek-v4-flash')],
     ['footerArmed', CHROME.footerArmed('embedded://deepseek:deepseek-v4-flash')],
+    // 切片①: 审批卡片与裁决回执。detail 区是数据不是 chrome, 卡片 chrome 只到键位行为止。
+    ...((): [string, string][] => {
+      const req: ApprovalRequest = {
+        tool: 'edit',
+        tier: 'write',
+        reasons: ['function 级 write', '目标在受保护清单 (src/model/seats.ts)'],
+        target: 'src/model/seats.ts',
+        summary: 'edit src/model/seats.ts (-3 +7 行)',
+        preview: [],
+        canGrant: true,
+        ttlSec: 600,
+      };
+      const admin: ApprovalRequest = { ...req, tool: 'bash', tier: 'admin', canGrant: false, summary: 'bash: git push --force' };
+      return [
+        ['approval:title', approvalTitle(req)],
+        ['approval:body', approvalBody(req, { detail: false })],
+        ['approval:body(admin)', approvalBody(admin, { detail: false })],
+        ['approval:denied', CHROME.approvalDenied('edit src/x.ts (-1 +1 行)')],
+        ['approval:once', CHROME.approvalOnce('edit src/x.ts (-1 +1 行)')],
+        ['approval:granted', CHROME.approvalGranted('edit src/x.ts (-1 +1 行)', 10)],
+        ['approval:busy', CHROME.approvalBusy('edit src/x.ts (-1 +1 行)')],
+      ];
+    })(),
     ['harness(有)', formatContextLine([{ path: '/x/.claude/CLAUDE.md', content: '' }], { cwd: '/x', home: '/h' })],
     ['harness(无)', formatContextLine([], { cwd: '/x', home: '/h' })],
   ];

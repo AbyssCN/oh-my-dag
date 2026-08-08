@@ -27,11 +27,13 @@
  * 双击判定是纯函数({@link decideCtrlC}),不碰 `Date.now`;硬退走注入的 `exit`。
  * 于是 L1 能直接测判定,L3 只需要验"真 PTY 里这条链接得起来"。
  */
-import { CombinedAutocompleteProvider, Container, Editor, ProcessTerminal, ScrollView, TuiAltScreen, VStack, type Terminal } from '@earendil-works/pi-tui';
+import { CombinedAutocompleteProvider, Container, Editor, ProcessTerminal, ScrollView, Text, TuiAltScreen, VStack, type Terminal } from '@earendil-works/pi-tui';
 import { logger } from '../logger';
+import type { ApprovalDecision, ApprovalGate, ApprovalRequest } from './approval/gate';
+import { approvalBody, approvalTitle } from './approval/card';
 import type { OmdBackend } from './backend';
 import { ChatLog } from './components/chat-log';
-import { type DialogHost, confirm as dialogConfirm, input as dialogInput, select as dialogSelect } from './components/dialog';
+import { DialogBox, ESC as DIALOG_ESC, type DialogHost, confirm as dialogConfirm, input as dialogInput, select as dialogSelect } from './components/dialog';
 import { DagHud } from './components/dag-hud';
 import { type PathReader, PathHud, createPathReader } from './components/path-hud';
 import { StatusLine } from './components/status-line';
@@ -139,6 +141,12 @@ export const CHROME = {
   resumeRefused: (runId: string, text: string) => `续不了 ${runId}: ${text}`,
   footer: (url: string) => `[${url}]  Ctrl+C 两次退出`,
   footerArmed: (url: string) => `[${url}]  再按一次 Ctrl+C 退出`,
+  // ── 审批层(切片①)。裁决回执要进对话记录 —— 卡片关掉之后, "刚才批没批过"得能回看。 ──
+  approvalDenied: (summary: string) => `审批: 已拒绝 ${summary}`,
+  approvalOnce: (summary: string) => `审批: 已批准这一次 ${summary}`,
+  approvalGranted: (summary: string, min: number) => `审批: 已批准 ${summary} (同档 ${min} 分钟内免审)`,
+  /** 对话框被占时新到的审批单按拒绝处理(fail-closed)—— 说出为什么, 别静默拒。 */
+  approvalBusy: (summary: string) => `审批: 另一个对话框开着, 已按拒绝处理 ${summary}`,
 } as const;
 
 /**
@@ -202,6 +210,12 @@ export interface RunOmdTuiOpts {
    * 藏在日志里等于加载期硬失败白做了。
    */
   extensions?: { name: string; ok: boolean; sandboxed?: boolean; missing?: string[] }[];
+  /**
+   * 审批闸(切片①)。UI 在这里把 ask handler 接上 —— 审批单占住输入区,
+   * `d` 看详情 · `y` 批准一次 · `a` 批准同档一段时间(admin 没有) · Esc 拒绝。
+   * 省略 = 没有审批面(fixture 之外的生产装配都该给)。
+   */
+  approvals?: ApprovalGate;
 }
 
 /**
@@ -352,6 +366,51 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     },
     requestRender: () => tui.requestRender(),
   };
+
+  /**
+   * ★ 审批单(切片①,G-1)。**占住输入区**(v5:审批单那张图),键位自绘:
+   * `y` 一次 · `a` 发同档 token(admin 档收不到这个键)· `d` 展开详情 · Esc 拒绝。
+   *
+   * ⚠ 对话框被占(用户正开着 /settings 之类)→ **按拒绝处理并说明**,不排队 ——
+   * 排队的单会在用户关掉框的下一瞬弹出来,像是"Esc 又弹回来了"。模型收到拒绝会自己重试或改道。
+   */
+  function askApproval(req: ApprovalRequest): Promise<ApprovalDecision> {
+    return new Promise((resolve) => {
+      let detail = false;
+      const body = new Text(approvalBody(req, { detail }));
+      const finish = (d: ApprovalDecision): void => {
+        dialogs.close();
+        const note =
+          d === 'deny'
+            ? CHROME.approvalDenied(req.summary)
+            : d === 'once'
+              ? CHROME.approvalOnce(req.summary)
+              : CHROME.approvalGranted(req.summary, Math.max(1, Math.round(req.ttlSec / 60)));
+        chatLog.appendNotice(note);
+        tui.requestRender();
+        resolve(d);
+      };
+      const box = new DialogBox(theme, approvalTitle(req), body, (data) => {
+        if (DIALOG_ESC.has(data)) return finish('deny');
+        if (data === 'y') return finish('once');
+        if (data === 'a' && req.canGrant) return finish('grant');
+        if (data === 'd') {
+          detail = !detail;
+          body.setText(approvalBody(req, { detail }));
+          tui.requestRender(); // setText 不触发重绘 (AGENTS.md §5), 必须自己请求
+        }
+        return undefined;
+      });
+      if (!dialogs.open(box, box)) {
+        chatLog.appendNotice(CHROME.approvalBusy(req.summary));
+        tui.requestRender();
+        resolve('deny');
+        return;
+      }
+      tui.requestRender();
+    });
+  }
+  if (opts.approvals) opts.approvals.setAsk(askApproval);
 
   let sessionId = opts.sessionId ?? 'tui';
   const seats = opts.seats ?? defaultSeatFace();
