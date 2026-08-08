@@ -20,6 +20,7 @@
  * @module
  */
 import type { OmdMemory } from '../memory';
+import type { ValidatedFact } from '../../memory/safeguards/namespaces';
 
 // ─── 契约类型(W4 交付时不改)────────────────────────────────────────────────
 
@@ -73,21 +74,64 @@ export interface SinkDeps {
   memory?: OmdMemory;
 }
 
-// ─── no-op 默认(W4 交付后替换函数体)───────────────────────────────────────
+// ─── W4 实装:continuity fact 镜像(真闸真库;namespace 注册属 W5 接线)────────────
+
+/** fact → CheckpointRow(loose ValidatedFact 安全提取, 缺字段降级 null/'')。 */
+function rowOf(fact: ValidatedFact): CheckpointRow {
+  const str = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null);
+  const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const created = (fact.confidence as { created_at?: unknown }).created_at;
+  return {
+    sessionId: str(fact.id) ?? '',
+    mode: str(fact.mode) ?? '',
+    intent: str(fact.intent),
+    ctxTokens: num(fact.ctxTokens),
+    degraded: fact.degraded === true,
+    checkpointPath: str(fact.checkpointPath),
+    ts: created instanceof Date ? created.toISOString() : String(created ?? ''),
+  };
+}
 
 /**
  * checkpoint → omd SQLite 镜像(fail-open)。
  * 无 memory 注入 → 静默跳过(markdown 已落,不报错)。
+ * 有 memory → `writeFact({ namespace:'continuity', id:sessionId, ... })`:同 session 多写
+ * = 演化更新一行(supersede), 供语义召回"历史相关 session";resume 真理源仍是 markdown。
  */
 export async function sinkCheckpoint(
-  _input: CheckpointSinkInput,
+  input: CheckpointSinkInput,
   deps?: SinkDeps,
 ): Promise<CheckpointSinkResult> {
   if (!deps?.memory) {
     return { ok: false, error: 'no OmdMemory injected — skip SQLite sink (markdown 已落)' };
   }
-  // W4(票 t2)交付真实实装:memory.writeFact({ namespace:'continuity', id:sessionId, ... })。
-  return { ok: false, error: 'session sink not yet wired (W4 pending)' };
+  try {
+    // agent_tentative(单源事件):同 session 再写 = replace(廉价 supersede);闲置 30 天过期
+    // (prune 清陈旧快照,不堆积)。source_event_id 锚 checkpoint 写事件。
+    const res = await deps.memory.writeFact({
+      namespace: 'continuity',
+      id: input.sessionId,
+      mode: input.mode,
+      md: input.md,
+      intent: input.intent,
+      next: input.next,
+      ctxTokens: input.ctxTokens ?? null,
+      degraded: input.degraded ?? false,
+      checkpointPath: input.checkpointPath,
+      source_event_id: `session-checkpoint:${input.sessionId}`,
+      confidence: {
+        level: 'agent_tentative',
+        source_event_ids: [`session-checkpoint:${input.sessionId}`],
+        created_at: new Date(),
+      },
+    });
+    if (res.status === 'written') {
+      return { ok: true, factStatus: res.action === 'insert' ? 'created' : 'updated' };
+    }
+    return { ok: false, factStatus: 'rejected', error: `fact rejected: ${res.reason}` };
+  } catch (e) {
+    return { ok: false, error: `sink threw (fail-open): ${e instanceof Error ? e.message : String(e)}` };
+  }
 }
 
 /**
@@ -95,9 +139,17 @@ export async function sinkCheckpoint(
  * 无 memory 注入 → 空列表(fail-open)。
  */
 export async function listCheckpoints(
-  _opts?: ListCheckpointsOpts,
-  _deps?: SinkDeps,
+  opts?: ListCheckpointsOpts,
+  deps?: SinkDeps,
 ): Promise<CheckpointRow[]> {
-  // W4(票 t2)交付真实实装:memory 检索 namespace='continuity' 的快照。
-  return [];
+  if (!deps?.memory) return [];
+  try {
+    // read-only:live 快照(每 session 最新一行), 按 ts 倒序, recent 截断。
+    let rows = deps.memory.liveFactsByNamespace('continuity').map(({ fact }) => rowOf(fact));
+    if (opts?.sessionId) rows = rows.filter((r) => r.sessionId === opts.sessionId);
+    rows.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
+    return rows.slice(0, opts?.recent ?? 20);
+  } catch {
+    return []; // 检索失败 → 空列表(fail-open, 不抛)
+  }
 }
