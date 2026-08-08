@@ -16,7 +16,8 @@
  * ## 为什么写死不许让它改仓
  *
  * 目标仓之一是 **talous-v2 —— 一个真项目**。所以:
- * ① `OMD_DATA_HOME` 改到临时目录 ⇒ 会话不写进目标仓的 `.omd/`(`chat/store.ts:65`);
+ * ① 会话改道到临时目录 —— ⚠ **`OMD_DATA_HOME` 一个变量不够**,必须连 `setActiveProject` 一起
+ *    (`project-scope.ts:117`:没激活 scope 就退回**相对**路径 `.omd/chat`,落进程 cwd);
  * ② 装一个**只读审批闸**:凡是分类到 read 档以上的一律 `deny`。
  *    这不是"相信它不会写",是**结构上写不了**。被拒次数一并记 ——
  *    如果它是因为被我的闸拒了才失败,那是**我的闸的读数**,不是 omd 的缺陷,得分得开。
@@ -60,6 +61,13 @@ async function runOne(repo: string): Promise<Reading> {
 
   // ① 会话数据改道到临时目录:目标仓的 .omd/ 一个字节都不许动。
   process.env.OMD_DATA_HOME = mkdtempSync(join(tmpdir(), 'omd-e2e-data-'));
+  // ★ **只设 `OMD_DATA_HOME` 是不够的**(2026-08-08 实测):`ChatStore.dir()` 在这个变量
+  //   有值时走 `dataPath('chat')`,而 `dataPath` 只有在 **project scope 被激活过**时才认它
+  //   (`project-scope.ts:117-119`)—— 没激活就退回**相对路径** `.omd/chat`,于是会话
+  //   落在**进程 cwd**(= 主仓)下。11 个探针会话就是这么进主仓 `.omd/chat/` 的。
+  //   目标仓当时没被写,靠的是"cwd 恰好是主仓"这个巧合,**不是这行代码**。
+  const { setActiveProject, resolveProject } = await import('../../src/harness/project-scope');
+  setActiveProject(resolveProject(process.env.OMD_DATA_HOME));
 
   const { bootstrapModelRuntime } = await import('../../src/model/bootstrap');
   bootstrapModelRuntime();
