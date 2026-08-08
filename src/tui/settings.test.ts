@@ -139,3 +139,35 @@ describe('formatSettings', () => {
     expect(out).toContain('当前会话: tui');
   });
 });
+
+describe('切片⑥: 可改组(界面/审批/provider)', () => {
+  test('★ 省略 = 那一组不进表(答不上现状的项不列)', () => {
+    const items = buildSettings(base);
+    expect(find(items, 'ui-sidebar')).toBeUndefined();
+    expect(find(items, 'approval-ttl')).toBeUndefined();
+    expect(find(items, 'providers')).toBeUndefined();
+  });
+
+  test('给了就列, 且都有 action(能改)与来源说明', () => {
+    const items = buildSettings({
+      ...base,
+      ui: { sidebar: true, painterName: '树' },
+      approvalTtlSec: 600,
+      providers: [
+        { id: 'deepseek', hasKey: true },
+        { id: 'kimi-coding', hasKey: false },
+      ],
+    });
+    const sidebar = find(items, 'ui-sidebar');
+    expect(sidebar?.value).toBe('开');
+    expect(sidebar?.action).toBe('ui-sidebar');
+    const ttl = find(items, 'approval-ttl');
+    expect(ttl?.value).toBe('600s');
+    expect(ttl?.detail).toContain('重启生效'); // 闸启动时读一次 —— 现状要说真话
+    const prov = find(items, 'providers');
+    expect(prov?.value).toBe('1 已配 / 1 未配');
+    expect(prov?.detail).toContain('kimi-coding');
+    // 只显示配没配, 不显示 key —— detail 里不该出现任何 key 形状的串
+    expect(prov?.detail).not.toMatch(/sk-|key=/i);
+  });
+});

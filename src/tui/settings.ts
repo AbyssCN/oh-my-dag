@@ -22,7 +22,7 @@ export interface SettingItem {
   value: string;
   detail?: string;
   /** 能改的项才有;只读行没有。 */
-  action?: 'seat' | 'session' | 'extensions';
+  action?: 'seat' | 'session' | 'extensions' | 'ui-sidebar' | 'ui-painter' | 'approval-ttl' | 'login';
 }
 
 export interface SettingsInput {
@@ -34,6 +34,13 @@ export interface SettingsInput {
   color: boolean;
   truecolor: boolean;
   extensions: { name: string; ok: boolean; sandboxed?: boolean; missing?: string[] }[];
+  // ── 切片⑥ (v5 第五节): 可改项。**省略 = 那一组不进表**(答不上现状的项不列)。──
+  /** 界面组: 左栏开关 + 全屏默认画法(运行时值; 写盘走 tui.ui)。 */
+  ui?: { sidebar: boolean; painterName: string };
+  /** 审批组: token TTL 秒(gate 启动时读一次 → 改完重启生效, detail 里写明)。 */
+  approvalTtlSec?: number;
+  /** provider 组: 已配/未配(**只显示配没配, 不显示 key**)。 */
+  providers?: { id: string; hasKey: boolean }[];
 }
 
 export function buildSettings(i: SettingsInput): SettingItem[] {
@@ -91,6 +98,48 @@ export function buildSettings(i: SettingsInput): SettingItem[] {
       ? '已在真终端量过'
       : '⚠ **未在真终端量过** —— 跑 `bun run scripts/tui-glyph-probe.ts --tty` 解锁 box drawing',
   });
+
+  // ── 界面(切片⑥, 写 tui.ui)────────────────────────────────────────────────
+  if (i.ui) {
+    items.push({
+      key: 'ui-sidebar',
+      label: '左栏 DAG 默认',
+      value: i.ui.sidebar ? '开' : '关',
+      detail: '写进 .omd/config.json 的 tui.ui.sidebar; 本程立即生效',
+      action: 'ui-sidebar',
+    });
+    items.push({
+      key: 'ui-painter',
+      label: '全屏默认画法',
+      value: i.ui.painterName,
+      detail: '写进 tui.ui.painter; 本程立即生效',
+      action: 'ui-painter',
+    });
+  }
+
+  // ── 审批(切片⑥, 写 tui.approvals)──────────────────────────────────────────
+  if (i.approvalTtlSec !== undefined) {
+    items.push({
+      key: 'approval-ttl',
+      label: '审批 token TTL',
+      value: `${i.approvalTtlSec}s`,
+      detail: '「a 批准同档」的免审窗口; 写进 tui.approvals.tokenTtlSec, **重启生效**(闸启动时读一次)',
+      action: 'approval-ttl',
+    });
+  }
+
+  // ── provider(切片⑥, 只显示配没配, 不显示 key)───────────────────────────────
+  if (i.providers) {
+    const got = i.providers.filter((p) => p.hasKey);
+    const missing = i.providers.filter((p) => !p.hasKey);
+    items.push({
+      key: 'providers',
+      label: 'provider 凭证',
+      value: i.providers.length === 0 ? '(一个都没发现)' : `${got.length} 已配 / ${missing.length} 未配`,
+      detail: `${got.map((p) => p.id).join('、') || '无'}${missing.length > 0 ? ` · 未配: ${missing.map((p) => p.id).join('、')}` : ''} —— 选中进 /login`,
+      action: 'login',
+    });
+  }
 
   // ── 扩展 ────────────────────────────────────────────────────────────────────
   if (i.extensions.length === 0) {

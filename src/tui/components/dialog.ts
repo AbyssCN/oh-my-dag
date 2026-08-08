@@ -123,12 +123,13 @@ export function confirm(host: DialogHost, theme: OmdTuiTheme, message: string): 
   }).then((v) => (v === null ? null : v === 'yes'));
 }
 
-/** 单行输入框。`null` = Esc;空串是**合法输入**,不折算成 null。 */
-export function input(host: DialogHost, theme: OmdTuiTheme, opts: { title: string; initial?: string }): Promise<string | null> {
+/** 单行输入框。`null` = Esc;空串是**合法输入**,不折算成 null。
+ * `mask` = 回显打星(凭证输入 —— key 一个字符都不许上屏,屏幕会进截图与 scrollback)。 */
+export function input(host: DialogHost, theme: OmdTuiTheme, opts: { title: string; initial?: string; mask?: boolean }): Promise<string | null> {
   return new Promise((resolve) => {
     let buf = opts.initial ?? '';
     const line = new StatusLine('');
-    const paint = (): void => line.setText(`> ${buf}`);
+    const paint = (): void => line.setText(`> ${opts.mask ? '*'.repeat(buf.length) : buf}`);
     paint();
     const box = new DialogBox(theme, `${opts.title}  (Enter 确认, Esc 取消)`, line, (data) => {
       if (ESC.has(data)) return finish(null);

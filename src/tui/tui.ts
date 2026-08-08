@@ -50,6 +50,7 @@ import { STARTUP_HINT, formatHelp, parseHelpCommand, slashCommands } from './com
 import { choiceLabel, listModelChoices, parseModelsCommand, sortChoices } from './model-picker';
 import { createOmdAutocompleteProvider } from './skill-complete';
 import { createContextHealth } from './health';
+import { loadTuiUiConfig, setApprovalTokenTtl, setTuiUi } from './ui-config';
 import { renderLogo } from './render/logo';
 import { summarizeToolArg } from './render/tool-arg';
 import { formatStatusLine, formatUsageLine } from './render/statusbar';
@@ -156,6 +157,11 @@ export const CHROME = {
   approvalGranted: (summary: string, min: number) => `审批: 已批准 ${summary} (同档 ${min} 分钟内免审)`,
   /** 对话框被占时新到的审批单按拒绝处理(fail-closed)—— 说出为什么, 别静默拒。 */
   approvalBusy: (summary: string) => `审批: 另一个对话框开着, 已按拒绝处理 ${summary}`,
+  // ── 切片⑥: /login 与设置写盘回执。key 本身一个字符都不进屏。 ──
+  loginDone: (provider: string, target: string, warnings: string[]) =>
+    `key 已写入 ${target === 'env' ? '.env' : 'auth.json'} (${provider}, 即时生效)${warnings.length > 0 ? `\n  ${warnings.join('\n  ')}` : ''}`,
+  uiWritten: (what: string, path: string) => `${what} 已写入 ${path}`,
+  approvalTtlWritten: (sec: number, path: string) => `审批 token TTL -> ${sec}s 已写入 ${path} (重启生效)`,
 } as const;
 
 /**
@@ -363,9 +369,10 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    * - 全屏:`Ctrl+G` 开关,`Tab` 在 树 / 泳道甘特 / 分层依赖 三画法间循环。
    * - 侧栏或全屏画着时**不再画底部那张表** —— 同一份 DAG 画两遍,人会以为是两个 run。
    */
-  let sidebarOn = true;
+  const uiCfg = loadTuiUiConfig(opts.cwd);
+  let sidebarOn = uiCfg.sidebar;
   let fullOn = false;
-  let painterIdx = 0; // 0=树 1=甘特 2=分层
+  let painterIdx = uiCfg.painterIdx; // 0=树 1=甘特 2=分层 (默认从 tui.ui.painter 读)
   const SIDEBAR_WIDTH = 34;
   /** 低于这个总宽不给侧栏。= 侧栏 34 + 对话区至少 56。 */
   const SIDEBAR_MIN_TOTAL = 90;
@@ -941,6 +948,50 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   }
 
   /**
+   * `/login` —— 给一个 provider 落 key(切片⑥)。
+   *
+   * 复用 `setKeyHeadless`(auth.json / .env 双路由 + 活注入,与 `omd_set_key` MCP 同一条),
+   * **不新写写盘逻辑**。key 输入框回显打星 —— 屏幕会进截图与 scrollback,一个字符都不许上屏。
+   */
+  async function handleLogin(text: string): Promise<boolean> {
+    const t = text.trim();
+    if (t !== '/login' && !t.startsWith('/login ')) return false;
+    chatLog.appendUser(t);
+    editor.setText('');
+    tui.requestRender();
+    try {
+      const { discoverProviders } = require('../config/config-discovery') as typeof import('../config/config-discovery');
+      let provider = t.split(/\s+/)[1] ?? '';
+      if (!provider) {
+        const found = discoverProviders(process.env);
+        const MANUAL = ' manual';
+        const picked = await dialogSelect(dialogs, theme, {
+          title: '给哪个 provider 落 key?',
+          options: [
+            ...found.map((p) => ({ value: p.id, label: `${p.hasKey ? '[已配] ' : '[未配] '}${p.id}` })),
+            { value: MANUAL, label: '手动输入 provider…', description: '发现不了的也能配' },
+          ],
+          search: true,
+        });
+        if (picked === null) return true; // Esc: 什么都不改
+        provider = picked === MANUAL ? ((await dialogInput(dialogs, theme, { title: 'provider id' })) ?? '') : picked;
+        if (!provider.trim()) return true;
+      }
+      const key = await dialogInput(dialogs, theme, { title: `${provider} 的 API key(回显打星)`, mask: true });
+      if (key === null || !key.trim()) return true; // Esc / 空: 什么都不改
+      const { setKeyHeadless } = require('../harness/init/headless-config') as typeof import('../harness/init/headless-config');
+      const r = setKeyHeadless(provider.trim(), key.trim());
+      chatLog.appendNotice(CHROME.loginDone(r.provider, r.target, r.warnings));
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      logger.warn({ err: reason }, '[omd/tui] /login 抛了');
+      chatLog.appendNotice(CHROME.failed(reason));
+    }
+    tui.requestRender();
+    return true;
+  }
+
+  /**
    * `/settings` —— owner 指出"设置完全没有"。
    *
    * 面板只列**真的有数**的项:每一项都答得出"现在是什么值"。答不上来的不进表 ——
@@ -957,6 +1008,19 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     } catch {
       // 读不到就是 null —— 与"一条都没有"分得开(本仓 NULL ≠ 0)。
     }
+    // 切片⑥: 可改组的现状。TTL 与 provider 现读 (只在 /settings 打开时, 不在渲染回路)。
+    const approvalTtlSec = ((): number => {
+      const { loadApprovalConfig } = require('./approval/policy') as typeof import('./approval/policy');
+      return loadApprovalConfig(opts.cwd).tokenTtlSec;
+    })();
+    const providers = ((): { id: string; hasKey: boolean }[] => {
+      try {
+        const { discoverProviders } = require('../config/config-discovery') as typeof import('../config/config-discovery');
+        return discoverProviders(process.env).map((p) => ({ id: p.id, hasKey: Boolean(p.hasKey) }));
+      } catch {
+        return []; // 发现不了 = 空表 (面板画「一个都没发现」, 不是崩)
+      }
+    })();
     const items = buildSettings({
       seats: current,
       seatsError: err,
@@ -966,6 +1030,9 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       color: colorEnabled(),
       truecolor: truecolorEnabled(),
       extensions: opts.extensions ?? [],
+      ui: { sidebar: sidebarOn, painterName: PAINTERS[painterIdx] ?? '树' },
+      approvalTtlSec,
+      providers,
     });
     chatLog.appendNotice(formatSettings(items));
     tui.requestRender();
@@ -984,6 +1051,35 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     if (pick.startsWith('seat:')) await seatPicker();
     else if (pick === 'session') await handleSession('/session');
     else if (pick === 'ext') chatLog.appendNotice('扩展清单在 `.omd/extensions.json`(入口写绝对路径)。改完重启 omd tui 生效。');
+    else if (pick === 'ui-sidebar') {
+      // 立即生效 + 写盘 —— 面板是 config 的编辑器, 不引第二处真源。
+      sidebarOn = !sidebarOn;
+      const path = setTuiUi(opts.cwd, { sidebar: sidebarOn });
+      chatLog.appendNotice(CHROME.uiWritten(`左栏默认 -> ${sidebarOn ? '开' : '关'}`, path));
+    } else if (pick === 'ui-painter') {
+      const chosen = await dialogSelect(dialogs, theme, {
+        title: '全屏默认画法?',
+        options: PAINTERS.map((name, idx) => ({ value: String(idx), label: `${idx === painterIdx ? '* ' : '  '}${name}` })),
+      });
+      if (chosen !== null) {
+        painterIdx = Number(chosen);
+        const path = setTuiUi(opts.cwd, { painterIdx });
+        chatLog.appendNotice(CHROME.uiWritten(`全屏默认画法 -> ${PAINTERS[painterIdx]}`, path));
+      }
+    } else if (pick === 'approval-ttl') {
+      const raw = await dialogInput(dialogs, theme, { title: '审批 token TTL(秒)', initial: String(approvalTtlSec) });
+      if (raw !== null && raw.trim()) {
+        try {
+          const sec = Number(raw.trim());
+          const path = setApprovalTokenTtl(opts.cwd, sec);
+          chatLog.appendNotice(CHROME.approvalTtlWritten(sec, path));
+        } catch (err2) {
+          chatLog.appendNotice(CHROME.failed(err2 instanceof Error ? err2.message : String(err2)));
+        }
+      }
+    } else if (pick === 'providers' || pick === 'login') {
+      await handleLogin('/login');
+    }
     tui.requestRender();
     return true;
   }
@@ -1012,10 +1108,13 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       void handleSettings(prompt);
       return;
     }
-    void handleSession(prompt).then((handledSession) => {
-      if (handledSession) return;
-      void handleRuns(prompt).then((handled) => {
-        if (!handled) void submit(prompt);
+    void handleLogin(prompt).then((handledLogin) => {
+      if (handledLogin) return;
+      void handleSession(prompt).then((handledSession) => {
+        if (handledSession) return;
+        void handleRuns(prompt).then((handled) => {
+          if (!handled) void submit(prompt);
+        });
       });
     });
     return;
