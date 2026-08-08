@@ -61,6 +61,19 @@ export interface FixtureBackendDeps {
 /** fixture 每轮记的固定用量 —— PTY 的行②断言就对着这三个数。 */
 export const FIXTURE_USAGE = { in: 3120, out: 184, cacheHit: 2760 } as const;
 
+/**
+ * 写死的上下文压力 —— 让底栏 `ctx N%` 可断言(PTY 的 `SB-5`)。
+ * 12,000 / 200,000 = **6%**;窗口非 0 ⇒ `ratio` 非 null(窗口未知那一档另有单测)。
+ */
+export const FIXTURE_PRESSURE = {
+  systemTokens: 8000,
+  harnessTokens: 2000,
+  historyTokens: 4000,
+  usedTokens: 12_000,
+  windowTokens: 200_000,
+  ratio: 12_000 / 200_000,
+} as const;
+
 export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend {
   let seq = 0;
   let onEvent: ((e: OmdTuiEvent) => void) | undefined;
@@ -118,7 +131,16 @@ export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend 
           emit('tool', { phase: 'end', name: 'write', ok: false });
           emit('chat', { type: 'delta', text: `write 没有执行: ${(err as Error).message}` });
         }
-        emit('session', { sessionId, messageCount: msgs.length + 1 });
+        /**
+         * ★ **fixture 也发 `pressure`**(2026-08-09)。
+         *
+         * 之前只发 `messageCount` ⇒ 底栏那个 `ctx N%` 段**端到端一条闸都没有**:
+         * L3 lane 永远看不到它, 真机上它只在"live 采帧且这一轮刚好在 grab 前定稿"时才出现
+         * (本程就撞上过:两张 live 帧都在定稿前, 于是 ctx 缺席, 而我一时分不清是时序还是改坏了)。
+         * ⇒ 给一组**写死的**读数, 让 `ctx` 变成可断言的东西。`ratio` 由 used/window 算,
+         * 与生产同一条公式(`analyzeContextPressure`), 不在这里另编一个百分比。
+         */
+        emit('session', { sessionId, messageCount: msgs.length + 1, pressure: FIXTURE_PRESSURE });
         sessions.set(sessionId, msgs);
         return { ok: true };
       }
@@ -140,7 +162,7 @@ export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend 
         push({ type: 'settle', id: 'shard-2', status: 'failed', kind: 'agent', model: 'fixture-model' });
         push({ type: 'start', id: 'shard-3', kind: 'agent' });
         emit('chat', { type: 'delta', text: 'fan-out 演示图已发完。' });
-        emit('session', { sessionId, messageCount: msgs.length + 1 });
+        emit('session', { sessionId, messageCount: msgs.length + 1, pressure: FIXTURE_PRESSURE });
         sessions.set(sessionId, msgs);
         return { ok: true };
       }
@@ -151,7 +173,7 @@ export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend 
           emit('tool', { phase: 'end', name: 'read', id: `fx-read-${i}`, ok: true });
         }
         emit('chat', { type: 'delta', text: '同一个文件读了三遍。' });
-        emit('session', { sessionId, messageCount: msgs.length + 1 });
+        emit('session', { sessionId, messageCount: msgs.length + 1, pressure: FIXTURE_PRESSURE });
         sessions.set(sessionId, msgs);
         return { ok: true };
       }
@@ -167,7 +189,7 @@ export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend 
       for (const text of FIXTURE_CHUNKS) emit('chat', { type: 'delta', text });
       // 切片②: 上账本 (固定读数), 让 session 事件之后底栏行①②有真数可画。
       deps.usage?.record(FIXTURE_USAGE, 'fixture:model', 'chat');
-      emit('session', { sessionId, messageCount: msgs.length + 1 });
+      emit('session', { sessionId, messageCount: msgs.length + 1, pressure: FIXTURE_PRESSURE });
       sessions.set(sessionId, msgs);
       return { ok: true };
     },

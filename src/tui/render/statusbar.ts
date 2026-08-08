@@ -66,57 +66,95 @@ export function fmtUsd(costUsd: number, unpriced: boolean): string {
   return `$${n}${unpriced ? '+' : ''}`;
 }
 
-/** 行①:`oh-my-dag · main +2 · wt:fanin │ kimi-coding:k3 │ ctx 4.7k/1049k 0% │ 会话 $0.83 │ 5h $0.42` */
-export function formatStatusLine(i: StatusBarInput): string {
+/**
+ * ★ **底栏只有一行**(2026-08-09,owner 定方向后重写)。
+ *
+ * ## 为什么从两行减到一行,而且减的是**词元**不是类别
+ *
+ * P3 gauntlet 盲比里 `08-streaming` 连两轮判我方输,6 跑里 **5 跑**指的是同一条:
+ * 「底栏两行塞了 8–12 组指标,没有视觉分组」。同一把尺子量竞品(`08-streaming` 帧):
+ * **omd 2 行 / 25 词元 · pi 1 行 / 7 · opencode 1 行 / 6** —— 我们是 3.5–4 倍。
+ *
+ * owner 裁决:**"按建议来;测不到的那种取消,只保留有效信息。"**
+ * 于是删掉三类,**一个类别都没少**(模型 · 上下文 · 花费 · 会话仍全在,rubric V4 不掉分):
+ *
+ * | 删的 | 依据 |
+ * |---|---|
+ * | `kimi-coding 本地3+ 额度未知` | **测不到就不画**(`AGENTS.md §4` 第一条"无源恒缺席")—— 订阅制额度没有官方端点, 画一句"未知"占 2 个词元却不能拿它做任何决定 |
+ * | `ctx … 窗口未知` 那一档 | 同上:窗口拿不到时**整段不画**, 不画一个自己说"不知道"的段 |
+ * | 绝对 cache token 数 | 与命中率重复(率才是能拿来做决定的那个);同屏两个数说一件事 |
+ * | 会话花费与 5h 花费**相同**时的第二个 | 信息量决定占位 —— 两个 `$0.00` 说的是同一件事;不同才画两个 |
+ * | provider 逐项拆分(单 provider 时) | 与座位坐标重复(`kimi-coding:k3` 已在左边);**≥2 个** provider 才有拆分的价值 |
+ *
+ * ⚠ `in/out` 换成 `↑↓`(U+2191/2193,**都在字形白名单里量过 = 1 列**);
+ * 缓存那格**不能用 `⇄`** —— 它不在白名单(实测"未在表里"), 用汉字「缓存」。
+ *
+ * 形如:`oh-my-dag main+86 │ kimi-coding:k3 │ ctx 1% │ $0.00 10次 │ ↑111k ↓2.5k 缓存59%`
+ */
+export function formatStatusLine(i: StatusBarInput, o: StatusBarOpts = {}): string {
   const segs: string[] = [];
   if (i.ws) {
+    // `repo branch+dirty` —— 原来是 `repo · branch +2`, 三个词元变两个, 信息一样。
     const parts = [i.ws.repo];
-    if (i.ws.branch) parts.push(`${i.ws.branch}${i.ws.dirty > 0 ? ` +${i.ws.dirty}` : ''}`);
+    if (i.ws.branch) parts.push(`${i.ws.branch}${i.ws.dirty > 0 ? `+${i.ws.dirty}` : ''}`);
     if (i.ws.worktree) parts.push(`wt:${i.ws.worktree}`);
-    segs.push(parts.join(' · '));
+    segs.push(parts.join(' '));
   }
   if (i.seat) segs.push(i.seat);
-  if (i.pressure && i.pressure.usedTokens > 0) {
-    const p = i.pressure;
-    segs.push(
-      p.ratio === null
-        ? `ctx ${humanTokens(p.usedTokens)} 窗口未知`
-        : `ctx ${humanTokens(p.usedTokens)}/${humanTokens(p.windowTokens)} ${Math.round(p.ratio * 100)}%`,
-    );
+  // 上下文:**只画百分比**;窗口拿不到(ratio === null)⇒ 整段不画(无源恒缺席)。
+  if (i.pressure && i.pressure.usedTokens > 0 && i.pressure.ratio !== null) {
+    segs.push(`ctx ${Math.round(i.pressure.ratio * 100)}%`);
   }
-  if (i.session && i.session.calls > 0) segs.push(`会话 ${fmtUsd(i.session.costUsd, i.session.unpriced)}`);
-  if (i.win && i.win.calls > 0) segs.push(`5h ${fmtUsd(i.win.costUsd, i.win.unpriced)} · ${i.win.calls} 次`);
+  // 花费:会话与 5h 相同 ⇒ 只画一个。不同才画两个(信息量决定占位)。
+  const sess = i.session && i.session.calls > 0 ? fmtUsd(i.session.costUsd, i.session.unpriced) : null;
+  const winCost = i.win && i.win.calls > 0 ? fmtUsd(i.win.costUsd, i.win.unpriced) : null;
+  const calls = i.win && i.win.calls > 0 ? `${i.win.calls}次` : null;
+  if (sess !== null && winCost !== null && sess !== winCost) {
+    // 两个数不同 ⇒ 都要, 但压成**一个词元** `$会话/$5h`(带标签写要多花 2 个词元, 而 12 是硬上限;
+    // 标签在 `/settings` 里有全称)。相同就只画一个。
+    segs.push(`${sess}/${winCost}${calls ? ` ${calls}` : ''}`);
+  } else if (winCost !== null) {
+    segs.push(`${winCost}${calls ? ` ${calls}` : ''}`);
+  } else if (sess !== null) {
+    segs.push(sess);
+  }
+  // token:`↑in ↓out 缓存NN%`。绝对 cache 数与命中率重复 ⇒ 只留率。
+  if (i.win && i.win.calls > 0) {
+    const w = i.win;
+    const cache = w.in > 0 && w.cacheHit > 0 ? ` 缓存${Math.round((w.cacheHit / w.in) * 100)}%` : '';
+    segs.push(`↑${humanTokens(w.in)} ↓${humanTokens(w.out)}${cache}`);
+  }
+  // provider 拆分:**≥2 个**才画, 且只画按量计价的那些(订阅制没有能测的数)。
+  if (i.win && i.win.byProvider.length >= 2) {
+    const billing = o.billing ?? DEFAULT_BILLING;
+    const priced = i.win.byProvider.filter((p) => (billing[p.provider] ?? 'token') !== 'subscription');
+    if (priced.length >= 2) segs.push(priced.map((p) => `${p.provider} ${fmtUsd(p.costUsd, p.unpriced)}`).join(' '));
+  }
+  const tail = [o.ssh ? `ssh ${o.ssh}` : null, o.tmux ? 'tmux' : null].filter(Boolean);
+  if (tail.length > 0) segs.push(tail.join(' '));
   return segs.join(SEP);
 }
 
-/**
- * 行②:`in 312k out 18.4k cache 276k 88% │ kimi-coding 本地3+ 额度未知 · deepseek $1.20 │ ssh ms02 · tmux`
- *
- * `null` = 窗口里一条记录都没有 → 返回空串,这一行**不占位**(与"跑了但全是 0"分得开:
- * 后者 calls > 0,照画)。
- */
-export function formatUsageLine(
-  win: WindowSummary | null,
-  o: { billing?: Readonly<Record<string, BillingMode>>; ssh?: string | null; tmux?: boolean } = {},
-): string {
-  if (!win || win.calls === 0) return '';
-  const billing = o.billing ?? DEFAULT_BILLING;
-  const segs: string[] = [];
-  const cachePct = win.in > 0 && win.cacheHit > 0 ? ` ${Math.round((win.cacheHit / win.in) * 100)}%` : '';
-  segs.push(`in ${humanTokens(win.in)} out ${humanTokens(win.out)}${win.cacheHit > 0 ? ` cache ${humanTokens(win.cacheHit)}${cachePct}` : ''}`);
-  if (win.byProvider.length > 0) {
-    segs.push(
-      win.byProvider
-        .map((p) => {
-          const mode = billing[p.provider] ?? 'token';
-          // 订阅制: 本地计数是下界(别的客户端烧的看不见), 额度没有官方端点 → 未知。
-          if (mode === 'subscription') return `${p.provider} 本地${p.calls}+ 额度未知`;
-          return `${p.provider} ${fmtUsd(p.costUsd, p.unpriced)}`;
-        })
-        .join(' · '),
-    );
-  }
-  const tail = [o.ssh ? `ssh ${o.ssh}` : null, o.tmux ? 'tmux' : null].filter(Boolean);
-  if (tail.length > 0) segs.push(tail.join(' · '));
-  return segs.join(SEP);
+/** 底栏一行的可选上下文(计价口径 / 远程环境)。 */
+export interface StatusBarOpts {
+  billing?: Readonly<Record<string, BillingMode>>;
+  ssh?: string | null;
+  tmux?: boolean;
 }
+
+/**
+ * ★ **底栏词元上限 = 12**(gauntlet 判据)。
+ *
+ * 词元 = 去掉 `│` 之后按空白切的段数。竞品是 6–7,原来的 omd 两行合计 25。
+ * 这条**不是**风格偏好:它是那 5 跑判词唯一说得出的可测量量, 所以做成会红的闸(`statusbar.test.ts`)。
+ */
+export const FOOTER_MAX_TOKENS = 12;
+
+/** 数一行的词元(判据与闸共用同一个实现 —— 两处各写一遍必然漂移)。 */
+export function countTokens(line: string): number {
+  return line
+    .split(BORDER.v)
+    .flatMap((g) => g.trim().split(/\s+/))
+    .filter((x) => x !== '').length;
+}
+

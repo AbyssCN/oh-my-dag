@@ -22,7 +22,7 @@ import { fitLine } from './line';
 import { renderGantt } from './dag-gantt';
 import { renderDelta, renderFogLine } from './path-fog';
 import { renderLayers } from './dag-layers';
-import { formatStatusLine, formatUsageLine } from './statusbar';
+import { formatStatusLine } from './statusbar';
 import { approvalBody, approvalTitle } from '../approval/card';
 import type { ApprovalRequest } from '../approval/gate';
 
@@ -133,11 +133,18 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
       session: null,
       win: null,
     })],
-    ['statusbar:行②', formatUsageLine(
-      { since: 0, calls: 5, in: 312000, out: 18400, cacheHit: 276000, costUsd: 1.62, unpriced: true, byProvider: [
-        { provider: 'kimi-coding', calls: 3, in: 200000, out: 10000, cacheHit: 180000, costUsd: 0, unpriced: false },
-        { provider: 'deepseek', calls: 2, in: 112000, out: 8400, cacheHit: 96000, costUsd: 1.2, unpriced: false },
-      ] },
+    // 底栏现在只有**一行**(2026-08-09)。样本取**最长那种形态**:双 provider + ssh + tmux。
+    ['statusbar:一行(最长形态)', formatStatusLine(
+      {
+        ws: { repo: 'oh-my-dag', branch: 'main', dirty: 2, worktree: 'fanin' },
+        seat: 'kimi-coding:k3',
+        pressure: { systemTokens: 12000, harnessTokens: 8000, historyTokens: 34000, usedTokens: 46000, windowTokens: 200000, ratio: 0.23 },
+        session: { costUsd: 0.83, unpriced: false, calls: 3 },
+        win: { since: 0, calls: 5, in: 312000, out: 18400, cacheHit: 276000, costUsd: 0.42, unpriced: false, byProvider: [
+          { provider: 'deepseek', calls: 3, in: 200000, out: 10000, cacheHit: 180000, costUsd: 1.2, unpriced: false },
+          { provider: 'mimo', calls: 2, in: 112000, out: 8400, cacheHit: 96000, costUsd: 0.3, unpriced: false },
+        ] },
+      },
       { ssh: 'ms02', tmux: true },
     )],
     ['help', formatHelp()],

@@ -241,17 +241,35 @@ async function scenarioHappyPath() {
     const merged = FIXTURE_REPLY.join('');
     check(p.text().includes(merged), 'S10-3 ★ 两片流式合成一条消息(中间没有条目间隔)', p.text().slice(0, 500));
 
-    // ── 切片② G-2: 跑一轮后底栏行①②有真数(与 backend-fixture.ts 的 FIXTURE_USAGE 逐字对应)。──
+    // ── 切片② G-2: 跑一轮后底栏有真数(与 backend-fixture.ts 的 FIXTURE_USAGE 逐字对应)。──
+    // ⚠ 2026-08-09 底栏**从两行减到一行**, 判据跟着改:`in/out/cache` 三个词换成 `↑↓`,
+    //   绝对 cache 数不画了(与命中率重复)⇒ 现在钉 `↑3.1k ↓184 缓存88%`。
+    //   数还是那三个(3120/184/2760 → 88%), 变的是词元数不是信息。
     check(
-      await waitFor(p, (t) => t.includes('in 3.1k out 184 cache 2.8k 88%')),
-      'SB-1 ★ 行②: in/out/cache 全部非零且与账本一致(3120/184/2760)',
+      await waitFor(p, (t) => t.includes('↑3.1k ↓184 缓存88%')),
+      'SB-1 ★ 底栏: token 与命中率非零且与账本一致(3120/184/2760 → 88%)',
       p.text().slice(-500),
     );
     // fixture:model 不在价表 → unpriced → `$0.00+`(下界标注), **不是** 0% 也不是编一个百分比。
-    check(p.text().includes('5h $0.00+ · 1 次'), 'SB-2 ★ 行①: 5h 窗口段有真计数, 未计价带 + 标注', p.text().slice(-500));
-    check(p.text().includes('fixture $0.00+'), 'SB-3 行②: provider 段按坐标前缀分组', p.text().slice(-500));
-    // 行① 工作区段: 这条 lane 的 cwd 就是 omd 仓 → 仓名与分支该在。
-    check(/oh-my-dag · \S+/.test(p.text()), 'SB-4 行①: git 仓名+分支段', p.text().slice(-500));
+    // ⚠ 判据随底栏减法改了三处(2026-08-09), 每处的**语义没放松**:
+    //   · `5h $0.00+ · 1 次` → `$0.00+ 1次`:会话与 5h 相同时只画一个数(fixture 里两者都是 0),
+    //     `+` 后缀(未计价的下界标注)照旧钉住 —— 那才是这条闸的要点。
+    //   · provider 逐项拆分**只在 ≥2 个按量 provider 时才画** ⇒ 单 provider 的 fixture 下
+    //     那一段本来就不该在, 原来的 SB-3 从这一版起判**它不出现**(不是删掉这条闸)。
+    //   · `oh-my-dag · main` 的分隔点去掉了(省一个词元)⇒ 正则改成 `oh-my-dag \S+`。
+    check(p.text().includes('$0.00+ 1次'), 'SB-2 ★ 底栏: 窗口段有真计数, 未计价带 + 标注', p.text().slice(-500));
+    check(!p.text().includes('fixture $0.00+'), 'SB-3 ★ 单 provider 时不画逐项拆分(与座位坐标重复)', p.text().slice(-500));
+    // 工作区段: 这条 lane 的 cwd 就是 omd 仓 → 仓名与分支该在。
+    check(/oh-my-dag \S+/.test(p.text()), 'SB-4 底栏: git 仓名+分支段', p.text().slice(-500));
+    /**
+     * ★ **SB-5:`ctx` 段端到端有闸**(2026-08-09 新加)。
+     *
+     * 在这之前它**一条闸都没有** —— fixture 后端不发 `pressure`, 所以 L3 永远看不到这一段;
+     * 真机上它只在"live 采帧且这一轮刚好在 grab 前定稿"时出现。本程就吃过这个:
+     * 两张 live 帧都缺 ctx, 而我一时分不清是时序还是我把它改坏了。
+     * fixture 现在发一组写死的读数(`FIXTURE_PRESSURE` = 12k/200k = **6%**)。
+     */
+    check(await waitFor(p, (t) => t.includes('ctx 6%')), 'SB-5 ★ 底栏: ctx 段有真百分比(12k/200k = 6%)', p.text().slice(-400));
 
     // ── 切片⑦: 会话树 —— fork 一条、切回去、两条互不污染 (G 判据逐字)。──
     p.write('/session fork\r');

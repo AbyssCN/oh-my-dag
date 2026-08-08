@@ -58,7 +58,7 @@ import { createContextHealth } from './health';
 import { loadTuiUiConfig, setApprovalTokenTtl, setTuiUi } from './ui-config';
 import { renderLogo } from './render/logo';
 import { summarizeToolArg } from './render/tool-arg';
-import { formatStatusLine, formatUsageLine } from './render/statusbar';
+import { formatStatusLine } from './render/statusbar';
 import { renderTable } from './render/table';
 import type { TuiUsageLedger } from './usage/ledger';
 import { inTmux, readWorkspaceInfo, sshSegment } from './workspace';
@@ -387,7 +387,6 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   // 底栏行①② (切片②, v5 第一节样张)。segment 模型: 没数据的段不画,
   // 所以启动时行②多半是空串 (窗口里没记录) —— 那不是 bug, 是「还没烧过」的真值。
   const statusLine = new StatusLine('');
-  const usageLine = new StatusLine('');
 
   /**
    * 欢迎屏(S-3)。字标走 brand(整屏最亮的一处),正文走 dim —— **分层是判据不是口味**:
@@ -573,7 +572,6 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   root.addChild(editorContainer, chrome);
   root.addChild(healthLine, { shrink: 0, visible: () => health.line() !== null });
   root.addChild(statusLine, chrome);
-  root.addChild(usageLine, chrome);
   /**
    * ★ 底栏第三行**只在它真有话说的时候出现**(2026-08-08,P3 件6 轮3)。
    *
@@ -697,6 +695,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     if (o.refreshGit) ws = readWorkspaceInfo(opts.cwd);
     const win = opts.usage?.window() ?? null;
     const session = opts.usage?.sessionTotal() ?? null;
+    // 底栏一行:ssh/tmux 与计价口径一起交给它(原来那是第二行的活)。
     statusLine.setText(
       formatStatusLine({
         ws,
@@ -704,9 +703,8 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         pressure: lastPressure,
         session: session && session.calls > 0 ? session : null,
         win,
-      }),
+      }, { ssh: sshHost, tmux }),
     );
-    usageLine.setText(formatUsageLine(win, { ssh: sshHost, tmux }));
   }
   /** 已唤起、等着挂到下一句上的 skill 正文。**用完即清** —— 一条 skill 只管一轮。 */
   let pendingSkill: string | null = null;
