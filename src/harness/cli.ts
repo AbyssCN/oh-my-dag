@@ -154,7 +154,7 @@ if (userArgs[0] === 'tui') {
         }
         return { extTools: toolList, exts: loaded, extStatus: status };
       })();
-      const { ChatStore } = await import('./chat/store');
+      const { createOmdSessionStore } = await import('./chat/session-store');
       const { createEmbeddedBackend } = await import('../tui/backend-embedded');
       // ⚠ 先有工具面才有 backend (工具要交给 runChatTurn), 而节点事件要灌回 backend ——
       // 所以这里用一个**延迟指针**接环, 不是循环依赖。装配完成前引擎不可能发事件。
@@ -164,7 +164,7 @@ if (userArgs[0] === 'tui') {
       const { createOmdMemory } = await import('./memory/store');
       const embedded = createEmbeddedBackend({
         cwd,
-        store: new ChatStore(cwd),
+        store: createOmdSessionStore(cwd),
         memory: createOmdMemory(),
         // S-4: 对话位的工具面(含六只手)。装配在 `tui/tools/chat-seat`, 那里有闸盯着 ——
         // 长在这个内联块里的话, "对话位到底拿到了哪些工具"没有任何测试看得见(坑 #7 同族)。
@@ -231,7 +231,7 @@ if (userArgs[0] === 'serve') {
   const { assembleOmdMcpTools, resolveEngineModels } = await import('../mcp/assemble');
   const { createConductorChatTools } = await import('../serve/chat-tools');
   const { startDaemon } = await import('../serve/daemon');
-  const { ChatStore } = await import('./chat/store');
+  const { createOmdSessionStore } = await import('./chat/session-store');
   const { createPlanLedger } = await import('./plan-ledger');
   const { existsSync } = await import('node:fs');
   const { join } = await import('node:path');
@@ -243,7 +243,7 @@ if (userArgs[0] === 'serve') {
     {
       cwd,
       tools,
-      chatStore: new ChatStore(cwd),
+      chatStore: createOmdSessionStore(cwd),
       ledger: createPlanLedger({ path: join(cwd, '.omd', 'plan-ledger.db') }),
       // conductor 座每请求现解 (INV-MODEL-3): omd_set_role 改完, 下一句 chat 就换座。
       resolveChatModel: () => resolveEngineModels(process.env).conductorModel,

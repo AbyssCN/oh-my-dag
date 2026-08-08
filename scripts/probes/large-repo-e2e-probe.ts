@@ -61,7 +61,7 @@ async function runOne(repo: string): Promise<Reading> {
 
   // ① 会话数据改道到临时目录:目标仓的 .omd/ 一个字节都不许动。
   process.env.OMD_DATA_HOME = mkdtempSync(join(tmpdir(), 'omd-e2e-data-'));
-  // ★ **只设 `OMD_DATA_HOME` 是不够的**(2026-08-08 实测):`ChatStore.dir()` 在这个变量
+  // ★ **只设 `OMD_DATA_HOME` 是不够的**(2026-08-08 实测):`session-store` 的 `sessionsRootFor()` 在这个变量
   //   有值时走 `dataPath('chat')`,而 `dataPath` 只有在 **project scope 被激活过**时才认它
   //   (`project-scope.ts:117-119`)—— 没激活就退回**相对路径** `.omd/chat`,于是会话
   //   落在**进程 cwd**(= 主仓)下。11 个探针会话就是这么进主仓 `.omd/chat/` 的。
@@ -74,7 +74,7 @@ async function runOne(repo: string): Promise<Reading> {
   const { assembleOmdMcpTools, resolveEngineModels } = await import('../../src/mcp/assemble');
   const { createChatSeatTools } = await import('../../src/tui/tools/chat-seat');
   const { createApprovalGate } = await import('../../src/tui/approval/gate');
-  const { ChatStore } = await import('../../src/harness/chat/store');
+  const { createOmdSessionStore } = await import('../../src/harness/chat/session-store');
   const { runChatTurn } = await import('../../src/harness/chat/agent');
   const { loadConductorContext } = await import('../../src/tui/context');
 
@@ -101,7 +101,7 @@ async function runOne(repo: string): Promise<Reading> {
   let crash = '';
   try {
     const r = await runChatTurn({
-      store: new ChatStore(repo),
+      store: createOmdSessionStore(repo),
       sessionId: `e2e-${Date.now()}`,
       prompt: TASK,
       model,
@@ -130,14 +130,14 @@ async function runOne(repo: string): Promise<Reading> {
       },
     });
     usage = r.usage;
-    messages = r.session.messages.length;
+    messages = r.messageCount;
     /**
      * 流式一个字都没收到 → 从会话里捞,但**只捞 `type === 'text'` 的块**。
      * ⚠ 不许 `JSON.stringify(整条 content)`:那会把 `thinking` 与那条 3848 字的
      * `thinkingSignature` 一起倒进判据,于是判据匹配的是内心独白(2026-08-08 实测的假绿)。
      */
     if (!out.trim()) {
-      for (const m of r.session.messages) {
+      for (const m of r.newMessages) {
         const c = (m as { role?: string; content?: unknown }).content;
         if ((m as { role?: string }).role !== 'assistant' || !Array.isArray(c)) continue;
         for (const part of c as { type?: string; text?: string }[]) {

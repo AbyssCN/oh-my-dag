@@ -9,13 +9,13 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { PlanLedger } from '../harness/plan-ledger';
-import { ChatStore } from '../harness/chat/store';
+import { type OmdSessionStore, createOmdSessionStore, resetSessionCacheForTest } from '../harness/chat/session-store';
 import { createDaemonFetch } from './daemon';
 
 const RUN = '11111111-2222-3333-4444-555555555555';
 let root: string;
 let fetchFn: (req: Request) => Promise<Response>;
-let store: ChatStore;
+let store: OmdSessionStore;
 
 const fakeLedger: PlanLedger = {
   record: () => null,
@@ -69,7 +69,8 @@ beforeEach(() => {
   );
   writeFileSync(join(dir, 'a.json'), JSON.stringify({ nodeId: 'a', leafKind: 'command', status: 'done', summary: 'ok', durationMs: 5 }));
   writeFileSync(join(dir, 'out-a.txt'), 'hello from a');
-  store = new ChatStore(root);
+  resetSessionCacheForTest(); // 单写者表是模块级的 —— 不清会把上一条临时目录的实例带进来
+  store = createOmdSessionStore(root);
   bridged.length = 0;
   fetchFn = createDaemonFetch({
     cwd: root,
@@ -175,12 +176,14 @@ describe('chat (SSE)', () => {
     const body = await res.text();
     expect(body).toContain('event: result');
     expect(body).toContain('收到');
-    expect(store.load('web1')?.messages.length).toBe(2);
+    expect((await (await store.open('web1'))?.messages())?.length).toBe(2);
   });
 
   test('空 message → 400;会话列表/详情/删除', async () => {
     expect((await post('/api/chat/web1/messages', {})).status).toBe(400);
-    await post('/api/chat/web1/messages', { message: 'hi' });
+    // ⚠ 必须**把 SSE 读完**再问列表:响应一发就返回, 轮子还在流里跑。
+    //   此前不读也过, 是因为老 store 是同步写、恰好在下一个 await 之前写完了 —— 那是碰运气。
+    await (await post('/api/chat/web1/messages', { message: 'hi' })).text();
     const list = (await (await get('/api/chat')).json()) as { id: string }[];
     expect(list.map((s) => s.id)).toEqual(['web1']);
     expect((await get('/api/chat/web1')).status).toBe(200);

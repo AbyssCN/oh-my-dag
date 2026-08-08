@@ -60,7 +60,7 @@ async function main(): Promise<void> {
   const repo = i >= 0 && process.argv[i + 1] ? (process.argv[i + 1] as string) : process.cwd();
   // 会话数据改道 —— 不落在目标仓的 .omd/。
   process.env.OMD_DATA_HOME = mkdtempSync(join(tmpdir(), 'omd-compact-data-'));
-  // ★ **只设 `OMD_DATA_HOME` 是不够的**(2026-08-08 实测):`ChatStore.dir()` 在这个变量
+  // ★ **只设 `OMD_DATA_HOME` 是不够的**(2026-08-08 实测):`session-store` 的 `sessionsRootFor()` 在这个变量
   //   有值时走 `dataPath('chat')`,而 `dataPath` 只有在 **project scope 被激活过**时才认它
   //   (`project-scope.ts:117-119`)—— 没激活就退回**相对路径** `.omd/chat`,于是会话
   //   落在**进程 cwd**(= 主仓)下。11 个探针会话就是这么进主仓 `.omd/chat/` 的。
@@ -73,7 +73,7 @@ async function main(): Promise<void> {
   const { assembleOmdMcpTools, resolveEngineModels } = await import('../../src/mcp/assemble');
   const { createChatSeatTools } = await import('../../src/tui/tools/chat-seat');
   const { createApprovalGate } = await import('../../src/tui/approval/gate');
-  const { ChatStore } = await import('../../src/harness/chat/store');
+  const { createOmdSessionStore } = await import('../../src/harness/chat/session-store');
   const { runChatTurn } = await import('../../src/harness/chat/agent');
   const { loadConductorContext } = await import('../../src/tui/context');
 
@@ -87,7 +87,7 @@ async function main(): Promise<void> {
 
   const tools = createChatSeatTools({ cwd: repo, mcpTools: assembleOmdMcpTools({ onNodeEvent: () => {} }), approvals });
   const model = resolveEngineModels(process.env).conductorModel;
-  const store = new ChatStore(repo);
+  const store = createOmdSessionStore(repo);
   const sessionId = `compact-${Date.now()}`;
   const contextFiles = loadConductorContext(repo);
 
@@ -124,7 +124,7 @@ async function main(): Promise<void> {
       rows.push({
         n: n + 1,
         compactions: r.compactions,
-        msgs: r.session.messages.length,
+        msgs: r.messageCount,
         tokens: r.pressure?.usedTokens ?? null,
         kept: reply.endsWith(TOKEN),
         tail: reply.slice(-70).replace(/\n/g, '⏎'),

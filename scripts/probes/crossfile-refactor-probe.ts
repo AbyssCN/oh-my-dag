@@ -56,7 +56,7 @@ async function main(): Promise<void> {
   }
   const repo = process.argv[i + 1] as string;
   process.env.OMD_DATA_HOME = mkdtempSync(join(tmpdir(), 'omd-xfile-data-'));
-  // ★ **只设 `OMD_DATA_HOME` 是不够的**(2026-08-08 实测):`ChatStore.dir()` 在这个变量
+  // ★ **只设 `OMD_DATA_HOME` 是不够的**(2026-08-08 实测):`session-store` 的 `sessionsRootFor()` 在这个变量
   //   有值时走 `dataPath('chat')`,而 `dataPath` 只有在 **project scope 被激活过**时才认它
   //   (`project-scope.ts:117-119`)—— 没激活就退回**相对路径** `.omd/chat`,于是会话
   //   落在**进程 cwd**(= 主仓)下。11 个探针会话就是这么进主仓 `.omd/chat/` 的。
@@ -69,7 +69,7 @@ async function main(): Promise<void> {
   const { assembleOmdMcpTools, resolveEngineModels } = await import('../../src/mcp/assemble');
   const { createChatSeatTools } = await import('../../src/tui/tools/chat-seat');
   const { createApprovalGate } = await import('../../src/tui/approval/gate');
-  const { ChatStore } = await import('../../src/harness/chat/store');
+  const { createOmdSessionStore } = await import('../../src/harness/chat/session-store');
   const { runChatTurn } = await import('../../src/harness/chat/agent');
   const { loadConductorContext } = await import('../../src/tui/context');
 
@@ -95,7 +95,7 @@ async function main(): Promise<void> {
   const t0 = Date.now();
   try {
     const r = await runChatTurn({
-      store: new ChatStore(repo),
+      store: createOmdSessionStore(repo),
       sessionId: `xfile-${Date.now()}`,
       prompt: TASK,
       model,
@@ -111,9 +111,9 @@ async function main(): Promise<void> {
       },
     });
     usage = r.usage;
-    messages = r.session.messages.length;
+    messages = r.messageCount;
     if (!out.trim()) {
-      for (const m of r.session.messages) {
+      for (const m of r.newMessages) {
         const c = (m as { role?: string; content?: unknown }).content;
         if ((m as { role?: string }).role !== 'assistant' || !Array.isArray(c)) continue;
         for (const part of c as { type?: string; text?: string }[]) if (part.type === 'text' && part.text) out += `${part.text}\n`;

@@ -19,7 +19,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ChatStore } from '../harness/chat/store';
+import { createOmdSessionStore } from '../harness/chat/session-store';
 import type { ConductorPlan } from '../harness/conductor-plan';
 import type { DagNodeEvent, ExecutorDagConfig, ExecutorDagResult } from '../harness/dag/types';
 import { assembleOmdMcpTools } from '../mcp/assemble';
@@ -63,7 +63,7 @@ function wireEverything() {
 
   const backend: ReturnType<typeof createEmbeddedBackend> = createEmbeddedBackend({
     cwd,
-    store: new ChatStore(cwd),
+    store: createOmdSessionStore(cwd),
     tools: [],
     resolveModel: () => 'fake:conductor',
     runTurn: (async () => ({ session: { messages: [] }, reply: '', newMessages: [], compactions: 0, usage: { in: 0, out: 0 }, pressure: { systemTokens: 0, harnessTokens: 0, historyTokens: 0, usedTokens: 0, windowTokens: 0, ratio: null } })) as never,

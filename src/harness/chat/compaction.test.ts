@@ -20,12 +20,12 @@ import { join } from 'node:path';
 import { callModel } from '../../model';
 import { runChatTurn } from './agent';
 import { CHAT_COMPACTION_PROMPT, DEFAULT_COMPACTION_CALL_MODEL, compactChatMessages } from './compaction';
-import { ChatStore } from './store';
+import { type OmdSessionStore, createOmdSessionStore, resetSessionCacheForTest } from './session-store';
 
 const MODEL = 'deepseek:deepseek-v4-flash'; // pi 内置目录离线可解
 
 let root: string;
-let store: ChatStore;
+let store: OmdSessionStore;
 let calls: { system: string; user: string }[] = [];
 
 /** 假的摘要调用:记下它收到的两段提示词,回一份固定摘要 + 一份固定用量。 */
@@ -45,9 +45,18 @@ const fakeCallModel = (async (req: { messages: { role: string; content: string }
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'omd-chat-compact-'));
-  store = new ChatStore(root);
+  resetSessionCacheForTest(); // 单写者表是模块级的 —— 不清会把上一条临时目录的实例带进来
+  store = createOmdSessionStore(root);
   calls = [];
 });
+
+/** 造一条已有历史的会话(新层是 append-only: 一条一条写进去, 没有"整份 save")。 */
+const seed = async (id: string, ms: AgentMessage[]): Promise<void> => {
+  const s = await store.create(id, 't');
+  for (const m of ms) await s.append(m);
+};
+/** 盘上那条会话现在投影出来是什么。 */
+const onDisk = async (id: string): Promise<AgentMessage[]> => (await store.open(id))!.messages();
 
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
@@ -77,10 +86,8 @@ describe('★ 轮前压缩(管跨轮增长)', () => {
   // 反向自检 (2026-08-07 实跑): 把 agent.ts 里那段 `if (wantCompaction && overBudget(...))`
   // 整块注释掉 → 「会话真的瘦了」「账本记到了」「摘要用的是 chat 口径」三条当场红。
   test('超预算的会话在开跑前被压缩, 且**写回磁盘**(否则下一轮全回来, 这次白花钱)', async () => {
-    const s = store.create('c1', 't');
-    s.messages = longSession(12);
-    store.save(s);
-    const before = (store.load('c1') as { messages: AgentMessage[] }).messages.length;
+    await seed('c1', longSession(12));
+    const before = (await onDisk('c1')).length;
 
     const r = await runChatTurn({
       store, sessionId: 'c1', prompt: '再问一句', model: MODEL, cwd: root,
@@ -91,16 +98,39 @@ describe('★ 轮前压缩(管跨轮增长)', () => {
     });
 
     expect(r.compactions).toBeGreaterThan(0);
-    const after = (store.load('c1') as { messages: AgentMessage[] }).messages;
+    const after = await onDisk('c1');
     // 压缩 + 本轮两条新消息之后, 仍必须比原来短 —— 只在内存里压不算数。
     expect(after.length).toBeLessThan(before);
     expect(JSON.stringify(after)).toContain('【摘要】');
   });
 
+  test('★★ 压缩这一轮**发给模型的**与**下一轮载入的**是同一份(两处各拼一次 = S-1 那一族)', async () => {
+    // 换存储层之后压缩落成一条 `compaction` 条目, 而条目**投影**回消息时的次序是
+    // `[摘要, 首条, ...尾]` —— 与 `compactChatMessages` 自己拼的 `[首条, 摘要, ...尾]` 不同。
+    // 于是"发出去的"与"存下来的"很容易变成两份:两边都有内容、都不报错, 只是不是同一份。
+    // 证伪 (实跑): 把 agent.ts 里 `messages = await existing.messages()` 换成
+    // `messages = compacted.messages` → 这条当场红 (第二轮开头是首条而不是摘要)。
+    await seed('c3', longSession(12));
+    const turn1: { history?: AgentMessage[] } = {};
+    const r1 = await runChatTurn({
+      store, sessionId: 'c3', prompt: '第一问', model: MODEL, cwd: root,
+      contextBudgetRatio: 0.000001, compactionKeepRecentTokens: 300,
+      compactionCallModel: fakeCallModel, loopFn: fakeLoop(turn1) as never,
+    });
+    expect(r1.compactions).toBeGreaterThan(0);
+
+    const turn2: { history?: AgentMessage[] } = {};
+    // 第二轮不许再压 (ratio=0), 否则量到的就不是"载入了什么"。
+    await runChatTurn({
+      store, sessionId: 'c3', prompt: '第二问', model: MODEL, cwd: root,
+      contextBudgetRatio: 0, loopFn: fakeLoop(turn2) as never,
+    });
+    // 第二轮载入的 = 第一轮发出去的 + 第一轮新增的那两条。逐字比。
+    expect(JSON.stringify(turn2.history)).toBe(JSON.stringify([...(turn1.history ?? []), ...r1.newMessages]));
+  });
+
   test('★ 摘要用的是 **chat 口径**, 不是叶子那套"改了哪些文件"', async () => {
-    const s = store.create('c2', 't');
-    s.messages = longSession(12);
-    store.save(s);
+    await seed('c2', longSession(12));
     await runChatTurn({
       store, sessionId: 'c2', prompt: 'x', model: MODEL, cwd: root,
       contextBudgetRatio: 0.000001, compactionKeepRecentTokens: 300, compactionCallModel: fakeCallModel, loopFn: fakeLoop() as never,
@@ -125,15 +155,11 @@ describe('★ 轮前压缩(管跨轮增长)', () => {
   });
 
   test('★ system prompt 未受影响 —— 压缩只动 messages', async () => {
-    const bare = store.create('c4', 't');
-    bare.messages = [];
-    store.save(bare);
+    await seed('c4', []);
     const seenShort: { systemPrompt?: string } = {};
     await runChatTurn({ store, sessionId: 'c4', prompt: 'x', model: MODEL, cwd: root, compactionCallModel: fakeCallModel, loopFn: fakeLoop(seenShort) as never });
 
-    const s = store.create('c5', 't');
-    s.messages = longSession(12);
-    store.save(s);
+    await seed('c5', longSession(12));
     const seenLong: { systemPrompt?: string } = {};
     await runChatTurn({
       store, sessionId: 'c5', prompt: 'x', model: MODEL, cwd: root,
@@ -145,18 +171,14 @@ describe('★ 轮前压缩(管跨轮增长)', () => {
 
 describe('不该压的时候不压', () => {
   test('没超预算 → 一次模型调用都不发(压缩不是每轮都跑的东西)', async () => {
-    const s = store.create('c6', 't');
-    s.messages = longSession(2);
-    store.save(s);
+    await seed('c6', longSession(2));
     const r = await runChatTurn({ store, sessionId: 'c6', prompt: 'x', model: MODEL, cwd: root, loopFn: fakeLoop() as never });
     expect(r.compactions).toBe(0);
     expect(calls).toHaveLength(0);
   });
 
   test('★ ratio=0 关掉压缩 —— 与"开着但没压"分得开(前者 calls=0 且恒不压)', async () => {
-    const s = store.create('c7', 't');
-    s.messages = longSession(12);
-    store.save(s);
+    await seed('c7', longSession(12));
     const r = await runChatTurn({
       store, sessionId: 'c7', prompt: 'x', model: MODEL, cwd: root,
       contextBudgetRatio: 0, compactionCallModel: fakeCallModel, loopFn: fakeLoop() as never,
@@ -164,13 +186,11 @@ describe('不该压的时候不压', () => {
     expect(r.compactions).toBe(0);
     expect(calls).toHaveLength(0);
     // 会话没被动过: 原来 24 条 + 本轮 2 条
-    expect((store.load('c7') as { messages: AgentMessage[] }).messages).toHaveLength(26);
+    expect(await onDisk('c7')).toHaveLength(26);
   });
 
   test('会话太短切不出点 → 不压, 也不抛(响亮记一行, 不静默)', async () => {
-    const s = store.create('c8', 't');
-    s.messages = [userMsg('只有一条')];
-    store.save(s);
+    await seed('c8', [userMsg('只有一条')]);
     const r = await runChatTurn({
       store, sessionId: 'c8', prompt: 'x', model: MODEL, cwd: root,
       contextBudgetRatio: 0.000001, compactionKeepRecentTokens: 300, compactionCallModel: fakeCallModel, loopFn: fakeLoop() as never,

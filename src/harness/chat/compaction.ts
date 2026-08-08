@@ -19,7 +19,7 @@
  */
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { callModel } from '../../model';
-import { type CompactionPrompt, compactLeafContext } from '../agent-leaf';
+import { type CompactionPrompt, type LeafCompaction, compactLeafContext } from '../agent-leaf';
 
 /**
  * 摘要那一次模型调用的接缝。
@@ -52,7 +52,10 @@ export const CHAT_COMPACTION_PROMPT: CompactionPrompt = {
 };
 
 /**
- * 压一段 chat 会话。压不动返回 `null`(**不是空数组** —— "没压"与"压成空的"是两件事)。
+ * 压一段 chat 会话。压不动返回 `null`(**不是空的结果** —— "没压"与"压成空的"是两件事)。
+ *
+ * 返回的是**结构化结果**(`LeafCompaction`):`messages` 给轮内那条路(它要换整份上下文),
+ * `summary` + `retainedTail` 给存储层(pi 的 `compaction` 条目存的正是这两件)。
  *
  * @param keepRecentTokens 尾部保留预算;默认 20k,与 leaf 同。
  */
@@ -63,7 +66,7 @@ export async function compactChatMessages(opts: {
   signal?: AbortSignal;
   /** 省略 → 真 `callModel`(账本挂在它出口上)。只有测试该传。 */
   callModelFn?: CompactionCallModel;
-}): Promise<AgentMessage[] | null> {
+}): Promise<LeafCompaction | null> {
   return compactLeafContext({
     messages: opts.messages,
     model: opts.model,

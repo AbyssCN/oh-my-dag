@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { observeModelUsage } from '../../model/accounting';
 import { runChatTurn } from './agent';
-import { ChatStore } from './store';
+import { createOmdSessionStore } from './session-store';
 import { analyzeContextPressure, sumUsage, turnUsages } from './usage';
 
 const MODEL = 'deepseek:deepseek-v4-flash';
@@ -98,7 +98,7 @@ describe('★ 接进账本了 —— 这是这一片补的缺口', () => {
     const detach = observeModelUsage((usage, model) => seen.push({ model, in: usage.in }));
     try {
       const r = await runChatTurn({
-        store: new ChatStore(root), sessionId: 's', prompt: 'q', model: MODEL, cwd: root,
+        store: createOmdSessionStore(root), sessionId: 's', prompt: 'q', model: MODEL, cwd: root,
         loopFn: fakeLoop([assistant('答一', u(100, 10)), assistant('答二', u(200, 20))]),
       });
       expect(seen.map((s) => s.in)).toEqual([100, 200]); // 两次调用 = 账本两笔
@@ -115,7 +115,7 @@ describe('★ 接进账本了 —— 这是这一片补的缺口', () => {
     const detach = observeModelUsage(() => seen.push(1));
     try {
       const r = await runChatTurn({
-        store: new ChatStore(root), sessionId: 's', prompt: 'q', model: MODEL, cwd: root,
+        store: createOmdSessionStore(root), sessionId: 's', prompt: 'q', model: MODEL, cwd: root,
         loopFn: fakeLoop([assistant('答')]),
       });
       expect(seen).toHaveLength(0);
@@ -128,7 +128,7 @@ describe('★ 接进账本了 —— 这是这一片补的缺口', () => {
   test('一轮跑完带回上下文压力(S9 算完就扔的那个数,现在返回给 UI)', async () => {
     root = mkdtempSync(join(tmpdir(), 'omd-chat-usage3-'));
     const r = await runChatTurn({
-      store: new ChatStore(root), sessionId: 's', prompt: 'q', model: MODEL, cwd: root,
+      store: createOmdSessionStore(root), sessionId: 's', prompt: 'q', model: MODEL, cwd: root,
       loopFn: fakeLoop([assistant('答', u(10, 1))]),
     });
     expect(r.pressure.usedTokens).toBeGreaterThan(0);

@@ -19,7 +19,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ChatStore } from '../src/harness/chat/store';
+import { createOmdSessionStore } from '../src/harness/chat/session-store';
 import { assembleOmdMcpTools, resolveEngineModels } from '../src/mcp/assemble';
 import { bootstrapModelRuntime } from '../src/model/bootstrap';
 import { createConductorChatTools } from '../src/serve/chat-tools';
@@ -34,7 +34,7 @@ if (process.env.OMD_L4 !== '1') {
 const cwd = mkdtempSync(join(tmpdir(), 'omd-tui-l4-'));
 bootstrapModelRuntime();
 const model = resolveEngineModels(process.env).conductorModel;
-const store = new ChatStore(cwd);
+const store = createOmdSessionStore(cwd);
 const backend = createEmbeddedBackend({
   cwd,
   store,
@@ -67,8 +67,8 @@ const deltas = events.filter((e) => e.event === 'chat').map((e) => (e.payload as
 check(deltas.length > 0, 'L4-2 收到了流式 delta (不是一次性返回)', `实得 ${deltas.length} 片`);
 const reply = deltas.join('');
 check(reply.includes('51'), 'L4-3 ★ 回答内容对 (17×3=51) —— 判据不是"有回复", 是回对了', reply.slice(0, 200));
-const persisted = store.load('l4');
-check((persisted?.messages.length ?? 0) >= 2, 'L4-4 会话真写进了 ChatStore', `实得 ${persisted?.messages.length ?? 0} 条`);
+const persisted = (await (await store.open('l4'))?.messages())?.length ?? 0;
+check(persisted >= 2, 'L4-4 会话真写进了存储层', `实得 ${persisted} 条`);
 check(events.at(-1)?.event === 'session', 'L4-5 收尾发了 session 事件 (UI 靠它收尾流式)');
 
 if (failures.length) {

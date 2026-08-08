@@ -435,6 +435,24 @@ const LEAF_COMPACTION_PROMPT: CompactionPrompt = {
     '只输出摘要本身, 不要复述任务、不要寒暄、不要接着干活。',
 };
 
+/**
+ * 压缩的结构化结果(2026-08-09)。
+ *
+ * `messages` 是**拼好的新上下文**(与本函数此前的返回值逐字相同,叶子那条路只用它);
+ * `summary` / `retainedTail` 是给**存储层**的:pi 的 `compaction` 条目存的正是这两件,
+ * 投影时自己拼回 `[摘要, ...retainedTail]`(`harness/session/context.js`)。
+ *
+ * ⚠ 两种拼法有一处**次序差**:这里的 `messages` 是 `[首条, 摘要, ...尾]`(首条逐字在前),
+ * 而 pi 的投影是 `[摘要, 首条, ...尾]` —— 内容一条不少,首条与摘要谁先谁后不同。
+ * 之所以不去改 pi:那是它的条目语义(摘要即截断点),而首条在不在才是 omd 在意的那件事。
+ */
+export interface LeafCompaction {
+  messages: AgentMessage[];
+  summary: string;
+  /** 摘要之后原样留着的消息 —— **含逐字保留的首条**(见上方次序差那条)。 */
+  retainedTail: AgentMessage[];
+}
+
 export async function compactLeafContext(opts: {
   messages: AgentMessage[];
   model: string;
@@ -448,7 +466,7 @@ export async function compactLeafContext(opts: {
    * 共享的可变状态,靠它做隔离单文件绿、全量红(2026-08-07 实测)。
    */
   callModelFn?: typeof callModel;
-}): Promise<AgentMessage[] | null> {
+}): Promise<LeafCompaction | null> {
   const { messages, model, keepRecentTokens, signal } = opts;
   const prompt = opts.prompt ?? LEAF_COMPACTION_PROMPT;
   const call = opts.callModelFn ?? callModel;
@@ -479,15 +497,21 @@ export async function compactLeafContext(opts: {
     return null;
   }
   if (!summary) return null;
-  return [
-    messages[0]!, // 契约逐字留着 (见 opts.compaction 注)
-    {
-      role: 'user' as const,
-      content: `${COMPACTION_SUMMARY_PREFIX}${summary}${COMPACTION_SUMMARY_SUFFIX}`,
-      timestamp: Date.now(),
-    },
-    ...messages.slice(cut),
-  ];
+  const head = messages[0]!; // 契约逐字留着 (见 opts.compaction 注)
+  const tail = messages.slice(cut);
+  return {
+    messages: [
+      head,
+      {
+        role: 'user' as const,
+        content: `${COMPACTION_SUMMARY_PREFIX}${summary}${COMPACTION_SUMMARY_SUFFIX}`,
+        timestamp: Date.now(),
+      },
+      ...tail,
+    ],
+    summary,
+    retainedTail: [head, ...tail],
+  };
 }
 
 /** 一条 AgentMessage 里的 assistant 文本 (thinking / toolCall 块不算)。chat agent 复用 → export。 */
@@ -742,13 +766,13 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
               });
               if (!compacted) return undefined; // 压不动 → 交给 shouldStopAfterTurn 优雅停
               usageAnchorStale = true; // 见上方注: 这一轮不能再拿 provider 用量当基数
-              const after = pureEstimate(compacted);
+              const after = pureEstimate(compacted.messages);
               compactions++;
               logger.info(
-                { model, window, before, after, msgs: `${ctx.messages.length}→${compacted.length}` },
+                { model, window, before, after, msgs: `${ctx.messages.length}→${compacted.messages.length}` },
                 '[agent-leaf] 上下文压缩 (auto-compaction) —— 接着干, 不是交卷',
               );
-              return { context: { ...ctx, messages: compacted } };
+              return { context: { ...ctx, messages: compacted.messages } };
             },
           }
         : {}),

@@ -19,7 +19,7 @@
  */
 import type { AgentEvent, AgentMessage } from '@earendil-works/pi-agent-core';
 import { logger } from '../logger';
-import type { ChatStore } from '../harness/chat/store';
+import type { OmdSessionStore } from '../harness/chat/session-store';
 import type { AnyOmdTool } from '../harness/agent-tools';
 import { type ChatTurnOpts, runChatTurn } from '../harness/chat/agent';
 import type { OmdBackend, OmdTuiEvent, TuiSessionMeta } from './backend';
@@ -27,7 +27,7 @@ import type { ContextFile } from './context';
 
 export interface EmbeddedBackendDeps {
   cwd: string;
-  store: ChatStore;
+  store: OmdSessionStore;
   /** chat 位工具白名单(`createConductorChatTools` 的产物)。 */
   tools: AnyOmdTool[];
   /**
@@ -176,7 +176,7 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
         // pressure / usage 一起发 —— UI 靠它画"离满还有多远、这一轮花了多少"。
         emit('session', {
           sessionId,
-          messageCount: r.session.messages.length,
+          messageCount: r.messageCount,
           compactions: r.compactions,
           pressure: r.pressure,
           usage: r.usage,
@@ -198,7 +198,8 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
     },
 
     async loadHistory({ sessionId }): Promise<AgentMessage[]> {
-      return deps.store.load(sessionId)?.messages ?? [];
+      // 缺席返回空历史 (还没说过话不是错误); 非法 id 仍**响亮抛** —— 那是路径穿越闸。
+      return (await (await deps.store.open(sessionId))?.messages()) ?? [];
     },
 
     // ── S14: run 历史与续跑 ────────────────────────────────────────────────
@@ -223,7 +224,7 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
       : {}),
 
     async listSessions(): Promise<TuiSessionMeta[]> {
-      return deps.store.list().map((m) => ({
+      return (await deps.store.list()).map((m) => ({
         id: m.id,
         title: m.title,
         updatedAt: Date.parse(m.updatedAt) || 0,
@@ -231,12 +232,12 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
       }));
     },
 
-    // 切片⑦: fork 直调 store (显式动作, 立刻写盘)。错误转成 ok:false + 原因原文 ——
+    // 切片⑦: fork 直调 store (显式动作, 立刻建文件)。错误转成 ok:false + 原因原文 ——
     // "为什么 fork 不了"这个问题必须答得出来 (源没写过盘 / id 冲突是两个不同的答案)。
     async forkSession({ fromId, newId }): Promise<{ ok: boolean; text: string }> {
       try {
-        const s = deps.store.fork(fromId, newId);
-        return { ok: true, text: `已从 ${fromId} fork 出 ${s.id} (${s.messages.length} 条消息)` };
+        const s = await deps.store.fork(fromId, newId);
+        return { ok: true, text: `已从 ${fromId} fork 出 ${s.id} (${(await s.messages()).length} 条消息)` };
       } catch (err) {
         return { ok: false, text: err instanceof Error ? err.message : String(err) };
       }

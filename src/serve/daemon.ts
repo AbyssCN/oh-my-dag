@@ -18,7 +18,7 @@ import { boardHtml } from './board-page';
 import type { OmdMcpTool } from '../mcp/server';
 import type { PlanLedger } from '../harness/plan-ledger';
 import type { AnyOmdTool } from '../harness/agent-tools';
-import { ChatStore } from '../harness/chat/store';
+import type { OmdSessionStore } from '../harness/chat/session-store';
 import { runChatTurn, type ChatTurnOpts } from '../harness/chat/agent';
 import {
   listPathMaps,
@@ -35,7 +35,7 @@ export interface DaemonDeps {
   cwd: string;
   /** assembleOmdMcpTools() 产物 — 命令面 + chat 工具面共用。 */
   tools: readonly OmdMcpTool[];
-  chatStore: ChatStore;
+  chatStore: OmdSessionStore;
   ledger: PlanLedger;
   /** conductor 座位坐标 — **每请求现解**(INV-MODEL-3: omd_set_role 改完下一句话就生效)。 */
   resolveChatModel: () => string;
@@ -154,13 +154,17 @@ export function createDaemonFetch(deps: DaemonDeps): (req: Request) => Promise<R
 
     // ── chat ──
     if (p[0] === 'chat') {
-      if (req.method === 'GET' && p.length === 1) return json(deps.chatStore.list());
+      if (req.method === 'GET' && p.length === 1) return json(await deps.chatStore.list());
       if (req.method === 'GET' && p.length === 2) {
-        const s = deps.chatStore.load(p[1]!);
-        return s ? json(s) : notFound(`chat ${p[1]}`);
+        const s = await deps.chatStore.open(p[1]!);
+        if (!s) return notFound(`chat ${p[1]}`);
+        // 详情 = 列表里的那条元信息 + 投影出来的消息。**不再回整个存储单元** ——
+        // 新层的持久单元是条目树, 把它原样倒给前端等于让 UI 依赖一个它读不懂的形状。
+        const meta = (await deps.chatStore.list()).find((m) => m.id === s.id);
+        return json({ ...(meta ?? { id: s.id, title: '' }), messages: await s.messages() });
       }
       if (req.method === 'DELETE' && p.length === 2) {
-        deps.chatStore.delete(p[1]!);
+        await deps.chatStore.delete(p[1]!);
         return json({ ok: true });
       }
       if (req.method === 'POST' && p.length === 3 && p[2] === 'messages') {
@@ -221,7 +225,7 @@ export function createDaemonFetch(deps: DaemonDeps): (req: Request) => Promise<R
             onEvent,
             ...(deps.chatLoopFn ? { loopFn: deps.chatLoopFn } : {}),
           });
-          send('result', { sessionId, reply: r.reply, messageCount: r.session.messages.length });
+          send('result', { sessionId, reply: r.reply, messageCount: r.messageCount });
         } catch (err) {
           send('error', { message: err instanceof Error ? err.message : String(err) });
         } finally {

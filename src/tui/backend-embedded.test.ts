@@ -10,7 +10,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ChatStore } from '../harness/chat/store';
+import { createOmdSessionStore } from '../harness/chat/session-store';
 import type { ChatTurnOpts, ChatTurnResult } from '../harness/chat/agent';
 import type { OmdTuiEvent } from './backend';
 import { createEmbeddedBackend } from './backend-embedded';
@@ -23,7 +23,7 @@ function fakeTurn(opts: { events?: AgentEvent[]; onCall?: (o: ChatTurnOpts) => v
     opts.onCall?.(o);
     for (const e of opts.events ?? []) o.onEvent?.(e);
     if (opts.throws) throw opts.throws;
-    return { session: { messages: [1, 2] } as never, reply: '答', newMessages: [], compactions: 0, usage: { in: 0, out: 0 }, pressure: { systemTokens: 0, harnessTokens: 0, historyTokens: 0, usedTokens: 0, windowTokens: 0, ratio: null } };
+    return { sessionId: o.sessionId, messageCount: 2, reply: '答', newMessages: [], compactions: 0, usage: { in: 0, out: 0 }, pressure: { systemTokens: 0, harnessTokens: 0, historyTokens: 0, usedTokens: 0, windowTokens: 0, ratio: null } };
   }) as never;
 }
 
@@ -32,7 +32,7 @@ function make(over: Partial<Parameters<typeof createEmbeddedBackend>[0]> = {}) {
   const events: OmdTuiEvent[] = [];
   const backend = createEmbeddedBackend({
     cwd,
-    store: new ChatStore(cwd),
+    store: createOmdSessionStore(cwd),
     tools: [],
     resolveModel: () => 'deepseek:deepseek-v4-flash',
     runTurn: fakeTurn(),
@@ -135,7 +135,7 @@ describe('失败与中断', () => {
       runTurn: (async (o: ChatTurnOpts) => {
         seen.set(o.sessionId, o.signal as AbortSignal);
         await new Promise((r) => setTimeout(r, 30));
-        return { session: { messages: [] } as never, reply: '', newMessages: [], compactions: 0, usage: { in: 0, out: 0 }, pressure: { systemTokens: 0, harnessTokens: 0, historyTokens: 0, usedTokens: 0, windowTokens: 0, ratio: null } };
+        return { sessionId: o.sessionId, messageCount: 0, reply: '', newMessages: [], compactions: 0, usage: { in: 0, out: 0 }, pressure: { systemTokens: 0, harnessTokens: 0, historyTokens: 0, usedTokens: 0, windowTokens: 0, ratio: null } };
       }) as never,
     });
     const a = backend.sendChat({ sessionId: 'A', prompt: 'x' });
@@ -153,7 +153,7 @@ describe('失败与中断', () => {
       runTurn: (async (o: ChatTurnOpts) => {
         seen.push(o.signal as AbortSignal);
         await new Promise((r) => setTimeout(r, 30));
-        return { session: { messages: [] } as never, reply: '', newMessages: [], compactions: 0, usage: { in: 0, out: 0 }, pressure: { systemTokens: 0, harnessTokens: 0, historyTokens: 0, usedTokens: 0, windowTokens: 0, ratio: null } };
+        return { sessionId: o.sessionId, messageCount: 0, reply: '', newMessages: [], compactions: 0, usage: { in: 0, out: 0 }, pressure: { systemTokens: 0, harnessTokens: 0, historyTokens: 0, usedTokens: 0, windowTokens: 0, ratio: null } };
       }) as never,
     });
     const p = backend.sendChat({ sessionId: 'A', prompt: 'x' });
@@ -169,22 +169,22 @@ describe('会话读侧', () => {
     expect(await make().backend.loadHistory({ sessionId: 'never-created' })).toEqual([]);
   });
 
-  test('★ 非法会话 id **响亮抛** —— ChatStore 的路径白名单穿过这一层没有被吞掉', async () => {
+  test('★ 非法会话 id **响亮抛** —— store 的路径白名单穿过这一层没有被吞掉', async () => {
     // 初版这条用了一个中文 id 当"不存在", 结果撞上白名单当场红 —— 那不是 bug,
-    // 是 `ChatStore` 防路径穿越的闸。把它钉住: 这一层不许把它降级成"返回空历史"。
+    // 是存储层防路径穿越的闸。把它钉住: 这一层不许把它降级成"返回空历史"。
     expect(make().backend.loadHistory({ sessionId: '../逃逸' })).rejects.toThrow('非法会话 id');
   });
 
-  test('listSessions 读的是真 ChatStore', async () => {
+  test('listSessions / loadHistory 读的是真 store(不是内存里的一份影子)', async () => {
     const cwd = fresh();
-    const store = new ChatStore(cwd);
-    const s = store.create('s1', '标题');
-    s.messages = [{ role: 'user', content: 'hi', timestamp: 1 } as never];
-    store.save(s);
+    const store = createOmdSessionStore(cwd);
+    const s = await store.create('s1', '标题');
+    await s.append({ role: 'user', content: 'hi', timestamp: 1 } as never);
     const backend = createEmbeddedBackend({
       cwd, store, tools: [], resolveModel: () => 'a:1', runTurn: fakeTurn(),
     });
     expect((await backend.listSessions()).map((m) => m.id)).toEqual(['s1']);
+    expect((await backend.loadHistory({ sessionId: 's1' })).length).toBe(1);
   });
 });
 

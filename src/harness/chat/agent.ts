@@ -3,13 +3,14 @@
  *
  * 与 agent-leaf 同一条裸循环路(pi-agent-core SDK 直调,禁 CLI 包——见 no-cli-dep.test.ts),
  * 差异只有三点,全部长在这里:
- *   ① **持久会话**:leaf 每次现构造空 messages 弃置;chat 从 ChatStore 载入历史,跑完追加落盘。
+ *   ① **持久会话**:leaf 每次现构造空 messages 弃置;chat 从 session-store 载入历史(投影),
+ *      跑完把本轮新增**逐条 append** 进磁盘。
  *      runAgentLoop 的语义(实读 dist/agent-loop.js):不改传入 context.messages(内部拷贝),
- *      返回值 = prompts + 本轮生成 → 持久化即 push(...returned)。
+ *      返回值 = prompts + 本轮生成 → 持久化即 append(...returned)。
  *   ② **conductor 档 system prompt**(harness-prompts 蒸馏核,冻结前缀在前)。
  *   ③ **事件外露**:emit 原样转给 onEvent(daemon 拿去接 SSE)。
  *
- * 失败语义:轮子抛错 → **不落盘**,响亮上抛(半轮对话入库 = 重试时 user 消息重复;
+ * 失败语义:轮子抛错 → **一个字节都不写**,响亮上抛(半轮对话入库 = 重试时 user 消息重复;
  * 前端本来留着输入框内容,丢的只是这一轮)。provider 错误同 agent-leaf 的 C-5b 纪律:
  * stopReason==='error' 的轮不算成功,连同 errorMessage 上抛真因。
  */
@@ -37,10 +38,10 @@ import { buildConductorChatSystemPrompt } from '../harness-prompts';
 import { parseModelRef } from '../fleet';
 import { resolvePiApiKey, resolvePiModel } from '../../model/pi-transport';
 import type { ThinkingLevel } from '../../model/role-models';
-import { ChatStore, type ChatSession } from './store';
+import type { OmdSessionStore } from './session-store';
 
 export interface ChatTurnOpts {
-  store: ChatStore;
+  store: OmdSessionStore;
   sessionId: string;
   /** 用户本轮输入。 */
   prompt: string;
@@ -87,7 +88,14 @@ export interface ChatTurnOpts {
 }
 
 export interface ChatTurnResult {
-  session: ChatSession;
+  sessionId: string;
+  /**
+   * 这一轮结束时会话里有多少条消息(投影口径)。
+   *
+   * ⚠ 换存储层之前这里给的是整个 `ChatSession`,而两个消费者都只取 `.messages.length`。
+   * 新层的消息是**投影**不是持久单元,再把整份数组带出来就等于鼓励调用方拿它当真相。
+   */
+  messageCount: number;
   /** 本轮 assistant 正文(thinking/toolCall 块不算)。 */
   reply: string;
   /** 本轮新增消息(含 user prompt 本身)。 */
@@ -122,7 +130,16 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
     throw new Error(`[chat-agent] 坐标 '${opts.model}' 解析不出模型 (provider '${provider}' 两栈都查不到)`);
   }
 
-  const session = opts.store.load(opts.sessionId) ?? opts.store.create(opts.sessionId, titleOf(opts.prompt));
+  /**
+   * ★ **会话文件到这一步为止都还没建**。
+   *
+   * `open()` 缺席返回 `null`,而 `create()` 在新层里是**立刻建文件**的(老 `ChatStore.create`
+   * 只在内存里造一个对象)。所以建会话推到轮子跑完之后 —— 这一条同时保住两条老纪律:
+   * ① **空会话不写进磁盘**(起了 TUI 没说话 → `/session list` 里不该冒出一条空的);
+   * ② **半轮不入库**(循环抛错 / provider 报错 → 盘上什么都不该有,重试时不该看见半条)。
+   */
+  const existing = await opts.store.open(opts.sessionId);
+  let messages = existing ? await existing.messages() : [];
   const tools = opts.tools ?? [];
 
   // ── 上下文压缩 (S9) ────────────────────────────────────────────────────────
@@ -148,10 +165,10 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
     return tokens >= window * budgetRatio;
   };
 
-  if (wantCompaction && overBudget(session.messages)) {
-    const before = pureEstimate(session.messages);
+  if (wantCompaction && existing && overBudget(messages)) {
+    const before = pureEstimate(messages);
     const compacted = await compactChatMessages({
-      messages: session.messages,
+      messages,
       model: opts.model,
       keepRecentTokens,
       ...(opts.signal ? { signal: opts.signal } : {}),
@@ -159,18 +176,22 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
     });
     if (compacted) {
       compactions++;
-      const beforeCount = session.messages.length;
-      // 立刻**写回会话**: 不写回的话下一轮载入的还是老的那一堆, 这次压缩等于白花钱。
-      session.messages = compacted;
-      opts.store.save(session);
+      const beforeCount = messages.length;
+      // 立刻**写进会话**: 不写的话下一轮载入的还是老的那一堆, 这次压缩等于白花钱。
+      // 落成一条 `compaction` 条目 (append-only), 投影自己会把它之前的东西截掉 ——
+      // 这就是 SDD 里"改完数组再全量 save 整块消失"的那一步。
+      await existing.appendCompaction({ summary: compacted.summary, tokensBefore: before, retainedTail: compacted.retainedTail });
+      // ⚠ **重新取投影**, 不用 `compacted.messages`: 存进去的是条目, 而这一轮要发给模型的
+      //   必须与下一轮载入时看到的**是同一份**。两处各拼一次就是 S-1 那一族 (都"有内容", 只是不同)。
+      messages = await existing.messages();
       logger.info(
         {
           sessionId: opts.sessionId,
           window,
-          tokens: `${before}→${pureEstimate(compacted)}`,
-          msgs: `${beforeCount}→${compacted.length}`,
+          tokens: `${before}→${pureEstimate(messages)}`,
+          msgs: `${beforeCount}→${messages.length}`,
         },
-        '[chat-agent] 轮前上下文压缩 —— 已写回会话',
+        '[chat-agent] 轮前上下文压缩 —— 已写进会话',
       );
     } else {
       // 压不动不是致命错: 这一轮照跑, 撞窗口由 provider 报。但**不许静默** ——
@@ -192,7 +213,7 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
       logger.warn({ err: (err as Error).message }, '[chat-agent] systemPrompt 钩子抛了 → 用原串');
     }
   }
-  const context: AgentContext = { systemPrompt, messages: session.messages, tools };
+  const context: AgentContext = { systemPrompt, messages, tools };
   const thinking = opts.thinkingLevel ?? 'high';
   const config: AgentLoopConfig = {
     model: piModel,
@@ -220,12 +241,15 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
             usageAnchorStale = true;
             compactions++;
             logger.info(
-              { sessionId: opts.sessionId, msgs: `${ctx.messages.length}→${compacted.length}` },
+              { sessionId: opts.sessionId, msgs: `${ctx.messages.length}→${compacted.messages.length}` },
               '[chat-agent] 轮内上下文压缩 —— 接着跑, 不是交卷',
             );
+            // ⚠ 轮**内**这一次不落条目: 它压的是这一次 run 里的工具循环, 而 `returned`
+            //   仍是从原始 prompts 起算的完整新增 —— 落一条 compaction 会把还没写进会话的
+            //   东西当成"已经在会话里"截掉。跨轮那一半由上面的轮前压缩负责。
             // ⚠ 只换 messages。`systemPrompt` 原样带过去 —— 它是冻结前缀, 动一个字
             // 就是 conductor 侧 prompt-cache 全失效, 而压缩本来是为了省钱。
-            return { context: { ...ctx, messages: compacted } };
+            return { context: { ...ctx, messages: compacted.messages } };
           },
           shouldStopAfterTurn: ({ context: ctx }) => overBudget(ctx.messages),
         }
@@ -263,14 +287,26 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
     }
   }
 
-  session.messages.push(...returned);
-  opts.store.save(session);
+  // 会话文件在这一刻才建 (见上方 `existing` 那条注): 到这里这一轮已经成了。
+  const session = existing ?? (await opts.store.create(opts.sessionId, titleOf(opts.prompt)));
+  // 逐条追加 —— `returned` 含本轮 user prompt 本身 (pi 的返回值 = prompts + 本轮生成)。
+  // 串行 await: 同一个 `Session` 实例的写本来就落进 pi 的 enqueue 单链, 抢跑没有意义。
+  for (const m of returned) await session.append(m);
+  const after = [...messages, ...returned];
   const reply = returned.map(assistantText).join('');
   const pressure = analyzeContextPressure({
     systemPrompt: context.systemPrompt,
     ...(opts.contextFiles ? { contextFiles: opts.contextFiles } : {}),
-    messages: session.messages,
+    messages: after,
     windowTokens: window,
   });
-  return { session, reply, newMessages: returned, compactions, usage: sumUsage(usages), pressure };
+  return {
+    sessionId: opts.sessionId,
+    messageCount: after.length,
+    reply,
+    newMessages: returned,
+    compactions,
+    usage: sumUsage(usages),
+    pressure,
+  };
 }
