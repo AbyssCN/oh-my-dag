@@ -91,7 +91,8 @@ function startPty(file, args, opts = {}) {
     rows: 30,
     cwd: opts.cwd ?? ROOT,
     // L3 恒用 fixture 后端: 这条 lane 不许打真模型 (要钱、要网、读数还不稳)。
-    env: { ...process.env, NO_COLOR: '1', OMD_INSTALL_SKILLS: '0', OMD_TUI_BACKEND: 'fixture', ...(opts.env ?? {}) },
+    // 账本目录也隔离 —— fixture 的假用量不许污染真仓 .omd/ 的 5h 窗口 (切片②)。
+    env: { ...process.env, NO_COLOR: '1', OMD_INSTALL_SKILLS: '0', OMD_TUI_BACKEND: 'fixture', OMD_TUI_USAGE_DIR: mkdtempSync(join(tmpdir(), 'omd-pty-usage-')), ...(opts.env ?? {}) },
   });
   let buf = '';
   let exited = null;
@@ -215,6 +216,18 @@ async function scenarioHappyPath() {
     //   合成一条则两片**紧挨着**。所以要钉的是拼接后的那个串。
     const merged = FIXTURE_REPLY.join('');
     check(p.text().includes(merged), 'S10-3 ★ 两片流式合成一条消息(中间没有条目间隔)', p.text().slice(0, 500));
+
+    // ── 切片② G-2: 跑一轮后底栏行①②有真数(与 backend-fixture.ts 的 FIXTURE_USAGE 逐字对应)。──
+    check(
+      await waitFor(p, (t) => t.includes('in 3.1k out 184 cache 2.8k 88%')),
+      'SB-1 ★ 行②: in/out/cache 全部非零且与账本一致(3120/184/2760)',
+      p.text().slice(-500),
+    );
+    // fixture:model 不在价表 → unpriced → `$0.00+`(下界标注), **不是** 0% 也不是编一个百分比。
+    check(p.text().includes('5h $0.00+ · 1 次'), 'SB-2 ★ 行①: 5h 窗口段有真计数, 未计价带 + 标注', p.text().slice(-500));
+    check(p.text().includes('fixture $0.00+'), 'SB-3 行②: provider 段按坐标前缀分组', p.text().slice(-500));
+    // 行① 工作区段: 这条 lane 的 cwd 就是 omd 仓 → 仓名与分支该在。
+    check(/oh-my-dag · \S+/.test(p.text()), 'SB-4 行①: git 仓名+分支段', p.text().slice(-500));
 
     p.write('\x03');
     check(await waitFor(p, (t) => t.includes('再按一次')), 'S2-4 第一次 Ctrl+C 只预备, 不退');

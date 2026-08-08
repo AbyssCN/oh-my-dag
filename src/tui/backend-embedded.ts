@@ -52,6 +52,12 @@ export interface EmbeddedBackendDeps {
   memory?: import('../harness/memory/store').OmdMemory;
   /** 扩展的 `before_agent_start` 钩子(S15a)。省略 = 没装扩展。 */
   systemPromptHook?: (prompt: string) => Promise<string>;
+  /**
+   * 调用账本(切片②)。chat 轮走 pi 的流式循环,**不经过** gateway 的 `observeModelUsage`,
+   * 在引擎账上完全隐形 —— 所以由这里在每轮结束时补记一笔(model = 本轮实际座位)。
+   * 省略 = 不记(底栏那些段不画,不是画 0)。
+   */
+  usage?: import('./usage/ledger').TuiUsageLedger;
   /** 测试接缝:替换真轮子。生产不传。 */
   runTurn?: typeof runChatTurn;
 }
@@ -163,6 +169,10 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
           ...(deps.contextFiles ? { contextFiles: deps.contextFiles } : {}),
         };
         const r = await runTurn(turn);
+        // 切片②: 本轮用量上账本 (usage 事件在账本之后发, UI 收到 session 事件时账已记好)。
+        if (r.usage && (r.usage.in > 0 || r.usage.out > 0)) {
+          deps.usage?.record(r.usage, deps.resolveModel(), 'chat');
+        }
         // pressure / usage 一起发 —— UI 靠它画"离满还有多远、这一轮花了多少"。
         emit('session', {
           sessionId,
