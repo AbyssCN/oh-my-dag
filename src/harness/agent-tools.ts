@@ -117,6 +117,32 @@ export const SKIP_DIRS = new Set([
   '__pycache__', 'target', 'vendor',
 ]);
 
+/**
+ * 跳不跳这个目录。**不是纯精确匹配** —— 精确匹配漏掉了 Python 虚拟环境的全部变体。
+ *
+ * ## 实测(2026-08-08,本机四个仓)
+ *
+ * `SKIP_DIRS` 里只有 `.venv`,而真实世界的名字是 `.venv-crawl4ai` / `.venv-seuranta` /
+ * `.venv-pg` —— **精确匹配一个都没拦住**,三个仓各有 1–2 个逃出去:
+ *
+ * | 仓 | 逃出去的 |
+ * |---|---|
+ * | talous-v2 | `.venv-seuranta` · `.venv-crawl4ai` |
+ * | fusang | `.venv-pg` |
+ * | bluebell | `.venv-seuranta` |
+ *
+ * 代价是可量的:`talous-v2` 的 `.venv-crawl4ai` 一个目录就占该仓 SKIP_DIRS 口径文件数的
+ * **58%**(11,150 / 19,177)—— 遍历预算全烧在 `site-packages` 上,而那里面**没有一行**
+ * 是这个仓的代码。
+ *
+ * ⚠ 收敛处**要求分隔符**(`venv` 后面必须是结尾或 `-._`),所以 `venvironment/` 这类
+ * 正常源码目录不会被误跳。反测钉了这一条。
+ */
+export function shouldSkipDir(name: string): boolean {
+  if (SKIP_DIRS.has(name)) return true;
+  return /^\.?venv($|[-._])/.test(name);
+}
+
 /** 简易 glob → RegExp (`*` 不跨 `/`, `**` 跨, `?` 单字符)。够 `*.ts` / `src/**\/*.test.ts` 用。 */
 function globToRegExp(glob: string): RegExp {
   let re = '';
@@ -190,7 +216,7 @@ async function walkFiles(root: string, limit: number, filter?: (path: string) =>
     for (const e of entries) {
       const full = join(dir, e.name);
       if (e.isDirectory()) {
-        if (!SKIP_DIRS.has(e.name)) stack.push(full);
+        if (!shouldSkipDir(e.name)) stack.push(full);
       } else if (e.isFile()) {
         if (filter && !filter(full)) continue;
         out.push(full);

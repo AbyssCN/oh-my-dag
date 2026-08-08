@@ -4,12 +4,14 @@
  * 存在的理由:`GREP_WALK_LIMIT` 是 20,000,而"离上限还有多远"是个**要一条命令算出来的数**,
  * 不是凭"感觉这仓挺大"就能说的(本仓 P-2:量化副词背后那个数在哪)。
  *
- * ⚠ 跳过目录表**从实装取**,不在这里抄一份 —— 抄一份就会与 agent 真正走的树漂开。
+ * ⚠ 跳过**判定**从实装取(`shouldSkipDir`),不在这里抄一份 —— 抄一份就会与 agent 真正走的树漂开。
+ *   ⚠ 早期版本 import 的是 `SKIP_DIRS` 集合, 那时它与实装是一致的;实装换成谓词之后
+ *   还 import 集合就会悄悄漂开(venv 变体会算进来而 agent 其实跳过了)。
  */
 import type { Dirent } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { GREP_WALK_LIMIT, SKIP_DIRS } from '../../src/harness/agent-tools';
+import { GREP_WALK_LIMIT, shouldSkipDir } from '../../src/harness/agent-tools';
 
 async function count(root: string): Promise<number> {
   let n = 0;
@@ -24,7 +26,7 @@ async function count(root: string): Promise<number> {
     }
     for (const e of entries) {
       if (e.isDirectory()) {
-        if (!SKIP_DIRS.has(e.name)) stack.push(join(dir, e.name));
+        if (!shouldSkipDir(e.name)) stack.push(join(dir, e.name));
       } else if (e.isFile()) n++;
     }
   }
