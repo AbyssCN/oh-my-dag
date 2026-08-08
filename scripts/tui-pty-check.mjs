@@ -793,6 +793,52 @@ async function scenarioDagViews() {
       p.text().slice(-600),
     );
     check(p.text().includes('[fan-in]'), 'DG-8 fan-in 汇聚点标出来(shard-3 deps 2 条)', p.text().slice(-600));
+
+    /**
+     * ★★ **G-C 的第三句:节点失败看得出是**哪一条**。**
+     *
+     * goal 契约 `docs/plan/2026-08-07-omd-tui-daily-driver-goal.md` §0 的 G-C 是三句话:
+     * 「`/hud` 开左栏 · fan-out 时逐节点变 · **节点失败看得出是哪条**」。
+     * 前两句早有闸(DG-2 / S11-3), **第三句一直没有** —— 2026-08-08 复核 G-A…G-G 时发现的。
+     *
+     * fixture 的演示 run 里 `shard-2` 本来就是 `status:'failed'`(`backend-fixture.ts:140`),
+     * 缺的只是断言。
+     *
+     * ⚠ 判据要的是**指得出是哪一条**, 不是"屏上有个失败字样":
+     * ① 失败标记 `✗` 与 `shard-2` 出现在**同一行**;
+     * ② **同一行里不许是 `✓`** —— 否则"失败画得和成功一样"照样能过。
+     * ⚠ 逐行找而不是整屏 `includes`:整屏两个字符串都在, 而它们**可能分属两行**,
+     * 那正是"看不出是哪条"的样子。
+     */
+    {
+      /**
+       * ⚠ **这个 oracle 没有"行"**:`visibleText` 把 `\s+` 折叠成一个空格
+       * (本文件头写着「剥 ANSI → 折叠空白 → 找子串」)⇒ 按行/按段切都切不出东西,
+       * 整块缓冲会当成一段, 于是 `includes` 两个串**都真**而它们可能隔了半屏。
+       * **第一版和第二版都栽在这**(第二版的 DG-9c 在证伪注入下照样绿 —— 本仓图鉴 S-26)。
+       */
+      const t = p.text();
+      /**
+       * ⚠ 窗口不能开大:折叠之后**相邻行是紧挨着的**, ±24 字符会把邻行 `shard-1` 的 `✓`
+       * 收进来(实测:`p ├─✓ shard-1 agent ├─✗ shard-2 agent`)。第三版就栽在这。
+       * ⇒ 只看**紧贴在 `shard-2` 前面的 6 个字符** —— 树里是 `├─✗ shard-2`,
+       * 底部表里是 `0.0s ✗ shard-2`, 两处标记都落在这 6 个字符内。
+       */
+      const marks = [];
+      for (let k = t.indexOf('shard-2'); k >= 0; k = t.indexOf('shard-2', k + 1)) {
+        marks.push(t.slice(Math.max(0, k - 6), k));
+      }
+      check(
+        marks.length > 0 && marks.some((m) => m.includes('✗')),
+        'DG-9b ★★ 失败节点指得出是**哪一条**(紧贴 `shard-2` 前面就是 `✗`;G-C 第三句)',
+        JSON.stringify(marks.slice(0, 4)),
+      );
+      check(
+        marks.length > 0 && marks.every((m) => !m.includes('✓')),
+        'DG-9c ★ 失败那条**没被画成成功**(紧贴它前面不许是 `✓`)',
+        JSON.stringify(marks.slice(0, 4)),
+      );
+    }
     p.write('\t');
     check(await waitFor(p, (t) => t.includes('当前: 树')), 'DG-9 Tab 循环回到树');
     p.write('\x07'); // 退出全屏
