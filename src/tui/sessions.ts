@@ -67,6 +67,24 @@ export function newSessionId(now: () => number = Date.now): string {
   return `s-${Math.floor(now() / 1000)}`;
 }
 
+/**
+ * ★ **一个 TUI 进程的默认会话 id**(2026-08-09)—— 不再是写死的 `'tui'`。
+ *
+ * owner 的日常用法是**同一个仓开多个 TUI 窗口**。写死 `'tui'` 时两个窗口写的是同一条会话:
+ * 今天(`ChatStore`)是 last-write-wins **静默丢轮次**;换到新存储层之后是第二个窗口
+ * 第一次说话就被跨进程写锁**响亮拒绝** —— 对这个用法是倒退。每个进程起来开自己的会话
+ * 就**根本不撞**,锁降级成兜底(只有显式 `/session switch` 到同一条时才可能撞)。
+ *
+ * 带 `pid`:`s-<秒>` 在同一秒起两个窗口会撞成同一条 —— 秒级时间戳区分不开脚本/tmux
+ * 布局恢复那种"一起起来"的场景,而那正是多开最常见的来法。
+ *
+ * ⚠ **不在这里建会话文件**:空会话不写进磁盘那条老纪律靠"首条消息才 create"保住,
+ * 这个函数只产 id。
+ */
+export function defaultTuiSessionId(now: () => number = Date.now, pid: number = process.pid): string {
+  return `${newSessionId(now)}-${pid}`;
+}
+
 /** fork 分支的默认 id:`<源>-f<秒级时间戳>` —— 名字自带 lineage, 列表里一眼读得出从哪长出来。 */
 export function forkSessionId(fromId: string, now: () => number = Date.now): string {
   const base = `${fromId}-f${Math.floor(now() / 1000)}`;

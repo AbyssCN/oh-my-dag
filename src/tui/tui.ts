@@ -46,7 +46,7 @@ import { renderLayers } from './render/dag-layers';
 import { StatusLine } from './components/status-line';
 import { type ContextFile, formatContextLine, loadConductorContext } from './context';
 import { formatSeatRows, parseSeatCommand, seatRows } from './seat-picker';
-import { forkSessionId, formatSessions, newSessionId, parseSessionCommand } from './sessions';
+import { defaultTuiSessionId, forkSessionId, formatSessions, newSessionId, parseSessionCommand } from './sessions';
 import { createSettingsPanel } from './components/settings-panel';
 import { SPINNER_FRAMES } from './design/tokens';
 import { installOmdKeybindings } from './keys';
@@ -397,6 +397,11 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    * ⚠ 宽度取的是**启动那一刻**的列数。终端后来被拉窄不会重画这一块(它已经是历史消息了),
    * 但字标本身不折行、窄了会被 ChatLog 截断,不会顶花布局。
    */
+  /**
+   * ★ 本进程的会话 id。**只算一次** —— 横幅上写的那个与后面真发消息用的那个必须是同一个,
+   * 各算一次的话跨秒起跑就会显示 A、写进 B(屏上与盘上是两条会话, 而两边都"有内容")。
+   */
+  let sessionId = opts.sessionId ?? defaultTuiSessionId();
   const bannerWidth = terminal.columns || 100;
   chatLog.appendBanner(
     [
@@ -406,7 +411,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       '',
       ...CHROME.welcomeBody({
         engine: opts.backend.connection.url,
-        session: opts.sessionId ?? 'tui',
+        session: sessionId,
         width: bannerWidth,
       })
         .split('\n')
@@ -683,7 +688,6 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   }
   if (opts.approvals) opts.approvals.setAsk(askApproval);
 
-  let sessionId = opts.sessionId ?? 'tui';
   const seats = opts.seats ?? defaultSeatFace();
 
   /**

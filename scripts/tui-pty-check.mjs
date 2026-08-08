@@ -272,23 +272,31 @@ async function scenarioHappyPath() {
     check(await waitFor(p, (t) => t.includes('ctx 6%')), 'SB-5 ★ 底栏: ctx 段有真百分比(12k/200k = 6%)', p.text().slice(-400));
 
     // ── 切片⑦: 会话树 —— fork 一条、切回去、两条互不污染 (G 判据逐字)。──
+    // ⚠ 2026-08-09: 默认会话 id 不再是写死的 `tui`(写死会让多开的两个窗口写同一条会话),
+    //   ⇒ 下面四条断言**从欢迎屏把本进程的 id 读回来**, 不再拿字面 `tui` 拼。
+    const sessionId = (p.text().match(/会话\s+(s-\d+-\d+)/) ?? [])[1];
+    check(
+      Boolean(sessionId),
+      'SESS-0 ★ 欢迎屏写的是本进程自己的会话 id(`s-<秒>-<pid>`, 不是写死的 tui)',
+      p.text().slice(0, 700),
+    );
     p.write('/session fork\r');
     check(
-      await waitFor(p, (t) => t.includes('已从 tui fork 出') && t.includes('已切到分支')),
+      await waitFor(p, (t) => t.includes(`已从 ${sessionId} fork 出`) && t.includes('已切到分支')),
       'SF-1 ★ fork 有回执且已切进分支',
       p.text().slice(-500),
     );
     p.write('branch-only\r'); // 分支里多说一句 —— 污染探针
     check(await waitFor(p, (t) => t.includes('> branch-only')), 'SF-2 分支里的新消息进了分支');
-    p.write('/session tui\r');
+    p.write(`/session ${sessionId}\r`);
     check(
-      await waitFor(p, (t) => t.includes('已切到会话 tui(回放 1 条')),
+      await waitFor(p, (t) => t.includes(`已切到会话 ${sessionId}(回放 1 条`)),
       'SF-3 ★ 切回原会话: 回放数不含分支消息(互不污染)',
       p.text().slice(-500),
     );
     p.write('/session\r');
     check(
-      await waitFor(p, (t) => t.includes('<- fork 自 tui')),
+      await waitFor(p, (t) => t.includes(`<- fork 自 ${sessionId}`)),
       'SF-4 会话列表画出 lineage(树的边是数据)',
       p.text().slice(-600),
     );

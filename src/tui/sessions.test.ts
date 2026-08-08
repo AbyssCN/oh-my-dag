@@ -7,7 +7,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { TuiSessionMeta } from './backend';
 import { ChatLog } from './components/chat-log';
-import { forkSessionId, formatSessions, newSessionId, parseSessionCommand } from './sessions';
+import { defaultTuiSessionId, forkSessionId, formatSessions, newSessionId, parseSessionCommand } from './sessions';
 import { createTheme } from './theme';
 
 describe('parseSessionCommand', () => {
@@ -75,6 +75,19 @@ describe('newSessionId', () => {
 
   test('生成的 id 过得了自己的白名单', () => {
     expect(parseSessionCommand(`/session ${newSessionId(() => 1_760_000_000_000)}`)?.kind).toBe('switch');
+  });
+});
+
+describe('★ defaultTuiSessionId —— 多开 TUI 不许撞进同一条会话', () => {
+  test('★ 同一秒起的两个进程也不撞(秒级时间戳分不开, pid 分得开)', () => {
+    const at = () => 1_760_000_000_000;
+    // 证伪:把 pid 从实现里去掉 → 这两个当场相等, 而相等就是"两个窗口写同一条会话"。
+    expect(defaultTuiSessionId(at, 111)).not.toBe(defaultTuiSessionId(at, 222));
+    expect(defaultTuiSessionId(at, 111)).toBe('s-1760000000-111');
+  });
+
+  test('生成的 id 过得了会话 id 白名单(不然多开第一句话就被路径闸拒)', () => {
+    expect(parseSessionCommand(`/session ${defaultTuiSessionId(() => 1_760_000_000_000, 4242)}`)?.kind).toBe('switch');
   });
 });
 
