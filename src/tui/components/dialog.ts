@@ -20,7 +20,7 @@
  * 对话框开着时再开一个 → **拒绝并说明**,不是叠上去。叠加之后"哪个在收键"就说不清了,
  * 而 Esc 会关掉哪一个也说不清。
  */
-import { type Component, SelectList, Text, visibleWidth } from '@earendil-works/pi-tui';
+import { type Component, Input, SelectList, Text, visibleWidth } from '@earendil-works/pi-tui';
 import { StatusLine } from './status-line';
 import { card } from '../design/tokens';
 import { fitLine } from '../render/line';
@@ -166,22 +166,69 @@ export function inputComponent(
   done: (value: string | null) => void,
   requestRender: () => void,
 ): DialogBox {
-  let buf = opts.initial ?? '';
-  const line = new StatusLine('');
-  const paint = (): void => line.setText(`> ${opts.mask ? '*'.repeat(buf.length) : buf}`);
-  paint();
-  return new DialogBox(theme, `${opts.title}  (Enter 确认, Esc 取消)`, line, (data) => {
-    if (ESC.has(data)) return done(null);
-    if (ENTER.has(data)) return done(buf);
-    if (data === '\x7f' || data === '\b') buf = buf.slice(0, -1);
-    else {
-      // 只收可打印的:控制码/方向键进来会画出 `[A` 这种看起来像用户真打了字的假回显。
-      // biome-ignore lint/suspicious/noControlCharactersInRegex: 终端输入本来就是控制码
-      const printable = data.replace(/\x1b(?:\[[0-9;?]*[ -/]*[@-~]|O.|.)?/g, '').replace(/[\x00-\x1f\x7f]/g, '');
-      if (!printable) return undefined;
-      buf += printable;
-    }
+  /**
+   * ★ **遮蔽档保留手搓**(2026-08-08 换 pi-tui `Input` 时的例外)。
+   *
+   * 理由是**核实过的**,不是懒:`Input` **不支持遮蔽** ——
+   * `mask` / `password` / `echo` 在 `dist/components/input.js` 里 **0 命中**,
+   * 它的 `render()` 直接把 `this.value` 切片画出去(`input.js:316-367`)。
+   * 而凭证输入**一个字符都不许上屏**(屏幕会进截图、进 scrollback)。
+   * ⇒ `/login` 落 key 这一条路继续走下面这个只有 buf + 退格的实现。
+   * **代价说清楚**:这一档没有光标移动 / 粘贴 / undo / 按词删。凭证一般是整串粘,
+   * 而粘贴在这里会被逐字符收下 —— 可以接受;真要改, 得先给 `Input` 提遮蔽支持。
+   */
+  if (opts.mask) {
+    let buf = opts.initial ?? '';
+    const line = new StatusLine('');
+    const paint = (): void => line.setText(`> ${'*'.repeat(buf.length)}`);
     paint();
+    return new DialogBox(theme, `${opts.title}  (Enter 确认, Esc 取消)`, line, (data) => {
+      if (ESC.has(data)) return done(null);
+      if (ENTER.has(data)) return done(buf);
+      if (data === '\x7f' || data === '\b') buf = buf.slice(0, -1);
+      else {
+        // 只收可打印的:控制码/方向键进来会画出 `[A` 这种看起来像用户真打了字的假回显。
+        // biome-ignore lint/suspicious/noControlCharactersInRegex: 终端输入本来就是控制码
+        const printable = data.replace(/\x1b(?:\[[0-9;?]*[ -/]*[@-~]|O.|.)?/g, '').replace(/[\x00-\x1f\x7f]/g, '');
+        if (!printable) return undefined;
+        buf += printable;
+      }
+      paint();
+      requestRender();
+      return undefined;
+    });
+  }
+
+  /**
+   * ★ **非遮蔽档走 pi-tui `Input`**(还上台账里最大的那笔欠账)。
+   *
+   * 换来的不是省事,是手搓那版**根本没有**的东西:光标移动 · 横向滚动 · 粘贴缓冲 ·
+   * kill-ring · undo 栈 · 按词删除/移动。手搓版只有"往后加字符"和"退一格" ——
+   * 在里面改一个打错的字要把后面全删掉重打。
+   *
+   * ⚠ 键**全部原样转给它**:`Input` 自己认 Enter/Esc(`onSubmit`/`onEscape`,
+   * `input.js:68-80`),这里再拦一道 `ESC`/`ENTER` 就会**抢在它前面**,
+   * 于是 `ctrl+-`(undo)之类它认得的键反而进不去。
+   * ⚠ `focused` 必须设:不设的话它不画光标(`input.js:367` 靠这个字段决定)。
+   */
+  const editor = new Input();
+  editor.setValue(opts.initial ?? '');
+  /**
+   * ★ **`setValue` 之后光标停在开头, 必须显式移到末尾。**
+   *
+   * 实测(不是猜):`new Input(); setValue('abc'); handleInput('\x7f')` → 值仍是 `'abc'` ——
+   * 光标在 0 位, 退格没得删。而这些框**几乎都是带初值开的**(`审批 TTL` 预填 `600`、
+   * 手输坐标预填当前坐标), 于是症状是**"打开框按退格没反应"** —— 一个很难往这上面想的 bug。
+   * 换 `Input` 那一版就踩了, 是既有的「退格」单测红出来的。
+   *
+   * `\x05` = `ctrl+e` = `tui.editor.cursorLineEnd`(pi-tui 默认表, 已核实)。
+   */
+  editor.handleInput('\x05');
+  editor.focused = true;
+  editor.onSubmit = (v: string) => done(v);
+  editor.onEscape = () => done(null);
+  return new DialogBox(theme, `${opts.title}  (Enter 确认, Esc 取消)`, editor, (data) => {
+    editor.handleInput(data);
     requestRender();
     return undefined;
   });
