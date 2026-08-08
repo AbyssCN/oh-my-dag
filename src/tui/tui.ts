@@ -151,9 +151,16 @@ export const CHROME = {
   noRunCapability: (what: string) => `这个后端没有 ${what} 能力 (能力探测: 该方法不存在)`,
   resumeStarted: (runId: string, text: string) => `续跑 ${runId}: ${text}`,
   resumeRefused: (runId: string, text: string) => `续不了 ${runId}: ${text}`,
-  // 行③帮助条。`omd tui` 字样留在这 —— 顶栏没了(v5: 信息下沉), 这一串同时是 PTY 的启动信标。
-  footer: (url: string) => `omd tui · /help 看命令 · Ctrl+C 两次退出  [${url}]`,
-  footerArmed: (url: string) => `omd tui · 再按一次 Ctrl+C 退出  [${url}]`,
+  /**
+   * 行③帮助条。`omd tui` 字样留在这 —— 顶栏没了(v5: 信息下沉), 这一串同时是 PTY 的启动信标。
+   *
+   * ★ **2026-08-08 去掉了尾巴上的 `[后端坐标]`**(P1 密度)。实测:同一屏上后端坐标出现
+   * **3 次** —— 首屏 `引擎 <坐标>`(一次性) + 行① `… │ <坐标> │ …`(常驻) + 这里(常驻)。
+   * **两份常驻的同一个串是纯浪费**,而行① 那份带着仓名/分支/窗口用量, 信息量严格更大。
+   * ⇒ 砍这一份。首屏那份是一次性的介绍, 不算重复, 留着。
+   */
+  footer: () => 'omd tui · /help 看命令 · Ctrl+C 两次退出',
+  footerArmed: () => 'omd tui · 再按一次 Ctrl+C 退出',
   // ── 审批层(切片①)。裁决回执要进对话记录 —— 卡片关掉之后, "刚才批没批过"得能回看。 ──
   approvalDenied: (summary: string) => `审批: 已拒绝 ${summary}`,
   approvalOnce: (summary: string) => `审批: 已批准这一次 ${summary}`,
@@ -337,7 +344,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       grouping: () => groupSkills(listSkills()),
     }),
   );
-  const footer = new StatusLine(CHROME.footer(opts.backend.connection.url));
+  const footer = new StatusLine(CHROME.footer());
   // 切片⑤: 上下文健康度一行。平时**不占位**(visible 靠 health.line() 判) —— 画一行空白
   // 会让底栏三行变成看起来的四行。
   const health = createContextHealth();
@@ -760,7 +767,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       const r = seats.set(role, coord);
       chatLog.appendNotice(CHROME.seatChanged(r.role, r.coord));
       // footer 与行① 重读 `connection.url` —— backend 那边是 getter, 座位一改它就变。
-      footer.setText(CHROME.footer(opts.backend.connection.url));
+      footer.setText(CHROME.footer());
       updateStatusBar();
     } catch (err) {
       // 拒绝的原因原样进屏 (非法 role / 坐标格式不对), 不吞成一句"失败了"。
@@ -1081,7 +1088,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       logger.warn({ err: reason, cmd: text }, '[omd/tui] session 命令抛了');
       chatLog.appendNotice(CHROME.sessionFailed(reason));
     }
-    footer.setText(CHROME.footer(opts.backend.connection.url));
+    footer.setText(CHROME.footer());
     tui.requestRender();
     return true;
   }
@@ -1405,7 +1412,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         requestExit();
       } else {
         armedAt = now();
-        footer.setText(CHROME.footerArmed(opts.backend.connection.url));
+        footer.setText(CHROME.footerArmed());
         tui.requestRender();
       }
       return { consume: true };
@@ -1465,7 +1472,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     // 任何非 Ctrl+C 的键都解除预备 —— 否则"按了 C、过一会儿又按 C"会被当成双击。
     if (armedAt !== null) {
       armedAt = null;
-      footer.setText(CHROME.footer(opts.backend.connection.url));
+      footer.setText(CHROME.footer());
       tui.requestRender();
     }
     // ⚠ **不 consume** —— 键要接着往下走到 editor。S2 时这里是 `consume: true` 加自己回显,
