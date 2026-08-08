@@ -87,7 +87,8 @@ function startPty(file, args, opts = {}) {
   const pty = spawn(file, args, {
     name: 'xterm-256color',
     // 尺寸锁死:不锁的话不同机器折行位置不同, 断言就成了碰运气 (SDD §9「锁死环境」)。
-    cols: 100,
+    // 窄终端场景经 opts.cols 显式给 (切片③: 侧栏自动收起的判据要在 80 列下量)。
+    cols: opts.cols ?? 100,
     rows: 30,
     cwd: opts.cwd ?? ROOT,
     // L3 恒用 fixture 后端: 这条 lane 不许打真模型 (要钱、要网、读数还不稳)。
@@ -193,6 +194,10 @@ async function scenarioHappyPath() {
       p.text().slice(0, 500),
     );
     // S11: HUD 吃到了 DAG 节点事件 —— 逐节点变 + 角色关系行 (owner 裁决 ③)。
+    // ⚠ 切片③起左栏树默认开, 有 run 时它顶掉底部那张表 (同一份 DAG 不画两遍) ——
+    //   这里先 /hud 关掉侧栏, 底部表回来, S11 的角色行/模型列断言才看得见。
+    p.write('/hud\r');
+    check(await waitFor(p, (t) => t.includes('左栏 DAG 图:关')), 'S11-0 /hud 能关掉侧栏(底部表回来)', p.text().slice(-300));
     check(
       await waitFor(p, (t) => t.includes('DAG fixture-run')),
       'S11-1 HUD 出现(有 run 才画, 没 run 恒缺席)',
@@ -496,6 +501,62 @@ async function scenarioSeat() {
 }
 
 /**
+ * 场景 4.6:**左栏 DAG + 三画法**(切片③,G-3)。
+ *
+ * `fixture:dag` 暗号发一个带 map 分裂的 run(planned 无 deps · expanded 带 parent+deps,
+ * 形状与引擎逐字一致)。判据:侧栏树画出 ├─ └─;Ctrl+G 全屏后 Tab 在 树/甘特/分层 间切;
+ * 80 列窄终端下侧栏自动收起、底部表顶上。
+ */
+async function scenarioDagViews() {
+  const p = startTui();
+  try {
+    check(await waitFor(p, (t) => t.includes('omd tui')), 'DG-0 (场景4.6) 启动');
+    p.write('fixture:dag\r');
+    check(await waitFor(p, (t) => t.includes('fan-out 演示图已发完')), 'DG-1 fan-out 演示 run 发完', p.text().slice(-400));
+    check(
+      await waitFor(p, (t) => t.includes('├─') && t.includes('└─')),
+      'DG-2 ★ 侧栏树画出分裂(├─ └─ 都在)',
+      p.text().slice(-600),
+    );
+    check(p.text().includes('DAG fixture-fanout'), 'DG-3 树头行带 run id', p.text().slice(-600));
+
+    p.write('\x07'); // Ctrl+G → 全屏 (画法 0 = 树)
+    check(await waitFor(p, (t) => t.includes('当前: 树')), 'DG-4 ★ Ctrl+G 进全屏(画法提示可见)', p.text().slice(-400));
+    p.write('\t');
+    check(await waitFor(p, (t) => t.includes('泳道甘特')), 'DG-5 ★ Tab 切到泳道甘特', p.text().slice(-600));
+    check(p.text().includes('在跑'), 'DG-6 甘特上有在跑的条(shard-3 没 settle)', p.text().slice(-600));
+    p.write('\t');
+    check(
+      await waitFor(p, (t) => t.includes('分层依赖') && t.includes('L0')),
+      'DG-7 ★ Tab 再切到分层依赖(L0 层可见)',
+      p.text().slice(-600),
+    );
+    check(p.text().includes('[fan-in]'), 'DG-8 fan-in 汇聚点标出来(shard-3 deps 2 条)', p.text().slice(-600));
+    p.write('\t');
+    check(await waitFor(p, (t) => t.includes('当前: 树')), 'DG-9 Tab 循环回到树');
+    p.write('\x07'); // 退出全屏
+    await new Promise((r) => setTimeout(r, 300));
+  } finally {
+    p.kill();
+  }
+}
+
+/** 场景 4.7:窄终端(80 列)—— 侧栏自动收起,底部表顶上(G-3 后半)。 */
+async function scenarioDagNarrow() {
+  const p = startTui({ cols: 80 });
+  try {
+    check(await waitFor(p, (t) => t.includes('omd tui')), 'DG-10 (场景4.7) 80 列启动');
+    p.write('fixture:dag\r');
+    check(await waitFor(p, (t) => t.includes('fan-out 演示图已发完')), 'DG-11 演示 run 发完');
+    // 底部那张表要回来 (它列节点行) —— 等它先出现, 再断言树没画。
+    check(await waitFor(p, (t) => t.includes('shard-1')), 'DG-12 底部表在画节点', p.text().slice(-500));
+    check(p.text().includes('├─') === false, 'DG-13 ★ 80 列下侧栏自动收起(树的分支符不出现)', p.text().slice(-500));
+  } finally {
+    p.kill();
+  }
+}
+
+/**
  * 场景 4.5:**审批层**(切片①,G-1 的 PTY 半):真 gate → 真卡片 → 真键位 → 真写/真拒。
  *
  * fixture 的 `fixture:write` 暗号会经**生产同一个 ApprovalGate** 调一个真会写盘的
@@ -605,6 +666,8 @@ await scenarioHappyPath();
 await scenarioArmReset();
 await scenarioLogRedirect();
 await scenarioSeat();
+await scenarioDagViews();
+await scenarioDagNarrow();
 await scenarioApproval();
 await scenarioRealBackendBoots();
 
