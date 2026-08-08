@@ -36,6 +36,8 @@ export const FIXTURE_RUN_ID = 'fixture-run';
 export const FIXTURE_WRITE_PROMPT = 'fixture:write';
 /** 触发 fan-out 图演示的暗号(切片③ L3)。发一个带 map 分裂的 run —— 左栏树要画得出 ├─ └─。 */
 export const FIXTURE_DAG_PROMPT = 'fixture:dag';
+/** 触发重复读演示的暗号(切片⑤ L3)。同一文件 read 三次 → 健康度一行要亮。 */
+export const FIXTURE_READS_PROMPT = 'fixture:reads';
 /** fan-out 演示 run 的 id。 */
 export const FIXTURE_DAG_RUN_ID = 'fixture-fanout';
 /** 审批演示写的文件名(目录由 `OMD_TUI_FIXTURE_DIR` 给;没给就不真写,只报没处写)。 */
@@ -136,6 +138,17 @@ export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend 
         push({ type: 'settle', id: 'shard-2', status: 'failed', kind: 'agent', model: 'fixture-model' });
         push({ type: 'start', id: 'shard-3', kind: 'agent' });
         emit('chat', { type: 'delta', text: 'fan-out 演示图已发完。' });
+        emit('session', { sessionId, messageCount: msgs.length + 1 });
+        sessions.set(sessionId, msgs);
+        return { ok: true };
+      }
+      // ── 切片⑤: 重复读演示 —— 同一文件 read 三次, 健康度一行该亮。
+      if (prompt.trim() === FIXTURE_READS_PROMPT) {
+        for (let i = 0; i < 3; i++) {
+          emit('tool', { phase: 'start', name: 'read', id: `fx-read-${i}`, args: { path: 'src/repeat.ts' } });
+          emit('tool', { phase: 'end', name: 'read', id: `fx-read-${i}`, ok: true });
+        }
+        emit('chat', { type: 'delta', text: '同一个文件读了三遍。' });
         emit('session', { sessionId, messageCount: msgs.length + 1 });
         sessions.set(sessionId, msgs);
         return { ok: true };

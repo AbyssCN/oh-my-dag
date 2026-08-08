@@ -49,6 +49,7 @@ import { buildSettings, formatSettings, parseSettingsCommand } from './settings'
 import { STARTUP_HINT, formatHelp, parseHelpCommand, slashCommands } from './commands';
 import { choiceLabel, listModelChoices, parseModelsCommand, sortChoices } from './model-picker';
 import { createOmdAutocompleteProvider } from './skill-complete';
+import { createContextHealth } from './health';
 import { renderLogo } from './render/logo';
 import { summarizeToolArg } from './render/tool-arg';
 import { formatStatusLine, formatUsageLine } from './render/statusbar';
@@ -281,6 +282,10 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     }),
   );
   const footer = new StatusLine(CHROME.footer(opts.backend.connection.url));
+  // 切片⑤: 上下文健康度一行。平时**不占位**(visible 靠 health.line() 判) —— 画一行空白
+  // 会让底栏三行变成看起来的四行。
+  const health = createContextHealth();
+  const healthLine = new StatusLine('');
   // 底栏行①② (切片②, v5 第一节样张)。segment 模型: 没数据的段不画,
   // 所以启动时行②多半是空串 (窗口里没记录) —— 那不是 bug, 是「还没烧过」的真值。
   const statusLine = new StatusLine('');
@@ -394,6 +399,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   root.addChild(pathHud, chrome);
   root.addChild(dialogSlot, chrome);
   root.addChild(editorContainer, chrome);
+  root.addChild(healthLine, { shrink: 0, visible: () => health.line() !== null });
   root.addChild(statusLine, chrome);
   root.addChild(usageLine, chrome);
   root.addChild(footer, chrome);
@@ -597,8 +603,12 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       const name = p?.name ?? '?';
       // 一个工具**一行**, end 原地更新 —— 不再 start/end 各追加一条 notice。
       // S-5: 带上参数那半句 —— 只画 `✓ read` 的话, 改对文件和改错文件在屏上长得一模一样。
-      if (p?.phase === 'start') chatLog.toolStart(name, { id: p?.id, detail: summarizeToolArg(p?.args) });
-      else chatLog.toolEnd(name, p?.ok !== false, { id: p?.id });
+      if (p?.phase === 'start') {
+        chatLog.toolStart(name, { id: p?.id, detail: summarizeToolArg(p?.args) });
+        // 切片⑤: 健康度计数吃 start 事件 (end 不带 args)。
+        health.onTool(name, p?.args);
+        healthLine.setText(health.line() ?? '');
+      } else chatLog.toolEnd(name, p?.ok !== false, { id: p?.id });
       tui.requestRender();
       return;
     }
@@ -881,6 +891,8 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   async function switchTo(id: string): Promise<void> {
     const history = await opts.backend.loadHistory({ sessionId: id });
     sessionId = id;
+    health.reset(); // 计数是一条会话的上下文状态 —— 跟着会话走, 不跟着进程走
+    healthLine.setText('');
     chatLog.replay(history as never);
     chatLog.appendNotice(CHROME.sessionSwitched(id, history.length));
   }
@@ -910,6 +922,8 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         chatLog.appendNotice(cmd.reason);
       } else if (cmd.kind === 'new') {
         sessionId = cmd.id ?? newSessionId();
+        health.reset();
+        healthLine.setText('');
         chatLog.clear();
         chatLog.appendNotice(CHROME.sessionNew(sessionId));
       } else {
