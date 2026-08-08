@@ -6,8 +6,7 @@
  *   `SessionContinuityStopInput` / `SessionContinuityStopOutput` / `evaluateSessionContinuityStop(input, ledger)`。
  * - ledger 只经 W3 `parseStopLedger(source)` 产生 (结构化 W3 输出; 决策绝不 grep transcript 文本)。
  * - 决策 = token bucket 唯一主触发 (Open-3): 跨档才 block; 无 HEAD bonus、无 transcript grep、
- *   无 shell 搜索、无 raw-text regex 替代; `lastUserAsk` 与 `assistantText` 对 W2 决策不透明 (classifier 只属 W3,
- *   skill preamble 保持 OPEN, 本切片不得隐式解决)。
+ *   无 shell 搜索、无 raw-text regex 替代; `lastUserAsk` 与 `assistantText` 对 W2 决策不透明 (classifier 只属 W3)。
  * - 守卫不是触发: `stop_hook_active: true` (CC loop guard) / `writer_locked: true` (双写排除)
  *   → 一律不决策; SessionStart / PreCompact / SessionEnd 事件与缺省事件 → 不决策 (opt-in)。
  * - fail-open: 空 ledger / 缺 token / transcript 不可读 → 不伪造 token、不抛、零写入
@@ -304,36 +303,38 @@ describe('assistantText 对 W2 决策不透明 (无 skill-preamble 扩展 · cla
 });
 
 describe('lastUserAsk 对 W2 决策不透明 (D-5 · 唯一触发仍是 token bucket)', () => {
-  test('跨档时 lastUserAsk 三态 (found / empty / blocked) 在相同 token entries 下输出逐字相同 (均 block)', () => {
+  test('跨档时 lastUserAsk (found / empty / skill 前导穿透) 在相同 token entries 下输出逐字相同 (均 block)', () => {
     const crossed = [assistantLine('轮1', usageTokens(150000)), assistantLine('轮2', usageTokens(210000))];
     const ledgers = [
       ledgerFrom(...crossed, userRaw('git commit 226451 — 最后真实 ask')), // found (D-1 string candidate)
       ledgerFrom(...crossed, userToolResult()), // empty (tool_result 无 candidate, D-1)
-      ledgerFrom(...crossed, userLine('Base directory for this skill: /home/nick/skills/foo')), // blocked (D-2)
+      // skill 前导 skip+continue → 穿透到更早真实 ask (硬化后; 镜像 A:161 遮 A:157)。
+      ledgerFrom(...crossed, userRaw('先进行 /grill 然后再/omd-sdd'), userLine('Base directory for this skill: /home/nick/skills/foo')),
     ];
     // user 记录不产生 entries → 三份 ledger entries 逐字相同, 差异只在 lastUserAsk。
     expect(ledgers[1]!.entries).toEqual(ledgers[0]!.entries);
     expect(ledgers[2]!.entries).toEqual(ledgers[0]!.entries);
-    // 三态必须真实不同, 否则对等输出断言是空转。
-    expect(ledgers[0]!.lastUserAsk.status).toBe('found');
-    expect(ledgers[1]!.lastUserAsk.status).toBe('empty');
-    expect(ledgers[2]!.lastUserAsk.status).toBe('blocked-skill-preamble');
+    // 三份 lastUserAsk 必须真实不同, 否则对等输出断言是空转。
+    expect(ledgers[0]!.lastUserAsk).toEqual({ status: 'found', value: 'git commit 226451 — 最后真实 ask', sourceLine: 3 });
+    expect(ledgers[1]!.lastUserAsk).toEqual({ status: 'empty', value: null, sourceLine: null });
+    expect(ledgers[2]!.lastUserAsk).toEqual({ status: 'found', value: '先进行 /grill 然后再/omd-sdd', sourceLine: 3 });
     const outs = ledgers.map((l) => evaluateSessionContinuityStop(stopInput(), l));
     for (const out of outs) expectBlock(out);
     expect(outs[1]).toEqual(outs[0]);
     expect(outs[2]).toEqual(outs[0]);
   });
 
-  test('未跨档时 lastUserAsk 三态同样不改变决策 (均 {}; HEAD/Git/grep 仍不参与)', () => {
+  test('未跨档时 lastUserAsk 同样不改变决策 (均 {}; HEAD/Git/grep 仍不参与)', () => {
     const idle = [assistantLine('轮1', usageTokens(100000)), assistantLine('轮2', usageTokens(150000))];
     const ledgers = [
       ledgerFrom(...idle, userRaw('HEAD 指向 226451 · git log 最新')),
       ledgerFrom(...idle, userToolResult()),
-      ledgerFrom(...idle, userLine('Base directory for this skill: /home/nick/skills/bar')),
+      // skill 前导 skip+continue → 穿透到更早真实 ask (硬化后)。
+      ledgerFrom(...idle, userRaw('未跨档真实 ask'), userLine('Base directory for this skill: /home/nick/skills/bar')),
     ];
-    expect(ledgers[0]!.lastUserAsk.status).toBe('found');
-    expect(ledgers[1]!.lastUserAsk.status).toBe('empty');
-    expect(ledgers[2]!.lastUserAsk.status).toBe('blocked-skill-preamble');
+    expect(ledgers[0]!.lastUserAsk).toEqual({ status: 'found', value: 'HEAD 指向 226451 · git log 最新', sourceLine: 3 });
+    expect(ledgers[1]!.lastUserAsk).toEqual({ status: 'empty', value: null, sourceLine: null });
+    expect(ledgers[2]!.lastUserAsk).toEqual({ status: 'found', value: '未跨档真实 ask', sourceLine: 3 });
     const outs = ledgers.map((l) => evaluateSessionContinuityStop(stopInput(), l));
     for (const out of outs) expectNoDecision(out);
     expect(outs[1]).toEqual(outs[0]);

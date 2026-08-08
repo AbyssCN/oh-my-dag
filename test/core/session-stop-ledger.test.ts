@@ -7,7 +7,7 @@
  *   (GWT-3/4/6 · D-3/D-5 · E-P1 ctxTokens 公式) + docs/plan/session-continuity-pathfinder.md。
  *
  * 覆盖:增量 ledger 消费 · usage/ctxTokens 记账 · touched-file/Bash 抽取材料 ·
- *   user 基础设施前导容忍(<system-reminder / <task-notification 精确前缀) ·
+ *   user 基础设施前导容忍(<system-reminder / <task-notification / skill 前导 精确前缀) ·
  *   lastUserAsk 逆序选择(最后真实 ask;仅原始精确前缀跳过, 宽泛过滤禁止) ·
  *   未知 line.type 忽略(GWT-3 allowlist)· malformed 输入 typed-error fail-open 值语义。
  *
@@ -221,10 +221,11 @@ describe('parseStopLedger — 未知 line.type 忽略', () => {
 // ─── user 基础设施前导容忍(GWT-4 / Open-2 窄前缀)────────────────────────────
 
 describe('parseStopLedger — user 行与基础设施前导', () => {
-  test('<system-reminder / <task-notification 精确前缀 user 行不产生 entry、不报错、不污染 assistantText', () => {
+  test('<system-reminder / <task-notification / skill 前导 精确前缀 user 行不产生 entry、不报错、不污染 assistantText', () => {
     const src = [
       userLine('<system-reminder>忽略我</system-reminder>'),
       userLine('<task-notification type="system">context 注入</task-notification>'),
+      userLine('Base directory for this skill: /home/nick/.claude/skills/omd-grill'),
       userToolResult(),
       assistant([{ type: 'text', text: '正常回复' }], USAGE_A),
       userLine('真正的用户提问'),
@@ -239,6 +240,7 @@ describe('parseStopLedger — user 行与基础设施前导', () => {
     // 基础设施前导文本绝不漏进 assistantText。
     expect(r.ledger.entries[0]!.assistantText).toContain('正常回复');
     expect(r.ledger.entries[0]!.assistantText).not.toContain('task-notification');
+    expect(r.ledger.entries[0]!.assistantText).not.toContain('Base directory for this skill:');
     expect(r.ledger.entries[0]!.assistantText).not.toContain('system-reminder');
   });
 });
@@ -260,13 +262,14 @@ describe('parseStopLedger — lastUserAsk(最后真实 ask)', () => {
     expect(r.ledger.lastUserAsk).toEqual({ status: 'found', value: '第二问(text 数组 content)', sourceLine: 3 });
   });
 
-  test('仅原始精确前缀 <task-notification 被跳过, 逆扫保留更早真实 ask;<task-notificationXYZ 同跳过', () => {
+  test('task-notification / skill 前导精确前缀均被跳过, 逆扫保留更早真实 ask; 前缀+任意后缀同跳过', () => {
     const src = [
       userLine('真实提问'),
       assistant([{ type: 'text', text: '回复' }], USAGE_A),
       userLine('<task-notification type="task">注入</task-notification>'),
       assistant([{ type: 'text', text: '回复二' }], USAGE_B),
       userLine('<task-notificationXYZ>'),
+      userLine('Base directory for this skill: /home/nick/.claude/skills/omd-grill'),
     ].join('\n');
     const r = parseStopLedger(src);
     expect(r.ok).toBe(true);
@@ -274,13 +277,50 @@ describe('parseStopLedger — lastUserAsk(最后真实 ask)', () => {
     expect(r.ledger.lastUserAsk).toEqual({ status: 'found', value: '真实提问', sourceLine: 1 });
   });
 
-  test('宽泛过滤禁止:前导空白/大小写变化/中部命中/slash ask 均为普通 found 且 value 原样', () => {
+  test('skill 前导被跳过, 逆扫穿透到更早真实 ask (镜像 A:161 遮 A:157)', () => {
+    const src = [
+      userRaw('先进行 /grill 然后再/omd-sdd'), // A:157 真实 ask 对照
+      assistant([{ type: 'text', text: '回复' }], USAGE_A),
+      userLine('Base directory for this skill: /home/nick/.claude/skills/omd-grill'), // A:161 skill 前导对照
+      assistant([{ type: 'text', text: '回复二' }], USAGE_B),
+    ].join('\n');
+    const r = parseStopLedger(src);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // 前导不再 blocked 停扫: 穿透到 A:157 语义的真实 ask, 而非停在 :161。
+    expect(r.ledger.lastUserAsk).toEqual({ status: 'found', value: '先进行 /grill 然后再/omd-sdd', sourceLine: 1 });
+  });
+
+  test('skill 前导是唯一 user 行 → empty (skip 后耗尽, 不伪造 ask)', () => {
+    const r = parseStopLedger(userLine('Base directory for this skill: /home/nick/.claude/skills/omd-grill'));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.ledger.lastUserAsk).toEqual({ status: 'empty', value: null, sourceLine: null });
+  });
+
+  test('候选仅含三种精确前缀 (system-reminder / task-notification / skill 前导) → empty', () => {
+    const src = [
+      userLine('<system-reminder>reminder</system-reminder>'),
+      userLine('<task-notification type="system">注入</task-notification>'),
+      userLine('Base directory for this skill: /home/nick/.claude/skills/omd-grill'),
+    ].join('\n');
+    const r = parseStopLedger(src);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.ledger.lastUserAsk).toEqual({ status: 'empty', value: null, sourceLine: null });
+  });
+
+  test('宽泛过滤禁止:前导空白/大小写变化/中部命中(含 skill 前导变体)均为普通 found 且 value 原样', () => {
     const cases = [
       ' <task-notification type="x">前导空格</task-notification>',
       '\t<task-notification type="x">tab 前导</task-notification>',
       '<Task-notification type="x">大小写变化</task-notification>',
       '前缀x<task-notification type="x">中部命中</task-notification>',
       '/help 需要更多上下文',
+      ' Base directory for this skill: /home/nick/skills/x', // 前导空格 → 不匹配精确前缀
+      '\tBase directory for this skill: /home/nick/skills/x', // tab 前导 → 不匹配
+      'base directory for this skill: /home/nick/skills/x', // 大小写变化 → 不匹配
+      'xBase directory for this skill: /home/nick/skills/x', // 中部命中 → 不匹配
     ];
     for (const ask of cases) {
       const r = parseStopLedger(userLine(ask));
