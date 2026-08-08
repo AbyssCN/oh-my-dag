@@ -501,6 +501,36 @@ async function scenarioSeat() {
 }
 
 /**
+ * 场景 4.8:**skill 补全三段式**(切片④,G-4)。
+ *
+ * `/` 只出组(S15/SET-4 已覆盖命令层)→ 这里验后两段:`/omd-` 出全名成员;
+ * `/omd ` 出**不带前缀**的成员(判据用 `[^-]council` —— 全名 `omd-council` 里
+ * `council` 前面是连字符,匹配不上;裸名前面是空格,匹配得上)。
+ */
+async function scenarioSkillComplete() {
+  const p = startTui();
+  try {
+    check(await waitFor(p, (t) => t.includes('omd tui')), 'SKC-0 (场景4.8) 启动');
+    p.write('/omd-');
+    check(
+      await waitFor(p, (t) => t.includes('omd-council'), 8000),
+      'SKC-1 ★ /omd- 展开全名成员(omd-council 出现在补全里)',
+      p.text().slice(-500),
+    );
+    for (let i = 0; i < 5; i++) p.write('\x7f'); // 退掉 /omd-
+    await new Promise((r) => setTimeout(r, 200));
+    p.write('/omd c');
+    check(
+      await waitFor(p, (t) => /[^-]council/.test(t), 8000),
+      'SKC-2 ★ /omd + 空格出**不带前缀**的成员(裸名 council)',
+      p.text().slice(-500),
+    );
+  } finally {
+    p.kill();
+  }
+}
+
+/**
  * 场景 4.6:**左栏 DAG + 三画法**(切片③,G-3)。
  *
  * `fixture:dag` 暗号发一个带 map 分裂的 run(planned 无 deps · expanded 带 parent+deps,
@@ -666,6 +696,7 @@ await scenarioHappyPath();
 await scenarioArmReset();
 await scenarioLogRedirect();
 await scenarioSeat();
+await scenarioSkillComplete();
 await scenarioDagViews();
 await scenarioDagNarrow();
 await scenarioApproval();

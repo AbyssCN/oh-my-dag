@@ -28,7 +28,7 @@
  * 于是 L1 能直接测判定,L3 只需要验"真 PTY 里这条链接得起来"。
  */
 import { hostname } from 'node:os';
-import { CombinedAutocompleteProvider, type Component, Container, Editor, HStack, ProcessTerminal, ScrollView, Text, TuiAltScreen, VStack, type Terminal } from '@earendil-works/pi-tui';
+import { type Component, Container, Editor, HStack, ProcessTerminal, ScrollView, Text, TuiAltScreen, VStack, type Terminal } from '@earendil-works/pi-tui';
 import { logger } from '../logger';
 import type { ApprovalDecision, ApprovalGate, ApprovalRequest } from './approval/gate';
 import { approvalBody, approvalTitle } from './approval/card';
@@ -48,6 +48,7 @@ import { formatSessions, newSessionId, parseSessionCommand } from './sessions';
 import { buildSettings, formatSettings, parseSettingsCommand } from './settings';
 import { STARTUP_HINT, formatHelp, parseHelpCommand, slashCommands } from './commands';
 import { choiceLabel, listModelChoices, parseModelsCommand, sortChoices } from './model-picker';
+import { createOmdAutocompleteProvider } from './skill-complete';
 import { renderLogo } from './render/logo';
 import { summarizeToolArg } from './render/tool-arg';
 import { formatStatusLine, formatUsageLine } from './render/statusbar';
@@ -266,12 +267,19 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   const pathHud = new PathHud(theme, opts.pathReader ?? createPathReader(opts.cwd));
   pathHud.refresh();
   const editor = new Editor(tui, theme.editor);
-  // 补全:**行首 `/` 出命令,其余出文件** —— 走 pi-tui 的 `CombinedAutocompleteProvider`。
+  // 补全:**行首 `/` 出命令,其余出文件** —— 底座是 pi-tui 的 `CombinedAutocompleteProvider`。
   // ⚠ 此前只挂了自写的文件补全, 于是打 `/settings` 弹出来的是一堆文件名(owner 截图抓到的)。
   //   斜杠开头本该出命令, 而这件事 pi-tui 本来就做好了。
-  // S-6: skill 组也进补全(`/omd` `/lark` …)。**启动时算一次** —— 见 commands.ts 的说明。
+  // 切片④ (G-4): 三段式 —— `/` 只出组, `/omd-` 出全名成员带描述, `/omd ` 出不带前缀的成员。
+  // 成员清单 5s TTL 现扫 (装新 skill 不用重启), 组清单仍启动时算一次 (见 commands.ts 的说明)。
   const startupGroups = groupSkills(listSkills()).groups.map((g) => ({ name: g.name, count: g.members.length }));
-  editor.setAutocompleteProvider(new CombinedAutocompleteProvider(slashCommands(startupGroups), opts.cwd));
+  editor.setAutocompleteProvider(
+    createOmdAutocompleteProvider({
+      commands: slashCommands(startupGroups),
+      cwd: opts.cwd,
+      grouping: () => groupSkills(listSkills()),
+    }),
+  );
   const footer = new StatusLine(CHROME.footer(opts.backend.connection.url));
   // 底栏行①② (切片②, v5 第一节样张)。segment 模型: 没数据的段不画,
   // 所以启动时行②多半是空串 (窗口里没记录) —— 那不是 bug, 是「还没烧过」的真值。
