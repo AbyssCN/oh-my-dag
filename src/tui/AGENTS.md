@@ -42,8 +42,17 @@
 (已用 / 欠账 / 有理由不用 / 不适用)。**改了 `src/tui` 就去更新它**,
 还掉一条欠账就从 §1 挪到 §3,别让它烂在表里。
 
-现状:引用 **17 / 约 70**。最大的三笔欠账 = `SettingsList`(设置页手搓中)·
-`Input`(手搓的输入框没有光标/undo/按词操作)· `Key`/`matchesKey`(手列 Esc 编码表)。
+现状:引用 **21 / 约 70**(2026-08-08 复核,命令在台账 §3)。
+本程还上两笔:**`SettingsList`**(设置页 → `components/settings-panel.ts`)·
+**`getKeybindings`**(`keys.ts` 补 pi-tui 认不出的双 ESC)。
+
+剩下最大的一笔:**`Input`** —— 手搓的输入框(`dialog.ts input()`)没有光标移动 / undo /
+按词操作 / 粘贴处理。⚠ `Input` **不支持遮蔽**,所以 `/login` 落 key 那处必须保留手搓,
+换的时候要在代码里写明这个理由。
+
+⚠ 台账 §1.1 记了一条**实测更正**:「换成 `matchesKey` 是纯赢」是错的,它是**一换一**
+(omd 的表有双 ESC 而 pi-tui 没有;pi-tui 有 kitty 编码而 omd 没有)。
+**照台账原文直接换会静默丢掉一种编码** —— 动 `dialog.ts` 那张表之前先读 §1.1。
 
 ---
 

@@ -18,6 +18,15 @@
  * 必须退回手输,而不是开一个空框 —— 开空框等于把人锁死在一个只能按 Esc 的界面里。
  */
 
+/**
+ * 目录里没有的坐标走这条:选单最后一行「手动输入坐标…」的 `value`。
+ *
+ * 用 `\0` 开头是因为它**不可能与真坐标撞** —— `provider:model` 里不会有 NUL。
+ * (2026-08-08 从 tui.ts 挪到这里:设置面板的座位子层也要认这个哨兵值,
+ * 而两处各写一份哨兵是"两份必漂"的经典形状。)
+ */
+export const MANUAL_COORD = '\u0000manual';
+
 export interface ModelChoice {
   provider: string;
   id: string;

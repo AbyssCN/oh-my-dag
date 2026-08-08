@@ -15,7 +15,7 @@
  *
  * ⚠ 关色之后 `visibleWidth` 读数不变(ANSI 本来就不计宽),所以宽度闸两种模式同一个结论。
  */
-import type { EditorTheme, MarkdownTheme } from '@earendil-works/pi-tui';
+import type { EditorTheme, MarkdownTheme, SettingsListTheme } from '@earendil-works/pi-tui';
 import { createHighlightCode } from './render/highlight';
 
 /** `NO_COLOR` 约定:**只要这个变量存在**(哪怕是空串)就关色。 */
@@ -70,6 +70,11 @@ export function fg24(hex: string): (t: string) => string {
 export interface OmdTuiTheme {
   markdown: MarkdownTheme;
   editor: EditorTheme;
+  /**
+   * pi-tui `SettingsList` 的主题面。**用 pi-tui 的类型**,不自定第二份形状 ——
+   * 自定一份的代价是 pi-tui 加一档我们不知道,而它加的那一档正好是我们缺的那个。
+   */
+  settingsList: SettingsListTheme;
   /** chrome 用的几档语义色。组件只认这几个名字,不认具体 SGR 码。 */
   chrome: {
     dim: (t: string) => string;
@@ -130,6 +135,18 @@ export function createTheme(opts: { color?: boolean; truecolor?: boolean } = {})
         scrollInfo: dim,
         noMatch: dim,
       },
+    },
+    settingsList: {
+      // 焦点行加粗、非焦点行常色 —— 两列对齐靠的是**同宽的标签列**, 不是靠给非焦点行调暗
+      //   (调暗之后一屏 13 行里 12 行是灰的, 读起来像"只有一项能用")。
+      label: (t, selected) => (selected ? c('1', MOCHA.text)(t) : t),
+      // 值那一列是这张表的信息主体 —— 焦点行给 accent, 其余给 dim: 眼睛先落在"现在是什么"。
+      value: (t, selected) => (selected ? accent(t) : dim(t)),
+      description: dim,
+      // `→ ` 与 pi-tui `SelectList` 的光标同一个字形(`select-list.js:91`), 宽度 2 与
+      //   非焦点行的两个空格严格对齐。U+2192 在白名单里量过 = 1 列。
+      cursor: `${accent('→')} `,
+      hint: dim,
     },
     chrome: { dim, accent, warn, user, brand },
   };
