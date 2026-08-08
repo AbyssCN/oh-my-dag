@@ -550,6 +550,17 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     open(component, focus) {
       if (dialogOpen) return false;
       dialogOpen = true;
+      /**
+       * ★ **对话框一开就把等待指示器停掉**(2026-08-08 实测撞出来的)。
+       *
+       * 它的文案是「在等模型回话」—— 而对话框(审批单 / 选择器)占住输入区时,
+       * **在等的是人不是模型**。一边弹审批单一边说"在等模型回话", 是**说了一句错话**,
+       * 而且是那种读起来完全合理、没人会去核的错话。
+       *
+       * ⚠ 顺带修掉一个测试面的问题:它每 120ms 重绘一次, 而 PTY 的 oracle 是**累积缓冲**
+       * ⇒ 审批场景里整块缓冲被这一行刷满, `slice(-400)` 那种诊断输出全成了它。
+       */
+      waiting.stop();
       dialogSlot.addChild(component);
       tui.setFocus(focus);
       return true;
@@ -557,6 +568,8 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     close() {
       if (!dialogOpen) return; // 幂等
       dialogOpen = false;
+      // 框关了, 如果这一轮还在等模型, 指示器接着转。
+      if (waitingOn) waiting.start();
       dialogSlot.clear();
       tui.setFocus(editor);
       tui.requestRender();

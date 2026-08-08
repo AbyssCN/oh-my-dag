@@ -902,7 +902,26 @@ async function scenarioApproval() {
     p.write('d'); // 展开详情 (内容预览)
     // ⚠ 判据是详情分隔线, 不是 'approved' —— 后者在**拒绝回执**里也出现 (approved.txt),
     //   证伪跑(去掉 setAsk 接线)时抓到这条在假绿。
-    check(await waitFor(p, (t) => t.includes('────────'), 8000), 'AP-6 d 展开详情(分隔线 + 内容预览)', p.text().slice(-400));
+    /**
+     * ⚠ **判据换过**(2026-08-08):原来是 `includes('────────')` —— **8 个 `─`**,
+     * 而 `PREVIEW_RULE_WIDTH` 恰好是 8(`approval/card.ts:18`), 于是**任何更长的横线**
+     * (卡片框 / 编辑器边框)都包含它 ⇒ **卡片一出现这条就满足了, 与 `d` 按没按无关**。
+     * 那不只是弱 —— 它让下面那个 `y` **可能在详情真渲染出来之前就发出去**。
+     *
+     * 换成 detail **独有**的形状:预览的 8 横线**紧跟着预览首行** `approved`
+     * (写的内容是 `'approved\n'`, `backend-fixture.ts:113`)。
+     * ⚠ 排除 `approved.txt` —— 那是摘要里的文件名, 按 `d` 之前就在屏上。
+     */
+    check(
+      // ⚠ 中间隔着**卡片的竖线** —— 每行都过 `card.side()` 包成 `│ … │`,
+      //   折叠之后是 `──────── │ approved`。只写 `\s+` 匹配不到(第一版就红在这)。
+      await waitFor(p, (t) => /────────[\s│]+approved(?!\.txt)/.test(t), 8000),
+      'AP-6 d 展开详情(预览横线**紧跟**预览内容, 不是随便一条横线)',
+      p.text().slice(-400),
+    );
+    // ⚠ 连发两个键之间**留间隔** —— 与本文件上面那条 Esc 的坑同族:
+    //   前一个键引发的重绘还没完成就发下一个, 应用可能在旧状态里收到它。
+    await new Promise((r) => setTimeout(r, 250));
     p.write('y'); // 批准这一次
     check(
       await waitFor(p, (t) => t.includes('已批准这一次') && t.includes('write 已执行')),
