@@ -439,7 +439,48 @@ async function scenarioSeat() {
     check(p.text().includes('左栏 DAG 默认'), 'SET-5 ★ 界面组在面板里(写 tui.ui)', p.text().slice(-900));
     check(p.text().includes('审批 token TTL'), 'SET-6 ★ 审批组在面板里(重启生效写在 detail)', p.text().slice(-900));
     check(p.text().includes('provider 凭证'), 'SET-7 provider 组在面板里(只显示配没配)', p.text().slice(-900));
-    p.write('\x1b');
+
+    /**
+     * ★ **SET-8/9/10:Esc 退一级,不是退到底**(2026-08-08,owner 点名的那条)。
+     *
+     * 三层:设置页 →(Enter 选座位行)→ 座位列表 →(Enter 选一个座位)→ 模型选择器。
+     * 从模型选择器按 Esc,该回到**座位列表**;再按一次,该回到**设置页**;再按才收工。
+     *
+     * ⚠ 判据必须**锚顺序**,不能锚子串 —— oracle 是累积缓冲,"改哪个座位"在前面
+     * 早就出现过一次,`includes` 无论修没修都是真(本文件头记的那一族假绿)。
+     * 所以量的是 `lastIndexOf` 的**先后**:座位列表最后一次出现要排在模型选择器之后,
+     * 那才叫"退回来了"。
+     */
+    p.write('\r'); // 选中第一行(座位 conductor)→ 进座位列表
+    check(
+      await waitFor(p, (t) => t.includes('改哪个座位')),
+      'SET-8 设置页里选座位行 → 开出座位列表',
+      p.text().slice(-600),
+    );
+    const seatListAt = p.text().lastIndexOf('改哪个座位');
+    p.write('\r'); // 选中第一个座位 → 进模型选择器(目录空时退回手输框, 两种都认)
+    const intoModel = await waitFor(p, (t) => {
+      const i = Math.max(t.lastIndexOf('换成哪个模型'), t.lastIndexOf('换成哪个坐标'));
+      return i > seatListAt;
+    });
+    check(intoModel, 'SET-9 座位列表里选一个 → 开出模型选择器', p.text().slice(-600));
+    p.write('\x1b'); // ← 这一下就是 owner 报的那一下
+    check(
+      await waitFor(p, (t) => {
+        const model = Math.max(t.lastIndexOf('换成哪个模型'), t.lastIndexOf('换成哪个坐标'));
+        return t.lastIndexOf('改哪个座位') > model;
+      }),
+      'SET-10 ★ 模型选择器 Esc → 回到**座位列表**(不是退出整个设置)',
+      p.text().slice(-900),
+    );
+    p.write('\x1b'); // 再退一级 → 回设置页
+    check(
+      await waitFor(p, (t) => t.lastIndexOf('改哪一项') > t.lastIndexOf('改哪个座位')),
+      'SET-11 ★ 座位列表 Esc → 回到**设置页**(逐级回退第二级)',
+      p.text().slice(-900),
+    );
+
+    p.write('\x1b'); // 第三下才真收工
     await new Promise((r) => setTimeout(r, 300));
 
     // 切片⑥: /login 开得出 provider 选择器; Esc 什么都不改 (真落 key 的路径走 headless-config 的单测)。
