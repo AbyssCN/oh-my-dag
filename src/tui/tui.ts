@@ -44,7 +44,7 @@ import { renderLayers } from './render/dag-layers';
 import { StatusLine } from './components/status-line';
 import { type ContextFile, formatContextLine, loadConductorContext } from './context';
 import { formatSeatRows, parseSeatCommand, seatRows } from './seat-picker';
-import { formatSessions, newSessionId, parseSessionCommand } from './sessions';
+import { forkSessionId, formatSessions, newSessionId, parseSessionCommand } from './sessions';
 import { buildSettings, formatSettings, parseSettingsCommand } from './settings';
 import { STARTUP_HINT, formatHelp, parseHelpCommand, slashCommands } from './commands';
 import { choiceLabel, listModelChoices, parseModelsCommand, sortChoices } from './model-picker';
@@ -161,6 +161,9 @@ export const CHROME = {
   loginDone: (provider: string, target: string, warnings: string[]) =>
     `key 已写入 ${target === 'env' ? '.env' : 'auth.json'} (${provider}, 即时生效)${warnings.length > 0 ? `\n  ${warnings.join('\n  ')}` : ''}`,
   uiWritten: (what: string, path: string) => `${what} 已写入 ${path}`,
+  // ── 切片⑦: 会话树。fork 的回执要说清"现在在分支上, 原会话没动"。 ──
+  sessionForked: (text: string) => `${text} —— 已切到分支; 原会话未动, /session 可切回`,
+  sessionForkFailed: (reason: string) => `fork 不了: ${reason}`,
   approvalTtlWritten: (sec: number, path: string) => `审批 token TTL -> ${sec}s 已写入 ${path} (重启生效)`,
 } as const;
 
@@ -933,6 +936,19 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         healthLine.setText('');
         chatLog.clear();
         chatLog.appendNotice(CHROME.sessionNew(sessionId));
+      } else if (cmd.kind === 'fork') {
+        // 切片⑦: fork 当前会话 → 切进分支。失败**不切**(半切会让下一句发进不存在的会话)。
+        if (!opts.backend.forkSession) {
+          chatLog.appendNotice(CHROME.noRunCapability('forkSession'));
+        } else {
+          const newId = cmd.id ?? forkSessionId(sessionId);
+          const r = await opts.backend.forkSession({ fromId: sessionId, newId });
+          if (!r.ok) chatLog.appendNotice(CHROME.sessionForkFailed(r.text));
+          else {
+            await switchTo(newId);
+            chatLog.appendNotice(CHROME.sessionForked(r.text));
+          }
+        }
       } else {
         await switchTo(cmd.id);
       }

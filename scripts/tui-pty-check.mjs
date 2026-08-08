@@ -234,6 +234,30 @@ async function scenarioHappyPath() {
     // 行① 工作区段: 这条 lane 的 cwd 就是 omd 仓 → 仓名与分支该在。
     check(/oh-my-dag · \S+/.test(p.text()), 'SB-4 行①: git 仓名+分支段', p.text().slice(-500));
 
+    // ── 切片⑦: 会话树 —— fork 一条、切回去、两条互不污染 (G 判据逐字)。──
+    p.write('/session fork\r');
+    check(
+      await waitFor(p, (t) => t.includes('已从 tui fork 出') && t.includes('已切到分支')),
+      'SF-1 ★ fork 有回执且已切进分支',
+      p.text().slice(-500),
+    );
+    p.write('branch-only\r'); // 分支里多说一句 —— 污染探针
+    check(await waitFor(p, (t) => t.includes('> branch-only')), 'SF-2 分支里的新消息进了分支');
+    p.write('/session tui\r');
+    check(
+      await waitFor(p, (t) => t.includes('已切到会话 tui(回放 1 条')),
+      'SF-3 ★ 切回原会话: 回放数不含分支消息(互不污染)',
+      p.text().slice(-500),
+    );
+    p.write('/session\r');
+    check(
+      await waitFor(p, (t) => t.includes('<- fork 自 tui')),
+      'SF-4 会话列表画出 lineage(树的边是数据)',
+      p.text().slice(-600),
+    );
+    p.write('\x1b'); // 关掉会话选择器
+    await new Promise((r) => setTimeout(r, 300));
+
     p.write('\x03');
     check(await waitFor(p, (t) => t.includes('再按一次')), 'S2-4 第一次 Ctrl+C 只预备, 不退');
 

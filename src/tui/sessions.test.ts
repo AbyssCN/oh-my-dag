@@ -7,7 +7,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { TuiSessionMeta } from './backend';
 import { ChatLog } from './components/chat-log';
-import { formatSessions, newSessionId, parseSessionCommand } from './sessions';
+import { forkSessionId, formatSessions, newSessionId, parseSessionCommand } from './sessions';
 import { createTheme } from './theme';
 
 describe('parseSessionCommand', () => {
@@ -129,5 +129,32 @@ describe('★ ChatLog.replay —— 切过去要看到那条会话的历史', ()
     l.appendUser('x');
     l.replay([]);
     expect(l.length).toBe(0);
+  });
+});
+
+describe('切片⑦: fork 解析与 lineage', () => {
+  test('/session fork [id] 解析; 非法 id 给人话', () => {
+    expect(parseSessionCommand('/session fork')).toEqual({ kind: 'fork', id: null });
+    expect(parseSessionCommand('/session fork b1')).toEqual({ kind: 'fork', id: 'b1' });
+    expect(parseSessionCommand('/session fork ../x')?.kind).toBe('usage');
+  });
+
+  test('列表画 lineage(有 parent 才画)', () => {
+    const out = formatSessions(
+      [
+        { id: 'tui', title: '', updatedAt: 0 },
+        { id: 'tui-f9', title: '', updatedAt: 0, parent: 'tui' },
+      ],
+      'tui-f9',
+    );
+    expect(out).toContain('<- fork 自 tui');
+    expect(out.split('\n')[1]).not.toContain('fork 自'); // 根会话那行没有
+  });
+
+  test('forkSessionId 名字自带 lineage 且不超 id 白名单上限', () => {
+    expect(forkSessionId('tui', () => 9_000)).toBe('tui-f9');
+    const long = forkSessionId('x'.repeat(80), () => 9_000);
+    expect(long.length).toBeLessThanOrEqual(64);
+    expect(long.endsWith('-f9')).toBe(true);
   });
 });

@@ -37,6 +37,8 @@ export interface TuiSessionMeta {
   id: string;
   title: string;
   updatedAt: number;
+  /** fork 来源会话 id(切片⑦ 会话树)。缺席 = 根会话。 */
+  parent?: string;
 }
 
 /**
@@ -75,4 +77,6 @@ export interface OmdBackend {
   listRuns?(): Promise<string>;
   /** 续跑一个断掉的 run —— 从磁盘 checkpoint 重载 plan,跳过已绿节点。 */
   resumeRun?(o: { runId: string }): Promise<{ ok: boolean; text: string }>;
+  /** fork 一条会话分支(切片⑦)。`ok:false` 带原因(源不存在 / id 冲突)。 */
+  forkSession?(o: { fromId: string; newId: string }): Promise<{ ok: boolean; text: string }>;
 }

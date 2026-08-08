@@ -53,7 +53,7 @@ export interface FixtureBackendDeps {
   /**
    * 调用账本(切片②)。给了 → 每轮 sendChat 记一笔**固定读数**的假用量
    * (model=`fixture:model`),好让 PTY 能对底栏行①②断言真数字。
-   * 它走与生产同一条 `record → 落盘 → window()` 链,假的只有数字本身。
+   * 它走与生产同一条 `record → 写盘 → window()` 链,假的只有数字本身。
    */
   usage?: import('./usage/ledger').TuiUsageLedger;
 }
@@ -65,6 +65,8 @@ export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend 
   let seq = 0;
   let onEvent: ((e: OmdTuiEvent) => void) | undefined;
   const sessions = new Map<string, AgentMessage[]>();
+  /** 切片⑦: fork 的 lineage(内存版 parent 边)。 */
+  const parents = new Map<string, string>();
 
   const emit = (event: OmdTuiEvent['event'], payload: unknown): void => {
     seq += 1;
@@ -176,7 +178,17 @@ export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend 
       return sessions.get(sessionId) ?? [];
     },
     async listSessions(): Promise<TuiSessionMeta[]> {
-      return [...sessions.keys()].map((id) => ({ id, title: id, updatedAt: 0 }));
+      return [...sessions.keys()].map((id) => ({ id, title: id, updatedAt: 0, ...(parents.has(id) ? { parent: parents.get(id) as string } : {}) }));
+    },
+
+    // 切片⑦: 内存版 fork —— 语义与 embedded 一致 (拷贝消息, 记 parent, 互不污染)。
+    async forkSession({ fromId, newId }): Promise<{ ok: boolean; text: string }> {
+      const src = sessions.get(fromId);
+      if (!src) return { ok: false, text: `fork 失败: 会话 ${fromId} 不存在 (还没写过盘的会话没有可 fork 的内容)` };
+      if (sessions.has(newId)) return { ok: false, text: `fork 失败: 会话 ${newId} 已存在` };
+      sessions.set(newId, structuredClone(src));
+      parents.set(newId, fromId);
+      return { ok: true, text: `已从 ${fromId} fork 出 ${newId} (${src.length} 条消息)` };
     },
   };
 }
