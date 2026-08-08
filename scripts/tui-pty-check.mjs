@@ -435,52 +435,81 @@ async function scenarioSeat() {
       p.text().slice(-500),
     );
     check(p.text().includes('(只读)'), 'SET-3 ★ 只读项标出来(选中它什么都不做, 这是刻意的)');
+    /**
+     * ★ **标题只许出现一次** —— 2026-08-08 帧上抓到的:面板自己画框之后,宿主那边又套了
+     * 一层 `DialogBox`,于是**双层框 + 标题印两遍**。
+     *
+     * ⚠ 单测抓不到这一条:它量的是面板自己的 `render()`,外面套的那层不在它视野里。
+     *
+     * ⚠ 判据必须是**否定式**:oracle 是累积缓冲,`改哪一项` 每次重绘都进一次,
+     * 数它出现几次没有意义。所以锚的是嵌套**独有的那个形状** ——
+     * 外框的竖线紧接着内框的左上角(`│ ┌─ 改哪一项`)。它一次都不该出现。
+     * 证伪方式:把宿主那层 `DialogBox` 加回去 → 当场红(2026-08-08 实跑过)。
+     */
+    check(!/│ ┌─ 改哪一项/.test(p.text()), 'SET-2b ★ 设置页没有嵌套框(标题不印两遍)', p.text().slice(-900));
     // 切片⑥: 可改组进了面板 (界面/审批/provider)。
     check(p.text().includes('左栏 DAG 默认'), 'SET-5 ★ 界面组在面板里(写 tui.ui)', p.text().slice(-900));
     check(p.text().includes('审批 token TTL'), 'SET-6 ★ 审批组在面板里(重启生效写在 detail)', p.text().slice(-900));
     check(p.text().includes('provider 凭证'), 'SET-7 provider 组在面板里(只显示配没配)', p.text().slice(-900));
 
     /**
-     * ★ **SET-8/9/10:Esc 退一级,不是退到底**(2026-08-08,owner 点名的那条)。
+     * ★ **SET-8/9/10/11:Esc 退一级,不是退到底**(2026-08-08,owner 点名的那条)。
      *
-     * 三层:设置页 →(Enter 选座位行)→ 座位列表 →(Enter 选一个座位)→ 模型选择器。
-     * 从模型选择器按 Esc,该回到**座位列表**;再按一次,该回到**设置页**;再按才收工。
+     * ⚠ **2026-08-08 键路径变了**(P1-3:设置页迁到 pi-tui `SettingsList`)。
+     * 老路是三层:设置页 →(Enter)→ 座位列表 →(Enter)→ 模型选择器,中间那层
+     * `改哪个座位` 是"父层套 for(;;) 重开"那个做法的产物。现在设置页里每个座位**自己就是一行**,
+     * Enter 直接开子层 ⇒ **只剩两层**,中间那层在这条路径上不再出现
+     * (`/seat` 命令那条路仍有它 —— 那是另一个入口,见 P2 的 IA 收敛)。
      *
-     * ⚠ 判据必须**锚顺序**,不能锚子串 —— oracle 是累积缓冲,"改哪个座位"在前面
-     * 早就出现过一次,`includes` 无论修没修都是真(本文件头记的那一族假绿)。
-     * 所以量的是 `lastIndexOf` 的**先后**:座位列表最后一次出现要排在模型选择器之后,
-     * 那才叫"退回来了"。
+     * ⚠ 判据的**语义一个字都没放松**:仍然锚 `lastIndexOf` 的**先后**,不锚子串 ——
+     * oracle 是累积缓冲,`改哪一项` / `审批 token TTL` 在前面早就出现过,
+     * `includes` 无论修没修都是真(本文件头记的那一族假绿)。
      */
-    p.write('\r'); // 选中第一行(座位 conductor)→ 进座位列表
+    const panelAt = p.text().lastIndexOf('改哪一项');
+    p.write('\r'); // 选中第一行(座位 conductor)→ **直接**开模型选单
     check(
-      await waitFor(p, (t) => t.includes('改哪个座位')),
-      'SET-8 设置页里选座位行 → 开出座位列表',
-      p.text().slice(-600),
-    );
-    const seatListAt = p.text().lastIndexOf('改哪个座位');
-    p.write('\r'); // 选中第一个座位 → 进模型选择器(目录空时退回手输框, 两种都认)
-    const intoModel = await waitFor(p, (t) => {
-      const i = Math.max(t.lastIndexOf('换成哪个模型'), t.lastIndexOf('换成哪个坐标'));
-      return i > seatListAt;
-    });
-    check(intoModel, 'SET-9 座位列表里选一个 → 开出模型选择器', p.text().slice(-600));
-    p.write('\x1b'); // ← 这一下就是 owner 报的那一下
-    check(
-      await waitFor(p, (t) => {
-        const model = Math.max(t.lastIndexOf('换成哪个模型'), t.lastIndexOf('换成哪个坐标'));
-        return t.lastIndexOf('改哪个座位') > model;
-      }),
-      'SET-10 ★ 模型选择器 Esc → 回到**座位列表**(不是退出整个设置)',
+      await waitFor(p, (t) => Math.max(t.lastIndexOf('换成哪个模型'), t.lastIndexOf('换成哪个坐标')) > panelAt),
+      'SET-8 ★ 设置页 Enter 座位行 → 直接开模型子层(SettingsList.submenu; 中间那层没了)',
       p.text().slice(-900),
     );
-    p.write('\x1b'); // 再退一级 → 回设置页
+    p.write('\x1b'); // ← 这一下就是 owner 报的那一下
     check(
-      await waitFor(p, (t) => t.lastIndexOf('改哪一项') > t.lastIndexOf('改哪个座位')),
-      'SET-11 ★ 座位列表 Esc → 回到**设置页**(逐级回退第二级)',
+      await waitFor(p, (t) => t.lastIndexOf('改哪一项') > Math.max(t.lastIndexOf('换成哪个模型'), t.lastIndexOf('换成哪个坐标'))),
+      'SET-9 ★ 子层 Esc → 回**设置页主表**(不是退出整个设置)',
       p.text().slice(-900),
     );
 
-    p.write('\x1b'); // 第三下才真收工
+    /**
+     * ★★ **SET-10/11:选中行不丢** —— 这是 `SettingsList.submenu` 换掉"重开父层"真正买到的东西。
+     *
+     * 走到 `审批 token TTL` 那一行(不是第一行 —— 第一行退回来也在第一行,那条判据是空的),
+     * 开子层再退回来,焦点该还钉在那一行。
+     *
+     * ⚠ 焦点靠**光标字形** `→ ` 认。判据是 `lastIndexOf('→ 审批 token TTL')` 排在子层标题之后 ——
+     * 光标在开子层**之前**也停在那一行,所以 `includes` 是假绿。
+     */
+    let onTtl = false;
+    for (let i = 0; i < 16 && !onTtl; i++) {
+      p.write('\x1b[B');
+      await new Promise((r) => setTimeout(r, 80));
+      onTtl = p.text().includes('→ 审批 token TTL');
+    }
+    check(onTtl, 'SET-10 ↓ 走得到「审批 token TTL」那一行(光标钉在它上面)', p.text().slice(-900));
+    p.write('\r'); // 开文本子层。`审批 token TTL(秒)` 带"(秒)"是子层标题独有的串
+    check(
+      await waitFor(p, (t) => t.includes('审批 token TTL(秒)')),
+      'SET-11 文本子层开出来了(TTL 没有候选表, 只能自持输入)',
+      p.text().slice(-900),
+    );
+    const subAt = p.text().lastIndexOf('审批 token TTL(秒)');
+    p.write('\x1b');
+    check(
+      await waitFor(p, (t) => t.lastIndexOf('→ 审批 token TTL') > subAt),
+      'SET-12 ★★ 退回来**选中行没丢** —— 光标还钉在原来那一行(老做法会回到第一行)',
+      p.text().slice(-900),
+    );
+
+    p.write('\x1b'); // 主表这一层的 Esc 才真收工
     await new Promise((r) => setTimeout(r, 300));
 
     // 切片⑥: /login 开得出 provider 选择器; Esc 什么都不改 (真落 key 的路径走 headless-config 的单测)。

@@ -46,9 +46,11 @@ import { StatusLine } from './components/status-line';
 import { type ContextFile, formatContextLine, loadConductorContext } from './context';
 import { formatSeatRows, parseSeatCommand, seatRows } from './seat-picker';
 import { forkSessionId, formatSessions, newSessionId, parseSessionCommand } from './sessions';
+import { createSettingsPanel } from './components/settings-panel';
+import { installOmdKeybindings } from './keys';
 import { buildSettings, parseSettingsCommand } from './settings';
 import { STARTUP_HINT, formatHelp, parseHelpCommand, slashCommands } from './commands';
-import { choiceLabel, listModelChoices, parseModelsCommand, sortChoices } from './model-picker';
+import { MANUAL_COORD, choiceLabel, listModelChoices, parseModelsCommand, sortChoices } from './model-picker';
 import { createOmdAutocompleteProvider } from './skill-complete';
 import { createContextHealth } from './health';
 import { loadTuiUiConfig, setApprovalTokenTtl, setTuiUi } from './ui-config';
@@ -263,6 +265,11 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    * 那是 owner 明确要的约束,不是可选项:一退什么都没了比不好看严重得多。
    */
   const tui = new TuiAltScreen(terminal);
+
+  // 键位表:补上 pi-tui 默认表认不出的双 ESC(`keys.ts` 记了实测的三行对照表)。
+  // ⚠ 必须在建组件**之前** —— 组件是在 `handleInput` 里现查 `getKeybindings()` 的,
+  //   所以顺序上其实没那么脆;放这儿是为了"键位是启动期的事"读起来一眼清楚。
+  installOmdKeybindings();
 
   const contextFiles = opts.contextFiles ?? loadConductorContext(opts.cwd);
   const theme = opts.theme ?? createTheme();
@@ -772,9 +779,6 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     }
   }
 
-  /** 目录里没有的坐标走这条 —— 手输仍然保留,不是所有 provider 都在 models.json 里登记过。 */
-  const MANUAL_COORD = '\u0000manual';
-
   /**
    * ★ **模型选单**(S-7)。此前这里是一个 `dialogInput`:让人**凭记忆敲** `provider:model`。
    *
@@ -1152,18 +1156,33 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     if (!parseSettingsCommand(text)) return false;
     chatLog.appendUser(text);
     editor.setText('');
-    // 同 seatPicker:改完一项**回到设置页**,不是掉回编辑器。每轮重读现状,
-    // 于是刚改完的值当场就显示成新的(原来那份文本快照做不到这件事)。
+    /**
+     * ★ **循环只剩"跳走再回来"这一种**(2026-08-08,P1-3)。
+     *
+     * `ac8d92d` 那版是"改一项就重开一次整页" —— 用户看到的是退回上一级,但它是**重开**,
+     * 选中行位置会丢。现在设置页是**常驻组件**(pi-tui `SettingsList`),改值/开子层
+     * 全在组件内部,循环碰不到它。
+     *
+     * 剩下这个循环只服务两项:`当前会话` 与 `provider 凭证` —— 它们不是"改一个值",
+     * 是**跳去另一条流程**,而那条流程自己要开对话框,host 一次只开一个
+     * (`dialog.ts` 文件头的裁决)。所以必须先让位,办完再把面板开回来。
+     * 重开在这里是**对的**:刚落的 key 要显示成"已配",不重读就还是旧数。
+     */
     for (;;) {
-      const done = await settingsOnce();
-      if (done) break;
+      const jump = await settingsOnce();
+      if (jump === null) break; // Esc:收工
+      if (jump === 'session') await handleSession('/session');
+      else if (jump === 'providers') await handleLogin('/login');
     }
     tui.requestRender();
     return true;
   }
 
-  /** 走一遍设置页。返回 `true` = 用户按 Esc 收工;`false` = 改完一项,外层重开。 */
-  async function settingsOnce(): Promise<boolean> {
+  /**
+   * 开一次设置页(常驻组件)。返回 `null` = 用户按 Esc 收工;
+   * 返回一个 id = 那一项要**跳去另一条流程**,面板已让位,由外层办完再开回来。
+   */
+  async function settingsOnce(): Promise<string | null> {
     const { current, err } = readSeats();
     let sessionCount: number | null = null;
     try {
@@ -1197,53 +1216,105 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       approvalTtlSec,
       providers,
     });
-    const pick = await dialogSelect(dialogs, theme, {
-      title: '改哪一项?',
-      options: items.map((it) => ({
-        value: it.action ? it.key : '',
-        label: `${it.action ? '' : '(只读) '}${it.label}: ${it.value}`,
-        ...(it.detail ? { description: it.detail } : {}),
-      })),
-      maxVisible: 12,
+    return new Promise<string | null>((resolve) => {
+      const panel = createSettingsPanel({
+        theme,
+        items,
+        painters: PAINTERS,
+        maxVisible: 12,
+        // 座位子层 = 模型选单。**与 `/seat` `/models` 同一份目录与同一种排序**
+        // (`model-picker.ts`)—— 三个入口一份实现, 不是三份。
+        seatChoices: (role, current) => {
+          const choices = sortChoices(listModelChoices(), current || null);
+          if (choices.length === 0) return null; // 目录空 → 面板自己退回手输框
+          return {
+            title: `${role} 换成哪个模型? (${choices.length} 个)`,
+            options: [
+              ...choices.map((c) => ({ value: c.coord, label: choiceLabel(c, current || null) })),
+              { value: MANUAL_COORD, label: '手动输入坐标…', description: '目录里没有登记的 provider:model' },
+            ],
+            search: true,
+            maxVisible: 12,
+          };
+        },
+        seatManual: (role, current) => ({ title: `${role} 换成哪个坐标? (provider:model)`, initial: current }),
+        // `审批 token TTL` 的值带单位(`30s`), 而输入框里该是**可编辑的数**, 不是带单位的串。
+        textPrompt: (_id, current) => ({ title: '审批 token TTL(秒)', initial: current.replace(/s$/, '') }),
+        apply: (id, value) => applySetting(id, value),
+        activate: (id) => {
+          // 就地办完的:一条通知就够, 面板留着(通知画在对话区, 不遮设置页)。
+          if (id === 'ext') {
+            chatLog.appendNotice('扩展清单在 `.omd/extensions.json`(入口写绝对路径)。改完重启 omd tui 生效。');
+            tui.requestRender();
+            return;
+          }
+          // 要开对话框的:让位。外层办完再把面板开回来。
+          finish(id);
+        },
+        onCancel: () => finish(null),
+        requestRender: () => tui.requestRender(),
+      });
+      /**
+       * ⚠ **面板自己画框与标题**,这里不许再套一层 `DialogBox`。
+       *
+       * 第一版套了 —— 帧上当场看见**双层框、标题印两遍**
+       * (`docs/bars/refs/omd/07-settings.txt`)。单测看不见这个:它量的是面板自己的
+       * `render()`,套在外面那层不在它视野里。**渲染类改动必须拿帧核对**(交接 40 §7.6)。
+       */
+      const finish = (v: string | null): void => {
+        dialogs.close();
+        resolve(v);
+      };
+      if (!dialogs.open(panel, panel)) resolve(null);
+      else tui.requestRender();
     });
-    if (pick === null) return true; // Esc:收工
-    // 只读行的 value 是空串 —— 选中它什么都不做, 这是刻意的(它本来就只是现状)。
-    // 但**留在设置页**:选了一行结果整页关掉, 会读成"我按错了什么"。
-    if (pick === '') return false;
-    if (pick.startsWith('seat:')) await seatPicker();
-    else if (pick === 'session') await handleSession('/session');
-    else if (pick === 'ext') chatLog.appendNotice('扩展清单在 `.omd/extensions.json`(入口写绝对路径)。改完重启 omd tui 生效。');
-    else if (pick === 'ui-sidebar') {
-      // 立即生效 + 写盘 —— 面板是 config 的编辑器, 不引第二处真源。
-      sidebarOn = !sidebarOn;
+  }
+
+  /**
+   * 真的改一项。**返回改完之后的真值** —— 面板照它回显。
+   *
+   * ⚠ 写盘失败时返回**旧值**:屏幕上不许留下一个"改好了"的假象。这是本仓
+   * "oracle 绿 ≠ 语义对"的同一条 —— 回执说改了而盘上没改, 是最难发现的一种错。
+   */
+  function applySetting(id: string, value: string): string {
+    if (id.startsWith('seat:')) {
+      const role = id.slice('seat:'.length);
+      const coord = value.trim();
+      if (!coord) return readSeats().current[role] ?? value;
+      applySeat(role, coord);
+      // applySeat 自己吞了异常并发了回执 —— 真值只能回盘上读, 不能信入参。
+      return readSeats().current[role] ?? coord;
+    }
+    if (id === 'ui-sidebar') {
+      sidebarOn = value === '开';
       const path = setTuiUi(opts.cwd, { sidebar: sidebarOn });
       chatLog.appendNotice(CHROME.uiWritten(`左栏默认 -> ${sidebarOn ? '开' : '关'}`, path));
-    } else if (pick === 'ui-painter') {
-      const chosen = await dialogSelect(dialogs, theme, {
-        title: '全屏默认画法?',
-        options: PAINTERS.map((name, idx) => ({ value: String(idx), label: `${idx === painterIdx ? '* ' : '  '}${name}` })),
-      });
-      if (chosen !== null) {
-        painterIdx = Number(chosen);
-        const path = setTuiUi(opts.cwd, { painterIdx });
-        chatLog.appendNotice(CHROME.uiWritten(`全屏默认画法 -> ${PAINTERS[painterIdx]}`, path));
-      }
-    } else if (pick === 'approval-ttl') {
-      const raw = await dialogInput(dialogs, theme, { title: '审批 token TTL(秒)', initial: String(approvalTtlSec) });
-      if (raw !== null && raw.trim()) {
-        try {
-          const sec = Number(raw.trim());
-          const path = setApprovalTokenTtl(opts.cwd, sec);
-          chatLog.appendNotice(CHROME.approvalTtlWritten(sec, path));
-        } catch (err2) {
-          chatLog.appendNotice(CHROME.failed(err2 instanceof Error ? err2.message : String(err2)));
-        }
-      }
-    } else if (pick === 'providers' || pick === 'login') {
-      await handleLogin('/login');
+      return sidebarOn ? '开' : '关';
     }
-    tui.requestRender();
-    return false; // 改完一项 → 外层重开设置页(退一级, 不是退到底)
+    if (id === 'ui-painter') {
+      const idx = PAINTERS.indexOf(value as (typeof PAINTERS)[number]);
+      if (idx < 0) return PAINTERS[painterIdx] ?? '树'; // 认不出就不动 —— 别把 painterIdx 写成 -1
+      painterIdx = idx;
+      const path = setTuiUi(opts.cwd, { painterIdx });
+      chatLog.appendNotice(CHROME.uiWritten(`全屏默认画法 -> ${PAINTERS[painterIdx]}`, path));
+      return PAINTERS[painterIdx] as string;
+    }
+    if (id === 'approval-ttl') {
+      const raw = value.trim();
+      const { loadApprovalConfig } = require('./approval/policy') as typeof import('./approval/policy');
+      const old = `${loadApprovalConfig(opts.cwd).tokenTtlSec}s`;
+      if (!raw) return old;
+      try {
+        const sec = Number(raw);
+        const path = setApprovalTokenTtl(opts.cwd, sec);
+        chatLog.appendNotice(CHROME.approvalTtlWritten(sec, path));
+        return `${sec}s`;
+      } catch (err2) {
+        chatLog.appendNotice(CHROME.failed(err2 instanceof Error ? err2.message : String(err2)));
+        return old; // ★ 拒了就回显旧值
+      }
+    }
+    return value;
   }
 
   editor.onSubmit = (text: string) => {

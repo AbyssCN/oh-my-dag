@@ -49,65 +49,90 @@ export const ESC = new Set(['\x1b', '\x1b\x1b']);
 /** 回车。 */
 const ENTER = new Set(['\r', '\n']);
 
+export interface SelectOpts {
+  title: string;
+  options: readonly SelectOption[];
+  maxVisible?: number;
+  search?: boolean;
+}
+
+/**
+ * ★ **选择框组件**(不开框、不返 Promise)。2026-08-08 从 `select()` 里分出来。
+ *
+ * 分出这一层的唯一理由是 `SettingsList.submenu` —— 它要的是一个 `Component`,
+ * 而**一次性 Promise 撑不住"父层留在栈里"**(交接 40 §7.4:确认时就 `host.close()`,
+ * 子层打开时父层已经不在了)。于是同一份构造给两个消费者:
+ * `select()` 把它开进 host;设置面板的子菜单直接把它当子组件返回。
+ *
+ * 选项为空 → 返回 `null`,调用方自己决定退路(**不开空框** —— 那是把人锁在一个
+ * 只能按 Esc 的界面里)。
+ */
+export function selectComponent(
+  theme: OmdTuiTheme,
+  opts: SelectOpts,
+  done: (value: string | null) => void,
+  requestRender: () => void,
+): DialogBox | null {
+  if (opts.options.length === 0) return null;
+  const list = new SelectList(
+    opts.options.map((o) => ({ value: o.value, label: o.label, ...(o.description ? { description: o.description } : {}) })),
+    opts.maxVisible ?? 10,
+    theme.editor.selectList,
+  );
+  /**
+   * S-7:**可搜索**。四十个模型里靠上下箭头找一个是不能用的。
+   *
+   * ⚠ 只收**可打印字符**。控制序列(方向键是 `\x1b[A` 这样的多字节)必须原样交给
+   * `SelectList` —— 把它们当成查询串会出现"按一下下箭头, 搜索框里多了个 `[A`"。
+   */
+  let query = '';
+  const titleOf = (): string => {
+    const hint = opts.search ? '打字搜索, ↑↓ 选, Enter 确认, Esc 取消' : '↑↓ 选, Enter 确认, Esc 取消';
+    const q = opts.search && query ? `  「${query}」` : '';
+    return `${opts.title}${q}  (${hint})`;
+  };
+  const box = new DialogBox(theme, titleOf(), list, (data) => {
+    if (ESC.has(data)) return done(null);
+    if (ENTER.has(data)) return done(list.getSelectedItem()?.value ?? null);
+    if (opts.search && (data === '\x7f' || data === '\b')) {
+      query = query.slice(0, -1);
+      list.setFilter(query);
+      box.setTitle(titleOf());
+      requestRender();
+      return undefined;
+    }
+    // 可打印 ASCII + 非控制的多字节(中文)都算查询串;`\x1b` 开头的一律不是。
+    if (opts.search && data.length > 0 && !data.startsWith('\x1b') && !/^[\x00-\x1f]/.test(data)) {
+      query += data;
+      list.setFilter(query);
+      box.setTitle(titleOf());
+      requestRender();
+      return undefined;
+    }
+    list.handleInput(data);
+    requestRender();
+    return undefined;
+  });
+  return box;
+}
+
 /**
  * 选择框。**返回 `null` = 用户按了 Esc**(与"选了一个空值"分得开)。
  *
  * @param maxVisible 一屏几行;超出由 `SelectList` 自己滚。
  */
-export function select(
-  host: DialogHost,
-  theme: OmdTuiTheme,
-  opts: { title: string; options: readonly SelectOption[]; maxVisible?: number; search?: boolean },
-): Promise<string | null> {
+export function select(host: DialogHost, theme: OmdTuiTheme, opts: SelectOpts): Promise<string | null> {
   return new Promise((resolve) => {
-    if (opts.options.length === 0) {
-      // 没有可选项时**不开框** —— 开一个空框让人按 Esc 是耍人。
-      resolve(null);
-      return;
-    }
-    const list = new SelectList(
-      opts.options.map((o) => ({ value: o.value, label: o.label, ...(o.description ? { description: o.description } : {}) })),
-      opts.maxVisible ?? 10,
-      theme.editor.selectList,
-    );
-    /**
-     * S-7:**可搜索**。四十个模型里靠上下箭头找一个是不能用的。
-     *
-     * ⚠ 只收**可打印字符**。控制序列(方向键是 `\x1b[A` 这样的多字节)必须原样交给
-     * `SelectList` —— 把它们当成查询串会出现"按一下下箭头, 搜索框里多了个 `[A`"。
-     */
-    let query = '';
-    const titleOf = (): string => {
-      const hint = opts.search ? '打字搜索, ↑↓ 选, Enter 确认, Esc 取消' : '↑↓ 选, Enter 确认, Esc 取消';
-      const q = opts.search && query ? `  「${query}」` : '';
-      return `${opts.title}${q}  (${hint})`;
-    };
-    const box = new DialogBox(theme, titleOf(), list, (data) => {
-      if (ESC.has(data)) return finish(null);
-      if (ENTER.has(data)) return finish(list.getSelectedItem()?.value ?? null);
-      if (opts.search && (data === '\x7f' || data === '\b')) {
-        query = query.slice(0, -1);
-        list.setFilter(query);
-        box.setTitle(titleOf());
-        host.requestRender();
-        return undefined;
-      }
-      // 可打印 ASCII + 非控制的多字节(中文)都算查询串;`\x1b` 开头的一律不是。
-      if (opts.search && data.length > 0 && !data.startsWith('\x1b') && !/^[\x00-\x1f]/.test(data)) {
-        query += data;
-        list.setFilter(query);
-        box.setTitle(titleOf());
-        host.requestRender();
-        return undefined;
-      }
-      list.handleInput(data);
-      host.requestRender();
-      return undefined;
-    });
+    const box = selectComponent(theme, opts, (v) => finish(v), () => host.requestRender());
     const finish = (v: string | null): void => {
       host.close();
       resolve(v);
     };
+    // 没有可选项时**不开框** —— 开一个空框让人按 Esc 是耍人。
+    if (box === null) {
+      resolve(null);
+      return;
+    }
     if (!host.open(box, box)) resolve(null);
     else host.requestRender();
   });
@@ -124,29 +149,49 @@ export function confirm(host: DialogHost, theme: OmdTuiTheme, message: string): 
   }).then((v) => (v === null ? null : v === 'yes'));
 }
 
+export interface InputOpts {
+  title: string;
+  initial?: string;
+  mask?: boolean;
+}
+
+/**
+ * ★ **输入框组件**(不开框、不返 Promise)。与 `selectComponent` 同一条理由:
+ * `SettingsList.submenu` 要 `Component`,而 `审批 token TTL` 那一项改的是一个**数**,
+ * 没有候选表可选,只能给一个自持输入的子层。
+ */
+export function inputComponent(
+  theme: OmdTuiTheme,
+  opts: InputOpts,
+  done: (value: string | null) => void,
+  requestRender: () => void,
+): DialogBox {
+  let buf = opts.initial ?? '';
+  const line = new StatusLine('');
+  const paint = (): void => line.setText(`> ${opts.mask ? '*'.repeat(buf.length) : buf}`);
+  paint();
+  return new DialogBox(theme, `${opts.title}  (Enter 确认, Esc 取消)`, line, (data) => {
+    if (ESC.has(data)) return done(null);
+    if (ENTER.has(data)) return done(buf);
+    if (data === '\x7f' || data === '\b') buf = buf.slice(0, -1);
+    else {
+      // 只收可打印的:控制码/方向键进来会画出 `[A` 这种看起来像用户真打了字的假回显。
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: 终端输入本来就是控制码
+      const printable = data.replace(/\x1b(?:\[[0-9;?]*[ -/]*[@-~]|O.|.)?/g, '').replace(/[\x00-\x1f\x7f]/g, '');
+      if (!printable) return undefined;
+      buf += printable;
+    }
+    paint();
+    requestRender();
+    return undefined;
+  });
+}
+
 /** 单行输入框。`null` = Esc;空串是**合法输入**,不折算成 null。
  * `mask` = 回显打星(凭证输入 —— key 一个字符都不许上屏,屏幕会进截图与 scrollback)。 */
-export function input(host: DialogHost, theme: OmdTuiTheme, opts: { title: string; initial?: string; mask?: boolean }): Promise<string | null> {
+export function input(host: DialogHost, theme: OmdTuiTheme, opts: InputOpts): Promise<string | null> {
   return new Promise((resolve) => {
-    let buf = opts.initial ?? '';
-    const line = new StatusLine('');
-    const paint = (): void => line.setText(`> ${opts.mask ? '*'.repeat(buf.length) : buf}`);
-    paint();
-    const box = new DialogBox(theme, `${opts.title}  (Enter 确认, Esc 取消)`, line, (data) => {
-      if (ESC.has(data)) return finish(null);
-      if (ENTER.has(data)) return finish(buf);
-      if (data === '\x7f' || data === '\b') buf = buf.slice(0, -1);
-      else {
-        // 只收可打印的:控制码/方向键进来会画出 `[A` 这种看起来像用户真打了字的假回显。
-        // biome-ignore lint/suspicious/noControlCharactersInRegex: 终端输入本来就是控制码
-        const printable = data.replace(/\x1b(?:\[[0-9;?]*[ -/]*[@-~]|O.|.)?/g, '').replace(/[\x00-\x1f\x7f]/g, '');
-        if (!printable) return undefined;
-        buf += printable;
-      }
-      paint();
-      host.requestRender();
-      return undefined;
-    });
+    const box = inputComponent(theme, opts, (v) => finish(v), () => host.requestRender());
     const finish = (v: string | null): void => {
       host.close();
       resolve(v);
