@@ -585,6 +585,53 @@ async function scenarioSkillComplete() {
 }
 
 /**
+ * 场景 4.9:**pathfinder 地图切换**(切片⑧,主 C 副 B)。
+ *
+ * 这条 lane 的 cwd 是 omd 仓, `docs/plan/pathfinder/` 里有真图 —— 只读不写。
+ * 判据逐字对 v5 切片表: 多张图列得出 · 切得动 · 票与 run 的关系看得见;
+ * 加 owner 裁决: C 雾退线默认, Tab 切 B 三角洲, 票 Enter 出动作弹窗。
+ */
+async function scenarioPathfinder() {
+  const p = startTui();
+  try {
+    check(await waitFor(p, (t) => t.includes('omd tui')), 'PF-0 (场景4.9) 启动');
+    p.write('\x10'); // Ctrl+P
+    check(
+      await waitFor(p, (t) => t.includes('切到哪张地图') || t.includes('雾退线')),
+      'PF-1 ★ Ctrl+P 列得出地图(多张出选择器, 一张直接进)',
+      p.text().slice(-600),
+    );
+    if (p.text().includes('切到哪张地图')) {
+      p.write('session'); // 搜索: 挑 session-continuity-port (它有前沿票)
+      await new Promise((r) => setTimeout(r, 400));
+      p.write('\r');
+    }
+    check(
+      await waitFor(p, (t) => t.includes('雾退线') && t.includes('凝固层')),
+      'PF-2 ★ 切得动 —— 进了那张图的全屏雾退线 (画法 C 默认)',
+      p.text().slice(-800),
+    );
+    check(/run 推进过/.test(p.text()), 'PF-3 ★ 票与 run 的关系看得见(头行的 run 计数段)', p.text().slice(-600));
+    p.write('\t');
+    check(await waitFor(p, (t) => t.includes('三角洲')), 'PF-4 ★ Tab 切到画法 B 三角洲', p.text().slice(-600));
+    p.write('\t');
+    await new Promise((r) => setTimeout(r, 300));
+    p.write('\r'); // Enter: 选中票的动作弹窗
+    check(
+      await waitFor(p, (t) => t.includes('审问 (grill)') && t.includes('research')),
+      'PF-5 ★ 票的动作弹窗 (g/d/c/r 四动作)',
+      p.text().slice(-600),
+    );
+    p.write('\x1b'); // Esc 返回
+    await new Promise((r) => setTimeout(r, 300));
+    p.write('\x10'); // Ctrl+P 退出全屏
+    await new Promise((r) => setTimeout(r, 300));
+  } finally {
+    p.kill();
+  }
+}
+
+/**
  * 场景 4.6:**左栏 DAG + 三画法**(切片③,G-3)。
  *
  * `fixture:dag` 暗号发一个带 map 分裂的 run(planned 无 deps · expanded 带 parent+deps,
@@ -751,6 +798,7 @@ await scenarioArmReset();
 await scenarioLogRedirect();
 await scenarioSeat();
 await scenarioSkillComplete();
+await scenarioPathfinder();
 await scenarioDagViews();
 await scenarioDagNarrow();
 await scenarioApproval();

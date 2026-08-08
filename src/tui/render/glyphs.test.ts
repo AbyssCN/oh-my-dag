@@ -20,6 +20,7 @@ import { buildSettings, formatSettings } from '../settings';
 import { formatSkillList, listSkills } from '../skills';
 import { fitLine } from './line';
 import { renderGantt } from './dag-gantt';
+import { renderDelta, renderFogLine } from './path-fog';
 import { renderLayers } from './dag-layers';
 import { formatStatusLine, formatUsageLine } from './statusbar';
 import { approvalBody, approvalTitle } from '../approval/card';
@@ -158,6 +159,19 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
     ['login:done', CHROME.loginDone('deepseek', 'env', ['auth.json 有旧 key 已被覆盖'])],
     ['ui:written', CHROME.uiWritten('左栏默认 -> 关', '/x/.omd/config.json')],
     ['approval-ttl:written', CHROME.approvalTtlWritten(120, '/x/.omd/config.json')],
+    // 切片⑧: 散雾图两画法 (chrome + 键位行; 票标题是数据, 但样例里的中文照扫无妨)。
+    ['path:fog', renderFogLine(
+      { destination: '目的地', slug: 'omd-agent-tui', gens: [['d01', 'd05']], frontier: [
+        { id: 't9', type: 'task', title: '审批层四档', runId: 'run-78f1951c' },
+        { id: 'g4', type: 'grill', title: 'ledger 判据' },
+      ], blocked: 1, ruled: 2, total: 5, runs: ['run-78f1951c'] },
+      { width: 100, height: 30, selected: 0 },
+    ).join('\n')],
+    ['path:delta', renderDelta(
+      { destination: '目的地', slug: 'omd-agent-tui', gens: [['d01']], frontier: [{ id: 'r2', type: 'research', title: 'exa 选型' }], blocked: 0, ruled: 1, total: 2, runs: [] },
+      { width: 100, height: 30, selected: 0 },
+    ).join('\n')],
+    ['path:none', CHROME.noPathMaps()],
     ['dialog:input', '输入  (Enter 确认, Esc 取消)'],
     ['seatRows', formatSeatRows(seatRows({ conductor: 'a:1' }))],
     ['skillList(空)', formatSkillList([])],
