@@ -34,6 +34,12 @@ export const GLYPH_CANDIDATES: ReadonlyArray<{ group: string; glyphs: readonly s
   { group: 'block', glyphs: ['█', '▓', '▒', '░', '▁', '▄', '▀', '▏', '▎'] },
   // box drawing:画框要用
   { group: 'box', glyphs: ['─', '│', '┌', '┐', '└', '┘', '├', '┤', '┬', '┴', '═', '║'] },
+  // box drawing 重线/虚线/圆角族:pathfinder 散雾图与 DAG 图的 HTML 稿用的就是这一族
+  // (2026-08-08 owner 指出 TUI 视觉与 HTML 稿不一致 —— 降级到轻线是偷懒, 正确做法是量它们)
+  { group: 'box-heavy', glyphs: ['━', '┃', '┏', '┓', '┗', '┛', '┣', '┳', '┻', '╋', '┄', '┅', '┆', '┇', '┈', '┉', '┊', '┋'] },
+  { group: 'box-round', glyphs: ['╭', '╮', '╰', '╯'] },
+  // HTML 稿里的其余构图字形:上横线 ▔ · 空心圆 ◌ · 双圆 ◉ · 指针 ▼ ▲ · 链 ⛓
+  { group: 'mock-extra', glyphs: ['▔', '▕', '◌', '◉', '▼', '▲', '⛓'] },
   // 箭头与几何:状态图标的常见候选
   { group: 'arrow', glyphs: ['→', '←', '↑', '↓', '⇒', '▶', '▸', '●', '○', '◆', '◇'] },
   // ⚠ 歧义宽度:CJK locale 下画 2 列,别处画 1 列。**同一字形在两台机器上不一样宽** ——

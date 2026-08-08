@@ -56,6 +56,12 @@ export function renderGantt(snap: DagSnapshot, o: { width: number; height: numbe
   const axis = fitLine(`${' '.repeat(labelW + 1)}0s${' '.repeat(Math.max(0, barW - 2 - fmtDur(span).length))}${fmtDur(span)}`, o.width);
   const pendingN = snap.nodes.length - started.length;
   const out = [fitLine(head, o.width), axis, ...rows];
+  // 瓶颈行 (v5 稿有): 占墙钟最长的那个节点。只有一个节点时它必然是 100%, 不值得说。
+  if (started.length > 1) {
+    const longest = started.reduce((a, b) => ((a.endAt ?? o.now) - (a.startAt as number) >= (b.endAt ?? o.now) - (b.startAt as number) ? a : b));
+    const share = Math.round((((longest.endAt ?? o.now) - (longest.startAt as number)) / span) * 100);
+    if (share > 0) out.push(fitLine(`瓶颈 ${longest.id} 占 ${share}% 墙钟${longest.endAt === null ? ' (在跑)' : ''}`, o.width));
+  }
   if (pendingN > 0) out.push(`(${pendingN} 个节点还没动 —— 不画空条)`);
   // 高度封顶: 全屏也有底, 剪掉的说清剪了多少。
   if (out.length > o.height) return [...out.slice(0, Math.max(1, o.height - 1)), `… 还有 ${out.length - o.height + 1} 行`];

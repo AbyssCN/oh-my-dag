@@ -427,7 +427,9 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     render: (width: number): string[] => {
       if (!pathData) return [fitLine('(图读不出来 —— 日志里有原因)', width)];
       const height = Math.max(6, (terminal.rows || 30) - 10);
-      const o = { width, height, selected: pathSelected };
+      // 颜色分层照 HTML 稿: 前沿/读数 accent · 地层/雾 dim · 阻塞 warn · 选中 user 档。
+      const paint = { accent: theme.chrome.accent, dim: theme.chrome.dim, warn: theme.chrome.warn, sel: theme.chrome.user };
+      const o = { width, height, selected: pathSelected, paint };
       return pathPainter === 0 ? renderFogLine(pathData, o) : renderDelta(pathData, o);
     },
     handleInput: () => {},

@@ -161,14 +161,14 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
     ['approval-ttl:written', CHROME.approvalTtlWritten(120, '/x/.omd/config.json')],
     // 切片⑧: 散雾图两画法 (chrome + 键位行; 票标题是数据, 但样例里的中文照扫无妨)。
     ['path:fog', renderFogLine(
-      { destination: '目的地', slug: 'omd-agent-tui', gens: [['d01', 'd05']], frontier: [
+      { destination: '目的地', slug: 'omd-agent-tui', gens: [[{ id: 'd01', gist: 'stdio' }, { id: 'd05', gist: 'memory' }]], frontier: [
         { id: 't9', type: 'task', title: '审批层四档', runId: 'run-78f1951c' },
         { id: 'g4', type: 'grill', title: 'ledger 判据' },
-      ], blocked: 1, ruled: 2, total: 5, runs: ['run-78f1951c'] },
+      ], blockedTickets: [{ id: 'b1', title: '会话树 fork' }], ruled: 2, total: 5, runs: ['run-78f1951c'] },
       { width: 100, height: 30, selected: 0 },
     ).join('\n')],
     ['path:delta', renderDelta(
-      { destination: '目的地', slug: 'omd-agent-tui', gens: [['d01']], frontier: [{ id: 'r2', type: 'research', title: 'exa 选型' }], blocked: 0, ruled: 1, total: 2, runs: [] },
+      { destination: '目的地', slug: 'omd-agent-tui', gens: [[{ id: 'd01', gist: 'stdio' }]], frontier: [{ id: 'r2', type: 'research', title: 'exa 选型' }], blockedTickets: [], ruled: 1, total: 2, runs: [] },
       { width: 100, height: 30, selected: 0 },
     ).join('\n')],
     ['path:none', CHROME.noPathMaps()],
