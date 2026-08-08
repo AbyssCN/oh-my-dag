@@ -147,7 +147,15 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
     ['sessionFailed', CHROME.sessionFailed('no such session')],
     // 对话框标题也是 chrome —— ↑↓ 已在白名单(真终端读数量过)。
     ['dialog:select', '挑一个  (↑↓ 选, Enter 确认, Esc 取消)'],
-    ['settings', formatSettings(buildSettings({ seats: { conductor: 'a:1' }, seatsError: null, sessionId: 'tui', sessionCount: 2, pressure: null, color: true, truecolor: true, extensions: [] }))],
+    ['settings', formatSettings(buildSettings({
+      seats: { conductor: 'a:1' }, seatsError: null, sessionId: 'tui', sessionCount: 2, pressure: null, color: true, truecolor: true, extensions: [],
+      // 切片⑥: 可改组的文案也要过字形闸
+      ui: { sidebar: true, painterName: '泳道甘特' }, approvalTtlSec: 600,
+      providers: [{ id: 'deepseek', hasKey: true }, { id: 'kimi-coding', hasKey: false }],
+    }))],
+    ['login:done', CHROME.loginDone('deepseek', 'env', ['auth.json 有旧 key 已被覆盖'])],
+    ['ui:written', CHROME.uiWritten('左栏默认 -> 关', '/x/.omd/config.json')],
+    ['approval-ttl:written', CHROME.approvalTtlWritten(120, '/x/.omd/config.json')],
     ['dialog:input', '输入  (Enter 确认, Esc 取消)'],
     ['seatRows', formatSeatRows(seatRows({ conductor: 'a:1' }))],
     ['skillList(空)', formatSkillList([])],

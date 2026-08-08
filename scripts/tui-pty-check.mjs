@@ -411,8 +411,23 @@ async function scenarioSeat() {
       p.text().slice(-500),
     );
     check(p.text().includes('(只读)'), 'SET-3 ★ 只读项标出来(选中它什么都不做, 这是刻意的)');
+    // 切片⑥: 可改组进了面板 (界面/审批/provider)。
+    check(p.text().includes('左栏 DAG 默认'), 'SET-5 ★ 界面组在面板里(写 tui.ui)', p.text().slice(-900));
+    check(p.text().includes('审批 token TTL'), 'SET-6 ★ 审批组在面板里(重启生效写在 detail)', p.text().slice(-900));
+    check(p.text().includes('provider 凭证'), 'SET-7 provider 组在面板里(只显示配没配)', p.text().slice(-900));
     p.write('\x1b');
     await new Promise((r) => setTimeout(r, 300));
+
+    // 切片⑥: /login 开得出 provider 选择器; Esc 什么都不改 (真落 key 的路径走 headless-config 的单测)。
+    p.write('/login\r');
+    check(
+      await waitFor(p, (t) => t.includes('给哪个 provider 落 key')),
+      'LOGIN-1 ★ /login 开出 provider 选择器(已配/未配标出来)',
+      p.text().slice(-500),
+    );
+    p.write('\x1b');
+    await new Promise((r) => setTimeout(r, 300));
+    check(p.text().includes('key 已写入') === false, 'LOGIN-2 ★ Esc 取消后什么都没写');
 
     // ★ 斜杠补全: owner 截图抓到的 bug —— 打 /se 弹出来的必须是**命令**不是文件名。
     // ⚠ 判据必须挑一个**此前从未打印过**的串 —— oracle 是累积缓冲, 用 `/seat` 之类
