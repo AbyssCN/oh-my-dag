@@ -56,6 +56,13 @@ async function main(): Promise<void> {
   }
   const repo = process.argv[i + 1] as string;
   process.env.OMD_DATA_HOME = mkdtempSync(join(tmpdir(), 'omd-xfile-data-'));
+  // ★ **只设 `OMD_DATA_HOME` 是不够的**(2026-08-08 实测):`ChatStore.dir()` 在这个变量
+  //   有值时走 `dataPath('chat')`,而 `dataPath` 只有在 **project scope 被激活过**时才认它
+  //   (`project-scope.ts:117-119`)—— 没激活就退回**相对路径** `.omd/chat`,于是会话
+  //   落在**进程 cwd**(= 主仓)下。11 个探针会话就是这么进主仓 `.omd/chat/` 的。
+  //   目标仓当时没被写,靠的是"cwd 恰好是主仓"这个巧合,**不是这行代码**。
+  const { setActiveProject, resolveProject } = await import('../../src/harness/project-scope');
+  setActiveProject(resolveProject(process.env.OMD_DATA_HOME));
 
   const { bootstrapModelRuntime } = await import('../../src/model/bootstrap');
   bootstrapModelRuntime();
