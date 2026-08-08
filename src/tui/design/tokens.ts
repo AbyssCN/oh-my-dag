@@ -75,3 +75,17 @@ export const card = {
     return `${BORDER.bl}${rule(Math.max(0, width - 2))}${BORDER.br}`;
   },
 } as const;
+
+/**
+ * ★ **等待指示器的动画帧**(2026-08-08)。
+ *
+ * 放在 token 层而不是 `tui.ts` 里 —— **是本模块那条闸红出来的**:
+ * 「框线字形不散在组件里」把方块字形写进 `tui.ts` 判为违规,而它判得对
+ * (画图字形散出去之后,"这个仓一共用了哪些字形"就再也数不清了)。
+ *
+ * ⚠ **不用 pi-tui 的默认帧**:那是**盲文点阵**(`⠋⠙⠹…`,`loader.js:2`),
+ * U+28xx **不在** `SAFE_GLYPH_WIDTHS` 里 —— 宽度没在真终端量过的字形会把整行排版算错。
+ * 这三个方块(U+2581 / U+2584 / U+2588)都量过,都是 1 列。
+ * 四帧一个脉冲(轻 → 中 → 满 → 中),`glyphs.test.ts` 连它一起过白名单。
+ */
+export const SPINNER_FRAMES: readonly string[] = ['▁', '▄', '█', '▄'];

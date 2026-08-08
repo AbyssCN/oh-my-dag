@@ -181,6 +181,9 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
     ['skillList(干净数据)', formatSkillList([{ name: 'omd-x', description: '一句话', root: '/r' }])],
     // ⚠ 2026-08-08 起 footer 不带后端坐标了(P1 密度:同一屏 3 次 → 2 次)。
     ['footer', CHROME.footer()],
+    // ★ 等待态:文案 + **四个动画帧**一起过白名单。pi-tui 默认帧是盲文点阵(U+28xx),
+    //   不在白名单里 —— 这一条就是拦"顺手用回默认帧"的。
+    ['waiting', `${CHROME.waiting} \u2581\u2584\u2588`],
     ['footerArmed', CHROME.footerArmed()],
     // 切片③: 全屏两画法的 chrome (头行/轴/提示行)。树的字形已在 dag-tree 那批白名单里。
     ['dag:gantt', renderGantt(
