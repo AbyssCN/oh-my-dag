@@ -505,3 +505,91 @@ describe('runGoal — survey 仓内勘察 (inproc 研究与仓库的接点)', ()
     expect(r.stages.find((s) => s.stage === 'survey')).toBeUndefined();
   });
 });
+
+// ── 闸 C (2026-08-10 事故): 续跑复用 classify + 契约段 ───────────────────────
+//
+// 事故: 同一段 goal 被心跳续派重分类 117 遍 (平均 2.1M tokens/遍) —— 节点级 checkpoint
+// 拦不住 (conductor 子图逐轮重展开, D-O 输入面恒判"依赖输出已变")。闸 C 把 classify 与
+// 契约段产物按 goal 全文哈希锚在 `.omd/continuity/<runId>/goal-state.json`, 未变即复用。
+
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+
+describe('闸 C — 续跑复用 classify + 契约段 (goal-state 锚)', () => {
+  const mkCounted = (cwd: string, counters: { classify: number; contract: number; exec: number }): RunGoalConfig => ({
+    cwd,
+    dag: {
+      conductorModel: 'c:m',
+      leafModel: 'l:m',
+      agentRunner: (async () => ({ text: 'x', usage: { in: 1, out: 1 } })) as never,
+      continuity: { manager: {} as never, runId: 'run-c' },
+    } as ExecutorDagConfig,
+    _today: () => '2026-08-10',
+    _classify: async () => (counters.classify++, { tier: 'complex' as GoalTier, acceptance: ACC_EXEC }),
+    _runDag: async (plan) => {
+      if (plan.name === 'goal-contract') {
+        counters.contract++;
+        return contractDag({ survey: 'src/a.ts:1 — 事实', specText: '# SDD 正文契约' });
+      }
+      counters.exec++;
+      return executeDag({ converged: true, rounds: 1 });
+    },
+  });
+
+  test('反向自检: 同 goal 同 runId 二跑 → classify/契约段各只跑一遍, 执行段照常跑两遍', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-goal-c-'));
+    const counters = { classify: 0, contract: 0, exec: 0 };
+    const r1 = await runGoal('目标甲', mkCounted(cwd, counters));
+    expect([counters.classify, counters.contract, counters.exec]).toEqual([1, 1, 1]);
+    const r2 = await runGoal('目标甲', mkCounted(cwd, counters));
+    expect([counters.classify, counters.contract, counters.exec]).toEqual([1, 1, 2]);
+    expect(r2.repoContext).toBe(r1.repoContext); // 勘察产物原样带回
+    expect(r2.stages.find((s) => s.stage === 'classify')!.summary).toContain('闸 C');
+    expect(r2.converged).toBe(true); // 复用不改变执行段结论
+  });
+
+  test('对照臂: goal 文本变了 → 状态作废, classify/契约段照常重跑', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-goal-c-'));
+    const counters = { classify: 0, contract: 0, exec: 0 };
+    await runGoal('目标甲', mkCounted(cwd, counters));
+    await runGoal('目标乙 (一字之差也算变)', mkCounted(cwd, counters));
+    expect([counters.classify, counters.contract]).toEqual([2, 2]);
+  });
+
+  test('对照臂: 无 continuity (无 runId 可锚) → 闸不启用, 两跑两遍', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-goal-c-'));
+    const counters = { classify: 0, contract: 0, exec: 0 };
+    const mk = (): RunGoalConfig => {
+      const c = mkCounted(cwd, counters);
+      delete (c.dag as { continuity?: unknown }).continuity;
+      return c;
+    };
+    await runGoal('目标甲', mk());
+    await runGoal('目标甲', mk());
+    expect([counters.classify, counters.contract]).toEqual([2, 2]);
+  });
+
+  test('specPath 记了但盘上文件没了 → 不复用, 契约段重跑 (状态不是真源, 盘上文件才是)', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-goal-c-'));
+    const specFile = join(cwd, 'docs', 'plan', `2026-08-10-${goalSlug('目标甲')}.md`);
+    mkdirSync(join(cwd, 'docs', 'plan'), { recursive: true });
+    writeFileSync(specFile, '# SDD');
+    const counters = { classify: 0, contract: 0, exec: 0 };
+    const mk = (): RunGoalConfig => {
+      const c = mkCounted(cwd, counters);
+      c._runDag = async (plan) => {
+        if (plan.name === 'goal-contract') {
+          counters.contract++;
+          return contractDag({ survey: 's', specFile });
+        }
+        counters.exec++;
+        return executeDag({ converged: true, rounds: 1 });
+      };
+      return c;
+    };
+    await runGoal('目标甲', mk());
+    expect(counters.contract).toBe(1);
+    rmSync(specFile);
+    await runGoal('目标甲', mk());
+    expect(counters.contract).toBe(2); // 文件没了 → 复用条件不成立
+  });
+});

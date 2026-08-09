@@ -239,3 +239,98 @@ describe('c3 折入端到端: 发现物入图 suggested 态', () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 });
+
+// ── 2026-08-10 事故闸: 无人续派熔断 (闸 A 次数上限 / 闸 B 探索型禁自续) ──────────
+//
+// 事故: cron 心跳每 30 分钟 reflow 清标记 + deliver 重派, 同一张 goal 票 3.5 天重派 ~55 次
+// (117 个 contract 相位, 237.8M tokens, 本周 76% 开销)。单次调用的 max-rounds/budget-minutes
+// 闸拦不住**跨次**重派; attempt.md 里"连续两次落这格再去看"是散文不是闸。
+// 反向自检 (本仓惯例): 每条闸都证明它真的会红 —— 上限臂 escalated + 对照臂 resumable 成对出现。
+
+import { goalAttemptsPath, readGoalAttempts } from './dispatch';
+
+const writeResultWithAcceptance = (cwd: string, slug: string, id: string, outcome: string, acceptance: string): void => {
+  const p = researchResultPath(cwd, slug, id);
+  mkdirSync(join(p, '..'), { recursive: true });
+  writeFileSync(p, `outcome: ${outcome}\nrunId: run-${id}\nacceptance: ${acceptance}\n\n摘要`);
+};
+
+describe('闸 A — 续派总次数上限 (跨次重派熔断)', () => {
+  test('dispatchGoalTicket 每次真 spawn 计数 +1; 幂等命中不计 (没花钱不记账)', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'goal-att-'));
+    const deps = { spawnDetached: () => 1, makeRunId: () => 'r1' };
+    dispatchGoalTicket(cwd, 'm1', 'g9', 'x', deps);
+    expect(readGoalAttempts(cwd, 'm1', 'g9')).toBe(1);
+    dispatchGoalTicket(cwd, 'm1', 'g9', 'x', deps); // 标记在 → 幂等命中
+    expect(readGoalAttempts(cwd, 'm1', 'g9')).toBe(1);
+    rmSync(goalDispatchedPath(cwd, 'm1', 'g9')); // 回流清标记后再派 = 又一次真 spawn
+    dispatchGoalTicket(cwd, 'm1', 'g9', 'x', deps);
+    expect(readGoalAttempts(cwd, 'm1', 'g9')).toBe(2);
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  test('反向自检: 达上限的 not-converged → escalated 升人, 不写续跑锚, 计数清零', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'goal-capA-'));
+    goalMapOn(cwd);
+    writeResult(cwd, 'm1', 'g9', 'not-converged');
+    writeFileSync(goalAttemptsPath(cwd, 'm1', 'g9'), '3');
+    const out = reflowGoalResults(mdBackend(cwd), cwd, 'm1', { maxAttempts: 3 });
+    expect(out[0]!.disposition).toBe('escalated');
+    expect(out[0]!.warning).toContain('达上限');
+    expect(mdBackend(cwd).readMap(cwd, 'm1')!.tickets[0]!.status).toBe('escalated');
+    expect(existsSync(goalResumePath(cwd, 'm1', 'g9'))).toBe(false); // 无锚 → deliver 不会再续这个 run
+    expect(existsSync(goalAttemptsPath(cwd, 'm1', 'g9'))).toBe(false);
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  test('对照臂: 次数未达上限 → 照旧 resumable + 续跑锚 (闸不过拦)', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'goal-capA-'));
+    goalMapOn(cwd);
+    writeResult(cwd, 'm1', 'g9', 'not-converged');
+    writeFileSync(goalAttemptsPath(cwd, 'm1', 'g9'), '2');
+    const out = reflowGoalResults(mdBackend(cwd), cwd, 'm1', { maxAttempts: 3 });
+    expect(out[0]!.disposition).toBe('resumable');
+    expect(readFileSync(goalResumePath(cwd, 'm1', 'g9'), 'utf8')).toBe('run-g9');
+    rmSync(cwd, { recursive: true, force: true });
+  });
+});
+
+describe('闸 B — 探索型验收 (无机器判据) 不进自动续跑', () => {
+  test('反向自检: exploratory 头的 not-converged 第一次就升人 (续跑期望收益为零)', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'goal-capB-'));
+    goalMapOn(cwd);
+    writeResultWithAcceptance(cwd, 'm1', 'g9', 'not-converged', 'exploratory');
+    const out = reflowGoalResults(mdBackend(cwd), cwd, 'm1');
+    expect(out[0]!.disposition).toBe('escalated');
+    expect(out[0]!.warning).toContain('探索型');
+    expect(existsSync(goalResumePath(cwd, 'm1', 'g9'))).toBe(false);
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  test('对照臂: executable 头照旧 resumable (闸 B 只认探索型)', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'goal-capB-'));
+    goalMapOn(cwd);
+    writeResultWithAcceptance(cwd, 'm1', 'g9', 'not-converged', 'executable');
+    const out = reflowGoalResults(mdBackend(cwd), cwd, 'm1');
+    expect(out[0]!.disposition).toBe('resumable');
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  test('向后兼容: 老结果文件无 acceptance 头 → 闸 B 不触发, 只剩闸 A 兜底', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'goal-capB-'));
+    goalMapOn(cwd);
+    writeResult(cwd, 'm1', 'g9', 'not-converged'); // 老格式 (无 acceptance 行)
+    const out = reflowGoalResults(mdBackend(cwd), cwd, 'm1');
+    expect(out[0]!.disposition).toBe('resumable');
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  test('exploratory 且 success → 照旧 delivered (闸 B 只拦"没成还想续", 不拦成了的)', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'goal-capB-'));
+    goalMapOn(cwd);
+    writeResultWithAcceptance(cwd, 'm1', 'g9', 'success', 'exploratory');
+    const out = reflowGoalResults(mdBackend(cwd), cwd, 'm1');
+    expect(out[0]!.disposition).toBe('delivered');
+    rmSync(cwd, { recursive: true, force: true });
+  });
+});

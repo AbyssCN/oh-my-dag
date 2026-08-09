@@ -292,6 +292,23 @@ export function goalResumePath(cwd: string, slug: string, ticketId: string): str
   return join(cwd, '.omd', 'pathfinder', 'results', slug, `${ticketId}.goal-resume`);
 }
 
+/**
+ * 续派总计数 (内容 = 已 spawn 次数): 闸 A 的账本。单次调用的 max-rounds/budget-minutes 闸不管
+ * 跨次重派 —— 2026-08-10 事故: 心跳 30 分钟一跳 × 每跳 reflow 清标记再 deliver, 同一张票 3.5 天
+ * 重派 ~55 次 (117 个 contract 相位, 237.8M tokens)。reflow 按这个数对上限判"还续不续"。
+ */
+export function goalAttemptsPath(cwd: string, slug: string, ticketId: string): string {
+  return join(cwd, '.omd', 'pathfinder', 'results', slug, `${ticketId}.goal-attempts`);
+}
+
+/** 读续派计数 (缺文件/坏内容 = 0 —— 老票没有这个文件, 从零起数)。 */
+export function readGoalAttempts(cwd: string, slug: string, ticketId: string): number {
+  const p = goalAttemptsPath(cwd, slug, ticketId);
+  if (!existsSync(p)) return 0;
+  const n = Number(readFileSync(p, 'utf8').trim());
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
 /** goal-worker 脚本按本包安装位置解析 (同 researchScriptPath 的理由: 相对 cwd 在别的 repo 必炸)。 */
 export function goalWorkerPath(): string {
   return join(import.meta.dir, '..', '..', '..', 'scripts', 'goal-worker.ts');
@@ -344,6 +361,8 @@ export function dispatchGoalTicket(
   );
   // spawn 之后才写标记: spawn 抛错时不留"已派"假象 (标记假阳性 = 票永远卡死在"在飞")。
   writeFileSync(marker, runId);
+  // 闸 A 账本: 每次真 spawn 记一笔 (幂等命中不记 —— 没花钱)。reflow 按它对上限判还续不续。
+  writeFileSync(goalAttemptsPath(cwd, slug, ticketId), String(readGoalAttempts(cwd, slug, ticketId) + 1));
   return { runId, already: false };
 }
 

@@ -285,7 +285,7 @@ export function reflowResearchResults(backend: PathBackend, cwd: string, slug: s
 // ── goal 票回流 (D-G1.3/G1.4, c2 波 2026-08-04) ──────────────────────────────
 
 import { renameSync, rmSync as rmSyncGoal } from 'node:fs';
-import { goalDispatchedPath, goalResumePath } from './dispatch';
+import { goalAttemptsPath, goalDispatchedPath, goalResumePath, readGoalAttempts } from './dispatch';
 
 /** goal 票一次折入的结局 (与 ReflowOutcome 分开: 语义是交付不是蒸馏)。 */
 export interface GoalReflowOutcome {
@@ -328,10 +328,14 @@ export function extractGoalDiscoveries(body: string): Array<{ type: 'grill' | 't
   return drafts;
 }
 
-/** 结果文件头解析: `outcome: <kind>` + `runId: <id>` (dag_goal resultOut 写的形状)。 */
-function parseGoalResult(text: string): { outcome: string; runId: string } | null {
-  const m = text.match(/^outcome: (\S+)\nrunId: (\S+)\n/);
-  return m ? { outcome: m[1]!, runId: m[2]! } : null;
+/**
+ * 结果文件头解析: `outcome: <kind>` + `runId: <id>` + 可选 `acceptance: <kind>`
+ * (dag_goal resultOut 写的形状)。acceptance 头是 2026-08-10 加的 (闸 B 信号线) ——
+ * 老结果文件没有它, 解析出 undefined = 闸 B 不触发 (只剩闸 A 的次数上限兜底)。
+ */
+function parseGoalResult(text: string): { outcome: string; runId: string; acceptance?: string } | null {
+  const m = text.match(/^outcome: (\S+)\nrunId: (\S+)\n(?:acceptance: (\S+)\n)?/);
+  return m ? { outcome: m[1]!, runId: m[2]!, ...(m[3] ? { acceptance: m[3] } : {}) } : null;
 }
 
 /**
@@ -341,7 +345,12 @@ function parseGoalResult(text: string): { outcome: string; runId: string } | nul
  * 处理过的结果文件改名归档 (`.md.done` / `.md.escalated` / `.attempt.md`) —— 再次回流不重复处理。
  * research 票不经此路 (它们的结果由 reflowResearchResults 以蒸馏语义折入)。
  */
-export function reflowGoalResults(backend: PathBackend, cwd: string, slug: string, opts: { at?: string } = {}): GoalReflowOutcome[] {
+export function reflowGoalResults(
+  backend: PathBackend,
+  cwd: string,
+  slug: string,
+  opts: { at?: string; maxAttempts?: number } = {},
+): GoalReflowOutcome[] {
   const map = backend.readMap(cwd, slug);
   if (!map) return [];
   const at = opts.at ?? new Date().toISOString();
@@ -368,25 +377,49 @@ export function reflowGoalResults(backend: PathBackend, cwd: string, slug: strin
     }
     const marker = goalDispatchedPath(cwd, slug, t.id);
     const anchor = goalResumePath(cwd, slug, t.id);
+    const attemptsFile = goalAttemptsPath(cwd, slug, t.id);
+    // 升人共用路径 (blocked / 闸 A / 闸 B): 自动通道到此为止, 三个标记全清 —— 半清会留下
+    // "escalated 却还挂着续跑锚"的矛盾态, 下次 deliver 又把它复活。
+    const escalateTicket = (why?: string): boolean => {
+      if (!backend.escalate) {
+        outcomes.push({ ticketId: t.id, disposition: 'escalated', outcome: head.outcome, runId: head.runId, warning: `后端 ${backend.kind} 未实装 escalate — 票留 ruled, 待人处理${why ? ` (${why})` : ''}` });
+        return false; // 文件不动: 下轮仍可见 (响亮重复好过静默丢失); 标记也不动 → deliver 幂等命中, 不再烧钱
+      }
+      backend.escalate(cwd, slug, t.id);
+      const sug = suggestFrom(text, head.runId);
+      renameSync(resultFile, `${resultFile}.escalated`);
+      rmSyncGoal(marker, { force: true });
+      rmSyncGoal(anchor, { force: true });
+      rmSyncGoal(attemptsFile, { force: true });
+      outcomes.push({ ticketId: t.id, disposition: 'escalated', outcome: head.outcome, runId: head.runId, ...(why ? { warning: why } : {}), ...(sug ? { suggested: sug } : {}) });
+      return true;
+    };
     if (head.outcome === 'success') {
       backend.markDelivered(cwd, slug, [t.id]);
       renameSync(resultFile, `${resultFile}.done`);
       rmSyncGoal(marker, { force: true });
       rmSyncGoal(anchor, { force: true });
+      rmSyncGoal(attemptsFile, { force: true });
       outcomes.push({ ticketId: t.id, disposition: 'delivered', outcome: head.outcome, runId: head.runId });
     } else if (head.outcome === 'blocked') {
-      if (!backend.escalate) {
-        outcomes.push({ ticketId: t.id, disposition: 'escalated', outcome: head.outcome, runId: head.runId, warning: `后端 ${backend.kind} 未实装 escalate — 票留 ruled, 待人处理` });
-        continue; // 文件不动: 下轮仍可见 (响亮重复好过静默丢失)
-      }
-      backend.escalate(cwd, slug, t.id);
-      const sugE = suggestFrom(text, head.runId);
-      renameSync(resultFile, `${resultFile}.escalated`);
-      rmSyncGoal(marker, { force: true });
-      rmSyncGoal(anchor, { force: true });
-      outcomes.push({ ticketId: t.id, disposition: 'escalated', outcome: head.outcome, runId: head.runId, ...(sugE ? { suggested: sugE } : {}) });
+      escalateTicket();
     } else {
-      // not-converged / error / budget-stop: 票留 ruled, 续跑锚落盘, 在途标记清掉 (deliver 可再派)。
+      // not-converged / error / budget-stop: 默认票留 ruled + 续跑锚落盘 (deliver 可再派) ——
+      // 但先过两道闸 (2026-08-10 事故: 心跳无人续派 3.5 天烧掉一周 76% token, 单次闸拦不住跨次重派):
+      // 闸 B — 探索型验收没有机器判据, "再给几轮可能就成"对它不成立 (judge 意见环可以永远说不),
+      //        自动续跑期望收益为零 → 直接升人。
+      // 闸 A — 续派总次数到上限 (默认 3, OMD_TICKET_GOAL_MAX_ATTEMPTS 可调) → 升人。
+      //        attempt.md 里那句"连续两次落这格再去看"此前只是散文 —— 这里把它做成闸 (§8.4 讲道理拦不住)。
+      const cap = opts.maxAttempts ?? Number(process.env.OMD_TICKET_GOAL_MAX_ATTEMPTS ?? 3);
+      const attempts = readGoalAttempts(cwd, slug, t.id);
+      if (head.acceptance === 'exploratory') {
+        escalateTicket('探索型验收 (无机器判据) 不进自动续跑 — 升人裁决');
+        continue;
+      }
+      if (attempts >= cap) {
+        escalateTicket(`续派 ${attempts} 次未收敛, 达上限 ${cap} — 升人裁决 (OMD_TICKET_GOAL_MAX_ATTEMPTS 可调)`);
+        continue;
+      }
       const sugR = suggestFrom(text, head.runId);
       writeFileSyncGoal(anchor, head.runId);
       rmSyncGoal(marker, { force: true });

@@ -25,8 +25,9 @@
  * 算好后冻进两个节点的输入的 —— 让它进图就等于让执行体自己的环去产出判据 (D-J 整套防作弊的地基
  * 就是"判卷标准是执行体动不了的东西")。
  */
-import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { runExecutorDagWithPlan } from '../dag/engine';
 import { makeDefaultGenerate } from '../dag/defaults';
 import type { ConductorPlan } from '../conductor-plan';
@@ -171,6 +172,18 @@ export function goalSlug(goal: string): string {
 const todayStr = (): string => new Date().toISOString().slice(0, 10);
 
 /**
+ * 闸 C (2026-08-10) 的落盘状态: resume 同一 runId 且 goal 文本未变时, classify 与契约段
+ * (survey/research/spec) 的产物直接复用, 不重跑。事故背景: 同一段 goal 被心跳续派重分类 117 遍
+ * (平均 2.1M tokens/遍) —— 节点级 checkpoint 拦不住, conductor 子图逐轮重展开, D-O 输入面
+ * 恒判"依赖输出已变"。状态键 = goal 全文 sha256: 文本动一个字就作废, "未变"是精确判据不是猜。
+ */
+interface GoalPhaseState {
+  goalHash: string;
+  classified: GoalClassification;
+  contract?: { specPath?: string; evidence: string; repoContext: string; sources: string[] };
+}
+
+/**
  * 跑一个 goal 到底 (INV-GOAL-1)。
  *
  * @returns 每阶段的结论 + spec 路径 + 证据 URL + 收敛情况。**失败不抛** —— 阶段级失败记在
@@ -183,6 +196,30 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   let evidence = '';
   let repoContext = '';
 
+  // ── 闸 C: 续跑状态读写 (无 continuity = 无 runId 可锚 → 闸不启用, 行为与从前逐字一致) ──
+  const continuityRunId = config.dag.continuity?.runId;
+  const statePath = continuityRunId ? join(config.cwd, '.omd', 'continuity', continuityRunId, 'goal-state.json') : undefined;
+  const goalHash = createHash('sha256').update(goal).digest('hex');
+  let prior: GoalPhaseState | undefined;
+  if (statePath && existsSync(statePath)) {
+    try {
+      const j = JSON.parse(readFileSync(statePath, 'utf8')) as GoalPhaseState;
+      if (j.goalHash === goalHash) prior = j;
+    } catch (e) {
+      // fail-open 但留证据 (本仓铁律 2): 读坏了照常重跑契约段, 不吞原因。
+      console.error(`[run-goal] goal-state 读失败 (照常重跑契约段): ${String(e)}`);
+    }
+  }
+  const saveState = (s: GoalPhaseState): void => {
+    if (!statePath) return;
+    try {
+      mkdirSync(dirname(statePath), { recursive: true });
+      writeFileSync(statePath, JSON.stringify(s));
+    } catch (e) {
+      console.error(`[run-goal] goal-state 写失败 (下次续跑将重跑契约段): ${String(e)}`);
+    }
+  };
+
   // ── S0/S-classify: 轻重路由 (D-5, 成本轴) + **验收分型** (D-I, 判据轴) ──────────
   //
   // 一次调用出两条轴。显式配置各自压过分类结果 —— 但 `tier` 只压成本轴, 压不到判据轴:
@@ -193,16 +230,19 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   // (那条强制可跑命令) 在真实路径上从未成立过**。2026-07-30 第一次 live 冒烟才看见这行:
   //   「验收分型未成立: 无分类器 (缺 generate/model)」
   // ——机制在、测试全绿、生产零生效, 正是这仓一直在杀的空旋钮形态, 而这次空掉的是防作弊的地基。
-  const classified = await (config._classify ??
-    ((g: string) =>
-      classifyGoal(g, {
-        generate: config.dag.generate ?? makeDefaultGenerate(config.dag.sessionId ?? randomUUID()),
-        model: config.dag.conductorModel,
-        // **空世界自检** (2026-07-31, G4): 活还没干之前先跑一遍判出的验收命令 —— 这时候就过 =
-        // 它区分不了"做完了"与"还没做"。给不给 runner 决定这层加固在不在, 与 `generate` 那条
-        // 教训同源: 只在测试里接、生产不接, 就是又一个"机制在、生产零生效"的空旋钮。
-        ...(config.dag.commandRunner ? { runCommand: config.dag.commandRunner } : {}),
-      })))(goal);
+  // 闸 C: goal 未变的续跑直接用上次的分类 (探针首跑已验过; 重分类 = 重烧一遍还可能分出不同的判据轴)。
+  const classified = prior
+    ? prior.classified
+    : await (config._classify ??
+      ((g: string) =>
+        classifyGoal(g, {
+          generate: config.dag.generate ?? makeDefaultGenerate(config.dag.sessionId ?? randomUUID()),
+          model: config.dag.conductorModel,
+          // **空世界自检** (2026-07-31, G4): 活还没干之前先跑一遍判出的验收命令 —— 这时候就过 =
+          // 它区分不了"做完了"与"还没做"。给不给 runner 决定这层加固在不在, 与 `generate` 那条
+          // 教训同源: 只在测试里接、生产不接, 就是又一个"机制在、生产零生效"的空旋钮。
+          ...(config.dag.commandRunner ? { runCommand: config.dag.commandRunner } : {}),
+        })))(goal);
   // 探针裁决钩子: 分类定稿后恰好调一次 (含 fallback / 探索型), 进 `_runDag` 与任何运行记录之前。
   // `_classify` 抛错时这行到不了 → 天然不调, 不存在"抛错也硬调"的路径。
   config.onClassified?.(classified);
@@ -217,10 +257,13 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
     // 只是换了一型。记成"空手而归"会让读数板把一次正常的探索型分类数成缺陷。
     outcome: 'success',
     summary:
-      acceptance.kind === 'executable'
+      (acceptance.kind === 'executable'
         ? `tier=${tier} · 验收=执行型 \`${acceptance.command}\` (期望退出码 ${acceptance.expectExit})`
-        : `tier=${tier} · 验收=探索型 · 学习目标: ${acceptance.learningGoal.slice(0, 120)}`,
+        : `tier=${tier} · 验收=探索型 · 学习目标: ${acceptance.learningGoal.slice(0, 120)}`) +
+      (prior ? ' · 复用续跑前分类 (goal 未变, 闸 C)' : ''),
   });
+  // 闸 C: 分类一定稿就落状态 (契约段中途炸也不用重分类; 契约段成了再补 contract 字段)。
+  if (!prior) saveState({ goalHash, classified });
   // 冻结的判卷标准: 同一份文本进 spec 起草与 execute 任务文本 (两处各写一份就会漂,
   // 而"判据漂了"正是作弊达标最舒服的入口)。
   const acceptanceBlock = renderAcceptance(acceptance);
@@ -237,7 +280,23 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
     // goal 当输入。放进子图就等于让**执行体自己的环**去产出判据 —— 而环每轮都重画, 判据也就跟着能变。
     // D-I 整套防作弊的地基就是那一句「判卷标准是执行体动不了的东西」, 判据进环这句话就没了。
     // (两条轴本来就是分开的: 成本轴"要不要接地"交给 conductor 判, 判据轴"成没成怎么判"绝不下放。)
-    if (config.dag.agentRunner) {
+    // 闸 C: 契约段产物在且 goal 未变 → 直接复用, 不重展开 conductor 子图。
+    // specPath 记了但盘上文件没了 → 条件不成立, 掉进下面照常重跑 (状态不是真源, 盘上文件才是)。
+    const priorContract = prior?.contract;
+    if (priorContract && (!priorContract.specPath || existsSync(priorContract.specPath))) {
+      specPath = priorContract.specPath;
+      evidence = priorContract.evidence;
+      repoContext = priorContract.repoContext;
+      sources.push(...priorContract.sources);
+      stages.push({
+        stage: 'survey',
+        status: 'done',
+        outcome: 'success',
+        summary: `复用续跑前契约段 (闸 C): ${repoContext ? `${repoContext.split('\n').length} 行仓内事实` : '首跑无勘察输出'}`,
+      });
+      stages.push({ stage: 'research', status: 'skipped', outcome: 'not-needed', summary: '复用续跑前契约段 (闸 C): 不重新调研' });
+      stages.push({ stage: 'spec', status: 'done', outcome: 'success', summary: specPath ?? '复用首跑契约正文 (spec 未落盘那次, 正文当契约)' });
+    } else if (config.dag.agentRunner) {
       const dir = config.specDir ?? join(config.cwd, 'docs', 'plan');
       const path = join(dir, `${(config._today ?? todayStr)()}-${goalSlug(goal)}.md`);
       const prepPlan: ConductorPlan = {
@@ -326,6 +385,10 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
           outcome: wrote ? 'success' : 'empty-result',
           summary: wrote ? path : 'spec 未落盘 (契约段没产出文件), 下游改用其正文当契约',
         });
+        // 闸 C: 有东西可复用才落状态 —— 全空的契约段 (evidence 空且没落盘) 下次续跑照常重跑。
+        if (evidence || specPath) {
+          saveState({ goalHash, classified, contract: { ...(specPath ? { specPath } : {}), evidence, repoContext, sources: [...sources] } });
+        }
       } catch (err) {
         // 抛错 = 引擎自己出事, 与"契约写了但没达标"是两回事 (ERROR vs STALLED)。
         stages.push({ stage: 'spec', status: 'failed', outcome: 'infra-error', summary: `契约段抛错: ${String(err).slice(0, 200)}` });

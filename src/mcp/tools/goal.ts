@@ -407,7 +407,9 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           if (resultOut) {
             try {
               mkdirSync(dirname(resultOut), { recursive: true });
-              writeFileSync(resultOut, `outcome: ${r.outcome}\nrunId: ${runId}\n\n${summarizeGoal(r)}`);
+              // acceptance 头是回流侧闸 B 的信号线: 探索型 (无机器判据) 的 not-converged 永远
+              // 判不出机器收敛, 自动续跑期望收益为零 —— reflow 读到它直接升人, 不写续跑锚。
+              writeFileSync(resultOut, `outcome: ${r.outcome}\nrunId: ${runId}\nacceptance: ${r.acceptance.kind}\n\n${summarizeGoal(r)}`);
             } catch (e) {
               logger.warn({ err: (e as Error).message, resultOut }, '[dag_goal] resultOut 写失败 (回流将看不到这跑)');
             }
