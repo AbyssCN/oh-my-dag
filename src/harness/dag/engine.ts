@@ -1869,7 +1869,10 @@ async function executePlan(
         const listerPrompt = `${listerGoal}${schemaNote}${depCtx}\n\n只回一个 JSON 对象, 必含数组键 "${spec.over}"。`;
         const listerModel = config.agentLeafModel ?? config.leafModel;
         const listerStart = new Date();
-        const r = await config.agentRunner({ prompt: listerPrompt, model: listerModel });
+        // SDD S3 碰撞台账会话: runId + 节点维度稳定后缀 (lister 是 map 节点的子 agent)。
+        // 引擎不建 runner (由接线层注入、跨 run 复用) → session 只能走调用期 input (AgentLeafInput.touchSession)。
+        const touchRunId = continuity?.runId ?? config.sessionId;
+        const r = await config.agentRunner({ prompt: listerPrompt, model: listerModel, ...(touchRunId ? { touchSession: `${touchRunId}:${id}:lister` } : {}) });
         recordGeneration({
           traceId: obsTraceId,
           name: `map-lister-agent:${id}`,
@@ -2368,7 +2371,9 @@ async function executePlan(
         // ⚠ 诚实边界: 内部工具循环 (每一次 read/edit/bash) **不在这条记录里** ——
         // 那要接 agent-leaf 的 onEvent 汇, 是另一件事。别把这条读成"agent 的全过程可见"。
         const agentStart = new Date();
-        const r = await config.agentRunner!({ prompt, model });
+        // SDD S3 碰撞台账会话: runId + 节点 id (runId 未知 → 不记, fail-open)。
+        const touchRunId = continuity?.runId ?? config.sessionId;
+        const r = await config.agentRunner!({ prompt, model, ...(touchRunId ? { touchSession: `${touchRunId}:${id}` } : {}) });
         recordGeneration({
           traceId: obsTraceId,
           name: `agent:${id}`,

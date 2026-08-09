@@ -58,7 +58,7 @@ function dataHomeBase(): string | null {
 }
 
 /** git toplevel;非 git → null。 */
-function gitToplevel(cwd: string): string | null {
+export function gitToplevel(cwd: string): string | null {
   try {
     const out = execFileSync('git', ['rev-parse', '--show-toplevel'], {
       cwd,

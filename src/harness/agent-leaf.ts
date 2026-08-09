@@ -40,6 +40,7 @@ import {
 // 0.84 起 `runAgentLoop` 第 6 参 streamFn **必填** (0.81.0 breaking: "made low-level loop stream
 // functions required")。0.80 省略时的内部默认就是这个 `streamSimple` —— 显式传 = 行为等价。
 import { streamSimple } from '@earendil-works/pi-ai/compat';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
@@ -237,6 +238,13 @@ export interface AgentLeafRunnerOpts {
    * 编辑型 leaf (DeepSeek/MiMo 改代码) 应开。
    */
   hashlineEdit?: boolean;
+  /**
+   * 碰撞台账写入面 (SDD S3, 只记不拦)。给了才记; **缺省零行为变化**。
+   * `session` 是 runner 级兜底; 引擎侧 runId 只在调用期可知 (runner 跨 run 复用) →
+   * 运行时以 `AgentLeafInput.touchSession` 覆盖 (经 AsyncLocalStorage 按调用落, 见装配处注)。
+   * 隔离档 (bwrap) 下 worker 进程同样收到 (leaf-worker 桥接)。
+   */
+  touch?: { session: string };
   /**
    * drift 检测 (代码级 spinning 防护): agent-leaf 是 headless 工具循环 = spin 高发面,
    * 默认开 (low-invasive: 仅同调用同参重复 ≥阈值才经 transformContext 注 stuck-checklist)。
@@ -538,7 +546,16 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
 
   // 工具集: 自有六件 + hashline (开则注入并**排除内置 edit**, 强制行锚定 patch) + 调用方自定。
   // 建一次复用整 runner: hashline 的快照 store 要跨 read/edit 共享, 而 runner 的 cwd 是固定的。
-  const baseTools = createOmdAgentTools({ cwd });
+  //
+  // SDD S3 碰撞台账会话 (只记不拦): 同一 runner 跨 run/跨节点复用 (MCP 长驻进程), runId 只在调用期
+  // 可知 → session 不能烤进工具闭包, 得按调用落。AsyncLocalStorage: 每次调用一个独立 async 上下文
+  // (下方 wrapper 用 run() 开, 不用 enterWith —— enterWith 会改到调用方的共享上下文, 并发节点互踩)。
+  const touchSessionStore = new AsyncLocalStorage<string | undefined>();
+  const touchOpt = opts.touch; // const 让闭包里的收窄成立 (getter 里引用 touchOpt.session)
+  const baseTools = createOmdAgentTools({
+    cwd,
+    ...(touchOpt ? { touch: { session: () => touchSessionStore.getStore() ?? touchOpt.session } } : {}),
+  });
   const hashlineTools = opts.hashlineEdit ? createHashlineCustomTools({ cwd }) : [];
   const excluded = new Set(opts.hashlineEdit ? ['edit'] : []);
   const allowlist = opts.tools ? new Set(opts.tools) : null;
@@ -550,7 +567,8 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
   const contextFiles = loadProjectContext(cwd);
   const systemPrompt = buildLeafSystemPrompt({ cwd, tools, contextFiles });
 
-  return async ({ prompt, model }) => {
+  const runOnce = async (input: AgentLeafInput): Promise<AgentLeafResult> => {
+    const { prompt, model } = input;
     const { provider, modelId } = parseModelRef(model);
     // 坐标解析与单发通道 (`callModel`) 走**同一个** resolver —— 两栈各解析一次正是"座位在这条路上
     // 能解出来、在那条路上解不出来"的来源。
@@ -862,6 +880,17 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       // 必须分得开 (同 spin / observations 那条口径)。
       ...(shell.runs().length ? { shellRuns: shell.runs() } : {}),
     };
+  };
+
+  // per-call touch session 落 ALS: 引擎侧 runId 只在调用期可知 (runner 跨 run 复用)。
+  // 用 `run()` 给本次调用开**独立 async 上下文** (store = per-call session) —— 并发调用各一个
+  // 上下文互不串。⚠ 不用 enterWith: 它在同步前缀里改的是**调用方 (引擎) 的共享上下文**,
+  // 并发节点会互相覆盖 (withScope 文档明说的坑); run() 的上下文随调用结束自动回收, 无需 exit。
+  return async (input) => {
+    if (opts.touch) {
+      return touchSessionStore.run(input.touchSession, () => runOnce(input));
+    }
+    return runOnce(input);
   };
 }
 

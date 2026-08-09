@@ -13,6 +13,12 @@ export interface AgentLeafInput {
   prompt: string;
   /** 'provider:modelId'。 */
   model: string;
+  /**
+   * 碰撞台账会话标识 (SDD S3, 只记不拦): 引擎侧 runId+节点维度稳定 id (如 `${runId}:${nodeId}`)。
+   * runner 跨 run 复用 (MCP 长驻进程) → 会话只能**按调用**传, 不能烤进 runner 装配期。
+   * 省略 = 本次调用不记 (runner 级 `AgentLeafRunnerOpts.touch` 仍在时回落其 session)。
+   */
+  touchSession?: string;
 }
 export interface AgentLeafResult {
   text: string;

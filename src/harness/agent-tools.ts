@@ -16,6 +16,7 @@
  * 打印内容, `bun -e` 等价任意代码执行。它挡的是"模型顺手 cat 一下配置"这类手滑, 不是对抗性外泄。
  * 真隔离在 agent leaf 的 bwrap jail (hooks/sandboxed-leaf.ts)。
  */
+import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -33,6 +34,8 @@ import { type Static, type TSchema, Type } from 'typebox';
 import { classifyCommand } from './hooks/dangerous-cmd';
 import { secretPathInCommand, SECRET_BASENAMES, SECRET_BASENAME_EXEMPT } from './command-leaf';
 import { logger } from '../logger';
+import { openTouchLedger, type TouchLedger, type TouchOp, type TouchSource } from './touch-ledger';
+import { verifiedShellWriteTargets } from './shell-writes';
 
 /**
  * omd 工具 = `AgentTool` + 两个**给系统提示用**的可选字段。
@@ -53,6 +56,28 @@ export type AnyOmdTool = OmdTool<any>;
 
 function textResult<T>(text: string, details: T): AgentToolResult<T> {
   return { content: [{ type: 'text', text }], details };
+}
+
+/** sha256 hex —— strict 档的 hash 列 (NULL≠0 纪律: 算过就是算过, 空内容也有 hash)。 */
+function sha256Hex(text: string): string {
+  return createHash('sha256').update(text).digest('hex');
+}
+
+/**
+ * SDD S3 碰撞台账写入 (只记不拦): 开了 touch 才记。**fail-open 不吞证据** ——
+ * recordTouch 自身 warn 留痕 (touch-ledger.ts), 这里只负责别让工具出口失败。
+ * session 支持 getter: 同一 runner 跨 run 复用 (MCP 长驻进程) 时 runId 只在调用期可知,
+ * 由 agent-leaf 的 AsyncLocalStorage 按调用喂 (getter 返 undefined = 本次不记)。
+ */
+function touchWrite(
+  ledger: TouchLedger | null,
+  touch: OmdAgentToolsOpts['touch'],
+  input: { path: string; op: TouchOp; hash?: string | null; source?: TouchSource },
+): void {
+  if (!ledger || !touch) return;
+  const session = typeof touch.session === 'function' ? touch.session() : touch.session;
+  if (!session) return;
+  ledger.recordTouch({ path: input.path, session, op: input.op, hash: input.hash, source: input.source });
 }
 
 /** 相对路径对 cwd 解析; 绝对路径原样 (沙箱由 bwrap jail 管, 不在这里拦)。 */
@@ -280,6 +305,15 @@ export interface OmdAgentToolsOpts {
    * 真要在生产里改这个数,先量一遍时间与内存 —— 别照猜改。
    */
   grepWalkLimit?: number;
+  /**
+   * 碰撞台账写入面 (SDD S3, 只记不拦)。给了才记; **缺省 = 零行为变化**。
+   *
+   * `session`: 常量 (runner 级固定, per-run 建的 runner 可直接烤 runId) 或 getter
+   * (runner 跨 run 复用时逐调用取 —— 引擎侧 runId 只在调用期可知, agent-leaf 经
+   * AsyncLocalStorage 按调用喂)。getter 返 undefined = 本次调用不记。
+   * 台账库锚在 cwd 的 `.omd/touch.db` (触碰发生的工作根; 隔离档下 worktree 各写各的)。
+   */
+  touch?: { session: string | (() => string | undefined) };
 }
 
 /**
@@ -302,6 +336,18 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
   const defaultTimeout = opts.bashTimeoutSec ?? 120;
   const walkLimit = opts.grepWalkLimit ?? GREP_WALK_LIMIT;
   const env = new NodeExecutionEnv({ cwd });
+  // SDD S3 碰撞台账 (只记不拦): 给了 touch 才开库, 库锚在 cwd (触碰发生的工作根) 的 `.omd/touch.db`。
+  // **开库失败 → warn 留痕 + 本次不记 (fail-open)** —— 台账是观测件, 绝不让工具调用因此失败。
+  const touchLedger: TouchLedger | null = opts.touch
+    ? (() => {
+        try {
+          return openTouchLedger({ root: cwd });
+        } catch (err) {
+          logger.warn({ err: (err as Error).message, root: cwd }, '[omd/agent-tools] touch 台账开库失败 → 本次不记 (fail-open)');
+          return null;
+        }
+      })()
+    : null;
 
   const read: OmdTool<{ path: string; lines: number; truncated: boolean }> = {
     name: 'read',
@@ -353,6 +399,8 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
       const full = abs(cwd, path);
       const r = await env.writeFile(full, content);
       if (!r.ok) throw new Error(`write 失败: ${display(cwd, full)}: ${r.error.message}`);
+      // SDD S3 strict 档 (事实): 受控写工具知道写了什么 → hash = sha256(写入内容), 非 NULL。
+      touchWrite(touchLedger, opts.touch, { path: full, op: 'write', hash: sha256Hex(content), source: 'strict' });
       return textResult(`✓ 写入 ${display(cwd, full)} (${content.length} 字节)`, {
         path: display(cwd, full),
         bytes: content.length,
@@ -386,6 +434,8 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
       const next = `${raw.slice(0, first)}${newText}${raw.slice(first + oldText.length)}`;
       const w = await env.writeFile(full, next);
       if (!w.ok) throw new Error(`edit 失败 (写回): ${display(cwd, full)}: ${w.error.message}`);
+      // SDD S3 strict 档 (事实): edit 写回的是整份新内容 (next), hash 对它算。
+      touchWrite(touchLedger, opts.touch, { path: full, op: 'write', hash: sha256Hex(next), source: 'strict' });
       return textResult(`✓ 已替换 ${display(cwd, full)} 中 1 处`, { path: display(cwd, full), replaced: true });
     },
   };
@@ -521,12 +571,22 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
         const secret = secretPathInCommand(s);
         if (secret) warnSecret(secret);
       }
+      // SDD S3 bash 写嗅探的起跑时刻: verifiedShellWriteTargets 的窗口左沿 (mtime ≥ startedAt - 容差)。
+      const startedAt = Date.now();
       const r = await executeShellWithCapture(env, command, {
         timeout: timeout && timeout > 0 ? timeout : defaultTimeout,
         ...(signal ? { abortSignal: signal } : {}),
       });
       if (!r.ok) throw new Error(`bash 失败: ${r.error.message}`);
       const { output, exitCode, cancelled, truncated } = r.value;
+      // SDD S3 推断档 (只记不拦): bash 成功 (exit 0 且未被中止) → 盘上核实的写目标记 inferred
+      // (hash=NULL —— 推断档不知道写了什么, NULL≠0 纪律)。复用 verifiedShellWriteTargets 同一条
+      // 判据不抄第二份; 与 strict 档分列不合并 (台账按 source 落)。
+      if (exitCode === 0 && !cancelled) {
+        for (const hit of verifiedShellWriteTargets([command], { root: cwd, startedAt })) {
+          touchWrite(touchLedger, opts.touch, { path: hit, op: 'write', source: 'inferred' });
+        }
+      }
       const tail = [
         cancelled ? '[命令被中止]' : '',
         exitCode !== undefined && exitCode !== 0 ? `[exit ${exitCode}]` : '',

@@ -37,6 +37,8 @@ const USAGE = `omd —— DAG 执行引擎 (纯 MCP + web 控制台)
   omd mcp     stdio MCP server (给 Claude Code 等 MCP 客户端 spawn)
   omd serve   web 控制台 daemon —— 引擎 API + conductor 对话 (127.0.0.1:4517; --port N 改端口)
   omd init    首次配置向导 (写 .env)
+  omd touch <path> --op read|write [--hash <h>] --session <id>   碰撞台账写面 (SDD S3 只记不拦; 锚 cwd 的 git toplevel/.omd/touch.db)
+  omd touches [--pairs|--findings]   碰撞台账查询面 (pairs 与 findings 分开读)
 
 终端对话前端: 原 pi TUI 2026-08-01 撤除, 2026-08-07 以自建 TUI 回归。
 
@@ -263,6 +265,12 @@ if (userArgs[0] === 'serve') {
     { ...(portFlag >= 0 && userArgs[portFlag + 1] ? { port: Number(userArgs[portFlag + 1]) } : {}) },
   );
   // Bun.serve 常驻 —— 不 process.exit; SIGINT 默认行为即优雅退。
+} else if (userArgs[0] === 'touch') {
+  await runTouch(userArgs.slice(1));
+  process.exit(process.exitCode ?? 0);
+} else if (userArgs[0] === 'touches') {
+  await runTouches(userArgs.slice(1));
+  process.exit(process.exitCode ?? 0);
 } else if (userArgs[0] === 'init') {
   await runInit();
 } else {
@@ -281,4 +289,89 @@ async function runInit(): Promise<void> {
   const { runInitWizard, createReadlineIO } = await import('./init');
   const ok = await runInitWizard({ io: createReadlineIO() });
   process.exit(ok ? 0 : 1);
+}
+
+// omd touch / omd touches 的 helper —— SDD S3 碰撞台账写入面 (只记不拦, 第一刀; jcode 总账 §6.1)。
+// 锚定 (总账 §3.6 已裁): 台账锚 **cwd 的 git toplevel** (找不到就 cwd) 下的 `.omd/touch.db`;
+// ⚠ 不用 omdRepoRoot() 的 worktree→主仓归并 —— 隔离档下两个 worktree 各写各的, 不算撞。
+// fail-open 不吞证据: 台账读写失败 → logger.warn 留痕, CLI 不因此崩 (记录失败 ≠ 工具失败)。
+
+/** 台账锚点 = cwd 的 git toplevel, 找不到 → cwd。判据与 project-scope 同一条 git 调用 (不新抄一份)。 */
+async function touchLedgerRoot(): Promise<string> {
+  const { gitToplevel } = await import('./project-scope');
+  return gitToplevel(process.cwd()) ?? process.cwd();
+}
+
+/** 取 `--name <v>` 的 v; 缺 flag 或缺值 → undefined。 */
+function flagValue(args: string[], name: string): string | undefined {
+  const i = args.indexOf(name);
+  return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
+}
+
+/**
+ * 写面: `omd touch <path> --op read|write [--hash <h>] --session <id>`。
+ * 参数错误 = 用法错误 (exit 1); 台账自身失败 = fail-open (warn 留痕 + exit 0 —— hook 链路上
+ * 工具调用已成功, 记录失败不能反过来把工具判失败)。
+ */
+async function runTouch(args: string[]): Promise<void> {
+  const pathArg = args[0];
+  const op = flagValue(args, '--op');
+  const session = flagValue(args, '--session');
+  const hash = flagValue(args, '--hash');
+  if (!pathArg || !op || !session) {
+    process.stderr.write('用法: omd touch <path> --op read|write [--hash <h>] --session <id>\n');
+    process.exitCode = 1;
+    return;
+  }
+  if (op !== 'read' && op !== 'write') {
+    process.stderr.write(`--op 必须是 read 或 write, 收到: ${op}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  const root = await touchLedgerRoot();
+  const { resolve } = await import('node:path');
+  const absPath = resolve(process.cwd(), pathArg);
+  try {
+  const { openTouchLedger } = await import('./touch-ledger');
+  const ledger = openTouchLedger({ root });
+  // hash 缺省落 NULL (没算 hash ≠ 空串, NULL≠0 纪律) —— 这里不传 ''。
+  // ledger.recordTouch 自带 fail-open (内部 warn 留痕), ts 由 ledger 自己打, 调用方不传。
+  ledger.recordTouch({ path: absPath, session, op, hash: hash ?? null, source: 'cli' });
+  } catch (err) {
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err), root, absPath, session, op },
+      '[omd/touch] 台账记录失败 (fail-open: 不阻断调用, 证据留 warn)',
+    );
+  }
+}
+
+/**
+ * 查询面: `omd touches [--pairs|--findings]`。pairs 与 findings 分开读、分开打印;
+ * 无 flag = 两个都打 (长期 0 也是读数, SDD §1-S3)。
+ */
+async function runTouches(args: string[]): Promise<void> {
+  const wantPairs = args.includes('--pairs');
+  const wantFindings = args.includes('--findings');
+  const showPairs = wantPairs || (!wantPairs && !wantFindings);
+  const showFindings = wantFindings || (!wantPairs && !wantFindings);
+  const root = await touchLedgerRoot();
+  try {
+  const { openTouchLedger } = await import('./touch-ledger');
+  const ledger = openTouchLedger({ root });
+  if (showPairs) {
+    const pairs = ledger.crossSessionPairs();
+    process.stdout.write(`pairs (${pairs.length}):\n`);
+    for (const p of pairs) process.stdout.write(`  ${JSON.stringify(p)}\n`);
+  }
+  if (showFindings) {
+    const fs = ledger.findings();
+    process.stdout.write(`findings (${fs.length}):\n`);
+    for (const f of fs) process.stdout.write(`  ${JSON.stringify(f)}\n`);
+  }
+  } catch (err) {
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err), root },
+      '[omd/touches] 台账读取失败 (fail-open: 不崩, 证据留 warn)',
+    );
+  }
 }

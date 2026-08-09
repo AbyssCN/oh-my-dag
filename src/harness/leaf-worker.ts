@@ -28,11 +28,17 @@ if (!payloadFile || !resultFile) {
 try {
   const payload = JSON.parse(readFileSync(payloadFile, 'utf8')) as {
     opts: Record<string, unknown>;
-    input: { prompt: string; model: string };
+    input: { prompt: string; model: string; touchSession?: string };
   };
   bootstrapModelRuntime();
   // cwd = process.cwd() (= worktree, bwrap --chdir 设); sandboxRoot 清掉 → in-process 路径 (bwrap 已是隔离)。
-  const runner = createAgentLeafRunner({ ...payload.opts, cwd: process.cwd(), sandboxRoot: undefined });
+  // SDD S3: 引擎侧 session 经 input 传 (runner 每 leaf 新建一次, 静态 session 即可, 无需 ALS)。
+  const runner = createAgentLeafRunner({
+    ...payload.opts,
+    cwd: process.cwd(),
+    sandboxRoot: undefined,
+    ...(payload.input.touchSession ? { touch: { session: payload.input.touchSession } } : {}),
+  });
   const result = await runner(payload.input);
   writeFileSync(resultFile, JSON.stringify({ ok: true, result }));
 } catch (e) {
