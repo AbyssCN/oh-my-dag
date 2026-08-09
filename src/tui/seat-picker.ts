@@ -44,7 +44,7 @@ export function parseSeatCommand(text: string): SeatCommand {
   if (t !== '/seat' && !t.startsWith('/seat ')) return null;
   const parts = t.split(/\s+/).slice(1);
   if (parts.length === 0) return { kind: 'list' };
-  if (parts.length === 1) return { kind: 'usage', reason: `缺坐标。用法: /seat <${TUNABLE_CONFIG_ROLES.join('|')}> <provider:model>` };
+  if (parts.length === 1) return { kind: 'usage', reason: `Missing coordinate. Usage: /seat <${TUNABLE_CONFIG_ROLES.join('|')}> <provider:model>` };
   return { kind: 'set', role: parts[0] as string, coord: parts[1] as string };
 }
 
@@ -58,7 +58,7 @@ export function seatRows(current: Record<string, string>): SeatRow[] {
     const spec = seatSpec(role);
     return {
       role,
-      coord: current[role] ?? '(未解析)',
+      coord: current[role] ?? '(unresolved)',
       what: spec?.what ?? null,
       recommend: spec?.recommend ?? null,
     };
@@ -73,8 +73,8 @@ export function seatRows(current: Record<string, string>): SeatRow[] {
 export function formatSeatRows(rows: SeatRow[]): string {
   /** 建议那一栏是登记表原文, 动辄两三行; 列表里只留第一句。要全文的人去 `/settings` 看。 */
   const first = (s: string | null | undefined) => (s ? (s.split(/[。;]/)[0] as string).trim() : '-');
-  const lines = rows.map((r) => `  ${r.role}: ${r.coord}\n      职责: ${first(r.what)}\n      建议: ${first(r.recommend)}`);
+  const lines = rows.map((r) => `  ${r.role}: ${r.coord}\n      does: ${first(r.what)}\n      pick: ${first(r.recommend)}`);
   // ★ 抬头挪到**最后一行**:全屏视口只留得住尾部,放在抬头的话"改的是哪个文件"
   //   会是第一个被顶掉的 —— 而那正是这条命令唯一有副作用的地方。
-  return `${lines.join('\n')}\n用法: /seat <role> <provider:model> —— 可调座位改的是 .omd/config.json,立刻生效`;
+  return `${lines.join('\n')}\nUsage: /seat <role> <provider:model> - tunable seats write .omd/config.json and take effect immediately`;
 }

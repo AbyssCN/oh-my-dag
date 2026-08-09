@@ -37,7 +37,7 @@ describe('fmtDur', () => {
 describe('renderGantt', () => {
   test('没动过的节点不画空条, 收进尾行计数', () => {
     const out = renderGantt(snap([node({ id: 'a' }), node({ id: 'b' })]), { width: 80, height: 20, now: 0 });
-    expect(out[1]).toContain('没有节点动过');
+    expect(out[1]).toContain('no node has moved yet');
   });
 
   test('★ 在跑的条画到"现在"并标「在跑」; 完成的标时长', () => {
@@ -51,16 +51,16 @@ describe('renderGantt', () => {
     const body = out.join('\n');
     expect(body).toContain('done-1');
     expect(body).toContain('42s');
-    expect(body).toContain('在跑');
+    expect(body).toContain('running');
     // 头行写明度量来源 —— 事件到达时刻, 不冒充引擎墙钟
-    expect(out[0]).toContain('事件到达时刻');
+    expect(out[0]).toContain('event arrival time');
   });
 
   test('高度封顶: 剪掉的说清剪了多少', () => {
     const many = Array.from({ length: 30 }, (_, i) => node({ id: `n${i}`, startAt: i, endAt: i + 1, seq: i }));
     const out = renderGantt(snap(many), { width: 80, height: 10, now: 100 });
     expect(out.length).toBe(10);
-    expect(out[9]).toContain('还有');
+    expect(out[9]).toContain('more lines');
   });
 
   test('每行不超宽', () => {
@@ -102,7 +102,7 @@ describe('layerOf / renderLayers', () => {
       { width: 80, height: 20 },
     );
     const body = out.join('\n');
-    expect(out[0]).toContain('按分裂/已知依赖分层');
+    expect(out[0]).toContain('by split / known deps');
     expect(body).toContain('L0');
     expect(body).toContain('L1');
     expect(body).toContain('join (agent)  <- a, b  [fan-in]');
@@ -113,6 +113,6 @@ describe('layerOf / renderLayers', () => {
     const many = Array.from({ length: 30 }, (_, i) => node({ id: `n${i}` }));
     const out = renderLayers(snap(many), { width: 80, height: 10 });
     expect(out.length).toBe(10);
-    expect(out[9]).toContain('还有');
+    expect(out[9]).toContain('more lines');
   });
 });

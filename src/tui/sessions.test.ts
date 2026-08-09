@@ -35,7 +35,7 @@ describe('parseSessionCommand', () => {
     for (const bad of ['/session ../逃逸', '/session 有中文', '/session -起头']) {
       const r = parseSessionCommand(bad);
       expect(r?.kind).toBe('usage');
-      expect((r as { reason: string }).reason).toContain('非法');
+      expect((r as { reason: string }).reason).toContain('Invalid session id');
     }
   });
 
@@ -55,12 +55,12 @@ describe('formatSessions', () => {
 
   test('★ 一条都没有时说真话(还没说过话), 不画一张空表', () => {
     const out = formatSessions([], 'tui');
-    expect(out).toContain('还没有已存会话');
+    expect(out).toContain('No stored sessions yet');
     expect(out).toContain('tui');
   });
 
   test('没有标题画 (无标题), 不留空', () => {
-    expect(formatSessions([s('a', '')], 'a')).toContain('(无标题)');
+    expect(formatSessions([s('a', '')], 'a')).toContain('(no title)');
   });
 
   test('updatedAt 为 0 画破折号(不是 1970)', () => {
@@ -160,8 +160,8 @@ describe('切片⑦: fork 解析与 lineage', () => {
       ],
       'tui-f9',
     );
-    expect(out).toContain('<- fork 自 tui');
-    expect(out.split('\n')[1]).not.toContain('fork 自'); // 根会话那行没有
+    expect(out).toContain('<- forked from tui');
+    expect(out.split('\n')[1]).not.toContain('forked from'); // 根会话那行没有
   });
 
   test('forkSessionId 名字自带 lineage 且不超 id 白名单上限', () => {

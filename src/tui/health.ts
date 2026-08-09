@@ -38,7 +38,7 @@ export function createContextHealth(threshold = REREAD_THRESHOLD): ContextHealth
         if (n >= threshold && (!worst || n > worst.n)) worst = { path, n };
       }
       if (!worst) return null;
-      return `上下文健康度: read ${worst.path} 已 ${worst.n} 次 —— 内容多半已在上下文里, 引用它而不是再读`;
+      return `Context health: read ${worst.path} ${worst.n}x already - it is most likely still in context, refer to it instead of reading again`;
     },
   };
 }

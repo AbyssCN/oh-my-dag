@@ -48,7 +48,7 @@ describe('角色映射(owner 裁决 ③:关系 = conductor / leaf / verifier)', 
   test('座位未知时说"未知座位", 不编一个', () => {
     const h = make(null);
     h.apply(planned(['a', 'agent']));
-    expect(text(h)).toContain('(未知座位)');
+    expect(text(h)).toContain('(seat unknown)');
   });
 });
 
@@ -56,9 +56,9 @@ describe('逐节点变', () => {
   test('★ planned → start → settle 三步各自反映在屏上', () => {
     const h = make();
     h.apply(planned(['n1', 'agent']));
-    expect(text(h)).toContain('待跑');
+    expect(text(h)).toContain('pending');
     h.apply({ type: 'start', id: 'n1', kind: 'agent' });
-    expect(text(h)).toContain('在跑');
+    expect(text(h)).toContain('running');
     h.apply({ type: 'settle', id: 'n1', status: 'done', kind: 'agent', model: 'deepseek-v4-flash' });
     const out = text(h);
     expect(out).toContain('ok');
@@ -95,8 +95,10 @@ describe('逐节点变', () => {
     h.apply(planned(['a', 'agent'], ['b', 'agent']));
     h.apply({ type: 'settle', id: 'a', status: 'done', kind: 'agent' });
     h.apply({ type: 'start', id: 'b', kind: 'agent' });
-    const body = text(h);
-    expect(body.indexOf('b')).toBeLessThan(body.indexOf('a', body.indexOf('节点')));
+    // ⚠ 别用 `indexOf('a')` 找那一行:表头换成英文之后 `status` 里就有 `a`,
+    //   于是这条闸量的是表头不是行序(2026-08-09 换纯英文时撞到)。按行首认。
+    const rows = text(h).split('\n').filter((l) => /^[ab]\s/.test(l));
+    expect(rows[0]?.startsWith('b')).toBe(true);
   });
 });
 
@@ -116,8 +118,8 @@ describe('宽度', () => {
     // 只说"另有 N 个"是不够的: 滚动之后你不知道自己在哪一段, 也不知道还能不能往下滚。
     const h = make();
     h.apply(planned(...(Array.from({ length: 40 }, (_, i) => [`n${i}`, 'agent'] as [string, string]))));
-    expect(text(h)).toContain('节点 1-12 / 40');
-    expect(text(h)).toContain('跟随中');
+    expect(text(h)).toContain('nodes 1-12 / 40');
+    expect(text(h)).toContain('following');
   });
 });
 
@@ -137,14 +139,14 @@ describe('★ 滚动', () => {
     const out = text(h);
     expect(out).not.toContain('n00');
     expect(out).toContain('n12');
-    expect(out).toContain('节点 13-24 / 40');
+    expect(out).toContain('nodes 13-24 / 40');
   });
 
   test('★ 夹在两端 —— 滚过头留一屏空白比什么都不显示更糟(看起来像节点都没了)', () => {
     const h = big(40);
     h.scrollBy(999);
     expect(h.scrollOffset).toBe(28); // 40 - 12
-    expect(text(h)).toContain('节点 29-40 / 40');
+    expect(text(h)).toContain('nodes 29-40 / 40');
     h.scrollBy(-999);
     expect(h.scrollOffset).toBe(0);
   });
@@ -158,9 +160,9 @@ describe('★ 滚动', () => {
 
   test('★ offset=0 是**跟随模式**, 滚过之后钉住 —— 新节点不许把正在看的那一屏顶走', () => {
     const h = big(40);
-    expect(text(h)).toContain('跟随中');
+    expect(text(h)).toContain('following');
     h.scrollBy(5);
-    expect(text(h)).not.toContain('跟随中');
+    expect(text(h)).not.toContain('following');
     // 又来一批节点: 窗口位置不动
     h.apply(planned(['zz', 'agent']));
     expect(h.scrollOffset).toBe(5);

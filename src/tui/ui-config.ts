@@ -64,7 +64,7 @@ export function patchOmdConfig(
     try {
       root = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
     } catch (err) {
-      throw new Error(`${path} 不是合法 JSON, 拒绝覆盖写 (先手修): ${(err as Error).message}`);
+      throw new Error(`${path} is not valid JSON, refusing to overwrite it (fix it by hand first): ${(err as Error).message}`);
     }
   }
   mutate(root);
@@ -92,7 +92,7 @@ export function setTuiUi(cwd: string, patch: { sidebar?: boolean; painterIdx?: n
 }
 
 export function setApprovalTokenTtl(cwd: string, ttlSec: number, env?: Record<string, string | undefined>): string {
-  if (!Number.isFinite(ttlSec) || ttlSec <= 0) throw new Error(`token TTL 必须是正数秒, 收到 ${ttlSec}`);
+  if (!Number.isFinite(ttlSec) || ttlSec <= 0) throw new Error(`token TTL must be a positive number of seconds, got ${ttlSec}`);
   return patchOmdConfig(
     cwd,
     (root) => {

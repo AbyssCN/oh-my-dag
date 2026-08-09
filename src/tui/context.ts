@@ -85,12 +85,12 @@ export function loadConductorContext(cwd: string, opts: { home?: string } = {}):
  * 分隔符与省略号刻意用纯 ASCII —— 字形宽度白名单(S6)跑完之前不引入宽度可疑的字符。
  */
 export function formatContextLine(files: ContextFile[], opts: { cwd: string; home?: string }): string {
-  if (files.length === 0) return 'harness 0 份 (未找到 AGENTS.md / CLAUDE.md)';
+  if (files.length === 0) return 'harness 0 files (no AGENTS.md / CLAUDE.md found)';
   const home = opts.home ?? homedir();
   const short = (p: string) =>
     p.startsWith(`${opts.cwd}/`) ? p.slice(opts.cwd.length + 1) : p.startsWith(`${home}/`) ? `~/${p.slice(home.length + 1)}` : p;
   const MAX = 4;
   const shown = files.slice(0, MAX).map((f) => short(f.path));
   const rest = files.length - shown.length;
-  return `harness ${files.length} 份: ${shown.join(', ')}${rest > 0 ? `, +${rest}` : ''}`;
+  return `harness ${files.length} files: ${shown.join(', ')}${rest > 0 ? `, +${rest}` : ''}`;
 }

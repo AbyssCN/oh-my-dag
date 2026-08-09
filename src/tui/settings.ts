@@ -50,8 +50,8 @@ export function buildSettings(i: SettingsInput): SettingItem[] {
   for (const role of ['conductor', 'leaf', 'verifier']) {
     items.push({
       key: `seat:${role}`,
-      label: `座位 ${role}`,
-      value: i.seats[role] ?? (i.seatsError ? '(解析不到)' : '(未配)'),
+      label: `seat ${role}`,
+      value: i.seats[role] ?? (i.seatsError ? '(unresolved)' : '(not set)'),
       ...(i.seatsError && !i.seats[role] ? { detail: i.seatsError } : {}),
       action: 'seat',
     });
@@ -60,10 +60,10 @@ export function buildSettings(i: SettingsInput): SettingItem[] {
   // ── 会话 ────────────────────────────────────────────────────────────────────
   items.push({
     key: 'session',
-    label: '当前会话',
+    label: 'current session',
     value: i.sessionId,
     // `null` = 还没问过后端(与"一条都没有"分得开)。
-    ...(i.sessionCount === null ? { detail: '已存会话数: 未读' } : { detail: `已存会话数: ${i.sessionCount}` }),
+    ...(i.sessionCount === null ? { detail: 'stored sessions: unread' } : { detail: `stored sessions: ${i.sessionCount}` }),
     action: 'session',
   });
 
@@ -72,47 +72,47 @@ export function buildSettings(i: SettingsInput): SettingItem[] {
     i.pressure && i.pressure.usedTokens > 0
       ? {
           key: 'ctx',
-          label: '上下文',
+          label: 'context',
           value:
             i.pressure.ratio === null
-              ? `${humanTokens(i.pressure.usedTokens)}(窗口未知)`
+              ? `${humanTokens(i.pressure.usedTokens)} (window unknown)`
               : `${humanTokens(i.pressure.usedTokens)}/${humanTokens(i.pressure.windowTokens)} ${Math.round(i.pressure.ratio * 100)}%`,
-          detail: `system ${humanTokens(i.pressure.systemTokens)} · harness ${humanTokens(i.pressure.harnessTokens)} · 历史 ${humanTokens(i.pressure.historyTokens)}`,
+          detail: `system ${humanTokens(i.pressure.systemTokens)} · harness ${humanTokens(i.pressure.harnessTokens)} · history ${humanTokens(i.pressure.historyTokens)}`,
         }
       : // 还没跑过一轮 —— 说真话, 不画一行 0。
-        { key: 'ctx', label: '上下文', value: '(还没跑过一轮)' },
+        { key: 'ctx', label: 'context', value: '(no turn run yet)' },
   );
 
   // ── 主题与字形(只读) ───────────────────────────────────────────────────────
   items.push({
     key: 'theme',
-    label: '配色',
-    value: !i.color ? '关(NO_COLOR)' : i.truecolor ? 'Catppuccin Mocha(24 位)' : '16 色回退',
-    detail: i.color && !i.truecolor ? '终端没报 COLORTERM=truecolor → 回退,不照发 24 位码' : undefined,
+    label: 'colors',
+    value: !i.color ? 'off (NO_COLOR)' : i.truecolor ? 'Catppuccin Mocha (24-bit)' : '16-color fallback',
+    detail: i.color && !i.truecolor ? 'terminal did not report COLORTERM=truecolor -> fall back instead of emitting 24-bit codes' : undefined,
   });
   items.push({
     key: 'glyphs',
-    label: '字形白名单',
-    value: `${SAFE_GLYPH_WIDTHS.size} 可用 / ${NEEDS_TTY_GLYPHS.size} 待量 / ${UNSAFE_GLYPHS.size} 不用`,
+    label: 'glyph whitelist',
+    value: `${SAFE_GLYPH_WIDTHS.size} usable / ${NEEDS_TTY_GLYPHS.size} unmeasured / ${UNSAFE_GLYPHS.size} rejected`,
     detail: GROUND_TRUTH
-      ? '已在真终端量过'
-      : '⚠ **未在真终端量过** —— 跑 `bun run scripts/tui-glyph-probe.ts --tty` 解锁 box drawing',
+      ? 'measured on a real terminal'
+      : '⚠ **not measured on a real terminal** - run `bun run scripts/tui-glyph-probe.ts --tty` to unlock box drawing',
   });
 
   // ── 界面(切片⑥, 写 tui.ui)────────────────────────────────────────────────
   if (i.ui) {
     items.push({
       key: 'ui-sidebar',
-      label: '左栏 DAG 默认',
-      value: i.ui.sidebar ? '开' : '关',
-      detail: '写进 .omd/config.json 的 tui.ui.sidebar; 本程立即生效',
+      label: 'DAG sidebar default',
+      value: i.ui.sidebar ? 'on' : 'off',
+      detail: 'written to tui.ui.sidebar in .omd/config.json; effective in this process',
       action: 'ui-sidebar',
     });
     items.push({
       key: 'ui-painter',
-      label: '全屏默认画法',
+      label: 'fullscreen default view',
       value: i.ui.painterName,
-      detail: '写进 tui.ui.painter; 本程立即生效',
+      detail: 'written to tui.ui.painter; effective in this process',
       action: 'ui-painter',
     });
   }
@@ -121,11 +121,11 @@ export function buildSettings(i: SettingsInput): SettingItem[] {
   if (i.approvalTtlSec !== undefined) {
     items.push({
       key: 'approval-ttl',
-      label: '审批 token TTL',
+      label: 'approval token TTL',
       value: `${i.approvalTtlSec}s`,
       // ⚠ 这里**不写 markdown**:选择器的 description 是纯文本, `**x**` 会原样带着星号上屏
       //   (2026-08-08 帧库实测抓到的)。要强调就用词序,不用星号。
-      detail: '「a 批准同档」的免审窗口; 写进 tui.approvals.tokenTtlSec, 重启才生效(闸启动时读一次)',
+      detail: 'window in which "a" (allow same tier) skips approval; written to tui.approvals.tokenTtlSec, effective after restart (the gate reads it once at startup)',
       action: 'approval-ttl',
     });
   }
@@ -136,9 +136,9 @@ export function buildSettings(i: SettingsInput): SettingItem[] {
     const missing = i.providers.filter((p) => !p.hasKey);
     items.push({
       key: 'providers',
-      label: 'provider 凭证',
-      value: i.providers.length === 0 ? '(一个都没发现)' : `${got.length} 已配 / ${missing.length} 未配`,
-      detail: `${got.map((p) => p.id).join('、') || '无'}${missing.length > 0 ? ` · 未配: ${missing.map((p) => p.id).join('、')}` : ''} —— 选中进 /login`,
+      label: 'provider credentials',
+      value: i.providers.length === 0 ? '(none found)' : `${got.length} configured / ${missing.length} missing`,
+      detail: `${got.map((p) => p.id).join(', ') || 'none'}${missing.length > 0 ? ` · missing: ${missing.map((p) => p.id).join(', ')}` : ''} - select this row to open /login`,
       action: 'login',
     });
   }
@@ -147,9 +147,9 @@ export function buildSettings(i: SettingsInput): SettingItem[] {
   if (i.extensions.length === 0) {
     items.push({
       key: 'ext',
-      label: '扩展',
-      value: '(没配)',
-      detail: '清单在 .omd/extensions.json',
+      label: 'extensions',
+      value: '(not configured)',
+      detail: 'manifest lives in .omd/extensions.json',
       action: 'extensions',
     });
   } else {
@@ -157,10 +157,10 @@ export function buildSettings(i: SettingsInput): SettingItem[] {
     const bad = i.extensions.filter((e) => !e.ok);
     items.push({
       key: 'ext',
-      label: '扩展',
-      value: `${ok.length} 已装 / ${bad.length} 被拒`,
+      label: 'extensions',
+      value: `${ok.length} loaded / ${bad.length} rejected`,
       // 被拒的**说出缺什么** —— 这就是加载期硬失败的价值,藏在日志里就白做了。
-      detail: bad.length > 0 ? `被拒: ${bad.map((e) => `${e.name}(缺 ${(e.missing ?? []).join('、') || '未知'})`).join(' · ')}` : undefined,
+      detail: bad.length > 0 ? `rejected: ${bad.map((e) => `${e.name}(缺 ${(e.missing ?? []).join('、') || 'unknown'})`).join(' · ')}` : undefined,
       action: 'extensions',
     });
   }
@@ -171,7 +171,7 @@ export function buildSettings(i: SettingsInput): SettingItem[] {
 /** 渲染成给对话记录看的文本(选择器之外还留一份可回看的痕)。 */
 export function formatSettings(items: readonly SettingItem[]): string {
   const rows = items.map((s) => `  ${s.label}: ${s.value}${s.detail ? `\n      ${s.detail}` : ''}`);
-  return `设置(可改的项在选择器里挑):\n${rows.join('\n')}`;
+  return `Settings (editable rows are pickable in the selector):\n${rows.join('\n')}`;
 }
 
 export function parseSettingsCommand(text: string): boolean {

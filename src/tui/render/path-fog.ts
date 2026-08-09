@@ -110,20 +110,20 @@ const fog = (width: number, density: 0 | 1 | 2, phase = 0): string => {
 };
 
 const clampHeight = (out: string[], height: number): string[] =>
-  out.length > height ? [...out.slice(0, Math.max(1, height - 1)), `… 还有 ${out.length - height + 1} 行`] : out;
+  out.length > height ? [...out.slice(0, Math.max(1, height - 1)), `… ${out.length - height + 1} more lines`] : out;
 
 /** 头两行:短读数在前(长 destination 会把 run 段截出屏,PF-3 红过一次)。 */
 const header = (d: PathViewData, painter: string, width: number, p: FogPaint): string[] => {
   const pct = d.total > 0 ? Math.round((d.ruled / d.total) * 100) : 0;
-  const runsSeg = d.runs.length > 0 ? ` · 本图被 ${d.runs.length} 个 run 推进过` : ' · 还没有 run 推进过本图';
+  const runsSeg = d.runs.length > 0 ? ` · ${d.runs.length} runs` : ' · no runs';
   return [
-    p.accent(fitLine(`地图 ${d.slug} · ${painter} · 散雾 ${pct}% (${d.ruled}/${d.total})${runsSeg}`, width)),
-    p.dim(fitLine(`目的地: ${d.destination}`, width)),
+    p.accent(fitLine(`map ${d.slug} · ${painter} · fog ${pct}% (${d.ruled}/${d.total})${runsSeg}`, width)),
+    p.dim(fitLine(`destination: ${d.destination}`, width)),
   ];
 };
 
 const keysLine = (width: number, p: FogPaint): string =>
-  p.dim(fitLine('上下键选票 · Enter 动作 · Tab 换画法 · Ctrl+P 退出', width));
+  p.dim(fitLine('up/down picks a ticket · Enter acts · Tab switches view · Ctrl+P exits', width));
 
 /** 底部读数条(稿的最后一行):`散雾 62% ████░░ · open 4 · blocked 1 · 本图被 3 个 run 推进过`。 */
 const summaryLine = (d: PathViewData, width: number, p: FogPaint): string => {
@@ -131,7 +131,7 @@ const summaryLine = (d: PathViewData, width: number, p: FogPaint): string => {
   const filled = Math.round((pct / 100) * 12);
   const bar = BAR_DONE.repeat(filled) + BAR_TODO.repeat(12 - filled);
   return p.accent(
-    fitLine(`散雾 ${pct}% ${bar} · open ${d.frontier.length} · blocked ${d.blockedTickets.length} · run x${d.runs.length}`, width),
+    fitLine(`fog ${pct}% ${bar} · open ${d.frontier.length} · blocked ${d.blockedTickets.length} · run x${d.runs.length}`, width),
   );
 };
 
@@ -152,11 +152,11 @@ export function renderFogLine(
 ): string[] {
   const p = o.paint ?? PLAIN;
   const w = o.width;
-  const out: string[] = [...header(d, '雾退线', w, p)];
+  const out: string[] = [...header(d, 'fog line', w, p)];
 
   // ── 凝固层: 逐代地层 (id + gist)。
-  out.push(p.dim(fitLine(`凝固层 ${'─'.repeat(Math.max(0, w - 8))}`, w)));
-  if (d.gens.length === 0) out.push(p.dim('  (还没有裁决)'));
+  out.push(p.dim(fitLine(`settled ${'─'.repeat(Math.max(0, w - 8))}`, w)));
+  if (d.gens.length === 0) out.push(p.dim('  (nothing ruled yet)'));
   for (let i = 0; i < d.gens.length; i++) {
     const row = (d.gens[i] as { id: string; gist: string }[]).map((e) => `${e.id} ${clip(e.gist, 10)}`).join(' · ');
     out.push(p.dim(fitLine(` gen-${i + 1}  ${row}`, w)));
@@ -164,7 +164,7 @@ export function renderFogLine(
 
   // ── 前沿线: 票钉在一条横线上。选中的用 [] 包 (结构可见, 不靠颜色)。阻塞票也钉着, 前缀 x。
   const marks: number[] = []; // 每张 open 票的 id 起始列 → ↓ 指针行
-  let line = '前沿线 ';
+  let line = 'frontier ';
   let overflow = 0;
   const pin = (body: string, isSel: boolean, track: boolean): void => {
     const seg = isSel ? `═[${body}]` : `──${body}`;
@@ -180,7 +180,7 @@ export function renderFogLine(
   if (overflow > 0) line += `──(+${overflow})`;
   line += '──';
   if (d.frontier.length === 0 && d.blockedTickets.length === 0) {
-    out.push(p.dim(fitLine('前沿线 ──── 前沿 0 (全部已裁决) ────', w)));
+    out.push(p.dim(fitLine('frontier ──── frontier 0 (everything ruled) ────', w)));
   } else {
     out.push(p.accent(fitLine(line, w)));
     // ↓ 指针行: 每张 open 票往雾里指一根。
@@ -196,11 +196,11 @@ export function renderFogLine(
   const detail = selectedDetail(d, o.selected, w, p);
   if (detail) out.push(detail);
   if (d.blockedTickets.length > 0) {
-    out.push(p.warn(fitLine(`  阻塞集 ${d.blockedTickets.length} 张: ${d.blockedTickets.map((b) => b.id).join(' · ')}`, w)));
+    out.push(p.warn(fitLine(`  blocked ${d.blockedTickets.length}: ${d.blockedTickets.map((b) => b.id).join(' · ')}`, w)));
   }
 
   // ── 雾层: 密度渐变并**撑满剩余高度**(稿里雾是大面积的, 三行雾读不出"体量")。
-  out.push(p.dim(fitLine(`雾层   ${fog(Math.max(0, w - 8), 2)}`, w)));
+  out.push(p.dim(fitLine(`fog    ${fog(Math.max(0, w - 8), 2)}`, w)));
   const q = '? ? ?';
   const pad = Math.max(0, Math.floor((w - 8 - q.length) / 2));
   out.push(p.dim(fitLine(`       ${fog(pad, 1, 3)} ${q} ${fog(pad, 1, 5)}`, w)));
@@ -222,7 +222,7 @@ export function renderDelta(
 ): string[] {
   const p = o.paint ?? PLAIN;
   const w = o.width;
-  const out: string[] = [...header(d, '三角洲', w, p)];
+  const out: string[] = [...header(d, 'delta', w, p)];
   const fogW = Math.min(18, Math.max(8, Math.floor(w / 6)));
   const bodyW = w - fogW - 1;
   /** 一行 = 左侧结构 + 右侧雾场列(密度随行衰减 —— 稿里的"离前沿越远雾越薄")。 */
@@ -235,7 +235,7 @@ export function renderDelta(
 
   out.push(row(`● ${d.slug} (goal)`, 0, 0, p.accent));
   // 凝固支流: 每代一条实线链, 接在主干下。
-  if (d.gens.length === 0) out.push(row('│  (还没有凝固的支流)', 0, 2, p.dim));
+  if (d.gens.length === 0) out.push(row('│  (no settled tributary yet)', 0, 2, p.dim));
   for (let i = 0; i < d.gens.length; i++) {
     const last = i === d.gens.length - 1 && d.frontier.length === 0;
     const chain = (d.gens[i] as { id: string; gist: string }[]).map((e) => `${e.id} ${clip(e.gist, 8)}`).join(' ── ');
@@ -256,7 +256,7 @@ export function renderDelta(
   // 雾场撑满剩余高度 (与画法 C 同一条理由: 雾的体量感)。
   const fill = o.height - out.length - 3;
   for (let i = 0; i < fill; i++) out.push(p.dim(fitLine(`     ${fog(Math.max(0, w - 6), i < fill / 2 ? 1 : 0, i * 3)}`, w)));
-  out.push(p.dim(fitLine(`雾场 ${fog(Math.max(0, w - 6), 0, 4)}`, w)));
+  out.push(p.dim(fitLine(`fog  ${fog(Math.max(0, w - 6), 0, 4)}`, w)));
   out.push(summaryLine(d, w, p));
   out.push(keysLine(w, p));
   return clampHeight(out, o.height);

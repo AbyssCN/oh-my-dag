@@ -29,8 +29,8 @@ export function fmtDur(ms: number): string {
  */
 export function renderGantt(snap: DagSnapshot, o: { width: number; height: number; now: number }): string[] {
   const started = snap.nodes.filter((n) => n.startAt !== null);
-  const head = `DAG ${snap.runLabel ?? '?'} · 泳道甘特(事件到达时刻)· ${snap.nodes.length} 节点`;
-  if (started.length === 0) return [fitLine(head, o.width), '(还没有节点动过 —— 没有时间条可画)'];
+  const head = `DAG ${snap.runLabel ?? '?'} · swimlane gantt (event arrival time) · ${snap.nodes.length} nodes`;
+  if (started.length === 0) return [fitLine(head, o.width), '(no node has moved yet - nothing to draw bars for)'];
 
   const t0 = Math.min(...started.map((n) => n.startAt as number));
   const tEnd = Math.max(o.now, ...started.map((n) => n.endAt ?? o.now));
@@ -49,7 +49,7 @@ export function renderGantt(snap: DagSnapshot, o: { width: number; height: numbe
       const from = Math.round(((s - t0) / span) * (barW - 1));
       const len = Math.max(1, Math.round(((e - s) / span) * barW));
       const bar = IDLE.repeat(from) + BAR_DONE.repeat(Math.min(len, barW - from)) + IDLE.repeat(Math.max(0, barW - from - len));
-      const dur = n.endAt === null ? '在跑' : fmtDur(e - s);
+      const dur = n.endAt === null ? 'running' : fmtDur(e - s);
       return fitLine(`${label(n).padEnd(labelW)} ${bar} ${dur}`, o.width);
     });
 
@@ -60,10 +60,10 @@ export function renderGantt(snap: DagSnapshot, o: { width: number; height: numbe
   if (started.length > 1) {
     const longest = started.reduce((a, b) => ((a.endAt ?? o.now) - (a.startAt as number) >= (b.endAt ?? o.now) - (b.startAt as number) ? a : b));
     const share = Math.round((((longest.endAt ?? o.now) - (longest.startAt as number)) / span) * 100);
-    if (share > 0) out.push(fitLine(`瓶颈 ${longest.id} 占 ${share}% 墙钟${longest.endAt === null ? ' (在跑)' : ''}`, o.width));
+    if (share > 0) out.push(fitLine(`bottleneck ${longest.id} takes ${share}% of wall clock${longest.endAt === null ? ' (running)' : ''}`, o.width));
   }
-  if (pendingN > 0) out.push(`(${pendingN} 个节点还没动 —— 不画空条)`);
+  if (pendingN > 0) out.push(`(${pendingN} nodes have not moved - no empty bars drawn)`);
   // 高度封顶: 全屏也有底, 剪掉的说清剪了多少。
-  if (out.length > o.height) return [...out.slice(0, Math.max(1, o.height - 1)), `… 还有 ${out.length - o.height + 1} 行`];
+  if (out.length > o.height) return [...out.slice(0, Math.max(1, o.height - 1)), `… ${out.length - o.height + 1} more lines`];
   return out;
 }

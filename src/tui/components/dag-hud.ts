@@ -60,11 +60,11 @@ interface NodeState {
 }
 
 const STATUS_LABEL: Record<NodeState['status'], string> = {
-  pending: '待跑',
-  running: '在跑',
+  pending: 'pending',
+  running: 'running',
   done: 'ok',
-  failed: '失败',
-  skipped: '跳过',
+  failed: 'failed',
+  skipped: 'skipped',
 };
 
 /** 表里最多画几行 —— 一个 200 节点的 map 会把整屏吃光,而 HUD 是配角。 */
@@ -162,7 +162,7 @@ export class DagHud implements Component {
 
     const seat = this.conductorSeat();
     // 角色关系行 (裁决 ③): conductor 在最前, 后面是它派出去的两档。
-    const relation = `conductor ${seat ?? '(未知座位)'} -> leaf ${byRole('leaf')} -> verifier ${byRole('verifier')}`;
+    const relation = `conductor ${seat ?? '(seat unknown)'} -> leaf ${byRole('leaf')} -> verifier ${byRole('verifier')}`;
     const out: string[] = [
       this.theme.chrome.accent(fitLine(this.runLabel ? `DAG ${this.runLabel}` : 'DAG', width)),
       this.theme.chrome.dim(fitLine(relation, width)),
@@ -177,7 +177,7 @@ export class DagHud implements Component {
     if (this.offset > max) this.offset = max;
     const shown = sorted.slice(this.offset, this.offset + MAX_ROWS);
     const rows = [
-      ['节点', '角色', '状态', '模型'],
+      ['node', 'role', 'status', 'model'],
       ...shown.map((n) => [n.id, roleOf(n.kind), STATUS_LABEL[n.status], n.model ?? '-']),
     ];
     out.push(...renderTable(rows, width));
@@ -186,8 +186,8 @@ export class DagHud implements Component {
       // 你不知道自己在哪一段,也不知道还能不能往下滚。
       const from = this.offset + 1;
       const to = this.offset + shown.length;
-      const follow = this.offset === 0 ? ' 跟随中' : '';
-      out.push(this.theme.chrome.dim(fitLine(`节点 ${from}-${to} / ${sorted.length}${follow}  Alt+↑↓ 滚动, Alt+Home 回顶`, width)));
+      const follow = this.offset === 0 ? ' following' : '';
+      out.push(this.theme.chrome.dim(fitLine(`nodes ${from}-${to} / ${sorted.length}${follow}  Alt+↑↓ scrolls, Alt+Home returns to top`, width)));
     }
     return out;
   }

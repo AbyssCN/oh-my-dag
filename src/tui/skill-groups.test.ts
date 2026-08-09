@@ -58,7 +58,7 @@ describe('分组总览取代那面墙', () => {
 
   test('★ 单体只报数不报名 —— 报名就退回成那面墙了', () => {
     const out = formatSkillList(wall);
-    expect(out).toContain('60 条单体');
+    expect(out).toContain('plus 60 standalone skills');
     expect(out).not.toContain('solo7');
   });
 

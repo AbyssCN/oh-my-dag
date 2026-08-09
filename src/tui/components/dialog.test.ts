@@ -50,7 +50,7 @@ const OPTIONS = [
 describe('select', () => {
   test('Enter 选中当前项', async () => {
     const h = fakeHost();
-    const p = select(h.host, theme, { title: '挑一个', options: OPTIONS });
+    const p = select(h.host, theme, { title: 'Pick one', options: OPTIONS });
     h.key('\r');
     expect(await p).toBe('a');
     expect(h.log).toEqual(['open', 'close']);
@@ -58,7 +58,7 @@ describe('select', () => {
 
   test('★ Esc 返回 null —— 与"选了一个空值"分得开', async () => {
     const h = fakeHost();
-    const p = select(h.host, theme, { title: '挑一个', options: OPTIONS });
+    const p = select(h.host, theme, { title: 'Pick one', options: OPTIONS });
     h.key('\x1b');
     expect(await p).toBeNull();
     expect(h.open).toBe(false);
@@ -80,10 +80,10 @@ describe('select', () => {
 
   test('标题写清怎么操作(否则用户不知道能 Esc)', () => {
     const h = fakeHost();
-    void select(h.host, theme, { title: '挑一个', options: OPTIONS });
+    void select(h.host, theme, { title: 'Pick one', options: OPTIONS });
     const out = h.render();
-    expect(out).toContain('挑一个');
-    expect(out).toContain('Esc 取消');
+    expect(out).toContain('Pick one');
+    expect(out).toContain('Esc cancel');
   });
 
   test('方向键交给 SelectList,不当成取消', async () => {

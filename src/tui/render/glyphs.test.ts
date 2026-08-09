@@ -111,8 +111,8 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
     ['toolEnd(ok)', CHROME.toolEnd('run', true)],
     ['toolEnd(fail)', CHROME.toolEnd('run', false)],
     ['seatChanged', CHROME.seatChanged('conductor', 'kimi-coding:k3')],
-    ['seatFailed', CHROME.seatFailed('coord 格式非法')],
-    ['seatUnresolved', CHROME.seatUnresolved('座位未配')],
+    ['seatFailed', CHROME.seatFailed('coord is not provider:model')],
+    ['seatUnresolved', CHROME.seatUnresolved('seat not configured')],
     ['noRunCapability', CHROME.noRunCapability('listRuns')],
     ['resumeStarted', CHROME.resumeStarted('abc', 'runId: abc status: running')],
     ['resumeRefused', CHROME.resumeRefused('abc', 'no checkpoint')],
@@ -149,43 +149,46 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
     )],
     ['help', formatHelp()],
     ['sessions(空)', formatSessions([], 'tui')],
-    ['sessions(有)', formatSessions([{ id: 's-1', title: '标题', updatedAt: 1760000000000 }, { id: 's-1-f9', title: '', updatedAt: 1760000000001, parent: 's-1' }], 's-1')],
-    ['sessionForked', CHROME.sessionForked('已从 tui fork 出 tui-f9 (2 条消息)')],
-    ['sessionForkFailed', CHROME.sessionForkFailed('会话 x 不存在')],
+    ['sessions(有)', formatSessions([{ id: 's-1', title: 'a title', updatedAt: 1760000000000 }, { id: 's-1-f9', title: '', updatedAt: 1760000000001, parent: 's-1' }], 's-1')],
+    ['sessionForked', CHROME.sessionForked('forked tui-f9 from tui (2 messages)')],
+    ['sessionForkFailed', CHROME.sessionForkFailed('session x does not exist')],
     ['sessionSwitched', CHROME.sessionSwitched('s-1', 4)],
     ['sessionNew', CHROME.sessionNew('s-2')],
     ['sessionFailed', CHROME.sessionFailed('no such session')],
     // 对话框标题也是 chrome —— ↑↓ 已在白名单(真终端读数量过)。
-    ['dialog:select', '挑一个  (↑↓ 选, Enter 确认, Esc 取消)'],
+    ['dialog:select', 'Pick one  (↑↓ select · Enter ok · Esc cancel)'],
     ['settings', formatSettings(buildSettings({
       seats: { conductor: 'a:1' }, seatsError: null, sessionId: 'tui', sessionCount: 2, pressure: null, color: true, truecolor: true, extensions: [],
       // 切片⑥: 可改组的文案也要过字形闸
-      ui: { sidebar: true, painterName: '泳道甘特' }, approvalTtlSec: 600,
+      ui: { sidebar: true, painterName: 'gantt' }, approvalTtlSec: 600,
       providers: [{ id: 'deepseek', hasKey: true }, { id: 'kimi-coding', hasKey: false }],
     }))],
-    ['login:done', CHROME.loginDone('deepseek', 'env', ['auth.json 有旧 key 已被覆盖'])],
-    ['ui:written', CHROME.uiWritten('左栏默认 -> 关', '/x/.omd/config.json')],
+    ['login:done', CHROME.loginDone('deepseek', 'env', ['auth.json had an older key, it was overwritten'])],
+    ['ui:written', CHROME.uiWritten('DAG sidebar default -> off', '/x/.omd/config.json')],
     ['approval-ttl:written', CHROME.approvalTtlWritten(120, '/x/.omd/config.json')],
     // 切片⑧: 散雾图两画法 (chrome + 键位行; 票标题是数据, 但样例里的中文照扫无妨)。
     ['path:fog', renderFogLine(
-      { destination: '目的地', slug: 'omd-agent-tui', gens: [[{ id: 'd01', gist: 'stdio' }, { id: 'd05', gist: 'memory' }]], frontier: [
-        { id: 't9', type: 'task', title: '审批层四档', runId: 'run-78f1951c' },
-        { id: 'g4', type: 'grill', title: 'ledger 判据' },
-      ], blockedTickets: [{ id: 'b1', title: '会话树 fork' }], ruled: 2, total: 5, runs: ['run-78f1951c'] },
+      { destination: 'a destination', slug: 'omd-agent-tui', gens: [[{ id: 'd01', gist: 'stdio' }, { id: 'd05', gist: 'memory' }]], frontier: [
+        { id: 't9', type: 'task', title: 'approval tiers', runId: 'run-78f1951c' },
+        { id: 'g4', type: 'grill', title: 'ledger criteria' },
+      ], blockedTickets: [{ id: 'b1', title: 'session tree fork' }], ruled: 2, total: 5, runs: ['run-78f1951c'] },
       { width: 100, height: 30, selected: 0 },
     ).join('\n')],
     ['path:delta', renderDelta(
-      { destination: '目的地', slug: 'omd-agent-tui', gens: [[{ id: 'd01', gist: 'stdio' }]], frontier: [{ id: 'r2', type: 'research', title: 'exa 选型' }], blockedTickets: [], ruled: 1, total: 2, runs: [] },
+      { destination: 'a destination', slug: 'omd-agent-tui', gens: [[{ id: 'd01', gist: 'stdio' }]], frontier: [{ id: 'r2', type: 'research', title: 'exa evaluation' }], blockedTickets: [], ruled: 1, total: 2, runs: [] },
       { width: 100, height: 30, selected: 0 },
     ).join('\n')],
     ['path:none', CHROME.noPathMaps()],
-    ['dialog:input', '输入  (Enter 确认, Esc 取消)'],
+    ['dialog:input', 'Input  (Enter ok · Esc cancel)'],
+    // ⚠ 两条判据在这一行分岔:字形闸要扫**真登记表**(座位说明是数据, 里面有什么字形都算数),
+    //   而纯英文闸量的是 **chrome**(`does:` / `pick:` / `Usage:` 那几个词)。
+    //   所以这里给真表, 纯英文闸把这一条按"数据"排除 —— 见下面那个 DATA_SAMPLES。
     ['seatRows', formatSeatRows(seatRows({ conductor: 'a:1' }))],
     ['skillList(空)', formatSkillList([])],
     // ⚠ **不把真 skill 列表放进来**:那些 description 来自 20 个 SKILL.md,是**数据不是 chrome**。
     //    实测它们里面就有 `✅` 和 `≠` —— 数据本来就可以是任意字形, 要求它干净是错的判据。
     //    数据侧要保的是"渲染它不会超宽", 见下面那个 describe。
-    ['skillList(干净数据)', formatSkillList([{ name: 'omd-x', description: '一句话', root: '/r' }])],
+    ['skillList(干净数据)', formatSkillList([{ name: 'omd-x', description: 'one line', root: '/r' }])],
     // ⚠ 2026-08-08 起 footer 不带后端坐标了(P1 密度:同一屏 3 次 → 2 次)。
     ['footer', CHROME.footer()],
     // ★ 等待态:文案 + **四个动画帧**一起过白名单。pi-tui 默认帧是盲文点阵(U+28xx),
@@ -204,20 +207,20 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
       ] },
       { width: 90, height: 20 },
     ).join('\n')],
-    ['dag:fullscreen-hint', 'Tab 切画法 (当前: 泳道甘特) · Ctrl+G 退出'],
+    ['dag:fullscreen-hint', 'Tab switches view (now: gantt) · Ctrl+G exits'],
     // 切片⑤: 健康度一行 (createContextHealth 的 line() 形状)。
-    ['health', '上下文健康度: read src/x.ts 已 3 次 —— 内容多半已在上下文里, 引用它而不是再读'],
-    ['dag:no-run', '(还没有 run —— 发一个再 Ctrl+G)'],
-    ['hud:on', '左栏 DAG 图:开(有 run 且终端宽度不低于 90 列才画;窄了自动收起)'],
-    ['hud:off', '左栏 DAG 图:关(底部那张表回来了)'],
+    ['health', 'Context health: read src/x.ts 3x already - it is most likely still in context, refer to it instead of reading again'],
+    ['dag:no-run', '(no run yet - send one, then press Ctrl+G)'],
+    ['hud:on', 'DAG sidebar: on (drawn when there is a run and the terminal is at least 90 columns; auto-hidden when narrower)'],
+    ['hud:off', 'DAG sidebar: off (the table at the bottom is back)'],
     // 切片①: 审批卡片与裁决回执。detail 区是数据不是 chrome, 卡片 chrome 只到键位行为止。
     ...((): [string, string][] => {
       const req: ApprovalRequest = {
         tool: 'edit',
         tier: 'write',
-        reasons: ['function 级 write', '目标在受保护清单 (src/model/seats.ts)'],
+        reasons: ['function-level write', 'target is on the protected list (src/model/seats.ts)'],
         target: 'src/model/seats.ts',
-        summary: 'edit src/model/seats.ts (-3 +7 行)',
+        summary: 'edit src/model/seats.ts (-3 +7 lines)',
         preview: [],
         canGrant: true,
         ttlSec: 600,
@@ -227,10 +230,10 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
         ['approval:title', approvalTitle(req)],
         ['approval:body', approvalBody(req, { detail: false })],
         ['approval:body(admin)', approvalBody(admin, { detail: false })],
-        ['approval:denied', CHROME.approvalDenied('edit src/x.ts (-1 +1 行)')],
-        ['approval:once', CHROME.approvalOnce('edit src/x.ts (-1 +1 行)')],
-        ['approval:granted', CHROME.approvalGranted('edit src/x.ts (-1 +1 行)', 10)],
-        ['approval:busy', CHROME.approvalBusy('edit src/x.ts (-1 +1 行)')],
+        ['approval:denied', CHROME.approvalDenied('edit src/x.ts (-1 +1 lines)')],
+        ['approval:once', CHROME.approvalOnce('edit src/x.ts (-1 +1 lines)')],
+        ['approval:granted', CHROME.approvalGranted('edit src/x.ts (-1 +1 lines)', 10)],
+        ['approval:busy', CHROME.approvalBusy('edit src/x.ts (-1 +1 lines)')],
       ];
     })(),
     ['harness(有)', formatContextLine([{ path: '/x/.claude/CLAUDE.md', content: '' }], { cwd: '/x', home: '/h' })],
@@ -244,6 +247,44 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
       expect(findRiskyGlyphs(text)).toEqual([]);
     });
   }
+
+  /**
+   * 这几条样本里**混着数据** —— 数据可以是中文(与下面「chrome 与数据是两条判据」同一条道理)。
+   *
+   * `seatRows`:座位说明来自**座位登记表** `src/model/seats.ts`,它同时喂 MCP 与文档,
+   * 不是 TUI 的 chrome。它的 chrome 部分(`does:` / `pick:` / `Usage:`)已经是英文,
+   * 而那几段中文说明要不要翻,是登记表自己的事,不在"TUI 纯英文"这条裁决的射程里。
+   * ⚠ 它仍然过**字形闸** —— 排除的只有纯英文那一条。
+   */
+  const DATA_SAMPLES = new Set(['seatRows']);
+
+  /**
+   * ★★ **chrome 一律纯英文**(owner 裁决 2026-08-09)。
+   *
+   * owner 原话:「整个 tui 应该是纯英文的,如果用户想用中文那就是纯靠模型自己理解翻译。」
+   * 一个实测好处:盲比的 `leakGuess` 里 critic 反复靠"中文"猜我们是某国产 CLI
+   * (`docs/bars/gauntlet-p3-账本.md` 里逐条可查)⇒ 换纯英文之后剥标签更接近真盲。
+   *
+   * **扫的就是上面那张样本表** —— 它已经是 chrome 层的枚举(CHROME 常量有完整性闸钉着,
+   * 函数型的手列在表里)。所以这条闸与那条完整性闸是一对:漏进表 → 那条红;
+   * 进了表但是中文 → 这条红。
+   *
+   * ⚠ **数据不在此列**:样本里那些 `title` / `destination` / skill description 是**数据**,
+   * 中文数据合法(下面那个 describe 讲的就是这件事)。所以表里凡是靠参数喂进去的中文
+   * 一律改成了英文占位 —— 不是"为了让闸绿",是**让这条闸量的确实是 chrome**。
+   *
+   * 反向自检(实跑):把 `CHROME.waiting` 改回 `'在等模型回话…(Esc 打断)'` → 这条当场红,
+   * 判词点出 `waiting` 与那几个汉字。
+   */
+  test('★★ chrome 文案一律纯英文 —— 中文只许出现在数据里', () => {
+    const cjk = /[㐀-鿿　-〿＀-￯]/gu;
+    const offenders = samples
+      .filter(([name]) => !DATA_SAMPLES.has(name))
+      .map(([name, text]) => [name, [...new Set(text.match(cjk) ?? [])].join('')] as const)
+      .filter(([, hit]) => hit.length > 0)
+      .map(([name, hit]) => `${name}: ${hit}`);
+    expect(offenders).toEqual([]);
+  });
 
   test('闸本身会红 —— 给它一个画不准的字形, 它必须报出来', () => {
     // 一条永远绿的闸比没有闸更坏, 所以在这里当场证伪一次。

@@ -108,7 +108,7 @@ export function formatStatusLine(i: StatusBarInput, o: StatusBarOpts = {}): stri
   // 花费:会话与 5h 相同 ⇒ 只画一个。不同才画两个(信息量决定占位)。
   const sess = i.session && i.session.calls > 0 ? fmtUsd(i.session.costUsd, i.session.unpriced) : null;
   const winCost = i.win && i.win.calls > 0 ? fmtUsd(i.win.costUsd, i.win.unpriced) : null;
-  const calls = i.win && i.win.calls > 0 ? `${i.win.calls}次` : null;
+  const calls = i.win && i.win.calls > 0 ? `${i.win.calls}x` : null;
   if (sess !== null && winCost !== null && sess !== winCost) {
     // 两个数不同 ⇒ 都要, 但压成**一个词元** `$会话/$5h`(带标签写要多花 2 个词元, 而 12 是硬上限;
     // 标签在 `/settings` 里有全称)。相同就只画一个。
@@ -118,10 +118,10 @@ export function formatStatusLine(i: StatusBarInput, o: StatusBarOpts = {}): stri
   } else if (sess !== null) {
     segs.push(sess);
   }
-  // token:`↑in ↓out 缓存NN%`。绝对 cache 数与命中率重复 ⇒ 只留率。
+  // token:`↑in ↓out cacheNN%`。绝对 cache 数与命中率重复 ⇒ 只留率。
   if (i.win && i.win.calls > 0) {
     const w = i.win;
-    const cache = w.in > 0 && w.cacheHit > 0 ? ` 缓存${Math.round((w.cacheHit / w.in) * 100)}%` : '';
+    const cache = w.in > 0 && w.cacheHit > 0 ? ` cache${Math.round((w.cacheHit / w.in) * 100)}%` : '';
     segs.push(`↑${humanTokens(w.in)} ↓${humanTokens(w.out)}${cache}`);
   }
   // provider 拆分:**≥2 个**才画, 且只画按量计价的那些(订阅制没有能测的数)。

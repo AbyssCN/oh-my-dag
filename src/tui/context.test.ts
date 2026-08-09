@@ -109,7 +109,7 @@ describe('findRepoRoot', () => {
 
 describe('formatContextLine —— 一份都没有时说真话', () => {
   test('★ 0 份时说的是"未找到", 不是编一个"已就绪"', () => {
-    expect(formatContextLine([], { cwd: '/x', home: '/h' })).toBe('harness 0 份 (未找到 AGENTS.md / CLAUDE.md)');
+    expect(formatContextLine([], { cwd: '/x', home: '/h' })).toBe('harness 0 files (no AGENTS.md / CLAUDE.md found)');
   });
 
   test('cwd 内的路径显示成相对, home 内的显示成 ~', () => {
@@ -120,11 +120,11 @@ describe('formatContextLine —— 一份都没有时说真话', () => {
       ],
       { cwd: '/x', home: '/h' },
     );
-    expect(line).toBe('harness 2 份: ~/.claude/CLAUDE.md, .claude/CLAUDE.md');
+    expect(line).toBe('harness 2 files: ~/.claude/CLAUDE.md, .claude/CLAUDE.md');
   });
 
   test('超过 4 份时折成 +N, 不把一行撑爆', () => {
     const files = Array.from({ length: 7 }, (_, i) => ({ path: `/x/f${i}.md`, content: '' }));
-    expect(formatContextLine(files, { cwd: '/x', home: '/h' })).toBe('harness 7 份: f0.md, f1.md, f2.md, f3.md, +3');
+    expect(formatContextLine(files, { cwd: '/x', home: '/h' })).toBe('harness 7 files: f0.md, f1.md, f2.md, f3.md, +3');
   });
 });

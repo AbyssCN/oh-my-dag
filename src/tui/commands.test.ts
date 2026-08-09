@@ -56,13 +56,13 @@ describe('formatHelp', () => {
 
   test('★ 有副作用的命令要说出来 —— 改文件和只读列表不是一回事', () => {
     const out = formatHelp();
-    expect(out).toContain('有副作用');
+    expect(out).toContain('side effect');
     // /seat /resume /login 是仅有的三条会改东西的 (切片⑥ 加了 /login: 落 key 写 auth.json/.env)
-    expect(COMMANDS.filter((c) => c.what.includes('副作用')).map((c) => c.name)).toEqual(['/seat', '/login', '/resume']);
+    expect(COMMANDS.filter((c) => c.what.includes('side effect')).map((c) => c.name)).toEqual(['/seat', '/login', '/resume']);
   });
 
   test('提到文件补全 —— 那条能力没有命令, 不说就没人知道', () => {
-    expect(formatHelp()).toContain('模糊补全');
+    expect(formatHelp()).toContain('fuzzy-complete');
   });
 });
 

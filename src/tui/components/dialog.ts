@@ -115,7 +115,7 @@ export function selectComponent(
    */
   let query = '';
   const titleOf = (): string => {
-    const hint = opts.search ? '打字搜索, ↑↓ 选, Enter 确认, Esc 取消' : '↑↓ 选, Enter 确认, Esc 取消';
+    const hint = opts.search ? 'type to search · ↑↓ select · Enter ok · Esc cancel' : '↑↓ select · Enter ok · Esc cancel';
     const q = opts.search && query ? `  「${query}」` : '';
     return `${opts.title}${q}  (${hint})`;
   };
@@ -171,8 +171,8 @@ export function confirm(host: DialogHost, theme: OmdTuiTheme, message: string): 
   return select(host, theme, {
     title: message,
     options: [
-      { value: 'yes', label: '是' },
-      { value: 'no', label: '否' },
+      { value: 'yes', label: 'yes' },
+      { value: 'no', label: 'no' },
     ],
   }).then((v) => (v === null ? null : v === 'yes'));
 }
@@ -210,7 +210,7 @@ export function inputComponent(
     const line = new StatusLine('');
     const paint = (): void => line.setText(`> ${'*'.repeat(buf.length)}`);
     paint();
-    return new DialogBox(theme, `${opts.title}  (Enter 确认, Esc 取消)`, line, (data) => {
+    return new DialogBox(theme, `${opts.title}  (Enter ok · Esc cancel)`, line, (data) => {
       if (ESC.has(data)) return done(null);
       if (ENTER.has(data)) return done(buf);
       if (data === '\x7f' || data === '\b') buf = buf.slice(0, -1);
@@ -255,7 +255,7 @@ export function inputComponent(
   editor.focused = true;
   editor.onSubmit = (v: string) => done(v);
   editor.onEscape = () => done(null);
-  return new DialogBox(theme, `${opts.title}  (Enter 确认, Esc 取消)`, editor, (data) => {
+  return new DialogBox(theme, `${opts.title}  (Enter ok · Esc cancel)`, editor, (data) => {
     editor.handleInput(data);
     requestRender();
     return undefined;

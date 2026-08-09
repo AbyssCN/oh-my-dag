@@ -35,22 +35,22 @@ describe('★ 每一项都答得出"现在是什么值"', () => {
   });
 
   test('★ 座位解析不到 → 写"(解析不到)"+原因, 不留空也不编一个', () => {
-    const it = find(buildSettings({ ...base, seats: {}, seatsError: '座位未配' }), 'seat:conductor');
-    expect(it?.value).toBe('(解析不到)');
-    expect(it?.detail).toBe('座位未配');
+    const it = find(buildSettings({ ...base, seats: {}, seatsError: 'seat not configured' }), 'seat:conductor');
+    expect(it?.value).toBe('(unresolved)');
+    expect(it?.detail).toBe('seat not configured');
   });
 
   test('★ verifier 没在 resolveEngineModels 里 → "(未配)", 不拿 leaf 冒充', () => {
-    expect(find(buildSettings(base), 'seat:verifier')?.value).toBe('(未配)');
+    expect(find(buildSettings(base), 'seat:verifier')?.value).toBe('(not set)');
   });
 
   test('★ 会话数读不到 → "未读", 与"一条都没有"分得开', () => {
-    expect(find(buildSettings({ ...base, sessionCount: null }), 'session')?.detail).toContain('未读');
+    expect(find(buildSettings({ ...base, sessionCount: null }), 'session')?.detail).toContain('unread');
     expect(find(buildSettings({ ...base, sessionCount: 0 }), 'session')?.detail).toContain('0');
   });
 
   test('★ 还没跑过一轮 → 上下文写真话, 不画一行 0', () => {
-    expect(find(buildSettings(base), 'ctx')?.value).toBe('(还没跑过一轮)');
+    expect(find(buildSettings(base), 'ctx')?.value).toBe('(no turn run yet)');
   });
 
   test('跑过之后显示分项', () => {
@@ -68,22 +68,22 @@ describe('★ 每一项都答得出"现在是什么值"', () => {
       systemTokens: 1000, harnessTokens: 0, historyTokens: 500,
       usedTokens: 1500, windowTokens: 0, ratio: null,
     };
-    expect(find(buildSettings({ ...base, pressure: p }), 'ctx')?.value).toContain('窗口未知');
+    expect(find(buildSettings({ ...base, pressure: p }), 'ctx')?.value).toContain('window unknown');
   });
 });
 
 describe('配色与字形', () => {
   test('三档各自显示', () => {
     expect(find(buildSettings({ ...base, color: false }), 'theme')?.value).toContain('NO_COLOR');
-    expect(find(buildSettings(base), 'theme')?.value).toContain('24 位');
+    expect(find(buildSettings(base), 'theme')?.value).toContain('24-bit');
     const fallback = find(buildSettings({ ...base, truecolor: false }), 'theme');
-    expect(fallback?.value).toContain('16 色');
-    expect(fallback?.detail).toContain('不照发');
+    expect(fallback?.value).toContain('16-color');
+    expect(fallback?.detail).toContain('instead of emitting 24-bit codes');
   });
 
   test('★ 字形那一项说得出量没量过真终端', () => {
     const it = find(buildSettings(base), 'glyphs');
-    expect(it?.value).toMatch(/\d+ 可用 \/ \d+ 待量 \/ \d+ 不用/);
+    expect(it?.value).toMatch(/\d+ usable \/ \d+ unmeasured \/ \d+ rejected/);
     expect(it?.detail).toBeDefined();
   });
 });
@@ -91,7 +91,7 @@ describe('配色与字形', () => {
 describe('★ 扩展:被拒的要说出缺什么', () => {
   test('没配 → 说清清单在哪', () => {
     const it = find(buildSettings(base), 'ext');
-    expect(it?.value).toBe('(没配)');
+    expect(it?.value).toBe('(not configured)');
     expect(it?.detail).toContain('.omd/extensions.json');
   });
 
@@ -106,7 +106,7 @@ describe('★ 扩展:被拒的要说出缺什么', () => {
       }),
       'ext',
     );
-    expect(it?.value).toBe('1 已装 / 1 被拒');
+    expect(it?.value).toBe('1 loaded / 1 rejected');
     expect(it?.detail).toContain('greedy');
     expect(it?.detail).toContain('ctx.fork');
   });
@@ -135,8 +135,8 @@ describe('★ 只读项与可改项分得开', () => {
 describe('formatSettings', () => {
   test('每一项都带值', () => {
     const out = formatSettings(buildSettings(base));
-    expect(out).toContain('座位 conductor: a:1');
-    expect(out).toContain('当前会话: tui');
+    expect(out).toContain('seat conductor: a:1');
+    expect(out).toContain('current session: tui');
   });
 });
 
@@ -159,16 +159,16 @@ describe('切片⑥: 可改组(界面/审批/provider)', () => {
       ],
     });
     const sidebar = find(items, 'ui-sidebar');
-    expect(sidebar?.value).toBe('开');
+    expect(sidebar?.value).toBe('on');
     expect(sidebar?.action).toBe('ui-sidebar');
     const ttl = find(items, 'approval-ttl');
     expect(ttl?.value).toBe('600s');
-    expect(ttl?.detail).toContain('重启才生效'); // 闸启动时读一次 —— 现状要说真话
+    expect(ttl?.detail).toContain('effective after restart'); // 闸启动时读一次 —— 现状要说真话
     // ⚠ detail 是**纯文本**(选择器 description 不渲染 markdown): 带星号会原样上屏。
     //   2026-08-08 帧库实测抓到过 `**重启生效**`。这条钉住不再回去。
     expect(ttl?.detail).not.toContain('**');
     const prov = find(items, 'providers');
-    expect(prov?.value).toBe('1 已配 / 1 未配');
+    expect(prov?.value).toBe('1 configured / 1 missing');
     expect(prov?.detail).toContain('kimi-coding');
     // 只显示配没配, 不显示 key —— detail 里不该出现任何 key 形状的串
     expect(prov?.detail).not.toMatch(/sk-|key=/i);

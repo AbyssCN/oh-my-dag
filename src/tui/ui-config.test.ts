@@ -42,7 +42,7 @@ describe('写盘', () => {
     const dir = tdir();
     mkdirSync(join(dir, '.omd'), { recursive: true });
     writeFileSync(join(dir, '.omd', 'config.json'), '{oops');
-    expect(() => setTuiUi(dir, { sidebar: false }, {})).toThrow('拒绝覆盖写');
+    expect(() => setTuiUi(dir, { sidebar: false }, {})).toThrow('refusing to overwrite');
     expect(readFileSync(join(dir, '.omd', 'config.json'), 'utf8')).toBe('{oops'); // 文件原样
   });
 
@@ -51,8 +51,8 @@ describe('写盘', () => {
     setApprovalTokenTtl(dir, 120, {});
     const root = JSON.parse(readFileSync(join(dir, '.omd', 'config.json'), 'utf8'));
     expect(root.tui.approvals.tokenTtlSec).toBe(120);
-    expect(() => setApprovalTokenTtl(dir, 0, {})).toThrow('正数');
-    expect(() => setApprovalTokenTtl(dir, Number.NaN, {})).toThrow('正数');
+    expect(() => setApprovalTokenTtl(dir, 0, {})).toThrow('positive number');
+    expect(() => setApprovalTokenTtl(dir, Number.NaN, {})).toThrow('positive number');
   });
 
   test('patchOmdConfig 返回写的路径(回执要能说出改了哪个文件)', () => {

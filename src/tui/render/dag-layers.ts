@@ -41,7 +41,7 @@ export function renderLayers(snap: DagSnapshot, o: { width: number; height: numb
   if (snap.nodes.length === 0) return [];
   const layers = layerOf(snap.nodes);
   const maxLayer = Math.max(...layers.values());
-  const out: string[] = [fitLine(`DAG ${snap.runLabel ?? '?'} · 分层依赖(按分裂/已知依赖分层)· ${maxLayer + 1} 层`, o.width)];
+  const out: string[] = [fitLine(`DAG ${snap.runLabel ?? '?'} · layered deps (by split / known deps) · ${maxLayer + 1} layers`, o.width)];
   for (let l = 0; l <= maxLayer; l++) {
     const members = snap.nodes.filter((n) => layers.get(n.id) === l);
     out.push(`L${l}`);
@@ -51,6 +51,6 @@ export function renderLayers(snap: DagSnapshot, o: { width: number; height: numb
       out.push(fitLine(`  ${TREE_MARK[n.status]} ${n.id} (${n.kind})${deps}${fanIn}`, o.width));
     }
   }
-  if (out.length > o.height) return [...out.slice(0, Math.max(1, o.height - 1)), `… 还有 ${out.length - o.height + 1} 行`];
+  if (out.length > o.height) return [...out.slice(0, Math.max(1, o.height - 1)), `… ${out.length - o.height + 1} more lines`];
   return out;
 }

@@ -101,32 +101,32 @@ export class PathHud implements Component {
 
   render(width: number): string[] {
     if (this.readError) {
-      return [this.theme.chrome.warn(fitLine(`pathfinder 读不出来: ${this.readError}`, width))];
+      return [this.theme.chrome.warn(fitLine(`pathfinder could not be read: ${this.readError}`, width))];
     }
     if (!this.snap) return []; // 无源恒缺席
     const s = this.snap;
     const out = [
-      this.theme.chrome.accent(fitLine(`地图 ${s.destination}`, width)),
+      this.theme.chrome.accent(fitLine(`map ${s.destination}`, width)),
       // ⚠ 进度条**不占满全宽**(`BAR_MAX_COLS`)—— 见 token 那一条的理由:
       //   盲比两跑都把"110 列的条子只表达 8/23"指成我方最大的缺口。
       this.theme.chrome.dim(fitLine(renderBar(s.ruled, s.total, Math.min(width, BAR_MAX_COLS)), width)),
     ];
     if (s.frontier.length === 0) {
       // 灰常量即真值: 0 是这一格的真答案。但要说清**为什么**是 0。
-      const why = s.blocked > 0 ? `全部 ${s.blocked} 张被前置票挡着` : '全部已裁决';
-      out.push(this.theme.chrome.dim(fitLine(`前沿 0 (${why})`, width)));
+      const why = s.blocked > 0 ? `all ${s.blocked} are blocked by prerequisites` : 'everything ruled';
+      out.push(this.theme.chrome.dim(fitLine(`frontier 0 (${why})`, width)));
       return out;
     }
     const shown = s.frontier.slice(0, MAX_ROWS);
     out.push(
       ...renderTable(
-        [['前沿票', '类型', '待决'], ...shown.map((t) => [t.id, t.type, t.title])],
+        [['ticket', 'type', 'open question'], ...shown.map((t) => [t.id, t.type, t.title])],
         width,
       ),
     );
     const rest = s.frontier.length - shown.length;
-    if (rest > 0) out.push(this.theme.chrome.dim(fitLine(`... 另有 ${rest} 张前沿票`, width)));
-    if (s.blocked > 0) out.push(this.theme.chrome.dim(fitLine(`阻塞集 ${s.blocked} 张`, width)));
+    if (rest > 0) out.push(this.theme.chrome.dim(fitLine(`... ${rest} more frontier tickets`, width)));
+    if (s.blocked > 0) out.push(this.theme.chrome.dim(fitLine(`blocked ${s.blocked}`, width)));
     return out;
   }
 

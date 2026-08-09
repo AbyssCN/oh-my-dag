@@ -115,16 +115,16 @@ export function createAskUserTool(resolve: AskUserResolver): AnyOmdTool[] {
           ...(o.description ? { description: o.description } : {}),
         })),
         // ★ R5:恒在最后一项。**不由模型决定给不给** —— 它是用户的退路, 不是模型的选项之一。
-        { value: DISCUSS, label: '先聊聊这个(不做选择)', description: '选项本身有问题, 或者想先弄清楚再决定' },
+        { value: DISCUSS, label: 'talk it through first', description: 'the options look wrong, or you want to understand first' },
       ];
-      deps.appendNotice(`问你一句: ${question}`);
+      deps.appendNotice(`A question for you: ${question}`);
       const picked = await select(deps.host, deps.theme, { title: question, options: opts, maxVisible: 8 });
       if (picked === null) {
-        deps.appendNotice('(你没选 —— 已告诉它自己拿主意)');
+        deps.appendNotice('(you did not choose - it was told to use its own judgement)');
         return { content: [{ type: 'text' as const, text: ASK_USER_CANCELLED }], details: { answered: false, reason: 'cancelled' } };
       }
       if (picked === DISCUSS) {
-        deps.appendNotice('(你选了先聊聊 —— 已让它把取舍讲清楚再等你)');
+        deps.appendNotice('(you chose to talk it through - it was asked to lay out the trade-offs and wait)');
         return { content: [{ type: 'text' as const, text: ASK_USER_DISCUSS }], details: { answered: false, reason: 'discuss' } };
       }
       const idx = Number(picked);
@@ -133,7 +133,7 @@ export function createAskUserTool(resolve: AskUserResolver): AnyOmdTool[] {
         // 越界只可能是内部错 —— 但也**不抛**:抛了模型会重试, 重试会再弹一次框。
         return { content: [{ type: 'text' as const, text: ASK_USER_CANCELLED }], details: { answered: false, reason: 'cancelled' } };
       }
-      deps.appendNotice(`你选了: ${chosen.label}`);
+      deps.appendNotice(`you chose: ${chosen.label}`);
       return {
         content: [{ type: 'text' as const, text: `用户选了: ${chosen.label}` }],
         details: { answered: true, index: idx, label: chosen.label },

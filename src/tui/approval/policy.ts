@@ -157,11 +157,11 @@ export function classifyToolCall(name: string, params: unknown, cfg: ApprovalPol
     try {
       dangerous = classifyCommand(p.command);
     } catch {
-      dangerous = { dangerous: true, label: 'classifier-error', reason: '命令分类器异常 (fail-closed)' };
+      dangerous = { dangerous: true, label: 'classifier-error', reason: 'command classifier threw (fail-closed)' };
     }
     if (dangerous.dangerous) {
       tier = 'admin';
-      reasons.push(`不可逆命令 [${dangerous.label}]: ${dangerous.reason}`);
+      reasons.push(`irreversible command [${dangerous.label}]: ${dangerous.reason}`);
     } else {
       // ② 风险登记表:read_only 命令(cat/grep/git log …)降到 read —— 不弹框;
       //    其余(scoped_write / 未登记)按 write 走审批。
@@ -169,7 +169,7 @@ export function classifyToolCall(name: string, params: unknown, cfg: ApprovalPol
       if (risk === 'read_only') tier = 'read';
       else {
         tier = maxTier(tier, 'write');
-        reasons.push(`bash 命令风险级 ${risk}`);
+        reasons.push(`bash command risk tier ${risk}`);
       }
     }
     // ③ 命令碰凭证文件 → 至少 read_sensitive(按分隔符拆段逐段查,`ls && cat .env` 的尾环也要被看见)。
@@ -179,7 +179,7 @@ export function classifyToolCall(name: string, params: unknown, cfg: ApprovalPol
       const secret = secretPathInCommand(s);
       if (secret) {
         tier = maxTier(tier, 'read_sensitive');
-        reasons.push(`命令读凭证文件 ${secret}`);
+        reasons.push(`command reads credential file ${secret}`);
         break;
       }
     }
@@ -188,18 +188,18 @@ export function classifyToolCall(name: string, params: unknown, cfg: ApprovalPol
   // 读类工具指向凭证文件 → read_sensitive(先给预览、继续需审批 —— 那道硬拒的正确形态)。
   if ((name === 'read' || name === 'grep' || name === 'ls') && typeof p.path === 'string' && secretBasenameOf(p.path)) {
     tier = maxTier(tier, 'read_sensitive');
-    reasons.push(`目标是凭证文件 ${p.path}`);
+    reasons.push(`target is a credential file ${p.path}`);
   }
 
   // function 级基础原因放最前(排卡片时它是第一行判据)。
   if (APPROVAL_TIER_ORDER[tier] >= APPROVAL_TIER_ORDER.write && reasons.length === 0) {
-    reasons.unshift(`function 级 ${tier}`);
+    reasons.unshift(`function-level ${tier}`);
   }
 
   // 受保护清单:双级同时命中 → 追加一条,**合并成一张单**(不弹两次)。
   if (APPROVAL_TIER_ORDER[tier] >= APPROVAL_TIER_ORDER.write && target) {
     const hit = protectedPathHit(target, cfg.protectedPaths);
-    if (hit) reasons.push(`目标在受保护清单 (${hit})`);
+    if (hit) reasons.push(`target is on the protected list (${hit})`);
   }
 
   if (tier === 'read_sensitive' && reasons.length === 0) reasons.push('read_sensitive');
@@ -210,11 +210,11 @@ export function classifyToolCall(name: string, params: unknown, cfg: ApprovalPol
 export function describeToolCall(name: string, params: unknown): { summary: string; preview: string[] } {
   const p = (params ?? {}) as Record<string, unknown>;
   const cap = (lines: string[], n: number): string[] =>
-    lines.length > n ? [...lines.slice(0, n), `… 还有 ${lines.length - n} 行`] : lines;
+    lines.length > n ? [...lines.slice(0, n), `… ${lines.length - n} more lines`] : lines;
   if (name === 'write' && typeof p.path === 'string') {
     const content = typeof p.content === 'string' ? p.content : '';
     return {
-      summary: `write ${p.path} (${content.length} 字节)`,
+      summary: `write ${p.path} (${content.length} bytes)`,
       preview: cap(content.split('\n'), 30),
     };
   }
@@ -222,7 +222,7 @@ export function describeToolCall(name: string, params: unknown): { summary: stri
     const oldLines = typeof p.oldText === 'string' ? p.oldText.split('\n') : [];
     const newLines = typeof p.newText === 'string' ? p.newText.split('\n') : [];
     return {
-      summary: `edit ${p.path} (-${oldLines.length} +${newLines.length} 行)`,
+      summary: `edit ${p.path} (-${oldLines.length} +${newLines.length} lines)`,
       preview: cap([...oldLines.map((l) => `- ${l}`), ...newLines.map((l) => `+ ${l}`)], 40),
     };
   }
@@ -237,7 +237,7 @@ export function describeToolCall(name: string, params: unknown): { summary: stri
   try {
     args = JSON.stringify(params ?? {});
   } catch {
-    args = '(参数序列化失败)';
+    args = '(arguments could not be serialized)';
   }
   if (args.length > 120) args = `${args.slice(0, 120)}…`;
   return { summary: `${name} ${args}`, preview: cap(JSON.stringify(params ?? {}, null, 2).split('\n'), 30) };

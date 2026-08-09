@@ -136,14 +136,14 @@ export const CHROME = {
     [
       ...renderTable(
         [
-          ['引擎', o.engine],
-          ['会话', o.session],
+          ['engine', o.engine],
+          ['session', o.session],
         ],
         o.width,
       ),
       '',
       `  > ${STARTUP_HINT}`,
-      '  > PgUp / PgDn 回看历史',
+      '  > PgUp / PgDn scrolls back through history',
     ].join('\n'),
   /**
    * 空输入框里的提示符(`HintedEditor`)。
@@ -152,30 +152,30 @@ export const CHROME = {
    * 屏上读成"两条一样的线中间空无一物"(P3 件6 轮1,账本有原文与帧号)。
    * 文案只许 ASCII + 已量过的 CJK —— 这一行同样过字形闸。
    */
-  editorHint: '问点什么, 或按 / 看命令 · Ctrl+C 两次退出',
+  editorHint: 'Ask something, or press / for commands · Ctrl+C twice to quit',
   /** 后端明确拒绝(**断链说明卡**):说出是谁拒的,不编一个回复。 */
-  refused: (url: string) => `后端拒绝了这一轮 (${url}): 引擎尚未接通, 这一轮没有发给任何模型`,
+  refused: (url: string) => `Backend refused this turn (${url}): engine not wired up, nothing was sent to any model`,
   /** 后端抛了:错误原文进屏,同时进日志文件。 */
-  failed: (reason: string) => `这一轮发不出去: ${reason}`,
+  failed: (reason: string) => `This turn could not be sent: ${reason}`,
   /** 工具在跑 / 跑完。真事件真名字, 没有事件就不画这一行。 */
   toolStart: (name: string) => `${name} ...`,
-  toolEnd: (name: string, ok: boolean) => `${name} ${ok ? 'ok' : '失败'}`,
+  toolEnd: (name: string, ok: boolean) => `${name} ${ok ? 'ok' : 'failed'}`,
   /** 切座位成功 —— 说出改了哪个文件, 别让人猜它生效了没。 */
-  seatChanged: (role: string, coord: string) => `座位已改: ${role} -> ${coord} (写入 .omd/config.json, 下一句生效)`,
-  seatFailed: (reason: string) => `座位没改成: ${reason}`,
+  seatChanged: (role: string, coord: string) => `Seat changed: ${role} -> ${coord} (written to .omd/config.json, effective next message)`,
+  seatFailed: (reason: string) => `Seat unchanged: ${reason}`,
   /** 座位读不出来 (没配过 omd 的仓)。原因原样贴出来 —— 那一格的真值就是解析不到。 */
-  seatUnresolved: (reason: string) => `当前座位解析不到: ${reason}`,
+  seatUnresolved: (reason: string) => `Current seat does not resolve: ${reason}`,
   /** 切会话回执 —— 说清切到哪、回放了几条,别让人猜切没切成。 */
-  sessionSwitched: (id: string, n: number) => `已切到会话 ${id}(回放 ${n} 条历史)`,
-  sessionNew: (id: string) => `已新开会话 ${id}(说第一句话时才真正建文件)`,
-  sessionFailed: (reason: string) => `切不过去: ${reason}`,
+  sessionSwitched: (id: string, n: number) => `Switched to session ${id} (replayed ${n} messages)`,
+  sessionNew: (id: string) => `New session ${id} (the file is only created when you say something)`,
+  sessionFailed: (reason: string) => `Cannot switch: ${reason}`,
   /** skill 已挂在**下一句**上 —— 说清它什么时候生效, 别让人以为已经跑了。 */
-  skillArmed: (name: string) => `已挂上 skill 「${name}」: 它会作为**下一句**的额外纪律注入 (只这一轮, 不写进会话)`,
-  skillMissing: (name: string) => `没有这条 skill: ${name} (用 /skill 看有哪些)`,
+  skillArmed: (name: string) => `Skill "${name}" armed: it is injected as extra discipline on the **next** message only (this turn, not stored in the session)`,
+  skillMissing: (name: string) => `No such skill: ${name} (use /skill to see what is available)`,
   /** 这个后端没有 run 能力(fixture / 远程未实现)。**说出缺的是什么**,不画一个点了没反应的入口。 */
-  noRunCapability: (what: string) => `这个后端没有 ${what} 能力 (能力探测: 该方法不存在)`,
-  resumeStarted: (runId: string, text: string) => `续跑 ${runId}: ${text}`,
-  resumeRefused: (runId: string, text: string) => `续不了 ${runId}: ${text}`,
+  noRunCapability: (what: string) => `This backend has no ${what} capability (probed: the method does not exist)`,
+  resumeStarted: (runId: string, text: string) => `Resuming ${runId}: ${text}`,
+  resumeRefused: (runId: string, text: string) => `Cannot resume ${runId}: ${text}`,
   /**
    * 行③帮助条。`omd tui` 字样留在这 —— 顶栏没了(v5: 信息下沉), 这一串同时是 PTY 的启动信标。
    *
@@ -185,25 +185,25 @@ export const CHROME = {
    * ⇒ 砍这一份。首屏那份是一次性的介绍, 不算重复, 留着。
    */
   /** 等待态那一行。措辞要说清**在等什么** —— 只画一个转圈等于没说。 */
-  waiting: '在等模型回话…(Esc 打断)',
-  footer: () => 'omd tui · /help 看命令 · Ctrl+C 两次退出',
-  footerArmed: () => 'omd tui · 再按一次 Ctrl+C 退出',
+  waiting: 'Waiting for the model...(Esc interrupts)',
+  footer: () => 'omd tui · /help for commands · Ctrl+C twice to quit',
+  footerArmed: () => 'omd tui · press Ctrl+C again to quit',
   // ── 审批层(切片①)。裁决回执要进对话记录 —— 卡片关掉之后, "刚才批没批过"得能回看。 ──
-  approvalDenied: (summary: string) => `审批: 已拒绝 ${summary}`,
-  approvalOnce: (summary: string) => `审批: 已批准这一次 ${summary}`,
-  approvalGranted: (summary: string, min: number) => `审批: 已批准 ${summary} (同档 ${min} 分钟内免审)`,
+  approvalDenied: (summary: string) => `Approval: denied ${summary}`,
+  approvalOnce: (summary: string) => `Approval: allowed once - ${summary}`,
+  approvalGranted: (summary: string, min: number) => `Approval: allowed ${summary} (same tier is auto-allowed for ${min} min)`,
   /** 对话框被占时新到的审批单按拒绝处理(fail-closed)—— 说出为什么, 别静默拒。 */
-  approvalBusy: (summary: string) => `审批: 另一个对话框开着, 已按拒绝处理 ${summary}`,
+  approvalBusy: (summary: string) => `Approval: another dialog is open, treated as denied - ${summary}`,
   // ── 切片⑥: /login 与设置写盘回执。key 本身一个字符都不进屏。 ──
   loginDone: (provider: string, target: string, warnings: string[]) =>
-    `key 已写入 ${target === 'env' ? '.env' : 'auth.json'} (${provider}, 即时生效)${warnings.length > 0 ? `\n  ${warnings.join('\n  ')}` : ''}`,
-  uiWritten: (what: string, path: string) => `${what} 已写入 ${path}`,
+    `Key written to ${target === 'env' ? '.env' : 'auth.json'} (${provider}, effective immediately)${warnings.length > 0 ? `\n  ${warnings.join('\n  ')}` : ''}`,
+  uiWritten: (what: string, path: string) => `${what} written to ${path}`,
   // ── 切片⑦: 会话树。fork 的回执要说清"现在在分支上, 原会话没动"。 ──
-  sessionForked: (text: string) => `${text} —— 已切到分支; 原会话未动, /session 可切回`,
-  sessionForkFailed: (reason: string) => `fork 不了: ${reason}`,
-  approvalTtlWritten: (sec: number, path: string) => `审批 token TTL -> ${sec}s 已写入 ${path} (重启生效)`,
+  sessionForked: (text: string) => `${text} - switched to the branch; the source session is untouched, /session switches back`,
+  sessionForkFailed: (reason: string) => `Cannot fork: ${reason}`,
+  approvalTtlWritten: (sec: number, path: string) => `Approval token TTL -> ${sec}s written to ${path} (effective after restart)`,
   /** 切片⑧: 一张图都没有时说真话 (画一个空雾场会读成"有图但没散")。 */
-  noPathMaps: () => '还没有 pathfinder 地图 (docs/plan/pathfinder/ 为空) —— 用 /omd-path 开一张',
+  noPathMaps: () => 'No pathfinder map yet (docs/plan/pathfinder/ is empty) - open one with /omd-path',
 } as const;
 
 /**
@@ -477,12 +477,12 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   const sidebarPainting = (vpWidth: number): boolean => sidebarOn && dagTree.active && vpWidth >= SIDEBAR_MIN_TOTAL;
 
   /** 全屏视图:一个薄 Component,按当前画法把快照交给对应的纯渲染函数。 */
-  const PAINTERS = ['树', '泳道甘特', '分层依赖'] as const;
+  const PAINTERS = ['tree', 'gantt', 'layers'] as const;
   const fullView: Component = {
     render: (width: number): string[] => {
-      if (!dagTree.active) return [fitLine('(还没有 run —— 发一个再 Ctrl+G)', width)];
+      if (!dagTree.active) return [fitLine('(no run yet - send one, then press Ctrl+G)', width)];
       const height = Math.max(6, (terminal.rows || 30) - 10);
-      const hint = theme.chrome.dim(fitLine(`Tab 切画法 (当前: ${PAINTERS[painterIdx]}) · Ctrl+G 退出`, width));
+      const hint = theme.chrome.dim(fitLine(`Tab switches view (now: ${PAINTERS[painterIdx]}) · Ctrl+G exits`, width));
       if (painterIdx === 0) return [...dagTree.render(width).slice(0, height), hint];
       const snap = dagTree.snapshot();
       const lines = painterIdx === 1 ? renderGantt(snap, { width, height, now: now() }) : renderLayers(snap, { width, height });
@@ -514,7 +514,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   }
   const pathView: Component = {
     render: (width: number): string[] => {
-      if (!pathData) return [fitLine('(图读不出来 —— 日志里有原因)', width)];
+      if (!pathData) return [fitLine('(map could not be read - the reason is in the log)', width)];
       const height = Math.max(6, (terminal.rows || 30) - 10);
       // 颜色分层照 HTML 稿: 前沿/读数 accent · 地层/雾 dim · 阻塞 warn · 选中 user 档。
       const paint = { accent: theme.chrome.accent, dim: theme.chrome.dim, warn: theme.chrome.warn, sel: theme.chrome.user };
@@ -977,7 +977,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         items,
         painters: PAINTERS,
         maxVisible: 12,
-        title: '改哪个座位?  (↑↓ 选, Enter 换模型, Esc 取消)',
+        title: 'Which seat?  (↑↓ select · Enter model · Esc cancel)',
         seatChoices: seatModelOpts,
         seatManual: seatManualOpts,
         textPrompt: (_id, cur) => ({ title: '?', initial: cur }), // 座位面板里没有文本项
@@ -1009,8 +1009,8 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     sidebarOn = !sidebarOn;
     chatLog.appendNotice(
       sidebarOn
-        ? `左栏 DAG 图:开(有 run 且终端宽度不低于 ${SIDEBAR_MIN_TOTAL} 列才画;窄了自动收起)`
-        : '左栏 DAG 图:关(底部那张表回来了)',
+        ? `DAG sidebar: on (drawn when there is a run and the terminal is at least ${SIDEBAR_MIN_TOTAL} columns; auto-hidden when narrower)`
+        : 'DAG sidebar: off (the table at the bottom is back)',
     );
     tui.requestRender();
     return true;
@@ -1073,7 +1073,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         else chatLog.appendNotice(await opts.backend.listRuns());
       } else {
         const runId = t.split(/\s+/)[1];
-        if (!runId) chatLog.appendNotice('用法: /resume <runId> (先 /runs 看有哪些)');
+        if (!runId) chatLog.appendNotice('Usage: /resume <runId> (use /runs to see what is there)');
         else if (!opts.backend.resumeRun) chatLog.appendNotice(CHROME.noRunCapability('resumeRun'));
         else {
           const r = await opts.backend.resumeRun({ runId });
@@ -1172,7 +1172,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         tui.requestRender();
         // 列表留痕 + 选择器现挑。一条都没有时 `select` 自己不开框(开个空框让人按 Esc 是耍人)。
         const pick = await dialogSelect(dialogs, theme, {
-          title: '切到哪条会话?',
+          title: 'Switch to which session?',
           options: list.map((m) => ({
             value: m.id,
             label: `${m.id === sessionId ? '* ' : '  '}${m.id}`,
@@ -1236,11 +1236,11 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     let slug = maps[0]!.slug;
     if (maps.length > 1) {
       const picked = await dialogSelect(dialogs, theme, {
-        title: '切到哪张地图?',
+        title: 'Switch to which map?',
         options: maps.map((m) => ({
           value: m.slug,
           label: `${m.slug === pathSlugSel ? '* ' : '  '}${m.slug}`,
-          description: `前沿 ${m.frontierCount} · open ${m.openCount} —— ${m.destination}`,
+          description: `frontier ${m.frontierCount} · open ${m.openCount} - ${m.destination}`,
         })),
         search: true,
       });
@@ -1265,20 +1265,20 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   async function openTicketActions(t: { id: string; type: string; title: string }): Promise<void> {
     const slug = pathSlugSel ?? '';
     const act = await dialogSelect(dialogs, theme, {
-      title: `票 ${t.id} · ${t.title}`,
+      title: `ticket ${t.id} · ${t.title}`,
       options: [
-        { value: 'g', label: 'g 审问 (grill)', description: '拆岔口给 owner 裁决' },
-        { value: 'd', label: 'd 做 (派 dag_goal/dag_run)', description: '把这张票交给引擎收敛' },
-        { value: 'c', label: 'c 评论', description: 'owner 备注写回地图' },
-        { value: 'r', label: 'r research', description: '跑 dag_research 收证据' },
+        { value: 'g', label: 'g grill', description: 'split the fork open for the owner to rule on' },
+        { value: 'd', label: 'd do it (dag_goal/dag_run)', description: 'hand this ticket to the engine' },
+        { value: 'c', label: 'c comment', description: 'write an owner note back into the map' },
+        { value: 'r', label: 'r research', description: 'run dag_research to collect evidence' },
       ],
     });
     if (act === null) return; // Esc: 返回
     const prompts: Record<string, string> = {
-      g: `对地图 ${slug} 的票 ${t.id}「${t.title}」做对抗式审问 (grill): 沿决策树拆岔口, 先给推荐答案, 把要我裁决的问题列出来`,
-      d: `把地图 ${slug} 的票 ${t.id}「${t.title}」交给引擎做掉 (用 omd_run 或 omd_solve), 完成后把结果与该票的裁决建议报回来`,
-      c: `给地图 ${slug} 的票 ${t.id} 记一条 owner 备注: `,
-      r: `针对地图 ${slug} 的票 ${t.id}「${t.title}」跑一轮 research 收证据, 汇总后给出裁决建议`,
+      g: `Grill ticket ${t.id} "${t.title}" of map ${slug}: walk the decision tree, give a recommended answer first, and list the questions that need my ruling`,
+      d: `Hand ticket ${t.id} "${t.title}" of map ${slug} to the engine (omd_run or omd_solve), then report the result and a ruling recommendation for that ticket`,
+      c: `Record an owner note on ticket ${t.id} of map ${slug}: `,
+      r: `Run one round of research on ticket ${t.id} "${t.title}" of map ${slug}, then summarize it into a ruling recommendation`,
     };
     // 预填不发送 —— 回车那一下才是"现在执行"。
     pathFullOn = false;
@@ -1306,10 +1306,10 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         const found = discoverProviders(process.env);
         const MANUAL = ' manual';
         const picked = await dialogSelect(dialogs, theme, {
-          title: '给哪个 provider 落 key?',
+          title: 'Store a key for which provider?',
           options: [
-            ...found.map((p) => ({ value: p.id, label: `${p.hasKey ? '[已配] ' : '[未配] '}${p.id}` })),
-            { value: MANUAL, label: '手动输入 provider…', description: '发现不了的也能配' },
+            ...found.map((p) => ({ value: p.id, label: `${p.hasKey ? '[set]   ' : '[unset] '}${p.id}` })),
+            { value: MANUAL, label: 'type a provider id…', description: 'works for ones discovery cannot see' },
           ],
           search: true,
         });
@@ -1317,7 +1317,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         provider = picked === MANUAL ? ((await dialogInput(dialogs, theme, { title: 'provider id' })) ?? '') : picked;
         if (!provider.trim()) return true;
       }
-      const key = await dialogInput(dialogs, theme, { title: `${provider} 的 API key(回显打星)`, mask: true });
+      const key = await dialogInput(dialogs, theme, { title: `API key for ${provider} (echo is masked)`, mask: true });
       if (key === null || !key.trim()) return true; // Esc / 空: 什么都不改
       const { setKeyHeadless } = require('../harness/init/headless-config') as typeof import('../harness/init/headless-config');
       const r = setKeyHeadless(provider.trim(), key.trim());
@@ -1397,7 +1397,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       color: colorEnabled(),
       truecolor: truecolorEnabled(),
       extensions: opts.extensions ?? [],
-      ui: { sidebar: sidebarOn, painterName: PAINTERS[painterIdx] ?? '树' },
+      ui: { sidebar: sidebarOn, painterName: PAINTERS[painterIdx] ?? 'tree' },
       approvalTtlSec,
       providers,
     });
@@ -1411,12 +1411,12 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         seatChoices: seatModelOpts,
         seatManual: seatManualOpts,
         // `审批 token TTL` 的值带单位(`30s`), 而输入框里该是**可编辑的数**, 不是带单位的串。
-        textPrompt: (_id, current) => ({ title: '审批 token TTL(秒)', initial: current.replace(/s$/, '') }),
+        textPrompt: (_id, current) => ({ title: 'Approval token TTL (seconds)', initial: current.replace(/s$/, '') }),
         apply: (id, value) => applySetting(id, value),
         activate: (id) => {
           // 就地办完的:一条通知就够, 面板留着(通知画在对话区, 不遮设置页)。
           if (id === 'ext') {
-            chatLog.appendNotice('扩展清单在 `.omd/extensions.json`(入口写绝对路径)。改完重启 omd tui 生效。');
+            chatLog.appendNotice('The extension manifest lives in `.omd/extensions.json` (entry points are absolute paths). Restart omd tui after editing it.');
             tui.requestRender();
             return;
           }
@@ -1458,17 +1458,17 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       return readSeats().current[role] ?? coord;
     }
     if (id === 'ui-sidebar') {
-      sidebarOn = value === '开';
+      sidebarOn = value === 'on';
       const path = setTuiUi(opts.cwd, { sidebar: sidebarOn });
-      chatLog.appendNotice(CHROME.uiWritten(`左栏默认 -> ${sidebarOn ? '开' : '关'}`, path));
-      return sidebarOn ? '开' : '关';
+      chatLog.appendNotice(CHROME.uiWritten(`DAG sidebar default -> ${sidebarOn ? 'on' : 'off'}`, path));
+      return sidebarOn ? 'on' : 'off';
     }
     if (id === 'ui-painter') {
       const idx = PAINTERS.indexOf(value as (typeof PAINTERS)[number]);
-      if (idx < 0) return PAINTERS[painterIdx] ?? '树'; // 认不出就不动 —— 别把 painterIdx 写成 -1
+      if (idx < 0) return PAINTERS[painterIdx] ?? 'tree'; // 认不出就不动 —— 别把 painterIdx 写成 -1
       painterIdx = idx;
       const path = setTuiUi(opts.cwd, { painterIdx });
-      chatLog.appendNotice(CHROME.uiWritten(`全屏默认画法 -> ${PAINTERS[painterIdx]}`, path));
+      chatLog.appendNotice(CHROME.uiWritten(`fullscreen default view -> ${PAINTERS[painterIdx]}`, path));
       return PAINTERS[painterIdx] as string;
     }
     if (id === 'approval-ttl') {
@@ -1569,7 +1569,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     // ⚠ Tab 只在全屏时截 —— 平时它是 editor 的补全键, 抢了会让输入框残废。
     if (data === '\x07') {
       if (!dagTree.active && !fullOn) {
-        chatLog.appendNotice('还没有 run —— 发一个再 Ctrl+G 看图');
+        chatLog.appendNotice('No run yet - send one, then press Ctrl+G');
       } else {
         fullOn = !fullOn;
       }

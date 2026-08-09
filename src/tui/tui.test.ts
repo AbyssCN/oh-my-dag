@@ -60,7 +60,7 @@ describe('★ 左槽 —— 正文不许贴着终端左边缘(P1)', () => {
   };
 
   test('包了左槽之后, 每一行内容都不在第 0 列', () => {
-    const out = withLeftGutter(fake(['AAA', 'BBB', '引擎  embedded://x'])).render(60);
+    const out = withLeftGutter(fake(['AAA', 'BBB', 'engine  embedded://x'])).render(60);
     const cols = out.map(startCol).filter((c) => c >= 0);
     expect(cols.length).toBeGreaterThan(0);
     // ⚠ 判据是**字面量 0**, 不是 `GUTTER_COLS` —— 第一版写的是 `c >= GUTTER_COLS`,
@@ -75,8 +75,8 @@ describe('★ 左槽 —— 正文不许贴着终端左边缘(P1)', () => {
   });
 
   test('内容一个字都没丢(槽只挪位置, 不吃字)', () => {
-    const out = withLeftGutter(fake(['引擎  embedded://kimi-coding:k3'])).render(60).join('\n');
-    expect(out).toContain('引擎  embedded://kimi-coding:k3');
+    const out = withLeftGutter(fake(['engine  embedded://kimi-coding:k3'])).render(60).join('\n');
+    expect(out).toContain('engine  embedded://kimi-coding:k3');
   });
 
   test('窄屏(80 列)下槽仍在, 且没把可用宽度吃穿', () => {

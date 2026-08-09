@@ -19,18 +19,18 @@ const PREVIEW_RULE_WIDTH = 8;
 
 /** 对话框标题行。 */
 export function approvalTitle(req: ApprovalRequest): string {
-  return `需要审批 · ${req.tier} · ${req.tool}`;
+  return `Approval needed · ${req.tier} · ${req.tool}`;
 }
 
 /** 键位行 —— admin 档没有 `a`(强制审批,不管多有把握)。 */
 export function approvalKeysLine(req: ApprovalRequest): string {
-  const grant = req.canGrant ? ` · a 批准 ${Math.max(1, Math.round(req.ttlSec / 60))} 分钟内同档` : '';
-  return `d 看详情 · y 批准这一次${grant} · Esc 拒绝`;
+  const grant = req.canGrant ? ` · a allows the same tier for ${Math.max(1, Math.round(req.ttlSec / 60))} min` : '';
+  return `d shows details · y allows once${grant} · Esc denies`;
 }
 
 /** 卡片正文(不含标题)。`detail` = `d` 展开后。 */
 export function approvalBody(req: ApprovalRequest, o: { detail: boolean }): string {
-  const lines = [`要做什么  ${req.summary}`, `触发原因  ${req.reasons.join(' + ') || req.tier}`, approvalKeysLine(req)];
+  const lines = [`what      ${req.summary}`, `why       ${req.reasons.join(' + ') || req.tier}`, approvalKeysLine(req)];
   if (o.detail && req.preview.length > 0) {
     lines.push(rule(PREVIEW_RULE_WIDTH), ...req.preview);
   }

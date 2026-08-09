@@ -223,21 +223,21 @@ function clip(s: string, budget = LIST_DESC_BUDGET): string {
  * ⚠ 单体只报数不报名:报名就退回成那面墙了。要名字的人打 `/skill all`。
  */
 export function formatSkillList(skills: SkillMeta[]): string {
-  if (skills.length === 0) return '没有可唤起的 skill (包内 client-skills/ 与 ~/.claude/skills 都不在或为空)';
+  if (skills.length === 0) return 'No skills to invoke (neither bundled client-skills/ nor ~/.claude/skills exists or has entries)';
   const { groups, loners } = groupSkills(skills);
   const lines: string[] = [];
   for (const g of groups) {
-    lines.push(`  /${g.name}  (${g.members.length} 条)  —— /${g.name} 列成员, /${g.name} <成员> 唤起`);
+    lines.push(`  /${g.name}  (${g.members.length})  - /${g.name} lists members, /${g.name} <member> invokes one`);
   }
-  if (loners.length > 0) lines.push(`  另有 ${loners.length} 条单体 skill —— /skill all 列全表`);
-  return `${lines.join('\n')}\n用法: /skill <name> [补充说明] —— 唤起后注入**本轮**纪律, 不写进会话`;
+  if (loners.length > 0) lines.push(`  plus ${loners.length} standalone skills - /skill all lists everything`);
+  return `${lines.join('\n')}\nUsage: /skill <name> [notes] - invoking one injects its discipline into **this turn** only, never stored in the session`;
 }
 
 /** 全表(`/skill all`)。一行一条,描述按可见宽度截断。 */
 export function formatSkillAll(skills: SkillMeta[]): string {
-  if (skills.length === 0) return '没有可唤起的 skill';
+  if (skills.length === 0) return 'No skills to invoke';
   const lines = skills.map((s) => `  ${s.name}: ${s.description ? clip(s.description) : '-'}`);
-  return `${lines.join('\n')}\n共 ${skills.length} 条。用法: /skill <name> [补充说明] —— 注入**本轮**纪律, 不写进会话`;
+  return `${lines.join('\n')}\n${skills.length} total. Usage: /skill <name> [notes] - injects discipline into **this turn** only, never stored in the session`;
 }
 
 /** 一个组的成员表(`/lark`)。组名前缀去掉 —— 每行重复一遍 `lark-` 只是噪音。 */
@@ -246,7 +246,7 @@ export function formatGroupMembers(group: SkillGroup): string {
     const short = m.name.slice(group.name.length + 1);
     return `  ${short}: ${m.description ? clip(m.description) : '-'}`;
   });
-  return `${group.name} (${group.members.length} 条):\n${lines.join('\n')}\n用法: /${group.name} <成员> [补充说明]`;
+  return `${group.name} (${group.members.length}):\n${lines.join('\n')}\nUsage: /${group.name} <member> [notes]`;
 }
 
 export interface LoadedSkill {

@@ -49,7 +49,7 @@ describe('行① formatStatusLine —— segment 模型: 没数据的段不画',
       win: win(),
     });
     // 会话 $0.83 与 5h $0.42 **不同** ⇒ 两个都画;相同的情形另有一条闸。
-    expect(line).toBe('oh-my-dag main+2 wt:fanin │ kimi-coding:k3 │ ctx 23% │ $0.83/$0.42 3次 │ ↑312k ↓18k 缓存88%');
+    expect(line).toBe('oh-my-dag main+2 wt:fanin │ kimi-coding:k3 │ ctx 23% │ $0.83/$0.42 3x │ ↑312k ↓18k cache88%');
     expect(countTokens(line)).toBeLessThanOrEqual(FOOTER_MAX_TOKENS);
   });
 
@@ -125,7 +125,7 @@ describe('★ 减法这件事本身要有闸(否则下一程会把字段加回�
 
   test('★ 会话花费与 5h 花费**相同** ⇒ 只画一个(两个 $0.00 说的是同一件事)', () => {
     const same = formatStatusLine({ ...base, session: { costUsd: 0, unpriced: false, calls: 10 }, win: win({ costUsd: 0, calls: 10 }) });
-    expect(same).toContain('$0.00 10次');
+    expect(same).toContain('$0.00 10x');
     expect(same).not.toContain('/$'); // 相同时不画第二个数
     // 不同的时候两个都在, 但仍是**一个词元**
     const diff = formatStatusLine({ ...base, session: { costUsd: 0, unpriced: false, calls: 10 }, win: win({ costUsd: 0.42, calls: 10 }) });
@@ -135,20 +135,20 @@ describe('★ 减法这件事本身要有闸(否则下一程会把字段加回�
 
   test('★ token 段用 ↑↓(都在字形白名单)且**不画绝对 cache 数**, 只留命中率', () => {
     const line = formatStatusLine({ ...base, win: win() });
-    expect(line).toContain('↑312k ↓18k 缓存88%');
+    expect(line).toContain('↑312k ↓18k cache88%');
     expect(line).not.toContain('276k'); // 绝对 cache 数与命中率重复
     expect(line).not.toContain('in ');
     expect(line).not.toContain('out ');
   });
 
-  test('cache 为 0 ⇒ 缓存那格不画(不画 0%)', () => {
-    expect(formatStatusLine({ ...base, win: win({ cacheHit: 0 }) })).not.toContain('缓存');
+  test('cache 为 0 ⇒ cache那格不画(不画 0%)', () => {
+    expect(formatStatusLine({ ...base, win: win({ cacheHit: 0 }) })).not.toContain('cache');
   });
 
   test('窗口空 ⇒ token 段与次数都不画(与"跑了但全是 0"分得开)', () => {
     const line = formatStatusLine({ ...base, session: null, win: null });
     expect(line).not.toContain('↑');
-    expect(line).not.toContain('次');
+    expect(line).not.toMatch(/\d+x/); // 次数段整段不画(`ctx` 里那个 x 不算)
   });
 
   test('ssh/tmux:有才画', () => {

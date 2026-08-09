@@ -61,7 +61,7 @@ export function shapeOf(item: SettingItem, ctx: { painters: readonly string[] })
     case 'ui-sidebar':
       // 值就是「开」/「关」两个字(`settings.ts:107`)。循环表必须与它逐字一致,
       // 否则 `values.indexOf(currentValue)` 是 -1,第一下 Enter 会跳到 values[0] 而不是翻转。
-      return { kind: 'cycle', values: ['开', '关'] };
+      return { kind: 'cycle', values: ['on', 'off'] };
     case 'ui-painter':
       return { kind: 'cycle', values: ctx.painters };
     case 'session':
@@ -150,7 +150,7 @@ export function toPiItems(
     const base: PiSettingItem = {
       id: item.key,
       // 只读行的标记留在**标签**上:值那一列是信息主体,不该被标记挤掉。
-      label: shape.kind === 'inert' ? `(只读) ${item.label}` : item.label,
+      label: shape.kind === 'inert' ? `(read-only) ${item.label}` : item.label,
       currentValue: item.value,
       ...(item.detail ? { description: item.detail } : {}),
     };
@@ -291,5 +291,5 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     // 项数涨过一屏再开 —— 那时它换回来的是 `(n/N)` 计数,现在换不回任何东西。
     { enableSearch: false },
   );
-  return new SettingsPanel(list, deps.theme, deps.title ?? '改哪一项?  (↑↓ 选, Enter 改, Esc 取消)', () => submenuOpen);
+  return new SettingsPanel(list, deps.theme, deps.title ?? 'Which setting?  (↑↓ select · Enter change · Esc cancel)', () => submenuOpen);
 }

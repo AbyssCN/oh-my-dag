@@ -237,7 +237,7 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
     async forkSession({ fromId, newId }): Promise<{ ok: boolean; text: string }> {
       try {
         const s = await deps.store.fork(fromId, newId);
-        return { ok: true, text: `已从 ${fromId} fork 出 ${s.id} (${(await s.messages()).length} 条消息)` };
+        return { ok: true, text: `forked ${s.id} from ${fromId} (${(await s.messages()).length} messages)` };
       } catch (err) {
         return { ok: false, text: err instanceof Error ? err.message : String(err) };
       }

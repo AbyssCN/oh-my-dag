@@ -40,7 +40,7 @@ const CLI = join(ROOT, 'src/harness/cli.ts');
 const BUN = process.env.BUN_PATH ?? 'bun';
 // 与 `src/tui/backend-fixture.ts` 的 FIXTURE_CHUNKS 逐字一致 —— 这条 lane 是 node 跑的,
 // 不 import TS 源;两处不一致时 S10-2/S10-3 会红,而那正是想要的信号。
-const FIXTURE_REPLY = ['已收到。', '这是 fixture 后端, 没有发给任何模型。'];
+const FIXTURE_REPLY = ['Got it.', 'This is the fixture backend, nothing was sent to any model.'];
 
 // ---------------------------------------------------------------------------
 // oracle:归一化可见文本 + 它自己的反测
@@ -162,7 +162,7 @@ function check(ok, label, extra = '') {
  * 拿它当启动信号会在窄终端场景(DG-10)偶发红。
  */
 function bootReady(t) {
-  return t.includes('引擎');
+  return t.includes('engine');
 }
 
 /** 场景 1:起得来 → 有回显 → Ctrl+C 两次干净退出。 */
@@ -180,7 +180,7 @@ async function scenarioHappyPath() {
     // 「0 份」正是 SDD §5.1 实测到的那个洞 (两份 harness 一个字都没进过 system prompt)。
     // 断言不钉具体份数: 全局那份取决于跑的人, 钉死份数会变成一条挑机器的闸。
     check(
-      /harness [1-9]\d* 份/.test(p.text()),
+      /harness [1-9]\d* files/.test(p.text()),
       'S4-1 头部报出装配到的 harness 份数(不为 0 —— 0 份就是 §5.1 那个洞)',
       p.text().slice(0, 300),
     );
@@ -208,7 +208,7 @@ async function scenarioHappyPath() {
       p.text().slice(0, 500),
     );
     check(
-      await waitFor(p, (t) => t.includes('这是 fixture 后端')),
+      await waitFor(p, (t) => t.includes('This is the fixture backend')),
       'S10-2 流式回复装配进对话记录',
       p.text().slice(0, 500),
     );
@@ -216,7 +216,7 @@ async function scenarioHappyPath() {
     // ⚠ 切片③起左栏树默认开, 有 run 时它顶掉底部那张表 (同一份 DAG 不画两遍) ——
     //   这里先 /hud 关掉侧栏, 底部表回来, S11 的角色行/模型列断言才看得见。
     p.write('/hud\r');
-    check(await waitFor(p, (t) => t.includes('左栏 DAG 图:关')), 'S11-0 /hud 能关掉侧栏(底部表回来)', p.text().slice(-300));
+    check(await waitFor(p, (t) => t.includes('DAG sidebar: off')), 'S11-0 /hud 能关掉侧栏(底部表回来)', p.text().slice(-300));
     check(
       await waitFor(p, (t) => t.includes('DAG fixture-run')),
       'S11-1 HUD 出现(有 run 才画, 没 run 恒缺席)',
@@ -246,7 +246,7 @@ async function scenarioHappyPath() {
     //   绝对 cache 数不画了(与命中率重复)⇒ 现在钉 `↑3.1k ↓184 缓存88%`。
     //   数还是那三个(3120/184/2760 → 88%), 变的是词元数不是信息。
     check(
-      await waitFor(p, (t) => t.includes('↑3.1k ↓184 缓存88%')),
+      await waitFor(p, (t) => t.includes('↑3.1k ↓184 cache88%')),
       'SB-1 ★ 底栏: token 与命中率非零且与账本一致(3120/184/2760 → 88%)',
       p.text().slice(-500),
     );
@@ -257,7 +257,7 @@ async function scenarioHappyPath() {
     //   · provider 逐项拆分**只在 ≥2 个按量 provider 时才画** ⇒ 单 provider 的 fixture 下
     //     那一段本来就不该在, 原来的 SB-3 从这一版起判**它不出现**(不是删掉这条闸)。
     //   · `oh-my-dag · main` 的分隔点去掉了(省一个词元)⇒ 正则改成 `oh-my-dag \S+`。
-    check(p.text().includes('$0.00+ 1次'), 'SB-2 ★ 底栏: 窗口段有真计数, 未计价带 + 标注', p.text().slice(-500));
+    check(p.text().includes('$0.00+ 1x'), 'SB-2 ★ 底栏: 窗口段有真计数, 未计价带 + 标注', p.text().slice(-500));
     check(!p.text().includes('fixture $0.00+'), 'SB-3 ★ 单 provider 时不画逐项拆分(与座位坐标重复)', p.text().slice(-500));
     // 工作区段: 这条 lane 的 cwd 就是 omd 仓 → 仓名与分支该在。
     check(/oh-my-dag \S+/.test(p.text()), 'SB-4 底栏: git 仓名+分支段', p.text().slice(-500));
@@ -274,7 +274,7 @@ async function scenarioHappyPath() {
     // ── 切片⑦: 会话树 —— fork 一条、切回去、两条互不污染 (G 判据逐字)。──
     // ⚠ 2026-08-09: 默认会话 id 不再是写死的 `tui`(写死会让多开的两个窗口写同一条会话),
     //   ⇒ 下面四条断言**从欢迎屏把本进程的 id 读回来**, 不再拿字面 `tui` 拼。
-    const sessionId = (p.text().match(/会话\s+(s-\d+-\d+)/) ?? [])[1];
+    const sessionId = (p.text().match(/session\s+(s-\d+-\d+)/) ?? [])[1];
     check(
       Boolean(sessionId),
       'SESS-0 ★ 欢迎屏写的是本进程自己的会话 id(`s-<秒>-<pid>`, 不是写死的 tui)',
@@ -282,7 +282,7 @@ async function scenarioHappyPath() {
     );
     p.write('/session fork\r');
     check(
-      await waitFor(p, (t) => t.includes(`已从 ${sessionId} fork 出`) && t.includes('已切到分支')),
+      await waitFor(p, (t) => t.includes(`forked`) && t.includes(`from ${sessionId}`) && t.includes('switched to the branch')),
       'SF-1 ★ fork 有回执且已切进分支',
       p.text().slice(-500),
     );
@@ -290,13 +290,13 @@ async function scenarioHappyPath() {
     check(await waitFor(p, (t) => t.includes('> branch-only')), 'SF-2 分支里的新消息进了分支');
     p.write(`/session ${sessionId}\r`);
     check(
-      await waitFor(p, (t) => t.includes(`已切到会话 ${sessionId}(回放 1 条`)),
+      await waitFor(p, (t) => t.includes(`Switched to session ${sessionId} (replayed 1 `)),
       'SF-3 ★ 切回原会话: 回放数不含分支消息(互不污染)',
       p.text().slice(-500),
     );
     p.write('/session\r');
     check(
-      await waitFor(p, (t) => t.includes(`<- fork 自 ${sessionId}`)),
+      await waitFor(p, (t) => t.includes(`<- forked from ${sessionId}`)),
       'SF-4 会话列表画出 lineage(树的边是数据)',
       p.text().slice(-600),
     );
@@ -304,7 +304,7 @@ async function scenarioHappyPath() {
     await new Promise((r) => setTimeout(r, 300));
 
     p.write('\x03');
-    check(await waitFor(p, (t) => t.includes('再按一次')), 'S2-4 第一次 Ctrl+C 只预备, 不退');
+    check(await waitFor(p, (t) => t.includes('press Ctrl+C again')), 'S2-4 第一次 Ctrl+C 只预备, 不退');
 
     p.write('\x03');
     const code = await Promise.race([p.exitedP, new Promise((r) => setTimeout(() => r('TIMEOUT'), 15000))]);
@@ -320,7 +320,7 @@ async function scenarioArmReset() {
   try {
     check(await waitFor(p, (t) => bootReady(t)), 'S2-6 (场景2) 启动');
     p.write('\x03');
-    check(await waitFor(p, (t) => t.includes('再按一次')), 'S2-7 (场景2) 进入预备');
+    check(await waitFor(p, (t) => t.includes('press Ctrl+C again')), 'S2-7 (场景2) 进入预备');
     // 打的字进输入框 (S8 之后不再是自绘回显)。用一个不会撞上任何 chrome 文案的串。
     p.write('zebra');
     check(await waitFor(p, (t) => t.includes('zebra')), 'S2-8 打字解除预备并回显', p.text().slice(0, 300));
@@ -376,7 +376,7 @@ async function scenarioLogRedirect() {
     check(p.text().includes(MARK) === false, 'S3-2 ★ 启动日志不在终端上(改道生效)', p.text().slice(0, 400));
 
     p.write('\x03');
-    await waitFor(p, (t) => t.includes('再按一次'));
+    await waitFor(p, (t) => t.includes('press Ctrl+C again'));
     p.write('\x03');
     const code = await Promise.race([p.exitedP, new Promise((r) => setTimeout(() => r('TIMEOUT'), 15000))]);
     check(code === 0, 'S3-3 (场景3) 干净退出', `实得 ${code}`);
@@ -415,17 +415,17 @@ async function scenarioSeat() {
 
     p.write('/seat\r');
     check(
-      await waitFor(p, (t) => t.includes('可调座位') && t.includes('.omd/config.json')),
+      await waitFor(p, (t) => t.includes('tunable seats') && t.includes('.omd/config.json')),
       'S12-1 /seat 列出座位视图(说清改的是哪个文件)',
       p.text().slice(0, 700),
     );
     // ★ 列的是**座位视图**不是裸模型列表: 职责那一行来自座位登记表。
-    check(p.text().includes('职责:'), 'S12-2 ★ 列的是座位视图(带职责/建议), 不是裸模型名');
+    check(p.text().includes('does:'), 'S12-2 ★ 列的是座位视图(带职责/建议), 不是裸模型名');
 
     // ⚠ 裸 `/seat` 现在会**开选择器**(2026-08-07 加的对话框)。它拿走焦点, 不 Esc 的话
     //   后面所有输入都进框里 —— 第一次跑就是这么红的 (SESS-1/2 收不到任何东西)。
     check(
-      await waitFor(p, (t) => t.includes('改哪个座位')),
+      await waitFor(p, (t) => t.includes('Which seat?')),
       'S12-2b ★ 裸 /seat 开出座位面板',
       p.text().slice(0, 900),
     );
@@ -448,7 +448,7 @@ async function scenarioSeat() {
     p.write('\x1b');
     await new Promise((r) => setTimeout(r, 200));
     check(
-      await waitFor(p, (t) => t.lastIndexOf('改哪个座位') > Math.max(t.lastIndexOf('换成哪个模型'), t.lastIndexOf('换成哪个坐标'))),
+      await waitFor(p, (t) => t.lastIndexOf('Which seat?') > Math.max(t.lastIndexOf('to which model?'), t.lastIndexOf('Which coordinate'))),
       'S12-2b3 ★ 子层 Esc → 回**座位面板**(退一级, 与设置页同一套行为)',
       p.text().slice(-900),
     );
@@ -506,7 +506,7 @@ async function scenarioSeat() {
     // /session: 列会话 + 新开(fixture 后端也实现了 listSessions/loadHistory)。
     p.write('/session\r');
     check(
-      await waitFor(p, (t) => t.includes('会话') && t.includes('/session <id> 切换')),
+      await waitFor(p, (t) => t.includes('/session <id> to switch') && t.includes('/session new [id]')),
       'SESS-1 /session 列出会话(标出当前那条)',
       p.text().slice(0, 800),
     );
@@ -514,13 +514,13 @@ async function scenarioSeat() {
     await new Promise((r) => setTimeout(r, 300));
     p.write('/session new mysess\r');
     check(
-      await waitFor(p, (t) => t.includes('已新开会话 mysess')),
+      await waitFor(p, (t) => t.includes('New session mysess')),
       'SESS-2 ★ 新开会话有回执',
       p.text().slice(0, 800),
     );
     p.write('/session ../逃逸\r');
     check(
-      await waitFor(p, (t) => t.includes('会话 id 非法')),
+      await waitFor(p, (t) => t.includes('Invalid session id')),
       'SESS-3 ★ 非法 id 给人话, 不是抛一个栈',
       p.text().slice(0, 800),
     );
@@ -528,16 +528,16 @@ async function scenarioSeat() {
     // /settings: owner 指出"设置完全没有"。面板 + 选择器, 只读项标出来。
     p.write('/settings\r');
     check(
-      await waitFor(p, (t) => t.includes('座位 conductor') && t.includes('字形白名单')),
+      await waitFor(p, (t) => t.includes('seat conductor') && t.includes('glyph whitelist')),
       'SET-1 ★ /settings 列出真有数的项(座位/会话/上下文/配色字形/扩展)',
       p.text().slice(0, 1100),
     );
     check(
-      await waitFor(p, (t) => t.includes('改哪一项')),
+      await waitFor(p, (t) => t.includes('Which setting?')),
       'SET-2 设置选择器开出来了',
       p.text().slice(-500),
     );
-    check(p.text().includes('(只读)'), 'SET-3 ★ 只读项标出来(选中它什么都不做, 这是刻意的)');
+    check(p.text().includes('(read-only)'), 'SET-3 ★ 只读项标出来(选中它什么都不做, 这是刻意的)');
     /**
      * ★ **标题只许出现一次** —— 2026-08-08 帧上抓到的:面板自己画框之后,宿主那边又套了
      * 一层 `DialogBox`,于是**双层框 + 标题印两遍**。
@@ -549,11 +549,11 @@ async function scenarioSeat() {
      * 外框的竖线紧接着内框的左上角(`│ ┌─ 改哪一项`)。它一次都不该出现。
      * 证伪方式:把宿主那层 `DialogBox` 加回去 → 当场红(2026-08-08 实跑过)。
      */
-    check(!/│ ┌─ 改哪一项/.test(p.text()), 'SET-2b ★ 设置页没有嵌套框(标题不印两遍)', p.text().slice(-900));
+    check(!/│ ┌─ Which setting/.test(p.text()), 'SET-2b ★ 设置页没有嵌套框(标题不印两遍)', p.text().slice(-900));
     // 切片⑥: 可改组进了面板 (界面/审批/provider)。
-    check(p.text().includes('左栏 DAG 默认'), 'SET-5 ★ 界面组在面板里(写 tui.ui)', p.text().slice(-900));
-    check(p.text().includes('审批 token TTL'), 'SET-6 ★ 审批组在面板里(重启生效写在 detail)', p.text().slice(-900));
-    check(p.text().includes('provider 凭证'), 'SET-7 provider 组在面板里(只显示配没配)', p.text().slice(-900));
+    check(p.text().includes('DAG sidebar default'), 'SET-5 ★ 界面组在面板里(写 tui.ui)', p.text().slice(-900));
+    check(p.text().includes('approval token TTL'), 'SET-6 ★ 审批组在面板里(重启生效写在 detail)', p.text().slice(-900));
+    check(p.text().includes('provider credentials'), 'SET-7 provider 组在面板里(只显示配没配)', p.text().slice(-900));
 
     /**
      * ★ **SET-8/9/10/11:Esc 退一级,不是退到底**(2026-08-08,owner 点名的那条)。
@@ -577,7 +577,7 @@ async function scenarioSeat() {
     );
     p.write('\x1b'); // ← 这一下就是 owner 报的那一下
     check(
-      await waitFor(p, (t) => t.lastIndexOf('改哪一项') > Math.max(t.lastIndexOf('换成哪个模型'), t.lastIndexOf('换成哪个坐标'))),
+      await waitFor(p, (t) => t.lastIndexOf('Which setting?') > Math.max(t.lastIndexOf('to which model?'), t.lastIndexOf('Which coordinate'))),
       'SET-9 ★ 子层 Esc → 回**设置页主表**(不是退出整个设置)',
       p.text().slice(-900),
     );
@@ -595,19 +595,19 @@ async function scenarioSeat() {
     for (let i = 0; i < 16 && !onTtl; i++) {
       p.write('\x1b[B');
       await new Promise((r) => setTimeout(r, 80));
-      onTtl = p.text().includes('→ 审批 token TTL');
+      onTtl = p.text().includes('→ approval token TTL');
     }
     check(onTtl, 'SET-10 ↓ 走得到「审批 token TTL」那一行(光标钉在它上面)', p.text().slice(-900));
     p.write('\r'); // 开文本子层。`审批 token TTL(秒)` 带"(秒)"是子层标题独有的串
     check(
-      await waitFor(p, (t) => t.includes('审批 token TTL(秒)')),
+      await waitFor(p, (t) => t.includes('Approval token TTL (seconds)')),
       'SET-11 文本子层开出来了(TTL 没有候选表, 只能自持输入)',
       p.text().slice(-900),
     );
-    const subAt = p.text().lastIndexOf('审批 token TTL(秒)');
+    const subAt = p.text().lastIndexOf('Approval token TTL (seconds)');
     p.write('\x1b');
     check(
-      await waitFor(p, (t) => t.lastIndexOf('→ 审批 token TTL') > subAt),
+      await waitFor(p, (t) => t.lastIndexOf('→ approval token TTL') > subAt),
       'SET-12 ★★ 退回来**选中行没丢** —— 光标还钉在原来那一行(老做法会回到第一行)',
       p.text().slice(-900),
     );
@@ -618,13 +618,13 @@ async function scenarioSeat() {
     // 切片⑥: /login 开得出 provider 选择器; Esc 什么都不改 (真落 key 的路径走 headless-config 的单测)。
     p.write('/login\r');
     check(
-      await waitFor(p, (t) => t.includes('给哪个 provider 落 key')),
+      await waitFor(p, (t) => t.includes('Store a key for which provider?')),
       'LOGIN-1 ★ /login 开出 provider 选择器(已配/未配标出来)',
       p.text().slice(-500),
     );
     p.write('\x1b');
     await new Promise((r) => setTimeout(r, 300));
-    check(p.text().includes('key 已写入') === false, 'LOGIN-2 ★ Esc 取消后什么都没写');
+    check(p.text().includes('Key written to') === false, 'LOGIN-2 ★ Esc 取消后什么都没写');
 
     // ★ 斜杠补全: owner 截图抓到的 bug —— 打 /se 弹出来的必须是**命令**不是文件名。
     // ⚠ 判据必须挑一个**此前从未打印过**的串 —— oracle 是累积缓冲, 用 `/seat` 之类
@@ -647,33 +647,33 @@ async function scenarioSeat() {
       p.text().slice(0, 800),
     );
     // ⚠ 提示里 `/help` 带反引号, 归一化后仍在 —— 断言别把反引号漏掉 (初版就漏了)。
-    check(p.text().includes('看命令'), 'HELP-2 启动提示指向 /help', p.text().slice(0, 300));
+    check(p.text().includes('for commands'), 'HELP-2 启动提示指向 /help', p.text().slice(0, 300));
 
     // S15 (A7): /skill 列出包内那批方法论 skill, 唤起后挂到**下一句**上。
     p.write('/skill\r');
     // S-6 umbrella: `/skill` 出的是**分组总览**(一组一行), 不再是那面 21 条的墙。
     // 判据同时钉两件事: 组入口画出来了 + "只管本轮"那句还在(它最容易在改版里丢)。
     check(
-      await waitFor(p, (t) => t.includes('/omd') && t.includes('本轮')),
+      await waitFor(p, (t) => t.includes('/omd') && t.includes('this turn')),
       'S15-1 /skill 出分组总览(组入口 + 说清只管本轮)',
       p.text().slice(-800),
     );
     // ★ 组命令本身:`/omd` 列成员, 且成员名**去掉组前缀**(每行重复一遍 omd- 只是噪音)。
     p.write('/omd\r');
     check(
-      await waitFor(p, (t) => t.includes('council') && t.includes('用法: /omd')),
+      await waitFor(p, (t) => t.includes('council') && t.includes('Usage: /omd')),
       'S15-1b ★ /omd 是一条真命令, 列出组成员',
       p.text().slice(-800),
     );
     p.write('/skill omd-council 审这批座位\r');
     check(
-      await waitFor(p, (t) => t.includes('已挂上 skill')),
+      await waitFor(p, (t) => t.includes('armed')),
       'S15-2 ★ 唤起 = 挂到下一句上, 不是立刻跑一轮',
       p.text().slice(0, 800),
     );
     p.write('/skill 根本没有这条\r');
     check(
-      await waitFor(p, (t) => t.includes('没有这条 skill')),
+      await waitFor(p, (t) => t.includes('No such skill')),
       'S15-3 ★ 找不到就说没有(不静默注入空块)',
       p.text().slice(0, 800),
     );
@@ -681,14 +681,14 @@ async function scenarioSeat() {
     // S14: fixture 后端**没有** run 能力 —— 键不出现, 而不是点了没反应。
     p.write('/runs\r');
     check(
-      await waitFor(p, (t) => t.includes('没有 listRuns 能力')),
+      await waitFor(p, (t) => t.includes('no listRuns capability')),
       'S14-1 ★ 后端没有 run 能力时说出缺的是什么(能力探测面, 不是假入口)',
       p.text().slice(0, 700),
     );
 
     p.write('/seat conductor omdtest:model-x\r');
     check(
-      await waitFor(p, (t) => t.includes('座位已改')),
+      await waitFor(p, (t) => t.includes('Seat changed')),
       'S12-3 切座位有回执',
       p.text().slice(0, 700),
     );
@@ -741,17 +741,17 @@ async function scenarioSkillComplete() {
     await new Promise((r) => setTimeout(r, 200));
 
     // ── 切片⑤: 上下文健康度一行 (顺在同一场景里: 计数属于同一条会话)。
-    check(p.text().includes('上下文健康度') === false, 'CH-1 ★ 平时不占位(触发前那一行不存在)');
+    check(p.text().includes('Context health') === false, 'CH-1 ★ 平时不占位(触发前那一行不存在)');
     p.write('fixture:reads\r');
     check(
-      await waitFor(p, (t) => t.includes('上下文健康度') && t.includes('已 3 次')),
+      await waitFor(p, (t) => t.includes('Context health') && t.includes('3x already')),
       'CH-2 ★ 同一文件 read 3 次 → 健康度一行亮, 带路径与次数',
       p.text().slice(-500),
     );
     // 新开会话 → 计数清零, 一行摘掉 (状态跟会话走)。屏上历史里那句还在 —— 判据用**当前可见帧**
     // 不好取, 退而断言回执出现 (reset 逻辑由 health.test.ts 钉)。
     p.write('/session new\r');
-    check(await waitFor(p, (t) => t.includes('已新开会话')), 'CH-3 换会话有回执(计数清零走 L1 闸)');
+    check(await waitFor(p, (t) => t.includes('New session')), 'CH-3 换会话有回执(计数清零走 L1 闸)');
   } finally {
     p.kill();
   }
@@ -770,28 +770,28 @@ async function scenarioPathfinder() {
     check(await waitFor(p, (t) => bootReady(t)), 'PF-0 (场景4.9) 启动');
     p.write('\x10'); // Ctrl+P
     check(
-      await waitFor(p, (t) => t.includes('切到哪张地图') || t.includes('雾退线')),
+      await waitFor(p, (t) => t.includes('Switch to which map?') || t.includes('fog line')),
       'PF-1 ★ Ctrl+P 列得出地图(多张出选择器, 一张直接进)',
       p.text().slice(-600),
     );
-    if (p.text().includes('切到哪张地图')) {
+    if (p.text().includes('Switch to which map?')) {
       p.write('session'); // 搜索: 挑 session-continuity-port (它有前沿票)
       await new Promise((r) => setTimeout(r, 400));
       p.write('\r');
     }
     check(
-      await waitFor(p, (t) => t.includes('雾退线') && t.includes('凝固层')),
+      await waitFor(p, (t) => t.includes('fog line') && t.includes('settled')),
       'PF-2 ★ 切得动 —— 进了那张图的全屏雾退线 (画法 C 默认)',
       p.text().slice(-800),
     );
-    check(/run 推进过/.test(p.text()), 'PF-3 ★ 票与 run 的关系看得见(头行的 run 计数段)', p.text().slice(-600));
+    check(/· \d+ runs|· no runs/.test(p.text()), 'PF-3 ★ 票与 run 的关系看得见(头行的 run 计数段)', p.text().slice(-600));
     p.write('\t');
-    check(await waitFor(p, (t) => t.includes('三角洲')), 'PF-4 ★ Tab 切到画法 B 三角洲', p.text().slice(-600));
+    check(await waitFor(p, (t) => t.includes('delta')), 'PF-4 ★ Tab 切到画法 B 三角洲', p.text().slice(-600));
     p.write('\t');
     await new Promise((r) => setTimeout(r, 300));
     p.write('\r'); // Enter: 选中票的动作弹窗
     check(
-      await waitFor(p, (t) => t.includes('审问 (grill)') && t.includes('research')),
+      await waitFor(p, (t) => t.includes('g grill') && t.includes('research')),
       'PF-5 ★ 票的动作弹窗 (g/d/c/r 四动作)',
       p.text().slice(-600),
     );
@@ -816,7 +816,7 @@ async function scenarioDagViews() {
   try {
     check(await waitFor(p, (t) => bootReady(t)), 'DG-0 (场景4.6) 启动');
     p.write('fixture:dag\r');
-    check(await waitFor(p, (t) => t.includes('fan-out 演示图已发完')), 'DG-1 fan-out 演示 run 发完', p.text().slice(-400));
+    check(await waitFor(p, (t) => t.includes('fan-out demo graph sent')), 'DG-1 fan-out 演示 run 发完', p.text().slice(-400));
     check(
       await waitFor(p, (t) => t.includes('├─') && t.includes('└─')),
       'DG-2 ★ 侧栏树画出分裂(├─ └─ 都在)',
@@ -825,13 +825,13 @@ async function scenarioDagViews() {
     check(p.text().includes('DAG fixture-fanout'), 'DG-3 树头行带 run id', p.text().slice(-600));
 
     p.write('\x07'); // Ctrl+G → 全屏 (画法 0 = 树)
-    check(await waitFor(p, (t) => t.includes('当前: 树')), 'DG-4 ★ Ctrl+G 进全屏(画法提示可见)', p.text().slice(-400));
+    check(await waitFor(p, (t) => t.includes('now: tree')), 'DG-4 ★ Ctrl+G 进全屏(画法提示可见)', p.text().slice(-400));
     p.write('\t');
-    check(await waitFor(p, (t) => t.includes('泳道甘特')), 'DG-5 ★ Tab 切到泳道甘特', p.text().slice(-600));
-    check(p.text().includes('在跑'), 'DG-6 甘特上有在跑的条(shard-3 没 settle)', p.text().slice(-600));
+    check(await waitFor(p, (t) => t.includes('swimlane gantt')), 'DG-5 ★ Tab 切到泳道甘特', p.text().slice(-600));
+    check(p.text().includes('running'), 'DG-6 甘特上有在跑的条(shard-3 没 settle)', p.text().slice(-600));
     p.write('\t');
     check(
-      await waitFor(p, (t) => t.includes('分层依赖') && t.includes('L0')),
+      await waitFor(p, (t) => t.includes('layered deps') && t.includes('L0')),
       'DG-7 ★ Tab 再切到分层依赖(L0 层可见)',
       p.text().slice(-600),
     );
@@ -883,7 +883,7 @@ async function scenarioDagViews() {
       );
     }
     p.write('\t');
-    check(await waitFor(p, (t) => t.includes('当前: 树')), 'DG-9 Tab 循环回到树');
+    check(await waitFor(p, (t) => t.includes('now: tree')), 'DG-9 Tab 循环回到树');
     p.write('\x07'); // 退出全屏
     await new Promise((r) => setTimeout(r, 300));
   } finally {
@@ -897,7 +897,7 @@ async function scenarioDagNarrow() {
   try {
     check(await waitFor(p, (t) => bootReady(t)), 'DG-10 (场景4.7) 80 列启动');
     p.write('fixture:dag\r');
-    check(await waitFor(p, (t) => t.includes('fan-out 演示图已发完')), 'DG-11 演示 run 发完');
+    check(await waitFor(p, (t) => t.includes('fan-out demo graph sent')), 'DG-11 演示 run 发完');
     // 底部那张表要回来 (它列节点行) —— 等它先出现, 再断言树没画。
     check(await waitFor(p, (t) => t.includes('shard-1')), 'DG-12 底部表在画节点', p.text().slice(-500));
     check(p.text().includes('├─') === false, 'DG-13 ★ 80 列下侧栏自动收起(树的分支符不出现)', p.text().slice(-500));
@@ -926,14 +926,14 @@ async function scenarioApproval() {
     // ── 第一轮: 拒绝 ──
     p.write('fixture:write\r');
     check(
-      await waitFor(p, (t) => t.includes('需要审批') && t.includes('要做什么')),
+      await waitFor(p, (t) => t.includes('Approval needed') && /what \S/.test(t)),
       'AP-1 ★ write 弹出审批单(占住输入区)',
       p.text().slice(-600),
     );
-    check(p.text().includes('y 批准这一次'), 'AP-2 卡片带键位行(y/a/d/Esc)', p.text().slice(-400));
+    check(p.text().includes('y allows once'), 'AP-2 卡片带键位行(y/a/d/Esc)', p.text().slice(-400));
     p.write('\x1b'); // Esc = 拒绝
     check(
-      await waitFor(p, (t) => t.includes('已拒绝') && t.includes('write 没有执行')),
+      await waitFor(p, (t) => t.includes('denied') && t.includes('write not executed')),
       'AP-3 ★ 拒绝有回执且工具报被拒',
       p.text().slice(-600),
     );
@@ -941,7 +941,7 @@ async function scenarioApproval() {
 
     // ── 第二轮: 看详情 + 批准 ──
     p.write('fixture:write\r');
-    check(await waitFor(p, (t) => t.includes('需要审批')), 'AP-5 同一操作重新要审批(y/Esc 不留 token)');
+    check(await waitFor(p, (t) => t.includes('Approval needed')), 'AP-5 同一操作重新要审批(y/Esc 不留 token)');
     p.write('d'); // 展开详情 (内容预览)
     // ⚠ 判据是详情分隔线, 不是 'approved' —— 后者在**拒绝回执**里也出现 (approved.txt),
     //   证伪跑(去掉 setAsk 接线)时抓到这条在假绿。
@@ -967,7 +967,7 @@ async function scenarioApproval() {
     await new Promise((r) => setTimeout(r, 250));
     p.write('y'); // 批准这一次
     check(
-      await waitFor(p, (t) => t.includes('已批准这一次') && t.includes('write 已执行')),
+      await waitFor(p, (t) => t.includes('allowed once') && t.includes('write executed')),
       'AP-7 ★ 批准有回执且工具真跑了',
       p.text().slice(-600),
     );
@@ -1029,7 +1029,7 @@ async function scenarioRealBackendBoots() {
       p.text().slice(-300),
     );
     p.write('\x03');
-    await waitFor(p, (t) => t.includes('再按一次'));
+    await waitFor(p, (t) => t.includes('press Ctrl+C again'));
     p.write('\x03');
     const code = await Promise.race([p.exitedP, new Promise((r) => setTimeout(() => r('TIMEOUT'), 20000))]);
     check(code === 0, 'REAL-3 真后端下 Ctrl+C 两次也干净退出', `实得 ${code}`);

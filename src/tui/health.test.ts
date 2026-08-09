@@ -19,14 +19,14 @@ describe('createContextHealth', () => {
   test('★ 同一文件第 3 次 read → 亮, 报路径与次数', () => {
     const h = createContextHealth();
     for (let i = 0; i < 3; i++) h.onTool('read', { path: 'src/x.ts' });
-    expect(h.line()).toContain('read src/x.ts 已 3 次');
+    expect(h.line()).toContain('read src/x.ts 3x already');
   });
 
   test('只报最重的那个文件(一行, 不是第二张 HUD)', () => {
     const h = createContextHealth();
     for (let i = 0; i < 3; i++) h.onTool('read', { path: 'a.ts' });
     for (let i = 0; i < 5; i++) h.onTool('read', { path: 'b.ts' });
-    expect(h.line()).toContain('b.ts 已 5 次');
+    expect(h.line()).toContain('b.ts 5x already');
     expect(h.line()).not.toContain('a.ts');
   });
 

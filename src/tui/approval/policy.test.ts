@@ -36,7 +36,7 @@ describe('四档分类', () => {
     for (const name of ['write', 'edit', 'omd_run']) {
       const c = classifyToolCall(name, { path: 'src/x.ts' }, cfg);
       expect(c.tier, name).toBe('write');
-      expect(c.reasons[0], name).toBe('function 级 write');
+      expect(c.reasons[0], name).toBe('function-level write');
     }
   });
 
@@ -60,7 +60,7 @@ describe('四档分类', () => {
   test('bash: scoped_write / 未登记命令 → write', () => {
     const c = classifyToolCall('bash', { command: 'bun test' }, cfg);
     expect(c.tier).toBe('write');
-    expect(c.reasons.join()).toContain('风险级');
+    expect(c.reasons.join()).toContain('risk tier');
     expect(classifyToolCall('bash', { command: 'mkdir -p /tmp/x' }, cfg).tier).toBe('write');
   });
 
@@ -68,7 +68,7 @@ describe('四档分类', () => {
     for (const command of ['git push --force origin main', 'git reset --hard HEAD~3']) {
       const c = classifyToolCall('bash', { command }, cfg);
       expect(c.tier, command).toBe('admin');
-      expect(c.reasons.join(), command).toContain('不可逆');
+      expect(c.reasons.join(), command).toContain('irreversible');
     }
   });
 
@@ -83,7 +83,7 @@ describe('四档分类', () => {
     const withProtected: ApprovalPolicyConfig = { ...cfg, protectedPaths: ['src/model/seats.ts', 'docs/plan/'] };
     const c = classifyToolCall('edit', { path: 'src/model/seats.ts', oldText: 'a', newText: 'b' }, withProtected);
     expect(c.tier).toBe('write');
-    expect(c.reasons).toEqual(['function 级 write', '目标在受保护清单 (src/model/seats.ts)']);
+    expect(c.reasons).toEqual(['function-level write', 'target is on the protected list (src/model/seats.ts)']);
     // 目录前缀也命中
     const c2 = classifyToolCall('write', { path: 'docs/plan/x.md', content: '' }, withProtected);
     expect(c2.reasons.length).toBe(2);
@@ -148,10 +148,10 @@ describe('loadApprovalConfig', () => {
 describe('describeToolCall(卡片文案)', () => {
   test('edit → diff 形态; write → 字节数 + 内容预览; bash → 命令全文', () => {
     const e = describeToolCall('edit', { path: 'a.ts', oldText: 'x\ny', newText: 'z' });
-    expect(e.summary).toBe('edit a.ts (-2 +1 行)');
+    expect(e.summary).toBe('edit a.ts (-2 +1 lines)');
     expect(e.preview).toEqual(['- x', '- y', '+ z']);
     const w = describeToolCall('write', { path: 'b.ts', content: 'hello\nworld' });
-    expect(w.summary).toContain('11 字节');
+    expect(w.summary).toContain('11 bytes');
     expect(w.preview).toEqual(['hello', 'world']);
     const b = describeToolCall('bash', { command: 'bun test\necho done' });
     expect(b.summary).toBe('bash: bun test');
@@ -161,6 +161,6 @@ describe('describeToolCall(卡片文案)', () => {
   test('预览封顶, 超长说还有多少行(单条长工具输出能拖死 TUI, superpowers 教训同族)', () => {
     const w = describeToolCall('write', { path: 'x', content: Array.from({ length: 100 }, (_, i) => `L${i}`).join('\n') });
     expect(w.preview.length).toBe(31);
-    expect(w.preview[30]).toContain('还有 70 行');
+    expect(w.preview[30]).toContain('70 more lines');
   });
 });

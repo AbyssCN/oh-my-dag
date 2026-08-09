@@ -60,15 +60,15 @@ describe('humanizeProviderError', () => {
     const long = `q: 500 {"message":"${'x'.repeat(400)}"}`;
     const line = humanizeProviderError(long);
     expect(line.length).toBeLessThan(400);
-    expect(line).toContain('还有');
-    expect(line).toContain('全文在日志里');
+    expect(line).toContain('more chars');
+    expect(line).toContain('full text in the log');
   });
 
   test('★★ 截断也**不许把 URL 吃掉** —— 它是唯一告诉人"怎么解决"的东西', () => {
     // 这条就是第一版栽的那个:真实 403 恰好在 150 字处被切断, URL 正好在切口之后。
     const line = humanizeProviderError(REAL_403);
     expect(line.endsWith('https://www.kimi.com/code/#pricing')).toBe(true);
-    expect(line).toContain('还有'); // 正文被截了, 而 URL 还在
+    expect(line).toContain('more chars'); // 正文被截了, 而 URL 还在
   });
 
   test('换行被拍平(对话区一条 notice 就该是一行)', () => {

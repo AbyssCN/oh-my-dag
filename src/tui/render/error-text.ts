@@ -62,7 +62,7 @@ export function humanizeProviderError(raw: string): string {
   const fixed = `${head} `.length + tail.length;
   const room = Math.max(24, ERROR_LINE_MAX - fixed);
   const flat = bare.replace(/\s+/g, ' ').trim();
-  const shown = flat.length <= room ? flat : `${flat.slice(0, room)}…(还有 ${flat.length - room} 字, 全文在日志里)`;
+  const shown = flat.length <= room ? flat : `${flat.slice(0, room)}…(${flat.length - room} more chars, full text in the log)`;
   return `${head} ${shown}${tail}`.replace(/\s+/g, ' ').trim();
 }
 
@@ -80,5 +80,5 @@ function pickMessage(o: unknown): string | null {
 function cap(s: string): string {
   const one = s.replace(/\s+/g, ' ').trim();
   if (one.length <= ERROR_LINE_MAX) return one;
-  return `${one.slice(0, ERROR_LINE_MAX)}…(还有 ${one.length - ERROR_LINE_MAX} 字, 全文在日志里)`;
+  return `${one.slice(0, ERROR_LINE_MAX)}…(${one.length - ERROR_LINE_MAX} more chars, full text in the log)`;
 }

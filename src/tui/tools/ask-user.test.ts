@@ -68,7 +68,7 @@ describe('ask_user', () => {
     expect(r.details).toMatchObject({ answered: true, index: 1, label: '乙' });
     // 留痕:问了什么 + 选了什么, 框关掉之后还回看得到
     expect(notices.join('\n')).toContain('选哪个?');
-    expect(notices.join('\n')).toContain('你选了: 乙');
+    expect(notices.join('\n')).toContain('you chose: 乙');
   });
 
   test('★ Esc 是**答案**不是错误 —— 回话且不抛', async () => {
@@ -118,7 +118,7 @@ describe('ask_user', () => {
     const p = mk({ host, theme: THEME, appendNotice: () => {} }).run(QUESTION);
     await Bun.sleep(0);
     const shownText = (host.opened as { render: (w: number) => string[] }).render(70).join('\n');
-    expect(shownText).toContain('先聊聊这个');
+    expect(shownText).toContain('talk it through first');
     host.press('\x1b');
     await p;
   });

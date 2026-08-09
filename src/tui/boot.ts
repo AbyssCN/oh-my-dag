@@ -46,15 +46,15 @@ export function formatBootFailure(err: unknown, cwd: string): string {
   const kind = classifyBootFailure(err);
   if (kind === 'seat-unresolved') {
     return [
-      `omd tui 起不来:这个仓还没配座位(座位是**逐仓**的,配置在 ${cwd}/.omd/config.json)。`,
+      `omd tui cannot start: this repo has no seats configured (seats are **per repo**, configured in ${cwd}/.omd/config.json).`,
       '',
-      '两条路任选一条:',
-      '  omd init            首次配置向导(选档 + 填 key)',
-      '  omd models auto     已经有 key 的话, 按渠道自动分配座位',
+      'Two ways out, pick either:',
+      '  omd init            first-run wizard (pick a tier + store keys)',
+      '  omd models auto     if you already have keys, assign seats by channel',
       '',
-      `引擎原话: ${raw}`,
+      `Engine said: ${raw}`,
       '',
     ].join('\n');
   }
-  return [`omd tui 起不来: ${raw}`, ''].join('\n');
+  return [`omd tui cannot start: ${raw}`, ''].join('\n');
 }

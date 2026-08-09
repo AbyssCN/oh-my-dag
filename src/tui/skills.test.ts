@@ -99,12 +99,12 @@ describe('★ 唤起 = 注入纪律, 不是执行', () => {
 
 describe('formatSkillList', () => {
   test('空目录说清是"目录不在或为空", 不画一张空表', () => {
-    expect(formatSkillList([])).toContain('没有可唤起的 skill');
+    expect(formatSkillList([])).toContain('No skills to invoke');
   });
 
   test('说清注入只管本轮、不写进会话', () => {
     const out = formatSkillList([{ name: 'omd-x', description: 'd', root: '/r' }]);
-    expect(out).toContain('本轮');
-    expect(out).toContain('不写进会话');
+    expect(out).toContain('this turn');
+    expect(out).toContain('never stored in the session');
   });
 });

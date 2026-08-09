@@ -58,16 +58,16 @@ describe('★ 三态分得开', () => {
   test('★ 有图但前沿为空(全被挡着)→ 画 0 并说清为什么, 不是空白', () => {
     const h = hudFor(world([ticket('a', { status: 'open', blockedBy: ['zzz'] })]));
     const out = h.render(100).join('\n');
-    expect(out).toContain('前沿 0');
-    expect(out).toContain('被前置票挡着');
+    expect(out).toContain('frontier 0');
+    expect(out).toContain('blocked by prerequisites');
   });
 
   test('★ 有图且全部裁决完 → 也画 0, 但**理由不同**(与被阻塞分得开)', () => {
     const h = hudFor(world([ticket('a', { status: 'ruled', ruling: 'x' })]));
     const out = h.render(100).join('\n');
-    expect(out).toContain('前沿 0');
-    expect(out).toContain('全部已裁决');
-    expect(out).not.toContain('被前置票挡着');
+    expect(out).toContain('frontier 0');
+    expect(out).toContain('everything ruled');
+    expect(out).not.toContain('blocked by prerequisites');
   });
 });
 
@@ -117,7 +117,7 @@ describe('宽度', () => {
 
   test('票多到画不下时说"另有 N 张", 不静默截断', () => {
     const h = hudFor(world(Array.from({ length: 12 }, (_, i) => ticket(`t${i}`))));
-    expect(h.render(100).join('\n')).toContain('另有 7 张前沿票');
+    expect(h.render(100).join('\n')).toContain('7 more frontier tickets');
   });
 });
 

@@ -38,16 +38,16 @@ export interface CommandDoc {
  * 顺序 = 显示顺序,按"多久用一次"排,不按字母。
  */
 export const COMMANDS: readonly CommandDoc[] = [
-  { handler: 'parseHelpCommand', name: '/help', args: null, what: '列出这张表' },
-  { handler: 'handleSkill', name: '/skill', args: '[name] [补充]', what: '按组列出 skill(包内 + ~/.claude/skills);`/skill all` 全表;给名字则挂到**下一句**上' },
-  { handler: 'handleHud', name: '/hud', args: null, what: '开关左栏 DAG 树(fan-out 分裂看得见;窄终端自动收起)。Ctrl+G 全屏,全屏里 Tab 切 树/甘特/分层' },
-  { handler: 'handleModels', name: '/models', args: null, what: '给对话位换模型:列出已配 provider 的全部模型(可打字搜索,当前项带 ✓)' },
-  { handler: 'handleSeat', name: '/seat', args: '[role] [provider:model]', what: '列出可调座位;给参数则改 `.omd/config.json`(**有副作用**,立刻生效)' },
-  { handler: 'handleSettings', name: '/settings', args: null, what: '设置面板:座位 / 界面 / 审批 / provider / 会话 / 扩展(只读项会标出来;可改项写 `.omd/config.json`)' },
-  { handler: 'handleLogin', name: '/login', args: '[provider]', what: '给 provider 落 API key(auth.json / .env 自动路由;回显打星,**有副作用**)' },
-  { handler: 'handleSession', name: '/session', args: '[id | new [id]]', what: '列出会话;给 id 则切过去并回放它的历史;`new` 新开一条' },
-  { handler: 'handleRuns', name: '/runs', args: null, what: '列出 DAG run(内存注册表 + 磁盘 checkpoint 合并)' },
-  { handler: 'handleRuns', name: '/resume', args: '<runId>', what: '续跑一个断掉的 run —— 从 checkpoint 重载,跳过已绿节点(**有副作用**)' },
+  { handler: 'parseHelpCommand', name: '/help', args: null, what: 'show this table' },
+  { handler: 'handleSkill', name: '/skill', args: '[name] [notes]', what: 'list skills by group; a name arms it for the **next** message' },
+  { handler: 'handleHud', name: '/hud', args: null, what: 'toggle the DAG sidebar. Ctrl+G fullscreen, Tab cycles tree/gantt/layers' },
+  { handler: 'handleModels', name: '/models', args: null, what: 'switch the chat seat model (type to filter, current one marked ✓)' },
+  { handler: 'handleSeat', name: '/seat', args: '[role] [provider:model]', what: 'list tunable seats; with arguments it writes `.omd/config.json` (**side effect**)' },
+  { handler: 'handleSettings', name: '/settings', args: null, what: 'settings panel: seats / ui / approval / providers / session / extensions' },
+  { handler: 'handleLogin', name: '/login', args: '[provider]', what: 'store an API key for a provider (echo masked, **side effect**)' },
+  { handler: 'handleSession', name: '/session', args: '[id | new [id]]', what: 'list sessions; with an id, switch and replay it; `new` starts a fresh one' },
+  { handler: 'handleRuns', name: '/runs', args: null, what: 'list DAG runs (registry + on-disk checkpoints)' },
+  { handler: 'handleRuns', name: '/resume', args: '<runId>', what: 'resume a broken run from its checkpoint (**side effect**)' },
 ];
 
 /** 清单里出现过的命令名 —— 接线闸拿它跟 `tui.ts` 对表。 */
@@ -59,9 +59,13 @@ export function parseHelpCommand(text: string): boolean {
 }
 
 export function formatHelp(): string {
-  const rows = COMMANDS.map((c) => `  ${c.name}${c.args ? ` ${c.args}` : ''}\n      ${c.what}`);
-  return `命令(直接打字则是发一轮对话):\n${rows.join('\n')}\n\n输入框里打 @ 或一段路径可以模糊补全文件名。
-HUD 节点多时:Alt+↑ / Alt+↓ 滚动,Alt+Home 回到跟随。`;
+  // ★ **一行一条**(2026-08-09):换纯英文之后两行一条的排法把整屏顶穿了 ——
+  //   `/help` 的前几条直接滚出屏幕, L3 的 HELP-1 当场红(那不是假红, 是真看不到了)。
+  //   一行一条同时也是密度上的改善:同一屏能读完。
+  const w = Math.max(...COMMANDS.map((c) => `${c.name}${c.args ? ` ${c.args}` : ''}`.length));
+  const rows = COMMANDS.map((c) => `  ${`${c.name}${c.args ? ` ${c.args}` : ''}`.padEnd(w)}  ${c.what}`);
+  return `Commands (plain text sends a chat turn):\n${rows.join('\n')}\n\nType @ or part of a path in the editor to fuzzy-complete file names.
+When the HUD has many nodes: Alt+↑ / Alt+↓ scrolls, Alt+Home follows again.`;
 }
 
 /** 启动提示 —— **必须提到 `/help`**,否则命令仍然发现不了。 */
@@ -73,7 +77,7 @@ HUD 节点多时:Alt+↑ / Alt+↓ 滚动,Alt+Home 回到跟随。`;
  * ⚠ 砍的是**重复**不是能力:"怎么退出"这条信息一秒都没丢, 它在行③ 常驻,
  * 而人需要它的时刻(想退却退不掉)恰恰是**看着行③**的那一刻,不是启动那一刻。
  */
-export const STARTUP_HINT = '打字后回车发一轮;`/help` 看命令。';
+export const STARTUP_HINT = 'Type and press Enter to send a turn; `/help` lists the commands.';
 
 /**
  * 给 pi-tui 的 `CombinedAutocompleteProvider` 用的形状。
@@ -108,8 +112,8 @@ export function slashCommands(groups: readonly SlashGroup[] = []): { name: strin
   }));
   const groupCmds = groups.map((g) => ({
     name: g.name,
-    description: `${g.count} 条 ${g.name}-* skill —— 不给成员则列出它们`,
-    argumentHint: '[成员] [补充说明]',
+    description: `${g.count} ${g.name}-* skills - without a member name it lists them`,
+    argumentHint: '[member] [notes]',
   }));
   return [...base, ...groupCmds];
 }

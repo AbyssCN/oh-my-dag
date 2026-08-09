@@ -140,7 +140,7 @@ describe('卡片内容', () => {
     const [wrapped] = gate.wrap([tool]);
     await expect(wrapped!.execute('t1', { path: 'src/model/seats.ts', oldText: 'a', newText: 'b' } as never)).rejects.toThrow();
     expect(asked.length).toBe(1);
-    expect(asked[0]!.reasons).toEqual(['function 级 write', '目标在受保护清单 (src/model/seats.ts)']);
+    expect(asked[0]!.reasons).toEqual(['function-level write', 'target is on the protected list (src/model/seats.ts)']);
     expect(asked[0]!.summary).toContain('edit src/model/seats.ts');
   });
 });

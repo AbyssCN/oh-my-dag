@@ -50,7 +50,7 @@ describe('★ 座位视图来自登记表, 不是第二份常量', () => {
   test('★ 解析不出坐标的座位画 (未解析), 不拿别的档冒充', () => {
     // verifier 不在 resolveEngineModels 的返回里 —— 那一格的真值就是"没解析到"。
     const rows = seatRows({ conductor: 'a:1', leaf: 'b:2' });
-    expect(rows.find((r) => r.role === 'verifier')?.coord).toBe('(未解析)');
+    expect(rows.find((r) => r.role === 'verifier')?.coord).toBe('(unresolved)');
   });
 
   test('登记表里查不到的座位 → what/recommend 是 null, 不编一句', () => {
@@ -71,6 +71,6 @@ describe('formatSeatRows', () => {
   });
 
   test('缺字段画 `-`', () => {
-    expect(formatSeatRows([{ role: 'x', coord: 'c', what: null, recommend: null }])).toContain('建议: -');
+    expect(formatSeatRows([{ role: 'x', coord: 'c', what: null, recommend: null }])).toContain('pick: -');
   });
 });

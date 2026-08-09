@@ -27,7 +27,7 @@ import type { OmdBackend, OmdTuiEvent, TuiSessionMeta } from './backend';
 export const FIXTURE_URL = 'fixture://l3-test';
 
 /** 固定回复分两片发 —— 流式装配的判据要的就是"分批到达仍恰好出现一次"。 */
-export const FIXTURE_CHUNKS = ['已收到。', '这是 fixture 后端, 没有发给任何模型。'] as const;
+export const FIXTURE_CHUNKS = ['Got it.', 'This is the fixture backend, nothing was sent to any model.'] as const;
 
 /** fixture 的 run id —— PTY 断言它出现在 HUD 顶行。 */
 export const FIXTURE_RUN_ID = 'fixture-run';
@@ -99,9 +99,9 @@ export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend 
     async execute(_id: string, params: unknown) {
       const p = params as { path: string; content: string };
       const dir = process.env.OMD_TUI_FIXTURE_DIR;
-      if (!dir) return { content: [{ type: 'text', text: '(OMD_TUI_FIXTURE_DIR 未设, 没处写)' }], details: undefined };
+      if (!dir) return { content: [{ type: 'text', text: '(OMD_TUI_FIXTURE_DIR is not set, nowhere to write)' }], details: undefined };
       writeFileSync(join(dir, p.path), p.content);
-      return { content: [{ type: 'text', text: `✓ 写入 ${p.path}` }], details: undefined };
+      return { content: [{ type: 'text', text: `✓ wrote ${p.path}` }], details: undefined };
     },
   } as AnyOmdTool;
   const wrappedWrite = deps.approvals ? deps.approvals.wrap([fixtureWrite])[0] : undefined;
@@ -126,10 +126,10 @@ export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend 
           const r = await wrappedWrite.execute('fx-approval', { path: FIXTURE_WRITE_FILE, content: 'approved\n' }, undefined, undefined as never);
           emit('tool', { phase: 'end', name: 'write', ok: true });
           const text = (r.content ?? []).map((c) => ('text' in c ? c.text : '')).join('');
-          emit('chat', { type: 'delta', text: `write 已执行: ${text}` });
+          emit('chat', { type: 'delta', text: `write executed: ${text}` });
         } catch (err) {
           emit('tool', { phase: 'end', name: 'write', ok: false });
-          emit('chat', { type: 'delta', text: `write 没有执行: ${(err as Error).message}` });
+          emit('chat', { type: 'delta', text: `write not executed: ${(err as Error).message}` });
         }
         /**
          * ★ **fixture 也发 `pressure`**(2026-08-09)。
@@ -161,7 +161,7 @@ export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend 
         push({ type: 'start', id: 'shard-2', kind: 'agent' });
         push({ type: 'settle', id: 'shard-2', status: 'failed', kind: 'agent', model: 'fixture-model' });
         push({ type: 'start', id: 'shard-3', kind: 'agent' });
-        emit('chat', { type: 'delta', text: 'fan-out 演示图已发完。' });
+        emit('chat', { type: 'delta', text: 'fan-out demo graph sent.' });
         emit('session', { sessionId, messageCount: msgs.length + 1, pressure: FIXTURE_PRESSURE });
         sessions.set(sessionId, msgs);
         return { ok: true };
@@ -172,7 +172,7 @@ export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend 
           emit('tool', { phase: 'start', name: 'read', id: `fx-read-${i}`, args: { path: 'src/repeat.ts' } });
           emit('tool', { phase: 'end', name: 'read', id: `fx-read-${i}`, ok: true });
         }
-        emit('chat', { type: 'delta', text: '同一个文件读了三遍。' });
+        emit('chat', { type: 'delta', text: 'Read the same file three times.' });
         emit('session', { sessionId, messageCount: msgs.length + 1, pressure: FIXTURE_PRESSURE });
         sessions.set(sessionId, msgs);
         return { ok: true };
@@ -206,11 +206,11 @@ export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend 
     // 切片⑦: 内存版 fork —— 语义与 embedded 一致 (拷贝消息, 记 parent, 互不污染)。
     async forkSession({ fromId, newId }): Promise<{ ok: boolean; text: string }> {
       const src = sessions.get(fromId);
-      if (!src) return { ok: false, text: `fork 失败: 会话 ${fromId} 不存在 (还没写过盘的会话没有可 fork 的内容)` };
-      if (sessions.has(newId)) return { ok: false, text: `fork 失败: 会话 ${newId} 已存在` };
+      if (!src) return { ok: false, text: `fork failed: session ${fromId} does not exist (a session never written has nothing to fork)` };
+      if (sessions.has(newId)) return { ok: false, text: `fork failed: session ${newId} already exists` };
       sessions.set(newId, structuredClone(src));
       parents.set(newId, fromId);
-      return { ok: true, text: `已从 ${fromId} fork 出 ${newId} (${src.length} 条消息)` };
+      return { ok: true, text: `forked ${newId} from ${fromId} (${src.length} messages)` };
     },
   };
 }

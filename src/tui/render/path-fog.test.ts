@@ -58,17 +58,17 @@ describe('画法 C 雾退线', () => {
   test('★ 空间构图: 地层带 gist + 票钉在线上 (选中 [] 包) + 指针行 + 详情行 + 雾层渐变 + 底部读数', () => {
     const out = renderFogLine(buildPathViewData(map()), { width: 100, height: 30, selected: 0 });
     const body = out.join('\n');
-    expect(out[0]).toContain('雾退线');
-    expect(out[0]).toContain('本图被 1 个 run 推进过');
+    expect(out[0]).toContain('fog line');
+    expect(out[0]).toContain('· 1 runs');
     expect(body).toContain('gen-1  d01 stdio · d05 memory'); // 地层 = id + gist (稿的形)
     // 票钉在一条横线上, 选中的 [] 包 (结构可见, 不靠颜色); 阻塞票 x 前缀也钉着
-    expect(body).toMatch(/前沿线 ═\[t9●[^\]]*\]──g4◆[^─]*─/);
+    expect(body).toMatch(/frontier ═\[t9●[^\]]*\]──g4◆[^─]*─/);
     expect(body).toContain('xb1');
     expect(body).toContain('↓'); // 指针行: 票往雾里指
     expect(body).toContain('> ● t9 task  审批层四档  <- run run-78f1'); // 选中详情行带全文与 run
-    expect(body).toContain('阻塞集 1 张');
+    expect(body).toContain('blocked 1');
     expect(body).toContain('? ? ?');
-    expect(body).toMatch(/散雾 40% [█░]+ · open 2 · blocked 1 · run x1/); // 底部读数条
+    expect(body).toMatch(/fog 40% [█░]+ · open 2 · blocked 1 · run x1/); // 底部读数条
   });
 
   test('颜色钩子: 给了 paint 时选中行走 sel 通道 (NO_COLOR/测试下恒等仍可读)', () => {
@@ -78,14 +78,14 @@ describe('画法 C 雾退线', () => {
       paint: { accent: tag('a'), dim: tag('d'), warn: tag('w'), sel: tag('s') },
     }).join('\n');
     expect(out).toContain('<s>> ● t9');
-    expect(out).toContain('<w>  阻塞集');
+    expect(out).toContain('<w>  blocked');
   });
 
   test('前沿空时说清为什么(灰常量即真值)', () => {
     const m = map();
     for (const t of m.tickets) t.status = 'ruled';
     const out = renderFogLine(buildPathViewData(m), { width: 80, height: 30, selected: 0 }).join('\n');
-    expect(out).toContain('前沿 0 (全部已裁决)');
+    expect(out).toContain('frontier 0 (everything ruled)');
   });
 
   test('没有 run 推进过 → 说真话, 不画 0 个', () => {
@@ -93,7 +93,7 @@ describe('画法 C 雾退线', () => {
     for (const t of m.tickets) t.suggestedBy = undefined;
     m.suggestionsLog = [];
     const out = renderFogLine(buildPathViewData(m), { width: 100, height: 30, selected: 0 });
-    expect(out[0]).toContain('还没有 run 推进过本图');
+    expect(out[0]).toContain('· no runs');
   });
 });
 
@@ -101,7 +101,7 @@ describe('画法 B 三角洲', () => {
   test('★ 河系构图: 主干 + 实线支流 (带 gist) + 虚段梢头 + 每行右侧雾场列', () => {
     const out = renderDelta(buildPathViewData(map()), { width: 100, height: 30, selected: 1 });
     const body = out.join('\n');
-    expect(out[0]).toContain('三角洲');
+    expect(out[0]).toContain('delta');
     expect(body).toContain('● omd-agent-tui (goal)');
     expect(body).toContain('├── d01 stdio ── d05 memory'); // 支流链带 gist
     expect(body).toMatch(/├···· t9●/); // 梢头虚段
@@ -133,6 +133,6 @@ describe('宽度闸(CJK 标题不超宽)', () => {
     for (let i = 0; i < 40; i++) m.tickets.push(ticket({ id: `x${i}` }));
     const out = renderFogLine(buildPathViewData(m), { width: 80, height: 12, selected: 0 });
     expect(out.length).toBe(12);
-    expect(out[11]).toContain('还有');
+    expect(out[11]).toContain('more lines');
   });
 });
