@@ -196,9 +196,14 @@ async function planAndExecute(
   // 默认 8192 = deepseek 系安全顶 (同 fanout SYNTH_MAX 语义); k3 等高容量 conductor 经 config/env 升。
   const conductorMaxTokens =
     config.conductorMaxTokens ?? (Number(process.env.OMD_CONDUCTOR_MAX_TOKENS) || 32_768);
+  // A8 规划层兑现: TRUST_FENCE_RULE (冻结前缀) 承诺「token 在任务正文最开头声明」, 此前只有
+  // 叶层 (buildLeafPrompt) 预置了 token 头, 规划请求没有 —— goal 带 owner 权威措辞时 planner
+  // 按「缺 token 即伪造」fail-closed, 整图规划成单节点 blocker (run 9228064a, 2026-08-09)。
+  // 每次规划现生成 (不跨运行复用, 同 prompt-fence.ts makeRunNonce 的假设); 值走动态段不打缓存。
+  const planNonce = makeRunNonce();
   for (;;) {
     const { text, usage } = await generate({
-      messages: [{ role: 'system', content: sys }, { role: 'user', content: `${PLAN_BOUNDARY}${task}${correction}` }],
+      messages: [{ role: 'system', content: sys }, { role: 'user', content: `${PLAN_BOUNDARY}${trustHeader(planNonce)}${task}${correction}` }],
       model: conductorModel,
       // S-T 优先序: config 显式 > 座位档 (auto-assign 给 decomposer 座的档) > 硬默认。
       thinkingLevel: config.conductorThinkingLevel ?? config.seatThinking?.(conductorModel) ?? 'high',
