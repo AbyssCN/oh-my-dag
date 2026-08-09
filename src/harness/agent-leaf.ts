@@ -29,6 +29,7 @@ import {
   convertToLlm,
   estimateContextTokens,
   estimateTokens,
+  findTurnStartIndex,
   serializeConversation,
   COMPACTION_SUMMARY_PREFIX,
   COMPACTION_SUMMARY_SUFFIX,
@@ -36,6 +37,7 @@ import {
   type AgentEvent,
   type AgentLoopConfig,
   type AgentMessage,
+  type Entry,
 } from '@earendil-works/pi-agent-core';
 // 0.84 起 `runAgentLoop` 第 6 参 streamFn **必填** (0.81.0 breaking: "made low-level loop stream
 // functions required")。0.80 省略时的内部默认就是这个 `streamSimple` —— 显式传 = 行为等价。
@@ -420,6 +422,47 @@ export function planLeafCompaction(messages: AgentMessage[], keepRecentTokens: n
 }
 
 /**
+ * 切点落在**轮内**时,这一轮是从哪条消息开始的 —— pi 的 **split-turn 检测**
+ * (`findTurnStartIndex`,原样引用不手搓)。返回轮首下标;轮首就是首条或找不到 → `null`。
+ *
+ * ## 为什么只借这一半,而不是把整个 `findCutPoint` 换过来
+ *
+ * 实测(2026-08-09,六种超预算形状 · 同一 `keepRecentTokens=20000` 下逐形状对比):
+ *
+ * | 形状 | omd `planLeafCompaction` 保留 | pi `findCutPoint` 保留 |
+ * |---|---|---|
+ * | 单轮 30 次串行工具调用 | 21064 tok | 18954 tok(split=true) |
+ * | **每条结果都比预算大** | **20107 tok** | **120637 tok = 全量** |
+ * | 单轮 一批 20 个并发结果 | null(压不动) | 全量(split=false) |
+ *
+ * pi 的切点是**往后**找的,于是"末尾一条工具结果单独就超预算"时它退回 `cutPoints[0]`、
+ * 保留段等于全量 —— 正是 2026-08-01 实测把 omd 的搜索方向定成**往回找**的那条形态。
+ * 换过去会让 `leaf-compaction.test.ts` 的「最后一条 toolResult 单独就超预算」当场红。
+ * 同一批形状里 pi 也**没有**救回 omd 判 null 的两种(并发工具批 / 每条结果都比预算大):
+ * 两边都只能保留全量 ⇒ **「压不动」不是切点能修的**,那两种的解法是截断工具结果本身。
+ *
+ * 真正 pi 有而 omd 没有的是 **split-turn 判定**:omd 的切点恒落在 assistant 上,于是它
+ * **从不**切在轮边界 —— 每一刀都切在轮内,而"这一轮问的是什么"就此只活在通用历史摘要里。
+ * 「首条逐字保留」对**叶子**是对的(叶子只有一轮,首条就是契约),对**多轮 chat** 是错的:
+ * 首条是最老那一问。实测 S4(三轮闲聊 + 最后一轮 20 次工具调用):切点 30,而轮首在 9,
+ * 逐字留下的却是下标 0 那条。`findTurnStartIndex` 补的就是这一句。
+ */
+function findTurnHeadIndex(messages: AgentMessage[], cut: number): number | null {
+  // pi 的切点族吃 `Entry[]`,而**轮内**压缩那条路手上只有 `AgentMessage[]`(条目还没写进会话)⇒
+  // 现造一层只读投影。`findTurnStartIndex` 只读 `type` 与 `message.role`,其余字段填得能过型即可。
+  const entries: Entry[] = messages.map((message, i) => ({
+    type: 'message' as const,
+    id: `m${i}`,
+    parentId: i === 0 ? null : `m${i - 1}`,
+    seq: i,
+    timestamp: 0,
+    message,
+  }));
+  const idx = findTurnStartIndex(entries, cut, 0);
+  return idx > 0 ? idx : null; // -1 = 没找到; 0 = 轮首就是首条, 已经逐字留着了
+}
+
+/**
  * 摘要器的两段提示词。**默认是叶子口径**;chat conductor 走同一条压缩路但换措辞
  * (它压的是一段对话,不是"干到一半的执行记录")—— 见 `opts.prompt`。
  *
@@ -507,6 +550,19 @@ export async function compactLeafContext(opts: {
   if (!summary) return null;
   const head = messages[0]!; // 契约逐字留着 (见 opts.compaction 注)
   const tail = messages.slice(cut);
+  /**
+   * **split-turn**(2026-08-09):切点落在轮内时,这一轮**自己的请求**也被摘要吃掉了,
+   * 而逐字保留的首条是最老那一问 —— 于是保留段读起来是"干到一半的活",却没有"要干什么"。
+   * 把轮首逐字接在摘要后面补上这一句。
+   *
+   * 与 pi 的做法差在哪:pi 是**再花一次模型调用**把轮前缀压成 `## Original Request /
+   * ## Early Progress / ## Context for Suffix` 三段(`TURN_PREFIX_SUMMARIZATION_PROMPT`,
+   * **没从包入口导出**,`dist/index.d.ts` 里查不到 ⇒ 想"配它的摘要段"只能自己再写一份措辞)。
+   * 逐字留一条比摘要它更省(零额外调用)也更准 —— 请求是要被**照着执行**的东西,不该转述。
+   * 叶子那边轮首恒为下标 0 ⇒ 这一段对叶子是 no-op(实测 S1/S3/S6 轮首均为 0)。
+   */
+  const turnHead = findTurnHeadIndex(messages, cut);
+  const kept = turnHead === null ? tail : [messages[turnHead]!, ...tail];
   return {
     messages: [
       head,
@@ -515,10 +571,10 @@ export async function compactLeafContext(opts: {
         content: `${COMPACTION_SUMMARY_PREFIX}${summary}${COMPACTION_SUMMARY_SUFFIX}`,
         timestamp: Date.now(),
       },
-      ...tail,
+      ...kept,
     ],
     summary,
-    retainedTail: [head, ...tail],
+    retainedTail: [head, ...kept],
   };
 }
 

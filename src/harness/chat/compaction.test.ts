@@ -12,7 +12,7 @@
  * `compactChatMessages` 不传 `callModelFn` 时必须是真的 `callModel` —— 而 `emitModelUsage`
  * 就挂在它的出口上。把默认值换掉,那条钉当场红。
  */
-import type { AgentMessage } from '@earendil-works/pi-agent-core';
+import { estimateTokens, type AgentMessage } from '@earendil-works/pi-agent-core';
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -166,6 +166,99 @@ describe('★ 轮前压缩(管跨轮增长)', () => {
       contextBudgetRatio: 0.000001, compactionKeepRecentTokens: 300, compactionCallModel: fakeCallModel, loopFn: fakeLoop(seenLong) as never,
     });
     expect(seenLong.systemPrompt).toBe(seenShort.systemPrompt as string);
+  });
+});
+
+/**
+ * ★ split-turn(2026-08-09):切点落在**轮内**时,本轮请求必须逐字活下来。
+ *
+ * 反向自检(实跑):把 `agent-leaf.ts` 里 `const kept = turnHead === null ? tail : [...]`
+ * 改回 `const kept = tail` → 下面第一条当场红(保留段里再也找不到本轮请求那句),
+ * 第二条(叶子形状 no-op)仍绿 —— 两条一起才分得开"接线起作用了"与"接线把什么都改了"。
+ *
+ * ⚠ 这一段量的**不是**"压不动能不能压得动"。实测(六种超预算形状,记在
+ * `agent-leaf.ts` 的 `findTurnHeadIndex` 注里):omd 判 null 的两种形状 pi 的
+ * `findCutPoint` 同样保留全量 —— 「压不动」是工具结果本身超预算,切点修不了。
+ */
+describe('★ split-turn —— 切点落在轮内时, 本轮请求逐字活下来', () => {
+  const asstCall = (id: string, pad = 400): AgentMessage =>
+    ({
+      role: 'assistant',
+      content: [
+        { type: 'text', text: 'x'.repeat(pad) },
+        { type: 'toolCall', id, name: 'read', arguments: { path: `f${id}.ts` } },
+      ],
+      api: 'openai-completions', provider: 'p', model: 'm',
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: 'toolUse', timestamp: 1,
+    }) as unknown as AgentMessage;
+  const toolRes = (id: string, pad = 400): AgentMessage =>
+    ({
+      role: 'toolResult', toolCallId: id, toolName: 'read',
+      content: [{ type: 'text', text: 'y'.repeat(pad) }], isError: false, timestamp: 1,
+    }) as unknown as AgentMessage;
+
+  const REQUEST = '★本轮请求: 把 src/x.ts 里的 Y 改成 Z, 别的一个字都别动';
+  /** 三轮闲聊 + 最后一轮 20 次工具调用(= 大仓单轮里几十次工具调用的形状)。 */
+  const multiTurn = (): AgentMessage[] => {
+    const out: AgentMessage[] = [];
+    for (let t = 0; t < 3; t++) out.push(userMsg(`第 ${t} 问`), assistantMsg(`第 ${t} 答`));
+    out.push(userMsg(REQUEST));
+    for (let i = 0; i < 20; i++) out.push(asstCall(`d${i}`), toolRes(`d${i}`, 8_000));
+    return out;
+  };
+  const roleOf = (m: AgentMessage): string => (m as { role: string }).role;
+  const tokens = (ms: AgentMessage[]): number => ms.reduce((n, m) => n + estimateTokens(m), 0);
+
+  test('★ 多轮 + 最后一轮超预算 → 保留段里有本轮请求原文, 且不切出孤儿 toolResult', async () => {
+    const msgs = multiTurn();
+    const r = (await compactChatMessages({
+      messages: msgs, model: MODEL, keepRecentTokens: 20_000, callModelFn: fakeCallModel,
+    }))!;
+    expect(r).not.toBeNull();
+    // ① 本轮请求逐字在保留段里 —— 摘要转述不算 (fakeCallModel 的摘要文本里没有这句)。
+    expect(JSON.stringify(r.retainedTail)).toContain(REQUEST);
+    // ② 位置: [首条, 本轮轮首, ...尾], 尾以 assistant 开头 (孤儿 toolResult = provider 直接 400)。
+    expect(roleOf(r.retainedTail[0] as AgentMessage)).toBe('user');
+    expect((r.retainedTail[1] as { content: string }).content).toBe(REQUEST);
+    expect(roleOf(r.retainedTail[2] as AgentMessage)).toBe('assistant');
+    // ③ 发出去的那一份: [首条, 摘要, 轮首, ...尾]
+    expect((r.messages[1] as { content: string }).content).toContain('【摘要】');
+    expect((r.messages[2] as { content: string }).content).toBe(REQUEST);
+    // ④ 真的瘦了: 压缩前 ≈42k → 压缩后落在 [keep, keep*1.5) 之间。
+    //    下界是"往回找"的语义 (宁可多留一点也不切出孤儿), 上界钉的是"多留不许多太多"。
+    expect(tokens(r.messages)).toBeLessThan(20_000 * 1.5);
+    expect(tokens(r.messages)).toBeGreaterThanOrEqual(20_000);
+    expect(tokens(r.messages)).toBeLessThan(tokens(msgs) * 0.55);
+  });
+
+  test('★ 单轮形状 (叶子: 首条就是轮首) → 一个字不变, 仍是 [首条, 摘要, ...尾]', async () => {
+    const msgs: AgentMessage[] = [userMsg(REQUEST)];
+    for (let i = 0; i < 20; i++) msgs.push(asstCall(`s${i}`), toolRes(`s${i}`, 8_000));
+    const r = (await compactChatMessages({
+      messages: msgs, model: MODEL, keepRecentTokens: 20_000, callModelFn: fakeCallModel,
+    }))!;
+    expect(r).not.toBeNull();
+    // 首条 = 轮首 ⇒ 不该多插一条: 摘要之后直接就是尾 (assistant)。
+    expect((r.messages[0] as { content: string }).content).toBe(REQUEST);
+    expect((r.messages[1] as { content: string }).content).toContain('【摘要】');
+    expect(roleOf(r.messages[2] as AgentMessage)).toBe('assistant');
+    expect(roleOf(r.retainedTail[1] as AgentMessage)).toBe('assistant');
+  });
+
+  test('★ 落进会话再投影回来: 本轮请求还在, 会话真的短了 (无 seq 错)', async () => {
+    await seed('c9', multiTurn());
+    const before = (await onDisk('c9')).length;
+    const r = await runChatTurn({
+      store, sessionId: 'c9', prompt: '接着改', model: MODEL, cwd: root,
+      contextBudgetRatio: 0.000001, compactionKeepRecentTokens: 20_000,
+      compactionCallModel: fakeCallModel, loopFn: fakeLoop() as never,
+    });
+    expect(r.compactions).toBeGreaterThan(0);
+    const after = await onDisk('c9'); // 投影读得出来 = 条目链没断
+    expect(after.length).toBeLessThan(before);
+    expect(JSON.stringify(after)).toContain(REQUEST);
   });
 });
 
