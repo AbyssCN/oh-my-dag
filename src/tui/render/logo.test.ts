@@ -6,9 +6,9 @@ import { describe, expect, test } from 'bun:test';
 import { findRiskyGlyphs } from './glyphs';
 import { LOGO_MIN_WIDTH, LOGO_NARROW, LOGO_ROWS, LOGO_WIDE, renderLogo, renderWord } from './logo';
 
-describe('Oh My DAG 字标 (S-3)', () => {
+describe('OMD 字标 (S-3;2026-08-09 从 OH MY DAG 换成 OMD)', () => {
   // 反向自检 (实跑): 把 LOGO_WIDE 任一行末尾的空格删掉 → 这条当场红。
-  test('★ 五行等长 —— 短行会让差分渲染留下上一帧的残留', () => {
+  test('★ 每行等长 —— 短行会让差分渲染留下上一帧的残留', () => {
     const widths = LOGO_WIDE.map((l) => visibleWidth(l));
     expect(new Set(widths).size).toBe(1);
   });
@@ -21,8 +21,8 @@ describe('Oh My DAG 字标 (S-3)', () => {
 
   // 反向自检: 把 LETTERS.M 的某一行删掉一个 █ → 这条当场红。
   // 手写整幅字标的第一版就是**看不出错**的, 只有截图能看出来 —— 这条闸把那件事变成机器能判的。
-  test('★ 每个字母自己五行等宽 —— 拼接能对齐的唯一前提', () => {
-    for (const ch of 'OHMYDAG ') {
+  test('★ 每个字母自己等行等宽 —— 拼接能对齐的唯一前提', () => {
+    for (const ch of 'OMD') {
       const rows = renderWord(ch);
       expect(rows).toHaveLength(LOGO_ROWS);
       expect(new Set(rows.map((r) => visibleWidth(r))).size).toBe(1);
@@ -31,6 +31,13 @@ describe('Oh My DAG 字标 (S-3)', () => {
 
   test('未收录的字符直接抛, 不静默画成空白', () => {
     expect(() => renderWord('Z')).toThrow();
+    // 换字之后 `H` 也不在表里了 —— 它要是还在, 就是四个谁都不画的点阵留在那儿。
+    expect(() => renderWord('H')).toThrow();
+  });
+
+  test('★ 换字之后比原来矮一半 —— 换字的理由就是它占屏(盲比里三跑全指欢迎屏)', () => {
+    expect(LOGO_ROWS).toBe(3);
+    expect(visibleWidth(LOGO_WIDE[0] as string)).toBeLessThan(58); // 原 `OH MY DAG` 宽 58
   });
 
   test('窄终端换小字标, 不折行', () => {
