@@ -8,6 +8,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createPathfinderTools, type PathfinderToolDeps } from './pathfinder';
 import { createOmdMemory } from '../../harness/memory/store';
+import { validateFactWrite } from '../../memory/safeguards/validator';
+import { checkEvolve } from '../../memory/safeguards/evolution-lock';
+import { ConfidenceSchema } from '../../memory/safeguards/namespace-kernel';
+import type { ValidatedFact } from '../../memory/safeguards/namespaces';
 
 function tools(cwd: string, overrides: Partial<PathfinderToolDeps> = {}) {
   const deps: PathfinderToolDeps = {
@@ -211,6 +215,12 @@ describe('pathfinder MCP tools', () => {
       expect(fact.outcome).toBe('worked');
       // memory_remember 同款: 显式写绕过密钥闸 (用户主权)。
       expect(opts.scanSecrets).toBe(false);
+      // 裁决 8 改判 human_verified 后, confidence 为 owner 确认态。
+      const conf = fact.confidence as Record<string, unknown>;
+      expect(conf.level).toBe('human_verified');
+      expect(conf.by).toBe('owner');
+      expect(conf.verified_at).toBeInstanceOf(Date);
+      expect(conf.note).toBe('path_rule:ship-widget:g1');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -273,5 +283,107 @@ describe('pathfinder MCP tools', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  /**
+   * 闸 (a): path_rule 写入的 fact (human_verified) 过 validator 不被拒。
+   *
+   * 反向自检: 把 pathfinder.ts:271 临时改成 `{ level:'agent_confident', source_event_ids:[anchor], created_at:new Date() }`
+   * (单锚, 不满足 agent_confident 的 min(3) source_event_ids) → validator 返回 `schema:Too small: expected array to have >=3 items`。
+   * 证伪方式: 改 pathfinder.ts → 跑本测试 → 见 `expect(v.ok).toBe(true)` 变红, reason 如上。
+   * 已改回 human_verified 形态, 测试绿。
+   */
+  test('闸(a): path_rule 写入 human_verified fact 过 validator', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pf-mcp-'));
+    try {
+      const writes: Array<Record<string, unknown>> = [];
+      const memory: PathfinderToolDeps['memory'] = {
+        writeFact: (async (fact: Record<string, unknown>) => {
+          writes.push(fact);
+          return { status: 'written', id: 'm1', action: 'insert' };
+        }) as NonNullable<PathfinderToolDeps['memory']>['writeFact'],
+      };
+      const { call } = tools(dir, { memory });
+
+      await call('path_map', { destination: 'Ship V' });
+      await call('path_add', { title: 'choose db', type: 'grill' });
+      await call('path_rule', { ticketId: 'g1', ruling: 'use pg' });
+
+      expect(writes.length).toBe(1);
+      const fact = writes[0]!;
+
+      // 过全量 validator (与 writeFact 实际路径同款)。
+      const v = validateFactWrite(fact);
+      expect(v.ok).toBe(true);
+      if (v.ok) {
+        expect(v.validated.confidence.level).toBe('human_verified');
+      }
+
+      // 额外: 确认 agent_confident 单锚确实会被 schema 拒 (文档化, 非运行时闸)。
+      const bad = ConfidenceSchema.safeParse({
+        level: 'agent_confident',
+        source_event_ids: ['single-anchor'],
+        created_at: new Date(),
+      });
+      expect(bad.success).toBe(false);
+      if (!bad.success) {
+        expect(bad.error.issues[0]?.message).toContain('3');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * 闸 (b): 同 identity 已有 human_verified → agent_tentative 写入被 checkEvolve 拒。
+   *
+   * 反向自检: 把 existing 从 human_verified 改成 agent_tentative (同 identity), 同样 incoming 应为 replace。
+   * 证伪方式: 改 existing.confidence 为 tentative → 跑本测试 → 见 `expect(result.action).toBe('reject')` 变红,
+   * action='replace'。已改回 human_verified, 测试绿。证明闸分得开 human_verified(reject) 与 tentative(replace) 两档。
+   */
+  test('闸(b): human_verified 现有 → agent_tentative 写入 checkEvolve 判 reject', () => {
+    const existing: ValidatedFact = {
+      namespace: 'omd.pattern',
+      situation: 'Ship X: pick db',
+      approach: 'use SQLite',
+      outcome: 'worked',
+      source_event_id: 'path_rule:ship-x:g1',
+      confidence: {
+        level: 'human_verified',
+        by: 'owner',
+        verified_at: new Date('2026-08-01'),
+        note: 'path_rule:ship-x:g1',
+      },
+    };
+
+    const incoming: ValidatedFact = {
+      namespace: 'omd.pattern',
+      situation: 'Ship X: pick db',
+      approach: 'use Postgres',
+      outcome: 'worked',
+      source_event_id: 'path_rule:ship-x:g1-v2',
+      confidence: {
+        level: 'agent_tentative',
+        source_event_ids: ['path_rule:ship-x:g1-v2'],
+        created_at: new Date('2026-08-02'),
+      },
+    };
+
+    // human_verified 是 immutable → reject
+    const result = checkEvolve(existing, incoming);
+    expect(result.action).toBe('reject');
+    expect(result.reason).toBe('human-verified-immutable');
+
+    // 反向自检: existing 为 tentative 时, 同样 incoming 应为 replace
+    const existingTentative: ValidatedFact = {
+      ...existing,
+      confidence: {
+        level: 'agent_tentative',
+        source_event_ids: ['path_rule:ship-x:g1'],
+        created_at: new Date('2026-08-01'),
+      },
+    };
+    const resultReplace = checkEvolve(existingTentative, incoming);
+    expect(resultReplace.action).toBe('replace');
   });
 });

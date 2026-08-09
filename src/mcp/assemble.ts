@@ -159,8 +159,8 @@ export function resolveEngineModels(
   };
 }
 
-/** 生产 memory 接缝 (tui 默认同款): OMD_MEMORY_PATH ?? .omd/memory.db + UNIVERSAL_SAFEGUARD。 */
-function createDefaultMemory(env: NodeJS.ProcessEnv): OmdMemory {
+/** 生产 memory 接缝 (MCP 装配与 TUI 对话位**同一真源**, S0 共库): OMD_MEMORY_PATH ?? .omd/memory.db + UNIVERSAL_SAFEGUARD。 */
+export function createDefaultMemory(env: NodeJS.ProcessEnv): OmdMemory {
   const memoryPath = env.OMD_MEMORY_PATH ?? '.omd/memory.db';
   mkdirSync(dirname(memoryPath), { recursive: true });
   return createOmdMemory({ path: memoryPath, safeguard: UNIVERSAL_SAFEGUARD });

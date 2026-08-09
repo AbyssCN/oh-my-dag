@@ -268,7 +268,7 @@ async function rememberRuling(
     approach: ruling,
     outcome: 'worked' as const, // 裁决 = owner 拍板采纳的走法 (决定态即 "采用")。
     source_event_id: anchor,
-    confidence: { level: 'agent_tentative' as const, source_event_ids: [anchor], created_at: new Date() },
+    confidence: { level: 'human_verified' as const, by: 'owner', verified_at: new Date(), note: anchor },
   };
   try {
     const result = await memory.writeFact(fact, { scanSecrets: false });
