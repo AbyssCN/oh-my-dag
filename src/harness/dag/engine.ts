@@ -118,6 +118,7 @@ import { collectDepMedia } from '../leaf-media';
 import { recordGeneration, recordSpan } from '../../model/langfuse';
 import { ModelError } from '../../model';
 import { classifyCommandExit, withFailureKind, upstreamFailureNotice } from '../node-failure';
+import { collectRepairGuidance } from './repair-guidance';
 import { makeRunNonce, fenceUntrusted, trustHeader } from '../prompt-fence';
 import type { ContentPart } from '../../model/gateway';
 
@@ -3270,6 +3271,9 @@ async function runDagInternal(
       conductorModel = config.conductorEscalationModel;
       // D-21: escTask 必带上轮 plan 大纲 (planOutline) — 重规划「只修不发明」的前提是看得见上轮
       // 分解; 未点名节点逐字保留 → 语义指纹跨轮复用零 LLM (措辞漂移 = 白白重算)。
+      // Tier-0 事件触发召回 (repair-guidance.ts): 失败判词命中已知死形态 fingerprint →
+      // 把「上次怎么处置的」可教指引直接喂给修复轮 (零 LLM 零 embedding; 零命中 = escTask 零变化)。
+      const repairGuidance = collectRepairGuidance(verdict.reason);
       const escTask = [
         task,
         '',
@@ -3277,9 +3281,13 @@ async function runDagInternal(
         planOutline(exec.plan),
         '',
         `[上一轮校验未通过] ${verdict.reason}`,
+        ...repairGuidance,
         '请基于上述分解重新规划: 只修被点名有问题的节点; 未点名节点**逐字保留**其 id/goal/字段/依赖边',
         '(引擎按语义指纹复用未变节点的上轮结果 — 任何措辞变化都会浪费一次重算)。',
       ].join('\n');
+      if (repairGuidance.length > 0) {
+        logger.info({ hits: repairGuidance.map((g) => g.slice(0, 40)) }, '[omd/executor-dag] Tier-0 修复指引命中 → 注入 escTask');
+      }
       // D-21: 上轮 plan+results 作复用匹配源 — 语义未变的节点零 LLM 注入上轮输出, 只重跑变化子图。
       // 毒集从外层轮继承下来 (D-4): 外层 judge 拒过的指纹在轮内 escalation 里同样不该复活。
       // 轮内不新铸票 —— verifier 的 verdict 只有整轮 {pass, reason}, 没有节点级点名 (要它得先扩 verifier 契约)。

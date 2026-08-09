@@ -104,6 +104,16 @@ describe('commandRiskTier — 取链上最重的一级, 未登记即 never', () 
     expect(commandBlockReason('git commit -m x', DEFAULT_COMMAND_ALLOWLIST)).not.toBeNull();
     expect(commandRiskTier('git commit -m x')).toBe('read_only');
   });
+
+  test('merge-base 放行 (纯只读祖先查询), merge 仍拒 —— 子命令精确匹配不是前缀', () => {
+    // 反向自检 (历史红): merge-base 缺席白名单时, S5 图 N0a ancestry 硬闸被
+    // `[blocked git-write: 'merge-base' ∉ 只读子命令 …]` 拦下, 白烧一轮 LLM 修复轮
+    // (NOTES 2026-08-10 样本 G, run 96fc81e2)。把本行从 GIT_READONLY_SUBCOMMANDS
+    // 删掉即复现该红。
+    expect(commandBlockReason('git merge-base --is-ancestor 070fd67 HEAD', DEFAULT_COMMAND_ALLOWLIST)).toBeNull();
+    // 对照臂: 'merge' 是写操作, 必须仍拒 —— 若闸做了前缀匹配, 本断言红。
+    expect(commandBlockReason('git merge --no-edit feature', DEFAULT_COMMAND_ALLOWLIST)).not.toBeNull();
+  });
 });
 
 describe('登记表的读数 (改了要经过改测试, 不许悄悄发生)', () => {

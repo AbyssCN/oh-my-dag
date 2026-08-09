@@ -64,6 +64,9 @@ export const DEFAULT_COMMAND_ALLOWLIST: readonly string[] = [
  */
 export const GIT_READONLY_SUBCOMMANDS: readonly string[] = [
   'status', 'diff', 'log', 'show', 'ls-files', 'ls-tree', 'rev-parse', 'blame', 'describe', 'shortlog', 'cat-file', 'grep',
+  // merge-base: 纯只读 (odb 祖先查询)。缺席实测代价 = S5 图 N0a ancestry 硬闸被拦,
+  // 白烧一轮 LLM 修复轮 (NOTES 2026-08-10 样本 G, run 96fc81e2)。
+  'merge-base',
 ];
 
 /**
