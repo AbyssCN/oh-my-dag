@@ -33,7 +33,6 @@ import { JsonlSessionRepo, buildSessionContext, type AgentMessage, type Session 
 import { NodeExecutionEnv } from '@earendil-works/pi-agent-core/node';
 import { dataPath } from '../project-scope';
 import { acquireWriteLock, type LockDeps } from './session-lock';
-import type { ChatSessionMeta } from './store';
 
 const CHAT_DIR = '.omd/chat';
 
@@ -44,6 +43,26 @@ const CHAT_DIR = '.omd/chat';
  * 且来自 HTTP 边界。**取交集 = 取更严的那个。**
  */
 export const OMD_SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+/**
+ * 会话列表里一条的形状。
+ *
+ * ⚠ 片 E(2026-08-09)之前它住在 `store.ts` 里,随那份手搓存储层一起退役 ——
+ * 类型跟着**消费者**走,而消费者(`/session` 列表、daemon 的 `GET /api/chat`)还在。
+ */
+export interface ChatSessionMeta {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  /**
+   * ⚠ 新层的 `list()` **只读 header**(这是它比老 `ChatStore.list()` 便宜的全部原因),
+   * 所以这一格恒为 `0` = **「没数过」**,不是「没有消息」(本仓 NULL ≠ 0 ≠ 不适用)。
+   */
+  messageCount: number;
+  /** fork 来源会话 id。缺席 = 根会话(树的列表面靠它画 lineage)。 */
+  parent?: string;
+}
 
 export interface OmdSession {
   readonly id: string;
