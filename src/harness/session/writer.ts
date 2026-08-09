@@ -35,6 +35,7 @@ import { resolveProject } from '../project-scope';
 import type { OmdMemory } from '../memory';
 import { checkNouns } from './noun-gate';
 import { sinkCheckpoint, type CheckpointSinkResult } from './sink';
+import { SYSTEM_REMINDER_PREFIX, TASK_NOTIFICATION_PREFIX, SKILL_PREAMBLE_PREFIX } from './stop-ledger';
 
 // ─── constants ──────────────────────────────────────────────────────────────
 
@@ -124,7 +125,16 @@ function readChunk(path: string, from: number, cap: number): { text: string; end
 }
 
 /** transcript JSONL → 紧凑对话摘录(U/A/T/R 行),控制在 MAX_EXCERPT_CHARS 内。 */
-function excerpt(chunk: string): string {
+/** 与 W3 parser 同名单的三精确前缀过滤 (D-4): 噪音 user 文本 (system-reminder/task-notification/skill 前导) 不进 U: 行。 */
+function isNoiseUserText(s: string): boolean {
+  return (
+    s.startsWith(SYSTEM_REMINDER_PREFIX) ||
+    s.startsWith(TASK_NOTIFICATION_PREFIX) ||
+    s.startsWith(SKILL_PREAMBLE_PREFIX)
+  );
+}
+
+export function excerpt(chunk: string): string {
   const out: string[] = [];
   for (const line of chunk.split('\n')) {
     if (!line.trim()) continue;
@@ -140,12 +150,12 @@ function excerpt(chunk: string): string {
     const content = j?.message?.content;
     if (j.type === 'user') {
       if (typeof content === 'string') {
-        if (!content.startsWith('<system-reminder')) out.push(`U: ${content.slice(0, 500)}`);
+        if (!isNoiseUserText(content)) out.push(`U: ${content.slice(0, 500)}`);
         continue;
       }
       if (!Array.isArray(content)) continue;
       for (const p of content as Array<Record<string, unknown>>) {
-        if (p.type === 'text' && typeof p.text === 'string' && !p.text.startsWith('<system-reminder'))
+        if (p.type === 'text' && typeof p.text === 'string' && !isNoiseUserText(p.text))
           out.push(`U: ${(p.text as string).slice(0, 500)}`);
         if (p.type === 'tool_result') {
           const raw = p.content;

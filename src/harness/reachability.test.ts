@@ -60,14 +60,12 @@ const DYNAMIC_ENTRIES: Record<string, string> = {
   'src/eval/tasks/oracle-plan-filter.ts':
     'eval fixture: 消费方是 colocated 的 `.test.ts`(worktree 隔离 → 清空目标模块 → fleet 照 SPEC 重建)。' +
     '**生产零消费者是它的设计**, 不是缺陷 —— 它量的就是"照 spec 重建"这件事本身。',
-  'src/harness/session/stop-ledger.ts':
-    'W3 Stop-ledger parser。**唯一消费者是 hook 例子** ' +
+  'src/harness/session/ledger.ts':
+    'W2→W1 ledger.jsonl 写者(SDD 契约 D-4 接缝)。**唯一生产消费者是 hook 例子** ' +
     '`docs/examples/claude-code/hooks/session-continuity.ts`,而 Claude Code 是按 ' +
-    '`settings.json` 里的**路径字符串**拉起 hook 的 —— 本仓的 import 图里当然看不见那条边。\n' +
-    '⚠ 它落在 `docs/examples/` 而不是 `scripts/` 是**冻结决策**(session-continuity 图的 g5: ' +
-    '「4 个 hook + writer 放 docs/examples/claude-code/hooks/ 作 opt-in 例子**不强制接线**」)—— ' +
-    '搬进 scripts/ 会让它变成默认接线的东西, 那是改产品决定, 不是修闸。\n' +
-    '消费点若哪天进了 `src/` 或 `scripts/`, 请删掉本条豁免。',
+    '`settings.json` 里的**路径字符串**拉起 hook 的 —— 本仓的 import 图里当然看不见那条边\n' +
+    '(同 stop-ledger.ts 的 hook 边界 —— 该条豁免已随 scripts/verify-ledger-windows.ts 的生产 import 删除;' +
+    '消费点若哪天进了 `src/` 或 `scripts/`, 请删掉本条豁免)。',
   'src/tui/ext/runner.ts':
     '扩展子进程的入口, 按**路径字符串**拉起: `tui/ext/host.ts` 的 ' +
     '`join(import.meta.dir, \'runner.ts\')` → `bwrap [binds] bun run <它> <扩展入口>`。\n' +

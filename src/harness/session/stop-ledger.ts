@@ -115,9 +115,9 @@ function userCandidateOf(content: unknown): string | null {
 }
 
 // 冻结前缀:原始字符串精确 startsWith, 不做 trim/大小写折叠/XML/slash 泛化(D-3)。
-const TASK_NOTIFICATION_PREFIX = '<task-notification';
-const SYSTEM_REMINDER_PREFIX = '<system-reminder';
-const SKILL_PREAMBLE_PREFIX = 'Base directory for this skill:';
+export const TASK_NOTIFICATION_PREFIX = '<task-notification';
+export const SYSTEM_REMINDER_PREFIX = '<system-reminder';
+export const SKILL_PREAMBLE_PREFIX = 'Base directory for this skill:';
 
 /** 逆序状态机(D-2):完整解析成功后选最后真实 ask;三精确前缀 skip+continue 逆扫, 耗尽 → empty。 */
 function selectLastUserAsk(candidates: readonly { line: number; value: string }[]): LastUserAsk {
