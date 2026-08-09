@@ -17,6 +17,7 @@
  * Invariants:
  *  VER-1 verifier 永不阻断: 抛错由调用方 (executor-dag) 兜; 未结构化输出 → 保守判 fail (不静默放行)。
  *  VER-2 全 leaf 失败 → 不调模型直接 fail (省一次调用, 显然无产出)。
+ *  VER-2b 零节点产出 (results 空) → 同样直接 fail: **0 有效样本 ≠ 通过**, 且与 VER-2 分开报判词。
  *  VER-3 信 verifier 的 pass 布尔 (任务要求逐条对照已进 prompt); reason 必带 (fail 时点名缺啥)。
  */
 import { z } from 'zod';
@@ -155,8 +156,16 @@ export function createDefaultVerifier(opts: DefaultVerifierOpts): VerifierFn {
       throw new Error('verifier: verifierModel 必填 (无硬默认, 形如 provider:modelId)');
     }
     const leaves = Object.values(results);
+    // VER-2b (2026-08-09 补): **零节点产出的跑永不算通过**。
+    // 原判据写的是 `leaves.length > 0 && 全 failed`, 那个 `> 0` 让"一个 leaf 都没跑完"从闸边上溜过去 ——
+    // 于是 verifier 拿着一份 `plan: X · 0 nodes` 的空摘要去问模型, 而模型对着空摘要照样可能判 pass。
+    // 0 有效样本 ≠ 通过: 什么都没量到的跑不许是绿的 (`run-outcome.ts` 的「空图不编 success」是同一条判据
+    // 的另一半, 那边早就这么写了)。与全 failed **分开报** —— 「没跑」和「跑了全挂」是两件事 (NULL ≠ 0)。
+    if (leaves.length === 0) {
+      return { pass: false, reason: '零节点产出 — 一个 leaf 都没跑完, 0 有效样本 ≠ 通过', usage: { in: 0, out: 0 } };
+    }
     // VER-2: 全失败 → 显然无产出, 省一次调用。
-    if (leaves.length > 0 && leaves.every((l) => l.status === 'failed')) {
+    if (leaves.every((l) => l.status === 'failed')) {
       return { pass: false, reason: '所有 leaf 执行失败 — 计划无产出', usage: { in: 0, out: 0 } };
     }
     const summary = summarizeResults(plan, results);

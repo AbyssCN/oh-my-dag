@@ -232,6 +232,49 @@ async function warmParallel<T>(
 }
 
 /**
+ * 跑一波 leaf, 并钉住一条闸:**这一波有效样本为 0 → 当场抛, 永不放行**。
+ *
+ * `parallel` 对单个 leaf fail-open (抛错 → null, INV-6) 是对的 —— 一个 sub-angle 挂掉只该丢它自己。
+ * 但**整波全挂**是另一件事: 2026-08-09 单 provider 周配额耗尽, gen 波打出 `r1: 0/26`,
+ * 引擎当没事一样又跑了两轮缺口补抓 (+92k 字符) 才崩。那 26 个的正确含义是 **26 个 invalid**
+ * (压根没到模型), 不是"26 次跑了没做成"。0 有效样本的产出不是"研究得浅",
+ * 是**什么都没量到** —— 后面的 reduce/synth/judge 全在对空气综合, 而报告长得和真的一模一样。
+ *
+ * 同族的闸在检索侧早就立着 (`researchWebFanout`: 检索零结果 → 抛)。这里补的是模型侧那一半。
+ * (jcode `DISCOVERY_RATE_BENCHMARK` 独立同构:「没有任何有效 trial 的跑永远不算通过」。)
+ *
+ * 顺带守本仓第二条坑规 —— fail-open 可以吞异常, 不许吞证据: `parallel` 把 leaf 的抛错吃成 null,
+ * 于是这里先把每条错话记下来, 整波塌了才分得清是配额、认证还是超时。
+ */
+async function runWave<T>(
+  label: string,
+  jobs: (() => Promise<T>)[],
+  conc: { concurrency: number },
+  warm: boolean,
+): Promise<T[]> {
+  const errs: string[] = [];
+  const watched = jobs.map((job) => async (): Promise<T> => {
+    try {
+      return await job();
+    } catch (e) {
+      errs.push((e as Error).message);
+      throw e;
+    }
+  });
+  const out = (await warmParallel(watched, conc, warm)).filter((x): x is T => x !== null);
+  if (out.length === 0) {
+    const uniq = [...new Set(errs)];
+    throw new Error(
+      `researchFanout: ${label} 波 0/${jobs.length} 有效样本 —— **0 有效样本 ≠ 通过**, 这一跑作废` +
+        ` (invalid: 没量到任何东西, 不是"结果不好")。\n` +
+        `  leaf 报错 ${errs.length} 条 / ${uniq.length} 种: ` +
+        (uniq.slice(0, 3).join(' | ') || '(一条都没有 —— 这一波压根没有 leaf, 看 lenses/framings/criteria 配置)'),
+    );
+  }
+  return out;
+}
+
+/**
  * 跑深度研究 fan-out (rounds 轮, 默认 1)。
  * leafCount = Σ轮(ΣV gen + L reduce) + (轮间 gap 分析 ×(roundsRun-1 或早停轮)) + M (synth) + K (judge) + 1 (fusion) + 1 (graft)。
  */
@@ -349,7 +392,7 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
     leafCount += genJobs.length;
     // gen 波也共享 head 大前缀 (persona/sub-angle 在 head 之后) → warm-then-fanout:
     // 串行暖 1 个写 head 到缓存, 其余 L×V-1 个 leaf 命中 head 段 (冷并发 = 每 leaf 全 miss head)。
-    const genResults = (await warmParallel(genJobs, conc, warm)).filter(Boolean) as { lens: string; angleIdx: number; text: string }[];
+    const genResults = await runWave(`gen r${round}`, genJobs, conc, warm);
     stage('gen', `r${round}: ${genResults.length}/${genJobs.length} sub-angle leaf`);
 
     // ── Stage 2: per-lens judge reduce → 冠军 + 摘碎片 (pro, L 并行)。
@@ -363,7 +406,7 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
     leafCount += reduceJobs.length;
     // reduce 各 lens body 互不相同, 但全部共享 head (stablePrefix+groundTruth) 这个大前缀, 且 reduce 是**首个 pro 阶段**。
     // warm-then-fanout: 串行暖 1 个写 head 到缓存 → reduce 2..L + 下游 synth/judge/graft 全继承命中 (L×head miss → 1×head miss)。
-    const champions = (await warmParallel(reduceJobs, conc, warm)).filter(Boolean) as { key: string; text: string }[];
+    const champions = await runWave(`reduce r${round}`, reduceJobs, conc, warm);
     lensChampions.push(...champions);
     stage('reduce', `r${round}: ${champions.length} lens 冠军`);
 
@@ -408,7 +451,7 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
   });
   leafCount += synthJobs.length;
   // synth 全读同一 championsDigest(~6k tok) → warm-then-fanout: 暖 1 个写前缀, 其余 hit。
-  const synthCandidates = (await warmParallel(synthJobs, conc, warm)).filter(Boolean) as { key: string; text: string }[];
+  const synthCandidates = await runWave('synth', synthJobs, conc, warm);
   stage('synth', `${synthCandidates.length} 综合候选`);
 
   const candDigest = synthCandidates.map((s) => `## 候选[${s.key}]\n${s.text}`).join('\n\n');
@@ -425,7 +468,7 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
   });
   leafCount += judgeJobs.length;
   // judge 全读同一 candDigest → warm-then-fanout; 且与下方 graft 共享 `groundTruth+candDigest` 前缀。
-  const judgeCritiques = (await warmParallel(judgeJobs, conc, warm)).filter(Boolean) as { key: string; text: string }[];
+  const judgeCritiques = await runWave('judge', judgeJobs, conc, warm);
   stage('judge', `${judgeCritiques.length} judge 维度`);
 
   const critDigest = judgeCritiques.map((c) => `### judge[${c.key}]\n${c.text}`).join('\n\n');
