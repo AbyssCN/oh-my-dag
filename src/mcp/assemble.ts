@@ -76,6 +76,8 @@ import { UNIVERSAL_SAFEGUARD } from '../memory/safeguards/namespaces';
 import type { ResearchFanoutResult } from '../harness/research/fanout';
 import { logger } from '../harness/logger';
 import { applyToolRenames } from './tool-renames';
+import { createConductorChatTool, type ConductorChatDeps } from './tools/chat';
+import { createOmdSessionStore, type OmdSessionStore } from '../harness/chat/session-store';
 
 /** 生产引擎接缝 (真 DAG 引擎)。 */
 const PROD_ENGINE: DagEngine = { runExecutorDag, runExecutorDagWithPlan };
@@ -117,6 +119,10 @@ export interface AssembleOmdMcpDeps {
   recorder?: DagRecorder;
   /** owner 收件箱接缝 (S3; 测试注入 :memory:; 默认与 runs.db 同库)。 */
   inbox?: OwnerInbox;
+  /** 会话持久层接缝 (S1 conductor_chat; 测试注入临时目录 store, 默认 createOmdSessionStore(cwd))。 */
+  chatStore?: OmdSessionStore;
+  /** conductor_chat 的 agent 循环接缝 (真循环要真模型; 测试注入 fake)。 */
+  chatLoopFn?: ConductorChatDeps['loopFn'];
   /**
    * 自主环接缝 (默认真 `runGoal`)。
    *
@@ -600,7 +606,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
 
   // 三层改名 (owner 2026-08-04, t7): 表内工具挂新名 map_*/solve/run, 旧名留 deprecated alias。
   // 真源 = tool-renames.ts 一张表; 文档/徽章两条闸 import 同表, 注册面与闸不可能漂移。
-  return applyToolRenames([
+  const assembled = applyToolRenames([
     // continuity 恒开 (D-3): checkpoint 落 <cwd>/.omd/continuity/<runId>/, dag_run_plan resume 可续。
     ...createDagTools({ engine, runRegistry, defaultConfig: buildDefaultConfig, continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd }, hudMirror, ledger, recorder, ...(deps.onNodeEvent ? { onNodeEvent: deps.onNodeEvent } : {}) }),
     createDagResearchTool(researchFanout),
@@ -675,4 +681,16 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     // plan-memory 账本可观测 (Phase A 证据门仪表, issue #10)。
     createPlansTool(ledger),
   ]);
+  // S1 conductor_chat (SDD 2026-08-09 远程指挥接缝): 对话位入口。**必须挂在改名之后** ——
+  // 它内部的 createConductorChatTools 按新名 (run/solve/map_tickets…) 点名, 挂早了装配期响亮抛。
+  assembled.push(
+    createConductorChatTool({
+      cwd,
+      store: deps.chatStore ?? createOmdSessionStore(cwd),
+      resolveModel: () => resolveEngineModels(env).conductorModel,
+      tools: assembled,
+      ...(deps.chatLoopFn ? { loopFn: deps.chatLoopFn } : {}),
+    }),
+  );
+  return assembled;
 }

@@ -58,7 +58,7 @@ describe('MCP 工具表完整性', () => {
   test('每个注册的工具名都在 docs/mcp-tools.md 里出现', () => {
     const names = new Set<string>();
     for (const f of tsFiles(join(ROOT, 'src', 'mcp'))) {
-      for (const m of readFileSync(f, 'utf8').matchAll(/name:\s*'((?:dag|omd|path|map|memory|dream)_[a-z_]+)'/g)) {
+      for (const m of readFileSync(f, 'utf8').matchAll(/name:\s*'((?:dag|omd|path|map|memory|dream|conductor)_[a-z_]+)'/g)) {
         names.add(m[1]!);
       }
     }
@@ -77,7 +77,7 @@ describe('MCP 工具表完整性', () => {
   test('两份 README 的工具数徽章 == 真实注册数', () => {
     const names = new Set<string>();
     for (const f of tsFiles(join(ROOT, 'src', 'mcp'))) {
-      for (const m of readFileSync(f, 'utf8').matchAll(/name:\s*'((?:dag|omd|path|map|memory|dream)_[a-z_]+)'/g)) {
+      for (const m of readFileSync(f, 'utf8').matchAll(/name:\s*'((?:dag|omd|path|map|memory|dream|conductor)_[a-z_]+)'/g)) {
         names.add(m[1]!);
       }
     }

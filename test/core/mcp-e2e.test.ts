@@ -69,6 +69,8 @@ const ALL_TOOLS = [
   // plan-memory 账本 (Phase A 证据门仪表)
   'omd_plans',
   'omd_primitive',
+  // S1 对话位入口 (SDD 2026-08-09 远程指挥接缝): t7 后出生, 直接新词表名, 无 alias。
+  'conductor_chat',
 ].sort();
 
 /**

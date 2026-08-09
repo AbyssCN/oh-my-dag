@@ -166,6 +166,16 @@ export function createOmdSessionStore(repoRoot: string, lockDeps?: LockDeps): Om
     locks.set(path, got.release);
   };
 
+  /**
+   * ⚠ **append 前必须 JSON round-trip 净化**(2026-08-09,S1 探针实测炸出):
+   * pi 的 loop 造 toolResult 时**无条件**写 `details`/`usage` 两个键(`agent-loop.js:538`,
+   * 工具没给就是 `undefined`),而 pi 自己的 storage 深检**拒绝任何 undefined 值**
+   * (`session.js` 的 `assertJsonSerializable`)—— 两半互相矛盾,踩雷面 = 任何带工具调用的轮,
+   * 症状 = `Durable payload contains undefined` 且 user+assistant 已入库(半轮)。
+   * round-trip 丢 undefined 键 —— 持久的本来就只是 JSON 能表达的那部分,语义零损失。
+   */
+  const jsonSafe = <T>(x: T): T => JSON.parse(JSON.stringify(x)) as T;
+
   const wrap = (id: string, s: Session, path: string): OmdSession => ({
     id,
     entries: () => branch(s),
@@ -174,7 +184,7 @@ export function createOmdSessionStore(repoRoot: string, lockDeps?: LockDeps): Om
     },
     async append(m) {
       ensureWritable(path);
-      await s.appendMessage(m);
+      await s.appendMessage(jsonSafe(m));
     },
     async appendCompaction(x) {
       ensureWritable(path);
@@ -185,7 +195,8 @@ export function createOmdSessionStore(repoRoot: string, lockDeps?: LockDeps): Om
         id: uuidv7(),
         summary: x.summary,
         tokensBefore: x.tokensBefore,
-        retainedTail: x.retainedTail,
+        // retainedTail 是 AgentMessage[] —— toolResult 的 undefined 键问题同 append,一并净化。
+        retainedTail: jsonSafe(x.retainedTail),
       // ⚠ `appendEntry(entry, lane)` 的 lane **不是可选的**(`session.d.ts:28`)——
       //   `appendMessage` 才默认 'main'。写死 'main':lane 的消费者在 §1.3,不在这一片。
       }, 'main');

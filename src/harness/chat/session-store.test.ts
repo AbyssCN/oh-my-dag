@@ -86,6 +86,30 @@ describe('六件事与 ChatStore 语义对得上', () => {
   });
 });
 
+describe('★ append 前 JSON round-trip 净化(pi loop 产 undefined 键 × pi storage 拒 undefined)', () => {
+  test('★ 带 details/usage: undefined 的 toolResult 落得进去、读得回来(去掉 jsonSafe 当场红)', async () => {
+    // 逐字复刻 pi `createToolResultMessage`(agent-loop.js:538)的形状:工具没给 details/usage
+    // 时这两个键**存在且值为 undefined** —— 正是 assertJsonSerializable 拒的东西。
+    const toolResult = {
+      role: 'toolResult',
+      toolCallId: 't1',
+      toolName: 'omd_run',
+      content: [{ type: 'text', text: 'runId: x' }],
+      details: undefined,
+      usage: undefined,
+      isError: false,
+      timestamp: 1,
+    } as unknown as AgentMessage;
+    const s = createOmdSessionStore(world());
+    const sess = await s.create('tr1');
+    await sess.append(msg('user', '跑个图'));
+    await sess.append(toolResult); // 净化缺席 → 这里抛 'Durable payload contains undefined'
+    const back = await sess.messages();
+    expect(back.length).toBe(2);
+    expect((back[1] as { toolName?: string }).toolName).toBe('omd_run');
+  });
+});
+
 describe('★★ 单写者 —— 这一片存在的理由', () => {
   test('同一个 id 两次 open 拿到同一份底层 Session(并发两写两条都在, 且重开读得回来)', async () => {
     const root = world();
