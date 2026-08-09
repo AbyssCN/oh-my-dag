@@ -302,8 +302,9 @@ export async function extractChatSession(
 
   if (opts.callModel && trustedInput.trim()) {
     const callModel = opts.callModel;
-    // 被测座位显式走 OMD_DREAM_MODEL (S4 真座位验收); opts.model 优先, env 次之, mimo 仅为无 env 时兜底。
-    const model = opts.model ?? process.env.OMD_DREAM_MODEL ?? 'mimo:deepseek-v4-flash';
+    // 模型必须显式解析: opts.model 优先, OMD_DREAM_MODEL 次之, 缺失则抛错 (禁静默兜底)。
+    const model = opts.model ?? process.env.OMD_DREAM_MODEL;
+    if (!model) throw new Error('extract-chat: model required — pass opts.model or set OMD_DREAM_MODEL; no silent fallback');
 
     const systemPrompt = [
       '你是一个记忆提取器。从以下用户与助手的对话中提取**可固化的事实**。',

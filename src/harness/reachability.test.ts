@@ -75,27 +75,6 @@ const DYNAMIC_ENTRIES: Record<string, string> = {
     '**benchmark 靶子**: `eval/tasks/medium.ts` 与 `large.ts` 都把这个路径列进目标集 —— ' +
     'eval 会清空它让 fleet 照 SPEC 重建。⚠ `planToMermaid` 生产零消费者, ' +
     '存在的唯一理由就是当靶子; 删它会同时打断两个 fixture。',
-  'src/harness/dream/gather.ts':
-    'S6 将接 CLI 入口拉起(`omd dream`),见 SDD §S1/§S6;当前由同址测试 `gather.test.ts` 直接拉起。' +
-    '生产入口尚未接线(S1 阶段不接 cli.ts),故登记豁免。',
-  'src/harness/dream/watermark.ts':
-    'S6 将接 CLI 入口拉起(`omd dream`),见 SDD §S1/§S6;当前由同址测试 `watermark.test.ts` 与 `gather.ts` 直接拉起。' +
-    '生产入口尚未接线(S1 阶段不接 cli.ts),故登记豁免。',
-  'src/harness/dream/merge.ts':
-    'S6 将接 CLI 入口拉起(`omd dream`),见 SDD §S2/§S6;当前由同址测试 `merge.test.ts` 直接拉起。' +
-    '生产入口尚未接线(S2 阶段不接 cli.ts),故登记豁免。',
-  'src/harness/dream/validate.ts':
-    'S6 将接 CLI 入口拉起(`omd dream`),见 SDD §S2/§S6;当前由同址测试 `validate.test.ts` 直接拉起。' +
-    '生产入口尚未接线(S2 阶段不接 cli.ts),故登记豁免。',
-  'src/harness/dream/promote.ts':
-    'S6 将接 CLI 入口拉起(`omd dream`),见 SDD §S3/§S6;当前由同址测试 `promote.test.ts` 直接拉起。' +
-    '生产入口尚未接线(S3 阶段不接 cli.ts),故登记豁免。',
-  'src/harness/dream/extract-chat.ts':
-    'S6 将接 CLI 入口拉起(`omd dream`),见 SDD §S4/§S6;当前由同址测试 `extract-chat.test.ts` 直接拉起。' +
-    '生产入口尚未接线(S4 阶段不接 cli.ts),故登记豁免。',
-  'src/harness/dream/extract-run.ts':
-    'S6 将接 CLI 入口拉起(`omd dream`),见 SDD §S5/§S6;当前由同址测试 `extract-run.test.ts` 直接拉起。' +
-    '生产入口尚未接线(S5 阶段不接 cli.ts),故登记豁免。',
 };
 
 // ⚠ 走图的四件 (`IMPORT_SPEC` / `tsFiles` / `resolveSpec` / `reachableFrom`) 2026-08-03

@@ -16,8 +16,8 @@
  *   provenance 唯一构造点 = validate.ts dreamFactInput, 模型不得作者化 sessionRef/confidence
  *   K_leaf = 8 (复用 merge.ts), 机械+LLM 合并后超限整叶 fail
  *
- * 模型解析链与 extract-chat.ts:305-306 同型:
- *   opts.model 优先 → OMD_DREAM_MODEL 次之 → 兜底仅无 env 时
+ * 模型解析与 extract-chat 同型:
+ *   opts.model 优先 → OMD_DREAM_MODEL 次之 → 缺失响亮抛 (禁静默兜底, S6 N4 裁)
  * LLM maxRetries 严格 0; 入账由注入的 callModel 出口保证, 叶内不重复 emit (双计)。
  */
 import { z } from 'zod';
@@ -66,7 +66,7 @@ export interface ExtractRunOpts {
    * 省略 → 不调 LLM, 只走机械时态边。
    */
   callModel?: (req: ModelRequest) => Promise<ModelResponse>;
-  /** provider:modelId 坐标。省略 → OMD_DREAM_MODEL → 兜底。 */
+  /** provider:modelId 坐标。省略 → OMD_DREAM_MODEL;两者皆缺 → 抛错。 */
   model?: string;
   /**
    * 注入 EdgeStore (依赖注入, 测试走 fake/memory)。
@@ -296,8 +296,9 @@ export async function extractRunRecord(
 
   if (opts.callModel && trustedInput.trim()) {
     const callModel = opts.callModel;
-    // 模型解析链: opts.model → OMD_DREAM_MODEL → 兜底 (同 extract-chat.ts:305-306)
-    const model = opts.model ?? process.env.OMD_DREAM_MODEL ?? 'mimo:deepseek-v4-flash';
+    // 模型必须显式解析: opts.model 优先, OMD_DREAM_MODEL 次之, 缺失则抛错 (禁静默兜底)。
+    const model = opts.model ?? process.env.OMD_DREAM_MODEL;
+    if (!model) throw new Error('extract-run: model required — pass opts.model or set OMD_DREAM_MODEL; no silent fallback');
 
     const systemPrompt = [
       '你是一个 run 记忆提取器。从以下 run 的执行记录中提取**可固化的事实**。',

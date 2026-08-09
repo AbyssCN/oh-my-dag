@@ -35,6 +35,9 @@ import {
 } from './extract-chat';
 import { K_leaf } from './merge';
 
+// 非 live 测试需要 model 坐标；设置 test fallback (仅当 env 未设时, 不覆盖 live 的 OMD_DREAM_MODEL)
+if (!process.env.OMD_DREAM_MODEL) process.env.OMD_DREAM_MODEL = 'test:fake';
+
 // ---------------------------------------------------------------------------
 // 测试辅助
 // ---------------------------------------------------------------------------
@@ -95,7 +98,7 @@ function fakeCallModel(
     parsed,
     usage: opts?.usage ?? defaultUsage,
     raw: {},
-    model: opts?.model ?? 'mimo:deepseek-v4-flash',
+    model: opts?.model ?? 'test:fake',
     attempts: 1,
   });
 }
