@@ -281,7 +281,7 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
   const usages = turnUsages(returned);
   for (const u of usages) {
     try {
-      emitModelUsage(u, opts.model);
+      emitModelUsage(u, opts.model, 'chat');
     } catch (err) {
       logger.warn({ err: (err as Error).message, model: opts.model }, '[chat-agent] 用量入账失败 (已吞, 不影响这一轮)');
     }

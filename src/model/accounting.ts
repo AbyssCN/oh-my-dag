@@ -13,7 +13,14 @@ import { computeCost } from './cost-ledger';
 import { evaluateBudget } from './budget';
 
 // ── 观察者钩子 (callModel 出口 → emit; ledger 订阅) ──────────────────────────────
-type UsageObserver = (usage: ModelUsage, model: string) => void;
+/**
+ * 这一笔是谁烧的。**订阅侧分不出来, 只有 emit 侧知道** ——
+ * `'engine'` = gateway 的 `callModel` (DAG 扇出的 conductor/leaf/verifier),
+ * `'chat'` = 对话轮 (`runChatTurn` 走 pi 循环, 逐条 emit)。
+ * 缺省 `'engine'`: 既有调用点全在 gateway 出口上, 不必逐个改。
+ */
+export type UsageOrigin = 'chat' | 'engine';
+type UsageObserver = (usage: ModelUsage, model: string, origin: UsageOrigin) => void;
 const observers = new Set<UsageObserver>();
 
 /** 注册 usage 观察者 (ledger 用)。返回 detach。多订阅安全 (Set, 不互相覆盖)。 */
@@ -23,10 +30,10 @@ export function observeModelUsage(fn: UsageObserver): () => void {
 }
 
 /** callModel 成功出口调用 — 只通知不持久 (守 INV-4)。观察者抛错不影响主流程。 */
-export function emitModelUsage(usage: ModelUsage, model: string): void {
+export function emitModelUsage(usage: ModelUsage, model: string, origin: UsageOrigin = 'engine'): void {
   for (const fn of observers) {
     try {
-      fn(usage, model);
+      fn(usage, model, origin);
     } catch {
       /* 计量不下沉主流程 (ECON-3 fail-open) */
     }

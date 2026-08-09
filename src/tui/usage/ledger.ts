@@ -6,13 +6,15 @@
  * 记录形状照 v5 定死:`(ts, model, source, in, out, cacheHit, costUsd)`。
  * 窗口是**滚动**的(`now - 5h` 之后求和),不是自然小时。
  *
- * ## 两个互不相交的来源,都要记
+ * ## 两个来源,同一个入口(2026-08-09 起)
  *
- * - `engine`:omd gateway 的每次 `callModel`(经 `observeModelUsage` 钩子)——
- *   DAG 扇出烧的 conductor/leaf/verifier 全在这条上;
- * - `chat`:TUI 对话轮(走 pi 的流式循环,**不经过** gateway,在引擎账上完全隐形)——
- *   由 backend-embedded 在每轮结束时补记。
- * 两条路径不相交(pi loop vs gateway),所以不会重复计账。
+ * - `engine`:omd gateway 的每次 `callModel` —— DAG 扇出烧的 conductor/leaf/verifier;
+ * - `chat`:对话轮(`runChatTurn` 在轮内**逐条** emit,一条 assistant = 一次 provider 调用)。
+ *
+ * 两者都经 `emitModelUsage` 这一个钩子进账,`source` 由 **emit 侧的第三参**带过来 ——
+ * 订阅侧分不出是谁烧的,所以不许在订阅处编一个恒定标签。
+ * ⚠ backend **不再**在轮末补记合计:那一笔与轮内的逐条是同一份钱,记两遍
+ * (生产账本上留下过 10 对 in/out 相同、相差 1-5ms 的孪生行)。
  *
  * ## 边界诚实(v5 原话)
  *

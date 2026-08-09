@@ -52,12 +52,9 @@ export interface EmbeddedBackendDeps {
   memory?: import('../harness/memory/store').OmdMemory;
   /** 扩展的 `before_agent_start` 钩子(S15a)。省略 = 没装扩展。 */
   systemPromptHook?: (prompt: string) => Promise<string>;
-  /**
-   * 调用账本(切片②)。chat 轮走 pi 的流式循环,**不经过** gateway 的 `observeModelUsage`,
-   * 在引擎账上完全隐形 —— 所以由这里在每轮结束时补记一笔(model = 本轮实际座位)。
-   * 省略 = 不记(底栏那些段不画,不是画 0)。
-   */
-  usage?: import('./usage/ledger').TuiUsageLedger;
+  // ⚠ 这里**没有** `usage` 账本(2026-08-09 删)。chat 轮的账由 `runChatTurn` 在轮内
+  // 逐条 `emitModelUsage(u, model, 'chat')` 记,装配层订一次钩子即可(`cli.ts`)——
+  // 后端再补记一笔合计就是同一轮记两遍(生产账本上留下过 10 对孪生行)。
   /** 测试接缝:替换真轮子。生产不传。 */
   runTurn?: typeof runChatTurn;
 }
@@ -169,10 +166,8 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
           ...(deps.contextFiles ? { contextFiles: deps.contextFiles } : {}),
         };
         const r = await runTurn(turn);
-        // 切片②: 本轮用量上账本 (usage 事件在账本之后发, UI 收到 session 事件时账已记好)。
-        if (r.usage && (r.usage.in > 0 || r.usage.out > 0)) {
-          deps.usage?.record(r.usage, deps.resolveModel(), 'chat');
-        }
+        // ⚠ 这一轮的账在 `runTurn` **里面**已经逐条记完了 (agent.ts 的 emitModelUsage) ——
+        // 这里不许再记一笔合计 (2026-08-09 双计账的原址)。
         // pressure / usage 一起发 —— UI 靠它画"离满还有多远、这一轮花了多少"。
         emit('session', {
           sessionId,

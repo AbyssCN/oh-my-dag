@@ -66,13 +66,14 @@ if (userArgs[0] === 'mcp') {
   // S1 判据 1 (SDD 2026-08-09 远程指挥接缝): MCP 路的调用也要进账本。emitModelUsage 是观察者
   // 钩子, 无订阅者 = 逐条通知进真空 —— 此前只有 tui 分支订阅, mcp 分支零订阅, 于是这条生产
   // 路径上「账本有本轮 usage」结构性不可能 (「机制在、生产零生效」形态, seat-wiring 同族)。
-  // 账本复用 tui 那份 (.omd/tui-usage.jsonl): 一个仓一本账, 两本账才分不清。source 恒 'engine' ——
-  // emitModelUsage 不带来源, chat 轮与引擎调用在这条钩子上分不开 (要分开是 §2 预算闸的活)。
+  // 账本复用 tui 那份 (.omd/tui-usage.jsonl): 一个仓一本账, 两本账才分不清。source 由 emit 侧
+  // 第三参带 (2026-08-09): 对话轮 emit 'chat', gateway callModel emit 'engine' —— 订阅侧照抄,
+  // 不再自己编一个恒定标签 (那样两类调用在账上分不开)。
   const { createTuiUsageLedger } = await import('../tui/usage/ledger');
   const { observeModelUsage } = await import('../model/accounting');
   const { join: joinPath } = await import('node:path');
   const mcpUsage = createTuiUsageLedger({ dir: process.env.OMD_TUI_USAGE_DIR || joinPath(process.cwd(), '.omd') });
-  observeModelUsage((u, model) => mcpUsage.record(u, model, 'engine'));
+  observeModelUsage((u, model, origin) => mcpUsage.record(u, model, origin));
   const { runOmdMcpServer } = await import('../mcp/server');
   const { assembleOmdMcpTools } = await import('../mcp/assemble');
   await runOmdMcpServer(assembleOmdMcpTools());
@@ -104,14 +105,16 @@ if (userArgs[0] === 'tui') {
     const { createApprovalGate } = await import('../tui/approval/gate');
     const { loadApprovalConfig } = await import('../tui/approval/policy');
     const approvals = createApprovalGate({ config: loadApprovalConfig(cwd) });
-    // 切片②: 调用账本。engine 侧 (gateway callModel) 走观察者钩子; chat 侧由 backend 补记 ——
-    // 两条路径不相交 (pi loop vs gateway), 不会重复计账。
+    // 切片②: 调用账本。**两侧统一走 emitModelUsage 钩子** —— gateway 的 callModel 与对话轮
+    // (`runChatTurn` 逐条 emit) 都从这一个订阅进账, 来源由 emit 侧第三参带。
+    // ⚠ 2026-08-09 修: 此前 chat 轮由 backend 在轮末**再补记一笔合计**, 而 8-07 起 agent.ts
+    // 已经逐条 emit —— 同一轮记两遍 (生产账本上留下 10 对 in/out 相同、相差 1-5ms 的孪生行)。
     const { createTuiUsageLedger } = await import('../tui/usage/ledger');
     const { observeModelUsage } = await import('../model/accounting');
     const { join: joinPath } = await import('node:path');
     // OMD_TUI_USAGE_DIR: 测试接缝 —— PTY lane 的 fixture 记账不许污染真仓的 5h 窗口。
     const usage = createTuiUsageLedger({ dir: process.env.OMD_TUI_USAGE_DIR || joinPath(cwd, '.omd') });
-    observeModelUsage((u, model) => usage.record(u, model, 'engine'));
+    observeModelUsage((u, model, origin) => usage.record(u, model, origin));
     /**
      * `ask_user` 要的 UI(对话框宿主 / 主题 / 记录口)—— **延迟指针**。
      *
@@ -199,8 +202,7 @@ if (userArgs[0] === 'tui') {
         // 座位每轮现解 (INV-MODEL-3): omd_set_role / `/seat` 改完, 下一句就换座。
         resolveModel: () => resolveEngineModels(process.env).conductorModel,
         contextFiles,
-        // 切片②: chat 轮补记进调用账本 (engine 侧走 observeModelUsage, 两路不相交)。
-        usage,
+        // ⚠ 不传 usage: chat 轮的账走上面那条 observeModelUsage 订阅 (agent.ts 逐条 emit)。
       });
       extStatus = st;
       sink = embedded;

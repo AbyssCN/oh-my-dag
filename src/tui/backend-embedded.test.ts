@@ -5,15 +5,17 @@
  * 座位每轮现解 / 事件转得对 / abort 掐得准 / 错误原样上抛。
  * 引擎行为本身由 `harness/chat/agent.test.ts` 与 L4 冒烟各管一段。
  */
-import type { AgentEvent } from '@earendil-works/pi-agent-core';
+import type { AgentEvent, AgentMessage } from '@earendil-works/pi-agent-core';
 import { describe, expect, test } from 'bun:test';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createOmdSessionStore } from '../harness/chat/session-store';
-import type { ChatTurnOpts, ChatTurnResult } from '../harness/chat/agent';
+import { runChatTurn, type ChatTurnOpts, type ChatTurnResult } from '../harness/chat/agent';
+import { observeModelUsage } from '../model/accounting';
 import type { OmdTuiEvent } from './backend';
 import { createEmbeddedBackend } from './backend-embedded';
+import { createTuiUsageLedger, type UsageRecord } from './usage/ledger';
 
 const fresh = () => mkdtempSync(join(tmpdir(), 'omd-tui-embedded-'));
 
@@ -185,6 +187,49 @@ describe('会话读侧', () => {
     });
     expect((await backend.listSessions()).map((m) => m.id)).toEqual(['s1']);
     expect((await backend.loadHistory({ sessionId: 's1' })).length).toBe(1);
+  });
+});
+
+describe('★ 一轮 chat 只上一次账 (2026-08-09 双计账修复)', () => {
+  // 反向自检 (实跑): 把 backend-embedded 那段轮末补记加回去 ——
+  //   `if (r.usage && ...) deps.usage?.record(r.usage, deps.resolveModel(), 'chat');`
+  // → 这条当场红成 calls=3 / in=600 (逐条 100+200 之外多出一笔合计 300)。
+  // 那正是修复前的生产形状: 账本上 in/out 相同、相差 1-5ms 的孪生行。
+  const u = (input: number, output: number) => ({ input, output, cacheRead: 0, cacheWrite: 0, totalTokens: 0 });
+  const assistant = (text: string, usage: ReturnType<typeof u>): AgentMessage =>
+    ({ role: 'assistant', content: [{ type: 'text', text }], timestamp: 1, stopReason: 'stop', usage }) as unknown as AgentMessage;
+
+  test('★ 两次 provider 调用 = 账本两行 (in 合计 300), 且两行都记成 chat', async () => {
+    const cwd = fresh();
+    const led = createTuiUsageLedger({ dir: cwd });
+    const rows: UsageRecord[] = [];
+    // 与 cli.ts 的装配同形状: 账本的**唯一**入口就是这条订阅, source 照抄 emit 侧的第三参。
+    const detach = observeModelUsage((usage, model, origin) => rows.push(led.record(usage, model, origin)));
+    try {
+      const backend = createEmbeddedBackend({
+        cwd,
+        store: createOmdSessionStore(cwd),
+        tools: [],
+        resolveModel: () => 'deepseek:deepseek-v4-flash',
+        // 真 `runChatTurn` + 假循环 —— 逐条 emit 那一段必须真的跑到 (假轮子会绕过它)。
+        runTurn: ((o: ChatTurnOpts): Promise<ChatTurnResult> =>
+          runChatTurn({
+            ...o,
+            loopFn: (async (prompts: AgentMessage[]) => [
+              ...prompts,
+              assistant('答一', u(100, 10)),
+              assistant('答二', u(200, 20)),
+            ]) as never,
+          })) as never,
+      });
+      await backend.sendChat({ sessionId: 's', prompt: 'q' });
+      const w = led.window();
+      expect(w.calls).toBe(2);
+      expect(w.in).toBe(300);
+      expect(rows.map((r) => r.source)).toEqual(['chat', 'chat']);
+    } finally {
+      detach();
+    }
   });
 });
 
