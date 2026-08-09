@@ -93,6 +93,9 @@ const DYNAMIC_ENTRIES: Record<string, string> = {
   'src/harness/dream/extract-chat.ts':
     'S6 将接 CLI 入口拉起(`omd dream`),见 SDD §S4/§S6;当前由同址测试 `extract-chat.test.ts` 直接拉起。' +
     '生产入口尚未接线(S4 阶段不接 cli.ts),故登记豁免。',
+  'src/harness/dream/extract-run.ts':
+    'S6 将接 CLI 入口拉起(`omd dream`),见 SDD §S5/§S6;当前由同址测试 `extract-run.test.ts` 直接拉起。' +
+    '生产入口尚未接线(S5 阶段不接 cli.ts),故登记豁免。',
 };
 
 // ⚠ 走图的四件 (`IMPORT_SPEC` / `tsFiles` / `resolveSpec` / `reachableFrom`) 2026-08-03
