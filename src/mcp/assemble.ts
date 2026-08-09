@@ -77,6 +77,7 @@ import type { ResearchFanoutResult } from '../harness/research/fanout';
 import { logger } from '../harness/logger';
 import { applyToolRenames } from './tool-renames';
 import { createConductorChatTool, type ConductorChatDeps } from './tools/chat';
+import { checkWeeklyBudget, usageLedgerDir } from './budget';
 import { createOmdSessionStore, type OmdSessionStore } from '../harness/chat/session-store';
 
 /** 生产引擎接缝 (真 DAG 引擎)。 */
@@ -689,6 +690,10 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       store: deps.chatStore ?? createOmdSessionStore(cwd),
       resolveModel: () => resolveEngineModels(env).conductorModel,
       tools: assembled,
+      // §2 周预算闸 (SDD 2026-08-09 ECON): 账本目录与上限都按**装配层的 env** 解 ——
+      // 与本文件其余接缝同口径 (测试注入 env, 不必污染进程)。每次调用现读盘 + 现读 env:
+      // 改 OMD_WEEKLY_BUDGET_USD 下一句就生效, 不必重连 server (INV-MODEL-3 同款理由)。
+      budget: () => checkWeeklyBudget({ dir: usageLedgerDir(cwd, env), env }),
       ...(deps.chatLoopFn ? { loopFn: deps.chatLoopFn } : {}),
     }),
   );

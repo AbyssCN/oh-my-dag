@@ -14,6 +14,9 @@
  *
  * `runIds` 从工具回执里收集(`run`/`solve` 回执首行 `runId: <id>` 是钉死的形状),
  * Claude 侧可继续 `dag_status` 追;图 fire-and-forget,Claude 断线图照跑。
+ *
+ * **§2 周预算闸**(`mcp/budget.ts`):轮前一道(超限 → 不跑轮,回 `lane="owner"` 阀块)、
+ * 派图前一道(超限 → `omd_run`/`omd_solve` 拒派)。已在飞的图不动。
  */
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -23,6 +26,13 @@ import { createOmdAgentTools } from '../../harness/agent-tools';
 import { createConductorChatTools } from '../../serve/chat-tools';
 import { runChatTurn, type ChatTurnOpts } from '../../harness/chat/agent';
 import type { OmdSessionStore } from '../../harness/chat/session-store';
+import {
+  checkWeeklyBudget,
+  renderBudgetEscalation,
+  renderBudgetLine,
+  usageLedgerDir,
+  type WeeklyBudgetStatus,
+} from '../budget';
 
 /** D-1 的只读手。`chat.test.ts` 反向自检:write/edit/bash 不许出现在 headless 工具面。 */
 export const HEADLESS_HANDS: readonly string[] = ['read', 'ls', 'grep'];
@@ -64,6 +74,11 @@ export interface ConductorChatDeps {
   tools: readonly OmdMcpTool[];
   /** 测试接缝:透传 runChatTurn 的 loopFn(真循环要真模型)。生产不传。 */
   loopFn?: ChatTurnOpts['loopFn'];
+  /**
+   * §2 周预算闸的读数源(默认:现读 `.omd/tui-usage.jsonl` 的滚动 7 天窗口)。
+   * **每次调用都重新读** —— 轮前一次、每次派图前一次,所以轮中途跨线也拦得住。
+   */
+  budget?: () => WeeklyBudgetStatus;
 }
 
 /**
@@ -98,9 +113,42 @@ function collectRunIds(tools: AnyOmdTool[], sink: string[]): AnyOmdTool[] {
   });
 }
 
+/**
+ * §2 预算闸的**派图侧**:超限时 `omd_run`/`omd_solve` 不进内层,直接以 `[TOOL ERROR]` 回执拒。
+ *
+ * 与轮前那道检查不重复 —— 轮前那道拦的是「这一轮别开始」,这道拦的是**轮跑到半截跨的线**
+ * (conductor 一轮可以派好几张图;账本每次现读,所以第 N 张图能看见前 N-1 张烧出来的钱)。
+ * 已在飞的图不动(fire-and-forget 语义不变),这里只拦**新派**。
+ * `[TOOL ERROR]` 前缀是既有惯例(chat-tools 的 invoke 同款),顺带保证 collectRunIds 不收它。
+ */
+function guardBudget(tools: AnyOmdTool[], budget: () => WeeklyBudgetStatus): AnyOmdTool[] {
+  return tools.map((t) => {
+    if (t.name !== 'omd_run' && t.name !== 'omd_solve') return t;
+    const inner = t.execute.bind(t);
+    return {
+      ...t,
+      async execute(...args: Parameters<AnyOmdTool['execute']>) {
+        const s = budget();
+        if (!s.over) return inner(...args);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `[TOOL ERROR]\n周预算闸: ${renderBudgetLine(s)} —— 拒派新图 (已在飞的图不动)。\n把这条原样上报给 owner, 别改用别的工具绕过去。`,
+            },
+          ],
+          details: undefined,
+        };
+      },
+    } as AnyOmdTool;
+  });
+}
+
 export function createConductorChatTool(deps: ConductorChatDeps): OmdMcpTool {
   // 装配期建一次(createOmdAgentTools 持 NodeExecutionEnv 资源);runIds 收集器 per-call 包装。
   const baseTools = buildHeadlessChatTools(deps);
+  // 默认读数源:账本目录与 harness/cli.ts 的 mcp 分支同一条解析(env 现读 —— 改上限不必重启 server)。
+  const budget = deps.budget ?? (() => checkWeeklyBudget({ dir: usageLedgerDir(deps.cwd) }));
   return {
     name: 'conductor_chat',
     description:
@@ -118,6 +166,21 @@ export function createConductorChatTool(deps: ConductorChatDeps): OmdMcpTool {
         return { content: [{ type: 'text' as const, text: 'conductor_chat: prompt required' }], isError: true };
       }
       const sid = sessionId ?? randomUUID();
+      // §2 周预算闸(轮**前**):超限就不跑这一轮 —— 一个 token 都不烧, 会话一个字节都不写。
+      // 回执是**正常回执**(isError=false), 正文只有 lane="owner" 的阀块:超限不是工具坏了,
+      // 是一个只有 owner 能裁的岔口, 走与 S2 同一条 ? 阀链(调用方禁代答)。
+      const preTurn = budget();
+      if (preTurn.over) {
+        const head = [
+          `sessionId: ${sid}`,
+          'runIds: (无)',
+          'escalation: lane=owner(阀块在正文,owner 级禁代答)',
+          `budget: ${renderBudgetLine(preTurn)} —— 已超, 本轮未执行`,
+          // usage/pressure 两行**故意不出现**:这一轮没跑, 没有 usage 可言。
+          // 编一对 0 上去就把「没跑」和「跑了但没烧」抹平成同一个读数(NULL ≠ 0)。
+        ].join('\n');
+        return { content: [{ type: 'text' as const, text: `${head}\n---\n${renderBudgetEscalation(preTurn)}` }] };
+      }
       const runIds: string[] = [];
       try {
         const r = await runChatTurn({
@@ -126,7 +189,7 @@ export function createConductorChatTool(deps: ConductorChatDeps): OmdMcpTool {
           prompt,
           model: deps.resolveModel(),
           cwd: deps.cwd,
-          tools: collectRunIds(baseTools, runIds),
+          tools: guardBudget(collectRunIds(baseTools, runIds), budget),
           // S2:headless 块拼在整份 prompt 尾部 —— 冻结前缀逐字不动,cache 面不伤。
           systemPromptHook: async (p) => `${p}\n\n${HEADLESS_PROMPT_BLOCK}`,
           ...(deps.loopFn ? { loopFn: deps.loopFn } : {}),

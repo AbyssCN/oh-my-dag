@@ -12,7 +12,7 @@
  *     (交接 37 坑 #7:装配点没闸 = 完全没接)。
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
@@ -29,6 +29,7 @@ import {
   parseEscalation,
 } from './chat';
 import { assembleOmdMcpTools, type AssembleOmdMcpDeps } from '../assemble';
+import { WEEKLY_BUDGET_ENV, type WeeklyBudgetStatus } from '../budget';
 import { RunRegistry } from '../run-registry';
 import { createOmdMemory } from '../../harness/memory';
 import { UNIVERSAL_SAFEGUARD } from '../../memory/safeguards/namespaces';
@@ -85,13 +86,17 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-const makeTool = (opts: { store?: OmdSessionStore; loop?: ReturnType<typeof fakeLoop> } = {}) =>
+const makeTool = (
+  opts: { store?: OmdSessionStore; loop?: ReturnType<typeof fakeLoop>; budget?: () => WeeklyBudgetStatus } = {},
+) =>
   createConductorChatTool({
     cwd: root,
     store: opts.store ?? store,
     resolveModel: () => MODEL,
     tools: FAKE_MCP_TOOLS,
     loopFn: opts.loop ?? fakeLoop('收到。'),
+    // 省略 budget = 走生产默认(现读 <cwd>/.omd/tui-usage.jsonl)—— 临时 root 里没账本 = 不拦。
+    ...(opts.budget ? { budget: opts.budget } : {}),
   });
 
 const callText = async (tool: OmdMcpTool, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }> => {
@@ -210,6 +215,101 @@ describe('判据 2:双进程锁拒(D-2 复用 session-lock)', () => {
     expect(second.text).toContain('111'); // 判词里要能说出持有者是谁
     // 会话没被写坏:投影仍可读且只有第一轮的两条(无重复 seq —— 坏了这里直接抛)
     expect((await (await storeA.open(sid))!.messages()).length).toBe(2);
+  });
+});
+
+describe('§2 周预算闸(SDD 2026-08-09 ECON)', () => {
+  /**
+   * **反向自检(每条怎么让它红)**:
+   * - 拆掉 handler 里那段 `if (preTurn.over)` → 「$100 轮前拒」当场红;
+   * - 拆掉 `guardBudget` 包装 → 「轮中途跨线拒派新图」当场红(runIds 会收到 run-abc);
+   * - 把闸做成恒拦(`over` 恒 true)→ 「$49.99 零变化」与「=0 关闸」两条当场红。
+   * 三条同时在,「拦得住」与「不误拦」两侧才都有人盯 —— 只有前者的闸会把 owner 锁在门外。
+   */
+  let savedLimit: string | undefined;
+  let savedDir: string | undefined;
+  beforeEach(() => {
+    savedLimit = process.env[WEEKLY_BUDGET_ENV];
+    savedDir = process.env.OMD_TUI_USAGE_DIR;
+    delete process.env[WEEKLY_BUDGET_ENV]; // 用默认上限 $50
+    delete process.env.OMD_TUI_USAGE_DIR; // 账本必须落在本用例的临时 root, 不许读到真仓那本
+  });
+  afterEach(() => {
+    if (savedLimit === undefined) delete process.env[WEEKLY_BUDGET_ENV];
+    else process.env[WEEKLY_BUDGET_ENV] = savedLimit;
+    if (savedDir === undefined) delete process.env.OMD_TUI_USAGE_DIR;
+    else process.env.OMD_TUI_USAGE_DIR = savedDir;
+  });
+
+  /** 往 `<root>/.omd/tui-usage.jsonl` 写真账本行 —— **不注 budget 接缝**, 走生产那条默认读数路径。 */
+  const writeSpend = (costUsd: number): void => {
+    mkdirSync(join(root, '.omd'), { recursive: true });
+    writeFileSync(
+      join(root, '.omd', 'tui-usage.jsonl'),
+      `${JSON.stringify({ ts: Date.now(), model: 'deepseek:deepseek-v4-flash', source: 'engine', in: 1, out: 1, cacheHit: 0, costUsd, unpriced: false })}\n`,
+    );
+  };
+
+  test('★ 账本一行 $100 → 轮前拒:isError=false 的正常回执 + lane=owner 阀块, 轮子一次没跑, 盘上零字节', async () => {
+    writeSpend(100);
+    let called = false;
+    const spy = (async (prompts: AgentMessage[], context: { tools?: AnyOmdTool[] }) => {
+      called = true;
+      return fakeLoop('不该跑到这一步')(prompts, context);
+    }) as unknown as ReturnType<typeof fakeLoop>;
+    const { text, isError } = await callText(makeTool({ loop: spy }), { prompt: '帮我跑个任务' });
+    expect(isError).toBe(false); // 超限不是"工具坏了", 是一个只有 owner 能裁的岔口
+    expect(called).toBe(false); // 不跑轮 = 一个 token 都不烧
+    expect(await store.list()).toHaveLength(0); // 没跑的轮不建会话
+    expect(parseEscalation(text)?.lane).toBe('owner'); // 与 S2 同一条阀链, 同一个解析器
+    expect(text).toMatch(/^escalation: lane=owner/m);
+    expect(text).toContain('$100.00');
+    expect(text).not.toMatch(/^usage:/m); // 没跑的轮不编 usage=0(NULL ≠ 0)
+  });
+
+  test('★ $49.99(未超)→ 行为零变化:照常跑轮、照常建会话、不冒阀块也不冒 budget 行', async () => {
+    writeSpend(49.99);
+    const { text, isError } = await callText(makeTool(), { prompt: '现在有几个 run?' });
+    expect(isError).toBe(false);
+    expect(text).toContain('收到。');
+    expect(text).not.toContain('escalation:');
+    expect(text).not.toContain('周预算闸');
+    expect(text).toMatch(/^usage:/m);
+    expect(await store.list()).toHaveLength(1);
+  });
+
+  test('★ OMD_WEEKLY_BUDGET_USD=0 → 闸关:$100 也照跑(关闸旋钮真的关得掉)', async () => {
+    writeSpend(100);
+    process.env[WEEKLY_BUDGET_ENV] = '0';
+    const { text, isError } = await callText(makeTool(), { prompt: 'x' });
+    expect(isError).toBe(false);
+    expect(text).toContain('收到。');
+    expect(text).not.toContain('escalation:');
+  });
+
+  test('★ 轮中途跨线 → omd_run 拒派新图, 内层一次没调(已在飞的图不动)', async () => {
+    // 两次读数:轮前 $10(放行, 轮跑起来)→ 派图时 $100(拒)。账本每次现读, 这正是两道闸的分工:
+    // 轮前那道拦"这轮别开始", 这道拦"轮跑到半截跨的线"。
+    const readings: WeeklyBudgetStatus[] = [
+      { limitUsd: 50, enabled: true, costUsd: 10, unpriced: false, calls: 1, over: false },
+      { limitUsd: 50, enabled: true, costUsd: 100, unpriced: false, calls: 2, over: true },
+    ];
+    let i = 0;
+    const budget = (): WeeklyBudgetStatus => readings[Math.min(i++, readings.length - 1)]!;
+    const echoRun = (async (prompts: AgentMessage[], context: { tools?: AnyOmdTool[] }) => {
+      const tool = (context.tools ?? []).find((t) => t.name === 'omd_run')!;
+      const res = await tool.execute('t1', { task: 'x' });
+      const toolText = (res as { content?: { text?: string }[] }).content?.[0]?.text ?? '';
+      return [
+        ...prompts,
+        { role: 'assistant', content: [{ type: 'text', text: toolText }], timestamp: 2, stopReason: 'stop' } as unknown as AgentMessage,
+      ];
+    }) as unknown as ReturnType<typeof fakeLoop>;
+    const { text } = await callText(makeTool({ budget, loop: echoRun }), { prompt: '把这个任务画成图' });
+    expect(text).toContain('[TOOL ERROR]'); // 既有惯例:模型看得见这是失败
+    expect(text).toContain('周预算闸');
+    expect(text).toMatch(/^runIds: \(无\)$/m); // 内层 run 没被调用, 所以没有 run-abc
+    expect(text).not.toContain('run-abc');
   });
 });
 
