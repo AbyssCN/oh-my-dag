@@ -36,8 +36,11 @@ describe('N3 · ① 任意代码执行 (RCE)', () => {
     expect(allowed('bun run /tmp/whatever.ts')).toBe(true);
   });
 
-  test('包管理器直通: `bun x` / `npx --yes` 放行 (从 registry 拉任意包并执行)', () => {
-    expect(allowed('bun x cowsay hi')).toBe(true);
+  test('包管理器直通: `bunx` / `npx --yes` 放行 (从 registry 拉任意包并执行)', () => {
+    // 2026-08-09: `bun x` 死形态被 ②.4 拒 (--cwd 下 bun 把 x 当 script 名, 见 command-leaf.ts)。
+    // ⚠ RCE 面**没有变小**, 只是换了正门 —— bunx/npx 直通仍在, 本测试如实记录这个面。
+    expect(allowed('bun x cowsay hi')).toBe(false);
+    expect(allowed('bunx cowsay hi')).toBe(true);
     expect(allowed('npx --yes some-pkg')).toBe(true);
   });
 });

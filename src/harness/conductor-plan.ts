@@ -439,6 +439,12 @@ export function conductorSystemPrompt(
     '  (set output_path too). A "leaf" CANNOT touch the filesystem — a leaf told to write a file silently',
     '  produces NOTHING (returns text, node reports done, no artifact). NEVER use "leaf" for an',
     '  implementation/build node. "Default to leaf" applies only to text-deliverable nodes (analysis/design/research).',
+    // 2026-08-09 补 (S2 图 reachability-entry 实测: 验证节点被标成产文件 → 产物闸 filesTouched
+    // 空误杀, 级联砍下游)。执法端 = 引擎 empty-artifact 判词已带同款自纠指引, 这里管画图端。
+    'MIRROR RULE — verification/check nodes MUST NOT declare artifacts: if a node only VERIFIES/inspects',
+    '  (runs tests, greps, compares, audits) and is not expected to write any file, set output_type:"none"',
+    '  (no output_path). Declaring output_type:"file" on a no-write node makes the artifact gate fail it',
+    '  for the crime of doing exactly its job.',
     // g1 leaf 档位判据 (图「引擎墙钟与 leaf 档位」#9, 2026-08-04)。这段是**教学**, 执法在
     // plan/leaf-tier-gate.ts (prompt 规则不可证伪, 闸红/绿可证伪 —— 违规 plan 会被拒回重画)。
     'HARD RULE — big content enters via PROMPT (billed once), never via an agent tool loop (the loop',

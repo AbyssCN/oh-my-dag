@@ -211,11 +211,12 @@ describe('command-leaf 输出捕获: stdout 与 stderr 都要', () => {
 
   test('只有一条流有内容时不留空行 (stdout 空 / stderr 空 各一例)', async () => {
     const { spawn } = fakeSpawn({
-      'bun x tsc': { stdout: '', stderr: 'TS2304: Cannot find name', exitCode: 2 },
+      // (样例命令 2026-08-09 从 'bun x tsc' 改 'bun run tsc': 前者已被 ②.4 死形态闸拒, 到不了 spawn)
+      'bun run tsc': { stdout: '', stderr: 'TS2304: Cannot find name', exitCode: 2 },
       'bun run build': { stdout: 'built', stderr: '', exitCode: 0 },
     });
     const run = createCommandLeafRunner({ allowlist: ['bun'], spawn });
-    expect((await run({ command: 'bun x tsc' })).text).toBe('TS2304: Cannot find name');
+    expect((await run({ command: 'bun run tsc' })).text).toBe('TS2304: Cannot find name');
     expect((await run({ command: 'bun run build' })).text).toBe('built');
   });
 });

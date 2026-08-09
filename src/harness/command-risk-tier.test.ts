@@ -67,6 +67,23 @@ describe('commandRiskTier — 取链上最重的一级, 未登记即 never', () 
     expect(commandRiskTier('omd dag-run --goal x')).toBe('never');
   });
 
+  test('`bun [--cwd D] x` 死形态拒得可教, bunx 放行 (2026-08-09, S2 图 oracle-tsc 实测)', () => {
+    // 实测: `bun --cwd <dir> x tsc` 下 bun 把 x 当 script 名报 `Script not found "x"` ——
+    // tsc 根本没跑, 节点红长得像类型错, verifier 还误判「违反冻结 oracle」。
+    // 反向自检 (2026-08-09 当场证伪): 注释掉 command-leaf.ts ②.4 分支 → 下面两条 not.toBeNull
+    // 断言当场红 (命令被放行, bun 在执行期才报 Script not found —— 闸没接住死形态)。
+    const r1 = commandBlockReason('bun x tsc --noEmit', DEFAULT_COMMAND_ALLOWLIST);
+    expect(r1).not.toBeNull();
+    expect(r1!).toContain('bunx'); // 判词必须教改写, 让修复轮能自纠
+    const r2 = commandBlockReason('bun --cwd /tmp/wt x tsc --noEmit', DEFAULT_COMMAND_ALLOWLIST);
+    expect(r2).not.toBeNull();
+    expect(r2!).toContain('bunx');
+    // 正道放行: bunx 直写 + bun 自己的合法形态不受影响。
+    expect(commandBlockReason('bunx tsc --noEmit -p /tmp/wt', DEFAULT_COMMAND_ALLOWLIST)).toBeNull();
+    expect(commandBlockReason('bun --cwd /tmp/wt test', DEFAULT_COMMAND_ALLOWLIST)).toBeNull();
+    expect(commandRiskTier('bunx tsc --noEmit')).toBe('scoped_write');
+  });
+
   test('&& 链取最重的一级, 而不是第一环', () => {
     expect(commandRiskTier('cat a.md && bun test')).toBe('scoped_write');
     expect(commandRiskTier('bun test && cat a.md')).toBe('scoped_write');
@@ -100,7 +117,7 @@ describe('登记表的读数 (改了要经过改测试, 不许悄悄发生)', ()
       .filter(([, t]) => t === 'scoped_write')
       .map(([bin]) => bin)
       .sort();
-    expect(scoped).toEqual(['bun', 'node', 'npx', 'tsc']);
+    expect(scoped).toEqual(['bun', 'bunx', 'node', 'npx', 'tsc']);
   });
 
   test('级序是全序且由轻到重 (读数板按它排序)', () => {

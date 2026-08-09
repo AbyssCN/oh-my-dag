@@ -2516,7 +2516,8 @@ async function executePlan(
               ? ranShell.length > 0
                 ? `filesTouched 空 — 受控写工具 (write/edit) 一次没用过, 但本 leaf 跑过 ${ranShell.length} 条 bash 命令` +
                   ` (${ranShell.slice(0, 3).map((s) => s.command.slice(0, 40)).join(' · ')}${ranShell.length > 3 ? ' …' : ''});` +
-                  ` 写操作可能经 bash 发生而产物闸看不见 —— 给该节点声明 output_path 即可被救回`
+                  ` 写操作可能经 bash 发生而产物闸看不见 —— 给该节点声明 output_path 即可被救回;` +
+                  ` 若本节点本就不产文件 (纯验证/检查), 重画时该标 output_type:'none' 而不是声明产物 —— 别让产物闸管一个没有产物的节点`
                 : 'filesTouched 空 — leaf 自报完成但未做任何文件写操作'
               : `声称产物不存在: ${missing.join(', ')}`;
             logger.warn({ node: id, filesTouched, missing }, '[omd/executor-dag] 产物校验失败 → 节点 failed (拒绝 empty-done)');

@@ -37,8 +37,9 @@ import type { CommandLeafInput, CommandLeafResult, CommandLeafRunner } from './l
  * sed/awk —— `-i` 就地改文件, 收益不抵风险; npm/pnpm/yarn —— publish/install 是外向且改依赖树。
  */
 export const DEFAULT_COMMAND_ALLOWLIST: readonly string[] = [
-  // ① 构建 / 类型 / 测试闸
-  'bun', 'node', 'tsc', 'npx',
+  // ① 构建 / 类型 / 测试闸 (bunx 2026-08-09 补: `bun --cwd D x tsc` 形态下 bun 把 x 当
+  //    script 名报 "Script not found" —— 正道是直接写 bunx, 死形态由 ②.4 拒得可教)
+  'bun', 'node', 'tsc', 'npx', 'bunx',
   // ② 只读检视 —— 验证叶要能证实自己的产物真存在、非空、内容对
   'ls', 'cat', 'head', 'tail', 'wc', 'stat', 'file', 'du', 'pwd', 'realpath', 'basename', 'dirname', 'diff',
   // ③ 搜索
@@ -112,6 +113,7 @@ export const COMMAND_RISK_TIER: Readonly<Record<string, CommandRiskTier>> = {
   node: 'scoped_write',
   tsc: 'scoped_write',
   npx: 'scoped_write',
+  bunx: 'scoped_write',
   // ⑤ 项目自有工具。`omd`/`oh-my-dag` 已从白名单摘除 (它们的风险是**整张图的风险**, 不是一条 CLI 的),
   //    故本表也不再登记 —— 未登记 = `never`, 与闸同向。
   codegraph: 'read_only',
@@ -289,6 +291,17 @@ export function commandBlockReason(command: string, allowlist: readonly string[]
     if (!allowlist.includes(bin)) {
       logger.warn({ command: link, bin, allowlist }, '[omd/command-leaf] 命令不在白名单, 拒绝');
       return `[blocked not-allowed: '${bin}' ∉ allowlist]`;
+    }
+    // ②.4 `bun [--cwd D] x …` 死形态拒得可教 (2026-08-09, S2 图 oracle-tsc 实测):
+    //    带 --cwd 时 bun 不解析 x 别名, 把 x 当 script 名报 `Script not found "x"` ——
+    //    tsc 根本没跑, 节点红却长得像类型错。判词给出改写, 让修复轮能自纠而不是瞎猜。
+    if (bin === 'bun') {
+      const toks = link.trim().split(/\s+/);
+      const xAt = toks[1] === 'x' ? 1 : toks[1] === '--cwd' && toks[3] === 'x' ? 3 : -1;
+      if (xAt > 0) {
+        logger.warn({ command: link }, '[omd/command-leaf] `bun x` 形态拒绝 (--cwd 下 x 不解析) → 提示改写 bunx');
+        return `[blocked bun-x-form: \`bun${xAt === 3 ? ' --cwd …' : ''} x\` 在本引擎不可用 (--cwd 下 bun 把 x 当 script 名) —— 改写为 \`bunx <tool> …\`(bunx 在白名单), 目录定位用工具自带参数 (如 tsc -p <dir>)]`;
+      }
     }
     // ②.5 shell 元字符拦 (sec-audit 揪出的 CRITICAL): 白名单只查首 token, 整串喂 sh -c → 经
     // ; | & $() ` 换行 < > () 可在合法 bin 后注入任意命令。拒绝这些元字符 (引号/空格/路径字符仍允许)。
