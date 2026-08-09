@@ -77,6 +77,12 @@ const DYNAMIC_ENTRIES: Record<string, string> = {
     '**benchmark 靶子**: `eval/tasks/medium.ts` 与 `large.ts` 都把这个路径列进目标集 —— ' +
     'eval 会清空它让 fleet 照 SPEC 重建。⚠ `planToMermaid` 生产零消费者, ' +
     '存在的唯一理由就是当靶子; 删它会同时打断两个 fixture。',
+  'src/harness/dream/gather.ts':
+    'S6 将接 CLI 入口拉起(`omd dream`),见 SDD §S1/§S6;当前由同址测试 `gather.test.ts` 直接拉起。' +
+    '生产入口尚未接线(S1 阶段不接 cli.ts),故登记豁免。',
+  'src/harness/dream/watermark.ts':
+    'S6 将接 CLI 入口拉起(`omd dream`),见 SDD §S1/§S6;当前由同址测试 `watermark.test.ts` 与 `gather.ts` 直接拉起。' +
+    '生产入口尚未接线(S1 阶段不接 cli.ts),故登记豁免。',
 };
 
 // ⚠ 走图的四件 (`IMPORT_SPEC` / `tsFiles` / `resolveSpec` / `reachableFrom`) 2026-08-03

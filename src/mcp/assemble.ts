@@ -72,6 +72,7 @@ import { resolveVerification } from '../harness/verifier';
 import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../harness/command-leaf';
 import type { AgentLeafRunner, CommandLeafRunner } from '../harness/leaf-runners';
 import { createOmdMemory, type OmdMemory } from '../harness/memory';
+import { resolveMemoryDbPath } from '../harness/memory/db-path';
 import { UNIVERSAL_SAFEGUARD } from '../memory/safeguards/namespaces';
 import type { ResearchFanoutResult } from '../harness/research/fanout';
 import { logger } from '../harness/logger';
@@ -159,9 +160,9 @@ export function resolveEngineModels(
   };
 }
 
-/** 生产 memory 接缝 (MCP 装配与 TUI 对话位**同一真源**, S0 共库): OMD_MEMORY_PATH ?? .omd/memory.db + UNIVERSAL_SAFEGUARD。 */
+/** 生产 memory 接缝 (MCP 装配与 TUI 对话位**同一真源**, S0 共库): resolveMemoryDbPath + UNIVERSAL_SAFEGUARD。 */
 export function createDefaultMemory(env: NodeJS.ProcessEnv): OmdMemory {
-  const memoryPath = env.OMD_MEMORY_PATH ?? '.omd/memory.db';
+  const memoryPath = resolveMemoryDbPath(env);
   mkdirSync(dirname(memoryPath), { recursive: true });
   return createOmdMemory({ path: memoryPath, safeguard: UNIVERSAL_SAFEGUARD });
 }
