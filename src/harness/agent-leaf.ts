@@ -30,7 +30,10 @@ import {
   estimateContextTokens,
   estimateTokens,
   findTurnStartIndex,
+  formatSize,
   serializeConversation,
+  truncateTail,
+  DEFAULT_MAX_LINES,
   COMPACTION_SUMMARY_PREFIX,
   COMPACTION_SUMMARY_SUFFIX,
   type AgentContext,
@@ -463,6 +466,119 @@ function findTurnHeadIndex(messages: AgentMessage[], cut: number): number | null
 }
 
 /**
+ * 保留段里**单条工具结果**被截断时贴的标记。给人读、也给测试断言 ——
+ * 保留段中出现"看着完整、其实缺了开头"的结果是**静默**的,必须自带痕迹。
+ */
+export const TOOL_RESULT_TRUNCATION_MARK = '[omd 压缩截断]';
+
+/**
+ * 触发截断的比值:保留段 > `keepRecentTokens × 这个数` 才动手。
+ *
+ * 取 **1.5** 是因为它是既有判据里**已经写死**的那条上界(`chat/compaction.test.ts`
+ * 「压缩后落在 [keep, keep×1.5)」)—— 用同一个数意味着:**只有既有判据已经判红的形状才会被截断**,
+ * 判据判绿的一律一个字不动。换个新数就等于新增一批"以前合格、现在被动了"的场景。
+ */
+export const COMPACTION_RETAINED_TOLERANCE = 1.5;
+
+/**
+ * 单条结果截完之后的**字节下限**。预算被 N 条并发结果均分,N 大时每份会摊到几十字节 ——
+ * 那种长度的尾巴读不出任何结论,不如宁可超一点预算。2000 字节 ≈ 500 token ≈ 一屏。
+ */
+export const MIN_TOOL_RESULT_BYTES = 2_000;
+
+/**
+ * token 预算 → 字节上界的换算。pi 的 `estimateTokens` 口径是 **chars/4**,而 `truncateTail`
+ * 卡的是 **utf8 字节**。ASCII 下二者相等(字节 = 字符),CJK 下 1 字符 = 3 字节 ⇒ 同样的字节上限
+ * 换来的 token **更少**。所以用 4 换算恒是**上界**,不会算漏。
+ */
+const BYTES_PER_TOKEN = 4;
+
+/** 把一条工具结果的 text 块截成尾部;没有一块需要截 → null(调用方据此判"没动过")。 */
+function truncateToolResultTail(msg: AgentMessage, maxBytes: number): AgentMessage | null {
+  const content = (msg as { content?: unknown }).content;
+  if (!Array.isArray(content)) return null;
+  let changed = false;
+  const next = content.map((block) => {
+    const b = block as { type?: string; text?: string };
+    if (b.type !== 'text' || typeof b.text !== 'string') return block; // 图片块原样带过
+    if (Buffer.byteLength(b.text, 'utf8') <= maxBytes) return block;
+    // 留**尾**不留头: 工具结果的结论在尾 (bash 的报错/退出行、测试的汇总行、grep 的最后一批命中)。
+    const t = truncateTail(b.text, { maxBytes, maxLines: DEFAULT_MAX_LINES });
+    if (!t.truncated) return block;
+    changed = true;
+    return {
+      ...b,
+      text:
+        `${TOOL_RESULT_TRUNCATION_MARK} 原 ${formatSize(t.totalBytes)} / ${t.totalLines} 行, ` +
+        `只留末尾 ${formatSize(t.outputBytes)} —— 开头已丢弃, 需要的话重新跑一次工具取那一段。\n${t.content}`,
+    };
+  });
+  return changed ? ({ ...(msg as object), content: next } as AgentMessage) : null;
+}
+
+/**
+ * **保留段里的巨型工具结果截断**(2026-08-09)—— 「压不动」的真解。
+ *
+ * ## 为什么切点修不了「压不动」
+ *
+ * 两边(omd 往回找 / pi 往后找)的合法切点都**排除 toolResult**:切在它上面就是孤儿结果、
+ * provider 直接 400。于是「一批并发结果」或「单条结果比预算还大」时,任何切法都得把那一整批
+ * 整个保留 —— 保留段的下限就是那一批的大小,与切点无关(实测表在 `findTurnHeadIndex` 注里:
+ * 单轮 20 个并发结果, omd 返 null、pi 保留全量)。**能动的只剩结果内容本身。**
+ *
+ * ## 三条边界(都是"别把零行为变化搞成有行为变化"的那一类)
+ *
+ * 1. **只在压缩里调用** —— 正常轮走不到这里,一条消息都不动。
+ * 2. **保留段没超太多就一个字不动**(`COMPACTION_RETAINED_TOLERANCE`):既有形状全部落在这条线下,
+ *    所以既有测试一行不用改。撑爆预算的**不是**工具结果时(纯对话)也返 null —— 截了也没用。
+ * 3. **预算按条均分**:单条上限 = 结果那部分预算 ÷ 结果条数。定值上限(如 pi 的 `DEFAULT_MAX_BYTES`
+ *    = 50KB)挡不住这个形状 —— 20 条各 24KB 每条都在 50KB 之下,合起来 120k token 照样撑爆。
+ *
+ * @param retained 保留段(含逐字留下的首条)。
+ * @param opts.tolerance 覆盖触发比值;`opts.minBytes` 覆盖单条下限。默认见上方两个常量。
+ * @returns 截过的新数组;没触发/没得截 → `null`(调用方原样用旧的,**不是**返回一份"看着一样"的拷贝)。
+ */
+export function truncateOversizedToolResults(
+  retained: AgentMessage[],
+  keepRecentTokens: number,
+  opts: { tolerance?: number; minBytes?: number } = {},
+): AgentMessage[] | null {
+  const tolerance = opts.tolerance ?? COMPACTION_RETAINED_TOLERANCE;
+  const total = retained.reduce((n, m) => n + estimateTokens(m), 0);
+  if (total <= keepRecentTokens * tolerance) return null;
+  const targets = retained.flatMap((m, i) => ((m as { role?: string }).role === 'toolResult' ? [i] : []));
+  if (targets.length === 0) return null;
+  const resultTokens = targets.reduce((n, i) => n + estimateTokens(retained[i]!), 0);
+  // 结果之外的部分(契约/轮首/assistant)是**不能截**的 ⇒ 先扣掉, 剩下的才是结果能吃的预算。
+  const budgetTokens = Math.max(0, keepRecentTokens - (total - resultTokens));
+  const maxBytes = Math.max(
+    opts.minBytes ?? MIN_TOOL_RESULT_BYTES,
+    Math.floor((budgetTokens * BYTES_PER_TOKEN) / targets.length),
+  );
+  const out = [...retained];
+  let changed = false;
+  for (const i of targets) {
+    const t = truncateToolResultTail(retained[i]!, maxBytes);
+    if (t) {
+      out[i] = t;
+      changed = true;
+    }
+  }
+  return changed ? out : null;
+}
+
+/**
+ * 切不出点、但**截断本身**就把上下文压下来了时用的摘要文本。
+ *
+ * 为什么不返 `null` 了事:这条路上「没东西可摘要」是真的(契约之后只有一轮),但
+ * 「压不动」不再是真的 —— 结果截完就在预算内。返 null 会让调用方去优雅停,活干不完,
+ * 而那正是这次要修的病。摘要位上写清楚"这次省的是哪来的",别让读的人以为摘要器出了空。
+ */
+export const TRUNCATION_ONLY_SUMMARY =
+  '(这次压缩没有可摘要的历史 —— 切不出摘要点。省下来的空间全部来自把超大工具结果截成尾部, ' +
+  `被截的每一条自己带 ${TOOL_RESULT_TRUNCATION_MARK} 标记。)`;
+
+/**
  * 摘要器的两段提示词。**默认是叶子口径**;chat conductor 走同一条压缩路但换措辞
  * (它压的是一段对话,不是"干到一半的执行记录")—— 见 `opts.prompt`。
  *
@@ -522,7 +638,33 @@ export async function compactLeafContext(opts: {
   const prompt = opts.prompt ?? LEAF_COMPACTION_PROMPT;
   const call = opts.callModelFn ?? callModel;
   const cut = planLeafCompaction(messages, keepRecentTokens);
-  if (cut === null) return null;
+  if (cut === null) {
+    /**
+     * 切不出点(契约之后只有一轮 / 短到没得摘要),而这一轮的**工具结果本身**撑爆了预算 ——
+     * 此前这里直接返 null = 调用方优雅停,活干不完。截断是这个形状唯一动得了的东西,
+     * 而且**不花一次模型调用**:没有历史要摘要,也就没有要付钱的地方。
+     */
+    const truncated = truncateOversizedToolResults(messages, keepRecentTokens);
+    if (!truncated) return null; // 真的压不动: 没超太多, 或撑爆预算的不是工具结果
+    logger.info(
+      { model, msgs: truncated.length, before: messages.reduce((n, m) => n + estimateTokens(m), 0),
+        after: truncated.reduce((n, m) => n + estimateTokens(m), 0) },
+      '[agent-leaf] 切不出摘要点 → 只截断超大工具结果 (零模型调用)',
+    );
+    return {
+      messages: [
+        truncated[0]!,
+        {
+          role: 'user' as const,
+          content: `${COMPACTION_SUMMARY_PREFIX}${TRUNCATION_ONLY_SUMMARY}${COMPACTION_SUMMARY_SUFFIX}`,
+          timestamp: Date.now(),
+        },
+        ...truncated.slice(1),
+      ],
+      summary: TRUNCATION_ONLY_SUMMARY,
+      retainedTail: truncated,
+    };
+  }
 
   const toSummarize = messages.slice(1, cut);
   if (toSummarize.length === 0) return null;
@@ -563,18 +705,28 @@ export async function compactLeafContext(opts: {
    */
   const turnHead = findTurnHeadIndex(messages, cut);
   const kept = turnHead === null ? tail : [messages[turnHead]!, ...tail];
+  /**
+   * **保留段的工具结果截断**(2026-08-09):切点排除 toolResult ⇒ 一批巨型结果只能整批保留,
+   * 保留段可以比预算大好几倍而切点无能为力。超得太多才动手(见 `truncateOversizedToolResults`
+   * 的三条边界),所以既有形状全部走 `?? retained` 这条、一个字不变。
+   *
+   * ⚠ 只截**保留段**,不截送去摘要的那一段:摘要那次调用收到什么原文,压缩前后必须一样,
+   * 否则这次改动就顺手改了摘要质量,而读数上分不出是哪一半带来的。
+   */
+  const retained = [head, ...kept];
+  const finalRetained = truncateOversizedToolResults(retained, keepRecentTokens) ?? retained;
   return {
     messages: [
-      head,
+      finalRetained[0]!,
       {
         role: 'user' as const,
         content: `${COMPACTION_SUMMARY_PREFIX}${summary}${COMPACTION_SUMMARY_SUFFIX}`,
         timestamp: Date.now(),
       },
-      ...kept,
+      ...finalRetained.slice(1),
     ],
     summary,
-    retainedTail: [head, ...kept],
+    retainedTail: finalRetained,
   };
 }
 
