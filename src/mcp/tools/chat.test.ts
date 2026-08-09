@@ -21,7 +21,13 @@ import type { AnyOmdTool } from '../../harness/agent-tools';
 import { createOmdSessionStore, resetSessionCacheForTest, type OmdSessionStore } from '../../harness/chat/session-store';
 import type { LockDeps } from '../../harness/chat/session-lock';
 import type { OmdMcpTool } from '../server';
-import { HEADLESS_HANDS, buildHeadlessChatTools, createConductorChatTool } from './chat';
+import {
+  HEADLESS_HANDS,
+  HEADLESS_PROMPT_BLOCK,
+  buildHeadlessChatTools,
+  createConductorChatTool,
+  parseEscalation,
+} from './chat';
 import { assembleOmdMcpTools, type AssembleOmdMcpDeps } from '../assemble';
 import { RunRegistry } from '../run-registry';
 import { createOmdMemory } from '../../harness/memory';
@@ -143,6 +149,34 @@ describe('runIds 收集', () => {
   test('没画图的轮 → runIds 显式为 (无),不是缺行', async () => {
     const { text } = await callText(makeTool(), { prompt: '直接回答我' });
     expect(text).toMatch(/^runIds: \(无\)$/m);
+  });
+});
+
+describe('S2:? 阀(prompt 接线 + 回执解析)', () => {
+  test('★ headless 块真进了 system prompt(fake loop 亲眼所见)——含阀形状与只读手声明', async () => {
+    let seenPrompt = '';
+    const spyLoop = (async (prompts: AgentMessage[], context: { systemPrompt?: string }) => {
+      seenPrompt = context.systemPrompt ?? '';
+      return fakeLoop('ok')(prompts, context as { tools?: AnyOmdTool[] });
+    }) as unknown as ReturnType<typeof fakeLoop>;
+    await callText(makeTool({ loop: spyLoop }), { prompt: 'x' });
+    expect(seenPrompt).toContain(HEADLESS_PROMPT_BLOCK); // 拼在尾部,冻结前缀不动
+    expect(seenPrompt.startsWith('You are the omd CONDUCTOR')).toBe(true);
+  });
+
+  test('★ reply 带 owner 级阀块 → 回执头点名 lane 且禁代答;无块不冒行(反向自检)', async () => {
+    const block = '<omd-escalation lane="owner">\n倾向: 换\n理由: x\n定不了的点: y\n</omd-escalation>';
+    const withValve = await callText(makeTool({ loop: fakeLoop(`定不了。\n${block}`) }), { prompt: '换协议' });
+    expect(withValve.text).toMatch(/^escalation: lane=owner/m);
+    expect(withValve.text).toContain(block); // 块全文原样在正文里 —— owner 要看原话
+    const noValve = await callText(makeTool({ loop: fakeLoop('直接答。') }), { prompt: '普通问题' });
+    expect(noValve.text).not.toContain('escalation:');
+  });
+
+  test('parseEscalation:lane 白名单,坏 lane / 无块 → null(不猜)', () => {
+    expect(parseEscalation('<omd-escalation lane="claude">x</omd-escalation>')?.lane).toBe('claude');
+    expect(parseEscalation('<omd-escalation lane="nick">x</omd-escalation>')).toBeNull();
+    expect(parseEscalation('没有块')).toBeNull();
   });
 });
 

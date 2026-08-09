@@ -27,6 +27,34 @@ import type { OmdSessionStore } from '../../harness/chat/session-store';
 /** D-1 的只读手。`chat.test.ts` 反向自检:write/edit/bash 不许出现在 headless 工具面。 */
 export const HEADLESS_HANDS: readonly string[] = ['read', 'ls', 'grep'];
 
+/**
+ * S2:headless 档的 situational 追加块(冻结前缀外,经 systemPromptHook 拼在尾部,cache 不伤)。
+ *
+ * 两件事,都只在 headless 档成立所以不进共享常量:
+ * ① 纠正 `<hands>` 段的漂移 —— 核里宣称六只手,本档只挂了只读三只,不声明的话
+ *   conductor 会去调不存在的 edit/write/bash(pi 报未知工具,白烧轮次);
+ * ② ? 阀的**输出形状**(阀纪律本身在核的 `<owner>` 段,这里只钉形状):
+ *   `<omd-escalation lane>` 块,lane 语义承 SDD §1-S2,反向纪律(无岔口不冒阀)一并写死。
+ */
+export const HEADLESS_PROMPT_BLOCK = `<headless>
+You are running headless over MCP — no TTY, no approval prompt, nobody to press y. Your hands are READ-ONLY: read / ls / grep only; edit, write and bash are NOT mounted in this mode. ALL writes and all verification go through the engine (omd_run / omd_solve) — a leaf's own tools are its gate.
+Graphs are fire-and-forget: after dispatching, report the runId and END your reply — do NOT poll omd_status to completion inside this turn. Planning alone can take minutes; zero visible nodes right after dispatch means "still planning", not a dead run. The caller tracks progress across turns and will come back to you with results.
+When you hit the ? valve (a fork you cannot rule on), emit it as a structured block inside your reply, exactly this shape:
+<omd-escalation lane="claude|owner">
+倾向: <one line>
+理由: <one line>
+定不了的点: <one line>
+</omd-escalation>
+lane="claude": the calling agent may rule (technical tie, acceptance ambiguity) — it will answer and continue this session. lane="owner": business direction / domain red line / irreversible — it must reach the human owner verbatim, the caller is forbidden to answer for them.
+Do NOT emit the block when there is no genuine fork: a false escalation is the valve failing in the other direction.
+</headless>`;
+
+/** S2:从 reply 里解析阀块(lane 白名单;解析不出 = 没有阀,不猜)。 */
+export function parseEscalation(reply: string): { lane: 'claude' | 'owner'; block: string } | null {
+  const m = reply.match(/<omd-escalation\s+lane="(claude|owner)">([\s\S]*?)<\/omd-escalation>/);
+  return m ? { lane: m[1] as 'claude' | 'owner', block: m[0] } : null;
+}
+
 export interface ConductorChatDeps {
   cwd: string;
   store: OmdSessionStore;
@@ -99,15 +127,20 @@ export function createConductorChatTool(deps: ConductorChatDeps): OmdMcpTool {
           model: deps.resolveModel(),
           cwd: deps.cwd,
           tools: collectRunIds(baseTools, runIds),
+          // S2:headless 块拼在整份 prompt 尾部 —— 冻结前缀逐字不动,cache 面不伤。
+          systemPromptHook: async (p) => `${p}\n\n${HEADLESS_PROMPT_BLOCK}`,
           ...(deps.loopFn ? { loopFn: deps.loopFn } : {}),
         });
         const pressure =
           r.pressure.ratio === null
             ? `used=${r.pressure.usedTokens} window=未知`
             : `${Math.round(r.pressure.ratio * 100)}% (${r.pressure.usedTokens}/${r.pressure.windowTokens})`;
+        const escalation = parseEscalation(r.reply);
         const head = [
           `sessionId: ${sid}`,
           `runIds: ${runIds.length ? runIds.join(', ') : '(无)'}`,
+          // S2:阀在头行点名, lane=owner 的调用方**禁代答**(原样转人);块全文在正文里。
+          ...(escalation ? [`escalation: lane=${escalation.lane}(阀块在正文,owner 级禁代答)`] : []),
           `usage: in=${r.usage.in} out=${r.usage.out}${r.usage.cacheHit !== undefined ? ` cacheHit=${r.usage.cacheHit}` : ''}`,
           `pressure: ${pressure}`,
         ].join('\n');
