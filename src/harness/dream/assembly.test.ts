@@ -78,6 +78,7 @@ function fakeCallModel(): (req: ModelRequest) => Promise<ModelResponse> {
               situation: 'worktree 派单的 oracle 措辞',
               approach: '写「对照主仓基线全量绿」',
               outcome: 'failed',
+              scope: 'oracle',
             },
           },
         ],

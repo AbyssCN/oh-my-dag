@@ -124,6 +124,7 @@ export function correctionCandidates(
         situation: parsed.situation,
         approach: parsed.whatWasDone,
         outcome: 'failed',
+        scope: 'chat-correction',
       },
       sessionRef: { sessionId, seq },
       confidence: baseConfidence,
@@ -134,6 +135,7 @@ export function correctionCandidates(
         situation: parsed.situation,
         approach: parsed.whatShouldBe,
         outcome: 'worked',
+        scope: 'chat-correction',
       },
       sessionRef: { sessionId, seq },
       confidence: baseConfidence,
@@ -390,7 +392,9 @@ export async function extractChatSession(
 
   const llmCandidates: DreamCandidate[] = llmRawCandidates.map((raw) => ({
     namespace: raw.namespace as DreamNamespace,
-    payload: raw.payload,
+    // scope 机械附加 (裁决 5): chat 语料的 pattern 恒为 chat-correction —— 与 sessionRef/confidence
+    // 同族「模型不得作者化」; 模型给了也覆盖。
+    payload: raw.namespace === 'omd.pattern' ? { ...raw.payload, scope: 'chat-correction' } : raw.payload,
     sessionRef: { sessionId, seq: raw.seq },
     confidence: {
       level: 'agent_tentative' as const,

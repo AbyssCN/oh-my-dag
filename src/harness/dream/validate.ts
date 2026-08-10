@@ -34,6 +34,7 @@ import { join } from 'node:path';
 import type { Database } from 'bun:sqlite';
 import { validateFactWrite } from '../../memory/safeguards/validator';
 import { DEFAULT_SAFEGUARD } from '../../memory/safeguards/namespaces';
+import { OMD_PATTERN_SCOPES } from '../../memory/safeguards/universal-namespaces';
 import { createOmdSessionStore, OMD_SESSION_ID_RE } from '../chat/session-store';
 import { createRunStore, type RunStore } from '../../mcp/run-store';
 
@@ -190,6 +191,20 @@ export async function validateDreamCandidate(
     scanSecrets: true,
   });
   if (!floor.ok) return { verdict: 'rejected', reason: floor.reason };
+
+  // ── 1b. scope-拒(裁决 5,dream 侧硬闸;pathfinder 等既有写手不走本阀所以 schema 里 optional)──
+  // 证伪方式 (validate.test.ts): omd.pattern 候选去掉 payload.scope → rejected 含 'scope';补回 → written。
+  if (candidate.namespace === 'omd.pattern') {
+    const scope = candidate.payload.scope;
+    if (typeof scope !== 'string' || !(OMD_PATTERN_SCOPES as readonly string[]).includes(scope)) {
+      return {
+        verdict: 'rejected',
+        reason:
+          `scope-invalid: omd.pattern 候选必带受控 scope (${OMD_PATTERN_SCOPES.join('/')}) —— ` +
+          `裁决 5: identityKey 依赖自由文本 = 复现机制结构性失效`,
+      };
+    }
+  }
 
   // ── 2. S-拒(纯函数零 IO,先于有 IO 的 P-拒)──
   const stat = findStatisticalAssertion(candidate.payload);

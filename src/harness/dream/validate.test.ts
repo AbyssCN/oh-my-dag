@@ -43,6 +43,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { createOmdSessionStore, resetSessionCacheForTest } from '../chat/session-store';
+import { identityKeyOf } from '../../memory/safeguards/namespaces';
 import { createRunStore, type RunStore } from '../../mcp/run-store';
 import {
   validateDreamCandidate,
@@ -88,6 +89,7 @@ const patternPayload = (situation: string): Record<string, unknown> => ({
   situation,
   approach: '空产物判败不入账',
   outcome: 'failed',
+  scope: 'oracle',
 });
 
 const makeCandidate = (
@@ -302,5 +304,53 @@ describe('namespace 硬边界(9 facet,不另写白名单 —— floor allowlist 
     expect(r.verdict).toBe('rejected');
     if (r.verdict !== 'rejected') return;
     expect(r.reason.startsWith('schema:')).toBe(true);
+  });
+});
+
+describe('scope-拒(裁决 5:omd.pattern 必带受控 scope)', () => {
+  // 证伪方式 (当场验过): 注释掉 validate.ts 的 1b scope-拒块 → 第一条测试红
+  // (缺 scope 的候选 floor 全过、S/P 拒都不命中 → written); 恢复后绿。
+  test('缺 scope → rejected,判词含 scope-invalid', async () => {
+    resetSessionCacheForTest();
+    const cwd = tmpDir();
+    const { scope: _drop, ...noScope } = patternPayload('family X 的 synthesis 空产物判败');
+    const r = await validateDreamCandidate(
+      makeCandidate(noScope, { sessionRef: await realSessionRef(cwd) }),
+      { cwd },
+    );
+    expect(r.verdict).toBe('rejected');
+    if (r.verdict !== 'rejected') return;
+    expect(r.reason).toContain('scope-invalid');
+  });
+
+  test('枚举外 scope → rejected;合法 scope → written(反向自检)', async () => {
+    resetSessionCacheForTest();
+    const cwd = tmpDir();
+    const ref = { sessionRef: await realSessionRef(cwd) };
+    const bad = await validateDreamCandidate(
+      makeCandidate({ ...patternPayload('family X 的 synthesis 空产物判败'), scope: 'vibes' }, ref),
+      { cwd },
+    );
+    expect(bad.verdict).toBe('rejected');
+    const good = await validateDreamCandidate(
+      makeCandidate(patternPayload('family X 的 synthesis 空产物判败'), ref),
+      { cwd },
+    );
+    expect(good.verdict).toBe('written');
+  });
+
+  test('scope 入 identityKey:同文异 scope 不同键,缺 scope 老行落 null 槽不撞新行', () => {
+    const base = {
+      namespace: 'omd.pattern',
+      situation: 's',
+      approach: 'a',
+      outcome: 'failed',
+    };
+    const kOracle = identityKeyOf({ ...base, scope: 'oracle' } as never);
+    const kPlan = identityKeyOf({ ...base, scope: 'plan-family' } as never);
+    const kLegacy = identityKeyOf(base as never);
+    expect(kOracle).not.toBe(kPlan);
+    expect(kLegacy).not.toBe(kOracle);
+    expect(kLegacy).toContain('null');
   });
 });

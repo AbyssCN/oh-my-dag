@@ -79,6 +79,9 @@ const USER_BRANCHES = [
 // omd.* —— omd 记住自己 (3 facet)。自评 learned 自我认知, 非工具清单镜像。
 // ---------------------------------------------------------------------------
 
+/** omd.pattern 的受控 scope 枚举 (dream SDD 终审裁决 5, 逐字冻结)。dream 写入侧必带 (validate 硬拒); pathfinder 等既有写手可缺省。 */
+export const OMD_PATTERN_SCOPES = ['chat-correction', 'plan-family', 'oracle', 'seat'] as const;
+
 const OMD_BRANCHES = [
   // 我擅长什么 (领域 + 自评熟练度 spectrum: expert→weak)。
   z.object({
@@ -90,11 +93,16 @@ const OMD_BRANCHES = [
     ...confidenceField,
   }),
   // 什么打法在什么情况管用/失败 (程序性学习, 自我进化核心燃料)。
+  // scope = 受控判别字段 (dream SDD 终审裁决 5): situation/approach 是自由文本,
+  // 同一教训换措辞就是新 identity, 复现永远攒不够 3 —— 受控枚举把 identity 空间切回可比。
+  // optional: pathfinder 裁决写入 (pathfinder.ts) 等既有写手不带它; Zod 剥未声明键,
+  // 不声明的话 dream 写的 scope 会被静默剥掉 (writeFact 落库的是 parsed.data)。
   z.object({
     namespace: z.literal('omd.pattern'),
     situation: z.string().min(1),
     approach: z.string().min(1),
     outcome: z.enum(['worked', 'failed']),
+    scope: z.enum(OMD_PATTERN_SCOPES).optional(),
     ...sourceAnchor,
     ...confidenceField,
   }),
@@ -123,7 +131,8 @@ export const USER_NAMESPACE_IDENTITY_FIELDS: Record<string, readonly string[]> =
 
 export const OMD_NAMESPACE_IDENTITY_FIELDS: Record<string, readonly string[]> = {
   'omd.capability': ['area'],
-  'omd.pattern': ['situation', 'approach'],
+  // scope 入键 (裁决 5): 无 scope 的既有行该槽位落 null, 与带 scope 的新行永不同键 —— 不迁移, 30 天自然衰减。
+  'omd.pattern': ['situation', 'approach', 'scope'],
   'omd.limit': ['kind', 'statement'],
 };
 

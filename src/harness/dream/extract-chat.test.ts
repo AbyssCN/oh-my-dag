@@ -181,6 +181,8 @@ describe('correctionCandidates', () => {
     expect(c0.payload.outcome).toBe('failed');
     expect(c0.payload.approach).toBe('quorum=any');
     expect(c0.payload.situation).toBe('family X synthesis');
+    // 裁决 5: chat 语料 scope 机械附加 —— 摘掉附加, validate 的 scope-拒会把整条纠错语料拒光。
+    expect(c0.payload.scope).toBe('chat-correction');
   });
 
   test('第二条: outcome=worked, approach=whatShouldBe', () => {
