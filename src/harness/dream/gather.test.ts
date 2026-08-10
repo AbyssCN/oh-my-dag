@@ -71,6 +71,18 @@ const aliveIfPositive = (pid: number): boolean => pid > 0;
 // 会话路
 // ---------------------------------------------------------------------------
 
+
+/**
+ * 模拟消费方固化成功 (2026-08-10 缺陷① 修法后, gather 不再自推游标):
+ * 对 report 里的 dirty 源按候选游标 setClean —— 生产里这一步由 assembly 在
+ * merge+promote 成功后做。
+ */
+const consolidate = (wm: ReturnType<typeof createWatermark>, r: Awaited<ReturnType<typeof gather>>): void => {
+  for (const s of r.sources) {
+    if (s.state === 'dirty' && s.cursor) wm.setClean(s.key, s.cursor);
+  }
+};
+
 describe('gather 会话路', () => {
   let cwd: string;
   let db: Database;
@@ -100,11 +112,12 @@ describe('gather 会话路', () => {
     const s = await store.create('s1');
     await s.append(msg('user', 'x'));
 
-    // 第一次 gather:应为 dirty
+    // 第一次 gather:应为 dirty(带候选游标, 游标本身不推进)
     const r1 = await gather({ cwd, watermarkDb: db });
     expect(r1.dirtyTotal).toBeGreaterThan(0);
+    consolidate(createWatermark({ db }), r1); // 消费方固化成功 → 才推进
 
-    // 第二次 gather:无新增 → clean
+    // 固化后再 gather:无新增 → clean
     const r2 = await gather({ cwd, watermarkDb: db });
     const src = r2.sources.find((x) => x.key === 'session:s1');
     expect(src!.state).toBe('clean');
@@ -119,17 +132,30 @@ describe('gather 会话路', () => {
 
     const r1 = await gather({ cwd, watermarkDb: db });
     expect(r1.dirtyTotal).toBeGreaterThan(0);
+    consolidate(createWatermark({ db }), r1);
 
     const r2 = await gather({ cwd, watermarkDb: db });
     expect(r2.dirtyTotal).toBe(0);
     // created===0 归 S2,此处不断言
   });
 
-  test('★ 反向自检 b:若 gather 不更新 watermark,第二次 dirty 仍>0 → 红', () => {
-    // 证伪方式:在 gather.ts 的 setClean/setDirty 调用处注释掉 wm 更新。
-    // 则第二次 gather 仍会看到相同的新条目,dirtyTotal > 0。
-    // 报错:"Expected: 0 Received: 2"
-    // 此处只记证伪方式;正确行为由上一条测试保证。
+  test('★ 未固化不归零(2026-08-10 缺陷① 反向自检):gather 两次不 setClean → dirty 原样在', async () => {
+    // 旧语义 (采集即推游标) 下第二次 gather 归零 —— kill 于 extract 中途该批永沉。
+    // 证伪方式 (当场验过): gather.ts 里把 setDirty 的 cursor 参数改回 String(maxSeq)
+    // → 本测试红 ("Expected: 2 Received: 0"); 恢复后绿。
+    const store = createOmdSessionStore(cwd);
+    const s = await store.create('s1');
+    await s.append(msg('user', 'a'));
+    await s.append(msg('assistant', 'b'));
+
+    const r1 = await gather({ cwd, watermarkDb: db });
+    expect(r1.dirtyTotal).toBe(2);
+    const src1 = r1.sources.find((x) => x.key === 'session:s1');
+    expect(src1!.cursor).toBeTruthy(); // 候选游标随报告带出, 供消费方固化后 setClean
+
+    // 不固化 (模拟 extract 中途 kill) → 再 gather: 同一批条目原样 dirty, 不沉
+    const r2 = await gather({ cwd, watermarkDb: db });
+    expect(r2.dirtyTotal).toBe(2);
   });
 });
 
@@ -310,6 +336,7 @@ describe('gather run 路幂等', () => {
 
     const r1 = await gather({ cwd: tmpDir(), watermarkDb: db, runStore: rs, isAlive: aliveIfPositive });
     expect(r1.dirtyTotal).toBe(1);
+    consolidate(createWatermark({ db }), r1);
 
     const r2 = await gather({ cwd: tmpDir(), watermarkDb: db, runStore: rs, isAlive: aliveIfPositive });
     expect(r2.dirtyTotal).toBe(0);
@@ -349,6 +376,7 @@ describe('gather run 路幂等', () => {
     // 第一次 gather:r-lag 活着不收;done-late 收(单游标设计会在这里把游标推到 03:00)
     const r1 = await gather({ cwd: tmpDir(), watermarkDb: db, runStore: rs, isAlive: aliveIfPositive });
     expect(r1.dirtyTotal).toBe(1);
+    consolidate(createWatermark({ db }), r1); // done-late 固化成功
 
     // r-lag 属主死掉,updatedAt **不变**(死进程不会再写库)
     const r2 = await gather({ cwd: tmpDir(), watermarkDb: db, runStore: rs, isAlive: () => false });
@@ -370,9 +398,9 @@ describe('skippedClean 标记', () => {
     const s = await store.create('s1');
     await s.append(msg('user', 'x'));
 
-    // 第一次 gather(建水位)
-    await gather({ cwd, watermarkDb: db });
-    // 第二次 gather(全 clean)
+    // 第一次 gather + 消费方固化(才建 clean 水位)
+    consolidate(createWatermark({ db }), await gather({ cwd, watermarkDb: db }));
+    // 再 gather(全 clean)
     const r2 = await gather({ cwd, watermarkDb: db });
     expect(r2.skippedClean).toBe(true);
   });
@@ -409,7 +437,7 @@ describe('三态在 gather 报告里分得开(a)', () => {
     // clean:先建一个会话,跑一次 gather,再跑一次 → clean
     const sClean = await store.create('clean-sess');
     await sClean.append(msg('user', 'old'));
-    await gather({ cwd, watermarkDb: db }); // 第一次:建水位
+    consolidate(createWatermark({ db }), await gather({ cwd, watermarkDb: db })); // 采 + 固化
     // 不再追加 → clean
 
     // dirty:另一个会话,有新增

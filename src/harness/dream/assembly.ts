@@ -35,6 +35,7 @@ import { createPlanLedger, type PlanLedger } from '../plan-ledger';
 import { createOmdSessionStore } from '../chat/session-store';
 
 import { gather, type GatherReport } from './gather';
+import { createWatermark } from './watermark';
 import { type DreamCandidate, validateDreamCandidate } from './validate';
 import { mergeDreamCandidates, type MergeReport } from './merge';
 import { promoteDreamFacts, type PromoteReport } from './promote';
@@ -76,6 +77,12 @@ export interface DreamAssemblyOpts {
    * 生产由 conductor 传入；测试可传 lambda 到 gather.isSessionActive。
    */
   currentSessionId?: string;
+  /**
+   * 分批消费(裁决 12,显式 opt-in;存量首跑用):本跑只消费 ≤ min(batchLeaves, L_max)
+   * 个 dirty 源,未消费源的水位游标不动,留给下一跑 —— 水位逐段推进。
+   * 省略 = 整跑语义不变(dirty 叶总数 > L_max 即响亮 fail,判据 2)。
+   */
+  batchLeaves?: number;
 }
 
 export interface DreamAssemblyReport extends DreamRunReport {
@@ -210,12 +217,18 @@ export async function runDreamAssembly(
       };
     }
 
-    // ── 预算闸: 前置检查 LLM 叶数 ──
+    // ── 分批 (裁决 12, 显式 opt-in) + 预算闸 ────────────────────────────
+    // batchLeaves 设定 → 本跑只消费 ≤ min(batch, L_max) 个 dirty 源 (session 先, sources 序),
+    // 未消费源游标不动留给下一跑; 计数闸对**本跑将起的叶数**把门 —— 整跑模式 (不设 batch)
+    // capped = 全部 dirty, 闸行为与判据 2 逐字不变 (上限 0 必红)。
+    const batchCap =
+      opts.batchLeaves !== undefined ? Math.max(1, Math.min(opts.batchLeaves, maxLLM)) : Number.MAX_SAFE_INTEGER;
+    const cappedSources = capDirtySources(gatherReport, batchCap);
     const dirtySessionCount = gatherReport.sources.filter(
-      (s) => s.type === 'session' && s.state === 'dirty',
+      (s) => s.type === 'session' && s.state === 'dirty' && cappedSources.has(s.key),
     ).length;
     const dirtyRunCount = gatherReport.sources.filter(
-      (s) => s.type === 'run' && s.state === 'dirty',
+      (s) => s.type === 'run' && s.state === 'dirty' && cappedSources.has(s.key),
     ).length;
     const totalLLMLeaves = dirtySessionCount + dirtyRunCount;
 
@@ -240,10 +253,6 @@ export async function runDreamAssembly(
           promote: { ok: true, promoted: 0, pruned: 0 } },
       };
     }
-
-    // ── 首跑分批: 若 LLM 叶数超限, 按 dirty source 数截断 ──
-    // (裁决 12: 按时间窗切, 每跑吃一段, 水位逐段推进)
-    const cappedSources = capDirtySources(gatherReport, maxLLM);
 
     // ══════════════════════════════════════════════════════════════════
     // S4: extract-chat × N (LLM, 并行)
@@ -356,6 +365,21 @@ export async function runDreamAssembly(
     // S3: promote + prune (零 LLM)
     // ══════════════════════════════════════════════════════════════════
     const promoteReport = await promoteDreamFacts({ cwd, memory });
+
+    // ── 水位推进 = 固化成功后消费方职责 (2026-08-10 缺陷① 修法) ─────────────
+    // 只推进本跑**真消费**的源 (dirty ∧ capped ∧ 有候选游标); 失败路径不推进 →
+    // 下一跑重采重烧 (幂等由 identityKey 兜住, 重烧不丢数据 —— 判据 3 的取舍方向)。
+    // 无 callModel = 叶没真跑, 一样不推进 (推进了 = 数据没进库就被跳过, 即缺陷① 本体)。
+    if (callModel && mergeReport.ok && promoteReport.ok) {
+      const wm = createWatermark({ path: join(cwd, '.omd', 'memory.db') });
+      try {
+        for (const s of gatherReport.sources) {
+          if (s.state === 'dirty' && s.cursor && cappedSources.has(s.key)) wm.setClean(s.key, s.cursor);
+        }
+      } finally {
+        wm.close();
+      }
+    }
 
     // ══════════════════════════════════════════════════════════════════
     // Report

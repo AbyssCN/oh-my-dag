@@ -49,6 +49,12 @@ export interface GatherSourceReport {
   dirtyCount: number;
   /** skip 理由(state=skipped 时有意义)。 */
   reason?: string;
+  /**
+   * 候选游标(state=dirty 时有值):固化**成功后**由消费方(assembly)以它 setClean 推进。
+   * gather 自己不推进游标 —— 采集时推进 = kill 于 extract 中途该批条目永沉
+   * (2026-08-10 存量首跑前置缺陷①;正是本文件头「死在游标下面」要防的那族)。
+   */
+  cursor?: string;
 }
 
 export interface GatherReport {
@@ -102,7 +108,13 @@ export async function gather(opts: GatherOpts): Promise<GatherReport> {
   const isSessionActive = opts.isSessionActive ?? (() => false);
   const ownDb = !opts.watermarkDb;
   const ownRunStore = !opts.runStore;
-  const wm: Watermark = createWatermark(opts.watermarkDb ? { db: opts.watermarkDb } : undefined);
+  // ⚠ watermark 与 runStore 同一条纪律:锚定到 opts.cwd。默认路径 (OMD_MEMORY_PATH ??
+  // '.omd/memory.db') 按**进程 cwd** 解析 —— 跨目录调用会读写错库(2026-08-10 存量首跑
+  // 前置缺陷②,S6 验收期间 assembly.test.ts 被迫用 env 防污染真仓 memory.db 即此裂缝)。
+  // 与 assembly 的 memory 同库同锚:join(cwd, '.omd', 'memory.db')。
+  const wm: Watermark = createWatermark(
+    opts.watermarkDb ? { db: opts.watermarkDb } : { path: join(cwd, '.omd', 'memory.db') },
+  );
   // ⚠ 锚定到 opts.cwd(与 sessionStore 同基准)。裸相对路径按进程 cwd 解析 ——
   // 测试在临时 cwd 下会静默读到**主仓生产库**(验收实测:空仓测试读出 45 条真 run)。
   const runStore: RunStore = opts.runStore ?? createRunStore({ path: join(cwd, '.omd', 'runs.db') });
@@ -145,8 +157,10 @@ export async function gather(opts: GatherOpts): Promise<GatherReport> {
 
     if (newEntries.length > 0) {
       dirtyTotal += newEntries.length;
-      wm.setDirty(key, String(maxSeq), newEntries.length);
-      sources.push({ type: 'session', key, state: 'dirty', dirtyCount: newEntries.length });
+      // 游标**不推进**(仍写 lastCursor):推进权归固化成功后的消费方 (report.cursor →
+      // assembly setClean)。采集即推进 = kill 于 extract 中途该批永沉(缺陷①,判据 3 的靶)。
+      wm.setDirty(key, lastCursor, newEntries.length);
+      sources.push({ type: 'session', key, state: 'dirty', dirtyCount: newEntries.length, cursor: String(maxSeq) });
     } else {
       // 无新增 → 记 clean(游标可能推进:会话被删条目再重建的边界;
       // prev.skipped = 曾活跃现退役且无条目可采,也要把 skip 行翻成 clean)
@@ -169,10 +183,10 @@ export async function gather(opts: GatherOpts): Promise<GatherReport> {
     if (!isRunCompleted(run, isAlive)) continue;
     const lastCursor = prev && !prev.skipped ? prev.lastCursor : '';
     if (run.updatedAt > lastCursor) {
-      // 首见完结,或完结后又被更新过(resume 后再完结)→ dirty
+      // 首见完结,或完结后又被更新过(resume 后再完结)→ dirty。游标不推进(同会话侧)。
       dirtyTotal += 1;
-      wm.setDirty(key, run.updatedAt, 1);
-      sources.push({ type: 'run', key, state: 'dirty', dirtyCount: 1 });
+      wm.setDirty(key, lastCursor, 1);
+      sources.push({ type: 'run', key, state: 'dirty', dirtyCount: 1, cursor: run.updatedAt });
     } else {
       sources.push({ type: 'run', key, state: 'clean', dirtyCount: 0 });
     }

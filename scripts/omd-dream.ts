@@ -53,6 +53,7 @@ function usage(): never {
   console.error('  --model <m>    provider:modelId (默认 OMD_DREAM_MODEL env)');
   console.error('  --json         JSON 输出 (默认人读)');
   console.error('  --dry-run      只读不写 (all 模式)');
+  console.error('  --batch <n>    分批消费: 本跑只吃 ≤n 个 dirty 源, 水位逐段推进 (存量首跑用)');
   process.exit(1);
 }
 
@@ -63,6 +64,7 @@ interface ParsedArgs {
   model?: string;
   json: boolean;
   dryRun: boolean;
+  batch?: number;
 }
 
 function parseArgs(raw: string[]): ParsedArgs {
@@ -81,6 +83,7 @@ function parseArgs(raw: string[]): ParsedArgs {
     else if (a === '--model' && raw[i + 1]) { args.model = raw[++i]!; }
     else if (a === '--json') { args.json = true; }
     else if (a === '--dry-run') { args.dryRun = true; }
+    else if (a === '--batch' && raw[i + 1]) { args.batch = Number(raw[++i]!); }
     else if (!a.startsWith('--')) {
       if (!args.phase) args.phase = a;
       else { console.error(`未知参数: ${a}`); usage(); }
@@ -202,6 +205,9 @@ async function phaseAll(args: ParsedArgs): Promise<void> {
     runId: args.runId,
     callModel: args.dryRun ? undefined : callModel,
     model: args.model,
+    ...(args.batch !== undefined && Number.isFinite(args.batch) && args.batch > 0
+      ? { batchLeaves: Math.floor(args.batch) }
+      : {}),
   });
 
   if (args.json) {

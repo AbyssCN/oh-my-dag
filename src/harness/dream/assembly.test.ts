@@ -214,3 +214,47 @@ describe('report 三态列', () => {
     expect(groups['provenance:']).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 分批 + 水位推进 (裁决 12 / 缺陷① 修法, 2026-08-10)
+// ---------------------------------------------------------------------------
+
+describe('分批消费与水位推进', () => {
+  test('★ batchLeaves=1 + 2 个 dirty run: 三跑吃完 —— 每跑一叶, 水位逐段推进, 末跑 noop', async () => {
+    seedTerminalRun('run-a');
+    seedTerminalRun('run-b');
+    const mk = () => ({ cwd: tmp, runId: 'batch', callModel: fakeCallModel(), model: 'test:fake', batchLeaves: 1 });
+    const r1 = await runDreamAssembly(mk());
+    expect(r1.ok).toBe(true);
+    expect(r1.phases.extractRun).toBe(1); // 只吃一个
+    const r2 = await runDreamAssembly(mk());
+    expect(r2.ok).toBe(true);
+    expect(r2.phases.extractRun).toBe(1); // 吃第二个 (第一个已固化转 clean)
+    const r3 = await runDreamAssembly(mk());
+    expect(r3.phases.extractRun).toBe(0); // 全固化 → noop
+    expect(r3.llmCalls).toBe(0);
+  });
+
+  test('★ 失败路径不推进水位: L_max fail 后重跑, 同批源原样 dirty (kill 不沉批)', async () => {
+    // 证伪方式 (当场验过): assembly.ts 的 setClean 块去掉 mergeReport.ok 守卫并挪到闸前
+    // → 本测试红 (第二跑 extractRun=0); 恢复后绿。
+    seedTerminalRun('run-a');
+    const failed = await runDreamAssembly({
+      cwd: tmp, runId: 'f1', callModel: fakeCallModel(), model: 'test:fake', maxLLMLeaves: 0,
+    });
+    expect(failed.ok).toBe(false); // 整跑 fail, 零叶起跑
+    const retry = await runDreamAssembly({
+      cwd: tmp, runId: 'f2', callModel: fakeCallModel(), model: 'test:fake',
+    });
+    expect(retry.ok).toBe(true);
+    expect(retry.phases.extractRun).toBe(1); // 数据没沉, 重跑吃到
+  });
+
+  test('无 callModel (机械跑) 不推进水位 —— 叶没真跑, 数据不许被跳过', async () => {
+    seedTerminalRun('run-a');
+    const dry = await runDreamAssembly({ cwd: tmp, runId: 'd1', model: 'test:fake' });
+    expect(dry.ok).toBe(true);
+    const real = await runDreamAssembly({ cwd: tmp, runId: 'd2', callModel: fakeCallModel(), model: 'test:fake' });
+    expect(real.phases.extractRun).toBe(1); // dry 跑没吃掉它
+  });
+});
