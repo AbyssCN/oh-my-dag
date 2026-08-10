@@ -90,4 +90,16 @@ describe('C-S3-3: 纪律保留 —— 空 roots 不挂, 组总览走返回值, p
     expect(ta.promptSnippet).not.toContain('zk-alpha'); // skill 名不进前缀
     expect(ta.promptSnippet).not.toContain('zk-delta');
   });
+
+  it('★ 市面 skill 兼容 (O-2 裁决): 全文带目录锚 + 捆绑资源清单 —— 相对路径资源第三层披露不断链 (证伪: 删 skill-tool.ts 的 header 拼装 → 本条红)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-s3-market-'));
+    mkSkill(root, 'zk-market', '跑 scripts/run.py 完成任务');
+    mkdirSync(join(root, 'zk-market', 'scripts'), { recursive: true });
+    writeFileSync(join(root, 'zk-market', 'scripts', 'run.py'), 'print(1)');
+    const t = createSkillTools({ roots: [root] })[0]!;
+    const text = resultText(await call(t, { name: 'zk-market' }));
+    expect(text).toContain(join(root, 'zk-market')); // 目录锚 (绝对路径)
+    expect(text).toContain('scripts/run.py'); // 捆绑资源清单
+    expect(text).toContain('跑 scripts/run.py 完成任务'); // 正文仍在
+  });
 });

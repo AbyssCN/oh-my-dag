@@ -104,7 +104,17 @@ export function createSkillTools(deps: SkillToolDeps = {}): AnyOmdTool[] {
           details: { name: resolved, found: false },
         };
       }
-      return { content: [{ type: 'text', text: src.body.trim() }], details: { name: resolved, found: true } };
+      // 市面 skill 兼容 (O-2 裁决 2026-08-10): Anthropic Agent Skills 规范的捆绑资源
+      // (scripts/references/assets) 在正文里是**相对 skill 目录**的路径, 而模型的 read/bash
+      // 相对 cwd 解析 —— 不给目录锚, 第三层披露断在这里。锚在**返回值**里 (不进冻结前缀)。
+      const bundle = src.files.filter((f) => f !== 'SKILL.md');
+      const header = [
+        `[skill ${resolved} · 目录 ${src.dir}]`,
+        ...(bundle.length
+          ? [`捆绑资源 (正文相对路径相对该目录, 用 read/bash 取): ${bundle.slice(0, 20).join(', ')}${bundle.length > 20 ? ' …' : ''}`]
+          : []),
+      ].join('\n');
+      return { content: [{ type: 'text', text: `${header}\n\n${src.body.trim()}` }], details: { name: resolved, found: true } };
     },
   };
   return [tool as AnyOmdTool];
