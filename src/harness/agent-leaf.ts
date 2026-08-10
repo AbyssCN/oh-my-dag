@@ -754,9 +754,14 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
   // oracle 泄漏一次性全封, 不逐工具打地鼠。前置委托: 下面 in-process 装配 (工具/hook/循环) 全不需要。
   if (opts.sandboxRoot) return createSandboxedLeafRunner(opts);
   const cwd = opts.cwd ?? process.cwd();
-  // agent leaf 默认 max thinking (the owner 锁): agent leaf 改文件/工具循环, 质量优先 (数量少于 inproc fan-out,
-  // max 成本可控)。inproc leaf 才走 high (mass fan-out 省成本)。可经 opts 覆盖。
+  // 缺省档按**通道**分 (2026-08-10 owner): 同一个默认值在两种计价下经济学相反, 不能共用。
+  //   pi 通道 → xhigh (owner 锁, 定价前提 = deepseek flash per-token 便宜档, xhigh 几乎白送;
+  //     agent leaf 改文件/工具循环质量优先, 数量少于 inproc fan-out)。inproc leaf 才走 high。
+  //   claude-code 订阅通道 → medium (owner 裁: effort 花的是与交互同池的窗口额度, xhigh 默认
+  //     会把 flash 时代的定价惯性带进订阅池 —— 与 dream 座位那次「pro 惯性」同族)。
+  // 显式 opts.thinkingLevel 恒覆盖两者 (A/B 必须能钉档位)。
   const thinkingLevel = opts.thinkingLevel ?? 'xhigh';
+  const sdkThinkingLevel = opts.thinkingLevel ?? 'medium';
 
   // 工具集: 自有六件 + hashline (开则注入并**排除内置 edit**, 强制行锚定 patch) + 调用方自定。
   // 建一次复用整 runner: hashline 的快照 store 要跨 read/edit 共享, 而 runner 的 cwd 是固定的。
@@ -1040,7 +1045,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
         // 看门狗: onActivity 每条 SDK 流消息续窗 + includePartialMessages 让长思考轮也有增量
         // (否则 3min idle 会把「在想」判成「挂死」—— 2026-08-01 修过的同族错)。
         // 上下文压缩/轮间停不做 (SDK 自管); tolerateAbort: 超时/停摆 abort → 返已累积, 优雅停语义保留。
-        const effort = effortOf(thinkingLevel);
+        const effort = effortOf(sdkThinkingLevel);
         const out = await runSdkAgentLoop({
           prompt: routedPrompt,
           systemPrompt,

@@ -42,9 +42,10 @@ const fakeQuery = (script: SDKMessage[], seen: { options?: Options } = {}) => {
 };
 
 describe('claude-code leaf 分支', () => {
-  test('★ 分派 + 映射:effort 取 thinkingLevel(worker medium),内置工具清空,omd 工具面桥过去', async () => {
+  test('★ 分派 + 映射:缺省档 = medium(订阅通道不吃 pi 路的 xhigh 默认 —— flash 定价惯性),内置工具清空,omd 工具面桥过去', async () => {
     const seen: { options?: Options } = {};
-    const run = createAgentLeafRunner({ cwd, thinkingLevel: 'medium', sdkQueryFn: fakeQuery([asst('改完了'), success()], seen) });
+    // 刻意不传 thinkingLevel:钉的是**通道缺省档**本身,不是透传。
+    const run = createAgentLeafRunner({ cwd, sdkQueryFn: fakeQuery([asst('改完了'), success()], seen) });
     const r = await run({ prompt: '把 a.ts 里的 bug 修了', model: MODEL });
     expect(r.text).toBe('改完了');
     // usage 口径与 pi leaf 同:in = input + cacheWrite (全价近似) + cacheRead, cacheHit = cacheRead
@@ -54,6 +55,13 @@ describe('claude-code leaf 分支', () => {
     expect(seen.options?.allowedTools).toContain('mcp__omd__read');
     expect(seen.options?.allowedTools).toContain('mcp__omd__write');
     expect(seen.options?.resume).toBeUndefined(); // leaf 每发独立, 无会话续接
+  });
+
+  test('★ 显式 thinkingLevel 恒覆盖通道缺省(A/B 钉档位的前提)', async () => {
+    const seen: { options?: Options } = {};
+    const run = createAgentLeafRunner({ cwd, thinkingLevel: 'xhigh', sdkQueryFn: fakeQuery([asst('好'), success()], seen) });
+    await run({ prompt: 'x', model: MODEL });
+    expect(seen.options?.effort).toBe('xhigh');
   });
 
   test('★ provider 错误 → 响亮抛 subtype 原文(闸在 SDK 路上也会红)', async () => {
