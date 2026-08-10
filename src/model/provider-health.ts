@@ -6,13 +6,23 @@
  * lite:kimi-k3。role-fallback 只知 channel 不知 model → channelInCooldown(channel) 查该 channel 是否有
  * **任意** model 在冷却 (宽门); inCooldown(coord) 按 channel:model 精确查 (窄门, callModel 重试用)。
  *
- * 纯内存 (进程级), 不落盘。「重启即清是对的」对**瞬时档**仍真; 2026-08-09 座位事故
- * (kimi 403 计费周期耗尽横扫四图, NOTES 样本 A) 证明它只对一半 —— 周期级下线是第二种态,
- * 30s 退避对它是错的。分档 (S-B1, 2026-08-10): 402/403 走 PERIOD_COOLDOWN_MS 长窗
- * (进程内 6h; 真周期边界从 403 里读不出来, 长窗 = 有界重试语义, 窗过重试一次失败再入窗,
- * 每进程每 6h 至多浪费一次瞬败调用)。跨进程持久化 = S-B2 (载体候选见普查 §1.7), 本片不做。
+ * 瞬时档纯内存 (进程级):「重启即清是对的」对它仍真。2026-08-09 座位事故 (kimi 403 计费
+ * 周期耗尽横扫四图, NOTES 样本 A) 证明只对一半 —— 周期级下线是第二种态, 30s 退避对它是错的。
+ * 分档 (S-B1): 402/403 走 PERIOD_COOLDOWN_MS 长窗 (6h; 真周期边界从 403 里读不出来,
+ * 长窗 = 有界重试语义, 窗过重试一次失败再入窗, 每 6h 至多浪费一次瞬败调用)。
+ *
+ * 周期档跨进程持久化 (S-B2): `.omd/seat-health.json` (进程 cwd 锚, OMD_SEAT_HEALTH_PATH
+ * 测试接缝) —— 每个 detached goal-worker 都是新 spawn 的进程 (goal.ts → goal-worker.ts),
+ * 不持久化 = 每个新 worker 把已知死到周期边界的座位再撞一遍 (普查 §1.7)。只持久化周期档
+ * (瞬时 30s 落盘只有陈旧害处); 存**到期时刻**不存布尔, 窗过即自愈, 过期行读写时过滤。
+ * 写法 = 读-合-写 + 临时文件 rename (原子; 双进程同刻写最坏丢一条 → 该座多被撞一次瞬败,
+ * 可接受)。读失败 fail-open 但留证据 (不吞)。载体自查: config.json 是用户意图面不收状态;
+ * runs.db 在 mcp 层, model 层引它是层次倒挂; 独立小 json 与 tui-usage.jsonl 同类文件面。
  * 独立模块避免 index ↔ role-fallback import 环。
  */
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { logger } from '../logger';
 
 /** 默认冷却窗 (ms): 一次 provider-fault 后该 (channel, model) 静默 30s。 */
 const DEFAULT_COOLDOWN_MS = 30_000;
@@ -41,6 +51,60 @@ export function livePin(coord: string | undefined, now = Date.now()): string | u
 /** "channel:model" → 冷却截止 epoch ms。 */
 const cooldownUntil = new Map<string, number>();
 
+// ── S-B2: 周期档跨进程持久化 ─────────────────────────────────────────────────
+interface PersistedCooldown {
+  key: string;
+  /** 到期 epoch ms —— 存到期时刻不存布尔, 窗过即自愈。 */
+  until: number;
+  since: number;
+  httpStatus?: number;
+}
+
+function seatHealthPath(): string {
+  return process.env.OMD_SEAT_HEALTH_PATH || join(process.cwd(), '.omd', 'seat-health.json');
+}
+
+/** 读盘上周期档条目 (过期行过滤; 坏文件 fail-open 留证据)。 */
+function readPersisted(now: number): PersistedCooldown[] {
+  const path = seatHealthPath();
+  if (!existsSync(path)) return [];
+  try {
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as { cooldowns?: PersistedCooldown[] };
+    return (raw.cooldowns ?? []).filter(
+      (c) => typeof c.key === 'string' && typeof c.until === 'number' && c.until > now,
+    );
+  } catch (err) {
+    logger.warn({ err: (err as Error).message, path }, '[omd/provider-health] seat-health 读取失败 → 按空处理 (fail-open, 证据在此)');
+    return [];
+  }
+}
+
+/** 周期档落盘: 读-合-写 + rename 原子。失败 fail-open 留证据。 */
+function persistPeriodCooldown(key: string, until: number, now: number): void {
+  const path = seatHealthPath();
+  try {
+    const rest = readPersisted(now).filter((c) => c.key !== key);
+    rest.push({ key, until, since: now });
+    mkdirSync(dirname(path), { recursive: true });
+    const tmp = `${path}.tmp.${process.pid}`;
+    writeFileSync(tmp, `${JSON.stringify({ cooldowns: rest }, null, 1)}\n`);
+    renameSync(tmp, path);
+  } catch (err) {
+    logger.warn({ err: (err as Error).message, path }, '[omd/provider-health] seat-health 写入失败 (该周期档只在本进程内存)');
+  }
+}
+
+let hydrated = false;
+/** 首次触碰时从盘上继承周期档 (spawn 的新 worker 由此不再撞已知死座)。每进程一次。 */
+function hydrateOnce(now: number): void {
+  if (hydrated) return;
+  hydrated = true;
+  for (const c of readPersisted(now)) {
+    const prev = cooldownUntil.get(c.key);
+    if (prev === undefined || prev < c.until) cooldownUntil.set(c.key, c.until);
+  }
+}
+
 /** "channel:model" 坐标 → "channel:model" key。裸 channel 名 → "channel:" (全 channel 冷却, 内部不用)。 */
 function keyOf(coord: string): string {
   return coord.includes(':') ? coord : `${coord}:`;
@@ -58,7 +122,11 @@ function channelOf(coord: string): string {
  */
 export function reportProviderFailure(coord: string, cooldownMs = DEFAULT_COOLDOWN_MS): void {
   if (!coord) return;
-  cooldownUntil.set(keyOf(coord), Date.now() + Math.max(0, cooldownMs));
+  const now = Date.now();
+  const until = now + Math.max(0, cooldownMs);
+  cooldownUntil.set(keyOf(coord), until);
+  // 周期档 (窗长达周期级) 才落盘 —— 瞬时 30s 落盘只有陈旧害处 (S-B2)。
+  if (cooldownMs >= PERIOD_COOLDOWN_MS) persistPeriodCooldown(keyOf(coord), until, now);
 }
 
 /**
@@ -66,6 +134,7 @@ export function reportProviderFailure(coord: string, cooldownMs = DEFAULT_COOLDO
  * `now` 可注入供测试。
  */
 export function inCooldown(coord: string, now = Date.now()): boolean {
+  hydrateOnce(now);
   const k = keyOf(coord);
   const until = cooldownUntil.get(k);
   if (until === undefined) return false;
@@ -81,6 +150,7 @@ export function inCooldown(coord: string, now = Date.now()): boolean {
  * role-fallback 只知 channel 不知 model, 用此判断是否顺延到下一个 channel。
  */
 export function channelInCooldown(channel: string, now = Date.now()): boolean {
+  hydrateOnce(now);
   const prefix = `${channel}:`;
   for (const [k, until] of cooldownUntil) {
     if (k.startsWith(prefix)) {
@@ -91,7 +161,8 @@ export function channelInCooldown(channel: string, now = Date.now()): boolean {
   return false;
 }
 
-/** 清全部冷却态 —— 测试钩子 (跨用例不串味)。 */
+/** 清全部冷却态 —— 测试钩子 (跨用例不串味)。含 S-B2 hydrate 标记 (不动盘上文件)。 */
 export function resetProviderCooldowns(): void {
   cooldownUntil.clear();
+  hydrated = false;
 }

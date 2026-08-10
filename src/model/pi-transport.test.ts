@@ -4,7 +4,7 @@
  * 覆盖: 请求/响应映射 (text/usage/thinking) · 解析序 (registry 优先 → pi 目录 → config 错) ·
  * assertModelResolvable 双路 · ledger 在 pi 路上照常触发 · 错误分类 (401/429/net)。
  */
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -91,7 +91,21 @@ function authFile(content: unknown): string {
   return p;
 }
 
+// 周期档 (402/403) 落盘重定向 —— 本文件的 402 熔断测试不重定向会写真仓 .omd/seat-health.json。
+let phDir: string;
+let phSavedEnv: string | undefined;
+beforeEach(() => {
+  const { mkdtempSync } = require('node:fs') as typeof import('node:fs');
+  const { tmpdir } = require('node:os') as typeof import('node:os');
+  const { join } = require('node:path') as typeof import('node:path');
+  phDir = mkdtempSync(join(tmpdir(), 'omd-pt-ph-'));
+  phSavedEnv = process.env.OMD_SEAT_HEALTH_PATH;
+  process.env.OMD_SEAT_HEALTH_PATH = join(phDir, 'seat-health.json');
+});
 afterEach(() => {
+  if (phSavedEnv === undefined) delete process.env.OMD_SEAT_HEALTH_PATH;
+  else process.env.OMD_SEAT_HEALTH_PATH = phSavedEnv;
+  try { (require('node:fs') as typeof import('node:fs')).rmSync(phDir, { recursive: true, force: true }); } catch {}
   setPiTransportDepsForTest();
   clearProviders();
 });
@@ -323,6 +337,7 @@ describe('pi 通道 · 错误分类与认证', () => {
    */
   test('402 余额不足 → 熔断跳 (而 400 请求错不跳: 换 provider 也不解决)', async () => {
     resetProviderCooldowns();
+    (require('node:fs') as typeof import('node:fs')).rmSync(process.env.OMD_SEAT_HEALTH_PATH!, { force: true }); // S-B2: 周期档臂已落盘, 臂间全清含盘
     const run = async (emsg: string): Promise<void> => {
       const { deps } = fakeDeps({
         completeSimple: async () => assistantMsg({ stopReason: 'error', errorMessage: emsg }),
@@ -343,18 +358,22 @@ describe('pi 通道 · 错误分类与认证', () => {
     // 「认证通过但不给服务」= 换一个能成 → 该熔断。⚠ 401(没认证上)刻意仍不熔断: 悄悄绕过去
     // 会把一个该让人去修的 key 配置错误藏起来。
     resetProviderCooldowns();
+    (require('node:fs') as typeof import('node:fs')).rmSync(process.env.OMD_SEAT_HEALTH_PATH!, { force: true }); // S-B2: 周期档臂已落盘, 臂间全清含盘
     await run('403 {"type":"RegionError","message":"only available hosted in China"}');
     expect(inCooldown('kimi-coding:k3')).toBe(true);
 
     resetProviderCooldowns();
+    (require('node:fs') as typeof import('node:fs')).rmSync(process.env.OMD_SEAT_HEALTH_PATH!, { force: true }); // S-B2: 周期档臂已落盘, 臂间全清含盘
     await run('401 unauthorized');
     expect(inCooldown('kimi-coding:k3')).toBe(false); // key 坏了该响, 不该被兜底盖住
 
     // 对照: 400 是**请求**错, 换后端也不解决 —— 熔断只针对"这个后端此刻不健康"。
     resetProviderCooldowns();
+    (require('node:fs') as typeof import('node:fs')).rmSync(process.env.OMD_SEAT_HEALTH_PATH!, { force: true }); // S-B2: 周期档臂已落盘, 臂间全清含盘
     await run('400 bad request');
     expect(inCooldown('kimi-coding:k3')).toBe(false);
     resetProviderCooldowns();
+    (require('node:fs') as typeof import('node:fs')).rmSync(process.env.OMD_SEAT_HEALTH_PATH!, { force: true }); // S-B2: 周期档臂已落盘, 臂间全清含盘
   });
 
   test('auth.json oauth access 未过期 → 直接用 (kimi-coding 无内置刷新件语义)', async () => {
