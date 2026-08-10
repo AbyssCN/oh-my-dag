@@ -40,6 +40,7 @@ import { parseModelRef } from '../fleet';
 import { resolvePiApiKey, resolvePiModel } from '../../model/pi-transport';
 import type { ThinkingLevel } from '../../model/role-models';
 import type { OmdSessionStore } from './session-store';
+import { CLAUDE_SDK_PROVIDER, runChatTurnSdk } from './claude-sdk-turn';
 
 export interface ChatTurnOpts {
   store: OmdSessionStore;
@@ -86,6 +87,14 @@ export interface ChatTurnOpts {
    * 校验放在调用方是刻意的:这条 opts 将来可能有别的消费者,而那条纪律是**扩展**专属的。
    */
   systemPromptHook?: (prompt: string) => Promise<string>;
+  /**
+   * 测试接缝:claude-code 通道的 SDK query 替身(真 SDK 要真订阅 + claude CLI)。生产不传。
+   * 类型写结构面不 import claude-sdk-turn —— 那边 import 本文件的 ChatTurnOpts,引用回去就是环。
+   */
+  sdkQueryFn?: (props: {
+    prompt: string;
+    options: import('@anthropic-ai/claude-agent-sdk').Options;
+  }) => AsyncIterable<import('@anthropic-ai/claude-agent-sdk').SDKMessage>;
 }
 
 export interface ChatTurnResult {
@@ -126,6 +135,9 @@ function titleOf(prompt: string): string {
 
 export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
   const { provider, modelId } = parseModelRef(opts.model);
+  // 订阅通道分派(NOTES 2026-08-10):claude-code:* 走 Agent SDK loop,契约同面。
+  // 分派放在 pi 解析**之前** —— claude-code 不在 pi 目录,晚一行就是解析报错。
+  if (provider === CLAUDE_SDK_PROVIDER) return runChatTurnSdk(opts);
   const piModel = resolvePiModel(provider, modelId);
   if (!piModel) {
     throw new Error(`[chat-agent] 坐标 '${opts.model}' 解析不出模型 (provider '${provider}' 两栈都查不到)`);
