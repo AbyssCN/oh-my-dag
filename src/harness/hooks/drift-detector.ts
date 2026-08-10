@@ -12,6 +12,7 @@
  * 默认阈值 4 次相同签 → 标记 spinning (覆盖实验: read+read+read+read; bash+bash+bash+bash)。
  */
 import { logger } from '../../logger';
+import { hashlinePatchPaths } from '../hashline';
 
 export interface DriftDetectorConfig {
   /** 签名环形缓冲区容量。默认 20。*/
@@ -65,6 +66,14 @@ export function computeSig(toolName: string, input: unknown): string {
   const path = args.file_path ?? args.path ?? args.pattern;
   if (typeof path === 'string' && path.length > 0) {
     return `${toolName}:${path.slice(0, 60)}`;
+  }
+  // hashline_edit/read: 参数是 patch/内容文本, 无 file_path —— 落键名兜底会把**所有**调用并成
+  // 一个签名 `hashline_edit:patch` (2026-08-10 S2/S3 实测: 连改 4 刀即误报 spinning, 单 run 20 次)。
+  // 从 ¶PATH#TAG 头取首个目标文件做签名 —— 提取用 hashline 的单真源, 不抄第二份正则。
+  const patch = args.patch ?? args.content;
+  if (typeof patch === 'string') {
+    const target = hashlinePatchPaths(patch)[0];
+    if (target) return `${toolName}:${target.slice(0, 60)}`;
   }
   const keys = Object.keys(args).sort().join(',');
   return `${toolName}:${keys}`;

@@ -17,7 +17,7 @@
  * 得先有"真跑上多久命中一次"的数 —— 先有读数再谈判据, 别反过来 (同 observations 的注)。
  */
 import { describe, expect, test } from 'bun:test';
-import { createDriftTracker } from './drift-detector';
+import { computeSig, createDriftTracker } from './drift-detector';
 
 describe('空转累计 (G5 频率读数, 2026-08-03)', () => {
   const spin = (t: ReturnType<typeof createDriftTracker>, sig: string, n: number): void => {
@@ -72,5 +72,30 @@ describe('空转累计 (G5 频率读数, 2026-08-03)', () => {
     }
     expect(t.summary().spinEvents).toBe(30);
     expect(t.summary().stuckSigs.length).toBeLessThanOrEqual(12);
+  });
+});
+
+describe('computeSig 的 hashline 目标锚 (2026-08-10 尺子修)', () => {
+  const patchFor = (path: string): string => `¶${path}#a1b2\nreplace 3..3:\n+new line`;
+
+  // 反向自检: 把 computeSig 的 patch 分支删掉 → 本条当场红 (回到全并成 `hashline_edit:patch` 的旧尺子,
+  // S2/S3 实测连改 4 刀即误报 spinning, 单 run 20 次)。
+  test('★ 不同目标文件的 patch → 不同签名, 连打 4 个不同文件不触发 spinning', () => {
+    expect(computeSig('hashline_edit', { patch: patchFor('src/a.ts') })).not.toBe(
+      computeSig('hashline_edit', { patch: patchFor('src/b.ts') }),
+    );
+    const t = createDriftTracker({ threshold: 4 });
+    for (const f of ['a.ts', 'b.ts', 'c.ts', 'd.ts']) t.note('hashline_edit', { patch: patchFor(f) });
+    expect(t.summary().spinEvents).toBe(0);
+  });
+
+  test('同一文件连打 4 刀 → 仍触发 (尺子变细, 没有钝掉)', () => {
+    const t = createDriftTracker({ threshold: 4 });
+    for (let i = 0; i < 4; i++) t.note('hashline_edit', { patch: patchFor('src/same.ts') });
+    expect(t.summary().spinEvents).toBe(1);
+  });
+
+  test('无 ¶ 头的 patch (格式坏/非 hashline) → 键名兜底 (既有行为不变)', () => {
+    expect(computeSig('hashline_edit', { patch: 'not a hashline patch' })).toBe('hashline_edit:patch');
   });
 });
