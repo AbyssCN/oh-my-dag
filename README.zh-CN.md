@@ -232,7 +232,7 @@ flowchart TB
     PJ["Plan JSON<br/>zod-validated · unknown card rejects the plan"]
     P1["prune<br/>cut nodes nothing consumes"]
     P2["dedup<br/>merge by semantic key"]
-    P3["evidence<br/>UI pixel-chain gate"]
+    P3["evidence<br/>UI shots-evidence gate (deterministic floor)"]
     P4["stamp<br/>pin a model: pick pool, then 3 rules"]
     CD --> PJ --> P1 --> P2 --> P3 --> P4
   end
@@ -241,10 +241,10 @@ flowchart TB
     direction TB
     RS{{"Ready-set scheduler<br/>a node waits only for its own deps"}}
     L1["inproc leaf<br/>one shot, no tools"]
-    L2["agent leaf<br/>tools + bwrap jail<br/>the only kind that writes files"]
+    L2["agent leaf<br/>tools · the only kind that writes files<br/>bwrap jail only on branchStrategy 'branch'"]
     L3["command<br/>zero LLM · allowlisted CLI"]
-    L4["map · primitive<br/>runtime fan-out / engine-owned control flow"]
-    UI["UI evidence branch<br/>render command prints image paths<br/>then attach_media leaf judges real pixels"]
+    L4["map · primitive · research · conductor<br/>runtime fan-out · engine control flow<br/>live retrieval · subgraph re-expansion"]
+    UI["UI evidence branch<br/>render command prints image paths<br/>omd-shots-verify gate: shots exist, non-blank<br/>(attach_media review optional, no longer the floor)"]
     RS --> L1 & L2 & L3 & L4
     L2 -.-> UI
     L3 -.-> UI

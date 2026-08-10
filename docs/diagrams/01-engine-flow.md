@@ -44,7 +44,7 @@ flowchart TB
     PJ["Plan JSON<br/>zod-validated · unknown card rejects the plan"]
     P1["prune<br/>cut nodes nothing consumes"]
     P2["dedup<br/>merge by semantic key"]
-    P3["evidence<br/>UI pixel-chain gate"]
+    P3["evidence<br/>UI shots-evidence gate (deterministic floor)"]
     P4["stamp<br/>pin a model: pick pool, then 3 rules"]
     CD --> PJ --> P1 --> P2 --> P3 --> P4
   end
