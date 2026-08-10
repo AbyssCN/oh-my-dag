@@ -27,7 +27,9 @@ import {
   buildHeadlessChatTools,
   createConductorChatTool,
   parseEscalation,
+  parseRouteLine,
 } from './chat';
+import { SOLVE_BUDGET_TOKENS, SOLVE_BUDGET_MINUTES } from '../../serve/chat-tools';
 import { assembleOmdMcpTools, type AssembleOmdMcpDeps } from '../assemble';
 import { WEEKLY_BUDGET_ENV, type WeeklyBudgetStatus } from '../budget';
 import { RunRegistry } from '../run-registry';
@@ -52,6 +54,7 @@ const fakeMcpTool = (name: string, text: string, isError = false): OmdMcpTool =>
 const FAKE_MCP_TOOLS: OmdMcpTool[] = [
   fakeMcpTool('run', 'runId: run-abc\nstatus: running'),
   fakeMcpTool('solve', 'runId: solve-should-not-count\nerror: leafModel required', true),
+  fakeMcpTool('dag_run_plan', 'runId: plan-xyz\nstatus: running'),
   ...['dag_status', 'dag_runs', 'dag_node_output', 'dag_cancel', 'map_tickets', 'omd_plans', 'memory_recall'].map(
     (n) => fakeMcpTool(n, `${n} ok`),
   ),
@@ -114,6 +117,58 @@ describe('D-1 headless 工具面', () => {
     for (const banned of ['write', 'edit', 'bash']) expect(names).not.toContain(banned);
     expect(names).toContain('omd_run'); // 引擎工具全开的抽查
     expect(names).toContain('omd_solve');
+    expect(names).toContain('omd_run_plan'); // C-2 (owner 2026-08-09 裁 C): 预构造 plan 通道
+  });
+
+  test('C-3: omd_solve 包装写死透传预算 (旋钮不暴露给模型)', async () => {
+    let captured: Record<string, unknown> | null = null;
+    const capturingTools: OmdMcpTool[] = FAKE_MCP_TOOLS.map((t) =>
+      t.name === 'solve'
+        ? {
+            ...t,
+            handler: (async (args: unknown) => {
+              captured = args as Record<string, unknown>;
+              return { content: [{ type: 'text' as const, text: 'runId: s' }] };
+            }) as OmdMcpTool['handler'],
+          }
+        : t,
+    );
+    const solve = buildHeadlessChatTools({ cwd: root, tools: capturingTools }).find((t) => t.name === 'omd_solve')!;
+    await solve.execute('t1', { goal: 'g' });
+    // 证伪方式 (当场验过): chat-tools.ts 里去掉 budgetTokens 透传 → 本断言红; 恢复后绿。
+    expect(captured!.budgetTokens).toBe(SOLVE_BUDGET_TOKENS);
+    expect(captured!.budgetMinutes).toBe(SOLVE_BUDGET_MINUTES);
+    // schema 面不暴露预算旋钮 (模型改不了的旋钮才是闸)
+    expect(JSON.stringify(solve.parameters ?? {})).not.toContain('budgetTokens');
+  });
+});
+
+describe('C-1 route 自述行 (NULL ≠ L0)', () => {
+  test('合法行解析出 level, 原文保留', () => {
+    const r = parseRouteLine('route: L2 · W=yes N=1-2 X=1 O=have\n派单如下…');
+    expect(r).not.toBeNull();
+    expect(r!.level).toBe('L2');
+    expect(r!.raw).toContain('W=yes');
+  });
+
+  test('★ 无 route 行 → null, 不许折算成 L0 (没申报 ≠ 直答)', () => {
+    const r = parseRouteLine('直接回答:是的。');
+    expect(r).toBeNull();
+    // 红线: 谁把 null 改成兜底 'L0', 这条立刻红。
+    expect(r?.level).not.toBe('L0');
+  });
+
+  test('残缺行 (无 L 档) → null, 不猜', () => {
+    expect(parseRouteLine('route: 大概 L 几吧 W=?')).toBeNull();
+  });
+
+  test('回执头: 申报可见, 未申报记 NULL', async () => {
+    const withRoute = await callText(makeTool({ loop: fakeLoop('route: L1 · W=no N=0 X=1 O=have\n查到了。') }), {
+      prompt: 'q1',
+    });
+    expect(withRoute.text).toContain('route: L1');
+    const noRoute = await callText(makeTool({ loop: fakeLoop('查到了。') }), { prompt: 'q2' });
+    expect(noRoute.text).toContain('route: NULL(未申报)');
   });
 });
 

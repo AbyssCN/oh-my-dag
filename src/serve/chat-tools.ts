@@ -58,9 +58,19 @@ function textTool<S extends ReturnType<typeof Type.Object>>(
 /**
  * @param tools assembleOmdMcpTools() 的产物(改名表已应用)。
  */
+/**
+ * L3/solve 的写死预算 (S-C, 契约 C-3): 旋钮不暴露给模型 —— 模型改不了的旋钮才是闸。
+ * 值的依据: budgetMinutes=30 承心跳单次调用先例 (`--budget-minutes 30`);
+ * budgetTokens=3M ≈ e0bd80a1 事故 contract 相位均值 2.1M/run 的 1.4×
+ * (单次 solve 超过它基本是失控不是大活)。超预算 outcome='budget-exhausted' (词表已有)。
+ */
+export const SOLVE_BUDGET_TOKENS = 3_000_000;
+export const SOLVE_BUDGET_MINUTES = 30;
+
 export function createConductorChatTools(tools: readonly OmdMcpTool[]): AnyOmdTool[] {
   const runTool = must(tools, 'run');
   const solveTool = must(tools, 'solve');
+  const runPlanTool = must(tools, 'dag_run_plan');
   const statusTool = must(tools, 'dag_status');
   const runsTool = must(tools, 'dag_runs');
   const outputTool = must(tools, 'dag_node_output');
@@ -82,7 +92,18 @@ export function createConductorChatTools(tools: readonly OmdMcpTool[]): AnyOmdTo
       'Autonomous goal loop: research → spec → execute → verify → 1 repair round. Returns runId.',
       'omd_solve(goal) — 自主环 (research→spec→execute→verify), 立返 runId',
       Type.Object({ goal: Type.String({ description: 'The goal to pursue autonomously' }) }),
-      (p) => invoke(solveTool, { goal: p.goal }),
+      // C-3: 预算写死透传 (schema 刻意不暴露 —— per-lane 预算是闸不是旋钮)。
+      (p) => invoke(solveTool, { goal: p.goal, budgetTokens: SOLVE_BUDGET_TOKENS, budgetMinutes: SOLVE_BUDGET_MINUTES }),
+    ),
+    textTool(
+      'omd_run_plan',
+      'Execute a pre-built ConductorPlan JSON directly — skips the conductor planning segment. For small decided tasks (N<=2, fix already stated). Invalid plan JSON is rejected loudly by parsePlan. Returns runId (fire-and-forget).',
+      'omd_run_plan(plan, task?) — 预构造 plan 直接执行, 跳过规划段 (owner 2026-08-09 裁 C: 审计链零损失, 调度税砍大头)',
+      Type.Object({
+        plan: Type.String({ description: 'ConductorPlan JSON string (validated by parsePlan)' }),
+        task: Type.Optional(Type.String({ description: 'Task description (escalation re-planning seed)' })),
+      }),
+      (p) => invoke(runPlanTool, { plan: p.plan, ...(p.task ? { task: p.task } : {}) }),
     ),
     textTool(
       'omd_status',

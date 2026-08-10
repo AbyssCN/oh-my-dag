@@ -65,6 +65,40 @@ export function parseEscalation(reply: string): { lane: 'claude' | 'owner'; bloc
   return m ? { lane: m[1] as 'claude' | 'owner', block: m[0] } : null;
 }
 
+/**
+ * S-C 路由阶梯 (契约 C-1, 真源 = grill 票 1 判卷 + `.omd/router-prompt-draft.md`)。
+ * 与 HEADLESS_PROMPT_BLOCK 同层: situational 追加块, 冻结核零字节改 (cache 面不伤)。
+ * 英文承 conductor 正文惯例 (D-3: 混排让 cache/遵从读数不可比)。
+ */
+export const ROUTING_LADDER_BLOCK = `<routing-ladder>
+Before acting on any task, classify it by four observables — declare first, then act:
+  W = does it write files (any byte in the repo)?  yes / no
+  N = estimated files touched: 0 / 1-2 / 3-8 / >8-or-uncountable
+  X = cross-module (top-level dirs touched): 1 / >=2
+  O = mechanical oracle (one command that judges pass/fail by itself): have / none / build
+If you cannot fill N or X, that itself is the reading — go look first (L1), then classify. Never skip this because the task "feels small".
+
+L0 direct answer — W=no and the answer is already in this turn's context. No tool calls. If you catch yourself writing "based on my impression / generally", or a quantifier (always / all / only / never) without the number behind it, drop to L1 and look.
+L1 read-only self-check — W=no, the answer lives in the repo. Budget: <=6 read-only calls (read / ls / grep / omd_recall / omd_status / omd_runs / omd_node_output). Escalate to L2 when: 6 calls without locating it; W turns out to be yes; or you need to run a command (you have no bash — running anything means a graph).
+L2 single graph (omd_run) — W=yes, N<=8, X=1, O=have (an existing command), and the fix is already decided (you can state the change in one sentence). Budget: one graph, redraw <=1; second red → stop and report, do not redraw again. The task text must contain: goal + acceptance command + boundaries (what not to touch). Dispatch, report the runId, END the turn. Small decided tasks (N<=2): you may pre-build a ConductorPlan JSON and call omd_run_plan instead — it skips the planning segment entirely (measured 2026-08-10: 64% of run graphs write <=2 files yet pay the full planning wall-clock).
+L3 full loop (omd_solve) — W=yes and (N>8 or X>=2 or O=none/build or the fix is undecided). Budget: one solve; its token/minute caps are wired in and not yours to change; never dispatch the same goal twice in one turn. Do NOT wrap an L2 task in solve "to be safe" — the research/spec phases are real money and buy nothing there.
+L4 escalation chain — L3 criteria hold, plus any of: schema / auth / irreversible surface; external research needed; the previous L3 came back blocked or oracle-failed. You do not have the tools for that chain — emit the ? valve (<omd-escalation>, lane per the headless block). Empty-handed escalation is not escalation: state your leaning + reason + the one undecidable point.
+
+The FIRST line of every reply, verbatim format:
+route: L<n> · W=<yes|no> N=<0|1-2|3-8|>8|?> X=<1|>=2|?> O=<have|none|build|?>
+Cannot fill a field → write "?" — never invent. Your declared route is compared against the route derived from your actual tool calls; mismatches are read out, so writing it honestly beats writing it favorably.
+</routing-ladder>`;
+
+/**
+ * C-1 route 自述行解析。解析不出 = **null**(NULL ≠ 0 ≠ L0 —— 把「没申报」记成
+ * 「直答」会让 L0 命中数虚高,而 L0 恰恰是最该被怀疑的一档)。
+ * 只抽 level;W/N/X/O 保留原文 —— 派生比对在读侧 (ab-snapshot) 做,这里不重造。
+ */
+export function parseRouteLine(reply: string): { level: 'L0' | 'L1' | 'L2' | 'L3' | 'L4'; raw: string } | null {
+  const m = reply.match(/^route:\s*(L[0-4])\b.*$/m);
+  return m ? { level: m[1] as 'L0' | 'L1' | 'L2' | 'L3' | 'L4', raw: m[0] } : null;
+}
+
 export interface ConductorChatDeps {
   cwd: string;
   store: OmdSessionStore;
@@ -191,7 +225,8 @@ export function createConductorChatTool(deps: ConductorChatDeps): OmdMcpTool {
           cwd: deps.cwd,
           tools: guardBudget(collectRunIds(baseTools, runIds), budget),
           // S2:headless 块拼在整份 prompt 尾部 —— 冻结前缀逐字不动,cache 面不伤。
-          systemPromptHook: async (p) => `${p}\n\n${HEADLESS_PROMPT_BLOCK}`,
+          // S-C:路由阶梯同层追加 (C-1)。
+          systemPromptHook: async (p) => `${p}\n\n${HEADLESS_PROMPT_BLOCK}\n\n${ROUTING_LADDER_BLOCK}`,
           ...(deps.loopFn ? { loopFn: deps.loopFn } : {}),
         });
         const pressure =
@@ -199,8 +234,11 @@ export function createConductorChatTool(deps: ConductorChatDeps): OmdMcpTool {
             ? `used=${r.pressure.usedTokens} window=未知`
             : `${Math.round(r.pressure.ratio * 100)}% (${r.pressure.usedTokens}/${r.pressure.windowTokens})`;
         const escalation = parseEscalation(r.reply);
+        // C-1: 申报面进回执头。没申报 = NULL 逐字可见, 不折算成任何档 (读侧派生另算两列)。
+        const route = parseRouteLine(r.reply);
         const head = [
           `sessionId: ${sid}`,
+          `route: ${route ? route.level : 'NULL(未申报)'}`,
           `runIds: ${runIds.length ? runIds.join(', ') : '(无)'}`,
           // S2:阀在头行点名, lane=owner 的调用方**禁代答**(原样转人);块全文在正文里。
           ...(escalation ? [`escalation: lane=${escalation.lane}(阀块在正文,owner 级禁代答)`] : []),

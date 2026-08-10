@@ -123,6 +123,7 @@ describe('★ human_verified 在 headless 下 fail-closed', () => {
       { name: 'memory_recall', handler: async () => ({ content: [] }) },
       { name: 'run', handler: async () => ({ content: [] }) },
       { name: 'solve', handler: async () => ({ content: [] }) },
+      { name: 'dag_run_plan', handler: async () => ({ content: [] }) },
       { name: 'dag_status', handler: async () => ({ content: [] }) },
       { name: 'dag_node_output', handler: async () => ({ content: [] }) },
       { name: 'dag_runs', handler: async () => ({ content: [] }) },
