@@ -15,13 +15,19 @@ const FP: Record<string, string> = {
   false: '— 不入',
 };
 
-const rows = Object.entries(REGISTRY).map(([field, e]) => {
-  const fp = FP[String(e.fingerprint)]!;
-  const note = e.note.replace(/\|/g, '\\|');
-  return `| \`${field}\` | ${e.consumer.replace(/\|/g, '\\|')} | ${fp} | ${e.declared ? '✅' : '—'} | ${note} |`;
-});
+/** 从 REGISTRY 渲染人读版表格 (真源唯一; mcp-schema-registry-regression.test.ts 复用本函数核文档不漂)。 */
+export function renderRegistryDoc(): string {
+  const rows = Object.entries(REGISTRY).map(([field, e]) => {
+    const fp = FP[String(e.fingerprint)]!;
+    const note = e.note.replace(/\|/g, '\\|');
+    return `| \`${field}\` | ${e.consumer.replace(/\|/g, '\\|')} | ${fp} | ${e.declared ? '✅' : '—'} | ${note} |`;
+  });
+  return [
+    '| 字段 | 引擎消费点 | 进语义指纹 | 进 conductor prompt | 备注 |',
+    '|---|---|---|---|---|',
+    ...rows,
+    `\n<!-- ${rows.length} 个字段; 由 scripts/gen-schema-registry-doc.ts 生成 -->`,
+  ].join('\n');
+}
 
-console.log('| 字段 | 引擎消费点 | 进语义指纹 | 进 conductor prompt | 备注 |');
-console.log('|---|---|---|---|---|');
-for (const r of rows) console.log(r);
-console.log(`\n<!-- ${rows.length} 个字段; 由 scripts/gen-schema-registry-doc.ts 生成 -->`);
+if (import.meta.main) console.log(renderRegistryDoc()); // 被回归测试 import 时不打印

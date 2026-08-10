@@ -115,11 +115,11 @@ describe('conductor prompt + parsePlan (规划层)', () => {
   test('TPL-2: 未知 template 名整 plan 拒 (含 map 子模板), 已知/无 opts 通过', () => {
     const mk = (tpl: string) => JSON.stringify({ name: 'p', nodes: { n: { agent: 'x', goal: 'g', template: tpl } } });
     const known = new Set(['card-a']);
-    expect(parsePlan(mk('card-a'), { knownTemplates: known }).ok).toBe(true);
-    const bad = parsePlan(mk('ghost'), { knownTemplates: known });
+    expect(parsePlan(mk('card-a'), { knownTemplates: known, knownServers: new Set() }).ok).toBe(true);
+    const bad = parsePlan(mk('ghost'), { knownTemplates: known, knownServers: new Set() });
     expect(bad.ok).toBe(false);
     if (!bad.ok) expect(bad.error).toContain('ghost');
-    expect(parsePlan(mk('ghost')).ok).toBe(true); // 无 opts = 不校验 (宿主宏观引擎路径 BC)
+    expect(parsePlan(mk('ghost'), { knownServers: new Set() }).ok).toBe(true); // 无 opts = 不校验 (宿主宏观引擎路径 BC)
     // map 子模板同受校验
     const mapPlan = JSON.stringify({
       name: 'p',
@@ -131,7 +131,7 @@ describe('conductor prompt + parsePlan (规划层)', () => {
         },
       },
     });
-    expect(parsePlan(mapPlan, { knownTemplates: known }).ok).toBe(false);
+    expect(parsePlan(mapPlan, { knownTemplates: known, knownServers: new Set() }).ok).toBe(false);
   });
 });
 

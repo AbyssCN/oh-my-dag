@@ -18,6 +18,8 @@ export interface McpToolInfo {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /** ListTools 带的 annotations.readOnlyHint(缺省 undefined = 副作用类, C-5 判据)。 */
+  readOnlyHint?: boolean;
 }
 
 export interface McpCallOutcome {
@@ -91,6 +93,7 @@ export class McpClientPool {
         name: t.name,
         description: t.description ?? '',
         inputSchema: (t.inputSchema ?? { type: 'object' }) as Record<string, unknown>,
+        readOnlyHint: t.annotations?.readOnlyHint,
       }));
       return { client, tools };
     })();

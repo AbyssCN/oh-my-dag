@@ -50,6 +50,13 @@ export interface McpClientToolsOpts {
   ledger?: McpCallLedger;
   /** 测试注入:InMemory transport。 */
   poolDeps?: McpPoolDeps;
+  /**
+   * 副作用策略 (O-4 一期)。缺省 'allow' = 与今日行为一致 (chat-seat.ts:77 只传 cwd, 零改动)。
+   * 函数形 = **按调用求值** (agent-leaf 的 per-run mcpAllow 经 AsyncLocalStorage 落, 同 session getter 模式)。
+   */
+  policy?:
+    | { sideEffects: 'allow' | { allow: string[] } | 'deny' }
+    | (() => { sideEffects: 'allow' | { allow: string[] } | 'deny' });
 }
 
 /** `server:tool` 全名。schema 已披露集合(C-4 闸)以它为键。 */
@@ -58,6 +65,7 @@ const keyOf = (t: McpToolInfo): string => `${t.server}:${t.name}`;
 function schemaText(t: McpToolInfo): string {
   return [
     `工具 ${keyOf(t)} —— ${t.description || '(无描述)'}`,
+    ...(t.readOnlyHint ? ['只读: server 声明 readOnlyHint=true —— 策略闸 (C-5) 按只读放行。'] : []),
     'schema:',
     JSON.stringify(t.inputSchema, null, 2),
     `调用: mcp_call({ tool: "${keyOf(t)}", args: { ... } })`,
@@ -90,6 +98,9 @@ export function createMcpClientTools(o: McpClientToolsOpts): AnyOmdTool[] {
 
   /** C-4 闸的状态:本装配生命周期内已披露过 schema 的工具全名。 */
   const fetched = new Set<string>();
+  /** C-5 策略求值:函数形按调用求值 (per-run 授权清单), 静态形原样。 */
+  const resolvePolicy = (): { sideEffects: 'allow' | { allow: string[] } | 'deny' } | undefined =>
+    typeof o.policy === 'function' ? o.policy() : o.policy;
 
   /** 名字解析:'server:tool' 只连该 server;裸名连全部找唯一匹配。 */
   async function resolveTool(raw: string): Promise<{ tool: McpToolInfo } | { error: string; server: string | null }> {
@@ -229,6 +240,22 @@ export function createMcpClientTools(o: McpClientToolsOpts): AnyOmdTool[] {
         }
       } catch (e) {
         logger.warn({ tool: key, err: (e as Error).message }, '[omd/mcp-client] schema 校验器自身失败 —— 跳过校验放行');
+      }
+      // C-5 策略闸 (O-4 一期判据): annotations.readOnlyHint === true 视为只读, 默认放行;
+      // 其余一律副作用类 —— 'allow' 放行 · 'deny' 拒 · {allow} 仅当清单含 server 名或 'server:tool'。
+      // 缺省 'allow'(chat-seat.ts:77 只传 cwd → 今日行为不变)。拒绝 = 确定性错误, 绝不发往 server。
+      const isReadOnly = t.readOnlyHint === true;
+      const policy = resolvePolicy()?.sideEffects ?? 'allow';
+      if (!isReadOnly && policy !== 'allow') {
+        const allowed = policy === 'deny' ? [] : policy.allow;
+        if (!allowed.includes(t.server) && !allowed.includes(key)) {
+          const policyText = policy === 'deny' ? "'deny'" : `allow 清单 ${JSON.stringify(allowed)}`;
+          const reason = `工具 ${key} 未声明 readOnlyHint, 属副作用类; 当前 policy ${policyText} 未授权。`;
+          const how = '声明方法: 在 plan 节点的 mcp 字段或模板卡 frontmatter 的 mcp 中声明对该工具的授权。';
+          const text = `拒绝: ${reason}${how}`;
+          record({ server: t.server, tool: key, status: 'rejected-policy', error: `${reason}${how}` });
+          return { content: [{ type: 'text', text }], details: { tool: key, status: 'rejected-policy' } };
+        }
       }
       try {
         const outcome = await pool.call(t.server, t.name, callArgs);

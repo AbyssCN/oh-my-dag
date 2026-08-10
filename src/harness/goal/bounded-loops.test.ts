@@ -46,15 +46,15 @@ describe('INV-GOAL-4 · 无环: 回边 → 编译期抛, 不进执行', () => {
 describe('INV-GOAL-4 · 有界: 每个循环构造都有 schema 层硬顶', () => {
   // research 节点内环 (D-6): 二次检索轮数。conductor 想写 99 轮也写不进来。
   test('research.rounds 上限 4 — 越界 plan 规划层就被拒', () => {
-    const ok = parsePlan(planJson({ R: { goal: 'q', executor: 'research', research: { rounds: 4 } } }));
+    const ok = parsePlan(planJson({ R: { goal: 'q', executor: 'research', research: { rounds: 4 } } }), { knownServers: new Set() });
     expect(ok.ok).toBe(true);
-    const bad = parsePlan(planJson({ R: { goal: 'q', executor: 'research', research: { rounds: 5 } } }));
+    const bad = parsePlan(planJson({ R: { goal: 'q', executor: 'research', research: { rounds: 5 } } }), { knownServers: new Set() });
     expect(bad.ok).toBe(false);
   });
 
   test('research.k 上限 12 (广度也有顶, 否则一个节点能烧穿预算)', () => {
-    expect(parsePlan(planJson({ R: { goal: 'q', executor: 'research', research: { k: 12 } } })).ok).toBe(true);
-    expect(parsePlan(planJson({ R: { goal: 'q', executor: 'research', research: { k: 13 } } })).ok).toBe(false);
+    expect(parsePlan(planJson({ R: { goal: 'q', executor: 'research', research: { k: 12 } } }), { knownServers: new Set() }).ok).toBe(true);
+    expect(parsePlan(planJson({ R: { goal: 'q', executor: 'research', research: { k: 13 } } }), { knownServers: new Set() }).ok).toBe(false);
   });
 
   // primitive 的 params 由**编译闸** (compilePrimitive → paramsSchema) 校, 不由 parsePlan 校 ——
@@ -74,9 +74,9 @@ describe('INV-GOAL-4 · 有界: 每个循环构造都有 schema 层硬顶', () =
   });
 
   test('节点重试也有界 (max_retry 不是"重试到成功")', () => {
-    const r = parsePlan(planJson({ A: { goal: 'a', on_failure: 'retry', max_retry: 2 } }));
+    const r = parsePlan(planJson({ A: { goal: 'a', on_failure: 'retry', max_retry: 2 } }), { knownServers: new Set() });
     expect(r.ok).toBe(true);
     // 负数/非整数被 schema 拒 — 没有"无限重试"这个取值
-    expect(parsePlan(planJson({ A: { goal: 'a', max_retry: -1 } })).ok).toBe(false);
+    expect(parsePlan(planJson({ A: { goal: 'a', max_retry: -1 } }), { knownServers: new Set() }).ok).toBe(false);
   });
 });

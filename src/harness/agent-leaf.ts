@@ -50,8 +50,19 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import { parseModelRef } from './fleet';
+/**
+ * D-7 leaf 侧 MCP 策略真源: 授权清单非空 → {allow}, 否则 deny —— 执行叶子不声明不授权
+ * (chat 座位的 'allow' 缺省不传染叶子)。装配闭包与接线测试共用这一个函数, 禁复刻。
+ */
+export function leafMcpPolicy(mcpAllow?: string[]): { sideEffects: { allow: string[] } | 'deny' } {
+  return mcpAllow && mcpAllow.length > 0 ? { sideEffects: { allow: mcpAllow } } : { sideEffects: 'deny' };
+}
+
 import { LEAF_HARNESS_CORE } from './harness-prompts';
 import { createOmdAgentTools, type AnyOmdTool } from './agent-tools';
+import { createMcpClientTools } from '../mcp/client/meta-tools';
+import type { McpPoolDeps } from '../mcp/client/pool';
+import type { McpCallLedger } from '../mcp/client/call-ledger';
 import { createHashlineCustomTools, hashlinePatchPaths } from './hashline';
 import { createDriftTracker, type DriftDetectorConfig } from './hooks/drift-detector';
 import { createSandboxedLeafRunner } from './hooks/sandboxed-leaf';
@@ -263,6 +274,17 @@ export interface AgentLeafRunnerOpts {
    * 隔离档 (bwrap) 下 worker 进程同样收到 (leaf-worker 桥接)。
    */
   touch?: { session: string };
+  /**
+   * 外部 MCP 工具授权兜底 (SDD D-7): runner 级缺省 allow 清单; 运行时以
+   * `AgentLeafInput.mcpAllow` 覆盖 (经 AsyncLocalStorage 按调用落, 同 touchSession)。
+   * 省略 = deny 全部副作用类 MCP 工具 (leaf 不声明不授权)。
+   */
+  mcpAllow?: string[];
+  /**
+   * 测试注入 (同 sdkQueryFn 纪律): 外部 MCP pool 的 transport / 台账 —— 进程内测试换
+   * InMemory linked pair + ':memory:' ledger; 生产省略 (stdio 子进程 + cwd 懒落库)。
+   */
+  mcpDeps?: { poolDeps?: McpPoolDeps; ledger?: McpCallLedger };
   /**
    * drift 检测 (代码级 spinning 防护): agent-leaf 是 headless 工具循环 = spin 高发面,
    * 默认开 (low-invasive: 仅同调用同参重复 ≥阈值才经 transformContext 注 stuck-checklist)。
@@ -776,16 +798,28 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
   // SDD S3 碰撞台账会话 (只记不拦): 同一 runner 跨 run/跨节点复用 (MCP 长驻进程), runId 只在调用期
   // 可知 → session 不能烤进工具闭包, 得按调用落。AsyncLocalStorage: 每次调用一个独立 async 上下文
   // (下方 wrapper 用 run() 开, 不用 enterWith —— enterWith 会改到调用方的共享上下文, 并发节点互踩)。
-  const touchSessionStore = new AsyncLocalStorage<string | undefined>();
+  // per-call 状态 (碰撞台账 session + MCP 授权清单) 落**同一个** ALS: 装配期闭包只挂 getter,
+  // 调用期由下方 wrapper 的 run() 写入 —— 并发调用各一个上下文互不串 (enterWith 会串, 见下)。
+  const touchSessionStore = new AsyncLocalStorage<{ session?: string; mcpAllow?: string[] } | undefined>();
   const touchOpt = opts.touch; // const 让闭包里的收窄成立 (getter 里引用 touchOpt.session)
   const baseTools = createOmdAgentTools({
     cwd,
-    ...(touchOpt ? { touch: { session: () => touchSessionStore.getStore() ?? touchOpt.session } } : {}),
+    ...(touchOpt ? { touch: { session: () => touchSessionStore.getStore()?.session ?? touchOpt.session } } : {}),
   });
   const hashlineTools = opts.hashlineEdit ? createHashlineCustomTools({ cwd }) : [];
+  // 外部 MCP 双 meta-tool (SDD D-8): 零注册 → [] (meta-tools.ts:72-73) → 工具面与 prompt 前缀
+  // 与接线前字节零变化 (I-1)。策略按调用求值 (getter 读 ALS): per-run 授权清单非空 → {allow},
+  // 否则 deny —— leaf 是执行叶子, 不声明即不授权 (chat 座位的 'allow' 缺省不传染叶子)。
+  const mcpTools = createMcpClientTools({
+    cwd,
+    session: () => touchSessionStore.getStore()?.session ?? touchOpt?.session,
+    policy: () => leafMcpPolicy(touchSessionStore.getStore()?.mcpAllow ?? opts.mcpAllow),
+    ...(opts.mcpDeps?.poolDeps ? { poolDeps: opts.mcpDeps.poolDeps } : {}),
+    ...(opts.mcpDeps?.ledger ? { ledger: opts.mcpDeps.ledger } : {}),
+  });
   const excluded = new Set(opts.hashlineEdit ? ['edit'] : []);
   const allowlist = opts.tools ? new Set(opts.tools) : null;
-  const tools = [...baseTools, ...hashlineTools, ...(opts.customTools ?? [])].filter(
+  const tools = [...baseTools, ...hashlineTools, ...mcpTools, ...(opts.customTools ?? [])].filter(
     (t) => !excluded.has(t.name) && (!allowlist || allowlist.has(t.name)),
   );
 
@@ -1156,13 +1190,14 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     };
   };
 
-  // per-call touch session 落 ALS: 引擎侧 runId 只在调用期可知 (runner 跨 run 复用)。
-  // 用 `run()` 给本次调用开**独立 async 上下文** (store = per-call session) —— 并发调用各一个
-  // 上下文互不串。⚠ 不用 enterWith: 它在同步前缀里改的是**调用方 (引擎) 的共享上下文**,
-  // 并发节点会互相覆盖 (withScope 文档明说的坑); run() 的上下文随调用结束自动回收, 无需 exit。
+  // per-call 状态 (session + mcpAllow) 一次 run() 落进 ALS: 引擎侧 runId 与 node.mcp ∪ 模板卡
+  // mcp 都只在调用期可知 (runner 跨 run/跨节点复用) → 不能烤进装配期。用 run() 开**独立 async
+  // 上下文** —— 并发调用各一个上下文互不串。⚠ 不用 enterWith: 它在同步前缀里改的是**调用方
+  // (引擎) 的共享上下文**, 并发节点会互相覆盖 (withScope 文档明说的坑); run() 的上下文随调用
+  // 结束自动回收, 无需 exit。
   return async (input) => {
-    if (opts.touch) {
-      return touchSessionStore.run(input.touchSession, () => runOnce(input));
+    if (opts.touch || input.mcpAllow !== undefined) {
+      return touchSessionStore.run({ session: input.touchSession, mcpAllow: input.mcpAllow }, () => runOnce(input));
     }
     return runOnce(input);
   };

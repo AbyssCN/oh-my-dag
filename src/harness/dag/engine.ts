@@ -30,9 +30,12 @@ import {
   conductorSystemPrompt,
   conductorPatchSystemPrompt,
   parsePlan,
+  mergeMcpAllow,
   PLAN_BOUNDARY,
   type ConductorPlan,
 } from '../conductor-plan';
+// D-3 注册 server 集真源 (parsePlan knownServers 必传): 该 run 的 cwd 经 loadMcpClientConfig。
+import { knownMcpServerNames } from '../../mcp/client/config';
 // S3.6 escalation patch 模式: 补丁解析 + 程序化 merge (未补丁节点字节不动 → D-21 复用按构造成立)。
 import { parsePlanPatch, applyPlanPatch } from '../plan-patch';
 import { hashArtifact, hashText, computeDagGeneration } from '../continuity/checkpoint-manager';
@@ -160,6 +163,14 @@ interface ExecOnce {
 }
 
 /**
+ * D-3 注册表根: parsePlan 的 knownServers 从**该 run 的 cwd** 取 (与 :3256 loadAgentTemplates 同一个根,
+ * 省略 = process.cwd()) —— 必传, 不存在省略注册表即静默跳过 mcp 校验的路径 (惰性闸修复)。
+ */
+function mcpRegistryRoot(config: ExecutorDagConfig): string {
+  return config.continuity?.repoRoot ?? process.cwd();
+}
+
+/**
  * 单轮: conductor 规划 (显式 conductorModel) → 现场 fan-out leaves → results。
  * 升级时本函数被重复调用 (换 conductorModel + 注入失败原因的 task)。
  */
@@ -213,7 +224,7 @@ async function planAndExecute(
       traceName: 'conductor:plan', // 顶层规划那一发 (与节点内重展开分开看)
     });
     conductorUsage = addUsage(conductorUsage, usage);
-    const parsed = parsePlan(text, { knownTemplates: new Set(templates.keys()) });
+    const parsed = parsePlan(text, { knownTemplates: new Set(templates.keys()), knownServers: knownMcpServerNames(mcpRegistryRoot(config)) });
     if (!parsed.ok) {
       lastErr = parsed.error;
       if (++parseFails > maxPlanRetries) break; // 预算同旧语义: 共 maxPlanRetries+1 次 parse 尝试
@@ -968,7 +979,7 @@ async function executePlan(
         maxTokens: config.conductorMaxTokens ?? (Number(process.env.OMD_CONDUCTOR_MAX_TOKENS) || 32_768),
       });
       usageAcc = addUsage(usageAcc, usage);
-      const parsed = parsePlan(text, { knownTemplates: new Set(templates.keys()) });
+      const parsed = parsePlan(text, { knownTemplates: new Set(templates.keys()), knownServers: knownMcpServerNames(mcpRegistryRoot(config)) });
       if (!parsed.ok) throw new Error(`子图不是有效 plan: ${parsed.error}`);
       // ── D-N 展开闸 (前半): 子图过**与外层同一条** pass 管线 (oracle 过滤 → prune → dedup →
       // evidence → stamp)。此前子图一条 pass 都不过, 后果不是"少了点优化"而是两个实打实的洞:
@@ -2391,7 +2402,16 @@ async function executePlan(
         const agentStart = new Date();
         // SDD S3 碰撞台账会话: runId + 节点 id (runId 未知 → 不记, fail-open)。
         const touchRunId = continuity?.runId ?? config.sessionId;
-        const r = await config.agentRunner!({ prompt, model, ...(touchRunId ? { touchSession: `${touchRunId}:${id}` } : {}) });
+        // SDD D-7: 外部 MCP 授权清单 = node.mcp ∪ 模板卡 mcp (去重并集; C-5 闸按 server 名或
+        // "server:tool" 判)。空清单 → 不传字段, leaf 回落 deny (执行叶子不声明不授权)。
+        // 合并真源 = conductor-plan.mergeMcpAllow (接线测试共用, 禁复刻)。
+        const mcpAllow = mergeMcpAllow(node, tpl);
+        const r = await config.agentRunner!({
+          prompt,
+          model,
+          ...(touchRunId ? { touchSession: `${touchRunId}:${id}` } : {}),
+          ...(mcpAllow.length ? { mcpAllow } : {}),
+        });
         recordGeneration({
           traceId: obsTraceId,
           name: `agent:${id}`,

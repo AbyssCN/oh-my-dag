@@ -22,6 +22,7 @@ import { createDagRecorder } from './dag-record';
 import { runExecutorDagWithPlan, type ExecutorDagResult, type GenerateFn } from './dag/engine';
 import { resolveSeatThinking } from '../model/role-models';
 import { parsePlan, type ConductorPlan } from './conductor-plan';
+import { knownMcpServerNames } from '../mcp/client/config';
 import type { VerifierFn } from './verifier';
 import type { AgentLeafRunner, CommandLeafRunner } from './leaf-runners';
 import { callModel, type ModelRequest, type ModelResponse } from '../model';
@@ -164,6 +165,8 @@ export interface FinalizeOpts {
 export interface FinalizeDeps {
   /** 注入式单发模型调用 (默认 callModel from src/model)。 */
   call?: (req: ModelRequest) => Promise<ModelResponse>;
+  /** 该 run 的 cwd 注册 server 集 (D-3 必传通道; 缺省按 process.cwd() 经 loadMcpClientConfig 取)。 */
+  knownServers?: ReadonlySet<string>;
 }
 
 /**
@@ -198,7 +201,8 @@ export async function finalizePlan(
     return draftPlan;
   }
   // 弱信任: 定稿输出**必须**重过 PlanSchema; 未过 → 回退 draft (不丢 compiled slice)。
-  const parsed = parsePlan(res.text);
+  // knownServers 必传 (D-3 惰性闸修复): 调用方给该 run 的 cwd 注册表, 缺省按 process.cwd() 取。
+  const parsed = parsePlan(res.text, { knownServers: deps?.knownServers ?? knownMcpServerNames(process.cwd()) });
   if (!parsed.ok) {
     logger.warn({ err: parsed.error }, '[omd/execute] runtime-finalize 输出未过 PlanSchema → 回退 draft (best-effort)');
     return draftPlan;
@@ -282,7 +286,7 @@ export async function executeSlice(
   const finalPlan = await finalize(
     plan,
     { finalize: opts.finalize, finalizeModel: opts.finalizeModel ?? conductorModel },
-    { call: deps?.call },
+    { call: deps?.call, knownServers: knownMcpServerNames(opts.cwd ?? process.cwd()) },
   );
 
   return runDag(finalPlan, {

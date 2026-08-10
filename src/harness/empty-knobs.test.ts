@@ -36,6 +36,7 @@ const DECLARED_CONSUMERS: Record<string, string> = {
   goal: 'executor-dag-planner.buildLeafPrompt',
   persona: 'executor-dag-planner.buildLeafPrompt',
   template: 'executor-dag (agentTemplates 查卡 → prompt 前缀)',
+  mcp: 'executor-dag (agentRunner 调用点: node.mcp ∪ 模板卡 mcp → mcpAllow → C-5 授权闸)',
   args: 'executor-dag-planner.buildLeafPrompt',
   depends_on: 'executor-dag (拓扑/ready-set 调度)',
   executor: 'executor-dag (agent/command/research/map 分流)',

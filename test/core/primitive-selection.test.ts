@@ -130,17 +130,17 @@ test('PlanSchema:合法 primitive 节点解析通过', () => {
     name: 't',
     nodes: { p: { kind: 'primitive', primitive: 'parallel', params: { goals: ['a', 'b'] } } },
   });
-  const r = parsePlan(plan);
+  const r = parsePlan(plan, { knownServers: new Set() });
   expect(r.ok).toBe(true);
 });
 
 test('PlanSchema SEL-1:kind:primitive 缺 primitive/params → 拒', () => {
-  expect(parsePlan(JSON.stringify({ name: 't', nodes: { p: { kind: 'primitive' } } })).ok).toBe(false);
+  expect(parsePlan(JSON.stringify({ name: 't', nodes: { p: { kind: 'primitive' } } }), { knownServers: new Set() }).ok).toBe(false);
 });
 
 test('PlanSchema:primitive 字段无 kind → 拒', () => {
   expect(
-    parsePlan(JSON.stringify({ name: 't', nodes: { p: { primitive: 'parallel', params: {} } } })).ok,
+    parsePlan(JSON.stringify({ name: 't', nodes: { p: { primitive: 'parallel', params: {} } } }), { knownServers: new Set() }).ok,
   ).toBe(false);
 });
 
@@ -149,7 +149,7 @@ test('PlanSchema BC:纯自由 node-graph 仍解析通过(不回归)', () => {
     name: 't',
     nodes: { a: { goal: 'do a', executor: 'leaf' }, b: { goal: 'do b', depends_on: ['a'] } },
   });
-  expect(parsePlan(free).ok).toBe(true);
+  expect(parsePlan(free, { knownServers: new Set() }).ok).toBe(true);
 });
 
 // ══ 5. 端到端 runExecutorDag:primitive 节点跑通 + BC + 混合图 ════════════════

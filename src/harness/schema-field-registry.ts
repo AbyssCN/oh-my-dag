@@ -120,6 +120,12 @@ export const REGISTRY: Record<string, FieldEntry> = {
   creative: { consumer: 'executor-dag.runNodeOnce (caveman 档位路由 + fan-in 摘要豁免)', fingerprint: 'fields', declared: true, note: '' },
   persona: { consumer: 'executor-dag-planner.buildLeafPrompt', fingerprint: 'fields', declared: true, note: '' },
   template: { consumer: 'executor-dag.runNodeOnce (agent-templates 查卡 → prompt 前缀 + 卡片 model)', fingerprint: 'fields', declared: true, note: '未知名规划期被 parsePlan 拒 (TPL-2)。' },
+  mcp: {
+    consumer: 'executor-dag.runNodeOnce (agentRunner 调用点: node.mcp ∪ 模板卡 mcp → mcpAllow → C-5 授权闸)',
+    fingerprint: 'fields',
+    declared: true,
+    note: 'D-7 开放生态: 授权清单不同 = 外部 MCP 工具面不同 = 不同的执行。',
+  },
   model: { consumer: 'executor-dag.runNodeOnce (TPL-3 显式坐标最高优先) + 调度期 channel 记账', fingerprint: 'fields', declared: false, note: '坐标该由座位分配表统一给; 明示会让 conductor 到处写死模型名。' },
   leaf: { consumer: '—', fingerprint: false, declared: false, note: '零消费者 (2026-07-28 空旋钮全仓扫)。zod 留容忍旧 plan。' },
   max_retry: { consumer: 'executor-dag.runNode (L0 节点级重试, 带上次败因)', fingerprint: 'fields', declared: false, note: 'D-11: 唯一的节点级恢复旋钮 (on_failure/fallback 已从 schema 删除)。重试次数不同 = 不同的执行与成本 → 入键。' },

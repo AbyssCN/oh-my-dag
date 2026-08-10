@@ -136,3 +136,11 @@ export function loadMcpClientConfig(cwd: string): McpClientConfig {
     return { servers: [], loadError: `${ownPath}: ${msg}` };
   }
 }
+
+/**
+ * 注册 server 名集 —— parsePlan 的 `knownServers` 真源 (开放生态 D-3 惰性闸修复):
+ * 所有生产调用点从**该 run 的 cwd** 经 loadMcpClientConfig 取, 不存在省略即静默跳过校验的路径。
+ */
+export function knownMcpServerNames(cwd: string): ReadonlySet<string> {
+  return new Set(loadMcpClientConfig(cwd).servers.map((s) => s.name));
+}

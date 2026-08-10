@@ -12,11 +12,12 @@ import { join } from 'node:path';
 import { logger } from '../../logger';
 
 /**
- * 调用结局。拒绝三态分列不合并 —— 「没发往 server」有三种理由,抹平就再也分不开:
+ * 调用结局。拒绝四态分列不合并 —— 「没发往 server」有四种理由,抹平就再也分不开:
  * rejected-unfetched = C-4 闸(没 find 过) · rejected-args = C-3 闸(参数不合 schema) ·
- * unknown-tool = 名字解析不到。connect-error 与 error 分开:前者没到工具,后者到了。
+ * rejected-policy = C-5 策略闸(声明方法未授权该副作用) · unknown-tool = 名字解析不到。
+ * connect-error 与 error 分开:前者没到工具,后者到了。
  */
-export type McpCallStatus = 'ok' | 'error' | 'rejected-unfetched' | 'rejected-args' | 'unknown-tool' | 'connect-error';
+export type McpCallStatus = 'ok' | 'error' | 'rejected-unfetched' | 'rejected-args' | 'rejected-policy' | 'unknown-tool' | 'connect-error';
 
 export interface McpCallRecord {
   server: string | null;

@@ -196,6 +196,12 @@ const PlanNode = z
      * (TPL-3: node.model 显式仍最高优先)。未知名规划期被 parsePlan(knownTemplates) 拒 (TPL-2)。
      */
     template: z.string().optional(),
+    /**
+     * MCP 工具声明 (开放生态 D-3): 元素 = server 名或 'server:tool' — 执行期据此挂载外部工具。
+     * 未注册 server 规划期被 parsePlan(knownServers) 拒 (同 TPL-2 的 template 通道: 注册表由调用方
+     * loadMcpClientConfig 取, 不在此 import)。
+     */
+    mcp: z.array(z.string()).optional(),
     model: z.string().optional(),
     leaf: z.record(z.string(), z.unknown()).optional(),
     /**
@@ -600,7 +606,7 @@ export function conductorSystemPrompt(
     // "agent" 2026-07-26 从明示 schema 撤下 (同 skill 的理由): executor-dag 零消费者 —— 分流只看
     // executor/model; 而 conductor 每轮重掷这个字段, 反而系统性打空 D-21 跨轮语义复用
     // (semantic-key 为此把它排除在指纹外)。zod 层仍容忍旧 plan。
-    '  "nodes": { "<node_id>": { "goal"?: string, "persona"?: string, "template"?: string,',
+'  "nodes": { "<node_id>": { "goal"?: string, "persona"?: string, "template"?: string, "mcp"?: string[] (server name or "server:tool" — an unregistered server makes the whole plan INVALID, like "template"),',
     '    "args"?: object, "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map"|"conductor", "command"?: string, "expect_exit"?: number, "creative"?: boolean,',
     // detector 进形状 (2026-07-30): 散文里提一嘴不算明示 —— 「明示即承诺」的闸判的就是这份
     // **conductor 照抄的形状**, 而不在形状里的字段它基本不会写。放在 max_nodes 旁边是因为两者
@@ -747,10 +753,13 @@ export function extractPlanJson(text: string): string {
  * Parse + validate a model reply into a plan. Returns ok|error (never throws).
  * opts.knownTemplates 给则校验每个 node.template (含 map 子模板) ∈ 注册表 — 未知名 = 整 plan 无效
  * (TPL-2: 拒在规划层, 驱动 conductor 重试; enum 级防幻觉, 同 primitive-registry .strict() 手法)。
+ * opts.knownServers **必传** (开放生态 D-3 惰性闸修复): 校验每个 node.mcp (含 map 子模板) 的 server 段 ∈
+ * 已注册 server — 未注册 = 整 plan 无效 (同 TPL-2 通道)。必传是为了不存在「省略 = 静默跳过校验」的
+ * 路径: 注册表由调用方经 knownMcpServerNames(该 run 的 cwd) 取 (mcp/client/config), 不在此 import。
  */
 export function parsePlan(
   text: string,
-  opts: { knownTemplates?: ReadonlySet<string> } = {},
+  opts: { knownTemplates?: ReadonlySet<string>; knownServers: ReadonlySet<string> },
 ): { ok: true; plan: ConductorPlan } | { ok: false; error: string } {
   let raw: unknown;
   try {
@@ -774,5 +783,36 @@ export function parsePlan(
       };
     }
   }
+  if (opts.knownServers) {
+    const unknown = new Set<string>();
+    for (const node of Object.values(res.data.nodes)) {
+      for (const entry of node.mcp ?? []) {
+        const server = entry.split(':')[0] ?? entry;
+        if (!opts.knownServers.has(server)) unknown.add(server);
+      }
+      const mapChildMcp = (node.map?.template as { mcp?: unknown } | undefined)?.mcp;
+      if (Array.isArray(mapChildMcp)) {
+        for (const entry of mapChildMcp) {
+          if (typeof entry !== 'string') continue;
+          const server = entry.split(':')[0] ?? entry;
+          if (!opts.knownServers.has(server)) unknown.add(server);
+        }
+      }
+    }
+    if (unknown.size > 0) {
+      return {
+        ok: false,
+        error: `${[...unknown].map((s) => `未注册的 MCP server "${s}"`).join('; ')}。已注册: ${[...opts.knownServers].join(', ')}`,
+      };
+    }
+  }
   return { ok: true, plan: res.data };
+}
+
+/**
+ * D-7 授权清单 (开放生态): `node.mcp ∪ 模板卡 mcp` 的去重并集 —— 元素 = server 名或 'server:tool'
+ * (C-5 闸判据)。executor-dag 的 agent-run 调用点与接线测试共用这一个真源, 禁止测试侧复刻合并逻辑。
+ */
+export function mergeMcpAllow(node: { mcp?: string[] }, tpl: { mcp?: string[] } | undefined): string[] {
+  return [...new Set([...(node.mcp ?? []), ...(tpl?.mcp ?? [])])];
 }

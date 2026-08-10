@@ -39,6 +39,12 @@ export interface AgentTemplate {
    * 词表外的值在加载期被丢弃 (fail-open, 防拼错卡召唤不存在的闸)。
    */
   evidence?: string;
+  /**
+   * 可选 MCP server 依赖声明 (开放生态 D-3) — 元素 = server 名或 'server:tool', 执行期据此挂载工具。
+   * 规划期由 parsePlan(knownServers) 校验已注册性 (同 TPL-2 通道); 加载期只做类型过滤 (非法元素
+   * 丢弃 + warn, 卡照常加载, TPL-1 fail-open) — 加载器是纯件, 注册表在调用方手里, 不在此校验。
+   */
+  mcp?: string[];
   /** 卡片正文 (方法论+检查单+输出纪律) — 执行期注入 leaf prompt 前缀, 规划期不进上下文。 */
   body: string;
 }
@@ -82,13 +88,25 @@ export function loadAgentTemplates(opts: { root?: string } = {}): Map<string, Ag
         logger.warn({ file, evidence }, '[omd/agent-templates] 未知 evidence 类 → 丢弃字段, 卡照常加载 (词表见 KNOWN_EVIDENCE_CLASSES)');
         evidence = undefined;
       }
+      let mcp: string[] | undefined;
+      if (fm.mcp !== undefined) {
+        if (!Array.isArray(fm.mcp)) {
+          logger.warn({ file }, '[omd/agent-templates] 卡片 mcp 字段非法 (须为 string[]) → 丢弃字段, 卡照常加载 (TPL-1 fail-open)');
+        } else {
+          const kept = fm.mcp.filter((m): m is string => typeof m === 'string' && m.trim().length > 0);
+          if (kept.length !== fm.mcp.length) {
+            logger.warn({ file, dropped: fm.mcp.length - kept.length }, '[omd/agent-templates] 卡片 mcp 含非法元素 → 丢弃, 卡照常加载 (TPL-1 fail-open)');
+          }
+          if (kept.length > 0) mcp = kept.map((m) => m.trim());
+        }
+      }
       const trimmedBody = body.trim();
       if (!trimmedBody) {
         logger.warn({ file }, '[omd/agent-templates] 卡片 body 为空 → 跳过 (TPL-1)');
         continue;
       }
       if (templates.has(name)) logger.info({ name, file }, '[omd/agent-templates] 项目卡覆盖同名卡');
-      templates.set(name, { name, description, ...(model ? { model } : {}), ...(evidence ? { evidence } : {}), body: trimmedBody });
+templates.set(name, { name, description, ...(model ? { model } : {}), ...(evidence ? { evidence } : {}), ...(mcp ? { mcp } : {}), body: trimmedBody });
     } catch (err) {
       logger.warn({ file, err }, '[omd/agent-templates] 卡片解析失败 → 跳过 (TPL-1 fail-open)');
     }

@@ -78,7 +78,7 @@ async function expandOnce(goal: string): Promise<{ plan: ConductorPlan | null; r
     maxTokens: 32_768,
   });
   const text = r.text ?? '';
-  const parsed = parsePlan(text, { knownTemplates: new Set() });
+  const parsed = parsePlan(text, { knownTemplates: new Set(), knownServers: new Set() });
   return parsed.ok ? { plan: parsed.plan, raw: text } : { plan: null, raw: text, err: parsed.error };
 }
 

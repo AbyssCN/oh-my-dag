@@ -33,6 +33,9 @@ export function nodeFieldsKey(node: PlanNode): string {
 		node.kind ?? NONE,
 		node.primitive ?? NONE,
 		node.template ?? NONE,
+		// D-7 (开放生态): mcp 声明是语义 —— 授权清单不同 = 能调的外部 MCP 工具不同 = 不同的执行
+		// (C-5 闸按 server 名 / 'server:tool' 判)。判重把两节点合成一个 = 吞掉某一方的外部工具面。
+		node.mcp ? node.mcp.join(',') : NONE,
 		node.model ?? NONE,
 		node.goal ?? NONE,
 		node.command ?? NONE,

@@ -16,6 +16,7 @@ import { logger } from '../../logger';
 import type { CheckpointManager } from '../../harness/continuity/checkpoint-manager.js';
 import type { ConductorPlan } from '../../harness/conductor-plan.js';
 import { parsePlan } from '../../harness/conductor-plan.js';
+import { knownMcpServerNames } from '../client/config.js';
 import { topoLevels } from '../../harness/dag/engine.js';
 import { renderProgressAscii } from './dag-ascii.js';
 import type { HudMirror } from '../../hud/mirror.js';
@@ -344,7 +345,7 @@ function makeDagResume(deps: DagToolDeps): OmdMcpTool {
       if (!meta.plan) {
         return { content: [{ type: 'text' as const, text: `dag_resume: run ${runId} stored only a skeleton (pre-plan-memory) — can't auto-replay; re-supply the plan via dag_run_plan resume=${runId}` }], isError: true };
       }
-      const parsed = parsePlan(JSON.stringify(meta.plan));
+      const parsed = parsePlan(JSON.stringify(meta.plan), { knownServers: knownMcpServerNames(deps.continuity?.repoRoot ?? process.cwd()) });
       if (!parsed.ok) {
         return { content: [{ type: 'text' as const, text: `dag_resume: stored plan for ${runId} is invalid — ${parsed.error}` }], isError: true };
       }
@@ -587,8 +588,8 @@ function makeDagRunPlan(deps: DagToolDeps): OmdMcpTool {
         throw new McpError(ErrorCode.InvalidParams, 'dag_run_plan: missing required param "plan"');
       }
 
-      // Validate plan via parsePlan (rejects invalid ConductorPlan).
-      const parsed = parsePlan(planJson);
+      // Validate plan via parsePlan (rejects invalid ConductorPlan + 未注册 mcp server, D-3 必传注册表)。
+      const parsed = parsePlan(planJson, { knownServers: knownMcpServerNames(deps.continuity?.repoRoot ?? process.cwd()) });
       if (!parsed.ok) {
         throw new McpError(ErrorCode.InvalidParams, `dag_run_plan: invalid plan — ${parsed.error}`);
       }

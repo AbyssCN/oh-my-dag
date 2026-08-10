@@ -11,6 +11,8 @@ import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createOmdAgentTools, shouldSkipDir, type AnyOmdTool } from './agent-tools';
+import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { createAgentLeafRunner, buildLeafSystemPrompt, loadProjectContext } from './agent-leaf';
 
 function fixture(): string {
   const root = mkdtempSync(join(tmpdir(), 'omd-agent-tools-'));
@@ -239,5 +241,55 @@ describe('读写改的基本语义', () => {
     const out = text(await run(ls!, {}));
     expect(out).toContain('sub/');
     expect(out).toContain('hello.ts');
+  });
+});
+// ── I-1 零配置叶子 (SDD D-8): 无 .omd/mcp.json → 工具面与 prompt 与接线前字节零变化 ──
+const MODEL = 'claude-code:claude-sonnet-5';
+const asst = (text: string): SDKMessage =>
+  ({
+    type: 'assistant',
+    session_id: 's',
+    message: {
+      content: [{ type: 'text', text }],
+      usage: { input_tokens: 20, output_tokens: 9, cache_read_input_tokens: 5, cache_creation_input_tokens: 4 },
+      stop_reason: 'end_turn',
+    },
+  }) as unknown as SDKMessage;
+const success = (): SDKMessage =>
+  ({ type: 'result', subtype: 'success', result: 'done', session_id: 's', usage: {} }) as unknown as SDKMessage;
+const fakeQuery = (script: SDKMessage[], seen: { options?: Options } = {}) => {
+  return (props: { prompt: string; options: Options }) => {
+    seen.options = props.options;
+    return (async function* () {
+      for (const m of script) yield m;
+    })();
+  };
+};
+
+describe('I-1 零配置叶子: tools 数组与 system prompt 与接线前字节零变化', () => {
+  // ★ 反向自检: 把 agent-leaf.ts 装配处的 createMcpClientTools 改成无条件挂载
+  // (或删掉 meta-tools.ts:76 的零注册短路) → 本条当场红。
+  it('tmp cwd 零配置 → 无 mcp_find/mcp_call, 工具名单恰为接线前六件, prompt 无 mcp 痕迹', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-leaf-i1-'));
+    const seen: { options?: Options } = {};
+    const run = createAgentLeafRunner({ cwd: root, sdkQueryFn: fakeQuery([asst('改完了'), success()], seen) });
+    await run({ prompt: 'x', model: MODEL });
+    // 桥的 allowedTools = runner tools 数组逐件映射 (buildOmdSdkMcpBridge) —— 断言**恰好**
+    // 六件自有工具 (接线前集合): 多挂任何 mcp_* 件即红。
+    expect(seen.options?.allowedTools).toEqual([
+      'mcp__omd__read', 'mcp__omd__write', 'mcp__omd__edit', 'mcp__omd__ls', 'mcp__omd__grep', 'mcp__omd__bash',
+    ]);
+    // 完整 system prompt 逐字节相等 (I-1 加强): 零注册下接线后的 prompt ≡ 只用接线前六件工具
+    // 拼出的 prompt —— 不许停在「不含 mcp_find」弱化版 (那会放过前缀/工具守则段的静默变化)。
+    // 证伪: ①删 meta-tools.ts 零注册短路 → tools 多两件 → prompt 含 mcp snippet → toBe 红;
+    // ②把 mcp promptSnippet 改无条件注入 → 同样 toBe 红。
+    const baseline = buildLeafSystemPrompt({ cwd: root, tools: createOmdAgentTools({ cwd: root }), contextFiles: loadProjectContext(root) });
+    expect(seen.options?.systemPrompt).toBe(baseline);
+    // 显式 mcpAllow 也不能在零注册下凭空造出工具 (零注册短路优先于授权清单)。
+    const seen2: { options?: Options } = {};
+    const run2 = createAgentLeafRunner({ cwd: root, sdkQueryFn: fakeQuery([asst('好'), success()], seen2) });
+    await run2({ prompt: 'x', model: MODEL, mcpAllow: ['some:tool'] });
+    expect(seen2.options?.allowedTools).not.toContain('mcp__omd__mcp_find');
+    expect(seen2.options?.systemPrompt).not.toContain('mcp_find');
   });
 });

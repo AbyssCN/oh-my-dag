@@ -344,7 +344,12 @@ describe('F4 — checkpoint 说绿不算数, 产物没了/变了就得重跑', (
     await runExecutorDagWithPlan(loopPlan(1), cfg(first.generate, root));
     const cps = nodeCheckpoints(root);
     expect(cps.length).toBeGreaterThanOrEqual(2); // 不是空转
-    unlinkSync(join(runDir(root), cps[0]!));
+    // 删**子节点**的 checkpoint: readdir 顺序不保证, 而 P 自己的 checkpoint 是裸 "P.json" ——
+    // 删到它不会触发子节点重跑, 断言就空转了 (2026-08-10 被 D-3 mcp 指纹变更暴露:
+    // 子节点内容寻址 id 一换, readdir 顺序翻面, cps[0] 从子节点变成 P.json)。
+    const victim = cps.find((f) => f.includes('::'));
+    expect(victim).toBeDefined(); // 子节点 id 含 `::` (内容寻址), 挑不到 = 图没展开, 测空气
+    unlinkSync(join(runDir(root), victim!));
 
     const second = makeGenerate();
     await runExecutorDagWithPlan(loopPlan(1), cfg(second.generate, root, { resume: true }));
@@ -358,7 +363,10 @@ describe('F4 — checkpoint 说绿不算数, 产物没了/变了就得重跑', (
     const first = makeGenerate();
     await runExecutorDagWithPlan(loopPlan(1), cfg(first.generate, root));
     const cps = nodeCheckpoints(root);
-    writeFileSync(join(runDir(root), cps[0]!), '{ 半截');
+    // 同上: 挑**子节点** checkpoint 改坏 (readdir 顺序不保证, 删/改到 P 自己的 = 断言空转)。
+    const victim = cps.find((f) => f.includes('::'));
+    expect(victim).toBeDefined();
+    writeFileSync(join(runDir(root), victim!), '{ 半截');
 
     const second = makeGenerate();
     await runExecutorDagWithPlan(loopPlan(1), cfg(second.generate, root, { resume: true }));

@@ -4,11 +4,15 @@
  * provider 错误响亮 / 0-token empty-done 仍被抓(反向自检:证明这两道闸在 SDK 路上也会红)。
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { createAgentLeafRunner } from './agent-leaf';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { buildOmdSdkMcpBridge } from './claude-sdk-loop';
+import { createMcpClientTools } from '../mcp/client/meta-tools';
 
 const MODEL = 'claude-code:claude-sonnet-5';
 let cwd: string;
@@ -98,5 +102,45 @@ describe('claude-code leaf 分支', () => {
     } as unknown as SDKMessage;
     const run = createAgentLeafRunner({ cwd, sdkQueryFn: fakeQuery([empty, success()]) });
     await expect(run({ prompt: 'x', model: MODEL })).rejects.toThrow('empty-done');
+  });
+});
+// ── SDD D-10: 外部 MCP meta-tool → leaf tools → SDK 桥 (agent-leaf.ts:1068-1086 通道) ──
+describe('D-10 MCP meta-tool 桥接', () => {
+  const withMcpConfig = (root: string) => {
+    mkdirSync(join(root, '.omd'), { recursive: true });
+    writeFileSync(join(root, '.omd', 'mcp.json'), JSON.stringify({ mcpServers: { t: { command: 'unused-by-inmemory' } } }));
+  };
+
+  test('★ 注册表非空 → leaf tools 含双 meta-tool, SDK 桥 ListTools + allowedTools 都带上', async () => {
+    withMcpConfig(cwd);
+    const seen: { options?: Options } = {};
+    const run = createAgentLeafRunner({ cwd, sdkQueryFn: fakeQuery([asst('改完了'), success()], seen) });
+    await run({ prompt: 'x', model: MODEL });
+    // 桥的 allowedTools 由 runner 的 tools 数组生成 —— 含 meta-tool 即证明 leaf 装配挂上了。
+    expect(seen.options?.allowedTools).toContain('mcp__omd__mcp_find');
+    expect(seen.options?.allowedTools).toContain('mcp__omd__mcp_call');
+    // promptSnippet 经 buildLeafSystemPrompt 既有机制进 system prompt (不另造注入路径)。
+    expect(seen.options?.systemPrompt).toContain('mcp_find');
+    // 桥本体 (真回路 InMemory, 同 claude-sdk-turn.test.ts:182): 同一 tools 面 → ListTools 透出双 meta-tool。
+    const tools = createMcpClientTools({ cwd });
+    expect(tools.map((t) => t.name)).toEqual(['mcp_find', 'mcp_call']);
+    const bridge = buildOmdSdkMcpBridge(tools);
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'd10', version: '0' });
+    await Promise.all([bridge.instance.server.connect(a), client.connect(b)]);
+    const listed = await client.listTools();
+    expect(listed.tools.map((t) => t.name)).toEqual(expect.arrayContaining(['mcp_find', 'mcp_call']));
+    await client.close();
+  });
+
+  test('★ 零注册 → 均不含 (证伪: 删掉 meta-tools.ts:76 零注册短路 / 无条件挂载 → 本条红)', async () => {
+    // beforeEach 的 tmp cwd 无 .omd/mcp.json
+    const seen: { options?: Options } = {};
+    const run = createAgentLeafRunner({ cwd, sdkQueryFn: fakeQuery([asst('改完了'), success()], seen) });
+    await run({ prompt: 'x', model: MODEL });
+    expect(seen.options?.allowedTools).not.toContain('mcp__omd__mcp_find');
+    expect(seen.options?.allowedTools).not.toContain('mcp__omd__mcp_call');
+    expect(seen.options?.systemPrompt).not.toContain('mcp_find');
+    expect(createMcpClientTools({ cwd })).toEqual([]); // I-2 零注册短路
   });
 });

@@ -147,6 +147,7 @@ describe("dedupPass (D-20)", () => {
 		// 每字段一对「仅此字段不同」的取值 (B 可为 undefined = 字段省略)。
 		const pairs: Record<string, [unknown, unknown]> = {
 			skill: ["s1", "s2"],
+			mcp: [["t"], ["t:poke"]],
 			goal: ["g1", "g2"],
 			args: [{ a: 1 }, { a: 2 }],
 			depends_on: [["d1"], ["d2"]],

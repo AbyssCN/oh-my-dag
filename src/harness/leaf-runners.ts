@@ -19,6 +19,13 @@ export interface AgentLeafInput {
    * 省略 = 本次调用不记 (runner 级 `AgentLeafRunnerOpts.touch` 仍在时回落其 session)。
    */
   touchSession?: string;
+  /**
+   * 本次调用允许调用的外部 MCP 工具 (SDD D-7): 引擎侧 `node.mcp ∪ 模板卡 mcp` 的去重并集
+   * (元素 = server 名或 "server:tool", 同 C-5 闸判据)。缺省/空 = deny 全部副作用类 MCP 工具 ——
+   * leaf 是执行叶子, 不声明不授权 (chat 座位的 'allow' 缺省不传染叶子)。runner 跨 run 复用 →
+   * 只能**按调用**传, 不能烤进 runner 装配期 (同 touchSession 那条)。
+   */
+  mcpAllow?: string[];
 }
 export interface AgentLeafResult {
   text: string;

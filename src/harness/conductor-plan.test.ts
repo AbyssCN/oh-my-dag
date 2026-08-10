@@ -16,7 +16,7 @@ describe('extractPlanJson', () => {
     const inner = { name: 'p', nodes: { a: { goal: '输出 Mermaid 文本 (不含 ``` 围栏), 保持纯文本' } } };
     const text = '```json\n' + JSON.stringify(inner, null, 2) + '\n```';
     expect(JSON.parse(extractPlanJson(text))).toEqual(inner);
-    expect(parsePlan(text).ok).toBe(true);
+    expect(parsePlan(text, { knownServers: new Set() }).ok).toBe(true);
   });
 
   test('普通 fenced JSON', () => {
@@ -44,12 +44,12 @@ describe('extractPlanJson', () => {
     };
     const text = JSON.stringify(inner, null, 2);
     expect(JSON.parse(extractPlanJson(text))).toEqual(inner);
-    expect(parsePlan(text).ok).toBe(true);
+    expect(parsePlan(text, { knownServers: new Set() }).ok).toBe(true);
   });
 
   test('无闭合 fence 的截断输出 → 余文交 JSON.parse 报错 (parsePlan 返回 ok:false 不抛)', () => {
     const text = '```json\n{"name": "p", "nodes": {"a": {"goal": "截断';
-    const r = parsePlan(text);
+    const r = parsePlan(text, { knownServers: new Set() });
     expect(r.ok).toBe(false);
   });
 });
@@ -91,6 +91,7 @@ describe('S5 conductor prompt: SDD v2 字段 + 前端 motif (G-9)', () => {
       expect(p).toContain('"requires"?: "all"|"any"|number');
       expect(p).toContain('"tier"?: "strong"|"mid"|"cheap"');
       expect(p).toContain('"output_path"?: string');
+      expect(p).toContain('"mcp"?: string[]'); // 开放生态 D-3: conductor 可声明节点 MCP 工具
     }
   });
 
@@ -113,7 +114,7 @@ describe('S5 conductor prompt: SDD v2 字段 + 前端 motif (G-9)', () => {
         cross_review: { goal: '契约违反与遗漏交叉审查', depends_on: ['contract', 'be_impl', 'fe_impl', 'mm_review'] },
       },
     };
-    const r = parsePlan(JSON.stringify(motifPlan));
+    const r = parsePlan(JSON.stringify(motifPlan), { knownServers: new Set() });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const levels = topoLevels(r.plan); // 无环 (有环会抛)
@@ -151,4 +152,48 @@ describe('command 闸的环境事实 = 两份 prompt 的单一真源', () => {
       expect(prompt).toMatch(/rejected/i);
     });
   }
+});
+
+// ── 开放生态 D-3: 节点 mcp 声明通道 ──────────────────────────────────────────
+
+describe('节点 mcp 声明 (开放生态 D-3)', () => {
+  const SERVERS = new Set(['filesystem', 'playwright']);
+
+  test('合法 mcp 字段 (server 名 + server:tool, 含 map 子模板) 解析 ok', () => {
+    const plan = {
+      name: 'p',
+      nodes: {
+        a: { goal: 'x', mcp: ['filesystem', 'playwright:shot'] },
+        fan: {
+          executor: 'map',
+          map: {
+            lister: { goal: 'list' },
+            over: 'items',
+            itemVar: 'item',
+            template: { goal: 'y', mcp: ['filesystem'] },
+          },
+        },
+      },
+    };
+    const r = parsePlan(JSON.stringify(plan), { knownServers: SERVERS });
+    expect(r.ok).toBe(true);
+  });
+
+  test('声明未注册 server → 整 plan 不 ok 且错误含该 server 名 (★ 坏样本证红)', () => {
+    // 证伪方式: 删掉 parsePlan 的 knownServers 检查 (或只留 knownTemplates), 本测试必红 ——
+    // r.ok 变 true, 错误文本里也没有未注册名。它就是「声明了未注册 server 必须被拒」的回归。
+    const plan = { name: 'p', nodes: { a: { goal: 'x', mcp: ['filesystem', 'ghost:tool'] } } };
+    const r = parsePlan(JSON.stringify(plan), { knownServers: SERVERS });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('ghost');
+  });
+
+  test('空注册表 → 任何 mcp 声明都被拒 (knownServers 必传 = fail-closed, 无省略即跳过的路径)', () => {
+    // 惰性闸修复 (D-3): knownServers 是 parsePlan 的必传参 —— 旧版可选时省略即静默跳过校验。
+    // 证伪: 把签名改回可选 / 校验块删掉 → 本条 r.ok 变 true → 红。
+    const plan = { name: 'p', nodes: { a: { goal: 'x', mcp: ['ghost'] } } };
+    const r = parsePlan(JSON.stringify(plan), { knownServers: new Set() });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('ghost');
+  });
 });
