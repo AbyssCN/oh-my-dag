@@ -34,6 +34,7 @@ import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagResult } from '../dag/types';
 import { classifyGoal, renderAcceptance, type AcceptanceSpec, type GoalClassification, type GoalTier } from './classify-acceptance';
 import type { RunOutcomeKind } from '../run-outcome';
+import { loadSddContract } from './sdd-direct';
 import type { ExecutorDagConfig } from '../dag/types';
 
 // D-I: 两条轴的类型与分类器都归 ./acceptance (那里是判据轴的单一真源); 此处 re-export 保旧调用面。
@@ -78,6 +79,12 @@ export interface RunGoalConfig {
   acceptance?: AcceptanceSpec;
   /** spec 落盘目录 (默认 <cwd>/docs/plan)。 */
   specDir?: string;
+  /**
+   * 直通入口 (SDD 2026-08-10-solve-sdd-direct-entry): 已结晶 SDD 的路径。给了 → 契约段子图
+   * **零展开零转录** (specPath/evidence 直接取自该文件, 与闸 C 同一条消费通路), research 不跑。
+   * 文件读不到 / 缺契约·分解段 → 起跑即抛 (fail-loud, 不静默降级回全程 goal)。
+   */
+  sddPath?: string;
   /** 日期串 (spec 文件名)。测试注入; 默认今天 YYYY-MM-DD。 */
   _today?: () => string;
   /** 注入式分类器 (测试 / 自定义): 一次出两条轴 (D-I)。 */
@@ -192,8 +199,10 @@ interface GoalPhaseState {
 export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunGoalResult> {
   const stages: GoalStage[] = [];
   const sources: string[] = [];
-  let specPath: string | undefined;
-  let evidence = '';
+  // 直通装载放在**一切之前** (G-2): 坏契约要在烧任何 token 之前被拒。
+  const sdd = config.sddPath ? loadSddContract(config.sddPath) : undefined;
+  let specPath: string | undefined = sdd?.path;
+  let evidence = sdd?.text ?? '';
   let repoContext = '';
 
   // ── 闸 C: 续跑状态读写 (无 continuity = 无 runId 可锚 → 闸不启用, 行为与从前逐字一致) ──
@@ -283,7 +292,12 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
     // 闸 C: 契约段产物在且 goal 未变 → 直接复用, 不重展开 conductor 子图。
     // specPath 记了但盘上文件没了 → 条件不成立, 掉进下面照常重跑 (状态不是真源, 盘上文件才是)。
     const priorContract = prior?.contract;
-    if (priorContract && (!priorContract.specPath || existsSync(priorContract.specPath))) {
+    if (sdd) {
+      // 直通 (G-1): 契约已结晶 —— 不勘察不调研不转录, SDD 全文 (含并行波形) 原样进 execute。
+      stages.push({ stage: 'survey', status: 'skipped', outcome: 'not-needed', summary: 'SDD 直通: 契约已结晶, 不勘察' });
+      stages.push({ stage: 'research', status: 'skipped', outcome: 'not-needed', summary: 'SDD 直通: 不调研' });
+      stages.push({ stage: 'spec', status: 'done', outcome: 'success', summary: `SDD 直通 (零转录): ${sdd.path}` });
+    } else if (priorContract && (!priorContract.specPath || existsSync(priorContract.specPath))) {
       specPath = priorContract.specPath;
       evidence = priorContract.evidence;
       repoContext = priorContract.repoContext;
@@ -411,7 +425,12 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   // 与 spec 未落盘的降级路径。conductor 据它把验收命令连成图里一个 executor:'command' 节点;
   // 探索型则据它知道"这次没有机器判据"从而不去伪造一个。
   const body = specPath
-    ? `按下面这份 SDD 契约实施 (契约全文已落盘 ${specPath}):\n\n${evidence}`
+    ? sdd
+      ? // 直通模式 (G-6 探针实测抓的洞): specPath 是**基座树**路径, 渲染进 prompt 会让 leaf
+        // 把它当仓根 → 绝对路径写出隔离树 (bwrap 里自检还"成功", 产物闸才拦住)。
+        // 改念执行根, 契约全文内联 —— leaf 的世界里只有 worktree。
+        `按下面这份 SDD 契约实施 (执行根: ${config.cwd} —— 一切相对路径以它为准, 禁止写到执行根之外):\n\n${evidence}`
+      : `按下面这份 SDD 契约实施 (契约全文已落盘 ${specPath}):\n\n${evidence}`
     : evidence
       ? `${goal}\n\n参考材料:\n${evidence}`
       : goal;
