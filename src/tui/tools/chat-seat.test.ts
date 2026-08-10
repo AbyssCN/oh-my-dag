@@ -7,12 +7,17 @@
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { assembleOmdMcpTools } from '../../mcp/assemble';
+import { createDagRecorder } from '../../harness/dag-record';
 import { buildConductorChatSystemPrompt } from '../../harness/harness-prompts';
 import { createApprovalGate } from '../approval/gate';
 import { HAND_TOOLS, createChatSeatTools } from './chat-seat';
 
-const seat = () => createChatSeatTools({ cwd: process.cwd(), mcpTools: assembleOmdMcpTools() });
+// recorder 注入 :memory: —— 默认 createDagRecorder() 打开真仓 .omd/dag-runs.db (进程 cwd 锚,
+// 缺陷②同族第四例): 外部 run 活跃时并发出 SQLiteError: disk I/O error 的假红 (NOTES 2026-08-10)。
+const mcpTools = () => assembleOmdMcpTools({ recorder: createDagRecorder({ db: new Database(':memory:') }) });
+const seat = () => createChatSeatTools({ cwd: process.cwd(), mcpTools: mcpTools() });
 
 describe('对话位工具面 (S-4)', () => {
   // 反向自检 (实跑): 把 createChatSeatTools 里的 createOmdAgentTools 那一行去掉 → 这条当场红。
@@ -107,7 +112,7 @@ describe('切片①:审批闸包在工具面外(不变量:闸永远有一层)', 
   test('★ 有闸:write 走审批 —— 拒绝则不执行(抛 [approval], 不是静默空结果)', async () => {
     const gate = createApprovalGate({});
     gate.setAsk(async () => 'deny');
-    const tools = createChatSeatTools({ cwd: process.cwd(), mcpTools: assembleOmdMcpTools(), approvals: gate });
+    const tools = createChatSeatTools({ cwd: process.cwd(), mcpTools: mcpTools(), approvals: gate });
     const write = tools.find((t) => t.name === 'write');
     await expect(write!.execute('t', { path: '/tmp/omd-approval-should-not-exist.txt', content: 'x' } as never)).rejects.toThrow(
       '[approval] 用户拒绝',
@@ -117,13 +122,13 @@ describe('切片①:审批闸包在工具面外(不变量:闸永远有一层)', 
   test('★ 有闸:bash 不可逆命令走 admin 档审批(内层硬拒已交给外层)——拒绝时报 [approval] 而不是 BLOCKED', async () => {
     const gate = createApprovalGate({});
     gate.setAsk(async () => 'deny');
-    const tools = createChatSeatTools({ cwd: process.cwd(), mcpTools: assembleOmdMcpTools(), approvals: gate });
+    const tools = createChatSeatTools({ cwd: process.cwd(), mcpTools: mcpTools(), approvals: gate });
     const bash = tools.find((t) => t.name === 'bash');
     await expect(bash!.execute('t', { command: 'git push --force origin main' } as never)).rejects.toThrow('[approval]');
   });
 
   test('★ 无闸:内层危险命令闸保持原样(fail-closed 硬拒)—— 两层不会同时缺席', async () => {
-    const tools = createChatSeatTools({ cwd: process.cwd(), mcpTools: assembleOmdMcpTools() });
+    const tools = createChatSeatTools({ cwd: process.cwd(), mcpTools: mcpTools() });
     const bash = tools.find((t) => t.name === 'bash');
     await expect(bash!.execute('t', { command: 'git push --force origin main' } as never)).rejects.toThrow('BLOCKED');
   });
@@ -135,7 +140,7 @@ describe('切片①:审批闸包在工具面外(不变量:闸永远有一层)', 
       askedCount += 1;
       return 'deny';
     });
-    const tools = createChatSeatTools({ cwd: process.cwd(), mcpTools: assembleOmdMcpTools(), approvals: gate });
+    const tools = createChatSeatTools({ cwd: process.cwd(), mcpTools: mcpTools(), approvals: gate });
     const read = tools.find((t) => t.name === 'read');
     const r = await read!.execute('t', { path: 'package.json' } as never);
     expect(askedCount).toBe(0);
