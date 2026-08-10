@@ -6,8 +6,11 @@
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import {
+  PERIOD_COOLDOWN_MS,
   channelInCooldown,
+  cooldownMsFor,
   inCooldown,
+  livePin,
   reportProviderFailure,
   resetProviderCooldowns,
 } from './provider-health';
@@ -53,5 +56,36 @@ describe('provider-health circuit breaker (D-18/INV-5)', () => {
     resetProviderCooldowns();
     expect(inCooldown('allegretto:kimi-k3')).toBe(false);
     expect(inCooldown('lite:kimi-k3')).toBe(false);
+  });
+});
+
+describe('冷却分档 (S-B1, 2026-08-10 —— 样本 A: 403 周期级 ≠ 429 瞬时)', () => {
+  afterEach(() => resetProviderCooldowns());
+
+  // 证伪方式 (当场验过): cooldownMsFor 里删掉 403 分支 → 首条断言红 (30_000); 恢复后绿。
+  test('402/403 → 周期档长窗; 429/5xx/transport → 瞬时档 30s', () => {
+    expect(cooldownMsFor(403)).toBe(PERIOD_COOLDOWN_MS);
+    expect(cooldownMsFor(402)).toBe(PERIOD_COOLDOWN_MS);
+    expect(cooldownMsFor(429)).toBe(30_000);
+    expect(cooldownMsFor(500)).toBe(30_000);
+    expect(cooldownMsFor(undefined)).toBe(30_000); // transport 无 status
+  });
+
+  test('周期档窗内跨过瞬时档边界仍在冷却, 窗过自愈 (有界重试语义)', () => {
+    const t0 = Date.now();
+    reportProviderFailure('kimi-coding:k3', cooldownMsFor(403));
+    expect(inCooldown('kimi-coding:k3', t0 + 60_000)).toBe(true); // 瞬时窗后仍下线
+    expect(inCooldown('kimi-coding:k3', t0 + PERIOD_COOLDOWN_MS - 1)).toBe(true);
+    expect(inCooldown('kimi-coding:k3', t0 + PERIOD_COOLDOWN_MS + 1)).toBe(false); // 窗过重试一次
+  });
+
+  // 证伪方式 (当场验过): livePin 里把 inCooldown 判断取反 → 两条断言红; 恢复后绿。
+  test('livePin: 冷却中的 pin 视为缺席 (样本 B/C: 死座不复活), 活座原样透传', () => {
+    const t0 = Date.now();
+    reportProviderFailure('kimi-coding:k3', cooldownMsFor(403));
+    expect(livePin('kimi-coding:k3', t0 + 1000)).toBeUndefined(); // 死座 → 缺席, 落回解析链
+    expect(livePin('deepseek:deepseek-v4-pro', t0 + 1000)).toBe('deepseek:deepseek-v4-pro');
+    expect(livePin(undefined, t0)).toBeUndefined(); // 无 pin 本来就缺席
+    expect(livePin('kimi-coding:k3', t0 + PERIOD_COOLDOWN_MS + 1)).toBe('kimi-coding:k3'); // 窗过复活
   });
 });

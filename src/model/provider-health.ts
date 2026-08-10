@@ -6,11 +6,37 @@
  * lite:kimi-k3。role-fallback 只知 channel 不知 model → channelInCooldown(channel) 查该 channel 是否有
  * **任意** model 在冷却 (宽门); inCooldown(coord) 按 channel:model 精确查 (窄门, callModel 重试用)。
  *
- * 纯内存 (进程级), 不落盘: 熔断是瞬时健康态, 重启即清是对的。独立模块避免 index ↔ role-fallback import 环。
+ * 纯内存 (进程级), 不落盘。「重启即清是对的」对**瞬时档**仍真; 2026-08-09 座位事故
+ * (kimi 403 计费周期耗尽横扫四图, NOTES 样本 A) 证明它只对一半 —— 周期级下线是第二种态,
+ * 30s 退避对它是错的。分档 (S-B1, 2026-08-10): 402/403 走 PERIOD_COOLDOWN_MS 长窗
+ * (进程内 6h; 真周期边界从 403 里读不出来, 长窗 = 有界重试语义, 窗过重试一次失败再入窗,
+ * 每进程每 6h 至多浪费一次瞬败调用)。跨进程持久化 = S-B2 (载体候选见普查 §1.7), 本片不做。
+ * 独立模块避免 index ↔ role-fallback import 环。
  */
 
 /** 默认冷却窗 (ms): 一次 provider-fault 后该 (channel, model) 静默 30s。 */
 const DEFAULT_COOLDOWN_MS = 30_000;
+
+/** 周期级冷却窗 (ms): 402/403 = 配额/计费级下线, 30s 退避无意义 (样本 A)。 */
+export const PERIOD_COOLDOWN_MS = 6 * 3_600_000;
+
+/**
+ * 按 HTTP 状态给冷却窗时长: 402/403 → 周期档, 其余 (429/5xx/transport=undefined) → 瞬时档。
+ * 判据 = 状态语义本身: 402/403 是配额/计费/权限拒, 不随时间自愈到下一次重试的粒度;
+ * 429 是限流, 短退避是对的 (真周期窗限流会反复触发, 每次只多付一次瞬败调用)。
+ */
+export function cooldownMsFor(httpStatus: number | undefined): number {
+  return httpStatus === 402 || httpStatus === 403 ? PERIOD_COOLDOWN_MS : DEFAULT_COOLDOWN_MS;
+}
+
+/**
+ * dispatch 存活闸 (样本 B/C: plan 级座位 pin 无视存活): pin 在冷却窗内 → 返 undefined
+ * (调用方按「pin 缺席」落回既有解析链 —— 链的后段 role-fallback 本来就避开冷却 channel)。
+ */
+export function livePin(coord: string | undefined, now = Date.now()): string | undefined {
+  if (coord === undefined) return undefined;
+  return inCooldown(coord, now) ? undefined : coord;
+}
 
 /** "channel:model" → 冷却截止 epoch ms。 */
 const cooldownUntil = new Map<string, number>();

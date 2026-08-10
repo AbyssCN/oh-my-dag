@@ -12,7 +12,7 @@ import type { ModelMessage, ModelRequest, ModelResponse, ModelUsage } from './ty
 import { getProvider } from './providers';
 import { emitModelUsage } from './accounting';
 import { resolvePiModel, piModelFromProviderConfig, piRequest, type PiModel } from './pi-transport';
-import { reportProviderFailure } from './provider-health';
+import { reportProviderFailure, cooldownMsFor } from './provider-health';
 import { reportTruncation } from './truncation';
 import { capsFor } from './model-caps';
 
@@ -286,7 +286,10 @@ export async function callModel(req: ModelRequest): Promise<ModelResponse> {
       lastErr.attempts = attempt + 1; // accurate budget on exhaustion (P1-C / INV-3)
       // 运行时熔断: provider-fault (429/5xx/网络) → 冷却该 provider, 后续 role 解析顺延兜底
       // (provider-health)。本次 in-flight 重试仍打原 target — 冷却只改**未来**的角色路由。
-      if (isProviderFault(lastErr)) reportProviderFailure(target.resolved);
+      // 402/403 走周期档长窗 (配额/计费级下线, 30s 退避无意义 — NOTES 2026-08-09 样本 A)。
+      if (isProviderFault(lastErr)) {
+        reportProviderFailure(target.resolved, cooldownMsFor(lastErr.kind === 'http' ? lastErr.status : undefined));
+      }
       if (attempt < maxRetries) {
         await sleep(baseDelay * 2 ** attempt, req.signal);
         continue;

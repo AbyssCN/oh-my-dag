@@ -119,6 +119,7 @@ import { recordGeneration, recordSpan } from '../../model/langfuse';
 import { ModelError } from '../../model';
 import { classifyCommandExit, withFailureKind, upstreamFailureNotice } from '../node-failure';
 import { collectRepairGuidance } from './repair-guidance';
+import { livePin } from '../../model/provider-health';
 import { makeRunNonce, fenceUntrusted, trustHeader } from '../prompt-fence';
 import type { ContentPart } from '../../model/gateway';
 
@@ -2339,7 +2340,18 @@ async function executePlan(
       // 静态 (agent→agentLeafModel, inproc→leafModel)。bucket = executor kind (router 学习单元)。
       const bucket = useAgent ? 'agent' : 'inproc';
       const staticModel = useAgent ? config.agentLeafModel ?? config.leafModel : config.leafModel;
-      const model = node.model ?? tpl?.model ?? (config.router ? config.router.select(bucket, staticModel) : staticModel);
+      // dispatch 存活闸 (S-B1, 样本 B/C): plan/模板 pin 的座位在冷却窗内 → 视为缺席,
+      // 落回既有解析链 (role-fallback 层本来就避开冷却 channel)。重解析结果经节点
+      // checkpoint 的 model 字段留痕 (与 plan pin 不一致即重解析发生过)。
+      const pinnedCoord = node.model ?? tpl?.model;
+      const alivePin = livePin(pinnedCoord);
+      if (pinnedCoord !== undefined && alivePin === undefined) {
+        logger.warn(
+          { node: id, pinned: pinnedCoord },
+          '[omd/executor-dag] plan pin 座位在冷却窗 → dispatch 就地重解析 (死座不复活, 样本 B/C)',
+        );
+      }
+      const model = alivePin ?? (config.router ? config.router.select(bucket, staticModel) : staticModel);
       const t0 = Date.now();
       // ── 声明产物的**跑前快照** (2026-07-30 live 冒烟挖出来的) ────────────────────
       // `filesTouched` 只统计 write/edit 族工具。agent 用 **bash 重定向** 写文件时它是空的 ——
