@@ -257,7 +257,7 @@ describe('applyRolePreset · key 跳过闸', () => {
 
     // 掌舵坐标 = pi OAuth 通道
     expect(updates.OMD_RUNTIME_PROVIDER).toBe('kimi-coding');
-    expect(updates.OMD_ITER_CONDUCTOR_MODEL).toBe('kimi-coding:k3');
+    expect(updates.OMD_ITER_CONDUCTOR_MODEL).toBe('kimi-coding:k3-256k');
     expect(notes.some((n) => n.includes('kimi-coding') && n.includes('免 key'))).toBe(true);
     expect(calls.apis).toEqual(['qwen', 'zhipu']); // kimi 开放平台 API 不再注册
     // env 不受 key 闸影响: review Spec 轴坐标 + router 池照写
@@ -266,7 +266,7 @@ describe('applyRolePreset · key 跳过闸', () => {
     expect(updates.OMD_ROUTER_POOL_AGENT).toBe('qwen:qwen3.7-plus,qwen:qwen3.7-max');
     // 便宜层全保留; 贵层剔除 zhipu (key 跳过) 剩 kimi-coding
     expect(calls.pools).toEqual([['qwen:qwen3.7-plus', 'mimo:mimo-v2.5']]);
-    expect(calls.premiums).toEqual([['kimi-coding:k3']]);
+    expect(calls.premiums).toEqual([['kimi-coding:k3-256k']]);
     expect(calls.roles).toEqual([['verifier', 'qwen:qwen3.7-max']]);
   });
 

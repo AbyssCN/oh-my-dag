@@ -30,7 +30,8 @@ const DS_PRO = 'deepseek:deepseek-v4-pro';
 const MIMO_25 = 'mimo:mimo-v2.5';
 const MIMO_ULTRASPEED = 'mimo:mimo-v2.5-pro-ultraspeed';
 // kimi-coding = pi OAuth 通道 (baf1295 统一模型层): 免 API key, 凭证走 ~/.pi/agent/auth.json。
-const KIMI_CODING_K3 = 'kimi-coding:k3';
+// owner 裁 (2026-08-10): 一律 256k 档 (k3-256k) —— 同模型小上下文档, 降订阅配额消耗。
+const KIMI_CODING_K3 = 'kimi-coding:k3-256k';
 const QWEN_PLUS = 'qwen:qwen3.7-plus';
 const QWEN_MAX = 'qwen:qwen3.7-max';
 const ZHIPU_GLM = 'zhipu:glm-5.2';

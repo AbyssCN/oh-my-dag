@@ -62,7 +62,7 @@ describe('ROLE_PRESETS 形状', () => {
     const [base, standard, ultimate] = ROLE_PRESETS;
     expect(base!.multimodalPoolPremium).toEqual(['opencode-go:glm-5.2']);
     expect(standard!.multimodalPoolPremium ?? []).toEqual([]);
-    expect(ultimate!.multimodalPoolPremium).toEqual(['zhipu:glm-5.2', 'kimi-coding:k3']);
+    expect(ultimate!.multimodalPoolPremium).toEqual(['zhipu:glm-5.2', 'kimi-coding:k3-256k']);
   });
 
   test('customApis 形状: id 非空 / https baseUrl / keyEnv 大写 *_API_KEY', () => {

@@ -29,6 +29,8 @@ export const DEFAULT_PRICES: PriceTable = {
 
   // ── Kimi For Coding (订阅制, 边际成本≈0 — 若列入 bandit 池会因 cost=0 通吃, 慎入池) ──
   'kimi-coding:k3': { inputRate: 0, outputRate: 0 },
+  // owner 裁 (2026-08-10): kimi 上线一律 256k 档降订阅配额消耗; k3 条目留给历史账。
+  'kimi-coding:k3-256k': { inputRate: 0, outputRate: 0 },
 
   // ── Anthropic Claude (omd 设计大脑 / conductor 可升级档) ──
   'anthropic:claude-opus-4-8': { inputRate: 15, outputRate: 75, cacheHitRate: 1.50 },

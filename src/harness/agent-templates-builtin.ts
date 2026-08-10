@@ -92,7 +92,7 @@ export const BUILTIN_AGENT_TEMPLATES: AgentTemplate[] = [
     description: 'Frontend/UI implementation of ONE component/screen: visual hierarchy, spacing rhythm, complete states, anti-slop red lines',
     // 卡级模型路由 (TPL-3, owner 2026-07-25): 前端/设计类活钉 Kimi K3 —— 视觉品味与状态完备性是这张卡的
     // 全部价值, 量产 worker 座的模型在这里省不出钱只会产 slop。node.model 显式仍赢过本字段。
-    model: 'kimi-coding:k3',
+    model: 'kimi-coding:k3-256k',
     // S1 证据类: 此卡产出用户可见 UI → S2 证据闸要求渲染 command 后代 + attach_media 审查尾 (SDD 2026-07-25 D-2/D-3)。
     evidence: 'ui-pixels',
     body: [

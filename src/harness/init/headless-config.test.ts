@@ -74,18 +74,18 @@ describe('applyPresetHeadless', () => {
     expect(r.presetId).toBe('cn-trio');
 
     // env 矩阵注入 (精确值)。
-    expect(env.OMD_ITER_CONDUCTOR_MODEL).toBe('kimi-coding:k3');
+    expect(env.OMD_ITER_CONDUCTOR_MODEL).toBe('kimi-coding:k3-256k');
     expect(env.OMD_ITER_LEAF_MODEL).toBe('deepseek:deepseek-v4-flash');
     expect(env.OMD_REDUCE_MODEL).toBe('mimo:mimo-v2.5-pro-ultraspeed');
-    expect(env.OMD_JUDGE_MODEL).toBe('kimi-coding:k3');
+    expect(env.OMD_JUDGE_MODEL).toBe('kimi-coding:k3-256k');
     // 落盘。
     expect(readFileSync(join(dir, '.env'), 'utf8')).toContain('OMD_ITER_CONDUCTOR_MODEL');
 
     // config 角色 → config.json (无 plan)。
     const cfg = JSON.parse(readFileSync(process.env.OMD_CONFIG_PATH!, 'utf8'));
-    expect(cfg.models.conductor).toBe('kimi-coding:k3');
+    expect(cfg.models.conductor).toBe('kimi-coding:k3-256k');
     expect(cfg.models.leaf).toBe('deepseek:deepseek-v4-flash');
-    expect(cfg.models.verifier).toBe('kimi-coding:k3');
+    expect(cfg.models.verifier).toBe('kimi-coding:k3-256k');
     // dream 座 2026-08-02 摘除 (ADR-0003) —— preset 不该再往 config 里写它。
     expect(cfg.models.dream).toBeUndefined();
     expect(cfg.models.plan).toBeUndefined();
