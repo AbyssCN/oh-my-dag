@@ -90,9 +90,10 @@ export const BUILTIN_AGENT_TEMPLATES: AgentTemplate[] = [
     // S5 前端 motif 的 fe_impl 节点 craft 卡 (2026-07-25): 通用 implementer 不带 UI 品味载荷,
     // motif 的前端实装节点此前裸跑。审美保真按 ponytail 红线 = 正确性不变量, 不是可砍的 polish。
     description: 'Frontend/UI implementation of ONE component/screen: visual hierarchy, spacing rhythm, complete states, anti-slop red lines',
-    // 卡级模型路由 (TPL-3, owner 2026-07-25): 前端/设计类活钉 Kimi K3 —— 视觉品味与状态完备性是这张卡的
-    // 全部价值, 量产 worker 座的模型在这里省不出钱只会产 slop。node.model 显式仍赢过本字段。
-    model: 'kimi-coding:k3-256k',
+    // 模型缺省走**座位链** (seat 配置是真源, owner 2026-08-10): 不 bake 坐标 —— stamp 的 mid 池由
+    // agent/leaf/overflow 座位经 resolveSeatModel 推导, agent 座配成哪个模型这张卡就默认跑哪个。
+    // 模板级显式 model 覆盖字段仍保留 (TPL-3: node.model > template.model); 项目卡 frontmatter
+    // 写 model 即覆盖本缺省, 不写 = 座位链。
     // S1 证据类: 此卡产出用户可见 UI → S2 证据闸要求渲染 command 后代 + attach_media 审查尾 (SDD 2026-07-25 D-2/D-3)。
     evidence: 'ui-pixels',
     body: [

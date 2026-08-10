@@ -13,6 +13,8 @@
 import { GROUND_TRUTH, NEEDS_TTY_GLYPHS, SAFE_GLYPH_WIDTHS, UNSAFE_GLYPHS } from './render/glyph-table';
 import type { ContextPressure } from '../harness/chat/usage';
 import { humanTokens } from './render/pressure';
+import { CORE_SEATS } from './seat-picker';
+import { TUNABLE_CONFIG_ROLES } from '../harness/init/headless-config';
 
 /** 面板里一项。`action` 为空 = **只读的现状行**,选中它什么都不做(而且它说得出为什么)。 */
 export interface SettingItem {
@@ -52,13 +54,42 @@ export function buildSettings(i: SettingsInput): SettingItem[] {
   const items: SettingItem[] = [];
 
   // ── 座位 ────────────────────────────────────────────────────────────────────
-  for (const role of ['conductor', 'leaf', 'verifier']) {
+  // ★ 两种形态 (2026-08-10 座位真源切片: 全座位可调, 座位组铺全量):
+  //
+  //   * **座位面板** (`/seat`, 输入只有座位相关组): 列**全量**可调座位 —— 它是
+  //     "改哪个座位"的入口, 藏座位就是藏能力。**不带描述区**: 每行挂 seatsError
+  //     长描述会把面板顶到 ~26 行, 30 行终端里对话区只剩 2 行, `/seat` 回执
+  //     (3 核心座 + 用法) 被挤出视口 —— S12-1/S12-2 PTY 实跑钉的。错误原因
+  //     在回执的通知里 (handleSeat 的 seatUnresolved), 信息没丢。
+  //   * **主表** (`/settings`, 输入带 ui/approval/providers 组): 只列 3 核心座
+  //     (CORE_SEATS) + 一行「N more seats — open /seat」。全量 16 座铺进来, 窗口按
+  //     行数走 (tui.ts maxVisible = items.length) 会顶穿 30 行终端: 座位组 16 行 +
+  //     advisor/session/ctx/theme/glyphs/ui/approval/providers/ext ≈ 30 行, 再加面板
+  //     边框必溢出 (SET-1 同族事故)。/settings 是概览, 改座位有专门入口 (/seat 面板)。
+  //     描述区 (seatsError) 只在这里给 —— 它同时是 settings.test.ts 钉的「答得出现状」。
+  //
+  // ⚠ 两种形态靠 `ui === undefined && sessionCount === null` 区分: /seat 面板的
+  //   输入永远只有座位相关组 (无 ui、sessionCount 恒 null); /settings 主表永远带
+  //   ui 组 (tui.ts 的 openSeatPanel / settingsOnce 两个调用点)。只此两个调用点 ——
+  //   加第三个调用点前先想清楚它要哪种形态。
+  const seatPanelShape = i.ui === undefined && i.sessionCount === null;
+  const seatGroup = seatPanelShape ? TUNABLE_CONFIG_ROLES : CORE_SEATS;
+  for (const role of seatGroup) {
     items.push({
       key: `seat:${role}`,
       label: `seat ${role}`,
       value: i.seats[role] ?? (i.seatsError ? '(unresolved)' : '(not set)'),
-      ...(i.seatsError && !i.seats[role] ? { detail: i.seatsError } : {}),
+      ...(!seatPanelShape && i.seatsError && !i.seats[role] ? { detail: i.seatsError } : {}),
       action: 'seat',
+    });
+  }
+  if (!seatPanelShape) {
+    // 只读行 (无 action): 不占座位子层, 指向 /seat 面板 —— 全量在那里。
+    items.push({
+      key: 'seat:more',
+      label: 'more seats',
+      value: `${TUNABLE_CONFIG_ROLES.length - CORE_SEATS.length} more seats`,
+      detail: 'open /seat to view and change all seats',
     });
   }
 

@@ -984,7 +984,12 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         theme,
         items,
         painters: PAINTERS,
-        maxVisible: 12,
+        // ★ 可见窗 12 → 4 (2026-08-10 座位真源切片): 全量 16 座时 12 行可见窗 + 描述区
+        //   把面板顶到 ~26 行, 30 行终端里对话区只剩 2 行 —— `/seat` 回执 (3 核心座 +
+        //   用法) 被挤到视口外, S12-1/S12-2 当场红 (PTY 实跑钉的)。4 行可见窗 +
+        //   buildSettings 面板形态不带描述区 ⇒ 面板 ~10 行, 回执与面板同屏。
+        //   全量座位仍可达: 列表可滚 ((1/N) 计数), 面板列全量不变。
+        maxVisible: 4,
         title: 'Which seat?  (↑↓ select · Enter model · Esc cancel)',
         seatChoices: seatModelOpts,
         seatManual: seatManualOpts,

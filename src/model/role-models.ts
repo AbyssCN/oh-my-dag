@@ -34,10 +34,12 @@ import { logger } from '../logger';
  * continuity = session 交接 checkpoint 蒸馏 (opt-in, 便宜档);刻意不进 MODEL_ROLES —— 它是后台
  * 可选角色, 走 env/config/默认解析即可, 不进默认 config UI / 起跑坐席告警面 (避免未用该功能者被噪音)。
  *
- * **角色 = 座位的子集** (INV-MODEL-1, P0 2026-07-28): 角色路与节点路自此是同一个 resolver
- * ({@link resolveSeatModel}) 的两个门面, 不再是两条会跑出不同答案的链。
+ * **ModelRole = 全座位** (派生自 seats.ts 的 OmdSeat, 2026-08-10 座位真源切片): 写入口
+ * (setRoleModel/persistRoleModel) 必须能落任意座位 —— config.models 的键 = 座位 id。「哪几个进
+ * 默认 config UI」由 {@link MODEL_ROLES} 表达, 与类型无关。角色路与节点路仍是同一个 resolver
+ * ({@link resolveSeatModel}) 的两个门面, 不会跑出两条链。
  */
-export type ModelRole = 'conductor' | 'leaf' | 'verifier' | 'continuity' | 'review';
+export type ModelRole = OmdSeat;
 
 /** UX 顺序 (config 列表 / onboard 页展示): 执行 → 校验。 */
 export const MODEL_ROLES: readonly ModelRole[] = ['conductor', 'leaf', 'verifier'];
@@ -412,7 +414,7 @@ export function tryResolveSeatModel(
   // 1. explicit argument (caller knows best)
   if (explicit?.trim()) return { model: explicit.trim(), source: 'explicit', via: 'explicit' };
   // 2. in-memory override (CLI / test, 非持久)
-  const override = overrides.get(seat as ModelRole);
+  const override = overrides.get(seat);
   if (override?.trim()) return { model: override.trim(), source: 'override', via: 'override' };
   // 3. .omd/config.json `models` 段 —— 单一手配面。压过 env 与 auto-assign 提案。
   const fromModels = (modelsMap ?? fileModels(cfgPath))[seat]?.trim();

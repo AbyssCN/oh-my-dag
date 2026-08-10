@@ -9,14 +9,21 @@
  *
  * ⚠ 所以这个文件**一个座位事实都不自己写**。写了就成了第二份登记表,而两份必漂。
  *
- * ## 只有三个座位能在这里改
+ * ## 列的是**全部可调座位**
  *
- * `TUNABLE_CONFIG_ROLES` = conductor / leaf / verifier —— 那是 `.omd/config.json` 认的键。
- * 别的座位由 auto-assign 按渠道经济学分派。**说清楚哪些能改**比列一堆改不动的更有用,
- * 所以列表里只有这三个,而不是把 30 多个座位铺出来让人挑一个改不了的。
+ * `TUNABLE_CONFIG_ROLES` 是 `.omd/config.json` 认的键 —— 2026-08-10 起**全部座位都可调**,
+ * 所以这里列全量, 每一行都能改。`CORE_SEATS` (conductor/leaf/verifier) 只是**首屏取舍**
+ * (回执与 `/settings` 主表只画这三座, 见 formatSeatRows 与 settings.ts), 不是"只有这些能改"。
  */
 import { TUNABLE_CONFIG_ROLES } from '../harness/init/headless-config';
-import { seatSpec } from '../model/seats';
+import { type OmdSeat, seatSpec } from '../model/seats';
+
+/**
+ * ★ **首屏核心三座** —— `/seat` 回执与 `/settings` 主表只画这三座 (可绘区/30 行终端取舍,
+ * 见 formatSeatRows 与 settings.ts 的注释)。**不是**「只有这三个能改」: 全部座位都能改,
+ * 完整清单在 `/seat` 面板。三座 = 拆解/执行/终审三类代表 (风险与频率各不相同)。
+ */
+export const CORE_SEATS: readonly OmdSeat[] = ['conductor', 'leaf', 'verifier'];
 
 export interface SeatRow {
   role: string;
@@ -55,12 +62,12 @@ export function parseSeatCommand(text: string): SeatCommand {
     if (!seat || !coord) return { kind: 'usage', reason: 'Usage: /seat advisor <seat> <provider:model|none>' };
     return { kind: 'advise', seat, coord: coord === 'none' ? null : coord };
   }
-  if (parts.length === 1) return { kind: 'usage', reason: `Missing coordinate. Usage: /seat <${TUNABLE_CONFIG_ROLES.join('|')}> <provider:model>` };
+  if (parts.length === 1) return { kind: 'usage', reason: 'Missing coordinate. Usage: /seat <role> <provider:model> (roles listed by /seat)' };
   return { kind: 'set', role: parts[0] as string, coord: parts[1] as string };
 }
 
 /**
- * 当前三个可调座位的视图。
+ * 当前全部可调座位的视图 (TUNABLE_CONFIG_ROLES 全量, 不裁)。
  *
  * @param current 角色 → 当前坐标(调用方从 `resolveEngineModels` 取,这里不自己解析 env)
  * @param advisors 角色 → advisor 坐标(调用方从 `resolveSeatAdvisor` 取)。缺席 = 没配。
@@ -87,14 +94,21 @@ export function seatRows(current: Record<string, string>, advisors: Record<strin
 export function formatSeatRows(rows: SeatRow[]): string {
   /** 建议那一栏是登记表原文, 动辄两三行; 列表里只留第一句。要全文的人去 `/settings` 看。 */
   const first = (s: string | null | undefined) => (s ? (s.split(/[。;]/)[0] as string).trim() : '-');
+  // ★ 回执**只留 3 核心座 + 一行「N more」**(2026-08-10 座位真源切片):
+  //   /seat 回执上方的可绘区只有几行 (面板随后占屏, S12-2 实测红过) —— 全量 16 座铺进来
+  //   会把头部挤出视口。**超过核心座数才裁**: 短列表 (装得下) 原样渲染, 不画多余提示。
+  const tooMany = rows.length > CORE_SEATS.length;
+  const core = tooMany ? rows.filter((r) => CORE_SEATS.includes(r.role as OmdSeat)) : rows;
   // advisor 行**只在配了时画**(缺席 ≠ none 抹平): 没配的座位不该多一行 "advisor: -" 噪声。
-  const lines = rows.map(
+  const lines = core.map(
     (r) =>
       `  ${r.role}: ${r.coord}\n      does: ${first(r.what)}\n      pick: ${first(r.recommend)}${r.advisor ? `\n      advisor: ${r.advisor}` : ''}`,
   );
   // ★ 抬头挪到**最后一行**:全屏视口只留得住尾部,放在抬头的话"改的是哪个文件"
   //   会是第一个被顶掉的 —— 而那正是这条命令唯一有副作用的地方。
-  // ⚠ advisor 的语法**不另起一行**: /seat 回执上方的可绘区只有几行 (面板随后占屏),
-  //   多一行就把最后一个 `does:` 挤出视口 (S12-2 实测红过)。语法在 /help 与设置面板里可发现。
-  return `${lines.join('\n')}\nUsage: /seat <role> <provider:model> - tunable seats write .omd/config.json and take effect immediately`;
+  // ⚠ advisor 的语法**不另起一行**: 多一行就把最后一个 `does:` 挤出视口。
+  //   语法在 /help 与设置面板里可发现。
+  const more =
+    tooMany ? `\n其余座位见 /seat 面板 — 面板里可改全部 ${TUNABLE_CONFIG_ROLES.length} 座` : '';
+  return `${lines.join('\n')}${more}\nUsage: /seat <role> <provider:model> - tunable seats write .omd/config.json and take effect immediately`;
 }

@@ -21,8 +21,8 @@ import {
   persistMultimodalPoolPremium,
   persistRoleModel,
   resolveMultimodalPool,
-  type ModelRole,
 } from '../../model/role-models';
+import { ALL_SEAT_IDS, type OmdSeat } from '../../model/seats';
 import {
   getProvider,
   registerProvidersFromEnv,
@@ -229,15 +229,16 @@ export function applyPresetHeadless(presetId: string, deps: HeadlessDeps = {}): 
 // setRoleHeadless — 单角色覆盖 → config.json (mtime 重读即时)。
 // ---------------------------------------------------------------------------
 
-/** MCP 可调 config 角色 (= {@link MODEL_ROLES}; plan 座由 Opus 顶替, dream 2026-08-02 摘 ADR-0003)。 */
-export const TUNABLE_CONFIG_ROLES: readonly ModelRole[] = ['conductor', 'leaf', 'verifier'];
+/** MCP 可调 config 角色 —— **全座位** (从座位登记表 SEATS 派生, 禁止手抄第二份清单; config.models 的键 = 座位 id)。 */
+export const TUNABLE_CONFIG_ROLES: readonly OmdSeat[] = ALL_SEAT_IDS;
 
 export function setRoleHeadless(role: string, coord: string): { role: string; coord: string } {
-  const r = role.trim() as ModelRole;
-  const c = coord.trim();
-  if (!TUNABLE_CONFIG_ROLES.includes(r)) {
-    throw new Error(`role '${role}' 不可调 (可选: ${TUNABLE_CONFIG_ROLES.join(', ')}; plan 已由 Opus 顶替)`);
+  // find 窄化到 OmdSeat (全座位) —— 不再 `as ModelRole` 把全量座位强转成窄 union (类型接缝)。
+  const r = TUNABLE_CONFIG_ROLES.find((s) => s === role.trim());
+  if (!r) {
+    throw new Error(`seat '${role}' 不在座位登记表 (可选: ${TUNABLE_CONFIG_ROLES.join(', ')})`);
   }
+  const c = coord.trim();
   if (!COORD_RE.test(c)) throw new Error(`coord '${coord}' 格式非法 (期望 provider:model)`);
   persistRoleModel(r, c);
   return { role: r, coord: c };
