@@ -23,6 +23,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { logger } from '../logger';
+import { CHANNEL_QUOTA_REGISTRY, validateQuotaRegistry, type ChannelQuotaEntry } from './channels';
 
 /** 默认冷却窗 (ms): 一次 provider-fault 后该 (channel, model) 静默 30s。 */
 const DEFAULT_COOLDOWN_MS = 30_000;
@@ -34,9 +35,49 @@ export const PERIOD_COOLDOWN_MS = 6 * 3_600_000;
  * 按 HTTP 状态给冷却窗时长: 402/403 → 周期档, 其余 (429/5xx/transport=undefined) → 瞬时档。
  * 判据 = 状态语义本身: 402/403 是配额/计费/权限拒, 不随时间自愈到下一次重试的粒度;
  * 429 是限流, 短退避是对的 (真周期窗限流会反复触发, 每次只多付一次瞬败调用)。
+ * 周期档先查配额窗登记表 (切片1/G-4): 命中可算边界 → 冷却到窗口边界 (剩余 ms);
+ * 未登记 / 边界不可算 → 保守兜底 PERIOD_COOLDOWN_MS (6h, 与既有语义逐字节等价)。
+ * `opts` 全可选: 现有调用点 (只传 httpStatus) 行为不变。
  */
-export function cooldownMsFor(httpStatus: number | undefined): number {
-  return httpStatus === 402 || httpStatus === 403 ? PERIOD_COOLDOWN_MS : DEFAULT_COOLDOWN_MS;
+export function cooldownMsFor(
+  httpStatus: number | undefined,
+  opts: { channel?: string; registry?: readonly ChannelQuotaEntry[]; now?: number } = {},
+): number {
+  if (httpStatus !== 402 && httpStatus !== 403) return DEFAULT_COOLDOWN_MS;
+  const { channel, registry = CHANNEL_QUOTA_REGISTRY, now = Date.now() } = opts;
+  // INV-3 运行时闸: 配额路径用的登记表必须合法 (sourceUrl https + 原文引句非空),
+  // 违规 → 抛错变红, 不静默兜底。空表合法 (fail-safe)。
+  validateQuotaRegistry(registry);
+  return quotaWindowRemainingMs(channel, registry, now) ?? PERIOD_COOLDOWN_MS;
+}
+
+/**
+ * 查配额窗登记表 → 到窗口边界的剩余冷却 ms; 未命中 / 边界不可算 → undefined (调用方兜底)。
+ * rolling: 剩余 = 整窗 (冷却从首次故障起算, 无历史可减);
+ * billing-cycle: 剩余 = 到本月末 (UTC 下月 1 日 00:00);
+ * calendar: 边界规则 (自由文本) 暂无计算实现 → 不可算 → undefined → 兜底 6h。
+ */
+function quotaWindowRemainingMs(
+  channel: string | undefined,
+  registry: readonly ChannelQuotaEntry[],
+  now: number,
+): number | undefined {
+  if (channel === undefined) return undefined;
+  const entry = registry.find((e) => e.channelId === channel);
+  if (!entry) return undefined;
+  for (const w of entry.windows) {
+    if (w.windowKind === 'rolling' && w.windowMs !== undefined) return w.windowMs;
+    if (w.windowKind === 'billing-cycle') return msToMonthBoundary(now);
+    // calendar: 无实现 → 继续, 最后兜底
+  }
+  return undefined;
+}
+
+/** 到本月末 (UTC 下月 1 日 00:00) 的剩余 ms; 恒 > 0 (now 恰在边界上 → 算到下一月末)。 */
+function msToMonthBoundary(now: number): number {
+  const d = new Date(now);
+  const nextMonthStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1, 0, 0, 0, 0);
+  return nextMonthStart - now;
 }
 
 /**
