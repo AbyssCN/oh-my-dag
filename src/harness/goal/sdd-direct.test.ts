@@ -107,6 +107,10 @@ describe('runGoal 直通接线 (G-1 零转录)', () => {
     const { r, seenTexts } = await run(p);
     expect(r.specPath).toBe(p);
     expect(seenTexts[0]).toContain('并行波形');
+    // G-6 探针回归: 基座 specPath 不得进 execute 文本 (leaf 会拿它当仓根写出隔离树);
+    // 改念执行根。证伪: 还原 run-goal 那个三元分支 → 本断言当场红。
+    expect(seenTexts[0]).toContain('执行根');
+    expect(seenTexts[0]).not.toContain(p);
     expect(r.stages.some((s) => s.summary.includes('SDD 直通'))).toBe(true);
   });
 

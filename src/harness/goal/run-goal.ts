@@ -425,7 +425,12 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   // 与 spec 未落盘的降级路径。conductor 据它把验收命令连成图里一个 executor:'command' 节点;
   // 探索型则据它知道"这次没有机器判据"从而不去伪造一个。
   const body = specPath
-    ? `按下面这份 SDD 契约实施 (契约全文已落盘 ${specPath}):\n\n${evidence}`
+    ? sdd
+      ? // 直通模式 (G-6 探针实测抓的洞): specPath 是**基座树**路径, 渲染进 prompt 会让 leaf
+        // 把它当仓根 → 绝对路径写出隔离树 (bwrap 里自检还"成功", 产物闸才拦住)。
+        // 改念执行根, 契约全文内联 —— leaf 的世界里只有 worktree。
+        `按下面这份 SDD 契约实施 (执行根: ${config.cwd} —— 一切相对路径以它为准, 禁止写到执行根之外):\n\n${evidence}`
+      : `按下面这份 SDD 契约实施 (契约全文已落盘 ${specPath}):\n\n${evidence}`
     : evidence
       ? `${goal}\n\n参考材料:\n${evidence}`
       : goal;
