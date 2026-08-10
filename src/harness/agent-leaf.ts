@@ -60,6 +60,8 @@ export function leafMcpPolicy(mcpAllow?: string[]): { sideEffects: { allow: stri
 
 import { LEAF_HARNESS_CORE } from './harness-prompts';
 import { createOmdAgentTools, type AnyOmdTool } from './agent-tools';
+import { createSkillTools, type SkillToolDeps } from './skills/skill-tool';
+import { defaultSkillRoots } from './skills/skills';
 import { createMcpClientTools } from '../mcp/client/meta-tools';
 import type { McpPoolDeps } from '../mcp/client/pool';
 import type { McpCallLedger } from '../mcp/client/call-ledger';
@@ -285,6 +287,12 @@ export interface AgentLeafRunnerOpts {
    * InMemory linked pair + ':memory:' ledger; 生产省略 (stdio 子进程 + cwd 懒落库)。
    */
   mcpDeps?: { poolDeps?: McpPoolDeps; ledger?: McpCallLedger };
+  /**
+   * 测试注入 (同 mcpDeps 纪律): read_skill 工具的依赖注入通道 —— 进程内测试换空 roots
+   * (零 skill 仓基线逐字节对比) 或 tmp 根; 生产省略 (defaultSkillRoots(cwd) 自动扫三源)。
+   * D-S3-5: roots 显式注入且包含该 cwd 的项目根 <cwd>/.omd/skills。
+   */
+  skillDeps?: SkillToolDeps;
   /**
    * drift 检测 (代码级 spinning 防护): agent-leaf 是 headless 工具循环 = spin 高发面,
    * 默认开 (low-invasive: 仅同调用同参重复 ≥阈值才经 transformContext 注 stuck-checklist)。
@@ -817,9 +825,14 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     ...(opts.mcpDeps?.poolDeps ? { poolDeps: opts.mcpDeps.poolDeps } : {}),
     ...(opts.mcpDeps?.ledger ? { ledger: opts.mcpDeps.ledger } : {}),
   });
+  // S3 read_skill umbrella (D-S3-5): 同一组装段挂 createSkillTools, roots 显式注入含 cwd 项目根, 与 mcpTools 并列进拼装点。
+  // 零 skill 不挂 (skill-tool.ts:52 短路), 保证 I-1 零 skill 仓 tools 数组与 S2 基线字节相同。
+  const skillTools = createSkillTools(opts.skillDeps?.roots
+    ? { roots: opts.skillDeps.roots }
+    : { cwd, roots: defaultSkillRoots(cwd) });
   const excluded = new Set(opts.hashlineEdit ? ['edit'] : []);
   const allowlist = opts.tools ? new Set(opts.tools) : null;
-  const tools = [...baseTools, ...hashlineTools, ...mcpTools, ...(opts.customTools ?? [])].filter(
+  const tools = [...baseTools, ...hashlineTools, ...mcpTools, ...skillTools, ...(opts.customTools ?? [])].filter(
     (t) => !excluded.has(t.name) && (!allowlist || allowlist.has(t.name)),
   );
 

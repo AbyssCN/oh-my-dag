@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { createOmdAgentTools, shouldSkipDir, type AnyOmdTool } from './agent-tools';
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { createAgentLeafRunner, buildLeafSystemPrompt, loadProjectContext } from './agent-leaf';
+import { createSkillTools } from './skills/skill-tool';
 
 function fixture(): string {
   const root = mkdtempSync(join(tmpdir(), 'omd-agent-tools-'));
@@ -267,29 +268,89 @@ const fakeQuery = (script: SDKMessage[], seen: { options?: Options } = {}) => {
 };
 
 describe('I-1 零配置叶子: tools 数组与 system prompt 与接线前字节零变化', () => {
-  // ★ 反向自检: 把 agent-leaf.ts 装配处的 createMcpClientTools 改成无条件挂载
-  // (或删掉 meta-tools.ts:76 的零注册短路) → 本条当场红。
-  it('tmp cwd 零配置 → 无 mcp_find/mcp_call, 工具名单恰为接线前六件, prompt 无 mcp 痕迹', async () => {
+  // ★ 反向自检 (C-S3-6): ①删掉 skill-tool 的零 skill 短路 (零 skill 也挂 read_skill) →
+  //   allowedTools 多一件 → toEqual 必红; ②把 skill 名或扫描数字拼进 promptSnippet →
+  //   systemPrompt toBe 必红 (冻结前缀纪律 I-3); ③把 agent-leaf.ts 装配处的
+  //   createMcpClientTools 改成无条件挂载 → mcp 两件多出来 → 同样红。
+  it('S3-C8-B: 零 skill tmp cwd 的 leaf tools 数组与 system prompt 与 S2 基线逐字节相同', async () => {
     const root = mkdtempSync(join(tmpdir(), 'omd-leaf-i1-'));
     const seen: { options?: Options } = {};
-    const run = createAgentLeafRunner({ cwd: root, sdkQueryFn: fakeQuery([asst('改完了'), success()], seen) });
+    // D-S3-8 特批改造: I-1 夹具改为零 skill 注入形态 (skillDeps.roots = []), 逐字节比较强度不变。
+    // 注入空 roots 同时是 D-S3-9 隔离: 缺省 roots 会扫到包内与 ~/.claude/skills, 测试不许读它们。
+    const run = createAgentLeafRunner({ cwd: root, sdkQueryFn: fakeQuery([asst('改完了'), success()], seen), skillDeps: { roots: [] } });
     await run({ prompt: 'x', model: MODEL });
     // 桥的 allowedTools = runner tools 数组逐件映射 (buildOmdSdkMcpBridge) —— 断言**恰好**
-    // 六件自有工具 (接线前集合): 多挂任何 mcp_* 件即红。
+    // 六件自有工具 (S2 收官基线): 多挂 read_skill 或任何 mcp_* 件即红。
     expect(seen.options?.allowedTools).toEqual([
       'mcp__omd__read', 'mcp__omd__write', 'mcp__omd__edit', 'mcp__omd__ls', 'mcp__omd__grep', 'mcp__omd__bash',
     ]);
-    // 完整 system prompt 逐字节相等 (I-1 加强): 零注册下接线后的 prompt ≡ 只用接线前六件工具
-    // 拼出的 prompt —— 不许停在「不含 mcp_find」弱化版 (那会放过前缀/工具守则段的静默变化)。
-    // 证伪: ①删 meta-tools.ts 零注册短路 → tools 多两件 → prompt 含 mcp snippet → toBe 红;
-    // ②把 mcp promptSnippet 改无条件注入 → 同样 toBe 红。
+    // 完整 system prompt 逐字节相等 (= S2 基线, 与原 I-1 同口径): 零 skill 注入下 S3 接线后的
+    // prompt ≡ 只用六件基线工具拼出的 prompt —— 不许停在「不含 mcp_find」弱化版
+    // (那会放过前缀/工具守则段的静默变化)。
     const baseline = buildLeafSystemPrompt({ cwd: root, tools: createOmdAgentTools({ cwd: root }), contextFiles: loadProjectContext(root) });
     expect(seen.options?.systemPrompt).toBe(baseline);
     // 显式 mcpAllow 也不能在零注册下凭空造出工具 (零注册短路优先于授权清单)。
     const seen2: { options?: Options } = {};
-    const run2 = createAgentLeafRunner({ cwd: root, sdkQueryFn: fakeQuery([asst('好'), success()], seen2) });
+    const run2 = createAgentLeafRunner({ cwd: root, sdkQueryFn: fakeQuery([asst('好'), success()], seen2), skillDeps: { roots: [] } });
     await run2({ prompt: 'x', model: MODEL, mcpAllow: ['some:tool'] });
     expect(seen2.options?.allowedTools).not.toContain('mcp__omd__mcp_find');
     expect(seen2.options?.systemPrompt).not.toContain('mcp_find');
+  });
+});
+
+// ── 开放生态 S3: read_skill 下放 leaf (D-S3-5 挂载点 + D-S3-6 不过 policy 闸) ──
+describe('S3: read_skill 经 leaf 装配 (tmp cwd + 注入 roots, D-S3-9 不碰真仓 .omd/ 与 ~/.claude/skills)', () => {
+  const SKILL_BODY = '# OMD Council\n\n逐条对照评审。\n\n- 清单见 [评审清单](./refs/checklist.md)\n\n末尾一行。';
+
+  /** 在 <root>/.omd/skills/omd-council/ 落 SKILL.md (含相对路径引用行) 与其引用文件。 */
+  function plantCouncilSkill(root: string): string {
+    const dir = join(root, '.omd', 'skills', 'omd-council');
+    mkdirSync(join(dir, 'refs'), { recursive: true });
+    writeFileSync(join(dir, 'SKILL.md'), `---\nname: omd-council\ndescription: 评审方法论\n---\n${SKILL_BODY}\n`);
+    writeFileSync(join(dir, 'refs', 'checklist.md'), '- 条目一\n');
+    return join(root, '.omd', 'skills');
+  }
+
+  // 证伪 (C-S3-6): ①把 execute 命中分支改成只返正文首行 (或返空串) → 全文逐字节断言必红
+  // (空串还会被读成"这条 skill 没内容", skill-tool 找不到分支的既有纪律); ②从 agent-leaf.ts
+  // 拼装点删掉 read_skill 挂载 → allowedTools 断言必红。缺一即证该闸是摆设。
+  it('S3-C8-A: 项目 .omd/skills 的 SKILL.md 经 leaf 装配 read_skill 取到完整原文', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-leaf-s3a-'));
+    const roots = [plantCouncilSkill(root)];
+    const seen: { options?: Options } = {};
+    const run = createAgentLeafRunner({ cwd: root, sdkQueryFn: fakeQuery([asst('好'), success()], seen), skillDeps: { roots } });
+    await run({ prompt: 'x', model: MODEL });
+    // ① leaf 工具面含 read_skill (桥后命名, 同六件基线的 mcp__omd__ 前缀形态)。
+    expect(seen.options?.allowedTools).toContain('mcp__omd__read_skill');
+    // ② 以同一注入 roots 取工具实例, execute 命中 → content 逐字节等于 SKILL.md 正文全文
+    // (src.body.trim() 口径), 含相对引用行原文。
+    const readSkill = createSkillTools({ roots }).find((t) => t.name === 'read_skill')!;
+    const res = (await readSkill.execute('call-1', { name: 'omd-council' } as never, undefined, undefined)) as {
+      content: { type: string; text?: string }[];
+      details?: unknown;
+    };
+    const out = res.content.map((c) => (c.type === 'text' ? c.text ?? '' : '')).join('');
+    expect(out).toBe(SKILL_BODY);
+    expect(out).toContain('[评审清单](./refs/checklist.md)');
+    // ③ details 形态钉死。
+    expect(res.details).toEqual({ name: 'omd-council', found: true });
+  });
+
+  // 证伪 (C-S3-6): 把 read_skill 的挂载挪进 MCP policy 求值路径 (经 mcp_call 桥 / leafMcpPolicy
+  // 过一遍) → 未声明 mcpAllow 时它不是被拒就是不在 allowedTools → 两条断言必红; 反过来若
+  // 顺带把 S2 policy 闸拆了 (mcp meta-tool 零注册也挂/不挂判据变了) → mcp 侧断言红。
+  it('C-S3-4: 未声明 mcp/skills 的 leaf 挂 read_skill, 不触发 C-5/D-7 拒绝路径', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-leaf-s3policy-'));
+    const roots = [plantCouncilSkill(root)];
+    // 注册一个 MCP server 但**不声明** mcpAllow → D-7 缺省 deny: meta-tool 在岗而调用会被拒。
+    writeFileSync(join(root, '.omd', 'mcp.json'), JSON.stringify({ mcpServers: { foo: { command: 'true' } } }));
+    const seen: { options?: Options } = {};
+    const run = createAgentLeafRunner({ cwd: root, sdkQueryFn: fakeQuery([asst('好'), success()], seen), skillDeps: { roots } });
+    await run({ prompt: 'x', model: MODEL });
+    // read_skill 是直接挂的只读本进程工具, 不在 mcp_call 桥后 —— leafMcpPolicy 的求值路径
+    // 根本碰不到它 (D-S3-6: 不过 C-5/D-7 闸)。
+    expect(seen.options?.allowedTools).toContain('mcp__omd__read_skill');
+    // S2 policy 闸语义不动: 注册了 server → meta-tool 仍在岗 (deny 是调用期求值, 不是不挂)。
+    expect(seen.options?.allowedTools).toContain('mcp__omd__mcp_call');
   });
 });

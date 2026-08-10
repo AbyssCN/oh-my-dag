@@ -17,6 +17,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { join, relative } from 'node:path';
 import { z } from 'zod';
 import { KNOWN_EVIDENCE_CLASSES } from '../agent-templates';
+import { knownMcpServerNames } from '../../mcp/client/config';
 import { splitFrontmatter } from './frontmatter';
 import { logger } from '../logger';
 
@@ -80,14 +81,14 @@ const SCRIPT_RE = /\.(py|sh|ts|js|mjs)$/i;
  * 宿主依赖标记: 命中 = skill 靠宿主 Claude 的工具/登录态干活, leaf/command 节点复现不了。
  * 词表刻意窄而具体 (specific > general): 误杀比误放贵 — 编译是显式 opt-in, 漏标记的 owner 会看到产物。
  */
-const HOST_MARKER_RE = /mcp__[a-z]|browser-harness|browser-act|scrapling|lark-cli|登录态|接管浏览器/i;
+const HOST_MARKER_RE = /mcp__[a-z][a-z0-9-]*|browser-harness|browser-act|scrapling|lark-cli|登录态|接管浏览器/i;
 
 /**
  * 三分类, 优先序 capability > skip > craft:
  * 带自包含脚本的 skill 即便部分阶段依赖宿主 (omd-video 的 enumerate 要 browser-harness),
  * 其脚本主体仍可确定性执行 → 配方优先。
  */
-export function classifySkill(src: SkillSource): SkillClass {
+export function classifySkill(src: SkillSource, cwd?: string): SkillClass {
   const scripts = src.files.filter((f) => SCRIPT_RE.test(f));
   for (const script of scripts) {
     const base = script.split('/').pop()!;
@@ -95,6 +96,24 @@ export function classifySkill(src: SkillSource): SkillClass {
     return { kind: 'capability', scriptFile: script, invocation: extractInvocation(src.body, base) ?? script };
   }
   const text = `${JSON.stringify(src.fm)}\n${src.body}`;
+  // D-S3-7: mcp__<server> 先查注册表; 已注册的不算宿主标记, 未注册照旧 skip。
+  if (cwd) {
+    const knownServers = knownMcpServerNames(cwd);
+    // 扫全部标记 (用全局正则以捕获多个标记, 如同时含 mcp__foo 与 browser-harness)。
+    const re = new RegExp(HOST_MARKER_RE.source, 'gi');
+    const markers = [...text.matchAll(re)].map((m) => m[0]);
+    for (const marker of markers) {
+      if (marker.startsWith('mcp__')) {
+        const serverName = marker.slice(5);
+        if (knownServers.has(serverName)) continue; // 已注册 → 不算宿主标记, 继续查下一个
+      }
+      // 非 MCP 宿主标记 (browser-harness 等) 或未注册的 mcp__<server> → skip
+      return { kind: 'skip', reason: `宿主依赖标记 "${marker}" — leaf 无宿主工具/登录态` };
+    }
+    // 全部标记都是已注册 mcp__<server> → craft
+    return { kind: 'craft' };
+  }
+  // 无 cwd → 旧行为: 任何命中即 skip
   const marker = text.match(HOST_MARKER_RE);
   if (marker) return { kind: 'skip', reason: `宿主依赖标记 "${marker[0]}" — leaf 无宿主工具/登录态` };
   return { kind: 'craft' };

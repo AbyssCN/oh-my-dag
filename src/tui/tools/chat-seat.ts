@@ -71,7 +71,7 @@ export function createChatSeatTools(o: ChatSeatToolsOpts): AnyOmdTool[] {
     // S17: 符号能力是**探测式**的 —— 探不到就一个工具都不挂(不是挂了、调了才失败)。
     ...createCodegraphTools({ cwd: o.cwd }),
     // S-6: 让模型自己取 skill 正文。一条 skill 都没有时不挂(同上:恒失败的工具比没有更糟)。
-    ...createSkillTools(),
+    ...createSkillTools({ cwd: o.cwd }),
     // 开放生态 S1: 外部 MCP 经双 meta-tool (find/call) 接入 —— 零注册不挂 (I-2),
     // 外部工具数不进冻结前缀 (schema 全走返回值, SDD D-2)。
     ...createMcpClientTools({ cwd: o.cwd }),
