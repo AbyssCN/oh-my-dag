@@ -7,6 +7,8 @@
  * dag_status / dag_result query RunRegistry; unknown runId → isError (never crash).
  */
 import { randomUUID } from 'node:crypto';
+import { mkdirSync, openSync, statSync, writeFileSync } from 'node:fs';
+import { isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import type { NodeDetail, RunRegistry } from '../run-registry.js';
@@ -23,9 +25,106 @@ import type { HudMirror } from '../../hud/mirror.js';
 import type { PlanLedger } from '../../harness/plan-ledger.js';
 import { recordDagRun, type DagRecorder } from '../../harness/dag-record.js';
 import { computeCost } from '../../model/cost-ledger.js';
+import { defaultIsAlive } from '../run-store.js';
 
 // renderProgressAscii 已抽到 ./dag-ascii (纯函数, statusline 复用); 此处保留 re-export 兼容既有 importer。
 export { renderProgressAscii };
+
+// ---------------------------------------------------------------------------
+// S2 执行进程化 (SDD 2026-08-10 §2) —— dag_run / dag_research 的 detached 子进程基建。
+//
+// 形状逐字仿 `scripts/goal-worker.ts` (已扛真载的 solve detached 路): 子进程照 `omd mcp`
+// 引导序 (bootstrapModelRuntime + assembleOmdMcpTools + 同一份 runs.db) 起来, 经
+// `resume: runId` 接手属主 (未知 runId → register+start, 属主 pid = 子进程), 轮询终态,
+// 退出前 `verifyTerminalPersisted` 写穿核验, 退出码 2=参数错 / 1=失败 / 3=写穿不可修 / 0=done。
+//
+// **为什么仿而不复用 goal-worker**: goal-worker 绑死 dag_goal 工具面 (硬编码找 `dag_goal`,
+// goal 走 argv), 与 S2 契约冲突 —— 本片要从 spec 读工具名 (dag_run|dag_research)、参数走
+// 临时文件 (argv 不携带 goal 原文: 元字符/长度/进程表泄露三害全避)。骨架逐段照抄, 差异只有这两处。
+//
+// 母进程 (server) 只做: 校验 → 写 spec → spawn detached → 立即返回 runId。**不登记 run**:
+// 登记由子进程做, 它才是属主 (pid 判活要认它) —— goal.ts 那段注释逐字适用, 母进程抢先登记
+// 会让下一个 session hydrate 把一个正在跑的 run 判成"被打断"。代价是毫秒级窗口
+// (子进程起来之前 dag_status 查无此 run)。
+// ---------------------------------------------------------------------------
+
+/** 传给子进程的 spec (落 .omd/continuity/<runId>/spec.json, mode 0600)。 */
+export interface DagExecSpec {
+  /** 要调的工具面 —— 子进程从 spec 读, 不硬编码 (goal-worker 的不适配点之一)。 */
+  tool: 'dag_run' | 'dag_research';
+  runId: string;
+  cwd: string;
+  /** 用户参数原样 (task/plan/question/leafModel/…); resume 由子进程按 runId 补。 */
+  args: Record<string, unknown>;
+}
+
+/** spawn 接缝 —— 测试注入替身, 永不起真进程 (同 goal.ts spawnDetached 纪律)。 */
+export type SpawnDagExecFn = (
+  spec: DagExecSpec,
+) => { ok: true; pid?: number; logPath: string } | { ok: false; error: string };
+
+/** 子进程自证旗标: dag-exec 的 env 带它, handler 看到即走进程内执行体, 不再二次 spawn。 */
+export const OMD_DAG_EXEC_CHILD = 'OMD_DAG_EXEC_CHILD';
+
+/** worker 脚本路径按**本包安装位置**解析 (同 goal.ts workerScriptPath —— 相对 cwd 拼在别的 repo 必 Script not found)。 */
+function dagExecScriptPath(): string {
+  return join(import.meta.dir, '..', '..', '..', 'scripts', 'dag-exec.ts');
+}
+
+/**
+ * 默认 spawn: Bun.spawn detached + stdout/stderr → exec.log (append) + unref。
+ * SDD §5: detached + stdio 重定向文件 = 脱离父进程组 —— server 收到进程组信号
+ * (客户端断开自杀) 时子进程不陪葬; G2 在真机直接验这一条。
+ */
+export function defaultSpawnDagExec(
+  spec: DagExecSpec,
+): { ok: true; pid?: number; logPath: string } | { ok: false; error: string } {
+  const runDir = join(spec.cwd, '.omd', 'continuity', spec.runId);
+  const specPath = join(runDir, 'spec.json');
+  const logPath = join(runDir, 'exec.log');
+  try {
+    mkdirSync(runDir, { recursive: true });
+    // 参数 (含 goal 原文) 经临时文件, 不进 argv (SDD §2)。mode 0600: 不给同机其他用户读。
+    writeFileSync(specPath, JSON.stringify(spec, null, 2), { mode: 0o600 });
+    const fd = openSync(logPath, 'a');
+    // env 全透传 + 子进程自证旗标。OMD_CONFIG_PATH 显式钉死 (SDD §2):
+    // 已设 → 解析成绝对路径 (相对路径对 cwd 解析, cwd 漂移也不读串);
+    // 未设 → 不设 —— 子进程 cwd 与母进程相同, configPath() 走同一条向上发现路径,
+    // 不发明第二套解析 (role-models.ts 的 configPath 是唯一真源)。
+    const env: Record<string, string | undefined> = { ...process.env, [OMD_DAG_EXEC_CHILD]: '1' };
+    const cfg = process.env.OMD_CONFIG_PATH;
+    if (cfg?.trim()) env.OMD_CONFIG_PATH = isAbsolute(cfg.trim()) ? cfg.trim() : resolve(spec.cwd, cfg.trim());
+    const proc = Bun.spawn(['bun', 'run', dagExecScriptPath(), '--run', spec.runId, '--spec', specPath], {
+      cwd: spec.cwd,
+      env,
+      detached: true,
+      stdin: 'ignore',
+      stdout: fd as unknown as number,
+      stderr: fd as unknown as number,
+    });
+    proc.unref();
+    return { ok: true, pid: proc.pid, logPath };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * 孤儿检测 (SDD §2 T2 另一半) 的时限: 属主 pid 死 ∧ 5min 无 checkpoint 写入 → stalled。
+ * 5min 是 SDD 定的消费端档 (进程死后给写穿/pid 复用留的宽限), 不是新判据。
+ * 反向自检: 改成 0 → 任何 kill(pid,0) 判活抖动都会误标 stalled (测试红);
+ * 删掉 pid 判活 → 活着的子进程 run 也被标 stalled (测试红)。
+ */
+export const STALLED_AFTER_MS = 5 * 60_000;
+
+/** continuity/<runId>/ 目录龄 (ms) —— 目录 mtime 随 checkpoint 增删文件更新; 目录不在 → 视为超龄。 */
+export function continuityAgeMs(runId: string, cwd: string): number {
+  try {
+    return Date.now() - statSync(join(cwd, '.omd', 'continuity', runId)).mtimeMs;
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
 
 /**
  * 派发简报 (D-8 宽出): 图结构 + 模型坐标一屏可读 — 客户端派发瞬间就知道开了多少节点/
@@ -121,6 +220,15 @@ export interface DagToolDeps {
    * `RunGoalResult`, 两张图的用量在那里已经不见了。
    */
   recorder?: DagRecorder;
+  /**
+   * S2 进程化 spawn 接缝 (dag_run / dag_research 起子进程)。测试注入替身, **永不起真进程**
+   * (同 goal.ts spawnDetached 纪律)。省略 = 真 defaultSpawnDagExec。
+   */
+  spawnDagExec?: SpawnDagExecFn;
+  /** 孤儿检测的 pid 判活接缝 (默认 process.kill(pid,0); 测试注入假死 pid)。 */
+  isAlive?: (pid: number) => boolean;
+  /** dag_cancel 的 SIGTERM 接缝 (默认 process.kill(pid,'SIGTERM'); 测试注入 spy —— 真 kill 会杀测试进程)。 */
+  killPid?: (pid: number) => void;
 }
 
 /**
@@ -242,7 +350,7 @@ function launchPlanRun(
   const goal = task?.slice(0, 200) ?? parsedPlan.name ?? 'prebuilt plan';
   if (resume) {
     // resume 语义: failed/cancelled run 重开 / server 重启后未知 runId 重登记; 在飞或已 done 的拒绝。
-    const rec = runRegistry.getRecord(resume);
+    const rec = runRegistry.getRecord(resume) ?? runRegistry.ensureFromDisk(resume);
     if (rec && rec.status !== 'failed' && rec.status !== 'cancelled') {
       return { content: [{ type: 'text', text: `resume 拒绝: run ${resume} 当前 ${rec.status} (仅 failed/cancelled/未知可续)` }], isError: true };
     }
@@ -362,7 +470,8 @@ function makeDagResume(deps: DagToolDeps): OmdMcpTool {
  * 因此**这个工具返回时活还没停** —— 回的是"已请求", 不是"已停止"; 真停没停看 `dag_status`。
  * 停下来之后 `dag_resume runId=<同一个>` 接着跑, 已绿节点全跳过。
  */
-function makeDagCancel({ runRegistry }: DagToolDeps): OmdMcpTool {
+function makeDagCancel(deps: DagToolDeps): OmdMcpTool {
+  const { runRegistry } = deps;
   return {
     name: 'dag_cancel',
     description: 'Cooperatively stop a run: no new nodes dispatched, in-flight ones finish, ends as cancelled (resumable).',
@@ -373,7 +482,9 @@ function makeDagCancel({ runRegistry }: DagToolDeps): OmdMcpTool {
     handler: async (args) => {
       const { runId, reason } = args as { runId?: string; reason?: string };
       if (!runId) throw new McpError(ErrorCode.InvalidParams, 'dag_cancel: missing required param "runId"');
-      const rec = runRegistry.getRecord(runId);
+      // S2: 子进程 run 不在本进程内存 —— 先读盘 (ensureFromDisk), 否则 cancel 一个
+      // dag-exec 跑着的 run 会报"unknown", 而那正是它最需要被叫停的时候。
+      const rec = runRegistry.getRecord(runId) ?? runRegistry.ensureFromDisk(runId);
       if (!rec) {
         return { content: [{ type: 'text' as const, text: `dag_cancel: unknown run ${runId} (see dag_runs)` }], isError: true };
       }
@@ -381,26 +492,62 @@ function makeDagCancel({ runRegistry }: DagToolDeps): OmdMcpTool {
         return { content: [{ type: 'text' as const, text: `dag_cancel: run ${runId} 当前 ${rec.status} — 不在飞, 无可取消` }], isError: true };
       }
       const why = reason?.trim() || '调用方叫停 (dag_cancel)';
-      // 把手不在 = server 重启后内存态丢了 (记录还在, 引擎却已不由本进程持有)。**如实说没停到** ——
-      // 回一句"已取消"而实际没停, 比停不下来更坏。
-      if (!runRegistry.requestCancel(runId, why)) {
+      // 内存把手 = 本进程 in-proc run (dag_goal / dag_run_plan / dag_resume) → 协作式 (D-P 原语义)。
+      if (runRegistry.requestCancel(runId, why)) {
         return {
           content: [{
             type: 'text' as const,
-            text: `dag_cancel: run ${runId} 没有取消把手 (多半是 server 重启后内存态丢了) — **没有停到**。` +
-              '该 run 若仍在别的进程里跑, 只能等它自己结束。',
+            text:
+              `dag_cancel: 已请求取消 ${runId} (${why})\n` +
+              '协作式: 不派新节点, 在飞的跑完才收尾 → 现在还没停, 看 dag_status 等它转 cancelled。\n' +
+              `续跑: dag_resume runId=${runId} (已跑完的节点会被跳过)`,
           }],
-          isError: true,
         };
       }
+      // 子进程 run (S2): 写 cancel 标记 + 对属主 pid 发 SIGTERM (SDD §2 生命周期)。
+      // 子进程 (dag-exec) 轮询标记 → requestCancel 自己 → 引擎协作式停 (既有优雅停语义接住);
+      // SIGTERM 是兜底 (子进程卡死, 或无取消把手的 dag_research 直接死; checkpoint 保底可 resume)。
+      const cwd = deps.continuity?.repoRoot ?? process.cwd();
+      const disk = runRegistry.diskRecord(runId);
+      const pid = disk?.ownerPid ?? null;
+      const isAlive = deps.isAlive ?? defaultIsAlive;
+      if (pid !== null && isAlive(pid)) {
+        try {
+          // 目录防御性建: 生产里 spawn 时已建好 (spec/exec.log 住这), 但"写标记"不该因目录
+          // 缺席而失败 —— SIGTERM 是兜底, 标记是协作通道, 两者都要尽力送达。
+          mkdirSync(join(cwd, '.omd', 'continuity', runId), { recursive: true });
+          writeFileSync(join(cwd, '.omd', 'continuity', runId, 'cancel'), why);
+          writeFileSync(join(cwd, '.omd', 'continuity', runId, 'cancel'), why);
+        } catch (e) {
+          logger.warn({ runId, err: (e as Error).message }, '[omd/dag-tools] cancel 标记写失败 (SIGTERM 仍会发)');
+        }
+        try {
+          (deps.killPid ?? ((p: number) => process.kill(p, 'SIGTERM')))(pid);
+        } catch (e) {
+          return {
+            content: [{ type: 'text' as const, text: `dag_cancel: 标记已写但 SIGTERM 失败: ${(e as Error).message} — 子进程可能还在跑, 稍后重试` }],
+            isError: true,
+          };
+        }
+        return {
+          content: [{
+            type: 'text' as const,
+            text:
+              `dag_cancel: 已请求取消 ${runId} (${why})\n` +
+              `子进程 pid ${pid}: cancel 标记 + SIGTERM 已发 — 协作式停, 看 dag_status 等它转 cancelled;\n` +
+              '若它无视标记 (卡死), 重启 session 后 hydrate 会按打断落 failed, 然后 dag_resume 接着跑。',
+          }],
+        };
+      }
+      // 属主 pid 已死 → 孤儿 (stalled): 没有活进程可停, 如实说没停到 (比回"已取消"诚实)。
       return {
         content: [{
           type: 'text' as const,
           text:
-            `dag_cancel: 已请求取消 ${runId} (${why})\n` +
-            '协作式: 不派新节点, 在飞的跑完才收尾 → 现在还没停, 看 dag_status 等它转 cancelled。\n' +
-            `续跑: dag_resume runId=${runId} (已跑完的节点会被跳过)`,
+            `dag_cancel: run ${runId} 的属主进程 (pid ${pid ?? '?'}) 已不在 — **没有活进程可停**。` +
+            '它是孤儿 (dag_status 会标 stalled); 重连 session 后 hydrate 按打断落 failed, 然后 dag_resume 接着跑。',
         }],
+        isError: true,
       };
     },
   };
@@ -429,10 +576,132 @@ function resolveDefaults(
   return typeof d === 'function' ? d() : d;
 }
 
-function makeDagRun({ engine, runRegistry, continuity, hudMirror, ledger, recorder, onNodeEvent, ...rest }: DagToolDeps): OmdMcpTool {
+/**
+ * dag_run 的**进程内执行体** (S2) —— 旧 dag_run handler 的整段身体, 零语义改动。
+ *
+ * 只在两种进程里跑: ① dag-exec 子进程 (env 带 OMD_DAG_EXEC_CHILD=1, handler 把控制权交给它);
+ * ② 测试 (同旗标)。生产 server 的 dag_run handler 永远走 spawn, 不碰这里。
+ *
+ * 接手语义 (goal-worker 逐字照抄): 子进程以 `resume: runId` 调进来 —— 未知 runId →
+ * reopenForResume = register + start, 属主 pid 记成**本进程** (判活认它); failed/cancelled →
+ * 重开; running/done → 拒绝 (母进程 spawn 前已查过盘, 这里是第二道闸)。
+ */
+function executeDagRunInProc(
+  runId: string,
+  args: { task: string; conductorModel?: string; leafModel?: string; resume?: string; maxFanout?: number },
+  deps: DagToolDeps,
+): { content: { type: 'text'; text: string }[]; isError?: boolean } {
+  const { engine, runRegistry, continuity, hudMirror, ledger, recorder, onNodeEvent } = deps;
+  const { task, conductorModel, leafModel, resume, maxFanout } = args;
+  const goal = task.slice(0, 200);
+  if (resume) {
+    // resume 语义: failed/cancelled run 重开 / 未知 runId 重登记; 在飞或已 done 的拒绝。
+    const rec = runRegistry.getRecord(resume);
+    if (rec && rec.status !== 'failed' && rec.status !== 'cancelled') {
+      return {
+        content: [{ type: 'text' as const, text: `resume 拒绝: run ${resume} 当前 ${rec.status} (仅 failed/cancelled/未知可续)` }],
+        isError: true,
+      };
+    }
+    runRegistry.reopenForResume(runId, { goal, meta: { tool: 'dag_run', resumed: true } });
+  } else {
+    runRegistry.register(runId, { goal, meta: { tool: 'dag_run' } });
+    runRegistry.start(runId);
+  }
+
+  // Fire-and-forget: execute in background, update registry on completion.
+  // 座位/池**每 run 重解** (INV-MODEL-3): thunk 在这里调用, 故 omd_set_role 改完下一次 dag_run 就用新座。
+  let defaultConfig: Partial<ExecutorDagConfig> | undefined;
+  try {
+    defaultConfig = resolveDefaults(deps.defaultConfig);
+  } catch (e) {
+    const msg = (e as Error).message;
+    runRegistry.fail(runId, msg);
+    return { content: [{ type: 'text' as const, text: `runId: ${runId}\nerror: ${msg}` }], isError: true };
+  }
+  const config: ExecutorDagConfig = {
+    ...defaultConfig,
+    conductorModel: conductorModel ?? defaultConfig?.conductorModel ?? '',
+    leafModel: leafModel ?? defaultConfig?.leafModel ?? '',
+    // D-P: 取消把手 (dag_cancel 拉它)。
+    cancelSignal: runRegistry.attachCancel(runId),
+    // 活体进度: conductor 出图后引擎发 planned → start/settle 流进 registry (dag_status 实时) +
+    // hudMirror 原子写 .omd/hud/dag.json (omd-hud statusline 数据源; conductor 路径无 topo → levels=null 平铺)。
+    onNodeEvent: (e) => {
+      runRegistry.applyNodeEvent(runId, e);
+      hudMirror?.write(runId, runRegistry.getRecord(runId));
+      if (onNodeEvent) {
+        try {
+          onNodeEvent(runId, e);
+        } catch (err) {
+          logger.warn({ runId, err: (err as Error).message }, '[omd/dag-tools] onNodeEvent 订阅者抛错 (已吞, 不打断执行)');
+        }
+      }
+    },
+    // 并发手闸: 参数 > defaultConfig (装配层 provider 池) > 引擎全宽。
+    ...(maxFanout ? { maxFanout } : {}),
+    // D-3 断点续跑: checkpoint 恒落盘; resume 时命中已绿节点跳过 (429 打断不再整图重跑)。
+    ...(continuity
+      ? { continuity: { manager: continuity.manager, runId, resume: !!resume, repoRoot: continuity.repoRoot } }
+      : {}),
+    // 运行留痕 (与 launchPlanRun 同款; dag_run 是 conductor 路径, 它自己组 config)。
+    ...(recorder
+      ? {
+          onComplete: recordDagRun(
+            recorder,
+            // entry 词表 (t7, 2026-08-04): 与工具新名同词 —— 'run' (旧 'dag_run' 只在历史行里,
+            // 读侧经 TOOL_RENAMES 归一合并)。
+            { runId, entry: 'run', question: task },
+            defaultConfig?.onComplete,
+          ),
+        }
+      : {}),
+  } as ExecutorDagConfig;
+
+  // Validate required config fields (engine will throw if missing, but we catch early).
+  if (!config.conductorModel) {
+    runRegistry.fail(runId, 'dag_run: conductorModel required (param or defaultConfig)');
+    return {
+      content: [{ type: 'text' as const, text: `runId: ${runId}\nerror: conductorModel required` }],
+      isError: true,
+    };
+  }
+  if (!config.leafModel) {
+    runRegistry.fail(runId, 'dag_run: leafModel required (param or defaultConfig)');
+    return {
+      content: [{ type: 'text' as const, text: `runId: ${runId}\nerror: leafModel required` }],
+      isError: true,
+    };
+  }
+
+  // Async execution — don't await (fire-and-forget). Registry tracks status.
+  engine
+    .runExecutorDag(task, config)
+    .then((result) => {
+      runRegistry.setNodeDetails(runId, extractNodeDetails(result));
+      // D-P: 叫停的不记 done (见 launchPlanRun 同款注)。
+      if (result.cancelled) runRegistry.cancel(runId, result.cancelled.reason, summarizeResult(result));
+      else runRegistry.succeed(runId, summarizeResult(result));
+      hudMirror?.write(runId, runRegistry.getRecord(runId)); // 终态 done → statusline grace 后收起
+      // plan-memory Phase A: 记一笔 (family 聚类 + 版本 + 战绩)。record 自身 fail-open。
+      if (ledger) recordPlanRun(ledger, task, result, config.conductorModel);
+    })
+    .catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      runRegistry.fail(runId, msg);
+      hudMirror?.write(runId, runRegistry.getRecord(runId)); // 终态 failed
+    });
+
+  return {
+    content: [{ type: 'text' as const, text: `runId: ${runId}\nstatus: running` }],
+  };
+}
+
+function makeDagRun(deps: DagToolDeps): OmdMcpTool {
+  const { runRegistry, ...rest } = deps;
   return {
     name: 'dag_run',
-    description: 'Execute a task via conductor DAG planning + leaf fan-out. resume=<runId> skips checkpointed nodes.',
+     description: 'Execute a task via conductor DAG planning + leaf fan-out (S2: detached child). resume=<runId> skips green nodes.',
     inputSchema: {
       task: z.string().describe('Task description for the conductor to plan and execute'),
       conductorModel: z.string().optional().describe('Conductor model (provider:modelId)'),
@@ -452,110 +721,77 @@ function makeDagRun({ engine, runRegistry, continuity, hudMirror, ledger, record
         throw new McpError(ErrorCode.InvalidParams, 'dag_run: missing required param "task"');
       }
       const runId = resume ?? randomUUID();
-      const goal = task.slice(0, 200);
+      // ── S2 执行进程化 (SDD 2026-08-10 §2) ──────────────────────────────────
+      // 母进程 (server) 只做: 校验 → 写 spec → spawn detached 子进程 → 立即返回 runId。
+      // 引擎/模型/harness 的代码在子进程里从盘上现码执行 —— 改完 commit, 下一个 run
+      // 就吃新代码, 零重启 (T1, 本 SDD 的存在理由)。
+      //
+      // 子进程怎么识别自己: dag-exec 的 env 带 OMD_DAG_EXEC_CHILD=1 (spawn 时钉死),
+      // handler 看到即走进程内执行体 (executeDagRunInProc = 旧 handler 整段身体, 零语义
+      // 改动), 不再二次 spawn。这是 dag_goal 的 `detached` 旗标的对偶: dag_goal 用参数
+      // 当开关 (生产默认 in-proc), dag_run 生产面**恒 detached**, 开关只能放 env,
+      // 不进工具 schema (schema 里出现 detached:false 就是一句谎话)。
+      if (process.env[OMD_DAG_EXEC_CHILD] === '1') {
+        return executeDagRunInProc(runId, { task, conductorModel, leafModel, resume, maxFanout }, deps);
+      }
+      // resume 冲突检查要含**盘上** (子进程 run 不在本进程内存 —— 例如另一个 dag-exec
+      // 正在跑同一个 runId): 漏了它, 第二个子进程会 reopenForResume 一个 running 的 run,
+      // 当场把第一个的活顶掉。
       if (resume) {
-        // resume 语义: failed/cancelled run 重开 / server 重启后未知 runId 重登记; 在飞或已 done 的拒绝。
-        const rec = runRegistry.getRecord(resume);
+        const rec = runRegistry.getRecord(resume) ?? runRegistry.ensureFromDisk(resume);
         if (rec && rec.status !== 'failed' && rec.status !== 'cancelled') {
           return {
             content: [{ type: 'text' as const, text: `resume 拒绝: run ${resume} 当前 ${rec.status} (仅 failed/cancelled/未知可续)` }],
             isError: true,
           };
         }
-        runRegistry.reopenForResume(runId, { goal, meta: { tool: 'dag_run', resumed: true } });
-      } else {
-        runRegistry.register(runId, { goal, meta: { tool: 'dag_run' } });
-        runRegistry.start(runId);
       }
-
-      // Fire-and-forget: execute in background, update registry on completion.
-      // 座位/池**每 run 重解** (INV-MODEL-3): thunk 在这里调用, 故 omd_set_role 改完下一次 dag_run 就用新座。
+      // 座位自检 (INV-MODEL-5) 在母进程做: 缺座不 spawn, 当场亮错 —— 省一个注定失败的
+      // 进程 + 一个注定 failed 的 run 记录。判据与执行体完全同源 (required 检查同一对字段)。
       let defaultConfig: Partial<ExecutorDagConfig> | undefined;
       try {
         defaultConfig = resolveDefaults(rest.defaultConfig);
       } catch (e) {
-        const msg = (e as Error).message;
-        runRegistry.fail(runId, msg);
-        return { content: [{ type: 'text' as const, text: `runId: ${runId}\nerror: ${msg}` }], isError: true };
+        return { content: [{ type: 'text' as const, text: `runId: ${runId}\nerror: ${(e as Error).message}` }], isError: true };
       }
-      const config: ExecutorDagConfig = {
-        ...defaultConfig,
-        conductorModel: conductorModel ?? defaultConfig?.conductorModel ?? '',
-        leafModel: leafModel ?? defaultConfig?.leafModel ?? '',
-        // D-P: 取消把手 (dag_cancel 拉它)。
-        cancelSignal: runRegistry.attachCancel(runId),
-        // 活体进度: conductor 出图后引擎发 planned → start/settle 流进 registry (dag_status 实时) +
-        // hudMirror 原子写 .omd/hud/dag.json (omd-hud statusline 数据源; conductor 路径无 topo → levels=null 平铺)。
-        onNodeEvent: (e) => {
-          runRegistry.applyNodeEvent(runId, e);
-          hudMirror?.write(runId, runRegistry.getRecord(runId));
-          // ⚠ **两处都要接**: `dag_run` (conductor 路径) 与 `dag_run_plan` (预构造 plan 路径)
-          // 是两个各自组 config 的函数 —— 只接一处的症状与完全没接一模一样, 换个工具就没事件。
-          // (run-record-wiring.test.ts 的注释记的就是这个坑, 本片差点原样再踩一次。)
-          if (onNodeEvent) {
-            try {
-              onNodeEvent(runId, e);
-            } catch (err) {
-              logger.warn({ runId, err: (err as Error).message }, '[omd/dag-tools] onNodeEvent 订阅者抛错 (已吞, 不打断执行)');
-            }
-          }
+      if (!(conductorModel ?? defaultConfig?.conductorModel)) {
+        return { content: [{ type: 'text' as const, text: `runId: ${runId}\nerror: conductorModel required` }], isError: true };
+      }
+      if (!(leafModel ?? defaultConfig?.leafModel)) {
+        return { content: [{ type: 'text' as const, text: `runId: ${runId}\nerror: leafModel required` }], isError: true };
+      }
+      // 母进程**不登记 run** (goal-worker 同款, goal.ts 注释逐字适用): 登记由子进程做,
+      // 它才是属主 (pid 判活要认它)。母进程抢先登记会让盘上留下一个属主是母进程的
+      // running 记录, 而母进程随时会走 —— 下一个 session hydrate 就把一个正在跑的
+      // run 判成"被打断"。代价是毫秒级窗口: 子进程起来之前 dag_status 查无此 run。
+      const cwd = deps.continuity?.repoRoot ?? process.cwd();
+      const spawned = (deps.spawnDagExec ?? defaultSpawnDagExec)({
+        tool: 'dag_run',
+        runId,
+        cwd,
+        args: {
+          task,
+          ...(conductorModel ? { conductorModel } : {}),
+          ...(leafModel ? { leafModel } : {}),
+          ...(maxFanout ? { maxFanout } : {}),
+          ...(resume ? { resume } : {}),
         },
-        // 并发手闸: 参数 > defaultConfig (装配层 provider 池) > 引擎全宽。
-        ...(maxFanout ? { maxFanout } : {}),
-        // D-3 断点续跑: checkpoint 恒落盘; resume 时命中已绿节点跳过 (429 打断不再整图重跑)。
-        ...(continuity
-          ? { continuity: { manager: continuity.manager, runId, resume: !!resume, repoRoot: continuity.repoRoot } }
-          : {}),
-        // 运行留痕 (与 launchPlanRun 同款; dag_run 是 conductor 路径, 它自己组 config)。
-        ...(recorder
-          ? {
-              onComplete: recordDagRun(
-                recorder,
-                // entry 词表 (t7, 2026-08-04): 与工具新名同词 —— 'run' (旧 'dag_run' 只在历史行里,
-                // 读侧经 TOOL_RENAMES 归一合并)。
-                { runId, entry: 'run', question: task },
-                defaultConfig?.onComplete,
-              ),
-            }
-          : {}),
-      } as ExecutorDagConfig;
-
-      // Validate required config fields (engine will throw if missing, but we catch early).
-      if (!config.conductorModel) {
-        runRegistry.fail(runId, 'dag_run: conductorModel required (param or defaultConfig)');
+      });
+      if (!spawned.ok) {
+        // 起不来要**当场响亮失败**, 不能回一个永远不会出现的 runId (同 goal.ts detached)。
         return {
-          content: [{ type: 'text' as const, text: `runId: ${runId}\nerror: conductorModel required` }],
+          content: [{ type: 'text' as const, text: `dag_run 起跑失败: ${spawned.error}` }],
           isError: true,
         };
       }
-      if (!config.leafModel) {
-        runRegistry.fail(runId, 'dag_run: leafModel required (param or defaultConfig)');
-        return {
-          content: [{ type: 'text' as const, text: `runId: ${runId}\nerror: leafModel required` }],
-          isError: true,
-        };
-      }
-
-      // Async execution — don't await (fire-and-forget). Registry tracks status.
-      engine
-        .runExecutorDag(task, config)
-        .then((result) => {
-          runRegistry.setNodeDetails(runId, extractNodeDetails(result));
-          // D-P: 叫停的不记 done (见 launchPlanRun 同款注)。
-          if (result.cancelled) runRegistry.cancel(runId, result.cancelled.reason, summarizeResult(result));
-          else runRegistry.succeed(runId, summarizeResult(result));
-          hudMirror?.write(runId, runRegistry.getRecord(runId)); // 终态 done → statusline grace 后收起
-          // plan-memory Phase A: 记一笔 (family 聚类 + 版本 + 战绩)。record 自身 fail-open。
-          if (ledger) recordPlanRun(ledger, task, result, config.conductorModel);
-        })
-        .catch((err) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          runRegistry.fail(runId, msg);
-          hudMirror?.write(runId, runRegistry.getRecord(runId)); // 终态 failed
-        });
-
       return {
-        content: [{ type: 'text' as const, text: `runId: ${runId}\nstatus: running` }],
+        content: [{
+          type: 'text' as const,
+          text:
+            `runId: ${runId}\nstatus: running\n` +
+            `(子进程 pid ${spawned.pid ?? '?'}, 日志 ${spawned.logPath})\n` +
+            `它不随本会话结束而死。查进度 dag_status runId=${runId} (若刚起跑查无此 run, 等几秒)。`,
+        }],
       };
     },
   };
@@ -603,7 +839,8 @@ function makeDagRunPlan(deps: DagToolDeps): OmdMcpTool {
 // dag_status — runId → status summary (unknown → isError).
 // ---------------------------------------------------------------------------
 
-function makeDagStatus({ runRegistry }: DagToolDeps): OmdMcpTool {
+function makeDagStatus(deps: DagToolDeps): OmdMcpTool {
+  const { runRegistry } = deps;
   return {
     name: 'dag_status',
     description: 'Get status of a DAG run by runId. Unknown runId → error.',
@@ -615,11 +852,35 @@ function makeDagStatus({ runRegistry }: DagToolDeps): OmdMcpTool {
       if (!runId) {
         throw new McpError(ErrorCode.InvalidParams, 'dag_status: missing required param "runId"');
       }
-      const rec = runRegistry.getRecord(runId);
+      const rec = runRegistry.getRecord(runId) ?? runRegistry.ensureFromDisk(runId);
       if (!rec) {
         return { content: [{ type: 'text' as const, text: `unknown run ${runId}` }], isError: true };
       }
-      const summary = runRegistry.getSummary(runId);
+      const summary = runRegistry.getSummary(runId, rec);
+      // S2 孤儿检测 (SDD §2 T2 另一半): running 而属主 pid 不活 ∧ 5min 无 checkpoint 写入
+      // → 标 stalled 并写明判定依据。**只标不写**: server 从此不写子进程 run 的状态
+      // (写者唯一 = 子进程); 重启后 hydrate 会按打断落 failed, 那才是写侧的事。
+      // 反向自检: 把 STALLED_AFTER_MS 改成 0 → kill(pid,0) 判活的瞬间抖动即误标 (测试红);
+      // 删掉 isAlive 判据 → 活着的子进程 run 也被标 stalled (测试红)。
+      const cwd = deps.continuity?.repoRoot ?? process.cwd();
+      const disk = runRegistry.diskRecord(runId);
+      const isAlive = deps.isAlive ?? defaultIsAlive;
+      if (
+        rec.status === 'running' &&
+        disk &&
+        disk.ownerPid !== null &&
+        !isAlive(disk.ownerPid) &&
+        continuityAgeMs(runId, cwd) > STALLED_AFTER_MS
+      ) {
+        const mins = Math.max(5, Math.round(continuityAgeMs(runId, cwd) / 60_000));
+        summary.content.push({
+          type: 'text' as const,
+          text:
+            `stalled: 属主进程 pid ${disk.ownerPid} 已不在, 且 ${runId} 无 checkpoint 写入已 ${mins} 分钟 (>5min) — ` +
+            `判定依据: SDD §2 孤儿检测 (pid 死 ∧ continuity mtime 龄 > 5min)。它不会自己好了; ` +
+            'resume 前先重连 session (hydrate 会按打断落 failed)。',
+        });
+      }
       // running 态追加 ASCII 层级图 (进度实时渲染)
       if (rec.status === 'running' && rec.progress) {
         const p = rec.progress;
@@ -647,7 +908,7 @@ function makeDagResult({ runRegistry }: DagToolDeps): OmdMcpTool {
       if (!runId) {
         throw new McpError(ErrorCode.InvalidParams, 'dag_result: missing required param "runId"');
       }
-      const rec = runRegistry.getRecord(runId);
+      const rec = runRegistry.getRecord(runId) ?? runRegistry.ensureFromDisk(runId);
       if (!rec) {
         return { content: [{ type: 'text' as const, text: `unknown run ${runId}` }], isError: true };
       }
@@ -689,7 +950,7 @@ function makeDagNodeOutput({ runRegistry }: DagToolDeps): OmdMcpTool {
       if (!nodeId) {
         throw new McpError(ErrorCode.InvalidParams, 'dag_node_output: missing required param "nodeId"');
       }
-      if (!runRegistry.getRecord(runId)) {
+      if (!runRegistry.getRecord(runId) && !runRegistry.ensureFromDisk(runId)) {
         return { content: [{ type: 'text' as const, text: `unknown run ${runId}` }], isError: true };
       }
       const detail = runRegistry.getNodeDetail(runId, nodeId);

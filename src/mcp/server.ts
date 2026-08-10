@@ -1,13 +1,15 @@
 /**
  * src/mcp/server —— omd MCP server 纯组装 (SDD 2026-07-19 omd-mcp-server, D-1/D-9)。
- * Server + StdioServerTransport + 工具注册, 零逻辑: 工具处理器住 src/mcp/tools/*.ts
- * (纯函数 + 注入接缝, 由后续 task 装配), 此处只把工具面挂上 SDK server。
+ * Server + StdioServerTransport + 工具注册; 唯一例外是 **S1 陈旧自检** (SDD 2026-08-10 §2 S1):
+ * 文件面裁决把 bootSha 捕获 + wrapStaleCheck 钉在本文件, 故 git 比对逻辑住这里 (见下方 S1 段),
+ * 工具处理器仍在 src/mcp/tools/*.ts (纯函数 + 注入接缝), 其余保持零逻辑。
  * stdout 是 MCP 协议通道 —— 本模块不写 stdout; 入口 (tui.ts `omd mcp`) 负责静默 logger。
  */
 import { McpServer, type ToolCallback } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { Implementation } from '@modelcontextprotocol/sdk/types.js';
 import type { ZodRawShapeCompat } from '@modelcontextprotocol/sdk/server/zod-compat.js';
+import { logger } from '../logger';
 
 /** 注册面工具定义。D-11: description 一行 ≤120 字符 (说明书住 SKILL/CLAUDE.md, 客户端每轮付 description 税)。 */
 export interface OmdMcpTool {
@@ -16,18 +18,188 @@ export interface OmdMcpTool {
   inputSchema: ZodRawShapeCompat;
   handler: ToolCallback<ZodRawShapeCompat>;
 }
+// ===========================================================================
+// S1 陈旧自检 (SDD 2026-08-10 §2 S1 / T3): server 代码落后于盘上时, 每次工具调用
+// 在输出**头部**注入一行警告 —— 不许静默 (§0 的教训: 修了但没修, 且无任何灯)。
+//
+// 判据与 HUD 新鲜度闸 (docs/architecture/omd-hud.md) **同源, 不发明第二套**: HUD 按 updatedAt 龄
+// 30s 分 live/stalled, 这里以同一 30s 档做重查节流 (窗口内复用上次比对; git spawn 每次
+// ~5ms, 但时间常数取既有档, 不另立)。分级:
+//   clean  HEAD == bootSha 且工作区干净              → 不注入
+//   dirty  HEAD == bootSha 但工作区脏 (porcelain 非空) → 降级档 (裁决): 只 debug 不注入
+//          (脏工作区是日常开发常态, 每调用注入=噪音; §0 病根是「commit 了没重启」, 那才响)
+//   stale  HEAD != bootSha                          → 注入 SDD §2 原文警告行
+// 读不到 git (非仓环境) → bootSha=null, fail-open 不注入不报错, 构造时打一条 debug, 永不再查。
+//
+// **反向自检 (SDD §2 S1 闸, 证伪方式)**: 把下方 `nowSha !== this.bootSha` 改成恒 true →
+// src/mcp/server.test.ts 的「同 sha 必无」测试当场红; 改成恒 false → 「假 sha 必现」当场红。
+// ===========================================================================
 
-/** 组装 server + 注册工具面: 纯循环无分支。info 由调用方给 (测试传固定值, 入口传包版本)。 */
-export function createOmdMcpServer(tools: readonly OmdMcpTool[], info: Implementation): McpServer {
+/** S1 git 读数接缝 —— 测试注入假 sha/假脏/假时钟, 生产用真实 git (Bun.spawnSync, 见 runGit)。 */
+export interface StaleGitDeps {
+  /** 当前 HEAD 全 sha; 读不到 → null (fail-open)。 */
+  headSha?: () => string | null;
+  /** 工作区是否有未提交改动 (git status --porcelain 非空)。 */
+  worktreeDirty?: () => boolean;
+  /** bootSha 之后领先的提交数; 数不出 (历史重写等) → null, 警告行省略 (+N commits)。 */
+  commitsAhead?: (bootSha: string) => number | null;
+  /** 时钟 (ms)。 */
+  now?: () => number;
+  /** 重查节流 ms —— 同源 HUD 新鲜度闸的 30s 档。 */
+  throttleMs?: number;
+}
+
+/** S1 分级: clean / dirty (工作区脏, 降级) / stale (HEAD 漂移)。 */
+export type StaleStatus = 'clean' | 'dirty' | 'stale';
+
+/** 一次比对的结果 (节流窗口内复用)。 */
+export interface StaleState {
+  status: StaleStatus;
+  bootSha: string | null;
+  nowSha: string | null;
+  /** bootSha..HEAD 提交数; 数不出 → null。 */
+  ahead: number | null;
+  checkedAt: number;
+}
+
+/** 跑一条 git 命令; 非零退出/抛错 → {ok:false} (fail-open 语义, 不 throw)。 */
+function runGit(args: string[]): { ok: boolean; out: string } {
+  try {
+    const r = Bun.spawnSync(['git', ...args], { cwd: process.cwd(), stdout: 'pipe', stderr: 'pipe' });
+    if (r.exitCode !== 0) return { ok: false, out: '' };
+    return { ok: true, out: r.stdout.toString().trim() };
+  } catch {
+    return { ok: false, out: '' };
+  }
+}
+
+const realHeadSha = (): string | null => {
+  const r = runGit(['rev-parse', 'HEAD']);
+  return r.ok ? r.out : null;
+};
+
+const realWorktreeDirty = (): boolean => {
+  const r = runGit(['status', '--porcelain']);
+  return r.ok && r.out.length > 0;
+};
+
+const realCommitsAhead = (bootSha: string): number | null => {
+  const r = runGit(['rev-list', '--count', `${bootSha}..HEAD`]);
+  if (!r.ok) return null;
+  const n = Number.parseInt(r.out, 10);
+  return Number.isNaN(n) ? null : n;
+};
+
+export class StaleChecker {
+  readonly bootSha: string | null;
+  readonly bootedAt: number;
+  private readonly deps: Required<StaleGitDeps>;
+  private state: StaleState | null = null;
+
+  constructor(deps: StaleGitDeps = {}) {
+    this.deps = {
+      headSha: realHeadSha,
+      worktreeDirty: realWorktreeDirty,
+      commitsAhead: realCommitsAhead,
+      now: Date.now,
+      throttleMs: 30_000, // 同源 HUD 30s 档, 不是新常数
+      ...deps,
+    };
+    this.bootedAt = this.deps.now();
+    this.bootSha = this.deps.headSha();
+    if (this.bootSha === null) {
+      // SDD §2 S1: 非仓环境 fail-open —— 不注入不报错, 只留一条 debug 留痕。
+      logger.debug('[omd/stale] git HEAD 读不到 (非仓环境?) — 陈旧自检 fail-open, 不注入不报错');
+    }
+  }
+
+  /** 节流比对: 30s 窗口内复用上次结果; bootSha=null (非仓) 永不再查。 */
+  check(): StaleState {
+    const now = this.deps.now();
+    if (this.bootSha === null) {
+      return { status: 'clean', bootSha: null, nowSha: null, ahead: null, checkedAt: now };
+    }
+    if (this.state !== null && now - this.state.checkedAt < this.deps.throttleMs) return this.state;
+    this.state = this.checkLocked();
+    return this.state;
+  }
+
+  private checkLocked(): StaleState {
+    const now = this.deps.now();
+    const nowSha = this.deps.headSha();
+    if (nowSha === null) {
+      // 运行中 git 读不到 (仓没了?) → fail-open 视为新鲜, 不注入 (无证据不指控)。
+      logger.debug('[omd/stale] 当前 HEAD 读不到 — fail-open 视为新鲜, 不注入');
+      return { status: 'clean', bootSha: this.bootSha!, nowSha: null, ahead: null, checkedAt: now };
+    }
+    // ← 反向自检锚点: 把 `!==` 改成恒 true/false, server.test.ts 的两条警告测试当场红。
+    if (nowSha !== this.bootSha) {
+      return {
+        status: 'stale',
+        bootSha: this.bootSha!,
+        nowSha,
+        ahead: this.deps.commitsAhead(this.bootSha!),
+        checkedAt: now,
+      };
+    }
+    if (this.deps.worktreeDirty()) {
+      return { status: 'dirty', bootSha: this.bootSha!, nowSha, ahead: 0, checkedAt: now };
+    }
+    return { status: 'clean', bootSha: this.bootSha!, nowSha, ahead: 0, checkedAt: now };
+  }
+
+  /** 要注入工具输出头部的那一行; 无警告 → null。 */
+  staleLine(): string | null {
+    const s = this.check();
+    if (s.status === 'stale') {
+      const ahead = s.ahead === null ? '' : ` (+${s.ahead} commits)`;
+      // SDD §2 S1 原文行 (英文, 契约文本, 不译)。
+      return `⚠ omd server code is stale: started at ${s.bootSha!.slice(0, 7)}, disk is now ${s.nowSha!.slice(0, 7)}${ahead}. Long-lived runs use in-memory code; reconnect to refresh the shell.`;
+    }
+    if (s.status === 'dirty') {
+      // 降级档 (裁决): 工作区脏但 HEAD 未动 → 只 debug 不注入。反向自检: 此档若改回注入,
+      // server.test.ts 的「脏 → 不注入」测试当场红。
+      logger.debug(`[omd/stale] 工作区脏但 HEAD 未动 (boot ${s.bootSha!.slice(0, 7)}) — 降级档, 不注入`);
+    }
+    return null;
+  }
+}
+
+/** 工具调用包装: 调用前取一次节流后的陈旧行, 有则注入结果**头部** (第一个 content 块)。 */
+export function wrapToolStale(tool: OmdMcpTool, stale: StaleChecker): OmdMcpTool {
+  return {
+    ...tool,
+    handler: async (args, extra) => {
+      const line = stale.staleLine();
+      const result = await tool.handler(args, extra);
+      if (!line) return result;
+      return { ...result, content: [{ type: 'text' as const, text: `${line}\n` }, ...result.content] };
+    },
+  };
+}
+
+/** 组装 server + 注册工具面。info 由调用方给 (测试传固定值, 入口传包版本)。
+ * 每个工具 handler 包一层 S1 陈旧自检 (wrapToolStale): 默认真 git 读数, 测试可注入假 StaleChecker。 */
+export function createOmdMcpServer(
+  tools: readonly OmdMcpTool[],
+  info: Implementation,
+  opts: { stale?: StaleChecker } = {},
+): McpServer {
+  const stale = opts.stale ?? new StaleChecker();
   const server = new McpServer(info);
   for (const t of tools) {
-    server.registerTool(t.name, { description: t.description, inputSchema: t.inputSchema }, t.handler);
+    server.registerTool(
+      t.name,
+      { description: t.description, inputSchema: t.inputSchema },
+      wrapToolStale(t, stale).handler,
+    );
   }
   // SDK 只在首次 registerTool 时才装 tools/list|tools/call 处理器 —— 空注册面 (骨架期) 下
   // tools/list 会吃 -32601。此处无条件初始化 (已装则 SDK 内部 early-return), 空面回 {tools: []}。
   (server as unknown as { setToolRequestHandlers(): void }).setToolRequestHandlers();
   return server;
 }
+
 
 /**
  * **客户端能力探针** (2026-07-31, MCP 2026-07-28 无状态化之后加的)。

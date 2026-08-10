@@ -7,11 +7,16 @@
  *   dag_status:   unknown runId → isError; known → summary
  *   dag_result:   unknown → isError; non-done → isError; done → result
  */
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { RunRegistry } from '../../src/mcp/run-registry';
 import { createDagTools, type DagEngine } from '../../src/mcp/tools/dag-tools';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../../src/harness/dag/types';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
+
+// S2 进程化 (SDD 2026-08-10): 本文件测 dag_run 的**进程内执行体** (生产里只在 dag-exec
+// 子进程跑) —— 设 OMD_DAG_EXEC_CHILD=1 让 handler 走执行体而非 spawn 真子进程。
+beforeEach(() => { process.env.OMD_DAG_EXEC_CHILD = '1'; });
+afterEach(() => { delete process.env.OMD_DAG_EXEC_CHILD; });
 
 /** Minimal valid ConductorPlan for dag_run_plan tests. */
 const VALID_PLAN_JSON = JSON.stringify({

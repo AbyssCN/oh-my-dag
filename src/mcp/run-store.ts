@@ -14,9 +14,11 @@
  * ## 存什么, 不存什么
  *
  * 存**身份与状态**: runId / status / goal / meta / error / 时间戳 / 属主进程。
- * 不存 `result` / `nodeDetails` / `progress` —— 它们体量大, 而且重启之后的权威来源是
- * **continuity checkpoint** (节点产物、轮次、毒集都在那儿)。registry 只需要够得着 runId 与
- * 它的状态, 剩下的由 resume 从盘上重建。照 map-store 已定的分工: 磁盘是真相, 这里是索引。
+ * S2 进程化 (SDD 2026-08-10 §2) 起, **result / nodeDetails / progress 也存** —— 此前不存的
+ * 理由是"重启后权威来源是 continuity checkpoint", 而进程化后 server 侧 `dag_status`/`dag_result`
+ * **只读盘** (子进程写, server 不再写该 run 状态), 内存里根本没有子进程 run 的这三样;
+ * 不存 = 子进程跑完的结果与进度在盘上永远读不到。体量问题用 JSON 列 + fail-open 兜:
+ * 这是 detached run 唯一出口, 不是可选项。
  *
  * ## 属主进程 (这条是关键, 不是记账)
  *
@@ -32,7 +34,7 @@ import { logger } from '../logger';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-/** 一条持久化的 run 身份 (不含 result/progress —— 见模块注)。 */
+/** 一条持久化的 run 记录 (身份 + 状态 + 终态产物 —— 见模块注)。 */
 export interface PersistedRun {
   runId: string;
   status: string;
@@ -43,6 +45,17 @@ export interface PersistedRun {
   updatedAt: string;
   /** 写这条记录时正在跑它的进程。终态记录里没有意义, 只在 pending/running 上判活。 */
   ownerPid: number | null;
+  /** 终态结果 (dag_result 消费; 子进程 run 只能从盘上拿)。 */
+  result?: unknown;
+  /** 节点明细 (dag_node_output 消费; 同上)。 */
+  nodeDetails?: Record<string, { status: string; output: string; error?: string }>;
+  /** 活体进度 (dag_status 消费; 子进程每次节点事件写穿)。 */
+  progress?: {
+    planned: Array<{ id: string; kind: string }>;
+    started: string[];
+    startedAt: Record<string, string>;
+    settled: Array<{ id: string; status: 'done' | 'failed' | 'skipped'; kind: string; model?: string }>;
+  };
 }
 
 export interface RunStore {
@@ -50,6 +63,8 @@ export interface RunStore {
   put(rec: PersistedRun): void;
   /** 全部记录 (启动时 hydrate 用)。 */
   all(): PersistedRun[];
+  /** 单条 (server 侧 dag_status/dag_cancel 只读盘接缝 —— 不整表 load)。 */
+  get(runId: string): PersistedRun | null;
   close(): void;
 }
 
@@ -62,7 +77,20 @@ interface Row {
   created_at: string;
   updated_at: string;
   owner_pid: number | null;
+  result: string | null;
+  node_details: string | null;
+  progress: string | null;
 }
+
+/** JSON 列宽容解析: 坏 JSON/缺列 → undefined (老库行/损坏行不阻断读)。 */
+const parseJson = <T>(s: string | null): T | undefined => {
+  if (s === null) return undefined;
+  try {
+    return JSON.parse(s) as T;
+  } catch {
+    return undefined;
+  }
+};
 
 const toRec = (r: Row): PersistedRun => ({
   runId: r.run_id,
@@ -73,7 +101,11 @@ const toRec = (r: Row): PersistedRun => ({
   createdAt: r.created_at,
   updatedAt: r.updated_at,
   ownerPid: r.owner_pid,
+  ...(parseJson<unknown>(r.result) !== undefined ? { result: parseJson(r.result) } : {}),
+  ...(parseJson(r.node_details) !== undefined ? { nodeDetails: parseJson(r.node_details) } : {}),
+  ...(parseJson(r.progress) !== undefined ? { progress: parseJson(r.progress) } : {}),
 });
+
 
 /**
  * 造一个 run 持久器。path 默认 `.omd/runs.db`; `:memory:` 或注入 db = 瞬时/测试。
@@ -85,40 +117,61 @@ export function createRunStore(opts: { path?: string; db?: Database } = {}): Run
   if (!opts.db && path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
   const db = opts.db ?? new Database(path);
   db.run('PRAGMA journal_mode = WAL');
+  db.run('PRAGMA journal_mode = WAL');
   db.run(`
     CREATE TABLE IF NOT EXISTS omd_runs (
-      run_id     TEXT PRIMARY KEY,
-      status     TEXT NOT NULL,
-      goal       TEXT NOT NULL,
-      meta       TEXT NOT NULL,
-      error      TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      owner_pid  INTEGER
+      run_id       TEXT PRIMARY KEY,
+      status       TEXT NOT NULL,
+      goal         TEXT NOT NULL,
+      meta         TEXT NOT NULL,
+      error        TEXT,
+      created_at   TEXT NOT NULL,
+      updated_at   TEXT NOT NULL,
+      owner_pid    INTEGER,
+      result       TEXT,
+      node_details TEXT,
+      progress     TEXT
     )
   `);
+  // S2 进程化加的 JSON 列: 老库 (2026-08-10 前建) 没有这三列 —— 逐列 ALTER 补上
+  // (列已存在 → SQLite 抛 duplicate column, 跳过即可; 这是幂等迁移不是新逻辑)。
+  const cols = new Set((db.query('PRAGMA table_info(omd_runs)').all() as { name: string }[]).map((c) => c.name));
+  for (const col of ['result', 'node_details', 'progress']) {
+    if (!cols.has(col)) db.run(`ALTER TABLE omd_runs ADD COLUMN ${col} TEXT`);
+  }
   const up = db.query(
-    `INSERT INTO omd_runs (run_id, status, goal, meta, error, created_at, updated_at, owner_pid)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO omd_runs (run_id, status, goal, meta, error, created_at, updated_at, owner_pid, result, node_details, progress)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(run_id) DO UPDATE SET
        status = excluded.status, goal = excluded.goal, meta = excluded.meta, error = excluded.error,
-       updated_at = excluded.updated_at, owner_pid = excluded.owner_pid`,
+       updated_at = excluded.updated_at, owner_pid = excluded.owner_pid,
+       result = excluded.result, node_details = excluded.node_details, progress = excluded.progress`,
   );
   const list = db.query(`SELECT * FROM omd_runs ORDER BY created_at ASC`);
+  const one = db.query(`SELECT * FROM omd_runs WHERE run_id = ?`);
+
+  const toPersisted = (r: Row): PersistedRun => toRec(r);
+
+  const put = (rec: PersistedRun): void => {
+    up.run(
+      rec.runId,
+      rec.status,
+      rec.goal,
+      JSON.stringify(rec.meta),
+      rec.error ?? null,
+      rec.createdAt,
+      rec.updatedAt,
+      rec.ownerPid,
+      rec.result === undefined ? null : JSON.stringify(rec.result),
+      rec.nodeDetails === undefined ? null : JSON.stringify(rec.nodeDetails),
+      rec.progress === undefined ? null : JSON.stringify(rec.progress),
+    );
+  };
 
   return {
     put(rec) {
       try {
-        up.run(
-          rec.runId,
-          rec.status,
-          rec.goal,
-          JSON.stringify(rec.meta),
-          rec.error ?? null,
-          rec.createdAt,
-          rec.updatedAt,
-          rec.ownerPid,
-        );
+        put(rec);
       } catch (e) {
         // fail-open: 持久化不该把一次真跑带走。
         //
@@ -135,9 +188,17 @@ export function createRunStore(opts: { path?: string; db?: Database } = {}): Run
     },
     all() {
       try {
-        return (list.all() as Row[]).map(toRec);
+        return (list.all() as Row[]).map(toPersisted);
       } catch {
         return [];
+      }
+    },
+    get(runId) {
+      try {
+        const row = one.get(runId) as Row | null;
+        return row ? toPersisted(row) : null;
+      } catch {
+        return null;
       }
     },
     close() {

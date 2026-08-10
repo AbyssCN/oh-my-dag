@@ -9,7 +9,7 @@
  * 这一条钉的就是接线本身 —— 与 `goal-resume.test.ts` 钉 continuity 接线同一个理由:
  * **有实现、零调用方**是这个仓反复撞见的形态, 只能靠"从工具面打进去"的测试拦住。
  */
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,6 +22,10 @@ import { createDagRecorder } from '../../harness/dag-record';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../../harness/dag/types';
 import type { RunGoalResult } from '../../harness/goal/run-goal';
 import type { ConductorPlan } from '../../harness/conductor-plan';
+
+// S2 进程化 (SDD 2026-08-10): dag_run 用例走**进程内执行体** (生产里只在 dag-exec 子进程跑)。
+beforeEach(() => { process.env.OMD_DAG_EXEC_CHILD = '1'; });
+afterEach(() => { delete process.env.OMD_DAG_EXEC_CHILD; });
 
 const stubResult = (planName: string, leavesIn: number, cacheHit: number): ExecutorDagResult =>
   ({

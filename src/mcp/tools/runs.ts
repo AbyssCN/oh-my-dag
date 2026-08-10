@@ -11,6 +11,8 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import type { RunRegistry, RunStatus } from '../run-registry.js';
 import type { OmdMcpTool } from '../server.js';
+import { defaultIsAlive } from '../run-store.js';
+import { STALLED_AFTER_MS, continuityAgeMs } from './dag-tools';
 
 /** 列上限 + goal 渲染截断宽。 */
 const MAX_RUNS = 20;
@@ -24,9 +26,10 @@ export interface RunsToolDeps {
 }
 
 /** 合并后的一行视图。 */
+/** 合并后的一行视图。 */
 interface RunRow {
   runId: string;
-  status: RunStatus | 'unknown(restart)';
+  status: RunStatus | 'unknown(restart)' | 'stalled';
   goal: string;
   createdAt: string;
 }
@@ -50,6 +53,18 @@ function makeDagRuns({ runRegistry, cwd }: RunsToolDeps): OmdMcpTool {
         const rec = runRegistry.getRecord(runId);
         if (!rec) continue;
         rows.set(runId, { runId, status: rec.status, goal: rec.goal, createdAt: rec.createdAt });
+      }
+      // S2 进程化: 子进程 run 只活在盘上 (runs.db) —— 内存之外并入盘上记录 (状态原样,
+      // 与内存 run 同源同列, 不再是 'unknown(restart)')。内存态优先 (本进程自己的 run 更新)。
+      for (const r of runRegistry.listDiskRuns()) {
+        if (rows.has(r.runId)) continue;
+        if (status && r.status !== status) continue;
+        let st: RunRow['status'] = r.status as RunStatus;
+        // 孤儿 (S2, 判据与 dag_status 同源): running 而属主 pid 不活 ∧ 5min 无 checkpoint → stalled。
+        if (r.status === 'running' && r.ownerPid !== null && !defaultIsAlive(r.ownerPid) && continuityAgeMs(r.runId, cwd) > STALLED_AFTER_MS) {
+          st = 'stalled';
+        }
+        rows.set(r.runId, { runId: r.runId, status: st, goal: r.goal, createdAt: r.createdAt });
       }
       // 磁盘态无活体 status — 仅无过滤时并入, 内存态优先 (已存在则跳)。
       if (!status) {

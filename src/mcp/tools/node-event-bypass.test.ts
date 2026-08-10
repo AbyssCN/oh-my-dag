@@ -9,7 +9,7 @@
  * 的函数**,只接一处的症状与完全没接一模一样(`run-record-wiring.test.ts` 的注释记过这个坑;
  * 本片第一版差点原样再踩一次 —— 先只改了 `launchPlanRun` 那处)。
  */
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,6 +18,10 @@ import type { DagNodeEvent, ExecutorDagConfig, ExecutorDagResult } from '../../h
 import { HudMirror } from '../../hud/mirror';
 import { RunRegistry } from '../run-registry';
 import { type DagEngine, createDagTools } from './dag-tools';
+
+// S2 进程化 (SDD 2026-08-10): dag_run 用例走**进程内执行体** (生产里只在 dag-exec 子进程跑)。
+beforeEach(() => { process.env.OMD_DAG_EXEC_CHILD = '1'; });
+afterEach(() => { delete process.env.OMD_DAG_EXEC_CHILD; });
 
 const EMPTY: ExecutorDagResult = {
   answer: 'ok', nodes: [], usage: { in: 0, out: 0 },

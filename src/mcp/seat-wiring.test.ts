@@ -103,11 +103,14 @@ let savedConfigPath: string | undefined;
 beforeEach(() => {
   savedConfigPath = process.env.OMD_CONFIG_PATH;
   process.env.OMD_CONFIG_PATH = '/nonexistent/omd-verifier-wired-test.json';
+  // S2 进程化 (SDD 2026-08-10): configSeenByEngine 走 dag_run 的**进程内执行体** (子进程路径见 dag-exec.ts)。
+  process.env.OMD_DAG_EXEC_CHILD = '1';
   resetConfigCache();
 });
 afterEach(() => {
   if (savedConfigPath === undefined) delete process.env.OMD_CONFIG_PATH;
   else process.env.OMD_CONFIG_PATH = savedConfigPath;
+  delete process.env.OMD_DAG_EXEC_CHILD;
   clearProviders();
   resetConfigCache();
 });

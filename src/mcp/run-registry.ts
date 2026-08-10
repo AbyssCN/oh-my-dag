@@ -6,6 +6,9 @@
  *   - **身份持久面** (S2, 2026-08-03): 给了 `store` 则 runId/状态写穿 `.omd/runs.db`, 构造时 hydrate ——
  *     MCP server 是 stdio + 客户端消失即自杀, "重启"是每次会话结束都会发生的事; 此前一重启就
  *     **没人记得那个 runId 存在过**, 而 checkpoint 一直在盘上。见 run-store.ts
+ *   - **只读盘接缝** (S2 进程化, 2026-08-10): server 侧 `dag_status`/`dag_runs`/`dag_cancel` 读
+ *     **子进程写的** run —— 内存里没有它们, 读侧经 `ensureFromDisk`/`diskRecord` 现读盘。
+ *     server 从此**不再写**子进程 run 的状态 (写者唯一 = 子进程)。
  *   - 产物持久面: continuity CheckpointManager (crash resume, D-3/D-9)
  *   - 未知 runId 查询 → 明确 MCP error (isError + message), 非 crash
  *   - 活体进度: applyNodeEvent 累积引擎 DagNodeEvent → planned/started/settled
@@ -14,7 +17,7 @@
  */
 
 import type { DagNodeEvent } from '../harness/dag/types';
-import { defaultIsAlive, type RunStore } from './run-store';
+import { defaultIsAlive, type PersistedRun, type RunStore } from './run-store';
 import { logger } from '../logger';
 
 /**
@@ -130,10 +133,54 @@ export class RunRegistry {
           : r.error
             ? { error: r.error }
             : {}),
+        ...(r.result !== undefined ? { result: r.result } : {}),
+        ...(r.nodeDetails !== undefined ? { nodeDetails: r.nodeDetails } : {}),
+        ...(r.progress !== undefined ? { progress: r.progress } : {}),
         createdAt: r.createdAt,
         updatedAt: r.updatedAt,
       });
     }
+  }
+
+  /**
+   * 读侧接缝 (S2 进程化): 内存没有该 run → 从持久面**现读** (不做 hydrate 的
+   * 孤儿转换 —— 那是启动语义; 运行期孤儿由 dag_status/dag_runs 的 stalled 判据显示, server
+   * 不写子进程 run 的状态)。
+   *
+   * ⚠ **不并入内存**: 子进程 run 的状态会推进 (running → done/failed), 内存快照会陈 ——
+   * 早前版本把盘快照 set 进内存, 之后 `getRecord` 命中陈旧快照 → dag_status 永远显示旧状态,
+   * 直到孤儿闸 (5min 无 checkpoint) 误标 stalled (G1 真机探针实测: 15min 轮询不见 done)。
+   * 盘是子进程 run 的唯一权威, 读侧每次现读; 本进程自己的 run 由 register/start 管内存,
+   * 调用点 (getRecord ?? ensureFromDisk) 里 getRecord 先命中, 轮不到这里。
+   * 反向自检: 把 `this.runs.set(runId, rec)` 加回来 → G1 探针 dag_status 轮询停在 running
+   * 快照 → 超时红 (探针实测路径, 不是模拟)。
+   */
+  ensureFromDisk(runId: string): RunRecord | null {
+    if (!this.store) return null;
+    const r = this.store.get(runId);
+    if (!r) return null;
+    const rec: RunRecord = {
+      status: r.status as RunStatus,
+      goal: r.goal,
+      meta: r.meta,
+      ...(r.error ? { error: r.error } : {}),
+      ...(r.result !== undefined ? { result: r.result } : {}),
+      ...(r.nodeDetails !== undefined ? { nodeDetails: r.nodeDetails } : {}),
+      ...(r.progress !== undefined ? { progress: r.progress } : {}),
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+    };
+    return rec;
+  }
+
+  /** 直读盘上一条 (不经内存; 属主 pid 等判活字段只在盘上)。无 store → null。 */
+  diskRecord(runId: string): PersistedRun | null {
+    return this.store?.get(runId) ?? null;
+  }
+
+  /** 盘上全部 (dag_runs 合并视图用; 子进程 run 只在这里)。无 store → []。 */
+  listDiskRuns(): PersistedRun[] {
+    return this.store?.all() ?? [];
   }
 
   /**
@@ -168,6 +215,9 @@ export class RunRegistry {
       goal: rec.goal,
       meta: rec.meta,
       ...(rec.error ? { error: rec.error } : {}),
+      ...(rec.result !== undefined ? { result: rec.result } : {}),
+      ...(rec.nodeDetails !== undefined ? { nodeDetails: rec.nodeDetails } : {}),
+      ...(rec.progress !== undefined ? { progress: rec.progress } : {}),
       createdAt: rec.createdAt,
       updatedAt: rec.updatedAt,
       // 终态记录的 pid 没有意义 (判活只在 pending/running 上做), 存 null 免得误导。
@@ -212,6 +262,9 @@ export class RunRegistry {
     if (!rec) throw new Error(`unknown run ${runId}`);
     this.transition(runId, 'done');
     rec.result = result;
+    // S2 进程化: 结果必须写穿 —— 子进程 run 的结果是 parent `dag_result` 唯一出口
+    // (parent 内存里没有这条)。transition 已写过一次但 result 是它之后才落的。
+    this.persist(runId);
   }
 
   fail(runId: string, error: string): void {
@@ -283,6 +336,8 @@ export class RunRegistry {
     if (!rec) return;
     rec.nodeDetails = details;
     rec.updatedAt = new Date().toISOString();
+    // 同 succeed: 子进程 run 的节点明细只经盘上到达 parent (dag_node_output)。
+    this.persist(runId);
   }
 
   /** 应用引擎节点事件 → 活体进度; 未知 runId → 静默忽略 (对齐 setNodeDetails)。 */
@@ -313,6 +368,9 @@ export class RunRegistry {
         break;
     }
     rec.updatedAt = new Date().toISOString();
+    // 同 setNodeDetails: 活体进度写穿 —— parent 的 dag_status 读盘拿子进程 run 的进度。
+    // 每次节点事件一行小写 (WAL + fail-open), 相对模型调用耗时可忽略。
+    this.persist(runId);
   }
 
   /** 查单节点明细; 未知 runId/nodeId → null (不抛)。 */
@@ -324,8 +382,11 @@ export class RunRegistry {
    * MCP-safe 查询: 未知 runId → isError 结果 (非 crash)。
    * 已知 → 正常摘要。
    */
-  getSummary(runId: string): ToolResult {
-    const rec = this.runs.get(runId);
+  getSummary(runId: string, fromDisk?: RunRecord): ToolResult {
+    // 子进程 run 不在本进程内存 —— 调用方 (dag_status) 已用 getRecord ?? ensureFromDisk
+    // 从盘上现取 rec, 这里直接渲染它; 否则内存无 → 误报 "unknown run"
+    // (G1 真机探针实测: 子进程 done 写穿后, dag_status 轮询永远 unknown → 15min 超时)。
+    const rec = fromDisk ?? this.runs.get(runId);
     if (!rec) {
       return {
         content: [{ type: 'text', text: `unknown run ${runId}` }],

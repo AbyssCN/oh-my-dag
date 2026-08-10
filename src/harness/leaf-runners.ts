@@ -171,6 +171,12 @@ export interface ResearchLeafInput {
   council?: boolean;
   /** 深档: 种子 query 作者化 (3-4 个互补角度各自检索) + provider 池全并行去重。默认关。 */
   deep?: boolean;
+  /**
+   * S2 (2026-08-10): 报告文件名基准 —— dag_research 进程化后 runId 由调用方 (母进程) 生成,
+   * 透传下来让报告与 registry runId 同源 (一 run 两 id 必漂)。省略 = 内部自造 (executor
+   * research 节点原语义, 零变化)。
+   */
+  runId?: string;
 }
 export interface ResearchLeafResult {
   /** 研究终稿正文 (进下游节点的 fan-in)。 */

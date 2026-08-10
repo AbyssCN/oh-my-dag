@@ -15,7 +15,7 @@
  * 真装配、真 `createDagTools`、真旁路、真 backend、真 `DagHud`。
  * 真模型那一层是 L4(`scripts/tui-l4-smoke.ts`),默认不跑。
  */
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -26,6 +26,10 @@ import { assembleOmdMcpTools } from '../mcp/assemble';
 import { createEmbeddedBackend } from './backend-embedded';
 import { DagHud } from './components/dag-hud';
 import { createTheme } from './theme';
+
+// S2 进程化 (SDD 2026-08-10): dag_run 用例走**进程内执行体** (见 mcp-dag-tools.test.ts 同款注)。
+beforeEach(() => { process.env.OMD_DAG_EXEC_CHILD = '1'; });
+afterEach(() => { delete process.env.OMD_DAG_EXEC_CHILD; });
 
 const EMPTY = { answer: 'ok', nodes: [], usage: { in: 0, out: 0 } } as unknown as ExecutorDagResult;
 

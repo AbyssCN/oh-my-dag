@@ -5,7 +5,7 @@
  * Covers: dag_review happy+fail, dag_runs merge,
  *         dag_run resume via reopenForResume (continuity.resume=true).
  */
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -16,6 +16,10 @@ import { createDagTools, type DagEngine } from '../../src/mcp/tools/dag-tools';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../../src/harness/dag/types';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
 import { CheckpointManager } from '../../src/harness/continuity/checkpoint-manager';
+
+// S2 进程化 (SDD 2026-08-10): dag_run resume 测试走**进程内执行体** (见 mcp-dag-tools.test.ts 同款注)。
+beforeEach(() => { process.env.OMD_DAG_EXEC_CHILD = '1'; });
+afterEach(() => { delete process.env.OMD_DAG_EXEC_CHILD; });
 
 // ---------------------------------------------------------------------------
 // helpers
