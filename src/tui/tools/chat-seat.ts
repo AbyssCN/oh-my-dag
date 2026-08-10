@@ -20,6 +20,7 @@
  */
 import type { AnyOmdTool } from '../../harness/agent-tools';
 import { createOmdAgentTools } from '../../harness/agent-tools';
+import { createMcpClientTools } from '../../mcp/client/meta-tools';
 import type { OmdMcpTool } from '../../mcp/server';
 import { createConductorChatTools } from '../../serve/chat-tools';
 import type { ApprovalGate } from '../approval/gate';
@@ -71,6 +72,9 @@ export function createChatSeatTools(o: ChatSeatToolsOpts): AnyOmdTool[] {
     ...createCodegraphTools({ cwd: o.cwd }),
     // S-6: 让模型自己取 skill 正文。一条 skill 都没有时不挂(同上:恒失败的工具比没有更糟)。
     ...createSkillTools(),
+    // 开放生态 S1: 外部 MCP 经双 meta-tool (find/call) 接入 —— 零注册不挂 (I-2),
+    // 外部工具数不进冻结前缀 (schema 全走返回值, SDD D-2)。
+    ...createMcpClientTools({ cwd: o.cwd }),
     // ★ `ask_user`(2026-08-08):让它能反问一句。**没有 host 就不挂** ——
     //   能力探测面靠"工具在不在", 挂一个必然问不出来的工具比没有更糟(同 codegraph 那条)。
     ...(o.askUser ? createAskUserTool(o.askUser) : []),

@@ -75,6 +75,10 @@ const DYNAMIC_ENTRIES: Record<string, string> = {
     '**benchmark 靶子**: `eval/tasks/medium.ts` 与 `large.ts` 都把这个路径列进目标集 —— ' +
     'eval 会清空它让 fleet 照 SPEC 重建。⚠ `planToMermaid` 生产零消费者, ' +
     '存在的唯一理由就是当靶子; 删它会同时打断两个 fixture。',
+  'src/mcp/client/fixtures/stdio-ping-server.ts':
+    'MCP client 真传输测试的 fixture server, 按**路径字符串**拉起: `mcp/client/pool.test.ts` 的 ' +
+    'FIXTURE = 这个路径 → `StdioClientTransport({ command: "bun", args: [<它>] })` 起真子进程。' +
+    '生产零消费者是设计 (开放生态 SDD S1): 它验的是真 stdio 传输腿, InMemory 假体验不出。',
 };
 
 // ⚠ 走图的四件 (`IMPORT_SPEC` / `tsFiles` / `resolveSpec` / `reachableFrom`) 2026-08-03

@@ -5,7 +5,9 @@
  * 但那条路要花钱、要真模型。这里先钉住**必要条件**:手在不在工具面上。
  * 手不在,后面怎么验都是空的。
  */
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { assembleOmdMcpTools } from '../../mcp/assemble';
@@ -145,5 +147,35 @@ describe('切片①:审批闸包在工具面外(不变量:闸永远有一层)', 
     const r = await read!.execute('t', { path: 'package.json' } as never);
     expect(askedCount).toBe(0);
     expect((r.content[0] as { text: string }).text).toContain('oh-my-dag');
+  });
+});
+
+describe('开放生态 S1:外部 MCP 双 meta-tool 接线 (I-1 / I-2)', () => {
+  // 反向自检: 把 chat-seat.ts 里 createMcpClientTools 那行删掉 → I-2 那条当场红。
+  test('★ I-1 零注册 → 工具面与今日相同, 没有 mcp_find/mcp_call', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-seat-nomcp-'));
+    const names = createChatSeatTools({ cwd, mcpTools: mcpTools() }).map((t) => t.name);
+    expect(names).not.toContain('mcp_find');
+    expect(names).not.toContain('mcp_call');
+  });
+
+  test('★ I-2 有注册 → 恰好多两件 meta-tool, 外部工具本身不进工具面', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-seat-mcp-'));
+    mkdirSync(join(cwd, '.omd'), { recursive: true });
+    writeFileSync(join(cwd, '.omd', 'mcp.json'), JSON.stringify({ mcpServers: { some: { command: 'x' } } }));
+    const bare = createChatSeatTools({ cwd: mkdtempSync(join(tmpdir(), 'omd-seat-nomcp2-')), mcpTools: mcpTools() });
+    const withMcp = createChatSeatTools({ cwd, mcpTools: mcpTools() });
+    expect(withMcp.length).toBe(bare.length + 2);
+    expect(withMcp.map((t) => t.name)).toEqual(expect.arrayContaining(['mcp_find', 'mcp_call']));
+  });
+
+  test('meta-tool 的 promptSnippet 进 system prompt(工具在面上, 模型得知道)', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-seat-mcp2-'));
+    mkdirSync(join(cwd, '.omd'), { recursive: true });
+    writeFileSync(join(cwd, '.omd', 'mcp.json'), JSON.stringify({ mcpServers: { some: { command: 'x' } } }));
+    const tools = createChatSeatTools({ cwd, mcpTools: mcpTools() });
+    const p = buildConductorChatSystemPrompt({ cwd, tools });
+    expect(p).toContain('mcp_find');
+    expect(p).toContain('mcp_call');
   });
 });
