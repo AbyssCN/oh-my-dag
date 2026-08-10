@@ -82,6 +82,7 @@ export async function sdkCompleteRaw(modelId: string, messages: ModelMessage[], 
       model: modelId,
       tools: [],
       allowedTools: [],
+      strictMcpConfig: true, // 完成位无工具, 全局 MCP schema 纯浪费 (两臂实测省 ~23k/发)
       // P0 (owner 验收 2026-08-10, run bff8c5ce): 曾是 1。CLI 侧 harness 自己会造额外轮
       // (模型试发一次 tool_use —— 工具面空、非交互 = 自动 deny —— deny 也消耗一轮; 触发非确定,
       // 同形复现两次未塌但生产塌了)。8 = 有界余量: 工具全 deny 下多的轮只能是文本续写, 撑不爆。

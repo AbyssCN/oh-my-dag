@@ -57,6 +57,7 @@ describe('callModel 分派 (claude-code:*)', () => {
     expect(o.model).toBe('claude-opus-5');
     expect(o.maxTurns).toBe(8); // P0: 1 → 8 (CLI harness 自造轮; deny 掉的 tool_use 也耗一轮)
     expect(o.tools).toEqual([]);
+    expect(o.strictMcpConfig).toBe(true); // 全局 MCP schema 不注入 (~23k/发)
     expect(o.effort).toBe('high');
     expect(o.systemPrompt).toBe('你是终审');
     expect(seen.calls[0]!.prompt).toBe('判一下');

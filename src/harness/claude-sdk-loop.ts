@@ -238,6 +238,9 @@ export async function runSdkAgentLoop(o: SdkLoopOpts): Promise<SdkLoopOut> {
     // 内置工具全清:座位的工具面就是闸(agent-tools.ts 搬家时的同一条纪律)。
     tools: [],
     mcpServers: { [MCP_SERVER_NAME]: { type: 'sdk', name: MCP_SERVER_NAME, instance: bridge.instance } },
+    // 只认上面显式传的 MCP —— 不设它 CLI 会把用户全局 MCP 的工具 schema 全量注入
+    // (两臂实测 32,612 → 9,126 prompt 侧 token/session), 且违背「工具面就是闸」。
+    strictMcpConfig: true,
     allowedTools: bridge.allowedTools,
     abortController: abort,
     ...(o.effort ? { effort: o.effort } : {}),

@@ -114,6 +114,7 @@ describe('持久化 + 账本 + 会话映射', () => {
       sdkQueryFn: fakeQuery([asst('好'), success('sdk-a')], seen),
     });
     expect((seen.options?.settings as { advisorModel?: string })?.advisorModel).toBe('claude-opus-5');
+    expect(seen.options?.strictMcpConfig).toBe(true); // 全局 MCP 注入 = ~23k/session + 破工具闸
 
     const seen2: { options?: Options } = {};
     await runChatTurnSdk({
