@@ -8,13 +8,20 @@
  * ## 读数从哪来 —— 复用 TUI 账本,不另起一本
  *
  * `.omd/tui-usage.jsonl` 是**一个仓一本账**(`harness/cli.ts` 的 mcp 分支已把 emitModelUsage
- * 订上去,engine 侧逐条落这里)。本闸只调 `createTuiUsageLedger(...).window(7d)` ——
- * 读回/坏行跳过/求和全是账本自己的既有逻辑,这里一行解析都不重写。
+ * 订上去,engine 侧逐条落这里)。
  *
- * **每次检查现开一个实例** = 现读盘,不是复用某个长活实例。两个理由:
- * ① MCP server 是长驻进程,而账本是**多写者**(TUI、别的 omd 进程、本进程的 engine 钩子)
- *    各自 append —— 进程内那份 `records` 只含该实例亲眼见过的;
- * ② 因此**一轮跑到半截跨线也看得见**(轮前没超、图烧超了 → 下一次派图当场被拦)。
+ * ## 增量读(S-E, 契约 C-7;此前每次检查整本重解析,压实阈值 50k 行 = 稳态 ~190× 今日量)
+ *
+ * 唯一合法形态 = **append 字节偏移续读,禁 TTL**(普查 §1.2:账本多写者——TUI、别的 omd
+ * 进程、本进程 engine 钩子各自 append;这条闸的全部意义是「图 N 看得见图 1..N−1 烧掉的」,
+ * 按偏移读新增字节保住了「轮中途越线下一次派图当场被拦」)。三条护栏:
+ * ① 文件尺寸 < 已读偏移 → 压实/重写发生过 → memo 作废整本重读(账本压实在 ledger 构造时
+ *    会把 50k 行截成 10k 行,偏移必失效);
+ * ② 尾部半行(写者写到一半)留 carry 下轮拼——多写者 append 原子性只到行粒度;
+ * ③ 出窗修剪只对**窗口前移**成立;更宽窗口的查询(since < prunedBefore)→ memo 作废重读,
+ *    正确性优先于省一次全读。
+ * 解析刀法与账本逐字同(JSON 坏行跳过;`ts` number ∧ `model` string 才算一条;
+ * costUsd 缺失 → 求和 NaN 语义原样保留 —— 那是「尺子坏了」的信号,不许吞)。
  *
  * ## NULL ≠ 0 ≠ 不适用(本仓纪律,这里三种都出现)
  *
@@ -32,10 +39,93 @@
  * 否则打错一个字符 = 闸悄悄没了(那正是本仓最贵的静默失效形态)。
  */
 import { join } from 'node:path';
+import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs';
 import { logger } from '../harness/logger';
-import { createTuiUsageLedger } from '../tui/usage/ledger';
+import { USAGE_LEDGER_FILE } from '../tui/usage/ledger';
 
 export const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
+// ── C-7 增量读 memo(按账本路径;设计见文件头「增量读」节) ───────────────────
+interface BudgetRow {
+  ts: number;
+  /** 可能缺失(老行)—— 求和成 NaN 是「尺子坏了」信号,原样保留。 */
+  costUsd?: number;
+  unpriced: boolean;
+}
+interface LedgerMemo {
+  offset: number;
+  carry: string;
+  rows: BudgetRow[];
+  prunedBefore: number;
+}
+const ledgerMemos = new Map<string, LedgerMemo>();
+
+/** 测试钩子:跨用例不串味。 */
+export function resetBudgetLedgerMemoForTest(): void {
+  ledgerMemos.clear();
+}
+
+const freshMemo = (): LedgerMemo => ({ offset: 0, carry: '', rows: [], prunedBefore: 0 });
+
+/** 增量读账本 → 窗内 {calls, costUsd, unpriced}。语义与 ledger.window() 的三个消费字段逐分等价。 */
+function readWeeklyWindow(dir: string, windowMs: number, nowMs: number): { calls: number; costUsd: number; unpriced: boolean } {
+  const path = join(dir, USAGE_LEDGER_FILE);
+  const since = nowMs - windowMs;
+  let memo = ledgerMemos.get(path);
+  if (!memo || since < memo.prunedBefore) {
+    // 护栏③:更宽窗口够不着已修剪的行 → 作废重读(正确性 > 省一次全读)。
+    memo = freshMemo();
+    ledgerMemos.set(path, memo);
+  }
+  if (!existsSync(path)) {
+    ledgerMemos.set(path, freshMemo());
+    return { calls: 0, costUsd: 0, unpriced: false };
+  }
+  const size = statSync(path).size;
+  if (size < memo.offset) {
+    // 护栏①:压实/重写发生过,偏移作废。
+    memo = freshMemo();
+    ledgerMemos.set(path, memo);
+  }
+  if (size > memo.offset) {
+    const fd = openSync(path, 'r');
+    try {
+      const buf = Buffer.alloc(size - memo.offset);
+      const n = readSync(fd, buf, 0, buf.length, memo.offset);
+      memo.offset += n;
+      const text = memo.carry + buf.toString('utf8', 0, n);
+      const parts = text.split('\n');
+      memo.carry = parts.pop() ?? ''; // 护栏②:尾部半行留下轮拼
+      for (const line of parts) {
+        if (!line) continue;
+        try {
+          const r = JSON.parse(line) as { ts?: unknown; model?: unknown; costUsd?: number; unpriced?: unknown };
+          if (typeof r.ts === 'number' && typeof r.model === 'string') {
+            memo.rows.push({ ts: r.ts, ...(r.costUsd !== undefined ? { costUsd: r.costUsd } : {}), unpriced: r.unpriced === true });
+          }
+        } catch {
+          // 坏行跳过 —— 与账本同刀法(账本是读数不是闸)
+        }
+      }
+    } finally {
+      closeSync(fd);
+    }
+  }
+  if (since > memo.prunedBefore) {
+    memo.rows = memo.rows.filter((r) => r.ts >= since);
+    memo.prunedBefore = since;
+  }
+  let calls = 0;
+  let costUsd = 0;
+  let unpriced = false;
+  for (const r of memo.rows) {
+    if (r.ts < since) continue;
+    calls += 1;
+    costUsd += r.costUsd as number; // undefined → NaN:语义与 ledger.sum 逐分一致
+    unpriced ||= r.unpriced;
+  }
+  return { calls, costUsd, unpriced };
+}
 /** owner 定的量级(SDD §2 标 tentative:拍的是量级不是精确值)。 */
 export const DEFAULT_WEEKLY_BUDGET_USD = 50;
 export const WEEKLY_BUDGET_ENV = 'OMD_WEEKLY_BUDGET_USD';
@@ -90,7 +180,7 @@ export function checkWeeklyBudget(opts: {
   const off: WeeklyBudgetStatus = { limitUsd, enabled: limitUsd > 0, costUsd: null, unpriced: false, calls: 0, over: false };
   if (limitUsd <= 0) return off; // 闸关:一行盘都不读
   try {
-    const w = createTuiUsageLedger({ dir: opts.dir, ...(opts.now ? { now: opts.now } : {}) }).window(SEVEN_DAYS_MS);
+    const w = readWeeklyWindow(opts.dir, SEVEN_DAYS_MS, (opts.now ?? Date.now)());
     // 缺 costUsd 的行会让账本的求和成 NaN(它按坏行跳过的只有 JSON 解析失败那种)。
     // NaN ≥ limit 恒 false —— 不写这一条的话,闸会**看起来绿着**地失效。
     if (!Number.isFinite(w.costUsd)) {

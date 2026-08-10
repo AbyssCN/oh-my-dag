@@ -24,11 +24,12 @@ import {
   checkWeeklyBudget,
   renderBudgetEscalation,
   renderBudgetLine,
+  resetBudgetLedgerMemoForTest,
   resolveWeeklyLimitUsd,
   usageLedgerDir,
 } from './budget';
 import { parseEscalation } from './tools/chat';
-import { USAGE_LEDGER_FILE, type UsageRecord } from '../tui/usage/ledger';
+import { USAGE_LEDGER_FILE, createTuiUsageLedger, type UsageRecord } from '../tui/usage/ledger';
 
 const NOW = 1_800_000_000_000;
 /** 窗口判据用**写死的天**, 不用被测常量推(见下面那条滚动窗口测试的注释)。 */
@@ -37,6 +38,9 @@ let dir: string;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'omd-budget-'));
+  // C-7 增量 memo 是模块级;测试里 writeFileSync **重写**账本(生产只 append + 压实缩小),
+  // 不 reset 的话「同尺寸重写」会让偏移语义静默失真。
+  resetBudgetLedgerMemoForTest();
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -148,5 +152,57 @@ describe('上报块与账本目录', () => {
   test('账本目录与 harness/cli.ts 同一条解析(OMD_TUI_USAGE_DIR 覆盖 cwd/.omd)', () => {
     expect(usageLedgerDir('/repo', {})).toBe(join('/repo', '.omd'));
     expect(usageLedgerDir('/repo', { OMD_TUI_USAGE_DIR: '/tmp/x' })).toBe('/tmp/x');
+  });
+});
+
+describe('C-7 增量读 —— 与全量重算逐分等价 (禁 TTL)', () => {
+  const appendRows = (rows: Partial<UsageRecord>[]): void => {
+    const { appendFileSync } = require('node:fs') as typeof import('node:fs');
+    appendFileSync(
+      join(dir, USAGE_LEDGER_FILE),
+      `${rows.map((r) => JSON.stringify({ ts: NOW - 1000, model: 'a:m', source: 'engine', in: 1, out: 1, cacheHit: 0, costUsd: 0, unpriced: false, ...r })).join('\n')}\n`,
+    );
+  };
+  /** 全量参照:与生产旧路径同一实现 (createTuiUsageLedger 整本读)。 */
+  const fullReference = () => {
+    const w = createTuiUsageLedger({ dir, now: () => NOW }).window(SEVEN_DAYS_MS);
+    return { calls: w.calls, costUsd: w.costUsd, unpriced: w.unpriced };
+  };
+  const incremental = () => {
+    const s = check();
+    return { calls: s.calls, costUsd: s.costUsd ?? Number.NaN, unpriced: s.unpriced };
+  };
+
+  // 证伪方式 (当场验过): readWeeklyWindow 里把 `r.ts < since` 的 continue 删掉 →
+  // 「窗外行」参照/增量不等, 本测试红; 恢复后绿。
+  test('★ 首读 + append 追加后, 与全量重算逐分相等 (含窗外行/坏行/未计价行)', () => {
+    writeLedger([
+      { costUsd: 3 },
+      { costUsd: 2, ts: NOW - 8 * DAY_MS }, // 窗外
+      'not-json-至-坏行',
+      { costUsd: 1, unpriced: true },
+    ]);
+    expect(incremental()).toEqual(fullReference());
+    appendRows([{ costUsd: 5 }, { costUsd: 7, ts: NOW - 6 * DAY_MS }]);
+    expect(incremental()).toEqual(fullReference()); // 追加只读新增字节, 结果仍逐分相等
+  });
+
+  test('★ 压实护栏: 文件缩小 (尺寸 < 偏移) → memo 作废整本重读, 不吐陈旧和', () => {
+    writeLedger([{ costUsd: 10 }, { costUsd: 20 }, { costUsd: 30 }]);
+    expect(incremental().costUsd).toBe(60);
+    writeLedger([{ costUsd: 1 }]); // 模拟压实: 重写成更小的文件
+    expect(incremental()).toEqual(fullReference());
+    expect(incremental().costUsd).toBe(1);
+  });
+
+  test('半行容忍: 尾部无换行的半行不计入, 补全后下一读计入', () => {
+    const { appendFileSync } = require('node:fs') as typeof import('node:fs');
+    writeLedger([{ costUsd: 2 }]);
+    expect(incremental().costUsd).toBe(2);
+    const row = JSON.stringify({ ts: NOW - 500, model: 'a:m', source: 'engine', in: 1, out: 1, cacheHit: 0, costUsd: 9, unpriced: false });
+    appendFileSync(join(dir, USAGE_LEDGER_FILE), row.slice(0, 20)); // 写者写到一半
+    expect(incremental().costUsd).toBe(2); // 半行不计入也不炸
+    appendFileSync(join(dir, USAGE_LEDGER_FILE), `${row.slice(20)}\n`); // 写完
+    expect(incremental().costUsd).toBe(11);
   });
 });
