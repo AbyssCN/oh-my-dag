@@ -69,6 +69,7 @@ import {
   type ThinkingLevel,
 } from '../model/role-models';
 import { createAgentLeafRunner } from '../harness/agent-leaf';
+import type { AnyOmdTool } from '../harness/agent-tools';
 import { resolveVerification } from '../harness/verifier';
 import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../harness/command-leaf';
 import type { AgentLeafRunner, CommandLeafRunner } from '../harness/leaf-runners';
@@ -91,6 +92,8 @@ export interface AssembleOmdMcpDeps {
   env?: NodeJS.ProcessEnv;
   /** 工作目录 (默认 process.cwd()): 工具作用域 + agent/command runner 基准 + 报告落盘根 (D-10)。 */
   cwd?: string;
+  /** ext 工具 (S4): 调用方 (cli.ts / goal.ts, 本就在 async 上下文) 按 run cwd 预加载后注入。空数组 = 不挂 (D-4 零变化)。 */
+  extTools?: AnyOmdTool[];
   /** DAG 引擎接缝 (默认真 runExecutorDag/runExecutorDagWithPlan)。 */
   engine?: DagEngine;
   /** run 注册表 (默认新 RunRegistry, 纯内存; 三段式 runId 生命周期的载体, D-3)。 */
@@ -200,7 +203,7 @@ export function createDefaultResearchRunner(deps: {
     return undefined;
   }
   return async (input) => {
-    const runId = randomUUID();
+    const runId = input.runId ?? randomUUID(); // S2: dag_research 进程化后 runId 由调用方透传, 报告与 registry 同源
     const res = await fanoutFn(stack, input.question, {
       // council: 按问题自适应出镜头 (分解器职责); 显式 false = 固定档单维, 省一次 conductor 调用。
       council: input.council !== false,
@@ -297,6 +300,7 @@ function renderResearchReport(question: string, runId: string, result: ResearchF
 export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[] {
   const env = deps.env ?? process.env;
   const cwd = deps.cwd ?? process.cwd();
+  const extTools = deps.extTools ?? [];
   const engine = deps.engine ?? PROD_ENGINE;
   // S2: registry 带上身份持久面 —— MCP server 是 stdio + 客户端消失即自杀, 「重启」是每次会话
   // 结束都发生的事。此前一重启就没人记得那个 runId 存在过 (而 checkpoint 一直在盘上), 于是
@@ -326,7 +330,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   // 工具响亮拒绝, 而不是静默降级成"看起来像调研的一段话"。
   const researchFanout: ResearchFanout =
     deps.researchFanout ??
-    (async ({ question, council, super: superMode, k, rounds }) => {
+    (async ({ question, council, super: superMode, k, rounds, runId }) => {
       if (!researchRunner) {
         throw new Error(
           '[dag_research] 无 search provider → 没有 web 就没有调研 (设 TAVILY_API_KEY / ANYSEARCH_API_KEY / SEARXNG_URL)。' +
@@ -335,11 +339,18 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       }
       const r = await researchRunner({
         question,
+        ...(runId ? { runId } : {}),
         ...(k ? { k } : {}),
         rounds: rounds ?? 1,
         ...(council === false ? { council: false } : {}),
         ...(superMode ? { deep: true } : {}),
       });
+      return {
+        // 透传的 runId 优先 (报告已按它命名); 没透传 (老调用方/自定义 runner 不认) → 回退文件名。
+        runId: runId ?? basename(r.reportPath ?? '', '.md'),
+        reportPath: r.reportPath ?? '',
+        summary: `${r.sources.length} 个来源真抓到正文\n${r.text.slice(0, 600)}`,
+      };
       return {
         runId: basename(r.reportPath ?? '', '.md'),
         reportPath: r.reportPath ?? '',
@@ -353,7 +364,14 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   const agentAdvisor = resolveSeatAdvisor('agent', { env });
   const agentRunner =
     deps.agentRunner ??
-    createAgentLeafRunner({ cwd, hashlineEdit: true, leafTimeoutMs, ...(agentAdvisor ? { advisor: agentAdvisor } : {}) });
+    createAgentLeafRunner({
+      cwd,
+      hashlineEdit: true,
+      leafTimeoutMs,
+      ...(agentAdvisor ? { advisor: agentAdvisor } : {}),
+      // S4 ext (D-1): 调用方按 run cwd 预加载注入。空数组 → 不传 customTools 键 = 工具面零变化 (D-4)。
+      ...(extTools.length ? { customTools: extTools } : {}),
+    });
   const commandRunner =
     deps.commandRunner ??
     createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], cwd, timeoutMs: 180_000 });
@@ -397,8 +415,11 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
    *   `cwd` 参数只管 spec 落盘目录 —— live 实测到过这个洞: worktree 建起来了、回话说"隔离成功",
    *   **产物却全落在主树**。声明面动了执行面没跟上, 而读数上看起来是成功的。
    *   宿主显式注入的 runner (`deps.agentRunner`) 不动: 那是调用方自己选的根, 我们不替它改。
+   * @param extToolsForRun S4 (D-3): 隔离档下 runner 的 ext 工具, 由 goal.ts:288 按 worktree cwd
+   *   `await loadExtTools(worktree.cwd)` 预加载后传入; 未传 = 该 runner 无 ext (调用方职责) ——
+   *   不回落到装配期那批 (worktree 是另一棵树, 它自己的 extensions.json 才算数)。
    */
-  const buildDefaultConfig = (overrideCwd?: string): Partial<ExecutorDagConfig> => {
+  const buildDefaultConfig = (overrideCwd?: string, extToolsForRun?: AnyOmdTool[]): Partial<ExecutorDagConfig> => {
     const root = overrideCwd ?? cwd;
     // R2 第二层 (2026-07-31, live 抓出来的洞): 光换 cwd **拦不住绝对路径**。第三跑实测有一个
     // agent 的产物落在 `/…/<沙箱>/docs/from-faq.md` —— 隔离树之外。
@@ -421,6 +442,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
             leafTimeoutMs,
             ...(agentAdvisor ? { advisor: agentAdvisor } : {}),
             ...(jailRoot ? { sandboxRoot: jailRoot } : {}),
+            ...(extToolsForRun && extToolsForRun.length ? { customTools: extToolsForRun } : {}),
           })
         : agentRunner;
     const commandRunnerForRun =
@@ -623,7 +645,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   const assembled = applyToolRenames([
     // continuity 恒开 (D-3): checkpoint 落 <cwd>/.omd/continuity/<runId>/, dag_run_plan resume 可续。
     ...createDagTools({ engine, runRegistry, defaultConfig: buildDefaultConfig, continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd }, hudMirror, ledger, recorder, ...(deps.onNodeEvent ? { onNodeEvent: deps.onNodeEvent } : {}) }),
-    createDagResearchTool(researchFanout),
+    createDagResearchTool(researchFanout, { runRegistry }),
     // 自主 goal 环 (P1 / INV-GOAL-1): buildDefaultConfig 传 thunk = 每次调用重解座位 (INV-MODEL-3)。
     // continuity 同 dag_run 恒开: 内层节点 checkpoint + **外层轮 journal** (INV-P2-6),
     // dag_goal resume=<runId> 才接得回轮次/毒集/复用源。

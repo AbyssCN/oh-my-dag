@@ -49,6 +49,8 @@ export interface OmdTool<TDetails = unknown> extends AgentTool<TSchema, TDetails
   promptSnippet?: string;
   /** 系统提示「守则」段追加的条目 (如 hashline 的用法铁律)。 */
   promptGuidelines?: string[];
+  /** 声明 true = 扩展作者确认工具沙箱叶内安全。未声明/非 true → sandboxed-leaf 剥除 + warn。 */
+  sandboxSafe?: boolean;
 }
 
 /** 工具执行体的松类型面 —— 各工具 schema 各不同, 装进同一个数组时统一按这个形状看。 */

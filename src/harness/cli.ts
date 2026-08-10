@@ -76,7 +76,8 @@ if (userArgs[0] === 'mcp') {
   observeModelUsage((u, model, origin) => mcpUsage.record(u, model, origin));
   const { runOmdMcpServer } = await import('../mcp/server');
   const { assembleOmdMcpTools } = await import('../mcp/assemble');
-  await runOmdMcpServer(assembleOmdMcpTools());
+  const { loadExtTools } = await import('./ext-tools');
+  await runOmdMcpServer(assembleOmdMcpTools({ extTools: await loadExtTools(process.cwd()) }));
   process.exit(0);
 }
 
@@ -174,7 +175,8 @@ if (userArgs[0] === 'tui') {
       // ⚠ 先有工具面才有 backend (工具要交给 runChatTurn), 而节点事件要灌回 backend ——
       // 所以这里用一个**延迟指针**接环, 不是循环依赖。装配完成前引擎不可能发事件。
       let sink: { pushDagEvent(runId: string, e: unknown): void } | null = null;
-      const tools = assembleOmdMcpTools({ onNodeEvent: (runId, e) => sink?.pushDagEvent(runId, e) });
+      const { loadExtTools } = await import('./ext-tools');
+      const tools = assembleOmdMcpTools({ onNodeEvent: (runId, e) => sink?.pushDagEvent(runId, e), extTools: await loadExtTools(cwd) });
       // S16: 自记忆与装配层共用同一个库 (D-5 共库) —— 两处各开一个会得到两份互不可见的记忆。
       // S0: 对话位 memory 走 assemble.ts 的同一真源 (OMD_MEMORY_PATH ?? .omd/memory.db + UNIVERSAL_SAFEGUARD);
       // 无参 createOmdMemory 调用会落到 ':memory:' 临时库, 进程一退全丢 —— 那正是上行注释警告的事。
@@ -251,7 +253,8 @@ if (userArgs[0] === 'serve') {
   const { existsSync } = await import('node:fs');
   const { join } = await import('node:path');
   const cwd = process.cwd();
-  const tools = assembleOmdMcpTools();
+  const { loadExtTools } = await import('./ext-tools');
+  const tools = assembleOmdMcpTools({ extTools: await loadExtTools(cwd) });
   const portFlag = userArgs.indexOf('--port');
   const staticDir = join(cwd, 'web', 'dist');
   startDaemon(

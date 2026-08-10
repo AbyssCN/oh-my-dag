@@ -32,6 +32,8 @@ export interface ToolDecl {
   promptSnippet?: string;
   /** typebox/JSON-schema 对象。宿主原样转给工具面,不解释内容。 */
   parameters: unknown;
+  /** 声明 true = 扩展作者确认工具只做沙箱叶内安全操作。未声明/非 true → 进隔离叶时剥除 + warn。 */
+  sandboxSafe?: boolean;
 }
 
 export type HostMsg =
