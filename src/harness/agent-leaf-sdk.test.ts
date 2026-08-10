@@ -64,6 +64,16 @@ describe('claude-code leaf 分支', () => {
     expect(seen.options?.effort).toBe('xhigh');
   });
 
+  test('★ advisor:claude-code 坐标 → settings.advisorModel;pi 座异族坐标规则同 chat(officialAdvisorModelId 共用)', async () => {
+    const seen: { options?: Options } = {};
+    const run = createAgentLeafRunner({
+      cwd, advisor: 'claude-code:claude-opus-5',
+      sdkQueryFn: fakeQuery([asst('好'), success()], seen),
+    });
+    await run({ prompt: 'x', model: MODEL });
+    expect((seen.options?.settings as { advisorModel?: string })?.advisorModel).toBe('claude-opus-5');
+  });
+
   test('★ provider 错误 → 响亮抛 subtype 原文(闸在 SDK 路上也会红)', async () => {
     const run = createAgentLeafRunner({
       cwd,

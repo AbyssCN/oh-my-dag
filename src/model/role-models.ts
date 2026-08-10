@@ -154,6 +154,12 @@ interface ConfigFile {
    * 独立段是纯增量 —— 老 config 没有这段 = 座位档缺席 = 执行期回落原有默认 (向后兼容)。
    */
   autoAssignedThinking?: Record<string, string>;
+  /**
+   * 座位 advisor 坐标 (seat → 'provider:modelId', NOTES 2026-08-10)。纯增量段: 老 config
+   * 缺席 = 无 advisor (**不自动选** —— transcript 会外发, 显式配置才生效)。分派看**座位**通道:
+   * claude-code 座走官方 server tool, pi 座走内部升档 tool。
+   */
+  advisors?: Record<string, string>;
 }
 
 let fileCache: { path: string; mtimeMs: number; config: ConfigFile } | null = null;
@@ -286,6 +292,7 @@ export function listRoleModels(
 export type { NodeTier, OmdSeat } from './seats';
 export { ALL_SEAT_IDS as ALL_SEATS, SEAT_TIER as NODE_TIER, seatSpec, seatSampling } from './seats';
 import type { OmdSeat } from './seats';
+import { seatSpec as seatSpecOf } from './seats';
 
 /** 兼容旧命名: 引擎节点座位 = 全部座位 (continuity/review 也是座位, 见 seats.ts)。 */
 export type OmdNode = OmdSeat;
@@ -524,6 +531,26 @@ export function resolveRoleModelConfigured(
 ): NodeModelResult {
   return resolveSeatModel(node, opts);
 }
+// seat advisor — config.advisors (seat → 坐标, NOTES 2026-08-10)
+// ---------------------------------------------------------------------------
+
+/**
+ * 解析座位的 advisor 坐标。层级同座位模型的精神: env > config > seats.ts 声明默认;
+ * 全缺 = undefined = 该座位无 advisor(**没有出厂值** —— 不自动选,transcript 会外发)。
+ * 消费点: mcp/tools/chat (conductor) · mcp/assemble (agent leaf 装配)。
+ */
+export function resolveSeatAdvisor(
+  seat: string,
+  opts: { env?: NodeJS.ProcessEnv; path?: string } = {},
+): string | undefined {
+  const env = opts.env ?? process.env;
+  const fromEnv = env[`OMD_${seat.toUpperCase()}_ADVISOR`];
+  if (fromEnv?.trim()) return fromEnv.trim();
+  const fromConfig = fileConfig(opts.path ?? configPath()).advisors?.[seat];
+  if (typeof fromConfig === 'string' && fromConfig.trim()) return fromConfig.trim();
+  return seatSpecOf(seat)?.advisor;
+}
+
 // multimodal leaf pool — config.multimodalPool (坐标列表)
 // ---------------------------------------------------------------------------
 

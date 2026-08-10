@@ -41,6 +41,7 @@ import { resolvePiApiKey, resolvePiModel } from '../../model/pi-transport';
 import type { ThinkingLevel } from '../../model/role-models';
 import type { OmdSessionStore } from './session-store';
 import { CLAUDE_SDK_PROVIDER, runChatTurnSdk } from './claude-sdk-turn';
+import { createAdvisorTool, createTranscriptRecorder } from '../advisor-tool';
 
 export interface ChatTurnOpts {
   store: OmdSessionStore;
@@ -55,6 +56,12 @@ export interface ChatTurnOpts {
   contextFiles?: readonly { path: string; content: string }[];
   /** 默认 'high'(conductor 座的默认档;chat 是判断位不是量产位)。 */
   thinkingLevel?: ThinkingLevel;
+  /**
+   * advisor 坐标(resolveSeatAdvisor('conductor') 的产物,省略 = 无)。按通道分派:
+   * claude-code 座 → 官方 server tool(settings.advisorModel);pi 座 → 内部升档 tool
+   * (advisor-tool.ts 注入本轮工具面,transcript 含既往会话)。
+   */
+  advisor?: string;
   /** pi AgentEvent 原样外露(daemon → SSE)。 */
   onEvent?: (e: AgentEvent) => void;
   signal?: AbortSignal;
@@ -153,7 +160,18 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
    */
   const existing = await opts.store.open(opts.sessionId);
   let messages = existing ? await existing.messages() : [];
-  const tools = opts.tools ?? [];
+  let tools = opts.tools ?? [];
+
+  // 内部升档 advisor(pi 座,NOTES 2026-08-10):无参 advisor 工具进本轮工具面,
+  // prompt 面随 buildConductorChatSystemPrompt 的工具列举自动到位。recorder 挂 onEvent 链,
+  // seed 既往会话 —— advisor 该看到这轮之前聊了什么。
+  const advisorRecorder = opts.advisor ? createTranscriptRecorder() : null;
+  if (opts.advisor && advisorRecorder) {
+    tools = [
+      ...tools,
+      createAdvisorTool({ advisor: opts.advisor, seatCoord: opts.model, transcript: () => advisorRecorder.serialize() }),
+    ];
+  }
 
   // ── 上下文压缩 (S9) ────────────────────────────────────────────────────────
   // 两处都要, 管的不是同一件事:
@@ -272,12 +290,16 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
       : {}),
   };
 
+  advisorRecorder?.seed(messages);
   const loop = opts.loopFn ?? runAgentLoop;
   const returned = await loop(
     [{ role: 'user', content: opts.prompt, timestamp: Date.now() }],
     context,
     config,
-    (e) => opts.onEvent?.(e),
+    (e) => {
+      advisorRecorder?.note(e);
+      opts.onEvent?.(e);
+    },
     opts.signal,
     streamSimple,
   );

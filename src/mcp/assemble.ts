@@ -62,6 +62,7 @@ import { isStrongCoord } from '../model/model-ratings';
 import {
   resolveRoleModelConfigured,
   resolveMultimodalPool,
+  resolveSeatAdvisor,
   resolveSeatThinking,
   resolveConfiguredPools,
   type OmdNode,
@@ -347,7 +348,12 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     });
   // 长任务叶子超时: OMD_LEAF_TIMEOUT_MS 覆 240s 默认, 1h 兜底防泄漏 (session.abort 不杀子进程)。
   const leafTimeoutMs = (() => { const n = env.OMD_LEAF_TIMEOUT_MS ? Number.parseInt(env.OMD_LEAF_TIMEOUT_MS, 10) : NaN; return Number.isFinite(n) && n > 0 ? n : 3_600_000; })();
-  const agentRunner = deps.agentRunner ?? createAgentLeafRunner({ cwd, hashlineEdit: true, leafTimeoutMs });
+  // agent 座位 advisor: 装配期解一次 (runner 生命周期同 MCP 进程; 热改 config 后重启生效 —— 与
+  // leafTimeoutMs 同精神)。未配 = 无 (不自动选)。
+  const agentAdvisor = resolveSeatAdvisor('agent', { env });
+  const agentRunner =
+    deps.agentRunner ??
+    createAgentLeafRunner({ cwd, hashlineEdit: true, leafTimeoutMs, ...(agentAdvisor ? { advisor: agentAdvisor } : {}) });
   const commandRunner =
     deps.commandRunner ??
     createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], cwd, timeoutMs: 180_000 });
@@ -409,7 +415,13 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     }
     const agentRunnerForRun =
       overrideCwd && !deps.agentRunner
-        ? createAgentLeafRunner({ cwd: root, hashlineEdit: true, leafTimeoutMs, ...(jailRoot ? { sandboxRoot: jailRoot } : {}) })
+        ? createAgentLeafRunner({
+            cwd: root,
+            hashlineEdit: true,
+            leafTimeoutMs,
+            ...(agentAdvisor ? { advisor: agentAdvisor } : {}),
+            ...(jailRoot ? { sandboxRoot: jailRoot } : {}),
+          })
         : agentRunner;
     const commandRunnerForRun =
       overrideCwd && !deps.commandRunner

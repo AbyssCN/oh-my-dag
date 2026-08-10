@@ -32,7 +32,7 @@ import type { ModelUsage } from '../../model/types';
 import { analyzeContextPressure } from './usage';
 import type { ChatTurnOpts, ChatTurnResult } from './agent';
 
-import { runSdkAgentLoop } from '../claude-sdk-loop';
+import { officialAdvisorModelId, runSdkAgentLoop } from '../claude-sdk-loop';
 
 // 常量真源在 model 层;循环核/桥在 claude-sdk-loop。re-export 保住既有 import 面(agent.ts / 测试)。
 export { CLAUDE_SDK_PROVIDER };
@@ -92,6 +92,8 @@ export async function runChatTurnSdk(opts: ChatTurnOpts): Promise<ChatTurnResult
 
   const resume = readSdkSessionId(opts.cwd, opts.sessionId);
   const effort = effortOf(opts.thinkingLevel ?? 'high');
+  // 官方 advisor(claude-code 座只认 claude-code:* advisor;Fable main 的配对拒绝由 CLI 处理:不挂 + 通知)。
+  const advisorModel = officialAdvisorModelId(opts.advisor, opts.model);
   const out = await runSdkAgentLoop({
     prompt: opts.prompt,
     systemPrompt,
@@ -99,6 +101,7 @@ export async function runChatTurnSdk(opts: ChatTurnOpts): Promise<ChatTurnResult
     modelId,
     modelCoord: opts.model,
     ...(effort ? { effort } : {}),
+    ...(advisorModel ? { advisorModel } : {}),
     ...(resume ? { resume } : {}),
     cwd: opts.cwd,
     ...(opts.onEvent ? { onEvent: opts.onEvent } : {}),

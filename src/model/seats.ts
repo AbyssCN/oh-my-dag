@@ -73,6 +73,15 @@ export interface SeatSpec {
   readonly recommend: string;
   /** auto-assign per-node 首选坐标覆盖 (稀疏高价值座位才配; 省略 = 类首选 + 渠道经济学)。 */
   readonly preferredCoord?: string;
+  /**
+   * advisor 默认坐标 (NOTES 2026-08-10 裁决: advisor 是**座位属性**不是第 15 个座位)。
+   * 座位执行中途可求教的更强模型 —— 按座位当前通道分派实现:
+   *   claude-code 座 → 官方 server-side advisor tool (SDK settings.advisorModel, 配对表 API 校验);
+   *   pi 座 → 内部升档 tool (src/harness/advisor-tool.ts, transcript 经 callModel 打此坐标)。
+   * **不自动选** (transcript 会外发给该 provider): 这里全部留空 = 出厂无 advisor;
+   * 运行时经 config.advisors[seat] / OMD_<SEAT>_ADVISOR 显式配置才生效 (resolveSeatAdvisor)。
+   */
+  readonly advisor?: string;
 }
 
 /**

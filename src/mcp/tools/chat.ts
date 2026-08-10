@@ -25,6 +25,7 @@ import type { AnyOmdTool } from '../../harness/agent-tools';
 import { createOmdAgentTools } from '../../harness/agent-tools';
 import { createConductorChatTools } from '../../serve/chat-tools';
 import { runChatTurn, type ChatTurnOpts } from '../../harness/chat/agent';
+import { resolveSeatAdvisor } from '../../model/role-models';
 import type { OmdSessionStore } from '../../harness/chat/session-store';
 import {
   checkWeeklyBudget,
@@ -222,6 +223,11 @@ export function createConductorChatTool(deps: ConductorChatDeps): OmdMcpTool {
           sessionId: sid,
           prompt,
           model: deps.resolveModel(),
+          // advisor 逐轮现解 (config 可热改, 与座位坐标同精神); 未配 = 无 (不自动选)。
+          ...((): { advisor?: string } => {
+            const a = resolveSeatAdvisor('conductor');
+            return a ? { advisor: a } : {};
+          })(),
           cwd: deps.cwd,
           tools: guardBudget(collectRunIds(baseTools, runIds), budget),
           // S2:headless 块拼在整份 prompt 尾部 —— 冻结前缀逐字不动,cache 面不伤。

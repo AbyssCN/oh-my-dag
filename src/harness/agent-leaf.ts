@@ -59,7 +59,8 @@ import { logger } from '../logger';
 import { callModel } from '../model';
 import { resolvePiApiKey, resolvePiModel } from '../model/pi-transport';
 import { CLAUDE_SDK_PROVIDER, effortOf } from '../model/claude-sdk-complete';
-import { runSdkAgentLoop } from './claude-sdk-loop';
+import { officialAdvisorModelId, runSdkAgentLoop } from './claude-sdk-loop';
+import { createAdvisorTool, createTranscriptRecorder } from './advisor-tool';
 import { promptVersionOfText } from '../model/langfuse';
 import type { ModelUsage } from '../model/types';
 import type { ThinkingLevel } from '../model/role-models';
@@ -245,6 +246,12 @@ export interface AgentLeafRunnerOpts {
    * 编辑型 leaf (DeepSeek/MiMo 改代码) 应开。
    */
   hashlineEdit?: boolean;
+  /**
+   * advisor 坐标(resolveSeatAdvisor('agent') 的产物,省略 = 无)。按座位通道分派:
+   * claude-code 座 → 官方 server tool(settings.advisorModel,配对由 CLI/API 校验);
+   * pi 座 → 内部升档 tool(advisor-tool.ts,本次运行注入工具面)。NOTES 2026-08-10。
+   */
+  advisor?: string;
   /**
    * 测试接缝:claude-code 订阅通道的 SDK query 替身(真 SDK 要真订阅 + claude CLI)。生产不传。
    */
@@ -819,6 +826,15 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     const promptVersion = promptVersionOfText(scaffold);
     const routedPrompt = opts.persona ? `<persona>\n${opts.persona}\n</persona>\n\n${disciplined}` : disciplined;
 
+    // advisor(NOTES 2026-08-10):pi 座内部升档 —— 本次运行注入无参 advisor 工具,prompt 面按
+    // 本次工具面重建(创建期缓存的 systemPrompt 不含它)。claude-code 座走官方(settings.advisorModel
+    // 在下方 SDK 分支下发),不注内部工具。recorder 挂 emit 链 —— 与 filesTouched 同一条事件流。
+    const advisorRecorder = opts.advisor && !isSdkChannel ? createTranscriptRecorder() : null;
+    const runTools = advisorRecorder
+      ? [...tools, createAdvisorTool({ advisor: opts.advisor!, seatCoord: model, transcript: () => advisorRecorder.serialize() })]
+      : tools;
+    const runSystemPrompt = advisorRecorder ? buildLeafSystemPrompt({ cwd, tools: runTools, contextFiles }) : systemPrompt;
+
     // filesTouched 采集 (2026-07-20 修产物闸冤杀): start 记 toolCallId→path 候选,
     // end 且 !isError 才计入 (失败的写不算产物)。
     // 此前 runner 从不填 filesTouched → executor-dag 产物闸把真交付的文件节点全判 failed (恒空 = "谎报完工")。
@@ -855,6 +871,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       // **进展信号**: 任何事件都算"它还在动" —— 包括 `thinking_delta` (模型在推理)。
       // 老判据只数 text_delta, 于是"在想"被读成"没反应"; effort 提到 max 之后那是必然误杀。
       noteProgress();
+      advisorRecorder?.note(e);
       if (e.type === 'message_update' && e.assistantMessageEvent.type === 'text_delta') {
         streamedChars += e.assistantMessageEvent.delta.length;
       } else if (e.type === 'tool_execution_start') {
@@ -967,9 +984,9 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     armIdle();
 
     const context: AgentContext = {
-      systemPrompt,
+      systemPrompt: runSystemPrompt,
       messages: [],
-      tools,
+      tools: runTools,
     };
     const config: AgentLoopConfig = {
       // SDK 通道不消费本 config (调用点分派), 空断言只为类型 —— pi 路上方已保证非空。
@@ -1046,6 +1063,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
         // (否则 3min idle 会把「在想」判成「挂死」—— 2026-08-01 修过的同族错)。
         // 上下文压缩/轮间停不做 (SDK 自管); tolerateAbort: 超时/停摆 abort → 返已累积, 优雅停语义保留。
         const effort = effortOf(sdkThinkingLevel);
+        const advisorModel = officialAdvisorModelId(opts.advisor, model);
         const out = await runSdkAgentLoop({
           prompt: routedPrompt,
           systemPrompt,
@@ -1053,6 +1071,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           modelId,
           modelCoord: model,
           ...(effort ? { effort } : {}),
+          ...(advisorModel ? { advisorModel } : {}),
           cwd,
           onEvent: emit,
           onActivity: noteProgress,

@@ -103,6 +103,24 @@ describe('持久化 + 账本 + 会话映射', () => {
     }
   });
 
+  test('★ advisor:claude-code 坐标 → settings.advisorModel 裸 id;异族坐标 → 不挂(warn 不炸)', async () => {
+    const seen: { options?: Options } = {};
+    await runChatTurnSdk({
+      store, sessionId: 's1', prompt: 'x', model: MODEL, cwd: root, contextFiles: [],
+      advisor: 'claude-code:claude-opus-5',
+      sdkQueryFn: fakeQuery([asst('好'), success('sdk-a')], seen),
+    });
+    expect((seen.options?.settings as { advisorModel?: string })?.advisorModel).toBe('claude-opus-5');
+
+    const seen2: { options?: Options } = {};
+    await runChatTurnSdk({
+      store, sessionId: 's2', prompt: 'x', model: MODEL, cwd: root, contextFiles: [],
+      advisor: 'openai-codex:gpt-5.6-sol',
+      sdkQueryFn: fakeQuery([asst('好'), success('sdk-b')], seen2),
+    });
+    expect(seen2.options?.settings).toBeUndefined();
+  });
+
   test('★ 次轮:resume 带上一轮的 SDK session_id,成功后映射更新为新 id', async () => {
     await runChatTurnSdk({
       store, sessionId: 's1', prompt: '一', model: MODEL, cwd: root, contextFiles: [],

@@ -16,6 +16,22 @@ import { logger } from '../logger';
 import { CLAUDE_SDK_PROVIDER } from '../model/claude-sdk-complete';
 import type { ModelUsage } from '../model/types';
 
+/**
+ * claude-code 座位的 advisor 坐标 → 官方路的裸 model id。
+ * 一期纪律(NOTES):claude-code 座只走官方 advisor,advisor 坐标必须同为 claude-code:*;
+ * 异族坐标 → warn + 不挂(不静默:配了没生效必须留痕)。
+ */
+export function officialAdvisorModelId(advisorCoord: string | undefined, seatCoord: string): string | undefined {
+  if (!advisorCoord) return undefined;
+  const prefix = `${CLAUDE_SDK_PROVIDER}:`;
+  if (advisorCoord.startsWith(prefix)) return advisorCoord.slice(prefix.length);
+  logger.warn(
+    { seat: seatCoord, advisor: advisorCoord },
+    '[claude-sdk] claude-code 座位的 advisor 必须是 claude-code:* 坐标 (官方配对表) —— 本次不挂 advisor',
+  );
+  return undefined;
+}
+
 /** MCP server 在 SDK 侧的注册名 → 工具名前缀 `mcp__omd__<name>`。 */
 const MCP_SERVER_NAME = 'omd';
 
@@ -165,6 +181,11 @@ export interface SdkLoopOpts {
   /** 座位坐标(投影消息的 model 字段 + 日志归因),如 claude-code:claude-sonnet-5。 */
   modelCoord: string;
   effort?: NonNullable<Options['effort']>;
+  /**
+   * 官方 server-side advisor 的模型 id(裸 id 如 claude-opus-5,非坐标)。经 SDK
+   * `settings.advisorModel` 下发;配对合法性由 CLI/API 校验(不合法 = 不挂 + 通知,不炸)。
+   */
+  advisorModel?: string;
   resume?: string;
   cwd: string;
   onEvent?: (e: AgentEvent) => void;
@@ -208,6 +229,7 @@ export async function runSdkAgentLoop(o: SdkLoopOpts): Promise<SdkLoopOut> {
     ...(o.effort ? { effort: o.effort } : {}),
     ...(o.resume ? { resume: o.resume } : {}),
     ...(o.includePartialMessages ? { includePartialMessages: true } : {}),
+    ...(o.advisorModel ? { settings: { advisorModel: o.advisorModel } as Options['settings'] } : {}),
   };
 
   o.onEvent?.({ type: 'agent_start' });
