@@ -43,6 +43,23 @@ export function parseSessionCommand(text: string): SessionCommand {
 }
 
 /**
+ * `/new` / `/fork` 的解析 —— `/session new|fork [id]` 的直达别名。
+ * 人想开新会话时想的是 `new`,不是 `session` 子命令。五态与 `parseSessionCommand`
+ * 共用(SessionCommand),id 白名单同 `ID_RE`;`/newx` 这类前缀撞车不拦,
+ * 返回 null 让主分发回落成普通文本 —— 与 `/sessionx` 回落同纪律。
+ */
+export function parseNewForkCommand(text: string): SessionCommand {
+  const m = /^\/(new|fork)(?:\s+(.*))?$/.exec(text.trim());
+  if (!m) return null;
+  const kind = m[1] as 'new' | 'fork';
+  const rest = m[2] ?? '';
+  if (rest === '') return { kind, id: null };
+  const id = rest.split(/\s+/)[0] as string; // 多余参数同 parseSessionCommand: 静默忽略
+  if (!ID_RE.test(id)) return { kind: 'usage', reason: `Invalid session id: ${id} (letters, digits, _ and - only, <=64 chars)` };
+  return { kind, id };
+}
+
+/**
  * 会话列表渲染。
  *
  * @param current 当前会话 id —— **标出来**。不标的话切完不知道切没切成。

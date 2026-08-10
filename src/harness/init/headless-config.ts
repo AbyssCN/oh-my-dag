@@ -163,6 +163,90 @@ export function setKeyHeadless(provider: string, key: string, target: KeyTarget 
 }
 
 // ---------------------------------------------------------------------------
+// removeKeyHeadless — setKeyHeadless 的反向: 按同路由删凭证 (auth.json/.env) + env 对称清除。
+// ---------------------------------------------------------------------------
+
+/** claude CLI 订阅通道 id — 与 tui/provider-directory.CLAUDE_CODE_ID 同值; 不 import 它
+ *  (TUI 对 model/harness 单向依赖, harness 引 TUI 常量会拽依赖图)。 */
+const CLAUDE_CODE_PROVIDER = 'claude-code';
+
+export interface RemovedEntry {
+  /** 被删键所在文件 (绝对路径)。 */
+  file: string;
+  /** 被删键名 (auth.json 条目为 provider id, .env 为 env key 名)。 */
+  key: string;
+}
+
+export interface RemoveKeyResult {
+  provider: string;
+  /** 实际删掉的条目 — 盘上真删了才算; claude-code 不删 → 空。 */
+  removed: RemovedEntry[];
+  warnings: string[];
+}
+
+/**
+ * 删一个 provider 的凭证 (setKeyHeadless 的反向路由):
+ *   - native/自定 provider (NATIVE_ENV_KEY / models.json keyEnv): 剥 <cwd>/.env 的 `KEY=` 行 + 对称清 env。
+ *   - 其余 pi provider: auth.json 删 all[provider] 条目 (api_key/oauth 都只是整条删, 不挑形) + 重写。
+ * 两个落点都查: 同一 provider 可能同时有 .env 键与 auth.json 条目 (如 target 强制落 authjson 的 deepseek),
+ * 删的就是盘上真存在的; 不存在的源不编进 removed, 全无 → warning 写真话。
+ * claude-code: 凭证在 ~/.claude/.credentials.json, 由 claude CLI 自管 —— 只发指路 notice, 不假装删。
+ * 活进程: env 对称清除 (注入反向); callModel registry 无外科 unregister (providers.ts 只有全量
+ * clearProviders), 旧注册条目留到进程重启 —— 注释写真话, 不夸大"即时生效"。
+ */
+export function removeKeyHeadless(provider: string, deps: HeadlessDeps = {}): RemoveKeyResult {
+  const p = provider.trim();
+  if (!p) throw new Error('removeKeyHeadless: provider required');
+  const env = deps.env ?? process.env;
+  const cwd = deps.cwd ?? process.cwd();
+  const authPath = deps.authPath ?? defaultAuthPath();
+  const warnings: string[] = [];
+  const removed: RemovedEntry[] = [];
+
+  if (p === CLAUDE_CODE_PROVIDER) {
+    warnings.push('claude-code 凭证在 ~/.claude/.credentials.json, 由 claude CLI 自管 — 用 `claude logout` 删, omd 不动它。');
+    return { provider: p, removed, warnings };
+  }
+
+  // 自定 provider 的 keyEnv 从 models.json 展示态读 (同 setKeyHeadless 的单一真源; null → undefined 归一)。
+  const customKeyEnv = listCustomProviderStatus(env).find((cp) => cp.id === p)?.keyEnv || undefined;
+  const nativeKeyEnv = NATIVE_ENV_KEY[p] ?? customKeyEnv;
+
+  // ① .env 键 (native/自定 provider 的落点; 行形同 upsertEnv 写的 `KEY=…`)。
+  if (nativeKeyEnv) {
+    const envPath = envFilePath(cwd);
+    if (existsSync(envPath)) {
+      const lines = readFileSync(envPath, 'utf8').split('\n');
+      const keyRe = new RegExp(`^(\\s*)${nativeKeyEnv.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*=`);
+      const kept = lines.filter((line) => !keyRe.test(line));
+      if (kept.length !== lines.length) {
+        const trimmed = kept.join('\n').replace(/\n+$/, '');
+        (deps.writeFile ?? ((pp, c) => writeFileSync(pp, c, 'utf8')))(envPath, trimmed.length ? `${trimmed}\n` : '');
+        delete (env as Record<string, string | undefined>)[nativeKeyEnv]; // 注入反向: 当前进程不再见这把 key
+        removed.push({ file: envPath, key: nativeKeyEnv });
+      }
+    }
+  }
+
+  // ② auth.json 条目 (pi 通道落点; 兼容 api_key/oauth —— 整条删, 不挑形)。
+  if (existsSync(authPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(authPath, 'utf8')) as Record<string, unknown>;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && p in parsed) {
+        delete parsed[p];
+        (deps.writeFile ?? ((pp, c) => writeFileSync(pp, c, 'utf8')))(authPath, `${JSON.stringify(parsed, null, 2)}\n`);
+        removed.push({ file: authPath, key: p });
+      }
+    } catch {
+      warnings.push(`auth.json 非法 JSON, 未改动 (${authPath})`);
+    }
+  }
+
+  if (!removed.length) warnings.push(`no stored credential for ${p}`);
+  return { provider: p, removed, warnings };
+}
+
+// ---------------------------------------------------------------------------
 // applyPresetHeadless — 写角色矩阵 (.env) + config (config.json), 不 prompt key。
 // ---------------------------------------------------------------------------
 

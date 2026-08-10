@@ -7,7 +7,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { TuiSessionMeta } from './backend';
 import { ChatLog } from './components/chat-log';
-import { defaultTuiSessionId, forkSessionId, formatSessions, newSessionId, parseSessionCommand } from './sessions';
+import { defaultTuiSessionId, forkSessionId, formatSessions, newSessionId, parseNewForkCommand, parseSessionCommand } from './sessions';
 import { createTheme } from './theme';
 
 describe('parseSessionCommand', () => {
@@ -41,6 +41,50 @@ describe('parseSessionCommand', () => {
 
   test('new 的 id 也过同一条白名单', () => {
     expect(parseSessionCommand('/session new ../x')?.kind).toBe('usage');
+  });
+});
+
+describe('parseNewForkCommand —— /new /fork 是 /session new|fork 的直达别名', () => {
+  test('不是 /new /fork 的不接管; 前缀撞车(/newx)回落成普通文本', () => {
+    expect(parseNewForkCommand('帮我看看')).toBeNull();
+    expect(parseNewForkCommand('/newx')).toBeNull();
+    expect(parseNewForkCommand('/forky')).toBeNull();
+    // /session 是 parseSessionCommand 的地盘, 别名不抢
+    expect(parseNewForkCommand('/session new')).toBeNull();
+  });
+
+  test('无参 → id null(交给默认 id 生成); 尾随空格不碍事', () => {
+    expect(parseNewForkCommand('/new')).toEqual({ kind: 'new', id: null });
+    expect(parseNewForkCommand('/fork')).toEqual({ kind: 'fork', id: null });
+    expect(parseNewForkCommand('/new ')).toEqual({ kind: 'new', id: null });
+  });
+
+  test('给合法 id 就用给的, 与 /session 同一条白名单口径', () => {
+    expect(parseNewForkCommand('/new mine')).toEqual({ kind: 'new', id: 'mine' });
+    expect(parseNewForkCommand('/fork b1')).toEqual({ kind: 'fork', id: 'b1' });
+    expect(parseNewForkCommand('/new my-sess_1')).toEqual({ kind: 'new', id: 'my-sess_1' });
+  });
+
+  test('★ 非法 id 先拦一次并给人话(与 parseSessionCommand 同文案)', () => {
+    for (const bad of ['/new ../逃逸', '/new 有中文', '/fork -起头', '/new ../x']) {
+      const r = parseNewForkCommand(bad);
+      expect(r?.kind).toBe('usage');
+      expect((r as { reason: string }).reason).toContain('Invalid session id');
+    }
+  });
+
+  test('多余参数静默忽略 —— 与 parseSessionCommand 同纪律, 不抛栈', () => {
+    expect(parseNewForkCommand('/new mine extra words')).toEqual({ kind: 'new', id: 'mine' });
+  });
+
+  test('legacy 解析不受影响: /session new|fork 走 parseSessionCommand, 别名不入侵', () => {
+    expect(parseSessionCommand('/new')).toBeNull();
+    expect(parseSessionCommand('/session new')).toEqual({ kind: 'new', id: null });
+    expect(parseSessionCommand('/session fork b1')).toEqual({ kind: 'fork', id: 'b1' });
+  });
+
+  test('生成的默认 id 过得了别名自己的白名单', () => {
+    expect(parseNewForkCommand(`/new ${newSessionId(() => 1_760_000_000_000)}`)).toEqual({ kind: 'new', id: 's-1760000000' });
   });
 });
 

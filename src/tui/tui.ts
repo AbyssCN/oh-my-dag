@@ -19,7 +19,7 @@
  *    但 `omd tui` 一旦接上引擎(它会 warn)就必须先做 S3,否则一条 pino 就把 UI 打花。
  * 4. `setInterval` 幂等 + `unref` —— ⏳ 本片无定时器(无动画)。加动画时这条要兑现,
  *    不 unref 会吊住事件循环,`runOmdTui()` 返回后进程不退。
- * 5. 退出前先停动画再拆传输 —— ✅ 形状已就位(`requestExit` 里 stopAnimations 先于
+ * 5. 退出前先停动画再拆传输 —— ✅ 形状已就位(`requestCleanExit` 里 stopAnimations 先于
  *    `tui.stop()`),只是本片没有动画可停。
  *
  * ## 可测性:时钟与退出都从外面注入
@@ -28,6 +28,8 @@
  * 于是 L1 能直接测判定,L3 只需要验"真 PTY 里这条链接得起来"。
  */
 import { hostname } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, resolve as resolvePath } from 'node:path';
 import { type Component, Container, HStack, Loader, ProcessTerminal, ScrollView, Spacer, Text, TuiAltScreen, VStack, type Terminal } from '@earendil-works/pi-tui';
 import { HintedEditor } from './components/hinted-editor';
 import { logger } from '../logger';
@@ -46,7 +48,7 @@ import { renderLayers } from './render/dag-layers';
 import { StatusLine } from './components/status-line';
 import { type ContextFile, formatContextLine, loadConductorContext } from './context';
 import { formatSeatRows, parseSeatCommand, seatRows } from './seat-picker';
-import { defaultTuiSessionId, forkSessionId, formatSessions, newSessionId, parseSessionCommand } from './sessions';
+import { defaultTuiSessionId, forkSessionId, formatSessions, newSessionId, parseNewForkCommand, parseSessionCommand } from './sessions';
 import { createSettingsPanel } from './components/settings-panel';
 import { SPINNER_FRAMES } from './design/tokens';
 import { installOmdKeybindings } from './keys';
@@ -58,7 +60,10 @@ import { createContextHealth } from './health';
 import { loadTuiUiConfig, setApprovalTokenTtl, setTuiUi } from './ui-config';
 import { renderLogo } from './render/logo';
 import { summarizeToolArg } from './render/tool-arg';
-import { formatStatusLine } from './render/statusbar';
+import { fmtUsd, formatStatusLine } from './render/statusbar';
+import { humanTokens } from './render/pressure';
+import { formatStatus } from './status';
+import { defaultExportPath, exportTranscriptMarkdown } from './export';
 // ⚠ 进屏的 provider 错误一律先压成一行 —— 原文照旧进各处的 logger.warn(压呈现不压证据)。
 import { humanizeProviderError } from './render/error-text';
 import { renderTable } from './render/table';
@@ -84,6 +89,9 @@ const HUD_SCROLL: Record<string, number> = {
 
 /** 双击 Ctrl+C 的窗口。openclaw / pi 一致,不发明新数。 */
 export const CTRL_C_WINDOW_MS = 500;
+
+/** `/status` 账本行的窗口口径:ledger 只有滚动窗口,24h 是它给得出、最接近"今日"的现成读数。 */
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * 第二次 Ctrl+C 落在窗口内 → 退出;否则 → 预备(并把这次的时刻记下)。
@@ -204,6 +212,18 @@ export const CHROME = {
   approvalTtlWritten: (sec: number, path: string) => `Approval token TTL -> ${sec}s written to ${path} (effective after restart)`,
   /** 切片⑧: 一张图都没有时说真话 (画一个空雾场会读成"有图但没散")。 */
   noPathMaps: () => 'No pathfinder map yet (docs/plan/pathfinder/ is empty) - open one with /omd-path',
+  // ── 2026-08-11 命令面六项(/compact /logout /status /export /new /fork /quit)的回执。 ──
+  compactDone: (id: string, before: number, after: number, n: number) =>
+    `Compacted ${id}: ~${before} -> ~${after} tokens (${n} messages -> summary + tail)`,
+  /** 静态串一律走函数形(与 footer/footerArmed 同款):字形闸只采样字符串常量,ASCII 串不占样本表。 */
+  compactNone: () => 'Nothing to compact: session is empty or already at the tail',
+  logoutCancelled: () => 'logout cancelled, nothing removed',
+  logoutClaude: () => 'claude-code uses the Claude CLI subscription - run `claude logout` in a terminal; omd does not touch its credentials.',
+  logoutDone: (provider: string, removed: { file: string; key: string }[], warnings: string[]) =>
+    `Removed ${provider} credential: ${removed.map((r) => `${r.key} in ${r.file}`).join(', ')}${warnings.length > 0 ? `\n  ${warnings.join('\n  ')}` : ''}`,
+  logoutNone: (provider: string, warnings: string[]) =>
+    `No stored credential for ${provider} - nothing removed${warnings.length > 0 ? `\n  ${warnings.join('\n  ')}` : ''}`,
+  exportDone: (n: number, abs: string) => `Exported ${n} messages -> ${abs}`,
 } as const;
 
 /**
@@ -246,7 +266,7 @@ export interface RunOmdTuiOpts {
   terminal?: Terminal;
   /** 时钟注入 —— 双击窗口的判定要可测。 */
   now?: () => number;
-  /** 硬退注入:第二次 `requestExit` 的兜底路径,测试里不许真杀进程。 */
+  /** 硬退注入:第二次 `requestCleanExit` 的兜底路径,测试里不许真杀进程。 */
   exit?: (code: number) => void;
   /**
    * conductor 的上下文装配(S4)。省略 → `loadConductorContext(cwd)`。
@@ -293,7 +313,7 @@ export interface RunOmdTuiOpts {
  * 起 TUI 并**一直 await 到有人要求退出**(SDD §4.2)。
  *
  * ⚠ 刻意**不靠事件循环空转返回** —— 那样"什么时候算结束"取决于有没有别的东西还挂着
- * 定时器,是隐式的。这里只由 `requestExit()` 兑现一个 Promise,结束条件是显式的一处。
+ * 定时器,是隐式的。这里只由 `requestCleanExit()` 兑现一个 Promise,结束条件是显式的一处。
  */
 /**
  * ★ 左槽宽度(P1)。取 1 不取 2:窄屏(80 列)下每一列都算数,而"不贴边"这件事 1 列就成立
@@ -723,10 +743,12 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   });
 
   /**
+   * 干净退出的**唯一路径** —— `/quit` 与双击 Ctrl+C 的 `'exit'` 分支共走这一条,
+   * 两份退出逻辑必漂, 只许有一份。
    * 幂等。第二次调用**直接硬退** —— 那是"第一次退出卡住了"的唯一出路
-   * (openclaw 同款:`requestExit` 二次进入即 `process.exit(130)`)。
+   * (openclaw 同款:`requestCleanExit` 二次进入即 `process.exit(130)`)。
    */
-  function requestExit(): void {
+  function requestCleanExit(): void {
     if (exiting) {
       hardExit(130);
       return;
@@ -1197,6 +1219,9 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    * ⚠ **切过去必须清屏并回放那条会话的历史**。不清的话上一条的消息会留着冒充这一条的上下文,
    * 于是模型看到的(ChatStore 里那条)与人看到的(屏上这堆)是两回事 ——
    * 两边都"有内容"、只是不是同一份,那是最难查的一种。
+   *
+   * `/new` 与 `/fork` 是它的直达别名 —— 解析走 `sessions.ts` 的 `parseNewForkCommand`
+   * (与 parseSessionCommand 同族),分发落进下面同一个 new/fork 分支,不另写会话逻辑。
    */
   /** 切过去 + 回放。抽出来是因为**文本命令与选择器两条路都要走它** —— 两份必漂。 */
   async function switchTo(id: string): Promise<void> {
@@ -1209,7 +1234,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   }
 
   async function handleSession(text: string): Promise<boolean> {
-    const cmd = parseSessionCommand(text);
+    const cmd = parseSessionCommand(text) ?? parseNewForkCommand(text);
     if (!cmd) return false;
     chatLog.appendUser(text);
     editor.setText('');
@@ -1388,6 +1413,159 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
     }
     tui.requestRender();
+    return true;
+  }
+  /**
+   * `/logout` —— 删一个 provider 的凭证(切片⑥的反向)。
+   *
+   * 复用 `removeKeyHeadless`(与 `setKeyHeadless` 同一条反向路由,删的是盘上真存在的键),
+   * **不新写删凭证逻辑**。裸 `/logout` 开选单 —— 只列已配的(listProviderRows 过滤
+   * unconfigured);Esc 零副作用,回执写明什么都没动。claude-code 的凭证归 claude CLI
+   * 自管,这里只指路不假装删。
+   */
+  async function handleLogout(text: string): Promise<boolean> {
+    const t = text.trim();
+    if (t !== '/logout' && !t.startsWith('/logout ')) return false;
+    chatLog.appendUser(t);
+    editor.setText('');
+    tui.requestRender();
+    try {
+      const { CLAUDE_CODE_ID, listProviderRows, providerRowLabel } =
+        require('./provider-directory') as typeof import('./provider-directory');
+      let provider = t.split(/\s+/)[1] ?? '';
+      if (!provider) {
+        // 只列已配的 —— 没配过的家没有凭证可删, 列出来是给人按 Esc 的假动作。
+        const rows = listProviderRows().filter((r) => r.status !== 'unconfigured');
+        if (rows.length === 0) {
+          chatLog.appendNotice('No configured provider credentials to remove - nothing removed');
+          tui.requestRender();
+          return true;
+        }
+        const picked = await dialogSelect(dialogs, theme, {
+          title: 'Log out which provider?  (Esc cancels, nothing removed)',
+          options: rows.map((r) => ({ value: r.id, label: providerRowLabel(r) })),
+          search: true,
+          maxVisible: 12,
+        });
+        if (picked === null) {
+          // Esc: 零副作用 —— 只是关选单, 什么都没删。
+          chatLog.appendNotice(CHROME.logoutCancelled());
+          tui.requestRender();
+          return true;
+        }
+        provider = picked;
+      }
+      if (provider.trim() === CLAUDE_CODE_ID) {
+        chatLog.appendNotice(CHROME.logoutClaude());
+        tui.requestRender();
+        return true;
+      }
+      const { removeKeyHeadless } = require('../harness/init/headless-config') as typeof import('../harness/init/headless-config');
+      const r = removeKeyHeadless(provider.trim());
+      chatLog.appendNotice(r.removed.length > 0 ? CHROME.logoutDone(r.provider, r.removed, r.warnings) : CHROME.logoutNone(r.provider, r.warnings));
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      logger.warn({ err: reason }, '[omd/tui] /logout 抛了');
+      chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
+    }
+    tui.requestRender();
+    return true;
+  }
+
+  /**
+   * `/status` —— 一屏当前状态,**只读零副作用**。
+   *
+   * 四段读数全走既有读径(座位 / sessionId / lastPressure / 账本窗口),
+   * 读不到的行由 formatStatus 写真话 —— 不编数。
+   */
+  function handleStatus(text: string): boolean {
+    const t = text.trim();
+    if (t !== '/status') return false;
+    chatLog.appendUser(t);
+    editor.setText('');
+    const { current } = readSeats();
+    // 账本行:ledger 只有滚动窗口, 24h 是"今日"最近似的现成读数, 标明窗口不冒充日账。
+    const win = opts.usage?.window(DAY_MS) ?? null;
+    chatLog.appendNotice(
+      formatStatus({
+        seat: current.conductor ?? null,
+        sessionId,
+        pressure: lastPressure,
+        usageToday: win === null ? null : `${fmtUsd(win.costUsd, win.unpriced)} · ↑${humanTokens(win.in)} ↓${humanTokens(win.out)} · ${win.calls} calls (24h window)`,
+      }),
+    );
+    tui.requestRender();
+    return true;
+  }
+
+  /**
+   * `/compact` —— 手动压缩当前会话上下文(真 model call + 落盘,副作用)。
+   *
+   * 复用 backend 的 `compact`(内部走 chat 既有 compaction 管线),回执带压缩前后
+   * 两个 token 估读数。压缩后**清屏重放** —— 屏上必须是人/模型同一份历史
+   * (sessions.ts 那条纪律:不回放的话旧消息冒充新上下文)。
+   */
+  async function handleCompact(text: string): Promise<boolean> {
+    const t = text.trim();
+    if (t !== '/compact') return false;
+    chatLog.appendUser(t);
+    editor.setText('');
+    tui.requestRender();
+    try {
+      const r = await opts.backend.compact({ sessionId });
+      if (r === null) {
+        chatLog.appendNotice(CHROME.compactNone());
+      } else {
+        chatLog.clear();
+        const history = await opts.backend.loadHistory({ sessionId });
+        chatLog.replay(history as never);
+        chatLog.appendNotice(CHROME.compactDone(sessionId, r.tokensBefore, r.tokensAfter, r.messageCount));
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      logger.warn({ err: reason }, '[omd/tui] /compact 抛了');
+      chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
+    }
+    tui.requestRender();
+    return true;
+  }
+
+  /**
+   * `/export` —— 把当前会话 transcript 写成 markdown 文件(写盘,副作用)。
+   *
+   * 数据从 `backend.loadHistory` 取,不新造存储;缺省路径 `.omd/exports/<sessionId>-<ts>.md`
+   * 由 export.ts 给。回执带**绝对路径** —— 人要在别的终端里找得到那个文件。
+   */
+  async function handleExport(text: string): Promise<boolean> {
+    const t = text.trim();
+    if (t !== '/export' && !t.startsWith('/export ')) return false;
+    chatLog.appendUser(t);
+    editor.setText('');
+    tui.requestRender();
+    try {
+      const history = await opts.backend.loadHistory({ sessionId });
+      const markdown = exportTranscriptMarkdown(history, { sessionId });
+      const rel = t.split(/\s+/)[1] ?? defaultExportPath(sessionId, Date.now());
+      const abs = resolvePath(opts.cwd, rel);
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, `${markdown}\n`, 'utf8');
+      chatLog.appendNotice(CHROME.exportDone(history.length, abs));
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      logger.warn({ err: reason }, '[omd/tui] /export 抛了');
+      chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
+    }
+    tui.requestRender();
+    return true;
+  }
+
+  /** `/quit` —— 干净退出。与双击 Ctrl+C 的 `'exit'` 分支共走 {@link requestCleanExit}。 */
+  function handleQuit(text: string): boolean {
+    const t = text.trim();
+    if (t !== '/quit') return false;
+    chatLog.appendUser(t);
+    editor.setText('');
+    requestCleanExit();
     return true;
   }
 
@@ -1581,16 +1759,28 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     if (handleSkill(prompt)) return;
     // S-6: 组命令排在 handleSkill 之后 —— `/skill` 本身不是组名, 顺序上不会互吃。
     if (handleSkillGroup(prompt)) return;
+    // 只读 / 退出命令就地消化; 其余走既有异步链 (解析同步、处理异步 —— 分发这一层不是 async)。
+    if (handleStatus(prompt)) return;
+    if (handleQuit(prompt)) return;
     if (parseSettingsCommand(prompt)) {
       void handleSettings(prompt);
       return;
     }
     void handleLogin(prompt).then((handledLogin) => {
       if (handledLogin) return;
-      void handleSession(prompt).then((handledSession) => {
-        if (handledSession) return;
-        void handleRuns(prompt).then((handled) => {
-          if (!handled) void submit(prompt);
+      void handleLogout(prompt).then((handledLogout) => {
+        if (handledLogout) return;
+        void handleSession(prompt).then((handledSession) => {
+          if (handledSession) return;
+          void handleCompact(prompt).then((handledCompact) => {
+            if (handledCompact) return;
+            void handleExport(prompt).then((handledExport) => {
+              if (handledExport) return;
+              void handleRuns(prompt).then((handled) => {
+                if (!handled) void submit(prompt);
+              });
+            });
+          });
         });
       });
     });
@@ -1603,7 +1793,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   tui.addInputListener((data: string) => {
     if (data === '\x03') {
       if (decideCtrlC(armedAt, now()) === 'exit') {
-        requestExit();
+        requestCleanExit();
       } else {
         armedAt = now();
         footer.setText(CHROME.footerArmed());

@@ -44,10 +44,17 @@ export const COMMANDS: readonly CommandDoc[] = [
   { handler: 'handleModels', name: '/models', args: null, what: 'switch the chat seat model (type to filter, current one marked ✓)' },
   { handler: 'handleSeat', name: '/seat', args: '[role] [provider:model] | advisor <seat> <coord|none>', what: 'list tunable seats; with arguments it writes `.omd/config.json` (**side effect**)' },
   { handler: 'handleSettings', name: '/settings', args: null, what: 'settings panel: seats / ui / approval / providers / session / extensions' },
+  { handler: 'handleStatus', name: '/status', args: null, what: 'one screen: seat, session id, context pressure, usage today (read-only)' },
   { handler: 'handleLogin', name: '/login', args: '[provider]', what: 'store an API key for a provider (echo masked, **side effect**)' },
+  { handler: 'handleLogout', name: '/logout', args: '[provider]', what: 'delete a stored credential for one provider (**side effect**)' },
   { handler: 'handleSession', name: '/session', args: '[id | new [id]]', what: 'list sessions; with an id, switch and replay it; `new` starts a fresh one' },
+  { handler: 'parseNewForkCommand', name: '/new', args: '[id]', what: 'start a fresh session (alias of /session new)' },
+  { handler: 'parseNewForkCommand', name: '/fork', args: '[id]', what: 'branch this session (alias of /session fork)' },
   { handler: 'handleRuns', name: '/runs', args: null, what: 'list DAG runs (registry + on-disk checkpoints)' },
   { handler: 'handleRuns', name: '/resume', args: '<runId>', what: 'resume a broken run from its checkpoint (**side effect**)' },
+  { handler: 'handleCompact', name: '/compact', args: null, what: 'compress the current session context (**side effect**)' },
+  { handler: 'handleExport', name: '/export', args: '[path]', what: 'write this transcript to a markdown file (**side effect**)' },
+  { handler: 'requestCleanExit', name: '/quit', args: null, what: 'exit cleanly (same as Ctrl+C twice)' },
 ];
 
 /** 清单里出现过的命令名 —— 接线闸拿它跟 `tui.ts` 对表。 */

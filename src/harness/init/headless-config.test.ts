@@ -1,6 +1,6 @@
 /**
  * headless-config 不变量: key 路由 (auth.json/​.env) + 合并不伤他人 + 活注入 + preset 落盘 +
- * 角色校验 (plan 拒) + HUD 开关。凭证 flag 依赖真 ~/.pi/auth.json, 由 dag_run 端到端验, 此处不锁。
+ * 角色校验 (plan 拒) + HUD 开关 + key 反向删除。凭证 flag 依赖真 ~/.pi/auth.json, 由 dag_run 端到端验, 此处不锁。
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { clearProviders, getProvider } from '../../model/providers';
 import { resetConfigCache } from '../../model/role-models';
-import { applyPresetHeadless, setKeyHeadless, setRoleHeadless, toggleHud } from './headless-config';
+import { applyPresetHeadless, removeKeyHeadless, setKeyHeadless, setRoleHeadless, toggleHud } from './headless-config';
 
 let dir: string;
 let prevConfigPath: string | undefined;
@@ -67,6 +67,66 @@ describe('setKeyHeadless 路由', () => {
   });
 });
 
+describe('removeKeyHeadless 反向删除', () => {
+  test('auth.json api_key 条目整条删 + 不动他人条目', () => {
+    const authPath = join(dir, 'auth.json');
+    writeFileSync(authPath, JSON.stringify({ 'kimi-coding': { type: 'api_key', key: 'sk-old' }, deepseek: { type: 'api_key', key: 'keep-me' } }));
+    const r = removeKeyHeadless('kimi-coding', { cwd: dir, env: {}, authPath });
+    expect(r.removed).toEqual([{ file: authPath, key: 'kimi-coding' }]);
+    expect(r.warnings).toEqual([]);
+    const auth = JSON.parse(readFileSync(authPath, 'utf8'));
+    expect(auth['kimi-coding']).toBeUndefined();
+    expect(auth.deepseek).toEqual({ type: 'api_key', key: 'keep-me' }); // 未被吞
+  });
+
+  test('auth.json oauth 条目同样整条删 (不挑形)', () => {
+    const authPath = join(dir, 'auth.json');
+    writeFileSync(authPath, JSON.stringify({ 'minimax-cn': { type: 'oauth', token: 't' } }));
+    const r = removeKeyHeadless('minimax-cn', { cwd: dir, env: {}, authPath });
+    expect(r.removed).toEqual([{ file: authPath, key: 'minimax-cn' }]);
+    expect(JSON.parse(readFileSync(authPath, 'utf8'))['minimax-cn']).toBeUndefined();
+  });
+
+  test('native: .env 剥 MIMO_API_KEY 行 + env 对称清除, 他人键与 auth.json 不动', () => {
+    const authPath = join(dir, 'auth.json');
+    writeFileSync(authPath, JSON.stringify({ deepseek: { type: 'api_key', key: 'keep' } }));
+    const env: Record<string, string | undefined> = { MIMO_API_KEY: 'sk-mimo-x', MIMO_BASE_URL: 'https://x/v1' };
+    writeFileSync(join(dir, '.env'), 'MIMO_API_KEY=sk-mimo-x\nMIMO_BASE_URL=https://x/v1\n');
+    const r = removeKeyHeadless('mimo', { cwd: dir, env, authPath });
+    expect(r.removed).toEqual([{ file: join(dir, '.env'), key: 'MIMO_API_KEY' }]);
+    expect(env.MIMO_API_KEY).toBeUndefined(); // 注入反向: 当前进程不再见这把 key
+    expect(env.MIMO_BASE_URL).toBe('https://x/v1');
+    const rest = readFileSync(join(dir, '.env'), 'utf8');
+    expect(rest).not.toContain('MIMO_API_KEY');
+    expect(rest).toContain('MIMO_BASE_URL=https://x/v1');
+    expect(JSON.parse(readFileSync(authPath, 'utf8')).deepseek.key).toBe('keep');
+  });
+
+  test('无凭证 → removed 空 + warning 真话', () => {
+    const r = removeKeyHeadless('kimi-coding', { cwd: dir, env: {}, authPath: join(dir, 'auth.json') });
+    expect(r.removed).toEqual([]);
+    expect(r.warnings).toEqual(['no stored credential for kimi-coding']);
+  });
+
+  test('auth.json 非法 JSON → warning, 文件不改动', () => {
+    const authPath = join(dir, 'auth.json');
+    writeFileSync(authPath, '{not json');
+    const r = removeKeyHeadless('kimi-coding', { cwd: dir, env: {}, authPath });
+    expect(r.removed).toEqual([]);
+    expect(r.warnings.some((w) => w.includes('非法 JSON'))).toBe(true);
+    expect(readFileSync(authPath, 'utf8')).toBe('{not json');
+  });
+
+  test('claude-code → 不删, 指路 claude CLI', () => {
+    const r = removeKeyHeadless('claude-code', { cwd: dir, env: {}, authPath: join(dir, 'auth.json') });
+    expect(r.removed).toEqual([]);
+    expect(r.warnings.some((w) => w.includes('claude logout'))).toBe(true);
+  });
+
+  test('空 provider → throw', () => {
+    expect(() => removeKeyHeadless('', { cwd: dir })).toThrow(/provider required/);
+  });
+});
 describe('applyPresetHeadless', () => {
   test('cn-trio: env 矩阵落盘+注入 + config 角色落 config.json (无 plan)', () => {
     const env: Record<string, string | undefined> = {};

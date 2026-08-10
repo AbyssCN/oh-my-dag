@@ -69,6 +69,12 @@ export interface OmdBackend {
   abortChat(o: { sessionId: string }): Promise<{ ok: boolean; aborted: boolean }>;
   loadHistory(o: { sessionId: string }): Promise<AgentMessage[]>;
   listSessions(): Promise<TuiSessionMeta[]>;
+  /** 压缩当前会话上下文(真 model call,副作用)。`null` = 无可压缩(空会话/已在尾部)。 */
+  compact(o: { sessionId: string }): Promise<{
+    tokensBefore: number;
+    tokensAfter: number;
+    messageCount: number;
+  } | null>;
 
   // ── 可选能力 (S14):**用 `backend.listRuns ?` 探测,不加 capabilities 标志位** ──
   // 两处声明同一件事必漂 (本仓 D-2 刚为此付过账)。fixture 后端不实现这两个 →

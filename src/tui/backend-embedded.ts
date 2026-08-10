@@ -18,10 +18,12 @@
  * **不给文件工具** —— 改文件走图,不走对话。那是 THE-LOOP 的角色红线,不是这一片的取舍。
  */
 import type { AgentEvent, AgentMessage } from '@earendil-works/pi-agent-core';
+import { estimateTokens } from '@earendil-works/pi-agent-core';
 import { logger } from '../logger';
 import type { OmdSessionStore } from '../harness/chat/session-store';
 import type { AnyOmdTool } from '../harness/agent-tools';
 import { type ChatTurnOpts, runChatTurn } from '../harness/chat/agent';
+import { type CompactionCallModel, compactChatMessages } from '../harness/chat/compaction';
 import type { OmdBackend, OmdTuiEvent, TuiSessionMeta } from './backend';
 import type { ContextFile } from './context';
 
@@ -57,6 +59,8 @@ export interface EmbeddedBackendDeps {
   // 后端再补记一笔合计就是同一轮记两遍(生产账本上留下过 10 对孪生行)。
   /** 测试接缝:替换真轮子。生产不传。 */
   runTurn?: typeof runChatTurn;
+  /** 测试接缝:压缩摘要那一次模型调用。生产不传(真 `callModel`, 账本挂在它出口上)。 */
+  compactCallModel?: CompactionCallModel;
 }
 
 /**
@@ -195,6 +199,36 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
     async loadHistory({ sessionId }): Promise<AgentMessage[]> {
       // 缺席返回空历史 (还没说过话不是错误); 非法 id 仍**响亮抛** —— 那是路径穿越闸。
       return (await (await deps.store.open(sessionId))?.messages()) ?? [];
+    },
+
+    // ── /compact: 手动压缩当前会话 ──────────────────────────────────────────
+    // 与 agent.ts 轮前压缩同一条路 (202-231): compactChatMessages (真 model call,
+    // 账本挂在 callModel 出口, 不许换掉默认值) → appendCompaction 落条目 →
+    // 重读投影算 after。`null` = 无可压缩 (会话不存在 / 切不出点) ——
+    // "没压" 不是 "压成空的" (compaction.ts:60 同口径)。
+    // 两个读数同口径: 逐条 estimateTokens 相加 (agent.ts:192 pureEstimate 先例)。
+    async compact({ sessionId }: { sessionId: string }) {
+      const session = await deps.store.open(sessionId);
+      if (!session) return null;
+      const messages = await session.messages();
+      const before = messages.reduce((n, m) => n + estimateTokens(m), 0);
+      const compacted = await compactChatMessages({
+        messages,
+        model: deps.resolveModel(),
+        ...(deps.compactCallModel ? { callModelFn: deps.compactCallModel } : {}),
+      });
+      if (!compacted) return null;
+      await session.appendCompaction({
+        summary: compacted.summary,
+        tokensBefore: before,
+        retainedTail: compacted.retainedTail,
+      });
+      const after = await session.messages();
+      return {
+        tokensBefore: before,
+        tokensAfter: after.reduce((n, m) => n + estimateTokens(m), 0),
+        messageCount: after.length,
+      };
     },
 
     // ── S14: run 历史与续跑 ────────────────────────────────────────────────

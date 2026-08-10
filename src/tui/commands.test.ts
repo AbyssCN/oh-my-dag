@@ -57,8 +57,29 @@ describe('formatHelp', () => {
   test('★ 有副作用的命令要说出来 —— 改文件和只读列表不是一回事', () => {
     const out = formatHelp();
     expect(out).toContain('side effect');
-    // /seat /resume /login 是仅有的三条会改东西的 (切片⑥ 加了 /login: 落 key 写 auth.json/.env)
-    expect(COMMANDS.filter((c) => c.what.includes('side effect')).map((c) => c.name)).toEqual(['/seat', '/login', '/resume']);
+    // 会改东西的六条: /seat /login /resume (落 key/写配置/续跑) + 新三项 /compact (真 model call+落盘)
+    // /logout (删凭证键) /export (写盘)。只读的 (/status /new /fork /quit) 不许标 —— 标了这条也红。
+    expect(new Set(COMMANDS.filter((c) => c.what.includes('side effect')).map((c) => c.name))).toEqual(
+      new Set(['/seat', '/login', '/resume', '/compact', '/logout', '/export']),
+    );
+  });
+
+  test('★ 六项新增命令的 handler 都是真实分发标识符 —— 名字写错当场红, 不靠猜', () => {
+    const byName = new Map(COMMANDS.map((c) => [c.name, c.handler]));
+    expect(byName.get('/compact')).toBe('handleCompact');
+    expect(byName.get('/logout')).toBe('handleLogout');
+    expect(byName.get('/new')).toBe('parseNewForkCommand');
+    expect(byName.get('/fork')).toBe('parseNewForkCommand');
+    expect(byName.get('/status')).toBe('handleStatus');
+    expect(byName.get('/export')).toBe('handleExport');
+    expect(byName.get('/quit')).toBe('requestCleanExit');
+  });
+
+  test('★ HELP-1: 一行一条 —— 每条命令占且只占一行, 两行一条当场红', () => {
+    const rows = formatHelp().split('\n').filter((l) => l.startsWith('  /'));
+    expect(rows).toHaveLength(COMMANDS.length);
+    // 行首令牌不重不漏 = 全部命令名 —— 漏行或两行一条都会红。
+    expect(new Set(rows.map((r) => r.trim().split(/\s+/)[0]))).toEqual(new Set(COMMAND_NAMES));
   });
 
   test('提到文件补全 —— 那条能力没有命令, 不说就没人知道', () => {

@@ -74,6 +74,18 @@ export const FIXTURE_PRESSURE = {
   ratio: 12_000 / 200_000,
 } as const;
 
+/**
+ * 写死的压缩读数 —— `/compact` 回执的 `~<before> → ~<after> tokens` 可断言(PTY 的 CMP-1)。
+ * 12,000 → 2,400 与 `FIXTURE_PRESSURE.usedTokens` 同源,数字之间不打架。
+ * fixture **不发真 model call、不真截断内存消息** —— 压缩行为由 embedded 走真
+ * `compactChatMessages`;这里只证明「命令线接得上、回执形状对」。
+ */
+export const FIXTURE_COMPACT = {
+  tokensBefore: 12_000,
+  tokensAfter: 2_400,
+  messageCount: 1,
+} as const;
+
 export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend {
   let seq = 0;
   let onEvent: ((e: OmdTuiEvent) => void) | undefined;
@@ -211,6 +223,12 @@ export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend 
       sessions.set(newId, structuredClone(src));
       parents.set(newId, fromId);
       return { ok: true, text: `forked ${newId} from ${fromId} (${src.length} messages)` };
+    },
+    /** 压缩演示(命令面):空会话 → null(与生产同语义,回执走「nothing to compact」),否则固定读数。 */
+    async compact({ sessionId }): Promise<{ tokensBefore: number; tokensAfter: number; messageCount: number } | null> {
+      const msgs = sessions.get(sessionId);
+      if (!msgs || msgs.length === 0) return null;
+      return { ...FIXTURE_COMPACT };
     },
   };
 }

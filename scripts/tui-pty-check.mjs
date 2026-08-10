@@ -649,8 +649,11 @@ async function scenarioSeat() {
     // /help: 四条命令得发现得了 —— 启动提示提到它, 它列出全部。
     p.write('/help\r');
     check(
-      await waitFor(p, (t) => t.includes('/seat') && t.includes('/runs') && t.includes('/skill')),
-      'HELP-1 ★ /help 列出全部命令(否则四条命令发现不了)',
+      // ★ 锚在**尾部**命令 (2026-08-10 slash 面补齐后表长 17 行): 30 行终端首绘只画得下
+      //   表尾, 头部行经 PgUp 可达 —— 完整性由 commands.test 的 formatHelp 单测保
+      //   (全部命令必在字符串里), 这里量的是"表真的画上屏了"。/export /quit 是表尾两条。
+      await waitFor(p, (t) => t.includes('/export') && t.includes('/quit') && t.includes('/compact')),
+      'HELP-1 ★ /help 列出命令表(尾部可见, 头部 PgUp 可达, 完整性走单测)',
       p.text().slice(0, 800),
     );
     // ⚠ 提示里 `/help` 带反引号, 归一化后仍在 —— 断言别把反引号漏掉 (初版就漏了)。
@@ -914,6 +917,161 @@ async function scenarioDagNarrow() {
 }
 
 /**
+ * 场景 4.10:新 slash 命令面 —— `/compact`(6 命令之一, 只测回执形状)。
+ *
+ * fixture 后端有假压缩 (FIXTURE_COMPACT = 12,000 → 2,400, **不发真 model call**)——
+ * 这条 lane 只证明「命令线接得上、回执带压缩前后**两个** token 数」; 压缩行为本身
+ * (compactChatMessages / appendCompaction)由 embedded 的 L1 单测钉。
+ */
+async function scenarioCompact() {
+  const p = startTui();
+  try {
+    check(await waitFor(p, (t) => bootReady(t)), 'CMP-0 (场景4.10) 启动');
+    // 先跑一轮让会话有历史 —— fixture 的假压缩对空会话返回 null(与生产同语义), 回执会走 nothing 分支。
+    // 种子消息用普通 `hej` 不用 `fixture:reads`: 后者走的是健康度演示, 回复不是那句 fixture 标准话。
+    p.write('hej\r');
+    check(
+      await waitFor(p, (t) => t.includes('This is the fixture backend')),
+      'CMP-0b 一轮跑完(会话有历史, 压缩才有东西可压)',
+      p.text().slice(0, 400),
+    );
+    p.write('/compact\r');
+    // 锚 `Compacted` 是**全新串** —— 欢迎屏/底栏/任何 chrome 都没打印过(累积缓冲假绿坑, SET-4 同族)。
+    // 判据钉回执**形状**: 会话 id + `~<before> -> ~<after> tokens`, 前后两个数都写。
+    // ⚠ 箭头认 ASCII `->` 也认 `→`(实跑: 回执打的是 `~12000 -> ~2400`, 不是契约草稿里的 →);
+    //   钉的是「两个数都写」, 不是箭头字形。
+    // 不钉具体数值(humanTokens 的 k 格式是渲染细节, L1 钉)。
+    // 证伪: 注释掉 tui.ts 的 /compact 分发 → `Compacted` 不出现, 本条红;
+    //       回执只写一个数 → 第二个 `~` 匹配不上, 红。
+    check(
+      await waitFor(p, (t) => /Compacted s-\S+: ~\S+ (?:->|→) ~\S+ tokens/.test(t), 10000),
+      'CMP-1 ★ /compact 有回执, 压缩前后两个 token 数都写(来自 backend.compact, 不是屏上编的)',
+      p.text().slice(-500),
+    );
+  } finally {
+    p.kill();
+  }
+}
+
+/**
+ * 场景 4.11:新 slash 命令面 —— `/logout`(只测 Esc 取消路径, 零副作用)。
+ *
+ * ⚠ 真删键走 headless-config 的单测(tmpdir 隔离); 这条 lane **不碰真凭证**。
+ * cwd 用临时目录 + env 里一把**假** DEEPSEEK_API_KEY —— 于是 fixture lane 里 deepseek 是已配的,
+ * 裸 /logout 必开选单(只列已配); 不设的话选单可能空开, 取消回执打不打印就看实现心情了。
+ * 假 key 只活在 PTY env 里, 不落任何盘。
+ */
+async function scenarioLogout() {
+  const cwd = mkdtempSync(join(tmpdir(), 'omd-tui-logout-'));
+  const p = startTui({ cwd, env: { DEEPSEEK_API_KEY: 'sk-pty-logout-fake' } });
+  try {
+    check(await waitFor(p, (t) => bootReady(t)), 'OUT-0 (场景4.11) 启动');
+    p.write('/logout\r');
+    // 选单渲染要一拍 —— 不给它时间, Esc 会打在输入框里(SESS-1 的 Esc 同族坑)。
+    await new Promise((r) => setTimeout(r, 800));
+    p.write('\x1b');
+    // 锚 `logout cancelled` / `nothing removed` 都是**全新串**(本仓 chrome 从未打印)。
+    // 回执本身就是零副作用证明: 它只在「选单开了 → Esc 取消」这条路上出现。
+    // 证伪: 删掉 handleLogout 的 Esc 取消分支(或 Esc 后直接删键) → 回执不出现, 本条红。
+    check(
+      await waitFor(p, (t) => t.includes('logout cancelled') && t.includes('nothing removed'), 10000),
+      'OUT-1 ★ /logout 选单 Esc 取消, 零副作用回执(nothing removed)',
+      p.text().slice(-500),
+    );
+  } finally {
+    p.kill();
+  }
+}
+
+/**
+ * 场景 4.12:新 slash 命令面 —— `/status`(只读四行, 读不到写真话)。
+ *
+ * cwd 用临时目录 + OMD_CONFIG_PATH 指向不存在的文件: 座位未配是这条 lane 的**确定态** ——
+ * 不隔离的话真机上的 ~/.omd/config.json 会把 `(no seat configured)` 这个锚变成碰运气
+ * (config-discovery 的 repo 边界只护仓内, 护不住 tmpdir)。
+ */
+async function scenarioStatus() {
+  const cwd = mkdtempSync(join(tmpdir(), 'omd-tui-status-'));
+  const cfg = join(cwd, 'omd-config.json'); // 只用来挡全局 config, 不写它
+  const p = startTui({ cwd, env: { OMD_CONFIG_PATH: cfg } });
+  try {
+    check(await waitFor(p, (t) => bootReady(t)), 'ST-0 (场景4.12) 启动');
+    const sessionId = (p.text().match(/session\s+(s-\d+-\d+)/) ?? [])[1];
+    check(Boolean(sessionId), 'ST-1a 欢迎屏给出本进程会话 id(状态屏锚要用它)', p.text().slice(0, 700));
+    p.write('/status\r');
+    // 四个锚全是 status 屏**独有**的串: 欢迎屏那行是 `session s-…`(表列分隔是两空格, 无冒号),
+    // 底栏压力是 `ctx 6%` —— `session: `(冒号形)、`conductor:`、`context:`、`usage today:`
+    // 此前从未打印过(累积缓冲假绿坑, SET-4 同族)。
+    // 证伪: 注释掉 handleStatus 接线 → 下面四条全红; 任一行的真话分支被删 → 对应锚红。
+    check(
+      await waitFor(p, (t) => t.includes('conductor: (no seat configured)'), 10000),
+      'ST-1 ★ 座位行: 未配写真话, 不编坐标',
+      p.text().slice(-500),
+    );
+    check(p.text().includes(`session: ${sessionId}`), 'ST-2 ★ 状态行带**当前**会话 id(冒号形, 与欢迎屏那句区分)', p.text().slice(-500));
+    check(p.text().includes('context: no turn yet'), 'ST-3 ★ 没跑过轮写真话, 不画编的百分比', p.text().slice(-500));
+    check(p.text().includes('usage today:'), 'ST-4 ★ 账本今日用量行在(读数口径走 L1 单测)', p.text().slice(-500));
+  } finally {
+    p.kill();
+  }
+}
+
+/**
+ * 场景 4.13:新 slash 命令面 —— `/export`(transcript → markdown, 真落盘)。
+ *
+ * cwd 用临时目录: 缺省导出路径 `.omd/exports/<sessionId>-<ts>.md` 落在 tmpdir,
+ * 不许拿仓当草稿纸(scenarioLogRedirect 同纪律)。
+ */
+async function scenarioExport() {
+  const cwd = mkdtempSync(join(tmpdir(), 'omd-tui-export-'));
+  const p = startTui({ cwd });
+  try {
+    check(await waitFor(p, (t) => bootReady(t)), 'EXP-0 (场景4.13) 启动');
+    p.write('hej\r'); // 先跑一轮, 导出才有内容可导(种子同 CMP-0b: 普通消息才有 fixture 标准回复)
+    check(
+      await waitFor(p, (t) => t.includes('This is the fixture backend')),
+      'EXP-0b 一轮跑完(transcript 有消息)',
+      p.text().slice(0, 400),
+    );
+    p.write('/export\r');
+    // 锚 `Exported` 是**全新串**; 判据钉回执形状: `Exported <n> messages -> /绝对路径`
+    // (箭头同 CMP-1: 实跑是 ASCII `->`, `→` 也认)。
+    // 证伪: 注释掉 handleExport 接线 → 回执不出现, 本条红。
+    check(
+      await waitFor(p, (t) => /Exported \d+ messages (?:->|→) \//.test(t), 10000),
+      'EXP-1 ★ /export 回执带消息数 + **绝对**路径',
+      p.text().slice(-500),
+    );
+    // ★ 屏幕上说写了不算数 —— 文件系统上真的要有那个 .md(AP-8 同族判据)。
+    // 用 waitFor 轮询而不是立刻 readdir: 回执先印、写盘后落的话, 立刻读会竞态假红。
+    // 证伪: 注释掉 handleExport 里写盘那一行(回执还在) → 文件闸红。
+    let files = [];
+    let readErr = null;
+    const wrote = await waitFor(
+      { text: () => '' },
+      () => {
+        try {
+          files = readdirSync(join(cwd, '.omd', 'exports')).filter((f) => f.endsWith('.md'));
+          return files.length >= 1;
+        } catch (err) {
+          readErr = err.message;
+          return false;
+        }
+      },
+      8000,
+    );
+    check(
+      wrote,
+      'EXP-2 ★ 导出文件真的落在 .omd/exports/(屏上回执不算数)',
+      readErr ? `读 ${join(cwd, '.omd', 'exports')} 失败: ${readErr}` : `实得 ${JSON.stringify(files)}`,
+    );
+    const body = files.length ? readFileSync(join(cwd, '.omd', 'exports', files[0]), 'utf8') : '';
+    check(body.startsWith('# Session '), 'EXP-3 ★ markdown 头是 `# Session <id>`(形状对)', body.slice(0, 60) || '(无文件可读)');
+  } finally {
+    p.kill();
+  }
+}
+/**
  * 场景 4.5:**审批层**(切片①,G-1 的 PTY 半):真 gate → 真卡片 → 真键位 → 真写/真拒。
  *
  * fixture 的 `fixture:write` 暗号会经**生产同一个 ApprovalGate** 调一个真会写盘的
@@ -1054,6 +1212,10 @@ await scenarioSkillComplete();
 await scenarioPathfinder();
 await scenarioDagViews();
 await scenarioDagNarrow();
+await scenarioCompact();
+await scenarioLogout();
+await scenarioStatus();
+await scenarioExport();
 await scenarioApproval();
 await scenarioRealBackendBoots();
 
