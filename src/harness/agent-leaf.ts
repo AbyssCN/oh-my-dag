@@ -58,6 +58,8 @@ import { createSandboxedLeafRunner } from './hooks/sandboxed-leaf';
 import { logger } from '../logger';
 import { callModel } from '../model';
 import { resolvePiApiKey, resolvePiModel } from '../model/pi-transport';
+import { CLAUDE_SDK_PROVIDER, effortOf } from '../model/claude-sdk-complete';
+import { runSdkAgentLoop } from './claude-sdk-loop';
 import { promptVersionOfText } from '../model/langfuse';
 import type { ModelUsage } from '../model/types';
 import type { ThinkingLevel } from '../model/role-models';
@@ -243,6 +245,10 @@ export interface AgentLeafRunnerOpts {
    * 编辑型 leaf (DeepSeek/MiMo 改代码) 应开。
    */
   hashlineEdit?: boolean;
+  /**
+   * 测试接缝:claude-code 订阅通道的 SDK query 替身(真 SDK 要真订阅 + claude CLI)。生产不传。
+   */
+  sdkQueryFn?: import('./claude-sdk-loop').SdkQueryFn;
   /**
    * 碰撞台账写入面 (SDD S3, 只记不拦)。给了才记; **缺省零行为变化**。
    * `session` 是 runner 级兜底; 引擎侧 runId 只在调用期可知 (runner 跨 run 复用) →
@@ -778,10 +784,14 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
   const runOnce = async (input: AgentLeafInput): Promise<AgentLeafResult> => {
     const { prompt, model } = input;
     const { provider, modelId } = parseModelRef(model);
+    // Claude 订阅通道 (NOTES 2026-08-10): claude-code:* 不在两栈, 循环走 SDK (下方调用点分派)。
+    // ⚠ sandboxRoot 模式下 claude CLI 的凭证目录 (~/.claude) 不在 bwrap 视图里 —— 订阅座位
+    // 暂不支持沙箱叶, 要用得先把凭证挂载进视图 (二期, 见 NOTES)。
+    const isSdkChannel = provider === CLAUDE_SDK_PROVIDER;
     // 坐标解析与单发通道 (`callModel`) 走**同一个** resolver —— 两栈各解析一次正是"座位在这条路上
     // 能解出来、在那条路上解不出来"的来源。
-    const piModel = resolvePiModel(provider, modelId);
-    if (!piModel) {
+    const piModel = isSdkChannel ? null : resolvePiModel(provider, modelId);
+    if (!piModel && !isSdkChannel) {
       throw new Error(
         `[agent-leaf] 坐标 '${model}' 解析不出模型: provider '${provider}' 既不在自有 registry 也不在 pi-ai 目录。`,
       );
@@ -957,7 +967,8 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       tools,
     };
     const config: AgentLoopConfig = {
-      model: piModel,
+      // SDK 通道不消费本 config (调用点分派), 空断言只为类型 —— pi 路上方已保证非空。
+      model: piModel!,
       convertToLlm,
       // thinking: 'off' = 不发该字段 (与 pi-transport 同语义); 其余直映 pi 的 reasoning 档,
       // 由 pi 按模型 thinkingLevelMap 再夹一次 (它比我们更清楚自家目录里哪档存在)。
@@ -980,7 +991,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       ...(wantCompaction
         ? {
             prepareNextTurn: async ({ context: ctx }) => {
-              const window = piModel.contextWindow;
+              const window = piModel?.contextWindow ?? 0;
               if (window <= 0) return undefined;
               const before = estimateContextTokens(ctx.messages).tokens;
               if (before < window * budgetRatio) return undefined;
@@ -1009,7 +1020,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
         }
         // 压缩之后仍在线上 (或压根没开压缩) → 优雅停: 撞窗口是整轮硬失败, 而停下来还能交已有产物。
         // 刚压过的那一轮改用逐条估算 —— provider 自报的用量描述的是压缩**前**的上下文 (见 usageAnchorStale)。
-        const window = piModel.contextWindow;
+        const window = piModel?.contextWindow ?? 0;
         const tokens = usageAnchorStale ? pureEstimate(ctx.messages) : estimateContextTokens(ctx.messages).tokens;
         usageAnchorStale = false;
         if (window > 0 && tokens >= window * budgetRatio) {
@@ -1023,14 +1034,39 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
 
     let messages: AgentMessage[];
     try {
-      messages = await runAgentLoop(
-        [{ role: 'user', content: routedPrompt, timestamp: Date.now() }],
-        context,
-        config,
-        emit,
-        controller.signal,
-        streamSimple,
-      );
+      if (isSdkChannel) {
+        // Claude 订阅通道: 循环换 SDK, 其余机械原样 —— filesTouched/writeEffects/shellRuns/drift
+        // 全挂在 emit 的 tool_execution_* 事件上, 桥发同形事件, 采集不知道循环换了。
+        // 看门狗: onActivity 每条 SDK 流消息续窗 + includePartialMessages 让长思考轮也有增量
+        // (否则 3min idle 会把「在想」判成「挂死」—— 2026-08-01 修过的同族错)。
+        // 上下文压缩/轮间停不做 (SDK 自管); tolerateAbort: 超时/停摆 abort → 返已累积, 优雅停语义保留。
+        const effort = effortOf(thinkingLevel);
+        const out = await runSdkAgentLoop({
+          prompt: routedPrompt,
+          systemPrompt,
+          tools,
+          modelId,
+          modelCoord: model,
+          ...(effort ? { effort } : {}),
+          cwd,
+          onEvent: emit,
+          onActivity: noteProgress,
+          includePartialMessages: true,
+          signal: controller.signal,
+          tolerateAbort: true,
+          ...(opts.sdkQueryFn ? { sdkQueryFn: opts.sdkQueryFn } : {}),
+        });
+        messages = [{ role: 'user', content: routedPrompt, timestamp: Date.now() } as AgentMessage, ...out.generated];
+      } else {
+        messages = await runAgentLoop(
+          [{ role: 'user', content: routedPrompt, timestamp: Date.now() }],
+          context,
+          config,
+          emit,
+          controller.signal,
+          streamSimple,
+        );
+      }
     } finally {
       if (hardTimer) clearTimeout(hardTimer);
       if (idleTimer) clearTimeout(idleTimer);

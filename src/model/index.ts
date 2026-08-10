@@ -12,6 +12,7 @@ import type { ModelMessage, ModelRequest, ModelResponse, ModelUsage } from './ty
 import { getProvider } from './providers';
 import { emitModelUsage } from './accounting';
 import { resolvePiModel, piModelFromProviderConfig, piRequest, type PiModel } from './pi-transport';
+import { CLAUDE_SDK_PROVIDER, sdkCompleteRaw } from './claude-sdk-complete';
 import { reportProviderFailure, cooldownMsFor } from './provider-health';
 import { reportTruncation } from './truncation';
 import { capsFor } from './model-caps';
@@ -86,6 +87,16 @@ function resolveModel(req: ModelRequest): ResolvedTarget {
   }
   const sep = raw.indexOf(':');
   const providerName = sep === -1 ? raw : raw.slice(0, sep);
+  // ⓪ Claude 订阅通道 (NOTES 2026-08-10): 不在两栈里, 造合成 target —— piModel 只有 doRequest
+  //    消费, 而 claude-code 分支在那里改走 SDK, 这个 stub 不会被当真模型用。
+  if (providerName === CLAUDE_SDK_PROVIDER) {
+    const modelId = sep === -1 ? '' : raw.slice(sep + 1);
+    if (!modelId) throw new ModelError('config', `callModel: '${raw}' 缺 model id (claude-code 无 defaultModel)`);
+    return {
+      piModel: { id: modelId, provider: CLAUDE_SDK_PROVIDER, contextWindow: 1_000_000 } as unknown as PiModel,
+      resolved: `${CLAUDE_SDK_PROVIDER}:${modelId}`,
+    };
+  }
   const cfg = getProvider(providerName);
   if (cfg) {
     const modelId = sep === -1 ? cfg.defaultModel ?? '' : raw.slice(sep + 1);
@@ -183,6 +194,10 @@ function doRequest(
   messages: ModelMessage[],
   req: ModelRequest,
 ): Promise<RawResult> {
+  // Claude 订阅完成位: 单发 SDK query, 外层重试/截断守卫/schema 纠错/熔断原样复用。
+  if ((target.piModel as { provider?: string }).provider === CLAUDE_SDK_PROVIDER) {
+    return sdkCompleteRaw((target.piModel as { id: string }).id, messages, req);
+  }
   // piRequest 的 PiCallResult 与 RawResult 结构同形 (text/usage/raw/finishReason)。
   return piRequest(target.piModel, messages, req, target.apiKey ? { apiKey: target.apiKey } : undefined);
 }
