@@ -49,10 +49,15 @@ export const COMMANDS: readonly CommandDoc[] = [
   { handler: 'handleLogout', name: '/logout', args: '[provider]', what: 'delete a stored credential for one provider (**side effect**)' },
   { handler: 'handleSession', name: '/session', args: '[id | new [id]]', what: 'list sessions; with an id, switch and replay it; `new` starts a fresh one' },
   { handler: 'parseNewForkCommand', name: '/new', args: '[id]', what: 'start a fresh session (alias of /session new)' },
-  { handler: 'parseNewForkCommand', name: '/fork', args: '[id]', what: 'branch this session (alias of /session fork)' },
+  // ⚠ `/fork` 与 `/tree` **不是重复的两条**, 两句 what 要把分野说清(2026-08-11 §1.3 裁决):
+  //    /fork 复制出**第二条会话**(两条都能活, 同一段历史两份); /tree 在**同一份文件**里换分支
+  //    (一份真值, 同时只有一个活分支)。说不清分野时人会随便点一个, 而两者的产物完全不同。
+  { handler: 'parseNewForkCommand', name: '/fork', args: '[id]', what: 'copy this session into a second one and switch to it (alias of /session fork)' },
+  { handler: 'handleTree', name: '/tree', args: null, what: 'browse this session tree; branch from an earlier entry - the abandoned branch becomes a [branch summary] node in the same file (**side effect**)' },
   { handler: 'handleRuns', name: '/runs', args: null, what: 'list DAG runs (registry + on-disk checkpoints)' },
   { handler: 'handleRuns', name: '/resume', args: '<runId>', what: 'resume a broken run from its checkpoint (**side effect**)' },
   { handler: 'handleCompact', name: '/compact', args: null, what: 'compress the current session context (**side effect**)' },
+  { handler: 'handleReload', name: '/reload', args: null, what: 'reload extensions from .omd/extensions.json - restarts their subprocesses (**side effect**)' },
   { handler: 'handleExport', name: '/export', args: '[path]', what: 'write this transcript to a markdown file (**side effect**)' },
   { handler: 'requestCleanExit', name: '/quit', args: null, what: 'exit cleanly (same as Ctrl+C twice)' },
 ];

@@ -77,6 +77,40 @@ export interface OmdSession {
   appendCompaction(x: { summary: string; tokensBefore: number; retainedTail: AgentMessage[] }): Promise<void>;
   /** 逐条读原始条目(compaction / custom 都在里面)—— §1.2 与 §1.3 要吃它。 */
   entries(): Promise<Awaited<ReturnType<Session['findEntriesOnBranch']>>>;
+  /**
+   * **整棵树**的条目(不只当前分支)—— `/tree` 要画分叉,只看当前分支画不出分叉。
+   *
+   * ⚠ 与 `entries()` 的差别是**真实的**:`entries()` 走 `findEntriesOnBranch`(从当前叶回溯
+   * 到根的那一条路径),分支摘要之后被放弃的那一段**不在里面**,而它们仍在文件里。
+   */
+  allEntries(): Promise<Awaited<ReturnType<Session['findEntries']>>>;
+  /** 当前分支的叶。`null` = 这条会话一条消息都还没有。 */
+  leafId(): Promise<string | null>;
+  /**
+   * ★ pi 的 `Session` 本体 —— **只给那几个形参类型写死 `Session` 的 pi 函数当参数用**
+   * (`collectEntriesForBranchSummary` 是其一;`Session` 有 private 字段 ⇒ 结构化窄接口
+   * 传不进去,实测 tsc 会红)。
+   *
+   * ⚠ **不许拿它写**:写必须走本层的 `append` / `appendCompaction` / `navigateTo` ——
+   * 只有那三条过 `ensureWritable`(跨进程写锁)。绕过去写不会报错,只会让另一个进程的
+   * 那份 `Session` 状态与磁盘对不上 —— 而那是"整份会话读不出来"的来路(见文件头第 1 条)。
+   */
+  readonly tree: Session;
+  /**
+   * 导航到树上另一个条目(pi 式分支,台账 §1.3)。
+   *
+   * `branchSummary` 给了就在**移动之后**追加一条 `branch_summary` 条目 —— 顺序不能反:
+   * `appendEntry` 的 `parentId` 取的是**当时**的 lane 指针(`jsonl/storage.js:112`),
+   * 先追加就会把摘要挂在旧分支的尾巴上,而那正是它要交代的那条分支。
+   *
+   * ⚠ 残余风险写明白:`moveLane` 成功而 `appendEntry` 抛,会留下"分支已放弃但没有摘要"
+   * 的中间态(pi 没有把两步合成一次写的口子)。条目一条都没丢 —— 用 `/tree` 挑回旧叶即可
+   * 回到原处;摘要要不要补由人决定,这一层不静默重试。
+   */
+  navigateTo(
+    targetId: string,
+    branchSummary?: { summary: string; fromId: string; details: unknown },
+  ): Promise<void>;
 }
 
 export interface OmdSessionStore {
@@ -178,7 +212,29 @@ export function createOmdSessionStore(repoRoot: string, lockDeps?: LockDeps): Om
 
   const wrap = (id: string, s: Session, path: string): OmdSession => ({
     id,
+    tree: s,
     entries: () => branch(s),
+    // ⚠ **不带 `start`** —— `findEntries` 是全表, 这正是它与 `entries()` 的差别所在。
+    //   `order` 仍要给:默认是叶往根(见下面 `branch` 那条注), 树画出来会上下颠倒。
+    allEntries: () => s.findEntries({ order: 'oldestFirst' }),
+    leafId: () => s.getLeafId(),
+    async navigateTo(targetId, branchSummary) {
+      ensureWritable(path);
+      await s.moveLane('main', targetId);
+      if (!branchSummary) return;
+      await s.appendEntry(
+        {
+          type: 'branch_summary',
+          id: uuidv7(),
+          fromId: branchSummary.fromId,
+          summary: branchSummary.summary,
+          // details 来自工具调用抽出来的文件名 —— 与 append 同一条:undefined 键会被 pi 的
+          // `assertJsonSerializable` 响亮拒(见下面 `jsonSafe` 那条注)。
+          details: jsonSafe(branchSummary.details),
+        },
+        'main',
+      );
+    },
     async messages() {
       return buildSessionContext(await branch(s)).messages;
     },

@@ -275,3 +275,76 @@ describe('★ S14: run 能力靠字段在不在探测, 不靠标志位', () => {
     expect(r?.text).toContain('no checkpoint');
   });
 });
+
+/**
+ * §1.3(2026-08-11):会话树与 pi 式分支的接线。
+ *
+ * 引擎行为(摘要挂在谁下面 / 旧分支不丢 / 模型看得到)由
+ * `harness/chat/branch-summary.test.ts` 管;这里只量**接线**:
+ * 能力探测面、树的取材是不是整棵树、以及那条 **fail-closed** ——
+ * 摘要失败时后端不许把会话切过去。
+ */
+describe('★ 会话树与分支(§1.3)', () => {
+  const msg = (text: string): AgentMessage => ({ role: 'user', content: [{ type: 'text', text }], timestamp: 1 }) as unknown as AgentMessage;
+
+  /** 假的摘要调用:回一份固定摘要 / 或塌掉。 */
+  const okCall = (async () => ({ text: '## Goal\n那条分支在试别的路子', usage: { in: 1, out: 1 }, raw: {}, model: 'fake:branch', attempts: 1 })) as never;
+  const badCall = (async () => {
+    throw new Error('provider said no');
+  }) as never;
+
+  /** 造一条四消息的会话, 返回后端与第二条条目的 id(= 回去重走的落点)。 */
+  const seeded = async (branchCallModel: unknown = okCall) => {
+    const m = make({ branchCallModel: branchCallModel as never });
+    // ⚠ 这里另开一个 store 实例是安全的:单写者表是**模块级按路径**的, 同一份文件
+    //   拿到的仍是同一个 `Session`(session-store 文件头第 1 条)。
+    const store = createOmdSessionStore(m.cwd);
+    const sess = await store.create('s', 't');
+    for (const t of ['一问', '一答', '二问 —— 要被放弃', '二答 —— 要被放弃']) await sess.append(msg(t));
+    const tree = await m.backend.sessionTree?.({ sessionId: 's' });
+    return { ...m, forkPoint: tree?.entries[1]?.id as string, tree };
+  };
+
+  test('★ 取材是**整棵树**, 不是当前分支 —— 被放弃的那一支必须还在里面', async () => {
+    // 反向自检(实跑): 把 backend 里的 `allEntries()` 换成 `entries()` → 分支之后
+    // 旧分支那两条消失, 这条当场红(而树看起来仍然完整)。
+    const { backend, forkPoint } = await seeded();
+    expect((await backend.branchTo?.({ sessionId: 's', entryId: forkPoint }))?.ok).toBe(true);
+    const after = await backend.sessionTree?.({ sessionId: 's' });
+    expect(after?.entries.map((e) => e.kind)).toContain('branch_summary');
+    // 四条 message 一条不少 + 新增那条摘要 = 5。
+    expect(after?.entries).toHaveLength(5);
+    expect(JSON.stringify(after?.entries)).toContain('二答');
+    // 叶换成了新分支的那条摘要。
+    expect(after?.entries.find((e) => e.id === after.leafId)?.kind).toBe('branch_summary');
+  });
+
+  test('★★ fail-closed:摘要失败 → **不切**(leafId 一动不动), 判词原样带出', async () => {
+    // 反向自检(实跑): 把 branchTo 里的 `if (!plan.ok) return` 去掉、失败也照样 navigateTo
+    // → 后两句当场红, 而红出来的正是那个静默态: 分支被放弃且没有任何交代。
+    const { backend, forkPoint, tree } = await seeded(badCall);
+    const r = await backend.branchTo?.({ sessionId: 's', entryId: forkPoint });
+    expect(r?.ok).toBe(false);
+    expect(r?.text).toContain('provider said no');
+    expect(r?.summarized).toBe(false);
+    const after = await backend.sessionTree?.({ sessionId: 's' });
+    expect(after?.leafId).toBe(tree?.leafId as string);
+    expect(after?.entries.some((e) => e.kind === 'branch_summary')).toBe(false);
+  });
+
+  test('★ `summarized:false` 与 `ok:false` 不是一回事 —— 切到当前叶 = 切成了但没什么可交代', async () => {
+    const { backend, tree } = await seeded();
+    const r = await backend.branchTo?.({ sessionId: 's', entryId: tree?.leafId as string });
+    expect(r?.ok).toBe(true);
+    expect(r?.summarized).toBe(false);
+    expect(r?.text).toContain('no [branch summary] node');
+  });
+
+  test('会话不存在:树是空的(不是抛), 而 branchTo 明确说不(不是静默成功)', async () => {
+    const { backend } = make();
+    expect(await backend.sessionTree?.({ sessionId: 'nope' })).toEqual({ leafId: null, entries: [] });
+    const r = await backend.branchTo?.({ sessionId: 'nope', entryId: 'x' });
+    expect(r?.ok).toBe(false);
+    expect(r?.text).toContain('no such session');
+  });
+});

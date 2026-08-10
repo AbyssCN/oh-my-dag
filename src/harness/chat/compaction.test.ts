@@ -12,7 +12,7 @@
  * `compactChatMessages` 不传 `callModelFn` 时必须是真的 `callModel` —— 而 `emitModelUsage`
  * 就挂在它的出口上。把默认值换掉,那条钉当场红。
  */
-import { estimateTokens, type AgentMessage } from '@earendil-works/pi-agent-core';
+import { createCompactionSummaryMessage, estimateTokens, type AgentMessage } from '@earendil-works/pi-agent-core';
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -224,7 +224,10 @@ describe('★ split-turn —— 切点落在轮内时, 本轮请求逐字活下�
     expect((r.retainedTail[1] as { content: string }).content).toBe(REQUEST);
     expect(roleOf(r.retainedTail[2] as AgentMessage)).toBe('assistant');
     // ③ 发出去的那一份: [首条, 摘要, 轮首, ...尾]
-    expect((r.messages[1] as { content: string }).content).toContain('【摘要】');
+    //    摘要那条是 pi 的 `compactionSummary` 消息 (2026-08-11 台账 §1.4: 手拼 user → pi 构造器),
+    //    前缀/后缀由 `convertToLlm` 在发出去那一刻贴 —— 这里断言的是**结构**, 不是拼好的串。
+    expect(roleOf(r.messages[1] as AgentMessage)).toBe('compactionSummary');
+    expect((r.messages[1] as { summary: string }).summary).toContain('【摘要】');
     expect((r.messages[2] as { content: string }).content).toBe(REQUEST);
     // ④ 真的瘦了: 压缩前 ≈42k → 压缩后落在 [keep, keep*1.5) 之间。
     //    下界是"往回找"的语义 (宁可多留一点也不切出孤儿), 上界钉的是"多留不许多太多"。
@@ -242,7 +245,7 @@ describe('★ split-turn —— 切点落在轮内时, 本轮请求逐字活下�
     expect(r).not.toBeNull();
     // 首条 = 轮首 ⇒ 不该多插一条: 摘要之后直接就是尾 (assistant)。
     expect((r.messages[0] as { content: string }).content).toBe(REQUEST);
-    expect((r.messages[1] as { content: string }).content).toContain('【摘要】');
+    expect((r.messages[1] as { summary: string }).summary).toContain('【摘要】');
     expect(roleOf(r.messages[2] as AgentMessage)).toBe('assistant');
     expect(roleOf(r.retainedTail[1] as AgentMessage)).toBe('assistant');
   });
@@ -259,6 +262,105 @@ describe('★ split-turn —— 切点落在轮内时, 本轮请求逐字活下�
     const after = await onDisk('c9'); // 投影读得出来 = 条目链没断
     expect(after.length).toBeLessThan(before);
     expect(JSON.stringify(after)).toContain(REQUEST);
+  });
+});
+
+/**
+ * ★ 结构化摘要 + 增量摘要(2026-08-11,台账 §1.2 / C14–C15)。
+ *
+ * 两臂**必须一起测**:只测"有旧摘要走增量"证明不了没有旧摘要时还走得对 ——
+ * 一个恒走增量的实现能让那一条独自绿(旧摘要位填空串照样能出摘要)。
+ */
+describe('★ 结构化摘要骨架 + 增量合并(有旧摘要走增量 / 没有走整份)', () => {
+  /** 上一次压缩留下的那条摘要消息 —— 与投影 / compactLeafContext 产出的**同一个构造器**。 */
+  const prevSummaryMsg = (text: string): AgentMessage =>
+    createCompactionSummaryMessage(text, 9_999, 1) as unknown as AgentMessage;
+  const PREV = '## Goal\n查 DAG 卡在哪一节点\n## Next Steps\n1. 读 engine.ts 的重试分支';
+
+  test('★ A: 摘要 prompt 带 pi C15 的段骨架(段名逐字英文, 不译)', async () => {
+    // 反向自检(实跑): 把 `CHAT_SUMMARY_SKELETON` 从两条 instruction 里去掉 → 本条当场红
+    // (九个段名一个都读不到)。这条钉的是**格式锚点存在**, 不是摘要写得好不好。
+    await compactChatMessages({
+      messages: longSession(12), model: MODEL, keepRecentTokens: 300, callModelFn: fakeCallModel,
+    });
+    const req = calls[0] as { user: string };
+    for (const seg of ['## Goal', '## Constraints & Preferences', '## Progress', '### Done',
+      '### In Progress', '### Blocked', '## Key Decisions', '## Next Steps', '## Critical Context']) {
+      expect(req.user).toContain(seg);
+    }
+    // pi 那份格式里唯一一条内容级约束 —— chat 摘要最容易丢的正是路径与错误原文。
+    expect(req.user).toContain('Preserve exact file paths, function names, and error messages');
+  });
+
+  test('★ B 臂一 —— **没有**旧摘要 → 整份生成(prompt 里不许出现 <previous-summary>)', async () => {
+    // 反向自检(实跑): 把 `findPreviousSummary` 改成恒返回 `{index:0, summary:'x'}` → 本条当场红
+    // (整份生成那条路上冒出了 <previous-summary>)。
+    await compactChatMessages({
+      messages: longSession(12), model: MODEL, keepRecentTokens: 300, callModelFn: fakeCallModel,
+    });
+    const req = calls[0] as { user: string };
+    expect(req.user).not.toContain('<previous-summary>');
+    expect(req.user).toContain('人与 conductor 的对话'); // 仍是 chat 口径, 不是叶子那套
+  });
+
+  test('★ B 臂二 —— **有**旧摘要 → 增量合并: 旧摘要原文进 prompt, 且不再重复占着上下文', async () => {
+    // 反向自检(实跑, 两处各证一次):
+    //  ① 把 `prompt: previous ? buildIncrementalChatPrompt(...) : CHAT_COMPACTION_PROMPT`
+    //     写死成 `CHAT_COMPACTION_PROMPT` → 前两条断言当场红(prompt 里没有 <previous-summary>)。
+    //  ② 把 `messages` 那行的 `.filter(...)` 去掉(旧摘要留在待压段) → 最后一条当场红
+    //     (旧摘要既在新摘要里、又原样占着一条 —— 正是 C14 要消掉的那个叠加)。
+    const msgs = [prevSummaryMsg(PREV), ...longSession(12)];
+    const r = (await compactChatMessages({
+      messages: msgs, model: MODEL, keepRecentTokens: 300, callModelFn: fakeCallModel,
+    }))!;
+    expect(r).not.toBeNull();
+
+    const req = calls[0] as { user: string };
+    expect(req.user).toContain('<previous-summary>');
+    expect(req.user).toContain(PREV); // 旧摘要**逐字**交给模型合并, 不是转述
+    expect(req.user).toContain('更新后的完整摘要'); // 要完整份不要补丁 —— 只回补丁是静默失效
+    // 段骨架两条路共用: 增量产出的格式必须与它读到的旧摘要格式一致。
+    expect(req.user).toContain('## Key Decisions');
+
+    // 旧摘要不再重复:新摘要替换它, 上下文里只剩一条 compactionSummary。
+    const summaries = (r.messages as AgentMessage[]).filter(
+      (m) => (m as { role?: string }).role === 'compactionSummary',
+    );
+    expect(summaries).toHaveLength(1);
+    expect((summaries[0] as { summary: string }).summary).toContain('【摘要】');
+    expect(JSON.stringify(r.retainedTail)).not.toContain(PREV);
+  });
+
+  test('空摘要 ≠ 没摘要 —— 回落整份生成, 但不静默(NULL≠0≠不适用)', async () => {
+    // 摘要器出过空这件事必须留痕: 走整份生成是对的, 但"这里本来有一条摘要"不许消失。
+    // 反向自检(实跑): 把 `findPreviousSummary` 里那句 `if (summary.trim())` 去掉 →
+    // 空串被当成旧摘要送进 <previous-summary>, 本条当场红。
+    await compactChatMessages({
+      messages: [prevSummaryMsg('   '), ...longSession(12)],
+      model: MODEL, keepRecentTokens: 300, callModelFn: fakeCallModel,
+    });
+    expect((calls[0] as { user: string }).user).not.toContain('<previous-summary>');
+  });
+
+  test('★ 落进会话再压第二次 —— 走的是增量那条(读的是盘上那份摘要)', async () => {
+    // 端到端: 第一轮压缩 → 会话里落一条 compaction 条目 → 第二轮载入的投影首条就是它。
+    // 反向自检(实跑): 把 compactChatMessages 里的 `findPreviousSummary` 调用去掉 →
+    // 第二次压缩的 prompt 里没有 <previous-summary>, 本条当场红。
+    await seed('c10', longSession(12));
+    await runChatTurn({
+      store, sessionId: 'c10', prompt: '第一问', model: MODEL, cwd: root,
+      contextBudgetRatio: 0.000001, compactionKeepRecentTokens: 300,
+      compactionCallModel: fakeCallModel, loopFn: fakeLoop() as never,
+    });
+    calls = []; // 只看第二次那一发
+    await runChatTurn({
+      store, sessionId: 'c10', prompt: '第二问', model: MODEL, cwd: root,
+      contextBudgetRatio: 0.000001, compactionKeepRecentTokens: 300,
+      compactionCallModel: fakeCallModel, loopFn: fakeLoop() as never,
+    });
+    expect(calls).toHaveLength(1);
+    expect((calls[0] as { user: string }).user).toContain('<previous-summary>');
+    expect((calls[0] as { user: string }).user).toContain('【摘要】'); // 盘上那份就是第一次的产物
   });
 });
 

@@ -55,6 +55,7 @@ import { installOmdKeybindings } from './keys';
 import { buildSettings, parseSettingsCommand } from './settings';
 import { STARTUP_HINT, formatHelp, parseHelpCommand, slashCommands } from './commands';
 import { MANUAL_COORD, choiceLabel, listModelChoices, parseModelsCommand, sortChoices } from './model-picker';
+import { buildTreeRows, formatTree, parseTreeCommand, treeLabel } from './tree-picker';
 import { createOmdAutocompleteProvider } from './skill-complete';
 import { createContextHealth } from './health';
 import { loadTuiUiConfig, setApprovalTokenTtl, setTuiUi } from './ui-config';
@@ -63,6 +64,7 @@ import { summarizeToolArg } from './render/tool-arg';
 import { fmtUsd, formatStatusLine } from './render/statusbar';
 import { humanTokens } from './render/pressure';
 import { formatStatus } from './status';
+import type { ExtReloadResult } from './ext/session';
 import { defaultExportPath, exportTranscriptMarkdown } from './export';
 // ⚠ 进屏的 provider 错误一律先压成一行 —— 原文照旧进各处的 logger.warn(压呈现不压证据)。
 import { humanizeProviderError } from './render/error-text';
@@ -209,6 +211,12 @@ export const CHROME = {
   // ── 切片⑦: 会话树。fork 的回执要说清"现在在分支上, 原会话没动"。 ──
   sessionForked: (text: string) => `${text} - switched to the branch; the source session is untouched, /session switches back`,
   sessionForkFailed: (reason: string) => `Cannot fork: ${reason}`,
+  // ── §1.3 (2026-08-11): `/tree` 的会话内分支。**回执要说清写没写摘要节点** ——
+  //    "切成了" 与 "切成了并且留下了交代" 是两件事, 压成一句就再也分不开。 ──
+  treeBranched: (id: string, text: string) => `Branched at ${id.slice(0, 8)}: ${text}`,
+  treeBranchFailed: (reason: string) => `Cannot branch: ${reason} (the session was not moved)`,
+  /** 选中的就是当前叶 —— 什么都不做, 但要说出来, 否则读成"点了没反应"。 */
+  treeAtLeaf: () => 'That entry is already the current leaf - nothing to branch from, nothing was written',
   approvalTtlWritten: (sec: number, path: string) => `Approval token TTL -> ${sec}s written to ${path} (effective after restart)`,
   /** 切片⑧: 一张图都没有时说真话 (画一个空雾场会读成"有图但没散")。 */
   noPathMaps: () => 'No pathfinder map yet (docs/plan/pathfinder/ is empty) - open one with /omd-path',
@@ -224,6 +232,23 @@ export const CHROME = {
   logoutNone: (provider: string, warnings: string[]) =>
     `No stored credential for ${provider} - nothing removed${warnings.length > 0 ? `\n  ${warnings.join('\n  ')}` : ''}`,
   exportDone: (n: number, abs: string) => `Exported ${n} messages -> ${abs}`,
+  // ── D3 `/reload`(2026-08-11): 扩展重载回执。**成败两侧都要有数**, 且工具面的那条
+  //    限制(启动时冻结)只在真发生时才多说一行 —— 没有增减就不占屏。 ──
+  extReloaded: (r: ExtReloadResult) => {
+    const head =
+      r.loaded.length === 0 && r.rejected.length === 0
+        ? 'Extensions reloaded: the manifest lists none (.omd/extensions.json)'
+        : `Extensions reloaded: ${r.loaded.length} loaded${r.loaded.length > 0 ? ` (${r.loaded.join(', ')})` : ''}, ${r.rejected.length} rejected${
+            r.rejected.length > 0 ? ` (${r.rejected.map((x) => `${x.name}: ${x.reason}`).join('; ')})` : ''
+          }`;
+    const lines = [head];
+    // 工具面在启动时冻结(chat-seat.ts:81 展开成新数组), 所以增减要说出来, 不静默。
+    if (r.toolsAdded.length > 0) lines.push(`  new tools need a restart to reach the model: ${r.toolsAdded.join(', ')}`);
+    if (r.toolsRemoved.length > 0) lines.push(`  tools that went away are still listed but now answer with an error: ${r.toolsRemoved.join(', ')}`);
+    return lines.join('\n');
+  },
+  /** 一轮还在飞的时候拒绝重载 —— kill 掉正在被调用的子进程会让那一轮无声地断。 */
+  extReloadBusy: () => 'Not reloading: this turn is still running (a tool call could be in flight). Try again once it finishes.',
 } as const;
 
 /**
@@ -296,6 +321,13 @@ export interface RunOmdTuiOpts {
    * 藏在日志里等于加载期硬失败白做了。
    */
   extensions?: { name: string; ok: boolean; sandboxed?: boolean; missing?: string[] }[];
+  /**
+   * `/reload` 的执行侧(D3,2026-08-11)。kill 掉扩展子进程 + 按 `.omd/extensions.json` 重来。
+   *
+   * **省略 = 这条装配路没有扩展宿主**(fixture lane)—— 那时 `/reload` 说清"这个 backend
+   * 没有这个能力", 不装一个点了没反应的命令(同 `noRunCapability` 那条惯例)。
+   */
+  reloadExtensions?: () => Promise<ExtReloadResult>;
   /**
    * 审批闸(切片①)。UI 在这里把 ask handler 接上 —— 审批单占住输入区,
    * `d` 看详情 · `y` 批准一次 · `a` 批准同档一段时间(admin 没有) · Esc 拒绝。
@@ -736,6 +768,17 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   let pendingSkill: string | null = null;
   /** 最近一轮的上下文压力 —— 设置面板要显示它。`null` = 还没跑过一轮(**不是 0**)。 */
   let lastPressure: import('../harness/chat/usage').ContextPressure | null = null;
+  /**
+   * 一轮是不是还在飞。**`/reload` 靠它拒绝打断** —— 扩展工具的 execute 是一次跨进程调用,
+   * 轮飞着的时候 kill 子进程会让那次调用停在那儿(超时才回),而症状是"模型忽然不动了"。
+   * ⚠ 不复用 `waitingOn`:那个在**第一片 delta 到达时**就关了,而工具调用发生在那之后。
+   */
+  let turnInFlight = false;
+  /**
+   * 扩展加载结果。**可变** —— `/reload` 之后设置面板要显示新的那份,
+   * 显示旧的话"重载了没有"就再也读不出来了(而屏上那条通知会读成已经生效)。
+   */
+  let extStatus = opts.extensions ?? [];
   let exiting = false;
   let resolveExit: () => void = () => {};
   const done = new Promise<void>((resolve) => {
@@ -804,6 +847,8 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     editor.setText('');
     editor.addToHistory(prompt);
     // 等待态开:到第一片回来为止(见 `onEvent` 的 delta 分支)。
+    // ⚠ `turnInFlight` 与它**不是同一件事**:这一条要活到整轮结束(工具调用在 delta 之后)。
+    turnInFlight = true;
     waitingOn = true;
     waiting.start();
     tui.requestRender();
@@ -820,6 +865,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     // 无论成败都收尾: 抛错那条路上 `session` 事件不会来, 不收尾的话下一轮会续进这条气泡。
     // ⚠ 等待态也在这里关 —— **`finally` 语义**:抛错那条路上 delta 永远不会来,
     //   只在 delta 分支关的话, 一次失败就会留下一个**永远在转**的指示器。
+    turnInFlight = false;
     stopWaiting();
     chatLog.closeStreaming();
     tui.requestRender();
@@ -1290,6 +1336,67 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   }
 
   /**
+   * `/tree` —— 会话**树**导航(台账 §1.3 / C11,真 model call + 写入会话文件,副作用)。
+   *
+   * ## 与 `/fork` 的分野(2026-08-11 裁决,别把两条读成重复)
+   *
+   * - `/fork` = **另存一条会话**(`repo.fork` 复制成第二份文件)。产物是两条并列的会话,
+   *   都能在 `/session` 里来回切、能各自继续 —— 代价是同一段历史存在两份。
+   * - `/tree` = **同一份文件里换分支**(pi 的做法)。回到旧节点重走,被放弃的那条分支
+   *   摘要成一条 `[branch summary]` 节点接在新分支起点上,原消息一条不动 ⇒ **一份真值**。
+   *   代价是同一条会话同时只有一个活分支(lane 指针只有一个)。
+   *
+   * ⇒ "想重走一段对话"走 `/tree`(默认);"想要两条同时活着的会话"走 `/fork`。
+   *
+   * ## 切完必须重放
+   *
+   * 换分支之后模型看到的是新分支的投影,屏上还是旧的 —— 不重放就是 `sessions.ts` 那条
+   * 老纪律的同一形状(两边都有内容,只是不是同一份)。所以走 `switchTo(sessionId)`。
+   */
+  async function handleTree(text: string): Promise<boolean> {
+    if (!parseTreeCommand(text)) return false;
+    chatLog.appendUser(text.trim());
+    editor.setText('');
+    tui.requestRender();
+    const { sessionTree, branchTo } = opts.backend;
+    if (!sessionTree || !branchTo) {
+      // 能力探测面靠字段在不在 —— 缺了就说**缺的是什么**, 不画一个点了没反应的入口。
+      chatLog.appendNotice(CHROME.noRunCapability('session tree'));
+      tui.requestRender();
+      return true;
+    }
+    try {
+      const { leafId, entries } = await sessionTree({ sessionId });
+      const rows = buildTreeRows(entries, leafId);
+      chatLog.appendNotice(formatTree(rows));
+      tui.requestRender();
+      // 一条都没有时 `select` 自己不开框(开个空框让人按 Esc 是耍人)。
+      const pick = await dialogSelect(dialogs, theme, {
+        title: 'Branch from which entry?',
+        options: rows.map((r) => ({ value: r.id, label: treeLabel(r), description: r.kind })),
+        search: true,
+      });
+      if (pick === null) return true; // Esc: 不切不写
+      if (pick === leafId) {
+        chatLog.appendNotice(CHROME.treeAtLeaf());
+      } else {
+        const r = await branchTo({ sessionId, entryId: pick });
+        if (!r.ok) chatLog.appendNotice(CHROME.treeBranchFailed(r.text));
+        else {
+          await switchTo(sessionId); // 换分支 = 换了一份历史, 屏上必须跟着换
+          chatLog.appendNotice(CHROME.treeBranched(pick, r.text));
+        }
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      logger.warn({ err: reason }, '[omd/tui] /tree 抛了');
+      chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
+    }
+    tui.requestRender();
+    return true;
+  }
+
+  /**
    * `Ctrl+P` 的选图 + 全屏(切片⑧)。多张图先挑, 一张直接进, 零张说真话。
    */
   async function openPathView(): Promise<void> {
@@ -1559,6 +1666,47 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     return true;
   }
 
+  /**
+   * `/reload` —— 重载扩展(kill 子进程 + 按 `.omd/extensions.json` 重来,副作用)。
+   *
+   * ## 范围只有 extensions 一样(owner 裁决,D3)
+   *
+   * pi 的 `/reload` 是五样(keybindings / extensions / skills / prompts / themes),
+   * 这里**只做扩展**:扩展是唯一"改了清单就得重启整个 TUI"的一样 —— skill 正文每次现读,
+   * 座位每轮现解,主题/键位改完重开面板就行。别的四样先不铺。
+   *
+   * ## 正在跑的东西为什么不受影响
+   *
+   * - **对话轮**:轮在飞时**直接拒**(见 `turnInFlight`)—— 不去 kill 可能正被调用的子进程。
+   * - **DAG 叶子**:叶侧的扩展宿主是 `harness/ext-tools.ts` 按 cwd 缓存的**另一批**子进程,
+   *   这条路一个字都不碰它们。跑着的图照跑,它们手里的工具仍指向自己的进程。
+   */
+  async function handleReload(text: string): Promise<boolean> {
+    const t = text.trim();
+    if (t !== '/reload') return false;
+    chatLog.appendUser(t);
+    editor.setText('');
+    tui.requestRender();
+    if (!opts.reloadExtensions) {
+      chatLog.appendNotice(CHROME.noRunCapability('extension reload'));
+    } else if (turnInFlight) {
+      chatLog.appendNotice(CHROME.extReloadBusy());
+    } else {
+      try {
+        const r = await opts.reloadExtensions();
+        extStatus = r.status;
+        chatLog.appendNotice(CHROME.extReloaded(r));
+      } catch (err) {
+        // fail-open 可以吞异常, 不许吞证据:原文进屏也进日志。
+        const reason = err instanceof Error ? err.message : String(err);
+        logger.warn({ err: reason }, '[omd/tui] /reload 抛了');
+        chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
+      }
+    }
+    tui.requestRender();
+    return true;
+  }
+
   /** `/quit` —— 干净退出。与双击 Ctrl+C 的 `'exit'` 分支共走 {@link requestCleanExit}。 */
   function handleQuit(text: string): boolean {
     const t = text.trim();
@@ -1634,7 +1782,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       pressure: lastPressure,
       color: colorEnabled(),
       truecolor: truecolorEnabled(),
-      extensions: opts.extensions ?? [],
+      extensions: extStatus,
       ui: { sidebar: sidebarOn, painterName: PAINTERS[painterIdx] ?? 'tree' },
       approvalTtlSec,
       providers,
@@ -1658,7 +1806,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         activate: (id) => {
           // 就地办完的:一条通知就够, 面板留着(通知画在对话区, 不遮设置页)。
           if (id === 'ext') {
-            chatLog.appendNotice('The extension manifest lives in `.omd/extensions.json` (entry points are absolute paths). Restart omd tui after editing it.');
+            chatLog.appendNotice('The extension manifest lives in `.omd/extensions.json` (entry points are absolute paths). Run `/reload` after editing it.');
             tui.requestRender();
             return;
           }
@@ -1772,12 +1920,18 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         if (handledLogout) return;
         void handleSession(prompt).then((handledSession) => {
           if (handledSession) return;
-          void handleCompact(prompt).then((handledCompact) => {
-            if (handledCompact) return;
-            void handleExport(prompt).then((handledExport) => {
-              if (handledExport) return;
-              void handleRuns(prompt).then((handled) => {
-                if (!handled) void submit(prompt);
+          void handleTree(prompt).then((handledTree) => {
+            if (handledTree) return;
+            void handleCompact(prompt).then((handledCompact) => {
+              if (handledCompact) return;
+              void handleExport(prompt).then((handledExport) => {
+                if (handledExport) return;
+                void handleReload(prompt).then((handledReload) => {
+                  if (handledReload) return;
+                  void handleRuns(prompt).then((handled) => {
+                    if (!handled) void submit(prompt);
+                  });
+                });
               });
             });
           });

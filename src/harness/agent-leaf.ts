@@ -23,6 +23,19 @@
  *     闸就是为它加的)。低层循环把 `stopReason:'error'` 连同 `errorMessage` 原样交回 → 直接抛得出真因。
  *
  * 换来的代价是系统提示与工具集要自己拼 —— 而那恰恰是想要的: 见 `buildLeafSystemPrompt`。
+ *
+ * ## 2026-08-11: 摘要消息改用 pi 构造器 `createCompactionSummaryMessage`(台账 §1.4)
+ *
+ * 此前两处手拼 `role:'user'` + `COMPACTION_SUMMARY_PREFIX/SUFFIX` —— 那正是那个构造器的
+ * 等价物。换过来顺带把两条压缩路的摘要消息**形状统一**了:轮前那条本来就来自 pi 的投影
+ * (`buildSessionContext`,`dist/harness/session/context.js:47`),轮内那条此前是手拼的 user。
+ * 同一件东西两个形状,`chat/compaction.ts` 要认出"本会话已有摘要"就只能按前缀串猜;
+ * 统一之后认它靠 `role === 'compactionSummary'`,不靠字符串匹配。
+ * 线上字节不变:`convertToLlm` 发出去时贴的还是同一对前后缀。
+ *
+ * ⚠ 下面这个 import 列表里**不要写注释** —— 台账 §5② 数 import 符号的那条命令按花括号整块
+ * 匹配再逐行切词,列表里的注释会被切成假符号、注释里的花括号会让整块从读数里消失。
+ * 两种都不报错,只是读数悄悄变了(2026-08-11 实测,两种都撞过)。
  */
 import {
   runAgentLoop,
@@ -34,8 +47,7 @@ import {
   serializeConversation,
   truncateTail,
   DEFAULT_MAX_LINES,
-  COMPACTION_SUMMARY_PREFIX,
-  COMPACTION_SUMMARY_SUFFIX,
+  createCompactionSummaryMessage,
   type AgentContext,
   type AgentEvent,
   type AgentLoopConfig,
@@ -449,8 +461,9 @@ const LEAF_SUMMARY_SYSTEM =
  *
  * 往回找不到 assistant (第一轮就撞线, 前面只有契约) → 不压, 返 null。
  *
- * 摘要以一条 **user 消息**插在保留段之前 —— 与 pi 压缩产出的形状一致
- * (`compactionSummary` 也是转成 user 消息)。
+ * 摘要以一条 **`compactionSummary` 消息**插在保留段之前(`createCompactionSummaryMessage`,
+ * 2026-08-11 从手拼 user 消息换成 pi 构造器)—— 发给 provider 前由 `convertToLlm` 转成
+ * 带 `COMPACTION_SUMMARY_PREFIX/SUFFIX` 的 user 消息,线上字节与手拼那份一致。
  */
 export function planLeafCompaction(messages: AgentMessage[], keepRecentTokens: number): number | null {
   if (messages.length < 4) return null; // 短到没什么可压的
@@ -689,19 +702,16 @@ export async function compactLeafContext(opts: {
      */
     const truncated = truncateOversizedToolResults(messages, keepRecentTokens);
     if (!truncated) return null; // 真的压不动: 没超太多, 或撑爆预算的不是工具结果
+    const truncTokensBefore = messages.reduce((n, m) => n + estimateTokens(m), 0);
     logger.info(
-      { model, msgs: truncated.length, before: messages.reduce((n, m) => n + estimateTokens(m), 0),
+      { model, msgs: truncated.length, before: truncTokensBefore,
         after: truncated.reduce((n, m) => n + estimateTokens(m), 0) },
       '[agent-leaf] 切不出摘要点 → 只截断超大工具结果 (零模型调用)',
     );
     return {
       messages: [
         truncated[0]!,
-        {
-          role: 'user' as const,
-          content: `${COMPACTION_SUMMARY_PREFIX}${TRUNCATION_ONLY_SUMMARY}${COMPACTION_SUMMARY_SUFFIX}`,
-          timestamp: Date.now(),
-        },
+        createCompactionSummaryMessage(TRUNCATION_ONLY_SUMMARY, truncTokensBefore, Date.now()),
         ...truncated.slice(1),
       ],
       summary: TRUNCATION_ONLY_SUMMARY,
@@ -761,11 +771,7 @@ export async function compactLeafContext(opts: {
   return {
     messages: [
       finalRetained[0]!,
-      {
-        role: 'user' as const,
-        content: `${COMPACTION_SUMMARY_PREFIX}${summary}${COMPACTION_SUMMARY_SUFFIX}`,
-        timestamp: Date.now(),
-      },
+      createCompactionSummaryMessage(summary, messages.reduce((n, m) => n + estimateTokens(m), 0), Date.now()),
       ...finalRetained.slice(1),
     ],
     summary,

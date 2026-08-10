@@ -101,6 +101,9 @@ if (userArgs[0] === 'tui') {
     let backend: import('../tui/backend').OmdBackend;
     // 扩展加载结果要传给 UI(设置面板), 所以声明在 if/else 之外。
     let extStatus: { name: string; ok: boolean; sandboxed?: boolean; missing?: string[] }[] = [];
+    // D3 `/reload`: 重载入口同样跨 if/else —— fixture 那条 lane 没有扩展宿主, 于是**不给**
+    // 这个键(TUI 那边就画「这条 backend 没有这个能力」, 不画一个点了没反应的命令)。
+    let reloadExtensions: (() => Promise<import('../tui/ext/session').ExtReloadResult>) | undefined;
     // 切片①: 审批闸。两条装配路都建 —— fixture 那条也要能在 PTY 里弹真的审批单
     // (卡片 UI + 键位 + 拒绝则不改/批准则改, 全走与生产同一个 gate)。
     const { createApprovalGate } = await import('../tui/approval/gate');
@@ -135,41 +138,12 @@ if (userArgs[0] === 'tui') {
       const { createChatSeatTools } = await import('../tui/tools/chat-seat');
       // S15a 扩展宿主: 每个扩展一个子进程 (bwrap 在就沙箱)。**加载期硬失败** ——
       // 碰了没实现的 API 就拒绝并逐条列出, 不半残地跑起来。
-      const { loadExtension, readExtensionList } = await import('../tui/ext/host');
-      const { extTools, exts, extStatus: st } = await (async () => {
-        const loaded: import('../tui/ext/host').LoadedExtension[] = [];
-        const toolList: import('./agent-tools').AnyOmdTool[] = [];
-        // 加载结果**也要给 UI** —— 被拒的缺什么, 藏在日志里等于加载期硬失败白做了。
-        const status: { name: string; ok: boolean; sandboxed?: boolean; missing?: string[] }[] = [];
-        for (const spec of readExtensionList(cwd)) {
-          const r = await loadExtension(spec.name, spec.entry, { cwd });
-          if (!r.ok) {
-            logger.warn(
-              { ext: spec.name, missing: r.rejected.missing, reason: r.rejected.reason },
-              '[omd/ext] 扩展**拒绝加载**(缺的 API 已逐条列出, 不半残地跑)',
-            );
-            status.push({ name: spec.name, ok: false, missing: r.rejected.missing });
-            continue;
-          }
-          status.push({ name: spec.name, ok: true, sandboxed: r.ext.sandboxed });
-          loaded.push(r.ext);
-          for (const t of r.ext.tools) {
-            toolList.push({
-              name: t.name,
-              label: t.name,
-              description: t.description,
-              promptSnippet: t.promptSnippet ?? t.description,
-              parameters: t.parameters,
-              executionMode: 'sequential',
-              async execute(_id: string, params: unknown) {
-                return { content: [{ type: 'text', text: await (r.ext as import('../tui/ext/host').LoadedExtension).callTool(t.name, params) }], details: undefined };
-              },
-            } as import('./agent-tools').AnyOmdTool);
-          }
-          logger.info({ ext: spec.name, tools: r.ext.tools.length, sandboxed: r.ext.sandboxed }, '[omd/ext] 扩展已加载');
-        }
-        return { extTools: toolList, exts: loaded, extStatus: status };
-      })();
+      // D3 `/reload`(2026-08-11): 持有者住在 `tui/ext/session.ts` —— 重载要动的那份状态
+      // (当前活着的子进程)此前长在这个内联块里, 谁都够不着。装配这一段只剩两句。
+      const { createExtSession } = await import('../tui/ext/session');
+      const extSession = createExtSession(cwd);
+      // 加载结果**也要给 UI** —— 被拒的缺什么, 藏在日志里等于加载期硬失败白做了。
+      const { tools: extTools, status: st } = await extSession.load();
       const { createOmdSessionStore } = await import('./chat/session-store');
       const { createEmbeddedBackend } = await import('../tui/backend-embedded');
       // ⚠ 先有工具面才有 backend (工具要交给 runChatTurn), 而节点事件要灌回 backend ——
@@ -190,16 +164,11 @@ if (userArgs[0] === 'tui') {
         // ★ `ask_user`(2026-08-08):UI 走**惰性取** —— 工具面装在 TUI 之前, 那时 dialogs
         //   还不存在(同上面那个"延迟指针接环"的理由)。`runOmdTui` 起来后把它填上。
         tools: createChatSeatTools({ cwd, mcpTools: tools, extTools, approvals, askUser: () => askUserUi }),
-        ...(exts.length > 0
-          ? {
-              // 多个扩展**串起来**追加:每个都只能在前一个的结果上追加, 顺序 = 清单顺序。
-              systemPromptHook: async (p0: string) => {
-                let out = p0;
-                for (const e of exts) out = await e.beforeAgentStart(out);
-                return out;
-              },
-            }
-          : {}),
+        // 多个扩展**串起来**追加(串接在 session 里, 每轮现取当前扩展)。
+        // ⚠ 钩子**无条件挂**: 挂不挂此前按启动那一刻的扩展数决定, 而 `/reload` 能把
+        //   0 个变成 N 个 —— 按启动数决定的话, 空仓里装上第一个扩展再重载, 工具进来了
+        //   但 `before_agent_start` 永远不跑, 而且没有任何症状。零扩展时它原样返回。
+        systemPromptHook: (p0: string) => extSession.systemPromptHook(p0),
         // S14: UI 自己直调 dag_runs / dag_resume (不经模型)。给了才有那两个能力。
         mcpTools: tools,
         // 座位每轮现解 (INV-MODEL-3): omd_set_role / `/seat` 改完, 下一句就换座。
@@ -208,6 +177,7 @@ if (userArgs[0] === 'tui') {
         // ⚠ 不传 usage: chat 轮的账走上面那条 observeModelUsage 订阅 (agent.ts 逐条 emit)。
       });
       extStatus = st;
+      reloadExtensions = () => extSession.reload();
       sink = embedded;
       backend = embedded;
     }
@@ -222,6 +192,7 @@ if (userArgs[0] === 'tui') {
         askUserUi = ui;
       },
       ...(extStatus.length > 0 ? { extensions: extStatus } : {}),
+      ...(reloadExtensions ? { reloadExtensions } : {}),
     });
   } catch (err) {
     // S-4b: 起不来的时候说人话。**实测撞出来的** —— 空仓里跑 `omd tui`, 第一屏是

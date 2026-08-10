@@ -57,10 +57,12 @@ describe('formatHelp', () => {
   test('★ 有副作用的命令要说出来 —— 改文件和只读列表不是一回事', () => {
     const out = formatHelp();
     expect(out).toContain('side effect');
-    // 会改东西的六条: /seat /login /resume (落 key/写配置/续跑) + 新三项 /compact (真 model call+落盘)
-    // /logout (删凭证键) /export (写盘)。只读的 (/status /new /fork /quit) 不许标 —— 标了这条也红。
+    // 会改东西的八条: /seat /login /resume (落 key/写配置/续跑) + /compact (真 model call+落盘)
+    // /logout (删凭证键) /export (写盘) + /reload (kill 掉扩展子进程再起一批 —— 进程级副作用)
+    // + /tree (§1.3: 真 model call 生成分支摘要 + 往会话文件追加一条 branch_summary 条目)。
+    // 只读的 (/status /new /fork /quit) 不许标 —— 标了这条也红。
     expect(new Set(COMMANDS.filter((c) => c.what.includes('side effect')).map((c) => c.name))).toEqual(
-      new Set(['/seat', '/login', '/resume', '/compact', '/logout', '/export']),
+      new Set(['/seat', '/login', '/resume', '/compact', '/logout', '/export', '/reload', '/tree']),
     );
   });
 
@@ -73,6 +75,18 @@ describe('formatHelp', () => {
     expect(byName.get('/status')).toBe('handleStatus');
     expect(byName.get('/export')).toBe('handleExport');
     expect(byName.get('/quit')).toBe('requestCleanExit');
+    // D3 (2026-08-11): /reload 的分发点 —— 名字写错时上面那条接线闸会红, 这里钉的是它叫什么。
+    expect(byName.get('/reload')).toBe('handleReload');
+    // §1.3 (2026-08-11): /tree 的分发点。
+    expect(byName.get('/tree')).toBe('handleTree');
+  });
+
+  test('★ /fork 与 /tree 的 what 必须说得出分野 —— 两条都是"分支"时人只会随便点一个', () => {
+    // 反向自检 (实跑): 把 /tree 的 what 改成 'branch this session' (与 /fork 旧文案同形) → 当场红。
+    const byName = new Map(COMMANDS.map((c) => [c.name, c.what]));
+    // /fork 产的是**第二条会话**(复制); /tree 是**同一份文件**里换分支(一份真值)。
+    expect(byName.get('/fork')).toContain('second one');
+    expect(byName.get('/tree')).toContain('same file');
   });
 
   test('★ HELP-1: 一行一条 —— 每条命令占且只占一行, 两行一条当场红', () => {

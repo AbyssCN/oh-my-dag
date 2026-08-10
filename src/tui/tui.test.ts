@@ -76,6 +76,42 @@ describe('★ 命令面回执形状 —— CHROME 是 PTY 闸锚点的单测钉 
     expect(CHROME.logoutClaude()).toContain('claude logout');
     expect(CHROME.logoutClaude()).not.toContain('removed');
   });
+  /**
+   * D3 `/reload`(2026-08-11)。**两侧都要有数** —— 只报 loaded 的回执读不出"有没有被拒的"。
+   * 反向自检: 把 `rejected` 那一段从 extReloaded 里去掉 → 「被拒的名字与原因都在回执里」当场红;
+   * 把 toolsAdded 那一行改成无条件输出 → 「没有增减就不多说一行」当场红。
+   */
+  test('★ /reload 回执:装上几个、拒了几个、被拒的为什么, 一句话里全有', () => {
+    const r = CHROME.extReloaded({
+      loaded: ['fixture'],
+      rejected: [{ name: 'greedy', reason: '这一版宿主没有这 2 个 API' }],
+      status: [],
+      toolsAdded: [],
+      toolsRemoved: [],
+    });
+    expect(r).toContain('1 loaded (fixture)');
+    expect(r).toContain('1 rejected');
+    expect(r).toContain('greedy: 这一版宿主没有这 2 个 API');
+    // 工具面没有增减时不多说一行 —— 那两行是**限制说明**, 没发生就不占屏。
+    expect(r.split('\n')).toHaveLength(1);
+  });
+
+  test('★ /reload 回执:工具面是启动时冻结的, 增减必须说出来(否则是"重载了但一半没生效")', () => {
+    const r = CHROME.extReloaded({ loaded: ['a'], rejected: [], status: [], toolsAdded: ['t_new'], toolsRemoved: ['t_old'] });
+    expect(r).toContain('t_new');
+    expect(r).toContain('restart');
+    expect(r).toContain('t_old');
+  });
+
+  test('★ /reload 清单里一个都没有 → 写真话, 不读成"重载成功装了 0 个"以外的意思', () => {
+    const r = CHROME.extReloaded({ loaded: [], rejected: [], status: [], toolsAdded: [], toolsRemoved: [] });
+    expect(r).toContain('.omd/extensions.json');
+  });
+
+  test('★ 轮在飞时拒绝重载 —— 说清为什么拒, 不静默不做', () => {
+    expect(CHROME.extReloadBusy()).toContain('still running');
+  });
+
   test('/export 回执带消息数 + 绝对路径', () => {
     const r = CHROME.exportDone(3, '/abs/.omd/exports/s-1-2024.md');
     expect(r).toContain('Exported 3 messages');

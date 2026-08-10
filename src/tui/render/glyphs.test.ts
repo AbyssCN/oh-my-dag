@@ -16,6 +16,7 @@ import { classifyGlyph, findRiskyGlyphs } from './glyphs';
 import { formatHelp } from '../commands';
 import { formatSeatRows, seatRows } from '../seat-picker';
 import { formatSessions } from '../sessions';
+import { buildTreeRows, formatTree } from '../tree-picker';
 import { buildSettings, formatSettings } from '../settings';
 import { formatSkillList, listSkills } from '../skills';
 import { fitLine } from './line';
@@ -150,6 +151,17 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
     ['help', formatHelp()],
     ['sessions(空)', formatSessions([], 'tui')],
     ['sessions(有)', formatSessions([{ id: 's-1', title: 'a title', updatedAt: 1760000000000 }, { id: 's-1-f9', title: '', updatedAt: 1760000000001, parent: 's-1' }], 's-1')],
+    // §1.3 (2026-08-11): `/tree` 的树与三条回执。树里的 preview 是**数据**(消息原文),
+    // 所以样例喂英文占位 —— 与 seatRows 那条注同一条道理:让这条闸量的确实是 chrome。
+    ['tree', formatTree(buildTreeRows([
+      { id: '019fee0a-1', parentId: null, seq: 1, kind: 'message/user', preview: 'a question' },
+      { id: '019fee0a-2', parentId: '019fee0a-1', seq: 2, kind: 'message/assistant', preview: 'an answer' },
+      { id: '019fee0a-3', parentId: '019fee0a-1', seq: 3, kind: 'branch_summary', preview: '[branch summary] the other branch' },
+    ], '019fee0a-3'))],
+    ['tree(空)', formatTree([])],
+    ['treeBranched', CHROME.treeBranched('019fee0a-2', 'branched at 019fee0a-2; 4 entries were summarized')],
+    ['treeBranchFailed', CHROME.treeBranchFailed('provider refused')],
+    ['treeAtLeaf', CHROME.treeAtLeaf()],
     ['sessionForked', CHROME.sessionForked('forked tui-f9 from tui (2 messages)')],
     ['sessionForkFailed', CHROME.sessionForkFailed('session x does not exist')],
     ['sessionSwitched', CHROME.sessionSwitched('s-1', 4)],

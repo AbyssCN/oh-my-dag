@@ -85,4 +85,32 @@ export interface OmdBackend {
   resumeRun?(o: { runId: string }): Promise<{ ok: boolean; text: string }>;
   /** fork 一条会话分支(切片⑦)。`ok:false` 带原因(源不存在 / id 冲突)。 */
   forkSession?(o: { fromId: string; newId: string }): Promise<{ ok: boolean; text: string }>;
+  /** 会话**树**(台账 §1.3 / C11)。整棵树,不只当前分支 —— 只给当前分支就画不出分叉。 */
+  sessionTree?(o: { sessionId: string }): Promise<{ leafId: string | null; entries: TuiTreeEntry[] }>;
+  /**
+   * 导航到树上某个条目:被放弃的那条分支先摘要成一条 `[branch summary]` 节点,再切过去。
+   *
+   * `summarized:false` 与 `ok:false` **不是一回事**:前者 = 切成了但没有可摘要的东西
+   * (纯往前导航),后者 = 没切(摘要失败 / 条目不存在)。压成一个布尔就再也分不开。
+   */
+  branchTo?(o: { sessionId: string; entryId: string }): Promise<{ ok: boolean; text: string; summarized: boolean }>;
+}
+
+/**
+ * 会话树里的一条(UI 要的最小面)。
+ *
+ * ⚠ 刻意**不透传 pi 的 `Entry`**:UI 只需要"挂在谁下面 + 是什么 + 长什么样",
+ * 而 `Entry` 带着整条消息与 usage。透传等于让 UI 层认识 pi 的条目词表,
+ * 那是 `OmdBackend` 这个接缝存在的理由的反面。
+ */
+export interface TuiTreeEntry {
+  id: string;
+  /** `null` = 根。树的边就是这一格。 */
+  parentId: string | null;
+  /** pi 的 append 序号 —— 同层排序靠它(时间戳同毫秒会打平)。 */
+  seq: number;
+  /** `message/user` · `message/assistant` · `compaction` · `branch_summary` … */
+  kind: string;
+  /** 一行预览(已截断)。空串 = 这条投影不出文字,不是"没读到"。 */
+  preview: string;
 }

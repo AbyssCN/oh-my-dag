@@ -23,8 +23,9 @@ import { logger } from '../logger';
 import type { OmdSessionStore } from '../harness/chat/session-store';
 import type { AnyOmdTool } from '../harness/agent-tools';
 import { type ChatTurnOpts, runChatTurn } from '../harness/chat/agent';
+import { type BranchSummaryCallModel, entryKind, entryPreview, planBranchNavigation } from '../harness/chat/branch-summary';
 import { type CompactionCallModel, compactChatMessages } from '../harness/chat/compaction';
-import type { OmdBackend, OmdTuiEvent, TuiSessionMeta } from './backend';
+import type { OmdBackend, OmdTuiEvent, TuiSessionMeta, TuiTreeEntry } from './backend';
 import type { ContextFile } from './context';
 
 export interface EmbeddedBackendDeps {
@@ -61,6 +62,14 @@ export interface EmbeddedBackendDeps {
   runTurn?: typeof runChatTurn;
   /** 测试接缝:压缩摘要那一次模型调用。生产不传(真 `callModel`, 账本挂在它出口上)。 */
   compactCallModel?: CompactionCallModel;
+  /**
+   * 测试接缝:**分支摘要**那一次模型调用(台账 §1.3)。生产不传。
+   *
+   * ⚠ 与 `compactCallModel` 分开而不是共用一个:两条路花的是两笔钱、判词也不同
+   * (压缩失败 = 回落优雅停;分支摘要失败 = **不导航**)。共用一个接缝时,测试里
+   * "只想让分支摘要塌"就会连带把压缩也换掉,于是量的不再是那一条。
+   */
+  branchCallModel?: BranchSummaryCallModel;
 }
 
 /**
@@ -259,6 +268,51 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
         updatedAt: Date.parse(m.updatedAt) || 0,
         ...(m.parent ? { parent: m.parent } : {}),
       }));
+    },
+
+    // ── §1.3: 会话树与 pi 式分支 ────────────────────────────────────────────
+    // 读侧走 `allEntries()` (**整棵树**, 不是当前分支): 分支摘要之后被放弃的那一段仍在
+    // 文件里, 而 `entries()` 看不见它们 —— 看不见就选不回去, 那条分支等于丢了。
+    async sessionTree({ sessionId }: { sessionId: string }): Promise<{ leafId: string | null; entries: TuiTreeEntry[] }> {
+      const session = await deps.store.open(sessionId);
+      // 会话不存在 = 还没说过话, 不是错误 (同 loadHistory)。leafId 仍是 null —— 空树。
+      if (!session) return { leafId: null, entries: [] };
+      const entries = await session.allEntries();
+      return {
+        leafId: await session.leafId(),
+        entries: entries.map((e) => ({
+          id: e.id,
+          parentId: e.parentId,
+          seq: e.seq,
+          kind: entryKind(e),
+          preview: entryPreview(e),
+        })),
+      };
+    },
+
+    // 写侧两步走: `planBranchNavigation` 只算 (读 + 一次模型调用), `navigateTo` 才写 ——
+    // 摘要失败时 lane **一步都不动** (fail-closed): 移了 lane 又没有摘要 = 那条分支被放弃
+    // 且没有任何交代, 正是本仓 S-1 那一族。
+    async branchTo({ sessionId, entryId }: { sessionId: string; entryId: string }): Promise<{ ok: boolean; text: string; summarized: boolean }> {
+      const session = await deps.store.open(sessionId);
+      if (!session) return { ok: false, text: `no such session: ${sessionId}`, summarized: false };
+      try {
+        const plan = await planBranchNavigation({
+          session: session.tree,
+          targetId: entryId,
+          model: deps.resolveModel(),
+          ...(deps.branchCallModel ? { callModelFn: deps.branchCallModel } : {}),
+        });
+        if (!plan.ok) return { ok: false, text: plan.error.message, summarized: false };
+        await session.navigateTo(entryId, plan.value.entry ?? undefined);
+        const text = plan.value.entry
+          ? `branched at ${entryId}; ${plan.value.abandoned} entries of the old branch were summarized into a [branch summary] node (they stay in the same file)`
+          : `moved to ${entryId}; nothing was abandoned, so no [branch summary] node was written`;
+        return { ok: true, text, summarized: plan.value.entry !== null };
+      } catch (err) {
+        // 条目不存在 / 写锁被别的进程占着都走这里 —— 原文原样带出去, 别吞成一句 "failed"。
+        return { ok: false, text: err instanceof Error ? err.message : String(err), summarized: false };
+      }
     },
 
     // 切片⑦: fork 直调 store (显式动作, 立刻建文件)。错误转成 ok:false + 原因原文 ——
