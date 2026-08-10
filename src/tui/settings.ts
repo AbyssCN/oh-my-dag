@@ -41,6 +41,11 @@ export interface SettingsInput {
   approvalTtlSec?: number;
   /** provider 组: 已配/未配(**只显示配没配, 不显示 key**)。 */
   providers?: { id: string; hasKey: boolean }[];
+  /**
+   * advisor 组 (2026-08-10, owner 点名可配): seat → 当前 advisor 坐标。
+   * 键**缺席 = 无 advisor**(与"配了"分得开, NULL≠0); 整组省略 = 不进表(同上面的约定)。
+   */
+  advisors?: Record<string, string | undefined>;
 }
 
 export function buildSettings(i: SettingsInput): SettingItem[] {
@@ -163,6 +168,23 @@ export function buildSettings(i: SettingsInput): SettingItem[] {
       detail: bad.length > 0 ? `rejected: ${bad.map((e) => `${e.name}(缺 ${(e.missing ?? []).join('、') || 'unknown'})`).join(' · ')}` : undefined,
       action: 'extensions',
     });
+  }
+
+  // ── advisor(座位属性, NOTES 2026-08-10 裁决;消费点 conductor chat / leaf 装配)──────
+  // ⚠ 排在**面板尾部**而不是座位组后面: 首屏可见窗有限, 排前面会把 glyph 行挤出首绘
+  //   (SET-1 实测红过)。/seat 面板按 action==='seat' 过滤, 顺序仍是 座位→advisor, 不受影响。
+  if (i.advisors) {
+    for (const seat of Object.keys(i.advisors)) {
+      items.push({
+        // `seat:advisor.<seat>`: 面板的座位子层按 `seat:` 前缀提取 role → 同一个模型选单,
+        // 不为 advisor 再造一条子层。applySetting 按 `advisor.` 再分流到 persistSeatAdvisor。
+        key: `seat:advisor.${seat}`,
+        label: `advisor ${seat}`,
+        value: i.advisors[seat] ?? '(none)',
+        detail: 'escalation advisor for this seat; claude-code seats only accept claude-code:* (official pairing) - written to advisors in .omd/config.json',
+        action: 'seat',
+      });
+    }
   }
 
   return items.filter((x) => x.detail !== undefined || true);

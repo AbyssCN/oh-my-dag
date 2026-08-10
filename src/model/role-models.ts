@@ -551,6 +551,20 @@ export function resolveSeatAdvisor(
   return seatSpecOf(seat)?.advisor;
 }
 
+/**
+ * 持久化座位 advisor (config.advisors[seat], TUI /seat·/settings 的写点)。
+ * `null` = **删键**而不是写空串: 删了之后 resolveSeatAdvisor 落回 seats.ts 声明默认
+ * (出厂全空 = 无 advisor)。写空串会把"显式清掉"和"没配过"两态抹成一个假坐标。
+ */
+export function persistSeatAdvisor(seat: string, coord: string | null, path = configPath()): void {
+  mutateConfig((cfg) => {
+    const adv = (cfg.advisors ??= {});
+    if (coord === null) delete adv[seat];
+    else adv[seat] = coord.trim();
+    if (Object.keys(adv).length === 0) delete cfg.advisors;
+  }, path);
+}
+
 // multimodal leaf pool — config.multimodalPool (坐标列表)
 // ---------------------------------------------------------------------------
 

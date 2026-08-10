@@ -42,7 +42,7 @@ export const COMMANDS: readonly CommandDoc[] = [
   { handler: 'handleSkill', name: '/skill', args: '[name] [notes]', what: 'list skills by group; a name arms it for the **next** message' },
   { handler: 'handleHud', name: '/hud', args: null, what: 'toggle the DAG sidebar. Ctrl+G fullscreen, Tab cycles tree/gantt/layers' },
   { handler: 'handleModels', name: '/models', args: null, what: 'switch the chat seat model (type to filter, current one marked ✓)' },
-  { handler: 'handleSeat', name: '/seat', args: '[role] [provider:model]', what: 'list tunable seats; with arguments it writes `.omd/config.json` (**side effect**)' },
+  { handler: 'handleSeat', name: '/seat', args: '[role] [provider:model] | advisor <seat> <coord|none>', what: 'list tunable seats; with arguments it writes `.omd/config.json` (**side effect**)' },
   { handler: 'handleSettings', name: '/settings', args: null, what: 'settings panel: seats / ui / approval / providers / session / extensions' },
   { handler: 'handleLogin', name: '/login', args: '[provider]', what: 'store an API key for a provider (echo masked, **side effect**)' },
   { handler: 'handleSession', name: '/session', args: '[id | new [id]]', what: 'list sessions; with an id, switch and replay it; `new` starts a fresh one' },

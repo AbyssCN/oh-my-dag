@@ -74,3 +74,26 @@ describe('formatSeatRows', () => {
     expect(formatSeatRows([{ role: 'x', coord: 'c', what: null, recommend: null }])).toContain('pick: -');
   });
 });
+
+describe('advisor(座位属性, owner 点名可配 2026-08-10)', () => {
+  test('★ /seat advisor <seat> <coord> → advise;none → 清掉(coord null, 不是字符串 "none")', () => {
+    expect(parseSeatCommand('/seat advisor conductor claude-code:claude-opus-5')).toEqual({
+      kind: 'advise',
+      seat: 'conductor',
+      coord: 'claude-code:claude-opus-5',
+    });
+    expect(parseSeatCommand('/seat advisor leaf none')).toEqual({ kind: 'advise', seat: 'leaf', coord: null });
+  });
+
+  test('缺参给 usage, 不静默', () => {
+    expect(parseSeatCommand('/seat advisor')?.kind).toBe('usage');
+    expect(parseSeatCommand('/seat advisor conductor')?.kind).toBe('usage');
+  });
+
+  test('★ advisor 行只在配了时画 —— 缺席 ≠ none, 不多一行噪声', () => {
+    const with_ = formatSeatRows(seatRows({ conductor: 'a:1' }, { conductor: 'claude-code:claude-opus-5' }));
+    expect(with_).toContain('advisor: claude-code:claude-opus-5');
+    const without = formatSeatRows(seatRows({ conductor: 'a:1' }));
+    expect(without).not.toContain('advisor:');
+  });
+});

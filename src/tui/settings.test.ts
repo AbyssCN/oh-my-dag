@@ -174,3 +174,19 @@ describe('切片⑥: 可改组(界面/审批/provider)', () => {
     expect(prov?.detail).not.toMatch(/sk-|key=/i);
   });
 });
+
+describe('advisor 行(座位属性, owner 点名可配 2026-08-10)', () => {
+  test('★ 配了显示坐标, 没配显示 (none) —— 两态都答得出现状; action=seat 复用座位子层', () => {
+    const items = buildSettings({ ...base, advisors: { conductor: 'claude-code:claude-opus-5', leaf: undefined } });
+    const c = find(items, 'seat:advisor.conductor');
+    const l = find(items, 'seat:advisor.leaf');
+    expect(c?.value).toBe('claude-code:claude-opus-5');
+    expect(l?.value).toBe('(none)');
+    expect(c?.action).toBe('seat');
+    expect(c?.detail).toContain('.omd/config.json');
+  });
+
+  test('整组省略 = 不进表(与 ui/approval 同约定)', () => {
+    expect(find(buildSettings(base), 'seat:advisor.conductor')).toBeUndefined();
+  });
+});

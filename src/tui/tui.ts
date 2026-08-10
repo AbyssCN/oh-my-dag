@@ -916,9 +916,13 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     const { fullModelCatalogDeps } = require('./provider-directory') as typeof import('./provider-directory');
     const choices = sortChoices(listModelChoices(fullModelCatalogDeps()), current);
     if (choices.length === 0) return null;
+    // advisor 行复用同一子层 (key `seat:advisor.<seat>`), 只多一条"清掉" —— advisor 与座位模型
+    // 不同: 它有合法的"不配"态 (不自动选, transcript 会外发), 座位模型没有。
+    const isAdvisor = role.startsWith('advisor.');
     return {
       title: `${role} 换成哪个模型? (${choices.length} 个)`,
       options: [
+        ...(isAdvisor ? [{ value: ADVISOR_NONE, label: '(none) 清掉 advisor', description: 'delete advisors key - back to unset' }] : []),
         ...choices.map((c) => ({ value: c.coord, label: choiceLabel(c, current) })),
         { value: MANUAL_COORD, label: '手动输入坐标…', description: '目录里没有登记的 provider:model' },
       ],
@@ -973,6 +977,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       color: colorEnabled(),
       truecolor: truecolorEnabled(),
       extensions: [],
+      advisors: readAdvisors(), // advisor 行 action 也是 seat → /seat 面板自动带上
     }).filter((it) => it.action === 'seat');
     await new Promise<void>((resolve) => {
       const panel = createSettingsPanel({
@@ -1046,16 +1051,52 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       // 列表照旧进记录(它是可回看的文本), **再**开选择器 —— 两者不互斥:
       // 记录留痕给以后翻, 选择器给现在改。
       const { current, err } = readSeats();
-      chatLog.appendNotice(formatSeatRows(seatRows(current)));
+      chatLog.appendNotice(formatSeatRows(seatRows(current, readAdvisors())));
       if (err) chatLog.appendNotice(CHROME.seatUnresolved(err));
       tui.requestRender();
       void openSeatPanel();
       return true;
     }
     if (cmd.kind === 'usage') chatLog.appendNotice(cmd.reason);
+    else if (cmd.kind === 'advise') applyAdvisor(cmd.seat, cmd.coord);
     else applySeat(cmd.role, cmd.coord);
     tui.requestRender();
     return true;
+  }
+
+  /** advisor 消费座 (resolveSeatAdvisor 的两个消费点): conductor chat · leaf 装配。 */
+  const ADVISOR_SEATS = ['conductor', 'leaf'] as const;
+
+  /** advisor 子层"清掉"项的哨兵。NUL 开头与 MANUAL_COORD 同理 —— 真坐标里不会有 NUL。 */
+  const ADVISOR_NONE = ' none';
+
+  /** 读两个消费座的 advisor 现值。缺席 = 没配 (undefined), 不编 none。 */
+  function readAdvisors(): Record<string, string | undefined> {
+    const { resolveSeatAdvisor } = require('../model/role-models') as typeof import('../model/role-models');
+    return Object.fromEntries(ADVISOR_SEATS.map((s) => [s, resolveSeatAdvisor(s)]));
+  }
+
+  /** advisor 写点 (owner 点名可配, 2026-08-10)。`null` = 清掉(删键)。回执带写到哪。 */
+  function applyAdvisor(seat: string, coord: string | null): void {
+    try {
+      const { persistSeatAdvisor, resolveSeatAdvisor } = require('../model/role-models') as typeof import('../model/role-models');
+      if (coord !== null && !coord.includes(':')) {
+        chatLog.appendNotice(CHROME.seatFailed(`advisor coordinate must be provider:model (got '${coord}')`));
+        return;
+      }
+      persistSeatAdvisor(seat, coord);
+      const now = resolveSeatAdvisor(seat);
+      chatLog.appendNotice(`advisor ${seat} -> ${now ?? '(none)'} (advisors.${seat} in .omd/config.json)`);
+      // 一期纪律 (claude-sdk-loop.officialAdvisorModelId): claude-code 座只认 claude-code:* advisor,
+      // 异族坐标运行时不挂。这里在**写的那一刻**就把话说明, 不等一轮跑完才发现没生效。
+      const seatCoord = readSeats().current[seat];
+      if (now && seatCoord?.startsWith('claude-code:') && !now.startsWith('claude-code:')) {
+        chatLog.appendNotice(`warning: seat ${seat} is on the claude-code channel - a non claude-code:* advisor will not be attached at runtime`);
+      }
+    } catch (err) {
+      chatLog.appendNotice(CHROME.seatFailed(err instanceof Error ? err.message : String(err)));
+    }
+    tui.requestRender();
   }
 
   /**
@@ -1414,13 +1455,17 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       ui: { sidebar: sidebarOn, painterName: PAINTERS[painterIdx] ?? 'tree' },
       approvalTtlSec,
       providers,
+      advisors: readAdvisors(),
     });
     return new Promise<string | null>((resolve) => {
       const panel = createSettingsPanel({
         theme,
         items,
         painters: PAINTERS,
-        maxVisible: 12,
+        // ★ 窗口装下**全部行**(2026-08-10): 面板把只读行排到末尾 (P3 件2 赢的那一手),
+        //   窗口 < 行数时只读尾巴 (colors/glyphs) 首绘永远不可见 —— advisor 行加进来时
+        //   SET-1 就是这么红的。写死 12 会在每次加行时复发, 所以跟着行数走。
+        maxVisible: Math.max(12, items.length),
         // 座位子层 = 模型选单。**三个入口一份实现**(P2 IA 收敛)—— 定义在 `seatModelOpts`。
         seatChoices: seatModelOpts,
         seatManual: seatManualOpts,
@@ -1463,6 +1508,14 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    * "oracle 绿 ≠ 语义对"的同一条 —— 回执说改了而盘上没改, 是最难发现的一种错。
    */
   function applySetting(id: string, value: string): string {
+    if (id.startsWith('seat:advisor.')) {
+      const seat = id.slice('seat:advisor.'.length);
+      // 空串 = 手输框空提交 → 不动 (清掉走显式的 (none) 项, 不让"没输"当成"清掉")。
+      if (value !== ADVISOR_NONE && !value.trim()) return readAdvisors()[seat] ?? '(none)';
+      applyAdvisor(seat, value === ADVISOR_NONE ? null : value.trim());
+      // 真值回盘上读 (applyAdvisor 吞异常发回执, 同 applySeat 的口径)。
+      return readAdvisors()[seat] ?? '(none)';
+    }
     if (id.startsWith('seat:')) {
       const role = id.slice('seat:'.length);
       const coord = value.trim();
