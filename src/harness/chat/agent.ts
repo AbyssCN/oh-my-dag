@@ -32,6 +32,7 @@ import { emitModelUsage } from '../../model/accounting';
 import type { ModelUsage } from '../../model/types';
 import { type CompactionCallModel, compactChatMessages } from './compaction';
 import { type ContextPressure, analyzeContextPressure, sumUsage, turnUsages } from './usage';
+import { join } from 'node:path';
 import { createMemoryTransform } from './memory-inject';
 import type { AnyOmdTool } from '../agent-tools';
 import { buildConductorChatSystemPrompt } from '../harness-prompts';
@@ -222,7 +223,10 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
     // 凭证每轮现取(同 agent-leaf: OAuth token 会在长会话中途过期)。
     getApiKey: (p: string) => resolvePiApiKey(p),
     // 记忆注入走甲类钩子 `transformContext` (S16): 只改这一次请求看到的消息, 不写回 context。
-    ...(opts.memory ? { transformContext: createMemoryTransform({ memory: opts.memory }) } : {}),
+    // C-9: 召回打点路径显式拼 cwd (不吃进程 cwd), INJECTED 从此有盘上痕迹。
+    ...(opts.memory
+      ? { transformContext: createMemoryTransform({ memory: opts.memory, eventsPath: join(opts.cwd, '.omd', 'recall-events.jsonl') }) }
+      : {}),
     // ② 单轮内压缩。顺序是**先压再判停**: 循环先调 prepareNextTurn 换上下文, 再拿换好的
     //    问 shouldStopAfterTurn。于是压成功 → 下一句判据自然在线下, 不停;
     //    压不动 → 下一句接住优雅停。不需要额外的"压过了没"标志位, 也就没有它漂掉的可能。

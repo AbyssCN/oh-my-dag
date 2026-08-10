@@ -187,3 +187,55 @@ describe('★ TTL 扫过之后过期 fact 真的不见了(真库, 不是替身)'
     }
   });
 });
+
+describe('C-9 召回漏斗打点 (S-F: INJECTED 从此有盘上痕迹)', () => {
+  const { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } = require('node:fs') as typeof import('node:fs');
+  const { tmpdir } = require('node:os') as typeof import('node:os');
+  const { join } = require('node:path') as typeof import('node:path');
+  const user = (t: string) => ({ role: 'user', content: t, timestamp: 1 }) as unknown as AgentMessage;
+
+  // 证伪方式 (当场验过): memory-inject.ts 里把打点块挪到 `if (!block) return` 之前
+  // → 「零命中无行」臂红 (空注入也计了一行); 恢复后绿。
+  test('★ 注入真发生 → append 一行 {ts, hits, queryChars}; 零命中 → 无行 (NULL ≠ 0)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omd-recall-ev-'));
+    const eventsPath = join(dir, '.omd', 'recall-events.jsonl');
+    try {
+      const { mem } = fakeMemory({ hits: [{ text: '座位是 kimi-coding:k3' }] });
+      await createMemoryTransform({ memory: mem, eventsPath })([user('座位?')]);
+      const lines = readFileSync(eventsPath, 'utf8').trim().split('\n');
+      expect(lines.length).toBe(1);
+      const row = JSON.parse(lines[0]!) as { ts: number; hits: number; queryChars: number };
+      expect(row.hits).toBe(1);
+      expect(row.queryChars).toBe('座位?'.length);
+
+      // 零命中 → 不注入也不打点: 行数不变 (没记 = NULL, 不是 0)
+      const { mem: empty } = fakeMemory({ hits: [] });
+      await createMemoryTransform({ memory: empty, eventsPath })([user('另一问')]);
+      expect(readFileSync(eventsPath, 'utf8').trim().split('\n').length).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('打点写入失败 → 注入照常 (advisory), 不抛', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omd-recall-ev2-'));
+    try {
+      // 让 eventsPath 的"目录"是一个普通文件 → mkdir/append 必失败
+      const blocker = join(dir, 'not-a-dir');
+      writeFileSync(blocker, 'x');
+      const eventsPath = join(blocker, 'recall-events.jsonl');
+      const { mem } = fakeMemory({ hits: [{ text: '事实' }] });
+      const out = await createMemoryTransform({ memory: mem, eventsPath })([user('问')]);
+      expect(out.length).toBe(2); // 注入没受影响
+      expect(existsSync(eventsPath)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('省略 eventsPath → 零打点 (向后兼容, 不吃进程 cwd)', async () => {
+    const { mem } = fakeMemory({ hits: [{ text: '事实' }] });
+    const out = await createMemoryTransform({ memory: mem })([user('问')]);
+    expect(out.length).toBe(2);
+  });
+});

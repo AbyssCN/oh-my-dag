@@ -22,6 +22,8 @@
  * 不放在对话位自主调」)。所以 TUI 里的 conductor **没有任何一条路**能自主写下
  * 一条 human_verified 事实。`memory-inject.test.ts` 有一条钉住这个不变量。
  */
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { logger } from '../../logger';
 import type { OmdMemory } from '../memory/store';
@@ -38,6 +40,14 @@ export interface MemoryInjectOpts {
   maxCharsPerFact?: number;
   /** 时钟注入(TTL 回收要可测)。 */
   now?: () => Date;
+  /**
+   * 召回漏斗打点(C-9,S-F):**注入真发生**时 append 一行 `{ts, hits, queryChars}`。
+   * 此前 INJECTED 无盘上痕迹(transformContext 刻意不进 transcript,logger 一行是唯一
+   * 证据)。路径**显式注入**(调用方拼 `join(cwd,'.omd','recall-events.jsonl')`)——
+   * 不吃进程 cwd(2026-08-10 一天三踩的锚陷阱)。省略 = 不打点(无行 = NULL,不是 0)。
+   * ACTION CHANGED 刻意不记:无真值,只有代理指标(读侧另算,报表必须标「代理」)。
+   */
+  eventsPath?: string;
 }
 
 /**
@@ -101,6 +111,15 @@ export function createMemoryTransform(opts: MemoryInjectOpts): (messages: AgentM
       const block = formatRecall(hits, maxChars);
       if (!block) return messages;
       logger.info({ query: query.slice(0, 80), hits: hits.length }, '[omd/memory] 召回已注入 (advisory)');
+      // C-9 漏斗打点: INJECTED 落一条可数记录 (advisory 同款纪律: 打点失败不阻断注入, 但留证据)。
+      if (opts.eventsPath) {
+        try {
+          mkdirSync(dirname(opts.eventsPath), { recursive: true });
+          appendFileSync(opts.eventsPath, `${JSON.stringify({ ts: now().getTime(), hits: hits.length, queryChars: query.length })}\n`);
+        } catch (err) {
+          logger.warn({ err: (err as Error).message, path: opts.eventsPath }, '[omd/memory] 召回打点写入失败 (注入照常, 该行缺席 = NULL 不是 0)');
+        }
+      }
       // 注在**末尾**: 冻结前缀在最前, 追加只失效一次并重建 (goal §6 纪律 2)。
       return [...messages, { role: 'user' as const, content: block, timestamp: Date.now() } as AgentMessage];
     } catch (err) {
