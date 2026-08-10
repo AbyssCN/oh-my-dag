@@ -358,7 +358,7 @@ export async function extractChatSession(
     // 成本: 经 computeCost 用模型坐标 + usage 算出
     const usage: ModelUsage = response.usage;
     const resolvedModel = response.model || model;
-    report.costUsd = computeCost(usage, resolvedModel).costUsd;
+    report.costUsd = computeCost(usage, resolvedModel).costUsd ?? 0; // 订阅通道 → 0 USD (dream 座恒 API, 防御性)
 
     if (response.parsed) {
       const parsed = response.parsed as { candidates?: Array<{ seq: number; namespace: string; payload: Record<string, unknown> }> };

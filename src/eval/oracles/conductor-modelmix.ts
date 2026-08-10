@@ -154,7 +154,8 @@ async function measureOnce(config: MixConfig, size: FixtureSize, leafTimeoutMs: 
       { in: metrics.usage.leavesIn, out: metrics.usage.leavesOut, cacheHit: metrics.usage.leavesCacheHit },
       config.leafModel,
     );
-    return { ...metrics, costUsd: cc.costUsd + lc.costUsd, unpriced: cc.unpriced || lc.unpriced };
+    // 订阅通道 → 0 USD 计入合计 (行级真相在 channel 列)
+    return { ...metrics, costUsd: (cc.costUsd ?? 0) + (lc.costUsd ?? 0), unpriced: cc.unpriced || lc.unpriced };
   } finally {
     await fx.cleanup();
   }

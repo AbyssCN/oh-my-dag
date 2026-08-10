@@ -16,6 +16,7 @@
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { logger } from '../logger';
+import { emitModelUsage } from './accounting';
 import type { ModelMessage, ModelRequest, ModelUsage } from './types';
 
 /** 订阅通道的座位 provider(坐标形如 `claude-code:claude-fable-5`)。chat/leaf/completion 三路同源。 */
@@ -74,13 +75,17 @@ export async function sdkCompleteRaw(modelId: string, messages: ModelMessage[], 
   const abort = new AbortController();
   req.signal?.addEventListener('abort', () => abort.abort(), { once: true });
   const effort = effortOf(req.thinkingLevel);
+  const coord = `${CLAUDE_SDK_PROVIDER}:${modelId}`;
   const q = (queryOverride ?? (query as unknown as SdkQueryLike))({
     prompt,
     options: {
       model: modelId,
       tools: [],
       allowedTools: [],
-      maxTurns: 1,
+      // P0 (owner 验收 2026-08-10, run bff8c5ce): 曾是 1。CLI 侧 harness 自己会造额外轮
+      // (模型试发一次 tool_use —— 工具面空、非交互 = 自动 deny —— deny 也消耗一轮; 触发非确定,
+      // 同形复现两次未塌但生产塌了)。8 = 有界余量: 工具全 deny 下多的轮只能是文本续写, 撑不爆。
+      maxTurns: 8,
       abortController: abort,
       ...(systemPrompt !== undefined ? { systemPrompt } : {}),
       ...(effort ? { effort } : {}),
@@ -88,27 +93,66 @@ export async function sdkCompleteRaw(modelId: string, messages: ModelMessage[], 
   });
 
   let lastStop: string | null | undefined;
-  const usage: ModelUsage = { in: 0, out: 0, cacheHit: 0 };
+  // 兜底累积 (流断时才用): 真源是 result.modelUsage —— SDK 文档明说 per-message usage 是
+  // main-loop-only 且验收实测 out 严重低估 (整份 plan 只记 out=4)。
+  const fallback: ModelUsage = { in: 0, out: 0, cacheHit: 0 };
   let result: Extract<SDKMessage, { type: 'result' }> | undefined;
-  for await (const msg of q) {
-    if (msg.type === 'assistant') {
-      const u = msg.message.usage as
-        | { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
-        | undefined;
-      if (u) {
-        const hit = u.cache_read_input_tokens ?? 0;
-        usage.in += (u.input_tokens ?? 0) + hit + (u.cache_creation_input_tokens ?? 0);
-        usage.out += u.output_tokens ?? 0;
-        usage.cacheHit = (usage.cacheHit ?? 0) + hit;
+  let threw: unknown = null;
+  try {
+    for await (const msg of q) {
+      if (msg.type === 'assistant') {
+        const u = msg.message.usage as
+          | { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
+          | undefined;
+        if (u) {
+          const hit = u.cache_read_input_tokens ?? 0;
+          fallback.in += (u.input_tokens ?? 0) + hit + (u.cache_creation_input_tokens ?? 0);
+          fallback.out += u.output_tokens ?? 0;
+          fallback.cacheHit = (fallback.cacheHit ?? 0) + hit;
+        }
+        lastStop = msg.message.stop_reason as string | null;
+      } else if (msg.type === 'result') {
+        result = msg;
       }
-      lastStop = msg.message.stop_reason as string | null;
-    } else if (msg.type === 'result') {
-      result = msg;
     }
+  } catch (err) {
+    threw = err; // 先记账再抛 (P1): 失败路的 token 也真烧了订阅额度。
   }
-  if (!result) throw new Error('[claude-sdk-complete] 流结束但没收到 result 消息 (CLI 中断?)');
+
+  const mu = result
+    ? (result as { modelUsage?: Record<string, { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number }> }).modelUsage
+    : undefined;
+  const usage: ModelUsage = mu && Object.keys(mu).length > 0
+    ? Object.values(mu).reduce<ModelUsage>(
+        (acc, v) => ({
+          in: acc.in + (v.inputTokens ?? 0) + (v.cacheReadInputTokens ?? 0) + (v.cacheCreationInputTokens ?? 0),
+          out: acc.out + (v.outputTokens ?? 0),
+          cacheHit: (acc.cacheHit ?? 0) + (v.cacheReadInputTokens ?? 0),
+        }),
+        { in: 0, out: 0, cacheHit: 0 },
+      )
+    : fallback;
+
+  // 失败路入账 (P1)。成功路不在这记 —— callModel 出口统一 emit, 这里再记就是双计。
+  const emitFailureUsage = (): void => {
+    if (usage.in === 0 && usage.out === 0) return; // 一个 token 都没花 (如 spawn 失败) → 无账可记
+    try {
+      emitModelUsage(usage, coord);
+    } catch (err) {
+      logger.warn({ err: (err as Error).message, model: coord }, '[claude-sdk-complete] 失败路入账失败 (已吞)');
+    }
+  };
+  if (threw !== null) {
+    emitFailureUsage();
+    throw threw;
+  }
+  if (!result) {
+    emitFailureUsage();
+    throw new Error('[claude-sdk-complete] 流结束但没收到 result 消息 (CLI 中断?)');
+  }
   if (result.subtype !== 'success') {
     // 外层 callModel 按 transport 错重试 + 熔断该坐标(订阅窗口耗尽被冷却正是想要的行为)。
+    emitFailureUsage();
     throw new Error(`[claude-sdk-complete] provider 错误: ${result.subtype}`);
   }
   return {

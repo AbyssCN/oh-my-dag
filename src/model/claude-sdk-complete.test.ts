@@ -55,7 +55,7 @@ describe('callModel 分派 (claude-code:*)', () => {
     expect(r.usage).toEqual({ in: 150, out: 7, cacheHit: 40 });
     const o = seen.calls[0]!.options;
     expect(o.model).toBe('claude-opus-5');
-    expect(o.maxTurns).toBe(1);
+    expect(o.maxTurns).toBe(8); // P0: 1 → 8 (CLI harness 自造轮; deny 掉的 tool_use 也耗一轮)
     expect(o.tools).toEqual([]);
     expect(o.effort).toBe('high');
     expect(o.systemPrompt).toBe('你是终审');

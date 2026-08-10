@@ -536,8 +536,8 @@ function buildCostStats(log: { model: string; usage: ModelUsage }[]): FanoutCost
     m.out += usage.out;
     m.cacheHit += usage.cacheHit ?? 0;
     const cb = computeCost(usage, model);
-    m.costUsd += cb.costUsd;
-    totalUsd += cb.costUsd;
+    m.costUsd += cb.costUsd ?? 0; // 订阅通道 → 0 USD 计入合计
+    totalUsd += cb.costUsd ?? 0;
     totalSavingsUsd += cb.cacheSavingsUsd ?? 0;
   }
   for (const m of Object.values(perModel)) m.cacheHitRate = m.in > 0 ? m.cacheHit / m.in : 0;

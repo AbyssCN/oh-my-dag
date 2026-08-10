@@ -380,7 +380,7 @@ export async function extractRunRecord(
     report.llmCallCount = 1;
     const usage: ModelUsage = response.usage;
     const resolvedModel = response.model || model;
-    report.costUsd = computeCost(usage, resolvedModel).costUsd;
+    report.costUsd = computeCost(usage, resolvedModel).costUsd ?? 0; // 订阅通道 → 0 USD (dream 座恒 API, 防御性)
     // 入账不在此处: 注入的 callModel (model/index.ts:305/329/352) 出口已 emitModelUsage,
     // 叶内再 emit 即双计 (S5 终审实测: live rawCalls 两笔逐字同值, ledger 成本 ×2)。
 

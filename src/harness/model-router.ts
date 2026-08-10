@@ -222,7 +222,7 @@ export function leafCostReward(
   if (!leaf.model || !leaf.usage) return 0.5 * dagFactor; // 无计量 → 中性
   const scale = opts.scaleUsd ?? envCostScale() ?? DEFAULT_COST_SCALE_USD;
   const { costUsd, unpriced } = computeCost(leaf.usage, leaf.model, opts.prices);
-  const costFactor = unpriced ? 0.5 : Math.exp(-costUsd / scale);
+  const costFactor = unpriced ? 0.5 : Math.exp(-(costUsd ?? 0) / scale); // 订阅通道按 0 边际美元参与选型
   return dagFactor * costFactor;
 }
 

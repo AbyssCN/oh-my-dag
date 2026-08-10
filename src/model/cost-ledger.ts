@@ -52,12 +52,22 @@ export const DEFAULT_PRICES: PriceTable = {
  * cacheHitRate omitted → inputRate·0.1 (ECON-2).
  * coord missing from prices → costUsd=0 + unpriced=true (ECON-3 fail-open).
  */
+/** 坐标 → 计价通道。claude-code:* 走订阅(Agent SDK 通道),其余按美元计价。 */
+export function channelOf(coord: string): 'api' | 'subscription' {
+  return coord.startsWith('claude-code:') ? 'subscription' : 'api';
+}
+
 export const computeCost: ComputeCost = (
   usage: ModelUsage,
   coord: string,
   prices?: PriceTable,
 ): CostBreakdown => {
   const table = prices ?? DEFAULT_PRICES;
+  // 订阅通道 (owner 裁 2026-08-10 验收 P2): cost = null 非 0, channel 列判别 —— 三态:
+  // 计价 (数字) / unpriced (价表缺, 0+旗) / subscription (不是美元计价的资源)。
+  if (channelOf(coord) === 'subscription') {
+    return { costUsd: null, cacheSavingsUsd: 0, unpriced: false, channel: 'subscription' };
+  }
   const price: ModelPrice | undefined = table[coord];
 
   if (!price) {

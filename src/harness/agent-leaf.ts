@@ -1055,6 +1055,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     };
 
     let messages: AgentMessage[];
+    let sdkUsage: ModelUsage | null = null;
     try {
       if (isSdkChannel) {
         // Claude 订阅通道: 循环换 SDK, 其余机械原样 —— filesTouched/writeEffects/shellRuns/drift
@@ -1079,8 +1080,13 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           signal: controller.signal,
           tolerateAbort: true,
           ...(opts.sdkQueryFn ? { sdkQueryFn: opts.sdkQueryFn } : {}),
+          // P1 (owner 验收): leaf 的账在循环核 emit, 成败都记 (pi leaf 不 emit 是因为引擎侧
+          // 有 usage 回传链; SDK 失败路直接 throw, 不在这记就是订阅额度账外)。
+          ledger: { model, origin: 'engine' },
         });
         messages = [{ role: 'user', content: routedPrompt, timestamp: Date.now() } as AgentMessage, ...out.generated];
+        // D2 (owner 验收): 逐消息 usage 折算 out 严重低估 —— totalUsage 取自 result.modelUsage 真源。
+        sdkUsage = out.totalUsage;
       } else {
         messages = await runAgentLoop(
           [{ role: 'user', content: routedPrompt, timestamp: Date.now() }],
@@ -1108,7 +1114,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       totals.output += u.output ?? 0;
       totals.cacheRead += u.cacheRead ?? 0;
     }
-    const usage = mapSessionUsage(totals);
+    const usage = sdkUsage ?? mapSessionUsage(totals);
 
     // **响亮失败** (承 C-5b): 低层循环对 provider 错误不抛 —— 它把 `stopReason:'error'` 连同
     // errorMessage 放进最后一条 assistant 消息就返回了 (agent-loop.js 的 error 分支)。

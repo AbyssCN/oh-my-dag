@@ -138,9 +138,9 @@ function recordPlanRun(
   const ok = result.verification ? result.verification.pass : allDone;
   let costUsd = 0;
   for (const leaf of leaves) {
-    if (leaf.model && leaf.usage) costUsd += computeCost(leaf.usage, leaf.model).costUsd;
+    if (leaf.model && leaf.usage) costUsd += computeCost(leaf.usage, leaf.model).costUsd ?? 0; // 订阅通道 → 0 USD 计入合计
   }
-  if (conductorModel) costUsd += computeCost(result.usage.conductor, conductorModel).costUsd;
+  if (conductorModel) costUsd += computeCost(result.usage.conductor, conductorModel).costUsd ?? 0;
   ledger.record({
     taskText,
     plan: {

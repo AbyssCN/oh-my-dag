@@ -2262,7 +2262,7 @@ if (import.meta.main) {
     const c = computeCost({ in: r.leavesIn, out: r.leavesOut, cacheHit: r.cacheHit }, coord);
     if (c.unpriced) { unpricedCoordRuns++; continue; }
     pricedRuns++;
-    leafUsd += c.costUsd;
+    leafUsd += c.costUsd ?? 0; // 订阅通道 → 0 USD 计入合计
   }
   const reuseRuns = runs.filter((r) => r.reused !== null);
   const reusedTotal = reuseRuns.reduce((a, r) => a + (r.reused ?? 0), 0);

@@ -74,12 +74,20 @@ describe('claude-code leaf 分支', () => {
     expect((seen.options?.settings as { advisorModel?: string })?.advisorModel).toBe('claude-opus-5');
   });
 
-  test('★ provider 错误 → 响亮抛 subtype 原文(闸在 SDK 路上也会红)', async () => {
-    const run = createAgentLeafRunner({
-      cwd,
-      sdkQueryFn: fakeQuery([asst('半截'), { type: 'result', subtype: 'error_max_turns', session_id: 's' } as unknown as SDKMessage]),
-    });
-    await expect(run({ prompt: 'x', model: MODEL })).rejects.toThrow('error_max_turns');
+  test('★ provider 错误 → 响亮抛 subtype 原文,且烧掉的 token 已入账(P1:失败 ≠ 账外)', async () => {
+    const { observeModelUsage } = await import('../model/accounting');
+    const emits: { model: string; origin: string }[] = [];
+    const un = observeModelUsage((_u, model, origin) => emits.push({ model, origin }));
+    try {
+      const run = createAgentLeafRunner({
+        cwd,
+        sdkQueryFn: fakeQuery([asst('半截'), { type: 'result', subtype: 'error_max_turns', session_id: 's' } as unknown as SDKMessage]),
+      });
+      await expect(run({ prompt: 'x', model: MODEL })).rejects.toThrow('error_max_turns');
+      expect(emits).toEqual([{ model: MODEL, origin: 'engine' }]);
+    } finally {
+      un();
+    }
   });
 
   test('★ 0-token empty-done:空文本 + 零落盘 + 非停摆非超时 → 仍然响亮失败', async () => {

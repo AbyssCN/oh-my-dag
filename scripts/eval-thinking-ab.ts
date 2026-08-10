@@ -104,7 +104,7 @@ async function trial(arm: Arm, task: (typeof WORKER_TASKS)[number], rep: number)
       formatOk: g.formatOk,
       ...(g.note ? { note: g.note } : {}),
       usage,
-      costUsd: computeCost({ in: usage.in, out: usage.out, cacheHit: usage.cacheHit }, MODEL_COORD).costUsd,
+      costUsd: computeCost({ in: usage.in, out: usage.out, cacheHit: usage.cacheHit }, MODEL_COORD).costUsd ?? 0, // 订阅通道 → 0 USD 计入合计 (行级真相在 channel 列)
       latencyMs: Date.now() - t0,
       outputChars: text.length,
     };

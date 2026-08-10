@@ -59,7 +59,10 @@ const success = (sid: string): SDKMessage =>
     result: 'done',
     session_id: sid,
     usage: {},
-    modelUsage: { 'claude-fable-5': { contextWindow: 1_000_000 } },
+    // 真源口径 (owner 验收 D2): 账行从 result.modelUsage 来, per-message usage 只是兜底。
+    modelUsage: {
+      'claude-fable-5': { inputTokens: 10, outputTokens: 5, cacheReadInputTokens: 2, cacheCreationInputTokens: 3, contextWindow: 1_000_000 },
+    },
   }) as unknown as SDKMessage;
 
 const fakeQuery =
@@ -146,6 +149,22 @@ describe('失败语义(半轮不入库 —— 本闸的反向自检:两条都先
     ).rejects.toThrow('error_during_execution');
     expect(await store.open('s1')).toBeNull();
     expect(existsSync(mapPath())).toBe(false);
+  });
+
+  test('★ 失败路也入账(P1):error result → 抛,但烧掉的 token 已 emit(半轮不入库 ≠ 账外)', async () => {
+    const emits: { model: string; origin: string }[] = [];
+    const un = observeModelUsage((_u, model, origin) => emits.push({ model, origin }));
+    try {
+      await expect(
+        runChatTurnSdk({
+          store, sessionId: 's1', prompt: 'x', model: MODEL, cwd: root, contextFiles: [],
+          sdkQueryFn: fakeQuery([asst('半截'), { type: 'result', subtype: 'error_max_turns', session_id: 'sdk-a' } as unknown as SDKMessage]),
+        }),
+      ).rejects.toThrow('error_max_turns');
+      expect(emits).toEqual([{ model: MODEL, origin: 'chat' }]); // 兜底累积行(error result 无 modelUsage)
+    } finally {
+      un();
+    }
   });
 
   test('★ 流断了没 result → 响亮抛,不落盘', async () => {

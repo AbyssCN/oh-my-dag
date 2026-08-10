@@ -13,6 +13,7 @@ import type { AgentEvent, AgentMessage } from '@earendil-works/pi-agent-core';
 import { randomUUID } from 'node:crypto';
 import type { AnyOmdTool } from './agent-tools';
 import { logger } from '../logger';
+import { emitModelUsage } from '../model/accounting';
 import { CLAUDE_SDK_PROVIDER } from '../model/claude-sdk-complete';
 import type { ModelUsage } from '../model/types';
 
@@ -200,13 +201,26 @@ export interface SdkLoopOpts {
   sdkQueryFn?: SdkQueryFn;
   /** abort 时不抛、返已累积消息(leaf 优雅停语义);chat 不开 = 无 result 必抛。 */
   tolerateAbort?: boolean;
+  /**
+   * 账本归因(owner 验收 P1,2026-08-10):给了就在循环核里 emit —— **成败都记**,
+   * 失败路的 token 也真烧了订阅额度,不 emit 就是账外。origin 由调用方定(chat/engine)。
+   * 不给 = 不 emit(测试/特殊调用方自理)。
+   */
+  ledger?: { model: string; origin: 'chat' | 'engine' };
 }
 
 export interface SdkLoopOut {
   /** 本轮生成(assistant + toolResult,pi 形状,不含调用方自己的 user prompt)。 */
   generated: AgentMessage[];
-  /** 逐条 assistant 的用量(与 generated 里的 assistant 一一对应,全零的已滤)。 */
-  usages: ModelUsage[];
+  /**
+   * 账行(逐模型)。真源 = result.modelUsage(SDK 文档:`usage` 是 main-loop-only,
+   * **modelUsage 才是记账字段** —— 验收实测 per-assistant usage 会分块重复 + out 严重低估)。
+   * result 缺席(流断/abort)→ 按 API message id 去重的累积值兜底,归因座位坐标。
+   * advisor / 子代理的 token 在 modelUsage 里是独立条目 → 独立账行,归因免费。
+   */
+  ledgerRows: { model: string; usage: ModelUsage }[];
+  /** ledgerRows 合计(chat 的 ChatTurnResult.usage / leaf 的 AgentLeafResult.usage 用它)。 */
+  totalUsage: ModelUsage;
   /** success 时必有;tolerateAbort 且中途 abort 时缺席。 */
   result?: SdkResult;
   aborted: boolean;
@@ -237,8 +251,12 @@ export async function runSdkAgentLoop(o: SdkLoopOpts): Promise<SdkLoopOut> {
 
   const toolNameById = new Map<string, string>();
   const generated: AgentMessage[] = [];
-  const usages: ModelUsage[] = [];
+  // per-API-message 去重累积 (兜底账): SDK 把同一次 API 调用按 content 块拆成多条 assistant
+  // 消息, 每条带同一份 usage —— 逐条 emit 就是三胞胎账行 (验收实测)。同 id 后到覆盖先到。
+  const usageById = new Map<string, ModelUsage>();
+  let anon = 0;
   let result: SdkResult | undefined;
+  let threw: unknown = null;
 
   try {
     for await (const msg of q) {
@@ -247,7 +265,7 @@ export async function runSdkAgentLoop(o: SdkLoopOpts): Promise<SdkLoopOut> {
         const mapped = mapAssistant(msg, o.modelCoord, toolNameById);
         generated.push(mapped);
         const u = mapSdkUsage(msg.message.usage as SdkApiUsage | undefined);
-        if (u.in > 0 || u.out > 0) usages.push(u);
+        if (u.in > 0 || u.out > 0) usageById.set((msg.message as { id?: string }).id ?? `anon-${anon++}`, u);
         o.onEvent?.({ type: 'message_end', message: mapped });
       } else if (msg.type === 'user') {
         generated.push(...mapToolResults(msg, toolNameById));
@@ -257,13 +275,46 @@ export async function runSdkAgentLoop(o: SdkLoopOpts): Promise<SdkLoopOut> {
       // system / stream_event 等其余消息型不进投影(stream_event 只喂 onActivity)。
     }
   } catch (err) {
-    // 我们自己 abort(超时/停摆)且调用方要优雅停 → 返已累积;其余照抛。
-    if (!(o.tolerateAbort && o.signal?.aborted)) throw err;
-    logger.warn({ model: o.modelCoord, err: (err as Error).message }, '[claude-sdk] abort 中断 → 返已累积消息 (优雅停)');
+    threw = err; // 先记账再决定抛不抛 —— 失败路的 token 也真烧了 (P1)。
   }
 
   const aborted = o.signal?.aborted === true;
-  if (!result && !(o.tolerateAbort && aborted)) {
+  // ── 账行:真源 result.modelUsage(错误 result 也带),缺席才用去重累积兜底 ────────
+  const mu = result
+    ? (result as { modelUsage?: Record<string, { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number }> }).modelUsage
+    : undefined;
+  const ledgerRows = (
+    mu && Object.keys(mu).length > 0
+      ? Object.entries(mu).map(([k, v]) => ({
+          model: `${CLAUDE_SDK_PROVIDER}:${k}`,
+          usage: {
+            in: (v.inputTokens ?? 0) + (v.cacheReadInputTokens ?? 0) + (v.cacheCreationInputTokens ?? 0),
+            out: v.outputTokens ?? 0,
+            cacheHit: v.cacheReadInputTokens ?? 0,
+          },
+        }))
+      : [...usageById.values()].map((usage) => ({ model: o.modelCoord, usage }))
+  ).filter((r) => r.usage.in > 0 || r.usage.out > 0); // 全零不记 (calls 灌水, 同 turnUsages 口径)
+  if (o.ledger) {
+    for (const row of ledgerRows) {
+      try {
+        emitModelUsage(row.usage, row.model, o.ledger.origin);
+      } catch (err) {
+        logger.warn({ err: (err as Error).message, model: row.model }, '[claude-sdk] 用量入账失败 (已吞, 不影响本轮)');
+      }
+    }
+  }
+  const totalUsage = ledgerRows.reduce<ModelUsage>(
+    (acc, r) => ({ in: acc.in + r.usage.in, out: acc.out + r.usage.out, cacheHit: (acc.cacheHit ?? 0) + (r.usage.cacheHit ?? 0) }),
+    { in: 0, out: 0, cacheHit: 0 },
+  );
+
+  // ── 失败语义(账已记完才抛) ─────────────────────────────────────────────────────
+  if (threw !== null) {
+    if (!(o.tolerateAbort && aborted)) throw threw;
+    logger.warn({ model: o.modelCoord, err: (threw as Error).message }, '[claude-sdk] abort 中断 → 返已累积消息 (优雅停)');
+  }
+  if (!result && !(o.tolerateAbort && aborted) && threw === null) {
     throw new Error('[claude-sdk] 流结束但没收到 result 消息 (CLI 中断?)');
   }
   if (result && result.subtype !== 'success' && !(o.tolerateAbort && aborted)) {
@@ -271,6 +322,6 @@ export async function runSdkAgentLoop(o: SdkLoopOpts): Promise<SdkLoopOut> {
     throw new Error(`[claude-sdk] provider 错误: ${result.subtype}${detail ? ` — ${detail}` : ''}`);
   }
   o.onEvent?.({ type: 'agent_end', messages: generated });
-  return { generated, usages, ...(result ? { result } : {}), aborted };
+  return { generated, ledgerRows, totalUsage, ...(result ? { result } : {}), aborted };
 }
 

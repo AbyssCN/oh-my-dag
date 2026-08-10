@@ -33,12 +33,18 @@ export type PriceTable = Record<string, ModelPrice>;
 
 /** 一次 model 调用的成本分解 (ComputeCost 输出)。 */
 export interface CostBreakdown {
-  /** = (cacheHit·cacheHitRate + (in-cacheHit)·inputRate + out·outputRate) / 1e6。unpriced → 0。 */
-  costUsd: number;
+  /**
+   * = (cacheHit·cacheHitRate + (in-cacheHit)·inputRate + out·outputRate) / 1e6。unpriced → 0。
+   * **`null` = 订阅通道**(owner 裁 2026-08-10 验收 P2):花的是订阅额度不是美元,
+   * 记 0 会把「没花钱」与「花的不是钱」抹平(NULL ≠ 0)。判别靠 `channel` 列,不靠猜。
+   */
+  costUsd: number | null;
   /** cache 命中省下的钱 = cacheHit·(inputRate - cacheHitRate)/1e6 (无 cacheHit → 0)。 */
   cacheSavingsUsd: number;
-  /** 价表缺该坐标 → true (costUsd=0, ECON-3)。 */
+  /** 价表缺该坐标 → true (costUsd=0, ECON-3)。订阅通道 **不是** unpriced —— 那是三态里的另一态。 */
   unpriced: boolean;
+  /** 计价通道。缺席 = 'api'(向后兼容:老消费者没读它也不该炸)。 */
+  channel?: 'subscription';
 }
 
 /** 预算档 (EvaluateBudget 输出的 level)。 */

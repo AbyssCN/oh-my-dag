@@ -78,13 +78,13 @@ export function createCostLedger(
   return {
     record(usage, model) {
       const breakdown = computeCost(usage, model, opts.prices);
-      spentUsd += breakdown.costUsd;
+      spentUsd += breakdown.costUsd ?? 0; // 订阅通道 → 0 USD 计入美元合计 (行级 NULL + channel 列保真相)
       cacheSavingsUsd += breakdown.cacheSavingsUsd;
       calls += 1;
       if (breakdown.unpriced) unpriced += 1;
       const m = (byModel[model] ??= { calls: 0, costUsd: 0, in: 0, out: 0 });
       m.calls += 1;
-      m.costUsd += breakdown.costUsd;
+      m.costUsd += breakdown.costUsd ?? 0;
       m.in += usage.in;
       m.out += usage.out;
       return { breakdown, budget: evaluateBudget(spentUsd, limitUsd, { warnFraction }) };

@@ -51,6 +51,8 @@ interface BudgetRow {
   /** 可能缺失(老行)—— 求和成 NaN 是「尺子坏了」信号,原样保留。 */
   costUsd?: number;
   unpriced: boolean;
+  /** 订阅通道行(costUsd=null 落盘):不花美元预算,整行跳过。缺席 = api。 */
+  channel?: 'subscription';
 }
 interface LedgerMemo {
   offset: number;
@@ -99,9 +101,14 @@ function readWeeklyWindow(dir: string, windowMs: number, nowMs: number): { calls
       for (const line of parts) {
         if (!line) continue;
         try {
-          const r = JSON.parse(line) as { ts?: unknown; model?: unknown; costUsd?: number; unpriced?: unknown };
+          const r = JSON.parse(line) as { ts?: unknown; model?: unknown; costUsd?: number | null; unpriced?: unknown; channel?: unknown };
           if (typeof r.ts === 'number' && typeof r.model === 'string') {
-            memo.rows.push({ ts: r.ts, ...(r.costUsd !== undefined ? { costUsd: r.costUsd } : {}), unpriced: r.unpriced === true });
+            memo.rows.push({
+              ts: r.ts,
+              ...(r.costUsd !== undefined && r.costUsd !== null ? { costUsd: r.costUsd } : {}),
+              unpriced: r.unpriced === true,
+              ...(r.channel === 'subscription' ? { channel: 'subscription' as const } : {}),
+            });
           }
         } catch {
           // 坏行跳过 —— 与账本同刀法(账本是读数不是闸)
@@ -120,6 +127,9 @@ function readWeeklyWindow(dir: string, windowMs: number, nowMs: number): { calls
   let unpriced = false;
   for (const r of memo.rows) {
     if (r.ts < since) continue;
+    // 订阅通道行 (channel 列判别, costUsd=null): 不花美元预算, 整行跳过 —— 既不进 USD 合计
+    // 也不该把周预算闸读成不可用。undefined (老行缺字段) 仍 → NaN: 尺子坏了的信号不吞。
+    if (r.channel === 'subscription') continue;
     calls += 1;
     costUsd += r.costUsd as number; // undefined → NaN:语义与 ledger.sum 逐分一致
     unpriced ||= r.unpriced;

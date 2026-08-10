@@ -26,7 +26,6 @@ import { assistantText, loadProjectContext } from '../agent-leaf';
 import { buildConductorChatSystemPrompt } from '../harness-prompts';
 import { parseModelRef } from '../fleet';
 import { logger } from '../../logger';
-import { emitModelUsage } from '../../model/accounting';
 import { CLAUDE_SDK_PROVIDER, effortOf } from '../../model/claude-sdk-complete';
 import type { ModelUsage } from '../../model/types';
 import { analyzeContextPressure } from './usage';
@@ -107,17 +106,12 @@ export async function runChatTurnSdk(opts: ChatTurnOpts): Promise<ChatTurnResult
     ...(opts.onEvent ? { onEvent: opts.onEvent } : {}),
     ...(opts.signal ? { signal: opts.signal } : {}),
     ...(opts.sdkQueryFn ? { sdkQueryFn: opts.sdkQueryFn } : {}),
+    // 账在循环核里记(成败都记,P1);真源 result.modelUsage,advisor/子代理独立账行。
+    // ⚠ SDK 通道的 calls = 账行数(逐模型)不是 API 调用数 —— 逐 assistant 记会三胞胎 + out 低估
+    // (owner 验收实测),粒度让给准确性。
+    ledger: { model: opts.model, origin: 'chat' },
   });
   const result = out.result!; // 非 tolerateAbort 路:runSdkAgentLoop 保证 success 才返回
-
-  // 逐条 emit 不汇总:每条 assistant 是一次独立 API 调用,calls 语义与 pi 通道一致。
-  for (const u of out.usages) {
-    try {
-      emitModelUsage(u, opts.model, 'chat');
-    } catch (err) {
-      logger.warn({ err: (err as Error).message, model: opts.model }, '[claude-sdk] 用量入账失败 (已吞, 不影响这一轮)');
-    }
-  }
 
   // ── 成功之后才落任何东西(半轮不入库,与 pi 通道同纪律) ────────────────────────
   const userMsg = { role: 'user', content: opts.prompt, timestamp: Date.now() } as AgentMessage;
@@ -130,10 +124,7 @@ export async function runChatTurnSdk(opts: ChatTurnOpts): Promise<ChatTurnResult
   const after = priorCount + newMessages.length;
   const windowTokens =
     Object.values((result.modelUsage ?? {}) as Record<string, { contextWindow?: number }>)[0]?.contextWindow ?? 1_000_000;
-  const total: ModelUsage = out.usages.reduce<ModelUsage>(
-    (acc, u) => ({ in: acc.in + u.in, out: acc.out + u.out, cacheHit: (acc.cacheHit ?? 0) + (u.cacheHit ?? 0) }),
-    { in: 0, out: 0, cacheHit: 0 },
-  );
+  const total: ModelUsage = out.totalUsage;
   return {
     sessionId: opts.sessionId,
     messageCount: after,

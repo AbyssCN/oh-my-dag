@@ -41,9 +41,12 @@ export interface UsageRecord {
   in: number;
   out: number;
   cacheHit: number;
-  costUsd: number;
+  /** `null` = 订阅通道(花的是额度不是美元,NULL ≠ 0);判别靠 `channel` 列。 */
+  costUsd: number | null;
   /** 价表里没有这个坐标(ECON-3)。合计时分开报 —— 0 元与没计价不是一回事。 */
   unpriced: boolean;
+  /** 计价通道。缺席 = api(老行向后兼容)。 */
+  channel?: 'subscription';
 }
 
 export interface ProviderWindow {
@@ -130,7 +133,9 @@ export function createTuiUsageLedger(opts: { dir: string; now?: () => number }):
       t.in += r.in;
       t.out += r.out;
       t.cacheHit += r.cacheHit;
-      t.costUsd += r.costUsd;
+      // null = 订阅通道 (channel 列判别), USD 合计合法跳过 —— 不是 0 也不是 NaN。
+      // undefined (老行缺字段) 仍走 += → NaN: 「尺子坏了」的信号不许吞 (budget.ts 同口径)。
+      if (r.costUsd !== null) t.costUsd += r.costUsd;
       t.unpriced ||= r.unpriced;
     }
     return t;
@@ -148,6 +153,7 @@ export function createTuiUsageLedger(opts: { dir: string; now?: () => number }):
         cacheHit: usage.cacheHit ?? 0,
         costUsd: breakdown.costUsd,
         unpriced: breakdown.unpriced,
+        ...(breakdown.channel ? { channel: breakdown.channel } : {}),
       };
       records.push(r);
       mine.push(r);
