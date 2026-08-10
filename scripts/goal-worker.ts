@@ -85,6 +85,8 @@ const res = (await goalTool.handler(
     // P0 (2026-08-10): 不转发这一格 = branch 静默变 head (参数矩阵空格)。worker 里是同一个
     // dag_goal handler, 它拿到参数就会走进程内路径的 prepareRunWorktree —— 单一实现, 零复刻。
     ...(opt('branch-strategy') ? { branchStrategy: opt('branch-strategy') } : {}),
+    // 直通入口 (SDD 2026-08-10-solve-sdd-direct-entry): 已结晶契约免转录, 同 handler 同语义。
+    ...(opt('sdd-path') ? { sddPath: opt('sdd-path') } : {}),
   } as never,
   {} as never,
 )) as { content: { text: string }[]; isError?: boolean };

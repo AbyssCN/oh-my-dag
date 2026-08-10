@@ -156,6 +156,10 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         .string()
         .optional()
         .describe("D-G1.3: on terminal state, write 'outcome: <kind>' header + summarizeGoal to this path (pathfinder reflow source)"),
+      sddPath: z
+        .string()
+        .optional()
+        .describe('Direct entry: path to a crystallized SDD (docs/plan/*.md). Skips research + contract transcription — the file IS the contract. Rejects files missing 契约/Contracts or 分解/Breakdown sections.'),
       budgetTokens: z
         .number()
         .int()
@@ -176,7 +180,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         ),
     },
     handler: async (args) => {
-      const { goal, tier, maxRounds, researchRounds, resume, detached, budgetTokens, budgetMinutes, branchStrategy, resultOut } = args as {
+      const { goal, tier, maxRounds, researchRounds, resume, detached, budgetTokens, budgetMinutes, branchStrategy, resultOut, sddPath } = args as {
         goal?: string;
         tier?: GoalTier;
         maxRounds?: number;
@@ -187,6 +191,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         budgetTokens?: number;
         budgetMinutes?: number;
         branchStrategy?: BranchStrategy;
+        sddPath?: string;
       };
       if (!goal?.trim()) {
         return { content: [{ type: 'text' as const, text: 'dag_goal: goal 必填' }], isError: true };
@@ -229,6 +234,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           // (prepareRunWorktree 全仓唯一实现; 状态锚随 --cwd 留主仓, 执行锚由 handler 内
           // buildConfig(worktree.cwd) 转向 —— 双 cwd 分离在既有进程内路径上本就成立)。
           ...(branchStrategy ? ['--branch-strategy', branchStrategy] : []),
+          ...(sddPath ? ['--sdd-path', sddPath] : []),
         ];
         let pid: number | undefined;
         try {
@@ -377,6 +383,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           ...(maxRounds ? { maxRounds } : {}),
           ...(researchRounds ? { researchRounds } : {}),
           ...(tier ? { tier } : {}),
+          ...(sddPath ? { sddPath } : {}),
         })
         .then((r) => {
           // N9 判据轴: 两条判据回填到这个 runId 的全部记录。**在这里而不是随 record 一起写** ——
