@@ -224,6 +224,11 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           ...(budgetTokens ? ['--budget-tokens', String(budgetTokens)] : []),
           ...(budgetMinutes ? ['--budget-minutes', String(budgetMinutes)] : []),
           ...(resultOut ? ['--result-out', resultOut] : []),
+          // P0 (2026-08-10): detached × branch 曾是参数矩阵空格 —— schema 收参、这里静默丢弃,
+          // 三个并发 branch run 全落主树。worker 内是同一个 dag_goal handler, 转发即隔离
+          // (prepareRunWorktree 全仓唯一实现; 状态锚随 --cwd 留主仓, 执行锚由 handler 内
+          // buildConfig(worktree.cwd) 转向 —— 双 cwd 分离在既有进程内路径上本就成立)。
+          ...(branchStrategy ? ['--branch-strategy', branchStrategy] : []),
         ];
         let pid: number | undefined;
         try {
@@ -240,6 +245,9 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
             type: 'text' as const,
             text:
               `runId: ${runId}\nstatus: detached${pid ? ` (pid ${pid})` : ''}\n` +
+              // 隔离模式要念出来 —— 调用方以为隔离而实际主树, 比不隔离更坏 (worker 内建树失败
+              // 退 head 的 degradedReason 落回执与日志, 这里先把"申请了什么"说清)。
+              (branchStrategy === 'branch' ? `branchStrategy: branch — worker 将建隔离 worktree (omd/run/${runId}); 建树失败会退回 head 并在日志/回执标注 degraded。\n` : '') +
               `日志: ${logPath}\n` +
               `它不随本会话结束而死。查进度 dag_status runId=${runId} (新会话也查得到; 若刚起跑查无此 run, 等几秒)。`,
           }],

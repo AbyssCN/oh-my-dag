@@ -169,3 +169,32 @@ describe('预算轴的接线 (七态词表抓出的那个空旋钮)', () => {
     expect(cmd[cmd.indexOf('--budget-minutes') + 1]).toBe('5');
   });
 });
+
+describe('detached × branchStrategy (P0 2026-08-10: 参数矩阵缺口)', () => {
+  // 缺陷本身: 进程内路径的 branch 隔离是好的 (goal-branch-strategy.test.ts 钉着), detached 的
+  // spawn 命令却把 --branch-strategy 漏了, worker 里同一个 handler 拿不到参数 → 静默主树直跑。
+  // 2026-08-10 三 SDD 并发实测: 三个 branch run 全落主树, git worktree list 零登记。
+  // 证伪方式 (实跑过): 注释掉 goal.ts spawn cmd 里的 branch-strategy 转发行 → 本组 1、3 当场红。
+  test('detached 把 branchStrategy 透传给 worker 命令行', async () => {
+    const seen: string[][] = [];
+    const { tool } = make((cmd) => { seen.push(cmd); return 7; });
+    await call(tool, { goal: 'g', detached: true, branchStrategy: 'branch' });
+    const cmd = seen[0]!;
+    expect(cmd).toContain('--branch-strategy');
+    expect(cmd[cmd.indexOf('--branch-strategy') + 1]).toBe('branch');
+  });
+
+  test('缺省 head 不带该参数 (worker 端缺省语义 = 今天的行为, 零回归)', async () => {
+    const seen: string[][] = [];
+    const { tool } = make((cmd) => { seen.push(cmd); return 7; });
+    await call(tool, { goal: 'g', detached: true });
+    expect(seen[0]!).not.toContain('--branch-strategy');
+  });
+
+  test('branch 档的即时回话要念出隔离模式 (调用方不该以为隔离而实际主树)', async () => {
+    const { tool } = make(() => 7);
+    const out = await call(tool, { goal: 'g', detached: true, branchStrategy: 'branch' });
+    expect(out.content[0]!.text).toContain('branchStrategy: branch');
+    expect(out.content[0]!.text).toContain('退回 head');
+  });
+});
