@@ -1,6 +1,6 @@
 # Open ecosystem — external MCP servers inside omd
 
-[← README](../README.md) · [architecture](architecture.md) · [MCP tools](mcp-tools.md) · [TUI](tui.md)
+[← README](../../README.md) · [architecture overview](overview.md) · [MCP tools](../guide/mcp-tools.md) · [TUI](../guide/tui.md)
 
 omd is an MCP **server**. This is the other half: omd as an MCP **client**, so any
 ecosystem server you already run under Claude Code or another host becomes callable from

@@ -1,10 +1,12 @@
 # MCP tools — the engine's raw API
 
-[← README](../README.md) · [architecture](architecture.md) · [command reference](../client-skills/README.md)
+[← docs index](../README.md) · [architecture](../architecture/overview.md) ·
+[command reference](../../client-skills/README.md) ·
+[capability map (diagram source of truth)](../diagrams/03-capability-map.md)
 
 Everything omd does is reachable two ways, and they are the same thing from two sides.
 The MCP tools below are the raw API; the slash commands in
-[client-skills](../client-skills/) are thin workflow wrappers that call these and add the
+[client-skills](../../client-skills/) are thin workflow wrappers that call these and add the
 discipline (when to escalate, how to accept, who holds the trigger).
 
 > **Naming (2026-08-04)** — the three layers now say their own promise: `map_*`
@@ -67,7 +69,7 @@ discipline (when to escalate, how to accept, who holds the trigger).
 | `omd_web` | search + fetch, zero LLM. Full text to disk, returns only the index + fetched URLs. For a synthesised answer use `dag_research` |
 | `omd_distill` | distil insight from text you already have (no fetching). `expert` = faithful extraction, `challenger` = high-temp long-tail |
 
-### Claude slash commands (the [client-skills](../client-skills/) pack)
+### Claude slash commands (the [client-skills](../../client-skills/) pack)
 
 Copy into `~/.claude/skills/` (Codex: merge into `AGENTS.md`). Each wraps the MCP
 tool(s) in the right column and adds the workflow discipline.

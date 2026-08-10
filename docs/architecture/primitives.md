@@ -1,6 +1,6 @@
 # Control-flow primitives
 
-[← README](../README.md) · [architecture](architecture.md) · [model layer](model-layer.md)
+[← README](../../README.md) · [architecture overview](overview.md) · [model layer](model-layer.md)
 
 A primitive is a node that says **which shape** the work has — `kind: "primitive"`,
 a `primitive` name, and `params`. The loop / branch / stop / scoring logic belongs to the
@@ -65,7 +65,7 @@ runtime control flow:
   must be followed by a render `command` node and an `omd-shots-verify` command node that
   checks the screenshots really exist, are non-empty, and are not blank canvases. This one
   is not advice — the `evidence` pass enforces it structurally, splicing the chain in when
-  it is missing and **rejecting the plan** when it cannot ([architecture](architecture.md#the-pass-pipeline)).
+  it is missing and **rejecting the plan** when it cannot ([dag engine](dag-engine.md#the-pass-pipeline)).
 
   The floor is deterministic on purpose. It used to be "send a multimodal model to take a
   look", and the full-stack eval read out why that fails: across six runs only one actually

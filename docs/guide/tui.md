@@ -1,6 +1,8 @@
 # TUI — the interactive terminal front end
 
-[← README](../README.md) · [architecture](architecture.md) · [model layer](model-layer.md) · [MCP tools](mcp-tools.md)
+[← README](../../README.md) · [architecture](../architecture/overview.md) · [model layer](../architecture/model-layer.md) · [MCP tools](mcp-tools.md)
+
+> **⚠ in development / 开发中 —— 界面与命令面仍在快速变化。**
 
 `omd tui` is omd's own terminal client: a chat seat that can plan and drive DAG runs,
 plus the panels that make the engine's own configuration (seats, providers, sessions,
@@ -300,7 +302,7 @@ Order is meaningful — it is the enumeration order in the system prompt:
 | command-seat tools (run / solve / status / graph library / map / memory recall) | `createConductorChatTools`, `src/serve/chat-tools.ts` | always |
 | symbol tools | `createCodegraphTools` | only if codegraph is detected |
 | skill tools | `createSkillTools` | only if at least one skill exists |
-| external MCP meta-tools | `createMcpClientTools`, see [open ecosystem](open-ecosystem.md) | only if a server is registered |
+| external MCP meta-tools | `createMcpClientTools`, see [open ecosystem](../architecture/open-ecosystem.md) | only if a server is registered |
 | `ask_user` | `createAskUserTool` | only when a dialog host exists |
 | extension tools | `src/tui/ext/host.ts` | per loaded extension |
 

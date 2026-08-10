@@ -4,7 +4,7 @@
 > Context Protocol)生态 2026 年中盘点:spec 演进、安全事件与攻击面、客户端与服务端采用格局;
 > 每个关键断言带来源 URL,区分一手来源与二手转述」。
 >
-> 两套系统跑的是同一道题(方法与读数见 [docs/deep-research.md](../deep-research.md) 的 A/B 对比)。
+> 两套系统跑的是同一道题(方法与读数见 [docs/guide/deep-research.md](../guide/deep-research.md) 的 A/B 对比)。
 > 下面这份是 **System B**(Claude dynamic workflow)在对抗核查后合成的断言集:106 个 agent 抓取 →
 > 断言抽取 → 每条 3 票对抗核查(2/3 反驳才杀)。收录的都是 **3-0 全票存活**的断言,按一手 / 二手
 > 标注。System A(omd `--deep`)对同题产出了 132k 字终稿 + 全文语料附录,覆盖了下列断言的 13/15。

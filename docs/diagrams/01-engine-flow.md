@@ -3,7 +3,7 @@
 - **Version**: v1.1.0
 - **Status**: Active
 - **Last updated**: 2026-08-10
-- **Related**: [architecture](../architecture.md) · [model-layer](../model-layer.md) · [primitives](../primitives.md)
+- **Related**: [architecture](../architecture/overview.md) · [model-layer](../architecture/model-layer.md) · [primitives](../architecture/primitives.md)
 
 > 本图是**真理源**。改引擎 = 改这里的 Mermaid,`git diff` 即变更史。README 里嵌的是同一段代码块,
 > 不是导出的图片 —— 栅格图改不动局部、diff 无意义、也没有地方写"为什么这么改"。

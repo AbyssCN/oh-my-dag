@@ -1,16 +1,17 @@
 # Model layer — how a model lands on a node
 
-[← README](../README.md) · [architecture](architecture.md) · [primitives](primitives.md) ·
-[model-config](model-config.md) · [diagram 04](diagrams/04-model-layer.md)
+[← README](../../README.md) · [architecture overview](overview.md) · [primitives](primitives.md) ·
+[model-config](../guide/model-config.md) · [diagram 04](../diagrams/04-model-layer.md)
 
 Two things are deliberately separate:
 
 - a **template card** says *how* the work is done (method, checklist, output discipline);
 - a **seat / pool** says *who* does it (which model coordinate).
 
-They compose freely — the same card can run on any model, and one model can execute many
-cards. This is the main structural difference from a subagent, where "who" and "how" are
-welded into one definition.
+They compose freely, and that is the point: the same card runs on any model, and one model
+executes many cards. Keeping the two axes apart means a method can be improved without
+re-deciding who runs it, and a model can be swapped without rewriting the method — the
+combination is chosen per node at plan time rather than fixed once in a definition.
 
 ## Resolution order
 
@@ -61,12 +62,23 @@ sites can share the `judge` seat because they want the same tier of model; conve
 *"is it done"* and judging *"which is better"* want different things, so they are two seats
 (`gate` / `judge`).
 
-| Class | Seats | Job |
-|---|---|---|
-| `decomposer` | `conductor` · `escalation` | plan the graph; re-plan on failure |
-| `judge_synth` | `gate` · `judge` · `reason` · `reduce` | the convergence gate, then pick winners / synthesize / fold |
-| `worker` | `leaf` · `agent` · `lens` · `expand` · `distill` · `overflow` · `continuity` | the mass fan-out, plus session hand-off distillation |
-| `verify` | `verifier` · `review-spec` · `review` | adversarial falsification; spec-vs-diff; the review find axis |
+Work routes to 16 named seats in four functional classes. Pin any of them once in
+`.omd/config.json` `models` and every resolver reads that one value. Rule of thumb:
+**strong where being wrong is expensive and rare; cheap where volume is high and an oracle
+catches mistakes.**
+
+| Class | Seats | Job | Reach for |
+|---|---|---|---|
+| `decomposer` | `conductor` · `escalation` | plan the graph; re-plan on failure | **strong** (SOTA brain) |
+| `judge_synth` | `gate` · `judge` · `reason` · `reduce` | the convergence gate, then pick winners / synthesize / fold | **strong** to judge; cheaper to fold |
+| `worker` | `leaf` · `agent` · `lens` · `expand` · `distill` · `overflow` · `continuity` | the mass fan-out, plus session hand-off distillation | **cheap–mid** (family ≠ quality here) |
+| `verify` | `verifier` · `review-spec` · `review` | adversarial falsification; spec-vs-diff; the review find axis | **mid, different family** from the author |
+
+Auto-assign fills these by **channel economics**, not by scattering families — diversity is
+spent only where it changes the answer (verify is off the author's family on purpose;
+research `lens` seats want several). The full per-seat table, the weak/strong rationale, and
+how to register OAuth/subscription models (Claude · GPT · Kimi) are in the
+[model configuration guide](../guide/model-config.md).
 
 Two splits worth keeping in mind:
 
@@ -107,9 +119,9 @@ Two properties of that chain that were bought with incidents:
 is `ALL_SEAT_IDS` — derived from the registry, never hand-copied — so the write entry points
 (`omd_set_role`, the TUI, hand-editing `.omd/config.json`) all accept any of the 16. The TUI is
 the interactive surface for all of it (`/seat`, `/models`, `/login`, `/settings`); its layout and
-the provider directory behind `/login` are documented in [tui](tui.md). Config file layout and
+the provider directory behind `/login` are documented in [tui](../guide/tui.md). Config file layout and
 the provider-side half (`~/.pi/agent/models.json`, `auth.json`) are in
-[model-config](model-config.md).
+[model-config](../guide/model-config.md).
 
 ## Channels — an API key is not the only way to reach a model
 
@@ -201,6 +213,10 @@ coordinate — the answer differs between siblings in the same family, and it ch
 ship.
 
 ## Stamp rules, in priority order
+
+The whole path — `node.model` → card-pinned model → pool pick → the three rules below → the
+effort clamp — is drawn in [diagram 04](../diagrams/04-model-layer.md), which is the source
+of truth for that figure.
 
 1. **Chain affinity** — exactly one real dep, this node is its only consumer, the upstream
    model is in this node's pool, same `cluster` → **inherit the upstream model**. Switching

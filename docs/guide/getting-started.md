@@ -42,7 +42,7 @@ OpenAI-compatible gateway, mix freely.
 omd init          # keys, model presets, reachability probe → writes .env
 ```
 
-**Manual** — copy [.env.example](../.env.example), minimum set:
+**Manual** — copy [.env.example](../../.env.example), minimum set:
 
 ```bash
 OMD_RUNTIME_PROVIDER=deepseek          # runtime coordinate (conductor defaults to it, D-8)
@@ -83,7 +83,7 @@ cp -r client-skills/omd-* ~/.claude/skills/
 ```
 
 Codex has no skills mechanism — merge the SKILL.md bodies you need into the target
-repo's `AGENTS.md`. See [client-skills/README.md](../client-skills/README.md) for
+repo's `AGENTS.md`. See [client-skills/README.md](../../client-skills/README.md) for
 the full command-migration table and workflows.
 
 ## 4 · What you get (19 tools, three groups)

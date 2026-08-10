@@ -37,4 +37,4 @@ memory_recall(query="<自然语言或关键词>", k=5)
 ## 与既有 skill 的边界
 
 - `/omd-recall` = 卡住时**主动召回既有记忆(读)**。
-- 不用于:巩固近期事件成持久记忆(**写**)→ `/omd-dream`;把新决策/引用记进台账 → `/omd-note`;文件内字面搜索 → 用 runtime 原生 Grep;第三方库文档 → `context7` MCP;git 提交历史 → `git log`。
+- 不用于:巩固近期事件成持久记忆(**写**)→ `bun run scripts/omd-dream.ts`(dream 管线,无 slash 入口);把新决策/引用记进台账 → `/omd-note`;文件内字面搜索 → 用 runtime 原生 Grep;第三方库文档 → `context7` MCP;git 提交历史 → `git log`。

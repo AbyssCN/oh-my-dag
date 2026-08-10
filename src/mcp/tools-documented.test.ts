@@ -1,5 +1,5 @@
 /**
- * **源码级闸: 注册了的 MCP 工具必须在 `docs/mcp-tools.md` 里出现** (2026-08-01)。
+ * **源码级闸: 注册了的 MCP 工具必须在 `docs/guide/mcp-tools.md` 里出现** (2026-08-01)。
  *
  * ## 起因
  * 改 `dag_rule` / `dag_triage` 时顺手一查, 发现对外工具表里**整个 owner 收件箱都没有** ——
@@ -21,7 +21,7 @@
  * 只有读者在正门看到一个错数字, 六个工具凭空消失。
  *
  * 徽章是**读者见到的第一个数**, 却是全仓最没人维护的那个: 加工具时要改 `assemble.ts` +
- * `docs/mcp-tools.md` + 两份 README × 每份两处(alt 文字 + URL)。**人记不住五处, 让测试记。**
+ * `docs/guide/mcp-tools.md` + 两份 README × 每份两处(alt 文字 + URL)。**人记不住五处, 让测试记。**
  */
 import { describe, expect, test } from 'bun:test';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -55,7 +55,7 @@ function tsFiles(dir: string, acc: string[] = []): string[] {
 }
 
 describe('MCP 工具表完整性', () => {
-  test('每个注册的工具名都在 docs/mcp-tools.md 里出现', () => {
+  test('每个注册的工具名都在 docs/guide/mcp-tools.md 里出现', () => {
     const names = new Set<string>();
     for (const f of tsFiles(join(ROOT, 'src', 'mcp'))) {
       for (const m of readFileSync(f, 'utf8').matchAll(/name:\s*'((?:dag|omd|path|map|memory|dream|conductor)_[a-z_]+)'/g)) {
@@ -65,12 +65,12 @@ describe('MCP 工具表完整性', () => {
     expect(names.size).toBeGreaterThan(30); // 抓不到名字说明正则漂了, 而不是"工具变少了"
     const registered = registeredNames(names);
 
-    const doc = readFileSync(join(ROOT, 'docs', 'mcp-tools.md'), 'utf8');
+    const doc = readFileSync(join(ROOT, 'docs', 'guide', 'mcp-tools.md'), 'utf8');
     const missing = [...registered].filter((n) => !doc.includes(`\`${n}\``)).sort();
     expect(
       missing.length === 0
         ? ''
-        : `以下工具已注册但不在 docs/mcp-tools.md 里 —— 调用方无从知道它存在:\n  ${missing.join('\n  ')}`,
+        : `以下工具已注册但不在 docs/guide/mcp-tools.md 里 —— 调用方无从知道它存在:\n  ${missing.join('\n  ')}`,
     ).toBe('');
   });
 

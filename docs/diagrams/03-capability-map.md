@@ -3,9 +3,9 @@
 - **Version**: v1.1.0
 - **Status**: Active
 - **Last updated**: 2026-08-10
-- **Related**: [mcp-tools](../mcp-tools.md) · [architecture](../architecture.md)
+- **Related**: [mcp-tools](../guide/mcp-tools.md) · [architecture](../architecture/overview.md)
 
-> 真理源。工具清单本身在 [mcp-tools.md](../mcp-tools.md);这张图只回答两个问题:
+> 真理源。工具清单本身在 [mcp-tools.md](../guide/mcp-tools.md);这张图只回答两个问题:
 > **有哪几类能力** 和 **哪些是零模型的**。
 >
 > **⚠ 两份 README 嵌的副本落后于本块**(2026-08-10):README 版停在 8/09,缺

@@ -3,9 +3,9 @@
 - **Version**: v1.1.0
 - **Status**: Active
 - **Last updated**: 2026-08-10
-- **Related**: [model-layer](../model-layer.md) · [model-config](../model-config.md) · [tui](../tui.md) · [01 engine flow](01-engine-flow.md)
+- **Related**: [model-layer](../architecture/model-layer.md) · [model-config](../guide/model-config.md) · [tui](../guide/tui.md) · [01 engine flow](01-engine-flow.md)
 
-> 真理源。文字版细节在 [model-layer.md](../model-layer.md);这两张图只回答"**谁决定了这个节点用哪个模型**"
+> 真理源。文字版细节在 [model-layer.md](../architecture/model-layer.md);这两张图只回答"**谁决定了这个节点用哪个模型**"
 > 与"**那个坐标是从哪张表来的、经哪条通道发出去的**"。
 
 ## Diagram — 节点选模型
@@ -49,7 +49,7 @@ flowchart TB
   class N,USE,EFF plain
 ```
 
-两件事分得很开,这是刻意的:**卡(card)说"怎么做"** —— 方法论、检查单、输出纪律;**座位与池说"谁来做"** —— 模型坐标。同一张卡能跑在任何模型上,同一个模型能执行任何卡。这是它与 subagent 最大的结构差别:subagent 把这两件事焊死在一个定义里。
+两件事分得很开,这是刻意的:**卡(card)说"怎么做"** —— 方法论、检查单、输出纪律;**座位与池说"谁来做"** —— 模型坐标。同一张卡能跑在任何模型上,同一个模型能执行任何卡 —— "怎么做"与"谁来做"各自独立演进,组合自由。
 
 ## Diagram — 座位真源 · 通道 · 探测面
 
@@ -97,7 +97,7 @@ flowchart TB
   class CH,CHAIN,COORD,P1,P2 plain
 ```
 
-**座位 = 模型选择轴, 不是角色轴。** 它回答「这一类活派给哪个模型 / 用多大 effort / 多发散」,不回答「这个角色是谁」。所以四个不同的判别类调用可以共用一个 `judge` 座;而判「达成没有」的闸(`gate`)与判「哪个更好」的择优(`judge`)要的东西不同、频率也差一个量级,于是它们是两个座。TUI 侧的入口(`/seat` · `/models` · `/login` · `/settings`)细节见 [tui.md](../tui.md);配置文件与 provider 那一半见 [model-config.md](../model-config.md)。
+**座位 = 模型选择轴, 不是角色轴。** 它回答「这一类活派给哪个模型 / 用多大 effort / 多发散」,不回答「这个角色是谁」。所以四个不同的判别类调用可以共用一个 `judge` 座;而判「达成没有」的闸(`gate`)与判「哪个更好」的择优(`judge`)要的东西不同、频率也差一个量级,于是它们是两个座。TUI 侧的入口(`/seat` · `/models` · `/login` · `/settings`)细节见 [tui.md](../guide/tui.md);配置文件与 provider 那一半见 [model-config.md](../guide/model-config.md)。
 
 ## Rationale
 

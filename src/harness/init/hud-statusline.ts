@@ -23,7 +23,7 @@ export function hudStatusLineCommand(repoRoot: string): string {
   return `bun run ${join(repoRoot, 'scripts', 'omd-hud.ts')}`;
 }
 
-/** 完整 statusLine 块 (refreshInterval=2 → 空闲时也每 2s 刷活体进度; 见 docs/omd-hud.md)。 */
+/** 完整 statusLine 块 (refreshInterval=2 → 空闲时也每 2s 刷活体进度; 见 docs/architecture/omd-hud.md)。 */
 export function hudStatusLineBlock(repoRoot: string): StatusLineBlock {
   return { type: 'command', command: hudStatusLineCommand(repoRoot), refreshInterval: 2, padding: 0 };
 }

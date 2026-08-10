@@ -27,7 +27,7 @@ scripts/omd-hud.ts (statusLine)  每 refreshInterval 秒 fork:
 
 - **RunRegistry 保持纯内存**(单测零磁盘);HudMirror 是旁挂的磁盘镜像,statusLine 独立进程只读磁盘。
 - **观察者不扰动被观察者**:HudMirror 全部 fail-open + 原子写(tmp+rename),写失败只 WARN,永不影响 DAG 执行。
-- **落盘位置**与 continuity 同级:`OMD_DATA_HOME` 设 → `~/.omd/projects/<slug>/hud/`;未设(MCP server 经 `.mcp.json` 挂载的常态)→ `<repoRoot>/.omd/hud/`。statusLine 两处都探,取 mtime 最新。
+- **写盘位置**与 continuity 同级:`OMD_DATA_HOME` 设 → `~/.omd/projects/<slug>/hud/`;未设(MCP server 经 `.mcp.json` 挂载的常态)→ `<repoRoot>/.omd/hud/`。statusLine 两处都探,取 mtime 最新。
 
 ## 新鲜度闸(反 happy-path)
 

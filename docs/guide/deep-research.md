@@ -3,7 +3,7 @@
 Fan out a research question across cheap concurrent models, keep every source on disk with zero
 loss, synthesize through multiple lenses, and let a judge panel pick the winner — one command.
 This page is the concrete side: the pipeline, which model runs which seat, how to run it, and the
-head-to-head benchmark behind the [README's featured numbers](../README.md#deep-research-benchmarked).
+head-to-head benchmark behind the [README's featured numbers](../../README.md#deep-research-benchmarked).
 
 The marketing-free claim: a $2.19 run on a cheap-model stack reproduced **13 of 15** independently
 verified facts that an all-frontier, 106-agent workflow produced — because the retrieval floor is
@@ -105,7 +105,7 @@ Two things carry the reliability:
 | judge / fusion | `gpt-5.6-sol` | 9 | judge panel, fusion |
 
 Swap any of them: `--lens-model`, `--reason-model`, `--conductor-model`, or per-seat config. The
-[model layer](model-layer.md) explains seats, pools, and how a node gets stamped.
+[model layer](../architecture/model-layer.md) explains seats, pools, and how a node gets stamped.
 
 ---
 
@@ -146,7 +146,7 @@ URL, first-hand sources separated from second-hand.
    across sessions; the workflow's cheap checkpoint replay is same-session only.
 
 **Sample output**: the reconstructed System-B claim set is in
-[`docs/examples/deep-research-mcp-2026.md`](examples/deep-research-mcp-2026.md). Full A/B methodology
+[`docs/examples/deep-research-mcp-2026.md`](../examples/deep-research-mcp-2026.md). Full A/B methodology
 and raw readings live in an internal findings document (not in the public tree).
 
 > The one line to take away: **reliability comes from outside the model.** In deep research that

@@ -3,7 +3,7 @@
 - **Version**: v1.1.0
 - **Status**: Active
 - **Last updated**: 2026-08-10
-- **Related**: [architecture](../architecture.md) · [01 engine flow](01-engine-flow.md) · [model-layer](../model-layer.md)
+- **Related**: [architecture](../architecture/overview.md) · [01 engine flow](01-engine-flow.md) · [model-layer](../architecture/model-layer.md)
 
 > 真理源。README(中英两份)嵌的是同一段代码块 —— 2026-08-10 逐字比对过,三份一致。
 
