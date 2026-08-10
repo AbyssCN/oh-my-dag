@@ -1,17 +1,17 @@
 # 02 — 两条主线:组合模式与图模式
 
-- **Version**: v1.0.0
+- **Version**: v1.1.0
 - **Status**: Active
-- **Last updated**: 2026-07-26
+- **Last updated**: 2026-08-10
 - **Related**: [architecture](../architecture.md) · [01 engine flow](01-engine-flow.md) · [model-layer](../model-layer.md)
 
-> 真理源。README(中英两份)嵌的是同一段代码块。
+> 真理源。README(中英两份)嵌的是同一段代码块 —— 2026-08-10 逐字比对过,三份一致。
 
 ## Diagram
 
 ```mermaid
 flowchart TB
-  AGENT["Your agent<br/>Claude Code · Codex · any MCP client · omd's own TUI"]
+  AGENT["Your agent<br/>Claude Code · Codex · any MCP client"]
 
   subgraph OMD["omd — one engine, two ways in"]
     direction TB
@@ -19,14 +19,15 @@ flowchart TB
     subgraph T1["Track 1 · COMPOSE — call one capability at a time"]
       C1["omd_primitive<br/>judge · verify · parallel · tournament · 12 shapes"]
       C2["omd_web / omd_distill<br/>fetch pages · distil insight"]
-      C3["memory_recall / path_map<br/>facts that outlive the window"]
+      C3["memory_recall / map_open<br/>facts that outlive the window"]
       C4["omd_shapes<br/>proven decompositions, and when NOT to use them"]
     end
 
     subgraph T2["Track 2 · GRAPH — hand off a whole fan-out"]
-      G1["dag_run<br/>a conductor decomposes for you"]
+      G1["run<br/>a conductor decomposes for you"]
       G2["dag_run_plan<br/>you wrote the graph, just run it"]
-      G3["dag_review / dag_debug / dag_slim / dag_deepen<br/>pre-shaped fleets"]
+      G3["solve<br/>state a goal — plan → execute → judge,<br/>looped to convergence, survives your session"]
+      G4["dag_review / dag_debug / dag_slim / dag_deepen<br/>pre-shaped fleets"]
     end
 
     BASE["Shared substrate<br/>typed plan · deterministic passes · oracle gates · cross-family verifier<br/>checkpoints · model pools · cost accounting"]
@@ -44,7 +45,7 @@ flowchart TB
   classDef base fill:#E1F5EE,stroke:#0F6E56,color:#04342C
   classDef ext fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
   class C1,C2,C3,C4 compose
-  class G1,G2,G3 dagmode
+  class G1,G2,G3,G4 dagmode
   class BASE base
   class AGENT,MODELS ext
 ```
@@ -63,3 +64,4 @@ flowchart TB
 | Version | Date | Change | Reason |
 |---|---|---|---|
 | v1.0.0 | 2026-07-26 | 首版 | 定位从"图是唯一入口"改为双主线 |
+| v1.1.0 | 2026-08-10 | 按 README(8/09 版, commit beb2a1b)重新同步: 入口方去掉 "omd's own TUI" · `dag_run`→`run` · `path_map`→`map_open` · 图模式补第三格 `solve` | 本块自称真理源, 而真理源反倒是三份里最旧的一份 —— 期间自带 TUI 已移除、装配层三层改名 (`src/mcp/tool-renames.ts`)、goal 引擎作为独立入口上线, 三件都只落进 README 没回流到这里 |

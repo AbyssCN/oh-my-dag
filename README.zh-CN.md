@@ -85,7 +85,7 @@ omd init                     # 向导:密钥、模型预设、可达性探测 �
 cd <你的项目> && claude mcp add omd -- omd mcp
 ```
 
-斜杠命令包(`/omd-path`、`/omd-review` 等 19 个 skill)在 server 首次启动时自动装进
+斜杠命令包(`/omd-path`、`/omd-review` 等 20 个 skill)在 server 首次启动时自动装进
 `~/.claude/skills/` —— 幂等,且**绝不覆盖你改过的 skill**。`OMD_INSTALL_SKILLS=0` 可关。
 
 **→ [完整走查](docs/MCP-ONBOARDING.md)** · [命令参考](client-skills/README.md)
@@ -96,8 +96,9 @@ cd <你的项目> && claude mcp add omd -- omd mcp
 跑 `bun run init` 进交互向导,或自己在 `.env` 里配 `OMD_RUNTIME_PROVIDER` +
 `OMD_RUNTIME_MODEL` + 后端密钥(抄 [.env.example](.env.example))。
 
-**没有终端 UI 了。** omd 曾自带一个交互 agent,2026-08-01 撤除 —— 引擎只留一个正门。
-你的 MCP 客户端**就是**前端:对话在那边,omd 只管执行。
+**终端 UI 回来了。** 自带 UI 2026-08-01 撤除,2026-08-07 以自建 TUI 回归 —— `omd tui`
+打开对话座位,带座位/模型选择器和 run/session 视图([docs/tui.md](docs/tui.md))。
+你的 MCP 客户端仍是完整前端:两条路驱动的是同一台引擎。
 
 </details>
 
@@ -106,8 +107,9 @@ cd <你的项目> && claude mcp add omd -- omd mcp
 ```mermaid
 flowchart LR
   subgraph EXEC["EXECUTE — get the work done"]
-    E1["run · dag_run_plan · dag_resume<br/>solve · dag_cancel · dag_triage · dag_rule<br/>dag_status · dag_result · dag_runs"]
+    E1["run · dag_run_plan · dag_resume · dag_cancel<br/>solve · dag_triage · dag_rule<br/>dag_status · dag_result · dag_runs · dag_node_output"]
     E2["omd_primitive<br/>12 control-flow shapes"]
+    E3["conductor_chat<br/>persistent session: the conductor answers, or dispatches graphs"]
   end
 
   subgraph RESEARCH["RESEARCH — get to the bottom of it"]
@@ -119,12 +121,13 @@ flowchart LR
   subgraph AUDIT["AUDIT — find what is wrong"]
     A1["dag_review<br/>many dimensions, cross-family falsification"]
     A2["dag_debug · dag_slim · dag_deepen"]
-    A3["omd-shots-verify<br/>zero model: shots exist and are not blank"]
+    A3["omd-shots-verify — repo script, not an MCP tool<br/>zero model: shots exist and are not blank"]
   end
 
   subgraph MEMORY["MEMORY &amp; PLANNING — outlive the context window"]
-    M1["memory_recall · memory_remember"]
-    M2["map_open · map_add · map_rule<br/>map_deliver · map_prefetch"]
+    M1["memory_recall · memory_remember<br/>zero model: BM25 leg + deterministic hashed vector leg"]
+    M2["map_init · map_open · map_add<br/>map_confirm · map_rule"]
+    M3["map_tickets · map_prefetch · map_deliver<br/>fold in landed results · dispatch AFK · run the slice"]
   end
 
   subgraph KNOW["KNOWLEDGE — stop reinventing the shape"]
@@ -132,12 +135,17 @@ flowchart LR
     K2["template cards<br/>expert checklist injected into a node"]
   end
 
+  subgraph CONF["CONFIG — point the engine at your models"]
+    F1["omd_set_key · omd_set_model · omd_set_role<br/>omd_apply_preset · omd_register_provider · omd_models_auto"]
+    F2["omd_config_status · omd_toggle_hud · omd_plans"]
+  end
+
   classDef llm fill:#EEEDFE,stroke:#534AB7,color:#26215C
   classDef zero fill:#E1F5EE,stroke:#0F6E56,color:#04342C
   classDef mixed fill:#FAECE7,stroke:#993C1D,color:#4A1B0C
-  class E1,E2,R3,A1,A2 mixed
-  class R1,A3,K1,K2 zero
-  class R2,M1,M2 llm
+  class E1,E2,R3,A1,A2,M3 mixed
+  class R1,A3,K1,K2,M1,M2,F1,F2 zero
+  class R2,E3 llm
 ```
 
 **执行** —— `run`(conductor 替你分解)· `dag_run_plan`(图你自己写好了)· `dag_resume`
@@ -145,18 +153,20 @@ flowchart LR
 四条停止轴:轮数上限、空转判据、judge ∧ accept、token/分钟预算;`detached: true` 交给一个
 比你会话活得久的 worker 进程)· `dag_cancel`(协作式叫停,可续跑)· `dag_triage` / `dag_rule`
 (owner 收件箱:跑着的图把领域岔口连同它正按什么假设继续跑一起摆出来,你的裁决逐字进下一轮)·
-`omd_primitive`(单跑一个控制流形状,不必先有图)· `dag_status` /
+`omd_primitive`(单跑一个控制流形状,不必先有图)· `conductor_chat`(常驻 conductor 会话:
+问它问题,或让它在对话中途派图)· `dag_status` /
 `dag_result` / `dag_node_output` / `dag_runs`。
 
-**研究** —— `omd_web`(搜 + 抓,**零 LLM**;全文落盘,只回索引)· `omd_distill`(对你已有的
+**研究** —— `omd_web`(搜 + 抓,**零 LLM**;全文写进磁盘,只回索引)· `omd_distill`(对你已有的
 文本跑两个镜头:一个忠实,一个对抗)· `dag_research`(抓 + 多镜头综合 + 裁判团)。
 
 **审查** —— `dag_review`(多维度 diff 审查,每个维度可路由到不同模型家族)· `dag_debug` ·
 `dag_slim`(只删不加的过度工程审计)· `dag_deepen`(架构热点)。
 
 **记忆与规划** —— `memory_recall` / `memory_remember` ·
-`map_open` / `map_add` / `map_rule` / `map_deliver` / `map_prefetch`(一张进 git 的决策地图,
-用带类型的票推进,后台调研在你关掉客户端之后继续跑)。
+`map_init` / `map_open` / `map_add` / `map_confirm` / `map_rule` / `map_tickets` /
+`map_deliver` / `map_prefetch`(一张进 git 的决策地图,用带类型的票推进 ——
+机器建议的票必须先过 `map_confirm` 才能被裁决 —— 后台调研在你关掉客户端之后继续跑)。
 
 **知识** —— `omd_shapes`(经验证的图式,每条都带触发条件**和"什么时候别用"**)·
 模板卡(执行期把专家检查单注入节点)。
@@ -186,12 +196,12 @@ bun run scripts/dag-research.ts "<你的问题>" --deep
 > **便宜栈用 $2.19 再现了强模型 workflow 核实过的 15 条事实里的 13 条。**
 
 不是因为小模型偷偷有强模型的水平,而是因为 deep research 有一层**确定性的检索地板**:`omd_web` 抓取全程
-不带模型,原文全量落盘,缺口靠**再抓那个缺的来源**补上,而不是让模型凭记忆填。模型只管综合,检索交给引擎。
+不带模型,原文全量写进磁盘,缺口靠**再抓那个缺的来源**补上,而不是让模型凭记忆填。模型只管综合,检索交给引擎。
 这就是整个仓库那句话在一道题上的实测 —— *可靠性来自模型之外*。
 
 ```mermaid
 flowchart LR
-  Q(["问题"]) --> G["gather 采集<br/>零模型搜+抓<br/>原文全量落盘"]
+  Q(["问题"]) --> G["gather 采集<br/>零模型搜+抓<br/>原文全量写进磁盘"]
   G --> S["synthesize 综合<br/>镜头扇出,评判团判优"]
   S --> D["deepen 加深 ×3<br/>找缺口 → 再抓 → 只挖缺口"]
   D -->|无新增即停| R(["带引用终稿<br/>+ 零丢失附录"])
@@ -279,11 +289,28 @@ flowchart TB
 
 | 种类 | 有模型? | 有工具? | 用于 |
 |---|---|---|---|
-| `leaf` | 单发一次 | 无 | 生成、研究、判断、起草 |
-| `agent` | 有 | read/edit/write/bash,关在 bwrap jail 里 | **唯一能写文件的种类** |
+| `leaf`(代码里叫 `inproc`) | 单发一次 | 无 | 生成、判断、起草 |
+| `agent` | 有 | read/edit/write/bash —— **只有** `branchStrategy: 'branch'` 才有 bwrap jail(见下表) | **唯一能写文件的种类** |
 | `command` | **无** | 白名单内的 CLI | 闸(`tsc`/测试)、扫描器、索引查询 |
 | `map` | 混合 | — | 运行时扇出:lister 跑出工作清单,每个元素一个子节点 |
-| `primitive` | 混合 | — | 12 种由引擎持有的控制流形状 |
+| `primitive` | 混合 | — | 引擎持有的控制流形状(12 个可组合 + gated 的 `escape-hatch`) |
+| `research` | 有 | 真 web 检索 | 有据可查的研究 —— 没有 web runner 时**响亮失败**,不许退回模型记忆编引用 |
+| `conductor` | 有 | — | 运行时展开子图;goal 环的重画轮次住在这里 |
+
+**一个 run 的写入落在哪、由什么围住** —— `solve` 接受 `branchStrategy`:
+
+| | `head`(默认) | `branch` |
+|---|---|---|
+| 写入去向 | 你当前的工作树 | `omd/run/<runId>` 上的隔离 git worktree;引擎绝不替你合并 —— 合并是你的事 |
+| agent leaf **写**面 | 锚定在 run 的 cwd,但**绝对路径仍然出得去**(实测,不是推测) | bwrap jail —— leaf 进程只看得见那个 worktree,外面根本没有可寻址的东西 |
+| agent leaf **读**面 | **你的整个文件系统** —— 没有 jail | `HOME=/tmp`,`/home` 不挂载 → jail 里不存在 `~/.ssh` |
+| command leaf | 白名单 + 危险模式表(两种模式都有) | 同左 |
+
+**这是一条刻意的裁决,不是疏忽**(2026-07-31):`head` 是"我在场、我盯着"的模式,能读 repo
+之外正是它存在的理由。如果某个节点被劫持 —— 比如被抓回网页里的注入文本 —— 执行面由 command
+白名单把守(已实测拒截两次),但 `head` 的**读**面是刻意敞开的。无人值守、要抓公网、或任何
+你不愿它读到 `~/.ssh` 的活,请用 `branchStrategy: 'branch'`。机器上没有 bwrap 时,引擎会
+响亮地说出来,并降级为仅路径级隔离。
 
 **Plan pass** —— 计划与执行之间的纯函数:`prune`(剪死节点)→ `dedup`(语义指纹归并)→
 `evidence`(UI 像素证据链闸)→ `stamp`(给每个节点钉模型)。
@@ -291,6 +318,7 @@ flowchart TB
 **控制流原语** —— 你只挑形状和参数;循环 / 分支 / 停止 / 打分的逻辑归运行时,永远不归模型:
 `parallel` · `pipeline` · `loop-until` · `verify` · `judge` · `discovery` · `iterate` ·
 `tournament` · `router` · `race` · `escalation` · `saga`。
+另有 gated 的第 13 个 `escape-hatch`,除非 `OMD_ESCAPE_HATCH=1` 否则关闭。
 
 **→ [架构详解](docs/architecture.md)** · [原语](docs/primitives.md) ·
 [图的真理源](docs/diagrams/01-engine-flow.md)
@@ -340,6 +368,23 @@ flowchart TB
 "谁来做"** —— 模型坐标。二者自由组合:同一张卡能跑在任何模型上,同一个模型能执行任何卡。
 这是它与 subagent 最大的结构差别 —— subagent 把这两件事焊死在一个定义里。
 
+### 座位一览
+
+omd 把活路由到 16 个具名座位,分四个职能类。任何座位在 `.omd/config.json` `models` 里钉一次,
+所有 resolver 读的都是那一个值。经验法则:**错了代价大而次数少的地方用强模型;量大且有 oracle
+兜错的地方用便宜模型。**
+
+| 类 | 座位 | 做什么 | 选型 |
+|---|---|---|---|
+| decomposer | `conductor` · `escalation` | 画/修计划图 | **强**(SOTA 大脑) |
+| judge_synth | `judge` · `gate` · `reason` · `reduce` | 挑赢家、关 goal 环、折叠结果 | 判卷用**强**;折叠可便宜 |
+| worker | `leaf` · `agent` · `lens` · `expand` · `distill` · `overflow` · `continuity` | 闸后面的批量执行 | **便宜–中档**(这里家族 ≠ 质量) |
+| verify | `verifier` · `review-spec` · `review` | 对抗性交叉核验 | **中档,与作者不同家族** |
+
+auto-assign 按**渠道经济学**填这些座位,不是为了撒家族而撒 —— 多样性只花在会改变答案的地方
+(verify 刻意避开作者家族;研究 `lens` 座位要好几个)。逐座位全表、强弱选型的依据、以及
+OAuth/订阅模型(Claude · GPT · Kimi)怎么注册 → **[模型配置指南](docs/model-config.md)**。
+
 **→ [模型层详解](docs/model-layer.md)** · [图的真理源](docs/diagrams/04-model-layer.md)
 
 ## 为什么它立得住
@@ -372,10 +417,12 @@ flowchart TB
 | | |
 |---|---|
 | [架构](docs/architecture.md) | pass 管线、调度、故障边界、checkpoint 与续跑 |
-| [原语](docs/primitives.md) | 12 个控制流形状,以及什么时候该用普通节点 |
+| [原语](docs/primitives.md) | 13 个控制流形状,以及什么时候该用普通节点 |
 | [模型层](docs/model-layer.md) | 座位、池、stamp 规则、推理档、多视角审查 |
-| [MCP 工具](docs/mcp-tools.md) | 全部 38 个,分组 |
-| [记忆](docs/memory.md) | 事实库、混合召回 |
+| [MCP 工具](docs/mcp-tools.md) | 全部 40 个独立工具(+9 个旧名别名),分组 |
+| [记忆](docs/memory.md) | 事实库、混合召回、决策地图 |
+| [终端 UI](docs/tui.md) | omd 自带 TUI:对话座位、座位/模型选择器、runs 与 sessions |
+| [开放生态](docs/open-ecosystem.md) | 外部 MCP server 与 skills 进 agent leaf、policy 闸 |
 | [图](docs/diagrams/) | 上面每张图的 Mermaid 真理源 |
 
 ## 许可

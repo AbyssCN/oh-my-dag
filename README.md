@@ -89,7 +89,7 @@ omd init                     # wizard: keys, model presets, reachability probe �
 cd <your-project> && claude mcp add omd -- omd mcp
 ```
 
-The slash-command pack (`/omd-path`, `/omd-review`, … 19 skills) installs itself into
+The slash-command pack (`/omd-path`, `/omd-review`, … 20 skills) installs itself into
 `~/.claude/skills/` on first server start — idempotent, and it never overwrites a skill you
 edited. Opt out with `OMD_INSTALL_SKILLS=0`.
 
@@ -102,9 +102,10 @@ Run `bun run init` for an interactive wizard, or set `OMD_RUNTIME_PROVIDER` +
 `OMD_RUNTIME_MODEL` + your backend key in `.env` by hand (copy
 [.env.example](.env.example)).
 
-**There is no terminal UI.** omd used to ship a bundled interactive agent; it was
-removed on 2026-08-01 so the engine has exactly one front door. Your MCP client
-*is* the front end — the conversation lives there, omd just executes.
+**The terminal UI is back.** The bundled UI was removed on 2026-08-01 and returned on
+2026-08-07 as omd's own TUI — `omd tui` opens a chat seat with seat/model pickers and
+run/session views ([docs/tui.md](docs/tui.md)). Your MCP client remains a full front
+end — either way the conversation drives the same engine.
 
 </details>
 
@@ -113,8 +114,9 @@ removed on 2026-08-01 so the engine has exactly one front door. Your MCP client
 ```mermaid
 flowchart LR
   subgraph EXEC["EXECUTE — get the work done"]
-    E1["run · dag_run_plan · dag_resume<br/>solve · dag_cancel · dag_triage · dag_rule<br/>dag_status · dag_result · dag_runs"]
+    E1["run · dag_run_plan · dag_resume · dag_cancel<br/>solve · dag_triage · dag_rule<br/>dag_status · dag_result · dag_runs · dag_node_output"]
     E2["omd_primitive<br/>12 control-flow shapes"]
+    E3["conductor_chat<br/>persistent session: the conductor answers, or dispatches graphs"]
   end
 
   subgraph RESEARCH["RESEARCH — get to the bottom of it"]
@@ -126,12 +128,13 @@ flowchart LR
   subgraph AUDIT["AUDIT — find what is wrong"]
     A1["dag_review<br/>many dimensions, cross-family falsification"]
     A2["dag_debug · dag_slim · dag_deepen"]
-    A3["omd-shots-verify<br/>zero model: shots exist and are not blank"]
+    A3["omd-shots-verify — repo script, not an MCP tool<br/>zero model: shots exist and are not blank"]
   end
 
   subgraph MEMORY["MEMORY &amp; PLANNING — outlive the context window"]
-    M1["memory_recall · memory_remember"]
-    M2["map_open · map_add · map_rule<br/>map_deliver · map_prefetch"]
+    M1["memory_recall · memory_remember<br/>zero model: BM25 leg + deterministic hashed vector leg"]
+    M2["map_init · map_open · map_add<br/>map_confirm · map_rule"]
+    M3["map_tickets · map_prefetch · map_deliver<br/>fold in landed results · dispatch AFK · run the slice"]
   end
 
   subgraph KNOW["KNOWLEDGE — stop reinventing the shape"]
@@ -139,12 +142,17 @@ flowchart LR
     K2["template cards<br/>expert checklist injected into a node"]
   end
 
+  subgraph CONF["CONFIG — point the engine at your models"]
+    F1["omd_set_key · omd_set_model · omd_set_role<br/>omd_apply_preset · omd_register_provider · omd_models_auto"]
+    F2["omd_config_status · omd_toggle_hud · omd_plans"]
+  end
+
   classDef llm fill:#EEEDFE,stroke:#534AB7,color:#26215C
   classDef zero fill:#E1F5EE,stroke:#0F6E56,color:#04342C
   classDef mixed fill:#FAECE7,stroke:#993C1D,color:#4A1B0C
-  class E1,E2,R3,A1,A2 mixed
-  class R1,A3,K1,K2 zero
-  class R2,M1,M2 llm
+  class E1,E2,R3,A1,A2,M3 mixed
+  class R1,A3,K1,K2,M1,M2,F1,F2 zero
+  class R2,E3 llm
 ```
 
 **Execution** — `run` (a conductor decomposes for you) · `dag_run_plan` (you wrote the graph)
@@ -153,7 +161,8 @@ executes, judges and repairs until it converges — four stop axes: rounds, no-p
 token/minute budget; `detached: true` hands it to a worker process that outlives your session) ·
 `dag_cancel` (cooperative stop, resumable) · `dag_triage` / `dag_rule` (owner inbox: a running graph
 raises a decision fork with the assumption it is proceeding on; your ruling enters the next round
-verbatim) · `omd_primitive` (one control-flow shape, no graph required) · `dag_status` /
+verbatim) · `omd_primitive` (one control-flow shape, no graph required) · `conductor_chat` (a persistent
+conductor session: ask it questions, or let it dispatch graphs mid-conversation) · `dag_status` /
 `dag_result` / `dag_node_output` / `dag_runs`.
 
 **Research** — `omd_web` (search + fetch, **zero LLM**; full text to disk, only an index comes
@@ -165,8 +174,10 @@ model family) · `dag_debug` · `dag_slim` (deletion-only over-engineering audit
 (architecture hotspots).
 
 **Memory & planning** — `memory_recall` / `memory_remember` ·
-`map_open` / `map_add` / `map_rule` / `map_deliver` / `map_prefetch` (a decision map in git,
-advanced by typed tickets, with background research that outlives your client).
+`map_init` / `map_open` / `map_add` / `map_confirm` / `map_rule` / `map_tickets` /
+`map_deliver` / `map_prefetch` (a decision map in git, advanced by typed tickets —
+machine-suggested tickets must pass `map_confirm` before they can be ruled on — with
+background research that outlives your client).
 
 **Knowledge** — `omd_shapes` (proven graph shapes, each with the trigger *and* the "not when")
 · template cards (a vetted specialist checklist injected into a node at run time).
@@ -293,11 +304,13 @@ flowchart TB
 
 | Kind | Model? | Tools? | Use for |
 |---|---|---|---|
-| `leaf` | one shot | no | generation, research, judgement, drafting |
+| `leaf` (`inproc` in code) | one shot | no | generation, judgement, drafting |
 | `agent` | yes | read/edit/write/bash — jailed **only** on `branchStrategy: 'branch'` (see below) | **the only kind that writes files** |
 | `command` | **none** | a CLI from an allowlist | gates (`tsc`/tests), scanners, indexed lookups |
 | `map` | mixed | — | runtime fan-out: a lister discovers the work-list, one child per item |
-| `primitive` | mixed | — | 12 control-flow shapes the engine owns |
+| `primitive` | mixed | — | control-flow shapes the engine owns (12 composable + gated `escape-hatch`) |
+| `research` | yes | live web retrieval | grounded research — **fails loudly** without a web runner instead of citing from model memory |
+| `conductor` | yes | — | expands a subgraph at run time; hosts the goal loop's re-plan rounds |
 
 **Where a run's writes land, and what contains them** — `solve` takes `branchStrategy`:
 
@@ -322,6 +335,7 @@ loudly and degrades to path-level isolation only.
 **Control-flow primitives** — you pick the shape and its params; the loop / branch / stop /
 scoring logic belongs to the runtime, never to the model: `parallel` · `pipeline` · `loop-until` ·
 `verify` · `judge` · `discovery` · `iterate` · `tournament` · `router` · `race` · `escalation` · `saga`.
+A gated thirteenth, `escape-hatch`, exists but stays off unless `OMD_ESCAPE_HATCH=1`.
 
 **→ [Architecture in depth](docs/architecture.md)** · [primitives](docs/primitives.md) ·
 [diagram source](docs/diagrams/01-engine-flow.md)
@@ -429,10 +443,12 @@ Three corollaries that decide real designs:
 | | |
 |---|---|
 | [Architecture](docs/architecture.md) | passes, scheduling, fault boundaries, checkpoint & resume |
-| [Primitives](docs/primitives.md) | the 12 control-flow shapes, and when to use plain nodes instead |
+| [Primitives](docs/primitives.md) | the 13 control-flow shapes, and when to use plain nodes instead |
 | [Model layer](docs/model-layer.md) | seats, pools, stamp rules, reasoning effort, multi-perspective review |
-| [MCP tools](docs/mcp-tools.md) | all 38, grouped |
-| [Memory](docs/memory.md) | fact store, hybrid recall |
+| [MCP tools](docs/mcp-tools.md) | all 40 distinct tools (+9 legacy aliases), grouped |
+| [Memory](docs/memory.md) | fact store, hybrid recall, decision maps |
+| [Terminal UI](docs/tui.md) | omd's own TUI: chat seat, seat/model pickers, runs & sessions |
+| [Open ecosystem](docs/open-ecosystem.md) | external MCP servers & skills on the agent leaf, policy gate |
 | [Diagrams](docs/diagrams/) | Mermaid source of truth for every figure above |
 
 ## License

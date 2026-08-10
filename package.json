@@ -1,7 +1,7 @@
 {
   "name": "oh-my-dag",
   "version": "0.3.0",
-  "description": "oh-my-dag — a DAG execution engine exposed as an MCP server. Typed nodes → concurrent fan-out → cross-model verify → escalate on failure; pathfinder mode (persistent decision maps for multi-session work), an agent-template registry, a memory layer, and a bundle of /omd-* client skills that install themselves into your MCP client. Any OpenAI-compatible backend plugs in, plus OAuth providers via the pi-ai catalog. No terminal UI: your MCP client is the front end.",
+  "description": "oh-my-dag — a DAG execution engine exposed as an MCP server. Typed nodes → concurrent fan-out → cross-model verify → escalate on failure; pathfinder mode (persistent decision maps for multi-session work), an agent-template registry, a memory layer, and a bundle of /omd-* client skills that install themselves into your MCP client. Any OpenAI-compatible backend plugs in, plus OAuth providers via the pi-ai catalog. Front ends: any MCP client, or omd's own TUI (omd tui).",
   "type": "module",
   "license": "MIT",
   "repository": {
