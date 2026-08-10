@@ -10,6 +10,7 @@ import type { FaninSummaryConfig } from '../fanin-summary';
 import type { ArtifactBudget } from '../plan/judge-artifacts';
 import type { NodeFailureKind } from '../node-failure';
 import type { RollbackAnchor } from '../rollback-anchor';
+import type { BlameEntry, BlameResolution } from './blame';
 
 /** omd 本体编排的注入式模型调用 (单一注入点; 默认 callModel, 测试传 fake)。 */
 export type GenerateFn = (req: {
@@ -678,6 +679,23 @@ export interface LeafResult {
 }
 
 /**
+ * D-4 打回共享契约 (SDD 2026-08-10-blame-scoped-node-retry)。本文件是跨消费方 (engine / dag-record /
+ * readout) 的冻结接缝: 责备集 schema **复用** blame.ts 的导出, 此处只 re-export + 命名, 不重定义
+ * (重定义即漂移源)。语义指纹的铸造与 D-21 复用匹配逻辑在 plan 层, 不在本文件 (SDD Non-goal)。
+ */
+
+/** 责备集条目 (点名节点 / 点名产物) 与产物→节点解析结果 — 直接复用 blame.ts, 本文件不重定义。 */
+export type { BlameEntry, BlameResolution };
+
+/** 解析后的责备集 (parseBlameVerdict 返回形)。undefined = 无围栏 / JSON 坏 / 空数组 → fail-open 整轮 (INV-1)。 */
+export type ParsedBlame = BlameEntry[] | undefined;
+
+/** 失效闭包 = blamed ∪ downstream(blamed) (D-2; invalidationClosure 返回形)。 */
+export type InvalidationClosure = ReadonlySet<string>;
+
+/** D-4 跨轮毒集 (传播载体): 上一轮被点名/闭包内节点的语义指纹。命中者不进 D-21 复用池。 */
+export type PoisonedNodes = ReadonlySet<string>;
+/**
  * 上一轮执行的 {plan, results} —— D-21 跨轮语义复用的输入。
  * 轮内 escalation 与外层 fixpoint (iterateExecutorDag) 共用同一形状。
  */
@@ -693,9 +711,20 @@ export interface PriorExec {
    * 没有它, 被拒节点 (status 仍是 'done' —— 拒的是质量不是状态) 会被指纹匹配原样复用进修复轮,
    * 修复轮能否修对就全看 conductor 从散文里猜没猜中该改哪个节点。
    */
-  poisoned?: ReadonlySet<string>;
+  poisoned?: PoisonedNodes;
 }
 
+/** D-4 打回读数 (SDD 2026-08-10-blame-scoped-node-retry 契约 f; 字段名冻结, 消费方在 dag-record/readout)。 */
+export type BlameRetryLedger = {
+  /** 解析出的点名节点数 (fail-open 走整轮 = 0)。 */
+  blameSize: number;
+  /** invalidationClosure 结果大小 (blame ∪ downstream)。 */
+  closureSize: number;
+  /** 闭包外且 D-21 指纹命中而复用的节点数。 */
+  reuseHits: number;
+  /** 本轮重跑墙钟 (ms)。 */
+  rerunWallMs: number;
+};
 export interface ExecutorDagResult {
   plan: ConductorPlan;
   /**
@@ -832,5 +861,9 @@ export interface ExecutorDagResult {
     escalated: boolean;
     /** 最终采用的 conductor 模型 (升级后 = 升级模型)。 */
     conductorModel: string;
+    /** D-6 同因熔断 (SDD 2026-08-11-inner-loop-v2, O-2): 连续两轮同一根因 → 停止重试标 STALLED。缺席/false = 未熔断。 */
+    circuitBroken?: boolean;
   };
+  /** D-4 打回读数 (SDD 2026-08-10-blame-scoped-node-retry, 契约 f 单对象): 最近一次 verifier 打回。缺席 = 没打回。 */
+  blameRetry?: BlameRetryLedger;
 }

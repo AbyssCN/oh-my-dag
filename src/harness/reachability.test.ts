@@ -79,12 +79,6 @@ const DYNAMIC_ENTRIES: Record<string, string> = {
     'MCP client 真传输测试的 fixture server, 按**路径字符串**拉起: `mcp/client/pool.test.ts` 的 ' +
     'FIXTURE = 这个路径 → `StdioClientTransport({ command: "bun", args: [<它>] })` 起真子进程。' +
     '生产零消费者是设计 (开放生态 SDD S1): 它验的是真 stdio 传输腿, InMemory 假体验不出。',
-  'src/harness/dag/blame.ts':
-    '⚠ **临时豁免 — 接上即删** (与本名单其余「动态路径拉起」项性质不同): 责备集件 ' +
-    '(SDD 2026-08-10-blame-scoped-node-retry 切片 2), 已实装 + blame.test.ts 全覆盖, ' +
-    '但**静态消费者 (内环 v2 SDD 切片 3 的 engine.ts blame→poisoned 接线) 尚未入主树** —— ' +
-    '它先落地供该切片消费。切片 3 一接上 engine.ts import 它, **立刻删掉本条豁免** ' +
-    '(那时它自然可达, 留着本条就成了名单里的死登记, 被下面「豁免名单不含真可达件」那条抓)。',
 };
 
 // ⚠ 走图的四件 (`IMPORT_SPEC` / `tsFiles` / `resolveSpec` / `reachableFrom`) 2026-08-03

@@ -4,10 +4,10 @@
  * 全部经 runExecutorDagWithPlan (预构造 plan, 跳过 conductor) + 注入 fake generate — 零真实 LLM。
  */
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runExecutorDagWithPlan } from './engine';
+import { parseBlameVerdict, runExecutorDagWithPlan } from './engine';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ContentPart } from '../../model/gateway';
 import { registerProvider } from '../../model/providers';
@@ -535,5 +535,320 @@ describe("executor:'research' 节点 (D-6)", () => {
       }),
     );
     expect(got.groundTruth).toContain('out:A');
+  });
+});
+
+// ── SDD 2026-08-10-blame-scoped-node-retry: blame-scoped 定点重跑 (切片 3+4+5 接线) ──────────
+// 契约: design-contract (d)(e)(f) + SDD G-1..G-5。样本图沿用 SDD 词汇:
+//   survey(勘察, 正确) ← draft(草稿, 错) ← polish(打磨, draft 下游)。
+// 判词带 ```blame 围栏责备 draft → 闭包 = {draft, polish}; survey = 闭包外 → 必须 100% 指纹复用。
+// 实装已由兄弟切片落地 (blame.ts 解析 / engine.ts 接线 / types.ts 台账), 本组用例为确定性回归 — 断言不为迁就实现而改。
+
+/** 责备集打回判词: 散文 + ```blame 围栏 (契约 (b): 围栏内为 BlameEntry[] JSON, 围栏外散文原样保留)。 */
+const BLAME_FENCE_DRAFT =
+  '草稿段验收不合格。\n```blame\n[{"node": "draft", "reason": "草稿验收段判卷命令不合格"}]\n```\n';
+
+/**
+ * 契约 (f) 冻结的台账类型 BlameRetryLedger (字段名冻结如上)。
+ * 结果面字段名未冻结 → 按契约字面取 `blameRetry` (与 claimCheck/artifactMove 同款 camelCase 读数位;
+ * 若切片 5 落成别的字段名, 这是唯一要对齐的接缝, 测试会以「undefined」显式红掉而不是静默)。
+ */
+type BlameRetryLedger = { blameSize: number; closureSize: number; reuseHits: number; rerunWallMs: number };
+const readBlameRetry = (r: Awaited<ReturnType<typeof runExecutorDagWithPlan>>): BlameRetryLedger | undefined =>
+  (r as unknown as { blameRetry?: BlameRetryLedger }).blameRetry;
+
+/** verifier 首轮 fail (reason = 打回判词, 可带责备围栏) → 次轮 pass (与 G-21 既有夹具同构)。 */
+const makeBlameVerifier = (reason: string): NonNullable<ExecutorDagConfig['verifier']> => {
+  let n = 0;
+  return async () => {
+    n++;
+    return n === 1
+      ? { pass: false, reason, usage: { in: 1, out: 1 } }
+      : { pass: true, reason: 'ok', usage: { in: 1, out: 1 } };
+  };
+};
+
+/** fake generate: REPLAN-PATCH 返回轮 2 补丁; leaf 按 id 记调用序 + prompt 全文 (跨轮字节比较用)。 */
+const makeBlameGenerate = (round2Patch: Record<string, unknown>) => {
+  const calls: string[] = [];
+  const promptLog: Array<{ id: string; prompt: string }> = [];
+  const generate: GenerateFn = async (req) => {
+    const sysC = req.messages.find((m) => m.role === 'system')?.content;
+    const sys = typeof sysC === 'string' ? sysC : '';
+    if (sys.includes('REPLAN-PATCH')) {
+      return { text: JSON.stringify({ patch: round2Patch }), usage: { in: 5, out: 5 } };
+    }
+    const prompt = contentText(req.messages.find((m) => m.role === 'user')?.content);
+    const id = leafId(prompt);
+    calls.push(id);
+    promptLog.push({ id, prompt });
+    return { text: `out:${id}`, usage: { in: 1, out: 1 } };
+  };
+  return { generate, calls, promptLog };
+};
+
+/** 样本图 (SDD 词汇): survey 正确、draft 错、polish 是 draft 下游。 */
+const blameGraphPlan = () =>
+  plan({
+    survey: { goal: '勘察仓内事实' },
+    draft: { goal: '草稿', depends_on: ['survey'] },
+    polish: { goal: '打磨', depends_on: ['draft'] },
+  });
+
+/** 轮 2 补丁: draft 与轮 1 **逐字节相同** (未补丁的 survey/polish 由 S3.6 原样保留)。 */
+const SAME_DRAFT_PATCH = { draft: { goal: '草稿', depends_on: ['survey'] } };
+
+describe('blame-scoped 定点重跑 (SDD 2026-08-10-blame-scoped-node-retry)', () => {
+  registerProvider('blamex', { baseUrl: 'http://127.0.0.1:9', apiKey: 'test-key', api: 'openai-compatible' });
+  const escConfig = (generate: GenerateFn, verifier: NonNullable<ExecutorDagConfig['verifier']>) =>
+    makeConfig(generate, { verifier, conductorEscalationModel: 'blamex:strong' });
+
+  test('G-1: 带责备集打回 → 闭包外节点 100% 指纹复用零 LLM, 台账可读出 reuseHits', async () => {
+    const { generate, calls } = makeBlameGenerate(SAME_DRAFT_PATCH);
+    const r = await runExecutorDagWithPlan(blameGraphPlan(), escConfig(generate, makeBlameVerifier(BLAME_FENCE_DRAFT)));
+    expect(r.verification!.pass).toBe(true);
+    // 闭包外 survey: 仅轮 1 一次 LLM; 轮 2 零调用注入上轮输出 (skipped = 复用注入标记, 同 G-21)
+    expect(calls.filter((c) => c === 'survey')).toHaveLength(1);
+    expect(r.results.survey!.skipped).toBe(true);
+    expect(r.results.survey!.status).toBe('done');
+    // 闭包内 draft + 下游 polish: 各重跑一次 (轮 1 + 轮 2)
+    expect(calls.filter((c) => c === 'draft')).toHaveLength(2);
+    expect(calls.filter((c) => c === 'polish')).toHaveLength(2);
+    expect((r.reusedNodes ?? []).sort()).toEqual(['survey']);
+    expect(r.usage.leavesIn).toBe(5); // 3 (轮 1) + 2 (轮 2 仅闭包内) — survey 零增量
+    // 台账 (契约 f): blameSize / closureSize / reuseHits / rerunWallMs 可读出
+    const ledger = readBlameRetry(r);
+    expect(ledger).toBeDefined();
+    expect(ledger!.blameSize).toBe(1);
+    expect(ledger!.closureSize).toBe(2); // draft ∪ downstream(draft) = {draft, polish}
+    expect(ledger!.reuseHits).toBe(1); // 闭包外且指纹命中 = survey
+    expect(ledger!.rerunWallMs).toBeGreaterThanOrEqual(0);
+  });
+
+  test('G-2: 反馈只进被责备节点重跑 prompt; 非责备节点 prompt 与上轮逐字节相同 (D-3)', async () => {
+    const { generate, promptLog } = makeBlameGenerate(SAME_DRAFT_PATCH);
+    const r = await runExecutorDagWithPlan(blameGraphPlan(), escConfig(generate, makeBlameVerifier(BLAME_FENCE_DRAFT)));
+    expect(r.verification!.pass).toBe(true);
+    const surveyPrompts = promptLog.filter((p) => p.id === 'survey').map((p) => p.prompt);
+    const draftPrompts = promptLog.filter((p) => p.id === 'draft').map((p) => p.prompt);
+    // 闭包外节点不重跑 → 不存在第二份 prompt; 其轮 2 输入面逐字节未变 ⟸ 指纹命中 (skipped=true):
+    // 复用节点引擎不建 prompt, 字节级证据落在指纹上 — 共享祖先 spec 若被碰, 指纹必变、必重跑 → 本行红。
+    expect(surveyPrompts).toHaveLength(1);
+    expect(r.results.survey!.skipped).toBe(true);
+    // 被责备节点: 重跑 prompt 带冻结的 append 段 (契约 e): \n\n---\n[verifier 打回 · 第 N 轮]\n{reason}\n
+    expect(draftPrompts).toHaveLength(2);
+    expect(draftPrompts[0]!).not.toContain('verifier 打回');
+    expect(draftPrompts[1]!).toMatch(/---\n\[verifier 打回 · 第 \d+ 轮\]\n草稿验收段判卷命令不合格/);
+  });
+
+  test('G-3: 散文打回 (无围栏) → 现行整轮路径行为不变 (SDD INV-1), 台账 blameSize=0', async () => {
+    const { generate, calls } = makeBlameGenerate({ draft: { goal: '草稿v2', depends_on: ['survey'] } });
+    const r = await runExecutorDagWithPlan(
+      blameGraphPlan(),
+      escConfig(generate, makeBlameVerifier('草稿输出不合格 (纯散文, 不指认节点)')),
+    );
+    expect(r.verification!.pass).toBe(true);
+    // 与现行引擎同构 (同 G-21 既有用例形状): 未变节点 D-21 复用, 变化节点重跑, polish 因前驱失效重跑
+    expect(calls.filter((c) => c === 'survey')).toHaveLength(1);
+    expect(r.results.survey!.skipped).toBe(true);
+    expect(calls.filter((c) => c === 'draft')).toHaveLength(2);
+    expect(calls.filter((c) => c === 'polish')).toHaveLength(2);
+    // 解析失败走整轮: 台账记 blameSize: 0 (契约 f: 不新增分支)
+    const ledger = readBlameRetry(r);
+    expect(ledger).toBeDefined();
+    expect(ledger!.blameSize).toBe(0);
+  });
+
+  test('G-4: blame 节点进 poisoned 集 → 指纹与上轮完全相同也不得复用 (D-4 回归)', async () => {
+    // 轮 2 补丁把 draft 重写为与轮 1 逐字节相同 → 指纹相同; 若毒集闸失效, computeReuse 必当复用 —
+    // 断言它仍重跑 = 闸活着 (毒集压过指纹, 这是「打回节点不得复用」的可执行判)。
+    const { generate, calls } = makeBlameGenerate(SAME_DRAFT_PATCH);
+    const r = await runExecutorDagWithPlan(blameGraphPlan(), escConfig(generate, makeBlameVerifier(BLAME_FENCE_DRAFT)));
+    expect(r.verification!.pass).toBe(true);
+    expect(calls.filter((c) => c === 'draft')).toHaveLength(2);
+    expect(calls.filter((c) => c === 'polish')).toHaveLength(2);
+    expect(r.results.draft!.status).toBe('done'); // 重跑产物, 非上轮注入
+    expect(r.reusedNodes ?? []).not.toContain('draft');
+    expect(r.reusedNodes ?? []).not.toContain('polish');
+  });
+
+  test('反向自检 oracle: 只有草稿错、勘察正确; 勘察重跑即红 (G-1 负控 / SDD G-5)', async () => {
+    // 已知样本: survey(勘察) 正确、draft(草稿) 错 → 判词只责备 draft → survey 必须零重跑。
+    // 若勘察节点发生重跑 → 本测试红 (ground truth 可人工核对: 勘察没错, 重跑即实现错)。
+    // 证伪方式: 「若 INV-1 被破 (出现第二套匹配让错指节点也'复用'), 或闭包过滤失效, 本测试绿 → 实现错」
+    const { generate, calls } = makeBlameGenerate(SAME_DRAFT_PATCH);
+    const r = await runExecutorDagWithPlan(blameGraphPlan(), escConfig(generate, makeBlameVerifier(BLAME_FENCE_DRAFT)));
+    expect(r.verification!.pass).toBe(true);
+    expect(calls.filter((c) => c === 'survey')).toHaveLength(1);
+    expect(r.results.survey!.skipped).toBe(true);
+    expect(r.results.survey!.status).toBe('done');
+    expect(r.results.survey!.output).toBe('out:survey'); // 上轮正确产出原样注入
+    // 负控: 判词把勘察也点进 blame → 勘察语义未变也在闭包内 → 毒集压过指纹, 必须重跑
+    const fenceBoth =
+      '勘察也被点名。\n```blame\n[{"node": "draft", "reason": "草稿错"}, {"node": "survey", "reason": "勘察被误点"}]\n```\n';
+    const { generate: g2, calls: c2 } = makeBlameGenerate(SAME_DRAFT_PATCH);
+    const r2 = await runExecutorDagWithPlan(blameGraphPlan(), escConfig(g2, makeBlameVerifier(fenceBoth)));
+    expect(r2.verification!.pass).toBe(true);
+    expect(c2.filter((c) => c === 'survey')).toHaveLength(2);
+    expect(r2.reusedNodes ?? []).not.toContain('survey');
+  });
+  test('G-5: 畸形 blame 围栏 → fail-open 现行整轮路径 (零闭包语义), 已知良好调查节点零重跑', async () => {
+    // INV-2 反向 oracle (必需注释): survey(勘察) 是本测试图的**已知良好节点**, 轮 2 补丁不改它 —
+    // 它**任何一次重跑都让本测试 (G-5) 红**。为什么: 畸形围栏必须 fail-open (SDD Non-goals:
+    // 责备集解析失败永远回退现行整轮), 整轮路径下 survey 语义未变 → D-21 指纹复用 → 零 LLM 注入
+    // (skipped=true)。若实现把坏 JSON 误当有效责备集 (或解析失败后仍猜一个闭包把 survey 卷进去),
+    // survey 必重跑 → G-5 红。即以「已知良好调查节点零重跑」钉死 fail-open 边界。
+    const { generate, calls } = makeBlameGenerate({ draft: { goal: '草稿v2', depends_on: ['survey'] } });
+    const r = await runExecutorDagWithPlan(
+      blameGraphPlan(),
+      escConfig(generate, makeBlameVerifier('不合格。\n```blame\n[{not valid json}]\n```\n')),
+    );
+    expect(r.verification!.pass).toBe(true);
+    // 围栏坏 = 视同散文 (G-3 同形): 无闭包语义, 台账 blameSize/closureSize 均为 0 (不猜, 不新增分支)
+    expect(calls.filter((c) => c === 'survey')).toHaveLength(1); // 已知良好节点零重跑 (反向 oracle)
+    expect(r.results.survey!.skipped).toBe(true);
+    expect(calls.filter((c) => c === 'draft')).toHaveLength(2); // 补丁改了 draft → 重跑
+    expect(calls.filter((c) => c === 'polish')).toHaveLength(2); // draft 指纹变 → 前驱失效重跑
+    const ledger = readBlameRetry(r);
+    expect(ledger).toBeDefined();
+    expect(ledger!.blameSize).toBe(0);
+    expect(ledger!.closureSize).toBe(0);
+  });
+
+  test('D-1: 结构化责备集解析 — node+artifact 条目经引擎 API 面解出; 引擎只吃 node 条目 (artifact 保留槽不接线)', async () => {
+    // parseBlameVerdict 从引擎再导出面取 (契约 §10) — 单一实现 (blame.ts), 无第二套解析。
+    // 契约 (b): 条目 node|artifact 二选一; artifact 是保留槽 (resolveBlameEntries 冻死不复活) —
+    // 引擎侧 `'node' in e` 过滤后只数 node 条目。混合责备: node 驱动定点闭包, artifact 被丢弃 (不猜映射)。
+    const fenceMixed =
+      '草稿验收不合格。\n```blame\n' +
+      '[{"node": "draft", "reason": "草稿错"}, {"artifact": "out:draft", "reason": "产物也错"}]\n```\n';
+    expect(parseBlameVerdict(fenceMixed)).toEqual([
+      { node: 'draft', reason: '草稿错' },
+      { artifact: 'out:draft', reason: '产物也错' },
+    ]);
+    const { generate, calls } = makeBlameGenerate(SAME_DRAFT_PATCH);
+    const r = await runExecutorDagWithPlan(blameGraphPlan(), escConfig(generate, makeBlameVerifier(fenceMixed)));
+    expect(r.verification!.pass).toBe(true);
+    expect(calls.filter((c) => c === 'survey')).toHaveLength(1);
+    expect(calls.filter((c) => c === 'draft')).toHaveLength(2);
+    expect(calls.filter((c) => c === 'polish')).toHaveLength(2);
+    const ledger = readBlameRetry(r);
+    expect(ledger!.blameSize).toBe(1); // 台账只数 node 条目
+    expect(ledger!.closureSize).toBe(2); // {draft, polish}
+  });
+
+  test('D-1 fail-open: 纯 artifact 责备集 (无 node 条目) → 引擎侧过滤后空 → 视同散文整轮 (INV-1)', async () => {
+    // artifact→node 映射 (resolveBlameEntries) 是冻结死码 — 引擎 `'node' in e` 过滤掉全部条目 →
+    // inGraph 空 → closure null → fail-open 整轮 (与 G-3 散文同形): 台账 blameSize/closureSize 0, 无定点语义。
+    // 若实现复活 artifact→node 映射让纯 artifact 打回也定点, 本测试红 = 契约冻结外的新行为。
+    const fenceArtifactOnly = '产物验收不合格。\n```blame\n[{"artifact": "out:draft", "reason": "产物错"}]\n```\n';
+    const { generate, calls } = makeBlameGenerate({ draft: { goal: '草稿v2', depends_on: ['survey'] } });
+    const r = await runExecutorDagWithPlan(
+      blameGraphPlan(),
+      escConfig(generate, makeBlameVerifier(fenceArtifactOnly)),
+    );
+    expect(r.verification!.pass).toBe(true);
+    expect(calls.filter((c) => c === 'survey')).toHaveLength(1); // 已知良好节点零重跑
+    expect(r.results.survey!.skipped).toBe(true);
+    expect(calls.filter((c) => c === 'draft')).toHaveLength(2); // 补丁改了 draft → 重跑
+    expect(calls.filter((c) => c === 'polish')).toHaveLength(2);
+    const ledger = readBlameRetry(r);
+    expect(ledger).toBeDefined();
+    expect(ledger!.blameSize).toBe(0);
+    expect(ledger!.closureSize).toBe(0);
+  });
+
+  test('G-1 精确闭包: blame draft → 恰 {draft, polish, publish} 失效; 非闭包 research 节点 100% 复用零重抓 (必需注释)', async () => {
+    // 必需注释 (SDD G-5 证伪方式, 落到 research 节点): research 是**已知正确的调研节点**
+    // (executor:'research', 真 web 抓取 — 实测一次 104s+token) — 它**任何一次重跑都让本测试红**。
+    // 为什么: 判词只责备 draft → 失效闭包必须恰为 {draft, polish, publish}; research 在图外、语义未变 →
+    // D-21 指纹复用 (skipped=true, 零 LLM 零 re-fetch)。若实现把闭包算错 / 复用判定分叉 (INV-2) /
+    // 毒集误伤 research → 它必重跑 → 本测试红。即以「正确 research 节点零重跑」钉死精确闭包边界。
+    const researchCalls: string[] = [];
+    let researchRunnerCount = 0;
+    const { generate, calls } = makeBlameGenerate(SAME_DRAFT_PATCH);
+    const r = await runExecutorDagWithPlan(
+      plan({
+        survey: { goal: '勘察仓内事实' },
+        research: { goal: '调研正确事实', executor: 'research' },
+        draft: { goal: '草稿', depends_on: ['survey'] },
+        polish: { goal: '打磨', depends_on: ['draft'] },
+        publish: { goal: '发布', depends_on: ['polish'] },
+      }),
+      makeConfig(generate, {
+        verifier: makeBlameVerifier(BLAME_FENCE_DRAFT),
+        conductorEscalationModel: 'blamex:strong',
+        researchRunner: async (input) => {
+          researchRunnerCount++;
+          researchCalls.push(input.question);
+          return { text: '研究终稿: 正确事实', usage: { in: 100, out: 50 }, sources: ['https://example.com/ok'] };
+        },
+      }),
+    );
+    expect(r.verification!.pass).toBe(true);
+    // 精确闭包 {draft, polish, publish}: 各重跑一次 (轮 1 + 轮 2)
+    expect(calls.filter((c) => c === 'draft')).toHaveLength(2);
+    expect(calls.filter((c) => c === 'polish')).toHaveLength(2);
+    expect(calls.filter((c) => c === 'publish')).toHaveLength(2);
+    // 闭包外: survey 轮 2 零 LLM; research 轮 2 零 LLM **且零 re-fetch** (researchRunner 只进一次)
+    expect(calls.filter((c) => c === 'survey')).toHaveLength(1);
+    expect(r.results.survey!.skipped).toBe(true);
+    expect(researchRunnerCount).toBe(1);
+    expect(researchCalls).toEqual(['调研正确事实']); // 轮 1 只问一次, 轮 2 复用不再问
+    expect(r.results.research!.skipped).toBe(true);
+    expect(r.results.research!.status).toBe('done');
+    expect(r.results.research!.output).toBe('研究终稿: 正确事实'); // 上轮正确产出原样注入
+    expect(r.results.research!.usage).toEqual({ in: 0, out: 0 }); // 复用零计费
+    expect((r.reusedNodes ?? []).sort()).toEqual(['research', 'survey']);
+    // 台账: closureSize 恰为 3 (不是整图 5), reuseHits 恰为 2 (survey + research)
+    const ledger = readBlameRetry(r);
+    expect(ledger).toBeDefined();
+    expect(ledger!.blameSize).toBe(1);
+    expect(ledger!.closureSize).toBe(3);
+    expect(ledger!.reuseHits).toBe(2);
+  });
+
+  test('INV-1: 复用判定全仓唯一 — dag 引擎无第二套指纹/匹配实现 (SDD INV-2)', async () => {
+    // 语义键单一真源 = plan-passes/semantic-key.ts (nodeFieldsKey → merkleFingerprints → computeReuse,
+    // D-20 判重与 D-21 跨轮复用同吃, 其头注释自述「单一真源」)。确定性回归: 引擎不得自带第二套
+    // 「语义字段序列化 / 指纹 / 匹配」实现 —— 出现 = 复用判定分叉 = 打回定点与判重各说各话。
+    const engineSrc = readFileSync(new URL('./engine.ts', import.meta.url), 'utf8');
+    // ① 引擎文件内不得定义键/指纹/匹配函数 (三个特征符号, 定义即第二套实现)。
+    expect(engineSrc).not.toMatch(/\bfunction\s+(nodeFieldsKey|merkleFingerprints|computeReuse)\s*\(/);
+    // ② 复用机器进口唯一: 名字带 semantic 的 import 只许指向单一真源 (多一条 = 平行实现, 红)。
+    const semanticImports = [...engineSrc.matchAll(/^import\b[^\n]*\bfrom\s*'([^']*semantic[^']*)'/gm)].map((m) => m[1]!);
+    expect(semanticImports).toEqual(['../plan-passes/semantic-key']);
+    // ③ 真源自身: nodeFieldsKey 恰好定义一次 (单一真源, 不复制)。
+    const keySrc = readFileSync(new URL('../plan-passes/semantic-key.ts', import.meta.url), 'utf8');
+    expect((keySrc.match(/export function nodeFieldsKey/g) ?? []).length).toBe(1);
+  });
+
+  // ── D-6 同因熔断 (SDD 2026-08-11-inner-loop-v2, O-2 聚类定 P0) ──────────────
+  // 反向自检 (实跑过): 删掉 engine.ts 的 `if (blameKey === lastBlameKey)` 分支 → 本用例
+  // 变成跑满 maxEscalations 轮 (circuitBroken 恒 undefined) → 断言 circuitBroken===true 当场红。
+  test('D-6: 连续两轮同一根因 → 熔断停止重试, 标 circuitBroken, 不跑满 maxEscalations', async () => {
+    let vcount = 0;
+    const stubbornVerifier: NonNullable<ExecutorDagConfig['verifier']> = async () => {
+      vcount++;
+      return { pass: false, reason: '草稿验收段判卷命令不合格 (第 X 轮同一根因)', usage: { in: 1, out: 1 } };
+    };
+    const { generate } = makeBlameGenerate(SAME_DRAFT_PATCH);
+    const r = await runExecutorDagWithPlan(
+      blameGraphPlan(),
+      makeConfig(generate, { verifier: stubbornVerifier, conductorEscalationModel: 'blamex:strong', maxEscalations: 3 }),
+    );
+    expect(r.verification!.circuitBroken).toBe(true);
+    expect(r.verification!.pass).toBe(false);
+    expect(vcount).toBeLessThan(4); // 熔断提前停 → verifier 调用数 < 首+3
+  });
+
+  test('D-6 零回归: maxEscalations=1 (缺省) 时熔断永不触发', async () => {
+    const { generate } = makeBlameGenerate(SAME_DRAFT_PATCH);
+    const r = await runExecutorDagWithPlan(
+      blameGraphPlan(),
+      escConfig(generate, makeBlameVerifier(BLAME_FENCE_DRAFT)),
+    );
+    expect(r.verification!.circuitBroken).toBeUndefined();
+    expect(r.verification!.pass).toBe(true);
   });
 });

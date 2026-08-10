@@ -49,7 +49,7 @@ import { leafCostReward } from '../model-router';
 import { logger } from '../logger';
 import { NOVELTY_COLLAPSE_LINE, pushNoveltyRound } from '../pathfinder/proximity';
 // ── T2#5 按簇拆出的兄弟文件 (引擎消费) ──
-import type { GenerateFn, ExecutorDagConfig, LeafResult, ExecutorDagResult, DagObservation } from './types';
+import type { GenerateFn, ExecutorDagConfig, LeafResult, ExecutorDagResult, DagObservation, BlameRetryLedger } from './types';
 import { makeDefaultGenerate, LEAF_SYSTEM_PREFIX, PONYTAIL_LEAF_DISPOSITION } from './defaults';
 import { topoLevels, buildLeafPrompt, addUsage, filterOracleCommandNodes } from './planner';
 // ready-set 调度器 (拓扑推进 + 三层并发闸 + quorum 判定; 纯同步零 IO, 见 dag-scheduler.ts)。
@@ -125,6 +125,9 @@ import { collectRepairGuidance } from './repair-guidance';
 import { livePin } from '../../model/provider-health';
 import { makeRunNonce, fenceUntrusted, trustHeader } from '../prompt-fence';
 import type { ContentPart } from '../../model/gateway';
+// D-1 责备集 (SDD 2026-08-10-blame-scoped-node-retry): verifier 打回的结构化点名 → 失效闭包。
+// 单一住处 (blame.ts, 与冻结的 blame.test.ts 同源); 引擎只接线不重实现 (INV-2)。
+import { parseBlameVerdict, invalidationClosure } from './blame';
 
 /** 上一轮 plan+results (escalation 重规划轮传入, D-21 跨轮复用的匹配源)。 */
 import type { PriorExec } from './types';
@@ -135,6 +138,9 @@ export { topoLevels } from './planner';
 export { loadAgentTemplates, templateRoster, AGENT_TEMPLATE_DIR } from '../agent-templates';
 export type { AgentTemplate } from '../agent-templates';
 export { PONYTAIL_LEAF_DISPOSITION } from './defaults';
+// D-1 冻结符号再导出 (契约 §10): parseBlameVerdict / invalidationClosure 定义在 blame.ts 单一住处,
+// 引擎只接线不重实现 (INV-2); 顶层具名导出保持公共面可见, 无别名包裹。
+export { parseBlameVerdict, invalidationClosure } from './blame';
 
 /** 一轮 plan+execute 的产物 (verify/升级编排在 runExecutorDag 外层组装)。 */
 interface ExecOnce {
@@ -182,6 +188,8 @@ async function planAndExecute(
   maxPlanRetries: number,
   templates: ReadonlyMap<string, AgentTemplate>,
   prior?: PriorExec,
+  /** D-3 反馈锚定 (SDD 2026-08-10-blame-scoped-node-retry): 闭包节点 id → 追加到其 goal 的 verifier 意见。非闭包节点不碰 (G-2)。 */
+  blameAnchor?: ReadonlyMap<string, string>,
 ): Promise<ExecOnce> {
   // ── 1. conductor: 单结构化调用规划 (显式可换) ──────────────────────────────
   // 模板注册表进规划 prompt (每卡一行 description); parsePlan 校验 template 引用 (TPL-2 规划层拒)。
@@ -258,7 +266,7 @@ async function planAndExecute(
 
   // pass 管线 (SDD v2): oracle 过滤 + planFilters (prune→dedup→stamp, 接线层组装)。
   // conductor 之后, 下游执行机器与 plan 来源无关 → 交 executePlan (D-7 预构造入口共用同一机器)。
-  return executePlan(applyPlanFilters(plan, config), task, config, generate, conductorUsage, templates, prior);
+  return executePlan(applyPlanFilters(plan, config), task, config, generate, conductorUsage, templates, prior, blameAnchor);
 }
 
 /**
@@ -288,6 +296,8 @@ async function tryPatchReplan(
   generate: GenerateFn,
   maxPlanRetries: number,
   templates: ReadonlyMap<string, AgentTemplate>,
+  /** D-3 反馈锚定: 同 planAndExecute (补丁路径同样在 executePlan 入口落 append)。 */
+  blameAnchor?: ReadonlyMap<string, string>,
 ): Promise<{ exec: ExecOnce | null; usage: ModelUsage }> {
   const sys = conductorPatchSystemPrompt();
   const prevPlanJson = JSON.stringify(
@@ -347,7 +357,7 @@ async function tryPatchReplan(
       { changed, removed, added, total: Object.keys(plan.nodes).length },
       '[omd/executor-dag] escalation 补丁采纳 → 程序化 merge (S3.6; 未补丁节点按构造复用)',
     );
-    const exec = await executePlan(applyPlanFilters(plan, config), task, config, generate, usage, templates, prior);
+    const exec = await executePlan(applyPlanFilters(plan, config), task, config, generate, usage, templates, prior, blameAnchor);
     return { exec, usage };
   }
   logger.warn({ err: lastErr }, '[omd/executor-dag] escalation 补丁模式未产出有效补丁 → 回退整图重规划 (S3.6 fail-open)');
@@ -368,7 +378,23 @@ async function executePlan(
   conductorUsage: ModelUsage,
   templates: ReadonlyMap<string, AgentTemplate>,
   prior?: PriorExec,
+  /** D-3 反馈锚定: 闭包节点 id → goal 追加后缀。执行前落 (computeReuse 在其后, 指纹吃 append 后的 plan)。 */
+  blameAnchor?: ReadonlyMap<string, string>,
 ): Promise<ExecOnce> {
+  // D-3 反馈锚定 (SDD 2026-08-10-blame-scoped-node-retry): verifier 意见只 append 到被责备
+  // (闭包内) 节点自己的 goal —— 非闭包节点字节不动 → 语义指纹与上轮相同 → D-21 复用成立 (G-2)。
+  // 闭包节点指纹已入 D-4 毒集 (computeReuse 见毒即 skip), append 只影响它自己的重跑 prompt,
+  // 不产生第二套匹配逻辑 (INV-2)。新 plan 里没有该 id (conductor 重画) → 跳过, 不编造节点。
+  if (blameAnchor) {
+    for (const [id, suffix] of blameAnchor) {
+      const n = plan.nodes[id];
+      if (!n) continue;
+      // ⚠ 用**新对象**替换而非原地改 goal: applyPlanPatch 浅拷贝 nodes (未补丁节点与上轮 plan
+      // 共享同一对象引用), 原地写会污染 prior.plan → priorFp 的指纹被 append 打翻 → 毒集 (按
+      // 未突变指纹铸的票) 落空 → 被责备节点逃过毒集被复用。G-5 负控当场抓到 (2026-08-10)。
+      plan.nodes[id] = { ...n, goal: `${n.goal ?? ''}${suffix}` };
+    }
+  }
   const levels = topoLevels(plan);
   // 观测归组键。与 runExecutorDag 里那一处**同一条口径** (config.sessionId 优先) ——
   // agent leaf 不经 gateway, 它的观测记录要落到同一条 trace 上才有意义。
@@ -437,7 +463,7 @@ async function executePlan(
    * 一个 leaf 经 bash 写出去的文件不在任何声明里, 于是两个并发兄弟真撞了**没有任何一处知道** ——
    * 而台账一直把静态那几次读数当成运行时这条的证据。两者的下一步相反, 所以要各记各的。
    *
-   * 键取排序后的 `a b`, 于是同一对只记一次(重叠是无向的)。窗口 = [起跑, leaf 返回],
+   * 键取排序后的 `ab`, 于是同一对只记一次(重叠是无向的)。窗口 = [起跑, leaf 返回],
    * **不含** fan-in 摘要那段(摘要期不写产物, 算进去会造出假重叠)。
    */
   const liveNow = new Set<string>();
@@ -3279,6 +3305,11 @@ async function runDagInternal(
   // ── 3. verify + conductor 静默升级 (config.verifier 给则启用) ──────────────────
   let verification: ExecutorDagResult['verification'];
   let verifierUsage: ModelUsage = { in: 0, out: 0 };
+  /** D-4 打回读数 (SDD 2026-08-10-blame-scoped-node-retry): 最近一次 verifier 打回 (契约 f 单对象; maxEscalations=1 下即唯一一次)。 */
+  let blameRetry: BlameRetryLedger | undefined;
+  /** plan 形状 → invalidationClosure 吃的 deps 表 (nodeId → depends_on)。 */
+  const depsOf = (p: ConductorPlan): Record<string, readonly string[]> =>
+    Object.fromEntries(Object.entries(p.nodes).map(([id, n]) => [id, n.depends_on ?? []]));
   if (config.verifier) {
     let attempts = 1;
     let escalated = false;
@@ -3286,6 +3317,12 @@ async function runDagInternal(
     verifierUsage = addUsage(verifierUsage, verdict.usage);
 
     let escCount = 0;
+    // D-6 同因熔断 (SDD 2026-08-11-inner-loop-v2, O-2 聚类定 P0): 上一轮打回原因的归一化指纹。
+    // 连续两轮同因 → 停止重试, 标 STALLED 交人。maxEscalations=1 时循环至多一轮, 本闸不触发 (零回归);
+    // >1 档 (真开放目标多轮修复) 才可能连撞, 那正是它的战场。
+    let lastBlameKey: string | undefined;
+    let sameCauseStreak = 0;
+    let circuitBroken = false;
     // D-P 取消接缝④: 不开新的升级重规划轮 (那是一整轮重规划 + 重跑, 最贵的一种"新活")。
     while (
       !verdict.pass &&
@@ -3293,6 +3330,26 @@ async function runDagInternal(
       escCount < maxEscalations &&
       escalationProviderReady(config.conductorEscalationModel)
     ) {
+      const blameKey = verdict.reason
+        .replace(/第\s*\d+\s*轮/g, '')
+        .replace(/\d+/g, '#')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 200);
+      if (blameKey === lastBlameKey) {
+        sameCauseStreak++;
+        if (sameCauseStreak >= 1) {
+          circuitBroken = true;
+          logger.warn(
+            { reason: blameKey, streak: sameCauseStreak + 1, round: escCount },
+            '[omd/executor-dag] D-6 同因熔断 → 停止重试 (连撞同一根因), STALLED 交人',
+          );
+          break;
+        }
+      } else {
+        sameCauseStreak = 0;
+        lastBlameKey = blameKey;
+      }
       escCount++;
       attempts++;
       escalated = true;
@@ -3320,22 +3377,56 @@ async function runDagInternal(
       if (repairGuidance.length > 0) {
         logger.info({ hits: repairGuidance.map((g) => g.slice(0, 40)) }, '[omd/executor-dag] Tier-0 修复指引命中 → 注入 escTask');
       }
+      // D-1/D-2 (SDD 2026-08-10-blame-scoped-node-retry): verifier 判词里的 ```blame 围栏是节点级
+      // 点名 —— 解析成功 → 失效闭包 = blame ∪ downstream, 闭包指纹进 D-4 毒集 (同一通道, 前向闭包
+      // 免费); 解析失败 (fail-open) → 现行整轮路径, 毒集照旧从外层轮继承, 行为逐字节不变 (INV-1)。
+      const blame = parseBlameVerdict(verdict.reason);
+      const blameNodes = blame?.filter((e): e is { node: string; reason: string } => 'node' in e) ?? [];
+      // 点名 id 不在图内 → 过滤 (契约 b); 过滤后空 → 视同 undefined → 整轮 (fail-open, 不猜)。
+      const inGraph = blameNodes.filter((e) => exec.plan.nodes[e.node]);
+      const closure =
+        inGraph.length > 0
+          ? invalidationClosure(
+              inGraph.map((e) => e.node),
+              depsOf(exec.plan),
+            )
+          : null;
+      // D-3 反馈锚定: 每个被责备节点自己的 reason → 后缀 (格式冻结于契约 e); 非闭包节点零触碰。
+      const blameAnchor = new Map<string, string>();
+      if (closure) {
+        for (const e of inGraph) {
+          if (closure.has(e.node)) blameAnchor.set(e.node, `\n\n---\n[verifier 打回 · 第 ${escCount} 轮]\n${e.reason}\n`);
+        }
+      }
+      const closureFps = new Set<string>();
+      if (closure) {
+        for (const [id, fp] of merkleFingerprints(exec.plan)) if (closure.has(id)) closureFps.add(fp);
+      }
       // D-21: 上轮 plan+results 作复用匹配源 — 语义未变的节点零 LLM 注入上轮输出, 只重跑变化子图。
-      // 毒集从外层轮继承下来 (D-4): 外层 judge 拒过的指纹在轮内 escalation 里同样不该复活。
-      // 轮内不新铸票 —— verifier 的 verdict 只有整轮 {pass, reason}, 没有节点级点名 (要它得先扩 verifier 契约)。
+      // 毒集: blame 解析成功 = 闭包指纹 (D-2, 取代整轮); 失败 = 从外层轮继承 (INV-1 零回归)。
       const priorExec: PriorExec = {
         plan: exec.plan,
         results: exec.results,
-        ...(prior?.poisoned?.size ? { poisoned: prior.poisoned } : {}),
+        ...(closure ? { poisoned: closureFps } : prior?.poisoned?.size ? { poisoned: prior.poisoned } : {}),
       };
       // S3.6 补丁模式优先 (未补丁节点字节不动 → 复用按构造成立); 补丁失败回退整图重规划 (fail-open)。
-      const patched = await tryPatchReplan(escTask, verdict.reason, priorExec, config, conductorModel, generate, maxPlanRetries, templates);
+      const rerunStart = Date.now();
+      const patched = await tryPatchReplan(escTask, verdict.reason, priorExec, config, conductorModel, generate, maxPlanRetries, templates, blameAnchor);
       if (patched.exec) {
         exec = patched.exec;
       } else {
         conductorUsage = addUsage(conductorUsage, patched.usage); // 补丁尝试的 token 不丢账
-        exec = await planAndExecute(escTask, config, conductorModel, generate, maxPlanRetries, templates, priorExec);
+        exec = await planAndExecute(escTask, config, conductorModel, generate, maxPlanRetries, templates, priorExec, blameAnchor);
       }
+      const rerunWallMs = Date.now() - rerunStart;
+      // D-4 打回读数入账 (SDD 契约 f): 每次打回追加一条。reuseHits = 闭包外命中数 ——
+      // 闭包指纹已入毒集, reusedNodes 里不可能有闭包节点, 这个数就是「闭包外且 D-21 命中」, 无第二套判定。
+      blameRetry = {
+        blameSize: blameNodes.length,
+        closureSize: closure?.size ?? 0,
+        reuseHits: exec.reusedNodes?.length ?? 0,
+        rerunWallMs,
+      };
       conductorUsage = addUsage(conductorUsage, exec.conductorUsage);
       leavesIn += exec.leavesIn;
       leavesOut += exec.leavesOut;
@@ -3351,7 +3442,7 @@ async function runDagInternal(
         '[omd/executor-dag] verifier 未过, 但升级模型 provider 未注册 → 维持弱模型 (不升级)',
       );
     }
-    verification = { pass: verdict.pass, reason: verdict.reason, attempts, escalated, conductorModel };
+    verification = { pass: verdict.pass, reason: verdict.reason, attempts, escalated, conductorModel, ...(circuitBroken ? { circuitBroken: true } : {}) };
   }
 
   // ── 4. bandit reward 回更 (config.router 给则): 最终轮每 leaf 的 (bucket, model) 按
@@ -3388,6 +3479,7 @@ async function runDagInternal(
       verifier: config.verifier ? verifierUsage : undefined,
     },
     verification,
+    ...(blameRetry ? { blameRetry } : {}),
   };
   if (config.onComplete) {
     try {

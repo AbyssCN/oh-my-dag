@@ -30,6 +30,7 @@ import { logger } from './logger';
 import type { ModelUsage } from '../model/gateway';
 import type { ConductorPlan } from './conductor-plan';
 import type { LeafResult } from './dag/engine';
+import type { BlameEntry } from './dag/blame';
 
 export interface VerifierVerdict {
   /** 结果是否满足任务的全部明确要求 (true = 放行)。 */
@@ -73,6 +74,21 @@ export const VERIFIER_VERDICT_SCHEMA = z.object({
   pass: z.coerce.boolean(),
   reason: z.coerce.string(),
 });
+
+/**
+ * D-1 产出侧助手 (SDD 2026-08-10-blame-scoped-node-retry): 把结构化责备集并进判词散文,
+ * 产出 `dag/blame.ts` 的 `parseBlameVerdict` 能解出的 reason。冻结格式同 `BLAME_FENCE`:
+ * ```` ```blame\n<BlameEntry[] JSON>\n``` ````, 围栏外散文原样保留 (人读面不变)。
+ *
+ * **判不出具体节点/产物时别调它** —— 纯散文 reason → 解析 undefined → 下游走现行整轮
+ * fail-open (INV-1, 行为逐字节不变)。entries 为空同样原样返回: 空数组会被解析器当不合形拒掉,
+ * 与「没附围栏」等价 —— 与其发一个注定作废的围栏, 不如不发。
+ * 本函数只做**序列化**, 不做任何解析/校验 —— 责备集语义的唯一实现在 blame.ts (INV-1: 无第二套)。
+ */
+export function withBlameFence(reason: string, entries: BlameEntry[]): string {
+  if (entries.length === 0) return reason;
+  return `${reason}\n\`\`\`blame\n${JSON.stringify(entries)}\n\`\`\``;
+}
 
 /**
  * 把 DAG 结果汇成给 verifier 看的一段 (失败节点标注, 每节点截断防爆 prompt)。
@@ -136,7 +152,20 @@ ${summary}
 
 输出 JSON 两字段:
 - pass (bool): 结果是否满足任务全部明确要求且无捏造。这是裁决。
-- reason (string): pass=false 时**必填** —— 缺哪条要求 / 哪里捏造或不可信 + 重新规划时该怎么修 (机制级, 不是"不够好")。pass=true 时一句话说明已覆盖。`;
+- reason (string): pass=false 时**必填** —— 缺哪条要求 / 哪里捏造或不可信 + 重新规划时该怎么修 (机制级, 不是"不够好")。pass=true 时一句话说明已覆盖。
+
+责备集 (可选输出, 只在你能**确定**失败具体出在哪个节点/产物时用):
+- 「执行结果」里每段以 \`### <id> [状态]\` 开头 —— 那个 <id> 就是 DAG 节点 id, 与计划节点一一对应。
+- 失败能指认具体节点/产物时, 在 reason 里追加一个 \`\`\`blame 围栏, 围栏内是**一行 JSON 数组** (冻结格式, 见 dag/blame.ts 的 BLAME_FENCE), 每条二选一:
+  - {"node": "<节点id>", "reason": "为什么是这个节点"} —— node 逐字照抄 \`### <id>\` 里的 id (写错=点名无效, 不会被定点重跑)。
+  - {"artifact": "<产物标识>", "reason": "为什么是这个产物"} —— 产物不对时才用 (如输出文件路径)。
+  - 多个节点/产物就并列多条; 每条 reason 都是机制级 (缺什么 / 错在哪 / 下轮怎么修)。
+  格式示例 (围栏语言标签 \`blame\` 即协议标记, 不能少):
+  \`\`\`blame
+  [{"node": "draft", "reason": "草稿验收不合格"}]
+  \`\`\`
+- **确定不了**具体是哪个节点/产物 → **不要**附围栏, reason 保持纯散文。判不出节点的打回走整轮重跑, 这是设计内的兜底, 不是失职。
+- 围栏是硬协议: 解析器只认 \`\`\`blame 围栏 + 合法 JSON 数组; 格式错 / 空数组 → 围栏作废 = 整轮重跑 (fail-open)。`;
 }
 
 export interface DefaultVerifierOpts {
