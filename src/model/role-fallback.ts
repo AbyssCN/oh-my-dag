@@ -15,7 +15,11 @@
  * 无 key 时不会兜底 → 仍在 call 时抛无凭证。故必须问"有没有凭证"而非"认不认识"。
  * OAuth provider (kimi-coding, 凭证走 auth.json 非 env key) 由 piHasCredential 正确纳入 → 不误判。
  */
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { assertModelResolvable } from './index';
+import { CLAUDE_SDK_PROVIDER } from './claude-sdk-complete';
 import { getProvider, listProviders } from './providers';
 import { piHasCredential } from './pi-transport';
 import { channelInCooldown } from './provider-health';
@@ -33,7 +37,25 @@ function providerOf(coord: string): string {
  * 或 pi 通道有凭证 (auth.json / env key, OAuth 亦覆盖)。
  */
 function credentialed(provider: string, env: Record<string, string | undefined>): boolean {
+  if (provider === CLAUDE_SDK_PROVIDER) return claudeSdkCredentialed(env);
   return !!getProvider(provider) || piHasCredential(provider, env);
+}
+
+/**
+ * claude-code 订阅通道的凭证判据(issue #6 根因修,2026-08-10)。
+ *
+ * 该通道在 callModel(index.ts:92)走 provider 注册表**之前**的专属分支,凭证由 Agent SDK
+ * 自理(`~/.claude/.credentials.json` 或 `CLAUDE_CODE_OAUTH_TOKEN`)—— 两个源都不在
+ * getProvider / piHasCredential 的可见面上。此前 credentialed 对 claude-code **恒 false**:
+ * 走兜底链的座位(叶)在所有进程静默降档 kimi,而不走兜底链的 completion 路直调成功
+ * (2026-08-10 实测:四座位全 no-credential + 同进程 verifier opus-5 真发成,dag-runs
+ * 7f4c1d54 的叶全是 kimi-coding:k3-256k)。判据对齐 SDK 的两个凭证源;
+ * `CLAUDE_CONFIG_DIR` 是 Claude Code 官方 env —— 测试用它注入 tmp 目录做两向自检。
+ */
+function claudeSdkCredentialed(env: Record<string, string | undefined>): boolean {
+  if (env.CLAUDE_CODE_OAUTH_TOKEN) return true;
+  const dir = env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+  return existsSync(join(dir, '.credentials.json'));
 }
 
 /** 裸 provider 坐标能否解析成可调模型 (有 defaultModel)。兜底目标须过此闸, 否则 'no defaultModel' 崩。 */

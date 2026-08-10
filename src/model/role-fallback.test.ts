@@ -4,10 +4,13 @@
  *     坐席检查纯告警不抛。判据 = 凭证维度 (非 key-blind 的 assertModelResolvable)。
  */
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { clearProviders, registerProvider } from './providers';
 import { setPiTransportDepsForTest } from './pi-transport';
 import { reportProviderFailure, resetProviderCooldowns } from './provider-health';
-import { roleModelWithFallback, resetRoleFallbackWarned, warnUnregisteredRoles } from './role-fallback';
+import { roleModelWithFallback, resetRoleFallbackWarned, warnUnregisteredRoles, usable } from './role-fallback';
 
 const FAKE = { baseUrl: 'http://x.invalid', apiKey: 'k', api: 'openai-compatible' as const };
 // auth.json 指向不存在文件 → piHasCredential 只认显式注册/传入 env, 不被真机 ~/.pi/agent/auth.json 干扰。
@@ -100,5 +103,38 @@ describe('warnUnregisteredRoles (issue #6 起跑坐席)', () => {
     registerProvider('mimo', { ...FAKE, defaultModel: 'mimo-v2.5-pro' });
     registerProvider('deepseek', { ...FAKE, defaultModel: 'deepseek-v4-pro' });
     expect(() => warnUnregisteredRoles({})).not.toThrow();
+  });
+});
+
+describe('claude-code 订阅通道凭证判据 (issue #6 根因修, 2026-08-10)', () => {
+  beforeEach(() => {
+    clearProviders();
+    resetProviderCooldowns();
+    isolateAuth();
+  });
+  afterEach(() => {
+    clearProviders();
+    resetProviderCooldowns();
+  });
+
+  // 反向自检: 把 credentialed 的 CLAUDE_SDK_PROVIDER 分支删掉 → 这条当场红 (回到恒 false 的旧缺陷:
+  // 探测面不认订阅通道, 叶座位在所有进程静默降档 kimi, 见 role-fallback.ts claudeSdkCredentialed 头注)。
+  test('★ 有 SDK 凭证 (CLAUDE_CONFIG_DIR 下有 .credentials.json) → usable', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omd-claude-cred-'));
+    writeFileSync(join(dir, '.credentials.json'), '{}');
+    expect(usable('claude-code:claude-sonnet-5', { CLAUDE_CONFIG_DIR: dir })).toBe(true);
+  });
+
+  test('★ 已知坏样本: 凭证目录不存在且无 token → 仍判 no-credential (修的是盲区不是放水)', () => {
+    expect(usable('claude-code:claude-sonnet-5', { CLAUDE_CONFIG_DIR: '/nonexistent/omd-claude-x' })).toBe(false);
+  });
+
+  test('CLAUDE_CODE_OAUTH_TOKEN 也算凭证 (SDK 第二凭证源, 无盘文件的 CI 形态)', () => {
+    expect(
+      usable('claude-code:claude-sonnet-5', {
+        CLAUDE_CONFIG_DIR: '/nonexistent/omd-claude-x',
+        CLAUDE_CODE_OAUTH_TOKEN: 't',
+      }),
+    ).toBe(true);
   });
 });
