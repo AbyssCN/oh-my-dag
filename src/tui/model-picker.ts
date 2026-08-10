@@ -39,7 +39,20 @@ export interface ModelCatalogDeps {
   providers?: () => string[];
   /** 注入用。默认真的 `listModelIds(provider)`。 */
   models?: (provider: string) => string[];
+  /**
+   * ★ pi-ai 全目录扩展面(2026-08-10,owner:"pi 的 model 全都显示了")。三个字段一起给才生效;
+   * **不给 = 只列 registry**(缺省不偷读真机状态 —— 纯函数的缺省必须是惰性的,否则每条既有
+   * 测试都在量这台机器配了什么)。真机打包在 provider-directory.fullModelCatalogDeps()。
+   */
+  catalogProviders?: () => string[];
+  catalogModels?: (provider: string) => string[];
+  /** 配了凭证的 provider id 集(含 `claude-code`)。目录只出**配了的**家的模型,照 pi 的
+   * "Only showing models from configured providers"。 */
+  configured?: () => ReadonlySet<string>;
 }
+
+/** claude-code 订阅通道:pi 目录里没有这个 id,模型面 = anthropic 条目的裸 id(坐标同形)。 */
+const CLAUDE_CODE_PROVIDER = 'claude-code';
 
 /** 组合出全部候选。**去重**:同一个 `provider:model` 出现两次是配置问题,不该让人看见两行。 */
 export function listModelChoices(deps: ModelCatalogDeps = {}): ModelChoice[] {
@@ -47,12 +60,25 @@ export function listModelChoices(deps: ModelCatalogDeps = {}): ModelChoice[] {
   const models = deps.models ?? ((p: string) => require('../model/models-json').listModelIds(p) as string[]);
   const out: ModelChoice[] = [];
   const seen = new Set<string>();
+  const push = (provider: string, id: string) => {
+    const coord = `${provider}:${id}`;
+    if (seen.has(coord)) return;
+    seen.add(coord);
+    out.push({ provider, id, coord });
+  };
+  // registry 在前:它们是本进程**确定可调**的(有 baseUrl+key);目录条目是"配了凭证按理可用"。
   for (const provider of providers()) {
-    for (const id of models(provider)) {
-      const coord = `${provider}:${id}`;
-      if (seen.has(coord)) continue;
-      seen.add(coord);
-      out.push({ provider, id, coord });
+    for (const id of models(provider)) push(provider, id);
+  }
+  if (deps.catalogProviders && deps.catalogModels && deps.configured) {
+    const configured = deps.configured();
+    for (const provider of deps.catalogProviders()) {
+      if (!configured.has(provider)) continue;
+      for (const id of deps.catalogModels(provider)) push(provider, id);
+    }
+    // 订阅通道派生:配了 claude CLI 就把 anthropic 目录映到 claude-code:*。
+    if (configured.has(CLAUDE_CODE_PROVIDER)) {
+      for (const id of deps.catalogModels('anthropic')) push(CLAUDE_CODE_PROVIDER, id);
     }
   }
   return out;

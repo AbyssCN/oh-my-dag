@@ -911,7 +911,10 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    */
   function seatModelOpts(role: string, now: string): SelectOpts | null {
     const current = now.startsWith('(') || !now ? null : now;
-    const choices = sortChoices(listModelChoices(), current);
+    // 全目录(2026-08-10): registry + configured 的 pi 目录家 + claude-code 派生 —— 照 pi 的
+    // "Only showing models from configured providers"。没配的家不出场, /login 配了自然出现。
+    const { fullModelCatalogDeps } = require('./provider-directory') as typeof import('./provider-directory');
+    const choices = sortChoices(listModelChoices(fullModelCatalogDeps()), current);
     if (choices.length === 0) return null;
     return {
       title: `${role} 换成哪个模型? (${choices.length} 个)`,
@@ -1300,22 +1303,33 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     editor.setText('');
     tui.requestRender();
     try {
-      const { discoverProviders } = require('../config/config-discovery') as typeof import('../config/config-discovery');
+      // ★ 全目录选单(2026-08-10, owner 点名照 pi): pi 目录 38 家 ∪ 探到的 ∪ claude-code,
+      //   配了的排前挂状态 —— 此前只列 discoverProviders() 探到的, 新机器上是空表。
+      const { CLAUDE_CODE_ID, listProviderRows, providerRowLabel } =
+        require('./provider-directory') as typeof import('./provider-directory');
       let provider = t.split(/\s+/)[1] ?? '';
       if (!provider) {
-        const found = discoverProviders(process.env);
+        const rows = listProviderRows();
         const MANUAL = ' manual';
+        const configured = rows.filter((r) => r.status !== 'unconfigured').length;
         const picked = await dialogSelect(dialogs, theme, {
-          title: 'Store a key for which provider?',
+          title: `Configure which provider? (${configured}/${rows.length} configured)`,
           options: [
-            ...found.map((p) => ({ value: p.id, label: `${p.hasKey ? '[set]   ' : '[unset] '}${p.id}` })),
-            { value: MANUAL, label: 'type a provider id…', description: 'works for ones discovery cannot see' },
+            ...rows.map((r) => ({ value: r.id, label: providerRowLabel(r) })),
+            { value: MANUAL, label: 'type a provider id…', description: 'works for ones the catalog cannot see' },
           ],
           search: true,
+          maxVisible: 12,
         });
         if (picked === null) return true; // Esc: 什么都不改
         provider = picked === MANUAL ? ((await dialogInput(dialogs, theme, { title: 'provider id' })) ?? '') : picked;
         if (!provider.trim()) return true;
+      }
+      if (provider.trim() === CLAUDE_CODE_ID) {
+        // 订阅通道没有"落 key"这条路 —— 凭证归 claude CLI 管, 这里指路而不是开一个必失败的输入框。
+        chatLog.appendNotice('claude-code uses the Claude CLI subscription - run `claude login` in a terminal; seats see it automatically.');
+        tui.requestRender();
+        return true;
       }
       const key = await dialogInput(dialogs, theme, { title: `API key for ${provider} (echo is masked)`, mask: true });
       if (key === null || !key.trim()) return true; // Esc / 空: 什么都不改

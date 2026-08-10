@@ -616,10 +616,17 @@ async function scenarioSeat() {
     await new Promise((r) => setTimeout(r, 300));
 
     // 切片⑥: /login 开得出 provider 选择器; Esc 什么都不改 (真落 key 的路径走 headless-config 的单测)。
+    // 2026-08-10 全目录化 (owner 点名照 pi): 标题带 (N/M configured) 计数, 列表是 pi 目录 38 家
+    // ∪ 探到的 ∪ claude-code —— 任何机器上都必有未配的家, 所以 `unconfigured` 恒可见。
     p.write('/login\r');
     check(
-      await waitFor(p, (t) => t.includes('Store a key for which provider?')),
-      'LOGIN-1 ★ /login 开出 provider 选择器(已配/未配标出来)',
+      await waitFor(p, (t) => t.includes('Configure which provider?')),
+      'LOGIN-1 ★ /login 开出 provider 选择器(全目录, 标题带配置计数)',
+      p.text().slice(-500),
+    );
+    check(
+      await waitFor(p, (t) => t.includes('unconfigured')),
+      'LOGIN-1b ★ 已配/未配状态标在行上(pi 形: `id · unconfigured`)',
       p.text().slice(-500),
     );
     p.write('\x1b');
