@@ -69,6 +69,8 @@ import type { DagRunNode } from '../src/harness/dag-record';
 import type { AcceptanceProbe } from '../src/harness/goal/acceptance-gate';
 import { FAILURE_KIND_INFO, FAILURE_KIND_ORDER, type NodeFailureKind } from '../src/harness/node-failure';
 import { RUN_OUTCOME_INFO, RUN_OUTCOME_ORDER, type RunOutcomeKind, type SpendBucket } from '../src/harness/run-outcome';
+import { resolveRoleModel } from '../src/model/role-models';
+import type { McpCallStatus } from '../src/mcp/client/call-ledger';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 统一契约 (src/harness/omd-readout.test.ts 钉死): readout() 是**唯一读数实现**, CLI 只做
@@ -546,6 +548,67 @@ export interface ReadoutResult {
     /** `rounds >= 2`:真转了第二圈 —— ⑧ 的机会**只可能出自这一格**。 */
     turned: number;
   };
+  /**
+   * ⑭ 管线税 (2026-08-10): solve 路 goal-contract 图与 goal-execute 图按 run 归并后的两段对照账。
+   * 全量口径 (闸的判据不搭展示窗口, 同 g4_sampling 那条纪律)。分母只算**两段都记了 usage** 的 run;
+   * verifier 打回三态分列 (列缺 / 记了读不出 / pass:false); 重规划 = 前一条 execute 被 verifier
+   * 打回后, 下一次 execute 的 usage 逐字段增量 (任一侧没记 → null, 不编 0)。
+   */
+  pipeline_tax: {
+    solveRuns: number;
+    bothMeasuredRuns: number;
+    unmeasuredRuns: number;
+    /** 段归属词表 ('goal-contract'/'goal-execute') 外的 plan_name —— 直通 merge 改图名会照在这里。 */
+    unknownPlans: { plan: string; rows: number }[];
+    contractTokens: number;
+    totalTokens: number;
+    /** 分母 0 → null (算不出 ≠ 0%)。 */
+    contractShare: number | null;
+    verifUnrecorded: number;
+    verifUnparsed: number;
+    rejections: number;
+    replans: { runId: string; deltas: { conductorIn: number | null; conductorOut: number | null; leavesIn: number | null; leavesOut: number | null; leavesCacheHit: number | null } }[];
+  };
+  /**
+   * ⑮ 座位健康 (2026-08-10): per-node model vs **读数时刻**座位配置 (CLI 经 resolveRoleModel 解析后
+   * 注入, readout 不自读 env/config)。偏离 = model ≠ 座位期望; kimi-coding 兜底是 issue #6 复发哨;
+   * usage 只在整 run 单模型时聚合 (混合座位不摊账 —— 硬摊 = 编账)。
+   * deviations/kimiFallbackEvents 在没给座位参照时是 null (**算不出 ≠ 0**)。
+   */
+  seat_health: {
+    badNodesRows: number;
+    noModelNodes: number;
+    /** 无座位映射的 kind (command/inproc/research/map…) —— 不编期望不算偏离。 */
+    unmappedKinds: Record<string, number>;
+    deviations: { runId: string; nodeId: string; kind: string; model: string; expected: string }[] | null;
+    kimiFallbackEvents: number | null;
+    byModel: { model: string; nodes: number }[];
+    usageByModel: { model: string; runs: number; tokens: number }[];
+    mixedRuns: number;
+    /** 渲染头注要印参照表, 让「偏离」可核对。 */
+    seatsRef: Record<string, string>;
+  };
+  /**
+   * ⑯ MCP policy (2026-08-10): 第二库 mcp-calls.db 的 calls 表, 七态分列不合并 (词表 =
+   * call-ledger.ts 的 McpCallStatus)。null = **无账** (库或表不在), 不是七格零。
+   */
+  mcp_policy: {
+    byStatus: Record<McpCallStatus, number>;
+    /** 词表外字面量 —— schema 漂移, 不发明新桶。 */
+    unknownStatus: { status: string; n: number }[];
+    byServer: { server: string; byStatus: Record<string, number>; total: number }[];
+    total: number;
+  } | null;
+  /**
+   * ⑰ cache 趋势 (2026-08-10): 记录级时序, created_at 升序取**最近** 20 行 —— 方向与 ⑫ 的
+   * 展示窗口 (最早 limit 个) 相反, 头注已标, 两处数不可比。leavesIn=0 → rate null (zeroIn 单列,
+   * 没跑过 leaf ≠ 0%); usage 没记 → leavesIn/leavesCacheHit null (unmeasured 单列), 不编 0。
+   */
+  cache_trend: {
+    rows: { createdAt: number; runId: string | null; leavesIn: number | null; leavesCacheHit: number | null; rate: number | null }[];
+    zeroIn: number;
+    unmeasured: number;
+  };
 }
 
 /** 单面的样本充分性(`enough=false` 时这一面的比例**不许当结论读**)。 */
@@ -861,12 +924,17 @@ interface ReadoutRow {
   rollback: string | null;
   observations: string | null;
   acceptance_probe: string | null;
+  plan_name: string | null;
+  verification: string | null;
 }
 
 interface ParsedRow {
   id: string;
   createdAt: number;
   runId: string | null;
+  planName: string | null;
+  /** verification 原始 JSON (execute 段 verifier 打回判据; 老行 NULL = 没记)。 */
+  verification: string | null;
   entry: string | null;
   levelIds: string[];
   nodes: DagRunNode[];
@@ -894,7 +962,7 @@ function zeroTwoGridRisk(): ReadoutResult['criteria_grid']['two_grid_risk'] {
 }
 
 /** 空世界 (表不存在或零记录): 合法, 各分布全零, 不是错误。 */
-function emptyWorld(meta: ReadoutResult['meta']): ReadoutResult {
+function emptyWorld(meta: ReadoutResult['meta'], seats?: Record<string, string>, mcpPolicy?: ReadoutResult['mcp_policy']): ReadoutResult {
   return {
     meta,
     runs: [],
@@ -959,6 +1027,16 @@ function emptyWorld(meta: ReadoutResult['meta']): ReadoutResult {
     },
     // 空世界: 闸分母全 0, ledgerGap 记 null = **不知道** (空留痕库不代表没跑过, 只代表这里没有)。
     gate_denominators: { g3LiveRuns: 0, g4Samples: 0, ledgerGap: null },
+    // ⑭-⑰ 四新段的空态: 全零 + 比率 null; 没给座位参照 → 偏离/兜底哨 null (算不出 ≠ 0);
+    // mcp 无账 (库/表不在) → null 不是七格零; cache 零行是空序列不是 0 命中。
+    pipeline_tax: { solveRuns: 0, bothMeasuredRuns: 0, unmeasuredRuns: 0, unknownPlans: [], contractTokens: 0, totalTokens: 0, contractShare: null, verifUnrecorded: 0, verifUnparsed: 0, rejections: 0, replans: [] },
+    seat_health: {
+      badNodesRows: 0, noModelNodes: 0, unmappedKinds: {},
+      deviations: seats === undefined ? null : [], kimiFallbackEvents: seats === undefined ? null : 0,
+      byModel: [], usageByModel: [], mixedRuns: 0, seatsRef: seats ?? {},
+    },
+    mcp_policy: mcpPolicy ?? null,
+    cache_trend: { rows: [], zeroIn: 0, unmeasured: 0 },
   };
 }
 
@@ -1097,13 +1175,48 @@ export function aggregateSuggestionAcceptance(mapsCwd: string): ReadoutResult['s
   acc.dedupe_rate = denom > 0 ? acc.deduped / denom : null;
   return acc;
 }
+/**
+ * ⑯ 第二库 (mcp-calls.db) 的七态分布。**纯函数**: 库/表不在 → null (「无账」, 不是七格零)。
+ * 七态词表 = call-ledger.ts 的 McpCallStatus, 分列不合并; 词表外字面量 → unknownStatus 单列
+ * (schema 漂移, 不发明新桶, 不并进 error)。server NULL → `(没解析到)` (= unknown-tool 那一族)。
+ */
+function computeMcpPolicy(mcpDb: Database | undefined): ReadoutResult['mcp_policy'] {
+  if (!mcpDb) return null;
+  let hasCalls = false;
+  try {
+    hasCalls = mcpDb.query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'calls'`).get() != null;
+  } catch {
+    return null; // 表查不出 = 读不到, 归无账 (读不到 ≠ 零行)
+  }
+  if (!hasCalls) return null;
+  const MCP_STATUSES: readonly McpCallStatus[] = ['ok', 'error', 'rejected-unfetched', 'rejected-args', 'rejected-policy', 'unknown-tool', 'connect-error'];
+  const byStatus = Object.fromEntries(MCP_STATUSES.map((s) => [s, 0])) as Record<McpCallStatus, number>;
+  const unknownStatus = new Map<string, number>();
+  for (const row of mcpDb.query(`SELECT status, COUNT(*) AS n FROM calls GROUP BY status`).all() as { status: string | null; n: number }[]) {
+    if (row.status !== null && row.status in byStatus) byStatus[row.status as McpCallStatus] = row.n;
+    else unknownStatus.set(row.status ?? '(null)', (unknownStatus.get(row.status ?? '(null)') ?? 0) + row.n);
+  }
+  const byServerMap = new Map<string, Record<string, number>>();
+  for (const row of mcpDb.query(`SELECT COALESCE(server, '(没解析到)') AS srv, status, COUNT(*) AS n FROM calls GROUP BY srv, status`).all() as { srv: string; status: string | null; n: number }[]) {
+    const m = byServerMap.get(row.srv) ?? {};
+    const k = row.status ?? '(null)';
+    m[k] = (m[k] ?? 0) + row.n;
+    byServerMap.set(row.srv, m);
+  }
+  const byServer = [...byServerMap.entries()]
+    .map(([server, st]) => ({ server, byStatus: st, total: Object.values(st).reduce((a, b) => a + b, 0) }))
+    .sort((a, b) => b.total - a.total || a.server.localeCompare(b.server));
+  return { byStatus, unknownStatus: [...unknownStatus.entries()].map(([status, n]) => ({ status, n })), byServer, total: byServer.reduce((a, b) => a + b.total, 0) };
+}
 
-export function readout(opts: { db: Database; limit?: number; dbPath?: string; mapsCwd?: string }): ReadoutResult {
+
+export function readout(opts: { db: Database; limit?: number; dbPath?: string; mapsCwd?: string; mcpDb?: Database; seats?: Record<string, string> }): ReadoutResult {
   const limit = opts.limit ?? 20;
   const meta: ReadoutResult['meta'] = { db: opts.dbPath ?? '(injected)', limit, readonly: true };
+  const mcpPolicy = computeMcpPolicy(opts.mcpDb);
   const db = opts.db;
   const hasTable = db.query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'omd_dag_runs'`).get() != null;
-  if (!hasTable) return emptyWorld(meta);
+  if (!hasTable) return emptyWorld(meta, opts.seats, mcpPolicy);
 
   // 老库可能缺后加的列 → 查一次 pragma 再拼, 缺的列补 NULL (正是"这批记录没记"那一格,
   // 与"记了但为空"分开数; 同 CLI ⑦ 段的做法, 不另起一套)。
@@ -1116,12 +1229,15 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
   const optionalCol = (name: string) => (haveCols.includes(name) ? `, ${name}` : `, NULL AS ${name}`);
   const rows = db
     .query(
-      `SELECT id, created_at, levels, nodes, usage${optionalCol('run_id')}${optionalCol('observations')}${optionalCol('entry')}${optionalCol('outcome')}${optionalCol('reused')}${optionalCol('criteria')}${optionalCol('claim_check')}${optionalCol('artifact_move')}${optionalCol('write_race')}${optionalCol('rollback')}${optionalCol('acceptance_probe')}` +
+      `SELECT id, created_at, levels, nodes, usage${optionalCol('run_id')}${optionalCol('observations')}${optionalCol('entry')}${optionalCol('outcome')}${optionalCol('reused')}${optionalCol('criteria')}${optionalCol('claim_check')}${optionalCol('artifact_move')}${optionalCol('write_race')}${optionalCol('rollback')}${optionalCol('acceptance_probe')}${optionalCol('plan_name')}${optionalCol('verification')}` +
         ` FROM omd_dag_runs ORDER BY created_at ASC`,
     )
     .all() as ReadoutRow[];
-  if (rows.length === 0) return emptyWorld(meta);
+  if (rows.length === 0) return emptyWorld(meta, opts.seats, mcpPolicy);
 
+  // ⑮ 的坏行计数: nodes 解析失败/形状不对的行**单列不吞** —— 它们在下面任何数里都看不见,
+  // 不数出来就是静默丢 (同四格「未记」那一格的分寸)。
+  let badNodesRows = 0;
   const parsed: ParsedRow[] = rows.map((r) => {
     // usage 列恒 NOT NULL, 但防御: 记坏了按没记处理 (不编 0 —— 那会把"没记"读成"零用量")。
     let usage: Usage | null = null;
@@ -1149,8 +1265,9 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
     try {
       const n = JSON.parse(r.nodes) as unknown;
       if (Array.isArray(n)) nodes = n as DagRunNode[];
+      else badNodesRows++; // 记了但形状不是数组 —— 坏行, 单列不吞
     } catch {
-      /* 解析失败 = 没记 */
+      badNodesRows++; // 坏 JSON —— 坏行, 单列不吞
     }
     return {
       id: r.id,
@@ -1166,6 +1283,8 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
       reused: r.reused,
       criteria: parseCriteria(r.criteria),
       acceptanceProbe: parseAcceptanceProbe(r.acceptance_probe),
+      planName: r.plan_name,
+      verification: r.verification,
     };
   });
 
@@ -1631,6 +1750,179 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
     wasted_review_share: sa && sa.decided > 0 ? sa.rejected / sa.decided : null,
   };
 
+  // ── ⑭ 管线税 (solve 路 contract vs execute 两段对照, 全量口径) ───────────────
+  // 先按 entry 隔离 (solve, 旧 dag_goal 已归一) 再按 run_id 归并 (复用 byRun 分组);
+  // 段归属按 plan_name **精确**匹配 —— 直通 merge 若改了图名, unknownPlans 会照出来而不是静默归零。
+  const PLAN_CONTRACT = 'goal-contract';
+  const PLAN_EXECUTE = 'goal-execute';
+  const solveByRun = new Map<string, ParsedRow[]>();
+  for (const [runId, recs] of byRun) {
+    const solve = recs.filter((r) => r.entry === 'solve');
+    if (solve.length > 0) solveByRun.set(runId, solve);
+  }
+  // verification 三态: 列缺 (老行 NULL) / 记了读不出 (含 pass 非布尔) / pass:false。分列不合并。
+  const parseVerif = (raw: string | null): { pass: boolean } | 'unrecorded' | 'unparsed' => {
+    if (raw === null) return 'unrecorded';
+    try {
+      const v = JSON.parse(raw) as Partial<{ pass: unknown }>;
+      if (v && typeof v === 'object' && typeof v.pass === 'boolean') return { pass: v.pass };
+    } catch {
+      /* 记了但读不出 = unparsed */
+    }
+    return 'unparsed';
+  };
+  let contractTokens = 0;
+  let totalTokens = 0;
+  let bothMeasuredRuns = 0;
+  let unmeasuredRuns = 0;
+  let verifUnrecorded = 0;
+  let verifUnparsed = 0;
+  let rejections = 0;
+  const unknownPlans = new Map<string, number>();
+  const replans: ReadoutResult['pipeline_tax']['replans'] = [];
+  for (const [runId, recs] of solveByRun) {
+    const contractRecs = recs.filter((r) => r.planName === PLAN_CONTRACT);
+    const executeRecs = recs.filter((r) => r.planName === PLAN_EXECUTE);
+    for (const r of recs) {
+      if (r.planName !== PLAN_CONTRACT && r.planName !== PLAN_EXECUTE) {
+        const p = r.planName ?? '(null)';
+        unknownPlans.set(p, (unknownPlans.get(p) ?? 0) + 1);
+      }
+    }
+    // verifier 打回只数 execute 段行 (被 verifier 审的是执行段); 三态分列, 不合并。
+    for (const r of executeRecs) {
+      const v = parseVerif(r.verification);
+      if (v === 'unrecorded') verifUnrecorded++;
+      else if (v === 'unparsed') verifUnparsed++;
+      else if (!v.pass) rejections++;
+    }
+    // 重规划: execute 段 attempt 按 created_at 升序, 前一条被 verifier 打回 → 记一事件;
+    // 增量逐字段 usage[i] − usage[i-1], 任一侧没记 → 该字段 null (算不出, 不编 0)。
+    const execAsc = [...executeRecs].sort((a, b) => a.createdAt - b.createdAt);
+    for (let i = 1; i < execAsc.length; i++) {
+      const prev = execAsc[i - 1]!;
+      const cur = execAsc[i]!;
+      const prevV = parseVerif(prev.verification);
+      if (prevV === 'unrecorded' || prevV === 'unparsed' || prevV.pass) continue;
+      const delta = (f: 'conductorIn' | 'conductorOut' | 'leavesIn' | 'leavesOut' | 'leavesCacheHit'): number | null =>
+        prev.usage === null || cur.usage === null ? null : cur.usage[f] - prev.usage[f];
+      replans.push({
+        runId,
+        deltas: { conductorIn: delta('conductorIn'), conductorOut: delta('conductorOut'), leavesIn: delta('leavesIn'), leavesOut: delta('leavesOut'), leavesCacheHit: delta('leavesCacheHit') },
+      });
+    }
+    // 占比分母只算**两段都记了 usage** 的 run; 缺任一段 → unmeasuredRuns (不在分母里)。
+    const cMeasured = contractRecs.some((r) => r.usage !== null);
+    const eMeasured = executeRecs.some((r) => r.usage !== null);
+    if (cMeasured && eMeasured) {
+      bothMeasuredRuns++;
+      for (const r of [...contractRecs, ...executeRecs]) {
+        if (r.usage === null) continue;
+        const four = r.usage.conductorIn + r.usage.conductorOut + r.usage.leavesIn + r.usage.leavesOut;
+        totalTokens += four;
+        if (r.planName === PLAN_CONTRACT) contractTokens += four; // cacheHit 是折扣标记, 不进分子
+      }
+    } else {
+      unmeasuredRuns++;
+    }
+  }
+  const pipeline_tax: ReadoutResult['pipeline_tax'] = {
+    solveRuns: solveByRun.size,
+    bothMeasuredRuns,
+    unmeasuredRuns,
+    unknownPlans: [...unknownPlans.entries()].map(([plan, rows]) => ({ plan, rows })).sort((a, b) => a.plan.localeCompare(b.plan)),
+    contractTokens,
+    totalTokens,
+    contractShare: bothMeasuredRuns > 0 ? contractTokens / totalTokens : null,
+    verifUnrecorded,
+    verifUnparsed,
+    rejections,
+    replans,
+  };
+
+  // ── ⑮ 座位健康 (per-node model vs 读数时刻座位配置) ──────────────────────────
+  // kind→seat 映射: conductor→'conductor' 座位, agent→'leaf' 座位; 其余 kind (command/inproc/
+  // research/map…) → unmappedKinds, **不编期望不算偏离**。nodes 是 JSON 文本列, 防御性解析;
+  // 坏行已计进 badNodesRows, 单列不吞。
+  // ⚠ 座位参照是**读数时刻**的解析结果 (CLI 注入, readout 不自读 env) —— 座位配置没有按 run 时点
+  //   落账, run 时点 ≠ 读数时点时这段会把"后来改过配置"读成"当时偏离" (诚实边界同款, 不是缺陷)。
+  const seatForKind: Record<string, string | undefined> = { conductor: 'conductor', agent: 'leaf' };
+  const unmappedKinds: Record<string, number> = {};
+  const deviations: NonNullable<ReadoutResult['seat_health']['deviations']> = [];
+  let noModelNodes = 0;
+  let kimiFallbackEvents = 0;
+  const byModelMap = new Map<string, number>();
+  const usageByModelMap = new Map<string, { runs: number; tokens: number }>();
+  let mixedRuns = 0;
+  for (const r of parsed) {
+    const models = new Set<string>();
+    for (const n of r.nodes) {
+      if (typeof n.model !== 'string') { noModelNodes++; continue; }
+      models.add(n.model);
+      byModelMap.set(n.model, (byModelMap.get(n.model) ?? 0) + 1);
+      const seat = seatForKind[n.kind];
+      if (seat === undefined) {
+        unmappedKinds[n.kind] = (unmappedKinds[n.kind] ?? 0) + 1;
+        continue;
+      }
+      const expected = opts.seats?.[seat];
+      if (expected === undefined) continue; // 该座位没解析出参照 → 判不了偏离 (整表缺席时两格为 null)
+      if (n.model !== expected) {
+        deviations.push({ runId: r.runId ?? `(no-runid):${r.id}`, nodeId: n.id, kind: n.kind, model: n.model, expected });
+        // issue #6 复发哨: 节点用 kimi-coding 而期望座位不是 kimi-coding → 兜底事件
+        if (n.model.split(':')[0] === 'kimi-coding' && expected.split(':')[0] !== 'kimi-coding') kimiFallbackEvents++;
+      }
+    }
+    // usage 只在整 run 单模型时聚合 (混合座位硬摊 = 编账, 照 ⑩ 段那条纪律); usage 没记的 run 不进。
+    if (models.size === 1) {
+      const [m] = [...models];
+      if (r.usage !== null) {
+        const e = usageByModelMap.get(m!) ?? { runs: 0, tokens: 0 };
+        e.runs++;
+        e.tokens += r.usage.conductorIn + r.usage.conductorOut + r.usage.leavesIn + r.usage.leavesOut;
+        usageByModelMap.set(m!, e);
+      }
+    } else if (models.size > 1) {
+      mixedRuns++;
+    }
+  }
+  const seat_health: ReadoutResult['seat_health'] = {
+    badNodesRows,
+    noModelNodes,
+    unmappedKinds,
+    deviations: opts.seats === undefined ? null : deviations,
+    kimiFallbackEvents: opts.seats === undefined ? null : kimiFallbackEvents,
+    byModel: [...byModelMap.entries()].map(([model, nodes]) => ({ model, nodes })).sort((a, b) => b.nodes - a.nodes || a.model.localeCompare(b.model)),
+    usageByModel: [...usageByModelMap.entries()].map(([model, v]) => ({ model, ...v })).sort((a, b) => a.model.localeCompare(b.model)),
+    mixedRuns,
+    seatsRef: opts.seats ?? {},
+  };
+
+  // ── ⑰ cache 趋势 (记录级时序, 取**最近** 20 行) ──────────────────────────────
+  // ⚠ 与 ⑫ 的展示窗口方向相反: 那边取**最早** limit 个 run, 这里取 created_at 升序的**末尾**
+  //   20 条记录 (不归并)。两处切片不同, 数不可比 —— 头注标出, 别读成同一窗口。
+  // leavesIn=0 → rate null (没跑过 leaf ≠ 0%); usage 没记 → leavesIn/leavesCacheHit null (标 —)。
+  const CACHE_TREND_WINDOW = 20;
+  let zeroIn = 0;
+  let unmeasuredTrend = 0;
+  const trendRows: ReadoutResult['cache_trend']['rows'] = [];
+  for (const r of parsed.slice(-CACHE_TREND_WINDOW)) {
+    if (r.usage === null) {
+      unmeasuredTrend++;
+      trendRows.push({ createdAt: r.createdAt, runId: r.runId, leavesIn: null, leavesCacheHit: null, rate: null });
+      continue;
+    }
+    trendRows.push({
+      createdAt: r.createdAt,
+      runId: r.runId,
+      leavesIn: r.usage.leavesIn,
+      leavesCacheHit: r.usage.leavesCacheHit,
+      rate: r.usage.leavesIn > 0 ? r.usage.leavesCacheHit / r.usage.leavesIn : null,
+    });
+    if (r.usage.leavesIn === 0) zeroIn++;
+  }
+  const cache_trend: ReadoutResult['cache_trend'] = { rows: trendRows, zeroIn, unmeasured: unmeasuredTrend };
+
   return {
     meta,
     runs: shown,
@@ -1691,6 +1983,10 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
     suggestion_acceptance: sa,
     gate_denominators,
     reuse_rate: { reused_nodes, total_nodes, rate: total_nodes > 0 ? reused_nodes / total_nodes : null, unknownRuns: reusedUnknownRuns },
+    pipeline_tax,
+    seat_health,
+    mcp_policy: mcpPolicy,
+    cache_trend,
   };
 }
 
@@ -1890,6 +2186,62 @@ function printReadoutHuman(r: ReadoutResult, dbPath: string): void {
     console.log('       这边按**节点面**算(准, 但只覆盖 2026-08-06 之后的记录)。老行在这边算不出, 别读成 0。');
   }
 }
+/** ⑭-⑰ 四新段的渲染 (CLI main 尾部调用; 计算全在 readout(), 这里只印 —— 两处各算一份必漂)。 */
+function printNewSegments(r: ReadoutResult, dbPath: string): void {
+  const pt = r.pipeline_tax;
+  console.log(`\n⑭ 管线税 (solve 路 contract 段 vs execute 段 —— G-3 直通判卷的 before/after 对照板)`);
+  console.log(`   ## 为什么单开一段: 直通入口 merge 的判卷 (SDD G-3: 直通侧 pre-execute ≤ 全程侧 10%) 要一张**只按 entry 隔离、再按 run_id 归并**的两段对照账。①/⑩ 的账把两段图加成一笔, 恰好把要量的东西抹掉了 —— 那是"全程多少钱", 这里要的是"contract 那一段占多少"。`);
+  console.log(`   全量口径 (不受展示窗口截断) · solve run ${pt.solveRuns} · 两段都记了 usage ${pt.bothMeasuredRuns} · 缺账 ${pt.unmeasuredRuns} (不在分母里)`);
+  console.log(`   contract 占已记 token: ${pt.contractShare === null ? '算不出 (分母 0)' : `${(pt.contractShare * 100).toFixed(1)}%`} (${pt.contractTokens}/${pt.totalTokens}, cacheHit 不进分子)`);
+  console.log(`   verifier 打回 ${pt.rejections} · 记了读不出 ${pt.verifUnparsed} · 老行没记 ${pt.verifUnrecorded} (没记 ≠ 没打回)`);
+  if (pt.unknownPlans.length > 0) console.log(`   ⚠ 段归属词表外的 plan_name: ${pt.unknownPlans.map((u) => `${u.plan}×${u.rows}`).join(' · ')} (直通 merge 改图名会照在这里)`);
+  if (pt.replans.length === 0) console.log(`   重规划 0 次`);
+  else {
+    console.log(`   重规划 ${pt.replans.length} 次 (usage 增量, 任一侧没记 → —):`);
+    for (const rp of pt.replans) {
+      const d = rp.deltas;
+      console.log(`     ${rp.runId}: +${d.conductorIn ?? '—'}cIn / +${d.conductorOut ?? '—'}cOut / +${d.leavesIn ?? '—'}lIn / +${d.leavesOut ?? '—'}lOut / +${d.leavesCacheHit ?? '—'}lHit`);
+    }
+  }
+
+  const sh = r.seat_health;
+  console.log(`\n⑮ 座位健康 (per-node model vs 座位配置 —— kimi-coding 兜底是 issue #6 复发哨)`);
+  console.log(`   ## 为什么单开一段: ⑩ 的效率轴只拿 model 去**定价**, 从不问"这个节点坐的座位对不对"。座位修复 (2026-08-10) 落地后, 复发哨必须长在读数板上而不是日志里 —— 日志没人盯, 板有人看。`);
+  if (Object.keys(sh.seatsRef).length > 0) console.log(`   座位参照 (读数时刻): ${Object.entries(sh.seatsRef).map(([s, m]) => `${s}=${m}`).join(' · ')}`);
+  else console.log(`   ⚠ 未给座位参照 → 偏离/兜底哨算不出 (null, 不编 0)`);
+  console.log(`   ⚠ 参照是**读数时刻**的解析结果 —— 座位配置没有按 run 时点落账, run 时点 ≠ 读数时点时这段会把"后来改过配置"读成"当时偏离" (诚实边界同款)。`);
+  console.log(`   偏离 ${sh.deviations === null ? '算不出' : String(sh.deviations.length)} · kimi-coding 兜底 ${sh.kimiFallbackEvents === null ? '算不出' : String(sh.kimiFallbackEvents)} (issue #6 复发哨 · 修后应为 0) · 无 model 老节点 ${sh.noModelNodes} · 坏 JSON 行 ${sh.badNodesRows} (不在下面任何数里)`);
+  const um = Object.entries(sh.unmappedKinds);
+  console.log(`   无座位映射 kind: ${um.length === 0 ? '—' : um.map(([k, v]) => `${k}×${v}`).join(' · ')} (不编期望不算偏离)`);
+  if (sh.deviations !== null && sh.deviations.length > 0) {
+    for (const d of sh.deviations.slice(0, 10)) console.log(`     ${d.runId} ${d.nodeId} [${d.kind}] ${d.model} ≠ 期望 ${d.expected}`);
+    if (sh.deviations.length > 10) console.log(`     …另 ${sh.deviations.length - 10} 条`);
+  }
+  console.log(`   按 model: ${sh.byModel.map((m) => `${m.model}×${m.nodes}节点`).join(' · ') || '—'} · usage 只按单模型 run 聚合: ${sh.usageByModel.map((m) => `${m.model} ${m.runs}run/${m.tokens}tok`).join(' · ') || '—'} · 混合座位 run ${sh.mixedRuns} (不摊账)`);
+
+  const mp = r.mcp_policy;
+  console.log(`\n⑯ MCP policy (.omd/mcp-calls.db · 七态分列不合并)`);
+  console.log(`   ## 为什么单开一段: 它在**另一个库**里 (mcp-calls.db, 与 dag-runs.db 不同文件不同寿命)。七态里 ok 与三种 rejected 的下一步互不相同 (policy 闸太紧 / 调用方没 find / 名字解析坏), 合并成一个 "非 ok" 正是本仓反复付账的那个动作。`);
+  if (mp === null) {
+    console.log(`   无账 (${join(dirname(dbPath), 'mcp-calls.db')} 不存在或没有 calls 表 —— 一次 MCP 调用都没记过, 不是零行)`);
+  } else {
+    console.log(`   七态: ${(['ok', 'error', 'rejected-unfetched', 'rejected-args', 'rejected-policy', 'unknown-tool', 'connect-error'] as const).map((s) => `${s}=${mp.byStatus[s]}`).join(' · ')} (total ${mp.total})`);
+    if (mp.unknownStatus.length > 0) console.log(`   ⚠ 词表外 status: ${mp.unknownStatus.map((u) => `${u.status}×${u.n}`).join(' · ')} (schema 漂移, 不并入任何一格)`);
+    if (mp.byServer.length > 0) console.log(`   按 server: ${mp.byServer.map((s) => `${s.server} ${s.total} (${Object.entries(s.byStatus).map(([st, v]) => `${st}=${v}`).join(' ')})`).join(' · ')}`);
+  }
+
+  const ct = r.cache_trend;
+  console.log(`\n⑰ cache 趋势 (leavesCacheHit/leavesIn · 记录级时序 · 最近 20 行)`);
+  console.log(`   ## 为什么单开一段: ①/⑩ 的 cacheRate 是**窗口均值**, 趋势 (在涨还是在塌) 在均值里不可见。这一段是**记录级时序** —— 口径与 ① 段 run 级不同, 头注标出, 两处的数不可比。`);
+  console.log(`   ⚠ 窗口取 created_at 升序的**最近** 20 行, 与 ⑫ 的展示窗口 (最早 limit 个) 方向相反 —— 不是同一切片。`);
+  console.log(`   created_at       run_id                   leavesIn   hit   rate`);
+  for (const row of ct.rows) {
+    console.log(`   ${String(row.createdAt).padEnd(16)} ${String(row.runId ?? '—').padEnd(21)} ${row.leavesIn === null ? '—'.padEnd(9) : String(row.leavesIn).padEnd(9)} ${row.leavesCacheHit === null ? '—'.padEnd(5) : String(row.leavesCacheHit).padEnd(5)} ${row.rate === null ? '—' : `${(row.rate * 100).toFixed(1)}%`}`);
+  }
+  if (ct.rows.length === 0) console.log(`   (无记录)`);
+  console.log(`   leavesIn=0 的行 ${ct.zeroIn} (没跑过 leaf ≠ 0%) · usage 没记的行 ${ct.unmeasured} (标 —)`);
+}
+
 
 
 interface Row {
@@ -1968,19 +2320,39 @@ if (import.meta.main) {
     console.error('（还没跑过带 runId 的 dag_run / dag_goal 就是空的，这不是错误。）');
     process.exit(3);
   }
+  // ⑯ 第二库 + ⑮ 座位参照: 注入 readout (保持纯函数, readout 不自读 env/文件)。
+  // mcp-calls.db 不存在/打不开 → 不注入 → 段⑯ 印「无账」(读不到 ≠ 零行, 同 countLedgerGap 那条纪律)。
+  // 座位解析失败 (未配) → 不注入 → 段⑮ 的偏离/兜底哨按「算不出」报 (null, 不编 0)。
+  const mcpDbPath = join(dirname(dbPath), 'mcp-calls.db');
+  let mcpDb: Database | undefined;
+  if (existsSync(mcpDbPath)) {
+    try {
+      mcpDb = new Database(mcpDbPath, { readonly: true });
+      mcpDb.run('PRAGMA query_only = ON');
+    } catch {
+      mcpDb = undefined; // 打不开 = 无账
+    }
+  }
+  let seats: Record<string, string> | undefined;
+  try {
+    seats = { conductor: resolveRoleModel('conductor'), leaf: resolveRoleModel('leaf') };
+  } catch {
+    seats = undefined; // 座位没配全 → 参照整表缺席
+  }
 
   // 表不存在 = 一笔记录都没有 (合法空态, 契约要求 exit 0; 老 CLI 会在这里 SELECT 崩掉)。
   if (!hasTable) {
-    const contract = readout({ db, limit, dbPath, mapsCwd: process.cwd() });
+    const contract = readout({ db, limit, dbPath, mapsCwd: process.cwd(), mcpDb, seats });
     if (flags.json) console.log(JSON.stringify({ dbPath, readout: contract }, null, 2));
     else {
       console.log(`留痕库 ${dbPath} 里还没有 omd_dag_runs 表 —— 一次记录都没有 (合法空态, exit 0)。`);
       printReadoutHuman(contract, dbPath);
+      printNewSegments(contract, dbPath);
     }
     db.close();
     process.exit(0);
   }
-  const contract = readout({ db, limit, dbPath, mapsCwd: process.cwd() });
+  const contract = readout({ db, limit, dbPath, mapsCwd: process.cwd(), mcpDb, seats });
 
   // 老库没有 observations / outcome 列 → 整条 SELECT 会崩。列在不在是**运行期事实**, 查一次 pragma
   // 再拼 (缺的那列补 NULL —— 正是"这批记录没记"那一格, 与"记了但是空的"分开数)。
@@ -1998,6 +2370,7 @@ if (import.meta.main) {
   if (rows.length === 0 && !flags.json) {
     console.log(`留痕库 ${dbPath} 里一条记录都没有。`);
     printReadoutHuman(contract, dbPath);
+    printNewSegments(contract, dbPath);
     process.exit(0);
   }
 
@@ -3101,12 +3474,14 @@ if (import.meta.main) {
   console.log('         两者在这块板上分不开 —— 留痕库永久而 journal 跟着 .omd/continuity 走。不假装分得清。');
 
   printReadoutHuman(contract, dbPath);
+  printNewSegments(contract, dbPath);
   console.log(`\n诚实边界: 本板读**两处** —— 留痕库 (永久) + continuity journal (跟着 .omd/continuity 走,`);
   console.log(`清掉就没了)。**它算不出的**: 单节点耗时 (没记)、judge 判词原文 (只存了停止那一条)、`);
   console.log(`conductor 那部分的 $ (它不是节点, 坐标没记 —— ⑩ 里算的是叶子那部分)。`);
   console.log(`不要因为这里没有就当它不存在 —— 那是 \`Unobserved\` 不是 \`Missing\`。\n`);
 
   db.close();
+  mcpDb?.close();
 }
 
 

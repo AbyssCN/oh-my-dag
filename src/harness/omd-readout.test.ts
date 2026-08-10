@@ -1636,3 +1636,167 @@ describe('omd-readout · 注意力轴 (LoopX 对照, 2026-08-05)', () => {
     expect(aa.handback_rate).toBeNull();
   });
 });
+
+describe('omd-readout · ⑭ 管线税 (2026-08-10)', () => {
+  test('solve 路两段对照: contractShare / verifier 打回三态 / 重规划增量 / 词表外 plan 单列不进分母', () => {
+    const db = new Database(':memory:');
+    createDagRecorder({ db });
+    const U = (cIn: number, cOut: number, lIn: number, lOut: number, lHit: number) =>
+      JSON.stringify({ conductorIn: cIn, conductorOut: cOut, leavesIn: lIn, leavesOut: lOut, leavesCacheHit: lHit });
+    const ins = (id: string, createdAt: number, planName: string, runId: string, entry: string, usage: string | null, verification: string | null) =>
+      db.run(
+        `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage, verification) VALUES (?, ?, ?, 1, NULL, ?, ?, '[]', '[]', ?, ?)`,
+        [id, createdAt, planName, runId, entry, usage, verification],
+      );
+    // run-P (dag_goal → 归一 solve): contract → execute(被打回) → execute(通过) → 重规划增量可算
+    ins('p1', 100, 'goal-contract', 'run-P', 'dag_goal', U(10, 20, 300, 50, 120), null);
+    ins('p2', 200, 'goal-execute', 'run-P', 'dag_goal', U(10, 20, 700, 150, 400), JSON.stringify({ pass: false, reason: 'x' }));
+    ins('p3', 300, 'goal-execute', 'run-P', 'dag_goal', U(20, 30, 900, 200, 500), JSON.stringify({ pass: true }));
+    // run-Q: execute 段 usage 没记 → 整 run 进 unmeasuredRuns; verification 记坏 → verifUnparsed
+    ins('q1', 400, 'goal-contract', 'run-Q', 'solve', U(5, 5, 10, 10, 0), null);
+    ins('q2', 500, 'goal-execute', 'run-Q', 'solve', 'null', '{broken');
+    // run-X: 两段都记 (进分母) + 词表外 plan_name 一行 (直通 merge 改名会照在这里) + execute 行 verification 列缺 → verifUnrecorded
+    ins('x1', 600, 'goal-contract', 'run-X', 'solve', U(1, 2, 3, 4, 5), null);
+    ins('x2', 700, 'goal-execute', 'run-X', 'solve', U(1, 2, 3, 4, 5), null);
+    ins('x3', 650, 'goal-contract-fast', 'run-X', 'solve', U(0, 0, 0, 0, 0), null);
+    const pt = readout({ db }).pipeline_tax;
+    expect(pt.solveRuns).toBe(3);
+    expect(pt.bothMeasuredRuns).toBe(2); // run-P + run-X; run-Q 缺 execute 段 usage → 不算
+    expect(pt.unmeasuredRuns).toBe(1);
+    expect(pt.contractTokens).toBe(390); // 380 (run-P contract) + 10 (run-X contract)
+    expect(pt.totalTokens).toBe(2430); // run-P 三行 380+880+1150 + run-X 两行 10+10; x3 词表外不进分母
+    expect(pt.contractShare).toBeCloseTo(390 / 2430, 10);
+    expect(pt.rejections).toBe(1);
+    expect(pt.verifUnparsed).toBe(1);
+    expect(pt.verifUnrecorded).toBe(1); // x2 列缺 (没记 ≠ 没打回)
+    expect(pt.unknownPlans).toEqual([{ plan: 'goal-contract-fast', rows: 1 }]);
+    expect(pt.replans).toEqual([
+      { runId: 'run-P', deltas: { conductorIn: 10, conductorOut: 10, leavesIn: 200, leavesOut: 50, leavesCacheHit: 100 } },
+    ]);
+  });
+});
+
+describe('omd-readout · ⑮ 座位健康 (2026-08-10)', () => {
+  test('偏离 / kimi 兜底哨 / byModel / usageByModel (单模型 run) / mixedRuns / unmappedKinds', () => {
+    const db = new Database(':memory:');
+    createDagRecorder({ db });
+    const seats = { conductor: 'claude-code:claude-fable-5', leaf: 'claude-code:claude-sonnet-5' };
+    const nodesJson = (...ns: { id: string; kind: string; model: string | null }[]) =>
+      JSON.stringify(ns.map((n) => ({ id: n.id, kind: n.kind, status: 'done', deps: [], ...(n.model === null ? {} : { model: n.model }) })));
+    const usage = (v: number) => JSON.stringify({ conductorIn: v, conductorOut: v, leavesIn: v, leavesOut: v, leavesCacheHit: 0 });
+    const ins = (id: string, createdAt: number, runId: string, nodes: string, u: string) =>
+      db.run(`INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage) VALUES (?, ?, 'p', 1, NULL, ?, 'solve', '[]', ?, ?)`, [id, createdAt, runId, nodes, u]);
+    ins('s1', 1, 'run-S', nodesJson({ id: 'c1', kind: 'conductor', model: 'deepseek:deepseek-v4-flash' }, { id: 'a1', kind: 'agent', model: 'deepseek:deepseek-v4-flash' }), usage(5));
+    ins('k1', 2, 'run-K', nodesJson({ id: 'a2', kind: 'agent', model: 'kimi-coding:k3' }), usage(1));
+    ins('m1', 3, 'run-M', nodesJson({ id: 'c3', kind: 'conductor', model: 'deepseek:deepseek-v4-flash' }, { id: 'a3', kind: 'agent', model: 'kimi-coding:k3' }), usage(10));
+    ins('n1', 4, 'run-N', nodesJson({ id: 'a4', kind: 'agent', model: null }), usage(2));
+    ins('c1', 5, 'run-C', nodesJson({ id: 'cmd1', kind: 'command', model: 'deepseek:deepseek-v4-flash' }), usage(0));
+    const sh = readout({ db, seats }).seat_health;
+    expect(sh.deviations!.length).toBe(5); // run-S 2 · run-K 1 · run-M 2
+    expect(sh.kimiFallbackEvents).toBe(2); // run-K a2 + run-M a3 (kimi-coding ≠ 期望 claude-code)
+    expect(sh.noModelNodes).toBe(1); // a4 老节点没记 model (≠ 偏离, ≠ 0)
+    expect(sh.unmappedKinds).toEqual({ command: 1 }); // cmd1 无座位映射, 不编期望
+    expect(sh.byModel).toEqual([
+      { model: 'deepseek:deepseek-v4-flash', nodes: 4 }, // c1+a1+c3+cmd1
+      { model: 'kimi-coding:k3', nodes: 2 },
+    ]);
+    expect(sh.usageByModel).toEqual([
+      { model: 'deepseek:deepseek-v4-flash', runs: 2, tokens: 20 }, // run-S (20) + run-C (0)
+      { model: 'kimi-coding:k3', runs: 1, tokens: 4 },
+    ]);
+    expect(sh.mixedRuns).toBe(1); // run-M 混合座位 → 不摊账
+    expect(sh.seatsRef).toEqual(seats);
+  });
+
+  test('没给座位参照 → deviations/kimiFallbackEvents 是 null (算不出 ≠ 0), 其余照数', () => {
+    const db = new Database(':memory:');
+    createDagRecorder({ db });
+    db.run(`INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage) VALUES ('n1', 1, 'p', 1, NULL, 'r', 'solve', '[]', ?, 'null')`,
+      [JSON.stringify([{ id: 'a', kind: 'agent', status: 'done', deps: [], model: 'kimi-coding:k3' }])]);
+    const sh = readout({ db }).seat_health;
+    expect(sh.deviations).toBeNull();
+    expect(sh.kimiFallbackEvents).toBeNull();
+    expect(sh.byModel).toEqual([{ model: 'kimi-coding:k3', nodes: 1 }]);
+    expect(sh.noModelNodes).toBe(0);
+  });
+});
+
+describe('omd-readout · ⑯ MCP policy (2026-08-10)', () => {
+  test('七态分列不合并; 词表外 status 单列; server NULL 印 (没解析到); 没传 mcpDb → 无账 null', () => {
+    const db = new Database(':memory:');
+    createDagRecorder({ db });
+    const mcpDb = new Database(':memory:');
+    mcpDb.run(`CREATE TABLE calls (ts INTEGER NOT NULL, session TEXT, server TEXT, tool TEXT NOT NULL, status TEXT NOT NULL, error TEXT)`);
+    const ins = (server: string | null, status: string) =>
+      mcpDb.run(`INSERT INTO calls (ts, session, server, tool, status, error) VALUES (1, NULL, ?, 't', ?, NULL)`, [server, status]);
+    ins('filesystem', 'ok');
+    ins('filesystem', 'ok');
+    ins('filesystem', 'error');
+    ins('github', 'rejected-policy');
+    ins('github', 'rejected-unfetched');
+    ins(null, 'unknown-tool');
+    ins(null, 'unknown-tool');
+    ins('x', 'mystery-status');
+    const mp = readout({ db, mcpDb }).mcp_policy!;
+    expect(mp.byStatus).toEqual({
+      ok: 2, error: 1, 'rejected-unfetched': 1, 'rejected-args': 0, 'rejected-policy': 1, 'unknown-tool': 2, 'connect-error': 0,
+    });
+    expect(mp.unknownStatus).toEqual([{ status: 'mystery-status', n: 1 }]);
+    expect(mp.total).toBe(8);
+    const fs = mp.byServer.find((s) => s.server === 'filesystem')!;
+    expect(fs.byStatus).toEqual({ ok: 2, error: 1 });
+    expect(fs.total).toBe(3);
+    const unk = mp.byServer.find((s) => s.server === '(没解析到)')!;
+    expect(unk.byStatus).toEqual({ 'unknown-tool': 2 });
+    // 库没注入 → 整段 null (无账, 不是七格零)
+    expect(readout({ db }).mcp_policy).toBeNull();
+  });
+});
+
+describe('omd-readout · ⑰ cache 趋势 (2026-08-10)', () => {
+  test('记录级时序取**最近** 20 行 (与 ⑫ 方向相反); leavesIn=0 → rate null + zeroIn; usage 没记 → unmeasured', () => {
+    const db = new Database(':memory:');
+    createDagRecorder({ db });
+    const ins = (id: string, createdAt: number, usage: string | null) =>
+      db.run(`INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage) VALUES (?, ?, 'p', 1, NULL, ?, 'solve', '[]', '[]', ?)`, [id, createdAt, id, usage]);
+    for (let i = 0; i < 25; i++) {
+      ins(`c${i}`, i, JSON.stringify({ conductorIn: 0, conductorOut: 0, leavesIn: i % 5 === 0 ? 0 : 10, leavesOut: 0, leavesCacheHit: i % 5 === 0 ? 0 : 3 }));
+    }
+    ins('c-null', 100, 'null'); // usage 没记 (JSON null)
+    const ct = readout({ db }).cache_trend;
+    expect(ct.rows.length).toBe(20); // 26 行取末尾 20
+    expect(ct.rows[0]!.createdAt).toBe(6); // 窗口从 c6 开始 —— 证明是**最近** 20 行, 不是最早
+    expect(ct.rows.find((x) => x.createdAt === 24)!.rate).toBeCloseTo(0.3, 10);
+    expect(ct.rows.find((x) => x.createdAt === 20)!.rate).toBeNull(); // leavesIn=0 → 算不出
+    expect(ct.rows.at(-1)).toEqual({ createdAt: 100, runId: 'c-null', leavesIn: null, leavesCacheHit: null, rate: null });
+    expect(ct.zeroIn).toBe(3); // c10/c15/c20 在窗口内 leavesIn=0
+    expect(ct.unmeasured).toBe(1);
+  });
+});
+
+describe('omd-readout · ⑭-⑰ 空态与防御 (2026-08-10)', () => {
+  test('空库: 四段各自空态 —— 全零 + 比率 null, mcp 无账 null, cache 空序列 (不编数)', () => {
+    const db = new Database(':memory:');
+    createDagRecorder({ db });
+    const r = readout({ db });
+    expect(r.pipeline_tax).toEqual({
+      solveRuns: 0, bothMeasuredRuns: 0, unmeasuredRuns: 0, unknownPlans: [],
+      contractTokens: 0, totalTokens: 0, contractShare: null,
+      verifUnrecorded: 0, verifUnparsed: 0, rejections: 0, replans: [],
+    });
+    expect(r.seat_health.badNodesRows).toBe(0);
+    expect(r.seat_health.deviations).toBeNull(); // 没给座位参照 → 算不出
+    expect(r.seat_health.kimiFallbackEvents).toBeNull();
+    expect(r.mcp_policy).toBeNull(); // 无账, 不是七格零
+    expect(r.cache_trend).toEqual({ rows: [], zeroIn: 0, unmeasured: 0 });
+  });
+
+  test('坏 JSON nodes 行 → badNodesRows 单列不吞, 整块板不炸', () => {
+    const db = new Database(':memory:');
+    createDagRecorder({ db });
+    db.run(`INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage) VALUES ('bad', 1, 'p', 1, NULL, 'r', 'solve', '[]', '{oops', 'null')`);
+    const r = readout({ db });
+    expect(r.seat_health.badNodesRows).toBe(1);
+    expect(r.runs.length).toBe(1); // 坏行不吞, 板照常出数
+  });
+});
