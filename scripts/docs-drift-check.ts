@@ -4,7 +4,7 @@
  *
  *   bun run scripts/docs-drift-check.ts          # 全绿 exit 0 (打印各项计数), 任一项失败 exit 1
  *
- * ## 它守哪四件事
+ * ## 它守哪五件事
  *
  *   ① 锚点存在   反引号内引用的 `src/...` / `scripts/...` 路径, 逐一验证盘上真有
  *                (`路径:行号` 只取路径部分; 含 `*` 的 glob 跳过 —— 那是模式不是锚点)
@@ -12,11 +12,15 @@
  *   ③ mermaid 健全  围栏闭合 · 块内 subgraph/end 配平 · `class X y` 引用的 classDef 已定义
  *   ④ 双语结构   README.md 与 README.zh-CN.md 的二级标题 (`## `) 数量一致
  *                (标题**文本**不要求相同 —— 那是翻译; 数量不同才是漏译了一整节)
+ *   ⑤ 引用可达   `![](path)` / `<img src=path>` 的图片, 以及 `[x](path.md)` 的仓内 md 链接,
+ *                按**所在文档的目录**解析后验证盘上存在 (`#片段` 只验文件部分;
+ *                http(s)/mailto/ 站点绝对路径 `/x` 跳过)。死链与坏图就是漂移。
  *
  * ## 扫描面: 只扫"写给读者看的", 不扫台账
  *
- * README.md · README.zh-CN.md · docs/*.md (仅顶层) · docs/diagrams/*.md。
- * **docs/plan/ · docs/handoff/ · docs/notes/ 等子目录一概不扫** —— 那是历史记录,
+ * README.md · README.zh-CN.md · docs/*.md (仅顶层) · docs/guide/*.md ·
+ * docs/architecture/*.md · docs/diagrams/*.md。目录不存在就跳过 (重组过渡期两种状态都不炸)。
+ * **docs/plan/ · docs/handoff/ · docs/notes/ 等台账子目录一概不扫** —— 那是历史记录,
  * 引用一个当时存在、今天已删的文件是**正确的**, 拿锚点闸去修它等于篡改历史。
  *
  * ## ③ 的局限: 这是轻量 lint, **不是完整 mermaid parse**
@@ -32,20 +36,22 @@
  *
  * `scripts/docs-drift-check.test.ts` 对**内置的坏 fixture 字符串**跑同一批纯函数并断言
  * 拿到 finding: 断锚点 (`src/nope/gone.ts`) · 少一个 `end` 的 subgraph · 没闭合的围栏 ·
- * 引用未定义 classDef 的 `class` 行 · 徽章数字与注册数不符 · 双语二级标题数不等。
+ * 引用未定义 classDef 的 `class` 行 · 徽章数字与注册数不符 · 双语二级标题数不等 ·
+ * 指向不存在图片的 `![](assets/diagrams/nope.svg)` 与指向已删文档的 `[x](../nope.md)`。
  * 每条都配一个**同形状但正确**的样本断言零 finding —— 只证"会红"不证"该绿时不红",
  * 会养出一条永远红的闸, 同样没用。
  *
- * 手工证伪: 往 docs/architecture.md 里加一行 `` `src/nope/gone.ts` ``, 重跑本脚本,
- * 应当 exit 1 并指名那一行。改不红 = 闸坏了。
+ * 手工证伪: ① 往 docs/README.md 里加一行 `` `src/nope/gone.ts` ``;
+ * ⑤ 往同一份里加一行 `![x](../assets/diagrams/nope.svg)` 或 `[x](nope.md)`。
+ * 重跑本脚本, 都应当 exit 1 并指名那一行。改不红 = 闸坏了。
  *
  * ## 分层
  *
- * 纯函数 (checkAnchors / checkToolCount / checkMermaid / checkBilingualHeadings) 吃字符串
- * 出 Finding[], 零 I/O; main 入口薄, 只负责读盘 + 排版 + 定退出码。
+ * 纯函数 (checkAnchors / checkToolCount / checkMermaid / checkBilingualHeadings /
+ * checkRefs) 吃字符串出 Finding[], 零 I/O; main 入口薄, 只负责读盘 + 排版 + 定退出码。
  */
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { dirname, join, normalize, relative } from 'node:path';
 import { TOOL_RENAMES } from '../src/mcp/tool-renames';
 
 const ROOT = new URL('..', import.meta.url).pathname;
@@ -373,14 +379,134 @@ export function checkBilingualHeadings(en: DocFile, zh: DocFile): Finding[] {
   ];
 }
 
+// ── ⑤ 引用可达 (图片 + 仓内 md 链接) ──────────────────────────────────────
+
+/** 一条从文档指出去的引用。`target` 是**原样**的链接目标, 还没解析。 */
+export interface DocRef {
+  line: number;
+  target: string;
+  kind: 'image' | 'link';
+}
+
+/** `![alt](path)` —— alt 里不许有 `]`, 目标取到第一个空白 (后面可能跟 `"title"`)。 */
+const IMAGE_MD_RE = /!\[[^\]]*\]\(\s*([^)\s]+)[^)]*\)/g;
+/** `<img src="path">` —— 单双引号都吃, 大小写不敏感。 */
+const IMAGE_HTML_RE = /<img\b[^>]*?\bsrc\s*=\s*["']([^"']*)["']/gi;
+/** `[text](path)` —— 只在**图片已被抹掉**的行上跑, 否则 `[![alt](img)](link)` 会认成图片那层。 */
+const LINK_MD_RE = /\[[^\]]*\]\(\s*([^)\s]+)[^)]*\)/g;
+/** 带 scheme 的 (`https:` `mailto:` `data:`) 或协议相对的 (`//cdn/...`) —— 仓外, 本闸管不着。 */
+const EXTERNAL_RE = /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i;
+
+/**
+ * 取出一份文档里所有图片与链接引用。围栏内的不算 —— 那是语法示例, 不是真引用。
+ *
+ * 图片先扫、再从行里抹掉才扫链接: 徽章那种 `[![alt](img)](target)` 嵌套形状,
+ * 不抹的话链接正则会先咬住内层的 img url, 外层真正的 target 反而漏掉。
+ */
+export function extractRefs(doc: DocFile): DocRef[] {
+  const out: DocRef[] = [];
+  const lines = doc.text.split('\n');
+  const inFence = fenceMask(lines);
+  for (let i = 0; i < lines.length; i++) {
+    if (inFence[i]) continue;
+    const line = lines[i]!;
+    for (const m of line.matchAll(IMAGE_MD_RE)) out.push({ line: i + 1, target: m[1]!, kind: 'image' });
+    for (const m of line.matchAll(IMAGE_HTML_RE)) out.push({ line: i + 1, target: m[1]!, kind: 'image' });
+    const stripped = line.replace(IMAGE_MD_RE, (s) => ' '.repeat(s.length));
+    for (const m of stripped.matchAll(LINK_MD_RE)) out.push({ line: i + 1, target: m[1]!, kind: 'link' });
+  }
+  return out;
+}
+
+/**
+ * 把一个链接目标解析成**相对仓根**的路径; null = 不该验 (仓外 / 纯锚点 / 站点绝对路径)。
+ *
+ * 相对**文档自己的目录**解析 —— docs/architecture/overview.md 里的 `../README.md`
+ * 指的是 docs/README.md, 不是仓根那份。重组之后跨目录相对链接遍地都是, 这一跳不能省。
+ */
+export function resolveRef(docPath: string, target: string): string | null {
+  let t = target.trim();
+  if (t.startsWith('<') && t.endsWith('>')) t = t.slice(1, -1); // `[x](<path>)`
+  t = t.split('#')[0]!; // `#anchor` 片段只验文件部分; 纯锚点会剩空串
+  if (!t || EXTERNAL_RE.test(t) || t.startsWith('/')) return null;
+  let decoded = t;
+  try {
+    decoded = decodeURIComponent(t);
+  } catch {
+    /* 不是合法 percent-encoding, 按字面路径处理 */
+  }
+  const p = normalize(join(dirname(docPath), decoded));
+  return p.startsWith('..') ? null : p; // 指到仓外
+}
+
+/** 这条引用要不要验存在: 图片一律验; 链接只验仓内 `.md` (目录链接/LICENSE 等不在口径内)。 */
+function refWorthChecking(ref: DocRef, resolved: string): boolean {
+  return ref.kind === 'image' || resolved.toLowerCase().endsWith('.md');
+}
+
+/**
+ * ⑤ 图片与仓内 md 链接逐一验证盘上存在。`exists` 同 ① 注入, 于是零 I/O 可测。
+ *
+ * 台账 (ANCHOR_EXEMPT) 只豁免**链接**那一半 —— 理由与 ① 同: 历史记录指向当时存在、
+ * 今天已删的文档是正确的。图片不豁免: 坏图对读者就是一个碎图标, 跟这份文档讲的是不是
+ * 历史无关。
+ */
+export function checkRefs(docs: DocFile[], exists: (path: string) => boolean): Finding[] {
+  const out: Finding[] = [];
+  for (const doc of docs) {
+    for (const ref of extractRefs(doc)) {
+      const resolved = resolveRef(doc.path, ref.target);
+      if (resolved === null || !refWorthChecking(ref, resolved)) continue;
+      if (ref.kind === 'link' && ANCHOR_EXEMPT.has(doc.path)) continue;
+      if (exists(resolved)) continue;
+      out.push(
+        ref.kind === 'image'
+          ? {
+              file: doc.path,
+              line: ref.line,
+              what: `图片指向盘上不存在的文件: ${ref.target} (解析为 ${resolved})`,
+              fix: `确认图片是没生成还是被改名/挪了位 —— 生成它, 或把这条引用改到真实路径 (路径按本文档所在目录解析, 跨目录记得写 ../)。`,
+            }
+          : {
+              file: doc.path,
+              line: ref.line,
+              what: `链接指向盘上不存在的文档: ${ref.target} (解析为 ${resolved})`,
+              fix: `死链。文档被挪走就更新这条链接 (相对本文档目录写), 被删了就把这句话一起删。`,
+            },
+      );
+    }
+  }
+  return out;
+}
+
+/** ⑤ 实际验了几条 (含通过的) —— 同 countAnchors, "0 失败"要能和"0 扫到"分开。 */
+export function countRefs(docs: DocFile[], kind: DocRef['kind']): number {
+  let n = 0;
+  for (const doc of docs) {
+    for (const ref of extractRefs(doc)) {
+      if (ref.kind !== kind) continue;
+      const resolved = resolveRef(doc.path, ref.target);
+      if (resolved === null || !refWorthChecking(ref, resolved)) continue;
+      if (ref.kind === 'link' && ANCHOR_EXEMPT.has(doc.path)) continue;
+      n++;
+    }
+  }
+  return n;
+}
+
 // ── 编排层: 唯一碰磁盘的地方 ──────────────────────────────────────────────
 
-/** 待扫的文档: 两份 README + docs 顶层 + docs/diagrams。子目录 (plan/handoff/...) 一概不进。 */
+/**
+ * 待扫的文档: 两份 README + docs 顶层 + docs/guide + docs/architecture + docs/diagrams。
+ *
+ * 目录不存在就跳过 —— docs 重组把顶层文件往 guide/ architecture/ 里搬, 搬之前搬之后
+ * 这条闸都得能跑。台账子目录 (plan/ handoff/ notes/ ...) 一概不进。
+ */
 export function scanTargets(root: string): string[] {
   const out = ['README.md', 'README.zh-CN.md'];
-  for (const dir of ['docs', join('docs', 'diagrams')]) {
+  for (const dir of ['docs', join('docs', 'guide'), join('docs', 'architecture'), join('docs', 'diagrams')]) {
     const abs = join(root, dir);
-    if (!existsSync(abs)) continue;
+    if (!existsSync(abs) || !statSync(abs).isDirectory()) continue;
     for (const e of readdirSync(abs).sort()) {
       const p = join(abs, e);
       if (statSync(p).isFile() && e.endsWith('.md')) out.push(relative(root, p));
@@ -407,9 +533,11 @@ function main(): number {
   const docs: DocFile[] = scanTargets(ROOT).map((p) => ({ path: p, text: readFileSync(join(ROOT, p), 'utf8') }));
   const byPath = new Map(docs.map((d) => [d.path, d]));
 
+  const onDisk = (p: string) => existsSync(join(ROOT, p));
   const registered = countRegisteredTools(mcpSources(ROOT));
-  const anchorFindings = checkAnchors(docs, (p) => existsSync(join(ROOT, p)));
+  const anchorFindings = checkAnchors(docs, onDisk);
   const mermaidFindings = docs.flatMap(checkMermaid);
+  const refFindings = checkRefs(docs, onDisk);
 
   const en = byPath.get('README.md');
   const zh = byPath.get('README.zh-CN.md');
@@ -423,6 +551,10 @@ function main(): number {
     {
       label: `④ 双语结构 (README.md ${en ? countH2(en.text) : '?'} 节 vs README.zh-CN.md ${zh ? countH2(zh.text) : '?'} 节)`,
       findings: bilingualFindings,
+    },
+    {
+      label: `⑤ 引用可达 (${countRefs(docs, 'image')} 张仓内图片 + ${countRefs(docs, 'link')} 条仓内 md 链接)`,
+      findings: refFindings,
     },
   ];
 

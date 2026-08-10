@@ -9,22 +9,40 @@
  * 全部 fixture 都是本文件内的字面量字符串, `exists` 也是注入的纯函数 —— 零磁盘零网络,
  * 于是这些断言不会因为别人改了 docs/ 而随机变色 (那是 main 入口的活, 不是判据的活)。
  */
-import { describe, expect, test } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, describe, expect, test } from 'bun:test';
 import {
   checkAnchors,
   checkBilingualHeadings,
   checkMermaid,
+  checkRefs,
   checkToolCount,
   countAnchors,
   countH2,
   countMermaidBlocks,
+  countRefs,
   countRegisteredTools,
+  extractRefs,
   normalizeAnchor,
+  resolveRef,
+  scanTargets,
   type DocFile,
 } from './docs-drift-check';
 
 /** 盘上"存在"的东西 —— 注入版, 于是判据可测且与真实仓状态解耦。 */
-const ON_DISK = new Set(['src/model/seats.ts', 'scripts/omd-doctor.ts', 'src/mcp']);
+const ON_DISK = new Set([
+  'src/model/seats.ts',
+  'scripts/omd-doctor.ts',
+  'src/mcp',
+  'assets/diagrams/engine-flow.svg',
+  'assets/diagrams/tui.gif',
+  'README.md',
+  'docs/README.md',
+  'docs/guide/tui.md',
+  'docs/architecture/overview.md',
+]);
 const exists = (p: string) => ON_DISK.has(p);
 
 const doc = (path: string, text: string): DocFile => ({ path, text });
@@ -187,5 +205,187 @@ describe('④ 双语结构对照', () => {
   test('围栏内的 ## 不算标题', () => {
     expect(countH2(['## One', '```bash', '## 这是注释不是标题', '```'].join('\n'))).toBe(1);
     expect(countH2(['### 三级不算', '## 二级算', '##没空格不算'].join('\n'))).toBe(1);
+  });
+});
+
+describe('⑤ 引用可达 —— 图片', () => {
+  test('图片指向盘上没有的文件 → 报到具体行, 并同时给原样目标与解析结果', () => {
+    const text = ['# t', '', '![流程图](../assets/diagrams/engine-flow.svg)', '![不存在](../assets/diagrams/nope.svg)'];
+    const f = checkRefs([doc('docs/README.md', text.join('\n'))], exists);
+    expect(f).toHaveLength(1);
+    expect(f[0]!.line).toBe(4);
+    expect(f[0]!.what).toContain('../assets/diagrams/nope.svg');
+    expect(f[0]!.what).toContain('assets/diagrams/nope.svg'); // 解析后的仓根相对路径
+    expect(f[0]!.fix.length).toBeGreaterThan(0);
+  });
+
+  test('图片都在盘上 → 零 finding (证明它不是永远红)', () => {
+    const text = '![流程](assets/diagrams/engine-flow.svg) 与 ![TUI](assets/diagrams/tui.gif)';
+    expect(checkRefs([doc('README.md', text)], exists)).toEqual([]);
+  });
+
+  test('<img src> 形式一样认 —— README 里 HTML 图片不比 markdown 图片少见', () => {
+    const bad = checkRefs([doc('README.md', '<img src="assets/diagrams/nope.gif" width="600">')], exists);
+    expect(bad).toHaveLength(1);
+    expect(bad[0]!.what).toContain('assets/diagrams/nope.gif');
+    expect(checkRefs([doc('README.md', "<img src='assets/diagrams/tui.gif'>")], exists)).toEqual([]);
+  });
+
+  test('http(s) 图片跳过 —— 徽章不归本闸管', () => {
+    const badge = '[![MCP server: 49 tools](https://img.shields.io/badge/x-49-c9a227)](docs/README.md)';
+    expect(checkRefs([doc('README.md', badge)], exists)).toEqual([]);
+  });
+
+  test('嵌套徽章里外层链接照样验 —— 不抹掉图片那层就会漏掉它', () => {
+    const badge = '[![MCP server: 49 tools](https://img.shields.io/badge/x-49-c9a227)](docs/nope.md)';
+    const f = checkRefs([doc('README.md', badge)], exists);
+    expect(f).toHaveLength(1);
+    expect(f[0]!.what).toContain('docs/nope.md');
+  });
+
+  test('图片在台账里也不豁免 —— 坏图对读者就是碎图标, 与"这是历史记录"无关', () => {
+    const f = checkRefs([doc('docs/silent-failures.md', '![旧图](assets/diagrams/nope.svg)')], exists);
+    expect(f).toHaveLength(1);
+  });
+});
+
+describe('⑤ 引用可达 —— 仓内 md 链接', () => {
+  test('死链 → 报到具体行', () => {
+    const text = ['# t', '细节见 [架构](architecture/overview.md)。', '还有 [没了](guide/gone.md)。'];
+    const f = checkRefs([doc('docs/README.md', text.join('\n'))], exists);
+    expect(f).toHaveLength(1);
+    expect(f[0]!.line).toBe(3);
+    expect(f[0]!.what).toContain('guide/gone.md');
+  });
+
+  test('链接都在盘上 → 零 finding', () => {
+    const text = '见 [架构](architecture/overview.md) 与 [TUI](guide/tui.md)。';
+    expect(checkRefs([doc('docs/README.md', text)], exists)).toEqual([]);
+  });
+
+  test('跨目录相对链接按**本文档所在目录**解析, 不是按仓根', () => {
+    // 仓根与 docs/ 下各有一份 README.md, 于是"按谁解析"这一跳只有 resolveRef 的
+    // 逐字断言能钉死 —— checkRefs 那一层两种解析都会得到一个存在的文件, 分不出来。
+    expect(resolveRef('docs/architecture/overview.md', '../README.md')).toBe('docs/README.md');
+    expect(resolveRef('docs/architecture/overview.md', '../../README.md')).toBe('README.md');
+    expect(resolveRef('docs/architecture/overview.md', '../guide/tui.md')).toBe('docs/guide/tui.md');
+    expect(checkRefs([doc('docs/architecture/overview.md', '[上一层](../guide/tui.md)')], exists)).toEqual([]);
+    const f = checkRefs([doc('docs/architecture/overview.md', '[上一层](../guide/nope.md)')], exists);
+    expect(f).toHaveLength(1);
+  });
+
+  test('`#片段` 只验文件部分; 纯锚点跳过', () => {
+    expect(resolveRef('docs/README.md', 'guide/tui.md#键位')).toBe('docs/guide/tui.md');
+    expect(resolveRef('docs/README.md', '#中文速览')).toBeNull();
+    expect(checkRefs([doc('docs/README.md', '见 [键位](guide/tui.md#键位) 与 [下面](#中文速览)')], exists)).toEqual([]);
+    expect(checkRefs([doc('docs/README.md', '见 [键位](guide/nope.md#键位)')], exists)).toHaveLength(1);
+  });
+
+  test('仓外 / 站点绝对 / 带 scheme 的目标一概跳过 —— 本闸管不着', () => {
+    expect(resolveRef('README.md', 'https://example.com/a.md')).toBeNull();
+    expect(resolveRef('README.md', 'mailto:x@y.z')).toBeNull();
+    expect(resolveRef('README.md', '//cdn.example.com/a.svg')).toBeNull();
+    expect(resolveRef('README.md', '/docs/a.md')).toBeNull();
+    expect(resolveRef('README.md', '../outside-the-repo.md')).toBeNull();
+  });
+
+  test('非 .md 链接不验 —— 目录链接 / LICENSE / .env.example 不在本闸口径内', () => {
+    const text = '见 [图集](diagrams/) · [许可](../LICENSE) · [样例配置](../.env.example)';
+    expect(checkRefs([doc('docs/README.md', text)], exists)).toEqual([]);
+  });
+
+  test('围栏内的链接与图片不算 —— 那是语法示例', () => {
+    const text = ['```md', '[x](nope.md)', '![y](nope.svg)', '```'].join('\n');
+    expect(checkRefs([doc('docs/README.md', text)], exists)).toEqual([]);
+    expect(extractRefs(doc('docs/README.md', text))).toEqual([]);
+  });
+
+  test('台账文件的 md 链接豁免 —— 同内容换个名字就得红 (豁免不是漏检)', () => {
+    const body = '当时那份 [笔记](guide/gone.md) 已经删了。';
+    expect(checkRefs([doc('docs/silent-failures.md', body)], exists)).toEqual([]);
+    expect(checkRefs([doc('docs/worktrees-archive.md', body)], exists)).toEqual([]);
+    expect(checkRefs([doc('docs/README.md', body)], exists)).toHaveLength(1);
+  });
+
+  test('countRefs 数的是"验了几条"不是"过了几条" (0 失败 ≠ 0 扫到)', () => {
+    const d = doc(
+      'docs/README.md',
+      ['![a](assets/diagrams/engine-flow.svg)', '[b](guide/tui.md) [c](diagrams/) [d](https://x.com/e.md)'].join('\n'),
+    );
+    expect(countRefs([d], 'image')).toBe(1); // 图片 1 张
+    expect(countRefs([d], 'link')).toBe(1); // 仓内 md 链接只有 guide/tui.md
+    expect(countRefs([doc('docs/README.md', '这里什么引用都没有')], 'link')).toBe(0);
+  });
+});
+
+/**
+ * scanTargets 是本文件里**唯一**碰磁盘的一块 —— 因为它守的就是"目录在不在盘上"。
+ * 但它碰的是 mkdtemp 出来的**假仓**, 不是本仓的 docs/, 所以照样不会因为别人改文档而变色。
+ *
+ * 守的判据: docs 重组把顶层文件往 guide/ architecture/ 里搬, **搬之前和搬之后都得能跑**。
+ * 证伪: 把 scanTargets 里的 `if (!existsSync(abs)) continue` 删掉, "重组前"那条会抛。
+ */
+describe('扫描面 (scanTargets)', () => {
+  const roots: string[] = [];
+  const fakeRepo = (files: string[]): string => {
+    const root = mkdtempSync(join(tmpdir(), 'docs-drift-'));
+    roots.push(root);
+    for (const f of files) {
+      const abs = join(root, f);
+      mkdirSync(join(abs, '..'), { recursive: true });
+      writeFileSync(abs, '# t\n');
+    }
+    return root;
+  };
+  afterAll(() => {
+    for (const r of roots) rmSync(r, { recursive: true, force: true });
+  });
+
+  test('重组前 (guide/ architecture/ 都还不存在) → 不抛, 扫到顶层与 diagrams', () => {
+    const root = fakeRepo([
+      'README.md',
+      'README.zh-CN.md',
+      'docs/README.md',
+      'docs/architecture.md',
+      'docs/diagrams/01-engine-flow.md',
+      'docs/plan/2026-08-10-x.md',
+    ]);
+    expect(scanTargets(root)).toEqual([
+      'README.md',
+      'README.zh-CN.md',
+      'docs/README.md',
+      'docs/architecture.md',
+      'docs/diagrams/01-engine-flow.md',
+    ]);
+  });
+
+  test('重组后 → guide/ 与 architecture/ 进扫描面, 台账子目录仍然一条都不进', () => {
+    const root = fakeRepo([
+      'README.md',
+      'README.zh-CN.md',
+      'docs/README.md',
+      'docs/silent-failures.md',
+      'docs/guide/tui.md',
+      'docs/architecture/overview.md',
+      'docs/diagrams/01-engine-flow.md',
+      'docs/plan/2026-08-10-x.md',
+      'docs/handoff/y.md',
+      'docs/notes/z.md',
+      'docs/adr/0001.md',
+    ]);
+    expect(scanTargets(root)).toEqual([
+      'README.md',
+      'README.zh-CN.md',
+      'docs/README.md',
+      'docs/silent-failures.md',
+      'docs/guide/tui.md',
+      'docs/architecture/overview.md',
+      'docs/diagrams/01-engine-flow.md',
+    ]);
+  });
+
+  test('非 .md 与子目录本身不进扫描面', () => {
+    const root = fakeRepo(['README.md', 'docs/guide/tui.md', 'docs/guide/screenshot.png', 'docs/guide/deep/nested.md']);
+    expect(scanTargets(root)).toEqual(['README.md', 'docs/guide/tui.md']);
   });
 });
