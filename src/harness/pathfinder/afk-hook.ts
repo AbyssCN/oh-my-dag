@@ -17,7 +17,7 @@ import { computeFrontier } from './frontier';
 import { researchResultPath } from './dispatch';
 import { distill, MAX_CHILDREN_PER_TICKET, parseChildren } from './result-format';
 import type { PathBackend } from './backend';
-import type { PathMap, Ticket } from './types';
+import type { PathMap, Ticket, WaitingLogEntry } from './types';
 
 // distill / parseChildren 的真身在 result-format.ts (双端共享契约); 这里 re-export 兼容既有 import。
 export { distill, parseChildren } from './result-format';
@@ -138,6 +138,20 @@ export interface WatchDeps {
   setInterval?: (fn: () => void, ms: number) => unknown;
   /** 注入式清定时器 (默认 = globalThis.clearInterval)。 */
   clearInterval?: (handle: unknown) => void;
+  /**
+   * D-5/G-5 (O-1 终裁, 2026-08-11): 每 tick 顺带扫一遍"等人裁超时"。注入的是**后端的**
+   * `sweepWaiting` 闭包 (`(now) => backend.sweepWaiting!(cwd, slug, { now })`) —— watcher 本身
+   * 不认后端, 也不认超时判据 (判据全在纯核 `frontier.sweepWaitingHuman`)。
+   *
+   * 为什么挂在这: 超时提醒此前只挂 `path_tickets` 读路径 (pull) —— 人不来看图, 票就永远催不到人;
+   * 而 owner 要的是"我不在 TUI 面前也能被触达"。gh 后端的 `sweepWaiting` 会在超时时于对应 issue
+   * 落评论 (GitHub 通知推手机), 所以只要有任何进程在跑这个轮询, 那条线就活。
+   *
+   * 省略 = 本 watcher **不扫**超时 (NULL≠0: 「没扫」≠「扫了没超时」)。
+   */
+  sweepWaiting?: (now: string) => WaitingLogEntry[];
+  /** 本 tick 新标 stale 的票 (空数组不叫 —— 没超时不是事件)。 */
+  onStale?: (entries: WaitingLogEntry[]) => void;
 }
 
 /** watchAfkResults 的句柄: tick() 手动扫一遍 (返回本轮回流); stop() 停轮询。 */
@@ -200,6 +214,16 @@ export function watchAfkResults(map: PathMap, opts: WatchOpts, deps: WatchDeps =
         deps.onReflow?.(reflow);
       } catch {
         // 单张坏结果隔离: 不掀桌, 继续处理其余票 (SDD "never throws on a single bad result")。
+      }
+    }
+    // 等人超时扫一遍, 放在回流**之后**: 回流可能刚把某张票裁掉, 先扫会对着过期状态催人。
+    if (deps.sweepWaiting) {
+      try {
+        const fired = deps.sweepWaiting(new Date().toISOString());
+        if (fired.length > 0) deps.onStale?.(fired);
+      } catch (err) {
+        // 同款隔离 (gh 抖一下不该让结果回流停摆), 但**不吞证据** (本仓坑 2)。
+        console.error(`[afk-hook] sweepWaiting 失败 slug=${current.slug}: ${String(err)}`);
       }
     }
     return reflows;

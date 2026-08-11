@@ -197,8 +197,9 @@ describe('runInit gh 执行序 emission', () => {
       expect(iDispatch).toBeLessThan(iPoll);
       expect(iPoll).toBeLessThan(iIntrospect);
 
-      // 8 个 label 全建 (含 research:council 修饰 label)。
-      expect(verbs.filter((v) => v === 'label create')).toHaveLength(8);
+      // 10 个 label 全建 (含 research:council 修饰 label + 控制面的 suggested/escalated 表达位——
+      // 少建任何一个, 新仓上对应 `--add-label` 起跑即报错, 这条计数就是那扇门的闸)。
+      expect(verbs.filter((v) => v === 'label create')).toHaveLength(10);
       // 两个 key 都 secret set (list 探已存在 → 空 → 全复制)。
       const secretNames = calls.filter((c) => c[0] === 'secret' && c[1] === 'set').map((c) => c[2]);
       expect(secretNames).toEqual(['DEEPSEEK_API_KEY', 'TAVILY_API_KEY']);

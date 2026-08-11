@@ -9,8 +9,10 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { createGhBackend } from './backend-gh';
+import { waitingHumanState } from './frontier';
+import { ghWaitingReminderBody, parseStaleAt } from './notify-gh';
 import type { GhResult, GhRunner } from './backend';
-import type { PathMap } from './types';
+import type { PathMap, WaitingLogEntry } from './types';
 
 const okr = (stdout: string): GhResult => ({ stdout, exitCode: 0, stderr: '' });
 
@@ -28,7 +30,8 @@ interface SubFixture {
   body?: string;
   state?: string;
   labels?: string[];
-  comments?: string[];
+  /** 字符串 = 只有正文 (无 createdAt, 老响应形状); 对象 = 带服务端时刻 (ruledAt 那一戳的来源)。 */
+  comments?: Array<string | { body: string; createdAt: string }>;
   updatedAt?: string;
 }
 
@@ -50,7 +53,9 @@ function mapResp(subs: SubFixture[], mapNumber = 5): string {
               state: s.state ?? 'OPEN',
               labels: { nodes: (s.labels ?? []).map((name) => ({ name })) },
               // author=acme (= fakeGh 的 owner), 让 owner 指令过滤天然通过。
-              comments: { nodes: (s.comments ?? []).map((body) => ({ body, author: { login: 'acme' } })) },
+              comments: {
+                nodes: (s.comments ?? []).map((c) => (typeof c === 'string' ? { body: c, author: { login: 'acme' } } : { ...c, author: { login: 'acme' } })),
+              },
               subIssues: { nodes: [] },
               ...(s.updatedAt !== undefined ? { updatedAt: s.updatedAt } : {}),
             })),
@@ -274,25 +279,36 @@ describe('G-3 冲突以盘为准 (D-4 单真源 · INV-1)', () => {
     expect(calls.some((c) => c.includes('--add-label') && c.includes('path:delivered'))).toBe(true);
   });
 
-  test('渲染等价的状态差 (盘 blocked/escalated · gh open) → 不算冲突, 零 gh 写 (否则每轮刷注记)', () => {
-    const resp = mapResp([
-      { number: 12, title: '[task] a', state: 'OPEN', labels: ['path:task'] },
-      { number: 13, title: '[task] b', state: 'OPEN', labels: ['path:task'] },
-    ]);
+  test('渲染等价的状态差 (盘 blocked · gh open) → 不算冲突, 零 gh 写 (否则每轮刷注记)', () => {
+    // ⚠ 2026-08-11 修订: 本条原先把 `escalated` 也算作"渲染等价" —— 前提是"gh 侧无对应表达位"。
+    // 该前提已作废 (`path:escalated` 是表达位), escalated 移到下一条当**真冲突**测。
+    // `blocked` 仍然等价于 open: 前置未散是**算出来的**, gh 侧本就不存这个。
+    const resp = mapResp([{ number: 12, title: '[task] a', state: 'OPEN', labels: ['path:task'] }]);
     const calls: string[][] = [];
     const b = createGhBackend(recording(resp, calls));
-    const out = b.syncFromMap(
-      '/repo',
-      '5',
-      truth([
-        { id: '#12', type: 'task', title: 'a', blockedBy: ['#99'], status: 'blocked' },
-        { id: '#13', type: 'task', title: 'b', blockedBy: [], status: 'escalated' },
-      ]),
-      { at: AT },
-    );
+    const out = b.syncFromMap('/repo', '5', truth([{ id: '#12', type: 'task', title: 'a', blockedBy: ['#99'], status: 'blocked' }]), { at: AT });
     expect(out.conflicts).toEqual([]);
     expect(out.synced).toEqual([]);
     expect(calls.some((c) => c[1] === 'comment' || c[1] === 'edit' || c[1] === 'close')).toBe(false);
+  });
+
+  test('盘 escalated · gh 无 label → 补 path:escalated (有表达位就得纳入比对, 否则 gh 侧留独立状态)', () => {
+    const resp = mapResp([{ number: 13, title: '[task] b', state: 'OPEN', labels: ['path:task'] }]);
+    const calls: string[][] = [];
+    const b = createGhBackend(recording(resp, calls));
+    const out = b.syncFromMap('/repo', '5', truth([{ id: '#13', type: 'task', title: 'b', blockedBy: [], status: 'escalated' }]), { at: AT });
+    expect(out.conflicts[0]).toMatchObject({ ticketId: '#13', mapStatus: 'escalated', ghStatus: 'open' });
+    expect(calls.some((c) => c.includes('--add-label') && c.includes('path:escalated'))).toBe(true);
+    expect(calls.some((c) => c[1] === 'close')).toBe(false); // escalated 是开着的
+  });
+
+  test('gh 手改留下的 path:escalated · 盘上是 open → 摘掉 (INV-1: gh 侧不许自留状态)', () => {
+    const resp = mapResp([{ number: 13, title: '[task] b', state: 'OPEN', labels: ['path:task', 'path:escalated'] }]);
+    const calls: string[][] = [];
+    const b = createGhBackend(recording(resp, calls));
+    const out = b.syncFromMap('/repo', '5', truth([{ id: '#13', type: 'task', title: 'b', blockedBy: [], status: 'open' }]), { at: AT });
+    expect(out.conflicts[0]).toMatchObject({ mapStatus: 'open', ghStatus: 'escalated' });
+    expect(calls.some((c) => c.includes('--remove-label') && c.includes('path:escalated'))).toBe(true);
   });
 
   test('盘上有票而 gh 无对应 issue → missing 列出 (NULL≠0: 「没镜像」不冒充「一致」)', () => {
@@ -307,5 +323,264 @@ describe('G-3 冲突以盘为准 (D-4 单真源 · INV-1)', () => {
   test('map issue 不存在 → fail-loud throw (不静默当作全一致)', () => {
     const b = createGhBackend(fakeGh(() => okr(JSON.stringify({ data: { repository: { issue: null } } }))));
     expect(() => b.syncFromMap('/repo', '5', truth([]), { at: AT })).toThrow(/找不到地图/);
+  });
+});
+
+// ── ③ D-5 三戳的 gh 载体 (O-5 还账 2026-08-11) ────────────────────────────────
+//
+// 切片 6 给 md 后端接上了三戳生产者, gh 那格留空 —— 于是 gh 上每张等人票的读数恒为
+// `waiting-unknown-since`, 超时永不触发 (一个在任何干预下都不动的数, 量的是尺子)。
+// 这一组测的是: 三戳在 gh 上**存得住、读得回**, 且各自选的载体是有理由的。
+
+const NOW = '2026-08-11T12:00:00.000Z';
+const LONG_AGO = '2026-08-01T00:00:00.000Z'; // 10 天前 (> 72h)
+const RECENT = '2026-08-11T09:00:00.000Z'; // 3h 前
+
+/** gh 写调用 (读查询不算): 「零 stale 零写」闸量的就是这个集合。 */
+function writes(calls: string[][]): string[][] {
+  return calls.filter((c) => c[0] === 'issue' && ['comment', 'edit', 'close', 'reopen', 'create'].includes(c[1] ?? ''));
+}
+
+describe('D-5 三戳 (gh 后端) — 载体与往返', () => {
+  test('escalate: 打进入戳评论 → reopen (票在 gh 上是 CLOSED) → 加 path:escalated', () => {
+    // reflowGoalResults 调 escalate 时票状态是 ruled = gh 上 CLOSED, 这是真实入口形状。
+    const resp = mapResp([{ number: 12, title: '[prototype] 收敛目标', state: 'CLOSED', labels: ['path:prototype'] }]);
+    const calls: string[][] = [];
+    const b = createGhBackend(recording(resp, calls));
+    b.escalate!('/repo', '5', '#12');
+
+    const stamp = writes(calls).find((c) => c[1] === 'comment')!;
+    expect(stamp[2]).toBe('12');
+    expect(stamp[stamp.indexOf('--body') + 1]).toMatch(/^\*\*waiting-since\*\*: \d{4}-/m);
+    // 反向自检: 少了 reopen 这一跳, 票在 gh 上仍是 CLOSED → readMap 读回 ruled → 这次升级等于没发生
+    // (下面那条「CLOSED + label 仍读 ruled」就是这条路的直接证据)。
+    expect(calls.some((c) => c[1] === 'reopen' && c[2] === '12')).toBe(true);
+    expect(calls.some((c) => c[1] === 'edit' && c.includes('--add-label') && c.includes('path:escalated'))).toBe(true);
+    // 证据先行: 戳评论在状态改动**之前**发 (改到一半炸了, "何时升的人"还留得下)。
+    const stampIdx = calls.findIndex((c) => c[1] === 'comment');
+    expect(calls.findIndex((c) => c[1] === 'reopen')).toBeGreaterThan(stampIdx);
+  });
+
+  test('escalate 读回: 开着 + path:escalated → status=escalated, waitingSince 从评论锚回读', () => {
+    const resp = mapResp([
+      {
+        number: 12,
+        title: '[prototype] 收敛目标',
+        state: 'OPEN',
+        labels: ['path:prototype', 'path:escalated'],
+        comments: [`**waiting-human**: 升人\n\n**waiting-since**: ${LONG_AGO}`],
+      },
+    ]);
+    const t = createGhBackend(fakeGh(() => okr(resp))).readMap('/repo', '5')!.tickets[0]!;
+    expect(t.status).toBe('escalated');
+    expect(t.waitingSince).toBe(LONG_AGO);
+    expect(waitingHumanState(t)).toBe('waiting'); // 唯一可判超时的一档
+  });
+
+  test('CLOSED + path:escalated 仍读 ruled (label 只在开着时作数 —— 这就是 escalate 必须 reopen 的原因)', () => {
+    const resp = mapResp([{ number: 12, title: '[task] x', state: 'CLOSED', labels: ['path:task', 'path:escalated'] }]);
+    const t = createGhBackend(fakeGh(() => okr(resp))).readMap('/repo', '5')!.tickets[0]!;
+    expect(t.status).toBe('ruled');
+  });
+
+  test('escalate 票不在图上 → throw 且零 gh 写 (与 md 后端同款 fail-loud)', () => {
+    const calls: string[][] = [];
+    const b = createGhBackend(recording(mapResp([]), calls));
+    expect(() => b.escalate!('/repo', '5', '#99')).toThrow(/找不到票/);
+    expect(writes(calls)).toEqual([]);
+  });
+
+  test('suggest: 出生戳落**正文锚** Waiting-since (建票时一次写死, 零额外调用/零正文重写)', () => {
+    const calls: string[][] = [];
+    const b = createGhBackend(recording(mapResp([]), calls));
+    b.suggest!('/repo', '5', [{ type: 'research', title: '查一下 X', suggestedBy: 'run-42' }], { at: RECENT });
+    const create = calls.find((c) => c[1] === 'create')!;
+    expect(create[create.indexOf('--body') + 1]).toContain(`Waiting-since: ${RECENT}`);
+    // 反向自检: 没这一戳, 建议票的等待读数恒为 waiting-unknown-since → 永不超时。
+    const back = mapResp([
+      { number: 42, title: '[research] 查一下 X', body: `Suggested-by: run-42\nWaiting-since: ${RECENT}`, labels: ['path:research', 'path:suggested'] },
+    ]);
+    const t = createGhBackend(fakeGh(() => okr(back))).readMap('/repo', '5')!.tickets[0]!;
+    expect(waitingHumanState(t)).toBe('waiting');
+  });
+
+  test('rule: ruledAt = 判词评论自带的 createdAt (rule 本身不多发一条戳评论)', () => {
+    const calls: string[][] = [];
+    const b = createGhBackend(recording(mapResp([]), calls));
+    b.rule('/repo', '5', '#12', 'go with plan A');
+    // 判词评论字节形状不变 (既有闸 backend.test.ts「rule: comment **ruling** + close」钉死), 且只此一条评论。
+    expect(writes(calls).filter((c) => c[1] === 'comment')).toEqual([['issue', 'comment', '12', '--body', '**ruling**: go with plan A']]);
+
+    const back = mapResp([
+      {
+        number: 12,
+        title: '[task] x',
+        state: 'OPEN',
+        labels: ['path:task', 'path:escalated'],
+        comments: [
+          `**waiting-human**: 升人\n\n**waiting-since**: ${LONG_AGO}`,
+          { body: '**ruling**: go with plan A', createdAt: NOW }, // 升人**之后**才有的判词
+        ],
+      },
+    ]);
+    const t = createGhBackend(fakeGh(() => okr(back))).readMap('/repo', '5')!.tickets[0]!;
+    expect(t.ruledAt).toBe(NOW);
+    // 「裁了没记」: 人已经裁了 (判词在), 只是票还挂着等人态 → 催他没意义, 但要看得见。
+    expect(waitingHumanState(t)).toBe('ruled-unrecorded');
+  });
+
+  test('上一轮的旧判词不算数: ruling 评论早于本轮 waitingSince → 仍是 waiting (判据是先后, 不是文本有无)', () => {
+    const resp = mapResp([
+      {
+        number: 12,
+        title: '[task] x',
+        state: 'OPEN',
+        labels: ['path:task', 'path:escalated'],
+        comments: [
+          { body: '**ruling**: 上一轮的旧判词', createdAt: '2026-07-01T00:00:00.000Z' },
+          `**waiting-human**: 又升人了\n\n**waiting-since**: ${LONG_AGO}`,
+        ],
+      },
+    ]);
+    const t = createGhBackend(fakeGh(() => okr(resp))).readMap('/repo', '5')!.tickets[0]!;
+    expect(waitingHumanState(t)).toBe('waiting');
+  });
+
+  test('评论没带 createdAt (老响应) → ruledAt 缺席, 不编时间 (NULL≠0 fail-safe)', () => {
+    const resp = mapResp([{ number: 12, title: '[task] x', state: 'CLOSED', labels: ['path:task'], comments: ['**ruling**: 定了'] }]);
+    const t = createGhBackend(fakeGh(() => okr(resp))).readMap('/repo', '5')!.tickets[0]!;
+    expect(t.ruling).toBe('定了'); // 判词照读 (存量语义不变)
+    expect(t.ruledAt).toBeUndefined();
+  });
+
+  test('新一轮 waiting-since **清掉**上一轮的 stale 标 (不清则该票永久排除在提醒之外)', () => {
+    const resp = mapResp([
+      {
+        number: 12,
+        title: '[task] x',
+        state: 'OPEN',
+        labels: ['path:task', 'path:escalated'],
+        comments: [
+          `**waiting-human**: 第一轮\n\n**waiting-since**: 2026-06-01T00:00:00.000Z`,
+          ghWaitingReminderBody({ ticketId: '#12', waitingSince: '2026-06-01T00:00:00.000Z', waitedMs: 99 * 3_600_000, at: '2026-06-05T00:00:00.000Z' }),
+          `**waiting-human**: 第二轮\n\n**waiting-since**: ${LONG_AGO}`, // 重新进入等待 → 旧 stale 作废
+        ],
+      },
+    ]);
+    const t = createGhBackend(fakeGh(() => okr(resp))).readMap('/repo', '5')!.tickets[0]!;
+    expect(t.waitingSince).toBe(LONG_AGO);
+    // 反向自检: 若重放时不 delete staleAt (只覆盖 waitingSince), 这条红 —— 而它红的后果是
+    // 第二轮超时**永远收不到提醒** (纯核见 staleAt 就跳过), 没有任何报错。
+    expect(t.staleAt).toBeUndefined();
+  });
+});
+
+// ── ④ gh sweepWaiting + 提醒通道 (O-1 终裁: 提醒走 GH, 尽量实时) ────────────────
+
+describe('gh sweepWaiting (G-5) — 提醒评论 + 零 stale 零写 + 不重复', () => {
+  /** 一张等了 10 天的 escalated 票 (可选追加评论)。 */
+  const staleTicket = (extra: Array<string | { body: string; createdAt: string }> = []): string =>
+    mapResp([
+      {
+        number: 12,
+        title: '[task] 谁来裁',
+        state: 'OPEN',
+        labels: ['path:task', 'path:escalated'],
+        comments: [`**waiting-human**: 升人\n\n**waiting-since**: ${LONG_AGO}`, ...extra],
+      },
+    ]);
+
+  test('超时票 → 在该 issue 落提醒评论 (等了多久 / 自何时 / 下一步把手) + 台账条目', () => {
+    const calls: string[][] = [];
+    const b = createGhBackend(recording(staleTicket(), calls));
+    const fired = b.sweepWaiting!('/repo', '5', { now: NOW });
+
+    expect(fired).toHaveLength(1);
+    expect(fired[0]).toMatchObject({ ticketId: '#12', waitingSince: LONG_AGO, at: NOW });
+    const note = writes(calls).find((c) => c[1] === 'comment')!;
+    expect(note[2]).toBe('12'); // 落在**当事 issue** 上 (GitHub 通知天然推手机 = owner 要的"实时")
+    const body = note[note.indexOf('--body') + 1]!;
+    expect(body).toContain('已等 252h'); // 08-01T00:00 → 08-11T12:00 = 10.5 天
+    expect(body).toContain(`自 ${LONG_AGO}`);
+    expect(body).toContain('/rule');
+    expect(parseStaleAt(body)).toBe(NOW); // 幂等键随提醒一起落地
+  });
+
+  test('★零 stale 零写: 没票超时 → 零 gh 写调用 (读路径上顺手扫的东西不许碰盘)', () => {
+    // 证伪方式 (实跑过): 把 sweepWaiting 改成"无条件先发一条评论再判", 本条当场红。
+    const resp = mapResp([
+      { number: 12, title: '[task] 刚等上', state: 'OPEN', labels: ['path:task', 'path:escalated'], comments: [`**waiting-since**: ${RECENT}`] },
+    ]);
+    const calls: string[][] = [];
+    const b = createGhBackend(recording(resp, calls));
+    expect(b.sweepWaiting!('/repo', '5', { now: NOW })).toEqual([]);
+    expect(writes(calls)).toEqual([]);
+  });
+
+  test('★不重复评论: 同一轮超时已提醒过 (stale-at 锚在) → 零写 (靠状态不靠记忆)', () => {
+    // MCP server 是 pull 模型, 跨调用没有记忆 —— 幂等只能靠 gh 上那条锚读回来。
+    const already = ghWaitingReminderBody({ ticketId: '#12', waitingSince: LONG_AGO, waitedMs: 250 * 3_600_000, at: '2026-08-10T00:00:00.000Z' });
+    const calls: string[][] = [];
+    const b = createGhBackend(recording(staleTicket([already]), calls));
+    expect(b.sweepWaiting!('/repo', '5', { now: NOW })).toEqual([]);
+    expect(writes(calls)).toEqual([]);
+    // 证伪方式 (实跑过): 把 readMap 里 staleAt 的回读摘掉 → 本条红 (每次 sweep 都重发一条提醒 = 刷屏)。
+  });
+
+  test('waiting-unknown-since (票在等人但没记进入时刻) → 不升级零写 (不知道等了多久就不假装知道)', () => {
+    const resp = mapResp([{ number: 12, title: '[task] 老票', state: 'OPEN', labels: ['path:task', 'path:escalated'] }]);
+    const calls: string[][] = [];
+    const b = createGhBackend(recording(resp, calls));
+    expect(b.sweepWaiting!('/repo', '5', { now: NOW })).toEqual([]);
+    expect(writes(calls)).toEqual([]);
+  });
+
+  test('suggested 票 (出生戳走正文锚) 同样进这条线', () => {
+    const resp = mapResp([
+      {
+        number: 31,
+        title: '[research] 机器建议',
+        state: 'OPEN',
+        labels: ['path:research', 'path:suggested'],
+        body: `Suggested-by: run-42\nWaiting-since: ${LONG_AGO}`,
+      },
+    ]);
+    const calls: string[][] = [];
+    const b = createGhBackend(recording(resp, calls));
+    expect(b.sweepWaiting!('/repo', '5', { now: NOW })).toHaveLength(1);
+    expect(writes(calls).some((c) => c[1] === 'comment' && c[2] === '31')).toBe(true);
+  });
+
+  test('图不存在 → [] (读路径上顺手扫的东西不炸掉整个 path_tickets)', () => {
+    const b = createGhBackend(fakeGh(() => okr(JSON.stringify({ data: { repository: { issue: null } } }))));
+    expect(b.sweepWaiting!('/repo', '5', { now: NOW })).toEqual([]);
+  });
+
+  test('提醒发送失败 → fail-open 不掀桌; 锚没落地 → 下一轮重发 (自愈, 不是静默漏掉一次)', () => {
+    const calls: string[][] = [];
+    const boom: string[] = [];
+    const b = createGhBackend(recording(staleTicket(), calls), false, (e: WaitingLogEntry) => {
+      boom.push(e.ticketId);
+      throw new Error('gh 403');
+    });
+    expect(() => b.sweepWaiting!('/repo', '5', { now: NOW })).not.toThrow();
+    expect(boom).toEqual(['#12']);
+    // 第二轮: fixture 里仍没有 stale-at 锚 (第一轮没写成) → 再判一次超时, 再发一次。
+    expect(b.sweepWaiting!('/repo', '5', { now: NOW })).toHaveLength(1);
+    expect(boom).toEqual(['#12', '#12']);
+  });
+});
+
+// ── ⑤ 提醒说的话必须是真的: escalated 票上的 /rule 收得到 ────────────────────────
+
+describe('escalated 票的评论指令 (提醒里给的那条把手)', () => {
+  test('escalated 票上的 /rule 照收 (不收 = 把人引到一条会被静默丢弃的路上)', () => {
+    const resp = mapResp([
+      { number: 12, title: '[task] 谁来裁', state: 'OPEN', labels: ['path:task', 'path:escalated'], comments: ['/rule 就按方案 A'] },
+    ]);
+    expect(createGhBackend(fakeGh(() => okr(resp))).collectOwnerCommands!('/repo', '5')).toEqual([
+      { ticketId: '#12', command: 'rule', text: '就按方案 A' },
+    ]);
+    // 反向自检: 把收集过滤改回 `status !== 'open'` 就 continue → 本条红 (提醒里那句 `/rule` 成了空话)。
   });
 });

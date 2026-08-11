@@ -23,8 +23,24 @@
  *     (CLOSED+suggested = 已拒建议, 与 CLOSED 的已裁票区分开)。溯源/指纹走正文锚往返。
  *   - `syncFromMap` (G-3 后半): gh 侧被人手改 → 以**盘上 map** 为准覆盖, 且**先**在该 issue 留冲突
  *     注记 (含两侧各自认为的状态与时间)。INV-1: gh 侧不产生独立状态, 这里只纠正渲染, 零裁决。
+ *
+ * 2026-08-11 O-1 终裁 + O-5 还账 (D-5/G-5) 再补三件:
+ *   - **`escalated` 有表达位了**: `path:escalated` label (开着 + 该 label)。此前 gh 侧"等人裁"
+ *     只有 suggested 一态, `escalate` 整个没实装 —— 而 `reflowGoalResults` 调它时票是 **ruled**
+ *     (gh 上 = CLOSED), 光打戳不 reopen 的话读回来仍是 ruled, 升级等于没发生。
+ *   - **D-5 三戳的 gh 载体 = 评论流 + 出生正文锚** (不是"改正文"):
+ *       · `waitingSince` — suggested 出生态落**正文锚** `Waiting-since:`(建票时一次写死, 零重写);
+ *                          escalate 落**评论锚** `**waiting-since**:`(票已存在, 改正文要读-改-写
+ *                          整段正文, 那正是 1890115 事故的形状 —— 手写字段被静默丢弃)。
+ *       · `ruledAt`     — **不额外写**: 裁决评论自带 `createdAt` 就是那一刻 (还能补读历史票);
+ *                          多写一条戳评论只是给手机上的人多推一条噪声。
+ *       · `staleAt`     — 提醒评论里的 `**stale-at**:` 锚 (notify-gh 定型)。幂等键必须是我们
+ *                          自己写的串, 不许依赖服务端字段的有无 (缺了就每 tick 重发提醒)。
+ *   - `sweepWaiting` + 提醒通道: 超时票 → 经 `WaitingHumanNotifier` 在该 issue 落提醒评论。
+ *     **零 stale 零写**同 md (1890115): 零票超时 = 零 gh 写调用 (只有一次 readMap 查询)。
  */
-import { deriveStatus } from './frontier';
+import { deriveStatus, sweepWaitingHuman } from './frontier';
+import { createGhWaitingNotifier, parseStaleAt } from './notify-gh';
 import { looksLikeResult } from './result-format';
 import {
   applySuggestions,
@@ -35,13 +51,16 @@ import {
   type SuggestionDraft,
 } from './suggest';
 import type { GhResult, GhRunner, PathBackend } from './backend';
-import type { PathMap, SuggestionLogEntry, Ticket, TicketStatus, TicketType } from './types';
+import type { WaitingHumanNotifier } from './frontier';
+import type { PathMap, SuggestionLogEntry, Ticket, TicketStatus, TicketType, WaitingLogEntry } from './types';
 
 const TICKET_TYPES: readonly TicketType[] = ['research', 'grill', 'prototype', 'task'];
 const MAP_LABEL = 'path:map';
 const DELIVERED_LABEL = 'path:delivered';
 /** S-1 片 e (t5 欠账): 机器建议票的 gh 映射 —— 开着 + 此 label = suggested; 关着 + 此 label = 已拒。 */
 const SUGGESTED_LABEL = 'path:suggested';
+/** D-5: `escalated` 的 gh 表达位 —— 开着 + 此 label = 等 owner 裁 (关着则是已裁, label 不再作数)。 */
+const ESCALATED_LABEL = 'path:escalated';
 /** 云端 Actions 研究完成后打的 label (S2 workflow 打, S3 折入据此收料 + ack 时摘)。 */
 const RESEARCH_DONE_LABEL = 'research-done';
 const MAP_TITLE_PREFIX = '🧭 [map] ';
@@ -113,11 +132,16 @@ function parseRuling(comments: Array<{ body: string }>): string | undefined {
   return undefined;
 }
 
-/** issue state + labels → 静态 status (open 票的 blocked 归一延后到全票集齐后 deriveStatus)。 */
+/**
+ * issue state + labels → 静态 status (open 票的 blocked 归一延后到全票集齐后 deriveStatus)。
+ * CLOSED 分支**不看** suggested/escalated label: 票已终结, 那两个 label 只是上一轮的残留
+ * (已拒建议的 CLOSED+suggested 由 readMapImpl 单独摘掉, 见那里)。
+ */
 function baseStatus(state: string, labels: string[]): TicketStatus {
   const closed = state.toUpperCase() === 'CLOSED';
   if (closed) return labels.includes(DELIVERED_LABEL) ? 'delivered' : 'ruled';
-  return labels.includes(SUGGESTED_LABEL) ? 'suggested' : 'open';
+  if (labels.includes(SUGGESTED_LABEL)) return 'suggested';
+  return labels.includes(ESCALATED_LABEL) ? 'escalated' : 'open';
 }
 
 /** 正文锚行 `<Key>: <value>` → value (S-1 溯源/指纹的往返载体; 无该行 → undefined)。 */
@@ -141,26 +165,69 @@ function suggestionLogBody(e: SuggestionLogEntry): string {
   return `**suggestion-log**: ${e.outcome} ${e.at} ${e.runId}`;
 }
 
+// ── D-5 三戳的 gh 载体 (评论流 = 事件, 出生正文锚 = 初值; 见文件头) ──────────────
+
+/** escalate 打的进入戳评论 (人读一行 + 机器读的 `**waiting-since**` 锚; 写读同一处定型)。 */
+function escalatedCommentBody(atIso: string): string {
+  return [
+    `**waiting-human**: 自动通道到此为止 — 这张票升给 owner 裁 (D-5 escalated)。`,
+    ``,
+    `**waiting-since**: ${atIso}`,
+  ].join('\n');
+}
+
+/**
+ * 把一张票的评论流**按序重放**成三戳 (纯):
+ *  - `**waiting-since**: <iso>` → 新一轮等待开始, 且**清掉**此前的 stale 标
+ *    (= 纯核 `markWaitingHuman` 的 delete staleAt; gh 上删不掉旧评论, 靠重放顺序等价实现)。
+ *  - `**stale-at**: <iso>`      → 本轮已提醒过 (幂等键, 由 notify-gh 写)。
+ *  - `**ruling**: …` 评论的 `createdAt` → ruledAt (最后一条为准: "最近一次裁决被记下的时刻";
+ *    `parseRuling` 取第一条是取**判词文本**, 两者要的不是同一条, 别合并)。
+ *    响应没给 createdAt (老 fixture / 精简查询) → ruledAt 缺席 = **没记上**, 不编时间 (NULL≠0)。
+ */
+function parseWaitingStamps(comments: Array<{ body: string; createdAt?: string }>): Pick<Ticket, 'waitingSince' | 'ruledAt' | 'staleAt'> {
+  const out: { waitingSince?: string; ruledAt?: string; staleAt?: string } = {};
+  for (const c of comments) {
+    const since = c.body.match(/^\*\*waiting-since\*\*:\s*(\S+)\s*$/m);
+    if (since) {
+      out.waitingSince = since[1]!;
+      delete out.staleAt;
+    }
+    const stale = parseStaleAt(c.body);
+    if (stale !== undefined) out.staleAt = stale;
+    if (/^\*\*ruling\*\*:/m.test(c.body) && c.createdAt !== undefined) out.ruledAt = c.createdAt;
+  }
+  return out;
+}
+
 // ── D-4 渲染面 (INV-1: gh 侧状态**只是**这三位的投影, 不是独立真源) ─────────────────
 
-/** gh 侧渲染三元组: issue 开/关 + 两个状态 label。两个 status 渲染相同 = 无冲突 (不刷注记)。 */
+/** gh 侧渲染四元组: issue 开/关 + 三个状态 label。两个 status 渲染相同 = 无冲突 (不刷注记)。 */
 interface GhRender {
   closed: boolean;
   suggested: boolean;
   delivered: boolean;
+  escalated: boolean;
 }
 
-/** 盘上 status → 它**应该**长成的 gh 渲染 (open/blocked/escalated 同一渲染: gh 侧无对应表达位)。 */
+/**
+ * 盘上 status → 它**应该**长成的 gh 渲染。
+ * `blocked` 与 `open` 仍是同一渲染 (前置未散是**算出来的**, gh 侧不存这个);
+ * `escalated` 从 2026-08-11 起有表达位 (`path:escalated`) —— 切片 4 那句"gh 侧无对应表达位"
+ * 到此为止: 有位就得纳入比对, 否则 gh 侧留着一个盘上没有的 label = 独立状态 (违 INV-1)。
+ */
 function renderOf(status: TicketStatus): GhRender {
   switch (status) {
     case 'suggested':
-      return { closed: false, suggested: true, delivered: false };
+      return { closed: false, suggested: true, delivered: false, escalated: false };
+    case 'escalated':
+      return { closed: false, suggested: false, delivered: false, escalated: true };
     case 'ruled':
-      return { closed: true, suggested: false, delivered: false };
+      return { closed: true, suggested: false, delivered: false, escalated: false };
     case 'delivered':
-      return { closed: true, suggested: false, delivered: true };
+      return { closed: true, suggested: false, delivered: true, escalated: false };
     default:
-      return { closed: false, suggested: false, delivered: false };
+      return { closed: false, suggested: false, delivered: false, escalated: false };
   }
 }
 
@@ -175,7 +242,7 @@ function readMapQuery(nativeDeps: boolean): string {
       subIssues(first:100){ nodes{
         number title body state updatedAt
         labels(first:20){ nodes{ name } }
-        comments(first:50){ nodes{ body author{ login } } }
+        comments(first:50){ nodes{ body createdAt author{ login } } }
         subIssues(first:100){ nodes{ number } }${blockedByField}
       }}
     }
@@ -196,7 +263,8 @@ interface GqlSubTicket {
   body: string | null;
   state: string;
   labels: { nodes: GqlLabel[] };
-  comments: { nodes: Array<{ body: string; author?: { login: string } | null }> };
+  /** `createdAt` = ruledAt 那一戳的来源 (老 fixture / 旧响应可能没有 → 该戳缺席, 不编)。 */
+  comments: { nodes: Array<{ body: string; createdAt?: string; author?: { login: string } | null }> };
   subIssues: { nodes: Array<{ number: number }> };
   /** gh 侧最后改动时刻 (G-3 冲突注记的 gh 时间; 老 fixture / 旧响应可能没有 → 注记写「未知」)。 */
   updatedAt?: string;
@@ -253,8 +321,11 @@ export interface GhMirror {
  *
  * `nativeDeps` (缺省 false 保守): blockedBy 真相源二选一 (D-C.2, 每仓恰一真相, 无 fallback 交叉) ——
  *   false = legacy body 尾行; true = 原生 issue-dependencies (读 GraphQL 字段 / 写 REST POST)。
+ *
+ * `notify` (缺省 = gh 评论通道): `sweepWaiting` 标 stale 时的提醒钩子 (O-1)。缺省实装就落在
+ * 同一个 `gh` 上, 所以 `resolveBackend` 不必知道通道的存在 (接线零改动); 测试可注入替身。
  */
-export function createGhBackend(gh: GhRunner, nativeDeps = false): PathBackend & GhMirror {
+export function createGhBackend(gh: GhRunner, nativeDeps = false, notify: WaitingHumanNotifier = createGhWaitingNotifier(gh)): PathBackend & GhMirror {
   const probe = gh(['repo', 'view', '--json', 'nameWithOwner']);
   if (probe.exitCode !== 0) {
     throw new Error(
@@ -347,6 +418,9 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false): PathBackend &
       // S-1 溯源/指纹走正文锚往返 (缺锚 → undefined, 不编)。
       const suggestedBy = parseAnchor(body, 'Suggested-by');
       const fingerprint = parseAnchor(body, 'Fingerprint');
+      // D-5 三戳: 评论流的事件戳**盖过**出生正文锚 (建议票被接受后又被升人 → 后一轮才是当前那轮)。
+      const stamps = parseWaitingStamps(sub.comments.nodes);
+      const waitingSince = stamps.waitingSince ?? parseAnchor(body, 'Waiting-since');
       tickets.push({
         id,
         type,
@@ -357,6 +431,9 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false): PathBackend &
         ...(children.length > 0 ? { children } : {}),
         ...(suggestedBy !== undefined ? { suggestedBy } : {}),
         ...(fingerprint !== undefined ? { fingerprint } : {}),
+        ...(waitingSince !== undefined ? { waitingSince } : {}),
+        ...(stamps.ruledAt !== undefined ? { ruledAt: stamps.ruledAt } : {}),
+        ...(stamps.staleAt !== undefined ? { staleAt: stamps.staleAt } : {}),
       });
     }
 
@@ -449,6 +526,9 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false): PathBackend &
       // 纯核给的是内存 id (s1/s2); gh 的稳定 id 只能是 issue number (D-D), 建完回填。
       const added: Ticket[] = res.added.map((t) => {
         const bodyLines = [`Suggested-by: ${t.suggestedBy}`, `Fingerprint: ${t.fingerprint}`];
+        // D-5 出生戳 (纯核 applySuggestions 已打在票上): 落**建票时的正文锚** —— 建议票一出生就在
+        // 等人确认, 没这一戳它的等待读数恒为 waiting-unknown-since, 超时永不触发 (切片 6 的 md 教训)。
+        if (t.waitingSince) bodyLines.push(`Waiting-since: ${t.waitingSince}`);
         if (!nativeDeps && t.blockedBy.length > 0) bodyLines.push(`Blocked-by: ${t.blockedBy.join(', ')}`);
         const number = createTicketIssue({
           title: `[${t.type}] ${t.title}`,
@@ -490,10 +570,50 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false): PathBackend &
       return entry;
     },
 
+    // D-5 裁决戳 (`ruledAt`) **不在这里写**: 下面这条判词评论自带 `createdAt` 就是"判词落盘的时刻",
+    // readMap 直接读它 (还顺带补齐了历史票)。多发一条 `**ruled-at**` 评论只是给手机上的人多推一条噪声,
+    // 且判词评论的字节形状是既有闸钉死的 (backend.test.ts「rule: comment **ruling** + close」)。
     rule: (_cwd, _slug, ticketId, ruling) => {
       const n = bareNumber(ticketId);
       run(gh, ['issue', 'comment', n, '--body', `**ruling**: ${ruling}`], 'rule:comment');
       run(gh, ['issue', 'close', n], 'rule:close');
+    },
+
+    /**
+     * D-G1.4 + D-5: goal 票升人 —— 票翻 escalated 并打进入戳。
+     *
+     * 三步都不可省 (调用点 `reflowGoalResults` 传进来的票状态是 **ruled** = gh 上 CLOSED):
+     *   ① 进入戳评论 (证据先行: 后面两步炸了, "何时升的人"还留得下);
+     *   ② CLOSED → reopen (不开回来, readMap 仍读成 ruled, 这次升级等于没发生);
+     *   ③ 加 `path:escalated` label (开着 + 该 label 才读得回 escalated)。
+     * 票不在图上 → throw (与 md 后端同款 fail-loud; 零 gh 写)。
+     */
+    escalate: (_cwd, slug, ticketId) => {
+      const map = readMapImpl(slug);
+      const tk = map?.tickets.find((t) => t.id === ticketId);
+      if (!tk) throw new Error(`escalate: 找不到票 "${ticketId}" (图 "${slug}")`);
+      const n = bareNumber(ticketId);
+      // 时钟在端口取 (纯核 markWaitingHuman 仍不自取时钟, 可重放) —— 同 md 后端。
+      run(gh, ['issue', 'comment', n, '--body', escalatedCommentBody(new Date().toISOString())], 'escalate:stamp');
+      if (tk.status === 'ruled' || tk.status === 'delivered') run(gh, ['issue', 'reopen', n], 'escalate:reopen');
+      if (tk.status !== 'escalated') run(gh, ['issue', 'edit', n, '--add-label', ESCALATED_LABEL], 'escalate:label');
+    },
+
+    /**
+     * D-5/G-5: 扫本图超时的等人票 → 经 `notify` 在对应 issue 落提醒评论 (O-1 的 gh 通道)。
+     *
+     * gh 侧**没有本地盘**: 那条提醒评论里的 `**stale-at**` 锚**就是** `staleAt` 的持久化,
+     * 于是"同一轮超时不重复提醒"靠状态成立 (下一轮 readMap 读回 staleAt → 纯核直接跳过),
+     * 不靠进程记忆 —— MCP server 是 pull 模型, 根本没有跨调用的记忆。
+     *
+     * **零 stale 零写** (1890115 铁律的 gh 版): 判定全在纯核 (先读后判), 只有真的 fired 才经
+     * notify 发评论 —— 没票超时 = 零 gh 写调用。图不存在 → [] (读路径上顺手扫的东西不炸掉 path_tickets)。
+     * notify 抛错由纯核 fail-open 吞掉并打 stderr: 此时 `stale-at` 没落地 → 下轮重判重发 (自愈)。
+     */
+    sweepWaiting: (_cwd, slug, opts): WaitingLogEntry[] => {
+      const map = readMapImpl(slug);
+      if (!map) return [];
+      return sweepWaitingHuman(map, { ...opts, notify });
     },
 
     // ruled 票已 close (rule 关的); delivered 只补 label → readMap 据 label 区分 ruled/delivered。
@@ -513,11 +633,13 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false): PathBackend &
       if (!issue) return [];
       const out: Array<{ ticketId: string; command: 'rule' | 'confirm-accept' | 'confirm-reject'; text: string }> = [];
       for (const sub of issue.subIssues.nodes) {
-        // 幂等锚: 只收未终结的票 (open / suggested)。CLOSED 票 = 裁决已落地, 下轮天然不再收。
-        // ⚠ /rule 额外只认 open: suggested 票上的 `/rule` **不收** —— 状态机要求先 confirm,
+        // 幂等锚: 只收未终结的票 (open / suggested / escalated)。CLOSED 票 = 裁决已落地, 下轮天然不再收。
+        // ⚠ escalated 必须在内 (2026-08-11): 超时提醒评论叫人在**本 issue** 回 `/rule`, 而 escalated
+        //   正是那批票 —— 不收就等于把人引到一条会被静默丢弃的路上 (提醒说的话必须是真的)。
+        // ⚠ /rule 额外不认 suggested: suggested 票上的 `/rule` **不收** —— 状态机要求先 confirm,
         //   收了等于绕过人确认直接裁掉一张机器建议 (S-1 GWT-8 挡的正是这个)。
         const status = baseStatus(sub.state, sub.labels.nodes.map((l) => l.name));
-        if (status !== 'open' && status !== 'suggested') continue;
+        if (status !== 'open' && status !== 'suggested' && status !== 'escalated') continue;
         // 每票取**最后一条** owner 指令评论 (改主意以最新为准)。
         let hit: { command: 'rule' | 'confirm-accept' | 'confirm-reject'; text: string } | null = null;
         for (const c of sub.comments.nodes) {
@@ -532,7 +654,7 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false): PathBackend &
           if (confirm) hit = { command: confirm[1] === 'accept' ? 'confirm-accept' : 'confirm-reject', text: '' };
         }
         if (!hit) continue;
-        if (hit.command === 'rule' && status !== 'open') continue; // 见上: suggested 票不接 /rule
+        if (hit.command === 'rule' && status === 'suggested') continue; // 见上: suggested 票不接 /rule (escalated 接)
         out.push({ ticketId: `#${sub.number}`, ...hit });
       }
       return out;
@@ -587,9 +709,17 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false): PathBackend &
           closed: sub.state.toUpperCase() === 'CLOSED',
           suggested: labels.includes(SUGGESTED_LABEL),
           delivered: labels.includes(DELIVERED_LABEL),
+          escalated: labels.includes(ESCALATED_LABEL),
         };
         const want = renderOf(t.status);
-        if (have.closed === want.closed && have.suggested === want.suggested && have.delivered === want.delivered) continue;
+        if (
+          have.closed === want.closed &&
+          have.suggested === want.suggested &&
+          have.delivered === want.delivered &&
+          have.escalated === want.escalated
+        ) {
+          continue;
+        }
 
         const n = bareNumber(t.id);
         const ghStatus = baseStatus(sub.state, labels);
@@ -607,6 +737,9 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false): PathBackend &
         }
         if (have.delivered !== want.delivered) {
           run(gh, ['issue', 'edit', n, want.delivered ? '--add-label' : '--remove-label', DELIVERED_LABEL], 'syncFromMap:deliveredLabel');
+        }
+        if (have.escalated !== want.escalated) {
+          run(gh, ['issue', 'edit', n, want.escalated ? '--add-label' : '--remove-label', ESCALATED_LABEL], 'syncFromMap:escalatedLabel');
         }
         conflicts.push({ ticketId: t.id, mapStatus: t.status, ghStatus, ...(sub.updatedAt !== undefined ? { ghUpdatedAt: sub.updatedAt } : {}), note });
       }

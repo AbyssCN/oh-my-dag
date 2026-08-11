@@ -326,3 +326,100 @@ describe('reflowResearchResults — gh 后端', () => {
     expect(calls.some((c) => c[1] === 'comment' || c[1] === 'close')).toBe(false);
   });
 });
+
+// ── watch tick 顺带扫等人超时 (O-1 终裁 2026-08-11: 提醒要能在人不开 TUI 时触达) ──
+//
+// sweep 此前只挂 `path_tickets` 读路径 (pull): 人不来看图, 票就永远催不到人 —— 而 owner 说的
+// 正是"我可能经常不在 TUI 面前"。这里把它挂进 watcher 的轮询周期; 判据与后端都由调用方注入,
+// watcher 自己既不认后端也不认超时判据。
+//
+// ⚠ 留账 (报告已写): `watchAfkResults` 今天**生产零消费** (只被测试驱动), 所以这条线要真的活,
+//    还差一个"谁来跑这个轮询"—— 见报告里的替代方案, 那部分在本任务写集之外。
+
+describe('afk-hook — watch tick 顺带 sweepWaiting (D-5/G-5)', () => {
+  const mapNoResults: PathMap = { destination: 'Ship X', slug: 'ship-x', tickets: [tk({ id: 'r1', type: 'research' })], decisionsLog: [] };
+  const entry = { ticketId: '#12', waitingSince: '2026-08-01T00:00:00.000Z', waitedMs: 252 * 3_600_000, at: '2026-08-11T12:00:00.000Z' };
+
+  test('每 tick 扫一遍; 有票超时 → onStale 收到条目', () => {
+    const nows: string[] = [];
+    const stale: string[] = [];
+    watchAfkResults(
+      mapNoResults,
+      { cwd: '/repo', mode: 'once' },
+      {
+        readIfReady: () => null,
+        sweepWaiting: (now) => {
+          nows.push(now);
+          return [entry];
+        },
+        onStale: (es) => stale.push(...es.map((e) => e.ticketId)),
+      },
+    );
+    expect(nows).toHaveLength(1);
+    expect(nows[0]).toMatch(/^\d{4}-\d{2}-\d{2}T/); // 时钟由 watcher 取, 传给后端 (纯核仍不自取)
+    expect(stale).toEqual(['#12']);
+  });
+
+  test('零票超时 → onStale 不叫 (没超时不是事件, 别把空扫报成一次提醒)', () => {
+    let called = 0;
+    watchAfkResults(mapNoResults, { cwd: '/repo', mode: 'once' }, { readIfReady: () => null, sweepWaiting: () => [], onStale: () => called++ });
+    expect(called).toBe(0);
+  });
+
+  test('★不注入 sweepWaiting → 完全不扫 (存量调用点行为逐字节不变; NULL≠0: 没扫 ≠ 扫了没超时)', () => {
+    // 证伪方式 (实跑过): 把 tick 里的 `if (deps.sweepWaiting)` 去掉改成无条件调用 → 这里 throw。
+    const reflows: AfkReflow[] = [];
+    watchAfkResults(mapNoResults, { cwd: '/repo', mode: 'once' }, { readIfReady: () => null, onReflow: (r) => reflows.push(r) });
+    expect(reflows).toEqual([]);
+  });
+
+  test('sweep 抛错 (gh 抖一下) → 不掀桌: 结果回流照常落地, 且 stderr 留证据', () => {
+    const reflows: AfkReflow[] = [];
+    const errs: unknown[][] = [];
+    const orig = console.error;
+    console.error = (...a: unknown[]) => errs.push(a);
+    try {
+      watchAfkResults(
+        { ...mapNoResults },
+        { cwd: '/repo', mode: 'once' },
+        {
+          readIfReady: () => 'r1 是好了的结果。',
+          sweepWaiting: () => {
+            throw new Error('gh 500');
+          },
+          onReflow: (r) => reflows.push(r),
+        },
+      );
+    } finally {
+      console.error = orig;
+    }
+    expect(reflows.map((r) => r.ticketId)).toEqual(['r1']); // 回流没被 sweep 的失败连累
+    expect(errs).toHaveLength(1); // fail-open 可以吞异常, 不许吞证据 (本仓坑 2)
+    expect(String(errs[0]![0])).toContain('gh 500');
+  });
+
+  test('interval 模式: 每次定时触发都扫一遍 (轮询周期 = 提醒的实时性来源)', () => {
+    let intervalFn: (() => void) | null = null;
+    let sweeps = 0;
+    watchAfkResults(
+      mapNoResults,
+      { cwd: '/repo', mode: 'interval', intervalMs: 100 },
+      {
+        readIfReady: () => null,
+        setInterval: (fn) => {
+          intervalFn = fn;
+          return 'H';
+        },
+        clearInterval: () => {},
+        sweepWaiting: () => {
+          sweeps++;
+          return [];
+        },
+      },
+    );
+    expect(sweeps).toBe(0); // interval 模式不立即扫 (与既有 tick 语义一致)
+    intervalFn!();
+    intervalFn!();
+    expect(sweeps).toBe(2);
+  });
+});

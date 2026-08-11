@@ -41,6 +41,10 @@ const PATH_LABELS: ReadonlyArray<readonly [string, string]> = [
   ['path:prototype', 'D93F0B'],
   ['path:task', '0E8A16'],
   ['path:delivered', 'C2E0C6'],
+  // 控制面统一 (2026-08-11): suggested/escalated 的 gh 表达位 —— label 不预建, 新仓上
+  // `gh issue edit --add-label` 会报错, suggest/escalate 起跑即 fail-loud (切片 4/⑤ 的留账洞)。
+  ['path:suggested', 'BFDADC'],
+  ['path:escalated', 'B60205'],
   ['research-done', '0E8A16'],
   ['research:council', 'BFD4F2'],
 ];
