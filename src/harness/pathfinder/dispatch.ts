@@ -375,20 +375,24 @@ export interface DispatchGoalResult {
  * - goal-worker 对未知 runId 走 reopenForResume = register+start (自注册, 母进程不等)。
  * - 预算默认档 (D-G1.6): OMD_TICKET_GOAL_ROUNDS (默认 2) / OMD_TICKET_GOAL_MINUTES (默认 30)。
  *
- * ⚠ D-3 闸在这条通道上**还没有**: 本函数收的是 `ticketId: string` 而不是票, 手上没有
- * `ticketClass` 可判, 类型层与 assertDispatchable 都够不着。今天不漏是因为唯一调用点
- * (`src/mcp/tools/pathfinder.ts` path_deliver → readyRegion) 只喂 **ruled task/prototype** 票;
- * 但那是调用点的性质, 不是这里的闸。补法 = 让它收票 (`DispatchableTicket`) 而不是 id,
- * 需同改 pathfinder.ts 调用点 —— 属切片 6 (票唯一入口) 的写集, 本切片不越界。
+ * D-3 闸 (切片 6 补上切片 2 留的类洞): 本函数**收票不收 id** —— 于是两道门在这条通道上都成立:
+ *  ① 类型层: 参数是 `DispatchableTicket`, `RulingTicket` 赋不进来 (编译期拒, G-4)。
+ *  ② 装配期: 首行 `assertDispatchable` 挡 `as` 强转 / JS 调用方 / 磁盘 parse 出来的票。
+ * 此前它收 `ticketId: string`, 手上没有 `ticketClass` 可判 —— 不漏只是因为唯一调用点
+ * (`src/mcp/tools/pathfinder.ts` path_deliver → readyRegion) 恰好只喂 ruled task/prototype 票,
+ * 而 readyRegion **不看类**: 一张标了 `ticketClass:'ruling'` 的 ruled task 票照样进区域。
+ * 那是调用点的性质, 不是闸 —— 现在是闸。
  */
 export function dispatchGoalTicket(
   cwd: string,
   slug: string,
-  ticketId: string,
+  ticket: DispatchableTicket,
   ruling: string,
   deps: DispatchGoalDeps = {},
   env: NodeJS.ProcessEnv = process.env,
 ): DispatchGoalResult {
+  // 装配期闸 (第二道): 类只在运行时看得见的那半 —— 拒了就一个副作用都不许留 (marker 也不写)。
+  const ticketId = assertDispatchable(ticket).id;
   const marker = goalDispatchedPath(cwd, slug, ticketId);
   if (existsSync(marker)) {
     return { runId: readFileSync(marker, 'utf8').trim(), already: true };

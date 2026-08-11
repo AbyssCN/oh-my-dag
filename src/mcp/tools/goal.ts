@@ -12,7 +12,8 @@ import { mkdirSync, openSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import type { OmdMcpTool } from '../server';
-import type { RunGoalResult, GoalTier, GoalClassification } from '../../harness/goal/run-goal';
+import type { RunGoalConfig, RunGoalResult, GoalTier, GoalClassification } from '../../harness/goal/run-goal';
+import { resolveBackend as realResolveBackend, type PathBackend } from '../../harness/pathfinder/backend';
 import type { ExecutorDagConfig } from '../../harness/dag/types';
 import type { CheckpointManager } from '../../harness/continuity/checkpoint-manager';
 import type { RunRegistry } from '../run-registry';
@@ -30,10 +31,25 @@ export interface GoalToolDeps {
   /** 自主环实现 (默认注入真 runGoal)。 */
   runGoal: (
     goal: string,
-    config: { cwd: string; dag: ExecutorDagConfig; maxRounds?: number; researchRounds?: number; tier?: GoalTier; onClassified?: (classified: GoalClassification) => void },
+    config: {
+      cwd: string;
+      dag: ExecutorDagConfig;
+      maxRounds?: number;
+      researchRounds?: number;
+      tier?: GoalTier;
+      onClassified?: (classified: GoalClassification) => void;
+      /** D-2 散雾出口的注入面 (切片 6 接线; 无 map 的仓不传 = 闸缺席, 行为逐字节照旧)。 */
+      tickets?: RunGoalConfig['tickets'];
+    },
   ) => Promise<RunGoalResult>;
   runRegistry: RunRegistry;
   cwd: string;
+  /**
+   * 决策地图后端解析器 (D-6①③ 的注入接缝; 省略 = `resolveBackend(cwd)` —— env OMD_PATH_BACKEND >
+   * 仓库配置 > md)。测试注入替身。**解析抛错 = 挂票缺席不是 run 失败**: gh 探测失败不该让
+   * 一次 solve 起不来 (票是控制面, run 是执行面 —— 控制面缺件时执行面照跑, 只是这趟对图不可见)。
+   */
+  resolveBackend?: (cwd: string) => PathBackend;
   /**
    * engine config 基座 —— **thunk, 每次调用重解** (INV-MODEL-3 无 boot 冻结: 长驻 server 里
    * 装配期算死的座位会让 omd_set_role 改完不生效)。
@@ -133,6 +149,124 @@ export function summarizeGoal(r: RunGoalResult): string {
   return lines.join('\n');
 }
 
+// ── D-6①③ (SDD 2026-08-11 控制面统一, 切片 6): 一切 run 挂票 · 一切散雾成票 ──────────
+//
+// 切片 1 把散雾出口的**纯核**与 run-goal 的注入面都建好了, 却**没有任何生产调用方传它** ——
+// 按本仓纪律那就是一个空旋钮 (`loopBudget` 那条踩过同一形态: Present 而非 Wired)。这一段就是那条 wire。
+//
+// ⚠ 边界 (owner 定向: 票是唯一入口是**方向**, 不是强迫每个仓开图):
+//   **仓里没有 map = 行为逐字节照旧** —— 不建图、不改 run、只 log 一行留痕 (INV-1)。
+//   多张开放地图且没显式指定 = **不猜** (同 pathfinder `resolveSlug` 的判据: 零/多张都要人说话);
+//   猜错图比不挂票坏 —— 票会长在一张与这趟活无关的图上, 而那张图的 owner 不知道它从哪来。
+
+/** run 挂票的落点 (map 句柄 + slug)。undefined = 这趟不挂票, **理由已 log** (不静默)。 */
+interface RunTicketTarget {
+  backend: PathBackend;
+  slug: string;
+}
+
+/** 挑这趟 run 挂哪张图。全程 fail-open: 任何一步不成 = 挂票缺席, run 照跑 (控制面缺件不掀执行面)。 */
+function resolveRunTicketTarget(deps: GoalToolDeps, wanted: string | undefined): RunTicketTarget | undefined {
+  let backend: PathBackend;
+  try {
+    backend = (deps.resolveBackend ?? ((cwd: string) => realResolveBackend(cwd)))(deps.cwd);
+  } catch (e) {
+    // gh 后端探测失败会 fail-loud throw (D-E) —— 那是 path_* 工具该炸的地方, 不是 solve 该炸的地方。
+    logger.warn({ err: (e as Error).message }, '[dag_goal] D-6 挂票: 后端解析失败 → 这趟不挂票 (run 照跑)');
+    return undefined;
+  }
+  try {
+    if (wanted) {
+      if (!backend.readMap(deps.cwd, wanted)) {
+        logger.warn({ slug: wanted }, '[dag_goal] D-6 挂票: 指定的 slug 在本仓找不到 → 这趟不挂票 (不代建图)');
+        return undefined;
+      }
+      return { backend, slug: wanted };
+    }
+    const maps = backend.listMaps(deps.cwd);
+    if (maps.length === 0) {
+      logger.info({ cwd: deps.cwd }, '[dag_goal] D-6 挂票: 本仓无决策地图 → 行为照旧 (path_map 开一张才挂票)');
+      return undefined;
+    }
+    if (maps.length > 1) {
+      logger.info({ slugs: maps.map((m) => m.slug) }, '[dag_goal] D-6 挂票: 多张开放地图, 未指定 slug → 不猜, 这趟不挂票');
+      return undefined;
+    }
+    return { backend, slug: maps[0]!.slug };
+  } catch (e) {
+    logger.warn({ err: (e as Error).message }, '[dag_goal] D-6 挂票: 读图失败 → 这趟不挂票 (run 照跑)');
+    return undefined;
+  }
+}
+
+/** 票题上限 (同 run-tickets 的理由: 票是给人一眼判的, 且 map markdown 一票一行)。 */
+function ticketTitle(goal: string): string {
+  const one = `[run] ${goal.replace(/\s+/g, ' ').trim()}`;
+  return one.length <= 160 ? one : `${one.slice(0, 159)}…`;
+}
+
+/**
+ * ③ 起跑开票 (D-6③「run 天然挂票」)。开的是**任务票** (`ticketClass:'task'`): 这趟 run 要的是施工。
+ *
+ * 幂等锚 = `suggestedBy === runId`: `resume=<runId>` 走的是同一个 runId, 复用同一张票而不是
+ * 每续一次长一张 (票量级噪声化正是 O-3 盯的那件事)。
+ * 出生状态 `open` 而非 `ruled` —— **ruled 的 task 票会被 `readyRegion` 收进待交付区域**,
+ * 于是 path_deliver 会把一趟正在飞的 run 再编译执行一遍 (双跑双烧)。开票只是让它在图上看得见。
+ */
+function openRunTicket(target: RunTicketTarget, cwd: string, runId: string, goal: string): string | undefined {
+  try {
+    const existing = target.backend.readMap(cwd, target.slug)?.tickets.find((t) => t.suggestedBy === runId);
+    if (existing) return existing.id;
+    const t = target.backend.addTicket(cwd, target.slug, {
+      type: 'task',
+      title: ticketTitle(goal),
+      blockedBy: [],
+      ticketClass: 'task',
+      suggestedBy: runId, // G-2: 票 → runId → 回执双向可达
+      executorKind: 'goal', // 这张票的执行档位就是"收敛一个开放目标" (D-1: solve 降级为票的一种档位)
+      body: `runId: ${runId}\n\n${goal}`, // gh 后端的 issue 正文; md 忽略
+    });
+    logger.info({ slug: target.slug, ticketId: t.id, runId }, '[dag_goal] D-6③ run 挂票: 已在图上开任务票');
+    return t.id;
+  } catch (e) {
+    logger.warn({ slug: target.slug, runId, err: (e as Error).message }, '[dag_goal] D-6③ 开票失败 → 这趟对图不可见 (run 照跑)');
+    return undefined;
+  }
+}
+
+/**
+ * ③ 终态如实翻票。**只翻读得出的那两格**, 其余留 open 并留痕 (NULL≠0: 不把"没结论"翻成结论):
+ *  - `SUCCESS`            → ruled(判词=收敛回执) + delivered。两步是因为 `markDelivered` 只认
+ *                           ruled 票 (它的语义是"已裁且已交付"), 与 afk-hook 折入 research 时
+ *                           先 rule 再走同一条路一致 —— 不发明第三个状态翻转口。
+ *  - `STALLED` / `BLOCKED` → escalated (G-2: 停在这里, 等人)。顺带打上 D-5 的等人进入戳
+ *                           (在 backend.escalate 里, 于是超时升级对这张票也成立)。
+ *  - 其余 (EXHAUSTED 加预算 resume / cancelled 原样 resume / ERROR 看栈) → 票留 open:
+ *    它们的下一步都是"接着跑", 翻成终态会把一件没完的事记成完了。
+ */
+function settleRunTicket(target: RunTicketTarget, cwd: string, ticketId: string, r: RunGoalResult): void {
+  const { backend, slug } = target;
+  const state = RUN_OUTCOME_INFO[r.outcome].loopState;
+  try {
+    if (state === 'SUCCESS') {
+      backend.rule(cwd, slug, ticketId, `[run 收敛] ${r.rounds} 轮 · 验收 ${r.acceptance.kind}${r.specPath ? ` · spec ${r.specPath}` : ''}`);
+      backend.markDelivered(cwd, slug, [ticketId]);
+      logger.info({ slug, ticketId }, '[dag_goal] D-6③ 终态: 票翻 delivered');
+    } else if (state === 'STALLED' || state === 'BLOCKED') {
+      if (!backend.escalate) {
+        logger.warn({ slug, ticketId, outcome: r.outcome }, `[dag_goal] D-6③ 终态: 后端 ${backend.kind} 未实装 escalate → 票留 open (闸缺席)`);
+        return;
+      }
+      backend.escalate(cwd, slug, ticketId);
+      logger.info({ slug, ticketId, outcome: r.outcome }, '[dag_goal] D-6③ 终态: 票翻 escalated (等人)');
+    } else {
+      logger.info({ slug, ticketId, outcome: r.outcome, loopState: state }, '[dag_goal] D-6③ 终态: 票留 open (下一步是接着跑, 不是终态)');
+    }
+  } catch (e) {
+    logger.warn({ slug, ticketId, err: (e as Error).message }, '[dag_goal] D-6③ 翻票失败 → 票停在原状态 (run 已终态落库)');
+  }
+}
+
 export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
   return {
     name: 'dag_goal',
@@ -171,6 +305,10 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         .positive()
         .optional()
         .describe('Stop opening new inner-loop rounds after this many minutes (soft stop; resume to continue)'),
+      slug: z
+        .string()
+        .optional()
+        .describe('Pathfinder map slug this run hangs its ticket on (omit = the single open map; no map = no ticket, behavior unchanged)'),
       branchStrategy: z
         .enum(['head', 'branch'])
         .optional()
@@ -180,7 +318,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         ),
     },
     handler: async (args) => {
-      const { goal, tier, maxRounds, researchRounds, resume, detached, budgetTokens, budgetMinutes, branchStrategy, resultOut, sddPath } = args as {
+      const { goal, tier, maxRounds, researchRounds, resume, detached, budgetTokens, budgetMinutes, branchStrategy, resultOut, sddPath, slug } = args as {
         goal?: string;
         tier?: GoalTier;
         maxRounds?: number;
@@ -192,6 +330,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         budgetMinutes?: number;
         branchStrategy?: BranchStrategy;
         sddPath?: string;
+        slug?: string;
       };
       if (!goal?.trim()) {
         return { content: [{ type: 'text' as const, text: 'dag_goal: goal 必填' }], isError: true };
@@ -236,6 +375,15 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           ...(branchStrategy ? ['--branch-strategy', branchStrategy] : []),
           ...(sddPath ? ['--sdd-path', sddPath] : []),
         ];
+        // D-6①③ (切片 6): detached 路径的挂票**在 worker 里生效**, 不在这里 —— worker 起来后调的是
+        // 同一个 dag_goal handler (进程内路径, --cwd 是主仓 → 同一张图), 挂票与散雾出口在那边一次性
+        // 接上; 母进程抢先开票会开出两张 (幂等锚 suggestedBy=runId 能救回来, 但那是靠运气不是靠设计)。
+        // ⚠ 留账: 显式 `slug` **没有**转发给 worker (`scripts/goal-worker.ts` 在本切片写集外, 需它加一行
+        //   `...(opt('slug') ? { slug: opt('slug') } : {})`)。于是 detached × 多图仓 = 不挂票 (log 留痕),
+        //   detached × 单图仓照常挂。**不预留死参数**: 转发了而 worker 不认, 就又是一个空旋钮。
+        if (slug) {
+          logger.info({ slug, runId }, '[dag_goal] D-6 挂票: detached 路径不转发 slug (worker 侧按单图自解析)');
+        }
         let pid: number | undefined;
         try {
           pid = spawn(cmd, { cwd: deps.cwd, logPath });
@@ -300,6 +448,11 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
       // 落盘目录。第一版就漏了这一步 —— worktree 建起来了、回话说"隔离成功"、**产物全落在主树**。
       // 声明面动了执行面没跟上, 而读数上看起来是成功的。
       if (worktree.strategy === 'branch') dag = deps.buildConfig(worktree.cwd);
+
+      // ── D-6①③ (切片 6): 这趟 run 在决策地图上的落点 ────────────────────────────
+      // 无图 / 多图未指定 / 后端解析失败 → undefined, 下面两处全部跳过 = 行为逐字节照旧 (INV-1)。
+      const ticketTarget = resolveRunTicketTarget(deps, slug);
+      const runTicketId = ticketTarget ? openRunTicket(ticketTarget, deps.cwd, runId, goal) : undefined;
 
       // INV-P2-6: continuity 给了才落环 journal; resume 时才读它 (与 per-node resume 同一开关)。
       // D-P: 取消把手一并挂上 —— 自主环是最长活的那条路 (research + 多轮执行), 也是最需要能叫停的。
@@ -384,6 +537,22 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           ...(researchRounds ? { researchRounds } : {}),
           ...(tier ? { tier } : {}),
           ...(sddPath ? { sddPath } : {}),
+          // ① D-2 散雾出口 (切片 1 的纯核 + 注入面, 到这里才有生产调用方): 这趟的未决/发现物/终态
+          // → 图上的 suggested 票。**sink 把 cwd 钉死在主仓** —— run-goal 用 `config.cwd` 调 suggest,
+          // 而隔离档 (branchStrategy=branch) 下那是 worktree; 不钉的话票会落进一棵随时会被删的树里
+          // (状态锚留主仓, 与 detached 的 --cwd 同一条纪律)。
+          ...(ticketTarget && ticketTarget.backend.suggest
+            ? {
+                tickets: {
+                  slug: ticketTarget.slug,
+                  runId,
+                  sink: {
+                    suggest: (_cwd: string, s: string, drafts: Parameters<NonNullable<PathBackend['suggest']>>[2], opts: Parameters<NonNullable<PathBackend['suggest']>>[3]) =>
+                      ticketTarget.backend.suggest!(deps.cwd, s, drafts, opts),
+                  },
+                },
+              }
+            : {}),
         })
         .then((r) => {
           // N9 判据轴: 两条判据回填到这个 runId 的全部记录。**在这里而不是随 record 一起写** ——
@@ -396,6 +565,9 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           if (r.converged) deps.runRegistry.succeed(runId, summarizeGoal(r));
           else if (r.cancelled) deps.runRegistry.cancel(runId, r.cancelled, summarizeGoal(r));
           else deps.runRegistry.fail(runId, summarizeGoalFailure(r));
+          // ③ 终态如实翻票 (D-6③)。开票失败过 (runTicketId 缺席) 就没有可翻的 —— 不重开一张:
+          // 一张只在终态出现的票读不出"这活跑过多久", 而那正是挂票要给人的信息。
+          if (ticketTarget && runTicketId) settleRunTicket(ticketTarget, deps.cwd, runTicketId, r);
           // t4 (S-3): BLOCKED = 需外部输入 = **红线岔口进收件箱** —— openFork 的第一个生产喂入点
           // (S3 建好收件箱后引擎从没铸过 fork; 无人值守的 BLOCKED 此前只活在 run 摘要里)。
           // blocking=true 语义成立: goal 环判 blocked 时已真停 (证据链 = R3 验证过的采集件, 见
@@ -454,7 +626,10 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
             //   实测 (2026-08-06 首批 4 跑): **4/4 都是 dirty-tracked** —— D-AB 那句
             //   「范围内写可以放手, 因为 git 就是 rollback」在生产上一次都没成立过。
             text:
-              `runId: ${runId}\nstatus: running\n${describeRunWorktree(worktree)}\n` +
+              `runId: ${runId}\nstatus: running\n` +
+              // D-6③: 挂在哪张图上要在**起跑这一刻**说 —— 否则票的存在只有翻日志才知道。
+              (ticketTarget && runTicketId ? `ticket: ${runTicketId} (map ${ticketTarget.slug}) — 终态自动翻 delivered/escalated\n` : '') +
+              `${describeRunWorktree(worktree)}\n` +
               describeRollback(captureRollbackAnchor({ cwd: worktree.cwd })),
           },
         ],

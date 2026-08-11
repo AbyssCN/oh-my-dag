@@ -24,6 +24,7 @@ import {
 } from '../../harness/pathfinder/backend';
 import { makeInitDeps, runInit, type InitDeps } from '../../harness/pathfinder/init';
 import {
+  assertDispatchable,
   countDispatchedResearch,
   dispatchFrontier as realDispatchFrontier,
   dispatchGoalTicket as realDispatchGoalTicket,
@@ -400,8 +401,15 @@ function makeTickets(deps: PathfinderToolDeps): OmdMcpTool {
       const r = resolveSlug(backend, deps.cwd, slug as string | undefined);
       if ('error' in r) return err(r.error);
       const reflow = reflowOnce(deps, backend, r.slug);
+      // D-5/G-5 (切片 6 接线): 等人超时扫一遍 —— 挂在**读路径**上是因为 MCP server 无常驻
+      // watcher (同 reflowOnce 的 pull 模型): 没人来看的图不需要催, 来看的时候必须是最新的。
+      // 后端缺 sweepWaiting (gh) = 该后端没有超时升级, 不是"扫了没超时"。
+      const stale = backend.sweepWaiting?.(deps.cwd, r.slug, { now: new Date().toISOString() }) ?? [];
+      const staleLines = stale.map(
+        (e) => `⏳ 等人超时: ${e.ticketId} 已等 ${Math.floor(e.waitedMs / 3_600_000)}h (自 ${e.waitingSince}) — 已标 stale, 台账留痕。`,
+      );
       const map = backend.readMap(deps.cwd, r.slug)!;
-      return ok([...reflow, renderStatus(map, deps.hudMirror)].join('\n'));
+      return ok([...reflow, ...staleLines, renderStatus(map, deps.hudMirror)].join('\n'));
     },
   };
 }
@@ -506,7 +514,9 @@ function makeDeliver(deps: PathfinderToolDeps): OmdMcpTool {
           const gt = map.tickets.find((t) => t.id === gid)!;
           const goalText = gt.ruling ?? gt.title;
           try {
-            const d = fireGoal(cwd, r.slug, gid, goalText);
+            // D-3/G-4 (切片 6): 派发口收**票**不收 id —— 裁决票在这里当场 throw (装配期拒),
+            // 落进下面的 catch 成一行 `✗ fire 失败`, 不掀掉同批其它票 (整批炸 = 把闸做成故障)。
+            const d = fireGoal(cwd, r.slug, assertDispatchable(gt), goalText);
             goalLines.push(`◈ goal 票 ${gid} → solve ${d.already ? '已在飞' : '已 fire'} (runId ${d.runId})`);
             // ⚠ **prototype 票的隔离今天没生效** (2026-08-06 查实的三环):
             //   ① D-13 给 prototype 设计的隔离 worktree 住在 `pathfinder/dispatch.ts` 的
@@ -535,8 +545,20 @@ function makeDeliver(deps: PathfinderToolDeps): OmdMcpTool {
         if (goalLines.length === 0) return err('区域为空 (不该发生: readyRegion 非 null 但两侧都空)。');
         return ok([...goalLines, renderStatus(backend.readMap(cwd, r.slug)!, deps.hudMirror)].join('\n'));
       }
+      // D-3/G-4 (切片 6): **第二条派发路径**的装配期闸 —— compileSlice→executeSlice 这条同样
+      // 会把票交给执行体, 而 readyRegion 只看 type+status **不看类**: 一张标了
+      // `ticketClass:'ruling'` 的 ruled task 票照样进区域。这里编译**之前**拒, 整批不跑
+      // (与 goal 档那条逐张报不同: slice 是一张图, 里面混进一张裁决票就该整张不发)。
+      const sliceTickets = map.tickets.filter((t) => region.slice.includes(t.id));
+      for (const t of sliceTickets) {
+        try {
+          assertDispatchable(t);
+        } catch (e) {
+          return err(`${errMsg(e)}\n区域未执行 —— 先把这张票从待交付区域里裁出去 (裁决票要的是人裁, 不是编译)。`);
+        }
+      }
       // deliver spec 护栏 (编译前, fail-loud): 复杂区域缺 docs/plan/ 契约引用 → 不编译不执行 (D-E)。
-      const gate = specGateViolation(map.tickets.filter((t) => region.slice.includes(t.id)));
+      const gate = specGateViolation(sliceTickets);
       if (gate) return err(gate);
       if (!models.leafModel) return err('未配 leaf 模型 — 设 OMD_ITER_LEAF_MODEL (或 OMD_RUNTIME_PROVIDER/MODEL) 后再 path_deliver。');
       let plan;

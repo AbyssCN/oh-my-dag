@@ -10,6 +10,7 @@
  */
 import { createHash } from 'node:crypto';
 import type { PathMap, SuggestionLogEntry, Ticket, TicketType } from './types';
+import { markWaitingHuman } from './frontier';
 import { semanticHit } from './proximity';
 
 /** D-S1.5: 指纹 = sha256(type + NFC(title))。t3 扩 body 级前,先堵「同题重开」。 */
@@ -108,6 +109,11 @@ export function applySuggestions(map: PathMap, drafts: SuggestionDraft[], opts: 
       suggestedBy: d.suggestedBy,
       fingerprint: fp,
     };
+    // D-5 三戳之三 (切片 6 接线): suggested = "等人确认" —— 出生即进等人态, 于是**这一刻**就是
+    // 进入时刻。不打这个戳的话, 每张建议票的等待读数都是 `waiting-unknown-since`, 超时永不升级
+    // (G-5 fail-safe 是对的: 不知道等了多久就不假装知道 —— 所以缺的不是闸, 是这个戳)。
+    // 时刻用 opts.at (调用方给的同一个可重放时钟), 不自取 Date.now。
+    markWaitingHuman(ticket, opts.at);
     map.tickets.push(ticket);
     byFp.set(fp, tid);
     added.push(ticket);

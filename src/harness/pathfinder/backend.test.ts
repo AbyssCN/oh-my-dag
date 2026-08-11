@@ -8,6 +8,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveBackend, type GhResult, type GhRunner } from './backend';
 import { createGhBackend } from './backend-gh';
+import { saveMap as saveMapForStamp } from './map-store';
+import { waitingHumanState } from './frontier';
+import type { Ticket } from './types';
 
 const okr = (stdout: string): GhResult => ({ stdout, exitCode: 0, stderr: '' });
 const failr = (stderr: string): GhResult => ({ stdout: '', exitCode: 1, stderr });
@@ -499,6 +502,101 @@ describe('D-C.2 门控: config.capabilities.nativeDependencies 选策略', () =>
       b.readMap(dir, '5');
       const q = calls.find((c) => c.includes('graphql'))!.find((a) => a.startsWith('query='))!;
       expect(q).not.toContain('blockedBy(first:50)'); // 缺省不查原生字段
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * **切片 6 ④** —— D-5 三戳的**生产者**接线 (SDD 2026-08-11 控制面统一, G-5)。
+ *
+ * 切片 3 把读侧 (`waitingHumanState` / `sweepWaitingHuman`) 与三个字段都做好了, 而**没有一处
+ * 生产代码往票上打这些戳** —— 于是每张等人票的读数恒为 `waiting-unknown-since`, 超时永不触发。
+ * 这不是"闸不灵", 是闸的输入恒为 NULL: 一个在任何干预下都不动的数, 量的是尺子。
+ *
+ * md 后端负责两戳 (escalate 的进入戳 / rule 的裁决戳) + sweepWaiting 落盘口;
+ * 第三处 (suggested 出生戳) 在 `suggest.applySuggestions`, 网在 suggested.test.ts。
+ * ⚠ gh 后端**不打戳** (backend-gh 不在本切片写集) —— 那格是留账, 不是"打了没记上"。
+ */
+describe('D-5 三戳生产者 (md 后端, G-5)', () => {
+  const seed = (dir: string, t: Partial<Ticket> & { id: string }): void => {
+    saveMapForStamp(
+      { destination: 'Ship X', slug: 'ship-x', tickets: [{ type: 'grill', title: t.id, blockedBy: [], status: 'open', ...t }], decisionsLog: [] },
+      dir,
+    );
+  };
+
+  test('escalate → 打进入戳 (没有它, 这张票的等待读数永远是 waiting-unknown-since)', () => {
+    const dir = tmp();
+    try {
+      seed(dir, { id: 'g1' });
+      const b = resolveBackend(dir, { env: { OMD_PATH_BACKEND: 'md' } });
+      b.escalate!(dir, 'ship-x', 'g1');
+      const tk = b.readMap(dir, 'ship-x')!.tickets[0]!;
+      // 证伪: 摘掉 escalate 里的 markWaitingHuman → waitingSince 缺席, 这条红 (且超时永不触发)。
+      expect(tk.status).toBe('escalated');
+      expect(tk.waitingSince).toBeTruthy();
+      expect(waitingHumanState(tk)).toBe('waiting');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('escalate 重进等待 → 清掉上一轮的 stale 标 (否则幂等闸把它永久排除在升级之外)', () => {
+    const dir = tmp();
+    try {
+      seed(dir, { id: 'g1', status: 'escalated', waitingSince: '2026-01-01T00:00:00.000Z', staleAt: '2026-01-04T00:00:00.000Z' });
+      const b = resolveBackend(dir, { env: { OMD_PATH_BACKEND: 'md' } });
+      b.escalate!(dir, 'ship-x', 'g1');
+      // 证伪: 用 `tk.waitingSince = now` 代替 markWaitingHuman (少了 delete staleAt) → 这条红。
+      expect(b.readMap(dir, 'ship-x')!.tickets[0]!.staleAt).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('rule → 打裁决戳; 「裁了没记」由 ruledAt ≥ waitingSince 判得出来 (不看 ruling 文本)', () => {
+    const dir = tmp();
+    try {
+      seed(dir, { id: 'g1', status: 'escalated', waitingSince: '2020-01-01T00:00:00.000Z', ruling: '上一轮的旧判词' });
+      const b = resolveBackend(dir, { env: { OMD_PATH_BACKEND: 'md' } });
+      b.rule(dir, 'ship-x', 'g1', '这次真的裁了');
+      const ruled = b.readMap(dir, 'ship-x')!.tickets[0]!;
+      expect(ruled.ruledAt).toBeTruthy();
+      // 把状态改回等人态 (票被裁过又重新升人 = 盘上有裂缝的那一形): 读数应是 ruled-unrecorded,
+      // 而**不是** waiting —— 催一个已经裁过的人没意义。
+      // 证伪: 摘掉 rule 里的 ruledAt → 这条读成 'waiting', 红。
+      expect(waitingHumanState({ ...ruled, status: 'escalated' })).toBe('ruled-unrecorded');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('sweepWaiting: 超时票标 stale + 台账**落盘** (纯核算, 端口只管写)', () => {
+    const dir = tmp();
+    try {
+      const long = new Date(Date.now() - 100 * 3_600_000).toISOString();
+      seed(dir, { id: 'g1', status: 'escalated', waitingSince: long });
+      const b = resolveBackend(dir, { env: { OMD_PATH_BACKEND: 'md' } });
+      const fired = b.sweepWaiting!(dir, 'ship-x', { now: new Date().toISOString() });
+      expect(fired.map((e) => e.ticketId)).toEqual(['g1']);
+      // 证伪: 把 sweepWaiting 实装成"算了不落盘"(不走 mutateMap) → 下面两条红, 而返回值仍是绿的
+      // —— 这正是要单独钉落盘那一位的理由。
+      const after = b.readMap(dir, 'ship-x')!;
+      expect(after.tickets[0]!.staleAt).toBeTruthy();
+      expect(after.waitingLog).toHaveLength(1);
+      expect(b.sweepWaiting!(dir, 'ship-x', { now: new Date().toISOString() })).toEqual([]); // 幂等
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('sweepWaiting: 图不存在 → [] (读路径上顺手扫的东西不炸掉整个 path_tickets)', () => {
+    const dir = tmp();
+    try {
+      const b = resolveBackend(dir, { env: { OMD_PATH_BACKEND: 'md' } });
+      expect(b.sweepWaiting!(dir, 'no-such-map', { now: new Date().toISOString() })).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

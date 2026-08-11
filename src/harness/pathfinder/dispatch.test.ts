@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import {
   assertDispatchable,
   dispatchFrontier,
+  dispatchGoalTicket,
+  goalDispatchedPath,
   dispatchTicket,
   disposePrototype,
   prototypeBranch,
@@ -195,6 +197,58 @@ describe('D-3 票类型闸 — 裁决票永不可派发 (G-4/G-6)', () => {
       const t = tk({ id: `legacy-${type}`, type });
       expect(assertDispatchable(t)).toBe(t as DispatchableTicket);
       expect(() => dispatchTicket(t, { cwd: '/repo', slug: 'legacy' }, d)).not.toThrow();
+    }
+  });
+
+  // ── 切片 6: goal 档派发口的类洞 (切片 2 留账的 P1) ────────────────────────────
+  //
+  // `dispatchGoalTicket` 此前收 `ticketId: string` —— 手上没有票就没有类可判, 两道门都够不着。
+  // 它是**第二条会把票交给执行体的路** (detached solve, 一跑就烧钱), 所以闸缺在这里比缺在
+  // dispatchTicket 上更贵: 那条至少还有 dispatchFrontier 在前面挡, 这条是 path_deliver 直连。
+
+  test('G-4 goal 档: 裁决票赋不进 dispatchGoalTicket 的参数 (@ts-expect-error 钉死)', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'pf-goal-gate-'));
+    try {
+      const t = ruling('g9', 'task');
+      expect(() => {
+        // 证伪 (G-6): 'ruling' → 'task', 或参数类型退回 `ticketId: string`, 这条抑制立刻变成
+        // TS2578「未使用的抑制指令」→ tsc 当场红 (实跑证伪过)。
+        // @ts-expect-error INV-2: RulingTicket ⊄ DispatchableTicket —— goal 派发口同样收不进裁决票。
+        dispatchGoalTicket(cwd, 'm', t, '收敛这个', { spawnDetached: () => 1, makeRunId: () => 'r' });
+      }).toThrow();
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test('G-4 goal 档运行时: as 强转的裁决票 → 装配期拒, 不 spawn 且**不留在途标记**', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'pf-goal-gate-'));
+    try {
+      const spawns: string[][] = [];
+      const smuggled = ruling('g9', 'task') as unknown as DispatchableTicket;
+      // 证伪: 摘掉 dispatchGoalTicket 首行的 assertDispatchable → 票被真 fire (spawns 变 1) 且
+      // 标记落盘, 这条当场红。标记那一位单独钉: 假阳性标记 = 票永远卡在"在飞"。
+      expect(() => dispatchGoalTicket(cwd, 'm', smuggled, '收敛这个', { spawnDetached: (c) => (spawns.push(c), 1) })).toThrow(/装配期拒/);
+      expect(spawns).toHaveLength(0);
+      expect(existsSync(goalDispatchedPath(cwd, 'm', 'g9'))).toBe(false);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test('存量兼容 (goal 档): 未标类的 ruled task 票照旧 fire (缺省 undefined = 语义不变)', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'pf-goal-gate-'));
+    try {
+      const spawns: string[][] = [];
+      const d = dispatchGoalTicket(cwd, 'm', tk({ id: 't2', type: 'task' }), '收敛这个', {
+        spawnDetached: (c) => (spawns.push(c), 1),
+        makeRunId: () => 'run-fixed',
+      });
+      // 证伪: 闸若把 undefined 当非法, 存量 goal 档票全部派不出去 —— 这条当场红。
+      expect(d).toEqual({ runId: 'run-fixed', already: false });
+      expect(spawns).toHaveLength(1);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
     }
   });
 

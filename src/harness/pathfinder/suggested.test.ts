@@ -10,7 +10,7 @@
 import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import type { PathMap, Ticket } from './types';
-import { computeFrontier, deriveStatus } from './frontier';
+import { computeFrontier, deriveStatus, waitingHumanState } from './frontier';
 import { parseMapMarkdown, renderMapMarkdown, saveMapDb, loadMapDb } from './map-store';
 import { compileSlice } from './slice-compiler';
 import { readyRegion } from '../../mcp/tools/pathfinder';
@@ -124,6 +124,16 @@ describe('applySuggestions (GWT-2/6/7)', () => {
     expect(tk.suggestedBy).toBe('run-1');
     expect(tk.fingerprint).toBe(computeFingerprint('research', '查一下 X'));
     expect(tk.id).toBe('s1');
+  });
+
+  test('★ 切片6④: suggested 出生即打**等人进入戳** (D-5 三戳之三, G-5)', () => {
+    // 建议票出生的那一刻就在等人确认 —— 于是 opts.at 就是它的进入时刻。不打这个戳的话,
+    // 每张建议票的等待读数恒为 waiting-unknown-since, 72h 超时**永远**不触发 (闸的输入恒为 NULL)。
+    const m = base();
+    applySuggestions(m, [{ type: 'research', title: '查一下 X', suggestedBy: 'run-1' }], { at: AT });
+    // 证伪: 摘掉 applySuggestions 里的 markWaitingHuman → waitingSince 缺席, 两条一起红。
+    expect(m.tickets[0]!.waitingSince).toBe(AT); // 用调用方给的可重放时钟, 不自取 Date.now
+    expect(waitingHumanState(m.tickets[0]!)).toBe('waiting');
   });
 
   test('GWT-6: 指纹撞任意状态既有票 → 不入图, deduped 留痕指向撞上的票', () => {

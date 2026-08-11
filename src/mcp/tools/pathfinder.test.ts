@@ -7,6 +7,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createPathfinderTools, type PathfinderToolDeps } from './pathfinder';
+import { loadMap, saveMap } from '../../harness/pathfinder/map-store';
+import type { Ticket } from '../../harness/pathfinder/types';
 import { createOmdMemory } from '../../harness/memory/store';
 import { validateFactWrite } from '../../memory/safeguards/validator';
 import { checkEvolve } from '../../memory/safeguards/evolution-lock';
@@ -385,5 +387,137 @@ describe('pathfinder MCP tools', () => {
     };
     const resultReplace = checkEvolve(existingTentative, incoming);
     expect(resultReplace.action).toBe('replace');
+  });
+});
+/**
+ * **切片 6 ②④** —— 第二条派发路径的装配期闸 + 等人超时扫描接线
+ * (SDD `docs/plan/2026-08-11-control-plane-unification.md` G-4 / G-5 / G-6)。
+ *
+ * ⚠ 这两条闸都建立在同一个事实上: `readyRegion` / 前沿计算**不看票的类** —— 它们判的是
+ * type + status。于是一张被人手改成 `ticketClass: 'ruling'` 的 ruled task 票, 今天照样进
+ * 待交付区域, 照样被编译进 slice 交给执行体。裁决票要的是人裁, 不是执行体 (INV-2)。
+ * 违规样本就按"真相文件被人手改"的形状造 (saveMap 直写), 那是它真实的来路。
+ */
+describe('★ 切片6② path_deliver 的两条派发路径都拒裁决票 (G-4/G-6)', () => {
+  /** 造一张图: 一张 ruled task 票, 可选标类。 */
+  function seed(dir: string, cls?: string): void {
+    const t: Ticket = { id: 't1', type: 'task', title: '干活', blockedBy: [], status: 'ruled', ruling: '按 docs/plan/x.md 干' };
+    if (cls) (t as Ticket & { ticketClass?: string }).ticketClass = cls;
+    saveMap({ destination: 'Ship X', slug: 'ship-x', tickets: [t], decisionsLog: [] }, dir);
+  }
+
+  test('★ slice 路径: 区域里混进裁决票 → 编译前整批拒, executeSlice 一次都不调', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pf-cls-'));
+    try {
+      seed(dir, 'ruling');
+      let executed = 0;
+      const { call } = tools(dir, {
+        executeSlice: (async () => ((executed++), { results: {}, verification: { pass: true } })) as unknown as PathfinderToolDeps['executeSlice'],
+      });
+      const r = await call('path_deliver');
+      // 证伪: 去掉 path_deliver 里那个 assertDispatchable 循环 → 区域照跑, executed 变 1, 这条红。
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('装配期拒');
+      expect(r.text).toContain('t1');
+      expect(executed).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('★ 未标类的同一张票照旧交付 (证明这不是"恒拒" —— 存量语义逐字节不变)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pf-cls-'));
+    try {
+      seed(dir); // 只差 ticketClass 一个字段
+      let executed = 0;
+      const { call } = tools(dir, {
+        executeSlice: (async (plan: { nodes: Record<string, unknown> }) => (
+          (executed++), { results: Object.fromEntries(Object.keys(plan.nodes).map((id) => [id, { status: 'done' }])) }
+        )) as unknown as PathfinderToolDeps['executeSlice'],
+      });
+      const r = await call('path_deliver');
+      expect(r.isError).toBe(false);
+      expect(executed).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('★ goal 档路径: 裁决票 → fire 失败一行, 派发替身一次都不被调 (不掀同批其它票)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pf-cls-'));
+    try {
+      const t = (id: string, cls?: string): Ticket => {
+        const x: Ticket = { id, type: 'task', title: `活 ${id}`, blockedBy: [], status: 'ruled', ruling: `干 ${id}`, executorKind: 'goal' };
+        if (cls) (x as Ticket & { ticketClass?: string }).ticketClass = cls;
+        return x;
+      };
+      saveMap({ destination: 'Ship X', slug: 'ship-x', tickets: [t('g1', 'ruling'), t('g2')], decisionsLog: [] }, dir);
+      const fired: string[] = [];
+      const { call } = tools(dir, {
+        dispatchGoal: ((_c: string, _s: string, gt: Ticket) => {
+          fired.push(gt.id);
+          return { runId: 'run-x', already: false };
+        }) as unknown as PathfinderToolDeps['dispatchGoal'],
+      });
+      const r = await call('path_deliver');
+      // 证伪: 摘掉 dispatchGoalTicket 首行的 assertDispatchable (或这里的 assertDispatchable 包装)
+      // → g1 进 fired, 这条红。同批的 g2 必须照常 fire —— 闸不是故障。
+      expect(fired).toEqual(['g2']);
+      expect(r.text).toContain('✗ goal 票 g1');
+      expect(r.text).toContain('裁决票永不可派发');
+      expect(r.text).toContain('◈ goal 票 g2');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('★ 切片6④ path_tickets 顺手扫等人超时 (D-5/G-5)', () => {
+  const H = 3_600_000;
+  const ago = (h: number): string => new Date(Date.now() - h * H).toISOString();
+
+  test('★ 等了 73h 的 escalated 票 → 标 stale + 台账落盘 + 回话念出来', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pf-sweep-'));
+    try {
+      const t: Ticket = { id: 'g1', type: 'grill', title: '等人裁的问题', blockedBy: [], status: 'escalated', waitingSince: ago(73) };
+      saveMap({ destination: 'Ship X', slug: 'ship-x', tickets: [t], decisionsLog: [] }, dir);
+      const { call } = tools(dir);
+      const r = await call('path_tickets');
+      // 证伪: 摘掉 makeTickets 里的 backend.sweepWaiting 调用 → 回话没这行且盘上没 staleAt, 这条红。
+      expect(r.text).toContain('等人超时: g1');
+      const after = loadMap(dir, 'ship-x')!;
+      expect(after.tickets[0]!.staleAt).toBeTruthy(); // 落盘了 (mutateMap 那一跳真的走到)
+      expect(after.waitingLog).toHaveLength(1);
+      // 幂等: 同一轮等待只标一次 (再看一次不再重复报)。
+      expect((await call('path_tickets')).text).not.toContain('等人超时: g1');
+      expect(loadMap(dir, 'ship-x')!.waitingLog).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('★ 才等了 1h 的票不报 + 没记进入时刻的票不报 (fail-safe: 不知道等了多久就不催)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pf-sweep-'));
+    try {
+      saveMap(
+        {
+          destination: 'Ship X',
+          slug: 'ship-x',
+          tickets: [
+            { id: 'g1', type: 'grill', title: '刚等上', blockedBy: [], status: 'escalated', waitingSince: ago(1) },
+            { id: 'g2', type: 'grill', title: '老票没戳', blockedBy: [], status: 'escalated' },
+          ],
+          decisionsLog: [],
+        },
+        dir,
+      );
+      const { call } = tools(dir);
+      // 证伪: 把 sweepWaitingHuman 的 `waiting-unknown-since` 也当 waiting 升级 (缺席回落到 0) →
+      // g2 立刻"等了 56 年"被标 stale, 这条红。那正是 NULL≠0 要挡的抹平。
+      expect((await call('path_tickets')).text).not.toContain('等人超时');
+      expect(loadMap(dir, 'ship-x')!.waitingLog).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

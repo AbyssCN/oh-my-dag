@@ -17,7 +17,8 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { researchResultPath } from './dispatch';
 import { loadMap, mutateMap, saveMap } from './map-store';
-import type { ExecutorKind, PathMap, SuggestionLogEntry, Ticket, TicketType } from './types';
+import { markWaitingHuman, sweepWaitingHuman } from './frontier';
+import type { DispatchableClass, ExecutorKind, PathMap, SuggestionLogEntry, Ticket, TicketType, WaitingLogEntry } from './types';
 
 /** 一条 owner 评论指令 (collectOwnerCommands 的输出形状)。 */
 export interface OwnerCommand {
@@ -56,6 +57,18 @@ export interface NewTicket {
   executorKind?: ExecutorKind;
   /** 显式 id (md; 省略 = 自动)。gh 忽略 (id 由 issue number 定)。 */
   id?: string;
+  /**
+   * D-3 票语义类 (切片 6): 出生即标类。**域是 `DispatchableClass`** —— 这个口开不出裁决票
+   * (裁决票是人裁出来的, 不是机器 addTicket 出来的; 想开裁决票就得先有人)。
+   * 省略 = 不标 (存量语义: NULL≠0, 「没标」≠「标了 task」)。gh 后端忽略 (md 落盘字段)。
+   */
+  ticketClass?: DispatchableClass;
+  /**
+   * 票身 runId 锚 (D-6③ run 天然挂票 / G-2 票→runId→回执)。字段与 S-1 建议票同一个
+   * (`Ticket.suggestedBy`) —— 两者是同一件事: **这张票是哪一次机器动作生出来的**。
+   * 省略 = 人手开的票 (无 run 锚)。gh 后端忽略。
+   */
+  suggestedBy?: string;
 }
 
 /** 操作级后端端口。read 方向拼装 PathMap, write 方向语义操作 (create/add/rule/deliver)。 */
@@ -83,6 +96,12 @@ export interface PathBackend {
   rule(cwd: string, slug: string, ticketId: string, ruling: string): void;
   /** D-G1.4 (可选, gh 片 e 才实装): goal 票 solve 报 blocked → 票翻 escalated (需人)。 */
   escalate?(cwd: string, slug: string, ticketId: string): void;
+  /**
+   * D-5/G-5 (切片 6 接线, 可选): 扫本图超时的"等人裁"票 → 标 stale + 写 waitingLog, 落盘。
+   * 判据纯核在 `frontier.sweepWaitingHuman` (只升级 `waiting` 一档), 本端口只负责读改写。
+   * 缺 = 该后端**没有超时升级** (gh 今天就是这一格) —— 不是"扫过没超时", 别把两者读成一件事。
+   */
+  sweepWaiting?(cwd: string, slug: string, opts: { now: string; timeoutMs?: number }): WaitingLogEntry[];
   /** 把一批已裁票翻 delivered (终态)。 */
   markDelivered(cwd: string, slug: string, ticketIds: string[]): void;
   /**
@@ -179,6 +198,9 @@ function createMdBackend(): PathBackend {
           blockedBy: nt.blockedBy,
           status: 'open',
           ...(nt.executorKind ? { executorKind: nt.executorKind } : {}),
+          ...(nt.suggestedBy ? { suggestedBy: nt.suggestedBy } : {}),
+          // 判别键**不在** `Ticket` 上 (types.ts 讲了为什么), 落盘/读回由 map-store 的 StoredTicket 管。
+          ...(nt.ticketClass ? ({ ticketClass: nt.ticketClass } as { ticketClass: DispatchableClass }) : {}),
         };
         map.tickets.push(t);
         // parentId → 落母票 children (D-J: 展开语义留本地, 两后端一致)。
@@ -205,6 +227,10 @@ function createMdBackend(): PathBackend {
       const mutated = mutateMap(cwd, slug, (map): boolean => {
         const tk = map.tickets.find((t) => t.id === ticketId);
         if (!tk) return false;
+        // D-5 三戳之一 (切片 6 接线): escalated 是"等人裁"两态之一 —— 进态就打进入戳,
+        // 否则 waitingHumanState 只能答 `waiting-unknown-since`, 超时永远升级不了 (G-5 的 NULL≠0)。
+        // 时钟在这里取 (端口是 IO 层; 纯核 frontier.markWaitingHuman 仍不自取时钟, 可重放)。
+        markWaitingHuman(tk, new Date().toISOString());
         tk.status = 'escalated';
         return true;
       });
@@ -216,6 +242,9 @@ function createMdBackend(): PathBackend {
         if (!tk) return false;
         tk.status = 'ruled';
         tk.ruling = ruling;
+        // D-5 三戳之二: 判词落盘的时刻。它与 waitingSince 的**先后**是「裁了没记」的唯一判据
+        // (票可被裁过又重新升人 —— 看 ruling 文本有无必误判, 见 types.ts 那段注)。
+        tk.ruledAt = new Date().toISOString();
         if (!map.decisionsLog.some((d) => d.ticketId === ticketId)) {
           map.decisionsLog.push({ ticketId, gist: ruling.slice(0, 80) });
         }
@@ -223,6 +252,12 @@ function createMdBackend(): PathBackend {
       });
       if (!mutated) throw new Error(`找不到地图 "${slug}"`);
       if (!mutated.result) throw new Error(`地图里没有票 "${ticketId}"`);
+    },
+    // D-5/G-5: 纯核算 (sweepWaitingHuman 就地改 map), 这里只负责经 mutateMap 落盘。
+    // 图不存在 → [] (读路径上顺手扫的东西不该因为图没了而炸掉整个 path_tickets)。
+    sweepWaiting: (cwd, slug, opts) => {
+      const mutated = mutateMap(cwd, slug, (map) => sweepWaitingHuman(map, opts));
+      return mutated ? mutated.result : [];
     },
     markDelivered: (cwd, slug, ticketIds) => {
       const set = new Set(ticketIds);

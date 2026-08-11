@@ -46,13 +46,13 @@ describe('dispatchGoalTicket 幂等 (GWT-G1-1 后半)', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'goal-disp-'));
     const spawns: string[][] = [];
     const deps = { spawnDetached: (cmd: string[]) => (spawns.push(cmd), 123), makeRunId: () => 'run-fixed' };
-    const d1 = dispatchGoalTicket(cwd, 'm', 't2', '收敛这个目标', deps);
+    const d1 = dispatchGoalTicket(cwd, 'm', t({ id: 't2' }), '收敛这个目标', deps);
     expect(d1).toEqual({ runId: 'run-fixed', already: false });
     expect(spawns).toHaveLength(1);
     expect(spawns[0]!.join(' ')).toContain('--goal 收敛这个目标');
     expect(spawns[0]!.join(' ')).toContain('--max-rounds 2'); // D-G1.6 默认档
     expect(readFileSync(goalDispatchedPath(cwd, 'm', 't2'), 'utf8')).toBe('run-fixed');
-    const d2 = dispatchGoalTicket(cwd, 'm', 't2', '收敛这个目标', deps);
+    const d2 = dispatchGoalTicket(cwd, 'm', t({ id: 't2' }), '收敛这个目标', deps);
     expect(d2).toEqual({ runId: 'run-fixed', already: true });
     expect(spawns).toHaveLength(1); // 没有第二次 spawn
     rmSync(cwd, { recursive: true, force: true });
@@ -61,7 +61,7 @@ describe('dispatchGoalTicket 幂等 (GWT-G1-1 后半)', () => {
   test('spawn 抛错 → 不写标记 (无"已派"假象, 可重试)', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'goal-disp-'));
     expect(() =>
-      dispatchGoalTicket(cwd, 'm', 't2', 'x', { spawnDetached: () => { throw new Error('spawn 炸'); } }),
+      dispatchGoalTicket(cwd, 'm', t({ id: 't2' }), 'x', { spawnDetached: () => { throw new Error('spawn 炸'); } }),
     ).toThrow(/spawn 炸/);
     expect(existsSync(goalDispatchedPath(cwd, 'm', 't2'))).toBe(false);
     rmSync(cwd, { recursive: true, force: true });
@@ -82,8 +82,9 @@ describe('path_deliver 分流 (GWT-G1-1)', () => {
       agentRunner: (async () => ({ text: '', usage: { in: 0, out: 0 } })) as never,
       commandRunner: (async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode: 0 })) as never,
       resolveBackend: (c) => resolveBackend(c, { env: { OMD_PATH_BACKEND: 'md' } }),
-      dispatchGoal: ((_c: string, _s: string, gid: string, goalText: string) => {
-        fired.push(`${gid}:${goalText}`);
+      // 切片 6: 派发口收**票**不收 id (D-3 闸够得着类了) —— 替身跟着改形状。
+      dispatchGoal: ((_c: string, _s: string, gt: Ticket, goalText: string) => {
+        fired.push(`${gt.id}:${goalText}`);
         return { runId: 'run-g', already: false };
       }) as never,
       executeSlice: (async () => ((sliceRan = true), { results: {}, verification: { pass: true } })) as never,
@@ -163,7 +164,7 @@ describe('reflowGoalResults 三态映射 (D-G1.4, GWT-G1-2)', () => {
     writeResult(cwd, 'm1', 'g9', 'not-converged');
     reflowGoalResults(mdBackend(cwd), cwd, 'm1');
     const spawns: string[][] = [];
-    const d = dispatchGoalTicket(cwd, 'm1', 'g9', '继续收敛', { spawnDetached: (c) => (spawns.push(c), 1), makeRunId: () => 'run-NEW' });
+    const d = dispatchGoalTicket(cwd, 'm1', t({ id: 'g9' }), '继续收敛', { spawnDetached: (c) => (spawns.push(c), 1), makeRunId: () => 'run-NEW' });
     expect(d.runId).toBe('run-g9'); // 旧 runId, 不是 run-NEW
     expect(spawns[0]!.join(' ')).toContain('--run-id run-g9');
     expect(spawns[0]!.join(' ')).toContain('--result-out'); // 结果通道接上
@@ -259,12 +260,12 @@ describe('闸 A — 续派总次数上限 (跨次重派熔断)', () => {
   test('dispatchGoalTicket 每次真 spawn 计数 +1; 幂等命中不计 (没花钱不记账)', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'goal-att-'));
     const deps = { spawnDetached: () => 1, makeRunId: () => 'r1' };
-    dispatchGoalTicket(cwd, 'm1', 'g9', 'x', deps);
+    dispatchGoalTicket(cwd, 'm1', t({ id: 'g9' }), 'x', deps);
     expect(readGoalAttempts(cwd, 'm1', 'g9')).toBe(1);
-    dispatchGoalTicket(cwd, 'm1', 'g9', 'x', deps); // 标记在 → 幂等命中
+    dispatchGoalTicket(cwd, 'm1', t({ id: 'g9' }), 'x', deps); // 标记在 → 幂等命中
     expect(readGoalAttempts(cwd, 'm1', 'g9')).toBe(1);
     rmSync(goalDispatchedPath(cwd, 'm1', 'g9')); // 回流清标记后再派 = 又一次真 spawn
-    dispatchGoalTicket(cwd, 'm1', 'g9', 'x', deps);
+    dispatchGoalTicket(cwd, 'm1', t({ id: 'g9' }), 'x', deps);
     expect(readGoalAttempts(cwd, 'm1', 'g9')).toBe(2);
     rmSync(cwd, { recursive: true, force: true });
   });
