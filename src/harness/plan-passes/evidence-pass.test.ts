@@ -133,15 +133,37 @@ describe("evidence-pass 不越界 (EVD-4/EVD-1)", () => {
 });
 
 describe("evidence-pass 拒 plan (EVD-3, 地板不可绕)", () => {
-	test("命中卡但无 output_path → 抛错, 错误信息给出修法", () => {
+	// EVD-5 (2026-08-11 owner 裁): 无可渲染目标从「抛错拒整张 plan」改成「本节点降级 diff-only + 留痕」。
+	// 改的理由是这条闸在**没有 HTML 产物的项目里不是地板是墙**: 本仓前端全是 Vite 里的 .tsx,
+	// conductor 一挑中 frontend-impl 就规划期整图被拒 (实测 run ea124f36 / 02a5e3bb 各一次)。
+	test("EVD-5 命中卡但无 output_path → 不抛, 降级并留痕", () => {
+		// 怎么让它红: patchChain 改回 throw → 第一行 not.toThrow 当场红;
+		//            或降级时不记 degraded (静默 fail-open) → 后三行红。
 		const p = plan({ ui: { goal: "写页面", template: "frontend-impl" } });
-		expect(() => evidencePass(p, { templates })).toThrow(/缺可渲染目标/);
-		expect(() => evidencePass(p, { templates })).toThrow(/output_path/);
+		expect(() => evidencePass(p, { templates })).not.toThrow();
+		const r = evidencePass(p, { templates });
+		expect(r.degraded.map((d) => d.id)).toEqual(["ui"]);
+		expect(r.degraded[0]!.reason).toMatch(/无可渲染目标/);
+		expect(r.patched).toEqual([]); // 没补链 —— 降级不假装有证据
 	});
 
-	test("output_path 不是可渲染后缀 (.ts) → 抛错", () => {
+	test("EVD-5 output_path 不是可渲染后缀 (.tsx) → 同样降级, 理由带上那个路径", () => {
+		// 怎么让它红: 把 RENDERABLE_EXT 放宽成匹配 .tsx → 它会去补链, degraded 变空即红。
 		const p = plan({ ui: { goal: "写组件", template: "frontend-impl", output_path: "src/Btn.tsx" } });
-		expect(() => evidencePass(p, { templates })).toThrow(/缺可渲染目标/);
+		const r = evidencePass(p, { templates });
+		expect(r.degraded.map((d) => d.id)).toEqual(["ui"]);
+		expect(r.degraded[0]!.reason).toMatch(/src\/Btn\.tsx/);
+	});
+
+	test("EVD-5 降级不影响同图里有 .html 目标的节点 (逐节点判, 不是整图降级)", () => {
+		// 怎么让它红: 把降级做成整图级开关 (一个降级则全不补链) → ok 节点的 patched 变空即红。
+		const p = plan({
+			bad: { goal: "写组件", template: "frontend-impl", output_path: "src/Btn.tsx" },
+			ok: { goal: "写页面", template: "frontend-impl", output_path: "dist/a.html" },
+		});
+		const r = evidencePass(p, { templates });
+		expect(r.degraded.map((d) => d.id)).toEqual(["bad"]);
+		expect(r.patched.length).toBeGreaterThan(0);
 	});
 });
 

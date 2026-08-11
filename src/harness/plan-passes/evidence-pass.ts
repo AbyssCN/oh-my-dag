@@ -53,11 +53,26 @@ export interface EvidencePassResult {
 	noCardHits: string[];
 	/** D-11 图形状指纹 (确定性): 节点数/边数/executor 多重集。与 goal + oracle 结果凑三元组。 */
 	shape: string;
+	/**
+	 * EVD-5 (2026-08-11):**降级为 diff-only 审**的命中节点 id + 理由 (无可渲染目标)。
+	 *
+	 * 为什么从"拒 plan"改成"降级留痕":原判据要求命中节点有 `.html/.htm` 的 `output_path` 才补得出
+	 * 渲染步,取不到就抛错拒**整张** plan。而本仓前端全是 Vite 应用里的 `.tsx` 组件 ——
+	 * **永远不会有独立 HTML 产物**,于是 `frontend-impl` 这张卡在本仓等于不可用:conductor 一挑中它,
+	 * 规划期整图当场被拒,一个节点都不跑 (实测两次:run `ea124f36` / `02a5e3bb`)。
+	 * 「采集是地板」这条在**有渲染目标的项目里**成立,在没有的项目里它不是地板是墙。
+	 *
+	 * 降级取 `leaf-profile` SDD D-10 的同款出口:**无截图能力的项目退化为 diff-only 审**。
+	 * 代价明写:这些节点的像素证据链**确实没有**,所以 fail-open 但**不吞证据** ——
+	 * 逐个记 id 与理由,由接线层 warn 出来,读的人看得见"这一格降级了"而不是以为它过了闸。
+	 */
+	degraded: Array<{ id: string; reason: string }>;
 }
 
 /**
  * S2 证据闸。templates = 注册表 (name → 卡), 由接线层注入 (本 pass 不读盘)。
- * @throws 命中 evidence 卡但无法补出渲染目标时抛错 (fail-closed 拒 plan)。
+ * @throws 补挂后仍缺链 (EVD-3 自检: 补挂逻辑有洞) —— 那是引擎 bug, 仍 fail-closed。
+ *         无可渲染目标**不再抛** (EVD-5 降级, 见 {@link EvidencePassResult.degraded})。
  */
 export function evidencePass(
 	plan: ConductorPlan,
@@ -75,27 +90,32 @@ export function evidencePass(
 		if (n.attach_media === true) return false;
 		return n.template !== undefined && opts.templates.get(n.template)?.evidence === UI_PIXELS;
 	});
-	if (hits.length === 0) return { plan, patched: [], noCardHits, shape }; // EVD-1
+	if (hits.length === 0) return { plan, patched: [], noCardHits, shape, degraded: [] }; // EVD-1
 
 	// ② 逐个命中节点验链; 缺链的攒补丁 (EVD-2: 已有链的原样跳过)。
 	const nodes: ConductorPlan["nodes"] = { ...plan.nodes };
 	const patched: string[] = [];
+	const degraded: EvidencePassResult['degraded'] = [];
 	for (const id of hits) {
 		if (hasEvidenceChain(nodes, id)) continue;
-		patched.push(...patchChain(nodes, id));
+		const r = patchChain(nodes, id);
+		if (r.degradedReason) degraded.push({ id, reason: r.degradedReason });
+		else patched.push(...r.ids);
 	}
-	if (patched.length === 0) return { plan, patched: [], noCardHits, shape }; // EVD-1 恒等
+	if (patched.length === 0) return { plan, patched: [], noCardHits, shape, degraded }; // EVD-1 恒等
 
 	// ③ EVD-3 补挂即满足自检: 补完仍缺链 = 补挂逻辑有洞, 宁可拒 plan 也不放行假证据链。
 	const next: ConductorPlan = { ...plan, nodes };
-	const stillMissing = hits.filter((id) => !hasEvidenceChain(nodes, id));
+	// 降级节点本来就没链 (EVD-5), 不算"补挂逻辑有洞" —— 排除它们, 否则自检会把降级误判成引擎 bug。
+	const degradedIds = new Set(degraded.map((d) => d.id));
+	const stillMissing = hits.filter((id) => !degradedIds.has(id) && !hasEvidenceChain(nodes, id));
 	if (stillMissing.length > 0) {
 		throw new Error(
 			`evidence-pass: 补挂后仍缺 ui-pixels 证据链: ${stillMissing.join(", ")} (闸不可绕, 见 SDD S2/D-2)`,
 		);
 	}
 	patched.sort();
-	return { plan: next, patched, noCardHits, shape };
+	return { plan: next, patched, noCardHits, shape, degraded };
 }
 
 /**
@@ -131,15 +151,18 @@ function descendantsOf(nodes: ConductorPlan["nodes"], id: string): string[] {
  * 渲染目标取该节点声明的 output_path (须是可渲染后缀) —— 取不到就没有可截图的东西,
  * 抛错拒 plan (D-2: 采集是地板; 与其挂一个必然失败的命令假装有证据链, 不如让 owner/conductor 补 output_path)。
  */
-function patchChain(nodes: ConductorPlan["nodes"], id: string): string[] {
+function patchChain(nodes: ConductorPlan["nodes"], id: string): { ids: string[]; degradedReason?: string } {
 	const node = nodes[id]!;
 	const target = node.output_path;
 	if (!target || !RENDERABLE_EXT.test(target)) {
-		throw new Error(
-			`evidence-pass: 节点 '${id}' 的卡声明 evidence:'${UI_PIXELS}' 但缺可渲染目标 ` +
-				`(output_path=${target ?? "(未声明)"}) —— 补不出渲染步。修法: 给该节点声明 .html 产物的 output_path, ` +
-				`或显式画出 [executor:'command' 渲染节点 → 跑 ${SHOTS_VERIFY_CLI} 的 command 节点] 后代链。`,
-		);
+		// EVD-5: 无可渲染目标 → **降级为 diff-only 审**, 不再拒整张 plan (理由见 EvidencePassResult.degraded)。
+		// 想要像素证据的项目, 修法仍是: 给该节点声明 .html 产物的 output_path,
+		// 或显式画出 [executor:'command' 渲染节点 → 跑 omd-shots-verify 的 command 节点] 后代链。
+		return {
+			ids: [],
+			degradedReason:
+				`无可渲染目标 (output_path=${target ?? "(未声明)"}) —— 像素证据链缺席, 本节点退化为 diff-only 审`,
+		};
 	}
 	const renderId = freshId(nodes, `${id}-render`);
 	const verifyId = freshId(nodes, `${id}-shots-verify`);
@@ -158,7 +181,7 @@ function patchChain(nodes: ConductorPlan["nodes"], id: string): string[] {
 	};
 	nodes[renderId] = renderNode;
 	nodes[verifyId] = verifyNode;
-	return [renderId, verifyId];
+	return { ids: [renderId, verifyId] };
 }
 
 /** id 去重 (补挂 id 与既有 id 撞车时加数字后缀)。 */

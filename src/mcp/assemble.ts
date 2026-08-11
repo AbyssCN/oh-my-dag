@@ -528,8 +528,15 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       // 本 pass 会新增节点, 排在 stamp 后补挂的 attach_media 审查 leaf 拿不到多模态池模型 = 白补
       // (回流修正 SDD 的「链尾」写法, 理由见 evidence-pass.ts 文件头)。卡按调用时刻读盘 (与执行器同源)。
       (p) => {
-        const { plan, patched, noCardHits, shape } = evidencePass(p, { templates: loadAgentTemplates({ root: cwd }) });
+        const { plan, patched, noCardHits, shape, degraded } = evidencePass(p, { templates: loadAgentTemplates({ root: cwd }) });
         if (patched.length) logger.info({ patched }, '[omd/mcp] evidence pass: 补挂 ui-pixels 证据链 (S2/D-2)');
+        // EVD-5 降级必须响亮: fail-open 可以吞异常, 不许吞证据。读的人要看得见"这一格没有像素证据",
+        // 而不是以为它过了闸 —— 静默降级与"闸压根没跑"在读数上不可分, 那正是本仓坑 #2 的形状。
+        if (degraded.length)
+          logger.warn(
+            { degraded },
+            '[omd/mcp] evidence pass: 无可渲染目标 → 这些节点降级为 diff-only 审 (EVD-5; 像素证据链缺席)',
+          );
         // D-11 挖矿日志: (goal, 图形状指纹, 无卡命中) —— S4 图形状挖矿与卡自扩的前置数据。
         // 三元组的 oracle 结果那一半在执行完成后由 run 汇总记 (规划期拿不到)。
         logger.info({ goal: plan.name, shape, noCardHits }, '[omd/mcp] evidence pass: 图形状指纹 (D-11 挖矿信号)');
