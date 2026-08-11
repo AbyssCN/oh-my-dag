@@ -25,7 +25,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ModelUsage } from '../../model/gateway';
-import { escalationProviderReady } from '../verifier';
+import { escalationProviderReady, type VerifierVerdict } from '../verifier';
 import type { AgentEvent } from '@earendil-works/pi-agent-core';
 import {
   conductorSystemPrompt,
@@ -3423,7 +3423,23 @@ async function runDagInternal(
   if (config.verifier) {
     let attempts = 1;
     let escalated = false;
-    let verdict = await config.verifier({ task, plan: exec.plan, results: exec.results });
+    // verifier 调不通 (模型层纠偏重试已耗尽: 连续非 JSON / 网络死) ≠ 执行失败 —— 裸 throw 会把
+    // **已收敛的整 run** 掀成 infra-error 一行字, 内环产出全丢 (实测样本 f3dd34b9, 2026-08-11:
+    // opus 订阅通道连回三次散文)。这里以 [verifier-error] 记账: fail-closed 不算过, 产出保全,
+    // 且**不进升级重规划环** —— 判卷官坏了还替它开修复轮 = 拿引擎故障当质量信号。
+    // 词表同 infraStopped:「修引擎/换池, 别加轮数」。吞异常不吞证据: 错误原文进 reason 与日志。
+    let verifierDown = false;
+    const runVerifier = async (): Promise<VerifierVerdict> => {
+      try {
+        return await config.verifier!({ task, plan: exec.plan, results: exec.results });
+      } catch (err) {
+        verifierDown = true;
+        const detail = String(err).slice(0, 300);
+        logger.warn({ err: detail }, '[omd/executor-dag] verifier 调不通 → 判卷缺席记账 (fail-closed, 保全执行产出; 修引擎/换池, 别加轮数)');
+        return { pass: false, reason: `[verifier-error] 判卷官调不通 (模型层重试已耗尽): ${detail}`, usage: { in: 0, out: 0 } };
+      }
+    };
+    let verdict = await runVerifier();
     verifierUsage = addUsage(verifierUsage, verdict.usage);
     emitRunEvent({ type: 'verdict', id: exec.plan.name, gate: 'verifier', verdict: verdict.pass ? 'pass' : 'fail', round: attempts, ...(verdict.reason ? { reason: verdict.reason } : {}) });
 
@@ -3437,6 +3453,7 @@ async function runDagInternal(
     // D-P 取消接缝④: 不开新的升级重规划轮 (那是一整轮重规划 + 重跑, 最贵的一种"新活")。
     while (
       !verdict.pass &&
+      !verifierDown &&
       config.cancelSignal?.aborted !== true &&
       escCount < maxEscalations &&
       escalationProviderReady(config.conductorEscalationModel)
@@ -3544,7 +3561,7 @@ async function runDagInternal(
       leavesIn += exec.leavesIn;
       leavesOut += exec.leavesOut;
       leavesCacheHit += exec.leavesCacheHit;
-      verdict = await config.verifier({ task, plan: exec.plan, results: exec.results });
+      verdict = await runVerifier();
       verifierUsage = addUsage(verifierUsage, verdict.usage);
       emitRunEvent({ type: 'verdict', id: exec.plan.name, gate: 'verifier', verdict: verdict.pass ? 'pass' : 'fail', round: attempts, ...(verdict.reason ? { reason: verdict.reason } : {}) });
     }

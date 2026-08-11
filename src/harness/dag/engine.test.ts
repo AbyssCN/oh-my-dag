@@ -930,3 +930,31 @@ describe('执行段禁调研 (段的分辨面 = plan.name)', () => {
   //      → 上面那条执行段用例当场红 (status 变 done, calls.n=1 —— 调研照跑)。
   // 两条互为证伪, 任一方向的接线错误都留不住绿。
 });
+
+describe('verifier 调不通 ≠ 执行失败 (2026-08-11 f3dd34b9 事故闸)', () => {
+  registerProvider('vdownx', { baseUrl: 'http://127.0.0.1:9', apiKey: 'test-key', api: 'openai-compatible' });
+
+  test('verifier 抛错 → 判卷缺席记账不掀 run: 产出保全 + [verifier-error] 带原文 + 不进升级环', async () => {
+    // 实测样本 f3dd34b9: opus 订阅通道连回三次散文, ModelError 裸穿 executePlan,
+    // 已收敛的内环产出被掀成 infra-error 一行字。
+    // 证伪 (实跑): 把 engine.ts runVerifier 的 try/catch 摘掉 → 本测试当场红
+    // (整个 promise reject, 拿不到带 [verifier-error] 的结果对象)。
+    const { generate, calls } = makeBlameGenerate(SAME_DRAFT_PATCH);
+    const throwingVerifier: NonNullable<ExecutorDagConfig['verifier']> = async () => {
+      throw new Error('invalid JSON: Unexpected identifier "blame"');
+    };
+    const r = await runExecutorDagWithPlan(
+      blameGraphPlan(),
+      makeConfig(generate, { verifier: throwingVerifier, conductorEscalationModel: 'vdownx:strong' }),
+    );
+    expect(r.verification!.pass).toBe(false); // fail-closed: 没被判过就不算过
+    expect(r.verification!.reason).toContain('[verifier-error]');
+    expect(r.verification!.reason).toContain('invalid JSON'); // 吞异常不吞证据: 错误原文在账上
+    expect(r.verification!.escalated).toBe(false); // 判卷官坏了不开修复轮 (拿引擎故障当质量信号)
+    // 产出保全: 三节点结果都在且各只跑一次 (没有被升级环二次重跑)
+    expect(r.results.survey!.status).toBe('done');
+    expect(r.results.draft!.status).toBe('done');
+    expect(r.results.polish!.status).toBe('done');
+    expect(calls.filter((c) => c === 'draft')).toHaveLength(1);
+  });
+});
