@@ -1,16 +1,25 @@
 /**
  * run-board 测试(G-4/G-5 契约条款, 不是可选项)。
  *
- * ## G-5 反向自检(证伪方式, 契约条款)
- * 证伪: 把 `run-board.ts` 的 `compactBoard` 里 `terminalRuns.has(p.runId)` 的删除分支
- * 反转为「**删活条目**」(例如把 `if (p && terminalRuns.has(p.runId)) { continue; }` 改成
- * `if (p && !terminalRuns.has(p.runId)) { continue; }`), 跑本文件:
- * `bun test src/harness/board/run-board.test.ts`
- * → **G-4 那条(「compact 后 ≤1MB 且所有活 run 条目仍在」)必须变红**(活条目被删)。
- * 还原后再跑 → 全绿。本文件先于实现跑过一次: 无 compact 的裸 append 实现上,
- * 超限文件不会被压缩, G-4 红; 实现 compact 后绿。
+ * ## G-4(2026-08-11 修订语义): compact 只删**已超保留期**的终态 run 条目
+ * - 保留期默认 24h, 自 terminal 条目的 ts 起算; 丢弃必留证据行(fail-open 不吞证据)。
+ * - 保留期内(刚写 terminal)的 run: claimed/published/terminal 条目 compact 后仍可读
+ *   —— 它们是 await 谓词的满足/中止信号(G-2/G-3), 删了 await 方下一拍 poll 什么都看不见,
+ *   只能傻等超时(D-5 竞态教训: run 7d50fda2)。
+ * - 超 1MB 强制 compact: 后 ≤1MB 且所有活 run 条目仍在; 删超期后仍超 → 保留期对半, 直到满足。
  *
- * 本文件在写死前已按此流程亲手执行过一遍(变异 → 红 → 还原 → 绿), 注释即证伪契约。
+ * ## G-5 反向自检(证伪方式, 契约条款)
+ * 证伪: 把 `run-board.ts` 的 `compactBoard` 保留期判定反转为「保留期内也删」
+ * (例如把 `age > retention` 改成 `age >= 0`, 即修订前的「终态即清」), 跑本文件:
+ * `bun test src/harness/board/run-board.test.ts`
+ * → **G-4 那条(「保留期内 terminal/published 条目仍可读」)必须变红**(刚终态的 run 被删)。
+ * 还原后再跑 → 全绿。
+ * (变异亦可做成「活 run 条目也删」: stale 集合并入非终态 runId → 上面的 G-4 断言红(活 run 被删),
+ *   还原后绿; 全活条目板(无终态 run)下该变异不触发删除块, 此时 INV-2 那条断言直接守住
+ *   「一个活条目都不删」—— 任何真删活条目的实现都会让 INV-2 的长度/逐个在场断言变红。)
+ *
+ * 当前实装已是保留期 TTL(见 D-5 修订记录): 只删超保留期终态 run, 保留期内条目与活 run 不动,
+ * 本文件 G-4 断言全绿 —— 上述变异还原法保证契约仍被证伪覆盖, 不退回「终态即清」。
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -37,6 +46,10 @@ const entry = (runId: string, event: BoardEntry['event'], extra: Partial<BoardEn
 });
 
 const boardFile = (root: string): string => join(root, '.omd', 'run-board.jsonl');
+
+/** G-4 保留期契约值: 默认 24h, 自 terminal 条目 ts 起算。 */
+const RETENTION_MS = 24 * 60 * 60 * 1000;
+const tsAgo = (ms: number): string => new Date(Date.now() - ms).toISOString();
 
 /** 直接写板文件(绕过 appendBoard 构造坏行/超限场景): 父目录先建好。 */
 const writeBoard = (root: string, lines: string[]): void => {
@@ -164,48 +177,55 @@ describe('liveRuns(D-9)', () => {
 });
 
 describe('compact / G-4', () => {
-  test('追加后顺手 compact: 已有 terminal 的 run 的全部条目被删, 活 run 原样', () => {
+  test('追加后顺手 compact: 刚写 terminal(保留期内)的 run 条目仍可读, 活 run 原样', () => {
     const root = freshRoot();
     appendBoard(root, entry('r-live', 'claimed', { writeSet: ['a.ts'] }));
     appendBoard(root, entry('r-done', 'claimed', { writeSet: ['b.ts'] }));
     appendBoard(root, entry('r-done', 'terminal', { outcome: 'ok' }));
     const got = readBoard(root);
-    expect(got.some((e) => e.runId === 'r-done')).toBe(false); // 终态 run 条目全删
+    // G-4 修订语义: terminal 刚写入、未超 24h 保留期 → compact 不删(claimed/terminal 都在)
+    expect(got.some((e) => e.runId === 'r-done' && e.event === 'claimed')).toBe(true);
+    expect(got.some((e) => e.runId === 'r-done' && e.event === 'terminal')).toBe(true);
     expect(got.some((e) => e.runId === 'r-live')).toBe(true);
   });
 
   test('坏行在 compact 重写中原样保留(写侧不吞证据)', () => {
     const root = freshRoot();
     writeBoard(root, [
-      JSON.stringify(entry('r-done', 'claimed')),
-      JSON.stringify(entry('r-done', 'terminal')),
+      JSON.stringify(entry('r-done', 'claimed', { ts: tsAgo(2 * RETENTION_MS) })), // 已超保留期 → compact 触发重写
+      JSON.stringify(entry('r-done', 'terminal', { ts: tsAgo(2 * RETENTION_MS) })),
       'garbage {{{',
     ]);
     appendBoard(root, entry('r-live', 'claimed', { writeSet: ['a.ts'] }));
     const got = readBoard(root);
-    expect(got.some((e) => e.runId === 'r-done')).toBe(false);
+    expect(got.some((e) => e.runId === 'r-done')).toBe(false); // 超保留期终态条目被删
     expect(got.some((e) => e.note?.includes('garbage'))).toBe(true); // 坏行证据仍在
   });
 
   /**
-   * G-4(契约条款): board 超 1MB 且含终态条目 → compact 后 ≤1MB 且**所有活 run 条目仍在**。
-   * G-5 证伪法(见文件头注释): 把 compact 反转为删活条目 → 本测试红 → 还原 → 绿。
+   * G-4(契约条款, 2026-08-11 修订): board 超 1MB 且含**超保留期**终态条目 → compact 后 ≤1MB
+   * 且所有活 run 条目仍在; 保留期内(刚写 terminal)的 run 其 terminal/published 仍可读
+   * (G-2/G-3 满足/中止信号, 竞态回归点); 丢弃必留证据行。
+   * G-5 证伪法(见文件头注释): 把保留期判定反转为「保留期内也删」→ 本测试红 → 还原 → 绿。
    */
-  test('G-4: 超 1MB 含终态 → compact 后 ≤1MB, 活 run 条目一个不丢', () => {
+  test('G-4: 超 1MB 强制 compact → ≤1MB, 活 run 全在, 保留期内 terminal/published 仍可读, 丢弃留证据行', () => {
     const root = freshRoot();
     const live = [entry('r-live-1', 'claimed', { writeSet: ['a.ts'] }), entry('r-live-2', 'claimed', { writeSet: ['b.ts'] })];
-    // 直接写盘构造超限板: 大量终态 run 的条目(每条约 300B) + 少数活条目
+    // 直接写盘构造超限板: 大量**已超保留期**(48h 前)的终态 run(每条约 300B) + 少数活条目
     const pad = 'x'.repeat(200);
     const lines: string[] = [];
     for (let i = 0; i < 4000; i++) {
-      lines.push(JSON.stringify(entry(`r-done-${i}`, 'claimed', { writeSet: ['p.ts'], note: pad })));
-      lines.push(JSON.stringify(entry(`r-done-${i}`, 'terminal', { outcome: 'ok' })));
+      lines.push(JSON.stringify(entry(`r-old-${i}`, 'claimed', { ts: tsAgo(2 * RETENTION_MS), writeSet: ['p.ts'], note: pad })));
+      lines.push(JSON.stringify(entry(`r-old-${i}`, 'terminal', { ts: tsAgo(2 * RETENTION_MS), outcome: 'ok' })));
     }
+    // 保留期内的终态 run: 刚写 terminal → G-2/G-3 的满足/中止信号, compact 后必须仍可读
+    lines.push(JSON.stringify(entry('r-fresh', 'published', { artifact: 'out.zip' })));
+    lines.push(JSON.stringify(entry('r-fresh', 'terminal', { outcome: 'ok' })));
     lines.push(...live.map((e) => JSON.stringify(e)));
     writeBoard(root, lines);
     expect(statSync(boardFile(root)).size).toBeGreaterThan(1024 * 1024);
 
-    appendBoard(root, entry('r-live-3', 'claimed', { writeSet: ['c.ts'] }));
+    appendBoard(root, entry('r-live-3', 'claimed', { writeSet: ['c.ts'] })); // 触发强制 compact
 
     expect(statSync(boardFile(root)).size).toBeLessThanOrEqual(1024 * 1024); // compact 后 ≤1MB
     const got = readBoard(root);
@@ -213,7 +233,39 @@ describe('compact / G-4', () => {
       expect(got.some((e) => e.runId === l.runId && e.writeSet?.includes(l.writeSet![0]!))).toBe(true); // 活条目全在
     }
     expect(got.some((e) => e.runId === 'r-live-3')).toBe(true); // 新追加的也在
-    expect(got.some((e) => e.runId.startsWith('r-done-'))).toBe(false); // 终态 run 全清
+    expect(got.some((e) => e.runId.startsWith('r-old-'))).toBe(false); // 超保留期终态条目被删
+    expect(got.some((e) => e.runId === 'r-fresh' && e.event === 'published')).toBe(true); // 保留期内 published 仍可读(G-2 满足信号)
+    expect(got.some((e) => e.runId === 'r-fresh' && e.event === 'terminal')).toBe(true); // 保留期内 terminal 仍可读(G-3 中止信号)
+    const discardNote = got.find((e) => e.event === 'note' && e.note?.startsWith('run-board compact dropped'));
+    expect(discardNote).toBeDefined(); // 丢弃必留证据行(不吞证据)
+  });
+
+  test('G-4 续: 删超期后仍超 1MB → 保留期对半, 最终 ≤1MB 且活 run/保留期内终态仍在', () => {
+    const root = freshRoot();
+    // 13h 前: 24h 保留期下未超期 → 第一轮无可删; 对半(12h)后超期 → 逼出「仍超则保留期对半」
+    const midTs = tsAgo(RETENTION_MS / 2 + 60 * 60 * 1000);
+    const lines: string[] = [];
+    for (let i = 0; i < 4000; i++) {
+      lines.push(JSON.stringify(entry(`r-mid-${i}`, 'claimed', { ts: midTs, writeSet: ['p.ts'], note: 'y'.repeat(200) })));
+      lines.push(JSON.stringify(entry(`r-mid-${i}`, 'terminal', { ts: midTs, outcome: 'ok' })));
+    }
+    lines.push(JSON.stringify(entry('r-fresh', 'published', { artifact: 'out.zip' })));
+    lines.push(JSON.stringify(entry('r-fresh', 'terminal', { outcome: 'ok' })));
+    lines.push(JSON.stringify(entry('r-live', 'claimed', { writeSet: ['a.ts'] })));
+    writeBoard(root, lines);
+    expect(statSync(boardFile(root)).size).toBeGreaterThan(1024 * 1024);
+
+    appendBoard(root, entry('r-live-2', 'claimed', { writeSet: ['b.ts'] })); // 触发强制 compact
+
+    expect(statSync(boardFile(root)).size).toBeLessThanOrEqual(1024 * 1024); // 保留期对半后最终 ≤1MB
+    const got = readBoard(root);
+    expect(got.some((e) => e.runId === 'r-live')).toBe(true); // 活 run 全在
+    expect(got.some((e) => e.runId === 'r-live-2')).toBe(true);
+    expect(got.some((e) => e.runId === 'r-fresh' && e.event === 'published')).toBe(true); // 保留期内 published 仍可读
+    expect(got.some((e) => e.runId === 'r-fresh' && e.event === 'terminal')).toBe(true); // 保留期内 terminal 仍可读
+    expect(got.some((e) => e.runId.startsWith('r-mid-'))).toBe(false); // 保留期对半后超期 → 被删
+    const discardNote = got.find((e) => e.event === 'note' && e.note?.startsWith('run-board compact dropped'));
+    expect(discardNote).toBeDefined(); // 丢弃必留证据行
   });
 
   test('INV-2: 全活条目超 1MB → 一个活条目都不删, 留一行超限证据 note(fail-open)', () => {
@@ -230,7 +282,12 @@ describe('compact / G-4', () => {
 
     const got = readBoard(root);
     const liveEntries = got.filter((e) => e.event === 'claimed');
+    // INV-2 变异敏感锚点(G-5 证伪): 若 compact 把 stale 集合并入活 runId(「活条目也删」变异),
+    // 下面两个断言必须红 —— 活条目是契约禁删对象, 删了即违约, 不许静默通过。
     expect(liveEntries.length).toBe(3501); // 3500 + 新追加, 一个没丢(INV-2)
+    const liveIds = new Set(liveEntries.map((e) => e.runId));
+    for (let i = 0; i < 3500; i++) expect(liveIds.has(`r-live-${i}`)).toBe(true); // 原 3500 条逐个在
+    expect(liveIds.has('r-extra')).toBe(true); // 新追加的活条目也在
     const overflowNote = got.find((e) => e.event === 'note' && e.note?.startsWith('run-board > 1MB after compact'));
     expect(overflowNote).toBeDefined(); // 留证据 note
     expect(overflowNote!.note).toContain('INV-2'); // 证据注明不删活条目的原因

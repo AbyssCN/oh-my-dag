@@ -14,9 +14,10 @@ import type { AcceptanceSpec, GoalClassification, GoalTier } from './classify-ac
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
 import { SDD_DECLARED_WRITE_SET, SDD_REPORT_FILE, type DeclaredWriteSet } from '../write-set';
-import { readBoard, type BoardEntry } from '../board/run-board';
+import { appendBoard, BOARD_RUN_ID, liveRuns, readBoard, type BoardEntry } from '../board/run-board';
 import { publishEntry } from '../../../scripts/board-publish';
 import type { RunOutcomeKind } from '../run-outcome';
+import { ignitionPreflight } from './ignition-preflight';
 
 /**
  * D-I: 分类器一次出两条轴 (成本轴 tier + 判据轴 acceptance)。本文件多数用例只关心成本轴,
@@ -63,6 +64,14 @@ function executeDag(
      * 这个 D-I 核心场景, 显式传 'failed'。
      */
     accept?: 'done' | 'failed' | 'absent';
+    /**
+     * S4 终态 emit 的注入面: N5 outcome 阶梯 (run-goal.ts) 的各停止轴都能经 execute 节点 /
+     * dag 结果注入 —— 测"每个可达终态都真 append 过 terminal", 不靠投影表冒充端到端。
+     */
+    cancelled?: string;
+    blocked?: string;
+    budgetStopped?: string;
+    infraStopped?: string;
   } = {},
 ): ExecutorDagResult {
   const accept = opts.accept ?? 'done';
@@ -86,9 +95,13 @@ function executeDag(
         usage: { in: 1, out: 1 },
         rounds: opts.rounds ?? 1,
         ...(opts.converged === undefined ? {} : { converged: opts.converged }),
+        ...(opts.blocked === undefined ? {} : { blocked: opts.blocked }),
+        ...(opts.budgetStopped === undefined ? {} : { budgetStopped: opts.budgetStopped }),
+        ...(opts.infraStopped === undefined ? {} : { infraStopped: opts.infraStopped }),
       },
     },
     reusedNodes: opts.reused ?? [],
+    ...(opts.cancelled === undefined ? {} : { cancelled: { reason: opts.cancelled, at: '2026-07-28T00:00:00Z', notRun: [] } }),
   } as unknown as ExecutorDagResult;
 }
 
@@ -587,7 +600,7 @@ describe('runGoal — survey 仓内勘察 (inproc 研究与仓库的接点)', ()
 // 拦不住 (conductor 子图逐轮重展开, D-O 输入面恒判"依赖输出已变")。闸 C 把 classify 与
 // 契约段产物按 goal 全文哈希锚在 `.omd/continuity/<runId>/goal-state.json`, 未变即复用。
 
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 
 describe('闸 C — 续跑复用 classify + 契约段 (goal-state 锚)', () => {
   const mkCounted = (cwd: string, counters: { classify: number; contract: number; exec: number }): RunGoalConfig => ({
@@ -1012,11 +1025,10 @@ describe('D-2 散雾出口 — 任一 run 挂票 (G-1 / G-2)', () => {
 });
 
 describe('runGoal — S4 run 生命周期接线 (board: claimed → terminal)', () => {
-  // ⚠ 事后读板读不到本 run 的条目: appendBoard 追加 terminal 后 compact 会立刻删掉
-  // 终态 run 的全部条目 (含 terminal 行本身, run-board.ts compactBoard) —— 板是协调介质
-  // 不是真源 (D-3/INV-1)。所以 claimed 经 onClassified 在 run 中途观测, terminal 内容经
-  // 纯函数面 boardTerminalEntry 验证, "terminal 真 append 过" 由 claimed 消失证明。
-  test('点火即 claimed: 带声明写集 (相对路径, 与 sdd-direct 写集列同物) + runId 锚; 终态后整 run 从板消失', async () => {
+  // D-5 修订: compact 只删**超保留期**(默认 24h, 自 terminal ts 起算)的终态 run 条目 ——
+  // 刚终态的 run 条目保留期内仍可读 (await 谓词的满足/中止信号, G-2/G-3)。所以 claimed 经
+  // onClassified 在 run 中途观测, "terminal 真 append 过" 由终态后 terminal 条目仍在板上 (保留期内) 证明。
+  test('点火即 claimed: 带声明写集 (相对路径, 与 sdd-direct 写集列同物) + runId 锚; 终态后条目保留期内仍可读', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-goal-s4-'));
     let claimedDuring: BoardEntry | undefined;
     await runGoal('做一个事', cfg(
@@ -1031,8 +1043,10 @@ describe('runGoal — S4 run 生命周期接线 (board: claimed → terminal)', 
     ));
     expect(claimedDuring?.runId).toBe('sess-s4-1');
     expect(claimedDuring?.writeSet).toEqual(['docs/a.md', 'src/x/**']);
-    // 终态后 compact 已清掉本 run 全部条目 —— terminal 确实经 appendBoard 落过 (唯一的删除机制)。
-    expect(readBoard(cwd).filter((e) => e.runId === 'sess-s4-1')).toHaveLength(0);
+    // 终态后条目仍在板上 (保留期内, D-5: compact 不再"终态即清") —— terminal 确实经 appendBoard 落过。
+    const after = readBoard(cwd);
+    expect(after.some((e) => e.runId === 'sess-s4-1' && e.event === 'claimed')).toBe(true);
+    expect(after.some((e) => e.runId === 'sess-s4-1' && e.event === 'terminal')).toBe(true);
   });
 
   test('缺省声明写集 = SDD_DECLARED_WRITE_SET.allowed', async () => {
@@ -1064,6 +1078,112 @@ describe('runGoal — S4 run 生命周期接线 (board: claimed → terminal)', 
         k === 'success' ? 'converged' : k === 'cancelled' ? 'cancelled' : k === 'not-converged' ? 'not-converged' : 'failed';
       expect(BOARD_TERMINAL_OUTCOME[k]).toBe(want);
     }
+  });
+  // ── 终态 emit 的端到端面: 不只测投影表, 每个可达终态 outcome 都真 append 过 terminal ──
+  // 可达 run 终态 = N5 outcome 阶梯 (run-goal.ts) 能产出的 8 个; stage 级 outcome
+  // (missing-capability / not-needed / empty-result / unclassified) 到不了 run 终态, 由投影表测试兜底。
+  const TERMINAL_CASES: {
+    kind: RunOutcomeKind;
+    want: 'converged' | 'failed' | 'cancelled' | 'not-converged';
+    dag: () => ExecutorDagResult;
+  }[] = [
+    { kind: 'success', want: 'converged', dag: () => executeDag({ converged: true }) },
+    { kind: 'not-converged', want: 'not-converged', dag: () => executeDag({ converged: false }) },
+    { kind: 'oracle-failed', want: 'failed', dag: () => executeDag({ converged: true, accept: 'failed' }) },
+    { kind: 'cancelled', want: 'cancelled', dag: () => executeDag({ converged: false, cancelled: '外部叫停' }) },
+    { kind: 'blocked', want: 'failed', dag: () => executeDag({ converged: false, blocked: '等 owner 拍板' }) },
+    { kind: 'budget-exhausted', want: 'failed', dag: () => executeDag({ converged: false, budgetStopped: '预算用尽' }) },
+    { kind: 'infra-error', want: 'failed', dag: () => executeDag({ converged: false, infraStopped: 'judge 调不通' }) },
+  ];
+  for (const c of TERMINAL_CASES) {
+    test(`终态 emit: ${c.kind} → terminal(${c.want}), 与 claimed 配对同 runId`, async () => {
+      const cwd = mkdtempSync(join(tmpdir(), 'omd-goal-s4-'));
+      const r = await runGoal('做一个事', cfg({ sessionId: 'sess-s4-t' }, {
+        cwd,
+        _classify: cls('simple'),
+        _runDag: dagRouter({ execute: async () => c.dag() }),
+      }));
+      expect(r.outcome).toBe(c.kind); // 先证注入面把 run 推到了这个终态, 再证终态记了账
+      const term = readBoard(cwd).find((e) => e.event === 'terminal');
+      expect(term?.runId).toBe('sess-s4-t');
+      expect(term?.outcome).toBe(c.want);
+      expect(term?.note).toBe(c.kind); // 粗态进 outcome, 细粒度留在 note (S4)
+      expect(readBoard(cwd).some((e) => e.runId === 'sess-s4-t' && e.event === 'claimed')).toBe(true);
+    });
+  }
+
+  test('终态 emit: execute 抛错 (bail 路) → terminal(infra-error) 也落板', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-goal-s4-'));
+    const r = await runGoal('做一个事', cfg({ sessionId: 'sess-s4-bail' }, {
+      cwd,
+      _classify: cls('simple'),
+      _runDag: dagRouter({ execute: async () => { throw new Error('exec 引擎炸'); } }),
+    }));
+    expect(r.outcome).toBe('infra-error');
+    const term = readBoard(cwd).find((e) => e.event === 'terminal');
+    expect(term?.outcome).toBe('failed');
+    expect(term?.note).toBe('infra-error');
+  });
+
+  test('删板不抹历史: board 是协调介质不是真源, RunGoalResult + 落盘 goal-state 才是', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-goal-s4-'));
+    const runId = 'sess-s4-del';
+    const counters = { classify: 0, contract: 0, exec: 0 };
+    const mk = (): RunGoalConfig => ({
+      cwd,
+      dag: {
+        conductorModel: 'c:m',
+        leafModel: 'l:m',
+        agentRunner: (async () => ({ text: 'x', usage: { in: 1, out: 1 } })) as never,
+        continuity: { manager: {} as never, runId },
+      } as ExecutorDagConfig,
+      _today: () => '2026-08-10',
+      _classify: async () => (counters.classify++, { tier: 'complex' as GoalTier, acceptance: ACC_EXEC }),
+      _runDag: async (plan) => {
+        if (plan.name === 'goal-contract') {
+          counters.contract++;
+          return contractDag({ survey: 'src/a.ts:1 — 事实', specText: '# SDD 正文契约' });
+        }
+        counters.exec++;
+        return executeDag({ converged: true, rounds: 1 });
+      },
+    });
+    const r1 = await runGoal('目标甲', mk());
+    expect(r1.outcome).toBe('success');
+    // 终态与落盘真源都在 —— 板只是协调介质上的指针
+    expect(readBoard(cwd).some((e) => e.runId === runId && e.event === 'terminal')).toBe(true);
+    const statePath = join(cwd, '.omd', 'continuity', runId, 'goal-state.json');
+    expect(existsSync(statePath)).toBe(true);
+    // 删板: 协调介质消失
+    rmSync(join(cwd, '.omd', 'run-board.jsonl'));
+    expect(readBoard(cwd)).toEqual([]);
+    // 权威 run 历史不依赖板: 返回面 (RunGoalResult) 的终态结论一字未变
+    expect(r1.converged).toBe(true);
+    expect(r1.stages.find((s) => s.stage === 'execute')!.outcome).toBe('success');
+    // 落盘 goal-state 才是续跑真源: 同 goal 同 runId 二跑 → 契约段复用 (闸 C 锚在盘上 state, 不在板)
+    const contractBefore = counters.contract;
+    const r2 = await runGoal('目标甲', mk());
+    expect(counters.contract).toBe(contractBefore); // 0 次重跑 → 删板没抹掉可续跑的历史
+    expect(r2.converged).toBe(true);
+  });
+
+  test('越闸必留账 (INV-5 后半): force → ok 且板上 note 点名撞了谁; note 不进活 run 判定', () => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-goal-s4-'));
+    appendBoard(root, { v: 1, ts: new Date().toISOString(), runId: 'sess-other', event: 'claimed', writeSet: ['docs/a.md'] });
+    // 无 force → blocked 且零越闸证据 (不许偷偷过)
+    expect(ignitionPreflight(root, ['docs/a.md'], {}).verdict).toBe('blocked');
+    expect(readBoard(root).filter((e) => e.event === 'note' && e.runId === BOARD_RUN_ID)).toHaveLength(0);
+    // force → ok, 但账必留: note 点名撞了哪个 run、哪些文件
+    const rep = ignitionPreflight(root, ['docs/a.md'], { force: true });
+    expect(rep.verdict).toBe('ok');
+    const notes = readBoard(root).filter((e) => e.event === 'note' && e.runId === BOARD_RUN_ID);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]!.note).toContain('sess-other');
+    expect(notes[0]!.note).toContain('docs/a.md');
+    // 账是板级证据 (BOARD_RUN_ID), 不冒充活 run: liveRuns 判定只看 claimed/terminal 对
+    expect([...liveRuns(readBoard(root)).keys()]).toEqual(['sess-other']);
+    // 二次独立重读账还在 (持久化, 不是单次读的瞬时态)
+    expect(readBoard(root).filter((e) => e.event === 'note' && e.runId === BOARD_RUN_ID)).toHaveLength(1);
   });
 });
 

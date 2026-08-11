@@ -100,7 +100,7 @@ const PlanNode = z
     // 'conductor' (P3 D-G′/批次 3) = 运行时**异构**展开: 现场让 conductor 画一张子图再局部调度。
     //   与 map 的分工: map 扇的是**同一件事的 N 份** (模板 + 运行时清单); conductor 展的是
     //   **一件事的若干不同步骤** (各有各的 goal/executor/依赖) —— 那是模板表达不了的形状。
-    executor: z.enum(['agent', 'leaf', 'command', 'map', 'research', 'conductor']).optional(),
+    executor: z.enum(['agent', 'leaf', 'command', 'map', 'research', 'conductor', 'await']).optional(),
     /**
      * executor='conductor' 的子图节点数硬顶 (D-B/D-D 展开闸)。缺省见 DEFAULT_MAX_CHILDREN=64,
      * 与 map 的 maxItems 同一个数 —— 没有证据支持给它一个不同的值。
@@ -175,6 +175,13 @@ const PlanNode = z
     }).optional(),
     /** executor='map' 时的动态扇出规格 (与 executor:'map' 互为 required, superRefine 校验)。 */
     map: MapSpec.optional(),
+    /** executor='await' 时的跨 run 等待规格: 等待 run-board 上出现匹配的 published 条目, 然后 git 合入其 commit。 */
+    await: z.object({
+      artifact: z.string().min(1),
+      fromRun: z.string().optional(),
+      /** D-8: 超时毫秒, 默认 3h (10_800_000)。 */
+      timeoutMs: z.number().int().positive().optional(),
+    }).optional(),
     // ── SDD 0013 S1 约束选择节点 (与自由 node 并存, SEL-5 BC) ──
     // kind:'primitive' = 从 vetted 菜单选原语 + 填 params, 非自由画 node-graph。
     // 此处只钉"选择 shape"(primitive ∈ 5 枚举 + params 存在); 各原语 params 深校验在 compile 期
@@ -257,6 +264,12 @@ const PlanNode = z
       ctx.addIssue({ code: 'custom', message: "executor:'map' 需 map spec", path: ['map'] });
     if (node.map && !isMap)
       ctx.addIssue({ code: 'custom', message: "map spec 需 executor:'map'", path: ['executor'] });
+    // D-8: await 节点交叉校验: await spec ⇔ executor:'await' 互为 required (同 map/primitive 的形态)。
+    const isAwait = node.executor === 'await';
+    if (isAwait && !node.await)
+      ctx.addIssue({ code: 'custom', message: "executor:'await' 需 await spec", path: ['await'] });
+    if (node.await && !isAwait)
+      ctx.addIssue({ code: 'custom', message: "await spec 需 executor:'await'", path: ['executor'] });
     // INV-U5: 模板节点禁再为 map (禁运行时无界递归展开)。
     if (node.map && (node.map.template as { executor?: string })?.executor === 'map')
       ctx.addIssue({

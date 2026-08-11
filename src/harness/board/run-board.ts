@@ -10,10 +10,12 @@
  * - 单行 ≤1KB(超出部分裁剪, 见 `serializeEntry`);`note` 超 500B 截断。
  *
  * ## compact(追加后顺手, >1MB 强制)
- * - 删除**已有 terminal 的 run 的全部条目**(含 terminal 行本身)—— 终态即归档, 板面只留活 run。
- * - 重写时坏行**原样保留**(compact 是写侧操作, 不许吞掉读侧会跳过的证据)。
- * - 重写后仍 >1MB: **活条目 INV-2 禁删**(丢弃活条目属违约), 此时已无可丢的终态条目
- *   (上一遍 compact 已删光) → 留一行证据 note(fail-open: 不吞证据, 也不假装压缩成功)。
+ * - 只删**已超保留期**的终态 run 的全部条目(含 terminal 行本身): 保留期默认 24h,
+ *   自 terminal 条目 ts 起算; 保留期内(刚写 terminal/published)的条目是 await 谓词的
+ *   满足/中止信号(G-2/G-3), 删了下一拍 poll 什么都看不见 → 保留期内不删(D-5 竞态教训)。
+ * - 超 1MB 强制 compact; 删超期条目后仍超 → 保留期**对半**再扫, 直到 ≤1MB 或已无终态 run。
+ * - 活条目 INV-2 禁删(丢弃活条目属违约); 丢弃终态条目必留证据 note; 超限不可解也留证据
+ *   note(fail-open: 不吞证据, 也不假装压缩成功)。
  *
  * ## 容错
  * - `readBoard` 容忍坏行: 跳过 + 返回一条含坏行内容片段的 `note` 证据行。
@@ -60,12 +62,19 @@ export const BOARD_RUN_ID = '__board__';
 
 /** 板文件上限: 超此强制 compact。 */
 const MAX_BOARD_BYTES = 1024 * 1024;
+/** 终态保留期: 默认 24h, 自 terminal 条目 ts 起算; 保留期内不删(await 谓词的满足/中止信号)。 */
+const DEFAULT_RETENTION_MS = 24 * 60 * 60 * 1000;
+/** 保留期对半下限: 低于此不再对半 —— 对半到亚秒会误删"刚写入"的终态条目(违约)。 */
+const MIN_RETENTION_MS = 1000;
+
 /** 单行上限: O_APPEND 单次写, 行必须 ≤1KB。 */
 const MAX_LINE_BYTES = 1024;
 /** `note` 字段截断上限(字节)。 */
 const MAX_NOTE_BYTES = 500;
 
 const OVERFLOW_NOTE_PREFIX = 'run-board > 1MB after compact: ';
+const DISCARD_NOTE_PREFIX = 'run-board compact dropped: ';
+
 const BAD_LINE_NOTE_PREFIX = 'run-board bad line skipped: ';
 const LOCK_RETRY_MS = 10;
 const LOCK_TIMEOUT_MS = 1000;
@@ -168,9 +177,12 @@ function withLock<T>(lockPath: string, fn: () => T): T | null {
 
 /**
  * compact 本体(best-effort, 不抛):
- * ① 删掉**已有 terminal 的 run 的全部条目**;坏行原样保留(重写不吞证据);
- * ② 重写后仍 >1MB → 已无可丢的终态条目(①已删光), 活条目 INV-2 禁删 →
- *    留一行证据 note(fail-open), 不假装压缩成功。
+ * ① 只删**已超保留期**(默认 24h, 自 terminal 条目 ts 起算)的终态 run 的全部条目;
+ *    保留期内的终态 run 条目(刚写 terminal/published)是 await 谓词的满足/中止信号(G-2/G-3),
+ *    删了下一拍 poll 什么都看不见 → 保留期内不删。
+ * ② 删后仍 >1MB → 保留期**对半**再扫, 直到 ≤1MB 或已无终态 run; 活条目 INV-2 禁删。
+ * ③ 丢弃终态条目必留证据行('run-board compact dropped'); 对半到下限仍超 →
+ *    留超限证据 note(fail-open: 不吞证据, 也不假装压缩成功)。
  */
 function compactBoard(path: string): void {
   let raw: string;
@@ -183,24 +195,65 @@ function compactBoard(path: string): void {
   if (rawLines.length === 0) return;
 
   const parsed = rawLines.map(parseLine);
-  const terminalRuns = new Set<string>();
+
+  // 每个终态 run 的 terminal 时刻(同一 run 多条 terminal → 取最新): 保留期自它起算。
+  const terminalAt = new Map<string, number>();
   for (const p of parsed) {
-    if (p && p.event === 'terminal') terminalRuns.add(p.runId);
-  }
-
-  const kept: string[] = [];
-  let droppedTerminal = 0;
-  for (let i = 0; i < rawLines.length; i++) {
-    const p = parsed[i];
-    if (p && terminalRuns.has(p.runId)) {
-      droppedTerminal++; // 终态 run 的全部条目(含 terminal 行本身)删除
-      continue;
+    if (p && p.event === 'terminal') {
+      const t = Date.parse(p.ts);
+      if (Number.isFinite(t)) {
+        const prev = terminalAt.get(p.runId);
+        if (prev === undefined || t > prev) terminalAt.set(p.runId, t);
+      }
     }
-    kept.push(rawLines[i]!); // 活条目与坏行原样保留(i 恒 < rawLines.length)
   }
 
-  if (droppedTerminal > 0) {
-    writeFileSync(path, kept.length > 0 ? `${kept.join('\n')}\n` : '', 'utf8');
+  const now = Date.now();
+  let retention = DEFAULT_RETENTION_MS;
+  // 行与解析结果配对, 过滤时保持对齐(坏行 → null, 原样保留)。
+  let rows: Array<{ line: string; p: BoardEntry | null }> = rawLines.map((line, i) => ({ line, p: parsed[i]! }));
+  let droppedRuns = 0;
+
+  for (;;) {
+    const stale = new Set<string>();
+    for (const [runId, ts] of terminalAt) {
+      if (now - ts > retention) stale.add(runId); // age > retention 才算超期(等号不算, G-5 证伪锚点)
+    }
+    if (stale.size > 0) {
+      const next: typeof rows = [];
+      for (const r of rows) {
+        if (r.p && stale.has(r.p.runId)) continue; // 超保留期终态 run 的全部条目删(含 terminal 行本身)
+        next.push(r);
+      }
+      droppedRuns += stale.size;
+      rows = next;
+      for (const id of stale) terminalAt.delete(id);
+    }
+    const bytes = rows.reduce((n, r) => n + Buffer.byteLength(r.line, 'utf8') + 1, 0);
+    if (bytes <= MAX_BOARD_BYTES) break;
+    if (terminalAt.size === 0) break; // 已无终态 run 可删 → 活条目 INV-2 禁删, 走下面超限 note
+    if (retention <= MIN_RETENTION_MS) break; // 对半到下限仍超 → fail-open, 不删"刚写入"的终态条目
+    retention = Math.floor(retention / 2); // 仍超 1MB → 保留期对半, 再扫
+  }
+
+  if (droppedRuns > 0) {
+    writeFileSync(path, rows.map((r) => r.line).join('\n') + '\n', 'utf8');
+    // 丢弃必留证据行(fail-open 不吞证据); 已有同前缀 note 不再补(防刷屏)。
+    const alreadyNoted = rows.some(
+      (r) => r.p !== null && r.p.runId === BOARD_RUN_ID && (r.p.note ?? '').startsWith(DISCARD_NOTE_PREFIX),
+    );
+    if (!alreadyNoted) {
+      appendRaw(
+        path,
+        JSON.stringify({
+          v: 1,
+          ts: new Date().toISOString(),
+          runId: BOARD_RUN_ID,
+          event: 'note',
+          note: `${DISCARD_NOTE_PREFIX}${droppedRuns} terminal runs past ${retention}ms retention`,
+        }),
+      );
+    }
   }
 
   let size = 0;
@@ -210,16 +263,12 @@ function compactBoard(path: string): void {
     return;
   }
   if (size > MAX_BOARD_BYTES) {
-    const liveCount = kept.filter((l) => {
-      const p = parseLine(l);
-      return p !== null && !terminalRuns.has(p.runId);
-    }).length;
+    const liveCount = rows.filter((r) => r.p !== null && !terminalAt.has(r.p.runId)).length;
     // 判重扫**全板**(不能只看末行: 每次 append 后末行是刚追加的新条目, 只查末行会让
     // 每次追加都补一条超限 note → 刷屏)。已有超限 note 就不再补。
-    const alreadyNoted = kept.some((l) => {
-      const p = parseLine(l);
-      return p !== null && p.runId === BOARD_RUN_ID && (p.note ?? '').startsWith(OVERFLOW_NOTE_PREFIX);
-    });
+    const alreadyNoted = rows.some(
+      (r) => r.p !== null && r.p.runId === BOARD_RUN_ID && (r.p.note ?? '').startsWith(OVERFLOW_NOTE_PREFIX),
+    );
     if (!alreadyNoted) {
       appendRaw(
         path,
@@ -228,7 +277,7 @@ function compactBoard(path: string): void {
           ts: new Date().toISOString(),
           runId: BOARD_RUN_ID,
           event: 'note',
-          note: `${OVERFLOW_NOTE_PREFIX}dropped ${droppedTerminal} terminal-run entries; kept ${liveCount} live entries; INV-2 forbids dropping live entries`,
+          note: `${OVERFLOW_NOTE_PREFIX}kept ${liveCount} live entries; INV-2 forbids dropping live entries`,
         }),
       );
     }
