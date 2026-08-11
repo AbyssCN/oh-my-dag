@@ -9,11 +9,14 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { goalSlug, runGoal, type RunGoalConfig } from './run-goal';
+import { BOARD_TERMINAL_OUTCOME, boardTerminalEntry, goalSlug, runGoal, type RunGoalConfig } from './run-goal';
 import type { AcceptanceSpec, GoalClassification, GoalTier } from './classify-acceptance';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
 import { SDD_DECLARED_WRITE_SET, SDD_REPORT_FILE, type DeclaredWriteSet } from '../write-set';
+import { readBoard, type BoardEntry } from '../board/run-board';
+import { publishEntry } from '../../../scripts/board-publish';
+import type { RunOutcomeKind } from '../run-outcome';
 
 /**
  * D-I: 分类器一次出两条轴 (成本轴 tier + 判据轴 acceptance)。本文件多数用例只关心成本轴,
@@ -1005,5 +1008,84 @@ describe('D-2 散雾出口 — 任一 run 挂票 (G-1 / G-2)', () => {
       tickets: { slug: 'no-such-map', sink: resolveBackend(base.cwd, { env: {} }), runId: 'run-y' },
     });
     expect(r.outcome).toBe('not-converged'); // 开票炸了不改 run 结论
+  });
+});
+
+describe('runGoal — S4 run 生命周期接线 (board: claimed → terminal)', () => {
+  // ⚠ 事后读板读不到本 run 的条目: appendBoard 追加 terminal 后 compact 会立刻删掉
+  // 终态 run 的全部条目 (含 terminal 行本身, run-board.ts compactBoard) —— 板是协调介质
+  // 不是真源 (D-3/INV-1)。所以 claimed 经 onClassified 在 run 中途观测, terminal 内容经
+  // 纯函数面 boardTerminalEntry 验证, "terminal 真 append 过" 由 claimed 消失证明。
+  test('点火即 claimed: 带声明写集 (相对路径, 与 sdd-direct 写集列同物) + runId 锚; 终态后整 run 从板消失', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-goal-s4-'));
+    let claimedDuring: BoardEntry | undefined;
+    await runGoal('做一个事', cfg(
+      { sessionId: 'sess-s4-1' },
+      {
+        cwd,
+        _classify: cls('simple'),
+        writeSet: { declared: { allowed: ['docs/a.md', 'src/x/**'], forbidden: [] } },
+        // claimed 在点火处已写、terminal 未写 —— 这个窗口正是观测点。
+        onClassified: () => { claimedDuring = readBoard(cwd).find((e) => e.event === 'claimed'); },
+      },
+    ));
+    expect(claimedDuring?.runId).toBe('sess-s4-1');
+    expect(claimedDuring?.writeSet).toEqual(['docs/a.md', 'src/x/**']);
+    // 终态后 compact 已清掉本 run 全部条目 —— terminal 确实经 appendBoard 落过 (唯一的删除机制)。
+    expect(readBoard(cwd).filter((e) => e.runId === 'sess-s4-1')).toHaveLength(0);
+  });
+
+  test('缺省声明写集 = SDD_DECLARED_WRITE_SET.allowed', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-goal-s4-'));
+    let claimedDuring: BoardEntry | undefined;
+    await runGoal('做一个事', cfg({}, {
+      cwd,
+      _classify: cls('simple'),
+      onClassified: () => { claimedDuring = readBoard(cwd).find((e) => e.event === 'claimed'); },
+    }));
+    expect(claimedDuring?.writeSet).toEqual(SDD_DECLARED_WRITE_SET.allowed);
+  });
+
+  test('终态 entry 内容: outcome 四值投影 + note 留细粒度 (纯函数面, compact 后读不到原行)', () => {
+    const e = boardTerminalEntry('run-t1', 'not-converged');
+    expect(e.event).toBe('terminal');
+    expect(e.runId).toBe('run-t1');
+    expect(e.outcome).toBe('not-converged');
+    expect(e.note).toBe('not-converged');
+    expect(boardTerminalEntry('run-t2', 'success').outcome).toBe('converged');
+    expect(boardTerminalEntry('run-t3', 'cancelled').outcome).toBe('cancelled');
+    expect(boardTerminalEntry('run-t4', 'blocked').outcome).toBe('failed');
+  });
+
+  test('BOARD_TERMINAL_OUTCOME 全表投影: 三格直通, 其余→failed', () => {
+    const kinds: RunOutcomeKind[] = ['success', 'not-converged', 'oracle-failed', 'blocked', 'budget-exhausted', 'cancelled', 'infra-error', 'missing-capability', 'not-needed', 'empty-result', 'unclassified'];
+    for (const k of kinds) {
+      const want: 'converged' | 'failed' | 'cancelled' | 'not-converged' =
+        k === 'success' ? 'converged' : k === 'cancelled' ? 'cancelled' : k === 'not-converged' ? 'not-converged' : 'failed';
+      expect(BOARD_TERMINAL_OUTCOME[k]).toBe(want);
+    }
+  });
+});
+
+describe('scripts/board-publish — published 条目 CLI (零 LLM)', () => {
+  test('publishEntry 追加合法 published 条目 (artifact + commit)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-board-publish-'));
+    publishEntry(root, 'run-p1', 'docs/plan/x.md', 'deadbeef');
+    const pub = readBoard(root).find((e) => e.event === 'published');
+    expect(pub?.runId).toBe('run-p1');
+    expect(pub?.artifact).toBe('docs/plan/x.md');
+    expect(pub?.commit).toBe('deadbeef');
+  });
+
+  test('CLI 四参追加; 缺参 exit 2 且不写板', () => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-board-publish-'));
+    const script = join(import.meta.dir, '..', '..', '..', 'scripts', 'board-publish.ts');
+    const ok = Bun.spawnSync(['bun', 'run', script, root, 'run-p2', 'docs/plan/y.md', 'cafebabe']);
+    expect(ok.exitCode).toBe(0);
+    const bad = Bun.spawnSync(['bun', 'run', script, root, 'run-p2']);
+    expect(bad.exitCode).toBe(2);
+    const pubs = readBoard(root).filter((e) => e.event === 'published');
+    expect(pubs).toHaveLength(1);
+    expect(pubs[0]?.commit).toBe('cafebabe');
   });
 });

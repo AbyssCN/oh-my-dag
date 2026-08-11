@@ -13,6 +13,8 @@ import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import type { OmdMcpTool } from '../server';
 import type { RunGoalConfig, RunGoalResult, GoalTier, GoalClassification } from '../../harness/goal/run-goal';
+import { ignitionPreflight } from '../../harness/goal/ignition-preflight';
+import { loadSddContract, parseBreakdown } from '../../harness/goal/sdd-direct';
 import { resolveBackend as realResolveBackend, type PathBackend } from '../../harness/pathfinder/backend';
 import type { ExecutorDagConfig } from '../../harness/dag/types';
 import type { CheckpointManager } from '../../harness/continuity/checkpoint-manager';
@@ -416,6 +418,30 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         };
       }
       const runId = resume || randomUUID();
+
+      // ── S2 点火预检 (INV-5): 已结晶 SDD 点火前查板上活 run 写集相交 ─────────────
+      // 只对 sddPath 直通 (点火路径) 生效 —— 非 sddPath run 点火时没有写集可查, 闸缺席,
+      // 行为逐字节照旧 (INV-1)。resume 是续跑不是点火, 不再过闸 (它首跑已过)。
+      // 预检放在 register/start 之前: 被拒的 run 不许进 registry, 也不建 worktree (无 debris)。
+      // detached 路径由 worker 内同一个 handler 走同一段代码 (--sdd-path 已转发), 不在这里重复。
+      if (sddPath && !resume) {
+        const preflight = ignitionPreflight(
+          deps.cwd,
+          [...new Set(parseBreakdown(loadSddContract(sddPath).text).slices.flatMap((s) => s.writeSet))],
+        );
+        if (preflight.verdict === 'blocked') {
+          return {
+            content: [{
+              type: 'text' as const,
+              text:
+                `dag_goal 点火预检拒绝 (INV-5): 写集与板上活 run 相交 — ` +
+                preflight.conflicts.map((c) => `${c.runId} (${c.overlap.join('、')})`).join('; ') +
+                `。等对方终态, 或 force 越闸 (留账)。`,
+            }],
+            isError: true,
+          };
+        }
+      }
       if (resume) {
         // 同一个 runId 重开: `register` 会因重复 id 抛 (server 还记得这个 run 时), 于是续跑一个
         // **本进程里跑失败/被叫停过**的 goal 原本会当场炸 —— 走 reopenForResume (failed/cancelled/未知
