@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  assertDispatchable,
   dispatchFrontier,
   dispatchTicket,
   disposePrototype,
@@ -14,7 +15,7 @@ import {
   type DispatchDeps,
 } from './dispatch';
 import type { GhResult, GhRunner } from './backend';
-import type { PathMap, Ticket } from './types';
+import type { DispatchableTicket, PathMap, RulingTicket, Ticket, TicketType } from './types';
 
 /** 造一张票 (默认 open task, 无前置)。 */
 function tk(p: Partial<Ticket> & Pick<Ticket, 'id' | 'type'>): Ticket {
@@ -88,6 +89,121 @@ describe('dispatch — dispatchTicket routes by type', () => {
     expect(r).toEqual({ kind: 'compile', ticketId: 't1' });
     expect(d.spawns).toHaveLength(0);
     expect(d.gits).toHaveLength(0);
+  });
+});
+
+/**
+ * D-3 票类型闸 (SDD `docs/plan/2026-08-11-control-plane-unification.md`, G-4 + G-6)。
+ *
+ * 闸的形状两道门, 两道都得有自己的违规样本:
+ *  ① 类型层 (主, INV-2「派发路径物理不存在」): `dispatchTicket` 收 `DispatchableTicket`,
+ *     `RulingTicket` 赋不进去 —— 用 `@ts-expect-error` 钉死。
+ *  ② 运行时 (兜底): `assertDispatchable` —— 挡 `as` 强转 / JS 调用方 / 磁盘 parse 出来的票
+ *     (那些票静态类型一律是 `Ticket`, 类只在运行时看得见)。
+ *
+ * G-6 反向自检 (逐条写在各 test 里, 已实跑证伪):
+ *  - 类型层那条: 把票的 `ticketClass` 从 `'ruling'` 改成 `'task'`(或把 `dispatchTicket` 的参数
+ *    类型改回 `Ticket`)→ `@ts-expect-error` 变成"未使用的抑制" → `tsc` TS2578 当场红。
+ *  - 运行时那条: 摘掉 `dispatchTicket` 首行的 `assertDispatchable` → 裁决票被真派 (research 票
+ *    会 spawn), `toThrow` 当场红。
+ */
+describe('D-3 票类型闸 — 裁决票永不可派发 (G-4/G-6)', () => {
+  /** 一张裁决票 (判别键必填)。type 可变 —— 用来验"类维度赢 type 维度"。 */
+  function ruling(id: string, type: TicketType = 'grill'): RulingTicket {
+    return { id, type, title: id, blockedBy: [], status: 'open', ticketClass: 'ruling' };
+  }
+
+  test('G-4 类型层: 裁决票赋不进 dispatchTicket 的参数 (@ts-expect-error 钉死)', () => {
+    const d = fakeDeps();
+    const t = ruling('g9');
+    expect(() => {
+      // 证伪 (G-6): 'ruling' → 'task' 或参数类型退回 Ticket, 下面这行就不再报错,
+      // 那条抑制立刻变成 TS2578「未使用的抑制指令」→ tsc 当场红。
+      // @ts-expect-error INV-2: RulingTicket ⊄ DispatchableTicket —— 派发口收不进裁决票。
+      dispatchTicket(t, ctx, d);
+    }).toThrow();
+    // 副作用一个都不许有 (类型层拒了也别留 spawn/git 的尾巴)。
+    expect(d.spawns).toHaveLength(0);
+    expect(d.gits).toHaveLength(0);
+  });
+
+  test('G-4 运行时第二道: as 强转绕过类型层 → 装配期拒, 错误指名票 id + type + 类', () => {
+    const d = fakeDeps();
+    // 违规样本: 模拟 JS 调用方 / 磁盘 parse 出来的票 —— 静态类型骗过第一道门。
+    const smuggled = ruling('g9') as unknown as DispatchableTicket;
+    // 证伪: 摘掉 dispatchTicket 首行的 assertDispatchable, 这条当场红 (票被真派)。
+    expect(() => dispatchTicket(smuggled, ctx, d)).toThrow(/g9/);
+    let msg = '';
+    try {
+      dispatchTicket(smuggled, ctx, d);
+    } catch (e) {
+      msg = (e as Error).message;
+    }
+    expect(msg).toContain('装配期拒');
+    expect(msg).toContain('g9');
+    expect(msg).toContain('type=grill');
+    expect(msg).toContain('ticketClass=ruling');
+    expect(d.spawns).toHaveLength(0);
+    expect(d.gits).toHaveLength(0);
+  });
+
+  test('G-4 类赢 type: 标了 ruling 的 research 票也不派 (不 spawn)', () => {
+    const d = fakeDeps();
+    const smuggled = ruling('r9', 'research') as unknown as DispatchableTicket;
+    // 证伪: 闸若按 type 判而非按类判, research 分支会先跑到 spawn —— spawns 变 1, 这条红。
+    expect(() => dispatchTicket(smuggled, { cwd: '/repo', slug: 'ship-x' }, d)).toThrow(/r9/);
+    expect(d.spawns).toHaveLength(0);
+  });
+
+  test('G-4 dispatchFrontier: 裁决票 (哪怕 type=research) 只 reported, 永不进 dispatched', () => {
+    const d = fakeDeps();
+    const map: PathMap = {
+      destination: 'Ship X',
+      slug: 'ship-x',
+      tickets: [
+        tk({ id: 'r1', type: 'research', title: 'research A' }),
+        ruling('r9', 'research'), // 裁决票伪装成 research —— 类维度必须赢
+        ruling('g9'),
+      ],
+      decisionsLog: [],
+    };
+    // 证伪: 去掉 dispatchFrontier 里的 dispatchable 判据, r9 进 dispatched 且 spawns 变 2 → 红。
+    const fd = dispatchFrontier(map, ctx, d);
+    expect(fd.dispatched.map((x) => x.ticketId)).toEqual(['r1']);
+    expect(fd.reported.map((t) => t.id).sort()).toEqual(['g9', 'r9']);
+    expect(d.spawns).toHaveLength(1);
+  });
+
+  test('fail-closed: 词表外的 ticketClass (真相文件手改) 拒派, 不静默放行', () => {
+    const d = fakeDeps();
+    const typo = { ...tk({ id: 'x1', type: 'research' }), ticketClass: 'rulingg' } as unknown as DispatchableTicket;
+    // 证伪: 闸若只判 === 'ruling', 手滑一个字母就把裁决票放成可派票 —— 这条当场红。
+    expect(() => dispatchTicket(typo, ctx, d)).toThrow(/rulingg/);
+    expect(d.spawns).toHaveLength(0);
+    // 批量口同样 fail-closed: 认不出的类归 reported, 不给执行体。
+    const map: PathMap = { destination: 'X', slug: 'ship-x', tickets: [typo as unknown as Ticket], decisionsLog: [] };
+    const fd = dispatchFrontier(map, ctx, fakeDeps());
+    expect(fd.dispatched).toHaveLength(0);
+    expect(fd.reported.map((t) => t.id)).toEqual(['x1']);
+  });
+
+  test('存量兼容: 未标类的四型票照旧可派 (缺省 undefined = 语义不变)', () => {
+    // NULL≠0: 「没标类」≠「标了任务票」—— 存量票一个字节没改, 派发行为必须与改动前逐字节相同。
+    // 证伪: 闸若把 undefined 当非法 (fail-closed 收得太宽), 存量图全部卡死 —— 这条当场红。
+    for (const type of ['research', 'grill', 'prototype', 'task'] as const) {
+      const d = fakeDeps();
+      const t = tk({ id: `legacy-${type}`, type });
+      expect(assertDispatchable(t)).toBe(t as DispatchableTicket);
+      expect(() => dispatchTicket(t, { cwd: '/repo', slug: 'legacy' }, d)).not.toThrow();
+    }
+  });
+
+  test('显式标 question/task 的票可派 (三类里可派的那两类)', () => {
+    const q: DispatchableTicket = { ...tk({ id: 'q1', type: 'research' }), ticketClass: 'question' };
+    const w: DispatchableTicket = { ...tk({ id: 'w1', type: 'task' }), ticketClass: 'task' };
+    const d = fakeDeps();
+    expect(dispatchTicket(q, { cwd: '/repo', slug: 'ship-x' }, d).kind).toBe('afk');
+    expect(dispatchTicket(w, ctx, d)).toEqual({ kind: 'compile', ticketId: 'w1' });
   });
 });
 

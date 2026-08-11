@@ -14,13 +14,21 @@
  *   └─ 可选 `## children` 段 (D-10 票自展开): 每行 `- [type] 子问题标题`, type 缺省 research。
  *      afk-hook 解析该段 → 新增子票 (blockedBy = 母票), 前沿重算。
  *
- * 溯源: D-6 (research→AFK 后台) · D-9 (type 驱动分派) · D-10 (self-expansion children) · D-13 (prototype worktree 隔离)。
+ * ★ D-3 票类型闸 (2026-08-11 控制面统一, INV-2): **裁决票永不可派发**。两道门:
+ *   ① 类型层 (主): 派发口收 `DispatchableTicket`, `RulingTicket` 赋不进去 —— 静态已知的
+ *      裁决票**编译期**就进不来 (派发路径物理不存在, 不是运行时 if)。
+ *   ② 运行时 (兜底): `assertDispatchable` —— 从磁盘 parse 出来的票静态类型一律是 `Ticket`,
+ *      类只在运行时看得见; 顺带挡 `as` 强转与 JS 调用方。
+ *
+ * 溯源: D-6 (research→AFK 后台) · D-9 (type 驱动分派) · D-10 (self-expansion children) · D-13 (prototype worktree 隔离) ·
+ *       D-3 控制面统一 (票语义三类 / 裁决票不可派发, `docs/plan/2026-08-11-control-plane-unification.md`)。
  */
 import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { computeFrontier } from './frontier';
 import type { GhResult, GhRunner } from './backend';
-import type { PathMap, Ticket } from './types';
+import { declaredTicketClass } from './types';
+import type { DispatchableTicket, PathMap, Ticket } from './types';
 
 // ── 路径 helper ────────────────────────────────────────────────────────────────
 
@@ -189,6 +197,28 @@ function dispatchResearchGh(ticket: Ticket, ctx: DispatchCtx, deps: DispatchDeps
   return { kind: 'gh-label', ticketId: ticket.id, label };
 }
 
+// ── D-3 票类型闸 (INV-2 第二道: 运行时/装配期拒) ───────────────────────────────
+
+/**
+ * 装配期闸: 把一张运行时来路不明的票收窄成**可派发票**, 收不窄就当场拒 (fail-loud)。
+ *
+ * 这是从 `Ticket` 拿到 `DispatchableTicket` 的**唯一合法门**——类型层挡住静态已知的裁决票,
+ * 这道门挡住"静态看不见类"的那半 (磁盘 parse 出来的票 / `as` 强转 / JS 调用方)。
+ *
+ * fail-closed: 只放行 `undefined`(未标类的存量票) / `'question'` / `'task'`;
+ * `'ruling'` 与**任何词表外的值**都拒 —— 真相文件人可手改, 把 `rulingg` 这种手滑
+ * 静默放行等于闸不存在 (本仓静默失效图鉴的形态)。错误里指名票 id + TicketType + 类。
+ */
+export function assertDispatchable(ticket: Ticket): DispatchableTicket {
+  const cls = declaredTicketClass(ticket);
+  if (cls === undefined || cls === 'question' || cls === 'task') return ticket as DispatchableTicket;
+  const why =
+    cls === 'ruling'
+      ? '裁决票永不可派发 (D-3 / INV-2): 它等的是人裁 (path_rule 落判词), 不是执行体。要派活另开任务票。'
+      : `ticketClass="${cls}" 不在三类词表 (question/task/ruling) 内 —— 拒派 (fail-closed, 不猜)。`;
+  throw new Error(`装配期拒: 票 ${ticket.id} (type=${ticket.type}, ticketClass=${cls}) ${why}`);
+}
+
 // ── dispatchTicket (纯决策 + 注入副作用) ────────────────────────────────────────
 
 /**
@@ -198,8 +228,12 @@ function dispatchResearchGh(ticket: Ticket, ctx: DispatchCtx, deps: DispatchDeps
  *  - grill: HITL, 出 `/grill this: <title>` prompt, 无 spawn → {hitl}。
  *  - prototype (D-13): `git worktree add <dir> -b <branch>` 隔离 → {worktree}。
  *  - task: 无可运行, 等区域散尽编译 → {compile}。
+ *
+ * D-3 闸: 参数类型是 `DispatchableTicket` —— 裁决票**赋不进来** (编译期拒, G-4);
+ * 第一行的 `assertDispatchable` 是第二道 (挡强转 / 运行时才看得见的类)。
  */
-export function dispatchTicket(ticket: Ticket, ctx: DispatchCtx, deps: DispatchDeps = {}): DispatchResult {
+export function dispatchTicket(ticket: DispatchableTicket, ctx: DispatchCtx, deps: DispatchDeps = {}): DispatchResult {
+  assertDispatchable(ticket);
   switch (ticket.type) {
     case 'research': {
       // gh 后端: 云端 label 触发派发 (无本地进程); 判据接 resolveBackend 的 kind (经 ctx.backend 传入)。
@@ -257,24 +291,32 @@ export function disposePrototype(ticketId: string, cwd: string, deps: DispatchDe
 
 // ── dispatchFrontier (前沿批量分派) ────────────────────────────────────────────
 
-/** 前沿分派结果: research 已 spawn 的 afk 列表 + 其余 (grill/prototype/task) 仅上报给 UI (不自动起副作用)。 */
+/** 前沿分派结果: research 已 spawn 的 afk 列表 + 其余 (grill/prototype/task/裁决票) 仅上报给 UI (不自动起副作用)。 */
 export interface FrontierDispatch {
   /** research 票已起后台 (每张一个 detached 子进程)。 */
   dispatched: DispatchResult[];
-  /** 其余前沿票 (grill/prototype/task) —— 仅报给 UI, **不**自动 spawn/建 worktree (避免惊吓副作用, D-5)。 */
+  /** 其余前沿票 (grill/prototype/task **+ 一切裁决票**) —— 仅报给 UI, **不**自动 spawn/建 worktree (避免惊吓副作用, D-5)。 */
   reported: Ticket[];
 }
 
 /**
  * 批量分派前沿 (computeFrontier): **只**自动 spawn research 票 (AFK 后台车队, D-6)。
  * grill 需人交互、prototype 会建 git 分支 —— 都是"会惊吓的副作用", 故仅 reported 给 UI 由人显式触发。
+ *
+ * D-3 闸 (G-4): 裁决票**先于 type 判**被摘出去 —— 一张标了 `ticketClass:'ruling'` 的
+ * research 票也不派 (类维度赢 type 维度: 类说"这票等人裁", 那就没有执行体的份)。
+ * 这里**不抛**而是归 reported: 裁决票躺在前沿等 owner 是常态, 为一张常态票炸掉整批 prefetch
+ * 是把闸做成了故障。真要派它的调用点 (dispatchTicket 单张) 才 fail-loud 指名。
  */
 export function dispatchFrontier(map: PathMap, ctx: DispatchCtx, deps: DispatchDeps = {}): FrontierDispatch {
   const frontier = computeFrontier(map);
   const dispatched: DispatchResult[] = [];
   const reported: Ticket[] = [];
   for (const t of frontier) {
-    if (t.type === 'research') dispatched.push(dispatchTicket(t, ctx, deps));
+    // 词表外的类 (真相文件手改) 同样进 reported —— fail-closed: 认不出的类不给执行体。
+    const cls = declaredTicketClass(t);
+    const dispatchable = cls === undefined || cls === 'question' || cls === 'task';
+    if (dispatchable && t.type === 'research') dispatched.push(dispatchTicket(t, ctx, deps));
     else reported.push(t);
   }
   return { dispatched, reported };
@@ -332,6 +374,12 @@ export interface DispatchGoalResult {
  * - 幂等: `.goal-dispatched` 标记存在 → 返回其中 runId, 不重 spawn。
  * - goal-worker 对未知 runId 走 reopenForResume = register+start (自注册, 母进程不等)。
  * - 预算默认档 (D-G1.6): OMD_TICKET_GOAL_ROUNDS (默认 2) / OMD_TICKET_GOAL_MINUTES (默认 30)。
+ *
+ * ⚠ D-3 闸在这条通道上**还没有**: 本函数收的是 `ticketId: string` 而不是票, 手上没有
+ * `ticketClass` 可判, 类型层与 assertDispatchable 都够不着。今天不漏是因为唯一调用点
+ * (`src/mcp/tools/pathfinder.ts` path_deliver → readyRegion) 只喂 **ruled task/prototype** 票;
+ * 但那是调用点的性质, 不是这里的闸。补法 = 让它收票 (`DispatchableTicket`) 而不是 id,
+ * 需同改 pathfinder.ts 调用点 —— 属切片 6 (票唯一入口) 的写集, 本切片不越界。
  */
 export function dispatchGoalTicket(
   cwd: string,

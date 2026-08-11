@@ -5,7 +5,8 @@
  * blockedBy 是前置票 (编译时成 depends_on)。零 UI / 零后台 / 零 LLM —— 只是形状。
  *
  * 溯源: D-1 (pathfinder 命名) · D-2 (slice 产物) · D-9 (票类型 + executorKind) ·
- *       D-10 (票自展开 children) · D-3 (markdown 真相源 + db 索引)。
+ *       D-10 (票自展开 children) · D-3 (markdown 真相源 + db 索引) ·
+ *       D-3 控制面统一 (2026-08-11: 票语义三类 + 裁决票不可派发, 见下 TicketClass)。
  */
 
 /** 票类型 (D-9): research=AFK 后台调研 / grill=HITL 审议 (纪律不动手, 无代码闸) / prototype=沙盒 spike / task=待编译施工。 */
@@ -40,6 +41,70 @@ export interface Ticket {
   suggestedBy?: string;
   /** t3 预留 (D-S1.5): 内容寻址指纹 = sha256(type + NFC(title)); suggested 入图时算并全状态查重。 */
   fingerprint?: string;
+}
+
+// ── D-3 (2026-08-11 控制面统一): 票语义三类 + 裁决票的类型层分家 ──────────────────
+
+/**
+ * 票语义三类 (D-3, `docs/plan/2026-08-11-control-plane-unification.md`) —— **不抹平**:
+ *  - `question` 问题票: 要一个**答案** (AFK 调研 / 审议产出)。
+ *  - `task`     任务票: 要**施工** (编译进 slice / 收敛 goal)。
+ *  - `ruling`   裁决票: 要**人裁**。永不可派发 (INV-2) —— 它等的是 owner 的判词, 不是执行体。
+ *
+ * ⚠ 与 `TicketType` 是两个维度, 不是同一件事: TicketType 说"用哪条执行路数"(D-9 分派),
+ * TicketClass 说"这张票要的是什么"。今天的四型票**一张都没标类** (字段缺省 = undefined),
+ * 语义与改动前逐字节相同; 标类由后续切片 (散雾出口 / 票唯一入口) 逐步接上。
+ */
+export type TicketClass = 'question' | 'task' | 'ruling';
+
+/** 可派发的两类 (裁决票不在内) —— `DispatchableTicket` 的判别键域。 */
+export type DispatchableClass = Exclude<TicketClass, 'ruling'>;
+
+/**
+ * 裁决票 (D-3): 判别键 `ticketClass: 'ruling'` **必填**。
+ *
+ * **INV-2 的类型层分家就在这里**: `RulingTicket` 是 `Ticket` 的结构超集 (进得了
+ * `PathMap.tickets`、进得了 render/parse 的一切 `Ticket` 口), 但**不是** `DispatchableTicket`
+ * —— 派发函数的参数类型收不进它, 派发路径在类型层就不存在 (不是运行时 if)。
+ *
+ * ✎ 为什么判别键**不**声明在 `Ticket` 上 (反直觉但必须):
+ *   若 `Ticket.ticketClass?: TicketClass` (域含 'ruling'), 则 `Ticket` 自己就不可赋给
+ *   `DispatchableTicket`, 于是**每一个**持 `Ticket` 的存量调用点都要改写才编得过 ——
+ *   代价是改语义无关的文件, 收益是零 (存量票本来就没标类)。把判别键留在子类型上,
+ *   存量 `Ticket` 一行不动照旧可派 (存量语义不变), 而静态已知的裁决票被编译期拒。
+ *   类的**运行时**读取走 `declaredTicketClass()` (类型层看不见的那半, 由派发闸兜底)。
+ */
+export interface RulingTicket extends Ticket {
+  ticketClass: 'ruling';
+}
+
+/**
+ * 派发口的参数类型 (INV-2 的物理性所在)。收得进:
+ *  - 未标类的存量票 (`Ticket`, 无 `ticketClass`) ✓
+ *  - 显式标 `question` / `task` 的票 ✓
+ * 收不进:
+ *  - `RulingTicket` ✗ —— `'ruling'` 不在 `DispatchableClass` 域内, 编译期拒 (G-4)。
+ */
+export type DispatchableTicket = Ticket & { ticketClass?: DispatchableClass };
+
+/**
+ * 读票上**写着的**类 (类型层看不见的那半: 从磁盘 parse 出来的票, 静态类型一律是 `Ticket`)。
+ *
+ * NULL≠0: 返回 `undefined` = **没标类** (存量票 / 旧图), 与显式 `'task'` 是两回事 ——
+ * 别拿"缺省当 task"把两者抹平, 分辨"这张票没标"和"这张票标了任务票"靠的就是这个 undefined。
+ *
+ * 真相文件人可手改 (regression 1 的形态), 所以词表外的值**原样返回**给闸判断 ——
+ * 派发闸只放行 `undefined | 'question' | 'task'`, 其余一律拒 (fail-closed:
+ * 把 `rulingg` 这种手滑静默升格成可派票, 正是 D-3 要挡的那类越权)。
+ */
+export function declaredTicketClass(t: Ticket): string | undefined {
+  const raw = (t as { ticketClass?: unknown }).ticketClass;
+  return typeof raw === 'string' ? raw : undefined;
+}
+
+/** 裁决票判定 (运行时): 判别键逐字节等于 'ruling'。窄化到 `RulingTicket` 供调用方分流。 */
+export function isRulingTicket(t: Ticket): t is RulingTicket {
+  return declaredTicketClass(t) === 'ruling';
 }
 
 /** 一张决策地图 = 一个目的地的完整决策 DAG (稳定 key = slug, 一 repo 多图)。 */
