@@ -41,6 +41,20 @@ export interface Ticket {
   suggestedBy?: string;
   /** t3 预留 (D-S1.5): 内容寻址指纹 = sha256(type + NFC(title)); suggested 入图时算并全状态查重。 */
   fingerprint?: string;
+
+  // ── D-5 (2026-08-11 控制面统一): 等人裁这件事的三个时刻 (ISO 8601, 调用方给) ──
+  // NULL≠0 三条铁律都压在"字段有无"上, 一个都不许靠猜补:
+  //  · 缺席 = **没记**, 不是 0 (当 0 就是 1970 → 每张票立刻超时 56 年)。
+  //  · 缺席 也不是 "不在等" —— "在等但没记进入时刻" 是独立读数 (waiting-unknown-since)。
+  //  · 判别 "没人裁" / "裁了没记" 靠 waitingSince 与 ruledAt 的**先后**, 不靠 ruling 文本有无
+  //    (票可被裁过又重新升人, backend.escalate 不清 ruling → 看文本必误判)。
+
+  /** 进入"等人裁"态 (suggested/escalated) 的时刻。缺席 = 没记上, **不可**据此算超时。 */
+  waitingSince?: string;
+  /** 最近一次裁决被记下的时刻。≥ waitingSince 且仍挂等人态 = 「裁了没记」(盘上有裂缝)。 */
+  ruledAt?: string;
+  /** 超时升级动作 (标 stale) 的执行时刻。缺席 = 本轮等待还没被标过 (幂等键)。 */
+  staleAt?: string;
 }
 
 // ── D-3 (2026-08-11 控制面统一): 票语义三类 + 裁决票的类型层分家 ──────────────────
@@ -118,6 +132,23 @@ export interface PathMap {
   decisionsLog: { ticketId: string; gist: string }[];
   /** S-1 (INV-S1-3): 建议处置台账 (append-only) — 接受率读数的数据源。缺省 = 无建议史 (旧图兼容)。 */
   suggestionsLog?: SuggestionLogEntry[];
+  /** D-5 (G-5): 等人超时升级台账 (append-only)。缺省 = 没记过, **不是**记了个空 (旧图兼容)。 */
+  waitingLog?: WaitingLogEntry[];
+}
+
+/**
+ * D-5 (G-5): 一条"等人超时被标 stale"的记录 —— 谁超时 (ticketId) · 等了多久 (waitedMs,
+ * 从 waitingSince 到 at) · 何时标的 (at)。票上的 `staleAt` 只留**本轮**窗口, 重新进入等待即被清;
+ * 这份 append-only 台账留全部历史 (同一张票可以超时多轮)。
+ */
+export interface WaitingLogEntry {
+  ticketId: string;
+  /** 本轮等待的进入时刻 (票上的 waitingSince 快照)。 */
+  waitingSince: string;
+  /** at − waitingSince (ms)。写死数值而非现算: 台账要能脱离票单独读。 */
+  waitedMs: number;
+  /** 标 stale 的时刻 (调用方给的 now, 引擎不自取 Date.now — 可重放)。 */
+  at: string;
 }
 
 /** S-1: 一条建议处置记录。outcome 词表与契约 GWT 同; deduped=指纹撞车, deduped-semantic=语义近邻 (r1 C1) — 分开数才调得动阈值。 */

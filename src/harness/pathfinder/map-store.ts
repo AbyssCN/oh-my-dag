@@ -14,7 +14,15 @@
 import { Database } from 'bun:sqlite';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { declaredTicketClass } from './types';
 import type { ExecutorKind, PathMap, Ticket, TicketStatus, TicketType } from './types';
+
+/**
+ * 盘上的票 = `Ticket` + 可能写着的 `ticketClass` (D-3 故意不把判别键放在 `Ticket` 上, 见 types.ts)。
+ * 值取**原样字符串**: 真相文件人可手改, 词表外的手滑 (`rulingg`) 要原样往返给闸判 (fail-closed),
+ * 不在存储层静默抹掉或归一 —— 与"未知 status 渲进兜底组"同一条纪律。
+ */
+type StoredTicket = Ticket & { ticketClass?: string };
 
 // ── 路径 helper (与纯 render/parse 分离) ──────────────────────────────────────
 
@@ -51,6 +59,12 @@ function renderTicket(t: Ticket): string {
   if (t.dNumber !== undefined) lines.push(`- dNumber: ${t.dNumber}`);
   if (t.suggestedBy !== undefined) lines.push(`- suggestedBy: ${t.suggestedBy}`);
   if (t.fingerprint !== undefined) lines.push(`- fingerprint: ${t.fingerprint}`);
+  // D-3 票类 + D-5 三戳: 一律"缺则省行" → 未标类无戳的存量票渲染输出逐字节不变。
+  const cls = declaredTicketClass(t);
+  if (cls !== undefined) lines.push(`- ticketClass: ${esc(cls)}`);
+  if (t.waitingSince !== undefined) lines.push(`- waitingSince: ${t.waitingSince}`);
+  if (t.ruledAt !== undefined) lines.push(`- ruledAt: ${t.ruledAt}`);
+  if (t.staleAt !== undefined) lines.push(`- staleAt: ${t.staleAt}`);
   return lines.join('\n');
 }
 
@@ -71,6 +85,12 @@ export function renderMapMarkdown(map: PathMap): string {
     // 否则 parser 在 cur.id 未开时会把它吞进 decisionsLog。
     out.push('## Suggestions log', '');
     for (const e of map.suggestionsLog) out.push(`- log: ${e.ticketId} ${e.outcome} ${e.at} ${e.runId}`);
+    out.push('');
+  }
+  if (map.waitingLog !== undefined && map.waitingLog.length > 0) {
+    // D-5 (G-5): 等人超时台账 append-only。行首 `- wait:` 同理与决策日志的 `- [id]` 分形状。
+    out.push('## Waiting-human log', '');
+    for (const e of map.waitingLog) out.push(`- wait: ${e.ticketId} ${e.waitingSince} ${e.waitedMs} ${e.at}`);
     out.push('');
   }
   out.push('## Tickets', '');
@@ -117,12 +137,13 @@ export function parseMapMarkdown(md: string): PathMap {
   let slug = '';
   const decisionsLog: { ticketId: string; gist: string }[] = [];
   const suggestionsLog: PathMap['suggestionsLog'] = [];
+  const waitingLog: PathMap['waitingLog'] = [];
   const tickets: Ticket[] = [];
-  let cur: Partial<Ticket> & { id?: string } = {};
+  let cur: Partial<StoredTicket> & { id?: string } = {};
 
   const flush = () => {
     if (cur.id !== undefined) {
-      tickets.push({
+      const t: StoredTicket = {
         id: cur.id,
         type: cur.type ?? 'task',
         title: cur.title ?? '',
@@ -134,7 +155,12 @@ export function parseMapMarkdown(md: string): PathMap {
         ...(cur.dNumber !== undefined ? { dNumber: cur.dNumber } : {}),
         ...(cur.suggestedBy !== undefined ? { suggestedBy: cur.suggestedBy } : {}),
         ...(cur.fingerprint !== undefined ? { fingerprint: cur.fingerprint } : {}),
-      });
+        ...(cur.ticketClass !== undefined ? { ticketClass: cur.ticketClass } : {}),
+        ...(cur.waitingSince !== undefined ? { waitingSince: cur.waitingSince } : {}),
+        ...(cur.ruledAt !== undefined ? { ruledAt: cur.ruledAt } : {}),
+        ...(cur.staleAt !== undefined ? { staleAt: cur.staleAt } : {}),
+      };
+      tickets.push(t);
     }
     cur = {};
   };
@@ -152,6 +178,11 @@ export function parseMapMarkdown(md: string): PathMap {
     const logM = line.match(/^- log: (\S+) (accepted|edited|rejected|deduped-semantic|deduped) (\S+) (\S+)$/);
     if (logM && cur.id === undefined) {
       suggestionsLog.push({ ticketId: logM[1]!, outcome: logM[2] as 'accepted', at: logM[3]!, runId: logM[4]! });
+      continue;
+    }
+    const waitM = line.match(/^- wait: (\S+) (\S+) (\d+) (\S+)$/);
+    if (waitM && cur.id === undefined) {
+      waitingLog.push({ ticketId: waitM[1]!, waitingSince: waitM[2]!, waitedMs: Number(waitM[3]!), at: waitM[4]! });
       continue;
     }
     const decM = line.match(/^- \[(.+?)\] (.*)$/);
@@ -180,10 +211,21 @@ export function parseMapMarkdown(md: string): PathMap {
     else if ((v = fieldValue(line, 'dNumber')) !== null) cur.dNumber = v;
     else if ((v = fieldValue(line, 'suggestedBy')) !== null) cur.suggestedBy = v;
     else if ((v = fieldValue(line, 'fingerprint')) !== null) cur.fingerprint = v;
+    else if ((v = fieldValue(line, 'ticketClass')) !== null) cur.ticketClass = unesc(v);
+    else if ((v = fieldValue(line, 'waitingSince')) !== null) cur.waitingSince = v;
+    else if ((v = fieldValue(line, 'ruledAt')) !== null) cur.ruledAt = v;
+    else if ((v = fieldValue(line, 'staleAt')) !== null) cur.staleAt = v;
   }
   flush();
 
-  return { destination, slug, tickets, decisionsLog, ...(suggestionsLog.length > 0 ? { suggestionsLog } : {}) };
+  return {
+    destination,
+    slug,
+    tickets,
+    decisionsLog,
+    ...(suggestionsLog.length > 0 ? { suggestionsLog } : {}),
+    ...(waitingLog.length > 0 ? { waitingLog } : {}),
+  };
 }
 
 // ── SQLite 索引 (镜像 dag-record.ts idiom; :memory: 传 Database 句柄) ──────────
@@ -218,6 +260,10 @@ function ensureSchema(db: Database): void {
       d_number      TEXT,
       suggested_by  TEXT,
       fingerprint   TEXT,
+      ticket_class  TEXT,
+      waiting_since TEXT,
+      ruled_at      TEXT,
+      stale_at      TEXT,
       PRIMARY KEY (map_slug, id)
     )
   `);
@@ -225,8 +271,14 @@ function ensureSchema(db: Database): void {
   const tcols = (db.query(`PRAGMA table_info(tickets)`).all() as { name: string }[]).map((c) => c.name);
   if (!tcols.includes('suggested_by')) db.run(`ALTER TABLE tickets ADD COLUMN suggested_by TEXT`);
   if (!tcols.includes('fingerprint')) db.run(`ALTER TABLE tickets ADD COLUMN fingerprint TEXT`);
+  // D-3 票类 + D-5 三戳 (同上: 老库就地补列)。
+  if (!tcols.includes('ticket_class')) db.run(`ALTER TABLE tickets ADD COLUMN ticket_class TEXT`);
+  if (!tcols.includes('waiting_since')) db.run(`ALTER TABLE tickets ADD COLUMN waiting_since TEXT`);
+  if (!tcols.includes('ruled_at')) db.run(`ALTER TABLE tickets ADD COLUMN ruled_at TEXT`);
+  if (!tcols.includes('stale_at')) db.run(`ALTER TABLE tickets ADD COLUMN stale_at TEXT`);
   const mcols = (db.query(`PRAGMA table_info(pathmaps)`).all() as { name: string }[]).map((c) => c.name);
   if (!mcols.includes('suggestions_log')) db.run(`ALTER TABLE pathmaps ADD COLUMN suggestions_log TEXT`);
+  if (!mcols.includes('waiting_log')) db.run(`ALTER TABLE pathmaps ADD COLUMN waiting_log TEXT`);
 }
 
 /** 落一张图到 db (幂等: 先删同 slug 的旧行)。map = 内存 PathMap, dbPath = 路径或 Database 句柄。 */
@@ -236,15 +288,16 @@ export function saveMapDb(map: PathMap, dbPath: string | Database): void {
     ensureSchema(db);
     db.run('DELETE FROM pathmaps WHERE slug = ?', [map.slug]);
     db.run('DELETE FROM tickets WHERE map_slug = ?', [map.slug]);
-    db.query('INSERT INTO pathmaps (slug, destination, decisions_log, suggestions_log) VALUES (?, ?, ?, ?)').run(
+    db.query('INSERT INTO pathmaps (slug, destination, decisions_log, suggestions_log, waiting_log) VALUES (?, ?, ?, ?, ?)').run(
       map.slug,
       map.destination,
       JSON.stringify(map.decisionsLog),
       map.suggestionsLog !== undefined ? JSON.stringify(map.suggestionsLog) : null,
+      map.waitingLog !== undefined ? JSON.stringify(map.waitingLog) : null,
     );
     const ins = db.query(
-      `INSERT INTO tickets (map_slug, ord, id, type, title, blocked_by, status, ruling, executor_kind, children, d_number, suggested_by, fingerprint)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tickets (map_slug, ord, id, type, title, blocked_by, status, ruling, executor_kind, children, d_number, suggested_by, fingerprint, ticket_class, waiting_since, ruled_at, stale_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     map.tickets.forEach((t, i) => {
       ins.run(
@@ -261,6 +314,10 @@ export function saveMapDb(map: PathMap, dbPath: string | Database): void {
         t.dNumber ?? null,
         t.suggestedBy ?? null,
         t.fingerprint ?? null,
+        declaredTicketClass(t) ?? null,
+        t.waitingSince ?? null,
+        t.ruledAt ?? null,
+        t.staleAt ?? null,
       );
     });
   } finally {
@@ -273,6 +330,7 @@ interface MapRow {
   destination: string;
   decisions_log: string;
   suggestions_log: string | null;
+  waiting_log: string | null;
 }
 interface TicketRow {
   id: string;
@@ -286,6 +344,10 @@ interface TicketRow {
   d_number: string | null;
   suggested_by: string | null;
   fingerprint: string | null;
+  ticket_class: string | null;
+  waiting_since: string | null;
+  ruled_at: string | null;
+  stale_at: string | null;
 }
 
 /**
@@ -303,7 +365,7 @@ export function loadMapDb(dbPath: string | Database, slug?: string): PathMap {
     ) as MapRow | null;
     if (!mapRow) throw new Error(`loadMapDb: 找不到图${slug !== undefined ? ` "${slug}"` : ''}`);
     const rows = db.query('SELECT * FROM tickets WHERE map_slug = ? ORDER BY ord').all(mapRow.slug) as TicketRow[];
-    const tickets: Ticket[] = rows.map((r) => ({
+    const tickets: StoredTicket[] = rows.map((r) => ({
       id: r.id,
       type: r.type as TicketType,
       title: r.title,
@@ -315,6 +377,10 @@ export function loadMapDb(dbPath: string | Database, slug?: string): PathMap {
       ...(r.d_number !== null ? { dNumber: r.d_number } : {}),
       ...(r.suggested_by !== null ? { suggestedBy: r.suggested_by } : {}),
       ...(r.fingerprint !== null ? { fingerprint: r.fingerprint } : {}),
+      ...(r.ticket_class !== null ? { ticketClass: r.ticket_class } : {}),
+      ...(r.waiting_since !== null ? { waitingSince: r.waiting_since } : {}),
+      ...(r.ruled_at !== null ? { ruledAt: r.ruled_at } : {}),
+      ...(r.stale_at !== null ? { staleAt: r.stale_at } : {}),
     }));
     return {
       destination: mapRow.destination,
@@ -323,6 +389,9 @@ export function loadMapDb(dbPath: string | Database, slug?: string): PathMap {
       decisionsLog: JSON.parse(mapRow.decisions_log) as { ticketId: string; gist: string }[],
       ...(mapRow.suggestions_log !== null && mapRow.suggestions_log !== undefined
         ? { suggestionsLog: JSON.parse(mapRow.suggestions_log) as PathMap['suggestionsLog'] }
+        : {}),
+      ...(mapRow.waiting_log !== null && mapRow.waiting_log !== undefined
+        ? { waitingLog: JSON.parse(mapRow.waiting_log) as PathMap['waitingLog'] }
         : {}),
     };
   } finally {
