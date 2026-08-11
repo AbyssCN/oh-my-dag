@@ -697,6 +697,22 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
         ...(acceptance.expectExit !== undefined ? { acceptExpectExit: acceptance.expectExit } : {}),
         name: 'goal-execute-flat',
       });
+      // O-6 (2026-08-11 二发教训): RED 的前提是切片 verify 在**实装前是红的** —— 引用既有绿
+      // 测试文件时结构性不成立 (旧测试全绿, RED 期望 1 得 0, 整图白跑一轮才发现)。有 commandRunner
+      // 就逐片探一枪 (acceptance.ts 的 vacuous 纪律推广到切片级): 已绿 = 判据虚 **或** 活已干完,
+      // 两种机械分不开, 都不该进平铺 —— 抛给回落 (v1 的冻结判据对"已完成"那半收敛最快)。
+      // 没 runner = 闸缺席 (fail-open, 测试/无命令能力档), 行为同今天。
+      if (config.dag.commandRunner) {
+        for (const s of breakdown.slices) {
+          const probe = await config.dag.commandRunner({ command: s.verify });
+          if (probe.exitCode === 0) {
+            throw new Error(
+              `切片 ${s.id} 的 verify 实装前已绿 (\`${s.verify}\` → 0): RED 无法成立 —— ` +
+                '判据虚 (换实装前天然红的命令, 如产物 grep) 或活已干完 (O-6 vacuous 探针)',
+            );
+          }
+        }
+      }
       // 编译器刻意不内联 SDD 全文 (token 注入由接线方裁, 见 sdd-compile 头注): 这里给每个
       // **切片实装节点**前置与 conductor 路径同源的契约上下文 (G-6 教训: 内联全文, 不引用
       // 基座路径); RED/GREEN/accept 是 command 节点, 不读文本, 不背这份 token。

@@ -477,3 +477,66 @@ describe('runGoal 直通档: 验收命令取自 SDD verify 列, 不用分类器�
     expect(r.stages.some((s) => s.summary.includes('判据取自 SDD verify 列'))).toBe(false);
   });
 });
+
+// ── O-6 vacuous 探针 (2026-08-11 二发教训: RED 对既有绿测试文件结构性失败) ──────────
+// 反向自检 (实跑过): 把 run-goal.ts 平铺块里的探针 for 循环摘掉 → 「已绿 → 回落」当场红。
+
+describe('runGoal 直通 v2 — O-6 vacuous 探针 (切片 verify 实装前已绿 → 不进平铺)', () => {
+  const ACC: AcceptanceSpec = { kind: 'executable', command: 'bun test', expectExit: 0 };
+  const classify = async (): Promise<GoalClassification> => ({ tier: 'complex', acceptance: ACC });
+  const SDD_FLAT2 = [
+    '# t',
+    '## 契约 (Contracts)',
+    '- G-1。',
+    '## 分解 (Breakdown)',
+    '| 切片 | 写集 | 依赖 | verify |',
+    '|---|---|---|---|',
+    '| 1 a | src/a.ts | — | `bun test src/a.test.ts` |',
+  ].join('\n');
+
+  const run = async (verifyExit: number) => {
+    const seenPlans: ConductorPlan[] = [];
+    const probed: string[] = [];
+    const config: RunGoalConfig = {
+      cwd: mkdtempSync(join(tmpdir(), 'omd-vac-')),
+      dag: {
+        conductorModel: 'c:m',
+        leafModel: 'l:m',
+        // 探针与 D-1 基线共用这一个 runner: 切片 verify 回 verifyExit, 验收命令恒 0。
+        commandRunner: (async ({ command }: { command: string }) => {
+          probed.push(command);
+          return { text: '', usage: { in: 0, out: 0 }, exitCode: command === 'bun test' ? 0 : verifyExit };
+        }) as never,
+      } as unknown as ExecutorDagConfig,
+      _classify: classify,
+      _runDag: (async (plan: ConductorPlan) => {
+        seenPlans.push(plan);
+        return {
+          plan: { name: plan.name, nodes: {} },
+          results: {
+            accept: { id: 'accept', status: 'done', kind: 'command', output: '', deps: [], usage: { in: 0, out: 0 } },
+            ...(plan.name === 'goal-execute'
+              ? { execute: { id: 'execute', status: 'done', kind: 'conductor', output: '[ok]', deps: [], usage: { in: 1, out: 1 }, rounds: 1, converged: true } }
+              : {}),
+          },
+          reusedNodes: [],
+        } as unknown as ExecutorDagResult;
+      }) as never,
+      sddPath: tmpSdd(SDD_FLAT2),
+    };
+    const r = await runGoal('按 SDD 执行', config);
+    return { r, seenPlans, probed };
+  };
+
+  test('切片 verify 实装前已绿 (探针得 0) → 响亮回落 v1, 注记含「实装前已绿」', async () => {
+    const { r, seenPlans, probed } = await run(0);
+    expect(probed).toContain('bun test src/a.test.ts'); // 真探过
+    expect(seenPlans[0]!.name).toBe('goal-execute'); // 没进平铺
+    expect(r.stages.some((s) => s.summary.includes('实装前已绿'))).toBe(true);
+  });
+
+  test('切片 verify 实装前红 (探针得 1) → 平铺照走 (探针不误伤真 TDD 输入)', async () => {
+    const { seenPlans } = await run(1);
+    expect(seenPlans[0]!.name).toBe('goal-execute-flat');
+  });
+});
