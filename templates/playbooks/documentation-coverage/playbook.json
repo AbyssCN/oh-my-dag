@@ -1,0 +1,15 @@
+{
+  "name": "documentation-coverage",
+  "steps": [
+    { "doc": "1_ANALYZE.md" },
+    { "doc": "2_FIND_GAPS.md" },
+    { "doc": "3_EVALUATE.md" },
+    { "doc": "4_IMPLEMENT.md" },
+    { "doc": "5_PROGRESS.md", "reset": true }
+  ],
+  "loop": { "maxRounds": 5 },
+  "acceptance": {
+    "command": "grep -qx \"PLAYBOOK_COMPLETE\" PLAYBOOK_STATUS.md",
+    "negativeSample": { "path": "PLAYBOOK_STATUS.md", "content": "INCOMPLETE" }
+  }
+}
