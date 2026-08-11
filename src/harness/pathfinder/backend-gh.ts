@@ -137,7 +137,7 @@ function parseRuling(comments: Array<{ body: string }>): string | undefined {
  * CLOSED 分支**不看** suggested/escalated label: 票已终结, 那两个 label 只是上一轮的残留
  * (已拒建议的 CLOSED+suggested 由 readMapImpl 单独摘掉, 见那里)。
  */
-function baseStatus(state: string, labels: string[]): TicketStatus {
+export function baseStatus(state: string, labels: string[]): TicketStatus {
   const closed = state.toUpperCase() === 'CLOSED';
   if (closed) return labels.includes(DELIVERED_LABEL) ? 'delivered' : 'ruled';
   if (labels.includes(SUGGESTED_LABEL)) return 'suggested';
@@ -202,8 +202,10 @@ function parseWaitingStamps(comments: Array<{ body: string; createdAt?: string }
 
 // ── D-4 渲染面 (INV-1: gh 侧状态**只是**这三位的投影, 不是独立真源) ─────────────────
 
-/** gh 侧渲染四元组: issue 开/关 + 三个状态 label。两个 status 渲染相同 = 无冲突 (不刷注记)。 */
-interface GhRender {
+/** gh 侧渲染四元组: issue 开/关 + 三个状态 label。两个 status 渲染相同 = 无冲突 (不刷注记)。
+ * export (2026-08-11, S5 票看板): 双端同数测试的 gh 臂必须对拍**真实现**而非在测试里复刻语义 ——
+ * 复刻与实装同源转录, 实装改坏抓不到 (本仓「测试与实装互相背书」图鉴形态)。 */
+export interface GhRender {
   closed: boolean;
   suggested: boolean;
   delivered: boolean;
@@ -216,7 +218,7 @@ interface GhRender {
  * `escalated` 从 2026-08-11 起有表达位 (`path:escalated`) —— 切片 4 那句"gh 侧无对应表达位"
  * 到此为止: 有位就得纳入比对, 否则 gh 侧留着一个盘上没有的 label = 独立状态 (违 INV-1)。
  */
-function renderOf(status: TicketStatus): GhRender {
+export function renderOf(status: TicketStatus): GhRender {
   switch (status) {
     case 'suggested':
       return { closed: false, suggested: true, delivered: false, escalated: false };

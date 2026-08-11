@@ -41,6 +41,7 @@ import { DialogBox, ESC as DIALOG_ESC, type DialogHost, type InputOpts, type Sel
 import { DagHud } from './components/dag-hud';
 import { DagTree } from './components/dag-tree';
 import { type PathReader, PathHud, createPathReader } from './components/path-hud';
+import { renderTicketBoard } from './components/ticket-board';
 import { renderGantt } from './render/dag-gantt';
 import { type PathViewData, buildPathViewData, renderDelta, renderFogLine } from './render/path-fog';
 import { fitLine } from './render/line';
@@ -420,6 +421,41 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   const basePathReader = opts.pathReader ?? createPathReader(opts.cwd);
   const pathHud = new PathHud(theme, () => (pathSlugSel ? createPathReader(opts.cwd, pathSlugSel)() : basePathReader()));
   pathHud.refresh();
+  // ── 切片 S5: 决策地图票看板 ──
+  // 盘上 PathMap 是唯一真源 (D-12 ①), TUI 只渲染不产独立状态; 渲染路径零写 (D-12 ③, 事故先例 1890115)。
+  // 不在 render 里读盘 (D-12 ②): 复用 pathHud.refresh() 的时机 (启动 / 每轮收尾 / Ctrl+P 切图)。
+  let ticketBoardMap: import('../harness/pathfinder/types').PathMap | null = null;
+  let ticketBoardErr: string | null = null;
+  function refreshTicketBoard(): void {
+    ticketBoardMap = null;
+    ticketBoardErr = null;
+    try {
+      // 选图与 pathHud 同一把尺 (createPathReader): 显式选了走选中, 没选走"前沿最多"的默认。
+      const snap = (pathSlugSel ? createPathReader(opts.cwd, pathSlugSel) : basePathReader)();
+      if (!snap) return; // 一张图都没有 → 无源恒缺席 (与 path-hud 同一语义, 不画空框)
+      const { resolveBackend } = require('../harness/pathfinder/backend') as typeof import('../harness/pathfinder/backend');
+      ticketBoardMap = resolveBackend(opts.cwd).readMap(opts.cwd, snap.slug);
+    } catch (err) {
+      // fail-open 可以吞异常, 不许吞证据: 原因留着画在屏上。
+      ticketBoardErr = err instanceof Error ? err.message : String(err);
+    }
+  }
+  refreshTicketBoard();
+  const ticketBoard: Component = {
+    render: (width: number): string[] => {
+      if (ticketBoardErr) return [theme.chrome.warn(fitLine(`ticket board could not be read: ${ticketBoardErr}`, width))];
+      if (!ticketBoardMap) return [];
+      // ⚠ 侧栏行数必须封顶 (实跑钉的): 19 票的图整张画会把 transcript 挤到 3 行,
+      //   欢迎屏那张表 (engine/session) 被挤出可见窗, PTY 的 bootReady 一条接一条红。
+      //   与 pathHud 同款 MAX_ROWS 惯例 —— 画表头 + 前几票 + "... N more", 全量仍在盘上。
+      const lines = renderTicketBoard(ticketBoardMap, now());
+      const cap = 7; // 表头 + 6 票; 超出再补一行 "... N more tickets"
+      const shown = lines.length <= cap ? lines : [...lines.slice(0, cap), `... ${lines.length - cap} more tickets`];
+      return shown.map((l) => theme.chrome.dim(fitLine(l, width)));
+    },
+    handleInput: () => {},
+    invalidate: () => {},
+  };
   // 空态在框里画一句提示符 —— 见 `components/hinted-editor.ts` 文件头(gauntlet critic 的判词)。
   const editor = new HintedEditor(tui, theme.editor, { hint: CHROME.editorHint, paint: theme.chrome.dim });
   // 补全:**行首 `/` 出命令,其余出文件** —— 底座是 pi-tui 的 `CombinedAutocompleteProvider`。
@@ -660,6 +696,8 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    * ⚠ 全屏散雾图开着时同样不画(同一张图画两遍会读成两张)。
    */
   root.addChild(pathHud, { shrink: 0, visible: () => pathHudVisible({ pathFullOn, hasDialogue: chatLog.hasDialogue }) });
+  // 切片 S5: 票看板与 pathHud 同一可见性 —— 它属于欢迎屏, 不属于对话主屏 (要常看按 Ctrl+P)。
+  root.addChild(ticketBoard, { shrink: 0, visible: () => pathHudVisible({ pathFullOn, hasDialogue: chatLog.hasDialogue }) });
   root.addChild(waiting, { shrink: 0, visible: () => turnInFlight });
   root.addChild(dialogSlot, chrome);
   root.addChild(editorContainer, chrome);
@@ -969,6 +1007,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       // 一轮跑完可能动过地图 (conductor 有 map_* 工具) → 重读一次。
       // 不在 render 里读盘: render 每帧都调, 那会变成每帧一次目录扫描。
       pathHud.refresh();
+      refreshTicketBoard(); // 切片 S5: 同一时机重读看板 (一轮跑完可能动过地图)
       if (pathSlugSel) reloadPathData(); // 切片⑧: 全屏图的数据同一时机重读
       tui.requestRender();
     }
@@ -1475,6 +1514,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     pathSelected = 0;
     reloadPathData();
     pathHud.refresh(); // 侧栏跟着换图
+    refreshTicketBoard(); // 切片 S5: 看板跟着换图
     pathFullOn = true;
     tui.requestRender();
   }

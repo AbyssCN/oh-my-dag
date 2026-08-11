@@ -815,6 +815,39 @@ async function scenarioPathfinder() {
 }
 
 /**
+ * 场景 S5:**决策地图票看板**(切片 S5, D-12 ①③)。
+ *
+ * 欢迎屏侧栏画 `ticket board` 块 —— 数据只读盘上 PathMap (resolveBackend(cwd).readMap),
+ * 复用 pathHud.refresh() 的时机, 渲染路径零写。
+ *
+ * ⚠ 判据为什么选看板独有前缀 `ticket board`:**证伪已当场做过** —— 接线前整跑一遍本脚本
+ * (全绿)且全仓 grep 该串只命中 `components/ticket-board.ts`(未挂进 tui.ts 时到不了屏),
+ * 即它只有新行为才产得出;若误选 `Got it.`(旧行为也产出)会假绿。反向: 删掉 tui.ts 的接线,
+ * TB-1 当场红。
+ *
+ * ⚠ TB-2 不是摆设: 读盘失败行 (`ticket board could not be read: …`) **也含** `ticket board`
+ * 子串 —— 没有 TB-2, TB-1 会在看板实际坏掉时照样绿。两者合读才等于"头在且不是错行"。
+ */
+async function scenarioTicketBoard() {
+  const p = startTui();
+  try {
+    check(await waitFor(p, (t) => bootReady(t)), 'TB-0 (场景 S5) 启动');
+    check(
+      await waitFor(p, (t) => t.includes('ticket board')),
+      'TB-1 ★ 欢迎屏画出票看板头 (盘上 map 非空才出 —— 空图返回 [] 连头都没有)',
+      p.text().slice(-600),
+    );
+    check(
+      !p.text().includes('ticket board could not be read'),
+      'TB-2 ★ 看板不是读盘失败错行冒充的 (错行也含 ticket board, 必须区分)',
+      p.text().slice(-600),
+    );
+  } finally {
+    p.kill();
+  }
+}
+
+/**
  * 场景 4.6:**左栏 DAG + 三画法**(切片③,G-3)。
  *
  * `fixture:dag` 暗号发一个带 map 分裂的 run(planned 无 deps · expanded 带 parent+deps,
@@ -1268,6 +1301,7 @@ await scenarioLogRedirect();
 await scenarioSeat();
 await scenarioSkillComplete();
 await scenarioPathfinder();
+await scenarioTicketBoard();
 await scenarioDagViews();
 await scenarioDagNarrow();
 await scenarioCompact();
