@@ -42,6 +42,7 @@ import { compileBreakdown, describeParallelism, parallelismReadout } from './sdd
 import { attributeWriteSet, classifyWriteScope, describeWriteSet, SDD_DECLARED_WRITE_SET, type DeclaredWriteSet, type WriteScopeKind, type WriteSetDeclaration, type WriteSetReport } from '../write-set';
 import { collectRunTickets, type RunTicketSink } from '../pathfinder/run-tickets';
 import { logger } from '../logger';
+import { appendBoard, type BoardEntry } from '../board/run-board';
 
 // D-I: 两条轴的类型与分类器都归 ./acceptance (那里是判据轴的单一真源); 此处 re-export 保旧调用面。
 export type { AcceptanceSpec, GoalClassification, GoalTier } from './classify-acceptance';
@@ -246,6 +247,37 @@ export function goalSlug(goal: string): string {
     .slice(0, 48);
   return s || 'goal';
 }
+
+/** RunOutcomeKind → board terminal outcome 的**四值投影** (S4)。细粒度留在 note, 粗态进 outcome。 */
+export const BOARD_TERMINAL_OUTCOME: Record<RunOutcomeKind, 'converged' | 'failed' | 'cancelled' | 'not-converged'> = {
+  success: 'converged',
+  cancelled: 'cancelled',
+  'not-converged': 'not-converged',
+  'oracle-failed': 'failed',
+  blocked: 'failed',
+  'budget-exhausted': 'failed',
+  'infra-error': 'failed',
+  'missing-capability': 'failed',
+  'not-needed': 'failed',
+  'empty-result': 'failed',
+  unclassified: 'failed',
+};
+
+/**
+ * 终态 entry 构造 (S4, **纯函数面**): 内容可单测。为何需要它: appendBoard 追加 terminal 后,
+ * run-board 的 compact 会立刻删掉**本 run 的全部条目 (含 terminal 行本身)** —— 板是协调介质
+ * 不是真源 (D-3/INV-1), 事后读板读不到这条, 内容只能经这里验证。
+ */
+export function boardTerminalEntry(runId: string, outcome: RunOutcomeKind): BoardEntry {
+  return {
+    v: 1,
+    ts: new Date().toISOString(),
+    runId,
+    event: 'terminal',
+    outcome: BOARD_TERMINAL_OUTCOME[outcome],
+    note: outcome,
+  };
+}
 /** D-2 diff 面: 跑后 git 工作树相对 HEAD 的改动 (相对路径, 含未跟踪, 不含被忽略的)。非 git 仓/失败 → 抛 (调用方 fail-open)。 */
 function collectChangedFiles(cwd: string): string[] {
   const r = Bun.spawnSync(['git', 'status', '--porcelain'], { cwd, stdout: 'pipe', stderr: 'pipe' });
@@ -343,6 +375,29 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   let specPath: string | undefined = sdd?.path;
   let evidence = sdd?.text ?? '';
   let repoContext = '';
+
+  // ── S4: run 生命周期接线 (board = 协调介质, 不是真源; D-3/INV-1) ────────────────
+  // 点火 → claimed (带声明写集, 相对路径, 与 sdd-direct 写集列同物); 终态 → terminal。
+  // runId 锚与 D-2 散雾出口同一条解析序 (tickets → continuity → sessionId); 全缺 → 本跑
+  // 自产一个 (claimed/terminal 仍配对, 只是没有外部回执锚)。写集与终态在别处都有真源
+  // (SDD 声明 / RunGoalResult), 板只记指针 —— 不把历史唯一信息只写 board。
+  // 异常抛 (classify/onClassified 这类引擎 bug) 不写 terminal: 那不是 run 的终态, 留下的
+  // claimed 由 liveRuns 当活 run 显形 —— 板的工作是把它显出来, 不是替引擎撒谎。
+  const boardRunId = config.tickets?.runId ?? config.dag.continuity?.runId ?? config.dag.sessionId ?? randomUUID();
+  const boardDeclared = config.writeSet?.declared ?? SDD_DECLARED_WRITE_SET;
+  const emitBoard = (event: 'claimed' | 'terminal', outcome?: RunOutcomeKind): void => {
+    try {
+      const entry: BoardEntry =
+        event === 'claimed'
+          ? { v: 1, ts: new Date().toISOString(), runId: boardRunId, event, writeSet: [...boardDeclared.allowed] }
+          : boardTerminalEntry(boardRunId, outcome!);
+      appendBoard(config.cwd, entry);
+    } catch (e) {
+      // 板不是承重墙: 写板失败不掀桌, 留日志, run 照跑 (与 saveState 同款纪律)。
+      console.error(`[run-goal] board ${event} 写失败 (不影响 run): ${String(e)}`);
+    }
+  };
+  emitBoard('claimed');
 
   // ── 闸 C: 续跑状态读写 (无 continuity = 无 runId 可锚 → 闸不启用, 行为与从前逐字一致) ──
   const continuityRunId = config.dag.continuity?.runId;
@@ -577,6 +632,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   // 成因由**调用点**给, 不在这里按 summary 文本猜 —— 猜就是又一处会漂的独立判断 (P1 为它付过账)。
   const bail = (summary: string, outcome: RunOutcomeKind): RunGoalResult => {
     stages.push({ stage: 'execute', status: 'failed', outcome, summary });
+    emitBoard('terminal', outcome);
     return { goal, tier, acceptance, stages, ...(specPath ? { specPath } : {}), sources, repoContext, converged: false, rounds: 0, reusedNodes: [], outcome };
   };
   // ── 内环 v2 切片 5 (SDD 2026-08-11-inner-loop-v2 D-1): 直通 v2 —— 分解表可编译时零 conductor ──
@@ -839,5 +895,6 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   // D-2 散雾出口 (切片 1): 拿到 map 句柄才开票; 没配 = 这一行直接返回, 行为逐字节不变 (INV-1)。
   // 放在 result 成形之后: 票身要的原因/未决/发现物全从终态读, 不从中途状态猜。
   openRunTickets(result, exec, config);
+  emitBoard('terminal', outcome);
   return result;
 }
