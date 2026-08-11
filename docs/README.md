@@ -45,14 +45,12 @@
 |---|---|
 | [`plan/`](plan/) | SDD 与执行契约 —— 每次动工前结晶的方案,含判据表与决策记录。改动的真源在这里 |
 | [`handoff/`](handoff/) | 逐程交接记录:上一程干到哪、下一程从哪接 |
-| [`session/`](session/) | 当前会话的续接文件(`_NEXT.md`),自动生成,不手写 |
 | [`notes/`](notes/) | 零散工作笔记,还没成形到进 `plan/` 的东西 |
 | [`knowledge/`](knowledge/) | 调研积累下来的知识条目,按主题与日期归档 |
 | [`reference/`](reference/) | 外部参考资料:agentic graph、harness 工程、loop 工程、基准与 runtime host 的一手材料 |
 | [`bars/`](bars/) | 横向对标台账 —— 对 pi、opencode、hermes 等同类系统逐模块的读数与打分 |
 | [`adr/`](adr/) | 架构决策记录,当前三条全是**已搁置**的方向(runtime port · 自演化 · dream),记的是为什么不做 |
 | [`design/`](design/) | 设计稿(HTML),TUI 与 pathfinder 界面的多方案对比 |
-| [`articles/`](articles/) | 成文的长篇文章,面向外部读者讲 harness 工程 |
 | [`security/`](security/) | 安全面材料,当前是爆炸半径分析 |
 | [`examples/`](examples/) | 可照抄的配置样例:Claude Code 的 `CLAUDE.md` 与 hooks、深度调研样例 |
 | [`silent-failures.md`](silent-failures.md) | **静默失效图鉴** —— 每条都是真出过事、且当时没有任何红灯的形态,附代价与抓法 |
