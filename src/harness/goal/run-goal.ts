@@ -36,6 +36,9 @@ import { classifyGoal, renderAcceptance, type AcceptanceSpec, type GoalClassific
 import type { RunOutcomeKind } from '../run-outcome';
 import { loadSddContract } from './sdd-direct';
 import type { ExecutorDagConfig } from '../dag/types';
+import { compareVerifyReports, summarizeDelta, type DeltaReport, type VerifyStepStatus } from './delta-compare';
+import { attributeWriteSet, classifyWriteScope, describeWriteSet, SDD_DECLARED_WRITE_SET, type DeclaredWriteSet, type WriteScopeKind, type WriteSetDeclaration, type WriteSetReport } from '../write-set';
+import { logger } from '../logger';
 
 // D-I: 两条轴的类型与分类器都归 ./acceptance (那里是判据轴的单一真源); 此处 re-export 保旧调用面。
 export type { AcceptanceSpec, GoalClassification, GoalTier } from './classify-acceptance';
@@ -101,6 +104,22 @@ export interface RunGoalConfig {
    * 靠 `plan.name` (`goal-contract` / `goal-execute`) 分辨是谁在调。
    */
   _runDag?: (plan: ConductorPlan, config: RunGoalConfig['dag']) => Promise<ExecutorDagResult>;
+  /**
+   * D-2 (SDD cairness-distill 2026-08-10): 写集对账的可注入面。写集 = plan 节点可选 `write_set`
+   * 字段 (conductor-plan.ts); 本钩子在 execute 段跑完后把跑后 git diff 逐文件走归属阶梯
+   * (write-set.ts 的 ①-⑤, orphan 红)。给 `_collectChangedFiles` = 注入 diff 收集 (测试 / 隔离档);
+   * 缺省 git status --porcelain (照 rollback-anchor 的 git 惯例; 失败 → 闸缺席 fail-open, warn
+   * 留痕, INV-1 不吞证据)。`globalExempt` / `intentional` 是阶梯 ②/④ 的清单。整 run 无节点声明
+   * → verdict 'undeclared' (INV-3: 声明缺席 ≠ 违规, NULL≠0 —— 那正是 O-1 的声明覆盖率读数)。
+   * `declared` = run 级声明写集面 (S-2, 裁「该不该写」, 与节点级阶梯正交): 缺省 write-set.ts 的
+   * SDD_DECLARED_WRITE_SET (本 SDD run 的声明); 并发 run (写面互异) / 测试注入自己的面。
+   */
+  writeSet?: {
+    _collectChangedFiles?: () => string[];
+    globalExempt?: string[];
+    intentional?: string[];
+    declared?: DeclaredWriteSet;
+  };
 }
 
 export interface RunGoalResult {
@@ -164,6 +183,36 @@ export interface RunGoalResult {
    * 全在盘上, `dag_goal resume=<同一个 runId>` 接着跑。
    */
   cancelled?: string;
+  /**
+   * **D-1 mode 感知基线 delta** (SDD cairness-distill D-1): 批前基线 vs accept 节点实判的比对。
+   * 缺席 = 非执行型 / 没配 commandRunner (fail-open) / 基线抛错 —— 闸缺席, 不是"零 delta"。
+   * `red` = 本次跑批新引入了失败 (非零退出码语义; 老失败单列不红, INV-4 老段/新增段分开)。
+   */
+  verifyDelta?: DeltaReport;
+  /**
+   * **D-2 写集对账报告** (SDD cairness-distill D-2): 声明(事前) × touch(过程) × diff(事后) 三面对账。
+   * 缺席 = 没配 writeSet 注入面 (闸缺席, 不是「零越界」); `verdict:'undeclared'` = 有对账但整 run
+   * 无节点声明写集 (INV-3 NULL≠0)。`red` = 存在 orphan —— 非零退出码语义, 与引擎回归分开报 (INV-4)。
+   */
+  writeSet?: WriteSetReport;
+  /**
+   * **run 级声明写集面** (S-2): diff 逐文件裁 allowed / forbidden / outside —— 判据与 enforcement
+   * 同一真源 (write-set.ts 的 classifyWriteScope + SDD_DECLARED_WRITE_SET)。与 writeSet 正交:
+   * 节点阶梯裁「谁写的」, 声明写集裁「该不该写」。`forbidden` = 撞禁写面 (并发 run 的写面,
+   * 并发越界样本, 非零退出码语义 —— 与 orphan 分开报, INV-4); `outside` = 声明面外 (INV-3:
+   * 声明缺席 ≠ 违规, 读数不冒充零越界)。缺席 = 没配 writeSet 注入面 (闸缺席, fail-open)。
+   */
+  writeScope?: WriteScopeReport;
+}
+export interface WriteScopeReport {
+  /** 逐文件裁决 (allowed / forbidden / outside)。 */
+  files: { file: string; kind: WriteScopeKind }[];
+  /** 撞禁写面 (并发 run 的写面) 的文件 —— 红。 */
+  forbidden: string[];
+  /** 在声明允许面内的文件。 */
+  allowed: string[];
+  /** 声明面外的文件 (INV-3 读数面, 不红)。 */
+  outside: string[];
 }
 
 /** kebab-case slug (spec 文件名用); 非字母数字折成 '-', 截断 48。 */
@@ -174,6 +223,26 @@ export function goalSlug(goal: string): string {
     .replace(/^-+|-+$/g, '')
     .slice(0, 48);
   return s || 'goal';
+}
+/** D-2 diff 面: 跑后 git 工作树相对 HEAD 的改动 (相对路径, 含未跟踪, 不含被忽略的)。非 git 仓/失败 → 抛 (调用方 fail-open)。 */
+function collectChangedFiles(cwd: string): string[] {
+  const r = Bun.spawnSync(['git', 'status', '--porcelain'], { cwd, stdout: 'pipe', stderr: 'pipe' });
+  if (r.exitCode !== 0) {
+    throw new Error(`git status 失败 (exit ${r.exitCode}): ${new TextDecoder().decode(r.stderr).trim()}`);
+  }
+  return new TextDecoder()
+    .decode(r.stdout)
+    .split('\n')
+    .filter((l) => l.trim().length > 0)
+    // porcelain v1: 'XY path'; 重命名 'R  old -> new' 取新路径; '!!' = 被忽略, 不进 diff 面。
+    .map((l) => (l.includes(' -> ') ? l.slice(l.indexOf(' -> ') + 4) : l.slice(3)))
+    .filter((p) => !p.startsWith('!!'));
+}
+/** S-2 声明写集面摘要: 红 = 撞禁写面 (并发 run 写面); outside 是 INV-3 读数, 不冒充零越界。 */
+function describeWriteScope(r: WriteScopeReport): string {
+  if (r.forbidden.length > 0) return `撞禁写面 ${r.forbidden.length} [${r.forbidden.join(', ')}]`;
+  if (r.outside.length > 0) return `声明面外 ${r.outside.length} (INV-3 读数)`;
+  return '声明面内';
 }
 
 const todayStr = (): string => new Date().toISOString().slice(0, 10);
@@ -478,6 +547,19 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
         : {}),
     },
   } as ConductorPlan;
+  // ── D-1 (SDD cairness-distill): mode 感知基线 delta —— 跑批前存基线、跑后比对 ──────────
+  // 基线 = 批前用同一份 commandRunner 跑一次验收命令 (与 accept 节点同 runner、同白名单闸);
+  // 只把「新引入失败」判红, 基线里就在的老失败 (unchanged-failure) 单列不红 (INV-4)。
+  // fail-open: 没配 runner (测试/无 command 能力) → 闸缺席; 抛错也缺席, 但不吞证据 (INV-1)。
+  let baselineStatus: VerifyStepStatus | undefined;
+  if (acceptance.kind === 'executable' && config.dag.commandRunner) {
+    try {
+      const bl = await config.dag.commandRunner({ command: acceptance.command });
+      baselineStatus = bl.exitCode === (acceptance.expectExit ?? 0) ? 'pass' : 'fail';
+    } catch (err) {
+      logger.warn({ command: acceptance.command, err: String(err) }, '[run-goal] D-1 基线跑不起来 → 闸缺席 (fail-open)');
+    }
+  }
   let exec: ExecutorDagResult;
   try {
     // 护栏③: **只有可执行判据**才进环。非可执行判据的 `oracleOk` 恒 true, 给了它就等于第一轮必停。
@@ -501,6 +583,64 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   // 冻结判据的意义就是"没被证明过就不算成", fail-closed 与 converged 缺席同一条纪律。
   const acceptLeaf = acceptance.kind === 'executable' ? exec.results.accept : undefined;
   const oracleOk = acceptance.kind !== 'executable' ? true : acceptLeaf?.status === 'done';
+  // D-1 delta: after 侧 = accept 节点的实判 (done→pass / failed→fail / 没跑→缺席)。
+  // 缺席 + 两侧都 full → 比对器判 new-failure (fail-closed, 与 oracleOk 同一条纪律:
+  // 「没被证明过就不算成」—— 引擎没跑到 accept 节点, 覆盖就回退了)。
+  let verifyDelta: DeltaReport | undefined;
+  if (baselineStatus !== undefined && acceptance.kind === 'executable') {
+    const acceptStatus = exec.results.accept?.status;
+    const afterStatus: VerifyStepStatus | undefined =
+      acceptStatus === 'done' ? 'pass' : acceptStatus === 'failed' ? 'fail' : undefined;
+    verifyDelta = compareVerifyReports(
+      { mode: 'full', steps: [{ id: 'accept', status: baselineStatus }] },
+      { mode: 'full', steps: afterStatus === undefined ? [] : [{ id: 'accept', status: afterStatus }] },
+    );
+  }
+  // ── D-2 (SDD cairness-distill): ex-ante 写集声明 + 跑后 diff 对账 (孤儿检测) ──────────
+  // 声明面 = exec 图里真跑过 (done/failed) 的节点的 write_set; 在跑节点 = 同一集合 —— 本 run 的
+  // 节点在收尾当下都算在跑, 历史 run 的声明根本不进输入 (G-4: 已完成节点不再授权后续改动,
+  // 由构造保证, 不靠运行时猜)。diff 面 = 跑后 git 工作树改动 (可注入); 收集失败 → 闸缺席
+  // (fail-open, 不吞证据)。touch 面 = touch ledger 的写事件, 由判定器的声明面承接 ——
+  // 本文件不持 ledger 句柄, 有句柄的装配层经同一个 attributeWriteSet 接对账。
+  // S-2: 同一份 diff 再走 run 级声明写集面 (allowed/forbidden/outside) —— 判据在 write-set.ts,
+  // 本文件不重写; 两轴 (节点归属 / run 声明面) 分开报, 不混成一个红 (INV-4)。
+  let writeSet: WriteSetReport | undefined;
+  let writeScope: WriteScopeReport | undefined;
+  if (config.writeSet) {
+    try {
+      const diffFiles = config.writeSet._collectChangedFiles
+        ? config.writeSet._collectChangedFiles()
+        : collectChangedFiles(config.cwd);
+      // S-2 run 级声明写集面 (与节点级阶梯正交: 阶梯裁「谁写的」, 声明面裁「该不该写」)。
+      // forbidden = 撞并发 run 的写面 (红, 非零退出码语义); outside = 声明面外 (INV-3 读数,
+      // 声明缺席 ≠ 违规, 不红)。缺省面 = write-set.ts 的 SDD_DECLARED_WRITE_SET (本 SDD run);
+      // 并发/其他 run 经 config.writeSet.declared 注入自己的面。
+      const declared = config.writeSet.declared ?? SDD_DECLARED_WRITE_SET;
+      const scopeFiles = diffFiles.map((file) => ({ file, kind: classifyWriteScope(file, declared) }));
+      writeScope = {
+        files: scopeFiles,
+        forbidden: scopeFiles.filter((f) => f.kind === 'forbidden').map((f) => f.file),
+        allowed: scopeFiles.filter((f) => f.kind === 'allowed').map((f) => f.file),
+        outside: scopeFiles.filter((f) => f.kind === 'outside').map((f) => f.file),
+      };
+      const declarations: WriteSetDeclaration[] = Object.entries(exec.plan.nodes)
+        .filter(([, n]) => Array.isArray(n.write_set))
+        .filter(([id]) => {
+          const st = exec.results[id]?.status;
+          return st === 'done' || st === 'failed';
+        })
+        .map(([id, n]) => ({ nodeId: id, files: n.write_set ?? [], status: exec.results[id]!.status }));
+      writeSet = attributeWriteSet({
+        diffFiles,
+        declarations,
+        activeNodeIds: Object.keys(exec.results),
+        ...(config.writeSet.globalExempt ? { globalExempt: config.writeSet.globalExempt } : {}),
+        ...(config.writeSet.intentional ? { intentional: config.writeSet.intentional } : {}),
+      });
+    } catch (err) {
+      logger.warn({ err: String(err) }, '[run-goal] D-2 写集对账起不来 → 闸缺席 (fail-open)');
+    }
+  }
   const converged = judgeSaidOk && oracleOk;
   const roundCount = execLeaf.rounds ?? 0;
   // INV-GOAL-3 可证面: 复用现在全发生在**内环**里 (子节点内容寻址, 同 id ≡ 同规格 + 同祖先规格)。
@@ -556,7 +696,10 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
         : `未收敛 (${execLeaf.status})`
       }${oracleNote}` +
       `${reusedNodes.length ? ` · 复用 ${reusedNodes.length} 节点` : ''}` +
-      `${exec.observations?.length ? ` · 图外观察 ${exec.observations.length} 条` : ''}`,
+      `${exec.observations?.length ? ` · 图外观察 ${exec.observations.length} 条` : ''}` +
+      `${verifyDelta ? ` · D-1 delta: ${summarizeDelta(verifyDelta)}` : ''}` +
+      `${writeSet ? ` · D-2 写集: ${describeWriteSet(writeSet)}` : ''}` +
+      `${writeScope ? ` · D-2 声明面: ${describeWriteScope(writeScope)}` : ''}`,
   });
 
   return {
@@ -575,5 +718,8 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
     ...(blocked ? { blocked } : {}),
     ...(budgetStopped ? { budgetStopped } : {}),
     ...(cancelledReason ? { cancelled: cancelledReason } : {}),
+    ...(verifyDelta ? { verifyDelta } : {}),
+    ...(writeSet ? { writeSet } : {}),
+    ...(writeScope ? { writeScope } : {}),
   };
 }

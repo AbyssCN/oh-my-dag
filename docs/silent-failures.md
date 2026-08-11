@@ -896,6 +896,70 @@ import 得到、类型对得上、调用写得出来。
 > **③ 措辞闸**:凡是「一整年 / 一直 / 从来 / 全部 / 唯一 / 最」这类**量化副词**,
 >   写之前先问它背后那个数在哪。查不出数就**把副词删掉**,别用修辞补。
 
+### S-27 · 审查产出的锚点是编的,而「有锚点」长得像「有证据」
+
+**形状**:review/audit 产出的每条 finding 都带 `file:line` 锚点,下游按锚点定位去修。锚点由审查模型**编**出来:文件不存在 / 行号越界 / 绝对路径出仓 —— 它在报告里长得跟真锚点一模一样,没有任何一层校验过它。
+
+**为什么没红灯**:finding 是模型吐的文本,不是类型;`src/x.ts:9999` 与 `src/x.ts:42` 在字符串层面同样合法。tsc 绿、报告照出、复核按锚点去读文件读不到 —— 症状是「读不到」,不是「锚点是假的」,于是归因常常落回「审查模型太严」。
+
+**代价**:Critical/Important 档 finding 带幻觉锚点进修复轮 → 修错文件、修不存在的行;跨模型复核时幻觉锚点被当真,错误结论被二次背书。
+
+**本仓实例**(2026-08-10,SDD cairness-distill D-3,蒸馏自 Cairness E_EVIDENCE002):cross-model finding 幻觉引用是已知形态,此前没有一层问过「这个锚点在盘上成立吗」。
+
+**怎么抓**:`src/harness/review/anchor-check.ts`(`checkFindingAnchors`:62)—— 每条 finding 一次 stat / 读行数,零 LLM (INV-1):文件真实存在 + `1 ≤ line ≤ 实有行数` + **repo 相对路径**;P0/P1 无合法锚点 (invalid-anchor / no-anchor)→ 降级记账 (P0→P1,P1→P2 非阻断档),`red` = 非零退出码。**模板豁免**:整份产出未开始填 (无真 finding 行)→ 整体 `skipped`,零误报。挂点 = review 产出出口 `review/run.ts:233` · `review/run-single.ts:87`。反向自检 (`anchor-check.test.ts`):`src/x.ts:9999` 而文件仅 100 行 / 文件不存在 → 当场红;把「文件不存在判 valid」→ 红。
+
+### S-28 · 回归只数总数,新引入的失败混在老失败里
+
+**形状**:验收/回归报告只有「N 个失败」这种总数。改动**新引入**的失败与基线里就在的老失败**混在同一个数里** —— 判红按总数,老失败常驻,新失败永远显不出来。
+
+**为什么没红灯**:总数是真的。「老失败 N」与「老失败 N + 新失败 1」是同一个数,没有任何一层问「这次跑批**新引入**了什么」。
+
+**代价**:修坏了东西,回归照旧红/照旧绿 (总数没变)→ 静默;反向也静默 —— after 里**缺了一步** (覆盖回退) 没人看得出,before 没有的步新出现被误读成「修复」。
+
+**本仓实例**(2026-08-10,SDD cairness-distill D-1,照抄 cc-delta-check 分类矩阵):跑批前存基线、跑后比对,六档分类 (new-failure / fixed / unchanged-failure / new-warning / newly-run / skipped),**只把新引入失败判红** (非零退出码语义),老失败单列不红 (INV-4:老段/新增段分开写,不与引擎回归混算)。`mode: full | changed-only` 双防:只有两侧都 full 时步缺席才算 new-failure (fail-closed),否则 skipped;反向缺失 (before 无、after 有)→ newly-run,不判 fixed 不判红 (假阴/假阳双防)。
+
+**怎么抓**:`src/harness/goal/delta-compare.ts`(`compareVerifyReports`:116 纯函数,零 LLM;`summarizeDelta`:122 一行摘要),挂 goal 验收路径 / verify 报告层。反向自检 (`delta-compare.test.ts`,G-1/G-2 逐条落):pass→fail → new-failure 红;两份相同 full 报告 → 零红 (把 unchanged 的 fail 步判红 → 红,INV-4 混算被钉死);changed-only 缺席 → skipped 不红;after 新步 → newly-run 不红。
+
+### S-29 · 节点改超范围文件,而「活干完了」不含「没动别人的东西」
+
+**形状**:DAG 节点跑完只问「活干完没」。节点顺手改了**声明之外**的文件 (兄弟节点的产物 / 不该碰的路径)—— 越界写没有消费者、无人对账,超范围改动只能靠 review 事后召回。
+
+**为什么没红灯**:写文件成功、节点 done、报告绿。「改了自己的 + 改了别人的」与「只改了自己的」在节点结果里长得一样 —— 没有一行代码知道「应该只改哪些」。
+
+**代价**:越界写污染兄弟节点产物 (下游吃到脏输入)、写进主树 (spike 试验码污主树那族);更阴的是**归档当永久通行证** —— done 节点的历史声明继续为后续改动放行。
+
+**本仓实例**(2026-08-10,SDD cairness-distill D-2,照抄 cc-deps 四段式归属阶梯 + deps.py:405-410 语义):plan 节点可声明预期写集 (可选字段 `write_set`,声明了才对账,声明成本见 SDD O-1);跑后把 git diff 逐文件走归属阶梯 ①治理产物 → ②全局豁免 → ③在跑节点声明命中 (>1 记 ambiguous)→ ④intentional 例外 → ⑤都不中 = orphan 红。**只有 `activeNodeIds` (本窗口在跑) 里的声明者算数** —— done/历史声明不放行 (G-4)。声明缺席 ≠ 违规 (INV-3,NULL≠0 纪律):整 run 无声明 → `undeclared` 闸缺席不红,那是 O-1 声明覆盖率读数面。touch 对账面:已知 writer 的 orphan 带 writer 证据 (「声明了 A 却改了 B」的机器可证形态)。
+
+**怎么抓**:`src/harness/write-set.ts`(`attributeWriteSet`:58 纯函数,零 LLM;`describeWriteSet`:116;②④ 豁免清单由装配层注入 `goal/run-goal.ts:618-619`);声明面 = `conductor-plan.ts:92` (`write_set`,刻意不进 conductor prompt —— O-1 未裁默认开之前只收手写 plan 的声明)+ `semantic-key.ts:49` (写集不同 = 越界判定面不同 → 入语义键,判重不吞契约)+ `schema-field-registry.ts:82` 登记;挂点 = goal 引擎验收路径。反向自检 (`write-set.test.ts`,G-3/G-4 逐条落):声明 `[a.ts]` 而 diff 含 `a.ts + b.ts` → b.ts orphan 红 (把 b.ts 放行 → 红);done 节点声明过 c.ts 而后续 diff 再改 c.ts → 不因历史声明放行 (把 done 声明也算数 → 红);`write_set: []` 声明空集 ≠ 未声明 (把空集当未声明 → 声明者用空集就能让闸永远缺席)。
+
+### S-30 · 声称完成 + 验收命令实败 —— 两边同框,判据不看
+
+**形状**:节点自报「已交付 / 全部完成 / 测试全部通过」,而引擎记录里**同节点**的验收命令退出码非零 (或状态 failed)。声称面与证据面硬矛盾 —— 而 gate 座位判据只问「模型说收敛没」,不问「声称与引擎证据对得上吗」。
+
+**为什么没红灯**:声称是输出文本,失败是引擎事实,两条数据流在判据里**从没见过面**。声称照常进 prompt、失败照常进 facts、judge 判词照常写 —— 谎报完成字面上成立,没有任何一层对账。
+
+**代价**:假完成进收敛判定 → 整轮被谎报带绿,贵座 judge 调用照烧。本仓历史样本:conductor-judge 2026-07-29 那批 **30% 谎报完成** (原措辞「已发送/已送达」)· llm-judge 判词点名的捏造执行确认「已发送/已录入」· claimed-actions 5 段真伪造。
+
+**怎么抓**:`src/harness/plan/false-completion.ts`(`gateFalseCompletion`:157)—— 谎报完成辩解词表 (完成类 + **校验通过面直接复用 claimed-actions 的 RULES 单一真源**,不抄第二份)+ 硬矛盾判据:同节点「词表命中 ∧ 引擎证据实败 (校验类命令正非零退出码 / 状态 failed)」→ 判 fail。判据刻意窄:语气/引文/否定筛全复用 claimed-actions;负退出码 (command-leaf 闸拒 = 命令没跑) 与 `||`/`;`/`|` 复合命令 (退出码不可归因) 不算实败。挂点 = `dag/engine.ts` `judgeConductorRound` (gate 座判据,`:811`):LLM judge 调用**前**确定性先行 (INV-1 零 LLM),命中 → 当场 converged=false + 证据作 reason + 被点节点铸票进毒集,不烧一次贵座调用。`lexiconHits` = O-2 假阳率读数分母,只记不拦。反向自检 (`false-completion.test.ts`):声称完成 + exit 1 / 状态 failed / 产物声称 / verifier 声称 / 已发送家族 → 当场红 (把 exit 1 当支撑声称 → 红);exit 0 / 无失败证据 / 指令句 / 条件句 / 引文 / 非验收命令 → 零误伤。
+### S-31 · 外部案例组:纸老虎清单 —— 声明面在前,消费面是「自觉」(Cairness 框架级样本)
+
+**形状**:一份治理框架把机制写在**文档形状**里 —— 清单 / 配置 / 模板字段,声明面齐全;消费面要么是「模型读到后自觉遵守」,要么压根没人读。两边都不报错 → 「机制在、生产零生效」在**框架尺度**上成立。触发条件 = 把治理/校验压在文档形状的声明面上,而不压在会执行的代码上。
+
+**和已有几条哪里不一样**:S-1/S-4 是**自家**声明了而自家没消费 (两端都在本仓,闸够得着);这一条声明端在**别的仓**,本仓任何一条消费点/可达性闸**结构上够不着** —— 归入 S-1/S-4 形态,但记为外部案例组:能带走的是抓法,不是闸。
+
+**为什么没红灯**:声明面全部自洽 —— schema 在、配置在、清单在、文档在;测试跑得欢 (测试是文档剩下的唯一访客);没有任何一层为「没人读」报错。Cairness 名义最硬的 HARD GATE 只查粗体字段名出现 → **空模板照过**;`confirmed_spec_revision` 从不与真实文件 hash 比对 → **stale 检测完全不存在**。S-1 判据第 3 条「两边都不报错」在框架尺度上原样复刻。
+
+**实例 (外部,审计已取证)**:`anti_rationalizations` **206 条**零消费 (靠模型自觉) · `auto_validation` (每命令 3–7 条命令行)**无执行器** · 8 条 `circuit_breakers` + 交互疲劳降级 + `git.*` 配置组声明在、消费者数 **0** · `allow_main_branch_apply` 配置改不动硬编码 · `forbids` (12×14) / `preconditions` / `stop_conditions` 全靠自觉。总成色 **约 4 成机器 enforce / 6 成结构化 prompt** —— 纸老虎区恰好是名字最硬的那几样。
+
+**怎么抓 (提问纪律,机械化成不了闸)**:
+> **每个声明字段 grep 它的消费者,数量为 0 即纸。**
+> ⚠ 机械化量过 (S-3,2026-08-06):按「导出函数在别的生产文件里没被引用」扫全仓 **613 里报 213 (35%)** —— 做不成闸,只能当写代码时的提问纪律;而且「有调用者」还要再往上读**调用方的条件** (D-13 先例:调用者在 `if (t.type === 'research')` 里把 prototype 滤掉了)。
+> 两条推论同属这条:① 配置字段要真改得动 (`allow_main_branch_apply` 反例);② 「确认记录」类数据必须钉内容 hash 并在消费点比对,否则 stale 检测不存在 (`confirmed_spec_revision` 反例 → SDD D-5 ⑤ 已入账)。
+
+**本仓对照 (同族形态落成会红的闸)**:Cairness 的教训是**散文清单无效** (206 条零消费),而「枚举偷懒变体有限、正面描述无穷」的思路有效 (D-4 由此蒸出词表)。本仓把同族形态全部落成零 LLM + 反向自检的闸:D-3/S-27 锚点校验 (`review/anchor-check.ts:62`,挂 `review/run.ts:233` · `run-single.ts:87`) · D-1/S-28 delta 比对 (`goal/delta-compare.ts:116`) · D-2/S-29 写集对账 (`write-set.ts:58`,豁免清单由装配层注入 `goal/run-goal.ts:618-619`) · D-4/S-30 谎报闸 (`plan/false-completion.ts:157`,挂 `dag/engine.ts:811`)—— 每条带反向自检 (见 `已立的闸` 表),反向证据 = 故意破坏 → 当场红。
+
+**回链**:SDD `docs/plan/2026-08-10-cairness-distill-comparison.md` (D-6 / G-7)。
+
 ## 已立的闸(可执行的那部分)
 
 | 闸 | 位置 | 守什么 | 抓哪几条 |
@@ -925,6 +989,10 @@ import 得到、类型对得上、调用写得出来。
 | 复用率不许再"推" | `src/harness/omd-readout.test.ts` | 分子分母都只认**节点面记了复用的跑**;老行算不出**不进分母**(**带反向自检**:把老行当 0 复用 → 红);夹具已改成像真引擎(复用节点进 `results`) | S-23 S-19 |
 | 回溯读数的单位 | `src/harness/omd-readout.test.ts` | 不同轮不算一对 · 同一节点不能和自己撞车 · 按 runId 分组(跨 run 的同名路径不是同一个文件)(**带反向自检**:拿掉跨轮排除 → 红;拿掉自配对守卫 → 红) | S-22 S-19 |
 | 熔断键的机会分母 | `src/harness/omd-readout.test.ts` | singleton(没机会)/ 真重复 / near-miss 三格互斥且穷尽;跨 run 的 near-miss 不算真机会;**空输出那桶是反例不进任何一格**(**带反向自检**:`exactRepeat` 去掉 `hits >= 2` → 两条红) | S-21 S-19 S-20 |
+| 审查锚点反幻觉 | `src/harness/review/anchor-check.ts` · `anchor-check.test.ts` | 每条 finding 一次 stat;文件存在 + line ≤ 行数 + repo 相对路径;P0/P1 无合法锚 → 降级记账;未填模板整体 skip(**带反向自检**:文件不存在判 valid → 红) | S-27 |
+| 验收 delta 只红新引入失败 | `src/harness/goal/delta-compare.ts` · `delta-compare.test.ts` | 六档矩阵 + mode 感知;老失败单列、新步 newly-run、缺席按 mode 判 skipped/new-failure(**带反向自检**:把 pass→fail 判成 fixed → 红;把 unchanged fail 判红 → 红) | S-28 |
+| 写集声明对账(越界即 orphan) | `src/harness/write-set.ts` · `write-set.test.ts` | 跑后 diff 走五档归属阶梯;done/历史声明不放行;无声明 → undeclared 不红(**带反向自检**:把 b.ts 放行 → 红;把 done 声明也算数 → 红) | S-29 |
+| 谎报完成硬矛盾闸 | `src/harness/plan/false-completion.ts` · `false-completion.test.ts` · `src/harness/dag/engine.ts` | 声称完成 ∧ 验收命令实败 → 判 fail;LLM judge 前确定性先行,被点节点铸票(**带反向自检**:把 exit 1 当支撑声称 → 红) | S-30 |
 
 **S-24 也没有闸** —— 声明端在 `node_modules` 里,仓内的消费点/可达性闸**结构上够不着**。
 落在纪律上的是一条前置动作:**压架构之前读上游的 `.js` 不读 `.d.ts`**(三条便宜读法见该条)。
@@ -932,6 +1000,7 @@ import 得到、类型对得上、调用写得出来。
 **S-12 没有闸,只有纪律** —— 它是运行时条件不是结构,写不出会红的断言。
 落在代码里的是两处 `logger.warn`(`run-store.put` / `RunRegistry.persist`),
 把一次静默降级变成一条可 grep 的记录。**别把它当闸看**:它不阻止事情发生,只保证下次看得见。
+**S-31 没有闸,只有提问纪律** —— 外部案例组 (Cairness 纸老虎清单):每个声明字段 grep 它的消费者,数量为 0 即纸。机械化量过 (按调用者数扫全仓 35% 噪声,见 S-3 的 D-13),只能当纪律。
 
 **每一条闸都做过变异验证**(故意破坏 → 必须红)。
 一条**永远绿的闸比没有闸更坏** —— 你会以为看过了。所以:

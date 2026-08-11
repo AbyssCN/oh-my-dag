@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { buildGateReview, buildSpecReviewPrompt, screenFinding, DIMS_BY_GATE } from './index';
 import { resolveReviewModels, type ReviewFinding, type RunReviewOpts, type RunReviewResult } from './run';
 import { verifyFindings as realVerifyFindings } from './verify';
+import { checkFindingAnchors } from './anchor-check';
 import { findLatestSdd } from '../execute-slice';
 import { createAgentLeafRunner } from '../agent-leaf';
 
@@ -82,6 +83,9 @@ export async function runReviewSingle(opts: RunReviewOpts): Promise<RunReviewRes
     ? undefined
     : await verifyFindings([{ dimension: 'all', text }], { model: verifyModel, cwd, verdictEffort: verifyEffort, send: opts.deps?.send });
 
+  // D-3 反幻觉锚点闸 (与 run.ts 同一挂点语义): 结构化 finding 的 file:line 确定性校验。
+  const anchorCheck = verified ? await checkFindingAnchors(verified, cwd) : undefined;
+
   const tmpDir = (env.TMPDIR ?? '').trim().replace(/\/+$/, '') || '/tmp';
   const outPath = opts.outPath || `${tmpDir}/omd-review-single-${opts.gate}-${process.pid}.md`;
   const doc: string[] = [`# 单-agent 对抗审查 [${opts.gate}] ${opts.scope.split('\n')[0]}`, ''];
@@ -89,8 +93,23 @@ export async function runReviewSingle(opts: RunReviewOpts): Promise<RunReviewRes
     doc.push('## ⚖️ 收敛层裁决', `> 提取 ${verified.length} · CONFIRMED ${verified.filter((v) => v.verdict === 'CONFIRMED').length} · REFUTED ${verified.filter((v) => v.verdict === 'REFUTED').length} · UNVERIFIED ${verified.filter((v) => v.verdict === 'UNVERIFIED').length}`, '');
     for (const v of verified) doc.push(`- **${v.verdict}** [${v.severity}] [${v.dimension}] ${v.file}${v.line ? `:${v.line}` : ''} — ${v.claim}`, `  依据: ${v.reason}`);
   }
+  if (anchorCheck) {
+    doc.push('## 🎯 锚点反幻觉闸 (D-3)', '');
+    if (anchorCheck.skipped) {
+      doc.push('> 整份产出未开始填 (无真 finding 行) — 整体 skipped, 零误报 (模板豁免)。');
+    } else if (anchorCheck.downgrades.length === 0) {
+      doc.push('> 全部 finding 锚点合法 — 无降级。');
+    } else {
+      doc.push(`> ${anchorCheck.downgrades.length} 条 P0/P1 finding 锚点不合法 — **降级记账**:`);
+      for (const d of anchorCheck.downgrades) {
+        const f = d.finding;
+        doc.push(`- **${f.severity}→${d.downgradedSeverity}** [${d.verdict}] ${f.file}${f.line ? `:${f.line}` : ''} — ${d.detail}`);
+      }
+    }
+    doc.push('');
+  }
   doc.push('', '## 单 agent find 全文', text);
   await Bun.write(outPath, doc.join('\n'));
 
-  return { findings, verified, outPath, model: findModel, sddPath: sdd?.path, specSkipped: specSkipped || undefined };
+  return { findings, verified, anchorCheck, outPath, model: findModel, sddPath: sdd?.path, specSkipped: specSkipped || undefined };
 }

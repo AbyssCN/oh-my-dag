@@ -83,6 +83,7 @@ import {
   renderShellRunFact,
   type UnsupportedClaimFinding,
 } from '../plan/claimed-actions';
+import { gateFalseCompletion, renderFalseCompletionFindings } from '../plan/false-completion';
 
 /**
  * 一个子节点最多往 judge 视图里放几条 bash 命令记录。
@@ -827,6 +828,25 @@ async function executePlan(
     // 整轮就没跑成 → 直接未收敛, 省一次 judge 调用 (同 llm-judge 的 status==='failed' 短路)。
     if (leaf.status === 'failed') {
       return { converged: false, reason: `整轮失败: ${leaf.output.slice(0, 300)}`, rejected: [], usage: { in: 0, out: 0 }, unreachable: null };
+    }
+    // ── D-4 谎报完成闸 (2026-08-10, SDD 切片 4) ─────────────────────────────────
+    // 确定性先行: 节点声称完成 ∧ 引擎证据**实败** (校验命令正非零退出码 / 状态 failed)
+    // = 硬矛盾, 当场判未收敛, **不烧一次贵座 judge 调用** (同冻结判据的顺序纪律)。
+    // 判据在 plan/false-completion.ts; 词表蒸自本仓 gate 历史误放样本 (INV-2 反向自检
+    // 见 false-completion.test.ts)。lexiconHits = O-2 假阳率读数面, 只记不拦。
+    const fc = gateFalseCompletion(checkableFromJudgeView(children));
+    if (fc.findings.length) {
+      logger.warn(
+        { node: id, round, hits: fc.lexiconHits, nodes: fc.findings.map((f) => f.nodeId) },
+        '[omd/executor-dag] D-4 谎报完成闸: 声称完成而验收命令实败 → 判未收敛',
+      );
+      return {
+        converged: false,
+        reason: renderFalseCompletionFindings(fc.findings),
+        rejected: fc.findings.map((f) => f.nodeId),
+        usage: { in: 0, out: 0 },
+        unreachable: null,
+      };
     }
     const judgeCoord = config.judgeModel ?? config.conductorModel;
     try {

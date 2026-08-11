@@ -98,7 +98,7 @@ const ASSERTIVE = /已|本次|本轮|此次|这次/;
  * ④ **解释**:「这些 tests pass 是因为 clamp 已修复」——在说**为什么**,重心不在断言校验发生过。
  *    (四类里最弱的一条:解释里确实预设了"通过"。留着是因为代价小 —— 5 段真伪造没有一句带因果连词。)
  */
-const NON_ASSERTIVE: ReadonlyArray<{ name: string; re: RegExp }> = [
+export const NON_ASSERTIVE: ReadonlyArray<{ name: string; re: RegExp }> = [
   { name: 'imperative', re: /请|确保|务必|记得|别忘|下一步|make sure|ensure|please|\bmust\b|\bshould\b/i },
   // 「测试全过**后**自动发布」「测试通过**后再**发 PR」—— 通过类词紧跟「后」= **等它通过之后**,
   // 事还没发生。这一条比一个裸的「会/将」精确得多(「已通过复核, 这会让下游省事」不该被否决)。
@@ -137,7 +137,7 @@ const QUOTE_SPANS: readonly RegExp[] = [
 ];
 
 /** 把引文内容换成**等长**空格(下标不变),供切句与匹配使用。 */
-function maskQuoted(text: string): string {
+export function maskQuoted(text: string): string {
   let out = text;
   for (const re of QUOTE_SPANS) out = out.replace(re, (m) => ' '.repeat(m.length));
   return out;
@@ -207,7 +207,7 @@ export function engineFacts(
 }
 
 /** {@link renderShellRunFact} 的反向:从事实行取回命令与退出码(取不出 → null)。 */
-function parseShellRunFact(fact: string): { command: string; exitCode: number | null } | null {
+export function parseShellRunFact(fact: string): { command: string; exitCode: number | null } | null {
   const m = /^执行命令: (.+) \((?:exit (-?\d+)|无退出码记录)\)$/.exec(fact);
   if (!m) return null;
   return { command: m[1]!, exitCode: m[2] === undefined ? null : Number(m[2]) };
@@ -253,6 +253,21 @@ export function isVerificationRun(run: { command: string; exitCode?: number }): 
 }
 
 /**
+ * 这条 bash 记录是不是「校验命令**实败**」—— `isVerificationRun` 的失败侧 (D-4, 2026-08-10)。
+ *
+ * 与 `isVerificationRun` 共用同一张命令形状表 (`VERIFICATION_COMMAND` / `RUNNER_PREFIX` /
+ * `EXIT_CODE_NOT_ATTRIBUTABLE`) —— 两套各写一份就是本仓反复付过账的漂移形态。
+ * 判据: 退出码是**正的非零**(实败); 负码 = command-leaf 闸拒 = 命令**没跑**, 不是实败;
+ * 缺席 = 无退出码记录 = 「跑了但没拿到结果」, 也不是实败 (同 {@link renderShellRunFact} 的诚实边界)。
+ * 「声称完成 ∧ 校验命令实败」= 硬矛盾, 是 D-4 谎报完成闸的失败证据面。
+ */
+export function isFailedVerificationRun(run: { command: string; exitCode?: number }): boolean {
+  if (typeof run.exitCode !== 'number' || run.exitCode <= 0) return false;
+  if (EXIT_CODE_NOT_ATTRIBUTABLE.test(run.command)) return false;
+  return run.command.split('&&').some((seg) => VERIFICATION_COMMAND.test(seg.trim().replace(RUNNER_PREFIX, '')));
+}
+
+/**
  * 引擎记录里**能够支撑「校验通过」类声称**的事实。两种形状:
  *
  * ① command 节点按预期退出码收尾(规划期定死的命令,引擎执行并核对);
@@ -284,7 +299,7 @@ const SENTENCE_DELIM = /[。；;！!？?\n]+/g;
  * 为什么要下标而不是直接要子串:匹配要用遮蔽串(引文不算数),而报出去的证据要用**原文**
  * (逐字)。等长遮蔽让同一对下标在两个串上都成立,于是两件事各取所需而不会错位。
  */
-function sentenceSpans(masked: string): { start: number; end: number }[] {
+export function sentenceSpans(masked: string): { start: number; end: number }[] {
   const out: { start: number; end: number }[] = [];
   let cursor = 0;
   SENTENCE_DELIM.lastIndex = 0;
@@ -336,6 +351,8 @@ export function detectClaimedVerifications(text: string, source: string): Claime
 export interface CheckableNode {
   id: string;
   output: string;
+  /** 引擎判定的节点状态 (`failed` = 引擎说这节点没成 —— D-4 的失败证据面之一)。 */
+  status?: string;
   facts?: readonly string[];
   artifacts?: ReadonlyArray<{ path: string; content?: string }>;
 }
@@ -370,6 +387,7 @@ export function findUnsupportedClaims(nodes: readonly CheckableNode[]): Unsuppor
 export interface JudgeViewLikeNode {
   id: string;
   output: string;
+  status?: string;
   facts?: readonly string[];
   artifacts?: ReadonlyArray<{ path: string; body: string; readable: boolean }>;
 }
@@ -385,6 +403,7 @@ export function checkableFromJudgeView(children: readonly JudgeViewLikeNode[]): 
   return children.map((c) => ({
     id: c.id,
     output: c.output,
+    ...(c.status ? { status: c.status } : {}),
     ...(c.facts ? { facts: c.facts } : {}),
     ...(c.artifacts
       ? { artifacts: c.artifacts.filter((a) => a.readable).map((a) => ({ path: a.path, content: a.body })) }

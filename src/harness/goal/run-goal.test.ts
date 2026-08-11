@@ -13,6 +13,7 @@ import { goalSlug, runGoal, type RunGoalConfig } from './run-goal';
 import type { AcceptanceSpec, GoalClassification, GoalTier } from './classify-acceptance';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
+import { SDD_DECLARED_WRITE_SET, SDD_REPORT_FILE, type DeclaredWriteSet } from '../write-set';
 
 /**
  * D-I: 分类器一次出两条轴 (成本轴 tier + 判据轴 acceptance)。本文件多数用例只关心成本轴,
@@ -87,6 +88,11 @@ function executeDag(
     reusedNodes: opts.reused ?? [],
   } as unknown as ExecutorDagResult;
 }
+
+/** D-1 基线用 commandRunner fake: 固定退出码, 零副作用。 */
+const cmdRunner = (exitCode: number) => async ({ command: _command }: { command: string }) => ({
+  text: '', usage: { in: 0, out: 0 }, exitCode,
+});
 
 /** 两段共用一个 `_runDag`, 按 plan.name 路由 (省略的那段走缺省的"一切正常")。 */
 const dagRouter = (h: {
@@ -251,6 +257,72 @@ describe('D-I 冻结判据 — 环外确定性闸', () => {
     }));
     expect(seen!.nodes.accept).toBeUndefined();
     expect(r.converged).toBe(true); // 探索型只看判词
+  });
+});
+
+describe('runGoal — D-1 mode 感知基线 delta (SDD cairness-distill D-1, 挂 goal 引擎验收路径)', () => {
+  // 基线 = 批前用同一份 commandRunner 跑验收命令; after = accept 节点实判。
+  // 只把「新引入失败」判红 (G-1), 老失败单列不红 (G-2 / INV-4)。
+  const deltaCfg = (dag: Partial<ExecutorDagConfig>, run: (plan: ConductorPlan) => Promise<ExecutorDagResult>): RunGoalConfig =>
+    cfg(dag, {
+      acceptance: { kind: 'executable', command: 'grep -qx "hello" a.md', expectExit: 0 },
+      tier: 'simple',
+      _runDag: run as never,
+    });
+
+  test('D-1 反向自检: 基线 pass → accept fail → new-failure, 红, 摘要点名新增失败', async () => {
+    // 证伪: 若实现不判红 / 不挂 delta → 本次跑批引入的失败被当老账, 闸形同虚设 (G-1 主路)。
+    const r = await runGoal('写个文件', deltaCfg(
+      { commandRunner: cmdRunner(0) },
+      async () => executeDag({ converged: true, accept: 'failed' }),
+    ));
+    expect(r.verifyDelta).toBeDefined();
+    expect(r.verifyDelta!.red).toBe(true);
+    expect(r.verifyDelta!.newFailures).toEqual(['accept']);
+    expect(r.verifyDelta!.steps).toEqual([{ id: 'accept', kind: 'new-failure', before: 'pass', after: 'fail' }]);
+    expect(r.converged).toBe(false);
+    expect(r.stages.at(-1)!.summary).toContain('D-1 delta: 新增失败 1 [accept]');
+  });
+
+  test('D-1: 基线 fail → accept fail → unchanged-failure, 不红 (老段, INV-4 不混算)', async () => {
+    // 证伪: 若实现把老失败判红 → 存量语料首跑全红, 与引擎回归混算。
+    const r = await runGoal('写个文件', deltaCfg(
+      { commandRunner: cmdRunner(1) },
+      async () => executeDag({ converged: true, accept: 'failed' }),
+    ));
+    expect(r.verifyDelta!.red).toBe(false);
+    expect(r.verifyDelta!.newFailures).toEqual([]);
+    expect(r.verifyDelta!.steps).toEqual([{ id: 'accept', kind: 'unchanged-failure', before: 'fail', after: 'fail' }]);
+  });
+
+  test('D-1: 基线 pass → accept done → 零 delta 不红 (G-2)', async () => {
+    const r = await runGoal('写个文件', deltaCfg(
+      { commandRunner: cmdRunner(0) },
+      async () => executeDag({ converged: true, accept: 'done' }),
+    ));
+    expect(r.verifyDelta!.red).toBe(false);
+    expect(r.verifyDelta!.steps).toEqual([]);
+    expect(r.verifyDelta!.total).toBe(1);
+    expect(r.stages.at(-1)!.summary).toContain('D-1 delta: 无变化');
+  });
+
+  test('D-1: accept 节点没跑 (缺席) + 基线 pass → new-failure 红 (fail-closed: 覆盖回退)', async () => {
+    // 证伪: 若实现把缺席当零 delta → 漏报 —— 「没被证明过就不算成」, 与 D-I 同一条纪律。
+    const r = await runGoal('写个文件', deltaCfg(
+      { commandRunner: cmdRunner(0) },
+      async () => executeDag({ converged: true, accept: 'absent' }),
+    ));
+    expect(r.verifyDelta!.red).toBe(true);
+    expect(r.verifyDelta!.newFailures).toEqual(['accept']);
+    expect(r.verifyDelta!.steps).toEqual([{ id: 'accept', kind: 'new-failure', before: 'pass' }]);
+  });
+
+  test('D-1 fail-open: 没配 commandRunner → verifyDelta 缺席 (闸缺席 ≠ 零 delta)', async () => {
+    const r = await runGoal('写个文件', deltaCfg(
+      {},
+      async () => executeDag({ converged: true, accept: 'failed' }),
+    ));
+    expect(r.verifyDelta).toBeUndefined();
   });
 });
 
@@ -593,3 +665,212 @@ describe('闸 C — 续跑复用 classify + 契约段 (goal-state 锚)', () => {
     expect(counters.contract).toBe(2); // 文件没了 → 复用条件不成立
   });
 });
+describe('runGoal — D-2 写集声明 + 跑后 diff 对账 (SDD cairness-distill D-2, 挂 goal 引擎验收路径)', () => {
+  // 声明面 = exec 图里真跑过节点的 write_set; diff 面 = 注入式收集 (测试不碰真 git)。
+  // 只把「走完归属阶梯无归属」判红 (G-3); 无声明 → undeclared 不红 (INV-3); 收集失败 → 闸缺席 (fail-open)。
+  // G-4 (历史声明不授权) 由 wiring 的「只收 done/failed 且 results 有条目」+ 判定器的 activeNodeIds 双裁。
+  const writeSetCfg = (opts: {
+    diff?: string[];
+    declared?: Record<string, string[]>;
+    accept?: 'done' | 'failed' | 'absent';
+    extra?: Partial<NonNullable<RunGoalConfig['writeSet']>>;
+  }): RunGoalConfig =>
+    cfg({}, {
+      acceptance: { kind: 'executable', command: 'true', expectExit: 0 },
+      tier: 'simple',
+      writeSet: { _collectChangedFiles: () => opts.diff ?? [], ...opts.extra },
+      _runDag: (async () => {
+        const base = executeDag({ converged: true, accept: opts.accept ?? 'done' });
+        return {
+          ...base,
+          plan: {
+            name: 'goal-execute',
+            nodes: {
+              execute: { executor: 'conductor', goal: 'g', ...(opts.declared?.execute ? { write_set: opts.declared.execute } : {}) },
+              accept: { executor: 'command', command: 'true' },
+              // G-4 探针: 声明了但本轮 results 无条目 (= 没跑) 的节点 —— wiring 必须把它滤出声明面。
+              ...(opts.declared?.history ? { history: { executor: 'command', command: 'true', write_set: opts.declared.history } } : {}),
+            },
+          },
+        } as unknown as ExecutorDagResult;
+      }) as never,
+    });
+
+  test('D-2 G-3 反向自检: 节点声明 [a.ts] 而 diff 含 a.ts+b.ts → b.ts orphan 红, 摘要点名越界', async () => {
+    // 证伪: 若实现把 b.ts 放行 → 越界写 (声明了 A 却改了 B) 被当正常, 闸形同虚设。
+    const r = await runGoal('写个文件', writeSetCfg({ diff: ['a.ts', 'b.ts'], declared: { execute: ['a.ts'] } }));
+    expect(r.writeSet).toBeDefined();
+    expect(r.writeSet!.red).toBe(true);
+    expect(r.writeSet!.orphans).toEqual(['b.ts']);
+    expect(r.writeSet!.files).toEqual([
+      { file: 'a.ts', kind: 'node-owned', declaredBy: ['execute'] },
+      { file: 'b.ts', kind: 'orphan' },
+    ]);
+    expect(r.stages.at(-1)!.summary).toContain('D-2 写集: 写集越界 1 [b.ts]');
+  });
+
+  test('D-2: b.ts 在 intentional 例外表 → 放行不红 (G-3 第二子句接线)', async () => {
+    const r = await runGoal('写个文件', writeSetCfg({
+      diff: ['a.ts', 'b.ts'],
+      declared: { execute: ['a.ts'] },
+      extra: { intentional: ['b.ts'] },
+    }));
+    expect(r.writeSet!.red).toBe(false);
+    expect(r.writeSet!.orphans).toEqual([]);
+    expect(r.writeSet!.files.find((f) => f.file === 'b.ts')!.kind).toBe('intentional');
+  });
+
+  test('D-2 G-4: 历史 run 的 done 节点声明过 c.ts → 后续 diff 改 c.ts 不因该历史声明放行 (orphan 红)', async () => {
+    // 证伪: 若 wiring 把没跑过的节点声明也喂进判定器 → 历史声明变永久通行证 (归档即授权),
+    // 正是 SDD 点名要堵的洞; 本测的 history 节点本轮 results 无条目, 必须被滤出声明面。
+    const r = await runGoal('写个文件', writeSetCfg({
+      diff: ['a.ts', 'c.ts'],
+      declared: { execute: ['a.ts'], history: ['c.ts'] },
+    }));
+    expect(r.writeSet!.red).toBe(true);
+    expect(r.writeSet!.orphans).toEqual(['c.ts']);
+    expect(r.writeSet!.files.find((f) => f.file === 'c.ts')!.kind).toBe('orphan');
+  });
+
+  test('D-2 INV-3: 整 run 无节点声明 → verdict undeclared, diff 有文件也不红 (声明缺席 ≠ 违规)', async () => {
+    // 证伪: 若实现把无声明 run 判红 → 误伤 (声明是可选字段, 没声明 = 没进对账契约, 那是 O-1 读数)。
+    const r = await runGoal('写个文件', writeSetCfg({ diff: ['x.ts'] }));
+    expect(r.writeSet).toBeDefined();
+    expect(r.writeSet!.verdict).toBe('undeclared');
+    expect(r.writeSet!.red).toBe(false);
+    expect(r.stages.at(-1)!.summary).toContain('D-2 写集: 未声明');
+  });
+
+  test('D-2 fail-open: diff 收集抛错 → writeSet 缺席 (闸缺席 ≠ 零越界), 不阻断 run', async () => {
+    // 证伪: 若实现把收集失败当「零越界」报绿 → 闸缺席被念成通过; 若实现让 run 抛错 → 闸变拦路虎。
+    const r = await runGoal('写个文件', {
+      ...writeSetCfg({}),
+      writeSet: { _collectChangedFiles: () => { throw new Error('不是 git 仓'); } },
+    });
+    expect(r.writeSet).toBeUndefined();
+    expect(r.converged).toBe(true); // 对账失败不影响 execute 结论本身
+  });
+
+  test('D-2: 没配 writeSet 注入面 → writeSet 缺席 (闸没进场)', async () => {
+    const r = await runGoal('写个文件', cfg({}, { acceptance: { kind: 'executable', command: 'true', expectExit: 0 }, tier: 'simple' }));
+    expect(r.writeSet).toBeUndefined();
+  });
+
+/**
+ * S-2 (SDD cairness-distill 2026-08-10, run 级声明写集面): diff 逐文件裁
+ * allowed / forbidden / outside —— 判据与 enforcement 同一真源 (write-set.ts 的
+ * classifyWriteScope + SDD_DECLARED_WRITE_SET), run-goal.ts 只做 wiring: 收集 diff →
+ * 分类 → 分列报告。与上面节点级 writeSet 正交 (阶梯裁「谁写的」, 声明面裁「该不该写」),
+ * 分开报不混成一个红 (INV-4)。GWT 逐条对应 docs/plan/2026-08-10-concurrent-sdd-execute-test.md
+ * run B 的「预期写集(声明)」: 允许 src/harness/** · docs/silent-failures.md · 本 run 报告
+ * (精确名, R-3 互异); 禁写 src/model/** (run C) · src/eval/** (run A)。
+ */
+describe('runGoal — D-2 声明写集面 (S-2, run 级 runtime 面)', () => {
+  // declared 缺席 → 回落 write-set.ts 的缺省面 (本 SDD run 自己的声明), 同 run-goal.ts 的
+  // `config.writeSet.declared ?? SDD_DECLARED_WRITE_SET` 接线。
+  const scopeCfg = (opts: {
+    diff?: string[];
+    declared?: DeclaredWriteSet;
+    extra?: Partial<NonNullable<RunGoalConfig['writeSet']>>;
+  }): RunGoalConfig =>
+    cfg({}, {
+      acceptance: { kind: 'executable', command: 'true', expectExit: 0 },
+      tier: 'simple',
+      writeSet: {
+        _collectChangedFiles: () => opts.diff ?? [],
+        ...(opts.declared ? { declared: opts.declared } : {}),
+        ...opts.extra,
+      },
+      _runDag: (async () => executeDag({ converged: true })) as never,
+    });
+
+  test('S-2 fallback 阶梯: declared 缺席 → 回落缺省面, 本 run 落点全 allowed 不红', async () => {
+    // 证伪: 若 wiring 不回落 SDD_DECLARED_WRITE_SET → 缺省声明面空转, 本 run 自己的
+    // 测试落点 (src/harness/**) 全被裁 outside, S-2 自伤。
+    const r = await runGoal('写个文件', scopeCfg({
+      diff: ['src/harness/run-goal.test.ts', 'src/harness/plan/deep/x.test.ts', 'docs/silent-failures.md'],
+    }));
+    expect(r.writeScope).toBeDefined();
+    expect(r.writeScope!.forbidden).toEqual([]);
+    expect(r.writeScope!.outside).toEqual([]);
+    expect(r.writeScope!.allowed.sort()).toEqual(['docs/silent-failures.md', 'src/harness/plan/deep/x.test.ts', 'src/harness/run-goal.test.ts']);
+    expect(r.writeScope!.files.every((f) => f.kind === 'allowed')).toBe(true);
+    expect(r.stages.at(-1)!.summary).toContain('声明面内');
+  });
+
+  test('S-2 R-3 精确报告路径: 本 run 报告文件名 → allowed, 并发 run 报告 → outside (docs/plan 不开通配)', async () => {
+    // 证伪: 若 docs/plan/** 被当通配放行 → run A/C 的报告文件裁 allowed, R-3 互异形同虚设,
+    // 并发 run 报告面相撞 (S-2 ① 不相交判据在报告面上失效)。
+    expect(SDD_REPORT_FILE).toBe('docs/plan/2026-08-10-cairness-distill-report.md');
+    const r = await runGoal('写个文件', scopeCfg({
+      diff: [SDD_REPORT_FILE, 'docs/plan/2026-08-10-compression-experiment-report.md', 'docs/plan/2026-08-10-seats-doctor-report.md'],
+    }));
+    expect(r.writeScope!.allowed).toEqual([SDD_REPORT_FILE]);
+    expect(r.writeScope!.outside.sort()).toEqual([
+      'docs/plan/2026-08-10-compression-experiment-report.md',
+      'docs/plan/2026-08-10-seats-doctor-report.md',
+    ]);
+    expect(r.writeScope!.forbidden).toEqual([]);
+    expect(r.stages.at(-1)!.summary).toContain('声明面外 2 (INV-3 读数)');
+  });
+
+  test('S-2 注入 declared 压过缺省面 (fallback 不泄漏)', async () => {
+    // 证伪: 若 wiring 只认缺省面 → 并发 run 注入自己互异的声明面失效, 声明写集变一仓一份,
+    // 三写集互异 (concurrent-sdd-execute-test 三行声明) 无从表达。
+    const r = await runGoal('写个文件', scopeCfg({
+      diff: ['src/custom/x.ts', 'src/harness/x.ts', 'src/other/y.ts'],
+      declared: { allowed: ['src/custom/**'], forbidden: ['src/other/**'] },
+    }));
+    expect(r.writeScope!.allowed).toEqual(['src/custom/x.ts']);
+    expect(r.writeScope!.outside).toEqual(['src/harness/x.ts']); // 缺省面没搭车生效
+    expect(r.writeScope!.forbidden).toEqual(['src/other/y.ts']);
+  });
+
+  test('S-2 禁写面: src/model/** (run C) 与 src/eval/** (run A) → forbidden, 摘要点名撞禁写面', async () => {
+    // 证伪: 若禁写面缺失/放行 → 并发 run 的写面被本 run 静默踩踏且不落任何红,
+    // S-2 隔离性第一道防线破 (concurrent-sdd-execute-test S-2 ①)。
+    const r = await runGoal('写个文件', scopeCfg({
+      diff: ['src/model/seat-quota.ts', 'src/model/a/b/c.ts', 'src/eval/runner.ts'],
+    }));
+    expect(r.writeScope!.forbidden.sort()).toEqual(['src/eval/runner.ts', 'src/model/a/b/c.ts', 'src/model/seat-quota.ts']);
+    expect(r.writeScope!.allowed).toEqual([]);
+    expect(r.stages.at(-1)!.summary).toContain('撞禁写面 3');
+    expect(r.stages.at(-1)!.summary).toContain('src/model/seat-quota.ts');
+  });
+
+  test('S-2 INV-2 已知违规写必须红: 单文件 diff 撞 run C 写面 → forbidden 点名', async () => {
+    // 证伪方法 (INV-2): 闸若缺失, classifyWriteScope 对该样本返回 allowed/outside,
+    // 越界写被当正常 —— S-2 隔离破 → run C 写集面被静默踩踏且不落 orphan 语料 (D-2 手工首跑
+    // 的判据正是 S-2 ①)。断言 forbidden 即当场证伪: 禁写面唯一合法答案就是红, 无灰色放行。
+    const r = await runGoal('写个文件', scopeCfg({ diff: ['src/model/seat-quota.ts'] }));
+    expect(r.writeScope!.forbidden).toEqual(['src/model/seat-quota.ts']);
+    expect(r.writeScope!.files).toEqual([{ file: 'src/model/seat-quota.ts', kind: 'forbidden' }]);
+    expect(r.stages.at(-1)!.summary).toContain('撞禁写面 1 [src/model/seat-quota.ts]');
+  });
+
+  test('S-2 近形负例: src/model.ts / src/eval.ts / src/harness.ts → outside, glob 不前缀匹配', async () => {
+    // 证伪: 若 glob 退化成前缀匹配 → 顶层近形文件被裁 forbidden/allowed, 允许面/禁写面外扩,
+    // 合法文件被当越界写 (假阳)。
+    const r = await runGoal('写个文件', scopeCfg({ diff: ['src/model.ts', 'src/eval.ts', 'src/harness.ts'] }));
+    expect(r.writeScope!.outside.sort()).toEqual(['src/eval.ts', 'src/harness.ts', 'src/model.ts']);
+    expect(r.writeScope!.forbidden).toEqual([]);
+    expect(r.writeScope!.allowed).toEqual([]);
+  });
+
+  test('S-2 混面 diff: 三种裁决各自点名, 禁写优先报红 (fail-closed 不回溯)', async () => {
+    const r = await runGoal('写个文件', scopeCfg({
+      diff: ['src/harness/x.ts', 'src/model/seat-quota.ts', 'scripts/foo.ts'],
+    }));
+    expect(r.writeScope!.allowed).toEqual(['src/harness/x.ts']);
+    expect(r.writeScope!.forbidden).toEqual(['src/model/seat-quota.ts']);
+    expect(r.writeScope!.outside).toEqual(['scripts/foo.ts']); // run C 允许面, 本 run 未声明 = INV-3 读数
+    expect(r.stages.at(-1)!.summary).toContain('撞禁写面 1 [src/model/seat-quota.ts]');
+  });
+
+  test('S-2 fail-open: 没配 writeSet 注入面 → writeScope 缺席 (闸没进场, 不是零越界)', async () => {
+    const r = await runGoal('写个文件', cfg({}, { acceptance: { kind: 'executable', command: 'true', expectExit: 0 }, tier: 'simple' }));
+    expect(r.writeScope).toBeUndefined();
+  });
+});
+});
+

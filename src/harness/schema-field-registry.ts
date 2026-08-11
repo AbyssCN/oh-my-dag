@@ -79,6 +79,12 @@ export const REGISTRY: Record<string, FieldEntry> = {
     declared: false,
     note: '⚠ 只在 **map.lister** 那一层被明示; node 顶层的同名字段不邀请 conductor 写 (它是 fan-in 摘要的形状约束, 由接线层/手写 plan 给)。',
   },
+  write_set: {
+    consumer: 'harness/write-set.attributeWriteSet (D-2 归属阶梯的声明面) + goal/run-goal 挂点',
+    fingerprint: 'fields',
+    declared: false,
+    note: 'D-2 (SDD cairness-distill): ex-ante 写集声明, 可选字段声明了才对账 (O-1 收声明覆盖率读数)。声明集不同 = 越界判定面不同 → 语义, 入键。不明示: O-1 未裁默认开之前只收手写 plan 的声明 (不进 conductor prompt)。',
+  },
   content_bytes: {
     consumer: 'plan/leaf-tier-gate.leafTierGateFindings (g1 图#9: 体量声明帮闸在「单 cat+leaf」与「conductor 展开 per-item 对」间选路)',
     fingerprint: false,

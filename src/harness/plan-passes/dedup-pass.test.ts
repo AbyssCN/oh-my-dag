@@ -175,6 +175,7 @@ describe("dedupPass (D-20)", () => {
 			cluster: ["fe", "be"],
 			tier: ["strong", "cheap"],
 			attach_media: [true, false],
+			write_set: [["a.ts"], ["b.ts"]],
 			research: [{ rounds: 1 }, { rounds: 2 }],
 			thinking: ["low", "xhigh"],
 		};

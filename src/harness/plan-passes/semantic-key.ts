@@ -44,6 +44,9 @@ export function nodeFieldsKey(node: PlanNode): string {
 		node.expect_exit ?? NONE,
 		node.skill ?? NONE,
 		node.output_path ?? NONE,
+		// D-2 (cairness-distill 2026-08-10): write_set 是语义 —— 声明的写集不同 = 越界判定面不同
+		// (write-set 归属阶梯 ③ 的命中面), 判重把声明不同步的两个节点合成一个 = 吞掉某一方的写集契约。
+		node.write_set ? node.write_set.join(',') : NONE,
 		node.persona ?? NONE,
 		node.creative ?? NONE,
 		node.output_schema ? JSON.stringify(node.output_schema) : NONE,
