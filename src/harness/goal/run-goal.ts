@@ -33,12 +33,13 @@ import { makeDefaultGenerate } from '../dag/defaults';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagResult } from '../dag/types';
 import { classifyGoal, renderAcceptance, type AcceptanceSpec, type GoalClassification, type GoalTier } from './classify-acceptance';
+import { acceptanceCommandBlockReason } from './acceptance-gate';
 import type { RunOutcomeKind } from '../run-outcome';
 import { loadSddContract } from './sdd-direct';
 import type { ExecutorDagConfig } from '../dag/types';
 import { compareVerifyReports, summarizeDelta, type DeltaReport, type VerifyStepStatus } from './delta-compare';
-import { parseBreakdown } from './sdd-direct';
-import { compileBreakdown, describeParallelism, parallelismReadout } from './sdd-compile';
+import { parseBreakdown, type SddContract } from './sdd-direct';
+import { acceptCommandFromBreakdown, compileBreakdown, describeParallelism, parallelismReadout } from './sdd-compile';
 import { attributeWriteSet, classifyWriteScope, describeWriteSet, SDD_DECLARED_WRITE_SET, type DeclaredWriteSet, type WriteScopeKind, type WriteSetDeclaration, type WriteSetReport } from '../write-set';
 import { collectRunTickets, type RunTicketSink } from '../pathfinder/run-tickets';
 import { logger } from '../logger';
@@ -46,6 +47,39 @@ import { appendBoard, type BoardEntry } from '../board/run-board';
 
 // D-I: 两条轴的类型与分类器都归 ./acceptance (那里是判据轴的单一真源); 此处 re-export 保旧调用面。
 export type { AcceptanceSpec, GoalClassification, GoalTier } from './classify-acceptance';
+
+/**
+ * 已结晶 SDD → 执行型验收 (直通档的判据来源, 2026-08-11 run 7d50fda2 修)。
+ *
+ * 命令怎么推在 `sdd-compile.acceptCommandFromBreakdown` (单真源); 这里只管**要不要用它**:
+ * 分解段解析不了 / 无 verify 列 → undefined, 回落分类器那条 (fail-open 但不吞证据 —— 存量
+ * SDD 里"分解段无表"的今天仍在跑, 拒起跑是无谓回归)。
+ */
+function sddDerivedAcceptance(sdd: SddContract): AcceptanceSpec | undefined {
+  let command: string | undefined;
+  try {
+    command = acceptCommandFromBreakdown(parseBreakdown(sdd.text));
+  } catch (err) {
+    logger.warn(
+      { sdd: sdd.path, err: String(err instanceof Error ? err.message : err).slice(0, 160) },
+      '[run-goal] 直通档: 分解表解析不了 → 验收命令回落分类器 (不静默)',
+    );
+    return undefined;
+  }
+  if (!command) {
+    logger.warn({ sdd: sdd.path }, '[run-goal] 直通档: verify 列推不出验收命令 → 回落分类器 (不静默)');
+    return undefined;
+  }
+  // 推出来也得**跑得起来**: verify 列写了白名单外的命令 (pytest/make/…) 时, 直接拿去当验收
+  // 会在命令闸上被拒 —— 那是"假红" (规划期说能跑, 执行期根本没跑), 比回落更坏。
+  const blocked = acceptanceCommandBlockReason(command);
+  if (blocked) {
+    logger.warn({ sdd: sdd.path, command, blocked }, '[run-goal] 直通档: verify 列推出的命令过不了命令闸 → 回落分类器 (不静默)');
+    return undefined;
+  }
+  // expectExit 恒 0: 这是**总验收** (全绿), TDD 中途那次证红由平铺图的 RED 节点带 expect_exit=1。
+  return { kind: 'executable', command, expectExit: 0 };
+}
 
 export type GoalStageName = 'classify' | 'survey' | 'research' | 'spec' | 'execute';
 
@@ -450,7 +484,15 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   // `_classify` 抛错时这行到不了 → 天然不调, 不存在"抛错也硬调"的路径。
   config.onClassified?.(classified);
   const tier = config.tier ?? classified.tier;
-  const acceptance = config.acceptance ?? classified.acceptance;
+  // ── 直通档判据来源 (2026-08-11, run 7d50fda2 修): 有 SDD 就从**它的 verify 列**推 ────────
+  //
+  // 分类器只看得见 goal 文本, 看不见 SDD —— 让它去编一条测试命令, 编出来的路径就是幻觉
+  // (那次: SDD 写 `src/harness/board/run-board.test.ts`, 它编成 `src/harness/dag/…`)。
+  // 而这条命令同时是 accept 节点、冻结判据 (freezeCriterion) 与基线 delta 的那一条,
+  // 于是整个判据轴挂在一个 SDD 里根本不存在的路径上。SDD 已经写明这个 run 要跑哪些测试,
+  // 判据就该从那儿来。显式 config.acceptance 仍压过一切 (调用方比 SDD 更知道自己在干嘛)。
+  const sddAcceptance = sdd ? sddDerivedAcceptance(sdd) : undefined;
+  const acceptance = config.acceptance ?? sddAcceptance ?? classified.acceptance;
   stages.push({
     stage: 'classify',
     // 判成执行型却拿不到可跑命令时, 分类器已降级成探索型 (acceptance.ts 的 fallbackExploratory)
@@ -463,6 +505,9 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
       (acceptance.kind === 'executable'
         ? `tier=${tier} · 验收=执行型 \`${acceptance.command}\` (期望退出码 ${acceptance.expectExit})`
         : `tier=${tier} · 验收=探索型 · 学习目标: ${acceptance.learningGoal.slice(0, 120)}`) +
+      // 判据换了来源要在摘要上看得见: 分类器编的那条与 SDD verify 列的差距, 正是 7d50fda2
+      // 那次幻觉路径唯一能被人一眼看出的地方 (它当时只活在图里, 摘要上什么都没写)。
+      (acceptance === sddAcceptance ? ' · 判据取自 SDD verify 列 (非分类器)' : '') +
       (prior ? ' · 复用续跑前分类 (goal 未变, 闸 C)' : ''),
   });
   // 闸 C: 分类一定稿就落状态 (契约段中途炸也不用重分类; 契约段成了再补 contract 字段)。

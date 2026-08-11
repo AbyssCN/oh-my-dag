@@ -12,7 +12,7 @@ import { logger } from '../../logger';
 import type { AgentLeafInput, AgentLeafResult, AgentLeafRunner } from '../leaf-runners';
 import type { AgentLeafRunnerOpts } from '../agent-leaf';
 import type { AnyOmdTool } from '../agent-tools';
-import { bwrapArgs, defaultRoBinds, makePiAgentCopy } from './bwrap';
+import { bwrapArgs, defaultRoBinds, makePiAgentCopy, resolveGitBinds, type GitBinds } from './bwrap';
 
 /** worker 在 worktree 内的相对路径 (eval 档: worktree = omd 自己的 HEAD checkout, 含此文件)。 */
 const WORKER_REL = 'src/harness/leaf-worker.ts';
@@ -128,6 +128,15 @@ export function createSandboxedLeafRunner(opts: AgentLeafRunnerOpts): AgentLeafR
   // 造 runner 的时候就把 worker 找定 —— 找不到当场响, 不留到第一个 leaf (见 resolveWorker)。
   const { argvPath: workerPath, extraRoBinds } = resolveWorker(root);
   const roBinds = [...defaultRoBinds(root), ...extraRoBinds];
+  // git 元数据 (opts.sandboxGit 显式要才挂; 见该字段的注 —— eval 档不要, 生产隔离档要)。
+  // 解析在**造 runner 的时候**做一次: 每 leaf 一次 `git rev-parse` 是白花的钱, 而这棵树的
+  // gitdir 在一个 run 里不会变。要了却解析不出 (root 不是 git 树 / 没有 git) → 响亮说一次:
+  // 静默无 git 正是这次要修的那个症状 (叶子自己撞上去, 撞完还不知道为什么)。
+  let gitBinds: GitBinds | null = null;
+  if (opts.sandboxGit) {
+    gitBinds = resolveGitBinds(root);
+    if (!gitBinds) logger.warn({ root }, '[omd/sandboxed-leaf] 要求挂 git 元数据但解析不出 (不是 git 树?) — jail 里仍无 git');
+  }
   const optsJson = serializableOpts(opts);
   // 与 agent-leaf 的默认同源 (2026-08-01 一起从 240s 提到 1h): 这里若还留 240s,
   // 隔离档的叶子会被父进程在 4.5 分钟处杀掉, 而 in-process 档能跑 1 小时 —— 同一个叶子两个寿命。
@@ -149,7 +158,15 @@ export function createSandboxedLeafRunner(opts: AgentLeafRunnerOpts): AgentLeafR
     // pi agent dir 即弃 rw 副本 (每 leaf 一份, 防并发写共享态; 见 makePiAgentCopy ⚠ OAuth 注)。
     const piAgentCopy = makePiAgentCopy();
     // bwrap [binds] bun run <worker> <payloadRel> <resultRel> —— 相对路径, cwd=worktree (bwrap --chdir)。
-    const argv = ['bwrap', ...bwrapArgs(root, roBinds, piAgentCopy ? { piAgentCopy } : {}), 'bun', 'run', workerPath, payloadRel, resultRel];
+    const argv = [
+      'bwrap',
+      ...bwrapArgs(root, roBinds, { ...(piAgentCopy ? { piAgentCopy } : {}), ...(gitBinds ? { gitBinds } : {}) }),
+      'bun',
+      'run',
+      workerPath,
+      payloadRel,
+      resultRel,
+    ];
     const proc = Bun.spawn(argv, { stdout: 'pipe', stderr: 'pipe', stdin: 'ignore' });
     // 桥与进程同寿: spawn 之后才开表 (早开空转), finally 里停 (worker 死了不再喂响应)。
     const stopBridge = bridgePrefix ? serveToolBridge(root, bridgePrefix, bridgeTools) : null;
@@ -184,7 +201,11 @@ export function createSandboxedLeafRunner(opts: AgentLeafRunnerOpts): AgentLeafR
         (timedOut
           ? `子进程跑满 ${timeoutMs / 1000}s 被我们杀掉 (真超时 → 加时间/换池)`
           : `子进程自己退了 (exit ${code}, 没跑满超时) — 多半是起不来而不是跑得慢; 加时间没用, 看下面的 stderr`);
-      logger.error({ root, code, timedOut, stderr: stderr.slice(-600) }, '[omd/sandboxed-leaf] worker 失败');
+      // `why` 必须进日志 (2026-08-11): 此前只记 code/stderr, 于是 worker 侧**自己报的**错误
+      // (leaf-worker 恒 `process.exit(0)`, 失败经结果文件的 `{ok:false,error}` 回传) 在日志上
+      // 长成一句无解的「worker 失败 code:0」—— 退出码 0 与"判失败"看着矛盾, 其实成因就写在
+      // 那个字段里, 只是没被记下来。吞异常不吞证据。
+      logger.error({ root, code, timedOut, why, stderr: stderr.slice(-600) }, '[omd/sandboxed-leaf] worker 失败');
       throw new Error(`[sandboxed-leaf] ${why} — stderr 尾: ${stderr.slice(-400)}`);
     } finally {
       stopBridge?.();

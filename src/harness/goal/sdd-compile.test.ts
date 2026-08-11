@@ -11,7 +11,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { parseBreakdown, type SddBreakdown } from './sdd-direct';
-import { compileBreakdown, describeParallelism, parallelismReadout, RED_EXPECT_EXIT } from './sdd-compile';
+import { acceptCommandFromBreakdown, compileBreakdown, describeParallelism, parallelismReadout, RED_EXPECT_EXIT } from './sdd-compile';
 import { PlanSchema } from '../conductor-plan';
 
 const FULL_REGRESSION = 'bunx tsc --noEmit && bun test';
@@ -19,6 +19,10 @@ const FULL_REGRESSION = 'bunx tsc --noEmit && bun test';
 /** 直接造结构 (绕开表文本), 用于给编译器喂精确的违规样本。 */
 const bd = (slices: SddBreakdown['slices'], waves?: SddBreakdown['waves']): SddBreakdown =>
   waves ? { slices, waves } : { slices };
+
+/** 从表行文本造分解 (要精确的 verify 列原文时用它, 不绕开解析器)。 */
+const bdRows = (rows: string[]): SddBreakdown =>
+  parseBreakdown(['## 分解 (Breakdown)', '| 切片 | 写集 | 依赖 | verify |', '|---|---|---|---|', ...rows].join('\n'));
 
 const slice = (
   id: number,
@@ -307,5 +311,63 @@ describe('parallelismReadout — 并行性 advisory (只报不拒)', () => {
       ),
     );
     expect(r.conservativeSlices).toEqual([]);
+  });
+});
+
+describe('acceptCommandFromBreakdown — 验收命令从 verify 列推 (2026-08-11 run 7d50fda2 修)', () => {
+  /** run 7d50fda2 的真表 (SDD-1 分解段四片, 逐字)。 */
+  const SDD1 = parseBreakdown(
+    [
+      '## 分解 (Breakdown)',
+      '| 切片 | 写集 | 依赖 | verify |',
+      '|---|---|---|---|',
+      '| 1 board 模块 | `src/harness/board/run-board.ts` + test | 无 | `bun test src/harness/board/run-board.test.ts` |',
+      '| 2 点火预检 | `src/harness/goal/ignition-preflight.ts` + test | 1 | `bun test src/harness/goal/ignition-preflight.test.ts` |',
+      '| 3 await 节点 | `src/harness/dag/await-node.ts` + test | 1 | `bun test src/harness/dag/await-node.test.ts` |',
+      '| 4 生命周期接线 | `src/harness/goal/run-goal.ts` + test | 1 | `bun test src/harness/goal/run-goal.test.ts` |',
+      '并行波形:{1} → {2,3,4}',
+    ].join('\n'),
+  );
+
+  // 反向自检: 把 run-goal 里 `sddAcceptance` 那一项去掉 (判据退回分类器) → 本条与下面
+  // run-goal.test 的接线条同时红。这条锁的是**命令里的路径只能来自 SDD**:
+  // 事故当天分类器编的是 `src/harness/dag/run-board.test.ts` —— 目录是幻觉, 而 SDD 写的是 board/。
+  test('★ 命令里的每个路径都来自 verify 列 (幻觉路径无处可生)', () => {
+    const cmd = acceptCommandFromBreakdown(SDD1)!;
+    const paths = cmd.split(/\s+/).filter((t) => t.includes('/'));
+    expect(paths.length).toBe(4);
+    for (const p of paths) expect(SDD1.slices.some((s) => s.verify.includes(p))).toBe(true);
+    expect(cmd).toContain('src/harness/board/run-board.test.ts');
+    expect(cmd).not.toContain('src/harness/dag/run-board.test.ts'); // 事故当天那条幻觉路径
+  });
+
+  // 反向自检: 把 acceptCommandFromBreakdown 的 links 段删掉 (只留去路径限定的全量版) → 本条红。
+  // 那正是最容易顺手写出的版本, 而它给出的冻结判据**开跑就绿** —— D-I 要杀的空判据。
+  test('★ 前半带路径 (活干之前必红) + 末环全量回归 (accept 的本职)', () => {
+    const cmd = acceptCommandFromBreakdown(SDD1)!;
+    expect(cmd.startsWith('bun test src/harness/board/run-board.test.ts &&')).toBe(true);
+    expect(cmd.endsWith(' && bun test')).toBe(true);
+  });
+
+  test('G-2 由构造成立: 推出的命令 ≠ 任何切片的 verify → 编译不被全量回归下沉闸拒', () => {
+    const cmd = acceptCommandFromBreakdown(SDD1)!;
+    for (const s of SDD1.slices) expect(cmd).not.toBe(s.verify);
+    expect(() => compileBreakdown(SDD1, { acceptCommand: cmd })).not.toThrow();
+  });
+
+  test('异构 verify (bun test + tsc) → 各自留一环, 去重按首见序', () => {
+    const b = bdRows([
+      '| 1 a | src/a.ts | — | bun test src/a.test.ts |',
+      '| 2 b | src/b.ts | 1 | tsc --noEmit |',
+      '| 3 c | src/c.ts | 1 | bun test src/a.test.ts |',
+    ]);
+    expect(acceptCommandFromBreakdown(b)).toBe('bun test src/a.test.ts && tsc --noEmit && bun test');
+  });
+
+  // 推法本身不认识生态 (只认"哪些参数像路径"); 这条命令在本仓会被命令白名单拒 —— 那是另一道
+  // 闸的事, run-goal 见拒即回落分类器 (sdd-direct.test 里那条)。
+  test('跨生态: pytest 一样推得出 (末环 = 去掉路径限定那截)', () => {
+    const b = bdRows(['| 1 a | src/a.py | — | pytest tests/test_a.py |']);
+    expect(acceptCommandFromBreakdown(b)).toBe('pytest tests/test_a.py && pytest');
   });
 });

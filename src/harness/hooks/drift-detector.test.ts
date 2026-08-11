@@ -99,3 +99,32 @@ describe('computeSig 的 hashline 目标锚 (2026-08-10 尺子修)', () => {
     expect(computeSig('hashline_edit', { patch: 'not a hashline patch' })).toBe('hashline_edit:patch');
   });
 });
+
+describe('computeSig 的 bash cd 前缀 (2026-08-11 run 7d50fda2 尺子修)', () => {
+  // 真样本形状: 隔离 worktree 的 run root, 光 cd 段就 76 字符 > 50 字符签名窗口。
+  const jail = '/home/nick/repos/oh-my-dag/.omd/runs/7d50fda2-c9b0-4a33-afb7-37207e724e90';
+  const inJail = (cmd: string): string => `cd ${jail} && ${cmd}`;
+
+  // 反向自检: 把 computeSig 里的 stripCdPrefix 调用去掉 → 本条当场红 (三条命令签名全等,
+  // 正是 run 7d50fda2 把 12 条不同命令报成"空转 ×12"的那把尺子)。
+  test('★ 同一 jail 下三条不同命令 → 三个不同签名, 不触发 spinning', () => {
+    const sigs = ['bun test src/a.test.ts', 'git status', 'ls src'].map((c) => computeSig('bash', { command: inJail(c) }));
+    expect(new Set(sigs).size).toBe(3);
+    const t = createDriftTracker({ threshold: 4 });
+    for (const c of ['bun test src/a.test.ts', 'git status', 'ls src', 'cat package.json']) t.note('bash', { command: inJail(c) });
+    expect(t.summary().spinEvents).toBe(0);
+  });
+
+  test('剥掉 cd 后同一条命令仍并成一个签名 (尺子变细, 没有钝掉)', () => {
+    const t = createDriftTracker({ threshold: 4 });
+    for (let i = 0; i < 4; i++) t.note('bash', { command: inJail('bun test src/a.test.ts') });
+    expect(t.summary().spinEvents).toBe(1);
+    // 在不在 jail 里跑同一条命令 = 同一件事, 签名应相同 (否则换档就丢历史)。
+    expect(computeSig('bash', { command: inJail('git status') })).toBe(computeSig('bash', { command: 'git status' }));
+  });
+
+  test('链式 cd 逐段剥; 光秃秃的 cd (无 &&) 原样保留', () => {
+    expect(computeSig('bash', { command: `cd ${jail} && cd src && ls` })).toBe('bash:ls');
+    expect(computeSig('bash', { command: 'cd /tmp' })).toBe('bash:cd /tmp');
+  });
+});

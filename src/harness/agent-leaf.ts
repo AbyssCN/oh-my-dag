@@ -341,6 +341,19 @@ export interface AgentLeafRunnerOpts {
    */
   sandboxRoot?: string;
   /**
+   * bwrap 隔离档下**把 git 元数据挂进 jail** (2026-08-11, run 7d50fda2 修)。默认 false。
+   *
+   * `git worktree add` 出来的树里 `.git` 是指向主 repo 的**指针文件**, jail 里那个路径不存在 →
+   * 隔离叶里 git 全灭 (实测叶子反复试探 git 后放弃, 12 轮空转)。设 true 则 ro-bind 共享
+   * `.git` + rw-bind 本树自己的 gitdir: log/show/diff/blame/status 可跑, 写主 repo 的 refs 与
+   * objects 仍被文件系统拒 (实测: tag/commit 均 `Read-only file system`)。
+   *
+   * **eval 档必须留 false**: 那里的隔离正是为了挡 `git show <commit>:file` 当 oracle 作弊
+   * (见 bwrap.ts 头注)。生产隔离档没有 oracle 可作弊, 而叶子确实需要 git —— 两档要求相反,
+   * 所以是显式开关, 不按"是不是 worktree"自动猜。
+   */
+  sandboxGit?: boolean;
+  /**
    * debug 事件汇 (2026-07-23): 设则把循环**全部**事件转发给它 (tool_call 参数 / 工具结果 / 消息),
    * 用于捕获 leaf transcript 挖 empty-done 根因。省略 = 不转发 (零开销)。仅排障用, 非生产热路径。
    */

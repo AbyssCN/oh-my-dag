@@ -207,6 +207,53 @@ export function describeParallelism(r: ParallelismReadout): string {
   return `宽度 ${r.maxWidth} · 关键路径 ${r.criticalPath.join('→')} (串行率 ${r.serialRatio.toFixed(2)})${conservative}`;
 }
 
+// ── 终局验收命令: 从 verify 列**推**, 不让分类器再编一遍 (2026-08-11 run 7d50fda2) ────────
+//
+// 事故形状: SDD verify 列写的是 `bun test src/harness/board/run-board.test.ts`, 而验收分类器
+// (classify-acceptance, 只看 goal 文本、看不到 SDD) 自己编了一条 `bun test
+// src/harness/dag/run-board.test.ts` —— 目录是幻觉。那条命令同时是**冻结判据**与 accept 节点,
+// 于是 s5 叶顺势把冻结判卷造在了幻觉路径上。这次结果无害 (它真去建了那个文件), 但机制是错的:
+// 已结晶 SDD 里明明写着这个 run 要跑哪些测试, 判据轴却去问一个看不见 SDD 的模型。
+//
+// 推法 = **各片 verify 去重串联, 末尾接一环去掉路径限定的全量版**:
+//   `bun test A && bun test B && bun test`
+// 两截各有各的职责, 缺一条这条命令就不合格:
+//   · 前半 (各片 verify) 给**判别力** —— 活干之前那些测试文件还不存在, 这条必红;
+//     只留全量版 (`bun test`) 会得到一条**开跑就绿**的冻结判据, 那正是 D-I 要杀的空判据。
+//   · 后半 (去路径限定) 给**全量回归** —— accept 节点的本职 (D-4: 全量只在终局跑一次);
+//     只留前半就只测了新写的那几个文件, 打烂别处没人看见。
+// 顺带两个性质: 命令里出现的路径全部来自 SDD (幻觉路径无处可生); 串起来必然长于任何单片
+// verify, 于是 G-2 (accept ≠ 切片 verify) 由构造成立。跨生态通用 (`pytest tests/x.py` →
+// 末环 `pytest`), 不写死 bun。
+
+/** 一段命令 (`&&` 分隔的一环) 的"去路径限定"版: 取到第一个含 `/` 的参数为止。 */
+function dropPathArgs(segment: string): string {
+  const tokens = segment.trim().split(/\s+/).filter(Boolean);
+  const cut = tokens.findIndex((t) => t.includes('/'));
+  return (cut === -1 ? tokens : tokens.slice(0, cut)).join(' ');
+}
+
+/**
+ * 分解表 verify 列 → 终局验收命令 (见上方注释的两截推法)。
+ * 推不出 (verify 列全空) → undefined, 调用方回落既有来源 (fail-open: 这是"判据从哪来"的升级,
+ * 不该顺手把分解段无表的存量 SDD 挡在门外 —— 同 run-goal 那条"编译不过则响亮回落"的纪律)。
+ */
+export function acceptCommandFromBreakdown(breakdown: SddBreakdown): string | undefined {
+  const links: string[] = [];
+  const fullRegression: string[] = [];
+  for (const s of breakdown.slices) {
+    const verify = s.verify.trim();
+    if (!verify) continue;
+    if (!links.includes(verify)) links.push(verify);
+    for (const seg of verify.split('&&')) {
+      const head = dropPathArgs(seg);
+      if (head && !fullRegression.includes(head)) fullRegression.push(head);
+    }
+  }
+  if (!links.length) return undefined;
+  return [...links, ...fullRegression.filter((h) => !links.includes(h))].join(' && ');
+}
+
 /**
  * 分解表结构 → 平铺 plan (G-1: 节点 = 切片×3 + accept, 零 conductor 展开)。
  *

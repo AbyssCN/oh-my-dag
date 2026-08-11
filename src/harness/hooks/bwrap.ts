@@ -56,6 +56,41 @@ const PI_AGENT_COPY_EXCLUDE = new Set<string>([...PI_AGENT_BIG_DIRS, 'sessions']
 export interface BwrapOpts {
   /** makePiAgentCopy() 产的即弃 rw 副本目录 — 挂 jail /tmp/.pi/agent (见 bwrapArgs 内注释)。 */
   piAgentCopy?: string;
+  /** {@link resolveGitBinds} 的产物 — 给了才把 git 元数据挂进视图 (见那里的取舍)。 */
+  gitBinds?: GitBinds;
+}
+
+/** worktree 的 git 元数据位置: 本树自己的 gitdir (rw) + 共享的 common dir (ro)。 */
+export interface GitBinds {
+  /** `git rev-parse --absolute-git-dir` — worktree 是 `<主repo>/.git/worktrees/<名>`。 */
+  gitDir: string;
+  /** `git rev-parse --git-common-dir` (绝对化) — 主 repo 的 `.git` (objects/refs 都在这)。 */
+  commonDir: string;
+}
+
+/**
+ * 解析 root 这棵树的 git 元数据位置; **只在它落在 root 之外时**返值 (落在里面的话
+ * `--bind root root` 已经带上了, 不必也不该再挂一次)。不是 git 树 / git 不可用 → null。
+ *
+ * 为什么需要这个: `git worktree add` 出来的树里 `.git` 是一个**指针文件**, 指向
+ * `<主repo>/.git/worktrees/<名>` —— 那个路径在 jail 里不存在, 于是隔离叶里 git 全灭
+ * (2026-08-11 run 7d50fda2 实测: 叶子反复试探 git 后放弃, 12 轮空转的真实摩擦面;
+ * jail 内 `git status` → `fatal: not a git repository: …/.git/worktrees/…`)。
+ */
+export function resolveGitBinds(root: string): GitBinds | null {
+  const p = Bun.spawnSync(['git', '-C', root, 'rev-parse', '--absolute-git-dir', '--git-common-dir'], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  if (p.exitCode !== 0) return null;
+  const [gitDir, common] = new TextDecoder().decode(p.stdout).trim().split('\n');
+  if (!gitDir || !common) return null;
+  // `--git-common-dir` 在主 repo 里返的是相对路径 (`.git`) —— 按 root 绝对化 (实测: 主 repo 返
+  // `.git`, worktree 返绝对路径; 只认一种写法就会在另一种上悄悄挂错地方)。
+  const commonDir = resolve(root, common);
+  // 都在 root 里面 = 普通 repo, `--bind root root` 已覆盖 → 无事可做。
+  if (gitDir.startsWith(`${resolve(root)}/`) && commonDir.startsWith(`${resolve(root)}/`)) return null;
+  return { gitDir, commonDir };
 }
 
 /**
@@ -102,6 +137,18 @@ export function bwrapArgs(root: string, roBinds: string[], opts: BwrapOpts = {})
     if (p && existsSync(p)) args.push('--ro-bind', p, p);
   }
   args.push('--bind', root, root);
+  // git 元数据 (只在调用方显式要 —— 见 sandboxed-leaf 的 `sandboxGit`):
+  //   · commonDir **只读**: objects/refs 全在这, 读得到就够 log/show/diff/blame 跑;
+  //     给写权等于让一个 jail 里的叶子能改主 repo 的 refs, 那是隔离要挡的第一件事。
+  //   · gitDir **可写**: `git status` 要刷新 index。它是本 worktree 私有的那份, 写坏也只坏这棵树。
+  // 顺序不能反: bwrap 按给定顺序叠挂, 子路径要在父路径之后才盖得住。
+  // ⚠ eval 档**不给**这两个绑定 —— 那里的隔离正是为了挡 `git show <commit>:file` 当 oracle
+  // (见本文件头注); 生产隔离档没有 oracle 可作弊, 而叶子确实需要 git。两档的要求相反,
+  // 所以是调用方显式选, 不在这里按"是不是 worktree"自动猜。
+  if (opts.gitBinds) {
+    args.push('--ro-bind', opts.gitBinds.commonDir, opts.gitBinds.commonDir);
+    if (opts.gitBinds.gitDir !== opts.gitBinds.commonDir) args.push('--bind', opts.gitBinds.gitDir, opts.gitBinds.gitDir);
+  }
   args.push('--chdir', root);
   // pi agent dir 分层挂载 (2026-07-25 三轮实证): HOME=/tmp 后 worker 缺 /tmp/.pi/agent →
   // 注册制 provider (mimo-platform/opencode-go/…) 全消失, leaf 全军覆没 leafTokens=0。

@@ -349,8 +349,12 @@ describe('runGoal 直通 v2 (切片 5: 分解表可编译 → 零 conductor 平�
     expect(plan.name).toBe('goal-execute-flat');
     expect(Object.keys(plan.nodes).length).toBe(7);
     expect(Object.values(plan.nodes).some((n) => n.executor === 'conductor')).toBe(false);
-    const acceptNodes = Object.values(plan.nodes).filter((n) => n.command === 'bun test');
-    expect(acceptNodes.length).toBe(1); // G-2: 全量回归恰一次, 且就是冻结判据那条命令
+    // G-2: 全量回归恰一次, 且就是冻结判据那条命令。**命令来自 verify 列** (2026-08-11 起,
+    // 不再是分类器那条 `bun test`): 各片 verify 串联 + 末环去路径限定的全量版。
+    const accept = 'bun test src/a.test.ts && bun test src/b.test.ts && bun test';
+    expect(Object.values(plan.nodes).filter((n) => n.command === accept).length).toBe(1);
+    expect(plan.nodes.accept!.command).toBe(accept);
+    expect(r.acceptance.kind === 'executable' && r.acceptance.command).toBe(accept);
     expect(plan.nodes.accept!.expect_exit).toBe(0);
     expect(r.converged).toBe(true);
     expect(r.stages.some((s) => s.summary.includes('直通v2平铺'))).toBe(true);
@@ -386,5 +390,90 @@ describe('runGoal 直通 v2 (切片 5: 分解表可编译 → 零 conductor 平�
     expect(seenPlans[0]!.nodes.execute!.executor).toBe('conductor');
     expect(r.converged).toBe(true); // v1 路径行为照旧 (judge ∧ oracle)
     expect(r.stages.some((s) => s.summary.includes('直通v2回落'))).toBe(true);
+  });
+});
+
+// ── 判据来源: SDD verify 列 > 分类器 (2026-08-11 run 7d50fda2 修) ─────────────────────
+//
+// 事故: 分类器只看得见 goal 文本, 看不见 SDD, 于是自己编了一条测试路径 (`src/harness/dag/
+// run-board.test.ts`), 而 SDD verify 列写的是 `src/harness/board/…` —— 目录是幻觉。那条命令
+// 同时是 accept 节点、freezeCriterion 与基线 delta 的那一条, 冻结判卷就此造在了幻觉路径上。
+//
+// 反向自检 (实跑过): 把 run-goal 里 `config.acceptance ?? sddAcceptance ?? classified.acceptance`
+// 的中间那项去掉 → 本组两条当场红 (判据退回分类器的幻觉路径)。
+describe('runGoal 直通档: 验收命令取自 SDD verify 列, 不用分类器编的', () => {
+  const HALLUCINATED = 'bun test src/harness/dag/run-board.test.ts';
+  const SDD_TABLE = [
+    '# 测试契约',
+    '## 契约 (Contracts)',
+    '- G-1 Given/When/Then。',
+    '## 分解 (Breakdown)',
+    '| 切片 | 写集 | 依赖 | verify |',
+    '|---|---|---|---|',
+    '| 1 board 模块 | `src/harness/board/run-board.ts` + test | 无 | `bun test src/harness/board/run-board.test.ts` |',
+    '| 2 点火预检 | `src/harness/goal/ignition-preflight.ts` + test | 1 | `bun test src/harness/goal/ignition-preflight.test.ts` |',
+    '并行波形:{1} → {2}',
+  ].join('\n');
+
+  const runWith = async (sddPath: string) => {
+    const seen: { plan: ConductorPlan; cfg: ExecutorDagConfig }[] = [];
+    const r = await runGoal('按 SDD 执行', {
+      cwd: mkdtempSync(join(tmpdir(), 'omd-direct-')),
+      dag: { conductorModel: 'c:m', leafModel: 'l:m' } as ExecutorDagConfig,
+      _classify: async (): Promise<GoalClassification> => ({
+        tier: 'simple',
+        acceptance: { kind: 'executable', command: HALLUCINATED, expectExit: 0 },
+      }),
+      _runDag: (async (plan: ConductorPlan, cfg: ExecutorDagConfig) => {
+        seen.push({ plan, cfg });
+        return {
+          plan,
+          results: Object.fromEntries(
+            Object.keys(plan.nodes).map((id) => [
+              id,
+              { id, status: 'done', kind: 'command', output: '', deps: [], usage: { in: 0, out: 0 }, converged: true },
+            ]),
+          ),
+          reusedNodes: [],
+        } as unknown as ExecutorDagResult;
+      }) as never,
+      sddPath,
+    } as RunGoalConfig);
+    return { r, seen };
+  };
+
+  test('★ accept 节点 + freezeCriterion 都用 SDD 的路径, 分类器那条幻觉路径一处都不出现', async () => {
+    const { r, seen } = await runWith(tmpSdd(SDD_TABLE));
+    const accept = seen[0]!.plan.nodes['accept']!;
+    expect(accept.command).toContain('src/harness/board/run-board.test.ts');
+    expect(accept.command).not.toContain('src/harness/dag/run-board.test.ts');
+    expect(seen[0]!.cfg.freezeCriterion?.command).toBe(accept.command as string);
+    expect(r.acceptance).toEqual({ kind: 'executable', command: accept.command as string, expectExit: 0 });
+    // 判据换了来源要在摘要上看得见 (事故当天它只活在图里, 摘要上什么都没写)。
+    expect(r.stages.some((s) => s.summary.includes('判据取自 SDD verify 列'))).toBe(true);
+  });
+
+  test('verify 列写了白名单外的命令 → 回落分类器 (不拿一条注定被闸拒的命令当验收 = 假红)', async () => {
+    const { r } = await runWith(
+      tmpSdd(
+        [
+          '# t',
+          '## 契约 (Contracts)',
+          '- G-1',
+          '## 分解 (Breakdown)',
+          '| 切片 | 写集 | 依赖 | verify |',
+          '|---|---|---|---|',
+          '| 1 a | `src/a.py` | 无 | `pytest tests/test_a.py` |',
+        ].join('\n'),
+      ),
+    );
+    expect(r.acceptance).toEqual({ kind: 'executable', command: HALLUCINATED, expectExit: 0 });
+  });
+
+  test('分解段无表 (存量直通 SDD) → 回落分类器那条, 行为不变 (fail-open)', async () => {
+    const { r, seen } = await runWith(tmpSdd(SDD_OK));
+    expect(r.acceptance).toEqual({ kind: 'executable', command: HALLUCINATED, expectExit: 0 });
+    expect(seen[0]!.plan.nodes['accept']!.command).toBe(HALLUCINATED);
+    expect(r.stages.some((s) => s.summary.includes('判据取自 SDD verify 列'))).toBe(false);
   });
 });

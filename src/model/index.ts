@@ -202,10 +202,31 @@ function doRequest(
   return piRequest(target.piModel, messages, req, target.apiKey ? { apiKey: target.apiKey } : undefined);
 }
 
-/** Strip a ```json … ``` fence if the model wrapped its JSON in one. */
-function stripFences(text: string): string {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  return (fenced?.[1] ?? text).trim();
+/**
+ * 结构化回复的 JSON 正文候选 (按优先序), 调用方逐个试 parse, 第一个成的算数。
+ *
+ * **围栏不是可靠线索, 因为 payload 里天然会有围栏。** 判官协议 (verifier.ts 的责备集 D-1)
+ * 要求把 ```blame 围栏写进 `reason` **字段值**里 —— 于是一份完全合规的结构化判词内部就含
+ * 内嵌围栏。老实现只有一条路 (「第一个 ``` 到下一个 ```」), 把 payload 里的内嵌围栏当成
+ * 包裹层抠出来, 送进 JSON.parse 的是 `blame\n[...]`:
+ *
+ *   2026-08-11 run 7d50fda2 —— `ModelError: invalid JSON: Unexpected identifier "blame"`,
+ *   模型层三次纠偏重试全撞同一条 (回的其实是**对的** JSON), 判卷失败连累一个已收敛的 run。
+ *   已用真样本形状复现, 闸见 model/json-fence.test.ts。
+ *
+ * 三个候选各治一种形状, 顺序即"越少猜越靠前":
+ *   ① 原文 —— 裸 JSON (最常见, 也正是上面那条被内嵌围栏坑掉的形状)
+ *   ② 贪婪围栏 (到**最后一个** ```) —— 外层 ```json 包裹且内部含内嵌围栏
+ *   ③ 懒惰围栏 (到**下一个** ```) —— 散文里夹一段围栏, 或多段围栏取第一段 (老行为)
+ */
+export function jsonCandidates(text: string): string[] {
+  const t = text.trim();
+  const out = [t];
+  for (const re of [/```(?:json)?\s*([\s\S]*)```/i, /```(?:json)?\s*([\s\S]*?)```/i]) {
+    const body = re.exec(t)?.[1]?.trim();
+    if (body && !out.includes(body)) out.push(body);
+  }
+  return out;
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -349,16 +370,26 @@ export async function callModel(req: ModelRequest): Promise<ModelResponse> {
     }
 
     // Structured output: parse → validate → only ever return validated data (INV-3).
+    // 候选阶梯逐个试 (见 jsonCandidates): 报错取**第一个候选**的原话 —— 那是模型真回的东西,
+    // 后面几个是我们自己的猜法, 拿猜法的报错去纠正模型会把它引向别处。
     let obj: unknown;
-    try {
-      obj = JSON.parse(stripFences(result.text));
-    } catch (e) {
-      lastErr = new ModelError('parse', `invalid JSON: ${(e as Error).message}`, { attempts: attempt + 1 });
+    let parseErr: Error | undefined;
+    for (const cand of jsonCandidates(result.text)) {
+      try {
+        obj = JSON.parse(cand);
+        parseErr = undefined;
+        break;
+      } catch (e) {
+        parseErr ??= e as Error;
+      }
+    }
+    if (parseErr) {
+      lastErr = new ModelError('parse', `invalid JSON: ${parseErr.message}`, { attempts: attempt + 1 });
       messages = [
         ...req.messages,
         {
           role: 'user',
-          content: `Your previous reply was not valid JSON (${(e as Error).message}). Reply with ONLY a JSON object — no prose, no code fences.`,
+          content: `Your previous reply was not valid JSON (${parseErr.message}). Reply with ONLY a JSON object — no prose, no code fences.`,
         },
       ];
       if (attempt < maxRetries) continue;

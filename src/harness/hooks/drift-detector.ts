@@ -48,6 +48,26 @@ const DEFAULT_THRESHOLD = 4;
 const DEFAULT_RECOVERY_THRESHOLD = 2;
 
 /**
+ * 剥掉命令前导的 `cd <路径> &&` 链 —— **cd 段不是"这次在干什么", 是"在哪儿干"**。
+ *
+ * 2026-08-11 run 7d50fda2: 隔离 worktree 里叶子每条 bash 都写成
+ * `cd /home/nick/repos/oh-my-dag/.omd/runs/<uuid> && <真命令>`, 而光 cd 段就 76 字符 >
+ * 下面那个 50 字符窗口 → **全部 bash 命令并成同一个签名**, 12 条不同命令被报成空转 ×12。
+ * 与 hashline_edit 那条 (2026-08-10, 落键名兜底把所有 patch 并成一个签名) 是同一种病:
+ * 签名窗口落在了对所有调用都相同的那一段上。
+ */
+function stripCdPrefix(cmd: string): string {
+  let out = cmd.trimStart();
+  // 链式 `cd a && cd b && 真命令` 逐段剥 (`;` 同理); 路径里不含 `&|;` 是这条正则的前提,
+  // 不成立时不剥 —— 剥错比不剥坏 (会把真命令的头吃掉)。
+  for (;;) {
+    const next = out.replace(/^cd\s+[^&;|]+?\s*(?:&&|;)\s*/, '');
+    if (next === out) return out;
+    out = next;
+  }
+}
+
+/**
  * 从一次工具调用计算归一化签名。含目标参数值 (不含 transient 字段如 timeout)。
  *
  * 入参是 **(工具名, 参数对象)** 而不是某个宿主的事件类型 —— 检测逻辑与"事件长什么样"无关,
@@ -59,7 +79,7 @@ export function computeSig(toolName: string, input: unknown): string {
   // bash: 命令前缀比参数键更区分是否 spinning
   if (toolName === 'bash') {
     const cmd = typeof args.command === 'string' ? args.command : '';
-    const prefix = cmd.replace(/[\n\r]/g, ' ').slice(0, 50);
+    const prefix = stripCdPrefix(cmd.replace(/[\n\r]/g, ' ')).slice(0, 50);
     return `bash:${prefix}`;
   }
   // read/write/edit/grep/ls/find: 含目标路径或模式第一参数

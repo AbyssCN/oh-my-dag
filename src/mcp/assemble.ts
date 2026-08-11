@@ -441,7 +441,11 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
             hashlineEdit: true,
             leafTimeoutMs,
             ...(agentAdvisor ? { advisor: agentAdvisor } : {}),
-            ...(jailRoot ? { sandboxRoot: jailRoot } : {}),
+            // 隔离档 = 生产 (branch worktree), 不是 eval —— 这里的 jail 里**要有 git**:
+            // worktree 的 `.git` 是指针文件, 不挂就是"隔离叶里 git 全灭" (run 7d50fda2 实测,
+            // 叶子空转 12 轮的真实摩擦面)。挂法是 ro 共享 .git + rw 本树 gitdir, 写主 repo
+            // 的 refs/objects 仍被拒; eval oracle 那条路 (eval/oracles/*) 不设此位, 行为不变。
+            ...(jailRoot ? { sandboxRoot: jailRoot, sandboxGit: true } : {}),
             ...(extToolsForRun && extToolsForRun.length ? { customTools: extToolsForRun } : {}),
           })
         : agentRunner;
