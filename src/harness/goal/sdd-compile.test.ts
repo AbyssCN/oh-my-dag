@@ -371,3 +371,30 @@ describe('acceptCommandFromBreakdown — 验收命令从 verify 列推 (2026-08-
     expect(acceptCommandFromBreakdown(b)).toBe('pytest tests/test_a.py && pytest');
   });
 });
+
+// ── acceptCommandFromBreakdown 废令蒸馏闸 (2026-08-11 run 928ff86e 冤案) ──────────
+// 反向自检 (实跑过): 把全量环收集处的 `!/["']/.test(head)` 判据摘掉 → 第一条当场红。
+
+describe('acceptCommandFromBreakdown — grep 族 verify 不蒸无文件废令', () => {
+  const bd = (rows: string[]): SddBreakdown =>
+    parseBreakdown(['## 分解 (Breakdown)', '| 切片 | 写集 | 依赖 | verify |', '|---|---|---|---|', ...rows].join('\n'));
+
+  test('三条 O-6 标记 grep (run 928ff86e 原样) → 推导命令零无文件段: 每个 ugrep 环都带路径参', () => {
+    const cmd = acceptCommandFromBreakdown(
+      bd([
+        '| 1 a | src/a.ts | — | `ugrep -qF "allowedIds" src/harness/plan-patch.ts` |',
+        '| 2 b | src/b.ts | — | `ugrep -qF "replanTokens" src/harness/dag/types.ts` |',
+        '| 3 c | src/c.ts | 1, 2 | `ugrep -qF "buildPatchRequest" src/harness/dag/engine.ts` |',
+      ]),
+    )!;
+    for (const seg of cmd.split('&&').map((s) => s.trim())) {
+      expect(seg.includes('/')).toBe(true); // 每一环都自带路径 —— 无 stdin 陷阱
+    }
+  });
+
+  test('测试型 verify 仍蒸出全量环 (`bun test src/x.test.ts` → 尾环 `bun test`, 通用性不受修法误伤)', () => {
+    const cmd = acceptCommandFromBreakdown(bd(['| 1 a | src/a.ts | — | `bun test src/a.test.ts` |']))!;
+    const segs = cmd.split('&&').map((s) => s.trim());
+    expect(segs[segs.length - 1]).toBe('bun test');
+  });
+});

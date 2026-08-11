@@ -247,7 +247,12 @@ export function acceptCommandFromBreakdown(breakdown: SddBreakdown): string | un
     if (!links.includes(verify)) links.push(verify);
     for (const seg of verify.split('&&')) {
       const head = dropPathArgs(seg);
-      if (head && !fullRegression.includes(head)) fullRegression.push(head);
+      // 裸形仍含引号参数 = 模式参在而文件参没了 (grep 族 `ugrep -qF "x" path` → `ugrep -qF "x"`
+      // 读 stdin, 永远非零) —— 蒸出来的是废令不是全量环。实测样本 run 928ff86e: 三条 O-6
+      // 标记 grep 被蒸成无文件 ugrep, 实装全对的 run 被判 not-converged (冤案)。
+      // 全量环只收"去路径后仍自足"的形 (`bun test src/x.test.ts` → `bun test`; `pytest tests/x.py`
+      // → `pytest`), 判据 = 裸形无引号残参 —— 跨生态通用, 仍不写死 bun。
+      if (head && !/["']/.test(head) && !fullRegression.includes(head)) fullRegression.push(head);
     }
   }
   if (!links.length) return undefined;
