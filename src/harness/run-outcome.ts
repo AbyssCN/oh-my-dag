@@ -147,7 +147,9 @@ export const RUN_OUTCOME_INFO: Record<RunOutcomeKind, RunOutcomeInfo> = {
     spendBucket: 'delivery',
     loopState: 'STALLED',
     evidence: '轮数用尽而 judge 判未达标(且 blocked/budgetStopped/cancelled 三者皆空)',
-    nextAction: '加 maxRounds 后 resume —— 再给几轮可能就成;连续两次落这格再去看是不是任务本身没写清',
+    nextAction:
+      '加 maxRounds 后 resume —— 再给几轮可能就成;连续两次落这格再去看是不是任务本身没写清。' +
+      '**平铺图 (直通v2) 例外**: 它没有内环轮, 加轮数无意义 —— 看摘要里哪个切片节点红了 (RED/GREEN/accept), 修 SDD 或实装后 resume 同 runId 复用绿节点 (O-6)',
     resumable: true,
   },
   'oracle-failed': {
