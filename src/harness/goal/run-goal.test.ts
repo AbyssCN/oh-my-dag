@@ -18,6 +18,7 @@ import { appendBoard, BOARD_RUN_ID, liveRuns, readBoard, type BoardEntry } from 
 import { publishEntry } from '../../../scripts/board-publish';
 import type { RunOutcomeKind } from '../run-outcome';
 import { ignitionPreflight } from './ignition-preflight';
+import { fingerprintOf } from '../profiles/review-ledger';
 
 /**
  * D-I: 分类器一次出两条轴 (成本轴 tier + 判据轴 acceptance)。本文件多数用例只关心成本轴,
@@ -1207,5 +1208,221 @@ describe('scripts/board-publish — published 条目 CLI (零 LLM)', () => {
     const pubs = readBoard(root).filter((e) => e.event === 'published');
     expect(pubs).toHaveLength(1);
     expect(pubs[0]?.commit).toBe('cafebabe');
+  });
+});
+
+// ── P4 设计审核集成 (INV-3 / INV-6 / G-4 / D-7) ──────────────────────────────
+//
+// 这些测试走 runGoal() 全路径 (非 maybeRunDesignReview 纯核直调), 验证接线真的通了。
+// 纯核判据在 design-review.test.ts 里, 这里钉的是「runGoal → designReview 结果面」的契约。
+
+describe('runGoal — P4 设计审核集成 (INV-3 / INV-6 / G-4 / D-7)', () => {
+  /** 造一份带设计审核的 config: 注入文件列表 + 可选的审核 runner。 */
+  const drCfg = (opts: {
+    changedFiles: string[];
+    runReview?: (diff: string, cwd: string) => Promise<{ findings: import('../profiles/review-ledger').ReviewFinding[]; usage: { in: number; out: number } }>;
+    repairAttempted?: boolean;
+  }): RunGoalConfig => {
+    const c = cfg({}, {
+      acceptance: { kind: 'executable', command: 'true', expectExit: 0 },
+      tier: 'simple',
+      writeSet: { _collectChangedFiles: () => opts.changedFiles },
+      designReview: {
+        _runReview: opts.runReview,
+        ...(opts.repairAttempted !== undefined ? { repairAttempted: opts.repairAttempted } : {}),
+      },
+    });
+    return c;
+  };
+
+  // ── G-4 / INV-6: 调度判定 ─────────────────────────────────────────────────
+
+  test('INV-6 / G-4: [src/a.ts] 非前端文件 → designReview.scheduled=false, usage 零', async () => {
+    const r = await runGoal('做个事', drCfg({ changedFiles: ['src/a.ts'] }));
+    expect(r.designReview).toBeDefined();
+    expect(r.designReview!.scheduled).toBe(false);
+    expect(r.designReview!.usage.in).toBe(0);
+    expect(r.designReview!.usage.out).toBe(0);
+    expect(r.designReview!.added).toBe(0);
+    expect(r.converged).toBe(true); // 不调度不影响收敛
+  });
+
+  test('G-4: [src/App.tsx] 前端文件 → designReview.scheduled=true, 用量如实', async () => {
+    const fp = fingerprintOf('src/App.tsx', '间距不对');
+    const r = await runGoal('做个事', drCfg({
+      changedFiles: ['src/App.tsx'],
+      runReview: async () => ({
+        findings: [{
+          where: 'src/App.tsx',
+          severity: 'p2' as const,
+          evidence: '间距不对',
+          suggestion: '加 gap-4',
+          uncertainty: '低',
+          fingerprint: fp,
+        }],
+        usage: { in: 120, out: 60 },
+      }),
+    }));
+    expect(r.designReview!.scheduled).toBe(true);
+    expect(r.designReview!.usage.in).toBe(120);
+    expect(r.designReview!.usage.out).toBe(60);
+    expect(r.designReview!.added).toBe(1);
+    expect(r.designReview!.findings).toHaveLength(1);
+    expect(r.designReview!.findings[0]!.fingerprint).toBe(fp);
+  });
+
+  test('G-4: 写集混有前后端 → 仅前端部分触发调度, scheduled=true', async () => {
+    const fp = fingerprintOf('src/ui/Modal.tsx', '层级错');
+    const r = await runGoal('做个事', drCfg({
+      changedFiles: ['src/model/types.ts', 'src/ui/Modal.tsx', 'README.md'],
+      runReview: async () => ({
+        findings: [{ where: 'src/ui/Modal.tsx', severity: 'p2', evidence: '层级错', suggestion: 'z-50', uncertainty: '中', fingerprint: fp }],
+        usage: { in: 30, out: 15 },
+      }),
+    }));
+    expect(r.designReview!.scheduled).toBe(true);
+    expect(r.designReview!.added).toBe(1);
+  });
+
+  test('INV-6: 空写集 → 不调度, usage 零, 零模型调用', async () => {
+    const r = await runGoal('做个事', drCfg({ changedFiles: [] }));
+    expect(r.designReview!.scheduled).toBe(false);
+    expect(r.designReview!.usage.in).toBe(0);
+    expect(r.converged).toBe(true);
+  });
+
+  // ── INV-3: 审核失败/timeout → converged 与无审核逐位相同 ──────────────────
+
+  test('INV-3: _runReview 抛错 → scheduled=true 但 added=0, converged 同无审核基线', async () => {
+    const base = cfg({}, {
+      acceptance: { kind: 'executable', command: 'true', expectExit: 0 },
+      tier: 'simple',
+      writeSet: { _collectChangedFiles: () => ['src/App.tsx'] },
+    });
+    // 有审核但审核崩了
+    const rFail = await runGoal('做个事', {
+      ...base,
+      designReview: { _runReview: async () => { throw new Error('审核叶崩了'); } },
+    });
+    // 无审核基线
+    const rBase = await runGoal('做个事', { ...base });
+    // INV-3: converged 结论逐位相同
+    expect(rFail.converged).toBe(rBase.converged);
+    expect(rFail.outcome).toBe(rBase.outcome);
+    expect(rFail.rounds).toBe(rBase.rounds);
+    expect(rFail.stages.at(-1)!.status).toBe(rBase.stages.at(-1)!.status);
+    expect(rFail.stages.at(-1)!.outcome).toBe(rBase.stages.at(-1)!.outcome);
+    // 审核本身留痕: scheduled=true 但 added=0 (抛错后闸缺席不抛)
+    expect(rFail.designReview!.scheduled).toBe(true);
+    expect(rFail.designReview!.added).toBe(0);
+    expect(rFail.designReview!.usage.in).toBe(0);
+    // 基线无审核
+    expect(rBase.designReview).toBeUndefined();
+  });
+
+  test('INV-3: 审核配了但 designReview 整段缺席 → 结果面 designReview=undefined, 收敛不变', async () => {
+    const r = await runGoal('做个事', cfg({}, {
+      acceptance: { kind: 'executable', command: 'true', expectExit: 0 },
+      tier: 'simple',
+    }));
+    expect(r.designReview).toBeUndefined();
+    expect(r.converged).toBe(true);
+  });
+
+  // ── D-7: 一波一修 / 同因熔断 / 存活转票 ───────────────────────────────────
+
+  test('D-7: 首轮 findings → added≥1, fused/tickets 全空 (repairAttempted 缺省 = false)', async () => {
+    const fp = fingerprintOf('src/Header.tsx', '对齐不一致');
+    const r = await runGoal('做个事', drCfg({
+      changedFiles: ['src/Header.tsx'],
+      runReview: async () => ({
+        findings: [{ where: 'src/Header.tsx', severity: 'p2', evidence: '对齐不一致', suggestion: 'flex + gap', uncertainty: '低', fingerprint: fp }],
+        usage: { in: 40, out: 20 },
+      }),
+    }));
+    expect(r.designReview!.added).toBe(1);
+    expect(r.designReview!.findings).toHaveLength(1);
+    expect(r.designReview!.fused).toEqual([]);
+    expect(r.designReview!.tickets).toEqual([]);
+  });
+
+  test('D-7: repairAttempted=true + 同指纹 → fused (熔断), added=0, 不落账', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-goal-dr-'));
+    const fp = fingerprintOf('src/Sidebar.tsx', '色相对比不够');
+    const finding = { where: 'src/Sidebar.tsx', severity: 'p2' as const, evidence: '色相对比不够', suggestion: '加深', uncertainty: '中', fingerprint: fp };
+    const mk = (repairAttempted: boolean): RunGoalConfig => ({
+      cwd,
+      dag: { conductorModel: 'c:m', leafModel: 'l:m' } as ExecutorDagConfig,
+      _today: () => '2026-07-28',
+      _runDag: dagRouter({}),
+      _classify: cls('simple'),
+      acceptance: { kind: 'executable', command: 'true', expectExit: 0 },
+      tier: 'simple',
+      writeSet: { _collectChangedFiles: () => ['src/Sidebar.tsx'] },
+      designReview: {
+        _runReview: async () => ({ findings: [finding], usage: { in: 10, out: 5 } }),
+        repairAttempted,
+      },
+    });
+    // 首轮: repairAttempted=false → 落账
+    const r1 = await runGoal('修侧栏', mk(false));
+    expect(r1.designReview!.added).toBe(1);
+    expect(r1.designReview!.fused).toEqual([]);
+    // 修复后: repairAttempted=true, 同指纹 → fused, 不落账
+    const r2 = await runGoal('修侧栏', mk(true));
+    expect(r2.designReview!.added).toBe(0);
+    expect(r2.designReview!.fused).toHaveLength(1);
+    expect(r2.designReview!.fused[0]!.fingerprint).toBe(fp);
+    expect(r2.designReview!.tickets).toEqual([]); // 同指纹归 fused, 不是 tickets
+  });
+
+  test('D-7: repairAttempted=true + 新指纹 (台账无记录) → tickets (存活转票), added=0', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-goal-dr-'));
+    const fpOld = fingerprintOf('src/Nav.tsx', '旧问题');
+    const fpNew = fingerprintOf('src/Nav.tsx', '新问题');
+    const mk = (fps: string[], repairAttempted: boolean): RunGoalConfig => ({
+      cwd,
+      dag: { conductorModel: 'c:m', leafModel: 'l:m' } as ExecutorDagConfig,
+      _today: () => '2026-07-28',
+      _runDag: dagRouter({}),
+      _classify: cls('simple'),
+      acceptance: { kind: 'executable', command: 'true', expectExit: 0 },
+      tier: 'simple',
+      writeSet: { _collectChangedFiles: () => ['src/Nav.tsx'] },
+      designReview: {
+        _runReview: async () => ({
+          findings: fps.map((fp) => ({ where: 'src/Nav.tsx', severity: 'p2' as const, evidence: fp === fpOld ? '旧问题' : '新问题', suggestion: '改', uncertainty: '低', fingerprint: fp })),
+          usage: { in: 10, out: 5 },
+        }),
+        repairAttempted,
+      },
+    });
+    // 首轮: 落账旧指纹
+    const r1 = await runGoal('修导航', mk([fpOld], false));
+    expect(r1.designReview!.added).toBe(1);
+    // 修复后: 报新指纹 → tickets (台账里没有 = 修复后的新发现物)
+    const r2 = await runGoal('修导航', mk([fpNew], true));
+    expect(r2.designReview!.added).toBe(0);
+    expect(r2.designReview!.fused).toEqual([]);
+    expect(r2.designReview!.tickets).toHaveLength(1);
+    expect(r2.designReview!.tickets[0]!.fingerprint).toBe(fpNew);
+  });
+
+  test('D-7: 同批内重复指纹 → 首轮去重 (deduped≥1), 不产生多轮修复', async () => {
+    const fp = fingerprintOf('src/Footer.tsx', '版权年份');
+    const r = await runGoal('做个事', drCfg({
+      changedFiles: ['src/Footer.tsx'],
+      runReview: async () => ({
+        findings: [
+          { where: 'src/Footer.tsx', severity: 'p2', evidence: '版权年份', suggestion: '改 2026', uncertainty: '低', fingerprint: fp },
+          { where: 'src/Footer.tsx', severity: 'p2', evidence: '版权年份', suggestion: '改 2026', uncertainty: '低', fingerprint: fp }, // 同指纹
+        ],
+        usage: { in: 10, out: 5 },
+      }),
+    }));
+    expect(r.designReview!.added).toBe(1); // 只落一条
+    expect(r.designReview!.deduped).toBeGreaterThanOrEqual(1); // 第二条被去重
+    expect(r.designReview!.fused).toEqual([]);
+    expect(r.designReview!.tickets).toEqual([]);
   });
 });
