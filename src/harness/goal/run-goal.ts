@@ -45,8 +45,9 @@ import { collectRunTickets, type RunTicketSink } from '../pathfinder/run-tickets
 import { logger } from '../logger';
 import { appendBoard, type BoardEntry } from '../board/run-board';
 import { resolveProfile, type LeafProfile } from '../profiles/profile';
-import { appendFindings, fingerprintOf, loadLedger, type ReviewFinding } from '../profiles/review-ledger';
+import { fingerprintOf, type ReviewFinding } from '../profiles/review-ledger';
 import { maybeRunDesignReview, type DesignReviewResult } from './design-review';
+import { escalationProviderReady } from '../verifier';
 
 // D-I: 两条轴的类型与分类器都归 ./acceptance (那里是判据轴的单一真源); 此处 re-export 保旧调用面。
 export type { AcceptanceSpec, GoalClassification, GoalTier } from './classify-acceptance';
@@ -188,7 +189,11 @@ export interface RunGoalConfig {
   designReview?: {
     /** 岗位档案名 (默认 'design-review')。 */
     profile?: string;
-    /** 注入式审核 runner (测试用); 默认走 agent leaf 调度。 */
+    /** 项目提供的截图命令。给了才启用生产截图审核 runner; 省略严格走 diff-only。 */
+    screenshotCommand?: string;
+    /** 升档模型坐标。省略回落 dag.conductorEscalationModel; provider 不可解析时不升档。 */
+    escalationSeat?: string;
+    /** 注入式审核 runner (测试用); 给了压过生产截图 runner。 */
     _runReview?: (diff: string, cwd: string) => Promise<{ findings: ReviewFinding[]; usage: { in: number; out: number } }>;
     /** D-7 修复已尝试标志: true → 同指纹熔断/转票, 不再落账新 findings。 */
     repairAttempted?: boolean;
@@ -343,6 +348,101 @@ function collectChangedFiles(cwd: string): string[] {
     // porcelain v1: 'XY path'; 重命名 'R  old -> new' 取新路径; '!!' = 被忽略, 不进 diff 面。
     .map((l) => (l.includes(' -> ') ? l.slice(l.indexOf(' -> ') + 4) : l.slice(3)))
     .filter((p) => !p.startsWith('!!'));
+}
+
+type DesignReviewRunner = (
+  diff: string,
+  cwd: string,
+) => Promise<{ findings: ReviewFinding[]; usage: { in: number; out: number } }>;
+
+/** profile 叶只回结构化 finding; 指纹在边界重算, 不信模型自报。 */
+function parseDesignReviewFindings(text: string): ReviewFinding[] {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]?.trim() ?? text.trim();
+  const objectAt = fenced.indexOf('{');
+  const arrayAt = fenced.indexOf('[');
+  const starts = [objectAt, arrayAt].filter((n) => n >= 0);
+  if (starts.length === 0) throw new Error('design-review 未返回 JSON');
+  const start = Math.min(...starts);
+  const isArray = fenced[start] === '[';
+  const end = fenced.lastIndexOf(isArray ? ']' : '}');
+  if (end < start) throw new Error('design-review JSON 不完整');
+  const parsed = JSON.parse(fenced.slice(start, end + 1)) as unknown;
+  const rows = Array.isArray(parsed)
+    ? parsed
+    : parsed && typeof parsed === 'object' && Array.isArray((parsed as { findings?: unknown }).findings)
+      ? (parsed as { findings: unknown[] }).findings
+      : [];
+  return rows.flatMap((raw): ReviewFinding[] => {
+    if (!raw || typeof raw !== 'object') return [];
+    const r = raw as Record<string, unknown>;
+    const severity = typeof r.severity === 'string' ? r.severity.toLowerCase() : '';
+    if (severity !== 'p0' && severity !== 'p1' && severity !== 'p2') return [];
+    if (
+      typeof r.where !== 'string' || !r.where.trim() ||
+      typeof r.evidence !== 'string' || !r.evidence.trim() ||
+      typeof r.suggestion !== 'string' || !r.suggestion.trim() ||
+      typeof r.uncertainty !== 'string' || !r.uncertainty.trim()
+    ) return [];
+    return [{
+      where: r.where,
+      severity,
+      evidence: r.evidence,
+      suggestion: r.suggestion,
+      uncertainty: r.uncertainty,
+      fingerprint: fingerprintOf(r.where, r.evidence),
+    }];
+  });
+}
+
+function screenshotReviewPrompt(
+  diff: string,
+  screenshotCommand: string,
+  severe?: ReviewFinding[],
+): string {
+  const recheck = severe?.length
+    ? `\n\n初审 P0/P1, 只保留复核后仍成立的项:\n${JSON.stringify(severe)}`
+    : '';
+  return `执行项目截图命令并审查真实截图像素, 不从代码猜视觉质量。\n` +
+    `截图命令(逐字执行): ${screenshotCommand}\n\n` +
+    `前端写集/diff 输入:\n${diff}${recheck}\n\n` +
+    '只输出 JSON: {"findings":[{"where":"文件或截图区域","severity":"p0|p1|p2",' +
+    '"evidence":"像素证据","suggestion":"具体修法","uncertainty":"不确定性"}]}。无问题输出 {"findings":[]}。';
+}
+
+/**
+ * 生产截图审核装配。无 screenshotCommand 故意不造 runner → maybeRunDesignReview 的 diff-only 路径;
+ * 有命令才调 profile agent。初审无 P0/P1 时不碰升档座, provider 不可达也不冒充已升档。
+ */
+function productionDesignReviewRunner(
+  config: RunGoalConfig,
+  screenshotCommand: string | undefined,
+  escalationSeat: string | undefined,
+): DesignReviewRunner | undefined {
+  const agentRunner = config.dag.agentRunner;
+  if (!screenshotCommand || !agentRunner) return undefined;
+  const profileName = config.designReview?.profile ?? 'design-review';
+  const profile: LeafProfile | undefined = resolveProfile(profileName, config.cwd);
+  if (!profile && config.designReview?.profile) {
+    logger.warn(
+      `Unknown profile "${profileName}"; running as ordinary leaf`,
+      `Unknown profile "${profileName}"; running as ordinary leaf (未知 leaf profile; design-review fail-open)`,
+    );
+  }
+  const initialModel = profile?.seat ?? config.dag.agentLeafModel ?? config.dag.leafModel;
+  const call = async (model: string, prompt: string) => {
+    const r = await agentRunner({ prompt, model, ...(profile ? { profile } : {}) });
+    return { findings: parseDesignReviewFindings(r.text), usage: { in: r.usage.in, out: r.usage.out } };
+  };
+  return async (diff) => {
+    const initial = await call(initialModel, screenshotReviewPrompt(diff, screenshotCommand));
+    const severe = initial.findings.filter((f) => f.severity === 'p0' || f.severity === 'p1');
+    if (!escalationSeat || severe.length === 0) return initial;
+    const rechecked = await call(escalationSeat, screenshotReviewPrompt(diff, screenshotCommand, severe));
+    return {
+      findings: [...initial.findings.filter((f) => f.severity === 'p2'), ...rechecked.findings],
+      usage: { in: initial.usage.in + rechecked.usage.in, out: initial.usage.out + rechecked.usage.out },
+    };
+  };
 }
 /** S-2 声明写集面摘要: 红 = 撞禁写面 (并发 run 写面); outside 是 INV-3 读数, 不冒充零越界。 */
 function describeWriteScope(r: WriteScopeReport): string {
@@ -898,12 +998,20 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
       const reviewFiles = config.writeSet?._collectChangedFiles
         ? config.writeSet._collectChangedFiles()
         : collectChangedFiles(config.cwd);
+      const requestedEscalation = config.designReview.escalationSeat ?? config.dag.conductorEscalationModel;
+      const escalationSeat = escalationProviderReady(requestedEscalation) ? requestedEscalation : undefined;
+      const runReview = config.designReview._runReview ??
+        productionDesignReviewRunner(config, config.designReview.screenshotCommand, escalationSeat);
       designReview = await maybeRunDesignReview({
         cwd: config.cwd,
         changedFiles: reviewFiles,
-        profile: config.designReview.profile,
-        runReview: config.designReview._runReview,
-        repairAttempted: config.designReview.repairAttempted,
+        ...(config.designReview.profile ? { profile: config.designReview.profile } : {}),
+        ...(runReview ? { runReview } : {}),
+        ...(config.designReview.screenshotCommand ? { screenshotCommand: config.designReview.screenshotCommand } : {}),
+        ...(escalationSeat ? { escalationSeat } : {}),
+        ...(config.designReview.repairAttempted !== undefined
+          ? { repairAttempted: config.designReview.repairAttempted }
+          : {}),
       });
     } catch (err) {
       logger.warn({ err: String(err) }, '[run-goal] 设计审核起不来 → 闸缺席 (fail-open, INV-3)');

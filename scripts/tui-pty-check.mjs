@@ -10,8 +10,8 @@
  * 对照做全了:bash 子进程在 bun 宿主下**是好的**(9 字节)—— 所以坏的不是 pty 本身,
  * 是 `bun 宿主 + 这个原生模块`这一对。
  *
- * ⇒ PTY 必须由 **node** 托管。`src/tui/tui-pty.test.ts` 只负责把这个脚本调起来收退出码。
- * ⚠ 别"顺手"把它改回 `bun test` —— 会静默变成一条 0 字节因而**永远绿**的假闸。
+ * ⇒ 真 node 宿主继续用 `@lydell/node-pty`;PATH 把 `node` 指到 bun shim 时,脚本改由 util-linux
+ * `script` 托管同一批交互(仍是真 PTY,仍跑全部断言),不再落进原生模块的零字节死路。
  *
  * ## 它证明什么 / 不证明什么(SDD §9.1 边界声明)
  *
@@ -29,7 +29,8 @@
  *
  * 用法:`node scripts/tui-pty-check.mjs`(退出码 0 = 全过)。
  */
-import { spawn } from '@lydell/node-pty';
+import { spawn as spawnNodePty } from '@lydell/node-pty';
+import { spawn as spawnChild } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -82,24 +83,70 @@ function selfTestOracle() {
 // PTY 驱动
 // ---------------------------------------------------------------------------
 
+/** bun 的 node shim 下避开 node-pty 原生回调缺陷,由 util-linux script 持有真 PTY。 */
+function startScriptPty(file, args, opts, env) {
+  const quote = (s) => `'${String(s).replaceAll("'", "'\\''")}'`;
+  const command = `stty cols ${opts.cols ?? 100} rows 30; exec ${[file, ...args].map(quote).join(' ')}`;
+  const child = spawnChild('script', ['-q', '-e', '-f', '-c', command, '/dev/null'], {
+    cwd: opts.cwd ?? ROOT,
+    env,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let buf = '';
+  let exited = null;
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (d) => { buf += d; });
+  child.stderr.on('data', (d) => { buf += d; });
+  child.on('error', (err) => { buf += `\n${String(err)}\n`; });
+  // pipe → script 会合并同一 tick 的相邻 write;留出事件边界,模拟 node-pty 每次直写 master。
+  let nextWriteAt = 0;
+  const write = (s) => {
+    const now = Date.now();
+    const at = Math.max(now, nextWriteAt);
+    nextWriteAt = at + 50;
+    setTimeout(() => child.stdin.write(s), at - now);
+  };
+  const exitedP = new Promise((resolve) => {
+    child.on('close', (code) => {
+      exited = code;
+      resolve(code);
+    });
+  });
+  return {
+    text: () => visibleText(buf),
+    write,
+    exitedP,
+    exitCode: () => exited,
+    kill: () => child.kill(),
+  };
+}
+
 /** 起一个 PTY 子进程并收全部输出。`startTui` 与日志正对照都走它,免得两处各写一份收流逻辑。 */
 function startPty(file, args, opts = {}) {
-  const pty = spawn(file, args, {
+  const env = {
+    ...process.env,
+    TERM: 'xterm-256color',
+    NO_COLOR: '1',
+    OMD_INSTALL_SKILLS: '0',
+    OMD_TUI_BACKEND: 'fixture',
+    OMD_TUI_USAGE_DIR: mkdtempSync(join(tmpdir(), 'omd-pty-usage-')),
+    ...(opts.env ?? {}),
+  };
+  if (typeof Bun !== 'undefined') return startScriptPty(file, args, opts, env);
+
+  const pty = spawnNodePty(file, args, {
     name: 'xterm-256color',
     // 尺寸锁死:不锁的话不同机器折行位置不同, 断言就成了碰运气 (SDD §9「锁死环境」)。
     // 窄终端场景经 opts.cols 显式给 (切片③: 侧栏自动收起的判据要在 80 列下量)。
     cols: opts.cols ?? 100,
     rows: 30,
     cwd: opts.cwd ?? ROOT,
-    // L3 恒用 fixture 后端: 这条 lane 不许打真模型 (要钱、要网、读数还不稳)。
-    // 账本目录也隔离 —— fixture 的假用量不许污染真仓 .omd/ 的 5h 窗口 (切片②)。
-    env: { ...process.env, NO_COLOR: '1', OMD_INSTALL_SKILLS: '0', OMD_TUI_BACKEND: 'fixture', OMD_TUI_USAGE_DIR: mkdtempSync(join(tmpdir(), 'omd-pty-usage-')), ...(opts.env ?? {}) },
+    env,
   });
   let buf = '';
   let exited = null;
-  pty.onData((d) => {
-    buf += d;
-  });
+  pty.onData((d) => { buf += d; });
   const exitedP = new Promise((resolve) => {
     pty.onExit(({ exitCode }) => {
       exited = exitCode;

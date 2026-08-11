@@ -11,6 +11,7 @@ import { dirname, join, resolve } from 'node:path';
 import { logger } from '../../logger';
 import type { AgentLeafInput, AgentLeafResult, AgentLeafRunner } from '../leaf-runners';
 import type { AgentLeafRunnerOpts } from '../agent-leaf';
+import type { LeafWorkerPayload } from '../leaf-worker';
 import type { AnyOmdTool } from '../agent-tools';
 import { bwrapArgs, defaultRoBinds, makePiAgentCopy, resolveGitBinds, type GitBinds } from './bwrap';
 
@@ -71,6 +72,15 @@ export function serializableOpts(opts: AgentLeafRunnerOpts): Record<string, unkn
     logger.warn({ tools: names }, `[omd/sandboxed-leaf] 非 sandboxSafe 扩展工具不进隔离叶 (已剥除): ${names.join(', ')}`);
   }
   return { ...rest, ...dd, ...(kept.length > 0 ? { customTools: kept } : {}) };
+}
+
+/** 单次调用的 JSON 边界形状。input 原样保留, profile 等调用期字段不得迁入构造期 opts。 */
+export function leafWorkerPayload(
+  opts: Record<string, unknown>,
+  input: AgentLeafInput,
+  bridgePrefix?: string,
+): LeafWorkerPayload {
+  return { opts, input, ...(bridgePrefix ? { toolBridge: { prefix: bridgePrefix } } : {}) };
 }
 
 /**
@@ -153,7 +163,7 @@ export function createSandboxedLeafRunner(opts: AgentLeafRunnerOpts): AgentLeafR
     const payloadAbs = join(root, payloadRel);
     const resultAbs = join(root, resultRel);
     const bridgePrefix = bridgeTools.size > 0 ? `.omd-leaf-tool-${id}` : null;
-    writeFileSync(payloadAbs, JSON.stringify({ opts: optsJson, input, ...(bridgePrefix ? { toolBridge: { prefix: bridgePrefix } } : {}) }));
+    writeFileSync(payloadAbs, JSON.stringify(leafWorkerPayload(optsJson, input, bridgePrefix ?? undefined)));
 
     // pi agent dir 即弃 rw 副本 (每 leaf 一份, 防并发写共享态; 见 makePiAgentCopy ⚠ OAuth 注)。
     const piAgentCopy = makePiAgentCopy();

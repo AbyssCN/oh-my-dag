@@ -48,6 +48,9 @@ export function nodeFieldsKey(node: PlanNode): string {
 		// (write-set 归属阶梯 ③ 的命中面), 判重把声明不同步的两个节点合成一个 = 吞掉某一方的写集契约。
 		node.write_set ? node.write_set.join(',') : NONE,
 		node.persona ?? NONE,
+		// D-3 (leaf-profile库 2026-08-11): profile 是语义 —— 档案名不同 = 装配进 leaf 的 persona/seat
+		// 不同 = 不同的执行 (INV-1 未知名回退普通 leaf, 语义同"无 profile"→ 缺省 NONE 归一)。
+		node.profile ?? NONE,
 		node.creative ?? NONE,
 		node.output_schema ? JSON.stringify(node.output_schema) : NONE,
 		node.args ? JSON.stringify(node.args) : NONE,

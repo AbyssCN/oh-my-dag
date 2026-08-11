@@ -20,14 +20,21 @@
  * 退出码:0 没有可迁的 / dry 跑完且全都能迁 · 1 有校验不过的 · 2 迁完了(--write)。
  */
 import { existsSync, readFileSync, readdirSync, renameSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { createOmdSessionStore } from '../src/harness/chat/session-store';
 import { dataPath } from '../src/harness/project-scope';
 
-/** 与 `ChatStore.dir()` 同一条判断 —— 两处漂开就会去迁一个空目录然后报"没有可迁的"。 */
+/**
+ * 旧格式目录 —— 与 session-store 的 `sessionsRootFor` **同一口径** (两处漂开就会去迁一个空
+ * 目录然后报"没有可迁的")。sessionsRootFor 把相对 dataPath 落在 store 的 fs cwd (=repoRoot) 上;
+ * 这里若按 process.cwd() 解析, OMD_DATA_HOME 设且无 active scope 时两处会指到不同目录
+ * (migrate 扫 run 根的空 .omd/chat, store 却读写 repoRoot/.omd/chat) —— 相对路径统一对
+ * repoRoot 解析, 绝对路径 (active scope) 原样透传。
+ */
 function chatDir(repoRoot: string): string {
-  return process.env.OMD_DATA_HOME?.trim() ? dataPath('chat') : join(repoRoot, '.omd/chat');
+  const rel = dataPath('chat');
+  return isAbsolute(rel) ? rel : join(repoRoot, rel);
 }
 
 export interface OldSession {

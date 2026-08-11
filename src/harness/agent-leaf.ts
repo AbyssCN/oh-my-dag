@@ -869,31 +869,47 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
   // S3 read_skill umbrella (D-S3-5): 同一组装段挂 createSkillTools, roots 显式注入含 cwd 项目根, 与 mcpTools 并列进拼装点。
   // 零 skill 不挂 (skill-tool.ts:52 短路), 保证 I-1 零 skill 仓 tools 数组与 S2 基线字节相同。
   // profile.skills: 已解析的岗位档案声明的 skill 名 → 在 roots 里定位并预载正文 (不进 promptVersion)。
+  // 渲染函数按调用期的 leafProfile (input.profile ?? opts.profile) 求值, 不在构造期烤死 ——
+  // runner 跨节点复用, 每次调用的 profile 可以不同 (同 leafProfile 的 D-3 边界)。
   const skillRoots = opts.skillDeps?.roots ?? defaultSkillRoots(cwd);
-  const profileSkillsContent = opts.profile?.skills
-    ?.map((name) => {
-      const src = loadSkillSourceByName(name, skillRoots);
-      return src ? `[skill ${name}]\n${src.body.trim()}` : null;
-    })
-    .filter((s): s is string => s !== null)
-    .join('\n\n') ?? '';
+  const renderProfileSkills = (profile: LeafProfile | undefined): string =>
+    profile?.skills
+      ?.map((name) => {
+        const src = loadSkillSourceByName(name, skillRoots);
+        return src ? `[skill ${name}]\n${src.body.trim()}` : null;
+      })
+      .filter((s): s is string => s !== null)
+      .join('\n\n') ?? '';
   const skillTools = createSkillTools({ roots: skillRoots, ...(opts.skillDeps?.cwd ? { cwd: opts.skillDeps.cwd } : {}) });
   const excluded = new Set(opts.hashlineEdit ? ['edit'] : []);
-  // profile.tools 与 opts.tools 合并做 allowlist (profile 是岗位预设, opts 是调用方显式覆盖; 取并集)。
-  const profileTools = opts.profile?.tools;
-  const allowlist = (opts.tools || profileTools) ? new Set([...(opts.tools ?? []), ...(profileTools ?? [])]) : null;
-  const tools = [...baseTools, ...hashlineTools, ...mcpTools, ...skillTools, ...(opts.customTools ?? [])].filter(
-    (t) => !excluded.has(t.name) && (!allowlist || allowlist.has(t.name)),
-  );
+  const availableTools = [...baseTools, ...hashlineTools, ...mcpTools, ...skillTools, ...(opts.customTools ?? [])];
+  // profile 按调用到达, tools 也必须按调用求值。undefined = 普通全工具策略; [] = 明确无工具;
+  // 非空 = 与 opts.tools 的并集再和真实可用工具取交集。
+  const toolsForProfile = (profile: LeafProfile | undefined): AnyOmdTool[] => {
+    const profileTools = profile?.tools;
+    const allowlist = (opts.tools || profileTools)
+      ? new Set([...(opts.tools ?? []), ...(profileTools ?? [])])
+      : null;
+    return availableTools.filter((t) => !excluded.has(t.name) && (!allowlist || allowlist.has(t.name)));
+  };
 
   // 项目说明书读一次复用整 runner (cwd 固定; 一次 fan-out 里几十个 leaf 不该各读一遍盘)。
   const contextFiles = loadProjectContext(cwd);
-  const systemPrompt = buildLeafSystemPrompt({ cwd, tools, contextFiles });
+  const defaultTools = toolsForProfile(opts.profile);
+  const defaultSystemPrompt = buildLeafSystemPrompt({ cwd, tools: defaultTools, contextFiles });
 
   const runOnce = async (input: AgentLeafInput): Promise<AgentLeafResult> => {
     const { prompt, model: inputModel } = input;
+    // profile 按调用传 (input.profile) 优先于构造期 opts.profile (runner 跨节点复用, SDD
+    // 2026-08-11-leaf-profile库 D-3): 引擎侧每节点各自 resolveProfile, 不能烤进 runner 装配期。
+    // opts.profile 仍是兼容回退 (未经 input 传时的旧调用形状)。
+    const leafProfile = input.profile ?? opts.profile;
+    const perCallTools = input.profile ? toolsForProfile(leafProfile) : defaultTools;
+    const perCallSystemPrompt = input.profile
+      ? buildLeafSystemPrompt({ cwd, tools: perCallTools, contextFiles })
+      : defaultSystemPrompt;
     // profile.seat 当节点无显式模型时的回退 (引擎侧未 pin model 且无 router → 传空串)。
-    const model = inputModel || opts.profile?.seat || '';
+    const model = inputModel || leafProfile?.seat || '';
     if (!model) {
       throw new Error('[agent-leaf] 无模型: input.model 空且 profile.seat 未设');
     }
@@ -927,7 +943,8 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // 而不是"引擎这一版怎么包装" —— 混进来会让版本逐节点漂, 也就分不了组。
     // profile.persona 与 profile skills 同此边界: 不进 promptVersion, 不建并行 prompt 构建路径。
     const promptVersion = promptVersionOfText(scaffold);
-    const combinedPersona = [opts.persona, opts.profile?.persona, profileSkillsContent].filter(Boolean).join('\n\n');
+    const profileSkillsContent = renderProfileSkills(leafProfile);
+    const combinedPersona = [opts.persona, leafProfile?.persona, profileSkillsContent].filter(Boolean).join('\n\n');
     const routedPrompt = combinedPersona ? `<persona>\n${combinedPersona}\n</persona>\n\n${disciplined}` : disciplined;
 
     // advisor(NOTES 2026-08-10):pi 座内部升档 —— 本次运行注入无参 advisor 工具,prompt 面按
@@ -935,9 +952,11 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // 在下方 SDK 分支下发),不注内部工具。recorder 挂 emit 链 —— 与 filesTouched 同一条事件流。
     const advisorRecorder = opts.advisor && !isSdkChannel ? createTranscriptRecorder() : null;
     const runTools = advisorRecorder
-      ? [...tools, createAdvisorTool({ advisor: opts.advisor!, seatCoord: model, transcript: () => advisorRecorder.serialize() })]
-      : tools;
-    const runSystemPrompt = advisorRecorder ? buildLeafSystemPrompt({ cwd, tools: runTools, contextFiles }) : systemPrompt;
+      ? [...perCallTools, createAdvisorTool({ advisor: opts.advisor!, seatCoord: model, transcript: () => advisorRecorder.serialize() })]
+      : perCallTools;
+    const runSystemPrompt = advisorRecorder
+      ? buildLeafSystemPrompt({ cwd, tools: runTools, contextFiles })
+      : perCallSystemPrompt;
 
     // filesTouched 采集 (2026-07-20 修产物闸冤杀): start 记 toolCallId→path 候选,
     // end 且 !isError 才计入 (失败的写不算产物)。
@@ -1181,8 +1200,8 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
         const advisorModel = officialAdvisorModelId(opts.advisor, model);
         const out = await runSdkAgentLoop({
           prompt: routedPrompt,
-          systemPrompt,
-          tools,
+          systemPrompt: perCallSystemPrompt,
+          tools: perCallTools,
           modelId,
           modelCoord: model,
           ...(effort ? { effort } : {}),

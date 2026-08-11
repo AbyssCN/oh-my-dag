@@ -48,9 +48,9 @@ const ROOT = new URL('../..', import.meta.url).pathname.replace(/\/$/, '');
  * 值 = 谁在什么地方按什么路径拉它(写不出这句话 = 它没有入口 = 该删, 不该豁免)。
  */
 const DYNAMIC_ENTRIES: Record<string, string> = {
-  'src/harness/leaf-worker.ts':
-    'bwrap 子进程按**路径字符串**拉起: hooks/sandboxed-leaf.ts 的 WORKER_REL = 这个路径, ' +
-    '每次 agent leaf 调用 spawn 一个 `bwrap [binds] bun run <它>`。',
+  // leaf-worker.ts 2026-08-11 出名单: sandboxed-leaf.ts 现在静态 import 其 LeafWorkerPayload 类型
+  // (profile 跨沙箱载荷同型, run d39b559e), 静态可达已覆盖; bwrap 仍按路径字符串拉起它, 但豁免名单
+  // 只收"静态不可达"的件。
   'src/eval/oracles/agent-leaf-prompt.ts':
     '**外部** tournament 脚本按路径参数跑: `bun run $FUSANG_HOME/scripts/xihe-tournament.ts <它>` ' +
     '(见该文件头注的「消费」段)。本仓没有、也不该有它的 import 方。',

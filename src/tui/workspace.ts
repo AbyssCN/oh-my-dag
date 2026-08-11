@@ -5,7 +5,8 @@
  * 读不出(不是 git 仓 / git 不在)→ 对应段 `null`,底栏那段**不画**(segment 模型)。
  */
 import { execFileSync } from 'node:child_process';
-import { basename } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import type { WorkspaceInfo } from './render/statusbar';
 
 const git = (cwd: string, ...args: string[]): string | null => {
@@ -15,6 +16,17 @@ const git = (cwd: string, ...args: string[]): string | null => {
     return null; // 不是 git 仓 / git 不在 —— 段不画, 不是错误
   }
 };
+
+/** 隔离 run/worktree 的目录名可能是 UUID;项目 package 名存在时比物理目录名更能标识仓库。 */
+function repoName(root: string): string {
+  try {
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { name?: unknown };
+    if (typeof pkg.name === 'string' && pkg.name.trim()) return pkg.name.trim();
+  } catch {
+    // 非 JS 仓或坏 package.json → 回落 git 根目录名,工作区读数不能拖垮 TUI。
+  }
+  return basename(root);
+}
 
 export function readWorkspaceInfo(cwd: string): WorkspaceInfo | null {
   const branchRaw = git(cwd, 'rev-parse', '--abbrev-ref', 'HEAD');
@@ -26,8 +38,9 @@ export function readWorkspaceInfo(cwd: string): WorkspaceInfo | null {
   // worktree 判定: git-dir 形如 `<主仓>/.git/worktrees/<名>` 才是链接工作树。
   const gitDir = git(cwd, 'rev-parse', '--git-dir');
   const wtMatch = gitDir?.match(/\/\.git\/worktrees\/([^/]+)$/);
+  const root = git(cwd, 'rev-parse', '--show-toplevel') ?? cwd;
   return {
-    repo: basename(git(cwd, 'rev-parse', '--show-toplevel') ?? cwd),
+    repo: repoName(root),
     branch,
     dirty,
     worktree: wtMatch?.[1] ?? null,

@@ -146,7 +146,7 @@ describe('D-N 展开闸 — 子图过与外层同一条 pass 管线', () => {
   test('stamp pass 跳过 conductor 节点 (它用 conductor 座位, 盖 leaf 档坐标是空旋钮)', () => {
     const p = plan({
       c: { goal: '展开', executor: 'conductor' },
-      l: { goal: '普通 leaf' },
+      l: { goal: '普通 leaf', tier: 'mid' },
     });
     const { plan: out, stamped } = stampPass(p, {
       pools: { strong: ['s:1'], mid: ['m:1'], cheap: ['ch:1'], multimodal: [] },

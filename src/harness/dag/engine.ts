@@ -34,7 +34,11 @@ import {
   mergeMcpAllow,
   PLAN_BOUNDARY,
   type ConductorPlan,
+  type ConductorProfileRosterEntry,
 } from '../conductor-plan';
+// SDD 2026-08-11-leaf-profile库 D-3: 节点 profile 字段经此解析成 LeafProfile, 复用既有注入口
+// (agent-leaf.ts AgentLeafRunnerOpts.profile 同型), 不建平行管道。loadProfiles 只投影有界 conductor 名册。
+import { loadProfiles, resolveProfile, type LeafProfile } from '../profiles/profile';
 // D-3 注册 server 集真源 (parsePlan knownServers 必传): 该 run 的 cwd 经 loadMcpClientConfig。
 import { knownMcpServerNames } from '../../mcp/client/config';
 // S3.6 escalation patch 模式: 补丁解析 + 程序化 merge (未补丁节点字节不动 → D-21 复用按构造成立)。
@@ -198,6 +202,18 @@ function mcpRegistryRoot(config: ExecutorDagConfig): string {
   return config.continuity?.repoRoot ?? process.cwd();
 }
 
+/** INV-7: conductor 只见 name + 一行能力摘要, 不让整份 ProfileSpec/persona 穿透。 */
+function profileRoster(config: ExecutorDagConfig): ConductorProfileRosterEntry[] {
+  return [...loadProfiles(mcpRegistryRoot(config)).values()].map((profile) => ({
+    name: profile.name,
+    summary: profile.skills?.length
+      ? `skills=${profile.skills.join(',')}; output=${profile.outputSchema ?? 'unspecified'}`
+      : profile.outputSchema
+        ? `output=${profile.outputSchema}`
+        : 'specialist profile',
+  }));
+}
+
 /**
  * 单轮: conductor 规划 (显式 conductorModel) → 现场 fan-out leaves → results。
  * 升级时本函数被重复调用 (换 conductorModel + 注入失败原因的 task)。
@@ -212,6 +228,7 @@ async function planAndExecute(
   prior?: PriorExec,
   /** D-3 反馈锚定 (SDD 2026-08-10-blame-scoped-node-retry): 闭包节点 id → 追加到其 goal 的 verifier 意见。非闭包节点不碰 (G-2)。 */
   blameAnchor?: ReadonlyMap<string, string>,
+  warnedUnknownProfiles: Set<string> = new Set(),
 ): Promise<ExecOnce> {
   // ── 1. conductor: 单结构化调用规划 (显式可换) ──────────────────────────────
   // 模板注册表进规划 prompt (每卡一行 description); parsePlan 校验 template 引用 (TPL-2 规划层拒)。
@@ -221,6 +238,7 @@ async function planAndExecute(
   const sys = conductorSystemPrompt({
     agents: config.agents,
     templates: templateRoster(templates),
+    profiles: profileRoster(config),
     profile: promptProfile,
   });
   let plan: ConductorPlan | null = null;
@@ -288,7 +306,7 @@ async function planAndExecute(
 
   // pass 管线 (SDD v2): oracle 过滤 + planFilters (prune→dedup→stamp, 接线层组装)。
   // conductor 之后, 下游执行机器与 plan 来源无关 → 交 executePlan (D-7 预构造入口共用同一机器)。
-  return executePlan(applyPlanFilters(plan, config), task, config, generate, conductorUsage, templates, prior, blameAnchor);
+  return executePlan(applyPlanFilters(plan, config), task, config, generate, conductorUsage, templates, prior, blameAnchor, warnedUnknownProfiles);
 }
 
 /**
@@ -327,6 +345,7 @@ async function tryPatchReplan(
   blameAnchor?: ReadonlyMap<string, string>,
   /** D-1/D-2: blame 闭包 (invalidationClosure 结果)。null/undefined = blame 解析失败 → 整图请求, 无越界闸。 */
   closure?: ReadonlySet<string> | null,
+  warnedUnknownProfiles: Set<string> = new Set(),
 ): Promise<{ exec: ExecOnce | null; usage: ModelUsage }> {
   const sys = conductorPatchSystemPrompt();
   const requestBody = closure
@@ -388,7 +407,7 @@ async function tryPatchReplan(
       { changed, removed, added, total: Object.keys(plan.nodes).length },
       '[omd/executor-dag] escalation 补丁采纳 → 程序化 merge (S3.6; 未补丁节点按构造复用)',
     );
-    const exec = await executePlan(applyPlanFilters(plan, config), task, config, generate, usage, templates, prior, blameAnchor);
+    const exec = await executePlan(applyPlanFilters(plan, config), task, config, generate, usage, templates, prior, blameAnchor, warnedUnknownProfiles);
     return { exec, usage };
   }
   logger.warn({ err: lastErr }, '[omd/executor-dag] escalation 补丁模式未产出有效补丁 → 回退整图重规划 (S3.6 fail-open)');
@@ -411,6 +430,7 @@ async function executePlan(
   prior?: PriorExec,
   /** D-3 反馈锚定: 闭包节点 id → goal 追加后缀。执行前落 (computeReuse 在其后, 指纹吃 append 后的 plan)。 */
   blameAnchor?: ReadonlyMap<string, string>,
+  warnedUnknownProfiles: Set<string> = new Set(),
 ): Promise<ExecOnce> {
   // D-3 反馈锚定 (SDD 2026-08-10-blame-scoped-node-retry): verifier 意见只 append 到被责备
   // (闭包内) 节点自己的 goal —— 非闭包节点字节不动 → 语义指纹与上轮相同 → D-21 复用成立 (G-2)。
@@ -435,6 +455,7 @@ async function executePlan(
     { plan: plan.name, leafModel: config.leafModel, nodes: Object.keys(plan.nodes).length, levels: levels.length },
     '[omd/executor-dag] planned',
   );
+  // warnedUnknownProfiles 由 runDagInternal 持有并跨升级重规划复用: 同一未知名整轮 run 只 WARN 一行。
 
   // 节点进度事件发射器 (fail-open: 观察者抛错不许扰动执行)。kind 词表 = executor ?? primitive ?? leaf。
   const nodeKind = (n: ConductorPlan['nodes'][string]): string =>
@@ -1032,6 +1053,7 @@ async function executePlan(
       const sys = conductorSystemPrompt({
         ...(config.agents ? { agents: config.agents } : {}),
         templates: templateRoster(templates),
+        profiles: profileRoster(config),
         profile: config.conductorPromptProfile ?? (process.env.OMD_CONDUCTOR_PROMPT === 'lean' ? 'lean' : 'full'),
       });
       const userMsg =
@@ -2403,6 +2425,18 @@ async function executePlan(
       if (node.template && !tpl) {
         logger.warn({ node: id, template: node.template }, '[omd/executor-dag] 未知 agent 模板 → 忽略 (TPL-2 fail-open)');
       }
+      // 岗位档案装配闸 (INV-1, SDD 2026-08-11-leaf-profile库): 同一未知名在本轮只 WARN 一行,
+      // 然后回退普通 leaf。去重键只用 profile 名: 同一坏名字被多个节点复用时, 重复日志没有新增信息。
+      const leafProfile: LeafProfile | undefined = node.profile
+        ? resolveProfile(node.profile, mcpRegistryRoot(config))
+        : undefined;
+      if (node.profile && !leafProfile && !warnedUnknownProfiles.has(node.profile)) {
+        warnedUnknownProfiles.add(node.profile);
+        logger.warn(
+          { node: id, profile: node.profile },
+          `Unknown profile "${node.profile}"; running as ordinary leaf`,
+        );
+      }
       // caveman 路由: 创意节点 (node.creative) → off 护交付物; 否则 → 干活级 (默认 full; ultra opt-in) 压叙述省 token。
       const cav = cavemanRule(leafCavemanLevel(node.creative, config.cavemanLevel ?? 'full'));
       // ponytail (构建相位): leaf-only 降代码量, 维二红线不在砍范围。创意节点护交付物 → 不挂 (同 caveman)。
@@ -2513,14 +2547,14 @@ async function executePlan(
           mediaParts = media.parts;
         }
       }
-      // per-node model 路由 (TPL-3): node.model 显式最高优先 → 模板卡 model → router (bandit) 选 →
-      // 静态 (agent→agentLeafModel, inproc→leafModel)。bucket = executor kind (router 学习单元)。
+      // per-node model 路由 (TPL-3): node.model 显式最高优先 → 模板卡 model → profile.seat →
+      // router (bandit) 选 → 静态 (agent→agentLeafModel, inproc→leafModel)。bucket = executor kind。
       const bucket = useAgent ? 'agent' : 'inproc';
       const staticModel = useAgent ? config.agentLeafModel ?? config.leafModel : config.leafModel;
-      // dispatch 存活闸 (S-B1, 样本 B/C): plan/模板 pin 的座位在冷却窗内 → 视为缺席,
+      // dispatch 存活闸 (S-B1, 样本 B/C): plan/模板/profile pin 的座位在冷却窗内 → 视为缺席,
       // 落回既有解析链 (role-fallback 层本来就避开冷却 channel)。重解析结果经节点
-      // checkpoint 的 model 字段留痕 (与 plan pin 不一致即重解析发生过)。
-      const pinnedCoord = node.model ?? tpl?.model;
+      // checkpoint 的 model 字段留痕 (与 pin 不一致即重解析发生过)。
+      const pinnedCoord = node.model ?? tpl?.model ?? leafProfile?.seat;
       const alivePin = livePin(pinnedCoord);
       if (pinnedCoord !== undefined && alivePin === undefined) {
         logger.warn(
@@ -2601,6 +2635,7 @@ async function executePlan(
         const r = await config.agentRunner!({
           prompt,
           model,
+          ...(leafProfile ? { profile: leafProfile } : {}),
           ...(touchRunId ? { touchSession: `${touchRunId}:${id}` } : {}),
           ...(mcpAllow.length ? { mcpAllow } : {}),
           onEvent: leafProgress,
@@ -3468,14 +3503,14 @@ async function runDagInternal(
   const maxEscalations = config.maxEscalations ?? 1;
   // agent 模板注册表: 注入 (测试/宿主) 或加载 (内置+.omd/agents)。每 run 载一次, 规划+执行+升级共用。
   const templates = config.agentTemplates ?? loadAgentTemplates({ root: config.continuity?.repoRoot });
-
+  const warnedUnknownProfiles = new Set<string>();
   let conductorModel = config.conductorModel ?? '';
   // D-7: 预构造 plan → executePlan 直执 (跳过 conductor); 否则 conductor 规划 → 执行。二者下游同一机器。
   let exec: ExecOnce;
   if (prebuiltPlan) {
-    exec = await executePlan(applyPlanFilters(prebuiltPlan, config), task, config, generate, { in: 0, out: 0 }, templates, prior);
+    exec = await executePlan(applyPlanFilters(prebuiltPlan, config), task, config, generate, { in: 0, out: 0 }, templates, prior, undefined, warnedUnknownProfiles);
   } else {
-    exec = await planAndExecute(task, config, conductorModel, generate, maxPlanRetries, templates, prior);
+    exec = await planAndExecute(task, config, conductorModel, generate, maxPlanRetries, templates, prior, undefined, warnedUnknownProfiles);
   }
   let conductorUsage = exec.conductorUsage;
   let leavesIn = exec.leavesIn;
@@ -3611,7 +3646,7 @@ async function runDagInternal(
       };
       // S3.6 补丁模式优先 (未补丁节点字节不动 → 复用按构造成立); 补丁失败回退整图重规划 (fail-open)。
       const rerunStart = Date.now();
-      const patched = await tryPatchReplan(escTask, verdict.reason, priorExec, config, conductorModel, generate, maxPlanRetries, templates, blameAnchor, closure);
+      const patched = await tryPatchReplan(escTask, verdict.reason, priorExec, config, conductorModel, generate, maxPlanRetries, templates, blameAnchor, closure, warnedUnknownProfiles);
       // D-3 (SDD 2026-08-11-l2-diff-replan): replanMode 记这一轮走的是补丁差量还是回落整图,
       // replanTokens 是这一轮的总账 —— 补丁成功时 exec.conductorUsage 已折进补丁尝试的 token
       // (tryPatchReplan 内部注释同证); 回落时补丁尝试 (patched.usage) 与整图重灌 (exec.conductorUsage)
@@ -3621,7 +3656,7 @@ async function runDagInternal(
         exec = patched.exec;
       } else {
         conductorUsage = addUsage(conductorUsage, patched.usage); // 补丁尝试的 token 不丢账
-        exec = await planAndExecute(escTask, config, conductorModel, generate, maxPlanRetries, templates, priorExec, blameAnchor);
+        exec = await planAndExecute(escTask, config, conductorModel, generate, maxPlanRetries, templates, priorExec, blameAnchor, warnedUnknownProfiles);
       }
       const replanTokens = replanMode === 'patch' ? patched.usage : addUsage(patched.usage, exec.conductorUsage);
       const rerunWallMs = Date.now() - rerunStart;

@@ -15,6 +15,7 @@
  *
  * ⚠ 只读叶子。没有"读一个组"的形态 —— 组没有正文,它只是一层路由。
  */
+import { sep } from 'node:path';
 import { Type } from 'typebox';
 import type { Static } from 'typebox';
 import type { AnyOmdTool, OmdTool } from '../agent-tools';
@@ -104,17 +105,17 @@ export function createSkillTools(deps: SkillToolDeps = {}): AnyOmdTool[] {
           details: { name: resolved, found: false },
         };
       }
-      // 市面 skill 兼容 (O-2 裁决 2026-08-10): Anthropic Agent Skills 规范的捆绑资源
-      // (scripts/references/assets) 在正文里是**相对 skill 目录**的路径, 而模型的 read/bash
-      // 相对 cwd 解析 —— 不给目录锚, 第三层披露断在这里。锚在**返回值**里 (不进冻结前缀)。
+      // 项目 `.omd/skills` 的 read_skill 契约是正文逐字返回;外部/包内 skill 的捆绑资源则
+      // 需要 O-2 目录锚,否则正文里的 scripts/references 相对 cwd 解析会断链。
       const bundle = src.files.filter((f) => f !== 'SKILL.md');
-      const header = [
-        `[skill ${resolved} · 目录 ${src.dir}]`,
-        ...(bundle.length
-          ? [`捆绑资源 (正文相对路径相对该目录, 用 read/bash 取): ${bundle.slice(0, 20).join(', ')}${bundle.length > 20 ? ' …' : ''}`]
-          : []),
-      ].join('\n');
-      return { content: [{ type: 'text', text: `${header}\n\n${src.body.trim()}` }], details: { name: resolved, found: true } };
+      const projectMarker = `${sep}.omd${sep}skills${sep}`;
+      const needsBundleAnchor = bundle.length > 0 && !src.dir.includes(projectMarker);
+      const body = src.body.trim();
+      const text = needsBundleAnchor
+        ? `[skill ${resolved} · 目录 ${src.dir}]\n` +
+          `捆绑资源 (正文相对路径相对该目录, 用 read/bash 取): ${bundle.slice(0, 20).join(', ')}${bundle.length > 20 ? ' …' : ''}\n\n${body}`
+        : body;
+      return { content: [{ type: 'text', text }], details: { name: resolved, found: true } };
     },
   };
   return [tool as AnyOmdTool];

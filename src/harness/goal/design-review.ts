@@ -157,10 +157,9 @@ export async function maybeRunDesignReview(opts: DesignReviewOpts): Promise<Desi
       rawFindings.push(...review.findings);
       usage = review.usage;
     } else if (opts.screenshotCommand) {
-      // D-10 截图路径: 跑截图命令, 产物进 diff; 此处不内置浏览器驱动, 命令由项目侧提供。
-      // 当前实现: 截图命令不可用时退化到 diff-only; 真实截图审需 agentRunner 带多模态座位。
-      logger.info({ cmd: opts.screenshotCommand }, '[omd/design-review] 截图命令已配置 (D-10), 当前 runner 缺席 → diff-only 退化');
-      rawFindings.push(...buildDiffOnlyFindings(frontendFiles));
+      // 有截图命令却没有 runner 时不能冒充 diff-only 看过截图。run-goal 生产装配会为这条路挂
+      // profile agent; 其它调用方漏装配则响亮失败, 由外层 advisory catch 收成零 finding。
+      throw new Error(`截图命令已配置但 screenshot review runner 缺席: ${opts.screenshotCommand}`);
     } else {
       // D-10 退化路径: 无截图命令 → diff-only 文本审
       rawFindings.push(...buildDiffOnlyFindings(frontendFiles));

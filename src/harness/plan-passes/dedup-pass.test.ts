@@ -178,6 +178,7 @@ describe("dedupPass (D-20)", () => {
 			params: [{ p: 1 }, { p: 2 }],
 			creative: [true, false],
 			persona: ["评论家", "审计员"],
+			profile: ["p1", "p2"],
 			template: ["t1", "t2"],
 			model: ["m1", "m2"],
 			max_retry: [1, 2],

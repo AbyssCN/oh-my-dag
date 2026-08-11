@@ -19,14 +19,18 @@ import './script-bootstrap';
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import { bootstrapModelRuntime } from '../model/bootstrap';
-import { createAgentLeafRunner } from './agent-leaf';
+import { createAgentLeafRunner, type AgentLeafRunnerOpts } from './agent-leaf';
+import type { AgentLeafInput, AgentLeafResult, AgentLeafRunner } from './leaf-runners';
 import type { AnyOmdTool } from './agent-tools';
 
-const payloadFile = process.argv[2];
-const resultFile = process.argv[3];
-if (!payloadFile || !resultFile) {
-  process.stderr.write('[leaf-worker] 用法: leaf-worker <payloadFile> <resultFile>\n');
-  process.exit(2);
+export interface LeafWorkerPayload {
+  opts: Record<string, unknown>;
+  input: AgentLeafInput;
+  toolBridge?: { prefix: string };
+}
+
+export interface LeafWorkerDeps {
+  createRunner?: (opts: AgentLeafRunnerOpts) => AgentLeafRunner;
 }
 
 /**
@@ -55,13 +59,14 @@ async function callParentTool(
   }
 }
 
-try {
-  const payload = JSON.parse(readFileSync(payloadFile, 'utf8')) as {
-    opts: Record<string, unknown>;
-    input: { prompt: string; model: string; touchSession?: string };
-    toolBridge?: { prefix: string };
-  };
-  bootstrapModelRuntime();
+/**
+ * 消费父进程落下的单次调用载荷。抽成可导出函数是为了让 JSON 边界可直接验:
+ * profile/touchSession 等调用期字段必须留在 input 上, 不能在 worker 里重建或丢掉。
+ */
+export async function runLeafWorkerPayload(
+  payload: LeafWorkerPayload,
+  deps: LeafWorkerDeps = {},
+): Promise<AgentLeafResult> {
   // cwd = process.cwd() (= worktree, bwrap --chdir 设); sandboxRoot 清掉 → in-process 路径 (bwrap 已是隔离)。
   // SDD S3: 引擎侧 session 经 input 传 (runner 每 leaf 新建一次, 静态 session 即可, 无需 ALS)。
   // D-9: sandboxSafe 工具的 decl (元数据) 过线, execute 在 JSON 边界剥落 → 这里重水化成**文件桥代理**
@@ -80,16 +85,32 @@ try {
           execute: (id: string, params: unknown) => callParentTool(bridgePrefix!, ++callSeq, t.name, id, params),
         }))
       : undefined;
-  const runner = createAgentLeafRunner({
+  const runner = (deps.createRunner ?? createAgentLeafRunner)({
     ...payload.opts,
     cwd: process.cwd(),
     sandboxRoot: undefined,
     ...(payload.input.touchSession ? { touch: { session: payload.input.touchSession } } : {}),
     ...(customTools ? { customTools } : {}),
-  });
-  const result = await runner(payload.input);
-  writeFileSync(resultFile, JSON.stringify({ ok: true, result }));
-} catch (e) {
-  writeFileSync(resultFile, JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+  } as AgentLeafRunnerOpts);
+  return runner(payload.input);
 }
-process.exit(0);
+
+async function main(): Promise<number> {
+  const payloadFile = process.argv[2];
+  const resultFile = process.argv[3];
+  if (!payloadFile || !resultFile) {
+    process.stderr.write('[leaf-worker] 用法: leaf-worker <payloadFile> <resultFile>\n');
+    return 2;
+  }
+  try {
+    const payload = JSON.parse(readFileSync(payloadFile, 'utf8')) as LeafWorkerPayload;
+    bootstrapModelRuntime();
+    const result = await runLeafWorkerPayload(payload);
+    writeFileSync(resultFile, JSON.stringify({ ok: true, result }));
+  } catch (e) {
+    writeFileSync(resultFile, JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+  }
+  return 0;
+}
+
+if (import.meta.main) process.exit(await main());

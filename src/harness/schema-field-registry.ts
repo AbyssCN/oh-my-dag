@@ -125,6 +125,12 @@ export const REGISTRY: Record<string, FieldEntry> = {
   params: { consumer: 'primitive-registry (paramsSchema 深校验 + run)', fingerprint: 'fields', declared: true, note: '' },
   creative: { consumer: 'executor-dag.runNodeOnce (caveman 档位路由 + fan-in 摘要豁免)', fingerprint: 'fields', declared: true, note: '' },
   persona: { consumer: 'executor-dag-planner.buildLeafPrompt', fingerprint: 'fields', declared: true, note: '' },
+  profile: {
+    consumer: 'executor-dag.runNodeOnce (INV-1 装配闸: resolveProfile → agentRunner input.profile; agent-leaf 消费 persona/seat/skills)',
+    fingerprint: 'fields',
+    declared: true,
+    note: 'SDD 2026-08-11-leaf-profile库 D-3: 岗位档案名不同 = 装配进 leaf 的 persona/seat 不同 = 不同的执行 → 入键。未知名回退普通 leaf (INV-1 fail-open), 语义同"无 profile"。',
+  },
   template: { consumer: 'executor-dag.runNodeOnce (agent-templates 查卡 → prompt 前缀 + 卡片 model)', fingerprint: 'fields', declared: true, note: '未知名规划期被 parsePlan 拒 (TPL-2)。' },
   mcp: {
     consumer: 'executor-dag.runNodeOnce (agentRunner 调用点: node.mcp ∪ 模板卡 mcp → mcpAllow → C-5 授权闸)',

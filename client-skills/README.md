@@ -4,7 +4,7 @@
 
 ## 安装
 
-**Claude Code**:**无需手动拷贝**。注册 omd MCP 后,`omd mcp` server 首次启动时自动把这 20 个技能
+**Claude Code**:**无需手动拷贝**。注册 omd MCP 后,`omd mcp` server 首次启动时自动把这 22 个技能
 (统一 `omd-` 前缀,避免和你既有 skill 撞名)幂等铺进用户级 `~/.claude/skills/` —— 新会话即得
 `/omd-path`、`/omd-deliver` 等。自装幂等、随包升级更新,且**从不覆盖你改过的技能**(按内容 hash 判定,
 用户动过即跳过)。关掉自装:环境变量 `OMD_INSTALL_SKILLS=0`。机制在 `src/harness/client-skills-install.ts`。
@@ -16,7 +16,7 @@ cd <目标repo> && claude mcp add omd -- omd mcp        # 全局安装的 omd; �
 
 **Codex**:没有 skills 机制——把需要的 SKILL.md 正文并入目标 repo 的 `AGENTS.md`,或作为 prompt 片段引用。
 
-## 技能一览(20 个)
+## 技能一览(22 个)
 
 > 这张表**必须与本目录 `ls` 逐个对上** —— 表里有而目录没有 = 用户装了却拿不到,
 > 目录有而表里没有 = 出厂了没人知道。两种都是静默失效。
@@ -25,6 +25,8 @@ cd <目标repo> && claude mcp add omd -- omd mcp        # 全局安装的 omd; �
 | 技能 | 干什么 | 靠什么 |
 |---|---|---|
 | `/omd-path` | 开/建/列 pathfinder 决策地图 + 开票 + 预取 | MCP `map_open` `map_add` `map_prefetch` |
+| `/omd-ui-reviewer` | 看渲染截图判 UI(层级/间距/可读性/状态/一致性/slop);design-review profile 的可移植兜底审核 skill | 纯方法论,无 MCP 依赖 |
+| `/omd-docs-drift` | 文档漂移追踪:按声明表裁「文档↔变更源」对,语义半闸出 suggested 票 | MCP `dag_run`(Sonnet 座逐对判) |
 | `/omd-tickets` | 看前沿 + 拉 AFK 研究回流(预算内自续) | MCP `map_tickets` |
 | `/omd-rule` | 裁决前沿票 + 终裁判定树(真源三层/灰态三画法/敏感清单) | MCP `map_rule` |
 | `/omd-deliver` | **权力闸**:执行已散尽区域 + delivered✅≠东西真在核对 | MCP `map_deliver` |

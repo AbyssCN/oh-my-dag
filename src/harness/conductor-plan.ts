@@ -206,6 +206,8 @@ const PlanNode = z
      * 弱 conductor 不自动生成 (防 slop)。
      */
     persona: z.string().optional(),
+    /** 岗位档案名; conductor 只能从注入名册选择, 未知名由执行期 INV-1 闸 fail-open。 */
+    profile: z.string().min(1).optional(),
     /**
      * Agent 模板引用 (agent-templates 注册表按名选卡): 执行期把卡片 body (方法论+检查单+输出纪律)
      * 注入 leaf prompt 前缀 — 模板管深度, persona 管任务角度 (一行调味), 二者叠加。卡片可携 model
@@ -328,8 +330,29 @@ export type ConductorPlan = z.infer<typeof PlanSchema>;
  *    裁决 (2026-07-25, medium R=2 串行): k3 full/lean 同分 1.000 且 firstShot 全过, lean 少 25%
  *    leaf token → k3 采 lean (assemble 接线); large fixture 高分辨率复核为可选 follow-up。
  */
+/** 岗位档案名册条目 DTO(INV-7 收窄形状): 只有 name + summary, 拒绝整份 ProfileSpec 穿透。 */
+export interface ConductorProfileRosterEntry {
+  readonly name: string;
+  readonly summary: string;
+}
+
+/**
+ * summary 单行 + ≤80 code points 归一化 (INV-7 第一道防线, 在 conductor-plan.ts 本地做 —— 不依赖
+ * 调用方守规矩)。折叠任意空白/换行成单空格再按 Unicode code point 截断 (`.slice` 按 UTF-16 code
+ * unit 会切碎代理对; `Array.from` 按 code point 迭代更安全)。
+ */
+function oneLineSummary(summary: string): string {
+  const normalized = summary.replace(/\s+/gu, ' ').trim();
+  return Array.from(normalized).slice(0, 80).join('');
+}
+
 export function conductorSystemPrompt(
-  opts: { agents?: string[]; templates?: { name: string; description: string }[]; profile?: 'full' | 'lean' } = {},
+  opts: {
+    agents?: string[];
+    templates?: { name: string; description: string }[];
+    profiles?: readonly ConductorProfileRosterEntry[];
+    profile?: 'full' | 'lean';
+  } = {},
 ): string {
   const lean = opts.profile === 'lean';
   // roster 段 2026-07-26 撤下: node.agent 在 executor-dag 零消费者 (分流看 executor/model), 且
@@ -349,6 +372,18 @@ export function conductorSystemPrompt(
         'add a one-line "persona" ON TOP for the task-specific angle (template = depth, persona = angle).',
         'Do NOT invent template names — an unknown name makes the whole plan INVALID. A card may pin the',
         'node\'s model; omit "model" unless you must override it. Mechanical/command nodes need no template.',
+      ]
+    : [];
+  // 岗位档案名册 (field "profile", optional): 每条仅 name + 归一化 summary, INV-7 不带 persona 全文。
+  // oneLineSummary 是双层防线的第一层 (本地做, 不信调用方); 装配点 (engine.ts) 投影 loadProfiles()
+  // 结果为 {name, summary} 是第二层, 二者独立生效, 任一层单独在场也不破 ≤80/单行不变量。
+  const profileSection = opts.profiles?.length
+    ? [
+        '',
+        'Leaf profile roster (field "profile", optional; use ONLY these names):',
+        ...opts.profiles.map((p) => `- "${p.name}": ${oneLineSummary(p.summary)}`),
+        'Set "profile" only when its role matches the node. Do not invent profile names.',
+        'Unknown names fall back to an ordinary leaf at run time.',
       ]
     : [];
   return [
@@ -598,6 +633,7 @@ export function conductorSystemPrompt(
     'Keep the graph acyclic.',
     ...roster,
     ...templateSection,
+    ...profileSection,
     '',
     'Constrained control-flow primitives (field "kind":"primitive" — OPTIONAL, prefer over hand-wiring):',
     'When a node\'s job matches a known control-flow SHAPE, emit ONE primitive node instead of hand-drawing',
@@ -628,7 +664,7 @@ export function conductorSystemPrompt(
     // "agent" 2026-07-26 从明示 schema 撤下 (同 skill 的理由): executor-dag 零消费者 —— 分流只看
     // executor/model; 而 conductor 每轮重掷这个字段, 反而系统性打空 D-21 跨轮语义复用
     // (semantic-key 为此把它排除在指纹外)。zod 层仍容忍旧 plan。
-'  "nodes": { "<node_id>": { "goal"?: string, "persona"?: string, "template"?: string, "mcp"?: string[] (server name or "server:tool" — an unregistered server makes the whole plan INVALID, like "template"),',
+ '  "nodes": { "<node_id>": { "goal"?: string, "persona"?: string, "profile"?: string, "template"?: string, "mcp"?: string[] (server name or "server:tool" — an unregistered server makes the whole plan INVALID, like "template"),',
     '    "args"?: object, "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map"|"conductor", "command"?: string, "expect_exit"?: number, "creative"?: boolean,',
     // detector 进形状 (2026-07-30): 散文里提一嘴不算明示 —— 「明示即承诺」的闸判的就是这份
     // **conductor 照抄的形状**, 而不在形状里的字段它基本不会写。放在 max_nodes 旁边是因为两者

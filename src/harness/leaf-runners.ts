@@ -7,6 +7,7 @@
  */
 import type { ModelUsage } from '../model/gateway';
 import type { AgentEvent } from '@earendil-works/pi-agent-core';
+import type { LeafProfile } from './profiles/profile';
 
 // ── agent leaf(带工具的 pi session,能改文件)────────────────────────
 export interface AgentLeafInput {
@@ -33,6 +34,13 @@ export interface AgentLeafInput {
    * 与 chat 通道同形: 回调抛错被吞, 永不影响执行)。省略 = 不转发 (零开销, 老 runner 行为不变)。
    */
   onEvent?: (e: AgentEvent) => void;
+  /**
+   * 已解析的岗位档案 (SDD 2026-08-11-leaf-profile库 D-3): 引擎侧 `node.profile` 经 `resolveProfile`
+   * 解出 → **按调用**传 (runner 跨节点复用, 不能烤进构造期 opts, 同 touchSession 那条)。
+   * 省略 = 本次调用无 profile, 与 opts 级 `AgentLeafRunnerOpts.profile`(构造期兼容回退)二选一由
+   * runner 实现决定优先序。profile 内容不进 promptVersion (INV-2, 与 persona 同边界)。
+   */
+  profile?: LeafProfile;
 }
 export interface AgentLeafResult {
   text: string;
