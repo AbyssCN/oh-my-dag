@@ -226,6 +226,23 @@ export interface SdkLoopOut {
   aborted: boolean;
 }
 
+/**
+ * 合成 pi 形状的 `message_update/text_delta`(SDK 通道正文流的唯一出口)。
+ *
+ * ⚠ 消费者(tui/backend-embedded:123 · serve/daemon:205 · agent-leaf:928)只认这一种
+ * 事件形状 —— SDK 通道此前一条都不发,正文在 UI 上**整段不上屏**(2026-08-11 实测:
+ * 7.7k token 的回答入了库、屏上零字,读起来像"卡住了")。
+ */
+function emitTextDelta(onEvent: ((e: AgentEvent) => void) | undefined, delta: string): void {
+  if (!onEvent || !delta) return;
+  const partial = { role: 'assistant', content: [{ type: 'text', text: delta }], timestamp: Date.now() };
+  onEvent({
+    type: 'message_update',
+    message: partial,
+    assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta, partial },
+  } as unknown as AgentEvent);
+}
+
 export async function runSdkAgentLoop(o: SdkLoopOpts): Promise<SdkLoopOut> {
   const bridge = buildOmdSdkMcpBridge(o.tools, { onEvent: o.onEvent ?? (() => {}) });
   const abort = new AbortController();
@@ -254,6 +271,9 @@ export async function runSdkAgentLoop(o: SdkLoopOpts): Promise<SdkLoopOut> {
 
   const toolNameById = new Map<string, string>();
   const generated: AgentMessage[] = [];
+  // 自上一条 assistant 以来经 stream_event 流出的正文字符数。**去重判据**:增量总是先于
+  // 它所属的 assistant 消息到达,所以 assistant 到达时它 >0 ⇔ 这段正文已经流出去过。
+  let streamedTextChars = 0;
   // per-API-message 去重累积 (兜底账): SDK 把同一次 API 调用按 content 块拆成多条 assistant
   // 消息, 每条带同一份 usage —— 逐条 emit 就是三胞胎账行 (验收实测)。同 id 后到覆盖先到。
   const usageById = new Map<string, ModelUsage>();
@@ -269,13 +289,30 @@ export async function runSdkAgentLoop(o: SdkLoopOpts): Promise<SdkLoopOut> {
         generated.push(mapped);
         const u = mapSdkUsage(msg.message.usage as SdkApiUsage | undefined);
         if (u.in > 0 || u.out > 0) usageById.set((msg.message as { id?: string }).id ?? `anon-${anon++}`, u);
+        // 增量没流出来过(没开 includePartialMessages / SDK 没发)→ 整段正文补成一条 delta,
+        // 否则这条消息在 UI 上一个字不上屏;流出来过就不补 —— 补了正文双份。
+        if (streamedTextChars === 0) {
+          const text = (mapped as unknown as { content: Array<{ type?: string; text?: string }> }).content
+            .filter((b) => b.type === 'text')
+            .map((b) => b.text ?? '')
+            .join('');
+          emitTextDelta(o.onEvent, text);
+        }
+        streamedTextChars = 0;
         o.onEvent?.({ type: 'message_end', message: mapped });
       } else if (msg.type === 'user') {
         generated.push(...mapToolResults(msg, toolNameById));
       } else if (msg.type === 'result') {
         result = msg;
+      } else if (msg.type === 'stream_event') {
+        // includePartialMessages 的正文增量 → 逐片转发(真 token 级流式)。thinking 等其余增量不转。
+        const ev = (msg as unknown as { event?: { type?: string; delta?: { type?: string; text?: string } } }).event;
+        if (ev?.type === 'content_block_delta' && ev.delta?.type === 'text_delta' && ev.delta.text) {
+          streamedTextChars += ev.delta.text.length;
+          emitTextDelta(o.onEvent, ev.delta.text);
+        }
       }
-      // system / stream_event 等其余消息型不进投影(stream_event 只喂 onActivity)。
+      // system 等其余消息型不进投影(stream_event 除正文增量外只喂 onActivity)。
     }
   } catch (err) {
     threw = err; // 先记账再决定抛不抛 —— 失败路的 token 也真烧了 (P1)。

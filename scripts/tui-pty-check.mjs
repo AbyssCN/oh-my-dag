@@ -1156,6 +1156,34 @@ async function scenarioApproval() {
 }
 
 /**
+ * 场景 4.6:**等待指示器活满整轮**(2026-08-11,"你卡住了吗"那单的闸)。
+ *
+ * 旧行为在首片 delta 时就把指示器收了 —— 正文整段到达的通道(claude-code SDK)上,
+ * 两段之间屏幕完全静止,owner 实测第一反应是打一句"你卡住了吗"。
+ *
+ * 判据用 `Working... <N>s`:这个串**只有**秒计时 ticker 在轮飞着的第 N 秒才会渲染 ——
+ * PTY 的 oracle 是累积缓冲,"首片之后指示器还在"没法靠缓冲里有没有基态文案分辨
+ * (基态从 submit 那一刻就进缓冲了),但 `Working...` 在旧行为下**永远不会出现**。
+ * 反向自检(实跑):把 tui.ts submit 里的 waitTicker 那段注释掉 → WK-2 当场红。
+ */
+async function scenarioSlowTurnIndicator() {
+  const p = startTui();
+  try {
+    check(await waitFor(p, (t) => bootReady(t)), 'WK-0 (场景4.6) 启动');
+    p.write('fixture:slow\r');
+    check(await waitFor(p, (t) => t.includes('slow chunk one')), 'WK-1 首片正文上屏', p.text().slice(-300));
+    check(
+      await waitFor(p, (t) => /Working\.\.\. \d+s/.test(t), 8000),
+      'WK-2 ★ 首片之后指示器仍活着(Working... Ns 只在轮飞着的第 N 秒渲染)',
+      p.text().slice(-400),
+    );
+    check(await waitFor(p, (t) => t.includes('slow done')), 'WK-3 慢轮收尾, 正文两片都在', p.text().slice(-300));
+  } finally {
+    p.kill();
+  }
+}
+
+/**
  * 场景 5:**真后端起得来**(2026-08-07 补的盲区)。
  *
  * ## 为什么这条非补不可
@@ -1217,6 +1245,7 @@ await scenarioLogout();
 await scenarioStatus();
 await scenarioExport();
 await scenarioApproval();
+await scenarioSlowTurnIndicator();
 await scenarioRealBackendBoots();
 
 if (failures.length) {

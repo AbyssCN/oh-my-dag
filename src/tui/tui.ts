@@ -196,6 +196,8 @@ export const CHROME = {
    */
   /** 等待态那一行。措辞要说清**在等什么** —— 只画一个转圈等于没说。 */
   waiting: 'Waiting for the model...(Esc interrupts)',
+  /** 同一行的计时态(首个整秒起)。秒数是"活着"的证据 —— 静止的等待行与死机在屏上长得一样。 */
+  waitingElapsed: (s: number) => `Working... ${s}s (Esc interrupts)`,
   footer: () => 'omd tui · /help for commands · Ctrl+C twice to quit',
   footerArmed: () => 'omd tui · press Ctrl+C again to quit',
   // ── 审批层(切片①)。裁决回执要进对话记录 —— 卡片关掉之后, "刚才批没批过"得能回看。 ──
@@ -588,11 +590,26 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    * (`docs/bars/pi-tui-模块台账.md` 那条欠账的原话)。"看起来没反应"与"真没反应"
    * 在屏幕上长得一样,这正是本仓最怕的那一族。
    *
+   * ★ **2026-08-11 起指示器活满整轮,不再在首片 delta 时收掉**(Claude Code 同款)。
+   * 旧设计"首片之后在动的是正文本身"在 SDK 通道上塌了:正文按 message 整段到达,
+   * 两段之间(长思考/工具串)屏上完全静止 —— owner 实测第一反应就是打一句"你卡住了吗"。
+   * 秒计时由 1s ticker 更新(`waitingElapsed`);对话框开着时 ticker 跳过 setMessage
+   * (dialogs.open 已把 loader 停了 —— 那时在等的是人不是模型,PTY 缓冲也经不起刷)。
+   *
    * ⚠ **帧在 `design/tokens.ts` 的 `SPINNER_FRAMES`,不在这里** ——
    * 「框线字形不散在组件里」那条闸把方块字形写进本文件判为违规,而它判得对。
    * 不用 pi-tui 的默认帧(盲文点阵,不在白名单里)的理由也写在那边。
    */
-  let waitingOn = false;
+  /**
+   * 一轮是不是还在飞(等待指示器的可见性 + `/reload` 靠它拒绝打断 —— 扩展工具的 execute
+   * 是一次跨进程调用,轮飞着的时候 kill 子进程会让那次调用停在那儿,症状是"模型忽然不动了")。
+   * ⚠ 声明必须在 `root` 装配之前(`armedAt` 同款 TDZ 坑:`visible` 闭包读它)。
+   */
+  let turnInFlight = false;
+  /** 本轮起点(ms)。秒计时的分子;每轮 submit 重置。 */
+  let turnStartedAt = 0;
+  /** 秒计时 ticker。**只在轮飞着时存在** —— 退出/收尾都要清,不清就是一个永远在跳的定时器。 */
+  let waitTicker: ReturnType<typeof setInterval> | null = null;
   const waiting = new Loader(tui, theme.chrome.accent, theme.chrome.dim, CHROME.waiting, {
     frames: [...SPINNER_FRAMES],
     intervalMs: 120,
@@ -626,7 +643,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    * ⚠ 全屏散雾图开着时同样不画(同一张图画两遍会读成两张)。
    */
   root.addChild(pathHud, { shrink: 0, visible: () => pathHudVisible({ pathFullOn, hasDialogue: chatLog.hasDialogue }) });
-  root.addChild(waiting, { shrink: 0, visible: () => waitingOn });
+  root.addChild(waiting, { shrink: 0, visible: () => turnInFlight });
   root.addChild(dialogSlot, chrome);
   root.addChild(editorContainer, chrome);
   root.addChild(healthLine, { shrink: 0, visible: () => health.line() !== null });
@@ -677,8 +694,8 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     close() {
       if (!dialogOpen) return; // 幂等
       dialogOpen = false;
-      // 框关了, 如果这一轮还在等模型, 指示器接着转。
-      if (waitingOn) waiting.start();
+      // 框关了, 如果这一轮还在飞, 指示器接着转。
+      if (turnInFlight) waiting.start();
       dialogSlot.clear();
       tui.setFocus(editor);
       tui.requestRender();
@@ -768,12 +785,8 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   let pendingSkill: string | null = null;
   /** 最近一轮的上下文压力 —— 设置面板要显示它。`null` = 还没跑过一轮(**不是 0**)。 */
   let lastPressure: import('../harness/chat/usage').ContextPressure | null = null;
-  /**
-   * 一轮是不是还在飞。**`/reload` 靠它拒绝打断** —— 扩展工具的 execute 是一次跨进程调用,
-   * 轮飞着的时候 kill 子进程会让那次调用停在那儿(超时才回),而症状是"模型忽然不动了"。
-   * ⚠ 不复用 `waitingOn`:那个在**第一片 delta 到达时**就关了,而工具调用发生在那之后。
-   */
-  let turnInFlight = false;
+  // `turnInFlight` 的声明在等待指示器那一段(root 装配之前,TDZ)—— 2026-08-11 与
+  // `waitingOn` 合并:指示器活满整轮之后,两者就是同一件事。
   /**
    * 扩展加载结果。**可变** —— `/reload` 之后设置面板要显示新的那份,
    * 显示旧的话"重载了没有"就再也读不出来了(而屏上那条通知会读成已经生效)。
@@ -822,8 +835,10 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     process.stdout.write(`${lines.join('\n')}\n`);
   }
 
-  /** S2 无动画;保留这个函数是为了让 §4.1 第 5 条的**顺序**先于动画存在。 */
-  function stopAnimations(): void {}
+  /** §4.1 第 5 条:先停动画再拆传输。等待指示器(loader 帧 + 秒计时 ticker)是目前唯一的动画。 */
+  function stopAnimations(): void {
+    stopWaiting();
+  }
 
   /**
    * 提交一轮。**这里是 S10 唯一要换的地方** —— 换掉的是 `opts.backend` 的实现,
@@ -832,10 +847,12 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    * ⚠ 拒绝要**画成 notice 不是 assistant**:一句"引擎没接通"若被画成助手发言,
    * 读起来就像模型在回答 —— 那正是本仓 S-1 那一族(看起来在动,其实一次都没生效)。
    */
-  /** 关等待态。**幂等** —— delta 与 submit 收尾都会调它, 而定时器只该停一次。 */
+  /** 关等待态(轮收尾/退出共用)。**幂等** —— 定时器只该停一次。 */
   function stopWaiting(): void {
-    if (!waitingOn) return;
-    waitingOn = false;
+    if (waitTicker) {
+      clearInterval(waitTicker);
+      waitTicker = null;
+    }
     waiting.stop();
   }
 
@@ -846,11 +863,16 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     pendingSkill = null;
     editor.setText('');
     editor.addToHistory(prompt);
-    // 等待态开:到第一片回来为止(见 `onEvent` 的 delta 分支)。
-    // ⚠ `turnInFlight` 与它**不是同一件事**:这一条要活到整轮结束(工具调用在 delta 之后)。
+    // 等待态开满整轮(2026-08-11,见 `waiting` 声明处)。文案先回到基态 ——
+    // 不回的话第二轮的头一秒还挂着上一轮的秒数。
     turnInFlight = true;
-    waitingOn = true;
+    turnStartedAt = Date.now();
+    waiting.setMessage(CHROME.waiting);
     waiting.start();
+    waitTicker = setInterval(() => {
+      // 对话框开着时在等的是人不是模型 —— 不改文案不触发重绘(loader 那侧 dialogs.open 已停)。
+      if (!dialogs.busy) waiting.setMessage(CHROME.waitingElapsed(Math.floor((Date.now() - turnStartedAt) / 1000)));
+    }, 1000);
     tui.requestRender();
     try {
       const res = await opts.backend.sendChat({ sessionId, prompt: withSkill });
@@ -863,8 +885,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
     }
     // 无论成败都收尾: 抛错那条路上 `session` 事件不会来, 不收尾的话下一轮会续进这条气泡。
-    // ⚠ 等待态也在这里关 —— **`finally` 语义**:抛错那条路上 delta 永远不会来,
-    //   只在 delta 分支关的话, 一次失败就会留下一个**永远在转**的指示器。
+    // ⚠ 等待态只在这里关(**`finally` 语义**)—— 指示器活满整轮, 不在 delta 分支收。
     turnInFlight = false;
     stopWaiting();
     chatLog.closeStreaming();
@@ -881,7 +902,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     if (e.event === 'chat') {
       const p = e.payload as { type?: string; text?: string };
       if (p?.type === 'delta' && p.text) {
-        stopWaiting(); // 第一片回来了 —— 从这一刻起"在动"的是正文本身
+        // 指示器不在这收(2026-08-11):正文按整段到达的通道上,两段之间屏会完全静止。
         chatLog.appendAssistantChunk(p.text);
         tui.requestRender();
       }

@@ -103,6 +103,9 @@ export async function runChatTurnSdk(opts: ChatTurnOpts): Promise<ChatTurnResult
     ...(advisorModel ? { advisorModel } : {}),
     ...(resume ? { resume } : {}),
     cwd: opts.cwd,
+    // 真 token 级流式(TUI 逐字上屏):stream_event 的正文增量在循环核转成 text_delta;
+    // SDK 不发增量时循环核在 message_end 前补整段 —— 两条路正文都恰好上屏一次。
+    includePartialMessages: true,
     ...(opts.onEvent ? { onEvent: opts.onEvent } : {}),
     ...(opts.signal ? { signal: opts.signal } : {}),
     ...(opts.sdkQueryFn ? { sdkQueryFn: opts.sdkQueryFn } : {}),

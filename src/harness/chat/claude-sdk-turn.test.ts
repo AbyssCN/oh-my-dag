@@ -8,6 +8,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { AgentEvent } from '@earendil-works/pi-agent-core';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Type } from 'typebox';
@@ -223,6 +224,61 @@ describe('MCP 桥(InMemoryTransport 真回路)', () => {
     const thrown = await client.callTool({ name: 'boom', arguments: {} });
     expect(thrown.isError).toBe(true);
     expect((thrown.content as { text?: string }[])[0]?.text).toContain('[TOOL ERROR] 炸了');
+  });
+});
+
+describe('正文事件(TUI 渲染的唯一来源 —— 2026-08-11 实测:通道不发 text_delta 时正文整段不上屏)', () => {
+  const deltasOf = (events: AgentEvent[]): string[] =>
+    events
+      .filter((e): e is Extract<AgentEvent, { type: 'message_update' }> => e.type === 'message_update')
+      .map((e) => e.assistantMessageEvent as { type: string; delta?: string })
+      .filter((a) => a.type === 'text_delta')
+      .map((a) => a.delta ?? '');
+
+  const streamEvt = (text: string): SDKMessage =>
+    ({
+      type: 'stream_event',
+      session_id: 'sdk-live',
+      event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } },
+    }) as unknown as SDKMessage;
+
+  test('★ SDK 没发增量 → assistant 正文合成一条 text_delta,且先于 message_end(反向自检:去掉合成即红)', async () => {
+    const events: AgentEvent[] = [];
+    await runChatTurnSdk({
+      store, sessionId: 's1', prompt: 'x', model: MODEL, cwd: root, contextFiles: [],
+      onEvent: (e) => events.push(e),
+      sdkQueryFn: fakeQuery([asst('两个 run 在跑'), success('sdk-a')]),
+    });
+    expect(deltasOf(events)).toEqual(['两个 run 在跑']);
+    const iDelta = events.findIndex((e) => e.type === 'message_update');
+    const iEnd = events.findIndex((e) => e.type === 'message_end');
+    expect(iDelta).toBeGreaterThanOrEqual(0);
+    expect(iDelta).toBeLessThan(iEnd);
+  });
+
+  test('★ stream_event 增量逐片转发;assistant 到达时不再补整段(补了正文就是双份)', async () => {
+    const events: AgentEvent[] = [];
+    await runChatTurnSdk({
+      store, sessionId: 's1', prompt: 'x', model: MODEL, cwd: root, contextFiles: [],
+      onEvent: (e) => events.push(e),
+      sdkQueryFn: fakeQuery([streamEvt('两个 run'), streamEvt(' 在跑'), asst('两个 run 在跑'), success('sdk-a')]),
+    });
+    expect(deltasOf(events)).toEqual(['两个 run', ' 在跑']);
+  });
+
+  test('正文为空的 assistant(纯工具调用轮)不合成空 delta;后续有增量的消息不受前一条影响', async () => {
+    const events: AgentEvent[] = [];
+    await runChatTurnSdk({
+      store, sessionId: 's1', prompt: 'x', model: MODEL, cwd: root, contextFiles: [],
+      onEvent: (e) => events.push(e),
+      sdkQueryFn: fakeQuery([
+        asst('', { toolUse: { id: 'tu-1', name: 'dag_status', input: {} } }),
+        toolResult('tu-1', 'running'),
+        asst('在跑'),
+        success('sdk-a'),
+      ]),
+    });
+    expect(deltasOf(events)).toEqual(['在跑']);
   });
 });
 

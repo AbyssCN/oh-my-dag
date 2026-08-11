@@ -38,6 +38,13 @@ export const FIXTURE_WRITE_PROMPT = 'fixture:write';
 export const FIXTURE_DAG_PROMPT = 'fixture:dag';
 /** 触发重复读演示的暗号(切片⑤ L3)。同一文件 read 三次 → 健康度一行要亮。 */
 export const FIXTURE_READS_PROMPT = 'fixture:reads';
+/**
+ * 慢轮暗号(等待指示器闸,2026-08-11)。首片之后故意停 2.5s 再收尾 ——
+ * 「首片正文已上屏时指示器仍活着」这条判据需要一个**够宽的时间窗**才断言得到;
+ * 其它暗号都是即答型,指示器在 PTY 抓到帧之前就收了。
+ */
+export const FIXTURE_SLOW_PROMPT = 'fixture:slow';
+export const FIXTURE_SLOW_CHUNKS = ['slow chunk one. ', 'slow done.'] as const;
 /** fan-out 演示 run 的 id。 */
 export const FIXTURE_DAG_RUN_ID = 'fixture-fanout';
 /** 审批演示写的文件名(目录由 `OMD_TUI_FIXTURE_DIR` 给;没给就不真写,只报没处写)。 */
@@ -174,6 +181,15 @@ export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend 
         push({ type: 'settle', id: 'shard-2', status: 'failed', kind: 'agent', model: 'fixture-model' });
         push({ type: 'start', id: 'shard-3', kind: 'agent' });
         emit('chat', { type: 'delta', text: 'fan-out demo graph sent.' });
+        emit('session', { sessionId, messageCount: msgs.length + 1, pressure: FIXTURE_PRESSURE });
+        sessions.set(sessionId, msgs);
+        return { ok: true };
+      }
+      // ── 慢轮演示: 首片 → 2.5s 静默 → 收尾。等待指示器"活满整轮"的 PTY 判据窗。
+      if (prompt.trim() === FIXTURE_SLOW_PROMPT) {
+        emit('chat', { type: 'delta', text: FIXTURE_SLOW_CHUNKS[0] });
+        await new Promise((r) => setTimeout(r, 2500)); // 秒计时至少走满两个 tick
+        emit('chat', { type: 'delta', text: FIXTURE_SLOW_CHUNKS[1] });
         emit('session', { sessionId, messageCount: msgs.length + 1, pressure: FIXTURE_PRESSURE });
         sessions.set(sessionId, msgs);
         return { ok: true };
