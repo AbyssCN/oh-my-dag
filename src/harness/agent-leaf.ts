@@ -816,8 +816,20 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
   //   claude-code 订阅通道 → medium (owner 裁: effort 花的是与交互同池的窗口额度, xhigh 默认
   //     会把 flash 时代的定价惯性带进订阅池 —— 与 dream 座位那次「pro 惯性」同族)。
   // 显式 opts.thinkingLevel 恒覆盖两者 (A/B 必须能钉档位)。
-  const thinkingLevel = opts.thinkingLevel ?? 'xhigh';
-  const sdkThinkingLevel = opts.thinkingLevel ?? 'medium';
+  //
+  // OMD_AGENT_EFFORT (2026-08-11): 给 A/B 用的**外部旋钮** —— 在此之前两个缺省值写死在代码里,
+  // 想量「medium vs high 值不值」就必须改代码再跑, 而「改了代码的两臂」不是同一条件下的两臂
+  // (单一变量守不住)。优先级: opts > env > 通道缺省; 词表外的值忽略并 warn (不静默吞掉打错的档,
+  // 否则实验会安静地跑成基线臂 —— 那正是最坏的结果: 两臂读数一样而你以为变量动过)。
+  const envEffort = process.env.OMD_AGENT_EFFORT?.trim();
+  const EFFORTS = ['off', 'low', 'medium', 'high', 'xhigh'] as const;
+  type Effort = (typeof EFFORTS)[number];
+  const envLevel = EFFORTS.includes(envEffort as Effort) ? (envEffort as Effort) : undefined;
+  if (envEffort && !envLevel) {
+    logger.warn({ OMD_AGENT_EFFORT: envEffort, allowed: EFFORTS }, '[omd/agent-leaf] OMD_AGENT_EFFORT 值不在词表内 → 忽略, 走通道缺省');
+  }
+  const thinkingLevel = opts.thinkingLevel ?? envLevel ?? 'xhigh';
+  const sdkThinkingLevel = opts.thinkingLevel ?? envLevel ?? 'medium';
 
   // 工具集: 自有六件 + hashline (开则注入并**排除内置 edit**, 强制行锚定 patch) + 调用方自定。
   // 建一次复用整 runner: hashline 的快照 store 要跨 read/edit 共享, 而 runner 的 cwd 是固定的。
