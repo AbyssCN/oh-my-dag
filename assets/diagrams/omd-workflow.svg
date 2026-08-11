@@ -89,7 +89,7 @@
   <g id="node-a4" data-graph-role="node" data-node-id="a4" data-semantic-role="rect" data-motion-role="" data-motion-stage="" data-motion-order="" data-parent="" data-deployment-id="" data-topic-id="" data-span-id="" data-station-order="" data-status="" data-start-ms="" data-duration-ms="" data-parent-span="" data-graph-bounds="775,180,895,242">
   <rect x="775.0" y="180.0" width="120.0" height="62.0" rx="8.0" fill="#0a4b78" stroke="#38bdf8" stroke-width="1.8"/>
   <text x="835.0" y="211.0" text-anchor="middle" class="node-title" font-size="18.0">execute</text>
-  <text x="835.0" y="233.0" text-anchor="middle" class="node-sub">run · solve</text>
+  <text x="835.0" y="233.0" text-anchor="middle" class="node-sub">run · sdd direct</text>
   </g>
   <g id="node-b1" data-graph-role="node" data-node-id="b1" data-semantic-role="rect" data-motion-role="" data-motion-stage="" data-motion-order="" data-parent="" data-deployment-id="" data-topic-id="" data-span-id="" data-station-order="" data-status="" data-start-ms="" data-duration-ms="" data-parent-span="" data-graph-bounds="250,398,370,460">
   <rect x="250.0" y="398.0" width="120.0" height="62.0" rx="8.0" fill="#0a4b78" stroke="#38bdf8" stroke-width="1.8"/>

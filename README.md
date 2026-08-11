@@ -25,7 +25,7 @@ One engine, four doors. Pick by how much you want to hand over at once.
 | | |
 |---|---|
 | **MCP · compose** | Call one capability and look at the result — run a `judge` over three attempts, fetch and distil a page, recall what you decided last week. Two to five steps, you stay in the loop. |
-| **MCP · graph & goal** | Hand off a whole fan-out. `run` lets a conductor decompose the task; `solve` takes a goal and loops plan → execute → judge → repair until it converges. Ten nodes or a hundred, you go do something else. |
+| **MCP · graph & goal** | Hand off a whole fan-out. `run` lets a conductor decompose the task; `solve` takes an *open* goal and researches its way toward one — its findings come back as tickets a human rules on. Already have a crystallised SDD? Pass `sddPath`: the engine compiles it straight to a flat graph — no research pass, no planning tax, the acceptance command is the only stop rule. Ten nodes or a hundred, you go do something else. |
 | **`conductor_chat`** | A persistent conductor session over MCP. Ask it questions, or let it dispatch graphs mid-conversation — including from a phone, since the session lives on the server and the run outlives the connection. |
 | **`omd tui`** *(in development)* | omd's own terminal client: a chat seat with seat/model pickers and live run views. Usable today, still moving — see [the TUI guide](docs/guide/tui.md). |
 
