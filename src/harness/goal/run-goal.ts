@@ -40,6 +40,7 @@ import { compareVerifyReports, summarizeDelta, type DeltaReport, type VerifyStep
 import { parseBreakdown } from './sdd-direct';
 import { compileBreakdown, describeParallelism, parallelismReadout } from './sdd-compile';
 import { attributeWriteSet, classifyWriteScope, describeWriteSet, SDD_DECLARED_WRITE_SET, type DeclaredWriteSet, type WriteScopeKind, type WriteSetDeclaration, type WriteSetReport } from '../write-set';
+import { collectRunTickets, type RunTicketSink } from '../pathfinder/run-tickets';
 import { logger } from '../logger';
 
 // D-I: 两条轴的类型与分类器都归 ./acceptance (那里是判据轴的单一真源); 此处 re-export 保旧调用面。
@@ -121,6 +122,25 @@ export interface RunGoalConfig {
     globalExempt?: string[];
     intentional?: string[];
     declared?: DeclaredWriteSet;
+  };
+  /**
+   * **D-2 散雾出口** (SDD 2026-08-11-control-plane-unification 切片 1) 的**可选注入面**:
+   * 给了 map 句柄, 这趟 run 的未决/发现物/终态才落成 map 上的 suggested 票 (人 confirm 前不进前沿)。
+   *
+   * **不给 = 闸缺席**, 收尾一行不多跑 —— 无相关配置的 run 行为逐字节不变 (INV-1)。
+   * 判据在 pathfinder/run-tickets.ts (纯核), 本文件只负责"拿到句柄就喂给它, 出事只留痕不掀桌"。
+   */
+  tickets?: {
+    /** 目标地图 slug。 */
+    slug: string;
+    /** map 写入口 (`resolveBackend(cwd)` 的结果即可; 缺 `suggest` 实装 = 闸缺席)。 */
+    sink: RunTicketSink;
+    /** 票身 runId 锚 (G-2 票→runId→回执)。省略 = continuity.runId ?? dag.sessionId; 都没有则不开票。 */
+    runId?: string;
+    /** suggestionsLog 时间戳 (可重放); 省略 = 现在。 */
+    at?: string;
+    /** 读 spec 全文的注入口 (测试); 省略 = readFileSync(specPath)。 */
+    _readSpec?: (path: string) => string;
   };
 }
 
@@ -245,6 +265,54 @@ function describeWriteScope(r: WriteScopeReport): string {
   if (r.forbidden.length > 0) return `撞禁写面 ${r.forbidden.length} [${r.forbidden.join(', ')}]`;
   if (r.outside.length > 0) return `声明面外 ${r.outside.length} (INV-3 读数)`;
   return '声明面内';
+}
+
+/**
+ * **D-2 散雾出口的接线** (SDD 2026-08-11-control-plane-unification 切片 1): 这趟 run 的
+ * 未决/发现物/终态 → map 上的 suggested 票 (G-1: 人 confirm 前不进前沿, 由 suggested 态本身保证)。
+ *
+ * 判据全在 `pathfinder/run-tickets.collectRunTickets` (纯核), 这里只做三件事: 取 runId 锚、
+ * 读 spec 正文、把清单交给 map 句柄。
+ *
+ * **每一条不开票的路都留痕** (仓规第二条: fail-open 可以吞异常, 不许吞证据):
+ *  - 没配 tickets → 静默 (闸根本没装, 不是失败)。
+ *  - 配了但后端没 `suggest` / 取不到 runId / spec 读不出 / 落图抛错 → warn 一行, run 照常返回。
+ * 尤其 runId: 取不到就**不开票** —— 一张回不去 run 的票违反 G-2, 比没有票更糟。
+ */
+function openRunTickets(result: RunGoalResult, exec: ExecutorDagResult, config: RunGoalConfig): void {
+  const t = config.tickets;
+  if (!t) return; // 闸缺席: 没给 map 句柄 (INV-1 逐字节不变的那条路)
+  try {
+    if (!t.sink.suggest) {
+      logger.warn({ slug: t.slug }, '[run-goal] D-2 散雾出口: 后端未实装 suggest (S-1 面) → 不开票');
+      return;
+    }
+    const runId = t.runId ?? config.dag.continuity?.runId ?? config.dag.sessionId;
+    if (!runId) {
+      logger.warn({ slug: t.slug }, '[run-goal] D-2 散雾出口: 取不到 runId 锚 → 不开票 (票回不去 run 违反 G-2)');
+      return;
+    }
+    // ① 未决的料 = 落盘 spec 全文。读不到 → 该条出口缺席 (NULL≠0: 不冒充"零未决")。
+    let specText: string | undefined;
+    if (result.specPath) {
+      try {
+        specText = (t._readSpec ?? ((p: string) => readFileSync(p, 'utf8')))(result.specPath);
+      } catch (err) {
+        logger.warn({ specPath: result.specPath, err: String(err) }, '[run-goal] D-2 ①未决出口: spec 读不到 → 该条缺席 (不是零未决)');
+      }
+    }
+    const drafts = collectRunTickets(result, {
+      runId,
+      ...(specText !== undefined ? { specText } : {}),
+      ...(exec.verification ? { verification: exec.verification } : {}),
+      ...(exec.blameRetry ? { blameRetry: exec.blameRetry } : {}),
+    });
+    if (drafts.length === 0) return; // 无未决无发现物无终态面 = 这趟没什么要人看的
+    const res = t.sink.suggest(config.cwd, t.slug, drafts, { at: t.at ?? new Date().toISOString() });
+    logger.info({ slug: t.slug, runId, drafts: drafts.length, summary: res.summary }, '[run-goal] D-2 散雾出口: run 产出 → suggested 票');
+  } catch (err) {
+    logger.warn({ slug: t.slug, err: String(err) }, '[run-goal] D-2 散雾出口开票失败 → 闸缺席 (fail-open, 不吞证据)');
+  }
 }
 
 const todayStr = (): string => new Date().toISOString().slice(0, 10);
@@ -748,7 +816,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
       `${writeScope ? ` · D-2 声明面: ${describeWriteScope(writeScope)}` : ''}`,
   });
 
-  return {
+  const result: RunGoalResult = {
     goal,
     tier,
     acceptance,
@@ -768,4 +836,8 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
     ...(writeSet ? { writeSet } : {}),
     ...(writeScope ? { writeScope } : {}),
   };
+  // D-2 散雾出口 (切片 1): 拿到 map 句柄才开票; 没配 = 这一行直接返回, 行为逐字节不变 (INV-1)。
+  // 放在 result 成形之后: 票身要的原因/未决/发现物全从终态读, 不从中途状态猜。
+  openRunTickets(result, exec, config);
+  return result;
 }

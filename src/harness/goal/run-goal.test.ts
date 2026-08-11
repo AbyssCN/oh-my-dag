@@ -874,3 +874,136 @@ describe('runGoal — D-2 声明写集面 (S-2, run 级 runtime 面)', () => {
 });
 });
 
+
+// ── D-2 散雾出口 (SDD 2026-08-11-control-plane-unification 切片 1) ────────────────
+//
+// 这一组走**真 md 后端 + 真 map 落盘 + 真 frontier**: 判据本身在 pathfinder/run-tickets.test.ts,
+// 这里钉的是「接线真的通了」—— 而"接线在不在"恰恰是 S-1 此前那条缝的全部内容
+// (机制在、pathfinder 派发线生效、直接 run 零命中)。
+import { resolveBackend } from '../pathfinder/backend';
+import { loadMap } from '../pathfinder/map-store';
+import { computeFrontier } from '../pathfinder/frontier';
+
+/** 一份带未决段的 spec 正文 (经 `_readSpec` 注入, 不真落盘)。 */
+const SPEC_WITH_OPEN = [
+  '# 某 SDD',
+  '',
+  '## 决策 (Decisions)',
+  '- **D-1 这条不是未决**',
+  '',
+  '## 未决 (Open)',
+  '',
+  '- **O-1(待 owner)** 超时时长定多少。',
+  '- **O-2(待实测)** 接受率读数。',
+].join('\n');
+
+/** 真 md 后端 + 一张空图 (env 传 {} 绕开外部 OMD_PATH_BACKEND 干扰)。 */
+function mapCfg(goalCfg: RunGoalConfig, runId: string): { backend: ReturnType<typeof resolveBackend>; tickets: NonNullable<RunGoalConfig['tickets']> } {
+  const backend = resolveBackend(goalCfg.cwd, { env: {} });
+  backend.createMap(goalCfg.cwd, '把散雾出口接上', 'fog-exit');
+  return { backend, tickets: { slug: 'fog-exit', sink: backend, runId, at: '2026-08-11T00:00:00.000Z' } };
+}
+
+describe('D-2 散雾出口 — 任一 run 挂票 (G-1 / G-2)', () => {
+  /**
+   * **G-1**: 不经 pathfinder 派发的 run 产出「未决」→ map 上出现 suggested 票, 携 runId 锚,
+   * 且**人 confirm 前不进前沿**。
+   *
+   * 反向自检 (G-6, 实跑证伪): 把 run-goal.ts 收尾那行 `openRunTickets(result, exec, config)` 注释掉 →
+   * `map.tickets` 恒为空, 本条前两个 expect 当场红 (实测 `expected 2, got 0`)。
+   * 换句话说这条测试证的是**接线**, 不是判据 —— 判据红不红在 run-tickets.test.ts 那边。
+   */
+  test('G-1: 契约段未决 → map 出现 suggested 票 (携 runId), 且不进前沿', async () => {
+    const base = cfg({ agentRunner: async () => ({ text: 'x', usage: { in: 1, out: 1 } }) });
+    const { tickets } = mapCfg(base, 'run-g1');
+    let readSpecArg = '';
+    const r = await runGoal('给 omd 加个散雾出口', {
+      ...base,
+      _classify: cls('complex'),
+      _runDag: dagRouter({ contract: async () => contractDag({ specFile: 'docs/plan/2026-07-28-给-omd-加个散雾出口.md' }) }),
+      tickets: {
+        ...tickets,
+        _readSpec: (p) => {
+          readSpecArg = p;
+          return SPEC_WITH_OPEN;
+        },
+      },
+    });
+    expect(r.converged).toBe(true); // run 本身照常收敛 —— 开票是收尾的旁路, 不改结论
+    expect(readSpecArg).toBe(r.specPath!); // ① 的料确实来自这趟 run 的 spec
+
+    const map = loadMap(base.cwd, 'fog-exit')!;
+    expect(map.tickets).toHaveLength(2);
+    expect(map.tickets.map((t) => t.status)).toEqual(['suggested', 'suggested']);
+    expect(map.tickets[0]!.title).toBe('[未决] O-1(待 owner) 超时时长定多少。');
+    expect(map.tickets.map((t) => t.suggestedBy)).toEqual(['run-g1', 'run-g1']);
+    // 人 confirm 前不进前沿 (suggested 没有执行力, INV-S1-1)。
+    expect(computeFrontier(map).map((t) => t.id)).toEqual([]);
+  });
+
+  /**
+   * **G-2**: 同因熔断 → 票带原因 + blame 摘要 + resume 把手, 且 run 终态与票**双向可达**
+   * (票 → `suggestedBy` = runId → 回执; 票 → 标题里的 resume 把手 → 同一个 runId)。
+   *
+   * 反向自检 (G-6, 实跑证伪): 把 run-goal.ts 的 `...(exec.verification ? { verification: exec.verification } : {})`
+   * 那一行删掉 (熔断面不再传给纯核) → 熔断票消失, 只剩发现物票, 本条 `[同因熔断]` 断言当场红
+   * (实测 `expected 2, got 1` + 标题不匹配)。
+   */
+  test('G-2: 同因熔断 → 票带原因 + blame + resume 把手, 票↔runId 双向可达', async () => {
+    const base = cfg();
+    const { tickets } = mapCfg(base, 'run-g2');
+    const stalledDag = (): ExecutorDagResult =>
+      ({
+        ...executeDag({ converged: false, rounds: 3 }),
+        verification: { pass: false, reason: '连撞同一根因: 产物缺失', attempts: 2, escalated: true, conductorModel: 'c:m', circuitBroken: true },
+        blameRetry: { blameSize: 2, closureSize: 4, reuseHits: 1, rerunWallMs: 42 },
+      }) as ExecutorDagResult;
+    const r = await runGoal('修个东西', {
+      ...base,
+      _classify: cls('simple'),
+      _runDag: dagRouter({ execute: async () => stalledDag() }),
+      tickets,
+    });
+    expect(r.outcome).toBe('not-converged');
+
+    const map = loadMap(base.cwd, 'fog-exit')!;
+    const circuit = map.tickets.find((t) => t.title.startsWith('[同因熔断]'))!;
+    expect(circuit).toBeDefined();
+    expect(circuit.status).toBe('suggested');
+    expect(circuit.title).toBe('[同因熔断] 连撞同一根因: 产物缺失 · blame 2 节点/失效闭包 4 · resume: dag_goal resume=run-g2');
+    // 双向可达: 票 → runId (溯源字段) / 票 → resume 把手 (标题自足, 人不必读 transcript)。
+    expect(circuit.suggestedBy).toBe('run-g2');
+    expect(circuit.title).toContain('resume: dag_goal resume=run-g2');
+    // 熔断票排在发现物票之前 (perRunCap 从尾巴丢, 带把手的那张不能被挤掉)。
+    expect(map.tickets[0]!.id).toBe(circuit.id);
+  });
+
+  test('INV-1 fail-open: 没配 tickets → map 一张票都不开, run 结论一字不变', async () => {
+    const base = cfg();
+    const { backend } = mapCfg(base, 'run-none');
+    const r = await runGoal('修个东西', { ...base, _classify: cls('simple') });
+    expect(r.converged).toBe(true);
+    expect(backend.readMap(base.cwd, 'fog-exit')!.tickets).toEqual([]);
+  });
+
+  test('INV-1 fail-open: 后端没实装 suggest → 不抛不吞, run 照常返回', async () => {
+    const base = cfg();
+    const r = await runGoal('修个东西', {
+      ...base,
+      _classify: cls('simple'),
+      tickets: { slug: 'no-such-map', sink: {}, runId: 'run-x' },
+    });
+    expect(r.converged).toBe(true);
+  });
+
+  test('落图抛错 (图不存在) → 闸缺席不掀桌, run 照常返回', async () => {
+    const base = cfg();
+    const r = await runGoal('修个东西', {
+      ...base,
+      _classify: cls('simple'),
+      _runDag: dagRouter({ execute: async () => executeDag({ converged: false, rounds: 1 }) }),
+      tickets: { slug: 'no-such-map', sink: resolveBackend(base.cwd, { env: {} }), runId: 'run-y' },
+    });
+    expect(r.outcome).toBe('not-converged'); // 开票炸了不改 run 结论
+  });
+});
