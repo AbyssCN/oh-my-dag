@@ -44,6 +44,9 @@ import { attributeWriteSet, classifyWriteScope, describeWriteSet, SDD_DECLARED_W
 import { collectRunTickets, type RunTicketSink } from '../pathfinder/run-tickets';
 import { logger } from '../logger';
 import { appendBoard, type BoardEntry } from '../board/run-board';
+import { resolveProfile, type LeafProfile } from '../profiles/profile';
+import { appendFindings, fingerprintOf, loadLedger, type ReviewFinding } from '../profiles/review-ledger';
+import { maybeRunDesignReview, type DesignReviewResult } from './design-review';
 
 // D-I: 两条轴的类型与分类器都归 ./acceptance (那里是判据轴的单一真源); 此处 re-export 保旧调用面。
 export type { AcceptanceSpec, GoalClassification, GoalTier } from './classify-acceptance';
@@ -177,7 +180,20 @@ export interface RunGoalConfig {
     /** 读 spec 全文的注入口 (测试); 省略 = readFileSync(specPath)。 */
     _readSpec?: (path: string) => string;
   };
-}
+  /**
+   * P4 设计审核触发接线: 给了 profile 名 (默认 'design-review'), execute 后写集与前端 glob
+   * 相交时调度审核叶 (advisory, 不阻塞主流程); 审核失败/timeout → converged 逐位不变 (INV-3)。
+   * 不给 = 整段缺席, 行为逐字节不变。
+   */
+  designReview?: {
+    /** 岗位档案名 (默认 'design-review')。 */
+    profile?: string;
+    /** 注入式审核 runner (测试用); 默认走 agent leaf 调度。 */
+    _runReview?: (diff: string, cwd: string) => Promise<{ findings: ReviewFinding[]; usage: { in: number; out: number } }>;
+    /** D-7 修复已尝试标志: true → 同指纹熔断/转票, 不再落账新 findings。 */
+    repairAttempted?: boolean;
+  };
+ }
 
 export interface RunGoalResult {
   goal: string;
@@ -260,6 +276,8 @@ export interface RunGoalResult {
    * 声明缺席 ≠ 违规, 读数不冒充零越界)。缺席 = 没配 writeSet 注入面 (闸缺席, fail-open)。
    */
   writeScope?: WriteScopeReport;
+  /** P4 设计审核结果 (advisory, 不参与收敛判定)。缺席 = 未启用设计审核。 */
+  designReview?: DesignReviewResult;
 }
 export interface WriteScopeReport {
   /** 逐文件裁决 (allowed / forbidden / outside)。 */
@@ -870,6 +888,27 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
       logger.warn({ err: String(err) }, '[run-goal] D-2 写集对账起不来 → 闸缺席 (fail-open)');
     }
   }
+
+  // ── P4 设计审核 (advisory, 不上关键路径) ────────────────────────────────────────
+  // INV-3: 审核失败/timeout → converged 与无审核节点逐位相同。
+  // INV-6 / G-4: 写集与前端 glob 不相交 → 零模型调用。
+  let designReview: DesignReviewResult | undefined;
+  if (config.designReview) {
+    try {
+      const reviewFiles = config.writeSet?._collectChangedFiles
+        ? config.writeSet._collectChangedFiles()
+        : collectChangedFiles(config.cwd);
+      designReview = await maybeRunDesignReview({
+        cwd: config.cwd,
+        changedFiles: reviewFiles,
+        profile: config.designReview.profile,
+        runReview: config.designReview._runReview,
+        repairAttempted: config.designReview.repairAttempted,
+      });
+    } catch (err) {
+      logger.warn({ err: String(err) }, '[run-goal] 设计审核起不来 → 闸缺席 (fail-open, INV-3)');
+    }
+  }
   const converged = judgeSaidOk && oracleOk;
   // 平铺路径没有内环 —— rounds 恒 0 是事实不是缺数 (摘要有「直通v2平铺」注记, 不会读成"没跑")。
   const roundCount = execLeaf?.rounds ?? 0;
@@ -952,7 +991,8 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
     ...(verifyDelta ? { verifyDelta } : {}),
     ...(writeSet ? { writeSet } : {}),
     ...(writeScope ? { writeScope } : {}),
-  };
+    ...(designReview ? { designReview } : {}),
+   };
   // D-2 散雾出口 (切片 1): 拿到 map 句柄才开票; 没配 = 这一行直接返回, 行为逐字节不变 (INV-1)。
   // 放在 result 成形之后: 票身要的原因/未决/发现物全从终态读, 不从中途状态猜。
   openRunTickets(result, exec, config);

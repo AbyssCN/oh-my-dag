@@ -73,7 +73,8 @@ export function leafMcpPolicy(mcpAllow?: string[]): { sideEffects: { allow: stri
 import { LEAF_HARNESS_CORE } from './harness-prompts';
 import { createOmdAgentTools, type AnyOmdTool } from './agent-tools';
 import { createSkillTools, type SkillToolDeps } from './skills/skill-tool';
-import { defaultSkillRoots } from './skills/skills';
+import type { LeafProfile } from './profiles/profile';
+import { defaultSkillRoots, loadSkillSourceByName } from './skills/skills';
 import { createMcpClientTools } from '../mcp/client/meta-tools';
 import type { McpPoolDeps } from '../mcp/client/pool';
 import type { McpCallLedger } from '../mcp/client/call-ledger';
@@ -264,6 +265,14 @@ export interface AgentLeafRunnerOpts {
    * 字节稳定 (prepend, cache 友好)。
    */
   persona?: string;
+
+  /**
+   * 已解析的岗位档案 (LeafProfile)。设则通过现有扩展点自动应用:
+   * persona 前置 (与 opts.persona 合并)、skills 注入 skill-tool roots、
+   * tools 做 allowlist、seat 当节点无显式模型时的回退。
+   * profile 内容不进 promptVersion (与 opts.persona 同一条边界)。
+   */
+  profile?: LeafProfile;
   /**
    * 开 hashline 编辑模式 (治弱模型改文件错位/腐烂): 自动注入 hashline_read/hashline_edit
    * (scope 到 cwd) **并排除内置 `edit`** —— 强制走行锚定 patch。read/write/bash 保留 (新建文件仍用 write)。
@@ -844,13 +853,23 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     ...(opts.mcpDeps?.poolDeps ? { poolDeps: opts.mcpDeps.poolDeps } : {}),
     ...(opts.mcpDeps?.ledger ? { ledger: opts.mcpDeps.ledger } : {}),
   });
+
   // S3 read_skill umbrella (D-S3-5): 同一组装段挂 createSkillTools, roots 显式注入含 cwd 项目根, 与 mcpTools 并列进拼装点。
   // 零 skill 不挂 (skill-tool.ts:52 短路), 保证 I-1 零 skill 仓 tools 数组与 S2 基线字节相同。
-  const skillTools = createSkillTools(opts.skillDeps?.roots
-    ? { roots: opts.skillDeps.roots }
-    : { cwd, roots: defaultSkillRoots(cwd) });
+  // profile.skills: 已解析的岗位档案声明的 skill 名 → 在 roots 里定位并预载正文 (不进 promptVersion)。
+  const skillRoots = opts.skillDeps?.roots ?? defaultSkillRoots(cwd);
+  const profileSkillsContent = opts.profile?.skills
+    ?.map((name) => {
+      const src = loadSkillSourceByName(name, skillRoots);
+      return src ? `[skill ${name}]\n${src.body.trim()}` : null;
+    })
+    .filter((s): s is string => s !== null)
+    .join('\n\n') ?? '';
+  const skillTools = createSkillTools({ roots: skillRoots, ...(opts.skillDeps?.cwd ? { cwd: opts.skillDeps.cwd } : {}) });
   const excluded = new Set(opts.hashlineEdit ? ['edit'] : []);
-  const allowlist = opts.tools ? new Set(opts.tools) : null;
+  // profile.tools 与 opts.tools 合并做 allowlist (profile 是岗位预设, opts 是调用方显式覆盖; 取并集)。
+  const profileTools = opts.profile?.tools;
+  const allowlist = (opts.tools || profileTools) ? new Set([...(opts.tools ?? []), ...(profileTools ?? [])]) : null;
   const tools = [...baseTools, ...hashlineTools, ...mcpTools, ...skillTools, ...(opts.customTools ?? [])].filter(
     (t) => !excluded.has(t.name) && (!allowlist || allowlist.has(t.name)),
   );
@@ -860,7 +879,12 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
   const systemPrompt = buildLeafSystemPrompt({ cwd, tools, contextFiles });
 
   const runOnce = async (input: AgentLeafInput): Promise<AgentLeafResult> => {
-    const { prompt, model } = input;
+    const { prompt, model: inputModel } = input;
+    // profile.seat 当节点无显式模型时的回退 (引擎侧未 pin model 且无 router → 传空串)。
+    const model = inputModel || opts.profile?.seat || '';
+    if (!model) {
+      throw new Error('[agent-leaf] 无模型: input.model 空且 profile.seat 未设');
+    }
     const { provider, modelId } = parseModelRef(model);
     // Claude 订阅通道 (NOTES 2026-08-10): claude-code:* 不在两栈, 循环走 SDK (下方调用点分派)。
     // ⚠ sandboxRoot 模式下 claude CLI 的凭证目录 (~/.claude) 不在 bwrap 视图里 —— 订阅座位
@@ -889,8 +913,10 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     const disciplined = scaffold ? `${scaffold}\n\n${prompt}` : prompt;
     // persona 刻意**不进** promptVersion: 它是每个节点自己的角色设定, 属于"这一发在干什么"
     // 而不是"引擎这一版怎么包装" —— 混进来会让版本逐节点漂, 也就分不了组。
+    // profile.persona 与 profile skills 同此边界: 不进 promptVersion, 不建并行 prompt 构建路径。
     const promptVersion = promptVersionOfText(scaffold);
-    const routedPrompt = opts.persona ? `<persona>\n${opts.persona}\n</persona>\n\n${disciplined}` : disciplined;
+    const combinedPersona = [opts.persona, opts.profile?.persona, profileSkillsContent].filter(Boolean).join('\n\n');
+    const routedPrompt = combinedPersona ? `<persona>\n${combinedPersona}\n</persona>\n\n${disciplined}` : disciplined;
 
     // advisor(NOTES 2026-08-10):pi 座内部升档 —— 本次运行注入无参 advisor 工具,prompt 面按
     // 本次工具面重建(创建期缓存的 systemPrompt 不含它)。claude-code 座走官方(settings.advisorModel

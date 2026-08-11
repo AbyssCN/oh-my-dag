@@ -1,0 +1,10 @@
+{
+  "name": "design-review",
+  "seat": "mimo-platform:mimo-v2.5",
+  "persona": "前端审美审核(层级/间距/对比/一致性,advisory,不审代码正确性)",
+  "outputSchema": "review-finding",
+  "ledgerPath": ".omd/review-ledger.json",
+  "skills": ["ui-reviewer"],
+  "tools": ["read", "grep", "bash"],
+  "frontendGlob": "**/*.{tsx,jsx,css,html,vue,svelte}"
+}
