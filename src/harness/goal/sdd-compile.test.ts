@@ -11,7 +11,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { parseBreakdown, type SddBreakdown } from './sdd-direct';
-import { compileBreakdown, RED_EXPECT_EXIT } from './sdd-compile';
+import { compileBreakdown, describeParallelism, parallelismReadout, RED_EXPECT_EXIT } from './sdd-compile';
 import { PlanSchema } from '../conductor-plan';
 
 const FULL_REGRESSION = 'bunx tsc --noEmit && bun test';
@@ -236,5 +236,76 @@ describe('compileBreakdown — 端到端: 解析器 → 编译器 (切片 1+2 �
     expect(plan.nodes['s2-red']!.depends_on).toEqual(['s1-green']);
     // 切片名进 goal —— 执行节点得知道自己在干哪一片 (SDD 全文注入与否由接线方 5 号切片裁)。
     expect(plan.nodes['s2']!.goal).toContain('编译器');
+  });
+});
+
+// ── 并行性 advisory 读数 (owner 2026-08-11: 结晶期审问 + 声明期读数, 只报不拒) ──────────
+//
+// 反向自检 (实跑过): 把 layerOf 里「dl > layer」改成「dl >= 0 恒不更新」(ASAP 全塌到 0 层)
+// → 「线性链串行率 1」「钻石图宽度 2」当场红; 把 conservativeSlices 判据 dw > aw 改成 false
+// → 「声明保守点名」当场红。读数不许恒零, 也不许把诚实串行报成保守。
+
+describe('parallelismReadout — 并行性 advisory (只报不拒)', () => {
+  const bd = (rows: string[], wave?: string): SddBreakdown =>
+    parseBreakdown(
+      ['## 分解 (Breakdown)', '| 切片 | 写集 | 依赖 | verify |', '|---|---|---|---|', ...rows, ...(wave ? [`并行波形:${wave}`] : [])].join('\n'),
+    );
+
+  test('线性链 1→2→3: 宽度 1, 关键路径全长, 串行率 1 (诚实串行如实报, 不报保守)', () => {
+    const r = parallelismReadout(
+      bd([
+        '| 1 a | src/a.ts | — | bun test src/a.test.ts |',
+        '| 2 b | src/b.ts | 1 | bun test src/b.test.ts |',
+        '| 3 c | src/c.ts | 2 | bun test src/c.test.ts |',
+      ]),
+    );
+    expect(r.maxWidth).toBe(1);
+    expect(r.criticalPath).toEqual([1, 2, 3]);
+    expect(r.serialRatio).toBe(1);
+    expect(r.conservativeSlices).toEqual([]); // 依赖真是链, 没有可提早的片
+  });
+
+  test('钻石图 1→{2,3}→4: 宽度 2, 关键路径长 3, 串行率 0.75', () => {
+    const r = parallelismReadout(
+      bd([
+        '| 1 a | src/a.ts | — | bun test src/a.test.ts |',
+        '| 2 b | src/b.ts | 1 | bun test src/b.test.ts |',
+        '| 3 c | src/c.ts | 1 | bun test src/c.test.ts |',
+        '| 4 d | src/d.ts | 2, 3 | bun test src/d.test.ts |',
+      ]),
+    );
+    expect(r.maxWidth).toBe(2);
+    expect(r.asapWaves).toEqual([[1], [2, 3], [4]]);
+    expect(r.criticalPath.length).toBe(3);
+    expect(r.serialRatio).toBe(0.75);
+  });
+
+  test('声明保守点名: 片 3 无依赖却被排到第 2 层 → 点名"可提至层 0" (本 wave 切片 4 的真实形状)', () => {
+    const r = parallelismReadout(
+      bd(
+        [
+          '| 1 a | src/a.ts | — | bun test src/a.test.ts |',
+          '| 2 b | src/b.ts | 1 | bun test src/b.test.ts |',
+          '| 3 c | src/c.ts | — | bun test src/c.test.ts |',
+        ],
+        '{1} → {2} → {3}',
+      ),
+    );
+    expect(r.conservativeSlices).toEqual([{ id: 3, declaredWave: 2, asapWave: 0 }]);
+    expect(describeParallelism(r)).toContain('片3');
+    expect(describeParallelism(r)).toContain('可提至0');
+  });
+
+  test('声明恰等于 ASAP → 零点名 (读数不许把贴线声明报成保守)', () => {
+    const r = parallelismReadout(
+      bd(
+        [
+          '| 1 a | src/a.ts | — | bun test src/a.test.ts |',
+          '| 2 b | src/b.ts | 1 | bun test src/b.test.ts |',
+        ],
+        '{1} → {2}',
+      ),
+    );
+    expect(r.conservativeSlices).toEqual([]);
   });
 });

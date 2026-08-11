@@ -122,6 +122,91 @@ function assertAcyclic(slices: readonly SddSlice[]): void {
   if (pending.size) throw new Error(`切片依赖成环: ${[...pending.keys()].join('、')} — 图跑起来永远没有就绪节点`);
 }
 
+// ── 并行性 advisory 读数 (owner 2026-08-11: 「调度器」放结晶期当审问, 声明期只出读数) ────────
+//
+// 为什么是读数不是闸: 并行上限由**真依赖关系**决定, 而依赖边真不真是语义判断 (真数据依赖 /
+// 可冻结进契约的接口依赖 / 叙事假边), 算法辨不出 —— 30–40% 的任务本来就是线性链 (agentic-graph
+// 调研 C1), 把「宽度不够」做成硬闸会拒掉诚实的串行分解, 逼人捏造假独立 (那比串行更贵,
+// 并发三跑的 debris 验收就是这笔学费)。所以两个方向各归各: 假并行有乱序/写集闸 (硬),
+// 假串行只点名 (advisory), 消解假边的动作留给结晶期的人审。
+
+export interface ParallelismReadout {
+  /** 依赖列允许的 ASAP 分层 (每片排进最早可跑层)。注意这是 ASAP 宽度, 不是最大反链 —— 够用且线性。 */
+  readonly asapWaves: readonly (readonly number[])[];
+  /** ASAP 最大宽度 (依赖列允许的最大并行度)。 */
+  readonly maxWidth: number;
+  /** 关键路径 (最长依赖链上的切片 id, 墙钟下界: 无论多少并发, 这条链只能串着走)。 */
+  readonly criticalPath: readonly number[];
+  /** 串行率 = 关键路径长 / 切片数。1 = 纯线性链 (要么诚实串行, 要么该去审问依赖边)。 */
+  readonly serialRatio: number;
+  /** 声明的波形比依赖列保守时点名: 这些切片按依赖本可提早到 ASAP 层, 作者却排在了后面。 */
+  readonly conservativeSlices: readonly { id: number; declaredWave: number; asapWave: number }[];
+}
+
+/**
+ * 并行性读数 (advisory, 只报不拒; 前提: 依赖列已过编译闸, 无环无悬空)。
+ * 消费者: 结晶期审问 (/omd-contract 收尾看一眼「串行率 1 的链, 哪条边是真的?」) 与
+ * run 摘要行 (读数入账, 声明宽度 vs 依赖宽度的差距可跨 run 累计)。
+ */
+export function parallelismReadout(breakdown: SddBreakdown): ParallelismReadout {
+  const { slices, waves } = breakdown;
+  const byId = new Map(slices.map((s) => [s.id, s]));
+  // ASAP 层 = 1 + max(依赖的层); 无依赖 = 0 层。同时得到最长链 (关键路径) 的回溯前驱。
+  const asapLayer = new Map<number, number>();
+  const cpPrev = new Map<number, number | undefined>();
+  const layerOf = (id: number): number => {
+    const hit = asapLayer.get(id);
+    if (hit !== undefined) return hit;
+    const s = byId.get(id)!;
+    let layer = 0;
+    let prev: number | undefined;
+    for (const d of s.deps) {
+      const dl = layerOf(d) + 1;
+      if (dl > layer) {
+        layer = dl;
+        prev = d;
+      }
+    }
+    asapLayer.set(id, layer);
+    cpPrev.set(id, prev);
+    return layer;
+  };
+  for (const s of slices) layerOf(s.id);
+  const layerCount = Math.max(...[...asapLayer.values()]) + 1;
+  const asapWaves: number[][] = Array.from({ length: layerCount }, () => []);
+  for (const s of slices) asapWaves[asapLayer.get(s.id)!]!.push(s.id);
+  // 关键路径: 从最深层的任一片回溯前驱链。
+  const deepest = slices.reduce((a, b) => (asapLayer.get(a.id)! >= asapLayer.get(b.id)! ? a : b));
+  const criticalPath: number[] = [];
+  for (let at: number | undefined = deepest.id; at !== undefined; at = cpPrev.get(at)) criticalPath.unshift(at);
+  // 声明保守点名: 作者把切片排在比 ASAP 更晚的层 (提早不可能 —— 乱序闸已保证声明不早于依赖)。
+  const conservativeSlices: { id: number; declaredWave: number; asapWave: number }[] = [];
+  if (waves) {
+    const declared = new Map<number, number>();
+    waves.forEach((wave, i) => wave.forEach((id) => declared.set(id, i)));
+    for (const s of slices) {
+      const dw = declared.get(s.id);
+      const aw = asapLayer.get(s.id)!;
+      if (dw !== undefined && dw > aw) conservativeSlices.push({ id: s.id, declaredWave: dw, asapWave: aw });
+    }
+  }
+  return {
+    asapWaves,
+    maxWidth: Math.max(...asapWaves.map((w) => w.length)),
+    criticalPath,
+    serialRatio: criticalPath.length / slices.length,
+    conservativeSlices,
+  };
+}
+
+/** 摘要一行 (进 run-goal 平铺路径的 execute 摘要, 读数入账)。 */
+export function describeParallelism(r: ParallelismReadout): string {
+  const conservative = r.conservativeSlices.length
+    ? ` · 声明保守: ${r.conservativeSlices.map((c) => `片${c.id}(声明层${c.declaredWave}→可提至${c.asapWave})`).join(' ')}`
+    : '';
+  return `宽度 ${r.maxWidth} · 关键路径 ${r.criticalPath.join('→')} (串行率 ${r.serialRatio.toFixed(2)})${conservative}`;
+}
+
 /**
  * 分解表结构 → 平铺 plan (G-1: 节点 = 切片×3 + accept, 零 conductor 展开)。
  *

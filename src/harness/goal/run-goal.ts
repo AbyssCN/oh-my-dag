@@ -38,7 +38,7 @@ import { loadSddContract } from './sdd-direct';
 import type { ExecutorDagConfig } from '../dag/types';
 import { compareVerifyReports, summarizeDelta, type DeltaReport, type VerifyStepStatus } from './delta-compare';
 import { parseBreakdown } from './sdd-direct';
-import { compileBreakdown } from './sdd-compile';
+import { compileBreakdown, describeParallelism, parallelismReadout } from './sdd-compile';
 import { attributeWriteSet, classifyWriteScope, describeWriteSet, SDD_DECLARED_WRITE_SET, type DeclaredWriteSet, type WriteScopeKind, type WriteSetDeclaration, type WriteSetReport } from '../write-set';
 import { logger } from '../logger';
 
@@ -519,9 +519,11 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   // G-7 读数靠 plan 名分辨 (goal-execute-flat vs goal-execute)。
   let flatPlan: ConductorPlan | undefined;
   let flatFallback: string | undefined;
+  let flatParallelism: string | undefined;
   if (sdd && acceptance.kind === 'executable') {
     try {
-      const compiled = compileBreakdown(parseBreakdown(sdd.text), {
+      const breakdown = parseBreakdown(sdd.text);
+      const compiled = compileBreakdown(breakdown, {
         acceptCommand: acceptance.command,
         ...(acceptance.expectExit !== undefined ? { acceptExpectExit: acceptance.expectExit } : {}),
         name: 'goal-execute-flat',
@@ -538,6 +540,8 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
           ]),
         ),
       } as ConductorPlan;
+      // 并行性 advisory (owner 2026-08-11): 只报不拒 —— 假串行点名给结晶期审问, 假并行归乱序闸。
+      flatParallelism = describeParallelism(parallelismReadout(breakdown));
     } catch (err) {
       flatFallback = String(err instanceof Error ? err.message : err).slice(0, 160);
       logger.warn(
@@ -736,7 +740,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
         : outcome === 'oracle-failed' ? '判词说成了但冻结判据没过 (D-I: 以判据为准)'
         : `未收敛 (${execLeaf?.status ?? '平铺图未过冻结判据'})`
       }${oracleNote}` +
-      `${flatUsed ? ' · 直通v2平铺' : ''}${flatFallback ? ` · 直通v2回落: ${flatFallback}` : ''}` +
+      `${flatUsed ? ` · 直通v2平铺 (并行读数: ${flatParallelism})` : ''}${flatFallback ? ` · 直通v2回落: ${flatFallback}` : ''}` +
       `${reusedNodes.length ? ` · 复用 ${reusedNodes.length} 节点` : ''}` +
       `${exec.observations?.length ? ` · 图外观察 ${exec.observations.length} 条` : ''}` +
       `${verifyDelta ? ` · D-1 delta: ${summarizeDelta(verifyDelta)}` : ''}` +
