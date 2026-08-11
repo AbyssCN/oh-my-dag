@@ -37,6 +37,8 @@ import type { RunOutcomeKind } from '../run-outcome';
 import { loadSddContract } from './sdd-direct';
 import type { ExecutorDagConfig } from '../dag/types';
 import { compareVerifyReports, summarizeDelta, type DeltaReport, type VerifyStepStatus } from './delta-compare';
+import { parseBreakdown } from './sdd-direct';
+import { compileBreakdown } from './sdd-compile';
 import { attributeWriteSet, classifyWriteScope, describeWriteSet, SDD_DECLARED_WRITE_SET, type DeclaredWriteSet, type WriteScopeKind, type WriteSetDeclaration, type WriteSetReport } from '../write-set';
 import { logger } from '../logger';
 
@@ -509,7 +511,42 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
     stages.push({ stage: 'execute', status: 'failed', outcome, summary });
     return { goal, tier, acceptance, stages, ...(specPath ? { specPath } : {}), sources, repoContext, converged: false, rounds: 0, reusedNodes: [], outcome };
   };
-  const execPlan: ConductorPlan = {
+  // ── 内环 v2 切片 5 (SDD 2026-08-11-inner-loop-v2 D-1): 直通 v2 —— 分解表可编译时零 conductor ──
+  // 平铺图 = 切片×(RED/实装/GREEN) + accept (D-4 定向 TDD); accept 命令 = 冻结判据同一条命令,
+  // D-3 停止规则合一。仅执行型验收可平铺: 探索型没有确定性停机判据, 平铺图会跑完即止无人判。
+  // 编译不过 → **响亮回落** v1 conductor 铺图 (warn + 摘要注记, 不静默): 直通 v1 的存量输入
+  // (分解段无表 / verify 列是验收点引用而非命令) 今天都不可编译, 拒跑是无谓回归;
+  // G-7 读数靠 plan 名分辨 (goal-execute-flat vs goal-execute)。
+  let flatPlan: ConductorPlan | undefined;
+  let flatFallback: string | undefined;
+  if (sdd && acceptance.kind === 'executable') {
+    try {
+      const compiled = compileBreakdown(parseBreakdown(sdd.text), {
+        acceptCommand: acceptance.command,
+        ...(acceptance.expectExit !== undefined ? { acceptExpectExit: acceptance.expectExit } : {}),
+        name: 'goal-execute-flat',
+      });
+      // 编译器刻意不内联 SDD 全文 (token 注入由接线方裁, 见 sdd-compile 头注): 这里给每个
+      // **切片实装节点**前置与 conductor 路径同源的契约上下文 (G-6 教训: 内联全文, 不引用
+      // 基座路径); RED/GREEN/accept 是 command 节点, 不读文本, 不背这份 token。
+      flatPlan = {
+        ...compiled,
+        nodes: Object.fromEntries(
+          Object.entries(compiled.nodes).map(([id, n]) => [
+            id,
+            n.executor === 'agent' ? { ...n, goal: `${body}\n\n${n.goal}` } : n,
+          ]),
+        ),
+      } as ConductorPlan;
+    } catch (err) {
+      flatFallback = String(err instanceof Error ? err.message : err).slice(0, 160);
+      logger.warn(
+        { sdd: sdd.path, err: flatFallback },
+        '[run-goal] 直通v2: 分解表编译不过 → 回落 conductor 铺图 (v1, 不静默)',
+      );
+    }
+  }
+  const execPlan: ConductorPlan = flatPlan ?? {
     name: 'goal-execute',
     nodes: {
       execute: {
@@ -573,16 +610,19 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   } catch (err) {
     return bail(`execute 抛错: ${String(err).slice(0, 200)}`, 'infra-error');
   }
+  const flatUsed = flatPlan !== undefined;
   const execLeaf = exec.results.execute;
-  if (!execLeaf) return bail('execute 节点无结果 (引擎没跑到它)', 'infra-error');
-  // `converged` 缺席 = 没人判过 → 一律**不算成** (judge_final 已保证它在, 缺席意味着引擎跑歪了)。
-  // judge 自己那一票优先: 环内判据绿时 `converged` 是**判据**说的, 不是 judge 说的
-  // (见 LeafResult.judgeConverged)。混用会让判据轴把"判据绿"误记成"judge 也说绿"。
-  const judgeSaidOk = execLeaf.judgeConverged ?? execLeaf.converged === true;
+  if (!execLeaf && !flatUsed) return bail('execute 节点无结果 (引擎没跑到它)', 'infra-error');
   // D-I 环外闸: 执行型才有这个节点。它**没跑**(引擎没走到 / 被 quorum 级联跳过)也算没过 ——
   // 冻结判据的意义就是"没被证明过就不算成", fail-closed 与 converged 缺席同一条纪律。
   const acceptLeaf = acceptance.kind === 'executable' ? exec.results.accept : undefined;
   const oracleOk = acceptance.kind !== 'executable' ? true : acceptLeaf?.status === 'done';
+  // `converged` 缺席 = 没人判过 → 一律**不算成** (judge_final 已保证它在, 缺席意味着引擎跑歪了)。
+  // judge 自己那一票优先: 环内判据绿时 `converged` 是**判据**说的, 不是 judge 说的
+  // (见 LeafResult.judgeConverged)。混用会让判据轴把"判据绿"误记成"judge 也说绿"。
+  // 平铺路径 (D-3): 没有 conductor 节点就没有 judge 投票 —— 停止规则唯一 = 冻结判据,
+  // criteria.judge 恒等于 oracle, 「判词✅/判据❌打架」这个状态在平铺图上从型别消灭。
+  const judgeSaidOk = flatUsed ? oracleOk : ((execLeaf!.judgeConverged ?? execLeaf!.converged === true));
   // D-1 delta: after 侧 = accept 节点的实判 (done→pass / failed→fail / 没跑→缺席)。
   // 缺席 + 两侧都 full → 比对器判 new-failure (fail-closed, 与 oracleOk 同一条纪律:
   // 「没被证明过就不算成」—— 引擎没跑到 accept 节点, 覆盖就回退了)。
@@ -642,16 +682,17 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
     }
   }
   const converged = judgeSaidOk && oracleOk;
-  const roundCount = execLeaf.rounds ?? 0;
+  // 平铺路径没有内环 —— rounds 恒 0 是事实不是缺数 (摘要有「直通v2平铺」注记, 不会读成"没跑")。
+  const roundCount = execLeaf?.rounds ?? 0;
   // INV-GOAL-3 可证面: 复用现在全发生在**内环**里 (子节点内容寻址, 同 id ≡ 同规格 + 同祖先规格)。
   const reusedNodes = exec.reusedNodes ?? [];
   // D-Q / D-P: 两种"没跑完但不是失败"的收尾, 各自如实报 —— 都恒不算收敛 (fail-closed)。
-  const blocked = execLeaf.blocked;
-  const budgetStopped = execLeaf.budgetStopped;
+  const blocked = execLeaf?.blocked;
+  const budgetStopped = execLeaf?.budgetStopped;
   // **引擎自己出事**导致环提前退出 (今天唯一来源: judge 调不通)。与 blocked 分开的理由是
   // 下一步相反: blocked 要人给外部输入, 这个要**修引擎** —— 而它此前落 `not-converged`,
   // 于是读的人会去加轮数, 恰恰是最没用的那个动作。
-  const infraStopped = execLeaf.infraStopped;
+  const infraStopped = execLeaf?.infraStopped;
   const cancelledReason = exec.cancelled?.reason;
   // 判词与 oracle **分开报**: 两者不一致时那句话本身就是结论 —— judge 说成了而冻结判据没过,
   // 正是 D-I 要抓的"作弊达标"; 反过来则是"任务里还有命令覆盖不到的明确要求"。
@@ -693,8 +734,9 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
         : outcome === 'infra-error' ? `引擎侧停: ${infraStopped!.slice(0, 300)} —— **别加轮数**, 这是引擎该修的`
         : outcome === 'blocked' ? `阻塞: ${blocked!.slice(0, 300)}`
         : outcome === 'oracle-failed' ? '判词说成了但冻结判据没过 (D-I: 以判据为准)'
-        : `未收敛 (${execLeaf.status})`
+        : `未收敛 (${execLeaf?.status ?? '平铺图未过冻结判据'})`
       }${oracleNote}` +
+      `${flatUsed ? ' · 直通v2平铺' : ''}${flatFallback ? ` · 直通v2回落: ${flatFallback}` : ''}` +
       `${reusedNodes.length ? ` · 复用 ${reusedNodes.length} 节点` : ''}` +
       `${exec.observations?.length ? ` · 图外观察 ${exec.observations.length} 条` : ''}` +
       `${verifyDelta ? ` · D-1 delta: ${summarizeDelta(verifyDelta)}` : ''}` +
