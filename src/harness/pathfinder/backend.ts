@@ -255,7 +255,15 @@ function createMdBackend(): PathBackend {
     },
     // D-5/G-5: 纯核算 (sweepWaitingHuman 就地改 map), 这里只负责经 mutateMap 落盘。
     // 图不存在 → [] (读路径上顺手扫的东西不该因为图没了而炸掉整个 path_tickets)。
+    //
+    // ⚠ **零 stale 零写** (2026-08-11 事故修): 它挂在 path_tickets **读路径**上, 无条件
+    // mutateMap 会让"看一眼图"就 parse→render 重写真相文件 —— 手写的 parser 外字段
+    // (`- delivered:` commit 锚) 被静默丢弃, 实测在 omd-mcp-server.md 上真丢过 6 行。
+    // 所以先纯读判定, 真有票要标 stale 才落盘; 常态路径对文件零字节触碰。
     sweepWaiting: (cwd, slug, opts) => {
+      const probe = loadMap(cwd, slug);
+      if (!probe) return [];
+      if (sweepWaitingHuman(probe, opts).length === 0) return [];
       const mutated = mutateMap(cwd, slug, (map) => sweepWaitingHuman(map, opts));
       return mutated ? mutated.result : [];
     },

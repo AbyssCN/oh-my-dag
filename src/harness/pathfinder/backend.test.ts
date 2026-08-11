@@ -3,7 +3,7 @@
  * gh 侧全程注入 GhRunner fixture, **永不真调 gh** (dispatch.ts 同款 idiom)。
  */
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveBackend, type GhResult, type GhRunner } from './backend';
@@ -597,6 +597,25 @@ describe('D-5 三戳生产者 (md 后端, G-5)', () => {
     try {
       const b = resolveBackend(dir, { env: { OMD_PATH_BACKEND: 'md' } });
       expect(b.sweepWaiting!(dir, 'no-such-map', { now: new Date().toISOString() })).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('sweepWaiting: 零 stale 零写 —— 手写的 parser 外字段不因"看一眼图"被静默丢弃 (2026-08-11 事故闸)', () => {
+    // 事故原样: sweep 挂 path_tickets 读路径, 无条件 mutateMap 让每次读图都 parse→render
+    // 重写真相文件, omd-mcp-server.md 手写的 6 行 `- delivered:` commit 锚被静默丢弃。
+    // 证伪 (实跑过): 把 sweepWaiting 改回无条件 mutateMap → 本条字节比对当场红。
+    const dir = tmp();
+    try {
+      seed(dir, { id: 'g1', status: 'escalated', waitingSince: new Date().toISOString() }); // 没超时
+      const file = join(dir, 'docs', 'plan', 'pathfinder', 'ship-x.md');
+      // 手写一行 parser 词表外的字段 (盘上真图的真实形态) —— 重写会把它丢掉。
+      writeFileSync(file, `${readFileSync(file, 'utf8')}\n- delivered: 手写 commit 锚 (abc123)\n`);
+      const before = readFileSync(file, 'utf8');
+      const b = resolveBackend(dir, { env: { OMD_PATH_BACKEND: 'md' } });
+      expect(b.sweepWaiting!(dir, 'ship-x', { now: new Date().toISOString() })).toEqual([]);
+      expect(readFileSync(file, 'utf8')).toBe(before); // 逐字节相同: 读不产生写
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
