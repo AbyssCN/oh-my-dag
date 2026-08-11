@@ -16,15 +16,32 @@
  *     读走 GraphQL `blockedBy(first:N){nodes{number}}` 字段, 写走 REST
  *     `POST /repos/{o}/{r}/issues/{n}/dependencies/blocked_by` (issue_id = blocking 票 databaseId);
  *     **完全不读不写 body 尾行**。开关由 resolveBackend 从 config.capabilities.nativeDependencies 读, 缺省 false。
+ *
+ * 2026-08-11 切片4 (控制面统一 SDD D-4 / G-3 / INV-1) 补两件:
+ *   - `path:suggested` label 映射 (S-1 片 e 的 t5 欠账): suggested 票镜像成**开着 + 带该 label**的
+ *     issue, confirm accept 摘 label (成 open 票), confirm reject 关票**但保留 label**
+ *     (CLOSED+suggested = 已拒建议, 与 CLOSED 的已裁票区分开)。溯源/指纹走正文锚往返。
+ *   - `syncFromMap` (G-3 后半): gh 侧被人手改 → 以**盘上 map** 为准覆盖, 且**先**在该 issue 留冲突
+ *     注记 (含两侧各自认为的状态与时间)。INV-1: gh 侧不产生独立状态, 这里只纠正渲染, 零裁决。
  */
 import { deriveStatus } from './frontier';
 import { looksLikeResult } from './result-format';
+import {
+  applySuggestions,
+  confirmSuggestion as confirmSuggestionPure,
+  type ApplySuggestionsOpts,
+  type ApplySuggestionsResult,
+  type ConfirmAction,
+  type SuggestionDraft,
+} from './suggest';
 import type { GhResult, GhRunner, PathBackend } from './backend';
-import type { Ticket, TicketStatus, TicketType } from './types';
+import type { PathMap, SuggestionLogEntry, Ticket, TicketStatus, TicketType } from './types';
 
 const TICKET_TYPES: readonly TicketType[] = ['research', 'grill', 'prototype', 'task'];
 const MAP_LABEL = 'path:map';
 const DELIVERED_LABEL = 'path:delivered';
+/** S-1 片 e (t5 欠账): 机器建议票的 gh 映射 —— 开着 + 此 label = suggested; 关着 + 此 label = 已拒。 */
+const SUGGESTED_LABEL = 'path:suggested';
 /** 云端 Actions 研究完成后打的 label (S2 workflow 打, S3 折入据此收料 + ack 时摘)。 */
 const RESEARCH_DONE_LABEL = 'research-done';
 const MAP_TITLE_PREFIX = '🧭 [map] ';
@@ -100,7 +117,51 @@ function parseRuling(comments: Array<{ body: string }>): string | undefined {
 function baseStatus(state: string, labels: string[]): TicketStatus {
   const closed = state.toUpperCase() === 'CLOSED';
   if (closed) return labels.includes(DELIVERED_LABEL) ? 'delivered' : 'ruled';
-  return 'open';
+  return labels.includes(SUGGESTED_LABEL) ? 'suggested' : 'open';
+}
+
+/** 正文锚行 `<Key>: <value>` → value (S-1 溯源/指纹的往返载体; 无该行 → undefined)。 */
+function parseAnchor(body: string, key: string): string | undefined {
+  const mm = body.match(new RegExp(`^${key}:\\s*(.+)$`, 'm'));
+  return mm ? mm[1]!.trim() : undefined;
+}
+
+/** 评论里的 S-1 台账行 `**suggestion-log**: <outcome> <at> <runId>` (一票可多行, 按序收)。 */
+function parseSuggestionLog(ticketId: string, comments: Array<{ body: string }>): SuggestionLogEntry[] {
+  const out: SuggestionLogEntry[] = [];
+  for (const c of comments) {
+    const mm = c.body.match(/^\*\*suggestion-log\*\*:\s*(accepted|edited|rejected|deduped|deduped-semantic)\s+(\S+)\s+(\S+)\s*$/m);
+    if (mm) out.push({ ticketId, outcome: mm[1] as SuggestionLogEntry['outcome'], at: mm[2]!, runId: mm[3]! });
+  }
+  return out;
+}
+
+/** 一条台账行的评论正文 (写与读同一处定型, 防两边漂移)。 */
+function suggestionLogBody(e: SuggestionLogEntry): string {
+  return `**suggestion-log**: ${e.outcome} ${e.at} ${e.runId}`;
+}
+
+// ── D-4 渲染面 (INV-1: gh 侧状态**只是**这三位的投影, 不是独立真源) ─────────────────
+
+/** gh 侧渲染三元组: issue 开/关 + 两个状态 label。两个 status 渲染相同 = 无冲突 (不刷注记)。 */
+interface GhRender {
+  closed: boolean;
+  suggested: boolean;
+  delivered: boolean;
+}
+
+/** 盘上 status → 它**应该**长成的 gh 渲染 (open/blocked/escalated 同一渲染: gh 侧无对应表达位)。 */
+function renderOf(status: TicketStatus): GhRender {
+  switch (status) {
+    case 'suggested':
+      return { closed: false, suggested: true, delivered: false };
+    case 'ruled':
+      return { closed: true, suggested: false, delivered: false };
+    case 'delivered':
+      return { closed: true, suggested: false, delivered: true };
+    default:
+      return { closed: false, suggested: false, delivered: false };
+  }
 }
 
 // GraphQL: map issue + 两层 sub-issue + 标签/评论 (一次抓齐, SDD "readMap 每次实时拼, 不做缓存层")。
@@ -112,7 +173,7 @@ function readMapQuery(nativeDeps: boolean): string {
     issue(number:$number){
       number title body state
       subIssues(first:100){ nodes{
-        number title body state
+        number title body state updatedAt
         labels(first:20){ nodes{ name } }
         comments(first:50){ nodes{ body author{ login } } }
         subIssues(first:100){ nodes{ number } }${blockedByField}
@@ -137,6 +198,8 @@ interface GqlSubTicket {
   labels: { nodes: GqlLabel[] };
   comments: { nodes: Array<{ body: string; author?: { login: string } | null }> };
   subIssues: { nodes: Array<{ number: number }> };
+  /** gh 侧最后改动时刻 (G-3 冲突注记的 gh 时间; 老 fixture / 旧响应可能没有 → 注记写「未知」)。 */
+  updatedAt?: string;
   /** native 策略专属: 原生 issue-dependencies 前置票 (legacy 策略该字段不查, 为 undefined)。 */
   blockedBy?: { nodes: Array<{ number: number }> };
 }
@@ -148,6 +211,40 @@ interface GqlMapIssue {
   subIssues: { nodes: GqlSubTicket[] };
 }
 
+// ── D-4 镜像同步口 (G-3 后半; PathBackend 之外的 gh 专属能力, 故独立接口) ─────────
+
+/** 一条"gh 侧被手改"的冲突记录 (以盘为准覆盖之后的回执; 注记原文一并带回, 调用方可直接念)。 */
+export interface GhMirrorConflict {
+  ticketId: string;
+  /** 盘上 map 认为的状态 (唯一真源)。 */
+  mapStatus: TicketStatus;
+  /** gh 侧自称的状态 (由 issue 开关 + 状态 label 反推)。 */
+  ghStatus: TicketStatus;
+  /** gh 侧最后改动时刻; 响应无该字段 → undefined (NULL≠0: 不编时间)。 */
+  ghUpdatedAt?: string;
+  /** 落在该 issue 上的冲突注记原文。 */
+  note: string;
+}
+
+export interface GhMirrorSyncResult {
+  /** 被纠正回盘上状态的票 (= conflicts 的 id 集)。 */
+  synced: string[];
+  conflicts: GhMirrorConflict[];
+  /** 盘上有票但 gh 无对应 issue —— 本切片不代建, 但绝不静默 (NULL≠0)。 */
+  missing: string[];
+}
+
+/** gh 渲染后端的镜像同步能力 (D-4: 盘上 map 唯一真源, gh 镜像不裁决)。 */
+export interface GhMirror {
+  /**
+   * 以盘上 map (`truth`) 为准把 gh 侧渲染纠正回来 (G-3): 逐票比对**渲染三元组**
+   * (开关 + suggested/delivered label) —— 渲染等价的状态差 (blocked/escalated ↔ open) 不算冲突,
+   * 否则每轮刷一条无意义注记。发现不一致 → **先**在该 issue 留冲突注记 (含两侧状态与时间),
+   * **再**覆盖 (证据先行: 覆盖中途炸了, 现场还在)。map issue 不存在 → throw (不静默当全一致)。
+   */
+  syncFromMap(cwd: string, slug: string, truth: PathMap, opts: { at: string }): GhMirrorSyncResult;
+}
+
 // ── 后端工厂 (构造即探测 repo, fail-loud) ───────────────────────────────────────
 
 /**
@@ -157,7 +254,7 @@ interface GqlMapIssue {
  * `nativeDeps` (缺省 false 保守): blockedBy 真相源二选一 (D-C.2, 每仓恰一真相, 无 fallback 交叉) ——
  *   false = legacy body 尾行; true = 原生 issue-dependencies (读 GraphQL 字段 / 写 REST POST)。
  */
-export function createGhBackend(gh: GhRunner, nativeDeps = false): PathBackend {
+export function createGhBackend(gh: GhRunner, nativeDeps = false): PathBackend & GhMirror {
   const probe = gh(['repo', 'view', '--json', 'nameWithOwner']);
   if (probe.exitCode !== 0) {
     throw new Error(
@@ -202,6 +299,84 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false): PathBackend {
     return id;
   };
 
+  /** 建一张票 issue 并挂到母票/地图下 (addTicket 与 suggest 共用; 调用序: create → 母/子 nodeId → addSubIssue)。 */
+  const createTicketIssue = (o: { title: string; labels: string[]; body: string; parent: string; ctx: string }): number => {
+    const out = run(gh, ['issue', 'create', '--title', o.title, '--label', o.labels.join(','), '--body', o.body], o.ctx);
+    const number = parseCreatedNumber(out, o.ctx);
+    const parentId = nodeId(gh, bareNumber(o.parent), `${o.ctx}:parentNode`);
+    const childId = nodeId(gh, String(number), `${o.ctx}:childNode`);
+    run(
+      gh,
+      ['api', 'graphql', '-H', SUB_ISSUE_HEADER, '-f', `query=${ADD_SUB_ISSUE_MUTATION}`, '-f', `parentId=${parentId}`, '-f', `childId=${childId}`],
+      `${o.ctx}:addSubIssue`,
+    );
+    return number;
+  };
+
+  /** 一条台账评论 (S-1 INV-S1-3: 处置留痕落在**当事 issue**上, 人在 gh 上直接读得到)。 */
+  const logComment = (ticketId: string, e: SuggestionLogEntry, ctx: string): void => {
+    run(gh, ['issue', 'comment', bareNumber(ticketId), '--body', suggestionLogBody(e)], ctx);
+  };
+
+  /** readMap 本体 (suggest/confirmSuggestion 也从这里取图 —— 决策全在纯核, gh 侧只 emit)。 */
+  const readMapImpl = (slug: string): PathMap | null => {
+    const mapNumber = Number(bareNumber(slug));
+    if (!Number.isFinite(mapNumber)) return null;
+    const issue = fetchMap(mapNumber);
+    if (!issue) return null;
+    const destination = issue.title.startsWith(MAP_TITLE_PREFIX) ? issue.title.slice(MAP_TITLE_PREFIX.length) : issue.title;
+
+    // 一遍: 把 sub-issue 拼成静态 Ticket (open 票的 blocked 归一在第二遍)。
+    const tickets: Ticket[] = [];
+    const suggestionsLog: SuggestionLogEntry[] = [];
+    for (const sub of issue.subIssues.nodes) {
+      const labels = sub.labels.nodes.map((l) => l.name);
+      const id = `#${sub.number}`;
+      // S-1 台账先收: 已拒建议的票下面这行也要收 (拒绝不是删除无痕, INV-S1-3)。
+      suggestionsLog.push(...parseSuggestionLog(id, sub.comments.nodes));
+      const status = baseStatus(sub.state, labels);
+      // CLOSED + path:suggested = **已拒建议**: 纯核语义里它已被移出图 → 这里同样不当票
+      // (若不认这条, 它会被 baseStatus 读成 ruled 混进决策日志 —— 拒绝反倒成了裁决)。
+      if (status !== 'suggested' && labels.includes(SUGGESTED_LABEL)) continue;
+      const { type, title } = parseTicketTitle(sub.title, labels);
+      const body = sub.body ?? '';
+      const ruling = status === 'ruled' || status === 'delivered' ? parseRuling(sub.comments.nodes) : undefined;
+      const children = sub.subIssues.nodes.map((c) => `#${c.number}`);
+      // blockedBy 单真相 (D-C.2): native 读原生依赖字段, legacy 读 body 尾行, 二选一不混用。
+      const blockedBy = nativeDeps ? (sub.blockedBy?.nodes ?? []).map((n) => `#${n.number}`) : parseBlockedBy(body);
+      // S-1 溯源/指纹走正文锚往返 (缺锚 → undefined, 不编)。
+      const suggestedBy = parseAnchor(body, 'Suggested-by');
+      const fingerprint = parseAnchor(body, 'Fingerprint');
+      tickets.push({
+        id,
+        type,
+        title,
+        blockedBy,
+        status,
+        ...(ruling !== undefined ? { ruling } : {}),
+        ...(children.length > 0 ? { children } : {}),
+        ...(suggestedBy !== undefined ? { suggestedBy } : {}),
+        ...(fingerprint !== undefined ? { fingerprint } : {}),
+      });
+    }
+
+    // 二遍: open 票据 blockedBy 是否全裁归一 open/blocked (frontier.deriveStatus 纯函数复用;
+    // suggested 票不参与 —— 它在人点头前不获得任何执行力, INV-S1-1)。
+    const ruledSet = new Set(tickets.filter((t) => t.status === 'ruled' || t.status === 'delivered').map((t) => t.id));
+    for (const t of tickets) {
+      if (t.status === 'open') t.status = deriveStatus(t, ruledSet);
+    }
+
+    const decisionsLog = tickets.filter((t) => t.ruling !== undefined).map((t) => ({ ticketId: t.id, gist: t.ruling!.slice(0, 80) }));
+    return {
+      destination,
+      slug: String(mapNumber),
+      tickets,
+      decisionsLog,
+      ...(suggestionsLog.length > 0 ? { suggestionsLog } : {}),
+    };
+  };
+
   return {
     kind: 'gh',
     listMaps: () => {
@@ -213,45 +388,7 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false): PathBackend {
       }));
     },
 
-    readMap: (_cwd, slug) => {
-      const mapNumber = Number(bareNumber(slug));
-      if (!Number.isFinite(mapNumber)) return null;
-      const issue = fetchMap(mapNumber);
-      if (!issue) return null;
-      const destination = issue.title.startsWith(MAP_TITLE_PREFIX) ? issue.title.slice(MAP_TITLE_PREFIX.length) : issue.title;
-
-      // 一遍: 把 sub-issue 拼成静态 Ticket (open 的 blocked 归一在第二遍)。
-      const tickets: Ticket[] = issue.subIssues.nodes.map((sub) => {
-        const labels = sub.labels.nodes.map((l) => l.name);
-        const { type, title } = parseTicketTitle(sub.title, labels);
-        const body = sub.body ?? '';
-        const status = baseStatus(sub.state, labels);
-        const ruling = status === 'ruled' || status === 'delivered' ? parseRuling(sub.comments.nodes) : undefined;
-        const children = sub.subIssues.nodes.map((c) => `#${c.number}`);
-        // blockedBy 单真相 (D-C.2): native 读原生依赖字段, legacy 读 body 尾行, 二选一不混用。
-        const blockedBy = nativeDeps ? (sub.blockedBy?.nodes ?? []).map((n) => `#${n.number}`) : parseBlockedBy(body);
-        return {
-          id: `#${sub.number}`,
-          type,
-          title,
-          blockedBy,
-          status,
-          ...(ruling !== undefined ? { ruling } : {}),
-          ...(children.length > 0 ? { children } : {}),
-        };
-      });
-
-      // 二遍: open 票据 blockedBy 是否全裁归一 open/blocked (frontier.deriveStatus 纯函数复用)。
-      const ruledSet = new Set(tickets.filter((t) => t.status === 'ruled' || t.status === 'delivered').map((t) => t.id));
-      for (const t of tickets) {
-        if (t.status === 'open') t.status = deriveStatus(t, ruledSet);
-      }
-
-      const decisionsLog = tickets
-        .filter((t) => t.ruling !== undefined)
-        .map((t) => ({ ticketId: t.id, gist: t.ruling!.slice(0, 80) }));
-      return { destination, slug: String(mapNumber), tickets, decisionsLog };
-    },
+    readMap: (_cwd, slug) => readMapImpl(slug),
 
     createMap: (_cwd, destination) => {
       const body = `Destination: ${destination}\n\n## Fog\n\n## Decisions so far\n`;
@@ -266,22 +403,14 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false): PathBackend {
       // legacy 策略: blockedBy 落 body 尾行 (单真相)。native 策略: body 绝不写尾行, 前置边走原生 REST (见下)。
       if (!nativeDeps && nt.blockedBy.length > 0) bodyLines.push(`Blocked-by: ${nt.blockedBy.join(', ')}`);
       const body = bodyLines.join('\n\n');
-      const out = run(
-        gh,
-        ['issue', 'create', '--title', `[${nt.type}] ${nt.title}`, '--label', `path:${nt.type}`, '--body', body],
-        'addTicket',
-      );
-      const number = parseCreatedNumber(out, 'addTicket');
-
       // sub-issue 挂接 (归属血缘, D-G): parentId 给则挂母票, 否则挂地图。
-      const parentNumber = bareNumber(nt.parentId ?? slug);
-      const parentId = nodeId(gh, parentNumber, 'addTicket:parentNode');
-      const childId = nodeId(gh, String(number), 'addTicket:childNode');
-      run(
-        gh,
-        ['api', 'graphql', '-H', SUB_ISSUE_HEADER, '-f', `query=${ADD_SUB_ISSUE_MUTATION}`, '-f', `parentId=${parentId}`, '-f', `childId=${childId}`],
-        'addTicket:addSubIssue',
-      );
+      const number = createTicketIssue({
+        title: `[${nt.type}] ${nt.title}`,
+        labels: [`path:${nt.type}`],
+        body,
+        parent: nt.parentId ?? slug,
+        ctx: 'addTicket',
+      });
 
       // native 策略 (D-C.2): 逐个 blocking 票取 databaseId → REST POST 建原生依赖 (任一失败 fail-loud)。
       if (nativeDeps) {
@@ -304,6 +433,61 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false): PathBackend {
         ...(nt.executorKind ? { executorKind: nt.executorKind } : {}),
       };
       return t;
+    },
+
+    /**
+     * S-1 片 e (t5 欠账): 机器建议入图。**决策全在纯核** (applySuggestions: 溯源必填 / 指纹 + 语义
+     * 去重 / 双上限), gh 侧只把纯核的结论 emit 成 issue —— 建议票 = 开着 + `path:suggested` label,
+     * 溯源与指纹落正文锚 (下次 readMap 往返回来, 跨 session 去重才成立)。
+     * 去重/丢弃不静默 (INV-S1-4): 去重行以台账评论落在**撞上的那张票**上。
+     */
+    suggest: (_cwd, slug, drafts: SuggestionDraft[], opts: ApplySuggestionsOpts): ApplySuggestionsResult => {
+      const map = readMapImpl(slug);
+      if (!map) throw new Error(`找不到地图 "${slug}"`);
+      const before = map.suggestionsLog?.length ?? 0;
+      const res = applySuggestions(map, drafts, opts);
+      // 纯核给的是内存 id (s1/s2); gh 的稳定 id 只能是 issue number (D-D), 建完回填。
+      const added: Ticket[] = res.added.map((t) => {
+        const bodyLines = [`Suggested-by: ${t.suggestedBy}`, `Fingerprint: ${t.fingerprint}`];
+        if (!nativeDeps && t.blockedBy.length > 0) bodyLines.push(`Blocked-by: ${t.blockedBy.join(', ')}`);
+        const number = createTicketIssue({
+          title: `[${t.type}] ${t.title}`,
+          labels: [`path:${t.type}`, SUGGESTED_LABEL],
+          body: bodyLines.join('\n\n'),
+          parent: slug,
+          ctx: 'suggest',
+        });
+        return { ...t, id: `#${number}` };
+      });
+      // 本次新增的台账行 (deduped / deduped-semantic) → 落在被撞上的票下面。
+      for (const e of (map.suggestionsLog ?? []).slice(before)) logComment(e.ticketId, e, 'suggest:log');
+      return { ...res, added };
+    },
+
+    /**
+     * 人确认一张 suggested 票 (S-1 GWT-3/4/5)。状态机判定走纯核 (非 suggested 票 → throw, 幂等拒绝),
+     * gh 侧只同步渲染:
+     *   - accept: (改题则先改 title) → 留台账评论 → **摘 `path:suggested` label** (票就此进前沿生命周期)。
+     *   - reject: 留台账评论 → close 但**保留 label** (CLOSED+suggested = 已拒建议, 与已裁票区分)。
+     * 台账评论先于状态改动 (证据先行: 改到一半炸了, 处置记录还在)。
+     */
+    confirmSuggestion: (_cwd, slug, ticketId, action: ConfirmAction, opts): SuggestionLogEntry => {
+      const map = readMapImpl(slug);
+      if (!map) throw new Error(`找不到地图 "${slug}"`);
+      const before = map.tickets.find((t) => t.id === ticketId);
+      const entry = confirmSuggestionPure(map, ticketId, action, opts); // 非 suggested / 不存在 → throw (零 gh 写)
+      const n = bareNumber(ticketId);
+      if (action === 'reject') {
+        logComment(ticketId, entry, 'confirmSuggestion:log');
+        run(gh, ['issue', 'close', n], 'confirmSuggestion:close');
+      } else {
+        if (entry.outcome === 'edited') {
+          run(gh, ['issue', 'edit', n, '--title', `[${before!.type}] ${opts.title!}`], 'confirmSuggestion:retitle');
+        }
+        logComment(ticketId, entry, 'confirmSuggestion:log');
+        run(gh, ['issue', 'edit', n, '--remove-label', SUGGESTED_LABEL], 'confirmSuggestion:unlabel');
+      }
+      return entry;
     },
 
     rule: (_cwd, _slug, ticketId, ruling) => {
@@ -329,8 +513,11 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false): PathBackend {
       if (!issue) return [];
       const out: Array<{ ticketId: string; command: 'rule' | 'confirm-accept' | 'confirm-reject'; text: string }> = [];
       for (const sub of issue.subIssues.nodes) {
-        // 幂等锚: 只收 open 票 (rule 落地后状态翻转, 下轮天然不再收)。
-        if (baseStatus(sub.state, sub.labels.nodes.map((l) => l.name)) !== 'open') continue;
+        // 幂等锚: 只收未终结的票 (open / suggested)。CLOSED 票 = 裁决已落地, 下轮天然不再收。
+        // ⚠ /rule 额外只认 open: suggested 票上的 `/rule` **不收** —— 状态机要求先 confirm,
+        //   收了等于绕过人确认直接裁掉一张机器建议 (S-1 GWT-8 挡的正是这个)。
+        const status = baseStatus(sub.state, sub.labels.nodes.map((l) => l.name));
+        if (status !== 'open' && status !== 'suggested') continue;
         // 每票取**最后一条** owner 指令评论 (改主意以最新为准)。
         let hit: { command: 'rule' | 'confirm-accept' | 'confirm-reject'; text: string } | null = null;
         for (const c of sub.comments.nodes) {
@@ -344,7 +531,9 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false): PathBackend {
           const confirm = c.body.match(/^\/confirm\s+(accept|reject)\s*$/);
           if (confirm) hit = { command: confirm[1] === 'accept' ? 'confirm-accept' : 'confirm-reject', text: '' };
         }
-        if (hit) out.push({ ticketId: `#${sub.number}`, ...hit });
+        if (!hit) continue;
+        if (hit.command === 'rule' && status !== 'open') continue; // 见上: suggested 票不接 /rule
+        out.push({ ticketId: `#${sub.number}`, ...hit });
       }
       return out;
     },
@@ -374,6 +563,54 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false): PathBackend {
     // ack = 摘 research-done label (幂等锚点): 下轮 collectResearchResults 不再命中该票。
     ackResearchResult: (_cwd, _slug, ticketId) => {
       run(gh, ['issue', 'edit', bareNumber(ticketId), '--remove-label', RESEARCH_DONE_LABEL], 'ackResearchResult');
+    },
+
+    // D-4/G-3: 盘上 map 是唯一写真源, gh 是渲染后端 —— 手改 gh 不改变任何决定, 只造成一次要被
+    // 纠正的漂移。纠正**不静默**: 每条冲突先在该 issue 留注记 (两侧状态 + 两侧时间), 再覆盖。
+    // INV-1: 这里发的全是渲染面操作 (close/reopen/label), 零裁决 (不写 **ruling**, 不建票)。
+    syncFromMap: (_cwd, slug, truth, opts): GhMirrorSyncResult => {
+      const mapNumber = Number(bareNumber(slug));
+      const issue = Number.isFinite(mapNumber) ? fetchMap(mapNumber) : null;
+      if (!issue) throw new Error(`syncFromMap: 找不到地图 "${slug}" 对应的 gh issue — 同步中止 (不静默当作全一致)`);
+      const bySub = new Map(issue.subIssues.nodes.map((s) => [`#${s.number}`, s]));
+
+      const conflicts: GhMirrorConflict[] = [];
+      const missing: string[] = [];
+      for (const t of truth.tickets) {
+        const sub = bySub.get(t.id);
+        if (!sub) {
+          missing.push(t.id); // 本切片不代建镜像 (非目标); 但"没镜像"要报出来, 不冒充一致
+          continue;
+        }
+        const labels = sub.labels.nodes.map((l) => l.name);
+        const have: GhRender = {
+          closed: sub.state.toUpperCase() === 'CLOSED',
+          suggested: labels.includes(SUGGESTED_LABEL),
+          delivered: labels.includes(DELIVERED_LABEL),
+        };
+        const want = renderOf(t.status);
+        if (have.closed === want.closed && have.suggested === want.suggested && have.delivered === want.delivered) continue;
+
+        const n = bareNumber(t.id);
+        const ghStatus = baseStatus(sub.state, labels);
+        const ghAt = sub.updatedAt ?? '未知'; // NULL≠0: 响应没给时间就写"未知", 不拿同步时刻冒充
+        const note =
+          `**conflict**: gh 侧状态与盘上 map 不一致 — 以盘为准覆盖 (D-4 单真源, gh 是渲染后端不裁决)。\n` +
+          `- 盘: ${t.status} (同步于 ${opts.at})\n` +
+          `- gh: ${ghStatus} (gh 更新于 ${ghAt}) — 本次已被覆盖\n` +
+          `要改状态请走 map (裁决只在盘上落账); 直接改 issue 会在下次同步被盖掉。`;
+        // 注记**先发**: 覆盖中途失败也留得下现场 (fail-loud 不吞证据)。
+        run(gh, ['issue', 'comment', n, '--body', note], 'syncFromMap:conflictNote');
+        if (have.closed !== want.closed) run(gh, ['issue', want.closed ? 'close' : 'reopen', n], 'syncFromMap:state');
+        if (have.suggested !== want.suggested) {
+          run(gh, ['issue', 'edit', n, want.suggested ? '--add-label' : '--remove-label', SUGGESTED_LABEL], 'syncFromMap:suggestedLabel');
+        }
+        if (have.delivered !== want.delivered) {
+          run(gh, ['issue', 'edit', n, want.delivered ? '--add-label' : '--remove-label', DELIVERED_LABEL], 'syncFromMap:deliveredLabel');
+        }
+        conflicts.push({ ticketId: t.id, mapStatus: t.status, ghStatus, ...(sub.updatedAt !== undefined ? { ghUpdatedAt: sub.updatedAt } : {}), note });
+      }
+      return { synced: conflicts.map((c) => c.ticketId), conflicts, missing };
     },
   };
 }
