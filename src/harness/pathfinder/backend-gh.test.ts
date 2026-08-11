@@ -584,3 +584,34 @@ describe('escalated 票的评论指令 (提醒里给的那条把手)', () => {
     // 反向自检: 把收集过滤改回 `status !== 'open'` 就 continue → 本条红 (提醒里那句 `/rule` 成了空话)。
   });
 });
+
+// ── 公开面归因剥离闸 (owner 2026-08-11: public 要干净) ─────────────────────────
+// 证伪 (实跑过): 把 run() 里 scrubbed 换回原 args → 本测当场红。
+
+describe('归因剥离: gh 出口的 --body/--title 不放行 session 链接与署名', () => {
+  test('票身带 Claude-Session/署名/裸链接 → 真发给 gh 的 body 三形全无, 正文保留', () => {
+    const seen: string[][] = [];
+    const b = createGhBackend(
+      fakeGh((args) => {
+        seen.push(args);
+        if (args[0] === 'issue' && args[1] === 'create') return okr('https://github.com/o/r/issues/9');
+        if (args[0] === 'issue' && args[1] === 'view') return okr('{"id":"NODE_X"}');
+        if (args[0] === 'api') return okr('{"id":"NODE_X"}');
+        return okr('[]');
+      }),
+    );
+    b.addTicket('/tmp', '#1', {
+      type: 'task',
+      title: '正常标题',
+      blockedBy: [],
+      body: ['真正文第一行', 'Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>', 'Claude-Session: https://claude.ai/code/session_01XXX', '🤖 Generated with [Claude Code](https://claude.com)', '真正文第二行'].join('\n'),
+    });
+    const create = seen.find((a) => a[0] === 'issue' && a[1] === 'create')!;
+    const body = create[create.indexOf('--body') + 1]!;
+    expect(body).toContain('真正文第一行');
+    expect(body).toContain('真正文第二行');
+    expect(body).not.toContain('claude.ai');
+    expect(body).not.toContain('Co-Authored-By');
+    expect(body).not.toContain('Generated with');
+  });
+});

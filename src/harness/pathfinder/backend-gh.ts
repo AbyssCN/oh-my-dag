@@ -69,9 +69,23 @@ const SUB_ISSUE_HEADER = 'GraphQL-Features: sub_issues';
 
 // ── gh 调用小工具 ────────────────────────────────────────────────────────────────
 
+/**
+ * 公开面归因剥离 (owner 2026-08-11): 本后端写的是**公开仓** issue —— 任何 session 把
+ * `Claude-Session:`/`claude.ai/code` 链接或 "Generated with Claude Code" 署名带进票身/判词/
+ * 评论, 都会直接落到公开面 (实测样本: 公开仓 11 个 issue 带署名、2 个带 session 链接,
+ * 2026-08-11 已手工清偿)。session 链接虽账号门控, session id 仍是元数据外泄。
+ * 剥在 run() 咽喉 (--body/--title 后继参数), 六个现有出口与未来新增出口全覆盖 —— 不指望
+ * 上游自觉 (§8.4 讲道理拦不住)。
+ */
+const ATTRIBUTION_LINE = /^\s*(Co-Authored-By: Claude.*|Claude-Session:.*|.*claude\.ai\/code\/.*|.*Generated with .{0,3}Claude Code.*)$\n?/gm;
+function scrubAttribution(text: string): string {
+  return text.replace(ATTRIBUTION_LINE, '').trimEnd();
+}
+
 /** 跑一条 gh; 非零退出即 throw (fail-loud: 写操作/读拼装任一 gh 失败都要显性, 不静默半成品)。 */
 function run(gh: GhRunner, args: string[], ctx: string): string {
-  const r: GhResult = gh(args);
+  const scrubbed = args.map((a, i) => (i > 0 && (args[i - 1] === '--body' || args[i - 1] === '--title') ? scrubAttribution(a) : a));
+  const r: GhResult = gh(scrubbed);
   if (r.exitCode !== 0) {
     throw new Error(`gh ${args.join(' ')} 失败 (${ctx}, exit=${r.exitCode}): ${(r.stderr || r.stdout || '').trim()}`);
   }
