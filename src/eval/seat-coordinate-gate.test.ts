@@ -71,6 +71,9 @@ const NOISE_PROVIDERS: ReadonlySet<string> = new Set([
   'channel', 'rule', 'off', 'grill', 'canary', 'addTicket', 'setSecrets', 'contract',
   'urn', 'W2', 'fixture', 'research', 'file', 'HH', 'package.json', 'conductor',
   'suggest', 'confirmSuggestion', 'syncFromMap',
+  // backend-gh 的 run(gh, …, op) 操作标签命名空间 (c2f87e6 新增三步 escalate:stamp/reopen/label,
+  // 与上一行 addTicket/syncFromMap 同族) —— 非模型坐标。
+  'escalate',
 ]);
 
 /** 扫描排除面 (与 D-4 冻结一致) —— 相对 repo 根的路径判定。 */
