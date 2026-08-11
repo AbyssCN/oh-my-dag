@@ -102,10 +102,13 @@ describe('G-3: design-review profile injection', () => {
     expect(typeof prof!.seat).toBe('string');
     expect(prof!.seat!.length).toBeGreaterThan(0);
 
-    // skills: 非空数组, 至少含 ui-reviewer
+    // skills: 非空数组, 含三件蒸馏配套 skill (2026-08-11 owner 裁: impeccable+huashu+taste,
+    // vendor 在 .omd/skills/, persona 蒸馏语料见 docs/reference/design-review-distill-2026-08-11/)
     expect(Array.isArray(prof!.skills)).toBe(true);
     expect(prof!.skills!.length).toBeGreaterThan(0);
-    expect(prof!.skills).toContain('ui-reviewer');
+    for (const s of ['impeccable', 'huashu-design', 'taste-skill']) {
+      expect(prof!.skills).toContain(s);
+    }
 
     // tools: 非空数组, 至少含 read / grep / bash
     expect(Array.isArray(prof!.tools)).toBe(true);
