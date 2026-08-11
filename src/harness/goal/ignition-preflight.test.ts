@@ -55,6 +55,8 @@ describe('ignitionPreflight (S2 / INV-5)', () => {
     const rep = ignitionPreflight(root, ['src/a.ts', 'src/b.ts']);
     expect(rep.verdict).toBe('blocked');
     expect(rep.conflicts).toEqual([{ runId: 'r1', overlap: ['src/a.ts'] }]);
+    // blocked = 拒绝点火 → 绝不越闸, 板上不留任何 bypass 证据。
+    expect(readBoard(root).filter((e) => e.event === 'note' && e.runId === BOARD_RUN_ID)).toHaveLength(0);
   });
 
   test('G-1: force:true → ok 且板上留一行越闸记录 (INV-5 后半)', () => {
@@ -63,17 +65,33 @@ describe('ignitionPreflight (S2 / INV-5)', () => {
     const rep = ignitionPreflight(root, ['src/a.ts', 'src/b.ts'], { force: true });
     expect(rep.verdict).toBe('ok');
     expect(rep.conflicts).toEqual([{ runId: 'r1', overlap: ['src/a.ts'] }]);
+    // 证据只认重读磁盘后的 note 行 (runId = BOARD_RUN_ID) —— 按字段过滤定位,
+    // 不把整板内容当历史快照去全量比对。
     const notes = readBoard(root).filter((e) => e.event === 'note' && e.runId === BOARD_RUN_ID);
-    expect(notes.length).toBe(1);
+    expect(notes).toHaveLength(1);
     expect(notes[0]!.note).toContain('越闸');
     expect(notes[0]!.note).toContain('r1');
     expect(notes[0]!.note).toContain('src/a.ts');
+    // 持久化: 第二次独立重读, 账还在 (不依赖单次读的瞬时状态)。
+    expect(readBoard(root).filter((e) => e.event === 'note' && e.runId === BOARD_RUN_ID)).toHaveLength(1);
+    // 越闸只追加证据行, 不动板上原有 claimed 条目。
+    const claimed = readBoard(root).filter((e) => e.runId === 'r1');
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]!.event).toBe('claimed');
   });
 
   test('已终态 run 的写集相交 → 不占写面, ok (D-9: 活 = claimed 无 terminal)', () => {
     const root = freshRoot();
     appendBoard(root, entry('r-done', 'claimed', { writeSet: ['src/a.ts'] }));
     appendBoard(root, entry('r-done', 'terminal', { outcome: 'ok' }));
+    const rep = ignitionPreflight(root, ['src/a.ts']);
+    expect(rep.verdict).toBe('ok');
+    expect(rep.conflicts).toEqual([]);
+  });
+  test('claimed 条目出现在 terminal 之后 → 仍不算活 (终态判定按 runId, 不按板上先后次序)', () => {
+    const root = freshRoot();
+    appendBoard(root, entry('r-done', 'terminal', { outcome: 'ok' }));
+    appendBoard(root, entry('r-done', 'claimed', { writeSet: ['src/a.ts'] }));
     const rep = ignitionPreflight(root, ['src/a.ts']);
     expect(rep.verdict).toBe('ok');
     expect(rep.conflicts).toEqual([]);
@@ -96,6 +114,17 @@ describe('ignitionPreflight (S2 / INV-5)', () => {
     expect(rep.conflicts).toEqual([
       { runId: 'r1', overlap: ['src/a.ts'] },
       { runId: 'r2', overlap: ['src/c.ts'] },
+    ]);
+  });
+  test('G-1: overlap 多元素时逐字精确且字典序排序 (conflicts 按板上次序)', () => {
+    const root = freshRoot();
+    appendBoard(root, entry('r1', 'claimed', { writeSet: ['src/b.ts', 'src/a.ts', 'src/d.ts'] }));
+    appendBoard(root, entry('r2', 'claimed', { writeSet: ['src/z.ts', 'src/d.ts', 'src/c.ts'] }));
+    const rep = ignitionPreflight(root, ['src/d.ts', 'src/b.ts', 'src/z.ts', 'src/c.ts']);
+    expect(rep.verdict).toBe('blocked');
+    expect(rep.conflicts).toEqual([
+      { runId: 'r1', overlap: ['src/b.ts', 'src/d.ts'] },
+      { runId: 'r2', overlap: ['src/c.ts', 'src/d.ts', 'src/z.ts'] },
     ]);
   });
 

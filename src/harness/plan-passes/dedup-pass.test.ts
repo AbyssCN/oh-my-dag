@@ -76,6 +76,16 @@ describe("dedupPass (D-20)", () => {
 		expect(merged).toEqual({});
 		expect(out).toBe(p);
 	});
+	test("仅 await spec 不同 (artifact) → 不判重 (D-8: 等待目标不同 = 不同执行)", () => {
+		const p = plan({
+			a1: { executor: "await", goal: "等制品", await: { artifact: "src/a.ts" } },
+			a2: { executor: "await", goal: "等制品", await: { artifact: "src/b.ts" } },
+		});
+		const { plan: out, merged } = dedupPass(p);
+		expect(merged).toEqual({});
+		expect(out).toBe(p);
+	});
+
 
 	test("plan.outputs 引用被删 id → 重定向到保留 id (并去重)", () => {
 		const p = plan(
@@ -178,6 +188,7 @@ describe("dedupPass (D-20)", () => {
 			write_set: [["a.ts"], ["b.ts"]],
 			research: [{ rounds: 1 }, { rounds: 2 }],
 			thinking: ["low", "xhigh"],
+			await: [{ artifact: "a.ts" }, { artifact: "b.ts" }],
 		};
 		for (const key of Object.keys(shape)) {
 			if (EXCLUDED.has(key)) continue;

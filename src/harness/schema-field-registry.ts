@@ -140,5 +140,11 @@ export const REGISTRY: Record<string, FieldEntry> = {
   tier: { consumer: 'stamp pass (D-17 选池档位)', fingerprint: 'fields', declared: true, note: '⚠ 子图**必须过同一条 pass 管线**, 否则 tier 在子节点上是哑弹 (D-N 修的那条)。' },
   thinking: { consumer: 'executor-dag.runNodeOnce (S-T 推理档, 显式最高优先)', fingerprint: 'fields', declared: false, note: '手写 plan / patch 的逃生口。⚠ 入键的理由是"档位在认档的家族上是语义", 不是"deepseek 上有效" —— 后者 200 次实测读不出差 (2026-07-29)。' },
   attach_media: { consumer: 'executor-dag.runNodeOnce (D-14v2 媒体 content parts)', fingerprint: 'fields', declared: true, note: '' },
+  await: {
+    consumer: 'executor-dag.runNodeOnce (runAwaitNode: 等 run-board 匹配条目 → git 合入其 commit)',
+    fingerprint: 'fields',
+    declared: false,
+    note: 'D-8: 等待目标不同 (artifact/fromRun/timeoutMs) = 匹配面与成本不同 = 不同的执行 → 入键。不明示: 同 research, executor 词表由 schema 兜, 旋钮由接线层/手写 plan 给 (等什么、等多久是调用方的成本决策)。',
+  },
 };
 

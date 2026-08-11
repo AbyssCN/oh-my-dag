@@ -296,6 +296,10 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         .string()
         .optional()
         .describe('Direct entry: path to a crystallized SDD (docs/plan/*.md). Skips research + contract transcription — the file IS the contract. Rejects files missing 契约/Contracts or 分解/Breakdown sections.'),
+      force: z
+        .boolean()
+        .optional()
+        .describe('S2/INV-5: bypass the ignition preflight hard gate (write-set overlaps a live run). The bypass is recorded on the run board (authoritative force note). Omit = gate enforced.'),
       budgetTokens: z
         .number()
         .int()
@@ -320,7 +324,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         ),
     },
     handler: async (args) => {
-      const { goal, tier, maxRounds, researchRounds, resume, detached, budgetTokens, budgetMinutes, branchStrategy, resultOut, sddPath, slug } = args as {
+      const { goal, tier, maxRounds, researchRounds, resume, detached, budgetTokens, budgetMinutes, branchStrategy, resultOut, sddPath, force, slug } = args as {
         goal?: string;
         tier?: GoalTier;
         maxRounds?: number;
@@ -332,6 +336,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         budgetMinutes?: number;
         branchStrategy?: BranchStrategy;
         sddPath?: string;
+        force?: boolean;
         slug?: string;
       };
       if (!goal?.trim()) {
@@ -384,6 +389,11 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         // 同一个 dag_goal handler (进程内路径, --cwd 是主仓 → 同一张图), 挂票与散雾出口在那边一次性
         // 接上; 母进程抢先开票会开出两张 (幂等锚 suggestedBy=runId 能救回来, 但那是靠运气不是靠设计)。
         // 留账已清 (cb4a129 → 2026-08-11): slug 随 spawn 参数直通 worker, 隔离后台 run 与前台同等挂票。
+        if (force) {
+          // 与 slug 同款纪律 (不预留死参数): worker 不认 `--force`, 转发了就是死参数 —— 不转发, 但要念出来,
+          // 否则 owner 以为越闸已生效, 而 worker 侧会在写集相交时硬闸拒绝。
+          logger.info({ force, runId }, '[dag_goal] INV-5: detached 路径不转发 force (worker 无 --force 参数) — 写集与活 run 相交时 worker 侧将硬闸拒绝');
+        }
         let pid: number | undefined;
         try {
           pid = spawn(cmd, { cwd: deps.cwd, logPath });
@@ -422,11 +432,18 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
       // 行为逐字节照旧 (INV-1)。resume 是续跑不是点火, 不再过闸 (它首跑已过)。
       // 预检放在 register/start 之前: 被拒的 run 不许进 registry, 也不建 worktree (无 debris)。
       // detached 路径由 worker 内同一个 handler 走同一段代码 (--sdd-path 已转发), 不在这里重复。
+      // force=true 是 owner 的显式越闸声明: **账由预检自己记** (ignitionPreflight 内部把越闸行落
+      // board note, INV-5 后半) —— 这里只把声明传过去, 不另造第二本账, 越闸与留账不脱钩。
+      // advisories (D-1/D-10: 已结晶未点火 SDD 相交) 只进报告、永不阻塞 —— 预检 verdict 不受其影响,
+      // 这里把整份 advisory 列表留到回执里念出来 (blocked 分支也念, 让调用方一次看全)。
+      let preflightAdvisories: string[] = [];
       if (sddPath && !resume) {
         const preflight = ignitionPreflight(
           deps.cwd,
           [...new Set(parseBreakdown(loadSddContract(sddPath).text).slices.flatMap((s) => s.writeSet))],
+          { force },
         );
+        preflightAdvisories = preflight.advisories;
         if (preflight.verdict === 'blocked') {
           return {
             content: [{
@@ -434,7 +451,8 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
               text:
                 `dag_goal 点火预检拒绝 (INV-5): 写集与板上活 run 相交 — ` +
                 preflight.conflicts.map((c) => `${c.runId} (${c.overlap.join('、')})`).join('; ') +
-                `。等对方终态, 或 force 越闸 (留账)。`,
+                `。等对方终态, 或 force 越闸 (留账)。` +
+                (preflight.advisories.length ? `\n注意 (不阻塞): ${preflight.advisories.join('; ')}` : ''),
             }],
             isError: true,
           };
@@ -653,6 +671,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
               `runId: ${runId}\nstatus: running\n` +
               // D-6③: 挂在哪张图上要在**起跑这一刻**说 —— 否则票的存在只有翻日志才知道。
               (ticketTarget && runTicketId ? `ticket: ${runTicketId} (map ${ticketTarget.slug}) — 终态自动翻 delivered/escalated\n` : '') +
+              (preflightAdvisories.length ? `注意 (点火预检 advisory, 不阻塞): ${preflightAdvisories.join('; ')}\n` : '') +
               `${describeRunWorktree(worktree)}\n` +
               describeRollback(captureRollbackAnchor({ cwd: worktree.cwd })),
           },

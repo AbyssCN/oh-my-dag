@@ -130,6 +130,7 @@ import type { ContentPart } from '../../model/gateway';
 // D-1 责备集 (SDD 2026-08-10-blame-scoped-node-retry): verifier 打回的结构化点名 → 失效闭包。
 // 单一住处 (blame.ts, 与冻结的 blame.test.ts 同源); 引擎只接线不重实现 (INV-2)。
 import { parseBlameVerdict, invalidationClosure } from './blame';
+import { awaitNode } from './await-node';
 
 /** 上一轮 plan+results (escalation 重规划轮传入, D-21 跨轮复用的匹配源)。 */
 import type { PriorExec } from './types';
@@ -1494,17 +1495,71 @@ async function executePlan(
    * `max_rounds` 缺省 1 = 展开一次就结束, **零回归** —— 于是在外层 fixpoint 还没撤 (D-F) 之前,
    * 不存在"两层 verify 同时在"的过渡态: 双环只在有人显式写 `max_rounds > 1` 时才出现。
    * (P1 的 double-loop 教训是两层必须二选一; 撤外层要等环在这里跑通, 反过来会有一段时间两层都不在。)
-   *
-   * 环的语义是**逐轮重展开**, 不是重跑同一张子图 —— 见 `retryCtx` 那段注。
-   *
-   * 状态 (轮次 / 毒集 / 上轮原因) 落**节点级 journal**, 每轮 judge 判完就写。为什么不是
-   * NodeCheckpoint: 那个只在节点 done 时写, 而环没收敛就没有 done, 崩在环中间等于毒集蒸发
-   * —— 正好是要防的那件事。详见 {@link NodeLoopJournal} 的类型注。
-   *
-   * **D-F (2026-07-30) 之后这里是唯一的环**: 外层 fixpoint 在 goal 引擎那条路上已撤。随之搬进来
-   * 两件原属外层的东西 —— 轮级 conductor 升级 (见 runConductorRound), 与 `judge_final` 终轮必判
-   * (撤了外层就没人再问「整体目标成了吗」, 调用方要裁决得有地方拿, 见 LeafResult.converged)。
    */
+
+  // ── S3 跨 run 等待: engine park 该节点, 等 run-board published 后 unpark ─────
+
+  const runAwaitNode = async (id: string): Promise<LeafResult> => {
+    const node = plan!.nodes[id]!;
+    const deps = node.depends_on ?? [];
+    const spec = node.await!;
+    const root = continuity?.repoRoot ?? process.cwd();
+    const t0 = Date.now();
+
+    emitNodeEvent({ type: 'start', id, kind: 'await' });
+
+    const res = await awaitNode(
+      root,
+      {
+        artifact: spec.artifact,
+        timeoutMs: spec.timeoutMs ?? 3 * 60 * 60 * 1000, // D-8 默认 3h
+        writeSet: node.write_set ?? [],
+        fromRun: spec.fromRun,
+      },
+      {
+        pollMs: 30_000, // 低频 poll 兜底 (fs.watch 为主触发)
+        runId: continuity?.runId ?? id,
+      },
+    );
+
+    const usage: ModelUsage = { in: 0, out: 0 };
+
+    if (res.verdict === 'unparked') {
+      emitNodeEvent({ type: 'settle', id, status: 'done', kind: 'await' });
+      saveDoneCheckpoint({
+        id,
+        kind: 'await' as NodeCheckpoint['leafKind'],
+        text: res.commit ?? '',
+        usage,
+        filesTouched: [],
+        deps,
+        t0,
+        artifactRoot: root,
+      });
+      return {
+        id,
+        status: 'done',
+        kind: 'await' as LeafResult['kind'],
+        output: res.commit ?? '',
+        deps,
+        usage,
+        ...(res.commit ? { commit: res.commit } as any : {}),
+      };
+    }
+
+    // stalled → failed with stall failure kind
+    emitNodeEvent({ type: 'settle', id, status: 'failed', kind: 'await' });
+    return {
+      id,
+      status: 'failed',
+      failureKind: 'stall',
+      kind: 'await' as LeafResult['kind'],
+      output: res.tickets[0]?.title ?? 'await stalled',
+      deps,
+      usage,
+    };
+  };
+  // ── conductor 内环展开 ────────────────────────────────────────────────────
   const runConductorNode = async (id: string): Promise<LeafResult> => {
     const node = plan!.nodes[id]!;
     const deps = node.depends_on ?? [];
@@ -2205,6 +2260,8 @@ async function executePlan(
       // 重新展开是便宜的一次 conductor 调用, 而子节点因 D-B 内容寻址各自命中自己的 checkpoint:
       // 内容没变 → id 没变 → 子节点全跳过, 只白花一次展开; 内容变了 → id 变了 → 本就该重跑。
       if (node.executor === 'conductor') return runConductorNode(id);
+      // S3 跨 run 等待: engine park 该节点, 等 run-board 上出现匹配 published 条目后 unpark (git 合入 commit)。
+      if (node.executor === 'await' && node.await) return runAwaitNode(id);
       // W2 resume: checkpoint done ∧ 代数匹配 ∧ **输入面未变 (D-O)** ∧ 产物存在且 hash 匹配 → 跳过执行。
       if (
         continuity?.resume &&
@@ -2808,9 +2865,12 @@ async function executePlan(
   //
   // per-kind 并发闸 (fanout 最大化, 2026-07-21): inproc 纯 API 等待默认不限;
   // agent/command 有本地足迹 (工具调用/CLI 抢本机 CPU·磁盘) → 独立小闸。按声明 executor 记账。
+  // await 与 command 同类 (确定性零模型, 纯本地 IO + git) → 归 command 闸; 且 warm-start
+  // 挑「真会打模型」的节点 (kindOf !== 'command'), await 归 command 后永不被暖发 ——
+  // 否则暖发串行 await 一次 = 整图锁在 3h park 后面 (S3)。
   const schedKind = (id: string): SchedKind => {
     const n = plan!.nodes[id]!;
-    if (n.executor === 'command') return 'command';
+    if (n.executor === 'command' || n.executor === 'await') return 'command';
     if (n.executor === 'agent') return 'agent';
     return 'inproc'; // leaf/map/primitive (map/primitive 内层并发各自管理)
   };
@@ -2818,9 +2878,10 @@ async function executePlan(
   // ── D-23 per-channel 并发闸 (SDD v2): key = provider 前缀, 调度期由 node.model ?? kind 静态
   // 模型确定性推出 (运行期 router 选择不改记账 — 与 kind 闸「按声明记账」同哲学)。command 无
   // 模型 → 不入渠道闸。未配 channelFanout → 全部不限 (零回归)。
+  // await 同样零模型 → 不入渠道闸 (park 期不该占 provider 渠道槽)。
   const schedChannel = (id: string): string | null => {
     const n = plan!.nodes[id]!;
-    if (n.executor === 'command') return null;
+    if (n.executor === 'command' || n.executor === 'await') return null;
     const model = n.model ?? (schedKind(id) === 'agent' ? config.agentLeafModel ?? config.leafModel : config.leafModel);
     const sep = model.indexOf(':');
     return sep >= 0 ? model.slice(0, sep) : model;

@@ -83,6 +83,9 @@ export function nodeFieldsKey(node: PlanNode): string {
 		// D-Q: detector 是语义 —— 同一个节点开不开检测者协议, 决定它的输出是"一段文字"还是
 		// "一份能铸毒票、能让环 BLOCKED 退出的裁决"。判重把两者合成一个 = 吞掉那份裁决 (同 judge_final)。
 		node.detector ?? NONE,
+		// D-8: await spec 是语义 —— 等 artifact A 与等 artifact B 是**不同的执行** (匹配面不同,
+		// 连 git 合入的 commit 都不同); 判重把两者合成一个 = 吞掉某一方等待的目标 (同 write_set 形态)。
+		node.await ? JSON.stringify(node.await) : NONE,
 	]);
 }
 
