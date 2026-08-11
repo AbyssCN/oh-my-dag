@@ -46,7 +46,7 @@ export interface ConductorChild {
   node: PlanNode;
 }
 
-export type ConductorExpandStatus = 'ok' | 'empty' | 'nested' | 'cycle';
+export type ConductorExpandStatus = 'ok' | 'empty' | 'nested' | 'cycle' | 'forbidden';
 
 export interface ConductorExpandResult {
   status: ConductorExpandStatus;
@@ -79,24 +79,43 @@ const FORBIDDEN_CHILD_EXECUTORS = new Set(['conductor', 'map']);
  * @param parentId  conductor 节点自身 id (子 id 前缀)
  * @param subplan   conductor 吐出并已过 schema 的子图 (节点名是模型起的)
  * @param opts.maxNodes 硬顶, 缺省 {@link DEFAULT_MAX_CHILDREN}
+ * @param opts.forbidExecutors **按调用**追加的禁单: executor → 拒绝理由 (原样进 error 文本)。
+ *   与 {@link FORBIDDEN_CHILD_EXECUTORS} 的分工是刻意的 —— 那份是**对谁都成立**的结构禁令
+ *   (嵌套展开面), 这份是**这一次调用的上下文**才成立的。同一个展开器被两段共用而两段的答案
+ *   相反时 (执行段禁 research / 契约段正当需要 research), 唯一不失真的写法就是让调用方带着理由传进来:
+ *   把它写死进全局禁单会误伤契约段, 而在这里按 plan 名分支会把"我是谁调的"这个上下文塞进纯函数。
+ *   理由随禁单一起传, 是因为**只有调用方知道为什么禁** —— 让这里编一句通用话术, 出错时那句话
+ *   就教不了任何东西 (仓规: 错误要可教)。
  */
 export function expandConductorNode(
   parentId: string,
   subplan: ConductorPlan,
-  opts: { maxNodes?: number } = {},
+  opts: { maxNodes?: number; forbidExecutors?: ReadonlyMap<string, string> } = {},
 ): ConductorExpandResult {
   const entries = Object.entries(subplan.nodes);
   if (entries.length === 0) return { status: 'empty', children: [], truncated: 0 };
 
-  // ── D-D 禁嵌套 (先于一切: 嵌套子图连指纹都不该算) ──
+  // ── D-D 禁嵌套 + 按调用禁单 (先于一切: 被拒的子图连指纹都不该算) ──
+  // 两条闸同一趟扫描, 全局那条先判 —— 它是结构性的, 与调用方是谁无关。
   for (const [name, node] of entries) {
     const ex = (node as { executor?: string }).executor;
-    if (ex && FORBIDDEN_CHILD_EXECUTORS.has(ex)) {
+    if (!ex) continue;
+    if (FORBIDDEN_CHILD_EXECUTORS.has(ex)) {
       return {
         status: 'nested',
         children: [],
         truncated: 0,
         error: `D-D 禁嵌套: 子节点 '${name}' 的 executor='${ex}' 不允许 (conductor 已是运行时展开, 不需要再套一层)`,
+      };
+    }
+    const why = opts.forbidExecutors?.get(ex);
+    if (why !== undefined) {
+      // fail-closed 同 D-D: 一个坏节点拒**整份**子图 —— 只丢那一个会留下一张 conductor 没打算画的图。
+      return {
+        status: 'forbidden',
+        children: [],
+        truncated: 0,
+        error: `本次展开禁用 executor='${ex}' (子节点 '${name}'): ${why}`,
       };
     }
   }

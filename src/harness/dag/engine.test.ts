@@ -8,6 +8,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseBlameVerdict, runExecutorDagWithPlan } from './engine';
+import { PLAN_BOUNDARY } from '../conductor-plan';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ContentPart } from '../../model/gateway';
 import { registerProvider } from '../../model/providers';
@@ -851,4 +852,81 @@ describe('blame-scoped 定点重跑 (SDD 2026-08-10-blame-scoped-node-retry)', (
     expect(r.verification!.circuitBroken).toBeUndefined();
     expect(r.verification!.pass).toBe(true);
   });
+});
+
+// ── 执行段禁调研 (owner 2026-08-11 裁; 内环 v2 D-2 / 控制面 D-2③ 的接线那一半) ─────────
+//
+// 「执行期不调研」此前只是散文。这一族把它变成会红的闸: 执行段 (`goal-execute`) 的 conductor
+// 画出 `executor:"research"` 子节点 → 整份子图当场拒; 契约段 (`goal-contract`) 照旧允许。
+//
+// **两臂只差一个变量**: plan.name。节点 id、子图 JSON、config 全部逐字相同 —— 差两个就分不清
+// 是哪个在起作用 (仓规「单一变量」)。
+describe('执行段禁调研 (段的分辨面 = plan.name)', () => {
+  /** conductor 每次都吐这张图: 一个调研 + 一个照着实装。契约段合法, 执行段非法。 */
+  const SUB_WITH_RESEARCH = JSON.stringify({
+    name: 'sub',
+    nodes: {
+      dig: { goal: '查一下别人怎么做', executor: 'research' },
+      impl: { goal: '照着实装', executor: 'agent', depends_on: ['dig'] },
+    },
+  });
+
+  /** 两臂共用: 节点 id 恒为 'execute', 只有 plan.name 变。 */
+  const segPlan = (name: string): ConductorPlan =>
+    ({ name, nodes: { execute: { goal: '把这件事干完', executor: 'conductor' } } }) as ConductorPlan;
+
+  function makeSegGenerate(): { generate: GenerateFn } {
+    const generate: GenerateFn = async (req) => {
+      const user = contentText(req.messages.find((m) => m.role === 'user')?.content);
+      // conductor 那一发 (规划请求带 PLAN_BOUNDARY 冻结前缀); 其余是 leaf。
+      if (user.includes(PLAN_BOUNDARY.trim().split('\n')[0]!)) {
+        return { text: SUB_WITH_RESEARCH, usage: { in: 1, out: 1 } };
+      }
+      return { text: `out:${leafId(user)}`, usage: { in: 1, out: 1 } };
+    };
+    return { generate };
+  }
+
+  /** 真跑过几次 research —— 「拒在展开期」与「跑了才发现」的区别就在这个数上。 */
+  const countingResearchRunner = (
+    calls: { n: number },
+  ): NonNullable<ExecutorDagConfig['researchRunner']> => async () => {
+    calls.n++;
+    return { text: '调研终稿', usage: { in: 1, out: 1 }, sources: ['https://example.com/a'] };
+  };
+
+  test('执行段: conductor 画出 research 子节点 → 子图整份被拒, 错误可教, research 一次都没跑', async () => {
+    const { generate } = makeSegGenerate();
+    const calls = { n: 0 };
+    const r = await runExecutorDagWithPlan(
+      segPlan('goal-execute'),
+      makeConfig(generate, { researchRunner: countingResearchRunner(calls) }),
+    );
+    expect(r.results.execute!.status).toBe('failed');
+    expect(r.results.execute!.output).toContain('forbidden'); // 状态出现在节点输出里 (可复盘)
+    expect(r.results.execute!.output).toContain('执行段禁调研');
+    expect(r.results.execute!.output).toContain('STALLED 开票交人'); // 教到"那该怎么办"
+    expect(calls.n).toBe(0); // 拒在展开期 —— 不是跑完一轮调研再说
+    // fail-closed: 合法的兄弟 (impl) 也不许溜进来跑
+    expect(Object.keys(r.results).filter((k) => k.startsWith('execute::'))).toEqual([]);
+  });
+
+  test('**阴性对照** 契约段: 同一份子图照旧允许 research (契约期的调研是正当的, 且真跑了)', async () => {
+    const { generate } = makeSegGenerate();
+    const calls = { n: 0 };
+    const r = await runExecutorDagWithPlan(
+      segPlan('goal-contract'),
+      makeConfig(generate, { researchRunner: countingResearchRunner(calls) }),
+    );
+    expect(r.results.execute!.status).toBe('done');
+    expect(r.results.execute!.output).not.toContain('forbidden');
+    expect(calls.n).toBe(1); // research 子节点真的跑了
+  });
+
+  // 反向自检 (实跑过, 2026-08-11):
+  //   ① 把 engine.ts 的 `plan!.name === EXECUTE_SEGMENT_PLAN_NAME` 改成恒 true
+  //      → 阴性对照那条当场红 (契约段的 research 被误伤: status failed, calls.n=0)。
+  //   ② 把它改成恒 false (等于不传禁单, 即改动前的行为)
+  //      → 上面那条执行段用例当场红 (status 变 done, calls.n=1 —— 调研照跑)。
+  // 两条互为证伪, 任一方向的接线错误都留不住绿。
 });

@@ -99,6 +99,53 @@ describe('D-D — 禁嵌套 (照 INV-U5, D-10「无用例支撑先禁」)', () =
   });
 });
 
+describe('按调用禁单 (执行段禁调研的纯逻辑那一半)', () => {
+  /** 执行段的禁单, 与 engine 的 EXECUTE_SEGMENT_FORBIDDEN_EXECUTORS 同形 (接线由 engine.test.ts 钉)。 */
+  const forbidResearch = new Map([['research', '执行段禁调研 —— 已结晶 SDD 的 research 已付费']]);
+
+  test('传了禁单: 子节点 executor:research → forbidden, 且错误可教 (带理由原文)', () => {
+    const r = expandConductorNode('P', plan({ dig: { goal: '查一下别人怎么做', executor: 'research' } }), {
+      forbidExecutors: forbidResearch,
+    });
+    expect(r.status).toBe('forbidden');
+    expect(r.children).toEqual([]);
+    expect(r.error).toContain('research');
+    expect(r.error).toContain('执行段禁调研'); // 理由逐字带出来, 不是"不允许"三个字
+  });
+
+  test('**阴性对照**: 不传禁单 → 同一份子图照旧 ok (契约段的 research 是正当的)', () => {
+    // 反向自检: 把上面那条的 `forbidExecutors` 删掉 → 上面那条立刻绿不了 (status 变 'ok');
+    // 把闸写成"全局禁 research" → 本条立刻红 (status 变 'forbidden')。两条互为证伪。
+    const r = expandConductorNode('P', plan({ dig: { goal: '查一下别人怎么做', executor: 'research' } }));
+    expect(r.status).toBe('ok');
+    expect(r.children).toHaveLength(1);
+  });
+
+  test('一个 research 拒**整份**子图 (fail-closed, 同 D-D)', () => {
+    const r = expandConductorNode(
+      'P',
+      plan({ impl: { goal: '实装', executor: 'agent' }, dig: { goal: '查', executor: 'research' } }),
+      { forbidExecutors: forbidResearch },
+    );
+    expect(r.status).toBe('forbidden');
+    expect(r.children).toEqual([]);
+  });
+
+  test('禁单不误伤别的 executor (只禁进单子的那些)', () => {
+    const r = expandConductorNode('P', chain(), { forbidExecutors: forbidResearch });
+    expect(r.status).toBe('ok');
+    expect(r.children).toHaveLength(3);
+  });
+
+  test('全局禁单先判: 禁单里同时有 conductor 也照旧报 nested (结构禁令不被上下文禁令顶掉)', () => {
+    const r = expandConductorNode('P', plan({ a: { goal: 'A', executor: 'conductor' } }), {
+      forbidExecutors: new Map([['conductor', '执行段的理由']]),
+    });
+    expect(r.status).toBe('nested');
+    expect(r.error).toContain('D-D');
+  });
+});
+
 describe('子图形状闸', () => {
   test('环 → 拒 (外层图有建图闸, 子图是模型现画的, 得自己查)', () => {
     const r = expandConductorNode('P', plan({

@@ -170,6 +170,25 @@ interface ExecOnce {
 }
 
 /**
+ * **执行段的段名** —— 段的分辨面取 `plan.name`, 与 run-goal 同一条既有口径
+ * (`goal-contract` / `goal-execute`, 见 run-goal.ts 的 `_runDag` 注), 不新开旋钮。
+ * 直通 v2 的平铺图 (`goal-execute-flat`) 压根没有 conductor 节点, 走不到这条闸, 故不入表。
+ */
+const EXECUTE_SEGMENT_PLAN_NAME = 'goal-execute';
+
+/**
+ * **执行段禁调研** (owner 2026-08-11 裁; 语义同内环 v2 D-2「不自转, STALLED 开票交人」
+ * 与控制面 D-2③)。key = 被禁的 executor, value = 拒绝理由 (原样进错误文本, 给下一轮/复盘的人读)。
+ *
+ * ⚠ **不能**并进 conductor-expand 的全局禁单: 契约段 (`goal-contract`) 的 conductor **正当需要**
+ * research 子节点 —— 它的 goal 里逐字写着「外部调研 (`executor:"research"`)」那一条, 而两段共用
+ * 同一个展开器。所以这份禁单按调用传, 只在执行段生效。
+ */
+const EXECUTE_SEGMENT_FORBIDDEN_EXECUTORS: ReadonlyMap<string, string> = new Map([
+  ['research', '执行段禁调研 —— 已结晶 SDD 的 research 已付费, 缺信息走 STALLED 开票交人, 不自开调研'],
+]);
+
+/**
  * D-3 注册表根: parsePlan 的 knownServers 从**该 run 的 cwd** 取 (与 :3256 loadAgentTemplates 同一个根,
  * 省略 = process.cwd()) —— 必传, 不存在省略注册表即静默跳过 mcp 校验的路径 (惰性闸修复)。
  */
@@ -1044,7 +1063,13 @@ async function executePlan(
     }
 
     // ── 2. 纯展开: D-B 内容寻址 id + D-D 禁嵌套 + 环检测 + 硬顶 ──
-    const expand = expandConductorNode(id, sub, node.max_nodes ? { maxNodes: node.max_nodes } : {});
+    // 执行段的附加禁单 (research) 按调用传 —— 契约段不传, 它的 research 子节点是正当的。
+    const forbidExecutors =
+      plan!.name === EXECUTE_SEGMENT_PLAN_NAME ? EXECUTE_SEGMENT_FORBIDDEN_EXECUTORS : undefined;
+    const expand = expandConductorNode(id, sub, {
+      ...(node.max_nodes ? { maxNodes: node.max_nodes } : {}),
+      ...(forbidExecutors ? { forbidExecutors } : {}),
+    });
     if (expand.status !== 'ok') {
       // 'empty' 也走这条: 与 map 的「空清单 = 成功 0 子」**刻意不同**。map 的空是 lister 如实报告
       // "没有东西要处理", 是一条真实且常见的信息; conductor 的空是**它没能把这件事分解出来** ——
