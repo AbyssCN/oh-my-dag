@@ -29,7 +29,7 @@
  *
  * 用法 (通常由 `dag_goal detached=true` 起, 手动跑也行):
  *   bun run scripts/goal-worker.ts --run-id <id> --cwd <dir> --goal "..." [--tier simple|complex]
- *                                  [--max-rounds N] [--research-rounds N] [--resume]
+ *                                  [--max-rounds N] [--research-rounds N] [--slug <map-slug>]
  */
 import { bootstrapModelRuntime } from '../src/model/bootstrap';
 import { assembleOmdMcpTools } from '../src/mcp/assemble';
@@ -38,44 +38,17 @@ import { createRunStore } from '../src/mcp/run-store';
 import { verifyTerminalPersisted } from '../src/mcp/terminal-verify';
 import { join } from 'node:path';
 
-const argv = process.argv.slice(2);
-const opt = (name: string): string | undefined => {
-  const i = argv.indexOf(`--${name}`);
-  return i >= 0 ? argv[i + 1] : undefined;
-};
-
-const runId = opt('run-id');
-const goal = opt('goal');
-const cwd = opt('cwd') ?? process.cwd();
-if (!runId || !goal) {
-  console.error('goal-worker: --run-id 与 --goal 必填');
-  process.exit(2);
-}
-
-bootstrapModelRuntime();
-
-// 与母进程**同一份** runs.db —— 这是"脱离会话"的全部要害: 母进程写 pending, 本进程接手改 running
-// 并把属主 pid 换成自己, 后来的 session 才看得到一个"活着的 run"而不是一个孤儿。
-const registry = new RunRegistry(undefined, { store: createRunStore({ path: join(cwd, '.omd', 'runs.db') }) });
-const tools = assembleOmdMcpTools({ cwd, runRegistry: registry });
-const goalTool = tools.find((t) => t.name === 'dag_goal');
-if (!goalTool) {
-  console.error('goal-worker: 装配里没有 dag_goal (assemble 变了?)');
-  process.exit(2);
-}
-
-// `dag_goal` 是 fire-and-forget (三段式: 起跑即返回 runId), 所以这里**必须等到终态**才能退 ——
-// 进程一退, 在飞的活就跟着没了, 那正是本进程存在的理由。
-//
-// **为什么首次跑也走 `resume` 这个参数名**: 它是工具面上唯一能"用调用方给的 runId 起一个 run"
-// 的口子, 而 detached 的 runId 必须由母进程先生成 (它要立刻回给调用方)。对**未知** runId,
-// `reopenForResume` 的语义正是 register + start —— 也就是我们要的那件事, 且属主 pid 记的是
-// **本进程**。附带的 `continuity.resume=true` 对一个没有任何 checkpoint 的新 run 是 no-op。
-// (不为此新增一个参数: 一个已有语义能表达的事不该有两个入口。)
-const res = (await goalTool.handler(
-  {
-    goal,
-    resume: runId,
+/** argv → dag_goal handler 参数 (纯函数, 供 goal-detached.test.ts 直接钉转发矩阵)。
+ *  转发矩阵必须与母进程 spawn cmd 一一对应 —— 漏一格 = 参数矩阵空格 (P0 2026-08-10 branch 同形)。
+ *  `--slug` 于 2026-08-11 (cb4a129 留账) 补入: detached × 多图仓与前台同路挂票。 */
+export const buildHandlerArgs = (argv: string[]): Record<string, unknown> => {
+  const opt = (name: string): string | undefined => {
+    const i = argv.indexOf(`--${name}`);
+    return i >= 0 ? argv[i + 1] : undefined;
+  };
+  return {
+    goal: opt('goal') ?? '',
+    resume: opt('run-id') ?? '',
     ...(opt('tier') ? { tier: opt('tier') } : {}),
     ...(opt('max-rounds') ? { maxRounds: Number(opt('max-rounds')) } : {}),
     ...(opt('research-rounds') ? { researchRounds: Number(opt('research-rounds')) } : {}),
@@ -87,36 +60,79 @@ const res = (await goalTool.handler(
     ...(opt('branch-strategy') ? { branchStrategy: opt('branch-strategy') } : {}),
     // 直通入口 (SDD 2026-08-10-solve-sdd-direct-entry): 已结晶契约免转录, 同 handler 同语义。
     ...(opt('sdd-path') ? { sddPath: opt('sdd-path') } : {}),
-  } as never,
-  {} as never,
-)) as { content: { text: string }[]; isError?: boolean };
+    // 双端转发 (SDD goal-worker --slug, 2026-08-11): spawn cmd 每一格在此都有对应 —— 漏一格即盲区。
+    ...(opt('slug') ? { slug: opt('slug') } : {}),
+  };
+};
 
-if (res.isError) {
-  console.error(`goal-worker: dag_goal 拒绝起跑 — ${res.content[0]?.text ?? ''}`);
-  // 登记成 failed, 否则盘上留一个 pending 的孤儿 (属主 pid 是本进程, 而本进程马上就没了)。
-  try {
-    registry.fail(runId, `起跑被拒: ${res.content[0]?.text ?? ''}`);
-  } catch {
-    /* 已是终态就算了 */
+// 主流程收进 import.meta.main: 测试 import 本模块只取 buildHandlerArgs, 不触发 argv 校验/起跑。
+if (import.meta.main) {
+  const argv = process.argv.slice(2);
+  const opt = (name: string): string | undefined => {
+    const i = argv.indexOf(`--${name}`);
+    return i >= 0 ? argv[i + 1] : undefined;
+  };
+
+  const runId = opt('run-id');
+  const goal = opt('goal');
+  const cwd = opt('cwd') ?? process.cwd();
+  if (!runId || !goal) {
+    console.error('goal-worker: --run-id 与 --goal 必填');
+    process.exit(2);
   }
-  process.exit(1);
-}
 
-console.error(`goal-worker: runId=${runId} 已起跑 (pid ${process.pid}), 等终态…`);
+  bootstrapModelRuntime();
 
-// 轮询自己的 registry 直到终态。`dag_goal` 的 .then 会把状态写成 done/failed/cancelled。
-const TERMINAL = new Set(['done', 'failed', 'cancelled']);
-for (;;) {
-  const st = registry.getStatus(runId);
-  if (st && TERMINAL.has(st)) {
-    // 终态写穿核验 (S-12 的灯, 2026-08-02): 内存终态 ≠ 盘上终态 —— 三次 live 在这儿静默丢过。
-    // 必须用**全新连接**核验与修复 (本进程的长命连接正是嫌疑面), 修不动才带着响亮日志退非零。
-    // ⚠ 先 `registry.close()`: 干净关闭会 checkpoint WAL, 且核验时进程内只剩一条写连接
-    // (2026-08-03 实测那次修复报 `disk I/O error` 时, 本进程这条还开着)。
-    registry.close();
-    const verdict = verifyTerminalPersisted(join(cwd, '.omd', 'runs.db'), runId, st);
-    console.error(`goal-worker: runId=${runId} 终态 ${st} (写穿核验: ${verdict})`);
-    process.exit(verdict === 'unrecoverable' ? 3 : st === 'done' ? 0 : 1);
+  // 与母进程**同一份** runs.db —— 这是"脱离会话"的全部要害: 母进程写 pending, 本进程接手改 running
+  // 并把属主 pid 换成自己, 后来的 session 才看得到一个"活着的 run"而不是一个孤儿。
+  const registry = new RunRegistry(undefined, { store: createRunStore({ path: join(cwd, '.omd', 'runs.db') }) });
+  const tools = assembleOmdMcpTools({ cwd, runRegistry: registry });
+  const goalTool = tools.find((t) => t.name === 'dag_goal');
+  if (!goalTool) {
+    console.error('goal-worker: 装配里没有 dag_goal (assemble 变了?)');
+    process.exit(2);
   }
-  await Bun.sleep(2000);
+
+  // `dag_goal` 是 fire-and-forget (三段式: 起跑即返回 runId), 所以这里**必须等到终态**才能退 ——
+  // 进程一退, 在飞的活就跟着没了, 那正是本进程存在的理由。
+  //
+  // **为什么首次跑也走 `resume` 这个参数名**: 它是工具面上唯一能"用调用方给的 runId 起一个 run"
+  // 的口子, 而 detached 的 runId 必须由母进程先生成 (它要立刻回给调用方)。对**未知** runId,
+  // `reopenForResume` 的语义正是 register + start —— 也就是我们要的那件事, 且属主 pid 记的是
+  // **本进程**。附带的 `continuity.resume=true` 对一个没有任何 checkpoint 的新 run 是 no-op。
+  // (不为此新增一个参数: 一个已有语义能表达的事不该有两个入口。)
+  const res = (await goalTool.handler(
+    buildHandlerArgs(argv) as never,
+    {} as never,
+  )) as { content: { text: string }[]; isError?: boolean };
+
+  if (res.isError) {
+    console.error(`goal-worker: dag_goal 拒绝起跑 — ${res.content[0]?.text ?? ''}`);
+    // 登记成 failed, 否则盘上留一个 pending 的孤儿 (属主 pid 是本进程, 而本进程马上就没了)。
+    try {
+      registry.fail(runId, `起跑被拒: ${res.content[0]?.text ?? ''}`);
+    } catch {
+      /* 已是终态就算了 */
+    }
+    process.exit(1);
+  }
+
+  console.error(`goal-worker: runId=${runId} 已起跑 (pid ${process.pid}), 等终态…`);
+
+  // 轮询自己的 registry 直到终态。`dag_goal` 的 .then 会把状态写成 done/failed/cancelled。
+  const TERMINAL = new Set(['done', 'failed', 'cancelled']);
+  for (;;) {
+    const st = registry.getStatus(runId);
+    if (st && TERMINAL.has(st)) {
+      // 终态写穿核验 (S-12 的灯, 2026-08-02): 内存终态 ≠ 盘上终态 —— 三次 live 在这儿静默丢过。
+      // 必须用**全新连接**核验与修复 (本进程的长命连接正是嫌疑面), 修不动才带着响亮日志退非零。
+      // ⚠ 先 `registry.close()`: 干净关闭会 checkpoint WAL, 且核验时进程内只剩一条写连接
+      // (2026-08-03 实测那次修复报 `disk I/O error` 时, 本进程这条还开着)。
+      registry.close();
+      const verdict = verifyTerminalPersisted(join(cwd, '.omd', 'runs.db'), runId, st);
+      console.error(`goal-worker: runId=${runId} 终态 ${st} (写穿核验: ${verdict})`);
+      process.exit(verdict === 'unrecoverable' ? 3 : st === 'done' ? 0 : 1);
+    }
+    await Bun.sleep(2000);
+  }
 }

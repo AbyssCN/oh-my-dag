@@ -376,16 +376,14 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           // buildConfig(worktree.cwd) 转向 —— 双 cwd 分离在既有进程内路径上本就成立)。
           ...(branchStrategy ? ['--branch-strategy', branchStrategy] : []),
           ...(sddPath ? ['--sdd-path', sddPath] : []),
+          // 双端转发 (SDD goal-worker --slug, 2026-08-11): 显式 slug 直通 worker —— 与 --sdd-path
+          // 同款条件转发; 不带 slug 时逐字节不展开 (INV-1), 无死参数。
+          ...(slug ? ['--slug', slug] : []),
         ];
         // D-6①③ (切片 6): detached 路径的挂票**在 worker 里生效**, 不在这里 —— worker 起来后调的是
         // 同一个 dag_goal handler (进程内路径, --cwd 是主仓 → 同一张图), 挂票与散雾出口在那边一次性
         // 接上; 母进程抢先开票会开出两张 (幂等锚 suggestedBy=runId 能救回来, 但那是靠运气不是靠设计)。
-        // ⚠ 留账: 显式 `slug` **没有**转发给 worker (`scripts/goal-worker.ts` 在本切片写集外, 需它加一行
-        //   `...(opt('slug') ? { slug: opt('slug') } : {})`)。于是 detached × 多图仓 = 不挂票 (log 留痕),
-        //   detached × 单图仓照常挂。**不预留死参数**: 转发了而 worker 不认, 就又是一个空旋钮。
-        if (slug) {
-          logger.info({ slug, runId }, '[dag_goal] D-6 挂票: detached 路径不转发 slug (worker 侧按单图自解析)');
-        }
+        // 留账已清 (cb4a129 → 2026-08-11): slug 随 spawn 参数直通 worker, 隔离后台 run 与前台同等挂票。
         let pid: number | undefined;
         try {
           pid = spawn(cmd, { cwd: deps.cwd, logPath });

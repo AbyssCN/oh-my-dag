@@ -20,6 +20,7 @@ import { createGoalTool } from './goal';
 import { RunRegistry } from '../run-registry';
 import { CheckpointManager } from '../../harness/continuity/checkpoint-manager';
 import type { RunGoalResult } from '../../harness/goal/run-goal';
+import { buildHandlerArgs } from '../../../scripts/goal-worker';
 
 const neverRuns = async (): Promise<RunGoalResult> => {
   throw new Error('detached 路径不该在母进程里跑 runGoal');
@@ -196,5 +197,33 @@ describe('detached × branchStrategy (P0 2026-08-10: 参数矩阵缺口)', () =>
     const out = await call(tool, { goal: 'g', detached: true, branchStrategy: 'branch' });
     expect(out.content[0]!.text).toContain('branchStrategy: branch');
     expect(out.content[0]!.text).toContain('退回 head');
+  });
+});
+describe('detached × slug (cb4a129 六留账: 显式 slug 双端转发)', () => {
+  // 缺陷本身: schema 收 `slug`, detached 的 spawn cmd 却把它静默丢弃 → worker 里同一个 handler
+  // 拿不到参数 → detached × 多图仓不挂票 (log 留痕), 单图仓照常挂 —— 多图仓成了盲区。
+  // 2026-08-11 双端各一行: spawn 侧条件参 + worker 侧条件转发 (与 --sdd-path 同路)。
+  // G-2 反向自检: 摘掉**任一端**的转发行, 对应测试当场红。
+  test('G-1 spawn 侧: detached+slug → 命令行带 --slug 且值原样', async () => {
+    const seen: string[][] = [];
+    const { tool } = make((cmd) => { seen.push(cmd); return 7; });
+    await call(tool, { goal: 'g', detached: true, slug: 'x' });
+    const cmd = seen[0]!;
+    expect(cmd[cmd.indexOf('--slug') + 1]).toBe('x');
+  });
+
+  test('INV-1: 不带 slug → spawn cmd 无 --slug (老命令逐字节不变, 无死参数)', async () => {
+    const seen: string[][] = [];
+    const { tool } = make((cmd) => { seen.push(cmd); return 7; });
+    await call(tool, { goal: 'g', detached: true });
+    expect(seen[0]!).not.toContain('--slug');
+  });
+
+  test('G-1 worker 侧: --slug 并进 handler 参数 (与 --sdd-path 同路)', () => {
+    expect(buildHandlerArgs(['--run-id', 'r1', '--goal', 'g', '--slug', 'x']).slug).toBe('x');
+  });
+
+  test('G-2 worker 侧: 不带 --slug → 参数无 slug 键 (缺省语义逐字节不变)', () => {
+    expect('slug' in buildHandlerArgs(['--run-id', 'r1', '--goal', 'g'])).toBe(false);
   });
 });
