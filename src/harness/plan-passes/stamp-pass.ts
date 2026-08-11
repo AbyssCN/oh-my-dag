@@ -88,8 +88,16 @@ export function stampPass(
 				? { key: "multimodal", coords: pools.multimodal }
 				: { key: "mid", coords: pools.mid }; // D-14v2
 		}
-		const key: PoolKey = n.tier ?? "mid"; // D-17: tier 显式覆盖, 缺省 mid 地板
-		return { key, coords: pools[key] };
+		// SEAT-1 (owner 裁 2026-08-11):**座位是唯一真源, stamp 不得覆盖它。**
+		// 这里原本是 `n.tier ?? "mid"` —— 缺省 mid 地板, 于是**每一个没标 tier 的节点**都被从 mid 池
+		// 盖上模型, 不问 executor。实测代价 (run 71356c1c): agent 座位配的是 sonnet-5, 而三个真改
+		// 文件的 agent 节点全跑成 mid 池里的 deepseek-v4-flash —— 座位表上写的那个模型一次都没被调用,
+		// 且盘上三处 (config.models / 座位解析 / 实跑) 给出三个不同答案, 谁也看不出是哪层盖的。
+		// 现在: 没标 tier → **不 stamp**, 节点回落它 executor 对应的座位 (agent→agent 座位、
+		// leaf→leaf 座位, 见 mcp/assemble:resolveEngineModels)。tier 仍然管用, 但必须**显式**写,
+		// 那时它表达的是"这一档要跳出本 executor 的默认座位", 是一次有意的越档而不是静默地板。
+		if (!n.tier) return null;
+		return { key: n.tier, coords: pools[n.tier] };
 	};
 
 	/** 祖先链里是否已有 attach_media 节点 (二次审查判据; 只走 nodes 内的真实边, 幻象 dep 忽略)。 */

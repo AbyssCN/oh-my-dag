@@ -74,7 +74,8 @@ describe("stamp-pass (D-16/17/22 · INV-7/9/11)", () => {
 			name: "p",
 			nodes: {
 				A: { goal: "a", model: "kimi:k2" },
-				B: { goal: "b", depends_on: ["A"] },
+				// SEAT-1 后 tier 必须显式写 —— 没写就不 stamp, 链亲和无从谈起 (见本文件末 SEAT-1 段)。
+				B: { goal: "b", depends_on: ["A"], tier: "mid" },
 			},
 		};
 		const { plan: out, stamped } = stampPass(plan, {
@@ -91,9 +92,9 @@ describe("stamp-pass (D-16/17/22 · INV-7/9/11)", () => {
 		const plan: ConductorPlan = {
 			name: "p",
 			nodes: {
-				A: { goal: "a" },
-				B: { goal: "b", depends_on: ["A"] },
-				C: { goal: "c", depends_on: ["B"] },
+				A: { goal: "a", tier: "mid" },
+				B: { goal: "b", depends_on: ["A"], tier: "mid" },
+				C: { goal: "c", depends_on: ["B"], tier: "mid" },
 			},
 		};
 		const { plan: out } = stampPass(plan, {
@@ -112,7 +113,7 @@ describe("stamp-pass (D-16/17/22 · INV-7/9/11)", () => {
 			name: "p",
 			nodes: {
 				A: { goal: "a", model: "kimi:k2", cluster: "be" },
-				B: { goal: "b", depends_on: ["A"], cluster: "fe" },
+				B: { goal: "b", depends_on: ["A"], cluster: "fe", tier: "mid" },
 			},
 		};
 		const { plan: out } = stampPass(plan, {
@@ -127,10 +128,10 @@ describe("stamp-pass (D-16/17/22 · INV-7/9/11)", () => {
 		const plan: ConductorPlan = {
 			name: "p",
 			nodes: {
-				s1: { goal: "a" },
-				s2: { goal: "b" },
-				s3: { goal: "c" },
-				J: { goal: "judge", depends_on: ["s1", "s2", "s3"] },
+				s1: { goal: "a", tier: "mid" },
+				s2: { goal: "b", tier: "mid" },
+				s3: { goal: "c", tier: "mid" },
+				J: { goal: "judge", depends_on: ["s1", "s2", "s3"], tier: "mid" },
 			},
 		};
 		const { plan: out, stamped } = stampPass(plan, {
@@ -176,7 +177,9 @@ describe("stamp-pass (D-16/17/22 · INV-7/9/11)", () => {
 			familyOf: fam,
 		});
 		expect(out.nodes.s!.model).toBe("s:1");
-		expect(out.nodes.d!.model).toBe("m:1"); // 缺省 mid 地板
+		// SEAT-1: 没标 tier 的 d **不再被 stamp** (原先有个"缺省 mid 地板"会盖它) ——
+		// 它回落自己 executor 的座位, 由 mcp/assemble:resolveEngineModels 决定。
+		expect(out.nodes.d!.model).toBeUndefined();
 	});
 
 	it("确定性: 同输入调用两次结果逐字段相同", () => {
@@ -302,5 +305,54 @@ describe('二次多模态审查自动升档', () => {
 			{ pools: { ...P3, multimodalStrong: [] }, familyOf: f3 },
 		);
 		expect(r.stamped.look2).toBe('mm:cheap');
+	});
+});
+
+// SEAT-1 (owner 裁 2026-08-11): 座位是唯一真源, stamp 不得覆盖它。
+// 病根实测 (run 71356c1c): agent 座位配的是 sonnet-5, 而三个真改文件的 agent 节点全跑成
+// mid 池里的 deepseek-v4-flash —— 因为老实现有一句 `n.tier ?? "mid"` 缺省地板, 把**每一个**
+// 没标 tier 的节点都从 mid 池盖了模型, 不问 executor。
+describe('SEAT-1: 没标 tier 的节点不被 stamp (回落 executor 的座位)', () => {
+	const P: StampPools = { strong: ['s:1'], mid: ['m:1'], cheap: ['c:1'], multimodal: [] };
+	const f = (c: string): string => c.split(':')[0]!;
+
+	test('agent 节点没标 tier → model 保持 undefined, 不进 stamped', () => {
+		// 怎么让它红:把 stamp-pass 的 `if (!n.tier) return null` 换回 `n.tier ?? "mid"` →
+		// a 会被盖成 'm:1', 两条断言当场红。(改回来实测过一次)
+		const r = stampPass(
+			{ name: 'p', nodes: { a: { goal: '改文件', executor: 'agent' } } },
+			{ pools: P, familyOf: f },
+		);
+		expect(r.plan.nodes.a!.model).toBeUndefined();
+		expect(r.stamped).toEqual({});
+	});
+
+	test('inproc leaf 没标 tier → 同样不被 stamp', () => {
+		// 怎么让它红:同上。leaf 与 agent 走的是**两个不同座位**(leaf=量产档 / agent=改文件档),
+		// 地板一盖两者就都变成池里那一个坐标 —— 座位表上的区分整个失效。
+		const r = stampPass(
+			{ name: 'p', nodes: { l: { goal: '生成', executor: 'leaf' } } },
+			{ pools: P, familyOf: f },
+		);
+		expect(r.plan.nodes.l!.model).toBeUndefined();
+	});
+
+	test('显式 tier 仍然管用 —— 它表达"有意越档", 不是静默地板', () => {
+		// 怎么让它红:把 `if (!n.tier) return null` 写成无条件 `return null` → strong 那条不再被 stamp。
+		const r = stampPass(
+			{ name: 'p', nodes: { hard: { goal: '难', executor: 'leaf', tier: 'strong' } } },
+			{ pools: P, familyOf: f },
+		);
+		expect(r.plan.nodes.hard!.model).toBe('s:1');
+	});
+
+	test('能力约束不受影响:看图节点没标 tier 照样进多模态池', () => {
+		// 怎么让它红:把 `if (!n.tier) return null` 提到 attach_media 分支**之前** → 看图节点
+		// 拿不到多模态坐标, 会被送进文本模型必然失败 (文件头那条"宁可失败得响亮"的注)。
+		const r = stampPass(
+			{ name: 'p', nodes: { pic: { goal: '看图', attach_media: true } } },
+			{ pools: { ...P, multimodal: ['mm:1'] }, familyOf: f },
+		);
+		expect(r.plan.nodes.pic!.model).toBe('mm:1');
 	});
 });

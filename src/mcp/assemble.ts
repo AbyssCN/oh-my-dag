@@ -491,27 +491,28 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     const uniqCoords = (xs: string[]): string[] => [...new Set(xs.filter((x) => x.includes(':')))];
     // 显式池 (config.pools) 优先; 每档独立回落座位推导。座位推导下 mid/cheap 会恒等 (六个 worker
     // 座位同一个坐标) —— 想让 tier:'cheap' 真的便宜、想让 sibling 跨家族分散有对象, 就得显式配池。
-    const cfgPools = resolveConfiguredPools();
+    // SEAT-1 (owner 裁 2026-08-11):**座位是唯一真源, pools 不再是第三条轴。**
+    // 池一律从座位推导 —— 于是池里每一个坐标都是某个座位的坐标, 改座位池自动跟着改。
+    // 撤掉的是 `cfgPools.X ??` 那层覆盖: 它让 config.pools 完全不问座位, env / --*-model /
+    // config.models 谁都盖不过它 (实测踩过: 12 个 OMD_* + 5 个旗标全设了却一个没生效)。
+    // 盘上还留着 pools 段的仓照旧能跑, 只是**它不再生效** —— 这件事必须响亮地说, 不能静默忽略。
     const stampPools = {
-      strong: cfgPools.strong ?? uniqCoords([roleCoord('judge'), roleCoord('reason'), roleCoord('verifier')]),
-      mid: cfgPools.mid ?? uniqCoords([roleCoord('leaf'), roleCoord('agent'), roleCoord('overflow')]),
-      cheap: cfgPools.cheap ?? uniqCoords([roleCoord('lens'), roleCoord('expand'), roleCoord('distill')]),
-      multimodal: cfgPools.multimodal ?? resolveMultimodalPool(),
-      ...(cfgPools.multimodalStrong ? { multimodalStrong: cfgPools.multimodalStrong } : {}),
+      strong: uniqCoords([roleCoord('judge'), roleCoord('reason'), roleCoord('verifier')]),
+      mid: uniqCoords([roleCoord('leaf'), roleCoord('agent'), roleCoord('overflow')]),
+      cheap: uniqCoords([roleCoord('lens'), roleCoord('expand'), roleCoord('distill')]),
+      // 多模态是**能力硬约束**不是档位偏好 (非多模态模型看不见图), 故仍读专用配置而非座位池。
+      multimodal: resolveMultimodalPool(),
     };
-    // 来源留痕 (2026-07-29): pools 是**第三条轴** —— 显式配的档位完全不问座位, env / --*-model /
-    // config.models 都覆盖不了它。此前无任何读数, 只能靠 [cost] 行反推实际跑了谁 (实测踩过:
-    // 12 个 OMD_* + 5 个旗标全设了却一个没生效, 因为叶子走的是 pools 不是座位)。
-    logger.info(
-      {
-        strong: cfgPools.strong ? 'config.pools' : '座位推导',
-        mid: cfgPools.mid ? 'config.pools' : '座位推导',
-        cheap: cfgPools.cheap ? 'config.pools' : '座位推导',
-        multimodal: cfgPools.multimodal ? 'config.pools' : '座位推导',
-        coords: stampPools,
-      },
-      '[omd/mcp] stamp 池来源 — 标 config.pools 的档位**不经过座位链**, 座位覆盖对它无效',
-    );
+    const ignoredPools = Object.entries(resolveConfiguredPools())
+      .filter(([, v]) => Array.isArray(v) && v.length > 0)
+      .map(([k]) => k);
+    if (ignoredPools.length) {
+      logger.warn(
+        { ignored: ignoredPools, effective: stampPools },
+        '[omd/mcp] config.pools 已失效并被忽略 (SEAT-1: 座位是唯一真源) — 请改座位 (omd_set_role / config.models), 并把 config.json 的 pools 段删掉',
+      );
+    }
+    logger.info({ coords: stampPools }, '[omd/mcp] stamp 池 = 座位推导 (SEAT-1)');
     const planFilters: Array<(p: ConductorPlan) => ConductorPlan> = [
       (p) => {
         const { plan, pruned } = prunePass(p);

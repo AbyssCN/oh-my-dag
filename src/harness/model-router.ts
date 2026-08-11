@@ -181,8 +181,17 @@ export function createModelRouterFromEnv(
   const mmPool = resolveMultimodalPool();
   if (mmPool.length) pools.multimodal = mmPool;
   const epsilon = env.OMD_ROUTER_EPSILON ? Number.parseFloat(env.OMD_ROUTER_EPSILON) : undefined;
-  if (Object.keys(pools).length) {
-    logger.info({ pools, epsilon }, '[omd/model-router] bandit 选型启用 (env pool 已配)');
+  // 这行原本无论哪个桶有池都印「bandit 选型启用」, 而真相常常是**只有 multimodal 一个桶**有池
+  // (它来自 config.multimodalPool, 不是 env)。于是日志读起来像"叶子在被 bandit 选", 实际 inproc /
+  // agent 一个都没在选 —— 与 SEAT-1「座位是唯一真源」直接冲突的错觉。现在逐桶报, 并说清来源。
+  const learned = Object.keys(pools).filter((b) => (pools[b]?.length ?? 0) > 1);
+  if (learned.length) {
+    logger.info(
+      { buckets: learned, pools, epsilon },
+      '[omd/model-router] bandit 选型启用 — 仅这几个桶 (其余桶恒走座位)',
+    );
+  } else if (Object.keys(pools).length) {
+    logger.info({ pools }, '[omd/model-router] bandit 未启用 (每桶 ≤1 臂 = 静态) — 选型仍由座位决定');
   }
   return createModelRouter({ pools, epsilon: Number.isFinite(epsilon) ? epsilon : undefined, ...opts });
 }
