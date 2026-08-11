@@ -5,7 +5,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import type { ConductorPlan } from './conductor-plan';
-import { applyPlanPatch, parsePlanPatch } from './plan-patch';
+import { applyPlanPatch, buildPatchRequest, parsePlanPatch } from './plan-patch';
 
 const prev = (): ConductorPlan =>
   ({
@@ -99,5 +99,44 @@ describe('applyPlanPatch', () => {
     const r = applyPlanPatch(prev(), { patch: { b: { template: 'no-such-card' } } }, { knownTemplates: new Set(['reviewer']) });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain('unknown template');
+  });
+
+  test('D-2 越界机器闸: 补丁 touch 闭包外节点 → 拒且判词点名 id 与「闭包外」', () => {
+    const r = applyPlanPatch(prev(), { patch: { c: { goal: '偷改' } } }, { allowedIds: new Set(['a', 'b']) });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain('c');
+      expect(r.error).toContain('闭包外');
+    }
+  });
+
+  test('D-2 反向自检: 闭包内 touch 不受 allowedIds 影响 (证伪 — 摘掉判据这条测试也会绿, 需配上一条才成立闸)', () => {
+    const r = applyPlanPatch(prev(), { patch: { a: { goal: '改研判' } } }, { allowedIds: new Set(['a']) });
+    expect(r.ok).toBe(true);
+  });
+});
+
+describe('buildPatchRequest (D-1 请求侧差量)', () => {
+  test('闭包节点全文入请求, 闭包外只留 `id: goal首行` 单行清单', () => {
+    const p = prev();
+    const req = buildPatchRequest(p, new Set(['b']));
+    expect(req).toContain('"b"');
+    expect(req).toContain('实装'); // 闭包节点 goal 全文在
+    expect(req).toContain('a: 研判'); // 闭包外单行清单
+    expect(req).toContain('c: 审查');
+    expect(req).not.toContain('"depends_on": ["b"]'); // c 的字段没有整节点入请求 (只单行)
+  });
+
+  test('G-1: 差量请求字节数严格小于整图 JSON (证伪 — 若把冻结节点发成全文, 此断言会红)', () => {
+    const p = prev();
+    const fullJson = JSON.stringify({ name: p.name, nodes: p.nodes, outputs: p.outputs }, null, 1);
+    const req = buildPatchRequest(p, new Set(['b']));
+    expect(req.length).toBeLessThan(fullJson.length);
+  });
+
+  test('闭包 = 全图时仍产出合法请求 (无冻结清单)', () => {
+    const p = prev();
+    const req = buildPatchRequest(p, new Set(['a', 'b', 'c']));
+    expect(req).not.toContain('字节冻结');
   });
 });

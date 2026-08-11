@@ -731,6 +731,18 @@ export type BlameRetryLedger = {
   reuseHits: number;
   /** 本轮重跑墙钟 (ms)。 */
   rerunWallMs: number;
+  /**
+   * 本轮重规划走的是补丁差量还是整图重灌 (SDD 2026-08-11-l2-diff-replan D-3)。
+   * 补丁解析失败/越界拒/档位闸拒 → 回落整图, 此处记 'full' (INV-1: 行为与整图重规划逐字节相同,
+   * 但补丁尝试烧掉的 token 不丢账, 见 replanTokens)。未发生补丁重规划的轮次不应出现该字段
+   * (NULL≠0: 用字段是否存在区分"没走这条路"与"走了记 0")。
+   */
+  replanMode: 'patch' | 'full';
+  /**
+   * 本轮重规划请求的 token 用量。回落到整图时两段都算总账 (补丁尝试 + 整图重灌之和), 不因
+   * 回落就丢掉补丁那段的花费。
+   */
+  replanTokens: { in: number; out: number };
 };
 export interface ExecutorDagResult {
   plan: ConductorPlan;

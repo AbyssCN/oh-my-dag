@@ -71,12 +71,21 @@ function mergeNode(
 export function applyPlanPatch(
   prev: ConductorPlan,
   patch: PlanPatch,
-  opts: { knownTemplates?: ReadonlySet<string> } = {},
+  opts: { knownTemplates?: ReadonlySet<string>; allowedIds?: ReadonlySet<string> } = {},
 ): { ok: true; applied: AppliedPatch } | { ok: false; error: string } {
   const nodes: Record<string, unknown> = { ...prev.nodes };
   const changed: string[] = [];
   const removed: string[] = [];
   const added: string[] = [];
+  // D-2 越界机器闸: 补丁 touch 的每个 id 须在 blame 闭包内, 「只修不发明」从 prompt 嘱咐
+  // 变会红的闸 (157 次同因事故的根因面) — 不依赖任何措辞, 补丁一律先过这关再 merge。
+  if (opts.allowedIds) {
+    for (const id of Object.keys(patch.patch)) {
+      if (!opts.allowedIds.has(id)) {
+        return { ok: false, error: `补丁 touch 闭包外节点: ${id} (闭包外, 只许改 ${[...opts.allowedIds].join(', ')})` };
+      }
+    }
+  }
   for (const [id, val] of Object.entries(patch.patch)) {
     if (val === null) {
       if (!(id in nodes)) return { ok: false, error: `patch 删除不存在的节点: ${id}` };
@@ -122,4 +131,35 @@ export function applyPlanPatch(
   // 返回 candidate 而非 res.data: zod 重解析会按 schema 键序重建对象; candidate 里未补丁节点
   // 与上轮是**同一对象引用** → 字节不动按构造成立 (最强复用保证), 校验只当闸不当变换。
   return { ok: true, applied: { plan: candidate as ConductorPlan, changed, removed, added } };
+}
+
+
+/**
+ * D-1 请求侧差量: 补丁重规划的 user 消息不再发整张 prior plan JSON (烧钱), 只发
+ * blame 闭包节点全文 + 闭包外节点单行清单 (`id: goal首行`)。闭包外节点反正字节冻结
+ * (D-2 机器闸拒 touch), 发全文纯属重灌。返回值直接拼进 tryPatchReplan 的 user 消息
+ * (取代原 prevPlanJson), 判词由调用方另行 append (与今天姿态一致)。
+ */
+export function buildPatchRequest(prev: ConductorPlan, closure: ReadonlySet<string>): string {
+  const closureNodes: Record<string, unknown> = {};
+  const frozenLines: string[] = [];
+  for (const [id, node] of Object.entries(prev.nodes)) {
+    if (closure.has(id)) {
+      closureNodes[id] = node;
+    } else {
+      const goal = (node as { goal?: unknown }).goal;
+      const firstLine = typeof goal === 'string' ? goal.split('\n')[0] : '(no goal)';
+      frozenLines.push(`${id}: ${firstLine}`);
+    }
+  }
+  const body = {
+    name: prev.name,
+    ...(prev.description ? { description: prev.description } : {}),
+    nodes: closureNodes,
+    ...(prev.outputs?.length ? { outputs: prev.outputs } : {}),
+  };
+  const frozenBlock = frozenLines.length
+    ? `\n\n[闭包外节点, 字节冻结, 补丁不许 touch]\n${frozenLines.join('\n')}`
+    : '';
+  return `${JSON.stringify(body, null, 1)}${frozenBlock}`;
 }

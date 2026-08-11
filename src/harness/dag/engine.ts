@@ -38,7 +38,7 @@ import {
 // D-3 注册 server 集真源 (parsePlan knownServers 必传): 该 run 的 cwd 经 loadMcpClientConfig。
 import { knownMcpServerNames } from '../../mcp/client/config';
 // S3.6 escalation patch 模式: 补丁解析 + 程序化 merge (未补丁节点字节不动 → D-21 复用按构造成立)。
-import { parsePlanPatch, applyPlanPatch } from '../plan-patch';
+import { parsePlanPatch, applyPlanPatch, buildPatchRequest } from '../plan-patch';
 import { hashArtifact, hashText, computeDagGeneration } from '../continuity/checkpoint-manager';
 import type { NodeCheckpoint, NodeLoopJournal, RoundVerdict } from '../continuity/types';
 // noun-gate 接缝(INV-X3):宿主注入(上游宿主传 memory-hub checkNouns);包不依赖 memory-hub。
@@ -308,6 +308,11 @@ function applyPlanFilters(plan: ConductorPlan, config: ExecutorDagConfig): Condu
  * 按构造成立, 不再指望 LLM「逐字保留」(S3.5 实证跨轮重措辞, 4 采样 1 中)。
  * 补丁解析/校验失败 → exec:null, 调用方回退现行整图重规划 (SDD 钉死 fail-open);
  * usage 始终返回 (补丁尝试烧掉的 conductor token 不丢账 — 成功时已折进 exec.conductorUsage)。
+ *
+ * D-1/D-2 (SDD 2026-08-11-l2-diff-replan) 请求侧差量: 有 closure (blame 解析成功) → user 消息
+ * 换成 buildPatchRequest 的差量体 (闭包节点全文 + 闭包外 `id: goal首行` 单行清单), 且
+ * applyPlanPatch 收 allowedIds=closure (越界机器闸, G-2)。closure 缺省/null (blame 解析失败,
+ * fail-open) → 现行整图请求, 不设 allowedIds — 行为与今天逐字节相同 (INV-1)。
  */
 async function tryPatchReplan(
   task: string,
@@ -320,18 +325,22 @@ async function tryPatchReplan(
   templates: ReadonlyMap<string, AgentTemplate>,
   /** D-3 反馈锚定: 同 planAndExecute (补丁路径同样在 executePlan 入口落 append)。 */
   blameAnchor?: ReadonlyMap<string, string>,
+  /** D-1/D-2: blame 闭包 (invalidationClosure 结果)。null/undefined = blame 解析失败 → 整图请求, 无越界闸。 */
+  closure?: ReadonlySet<string> | null,
 ): Promise<{ exec: ExecOnce | null; usage: ModelUsage }> {
   const sys = conductorPatchSystemPrompt();
-  const prevPlanJson = JSON.stringify(
-    {
-      name: prior.plan.name,
-      ...(prior.plan.description ? { description: prior.plan.description } : {}),
-      nodes: prior.plan.nodes,
-      ...(prior.plan.outputs?.length ? { outputs: prior.plan.outputs } : {}),
-    },
-    null,
-    1,
-  );
+  const requestBody = closure
+    ? buildPatchRequest(prior.plan, closure)
+    : JSON.stringify(
+        {
+          name: prior.plan.name,
+          ...(prior.plan.description ? { description: prior.plan.description } : {}),
+          nodes: prior.plan.nodes,
+          ...(prior.plan.outputs?.length ? { outputs: prior.plan.outputs } : {}),
+        },
+        null,
+        1,
+      );
   const known = new Set(templates.keys());
   let usage: ModelUsage = { in: 0, out: 0 };
   let lastErr = '';
@@ -340,7 +349,7 @@ async function tryPatchReplan(
     const { text, usage: u } = await generate({
       messages: [
         { role: 'system', content: sys },
-        { role: 'user', content: `${PLAN_BOUNDARY}${prevPlanJson}\n\n[verification failure] ${reason}${correction}` },
+        { role: 'user', content: `${PLAN_BOUNDARY}${requestBody}\n\n[verification failure] ${reason}${correction}` },
       ],
       model: conductorModel,
       traceName: 'conductor:repair', // 校验失败后的补丁重试 —— 与首次规划分开看 (它的贵是有原因的)
@@ -353,7 +362,7 @@ async function tryPatchReplan(
       lastErr = parsed.error;
       continue;
     }
-    const applied = applyPlanPatch(prior.plan, parsed.patch, { knownTemplates: known });
+    const applied = applyPlanPatch(prior.plan, parsed.patch, { knownTemplates: known, ...(closure ? { allowedIds: closure } : {}) });
     if (!applied.ok) {
       lastErr = applied.error;
       continue;
@@ -3602,13 +3611,19 @@ async function runDagInternal(
       };
       // S3.6 补丁模式优先 (未补丁节点字节不动 → 复用按构造成立); 补丁失败回退整图重规划 (fail-open)。
       const rerunStart = Date.now();
-      const patched = await tryPatchReplan(escTask, verdict.reason, priorExec, config, conductorModel, generate, maxPlanRetries, templates, blameAnchor);
+      const patched = await tryPatchReplan(escTask, verdict.reason, priorExec, config, conductorModel, generate, maxPlanRetries, templates, blameAnchor, closure);
+      // D-3 (SDD 2026-08-11-l2-diff-replan): replanMode 记这一轮走的是补丁差量还是回落整图,
+      // replanTokens 是这一轮的总账 —— 补丁成功时 exec.conductorUsage 已折进补丁尝试的 token
+      // (tryPatchReplan 内部注释同证); 回落时补丁尝试 (patched.usage) 与整图重灌 (exec.conductorUsage)
+      // 两段都要, 不因回落就丢补丁那段的花费 (NULL≠0)。
+      const replanMode: 'patch' | 'full' = patched.exec ? 'patch' : 'full';
       if (patched.exec) {
         exec = patched.exec;
       } else {
         conductorUsage = addUsage(conductorUsage, patched.usage); // 补丁尝试的 token 不丢账
         exec = await planAndExecute(escTask, config, conductorModel, generate, maxPlanRetries, templates, priorExec, blameAnchor);
       }
+      const replanTokens = replanMode === 'patch' ? patched.usage : addUsage(patched.usage, exec.conductorUsage);
       const rerunWallMs = Date.now() - rerunStart;
       // D-4 打回读数入账 (SDD 契约 f): 每次打回追加一条。reuseHits = 闭包外命中数 ——
       // 闭包指纹已入毒集, reusedNodes 里不可能有闭包节点, 这个数就是「闭包外且 D-21 命中」, 无第二套判定。
@@ -3617,6 +3632,8 @@ async function runDagInternal(
         closureSize: closure?.size ?? 0,
         reuseHits: exec.reusedNodes?.length ?? 0,
         rerunWallMs,
+        replanMode,
+        replanTokens,
       };
       conductorUsage = addUsage(conductorUsage, exec.conductorUsage);
       leavesIn += exec.leavesIn;

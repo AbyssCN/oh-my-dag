@@ -554,7 +554,14 @@ const BLAME_FENCE_DRAFT =
  * 结果面字段名未冻结 → 按契约字面取 `blameRetry` (与 claimCheck/artifactMove 同款 camelCase 读数位;
  * 若切片 5 落成别的字段名, 这是唯一要对齐的接缝, 测试会以「undefined」显式红掉而不是静默)。
  */
-type BlameRetryLedger = { blameSize: number; closureSize: number; reuseHits: number; rerunWallMs: number };
+type BlameRetryLedger = {
+  blameSize: number;
+  closureSize: number;
+  reuseHits: number;
+  rerunWallMs: number;
+  replanMode: 'patch' | 'full';
+  replanTokens: { in: number; out: number; cacheHit?: number };
+};
 const readBlameRetry = (r: Awaited<ReturnType<typeof runExecutorDagWithPlan>>): BlameRetryLedger | undefined =>
   (r as unknown as { blameRetry?: BlameRetryLedger }).blameRetry;
 
@@ -624,6 +631,93 @@ describe('blame-scoped 定点重跑 (SDD 2026-08-10-blame-scoped-node-retry)', (
     expect(ledger!.closureSize).toBe(2); // draft ∪ downstream(draft) = {draft, polish}
     expect(ledger!.reuseHits).toBe(1); // 闭包外且指纹命中 = survey
     expect(ledger!.rerunWallMs).toBeGreaterThanOrEqual(0);
+    // D-3 (SDD 2026-08-11-l2-diff-replan): 补丁一击即中 → mode='patch', token 就是补丁那次调用
+    expect(ledger!.replanMode).toBe('patch');
+    expect(ledger!.replanTokens).toEqual({ in: 5, out: 5, cacheHit: 0 });
+  });
+
+  /** D-1 请求侧差量 (SDD 2026-08-11-l2-diff-replan G-1): 闭包节点全文 + 闭包外单行清单, 严格小于整图 JSON。
+   * 用比 blameGraphPlan 更宽的图: draft 无下游依赖者 → 闭包严格 = {draft}, note_a..d 均闭包外
+   * (闭包外节点数量放大, 差量省字节的效果才不被「闭包占了大半图」盖掉)。
+   */
+  test('D-1: 补丁请求闭包节点全文 + 闭包外单行清单, 字节数严格小于整图 JSON', async () => {
+    const wideBlamePlan = plan({
+      survey: { goal: '勘察仓内事实, 覆盖若干背景细节以撑起整图字节数' },
+      draft: { goal: '草稿', depends_on: ['survey'] },
+      note_a: { goal: '独立备注甲, 与 draft 无依赖关系, 纯闭包外填充节点' },
+      note_b: { goal: '独立备注乙, 与 draft 无依赖关系, 纯闭包外填充节点' },
+      note_c: { goal: '独立备注丙, 与 draft 无依赖关系, 纯闭包外填充节点' },
+      note_d: { goal: '独立备注丁, 与 draft 无依赖关系, 纯闭包外填充节点' },
+    });
+    const patchPrompts: string[] = [];
+    const generate: GenerateFn = async (req) => {
+      const sysC = req.messages.find((m) => m.role === 'system')?.content;
+      const sys = typeof sysC === 'string' ? sysC : '';
+      if (sys.includes('REPLAN-PATCH')) {
+        const userC = req.messages.find((m) => m.role === 'user')?.content;
+        patchPrompts.push(typeof userC === 'string' ? userC : '');
+        return { text: JSON.stringify({ patch: SAME_DRAFT_PATCH }), usage: { in: 5, out: 5 } };
+      }
+      const prompt = contentText(req.messages.find((m) => m.role === 'user')?.content);
+      const id = leafId(prompt);
+      return { text: `out:${id}`, usage: { in: 1, out: 1 } };
+    };
+    const r = await runExecutorDagWithPlan(wideBlamePlan, escConfig(generate, makeBlameVerifier(BLAME_FENCE_DRAFT)));
+    expect(r.verification!.pass).toBe(true);
+    expect(patchPrompts).toHaveLength(1);
+    const req = patchPrompts[0]!;
+    // 闭包节点 (仅 draft, 无下游依赖者) 全文入请求
+    expect(req).toContain('"草稿"');
+    // 闭包外 4 个 note 节点只以 `id: goal首行` 单行清单出现, 不带全文对象 (字节冻结, D-2 前置证据)
+    for (const id of ['survey', 'note_a', 'note_b', 'note_c', 'note_d']) {
+      expect(req).toMatch(new RegExp(`${id}: `));
+      expect(req).not.toMatch(new RegExp(`"${id}":\\s*\\{`));
+    }
+    // 差量请求严格小于整图 JSON (G-1 字面判据): 对照基线 = 改前 tryPatchReplan 发的整图请求体
+    // (同一 {name,nodes} 外壳 + 同一 JSON.stringify(_, null, 1) 格式; 剥掉 PLAN_BOUNDARY 与判词
+    // 后缀 —— 二者对差量/整图两种请求体一视同仁, 唯一变量是差量 vs 整图)。
+    const requestBody = req.slice(PLAN_BOUNDARY.length).split('\n\n[verification failure]')[0]!;
+    const fullBody = JSON.stringify({ name: 'test-plan', nodes: wideBlamePlan.nodes }, null, 1);
+    expect(requestBody.length).toBeLessThan(fullBody.length);
+  });
+
+  /** D-2 越界机器闸 (SDD 2026-08-11-l2-diff-replan G-2): 补丁 touch 闭包外节点 → 拒且回落整图。 */
+  test('D-2: 补丁 touch 闭包外节点 → 越界闸拒 → 回落整图, 台账 replanMode=full 补丁 token 不丢账', async () => {
+    const generate: GenerateFn = async (req) => {
+      const sysC = req.messages.find((m) => m.role === 'system')?.content;
+      const sys = typeof sysC === 'string' ? sysC : '';
+      if (sys.includes('REPLAN-PATCH')) {
+        // 越界: 判词只责备 draft (闭包={draft,polish}), 补丁却 touch 闭包外的 survey
+        return { text: JSON.stringify({ patch: { survey: { goal: '篡改的勘察' } } }), usage: { in: 4, out: 4 } };
+      }
+      if (sys.includes('CONDUCTOR')) {
+        return {
+          text: JSON.stringify({
+            name: 'replanned',
+            nodes: {
+              survey: { goal: '勘察仓内事实' },
+              draft: { goal: '草稿v2', depends_on: ['survey'] },
+              polish: { goal: '打磨', depends_on: ['draft'] },
+            },
+          }),
+          usage: { in: 10, out: 10 },
+        };
+      }
+      const prompt = contentText(req.messages.find((m) => m.role === 'user')?.content);
+      const id = leafId(prompt);
+      return { text: `out:${id}`, usage: { in: 1, out: 1 } };
+    };
+    const r = await runExecutorDagWithPlan(
+      blameGraphPlan(),
+      makeConfig(generate, { verifier: makeBlameVerifier(BLAME_FENCE_DRAFT), conductorEscalationModel: 'blamex:strong', maxPlanRetries: 1 }),
+    );
+    expect(r.verification!.pass).toBe(true);
+    const ledger = readBlameRetry(r);
+    expect(ledger).toBeDefined();
+    // 越界补丁 (maxPlanRetries+1=2 次尝试) 全被闸拒 → 回落整图 conductor
+    expect(ledger!.replanMode).toBe('full');
+    // 补丁尝试的 token (2×{4,4}) + 整图重灌 ({10,10}) 全入账, 回落不丢补丁那段花费
+    expect(ledger!.replanTokens).toEqual({ in: 4 * 2 + 10, out: 4 * 2 + 10, cacheHit: 0 });
   });
 
   test('G-2: 反馈只进被责备节点重跑 prompt; 非责备节点 prompt 与上轮逐字节相同 (D-3)', async () => {
