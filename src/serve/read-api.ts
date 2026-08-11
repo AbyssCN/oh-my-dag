@@ -20,6 +20,9 @@ import { ledgerPath } from '../harness/dag-record';
 import { readout, type ReadoutResult } from '../../scripts/omd-readout';
 import { Database } from 'bun:sqlite';
 import type { PathMap } from '../harness/pathfinder/types';
+import { ALL_SEAT_IDS, SEAT_PREFERRED_COORD } from '../model/seats';
+import { channelOf } from '../model/cost-ledger';
+import { budgetStats } from '../model/provider-budget';
 
 /** runId 是目录名、nodeId 是文件名成分 —— 皆来自 HTTP 边界,白名单闸(动态子节点含 `::` 与 `.`)。 */
 const RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,80}$/;
@@ -367,4 +370,83 @@ export function readAttention(cwd: string): AttentionView {
     out.maps.push({ slug: row.slug, destination: view.destination, total: view.tickets.length, bands, phantoms: view.fog.phantoms.length });
   }
   return out;
+}
+
+// ── 座位 / 额度视图 (S4) ───────────────────────────────────────────────────────
+//
+// 首页那一问:「哪个座位在烧哪个桶 · 还剩多少 · 烧穿了落到哪」。
+// 数据纪律与上面读数板同款:**只读真源,取不到就不给,不编 0**。
+//   · 座位表 = model/seats.ts 编译期常量(SEAT_PREFERRED_COORD 只含显式配了的)
+//   · 桶     = cost-ledger.channelOf(coord) —— api 与订阅分道,判据只此一处
+//   · 预算   = provider-budget.budgetStats() —— ⚠ 名字叫 budget, 真实身份是 **MiMo provider
+//              的限流状态**(并发/RPM),不是全 provider 通用预算;逐字段透传不改形状
+//   · 花费/用量/溢出 → 本仓不存在座位粒度的映射函数(见 unavailable 各条),一律 undefined
+//
+// ⚠ 与文件头注不同: 本视图**不读磁盘** —— 座位表是编译期常量, budgetStats 是进程内内存态。
+// cwd 保留仅为与 readRun(cwd, …) 等既有签名一致(未来若接入磁盘账本沿用同一入口)。
+
+export interface SeatRow {
+  /** 座位 id(ALL_SEAT_IDS 遍历序 = 展示序)。 */
+  role: string;
+  /** seats.ts 显式配的 per-node 首选坐标;没配 = undefined(该座位走 tier 类首选,运行期分派)。 */
+  coord?: string;
+  /** cost-ledger.channelOf(coord) 的透传结果: 烧哪个桶。无 coord → undefined(不许替它编)。 */
+  channel?: 'api' | 'subscription';
+  /** 座位粒度花费 —— 无已确认来源,恒 undefined(见 unavailable.spentUsd)。 */
+  spentUsd?: number;
+  /** 座位粒度输入 token —— 无已确认来源,恒 undefined(见 unavailable.tokensIn)。 */
+  tokensIn?: number;
+  /** 座位粒度输出 token —— 无已确认来源,恒 undefined(见 unavailable.tokensOut)。 */
+  tokensOut?: number;
+  /** 烧穿后的溢出落点 —— 调用方逐次传参,无静态登记,恒 undefined(见 unavailable.overflowTo)。 */
+  overflowTo?: string;
+}
+
+export interface SeatsView {
+  seats: SeatRow[];
+  /** provider-budget.budgetStats() 逐字段透传(见上注释: MiMo 限流状态)。 */
+  budget: { inFlight: number; waiting: number; cap: number; rpmTokens: number; rpmLimit: number };
+  /** 取不到的字段/座位组合,逐项说明为什么 —— 空着不解释等于骗人。 */
+  unavailable: Array<{ field: string; reason: string }>;
+}
+
+/**
+ * 座位/额度只读视图。
+ * 实现**零 fs 调用**(座位表是编译期常量, budgetStats 是内存态)——
+ * T-4 的逐字节一致测试钉的就是这条, 未来若加磁盘缓存必须同步更新那条闸。
+ */
+export function readSeats(cwd: string): SeatsView {
+  void cwd;
+
+  const seats: SeatRow[] = ALL_SEAT_IDS.map((role): SeatRow => {
+    const coord = SEAT_PREFERRED_COORD[role];
+    return { role, ...(coord ? { coord, channel: channelOf(coord) } : {}) };
+  });
+
+  // 没配 preferredCoord 的座位 = 走 tier 类首选 + 渠道经济学, 运行期才定坐标。
+  // 这里从真源派生(ALL_SEAT_IDS − 有 coord 的), 不手抄第二份 —— seats.ts 增减座位不会漂。
+  const noCoordSeats = ALL_SEAT_IDS.filter((id) => !SEAT_PREFERRED_COORD[id]);
+
+  const unavailable: SeatsView['unavailable'] = [
+    ...noCoordSeats.map((role) => ({
+      field: `${role}.coord`,
+      reason:
+        'seats.ts 未给 preferredCoord —— 该座位走 tier 类首选 + 渠道经济学运行期分派, 非静态登记' +
+        '(role-models.ts 是派生视图, 不是真源)',
+    })),
+    {
+      field: 'spentUsd',
+      reason:
+        'tui/usage/ledger.ts 的 byProvider 只按 provider(coord 冒号前段)聚合, 不记录发起调用的座位(role)' +
+        '字段; 归到某座位属张冠李戴',
+    },
+    { field: 'tokensIn', reason: '同 spentUsd —— 用量与花费同源同一空缺, 拆不到座位粒度' },
+    { field: 'tokensOut', reason: '同 spentUsd —— 用量与花费同源同一空缺, 拆不到座位粒度' },
+    {
+      field: 'overflowTo',
+      reason: 'provider-budget.ts 的溢出坐标(overflowModel)由调用方逐次传参决定, 无按座位静态登记的查询函数',
+    },
+  ];
+
+  return { seats, budget: budgetStats(), unavailable };
 }
