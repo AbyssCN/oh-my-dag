@@ -379,7 +379,14 @@ export type DagNodeEvent =
   | { type: 'planned'; nodes: Array<{ id: string; kind: string }> }
   | { type: 'expanded'; parent: string; nodes: Array<{ id: string; kind: string; deps: string[] }> }
   | { type: 'start'; id: string; kind: string }
-  | { type: 'settle'; id: string; status: 'done' | 'failed' | 'skipped'; kind: string; model?: string };
+  | { type: 'settle'; id: string; status: 'done' | 'failed' | 'skipped'; kind: string; model?: string;
+      durationMs?: number; failReason?: string; usage?: { in: number; out: number } }
+  // 新增三型 (SDD 2026-08-11-dag-观察面与审核跟踪升级, additive)。id 均为节点 id;
+  // 未知 type 消费者必须静默忽略 (C-1)。verdict 的 pass/fail 指**被审对象** (D-9)。
+  | { type: 'progress'; id: string; tool?: string; note?: string; calls: number; elapsedMs: number }
+  | { type: 'verdict'; id: string; gate: 'judge' | 'verifier' | 'gate' | 'acceptance' | 'review';
+      verdict: 'pass' | 'fail'; round: number; reason?: string }
+  | { type: 'replan'; parent: string; round: number; poisoned: string[] };
 
 /**
  * **图外只读观察者**的一条产出 (P3 D-Q)。

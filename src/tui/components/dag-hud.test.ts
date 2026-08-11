@@ -197,3 +197,32 @@ describe('★ 滚动', () => {
     expect(text(h)).not.toContain('Alt+');
   });
 });
+
+describe('C-1 未知事件不破消费者 (SDD 2026-08-11)', () => {
+  // 反向自检 (本组三条): 老 apply 的兜底把未知事件当 settle 用, `upsert(e.id, ...)`
+  // 拿 undefined 当 key 造幽灵行 —— 对老实现跑, size/render 断言当场红。
+  test('词表外 type → 不 throw、不造节点、渲染不变', () => {
+    const h = make();
+    h.apply(planned(['n1', 'agent']));
+    const before = text(h);
+    expect(() => h.apply({ type: 'blorp', id: 'ghost' } as never)).not.toThrow();
+    expect(h.size).toBe(1);
+    expect(text(h)).toBe(before);
+  });
+
+  test('replan (无 id) → 不造幽灵节点', () => {
+    const h = make();
+    h.apply(planned(['n1', 'agent']));
+    expect(() => h.apply({ type: 'replan', parent: 'p', round: 1, poisoned: ['n1'] })).not.toThrow();
+    expect(h.size).toBe(1);
+  });
+
+  test('缺 type 的畸形对象 → 不 throw、不造节点、渲染不变', () => {
+    const h = make();
+    h.apply(planned(['n1', 'agent']));
+    const before = text(h);
+    expect(() => h.apply({ id: 'ghost' } as never)).not.toThrow();
+    expect(h.size).toBe(1);
+    expect(text(h)).toBe(before);
+  });
+});

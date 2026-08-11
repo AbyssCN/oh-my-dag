@@ -13,16 +13,19 @@
  * map/conductor 节点**运行时**把子节点挂进图的那一刻会发一次。所以父子关系是引擎给的事实,
  * 这里只负责把它摆成树。`planned` 那一批没有父,就是根。
  *
- * ## 时间是**事件到达时刻**,不是引擎时钟
+ * ## 时间:settle.durationMs 是耗时真源 (D-5, SDD 2026-08-11)
  *
- * 事件不带 ts,泳道甘特(画法 B)量的是 start→settle 的到达间隔。这对"谁是串行尾巴"
- * 够用,但**不是**引擎侧的精确墙钟 —— 甘特头上会写明这一点的度量来源。
+ * settle 事件带引擎侧墙钟 (`durationMs`) 时优先用它;老发射点不给 → 回落到达间隔。
+ * running 态的活秒数是 `now() - startAt`(render 时现算,由 tui 的 render tick 驱动递增)——
+ * 那是"活着"的证据,不是精确墙钟。泳道甘特(画法 B)仍量到达间隔,头行有声明。
  *
  * ⚠ **没有 run 时什么都不画**(`render` 返回 `[]`)—— 与 DagHud 同一条:
  * 画一个空框会让人以为"有个 run 但没动"。
  */
 import type { Component } from '@earendil-works/pi-tui';
 import type { DagNodeEvent } from '../../harness/dag/types';
+import { logger } from '../../logger';
+import { fmtDur } from '../render/dag-gantt';
 import { fitLine } from '../render/line';
 import type { OmdTuiTheme } from '../theme';
 
@@ -53,6 +56,28 @@ export interface TreeNode {
   /** start / settle 事件的**到达时刻**(ms)。`null` = 还没发生(与 0 分得开)。 */
   startAt: number | null;
   endAt: number | null;
+  /** settle 带的引擎侧墙钟 (D-5 耗时真源)。缺席 = 老发射点, 渲染回落到达间隔。 */
+  durationMs?: number;
+  /** settle 带的失败原文首行 (≤160 字符, S1 截断)。只画在 failed 行下 (C-6 ②)。 */
+  failReason?: string;
+  /** 最近一条 progress 的展示量 (C-6 ④; 生产端已节流 ≥500ms, 只留最新)。 */
+  progress?: { tool?: string; note?: string };
+  /**
+   * 审核判决子行 (C-6 ③, 按到达序陈列)。DagTree 恒初始化成 `[]`;
+   * 可选是因为树外的快照字面量 (render/ 测试) 可能不带它, 渲染侧 `?? []` 兜底。
+   */
+  verdicts?: VerdictLine[];
+}
+
+/**
+ * 一条审核判决 (verdict 事件)。pass/fail **指被审对象** (D-9):
+ * review CONFIRMED finding → fail, 证伪撤销 → pass —— 与引擎 verifier 同一读法。
+ */
+export interface VerdictLine {
+  gate: 'judge' | 'verifier' | 'gate' | 'acceptance' | 'review';
+  verdict: 'pass' | 'fail';
+  round: number;
+  reason?: string;
 }
 
 /** 三画法共用的一份快照(纯数据,渲染函数吃它)。 */
@@ -79,6 +104,12 @@ export class DagTree implements Component {
   get size(): number {
     return this.nodes.size;
   }
+  /** 有没有节点还在跑 —— tui 的 render tick 拿它决定要不要继续刷活秒数 (C-6 ①)。 */
+  hasRunning(): boolean {
+    for (const n of this.nodes.values()) if (n.status === 'running') return true;
+    return false;
+  }
+
 
   /** 三画法共用的快照(按 seq 排)。 */
   snapshot(): DagSnapshot {
@@ -93,25 +124,56 @@ export class DagTree implements Component {
   }
 
   apply(e: DagNodeEvent): void {
-    if (e.type === 'planned') {
-      for (const n of e.nodes) this.put(n.id, n.kind, null);
-      return;
+    switch (e.type) {
+      case 'planned': {
+        for (const n of e.nodes) this.put(n.id, n.kind, null);
+        return;
+      }
+      case 'expanded': {
+        // ★ 这一支就是"分裂"本身:parent 是真的, 子节点挂在它下面。
+        for (const n of e.nodes) this.put(n.id, n.kind, e.parent, false, n.deps);
+        return;
+      }
+      case 'start': {
+        const n = this.put(e.id, e.kind, null, true);
+        n.status = 'running';
+        n.startAt = this.now();
+        return;
+      }
+      case 'settle': {
+        const n = this.put(e.id, e.kind, null, true);
+        n.status = e.status;
+        n.endAt = this.now();
+        if (n.startAt === null) n.startAt = n.endAt; // settle 先于 start 到 (乱序): 画零长条, 不编时长
+        // D-5: 耗时真源 = 引擎侧墙钟;老发射点不给 → 渲染回落到达间隔。
+        if (e.durationMs !== undefined) n.durationMs = e.durationMs;
+        if (e.failReason !== undefined) n.failReason = e.failReason;
+        return;
+      }
+      case 'progress': {
+        // C-6 ④: tool/note 挂节点行尾。id 是真实节点 (生产端已节流 ≥500ms), 只留最近一条。
+        const n = this.put(e.id, '', null, true);
+        n.progress = { tool: e.tool, note: e.note };
+        return;
+      }
+      case 'verdict': {
+        // C-6 ③: 判决陈列成子行。pass/fail 指被审对象 (D-9), 画法只陈列不解释。
+        const n = this.put(e.id, '', null, true);
+        (n.verdicts ??= []).push({ gate: e.gate, verdict: e.verdict, round: e.round, reason: e.reason });
+        return;
+      }
+      case 'replan': {
+        // C-1: 无节点 id, 图上没有可画的位置 —— 静默忽略。
+        // 老兜底会把整个对象当 settle 处理并 `put(undefined)` 造幽灵节点 (D-7 grill F1)。
+        return;
+      }
+      default: {
+        // C-1 (SDD 2026-08-11): 词表外 type / 缺 type 的畸形对象 —— fail-open:
+        // 不 throw、不造节点、既有渲染不变, 只留一条日志痕。
+        const u = e as unknown as { type?: unknown };
+        logger.warn({ type: u.type }, '[dag-tree] C-1: 忽略未知 DAG 事件 (不造节点)');
+      }
     }
-    if (e.type === 'expanded') {
-      // ★ 这一支就是"分裂"本身:parent 是真的, 子节点挂在它下面。
-      for (const n of e.nodes) this.put(n.id, n.kind, e.parent, false, n.deps);
-      return;
-    }
-    if (e.type === 'start') {
-      const n = this.put(e.id, e.kind, null, true);
-      n.status = 'running';
-      n.startAt = this.now();
-      return;
-    }
-    const n = this.put(e.id, e.kind, null, true);
-    n.status = e.status;
-    n.endAt = this.now();
-    if (n.startAt === null) n.startAt = n.endAt; // settle 先于 start 到 (乱序): 画零长条, 不编时长
   }
 
   /**
@@ -126,7 +188,7 @@ export class DagTree implements Component {
       if (deps) hit.deps = deps;
       return hit;
     }
-    const n: TreeNode = { id, kind, status: 'pending', parent, deps: deps ?? [], seq: this.seq++, startAt: null, endAt: null };
+    const n: TreeNode = { id, kind, status: 'pending', parent, deps: deps ?? [], seq: this.seq++, startAt: null, endAt: null, verdicts: [] };
     this.nodes.set(id, n);
     return n;
   }
@@ -156,8 +218,25 @@ export class DagTree implements Component {
       kids.forEach((n, i) => {
         const last = i === kids.length - 1;
         const branch = parent === null ? '' : last ? '└─' : '├─';
-        const line = `${prefix}${branch}${TREE_MARK[n.status]} ${n.id} ${n.kind}`;
+        // 行尾:C-6 ① 活秒数/耗时 (D-5: durationMs 优先, 缺席回落到达间隔) + C-6 ④ progress 的 tool/note。
+        // ⚠ 秒数**排在 progress 前**: 侧栏只有 34 列, 截断从尾巴开始 —— "活着"的秒数
+        //   (C-6 ① 的判据主体) 必须活得过截断, progress 尾巴截掉只是少看半句。
+        const tail: string[] = [];
+        if (n.status === 'running') tail.push(fmtDur(Math.max(0, this.now() - (n.startAt ?? this.now()))));
+        else if (n.endAt !== null) tail.push(fmtDur(Math.max(0, n.durationMs ?? n.endAt - (n.startAt ?? n.endAt))));
+        if (n.progress) {
+          const bits = [n.progress.tool, n.progress.note].filter((b): b is string => Boolean(b)).join(' ');
+          if (bits) tail.push(`[${bits}]`);
+        }
+        const line = `${prefix}${branch}${TREE_MARK[n.status]} ${n.id}${n.kind ? ` ${n.kind}` : ''}${tail.length > 0 ? ` ${tail.join(' ')}` : ''}`;
         out.push(paint(n)(fitLine(line, width)));
+        // 子行:C-6 ② failed 节点下一行缩进画 failReason; C-6 ③ 审核判决子行 (✗/✓ <gate> r<N>: <reason>)。
+        // 子行缩进对齐节点行的 **id 起始列**(行首 = prefix + 分支宽 2 + 标记 2)。
+        const subPrefix = prefix + (branch ? '    ' : '  ');
+        if (n.status === 'failed' && n.failReason) out.push(paint(n)(fitLine(`${subPrefix}${n.failReason}`, width)));
+        for (const v of n.verdicts ?? []) {
+          out.push(this.theme.chrome.dim(fitLine(`${subPrefix}${v.verdict === 'pass' ? TREE_MARK.done : TREE_MARK.failed} ${v.gate} r${v.round}${v.reason ? `: ${v.reason}` : ''}`, width)));
+        }
         walk(n.id, parent === null ? '' : prefix + (last ? '  ' : '│ '));
       });
     };

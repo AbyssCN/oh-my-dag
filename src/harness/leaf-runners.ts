@@ -6,6 +6,7 @@
  * omd-pi provider runner(随 provider slice)。测试注入 fake。
  */
 import type { ModelUsage } from '../model/gateway';
+import type { AgentEvent } from '@earendil-works/pi-agent-core';
 
 // ── agent leaf(带工具的 pi session,能改文件)────────────────────────
 export interface AgentLeafInput {
@@ -26,6 +27,12 @@ export interface AgentLeafInput {
    * 只能**按调用**传, 不能烤进 runner 装配期 (同 touchSession 那条)。
    */
   mcpAllow?: string[];
+  /**
+   * 内部事件汇 (SDD D-8, 2026-08-11): runner 把本次调用的**内部工具事件** (tool_execution_start/end)
+   * 转发给它 —— 引擎在节点调 runner 时挂节流转发器, 转成 DAG 的 `progress` 事件 (节流在引擎侧,
+   * 与 chat 通道同形: 回调抛错被吞, 永不影响执行)。省略 = 不转发 (零开销, 老 runner 行为不变)。
+   */
+  onEvent?: (e: AgentEvent) => void;
 }
 export interface AgentLeafResult {
   text: string;

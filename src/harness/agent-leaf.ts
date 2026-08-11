@@ -979,6 +979,16 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           logger.warn({ err: (err as Error).message }, '[agent-leaf] onEvent 回调抛错 (已吞, 不打断循环)');
         }
       }
+      // 调用期事件汇 (SDD D-8, 2026-08-11): 转发**内部工具事件**给本次调用的 input.onEvent ——
+      // 引擎侧据此转成 DAG 的 progress 事件。刻意只转发工具事件: text_delta 是正文流, 不进
+      // DAG 事件 (D-10); 转发面与采集面同一条 emit 链, 不另开旁路 (两处各写一份必漂)。
+      if (input.onEvent && (e.type === 'tool_execution_start' || e.type === 'tool_execution_end')) {
+        try {
+          input.onEvent(e);
+        } catch (err) {
+          logger.warn({ err: (err as Error).message }, '[agent-leaf] input.onEvent 回调抛错 (已吞, 不打断循环)');
+        }
+      }
     };
 
     // ── 有界性 (两级) ────────────────────────────────────────────────────────────

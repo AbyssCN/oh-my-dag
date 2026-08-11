@@ -834,6 +834,36 @@ async function scenarioDagViews() {
     );
     check(p.text().includes('DAG fixture-fanout'), 'DG-3 树头行带 run id', p.text().slice(-600));
 
+    // ── C-6 画法 (SDD 2026-08-11, S3 切片): fixture 的演示 run 现在带
+    //    durationMs/failReason/progress/verdict —— 树要把这四件事画出来。 ──
+    // ② failed 节点下一行缩进画 failReason。归一化文本没有"行", 钉**顺序**: 节点行先于原因。
+    //    证伪: 注释掉 dag-tree render 里的 failReason 子行 → `assertion failed` 不出现, 红。
+    check(
+      await waitFor(p, (t) => t.includes('assertion failed') && t.indexOf('shard-2 agent') < t.indexOf('assertion failed')),
+      'DG-14 ★ C-6② 失败原因画在失败节点下一行(failReason 来自 settle, 不是编的)',
+      p.text().slice(-600),
+    );
+    // ③ 审核判决画子行: ✗/✓ <gate> r<N>: <reason>。fixture 给了 pass + fail 各一条。
+    //    ⚠ 侧栏只有 34 列, reason 尾巴会被 fitLine 截掉 —— 这里钉 `✗ verifier r1` (形状),
+    //    完整 `<reason>` 由 dag-tree.test.ts 在宽行上钉。
+    //    证伪: 注释掉 dag-tree render 里的 verdict 子行 → `verifier r1` 不出现, 红。
+    check(
+      await waitFor(p, (t) => t.includes('✗ verifier r1')),
+      'DG-15 ★ C-6③ fail 判决子行(✗ verifier r1: reason)',
+      p.text().slice(-600),
+    );
+    check(p.text().includes('✓ judge r1'), 'DG-16 ★ C-6③ pass 判决子行(✓ judge r1)', p.text().slice(-600));
+    // ① running 节点活秒数随 render tick 递增。shard-3 只 start 不 settle —— 永远在跑;
+    //    缓冲累积所有帧, 取 shard-3 行出现过的最大秒数, 走到 ≥2s 说明 ticker 真的在刷。
+    //    证伪: 摘掉 tui.ts 的 syncDagTicker 接线 → 秒数停在第一帧, 本闸红。
+    const liveSecs = () =>
+      Math.max(0, ...[...p.text().matchAll(/shard-3.{0,80}?(\d+(?:\.\d+)?)s/g)].map((m) => Number(m[1])));
+    check(
+      await waitFor(p, () => liveSecs() >= 2, 8000),
+      'DG-17 ★ C-6① running 节点行活秒数随 render tick 递增(≥2s)',
+      p.text().slice(-400),
+    );
+
     p.write('\x07'); // Ctrl+G → 全屏 (画法 0 = 树)
     check(await waitFor(p, (t) => t.includes('now: tree')), 'DG-4 ★ Ctrl+G 进全屏(画法提示可见)', p.text().slice(-400));
     p.write('\t');

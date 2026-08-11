@@ -26,6 +26,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ModelUsage } from '../../model/gateway';
 import { escalationProviderReady } from '../verifier';
+import type { AgentEvent } from '@earendil-works/pi-agent-core';
 import {
   conductorSystemPrompt,
   conductorPatchSystemPrompt,
@@ -49,7 +50,7 @@ import { leafCostReward } from '../model-router';
 import { logger } from '../logger';
 import { NOVELTY_COLLAPSE_LINE, pushNoveltyRound } from '../pathfinder/proximity';
 // ── T2#5 按簇拆出的兄弟文件 (引擎消费) ──
-import type { GenerateFn, ExecutorDagConfig, LeafResult, ExecutorDagResult, DagObservation, BlameRetryLedger } from './types';
+import type { GenerateFn, ExecutorDagConfig, LeafResult, ExecutorDagResult, DagObservation, BlameRetryLedger, DagNodeEvent } from './types';
 import { makeDefaultGenerate, LEAF_SYSTEM_PREFIX, PONYTAIL_LEAF_DISPOSITION } from './defaults';
 import { topoLevels, buildLeafPrompt, addUsage, filterOracleCommandNodes } from './planner';
 // ready-set 调度器 (拓扑推进 + 三层并发闸 + quorum 判定; 纯同步零 IO, 见 dag-scheduler.ts)。
@@ -846,6 +847,8 @@ async function executePlan(
     const childIds = children.map((c) => c.id);
     // 整轮就没跑成 → 直接未收敛, 省一次 judge 调用 (同 llm-judge 的 status==='failed' 短路)。
     if (leaf.status === 'failed') {
+      // D-3 (2026-08-11): 判决升级为事件 (整轮没跑成 = 确定性短路, 仍给一条 judge 判词)。
+      emitNodeEvent({ type: 'verdict', id, gate: 'judge', verdict: 'fail', round, reason: `整轮失败: ${leaf.output.slice(0, 300)}` });
       return { converged: false, reason: `整轮失败: ${leaf.output.slice(0, 300)}`, rejected: [], usage: { in: 0, out: 0 }, unreachable: null };
     }
     // ── D-4 谎报完成闸 (2026-08-10, SDD 切片 4) ─────────────────────────────────
@@ -859,6 +862,8 @@ async function executePlan(
         { node: id, round, hits: fc.lexiconHits, nodes: fc.findings.map((f) => f.nodeId) },
         '[omd/executor-dag] D-4 谎报完成闸: 声称完成而验收命令实败 → 判未收敛',
       );
+      // D-3 (2026-08-11): 确定性闸的判决独立成 gate:'gate' 词表 (与 LLM judge 分开, D-9 同一读法)。
+      emitNodeEvent({ type: 'verdict', id, gate: 'gate', verdict: 'fail', round, reason: renderFalseCompletionFindings(fc.findings) });
       return {
         converged: false,
         reason: renderFalseCompletionFindings(fc.findings),
@@ -912,6 +917,7 @@ async function executePlan(
       if (!v.converged && !v.failureReason) {
         logger.warn({ node: id, round }, '[omd/executor-dag] 内环 judge 判未收敛却零理由 → 下一轮反馈为空 (A5, 应由 llm-judge 兜住)');
       }
+      emitNodeEvent({ type: 'verdict', id, gate: 'judge', verdict: v.converged ? 'pass' : 'fail', round, ...(v.failureReason ? { reason: v.failureReason } : {}) });
       return { converged: v.converged, reason: v.failureReason ?? '', rejected, usage, unreachable: null as string | null };
     } catch (err) {
       // fail-closed: 判不出来就当没达成。judge 挂掉不该变成"那就算过了吧"。
@@ -925,6 +931,7 @@ async function executePlan(
       // A5: 这句话的读者是**下一轮重画的 conductor**。旧文案 (`judge 无可解析结论 (fail-closed)`)
       // 报得对, 但它是**引擎侧的事故**, 而读者会把出现在「上一轮未通过」里的任何东西当成对自己
       // 方案的评价 —— 于是它会为了迎合一句根本不存在的判词去改图。所以第一句先把这件事撇清。
+      emitNodeEvent({ type: 'verdict', id, gate: 'judge', verdict: 'fail', round, reason: '【引擎侧事故】judge 调用失败或结论无法解析 → 判未收敛 (fail-closed)' });
       return {
         converged: false,
         unreachable,
@@ -1343,7 +1350,7 @@ async function executePlan(
               });
               for (const f of r.filesTouched ?? []) touchedAll.add(f);
               // 子节点绕过外层 settle() → 补发事件 (同 map 子节点)。
-              emitNodeEvent({ type: 'settle', id: cid, status: r.status, kind: r.kind, ...(r.model ? { model: r.model } : {}) });
+              emitNodeEvent(settleEvent(cid, r));
               // 释放子图内下游。失败也释放 —— 是否执行由下游自己的 requires quorum 判 (D-7v2),
               // 不在这里替它决定 (与外层 settle 同语义)。
               for (const dep of dependentsLocal.get(cid) ?? []) {
@@ -2043,7 +2050,7 @@ async function executePlan(
               results[child.id] = r;
               depOutputs[child.id] = r.output;
               // map 子节点绕过外层 settle() → 此处补发 settle 事件 (INV-U6 子集独立调度)。
-              emitNodeEvent({ type: 'settle', id: child.id, status: r.status, kind: r.kind, ...(r.model ? { model: r.model } : {}) });
+              emitNodeEvent(settleEvent(child.id, r));
               usageAcc = addUsage(usageAcc, r.usage);
               if (r.status === 'failed') failedCount++;
               // 失败子项带败因截断 (2026-08-04): 此前压成光秃 '[failed]', 下游 fan-in 与 repair 轮
@@ -2135,6 +2142,28 @@ async function executePlan(
 
   // 节点起跑时刻 (issue #4: 失败 checkpoint 的 durationMs 用; settle 在 runNode 各早退分支之外, 需独立捕获)。
   const nodeStartedAt = new Map<string, number>();
+  // ── SDD 2026-08-11 (D-1/D-5/D-10): settle 观测字段 + progress 节流 ───────────────
+  // settle 三新字段全 optional (additive, 老发射点不补也合法); durationMs 真源 = 引擎侧墙钟
+  // (nodeStartedAt), 不是 TUI 的事件到达间隔 (D-5); failReason = 失败原文首行 ≤160 (全文在 run 记录)。
+  const settleEvent = (id: string, r: LeafResult): DagNodeEvent => {
+    const startedAt = nodeStartedAt.get(id);
+    const failReason = r.status === 'failed' ? (r.output || '(无输出)').split('\n')[0]!.slice(0, 160) : undefined;
+    return {
+      type: 'settle',
+      id,
+      status: r.status,
+      kind: r.kind,
+      ...(r.model ? { model: r.model } : {}),
+      ...(startedAt !== undefined ? { durationMs: Math.max(0, Date.now() - startedAt) } : {}),
+      ...(failReason ? { failReason } : {}),
+      ...(r.usage ? { usage: { in: r.usage.in, out: r.usage.out } } : {}),
+    };
+  };
+  // progress 节流 (D-2/D-10): 生产端按节点 ≥500ms 一条; **首条不节流** —— C-2 反向自检依赖它
+  // (≥3 次工具调用必须至少出 1 条, 而 3 次调用完全可以落在 500ms 内)。
+  const PROGRESS_THROTTLE_MS = 500;
+  const lastProgressAt = new Map<string, number>();
+  const progressCalls = new Map<string, number>();
   /**
    * conductor 子图节点 → **它这一次是第几轮跑的**(2026-08-06)。
    *
@@ -2477,11 +2506,38 @@ async function executePlan(
         // "server:tool" 判)。空清单 → 不传字段, leaf 回落 deny (执行叶子不声明不授权)。
         // 合并真源 = conductor-plan.mergeMcpAllow (接线测试共用, 禁复刻)。
         const mcpAllow = mergeMcpAllow(node, tpl);
+        // SDD D-2 (2026-08-11): 挂 leaf 事件汇 → 转成 DAG progress 事件。只认工具起跑;
+        // text_delta 不进 DAG 事件 (D-10: DAG 面板不是 transcript)。回调抛错 fail-open。
+        const leafProgress = (e: AgentEvent): void => {
+          if (e.type !== 'tool_execution_start') return;
+          const now = Date.now();
+          const calls = (progressCalls.get(id) ?? 0) + 1;
+          progressCalls.set(id, calls);
+          const last = lastProgressAt.get(id);
+          if (last !== undefined && now - last < PROGRESS_THROTTLE_MS) return;
+          lastProgressAt.set(id, now);
+          const a = (e.args ?? {}) as { path?: unknown; command?: unknown; patch?: unknown };
+          const note =
+            typeof a.path === 'string' && a.path.trim()
+              ? `${e.toolName} ${a.path.trim()}`
+              : typeof a.command === 'string' && a.command.trim()
+                ? `bash: ${a.command.trim().slice(0, 40)}`
+                : undefined;
+          emitNodeEvent({
+            type: 'progress',
+            id,
+            ...(e.toolName ? { tool: e.toolName } : {}),
+            ...(note ? { note } : {}),
+            calls,
+            elapsedMs: now - (nodeStartedAt.get(id) ?? now),
+          });
+        };
         const r = await config.agentRunner!({
           prompt,
           model,
           ...(touchRunId ? { touchSession: `${touchRunId}:${id}` } : {}),
           ...(mcpAllow.length ? { mcpAllow } : {}),
+          onEvent: leafProgress,
         });
         recordGeneration({
           traceId: obsTraceId,
@@ -2902,7 +2958,7 @@ async function executePlan(
       endTime: new Date(),
       ...(settled.failureKind ? { failureKind: settled.failureKind } : {}),
     });
-    emitNodeEvent({ type: 'settle', id, status: settled.status, kind: settled.kind, ...(settled.model ? { model: settled.model } : {}) });
+    emitNodeEvent(settleEvent(id, settled));
     // issue #4: 失败节点留痕。成功节点由 runNode 内成功分支落 checkpoint; failed/抛错节点此前**零记录**
     // (stdout 被 caveman 压掉、dag-runs.db 未启用、continuity 只存绿节点 → judge 截停后无法诊断)。
     // 这里补一条结构化败因 checkpoint (节点 id/executor/model/败因分类/错误消息截断)。全程 fail-open,
@@ -3326,6 +3382,15 @@ async function runDagInternal(
   // 同一条 trace 上。不写回的话, 省略 sessionId 的调用方会得到两条 trace —— 一条模型调用的、
   // 一条 agent 的, 而它们本来是同一跑。同一件事只该有一个 id, 在这里定死。
   config = { ...config, sessionId };
+  // SDD D-3 (2026-08-11): 判决/重规划升级为事件。executePlan 内另有一份节点级发射器; 这里发的是
+  // run 级 verdict/replan —— id/parent 取 plan.name (被审对象 = 整轮, 无单一节点可挂)。
+  const emitRunEvent = (e: DagNodeEvent): void => {
+    try {
+      config.onNodeEvent?.(e);
+    } catch {
+      /* fail-open */
+    }
+  };
   // runLabel = 这一跑的目标, 进 Langfuse 的 trace 名 —— 列表页按 name 认 trace, 全叫一个名字
   // 等于一屏一模一样的行。截断在 langfuse 那一侧做 (那儿才知道上限)。
   const generate = config.generate ?? makeDefaultGenerate(sessionId, typeof task === 'string' ? task : undefined);
@@ -3360,6 +3425,7 @@ async function runDagInternal(
     let escalated = false;
     let verdict = await config.verifier({ task, plan: exec.plan, results: exec.results });
     verifierUsage = addUsage(verifierUsage, verdict.usage);
+    emitRunEvent({ type: 'verdict', id: exec.plan.name, gate: 'verifier', verdict: verdict.pass ? 'pass' : 'fail', round: attempts, ...(verdict.reason ? { reason: verdict.reason } : {}) });
 
     let escCount = 0;
     // D-6 同因熔断 (SDD 2026-08-11-inner-loop-v2, O-2 聚类定 P0): 上一轮打回原因的归一化指纹。
@@ -3436,6 +3502,8 @@ async function runDagInternal(
               depsOf(exec.plan),
             )
           : null;
+      // D-3 (2026-08-11): 升级重规划成事件 —— poisoned = 失效闭包 (blame 解析失败 → 整轮, 毒集空)。
+      emitRunEvent({ type: 'replan', parent: exec.plan.name, round: escCount, poisoned: closure ? [...closure] : [] });
       // D-3 反馈锚定: 每个被责备节点自己的 reason → 后缀 (格式冻结于契约 e); 非闭包节点零触碰。
       const blameAnchor = new Map<string, string>();
       if (closure) {
@@ -3478,6 +3546,7 @@ async function runDagInternal(
       leavesCacheHit += exec.leavesCacheHit;
       verdict = await config.verifier({ task, plan: exec.plan, results: exec.results });
       verifierUsage = addUsage(verifierUsage, verdict.usage);
+      emitRunEvent({ type: 'verdict', id: exec.plan.name, gate: 'verifier', verdict: verdict.pass ? 'pass' : 'fail', round: attempts, ...(verdict.reason ? { reason: verdict.reason } : {}) });
     }
 
     // 配了升级模型但 provider 未注册 (没配 API key) → 显式记: 维持弱模型 (Nick: 没配 SOTA 就不升级)。

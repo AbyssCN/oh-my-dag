@@ -7,9 +7,20 @@
  *   exit 0  → succeed({summary, reportPath})   (summary = stdout brief 尾段)
  *   exit ≠0 → fail(stderr 尾 400 字)
  * --out 由本模块定 (/tmp/omd-fleet-<tool>-<runId>.md) — 报告路径确定可知, 不靠解析脚本 stdout。
+ *
+ * D-4 观察面 (SDD 2026-08-11-dag-观察面与审核跟踪升级, C-5): dag_review 有 onNodeEvent 订阅者
+ * (TUI) 时, 子进程经 run.ts 的 OMD_REVIEW_EVENT_FILE 汇把进度 NDJSON 逐行追加到事件文件,
+ * 本模块轮询翻成标准 DagNodeEvent 灌 pushDagEvent (合成 runId = 本工具 runId, 维度 = 节点)。
+ * 合成 run 不进 dag_runs 列表 (D-11) —— 只上 TUI 实时面板, 回看走 review 全文落盘。
  */
 import { randomUUID } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { z } from 'zod';
+import { logger } from '../../logger';
+import type { DagNodeEvent } from '../../harness/dag/types';
+import type { ReviewProgressEvent } from '../../harness/review/run';
 import type { RunRegistry } from '../run-registry.js';
 import type { OmdMcpTool } from '../server.js';
 
@@ -25,9 +36,9 @@ export interface SpawnResult {
   stderr: string;
 }
 
-/** spawn 接缝 —— 测试注入 fake; 生产默认 Bun.spawn (下方 defaultSpawn)。 */
+/** spawn 接缝 —— 测试注入 fake; 生产默认 Bun.spawn (下方 defaultSpawn)。env 追加进子进程 (默认继承)。 */
 export interface SpawnFn {
-  (cmd: string[], opts: { cwd: string }): Promise<SpawnResult>;
+  (cmd: string[], opts: { cwd: string; env?: Record<string, string> }): Promise<SpawnResult>;
 }
 
 /** Dependencies injected into fleet tool handlers. */
@@ -37,11 +48,72 @@ export interface FleetToolDeps {
   cwd: string;
   /** 覆盖 spawn (测试)。默认 Bun.spawn(['bun','run',...])。 */
   spawn?: SpawnFn;
+  /**
+   * D-4 观察面订阅者 (TUI pushDagEvent 源, 经 assemble.ts 传达): 给了则 dag_review 把子进程
+   * 进度翻成标准 DagNodeEvent 灌进来 (合成 runId = 本工具 runId, 维度 = 节点)。省略 = 不转 (现状)。
+   */
+  onNodeEvent?: (runId: string, e: DagNodeEvent) => void;
 }
 
-/** 生产 spawn: 数组参数 + cwd 注入 + stdout/stderr 管道收集。 */
+/**
+ * D-4 翻面: review 进度事件 (ReviewProgressEvent, run.ts 的 onProgress 汇) → 标准 DagNodeEvent。
+ * 维度 = 节点; verdict.gate 恒 'review' —— pass/fail 方向 (D-9) 在 run.ts 发射时已定, 这里只翻形状。
+ */
+export function toDagNodeEvent(e: ReviewProgressEvent): DagNodeEvent {
+  switch (e.type) {
+    case 'planned':
+      return { type: 'planned', nodes: e.nodes };
+    case 'start':
+      return { type: 'start', id: e.id, kind: e.kind };
+    case 'settle':
+      return { type: 'settle', id: e.id, status: e.status, kind: e.kind, model: e.model, durationMs: e.durationMs, failReason: e.failReason };
+    case 'verdict':
+      return { type: 'verdict', id: e.id, gate: e.gate, verdict: e.verdict, round: e.round, reason: e.reason };
+  }
+}
+
+/**
+ * D-4 事件汇轮询 (SDD C-5): 子进程把 review 进度 NDJSON **逐行追加**到 eventFile (run.ts 的
+ * OMD_REVIEW_EVENT_FILE 汇), 本进程每 intervalMs 读增量翻成 DagNodeEvent 灌 onNodeEvent (合成 runId)。
+ * 返回 stop(): 停轮询 + 终排 (子进程退出后可能还有最后几条, 不留尾巴)。
+ * 文件未建/行解析失败 → 静默/仅 warn (观察面是可丢的旁路, 不打断 review 本身)。
+ */
+export function startReviewEventPoller(
+  opts: { file: string; runId: string; onNodeEvent: (runId: string, e: DagNodeEvent) => void; intervalMs?: number },
+): () => void {
+  const { file, runId, onNodeEvent } = opts;
+  const intervalMs = opts.intervalMs ?? 200;
+  let tail = ''; // 半行缓冲 (追加写可能读到写了一半的 JSON)
+  const drain = (): void => {
+    let text: string;
+    try {
+      text = readFileSync(file, 'utf8');
+    } catch {
+      return; // 文件还没建 (子进程未起) → 下轮再说
+    }
+    const lines = (tail + text).split('\n');
+    tail = lines.pop() ?? '';
+    for (const ln of lines) {
+      if (!ln.trim()) continue;
+      try {
+        onNodeEvent(runId, toDagNodeEvent(JSON.parse(ln) as ReviewProgressEvent));
+      } catch (err) {
+        logger.warn({ runId, err: (err as Error).message }, '[fleet/dag_review] 事件行解析失败 (跳过, 观察面旁路)');
+      }
+    }
+  };
+  drain();
+  const timer = setInterval(drain, intervalMs);
+  timer.unref?.(); // 不挡进程退出 (fire-and-forget 子进程)
+  return () => {
+    clearInterval(timer);
+    drain();
+  };
+}
+
+/** 生产 spawn: 数组参数 + cwd/env 注入 + stdout/stderr 管道收集。 */
 const defaultSpawn: SpawnFn = async (cmd, opts) => {
-  const proc = Bun.spawn(cmd, { cwd: opts.cwd, stdout: 'pipe', stderr: 'pipe' });
+  const proc = Bun.spawn(cmd, { cwd: opts.cwd, env: { ...process.env, ...opts.env }, stdout: 'pipe', stderr: 'pipe' });
   const [exitCode, stdout, stderr] = await Promise.all([
     proc.exited,
     new Response(proc.stdout).text(),
@@ -85,15 +157,31 @@ interface FleetRunOpts {
   argv: string[];
   reportPath: string;
   goal: string;
+  /**
+   * D-4: review 进度事件文件 (子进程 NDJSON 逐行追加; 父进程轮询翻成 DagNodeEvent 灌 onNodeEvent)。
+   * 给了 → spawn env 带 OMD_REVIEW_EVENT_FILE, 退出后清理临时目录。
+   */
+  eventFile?: string;
 }
 
 /** 三段式派发: register → start → 后台 spawn → succeed/fail。同步回 runId。 */
-function dispatchFleetRun({ runRegistry, cwd, spawn }: Required<Pick<FleetToolDeps, 'runRegistry' | 'cwd'>> & { spawn: SpawnFn }, opts: FleetRunOpts): string {
+function dispatchFleetRun(
+  { runRegistry, cwd, spawn, onNodeEvent }: Required<Pick<FleetToolDeps, 'runRegistry' | 'cwd'>> & { spawn: SpawnFn; onNodeEvent?: FleetToolDeps['onNodeEvent'] },
+  opts: FleetRunOpts,
+): string {
   const runId = randomUUID();
   runRegistry.register(runId, { goal: opts.goal, meta: { tool: opts.tool } });
   runRegistry.start(runId);
 
-  spawn(['bun', 'run', opts.script, ...opts.argv, '--out', opts.reportPath], { cwd })
+  // D-4: 有观察面订阅者 → 轮询子进程进度事件 (run.ts 经 OMD_REVIEW_EVENT_FILE 汇 NDJSON)。
+  const stopPoller = opts.eventFile && onNodeEvent
+    ? startReviewEventPoller({ file: opts.eventFile, runId, onNodeEvent })
+    : null;
+
+  spawn(
+    ['bun', 'run', opts.script, ...opts.argv, '--out', opts.reportPath],
+    { cwd, ...(opts.eventFile ? { env: { OMD_REVIEW_EVENT_FILE: opts.eventFile } } : {}) },
+  )
     .then(({ exitCode, stdout, stderr }) => {
       if (exitCode === 0) {
         runRegistry.succeed(runId, { summary: summarizeStdout(stdout), reportPath: opts.reportPath });
@@ -103,6 +191,16 @@ function dispatchFleetRun({ runRegistry, cwd, spawn }: Required<Pick<FleetToolDe
     })
     .catch((err) => {
       runRegistry.fail(runId, err instanceof Error ? err.message : String(err));
+    })
+    .finally(() => {
+      stopPoller?.(); // 终排: 收走子进程退出前最后几条
+      if (opts.eventFile) {
+        try {
+          rmSync(dirname(opts.eventFile), { recursive: true, force: true });
+        } catch {
+          // 临时目录清理失败不炸 (/tmp 自清)。
+        }
+      }
     });
 
   return runId;
@@ -153,6 +251,8 @@ function makeDagReview(deps: FleetToolDeps, spawn: SpawnFn): OmdMcpTool {
         argv,
         reportPath: reportPathFor('review'),
         goal: `review gate=${gate ?? 'G2'}${scope ? ` paths=${scope}` : ''}`,
+        // D-4: 有 TUI 等观察面订阅者 → 起事件文件轮询 (合成 runId = 本 run, 维度 = 节点)。
+        eventFile: deps.onNodeEvent ? join(mkdtempSync(join(tmpdir(), 'omd-review-events-')), 'events.ndjson') : undefined,
       });
       return { content: [{ type: 'text' as const, text: `runId: ${runId}\nstatus: running` }] };
     },

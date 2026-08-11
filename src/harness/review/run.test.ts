@@ -3,13 +3,14 @@
  *
  * 全 fake generate / 注入依赖 (deps.send / deps.findSdd / deps.env), 零真实模型调用。
  * CLI 阶梯 (G0 短路 / --no-spec@G3 报错 / --help) 走子进程冒烟 (不需要 provider env)。
+ * D-4 观察面 (SDD C-5): onProgress 汇的事件序列 + OMD_REVIEW_EVENT_FILE 子进程通道, 含反向自检。
  */
 import { describe, test, expect } from 'bun:test';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runReview, DIMS_BY_GATE, SPEC_SKIPPED_NOTE, type RunReviewOpts } from './run';
-import type { ReviewSendFn } from './verify';
+import { runReview, DIMS_BY_GATE, SPEC_SKIPPED_NOTE, type ReviewProgressEvent, type RunReviewOpts } from './run';
+import type { ReviewSendFn, VerifiedFinding } from './verify';
 
 const REPO_ROOT = join(import.meta.dir, '..', '..', '..');
 const SCRIPT = join(REPO_ROOT, 'scripts', 'dag-review.ts');
@@ -159,6 +160,112 @@ describe('review/run 双轴', () => {
     const extractCalls = calls.filter((c) => c.content.includes('结构化提取'));
     expect(extractCalls.length).toBe(1); // 只有 correctness; spec 跳过不进
     expect(extractCalls[0]!.content).not.toContain(SPEC_SKIPPED_NOTE);
+  });
+});
+
+describe('D-4 观察面 (onProgress 汇, SDD C-5)', () => {
+  /** 注入式 verifyFindings: 免走真 extract/证伪 (fake send 也能走, 但注入更直白, 裁决可精确摆布)。 */
+  const VERIFIED: VerifiedFinding[] = [
+    { severity: 'P0', file: 'a.ts', line: 3, claim: '缺权限守卫', symbols: [], dimension: 'correctness', verdict: 'CONFIRMED', reason: '证据支持' },
+    { severity: 'P1', file: 'b.ts', line: 9, claim: '未排序', symbols: [], dimension: 'security', verdict: 'REFUTED', reason: '已排序' },
+    { severity: 'P1', file: 'c.ts', claim: '存疑候选', symbols: [], dimension: 'boundary', verdict: 'UNVERIFIED', reason: '证据不足' },
+  ];
+
+  test('C-5 序列: planned(3) → 每维 start/settle → 证伪 verdict (D-9 方向 + reason ≤160)', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-review-evt-'));
+    const { send } = makeFakeSend();
+    const events: ReviewProgressEvent[] = [];
+    const res = await runReview(baseOpts({
+      dims: ['correctness', 'security', 'boundary'],
+      verify: true,
+      cwd,
+      deps: { send, verifyFindings: async () => VERIFIED, findSdd: () => null, env: {} },
+      onProgress: (e) => events.push(e),
+    }));
+    expect(res.verified).toHaveLength(3);
+
+    // planned 先出, 3 个维度节点 (维度 = 节点)。
+    expect(events[0]).toEqual({
+      type: 'planned',
+      nodes: [
+        { id: 'correctness', kind: 'review' },
+        { id: 'security', kind: 'review' },
+        { id: 'boundary', kind: 'review' },
+      ],
+    });
+    // 每维 start 先于 settle, settle 全 done。
+    for (const dim of ['correctness', 'security', 'boundary']) {
+      const start = events.findIndex((e) => e.type === 'start' && e.id === dim);
+      const settle = events.findIndex((e) => e.type === 'settle' && e.id === dim);
+      expect(start).toBeGreaterThan(0);
+      expect(settle).toBeGreaterThan(start);
+      expect(events[settle]).toMatchObject({ type: 'settle', id: dim, status: 'done', kind: 'review' });
+    }
+    // 证伪阶段每条 finding 一条 verdict (gate:'review', round 1, reason ≤160)。
+    const verdicts = events.filter((e) => e.type === 'verdict') as Extract<ReviewProgressEvent, { type: 'verdict' }>[];
+    expect(verdicts).toHaveLength(3);
+    const byDim = Object.fromEntries(verdicts.map((v) => [v.id, v]));
+    // D-9: pass/fail 指**被审对象** —— CONFIRMED (代码有伤) → fail; 证伪撤销 (REFUTED) → pass;
+    // UNVERIFIED 未被证伪撤销 → fail (与 scripts/dag-review 的"存活"口径一致)。
+    expect(byDim.correctness).toMatchObject({ gate: 'review', verdict: 'fail', round: 1 });
+    expect(byDim.security).toMatchObject({ gate: 'review', verdict: 'pass', round: 1 });
+    expect(byDim.boundary).toMatchObject({ gate: 'review', verdict: 'fail', round: 1 });
+    for (const v of verdicts) expect(v.reason!.length).toBeLessThanOrEqual(160);
+  });
+
+  test('维度抛错 → settle failed + failReason 首行 ≤160, 审查照抛 (观察面不改语义)', async () => {
+    const events: ReviewProgressEvent[] = [];
+    const send = (async (req: { messages: { content: string }[] }) => {
+      const content = String(req.messages[0]!.content);
+      if (content.includes('对抗式审查 [security]')) throw new Error('boom line1\nline2');
+      return { text: '无真 bug。' } as unknown;
+    }) as unknown as ReviewSendFn;
+    await expect(runReview(baseOpts({
+      dims: ['correctness', 'security'],
+      deps: { send, findSdd: () => null, env: {} },
+      onProgress: (e) => events.push(e),
+    }))).rejects.toThrow('boom');
+    const failed = events.filter((e) => e.type === 'settle' && e.status === 'failed') as Extract<ReviewProgressEvent, { type: 'settle' }>[];
+    expect(failed).toHaveLength(1); // 只有 security 那条失败
+    expect(failed[0]).toMatchObject({ id: 'security', status: 'failed', kind: 'review' });
+    expect(failed[0]!.failReason).toBe('boom line1'); // 首行
+    expect(failed[0]!.failReason!.length).toBeLessThanOrEqual(160);
+    expect(events.filter((e) => e.type === 'settle' && e.status === 'done')).toHaveLength(1); // correctness 照常 done
+  });
+
+  test('子进程汇 OMD_REVIEW_EVENT_FILE: NDJSON 落盘与回调同序列 (env 断 → 零落盘, 反向自检)', async () => {
+    // 正检: 设 env → run.ts 把每条事件 NDJSON 逐行追加到事件文件 (fleet 轮询面)。
+    const dir = mkdtempSync(join(tmpdir(), 'omd-review-evfile-'));
+    const file = join(dir, 'events.ndjson');
+    process.env.OMD_REVIEW_EVENT_FILE = file;
+    try {
+      const { send } = makeFakeSend();
+      const events: ReviewProgressEvent[] = [];
+      await runReview(baseOpts({
+        dims: ['correctness', 'security', 'boundary'],
+        deps: { send, findSdd: () => null, env: {} },
+        onProgress: (e) => events.push(e),
+      }));
+      const lines = (await Bun.file(file).text()).trim().split('\n').filter(Boolean);
+      expect(lines.length).toBe(events.length); // 同序列: 1 planned + 3 start + 3 settle
+      const parsed = lines.map((l) => JSON.parse(l) as ReviewProgressEvent);
+      expect(parsed).toEqual(events);
+    } finally {
+      delete process.env.OMD_REVIEW_EVENT_FILE;
+      rmSync(dir, { recursive: true, force: true });
+    }
+    // 反向自检 (C-5): 断开子进程通道 (不设 env) → 零落盘 —— 若 run.ts 绕过 env 直写盘, 这条红。
+    // 对应"断开 onProgress → TUI 事件数为 0 (今天的现状)": 事件只经汇出来, 汇可断。
+    const dir2 = mkdtempSync(join(tmpdir(), 'omd-review-evfile2-'));
+    const file2 = join(dir2, 'events.ndjson');
+    const { send } = makeFakeSend();
+    await runReview(baseOpts({
+      dims: ['correctness'],
+      deps: { send, findSdd: () => null, env: {} },
+      onProgress: undefined, // 回调也断
+    }));
+    expect(existsSync(file2)).toBe(false); // env 没设过 → 不写盘 (通道整体可断)
+    rmSync(dir2, { recursive: true, force: true });
   });
 });
 

@@ -679,7 +679,9 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       ...deps.pathfinder,
     }),
     // fleet 四工具: review/slim/deepen/debug 异步子进程。
-    ...createFleetTools({ runRegistry, cwd, spawn: deps.spawn }),
+    // D-4 (SDD C-5): onNodeEvent 也达 fleet —— dag_review 的进度翻成标准 DagNodeEvent 灌 pushDagEvent
+    // (此前只达 createDagTools, review 这条观察面是断的)。省略 = 不转 (现状)。
+    ...createFleetTools({ runRegistry, cwd, spawn: deps.spawn, ...(deps.onNodeEvent ? { onNodeEvent: deps.onNodeEvent } : {}) }),
     // runs 工具: 内存 registry ∪ 磁盘 continuity 合并列表。
     ...createRunsTools({ runRegistry, cwd }),
     // S3 owner 收件箱: dag_triage (看) + dag_rule (裁)。无人值守的产出必须有去处。

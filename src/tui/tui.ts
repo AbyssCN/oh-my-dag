@@ -615,6 +615,23 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     intervalMs: 120,
   });
   waiting.stop(); // 构造里会 start;没在等的时候不许有定时器在跑
+  /**
+   * DAG 活秒数 ticker (C-6 ①, SDD 2026-08-11):有节点在跑 → 每秒刷一次渲染,
+   * 树行的活秒数才随 render tick 递增。轮飞着时 Loader 自己就在刷(120ms),这里兜底的是
+   * **轮已收尾而节点仍在跑**的那段 —— fixture 的 shard-3 就是这种, 摘掉这条秒数会停。
+   * 幂等:只在 无→有 时起、有→无 时停。
+   */
+  let dagTicker: ReturnType<typeof setInterval> | null = null;
+  function syncDagTicker(): void {
+    const running = dagTree.hasRunning();
+    if (running && dagTicker === null) {
+      dagTicker = setInterval(() => tui.requestRender(), 1000);
+    } else if (!running && dagTicker !== null) {
+      clearInterval(dagTicker);
+      dagTicker = null;
+    }
+  }
+
 
   /**
    * Ctrl+C 预备时刻(`null` = 没在预备)。
@@ -835,9 +852,13 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     process.stdout.write(`${lines.join('\n')}\n`);
   }
 
-  /** §4.1 第 5 条:先停动画再拆传输。等待指示器(loader 帧 + 秒计时 ticker)是目前唯一的动画。 */
+  /** §4.1 第 5 条:先停动画再拆传输。等待指示器(loader 帧 + 秒计时 ticker)与 DAG 活秒数 ticker 是目前的动画。 */
   function stopAnimations(): void {
     stopWaiting();
+    if (dagTicker) {
+      clearInterval(dagTicker);
+      dagTicker = null;
+    }
   }
 
   /**
@@ -934,6 +955,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         // 切片③: 同一批事件两个消费者。**不能只喂一个** —— 交接 37 坑 #7 同族:
         // 只接一处的话左栏是一张永远空的图, 而它看起来只是"还没开始跑"。
         dagTree.apply(p.node as never);
+        syncDagTicker(); // 节点态变了 → 重算活秒数 ticker 的启停 (C-6 ①)
       }
       tui.requestRender();
       return;

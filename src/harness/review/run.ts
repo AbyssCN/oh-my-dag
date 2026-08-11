@@ -11,9 +11,10 @@
  *
  * 全文落盘 (零丢失), 返回结构化 finding 供调用方 (CLI 打印 / build 内嵌摘要进报告)。
  */
+import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildReviewPrompt, buildSpecReviewPrompt, screenFinding, type ReviewDimension, type ReviewGate } from './index';
-import { verifyFindings, type VerifiedFinding, type ReviewSendFn } from './verify';
+import { verifyFindings as realVerifyFindings, type VerifiedFinding, type ReviewSendFn } from './verify';
 import { checkFindingAnchors, type AnchorCheckResult } from './anchor-check';
 import { findLatestSdd } from '../execute-slice';
 import { send } from '../../model/gateway';
@@ -69,6 +70,19 @@ export const DIMS_BY_GATE: Record<ReviewGate, ReviewDimension[]> = {
   G2: ['correctness', 'security', 'boundary'],
   G3: ['correctness', 'security', 'boundary', 'contract', 'spec'],
 };
+
+/**
+ * review 进度事件 (D-4 onProgress 汇, SDD C-5)。**不是**引擎 DagNodeEvent —— review 自编排不迁
+ * executor-dag, 装配层 (fleet 的 dag_review) 负责把这份翻成标准 `DagNodeEvent` 灌 pushDagEvent。
+ * 语义: 维度 = 节点 (planned 一次列全 → 每维 start/settle); 证伪阶段每条 finding 一条 verdict
+ * (gate 恒为 'review', CONFIRMED→fail / 证伪撤销→pass, D-9)。
+ */
+export type ReviewProgressEvent =
+  | { type: 'planned'; nodes: Array<{ id: string; kind: string }> }
+  | { type: 'start'; id: string; kind: string }
+  | { type: 'settle'; id: string; status: 'done' | 'failed'; kind: string; model?: string;
+      durationMs?: number; failReason?: string }
+  | { type: 'verdict'; id: string; gate: 'review'; verdict: 'pass' | 'fail'; round: number; reason?: string };
 
 export interface ReviewFinding {
   dimension: ReviewDimension;
@@ -142,6 +156,12 @@ export interface RunReviewOpts {
   single?: boolean;
   /** 注入依赖 (测试用)。 */
   deps?: RunReviewDeps;
+  /**
+   * D-4 观察面汇 (SDD C-5): 进度事件回调 (planned → 每维 start/settle → 证伪 verdict)。
+   * 给了不改变任何审查行为, 只是多转一份; 省略 = 不转 (今天的现状)。单 agent 深审
+   * (opts.single) 不走本汇 —— run-single 不在 D-4 写集, 其观察面保持现状 (零事件)。
+   */
+  onProgress?: (e: ReviewProgressEvent) => void;
 }
 
 /** spec 轴无 SDD 时的跳过说明 (非失败; 不进收敛层)。 */
@@ -161,6 +181,9 @@ export async function runReview(opts: RunReviewOpts): Promise<RunReviewResult> {
     return runReviewSingle(opts);
   }
   const sendFn = opts.deps?.send ?? send;
+  // deps.verifyFindings 接缝 (RunReviewDeps 文档即"注入依赖 (测试 fake generate 用)")——
+  // 此前只被 run-single 用, run.ts 这条是死的 (接口有字段、实现不读, 注入即静默忽略)。
+  const verifyFindings = opts.deps?.verifyFindings ?? realVerifyFindings;
   const findSdd = opts.deps?.findSdd ?? findLatestSdd;
   const cwd = opts.cwd ?? process.cwd();
   // find 层 (宽/并行/找 bug 靠召回): model + effort 各 env 可调。默认 effort=high。
@@ -186,34 +209,70 @@ export async function runReview(opts: RunReviewOpts): Promise<RunReviewResult> {
   const sdd = wantSpec ? findSdd(join(cwd, 'docs', 'plan')) : null;
   const specSkipped = wantSpec && !sdd;
 
+  // D-4 事件汇: onProgress = 进程内回调 (测试/内嵌); OMD_REVIEW_EVENT_FILE = 子进程通道
+  // (scripts/dag-review.ts 经 fleet 传 env, 本文件把进度 NDJSON 逐行追加, 父进程轮询翻成标准
+  // DagNodeEvent 灌 pushDagEvent) —— 零脚本改动: 子进程只调 runReview, 不用知道自己被观察。
+  // 两路都 fail-open (观察面不打断审查; C-1 同款"留痕但不炸"语义)。
+  const eventFile = process.env.OMD_REVIEW_EVENT_FILE;
+  const emit = (e: ReviewProgressEvent): void => {
+    try {
+      opts.onProgress?.(e);
+    } catch {
+      // 订阅者抛错不打断审查 (观察面是可丢的旁路)。
+    }
+    if (eventFile) {
+      try {
+        appendFileSync(eventFile, `${JSON.stringify(e)}\n`);
+      } catch {
+        // 事件文件不可写 → 观察面静默降级, 审查照跑。
+      }
+    }
+  };
+  emit({ type: 'planned', nodes: dims.map((d) => ({ id: d, kind: 'review' })) });
+
   const findings = await Promise.all(
     dims.map(async (dimension): Promise<ReviewFinding> => {
-      if (dimension === 'spec') {
-        if (!sdd) {
-          return { dimension, text: SPEC_SKIPPED_NOTE, likelySlop: false, hasRealSignal: false, skipped: true };
+      // D-4 观察面: 每维 start → find 调用 → settle (失败也 settle failed 再照抛 —— 汇不改语义)。
+      emit({ type: 'start', id: dimension, kind: 'review' });
+      const t0 = Date.now();
+      const settle = (status: 'done' | 'failed', extra: { model?: string; failReason?: string } = {}): void => {
+        emit({ type: 'settle', id: dimension, status, kind: 'review', durationMs: Date.now() - t0, ...extra });
+      };
+      try {
+        if (dimension === 'spec') {
+          if (!sdd) {
+            settle('done', { model: specModel });
+            return { dimension, text: SPEC_SKIPPED_NOTE, likelySlop: false, hasRealSignal: false, skipped: true };
+          }
+          const prompt = buildSpecReviewPrompt({
+            scope: opts.scope, gate: opts.gate, sddPath: sdd.path, sddText: sdd.text, extraFocus: opts.extraFocus,
+          });
+          const res = await sendFn({
+            model: specModel,
+            messages: [{ role: 'user', content: `${diffBlock}\n\n${prompt}` }],
+            thinkingLevel: findEffort,
+          });
+          const screen = screenFinding(res.text);
+          settle('done', { model: specModel });
+          return { dimension, text: res.text, likelySlop: screen.likelySlop, hasRealSignal: screen.hasRealSignal };
         }
-        const prompt = buildSpecReviewPrompt({
-          scope: opts.scope, gate: opts.gate, sddPath: sdd.path, sddText: sdd.text, extraFocus: opts.extraFocus,
-        });
+        const model = dimModels[dimension] ?? findModel;
+        const prompt = buildReviewPrompt({ dimension, scope: opts.scope, gate: opts.gate, extraFocus: opts.extraFocus });
+        // diff 在前 (共享前缀 → prefix-cache) + 维度 prompt 在后。
+        // 维度模型: OMD_REVIEW_DIM_MODELS 里点名的走那个坐标, 否则回落 findModel (跨模型多视角, 见
+        // resolveDimensionModels —— 同一模型跑五个维度 = 五条召回共享同一套盲点)。
         const res = await sendFn({
-          model: specModel,
+          model,
           messages: [{ role: 'user', content: `${diffBlock}\n\n${prompt}` }],
           thinkingLevel: findEffort,
         });
         const screen = screenFinding(res.text);
+        settle('done', { model });
         return { dimension, text: res.text, likelySlop: screen.likelySlop, hasRealSignal: screen.hasRealSignal };
+      } catch (err) {
+        settle('failed', { failReason: String(err instanceof Error ? err.message : err).split('\n')[0]!.slice(0, 160) });
+        throw err;
       }
-      const prompt = buildReviewPrompt({ dimension, scope: opts.scope, gate: opts.gate, extraFocus: opts.extraFocus });
-      // diff 在前 (共享前缀 → prefix-cache) + 维度 prompt 在后。
-      // 维度模型: OMD_REVIEW_DIM_MODELS 里点名的走那个坐标, 否则回落 findModel (跨模型多视角, 见
-      // resolveDimensionModels —— 同一模型跑五个维度 = 五条召回共享同一套盲点)。
-      const res = await sendFn({
-        model: dimModels[dimension] ?? findModel,
-        messages: [{ role: 'user', content: `${diffBlock}\n\n${prompt}` }],
-        thinkingLevel: findEffort,
-      });
-      const screen = screenFinding(res.text);
-      return { dimension, text: res.text, likelySlop: screen.likelySlop, hasRealSignal: screen.hasRealSignal };
     }),
   );
 
@@ -225,6 +284,21 @@ export async function runReview(opts: RunReviewOpts): Promise<RunReviewResult> {
       findings.filter((f) => !f.skipped).map((f) => ({ dimension: f.dimension, text: f.text })),
       { model: verifyModel, cwd: opts.cwd, verdictEffort: verifyEffort, send: sendFn },
     );
+  }
+  // D-4 观察面: 证伪阶段每条 finding 一条 verdict (gate:'review')。D-9 —— pass/fail 指**被审对象**:
+  // CONFIRMED (代码有伤) → fail; 证伪撤销 (REFUTED) → pass; UNVERIFIED 未被证伪撤销 → fail
+  // (与 scripts/dag-review 的"存活 (≠REFUTED)"口径一致, 不静默丢真伤候选)。reason = finding 摘要 ≤160。
+  if (verified) {
+    for (const v of verified) {
+      emit({
+        type: 'verdict',
+        id: v.dimension,
+        gate: 'review',
+        verdict: v.verdict === 'REFUTED' ? 'pass' : 'fail',
+        round: 1, // 收敛层单轮 (ROUND_CAPS=1 doctrine)
+        reason: `${v.claim} (${v.file}${v.line ? `:${v.line}` : ''})`.slice(0, 160),
+      });
+    }
   }
   // D-3 反幻觉锚点闸 (挂 review 产出出口): 每条结构化 finding 的 file:line 确定性校验 —
   // 文件真实存在 + line ≤ 行数; P0/P1 无合法锚点 → 降级记账 (G-5)。零 LLM, 一次 stat/条。

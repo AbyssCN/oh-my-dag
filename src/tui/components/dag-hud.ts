@@ -22,6 +22,7 @@
  */
 import type { Component } from '@earendil-works/pi-tui';
 import type { DagNodeEvent } from '../../harness/dag/types';
+import { logger } from '../../logger';
 import { fitLine } from '../render/line';
 import { renderBar } from '../render/bar';
 import { renderTable } from '../render/table';
@@ -132,21 +133,40 @@ export class DagHud implements Component {
   }
 
   apply(e: DagNodeEvent): void {
-    if (e.type === 'planned') {
-      for (const n of e.nodes) this.upsert(n.id, n.kind, 'pending');
-      return;
+    switch (e.type) {
+      case 'planned': {
+        for (const n of e.nodes) this.upsert(n.id, n.kind, 'pending');
+        return;
+      }
+      case 'expanded': {
+        // 运行时挂进来的子节点。少了这一条,一个 map 节点在 HUD 上永远只有一个点 ——
+        // 而实际上它底下正在跑几十个 leaf(`DagNodeEvent.expanded` 的注释记的就是这个洞)。
+        for (const n of e.nodes) this.upsert(n.id, n.kind, 'pending');
+        return;
+      }
+      case 'start': {
+        this.upsert(e.id, e.kind, 'running');
+        return;
+      }
+      case 'settle': {
+        this.upsert(e.id, e.kind, e.status, e.model);
+        return;
+      }
+      case 'progress':
+      case 'verdict':
+      case 'replan': {
+        // C-6 的展示量 (活秒数/failReason/判决/progress) 画在树上 (dag-tree);
+        // HUD 表只保节点态, 这些事件不改变它。C-1: 不造节点 ——
+        // 老兜底会把 progress/verdict 的 id 当 settle 用, replan 更是 `put(undefined)`。
+        return;
+      }
+      default: {
+        // C-1 (SDD 2026-08-11): 词表外 type / 缺 type 的畸形对象 —— fail-open:
+        // 不 throw、不造节点、既有渲染不变, 只留一条日志痕。
+        const u = e as unknown as { type?: unknown };
+        logger.warn({ type: u.type }, '[dag-hud] C-1: 忽略未知 DAG 事件 (不造节点)');
+      }
     }
-    if (e.type === 'expanded') {
-      // 运行时挂进来的子节点。少了这一条,一个 map 节点在 HUD 上永远只有一个点 ——
-      // 而实际上它底下正在跑几十个 leaf(`DagNodeEvent.expanded` 的注释记的就是这个洞)。
-      for (const n of e.nodes) this.upsert(n.id, n.kind, 'pending');
-      return;
-    }
-    if (e.type === 'start') {
-      this.upsert(e.id, e.kind, 'running');
-      return;
-    }
-    this.upsert(e.id, e.kind, e.status, e.model);
   }
 
   private upsert(id: string, kind: string, status: NodeState['status'], model?: string): void {

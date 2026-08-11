@@ -164,7 +164,8 @@ export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend 
         return { ok: true };
       }
       // ── 切片③: fan-out 图演示。形状与引擎 DagNodeEvent 逐字一致 (planned 无 deps,
-      //    expanded 带 parent+deps —— 不一致的话 PTY 绿而生产红)。
+      //    expanded 带 parent+deps;C-6 的 durationMs/failReason/progress/verdict 也是冻结面字段 ——
+      //    不一致的话 PTY 绿而生产红)。
       if (prompt.trim() === FIXTURE_DAG_PROMPT) {
         const push = (node: unknown) => emit('dag', { runId: FIXTURE_DAG_RUN_ID, node });
         push({ type: 'planned', nodes: [{ id: 'plan', kind: 'conductor' }, { id: 'extract', kind: 'map' }, { id: 'merge', kind: 'map' }] });
@@ -176,10 +177,16 @@ export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend 
           { id: 'shard-3', kind: 'agent', deps: ['shard-1', 'shard-2'] },
         ] });
         push({ type: 'start', id: 'shard-1', kind: 'agent' });
-        push({ type: 'settle', id: 'shard-1', status: 'done', kind: 'agent', model: 'fixture-model' });
+        push({ type: 'progress', id: 'shard-1', tool: 'read', note: 'source doc', calls: 1, elapsedMs: 400 });
+        push({ type: 'settle', id: 'shard-1', status: 'done', kind: 'agent', model: 'fixture-model', durationMs: 1200 });
+        push({ type: 'verdict', id: 'shard-1', gate: 'judge', verdict: 'pass', round: 1 });
         push({ type: 'start', id: 'shard-2', kind: 'agent' });
-        push({ type: 'settle', id: 'shard-2', status: 'failed', kind: 'agent', model: 'fixture-model' });
+        push({ type: 'progress', id: 'shard-2', tool: 'bash', note: 'edit engine.ts', calls: 3, elapsedMs: 2100 });
+        push({ type: 'settle', id: 'shard-2', status: 'failed', kind: 'agent', model: 'fixture-model', durationMs: 3400, failReason: 'assertion failed: mock output contradicts source doc' });
+        push({ type: 'verdict', id: 'shard-2', gate: 'verifier', verdict: 'fail', round: 1, reason: 'output contradicts source doc' });
+        // shard-3 只 start 不 settle —— 故意留一个 running 节点: C-6 ① 的活秒数要在它身上涨。
         push({ type: 'start', id: 'shard-3', kind: 'agent' });
+        push({ type: 'progress', id: 'shard-3', tool: 'bash', note: 'edit engine.ts', calls: 2, elapsedMs: 900 });
         emit('chat', { type: 'delta', text: 'fan-out demo graph sent.' });
         emit('session', { sessionId, messageCount: msgs.length + 1, pressure: FIXTURE_PRESSURE });
         sessions.set(sessionId, msgs);
