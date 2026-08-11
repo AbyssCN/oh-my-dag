@@ -129,7 +129,65 @@ export function summarizeResults(
   return lines.join('\n\n');
 }
 
-function verifierPrompt(task: string, summary: string): string {
+/**
+ * **判卷真值** (D-5, SDD `docs/plan/2026-08-11-inner-loop-v2-control-inversion.md`) ——
+ * harness 在**注入面**知道、而判卷面此前拿不到的那几份值。
+ *
+ * 实证判例 (本仓 `.omd/dag-runs.db` run `4a609621`, 2026-08-10 probe, 判词逐字):
+ * 「唯一保留意见: 句中『信任 token 03880693』**在我可见的任务文本里无对应来源, 无法核验**」。
+ * 那个 token 是引擎自己注入进 leaf prompt 最开头的 (engine 的 runNonce → prompt-fence 的
+ * `trustHeader`), 而判卷官只拿到原始 task + 结果摘要。**注入面知道真值、判卷面拿不到 = 确定性假阳**:
+ * verifier 章程 (默认怀疑) 是对的, 拿闭卷考开卷题是错的。
+ *
+ * 所以真值随卷 —— 不是放宽判据, 是把「只能信一段自述」换成「能逐字符比对」。
+ */
+export interface JudgingTruths {
+  /** A8 本轮信任 token (engine 的 runNonce, 见 prompt-fence.ts)。 */
+  trustToken?: string;
+}
+
+/**
+ * 每份真值的**卷面写法** (键 → 判卷官读得懂的一行)。
+ * 注入面新增一份判卷相关真值 = 在这里加一行; 加漏了, 装配期闸 (`assertJudgingTruthsCarried`)
+ * 就会因为「值没出现在卷面上」当场抛 —— 这正是本表不做成通用登记框架也不会静默漂的原因。
+ */
+const TRUTH_LINES: { [K in keyof Required<JudgingTruths>]: (v: string) => string } = {
+  trustToken: (v) =>
+    `- **信任 token (A8)** = \`${v}\` —— harness 在任务正文最开头注入的 (prompt-fence 的 runNonce), ` +
+    `**它不出现在原始任务文本里是设计如此**, 不是执行体编的。结果里出现的 token 与上面这串**逐字符相同** ` +
+    `→ 已核验为真, 不构成"凭空编造"; 不同 / 伪造 / 该带却没带, 才是问题。`,
+};
+
+/** 把判卷真值渲染成卷面一段。一份都没有 → 返回空串 (卷面逐字节同旧, 老调用方零回归)。 */
+export function renderJudgingTruths(truths: JudgingTruths): string {
+  const lines = (Object.keys(TRUTH_LINES) as (keyof JudgingTruths)[])
+    .map((k) => (truths[k] ? TRUTH_LINES[k](truths[k]!) : ''))
+    .filter(Boolean);
+  return lines.length === 0
+    ? ''
+    : `\n判卷真值 (harness 注入面给的确定性事实, **不是**执行体自述 —— 可逐字符比对):\n${lines.join('\n')}\n`;
+}
+
+/**
+ * **装配期闸** (D-5 / G-4 前半): 断言「判卷官拿到 = 判卷所需全部真值」——
+ * 每份注入的真值都必须**真的出现在卷面上**, 缺一份即抛, 错误指名是哪一份。
+ *
+ * 为什么是抛而不是记一行 warn: 缺的后果是判卷官闭卷考 → 确定性假阳 → escalation 重规划空转,
+ * 而那笔账要跑完整张 DAG 才记上。**拒起跑**是唯一能让它在花钱之前可见的形式 (fail-loud)。
+ */
+export function assertJudgingTruthsCarried(truths: JudgingTruths, paper: string): void {
+  const missing = Object.entries(truths)
+    .filter(([, v]) => typeof v === 'string' && v.length > 0 && !paper.includes(v))
+    .map(([k]) => k);
+  if (missing.length > 0) {
+    throw new Error(
+      `verifier: 判卷真值未随卷 — ${missing.join(', ')} (harness 注入面已知, 判卷面拿不到) → 拒起跑。` +
+        ` 修法: 在 verifier.ts 的 TRUTH_LINES 里给这份真值补一行卷面写法 (D-5)。`,
+    );
+  }
+}
+
+function verifierPrompt(task: string, summary: string, truths: JudgingTruths = {}): string {
   return `你是一个**跨模型校验者**, 审一个多步任务的执行结果是否真正满足任务。你的职责是**攻击结果、找出它没满足任务的地方**, 而不是盖章放行 —— 默认怀疑, 证据不足时判不通过。
 
 判定**必须先做一步**: 从原始任务里抽出所有**明确要求** —— 步数、字数/篇幅、必须覆盖的子部分、必须标注的东西、格式、约束、应产出的体裁 (设计/分析/清单, 而非假装执行)。**逐条**对照结果。
@@ -139,7 +197,7 @@ function verifierPrompt(task: string, summary: string): string {
 2. **高风险接缝** (契约边界 / 状态机 / 法定数字 / 安全) 即使"看起来对"也要质疑其正确性; 无法确证正确 → 不过。
 3. 结果是**捏造的数据 / 假执行确认** (凭空编输入、"已发送/已录入" 这类没真做却声称做了的) → 不过。
 4. 计划有节点失败导致结果不完整 → 不过。
-
+${renderJudgingTruths(truths)}
 原始任务:
 ---
 ${task}
@@ -175,11 +233,17 @@ export interface DefaultVerifierOpts {
   thinkingLevel?: 'off' | 'low' | 'medium' | 'high' | 'xhigh';
   /** 注入式 callModel (测试)。默认真 callModel。 */
   callModelFn?: typeof send;
+  /** D-5 判卷真值 (harness 注入面知道的那几份)。省略 = 一份都不随卷, 卷面逐字节同旧。 */
+  truths?: JudgingTruths;
 }
 
 /** 造默认跨模型校验器。全 leaf 失败 → 不调模型直接 fail (VER-2); 否则 callModel → 信其 pass 布尔。 */
 export function createDefaultVerifier(opts: DefaultVerifierOpts): VerifierFn {
   const call = opts.callModelFn ?? send;
+  const truths = opts.truths ?? {};
+  // D-5 / G-4: **装配期**就把卷面渲染一次并断言真值都在上面 —— 缺即抛 = 拒起跑。
+  // 放在这里而不是判卷时: 判卷时才发现, 已经跑完一整张 DAG 了 (那笔账正是这条契约要省的)。
+  assertJudgingTruthsCarried(truths, verifierPrompt('', '', truths));
   return async ({ task, plan, results }): Promise<VerifierVerdict> => {
     if (!opts.verifierModel) {
       throw new Error('verifier: verifierModel 必填 (无硬默认, 形如 provider:modelId)');
@@ -202,7 +266,7 @@ export function createDefaultVerifier(opts: DefaultVerifierOpts): VerifierFn {
     const r = await withGoFallback(opts.verifierModel, (m) =>
       call({
         model: m,
-        messages: [{ role: 'user', content: verifierPrompt(task, summary) }],
+        messages: [{ role: 'user', content: verifierPrompt(task, summary, truths) }],
         // 采样意图取自座位登记表 (model/seats.ts): 终审要**稳定** —— 同一份产出不该这次过下次不过。
         ...seatSampling('verifier'),
         // xhigh 推理档 + 700 预算 = reasoning 必吃光正文 (这是审查 oracle 闸, 空裁决最伤)。
