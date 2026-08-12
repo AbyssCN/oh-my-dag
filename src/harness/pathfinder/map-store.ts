@@ -23,6 +23,14 @@ import type { ExecutorKind, PathMap, Ticket, TicketStatus, TicketType } from './
  * 不在存储层静默抹掉或归一 —— 与"未知 status 渲进兜底组"同一条纪律。
  */
 type StoredTicket = Ticket & { ticketClass?: string };
+/** 解析中间态: 扁平行先各自落进这些平铺键, flush 时才拼成 `Ticket.dispatch` 嵌套对象。 */
+type ParsedTicket = Partial<StoredTicket> & {
+  id?: string;
+  dispatchRunId?: string;
+  dispatchStartedAt?: string;
+  dispatchFinishedAt?: string;
+  dispatchOutcome?: string;
+};
 
 // ── 路径 helper (与纯 render/parse 分离) ──────────────────────────────────────
 
@@ -65,6 +73,16 @@ function renderTicket(t: Ticket): string {
   if (t.waitingSince !== undefined) lines.push(`- waitingSince: ${t.waitingSince}`);
   if (t.ruledAt !== undefined) lines.push(`- ruledAt: ${t.ruledAt}`);
   if (t.staleAt !== undefined) lines.push(`- staleAt: ${t.staleAt}`);
+  // D-6③ 派发锚 (Ticket.dispatch)。嵌套对象在这个扁平 `- key: value` 格式里存不下, 故**拆平成四行**,
+  // 每行独立"缺则省行" —— 与上面三戳同规, 没锚的存量票渲染输出逐字节不变。
+  // ⚠ 这里是**字段白名单**: 新增 Ticket 字段不同时改「写行 / 解析 / 重建」三处, 它就在盘上被静默丢弃
+  // (本字段第一版就是这么丢的 —— 内存里写进去了, 落盘读回来是 undefined, 而没有任何报错)。
+  if (t.dispatch !== undefined) {
+    lines.push(`- dispatchRunId: ${t.dispatch.runId}`);
+    lines.push(`- dispatchStartedAt: ${t.dispatch.startedAt}`);
+    if (t.dispatch.finishedAt !== undefined) lines.push(`- dispatchFinishedAt: ${t.dispatch.finishedAt}`);
+    if (t.dispatch.outcome !== undefined) lines.push(`- dispatchOutcome: ${t.dispatch.outcome}`);
+  }
   return lines.join('\n');
 }
 
@@ -139,7 +157,7 @@ export function parseMapMarkdown(md: string): PathMap {
   const suggestionsLog: PathMap['suggestionsLog'] = [];
   const waitingLog: PathMap['waitingLog'] = [];
   const tickets: Ticket[] = [];
-  let cur: Partial<StoredTicket> & { id?: string } = {};
+  let cur: ParsedTicket = {};
 
   const flush = () => {
     if (cur.id !== undefined) {
@@ -159,6 +177,17 @@ export function parseMapMarkdown(md: string): PathMap {
         ...(cur.waitingSince !== undefined ? { waitingSince: cur.waitingSince } : {}),
         ...(cur.ruledAt !== undefined ? { ruledAt: cur.ruledAt } : {}),
         ...(cur.staleAt !== undefined ? { staleAt: cur.staleAt } : {}),
+        // 派发锚: runId + startedAt 两者齐全才算一个锚 (缺一半 = 文件被手改坏了, 宁可当没有)。
+        ...(cur.dispatchRunId !== undefined && cur.dispatchStartedAt !== undefined
+          ? {
+              dispatch: {
+                runId: cur.dispatchRunId,
+                startedAt: cur.dispatchStartedAt,
+                ...(cur.dispatchFinishedAt !== undefined ? { finishedAt: cur.dispatchFinishedAt } : {}),
+                ...(cur.dispatchOutcome !== undefined ? { outcome: cur.dispatchOutcome as 'passed' | 'failed' } : {}),
+              },
+            }
+          : {}),
       };
       tickets.push(t);
     }
@@ -215,6 +244,10 @@ export function parseMapMarkdown(md: string): PathMap {
     else if ((v = fieldValue(line, 'waitingSince')) !== null) cur.waitingSince = v;
     else if ((v = fieldValue(line, 'ruledAt')) !== null) cur.ruledAt = v;
     else if ((v = fieldValue(line, 'staleAt')) !== null) cur.staleAt = v;
+    else if ((v = fieldValue(line, 'dispatchRunId')) !== null) cur.dispatchRunId = v;
+    else if ((v = fieldValue(line, 'dispatchStartedAt')) !== null) cur.dispatchStartedAt = v;
+    else if ((v = fieldValue(line, 'dispatchFinishedAt')) !== null) cur.dispatchFinishedAt = v;
+    else if ((v = fieldValue(line, 'dispatchOutcome')) !== null) cur.dispatchOutcome = v;
   }
   flush();
 
@@ -318,6 +351,10 @@ export function saveMapDb(map: PathMap, dbPath: string | Database): void {
         t.waitingSince ?? null,
         t.ruledAt ?? null,
         t.staleAt ?? null,
+        // ponytail: D-6③ 派发锚**没进 db 索引** —— 加列要给既有 .omd/pathfinder.db 走 ALTER 迁移,
+        // 而 `loadMapDb` 今天在生产里零消费者 (只有本模块与一段 eval 描述引用它)。真源是 markdown,
+        // 索引随时可由 rebuildDbFromMarkdown 重建。**记在这儿而不是默默留着**: 哪天 loadMapDb 真被
+        // 生产消费, 这条就得先还 —— 否则索引读出来的票一律没有锚, 而且不会报错。
       );
     });
   } finally {

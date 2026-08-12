@@ -27,6 +27,8 @@
  * 视觉: 浅色 Swiss grid, 无暗色/HUD 风。
  */
 
+import type { Ticket } from '../harness/pathfinder/types';
+
 /** 列序 = 票的生命周期顺序 (与 {@link import('../harness/pathfinder/types').TicketStatus} 同词表)。 */
 export const BOARD_COLUMNS = [
   { status: 'escalated', label: '待 owner 决断', hint: '`?` 上报 —— 卡片不截断, 那句话就是要你回答的问题' },
@@ -36,6 +38,29 @@ export const BOARD_COLUMNS = [
   { status: 'ruled', label: '已裁决', hint: '有 ruling, 等编译成 slice' },
   { status: 'delivered', label: '已交付', hint: '终态 (⚠ delivered ✅ ≠ 东西真在, 逐票核对真身)' },
 ] as const;
+
+/**
+ * 控制台 SDD D-3 的两新列 —— **派生相**, 不是 TicketStatus。
+ *
+ * 为什么派生:INV-1「map 盘上状态是唯一写真源」+ D-1「看板是视图」。「有没有 run 在跑它」
+ * 由 `Ticket.dispatch` 锚承载 (D-6③ 地基), 列只是把锚读成一个词。把它做成两个新 status 会
+ * 波及每一处 status switch / gh label 映射 / frontier 判定, 且真源里会多出两个只有看板关心的态。
+ *
+ * 判据(只认盘上事实, 不猜):
+ *  - `in-flight`  锚在、没 finishedAt → 正在跑。
+ *  - `in-review`  锚在、有 finishedAt、票**仍是 ruled** → 跑完了却没进 delivered, 等人看。
+ *    ⚠ 刻意不看 `outcome`: 跑挂了 (failed) 和跑过了但 markDelivered 没执行到 (进程在两步之间死了)
+ *    是同一件事 —— 「跑完待验」。只认 passed 会把后一种漏成"什么都没发生"。
+ *  - 其余 → null, 该票由它自己的 status 决定落哪一列。
+ */
+export type DispatchPhase = 'in-flight' | 'in-review';
+
+export function dispatchPhaseOf(t: Pick<Ticket, 'status' | 'dispatch'>): DispatchPhase | null {
+  const d = t.dispatch;
+  if (!d) return null; // 缺席 = 从没派发过 (不是"派发失败", 见 Ticket.dispatch 注)
+  if (!d.finishedAt) return 'in-flight';
+  return t.status === 'ruled' ? 'in-review' : null;
+}
 
 const STYLE = `
 :root{--ink:#1a1a1a;--dim:#6b6b6b;--line:#e2e2e2;--bg:#fafafa;--card:#fff;--accent:#1f4fd8}

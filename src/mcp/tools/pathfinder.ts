@@ -567,6 +567,20 @@ function makeDeliver(deps: PathfinderToolDeps): OmdMcpTool {
       } catch (e) {
         return err(`slice 编译失败: ${String(e)}`);
       }
+      // D-6③ 派发锚 (control-plane G-2)。此前 runId 只在下面的 opts 里现造、只喂 recorder ——
+      // 「这些票 ↔ 这个 run」的事实在那一行产生、当场被扔掉, 于是票从 ruled 直接跳 delivered,
+      // 看板上「正在跑 / 跑完待验」两态盘上根本不存在 (控制台 SDD D-3 要的两列没有数据源)。
+      // 现在 runId 提到这里生成: 它同时是账本键与票上的锚, **必须是同一个值**, 否则回执查不回来。
+      const runId = crypto.randomUUID();
+      backend.markDispatch?.(cwd, r.slug, region.slice, { open: { runId, startedAt: new Date().toISOString() } });
+      let settled = false;
+      // 收工回填。放 finally 里跑 —— 异常路径 (编译期外的任何抛错) 若不 settle, 票就会永远停在
+      // 「正在跑」。硬杀 (SIGKILL) 仍兜不住, 那个缺口写在 Ticket.dispatch 的注释里, 不假装解决。
+      const settle = (outcome: 'passed' | 'failed'): void => {
+        if (settled) return;
+        settled = true;
+        backend.markDispatch?.(cwd, r.slug, region.slice, { settle: { finishedAt: new Date().toISOString(), outcome } });
+      };
       try {
         const opts: ExecuteSliceOpts = {
           leafModel: models.leafModel,
@@ -575,19 +589,21 @@ function makeDeliver(deps: PathfinderToolDeps): OmdMcpTool {
           agentRunner: deps.agentRunner,
           commandRunner: deps.commandRunner,
           cwd,
-          // 运行留痕 (2026-08-02): 慢回路这条此前完全不进账本。runId 在这里现造 ——
+          // 运行留痕 (2026-08-02): 慢回路这条此前完全不进账本。runId 在上面生成 ——
           // pathfinder 没有 RunRegistry (它的身份是**票**不是 run), 但 executeSlice 可能落多条
           // 记录 (iterate 每轮一张图), 不给个共同的 runId 就归不成"这一次交付"的账。
           // entry 词表 (t7, 2026-08-04): 'map_deliver' (旧 'path_deliver' 只在历史行里, 读侧归一合并)。
-          ...(deps.recorder ? { recorder: deps.recorder, entry: 'map_deliver', runId: crypto.randomUUID() } : {}),
+          ...(deps.recorder ? { recorder: deps.recorder, entry: 'map_deliver', runId } : {}),
         };
         const result = await exec(plan, opts);
         const nodeStates = Object.values(result?.results ?? {});
         const failed = nodeStates.filter((n) => (n as { status?: string }).status !== 'done').length;
         const pass = result?.verification?.pass;
         if (failed > 0 || pass === false) {
+          settle('failed');
           return err(`slice "${plan.name}" 执行有 ${failed}/${nodeStates.length} 节点未完成${pass === false ? ' · 校验未过' : ''} — 区域未标记交付, 修复后可再 path_deliver。`);
         }
+        settle('passed');
         backend.markDelivered(cwd, r.slug, region.slice);
         return ok([
           ...goalLines,
@@ -596,6 +612,9 @@ function makeDeliver(deps: PathfinderToolDeps): OmdMcpTool {
         ].join('\n'));
       } catch (e) {
         return err(`slice 执行失败: ${String(e)}`);
+      } finally {
+        // 上面每条正常出口都已 settle 过 (settled 闸保幂等); 这里兜的是抛错那条路。
+        settle('failed');
       }
     },
   };

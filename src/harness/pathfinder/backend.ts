@@ -105,6 +105,21 @@ export interface PathBackend {
   /** 把一批已裁票翻 delivered (终态)。 */
   markDelivered(cwd: string, slug: string, ticketIds: string[]): void;
   /**
+   * D-6③ 派发锚 (control-plane G-2「票→runId→回执」)。**可选端口**:
+   * 缺 = 该后端不记派发锚(gh 今天就是这一格)—— 那是"这条链没接", 不是"派发过但没在跑",
+   * 读侧据此把该后端的票一律算作**无锚**, 而不是猜一个状态出来。
+   *
+   * `open`  = 派发前打锚(runId + startedAt), 只打在 `ruled` 票上(别的状态不该被派发)。
+   * `settle`= 收工回填(finishedAt + outcome), 幂等:已有 finishedAt 的不覆写
+   *           (一次派发只settle一次; 覆写会把第一次的真相抹掉)。
+   */
+  markDispatch?(
+    cwd: string,
+    slug: string,
+    ticketIds: string[],
+    anchor: { open: { runId: string; startedAt: string } } | { settle: { finishedAt: string; outcome: 'passed' | 'failed' } },
+  ): void;
+  /**
    * 收本图待折入的 research 结果 (S3 回流入料; 折入编排见 afk-hook.reflowResearchResults, 后端无关)。
    * - md: 未裁 research 票的落盘结果文件 (.omd/pathfinder/results/<slug>/<id>.md)。
    * - gh: 带 `research-done` label 的票, body = 该票评论里最后一条含结果形状 (`## 终稿`) 的正文;
@@ -272,6 +287,24 @@ function createMdBackend(): PathBackend {
       mutateMap(cwd, slug, (map) => {
         for (const t of map.tickets) {
           if (set.has(t.id) && t.status === 'ruled') t.status = 'delivered';
+        }
+      });
+    },
+    markDispatch: (cwd, slug, ticketIds, anchor) => {
+      const set = new Set(ticketIds);
+      mutateMap(cwd, slug, (map) => {
+        for (const t of map.tickets) {
+          if (!set.has(t.id)) continue;
+          if ('open' in anchor) {
+            // 只给 `ruled` 票打锚:别的状态本就不该被派发, 给它们打锚等于把一个假事实写进真源。
+            if (t.status !== 'ruled') continue;
+            t.dispatch = { runId: anchor.open.runId, startedAt: anchor.open.startedAt };
+          } else {
+            // 幂等 + 不覆写:没锚的不凭空造(那会造出"跑完了但没人派过"的记录);
+            // 已 settle 的不覆写(第一次的真相是这次派发的真相)。
+            if (!t.dispatch || t.dispatch.finishedAt) continue;
+            t.dispatch = { ...t.dispatch, finishedAt: anchor.settle.finishedAt, outcome: anchor.settle.outcome };
+          }
         }
       });
     },

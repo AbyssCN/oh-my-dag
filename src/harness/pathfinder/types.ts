@@ -55,6 +55,34 @@ export interface Ticket {
   ruledAt?: string;
   /** 超时升级动作 (标 stale) 的执行时刻。缺席 = 本轮等待还没被标过 (幂等键)。 */
   staleAt?: string;
+
+  // ── D-6③ 地基 (2026-08-12): 派发锚 —— 「票 → runId → 回执」双向可达 (control-plane G-2) ──
+  //
+  // **为什么是字段不是新 TicketStatus**: 控制台 SDD D-3 要给看板补 `in-flight` / `in-review`
+  // 两列, 而 INV-1 写着「map 盘上状态是唯一写真源」、D-1 写着「看板是视图」。两列要的信息
+  // (这张票有没有 run 在跑 / 跑完了没进交付) 由本字段承载, 列是**派生视图**;
+  // 加两个 TicketStatus 会波及每一处 status switch、gh label 映射、frontier 判定, 而它们
+  // 表达的东西这里已经有了 —— 那是把视图需求写进真源。
+  //
+  // **缺口的位置** (改这条之前): `path_deliver` 在 `pathfinder.ts` 里 `crypto.randomUUID()`
+  // 现造 runId、只喂给 recorder, 跑完直接 `markDelivered` —— 「这些票 ↔ 这个 run」的事实
+  // 在那一行产生、当场被扔掉。于是票从 `ruled` 直接跳 `delivered`, 中间两态盘上根本不存在。
+  //
+  // **NULL≠0 同 D-5**: 整个 `dispatch` 缺席 = 这张票**从没被派发过**(不是"派发失败");
+  // `finishedAt` 缺席 = **还在跑**(不是"跑完了没记")。⚠ 已知缺口: 进程被硬杀 (SIGKILL)
+  // 会留下永久无 finishedAt 的锚 —— 异常路径由 settle 的 finally 兜住, 硬杀兜不住。
+  // 修法是拿 run-board 的 terminal 事件回填, 那是下一片的事, 不在本地基里假装解决了。
+  /** 派发锚。缺席 = 从没派发过。 */
+  dispatch?: {
+    /** 本次派发的 runId (与 dag 台账 / recorder 同一个值 —— 回执按它查得到)。 */
+    runId: string;
+    /** 派发时刻 (ISO 8601)。 */
+    startedAt: string;
+    /** 收工时刻。缺席 = 还在跑 (见上"硬杀"缺口)。 */
+    finishedAt?: string;
+    /** 与 finishedAt 同生同死: 这一跑是过了还是没过。 */
+    outcome?: 'passed' | 'failed';
+  };
 }
 
 // ── D-3 (2026-08-11 控制面统一): 票语义三类 + 裁决票的类型层分家 ──────────────────

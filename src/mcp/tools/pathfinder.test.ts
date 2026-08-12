@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createPathfinderTools, type PathfinderToolDeps } from './pathfinder';
 import { loadMap, saveMap } from '../../harness/pathfinder/map-store';
+import { dispatchPhaseOf } from '../../serve/board-page';
 import type { Ticket } from '../../harness/pathfinder/types';
 import { createOmdMemory } from '../../harness/memory/store';
 import { validateFactWrite } from '../../memory/safeguards/validator';
@@ -521,3 +522,107 @@ describe('★ 切片6④ path_tickets 顺手扫等人超时 (D-5/G-5)', () => {
     }
   });
 });
+
+/**
+ * D-6③ 派发锚 (control-plane G-2「票→runId→回执」双向可达) —— 控制台 SDD D-3 两新列的地基。
+ *
+ * 改这条之前:runId 在 `path_deliver` 里现造、只喂 recorder, 跑完直接 markDelivered ——
+ * 「这些票 ↔ 这个 run」的事实在那一行产生、当场被扔掉, 票从 ruled 直接跳 delivered。
+ */
+describe('D-6③ 派发锚: 票 → runId', () => {
+  const setup = async (dir: string, exec: unknown) => {
+    const { call } = tools(dir, { executeSlice: exec as PathfinderToolDeps['executeSlice'] });
+    await call('path_map', { destination: 'Ship X' });
+    await call('path_add', { title: 'build the thing', type: 'task' });
+    await call('path_rule', { ticketId: 't1', ruling: 'do it with bun' });
+    return call;
+  };
+  const ticket = (dir: string): Ticket => loadMap(dir, 'ship-x')!.tickets.find((t) => t.id === 't1')!;
+
+  test('派发**期间**锚已在盘上且无 finishedAt → in-flight (锚必须早于 exec 写)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pf-anchor-'));
+    try {
+      let midRun: Ticket | undefined;
+      const call = await setup(dir, async (plan: { nodes: Record<string, unknown> }) => {
+        // 在执行**当中**读盘 —— 这是本条的全部意义: 锚若写在 exec 之后,「正在跑」那一列
+        // 永远看不到任何票 (窗口为零)。证伪: 把 markDispatch(open) 挪到 exec 之后 → 这里读到 undefined。
+        midRun = ticket(dir);
+        return { results: Object.fromEntries(Object.keys(plan.nodes).map((id) => [id, { status: 'done' }])) };
+      });
+      await call('path_deliver');
+
+      expect(midRun?.dispatch).toBeDefined();
+      expect(midRun!.dispatch!.runId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(midRun!.dispatch!.finishedAt).toBeUndefined(); // 还在跑
+      expect(dispatchPhaseOf(midRun!)).toBe('in-flight');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('跑过 → 锚 settle 成 passed, 票进 delivered, 相位归 null (它由 status 说了算)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pf-anchor-'));
+    try {
+      const call = await setup(dir, async (plan: { nodes: Record<string, unknown> }) => ({
+        results: Object.fromEntries(Object.keys(plan.nodes).map((id) => [id, { status: 'done' }])),
+      }));
+      await call('path_deliver');
+
+      const t = ticket(dir);
+      expect(t.status).toBe('delivered');
+      expect(t.dispatch!.outcome).toBe('passed');
+      expect(t.dispatch!.finishedAt).toBeTruthy();
+      expect(dispatchPhaseOf(t)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('跑挂 → 票仍 ruled + 锚已 settle → in-review (「跑完待验」这一列的数据源)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pf-anchor-'));
+    try {
+      const call = await setup(dir, async (plan: { nodes: Record<string, unknown> }) => ({
+        results: Object.fromEntries(Object.keys(plan.nodes).map((id) => [id, { status: 'failed' }])),
+      }));
+      const r = await call('path_deliver');
+      expect(r.isError).toBe(true);
+
+      const t = ticket(dir);
+      expect(t.status).toBe('ruled'); // 失败不翻交付 (既有语义, 不动)
+      expect(t.dispatch!.outcome).toBe('failed');
+      // 证伪: 删掉失败分支里的 settle('failed') → finishedAt 缺席 → 相位变 in-flight (永远在跑)。
+      expect(dispatchPhaseOf(t)).toBe('in-review');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('exec 抛错 → finally 兜住 settle, 票不会永远停在「正在跑」', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pf-anchor-'));
+    try {
+      const call = await setup(dir, async () => {
+        throw new Error('boom');
+      });
+      const r = await call('path_deliver');
+      expect(r.isError).toBe(true);
+
+      const t = ticket(dir);
+      // 证伪: 去掉 finally 里的 settle('failed') → finishedAt 缺席 → in-flight 永久悬挂。
+      expect(t.dispatch!.finishedAt).toBeTruthy();
+      expect(dispatchPhaseOf(t)).toBe('in-review');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('dispatchPhaseOf 纯判据四格 (缺席 ≠ 在跑 ≠ 待验)', () => {
+    const base = { status: 'ruled' as const };
+    expect(dispatchPhaseOf(base)).toBeNull(); // 从没派发过
+    expect(dispatchPhaseOf({ ...base, dispatch: { runId: 'r', startedAt: 'x' } })).toBe('in-flight');
+    expect(dispatchPhaseOf({ ...base, dispatch: { runId: 'r', startedAt: 'x', finishedAt: 'y', outcome: 'failed' } })).toBe('in-review');
+    // 跑过了但 markDelivered 没执行到 (进程死在两步之间) 也算「跑完待验」—— 刻意不看 outcome。
+    expect(dispatchPhaseOf({ ...base, dispatch: { runId: 'r', startedAt: 'x', finishedAt: 'y', outcome: 'passed' } })).toBe('in-review');
+    expect(dispatchPhaseOf({ status: 'delivered', dispatch: { runId: 'r', startedAt: 'x', finishedAt: 'y', outcome: 'passed' } })).toBeNull();
+  });
+});
+
