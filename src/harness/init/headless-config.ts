@@ -24,12 +24,11 @@ import {
 } from '../../model/role-models';
 import { ALL_SEAT_IDS, type OmdSeat } from '../../model/seats';
 import {
-  getProvider,
   registerProvidersFromEnv,
   registerProvidersFromModelsJson,
 } from '../../model/providers';
 import { listCustomProviderStatus, modelsJsonPath, upsertProvider } from '../../model/models-json';
-import { piHasCredential } from '../../model/pi-transport';
+import { providerCredentialed } from '../../model/role-fallback';
 import { ROLE_PRESETS, coordProvider } from './role-presets';
 import { hudStatusLineCommand, installHudStatusLine } from './hud-statusline';
 import { upsertEnv } from './wizard';
@@ -86,16 +85,25 @@ function writeAuthJsonKey(provider: string, key: string, authPath: string, write
 }
 
 /**
- * provider 是否有可用凭证 —— native (registry 已注册 ∨ env key 在) ∨ pi 通道 (auth.json/env 映射)。
- * piHasCredential 单独对 native provider (如 mimo, 不在 PI_ENV_KEY_MAP) 会漏判, 故此处补 native 维度。
+ * provider 是否有可用凭证 —— 模型层判据 (registry ∨ pi 通道 ∨ **claude-code 订阅通道**)
+ * ∨ 本层独有的两个维度 (native env key / models.json 自定 provider key)。
+ *
+ * ⚠ 订阅通道那一维**必须**走 `providerCredentialed` 委派, 不许在这里抄第二份:
+ * claude-code 的凭证由 Agent SDK 自理 (`~/.claude/.credentials.json` 或 `CLAUDE_CODE_OAUTH_TOKEN`),
+ * 两个源都不在 `getProvider` / `piHasCredential` 的可见面上。`role-fallback.credentialed`
+ * 2026-08-10 (issue #6) 为此加过分支, 而本函数是**另一份拷贝**没跟着改 —— 于是
+ * `omd_config_status` 对 conductor/verifier 恒报「无凭证 (call 时会抛)」, 而真调用 5.9s 成功,
+ * 同一份输出里的座位自检还写着「0 个不可用」。两份判据各瞎一半, 谁也不知道该信哪个。
+ * 一致性由 `headless-config-credential.test.ts` 钉住。
+ *
+ * piHasCredential 单独对 native provider (如 mimo, 不在 PI_ENV_KEY_MAP) 会漏判, 故补 native 维度。
  */
 export function hasCredential(provider: string, env: Record<string, string | undefined>): boolean {
-  if (getProvider(provider)) return true; // native registry 命中 (注册时 key 在)
+  if (providerCredentialed(provider, env)) return true; // registry ∨ pi ∨ claude-code 订阅
   const nativeKey = NATIVE_ENV_KEY[provider];
   if (nativeKey && env[nativeKey]?.trim()) return true;
   const customKeyEnv = listCustomProviderStatus(env).find((cp) => cp.id === provider)?.keyEnv;
-  if (customKeyEnv && env[customKeyEnv]?.trim()) return true;
-  return piHasCredential(provider, env);
+  return !!(customKeyEnv && env[customKeyEnv]?.trim());
 }
 
 // ---------------------------------------------------------------------------

@@ -36,6 +36,13 @@ function providerOf(coord: string): string {
  * provider 是否有可用凭证 (= 真能调用): 自有 registry 命中 (registerProvider 要求 apiKey → 注册即带 key)
  * 或 pi 通道有凭证 (auth.json / env key, OAuth 亦覆盖)。
  */
+export function providerCredentialed(
+  provider: string,
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return credentialed(provider, env);
+}
+
 function credentialed(provider: string, env: Record<string, string | undefined>): boolean {
   if (provider === CLAUDE_SDK_PROVIDER) return claudeSdkCredentialed(env);
   return !!getProvider(provider) || piHasCredential(provider, env);
