@@ -24,6 +24,7 @@ import { fetchRacing } from '../web/fetch-racing';
 import { repoProbe, renderRepoHits } from './repo-probe';
 import { normalizeUrl } from '../web/types';
 import type { WebStack } from '../web';
+import type { ModelUsage } from '../../model/types';
 
 /** 通用 web 研究 lens (证据/批判/实践三视角, 各 3 sub-angle)。领域研究覆盖之。 */
 export const DEFAULT_WEB_LENSES: ResearchLens[] = [
@@ -138,6 +139,8 @@ export interface WebFanoutOpts extends RetrieveOpts {
    */
   authorSeeds?: boolean;
   onStage?: (stage: string, detail: string) => void;
+  /** 注入 callModel (测试 fake): 一处透传到 conductor 分解 / 种子作者化 / fanout 全部 leaf。 */
+  _callModel?: typeof send;
 }
 
 export interface WebFanoutResult {
@@ -162,7 +165,7 @@ const SEED_SCHEMA = z.object({ queries: z.array(z.string().min(4)) });
  */
 export async function authorSeedQueries(
   question: string,
-  opts: { model?: string; _call?: typeof send } = {},
+  opts: { model?: string; onUsage?: (model: string, usage: ModelUsage) => void; _call?: typeof send } = {},
 ): Promise<string[]> {
   const call = opts._call ?? send;
   const model = opts.model ?? resolveRoleModelConfigured('lens').model;
@@ -182,6 +185,7 @@ export async function authorSeedQueries(
       maxTokens: 4096, // 种子 query 虽短, 推理族仍需 reasoning 余量
       meta: { role: 'seed-author' },
     });
+    opts.onUsage?.(model, res.usage ?? { in: 0, out: 0 });
     const parsed = SEED_SCHEMA.safeParse(res.parsed);
     return parsed.success ? parsed.data.queries.slice(0, 4) : [];
   } catch {
@@ -300,10 +304,16 @@ export async function researchWebFanout(
   if (retrieval.sources.length === 0) throw new Error('researchWebFanout: 检索零结果, 无语料可研究');
   opts.onStage?.('retrieve', `命中 ${retrieval.sources.length} · 抓取 ${retrieval.sources.filter((s) => s.body).length} · 语料 ${retrieval.markdown.length} chars`);
 
+  // ── fanout 之前发生的模型调用 (种子作者化 / conductor 分解) 的 usage。
+  // `researchFanout` 的 usageLog 是它的局部量, 这两发**结构上**在作用域外 —— 不显式收就永远漏记,
+  // 而 conductor 常是整次研究最贵的单发。低报成本 = 高估收益, 账本是尺子, 不能只量一半。
+  const priorUsage: { model: string; usage: ModelUsage }[] = [];
+  const trackPrior = (model: string, usage: ModelUsage): void => void priorUsage.push({ model, usage });
+
   // deep 档: 种子未显式给 → 模型作者化 (显式给的优先, 作者化不覆盖人)。
   let seedQueries = opts.seedQueries;
   if (!seedQueries?.length && opts.authorSeeds) {
-    seedQueries = await authorSeedQueries(question, { model: opts.lensModel });
+    seedQueries = await authorSeedQueries(question, { model: opts.lensModel, onUsage: trackPrior, _call: opts._callModel });
     opts.onStage?.(
       'seeds',
       seedQueries.length ? `作者化 ${seedQueries.length} 个种子: ${seedQueries.join(' · ')}` : '种子作者化失败 → 单检索继续 (fail-open)',
@@ -342,6 +352,8 @@ export async function researchWebFanout(
       lensCount: opts.lensCount,
       lensModel,
       reasonModel,
+      onUsage: trackPrior,
+      _callModel: opts._callModel,
     });
     lenses = authored.lenses;
     synthesisFramings = authored.synthesisFramings;
@@ -398,7 +410,9 @@ export async function researchWebFanout(
     maxFanout: opts.maxFanout,
     rounds,
     probe,
+    priorUsage, // conductor 分解 / 种子作者化那几发, 并进同一本账
     onStage: opts.onStage,
+    _callModel: opts._callModel,
   });
 
   return {

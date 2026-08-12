@@ -161,6 +161,12 @@ export interface ResearchFanoutConfig {
    * 失败不断链 (probe 是增益): 抛错 → 只剩模型半边。
    */
   probe?: (args: { round: number; digest: string; gaps: ResearchGap[] }) => Promise<ProbeYield>;
+  /**
+   * 调用方在**进 fanout 之前**已经发生的模型调用 (conductor 分解 / 种子作者化) 的 usage,
+   * 并进同一本账 → `costStats` 覆盖整次研究而非只覆盖 fanout 内部。
+   * `usageLog` 是本函数的局部量, 作用域外的调用**结构上**进不来, 只能这样递进来。
+   */
+  priorUsage?: readonly { model: string; usage: ModelUsage }[];
   /** 注入 callModel (测试 fake)。结构化签名 (不 import callModel 值 → 不绕 gateway, 守 INV-1)。 */
   _callModel?: (req: ModelRequest) => Promise<ModelResponse>;
   /** 进度回调 (可选)。 */
@@ -329,7 +335,7 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
   const head = cfg.stablePrefix ? `${cfg.stablePrefix}\n\n${cfg.groundTruth}` : cfg.groundTruth;
 
   // ── 遥测累加: 每个 leaf 调用后记 (model, usage) → 整轮 cache 命中率 + 成本 (M6, 不靠账单猜)。
-  const usageLog: { model: string; usage: ModelUsage }[] = [];
+  const usageLog: { model: string; usage: ModelUsage }[] = [...(cfg.priorUsage ?? [])];
   const track = async (model: string, p: Promise<{ text: string; usage?: ModelUsage }>): Promise<string> => {
     const r = await p;
     usageLog.push({ model, usage: r.usage ?? { in: 0, out: 0 } });

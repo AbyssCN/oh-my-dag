@@ -16,6 +16,7 @@ import { resolveRoleModelConfigured } from '../../model/role-models';
 import { TASTE_CORE } from '../taste';
 import { RESEARCH_LENS_TEMPLATE } from './lens-template';
 import type { ResearchFanoutConfig, ResearchLens } from './fanout';
+import type { ModelUsage } from '../../model/types';
 import { ModelError } from '../../model';
 
 // ── Zod schema: mirror ResearchFanoutConfig (只校验 conductor 能写的字段) ──
@@ -82,6 +83,12 @@ export async function authorFanoutSpec(input: {
   /** 编排策略: 模型分配由调用侧控制, 不让 conductor author。默认 flash(广度)/pro(推理)。 */
   lensModel?: string;
   reasonModel?: string;
+  /**
+   * 这一发 conductor 的 usage 回调 —— 调用方拿去并进 `costStats`。
+   * 没有它这发就只在 provider 账单上存在: 它发生在 `researchFanout` 的 `usageLog` 作用域**之外**,
+   * 而它常是整次研究里最贵的单发 (全量语料 + pro 座)。fail-open: 回调抛错不影响分解结果。
+   */
+  onUsage?: (model: string, usage: ModelUsage) => void;
   _callModel?: typeof defaultCallModel;
 }): Promise<ResearchFanoutConfig> {
   const call = input._callModel ?? defaultCallModel;
@@ -118,6 +125,8 @@ export async function authorFanoutSpec(input: {
     }
     throw err;
   }
+
+  input.onUsage?.(model, response.usage ?? { in: 0, out: 0 });
 
   const parsed = response.parsed as ConductorOutput;
 
