@@ -228,7 +228,9 @@ export class RunRegistry {
   /** 注册新 run。重复 runId → throw。 */
   register(runId: string, opts: { goal: string; meta?: Record<string, unknown> }): void {
     if (this.runs.has(runId)) throw new Error(`run ${runId} already registered`);
-    const now = new Date().toISOString();
+    // ⚠ 走 this.now() 不是裸 new Date(): 注入时钟是构造参数, 而 getSummary 的 elapsed 用它 ——
+    // 两处各用各的钟, 算出来的时长就是真假混算 (2026-08-12 补, 立 elapsed 那行时抓出)。
+    const now = this.now().toISOString();
     this.runs.set(runId, {
       status: 'pending',
       goal: opts.goal,
@@ -247,7 +249,7 @@ export class RunRegistry {
       throw new Error(`illegal transition ${rec.status} → ${to} for run ${runId}`);
     }
     rec.status = to;
-    rec.updatedAt = new Date().toISOString();
+    rec.updatedAt = this.now().toISOString(); // 同 register: 与 elapsed 共用一个钟
     // 终态 → 取消把手没有意义了, 清掉 (留着 = 一个永远 abort 不到东西的旋钮 + 内存慢慢涨)。
     if (LEGAL_TRANSITIONS[to].length === 0) this.controllers.delete(runId);
     this.persist(runId);
@@ -367,7 +369,7 @@ export class RunRegistry {
         delete progress.startedAt[e.id];
         break;
     }
-    rec.updatedAt = new Date().toISOString();
+    rec.updatedAt = this.now().toISOString(); // 同 register/transition: 三处共用一个钟, 别漏第三处
     // 同 setNodeDetails: 活体进度写穿 —— parent 的 dag_status 读盘拿子进程 run 的进度。
     // 每次节点事件一行小写 (WAL + fail-open), 相对模型调用耗时可忽略。
     this.persist(runId);
@@ -400,6 +402,17 @@ export class RunRegistry {
       `created: ${rec.createdAt}`,
       `updated: ${rec.updatedAt}`,
     ];
+    // elapsed: **相对时长**。created/updated 是 UTC ISO 串, 而读它的人在本地时区 ——
+    // 2026-08-12 实测: 同一程因为拿 UTC 串自己换算, 把「跑了 4 分钟」读成「9 分钟零进度」
+    // 并据此撤了两个健康的 run。换算这一步不该留给读的人做。
+    // 终态用 updated - created (定格); 未终态用 now - created (还在走)。
+    const startedMs = Date.parse(rec.createdAt);
+    // 「终态」不另立词表: 本仓的定义就是「出边为空」(同 transition 里清 controller 那条判据)。
+    const isTerminal = LEGAL_TRANSITIONS[rec.status].length === 0;
+    const endMs = isTerminal ? Date.parse(rec.updatedAt) : this.now().getTime();
+    if (Number.isFinite(startedMs) && Number.isFinite(endMs)) {
+      parts.push(`elapsed: ${formatDuration(endMs - startedMs)}`);
+    }
     if (rec.status === 'done' && rec.result !== undefined) {
       parts.push(`result: ${typeof rec.result === 'string' ? rec.result : JSON.stringify(rec.result)}`);
     }
@@ -414,15 +427,53 @@ export class RunRegistry {
         parts.push(`partial: ${typeof rec.result === 'string' ? rec.result : JSON.stringify(rec.result)}`);
       }
     }
-    // running 态活体进度 (applyNodeEvent 累积; D-8 宽出: 计数 + 在跑节点名, 不灌输出)。
-    if (rec.status === 'running' && rec.progress) {
+    // 节点账 (applyNodeEvent 累积; D-8 宽出: 计数 + 在跑节点名, 不灌输出)。
+    //
+    // ⚠ **对所有态都印, 不只 running** —— 终态恰恰是最需要它的时候。旧版把这段关在
+    // `status === 'running'` 里, 于是一个 `status: done` 的 run 什么节点信息都不给,
+    // 而它的真相可能是「2 done / 1 failed / 10 skipped」(2026-08-12 run 360405a5 实例:
+    // 我据 `status: done` 报了「三片全交付」, 节点级真相是主实现节点挂了、下游全级联跳过)。
+    //
+    // ⚠ **四个数恒印, 0 也印**: `skipped: 0` 与「这一格没数据」是两件事 (NULL ≠ 0 ≠ 不适用)。
+    // 旧版 `${failed ? …}` 让「零失败」与「没统计失败」在字面上不可分。
+    //
+    // ⚠ **skipped 不并进 failed**: 旧版 `failed = settled.length - done` 把级联跳过算成失败,
+    // 上面那个 run 会被印成「11 failed」—— 1 个真败与 10 个连坐是两种因, 合并了就找不着根。
+    if (rec.progress) {
       const p = rec.progress;
-      const total = p.planned.length || p.started.length + p.settled.length;
-      const done = p.settled.filter((s) => s.status === 'done').length;
-      const failed = p.settled.length - done;
-      const pending = Math.max(0, total - p.started.length - p.settled.length);
-      parts.push(`progress: ${done}/${total} done${failed ? `, ${failed} failed` : ''}, ${pending} pending`);
-      if (p.started.length) {
+      // ⚠ 数的是**节点**, 不是 settle 事件。`settled` 是追加数组: 一个节点被重跑
+      // (内环轮次 / 毒集强制重跑 / __r1 分身) 会留多条。按事件数数, 2026-08-12 的
+      // run 360405a5 会印成「13 done / 2 failed / 11 skipped (共 13)」—— 26 个数
+      // 落进 13 个格子, 单位就错了 (本仓 S-22: 算得没错, 但量的不是你以为的那件事)。
+      // 以**最后一次** settle 为准: 先失败后重跑成功的节点, 最终状态是 done。
+      const lastByNode = new Map<string, (typeof p.settled)[number]>();
+      for (const s of p.settled) lastByNode.set(s.id, s);
+      // 在飞**压过**历史 settle: 一个节点可以 settle 之后被重新 start (毒集强制重跑),
+      // 此刻它的真状态是 running 而不是上一轮那个结果。不压, 它会同时进两格 ——
+      // 真数据实测 run bf651d37: 和 12 > 分母 11, 多的正是这一个 (2026-08-12)。
+      const inFlight = new Set(p.started);
+      const byStatus = (want: string): number =>
+        [...lastByNode.values()].filter((s) => !inFlight.has(s.id) && s.status === want).length;
+      // 分母 = **见过的所有节点 id 的并集**, 不是 `planned.length`。真数据实测 (2026-08-12,
+      // run 66095b2f): 重规划变体 (`__r1` 之类) 会 settle 但不进 planned, 于是四数之和 19
+      // 大过分母 18 —— 分母取小了 (本仓 S-19 分母族)。按并集取, 「和 = 总数」才是结构上成立的,
+      // 而不是碰巧成立。
+      const total = new Set([...p.planned.map((n) => n.id), ...p.started, ...lastByNode.keys()]).size;
+      const done = byStatus('done');
+      const failed = byStatus('failed');
+      const skipped = byStatus('skipped');
+      // 在飞。这一格不加, 在飞节点就落在所有格子之外 (真数据实测: run d39b559e
+      // 四数之和 29 而分母 30, 差的正是那一个在飞的)。
+      const running = inFlight.size;
+      const pending = Math.max(0, total - new Set([...p.started, ...lastByNode.keys()]).size);
+      // 五格互斥且穷尽: done+failed+skipped+running+pending ≡ total。这是恒等式不是巧合 ——
+      // 分母取并集 + started/settled 不相交, 两条一起保证的。少任何一格都会让人拿手边最像的
+      // 那个数当分母 (本仓 S-19)。
+      parts.push(
+        `nodes: ${done} done / ${failed} failed / ${skipped} skipped / ${running} running / ${pending} pending (共 ${total})`,
+      );
+      // 在跑节点名只在 running 态有意义 (终态没有"在跑")。
+      if (rec.status === 'running' && p.started.length) {
         const kindOf = new Map(p.planned.map((n) => [n.id, n.kind]));
         const nowMs = this.now().getTime();
         parts.push(`running: ${p.started.map((id) => {
