@@ -1008,6 +1008,29 @@ import 得到、类型对得上、调用写得出来。
 
 **回链**:run `a7a9bc0a-0091-44d2-a854-4ef0d1dc0c13`;Wave 1 封账 commit `edb3f53`。
 
+### S-34 · **沙箱视图静默拿走一个能力,而量它的尺子在同一沙箱下同时失真**
+
+**形状**:隔离档给叶子的视图里,某个能力的**声明面完整留在树内**(`.git` 指针文件还在、`git` 还在 `PATH` 上),而它依赖的**树外真身没挂进来** → 能力零生效。叶子不知道,反复试探再放弃 = 真摩擦。与此同时,量这场摩擦的尺子(空转检测的命令签名)在**同一个沙箱条件下**失真:jail 的 `cd <run root> &&` 前缀吃满了取签名的 50 字符窗口,互不相同的命令并成同一个签名。两者叠加,读数出口是一句「同一命令空转 ×12」,而真相是「12 条不同的命令,各自撞在一个没挂进来的 `.git` 上」。
+
+**和已有几条哪里不一样**:S-32 是**判据自己坏了**而红灯指向被测对象——那条只有一处坏。这条是**两处同时坏,且坏因同源**(都由「隔离档」这一个环境条件触发):一处制造无用功,另一处让无用功被归因到执行体身上。与 S-15「够不着 ≠ 零检出」的区别在读数的去向——那条落在事后读数板,这条的读数**当场驱动内环**(空转计数是重规划与升座的输入)。与 S-6「在想 ≠ 没反应」正相反:那条把活着读成死了,这条把**环境缺件**读成**执行体在打转**。
+
+**为什么没红灯**:三层各自都"正常"。① git 的报错发生在**叶子进程内部**(`fatal: not a git repository`),被叶子当成"环境待摸索"吞掉,引擎侧一个错误都没收到;② drift-detector 照常出数,只是数是错的——一个哈希窗口被前缀吃满,既不抛也不警;③ tsc 绿、测试绿,因为**当时全仓没有一条测试同时跑在真 bwrap + 真 worktree 上**(核实:`a16043a^` 版 `bwrap-containment.test.ts` 全文零个 `worktree`),而这两个缺陷**只在这个组合下出现**。
+
+**实例(自家,2026-08-11,run `7d50fda2` = SDD-1 首跑)**:
+- 隔离档 run root 是 `.omd/runs/<uuid>/` 下的一棵 worktree。worktree 的 `.git` 是**指针文件**,指向主仓 `.git/worktrees/<name>`;bwrap 视图不含主仓 `.git` → jail 内 git 全灭。
+- jail 前缀 `cd /home/nick/…/.omd/runs/<uuid> &&` 共 76 字符 > `computeSig` 的 50 字符窗口 → **隔离档下每一条 bash 命令签名相同**。
+- 出口读数:节点 `38bv` 报「空转 ×12」。它伪装成了什么:「这个叶子在原地打转,该升座位/重规划」。
+- 顺带一条同源的:当时挂在待查上的 `[omd/sandboxed-leaf] worker 失败 code:0` 不是谜——`leaf-worker` **恒 `process.exit(0)`**,失败经结果文件回传,是**日志把唯一的成因字段漏了**(补 `why` 后就地结案)。
+
+**怎么抓**(这条**有闸**,两道,各自变异证伪过):
+> **凡是「隔离档下才出现」的缺陷,闸必须跑在真 bwrap + 真 worktree 上;在主树上测等于没测。**
+
+- **能力那侧**:`resolveGitBinds`(`bwrap.ts:80`)+ `bwrapArgs` 的 `gitBinds`(`:148`)——**ro-bind 共享 `.git` + rw-bind 本树 gitdir**,由 `agent-leaf` 的 `sandboxGit` 显式开,`assemble.ts:448` 只在**生产隔离档**开(eval oracle 那条路的 no-git 是刻意的,防 `git show` 当 oracle,一个字没动)。闸:`bwrap-containment.test.ts:98` 四条,真造「主 repo + 一棵 worktree」;反向自检(实跑过):删掉 `bwrapArgs` 里 `opts.gitBinds` 那段 → ② 当场红,①③ 仍绿。
+- **尺子那侧**:`stripCdPrefix`(`drift-detector.ts:59`)剥前导 `cd <路径> &&` 链再取窗口。闸:`drift-detector.test.ts:103` 三条;反向自检写在 `:108`——去掉 `stripCdPrefix` 调用 → 三条不同命令签名全等,当场红。
+- ⚠ **这两组 bwrap 闸在没有 bwrap 的机器上自报「未测」而不是绿**(`HAS_BWRAP` 分支断言 `expect(HAS_BWRAP).toBe(false)`)。照本仓「缺席 ≠ 通过」的口径:那行绿**不能**读成"隔离档验过了"。
+
+**回链**:`docs/plan/NOTES.md` 2026-08-11 两节(四缺陷 + 已修);修复 commit `a16043a`。
+
 ## 已立的闸(可执行的那部分)
 
 | 闸 | 位置 | 守什么 | 抓哪几条 |
@@ -1041,6 +1064,8 @@ import 得到、类型对得上、调用写得出来。
 | 验收 delta 只红新引入失败 | `src/harness/goal/delta-compare.ts` · `delta-compare.test.ts` | 六档矩阵 + mode 感知;老失败单列、新步 newly-run、缺席按 mode 判 skipped/new-failure(**带反向自检**:把 pass→fail 判成 fixed → 红;把 unchanged fail 判红 → 红) | S-28 |
 | 写集声明对账(越界即 orphan) | `src/harness/write-set.ts` · `write-set.test.ts` | 跑后 diff 走五档归属阶梯;done/历史声明不放行;无声明 → undeclared 不红(**带反向自检**:把 b.ts 放行 → 红;把 done 声明也算数 → 红) | S-29 |
 | 谎报完成硬矛盾闸 | `src/harness/plan/false-completion.ts` · `false-completion.test.ts` · `src/harness/dag/engine.ts` | 声称完成 ∧ 验收命令实败 → 判 fail;LLM judge 前确定性先行,被点节点铸票(**带反向自检**:把 exit 1 当支撑声称 → 红) | S-30 |
+| 隔离档 git 能用 | `src/harness/hooks/bwrap.ts` · `bwrap-containment.test.ts:98` | 真造「主 repo + worktree」跑真 bwrap:ro 共享 `.git` + rw 本树 gitdir;jail 内写 ref/objects 仍拒(**带反向自检**:删 `gitBinds` 段 → ② 红,①③ 仍绿。⚠ 无 bwrap 的机器自报**未测**,不是绿) | S-34 |
+| 空转签名不被 `cd` 前缀吃掉 | `src/harness/hooks/drift-detector.ts` · `drift-detector.test.ts:103` | 取 50 字符窗口前先剥 `cd <路径> &&` 链,尺子不因 jail 路径变钝(**带反向自检**:去掉 `stripCdPrefix` → 三条不同命令签名全等,红) | S-34 |
 
 **S-24 也没有闸** —— 声明端在 `node_modules` 里,仓内的消费点/可达性闸**结构上够不着**。
 落在纪律上的是一条前置动作:**压架构之前读上游的 `.js` 不读 `.d.ts`**(三条便宜读法见该条)。
