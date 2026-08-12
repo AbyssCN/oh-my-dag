@@ -16,9 +16,9 @@ import { logger } from '../logger';
 import type { Playbook } from './types';
 
 /** 内置 playbook 根 (随包发布; 相对本模块位置解析, 与 cwd 无关 —— 同 pathfinder/init.ts 的 CALLER_TEMPLATE_ABS 范式)。 */
-const BUILTIN_PLAYBOOK_DIR = join(import.meta.dir, '..', '..', '..', 'templates', 'playbooks');
+export const BUILTIN_PLAYBOOK_DIR = join(import.meta.dir, '..', '..', '..', 'templates', 'playbooks');
 /** 项目层 playbook 目录 (cwd 相对; 与 `.omd/profiles`、`.omd/agents` 同规)。 */
-const PROJECT_PLAYBOOK_DIR = '.omd/playbooks';
+export const PROJECT_PLAYBOOK_DIR = '.omd/playbooks';
 /** `probeDiscrimination` 所在模块的绝对路径 —— A-3 探针桥要在**子进程里**动态 import 它 (见下)。 */
 const ACCEPTANCE_GATE_ABS = join(import.meta.dir, '..', 'goal', 'acceptance-gate.ts');
 
@@ -138,7 +138,7 @@ function probeAcceptanceSync(
     // 出现在日志文本里的分隔符包住真正的裁决, 父进程只取分隔符**之后**的内容来解析, 不受前面
     // 任何日志行干扰(实测:不加分隔符, `this-binary-does-not-exist-xyz` 这类会触发白名单 warn 的
     // 用例, JSON.parse 会因为 stdout 里混了 warn 文本而失败 —— 那不是"探针跑不起来", 是解析没做对)。
-    const MARKER = ' OMD_PLAYBOOK_A3_RESULT ';
+    const MARKER = '\0OMD_PLAYBOOK_A3_RESULT\0';
     writeFileSync(
       bridgeFile,
       [

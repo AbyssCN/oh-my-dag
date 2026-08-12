@@ -9,7 +9,8 @@
  *   · `.omd/plan-ledger.db`      — plan 图库(family/版本链/战绩)
  * 于是「谁起的 run 都看得见」不是特性是必然。损坏条目跳过但按仓规留证据(WARN path+err)。
  */
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync, type Dirent } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { logger } from '../logger';
 import { readDagView, readFog, type DagView } from '../hud/load';
@@ -23,6 +24,9 @@ import type { PathMap } from '../harness/pathfinder/types';
 import { ALL_SEAT_IDS, SEAT_PREFERRED_COORD } from '../model/seats';
 import { channelOf } from '../model/cost-ledger';
 import { budgetStats } from '../model/provider-budget';
+import type { ProfileSpec } from '../harness/profiles/profile';
+import { loadPlaybooks, BUILTIN_PLAYBOOK_DIR, PROJECT_PLAYBOOK_DIR } from '../harness/playbook/load';
+import type { Playbook } from '../harness/playbook/types';
 
 /** runId 是目录名、nodeId 是文件名成分 —— 皆来自 HTTP 边界,白名单闸(动态子节点含 `::` 与 `.`)。 */
 const RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,80}$/;
@@ -449,4 +453,384 @@ export function readSeats(cwd: string): SeatsView {
   ];
 
   return { seats, budget: budgetStats(), unavailable };
+}
+
+// ---------------------------------------------------------------------------
+// S10 只读接口:Skills / MCP servers / run-board / Profiles
+// ---------------------------------------------------------------------------
+//
+// 与上面 readSeats 一样是**纯磁盘契约**读侧:不读 daemon 内存、不读进程内 registry、
+// 不提供任何写通道(启停/编辑留到后续片,若真有写通道会是第二真源)。
+//
+// 状态语义(DiskSource.status)统一四路复用:
+//   missing = 路径不存在(正常空缺, 不记 warning) · empty = 存在但无条目 ·
+//   ok = 至少一个有效条目且无失败 · partial = 有有效条目也有失败条目 ·
+//   error = 路径存在但整体不可读/格式非法, 或候选条目全部失败。
+// 这条把「目录不存在」与「目录空」分开返回 —— 压成同一个空数组会把「还没配置」
+// 误读成「配置了但是空的」,两件事在运维判断上不是一回事(本仓 NULL ≠ 0 ≠ 不适用)。
+
+export type DiskSourceStatus = 'missing' | 'empty' | 'ok' | 'partial' | 'error';
+
+export interface DiskSource {
+  path: string;
+  kind: 'file' | 'directory';
+  exists: boolean;
+  status: DiskSourceStatus;
+}
+
+export interface ReadWarning {
+  /** 出错文件/目录;JSONL 单行错误用 `${file}:${lineNumber}`。 */
+  path: string;
+  /** 必须是 String(err),保留原始错误文本。 */
+  error: string;
+}
+
+/** 每个 catch 至少留一行证据(path + 原始错误文本),不许空 catch。 */
+function pushReadWarning(warnings: ReadWarning[], path: string, err: unknown): void {
+  const warning: ReadWarning = { path, error: String(err) };
+  warnings.push(warning);
+  logger.warn(warning, '[serve/read] 跳过损坏磁盘条目');
+}
+
+// ── Skills ───────────────────────────────────────────────────────────────
+
+export interface SkillItem {
+  /** 顶层技能目录名。 */
+  name: string;
+  scope: 'user' | 'project';
+  /** 技能目录绝对路径。 */
+  path: string;
+  /** 目录内递归发现的 *.md 绝对路径, 字典序排列(主文档文件名未确认, 不猜 SKILL.md)。 */
+  markdownFiles: string[];
+}
+
+export interface SkillsView {
+  sources: { user: DiskSource; project: DiskSource };
+  items: SkillItem[];
+  warnings: ReadWarning[];
+}
+
+/** 符号链接跟随一次判目录:损坏链接(常见于 user skills 目录里的旧链接)当作非候选悄悄跳过, 不算失败。 */
+function isSkillEntryDirectory(fullPath: string, entry: Dirent): boolean {
+  if (entry.isDirectory()) return true;
+  if (entry.isSymbolicLink()) {
+    try {
+      return statSync(fullPath).isDirectory();
+    } catch {
+      return false; // 断链, 不是候选, 不留 warning
+    }
+  }
+  return false;
+}
+
+/** 递归收集一个技能目录下的 *.md 绝对路径。目录不可读会抛出, 由调用方记 warning。 */
+function collectMarkdownFiles(dir: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...collectMarkdownFiles(full));
+    else if (entry.isFile() && entry.name.endsWith('.md')) out.push(full);
+  }
+  return out;
+}
+
+function scanSkillsDir(dir: string, scope: 'user' | 'project', warnings: ReadWarning[]): { source: DiskSource; items: SkillItem[] } {
+  if (!existsSync(dir)) return { source: { path: dir, kind: 'directory', exists: false, status: 'missing' }, items: [] };
+
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    pushReadWarning(warnings, dir, err);
+    return { source: { path: dir, kind: 'directory', exists: true, status: 'error' }, items: [] };
+  }
+
+  const items: SkillItem[] = [];
+  let hadFailure = false;
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (!isSkillEntryDirectory(full, entry)) continue;
+    try {
+      items.push({ name: entry.name, scope, path: full, markdownFiles: collectMarkdownFiles(full).sort() });
+    } catch (err) {
+      pushReadWarning(warnings, full, err);
+      hadFailure = true;
+    }
+  }
+
+  const status: DiskSourceStatus =
+    items.length === 0 ? (hadFailure ? 'error' : 'empty') : hadFailure ? 'partial' : 'ok';
+  return { source: { path: dir, kind: 'directory', exists: true, status }, items };
+}
+
+/** Skills 清单:user (`~/.claude/skills`) + project (`.omd/skills`) 两层, 只读, 不猜文档文件名。 */
+export function readSkills(cwd: string, homeDir: string = homedir()): SkillsView {
+  const warnings: ReadWarning[] = [];
+  const userScan = scanSkillsDir(join(homeDir, '.claude', 'skills'), 'user', warnings);
+  const projectScan = scanSkillsDir(join(cwd, '.omd', 'skills'), 'project', warnings);
+  const items = [...userScan.items, ...projectScan.items].sort(
+    (a, b) => a.scope.localeCompare(b.scope) || a.name.localeCompare(b.name),
+  );
+  return { sources: { user: userScan.source, project: projectScan.source }, items, warnings };
+}
+
+// ── MCP servers ──────────────────────────────────────────────────────────
+
+export interface McpServerItem {
+  name: string;
+  command: string;
+  args: string[];
+  /** 只公开 env 键名, 不公开值。 */
+  envKeys: string[];
+}
+
+export interface McpServersView {
+  source: DiskSource;
+  items: McpServerItem[];
+  warnings: ReadWarning[];
+}
+
+/** MCP 服务器清单, 真源 `.omd/mcp.json`(顶层键 `mcpServers`)。env 值绝不透传到响应。 */
+export function readMcpServers(cwd: string): McpServersView {
+  const file = join(cwd, '.omd', 'mcp.json');
+  const warnings: ReadWarning[] = [];
+  if (!existsSync(file)) return { source: { path: file, kind: 'file', exists: false, status: 'missing' }, items: [], warnings };
+
+  let raw: string;
+  try {
+    raw = readFileSync(file, 'utf-8');
+  } catch (err) {
+    pushReadWarning(warnings, file, err);
+    return { source: { path: file, kind: 'file', exists: true, status: 'error' }, items: [], warnings };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    pushReadWarning(warnings, file, err);
+    return { source: { path: file, kind: 'file', exists: true, status: 'error' }, items: [], warnings };
+  }
+
+  const mcpServers = (parsed as Record<string, unknown> | null)?.mcpServers;
+  if (typeof mcpServers !== 'object' || mcpServers === null || Array.isArray(mcpServers)) {
+    pushReadWarning(warnings, file, new Error('顶层 mcpServers 字段缺失或类型非法'));
+    return { source: { path: file, kind: 'file', exists: true, status: 'error' }, items: [], warnings };
+  }
+
+  const names = Object.keys(mcpServers);
+  if (names.length === 0) return { source: { path: file, kind: 'file', exists: true, status: 'empty' }, items: [], warnings };
+
+  const items: McpServerItem[] = [];
+  let hadFailure = false;
+  for (const name of names) {
+    const entry = (mcpServers as Record<string, unknown>)[name] as Record<string, unknown> | null;
+    if (typeof entry !== 'object' || entry === null || typeof entry.command !== 'string') {
+      pushReadWarning(warnings, `${file}#${name}`, new Error('server 条目缺失 command 字段或类型错'));
+      hadFailure = true;
+      continue;
+    }
+    items.push({
+      name,
+      command: entry.command,
+      args: Array.isArray(entry.args) ? entry.args.map(String) : [],
+      envKeys: entry.env && typeof entry.env === 'object' ? Object.keys(entry.env as Record<string, unknown>) : [],
+    });
+  }
+  items.sort((a, b) => a.name.localeCompare(b.name));
+
+  const status: DiskSourceStatus = items.length === 0 ? 'error' : hadFailure ? 'partial' : 'ok';
+  return { source: { path: file, kind: 'file', exists: true, status }, items, warnings };
+}
+
+// ── run-board ────────────────────────────────────────────────────────────
+
+export interface RunBoardClaimedEvent {
+  v: 1;
+  ts: string;
+  runId: string;
+  event: 'claimed';
+  writeSet: string[];
+}
+
+export interface RunBoardTerminalEvent {
+  v: 1;
+  ts: string;
+  runId: string;
+  event: 'terminal';
+  outcome: string;
+  note?: string;
+}
+
+export type RunBoardEvent = RunBoardClaimedEvent | RunBoardTerminalEvent;
+
+export interface RunBoardView {
+  source: DiskSource;
+  items: RunBoardEvent[];
+  warnings: ReadWarning[];
+}
+
+/** 并发协调看板, 真源 `.omd/run-board.jsonl`。保持文件行序, 单行坏不炸全表(partial)。 */
+export function readRunBoard(cwd: string): RunBoardView {
+  const file = join(cwd, '.omd', 'run-board.jsonl');
+  const warnings: ReadWarning[] = [];
+  if (!existsSync(file)) return { source: { path: file, kind: 'file', exists: false, status: 'missing' }, items: [], warnings };
+
+  let raw: string;
+  try {
+    raw = readFileSync(file, 'utf-8');
+  } catch (err) {
+    pushReadWarning(warnings, file, err);
+    return { source: { path: file, kind: 'file', exists: true, status: 'error' }, items: [], warnings };
+  }
+
+  const lines = raw.split('\n');
+  const items: RunBoardEvent[] = [];
+  let hadFailure = false;
+  let sawNonBlankLine = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = (lines[i] ?? '').trim();
+    if (!line) continue;
+    sawNonBlankLine = true;
+    const lineNo = i + 1;
+    try {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      if (parsed.event === 'claimed' && typeof parsed.runId === 'string' && Array.isArray(parsed.writeSet)) {
+        items.push(parsed as unknown as RunBoardClaimedEvent);
+      } else if (parsed.event === 'terminal' && typeof parsed.runId === 'string' && typeof parsed.outcome === 'string') {
+        items.push(parsed as unknown as RunBoardTerminalEvent);
+      } else {
+        throw new Error(`未知 event 或字段缺失: ${line.slice(0, 200)}`);
+      }
+    } catch (err) {
+      pushReadWarning(warnings, `${file}:${lineNo}`, err);
+      hadFailure = true;
+    }
+  }
+
+  const status: DiskSourceStatus = !sawNonBlankLine ? 'empty' : items.length === 0 ? 'error' : hadFailure ? 'partial' : 'ok';
+  return { source: { path: file, kind: 'file', exists: true, status }, items, warnings };
+}
+
+// ── Profiles ─────────────────────────────────────────────────────────────
+//
+// 与 harness/profiles/profile.ts 的 loadProfiles() 同款字段级合并语义, 但**不复用它的返回值
+// 反推来源状态**(它会把两层压成一个 Map, 看不出 project 层是缺目录还是空目录)。
+// 这里独立扫两层磁盘, 换来 sources.project 能区分 missing/empty。
+
+export interface ProfileItem extends ProfileSpec {
+  /** 合并结果实际使用的来源;顺序恒 builtin → project。 */
+  sourceLayers: Array<'builtin' | 'project'>;
+}
+
+export interface ProfilesView {
+  sources: { builtin: DiskSource; project: DiskSource };
+  items: ProfileItem[];
+  warnings: ReadWarning[];
+}
+
+function scanProfileDir(dir: string, warnings: ReadWarning[]): { source: DiskSource; specs: Map<string, ProfileSpec> } {
+  if (!existsSync(dir)) return { source: { path: dir, kind: 'directory', exists: false, status: 'missing' }, specs: new Map() };
+
+  let files: string[];
+  try {
+    files = readdirSync(dir).filter((n) => n.endsWith('.json'));
+  } catch (err) {
+    pushReadWarning(warnings, dir, err);
+    return { source: { path: dir, kind: 'directory', exists: true, status: 'error' }, specs: new Map() };
+  }
+  if (files.length === 0) {
+    return { source: { path: dir, kind: 'directory', exists: true, status: 'empty' }, specs: new Map() };
+  }
+
+  const specs = new Map<string, ProfileSpec>();
+  let hadFailure = false;
+  for (const file of files) {
+    const abs = join(dir, file);
+    try {
+      const raw = JSON.parse(readFileSync(abs, 'utf-8')) as Partial<ProfileSpec>;
+      // 判据与引擎侧 `profiles/profile.ts:readDirProfiles` 必须一致 —— 这里是同一条规则的**第二份**
+      // 实装 (视图层自己扫盘, 不走 loadProfiles)。2026-08-12 D-3 把 persona 降级为可选后, 这里一度
+      // 还留着 `typeof raw.persona !== 'string'` 就拒: 结果是**引擎认、控制台不认**同一份档案 ——
+      // 一个没有报错、只是列表里少一行的静默分歧。改判据时两处一起改, 或哪天把这份合并回去。
+      if (typeof raw !== 'object' || raw === null || typeof raw.name !== 'string') {
+        throw new Error('name 缺失或类型错');
+      }
+      specs.set(raw.name, raw as ProfileSpec);
+    } catch (err) {
+      pushReadWarning(warnings, abs, err);
+      hadFailure = true;
+    }
+  }
+
+  const status: DiskSourceStatus = specs.size === 0 ? 'error' : hadFailure ? 'partial' : 'ok';
+  return { source: { path: dir, kind: 'directory', exists: true, status }, specs };
+}
+
+/**
+ * Profiles 视图:内置 (`src/harness/profiles/builtin/*.json`) + 项目层 (`.omd/profiles/*.json`)
+ * 字段级合并(project 字段胜, 未写字段保留 builtin), 但两层的 DiskSource 独立判定 —— 不从
+ * 合并结果反推来源状态。
+ */
+export function readProfiles(cwd: string): ProfilesView {
+  const warnings: ReadWarning[] = [];
+  const builtinDir = join(import.meta.dir, '..', 'harness', 'profiles', 'builtin');
+  const projectDir = join(cwd, '.omd', 'profiles');
+  const builtinScan = scanProfileDir(builtinDir, warnings);
+  const projectScan = scanProfileDir(projectDir, warnings);
+
+  const merged = new Map<string, ProfileItem>();
+  for (const [name, spec] of builtinScan.specs) merged.set(name, { ...spec, sourceLayers: ['builtin'] });
+  for (const [name, spec] of projectScan.specs) {
+    const base = merged.get(name);
+    merged.set(name, base ? { ...base, ...spec, sourceLayers: ['builtin', 'project'] } : { ...spec, sourceLayers: ['project'] });
+  }
+
+  const items = [...merged.values()].sort((a, b) => a.name.localeCompare(b.name));
+  return { sources: { builtin: builtinScan.source, project: projectScan.source }, items, warnings };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Workflows 外层: playbook 只读视图 (控制台 SDD D-5/D-7)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface PlaybooksView {
+  sources: { builtin: DiskSource; project: DiskSource };
+  items: Playbook[];
+  warnings: ReadWarning[];
+}
+
+/**
+ * Playbooks 视图:内置 (`templates/playbooks/`) + 项目层 (`.omd/playbooks/`) 叠加, 项目层同名胜。
+ *
+ * **为什么这里要 catch, 而 `loadPlaybooks` 自己是 fail-closed 的**:那个函数刻意选了「一份坏
+ * playbook → 整次加载抛错」—— 因为静默跳过会让调用方把"它被拒收"读成"没这个 playbook"。
+ * 那条纪律对**引擎**成立;对**只读视图**不成立:一份坏 playbook 不该让控制台整页打不开。
+ * 所以这里接住异常, 但**不吞证据** —— 原文进 warnings, 读的人看得见"这层没读成"而不是空列表。
+ * 两种"空"因此可分:`status:'missing'`(目录不在)vs `status:'error'`(读了但拒收)。
+ */
+export function readPlaybooks(cwd: string): PlaybooksView {
+  const warnings: ReadWarning[] = [];
+  const builtinDir = BUILTIN_PLAYBOOK_DIR;
+  const projectDir = join(cwd, PROJECT_PLAYBOOK_DIR);
+  const dirSource = (dir: string): DiskSource =>
+    existsSync(dir)
+      ? { path: dir, kind: 'directory', exists: true, status: 'ok' }
+      : { path: dir, kind: 'directory', exists: false, status: 'missing' };
+
+  let items: Playbook[] = [];
+  let failed = false;
+  try {
+    items = [...loadPlaybooks(cwd).values()].sort((a, b) => a.name.localeCompare(b.name));
+  } catch (err) {
+    pushReadWarning(warnings, `${builtinDir} | ${projectDir}`, err);
+    failed = true;
+  }
+
+  const stamp = (dir: string): DiskSource => {
+    const s = dirSource(dir);
+    // 加载整体失败时, 两层都标 error —— 抛错不指名是哪一层的锅, 不猜。
+    return failed && s.exists ? { ...s, status: 'error' } : s;
+  };
+  return { sources: { builtin: stamp(builtinDir), project: stamp(projectDir) }, items, warnings };
 }

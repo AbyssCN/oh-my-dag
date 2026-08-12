@@ -27,6 +27,11 @@ import {
   readReadout,
   readAttention,
   readSeats,
+  readSkills,
+  readMcpServers,
+  readPlaybooks,
+  readRunBoard,
+  readProfiles,
   readNodeOutput,
   readPathMap,
   readRun,
@@ -117,6 +122,12 @@ export function createDaemonFetch(deps: DaemonDeps): (req: Request) => Promise<R
     if (p[0] === 'readout' && req.method === 'GET') return json(readReadout(cwd));
     if (p[0] === 'attention' && req.method === 'GET') return json(readAttention(cwd));
     if (p[0] === 'seats' && req.method === 'GET') return json(readSeats(cwd));
+    // Skills / MCP / 并发协调 / Profiles: 只读清单端点 (S10, D-20)。
+    if (p[0] === 'skills' && req.method === 'GET') return json(readSkills(cwd));
+    if (p[0] === 'mcp' && req.method === 'GET') return json(readMcpServers(cwd));
+    if (p[0] === 'playbooks' && req.method === 'GET') return json(readPlaybooks(cwd));
+    if (p[0] === 'run-board' && req.method === 'GET') return json(readRunBoard(cwd));
+    if (p[0] === 'profiles' && req.method === 'GET') return json(readProfiles(cwd));
     if (p[0] === 'maps' && req.method === 'GET') {
       if (p.length === 1) return json(listPathMaps(cwd));
       const map = readPathMap(cwd, p[1]!);
