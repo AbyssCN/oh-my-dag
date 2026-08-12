@@ -26,6 +26,8 @@ import type { PlanLedger } from '../../harness/plan-ledger.js';
 import { recordDagRun, type DagRecorder } from '../../harness/dag-record.js';
 import { computeCost } from '../../model/cost-ledger.js';
 import { liveRunsNotice } from '../../harness/board/dag-run-board.js';
+import { envSummaryLine } from '../../model/bootstrap.js';
+import { listProviders } from '../../model/providers.js';
 import { defaultIsAlive } from '../run-store.js';
 
 // renderProgressAscii 已抽到 ./dag-ascii (纯函数, statusline 复用); 此处保留 re-export 兼容既有 importer。
@@ -789,12 +791,18 @@ function makeDagRun(deps: DagToolDeps): OmdMcpTool {
       // 不必排除自己。为什么值得占回执两行: 2026-08-12 一天里两次重复派工都跑到实施期才被
       // 人眼发现, 而「在跑的是什么」这一条信息当时就在盘上, 没有任何出口把它印出来。
       const liveNotice = liveRunsNotice(cwd, runId);
+      // env 摘要 (片 C, 2026-08-12): 它此前每进程往 stderr 印一行, 没人开那些日志。
+      // 移到这里 —— 一个 run 印一次, 印在派工的人正在读的字里。`config=` 那一位尤其:
+      // 2026-08-12 我据 `~/.omd/config.json` 判了一次资源不可用并撤了两个健康的 run,
+      // 而仓内那份才生效 (role-models.ts:79-88 不越仓边界)。
+      const envLine = envSummaryLine(listProviders());
       return {
         content: [{
           type: 'text' as const,
           text:
             `runId: ${runId}\nstatus: running\n` +
             `(子进程 pid ${spawned.pid ?? '?'}, 日志 ${spawned.logPath})\n` +
+            `env: ${envLine}\n` +
             `它不随本会话结束而死。查进度 dag_status runId=${runId} (若刚起跑查无此 run, 等几秒)。` +
             (liveNotice.length ? `\n\n${liveNotice.join('\n')}` : ''),
         }],
