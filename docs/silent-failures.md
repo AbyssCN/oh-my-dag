@@ -1084,6 +1084,7 @@ import 得到、类型对得上、调用写得出来。
 | 写集声明对账(越界即 orphan) | `src/harness/write-set.ts` · `write-set.test.ts` | 跑后 diff 走五档归属阶梯;done/历史声明不放行;无声明 → undeclared 不红(**带反向自检**:把 b.ts 放行 → 红;把 done 声明也算数 → 红) | S-29 |
 | 谎报完成硬矛盾闸 | `src/harness/plan/false-completion.ts` · `false-completion.test.ts` · `src/harness/dag/engine.ts` | 声称完成 ∧ 验收命令实败 → 判 fail;LLM judge 前确定性先行,被点节点铸票(**带反向自检**:把 exit 1 当支撑声称 → 红) | S-30 |
 | 证据字段的真发射点还在 | `src/harness/agent-leaf-shellruns-wiring.test.ts` | `shellRuns` 生产端(在代码里、不在注释上、条件形状不变)与消费端(`claimed-actions` 还读它)两头都钉(**带反向自检**:删发射行 → 2 红;注释掉 → 1 红;消费端改名 → 1 红) | S-35 S-30 |
+| 产物闸的输入字段还在发(同一行的邻居) | `src/harness/agent-leaf-filestouched-wiring.test.ts` | `filesTouched` 生产端**无条件**发(空数组是读数,缺席会被下游 `?? []` 读成「没碰文件」→ 恒冤杀复活)+ engine 产物闸还在读(**带反向自检**:删发射行 → 3 红;改成有条件发射 → 1 红;消费端改名 → 1 红) | S-35 |
 | 隔离档 git 能用 | `src/harness/hooks/bwrap.ts` · `bwrap-containment.test.ts:98` | 真造「主 repo + worktree」跑真 bwrap:ro 共享 `.git` + rw 本树 gitdir;jail 内写 ref/objects 仍拒(**带反向自检**:删 `gitBinds` 段 → ② 红,①③ 仍绿。⚠ 无 bwrap 的机器自报**未测**,不是绿) | S-34 |
 | 空转签名不被 `cd` 前缀吃掉 | `src/harness/hooks/drift-detector.ts` · `drift-detector.test.ts:103` | 取 50 字符窗口前先剥 `cd <路径> &&` 链,尺子不因 jail 路径变钝(**带反向自检**:去掉 `stripCdPrefix` → 三条不同命令签名全等,红) | S-34 |
 
