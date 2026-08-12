@@ -545,7 +545,18 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
     description:
       'Run a shell command in the working root. Irreversible commands (rm -rf /, git push --force, ' +
       'DROP TABLE, …) and commands that read credential files are refused.',
-    promptSnippet: 'bash(command, timeout?) — 在工作根跑 shell (不可逆命令与读凭证文件会被拒)。',
+    // ⚠ 末句不是客套话。账在 `shell-writes.ts` 头注: 「两次真跑两次中招, 第一次还连累下游
+    // 四个复核节点全 skip —— **活是干完了的**」。产物闸只认受控写工具的 filesTouched,
+    // 经 bash 写的目标是**推断**而本仓明写「节点成败/产物闸/judge 一律不看它」
+    // (failure-trace.ts:29) —— 闸判得没错, 所以修的是这里: 让执行体一开始就别那么写。
+    // 只说「别用」而不说后果, 执行体没有理由听, 所以后果也写进去。
+    // ⚠ 别把 2026-08-12 run 360405a5 算进这条的账: 那次第一轮 impl-types 判 empty-artifact
+    // 后 conductor 重规划, 第二轮五个 impl 节点全绿 —— 它真正卡死在 green-gate.__r1 撞上
+    // **另一个并发 run** 半成品的 tsc 错。那是多 run 共用一棵树的代价, 与本条无关。
+    promptSnippet:
+      'bash(command, timeout?) — 在工作根跑 shell (不可逆命令与读凭证文件会被拒)。' +
+      '⚠ 写文件用 write/edit, 别用 bash 重定向 (`>` `tee` `sed -i`): 产物闸只认受控写工具, ' +
+      '经 bash 写的文件它**看不见**, 节点会被判 empty-artifact 并级联跳过下游。',
     parameters: BASH_SCHEMA,
     executionMode: 'sequential',
     async execute(_id, params, signal) {
