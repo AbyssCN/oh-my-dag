@@ -189,6 +189,47 @@ describe('getSummary 的节点账', () => {
     expect(t).toContain('nodes: 0 done / 0 failed / 0 skipped / 1 running / 0 pending (共 1)');
   });
 
+  test('★ INV-9: 重规划留痕 —— replan 事件不许被静默丢掉', () => {
+    // 2026-08-12 run 360405a5: 这张图重规划过 2 轮 —— 轮 1 的 green-gate 真跑过并挂在
+    // **另一个并发 run** 的 tsc 错上, 轮 2 才判的 empty-artifact。而 `progress` 只存每个
+    // 节点最后一次的状态, 于是「重规划过」这件事在摘要里完全不可见: 读的人会把轮 2 的
+    // 失败当成第一次失败, 去修一个其实是被跨 run 毒死的东西 (我本程就这么错了两次)。
+    // `DagNodeEvent` 里 `{ type: 'replan', parent, round, poisoned }` 一直都在,
+    // 只是 applyNodeEvent 的 switch 没有这一 case —— 事件落进去就没了。
+    const reg = makeReg(() => T0);
+    reg.register('r9', { goal: 'g' });
+    reg.start('r9');
+    reg.applyNodeEvent('r9', { type: 'planned', nodes: [{ id: 'a', kind: 'leaf' }] } as DagNodeEvent);
+    reg.applyNodeEvent('r9', {
+      type: 'replan',
+      parent: 'a',
+      round: 1,
+      poisoned: ['impl-types', 'green-gate'],
+    } as DagNodeEvent);
+    reg.applyNodeEvent('r9', { type: 'settle', id: 'a', status: 'done', kind: 'leaf' } as DagNodeEvent);
+    reg.succeed('r9', {});
+
+    const t = textOf(reg, 'r9');
+    // 怎么让它红: 拿掉 applyNodeEvent 的 'replan' case (回到静默丢弃) → 红。
+    expect(t).toContain('replan: 1 次');
+    // 毒集也要带出来 —— 「重规划过」不告诉你重规划了什么, 等于只响铃不指路
+    expect(t).toContain('impl-types');
+  });
+
+  test('★ INV-10: 没重规划过就不印那一行 —— 0 次是"没发生", 不是"没统计"', () => {
+    // 与四格「0 也印」相反, 这里刻意缺席: replan 是**事件**不是**分格**。
+    // 分格的 0 与缺席要分开(那是分母问题); 事件没发生就没有那一行(那是噪声问题)。
+    // 判别法: 前者回答「这一格是多少」, 后者回答「有没有发生过」。
+    const reg = makeReg(() => T0);
+    reg.register('r10', { goal: 'g' });
+    reg.start('r10');
+    reg.applyNodeEvent('r10', { type: 'planned', nodes: [{ id: 'a', kind: 'leaf' }] } as DagNodeEvent);
+    reg.applyNodeEvent('r10', { type: 'settle', id: 'a', status: 'done', kind: 'leaf' } as DagNodeEvent);
+    reg.succeed('r10', {});
+    // 怎么让它红: 改成无条件印 `replan: 0 次` → 红。
+    expect(textOf(reg, 'r10')).not.toContain('replan:');
+  });
+
   test('★ 失败态也要有节点账 —— 「为什么失败」的第一手就是它', () => {
     const reg = makeReg(() => T0);
     reg.register('r4', { goal: 'g' });

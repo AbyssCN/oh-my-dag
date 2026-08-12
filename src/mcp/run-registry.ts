@@ -44,6 +44,17 @@ export interface RunProgress {
   /** start 事件时刻 (ISO, settle 时清理) — running 行耗时由 now - startedAt 算出。 */
   startedAt: Record<string, string>;
   settled: Array<{ id: string; status: 'done' | 'failed' | 'skipped'; kind: string; model?: string }>;
+  /**
+   * 重规划留痕 (2026-08-12 补)。**缺席 = 没重规划过**, 不是「没统计」——
+   * 与四格计数「0 也印」相反, 这是**事件**不是**分格**: 分格回答「这一格是多少」,
+   * 事件回答「有没有发生过」, 没发生就该没有那一行。
+   *
+   * 为什么必须记: `planned` 每轮重规划**整体覆盖**、`settled` 只留每节点最后一次 ——
+   * 于是「这张图重规划过」在摘要里彻底不可见。run 360405a5 实测代价: 轮 1 的
+   * green-gate 真跑过并挂在**另一个并发 run** 的 tsc 错上, 轮 2 才判的 empty-artifact;
+   * 只看终态的人 (我) 把轮 2 当成第一次失败, 连着两次修错了对象。
+   */
+  replans?: Array<{ parent: string; round: number; poisoned: string[] }>;
 }
 
 /** 毫秒 → 人读耗时 (0s / 45s / 3m12s / 1h2m3s)。 */
@@ -368,6 +379,12 @@ export class RunRegistry {
         progress.started = progress.started.filter((id) => id !== e.id);
         delete progress.startedAt[e.id];
         break;
+      // ⚠ 这一 case 此前**不存在** —— replan 事件落进 switch 就被静默丢掉了 (2026-08-12 补)。
+      // 事件本身一直有 (`DagNodeEvent` 的 `{ type:'replan', parent, round, poisoned }`),
+      // 缺的只是这里接一下。不接的代价见 RunProgress.replans 的注。
+      case 'replan':
+        (progress.replans ??= []).push({ parent: e.parent, round: e.round, poisoned: [...e.poisoned] });
+        break;
     }
     rec.updatedAt = this.now().toISOString(); // 同 register/transition: 三处共用一个钟, 别漏第三处
     // 同 setNodeDetails: 活体进度写穿 —— parent 的 dag_status 读盘拿子进程 run 的进度。
@@ -472,6 +489,15 @@ export class RunRegistry {
       parts.push(
         `nodes: ${done} done / ${failed} failed / ${skipped} skipped / ${running} running / ${pending} pending (共 ${total})`,
       );
+      // 重规划留痕: 没发生就整行缺席 (事件不是分格, 见 RunProgress.replans 的注)。
+      // 带毒集 —— 只说「重规划过」不说「重规划了什么」, 等于只响铃不指路。
+      if (p.replans?.length) {
+        const poisoned = [...new Set(p.replans.flatMap((r) => r.poisoned))];
+        parts.push(
+          `replan: ${p.replans.length} 次` +
+            (poisoned.length ? ` (毒集 ${poisoned.slice(0, 8).join(', ')}${poisoned.length > 8 ? ` …+${poisoned.length - 8}` : ''})` : ''),
+        );
+      }
       // 在跑节点名只在 running 态有意义 (终态没有"在跑")。
       if (rec.status === 'running' && p.started.length) {
         const kindOf = new Map(p.planned.map((n) => [n.id, n.kind]));
