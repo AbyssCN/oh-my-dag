@@ -111,4 +111,48 @@ describe('profiles', () => {
     expect(ev).toBeDefined(); // 证据:文件名…
     expect(ev?.err.length).toBeGreaterThan(0); // …与错误原文
   });
+
+  /**
+   * T3 (D-3): `persona` 降级为**可选**。缺 persona 从"非法档案"变成"合法形态" ——
+   * 判据只剩 `name`。这条闸盯的是那个**静默**方向:旧判据会把缺 persona 的合法档案跳过,
+   * 而跳过是 warn 级的,调用方拿到的只是"这个 profile 不存在"。
+   */
+  test('T3/D-3 缺 persona 的档案是合法的 —— 照常加载, 且不产生 warn', () => {
+    writeProject('seat-only.json', { name: 'zz-seat-only', seat: 'deepseek:deepseek-v4-flash' } as ProfileSpec);
+
+    const spec = resolveProfile('zz-seat-only', cwd);
+    // 反向自检 (2026-08-12 实跑): 把 readDirProfiles 的判据改回
+    //   `|| typeof raw.persona !== 'string'` → `Received: undefined` → 红。
+    expect(spec).toBeDefined();
+    expect(spec!.seat).toBe('deepseek:deepseek-v4-flash');
+    expect(spec!.persona).toBeUndefined();
+    // 缺 persona 不是"坏文件", 所以不该留跳过证据 —— 有 warn 说明旧判据还在。
+    expect(warns.find((w) => w.file.endsWith('seat-only.json'))).toBeUndefined();
+  });
+});
+
+/**
+ * C-7 判据只有一份 (SDD 2026-08-11 卡与profile分工 D-12)。
+ *
+ * 迁移前 `design-review` 的判据表**同时**活在两处:profile 的 persona (2741 字符) 与
+ * `frontend-impl` 卡 body —— 同一批知识的两面、两份独立文本, 已在漂。漂了之后两边各自自洽,
+ * 症状静默。本闸盯的就是"判据又漂回 persona"这一个方向。
+ *
+ * 量的是**内置档案真身**, 不是临时目录里的影子 —— 影子测得再绿也拦不住内置文件回胖。
+ */
+describe('C-7 判据只有一份 (design-review 档案不再承载判据表)', () => {
+  test('内置 design-review 的 persona ≤200 字符, 且不含 p0/p1/p2 判据词', () => {
+    const spec = JSON.parse(readFileSync(join(BUILTIN_DIR, BUILTIN_FILE), 'utf8')) as ProfileSpec;
+    const persona = spec.persona ?? '';
+    // 反向自检 (2026-08-12 实跑): 把旧的 2741 字符判据表贴回 persona →
+    //   长度断言 `Expected: <= 200  Received: 2741` → 红。
+    expect(persona.length).toBeLessThanOrEqual(200);
+    const 判据词 = ['p0', 'p1', 'p2', '硬闸', '命中即报'].filter((w) => persona.includes(w));
+    expect(判据词).toEqual([]);
+    // 装配位字段一个都不许在瘦身里丢 (D-14: 它们是卡没有的东西, 且都不进 prompt)。
+    expect(spec.seat).toBeTruthy();
+    expect(spec.outputSchema).toBeTruthy();
+    expect(spec.ledgerPath).toBeTruthy();
+    expect(spec.frontendGlob).toBeTruthy();
+  });
 });

@@ -91,7 +91,11 @@ describe('profile 调用期接缝', () => {
 
     expect(prompts[0]).not.toContain('PROFILE PERSONA SENTINEL');
     expect(prompts[1]).toContain('PROFILE PERSONA SENTINEL');
-    expect(prompts[1]).toContain('[skill runtime-review-skill]\nSKILL BODY SENTINEL');
+    // C-1 (SDD 卡与profile分工 D-4): skill **正文**不再预载进 `<persona>` 段 —— 它曾经是整个
+    // prompt 最前面、比 persona 本身还贵的一段。本行此前断言的正是被撤掉的那个行为, 现在反过来
+    // 当闸用。反向自检: 恢复 agent-leaf 的 `profileSkillsContent` 拼接 → 本断言立刻红。
+    // ⚠ 工具面不受影响: createSkillTools 仍无条件挂, agent 照样能按需 read_skill (下面 allowedTools 已覆盖)。
+    expect(prompts[1]).not.toContain('SKILL BODY SENTINEL');
     expect(options[1]?.model).toBe('claude-sonnet-5');
     expect(options[0]?.allowedTools).toContain('mcp__omd__write');
     expect(options[1]?.allowedTools).toContain('mcp__omd__read');

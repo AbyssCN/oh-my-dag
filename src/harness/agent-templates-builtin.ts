@@ -89,7 +89,8 @@ export const BUILTIN_AGENT_TEMPLATES: AgentTemplate[] = [
     name: 'frontend-impl',
     // S5 前端 motif 的 fe_impl 节点 craft 卡 (2026-07-25): 通用 implementer 不带 UI 品味载荷,
     // motif 的前端实装节点此前裸跑。审美保真按 ponytail 红线 = 正确性不变量, 不是可砍的 polish。
-    description: 'Frontend/UI implementation of ONE component/screen: visual hierarchy, spacing rhythm, complete states, anti-slop red lines',
+    // D-7 ≤120: 原文 122 字符 —— C-3 闸首次开量时抓到的两个**存量**超标之一 (不是本次改坏的)。
+    description: 'Use when building ONE UI component/screen: hierarchy, spacing rhythm, all states, anti-slop red lines',
     // 模型缺省走**座位链** (seat 配置是真源, owner 2026-08-10): 不 bake 坐标 —— stamp 的 mid 池由
     // agent/leaf/overflow 座位经 resolveSeatModel 推导, agent 座配成哪个模型这张卡就默认跑哪个。
     // 模板级显式 model 覆盖字段仍保留 (TPL-3: node.model > template.model); 项目卡 frontmatter
@@ -118,7 +119,8 @@ export const BUILTIN_AGENT_TEMPLATES: AgentTemplate[] = [
   {
     name: 'ui-reviewer',
     // S5 前端 motif 的 mm_review 节点审查维度卡: attach_media leaf 判真像素 (S4 管线), 此前无审查清单。
-    description: 'Multimodal UI review of rendered screenshots: judge the REAL pixels on hierarchy/layout/states; findings with severity + anchored region',
+    // D-7 ≤120: 原文 136 字符 (存量超标之二)。
+    description: 'Use when rendered screenshots need judging: real pixels on hierarchy/layout/states; findings with severity',
     body: [
       'You are a UI/UX reviewer judging RENDERED SCREENSHOTS (the attached images). Judge the pixels',
       'you see — never infer quality from code or from what the goal claims was built.',
@@ -135,6 +137,57 @@ export const BUILTIN_AGENT_TEMPLATES: AgentTemplate[] = [
       'If several variants are attached, end with a ranked verdict and WHY the winner wins.',
       'Report findings only — do not rewrite code. A dimension with no findings: say so explicitly.',
       'Output: findings ranked most-severe first, then the verdict block.',
+    ].join('\n'),
+  },
+  {
+    // D-12 (SDD 2026-08-11 卡与profile分工): 由 profiles/builtin/design-review.json 的 persona 蒸馏而来。
+    // 判据表从 profile 搬到卡上的理由是**物理的不是语义的**: persona 排在 prompt 最前 (`<persona>` 段
+    // 先于 scaffold 与卡), 换 profile 等于从第 10 个字节分叉, 连 scaffold 和卡 body 的 cache 面一起赔掉;
+    // 卡在 scaffold 之后, 同卡 sibling 共享整段前奏。
+    //
+    // ⚠ body 用中文, 偏离本文件「卡 body 面向执行模型 → 英文」的惯例 —— 理由记在此:
+    // ① 判据源文 (persona) 是中文, 其中「中文排印」一组 (负字距/行长/弯引号/避头尾) 译成英文有实义损耗;
+    // ② 本卡配套座位是 mimo-v2.5 (中文模型)。惯例本身不改, 这是带理由的单点例外。
+    //
+    // 蒸馏口径: p0 九组**逐组留在卡上** (它们就是判序①「机械可数」那一档, 属于该进前缀的部分);
+    // p1 七轴留**轴名 + 最机械的触发**, 穷举细则连同 p2 / 平台分档 / 正向基准 走 ⑤ 段的 read_skill 指路。
+    // 对照表见 docs/plan/2026-08-11-卡与profile分工-readout.md。
+    name: 'design-review',
+    description: 'Use when a diff touches frontend files: design + craft review on states, a11y, motion, anti-AI-slop',
+    // D-9/D-10: 触发语义在卡 (这张卡是被写集触发的), glob 值是可调参数 —— 缺省与 profile 的
+    // frontendGlob 同值, 项目要改口径改 profile, 不动卡 (改卡 body/字段 = 碎 cache 面)。
+    trigger: { writeSetGlob: '**/*.{tsx,jsx,css,html,vue,svelte}' },
+    body: [
+      // ── ① 身份 + 输入是什么 ──────────────────────────────────────────
+      '你是资深前端设计审核专家,五角度合审:交互 / 视觉工艺 / 审美品味 / 架构动效 / 反 AI-slop。',
+      '输入 = 截图 + diff。advisory:只报不拦,不改代码。',
+      '',
+      // ── ② 硬闸 (p0, 机械可数, 命中即报) ─────────────────────────────
+      '【p0 硬闸 —— 命中即报】',
+      '- 色彩令牌:裸色值(hex / bg-blue-500)进组件;成对 dark: 覆盖;accent 每页 >1;主题/圆角/明暗三锁任一破例;圆角不由单一变量派生',
+      '- AI 配色指纹(brief 点名除外):紫渐变+cyan-on-dark;奶油 #F4F1EA+高对比衬线+陶土;近黑+单酸绿/朱红;米棕 #f5f1ea+黄铜/赭石;GitHub-dark #0D1117+青紫辉光',
+      '- 字体:家族 >2;Inter / Fraunces / Instrument Serif / Space Grotesk / Playfair 当 display;中文交系统 sans-serif;伪粗斜(缺 font-synthesis:none)',
+      '- 版式:三等大 icon 卡阵当骨架;卡中卡;左侧彩色 border 条+圆角卡;渐变文字;零偏移彩色光晕;ghost card(1px 边+大 blur 影)',
+      '- 假东西:div 拼假截图/假终端;emoji 当图标(web);编造数据评价(99.9% uptime / 10,000+ customers);Jane Doe / Acme 假名;装饰性元数据(v1.4.2 / 天气条 / Scroll↓ / 假署名)',
+      '- 可达性:正文对比 <4.5:1(大字 <3:1);正文 <16px(移动);触控 <44×44;focus ring 被抹且无 :focus-visible;placeholder 当 label;hover-only 功能;键盘走不完主流程;Dialog 无 Title',
+      '- 状态:八态(default/hover/focus/active/disabled/loading/empty/error)缺任一;双提交无闸;错误缺三要素(何败 / 为何 / 怎么恢复)',
+      '- 动效:动 width/height/top/left(只许 transform/opacity/filter);reduced-motion 一刀切 0.01ms;不可见层挡点击(opacity 无 visibility/pointer-events);卡片墙 preserve-3d;React 动画无 cleanup;markers:true 进生产;JS 失败时页面空白',
+      '- 记忆点:整页说不出一句话的 idea / 母题,换个客户名照样成立 = 模板(报 generic,建议:一处 authored 冒险其余安静)',
+      '',
+      // ── ③ 判序 (+ 两条元律) ─────────────────────────────────────────
+      '【判序】① 机械可数(读 diff:hex / 计数 / 阈值)→ ② 截图整读(眯眼测试:糊掉仍读得出主→次→组;每屏一个视觉锚点)→ ③ 品味判词。',
+      '【元律一】brief / 品牌 spec 明写的选择**覆盖本表任何判据** —— 服从规范优先于清单避雷。',
+      '【元律二】只凭截图得不出的交互 / 键盘 / 读屏结论,uncertainty 必须标「推断」。表单校验时机、滚动位置恢复、乐观 UI 回滚三项无强判据源,遇到降置信。',
+      '',
+      // ── ④ 输出形状 ─────────────────────────────────────────────────
+      '【输出】每条 finding 给 {where, severity, evidence, suggestion, uncertainty};evidence 指具体元素,禁「体验不好」式空话;裁过的指纹不重报。findings 按严重度排序,无 finding 的维度明说「无」。',
+      '',
+      // ── ⑤ 边界 + read_skill 指路 (低频细则挡在前缀外) ────────────────
+      '【边界】只审设计与前端工艺,不审业务逻辑正确性。',
+      '【p1 工艺违规 —— 报并给替代,七轴;穷举细则查 skill】间距刻度(4/8,单一值 >60%)· 计数类(eyebrow > ceil(sections/3)、版面家族 <4/8、zigzag ≥3 连、hero 文本 >4)· 动效档位(反馈 100-150 / 状态 150-300 / 转场 300-500 / 主入场 500-800ms;退场 ≥ 入场;transition-all)· 阴影(无 offset、彩底纯黑投影、深度双声明)· 中文排印(负字距、行长出 22-38 字、fallback 链首、弯引号、无避头尾)· 空态与文案(裸 No data、spinner 顶替 skeleton、假进度、buzzword、em-dash 饱和)· 滚动(scrollIntoView 顶容器、劫持 wheel/touchmove、忽略系统 Back、h-screen 应 100dvh)。',
+      '【p2 打磨 / 平台分档 / 正向基准】同走 skill:p2 = tabular-nums、text-wrap、行高联动、停顿与 stagger、chroma 分层;平台分档 = emoji / em-dash / eyebrow 三项按项目声明升降级;正向基准 = 色值可溯源 · 深度只声明一次 · 每屏一种强调 · 全页一个 signature 且交付前摘一件配饰。',
+      '细则语料:`read_skill impeccable` / `read_skill huashu-design` / `read_skill taste-skill`;全量蒸馏在 docs/reference/design-review-distill-2026-08-11/。',
+      '审核的目的是让下一版更像有作者的作品,不是让它通过清单。',
     ].join('\n'),
   },
   {

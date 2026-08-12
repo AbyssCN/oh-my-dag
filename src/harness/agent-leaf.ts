@@ -74,7 +74,7 @@ import { LEAF_HARNESS_CORE } from './harness-prompts';
 import { createOmdAgentTools, type AnyOmdTool } from './agent-tools';
 import { createSkillTools, type SkillToolDeps } from './skills/skill-tool';
 import type { LeafProfile } from './profiles/profile';
-import { defaultSkillRoots, loadSkillSourceByName } from './skills/skills';
+import { defaultSkillRoots } from './skills/skills';
 import { createMcpClientTools } from '../mcp/client/meta-tools';
 import type { McpPoolDeps } from '../mcp/client/pool';
 import type { McpCallLedger } from '../mcp/client/call-ledger';
@@ -868,18 +868,9 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
 
   // S3 read_skill umbrella (D-S3-5): 同一组装段挂 createSkillTools, roots 显式注入含 cwd 项目根, 与 mcpTools 并列进拼装点。
   // 零 skill 不挂 (skill-tool.ts:52 短路), 保证 I-1 零 skill 仓 tools 数组与 S2 基线字节相同。
-  // profile.skills: 已解析的岗位档案声明的 skill 名 → 在 roots 里定位并预载正文 (不进 promptVersion)。
-  // 渲染函数按调用期的 leafProfile (input.profile ?? opts.profile) 求值, 不在构造期烤死 ——
-  // runner 跨节点复用, 每次调用的 profile 可以不同 (同 leafProfile 的 D-3 边界)。
+  // profile.skills: 已解析的岗位档案声明的 skill 名, 仍读取供 agent 按需 read_skill 定位, 不再预载正文进 prompt
+  // (O-1 2026-08-11: 撤 skill 正文预载, createSkillTools 不动, 不建并行渲染路径)。
   const skillRoots = opts.skillDeps?.roots ?? defaultSkillRoots(cwd);
-  const renderProfileSkills = (profile: LeafProfile | undefined): string =>
-    profile?.skills
-      ?.map((name) => {
-        const src = loadSkillSourceByName(name, skillRoots);
-        return src ? `[skill ${name}]\n${src.body.trim()}` : null;
-      })
-      .filter((s): s is string => s !== null)
-      .join('\n\n') ?? '';
   const skillTools = createSkillTools({ roots: skillRoots, ...(opts.skillDeps?.cwd ? { cwd: opts.skillDeps.cwd } : {}) });
   const excluded = new Set(opts.hashlineEdit ? ['edit'] : []);
   const availableTools = [...baseTools, ...hashlineTools, ...mcpTools, ...skillTools, ...(opts.customTools ?? [])];
@@ -943,8 +934,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // 而不是"引擎这一版怎么包装" —— 混进来会让版本逐节点漂, 也就分不了组。
     // profile.persona 与 profile skills 同此边界: 不进 promptVersion, 不建并行 prompt 构建路径。
     const promptVersion = promptVersionOfText(scaffold);
-    const profileSkillsContent = renderProfileSkills(leafProfile);
-    const combinedPersona = [opts.persona, leafProfile?.persona, profileSkillsContent].filter(Boolean).join('\n\n');
+    const combinedPersona = [opts.persona, leafProfile?.persona].filter(Boolean).join('\n\n');
     const routedPrompt = combinedPersona ? `<persona>\n${combinedPersona}\n</persona>\n\n${disciplined}` : disciplined;
 
     // advisor(NOTES 2026-08-10):pi 座内部升档 —— 本次运行注入无参 advisor 工具,prompt 面按

@@ -16,7 +16,7 @@ import { logger } from '../logger';
 export interface ProfileSpec {
   name: string;
   seat?: string;
-  persona: string;
+  persona?: string;
   skills?: string[];
   tools?: string[];
   outputSchema?: string;
@@ -44,8 +44,8 @@ function readDirProfiles(dir: string, layer: string): Map<string, ProfileSpec> {
     const abs = join(dir, file);
     try {
       const raw = JSON.parse(readFileSync(abs, 'utf8')) as Partial<ProfileSpec>;
-      if (typeof raw !== 'object' || raw === null || typeof raw.name !== 'string' || typeof raw.persona !== 'string') {
-        logger.warn({ file: abs, err: 'name/persona 缺失或类型错' }, `profiles[${layer}]: 跳过非法档案`);
+      if (typeof raw !== 'object' || raw === null || typeof raw.name !== 'string') {
+        logger.warn({ file: abs, err: 'name 缺失或类型错' }, `profiles[${layer}]: 跳过非法档案`);
         continue;
       }
       out.set(raw.name, raw as ProfileSpec);

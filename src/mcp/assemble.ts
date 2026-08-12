@@ -56,6 +56,7 @@ import { prunePass } from '../harness/plan-passes/prune-pass';
 import { dedupPass } from '../harness/plan-passes/dedup-pass';
 import { stampPass } from '../harness/plan-passes/stamp-pass';
 import { evidencePass } from '../harness/plan-passes/evidence-pass';
+import { triggerPass } from '../harness/plan-passes/trigger-pass';
 import { loadAgentTemplates } from '../harness/agent-templates';
 import { modelFamily } from '../model/channels';
 import { isStrongCoord } from '../model/model-ratings';
@@ -540,6 +541,18 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
         // D-11 挖矿日志: (goal, 图形状指纹, 无卡命中) —— S4 图形状挖矿与卡自扩的前置数据。
         // 三元组的 oracle 结果那一半在执行完成后由 run 汇总记 (规划期拿不到)。
         logger.info({ goal: plan.name, shape, noCardHits }, '[omd/mcp] evidence pass: 图形状指纹 (D-11 挖矿信号)');
+        return plan;
+      },
+      // 卡触发闸 (SDD 2026-08-11 卡与profile分工 D-9/D-11)。**同样排在 stamp 之前**, 与 evidence-pass
+      // 同一条理由: 本 pass 会新增节点, 排在 stamp 后补挂的审核节点拿不到档位模型 = 白补 (C-6 钉的就是这条)。
+      // 放在 evidence 之后: 证据链补出来的渲染/校验节点是 command, 不带 output_path 也不该触发设计审核 ——
+      // 让它们先落地再算写集, 不会改变结果, 但顺序固定下来读的人不用猜。
+      (p) => {
+        const { plan, attached, alreadyPresent } = triggerPass(p, { templates: loadAgentTemplates({ root: cwd }) });
+        if (attached.length) logger.info({ attached }, '[omd/mcp] trigger pass: 按写集补挂卡审核节点 (D-9, advisory 不上关键路径)');
+        // 「命中了但没补」要念出来 —— 与「没命中」在读数上必须分得开, 否则事后看不出闸有没有真跑 (坑 #1)。
+        if (alreadyPresent.length)
+          logger.info({ alreadyPresent }, '[omd/mcp] trigger pass: 写集命中但图上已有该卡节点 → 不重复补 (TRG-2 幂等)');
         return plan;
       },
       (p) => {

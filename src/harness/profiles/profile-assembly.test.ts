@@ -93,10 +93,13 @@ describe('G-3: design-review profile injection', () => {
     const prof = resolveProfile('design-review', cwd);
     expect(prof).toBeDefined();
 
-    // persona: 非空字符串, 含核心职责描述
-    expect(typeof prof!.persona).toBe('string');
-    expect(prof!.persona.length).toBeGreaterThan(10);
-    expect(prof!.persona).toContain('审核');
+    // persona: 非空字符串, 含核心职责描述。
+    // D-3 后 persona 是**可选**字段 → 这里先硬断言它在, 再用收窄后的局部量断长度:
+    // 用 `!` 糊过去会让「档案真的丢了 persona」退化成类型层面的沉默, 而这条测试要的正是它在。
+    const { persona } = prof!;
+    if (typeof persona !== 'string') throw new Error('design-review 内置档案缺 persona (本测试要求它存在)');
+    expect(persona.length).toBeGreaterThan(10);
+    expect(persona).toContain('审核');
 
     // seat: 非空, 已设到具体模型坐标
     expect(typeof prof!.seat).toBe('string');
@@ -232,6 +235,9 @@ describe('G-7: unknown-profile mutation sensitivity', () => {
     const known = resolveProfile('design-review', cwd);
     expect(known).toBeDefined();
     expect(known!.name).toBe('design-review');
-    expect(known!.persona.length).toBeGreaterThan(0);
+    // 同上 (D-3 persona 可选): 硬断言存在, 再量长度 —— 不用 `!` 绕过。
+    const knownPersona = known!.persona;
+    if (typeof knownPersona !== 'string') throw new Error('design-review 内置档案缺 persona (本测试要求它存在)');
+    expect(knownPersona.length).toBeGreaterThan(0);
   });
 });

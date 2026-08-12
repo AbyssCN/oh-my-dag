@@ -45,6 +45,13 @@ export interface AgentTemplate {
    * 丢弃 + warn, 卡照常加载, TPL-1 fail-open) — 加载器是纯件, 注册表在调用方手里, 不在此校验。
    */
   mcp?: string[];
+  /**
+   * 可选触发声明 (D-9/D-10) — 触发语义归卡 (这张卡该在什么写集变动后被补挂审核),
+   * glob 参数值仍由调用方 (trigger-pass) 结合 profile/plan 传入; 此字段只声明"此卡参与触发"。
+   * 词法层: writeSetGlob 是与节点 output_path∪write_set 做交集判定的 glob 模式串。
+   * 加载期只做形状校验 (非法 → 丢弃字段, 卡照常加载, TPL-1 fail-open)。
+   */
+  trigger?: { writeSetGlob: string };
   /** 卡片正文 (方法论+检查单+输出纪律) — 执行期注入 leaf prompt 前缀, 规划期不进上下文。 */
   body: string;
 }
@@ -100,13 +107,27 @@ export function loadAgentTemplates(opts: { root?: string } = {}): Map<string, Ag
           if (kept.length > 0) mcp = kept.map((m) => m.trim());
         }
       }
+      let trigger: { writeSetGlob: string } | undefined;
+      if (fm.trigger !== undefined) {
+        const t = fm.trigger as unknown;
+        if (
+          t !== null &&
+          typeof t === 'object' &&
+          typeof (t as { writeSetGlob?: unknown }).writeSetGlob === 'string' &&
+          (t as { writeSetGlob: string }).writeSetGlob.trim().length > 0
+        ) {
+          trigger = { writeSetGlob: (t as { writeSetGlob: string }).writeSetGlob.trim() };
+        } else {
+          logger.warn({ file }, '[omd/agent-templates] 卡片 trigger 字段非法 (须为 { writeSetGlob: string }) → 丢弃字段, 卡照常加载 (TPL-1 fail-open)');
+        }
+      }
       const trimmedBody = body.trim();
       if (!trimmedBody) {
         logger.warn({ file }, '[omd/agent-templates] 卡片 body 为空 → 跳过 (TPL-1)');
         continue;
       }
       if (templates.has(name)) logger.info({ name, file }, '[omd/agent-templates] 项目卡覆盖同名卡');
-templates.set(name, { name, description, ...(model ? { model } : {}), ...(evidence ? { evidence } : {}), ...(mcp ? { mcp } : {}), body: trimmedBody });
+templates.set(name, { name, description, ...(model ? { model } : {}), ...(evidence ? { evidence } : {}), ...(mcp ? { mcp } : {}), ...(trigger ? { trigger } : {}), body: trimmedBody });
     } catch (err) {
       logger.warn({ file, err }, '[omd/agent-templates] 卡片解析失败 → 跳过 (TPL-1 fail-open)');
     }
