@@ -2,10 +2,18 @@
  * src/serve/read-api —— 座位/额度视图 (readSeats) 契约测试 (S4)。
  *
  * T-1..T-4 每条都写了「怎么让它红」并当场证伪过 —— 永远绿的闸不是闸。
- * ⚠ 文件级纪律: **真调用 channelOf 的 mock 测试排最后**。mock.module 在 Bun 里对
- * 整个测试文件生效(且会改写已加载模块的导出), 排在前面会把后面所有真实数据断言污染掉。
+ *
+ * ⚠ 这里**不许用 `mock.module`**。Bun 的 `mock.restore()` 只撤 `spyOn`/`mock()` 造的桩,
+ * **不撤 module mock** —— 而 module mock 改写的是进程级模块注册表, 会活到整个 `bun test` 结束,
+ * 泄给后面**别的文件**。实测代价 (2026-08-12): 这里曾把 `../model/cost-ledger` 整个换成
+ * 一个只有 `channelOf` 的对象, 于是全量跑里 `channelOf` 恒返 `subscription`、`computeCost`
+ * 直接消失, 打红 7 个无关文件共 10 条闸 (cost-channel / tui ledger / model-router-reward /
+ * S6 批级闸 / dag_status 活体进度 / dream assembly + extract-chat)。单跑每个都绿, 只有全量红 ——
+ * 于是那 10 条被读成「已知红」, 成本账本那一片的闸在全量跑里等于哑的。
+ * 原来那条「mock 测试排最后」的纪律只护得住**本文件**的后续, 护不住后面的文件。
+ * `spyOn` 没有这个问题 (`mock.restore()` 管得着), 且实测穿得到 `read-api.ts` 的 import 绑定。
  */
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,6 +29,7 @@ import {
   type SeatRow,
   type SeatsView,
 } from './read-api';
+import * as costLedger from '../model/cost-ledger';
 import { channelOf } from '../model/cost-ledger';
 import { ALL_SEAT_IDS, SEAT_PREFERRED_COORD } from '../model/seats';
 import type { PlanLedger } from '../harness/plan-ledger';
@@ -382,19 +391,26 @@ describe('S10-4: readProfiles —— builtin 恒存在, project missing ≠ empt
   });
 });
 
-describe('T-1 补: 真调用 channelOf, 不是另写一份判据(mock 证订阅分支原样透传)', () => {
-  test('mock 把 channelOf 返回值改成 subscription, readSeats 输出必须跟着变', () => {
+describe('T-1 补: 真调用 channelOf, 不是另写一份判据(打桩证订阅分支原样透传)', () => {
+  // 桩必还原 —— 靠 hook 不靠记性。spyOn 归 mock.restore() 管 (module mock 不归, 见文件头)。
+  afterEach(() => mock.restore());
+
+  test('把 channelOf 返回值打成 subscription, readSeats 输出必须跟着变', () => {
     // 怎么让它红: 若把 readSeats 的 channel 改成内联 `coord?.startsWith('claude-code:') ? 'subscription' : 'api'`
-    // (绕开 import 的 channelOf), mock 改了返回值但输出不跟着变 → 下面断言失败。
-    // 静态表里没有订阅坐标样本, mock 是证明「订阅返回值能原样透传到 SeatRow.channel」的唯一途径。
-    mock.module('../model/cost-ledger', () => ({
-      channelOf: () => 'subscription' as const,
-    }));
+    // (绕开 import 的 channelOf), 桩改了返回值但输出不跟着变 → 下面断言失败。
+    // 静态表里没有订阅坐标样本, 打桩是证明「订阅返回值能原样透传到 SeatRow.channel」的唯一途径。
+    spyOn(costLedger, 'channelOf').mockReturnValue('subscription');
     const view = readSeats(root);
     const withCoord = view.seats.filter((s) => s.coord !== undefined);
     expect(withCoord.length).toBeGreaterThan(0);
     for (const row of withCoord) expect(row.channel).toBe('subscription');
-    mock.restore(); // 还原 cost-ledger, 防污染本文件后续(实际已无后续, 纪律而已)
+  });
+
+  // 还原闸: 上一条的桩没撤干净, 这条当场红 —— 它就是那 10 条跨文件误红的**本地代理**,
+  // 让「泄漏」在本文件里就被抓住, 不必等全量跑才发现。
+  test('★ 桩撤干净了: channelOf 回真身 (泄漏的本地代理闸)', () => {
+    expect(costLedger.channelOf('deepseek:deepseek-v4-flash')).toBe('api');
+    expect(costLedger.computeCost).toBeTypeOf('function'); // module mock 会把它整个抹掉
   });
 });
 
