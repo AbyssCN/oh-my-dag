@@ -36,6 +36,7 @@
  *   bun run scripts/dag-exec.ts --run <runId> --spec <path>/spec.json
  */
 import { bootstrapModelRuntime } from '../src/model/bootstrap';
+import { claimDagRun, terminalDagRun } from '../src/harness/board/dag-run-board';
 import { assembleOmdMcpTools } from '../src/mcp/assemble';
 import { RunRegistry } from '../src/mcp/run-registry';
 import { createRunStore } from '../src/mcp/run-store';
@@ -102,6 +103,17 @@ process.on('SIGTERM', () => {
 
 console.error(`dag-exec: runId=${runId} tool=${spec.tool} (pid ${process.pid}), 等终态…`);
 
+// run-board 登记 (2026-08-12): 此前 run-board 与点火预检**只挂在 goal 一条路上** ——
+// `dag_run` 路径零留痕, 于是同一天里两次重复派工、一次写集撞车、一次跨 run 毒闸,
+// 闸全在盘上却一次没响 (账见 dag-run-board.ts 头注)。接在这里而不是 handler 里:
+// 本文件是**所有分离 run 的唯一漏斗**, 一处覆盖 dag_run 与 dag_research, 不必改三个调用点。
+// fail-open: 协调面写不进去不许拦住起跑 —— 它是协调介质不是真源 (D-3/INV-1)。
+try {
+  claimDagRun(cwd, runId, String((spec.args as { task?: unknown }).task ?? ''));
+} catch (e) {
+  console.error(`dag-exec: run-board claim 失败 (已忽略): ${(e as Error).message}`);
+}
+
 // 接手 (goal-worker 同款): resume=<runId> 是工具面上唯一能"用调用方给的 runId 起 run"的口子。
 // 对**未知** runId, reopenForResume 的语义正是 register + start, 且属主 pid 记的是**本进程**。
 const res = (await tool.handler({ ...spec.args, resume: runId } as never, {} as never)) as {
@@ -117,6 +129,13 @@ if (res.isError) {
   } catch {
     /* 执行体已登记过终态就算了 */
   }
+  // ⚠ 这条早退路径同样要落板上终态 —— 上面刚 claim 过, 不销就是一个永远活着的幽灵 run。
+  // (写这段时差点漏掉它: claim 在 handler 之前, 而这支在 handler 之后立刻 exit。)
+  try {
+    terminalDagRun(cwd, runId, 'failed');
+  } catch {
+    /* 协调面写不进去不影响这条退出路径 */
+  }
   process.exit(1);
 }
 
@@ -130,6 +149,14 @@ for (;;) {
   }
   const st = registry.getStatus(runId);
   if (st && TERMINAL.has(st)) {
+    // run-board 销号。放在 close() 之前 —— 它写的是 JSONL 不是 runs.db, 两条通道互不相干,
+    // 而**每条终态路径都必须经过它**: 漏一条, 那个 run 就在板上永远活着, 把后来每一次起跑
+    // 都报成冲突, 闸随即被当噪声关掉。fail-open 同 claim。
+    try {
+      terminalDagRun(cwd, runId, st);
+    } catch (e) {
+      console.error(`dag-exec: run-board terminal 失败 (已忽略): ${(e as Error).message}`);
+    }
     // 终态写穿核验 (S-12 的灯, goal-worker 同款): 内存终态 ≠ 盘上终态 —— 三次 live 在这儿
     // 静默丢过。必须用**全新连接**核验与修复; 先 close() 干净关掉本进程这条写连接
     // (2026-08-03 实测: 核验时同进程两条写连接报过 disk I/O error)。
