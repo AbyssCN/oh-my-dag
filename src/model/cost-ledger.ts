@@ -10,6 +10,7 @@
  */
 import type { ModelPrice, PriceTable, CostBreakdown, ComputeCost } from './econ-types';
 import type { ModelUsage } from './types';
+import { resolveSubscriptionProviders } from './role-models';
 
 /**
  * 缺省价表。**key = 本仓真实 'provider:model' 坐标** (callModel/fleet 实际用的, 见 spikes + role-models),
@@ -52,9 +53,25 @@ export const DEFAULT_PRICES: PriceTable = {
  * cacheHitRate omitted → inputRate·0.1 (ECON-2).
  * coord missing from prices → costUsd=0 + unpriced=true (ECON-3 fail-open).
  */
-/** 坐标 → 计价通道。claude-code:* 走订阅(Agent SDK 通道),其余按美元计价。 */
+/**
+ * 坐标 → 计价通道。两半来源不同, 刻意分开:
+ *
+ * - `claude-code:*` **结构性**订阅 —— 该通道压根没有 API key(Agent SDK 自理凭证),
+ *   配置空了也是订阅, 不许被配掉。
+ * - 其余查 `config.subscriptionProviders` / `OMD_SUBSCRIPTION_PROVIDERS` —— 哪个 provider
+ *   上跑的是**套餐**是你账户的事实, 换一把按量 key 同一个 provider 就该变回计价。
+ *
+ * 不这么分的代价(2026-08-12 装 minimax 套餐 key 当多模态池时撞的): 别家套餐掉进 `unpriced`,
+ * 而「这资源不按美元算」与「我们忘了填价」印出来一模一样(都是 0), 处置却完全相反。
+ *
+ * 成本: 每次 statSync 一下 config(`fileConfig` 按 mtime 缓存解析结果)。账本按**调用**计,
+ * 不按 token 计, 这个量级可以忽略。
+ */
 export function channelOf(coord: string): 'api' | 'subscription' {
-  return coord.startsWith('claude-code:') ? 'subscription' : 'api';
+  if (coord.startsWith('claude-code:')) return 'subscription';
+  const i = coord.indexOf(':');
+  const provider = i >= 0 ? coord.slice(0, i) : coord;
+  return resolveSubscriptionProviders().includes(provider) ? 'subscription' : 'api';
 }
 
 export const computeCost: ComputeCost = (

@@ -141,6 +141,15 @@ interface ConfigFile {
   /** 多模态 leaf 候选池 (坐标列表)。 */
   multimodalPool?: string[];
   /**
+   * 跑在**套餐/订阅**上的 provider id 列表 (裸 id, 不带冒号)。账本三态里 `subscription` 那一格
+   * 的判据来源 —— 见 `cost-ledger.channelOf`。
+   *
+   * 为什么是配置不是源码: 哪个 provider 上跑的是套餐, 是**你账户的事实**, 换一把按量 key
+   * 同一个 provider 就该变回计价。同 `pools` 那条教训 —— 选择不该烤进源码。
+   * `claude-code` **不在此列也恒订阅**: 那通道压根没有 API key (Agent SDK 自理凭证), 是结构事实。
+   */
+  subscriptionProviders?: string[];
+  /**
    * stamp pass 的**显式档位池** (2026-07-26)。缺省 → 从座位坐标推导 (老行为)。
    * 为什么要它: 座位推导下 mid = uniq(leaf/agent/overflow)、cheap = uniq(lens/expand/distill),
    * 而 auto-assign 把这六个座位全归 worker 类给同一个坐标 → **mid 与 cheap 恒等**, tier:'cheap'
@@ -681,6 +690,29 @@ function cleanCoordList(xs: unknown): string[] | undefined {
     ),
   ];
   return out.length ? out : undefined;
+}
+
+/** 逗号/数组分隔的**裸 provider id** 列表清洗。全空 → undefined (供 `??` 逐层回落)。 */
+function cleanProviderList(v: unknown): string[] | undefined {
+  const arr = typeof v === 'string' ? v.split(',') : Array.isArray(v) ? v : null;
+  if (!arr) return undefined;
+  const out = arr.map((x) => (typeof x === 'string' ? x.trim() : '')).filter(Boolean);
+  return out.length ? out : undefined;
+}
+
+/**
+ * 跑在套餐/订阅上的 provider id 列表。解析序**照 `resolveConfiguredPools`**:
+ * env `OMD_SUBSCRIPTION_PROVIDERS` 压过 `config.subscriptionProviders` —— 它是新造的临时覆盖口,
+ * 没有历史包袱, 语义就该是「这次进程按我说的来」。
+ *
+ * **没有出厂值**: 两处都没有 → `[]`。`claude-code` 的订阅身份由 `channelOf` 结构性写死,
+ * 不靠这张表 —— 别在这里塞默认值把两件事混起来。
+ */
+export function resolveSubscriptionProviders(
+  path = configPath(),
+  env: Record<string, string | undefined> = process.env,
+): string[] {
+  return cleanProviderList(env.OMD_SUBSCRIPTION_PROVIDERS) ?? cleanProviderList(fileConfig(path).subscriptionProviders) ?? [];
 }
 
 export function resolveConfiguredPools(
