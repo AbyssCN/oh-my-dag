@@ -774,6 +774,8 @@ async function executePlan(
     prompt?: string;
     /** 产物根 (agent leaf 自报 cwd 最准); 缺省 continuity.repoRoot。 */
     artifactRoot?: string;
+    /** S1 埋点: agent leaf watchdog 采集, 形状同 {@link NodeCheckpoint.watchdog}; 只透传, 不判定。 */
+    watchdog?: NodeCheckpoint['watchdog'];
   }): void => {
     if (!continuity) return;
     try {
@@ -830,6 +832,7 @@ async function executePlan(
         ...(fingerprint ? { fingerprint } : {}),
         ...(Object.keys(inputHashes).length ? { inputHashes } : {}),
         ...(nounAnnotations ? { nounAnnotations } : {}),
+        ...(opts.watchdog ? { watchdog: opts.watchdog } : {}),
         durationMs: Date.now() - opts.t0,
         createdAt: new Date().toISOString(),
         ...(dagGeneration ? { generation: dagGeneration } : {}),
@@ -1656,6 +1659,35 @@ async function executePlan(
           deps,
           t0: nodeStartedAt.get(id) ?? Date.now(),
         });
+      }
+      // **预算轴留痕 (报不拦, 2026-08-12 S1 埋点)**: 上面的预算轴 (round > startRound 处) 只在
+      // **轮边界**查, 于是"这一轮自己就跑穿预算、当轮就收敛/定局退出"这一路 (settle 从任何非
+      // 预算出口被叫到) 此前一条记录都不留 —— 实测 d39b559e 内环跑 131.3min / 预算 90min,
+      // budget-exhausted 计数 0。判定逻辑一字不改: 不提前 break, 不改 cap/阈值, settle 本身就是
+      // "环已经定局"这一刻, 只在这一刻对一次账。`!budgetStopped` 避免与「开轮前拦下」重复记
+      // (那条已经在轮边界写过 journal 了) —— 这里补的是它**没**触发、但定局时账已经超了的那格。
+      if (!budgetStopped) {
+        const postSpentTokens = usageAcc.in + usageAcc.out;
+        const postSpentMs = Date.now() - loopStartedAt;
+        const postTokenCap = config.loopBudget?.tokens;
+        const postMsCap = config.loopBudget?.ms;
+        let postLoopBudgetExceeded: string | undefined;
+        if (postTokenCap !== undefined && postSpentTokens >= postTokenCap) {
+          postLoopBudgetExceeded = `token 预算跑穿 (轮跑完才发现): 已花 ${postSpentTokens} / 上限 ${postTokenCap}`;
+        } else if (postMsCap !== undefined && postSpentMs >= postMsCap) {
+          postLoopBudgetExceeded = `时间预算跑穿 (轮跑完才发现): 已用 ${Math.round(postSpentMs / 1000)}s / 上限 ${Math.round(postMsCap / 1000)}s`;
+        }
+        if (postLoopBudgetExceeded) {
+          logger.warn(
+            { node: id, rounds, postSpentTokens, postSpentMs },
+            `[omd/executor-dag] ${postLoopBudgetExceeded} → 内环已定局, 只报不拦`,
+          );
+          writeLoopJournal(rounds, poisoned, prevReason, false, out.output, {
+            kind: 'budget-exhausted',
+            evidence: postLoopBudgetExceeded,
+            atRound: rounds,
+          });
+        }
       }
       return out;
     };
@@ -2588,6 +2620,8 @@ async function executePlan(
       // §8.5 效果指标的压缩形 [总写次数, no-op 次数]。undefined = 这条链上没人报 (inproc 节点),
       // 与 [0,0] (跑了但一次没写) 刻意分开 —— 读数板必须把两者分开念。
       let writeCounts: [number, number] | undefined;
+      // S1 埋点: agent leaf watchdog 采集, 只透传不判定。undefined = 该 runner 不统计 (inproc/旧 runner)。
+      let watchdog: NodeCheckpoint['watchdog'];
       // prompt 观测面 (同 conductor 那处: 默认 logger 的 debug 是空函数, 生产零成本)。
       // leaf 这一份尤其值钱 —— 上游材料、围栏、失败前驱的告示全落在它里面。
       logger.debug({ node: id, phase: useAgent ? 'agent-leaf' : 'inproc-leaf', model, prompt }, '[omd/prompt] leaf');
@@ -2689,6 +2723,22 @@ async function executePlan(
         // **完全不存在** —— 于是「产物声称的引擎校验动作 ⊆ 引擎记录的动作」这个谓词的记录集
         // 缺了主要合法元素, 诚实节点与顺手编一句的节点在 facts 上长得一模一样。
         shellRuns = r.shellRuns;
+        // S1 埋点: 真 runner (agent-leaf.ts) 恒嵌套在 `.watchdog` 下; 隔离测试用的 fake runner
+        // 为单独量出「引擎透传保真」这一段, 直喂顶层 stalled/timedOut/touchTimelineMs/toolTimelineMs
+        // 四个字段 (省一次真 SDK 流) —— 两种形状都收, 嵌套优先, 都没有 = 该 runner 不统计。
+        if (r.watchdog) {
+          watchdog = r.watchdog;
+        } else {
+          const flatWd = r as unknown as { timedOut?: boolean; touchTimelineMs?: number[]; toolTimelineMs?: number[] };
+          if (flatWd.timedOut !== undefined || flatWd.touchTimelineMs !== undefined || flatWd.toolTimelineMs !== undefined) {
+            watchdog = {
+              stalled: r.stalled ?? false,
+              timedOut: flatWd.timedOut ?? false,
+              touchTimelineMs: flatWd.touchTimelineMs ?? [],
+              toolTimelineMs: flatWd.toolTimelineMs ?? [],
+            };
+          }
+        }
         // 早期心跳闸 (issue #5): provider 挂起判停摆 → 标 failed (不把近零输出当 done), 附 stall 标记
         // 供 settle 记 failureKind='stall' (issue #4 败因留痕)。heal 回路可据此重试/换池。
         // G5 频率读数 (2026-08-03): leaf 在自己的工具循环里反复发同一个动作。**只报不拦** ——
@@ -2711,6 +2761,7 @@ async function executePlan(
             id, status: 'failed', failureKind: 'stall', kind: 'agent', model,
             output: `[停摆: 心跳闸提前中止, 疑 provider 挂起/排队] 原输出(${text.length}B): ${text.slice(0, 400)}`,
             deps: node.depends_on ?? [], usage, filesTouched, ...(filesRead.length ? { filesRead } : {}), stalled: true,
+            ...(watchdog ? { watchdog } : {}),
           };
         }
         // 产物校验闸 (2026-07-03 实测教训: ultraspeed leaf 4 节点 3 个 empty-done — 自报完成
@@ -2840,6 +2891,7 @@ async function executePlan(
         prompt,
         // agent leaf 自报的 cwd 最准 (它就是写文件的那个进程); inproc 无产物, 参数无所谓。
         ...(artifactRoot ? { artifactRoot } : {}),
+        ...(watchdog ? { watchdog } : {}),
       });
       return leaf;
   };
@@ -3109,6 +3161,9 @@ async function executePlan(
           // 今天分不开不是因为难, 是因为**没人记那一位**。先记, 攒够了再判要不要动闸。
           // ⚠ 只记不判: 产物闸一个字没改。
           ...(settled.filesRead?.length ? { inputPaths: settled.filesRead } : {}),
+          // S1 埋点: failed checkpoint 也透传 watchdog (看门狗判死的叶, 盘上不该只剩 failureKind:'stall'
+          // 而读不到活性; done 出口在 saveDoneCheckpoint 里同风格透传)。
+          ...(settled.watchdog ? { watchdog: settled.watchdog } : {}),
           durationMs: startedAt ? Date.now() - startedAt : 0,
           createdAt: new Date().toISOString(),
           ...(dagGeneration ? { generation: dagGeneration } : {}),

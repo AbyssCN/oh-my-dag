@@ -89,6 +89,20 @@ export interface AgentLeafResult {
    *  留 stall 败因(而非把近零输出当 done)。省略/false = 正常完成或硬超时。 */
   stalled?: boolean;
   /**
+   * agent leaf watchdog 采集(2026-08-12, S1 埋点)。省略 = 该 runner 不统计(非 agent leaf /
+   * 老记录),不代表"量过了且没触发"。存在时 `stalled`/`timedOut` 必须恒写 boolean —— `false`
+   * 是"量过了且没发生",不许用省略表示 false。`touchTimelineMs`/`toolTimelineMs` 是距叶启动的
+   * 相对毫秒数(升序),不是绝对时间戳。`spin` 仅在 `spinEvents > 0` 时出现,同 drift-detector 惯例。
+   * 形状与 {@link NodeCheckpoint.watchdog} 一致(见 continuity/types.ts)。
+   */
+  watchdog?: {
+    stalled: boolean;
+    timedOut: boolean;
+    touchTimelineMs: number[];
+    toolTimelineMs: number[];
+    spin?: { spinEvents: number; maxSameCount: number };
+  };
+  /**
    * 本次 leaf 的空转累计 (2026-08-03, G5)。缺席 = 没跑 drift 检测 (关掉了 / 非 agent leaf)。
    *
    * **以数据回传而不是回调**: drift 的 `onSpinning`/`onRecovered` 是函数, 而隔离档的 leaf

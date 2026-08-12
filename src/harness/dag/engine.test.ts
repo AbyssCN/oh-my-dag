@@ -4,7 +4,7 @@
  * 全部经 runExecutorDagWithPlan (预构造 plan, 跳过 conductor) + 注入 fake generate — 零真实 LLM。
  */
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseBlameVerdict, runExecutorDagWithPlan } from './engine';
@@ -13,6 +13,7 @@ import type { ConductorPlan } from '../conductor-plan';
 import type { ContentPart } from '../../model/gateway';
 import { registerProvider } from '../../model/providers';
 import type { DagNodeEvent, ExecutorDagConfig, GenerateFn } from './types';
+import { CheckpointManager } from '../continuity/checkpoint-manager';
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -1050,5 +1051,114 @@ describe('verifier 调不通 ≠ 执行失败 (2026-08-11 f3dd34b9 事故闸)', 
     expect(r.results.draft!.status).toBe('done');
     expect(r.results.polish!.status).toBe('done');
     expect(calls.filter((c) => c === 'draft')).toHaveLength(1);
+  });
+});
+
+/**
+ * D-P 取消: **协作式停** —— 外层只翻标志位, 引擎在调度接缝上自己停, **不杀在飞节点**。
+ *
+ * 为什么补这一组 (2026-08-11, r1 裁决的尾巴): 这条不变量此前只活在注释里 ——
+ * `engine.ts:3154` 接缝① 与 `dag-tools.ts:371` 的「不杀在飞节点」写得很清楚, 而
+ * `cancelSignal` / `attachCancel` 在全仓**零测试断言**。一条承重不变量没有会红的闸,
+ * 下一次有人为了"取消要更干脆"去 kill 在飞叶时, 没有任何东西会拦住他。
+ *
+ * ★ 证伪方式 (加闸时当场做过, 两条各自单独红过):
+ *   · 「不杀在飞」那条 —— 把接缝① (engine.ts:3156) 的 `if (sched.runningCount === 0)` 去掉,
+ *     让取消立刻 resolve 而不等在飞结清 → A 的 settle 赶不上, `results.A` 不再是 done → 红。
+ *   · 「不派新活」那条 —— 把接缝① 整个 `if (isCancelled())` 块注释掉 → B 照跑,
+ *     `calls` 变成 ['A','B'] → 红。
+ */
+describe('D-P 取消 (协作式停, 不杀在飞节点)', () => {
+  /** A 在飞时开火的取消: fake generate 进到 A 里先 abort, 再慢慢跑完自己那一发。 */
+  function makeCancelDuring(nodeId: string): { generate: GenerateFn; calls: string[]; signal: AbortSignal } {
+    const ac = new AbortController();
+    const calls: string[] = [];
+    const generate: GenerateFn = async (req) => {
+      const id = leafId(contentText(req.messages.find((m) => m.role === 'user')?.content));
+      calls.push(id);
+      if (id === nodeId) {
+        ac.abort('测试取消');
+        await sleep(20); // 取消已开火, 而这一发还在飞 —— 闸量的就是这 20ms 里它会不会被杀
+      }
+      return { text: `out:${id}`, usage: { in: 1, out: 1 } };
+    };
+    return { generate, calls, signal: ac.signal };
+  }
+
+  test('★ 在飞节点跑完不被杀: 取消落在 A 在飞时, A 仍 done 且产物完整', async () => {
+    const { generate, signal } = makeCancelDuring('A');
+    const r = await runExecutorDagWithPlan(
+      plan({ A: { goal: '根' }, B: { goal: '叶B', depends_on: ['A'] } }),
+      makeConfig(generate, { cancelSignal: signal }),
+    );
+    // 在飞的那一发跑到自己结束 —— 产物/usage 一样不少 (这正是"不杀"的可观测形态)
+    expect(r.results.A!.status).toBe('done');
+    expect(r.results.A!.output).toContain('out:A');
+    expect(r.results.A!.usage).toEqual({ in: 1, out: 1 });
+  });
+
+  test('★ 取消后不派新活: B 一次模型都没调, 且如实进 cancelled.notRun (不伪造结果)', async () => {
+    const { generate, calls, signal } = makeCancelDuring('A');
+    const r = await runExecutorDagWithPlan(
+      plan({ A: { goal: '根' }, B: { goal: '叶B', depends_on: ['A'] } }),
+      makeConfig(generate, { cancelSignal: signal }),
+    );
+    expect(calls).toEqual(['A']); // B 从未起跑
+    expect(r.cancelled).toBeDefined();
+    expect(r.cancelled!.reason).toContain('测试取消'); // 取消理由如实带出, 不压成一句"已取消"
+    expect(r.cancelled!.notRun).toContain('B'); // 未起跑的如实列出
+    expect(r.results.B).toBeUndefined(); // 不伪造结果: 没跑就没有这一条
+  });
+});
+
+/**
+ * S1 埋点 (c): 内环跑完才发现超预算 —— 与「开轮前拦下」同一个 kind, 不同的证据文案。
+ *
+ * 为什么要单独钉这条: 2026-08-11 run d39b559e 内环跑 131.3min 而预算 90min,
+ * `_loop-execute.json` 里 budget-exhausted 计数 = 0 —— 因为已有的预算闸只在**下一轮开跑前**查
+ * (engine.ts:1730 `if (round > startRound)`), 单轮本身跑穿预算、当轮就收敛的场景一次都不查。
+ * 这条闸补的正是"轮内跑完才发现超了"这一格 —— **只报不拦**, 判定/收敛结果一个字不改
+ * (owner 冻结: 不许把判点搬进轮里, 不许提前 break, 不许改阈值)。
+ *
+ * ★ 证伪方式: 把新增的轮后留痕整段删掉 (或不写 journal) → journal.stop 缺席, 本条必红。
+ */
+describe('内环跑完才发现超预算 (只报不拦, S1 埋点)', () => {
+  /** conductor 单轮就展开出的极简子图: 一个默认执行器 (leaf) 的叶子。 */
+  const SUB_QUICK = JSON.stringify({
+    name: 'sub',
+    nodes: { step: { goal: '一步搞定' } },
+  });
+
+  test('★ 单轮本身跑穿 ms 预算 → journal 记一条 budget-exhausted, 证据文案区分「跑完才发现」', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-budget-'));
+    try {
+      const mgr = new CheckpointManager(root);
+      const generate: GenerateFn = async (req) => {
+        const user = contentText(req.messages.find((m) => m.role === 'user')?.content);
+        if (user.includes(PLAN_BOUNDARY.trim().split('\n')[0]!)) {
+          await sleep(60); // 这一轮自己就花掉 60ms, 远超下面 10ms 的预算上限
+          return { text: SUB_QUICK, usage: { in: 1, out: 1 } };
+        }
+        return { text: `out:${leafId(user)}`, usage: { in: 1, out: 1 } };
+      };
+      const r = await runExecutorDagWithPlan(
+        plan({ A: { goal: '单轮胖轮子, 轮内自己就超预算', executor: 'conductor', max_rounds: 1 } }),
+        makeConfig(generate, {
+          loopBudget: { ms: 10 },
+          continuity: { manager: mgr, runId: 'r-budget-post', repoRoot: root },
+        }),
+      );
+      // 只报不拦: 节点该怎么收敛还怎么收敛, 判定逻辑一个字没变。
+      expect(r.results.A!.status).toBe('done');
+      const journal = mgr.loadNodeLoopJournal('r-budget-post', 'A');
+      expect(journal?.stop).toBeDefined();
+      expect(journal!.stop!.kind).toBe('budget-exhausted');
+      // 与「开轮前拦下」那条 (evidence: "预算用尽: 已花/已用 ... (第 N 轮后)") 刻意不同文案 ——
+      // 这条是"这一轮已经真的跑完了才发现超" (atRound = 真正跑完的那一轮, 不是没开成的下一轮)。
+      expect(journal!.stop!.evidence).toContain('跑完');
+      expect(journal!.stop!.atRound).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

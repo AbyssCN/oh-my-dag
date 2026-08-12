@@ -155,6 +155,26 @@ export interface NodeCheckpoint {
    * (防"过期切点乱截"); 对得上 → 安全跳过 (幂等)。optional = 向后兼容旧 checkpoint。
    */
   generation?: string;
+  /**
+   * agent leaf watchdog 采集 (2026-08-12, S1 埋点)。**缺席语义**: 整个 `watchdog` 缺席 =
+   * 非 agent 叶 / 老记录 (这条采集不适用或没接), 不代表"量过了且没触发"。
+   *
+   * 存在时 `stalled`/`timedOut` **必须恒写 boolean** —— `false` 是"量过了且没发生",
+   * 不许用字段缺席去表示 false (NULL ≠ 0 ≠ 不适用, 与本仓其余可选字段同一条纪律)。
+   *
+   * `touchTimelineMs` = 每次 `filesTouched` 集合新增一个路径时距叶启动的相对毫秒数 (升序);
+   * `toolTimelineMs` = 每次 `tool_execution_start` 距叶启动的相对毫秒数。两者都是相对值,
+   * 不是绝对时间戳。
+   *
+   * `spin` 沿用既有 drift-detector 惯例, 仅在 `spinEvents > 0` 时出现。
+   */
+  watchdog?: {
+    stalled: boolean;
+    timedOut: boolean;
+    touchTimelineMs: number[];
+    toolTimelineMs: number[];
+    spin?: { spinEvents: number; maxSameCount: number };
+  };
   /** 当前版本 = 1。迁移用。 */
   schemaVersion: 1;
 }

@@ -969,6 +969,11 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     const FILE_READ_TOOLS = new Set(['read', 'hashline_read']);
     const touched = new Set<string>();
     const readPaths = new Set<string>();
+    // watchdog 时间线采集 (SDD S1): 相对 startedAt 的毫秒偏移, 升序。touchTimelineMs 只在
+    // filesTouched **新增路径**时追加一条 (重复路径不追加); toolTimelineMs 每次 tool_execution_start
+    // 都追加一条。startedAt 声明在下方, 但此处只是采集函数体 (运行时才引用), 无 TDZ 问题。
+    const touchTimelineMs: number[] = [];
+    const toolTimelineMs: number[] = [];
     // bash 痕迹采集 (2026-08-05)。配对逻辑抽成纯件 (见 createShellRunCollector) —— 它是这条链上
     // 唯一有判断的地方 (缺退出码不许编 0 · 闸拒的命令也要记), 留在闭包里就只能"接上了"而验不了。
     const shell = createShellRunCollector();
@@ -1000,6 +1005,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       } else if (e.type === 'tool_execution_start') {
         toolCalls++;
         pendingTools++;
+        toolTimelineMs.push(Date.now() - startedAt);
         drift?.note(e.toolName, e.args);
         const args = (e.args ?? {}) as { path?: unknown; patch?: unknown };
         if (FILE_WRITE_TOOLS.has(e.toolName)) {
@@ -1030,6 +1036,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           if (ps) {
             const snaps = snapByCall.get(e.toolCallId);
             for (const p of ps) {
+              if (!touched.has(p)) touchTimelineMs.push(Date.now() - startedAt);
               touched.add(p);
               const before = snaps?.get(p);
               if (!before) continue; // 没取到快照 (理论上不会) → 不编一个效果数出来
@@ -1285,7 +1292,23 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       ...(spinSummary && spinSummary.spinEvents > 0 ? { spin: spinSummary } : {}),
       // 一条都没跑 → **缺席**而不是 `[]`: 「这个 leaf 没用过 bash」与「这条采集没接」在读数上
       // 必须分得开 (同 spin / observations 那条口径)。
+      // ⚠ 2026-08-12 补回: S1 埋点 (run 360405a5) 把这一行**删掉换成了下面的 watchdog 块**。
+      // tsc 不报 (shellRuns 是可选字段), 测试也不报 —— honest-self-verification.test.ts 用的是
+      // 注入的 agentRunner 自己喂 shellRuns, 碰不到这个真发射点。而下游 claimed-actions.ts:200
+      // 的 `r.shellRuns ?? []` 会恒为空 → 谎报完成闸(S-30) 还在跑但什么都看不见。
+      // 两者不冲突, 并列写。删这一行前先看 agent-leaf-shellruns-wiring.test.ts。
       ...(shell.runs().length ? { shellRuns: shell.runs() } : {}),
+      // watchdog: S1 埋点 —— stalled/timedOut 恒写 boolean (false = 量过了且没发生, 不用缺席表示),
+      // spin 子字段沿用同一份 spinSummary、同一条「仅 spinEvents>0 才出现」惯例。
+      watchdog: {
+        stalled,
+        timedOut,
+        touchTimelineMs,
+        toolTimelineMs,
+        ...(spinSummary && spinSummary.spinEvents > 0
+          ? { spin: { spinEvents: spinSummary.spinEvents, maxSameCount: spinSummary.maxSameCount } }
+          : {}),
+      },
     };
   };
 
