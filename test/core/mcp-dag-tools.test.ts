@@ -380,13 +380,15 @@ describe('派发简报 + 活体进度', () => {
     emit({ type: 'planned', nodes: [{ id: 'a', kind: 'inproc' }, { id: 'b', kind: 'agent' }, { id: 'gate', kind: 'command' }] });
     emit({ type: 'start', id: 'a', kind: 'inproc' });
     let status = (await getTool(tools, 'dag_status')({ runId })) as { content: { text: string }[] };
-    expect(status.content[0]!.text).toContain('progress: 0/3 done, 2 pending');
+    // 五格互斥穷尽 (2375632 起 `progress: X/N done` 换成节点账整行) —— 断言整行,
+    // 因为「0 done」与「0 failed / 0 skipped」是三件不同的事, 只断言 done 数分不开它们。
+    expect(status.content[0]!.text).toContain('nodes: 0 done / 0 failed / 0 skipped / 1 running / 2 pending (共 3)');
     expect(status.content[0]!.text).toContain('running: a(inproc, 0s)');
 
     emit({ type: 'settle', id: 'a', status: 'done', kind: 'inproc' });
     emit({ type: 'start', id: 'b', kind: 'agent' });
     status = (await getTool(tools, 'dag_status')({ runId })) as { content: { text: string }[] };
-    expect(status.content[0]!.text).toContain('progress: 1/3 done, 1 pending');
+    expect(status.content[0]!.text).toContain('nodes: 1 done / 0 failed / 0 skipped / 1 running / 1 pending (共 3)');
     expect(status.content[0]!.text).toContain('running: b(agent, 0s)');
 
     finish();
