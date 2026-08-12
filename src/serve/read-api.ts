@@ -17,6 +17,7 @@ import { readDagView, readFog, type DagView } from '../hud/load';
 import type { HudFogSnapshot } from '../hud/types';
 import { loadMap } from '../harness/pathfinder/map-store';
 import { computeFog, type FogView } from '../harness/pathfinder/fog';
+import { dispatchPhaseOf, type DispatchPhase } from './board-page';
 import { ledgerPath } from '../harness/dag-record';
 import { readout, type ReadoutResult } from '../../scripts/omd-readout';
 import { Database } from 'bun:sqlite';
@@ -270,7 +271,11 @@ export function listPathMaps(cwd: string): PathMapListRow[] {
 }
 
 /** 地图 + 雾档读数 (前端要的两样东西一次给全, 免得它自己算第二份)。 */
-export interface PathMapView extends PathMap {
+/** 票 + 服务端算好的派发相 (前端不判断, 见 readPathMap 注)。 */
+export type PathMapTicketView = PathMap['tickets'][number] & { phase: DispatchPhase | null };
+
+export interface PathMapView extends Omit<PathMap, 'tickets'> {
+  tickets: PathMapTicketView[];
   /**
    * 雾档 —— **服务端算**(SDD 2026-08-06 §4)。
    *
@@ -284,7 +289,12 @@ export interface PathMapView extends PathMap {
 export function readPathMap(cwd: string, slug: string): PathMapView | null {
   if (!SLUG_RE.test(slug)) throw new Error(`非法 slug: ${JSON.stringify(slug)}`);
   const map = loadMap(cwd, slug);
-  return map ? { ...map, fog: computeFog(map) } : null;
+  if (!map) return null;
+  // 派发相与雾档同规:**服务端算**。判据 (dispatchPhaseOf) 留在一处, 前端只渲染不判断 ——
+  // 前端自己算等于让判据出现两份 (web 包抄的是类型不是实现, 见 web/src/api.ts 那 32 个手抄
+  // interface), 两处各算一份必漂。本仓已经为这条付过账 (本程刚在 readProfiles 的 persona
+  // 判据上又抓到一例:引擎认、控制台不认, 不报错, 只是列表里少一行)。
+  return { ...map, tickets: map.tickets.map((t) => ({ ...t, phase: dispatchPhaseOf(t) })), fog: computeFog(map) };
 }
 
 
