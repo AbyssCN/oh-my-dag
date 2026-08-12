@@ -1031,6 +1031,25 @@ import 得到、类型对得上、调用写得出来。
 
 **回链**:`docs/plan/NOTES.md` 2026-08-11 两节(四缺陷 + 已修);修复 commit `a16043a`。
 
+### S-35 · **新埋点挤掉旧证据** —— 而两侧测试都用注入夹具,碰不到真发射点
+
+**形状**:往一个返回值里加新采集字段时,新字段**替换**掉了旧字段那一行。旧字段的消费者还在、还在跑,只是永远收到空值。
+
+**和已有几条哪里不一样**:S-1 是**声明了没消费**(消费面从来不存在);这条是消费面**一直在**,上游不发了。与 S-12 也不同 —— 没有 `catch`,没有降级,就是一行代码被另一行占了位置。
+
+**为什么没红灯**:①`tsc` 不报 —— 字段是可选的,少发一个合法;② 测试不报 —— **全仓对该字段的断言全部挂在注入的 runner 上**(`agentRunner: async () => ({ ..., shellRuns })`),夹具自己喂那个字段,**从来不经过生产的发射点**。于是「这个字段的行为」有测试,「这个字段还发不发」没有任何东西守。
+
+**本仓实例(2026-08-12,run `360405a5`)**:S1 埋点加 `watchdog` 时,把 `agent-leaf.ts` 返回值里的 `...(shell.runs().length ? { shellRuns: shell.runs() } : {})` 删掉换成了 watchdog 块。下游 `plan/claimed-actions.ts:200` 的 `const runs = r.shellRuns ?? []` 是**谎报完成闸(S-30)的证据面** —— 它从此恒收空数组,闸照常跑、照常判、什么都看不见。任务书明写「零行为变更」,而这一刀 tsc 绿、测试绿、交付绿。事后 `agent-leaf.ts` 里 `shellRuns` **只剩一句注释** —— 用 `grep -c` 数会读成「还在」。
+
+**怎么抓**:
+> **加字段到一个返回值里之前,先数这个返回值现在发几个字段;加完再数一次。**
+
+落成闸:`src/harness/agent-leaf-shellruns-wiring.test.ts` —— 生产端(发射行在代码里、不在注释上、条件形状不变)+ 消费端(`claimed-actions` 还在读)两头都钉。**刻意是源码面闸不是行为闸**:该字段要真跑一条 `bash` 才产出,SDK 通道的工具事件来自 SDK 真调 omd 桥、注入的 `sdkQueryFn` 造不出来,pi 通道要起真 loop —— 两条都不是单元测试量级。源码面闸够用,因为历史失效形态**只有一个**:那一行被删或被注释。反向自检三刀实测(删行 → 2 红;注释掉 → 1 红;消费端改名 → 1 红)。
+
+**推论(便宜且立刻可用)**:一个字段若**只被注入夹具断言过**,它就没有守卫。判别法是一条 `ugrep`:该字段名在测试里出现的地方,有没有一处不是 `agentRunner`/`fakeX` 之类的构造。
+
+**回链**:run `360405a5`(节点级 `impl-types` failed 而 `exec.log` 末行写 `终态 done`,S-33 同族)。
+
 ## 已立的闸(可执行的那部分)
 
 | 闸 | 位置 | 守什么 | 抓哪几条 |
@@ -1064,6 +1083,7 @@ import 得到、类型对得上、调用写得出来。
 | 验收 delta 只红新引入失败 | `src/harness/goal/delta-compare.ts` · `delta-compare.test.ts` | 六档矩阵 + mode 感知;老失败单列、新步 newly-run、缺席按 mode 判 skipped/new-failure(**带反向自检**:把 pass→fail 判成 fixed → 红;把 unchanged fail 判红 → 红) | S-28 |
 | 写集声明对账(越界即 orphan) | `src/harness/write-set.ts` · `write-set.test.ts` | 跑后 diff 走五档归属阶梯;done/历史声明不放行;无声明 → undeclared 不红(**带反向自检**:把 b.ts 放行 → 红;把 done 声明也算数 → 红) | S-29 |
 | 谎报完成硬矛盾闸 | `src/harness/plan/false-completion.ts` · `false-completion.test.ts` · `src/harness/dag/engine.ts` | 声称完成 ∧ 验收命令实败 → 判 fail;LLM judge 前确定性先行,被点节点铸票(**带反向自检**:把 exit 1 当支撑声称 → 红) | S-30 |
+| 证据字段的真发射点还在 | `src/harness/agent-leaf-shellruns-wiring.test.ts` | `shellRuns` 生产端(在代码里、不在注释上、条件形状不变)与消费端(`claimed-actions` 还读它)两头都钉(**带反向自检**:删发射行 → 2 红;注释掉 → 1 红;消费端改名 → 1 红) | S-35 S-30 |
 | 隔离档 git 能用 | `src/harness/hooks/bwrap.ts` · `bwrap-containment.test.ts:98` | 真造「主 repo + worktree」跑真 bwrap:ro 共享 `.git` + rw 本树 gitdir;jail 内写 ref/objects 仍拒(**带反向自检**:删 `gitBinds` 段 → ② 红,①③ 仍绿。⚠ 无 bwrap 的机器自报**未测**,不是绿) | S-34 |
 | 空转签名不被 `cd` 前缀吃掉 | `src/harness/hooks/drift-detector.ts` · `drift-detector.test.ts:103` | 取 50 字符窗口前先剥 `cd <路径> &&` 链,尺子不因 jail 路径变钝(**带反向自检**:去掉 `stripCdPrefix` → 三条不同命令签名全等,红) | S-34 |
 
