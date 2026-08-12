@@ -141,10 +141,19 @@ function parseBlockedBy(body: string): string[] {
     .filter((s) => s.length > 0);
 }
 
-/** 评论里的裁决: 首行 `**ruling**: <text>` → text (取第一条命中)。 */
-function parseRuling(comments: Array<{ body: string }>): string | undefined {
+/**
+ * 评论里的裁决: `**ruling**: <text>` → text, **text 一直取到评论末尾** (取第一条命中)。
+ *
+ * ⚠ `[\s\S]*` 不是 `.*`: JS 里 `.` 不匹配换行、`$` 在 `/m` 下是行尾, 用 `(.*)` 会把判词
+ * 截到第一行。实测代价 (2026-08-12 切 gh 当天): issue #103 评论全长 1850 → 读回 93,
+ * **丢 94.9%**; 全图 7 张多段判词合计约 13k 字符读不回来。而判词是 `path_deliver` 编
+ * slice 节点 goal 的**原料** —— 首行通常只是「修」「封存」这种结论句, 判据/边界/反向自检
+ * 全在后面几段, 截掉之后执行体拿到一句结论、零约束, 且两侧都不报错。
+ * 整段闸在 `backend-gh-ruling-parse.test.ts`。
+ */
+export function parseRuling(comments: Array<{ body: string }>): string | undefined {
   for (const c of comments) {
-    const mm = c.body.match(/^\*\*ruling\*\*:\s*(.*)$/m);
+    const mm = c.body.match(/^\*\*ruling\*\*:\s*([\s\S]*)$/m);
     if (mm) return mm[1]!.trim();
   }
   return undefined;
