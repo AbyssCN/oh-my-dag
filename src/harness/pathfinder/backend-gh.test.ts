@@ -614,4 +614,86 @@ describe('归因剥离: gh 出口的 --body/--title 不放行 session 链接与�
     expect(body).not.toContain('Co-Authored-By');
     expect(body).not.toContain('Generated with');
   });
+
+  // Executor-kind 正文锚 (md→gh 迁移前置)。反向自检 = 第三条: 摘掉锚这条闸就红,
+  // 且红的方式正是它防的那个静默降级 (executorKind 丢失 → slice-compiler 缺省 inproc→leaf)。
+  test('addTicket 带 executorKind → 正文落 `Executor-kind:` 锚', () => {
+    const seen: string[][] = [];
+    const b = createGhBackend(
+      fakeGh((args) => {
+        seen.push(args);
+        if (args[0] === 'issue' && args[1] === 'create') return okr('https://github.com/o/r/issues/9');
+        if (args[0] === 'issue' && args[1] === 'view') return okr('{"id":"NODE_X"}');
+        if (args[0] === 'api') return okr('{"id":"NODE_X"}');
+        return okr('[]');
+      }),
+    );
+    b.addTicket('/tmp', '#1', { type: 'task', title: '施工票', blockedBy: [], executorKind: 'agent' });
+    const create = seen.find((a) => a[0] === 'issue' && a[1] === 'create')!;
+    expect(create[create.indexOf('--body') + 1]!).toContain('Executor-kind: agent');
+  });
+
+  test('readMap 读回 `Executor-kind:` 锚 → 票带 executorKind (往返对称)', () => {
+    const resp = mapResp([{ number: 40, title: '[task] 施工票', body: 'Executor-kind: agent', labels: ['path:task'] }]);
+    const b = createGhBackend(fakeGh(() => okr(resp)));
+    expect(b.readMap('/tmp', '5')!.tickets[0]!.executorKind).toBe('agent');
+  });
+
+  // 超长标题 (2026-08-12 真机迁移当场撞到: 一张 1600 字的 grill 票, GraphQL 报
+  // `Title is too long (maximum is 256 characters)`)。反向自检: 去掉 overlong 分支 → 第一条红
+  // (title 超 256 原样发出去, 真 gh 会拒), 去掉 Origin-title 锚 → 第二条红 (标题被截没了)。
+  test('title 超 256 → issue title 截断, 全文落 Origin-title 锚', () => {
+    const seen: string[][] = [];
+    const long = '长'.repeat(400);
+    const b = createGhBackend(
+      fakeGh((args) => {
+        seen.push(args);
+        if (args[0] === 'issue' && args[1] === 'create') return okr('https://github.com/o/r/issues/9');
+        if (args[0] === 'issue' && args[1] === 'view') return okr('{"id":"NODE_X"}');
+        if (args[0] === 'api') return okr('{"id":"NODE_X"}');
+        return okr('[]');
+      }),
+    );
+    b.addTicket('/tmp', '#1', { type: 'grill', title: long, blockedBy: [] });
+    const create = seen.find((a) => a[0] === 'issue' && a[1] === 'create')!;
+    expect(create[create.indexOf('--title') + 1]!.length).toBeLessThanOrEqual(256);
+    expect(create[create.indexOf('--body') + 1]!).toContain(`Origin-title: ${long}`);
+  });
+
+  test('readMap 有 Origin-title 锚 → 以锚为准 (截断只影响网页显示名, 往返无损)', () => {
+    const long = '长'.repeat(400);
+    const resp = mapResp([{ number: 50, title: '[grill] 长长长…', body: `Origin-title: ${long}`, labels: ['path:grill'] }]);
+    const b = createGhBackend(fakeGh(() => okr(resp)));
+    expect(b.readMap('/tmp', '5')!.tickets[0]!.title).toBe(long);
+  });
+
+  test('没有 Origin-title 锚 → 用 issue title (常规票不受影响)', () => {
+    const resp = mapResp([{ number: 51, title: '[task] 普通标题', body: '', labels: ['path:task'] }]);
+    const b = createGhBackend(fakeGh(() => okr(resp)));
+    expect(b.readMap('/tmp', '5')!.tickets[0]!.title).toBe('普通标题');
+  });
+
+  // 证伪: 把 readMap 的 status 条件改回 `ruled || delivered` → 本条红 (升一次人判词就读没了)。
+  test('escalated 票的判词也读得回来 (escalate 不清 ruling, types.ts:49)', () => {
+    const resp = mapResp([{ number: 52, title: '[prototype] 四要素定稿', body: '', labels: ['path:prototype', 'path:escalated'], comments: ['**ruling**: 判过了才升的人'] }]);
+    const b = createGhBackend(fakeGh(() => okr(resp)));
+    const t = b.readMap('/tmp', '5')!.tickets[0]!;
+    expect(t.status).toBe('escalated');
+    expect(t.ruling).toBe('判过了才升的人');
+  });
+
+  test('open 票评论里的 `**ruling**` 不当判词 (没裁过的票, 那只可能是人手写的草稿)', () => {
+    const resp = mapResp([{ number: 53, title: '[task] 还没裁', body: '', labels: ['path:task'], comments: ['**ruling**: 草稿'] }]);
+    const b = createGhBackend(fakeGh(() => okr(resp)));
+    expect(b.readMap('/tmp', '5')!.tickets[0]!.ruling).toBeUndefined();
+  });
+
+  test('锚缺席 / 词表外的值 → executorKind 不填 (不编一个出来, fail-closed 走编译器缺省)', () => {
+    const b = (body: string) => {
+      const resp = mapResp([{ number: 41, title: '[task] 施工票', body, labels: ['path:task'] }]);
+      return createGhBackend(fakeGh(() => okr(resp))).readMap('/tmp', '5')!.tickets[0]!;
+    };
+    expect(b('').executorKind).toBeUndefined();
+    expect(b('Executor-kind: agnet').executorKind).toBeUndefined(); // 手滑的词表外值
+  });
 });

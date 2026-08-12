@@ -52,9 +52,13 @@ import {
 } from './suggest';
 import type { GhResult, GhRunner, PathBackend } from './backend';
 import type { WaitingHumanNotifier } from './frontier';
-import type { PathMap, SuggestionLogEntry, Ticket, TicketStatus, TicketType, WaitingLogEntry } from './types';
+import type { ExecutorKind, PathMap, SuggestionLogEntry, Ticket, TicketStatus, TicketType, WaitingLogEntry } from './types';
 
 const TICKET_TYPES: readonly TicketType[] = ['research', 'grill', 'prototype', 'task'];
+/** `Executor-kind` 正文锚的词表 (词表外 = 不认, 见 readMap 处注记)。与 types.ts 的 ExecutorKind 同域。 */
+const EXECUTOR_KINDS: readonly ExecutorKind[] = ['command', 'inproc', 'agent', 'map', 'primitive', 'goal'];
+/** gh issue 标题硬上限 (GraphQL createIssue: `Title is too long (maximum is 256 characters)`)。 */
+const GH_TITLE_MAX = 256;
 const MAP_LABEL = 'path:map';
 const DELIVERED_LABEL = 'path:delivered';
 /** S-1 片 e (t5 欠账): 机器建议票的 gh 映射 —— 开着 + 此 label = suggested; 关着 + 此 label = 已拒。 */
@@ -427,23 +431,34 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false, notify: Waitin
       if (status !== 'suggested' && labels.includes(SUGGESTED_LABEL)) continue;
       const { type, title } = parseTicketTitle(sub.title, labels);
       const body = sub.body ?? '';
-      const ruling = status === 'ruled' || status === 'delivered' ? parseRuling(sub.comments.nodes) : undefined;
+      // 超长票的全文标题锚 (见 addTicket 处注记): 有锚就以锚为准, issue title 只是被截断的显示名。
+      const fullTitle = parseAnchor(body, 'Origin-title') ?? title;
+      // escalated 也读判词 (2026-08-12): types.ts:49 明写「票可被裁过又重新升人, escalate **不清**
+      // ruling」—— 本仓真有这张 (proto-cube-sandbox-leaf, 判词 1108 字后升人)。漏掉这一档 = 升一次人
+      // 就把判词读没了, 而 md 侧留着 ⇒ 同一张票两个后端读出两个内容。open/blocked/suggested 仍不读:
+      // 那三态**没被裁过**, 评论里出现 `**ruling**` 只可能是人手写的草稿, 不是判词。
+      const ruling = status === 'ruled' || status === 'delivered' || status === 'escalated' ? parseRuling(sub.comments.nodes) : undefined;
       const children = sub.subIssues.nodes.map((c) => `#${c.number}`);
       // blockedBy 单真相 (D-C.2): native 读原生依赖字段, legacy 读 body 尾行, 二选一不混用。
       const blockedBy = nativeDeps ? (sub.blockedBy?.nodes ?? []).map((n) => `#${n.number}`) : parseBlockedBy(body);
       // S-1 溯源/指纹走正文锚往返 (缺锚 → undefined, 不编)。
       const suggestedBy = parseAnchor(body, 'Suggested-by');
       const fingerprint = parseAnchor(body, 'Fingerprint');
+      // executorKind 正文锚往返 (见 addTicket 处注记)。词表外的值不认 (盘上人可手改 → fail-closed,
+      // 宁可读成"没标"走缺省, 也不把 `agnet` 这种手滑喂进 toPlanExecutor 的 switch)。
+      const ekRaw = parseAnchor(body, 'Executor-kind');
+      const executorKind = (EXECUTOR_KINDS as readonly string[]).includes(ekRaw ?? '') ? (ekRaw as ExecutorKind) : undefined;
       // D-5 三戳: 评论流的事件戳**盖过**出生正文锚 (建议票被接受后又被升人 → 后一轮才是当前那轮)。
       const stamps = parseWaitingStamps(sub.comments.nodes);
       const waitingSince = stamps.waitingSince ?? parseAnchor(body, 'Waiting-since');
       tickets.push({
         id,
         type,
-        title,
+        title: fullTitle,
         blockedBy,
         status,
         ...(ruling !== undefined ? { ruling } : {}),
+        ...(executorKind !== undefined ? { executorKind } : {}),
         ...(children.length > 0 ? { children } : {}),
         ...(suggestedBy !== undefined ? { suggestedBy } : {}),
         ...(fingerprint !== undefined ? { fingerprint } : {}),
@@ -493,12 +508,22 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false, notify: Waitin
     addTicket: (_cwd, slug, nt) => {
       const bodyLines: string[] = [];
       if (nt.body) bodyLines.push(nt.body);
+      // executorKind 正文锚 (2026-08-12, md→gh 迁移前置): 不落锚就**静默改变交付行为** ——
+      // slice-compiler 的 toPlanExecutor 缺省 `inproc → leaf`, 于是一张 `agent` 票搬上 gh 再读回来
+      // 会被编译成单发 leaf, 而症状是沉默的 (图照跑, 只是执行器换了)。形状对称 Suggested-by/Fingerprint。
+      if (nt.executorKind) bodyLines.push(`Executor-kind: ${nt.executorKind}`);
+      // gh issue title 硬上限 256 字 (GraphQL `Title is too long`), 而票的 title 是**不限长的自由文本**
+      // —— 本仓真有一张 1600 字的 grill 票 (整篇分析写在标题里)。超长 → issue title 截断作显示名,
+      // 全文落 `Origin-title` 锚, readMap 优先读锚 ⇒ **往返无损**, 截断只影响 gh 网页上的那一行。
+      const fullTitle = `[${nt.type}] ${nt.title}`;
+      const overlong = fullTitle.length > GH_TITLE_MAX;
+      if (overlong) bodyLines.push(`Origin-title: ${nt.title}`);
       // legacy 策略: blockedBy 落 body 尾行 (单真相)。native 策略: body 绝不写尾行, 前置边走原生 REST (见下)。
       if (!nativeDeps && nt.blockedBy.length > 0) bodyLines.push(`Blocked-by: ${nt.blockedBy.join(', ')}`);
       const body = bodyLines.join('\n\n');
       // sub-issue 挂接 (归属血缘, D-G): parentId 给则挂母票, 否则挂地图。
       const number = createTicketIssue({
-        title: `[${nt.type}] ${nt.title}`,
+        title: overlong ? `${fullTitle.slice(0, GH_TITLE_MAX - 1)}…` : fullTitle,
         labels: [`path:${nt.type}`],
         body,
         parent: nt.parentId ?? slug,

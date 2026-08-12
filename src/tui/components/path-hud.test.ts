@@ -99,7 +99,15 @@ describe('读侧', () => {
     const h = new PathHud(theme, () => snap);
     h.refresh();
     expect(h.render(80)).toEqual([]);
-    snap = { destination: 'd', slug: 's', frontier: [{ id: 'x', type: 'decision', title: 't' }], blocked: 0, ruled: 0, total: 1 };
+    snap = {
+      destination: 'd',
+      slug: 's',
+      frontier: [{ id: 'x', type: 'decision', title: 't' }],
+      blocked: 0,
+      ruled: 0,
+      total: 1,
+      map: { destination: 'd', slug: 's', tickets: [], decisionsLog: [] },
+    };
     h.refresh();
     expect(h.render(80).join('\n')).toContain('x');
   });

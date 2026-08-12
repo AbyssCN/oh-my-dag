@@ -433,8 +433,9 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       // 选图与 pathHud 同一把尺 (createPathReader): 显式选了走选中, 没选走"前沿最多"的默认。
       const snap = (pathSlugSel ? createPathReader(opts.cwd, pathSlugSel) : basePathReader)();
       if (!snap) return; // 一张图都没有 → 无源恒缺席 (与 path-hud 同一语义, 不画空框)
-      const { resolveBackend } = require('../harness/pathfinder/backend') as typeof import('../harness/pathfinder/backend');
-      ticketBoardMap = resolveBackend(opts.cwd).readMap(opts.cwd, snap.slug);
+      // 直接用 reader 已经读到的那张图: 此处**再读一遍**正是 2026-08-12 切 gh 时炸掉看板的形状
+      // (reader 给 md slug、这里拿它去问 gh, readMap 返回 null 而 null 不是异常 → 静默空白)。
+      ticketBoardMap = snap.map;
     } catch (err) {
       // fail-open 可以吞异常, 不许吞证据: 原因留着画在屏上。
       ticketBoardErr = err instanceof Error ? err.message : String(err);
