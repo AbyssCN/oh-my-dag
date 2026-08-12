@@ -45,7 +45,7 @@ beforeEach(() => {
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 describe('T-1: SeatRow.channel 与 cost-ledger.channelOf(coord) 一致', () => {
-  test('真实数据: 每个有 coord 的座位 channel === channelOf(coord)(当前全是 openai-codex → api 分支)', () => {
+  test('真实数据: 每个有 coord 的座位 channel === channelOf(coord)', () => {
     const view = readSeats(root);
     const withCoord = view.seats.filter((s) => s.coord !== undefined);
     // seats.ts 里显式配了 preferredCoord 的座位数(静态表 6 个, 全是 openai-codex:gpt-5.6-sol)
@@ -57,10 +57,14 @@ describe('T-1: SeatRow.channel 与 cost-ledger.channelOf(coord) 一致', () => {
     for (const row of view.seats) {
       if (!row.coord) expect(row.channel).toBeUndefined();
     }
-    // 订阅分支的真源判据: 静态表里没有订阅坐标样本, 但分道判据本身必须是真的
-    // (claude-code:* 走 Agent SDK 订阅通道, 其余按美元计价 —— cost-ledger.ts 头注)
+    // 订阅分支的真源判据: 静态表里没有订阅坐标样本, 但分道判据本身必须是真的。
+    // claude-code:* 是**结构性**订阅 (该通道没有 API key, Agent SDK 自理凭证) → 与配置无关, 可以钉死。
     expect(channelOf('claude-code:claude-opus-4-8')).toBe('subscription');
-    expect(channelOf('openai-codex:gpt-5.6-sol')).toBe('api');
+    // ⚠ 这里**不再钉** `openai-codex → api`: 2026-08-12 起 claude-code 之外的订阅归属由
+    // `config.subscriptionProviders` 决定 (哪个 provider 上跑套餐是账户的事实, 不是源码的事实),
+    // 而 `.omd/` 是 gitignored —— 钉具体 provider 会让这条测试的成败取决于**跑它的那台机器**,
+    // 本机把 openai-codex 配成订阅后它当场红。规则本身 (配了→订阅 / 没配→api) 由
+    // `model/cost-channel-subscription.test.ts` 用注入 env 密封地钉, 那才是它该待的地方。
     // 怎么让它红: readSeats 里把 channel 写成恒 'api' / 或自写一份与 channelOf 不一致的判据 → 循环断言失败。
   });
 });
