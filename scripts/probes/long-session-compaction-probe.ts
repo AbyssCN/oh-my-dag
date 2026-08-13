@@ -72,24 +72,17 @@ async function main(): Promise<void> {
   bootstrapModelRuntime();
   const { assembleOmdMcpTools, resolveEngineModels } = await import('../../src/mcp/assemble');
   const { createChatSeatTools } = await import('../../src/tui/tools/chat-seat');
-  const { createApprovalGate } = await import('../../src/tui/approval/gate');
+  const { readonlyFace } = await import('./readonly-face');
   const { createOmdSessionStore } = await import('../../src/harness/chat/session-store');
   const { runChatTurn } = await import('../../src/harness/chat/agent');
-  const { loadConductorContext } = await import('../../src/tui/context');
 
-  // 只读闸:这一格不需要写, 写档一律拒 ⇒ 结构上改不了目标仓。
-  let denied = 0;
-  const approvals = createApprovalGate();
-  approvals.setAsk(async () => {
-    denied++;
-    return 'deny';
-  });
-
-  const tools = createChatSeatTools({ cwd: repo, mcpTools: assembleOmdMcpTools({ onNodeEvent: () => {} }), approvals });
+  // 只读闸:这一格不需要写, 会改盘的一律拒 ⇒ 结构上改不了目标仓。
+  // (2026-08-13 由审批闸搬到 `readonly-face` —— 审批层已随 TUI yolo 化删除。)
+  const face = readonlyFace(createChatSeatTools({ cwd: repo, mcpTools: assembleOmdMcpTools({ onNodeEvent: () => {} }) }));
+  const tools = face.tools;
   const model = resolveEngineModels(process.env).conductorModel;
   const store = createOmdSessionStore(repo);
   const sessionId = `compact-${Date.now()}`;
-  const contextFiles = loadConductorContext(repo);
 
   const prompts = [TURN1, ...FILLERS, LAST];
   interface Row {
@@ -113,7 +106,6 @@ async function main(): Promise<void> {
         model,
         cwd: repo,
         tools,
-        contextFiles,
         // ★ 把阈值压到很低来**逼出压缩**。默认 0.85 要堆很久才到, 这一格买不起那个时间。
         //   ⚠ 这是与"真跑几十轮"的诚实偏离, 已写在文件头。
         contextBudgetRatio: 0.02,
@@ -159,7 +151,7 @@ async function main(): Promise<void> {
   for (const r of rows) {
     console.log(`    ${String(r.n).padStart(2)}  ${String(r.compactions).padStart(4)}  ${String(r.msgs).padStart(4)}  ${String(r.tokens ?? '-').padStart(9)}  ${r.kept ? ' ✓  ' : ' **✗**'}  ${r.tail}`);
   }
-  console.log(`  审批拒(只读闸) ${denied} 次`);
+  console.log(`  只读闸拒 ${face.denied()} 次`);
 }
 
 await main();

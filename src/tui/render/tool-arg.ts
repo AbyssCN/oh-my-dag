@@ -27,11 +27,33 @@ export const ARG_BUDGET = 56;
 const FIELDS: readonly string[] = ['path', 'file_path', 'command', 'pattern', 'query', 'name', 'runId', 'goal'];
 
 /**
- * 工具参数 → 一行里的那半句。挑不出 → `null`(调用方画光秃秃的工具名)。
+ * ★ **搜索是两格,不是一格**(2026-08-13,owner 原话「搜了什么文件…能看到」)。
+ *
+ * 上面那张优先级表把 `path` 排在 `pattern` 前面 —— 对文件工具是对的,对搜索**是反的**:
+ * `grep(pattern:'thinking_delta', path:'src/')` 画出来是 `grep src/`,
+ * **搜索词一个字都不在屏上**。而"搜的是什么"恰恰是搜索这一步唯一的信息;
+ * 范围(`src/`)是次要的,缺了顶多不知道搜哪,缺了搜索词就等于只知道"它搜了"。
+ *
+ * 所以搜索类单独一条:`词 in 范围`,范围缺席就只画词。**不进 FIELDS 表** ——
+ * 那张表的语义是"挑一格",而这里本来就要两格,塞进去会把表的契约改掉。
  */
-export function summarizeToolArg(args: unknown, budget = ARG_BUDGET): string | null {
+const SEARCH_TOOLS = new Set(['grep', 'search', 'codegraph_search']);
+
+/**
+ * 工具参数 → 一行里的那半句。挑不出 → `null`(调用方画光秃秃的工具名)。
+ *
+ * `tool` 给了且属于搜索一族 → 走「词 in 范围」两格;省略 = 老行为逐字不变
+ * (`summarizeToolArg` 有别的调用点,不能因为多了一个可选参数就改它们的读数)。
+ */
+export function summarizeToolArg(args: unknown, budget = ARG_BUDGET, tool?: string): string | null {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return null;
   const rec = args as Record<string, unknown>;
+  if (tool && SEARCH_TOOLS.has(tool)) {
+    const pattern = typeof rec.pattern === 'string' && rec.pattern.trim() ? rec.pattern.trim() : null;
+    const scope = typeof rec.path === 'string' && rec.path.trim() ? rec.path.trim() : null;
+    // 词缺席就退回通用挑格 —— 搜索工具没给 pattern 是反常, 但不该因此什么都不画。
+    if (pattern) return fitLine(scope ? `${pattern} in ${scope}` : pattern, budget, '…');
+  }
   for (const key of FIELDS) {
     const v = rec[key];
     if (typeof v === 'string' && v.trim()) return fitLine(v.trim(), budget, '…');
@@ -41,8 +63,8 @@ export function summarizeToolArg(args: unknown, budget = ARG_BUDGET): string | n
   return null;
 }
 
-/** 工具行正文:`read config.txt` / 挑不出参数时就 `read`。标记由调用方加。 */
+/** 工具行正文:`read config.txt` / `grep foo in src/` / 挑不出参数时就 `read`。标记由调用方加。 */
 export function formatToolLine(name: string, args: unknown, budget = ARG_BUDGET): string {
-  const arg = summarizeToolArg(args, budget);
+  const arg = summarizeToolArg(args, budget, name);
   return arg ? `${name} ${arg}` : name;
 }

@@ -90,14 +90,14 @@ describe('chat pi 路注入', () => {
       return [...prompts, { role: 'assistant', content: [{ type: 'text', text: 'ok' }], timestamp: 2, stopReason: 'stop' } as unknown as AgentMessage];
     };
     await runChatTurn({
-      store, sessionId: 's1', prompt: 'x', model: 'deepseek:deepseek-v4-flash', cwd: root, contextFiles: [],
+      store, sessionId: 's1', prompt: 'x', model: 'deepseek:deepseek-v4-flash', cwd: root,
       advisor: 'openai-codex:gpt-5.6-sol', loopFn: fakeLoop as never,
     });
     expect(seen.tools).toContain('advisor');
     expect(seen.systemPrompt).toContain('advisor — consult a stronger reviewer model');
 
     await runChatTurn({
-      store, sessionId: 's2', prompt: 'x', model: 'deepseek:deepseek-v4-flash', cwd: root, contextFiles: [],
+      store, sessionId: 's2', prompt: 'x', model: 'deepseek:deepseek-v4-flash', cwd: root,
       loopFn: fakeLoop as never,
     });
     expect(seen.tools).not.toContain('advisor');

@@ -26,7 +26,7 @@ import {
 } from '@earendil-works/pi-agent-core';
 // 0.84 起 `runAgentLoop` 第 6 参 streamFn **必填** (同 agent-leaf 头注)。0.80 的内部默认就是它。
 import { streamSimple } from '@earendil-works/pi-ai/compat';
-import { assistantText, loadProjectContext } from '../agent-leaf';
+import { assistantText } from '../agent-leaf';
 import { logger } from '../../logger';
 import { emitModelUsage } from '../../model/accounting';
 import type { ModelUsage } from '../../model/types';
@@ -52,8 +52,6 @@ export interface ChatTurnOpts {
   model: string;
   cwd: string;
   tools?: AnyOmdTool[];
-  /** 省略 → loadProjectContext(cwd)(与 leaf 同一条向上走的加载路)。 */
-  contextFiles?: readonly { path: string; content: string }[];
   /** 默认 'high'(conductor 座的默认档;chat 是判断位不是量产位)。 */
   thinkingLevel?: ThinkingLevel;
   /**
@@ -234,7 +232,6 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
   let systemPrompt = buildConductorChatSystemPrompt({
     cwd: opts.cwd,
     tools,
-    contextFiles: opts.contextFiles ?? loadProjectContext(opts.cwd),
   });
   if (opts.systemPromptHook) {
     // fail-open: 钩子挂了不该让这一句发不出去; 但不吞证据。
@@ -334,7 +331,6 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
   const reply = returned.map(assistantText).join('');
   const pressure = analyzeContextPressure({
     systemPrompt: context.systemPrompt,
-    ...(opts.contextFiles ? { contextFiles: opts.contextFiles } : {}),
     messages: after,
     windowTokens: window,
   });

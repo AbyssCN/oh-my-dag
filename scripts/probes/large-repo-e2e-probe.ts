@@ -73,21 +73,15 @@ async function runOne(repo: string): Promise<Reading> {
   bootstrapModelRuntime();
   const { assembleOmdMcpTools, resolveEngineModels } = await import('../../src/mcp/assemble');
   const { createChatSeatTools } = await import('../../src/tui/tools/chat-seat');
-  const { createApprovalGate } = await import('../../src/tui/approval/gate');
+  const { readonlyFace } = await import('./readonly-face');
   const { createOmdSessionStore } = await import('../../src/harness/chat/session-store');
   const { runChatTurn } = await import('../../src/harness/chat/agent');
-  const { loadConductorContext } = await import('../../src/tui/context');
 
-  // ② 只读闸。read 档在 gate 里直接放行, 走到 ask 的一律是 read 以上 → 全拒。
-  let denied = 0;
-  const approvals = createApprovalGate();
-  approvals.setAsk(async () => {
-    denied++;
-    return 'deny';
-  });
-
+  // ② 只读闸(2026-08-13 由审批闸搬到 `readonly-face`: 审批层已随 TUI yolo 化删除)。
+  //    工具面形状不变 —— 会改盘的那几只仍在面上, 被拒是调用时抛错。
   const mcpTools = assembleOmdMcpTools({ onNodeEvent: () => {} });
-  const tools = createChatSeatTools({ cwd: repo, mcpTools, approvals });
+  const face = readonlyFace(createChatSeatTools({ cwd: repo, mcpTools }));
+  const tools = face.tools;
   // 座位走**生产的同一条解析**(env + .omd/config.json)。探针里另指一个模型的话,
   // 量的就不是生产装配了。
   const model = resolveEngineModels(process.env).conductorModel;
@@ -107,7 +101,7 @@ async function runOne(repo: string): Promise<Reading> {
       model,
       cwd: repo,
       tools,
-      contextFiles: loadConductorContext(repo),
+      
       onEvent: (e: { type: string } & Record<string, unknown>) => {
         if (e.type === 'tool_execution_start') {
           const args = JSON.stringify(e.args ?? {}).slice(0, 120);
@@ -166,7 +160,7 @@ async function runOne(repo: string): Promise<Reading> {
   const dump = join(process.env.OMD_DATA_HOME as string, 'answer.txt');
   writeFileSync(dump, `=== ${repo} ===\n--- 交付正文 (判据只看这一段) ---\n${out}\n--- thinking (只为看, 不进判据) ---\n${thinking}\n`);
   console.log(`  [全文已写 ${dump}]`);
-  return { repo, ok, why, toolCalls, denied, ms, usage, messages, answerTail: out.trim().slice(-400) };
+  return { repo, ok, why, toolCalls, denied: face.denied(), ms, usage, messages, answerTail: out.trim().slice(-400) };
 }
 
 const repos = process.argv.slice(2);
@@ -182,7 +176,7 @@ for (const repo of repos) {
   console.log(`  oracle: ${ORACLE[repo]?.path} ${ORACLE[repo]?.lines} 行`);
   console.log(`  工具调用 ${r.toolCalls.length} 次:`);
   for (const [i, c] of r.toolCalls.entries()) console.log(`    ${String(i + 1).padStart(2)}. ${c}`);
-  console.log(`  审批拒(我的只读闸)${r.denied} 次 · 消息 ${r.messages} 条 · ${(r.ms / 1000).toFixed(1)}s`);
+  console.log(`  只读闸拒 ${r.denied} 次 · 消息 ${r.messages} 条 · ${(r.ms / 1000).toFixed(1)}s`);
   console.log(`  usage: ${JSON.stringify(r.usage)}`);
   console.log(`  回答末尾: ${JSON.stringify(r.answerTail)}`);
 }

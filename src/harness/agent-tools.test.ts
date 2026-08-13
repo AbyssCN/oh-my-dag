@@ -10,7 +10,7 @@ import { describe, expect, it } from 'bun:test';
 import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createOmdAgentTools, shouldSkipDir, type AnyOmdTool } from './agent-tools';
+import { createOmdAgentTools, shouldSkipDir, walkFiles, type AnyOmdTool } from './agent-tools';
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { createAgentLeafRunner, buildLeafSystemPrompt, loadProjectContext } from './agent-leaf';
 import { createSkillTools } from './skills/skill-tool';
@@ -214,17 +214,83 @@ describe('读写改的基本语义', () => {
     expect((out as unknown as { details: { walkCapped: boolean } }).details.walkCapped).toBe(false);
   });
 
-  it('★ glob 在**遍历时**就生效 —— 否则上限数的是任意文件, glob 逃不出上限', async () => {
+  /**
+   * ★ glob 在**遍历时**就生效(结果面),但**不再帮你逃出上限**(代价面)。
+   *
+   * ## 这条 2026-08-13 翻过一次,理由记在这里
+   *
+   * 上一版的判据是「带 glob 时不报被截」—— 因为那时上限只数**候选**文件,
+   * 不匹配的一个都不计数。那一步当时读起来很合理(「glob 收窄了,当然该走得更远」),
+   * 而它的代价是**遍历实际无界**:`grep(x, path:'/mnt/d', glob:'*.ts')` 在一整块
+   * 网络盘上走穿都到不了 20,000,上限形同虚设。2026-08-13 的 WSL 整机卡死就是这么来的
+   * (`omd tui` 主进程占满一核 3h48m,而 `walkFiles` 是进程内 JS —— 不进 bwrap、
+   * `bashTimeoutSec` 管不着、Esc 也打断不了)。
+   *
+   * 所以现在两件事分开:**glob 决定你要什么,上限决定允许花多少**。
+   * 上限数的是 readdir 返回的条目总数。
+   *
+   * **证伪方式**:把 `walkFiles` 的 `visited += 1` 挪回只在 `out.push` 时加
+   * (= 回到旧口径)→ 第二条当场红(4 个条目、上限 2,却报不被截)。
+   */
+  it('★ glob 决定要什么, 上限决定花多少 —— glob 不再帮你逃出上限', async () => {
     const root = mkdtempSync(join(tmpdir(), 'omd-agent-globwalk-'));
-    // 3 个 .md 干扰 + 1 个 .ts 真目标。上限设 2:
-    //   走完再筛 → 先收 2 个任意文件(很可能全是 .md), 筛完剩 0 → 报"无命中"
-    //   走时就筛 → 只有 .ts 进得来, 1 个候选, 没到上限 ⇒ 找得到且**不报被截**
+    // 3 个 .md 干扰 + 1 个 .ts 真目标, 共 4 个条目;上限设 2 ⇒ 必然被截。
     for (const n of ['x', 'y', 'z']) writeFileSync(join(root, `${n}.md`), 'const q = 1;\n');
     writeFileSync(join(root, 'target.ts'), `const q = 'globwalk_needle';\n`);
     const g = createOmdAgentTools({ cwd: root, grepWalkLimit: 2 }).find((t) => t.name === 'grep');
     const out = await run(g!, { pattern: 'globwalk_needle', glob: '*.ts' });
-    expect(text(out)).toContain('target.ts:1:');
-    expect(text(out)).not.toContain('遍历上限');
+    // ① 结果面:glob 仍在遍历时生效 —— 收进来的只有 .ts, 没有走完再筛那一趟。
+    expect((out as unknown as { details: { walked: number } }).details.walked).toBeLessThanOrEqual(1);
+    // ② 代价面:4 个条目 > 上限 2 ⇒ **必须承认被截**(旧口径在这里会说没被截)。
+    expect(text(out)).toContain('遍历上限');
+  });
+
+  /**
+   * ★★ **远端挂载整棵剪掉,并且说出来**(2026-08-13,WSL 整机卡死的修法)。
+   *
+   * 判据是 **fstype 不是路径**:写死 `/mnt` 只挡得住 WSL 一种形态,而 NAS / sshfs
+   * 挂在哪儿是用户定的。这里把挂载表**注进去**,不去读真机的 `/proc/mounts` ——
+   * 否则这条闸在没有网络盘的机器上恒绿,量的是那台机器不是这段代码。
+   *
+   * **证伪方式**:把 `walkFiles` 里 `isRemote(full)` 那个分支删掉 → 两条全红
+   * (needle 会从"远端"目录里被搜出来,且没有那句跳过说明)。
+   */
+  it('★ 远端挂载不进去, 且**说出来** —— 静默剪掉 = 用 (无命中) 骗人', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-agent-mount-'));
+    const remote = join(root, 'mnt-d');
+    mkdirSync(remote);
+    writeFileSync(join(remote, 'far.ts'), `const q = 'mountgate_needle';\n`);
+    writeFileSync(join(root, 'near.ts'), `const q = 'mountgate_needle';\n`);
+    const walked = await walkFiles(root, 1000, { remoteMounts: [remote] });
+    expect(walked.files.map((f) => f.replace(`${root}/`, ''))).toEqual(['near.ts']);
+    expect(walked.skippedMounts).toEqual([remote]);
+  });
+
+  /**
+   * ★ **root 自己就在远端挂载上时不剪** —— 那是「明说要去那儿」,不是误入。
+   * 剪掉的话这个工具在那条路径上永远返回 `(无命中)`,而那是本仓最怕的那种谎。
+   * 那一支的护栏是另外两条:条目上限 + 墙钟预算。
+   */
+  it('★ 明确 path= 指到远端里面时照走 —— 护栏换成上限+预算, 不是装作那儿没有', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-agent-mount-root-'));
+    writeFileSync(join(root, 'inside.ts'), `const q = 'x';\n`);
+    const walked = await walkFiles(root, 1000, { remoteMounts: [root] });
+    expect(walked.files.map((f) => f.replace(`${root}/`, ''))).toEqual(['inside.ts']);
+    expect(walked.skippedMounts).toEqual([]);
+  });
+
+  /**
+   * ★ **墙钟预算**:条目数远没到上限、时间已经过去很久 —— 9P 上一个 readdir 就可能
+   * 几百毫秒,2026-08-13 那次正是这一种(3h48m 而条目数根本到不了 20,000)。
+   * 时钟注入,不靠 sleep 出一个不确定的读数。
+   */
+  it('★ 走超墙钟预算就停, 并承认被截(条目数没到上限也要停)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-agent-budget-'));
+    for (const n of ['a', 'b', 'c']) writeFileSync(join(root, `${n}.ts`), 'x\n');
+    let t = 0;
+    const walked = await walkFiles(root, 1000, { budgetMs: 5, now: () => (t += 10) });
+    expect(walked.capped).toBe(true);
+    expect(walked.files).toEqual([]); // 第一次判预算就在 readdir 之前 —— 一个条目都没走
   });
 
   it('grep 返 `路径:行号: 内容`, 支持 glob 与 literal', async () => {

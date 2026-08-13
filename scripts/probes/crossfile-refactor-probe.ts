@@ -68,24 +68,13 @@ async function main(): Promise<void> {
   bootstrapModelRuntime();
   const { assembleOmdMcpTools, resolveEngineModels } = await import('../../src/mcp/assemble');
   const { createChatSeatTools } = await import('../../src/tui/tools/chat-seat');
-  const { createApprovalGate } = await import('../../src/tui/approval/gate');
   const { createOmdSessionStore } = await import('../../src/harness/chat/session-store');
   const { runChatTurn } = await import('../../src/harness/chat/agent');
-  const { loadConductorContext } = await import('../../src/tui/context');
 
-  let allowed = 0;
-  let denied = 0;
-  const approvals = createApprovalGate();
-  approvals.setAsk(async (req: { tier?: string }) => {
-    if (req.tier === 'admin') {
-      denied++;
-      return 'deny';
-    }
-    allowed++;
-    return 'once';
-  });
-
-  const tools = createChatSeatTools({ cwd: repo, mcpTools: assembleOmdMcpTools({ onNodeEvent: () => {} }), approvals });
+  // 2026-08-13: 审批闸删了。这个探针原本「admin 拒 · 其余放行」—— 与新默认
+  // (黑名单硬拒不可逆命令, 其余在 bwrap 围栏里直接跑) **语义相同**, 所以直接去掉那一层,
+  // 而不是造一个假的替身。少掉的只有 allowed/denied 两个计数, 报告行随之收窄。
+  const tools = createChatSeatTools({ cwd: repo, mcpTools: assembleOmdMcpTools({ onNodeEvent: () => {} }) });
   const model = resolveEngineModels(process.env).conductorModel;
   const toolCalls: string[] = [];
   let out = '';
@@ -101,7 +90,7 @@ async function main(): Promise<void> {
       model,
       cwd: repo,
       tools,
-      contextFiles: loadConductorContext(repo),
+      
       onEvent: (e: { type: string } & Record<string, unknown>) => {
         if (e.type === 'tool_execution_start') toolCalls.push(`${String(e.toolName)} ${JSON.stringify(e.args ?? {}).slice(0, 130)}`);
         if (e.type === 'message_update') {
@@ -169,7 +158,7 @@ console.log(JSON.stringify({ short1: formatTokens(999, 'short'), short2: formatT
   console.log(`  行为抽查: ${beh.text}`);
   console.log(`  工具调用 ${toolCalls.length} 次:`);
   for (const [n, c] of toolCalls.entries()) console.log(`    ${String(n + 1).padStart(2)}. ${c}`);
-  console.log(`  审批 放行 ${allowed} / 拒 ${denied} · 消息 ${messages} 条 · ${(ms / 1000).toFixed(1)}s · usage ${JSON.stringify(usage)}`);
+  console.log(`  消息 ${messages} 条 · ${(ms / 1000).toFixed(1)}s · usage ${JSON.stringify(usage)}`);
   console.log(`  改了哪些文件:\n${names.text.split('\n').map((l) => `    ${l}`).join('\n')}`);
   if (!v.tscGreen) console.log(`  tsc 输出:\n${tsc.text}`);
   console.log(`  回复末尾: ${JSON.stringify(out.trim().slice(-400))}`);

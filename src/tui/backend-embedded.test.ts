@@ -80,6 +80,26 @@ describe('事件转换', () => {
     expect(events.map((e) => e.seq)).toEqual([...events.map((_, i) => i + 1)]);
   });
 
+  /**
+   * ★ 思维链(2026-08-13)。owner 原话「思维链也看不到」—— 根因就在这里:
+   * 这个映射表**只有 `text_delta`**,pi 的 `thinking_*` 三兄弟一条都没转。
+   *
+   * 反向自检(实跑):把 `mapAgentEvent` 里 `thinking_delta` 那个分支删掉 → 第 1 条当场红。
+   */
+  test('★ thinking_delta → chat/thinking(此前整条思维链被丢掉)', async () => {
+    const think = (t: string) =>
+      ({ type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: t } }) as unknown as AgentEvent;
+    const end = { type: 'message_update', assistantMessageEvent: { type: 'thinking_end' } } as unknown as AgentEvent;
+    const { backend, events } = make({ runTurn: fakeTurn({ events: [think('想'), think('完了'), end, delta('答')] }) });
+    await backend.sendChat({ sessionId: 's', prompt: 'x' });
+    expect(events.filter((e) => e.event === 'chat').map((e) => e.payload)).toEqual([
+      { type: 'thinking', text: '想' },
+      { type: 'thinking', text: '完了' },
+      { type: 'thinking_end' },
+      { type: 'delta', text: '答' },
+    ]);
+  });
+
   test('工具事件带上名字与成败', async () => {
     const evs = [
       { type: 'tool_execution_start', toolName: 'run' },
@@ -91,6 +111,38 @@ describe('事件转换', () => {
       { phase: 'start', name: 'run' },
       { phase: 'end', name: 'run', ok: false },
     ]);
+  });
+
+  /**
+   * ★ `details` 透传(2026-08-13,owner 点名「工具结果也进屏」)。
+   *
+   * 两条判据是一对:**要传 `details`**、**不要传 `content`**。后者是给模型看的正文,
+   * 一次 grep 可能几万字 —— 灌进事件流等于把整个工具输出复制一份进 UI。
+   *
+   * 反向自检(实跑):把 `mapAgentEvent` 里 `t.result?.details` 那一段删掉 → 第 1 条当场红。
+   */
+  test('★ tool_execution_end 透传 details(而不是整个 result)', async () => {
+    const evs = [
+      {
+        type: 'tool_execution_end',
+        toolName: 'grep',
+        toolCallId: 'c1',
+        isError: false,
+        result: { content: [{ type: 'text', text: '几万字的正文' }], details: { matches: 8, files: 3 } },
+      },
+    ] as unknown as AgentEvent[];
+    const { backend, events } = make({ runTurn: fakeTurn({ events: evs }) });
+    await backend.sendChat({ sessionId: 's', prompt: 'x' });
+    const payload = events.find((e) => e.event === 'tool')?.payload as Record<string, unknown>;
+    expect(payload.details).toEqual({ matches: 8, files: 3 });
+    expect(JSON.stringify(payload)).not.toContain('几万字的正文');
+  });
+
+  test('没有 details 的工具:键**不出现**(与 details 是 undefined 分得开)', async () => {
+    const evs = [{ type: 'tool_execution_end', toolName: 'x', toolCallId: 'c2', isError: false, result: {} }] as unknown as AgentEvent[];
+    const { backend, events } = make({ runTurn: fakeTurn({ events: evs }) });
+    await backend.sendChat({ sessionId: 's', prompt: 'x' });
+    expect(events.find((e) => e.event === 'tool')?.payload).toEqual({ phase: 'end', name: 'x', id: 'c2', ok: true });
   });
 
   test('★ 转不过来的事件**不发** —— 不硬塞成 chat (词表钉死 5 种)', async () => {

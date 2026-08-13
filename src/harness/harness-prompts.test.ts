@@ -36,14 +36,6 @@ describe('conductor 档:冻结前缀在前,动态尾在后(cache 面结构)', ()
     expect(p).not.toContain('\n\n\n');
   });
 
-  test('项目说明书以 <project_instructions> 包裹排在最后(最动态段殿后)', () => {
-    const p = buildConductorChatSystemPrompt({
-      cwd: '/w',
-      contextFiles: [{ path: '/w/AGENTS.md', content: 'X' }],
-    });
-    expect(p.indexOf('Working root')).toBeLessThan(p.indexOf('<project_instructions'));
-  });
-
   test('冻结核覆盖蒸馏源的承重段(丢一段 = 蒸馏残缺,当场红)', () => {
     for (const anchor of [
       '<stance>', '<roles>', '<core-discipline>', '<final-ruling>',

@@ -1,13 +1,17 @@
 /**
- * src/tui/ui-config —— **界面/审批设置的 config 读写面**(切片⑥,v5 第五节)。
+ * src/tui/ui-config —— **界面设置的 config 读写面**(切片⑥,v5 第五节)。
  *
  * 写的是 `.omd/config.json`(逐仓)。面板只是它的编辑器,**不引入第二处真源**:
  * 读回来的值就是文件里的值,改完立刻写回同一个文件。
  *
  * 形状:
  * ```jsonc
- * { "tui": { "ui": { "sidebar": true, "painter": "gantt" }, "approvals": { "tokenTtlSec": 600 } } }
+ * { "tui": { "ui": { "sidebar": true, "painter": "gantt" } } }
  * ```
+ *
+ * ⚠ `tui.sandbox` 段**不在这里读** —— 它的消费者是 harness 侧的工具装配
+ * (`harness/hooks/command-policy.ts`),而这个文件是 TUI 的界面偏好面。
+ * 两处各读一份同一个段必漂,所以是**分段而治**:界面段在这、围栏段在那。
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
@@ -91,15 +95,3 @@ export function setTuiUi(cwd: string, patch: { sidebar?: boolean; painterIdx?: n
   );
 }
 
-export function setApprovalTokenTtl(cwd: string, ttlSec: number, env?: Record<string, string | undefined>): string {
-  if (!Number.isFinite(ttlSec) || ttlSec <= 0) throw new Error(`token TTL must be a positive number of seconds, got ${ttlSec}`);
-  return patchOmdConfig(
-    cwd,
-    (root) => {
-      const tui = tuiSection(root);
-      const approvals = (tui.approvals ??= {}) as Record<string, unknown>;
-      approvals.tokenTtlSec = ttlSec;
-    },
-    env,
-  );
-}

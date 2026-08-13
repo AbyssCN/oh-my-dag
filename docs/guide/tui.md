@@ -45,6 +45,14 @@ is the only way a remote assembly could ever notice a dropped frame; the embedde
 assembly emits it too so the UI code never forks on assembly. The vocabulary is pinned
 to five kinds — `chat` · `tool` · `dag` · `run` · `session`.
 
+A `chat` payload is one of three: `{type:'delta', text}` (visible prose),
+`{type:'thinking', text}` (chain of thought), `{type:'thinking_end'}`. The thinking half
+was missing until 2026-08-13 — `mapAgentEvent` translated only `text_delta`, so pi's
+`thinking_delta` fell through the "kinds that do not translate are not emitted" branch and
+the reasoning was never drawn at all. `thinking_end` matters on its own: without it the
+next prose delta appends to the thinking entry, and the screen reads as though the model
+published its scratchpad as the answer.
+
 Node-level DAG events do not arrive through a backend method. The tool surface is
 assembled *before* the backend exists (tools must be handed to `runChatTurn`), so the
 backend exposes a `DagEventSink.pushDagEvent(runId, e)` inlet, wired up in
@@ -116,7 +124,7 @@ earlier version of that gate passed on **comments** alone.
 | `/hud` | — | toggles the DAG sidebar (Ctrl+G fullscreen, Tab cycles tree/gantt/layers) | no |
 | `/models` | — | switches the chat seat model, filterable, current one marked | writes `.omd/config.json` |
 | `/seat` | `[role] [provider:model]` · `advisor <seat> <coord\|none>` | lists tunable seats; with arguments it writes the seat | writes `.omd/config.json` |
-| `/settings` | — | settings panel: seats / ui / approval / providers / session / extensions | writes on change |
+| `/settings` | — | settings panel: seats / ui / sandbox / providers / session / extensions | writes on change |
 | `/login` | `[provider]` | stores an API key for a provider (masked echo) | writes credentials |
 | `/session` | `[id \| new [id]]` | lists sessions; an id switches and replays; `new` starts fresh | switches session |
 | `/runs` | — | lists DAG runs (in-memory registry + on-disk checkpoints) | no |
@@ -208,7 +216,7 @@ measured on a real terminal says so; an unresolvable seat says unresolved.
 
 Groups present: seats (core three + "more seats" sub-layer) · advisors · current session
 and context pressure · colours and glyph whitelist · DAG sidebar default and fullscreen
-painter · approval token TTL · provider credentials (configured or not — never the key) ·
+painter · shell sandbox status (read-only) · provider credentials (configured or not — never the key) ·
 extensions.
 
 The outer loop around the panel handles exactly two rows — *current session* and
@@ -242,7 +250,9 @@ in `EmbeddedBackendDeps`.
 
 | Layer | File | Point |
 |---|---|---|
-| Approval gate | `src/tui/approval/gate.ts`, `policy.ts`, `card.ts` | approval wraps the tools, it is not prose in a prompt. Four tiers (`read` / `read_sensitive` / `write` / `admin`); `admin` never issues a token. Fail-closed when no ask handler is attached. |
+| Shell sandbox | `src/harness/hooks/shell-sandbox.ts` | every shell command runs under bwrap: the working root and `/tmp` are writable, everything else on the machine stays readable but read-only. `write`/`edit` targets outside the boundary are refused too — otherwise the fence covers only one of the two ways out. Availability is a real probe run (`bwrap … true`), not `which bwrap`; when it fails the shell runs unconfined and the first screen says so. |
+| Command policy | `src/harness/hooks/command-policy.ts` | the deny list (recursive force-delete, `DROP TABLE`, `git push --force`, …) is a hard refusal; the allow list is a per-repo **pardon** for deny-list false positives and is checked **first**. Config lives under `tui.sandbox` in `.omd/config.json` and can only *add* to the built-in deny list. |
+| Traversal gate | `walkFiles` in `src/harness/agent-tools.ts` | `grep` walks **in-process**, so the fence does not cover it and `bashTimeoutSec` cannot kill it. Three bounds, all of which report themselves: mount points whose fstype is remote (`9p`/`cifs`/`nfs`/`fuse.*`) are pruned whole, there is a wall-clock budget, and the entry cap counts *entries visited* rather than files matched. See the incident note below. |
 | Usage ledger | `src/tui/usage/ledger.ts` | one record per call, rolling 5-hour window. Both `engine` and `chat` sources enter through the single `emitModelUsage` hook; the source label comes from the emitter, never invented at the subscriber. |
 | Extensions | `src/tui/ext/host.ts`, `protocol.ts`, `runner.ts` | one child process per extension, sandboxed under bwrap when available. `systemPrompt` is append-only, and the check runs in the **parent**. Loading fails loudly with a list of missing APIs rather than running half-wired. |
 | Context health | `src/tui/health.ts` | reading the same file three times in one session lights one line; it occupies no row when healthy, and the counter resets per session, not per process. |
@@ -281,6 +291,18 @@ redraws differentially and an unchanged on-screen line never re-enters the byte 
 It was replaced by a unit test on `pathHudVisible` plus a recaptured frame under
 `docs/bars/refs/`.
 
+A second one was withdrawn for the same class of reason on 2026-08-13: "chain of thought
+and prose are not on the same line" is unmeasurable here, because the oracle collapses
+whitespace and newlines leave no trace — the assertion would have measured the ruler.
+It lives in `chat-log.test.ts` instead, where entries are countable objects.
+
+The **sandbox** is verified in its own lane, `src/harness/hooks/shell-sandbox.test.ts`,
+and that lane really starts bwrap: the fence's whole value is "writes cannot leave the
+working root", and that is invisible in the argv string — swapping two bind flags produces
+identical-looking argv and a completely read-only jail. The judgement is therefore a
+filesystem reading. Where bwrap cannot start, the fence cases are **skipped with a printed
+reason** rather than quietly passing.
+
 ## 10. Entry point
 
 `omd tui` is assembled in `src/harness/cli.ts`. Order matters in two places: log redirect
@@ -293,6 +315,58 @@ The chat seat's tool surface is assembled by `createChatSeatTools` in
 `src/tui/tools/chat-seat.ts` — extracted out of an inline block in `cli.ts` precisely so
 that "which tools does the chat seat actually have" is something a test can assert
 against (`src/tui/tools/chat-seat.test.ts`), rather than something you grep for.
+
+### Sandbox configuration
+
+Defaults need no config: the fence is on, the working root and `/tmp` are writable, the
+built-in deny list applies. Everything below is a per-repo override in `.omd/config.json`:
+
+```jsonc
+{
+  "tui": {
+    "sandbox": {
+      "enabled": true,                          // false = run unconfined (deny list stays)
+      "writable": ["/home/you/.claude"],        // absolute paths writable besides the root
+      "allow": ["^git reset --hard$"],          // pardons for deny-list false positives
+      "deny": ["\\bterraform\\s+destroy\\b"]    // added to the built-in list, never replaces it
+    }
+  }
+}
+```
+
+The cost of the default boundary is worth stating plainly: anything that writes outside
+the repo fails inside the fence. `bun test`, `bunx tsc` and `git` (including commits) all
+work, because their writes land in the working root; `bun install` does not, because its
+cache is under `$HOME` — measured, not assumed. Add the path to `writable` when you need it.
+
+### The 2026-08-13 incident: reads can kill a machine too
+
+A conductor session walked into `/mnt/d` — a WSL **9p drvfs** mount. The result was not
+slowness: the 9P bridge saturated, every operation in WSL that touched a Windows file hung
+indefinitely, and because `PATH` contains directories under `/mnt/c`, even opening a new
+shell blocked while resolving it. The terminal went black with no error. `omd tui` pegged a
+core for **3h48m**.
+
+Two lessons are now encoded in the code, and neither of them is "tell the model not to":
+
+1. **The fence guards writes; that incident was a read.** `--ro-bind / /` left `/mnt`
+   perfectly readable. So `/mnt` is now `--tmpfs` inside the jail — commands cannot reach
+   those mounts at all. Re-expose a specific one through `tui.sandbox.writable`.
+2. **The fence never covered the actual culprit.** The process pegging a core was the TUI
+   *itself*, not a child — because `walkFiles` is in-process JavaScript. It does not enter
+   bwrap, `bashTimeoutSec` cannot reach it, and Esc cannot interrupt it. That is why the
+   traversal gate lives in `agent-tools.ts` and judges by **fstype read from
+   `/proc/mounts`**, not by a hard-coded `/mnt` prefix: NAS, sshfs and rclone mounts are
+   wherever the user put them.
+
+The entry cap changed meaning in the same pass. It used to count *matched* files, so with a
+`glob` the non-matching ones cost nothing — meaning `grep(x, path:'/mnt/d', glob:'*.ts')`
+could traverse an entire disk without ever reaching 20,000. It now counts entries visited:
+**glob decides what you want, the cap decides what you may spend.**
+
+Every one of these bounds reports itself in the tool output (`[⚠ 跳过 … 远端挂载]`,
+`[⚠ 走到遍历上限/时间预算就停了 …]`). A silently pruned tree turns `(无命中)` from
+"it is not there" into "I never looked" — and the model has no way to tell those apart.
 
 Order is meaningful — it is the enumeration order in the system prompt:
 
@@ -314,7 +388,18 @@ change code, and without bash there is no way to verify the change. The dispatch
 discipline — do small work directly, send genuinely shardable work to a DAG — lives in the
 `<hands>` section of the system prompt, not in the tool list.
 
-One invariant is pinned by `chat-seat.test.ts`: **there is always exactly one gate layer**.
-When an approval gate is supplied it wraps the whole surface and the hands' inner
-`dangerousCommandGuard` is switched off (the `admin` tier takes over); when it is not, the
-inner guard stays on. No assembly has neither.
+One invariant is pinned by `chat-seat.test.ts`: **the gate never disappears**. Until
+2026-08-13 that gate was a four-tier approval dialog. The owner removed it because the tier
+table registered only ~25 binaries and anything unregistered raised a prompt — a single
+turn stalled on six of them, `which omd` among them. That makes it an interrupter, not a
+safety measure.
+
+Two layers replaced it, and neither asks a human anything:
+
+- the **bwrap fence** stops writes from leaving the working root;
+- the **deny list** stops the irreversible things that happen *inside* it (recursive
+  force-delete, `DROP TABLE`, `git push --force` — the last never touches the filesystem
+  at all, so no fence could catch it).
+
+`dangerousCommandGuard` is therefore always on for the chat seat. Nothing switches it off
+any more.

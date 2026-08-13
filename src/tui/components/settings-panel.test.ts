@@ -36,17 +36,19 @@ const THEME = createTheme({ color: false }); // 关色 = 恒等函数, 断言里
 const PAINTERS = ['tree', 'gantt', 'layers'];
 const W = 110;
 
-/** 真实形状的一小撮项:一个座位 · 一个循环 · 一个文本子层 · 一个跳走 · 一个只读。 */
+/** 真实形状的一小撮项:两个座位子层 · 一个循环 · 一个跳走 · 一个只读。 */
 function sampleItems(): SettingItem[] {
   return [
     { key: 'seat:conductor', label: 'seat conductor', value: 'deepseek:v4-flash', action: 'seat' },
     { key: 'ui-sidebar', label: 'DAG sidebar default', value: 'on', detail: 'written to tui.ui.sidebar in .omd/config.json; effective in this process', action: 'ui-sidebar' },
     {
-      key: 'approval-ttl',
-      label: 'approval token TTL',
-      value: '900s',
-      detail: 'window in which "a" (allow same tier) skips approval; written to tui.approvals.tokenTtlSec, effective after restart (the gate reads it once at startup)',
-      action: 'approval-ttl',
+      // 第 3 行**必须是子层** —— 「选中行不丢」那条钉的就是"从第 3 行开子层再退回来"。
+      // 2026-08-13 之前这里是已删的 `approval-ttl`(文本子层);现在唯一的子层是座位。
+      key: 'seat:leaf',
+      label: 'seat leaf',
+      value: 'kimi:k3',
+      detail: 'written to .omd/config.json under seats.leaf; this is the model every DAG leaf runs on, and it takes effect on the next run',
+      action: 'seat',
     },
     { key: 'providers', label: 'provider credentials', value: '2 configured / 3 missing', detail: 'select this row to open /login', action: 'login' },
     { key: 'glyphs', label: 'glyph whitelist', value: '94 usable / 0 unmeasured / 11 rejected', detail: 'measured on a real terminal' },
@@ -74,7 +76,6 @@ function harness(over: Partial<SettingsPanelDeps> = {}): { panel: ReturnType<typ
       ],
     }),
     seatManual: (role) => ({ title: `Which coordinate for ${role}? (provider:model)` }),
-    textPrompt: () => ({ title: 'Approval token TTL (seconds)', initial: '900' }),
     apply: (id, value) => {
       calls.applied.push([id, value]);
       return value;
@@ -105,9 +106,8 @@ describe('shapeOf —— 一项只能是一种形状', () => {
   test('action 为空 ⇔ inert(与 settings.ts 的契约同一句话)', () => {
     expect(shapeOf({ key: 'x', label: 'x', value: 'v' }, { painters: PAINTERS })).toEqual({ kind: 'inert' });
   });
-  test('座位 → 子层;TTL → 文本子层', () => {
+  test('座位 → 子层(2026-08-13 起这是唯一的子层:文本子层随审批 TTL 一起删)', () => {
     expect(shapeOf({ key: 'seat:leaf', label: 'l', value: 'v', action: 'seat' }, { painters: PAINTERS })).toEqual({ kind: 'submenu', sub: 'seat' });
-    expect(shapeOf({ key: 'approval-ttl', label: 'l', value: 'v', action: 'approval-ttl' }, { painters: PAINTERS })).toEqual({ kind: 'submenu', sub: 'text' });
   });
   test('★ 循环表与 settings.ts 写的值逐字一致 —— 差一个字第一下 Enter 就不是翻转', () => {
     // `settings.ts:107` 写的是 `i.ui.sidebar ? 'on' : 'off'`。这条钉的就是那两个词。
@@ -141,10 +141,10 @@ describe('映到 pi-tui SettingItem', () => {
   });
   test('detail 进 description(不再拼进 label)', () => {
     const pi = toPiItems({ items: sampleItems(), painters: PAINTERS }, () => undefined);
-    const ttl = pi.find((x) => x.id === 'approval-ttl');
-    expect(ttl?.label).toBe('approval token TTL');
-    expect(ttl?.currentValue).toBe('900s');
-    expect(ttl?.description).toContain('effective after restart');
+    const row = pi.find((x) => x.id === 'seat:leaf');
+    expect(row?.label).toBe('seat leaf');
+    expect(row?.currentValue).toBe('kimi:k3');
+    expect(row?.description).toContain('takes effect on the next run');
   });
 });
 
@@ -164,16 +164,16 @@ describe('渲染 —— 这一片真正要修的那两件', () => {
 
   test('★ 说明**单独一行**且不被截断 —— 修的就是帧上那个 `重启才生效(`', () => {
     const { panel } = harness();
-    panel.handleInput('\x1b[B'); // ↓ 到 `左栏 DAG 默认`
-    panel.handleInput('\x1b[B'); // ↓ 到 `审批 token TTL`
+    panel.handleInput('\x1b[B'); // ↓ 到 `DAG sidebar default`
+    panel.handleInput('\x1b[B'); // ↓ 到 `seat leaf`
     const out = text(panel);
-    expect(focusedLine(panel)).toContain('approval token TTL');
+    expect(focusedLine(panel)).toContain('seat leaf');
     // 说明整句都在, 且**不在**焦点那一行上。
     // ⚠ 判据是"**没被截断**"不是"在一行里":英文那句比原来的中文长, 会被 pi-tui 折行 ——
     //   折行是完好的, 截断才是缺陷。所以先把框线与折行抹平再比整句。
     const flat = out.replace(/[│┌┐└┘─]/g, ' ').replace(/\s+/g, ' ');
-    expect(flat).toContain('written to tui.approvals.tokenTtlSec, effective after restart (the gate reads it once at startup)');
-    expect(focusedLine(panel)).not.toContain('effective after restart');
+    expect(flat).toContain('written to .omd/config.json under seats.leaf; this is the model every DAG leaf runs on, and it takes effect on the next run');
+    expect(focusedLine(panel)).not.toContain('takes effect on the next run');
   });
 
   test('说明只给焦点项 —— 没被选中的项的说明不上屏', () => {
@@ -274,12 +274,12 @@ describe('★ 子层:退一级不退到底(交接 40 §4.3/§4.4)', () => {
 
   test('★ 选中行不丢 —— 从第 3 行开的子层, 退回来还在第 3 行', () => {
     const { panel } = harness();
-    for (let i = 0; i < 2; i++) panel.handleInput('\x1b[B'); // → 审批 token TTL(第 3 行)
-    expect(focusedLine(panel)).toContain('approval token TTL');
-    panel.handleInput('\r'); // 开文本子层
-    expect(text(panel)).toContain('Approval token TTL (seconds)');
+    for (let i = 0; i < 2; i++) panel.handleInput('\x1b[B'); // → seat leaf(第 3 行)
+    expect(focusedLine(panel)).toContain('seat leaf');
+    panel.handleInput('\r'); // 开座位子层
+    expect(text(panel)).toContain('Switch leaf to which model?');
     panel.handleInput('\x1b'); // 退回来
-    expect(focusedLine(panel)).toContain('approval token TTL'); // ← 老做法(重开父层)这里会回到第 1 行
+    expect(focusedLine(panel)).toContain('seat leaf'); // ← 老做法(重开父层)这里会回到第 1 行
   });
 
   test('子层确认 → 值交给 apply 并回显', () => {
@@ -334,7 +334,7 @@ describe('★ 只读现状行排在末尾(P3 件2 轮1 的 critic 判词)', () =
     { key: 'ctx', label: '上下文', value: '(还没跑过一轮)' },
     { key: 'ui-sidebar', label: '左栏 DAG 默认', value: '开', action: 'ui-sidebar' },
     { key: 'theme', label: '配色', value: '16 色回退' },
-    { key: 'approval-ttl', label: '审批 token TTL', value: '900s', action: 'approval-ttl' },
+    { key: 'seat:leaf', label: '叶子座位', value: 'kimi:k3', action: 'seat' },
     { key: 'glyphs', label: '字形白名单', value: '94 可用 / 0 待量 / 11 不用' },
   ];
 

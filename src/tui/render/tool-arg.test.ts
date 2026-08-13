@@ -51,9 +51,46 @@ describe('宽度', () => {
   });
 });
 
+/**
+ * ★ 搜索是两格(2026-08-13,owner 原话「搜了什么文件…能看到」)。
+ *
+ * 反向自检(实跑):把 `summarizeToolArg` 里 `SEARCH_TOOLS` 那一段删掉 → 第 1 条当场红,
+ * 实得 `src/` —— 也就是修之前屏上的样子:**搜索词一个字都没有**。
+ */
+describe('搜索一族:词 in 范围', () => {
+  test('★ pattern 压过 path —— 搜索词是信息主体, 范围是次要的', () => {
+    expect(summarizeToolArg({ pattern: 'thinking_delta', path: 'src/' }, ARG_BUDGET, 'grep')).toBe('thinking_delta in src/');
+  });
+
+  test('没给范围就只画词(不编一个 in .)', () => {
+    expect(summarizeToolArg({ pattern: 'foo' }, ARG_BUDGET, 'grep')).toBe('foo');
+  });
+
+  test('★ 不传工具名 = 老行为逐字不变(别的调用点不该被这条改掉读数)', () => {
+    expect(summarizeToolArg({ pattern: 'foo', path: 'src/' })).toBe('src/');
+  });
+
+  test('非搜索工具不吃这条 —— read 的 path 仍是那一格', () => {
+    expect(summarizeToolArg({ path: 'a.ts', pattern: 'x' }, ARG_BUDGET, 'read')).toBe('a.ts');
+  });
+
+  test('搜索工具没给 pattern → 退回通用挑格, 不是什么都不画', () => {
+    expect(summarizeToolArg({ path: 'src/' }, ARG_BUDGET, 'grep')).toBe('src/');
+  });
+
+  test('两格合起来也要过宽度预算', () => {
+    const out = summarizeToolArg({ pattern: 'p'.repeat(40), path: 'd'.repeat(40) }, ARG_BUDGET, 'grep') as string;
+    expect(visibleWidth(out)).toBeLessThanOrEqual(ARG_BUDGET);
+  });
+});
+
 describe('整行', () => {
   test('有参数画名字 + 参数', () => {
     expect(formatToolLine('read', { path: 'a.ts' })).toBe('read a.ts');
+  });
+
+  test('★ formatToolLine 自己就把工具名喂下去了(grep 不必调用方记得传)', () => {
+    expect(formatToolLine('grep', { pattern: 'foo', path: 'src/' })).toBe('grep foo in src/');
   });
 
   test('没参数就只画名字, 不画空括号', () => {

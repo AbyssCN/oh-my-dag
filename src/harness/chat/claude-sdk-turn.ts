@@ -22,7 +22,7 @@
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { assistantText, loadProjectContext } from '../agent-leaf';
+import { assistantText } from '../agent-leaf';
 import { buildConductorChatSystemPrompt } from '../harness-prompts';
 import { parseModelRef } from '../fleet';
 import { logger } from '../../logger';
@@ -79,7 +79,6 @@ export async function runChatTurnSdk(opts: ChatTurnOpts): Promise<ChatTurnResult
   let systemPrompt = buildConductorChatSystemPrompt({
     cwd: opts.cwd,
     tools,
-    contextFiles: opts.contextFiles ?? loadProjectContext(opts.cwd),
   });
   if (opts.systemPromptHook) {
     try {

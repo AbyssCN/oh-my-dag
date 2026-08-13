@@ -31,7 +31,7 @@
  */
 import { spawn as spawnNodePty } from '@lydell/node-pty';
 import { spawn as spawnChild } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -223,22 +223,20 @@ async function scenarioHappyPath() {
     //   标签与实际锚点对不上的闸, 红的时候会把人指向错的地方。
     check(p.text().includes('fixture://l3-test'), 'S2-2 行①自报 fixture 后端(L3 不打真模型)');
 
-    // S4: 这条 lane 的 cwd 就是 omd 仓, 仓里有 .claude/CLAUDE.md ——
-    // 「0 份」正是 SDD §5.1 实测到的那个洞 (两份 harness 一个字都没进过 system prompt)。
-    // 断言不钉具体份数: 全局那份取决于跑的人, 钉死份数会变成一条挑机器的闸。
-    check(
-      /harness [1-9]\d* files/.test(p.text()),
-      'S4-1 头部报出装配到的 harness 份数(不为 0 —— 0 份就是 §5.1 那个洞)',
-      p.text().slice(0, 300),
-    );
-    // ⚠ 这条最初写成 `includes('.claude/CLAUDE.md')` —— **是条假闸**:
-    // 全局那份显示成 `~/.claude/CLAUDE.md`, 同一个子串照样命中。实跑证伪时它纹丝不动。
-    // 项目那份是相对 cwd 显示的, 所以要连它前面的分隔符一起钉, 才分得开两档。
-    check(
-      /[:,] \.claude\/CLAUDE\.md/.test(p.text()),
-      'S4-2 ★ 项目那份 .claude/CLAUDE.md 真的装进来了(不是被全局那份顶替)',
-      p.text().slice(0, 300),
-    );
+    /**
+     * ⚠ **S4-1 / S4-2 于 2026-08-13 撤除** —— 它们量的东西已经不存在了。
+     *
+     * 那两条钉的是「装配到的 harness 份数不为 0」与「项目那份 `.claude/CLAUDE.md`
+     * 真的装进来了」,来源是 SDD §5.1 实测到的洞(两份 harness 一个字都没进过 system prompt)。
+     * 本日 owner 让 omd 自己改 system prompt,**刻意去掉了 `contextFiles` 注入** ——
+     * 连带 `src/tui/context.ts`、`formatContextLine` 与屏上那行 `harness N files` 一起删。
+     *
+     * 于是这两条断言的**对象**没了。留着它们只有两种结局:恒红(现在这样),
+     * 或者有人为了让它绿而把一个已被裁掉的行为加回来 —— 后者更糟。
+     * 撤除不是"放松判据":那个行为被裁掉是一次显式决定,判据跟着走才是对的。
+     *
+     * ⇒ 要是将来重新引入 harness 注入,这两条照抄回来即可(git 里有原文)。
+     */
 
     p.write('hej');
     check(await waitFor(p, (t) => t.includes('hej')), 'S2-3 按键有回显', p.text().slice(0, 200));
@@ -597,9 +595,9 @@ async function scenarioSeat() {
      * 证伪方式:把宿主那层 `DialogBox` 加回去 → 当场红(2026-08-08 实跑过)。
      */
     check(!/│ ┌─ Which setting/.test(p.text()), 'SET-2b ★ 设置页没有嵌套框(标题不印两遍)', p.text().slice(-900));
-    // 切片⑥: 可改组进了面板 (界面/审批/provider)。
+    // 切片⑥: 可改组进了面板 (界面/沙箱/provider)。
     check(p.text().includes('DAG sidebar default'), 'SET-5 ★ 界面组在面板里(写 tui.ui)', p.text().slice(-900));
-    check(p.text().includes('approval token TTL'), 'SET-6 ★ 审批组在面板里(重启生效写在 detail)', p.text().slice(-900));
+    check(p.text().includes('shell sandbox'), 'SET-6 ★ 沙箱现状在面板里(2026-08-13 替掉审批组; 只读行)', p.text().slice(-900));
     check(p.text().includes('provider credentials'), 'SET-7 provider 组在面板里(只显示配没配)', p.text().slice(-900));
 
     /**
@@ -632,29 +630,33 @@ async function scenarioSeat() {
     /**
      * ★★ **SET-10/11:选中行不丢** —— 这是 `SettingsList.submenu` 换掉"重开父层"真正买到的东西。
      *
-     * 走到 `审批 token TTL` 那一行(不是第一行 —— 第一行退回来也在第一行,那条判据是空的),
+     * 走到 `seat leaf` 那一行(不是第一行 —— 第一行退回来也在第一行,那条判据是空的),
      * 开子层再退回来,焦点该还钉在那一行。
      *
-     * ⚠ 焦点靠**光标字形** `→ ` 认。判据是 `lastIndexOf('→ 审批 token TTL')` 排在子层标题之后 ——
+     * ⚠ **2026-08-13 换了锚行**:原来锚的是 `审批 token TTL`(文本子层),
+     * 而审批那一行随审批层一起删了。现在唯一的子层是座位 ⇒ 锚 `seat leaf`(第 2 行)。
+     * 判据的语义一个字没放松:仍是"不是第一行 + 开子层 + 退回来还在原行"。
+     *
+     * ⚠ 焦点靠**光标字形** `→ ` 认。判据是 `lastIndexOf('→ seat leaf')` 排在子层标题之后 ——
      * 光标在开子层**之前**也停在那一行,所以 `includes` 是假绿。
      */
-    let onTtl = false;
-    for (let i = 0; i < 16 && !onTtl; i++) {
+    let onLeaf = false;
+    for (let i = 0; i < 16 && !onLeaf; i++) {
       p.write('\x1b[B');
       await new Promise((r) => setTimeout(r, 80));
-      onTtl = p.text().includes('→ approval token TTL');
+      onLeaf = p.text().includes('→ seat leaf');
     }
-    check(onTtl, 'SET-10 ↓ 走得到「审批 token TTL」那一行(光标钉在它上面)', p.text().slice(-900));
-    p.write('\r'); // 开文本子层。`审批 token TTL(秒)` 带"(秒)"是子层标题独有的串
+    check(onLeaf, 'SET-10 ↓ 走得到「seat leaf」那一行(光标钉在它上面)', p.text().slice(-900));
+    p.write('\r'); // 开座位子层
     check(
-      await waitFor(p, (t) => t.includes('Approval token TTL (seconds)')),
-      'SET-11 文本子层开出来了(TTL 没有候选表, 只能自持输入)',
+      await waitFor(p, (t) => t.lastIndexOf('leaf 换成哪个模型?') > t.lastIndexOf('→ seat leaf')),
+      'SET-11 座位子层开出来了(不是第一行那个 conductor 的)',
       p.text().slice(-900),
     );
-    const subAt = p.text().lastIndexOf('Approval token TTL (seconds)');
+    const subAt = p.text().lastIndexOf('leaf 换成哪个模型?');
     p.write('\x1b');
     check(
-      await waitFor(p, (t) => t.lastIndexOf('→ approval token TTL') > subAt),
+      await waitFor(p, (t) => t.lastIndexOf('→ seat leaf') > subAt),
       'SET-12 ★★ 退回来**选中行没丢** —— 光标还钉在原来那一行(老做法会回到第一行)',
       p.text().slice(-900),
     );
@@ -817,12 +819,30 @@ async function scenarioSkillComplete() {
 /**
  * 场景 4.9:**pathfinder 地图切换**(切片⑧,主 C 副 B)。
  *
- * 这条 lane 的 cwd 是 omd 仓, `docs/plan/pathfinder/` 里有真图 —— 只读不写。
- * 判据逐字对 v5 切片表: 多张图列得出 · 切得动 · 票与 run 的关系看得见;
+ * 判据逐字对 v5 切片表: 图列得出 · 切得动 · 票与 run 的关系看得见;
  * 加 owner 裁决: C 雾退线默认, Tab 切 B 三角洲, 票 Enter 出动作弹窗。
+ *
+ * ## ★ 2026-08-13:改成 **fixture 图 + 临时 cwd**,不再吃真仓状态
+ *
+ * 原来这条 lane 的 cwd 是 omd 仓、读 `docs/plan/pathfinder/` 里的真图。
+ * commit `933481f`「md 图挪进 archive」之后那个目录只剩 `archive/` ——
+ * 于是 PF-1..PF-5 **五条全红**,屏上是 `No pathfinder map yet (…is empty)`。
+ * 那不是 UI 坏了,是判据的前提被别的改动搬走了。
+ *
+ * 这五条量的是**交互链**(Ctrl+P → 全屏 → Tab 换画法 → Enter 出弹窗),
+ * 跟图从哪来无关。所以照这条 lane 其它场景的惯例改成临时 cwd + 自带一张图:
+ * 判据从此只依赖这个文件,不依赖今天仓里恰好还剩几张图。
+ *
+ * 图用的是仓里已有的 `fog-acceptance.fixture.md`(fog 单测的同一份)——
+ * **不另抄一份**:两份必漂,而漂掉的那份会让 PTY 绿着而单测红。
  */
 async function scenarioPathfinder() {
-  const p = startTui();
+  const cwd = mkdtempSync(join(tmpdir(), 'omd-tui-path-'));
+  const mapDir = join(cwd, 'docs', 'plan', 'pathfinder');
+  mkdirSync(mapDir, { recursive: true });
+  // 只有**一张**图 ⇒ Ctrl+P「一张直接进」那一支(PF-1 的两支都认)。
+  writeFileSync(join(mapDir, 'fog-acceptance.md'), readFileSync(join(ROOT, 'src/harness/pathfinder/fog-acceptance.fixture.md'), 'utf8'));
+  const p = startTui({ cwd });
   try {
     check(await waitFor(p, (t) => bootReady(t)), 'PF-0 (场景4.9) 启动');
     p.write('\x10'); // Ctrl+P
@@ -1182,84 +1202,52 @@ async function scenarioExport() {
   }
 }
 /**
- * 场景 4.5:**审批层**(切片①,G-1 的 PTY 半):真 gate → 真卡片 → 真键位 → 真写/真拒。
+ * 场景 4.5:**思维链上屏**(2026-08-13,owner 原话「思维链也看不到」)。
  *
- * fixture 的 `fixture:write` 暗号会经**生产同一个 ApprovalGate** 调一个真会写盘的
- * write 工具(写进 `OMD_TUI_FIXTURE_DIR`)。于是「拒绝则不改、批准则改」在这里是
- * **文件系统上的读数**,不是屏幕上的一句话。
+ * 根因是 `backend-embedded.mapAgentEvent` 只映射了 `text_delta` —— pi 的
+ * `thinking_delta` / `thinking_end` 被"转不过来的不发"那条注释顺手吞掉了。
+ * fixture 的 `fixture:think` 暗号走**与生产同一条** `chat` 事件通道:
+ * 两片 thinking → thinking_end → 一片正文。
  *
- * 反向自检(实跑):把 tui.ts 里 `opts.approvals.setAsk(askApproval)` 那行注释掉 →
- * AP-1(卡片出现)当场红 —— gate fail-closed 拒绝, 卡片不弹, 文件也不写。
+ * 判据有两半,少一半都不算修好:
+ *   ① 思考真的上屏(此前一个字都没有);
+ *   ② 思考与正文**分得开** —— `thinking_end` 收掉思考条目之后正文才另起一条。
+ *      不收的话正文会续进思考区,屏上读成"模型把草稿当答案发了"。
+ *
+ * 反向自检(实跑):把 `mapAgentEvent` 里 `thinking_delta` 那个分支删掉 → TH-1 当场红;
+ * 把 `tui.ts` 里 `thinking_end` 那个分支删掉 → TH-3 当场红(正文与思考同在一条)。
  */
-async function scenarioApproval() {
-  const dir = mkdtempSync(join(tmpdir(), 'omd-tui-approval-'));
-  const target = join(dir, 'approved.txt');
-  const p = startTui({ env: { OMD_TUI_FIXTURE_DIR: dir } });
+async function scenarioThinking() {
+  const p = startTui();
   try {
-    check(await waitFor(p, (t) => bootReady(t)), 'AP-0 (场景4.5) 启动');
-
-    // ── 第一轮: 拒绝 ──
-    p.write('fixture:write\r');
+    check(await waitFor(p, (t) => bootReady(t)), 'TH-0 (场景4.5) 启动');
+    p.write('fixture:think\r');
     check(
-      await waitFor(p, (t) => t.includes('Approval needed') && /what \S/.test(t)),
-      'AP-1 ★ write 弹出审批单(占住输入区)',
+      await waitFor(p, (t) => t.includes('weighing option A')),
+      'TH-1 ★ 思维链真的上屏(此前 thinking_delta 被整个丢掉)',
       p.text().slice(-600),
     );
-    check(p.text().includes('y allows once'), 'AP-2 卡片带键位行(y/a/d/Esc)', p.text().slice(-400));
-    p.write('\x1b'); // Esc = 拒绝
     check(
-      await waitFor(p, (t) => t.includes('denied') && t.includes('write not executed')),
-      'AP-3 ★ 拒绝有回执且工具报被拒',
+      await waitFor(p, (t) => t.includes('against option B')),
+      'TH-2 思考分片追加进同一条(两片都在)',
       p.text().slice(-600),
     );
-    check(existsSync(target) === false, 'AP-4 ★ 拒绝则不改 —— 文件系统上真的没有那个文件');
-
-    // ── 第二轮: 看详情 + 批准 ──
-    p.write('fixture:write\r');
-    check(await waitFor(p, (t) => t.includes('Approval needed')), 'AP-5 同一操作重新要审批(y/Esc 不留 token)');
-    p.write('d'); // 展开详情 (内容预览)
-    // ⚠ 判据是详情分隔线, 不是 'approved' —— 后者在**拒绝回执**里也出现 (approved.txt),
-    //   证伪跑(去掉 setAsk 接线)时抓到这条在假绿。
+    check(
+      await waitFor(p, (t) => t.includes('answer: option B')),
+      'TH-3 ★ 正文另起一条 —— thinking_end 收掉思考条目之后才画正文',
+      p.text().slice(-600),
+    );
     /**
-     * ⚠ **判据换过**(2026-08-08):原来是 `includes('────────')` —— **8 个 `─`**,
-     * 而 `PREVIEW_RULE_WIDTH` 恰好是 8(`approval/card.ts:18`), 于是**任何更长的横线**
-     * (卡片框 / 编辑器边框)都包含它 ⇒ **卡片一出现这条就满足了, 与 `d` 按没按无关**。
-     * 那不只是弱 —— 它让下面那个 `y` **可能在详情真渲染出来之前就发出去**。
+     * ⚠ **「思考与正文分成两条」这条判据不在这一层** —— 这个 oracle 判不了它。
      *
-     * 换成 detail **独有**的形状:预览的 8 横线**紧跟着预览首行** `approved`
-     * (写的内容是 `'approved\n'`, `backend-fixture.ts:113`)。
-     * ⚠ 排除 `approved.txt` —— 那是摘要里的文件名, 按 `d` 之前就在屏上。
+     * `visibleText` 把 `\s+` 归一成单空格(本文件第 56 行),换行**不留痕** ——
+     * 于是"在不在同一行"在累积缓冲里恒为真,写成断言只会量到尺子本身
+     * (实跑验证过:整屏折叠成一行,横幅与底栏也在同一串里)。
+     *
+     * 那条判据的正确落点是 L1:`chat-log.test.ts` 的
+     * 「思考与正文是**两条**」(`log.length === 2` + `lastText === 'answer'`)与
+     * 「不收尾也不会串」。这一层只证明**两段都上了屏**、顺序对。
      */
-    check(
-      // ⚠ 中间隔着**卡片的竖线** —— 每行都过 `card.side()` 包成 `│ … │`,
-      //   折叠之后是 `──────── │ approved`。只写 `\s+` 匹配不到(第一版就红在这)。
-      await waitFor(p, (t) => /────────[\s│]+approved(?!\.txt)/.test(t), 8000),
-      'AP-6 d 展开详情(预览横线**紧跟**预览内容, 不是随便一条横线)',
-      p.text().slice(-400),
-    );
-    // ⚠ 连发两个键之间**留间隔** —— 与本文件上面那条 Esc 的坑同族:
-    //   前一个键引发的重绘还没完成就发下一个, 应用可能在旧状态里收到它。
-    await new Promise((r) => setTimeout(r, 250));
-    p.write('y'); // 批准这一次
-    check(
-      await waitFor(p, (t) => t.includes('allowed once') && t.includes('write executed')),
-      'AP-7 ★ 批准有回执且工具真跑了',
-      p.text().slice(-600),
-    );
-    let content = '';
-    const wrote = await waitFor(
-      { text: () => '' },
-      () => {
-        try {
-          content = readFileSync(target, 'utf-8');
-          return content.includes('approved');
-        } catch {
-          return false;
-        }
-      },
-      8000,
-    );
-    check(wrote, 'AP-8 ★ 批准则改 —— 文件真的写上盘了(屏幕上说写了不算数)', `实得: ${content.slice(0, 100)}`);
   } finally {
     p.kill();
   }
@@ -1355,7 +1343,7 @@ await scenarioCompact();
 await scenarioLogout();
 await scenarioStatus();
 await scenarioExport();
-await scenarioApproval();
+await scenarioThinking();
 await scenarioSlowTurnIndicator();
 await scenarioRealBackendBoots();
 

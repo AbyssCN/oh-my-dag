@@ -140,19 +140,19 @@ describe('formatSettings', () => {
   });
 });
 
-describe('切片⑥: 可改组(界面/审批/provider)', () => {
+describe('切片⑥: 可改组(界面/沙箱/provider)', () => {
   test('★ 省略 = 那一组不进表(答不上现状的项不列)', () => {
     const items = buildSettings(base);
     expect(find(items, 'ui-sidebar')).toBeUndefined();
-    expect(find(items, 'approval-ttl')).toBeUndefined();
+    expect(find(items, 'sandbox')).toBeUndefined();
     expect(find(items, 'providers')).toBeUndefined();
   });
 
-  test('给了就列, 且都有 action(能改)与来源说明', () => {
+  test('给了就列; 可改的带 action, 沙箱那行只读且都有来源说明', () => {
     const items = buildSettings({
       ...base,
       ui: { sidebar: true, painterName: '树' },
-      approvalTtlSec: 600,
+      sandbox: { ok: true },
       providers: [
         { id: 'deepseek', hasKey: true },
         { id: 'kimi-coding', hasKey: false },
@@ -161,12 +161,14 @@ describe('切片⑥: 可改组(界面/审批/provider)', () => {
     const sidebar = find(items, 'ui-sidebar');
     expect(sidebar?.value).toBe('on');
     expect(sidebar?.action).toBe('ui-sidebar');
-    const ttl = find(items, 'approval-ttl');
-    expect(ttl?.value).toBe('600s');
-    expect(ttl?.detail).toContain('effective after restart'); // 闸启动时读一次 —— 现状要说真话
+    // 沙箱行是**只读**的(没有 action) —— 它答的是"现在有没有围栏", 不是一个偏好。
+    const sb = find(items, 'sandbox');
+    expect(sb?.value).toBe('bwrap on');
+    expect(sb?.action).toBeUndefined();
+    expect(sb?.detail).toContain('tui.sandbox');
     // ⚠ detail 是**纯文本**(选择器 description 不渲染 markdown): 带星号会原样上屏。
     //   2026-08-08 帧库实测抓到过 `**重启生效**`。这条钉住不再回去。
-    expect(ttl?.detail).not.toContain('**');
+    expect(sb?.detail).not.toContain('**');
     const prov = find(items, 'providers');
     expect(prov?.value).toBe('1 configured / 1 missing');
     expect(prov?.detail).toContain('kimi-coding');
@@ -186,7 +188,7 @@ describe('advisor 行(座位属性, owner 点名可配 2026-08-10)', () => {
     expect(c?.detail).toContain('.omd/config.json');
   });
 
-  test('整组省略 = 不进表(与 ui/approval 同约定)', () => {
+  test('整组省略 = 不进表(与 ui/sandbox 同约定)', () => {
     expect(find(buildSettings(base), 'seat:advisor.conductor')).toBeUndefined();
   });
 });

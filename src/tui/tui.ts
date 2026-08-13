@@ -30,14 +30,12 @@
 import { hostname } from 'node:os';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve as resolvePath } from 'node:path';
-import { type Component, Container, HStack, Loader, ProcessTerminal, ScrollView, Spacer, Text, TuiAltScreen, VStack, type Terminal } from '@earendil-works/pi-tui';
+import { type Component, Container, HStack, Loader, ProcessTerminal, ScrollView, Spacer, TuiAltScreen, VStack, type Terminal } from '@earendil-works/pi-tui';
 import { HintedEditor } from './components/hinted-editor';
 import { logger } from '../logger';
-import type { ApprovalDecision, ApprovalGate, ApprovalRequest } from './approval/gate';
-import { approvalBody, approvalTitle } from './approval/card';
 import type { OmdBackend } from './backend';
 import { ChatLog } from './components/chat-log';
-import { DialogBox, ESC as DIALOG_ESC, type DialogHost, type InputOpts, type SelectOpts, confirm as dialogConfirm, input as dialogInput, select as dialogSelect } from './components/dialog';
+import { type DialogHost, type InputOpts, type SelectOpts, confirm as dialogConfirm, input as dialogInput, select as dialogSelect } from './components/dialog';
 import { DagHud } from './components/dag-hud';
 import { DagTree } from './components/dag-tree';
 import { type PathReader, PathHud, createPathReader } from './components/path-hud';
@@ -47,7 +45,6 @@ import { type PathViewData, buildPathViewData, renderDelta, renderFogLine } from
 import { fitLine } from './render/line';
 import { renderLayers } from './render/dag-layers';
 import { StatusLine } from './components/status-line';
-import { type ContextFile, formatContextLine, loadConductorContext } from './context';
 import { formatSeatRows, parseSeatCommand, seatRows } from './seat-picker';
 import { defaultTuiSessionId, forkSessionId, formatSessions, newSessionId, parseNewForkCommand, parseSessionCommand } from './sessions';
 import { createSettingsPanel } from './components/settings-panel';
@@ -59,9 +56,10 @@ import { MANUAL_COORD, choiceLabel, listModelChoices, parseModelsCommand, sortCh
 import { buildTreeRows, formatTree, parseTreeCommand, treeLabel } from './tree-picker';
 import { createOmdAutocompleteProvider } from './skill-complete';
 import { createContextHealth } from './health';
-import { loadTuiUiConfig, setApprovalTokenTtl, setTuiUi } from './ui-config';
+import { loadTuiUiConfig, setTuiUi } from './ui-config';
 import { renderLogo } from './render/logo';
 import { summarizeToolArg } from './render/tool-arg';
+import { summarizeToolResult } from './render/tool-result';
 import { fmtUsd, formatStatusLine } from './render/statusbar';
 import { humanTokens } from './render/pressure';
 import { formatStatus } from './status';
@@ -201,12 +199,11 @@ export const CHROME = {
   waitingElapsed: (s: number) => `Working... ${s}s (Esc interrupts)`,
   footer: () => 'omd tui · /help for commands · Ctrl+C twice to quit',
   footerArmed: () => 'omd tui · press Ctrl+C again to quit',
-  // ── 审批层(切片①)。裁决回执要进对话记录 —— 卡片关掉之后, "刚才批没批过"得能回看。 ──
-  approvalDenied: (summary: string) => `Approval: denied ${summary}`,
-  approvalOnce: (summary: string) => `Approval: allowed once - ${summary}`,
-  approvalGranted: (summary: string, min: number) => `Approval: allowed ${summary} (same tier is auto-allowed for ${min} min)`,
-  /** 对话框被占时新到的审批单按拒绝处理(fail-closed)—— 说出为什么, 别静默拒。 */
-  approvalBusy: (summary: string) => `Approval: another dialog is open, treated as denied - ${summary}`,
+  /**
+   * 沙箱降级告警(2026-08-13)。**顶栏一行,不是日志里一行** —— owner 裁的兜底是
+   * 「降级裸跑 + 红字告警」,而"起没起来"在屏上没有别的痕迹:命令照跑、结果照回。
+   */
+  sandboxOff: (reason: string) => `sandbox off - shell commands run unconfined (${reason})`,
   // ── 切片⑥: /login 与设置写盘回执。key 本身一个字符都不进屏。 ──
   loginDone: (provider: string, target: string, warnings: string[]) =>
     `Key written to ${target === 'env' ? '.env' : 'auth.json'} (${provider}, effective immediately)${warnings.length > 0 ? `\n  ${warnings.join('\n  ')}` : ''}`,
@@ -220,7 +217,6 @@ export const CHROME = {
   treeBranchFailed: (reason: string) => `Cannot branch: ${reason} (the session was not moved)`,
   /** 选中的就是当前叶 —— 什么都不做, 但要说出来, 否则读成"点了没反应"。 */
   treeAtLeaf: () => 'That entry is already the current leaf - nothing to branch from, nothing was written',
-  approvalTtlWritten: (sec: number, path: string) => `Approval token TTL -> ${sec}s written to ${path} (effective after restart)`,
   /** 切片⑧: 一张图都没有时说真话 (画一个空雾场会读成"有图但没散")。 */
   noPathMaps: () => 'No pathfinder map yet (docs/plan/pathfinder/ is empty) - open one with /omd-path',
   // ── 2026-08-11 命令面六项(/compact /logout /status /export /new /fork /quit)的回执。 ──
@@ -296,13 +292,6 @@ export interface RunOmdTuiOpts {
   now?: () => number;
   /** 硬退注入:第二次 `requestCleanExit` 的兜底路径,测试里不许真杀进程。 */
   exit?: (code: number) => void;
-  /**
-   * conductor 的上下文装配(S4)。省略 → `loadConductorContext(cwd)`。
-   *
-   * 现在只用来**显示装了哪几份**;S10 接 `runChatTurn` 时同一个数组原样传进
-   * `contextFiles` —— 屏上看到的与模型吃到的是同一份,不会各读各的。
-   */
-  contextFiles?: ContextFile[];
   /** 主题注入(S18 换 Catppuccin 逐值;测试用它固定关色)。省略 → `createTheme()`。 */
   theme?: OmdTuiTheme;
   /** 会话 id。S10 之前只有一条会话,给个稳定默认值即可。 */
@@ -332,11 +321,13 @@ export interface RunOmdTuiOpts {
    */
   reloadExtensions?: () => Promise<ExtReloadResult>;
   /**
-   * 审批闸(切片①)。UI 在这里把 ask handler 接上 —— 审批单占住输入区,
-   * `d` 看详情 · `y` 批准一次 · `a` 批准同档一段时间(admin 没有) · Esc 拒绝。
-   * 省略 = 没有审批面(fixture 之外的生产装配都该给)。
+   * bwrap 围栏的**探测读数**(2026-08-13)。`ok:false` → 顶栏画一行红字
+   * `sandbox off - <原因>`;省略 = 这条装配路不谈沙箱(fixture lane)。
+   *
+   * ⚠ 只是**读数**不是开关:开关在 `.omd/config.json` 的 `tui.sandbox`,
+   * 装配层(`cli.ts`)读完探完才把结论给 UI。UI 画它,不决定它。
    */
-  approvals?: ApprovalGate;
+  sandbox?: { ok: boolean; reason?: string };
   /**
    * 调用账本(切片②)。底栏行①的「会话/5h」与行②的 in/out/cache + provider 段全从它取。
    * 省略 = 那些段**不画**(没有账本不是 $0 —— segment 模型)。
@@ -403,13 +394,11 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   //   所以顺序上其实没那么脆;放这儿是为了"键位是启动期的事"读起来一眼清楚。
   installOmdKeybindings();
 
-  const contextFiles = opts.contextFiles ?? loadConductorContext(opts.cwd);
   const theme = opts.theme ?? createTheme();
 
   // 状态行走 StatusLine (截断, 不折行) —— 状态行一折, 下面所有东西的行号整体下移,
   // 而 HUD 是按行差分画的, 结果是布局错位。对话正文走 ChatLog (折行是对的)。
   // ⚠ 顶栏(`omd tui - cwd`)已去掉 —— v5 裁决: 信息下沉到底部三行, 仓名/分支在行①。
-  const harness = new StatusLine(formatContextLine(contextFiles, { cwd: opts.cwd }));
   const chatLog = new ChatLog(theme);
   // HUD 在没有 run 的时候 `render()` 返回空数组 (无源恒缺席), 所以恒挂着不用条件添加。
   const dagHud = new DagHud(theme, () => opts.backend.connection.url.replace(/^embedded:\/\//, '') || null);
@@ -509,6 +498,14 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         .map(theme.chrome.dim),
     ].join('\n'),
   );
+  /**
+   * 沙箱降级告警(2026-08-13)。**第一屏就说**,不等第一条命令跑完 ——
+   * owner 裁的兜底是「降级裸跑 + 红字告警」,而围栏在不在,屏上没有别的痕迹。
+   * `ok` 时一个字都不画:一条"一切正常"的常驻横幅只会训练人不看它。
+   */
+  if (opts.sandbox && !opts.sandbox.ok) {
+    chatLog.appendNotice(CHROME.sandboxOff(opts.sandbox.reason ?? 'unknown'));
+  }
 
   // editor 住在自己的容器里 —— 对话框**换掉容器内容**而不是叠 overlay(SDD §7.1 已裁决:
   // 0.84 的 overlay 焦点恢复状态机会在下一次按键夺回焦点, 换 container 没有那个状态机)。
@@ -679,7 +676,6 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   let armedAt: number | null = null;
 
   const root = new VStack();
-  root.addChild(harness, chrome);
   root.addChild(body, { grow: 1, shrink: 1, minSize: 3, visible: () => !fullOn && !pathFullOn });
   root.addChild(fullView, { grow: 1, shrink: 1, minSize: 3, visible: () => fullOn && !pathFullOn });
   root.addChild(pathView, { grow: 1, shrink: 1, minSize: 3, visible: () => pathFullOn });
@@ -768,50 +764,6 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     },
   });
 
-  /**
-   * ★ 审批单(切片①,G-1)。**占住输入区**(v5:审批单那张图),键位自绘:
-   * `y` 一次 · `a` 发同档 token(admin 档收不到这个键)· `d` 展开详情 · Esc 拒绝。
-   *
-   * ⚠ 对话框被占(用户正开着 /settings 之类)→ **按拒绝处理并说明**,不排队 ——
-   * 排队的单会在用户关掉框的下一瞬弹出来,像是"Esc 又弹回来了"。模型收到拒绝会自己重试或改道。
-   */
-  function askApproval(req: ApprovalRequest): Promise<ApprovalDecision> {
-    return new Promise((resolve) => {
-      let detail = false;
-      const body = new Text(approvalBody(req, { detail }));
-      const finish = (d: ApprovalDecision): void => {
-        dialogs.close();
-        const note =
-          d === 'deny'
-            ? CHROME.approvalDenied(req.summary)
-            : d === 'once'
-              ? CHROME.approvalOnce(req.summary)
-              : CHROME.approvalGranted(req.summary, Math.max(1, Math.round(req.ttlSec / 60)));
-        chatLog.appendNotice(note);
-        tui.requestRender();
-        resolve(d);
-      };
-      const box = new DialogBox(theme, approvalTitle(req), body, (data) => {
-        if (DIALOG_ESC.has(data)) return finish('deny');
-        if (data === 'y') return finish('once');
-        if (data === 'a' && req.canGrant) return finish('grant');
-        if (data === 'd') {
-          detail = !detail;
-          body.setText(approvalBody(req, { detail }));
-          tui.requestRender(); // setText 不触发重绘 (AGENTS.md §5), 必须自己请求
-        }
-        return undefined;
-      });
-      if (!dialogs.open(box, box)) {
-        chatLog.appendNotice(CHROME.approvalBusy(req.summary));
-        tui.requestRender();
-        resolve('deny');
-        return;
-      }
-      tui.requestRender();
-    });
-  }
-  if (opts.approvals) opts.approvals.setAsk(askApproval);
 
   const seats = opts.seats ?? defaultSeatFace();
 
@@ -966,19 +918,32 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         chatLog.appendAssistantChunk(p.text);
         tui.requestRender();
       }
+      // 思维链(2026-08-13):dim 一段, 与正文分条。`thinking_end` 收条目 ——
+      // 不收的话下一段正文会续进思考区, 读起来就是"模型把草稿当答案发了"。
+      if (p?.type === 'thinking' && p.text) {
+        chatLog.appendThinkingChunk(p.text);
+        tui.requestRender();
+      }
+      if (p?.type === 'thinking_end') {
+        chatLog.closeStreaming();
+        tui.requestRender();
+      }
       return;
     }
     if (e.event === 'tool') {
-      const p = e.payload as { phase?: string; name?: string; ok?: boolean; id?: string; args?: unknown };
+      const p = e.payload as { phase?: string; name?: string; ok?: boolean; id?: string; args?: unknown; details?: unknown };
       const name = p?.name ?? '?';
       // 一个工具**一行**, end 原地更新 —— 不再 start/end 各追加一条 notice。
       // S-5: 带上参数那半句 —— 只画 `✓ read` 的话, 改对文件和改错文件在屏上长得一模一样。
       if (p?.phase === 'start') {
-        chatLog.toolStart(name, { id: p?.id, detail: summarizeToolArg(p?.args) });
+        // ⚠ 工具名必须传 —— 搜索一族靠它才画得出「词 in 范围」(2026-08-13)。
+        //   不传的话 `grep(pattern, path)` 会退回通用挑格, 屏上只剩范围, 搜索词消失。
+        chatLog.toolStart(name, { id: p?.id, detail: summarizeToolArg(p?.args, undefined, name) });
         // 切片⑤: 健康度计数吃 start 事件 (end 不带 args)。
         health.onTool(name, p?.args);
         healthLine.setText(health.line() ?? '');
-      } else chatLog.toolEnd(name, p?.ok !== false, { id: p?.id });
+        // 2026-08-13: 结果那半句在 end 事件里(start 时还不知道搜到了什么)。
+      } else chatLog.toolEnd(name, p?.ok !== false, { id: p?.id, result: summarizeToolResult(name, p?.details) });
       tui.requestRender();
       return;
     }
@@ -1144,7 +1109,6 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         title: 'Which seat?  (↑↓ select · Enter model · Esc cancel)',
         seatChoices: seatModelOpts,
         seatManual: seatManualOpts,
-        textPrompt: (_id, cur) => ({ title: '?', initial: cur }), // 座位面板里没有文本项
         apply: (id, value) => applySetting(id, value),
         activate: () => {}, // 同上:过滤后只剩座位行, 没有"跳走"的项
         onCancel: () => {
@@ -1846,10 +1810,6 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       // 读不到就是 null —— 与"一条都没有"分得开(本仓 NULL ≠ 0)。
     }
     // 切片⑥: 可改组的现状。TTL 与 provider 现读 (只在 /settings 打开时, 不在渲染回路)。
-    const approvalTtlSec = ((): number => {
-      const { loadApprovalConfig } = require('./approval/policy') as typeof import('./approval/policy');
-      return loadApprovalConfig(opts.cwd).tokenTtlSec;
-    })();
     const providers = ((): { id: string; hasKey: boolean }[] => {
       try {
         const { discoverProviders } = require('../config/config-discovery') as typeof import('../config/config-discovery');
@@ -1868,7 +1828,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       truecolor: truecolorEnabled(),
       extensions: extStatus,
       ui: { sidebar: sidebarOn, painterName: PAINTERS[painterIdx] ?? 'tree' },
-      approvalTtlSec,
+      ...(opts.sandbox ? { sandbox: opts.sandbox } : {}),
       providers,
       advisors: readAdvisors(),
     });
@@ -1884,8 +1844,6 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         // 座位子层 = 模型选单。**三个入口一份实现**(P2 IA 收敛)—— 定义在 `seatModelOpts`。
         seatChoices: seatModelOpts,
         seatManual: seatManualOpts,
-        // `审批 token TTL` 的值带单位(`30s`), 而输入框里该是**可编辑的数**, 不是带单位的串。
-        textPrompt: (_id, current) => ({ title: 'Approval token TTL (seconds)', initial: current.replace(/s$/, '') }),
         apply: (id, value) => applySetting(id, value),
         activate: (id) => {
           // 就地办完的:一条通知就够, 面板留着(通知画在对话区, 不遮设置页)。
@@ -1952,21 +1910,6 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       const path = setTuiUi(opts.cwd, { painterIdx });
       chatLog.appendNotice(CHROME.uiWritten(`fullscreen default view -> ${PAINTERS[painterIdx]}`, path));
       return PAINTERS[painterIdx] as string;
-    }
-    if (id === 'approval-ttl') {
-      const raw = value.trim();
-      const { loadApprovalConfig } = require('./approval/policy') as typeof import('./approval/policy');
-      const old = `${loadApprovalConfig(opts.cwd).tokenTtlSec}s`;
-      if (!raw) return old;
-      try {
-        const sec = Number(raw);
-        const path = setApprovalTokenTtl(opts.cwd, sec);
-        chatLog.appendNotice(CHROME.approvalTtlWritten(sec, path));
-        return `${sec}s`;
-      } catch (err2) {
-        chatLog.appendNotice(CHROME.failed(humanizeProviderError(err2 instanceof Error ? err2.message : String(err2))));
-        return old; // ★ 拒了就回显旧值
-      }
     }
     return value;
   }

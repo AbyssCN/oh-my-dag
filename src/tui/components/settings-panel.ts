@@ -6,7 +6,7 @@
  *
  * 上一版是 `dialog.ts select()` 手拼一个选择框:一行里塞 `标签: 值`,`detail` 塞进
  * `SelectList` 的 `description` —— 而 `SelectList` 把 description 画在**同一行**,
- * 于是 `审批 token TTL` 那条说明被截断成 `重启才生效(`(2026-08-08 帧库实测抓到)。
+ * 于是最长那条说明被截断成半句(2026-08-08 帧库实测抓到;当时那一行是已删的 `审批 token TTL`)。
  *
  * `SettingsList` 一次解决三件:
  * 1. `标签 | 值` **两列对齐**(标签列同宽),说明**单独一行**只给焦点项 → 不再截断。
@@ -40,7 +40,7 @@ export type SettingShape =
   /** Enter 在候选表里循环。 */
   | { kind: 'cycle'; values: readonly string[] }
   /** Enter 开子层;子层的取消**只关子层**。 */
-  | { kind: 'submenu'; sub: 'seat' | 'text' }
+  | { kind: 'submenu'; sub: 'seat' }
   /** Enter 不是改值,是跳走。 */
   | { kind: 'activate' };
 
@@ -56,8 +56,6 @@ export function shapeOf(item: SettingItem, ctx: { painters: readonly string[] })
       return { kind: 'inert' };
     case 'seat':
       return { kind: 'submenu', sub: 'seat' };
-    case 'approval-ttl':
-      return { kind: 'submenu', sub: 'text' };
     case 'ui-sidebar':
       // 值就是「开」/「关」两个字(`settings.ts:107`)。循环表必须与它逐字一致,
       // 否则 `values.indexOf(currentValue)` 是 -1,第一下 Enter 会跳到 values[0] 而不是翻转。
@@ -83,8 +81,6 @@ export interface SettingsPanelDeps {
   seatChoices: (role: string, current: string) => SelectOpts | null;
   /** 手输坐标那条退路 —— 不是所有 provider 都在 models.json 里登记过。 */
   seatManual: (role: string, current: string) => InputOpts;
-  /** 文本子层(目前只有 `审批 token TTL`)。 */
-  textPrompt: (id: string, current: string) => InputOpts;
   /**
    * 值真的改了。**返回改完之后的真值** —— 面板照它回显。
    * 写盘失败时返回旧值,于是屏幕上不会留下一个"改好了"的假象。
@@ -128,7 +124,7 @@ class SwapSlot implements Component {
  */
 export function toPiItems(
   ctx: { items: readonly SettingItem[]; painters: readonly string[] },
-  subFactory: (item: SettingItem, sub: 'seat' | 'text') => PiSettingItem['submenu'],
+  subFactory: (item: SettingItem, sub: 'seat') => PiSettingItem['submenu'],
 ): PiSettingItem[] {
   /**
    * ★ **只读现状行一律排到末尾**(2026-08-08,P3 件2 轮1 的 critic 判词)。
@@ -256,20 +252,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     return slot;
   };
 
-  const textSubmenu = (item: SettingItem): PiSettingItem['submenu'] => (currentValue, rawDone) => {
-    submenuOpen = true;
-    return inputComponent(
-      deps.theme,
-      deps.textPrompt(item.key, currentValue),
-      (v) => {
-        submenuOpen = false;
-        rawDone(v ?? undefined);
-      },
-      deps.requestRender,
-    );
-  };
-
-  const piItems = toPiItems(deps, (item, sub) => (sub === 'seat' ? seatSubmenu(item) : textSubmenu(item)));
+  // 2026-08-13: 文本子层随审批 TTL 那一行一起删 —— 主表里再没有"输一段字"的设置项。
+  // 留着的话它是一条**永远绿的闸**(测得到、但生产永远走不到), 那正是本仓明写要拒的东西。
+  const piItems = toPiItems(deps, (item) => seatSubmenu(item));
 
   const list = new SettingsList(
     piItems,

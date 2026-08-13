@@ -26,7 +26,6 @@ import { type ChatTurnOpts, runChatTurn } from '../harness/chat/agent';
 import { type BranchSummaryCallModel, entryKind, entryPreview, planBranchNavigation } from '../harness/chat/branch-summary';
 import { type CompactionCallModel, compactChatMessages } from '../harness/chat/compaction';
 import type { OmdBackend, OmdTuiEvent, TuiSessionMeta, TuiTreeEntry } from './backend';
-import type { ContextFile } from './context';
 
 export interface EmbeddedBackendDeps {
   cwd: string;
@@ -46,8 +45,6 @@ export interface EmbeddedBackendDeps {
    * 起跑时解一次的写法会让切座位在当前会话里静默无效。
    */
   resolveModel: () => string;
-  /** conductor 的上下文装配(S4)。屏上显示的与模型吃到的必须是同一份数组。 */
-  contextFiles?: ContextFile[];
   /**
    * omd 自记忆(S16,A8)。给了就每轮召回一次注在消息末尾(advisory)。
    * 省略 = 不注入 —— 与"注入了但一条都没召回到"**不是一回事**。
@@ -124,6 +121,26 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
       emit('chat', { type: 'delta', text: e.assistantMessageEvent.delta });
       return;
     }
+    /**
+     * ★ **思维链**(2026-08-13 补)。pi 的 `AssistantMessageEvent` 里一直有
+     * `thinking_start` / `thinking_delta` / `thinking_end` 三个成员
+     * (实读 `pi-ai/dist/types.d.ts:401-413`),而这里**只映射了 `text_delta`** ——
+     * 于是整条思维链被"转不过来的不发"那条注释顺手吞掉了。
+     *
+     * 它转得过来:`chat` 事件的 payload 多一个 `type`,与 `delta` 并列。
+     * owner 2026-08-13 的原话:「思维链也看不到」。那不是模型没想,是这里没发。
+     *
+     * `thinking_end` 也发:UI 靠它**收掉思考条目**,下一段正文才不会续进思考区
+     * (与 `session` 事件收尾 assistant 气泡同一条理由)。
+     */
+    if (e.type === 'message_update' && e.assistantMessageEvent.type === 'thinking_delta') {
+      emit('chat', { type: 'thinking', text: e.assistantMessageEvent.delta });
+      return;
+    }
+    if (e.type === 'message_update' && e.assistantMessageEvent.type === 'thinking_end') {
+      emit('chat', { type: 'thinking_end' });
+      return;
+    }
     // ⚠ `id` 是 pi 的 `toolCallId`, **必须带上**:UI 靠它把 end 对回 start 那一行。
     //   此前对回去靠的是**工具名** —— 同一个工具连调两次时, 第一个 end 会去更新
     //   最后一条同名行, 于是屏上"先跑完的那个"标记落在"后开始的那一行"上。
@@ -134,8 +151,27 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
       return;
     }
     if (e.type === 'tool_execution_end') {
-      const t = e as { toolName?: string; toolCallId?: string; isError?: boolean };
-      emit('tool', { phase: 'end', name: t.toolName ?? '?', id: t.toolCallId, ok: !t.isError });
+      const t = e as { toolName?: string; toolCallId?: string; isError?: boolean; result?: { details?: unknown } };
+      /**
+       * ★ `details` 透传(2026-08-13,owner 点名「工具结果也进屏」)。
+       *
+       * 屏上此前只有 `✓ grep foo in src/` —— **搜到了什么看不见**,命中 0 处与 300 处
+       * 长得一模一样,而这两件事该做的下一步完全不同。
+       *
+       * ⚠ 只发 `details` **不发 `result.content`**:后者是给模型看的正文,一次 grep
+       * 就可能是几万字,灌进事件流等于把整个工具输出复制一份进 UI。
+       * `details` 是各工具的结构化契约(`OmdTool<T>` 的类型参数),小且稳定。
+       *
+       * ⚠ 不在这里渲染成句子 —— 与上面 `args` 那条同一纪律:后端只传数据,
+       * 挑哪几格、怎么措辞是排版,归 UI(`render/tool-result.ts`)。
+       */
+      emit('tool', {
+        phase: 'end',
+        name: t.toolName ?? '?',
+        id: t.toolCallId,
+        ok: !t.isError,
+        ...(t.result?.details !== undefined ? { details: t.result.details } : {}),
+      });
     }
   };
 
@@ -176,7 +212,6 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
           signal: controller.signal,
           ...(deps.memory ? { memory: deps.memory } : {}),
           ...(deps.systemPromptHook ? { systemPromptHook: deps.systemPromptHook } : {}),
-          ...(deps.contextFiles ? { contextFiles: deps.contextFiles } : {}),
         };
         const r = await runTurn(turn);
         // ⚠ 这一轮的账在 `runTurn` **里面**已经逐条记完了 (agent.ts 的 emitModelUsage) ——

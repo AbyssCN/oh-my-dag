@@ -10,11 +10,9 @@
  * 逐条证伪方式:
  * - 「框被占时不开框」→ 把 `busy` 判断删掉 → 当场红(它会真去 open)。
  * - 「Esc 是答案不是错误」→ 把 `null` 分支改成 `throw` → 当场红。
- * - 「档位是 read」→ 把 policy 里那行删掉 → 当场红(未登记 fail-closed 归 write)。
  */
 import { describe, expect, test } from 'bun:test';
 import type { Component } from '@earendil-works/pi-tui';
-import { DEFAULT_APPROVAL_CONFIG, classifyToolCall } from '../approval/policy';
 import type { DialogHost } from '../components/dialog';
 import { createTheme } from '../theme';
 import { ASK_USER_BUSY, ASK_USER_CANCELLED, ASK_USER_DISCUSS, type AskUserUi, createAskUserTool } from './ask-user';
@@ -91,16 +89,6 @@ describe('ask_user', () => {
   test('★ UI 还没建好(装配环那一刻):同样回话不抛', async () => {
     const r = await mk(null).run(QUESTION);
     expect(text(r)).toBe(ASK_USER_BUSY);
-  });
-
-  test('★ 档位必须是 read —— 否则"想问一句话"要先请人批准', () => {
-    const c = classifyToolCall('ask_user', QUESTION, DEFAULT_APPROVAL_CONFIG);
-    expect(c.tier).toBe('read');
-  });
-
-  test('反测:未登记的工具确实 fail-closed 归 write —— 证明上一条不是白给的', () => {
-    // 上一条若换成任何没登记的名字就该是 write。这条钉的是"那张表真的在起作用"。
-    expect(classifyToolCall('some_unregistered_tool', {}, DEFAULT_APPROVAL_CONFIG).tier).toBe('write');
   });
 
 

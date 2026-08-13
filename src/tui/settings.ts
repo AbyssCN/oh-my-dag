@@ -24,7 +24,7 @@ export interface SettingItem {
   value: string;
   detail?: string;
   /** 能改的项才有;只读行没有。 */
-  action?: 'seat' | 'session' | 'extensions' | 'ui-sidebar' | 'ui-painter' | 'approval-ttl' | 'login';
+  action?: 'seat' | 'session' | 'extensions' | 'ui-sidebar' | 'ui-painter' | 'login';
 }
 
 export interface SettingsInput {
@@ -39,8 +39,14 @@ export interface SettingsInput {
   // ── 切片⑥ (v5 第五节): 可改项。**省略 = 那一组不进表**(答不上现状的项不列)。──
   /** 界面组: 左栏开关 + 全屏默认画法(运行时值; 写盘走 tui.ui)。 */
   ui?: { sidebar: boolean; painterName: string };
-  /** 审批组: token TTL 秒(gate 启动时读一次 → 改完重启生效, detail 里写明)。 */
-  approvalTtlSec?: number;
+  /**
+   * 沙箱组(2026-08-13,替掉审批组):bwrap 围栏的**探测读数**。
+   *
+   * ⚠ **只读行,没有 action** —— 开关在 `.omd/config.json` 的 `tui.sandbox`,
+   * 面板里改不了它是刻意的:这一行要回答的是「现在到底有没有围栏」,
+   * 而那是一次探测的结果,不是一个偏好。
+   */
+  sandbox?: { ok: boolean; reason?: string };
   /** provider 组: 已配/未配(**只显示配没配, 不显示 key**)。 */
   providers?: { id: string; hasKey: boolean }[];
   /**
@@ -153,16 +159,18 @@ export function buildSettings(i: SettingsInput): SettingItem[] {
     });
   }
 
-  // ── 审批(切片⑥, 写 tui.approvals)──────────────────────────────────────────
-  if (i.approvalTtlSec !== undefined) {
+  // ── 沙箱(2026-08-13, 只读行: 答「现在有没有围栏」)────────────────────────────
+  if (i.sandbox) {
     items.push({
-      key: 'approval-ttl',
-      label: 'approval token TTL',
-      value: `${i.approvalTtlSec}s`,
+      key: 'sandbox',
+      label: 'shell sandbox',
+      value: i.sandbox.ok ? 'bwrap on' : `off - ${i.sandbox.reason ?? 'unknown'}`,
       // ⚠ 这里**不写 markdown**:选择器的 description 是纯文本, `**x**` 会原样带着星号上屏
       //   (2026-08-08 帧库实测抓到的)。要强调就用词序,不用星号。
-      detail: 'window in which "a" (allow same tier) skips approval; written to tui.approvals.tokenTtlSec, effective after restart (the gate reads it once at startup)',
-      action: 'approval-ttl',
+      detail:
+        'bwrap confines every shell command: the working root and /tmp are writable, everything else is read-only. ' +
+        'Irreversible commands (recursive force-delete, DROP TABLE, git push --force) are refused whether or not the sandbox is up. ' +
+        'Configure it in .omd/config.json under tui.sandbox (enabled / writable / allow / deny).',
     });
   }
 

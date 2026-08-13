@@ -78,7 +78,7 @@ const fakeQuery =
 describe('分派路由', () => {
   test('★ runChatTurn 对 claude-code:* 坐标走 SDK 通道(pi 目录解析不到也能跑)', async () => {
     const r = await runChatTurn({
-      store, sessionId: 's1', prompt: '进度如何', model: MODEL, cwd: root, contextFiles: [],
+      store, sessionId: 's1', prompt: '进度如何', model: MODEL, cwd: root,
       sdkQueryFn: fakeQuery([asst('两个 run 在跑'), success('sdk-a')]),
     });
     expect(r.reply).toBe('两个 run 在跑');
@@ -91,7 +91,7 @@ describe('持久化 + 账本 + 会话映射', () => {
     const un = observeModelUsage((u, model, origin) => emits.push({ u, model, origin }));
     try {
       const r = await runChatTurnSdk({
-        store, sessionId: 's1', prompt: '给我看看 DAG 引擎的进度', model: MODEL, cwd: root, contextFiles: [],
+        store, sessionId: 's1', prompt: '给我看看 DAG 引擎的进度', model: MODEL, cwd: root,
         sdkQueryFn: fakeQuery([asst('好的'), success('sdk-a')]),
       });
       expect(r.messageCount).toBe(2);
@@ -110,7 +110,7 @@ describe('持久化 + 账本 + 会话映射', () => {
   test('★ advisor:claude-code 坐标 → settings.advisorModel 裸 id;异族坐标 → 不挂(warn 不炸)', async () => {
     const seen: { options?: Options } = {};
     await runChatTurnSdk({
-      store, sessionId: 's1', prompt: 'x', model: MODEL, cwd: root, contextFiles: [],
+      store, sessionId: 's1', prompt: 'x', model: MODEL, cwd: root,
       advisor: 'claude-code:claude-opus-5',
       sdkQueryFn: fakeQuery([asst('好'), success('sdk-a')], seen),
     });
@@ -119,7 +119,7 @@ describe('持久化 + 账本 + 会话映射', () => {
 
     const seen2: { options?: Options } = {};
     await runChatTurnSdk({
-      store, sessionId: 's2', prompt: 'x', model: MODEL, cwd: root, contextFiles: [],
+      store, sessionId: 's2', prompt: 'x', model: MODEL, cwd: root,
       advisor: 'openai-codex:gpt-5.6-sol',
       sdkQueryFn: fakeQuery([asst('好'), success('sdk-b')], seen2),
     });
@@ -128,12 +128,12 @@ describe('持久化 + 账本 + 会话映射', () => {
 
   test('★ 次轮:resume 带上一轮的 SDK session_id,成功后映射更新为新 id', async () => {
     await runChatTurnSdk({
-      store, sessionId: 's1', prompt: '一', model: MODEL, cwd: root, contextFiles: [],
+      store, sessionId: 's1', prompt: '一', model: MODEL, cwd: root,
       sdkQueryFn: fakeQuery([asst('答一'), success('sdk-a')]),
     });
     const seen: { options?: Options } = {};
     await runChatTurnSdk({
-      store, sessionId: 's1', prompt: '二', model: MODEL, cwd: root, contextFiles: [],
+      store, sessionId: 's1', prompt: '二', model: MODEL, cwd: root,
       sdkQueryFn: fakeQuery([asst('答二'), success('sdk-b')], seen),
     });
     expect(seen.options?.resume).toBe('sdk-a');
@@ -145,7 +145,7 @@ describe('失败语义(半轮不入库 —— 本闸的反向自检:两条都先
   test('★ result subtype 非 success → 响亮抛,会话与映射一个字节不写', async () => {
     await expect(
       runChatTurnSdk({
-        store, sessionId: 's1', prompt: 'x', model: MODEL, cwd: root, contextFiles: [],
+        store, sessionId: 's1', prompt: 'x', model: MODEL, cwd: root,
         sdkQueryFn: fakeQuery([asst('半截'), { type: 'result', subtype: 'error_during_execution', session_id: 'sdk-a' } as unknown as SDKMessage]),
       }),
     ).rejects.toThrow('error_during_execution');
@@ -159,7 +159,7 @@ describe('失败语义(半轮不入库 —— 本闸的反向自检:两条都先
     try {
       await expect(
         runChatTurnSdk({
-          store, sessionId: 's1', prompt: 'x', model: MODEL, cwd: root, contextFiles: [],
+          store, sessionId: 's1', prompt: 'x', model: MODEL, cwd: root,
           sdkQueryFn: fakeQuery([asst('半截'), { type: 'result', subtype: 'error_max_turns', session_id: 'sdk-a' } as unknown as SDKMessage]),
         }),
       ).rejects.toThrow('error_max_turns');
@@ -172,7 +172,7 @@ describe('失败语义(半轮不入库 —— 本闸的反向自检:两条都先
   test('★ 流断了没 result → 响亮抛,不落盘', async () => {
     await expect(
       runChatTurnSdk({
-        store, sessionId: 's1', prompt: 'x', model: MODEL, cwd: root, contextFiles: [],
+        store, sessionId: 's1', prompt: 'x', model: MODEL, cwd: root,
         sdkQueryFn: fakeQuery([asst('半截')]),
       }),
     ).rejects.toThrow('没收到 result');
@@ -245,7 +245,7 @@ describe('正文事件(TUI 渲染的唯一来源 —— 2026-08-11 实测:通道
   test('★ SDK 没发增量 → assistant 正文合成一条 text_delta,且先于 message_end(反向自检:去掉合成即红)', async () => {
     const events: AgentEvent[] = [];
     await runChatTurnSdk({
-      store, sessionId: 's1', prompt: 'x', model: MODEL, cwd: root, contextFiles: [],
+      store, sessionId: 's1', prompt: 'x', model: MODEL, cwd: root,
       onEvent: (e) => events.push(e),
       sdkQueryFn: fakeQuery([asst('两个 run 在跑'), success('sdk-a')]),
     });
@@ -259,7 +259,7 @@ describe('正文事件(TUI 渲染的唯一来源 —— 2026-08-11 实测:通道
   test('★ stream_event 增量逐片转发;assistant 到达时不再补整段(补了正文就是双份)', async () => {
     const events: AgentEvent[] = [];
     await runChatTurnSdk({
-      store, sessionId: 's1', prompt: 'x', model: MODEL, cwd: root, contextFiles: [],
+      store, sessionId: 's1', prompt: 'x', model: MODEL, cwd: root,
       onEvent: (e) => events.push(e),
       sdkQueryFn: fakeQuery([streamEvt('两个 run'), streamEvt(' 在跑'), asst('两个 run 在跑'), success('sdk-a')]),
     });
@@ -269,7 +269,7 @@ describe('正文事件(TUI 渲染的唯一来源 —— 2026-08-11 实测:通道
   test('正文为空的 assistant(纯工具调用轮)不合成空 delta;后续有增量的消息不受前一条影响', async () => {
     const events: AgentEvent[] = [];
     await runChatTurnSdk({
-      store, sessionId: 's1', prompt: 'x', model: MODEL, cwd: root, contextFiles: [],
+      store, sessionId: 's1', prompt: 'x', model: MODEL, cwd: root,
       onEvent: (e) => events.push(e),
       sdkQueryFn: fakeQuery([
         asst('', { toolUse: { id: 'tu-1', name: 'dag_status', input: {} } }),
@@ -285,7 +285,7 @@ describe('正文事件(TUI 渲染的唯一来源 —— 2026-08-11 实测:通道
 describe('工具循环消息映射', () => {
   test('★ tool_use / tool_result 映射成 pi 形状且 toolName 经 id 关联', async () => {
     const r = await runChatTurnSdk({
-      store, sessionId: 's1', prompt: '跑一下', model: MODEL, cwd: root, contextFiles: [],
+      store, sessionId: 's1', prompt: '跑一下', model: MODEL, cwd: root,
       sdkQueryFn: fakeQuery([
         asst('我调一下工具', { toolUse: { id: 'tu-1', name: 'dag_status', input: { runId: 'r1' } } }),
         toolResult('tu-1', 'running'),

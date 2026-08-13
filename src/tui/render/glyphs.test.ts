@@ -9,7 +9,6 @@
  */
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { describe, expect, test } from 'bun:test';
-import { formatContextLine } from '../context';
 import { CHROME } from '../tui';
 import { GROUND_TRUTH, NEEDS_TTY_GLYPHS, SAFE_GLYPH_WIDTHS, UNSAFE_GLYPHS } from './glyph-table';
 import { classifyGlyph, findRiskyGlyphs } from './glyphs';
@@ -24,8 +23,6 @@ import { renderGantt } from './dag-gantt';
 import { renderDelta, renderFogLine } from './path-fog';
 import { renderLayers } from './dag-layers';
 import { formatStatusLine } from './statusbar';
-import { approvalBody, approvalTitle } from '../approval/card';
-import type { ApprovalRequest } from '../approval/gate';
 
 describe('★ 回归钉: 探针读数 vs 今天的 pi-tui', () => {
   // 反向自检: 把 glyph-table 里 '你' 的 2 改成 1 → 这条当场红。
@@ -172,12 +169,11 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
     ['settings', formatSettings(buildSettings({
       seats: { conductor: 'a:1' }, seatsError: null, sessionId: 'tui', sessionCount: 2, pressure: null, color: true, truecolor: true, extensions: [],
       // 切片⑥: 可改组的文案也要过字形闸
-      ui: { sidebar: true, painterName: 'gantt' }, approvalTtlSec: 600,
+      ui: { sidebar: true, painterName: 'gantt' }, sandbox: { ok: false, reason: 'bwrap: No such file or directory' },
       providers: [{ id: 'deepseek', hasKey: true }, { id: 'kimi-coding', hasKey: false }],
     }))],
     ['login:done', CHROME.loginDone('deepseek', 'env', ['auth.json had an older key, it was overwritten'])],
     ['ui:written', CHROME.uiWritten('DAG sidebar default -> off', '/x/.omd/config.json')],
-    ['approval-ttl:written', CHROME.approvalTtlWritten(120, '/x/.omd/config.json')],
     // 切片⑧: 散雾图两画法 (chrome + 键位行; 票标题是数据, 但样例里的中文照扫无妨)。
     ['path:fog', renderFogLine(
       { destination: 'a destination', slug: 'omd-agent-tui', gens: [[{ id: 'd01', gist: 'stdio' }, { id: 'd05', gist: 'memory' }]], frontier: [
@@ -225,31 +221,8 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
     ['dag:no-run', '(no run yet - send one, then press Ctrl+G)'],
     ['hud:on', 'DAG sidebar: on (drawn when there is a run and the terminal is at least 90 columns; auto-hidden when narrower)'],
     ['hud:off', 'DAG sidebar: off (the table at the bottom is back)'],
-    // 切片①: 审批卡片与裁决回执。detail 区是数据不是 chrome, 卡片 chrome 只到键位行为止。
-    ...((): [string, string][] => {
-      const req: ApprovalRequest = {
-        tool: 'edit',
-        tier: 'write',
-        reasons: ['function-level write', 'target is on the protected list (src/model/seats.ts)'],
-        target: 'src/model/seats.ts',
-        summary: 'edit src/model/seats.ts (-3 +7 lines)',
-        preview: [],
-        canGrant: true,
-        ttlSec: 600,
-      };
-      const admin: ApprovalRequest = { ...req, tool: 'bash', tier: 'admin', canGrant: false, summary: 'bash: git push --force' };
-      return [
-        ['approval:title', approvalTitle(req)],
-        ['approval:body', approvalBody(req, { detail: false })],
-        ['approval:body(admin)', approvalBody(admin, { detail: false })],
-        ['approval:denied', CHROME.approvalDenied('edit src/x.ts (-1 +1 lines)')],
-        ['approval:once', CHROME.approvalOnce('edit src/x.ts (-1 +1 lines)')],
-        ['approval:granted', CHROME.approvalGranted('edit src/x.ts (-1 +1 lines)', 10)],
-        ['approval:busy', CHROME.approvalBusy('edit src/x.ts (-1 +1 lines)')],
-      ];
-    })(),
-    ['harness(有)', formatContextLine([{ path: '/x/.claude/CLAUDE.md', content: '' }], { cwd: '/x', home: '/h' })],
-    ['harness(无)', formatContextLine([], { cwd: '/x', home: '/h' })],
+    // 2026-08-13: 审批卡片删了, 换成沙箱降级告警那一行(它是 chrome, 要过字形闸)。
+    ['sandbox:off', CHROME.sandboxOff('bwrap: Operation not permitted')],
     // 空输入框里的提示符(`HintedEditor`)—— P3 件6 轮1 的 critic 判词逼出来的那一行。
     ['editorHint', CHROME.editorHint],
   ];

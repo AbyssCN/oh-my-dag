@@ -18,7 +18,9 @@
  */
 import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { readdir, readFile, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import { NodeExecutionEnv } from '@earendil-works/pi-agent-core/node';
@@ -32,6 +34,8 @@ import {
 } from '@earendil-works/pi-agent-core';
 import { type Static, type TSchema, Type } from 'typebox';
 import { classifyCommand } from './hooks/dangerous-cmd';
+import { type CommandPolicy, DEFAULT_SANDBOX_CONFIG, judgeCommand } from './hooks/command-policy';
+import { sandboxCommand } from './hooks/shell-sandbox';
 import { secretPathInCommand, SECRET_BASENAMES, SECRET_BASENAME_EXEMPT } from './command-leaf';
 import { logger } from '../logger';
 import { openTouchLedger, type TouchLedger, type TouchOp, type TouchSource } from './touch-ledger';
@@ -194,13 +198,97 @@ function globToRegExp(glob: string): RegExp {
 }
 
 /**
+ * **远端 / 慢挂载的文件系统类型**(2026-08-13,WSL 卡死事故的修法)。
+ *
+ * ## 这张表是拿一次真事故换来的
+ *
+ * 2026-08-13:`omd tui` 的 conductor 让 `grep` 走进 `/mnt/d` —— 那是 WSL 的 **9p drvfs**
+ * 挂载。后果不是慢,是**整台机器的 WSL 停摆**:9P 桥被递归遍历打爆之后,任何碰 Windows
+ * 文件的操作无限期挂起,连新开一个 shell 都卡在解析 PATH(PATH 里有 `/mnt/c` 下的路径),
+ * 于是终端一片全黑、不报错。`omd tui` 进程本身占满一个核 **3 小时 48 分**。
+ *
+ * ⚠ **占核的是 TUI 主进程,不是子进程** —— 因为 `walkFiles` 是**进程内** JS:
+ * 它不进 bwrap 围栏(围栏只包 bash)、`bashTimeoutSec` 管不着它、Esc 也打断不了。
+ * 这就是为什么闸必须加在这里,而不只是加在沙箱那一侧。
+ *
+ * 判据是 **fstype 不是路径** —— 写死 `/mnt` 只挡得住 WSL 一种形态,而 NAS(`/mnt/nas*`)、
+ * sshfs、rclone 挂在哪儿是用户定的。本机实测 `/proc/mounts`:
+ * `/mnt/c` `/mnt/d` = `9p`,另有 `/mnt/nas` `/mnt/nas-backups` `/mnt/nas-marketing`。
+ */
+export const REMOTE_FS_TYPES: ReadonlySet<string> = new Set([
+  '9p', 'drvfs', 'cifs', 'smbfs', 'smb3', 'nfs', 'nfs4', 'afs', 'ceph', 'glusterfs', 'davfs', 'afpfs',
+]);
+
+/** `fuse.` 开头的一族按前缀判(`fuse.sshfs` / `fuse.rclone` / `fuse.s3fs` …)—— 逐个登记必漏新成员。 */
+const REMOTE_FUSE_PREFIX = 'fuse.';
+
+/** 一条 fstype 算不算远端。`fuse.` 前缀 + 上面那张表。 */
+export function isRemoteFsType(fstype: string): boolean {
+  return REMOTE_FS_TYPES.has(fstype) || fstype.startsWith(REMOTE_FUSE_PREFIX);
+}
+
+/**
+ * 读 `/proc/mounts` 挑出远端挂载点(绝对路径,去重)。
+ *
+ * 读不到(非 Linux / 权限)→ **空表 + 不抛**:遍历闸是护栏不是承重件,
+ * 拿不到挂载表时退回"没有远端挂载"的旧行为,而不是让 `grep` 整个失败。
+ * ⚠ 但这条 fail-open 不吞证据 —— 调用方拿到的 `skippedMounts` 是空,
+ * 与"读到了且确实没有远端挂载"同形。两者都不该发生在正常 Linux 上,不值得再分一列。
+ */
+export function readRemoteMounts(procMounts = '/proc/mounts'): string[] {
+  let raw: string;
+  try {
+    raw = readFileSync(procMounts, 'utf8');
+  } catch {
+    return [];
+  }
+  const out = new Set<string>();
+  for (const line of raw.split('\n')) {
+    // 格式: `device mountpoint fstype options dump pass`;挂载点里的空格转义成 `\040`。
+    const [, mountpoint, fstype] = line.split(' ');
+    if (!mountpoint || !fstype) continue;
+    if (isRemoteFsType(fstype)) out.add(mountpoint.replace(/\\040/g, ' '));
+  }
+  return [...out];
+}
+
+/**
  * 遍历结果。**`capped` 必须往上报** —— 见下面那段。
  */
 export interface WalkResult {
   files: string[];
-  /** 走到 `limit` 就停了 = **命中可能不全**。`false` 才代表"整棵树都走过了"。 */
+  /** 走到上限/预算就停了 = **命中可能不全**。`false` 才代表"整棵树都走过了"。 */
   capped: boolean;
+  /**
+   * 因为是**远端挂载**而整棵剪掉的路径。
+   *
+   * ⚠ **必须往上报**,与 `capped` 同一条纪律:静默剪掉之后,`grep` 在
+   * `/mnt/d` 上返回 `(无命中)` —— 而那句话读起来是"那儿没有",实际是"我没去看"。
+   * 空数组 = 一棵都没剪(不是"不知道")。
+   */
+  skippedMounts: string[];
 }
+
+/** {@link walkFiles} 的可选件。全部有默认值 —— 调用方只给它在意的那一项。 */
+export interface WalkOpts {
+  /** 候选文件过滤(glob)。**在走的过程中就用**,不是走完再筛。 */
+  filter?: (path: string) => boolean;
+  /** 墙钟预算(ms)。超了停下并 `capped: true`。默认 {@link WALK_BUDGET_MS}。 */
+  budgetMs?: number;
+  /** 远端挂载点表。**注入以便可测** —— 省略 = 现读 `/proc/mounts`。 */
+  remoteMounts?: readonly string[];
+  /** 时钟注入(预算判定要可测,不能靠在测试里 sleep 出一个不确定的读数)。 */
+  now?: () => number;
+}
+
+/**
+ * 遍历的**墙钟预算**(ms)。
+ *
+ * ⚠ 这个数与 `GREP_WALK_LIMIT` 是**两条不同的闸**,不是一条的两种写法:
+ * 条目上限管的是"走了多少",预算管的是"走了多久"。9P 上一个条目可能要几百毫秒,
+ * 于是条目数远没到上限、时间已经过去几小时 —— 2026-08-13 那次正是这一种。
+ */
+export const WALK_BUDGET_MS = 10_000;
 
 /**
  * 走一棵树,最多 `limit` 个文件。
@@ -227,16 +315,51 @@ export interface WalkResult {
  *
  * 老版是 `walkFiles(...)` 之后再 `files.filter(globRe)` —— 于是 `grep(x, glob:'*.ts')`
  * 在大仓里先走 20_000 个**任意**文件(哈希序,不是你想要的那 20_000 个)再筛,
- * **glob 一点都帮不上逃出上限**。现在 filter 进了走的过程,上限只数候选文件。
+ * **glob 一点都帮不上逃出上限**。现在 filter 进了走的过程。
+ *
+ * ## ★ 2026-08-13:上限数的是**走过的条目**,不再是命中的文件
+ *
+ * 上一版把 filter 挪进遍历时,顺手把上限也改成只数**候选**文件 —— 那一步是错的,
+ * 而且错得静默:带 `glob` 时不匹配的文件**一个都不计数**,于是
+ * `grep(x, path:'/mnt/d', glob:'*.ts')` 在一整块盘上走穿都到不了 20,000,
+ * **上限形同虚设,遍历实际无界**。2026-08-13 的 WSL 卡死就是这么来的。
+ *
+ * 现在:`limit` 数的是 **readdir 返回的条目总数**(目录 + 文件,不管过没过 filter)——
+ * 也就是"干了多少活"。glob 仍然只影响**结果**,不再影响**代价**。
+ * 两件事本来就该分开:一个是你想要什么,一个是允许花多少。
+ *
+ * ⚠ **export 是给闸用的**(同 `SKIP_DIRS` 那条):远端挂载剪枝与墙钟预算都要能被
+ * 注入着量 —— 去读真机的 `/proc/mounts`,这条闸在没有网络盘的机器上就恒绿,
+ * 量的是那台机器不是这段代码。
  */
-async function walkFiles(root: string, limit: number, filter?: (path: string) => boolean): Promise<WalkResult> {
+export async function walkFiles(root: string, limit: number, opts: WalkOpts = {}): Promise<WalkResult> {
+  const { filter, budgetMs = WALK_BUDGET_MS, now = Date.now } = opts;
+  const remote = opts.remoteMounts ?? readRemoteMounts();
+  const deadline = now() + budgetMs;
   const out: string[] = [];
+  const skippedMounts: string[] = [];
   const stack = [root];
-  // ★ 多收**一个**再判:`out.length > limit` 才叫"还有更多"。
-  //   直接在 `>= limit` 处 return 分不开"刚好 limit 个"与"还有第 limit+1 个" ——
-  //   而那两件事一个该报 capped 一个不该(本仓 NULL ≠ 0 的同一条:别把两种状态抹成一种)。
-  const probe = limit + 1;
+  /** 走过的条目数(目录+文件)。上限数它 —— 见上面那段。 */
+  let visited = 0;
+  let capped = false;
+  /** 这个目录是不是一个远端挂载点(整棵剪掉)。前缀比较 —— 挂载点之下全部算。 */
+  const isRemote = (dir: string): boolean =>
+    remote.some((m) => dir === m || dir.startsWith(m.endsWith(sep) ? m : m + sep));
+  /**
+   * ★ **root 自己就在远端挂载上时不剪**(2026-08-13)。
+   *
+   * 剪的目的是挡**误入** —— 从 `/` 或 `~` 走着走着掉进 `/mnt/d`。而
+   * `grep(path:'/mnt/d')` 是**明说要去那儿**,把它剪成"一层都不进"等于让这个工具
+   * 在那条路径上永远返回 `(无命中)`,而那是本仓最怕的那种谎。
+   * 那一支的护栏是另外两条:条目上限 + 墙钟预算 —— 它们对本地远端一视同仁。
+   */
+  const rootIsRemote = isRemote(root);
   outer: while (stack.length > 0) {
+    // 预算先判 —— 9P 上一个 readdir 就可能几百毫秒, 判在 readdir **之前**才拦得住。
+    if (now() > deadline) {
+      capped = true;
+      break;
+    }
     const dir = stack.pop()!;
     let entries: Dirent[];
     try {
@@ -246,17 +369,26 @@ async function walkFiles(root: string, limit: number, filter?: (path: string) =>
     }
     for (const e of entries) {
       const full = join(dir, e.name);
+      visited += 1;
+      if (visited > limit) {
+        capped = true;
+        break outer;
+      }
       if (e.isDirectory()) {
-        if (!shouldSkipDir(e.name)) stack.push(full);
+        if (shouldSkipDir(e.name)) continue;
+        // ★ 远端挂载整棵剪掉, 并**记下来往上报** —— 静默剪 = `(无命中)` 骗人。
+        if (!rootIsRemote && isRemote(full)) {
+          if (!skippedMounts.includes(full)) skippedMounts.push(full);
+          continue;
+        }
+        stack.push(full);
       } else if (e.isFile()) {
         if (filter && !filter(full)) continue;
         out.push(full);
-        if (out.length >= probe) break outer;
       }
     }
   }
-  if (out.length > limit) return { files: out.slice(0, limit), capped: true };
-  return { files: out, capped: false };
+  return { files: out, capped, skippedMounts };
 }
 
 // ── 工具 schema ────────────────────────────────────────────────────────────────
@@ -297,6 +429,23 @@ export interface OmdAgentToolsOpts {
   cwd: string;
   /** bash 不可逆命令 fail-closed 闸。默认 true (安全侧); false = 逃生关闸。 */
   dangerousCommandGuard?: boolean;
+  /**
+   * 黑白名单(2026-08-13)。省略 = 内置黑名单 + 空白名单 —— 与本参数出现之前**行为一致**。
+   * 给了就用它替掉 `classifyCommand`(白名单赦免在里面,见 `hooks/command-policy.ts`)。
+   *
+   * ⚠ 与 `dangerousCommandGuard: false` 的关系:那个是**整闸关**,这个是**换判据**。
+   * 关闸时本参数不生效 —— 不存在"关了闸还想按名单判"的场景。
+   */
+  commandPolicy?: CommandPolicy;
+  /**
+   * bwrap 围栏(2026-08-13,owner 裁:对话位默认 yolo + 沙箱)。给了则:
+   *   · `bash` 的每条命令包进 bwrap —— `root` 与 `/tmp` 可写, **其余全只读**;
+   *   · `write` / `edit` 的目标越出可写边界 → 拒(否则围栏只挡 bash 这一个口)。
+   *
+   * 省略 = 无围栏(leaf 那条路:真隔离由 `hooks/sandboxed-leaf.ts` 在**进程级**做)。
+   * bwrap 起不来时**降级裸跑**并记一行 —— 黑名单仍在(见 `shell-sandbox.ts` 的探测)。
+   */
+  sandbox?: { root: string; writable?: readonly string[] };
   /** bash 单条命令默认超时 (秒)。默认 120。 */
   bashTimeoutSec?: number;
   /**
@@ -335,7 +484,27 @@ export const GREP_WALK_LIMIT = 20_000;
 export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
   const cwd = resolve(opts.cwd);
   const guardDangerous = opts.dangerousCommandGuard !== false;
+  const commandPolicy = opts.commandPolicy ?? DEFAULT_SANDBOX_CONFIG;
   const defaultTimeout = opts.bashTimeoutSec ?? 120;
+  /**
+   * 围栏的可写边界 = `root` + 额外逃生口 + `/tmp`(bwrap 那侧是 tmpfs,这侧的 write/edit
+   * 落在宿主真 `/tmp` —— 不一致但两边都"能写",而收紧到不许写 /tmp 会打断一堆正常用法)。
+   * 省略 `sandbox` → `null` = 不设边界(leaf 那条路,与本参数出现之前行为一致)。
+   */
+  const writableRoots: string[] | null = opts.sandbox
+    ? [resolve(opts.sandbox.root), ...(opts.sandbox.writable ?? []).map((p) => resolve(p)), tmpdir()]
+    : null;
+  /** 目标在不在可写边界里。无边界 → 恒 true。 */
+  const writable = (target: string): boolean =>
+    writableRoots === null || writableRoots.some((r) => target === r || target.startsWith(r.endsWith(sep) ? r : r + sep));
+  /** 越界即拒 —— 错误里带边界原文, 模型才知道该改去哪写, 而不是反复试同一个路径。 */
+  const requireWritable = (target: string, tool: string): void => {
+    if (writable(target)) return;
+    throw new Error(
+      `BLOCKED 沙箱越界: ${tool} 的目标 ${target} 不在可写边界内 (${(writableRoots ?? []).join(' · ')})。` +
+        '要写到工作根外面, 把路径加进 .omd/config.json 的 tui.sandbox.writable。',
+    );
+  };
   const walkLimit = opts.grepWalkLimit ?? GREP_WALK_LIMIT;
   const env = new NodeExecutionEnv({ cwd });
   // SDD S3 碰撞台账 (只记不拦): 给了 touch 才开库, 库锚在 cwd (触碰发生的工作根) 的 `.omd/touch.db`。
@@ -399,6 +568,7 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
     async execute(_id, params) {
       const { path, content } = params as Static<typeof WRITE_SCHEMA>;
       const full = abs(cwd, path);
+      requireWritable(full, 'write');
       const r = await env.writeFile(full, content);
       if (!r.ok) throw new Error(`write 失败: ${display(cwd, full)}: ${r.error.message}`);
       // SDD S3 strict 档 (事实): 受控写工具知道写了什么 → hash = sha256(写入内容), 非 NULL。
@@ -422,6 +592,7 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
     async execute(_id, params) {
       const { path, oldText, newText } = params as Static<typeof EDIT_SCHEMA>;
       const full = abs(cwd, path);
+      requireWritable(full, 'edit');
       let raw: string;
       try {
         raw = await readFile(full, 'utf-8');
@@ -468,7 +639,7 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
     },
   };
 
-  const grep: OmdTool<{ matches: number; files: number; walked: number; walkCapped: boolean }> = {
+  const grep: OmdTool<{ matches: number; files: number; walked: number; walkCapped: boolean; skippedMounts: number }> = {
     name: 'grep',
     label: 'grep',
     description:
@@ -494,8 +665,8 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
       if (!info) throw new Error(`grep 失败: 路径不存在 ${display(cwd, root)}`);
       // glob 进遍历(不是走完再筛)—— 否则上限数的是**任意** 20_000 个文件, glob 帮不上忙。
       const walked = info.isDirectory()
-        ? await walkFiles(root, walkLimit, globRe ? (f) => globRe.test(f.split(sep).join('/')) : undefined)
-        : { files: [root], capped: false };
+        ? await walkFiles(root, walkLimit, globRe ? { filter: (f) => globRe.test(f.split(sep).join('/')) } : {})
+        : { files: [root], capped: false, skippedMounts: [] };
       const files = walked.files;
       const hits: string[] = [];
       let filesWithHits = 0;
@@ -526,15 +697,31 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
        * 是"这个符号不存在"这个**错误结论**,而它没有任何线索去怀疑。
        */
       const cut = walked.capped
-        ? `\n[⚠ 只走到前 ${files.length} 个文件就到遍历上限了 —— **命中很可能不全**` +
+        ? `\n[⚠ 走到遍历上限/时间预算就停了 (收到 ${files.length} 个候选文件) —— **命中很可能不全**` +
           `${hits.length === 0 ? '(上面那句"无命中"因此不代表它不存在)' : ''}。用 path= 收窄目录, 或 glob= 收窄文件名]`
         : '';
-      return textResult(`${head}${more}${cut}`, {
+      /**
+       * ★ **剪掉的远端挂载必须说出来**(2026-08-13,与 `capped` 同一条纪律)。
+       *
+       * 静默剪掉之后,`grep` 在一个挂着 NAS 的目录上返回 `(无命中)` —— 而那句话
+       * 读起来是"那儿没有",实际是"我根本没去看"。两件事抹成一句,agent 就会
+       * 拿着一个错误结论继续往下走,且没有任何线索去怀疑。
+       */
+      const MOUNT_REPORT_CAP = 5;
+      const skipped = walked.skippedMounts;
+      const mounts =
+        skipped.length === 0
+          ? ''
+          : `\n[⚠ 跳过 ${skipped.slice(0, MOUNT_REPORT_CAP).map((m) => display(cwd, m)).join(' · ')}` +
+            `${skipped.length > MOUNT_REPORT_CAP ? ` 等 ${skipped.length} 处` : ''}` +
+            ' —— 远端挂载 (9p/NAS/网络盘), 递归遍历会拖死整台机器。要搜就直接 path= 指到那里面]';
+      return textResult(`${head}${more}${cut}${mounts}`, {
         matches: hits.length,
         files: filesWithHits,
-        // 走了几个 / 有没有被截 —— 让调用方也能程序化地看见, 不只靠读那句话。
+        // 走了几个 / 有没有被截 / 剪了几处 —— 让调用方也能程序化地看见, 不只靠读那句话。
         walked: files.length,
         walkCapped: walked.capped,
+        skippedMounts: skipped.length,
       });
     },
   };
@@ -561,12 +748,15 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
     executionMode: 'sequential',
     async execute(_id, params, signal) {
       const { command, timeout } = params as Static<typeof BASH_SCHEMA>;
-      // ① 不可逆命令 fail-closed (与 command-leaf 共用同一个分类器)。分类器抛错也算拦 ——
+      // ① 不可逆命令 fail-closed (与 command-leaf 共用同一张模式表)。分类器抛错也算拦 ——
       //    fail-closed 契约不能因为异常就变成 fail-open。
+      //    2026-08-13: 判据换成 `judgeCommand` —— 同一张黑名单, 外加逐仓白名单赦免。
+      //    不传 commandPolicy 时它等价于旧的 `classifyCommand`(DEFAULT_SANDBOX_CONFIG 的
+      //    deny 就是 DANGEROUS_PATTERNS、allow 为空), 所以 leaf 那条路一个字都没变。
       if (guardDangerous) {
         let dangerous: ReturnType<typeof classifyCommand>;
         try {
-          dangerous = classifyCommand(command);
+          dangerous = judgeCommand(command, commandPolicy);
         } catch (err) {
           logger.error({ command, err: (err as Error).message }, '[omd/agent-tools] 命令分类器异常 → 拦');
           throw new Error('BLOCKED: 命令分类器异常 (fail-closed)');
@@ -586,7 +776,13 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
       }
       // SDD S3 bash 写嗅探的起跑时刻: verifiedShellWriteTargets 的窗口左沿 (mtime ≥ startedAt - 容差)。
       const startedAt = Date.now();
-      const r = await executeShellWithCapture(env, command, {
+      // ③ bwrap 围栏 (2026-08-13): 工作根 + /tmp 可写, 其余全只读。**包的是命令串** ——
+      //    pi 每次 exec 都 spawn 全新 shell (无跨调用 cd 状态), 逐条包因此是安全的。
+      //    沙箱起不来 → `sandboxCommand` 原样返回 (降级裸跑, 告警在 probe 那侧)。
+      const toRun = opts.sandbox
+        ? sandboxCommand(command, { root: opts.sandbox.root, ...(opts.sandbox.writable ? { extraWritable: opts.sandbox.writable } : {}) })
+        : command;
+      const r = await executeShellWithCapture(env, toRun, {
         timeout: timeout && timeout > 0 ? timeout : defaultTimeout,
         ...(signal ? { abortSignal: signal } : {}),
       });

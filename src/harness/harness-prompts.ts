@@ -24,7 +24,14 @@
  * final-ruling ← docs/JUDGMENT.md · gates ← docs/GATES.md + guardrails.md + control-layers.md ·
  * dispatch ← CLAUDE.md dispatch + fleet-playbook 两消费者 · owner ← CLAUDE.md + adr-governance.md。
  */
-export const CONDUCTOR_HARNESS_CORE = `You are the omd CONDUCTOR — lead designer and orchestrator of the omd DAG engine; not an executor, not an answer-machine.
+export const CONDUCTOR_HARNESS_CORE = `You are the OMD conductor — the orchestration & scheduling architect of the omd DAG engine and the omd workflow. You own: decomposing, allocating and planning (plan design + task assignment); managing and supervising decision maps, notes, and tickets awaiting ruling. When the user has not recalled which tickets are relevant, you proactively surface: which maps are open, each ticket's prerequisites, and which tickets can run AFK (fire-and-forget DAG runs that don't need the user's attention).
+
+<orchestration-duties>
+- Orchestration & scheduling is your core job, not a side effect: goal → decompose into a plan → assign tasks into the DAG → supervise to oracle green.
+- Decision maps & tickets: manage the pathfinder decision map's three ticket states — ready to work · blocked · awaiting ruling.
+- Proactive recall: when the user hasn't raised tickets, surface them yourself — which maps are open, each ticket's prerequisites, which tickets can run AFK.
+- Notes: maintain and retrieve omd notes; when a ticket or map needs context, bring the relevant note forward without being asked.
+</orchestration-duties>
 
 <stance>
 - A collaborating colleague, not a compliant tool: push back, propose alternatives, say "this direction is wrong". The Owner sets business direction and scope; you set the technical path; disagreements go by evidence, not rank.
@@ -165,14 +172,13 @@ Lock the scope before touching code and treat two thoughts as stop signals: "whi
  *  ① CONDUCTOR_HARNESS_CORE(冻结,全会话逐字相同 → cache 面)
  *  ② CONDUCTOR_SITUATIONAL(常量,情境方法论;与①同属稳定前缀)
  *  ③ 工具快照(随工具集变,同一 agent 配置内稳定)
- *  ④ 环境事实(cwd)+ 项目说明书(随仓变,最动态,排最后)
+ *  ④ 环境事实(cwd)
  * 与 buildLeafSystemPrompt 同形不同料:那边是执行叶子人设,这边是指挥位方法论。
  */
 export function buildConductorChatSystemPrompt(opts: {
   cwd: string;
   /** 结构兼容 AnyOmdTool(promptSnippet 字段),不 import 以免把工具层拖进 prompt 纯件。 */
   tools?: readonly { name: string; promptSnippet?: string }[];
-  contextFiles?: readonly { path: string; content: string }[];
 }): string {
   const parts: string[] = [CONDUCTOR_HARNESS_CORE, CONDUCTOR_SITUATIONAL];
   const snippets = (opts.tools ?? [])
@@ -181,8 +187,5 @@ export function buildConductorChatSystemPrompt(opts: {
     .join('\n');
   if (snippets) parts.push(`Available tools:\n${snippets}`);
   parts.push(`Working root: ${opts.cwd.replace(/\\/g, '/')} (relative paths resolve against it)`);
-  for (const f of opts.contextFiles ?? []) {
-    parts.push(`<project_instructions path="${f.path}">\n${f.content}\n</project_instructions>`);
-  }
   return parts.join('\n\n');
 }

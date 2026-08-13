@@ -17,13 +17,28 @@
  * 故翻掉(记在 `docs/plan/2026-08-07-omd-tui-daily-driver-goal.md` §4)。
  *
  * ⚠ 派遣没有消失:分野写在 system prompt 的 `<hands>` 段 —— 小活自做,真能分片的才派 DAG。
+ *
+ * ## 闸:两层,不是一层(2026-08-13 owner 裁,替掉四档审批)
+ *
+ * 旧装配把整个工具面包一层四档审批,判据是 `COMMAND_RISK_TIER` —— 而那张表只登记了
+ * 25 个 bin,**未登记一律弹框**。实测(owner 截图)一轮 6 条调用全停在等人按键上:
+ * `which omd` 被判 `risk tier never`。审批闸因此不是安全措施,是打断器。
+ *
+ * 现在:
+ *   · **围栏**(`hooks/shell-sandbox`)—— bash 每条命令进 bwrap,工作根 + `/tmp` 可写,
+ *     其余全只读;`write`/`edit` 越界即拒。挡的是**越界**。
+ *   · **黑名单**(`hooks/command-policy`)—— `rm -rf /`、`DROP TABLE`、`git push --force`
+ *     一族硬拒。挡的是**工作根之内的不可逆**(围栏盖不住的那一半)。
+ *
+ * **不变量仍是「闸永远有一层」**,只是那一层不再是人:黑名单 `dangerousCommandGuard`
+ * 现在**恒开**(不再因为装了审批就关掉)。`chat-seat.test.ts` 钉这条。
  */
 import type { AnyOmdTool } from '../../harness/agent-tools';
 import { createOmdAgentTools } from '../../harness/agent-tools';
+import { loadSandboxConfig } from '../../harness/hooks/command-policy';
 import { createMcpClientTools } from '../../mcp/client/meta-tools';
 import type { OmdMcpTool } from '../../mcp/server';
 import { createConductorChatTools } from '../../serve/chat-tools';
-import type { ApprovalGate } from '../approval/gate';
 import { type AskUserResolver, createAskUserTool } from './ask-user';
 import { createCodegraphTools } from './codegraph';
 import { createSkillTools } from './skill-tool';
@@ -44,14 +59,11 @@ export interface ChatSeatToolsOpts {
   /** 扩展带进来的工具(S15a)。没有扩展就省略。 */
   extTools?: readonly AnyOmdTool[];
   /**
-   * 审批闸(切片①)。给了 → **整个工具面**被包一层四档审批,且六只手的内层
-   * `dangerousCommandGuard` 关掉,由审批的 admin 档接管(v5:「bash 不可逆子集 → 强制审批」)。
-   * 省略 → 内层闸保持原样(硬拒不可逆命令)。
-   *
-   * ⚠ **不变量:闸永远有一层** —— 要么内层硬拒,要么外层审批,不存在两层都没有的装配。
-   * `chat-seat.test.ts` 钉这条。
+   * 围栏 + 黑白名单(2026-08-13)。**测试接缝** —— 省略 = 现读 `.omd/config.json`
+   * 的 `tui.sandbox` 段(生产路径)。传进来是为了让"装了什么闸"可直测,
+   * 而不是靠在测试里现造一个 config 文件。
    */
-  approvals?: ApprovalGate;
+  sandbox?: import('../../harness/hooks/command-policy').SandboxConfig;
   /**
    * `ask_user` 的 UI 取法(**惰性** —— 工具面装在 TUI 之前, 见 `ask-user.ts` 的说明)。
    * **省略 = 这条装配路径没有 `ask_user` 这个能力**(工具列表里根本没这个名字)——
@@ -65,8 +77,15 @@ export interface ChatSeatToolsOpts {
  * 手在最前(最常用),然后指挥面,再符号面,最后扩展。
  */
 export function createChatSeatTools(o: ChatSeatToolsOpts): AnyOmdTool[] {
+  // 2026-08-13 owner 裁: 默认 yolo —— 不弹审批框, 安全靠 **围栏 + 黑名单** 两层。
+  // 配置逐仓读 (`tui.sandbox`); `enabled:false` 只关围栏, 黑名单永远在。
+  const sandboxCfg = o.sandbox ?? loadSandboxConfig(o.cwd);
   const all = [
-    ...createOmdAgentTools({ cwd: o.cwd, ...(o.approvals ? { dangerousCommandGuard: false } : {}) }),
+    ...createOmdAgentTools({
+      cwd: o.cwd,
+      commandPolicy: sandboxCfg,
+      ...(sandboxCfg.enabled ? { sandbox: { root: o.cwd, writable: sandboxCfg.writable } } : {}),
+    }),
     ...createConductorChatTools(o.mcpTools),
     // S17: 符号能力是**探测式**的 —— 探不到就一个工具都不挂(不是挂了、调了才失败)。
     ...createCodegraphTools({ cwd: o.cwd }),
@@ -80,5 +99,5 @@ export function createChatSeatTools(o: ChatSeatToolsOpts): AnyOmdTool[] {
     ...(o.askUser ? createAskUserTool(o.askUser) : []),
     ...(o.extTools ?? []),
   ];
-  return o.approvals ? o.approvals.wrap(all) : all;
+  return all;
 }

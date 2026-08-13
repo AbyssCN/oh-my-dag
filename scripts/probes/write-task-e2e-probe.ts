@@ -84,28 +84,14 @@ async function main(): Promise<void> {
   bootstrapModelRuntime();
   const { assembleOmdMcpTools, resolveEngineModels } = await import('../../src/mcp/assemble');
   const { createChatSeatTools } = await import('../../src/tui/tools/chat-seat');
-  const { createApprovalGate } = await import('../../src/tui/approval/gate');
   const { createOmdSessionStore } = await import('../../src/harness/chat/session-store');
   const { runChatTurn } = await import('../../src/harness/chat/agent');
-  const { loadConductorContext } = await import('../../src/tui/context');
 
-  // write 档放行 · admin 档拒。两个数都记 —— 分得开"能力不行"与"被我的闸拒了"。
-  let allowed = 0;
-  let denied = 0;
-  const tiers: string[] = [];
-  const approvals = createApprovalGate();
-  approvals.setAsk(async (req: { tier?: string; summary?: string }) => {
-    tiers.push(`${req.tier ?? '?'}:${(req.summary ?? '').slice(0, 60)}`);
-    if (req.tier === 'admin') {
-      denied++;
-      return 'deny';
-    }
-    allowed++;
-    return 'once';
-  });
-
+  // 2026-08-13: 审批闸删了。原来是「write 档放行 · admin 档拒」—— 与新默认
+  // (黑名单硬拒不可逆命令, 其余在 bwrap 围栏里直接跑) **语义相同**。
+  // ⚠ 少掉的读数是"档位分布"那一列; 它量的是审批层, 而审批层已经不存在了。
   const mcpTools = assembleOmdMcpTools({ onNodeEvent: () => {} });
-  const tools = createChatSeatTools({ cwd: repo, mcpTools, approvals });
+  const tools = createChatSeatTools({ cwd: repo, mcpTools });
   const model = resolveEngineModels(process.env).conductorModel;
 
   const toolCalls: string[] = [];
@@ -123,7 +109,7 @@ async function main(): Promise<void> {
       model,
       cwd: repo,
       tools,
-      contextFiles: loadConductorContext(repo),
+      
       onEvent: (e: { type: string } & Record<string, unknown>) => {
         if (e.type === 'tool_execution_start') {
           toolCalls.push(`${String(e.toolName)} ${JSON.stringify(e.args ?? {}).slice(0, 160)}`);
@@ -208,7 +194,6 @@ console.log(JSON.stringify(r));
   console.log(`    ④ 它自己跑过**本仓真正的**验收命令   : ${v.selfRanTests ? '✓' : '**✗ 只写没验**'}${fakeVerify ? '  ⚠ 但它跑过 node -e/bun -e —— 自造的验证不算' : ''}`);
   console.log(`  工具调用 ${toolCalls.length} 次:`);
   for (const [i, c] of toolCalls.entries()) console.log(`    ${String(i + 1).padStart(2)}. ${c}`);
-  console.log(`  审批: 放行 ${allowed} · 拒 ${denied}${tiers.length ? `  档位=[${tiers.join(' | ')}]` : ''}`);
   console.log(`  消息 ${messages} 条 · ${(ms / 1000).toFixed(1)}s · usage ${JSON.stringify(usage)}`);
   console.log(`  git status:\n${status.text || '    (干净 —— 一个文件都没改)'}`);
   console.log(`  git diff --stat:\n${diffstat.text || '    (无)'}`);

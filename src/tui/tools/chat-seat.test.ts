@@ -13,7 +13,6 @@ import { Database } from 'bun:sqlite';
 import { assembleOmdMcpTools } from '../../mcp/assemble';
 import { createDagRecorder } from '../../harness/dag-record';
 import { buildConductorChatSystemPrompt } from '../../harness/harness-prompts';
-import { createApprovalGate } from '../approval/gate';
 import { HAND_TOOLS, createChatSeatTools } from './chat-seat';
 
 // recorder 注入 :memory: —— 默认 createDagRecorder() 打开真仓 .omd/dag-runs.db (进程 cwd 锚,
@@ -100,52 +99,66 @@ describe('接线闸:cli.ts 真的走这条装配', () => {
     expect(tuiBranch()).not.toContain('createConductorChatTools(');
   });
 
-  test('★ 切片①:tui 分支把审批闸接进了工具面与 UI 两处(接一处 = 没接,坑 #7 同族)', () => {
+  test('★ 2026-08-13:tui 分支把沙箱接进了工具面与 UI 两处(接一处 = 没接,坑 #7 同族)', () => {
     const b = tuiBranch();
-    expect(b).toContain('createApprovalGate(');
-    // ⚠ 判据锚在**各自的调用点**上 —— 初版写的是裸子串 'approvals });',
-    //   它匹配到的其实是 fixture 那行, 切片②往那行加了个参数它就红了(判据松 = 碰运气)。
-    expect(b).toMatch(/createChatSeatTools\(\{[^)]*approvals/); // 工具面那半
-    expect(b).toMatch(/runOmdTui\(\{[^)]*approvals/); // UI 那半
+    expect(b).toContain('loadSandboxConfig(');
+    expect(b).toContain('probeShellSandbox(');
+    // ⚠ 判据锚在**各自的调用点**上 —— 裸子串 'sandbox' 会匹配到扩展那行的 `sandboxed?:`,
+    //   那种判据是碰运气(旧版审批那条就为此红过一次)。
+    expect(b).toMatch(/createChatSeatTools\(\{[^)]*sandbox:/); // 工具面那半(读配置)
+    expect(b).toMatch(/runOmdTui\(\{[^)]*sandbox:/); // UI 那半(画告警)
+  });
+
+  test('★ 审批层真的不在了 —— 留一句 setAsk 就等于打断器还活着', () => {
+    const b = tuiBranch();
+    expect(b).not.toContain('createApprovalGate');
+    expect(b).not.toContain('approvals');
   });
 });
 
-describe('切片①:审批闸包在工具面外(不变量:闸永远有一层)', () => {
-  test('★ 有闸:write 走审批 —— 拒绝则不执行(抛 [approval], 不是静默空结果)', async () => {
-    const gate = createApprovalGate({});
-    gate.setAsk(async () => 'deny');
-    const tools = createChatSeatTools({ cwd: process.cwd(), mcpTools: mcpTools(), approvals: gate });
-    const write = tools.find((t) => t.name === 'write');
-    await expect(write!.execute('t', { path: '/tmp/omd-approval-should-not-exist.txt', content: 'x' } as never)).rejects.toThrow(
-      '[approval] 用户拒绝',
-    );
-  });
+/**
+ * 2026-08-13 owner 裁:审批闸删掉,默认 yolo。**不变量仍是「闸永远有一层」**,
+ * 只是那一层不再是人 —— 黑名单硬拒 + bwrap 围栏。这一组钉的就是那两层都真的在。
+ *
+ * 反向自检(实跑,判据必须会红):
+ *   · 把 `chat-seat.ts` 的 `commandPolicy: sandboxCfg` 删掉 → 第 2 条仍绿(内置默认同表),
+ *     但把 `createOmdAgentTools` 的 `guardDangerous` 默认改成 false → 第 1 条当场红。
+ *   · 把 `sandbox: { root: o.cwd, … }` 那段删掉 → 第 3 条当场红(越界写会真的成功)。
+ */
+describe('yolo 之后剩下的两层闸(黑名单 + 围栏)', () => {
+  const seatIn = (cwd: string) => createChatSeatTools({ cwd, mcpTools: mcpTools() });
 
-  test('★ 有闸:bash 不可逆命令走 admin 档审批(内层硬拒已交给外层)——拒绝时报 [approval] 而不是 BLOCKED', async () => {
-    const gate = createApprovalGate({});
-    gate.setAsk(async () => 'deny');
-    const tools = createChatSeatTools({ cwd: process.cwd(), mcpTools: mcpTools(), approvals: gate });
-    const bash = tools.find((t) => t.name === 'bash');
-    await expect(bash!.execute('t', { command: 'git push --force origin main' } as never)).rejects.toThrow('[approval]');
-  });
-
-  test('★ 无闸:内层危险命令闸保持原样(fail-closed 硬拒)—— 两层不会同时缺席', async () => {
-    const tools = createChatSeatTools({ cwd: process.cwd(), mcpTools: mcpTools() });
-    const bash = tools.find((t) => t.name === 'bash');
+  test('★ 黑名单:不可逆命令硬拒(没有审批可以按 y 绕过去了)', async () => {
+    const bash = seatIn(process.cwd()).find((t) => t.name === 'bash');
     await expect(bash!.execute('t', { command: 'git push --force origin main' } as never)).rejects.toThrow('BLOCKED');
   });
 
-  test('有闸:read 不经审批直接执行(G-1: read 全程不弹框)', async () => {
-    const gate = createApprovalGate({});
-    let askedCount = 0;
-    gate.setAsk(async () => {
-      askedCount += 1;
-      return 'deny';
-    });
-    const tools = createChatSeatTools({ cwd: process.cwd(), mcpTools: mcpTools(), approvals: gate });
-    const read = tools.find((t) => t.name === 'read');
+  test('★ 白名单赦免黑名单 —— 顺序是白先黑后, 反了就等于没有逃生口', async () => {
+    // 拿一条**无害**命令当探针: 黑名单命中它 → BLOCKED; 白名单赦免同一条 → 真跑。
+    // 用真的 `git push --force` 会让"闸放行了"与"shell 失败了"混在一个错误里, 分不开。
+    const bash = createChatSeatTools({
+      cwd: process.cwd(),
+      mcpTools: mcpTools(),
+      sandbox: { enabled: false, writable: [], allow: [/^echo pardoned$/], deny: [{ label: 't', reason: 'test', re: /^echo / }] },
+    }).find((t) => t.name === 'bash');
+    await expect(bash!.execute('t', { command: 'echo blocked' } as never)).rejects.toThrow('BLOCKED');
+    const ok = await bash!.execute('t', { command: 'echo pardoned' } as never);
+    expect((ok.content[0] as { text: string }).text).toContain('pardoned');
+  });
+
+  test('★ 围栏:write 越出工作根即拒 —— 围栏只挡 bash 的话它挡不住任何东西', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-seat-fence-'));
+    const write = seatIn(root).find((t) => t.name === 'write');
+    // 工作根之内: 照写。
+    const inside = await write!.execute('t', { path: 'ok.txt', content: 'x' } as never);
+    expect((inside.content[0] as { text: string }).text).toContain('ok.txt');
+    // 工作根之外(且不在 /tmp 白名单的那一支下): 拒, 并说清边界在哪。
+    await expect(write!.execute('t', { path: '/etc/omd-should-not-exist', content: 'x' } as never)).rejects.toThrow('沙箱越界');
+  });
+
+  test('read 一个字都不拦 —— yolo 的前提就是读半区零摩擦', async () => {
+    const read = seatIn(process.cwd()).find((t) => t.name === 'read');
     const r = await read!.execute('t', { path: 'package.json' } as never);
-    expect(askedCount).toBe(0);
     expect((r.content[0] as { text: string }).text).toContain('oh-my-dag');
   });
 });

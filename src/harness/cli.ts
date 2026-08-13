@@ -92,9 +92,6 @@ if (userArgs[0] === 'tui') {
   logger.info({ file: tuiLog.path }, '[omd/tui] 日志改道生效, 本程日志不进终端');
   try {
     const { runOmdTui } = await import('../tui/tui');
-    const { loadConductorContext } = await import('../tui/context');
-    // 上下文只装配一次, 同一个数组既进屏幕又进 system prompt —— 两处各读一份必漂 (S4)。
-    const contextFiles = loadConductorContext(cwd);
 
     // L3 接缝 (SDD §9): PTY lane 要证明 UI 循环通, 但**不能**因此去打真模型。
     // 只有显式设了这个环境变量才装 fixture; 它自报家门 (footer 上写着 fixture://l3-test)。
@@ -104,11 +101,12 @@ if (userArgs[0] === 'tui') {
     // D3 `/reload`: 重载入口同样跨 if/else —— fixture 那条 lane 没有扩展宿主, 于是**不给**
     // 这个键(TUI 那边就画「这条 backend 没有这个能力」, 不画一个点了没反应的命令)。
     let reloadExtensions: (() => Promise<import('../tui/ext/session').ExtReloadResult>) | undefined;
-    // 切片①: 审批闸。两条装配路都建 —— fixture 那条也要能在 PTY 里弹真的审批单
-    // (卡片 UI + 键位 + 拒绝则不改/批准则改, 全走与生产同一个 gate)。
-    const { createApprovalGate } = await import('../tui/approval/gate');
-    const { loadApprovalConfig } = await import('../tui/approval/policy');
-    const approvals = createApprovalGate({ config: loadApprovalConfig(cwd) });
+    // 2026-08-13 owner 裁: 审批闸删了, 默认 yolo。安全 = **围栏 + 黑名单** 两层, 都不打断人。
+    // 这里只探一次 bwrap 起不起得来 —— 起不来是**降级裸跑 + 顶栏红字**, 不是静默。
+    const { loadSandboxConfig } = await import('./hooks/command-policy');
+    const { probeShellSandbox } = await import('./hooks/shell-sandbox');
+    const sandboxCfg = loadSandboxConfig(cwd);
+    const sandboxStatus = sandboxCfg.enabled ? probeShellSandbox() : { ok: false, reason: 'disabled in .omd/config.json (tui.sandbox.enabled=false)' };
     // 切片②: 调用账本。**两侧统一走 emitModelUsage 钩子** —— gateway 的 callModel 与对话轮
     // (`runChatTurn` 逐条 emit) 都从这一个订阅进账, 来源由 emit 侧第三参带。
     // ⚠ 2026-08-09 修: 此前 chat 轮由 backend 在轮末**再补记一笔合计**, 而 8-07 起 agent.ts
@@ -129,7 +127,7 @@ if (userArgs[0] === 'tui') {
     let askUserUi: import('../tui/tools/ask-user').AskUserUi | null = null;
     if (process.env.OMD_TUI_BACKEND === 'fixture') {
       const { createFixtureBackend } = await import('../tui/backend-fixture');
-      backend = createFixtureBackend({ approvals, usage });
+      backend = createFixtureBackend({ usage });
     } else {
       // 与 `omd serve` 同一条路: 同一个 runChatTurn、同一批 chatTools、同一条座位解析。
       const { bootstrapModelRuntime } = await import('../model/bootstrap');
@@ -163,7 +161,7 @@ if (userArgs[0] === 'tui') {
         // 切片①: 审批闸包住整个工具面; 六只手的内层危险命令闸随之交给 admin 档 (闸永远有一层)。
         // ★ `ask_user`(2026-08-08):UI 走**惰性取** —— 工具面装在 TUI 之前, 那时 dialogs
         //   还不存在(同上面那个"延迟指针接环"的理由)。`runOmdTui` 起来后把它填上。
-        tools: createChatSeatTools({ cwd, mcpTools: tools, extTools, approvals, askUser: () => askUserUi }),
+        tools: createChatSeatTools({ cwd, mcpTools: tools, extTools, sandbox: sandboxCfg, askUser: () => askUserUi }),
         // 多个扩展**串起来**追加(串接在 session 里, 每轮现取当前扩展)。
         // ⚠ 钩子**无条件挂**: 挂不挂此前按启动那一刻的扩展数决定, 而 `/reload` 能把
         //   0 个变成 N 个 —— 按启动数决定的话, 空仓里装上第一个扩展再重载, 工具进来了
@@ -173,7 +171,6 @@ if (userArgs[0] === 'tui') {
         mcpTools: tools,
         // 座位每轮现解 (INV-MODEL-3): omd_set_role / `/seat` 改完, 下一句就换座。
         resolveModel: () => resolveEngineModels(process.env).conductorModel,
-        contextFiles,
         // ⚠ 不传 usage: chat 轮的账走上面那条 observeModelUsage 订阅 (agent.ts 逐条 emit)。
       });
       extStatus = st;
@@ -184,8 +181,7 @@ if (userArgs[0] === 'tui') {
     await runOmdTui({
       backend,
       cwd,
-      contextFiles,
-      approvals,
+      sandbox: sandboxStatus,
       usage,
       // 延迟指针的另一端:UI 就绪即填, `ask_user` 从此问得出来。
       onUi: (ui) => {

@@ -7,6 +7,9 @@
  *   不是排版指令,渲染掉等于篡改回显。
  * - `assistant` —— 走 pi-tui 的 `Markdown`(内部 `marked`)。代码高亮是 S7 从 theme 挂进来的,
  *   这里不认识 highlight 这回事。
+ * - `thinking` —— 模型的思维链(2026-08-13)。**纯文本 + dim**,不当 markdown 渲染:
+ *   思考里的 `#` `*` 是它在打草稿,不是排版意图;而且 dim 之后再叠 markdown 的
+ *   粗体/标题色,思考区会比正文还显眼 —— 那正好是反的。
  * - `notice` —— 引擎/后端说的话(含**断链说明卡**:后端拒绝时的原因句)。
  *   刻意与 assistant 分开:一句"引擎没接通"被画成助手发言,读起来就像模型在回答。
  *
@@ -20,12 +23,20 @@ import { type Component, Markdown, Text, visibleWidth } from '@earendil-works/pi
 import { rule } from '../design/tokens';
 import type { OmdTuiTheme } from '../theme';
 
-export type ChatRole = 'user' | 'assistant' | 'notice' | 'tool' | 'divider';
+export type ChatRole = 'user' | 'assistant' | 'thinking' | 'notice' | 'tool' | 'divider';
 
-/** 工具行的可选料。`id` = pi 的 `toolCallId`;`detail` = 参数里那半句(由 `render/tool-arg` 挑)。 */
+/**
+ * 工具行的可选料。`id` = pi 的 `toolCallId`;`detail` = 参数里那半句(由 `render/tool-arg` 挑);
+ * `result` = 结果那半句(由 `render/tool-result` 挑,只有 `toolEnd` 给得出)。
+ */
 export interface ToolLineOpts {
   id?: string | undefined;
   detail?: string | null | undefined;
+  /**
+   * 结果摘要(`8 in 3 files` / `120 lines` / `exit 0`)。**只在 `toolEnd` 有意义** ——
+   * 开跑那一刻还不知道搜到了什么。`null`/省略 = 这个工具挑不出结果那一格,不画。
+   */
+  result?: string | null | undefined;
 }
 
 interface Entry {
@@ -59,7 +70,7 @@ function plainText(content: unknown): string | null {
  *
  * ⚠ 三种角色三种前缀不是装饰:一条工具输出被画成助手发言,读起来就像模型说了它没说过的话。
  */
-const PREFIX: Record<ChatRole, string> = { user: '> ', assistant: '', notice: '! ', tool: '', divider: '' };
+const PREFIX: Record<ChatRole, string> = { user: '> ', assistant: '', thinking: '', notice: '! ', tool: '', divider: '' };
 /** 工具行三态。**跑着的与跑完的必须看得出区别** —— 否则你不知道它是在忙还是卡住了。 */
 export const TOOL_MARK = { running: '·', ok: '✓', fail: '✗' } as const;
 
@@ -162,7 +173,12 @@ export class ChatLog implements Component {
     const hit = [...this.entries].reverse().find((e) => e.role === 'tool' && e.toolKey === key);
     // 参数那半句以 start 那一行为准 —— end 事件不带 args, 拿不到就别把已经画对的擦掉。
     const body = hit?.toolText ?? (opts.detail ? `${name} ${opts.detail}` : name);
-    const text = `${mark} ${body}`;
+    /**
+     * 结果那半句(2026-08-13)。用 `→` 与参数分开 —— 「搜什么」与「搜到什么」是两件事,
+     * 中间没有分隔的话 `grep foo in src/ 8 in 3 files` 读起来是一串数字。
+     * ⚠ 挑不出结果就**什么都不加**,不画一个 `→ ?` 占位(空着至少诚实)。
+     */
+    const text = opts.result ? `${mark} ${body} → ${opts.result}` : `${mark} ${body}`;
     const paint = (t: string) => (ok ? this.theme.chrome.dim(t) : this.theme.chrome.warn(t));
     if (hit) {
       (hit.component as Text).setText(paint(text));
@@ -238,6 +254,35 @@ export class ChatLog implements Component {
   }
 
   /**
+   * **思维链**的流式追加(2026-08-13)。与 `appendAssistantChunk` 同构,只有三处不同:
+   * 角色是 `thinking`、组件是 `Text` 不是 `Markdown`、整块 dim。
+   *
+   * ## 为什么这是一条独立的方法而不是一个参数
+   *
+   * 因为**收尾判据不同**:空正文的 assistant 气泡要丢掉(`closeStreaming` 那条),
+   * 而思考区为空本来就不该开条目 —— 两者压进一个带 flag 的方法之后,
+   * 那条 `if (last.role === 'assistant' && !last.buffer.trim())` 就得再长一个分支。
+   *
+   * ⚠ 这个方法此前**根本不存在**:`backend-embedded` 的 `mapAgentEvent` 只映射
+   * `text_delta`,pi 的 `thinking_delta` 被整个丢掉了(「转不过来的不发」那条注释
+   * 掩盖了它 —— 它转得过来,只是没人写)。owner 2026-08-13 的原话是「思维链也看不到」。
+   */
+  appendThinkingChunk(chunk: string): void {
+    const last = this.entries.at(-1);
+    if (last?.role === 'thinking' && last.open) {
+      last.buffer += chunk;
+      (last.component as Text).setText(this.theme.chrome.dim(last.buffer));
+      return;
+    }
+    this.entries.push({
+      role: 'thinking',
+      component: new Text(this.theme.chrome.dim(chunk)),
+      buffer: chunk,
+      open: true,
+    });
+  }
+
+  /**
    * 收尾当前流式消息。**幂等** —— 没有开着的消息时什么都不做。
    *
    * ⚠ **一个字都没收到的气泡直接丢掉**(S-5)。模型在一轮里只发工具调用、不发文字时,
@@ -250,7 +295,8 @@ export class ChatLog implements Component {
     const last = this.entries.at(-1);
     if (!last?.open) return;
     last.open = false;
-    if (last.role === 'assistant' && !last.buffer.trim()) this.entries.pop();
+    // 空气泡直接丢 —— 思考区同理(模型开了 thinking 块却一个字都没吐时会留一条空条目)。
+    if ((last.role === 'assistant' || last.role === 'thinking') && !last.buffer.trim()) this.entries.pop();
   }
 
   /**

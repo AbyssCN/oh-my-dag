@@ -70,6 +70,45 @@ describe('★ 流式:一条消息, 不是一堆消息', () => {
     expect(log.length).toBe(2);
   });
 
+  /**
+   * ★ 思维链(2026-08-13)。owner 原话「思维链也看不到」——
+   * 根因在 `backend-embedded` 少映射了 `thinking_delta`,而这一层此前**根本没有**画它的口子。
+   *
+   * 反向自检(实跑):把 `appendThinkingChunk` 的"追加进同一条"分支删掉 → 第 1 条当场红
+   * (两片各成一条);把 `closeStreaming` 里 thinking 那半删掉 → 第 3 条当场红(正文续进思考区)。
+   */
+  test('★ 思考分片追加进同一条 —— 与正文同构', () => {
+    const log = new ChatLog(theme);
+    for (const t of ['weighing ', 'A vs B']) log.appendThinkingChunk(t);
+    expect(log.length).toBe(1);
+    expect(log.lastText).toBe('weighing A vs B');
+    expect(text(log)).toContain('weighing A vs B');
+  });
+
+  test('★ 思考与正文是**两条** —— 压成一条就等于把草稿当答案发了', () => {
+    const log = new ChatLog(theme);
+    log.appendThinkingChunk('draft');
+    log.closeStreaming();
+    log.appendAssistantChunk('answer');
+    expect(log.length).toBe(2);
+    expect(log.lastText).toBe('answer');
+  });
+
+  test('★ 不收尾也不会串 —— 角色一换就另开一条(正文不许落进思考区)', () => {
+    const log = new ChatLog(theme);
+    log.appendThinkingChunk('draft');
+    log.appendAssistantChunk('answer');
+    expect(log.lastText).toBe('answer');
+    expect(log.length).toBe(2);
+  });
+
+  test('空思考条目在收尾时丢掉 —— 开了 thinking 块却一个字没吐, 不该占一行', () => {
+    const log = new ChatLog(theme);
+    log.appendThinkingChunk('');
+    log.closeStreaming();
+    expect(log.length).toBe(0);
+  });
+
   test('user 消息也会收尾流式 —— 用户插话之后模型不该续到旧气泡里', () => {
     const log = new ChatLog(theme);
     log.appendAssistantChunk('前半');
@@ -112,6 +151,42 @@ describe('宽度约束', () => {
     const lines = log.render(40);
     expect(lines[0]).not.toBe('');
     expect(lines).toContain('');
+  });
+});
+
+/**
+ * ★ 结果那半句(2026-08-13,owner 点名「工具结果也进屏」)。
+ *
+ * 反向自检(实跑):把 `toolEnd` 里 `opts.result ? … : …` 那个三元退回原来的模板串 →
+ * 第 1 条当场红(屏上只剩 `✓ grep foo in src/`,搜到了什么仍然看不见)。
+ */
+describe('★ 工具行的结果半句', () => {
+  test('★ end 时把结果接在参数后面, 用 → 分开', () => {
+    const log = new ChatLog(theme);
+    log.toolStart('grep', { id: 't1', detail: 'foo in src/' });
+    log.toolEnd('grep', true, { id: 't1', result: '8 in 3 files' });
+    expect(text(log)).toContain(`${TOOL_MARK.ok} grep foo in src/ → 8 in 3 files`);
+  });
+
+  test('挑不出结果就不画箭头 —— 不编一个 `→ ?` 占位', () => {
+    const log = new ChatLog(theme);
+    log.toolStart('omd_run', { id: 't2' });
+    log.toolEnd('omd_run', true, { id: 't2', result: null });
+    expect(text(log)).toContain(`${TOOL_MARK.ok} omd_run`);
+    expect(text(log)).not.toContain('→');
+  });
+
+  test('★ 失败的工具也带结果 —— 失败时最需要知道它做到哪一步', () => {
+    const log = new ChatLog(theme);
+    log.toolStart('bash', { id: 't3', detail: 'bun test' });
+    log.toolEnd('bash', false, { id: 't3', result: 'exit 1' });
+    expect(text(log)).toContain(`${TOOL_MARK.fail} bash bun test → exit 1`);
+  });
+
+  test('对不上 start 的 end 也画得出结果(补一条总比丢掉强)', () => {
+    const log = new ChatLog(theme);
+    log.toolEnd('grep', true, { id: 'orphan', detail: 'x in y', result: 'no match' });
+    expect(text(log)).toContain('grep x in y → no match');
   });
 });
 
