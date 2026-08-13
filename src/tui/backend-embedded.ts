@@ -150,6 +150,29 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
       emit('tool', { phase: 'start', name: t.toolName ?? '?', id: t.toolCallId, args: t.args });
       return;
     }
+    /**
+     * ★ **工具跑着的中途读数**(2026-08-14)。pi 的第 3 种工具事件,omd 此前整个丢掉 ——
+     * 而丢掉它不只是少画一行:`bash` 那侧根本没接 `onUpdate`,于是这个事件
+     * **结构上永远不会到达**。两处一起补才有用(`agent-tools.ts` 的 `onChunk`)。
+     *
+     * 只发**进度那一格**不发全文:`partialResult.content` 是到目前为止的整段输出,
+     * 一条 `bun test` 能有几万字,逐次全量发等于把输出复制几百份进事件流。
+     * UI 要的是"它还在动 + 现在到哪了",所以这里给**行数**与**末行**。
+     */
+    if (e.type === 'tool_execution_update') {
+      const t = e as { toolName?: string; toolCallId?: string; partialResult?: { content?: { text?: string }[] } };
+      const text = t.partialResult?.content?.map((c) => c.text ?? '').join('') ?? '';
+      const lines = text ? text.split('\n') : [];
+      emit('tool', {
+        phase: 'update',
+        name: t.toolName ?? '?',
+        id: t.toolCallId,
+        lines: lines.length,
+        // 末**非空**行 —— 很多命令输出以换行结尾, 取 at(-1) 会恒得空串(读成"没输出")。
+        tail: [...lines].reverse().find((l) => l.trim()) ?? '',
+      });
+      return;
+    }
     if (e.type === 'tool_execution_end') {
       const t = e as { toolName?: string; toolCallId?: string; isError?: boolean; result?: { details?: unknown } };
       /**

@@ -161,6 +161,29 @@ export class ChatLog implements Component {
   }
 
   /**
+   * ★ **工具跑着的中途读数**(2026-08-14)——**原地更新同一行**,不追加。
+   *
+   * 治的是「在跑」与「卡死」在屏上长得一样这一族:一条跑 120 秒的命令,
+   * 此前 120 秒里那一行是静止的 `· bash bun test`,而一个真卡住的命令长得**逐像素相同**。
+   * 2026-08-13 那次 3h48m 全机停摆,屏幕上什么都看不见,一半原因就是这里。
+   *
+   * ⚠ 画的是**进度不是全文**:`N lines · <末行>`。把整段输出往对话记录里灌会做两件坏事——
+   * 挤掉真正的回复,以及让同一段文字在 transcript 里出现几百遍(每次 update 一遍)。
+   * 末行是"现在到哪了"最便宜的答案。
+   *
+   * ⚠ 找不到对应行**什么都不做**(与 `toolEnd` 相反):update 早于 start 到达是
+   * 不可能的事件序,补一条只会造出一条永远不会被 end 收掉的孤儿行。
+   */
+  toolUpdate(name: string, opts: { id?: string | undefined; lines: number; tail?: string | undefined }): void {
+    const key = opts.id ?? name;
+    const hit = [...this.entries].reverse().find((e) => e.role === 'tool' && e.toolKey === key);
+    if (!hit) return;
+    const tail = opts.tail?.trim() ? ` · ${opts.tail.trim()}` : '';
+    const progress = `${opts.lines} line${opts.lines === 1 ? '' : 's'}${tail}`;
+    (hit.component as Text).setText(this.theme.chrome.dim(`${TOOL_MARK.running} ${hit.toolText ?? name} → ${progress}`));
+  }
+
+  /**
    * 工具跑完 —— **原地更新**那一行。找不到对应行就补一条(总比丢掉强)。
    *
    * ⚠ 对回哪一行看 `opts.id`(pi 的 `toolCallId`)。**只按工具名对是错的**:

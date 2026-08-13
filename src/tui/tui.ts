@@ -931,7 +931,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       return;
     }
     if (e.event === 'tool') {
-      const p = e.payload as { phase?: string; name?: string; ok?: boolean; id?: string; args?: unknown; details?: unknown };
+      const p = e.payload as { phase?: string; name?: string; ok?: boolean; id?: string; args?: unknown; details?: unknown; lines?: number; tail?: string };
       const name = p?.name ?? '?';
       // 一个工具**一行**, end 原地更新 —— 不再 start/end 各追加一条 notice。
       // S-5: 带上参数那半句 —— 只画 `✓ read` 的话, 改对文件和改错文件在屏上长得一模一样。
@@ -942,6 +942,9 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         // 切片⑤: 健康度计数吃 start 事件 (end 不带 args)。
         health.onTool(name, p?.args);
         healthLine.setText(health.line() ?? '');
+        // 2026-08-14: 跑着的中途读数 —— 原地更新同一行, 让「在跑」与「卡死」分得开。
+      } else if (p?.phase === 'update') {
+        chatLog.toolUpdate(name, { id: p?.id, lines: Number(p?.lines ?? 0), tail: p?.tail });
         // 2026-08-13: 结果那半句在 end 事件里(start 时还不知道搜到了什么)。
       } else chatLog.toolEnd(name, p?.ok !== false, { id: p?.id, result: summarizeToolResult(name, p?.details) });
       tui.requestRender();

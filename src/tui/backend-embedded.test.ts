@@ -138,6 +138,36 @@ describe('事件转换', () => {
     expect(JSON.stringify(payload)).not.toContain('几万字的正文');
   });
 
+  /**
+   * ★ 中途读数(2026-08-14)。两条判据是一对:**要发进度**、**不要发全文** ——
+   * `partialResult.content` 是到目前为止的整段输出,逐次全量发等于把输出复制几百份进事件流。
+   */
+  test('★ tool_execution_update → phase:update, 只发行数与末行', async () => {
+    const evs = [
+      {
+        type: 'tool_execution_update',
+        toolName: 'bash',
+        toolCallId: 'u1',
+        partialResult: { content: [{ type: 'text', text: 'line-1\nline-2\nline-3\n' }] },
+      },
+    ] as unknown as AgentEvent[];
+    const { backend, events } = make({ runTurn: fakeTurn({ events: evs }) });
+    await backend.sendChat({ sessionId: 's', prompt: 'x' });
+    const payload = events.find((e) => e.event === 'tool')?.payload as Record<string, unknown>;
+    // 4 行 = 三行正文 + 末尾换行切出来的空串(行数是"到哪了"的读数, 不做美化)。
+    expect(payload).toEqual({ phase: 'update', name: 'bash', id: 'u1', lines: 4, tail: 'line-3' });
+    expect(JSON.stringify(payload)).not.toContain('line-1');
+  });
+
+  test('★ 末行取最后一个**非空**行 —— 输出以换行结尾时 at(-1) 恒是空串', async () => {
+    const evs = [
+      { type: 'tool_execution_update', toolName: 'bash', toolCallId: 'u2', partialResult: { content: [{ type: 'text', text: 'done\n\n\n' }] } },
+    ] as unknown as AgentEvent[];
+    const { backend, events } = make({ runTurn: fakeTurn({ events: evs }) });
+    await backend.sendChat({ sessionId: 's', prompt: 'x' });
+    expect((events.find((e) => e.event === 'tool')?.payload as { tail: string }).tail).toBe('done');
+  });
+
   test('没有 details 的工具:键**不出现**(与 details 是 undefined 分得开)', async () => {
     const evs = [{ type: 'tool_execution_end', toolName: 'x', toolCallId: 'c2', isError: false, result: {} }] as unknown as AgentEvent[];
     const { backend, events } = make({ runTurn: fakeTurn({ events: evs }) });

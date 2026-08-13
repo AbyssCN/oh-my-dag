@@ -746,7 +746,7 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
       '经 bash 写的文件它**看不见**, 节点会被判 empty-artifact 并级联跳过下游。',
     parameters: BASH_SCHEMA,
     executionMode: 'sequential',
-    async execute(_id, params, signal) {
+    async execute(_id, params, signal, onUpdate) {
       const { command, timeout } = params as Static<typeof BASH_SCHEMA>;
       // ① 不可逆命令 fail-closed (与 command-leaf 共用同一张模式表)。分类器抛错也算拦 ——
       //    fail-closed 契约不能因为异常就变成 fail-open。
@@ -782,9 +782,41 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
       const toRun = opts.sandbox
         ? sandboxCommand(command, { root: opts.sandbox.root, ...(opts.sandbox.writable ? { extraWritable: opts.sandbox.writable } : {}) })
         : command;
+      /**
+       * ★ **流式输出**(2026-08-14)。pi 一直提供两条通道,omd 此前**两条都没接**:
+       * 工具签名不收 `onUpdate`、`executeShellWithCapture` 的 `onChunk` 一次都没传
+       * ⇒ `tool_execution_update` 事件**结构上永远不可能触发**。
+       *
+       * 代价是可量的:一条跑 120 秒的命令,屏上 120 秒里一个字都没有 —— 而
+       * 2026-08-13 那次 3h48m 卡死,屏幕上什么都看不见正是这个原因的一半
+       * (另一半是 `walkFiles` 无界,见 S-36)。**"在跑"与"卡死"在屏上长得一样**,
+       * 这是本仓最怕的那一族。
+       *
+       * ⚠ 节流:`onChunk` 是**每一片 stdout** 都调,一条 `bun test` 能有几千片。
+       * 逐片往上发会把事件流淹掉(UI 每帧重绘一次都跟不上)。所以按**时间**节流,
+       * 不按片数 —— 片的大小完全取决于子进程怎么 flush,按片数节流等于按一个
+       * 不受控的量节流。末片无条件发,否则最后一段输出会被节流吞掉。
+       */
+      const throttleMs = 120;
+      let lastEmit = 0;
       const r = await executeShellWithCapture(env, toRun, {
         timeout: timeout && timeout > 0 ? timeout : defaultTimeout,
         ...(signal ? { abortSignal: signal } : {}),
+        ...(onUpdate
+          ? {
+              onChunk: (_chunk: string, getProgress: () => { output: string }) => {
+                const now = Date.now();
+                if (now - lastEmit < throttleMs) return;
+                lastEmit = now;
+                // details 里的 exitCode 用 `undefined` —— 还没跑完, 编一个 0 就是把
+                // "在跑" 画成 "跑成功了"(与结果摘要那条 `no exit code` 同一纪律)。
+                onUpdate({
+                  content: [{ type: 'text', text: getProgress().output }],
+                  details: { exitCode: undefined, truncated: false },
+                });
+              },
+            }
+          : {}),
       });
       if (!r.ok) throw new Error(`bash 失败: ${r.error.message}`);
       const { output, exitCode, cancelled, truncated } = r.value;

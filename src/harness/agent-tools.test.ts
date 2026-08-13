@@ -93,6 +93,51 @@ describe('工具集就是闸 —— 不可逆命令', () => {
     expect(text(await run(loose.bash!, { command: 'echo "git reset --hard"' }))).toContain('git reset --hard');
   });
 
+  /**
+   * ★★ **bash 输出流式往上报**(2026-08-14)。
+   *
+   * 此前 omd 六个工具**没有一个**接 `onUpdate`(全仓 0 命中),`executeShellWithCapture`
+   * 的 `onChunk` 也一次都没传 ⇒ pi 的 `tool_execution_update` **结构上永远不会触发**。
+   * 代价:一条跑 120 秒的命令,屏上 120 秒里一个字都没有 ——「在跑」与「卡死」长得一样。
+   *
+   * **证伪方式**(实跑):把 `bash.execute` 的第四个参数 `onUpdate` 删掉,或把
+   * `onChunk` 那一段去掉 → 第一条当场红(`updates` 恒为 0)。
+   */
+  it('★ bash 跑着就往上报进度(不接 onUpdate 的话「在跑」与「卡死」在屏上一样)', async () => {
+    const { bash } = toolset(fixture());
+    const seen: string[] = [];
+    // 每片之间 150ms > 节流 120ms ⇒ 至少报得出一次。
+    await bash!.execute(
+      'c1',
+      { command: 'for i in 1 2 3; do echo line-$i; sleep 0.15; done' } as never,
+      undefined,
+      ((partial: { content: { text?: string }[] }) => {
+        seen.push(partial.content.map((c) => c.text ?? '').join(''));
+      }) as never,
+    );
+    expect(seen.length).toBeGreaterThan(0);
+    // 报的是**到目前为止的整段输出**(累积), 所以最后一次里该有前面的行。
+    expect(seen.at(-1)).toContain('line-1');
+  });
+
+  it('★ 中途读数的 exitCode 是 undefined —— 编一个 0 就是把「在跑」画成「跑成功了」', async () => {
+    const { bash } = toolset(fixture());
+    const details: unknown[] = [];
+    await bash!.execute(
+      'c2',
+      { command: 'echo a; sleep 0.2; echo b' } as never,
+      undefined,
+      ((partial: { details: unknown }) => details.push(partial.details)) as never,
+    );
+    for (const d of details) expect((d as { exitCode: unknown }).exitCode).toBeUndefined();
+  });
+
+  it('不给 onUpdate 就一次都不报(省略 = 零行为变化, leaf 那条路不受影响)', async () => {
+    const { bash } = toolset(fixture());
+    // 不传第四参 —— 走的是与本条改动之前逐字相同的路径。
+    expect(text(await run(bash!, { command: 'echo ok' }))).toContain('ok');
+  });
+
   it('普通命令照常跑, 且带回 exit code', async () => {
     const { bash } = toolset(fixture());
     expect(text(await run(bash!, { command: 'echo ok' }))).toContain('ok');

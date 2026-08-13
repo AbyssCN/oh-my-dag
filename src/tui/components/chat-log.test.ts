@@ -160,6 +160,49 @@ describe('宽度约束', () => {
  * 反向自检(实跑):把 `toolEnd` 里 `opts.result ? … : …` 那个三元退回原来的模板串 →
  * 第 1 条当场红(屏上只剩 `✓ grep foo in src/`,搜到了什么仍然看不见)。
  */
+/**
+ * ★ 中途读数(2026-08-14)。治的是「在跑」与「卡死」在屏上逐像素相同这一族。
+ *
+ * 反向自检(实跑):把 `toolUpdate` 里 `setText` 那行去掉 → 第 1 条当场红;
+ * 把 `if (!hit) return` 改成补一条 → 第 3 条当场红(多出一条永不被 end 收掉的孤儿行)。
+ */
+describe('★ 工具行的中途读数', () => {
+  test('★ 原地更新同一行 —— 不追加(否则一条命令能刷出几百行)', () => {
+    const log = new ChatLog(theme);
+    log.toolStart('bash', { id: 'u1', detail: 'bun test' });
+    const before = log.length;
+    log.toolUpdate('bash', { id: 'u1', lines: 12, tail: '12 pass' });
+    log.toolUpdate('bash', { id: 'u1', lines: 40, tail: '40 pass' });
+    expect(log.length).toBe(before);
+    expect(text(log)).toContain(`${TOOL_MARK.running} bash bun test → 40 lines · 40 pass`);
+    expect(text(log)).not.toContain('12 lines');
+  });
+
+  test('末行为空时只画行数 —— 不画一个空的 `· `', () => {
+    const log = new ChatLog(theme);
+    log.toolStart('bash', { id: 'u2', detail: 'x' });
+    log.toolUpdate('bash', { id: 'u2', lines: 1, tail: '   ' });
+    expect(text(log)).toContain('→ 1 line');
+    expect(text(log)).not.toContain('1 line ·');
+  });
+
+  test('★ 对不上 start 的 update **什么都不做** —— 补一条会造出永不被 end 收掉的孤儿', () => {
+    const log = new ChatLog(theme);
+    log.toolUpdate('bash', { id: 'ghost', lines: 3 });
+    expect(log.length).toBe(0);
+  });
+
+  test('update 之后 end 仍然原地收尾, 结果覆盖掉进度', () => {
+    const log = new ChatLog(theme);
+    log.toolStart('bash', { id: 'u3', detail: 'bun test' });
+    log.toolUpdate('bash', { id: 'u3', lines: 40, tail: 'running' });
+    log.toolEnd('bash', true, { id: 'u3', result: 'exit 0' });
+    expect(log.length).toBe(1);
+    expect(text(log)).toContain(`${TOOL_MARK.ok} bash bun test → exit 0`);
+    expect(text(log)).not.toContain('40 lines');
+  });
+});
+
 describe('★ 工具行的结果半句', () => {
   test('★ end 时把结果接在参数后面, 用 → 分开', () => {
     const log = new ChatLog(theme);
