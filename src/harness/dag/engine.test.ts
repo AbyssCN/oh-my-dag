@@ -14,6 +14,7 @@ import type { ContentPart } from '../../model/gateway';
 import { registerProvider } from '../../model/providers';
 import type { DagNodeEvent, ExecutorDagConfig, GenerateFn } from './types';
 import { CheckpointManager } from '../continuity/checkpoint-manager';
+import { DEFAULT_FANIN_MIN_CHARS, FANIN_SUMMARY_SYSTEM, composeAnchorBlock } from '../fanin-summary';
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -1451,5 +1452,144 @@ describe('fan-in 硬上限 (上游超长输出 → 截断 + 指针, 不再原样
     );
     expect(bPrompt).toContain(SMALL);
     expect(bPrompt).not.toContain('fan-in 硬上限');
+  });
+});
+
+// ── conductor 局部子图 fan-in 定向摘要 (INV-2, 2026-08-14) ──────────────────────
+// conductor 内环展开出的子图与顶层图吃同一条 fan-in 摘要缝: 局部泵在 dependents 释放前
+// `await maybeFaninView(cid, r)`, 全文账 (results/checkpoint 的来源 settledR) 与消费视图
+// (faninView[cid], 只喂下游 prompt) 严格分离。三条 GWT 钉住: 摘要触发时双视图分道扬镳 ·
+// 扇出闸缺省时全文兜底 · 失败子节点不摘要 (status 闸独立于长度/扇出闸)。
+describe('conductor 局部子图 fan-in 摘要 (双视图 + 三态闸)', () => {
+  const A_GOAL = 'A_STEP_GOAL_MARKER_9f3';
+  const B_GOAL = 'B_STEP_GOAL_MARKER_7c1';
+  // 严格 > DEFAULT_FANIN_MIN_CHARS(1800); 含且只含一个路径锚 src/upstream.ts; 含全文哨兵。
+  const A_FULL = `${'x'.repeat(1900)} 详见 src/upstream.ts 的实现。A_FULL_ONLY_SENTINEL`;
+  const A_USAGE = { in: 11, out: 9 };
+  const A_SUMMARY_TOKEN = 'A_SUMMARY_TOKEN_5e2';
+  // 故意遗漏 src/upstream.ts —— 逼出 composeAnchorBlock 那半 (程序补摘要没保住的锚)。
+  const FAKE_SUMMARY = { tldr: A_SUMMARY_TOKEN, key_points: [], artifacts: [], open_questions: [] };
+  const SUMMARY_USAGE = { in: 7, out: 3 };
+  const planMarker = PLAN_BOUNDARY.trim().split('\n')[0]!;
+  const SUB_LINEAR = JSON.stringify({
+    name: 'sub',
+    nodes: { A: { goal: A_GOAL }, B: { goal: B_GOAL, depends_on: ['A'] } },
+  });
+  const SUB_LINEAR_A_FAILS = JSON.stringify({
+    name: 'sub',
+    nodes: { A: { goal: A_GOAL, executor: 'command', command: 'irrelevant-fake' }, B: { goal: B_GOAL, depends_on: ['A'] } },
+  });
+
+  /** conductor 单轮展开 A→B; 按 goal 关键词/system 内容分流 (运行时子节点 id 哈希化, 不硬编码)。 */
+  function makeFixtureGenerate(opts: {
+    subPlanText: string;
+    onA?: (id: string) => void;
+    onB?: (id: string, prompt: string) => void;
+    faninSummaryCalls: string[];
+  }): GenerateFn {
+    return async (req) => {
+      const user = contentText(req.messages.find((m) => m.role === 'user')?.content);
+      const sys = contentText(req.messages.find((m) => m.role === 'system')?.content);
+      if (user.includes(planMarker)) return { text: opts.subPlanText, usage: { in: 1, out: 1 } };
+      if (sys === FANIN_SUMMARY_SYSTEM) {
+        opts.faninSummaryCalls.push(req.traceName ?? 'fanin-summary');
+        return { text: JSON.stringify(FAKE_SUMMARY), usage: SUMMARY_USAGE };
+      }
+      const id = leafId(user);
+      if (user.includes(A_GOAL)) {
+        opts.onA?.(id);
+        return { text: A_FULL, usage: A_USAGE };
+      }
+      opts.onB?.(id, user);
+      return { text: `out:${id}`, usage: { in: 1, out: 1 } };
+    };
+  }
+
+  test('★ minFanout:1 → B 吃摘要视图, A 的 checkpoint 带 faninAnchors、canonical 结果仍全文', async () => {
+    let aId = '';
+    let bPrompt = '';
+    const faninSummaryCalls: string[] = [];
+    const generate = makeFixtureGenerate({
+      subPlanText: SUB_LINEAR,
+      onA: (id) => { aId = id; },
+      onB: (_id, prompt) => { bPrompt = prompt; },
+      faninSummaryCalls,
+    });
+    const r = await runExecutorDagWithPlan(
+      plan({ C: { goal: '子图顶点, minFanout1', executor: 'conductor', max_rounds: 1 } }),
+      makeConfig(generate, { faninSummary: { minFanout: 1 } }),
+    );
+    expect(r.results.C!.status).toBe('done');
+    expect(aId).not.toBe('');
+
+    // INV-2 反向自检 (2026-08-14 实跑, 非推测): 把 engine.ts 局部泵那行
+    // `const { r: settledR, view } = await maybeFaninView(cid, r, dependentsLocal.get(cid) ?? [])`
+    // 临时换成 `const { r: settledR, view } = { r, view: null as string | null }`(局部泵不再摘要),
+    // `bun test -t "minFanout:1"` 实测：1 fail —— 下面 `toContain(A_SUMMARY_TOKEN)` 红,
+    // received 是 B_STEP_GOAL_MARKER 全文 (含 `A_FULL_ONLY_SENTINEL`), 证实 B 确实吃到了 A 的全文
+    // 而非摘要视图。反事实 (INV-2, 必须成立): 禁用局部泵 → 本测试必红 —— 改回原行后
+    // 同一条命令重跑：0 fail, 转绿 (见本文件 58/58 pass 那次)。
+    expect(bPrompt).toContain(A_SUMMARY_TOKEN);
+    expect(bPrompt).toContain(composeAnchorBlock(JSON.stringify(FAKE_SUMMARY), ['src/upstream.ts']));
+    expect(bPrompt).not.toContain('A_FULL_ONLY_SENTINEL');
+    // 局部泵恰好跑了一发 (minFanout:1 把单 consumer 从"不触发"翻成"触发"), 不多不少。
+    expect(faninSummaryCalls).toHaveLength(1);
+
+    // A 的 checkpoint 来源 (settledR, 经 results[cid] 落盘) —— 全文账不受消费视图影响。
+    // `depOutputs[A]` 与 `results[A].output` 同源 (engine.ts 内环 `depOutputs[cid] = settledR.output`),
+    // 故这条 `toBe(A_FULL)` 同时钉住「depOutputs[A] 仍全文」: 摘要只换消费视图, 不换账本。
+    const aCheckpoint = r.results[aId]!;
+    expect(aCheckpoint.output).toBe(A_FULL);
+    expect(aCheckpoint.faninAnchors).toEqual([1, 1]); // 全文 1 个路径锚, 摘要遗漏 1 个
+    expect(aCheckpoint.usage).toEqual({ in: A_USAGE.in + SUMMARY_USAGE.in, out: A_USAGE.out + SUMMARY_USAGE.out, cacheHit: 0 });
+  });
+
+  test('faninSummary 缺省 (minFanout 默认 2, 单 consumer 不触发) → B 吃全文, A 无 faninAnchors', async () => {
+    let aId = '';
+    let bPrompt = '';
+    const faninSummaryCalls: string[] = [];
+    const generate = makeFixtureGenerate({
+      subPlanText: SUB_LINEAR,
+      onA: (id) => { aId = id; },
+      onB: (_id, prompt) => { bPrompt = prompt; },
+      faninSummaryCalls,
+    });
+    const r = await runExecutorDagWithPlan(
+      plan({ C: { goal: '子图顶点, 缺省配置', executor: 'conductor', max_rounds: 1 } }),
+      makeConfig(generate),
+    );
+    expect(r.results.C!.status).toBe('done');
+    expect(bPrompt).toContain(A_FULL);
+    expect(bPrompt).toContain('A_FULL_ONLY_SENTINEL');
+    expect(bPrompt).not.toContain(A_SUMMARY_TOKEN);
+    expect(faninSummaryCalls).toHaveLength(0);
+
+    const aCheckpoint = r.results[aId]!;
+    expect(aCheckpoint.output).toBe(A_FULL);
+    // 三态守卫: 缺席(没做摘要) ≠ [0,0](做了但无锚) ≠ [N,k] —— 这里必须是缺席。
+    expect('faninAnchors' in aCheckpoint).toBe(false);
+    expect(aCheckpoint.faninAnchors).toBeUndefined();
+  });
+
+  test('A failed → 不摘要 (status 闸独立于长度/扇出闸, 即便失败输出仍超 minChars)', async () => {
+    const faninSummaryCalls: string[] = [];
+    const generate = makeFixtureGenerate({ subPlanText: SUB_LINEAR_A_FAILS, faninSummaryCalls });
+    const r = await runExecutorDagWithPlan(
+      plan({ C: { goal: '子图顶点, A 会失败', executor: 'conductor', max_rounds: 1 } }),
+      makeConfig(generate, {
+        faninSummary: { minFanout: 1 },
+        // A 是 command 节点: 长输出 + 非零退出码 (expect_exit 缺省 0) → status:'failed',
+        // 且失败输出本身 > minChars —— 确保这里短路的只能是 status 闸, 不是长度/扇出闸。
+        commandRunner: async () => ({ text: A_FULL, usage: { in: 0, out: 0 }, exitCode: 1 }),
+      }),
+    );
+    const aEntry = Object.entries(r.results).find(([, v]) => v.kind === 'command');
+    expect(aEntry).toBeDefined();
+    const [, aCheckpoint] = aEntry!;
+    expect(aCheckpoint.status).toBe('failed');
+    expect(aCheckpoint.output.length).toBeGreaterThan(DEFAULT_FANIN_MIN_CHARS);
+    expect(faninSummaryCalls).toHaveLength(0);
+    expect('faninAnchors' in aCheckpoint).toBe(false);
+    expect(aCheckpoint.faninAnchors).toBeUndefined();
   });
 });

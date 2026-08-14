@@ -1407,9 +1407,15 @@ async function executePlan(
               output: `[failed] ${e instanceof Error ? e.message : String(e)}`,
               deps: (plan!.nodes[cid]!.depends_on ?? []) as string[], usage: { in: 0, out: 0 },
             }))
-            .then((r) => {
+            .then(async (r) => {
               liveNow.delete(cid); // 写窗口到此为止 (同外层那条: 不含之后的摘要/记账)
-              results[cid] = r;
+              // 摘要在飞、dependents 不在摘要就绪前释放)。fail-open, 永不抛; view 只喂 faninView,
+              // 全文账 (results/roundResults/depOutputs/checkpoint/usage) 一律走 settledR。
+              // consumers 传 `dependentsLocal`(子图内边, 见上方 D-C 局部拓扑调度那段) —— 顶层
+              // `sched` 看不见这些运行时子节点, 传了才有真实扇出数 (2026-08-14 修, 见 maybeFaninView 注)。
+              const { r: settledR, view } = await maybeFaninView(cid, r, dependentsLocal.get(cid) ?? []);
+              if (view) faninView[cid] = view;
+              results[cid] = settledR;
               // 子图节点也发 span (2026-07-31)。此前**只有外层 settle 循环调 recordSpan**, 而
               // 运行时展开出来的子节点走的是这条内环 —— 于是它们在观测面上只有 generation、没有 span,
               // 而 generation 又按 nodeId 挂在那个不存在的 span 上 → **全成孤儿**。
@@ -1419,16 +1425,16 @@ async function executePlan(
               recordSpan({
                 traceId: obsTraceId,
                 nodeId: cid,
-                kind: r.kind,
-                status: r.status,
+                kind: settledR.kind,
+                status: settledR.status,
                 startTime: new Date(nodeStartedAt.get(cid) ?? Date.now()),
                 endTime: new Date(),
-                ...(r.failureKind ? { failureKind: r.failureKind } : {}),
+                ...(settledR.failureKind ? { failureKind: settledR.failureKind } : {}),
               });
-              roundResults.set(cid, r);
-              depOutputs[cid] = r.output;
-              usageAcc = addUsage(usageAcc, r.usage);
-              if (r.status === 'failed') failedLocal++;
+              roundResults.set(cid, settledR);
+              depOutputs[cid] = settledR.output;
+              usageAcc = addUsage(usageAcc, settledR.usage);
+              if (settledR.status === 'failed') failedLocal++;
               // 失败子节点**带上败因** (截断防爆), 不是一个光秃秃的 `[failed]`。
               // 2026-07-30 live 冒烟实证: 一个写文件的子节点被产物闸拒 (`filesTouched 空 — leaf
               // 自报完成但未做任何文件写操作`), 而环里看到的只有 `[failed]` —— judge 于是自己编了
@@ -1440,7 +1446,7 @@ async function executePlan(
               // 只放引擎观测到的: filesTouched 经产物闸核过存在性; command 节点 done ≡ 退出码符合 expect_exit。
               // 引擎记录的那几行 —— **构造器与整图那道扫描共用一份** (见 engineFacts 的注:
               // 两处各写一份的话, 同一个节点在两条路上会得到不同的"引擎记录", 而差异是静默的)。
-              const facts = engineFacts(r, {
+              const facts = engineFacts(settledR, {
                 expectExit: plan!.nodes[cid]?.expect_exit ?? 0,
                 shellCap: SHELL_FACT_CAP,
               });
@@ -1449,19 +1455,19 @@ async function executePlan(
               // (2026-07-30 两次带种 live 都是这个形状)。产物内容由**引擎读盘**补进来:
               // 让 leaf 自己把内容复述进 output 就又回到自证, 而自证正是反捏造判词要杀的东西。
               const artifacts = judgeArtifactBudget
-                ? collectJudgeArtifacts(r.filesTouched ?? [], artifactReader, judgeArtifactBudget)
+                ? collectJudgeArtifacts(settledR.filesTouched ?? [], artifactReader, judgeArtifactBudget)
                 : [];
               childOut.push({
                 id: cid,
                 originalId: byId.get(cid)?.originalId ?? cid,
-                status: r.status,
-                output: r.status === 'failed' ? `[failed] ${(r.output || '(无输出)').slice(0, 600)}` : r.output,
+                status: settledR.status,
+                output: settledR.status === 'failed' ? `[failed] ${(settledR.output || '(无输出)').slice(0, 600)}` : settledR.output,
                 ...(facts.length ? { facts } : {}),
                 ...(artifacts.length ? { artifacts } : {}),
               });
-              for (const f of r.filesTouched ?? []) touchedAll.add(f);
+              for (const f of settledR.filesTouched ?? []) touchedAll.add(f);
               // 子节点绕过外层 settle() → 补发事件 (同 map 子节点)。
-              emitNodeEvent(settleEvent(cid, r));
+              emitNodeEvent(settleEvent(cid, settledR));
               // 释放子图内下游。失败也释放 —— 是否执行由下游自己的 requires quorum 判 (D-7v2),
               // 不在这里替它决定 (与外层 settle 同语义)。
               for (const dep of dependentsLocal.get(cid) ?? []) {
@@ -3084,14 +3090,23 @@ async function executePlan(
   // 定向摘要 (按下游目标提炼) + 全文落盘留指针, 存 faninView[id]; 下游 fan-in 注入摘要而非全文。
   // 调用点在调度器 .then 内 (running 保持占位跨此 await → 收敛判据不会在摘要在飞时误触发, 见 pump)。
   // 全程 fail-open: 任何失败 → view=null → 下游回退全文注入。usage 折进 producer 的 r.usage (账本一致)。
-  const maybeFaninView = async (id: string, r: LeafResult): Promise<{ r: LeafResult; view: string | null }> => {
+  // `consumersOverride`: conductor 局部子图内的运行时子节点从未进过顶层 `sched` (它在
+  // `executePlan` 里只对初始 `plan.nodes` 建过一次快照, 子图节点是之后才 `plan!.nodes[child.id]=`
+  // 追加进去的), 于是 `sched.dependentsOf` 对它们恒返回 `[]` → 扇出闸永远短路成"全文"。
+  // 内环 pump (`runConductorRound`) 已经自己算了一份 `dependentsLocal`(子图内边), 直接传进来
+  // 绕开对 `sched` 的依赖; 顶层 pump 不传, 沿用 `sched.dependentsOf` (2026-08-14, INV-2 定位)。
+  const maybeFaninView = async (
+    id: string,
+    r: LeafResult,
+    consumersOverride?: string[],
+  ): Promise<{ r: LeafResult; view: string | null }> => {
     try {
       if (!faninCfg.enabled) return { r, view: null };
       if (r.status !== 'done') return { r, view: null }; // 失败节点不摘要 (败因全文留给 heal)
       if (r.kind === 'map') return { r, view: null }; // map 输出是结构化 JSON 数组, 摘要会毁其可解析性
       const node = plan!.nodes[id]!;
       if (node.creative) return { r, view: null }; // 护创意交付物 (best-of-n/judge 候选需全文, 同 caveman off)
-      const consumers = sched.dependentsOf(id);
+      const consumers = consumersOverride ?? sched.dependentsOf(id);
       if (consumers.length < faninCfg.minFanout) return { r, view: null }; // 扇出闸 (默认 ≥2)
       const output = r.output ?? '';
       if (output.length < faninCfg.minChars) return { r, view: null }; // 短输出摘要纯亏 (摘要器 input 即全文)
