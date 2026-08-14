@@ -1177,6 +1177,48 @@ import 得到、类型对得上、调用写得出来。
 
 ---
 
+### S-39 · **第二张声明面静默盖过第一张** —— 改了真源、全绿、零生效
+
+**形状**:同一件事有两处声明(A = 真源登记表,B = 另一个配置块),消费面**只读 B**。
+改 A 之后:类型过、测试过、连"读 A 的探针"都全绿 —— **而运行时一个字都没变**。
+两边都不报错,因为两边**各自都是自洽的**。
+
+**和已有几条哪里不一样**:S-1 是「声明了没人读」(B 不存在);S-38 是「注释背书了一道不存在的闸」
+(声明面是散文)。这一条两处声明**都是代码、都有人读**,只是**读的不是你改的那处**。
+可达性闸、空旋钮闸全都基于「有没有人读」——**这里两处都有人读,一道现成的闸都够不着。**
+
+**为什么没红灯**:验证手法本身在骗人。`resolveSeatModel('lens')` 返新坐标 ✓、
+座位探针 5/5 ✓ —— 但这两样问的都是「**座位**解析成什么」,而被测 stage 根本不走座位。
+**"我验证过了"里的"验证"验的是另一个东西。**
+
+**本仓实例(2026-08-14,自己犯的,代价 = 一整跑 ≈2.1M token)**:
+owner 要求把 research fanout 的座位挪到 M3。改完 `config.models` 的
+`lens / reduce / judge / reason` 四座,四个 `resolveSeatModel` 全返 M3,座位探针全绿,
+**跑完才发现 6 个 stage 里只有 3 个换了**:
+
+| stage | 实际取值链 | 换座后生效? |
+|---|---|---|
+| `gen` / `synth` | `web-fanout.ts:405` → `config.pools.lens` | ✗ 仍旧坐标 |
+| `judge` | `web-fanout.ts:407` → `config.pools.judge` | ✗ 仍旧坐标 |
+| `reduce` | `fanout.ts:328` → `reduce` 座 | ✓ |
+| `fusion` / `graft` | `web-fanout.ts:409` → `judge` 座 | ✓ |
+
+没换的那三个占该跑输入的 **82%**,于是整臂读数**不可判**(单一变量只落在 18% 的量上),
+而表面上它长得像一次"做了但没效果"的干净失败 —— 那正是最贵的读法错误。
+
+**怎么抓**(已落地):
+
+> **改配置之前,先打印"消费面真正会用的值",而不是"真源解析成什么"。**
+> `scripts/omd-fanout-seats.ts` 逐 stage 印出取值链与落点,座位与池不一致时显式喊出来。
+> 零 token,而上一次看见这件事花了一整跑。
+> **反向自检**:`OMD_CONFIG_PATH` 指向一份池=旧坐标的临时 config → 两条不一致警告当场出现。
+
+⚠ 它只覆盖**静态可解**的那半(座位 + 池)。运行期覆盖(`opts.*Model`、council 出的
+per-lens 模型)静态看不见 —— 那一层的真值只有跑完读 `.omd/seat-usage.jsonl` 的
+`traceName × model`(`scripts/omd-seat-usage.ts --trace`)。**别把静态的绿当成"跑起来一定是这样"。**
+
+---
+
 ## 已立的闸(可执行的那部分)
 
 | 闸 | 位置 | 守什么 | 抓哪几条 |
@@ -1216,6 +1258,7 @@ import 得到、类型对得上、调用写得出来。
 | 隔离档 git 能用 | `src/harness/hooks/bwrap.ts` · `bwrap-containment.test.ts:98` | 真造「主 repo + worktree」跑真 bwrap:ro 共享 `.git` + rw 本树 gitdir;jail 内写 ref/objects 仍拒(**带反向自检**:删 `gitBinds` 段 → ② 红,①③ 仍绿。⚠ 无 bwrap 的机器自报**未测**,不是绿) | S-34 |
 | 空转签名不被 `cd` 前缀吃掉 | `src/harness/hooks/drift-detector.ts` · `drift-detector.test.ts:103` | 取 50 字符窗口前先剥 `cd <路径> &&` 链,尺子不因 jail 路径变钝(**带反向自检**:去掉 `stripCdPrefix` → 三条不同命令签名全等,红) | S-34 |
 | 终审产物三态(unregistered ≠ missing) | `src/harness/verifier.ts:125` · `verifier-evidence.test.ts:102` | `summarizeResults` 对每个声明 `output_path` 的节点跑 `statSync`,按 registered/unregistered/missing 三态写入 prompt,`unregistered` 单独告警(`verifier.ts:155`)(**带反向自检**:三态判定改回二态、吞掉 `unregistered` → 3 条红) | S-33 |
+| fanout 每个 stage 的**真实落点**(池不许静默盖过座位) | `scripts/omd-fanout-seats.ts` | 逐 stage 印取值链 + 落点;`config.pools.lens/judge` 与 lens/judge 座不一致时显式告警(**带反向自检**:`OMD_CONFIG_PATH` 指向池=旧坐标的临时 config → 两条不一致警告当场出现)。⚠ 只覆盖静态可解那半,运行期覆盖看 `seat-usage.jsonl` 的 traceName×model | S-39 |
 | 图的引用完整性 | `src/harness/plan/graph-cycle.ts` · `conductor-plan.ts` superRefine · `plan/static-lint.ts` | 环 = fail-closed 判死并点名环路;悬空 dep / 不可能达标的配额 = report-only,截断自报与手误分两个 kind(**带反向自检**:注掉 superRefine 环闸 → 4 红;删 ④ 段 → 5 红;删 truncatedIds 分支 → 1 红;`<=` 改 `<` → 1 红;lint 视图退回老口径 → 3 红) | S-38 |
 
 **S-24 也没有闸** —— 声明端在 `node_modules` 里,仓内的消费点/可达性闸**结构上够不着**。

@@ -75,7 +75,8 @@ async function main(): Promise<void> {
   const rows: Row[] = [];
   // 两臂: 被测 (claude-code 订阅位, = 本次 research 的 lens/reduce/synth/judge 座) 与
   // 对照 (deepseek, 已知自动前缀缓存)。同一前缀, 同一问题, 各发两次。
-  for (const model of ['claude-code:claude-haiku-4-5', 'deepseek:deepseek-v4-flash']) {
+  const models = opt('models')?.split(',') ?? ['claude-code:claude-haiku-4-5', 'deepseek:deepseek-v4-flash'];
+  for (const model of models) {
     for (const 发次 of [1, 2]) {
       const t = Date.now();
       try {
@@ -108,17 +109,23 @@ async function main(): Promise<void> {
 
   // 判词按预声明的信号机械打印 —— 不在这里现编判据。
   const second = (m: string): Row | undefined => rows.find((r) => r.model.startsWith(m) && r.发次 === 2);
-  const cc = second('claude-code');
   const ds = second('deepseek');
   const hit = (r?: Row): boolean => (r?.cacheHit ?? 0) > 0;
   console.log('\n判词 (按跑前钉死的信号):');
-  if (!hit(ds)) {
+  // ⚠ 只对**这一跑真的在场**的臂出判词。第一版这里写死了 claude-code, 于是换 --models 之后
+  // 它照样打印一句关于 claude-code 的结论 —— 而那一臂根本没跑。**没跑的臂不许有判词。**
+  if (!ds) {
+    console.log('  ⚠ 本跑没有 deepseek 对照臂 → 无噪声地板可比, 下面只报事实不下结论。');
+  } else if (!hit(ds)) {
     console.log('  ⚠ 对照臂 (deepseek) 第二发也没命中 → **尺子没动, 本实验作废**, 别读被测臂。');
-  } else if (hit(cc)) {
-    console.log('  · claude-code 第二发命中 → 这条路会缓存 user 前缀; research 那 40 发的 0 **另有原因**, 继续查。');
-  } else {
-    console.log('  · claude-code 第二发 0 而 deepseek 命中 → **前缀缓存在 claude-code 位上不成立**;');
-    console.log('    fanout 的 head 共享设计在这些座位上是空转 —— 降耗先修这个, 而不是砍 L×V。');
+  }
+  for (const r of rows.filter((x) => x.发次 === 2 && !x.model.startsWith('deepseek'))) {
+    const rate = r.in > 0 ? ((r.cacheHit ?? 0) / r.in) * 100 : 0;
+    console.log(
+      hit(r)
+        ? `  · ${r.model} 第二发命中 ${r.cacheHit}/${r.in} (${rate.toFixed(1)}%) → 这条路**会**缓存 user 前缀。`
+        : `  · ${r.model} 第二发 0${ds && hit(ds) ? ' 而 deepseek 命中' : ''} → 前缀缓存在这条路上**不成立**。`,
+    );
   }
 }
 
