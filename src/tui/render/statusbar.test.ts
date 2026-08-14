@@ -83,6 +83,48 @@ describe('行① formatStatusLine —— segment 模型: 没数据的段不画',
   test('非 git 仓: 工作区段整个不画', () => {
     expect(formatStatusLine({ ws: null, seat: 'a:b', pressure: null, session: null, win: null })).toBe('a:b');
   });
+
+  /**
+   * ★ 隔离档 run 的 worktree —— **omd 自己生成的分支名不许把其余段挤出屏幕**。
+   *
+   * 实测(2026-08-14,run1 的 worktree 里跑 L3 PTY):工作区段 94 列 + 分隔符 = 97/100,
+   * 座位 / ctx / 花费 / token 四段全在屏外 ⇒ `SB-1` `SB-2` `SB-5` 同时红,而它们守的
+   * 东西一个都没坏。病根是同一个 36 位 uuid 画了两遍(分支 `omd/run/<id>` + `wt:<id>`)。
+   *
+   * 反向自检(实跑):把 `shortenIds` 换成恒等函数 → 末尾那条长度断言当场红
+   * (97 > 60)。只断言"含前 8 位"是不够的 —— 全长里也含前 8 位,那样会假绿。
+   */
+  test('★ omd/run/<uuid> 分支 + 同 uuid 的 worktree: id 缩到 8 位, 工作区段不吃满一行', () => {
+    const line = formatStatusLine({
+      ws: { repo: 'oh-my-dag', branch: 'omd/run/c02ac67d-3c28-4feb-8215-248bd38f89f1', dirty: 0, worktree: 'c02ac67d-3c28-4feb-8215-248bd38f89f1' },
+      seat: 'kimi-coding:k3',
+      pressure: { systemTokens: 12_000, harnessTokens: 0, historyTokens: 0, usedTokens: 12_000, windowTokens: 200_000, ratio: 0.06, source: 'usage' },
+      session: null,
+      win: null,
+    });
+    // id 缩到 8 位, 且**同一个 id 不画两遍**(分支里已经有了)。
+    expect(line).toBe('oh-my-dag omd/run/c02ac67d │ kimi-coding:k3 │ ctx 6%');
+    // 后面几段真的还在屏上 —— 这才是这条闸买的东西(缩 id 只是手段)。
+    expect(line).toContain('kimi-coding:k3');
+    expect(line).toContain('ctx 6%');
+    expect(line.split('│')[0]!.length).toBeLessThan(60); // 恒等函数下这里是 97
+  });
+
+  /**
+   * ★ **去重只在真重复时发生** —— 名字不同的 worktree,`wt:` 仍要画。
+   * 少了这条,上面那条会诱导下一程把 `wt:` 整个删掉,而那会让"我在哪棵树上"从屏上消失。
+   * 反向自检:把去重条件改成无条件跳过 → 这条当场红。
+   */
+  test('★ worktree 名不在分支里 → wt: 照画(去重不是删段)', () => {
+    const line = formatStatusLine({
+      ws: { repo: 'oh-my-dag', branch: 'feature/x', dirty: 0, worktree: 'fanin-swarm' },
+      seat: 'a:b',
+      pressure: null,
+      session: null,
+      win: null,
+    });
+    expect(line).toBe('oh-my-dag feature/x wt:fanin-swarm │ a:b');
+  });
 });
 
 describe('★ 减法这件事本身要有闸(否则下一程会把字段加回来)', () => {

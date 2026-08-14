@@ -91,13 +91,31 @@ export function fmtUsd(costUsd: number, unpriced: boolean): string {
  *
  * 形如:`oh-my-dag main+86 │ kimi-coding:k3 │ ctx 1% │ $0.00 10次 │ ↑111k ↓2.5k 缓存59%`
  */
+/**
+ * uuid 缩到前 8 位 —— **omd 自己生成的分支名会把整条底栏挤出屏幕**。
+ *
+ * 隔离档 run 的分支是 `omd/run/<uuid>`,worktree 目录名同为 `<uuid>`,于是同一个 36 位 id
+ * 画两遍:`oh-my-dag omd/run/<36> wt:<36>` = **94 列**,加分隔符占满 100 列的终端 ——
+ * 座位 / `ctx` / 花费 / token 四段全在屏外。实测(2026-08-14,worktree 里跑 L3 PTY):
+ * `SB-1` `SB-2` `SB-5` 三条同时红,而它们要守的东西一个都没坏。
+ *
+ * 只缩 uuid 不做通用宽度预算:人读 uuid 只用前 8 位(`git` 同口径),而通用截断会把
+ * "画不下"这件事**藏起来** —— 那是另一族问题,要的是别的解法。
+ */
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
+const shortenIds = (s: string): string => s.replace(UUID_RE, (m) => m.slice(0, 8));
+
 export function formatStatusLine(i: StatusBarInput, o: StatusBarOpts = {}): string {
   const segs: string[] = [];
   if (i.ws) {
     // `repo branch+dirty` —— 原来是 `repo · branch +2`, 三个词元变两个, 信息一样。
     const parts = [i.ws.repo];
-    if (i.ws.branch) parts.push(`${i.ws.branch}${i.ws.dirty > 0 ? `+${i.ws.dirty}` : ''}`);
-    if (i.ws.worktree) parts.push(`wt:${i.ws.worktree}`);
+    const branch = i.ws.branch === null ? null : shortenIds(i.ws.branch);
+    if (branch !== null) parts.push(`${branch}${i.ws.dirty > 0 ? `+${i.ws.dirty}` : ''}`);
+    // worktree 名已经在分支里 ⇒ 不画第二遍(omd 隔离档:分支 `omd/run/<id>`, worktree 目录名同为 `<id>`)。
+    // 名字不同的 worktree 照画 —— 那时 `wt:` 才带新信息。
+    const wt = i.ws.worktree === null ? null : shortenIds(i.ws.worktree);
+    if (wt !== null && !(branch ?? '').includes(wt)) parts.push(`wt:${wt}`);
     segs.push(parts.join(' '));
   }
   if (i.seat) segs.push(i.seat);
