@@ -141,7 +141,10 @@ function makeSetRole(): OmdMcpTool {
   return {
     name: 'omd_set_role',
     description:
-      'Override one engine role model coord → .omd/config.json, immediate. Roles: conductor/leaf/verifier/dream (no plan).',
+      // 座位名**不在这里抄** —— 手抄的那份写的是 conductor/leaf/verifier/dream, 其中 dream 座
+      // 2026-08-02 已摘 (ADR-0003), 另外 13 个座能设却没写在这。全表由 role 参数的 describe
+      // 从登记表派生 (D-11 限死本行 ≤120 字符, 16 个座位名塞不进来 —— 那正是该放参数上的理由)。
+      'Override one engine seat model coord → .omd/config.json, immediate. Seat list: see the role param.',
     inputSchema: {
       role: z.string().describe(`Role — one of: ${roles}`),
       coord: z.string().describe("Model coordinate 'provider:model', e.g. 'kimi-coding:k3'"),
@@ -286,7 +289,7 @@ function makeConfigStatus(router?: ConfigToolDeps['router']): OmdMcpTool {
         const lines = [
           'omd 引擎配置:',
           '',
-          'config 角色 (conductor/leaf/verifier/dream):',
+          'config 角色:', // 座位名逐行印在下面, 别在标题里再抄一份会漂的清单
           ...s.roles.map((r) => `  ${r.role.padEnd(10)} ${r.resolved.padEnd(34)} [${r.source}] ${mark(r.hasCredential)}`),
         ];
         if (s.envRoles.length) {

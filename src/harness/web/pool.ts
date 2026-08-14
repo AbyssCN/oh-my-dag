@@ -26,9 +26,15 @@ export interface SearchEntry {
 
 export interface PoolSearchResult {
   results: SearchResult[];
-  /** 实际服务的 provider (failover/rotate = 1 个, aggregate = N 个)。 */
+  /** 实际服务的 provider (failover/rotate = 1 个, aggregate = N 个; 全员空手 = 试过的全部)。 */
   providers: string[];
   mode: PoolMode;
+  /**
+   * 路上被跳过的 provider 的错误原文(`name: message`)。缺席 = 没人抛。
+   * 有它才分得开「链走完了确实没结果」与「一半 provider 挂了才显得没结果」——
+   * 不留这一格的话, 后者会被读成前者(fail-open 可以吞异常, 不许吞证据)。
+   */
+  errors?: string[];
 }
 
 export interface ProviderStatus {
@@ -101,7 +107,21 @@ export function createWebSearchPool(opts: {
     });
   }
 
-  /** 顺序尝试, 首个成功即记额度并返回; 全失败抛聚合错误。 */
+  /**
+   * 顺序尝试, 首个**给出结果**的即记额度并返回; 全失败抛聚合错误。
+   *
+   * ⚠ **空手不算答**(2026-08-14 修): 原实现是"首个不抛的就返回", 于是一个 200 但
+   * `results: []` 的 provider(限流软失败 / 该 query 它没索引)**把 failover 链短路掉** ——
+   * 后面的 provider 一个都不试, `retrieveWeb` 拿到 0 条, `researchWebFanout` 抛
+   * 「检索零结果, 无语料可研究」, 整个 research 节点失败 → 进毒集 → 语料双跑重画。
+   * 也就是说 failover 此前**只保"provider 挂了"这一档, 不保"provider 空手"这一档**,
+   * 而后者在盘上留下的痕迹与前者完全不同(节点抛的是"零结果"不是"provider failed"),
+   * 所以一直没人把它读成 failover 的洞。现场: `.omd/continuity/42982b58-…-contract/
+   * fail-contract__1zx4npofuujaj.txt`。
+   *
+   * **全员空手仍返空、不抛** —— 上游 `retrieveWeb` 把多条 query 放在 `Promise.all` 里,
+   * 这里一抛就会把**别的 query 已经搜到的结果**一起带走。空是合法答案, 只是要在**试遍全链之后**才算数。
+   */
   async function tryInOrder(
     ordered: ResolvedEntry[],
     query: string,
@@ -110,15 +130,24 @@ export function createWebSearchPool(opts: {
     signal?: AbortSignal,
   ): Promise<PoolSearchResult> {
     const errors: string[] = [];
+    const empties: string[] = [];
     for (const e of ordered) {
       try {
         const results = await e.provider.search(query, maxResults, signal);
+        // 发出去了就记额度 —— 空手也真的用掉了一次配额, 不记会让额度账虚高。
         quota.record(e.name, t);
-        return { results, providers: [e.name], mode };
+        if (results.length === 0) {
+          empties.push(e.name);
+          continue; // 换下一个 provider, 而不是把空手当答案
+        }
+        return { results, providers: [e.name], mode, ...(errors.length ? { errors } : {}) };
       } catch (err) {
         errors.push(`${e.name}: ${(err as Error).message}`);
       }
     }
+    // 有人空手 = 链走完了, 答案确实是空 (providers 记全部试过的, 让调用方看得出链已耗尽)。
+    // 一个都没空手 = 全是抛的 → 保持原语义抛聚合错误。两种"没结果"不许合并成一种。
+    if (empties.length > 0) return { results: [], providers: empties, mode, ...(errors.length ? { errors } : {}) };
     throw new Error(`all search providers failed: ${errors.join(' | ')}`);
   }
 

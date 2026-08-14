@@ -13,6 +13,7 @@ import type { ModelRequest, ModelResponse } from './types';
 import { callModel } from './index';
 import { makeBudgetedCall } from './provider-budget';
 import { promptVersionOf, recordGeneration } from './langfuse';
+import { recordSeatUsage, seatOfTrace } from './seat-usage';
 
 // ── 类型 re-export (内核统一从 gateway 取型) ─────────────────────────
 export type {
@@ -107,6 +108,17 @@ export async function send(req: GatewayRequest): Promise<ModelResponse> {
       startTime,
       endTime: new Date(),
     });
+    // per-seat 归属账 (seat-usage.ts): 角色标签只活到这一层, 再往下 callModel 就只剩坐标了。
+    recordSeatUsage({
+      ts: startTime.getTime(),
+      seat: seatOfTrace(reqWithTrace.meta?.role),
+      traceName: reqWithTrace.meta?.role ?? null,
+      model: res.model ?? reqWithTrace.model ?? 'unknown',
+      in: res.usage?.in ?? null,
+      out: res.usage?.out ?? null,
+      cacheHit: res.usage?.cacheHit ?? null,
+      runId: reqWithTrace.meta?.sessionId ?? null,
+    });
     return res;
   } catch (err) {
     // **失败的调用比成功的更值得看**: 429/超时/闸拒是 prompt 迭代时最需要的那一批样本,
@@ -121,6 +133,18 @@ export async function send(req: GatewayRequest): Promise<ModelResponse> {
       ...(reqWithTrace.meta?.nodeId ? { nodeId: reqWithTrace.meta.nodeId } : {}),
       startTime,
       endTime: new Date(),
+      error: String(err),
+    });
+    // 抛的那一发也要有一行: token 未知落 null (不是 0 —— 它可能烧了才抛的), 原文进 error 列。
+    recordSeatUsage({
+      ts: startTime.getTime(),
+      seat: seatOfTrace(reqWithTrace.meta?.role),
+      traceName: reqWithTrace.meta?.role ?? null,
+      model: reqWithTrace.model ?? 'unknown',
+      in: null,
+      out: null,
+      cacheHit: null,
+      runId: reqWithTrace.meta?.sessionId ?? null,
       error: String(err),
     });
     throw err;

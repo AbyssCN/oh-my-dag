@@ -297,6 +297,16 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
     thinkingLevel?: 'high' | 'xhigh';
     maxTokens?: number;
     responseSchema?: z.ZodTypeAny;
+    /**
+     * 这一发属于哪个 stage(gap/gen/reduce/synth/judge/fusion/graft)。**只走观测面, 不影响调用。**
+     * 不给 → 退回 `fanout-leaf`(老标签),行为逐字节照旧。
+     *
+     * 为什么要有它:此前全部 stage 共用一个 `fanout-leaf` 标签,于是 2026-08-14 量到
+     * 「契约段 90.8% 的 token 在 research 节点内部」之后, **再往下一层就问不动了** ——
+     * 账上分不出那 8M 是 gen 的 ×L 扇出、reduce 的归并, 还是 synth/judge 的长前缀。
+     * 降耗要先知道降谁, 所以先把这一列量出来(消费面 = `.omd/seat-usage.jsonl` 的 byTrace)。
+     */
+    stage?: string;
   }) => Promise<{ text: string; usage?: ModelUsage; parsed?: unknown }>;
   // 输出兜底。**8192 是 2026-07-28 修掉的 bug**: 那个数来自一句没验过的注释 ("deepseek 系硬顶 ~8k 会 400"),
   // 实测推翻 —— 同一条 opencode-go 渠道 cap=32000 下 minimax-m3 自然写到 out=21309、kimi-k3 写到 13874, 都正常收尾,
@@ -312,7 +322,7 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
           thinkingLevel: req.thinkingLevel,
           maxTokens: req.maxTokens,
           responseSchema: req.responseSchema,
-          meta: { role: 'fanout-leaf', sessionId },
+          meta: { role: req.stage ? `fanout:${req.stage}` : 'fanout-leaf', sessionId },
         });
   // 单点包装: maxTokens 兜底 + GO 溢出回退 ds-v4-pro (A② fallback chain), 全 stage (gen/reduce/synth/judge/graft) 继承。
   const call: CallFn = (req) => {
@@ -356,7 +366,7 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
     leafCount += 1;
     const prompt = `${corpus}\n\n各镜头冠军 (截至第 ${round} 轮):\n${digest}\n\n你是 research-second-pass 的缺口分析器。通读以上全部, 提出下一轮**只做增量**该挖什么: 没有出处的关键断言、被引用/被点名却没读过的来源 (urls 给完整链接)、有料没挖透的角度。\n\n缺口有两个方向, 分开填:\n- urls: 该读的**外部**来源 (完整链接);\n- repoQueries: 该在**本仓**查证的字面串/符号名 (函数名/类型名/常量/配置键/错误文案)。凡是"我们仓里是怎么做的 / 有没有现成的"这类缺口都填这里 —— 会有确定性检索去取, 你不要凭印象回答。\n\n已答好的部分不要重复提。没有值得挖的就返回空 gaps —— 不要硬凑。只输出 JSON: {"gaps":[{"key":"...","question":"...","why":"...","urls":["..."],"repoQueries":["..."]}]}`;
     try {
-      const res = await call({ model: cfg.reasonModel, messages: msg(prompt), responseSchema: GAP_SCHEMA });
+      const res = await call({ model: cfg.reasonModel, messages: msg(prompt), responseSchema: GAP_SCHEMA, stage: 'gap' });
       usageLog.push({ model: cfg.reasonModel, usage: res.usage ?? { in: 0, out: 0 } });
       const parsed = GAP_SCHEMA.safeParse(res.parsed ?? lenientJson(res.text));
       return parsed.success ? parsed.data.gaps.slice(0, MAX_GAPS) : [];
@@ -389,7 +399,7 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
           const prompt = `${corpus}\n\n<persona>${lens.persona}</persona>${abstraction}\n\n研究问题: ${cfg.question}${roundNote}\n\n本 leaf 的具体 sub-angle: ${angle}\n\n用 ground-truth 里的真实模块名推理 (禁造)。结构化、具体、可落地、只答这个 sub-angle。`;
           const text = await track(
             lensModel,
-            call({ model: lensModel, messages: userMsg(prompt, cfg.images), thinkingLevel: cfg.leafThinking }),
+            call({ model: lensModel, messages: userMsg(prompt, cfg.images), thinkingLevel: cfg.leafThinking, stage: 'gen' }),
           );
           return { lens: lens.key, angleIdx: i, text };
         });
@@ -406,7 +416,7 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
       const variants = genResults.filter((g) => g.lens === lens.key).sort((a, b) => a.angleIdx - b.angleIdx);
       const body = variants.map((v, i) => `### sub-angle ${i + 1}\n${v.text}`).join('\n\n');
       const prompt = `${corpus}\n\n镜头[${lens.key}] 的 ${variants.length} 个 sub-angle 产出:\n${body}\n\n你是该镜头的首席 judge。合成这镜头的**冠军答案**: 取最强骨架 + 嫁接各 sub-angle 的最佳碎片, 去冗余去弱点。直接给冠军答案。`;
-      const text = await track(reduceModel, call({ model: reduceModel, messages: msg(prompt) }));
+      const text = await track(reduceModel, call({ model: reduceModel, messages: msg(prompt), stage: 'reduce' }));
       return { key: lens.key, text };
     });
     leafCount += reduceJobs.length;
@@ -452,7 +462,7 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
   const synthJobs = cfg.synthesisFramings.map((fr, mi) => async () => {
     const sm = synthModels?.[mi] ?? cfg.reasonModel;
     const prompt = `${corpus}\n\n各镜头冠军:\n${championsDigest}\n\n<framing>${fr.framing}</framing>\n\n按此 framing 综合成一份完整方案 (具体到模块/文件/接点, 用真实模块名)。`;
-    const text = await track(sm, call({ model: sm, messages: msg(prompt) }));
+    const text = await track(sm, call({ model: sm, messages: msg(prompt), stage: 'synth' }));
     return { key: fr.key, text };
   });
   leafCount += synthJobs.length;
@@ -469,7 +479,7 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
   const judgeJobs = cfg.judgeCriteria.map((j, ki) => async () => {
     const jm = j.model ?? judgePanelModels?.[ki] ?? judgeModel; // 显式 model > judgePool 轮转 > 全局 judgeModel
     const prompt = `${corpus}\n\n${candDigest}\n\n你是评判维度【${j.criterion}】的 judge。按此维度评 ${synthCandidates.length} 个候选: 各自强弱 + 哪个最优 + 该嫁接谁的哪段。只从你这个维度评。`;
-    const text = await track(jm, call({ model: jm, messages: msg(prompt) }));
+    const text = await track(jm, call({ model: jm, messages: msg(prompt), stage: 'judge' }));
     return { key: j.key, text };
   });
   leafCount += judgeJobs.length;
@@ -486,7 +496,7 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
   leafCount += 1;
   const fusionModel = cfg.fusionModel ?? judgeModel; // 收敛单发, 不发散
   const fusionPrompt = `${corpus}\n\n${candDigest}\n\nK-judge panel 多维评判:\n${critDigest}\n\n${buildFusionAnalysisPrompt()}`;
-  const fusionAnalysis = await track(fusionModel, call({ model: fusionModel, messages: msg(fusionPrompt) }));
+  const fusionAnalysis = await track(fusionModel, call({ model: fusionModel, messages: msg(fusionPrompt), stage: 'fusion' }));
   stage('fusion', 'fusion 融合分析 (5-tuple)');
 
   // ── Stage 5: 终审 graft (pro, 1 发) → 据 panel 评判 + fusion 5-tuple 合成最终方案。
@@ -494,7 +504,7 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
   // 前缀与 fusion 字节对齐 (`head\n\n${candDigest}`) → 复用 judge/fusion 已暖的 head+candDigest 缓存。
   const finalPrompt = `${corpus}\n\n${candDigest}\n\nK-judge panel 多维评判:\n${critDigest}\n\nFusion 融合分析 (结构化):\n${fusionAnalysis}\n\n你是首席架构师。据 panel 多维评判 + fusion 融合分析**合成唯一最终方案**: 选最强骨架, 嫁接共识与独特洞察, 显式消解矛盾点、补齐覆盖缺口与盲点。直接给最终方案, 不要元评论。`;
   const graftModel = cfg.graftModel ?? cfg.reasonModel; // 收敛终笔, 单一强连贯模型
-  const finalText = await track(graftModel, call({ model: graftModel, messages: msg(finalPrompt) }));
+  const finalText = await track(graftModel, call({ model: graftModel, messages: msg(finalPrompt), stage: 'graft' }));
 
   // 收尾遥测: per-model 缓存命中率 + 成本 (M6: 测量命中率而非靠账单倒猜)。经 onStage 流到所有 driver 的 stderr。
   const costStats = buildCostStats(usageLog);

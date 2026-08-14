@@ -126,6 +126,10 @@ export async function retrieveWeb(
   const rounds = await Promise.all(
     queries.map((q) => stack.searchPool.search(q, k, { mode, signal: opts.signal })),
   );
+  // 链上被跳过的 provider 的原文要念出来: 「一半 provider 挂了才显得没资料」与「确实没资料」
+  // 在结果上长得一模一样, 不留这一行就再也分不开 (fail-open 可以吞异常, 不许吞证据)。
+  const searchErrors = rounds.flatMap((r) => r.errors ?? []);
+  if (searchErrors.length) opts.onWarn?.(`检索链上有 provider 挂了 (已跳过继续): ${searchErrors.join(' | ')}`);
   // 多轮结果按归一化 URL 去重 (保首现: 原 query 命中优先, 改写补召回); provider 并集去重。
   const seen = new Set<string>();
   const mergedResults: SearchResult[] = [];

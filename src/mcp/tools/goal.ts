@@ -14,6 +14,7 @@ import { z } from 'zod';
 import type { OmdMcpTool } from '../server';
 import type { RunGoalConfig, RunGoalResult, GoalTier, GoalClassification } from '../../harness/goal/run-goal';
 import { ignitionPreflight } from '../../harness/goal/ignition-preflight';
+import { readIgnitionBandwidth, renderIgnitionForecast } from '../../harness/goal/ignition-forecast';
 import { loadSddContract, parseBreakdown } from '../../harness/goal/sdd-direct';
 import { resolveBackend as realResolveBackend, type PathBackend } from '../../harness/pathfinder/backend';
 import type { ExecutorDagConfig } from '../../harness/dag/types';
@@ -269,6 +270,28 @@ function settleRunTicket(target: RunTicketTarget, cwd: string, ticketId: string,
   }
 }
 
+/**
+ * 点火消耗预告(owner 2026-08-14):把「烧多少 · 烧不烧契约段 · 烧哪本账」机械印进回执。
+ * 坐标取自**这趟真正会用的** dag config,不另解析一遍座位表(第二处解析必漂)。
+ * 整段 fail-open:预告算不出来不许把点火挡下来,留一行日志。
+ */
+function ignitionForecastLine(dag: Partial<ExecutorDagConfig>, sddPath: string | undefined): string {
+  try {
+    const coords: { label: string; coord: string }[] = [];
+    for (const [label, coord] of [
+      ['conductor', dag.conductorModel],
+      ['leaf', dag.leafModel],
+      ['agent', dag.agentLeafModel],
+    ] as [string, string | undefined][]) {
+      if (coord) coords.push({ label, coord });
+    }
+    return `${renderIgnitionForecast({ sddPath, coords, bandwidth: readIgnitionBandwidth() })}\n`;
+  } catch (e) {
+    logger.warn({ err: (e as Error).message }, '[dag_goal] 消耗预告渲染失败 (点火照常)');
+    return '';
+  }
+}
+
 export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
   return {
     name: 'dag_goal',
@@ -413,6 +436,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
               // 退 head 的 degradedReason 落回执与日志, 这里先把"申请了什么"说清)。
               (branchStrategy === 'branch' ? `branchStrategy: branch — worker 将建隔离 worktree (omd/run/${runId}); 建树失败会退回 head 并在日志/回执标注 degraded。\n` : '') +
               `日志: ${logPath}\n` +
+              ignitionForecastLine(dag, sddPath) +
               `它不随本会话结束而死。查进度 dag_status runId=${runId} (新会话也查得到; 若刚起跑查无此 run, 等几秒)。`,
           }],
         };
@@ -672,6 +696,8 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
               // D-6③: 挂在哪张图上要在**起跑这一刻**说 —— 否则票的存在只有翻日志才知道。
               (ticketTarget && runTicketId ? `ticket: ${runTicketId} (map ${ticketTarget.slug}) — 终态自动翻 delivered/escalated\n` : '') +
               (preflightAdvisories.length ? `注意 (点火预检 advisory, 不阻塞): ${preflightAdvisories.join('; ')}\n` : '') +
+              // 同 describeRollback 那条纪律: 要用这个数的人正是此刻扣扳机的人, 跑完再说没用。
+              ignitionForecastLine(dag, sddPath) +
               `${describeRunWorktree(worktree)}\n` +
               describeRollback(captureRollbackAnchor({ cwd: worktree.cwd })),
           },
