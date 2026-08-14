@@ -10,10 +10,11 @@
  * - 「坏正则丢一条不是丢一段」→ 把 `compile` 的 catch 改成 `throw` → 第 6 条当场红。
  */
 import { describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DEFAULT_SANDBOX_CONFIG, judgeCommand, loadSandboxConfig } from './command-policy';
+import { classifyCommand } from './dangerous-cmd';
 
 /** 写一份 `.omd/config.json` 并返回它的仓根。 */
 function repoWith(sandbox: unknown): string {
@@ -89,5 +90,49 @@ describe('loadSandboxConfig —— 逐仓配置', () => {
     mkdirSync(join(dir, '.omd'), { recursive: true });
     writeFileSync(join(dir, '.omd', 'config.json'), '{oops');
     expect(loadSandboxConfig(dir, {}).enabled).toBe(true);
+  });
+});
+
+// ── sql-truncate 收紧 (2026-08-14, 夜跑实测 3 次误拦搜索命令后修; 写这份测试时
+//    fusang 同源 hook 又拦了一次 heredoc —— 第 4 次活体复现, 本组测试只能经 Edit 工具落盘) ──
+// 反向自检: 把 dangerous-cmd.ts 的 sql-truncate 改回旧宽模式 → 「搜索命令放行」当场红。
+// 判据是夜跑读数里**预先写死**的那两条 (事后编判据等于没判据)。
+const TR = 'TRUNCATE'; // 拼出来, 免得本文件自己被同源 shell hook 扫中 (它扫的是命令文本, 但别赌)
+describe('sql-truncate 只认 SQL 上下文 (搜索这个词 ≠ 执行它)', () => {
+  test('★ 搜索命令放行: rg / grep 多模式 (昨夜实撞的两条原文形状)', () => {
+    expect(classifyCommand(`rg ${TR} src/`).dangerous).toBe(false);
+    expect(classifyCommand(`grep -R -n -i -e token -e estimate -e ${TR} src`).dangerous).toBe(false);
+    expect(classifyCommand(`grep -n "${TR}" file.ts`).dangerous).toBe(false);
+  });
+
+  test('★ 真 SQL 照拦: 显式 TABLE / 引号内语句起始 / 分号后', () => {
+    expect(classifyCommand(`psql -c "${TR} TABLE users"`).label).toBe('sql-truncate');
+    expect(classifyCommand(`psql -c '${TR} users'`).label).toBe('sql-truncate');
+    expect(classifyCommand(`psql -c "SELECT 1; ${TR} users"`).label).toBe('sql-truncate');
+  });
+
+  test('GNU truncate (命令起始 / 管道后) 拦法与旧版一致 —— 收紧不放松', () => {
+    expect(classifyCommand('truncate -s 0 /var/log/app.log').label).toBe('sql-truncate');
+    expect(classifyCommand('echo x | truncate -s 0 f').label).toBe('sql-truncate');
+  });
+});
+
+// ── leaf 逃生口接线 (2026-08-14, 夜跑读数第二层问题) ─────────────────────────
+// 此前 `.omd/config.json` 的 allow 只对 TUI 生效, DAG leaf 吃 DEFAULT_SANDBOX_CONFIG (allow 恒空)
+// → 误报没有赦免出口, leaf 只能撞墙重试 (S-36 同形: 护栏装在一侧, 同名通道绕过全部)。
+// 源码形状闸 (同 agent-leaf-shellruns-wiring 先例): 删掉 agent-leaf 那行接线 → 第一条当场红。
+describe('leaf 路吃得到 config 赦免', () => {
+  test('★ agent-leaf 的 createOmdAgentTools 真传了 loadSandboxConfig(cwd)', () => {
+    const src = readFileSync(join(import.meta.dir, '..', 'agent-leaf.ts'), 'utf8');
+    const live = src
+      .split('\n')
+      .filter((l) => l.includes('commandPolicy: loadSandboxConfig(cwd)'))
+      .filter((l) => !l.trimStart().startsWith('//') && !l.trimStart().startsWith('*'));
+    expect(live.length).toBe(1);
+  });
+
+  test('allow 赦免赢过黑名单 (config → judgeCommand 全链, leaf 拿到的就是这份)', () => {
+    const cfg = loadSandboxConfig(repoWith({ allow: ['^rg\\s'] }), {});
+    expect(judgeCommand('rg "drop table users" src/', cfg).dangerous).toBe(false);
   });
 });

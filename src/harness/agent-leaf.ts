@@ -81,6 +81,7 @@ import type { McpCallLedger } from '../mcp/client/call-ledger';
 import { createHashlineCustomTools, hashlinePatchPaths } from './hashline';
 import { createDriftTracker, type DriftDetectorConfig } from './hooks/drift-detector';
 import { createSandboxedLeafRunner } from './hooks/sandboxed-leaf';
+import { loadSandboxConfig } from './hooks/command-policy';
 import { logger } from '../logger';
 import { callModel } from '../model';
 import { resolvePiApiKey, resolvePiModel } from '../model/pi-transport';
@@ -852,6 +853,11 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
   const touchOpt = opts.touch; // const 让闭包里的收窄成立 (getter 里引用 touchOpt.session)
   const baseTools = createOmdAgentTools({
     cwd,
+    // 逃生口接到 leaf 这条路 (2026-08-14, 夜跑读数第二层问题): 此前 `.omd/config.json` 的
+    // `tui.sandbox.allow/deny` 只对 TUI 生效, DAG leaf 吃 DEFAULT_SANDBOX_CONFIG (allow 恒空) ——
+    // 误报没有任何赦免出口, leaf 只能撞墙重试 (S-36 同形: 护栏装在一侧, 同名通道绕过全部)。
+    // loadSandboxConfig 在 runner 装配期读一次 (cwd 固定); 改 config 后新 run 生效 (thunk 每 run 重建)。
+    commandPolicy: loadSandboxConfig(cwd),
     ...(touchOpt ? { touch: { session: () => touchSessionStore.getStore()?.session ?? touchOpt.session } } : {}),
   });
   const hashlineTools = opts.hashlineEdit ? createHashlineCustomTools({ cwd }) : [];

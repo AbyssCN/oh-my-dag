@@ -1411,3 +1411,45 @@ describe('S-33 集成接线: config.verifier 收到 artifactRoot (engine.ts 侧,
     expect(seen).toBe(process.cwd());
   });
 });
+
+// ── fan-in 硬上限 (爆窗闸, 2026-08-14) ──────────────────────────────────────
+// 实测背景: kaupan-ala 首跑一个分析节点吃进 316KB 上游正文 → 窗口炸掉整图报废重派。
+// 定向摘要的三条缝 (扇出<2 绕过 / 摘要失败回落全文 / creative 护全文) 共同下游 = 注入点,
+// 兜底闸放在那里。反向自检: 把 engine.ts upstreamText 里 capFanin 那一步删掉 → 第一条当场红。
+describe('fan-in 硬上限 (上游超长输出 → 截断 + 指针, 不再原样进 prompt)', () => {
+  test('★ 线性链 (扇出1, 摘要不触发) 上游 30K 字符 → 下游 prompt 只见 24K + 响亮截断标注', async () => {
+    const HUGE = 'x'.repeat(30_000);
+    let bPrompt = '';
+    const generate: GenerateFn = async (req) => {
+      const user = contentText(req.messages.find((m) => m.role === 'user')?.content);
+      const id = leafId(user);
+      if (id === 'B') bPrompt = user;
+      return { text: id === 'A' ? HUGE : 'ok', usage: { in: 1, out: 1 } };
+    };
+    const r = await runExecutorDagWithPlan(
+      plan({ A: { goal: '产大料' }, B: { goal: '吃上游', depends_on: ['A'] } }),
+      makeConfig(generate),
+    );
+    expect(r.results.B!.status).toBe('done');
+    expect(bPrompt).toContain('fan-in 硬上限'); // 截断必须响亮 (No-silent-caps)
+    expect(bPrompt).toContain('30000'); // 全量多大要说出来
+    expect(bPrompt.length).toBeLessThan(30_000); // 30K 原文没有整个进 prompt
+  });
+
+  test('上限内的上游原样直传 (零回归: 正常用法一个字不动)', async () => {
+    const SMALL = 'y'.repeat(500);
+    let bPrompt = '';
+    const generate: GenerateFn = async (req) => {
+      const user = contentText(req.messages.find((m) => m.role === 'user')?.content);
+      const id = leafId(user);
+      if (id === 'B') bPrompt = user;
+      return { text: id === 'A' ? SMALL : 'ok', usage: { in: 1, out: 1 } };
+    };
+    await runExecutorDagWithPlan(
+      plan({ A: { goal: '产小料' }, B: { goal: '吃上游', depends_on: ['A'] } }),
+      makeConfig(generate),
+    );
+    expect(bPrompt).toContain(SMALL);
+    expect(bPrompt).not.toContain('fan-in 硬上限');
+  });
+});
