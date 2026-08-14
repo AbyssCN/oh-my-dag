@@ -275,12 +275,14 @@ describe('N5 · 终止原因出得了图 (留痕 + 读数板)', () => {
   test('--json 按词表出 run 级分布, 且"没记"单独一个计数器', async () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'n5-readout-')), 'runs.db');
     seed(dbPath);
-    const p = Bun.spawn(['bun', 'run', 'scripts/omd-readout.ts', '--db', dbPath, '--json'], { stdout: 'pipe', stderr: 'pipe' });
-    const out = JSON.parse(await new Response(p.stdout).text()) as {
+    // spawnSync: 这类一次性 CLI 调用不需要异步子进程通道, 而那条通道在满负载下会
+    // 掉 EBADF/epoll_ctl (2026-08-14 实测: 8 次全量中 4 次, 见 test/core/_await-exit.ts)。
+    const p = Bun.spawnSync(['bun', 'run', 'scripts/omd-readout.ts', '--db', dbPath, '--json']);
+    const out = JSON.parse(p.stdout.toString()) as {
       outcomeCount: Record<RunOutcomeKind, number>;
       runsUnrecordedOutcome: number;
     };
-    expect(await p.exited).toBe(0);
+    expect(p.exitCode).toBe(0);
     expect(out.outcomeCount.success).toBe(1);
     expect(out.outcomeCount.blocked).toBe(1); // ← 与下一行分得开, 这就是这一层细化买到的东西
     expect(out.outcomeCount['infra-error']).toBe(1);
@@ -290,9 +292,11 @@ describe('N5 · 终止原因出得了图 (留痕 + 读数板)', () => {
   test('文本板把每格的下一步一起印 (同 ⑦ 段的验收方式)', async () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'n5-readout-txt-')), 'runs.db');
     seed(dbPath);
-    const p = Bun.spawn(['bun', 'run', 'scripts/omd-readout.ts', '--db', dbPath], { stdout: 'pipe', stderr: 'pipe' });
-    const text = await new Response(p.stdout).text();
-    expect(await p.exited).toBe(0);
+    // spawnSync: 这类一次性 CLI 调用不需要异步子进程通道, 而那条通道在满负载下会
+    // 掉 EBADF/epoll_ctl (2026-08-14 实测: 8 次全量中 4 次, 见 test/core/_await-exit.ts)。
+    const p = Bun.spawnSync(['bun', 'run', 'scripts/omd-readout.ts', '--db', dbPath]);
+    const text = p.stdout.toString();
+    expect(p.exitCode).toBe(0);
     expect(text).toContain('⑨ run 级终止原因');
     expect(text).toContain('看栈'); // ERROR 那格的下一步 —— 五态里此前上层空着的格
     expect(text).toContain('别加轮数'); // BLOCKED 那格的下一步

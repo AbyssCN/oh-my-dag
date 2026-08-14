@@ -423,9 +423,11 @@ describe('P1 · 读数板按新词表出分布 (细化值不值的唯一证据�
   test('--json 把三种"没过"分开数: 各格 / unclassified / 压根没记', async () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'p1-readout-')), 'runs.db');
     seed(dbPath);
-    const p = Bun.spawn(['bun', 'run', 'scripts/omd-readout.ts', '--db', dbPath, '--json'], { stdout: 'pipe', stderr: 'pipe' });
-    const out = JSON.parse(await new Response(p.stdout).text());
-    expect(await p.exited).toBe(0);
+    // spawnSync: 这类一次性 CLI 调用不需要异步子进程通道, 而那条通道在满负载下会
+    // 掉 EBADF/epoll_ctl (2026-08-14 实测: 8 次全量中 4 次, 见 test/core/_await-exit.ts)。
+    const p = Bun.spawnSync(['bun', 'run', 'scripts/omd-readout.ts', '--db', dbPath, '--json']);
+    const out = JSON.parse(p.stdout.toString());
+    expect(p.exitCode).toBe(0);
     expect(out.notDoneNodes).toBe(4); // done 的那个不算
     expect(out.failureKindCount['gate-rejected']).toBe(1);
     expect(out.failureKindCount['assert-failed']).toBe(1); // ← 与上一行分得开, 这就是细化买到的东西
@@ -437,9 +439,11 @@ describe('P1 · 读数板按新词表出分布 (细化值不值的唯一证据�
   test('文本板把每格的**下一步**一起印出来 (分类不落到动作上就白分)', async () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'p1-readout-txt-')), 'runs.db');
     seed(dbPath);
-    const p = Bun.spawn(['bun', 'run', 'scripts/omd-readout.ts', '--db', dbPath], { stdout: 'pipe', stderr: 'pipe' });
-    const text = await new Response(p.stdout).text();
-    expect(await p.exited).toBe(0);
+    // spawnSync: 这类一次性 CLI 调用不需要异步子进程通道, 而那条通道在满负载下会
+    // 掉 EBADF/epoll_ctl (2026-08-14 实测: 8 次全量中 4 次, 见 test/core/_await-exit.ts)。
+    const p = Bun.spawnSync(['bun', 'run', 'scripts/omd-readout.ts', '--db', dbPath]);
+    const text = p.stdout.toString();
+    expect(p.exitCode).toBe(0);
     expect(text).toContain('gate-rejected');
     expect(text).toContain('白名单不会因为重试而放行'); // BLOCKED 的下一步
     expect(text).toContain('再试一轮可能就好'); // STALLED 的下一步

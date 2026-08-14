@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { spawnWithPipes } from './_await-exit';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -107,11 +108,11 @@ async function readResponseId(stdout: ReadableStream<Uint8Array>, id: number, ti
 describe('omd mcp 进程生命周期 (D-9 回归)', () => {
   test('客户端消失 (stdin 关闭) → ≤5s 干净自退 exit 0, 不留僵尸忙转', async () => {
     const tuiPath = fileURLToPath(new URL('../../src/harness/cli.ts', import.meta.url));
-    const proc = Bun.spawn(['bun', 'run', tuiPath, 'mcp'], {
-      stdin: 'pipe',
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
+    const proc = spawnWithPipes(
+      () => Bun.spawn(['bun', 'run', tuiPath, 'mcp'], { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' }),
+      ['stdin', 'stdout', 'stderr'],
+      'D-9 回归: 起 omd mcp server',
+    );
     const stderrText = new Response(proc.stderr).text(); // 早挂消费防管道背压, 失败时供诊断
     try {
       const init = {

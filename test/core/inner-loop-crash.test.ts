@@ -30,7 +30,7 @@ import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { awaitExitBounded } from './_await-exit';
+import { awaitDeath, readAllBounded } from './_await-exit';
 
 const CHILD = join(import.meta.dir, 'inner-loop-crash-child.ts');
 const REPO = join(import.meta.dir, '..', '..');
@@ -63,8 +63,10 @@ interface ChildOut {
 
 async function runChild(args: string[]): Promise<ChildOut | null> {
   const proc = Bun.spawn(['bun', 'run', CHILD, '--root', root, '--run', RUN_ID, ...args], { cwd: REPO, stdout: 'pipe', stderr: 'pipe' });
-  const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-  await awaitExitBounded(proc, 'runChild(resume 子进程)');
+  // 本文件的 runChild **不看退出码**(返回值里没有它, 判据全在 `##RESULT##` 那行),
+  // 所以退出事件丢了不该让整条用例红 —— 用 awaitDeath 而不是 awaitExitBounded。
+  const [stdout, stderr] = await readAllBounded([proc.stdout, proc.stderr], 'runChild(resume 子进程) 读管道') as [string, string];
+  await awaitDeath(proc, 'runChild(resume 子进程)');
   const line = stdout.split('\n').find((l) => l.startsWith('##RESULT## '));
   if (!line) throw new Error(`子进程没给出读数 —— stderr:\n${stderr.slice(-2000)}`);
   return JSON.parse(line.slice('##RESULT## '.length)) as ChildOut;
@@ -91,7 +93,7 @@ async function crashAt(hangNode: string, args: string[]): Promise<void> {
     await Bun.sleep(50);
   }
   proc.kill('SIGKILL');
-  await awaitExitBounded(proc, `crashAt(${hangNode}) 的 SIGKILL 之后`);
+  await awaitDeath(proc, `crashAt(${hangNode}) 的 SIGKILL 之后`);
 }
 
 describe('G2/F1 真杀 —— 内环崩在轮中, 已批准制品不丢、已绿子节点不重跑', () => {
