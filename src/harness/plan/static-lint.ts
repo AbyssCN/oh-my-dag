@@ -274,3 +274,71 @@ export function staticLintPlan(
 
   return out;
 }
+
+/** serializeWriteRaces 的输出: 修好的 plan + 补了哪些边 (给日志/观察渲染)。 */
+export interface WriteRaceSerialization {
+  plan: ConductorPlan;
+  /** 每条 = 一次程序化补边: `to.depends_on += from`, 因为两者都声明写 `path` 且此前无序。 */
+  added: { from: string; to: string; path: string }[];
+}
+
+/**
+ * **计划期写竞争硬闸 (2026-08-14, plana 夜报回流第 1 条)**: 把 ①「只报」升级成**构造性消灭** ——
+ * 同一文件的多个写者若互不可达 (真会竞争), 引擎直接补依赖边把它们串行化。
+ *
+ * 为什么是补边而不是拒图: 拒图要烧一轮 conductor 重画 (且 max_rounds 默认 1, 拒 = 整节点报废),
+ * 而 lint 消息里那句「给后写的那个加 depends_on」本来就是**确定性可执行**的 —— 机器能做的修复
+ * 不该让 LLM 重画一遍 (同 applyPlanPatch「程序化 merge」的理由)。
+ *
+ * 方向的确定性: 写者按**现有图的拓扑序** (声明序 tie-break) 排队, 边永远从队前指向队后 ——
+ * 与既有边一致的全序上加边**不可能成环** (声明序 naive 链会: 声明 [a,b,c] + 既有 a←c 时
+ * a→b→c→a, 写这段时先想到的正是那个坑)。同一调度序每次跑同一结果, 这就是要买的东西。
+ *
+ * ⚠ 不改输入 plan (prior.plan 可能与调用方共享引用 —— engine 里 D-4 毒集那条注买过的教训);
+ * 无竞争时原对象直接返回 (零拷贝零扰动)。
+ */
+export function serializeWriteRaces(plan: ConductorPlan): WriteRaceSerialization {
+  const ids = Object.keys(plan.nodes);
+  const memo = new Map<string, Set<string>>();
+  // 现有图的拓扑位置 (Kahn, 声明序 tie-break)。环由编译期闸拒, 这里防御性跳出即可。
+  const topoIndex = new Map<string, number>();
+  {
+    const indeg = new Map<string, number>(ids.map((id) => [id, 0]));
+    for (const id of ids) for (const d of plan.nodes[id]!.depends_on ?? []) if (indeg.has(id) && plan.nodes[d]) indeg.set(id, (indeg.get(id) ?? 0) + 1);
+    const ready = ids.filter((id) => (indeg.get(id) ?? 0) === 0);
+    let n = 0;
+    while (ready.length) {
+      const id = ready.shift()!;
+      topoIndex.set(id, n++);
+      for (const other of ids) {
+        if ((plan.nodes[other]!.depends_on ?? []).includes(id)) {
+          const left = (indeg.get(other) ?? 0) - 1;
+          indeg.set(other, left);
+          if (left === 0) ready.push(other);
+        }
+      }
+    }
+  }
+  const byPath = new Map<string, string[]>();
+  for (const id of ids) {
+    const p = declaredOutput(plan.nodes[id]!);
+    if (p) byPath.set(p, [...(byPath.get(p) ?? []), id]);
+  }
+  const added: WriteRaceSerialization['added'] = [];
+  const nodes: ConductorPlan['nodes'] = { ...plan.nodes };
+  for (const [path, writers] of byPath) {
+    if (writers.length < 2) continue;
+    const ordered = [...writers].sort((a, b) => (topoIndex.get(a) ?? 0) - (topoIndex.get(b) ?? 0));
+    for (let i = 1; i < ordered.length; i++) {
+      const from = ordered[i - 1]!;
+      const to = ordered[i]!;
+      // 已有序 (任一方向可达) = 不是竞争, 不补。⚠ memo 在补边后失效 → 每次补完清掉重算,
+      // 三写者链式补边时第二刀要看见第一刀 (否则 w1→w3 会再补一条冗余边)。
+      if (!canRunConcurrently({ ...plan, nodes }, from, to, memo)) continue;
+      nodes[to] = { ...nodes[to]!, depends_on: [...new Set([...(nodes[to]!.depends_on ?? []), from])] };
+      memo.clear();
+      added.push({ from, to, path });
+    }
+  }
+  return added.length ? { plan: { ...plan, nodes }, added } : { plan, added };
+}

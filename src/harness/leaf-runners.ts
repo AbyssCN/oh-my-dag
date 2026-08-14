@@ -89,6 +89,12 @@ export interface AgentLeafResult {
    *  留 stall 败因(而非把近零输出当 done)。省略/false = 正常完成或硬超时。 */
   stalled?: boolean;
   /**
+   * 空转熔断理由(2026-08-14, drift fuse)。非空 = 循环被熔断闸硬停(软注入没拉回来的深度空转),
+   * executor 据此标 failed + `spin-fused` 败因。省略 = 没熔断。与 `stalled` 分开:那是 provider
+   * 没反应,这是模型有反应地原地打转 —— 下一步相反(见 node-failure 的 spin-fused 注)。
+   */
+  spinFused?: string;
+  /**
    * agent leaf watchdog 采集(2026-08-12, S1 埋点)。省略 = 该 runner 不统计(非 agent leaf /
    * 老记录),不代表"量过了且没触发"。存在时 `stalled`/`timedOut` 必须恒写 boolean —— `false`
    * 是"量过了且没发生",不许用省略表示 false。`touchTimelineMs`/`toolTimelineMs` 是距叶启动的
@@ -107,7 +113,8 @@ export interface AgentLeafResult {
    *
    * **以数据回传而不是回调**: drift 的 `onSpinning`/`onRecovered` 是函数, 而隔离档的 leaf
    * 跑在 bwrap 子进程里, 只有 JSON 安全的东西过得了那道边界 —— 那两个回调在隔离档上
-   * 结构性接不了, 这就是它们至今零消费者的原因。**只报不拦**: 这是频率读数, 不带停机语义。
+   * 结构性接不了, 这就是它们至今零消费者的原因。本字段是频率读数; 停机语义在 `spinFused`
+   * (2026-08-14 起, 读数收够后由熔断闸接)。
    */
   spin?: { spinEvents: number; maxSameCount: number; stuckSigs: string[] };
   /**

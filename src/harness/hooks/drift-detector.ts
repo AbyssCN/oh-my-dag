@@ -41,11 +41,25 @@ export interface DriftDetectorConfig {
   onRecovered?: (info: { stuckSig: string; escapeSigs: string[] }) => void;
   /** 恢复判定: spinning 后出现 ≥N 个不同的非-stuck 签名 = 打破循环。默认 2 (精度优先)。 */
   recoveryThreshold?: number;
+  /**
+   * 熔断闸 (2026-08-14): 软注入 (stuck-checklist) 拦不住的深度空转 → 硬停整个 leaf。
+   * `false` = 只报不拦 (旧行为)。省略 = 用默认阈值。
+   *
+   * 阈值来自真跑读数, 不是拍的:
+   *   - 该拦: 2026-08-13 夜 build_ingestor 空转 26 回合 (max 9×); 2026-08-03 live 16 回合 (max 39×)。
+   *     两例都是软注入后继续烧了几十轮 —— 每轮全上下文重发, 单 leaf 烧掉数 M token。
+   *   - 不该拦: 正当 TDD 迭代 (edit→test→edit→test) 会以 1–6 spinEvents / max 4–5× 触发软检出
+   *     (2026-08-13 夜 impl_api_time 6 回合、test_overtime 2 回合, 都产出了真产物)。
+   * 默认取两组读数之间的空档: spinEvents ≥ 10 或 maxSameCount ≥ 12。
+   */
+  fuse?: false | { spinEvents?: number; maxSameCount?: number };
 }
 
 const DEFAULT_MAX_SLOTS = 20;
 const DEFAULT_THRESHOLD = 4;
 const DEFAULT_RECOVERY_THRESHOLD = 2;
+const DEFAULT_FUSE_SPIN_EVENTS = 10;
+const DEFAULT_FUSE_MAX_SAME = 12;
 
 /**
  * 剥掉命令前导的 `cd <路径> &&` 链 —— **cd 段不是"这次在干什么", 是"在哪儿干"**。
@@ -126,10 +140,17 @@ export interface DriftTracker {
    * 明确剔除函数)。也就是说那两个回调在隔离档上**结构性接不了** —— 这就是为什么它们至今
    * 零消费者: 不是忘了接, 是那条路上接不了。信号要出 leaf, 只能随结果**以数据形式**回来。
    *
-   * ⚠ 只报不数: 这里给的是频率读数, **不带任何停机语义**。要不要把它升成 BLOCKED、K 取几,
-   * 得先有"它在真跑上多久命中一次"的读数 —— 那正是这个字段存在的理由 (同 observations 的注)。
+   * ⚠ summary 本身只报不数 (频率读数); 停机语义在 fuseTripped —— 读数已经收够了
+   * (2026-08-13 夜 + 2026-08-03 live, 见 DriftDetectorConfig.fuse 的注), 闸由它接。
    */
   summary(): DriftSummary;
+  /**
+   * 熔断闸: 空转累计过硬阈值 → 返回一句可进日志/结果的理由; 未过 (或 fuse:false) → null。
+   * 宿主在每次 note() 后查一次, 非 null 就停整个循环 (agent-leaf 走与超时同一条优雅停路)。
+   * 判据用**跨 reset 的累计值** (spinEvents/maxSameCount 刻意不清, 见 summary 的注) ——
+   * 熔断问的是"这个 leaf 整场烧了多少", 不是"这一轮卡没卡"。
+   */
+  fuseTripped(): string | null;
 }
 
 /** 一次 leaf 的空转累计 —— 只报不拦, 进 `observations` 当频率读数。 */
@@ -148,6 +169,13 @@ export function createDriftTracker(config: DriftDetectorConfig = {}): DriftTrack
   const threshold = config.threshold ?? DEFAULT_THRESHOLD;
   const repeatedInjection = config.repeatedInjection ?? false;
   const recoveryThreshold = config.recoveryThreshold ?? DEFAULT_RECOVERY_THRESHOLD;
+  const fuse =
+    config.fuse === false
+      ? null
+      : {
+          spinEvents: config.fuse?.spinEvents ?? DEFAULT_FUSE_SPIN_EVENTS,
+          maxSameCount: config.fuse?.maxSameCount ?? DEFAULT_FUSE_MAX_SAME,
+        };
 
   let ring: string[] = [];
   let spinningDetected = false;
@@ -175,19 +203,33 @@ export function createDriftTracker(config: DriftDetectorConfig = {}): DriftTrack
       return { spinEvents, maxSameCount, stuckSigs: [...stuckSigsSeen] };
     },
 
+    fuseTripped() {
+      if (!fuse) return null;
+      if (spinEvents >= fuse.spinEvents) {
+        return `空转熔断: 累计 ${spinEvents} 个 spin 回合 (阈值 ${fuse.spinEvents}); 卡在 ${stuckSigsSeen.slice(0, 3).join(' / ') || '未记'}`;
+      }
+      if (maxSameCount >= fuse.maxSameCount) {
+        return `空转熔断: 同签名重复 ${maxSameCount} 次 (阈值 ${fuse.maxSameCount}); 卡在 ${stuckSigsSeen.slice(0, 3).join(' / ') || '未记'}`;
+      }
+      return null;
+    },
+
     note(toolName, input) {
       const sig = computeSig(toolName, input);
 
       ring.push(sig);
       if (ring.length > maxSlots) ring.shift();
 
+      // maxSameCount 在**每次** note 上更新, 不只在检出边沿 —— 熔断 (fuseTripped) 要看得见
+      // "注入之后还在继续加深"的那段, 而那段恰好落在 spinningDetected 置位期间。
+      const sameCount = ring.filter((s) => s === sig).length;
+      if (sameCount >= threshold && sameCount > maxSameCount) maxSameCount = sameCount;
+
       if (!spinningDetected) {
-        const sameCount = ring.filter((s) => s === sig).length;
         if (sameCount >= threshold) {
           spinningDetected = true;
-          // G5 读数累计 (只报不拦): 回合数 + 卡得多深 + 卡在什么上。
+          // G5 读数累计: 回合数 + 卡在什么上 (深度已在上方逐 note 更新)。
           spinEvents++;
-          if (sameCount > maxSameCount) maxSameCount = sameCount;
           if (!stuckSigsSeen.includes(sig) && stuckSigsSeen.length < 12) stuckSigsSeen.push(sig);
           // 新 spin 回合: 记住卡在什么, 重置恢复窗口 (即便上回合已恢复, 这次又卡了 = 新难题)。
           stuckSig = sig;

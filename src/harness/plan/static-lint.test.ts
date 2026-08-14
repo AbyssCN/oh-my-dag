@@ -237,3 +237,62 @@ describe('缺命令目标 · 仓库真实集成 (cwd=REPO_ROOT, 真实 scripts/d
     expect(f[0]!.message).toContain('改法');
   });
 });
+
+// ── serializeWriteRaces (2026-08-14, plana 夜报回流: 写竞争从只报升级成构造性消灭) ──
+// 反向自检: 把 engine.ts applyPlanFilters 里 serializeWriteRaces 那段删掉 → 下面 engine 侧
+// 接线测试红; 把本函数的补边逻辑删掉 → 第一条当场红。
+import { serializeWriteRaces } from './static-lint';
+
+describe('serializeWriteRaces (写竞争硬闸: 程序化补边串行化)', () => {
+  test('★ 两个互不可达的同文件写者 → 补一条边, 补完 lint 不再报竞争', () => {
+    const p = plan({
+      a: { goal: '写', output_path: 'docs/x.md' },
+      b: { goal: '也写', output_path: 'docs/x.md' },
+    });
+    const { plan: fixed, added } = serializeWriteRaces(p);
+    expect(added).toHaveLength(1);
+    expect(added[0]!.path).toBe('docs/x.md');
+    expect(fixed.nodes[added[0]!.to]!.depends_on).toContain(added[0]!.from);
+    expect(staticLintPlan(fixed).filter((f) => f.kind === 'write-race')).toHaveLength(0);
+    // 不改输入 plan (共享引用纪律)
+    expect(p.nodes.b!.depends_on ?? []).toHaveLength(0);
+  });
+
+  test('已有依赖边 (有序) → 原对象原样返回, 零补边', () => {
+    const p = plan({
+      a: { goal: '写', output_path: 'docs/x.md' },
+      b: { goal: '改', output_path: 'docs/x.md', depends_on: ['a'] },
+    });
+    const r = serializeWriteRaces(p);
+    expect(r.added).toHaveLength(0);
+    expect(r.plan).toBe(p);
+  });
+
+  test('写不同文件 → 不碰', () => {
+    const p = plan({
+      a: { goal: '写', output_path: 'docs/x.md' },
+      b: { goal: '写', output_path: 'docs/y.md' },
+    });
+    expect(serializeWriteRaces(p).added).toHaveLength(0);
+  });
+
+  test('★ 三写者 + 既有反声明序边 → 按拓扑序补边, 不成环 (声明序 naive 链会把 a→b→c→a 连成环)', () => {
+    // 声明 [a, b, c], 既有边 a depends_on c (c 先于 a)。声明序链会补 b←a 与 c←b → 环。
+    const p = plan({
+      a: { goal: '写', output_path: 'docs/x.md', depends_on: ['c'] },
+      b: { goal: '写', output_path: 'docs/x.md' },
+      c: { goal: '写', output_path: 'docs/x.md' },
+    });
+    const { plan: fixed, added } = serializeWriteRaces(p);
+    expect(added.length).toBeGreaterThan(0);
+    // 无环: 从每个节点沿 depends_on 走, 不会回到自己
+    const reach = (id: string, seen = new Set<string>()): boolean => {
+      if (seen.has(id)) return true; // 回到访问路径 = 环
+      seen.add(id);
+      return (fixed.nodes[id]!.depends_on ?? []).some((d) => reach(d, new Set(seen)));
+    };
+    for (const id of Object.keys(fixed.nodes)) expect(reach(id)).toBe(false);
+    // 且全部写者两两有序
+    expect(staticLintPlan(fixed).filter((f) => f.kind === 'write-race')).toHaveLength(0);
+  });
+});

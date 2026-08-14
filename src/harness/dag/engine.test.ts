@@ -4,7 +4,7 @@
  * 全部经 runExecutorDagWithPlan (预构造 plan, 跳过 conductor) + 注入 fake generate — 零真实 LLM。
  */
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseBlameVerdict, runExecutorDagWithPlan } from './engine';
@@ -1160,5 +1160,218 @@ describe('内环跑完才发现超预算 (只报不拦, S1 埋点)', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// ── 空转熔断 (spin-fused, 2026-08-14) ────────────────────────────────────────
+// 反向自检: 把 engine.ts 里 `if (r.spinFused)` 那块删掉 → 第一条当场红 (熔断的 leaf 会被当
+// 正常完成放行, 半截输出进下游 —— 正是 2026-08-13 夜 execute(conductor) 空转 1h51 的形状)。
+describe('空转熔断 (drift fuse → 节点 spin-fused)', () => {
+  test('★ agentRunner 报 spinFused → 节点 failed + failureKind spin-fused, 已落盘产物保留在 filesTouched', async () => {
+    const { generate } = makeGenerate();
+    const r = await runExecutorDagWithPlan(
+      plan({ W: { goal: '改文件', executor: 'agent' } }),
+      makeConfig(generate, {
+        agentRunner: async () => ({
+          text: '半截产出',
+          usage: { in: 1, out: 1 },
+          filesTouched: ['src/x.ts'],
+          spinFused: '空转熔断: 同签名重复 14 次 (阈值 12); 卡在 bash:python ingest.py',
+        }),
+      }),
+    );
+    expect(r.results.W!.status).toBe('failed');
+    expect(r.results.W!.failureKind).toBe('spin-fused');
+    expect(r.results.W!.output).toContain('空转熔断');
+    expect(r.results.W!.filesTouched).toEqual(['src/x.ts']);
+  });
+
+  test('没熔断 (spinFused 缺席) → 照旧 done, 零回归', async () => {
+    const { generate } = makeGenerate();
+    const r = await runExecutorDagWithPlan(
+      plan({ W: { goal: '改文件', executor: 'agent' } }),
+      makeConfig(generate, {
+        agentRunner: async () => ({ text: '完整产出', usage: { in: 1, out: 1 }, filesTouched: ['src/x.ts'] }),
+      }),
+    );
+    expect(r.results.W!.status).toBe('done');
+  });
+});
+
+// ── D-21 复用闸 (2026-08-14): replan 必须带复用 ─────────────────────────────
+// 实测背景: f2af8514 execute 相位补丁失败落到整图重规划, conductor 把全部节点重写 →
+// 指纹 0 命中 → 上轮 37 个 done 全部重烧 (35 节点 reused 0, 33.1M leaves-in 只换来 7 done)。
+// 反向自检: 把 engine.ts planAndExecute 里 D-21 复用闸那块删掉 → 第一条当场红
+// (零复用的重写图会被直接放行执行, 一次拒回都没有)。
+describe('D-21 复用闸 (整图重规划零复用 → 拒回重问)', () => {
+  const priorPlan: ConductorPlan = {
+    name: 'prior',
+    nodes: {
+      a: { goal: '甲' }, b: { goal: '乙', depends_on: ['a'] }, c: { goal: '丙' }, d: { goal: '丁' }, e: { goal: '戊' },
+    },
+  };
+  const priorResults = Object.fromEntries(
+    ['a', 'b', 'c', 'd', 'e'].map((id) => [
+      id,
+      { id, status: 'done', kind: 'inproc', output: `out:${id}`, deps: [], usage: { in: 1, out: 1 } },
+    ]),
+  ) as Record<string, import('./types').LeafResult>;
+  const REWRITTEN = JSON.stringify({ name: 'rewrite', nodes: { x1: { goal: '全新1' }, x2: { goal: '全新2', depends_on: ['x1'] } } });
+  const PRESERVED = JSON.stringify({
+    name: 'fixed',
+    nodes: {
+      a: { goal: '甲' }, b: { goal: '乙', depends_on: ['a'] }, c: { goal: '丙' }, d: { goal: '丁' }, e: { goal: '戊' },
+      fix: { goal: '补一步', depends_on: ['e'] },
+    },
+  });
+  const planMarker = PLAN_BOUNDARY.trim().split('\n')[0]!;
+
+  test('★ 第一版整图重写零复用 → 拒回带上轮节点清单; 第二版保留节点 → 复用生效只跑新增', async () => {
+    const planReqs: string[] = [];
+    const leafCalls: string[] = [];
+    const generate: GenerateFn = async (req) => {
+      const user = contentText(req.messages.find((m) => m.role === 'user')?.content);
+      if (user.includes(planMarker)) {
+        planReqs.push(user);
+        return { text: planReqs.length === 1 ? REWRITTEN : PRESERVED, usage: { in: 1, out: 1 } };
+      }
+      leafCalls.push(leafId(user));
+      return { text: `out:${leafId(user)}`, usage: { in: 1, out: 1 } };
+    };
+    const { runExecutorDag } = await import('./engine');
+    const r = await runExecutorDag('把失败的一步修好', makeConfig(generate), { plan: priorPlan, results: priorResults });
+    expect(planReqs.length).toBe(2); // 第一版被拒, 重问了一次
+    expect(planReqs[1]!).toContain('零复用'); // 拒回原因可教
+    expect(planReqs[1]!).toContain('a, b, c, d, e'); // 带上轮节点清单
+    expect(r.reusedNodes?.length ?? 0).toBe(5); // a–e 全复用
+    expect(leafCalls).toEqual(['fix']); // 只有新增节点真跑了
+  });
+
+  test('重问后仍零复用 → fail-open 放行 (闸不许把 run 卡死), 全部重跑', async () => {
+    let planCalls = 0;
+    const generate: GenerateFn = async (req) => {
+      const user = contentText(req.messages.find((m) => m.role === 'user')?.content);
+      if (user.includes(planMarker)) {
+        planCalls++;
+        return { text: REWRITTEN, usage: { in: 1, out: 1 } };
+      }
+      return { text: `out:${leafId(user)}`, usage: { in: 1, out: 1 } };
+    };
+    const { runExecutorDag } = await import('./engine');
+    const r = await runExecutorDag('修', makeConfig(generate), { plan: priorPlan, results: priorResults });
+    expect(planCalls).toBe(2); // 拒回一次后放行
+    expect(r.results.x1!.status).toBe('done');
+    expect(r.reusedNodes?.length ?? 0).toBe(0);
+  });
+
+  test('上轮 done 不足阈值 (<4) → 闸不触发, 重写图直接放行 (小图重烧便宜, 不值一次重问)', async () => {
+    let planCalls = 0;
+    const generate: GenerateFn = async (req) => {
+      const user = contentText(req.messages.find((m) => m.role === 'user')?.content);
+      if (user.includes(planMarker)) {
+        planCalls++;
+        return { text: REWRITTEN, usage: { in: 1, out: 1 } };
+      }
+      return { text: `out:${leafId(user)}`, usage: { in: 1, out: 1 } };
+    };
+    const smallPrior = {
+      plan: { name: 'p', nodes: { a: { goal: '甲' }, b: { goal: '乙' } } } as ConductorPlan,
+      results: Object.fromEntries(
+        ['a', 'b'].map((id) => [id, { id, status: 'done', kind: 'inproc', output: 'o', deps: [], usage: { in: 1, out: 1 } }]),
+      ) as Record<string, import('./types').LeafResult>,
+    };
+    const { runExecutorDag } = await import('./engine');
+    await runExecutorDag('修', makeConfig(generate), smallPrior);
+    expect(planCalls).toBe(1);
+  });
+});
+
+// ── crash 入账 (记账完整性闸, 2026-08-14) ───────────────────────────────────
+// 实测背景: f2af8514 终段崩掉 (infra-error), 该相位 usage 无记录 —— onComplete 只在正常返回
+// 时触发。反向自检: 把 engine.ts runDagInternal 外包那层 try/catch 删掉 → 第一条当场红
+// (onComplete 一次都不会被调, recorded 空)。
+describe('crash 入账 (中途抛错也要写部分记录)', () => {
+  registerProvider('crashx', { baseUrl: 'http://127.0.0.1:9', apiKey: 'test-key', api: 'openai-compatible' });
+
+  test('★ 升级重规划轮炸 → onComplete 收到部分记录 (round-1 usage 下限 + crash 原因), 错误照抛', async () => {
+    const generate: GenerateFn = async (req) => {
+      const user = contentText(req.messages.find((m) => m.role === 'user')?.content);
+      if (user.includes('[verification failure]')) throw new Error('炸在补丁轮');
+      const id = leafId(user);
+      return { text: `out:${id}`, usage: { in: 1, out: 1 } };
+    };
+    const recorded: import('./types').ExecutorDagResult[] = [];
+    let thrown: Error | null = null;
+    try {
+      await runExecutorDagWithPlan(
+        plan({ A: { goal: '甲' } }),
+        makeConfig(generate, {
+          verifier: async () => ({ pass: false, reason: '不合格', usage: { in: 1, out: 1 } }),
+          conductorEscalationModel: 'crashx:strong',
+          onComplete: async (r) => {
+            recorded.push(r);
+          },
+        }),
+      );
+    } catch (e) {
+      thrown = e as Error;
+    }
+    expect(thrown?.message).toContain('炸在补丁轮'); // 错误没有被吞
+    expect(recorded.length).toBe(1); // 但账写上了
+    expect(recorded[0]!.verification?.pass).toBe(false);
+    expect(recorded[0]!.verification?.reason).toContain('crash 入账');
+    expect(recorded[0]!.verification?.reason).toContain('炸在补丁轮');
+    expect(recorded[0]!.results.A?.status).toBe('done'); // round-1 的执行产出保留在记录里
+  });
+
+  test('规划期就炸 (exec 从未赋值) → 不编空记录 (缺席 ≠ 0), 错误照抛', async () => {
+    const generate: GenerateFn = async () => {
+      throw new Error('规划期炸');
+    };
+    const recorded: unknown[] = [];
+    let thrown: Error | null = null;
+    try {
+      const { runExecutorDag } = await import('./engine');
+      await runExecutorDag('任务', makeConfig(generate, { onComplete: async (r) => void recorded.push(r) }));
+    } catch (e) {
+      thrown = e as Error;
+    }
+    expect(thrown).not.toBeNull();
+    expect(recorded.length).toBe(0);
+  });
+});
+
+// ── 写竞争硬闸接线 (2026-08-14): applyPlanFilters → serializeWriteRaces ─────────
+describe('写竞争硬闸 (engine 接线: 竞写对被程序化串行化)', () => {
+  test('★ 两节点声明写同一文件且无边 → 引擎补边, 执行严格有序 (不再并发)', async () => {
+    const { generate } = makeGenerate();
+    const root = mkdtempSync(join(tmpdir(), 'omd-race-'));
+    let active = 0;
+    let peak = 0;
+    let runs = 0;
+    const r = await runExecutorDagWithPlan(
+      plan({
+        w1: { goal: '写前半', executor: 'agent', output_path: 'docs/x.md' },
+        w2: { goal: '写后半', executor: 'agent', output_path: 'docs/x.md' },
+      }),
+      makeConfig(generate, {
+        agentRunner: async () => {
+          active++;
+          runs++;
+          peak = Math.max(peak, active);
+          await sleep(15);
+          active--;
+          mkdirSync(join(root, 'docs'), { recursive: true });
+          writeFileSync(join(root, 'docs', 'x.md'), 'ok', 'utf8');
+          return { text: 'ok', usage: { in: 1, out: 1 }, filesTouched: ['docs/x.md'], cwd: root };
+        },
+      }),
+    );
+    rmSync(root, { recursive: true, force: true });
+    const w2Deps = r.plan.nodes.w2!.depends_on ?? [];
+    const w1Deps = r.plan.nodes.w1!.depends_on ?? [];
+    expect(w2Deps.includes('w1') || w1Deps.includes('w2')).toBe(true); // 一个方向被补上
+    expect(runs).toBe(2);
+    expect(peak).toBe(1); // 不再并发 —— 这就是硬闸买到的东西
   });
 });

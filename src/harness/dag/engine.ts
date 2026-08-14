@@ -101,7 +101,7 @@ const SHELL_FACT_CAP = 6;
 import { verifiedShellWriteTargets } from '../shell-writes';
 import { blamePathCandidates, failureExcerpt } from '../failure-trace';
 import { captureRollbackAnchor } from '../rollback-anchor';
-import { staticLintPlan } from '../plan/static-lint';
+import { serializeWriteRaces, staticLintPlan } from '../plan/static-lint';
 import { leafTierGateFindings } from '../plan/leaf-tier-gate';
 import { scheduledArtifactFindings } from '../plan/invocation-facts';
 // D-Q 图外只读观察者的两个确定性 producer (零模型调用): 制品边 lint + 环空转检测。
@@ -252,6 +252,12 @@ async function planAndExecute(
   const LEAF_TIER_MAX_REJECTS = 2;
   let parseFails = 0;
   let gateRejects = 0;
+  // D-21 复用闸 (2026-08-14): 整图重规划 (patch 模式 fail-open 落到这) 把上轮节点全部重写 →
+  // 语义指纹 0 命中 → 已绿工作整体重烧。实测 f2af8514 execute 相位: 上轮 37 done, 重画后
+  // reused 0, 33.1M leaves-in 只换来 7 done。判据必须在**执行前** —— 执行后再看 reusedNodes
+  // 是尸检不是闸。拒回一次带节点清单重问; 再不中 fail-open 放行 + 响亮留证 (闸不许把 run 卡死)。
+  const REUSE_GATE_MIN_DONE = 4;
+  let reuseRejects = 0;
   // conductor 输出预算 (2026-07-25 实证修): plan JSON 随任务规模涨, thinking 模型 (k3) 的推理还可能
   // 计入 completion 预算 — transport 默认 4096 必截断 (Unterminated string 重试耗尽整轮报废)。
   // 默认 8192 = deepseek 系安全顶 (同 fanout SYNTH_MAX 语义); k3 等高容量 conductor 经 config/env 升。
@@ -299,6 +305,38 @@ async function planAndExecute(
         );
       }
     }
+    // D-21 复用闸: 上轮有可复用的 done 节点 (未中毒), 新图却一个都对不上 → conductor 把
+    // 「未点名节点逐字保留」的指令整个无视了。预览用与 executePlan 同一条 computeReuse
+    // (filters 先过, 与真执行同输入; blame append 只碰闭包节点, 而闭包已在毒集, 不影响预览)。
+    if (prior) {
+      const priorFps = merkleFingerprints(prior.plan);
+      const eligibleDone = Object.entries(prior.results).filter(
+        ([id, r]) => r.status === 'done' && !prior.poisoned?.has(priorFps.get(id) ?? ''),
+      ).length;
+      if (eligibleDone >= REUSE_GATE_MIN_DONE) {
+        const preview = computeReuse(applyPlanFilters(parsed.plan, config), prior, prior.poisoned);
+        if (preview.size === 0 && reuseRejects < 1) {
+          reuseRejects++;
+          const keepIds = Object.keys(prior.plan.nodes).slice(0, 40).join(', ');
+          logger.info(
+            { eligibleDone, priorNodes: Object.keys(prior.plan.nodes).length },
+            '[omd/executor-dag] D-21 复用闸拒回 plan → 带上轮节点清单重问 (整图重写 = 已绿工作重烧)',
+          );
+          correction =
+            `\n\n上一版 plan 与上轮分解**零复用**: 上轮已有 ${eligibleDone} 个完成且未被点名有问题的节点, ` +
+            `而你把所有节点都重写了 —— 引擎按语义指纹复用未变节点, id/goal/字段/依赖边任何措辞变化都会白白重算。` +
+            `未被点名的节点**逐字保留**, 只改被点名有问题的。上轮节点 id: ${keepIds}。只回完整 plan JSON 对象。`;
+          continue;
+        }
+        if (preview.size === 0) {
+          // 重问预算用尽仍零复用 → fail-open 放行 + 响亮留证 (仓规: 可以吞, 不许吞证据)。
+          logger.warn(
+            { eligibleDone, rejects: reuseRejects },
+            '[omd/executor-dag] D-21 复用闸重问后仍零复用 → fail-open 放行 (已绿工作将整体重烧, 证据在此)',
+          );
+        }
+      }
+    }
     plan = parsed.plan;
     break;
   }
@@ -317,7 +355,17 @@ async function planAndExecute(
 function applyPlanFilters(plan: ConductorPlan, config: ExecutorDagConfig): ConductorPlan {
   let p = config.oracleCmd ? filterOracleCommandNodes(plan, config.oracleCmd) : plan;
   for (const f of config.planFilters ?? []) p = f(p);
-  return p;
+  // 计划期写竞争硬闸 (2026-08-14): 同文件多写者且互不可达 → 程序化补边串行化 (构造性消灭,
+  // 不烧重画轮)。挂在这里 = 顶层图与 conductor 子图 (D-N 管线) 两个口共用一条。方向/成环
+  // 论证见 serializeWriteRaces 的注。补了边就响亮留证 —— 静默改图与静默竞争一样坏。
+  const serialized = serializeWriteRaces(p);
+  for (const e of serialized.added) {
+    logger.warn(
+      { from: e.from, to: e.to, path: e.path },
+      '[omd/executor-dag] 写竞争硬闸: 两节点声明写同一文件且无序 → 已补依赖边串行化 (谁后写由拓扑+声明序定)',
+    );
+  }
+  return serialized.plan;
 }
 
 /**
@@ -2764,6 +2812,17 @@ async function executePlan(
             ...(watchdog ? { watchdog } : {}),
           };
         }
+        // 空转熔断 (2026-08-14): fuse 硬停的 leaf 判 failed + spin-fused 败因 (retryable:false ——
+        // 原样重试大概率原地再烧一遍, 见 node-failure 的注)。已落盘产物在 filesTouched 里保留。
+        if (r.spinFused) {
+          logger.warn({ node: id, model, reason: r.spinFused }, '[omd/executor-dag] agent leaf 空转熔断 → 节点 failed');
+          return {
+            id, status: 'failed', failureKind: 'spin-fused', kind: 'agent', model,
+            output: `[${r.spinFused}] 原输出(${text.length}B): ${text.slice(0, 400)}`,
+            deps: node.depends_on ?? [], usage, filesTouched, ...(filesRead.length ? { filesRead } : {}),
+            ...(watchdog ? { watchdog } : {}),
+          };
+        }
         // 产物校验闸 (2026-07-03 实测教训: ultraspeed leaf 4 节点 3 个 empty-done — 自报完成
         // 却零改动, oracle 因"新文件没接线"照样绿 → 谎报完工静默漏过)。写文件节点 done 的
         // **必要条件** = 真碰了文件: filesTouched 空 / 声称的路径不存在 → failed (heal 回路可见)。
@@ -3523,10 +3582,68 @@ function dropPoisonedGreens(
   }
 }
 
+/**
+ * crash 路径也入账 (2026-08-14, 记账完整性闸)。
+ *
+ * 此前 onComplete (dag-runs.db 的唯一写点) 只在 runDagInternal 正常返回时触发 —— 中途抛错
+ * (规划失败 / verifier 硬死 / 升级重规划炸) 则整段 usage **从账上消失**。实测 f2af8514:
+ * 终段崩掉 (infra-error), 该相位的 token 无记录, 夜账只能给下限。
+ *
+ * 做法: core 每轮把 exec 交进观察槽; 抛错时用**最后一轮已知的 exec** 写一条部分记录
+ * (verification.pass=false, reason 带 crash 原文) 再原样抛。诚实边界 (明写, 不是漏):
+ * ① 记的是最后一轮 exec 自己的 usage —— 升级轮的累计增量在 core 局部, 拿不到, 这是下限;
+ * ② 规划期就炸 (exec 从未赋值) 记不了 —— 那时没有 plan/results 可记, 编一条空的比缺席更坏;
+ * ③ 进程级死 (SIGKILL/OOM) 任何 in-process 钩子都救不了, 那一格由 runs.db 僵尸清扫兜底。
+ */
 async function runDagInternal(
   task: string,
   config: ExecutorDagConfig,
   prebuiltPlan: ConductorPlan | null,
+  prior?: PriorExec,
+): Promise<ExecutorDagResult> {
+  const observed: { exec?: ExecOnce; sessionId?: string; conductorModel?: string } = {};
+  try {
+    return await runDagInternalCore(task, config, prebuiltPlan, observed, prior);
+  } catch (err) {
+    const exec = observed.exec;
+    if (config.onComplete && exec) {
+      const partial: ExecutorDagResult = {
+        plan: exec.plan,
+        sessionId: observed.sessionId ?? config.sessionId ?? config.continuity?.runId ?? 'unknown',
+        levels: exec.levels,
+        results: exec.results,
+        reusedNodes: exec.reusedNodes,
+        ...(exec.observations.length ? { observations: exec.observations } : {}),
+        claimCheck: exec.claimCheck,
+        artifactMove: exec.artifactMove,
+        rollback: exec.rollback,
+        writeRace: exec.writeRace,
+        usage: { conductor: exec.conductorUsage, leavesIn: exec.leavesIn, leavesOut: exec.leavesOut, leavesCacheHit: exec.leavesCacheHit },
+        verification: {
+          pass: false,
+          reason: `[crash 入账 (下限)] ${((err as Error).message ?? String(err)).slice(0, 500)}`,
+          attempts: 0,
+          escalated: false,
+          conductorModel: observed.conductorModel ?? config.conductorModel ?? '',
+        },
+      };
+      try {
+        await config.onComplete(partial);
+        logger.warn({ err: (err as Error).message }, '[omd/executor-dag] run 中途抛错 → 已写部分记录入账 (crash 不丢账)');
+      } catch (e) {
+        logger.warn({ err: (e as Error).message }, '[omd/executor-dag] crash 入账本身失败 (证据在此, 原错误照抛)');
+      }
+    }
+    throw err;
+  }
+}
+
+async function runDagInternalCore(
+  task: string,
+  config: ExecutorDagConfig,
+  prebuiltPlan: ConductorPlan | null,
+  /** crash 入账观察槽: core 每轮把 exec/sessionId/conductorModel 塞进来, 见 runDagInternal 的注。 */
+  observed: { exec?: ExecOnce; sessionId?: string; conductorModel?: string },
   /** 上一**外层轮**的 {plan, results} (D-21 跨轮复用)。轮内 escalation 的 prior 另在下方组装。 */
   prior?: PriorExec,
 ): Promise<ExecutorDagResult> {
@@ -3561,12 +3678,15 @@ async function runDagInternal(
   const warnedUnknownProfiles = new Set<string>();
   let conductorModel = config.conductorModel ?? '';
   // D-7: 预构造 plan → executePlan 直执 (跳过 conductor); 否则 conductor 规划 → 执行。二者下游同一机器。
+  observed.sessionId = sessionId;
+  observed.conductorModel = conductorModel;
   let exec: ExecOnce;
   if (prebuiltPlan) {
     exec = await executePlan(applyPlanFilters(prebuiltPlan, config), task, config, generate, { in: 0, out: 0 }, templates, prior, undefined, warnedUnknownProfiles);
   } else {
     exec = await planAndExecute(task, config, conductorModel, generate, maxPlanRetries, templates, prior, undefined, warnedUnknownProfiles);
   }
+  observed.exec = exec;
   let conductorUsage = exec.conductorUsage;
   let leavesIn = exec.leavesIn;
   let leavesOut = exec.leavesOut;
@@ -3713,6 +3833,8 @@ async function runDagInternal(
         conductorUsage = addUsage(conductorUsage, patched.usage); // 补丁尝试的 token 不丢账
         exec = await planAndExecute(escTask, config, conductorModel, generate, maxPlanRetries, templates, priorExec, blameAnchor, warnedUnknownProfiles);
       }
+      observed.exec = exec;
+      observed.conductorModel = conductorModel;
       const replanTokens = replanMode === 'patch' ? patched.usage : addUsage(patched.usage, exec.conductorUsage);
       const rerunWallMs = Date.now() - rerunStart;
       // D-4 打回读数入账 (SDD 契约 f): 每次打回追加一条。reuseHits = 闭包外命中数 ——

@@ -74,6 +74,13 @@ export type NodeFailureKind =
   | 'gate-rejected'
   /** agent leaf 心跳闸判 provider 挂起(`AgentLeafResult.stalled`)。 */
   | 'stall'
+  /**
+   * agent leaf 空转熔断(2026-08-14):drift fuse 判累计空转过硬阈值 → 循环硬停。
+   * 与 `stall` 分开:stall 是 provider 没反应(换池有用),这格是模型在**有反应地原地打转**
+   * (换池没用,重试大概率原地再烧一遍)—— 两者的下一步正好相反。
+   * 阈值依据 2026-08-13 夜 + 2026-08-03 live 读数,见 drift-detector 的 fuse 注。
+   */
+  | 'spin-fused'
   /** 产物闸:写文件节点 `filesTouched` 空,或声称的产物不在盘上(empty-done)。 */
   | 'empty-artifact'
   /** research leaf 零来源:没有任何真 URL 抓取痕迹(假 grounded)。 */
@@ -166,6 +173,14 @@ export const FAILURE_KIND_INFO: Record<NodeFailureKind, FailureKindInfo> = {
     evidence: 'agent leaf 心跳闸提前中止(AgentLeafResult.stalled)',
     nextAction: '换池 / 重试 —— 是 provider 侧的事,不是 prompt 的事',
     retryable: true,
+  },
+  'spin-fused': {
+    loopState: 'STALLED',
+    evidence: 'agent leaf 空转熔断(drift fuse: 累计 spin 回合或同签名深度过硬阈值,软注入没拉回来)',
+    nextAction:
+      '**别原样重试** —— 同 prompt 同上下文大概率原地再空转一遍。看 stuckSigs 卡在什么上:' +
+      '任务书缺信息就补信息,工具被闸拦就先解闸,再不行拆小这一步',
+    retryable: false,
   },
   'empty-artifact': {
     loopState: 'STALLED',

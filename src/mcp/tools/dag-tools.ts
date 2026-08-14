@@ -29,6 +29,13 @@ import { liveRunsNotice } from '../../harness/board/dag-run-board.js';
 import { envSummaryLine } from '../../model/bootstrap.js';
 import { listProviders } from '../../model/providers.js';
 import { defaultIsAlive } from '../run-store.js';
+import {
+  describeRunWorktree,
+  prepareRunWorktree,
+  runWorktreeDir,
+  type BranchStrategy,
+} from '../../harness/run-worktree.js';
+import { existsSync } from 'node:fs';
 
 // renderProgressAscii 已抽到 ./dag-ascii (纯函数, statusline 复用); 此处保留 re-export 兼容既有 importer。
 export { renderProgressAscii };
@@ -186,7 +193,8 @@ export interface DagToolDeps {
    * **给 thunk 则每个 run 重算** (INV-MODEL-3 无 boot 冻结): MCP server 是长驻进程, 装配期算一次
    * 就把座位/池冻在 boot 那一刻 —— `omd_set_role` 改了配置也要重连才生效。给值 = 老语义 (测试用)。
    */
-  defaultConfig?: Partial<ExecutorDagConfig> | (() => Partial<ExecutorDagConfig>);
+  /** thunk 可收 cwd (隔离档用 worktree cwd 重建 leaf runner — assemble 的 buildDefaultConfig 天然匹配)。 */
+  defaultConfig?: Partial<ExecutorDagConfig> | ((cwd?: string) => Partial<ExecutorDagConfig>);
   /**
    * W2 continuity (D-3 断点续跑): 给则每个 run 落节点 checkpoint (.omd/continuity/<runId>/),
    * dag_run_plan 的 resume 参数命中已绿节点即跳过 (429 打断后不再整图重跑)。省略 = 不落不续。
@@ -266,6 +274,33 @@ function recordPlanRun(
   });
 }
 
+/**
+ * 交付物存在性闸 (2026-08-14, plana 夜报回流第 2 条「done 但零交付」)。
+ *
+ * 实测背景: kaupan-ala 首跑爆窗后大面积级联 skip, runs.db 却记 `done` —— 此前只要引擎不抛错
+ * 不被叫停, 一律 `succeed`。「跑完了」和「交付了」是两个判断, 终态只判了前者。
+ *
+ * 判据 (确定性, 不猜):
+ *   · plan 声明了 `outputs` (交付物节点 id) → 它们必须全部 done。done 的 output 节点其
+ *     声明产物已被**节点级产物闸**验过在盘上, 这里不重查一遍磁盘 (一份判据两处写必漂)。
+ *   · 未声明 outputs → 至少一个节点 done (不给「没做任何事」发成功票, 同 empty-done 的语义)。
+ *
+ * 返回 null = 可发 done; 非 null = 拦下的理由 (进 fail 的 error, 结果照记 —— 证据不陪葬)。
+ */
+export function zeroDeliveryReason(result: ExecutorDagResult): string | null {
+  const outputIds = result.plan.outputs ?? [];
+  if (outputIds.length) {
+    const missing = outputIds.filter((id) => result.results[id]?.status !== 'done');
+    return missing.length
+      ? `交付物闸: 声明的 outputs 节点未全部 done (缺: ${missing.join(', ')}) — 跑完 ≠ 交付了; 已完成节点与产物见 result`
+      : null;
+  }
+  const done = Object.values(result.results).filter((l) => l.status === 'done').length;
+  return done === 0
+    ? `交付物闸: ${Object.keys(result.results).length} 个节点无一 done — 不给"没做任何事"发成功票`
+    : null;
+}
+
 /** Map ExecutorDagResult.results → per-node NodeDetail {status, output} for registry storage. */
 function extractNodeDetails(result: ExecutorDagResult): Record<string, NodeDetail> {
   const details: Record<string, NodeDetail> = {};
@@ -337,17 +372,10 @@ function summarizeResult(result: ExecutorDagResult): Record<string, unknown> {
  */
 function launchPlanRun(
   parsedPlan: ConductorPlan,
-  opts: { resume?: string; leafModel?: string; maxFanout?: number; task?: string; toolName: string },
+  opts: { resume?: string; leafModel?: string; maxFanout?: number; task?: string; toolName: string; branchStrategy?: BranchStrategy },
   deps: DagToolDeps,
 ): { content: { type: 'text'; text: string }[]; isError?: boolean } {
   const { engine, runRegistry, continuity, hudMirror, ledger, recorder, onNodeEvent } = deps;
-  let defaultConfig: Partial<ExecutorDagConfig> | undefined;
-  try {
-    defaultConfig = resolveDefaults(deps.defaultConfig);
-  } catch (e) {
-    // 起跑自检 / 座位未配 (INV-MODEL-5): 响亮但不崩 server —— 回 MCP error 并把座位名带出去。
-    return { content: [{ type: 'text' as const, text: `${opts.toolName} 拒绝: ${(e as Error).message}` }], isError: true };
-  }
   const { resume, leafModel, maxFanout, task, toolName } = opts;
   const runId = resume ?? randomUUID();
   const goal = task?.slice(0, 200) ?? parsedPlan.name ?? 'prebuilt plan';
@@ -361,6 +389,17 @@ function launchPlanRun(
   } else {
     runRegistry.register(runId, { goal, meta: { tool: toolName } });
     runRegistry.start(runId);
+  }
+  // 隔离档 (方案 A, 2026-08-14): 'branch' → 本 run 落隔离 worktree; 缺省 'head' 零回归。
+  // 必须在 resolveDefaults 之前 —— 隔离档要用 worktree cwd 重建 leaf runner。
+  const worktree = resolveRunWorktree(runId, opts.branchStrategy, resume, deps);
+  let defaultConfig: Partial<ExecutorDagConfig> | undefined;
+  try {
+    defaultConfig = resolveDefaults(deps.defaultConfig, worktree.strategy === 'branch' ? worktree.cwd : undefined);
+  } catch (e) {
+    // 起跑自检 / 座位未配 (INV-MODEL-5): 响亮但不崩 server —— 记败因并把座位名带出去。
+    runRegistry.fail(runId, (e as Error).message);
+    return { content: [{ type: 'text' as const, text: `${opts.toolName} 拒绝: ${(e as Error).message}` }], isError: true };
   }
   let hudLevels: string[][] | undefined;
   try {
@@ -388,7 +427,16 @@ function launchPlanRun(
     },
     ...(maxFanout ? { maxFanout } : {}),
     ...(continuity
-      ? { continuity: { manager: continuity.manager, runId, resume: !!resume, repoRoot: continuity.repoRoot } }
+      ? {
+          continuity: {
+            manager: continuity.manager,
+            runId,
+            resume: !!resume,
+            // 隔离档: 产物根钉到 worktree —— 不钉的话产物闸/artifactRoot 会拿主仓根去查
+            // 隔离树里的文件 (goal.ts 同款注: 票会落进一棵随时会被删的树里)。
+            repoRoot: worktree.strategy === 'branch' ? worktree.cwd : continuity.repoRoot,
+          },
+        }
       : {}),
     // 运行留痕 (给了 recorder 才记)。链上 defaultConfig 自带的 onComplete —— 留痕不许吃掉别人的钩子。
     // `entry` 复用**已有的** toolName ('dag_run_plan' / 'dag_resume') —— 这个函数本来就为
@@ -413,7 +461,9 @@ function launchPlanRun(
       runRegistry.setNodeDetails(runId, extractNodeDetails(result));
       // D-P: 被叫停的 run **不记 done** —— 它没跑完。手上的结果照样记进去 (已跑完的节点值钱),
       // 状态用 cancelled 与"跑完了"分开, 调用方据此走 dag_resume 而不是去查为什么挂了。
+      const zd = result.cancelled ? null : zeroDeliveryReason(result);
       if (result.cancelled) runRegistry.cancel(runId, result.cancelled.reason, summarizeResult(result));
+      else if (zd) runRegistry.fail(runId, zd, summarizeResult(result));
       else runRegistry.succeed(runId, summarizeResult(result));
       hudMirror?.write(runId, runRegistry.getRecord(runId), hudLevels);
       if (ledger && task) recordPlanRun(ledger, task, result, config.conductorModel);
@@ -424,7 +474,13 @@ function launchPlanRun(
       hudMirror?.write(runId, runRegistry.getRecord(runId), hudLevels);
     });
   return {
-    content: [{ type: 'text', text: `runId: ${runId}\nstatus: running\n--- dispatch ---\n${dispatchBriefing(parsedPlan, config)}` }],
+    content: [{
+      type: 'text',
+      text:
+        `runId: ${runId}\nstatus: running\n--- dispatch ---\n${dispatchBriefing(parsedPlan, config)}` +
+        // 隔离档必须把目录/分支/降级原因念出来 (run-worktree 的纪律: 不念 = "东西不见了")。
+        (worktree.strategy === 'branch' || worktree.degradedReason ? `\n${describeRunWorktree(worktree)}` : ''),
+    }],
   };
 }
 
@@ -572,11 +628,35 @@ export function createDagTools(deps: DagToolDeps): OmdMcpTool[] {
 // dag_run — task → conductor plan → fan-out → {runId, summary}.
 // ---------------------------------------------------------------------------
 
-/** thunk 则调用 (每 run 新鲜), 值则原样 — 见 DagToolDeps.defaultConfig。 */
+/** thunk 则调用 (每 run 新鲜), 值则原样 — 见 DagToolDeps.defaultConfig。
+ *  `cwd` 只对 thunk 生效 (assemble 的 buildDefaultConfig 收 overrideCwd): 隔离档必须用
+ *  worktree cwd 重建 leaf runner —— goal.ts 2026-07-31 live 实测: 不重建则 agent 写的是主树。 */
 function resolveDefaults(
-  d: Partial<ExecutorDagConfig> | (() => Partial<ExecutorDagConfig>) | undefined,
+  d: Partial<ExecutorDagConfig> | ((cwd?: string) => Partial<ExecutorDagConfig>) | undefined,
+  cwd?: string,
 ): Partial<ExecutorDagConfig> | undefined {
-  return typeof d === 'function' ? d() : d;
+  return typeof d === 'function' ? d(cwd) : d;
+}
+
+/**
+ * 隔离档解析 (2026-08-14, owner 裁方案 A: dag_run/dag_run_plan 接 worktree 档)。
+ *
+ * 背景: 2026-08-13 夜 plana 9 个 run 全在同一棵主树上跑 (dag_run 此前没有隔离参数),
+ * 零事故靠的是文件集恰好不相交; 次日 oh-my-dag 主树被并行 session 的 stash 实测竞走一次。
+ * 语义与 dag_goal 的 branchStrategy 逐字一致 ('head' 缺省零回归; 'branch' 隔离 worktree,
+ * 引擎永不自动合回)。resume 时盘上已有该 runId 的隔离树 → **强制 branch** —— 首跑在隔离树、
+ * resume 却写主树是静默换树, 比不隔离更坏 (checkpoint 与半成品全在那棵树上)。
+ */
+function resolveRunWorktree(
+  runId: string,
+  requested: BranchStrategy | undefined,
+  resume: string | undefined,
+  deps: DagToolDeps,
+): ReturnType<typeof prepareRunWorktree> {
+  const root = deps.continuity?.repoRoot ?? process.cwd();
+  const strategy: BranchStrategy =
+    requested ?? (resume && existsSync(runWorktreeDir(root, runId)) ? 'branch' : 'head');
+  return prepareRunWorktree({ cwd: root, runId, strategy });
 }
 
 /**
@@ -591,7 +671,7 @@ function resolveDefaults(
  */
 function executeDagRunInProc(
   runId: string,
-  args: { task: string; conductorModel?: string; leafModel?: string; resume?: string; maxFanout?: number },
+  args: { task: string; conductorModel?: string; leafModel?: string; resume?: string; maxFanout?: number; branchStrategy?: BranchStrategy },
   deps: DagToolDeps,
 ): { content: { type: 'text'; text: string }[]; isError?: boolean } {
   const { engine, runRegistry, continuity, hudMirror, ledger, recorder, onNodeEvent } = deps;
@@ -612,11 +692,13 @@ function executeDagRunInProc(
     runRegistry.start(runId);
   }
 
+  // 隔离档 (方案 A, 2026-08-14): 与 launchPlanRun 同一条 resolveRunWorktree —— 语义见彼处注。
+  const worktree = resolveRunWorktree(runId, args.branchStrategy, resume, deps);
   // Fire-and-forget: execute in background, update registry on completion.
   // 座位/池**每 run 重解** (INV-MODEL-3): thunk 在这里调用, 故 omd_set_role 改完下一次 dag_run 就用新座。
   let defaultConfig: Partial<ExecutorDagConfig> | undefined;
   try {
-    defaultConfig = resolveDefaults(deps.defaultConfig);
+    defaultConfig = resolveDefaults(deps.defaultConfig, worktree.strategy === 'branch' ? worktree.cwd : undefined);
   } catch (e) {
     const msg = (e as Error).message;
     runRegistry.fail(runId, msg);
@@ -645,7 +727,16 @@ function executeDagRunInProc(
     ...(maxFanout ? { maxFanout } : {}),
     // D-3 断点续跑: checkpoint 恒落盘; resume 时命中已绿节点跳过 (429 打断不再整图重跑)。
     ...(continuity
-      ? { continuity: { manager: continuity.manager, runId, resume: !!resume, repoRoot: continuity.repoRoot } }
+      ? {
+          continuity: {
+            manager: continuity.manager,
+            runId,
+            resume: !!resume,
+            // 隔离档: 产物根钉到 worktree —— 不钉的话产物闸/artifactRoot 会拿主仓根去查
+            // 隔离树里的文件 (goal.ts 同款注: 票会落进一棵随时会被删的树里)。
+            repoRoot: worktree.strategy === 'branch' ? worktree.cwd : continuity.repoRoot,
+          },
+        }
       : {}),
     // 运行留痕 (与 launchPlanRun 同款; dag_run 是 conductor 路径, 它自己组 config)。
     ...(recorder
@@ -682,8 +773,10 @@ function executeDagRunInProc(
     .runExecutorDag(task, config)
     .then((result) => {
       runRegistry.setNodeDetails(runId, extractNodeDetails(result));
-      // D-P: 叫停的不记 done (见 launchPlanRun 同款注)。
+      // D-P: 叫停的不记 done (见 launchPlanRun 同款注); 零交付同样不记 done (交付物闸)。
+      const zd = result.cancelled ? null : zeroDeliveryReason(result);
       if (result.cancelled) runRegistry.cancel(runId, result.cancelled.reason, summarizeResult(result));
+      else if (zd) runRegistry.fail(runId, zd, summarizeResult(result));
       else runRegistry.succeed(runId, summarizeResult(result));
       hudMirror?.write(runId, runRegistry.getRecord(runId)); // 终态 done → statusline grace 后收起
       // plan-memory Phase A: 记一笔 (family 聚类 + 版本 + 战绩)。record 自身 fail-open。
@@ -696,7 +789,12 @@ function executeDagRunInProc(
     });
 
   return {
-    content: [{ type: 'text' as const, text: `runId: ${runId}\nstatus: running` }],
+    content: [{
+      type: 'text' as const,
+      text:
+        `runId: ${runId}\nstatus: running` +
+        (worktree.strategy === 'branch' || worktree.degradedReason ? `\n${describeRunWorktree(worktree)}` : ''),
+    }],
   };
 }
 
@@ -711,14 +809,23 @@ function makeDagRun(deps: DagToolDeps): OmdMcpTool {
       leafModel: z.string().optional().describe('Leaf model (provider:modelId)'),
       resume: z.string().optional().describe('Prior runId to resume — done nodes with valid checkpoints are skipped'),
       maxFanout: z.number().int().positive().optional().describe('Concurrency cap for node fan-out (default: provider pool)'),
+      branchStrategy: z
+        .enum(['head', 'branch'])
+        .optional()
+        .describe(
+          "'head' (default) = run writes the current working tree; " +
+            "'branch' = isolated git worktree on branch omd/run/<runId>; the engine never merges back — you do. " +
+            'Use branch whenever another session/run may be writing the same tree.',
+        ),
     },
     handler: async (args) => {
-      const { task, conductorModel, leafModel, resume, maxFanout } = args as {
+      const { task, conductorModel, leafModel, resume, maxFanout, branchStrategy } = args as {
         task?: string;
         conductorModel?: string;
         leafModel?: string;
         resume?: string;
         maxFanout?: number;
+        branchStrategy?: BranchStrategy;
       };
       if (!task) {
         throw new McpError(ErrorCode.InvalidParams, 'dag_run: missing required param "task"');
@@ -735,7 +842,7 @@ function makeDagRun(deps: DagToolDeps): OmdMcpTool {
       // 当开关 (生产默认 in-proc), dag_run 生产面**恒 detached**, 开关只能放 env,
       // 不进工具 schema (schema 里出现 detached:false 就是一句谎话)。
       if (process.env[OMD_DAG_EXEC_CHILD] === '1') {
-        return executeDagRunInProc(runId, { task, conductorModel, leafModel, resume, maxFanout }, deps);
+        return executeDagRunInProc(runId, { task, conductorModel, leafModel, resume, maxFanout, branchStrategy }, deps);
       }
       // resume 冲突检查要含**盘上** (子进程 run 不在本进程内存 —— 例如另一个 dag-exec
       // 正在跑同一个 runId): 漏了它, 第二个子进程会 reopenForResume 一个 running 的 run,
@@ -778,6 +885,8 @@ function makeDagRun(deps: DagToolDeps): OmdMcpTool {
           ...(leafModel ? { leafModel } : {}),
           ...(maxFanout ? { maxFanout } : {}),
           ...(resume ? { resume } : {}),
+          // 隔离档随 spec 过河 —— worktree 由**子进程**建 (它才是属主, 也是要在那棵树里跑的人)。
+          ...(branchStrategy ? { branchStrategy } : {}),
         },
       });
       if (!spawned.ok) {
@@ -825,14 +934,19 @@ function makeDagRunPlan(deps: DagToolDeps): OmdMcpTool {
       leafModel: z.string().optional().describe('Leaf model (provider:modelId)'),
       resume: z.string().optional().describe('Prior runId to resume — done nodes with valid checkpoints are skipped'),
       maxFanout: z.number().int().positive().optional().describe('Concurrency cap for node fan-out (default: provider pool)'),
+      branchStrategy: z
+        .enum(['head', 'branch'])
+        .optional()
+        .describe("'head' (default) = write current tree; 'branch' = isolated git worktree omd/run/<runId> (never auto-merged back)"),
     },
     handler: async (args) => {
-      const { plan: planJson, task, leafModel, resume, maxFanout } = args as {
+      const { plan: planJson, task, leafModel, resume, maxFanout, branchStrategy } = args as {
         plan?: string;
         task?: string;
         leafModel?: string;
         resume?: string;
         maxFanout?: number;
+        branchStrategy?: BranchStrategy;
       };
       if (!planJson) {
         throw new McpError(ErrorCode.InvalidParams, 'dag_run_plan: missing required param "plan"');
@@ -844,7 +958,7 @@ function makeDagRunPlan(deps: DagToolDeps): OmdMcpTool {
         throw new McpError(ErrorCode.InvalidParams, `dag_run_plan: invalid plan — ${parsed.error}`);
       }
 
-      return launchPlanRun(parsed.plan, { resume, leafModel, maxFanout, task, toolName: 'dag_run_plan' }, deps);
+      return launchPlanRun(parsed.plan, { resume, leafModel, maxFanout, task, toolName: 'dag_run_plan', ...(branchStrategy ? { branchStrategy } : {}) }, deps);
     },
   };
 }

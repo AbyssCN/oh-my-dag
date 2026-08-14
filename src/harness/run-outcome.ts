@@ -241,6 +241,9 @@ const NODE_TO_RUN: Record<NodeFailureKind, RunOutcomeKind | null> = {
   'timed-out': 'not-converged',
   'gate-rejected': 'blocked',
   stall: 'infra-error',
+  // 2026-08-14: 空转熔断走 `blocked` —— 与 rounds-exhausted 同类 (原样重试没用, 要改的是
+  // 任务书/工具面), 与 stall 的 infra-error (换池有用) 正相反。
+  'spin-fused': 'blocked',
   'empty-artifact': 'not-converged',
   'no-sources': 'not-converged',
   'missing-capability': 'missing-capability',

@@ -984,6 +984,9 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       opts.driftDetector === false
         ? null
         : createDriftTracker(typeof opts.driftDetector === 'object' ? opts.driftDetector : {});
+    // 空转熔断 (2026-08-14): 非 null = 已熔断, 值是理由原文。controller/startedAt 声明在下方,
+    // 但此处只是采集函数体 (运行时才引用), 无 TDZ 问题 —— 同 touchTimelineMs 那条注。
+    let spinFused: string | null = null;
 
     const emit = (e: AgentEvent): void => {
       // **进展信号**: 任何事件都算"它还在动" —— 包括 `thinking_delta` (模型在推理)。
@@ -997,6 +1000,16 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
         pendingTools++;
         toolTimelineMs.push(Date.now() - startedAt);
         drift?.note(e.toolName, e.args);
+        // 熔断闸: 软注入 (takeInjection) 之后还在加深的空转 → 硬停, 走与超时同一条优雅停路
+        // (SDK 通道 tolerateAbort 返已累积; pi 通道 signal 停轮)。已落盘产物保留, 节点判 spin-fused。
+        if (drift && spinFused === null) {
+          const trip = drift.fuseTripped();
+          if (trip) {
+            spinFused = trip;
+            logger.warn({ toolCalls, trip }, '[agent-leaf] 空转熔断 → 硬停循环 (fuse)');
+            controller.abort();
+          }
+        }
         const args = (e.args ?? {}) as { path?: unknown; patch?: unknown };
         if (FILE_WRITE_TOOLS.has(e.toolName)) {
           // hashline_edit 路径嵌在 patch 头 (`¶PATH#TAG`), 不是顶层 path —— 必须解析 patch, 否则漏记 → 假 empty-done。
@@ -1261,7 +1274,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // 零产出兜底: 没错误、没正文、没落盘、也不是被我们停下来的 → 仍然响亮失败
     // (executor-dag failedFromThrow 接住, 保留败因入 heal 回路), 不把 empty-done 当成功。
     // stalled / 超时 / 上下文到顶都**不在此列**: 它们有各自的语义, 由下游按语义判。
-    if (!text.trim() && touched.size === 0 && !stalled && !timedOut && !contextExhausted) {
+    if (!text.trim() && touched.size === 0 && !stalled && !timedOut && !contextExhausted && spinFused === null) {
       throw new Error(
         `[agent-leaf] 0-token empty-done (model=${model}): 循环返回空文本、无文件写入、非停摆非超时 — ` +
           '疑 provider 静默失败 (空响应, 或 reasoning 截断吞了正文)。',
@@ -1274,11 +1287,16 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       );
     } else if (timedOut) {
       logger.warn({ timeoutMs, outLen: streamedChars }, '[agent-leaf] leaf 超时中止 (有界停, 返已累积输出)');
+    } else if (spinFused !== null) {
+      logger.warn({ toolCalls, outLen: streamedChars, spinFused }, '[agent-leaf] leaf 空转熔断中止 (返已累积输出)');
     }
     // spin 只在真卡过时带出去 —— 全 0 的字段进 JSON 只是噪声 (同 observations「缺席 ≠ 0」的口径)。
     const spinSummary = drift?.summary();
     return {
       text, usage, promptVersion, filesTouched: [...touched], filesRead: [...readPaths], cwd, toolCalls, stalled, writeEffects,
+      // 熔断理由 (非 null = 熔断过)。数据不是回调 —— 隔离档 bwrap 子进程只有 JSON 过得了边界
+      // (同 DriftTracker.summary 那条注), 信号要出 leaf 只能随结果回来。
+      ...(spinFused !== null ? { spinFused } : {}),
       ...(spinSummary && spinSummary.spinEvents > 0 ? { spin: spinSummary } : {}),
       // 一条都没跑 → **缺席**而不是 `[]`: 「这个 leaf 没用过 bash」与「这条采集没接」在读数上
       // 必须分得开 (同 spin / observations 那条口径)。

@@ -13,8 +13,9 @@
  *
  * ## 判据的诚实边界
  *
- * 这里量的是**频率读数**, 不带任何停机语义。要不要把它升成 BLOCKED、K 取几,
- * 得先有"真跑上多久命中一次"的数 —— 先有读数再谈判据, 别反过来 (同 observations 的注)。
+ * `summary()` 是**频率读数**。停机语义在 `fuseTripped()` (2026-08-14 起): 读数收够了
+ * (2026-08-13 夜 26 回合/9× + 2026-08-03 live 16 回合/39× 该拦; 1–6 回合/4–5× 的 TDD
+ * 迭代不该拦), 阈值取两组之间的空档 —— 见本文件「熔断闸」一节与 DriftDetectorConfig.fuse 的注。
  */
 import { describe, expect, test } from 'bun:test';
 import { computeSig, createDriftTracker } from './drift-detector';
@@ -126,5 +127,69 @@ describe('computeSig 的 bash cd 前缀 (2026-08-11 run 7d50fda2 尺子修)', ()
   test('链式 cd 逐段剥; 光秃秃的 cd (无 &&) 原样保留', () => {
     expect(computeSig('bash', { command: `cd ${jail} && cd src && ls` })).toBe('bash:ls');
     expect(computeSig('bash', { command: 'cd /tmp' })).toBe('bash:cd /tmp');
+  });
+});
+
+describe('熔断闸 fuseTripped (2026-08-14; 阈值依据 2026-08-13 夜 + 2026-08-03 live 读数)', () => {
+  const spin = (t: ReturnType<typeof createDriftTracker>, sig: string, n: number): void => {
+    for (let i = 0; i < n; i++) t.note('bash', { command: sig });
+  };
+  /** 模拟软注入被消费 (每轮 LLM 调用前宿主会调一次) —— 让下一次同签名 note 能重新检出、spinEvents 递增。 */
+  const consume = (t: ReturnType<typeof createDriftTracker>): void => void t.takeInjection();
+
+  test('★ 正当 TDD 迭代 (edit↔test 交替, 昨夜 impl_api_time 形状: 6 回合 / max 5×) → 不熔断', () => {
+    const t = createDriftTracker({ threshold: 4 });
+    // edit → test → edit → test … 各 8 次: 软检出会响 (spinEvents 少量), 但远不到硬阈值。
+    for (let i = 0; i < 8; i++) {
+      t.note('hashline_edit', { patch: '¶src/x.ts#aa\n…' });
+      t.note('bash', { command: 'npx vitest run src/x.test.ts' });
+      consume(t);
+    }
+    expect(t.fuseTripped()).toBeNull();
+    expect(t.summary().spinEvents).toBeLessThan(10);
+  });
+
+  test('★ 深度空转 (昨夜 build_ingestor 形状: 软注入后继续同签名几十轮) → 熔断, 理由带 stuckSig', () => {
+    const t = createDriftTracker({ threshold: 4 });
+    // 同一签名连打: maxSameCount 会随 note 持续加深 (不只在检出边沿更新) → 撞 maxSameCount 阈值。
+    spin(t, 'PYTHONDONTWRITEBYTECODE=1 python ingest.py', 14);
+    const trip = t.fuseTripped();
+    expect(trip).not.toBeNull();
+    expect(trip!).toContain('空转熔断');
+    expect(trip!).toContain('PYTHONDONTWRITEBYTECODE=1');
+  });
+
+  test('★ 回合数路径: 反复卡住-注入-再卡 (spinEvents 累计 ≥10) → 熔断', () => {
+    const t = createDriftTracker({ threshold: 4, maxSlots: 8 });
+    // 每轮换一个签名卡 4 次 (环小, 旧签名滚出) → spinEvents 逐轮 +1 而 maxSameCount 停在 4。
+    for (let i = 0; i < 10; i++) {
+      spin(t, `sig-${i}`, 4);
+      consume(t);
+    }
+    expect(t.summary().maxSameCount).toBeLessThan(12);
+    expect(t.fuseTripped()).not.toBeNull();
+  });
+
+  test('fuse:false = 只报不拦 (旧行为逃生口)', () => {
+    const t = createDriftTracker({ threshold: 4, fuse: false });
+    spin(t, 'same', 20);
+    expect(t.summary().spinEvents).toBeGreaterThan(0);
+    expect(t.fuseTripped()).toBeNull();
+  });
+
+  test('阈值可调 (fuse.maxSameCount=6 → 7 连击即熔断)', () => {
+    const t = createDriftTracker({ threshold: 4, fuse: { maxSameCount: 6 } });
+    spin(t, 'same', 6);
+    expect(t.fuseTripped()).not.toBeNull();
+  });
+
+  test('跨 reset 累计: reset (每轮 agent 开始) 不清熔断判据 —— 熔断问的是整场', () => {
+    const t = createDriftTracker({ threshold: 4, maxSlots: 8 });
+    for (let i = 0; i < 10; i++) {
+      spin(t, `sig-${i}`, 4);
+      consume(t);
+      t.reset();
+    }
+    expect(t.fuseTripped()).not.toBeNull();
   });
 });

@@ -57,6 +57,15 @@ export interface RunProgress {
   replans?: Array<{ parent: string; round: number; poisoned: string[] }>;
 }
 
+/**
+ * 孤儿 run 的败因文案 (hydrate / ensureFromDisk / 清扫写回三处共用 —— 各写一份必漂)。
+ * ⚠ 「写者唯一 = 子进程」的例外仅此一条: 属主 pid 已死 = 那个写者不存在了, server 替它收终态
+ * 不与任何活写者竞争 (判据是 pid 存活, 不是时间启发式)。
+ */
+function orphanError(ownerPid: number | null): string {
+  return `属主进程已不在 (pid ${ownerPid ?? '?'}) — 这次跑没跑完, 直接 resume 接着跑`;
+}
+
 /** 毫秒 → 人读耗时 (0s / 45s / 3m12s / 1h2m3s)。 */
 function formatDuration(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -135,12 +144,16 @@ export class RunRegistry {
   private hydrate(): void {
     for (const r of this.store!.all()) {
       const orphaned = (r.status === 'running' || r.status === 'pending') && (r.ownerPid === null || !this.isAlive(r.ownerPid));
+      // 僵尸清扫 (2026-08-14, 记账完整性闸): 孤儿转换**写回盘**, 不只转内存视图 —— 此前只转
+      // 内存, 盘上那行永远 `running` (实测 plana: 两条 run 属主 pid 已死 10h+, runs.db 仍 running,
+      // 它们的 usage 也因此从未入账可见)。「没进程在跑它」是 pid 判出来的事实, 不写回 = 知道错的。
+      if (orphaned) this.sweepOrphanToDisk(r);
       this.runs.set(r.runId, {
         status: (orphaned ? 'failed' : r.status) as RunStatus,
         goal: r.goal,
         meta: r.meta,
         ...(orphaned
-          ? { error: `属主进程已不在 (pid ${r.ownerPid ?? '?'}) — 这次跑没跑完, 直接 resume 接着跑` }
+          ? { error: orphanError(r.ownerPid) }
           : r.error
             ? { error: r.error }
             : {}),
@@ -151,6 +164,17 @@ export class RunRegistry {
         updatedAt: r.updatedAt,
       });
     }
+  }
+
+  /** 孤儿 run 的终态写回盘 (failed + 原因 + 属主清空)。put 自身 fail-open 且留证 (run-store)。 */
+  private sweepOrphanToDisk(r: PersistedRun): void {
+    this.store?.put({
+      ...r,
+      status: 'failed',
+      error: orphanError(r.ownerPid),
+      ownerPid: null,
+      updatedAt: this.now().toISOString(),
+    });
   }
 
   /**
@@ -170,6 +194,15 @@ export class RunRegistry {
     if (!this.store) return null;
     const r = this.store.get(runId);
     if (!r) return null;
+    // 僵尸清扫的读侧半边 (2026-08-14): 长命 server 不重启, hydrate 那次清扫可能是几天前 ——
+    // 子进程死后盘上 `running` 会一直骗到下次重启。判据仍是 pid 存活 (与 hydrate 同一条,
+    // 不引入时间启发式): 活着的子进程 pid 恒 alive, 这里永远不误伤; 死了才转 + 写回。
+    const orphaned = (r.status === 'running' || r.status === 'pending') && (r.ownerPid === null || !this.isAlive(r.ownerPid));
+    if (orphaned) {
+      this.sweepOrphanToDisk(r);
+      r.status = 'failed';
+      r.error = orphanError(r.ownerPid);
+    }
     const rec: RunRecord = {
       status: r.status as RunStatus,
       goal: r.goal,
@@ -280,11 +313,14 @@ export class RunRegistry {
     this.persist(runId);
   }
 
-  fail(runId: string, error: string): void {
+  fail(runId: string, error: string, result?: unknown): void {
     const rec = this.runs.get(runId);
     if (!rec) throw new Error(`unknown run ${runId}`);
     this.transition(runId, 'failed');
     rec.error = error;
+    // 同 cancel 那条注 (2026-08-14 交付物闸需要): 判 failed 的 run 手上有的东西一样值钱 ——
+    // 零交付闸拦下的 run 已跑完的节点/产物/账本全在 result 里, 不带走它们等于把证据一起判没。
+    if (result !== undefined) rec.result = result;
     this.persist(runId); // transition 已写过一次, 但 error 是它之后才落的
   }
 

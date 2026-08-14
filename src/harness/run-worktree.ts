@@ -122,6 +122,24 @@ export function prepareRunWorktree(
   const git = deps.git ?? defaultGit;
   const dir = runWorktreeDir(cwd, runId);
   const branch = runWorktreeBranch(runId);
+  // resume 复用 (2026-08-14, dag_run 接隔离档时补): 同 runId 的树已在 → 原样接着用。
+  // 不复用的话 `worktree add` 会失败 → 走下面的退回 head —— 那是**静默换树**: 首跑写在
+  // 隔离树里, resume 却写主树, 比不隔离更坏 (checkpoint 与半成品全在那棵树上)。
+  if (existsSync(dir)) {
+    logger.info({ runId, dir, branch }, '[omd/run-worktree] 隔离 worktree 已存在 → 复用 (resume)');
+    return {
+      cwd: dir,
+      branch,
+      strategy: 'branch',
+      dispose: () => {
+        try {
+          git(['worktree', 'remove', '--force', dir], { cwd });
+        } catch (e) {
+          logger.warn({ dir, err: String(e) }, '[omd/run-worktree] 弃用 worktree 失败 (fail-open)');
+        }
+      },
+    };
+  }
   try {
     git(['worktree', 'add', dir, '-b', branch], { cwd });
   } catch (e) {
