@@ -15,7 +15,21 @@
  * - `stableFailSet` 的交集改成并集 → **★④ 与端到端那条红**(2 条)。
  */
 import { describe, expect, test } from 'bun:test';
-import { acceptSideOf, buildAcceptDelta, stableFailSet, unstableFailSet } from './accept-delta';
+import { acceptSideOf, buildAcceptDelta, extractFailSet, stableFailSet, unstableFailSet } from './accept-delta';
+
+/** 随 `extractFailSet` 一起从 `blank-baseline.test.ts` 搬来(该模块已整个删除)。 */
+describe('(fail) 集合刀法 (集合比较不是计数)', () => {
+  test('提取名字、去重、去时长尾巴、排序', () => {
+    const out = [
+      '(fail) A > b 断言 [12.20ms]',
+      '(fail) C > d [1.5s]',
+      '(fail) A > b 断言 [13.01ms]', // 重复 (重跑) → 去重
+      ' 3800 pass',
+      '(pass) 不该被抓',
+    ].join('\n');
+    expect(extractFailSet(out)).toEqual(['A > b 断言', 'C > d']);
+  });
+});
 
 /** 一段像 `bun test` 的输出(只有 `(fail)` 行是判据面)。 */
 const out = (...names: string[]): string =>

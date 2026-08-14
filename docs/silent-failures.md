@@ -1094,7 +1094,11 @@ import 得到、类型对得上、调用写得出来。
 | 2 | 5033 pass / 1 fail / 100.4s | `test/core/node-failure-kind.test.ts:442` | `EBADF: bad file descriptor, epoll_ctl` —— `Bun.spawn` 在满负载下拿不到 fd |
 | 3(另一 session) | 5010 pass / 1 fail | `node-failure-kind` 的 5s 超时 | 同族;第二次全量自己绿了 |
 
-两次之间 HEAD 没动。**红的名字集两次不相交** —— 而 `src/harness/blank-baseline.ts:8` 的模块注释里写着一条前提:「同 HEAD 两次的 fail 名字集**逐条相同**」。那条前提今天不成立了。
+两次之间 HEAD 没动。**红的名字集两次不相交** —— 而当时 `src/harness/blank-baseline.ts`(空白基线的 keyed 缓存)的模块注释里写着一条前提:「同 HEAD 两次的 fail 名字集**逐条相同**」,并拿它当整份缓存的立论。
+
+**追那条前提的出处,查到本条最值钱的一句**:它的原始观测在 `.omd/state-carry-survey.md` —— `61.66s`(S1,HEAD `c9b01a8`)· `62.81s`(S2,HEAD **`14c282e`**),「两次 fail 名字集逐条相同(4 条)」。**n=2,而且那两次不在同一个 HEAD 上**。也就是说,一句关于"同 HEAD 稳定性"的前提,是拿两个**不同 HEAD** 的样本立起来的 —— 本仓那句血账「基线不在同一条件上,整个对比作废」,这次是被写进了一个模块的立论里,然后在上面盖了一层缓存。
+
+该模块 2026-08-14 **整个删除**(owner 裁):判据面永不进缓存 ⇒ 缓存命中后只剩不许拿来判事的陈旧数字,比不印更坏(「无源恒缺席」)。抽取函数 `extractFailSet` 搬进唯一消费点 `accept-delta.ts`。
 
 **半 b —— 于是闸退化成恒绿。** `src/harness/goal/run-goal.ts:899-906` 跑一次验收命令取基线,`:942-943` 把它包成**只有一格**的报告(`id: 'accept'`,status = 退出码);`src/harness/goal/delta-compare.ts:88` 对 `fail → fail` 判 `unchanged-failure`、不进 `newFailures`、不红。**只要验收命令里含 `bun test`,基线红是大概率事件**,于是这条闸对任何真回归都会说"未新增失败"。
 
@@ -1106,7 +1110,7 @@ import 得到、类型对得上、调用写得出来。
 > **不稳定的红不许进基线。** 采基线时同一 HEAD 跑两次,只把**两次都红的**写进基线;单次红的进 flake 台账,不进判据。
 > **回归闸的粒度不许粗于「一条测试」。** 判据是一条 `ugrep`:比对器收到的 `steps` 数 —— 等于 1 就是这条。
 
-拼件已经全在仓里,不用新造:`blank-baseline.ts:42` 的 `failSet`(测试名集合,注释原话「判据是集合比较不是计数」)+ `scripts/omd-blank-baseline.ts:56` 的 `extractFailSet`,接到 `run-goal.ts:942` 那一格的位置即可。反向自检写法:造一对 before=fail / after=fail 但 `failSet` 不同的报告 —— 现在判 `unchanged-failure`(不红),接上之后必须判 `new-failure`。
+反向自检写法:造一对 before=fail / after=fail 但 `failSet` 不同的报告 —— 老口径判 `unchanged-failure`(不红),接上之后必须判 `new-failure`。
 
 **闸已落地**(2026-08-14,`src/harness/goal/accept-delta.ts` + `accept-delta.test.ts` + `run-goal.test.ts` 两条接线闸)。两半都做成了会红的东西:
 

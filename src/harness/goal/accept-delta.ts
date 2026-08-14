@@ -22,13 +22,33 @@
  *
  * ## 方向:宁可吵,不可静默
  *
- * `blank-baseline.ts:13-19` 已经把这条不对称写死过:
- * 「乐观陈旧(少记红)→ 真基线红被当新增 → 白烧修复轮(**可恢复,吵**);
- *   悲观陈旧(多记红)→ 真回归被赦免成"基线本来就红"(**静默,致命**)」。
+ * **乐观(少记红)→ 真基线红被当新增 → 白烧修复轮:可恢复,吵。
+ *   悲观(多记红)→ 真回归被赦免成"基线本来就红":静默,致命。**
  * 本模块两条修法都朝"吵"那边偏,第 2 条只把吵压到可用,不把它压成静默。
+ *
+ * ⚠ 这条不对称原本写在 `blank-baseline.ts`(空白基线的 keyed 缓存)的模块注释里,而那个
+ * 模块 2026-08-14 **整个删了** —— 它同一段注释里还写着「同 HEAD 两次的 fail 名字集逐条
+ * 相同」并拿它当缓存的立论,而支撑那句的观测是 n=2 且**跨两个 HEAD**。判据面既然永不进
+ * 缓存,缓存就没有剩下的用处。**不对称本身仍然成立,所以原话抄在这里,不留跨模块指针。**
  */
-import { extractFailSet } from '../blank-baseline';
 import { compareVerifyReports, type DeltaReport, type VerifyStep, type VerifyStepStatus } from './delta-compare';
+
+/**
+ * 从 `bun test` 输出提取 `(fail)` 名字集。
+ *
+ * ⚠ 2026-08-14 从 `src/harness/blank-baseline.ts` 搬来 —— 那个模块(空白基线的 keyed 缓存)
+ * **整个删掉了**:它的立论「同 HEAD 两次的 fail 名字集逐条相同」建在 n=2 且**跨两个 HEAD**
+ * 的观测上(`c9b01a8` / `14c282e`),而本条 S-37 量到的 4 个样本两两不相交。判据面既然
+ * 永不进缓存(owner 裁),缓存命中后只剩不许拿来判事的陈旧数字 —— 留着比不留更坏。
+ * 抽取函数搬进**唯一消费点**(本模块),不再有第二个家。
+ */
+export function extractFailSet(testOutput: string): string[] {
+  const out = new Set<string>();
+  for (const m of testOutput.matchAll(/^\(fail\)\s+(.+?)(?:\s+\[[\d.]+m?s\])?$/gm)) {
+    out.add(m[1]!.trim());
+  }
+  return [...out].sort();
+}
 
 /** 整条验收命令那一格的 step id —— 与 D-1 落地时的口径一致(老报告逐字兼容)。 */
 export const ACCEPT_STEP = 'accept';
