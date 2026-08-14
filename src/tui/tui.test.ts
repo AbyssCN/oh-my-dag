@@ -141,7 +141,7 @@ describe('★ /status —— 四段真话 (formatStatus, 只读零副作用)', (
     const out = formatStatus({
       seat: null,
       sessionId: 's-1',
-      pressure: { systemTokens: 0, harnessTokens: 0, historyTokens: 0, usedTokens: 100, windowTokens: 1000, ratio: null },
+      pressure: { systemTokens: 0, harnessTokens: 0, historyTokens: 0, usedTokens: 100, windowTokens: 1000, ratio: null, source: 'estimate' },
       usageToday: null,
     });
     expect(out).toContain('context: 100 (window unknown)');
@@ -152,7 +152,7 @@ describe('★ /status —— 四段真话 (formatStatus, 只读零副作用)', (
     const out = formatStatus({
       seat: null,
       sessionId: 's-1',
-      pressure: { systemTokens: 0, harnessTokens: 0, historyTokens: 0, usedTokens: 0, windowTokens: 1000, ratio: 0 },
+      pressure: { systemTokens: 0, harnessTokens: 0, historyTokens: 0, usedTokens: 0, windowTokens: 1000, ratio: 0, source: 'estimate' },
       usageToday: null,
     });
     expect(out).toContain('context: no turn yet');

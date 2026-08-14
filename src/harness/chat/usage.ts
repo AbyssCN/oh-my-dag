@@ -16,8 +16,8 @@
  * 压缩判定每轮都要算「已用 / 窗口」,但那个数只进了一句日志。人在屏幕前**看不到快满了**,
  * 直到某一轮突然被压缩。这里把它变成一个可显示的结构。
  */
-import type { AgentMessage } from '@earendil-works/pi-agent-core';
-import { estimateTokens } from '@earendil-works/pi-agent-core';
+import type { AgentMessage, Entry } from '@earendil-works/pi-agent-core';
+import { calculateContextTokens, estimateTokens, getLastAssistantUsage } from '@earendil-works/pi-agent-core';
 import type { ModelUsage } from '../../model/types';
 import { mapSessionUsage } from '../agent-leaf';
 
@@ -26,6 +26,24 @@ interface PiUsageLike {
   input?: number;
   output?: number;
   cacheRead?: number;
+}
+
+/**
+ * `AgentMessage[]` → `Entry[]` 的**只读投影**,只为喂给 `getLastAssistantUsage`。
+ *
+ * ⚠ 不改上游类型:这里造的 `MessageEntry` 除 `type`/`message` 外的字段
+ * (`id`/`seq`/`parentId`/`timestamp`)`getLastAssistantUsage` 根本不读,填占位值即可 ——
+ * 这层投影**只服务这一个调用**,不是"把 AgentMessage 变成 Entry"的通用适配器。
+ */
+function toEntries(messages: readonly AgentMessage[]): Entry[] {
+  return messages.map((message, i) => ({
+    type: 'message',
+    id: `t${i}`,
+    seq: i,
+    parentId: null,
+    timestamp: 0,
+    message,
+  }));
 }
 
 /**
@@ -68,12 +86,17 @@ export interface ContextPressure {
   harnessTokens: number;
   /** 会话历史。 */
   historyTokens: number;
-  /** 合计 = system + history。 */
+  /** 合计;来源见 `source`。 */
   usedTokens: number;
   /** 模型窗口;`0` = 目录里查不到(**不是"窗口为 0"**,是不知道)。 */
   windowTokens: number;
   /** 占比 0..1;窗口未知时 `null` —— 不拿一个编出来的分母算百分比。 */
   ratio: number | null;
+  /**
+   * `usedTokens` 的来源:`'usage'` = provider 真实回传的 usage;`'estimate'` = 查不到真实值,
+   * 回落到 `estimateTokens` 的估算。**别把两者混在一列里** —— 那会让"这个数准不准"变成猜。
+   */
+  source: 'usage' | 'estimate';
 }
 
 /**
@@ -81,6 +104,11 @@ export interface ContextPressure {
  *
  * ⚠ `windowTokens === 0` 时 `ratio` 返回 `null` 而不是 0:
  * "占了 0%" 与 "不知道占多少" 是两件事,压成一个数之后 UI 就会画出一条永远空的进度条。
+ *
+ * ⚠ `usedTokens` 优先取 provider 真实 usage(`getLastAssistantUsage` + `calculateContextTokens`),
+ * 取不到才回落估算:最后一条 assistant 消息若 `stopReason` 是 `aborted`/`error`,或
+ * `calculateContextTokens` 算出 `<= 0`(provider 没报数),`getLastAssistantUsage` 本身就已经
+ * 排除掉了 —— 这里只需按它返回 `undefined` 与否二选一, 不用自己重复判一遍。
  */
 export function analyzeContextPressure(opts: {
   systemPrompt: string;
@@ -94,7 +122,9 @@ export function analyzeContextPressure(opts: {
     0,
   );
   const historyTokens = opts.messages.reduce((n, m) => n + estimateTokens(m), 0);
-  const usedTokens = systemTokens + historyTokens;
+  const realUsage = getLastAssistantUsage(toEntries(opts.messages));
+  const usedTokens = realUsage ? calculateContextTokens(realUsage) : systemTokens + historyTokens;
+  const source: ContextPressure['source'] = realUsage ? 'usage' : 'estimate';
   const windowTokens = Math.max(0, opts.windowTokens);
   return {
     systemTokens,
@@ -103,5 +133,6 @@ export function analyzeContextPressure(opts: {
     usedTokens,
     windowTokens,
     ratio: windowTokens > 0 ? usedTokens / windowTokens : null,
+    source,
   };
 }

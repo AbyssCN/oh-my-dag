@@ -145,6 +145,65 @@ describe('工具集就是闸 —— 不可逆命令', () => {
   });
 });
 
+describe('★ bash 出口清洗 (2026-08-14, RED —— src/harness/agent-tools.ts 未改前必须红)', () => {
+  /**
+   * 契约: `docs/plan/2026-08-13-...四笔已定性的欠账...md` 第 2 笔。`sanitizeBinaryOutput`
+   * 沿用 pi 语义: 保留 `\t`/`\n`/`\r`, 删除其余 C0 控制字符 (0x00-0x1f, 排除上面三个) 与
+   * `U+FFF9..U+FFFB`。`sanitized` 只表示原始 chunk 曾被改变, 不得借用 `truncated` 表示;
+   * `sanitized===true` 时正文必须含固定提示 `[输出含控制字符, 已清洗]`, 否则不得出现。
+   *
+   * **证伪方式**: 此刻 `agent-tools.ts` 的 `bash.execute` 只回 `{ exitCode, truncated }`,
+   * 从不观察原始 chunk 是否被 `sanitizeBinaryOutput` 改过 —— 下面两条此刻必须失败
+   * (`details.sanitized` 是 `undefined`, 正文不含固定提示, `not.toContain` 一侧也测不出差异
+   * 因为控制字符本就被 pi 自己的 `sanitizeBinaryOutput` 删了, 但 `sanitized` 字段与提示语
+   * 缺失 → `toBe(true)`/`toContain(...)` 断言红)。改动落地后重跑本文件应转绿。
+   */
+  const CONTROL_PROBE = "printf 'PRE\\x00\\x1bMID' && printf '￹POST\\n\\tTAB\\n'; exit 5";
+  it('★ bash 清洗控制字符后必须显式报告', async () => {
+    const { bash } = toolset(fixture());
+    const r = await run(bash!, { command: CONTROL_PROBE });
+    const out = text(r);
+    const details = (r as { details?: { sanitized?: boolean } }).details;
+    // 普通文本/换行/tab 保留。
+    expect(out).toContain('PRE');
+    expect(out).toContain('MID');
+    expect(out).toContain('POST');
+    expect(out).toContain('TAB');
+    expect(out).toContain('\n');
+    expect(out).toContain('\t');
+    // 被过滤的字符不许漏进正文: NUL / ESC / U+FFF9。
+    expect(out).not.toContain(' ');
+    expect(out).not.toContain('');
+    expect(out).not.toContain('￹');
+    // 固定提示必须出现, 且与 [exit N] 提示同时存在、互不吞没 —— 证明清洗只作用于原始
+    // chunk, 不作用于后拼的提示文本 (提示文本本身是纯 ASCII, 若被吞则说明拼接顺序错了)。
+    expect(out).toContain('[输出含控制字符, 已清洗]');
+    expect(out).toContain('[exit 5]');
+    expect(details?.sanitized).toBe(true);
+  });
+  it('★ 纯文本命令不许误报清洗 (sanitized===false 时不得出现固定提示)', async () => {
+    const { bash } = toolset(fixture());
+    const r = await run(bash!, { command: 'echo plain-text-no-control-chars' });
+    const out = text(r);
+    const details = (r as { details?: { sanitized?: boolean } }).details;
+    expect(out).not.toContain('[输出含控制字符, 已清洗]');
+    expect(details?.sanitized).toBe(false);
+  });
+  it('★ bash 先清洗再按展示字节计算截断', async () => {
+    const { bash } = toolset(fixture());
+    // 先吐 60000 字节可删除的 NUL (远超 DEFAULT_MAX_BYTES=50KB), 再吐一段短的可见尾部。
+    // 若实现先按原始字节计入预算再清洗, 这段可见尾部的展示预算会被将被删除的 NUL 提前
+    // 耗光, 尾部可能被截断/丢失; 若先清洗再计预算, 60000 字节的 NUL 清洗后是 0 字节,
+    // 预算几乎全部留给可见尾部 —— 尾部必须完整、且不许被判 truncated。
+    const r = await run(bash!, { command: "head -c 60000 /dev/zero; echo TAIL-OK-VISIBLE" });
+    const out = text(r);
+    const details = (r as { details?: { sanitized?: boolean; truncated?: boolean } }).details;
+    expect(out).toContain('TAIL-OK-VISIBLE');
+    expect(details?.sanitized).toBe(true);
+    expect(details?.truncated).toBe(false);
+  });
+});
+
 describe('读写改的基本语义', () => {
   it('read 带 1-indexed 行号, offset/limit 切片后行号仍是真实行号', async () => {
     const root = fixture();

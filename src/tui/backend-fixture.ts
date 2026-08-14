@@ -75,6 +75,7 @@ export const FIXTURE_PRESSURE = {
   usedTokens: 12_000,
   windowTokens: 200_000,
   ratio: 12_000 / 200_000,
+  source: 'estimate',
 } as const;
 
 /**

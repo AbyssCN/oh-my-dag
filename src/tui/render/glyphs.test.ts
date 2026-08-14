@@ -120,14 +120,14 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
     ['statusbar:行①', formatStatusLine({
       ws: { repo: 'oh-my-dag', branch: 'main', dirty: 2, worktree: 'fanin' },
       seat: 'kimi-coding:k3',
-      pressure: { systemTokens: 12000, harnessTokens: 8000, historyTokens: 34000, usedTokens: 46000, windowTokens: 200000, ratio: 0.23 },
+      pressure: { systemTokens: 12000, harnessTokens: 8000, historyTokens: 34000, usedTokens: 46000, windowTokens: 200000, ratio: 0.23, source: 'estimate' },
       session: { costUsd: 0.83, unpriced: false, calls: 3 },
       win: { since: 0, calls: 5, in: 312000, out: 18400, cacheHit: 276000, costUsd: 0.42, unpriced: false, byProvider: [] },
     })],
     ['statusbar:行①(窗口未知)', formatStatusLine({
       ws: { repo: 'x', branch: null, dirty: 0, worktree: null },
       seat: 'a:b',
-      pressure: { systemTokens: 4000, harnessTokens: 0, historyTokens: 1000, usedTokens: 5000, windowTokens: 0, ratio: null },
+      pressure: { systemTokens: 4000, harnessTokens: 0, historyTokens: 1000, usedTokens: 5000, windowTokens: 0, ratio: null, source: 'estimate' },
       session: null,
       win: null,
     })],
@@ -136,7 +136,7 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
       {
         ws: { repo: 'oh-my-dag', branch: 'main', dirty: 2, worktree: 'fanin' },
         seat: 'kimi-coding:k3',
-        pressure: { systemTokens: 12000, harnessTokens: 8000, historyTokens: 34000, usedTokens: 46000, windowTokens: 200000, ratio: 0.23 },
+        pressure: { systemTokens: 12000, harnessTokens: 8000, historyTokens: 34000, usedTokens: 46000, windowTokens: 200000, ratio: 0.23, source: 'estimate' },
         session: { costUsd: 0.83, unpriced: false, calls: 3 },
         win: { since: 0, calls: 5, in: 312000, out: 18400, cacheHit: 276000, costUsd: 0.42, unpriced: false, byProvider: [
           { provider: 'deepseek', calls: 3, in: 200000, out: 10000, cacheHit: 180000, costUsd: 1.2, unpriced: false },

@@ -20,6 +20,8 @@
  *  VER-2b 零节点产出 (results 空) → 同样直接 fail: **0 有效样本 ≠ 通过**, 且与 VER-2 分开报判词。
  *  VER-3 信 verifier 的 pass 布尔 (任务要求逐条对照已进 prompt); reason 必带 (fail 时点名缺啥)。
  */
+import { existsSync, statSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
 import { z } from 'zod';
 import { send, listProviders, assertModelResolvable } from '../model/gateway';
 import { resolveRoleModel, listRoleModels } from '../model/gateway';
@@ -46,6 +48,8 @@ export type VerifierFn = (req: {
   task: string;
   plan: ConductorPlan;
   results: Record<string, LeafResult>;
+  /** S-33: 产物三态 (registered/unregistered/missing) 的解析根 (相对 output_path 按它解析)。省略 = 不判产物三态, 卷面逐字节同旧。 */
+  artifactRoot?: string;
 }) => Promise<VerifierVerdict>;
 
 /** 校验启停状态标 (让"校验已禁用"可见, 防静默丢护栏)。供 boot log / TUI / 状态行读。 */
@@ -107,12 +111,25 @@ export function withBlameFence(reason: string, entries: BlameEntry[]): string {
  * ⚠ 失败节点的正文仍是 `(failed)` (原样未动 —— 那条没有校准读数支持, 别搭车改);
  * 但退出码照给, 因为 `-1`(闸拒, 命令没跑) 与 `1`(命令跑了、断言没成立) 的下一步相反,
  * 而这个区分此前只能靠下游毒化文案**间接**漏给它。
+ *
+ * **S-33 产物三态** (2026-08-14): `output_path` 声明了写的节点, 每条都对**盘上真实状态** (`statSync`)
+ * 核一次, 分三态入卷 (`artifact: <path> [<state>]`):
+ *   - `registered`   盘上有 且 leaf 自报的 `filesTouched` 里也有 —— 正常态。
+ *   - `unregistered` 盘上有 但 `filesTouched` 没登记 —— **单独标出并显式告警**: 这不是产物问题,
+ *     是**节点上报链的缺陷** (leaf 真写了却没报), 别让判卷官误读成"没写"。
+ *   - `missing`      盘上没有 (不论 `filesTouched` 怎么说) —— 声明了却不存在, 该拦。
+ * ⚠ `missing` 与失败节点写死的 `(failed)` 正文是**两条独立的线**: 正文不动 (上一条注释的约束),
+ * 但缺失的具体路径必须单独出现在 `artifact:` 行上, 不许被 `(failed)` 整体替换吞掉。
+ * 只在传了 `artifactRoot` 时判 (省略 = 不判, 卷面逐字节同旧, 老调用方零回归) —— 相对路径按它解析。
  */
 export function summarizeResults(
   plan: ConductorPlan,
   results: Record<string, LeafResult>,
+  artifactRootOrMaxPerNode?: string | number,
   maxPerNode = 1200,
 ): string {
+  const artifactRoot = typeof artifactRootOrMaxPerNode === 'string' ? artifactRootOrMaxPerNode : undefined;
+  const effMaxPerNode = typeof artifactRootOrMaxPerNode === 'number' ? artifactRootOrMaxPerNode : maxPerNode;
   const lines: string[] = [`plan: ${plan.name} · ${Object.keys(results).length} nodes`];
   for (const [id, leaf] of Object.entries(results)) {
     const node = plan.nodes[id];
@@ -123,7 +140,25 @@ export function summarizeResults(
         ? ''
         : `exit ${leaf.exitCode}${leaf.exitCode < 0 ? ' (command-leaf 闸拒 — 命令未执行)' : ''}`,
     ].filter(Boolean);
-    const body = leaf.status === 'failed' ? '(failed)' : (leaf.output ?? '').slice(0, maxPerNode);
+    if (artifactRoot && node?.output_path) {
+      const resolved = isAbsolute(node.output_path) ? node.output_path : join(artifactRoot, node.output_path);
+      let onDisk = false;
+      try {
+        statSync(resolved);
+        onDisk = existsSync(resolved);
+      } catch {
+        onDisk = false;
+      }
+      const touched = (leaf.filesTouched ?? []).includes(node.output_path);
+      const state = !onDisk ? 'missing' : touched ? 'registered' : 'unregistered';
+      meta.push(`artifact: ${node.output_path} [${state}]`);
+      if (state === 'unregistered') {
+        meta.push(
+          `⚠ ${node.output_path} 盘上真有, 但节点未在 filesTouched 里登记 —— 这是节点上报链的缺陷, 不是产物没写。`,
+        );
+      }
+    }
+    const body = leaf.status === 'failed' ? '(failed)' : (leaf.output ?? '').slice(0, effMaxPerNode);
     lines.push([head, ...meta, body].join('\n'));
   }
   return lines.join('\n\n');
@@ -244,7 +279,7 @@ export function createDefaultVerifier(opts: DefaultVerifierOpts): VerifierFn {
   // D-5 / G-4: **装配期**就把卷面渲染一次并断言真值都在上面 —— 缺即抛 = 拒起跑。
   // 放在这里而不是判卷时: 判卷时才发现, 已经跑完一整张 DAG 了 (那笔账正是这条契约要省的)。
   assertJudgingTruthsCarried(truths, verifierPrompt('', '', truths));
-  return async ({ task, plan, results }): Promise<VerifierVerdict> => {
+  return async ({ task, plan, results, artifactRoot }): Promise<VerifierVerdict> => {
     if (!opts.verifierModel) {
       throw new Error('verifier: verifierModel 必填 (无硬默认, 形如 provider:modelId)');
     }
@@ -261,7 +296,7 @@ export function createDefaultVerifier(opts: DefaultVerifierOpts): VerifierFn {
     if (leaves.every((l) => l.status === 'failed')) {
       return { pass: false, reason: '所有 leaf 执行失败 — 计划无产出', usage: { in: 0, out: 0 } };
     }
-    const summary = summarizeResults(plan, results);
+    const summary = summarizeResults(plan, results, artifactRoot);
     // A② GO fallback: verifierModel 走 opencode-go 端点溢出 → 回退 ds-v4-pro 官方 (跨模型校验不能因 GO 抖动整轮失败)。
     const r = await withGoFallback(opts.verifierModel, (m) =>
       call({

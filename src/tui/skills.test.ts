@@ -95,6 +95,25 @@ describe('★ 唤起 = 注入纪律, 不是执行', () => {
     const b = loadSkillBlock('omd-council', '', [skillsRoot()]) as { block: string };
     expect(b.block).not.toContain('---\nname:');
   });
+
+  test('★ 端到端: parseSkillCommand → loadSkillBlock → 正文占位符被 rest 真实替换', () => {
+    // 覆盖完整生产链路(parseSkillCommand 切参 → loadSkillBlock 唤起 → applySkillArguments 替换),
+    // 不是孤立测 applySkillArguments —— 证伪方式: 把 loadSkillBlock 内的替换调用去掉
+    // (改回 `src.body.trim()` 不代入 args), 本用例的 `$1`/`$ARGUMENTS` 断言会残留占位符原文, 变红。
+    const root = mkdtempSync(join(tmpdir(), 'omd-skill-args-'));
+    mkdirSync(join(root, 'x-demo'));
+    writeFileSync(
+      join(root, 'x-demo', 'SKILL.md'),
+      ['---', 'description: demo', '---', '目标文件: $1', '全部参数: $ARGUMENTS'].join('\n'),
+    );
+    const cmd = parseSkillCommand('/skill x-demo "src/foo bar.ts" strict');
+    expect(cmd).toEqual({ kind: 'invoke', name: 'x-demo', rest: '"src/foo bar.ts" strict' });
+    if (cmd?.kind !== 'invoke') throw new Error('expected invoke');
+    const b = loadSkillBlock(cmd.name, cmd.rest, [root]) as { block: string };
+    expect(b.block).toContain('目标文件: src/foo bar.ts');
+    expect(b.block).toContain('全部参数: src/foo bar.ts strict');
+    expect(b.block).not.toMatch(/\$1|\$ARGUMENTS/);
+  });
 });
 
 describe('formatSkillList', () => {

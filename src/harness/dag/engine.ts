@@ -3711,7 +3711,9 @@ async function runDagInternalCore(
     let verifierDown = false;
     const runVerifier = async (): Promise<VerifierVerdict> => {
       try {
-        return await config.verifier!({ task, plan: exec.plan, results: exec.results });
+        // S-33 集成接线: artifactRoot 必须给, 终审三态 (registered/unregistered/missing) 才不会
+        // 全程沉默 (summarizeResults 只在 artifactRoot 存在时判产物, 见 verifier.ts:123)。
+        return await config.verifier!({ task, plan: exec.plan, results: exec.results, artifactRoot: config.continuity?.repoRoot ?? process.cwd() });
       } catch (err) {
         verifierDown = true;
         const detail = String(err).slice(0, 300);

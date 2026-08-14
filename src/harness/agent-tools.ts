@@ -29,6 +29,7 @@ import {
   DEFAULT_MAX_LINES,
   GREP_MAX_LINE_LENGTH,
   executeShellWithCapture,
+  sanitizeBinaryOutput,
   truncateHead,
   truncateLine,
 } from '@earendil-works/pi-agent-core';
@@ -799,7 +800,35 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
        */
       const throttleMs = 120;
       let lastEmit = 0;
-      const r = await executeShellWithCapture(env, toRun, {
+      /**
+       * ★ **控制字符清洗探测**(2026-08-14, 第 2 笔)。`executeShellWithCapture` 内部本就会对
+       * 每片 chunk 调 `sanitizeBinaryOutput` 再拼进 `output`(pi 源码 `onChunk` 里先清洗再计
+       * 字节数)—— 所以到手的 `output` **已经干净**,事后对它 diff 一次必然是 no-op,永远测不出
+       * "原始输出脏过没有"(实测: `printf 'PRE\x00\x1bMID'` 走一遍拿到的 `output` 就是
+       * `"PREMID"`,NUL/ESC 早没了)。真正的脏信号只活在 `env.exec` 传给 `onStdout`/`onStderr`
+       * 的**原始** chunk 里,而那层由 `executeShellWithCapture` 自己接管、不对外暴露。
+       * 于是这里包一层 `env`(只代理 `exec`,其余方法走原型链落到真实 `env` 上),在
+       * `executeShellWithCapture` 把它的内部 onChunk 塞进 `onStdout`/`onStderr` 之前先接一手
+       * 原始 chunk 判脏、再原样转发 —— 不改变真实执行/截断路径,只加一条旁路观测。
+       */
+      let sawRawControlChars = false;
+      const rawChunkWatcher = (chunk: string): void => {
+        if (!sawRawControlChars && sanitizeBinaryOutput(chunk) !== chunk) sawRawControlChars = true;
+      };
+      const execEnv = Object.create(env) as typeof env;
+      execEnv.exec = (cmd, execOptions) =>
+        env.exec(cmd, {
+          ...execOptions,
+          onStdout: (chunk: string) => {
+            rawChunkWatcher(chunk);
+            execOptions?.onStdout?.(chunk);
+          },
+          onStderr: (chunk: string) => {
+            rawChunkWatcher(chunk);
+            execOptions?.onStderr?.(chunk);
+          },
+        });
+      const r = await executeShellWithCapture(execEnv, toRun, {
         timeout: timeout && timeout > 0 ? timeout : defaultTimeout,
         ...(signal ? { abortSignal: signal } : {}),
         ...(onUpdate
@@ -820,6 +849,12 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
       });
       if (!r.ok) throw new Error(`bash 失败: ${r.error.message}`);
       const { output, exitCode, cancelled, truncated } = r.value;
+      // 出口清洗: 正文过一遍 `sanitizeBinaryOutput`(通常是 no-op, 因为上面已证 `output` 到手时
+      // 早被 pi 内部清过 —— 这里仍显式做一遍是防御性的, 不依赖上游行为不变)。`sanitized`
+      // 只看旁路探测到的**原始** chunk 是否曾被改过, 不借用 `truncated` 表意 (NULL≠0 同一纪律:
+      // 两件事分两列)。
+      const cleanOutput = sanitizeBinaryOutput(output);
+      const sanitized = sawRawControlChars;
       // SDD S3 推断档 (只记不拦): bash 成功 (exit 0 且未被中止) → 盘上核实的写目标记 inferred
       // (hash=NULL —— 推断档不知道写了什么, NULL≠0 纪律)。复用 verifiedShellWriteTargets 同一条
       // 判据不抄第二份; 与 strict 档分列不合并 (台账按 source 落)。
@@ -832,10 +867,11 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
         cancelled ? '[命令被中止]' : '',
         exitCode !== undefined && exitCode !== 0 ? `[exit ${exitCode}]` : '',
         truncated ? '[输出已截断, 只保留尾部]' : '',
+        sanitized ? '[输出含控制字符, 已清洗]' : '',
       ]
         .filter(Boolean)
         .join(' ');
-      return textResult(`${output}${tail ? `\n${tail}` : ''}`, { exitCode, truncated });
+      return textResult(`${cleanOutput}${tail ? `\n${tail}` : ''}`, { exitCode, truncated, sanitized });
     },
   };
 

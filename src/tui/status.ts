@@ -39,6 +39,8 @@ export function formatStatus(o: StatusInput): string {
 
 function formatContext(p: ContextPressure | null): string {
   if (!p || p.usedTokens <= 0) return 'context: no turn yet';
-  if (p.ratio === null) return `context: ${humanTokens(p.usedTokens)} (window unknown)`;
-  return `context: ${humanTokens(p.usedTokens)}/${humanTokens(p.windowTokens)} ${Math.round(p.ratio * 100)}%`;
+  // 估算值标注出来:「准不准」是渲染面必须如实转述的一部分,不是内部细节。
+  const tag = p.source === 'estimate' ? ' (est.)' : '';
+  if (p.ratio === null) return `context: ${humanTokens(p.usedTokens)} (window unknown)${tag}`;
+  return `context: ${humanTokens(p.usedTokens)}/${humanTokens(p.windowTokens)} ${Math.round(p.ratio * 100)}%${tag}`;
 }

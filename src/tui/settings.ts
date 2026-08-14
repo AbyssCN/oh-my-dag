@@ -119,7 +119,7 @@ export function buildSettings(i: SettingsInput): SettingItem[] {
             i.pressure.ratio === null
               ? `${humanTokens(i.pressure.usedTokens)} (window unknown)`
               : `${humanTokens(i.pressure.usedTokens)}/${humanTokens(i.pressure.windowTokens)} ${Math.round(i.pressure.ratio * 100)}%`,
-          detail: `system ${humanTokens(i.pressure.systemTokens)} · harness ${humanTokens(i.pressure.harnessTokens)} · history ${humanTokens(i.pressure.historyTokens)}`,
+          detail: `system ${humanTokens(i.pressure.systemTokens)} · harness ${humanTokens(i.pressure.harnessTokens)} · history ${humanTokens(i.pressure.historyTokens)} · ${i.pressure.source === 'usage' ? 'real usage' : 'estimated'}`,
         }
       : // 还没跑过一轮 —— 说真话, 不画一行 0。
         { key: 'ctx', label: 'context', value: '(no turn run yet)' },

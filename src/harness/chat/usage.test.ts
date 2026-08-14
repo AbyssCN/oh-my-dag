@@ -17,8 +17,8 @@ import { analyzeContextPressure, sumUsage, turnUsages } from './usage';
 
 const MODEL = 'deepseek:deepseek-v4-flash';
 const u = (input: number, output: number, cacheRead = 0) => ({ input, output, cacheRead, cacheWrite: 0, totalTokens: 0 });
-const assistant = (text: string, usage?: ReturnType<typeof u>): AgentMessage =>
-  ({ role: 'assistant', content: [{ type: 'text', text }], timestamp: 1, stopReason: 'stop', ...(usage ? { usage } : {}) }) as unknown as AgentMessage;
+const assistant = (text: string, usage?: ReturnType<typeof u>, stopReason: string = 'stop'): AgentMessage =>
+  ({ role: 'assistant', content: [{ type: 'text', text }], timestamp: 1, stopReason, ...(usage ? { usage } : {}) }) as unknown as AgentMessage;
 const user = (t: string): AgentMessage => ({ role: 'user', content: t, timestamp: 1 }) as AgentMessage;
 
 describe('turnUsages', () => {
@@ -80,6 +80,70 @@ describe('analyzeContextPressure', () => {
   test('没有 harness 文件 → harnessTokens 是 0(真值, 不是缺数据)', () => {
     expect(analyzeContextPressure({ systemPrompt: 'x', messages: [], windowTokens: 10 }).harnessTokens).toBe(0);
   });
+
+  // 契约第 3 笔(RED, 只改测试, 不改 usage.ts —— 此刻必须红):
+  // context 压力优先用 provider 真实 usage(`getLastAssistantUsage` + `calculateContextTokens`),
+  // 取不到才回落现有 `estimateTokens` 估算, 并把走的哪条路如实记进新增字段 `source`。
+
+  test('★ 有合法 assistant usage → usedTokens 取真实值, source 标 "usage"(证伪: 注释掉真实值分支只留估算, 此断言会因 usedTokens 变成估算数值而红)', () => {
+    const p = analyzeContextPressure({
+      systemPrompt: 'x'.repeat(4000),
+      messages: [assistant('答', u(500, 100, 50))], // calculateContextTokens = 500+100+50+0 = 650
+      windowTokens: 100_000,
+    });
+    expect(p.usedTokens).toBe(650);
+    expect((p as unknown as { source: string }).source).toBe('usage');
+  });
+
+  test('★ 没有 usage 字段 → 回落估算, source 标 "estimate"(证伪: 若误把"无 usage"当真实值 0, usedTokens 会变 0 而不是估算的正数)', () => {
+    const p = analyzeContextPressure({
+      systemPrompt: 'x'.repeat(400),
+      messages: [assistant('答')],
+      windowTokens: 1000,
+    });
+    expect((p as unknown as { source: string }).source).toBe('estimate');
+    expect(p.usedTokens).toBe(p.systemTokens + p.historyTokens);
+  });
+
+  test('★ stopReason 为 aborted/error → 即便带 usage 也回落估算(证伪: 若不查 stopReason, usedTokens 会取到那条 usage 的真实值 999 而不是估算数)', () => {
+    const pAborted = analyzeContextPressure({
+      systemPrompt: 'x'.repeat(400),
+      messages: [assistant('答', u(900, 99), 'aborted')],
+      windowTokens: 1000,
+    });
+    const pError = analyzeContextPressure({
+      systemPrompt: 'x'.repeat(400),
+      messages: [assistant('答', u(900, 99), 'error')],
+      windowTokens: 1000,
+    });
+    for (const p of [pAborted, pError]) {
+      expect((p as unknown as { source: string }).source).toBe('estimate');
+      expect(p.usedTokens).toBe(p.systemTokens + p.historyTokens);
+      expect(p.usedTokens).not.toBe(999);
+    }
+  });
+
+  test('★ totalTokens 与四项和皆非正 → 回落估算(证伪: 若把 calculateContextTokens 的 0 误当真实值直接采用, usedTokens 会是 0 而不是估算的正数)', () => {
+    const p = analyzeContextPressure({
+      systemPrompt: 'x'.repeat(400),
+      messages: [assistant('答', u(0, 0, 0))], // input+output+cacheRead+cacheWrite=0, totalTokens=0
+      windowTokens: 1000,
+    });
+    expect((p as unknown as { source: string }).source).toBe('estimate');
+    expect(p.usedTokens).toBe(p.systemTokens + p.historyTokens);
+    expect(p.usedTokens).toBeGreaterThan(0);
+  });
+
+  test('★ windowTokens=0 时即便取到真实 usage, ratio 仍是 null(证伪: 若把 ratio 判定误绑到 source 而非 windowTokens, 这里会拿到一个非 null 的数)', () => {
+    const p = analyzeContextPressure({
+      systemPrompt: 'x',
+      messages: [assistant('答', u(500, 100, 50))],
+      windowTokens: 0,
+    });
+    expect((p as unknown as { source: string }).source).toBe('usage');
+    expect(p.ratio).toBeNull();
+    expect(p.windowTokens).toBe(0);
+  });
 });
 
 describe('★ 接进账本了 —— 这是这一片补的缺口', () => {
@@ -134,5 +198,9 @@ describe('★ 接进账本了 —— 这是这一片补的缺口', () => {
     expect(r.pressure.usedTokens).toBeGreaterThan(0);
     expect(r.pressure.windowTokens).toBeGreaterThan(0); // deepseek-v4-flash 目录里有窗口
     expect(r.pressure.ratio).not.toBeNull();
+    // ★ 集成接线回归: 真实运行时 (runChatTurn → agent.ts:332 的 analyzeContextPressure 装配点)
+    // 必须真的走到 getLastAssistantUsage 消费链, 不是估算兜底 (证伪: 若 agent.ts 漏传 `messages: after`
+    // 或漏传含真实 usage 的消息, source 会掉回 'estimate', 这条断言当场红)。
+    expect((r.pressure as unknown as { source: string }).source).toBe('usage');
   });
 });

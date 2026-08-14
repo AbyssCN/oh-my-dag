@@ -14,6 +14,9 @@
  * 判据取**模型真收到的 prompt**(不是只测辅助函数的返回值): 中间少接一段, 上面那条就白立了。
  */
 import { describe, expect, test } from 'bun:test';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createDefaultVerifier, summarizeResults } from './verifier';
 import type { ConductorPlan } from './conductor-plan';
 import type { LeafResult } from './dag/engine';
@@ -81,5 +84,75 @@ describe('verifier 的证据面: command 节点必须带命令串与退出码', 
     const s = summarizeResults(plan, { count: leaf({ id: 'count', output: long, exitCode: 0 }) }, 100);
     expect(s).toContain('x'.repeat(100));
     expect(s).not.toContain('x'.repeat(101));
+  });
+});
+
+/**
+ * S-33 终审产物面三态闸 —— GREEN (SDD `docs/plan/2026-08-13-在-home-nick-repos-oh-my-dag-仓里还四笔已定性的欠账-四笔互相独立-可.md` 第3笔, 落地 2026-08-14)。
+ *
+ * `summarizeResults` 第三形参收窄成 `string | number`: 传 string = `artifactRoot` (S-33 产物三态判据的解析根,
+ * 省略 = 不判, 卷面逐字节同旧); 传 number = 老 `maxPerNode` (向后兼容, 见上一个 describe 的截断用例)。
+ * 每个声明了 `output_path` 的节点跑一次 `statSync` 核盘上真实状态, 三态互斥穷尽写入
+ * `artifact: <path> [<state>]`:
+ *   registered   声明了 (`output_path`) 且盘上真有 且 `filesTouched` 登记了
+ *   unregistered 声明了 且盘上真有 但 `filesTouched` 没登记 —— 单独标出 + 卷面附带告警 (节点上报链缺陷)
+ *   missing      声明了 但盘上没有 —— 且这条节点本身 `status: 'failed'`, 钉「具体缺失路径不能被
+ *                失败节点写死的 `(failed)` 正文抹掉」(那条正文原样不动, 见 verifier.ts:107)
+ */
+describe('S-33 终审产物面三态闸', () => {
+  const artifactRoot = mkdtempSync(join(tmpdir(), 's33-'));
+  writeFileSync(join(artifactRoot, 'reg.txt'), 'registered fixture');
+  writeFileSync(join(artifactRoot, 'unreg.txt'), 'unregistered fixture');
+  // miss.txt 故意不建 (missing 态)。
+
+  const s33Plan: ConductorPlan = {
+    name: 's33',
+    nodes: {
+      reg: { goal: '登记且真写', executor: 'leaf', output_path: 'reg.txt' },
+      unreg: { goal: '真写但没登记进 filesTouched', executor: 'leaf', output_path: 'unreg.txt' },
+      miss: { goal: '声明了但没写, 节点本身也失败', executor: 'leaf', output_path: 'miss.txt' },
+    },
+  };
+
+  const s33Results: Record<string, LeafResult> = {
+    reg: leaf({ id: 'reg', status: 'done', filesTouched: ['reg.txt'] }),
+    unreg: leaf({ id: 'unreg', status: 'done', filesTouched: [] }),
+    miss: leaf({ id: 'miss', status: 'failed', filesTouched: [] }),
+  };
+
+  test('★ S-33 盘上存在但未登记是 unregistered，不是 missing', () => {
+    const s = summarizeResults(s33Plan, s33Results, artifactRoot);
+    expect(s).toContain('artifact: unreg.txt [unregistered]');
+    expect(s).not.toContain('artifact: unreg.txt [missing]');
+  });
+
+  test('★ S-33 registered / unregistered / missing 三态互斥且穷尽', () => {
+    const s = summarizeResults(s33Plan, s33Results, artifactRoot);
+    const rows = [...s.matchAll(/artifact: (\S+) \[(\w+)\]/g)].map((m) => ({ path: m[1], state: m[2] }));
+    expect(rows).toEqual([
+      { path: 'reg.txt', state: 'registered' },
+      { path: 'unreg.txt', state: 'unregistered' },
+      { path: 'miss.txt', state: 'missing' },
+    ]);
+    // 失败节点的正文仍写死 `(failed)` (S-33 不动那条, verifier.ts:107) —— 但产物三态是独立维度,
+    // `miss.txt` 的具体缺失路径不许被这句抹掉/吞掉。
+    expect(s).toContain('(failed)');
+    expect(s).toContain('artifact: miss.txt [missing]');
+  });
+
+  test('★ S-33 三态真的进入模型收到的终审 prompt', async () => {
+    let seen = '';
+    const verifier = createDefaultVerifier({
+      verifierModel: 'fake:m',
+      callModelFn: (async (req: { messages: Array<{ content: string }> }) => {
+        seen = req.messages.map((m) => m.content).join('\n');
+        return { text: '', parsed: { pass: true, reason: 'ok' }, usage: { in: 1, out: 1 } };
+      }) as never,
+    });
+    const v = await verifier({ task: '核验三态产物', plan: s33Plan, results: s33Results, artifactRoot });
+    expect(v.pass).toBe(true);
+    expect(seen).toContain('artifact: reg.txt [registered]');
+    expect(seen).toContain('artifact: unreg.txt [unregistered]');
+    expect(seen).toContain('artifact: miss.txt [missing]');
   });
 });

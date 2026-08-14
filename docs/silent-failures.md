@@ -1002,9 +1002,9 @@ import 得到、类型对得上、调用写得出来。
 **怎么抓**:
 > **判「文件缺失」之前,先 `stat` 一次磁盘。`artifactPaths` 是节点自报的登记册,不是文件系统。**
 
-落成闸的形状(已知,未排期):终审 prompt 的产物面在装配时对**声明写集的每一条路径**跑一次 stat,按三态入 prompt —— `on-disk + registered` / `on-disk + unregistered`(有节点没如实登记,**这一格本身要单独告警**,它是节点上报链的缺陷)/ `missing`。反向自检的形状也已知:造一个「文件在盘上、`artifactPaths` 里没有」的夹具,终审面必须给出 `unregistered` 而不是 `missing`,否则红。
+落成闸:`summarizeResults`(`src/harness/verifier.ts:125`)对每个声明了 `output_path` 的节点跑一次 `statSync`,按三态写入 `artifact: <path> [<state>]` —— `registered` / `unregistered`(有节点没如实登记,**这一格本身单独告警**,它是节点上报链的缺陷,`verifier.ts:155`)/ `missing`;`createDefaultVerifier`(`verifier.ts:299`)把 `artifactRoot` 一路传进去,三态因此进入终审真收到的 prompt。反向自检夹具:`verifier-evidence.test.ts:102-158`,`unreg.txt` 真写到盘上但故意不登记进 `filesTouched`(`:105` `:112` `:119`),断言它判 `unregistered` 不是 `missing`(`:125-126`)。**实跑证伪**:把 `verifier.ts:153` 的三态判定改回二态(`!onDisk ? 'missing' : 'registered'`,吞掉 `unregistered`)→ 3 条测试当场红;改回原判定 → 8 pass / 0 fail。
 
-**闸的状态**:**还没有。** 在那之前是一条提问纪律,且**对读判词的人也成立**:终审说「文件缺失」时,自己去 `ls` 一次再信。
+**闸的状态**:**已落地**(2026-08-14)。落地前的兜底纪律仍然有效,留作双保险:终审说「文件缺失」时,自己去 `ls` 一次再信。
 
 **回链**:run `a7a9bc0a-0091-44d2-a854-4ef0d1dc0c13`;Wave 1 封账 commit `edb3f53`。
 
@@ -1113,6 +1113,7 @@ import 得到、类型对得上、调用写得出来。
 | 产物闸的输入字段还在发(同一行的邻居) | `src/harness/agent-leaf-filestouched-wiring.test.ts` | `filesTouched` 生产端**无条件**发(空数组是读数,缺席会被下游 `?? []` 读成「没碰文件」→ 恒冤杀复活)+ engine 产物闸还在读(**带反向自检**:删发射行 → 3 红;改成有条件发射 → 1 红;消费端改名 → 1 红) | S-35 |
 | 隔离档 git 能用 | `src/harness/hooks/bwrap.ts` · `bwrap-containment.test.ts:98` | 真造「主 repo + worktree」跑真 bwrap:ro 共享 `.git` + rw 本树 gitdir;jail 内写 ref/objects 仍拒(**带反向自检**:删 `gitBinds` 段 → ② 红,①③ 仍绿。⚠ 无 bwrap 的机器自报**未测**,不是绿) | S-34 |
 | 空转签名不被 `cd` 前缀吃掉 | `src/harness/hooks/drift-detector.ts` · `drift-detector.test.ts:103` | 取 50 字符窗口前先剥 `cd <路径> &&` 链,尺子不因 jail 路径变钝(**带反向自检**:去掉 `stripCdPrefix` → 三条不同命令签名全等,红) | S-34 |
+| 终审产物三态(unregistered ≠ missing) | `src/harness/verifier.ts:125` · `verifier-evidence.test.ts:102` | `summarizeResults` 对每个声明 `output_path` 的节点跑 `statSync`,按 registered/unregistered/missing 三态写入 prompt,`unregistered` 单独告警(`verifier.ts:155`)(**带反向自检**:三态判定改回二态、吞掉 `unregistered` → 3 条红) | S-33 |
 
 **S-24 也没有闸** —— 声明端在 `node_modules` 里,仓内的消费点/可达性闸**结构上够不着**。
 落在纪律上的是一条前置动作:**压架构之前读上游的 `.js` 不读 `.d.ts`**(三条便宜读法见该条)。
@@ -1122,7 +1123,7 @@ import 得到、类型对得上、调用写得出来。
 把一次静默降级变成一条可 grep 的记录。**别把它当闸看**:它不阻止事情发生,只保证下次看得见。
 **S-31 没有闸,只有提问纪律** —— 外部案例组 (Cairness 纸老虎清单):每个声明字段 grep 它的消费者,数量为 0 即纸。机械化量过 (按调用者数扫全仓 35% 噪声,见 S-3 的 D-13),只能当纪律。
 
-**S-33 没有闸,只有提问纪律** —— 闸的形状已知 (终审产物面按 `stat` 分三态:registered / **unregistered** / missing),未排期。在那之前:终审说「文件缺失」时,自己 `ls` 一次再信。
+**S-33 闸已落地**(2026-08-14,`src/harness/verifier.ts:125` + `verifier-evidence.test.ts:102`)——终审产物面按 `stat` 分三态:registered / **unregistered** / missing,`unregistered` 单独告警。落地前的兜底纪律仍留作双保险:终审说「文件缺失」时,自己 `ls` 一次再信。
 
 **每一条闸都做过变异验证**(故意破坏 → 必须红)。
 一条**永远绿的闸比没有闸更坏** —— 你会以为看过了。所以:

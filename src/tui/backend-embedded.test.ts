@@ -25,7 +25,7 @@ function fakeTurn(opts: { events?: AgentEvent[]; onCall?: (o: ChatTurnOpts) => v
     opts.onCall?.(o);
     for (const e of opts.events ?? []) o.onEvent?.(e);
     if (opts.throws) throw opts.throws;
-    return { sessionId: o.sessionId, messageCount: 2, reply: '答', newMessages: [], compactions: 0, usage: { in: 0, out: 0 }, pressure: { systemTokens: 0, harnessTokens: 0, historyTokens: 0, usedTokens: 0, windowTokens: 0, ratio: null } };
+    return { sessionId: o.sessionId, messageCount: 2, reply: '答', newMessages: [], compactions: 0, usage: { in: 0, out: 0 }, pressure: { systemTokens: 0, harnessTokens: 0, historyTokens: 0, usedTokens: 0, windowTokens: 0, ratio: null, source: 'estimate' } };
   }) as never;
 }
 
@@ -219,7 +219,7 @@ describe('失败与中断', () => {
       runTurn: (async (o: ChatTurnOpts) => {
         seen.set(o.sessionId, o.signal as AbortSignal);
         await new Promise((r) => setTimeout(r, 30));
-        return { sessionId: o.sessionId, messageCount: 0, reply: '', newMessages: [], compactions: 0, usage: { in: 0, out: 0 }, pressure: { systemTokens: 0, harnessTokens: 0, historyTokens: 0, usedTokens: 0, windowTokens: 0, ratio: null } };
+        return { sessionId: o.sessionId, messageCount: 0, reply: '', newMessages: [], compactions: 0, usage: { in: 0, out: 0 }, pressure: { systemTokens: 0, harnessTokens: 0, historyTokens: 0, usedTokens: 0, windowTokens: 0, ratio: null, source: 'estimate' } };
       }) as never,
     });
     const a = backend.sendChat({ sessionId: 'A', prompt: 'x' });
@@ -237,7 +237,7 @@ describe('失败与中断', () => {
       runTurn: (async (o: ChatTurnOpts) => {
         seen.push(o.signal as AbortSignal);
         await new Promise((r) => setTimeout(r, 30));
-        return { sessionId: o.sessionId, messageCount: 0, reply: '', newMessages: [], compactions: 0, usage: { in: 0, out: 0 }, pressure: { systemTokens: 0, harnessTokens: 0, historyTokens: 0, usedTokens: 0, windowTokens: 0, ratio: null } };
+        return { sessionId: o.sessionId, messageCount: 0, reply: '', newMessages: [], compactions: 0, usage: { in: 0, out: 0 }, pressure: { systemTokens: 0, harnessTokens: 0, historyTokens: 0, usedTokens: 0, windowTokens: 0, ratio: null, source: 'estimate' } };
       }) as never,
     });
     const p = backend.sendChat({ sessionId: 'A', prompt: 'x' });

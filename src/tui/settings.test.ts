@@ -56,7 +56,7 @@ describe('★ 每一项都答得出"现在是什么值"', () => {
   test('跑过之后显示分项', () => {
     const p: ContextPressure = {
       systemTokens: 12_000, harnessTokens: 8000, historyTokens: 34_000,
-      usedTokens: 46_000, windowTokens: 200_000, ratio: 0.23,
+      usedTokens: 46_000, windowTokens: 200_000, ratio: 0.23, source: 'estimate',
     };
     const it = find(buildSettings({ ...base, pressure: p }), 'ctx');
     expect(it?.value).toContain('46k/200k 23%');
@@ -66,7 +66,7 @@ describe('★ 每一项都答得出"现在是什么值"', () => {
   test('★ 窗口未知时不画百分比', () => {
     const p: ContextPressure = {
       systemTokens: 1000, harnessTokens: 0, historyTokens: 500,
-      usedTokens: 1500, windowTokens: 0, ratio: null,
+      usedTokens: 1500, windowTokens: 0, ratio: null, source: 'estimate',
     };
     expect(find(buildSettings({ ...base, pressure: p }), 'ctx')?.value).toContain('window unknown');
   });

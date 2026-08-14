@@ -44,7 +44,7 @@ describe('行① formatStatusLine —— segment 模型: 没数据的段不画',
     const line = formatStatusLine({
       ws: { repo: 'oh-my-dag', branch: 'main', dirty: 2, worktree: 'fanin' },
       seat: 'kimi-coding:k3',
-      pressure: { systemTokens: 12_000, harnessTokens: 8000, historyTokens: 34_000, usedTokens: 46_000, windowTokens: 200_000, ratio: 0.23 },
+      pressure: { systemTokens: 12_000, harnessTokens: 8000, historyTokens: 34_000, usedTokens: 46_000, windowTokens: 200_000, ratio: 0.23, source: 'estimate' },
       session: { costUsd: 0.83, unpriced: false, calls: 3 },
       win: win(),
     });
@@ -70,7 +70,7 @@ describe('行① formatStatusLine —— segment 模型: 没数据的段不画',
     const line = formatStatusLine({
       ws: null,
       seat: 'a:b',
-      pressure: { systemTokens: 4000, harnessTokens: 0, historyTokens: 1000, usedTokens: 5000, windowTokens: 0, ratio: null },
+      pressure: { systemTokens: 4000, harnessTokens: 0, historyTokens: 1000, usedTokens: 5000, windowTokens: 0, ratio: null, source: 'estimate' },
       session: null,
       win: null,
     });
@@ -89,7 +89,7 @@ describe('★ 减法这件事本身要有闸(否则下一程会把字段加回�
   const base = {
     ws: { repo: 'oh-my-dag', branch: 'main', dirty: 86, worktree: null },
     seat: 'kimi-coding:k3',
-    pressure: { systemTokens: 1, harnessTokens: 0, historyTokens: 1, usedTokens: 6400, windowTokens: 1_049_000, ratio: 0.006 },
+    pressure: { systemTokens: 1, harnessTokens: 0, historyTokens: 1, usedTokens: 6400, windowTokens: 1_049_000, ratio: 0.006, source: 'estimate' },
     session: { costUsd: 0, unpriced: false, calls: 10 },
   } as const;
 

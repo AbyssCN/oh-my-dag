@@ -1375,3 +1375,39 @@ describe('写竞争硬闸 (engine 接线: 竞写对被程序化串行化)', () =
     expect(peak).toBe(1); // 不再并发 —— 这就是硬闸买到的东西
   });
 });
+
+describe('S-33 集成接线: config.verifier 收到 artifactRoot (engine.ts 侧, 不是只在单测里手传)', () => {
+  // 反向自检: 把 engine.ts 里 `artifactRoot: config.continuity?.repoRoot ?? process.cwd()` 那半句删掉 →
+  // 这条断言会因 `seen` 停在 undefined 而红 (证伪 D-976/S-33 集成缺口: verifier.ts 的三态判据只在
+  // `artifactRoot` 存在时生效, 引擎不传 = 终审三态永远沉默, 逐字节退化回旧行为但不报错——静默坑)。
+  test('★ runExecutorDagWithPlan 真实调用链把 continuity.repoRoot 递给 verifier', async () => {
+    const { generate } = makeGenerate();
+    let seen: string | undefined;
+    const verifier: NonNullable<ExecutorDagConfig['verifier']> = async (req) => {
+      seen = req.artifactRoot;
+      return { pass: true, reason: 'ok', usage: { in: 0, out: 0 } };
+    };
+    const root = mkdtempSync(join(tmpdir(), 'omd-s33-wiring-'));
+    const mgr = new CheckpointManager(root);
+    try {
+      await runExecutorDagWithPlan(
+        plan({ A: { goal: '单节点' } }),
+        makeConfig(generate, { verifier, continuity: { manager: mgr, runId: 's33-wiring', repoRoot: root } }),
+      );
+      expect(seen).toBe(root);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('没配 continuity 时回落 process.cwd() (不是 undefined —— 否则三态闸悄悄失效)', async () => {
+    const { generate } = makeGenerate();
+    let seen: string | undefined;
+    const verifier: NonNullable<ExecutorDagConfig['verifier']> = async (req) => {
+      seen = req.artifactRoot;
+      return { pass: true, reason: 'ok', usage: { in: 0, out: 0 } };
+    };
+    await runExecutorDagWithPlan(plan({ A: { goal: '单节点' } }), makeConfig(generate, { verifier }));
+    expect(seen).toBe(process.cwd());
+  });
+});
