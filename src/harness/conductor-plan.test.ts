@@ -197,3 +197,59 @@ describe('节点 mcp 声明 (开放生态 D-3)', () => {
     if (!r.ok) expect(r.error).toContain('ghost');
   });
 });
+
+/**
+ * 环 → schema 判死 (issue #25, 2026-08-14)。
+ *
+ * **为什么闸在 schema 层而不在 parsePlan 里**: 造 plan 的入口不止一个 —— plan-patch 的 merge、
+ * pathfinder 的 slice-compiler、arch/deepen-plan、slim/local-plan 全都过 `PlanSchema` 而各自没有
+ * 环检。放这里一处等于同时给它们全都上闸。
+ *
+ * **为什么是 fail-closed 而不是 report-only** (与同一分支上的悬空依赖相反): 环没有 intentional
+ * 消费方 —— 运行时子图对环早就是拒整份 (conductor-expand 的 status:'cycle'), 顶层反而最宽。
+ *
+ * **反向自检 (实跑过)**: 注掉 `PlanSchema` superRefine 里的 `findGraphCycle` 那一段 →
+ * 本 describe 的三条报环用例全红 (parsePlan 返 ok:true), 而"无环图照过"那条仍绿。
+ */
+describe('依赖环 → parsePlan 拒 (fail-closed)', () => {
+  const parse = (nodes: Record<string, unknown>) =>
+    parsePlan(JSON.stringify({ name: 'p', nodes }), { knownServers: new Set() });
+
+  test('二元环 A↔B → ok:false 且判词点名环路', () => {
+    const r = parse({ A: { goal: 'a', depends_on: ['B'] }, B: { goal: 'b', depends_on: ['A'] } });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain('依赖环');
+    expect(r.error).toContain('A');
+    expect(r.error).toContain('B');
+  });
+
+  test('自环 → 同样拒 (不靠"没人会这么画"兜)', () => {
+    expect(parse({ A: { goal: 'a', depends_on: ['A'] } }).ok).toBe(false);
+  });
+
+  test('三元环 → 拒', () => {
+    const r = parse({
+      a: { goal: 'a', depends_on: ['c'] },
+      b: { goal: 'b', depends_on: ['a'] },
+      c: { goal: 'c', depends_on: ['b'] },
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  test('无环图照过 (证明上面不是恒拒的空转断言)', () => {
+    expect(parse({ a: { goal: 'a' }, b: { goal: 'b', depends_on: ['a'] } }).ok).toBe(true);
+  });
+
+  test('幻象 dep 不算边 → 不误判成环 (它归 static-lint 的 report-only, 不在这道 fail-closed 闸里)', () => {
+    const r = parse({ research: { goal: 'r' }, syn: { goal: 's', depends_on: ['reserach'] } });
+    expect(r.ok).toBe(true);
+  });
+
+  test('拒出去的环**不会**再走到执行入口 topoLevels 那道兜底 (两道闸判据一致)', () => {
+    const cyclic = { name: 'p', nodes: { A: { goal: 'a', depends_on: ['B'] }, B: { goal: 'b', depends_on: ['A'] } } };
+    expect(parsePlan(JSON.stringify(cyclic), { knownServers: new Set() }).ok).toBe(false);
+    // topoLevels 那道保留是因为运行期挂进图的子节点 (map/conductor 展开) 不过 schema。
+    expect(() => topoLevels(cyclic as never)).toThrow(/cycle/);
+  });
+});

@@ -7,7 +7,8 @@
  *   ② 同一个名换了活 → resume 把上次的产物当这次的绿 (**张冠李戴**, 更坏)
  */
 import { describe, expect, test } from 'bun:test';
-import { expandConductorNode, DEFAULT_MAX_CHILDREN } from './conductor-expand';
+import { expandConductorNode, subgraphLintView, DEFAULT_MAX_CHILDREN } from './conductor-expand';
+import { staticLintPlan } from './static-lint';
 import type { ConductorPlan } from '../conductor-plan';
 
 const plan = (nodes: Record<string, unknown>): ConductorPlan =>
@@ -192,5 +193,84 @@ describe('子图形状闸', () => {
 
   test('默认硬顶 = 64, 与 map 的 DEFAULT_MAX_ITEMS 同一个数 (不是独立调过的)', () => {
     expect(DEFAULT_MAX_CHILDREN).toBe(64);
+  });
+});
+
+/**
+ * `subgraphLintView` —— 键与边同体系 (issue #25, 2026-08-14)。
+ *
+ * 起因是一次对照实验: 调用方 (engine.ts 的 A4 静态闸) 此前就地拼这张 plan, 键取 `originalId`
+ * 而边已被重写成内容寻址 id。同一张子图 —— 展开前 lint 得 0 条, 展开后按老口径 lint 得
+ * `write-race[b,a]`, 而 b 明明 depends_on a。也就是「有依赖 = 有序 = 不是竞争」那条豁免
+ * **从来没在子图上生效过**。
+ *
+ * **反向自检 (2026-08-14 实跑)**: 把 `subgraphLintView` 里的 `readable.get(d) ?? d` 改成 `d`
+ * (逐字退回老口径) → 29 pass 变 26 pass 3 fail: 假写竞争回来, 可读名那条与截断那条一起塌。
+ */
+describe('subgraphLintView — 键与边同一个体系', () => {
+  test('★ 有依赖的两个同写者不再被报成写竞争 (对照: 展开前后判词一致)', () => {
+    const sub = plan({
+      a: { goal: 'A', executor: 'agent', output_path: 'src/x.ts' },
+      b: { goal: 'B', executor: 'agent', output_path: 'src/x.ts', depends_on: ['a'] },
+    });
+    const exp = expandConductorNode('P', sub);
+    expect(exp.status).toBe('ok');
+    expect(staticLintPlan(sub)).toHaveLength(0);                       // 展开前
+    expect(staticLintPlan(subgraphLintView(exp.children))).toHaveLength(0); // 展开后, 同一个答案
+  });
+
+  test('真写竞争 (无依赖边) 照报 —— 证明上面不是靠"什么都不报"过的', () => {
+    const exp = expandConductorNode('P', plan({
+      a: { goal: 'A', executor: 'agent', output_path: 'src/x.ts' },
+      b: { goal: 'B', executor: 'agent', output_path: 'src/x.ts' },
+    }));
+    const f = staticLintPlan(subgraphLintView(exp.children));
+    expect(f.map((x) => x.kind)).toEqual(['write-race']);
+  });
+
+  test('键是可读名, 边也是可读名 (判词的读者是下一轮 conductor, 它只认自己起的名)', () => {
+    const exp = expandConductorNode('P', chain(['contract', 'impl', 'verify']));
+    const view = subgraphLintView(exp.children);
+    expect(Object.keys(view.nodes).sort()).toEqual(['contract', 'impl', 'verify']);
+    expect(view.nodes['impl']!.depends_on).toEqual(['contract']);
+    expect(view.nodes['verify']!.depends_on).toEqual(['impl']);
+  });
+
+  test('指向子图外的引用原样保留 (由调用方的 knownExternal 判它合不合法)', () => {
+    const exp = expandConductorNode('P', plan({ a: { goal: 'A', depends_on: ['outer-node'] } }));
+    expect(subgraphLintView(exp.children).nodes['a']!.depends_on).toEqual(['outer-node']);
+  });
+
+  /** 三步链 + 上限 2 → 被截断的是根 `a`, 而留下来的 `b` 引用着它 (展开序按指纹字典序, 确定)。 */
+  const truncatedChain = () => {
+    const exp = expandConductorNode('P', plan({
+      a: { goal: 'A' },
+      b: { goal: 'B', depends_on: ['a'] },
+      c: { goal: 'C', depends_on: ['b'] },
+    }), { maxNodes: 2 });
+    // 前置断言: 指纹序若哪天变了, 本用例要**当场红**, 而不是悄悄退化成"什么都没测到"。
+    expect(exp.truncatedNames).toEqual(['a']);
+    return exp;
+  };
+
+  test('★ 截断产生的悬空引用: 生产者自报名字 → lint 报成 truncated 而非 dangling', () => {
+    const exp = truncatedChain();
+    const kinds = staticLintPlan(subgraphLintView(exp.children), { truncatedIds: new Set(exp.truncatedNames) })
+      .map((f) => f.kind);
+    expect(kinds).toContain('truncated-dependency');
+    expect(kinds).not.toContain('dangling-dependency');
+  });
+
+  test('不给 truncatedIds → 同一张图报成 dangling (证明上一条真是靠自报分开的, 不是碰巧)', () => {
+    const kinds = staticLintPlan(subgraphLintView(truncatedChain().children)).map((f) => f.kind);
+    expect(kinds).toContain('dangling-dependency');
+    expect(kinds).not.toContain('truncated-dependency');
+  });
+
+  test('truncatedNames 与 truncated 计数一致 (不许一个报数一个报名)', () => {
+    const many = Object.fromEntries(Array.from({ length: 5 }, (_, i) => [`n${i}`, { goal: `N${i}` }]));
+    const exp = expandConductorNode('P', plan(many), { maxNodes: 2 });
+    expect(exp.truncatedNames).toHaveLength(exp.truncated);
+    expect(exp.truncated).toBe(3);
   });
 });

@@ -4,6 +4,12 @@ import type { ModelUsage } from '../../model/gateway';
 /**
  * 拓扑分层 (Kahn): level k = 所有依赖都在 level <k 的节点。环 → 抛错 (conductor 应产 DAG)。
  * 未知 dep 引用按"已满足"处理 (宽容, conductor 偶发引用不存在节点不应卡死整图)。
+ *
+ * ⚠ 两条口径的**当前归属** (2026-08-14, issue #25 —— 免得这段注释又变成幻象闸):
+ *  - **环**: 首闸在 `PlanSchema` 的 superRefine (fail-closed, 造 plan 的入口全都过它)。这里的抛错
+ *    退成兜底 —— 运行期挂进图的子节点 (map/conductor 展开) 不过 schema, 那条路仍靠它。
+ *  - **未知 dep**: 没有闸, 就是宽容, 且 `dag-scheduler` 与本函数口径一致 (filter 掉 = 视为已满足)。
+ *    它有 intentional 消费方 (子图截断), 所以只由 `plan/static-lint` **报告不拦截**。
  */
 export function topoLevels(plan: ConductorPlan): string[][] {
   const ids = Object.keys(plan.nodes);

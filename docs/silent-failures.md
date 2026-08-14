@@ -1124,6 +1124,59 @@ import 得到、类型对得上、调用写得出来。
 
 ⚠ 复跑只在**要判红时**才付,绿的那条路一次都不多跑;复跑抛错 → **维持原判红**(fail-closed:证不了它是抖动就按红算),抖动名字进判词(`· 复跑未复现 N [...]`)—— 不写出来的话,「复跑一次就绿了所以放行」在盘上没有痕迹,而那是下一个人判断这条闸可不可信时唯一能拿到的证据。
 
+### S-38 · **一条注释背书了一道不存在的闸** —— 而下游据此**主动不查**
+
+**形状**:模块 A 的注释里写着「这件事 X 在**别处**已经拦了」,于是 A **刻意不查 X**;
+而那个"别处"从来没有实现过 X。声明面是**注释**,消费面是**另一个模块决定不做的检查** ——
+两边都不是代码,所以 tsc 与测试结构上都够不着。
+
+**和已有几条哪里不一样**:S-1 是「字段声明了没人读」(声明在 schema,消费在引擎,至少两头都是代码);
+这条的声明面是**散文**,而它的"消费"是一个**不作为**。可达性闸、空旋钮闸、消费点闸全都基于
+「谁读了谁」,而**没有人读一条不存在的检查** —— 这一族用现有的任何一道结构闸都抓不到。
+
+**为什么没红灯**:注释读起来是一句可靠的分工说明,而且**语气越确定越不会被复核**
+(「编译期已有闸,这里不重复」——`不重复` 三个字把复核的动机也一并消掉了)。
+
+**本仓实例(2026-08-14,外部 RFC issue #25 报进来的)**:三处互相印证的注释,共同背书了一道
+从不存在的「建图闸」——
+
+| 位置(**修前**行号) | 原文 | 事实 |
+|---|---|---|
+| `plan/static-lint.ts:20` | 「`depends_on` 指向图里不存在的节点 → 编译期已有闸, 这里不重复」 | 引用完整性在 `parsePlan` / plan-passes / 编译路径里**都没有** |
+| `plan/static-lint.ts:56` | 「编译期已查环」 | 顶层图的环只有 `executePlan` 入口的 `topoLevels` 抛错,不在"编译期" |
+| `plan/conductor-expand.ts:123` | 「外层图由建图闸保证无环」 | 同上;它指的那道闸不存在 |
+
+后果分两半:**环**那半其实被 `topoLevels` 的抛错兜住了(所以只是注释错了位置);
+**引用完整性**那半是真洞 —— 调度器把未知 dep 当作已满足,于是拼错一个上游名字的节点会
+在前驱一个字都没产出的情况下开跑,还很可能产出一份读起来很完整的东西,最后记 `done`。
+
+**活体基率(2026-08-14 实测,`scripts/probes/plan-ref-integrity.ts`)**:
+
+| 来源 | plan 数 | 有环 | 悬空 dep |
+|---|---|---|---|
+| 历史 run 写入磁盘的 plan(`.omd/continuity/**/_dag.json`) | 170 | **0** | **2 条 / 1 份(0.6%)** |
+| eval 语料(`.omd/eval/**/*.json`) | 230 | 0 | 0 |
+
+那 1 份不是构造的:run `t5a-1321c516` 里两个 conductor 子节点分别依赖 `related_manifest` 与
+`support_review`,而这两个名字在外层图和兄弟节点里**都不存在**(子图 8 个节点,远未触及 64 上限,
+排除截断)。也就是说 RFC 描述的形状在活体语料里**有实证**,不是假想。
+
+**怎么抓**(两条都落了地):
+
+> ① **能判死的就别只写注释** —— 环已升成 `PlanSchema` superRefine 的 fail-closed 闸
+> (`conductor-plan.ts`),判词点名环路。测得的代价是 0(400 份 plan 无一有环)。
+>
+> ② **判据要说清"谁在哪一层拦"** —— 凡是写「别处已经拦了」的注释,把**那一层的文件名**写进去;
+> 写不出文件名,就说明你在背书一道你没看过的闸。本条修完后 `planner.ts` / `conductor-expand.ts` /
+> `dag-tools.ts` 三处注释都改成了「首闸在 X,这里是第二道防线」。
+
+⚠ **报告不拦截的那一半是刻意的**:悬空 dep 在仓内**有 intentional 消费方**(子图被 `maxNodes`
+截断时,留下的引用刻意退化成未知 dep 靠执行器的宽容语义不炸),typo 与刻意悬空在图上形状完全相同。
+所以它进 `static-lint` 的 report-only 通道,并由生产者自报的 `truncatedNames` 分成两个 kind ——
+两种语义混进同一个计数,升闸判据就会被污染。
+
+---
+
 ## 已立的闸(可执行的那部分)
 
 | 闸 | 位置 | 守什么 | 抓哪几条 |
@@ -1163,6 +1216,7 @@ import 得到、类型对得上、调用写得出来。
 | 隔离档 git 能用 | `src/harness/hooks/bwrap.ts` · `bwrap-containment.test.ts:98` | 真造「主 repo + worktree」跑真 bwrap:ro 共享 `.git` + rw 本树 gitdir;jail 内写 ref/objects 仍拒(**带反向自检**:删 `gitBinds` 段 → ② 红,①③ 仍绿。⚠ 无 bwrap 的机器自报**未测**,不是绿) | S-34 |
 | 空转签名不被 `cd` 前缀吃掉 | `src/harness/hooks/drift-detector.ts` · `drift-detector.test.ts:103` | 取 50 字符窗口前先剥 `cd <路径> &&` 链,尺子不因 jail 路径变钝(**带反向自检**:去掉 `stripCdPrefix` → 三条不同命令签名全等,红) | S-34 |
 | 终审产物三态(unregistered ≠ missing) | `src/harness/verifier.ts:125` · `verifier-evidence.test.ts:102` | `summarizeResults` 对每个声明 `output_path` 的节点跑 `statSync`,按 registered/unregistered/missing 三态写入 prompt,`unregistered` 单独告警(`verifier.ts:155`)(**带反向自检**:三态判定改回二态、吞掉 `unregistered` → 3 条红) | S-33 |
+| 图的引用完整性 | `src/harness/plan/graph-cycle.ts` · `conductor-plan.ts` superRefine · `plan/static-lint.ts` | 环 = fail-closed 判死并点名环路;悬空 dep / 不可能达标的配额 = report-only,截断自报与手误分两个 kind(**带反向自检**:注掉 superRefine 环闸 → 4 红;删 ④ 段 → 5 红;删 truncatedIds 分支 → 1 红;`<=` 改 `<` → 1 红;lint 视图退回老口径 → 3 红) | S-38 |
 
 **S-24 也没有闸** —— 声明端在 `node_modules` 里,仓内的消费点/可达性闸**结构上够不着**。
 落在纪律上的是一条前置动作:**压架构之前读上游的 `.js` 不读 `.d.ts`**(三条便宜读法见该条)。

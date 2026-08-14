@@ -406,6 +406,13 @@ export interface DagObservation {
    * `write-race` / `missing-input` / `missing-command-target` = **跑之前**就能确定性判死的坏 plan
    * (A4, 2026-07-31, 补 Fowler 2×2 里最空的那格 computational feedforward; 后者是 command 节点
    * 引用 cwd 内不存在的脚本或未定义的 package script)。前两个是事后传感, 这些是事前拦。
+   *
+   * `dangling-dependency` / `truncated-dependency` / `impossible-quorum` (issue #25, 2026-08-14)
+   * = 同一格 (跑前确定性判死) 的引用完整性三条。**只报不拦**, 且这一条的 report-only 有个比
+   * "怕误伤"更硬的理由: 悬空引用在仓内**有 intentional 消费方** (子图被 maxNodes 截断时,
+   * 留下的引用刻意退化成未知 dep 靠执行器的宽容语义不炸), typo 与刻意悬空在图上形状完全相同。
+   * 两者由生产者自报的 `truncatedNames` 分成两个 kind —— 混进同一个计数, 升闸判据就会被污染
+   * (owner 判据③)。升成拦截的前置 = 先拿到分来源的活体基率。
    */
   /**
    * `loop-no-artifact-change` (2026-07-31, G5 正解) = 两轮下来**盘上的产物逐字节没变**。
@@ -474,7 +481,7 @@ export interface DagObservation {
    * **只报不拦** (同上面几条): 要不要真把检测者的写工具收掉是单独的拨闸决定, 而今天 n=4,
    * 离读得出基率还差得远。判据与分母见 `plan/observers.detectDetectorWrites`。
    */
-  kind: 'undeclared-artifact-dep' | 'loop-no-progress' | 'write-race' | 'missing-input' | 'missing-command-target' | 'loop-no-artifact-change' | 'leaf-spin' | 'scheduled-artifact' | 'novelty-collapse' | 'verbatim-drop' | 'unsupported-claim' | 'detector-wrote';
+  kind: 'undeclared-artifact-dep' | 'loop-no-progress' | 'write-race' | 'missing-input' | 'missing-command-target' | 'dangling-dependency' | 'truncated-dependency' | 'impossible-quorum' | 'loop-no-artifact-change' | 'leaf-spin' | 'scheduled-artifact' | 'novelty-collapse' | 'verbatim-drop' | 'unsupported-claim' | 'detector-wrote';
   /** 涉及的节点 id (lint = [reader, writer]; 空转 = 被反复拒绝的那批)。 */
   nodes: string[];
   /** 人与模型都读的一句话 (进 prompt 的就是它)。 */

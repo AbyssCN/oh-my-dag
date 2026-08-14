@@ -115,14 +115,20 @@ describe('conductor 节点 — 展开', () => {
     expect(f.leafCalls).toHaveLength(0);
   });
 
-  test('子图有环 → 拒 (外层建图闸管不到运行期现画的子图)', async () => {
+  test('子图有环 → 拒, 且判词点名环路 (issue #25 后闸前移到 schema, 出口不变)', async () => {
     const f = makeFake(JSON.stringify({
       name: 's',
       nodes: { a: { goal: 'A', depends_on: ['b'] }, b: { goal: 'B', depends_on: ['a'] } },
     }));
     const r = await runExecutorDagWithPlan(withConductor(), cfg(f.generate));
     expect(r.results.plan_it?.status).toBe('failed');
-    expect(r.results.plan_it?.output).toContain('有环');
+    // 2026-08-14 (issue #25): 环闸进了 `PlanSchema` 的 superRefine, 而子图**也过那道 schema**
+    // (engine 的 `parsePlan` 出口), 所以这份子图现在在 `expandConductorNode` 之前就被判死了。
+    // 断言跟着改的是**哪一层拒的**, 不是拒不拒 —— 出口 (failed + 带原因) 逐字未变, 而判词现在
+    // 还多点名了环路。expandConductorNode 自己那道环闸退成第二道防线 (仍被 conductor-expand.test 直测:
+    // 它是纯函数, 调用方不一定先 parse)。
+    expect(r.results.plan_it?.output).toContain('依赖环');
+    expect(r.results.plan_it?.output).toContain('a → b → a');
   });
 });
 

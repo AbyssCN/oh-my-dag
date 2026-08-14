@@ -30,6 +30,7 @@
  * 本模块**只做纯逻辑**: 零 IO、零模型、零 Date/random → 完整可单测 (同 map-expand 的纪律)。
  */
 import { merkleFingerprints } from '../plan-passes/semantic-key';
+import { findGraphCycle } from './graph-cycle';
 import type { ConductorPlan } from '../conductor-plan';
 
 type PlanNode = ConductorPlan['nodes'][string];
@@ -53,6 +54,15 @@ export interface ConductorExpandResult {
   children: ConductorChild[];
   /** 被 maxNodes 截断丢弃的节点数 (调用方须 log —— no-silent-caps)。 */
   truncated: number;
+  /**
+   * 被截断掉的**原名**清单 (`truncatedNames.length === truncated`)。
+   *
+   * 存在理由 = 让下游**分得清两种悬空引用** (issue #25 owner 判据③): 留下来的子节点若引用了一个
+   * 被截断的兄弟, 那条 dep 会原样留成一个图里不存在的名字 —— 形状与 conductor 把 `research`
+   * 拼成 `reserach` 的手误**一模一样**。谁截断的谁知道, 所以由生产者报出来, 而不是让下游按
+   * "这名字长得不像内容寻址 id"去猜 (那是在下游复刻生产者的知识, 早晚漂)。
+   */
+  truncatedNames: string[];
   /** nested/cycle 时的原因。 */
   error?: string;
 }
@@ -93,7 +103,7 @@ export function expandConductorNode(
   opts: { maxNodes?: number; forbidExecutors?: ReadonlyMap<string, string> } = {},
 ): ConductorExpandResult {
   const entries = Object.entries(subplan.nodes);
-  if (entries.length === 0) return { status: 'empty', children: [], truncated: 0 };
+  if (entries.length === 0) return { status: 'empty', children: [], truncated: 0, truncatedNames: [] };
 
   // ── D-D 禁嵌套 + 按调用禁单 (先于一切: 被拒的子图连指纹都不该算) ──
   // 两条闸同一趟扫描, 全局那条先判 —— 它是结构性的, 与调用方是谁无关。
@@ -105,6 +115,7 @@ export function expandConductorNode(
         status: 'nested',
         children: [],
         truncated: 0,
+        truncatedNames: [],
         error: `D-D 禁嵌套: 子节点 '${name}' 的 executor='${ex}' 不允许 (conductor 已是运行时展开, 不需要再套一层)`,
       };
     }
@@ -115,17 +126,22 @@ export function expandConductorNode(
         status: 'forbidden',
         children: [],
         truncated: 0,
+        truncatedNames: [],
         error: `本次展开禁用 executor='${ex}' (子节点 '${name}'): ${why}`,
       };
     }
   }
 
-  // ── 环检测: 外层图由建图闸保证无环, 子图是模型现画的, 得自己查 ──
+  // ── 环检测: **第二道防线** (issue #25 之后)。环闸已经进了 `PlanSchema` 的 superRefine, 而引擎
+  // 这条路上的子图也过那道 schema (engine 的 parsePlan 出口) —— 也就是说走引擎时环在这之前就被
+  // 判死了, 这里拦不到。留着是因为本模块是**纯函数**, 调用方不一定先 parse; 而下面的指纹计算
+  // 遇环会给多个节点发同一个 '∞cycle' 占位指纹 → id 相撞, 那是不能靠指纹层兜的。
+  // ⚠ 别把这行读成"顶层图的环由这里管" —— 那正是本仓刚清掉的幻象闸形状。
   // (merkleFingerprints 内部有环防御会返 '∞cycle', 但那会让**多个**节点拿到同一个占位指纹 →
   //  id 相撞。所以环必须在算指纹之前就拒掉, 不能靠指纹层兜。)
-  const cycle = findCycle(subplan);
+  const cycle = findGraphCycle(subplan.nodes);
   if (cycle) {
-    return { status: 'cycle', children: [], truncated: 0, error: `子图有环: ${cycle.join(' → ')}` };
+    return { status: 'cycle', children: [], truncated: 0, truncatedNames: [], error: `子图有环: ${cycle.join(' → ')}` };
   }
 
   // ── D-B: 语义指纹 = 内容寻址的 key ──
@@ -162,7 +178,8 @@ export function expandConductorNode(
     // 后者是刻意的: conductor 节点自己在外层有上游, 子节点引用它们是合法且有用的
     // (调用方会把父节点的 depends_on 并进每个子节点, 见 executor-dag 的接线)。
     // 被 maxNodes 截断掉的兄弟会在这里变成"外层未知 id" → 由执行器按幻象 dep 处理 (视为已满足),
-    // 与 topoLevels/外层调度对未知 dep 的既有语义一致。
+    // 与 topoLevels/外层调度对未知 dep 的既有语义一致。这是**刻意的悬空引用**, 与 conductor 手误
+    // 打出的悬空引用形状相同而语义相反 —— 靠 `truncatedNames` 把两者分开 (见该字段)。
     const rewritten = raw.map((d) => (keptNames.has(d) ? idOf(d) : d));
     return {
       id: idOf(name),
@@ -172,7 +189,35 @@ export function expandConductorNode(
     };
   });
 
-  return { status: 'ok', children, truncated };
+  return { status: 'ok', children, truncated, truncatedNames: order.slice(maxNodes).map(([name]) => name) };
+}
+
+/**
+ * 子图的 **lint 视图**: 键与边**同一个体系** (规划期可读名)。
+ *
+ * 存在理由是一次对照实验 (2026-08-14, issue #25): 调用方此前就地拼这张临时 plan —— 键取
+ * `originalId`, 而 `child.node.depends_on` 已被上面重写成内容寻址 id。两个体系混在一张图上,
+ * 结果是**子图内部每一条边都指向一个不存在的 id**: `staticLintPlan` 的祖先闭包恒为空, 于是
+ * 「有依赖 = 有序 = 不是竞争」那条豁免从来没生效过 (一条 a→b 的链上两个节点写同一个文件被报成
+ * 写竞争), 而新加的悬空依赖检查会把每一条正常边都报成手误。
+ *
+ * 翻回可读名而不是改用运行期 id, 是因为判词的读者是**下一轮 conductor**, 它只认自己起的名字。
+ * 翻不回来的引用原样保留 —— 那是指向子图之外的引用, 由调用方的 `knownExternal` 判它合不合法。
+ */
+export function subgraphLintView(children: readonly ConductorChild[]): ConductorPlan {
+  const readable = new Map(children.map((c) => [c.id, c.originalId]));
+  return {
+    name: 'sub',
+    nodes: Object.fromEntries(
+      children.map((c) => {
+        const inner = (c.node.depends_on ?? []) as string[];
+        return [
+          c.originalId,
+          inner.length ? { ...c.node, depends_on: inner.map((d) => readable.get(d) ?? d) } : c.node,
+        ];
+      }),
+    ),
+  } as ConductorPlan;
 }
 
 /** 一条子图体检结论 (D-N 展开闸的后半)。 */
@@ -220,33 +265,3 @@ export function subgraphWarnings(children: readonly ConductorChild[]): SubgraphW
   return out;
 }
 
-/**
- * 找一条环 (DFS 三色)。只看子图内部的边, 外部引用不算边 (它们由外层调度保证已完成)。
- * @returns 环上的节点名序列 (首尾同名), 无环 → null。
- */
-function findCycle(subplan: ConductorPlan): string[] | null {
-  const nodes = subplan.nodes;
-  const state = new Map<string, 0 | 1 | 2>(); // 0/未访 1/在栈 2/完成
-  const stack: string[] = [];
-
-  const visit = (id: string): string[] | null => {
-    if (state.get(id) === 2) return null;
-    if (state.get(id) === 1) return [...stack.slice(stack.indexOf(id)), id];
-    state.set(id, 1);
-    stack.push(id);
-    for (const d of (nodes[id]?.depends_on ?? []) as string[]) {
-      if (!(d in nodes)) continue; // 外部引用不是子图内的边
-      const found = visit(d);
-      if (found) return found;
-    }
-    stack.pop();
-    state.set(id, 2);
-    return null;
-  };
-
-  for (const id of Object.keys(nodes)) {
-    const found = visit(id);
-    if (found) return found;
-  }
-  return null;
-}

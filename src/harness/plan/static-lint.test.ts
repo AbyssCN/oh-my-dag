@@ -296,3 +296,107 @@ describe('serializeWriteRaces (写竞争硬闸: 程序化补边串行化)', () =
     expect(staticLintPlan(fixed).filter((f) => f.kind === 'write-race')).toHaveLength(0);
   });
 });
+
+/**
+ * ④⑤ 引用完整性 (issue #25, 2026-08-14) —— 表驱动 + 两侧都钉。
+ *
+ * **反向自检** (仓规: 一条永远绿的闸不是闸 —— 下面三条都是 2026-08-14 实跑的读数, 不是预测):
+ *  - 删掉 static-lint.ts 的 ④ 整段 → 46 pass 变 41 pass 5 fail, 而"不该报"的那几条仍绿
+ *    (证明它们不是靠"什么都不报"混过去的)。
+ *  - 只把 ④ 里 `if (opts.truncatedIds?.has(d))` 那个分支删掉 → 恰好 1 条红 (截断那条),
+ *    也就是「两种语义分成两个 kind」这件事确实被测着。
+ *  - 把 ⑤ 的 `req <= real.size` 改成 `req < real.size` → 恰好 1 条红 (requires 恰好等于依赖数),
+ *    边界方向被钉住。
+ */
+describe('悬空依赖 / 不可能达标的配额', () => {
+  const cases: {
+    name: string;
+    nodes: Record<string, unknown>;
+    opts?: Parameters<typeof staticLintPlan>[1];
+    expect: StaticFinding['kind'][];
+  }[] = [
+    {
+      name: 'depends_on 拼错 → dangling (RFC 原样例: research 拼成 reserach)',
+      nodes: { research: { goal: '调查' }, synthesis: { goal: '综合', depends_on: ['reserach'] } },
+      expect: ['dangling-dependency'],
+    },
+    {
+      name: '自依赖 → 这里不报 (它是环, 由 PlanSchema superRefine fail-closed 判死, 不重复)',
+      nodes: { a: { goal: 'A', depends_on: ['a'] } },
+      expect: [],
+    },
+    {
+      name: '正常边 → 不报 (证明上面不是恒报的空转断言)',
+      nodes: { a: { goal: 'A' }, b: { goal: 'B', depends_on: ['a'] } },
+      expect: [],
+    },
+    {
+      name: '重复依赖 → 不报 (调度器 indeg/dependents 各多记一次, 相消, 无害)',
+      nodes: { a: { goal: 'A' }, b: { goal: 'B', depends_on: ['a', 'a'] } },
+      expect: [],
+    },
+    {
+      name: '同一条坏引用写两次 → 只报一条 (别让一个问题刷屏)',
+      nodes: { a: { goal: 'A', depends_on: ['nope', 'nope'] } },
+      expect: ['dangling-dependency'],
+    },
+    {
+      name: '声明为图外真节点 → 不报 (子图引用父节点的外层上游, 设计允许)',
+      nodes: { a: { goal: 'A', depends_on: ['outer-1'] } },
+      opts: { knownExternal: new Set(['outer-1']) },
+      expect: [],
+    },
+    {
+      name: '生产者自报被截断 → truncated 而非 dangling (owner 判据③: 两种语义不混一个计数)',
+      nodes: { a: { goal: 'A', depends_on: ['cut-sibling'] } },
+      opts: { truncatedIds: new Set(['cut-sibling']) },
+      expect: ['truncated-dependency'],
+    },
+    {
+      name: 'requires 大于真实依赖数 → impossible-quorum',
+      nodes: { a: { goal: 'A' }, b: { goal: 'B' }, j: { goal: '判', depends_on: ['a', 'b'], requires: 3 } },
+      expect: ['impossible-quorum'],
+    },
+    {
+      name: 'requires 恰好等于依赖数 → 不报 (边界: 达得到)',
+      nodes: { a: { goal: 'A' }, b: { goal: 'B' }, j: { goal: '判', depends_on: ['a', 'b'], requires: 2 } },
+      expect: [],
+    },
+    {
+      name: 'typo 把配额顶成不可达 → 两条都报 (两种故障形状: 空跑 + 无声跳过)',
+      nodes: { a: { goal: 'A' }, j: { goal: '判', depends_on: ['a', 'bee'], requires: 2 } },
+      expect: ['dangling-dependency', 'impossible-quorum'],
+    },
+    {
+      name: '零依赖 + requires:2 → 不报 (quorum 判定对零依赖直接放行, 那是死旋钮不是判死)',
+      nodes: { a: { goal: 'A', requires: 2 } },
+      expect: [],
+    },
+    {
+      name: "requires:'any' → 不报 (非数值配额没有「够不着」这回事)",
+      nodes: { a: { goal: 'A' }, b: { goal: 'B', depends_on: ['a'], requires: 'any' } },
+      expect: [],
+    },
+  ];
+
+  for (const c of cases) {
+    test(c.name, () => {
+      const f = staticLintPlan(plan(c.nodes), c.opts ?? {});
+      expect(f.map((x) => x.kind).sort()).toEqual([...c.expect].sort());
+    });
+  }
+
+  test('判词点名了坏引用、现有节点、以及怎么改 (读者是下一轮 conductor)', () => {
+    const f = staticLintPlan(plan({ research: { goal: '调查' }, synthesis: { goal: '综合', depends_on: ['reserach'] } }));
+    expect(f[0]!.nodes).toEqual(['synthesis']);
+    expect(f[0]!.message).toContain('reserach');
+    expect(f[0]!.message).toContain('research');   // 现有节点清单 —— 它得知道正确的名字长什么样
+    expect(f[0]!.message).toContain('已满足');      // 说清后果, 不是只报一个"坏引用"
+  });
+
+  test('配额判词给出可执行的数 (≤N 或 any), 不是只说"不合法"', () => {
+    const f = staticLintPlan(plan({ a: { goal: 'A' }, j: { goal: '判', depends_on: ['a'], requires: 3 } }));
+    expect(f[0]!.message).toContain('requires:3');
+    expect(f[0]!.message).toContain('≤1');
+  });
+});

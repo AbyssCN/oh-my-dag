@@ -138,8 +138,8 @@ export function continuityAgeMs(runId: string, cwd: string): number {
 
 /**
  * 派发简报 (D-8 宽出): 图结构 + 模型坐标一屏可读 — 客户端派发瞬间就知道开了多少节点/
- * 几层/什么模型, 不必等 dag_status。levels 经 topoLevels (环图不该出现 — parsePlan 不查环,
- * 防御性兜底)。
+ * 几层/什么模型, 不必等 dag_status。levels 经 topoLevels; 环图不该出现 —— 2026-08-14 起 parsePlan
+ * **查环** (PlanSchema superRefine, issue #25), 所以这里的 try/catch 是防御性兜底而不是主闸。
  */
 export function dispatchBriefing(plan: ConductorPlan, config: ExecutorDagConfig): string {
   const entries = Object.entries(plan.nodes);

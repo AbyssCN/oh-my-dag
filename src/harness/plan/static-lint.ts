@@ -17,7 +17,13 @@
  * - 两个**能并行**的节点声明写同一个文件 → 写竞争。谁最后写谁赢, 而赢家是调度顺序决定的,
  *   也就是**每次跑结果可能不同**。这是最坏的一种: 它不报错, 只是有时候产物不对。
  * - 节点依赖的输入文件**不存在**且图里没有任何节点产出它 → 那一步注定失败。
- * - `depends_on` 指向图里不存在的节点 → 编译期已有闸, 这里不重复。
+ * - `depends_on` 指向图里不存在的节点 → **调度器视为已满足**, 于是那个节点在前驱一个字都没产出时
+ *   就照跑, 还很可能产出一份看起来完整的东西 (issue #25)。⚠ 本行 2026-08-14 订正: 它原先写的是
+ *   "编译期已有闸, 这里不重复" —— 而那道闸**在仓里不存在**, 环检与引用完整性在 parsePlan /
+ *   plan-passes / 编译路径里都没有。一条注释背书了一个幻象闸, 正是本仓 silent-failures 图鉴
+ *   「声明面存在、消费面缺席、两边都不报错」的形状。环已由 `PlanSchema` superRefine 判死 (fail-closed);
+ *   引用完整性落在这里 (report-only —— 它有 intentional 消费方, 见 `dangling-dependency`)。
+ * - `requires` 要的达标数**大于真实依赖数** → 那个配额永远不可能满足, 节点必被级联 skip。
  * - command 节点引用的 cwd 内脚本**不存在**, 或 package script **未定义** → 那一步同样注定失败。
  *
  * ## 纪律: 只报能**确定性判死**的, 不猜
@@ -41,7 +47,21 @@ import { join, resolve, sep } from 'node:path';
 type PlanNodeLike = ConductorPlan['nodes'][string];
 
 export interface StaticFinding {
-  kind: 'write-race' | 'missing-input' | 'missing-command-target';
+  kind:
+    | 'write-race'
+    | 'missing-input'
+    | 'missing-command-target'
+    /** `depends_on` 指向图里没有的 id —— 疑似手误 (issue #25)。 */
+    | 'dangling-dependency'
+    /**
+     * 同样是悬空引用, 但**生产者自报是它干的** (子图被 maxNodes 截断)。
+     *
+     * 与 `dangling-dependency` 分成两个 kind 是 owner 的判据③: 两种语义混进同一个计数,
+     * report-only 阶段收上来的读数就分不出"该拦的"和"刻意的", 升闸判据会被污染。
+     */
+    | 'truncated-dependency'
+    /** `requires` 的达标数大于真实依赖数 → 永不可能达标。 */
+    | 'impossible-quorum';
   /** 涉及的节点 (规划期可读名 —— 下一轮 conductor 认得出的那个名字体系)。 */
   nodes: string[];
   /** 已经是人话, 且带**怎么改**。 */
@@ -53,7 +73,7 @@ function ancestors(plan: ConductorPlan, id: string, memo = new Map<string, Set<s
   const hit = memo.get(id);
   if (hit) return hit;
   const out = new Set<string>();
-  memo.set(id, out); // 先放进去防环 (编译期已查环, 这里只是不挂死)
+  memo.set(id, out); // 先放进去防环 (环由 PlanSchema superRefine 判死, 这里只是不挂死)
   for (const d of plan.nodes[id]?.depends_on ?? []) {
     out.add(d);
     for (const a of ancestors(plan, d, memo)) out.add(a);
@@ -162,10 +182,18 @@ function checkPackageScript(cwd: string, name: string, id: string, out: StaticFi
  *
  * @param fileExists 注入式存在性探测 (相对仓根)。省略 = 不做 missing-input 检查
  *   (拿不到文件系统时**不猜**, 而不是假设文件不存在 —— 后者会把所有 plan 报红)。
+ * @param knownExternal **合法的图外引用** id 集 (不报)。子图 lint 时 = 外层图的节点 id ——
+ *   conductor 子节点引用父节点的外层上游是设计允许的 (见 conductor-expand 的 dep 重写注)。
+ * @param truncatedIds 生产者自报**被截断**掉的节点名 —— 引用它们报成 `truncated-dependency`
+ *   而不是 `dangling-dependency` (owner 判据③: 两种语义不许混进同一个计数)。
  */
 export function staticLintPlan(
   plan: ConductorPlan,
-  opts: { fileExists?: (relPath: string) => boolean } = {},
+  opts: {
+    fileExists?: (relPath: string) => boolean;
+    knownExternal?: ReadonlySet<string>;
+    truncatedIds?: ReadonlySet<string>;
+  } = {},
 ): StaticFinding[] {
   const out: StaticFinding[] = [];
   const ids = Object.keys(plan.nodes);
@@ -270,6 +298,72 @@ export function staticLintPlan(
     } else if (pkgName !== undefined) {
       checkPackageScript(cwd, pkgName, id, out);
     }
+  }
+
+  // ── ④ 悬空依赖 (issue #25) ──────────────────────────────────────────────────
+  // 调度器对未知 dep 的语义是**视为已满足** (dag-scheduler 与 topoLevels 都 filter 掉它),
+  // 所以 `synthesis` 把 `research` 拼成 `reserach` 时, synthesis 会在前驱一个字都没产出的情况下
+  // 立刻就绪, 而且很可能产出一份读起来很完整的东西 —— 不报错、不成环、最后记 done。
+  //
+  // ⚠ 出口是**报告不拦截**, 与本模块其余各条同纪律, 但这一条的理由更硬: 仓内有 intentional
+  // 消费方 (子图截断, 见 truncatedIds), typo 与刻意悬空**在图上形状相同**。fail-closed 会把
+  // 后者一起拒掉。
+  const seenExternal = new Set<string>();
+  for (const id of ids) {
+    const deps = plan.nodes[id]!.depends_on ?? [];
+    for (const d of deps) {
+      // 重复依赖 (RFC 提过的一个候选 kind) **不报**: 实读 dag-scheduler 的 advance —— 同一个 dep
+      // 出现两次会让 indeg 多记一次, 而 dependents 里也多记一次, 减到 0 时只 push 一次 → 无害。
+      // 判据是"只报能确定性判死的", 无害的不报。
+      if (d in plan.nodes) continue;
+      if (opts.knownExternal?.has(d)) continue;               // 图外真节点 (子图引用外层上游)
+      const key = `${id} ${d}`;
+      if (seenExternal.has(key)) continue;
+      seenExternal.add(key);
+      if (opts.truncatedIds?.has(d)) {
+        out.push({
+          kind: 'truncated-dependency',
+          nodes: [id],
+          message:
+            `依赖被截断: 节点 "${id}" 依赖 "${d}", 而 "${d}" 因子图节点数超上限被丢弃 —— ` +
+            `这条依赖会被执行器当作已满足, 于是 "${id}" 拿不到它本该消费的输入。` +
+            `改法: **把子图画小**(合并步骤), 让需要的兄弟节点留在上限内。`,
+        });
+        continue;
+      }
+      out.push({
+        kind: 'dangling-dependency',
+        nodes: [id],
+        message:
+          `依赖指向不存在的节点: 节点 "${id}" 的 depends_on 里有 "${d}", 但图里没有这个 id —— ` +
+          `执行器会把这条依赖当作**已满足**, 于是 "${id}" 会在没有任何前驱输出的情况下就开跑。` +
+          `改法: **把它改成图里真实存在的节点 id** (常见原因是拼错), 或者**删掉这条依赖**。` +
+          `现有节点: ${ids.join(', ')}`,
+      });
+    }
+  }
+
+  // ── ⑤ 不可能达标的配额 (issue #25) ──────────────────────────────────────────
+  // `requires: K` 判定读的是**过滤掉未知 dep 之后**的依赖数 (dag-scheduler.quorumVerdict),
+  // 所以 K 大于真实依赖数时, 达标数永远够不着 → 该节点必被级联 skip。这与 ④ 是**两种不同的
+  // 故障形状**: ④ 是节点空跑并产出看似完整的东西, ⑤ 是节点一声不响地不跑。
+  // 零依赖的节点不判 —— 那时 quorum 判定根本不参与 (deps.length===0 直接放行), K 只是个死旋钮。
+  for (const id of ids) {
+    const n = plan.nodes[id]!;
+    const req = n.requires;
+    if (typeof req !== 'number') continue;
+    const real = new Set((n.depends_on ?? []).filter((d) => d in plan.nodes));
+    if (real.size === 0 || req <= real.size) continue;
+    const declared = (n.depends_on ?? []).length;
+    out.push({
+      kind: 'impossible-quorum',
+      nodes: [id],
+      message:
+        `配额不可能达标: 节点 "${id}" 要求 requires:${req} 个依赖成功, 但图里真实存在的依赖只有 ` +
+        `${real.size} 个${declared > real.size ? ` (声明了 ${declared} 个, 其余指向不存在的节点)` : ''} —— ` +
+        `达标数永远够不着, 这个节点会被无声跳过。` +
+        `改法: **把 requires 降到 ≤${real.size}** (或改成 "any"), 或者**补上缺的那几个依赖节点**。`,
+    });
   }
 
   return out;
