@@ -18,6 +18,7 @@ import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { awaitExitBounded } from './_await-exit';
 
 const CHILD = join(import.meta.dir, 'fault-injection-child.ts');
 const RUN_ID = 'crash-run';
@@ -54,7 +55,7 @@ async function runChild(args: string[]): Promise<{ code: number | null; signal: 
     stderr: 'pipe',
   });
   const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-  await proc.exited;
+  await awaitExitBounded(proc, 'runChild(resume 子进程)');
   const line = stdout.split('\n').find((l) => l.startsWith('##RESULT## '));
   return {
     code: proc.exitCode,
@@ -84,7 +85,7 @@ async function crashAt(hangNode: string, args: string[]): Promise<void> {
     await Bun.sleep(50);
   }
   proc.kill('SIGKILL');
-  await proc.exited;
+  await awaitExitBounded(proc, `crashAt(${hangNode}) 的 SIGKILL 之后`);
 }
 
 describe('F1 崩在一轮中途 —— 轮内已绿节点不重跑, 制品不丢', () => {
