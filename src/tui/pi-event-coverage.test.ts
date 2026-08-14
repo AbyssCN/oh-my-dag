@@ -29,6 +29,11 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+// 锚在**模块位置**不是 cwd (2026-08-14 修, 夜跑待办②): 此前 join(process.cwd(), …) 把
+// node_modules 钉死在启动目录 —— 任何 worktree / 从别的目录跑, 它都因环境而红, 而红的原因
+// 与它要守的东西毫无关系 (这种闸会训练人无视它)。同隔壁 omdRepoRoot 的思路: 本文件在
+// src/tui/ 下, 仓根 = 上两级; worktree 里 node_modules 缺失时 (见 .gitignore 符号链接注) 跳过而不是假红。
+const REPO_ROOT = join(import.meta.dir, '..', '..');
 const CORE_TYPES = 'node_modules/@earendil-works/pi-agent-core/dist/types.d.ts';
 const AI_TYPES = 'node_modules/@earendil-works/pi-ai/dist/types.d.ts';
 const BACKEND = 'src/tui/backend-embedded.ts';
@@ -70,7 +75,7 @@ const ASSISTANT_EVENT_EXEMPT: Readonly<Record<string, string>> = {
 const mapped = (backend: string, name: string): boolean => backend.includes(`'${name}'`);
 
 describe('pi 事件词表覆盖闸 —— 每一种要么映射, 要么写明为什么不', () => {
-  const backend = readFileSync(join(process.cwd(), BACKEND), 'utf8');
+  const backend = readFileSync(join(REPO_ROOT, BACKEND), 'utf8');
 
   /**
    * 反向自检(实跑,两刀):
@@ -80,14 +85,14 @@ describe('pi 事件词表覆盖闸 —— 每一种要么映射, 要么写明为
    *      表在漂, 而漂掉的那条会让人以为某个事件"已经想过了")。
    */
   test('★ AgentEvent 的每一种都有着落(映射 / 豁免)', () => {
-    const all = discriminants(readFileSync(join(process.cwd(), CORE_TYPES), 'utf8'), 'export type AgentEvent', 4000);
+    const all = discriminants(readFileSync(join(REPO_ROOT, CORE_TYPES), 'utf8'), 'export type AgentEvent', 4000);
     expect(all.length).toBeGreaterThan(5); // 解析真的解出东西了 —— 空集合会让这条恒绿
     const orphans = all.filter((e) => !mapped(backend, e) && !(e in AGENT_EVENT_EXEMPT));
     expect(orphans).toEqual([]);
   });
 
   test('★ AssistantMessageEvent 的每一种都有着落', () => {
-    const all = discriminants(readFileSync(join(process.cwd(), AI_TYPES), 'utf8'), 'export type AssistantMessageEvent');
+    const all = discriminants(readFileSync(join(REPO_ROOT, AI_TYPES), 'utf8'), 'export type AssistantMessageEvent');
     expect(all.length).toBeGreaterThan(8);
     const orphans = all.filter((e) => !mapped(backend, e) && !(e in ASSISTANT_EVENT_EXEMPT));
     expect(orphans).toEqual([]);
@@ -100,8 +105,8 @@ describe('pi 事件词表覆盖闸 —— 每一种要么映射, 要么写明为
    * 还在,读的人会以为"这件事想过了",而它想的是一个已经不存在的东西。
    */
   test('★ 豁免表里没有幽灵条目(pi 删掉一种事件时, 对应豁免也要跟着删)', () => {
-    const core = discriminants(readFileSync(join(process.cwd(), CORE_TYPES), 'utf8'), 'export type AgentEvent', 4000);
-    const ai = discriminants(readFileSync(join(process.cwd(), AI_TYPES), 'utf8'), 'export type AssistantMessageEvent');
+    const core = discriminants(readFileSync(join(REPO_ROOT, CORE_TYPES), 'utf8'), 'export type AgentEvent', 4000);
+    const ai = discriminants(readFileSync(join(REPO_ROOT, AI_TYPES), 'utf8'), 'export type AssistantMessageEvent');
     expect(Object.keys(AGENT_EVENT_EXEMPT).filter((k) => !core.includes(k))).toEqual([]);
     expect(Object.keys(ASSISTANT_EVENT_EXEMPT).filter((k) => !ai.includes(k))).toEqual([]);
   });
