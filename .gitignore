@@ -1,5 +1,8 @@
 # deps
-node_modules/
+# 不带斜杠: 2026-08-14 实测 `node_modules/` 只匹配目录, **符号链接版滑进了 commit** ——
+# 隔离 worktree 里 ln -s 主仓 node_modules 提速, git add -A 把链接收了, merge 检出时
+# 把主仓真目录整个覆盖成自指链接 (依赖全灭, bun install 重救)。无斜杠两种都忽略。
+node_modules
 
 # runtime state (sqlite stores, configs)
 .wright/
