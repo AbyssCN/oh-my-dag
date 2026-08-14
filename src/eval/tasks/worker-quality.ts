@@ -15,6 +15,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { awaitDeath, readAllBounded, spawnWithPipes } from '../../harness/proc/await-exit';
 
 export interface WorkerGrade {
   /** 0..1, 答案正确性 (宽松抽取, 不因啰嗦扣分)。 */
@@ -95,10 +96,18 @@ export async function runCodeCases(
       ].join('\n'),
       'utf-8',
     );
-    const proc = Bun.spawn(['bun', 'run', join(dir, 'run.ts')], { cwd: dir, stdout: 'pipe', stderr: 'pipe' });
+    // 三处等待都有界 (2026-08-14 晚, 同 command-leaf 那族): 此前 `await proc.exited` 排在
+    // SIGKILL 定时器**之后** —— 定时器已经打完那一枪, 退出事件再丢掉就没有任何东西兜底了,
+    // 整个评测挂死在这一行。`awaitDeath` 要的正是这里唯一需要的事实("它没了"), 而不是退出码。
+    const proc = spawnWithPipes(
+      () => Bun.spawn(['bun', 'run', join(dir, 'run.ts')], { cwd: dir, stdout: 'pipe', stderr: 'pipe' }),
+      ['stdout'],
+      `worker-quality 跑样本 ${entry}`,
+    );
     const timer = setTimeout(() => proc.kill('SIGKILL'), timeoutMs);
-    const out = await new Response(proc.stdout).text();
-    await proc.exited;
+    // 一进一出, 拿不到就是 readAllBounded 自己抛, 走不到这行。
+    const out = (await readAllBounded([proc.stdout], `worker-quality 读 ${entry} 的输出`, timeoutMs))[0]!;
+    await awaitDeath(proc, `worker-quality 等 ${entry} 退出`, timeoutMs);
     clearTimeout(timer);
     if (out.includes('NOFN')) return { score: 0, formatOk: false, note: `未导出 ${entry}` };
     const ok = (out.match(/^OK$/gm) ?? []).length;

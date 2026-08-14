@@ -30,7 +30,7 @@ import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { awaitDeath, readAllBounded } from './_await-exit';
+import { awaitDeath, readAllBounded } from '../../src/harness/proc/await-exit';
 
 const CHILD = join(import.meta.dir, 'inner-loop-crash-child.ts');
 const REPO = join(import.meta.dir, '..', '..');

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { spawnWithPipes } from './_await-exit';
+import { spawnWithPipes } from '../../src/harness/proc/await-exit';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';

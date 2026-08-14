@@ -276,7 +276,7 @@ describe('N5 · 终止原因出得了图 (留痕 + 读数板)', () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'n5-readout-')), 'runs.db');
     seed(dbPath);
     // spawnSync: 这类一次性 CLI 调用不需要异步子进程通道, 而那条通道在满负载下会
-    // 掉 EBADF/epoll_ctl (2026-08-14 实测: 8 次全量中 4 次, 见 test/core/_await-exit.ts)。
+    // 掉 EBADF/epoll_ctl (2026-08-14 实测: 8 次全量中 4 次, 见 src/harness/proc/await-exit.ts)。
     const p = Bun.spawnSync(['bun', 'run', 'scripts/omd-readout.ts', '--db', dbPath, '--json']);
     const out = JSON.parse(p.stdout.toString()) as {
       outcomeCount: Record<RunOutcomeKind, number>;
@@ -293,7 +293,7 @@ describe('N5 · 终止原因出得了图 (留痕 + 读数板)', () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'n5-readout-txt-')), 'runs.db');
     seed(dbPath);
     // spawnSync: 这类一次性 CLI 调用不需要异步子进程通道, 而那条通道在满负载下会
-    // 掉 EBADF/epoll_ctl (2026-08-14 实测: 8 次全量中 4 次, 见 test/core/_await-exit.ts)。
+    // 掉 EBADF/epoll_ctl (2026-08-14 实测: 8 次全量中 4 次, 见 src/harness/proc/await-exit.ts)。
     const p = Bun.spawnSync(['bun', 'run', 'scripts/omd-readout.ts', '--db', dbPath]);
     const text = p.stdout.toString();
     expect(p.exitCode).toBe(0);

@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { logger } from '../../logger';
+import { spawnWithPipes } from '../../harness/proc/await-exit';
 import type { DagNodeEvent } from '../../harness/dag/types';
 import type { ReviewProgressEvent } from '../../harness/review/run';
 import type { RunRegistry } from '../run-registry.js';
@@ -111,9 +112,22 @@ export function startReviewEventPoller(
   };
 }
 
-/** 生产 spawn: 数组参数 + cwd/env 注入 + stdout/stderr 管道收集。 */
+/**
+ * 生产 spawn: 数组参数 + cwd/env 注入 + stdout/stderr 管道收集。
+ *
+ * ⚠ **这里只补了"管道没建起来"那一张脸**(2026-08-14 晚)。同源的另外三张
+ * (`proc.exited` 永不 resolve / 抛 EBADF / 管道到不了 EOF)要有界就得有一个 deadline,
+ * 而 fleet 的子进程是**按设计长跑的**(`bun run scripts/dag-*.ts`,分钟级到更久),
+ * 这里没有超时也不该由我随手编一个 —— 编小了会杀掉正常作业。
+ * 那个 deadline 该是多少是个待裁的设计问题,记在 `docs/plan/2026-08-14-next-session.md`。
+ * `spawnWithPipes` 不同:它检的是"传了 'pipe' 到底给没给",**不含任何时间假设**,所以可以现在就补。
+ */
 const defaultSpawn: SpawnFn = async (cmd, opts) => {
-  const proc = Bun.spawn(cmd, { cwd: opts.cwd, env: { ...process.env, ...opts.env }, stdout: 'pipe', stderr: 'pipe' });
+  const proc = spawnWithPipes(
+    () => Bun.spawn(cmd, { cwd: opts.cwd, env: { ...process.env, ...opts.env }, stdout: 'pipe', stderr: 'pipe' }),
+    ['stdout', 'stderr'],
+    `fleet 子进程 \`${cmd.slice(0, 3).join(' ')}\``,
+  );
   const [exitCode, stdout, stderr] = await Promise.all([
     proc.exited,
     new Response(proc.stdout).text(),

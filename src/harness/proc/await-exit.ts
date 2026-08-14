@@ -1,5 +1,11 @@
 /**
- * test/core/_await-exit —— **有界地**等子进程退出,并把两种"没等到"分开。
+ * harness/proc/await-exit —— **有界地**等子进程退出,并把两种"没等到"分开。
+ *
+ * ⚠ 2026-08-14 晚从 `test/core/_await-exit.ts` 搬到 `src/`:当天先只给测试补了界,
+ * 而**同一个模式逐字长在生产码里**(`command-leaf.ts` 的 `defaultSpawn`)——
+ * 那条路上 G4 判别力探针在满负载下静默 fail-open 过一次(26 次全量里 1 次,
+ * 判词与计数见 `docs/plan/2026-08-14-next-session.md` 的「第五张脸」)。
+ * **一份界两处用**,别再养两套。
  *
  * ## 为什么需要它(2026-08-14 实测,不是预防性优化)
  *
@@ -220,7 +226,7 @@ export async function awaitExitBounded(
     throw new Error(
       `${what}: ${face}, 而子进程 (pid ${proc.pid}) **已经不在**。` +
         ` 这是运行时的子进程回收缺陷 (bun ${Bun.version}: 退出事件丢了), 不是被测对象的问题 —— 本次读数无效, 重跑。` +
-        ` 同源的另一面是 EBADF/epoll_ctl。详见 test/core/_await-exit.ts 的模块注。`,
+        ` 同源的另一面是 EBADF/epoll_ctl。详见 src/harness/proc/await-exit.ts 的模块注。`,
     );
   }
   proc.kill('SIGKILL');

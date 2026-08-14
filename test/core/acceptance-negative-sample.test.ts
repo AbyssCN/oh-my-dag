@@ -10,7 +10,7 @@
  * 两道问的不是同一个问题,少哪一道都漏掉一整类。
  */
 import { describe, expect, test } from 'bun:test';
-import { acceptanceDiscriminationReason, acceptanceVacuityReason } from '../../src/harness/goal/acceptance-gate';
+import { acceptanceDiscriminationReason, acceptanceVacuityReason, probeDiscrimination } from '../../src/harness/goal/acceptance-gate';
 import { classifyGoal, normalizeClassification } from '../../src/harness/goal/classify-acceptance';
 
 /** 探针注入 runner:把"命令 + 那个临时世界"翻成一个退出码,不真起子进程(测的是判据逻辑)。 */
@@ -82,6 +82,42 @@ describe('G4 · 探针的 fail-open 边界 (加固不是前置条件)', () => {
       throw new Error('spawn 失败');
     };
     expect(await acceptanceDiscriminationReason('grep -q x a.md', { path: 'a.md', content: 'x' }, 0, { runIn: boom })).toBeNull();
+  });
+
+  /**
+   * ★ 两种 fail-open **在账本上必须分得开**(2026-08-14 晚)。
+   *
+   * 原本两条 `return` 用的是同一句 `why`,而它们的下一步完全相反:
+   * 「命令被闸拒」去看白名单,「探针自己炸了」是运行时缺陷、这次读数无效该重跑。
+   * 压成一个标签就是本仓坑①(`NULL` ≠ 0 ≠ 不适用)。
+   *
+   * 这不是纸上推演:26 次全量里 `v4-5.log` 真中过一次(见 `docs/plan/2026-08-14-next-session.md`
+   * 「第五张脸」),当时现场只剩一句光秃秃的 msg —— **只能靠计数**认出来。
+   *
+   * 反向自检:两条 `why` 改回同一个常量 → 第一条红;把 `String(err)` 从 `why` 里拿掉 → 第二条红。
+   */
+  test('★ 「被闸拒」与「探针自己炸了」是两件事, 判词不许同字', async () => {
+    const blocked = await probeDiscrimination('grep -q x a.md', { path: 'a.md', content: 'x' }, 0, {
+      runIn: async () => ({ exitCode: -1 }),
+    });
+    const boom = await probeDiscrimination('grep -q x a.md', { path: 'a.md', content: 'x' }, 0, {
+      runIn: async () => {
+        throw new Error('EBADF: bad file descriptor, epoll_ctl');
+      },
+    });
+    expect(blocked.status).toBe('fail_open');
+    expect(boom.status).toBe('fail_open');
+    expect((blocked as { why: string }).why).not.toBe((boom as { why: string }).why);
+  });
+
+  test('★ 炸了的那条把**错误原文**带进 why —— 留了证据不等于证据看得见', async () => {
+    const boom = await probeDiscrimination('grep -q x a.md', { path: 'a.md', content: 'x' }, 0, {
+      runIn: async () => {
+        throw new Error('EBADF: bad file descriptor, epoll_ctl');
+      },
+    });
+    // 光进 logger 的字段不算: 那次真实事故的日志格式把 binding 全丢了, msg 里没有就等于没有。
+    expect((boom as { why: string }).why).toContain('EBADF');
   });
 
   test('真落盘一次 (不注入 runner 时探针自带 runner, 且临时目录用完就删)', async () => {

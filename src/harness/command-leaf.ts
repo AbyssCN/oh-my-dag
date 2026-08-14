@@ -20,6 +20,7 @@
  * cwd 锚 + 超时 + 危险模式表; 需要强隔离的是 agent leaf (那边有 bwrap jail)。
  */
 import { classifyCommand } from './hooks/dangerous-cmd';
+import { awaitExitBounded, readAllBounded, spawnWithPipes } from './proc/await-exit';
 import { logger } from '../logger';
 import type { ModelUsage } from '../model/types';
 
@@ -169,9 +170,26 @@ export interface CommandLeafRunnerOpts {
   timeoutMs?: number;
   /** cwd。默认 process.cwd()。 */
   cwd?: string;
-  /** 注入式 spawn (测试替身)。默认 Bun.spawn 捕获 stdout/stderr/exit。 */
-  spawn?: (command: string, cwd: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
+  /** 注入式 spawn (测试替身)。默认 `defaultSpawn` —— Bun.spawn 捕获 stdout/stderr/exit。 */
+  spawn?: (command: string, cwd: string, timeoutMs?: number) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
+  /**
+   * 注入 `Bun.spawn` **本身**(不是整条采集)—— 只给 `defaultSpawn` 用,给了 `spawn` 时它不生效。
+   *
+   * 两个口子分野明确:`spawn` 换掉"跑一条命令拿三元组"这件事(旧的、给不关心子进程层的测试用);
+   * `spawnRaw` 换掉"起子进程"这一步,于是**子进程记账失效的那四张脸能被确定性地注入** ——
+   * 它们在真机上是 1/26 的东西,靠跑全量验不了。见 `command-leaf-subproc-faces.test.ts`。
+   */
+  spawnRaw?: () => BoundedProc;
 }
+
+/** `defaultSpawn` 需要的那一小块 `Bun.Subprocess` 面(注入面就是它,不多不少)。 */
+type BoundedProc = {
+  stdout: ReadableStream<Uint8Array> | undefined;
+  stderr: ReadableStream<Uint8Array> | undefined;
+  exited: Promise<number>;
+  pid: number;
+  kill: (sig?: number | NodeJS.Signals) => void;
+};
 
 /**
  * **没有 memo 缓存 —— 这是量出来的决定, 不是遗漏** (2026-08-01)。
@@ -196,14 +214,32 @@ export interface CommandLeafRunnerOpts {
  * 反向自检见 `command-leaf-cache-scope.test.ts` —— 谁再加缓存, 那几条会红。
  */
 
-const defaultSpawn = async (command: string, cwd: string) => {
-  const proc = Bun.spawn(['sh', '-c', command], { cwd, stdout: 'pipe', stderr: 'pipe' });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
+/**
+ * **三处等待全部有界** (2026-08-14 晚)。此前是裸的 `Bun.spawn` + `new Response(...).text()`
+ * + `proc.exited` —— 与当天为测试补界的那个模式**逐字相同**,而生产这一份当天没动。
+ *
+ * 代价是实测到的:G4 判别力探针走的正是这条路,26 次全量里 1 次 spawn 抛错 →
+ * `acceptance-gate.ts:241` catch → `fail_open`,**闸静默失效**。
+ * 更坏的一面是挂死那张脸:界不在这里时,外层那道超时哨会把它兑成 `exitCode 124`,
+ * 于是一次记账缺陷伪装成"命令超时",在探针里还会被读成"判据有判别力"(假绿)。
+ *
+ * ⚠ 内层预算 = 外层 `timeoutMs`,而外层哨兵**多给 5s**(见 createCommandLeafRunner)——
+ * 两道界撞在同一个时刻会让谁先响成为运气。内层先响才有分辨力:它分得开
+ * 「进程还活着 = 真慢」与「进程已经没了 = 退出事件丢了」,而外层只会印一个 124。
+ */
+const defaultSpawn = async (command: string, cwd: string, timeoutMs = 60_000, spawnRaw?: () => BoundedProc) => {
+  const proc = spawnWithPipes(
+    spawnRaw ?? (() => Bun.spawn(['sh', '-c', command], { cwd, stdout: 'pipe', stderr: 'pipe' }) as BoundedProc),
+    ['stdout', 'stderr'],
+    `跑命令 \`${command.slice(0, 60)}\``,
+  );
+  const what = `跑命令 \`${command.slice(0, 60)}\``;
+  const [pipes, exitCode] = await Promise.all([
+    readAllBounded([proc.stdout!, proc.stderr!], what, timeoutMs),
+    awaitExitBounded(proc, what, timeoutMs),
   ]);
-  return { stdout, stderr, exitCode };
+  // readAllBounded 逐条对应输入流, 两条进两条出; 拿不到就是它抛, 走不到这里。
+  return { stdout: pipes[0]!, stderr: pipes[1]!, exitCode };
 };
 
 /** git 的「带值全局 flag」—— 取子命令时必须连它的值一起跳过, 否则 `git -C /repo status` 会把 /repo 当子命令。 */
@@ -340,7 +376,7 @@ export function createCommandLeafRunner(opts: CommandLeafRunnerOpts): CommandLea
   const allowlist = opts.allowlist;
   const timeoutMs = opts.timeoutMs ?? 60_000;
   const cwd = opts.cwd ?? process.cwd();
-  const spawn = opts.spawn ?? defaultSpawn;
+  const spawn = opts.spawn ?? ((c: string, d: string, t?: number) => defaultSpawn(c, d, t, opts.spawnRaw));
 
   // **每次调用都真跑** —— 不缓存的判据见上方 CommandLeafRunnerOpts 下的那段注。
   return async ({ command }) => {
@@ -352,11 +388,16 @@ export function createCommandLeafRunner(opts: CommandLeafRunnerOpts): CommandLea
     const outParts: string[] = [];
     let exitCode = 0;
     for (const link of links) {
+      // ⚠ 哨兵**比内层界晚 5s**(2026-08-14 晚)。此前两者同为 timeoutMs, 而 `defaultSpawn` 内层
+      //   分得开「进程还活着 = 真慢」与「进程已经没了 = 退出事件丢了」, 外层只会印一个 124。
+      //   同一时刻起跑的两道界谁先响是运气 —— 让有分辨力的那道先响。
+      //   哨兵留着不是冗余: 注入进来的 `opts.spawn` 是外部代码, 它挂住时只有这道拦得住。
       const { stdout, stderr, exitCode: code } = await Promise.race([
-        spawn(link, cwd),
-        new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve) =>
-          setTimeout(() => resolve({ stdout: '', stderr: `[timeout ${timeoutMs}ms]`, exitCode: 124 }), timeoutMs),
-        ),
+        spawn(link, cwd, timeoutMs),
+        new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve) => {
+          const id = setTimeout(() => resolve({ stdout: '', stderr: `[timeout ${timeoutMs}ms]`, exitCode: 124 }), timeoutMs + 5_000);
+          (id as unknown as { unref?: () => void }).unref?.();
+        }),
       ]);
       // **两条流都要**, 不是二选一 (2026-08-01, verifier 校准逼出来的)。
       //

@@ -9,7 +9,7 @@
  *      本文件自己撞上 bun:test 超时 —— 那正是这条闸要消灭的形状。
  */
 import { describe, expect, test } from 'bun:test';
-import { awaitDeath, awaitExitBounded, processGone, readAllBounded, spawnWithPipes } from './_await-exit';
+import { awaitDeath, awaitExitBounded, processGone, readAllBounded, spawnWithPipes } from './await-exit';
 
 /** 一个 `exited` 永不 resolve 的假子进程 —— 正是线上那个缺陷的形状。 */
 const stuckProc = (pid: number, onKill?: () => void) => ({

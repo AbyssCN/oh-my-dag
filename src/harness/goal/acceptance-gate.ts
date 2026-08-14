@@ -79,6 +79,17 @@ export const isRunnableAcceptanceCommand = (command: string): boolean =>
 const VACUITY_CANT_RUN = '[omd/goal] 空世界自检跑不起来 → 不拦 (fail-open)';
 const SAMPLE_PATH_BAD = '[omd/goal] 反面样本路径不合法 → 跳过判别力探针 (fail-open)';
 const DISCRIM_CANT_RUN = '[omd/goal] 判别力探针跑不起来 → 不拦 (fail-open)';
+/**
+ * 上面那句原本**同时**盖住两件事:命令被闸拒(负码)与探针自己炸了(catch)。
+ * 两者的下一步完全不同(前者去看白名单,后者是运行时缺陷该重跑),压成一个标签就再也分不开
+ * —— 本仓坑①(`NULL` ≠ 0 ≠ 不适用)的同一形状。2026-08-14 晚拆开。
+ *
+ * ⚠ **catch 那条把错误原文带进 `why`**,不是只留在 logger 的字段里:那次真实事故
+ * (26 次全量里 1 次,`v4-5.log`)现场就只剩一句光秃秃的 msg —— 日志格式把 binding 全丢了,
+ * 只能靠"绿的日志各 1 条、红的那份 2 条"这种计数才认出来。
+ * **留了证据不等于证据看得见**(本仓 §3 的第二层)。
+ */
+const DISCRIM_BLOCKED = '[omd/goal] 判别力探针的命令被闸拒 → 不拦 (fail-open, 那件事由命令闸管)';
 export const NO_NEGATIVE_SAMPLE = '[omd/goal] 分类器没给反面样本 → 判别力探针跳过 (这条判据只过了空世界自检)';
 
 /**
@@ -230,7 +241,7 @@ export async function probeDiscrimination(
     const run = deps.runIn ?? defaultProbeRunner;
     const { exitCode } = await run({ command, cwd: dir });
     // 负码 = 闸拒(命令没跑)→ 探针无话可说, 那件事由 acceptanceCommandBlockReason 管。
-    if (exitCode < 0) return { status: 'fail_open', why: DISCRIM_CANT_RUN };
+    if (exitCode < 0) return { status: 'fail_open', why: DISCRIM_BLOCKED };
     if (exitCode !== expectExit) return { status: 'ok' }; // 错答案上命令失败 —— 通过探针
     return {
       status: 'ring',
@@ -239,8 +250,9 @@ export async function probeDiscrimination(
         `对的答案和错的答案都满足它, 因此它判不了成败。反面样本: \`${rel}\` = ${JSON.stringify(sample.content.slice(0, 120))}`,
     };
   } catch (err) {
-    logger.warn({ command, err: String(err) }, DISCRIM_CANT_RUN);
-    return { status: 'fail_open', why: DISCRIM_CANT_RUN };
+    const why = `${DISCRIM_CANT_RUN}: ${String(err).slice(0, 200)}`;
+    logger.warn({ command, err: String(err) }, why);
+    return { status: 'fail_open', why };
   } finally {
     if (dir) rmSync(dir, { recursive: true, force: true });
   }
