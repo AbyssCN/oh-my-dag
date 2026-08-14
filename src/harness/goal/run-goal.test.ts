@@ -1468,3 +1468,94 @@ describe('runGoal — P4 设计审核集成 (INV-3 / INV-6 / G-4 / D-7)', () => 
     expect(r.designReview!.tickets).toEqual([]);
   });
 });
+
+// ── 实验臂 contract-distill (`.omd/experiments.json` 的 `contractFaninDistill`) ──────────────
+//
+// 只碰契约段 (`goal-contract`) 的 dagCfg.faninSummary.minFanout, 且只把它收紧到 1 —— 调用方原有
+// faninSummary 字段透传不丢, execute 段一律不受影响。旗标 off/缺失/坏 JSON → readExperimentFlags
+// 恒回 off, `dagCfg` 与 `baseDagCfg` 同一引用 → 两段 config 零字段增删 (INV-1)。
+
+import { afterEach, beforeEach, spyOn } from 'bun:test';
+import * as repoRoot from '../repo-root';
+
+describe('实验臂 contract-distill — 契约段 fan-in 摘要扇出闸', () => {
+  let flagRoot: string;
+
+  beforeEach(() => {
+    flagRoot = mkdtempSync(join(tmpdir(), 'omd-goal-distill-flag-'));
+    mkdirSync(join(flagRoot, '.omd'), { recursive: true });
+    spyOn(repoRoot, 'omdRepoRoot').mockReturnValue(flagRoot);
+  });
+
+  afterEach(() => {
+    rmSync(flagRoot, { recursive: true, force: true });
+  });
+
+  const mkCaptured = (captured: { contract?: ExecutorDagConfig; execute?: ExecutorDagConfig }): RunGoalConfig => ({
+    cwd: mkdtempSync(join(tmpdir(), 'omd-goal-distill-')),
+    dag: {
+      conductorModel: 'c:m',
+      leafModel: 'l:m',
+      agentRunner: (async () => ({ text: 'x', usage: { in: 1, out: 1 } })) as never,
+      // 调用方原有 faninSummary — 用来证「其它字段透传不丢」, 不是引擎默认值。
+      faninSummary: { minChars: 999, model: 'x:y' },
+      continuity: { manager: {} as never, runId: 'run-distill' },
+    } as ExecutorDagConfig,
+    _today: () => '2026-08-14',
+    _classify: cls('complex'),
+    _runDag: (async (plan: ConductorPlan, dagCfg: ExecutorDagConfig) => {
+      if (plan.name === 'goal-contract') {
+        captured.contract = dagCfg;
+        return contractDag({ specFile: 'docs/plan/2026-07-28-x.md', specText: '契约正文' });
+      }
+      captured.execute = dagCfg;
+      return executeDag({ converged: true });
+    }) as never,
+  });
+
+  // 证伪 (a): 若接线漏做了默认值改写 (如把缺席误写成显式 `{minFanout:2}`) → 下面两处
+  // `toEqual({ minChars: 999, model: 'x:y' })` 会因多出 `minFanout` 键当场红 (INV-1)。
+  // INV-2 实测已跑 (2026-08-14): 把 `readExperimentFlags()` 临时硬编码为恒回
+  // `{ contractFaninDistill: true }`, 跑 `bun test src/harness/goal/run-goal.test.ts` ——
+  // 本条当场变红 (`toEqual` 多出 `"minFanout": 1`), 其余 82 条不受影响; 还原后 `git diff` 为空,
+  // 复跑全绿 (88 pass)。证明本条测试确实在验旗标接线, 不是虚闸。
+  test('旗标 off (无 .omd/experiments.json) → 两段 config 与调用方原样逐字节等价', async () => {
+    const captured: { contract?: ExecutorDagConfig; execute?: ExecutorDagConfig } = {};
+    const config = mkCaptured(captured);
+    await runGoal('目标 off', config);
+    expect(captured.contract).toBeDefined();
+    expect(captured.execute).toBeDefined();
+    expect(captured.contract!.faninSummary).toEqual({ minChars: 999, model: 'x:y' });
+    expect(captured.execute!.faninSummary).toEqual({ minChars: 999, model: 'x:y' });
+    // execute 段整体也逐字节等价于「本改动之前」的既有推导 (D-I 冻结判据附加, 与本实验臂无关)
+    expect(captured.execute).toEqual({
+      ...config.dag,
+      freezeCriterion: { command: 'bun test', expectExit: 0 },
+    });
+    // 契约段除 runId 后缀外逐字节等价
+    expect(captured.contract).toEqual({
+      ...config.dag,
+      continuity: { ...config.dag.continuity!, runId: 'run-distill-contract' },
+    });
+  });
+
+  // 证伪 (b): 若把 minFanout 接到了 execute 段而非契约段 → `captured.execute!.faninSummary` 的
+  // `minFanout` 也会变 1, 最后一条断言当场红; 若接线丢了原有 `model` 字段 → 透传断言当场红。
+  test('旗标 on → 契约段 minFanout 收紧到 1, 原字段透传, execute 段不受影响', async () => {
+    writeFileSync(join(flagRoot, '.omd', 'experiments.json'), JSON.stringify({ contractFaninDistill: true }));
+    const captured: { contract?: ExecutorDagConfig; execute?: ExecutorDagConfig } = {};
+    const config = mkCaptured(captured);
+    await runGoal('目标 on', config);
+    expect(captured.contract!.faninSummary).toEqual({ minChars: 999, model: 'x:y', minFanout: 1 });
+    expect(captured.execute!.faninSummary).toEqual({ minChars: 999, model: 'x:y' });
+  });
+
+  // 证伪 (c): 若旗标读了但没接到 spec stage 的 summary 拼接 → 这里的 `toContain` 当场红。
+  test('旗标 on → spec stage summary 末尾带实验臂标记', async () => {
+    writeFileSync(join(flagRoot, '.omd', 'experiments.json'), JSON.stringify({ contractFaninDistill: true }));
+    const captured: { contract?: ExecutorDagConfig; execute?: ExecutorDagConfig } = {};
+    const r = await runGoal('目标 on 标记', mkCaptured(captured));
+    const specStage = r.stages.find((s) => s.stage === 'spec');
+    expect(specStage!.summary).toContain(' · 实验臂: contract-distill');
+  });
+});

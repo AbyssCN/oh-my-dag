@@ -38,6 +38,7 @@ import type { RunOutcomeKind } from '../run-outcome';
 import { loadSddContract } from './sdd-direct';
 import type { ExecutorDagConfig } from '../dag/types';
 import { TEST_STEP_PREFIX, acceptSideOf, buildAcceptDelta, stableFailSet, unstableFailSet, type AcceptSide } from './accept-delta';
+import { readExperimentFlags } from './experiment-flags';
 import { summarizeDelta, type DeltaReport, type VerifyStepStatus } from './delta-compare';
 import { parseBreakdown, type SddContract } from './sdd-direct';
 import { acceptCommandFromBreakdown, compileBreakdown, describeParallelism, parallelismReadout } from './sdd-compile';
@@ -706,9 +707,16 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
       try {
         // 独立 runId 后缀: 与 execute 段共用 runId 会让两张不同的图互相覆盖 `_dag.json`。
         // 后缀是确定性的 → `dag_goal resume=<runId>` 照样接得回这一段。
-        const dagCfg = config.dag.continuity
+        const baseDagCfg = config.dag.continuity
           ? { ...config.dag, continuity: { ...config.dag.continuity, runId: `${config.dag.continuity.runId}-contract` } }
           : config.dag;
+        // 实验臂 contract-distill (`.omd/experiments.json` 的 `contractFaninDistill`):
+        // 只把契约段的 fan-in 摘要扇出闸收紧到 1 (原有字段透传, 不丢)。旗标 off/缺失/坏 JSON →
+        // `readExperimentFlags()` 恒回 off, `dagCfg` 与 `baseDagCfg` 同一引用, 零字段增删 (INV-1)。
+        const experimentFlags = readExperimentFlags();
+        const dagCfg = experimentFlags.contractFaninDistill
+          ? { ...baseDagCfg, faninSummary: { ...baseDagCfg.faninSummary, minFanout: 1 } }
+          : baseDagCfg;
         const res = await (config._runDag ?? runExecutorDagWithPlan)(prepPlan, dagCfg);
         const leaf = res.results.contract;
         const touched = leaf?.filesTouched ?? [];
@@ -755,7 +763,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
           // 没真写盘 = 只吐了文本 —— 记 failed 但不断流程 (下游拿正文当契约仍能跑)。
           status: wrote ? 'done' : 'failed',
           outcome: wrote ? 'success' : 'empty-result',
-          summary: wrote ? path : 'spec 未落盘 (契约段没产出文件), 下游改用其正文当契约',
+          summary: (wrote ? path : 'spec 未落盘 (契约段没产出文件), 下游改用其正文当契约') + (experimentFlags.contractFaninDistill ? ' · 实验臂: contract-distill' : ''),
         });
         // 闸 C: 有东西可复用才落状态 —— 全空的契约段 (evidence 空且没落盘) 下次续跑照常重跑。
         if (evidence || specPath) {
