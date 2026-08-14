@@ -14,12 +14,34 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { ledgerPath } from './dag-record';
 import { mainRepoRootOfWorktree, omdRepoRoot } from './repo-root';
 
 const origCwd = process.cwd();
 afterEach(() => process.chdir(origCwd));
+
+/**
+ * 期望的仓根 —— **拿 git 自己当 oracle**,独立于被测实现(不循环论证)。
+ *
+ * `--git-common-dir` 在主仓与 linked worktree 里指向**同一个** `.git`,它的父目录正是
+ * `omdRepoRoot()` 按定义该返回的那个根(worktree 重定向就是冲这个去的)。
+ *
+ * ⚠ 此前下面两条 ★ 把期望值直接写成 `origCwd` —— 在主仓里两者恰好相等,所以一直绿;
+ * 在 **worktree 里必假红**,而代码行为完全正确(`repo-root.ts:55` 的重定向)。
+ * 实测代价(2026-08-14):worktree 全量恒红 2 条,红的理由与它们要守的东西无关。
+ *
+ * fail-open: 没有 git / 不在仓里 → 退回 cwd(= 改这条之前的老口径)。
+ */
+function repoRootByGit(): string {
+  try {
+    const r = Bun.spawnSync(['git', '-C', origCwd, 'rev-parse', '--path-format=absolute', '--git-common-dir']);
+    const out = r.stdout.toString().trim();
+    return r.exitCode === 0 && out ? realpathSync(dirname(out)) : realpathSync(origCwd);
+  } catch {
+    return realpathSync(origCwd);
+  }
+}
 
 /** 造 `<root>/package.json` + `<root>/a/b` 的临时树 (macOS 的 /var→/private/var 用 realpath 归一)。 */
 function pkgTree(): { root: string; deep: string } {
@@ -58,7 +80,7 @@ describe('omdRepoRoot — 锚点是模块位置, 不是 cwd', () => {
     const { deep } = pkgTree();
     process.chdir(deep);
     expect(omdRepoRoot()).toBe(anchored);
-    expect(realpathSync(anchored)).toBe(realpathSync(origCwd));
+    expect(realpathSync(anchored)).toBe(repoRootByGit());
   });
 });
 
@@ -111,6 +133,6 @@ describe('ledgerPath — 留痕库只有一个位置', () => {
   });
 
   test('落在 omd 仓根下的 .omd/ 里 (不是 src/harness/.omd, 也不是 tmp)', () => {
-    expect(ledgerPath()).toBe(join(realpathSync(origCwd), '.omd', 'dag-runs.db'));
+    expect(ledgerPath()).toBe(join(repoRootByGit(), '.omd', 'dag-runs.db'));
   });
 });
