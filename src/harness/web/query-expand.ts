@@ -89,6 +89,8 @@ export function createModelQueryExpander(
       ],
       temperature: 0.3,
       signal,
+      // 观测面: 不带 role 的 send 在 per-seat 台账里落成 traceName=null, 与别家的无名调用混一桶。
+      meta: { role: 'web:expand' },
     });
     return parseRewrites(res.text, query);
   };

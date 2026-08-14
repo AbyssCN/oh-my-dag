@@ -77,6 +77,10 @@ const TRACE_SEAT_RULES: readonly [RegExp, string][] = [
   [/^fanout:reduce$/, 'reduce'], // resolveRoleModelConfigured('reduce')
   [/^fanout:judge$/, 'judge'], // resolveRoleModelConfigured('judge')
   [/^fanout:(gap|synth|fusion|graft)$/, 'reason'], // 四个都默认 cfg.reasonModel (可被 synthPool/fusionModel/graftModel 覆盖 → 那时 model 列可查)
+  // web 检索层 (2026-08-14 补标签)。此前这三处 send **不带 role**, 于是落进 traceName=null
+  // 与别家无名调用混一桶 —— 而「distill 输入截断」正是 research 降耗的候选之一, 量不出来就选不了。
+  [/^web:expand$/, 'expand'], // web/query-expand.ts → resolveSeatModel('expand')
+  [/^web:distill-/, 'distill'], // web/distill-source.ts 与 distill-challenger.ts → resolveSeatModel('distill')
 ];
 
 /**

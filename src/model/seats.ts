@@ -212,7 +212,11 @@ export const SEATS: readonly SeatSpec[] = [
     crossFamily: 'no',
     thinking: 'xhigh',
     sampling: {},
-    recommend: 'deepseek-v4-flash —— 量产档, 靠缓存命中率而不是靠降 effort 省钱 (200 次对照: v4 忽略 effort 旋钮)。',
+    recommend:
+      'minimax-cn:MiniMax-M3 (owner 2026-08-14 裁, 订阅直连 + adaptive thinking)。' +
+      '⚠ 必须走原生位 `minimax-native.ts` —— pi 目录那条 anthropic 兼容端点把推理内联进 text, ' +
+      '量产座位格式守实测 37% (.omd/eval/m3-inproc-strip), 原生位 100%。' +
+      '前任 deepseek-v4-flash: 量产档, 靠缓存命中率而不是靠降 effort 省钱 (200 次对照: v4 忽略 effort 旋钮)。',
   },
   {
     id: 'agent',
@@ -225,7 +229,13 @@ export const SEATS: readonly SeatSpec[] = [
     // 这里写 xhigh 是为了两者一致, 别让人以为改这里能调 agent。
     thinking: 'xhigh',
     sampling: {},
-    recommend: '改文件质量优先。注意它的 effort 由 `agent-leaf.ts` 的 runner 默认给, 不读这一档。',
+    recommend:
+      'minimax-cn:MiniMax-M3 (owner 2026-08-14 裁)。实测依据 `.omd/eval/m3-agent-smoke` / `m3-agent-hard`: ' +
+      'smoke 两跑 G0+G1 双过 (工具循环真动手, 与 claude-sonnet-5 平手且墙钟约一半); hard 两跑 G0 过 G1 不过 —— ' +
+      '而 sonnet-5 在同题上**同样 G1 不过**, 是平手不是退步。' +
+      '⚠ 这条路走 pi-agent-core 自己的栈, **不经** `minimax-native.ts` —— 那边 `<think>` 仍在 text 里, ' +
+      '但交付物是文件改动不是被 parse 的正文, 代价小得多。别把量产座位那条结论套过来。' +
+      '改文件质量优先。注意它的 effort 由 `agent-leaf.ts` 的 runner 默认给, 不读这一档。',
   },
   { id: 'lens', tier: 'worker',
     what: 'research 的 **sub-angle 广度叶**: 一个镜头下的一个角度, 各写各的。',

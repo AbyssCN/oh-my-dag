@@ -13,6 +13,7 @@ import { getProvider } from './providers';
 import { emitModelUsage } from './accounting';
 import { resolvePiModel, piModelFromProviderConfig, piRequest, type PiModel } from './pi-transport';
 import { CLAUDE_SDK_PROVIDER, sdkCompleteRaw } from './claude-sdk-complete';
+import { MINIMAX_NATIVE_PROVIDERS, minimaxCompleteRaw } from './minimax-native';
 import { reportProviderFailure, cooldownMsFor } from './provider-health';
 import { reportTruncation } from './truncation';
 import { capsFor } from './model-caps';
@@ -197,6 +198,16 @@ function doRequest(
   // Claude 订阅完成位: 单发 SDK query, 外层重试/截断守卫/schema 纠错/熔断原样复用。
   if ((target.piModel as { provider?: string }).provider === CLAUDE_SDK_PROVIDER) {
     return sdkCompleteRaw((target.piModel as { id: string }).id, messages, req);
+  }
+  // MiniMax 原生位 (owner 2026-08-14): pi 目录给 minimax-cn 的是 anthropic 兼容那条端点, 它把推理
+  // **内联进 text** (`<think>…</think>{…}`), 而本仓对 `<think>` 零处理 → 量产座位格式守实测 37%。
+  // 原生 chatcompletion_v2 上 content 干净、推理单列, 且能显式发 thinking:adaptive。见 minimax-native.ts。
+  if (MINIMAX_NATIVE_PROVIDERS.has((target.piModel as { provider?: string }).provider ?? '')) {
+    const p = (target.piModel as { provider?: string }).provider!;
+    return minimaxCompleteRaw((target.piModel as { id: string }).id, messages, req, {
+      provider: p,
+      ...(target.apiKey ? { apiKey: target.apiKey } : {}),
+    });
   }
   // piRequest 的 PiCallResult 与 RawResult 结构同形 (text/usage/raw/finishReason)。
   return piRequest(target.piModel, messages, req, target.apiKey ? { apiKey: target.apiKey } : undefined);

@@ -57,6 +57,7 @@ export function createChallengerDistiller(
         { role: 'system', content: CHALLENGER_SYSTEM },
         { role: 'user', content: buildDistillPrompt(input, maxChars) },
       ],
+      meta: { role: 'web:distill-challenger' },
       temperature,
       topP: 0.95,
       maxTokens: 16_384,

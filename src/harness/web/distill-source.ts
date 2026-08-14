@@ -105,6 +105,7 @@ export function createModelSourceDistiller(
         { role: 'system', content: DISTILL_SYSTEM },
         { role: 'user', content: buildDistillPrompt(input, maxChars) },
       ],
+      meta: { role: 'web:distill-source' }, // 见 model/seat-usage.ts: 没这一格就量不出蒸馏这一层花了多少
       temperature: 0.25,
       topP: 0.85,
       maxTokens: 16_384, // 巨源蒸馏, 4096 会把长文档的后半截切掉

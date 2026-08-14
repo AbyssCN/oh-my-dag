@@ -74,6 +74,10 @@ const NOISE_PROVIDERS: ReadonlySet<string> = new Set([
   // backend-gh 的 run(gh, …, op) 操作标签命名空间 (c2f87e6 新增三步 escalate:stamp/reopen/label,
   // 与上一行 addTicket/syncFromMap 同族) —— 非模型坐标。
   'escalate',
+  // per-seat 台账的**角色标签**命名空间 (`web:expand` / `web:distill-source` / `web:distill-challenger`,
+  // 2026-08-14) —— 与 `conductor:plan` 同族: 它们是观测面的 meta.role, 不是模型坐标。
+  // 真坐标仍由这三处各自的 resolveSeatModel('expand'/'distill') 解析, 一个字都没绕过座位链。
+  'web',
 ]);
 
 /** 扫描排除面 (与 D-4 冻结一致) —— 相对 repo 根的路径判定。 */
@@ -141,6 +145,7 @@ const ALLOWLIST: readonly { file: string; coord: string; reason: string }[] = [
   { file: 'src/model/provider-health.ts', coord: 'allegretto:kimi-k3', reason: 'JSDoc @param 示例 (channel:model 冷却键格式说明), 非运行值' },
   { file: 'src/model/role-fallback.ts', coord: 'deepseek:x', reason: '注释示例 (providerOf 说明), 非运行值' },
   { file: 'src/model/types.ts', coord: 'mimo:deepseek-v4-flash', reason: 'JSDoc 示例 (ModelRequest.model 字段说明), 非运行值' },
+  { file: 'src/model/minimax-native.ts', coord: 'minimax-cn:MiniMax-M3', reason: '文件头注释里的实测样例 (展示走 pi 通道时 text 粘着 <think> 的原样输出), 非运行值; 路由判定读的是 piModel.provider 不是这个字面串' },
 ];
 
 const allowlistKey = (h: { file: string; coord: string }): string => `${h.file}\t${h.coord}`;
