@@ -1108,6 +1108,18 @@ import 得到、类型对得上、调用写得出来。
 
 拼件已经全在仓里,不用新造:`blank-baseline.ts:42` 的 `failSet`(测试名集合,注释原话「判据是集合比较不是计数」)+ `scripts/omd-blank-baseline.ts:56` 的 `extractFailSet`,接到 `run-goal.ts:942` 那一格的位置即可。反向自检写法:造一对 before=fail / after=fail 但 `failSet` 不同的报告 —— 现在判 `unchanged-failure`(不红),接上之后必须判 `new-failure`。
 
+**闸已落地**(2026-08-14,`src/harness/goal/accept-delta.ts` + `accept-delta.test.ts` + `run-goal.test.ts` 两条接线闸)。两半都做成了会红的东西:
+
+| 半 | 落点 | 反向自检(**实跑读数,不是预期**) |
+|---|---|---|
+| 粒度降到一条测试 | `buildAcceptDelta` —— 两侧 `(fail)` 名字集取**并集**当 step 集 | 删掉逐条那段 → **4 条红**;名字集改成只铺 after 侧 → **1 条红** |
+| 一次红不算红 | `stableFailSet`(交集)+ `run-goal` 判红前复跑一次 | 交集改并集 → **2 条红**;删掉复跑段 → 接线闸 **1 条红** |
+| **接线**真的在 | `run-goal.test.ts` 两条端到端 | after 侧换回不带输出 → **2 条红** |
+
+⚠ **接线闸是单独一条,不能省**:`buildAcceptDelta` 可以完全正确,而 `run-goal` 照样只传一格退出码 —— 那正是 S-35「机制在、真发射点没接」的形状,纯函数测试**结构上碰不到它**。
+
+⚠ 复跑只在**要判红时**才付,绿的那条路一次都不多跑;复跑抛错 → **维持原判红**(fail-closed:证不了它是抖动就按红算),抖动名字进判词(`· 复跑未复现 N [...]`)—— 不写出来的话,「复跑一次就绿了所以放行」在盘上没有痕迹,而那是下一个人判断这条闸可不可信时唯一能拿到的证据。
+
 ## 已立的闸(可执行的那部分)
 
 | 闸 | 位置 | 守什么 | 抓哪几条 |
@@ -1139,6 +1151,7 @@ import 得到、类型对得上、调用写得出来。
 | 熔断键的机会分母 | `src/harness/omd-readout.test.ts` | singleton(没机会)/ 真重复 / near-miss 三格互斥且穷尽;跨 run 的 near-miss 不算真机会;**空输出那桶是反例不进任何一格**(**带反向自检**:`exactRepeat` 去掉 `hits >= 2` → 两条红) | S-21 S-19 S-20 |
 | 审查锚点反幻觉 | `src/harness/review/anchor-check.ts` · `anchor-check.test.ts` | 每条 finding 一次 stat;文件存在 + line ≤ 行数 + repo 相对路径;P0/P1 无合法锚 → 降级记账;未填模板整体 skip(**带反向自检**:文件不存在判 valid → 红) | S-27 |
 | 验收 delta 只红新引入失败 | `src/harness/goal/delta-compare.ts` · `delta-compare.test.ts` | 六档矩阵 + mode 感知;老失败单列、新步 newly-run、缺席按 mode 判 skipped/new-failure(**带反向自检**:把 pass→fail 判成 fixed → 红;把 unchanged fail 判红 → 红) | S-28 |
+| 验收 delta 的**分辨率**(基线红时仍看得见新失败) | `src/harness/goal/accept-delta.ts` · `accept-delta.test.ts` · `run-goal.test.ts` 两条接线闸 | 两侧 `(fail)` 名字集取并集当 step 集,判据降到一条测试;判红前复跑一次只留复现的,抖动名字进判词(**带反向自检**:删逐条段 → 4 红;并集改 after-only → 1 红;交集改并集 → 2 红;after 侧不喂输出 → 接线闸 2 红) | S-37 S-28 S-35 |
 | 写集声明对账(越界即 orphan) | `src/harness/write-set.ts` · `write-set.test.ts` | 跑后 diff 走五档归属阶梯;done/历史声明不放行;无声明 → undeclared 不红(**带反向自检**:把 b.ts 放行 → 红;把 done 声明也算数 → 红) | S-29 |
 | 谎报完成硬矛盾闸 | `src/harness/plan/false-completion.ts` · `false-completion.test.ts` · `src/harness/dag/engine.ts` | 声称完成 ∧ 验收命令实败 → 判 fail;LLM judge 前确定性先行,被点节点铸票(**带反向自检**:把 exit 1 当支撑声称 → 红) | S-30 |
 | 证据字段的真发射点还在 | `src/harness/agent-leaf-shellruns-wiring.test.ts` | `shellRuns` 生产端(在代码里、不在注释上、条件形状不变)与消费端(`claimed-actions` 还读它)两头都钉(**带反向自检**:删发射行 → 2 红;注释掉 → 1 红;消费端改名 → 1 红) | S-35 S-30 |

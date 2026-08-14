@@ -65,6 +65,8 @@ function executeDag(
      * 这个 D-I 核心场景, 显式传 'failed'。
      */
     accept?: 'done' | 'failed' | 'absent';
+    /** accept 节点的输出正文 —— S-37 那条闸的判据面(`(fail)` 名字集从这里抽)。 */
+    acceptOutput?: string;
     /**
      * S4 终态 emit 的注入面: N5 outcome 阶梯 (run-goal.ts) 的各停止轴都能经 execute 节点 /
      * dag 结果注入 —— 测"每个可达终态都真 append 过 terminal", 不靠投影表冒充端到端。
@@ -83,7 +85,7 @@ function executeDag(
         ? {}
         : {
             accept: {
-              id: 'accept', status: accept, kind: 'command', output: accept === 'done' ? '' : '[exit 1]',
+              id: 'accept', status: accept, kind: 'command', output: opts.acceptOutput ?? (accept === 'done' ? '' : '[exit 1]'),
               deps: ['execute'], usage: { in: 0, out: 0 },
             },
           }),
@@ -286,6 +288,46 @@ describe('runGoal — D-1 mode 感知基线 delta (SDD cairness-distill D-1, 挂
       tier: 'simple',
       _runDag: run as never,
     });
+
+  /**
+   * ★ **S-37 接线闸** —— 纯函数那侧在 `accept-delta.test.ts` 已经钉死;这两条钉的是
+   * **run-goal 真把命令输出喂进去了**。少了它们,`buildAcceptDelta` 可以完全正确而
+   * run-goal 照样只传一格退出码 —— 那正是 S-35「机制在、真发射点没接」的形状。
+   *
+   * 背景(为什么值得两条端到端):夜跑 run `c02ac67d` 的引擎印过「D-1 delta: 未新增失败」,
+   * 而它说对是**碰巧** —— 基线本来就红,真引入回归它会印一模一样的话。
+   */
+  /** 按调用次序吐不同输出的 commandRunner(第 1 次 = 基线,第 2 次 = 判红前的复跑)。 */
+  const cmdRunnerSeq = (...outs: Array<{ exitCode: number; text: string }>) => {
+    let n = 0;
+    return async ({ command: _command }: { command: string }) => ({ usage: { in: 0, out: 0 }, ...(outs[Math.min(n++, outs.length - 1)]!) });
+  };
+  const failLines = (...names: string[]): string => names.map((s) => `(fail) ${s} [1.00ms]`).join('\n');
+
+  test('★ S-37: 基线本来就红(A) + after 红(A+B) → 报 test:B, 不再被 unchanged-failure 赦免', async () => {
+    // 证伪(实跑): 把 run-goal 里 after 侧的 acceptSideOf 换回不带输出 → **这两条当场红**
+    // (回到 S-37 的洞: 引擎会把 B 当老失败赦免掉)。
+    const r = await runGoal('写个文件', deltaCfg(
+      // 基线红且复跑同样红 ⇒ 复现确认放行, B 是真回归。
+      { commandRunner: cmdRunnerSeq({ exitCode: 1, text: failLines('A') }, { exitCode: 1, text: failLines('A', 'B') }) },
+      async () => executeDag({ converged: true, accept: 'failed', acceptOutput: failLines('A', 'B') }),
+    ));
+    expect(r.verifyDelta!.red).toBe(true);
+    expect(r.verifyDelta!.newFailures).toEqual(['test:B']);
+    expect(r.stages.at(-1)!.summary).toContain('D-1 delta: 新增失败 1 [test:B]');
+  });
+
+  test('★ S-37 另一半: 复跑没复现 → 不判红, 但抖动写进判词(不留证据 = 偷偷放行)', async () => {
+    // 证伪(实跑): 删掉复跑确认那整段 → **本条当场红**(闸被抖动推到假阳性那一端,
+    // 人照样学会无视它 —— 那是 S-37 的另一个极端, 不是修好)。
+    const r = await runGoal('写个文件', deltaCfg(
+      { commandRunner: cmdRunnerSeq({ exitCode: 1, text: failLines('A') }, { exitCode: 1, text: failLines('A') }) },
+      async () => executeDag({ converged: true, accept: 'failed', acceptOutput: failLines('A', 'B') }),
+    ));
+    expect(r.verifyDelta!.red).toBe(false);
+    expect(r.verifyDelta!.newFailures).toEqual([]);
+    expect(r.stages.at(-1)!.summary).toContain('复跑未复现 1 [B]');
+  });
 
   test('D-1 反向自检: 基线 pass → accept fail → new-failure, 红, 摘要点名新增失败', async () => {
     // 证伪: 若实现不判红 / 不挂 delta → 本次跑批引入的失败被当老账, 闸形同虚设 (G-1 主路)。

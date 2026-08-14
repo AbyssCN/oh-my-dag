@@ -37,7 +37,8 @@ import { acceptanceCommandBlockReason } from './acceptance-gate';
 import type { RunOutcomeKind } from '../run-outcome';
 import { loadSddContract } from './sdd-direct';
 import type { ExecutorDagConfig } from '../dag/types';
-import { compareVerifyReports, summarizeDelta, type DeltaReport, type VerifyStepStatus } from './delta-compare';
+import { TEST_STEP_PREFIX, acceptSideOf, buildAcceptDelta, stableFailSet, unstableFailSet, type AcceptSide } from './accept-delta';
+import { summarizeDelta, type DeltaReport, type VerifyStepStatus } from './delta-compare';
 import { parseBreakdown, type SddContract } from './sdd-direct';
 import { acceptCommandFromBreakdown, compileBreakdown, describeParallelism, parallelismReadout } from './sdd-compile';
 import { attributeWriteSet, classifyWriteScope, describeWriteSet, SDD_DECLARED_WRITE_SET, type DeclaredWriteSet, type WriteScopeKind, type WriteSetDeclaration, type WriteSetReport } from '../write-set';
@@ -895,11 +896,13 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   // 基线 = 批前用同一份 commandRunner 跑一次验收命令 (与 accept 节点同 runner、同白名单闸);
   // 只把「新引入失败」判红, 基线里就在的老失败 (unchanged-failure) 单列不红 (INV-4)。
   // fail-open: 没配 runner (测试/无 command 能力) → 闸缺席; 抛错也缺席, 但不吞证据 (INV-1)。
-  let baselineStatus: VerifyStepStatus | undefined;
+  // ⚠ S-37: 基线**只存退出码那一格是不够的** —— 基线红在本仓是常态, 而 fail→fail 判
+  //   unchanged-failure 会把真回归一起赦免。所以同时存 `(fail)` 名字集, 判据降到一条测试。
+  let baselineSide: AcceptSide | undefined;
   if (acceptance.kind === 'executable' && config.dag.commandRunner) {
     try {
       const bl = await config.dag.commandRunner({ command: acceptance.command });
-      baselineStatus = bl.exitCode === (acceptance.expectExit ?? 0) ? 'pass' : 'fail';
+      baselineSide = acceptSideOf(bl.exitCode === (acceptance.expectExit ?? 0) ? 'pass' : 'fail', bl.text);
     } catch (err) {
       logger.warn({ command: acceptance.command, err: String(err) }, '[run-goal] D-1 基线跑不起来 → 闸缺席 (fail-open)');
     }
@@ -934,14 +937,32 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   // 缺席 + 两侧都 full → 比对器判 new-failure (fail-closed, 与 oracleOk 同一条纪律:
   // 「没被证明过就不算成」—— 引擎没跑到 accept 节点, 覆盖就回退了)。
   let verifyDelta: DeltaReport | undefined;
-  if (baselineStatus !== undefined && acceptance.kind === 'executable') {
+  /** S-37 第 2 半:第一次读到、复跑没复现的失败(抖动证据,进判词不进判红)。 */
+  let flakyFailures: string[] = [];
+  if (baselineSide !== undefined && acceptance.kind === 'executable') {
     const acceptStatus = exec.results.accept?.status;
     const afterStatus: VerifyStepStatus | undefined =
       acceptStatus === 'done' ? 'pass' : acceptStatus === 'failed' ? 'fail' : undefined;
-    verifyDelta = compareVerifyReports(
-      { mode: 'full', steps: [{ id: 'accept', status: baselineStatus }] },
-      { mode: 'full', steps: afterStatus === undefined ? [] : [{ id: 'accept', status: afterStatus }] },
-    );
+    let afterSide = acceptSideOf(afterStatus, exec.results.accept?.output ?? '');
+    verifyDelta = buildAcceptDelta(baselineSide, afterSide);
+    // ★ 一次红不算红(S-37 半 a:同 HEAD 两次的 fail 名字集实测不相交)。**只在要判红时**
+    //   才付这次复跑 —— 绿的那条路一次都不多跑。复跑抛错 = 不改判(fail-closed:
+    //   证不了它是抖动就按红算), 但留证据。
+    const needsConfirm = verifyDelta.red && verifyDelta.newFailures.some((id) => id.startsWith(TEST_STEP_PREFIX));
+    if (needsConfirm && config.dag.commandRunner) {
+      try {
+        const again = await config.dag.commandRunner({ command: acceptance.command });
+        const againSet = acceptSideOf('fail', again.text).failSet;
+        flakyFailures = unstableFailSet(afterSide.failSet, againSet);
+        if (flakyFailures.length > 0) {
+          logger.warn({ flaky: flakyFailures, command: acceptance.command }, '[run-goal] D-1 复跑未复现 → 不判红, 记抖动 (S-37)');
+          afterSide = { status: afterSide.status, failSet: stableFailSet(afterSide.failSet, againSet) };
+          verifyDelta = buildAcceptDelta(baselineSide, afterSide);
+        }
+      } catch (err) {
+        logger.warn({ err: String(err) }, '[run-goal] D-1 复跑跑不起来 → 维持原判红 (fail-closed, 不吞证据)');
+      }
+    }
   }
   // ── D-2 (SDD cairness-distill): ex-ante 写集声明 + 跑后 diff 对账 (孤儿检测) ──────────
   // 声明面 = exec 图里真跑过 (done/failed) 的节点的 write_set; 在跑节点 = 同一集合 —— 本 run 的
@@ -1076,6 +1097,9 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
       `${reusedNodes.length ? ` · 复用 ${reusedNodes.length} 节点` : ''}` +
       `${exec.observations?.length ? ` · 图外观察 ${exec.observations.length} 条` : ''}` +
       `${verifyDelta ? ` · D-1 delta: ${summarizeDelta(verifyDelta)}` : ''}` +
+      // S-37: 抖动**要写出来**。不写 = 「复跑一次就绿了所以放行」这件事在盘上没有痕迹,
+      // 而那正是下一个人判断这条闸可不可信时唯一能拿到的证据。
+      `${flakyFailures.length ? ` · 复跑未复现 ${flakyFailures.length} [${flakyFailures.join(', ')}]` : ''}` +
       `${writeSet ? ` · D-2 写集: ${describeWriteSet(writeSet)}` : ''}` +
       `${writeScope ? ` · D-2 声明面: ${describeWriteScope(writeScope)}` : ''}`,
   });
