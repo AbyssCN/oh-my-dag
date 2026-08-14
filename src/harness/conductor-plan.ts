@@ -14,6 +14,7 @@
  *  PLAN-3 plan = WorkflowYaml-shaped → 可直接 compile (toWorkflowYaml 在 conductor/plan)。
  */
 import { z } from 'zod';
+import { findGraphCycle } from './plan/graph-cycle';
 import { DEFAULT_COMMAND_ALLOWLIST, GIT_READONLY_SUBCOMMANDS } from './command-leaf';
 import { renderShapesForPrompt } from './shapes';
 import { TRUST_FENCE_RULE } from './prompt-fence';
@@ -309,6 +310,25 @@ export const PlanSchema = z
       if (!(id in plan.nodes))
         ctx.addIssue({ code: 'custom', message: `outputs 引用不存在的节点 id: ${id}`, path: ['outputs'] });
     }
+    /**
+     * 环 → 整份 plan 无效 (2026-08-14, issue #25)。
+     *
+     * 此前唯一拦环的地方是 `executePlan` 入口的 `topoLevels` 抛错 —— 那时 plan 早已被采纳,
+     * 异常直接穿出 `runExecutorDag`, 于是**一个 conductor 的手误炸掉整跑**, 而它本该走
+     * 「plan 无效 → 带精确错误重问一次」那条有界重试路 (parsePlan 的 ok:false 出口)。放在 schema
+     * 层是因为造 plan 的入口不止 parsePlan 一个: plan-patch 的 merge、slice-compiler、deepen-plan、
+     * slim/local-plan 全都过这道 `PlanSchema`, 而它们全都没有自己的环检。
+     *
+     * 与 `outputs` 那条同为 fail-closed: 环没有任何 intentional 消费方 —— 运行时子图对环
+     * 早就是拒整份 (`conductor-expand` 的 status:'cycle'), 顶层反而最宽, 那是双标不是宽容。
+     */
+    const cycle = findGraphCycle(plan.nodes);
+    if (cycle)
+      ctx.addIssue({
+        code: 'custom',
+        message: `依赖环: ${cycle.join(' → ')} —— 图必须无环。改法: 断掉环上任意一条 depends_on (通常是那条"为了顺序好看"而不是真数据依赖的边)。`,
+        path: ['nodes'],
+      });
   });
 
 export type ConductorPlan = z.infer<typeof PlanSchema>;
@@ -399,6 +419,8 @@ export function conductorSystemPrompt(
           '"command" nodes over fresh generation where indexed infra already answers. depends_on only for',
           'real data dependencies. Executors may be weak models: phrase each leaf goal to PRODUCE its',
           'deliverable content (never "execute step X"), and size nodes so a weak executor stays coherent.',
+          'On redraw rounds re-emit un-blamed nodes byte-identical — content-addressed ids make unchanged',
+          'specs free (D-21); reword only what the failure reason forces.',
           '',
         ]
       : [
@@ -433,6 +455,13 @@ export function conductorSystemPrompt(
     '  over-large node makes a weak model lose focus AND risks prompt-cache TTL expiry between slow turns.',
     '- Do NOT over-atomize: too-fine nodes waste planning output and bleed context at every fan-in.',
     '- Fan-in carries SUMMARIES, not full transcripts (keep each downstream node\'s input small).',
+    '',
+    'Redraw economics (applies when a failure reason from a previous round is present):',
+    '- Node identity is CONTENT-ADDRESSED: a re-emitted node with a byte-identical spec (goal text, deps,',
+    '  executor) is reused for FREE — zero tokens, zero re-run. Rewording an innocent node forfeits that',
+    '  reuse and re-burns its whole subtree.',
+    '- So change ONLY what the failure reason forces: fix the named nodes, add the missing step. Every',
+    '  node NOT named by the failure: re-emit its spec VERBATIM.',
     '',
     'Minimize critical-path DEPTH (scheduling is dependency-driven — a node runs the moment its deps settle,',
     'there are NO level barriers — but every unnecessary dep still adds critical-path latency and re-accumulates',

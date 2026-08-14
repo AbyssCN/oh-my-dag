@@ -74,7 +74,7 @@ import {
 } from '../fanin-summary';
 // D-21 escalation 跨轮复用: 语义 Merkle 指纹 + 前驱闭包匹配 (semantic-key 单一真源)。
 import { computeReuse, merkleFingerprints } from '../plan-passes/semantic-key';
-import { expandConductorNode, subgraphWarnings } from '../plan/conductor-expand';
+import { expandConductorNode, subgraphLintView, subgraphWarnings } from '../plan/conductor-expand';
 import { renderRoundForJudge, splitNamedIds, type JudgeChildView } from '../plan/conductor-judge';
 import { collectJudgeArtifacts, DEFAULT_ARTIFACT_BUDGET, type ArtifactBudget } from '../plan/judge-artifacts';
 import type { ShellRun } from '../leaf-runners';
@@ -1104,7 +1104,9 @@ async function executePlan(
     const retryCtx = prevReason
       ? `\n\n<上一轮未通过>\n${prevReason.slice(0, 1500)}\n</上一轮未通过>\n` +
         '这一轮请**重新分解**: 该补的步骤补上 (包括上一轮压根没有的那种, 比如先去把某个事实查清楚), ' +
-        '该改的改掉。原样再画一遍上一轮的图只会再失败一次。'
+        '该改的改掉。原样再画一遍上一轮的图只会再失败一次。' +
+        '但**没被点名的节点请逐字节保持原规格** (goal 文本/依赖/executor 一字不动) —— ' +
+        '节点 id 按内容寻址, 规格没变的节点零成本复用上轮产出; 顺手改写无辜节点 = 它整棵子树白烧重跑。'
       : '';
     // **owner 指令** (S3 / D-S): 与失败原因同一条管道、**独立的块**、**逐字**。
     // 排在失败原因**之前** —— 人的指令优先级高于机器的观察, 顺序上也该先看见。
@@ -1219,10 +1221,15 @@ async function executePlan(
     // 用**规划期可读名**建一张临时 plan 来查: 判据要说给下一轮的 conductor 听, 而它只认自己起的名字
     // (2026-07-30 那条"建议拿运行期 id 对下一轮说话"的事故买来的纪律)。
     // 出口与制品 lint 同款: **只报不拦**, 发现进下一轮重展开的 prompt。
-    const staticPlan = {
-      name: 'sub',
-      nodes: Object.fromEntries(expand.children.map((c) => [c.originalId, c.node])),
-    } as ConductorPlan;
+    //
+    // ⚠ 2026-08-14 修 (issue #25 分支, 一次对照实验当场抓到): 这张临时 plan 此前**键与边不同体系**
+    // —— 键取 `originalId` (可读名), 而 `c.node.depends_on` 已被展开器重写成内容寻址 id。于是子图里
+    // 每一条内部边在这张 plan 上都指向一个不存在的 id, `ancestors()` 的闭包恒为空 → 「有依赖 = 有序 =
+    // 不是竞争」这条豁免**从来没生效过**: 一条 a→b 的链上两个节点写同一个文件, 会被报成写竞争。
+    // 实测对照: 同一张子图直接 lint 得 0 条, 经展开后按老口径 lint 得 `write-race[b,a]`。
+    // 修法 = 把边翻回可读名 (与键同一个体系), 而不是把键换成运行期 id —— 判词的读者是下一轮
+    // conductor, 它只认自己起的名字 (上面那条 2026-07-30 的纪律)。视图本身是纯函数 (可反向自检)。
+    const staticPlan = subgraphLintView(expand.children);
     const staticFindings = staticLintPlan(staticPlan, {
       fileExists: (rel) => {
         try {
@@ -1231,6 +1238,12 @@ async function executePlan(
           return true; // 探不到就当它在 —— 不猜, 免得把所有 plan 报红
         }
       },
+      // 翻不回可读名的引用 = 指向子图**之外** —— 子节点引用父节点的外层上游是设计允许的
+      // (conductor-expand 的 dep 重写注), 那不是手误, 不报。
+      knownExternal: new Set(Object.keys(plan!.nodes)),
+      // 被截断的兄弟由展开器自报 → 报成 truncated-dependency 而非 dangling-dependency
+      // (owner 判据③: 刻意的悬空与手误的悬空不许混进同一个计数)。
+      truncatedIds: new Set(expand.truncatedNames),
     });
     if (staticFindings.length) {
       observe(staticFindings.map((f) => ({ kind: f.kind, nodes: f.nodes, message: f.message })));
