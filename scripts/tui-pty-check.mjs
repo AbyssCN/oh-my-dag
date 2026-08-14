@@ -30,7 +30,7 @@
  * 用法:`node scripts/tui-pty-check.mjs`(退出码 0 = 全过)。
  */
 import { spawn as spawnNodePty } from '@lydell/node-pty';
-import { spawn as spawnChild } from 'node:child_process';
+import { execFileSync, spawn as spawnChild } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -895,8 +895,30 @@ async function scenarioPathfinder() {
  * ⚠ TB-2 不是摆设: 读盘失败行 (`ticket board could not be read: …`) **也含** `ticket board`
  * 子串 —— 没有 TB-2, TB-1 会在看板实际坏掉时照样绿。两者合读才等于"头在且不是错行"。
  */
+/**
+ * 播一张最小 PathMap 到 `cwd` —— **经 `saveMap` 真写,不在这里手抄盘上格式**
+ * (抄一份必漂,而漂了不报错)。本 lane 是 node 跑的,所以借 `bun -e` 动态 import TS 源,
+ * 同 `scenarioLogging` 里那条 control 的办法。
+ */
+function seedTicketMap(cwd) {
+  const store = JSON.stringify(join(ROOT, 'src/harness/pathfinder/map-store.ts'));
+  const map = JSON.stringify({
+    destination: 'PTY 夹具图',
+    slug: 'pty-fixture',
+    decisionsLog: [],
+    tickets: [{ id: 't1', type: 'task', title: '夹具票', blockedBy: [], status: 'open' }],
+  });
+  execFileSync(BUN, ['-e', `const m = await import(${store}); m.saveMap(${map}, ${JSON.stringify(cwd)});`], { stdio: 'pipe' });
+}
+
 async function scenarioTicketBoard() {
-  const p = startTui();
+  // ⚠ **自带夹具, 不读"盘上恰好有没有图"**(2026-08-14 修)。原来 startTui() 用仓根当 cwd,
+  //   于是判据实际量的是「这台机器的仓里有没有一张非空 PathMap」——主仓有所以一直绿,
+  //   而任何 worktree 的 `.omd/` 是 gitignored ⇒ 空 ⇒ TB-1 恒红, 红的理由与它守的东西无关。
+  //   同 S-36 那条注释骂过的形状:去读真机 /proc/mounts 的闸, 量的是那台机器不是这段代码。
+  const cwd = mkdtempSync(join(tmpdir(), 'omd-tui-map-'));
+  seedTicketMap(cwd);
+  const p = startTui({ cwd });
   try {
     check(await waitFor(p, (t) => bootReady(t)), 'TB-0 (场景 S5) 启动');
     check(
