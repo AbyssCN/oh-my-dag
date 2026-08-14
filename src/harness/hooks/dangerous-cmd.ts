@@ -32,8 +32,13 @@ export const DANGEROUS_PATTERNS: readonly DangerousPattern[] = [
   },
   {
     label: 'sql-truncate',
+    // 2026-08-14 收紧: 旧 `/truncate\s+/` 打中**任何搜索这个词的命令** —— 2026-08-13 夜实测
+    // 误拦 3 次 (`rg TRUNCATE src/`、`grep -e TRUNCATE …`), leaf 撞墙重试白烧轮次。
+    // 只认两种真形态: ① 显式 SQL `truncate table …`; ② 语句/引号/管道边界起始的
+    // `truncate <参数>` (psql -c "TRUNCATE users"、GNU `truncate -s 0 f` —— 与旧行为同拦)。
+    // 判据 (测试钉死): `psql -c "TRUNCATE TABLE users"` 仍拦 ∧ `rg TRUNCATE src/` 放行。
     reason: 'TRUNCATE 清空表数据不可逆',
-    re: /truncate\s+/i,
+    re: /truncate\s+table\b|(^|[;"'`(|&])\s*truncate\s+\S/i,
   },
   {
     label: 'sql-delete-unscoped',

@@ -771,10 +771,38 @@ async function executePlan(
    * 要么是那个节点自报完成的假话。见 `upstreamFailureNotice`。
    */
   const upstreamText = (d: string): string => {
-    const body = faninView[d] ?? depOutputs[d] ?? '';
+    const body = capFanin(d, faninView[d] ?? depOutputs[d] ?? '');
     const r = results[d];
     if (!r || r.status === 'done') return body;
     return `${upstreamFailureNotice(d, r.failureKind, r.status)}\n${body}`;
+  };
+
+  /**
+   * fan-in 硬上限 (2026-08-14, 爆窗闸)。
+   *
+   * 实测背景: kaupan-ala 首跑 (6bbab733) 一个分析节点把 316KB 上游正文整个吃进 prompt →
+   * 窗口炸掉, 117 节点图报废重派 (重做 24.4M in + 1.05M out)。定向摘要机制管不到它的三条缝:
+   * ① 扇出 <2 的线性链整个绕过 (minFanout 闸); ② 摘要解析失败回落**全文**;
+   * ③ creative 节点护全文。三条缝的共同下游就是这里 —— 所以兜底闸放注入点, 不放摘要里。
+   *
+   * 上限 24K 字符 ≈ 8K token: 对"全文直传"的正常用法绰绰有余 (fanin 摘要的触发线才 1.8K),
+   * 而 6 个满额 dep 也只 ~48K token, 在最小生产窗口 (128K) 内。截断必须响亮 + 带全文指针
+   * (No-silent-caps): 有工具的 consumer 拿路径分页读, 无工具的至少知道自己看的是节选。
+   * ⚠ 只截 prompt 视图, **不碰 depOutputs** —— 那是 staleness 的语义锚, 截了它 resume 必判 stale。
+   */
+  const FANIN_HARD_CAP_CHARS = 24_000;
+  const capFanin = (d: string, body: string): string => {
+    if (body.length <= FANIN_HARD_CAP_CHARS) return body;
+    const fullPath = continuity ? continuity.manager.saveFaninFull(continuity.runId, d, body) : null;
+    logger.warn(
+      { dep: d, len: body.length, cap: FANIN_HARD_CAP_CHARS, persisted: !!fullPath },
+      '[omd/executor-dag] fan-in 硬上限截断 (爆窗闸) —— 上游全文过大, 注入节选 + 指针',
+    );
+    return (
+      body.slice(0, FANIN_HARD_CAP_CHARS) +
+      `\n…[fan-in 硬上限: 上游 ${d} 输出 ${body.length} 字符, 此处只含前 ${FANIN_HARD_CAP_CHARS};` +
+      (fullPath ? ` 全文在 ${fullPath} —— 有 read 工具就按需分页读它]` : ' 全文未落盘 (无 continuity), 需要时让上游改写进文件]')
+    );
   };
 
   /**
