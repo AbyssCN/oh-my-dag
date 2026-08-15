@@ -235,3 +235,66 @@ export async function awaitExitBounded(
       ` 是被测对象卡住了 (已 SIGKILL)。别把它当上面那条运行时缺陷放过。`,
   );
 }
+
+/**
+ * **等一件"进程还活着就该继续等"的事** —— 对作业时长**零假设**(2026-08-15)。
+ *
+ * ## 为什么需要第四个 helper
+ *
+ * 上面三个(`readAllBounded` / `awaitDeath` / `awaitExitBounded`)都收 `timeoutMs`,
+ * 都在回答同一个形状的问题:「等太久 = 有问题」。**对按设计长跑的子进程,这个形状不成立。**
+ * `fleet.ts` spawn 的是 `bun run scripts/dag-{review,slim,deepen}.ts`,分钟级到更久;
+ * 给它编一个 deadline,编小了杀正常作业,编大了等于没有 —— 上一程正因为这个把它记成
+ * 「待裁的设计问题」(`docs/plan/2026-08-14-next-session.md`)。
+ *
+ * **裁法不是选一个数,是换一把尺子。** 要挡的从来不是"作业跑太久",而是"运行时把子进程的记账
+ * 弄丢了"——而这两件事**可以直接分辨**:
+ *
+ *   进程还在  ⇒ 正常长跑, 无限等下去, 一秒都不该催
+ *   进程没了 而 事件仍没落定 ⇒ 记账丢了 (bun 那族缺陷), 抛
+ *
+ * 判据是 `processGone(pid)` 的**直接观测**, 不是时间推断 —— 与 `awaitDeath` 头注那条
+ * 「按需求分道不按宽严」同源。
+ *
+ * @param work 在等的那件事(`proc.exited` 或读管道)。它自己抛 → 原样带上下文抛出。
+ * @param pid  被等的子进程 pid。
+ * @param what 这一步在做什么(进判词)。
+ * @param graceMs 进程消失之后, 允许运行时把事件补上的宽限。**不是作业时长上限。**
+ */
+export async function awaitWhileAlive<T>(
+  work: Promise<T>,
+  pid: number,
+  what: string,
+  graceMs = 5_000,
+  pollMs = 200,
+): Promise<T> {
+  let done = false;
+  const guarded = work.then(
+    (v) => {
+      done = true;
+      return { v };
+    },
+    (e: unknown) => {
+      done = true;
+      throw new Error(`${what}: 等的那件事**抛**了 (${String(e).slice(0, 120)}) —— 若为 EBADF/epoll_ctl 即 bun ${Bun.version} 子进程记账缺陷那族。`);
+    },
+  );
+  // ⚠ 这个看门狗刻意**没有总时长上限**: 只要进程还在 /proc 上, 它就一直等。
+  const watch = (async (): Promise<'ok' | 'lost'> => {
+    while (!done && !processGone(pid)) await Bun.sleep(pollMs);
+    if (done) return 'ok';
+    // 进程没了 —— 正常情况下退出事件/EOF 应当紧随其后。给它一点时间落地再判。
+    const until = Date.now() + graceMs;
+    while (!done && Date.now() < until) await Bun.sleep(pollMs);
+    return done ? 'ok' : 'lost';
+  })();
+
+  const r = await Promise.race([guarded, watch]);
+  if (typeof r === 'object') return r.v;
+  if (r === 'ok') return (await guarded).v;
+  throw new Error(
+    `${what}: 子进程 (pid ${pid}) **已经不在**, 但等的那件事在其后 ${graceMs}ms 内仍未落定` +
+      ` ⇒ 运行时把子进程记账弄丢了 (bun ${Bun.version} 那族: 退出事件丢 / 管道到不了 EOF)。` +
+      ` 本次结果不可信。⚠ 这条**不含任何作业时长假设** —— 进程活着时它一秒都不会催, 所以它红了就不是"跑太久"。`,
+  );
+}

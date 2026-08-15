@@ -9,7 +9,7 @@
  *      本文件自己撞上 bun:test 超时 —— 那正是这条闸要消灭的形状。
  */
 import { describe, expect, test } from 'bun:test';
-import { awaitDeath, awaitExitBounded, processGone, readAllBounded, spawnWithPipes } from './await-exit';
+import { awaitDeath, awaitExitBounded, awaitWhileAlive, processGone, readAllBounded, spawnWithPipes } from './await-exit';
 
 /** 一个 `exited` 永不 resolve 的假子进程 —— 正是线上那个缺陷的形状。 */
 const stuckProc = (pid: number, onKill?: () => void) => ({
@@ -225,5 +225,67 @@ describe('readAllBounded —— 管道读也要有界', () => {
     expect(err).toBeInstanceOf(Error);
     expect((err as Error).message).toContain('还没到 EOF');
     expect((err as Error).message).toContain('本次读数无效');
+  });
+});
+
+/**
+ * `awaitWhileAlive` 的闸 —— 它存在的全部理由是**对作业时长零假设**,
+ * 所以两侧都得证:活着时**多久都不催**,死了之后才抛。只测其中一侧的话,
+ * 一个"其实还是按时间超时"的实现照样能过。
+ *
+ * ★ 证伪(实跑三刀):
+ *   ① 把 `processGone` 那一支去掉、改成固定 timeout ⇒ ★① 红(活着也被催)。
+ *   ② 把 grace 之后的 `return 'lost'` 改成 `'ok'` ⇒ ★② 红(记账丢了却不报)。
+ *   ③ 把 `guarded` 的 reject 分支吞掉 ⇒ ★③ 红(抛的那张脸静默变成"没落定")。
+ */
+describe('awaitWhileAlive —— 进程活着就无限等, 死了才判记账丢了', () => {
+  /** 起一个真活着的子进程, 用完杀掉。 */
+  const withAlive = async (fn: (pid: number) => Promise<void>): Promise<void> => {
+    const p = Bun.spawn(['sleep', '30'], { stdout: 'ignore', stderr: 'ignore' });
+    try {
+      await fn(p.pid);
+    } finally {
+      p.kill('SIGKILL');
+      await p.exited;
+    }
+  };
+
+  test('★① 进程活着 → 即便 grace 极小也不催, 等到 work 自己完成', async () => {
+    await withAlive(async (pid) => {
+      const slow = Bun.sleep(300).then(() => 'done');
+      // grace 只有 10ms —— 任何"按时间超时"的实现都会在这里抛。
+      const r = await awaitWhileAlive(slow, pid, '假的长跑作业', 10, 20);
+      expect(r).toBe('done'); // 没抛 = 它真的只看死活不看时长
+    });
+  });
+
+  test('★② 进程已死而 work 不落定 → 抛, 判词点名记账丢了且声明自己无时长假设', async () => {
+    const p = Bun.spawn(['true'], { stdout: 'ignore', stderr: 'ignore' });
+    const pid = p.pid;
+    await p.exited;
+    while (!processGone(pid)) await Bun.sleep(10); // 夹具自证: 确实已从 /proc 消失
+    const never = new Promise<string>(() => {}); // 落不定的那件事 (正是线上那张脸)
+    const err = await awaitWhileAlive(never, pid, '假的已死子进程', 30, 10).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain('已经不在');
+    expect((err as Error).message).toContain('仍未落定');
+    // ⚠ 这一行钉的是**判词不许误导**: 它红了永远不该被读成"跑太久"。
+    expect((err as Error).message).toContain('不含任何作业时长假设');
+  });
+
+  test('★③ work 自己抛 (EBADF 那张脸) → 带上下文抛出, 不静默降级成"没落定"', async () => {
+    await withAlive(async (pid) => {
+      const boom = Promise.reject(new Error('EBADF: epoll_ctl failed'));
+      const err = await awaitWhileAlive(boom, pid, '假的抛脸', 10, 20).catch((e: Error) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toContain('抛');
+      expect((err as Error).message).toContain('EBADF');
+    });
+  });
+
+  test('★④ work 立刻完成 → 原样返回 (正常路一个字不改)', async () => {
+    await withAlive(async (pid) => {
+      expect(await awaitWhileAlive(Promise.resolve(42), pid, '正常路', 10, 20)).toBe(42);
+    });
   });
 });

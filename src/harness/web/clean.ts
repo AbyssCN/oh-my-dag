@@ -10,6 +10,7 @@
  * runner 注入 → 纯逻辑可测不打 Python (CI 无 trafilatura 时单测仍跑)。
  */
 import type { FetchProvider, FetchResult } from './types';
+import { awaitWhileAlive, spawnWithPipes } from '../proc/await-exit';
 
 export interface CleanResult {
   text: string;
@@ -123,16 +124,29 @@ export function stripHtmlToText(html: string): string {
 /** spawn `trafilatura --markdown`, stdin 喂 HTML, stdout 取 markdown。 */
 function defaultTrafilaturaRunner(bin: string): CleanRunner {
   return async (html, signal) => {
-    const proc = Bun.spawn([bin, '--markdown'], {
-      stdin: new TextEncoder().encode(html),
-      stdout: 'pipe',
-      stderr: 'pipe',
-      signal,
-    });
-    const out = await new Response(proc.stdout).text();
-    const code = await proc.exited;
+    // ⚠ 走加固件(2026-08-15)。原写法是裸 `'pipe'` + `Response(stdout).text()` + `await proc.exited`
+    // —— bun 1.3.14 子进程记账缺陷那族逐字的形状(`'pipe'` 拿 undefined · 管道到不了 EOF ·
+    // `proc.exited` 不 resolve 或抛 EBADF, 见 `await-exit.ts` 头注)。它在 research 的抓取热路径上,
+    // 每个来源一发, 卡住一发就拖住整轮。
+    //
+    // **两条界分工明确**: `signal`(调用方透传)管"太慢了, 不要了";
+    // `awaitWhileAlive` 管"运行时把记账弄丢了" —— 后者对耗时零假设, 所以不会误杀一篇大页面的正常清洗。
+    const label = `trafilatura 清洗 (${bin})`;
+    const proc = spawnWithPipes(
+      () =>
+        Bun.spawn([bin, '--markdown'], {
+          stdin: new TextEncoder().encode(html),
+          stdout: 'pipe',
+          stderr: 'pipe',
+          signal,
+        }),
+      ['stdout', 'stderr'],
+      label,
+    );
+    const out = await awaitWhileAlive(new Response(proc.stdout).text(), proc.pid, `${label} 读 stdout`);
+    const code = await awaitWhileAlive(proc.exited, proc.pid, `${label} 等退出码`);
     if (code !== 0) {
-      const err = await new Response(proc.stderr).text();
+      const err = await awaitWhileAlive(new Response(proc.stderr).text(), proc.pid, `${label} 读 stderr`);
       throw new Error(`trafilatura exited ${code}: ${err.slice(0, 200)}`);
     }
     return out;
