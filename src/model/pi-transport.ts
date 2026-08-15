@@ -512,12 +512,39 @@ export async function piRequest(
   const wantTopP = bodyShaped ? sampling.topP : undefined;
   // JSON 模式: 原生那条一直在发, 并成一条不能把它丢了 (丢了只是让 parse 重试变多, 是最难察觉的那类退步)。
   const wantJsonObject = !!req.responseSchema && model.api === 'openai-completions';
+  /**
+   * **minimax 私有两参** (2026-08-14 实测接线, 单变量四臂):
+   *
+   *   ① `reasoning_split` —— 控制**推理放哪**。不发 (或 false) 时 minimax 把推理**内联进 `content`**
+   *      的 `<think>…</think>` 里, 而下面取 text 只按 block 类型过滤、认不出这个标记 ⇒ 推理混进正文。
+   *      后果不是"多几个字": 严格 `JSON.parse` 当场炸; 宽松抽取 (`jsonCandidates`) 会抠到 **think 里
+   *      被模型自己推翻的草稿**——后者不报错, 更危险 (仓规 §坑-3「oracle 绿 ≠ 语义对」)。
+   *      实测四臂: 什么都不发 → 含 think · 只发 thinking → **仍含 think** · 发 split → 干净。
+   *      **所以修这条的是 split, 不是 thinking** (一开始我以为是后者, 被对照臂驳回)。
+   *
+   *   ② `thinking.type` —— 控制**思不思考**。minimax 不认 OpenAI 的 `reasoning_effort`
+   *      (实测六档 off/low/…/xhigh 的 out token 与质量全在噪声内 = 那个旋钮在 M3 上是空的),
+   *      认的是自家 `{type:'disabled'|'adaptive'}`。接上之后 `thinkingLevel:'off'` 才真的关得掉。
+   *      ⚠ 这不是免费的: 实测关思考 worker-quality 正确分 **100% → 72%**(两道推理题全灭),
+   *      省 out token 9×、延迟 2×。所以只在调用方**显式要 off** 时才关, 缺省一律 adaptive。
+   *      ⚠ M2.x **关不掉**思考 (官方明写), 对它发 disabled 不要假设生效。
+   */
+  const isMinimax = model.provider === 'minimax' || model.provider === 'minimax-cn';
+  const wantMinimaxShape = isMinimax && model.api === 'openai-completions';
   const onPayload =
-    wantTopP !== undefined || wantJsonObject
+    wantTopP !== undefined || wantJsonObject || wantMinimaxShape
       ? (payload: unknown): unknown => {
           const body = payload as Record<string, unknown>;
           if (wantTopP !== undefined) body.top_p = wantTopP;
           if (wantJsonObject) body.response_format = { type: 'json_object' };
+          if (wantMinimaxShape) {
+            body.reasoning_split = true;
+            // ⚠ 判据用 `req.thinkingLevel` 而**不是** `level`: 后者是经 effort 词表夹过的值,
+            // 而那张词表的用途是"哪些 reasoning_effort 字面量会被该 provider 拒" —— minimax 压根
+            // 不认 reasoning_effort, 拿它的过滤结果去决定"开不开思考"是借错了尺子。
+            // (实测踩到: caps 命中与否会让同一个 'off' 在两条路径上得出相反结果, ★② 当场红。)
+            body.thinking = { type: req.thinkingLevel === 'off' ? 'disabled' : 'adaptive' };
+          }
           return body;
         }
       : undefined;

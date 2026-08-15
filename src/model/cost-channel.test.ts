@@ -27,7 +27,9 @@ describe('computeCost 三态', () => {
   });
 
   test('★ 三态互斥:计价行有数字、unpriced 行 0+旗、订阅行 null+列 —— 谁也不冒充谁', () => {
-    expect(computeCost({ in: 1e6, out: 0 }, 'deepseek:deepseek-v4-flash').costUsd).toBeCloseTo(0.27);
+    // 数值跟着 DEFAULT_PRICES 走 (2026-08-14 核官网订正 0.27 → 0.14); 本测钉的是"计价行有数字",
+    // 不是这个具体价 —— 价表再变时改这一行, 别把它读成"价格回归"。
+    expect(computeCost({ in: 1e6, out: 0 }, 'deepseek:deepseek-v4-flash').costUsd).toBeCloseTo(0.14);
     const up = computeCost({ in: 1e6, out: 0 }, 'nobody:unknown');
     expect(up).toMatchObject({ costUsd: 0, unpriced: true });
     expect(up.channel).toBeUndefined();

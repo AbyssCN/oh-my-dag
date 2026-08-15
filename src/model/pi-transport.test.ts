@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AssistantMessage, Context, SimpleStreamOptions, Usage } from '@earendil-works/pi-ai';
 import {
+  piRequest,
   piUsageToModelUsage,
   resolvePiModel,
   setPiTransportDepsForTest,
@@ -415,5 +416,71 @@ describe('pi 通道 · 错误分类与认证', () => {
     }).catch((e) => e as ModelError);
     expect((err as ModelError).kind).toBe('config');
     expect((err as ModelError).message).toContain('无凭证');
+  });
+});
+
+/**
+ * minimax 私有请求体两参 (2026-08-14 接线)。判据全部来自当天的真调用四臂对照,不是读文档读来的:
+ *   · 只发 `thinking` **不能**把推理从 `content` 里赶出去(实测仍带 `<think>`)—— 干这活的是
+ *     `reasoning_split`。修之前经本通道拿到的 M3 正文首字符就是 `<`,裸 `JSON.parse` 必炸。
+ *   · minimax 不认 OpenAI 的 `reasoning_effort`(六档实测无差),认自家 `thinking.type`;
+ *     接上后 `thinkingLevel:'off'` 实测 out 182 → 49。
+ *
+ * ## 反向自检(怎么让它红)
+ *
+ * 把 piRequest 里的 `wantMinimaxShape` 恒设为 `true` → ★③ 红(kimi 也被塞了 minimax 私有键);
+ * 把 `body.reasoning_split = true` 那行删掉 → ★① 红;把 `level === 'off'` 写死成 `'adaptive'` → ★② 红。
+ * 三条各钉一侧,少任何一条都能靠"无条件注入"或"恒 adaptive"蒙混过去。
+ */
+describe('piRequest · minimax 私有请求体', () => {
+  const MINIMAX: PiModel = {
+    ...BASE_MODEL,
+    id: 'MiniMax-M3',
+    name: 'MiniMax M3',
+    provider: 'minimax-cn',
+    api: 'openai-completions',
+    baseUrl: 'https://api.minimaxi.com/v1',
+  };
+  /** 取本次调用实际交给 pi 的 body 整形器产出(onPayload 缺席 = 什么都没注入)。 */
+  const shapedBody = (opts: SimpleStreamOptions | undefined, model: PiModel): Record<string, unknown> =>
+    (opts?.onPayload?.({}, model) ?? {}) as Record<string, unknown>;
+
+  test('★① minimax + 缺省档 → reasoning_split=true(推理不再混进正文)+ thinking.adaptive', async () => {
+    const { deps, calls } = fakeDeps();
+    setPiTransportDepsForTest(deps);
+    await piRequest(MINIMAX, [{ role: 'user', content: 'hi' }], { messages: [] }, { apiKey: 'k' });
+    const body = shapedBody(calls[0]?.options, MINIMAX);
+    expect(body.reasoning_split).toBe(true);
+    expect(body.thinking).toEqual({ type: 'adaptive' });
+  });
+
+  test('★② thinkingLevel=off → thinking.disabled(minimax 上这个旋钮此前是空的)', async () => {
+    const { deps, calls } = fakeDeps();
+    setPiTransportDepsForTest(deps);
+    await piRequest(
+      MINIMAX,
+      [{ role: 'user', content: 'hi' }],
+      { messages: [], thinkingLevel: 'off' },
+      { apiKey: 'k' },
+    );
+    expect(shapedBody(calls[0]?.options, MINIMAX).thinking).toEqual({ type: 'disabled' });
+  });
+
+  test('★③ 非 minimax 不受影响 —— 私有键不许外溢到别家 provider', async () => {
+    const { deps, calls } = fakeDeps();
+    setPiTransportDepsForTest(deps);
+    // ⚠ 这里**必须**用一个 `openai-completions` 的非 minimax 模型。第一版拿 BASE_MODEL
+    // (anthropic-messages) 当反例, 反向自检当场戳穿: 把 isMinimax 篡改成恒 true 它照样绿 ——
+    // 因为它是被 api 类型挡住的, 根本没钉 provider 判断。**弱判据比没判据更坏**: 它看起来在守。
+    const deepseekLike: PiModel = {
+      ...BASE_MODEL,
+      id: 'deepseek-v4-flash',
+      provider: 'deepseek',
+      api: 'openai-completions',
+    };
+    await piRequest(deepseekLike, [{ role: 'user', content: 'hi' }], { messages: [] }, { apiKey: 'k' });
+    const body = shapedBody(calls[0]?.options, deepseekLike);
+    expect(body.reasoning_split).toBeUndefined();
+    expect(body.thinking).toBeUndefined();
   });
 });

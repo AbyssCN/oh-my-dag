@@ -19,8 +19,20 @@ import { resolveSubscriptionProviders } from './role-models';
  */
 export const DEFAULT_PRICES: PriceTable = {
   // ── DeepSeek (executor 主力, deepseek-v4-flash 用得最多) ──
-  'deepseek:deepseek-v4-flash': { inputRate: 0.27, outputRate: 1.10, cacheHitRate: 0.07 },
-  'deepseek:deepseek-v4-pro': { inputRate: 0.55, outputRate: 2.19, cacheHitRate: 0.14 },
+  //
+  // 2026-08-14 核官网订正 (api-docs.deepseek.com/quick_start/pricing): 原值 0.27/1.10/0.07 与
+  // 0.55/2.19/0.14 **早已过期**, 比实际贵 2–4 倍 —— 拿它算出来的成本读数全部偏高, 而这种偏差
+  // 在账本上不报错、只是默默把便宜档记贵(又一条「配了不生效」的同族: 数在, 只是不对)。
+  //
+  // ⚠ **本表是单价, 装不下峰谷**(ModelPrice 只有三个标量, econ-types 是 FROZEN CONTRACT)。
+  // 而官网同页脚注: **2026-08-16 16:00 UTC 起改峰谷计价**, 峰时 = 01:00–04:00 与 06:00–10:00 UTC
+  // (= 北京时间 09:00–12:00 与 14:00–18:00):
+  //     v4-flash  off-peak 0.007 / 0.22 / 0.66   ·  peak 0.014 / 0.44 / 1.32
+  //     v4-pro    off-peak 0.022 / 0.66 / 1.98   ·  peak 0.044 / 1.32 / 3.96
+  // 届时这两行会**再次系统性偏低**(输出价要涨 2.4–4.7 倍)。要么那天把值换成 off-peak 档并接受
+  // 峰时低估, 要么给 ModelPrice 加时段维度 —— 后者要动冻结契约, 是 owner 的裁决不是随手改。
+  'deepseek:deepseek-v4-flash': { inputRate: 0.14, outputRate: 0.28, cacheHitRate: 0.0028 },
+  'deepseek:deepseek-v4-pro': { inputRate: 0.435, outputRate: 0.87, cacheHitRate: 0.003625 },
 
   // ── MiMo (烧 token-plan 沉没额度) ──
   'mimo:mimo-v2.5-pro': { inputRate: 0.50, outputRate: 2.00, cacheHitRate: 0.10 },

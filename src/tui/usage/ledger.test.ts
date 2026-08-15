@@ -18,7 +18,9 @@ describe('记账与窗口', () => {
   test('record 上账 + 计价(价表坐标)+ unpriced 标注(坐标不在表里)', () => {
     const led = createTuiUsageLedger({ dir: tdir(), now: () => 1000 });
     const priced = led.record({ in: 1_000_000, out: 0 }, 'deepseek:deepseek-v4-flash', 'engine');
-    expect(priced.costUsd).toBeCloseTo(0.27, 5);
+    // 跟着 DEFAULT_PRICES 走 (2026-08-14 核 deepseek 官网订正 0.27 → 0.14)。
+    // 本测钉的是"计价坐标出数字、非计价坐标标 unpriced", 不是这个具体价。
+    expect(priced.costUsd).toBeCloseTo(0.14, 5);
     expect(priced.unpriced).toBe(false);
     const un = led.record({ in: 100, out: 10 }, 'nobody:mystery', 'chat');
     expect(un.costUsd).toBe(0);
