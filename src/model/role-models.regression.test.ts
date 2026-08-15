@@ -200,10 +200,11 @@ describe("INV-MODEL-1 — 单一解析权威 (一条链)", () => {
 	});
 
 	test("座位表 = seats.ts 一处定义 (加座位只改一处)", () => {
-		// 2026-08-01 加了 `gate` (内环闸从 judge 拆出) → 17;2026-08-02 摘 `dream` (ADR-0003) → 16。
+		// 2026-08-01 加了 `gate` (内环闸从 judge 拆出) → 17;2026-08-02 摘 `dream` (ADR-0003) → 16;
+		// 2026-08-15 加 `fusion` / `graft` (research 终局两发从 judge/reason 拆出, owner 裁) → 18。
 		// 数字写死是刻意的: 加座位时这里必须红一次, 逼你去看新座位有没有登记消费点与推荐模型。
-		expect(ALL_SEATS).toHaveLength(16);
-		expect(Object.keys(NODE_TIER)).toHaveLength(16);
+		expect(ALL_SEATS).toHaveLength(18);
+		expect(Object.keys(NODE_TIER)).toHaveLength(18);
 		expect(ALL_SEATS).toContain("continuity");
 		expect(ALL_SEATS).toContain("review");
 	});

@@ -104,9 +104,9 @@ export interface WebFanoutOpts extends RetrieveOpts {
   divergeWeights?: Record<string, number>;
   /** judge panel 跨族池覆盖 (省略 → JUDGE_PANEL_POOL)。 */
   judgePool?: string[];
-  /** fusion 融合分析模型 (省略 → judgeModel = 强)。收敛单发。 */
+  /** fusion 融合分析模型 (省略 → `fusion` 座)。收敛单发。 */
   fusionModel?: string;
-  /** graft 终笔模型 (省略 → judge 座 = 强连贯; 原为 reasonModel=k3)。eval 用它测 v2.5-pro vs sol。 */
+  /** graft 终笔模型 (省略 → `graft` 座)。eval 用它测臂级对照 (单变量旋钮)。 */
   graftModel?: string;
   maxFanout?: number;
   /**
@@ -405,8 +405,10 @@ export async function researchWebFanout(
     divergePool: opts.divergePool ?? configuredPools().lens ?? LENS_DIVERGENCE_POOL,
     divergeWeights: opts.divergeWeights ?? LENS_DIVERGENCE_WEIGHTS,
     judgePool: opts.judgePool ?? configuredPools().judge ?? JUDGE_PANEL_POOL,
+    // 座位化 (owner 2026-08-15): 两者省略即落 `fusion` / `graft` 座 (fanout.ts 内层解析)。
+    // 此前这里把 graft 覆盖成 judge 座, 而 fanout.ts 内层默认是 reasonModel —— 两个调用方两个默认。
     fusionModel: opts.fusionModel,
-    graftModel: opts.graftModel ?? resolveRoleModelConfigured('judge').model,
+    graftModel: opts.graftModel,
     maxFanout: opts.maxFanout,
     rounds,
     probe,

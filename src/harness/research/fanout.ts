@@ -494,7 +494,12 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
   // (last30days 2026-06-16: synthesis 质量 ~3/4 of lift)。前缀 `head\n\n${candDigest}` 与
   // judge/graft 字节对齐 → 复用已暖缓存。
   leafCount += 1;
-  const fusionModel = cfg.fusionModel ?? judgeModel; // 收敛单发, 不发散
+  // 座位化 (owner 2026-08-15): 此前默认继承 judgeModel —— 于是想让 fusion 与 judge 用不同模型
+  // 就只能改代码。fusion 干的是「在别人产出里找盲点」, 与被找对象同族时结构性失效, 该独立配。
+  // ⚠ 上面两处「复用已暖缓存」只在 fusion/graft 与 judge 波**同通道**时成立。座位化之后它们可能
+  // 落在别的通道上 (出厂推荐 = claude-code, 而该通道对 user 消息里的 corpus 零缓存) —— 那时字节
+  // 对齐仍然成立、缓存命中不成立, 每发多付一次全额 head。1 发的量, 是有意接受的代价 (见 seats.ts)。
+  const fusionModel = cfg.fusionModel ?? resolveRoleModelConfigured('fusion').model; // 收敛单发, 不发散
   const fusionPrompt = `${corpus}\n\n${candDigest}\n\nK-judge panel 多维评判:\n${critDigest}\n\n${buildFusionAnalysisPrompt()}`;
   const fusionAnalysis = await track(fusionModel, call({ model: fusionModel, messages: msg(fusionPrompt), stage: 'fusion' }));
   stage('fusion', 'fusion 融合分析 (5-tuple)');
@@ -503,7 +508,9 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
   leafCount += 1;
   // 前缀与 fusion 字节对齐 (`head\n\n${candDigest}`) → 复用 judge/fusion 已暖的 head+candDigest 缓存。
   const finalPrompt = `${corpus}\n\n${candDigest}\n\nK-judge panel 多维评判:\n${critDigest}\n\nFusion 融合分析 (结构化):\n${fusionAnalysis}\n\n你是首席架构师。据 panel 多维评判 + fusion 融合分析**合成唯一最终方案**: 选最强骨架, 嫁接共识与独特洞察, 显式消解矛盾点、补齐覆盖缺口与盲点。直接给最终方案, 不要元评论。`;
-  const graftModel = cfg.graftModel ?? cfg.reasonModel; // 收敛终笔, 单一强连贯模型
+  // 座位化 (owner 2026-08-15): 此前内层默认 = reasonModel、而 web-fanout 又覆盖成 judge 座 ——
+  // **同一发在两个调用方拿到两个不同默认**, 正是该拆座位的信号。
+  const graftModel = cfg.graftModel ?? resolveRoleModelConfigured('graft').model; // 收敛终笔, 单一强连贯模型
   const finalText = await track(graftModel, call({ model: graftModel, messages: msg(finalPrompt), stage: 'graft' }));
 
   // 收尾遥测: per-model 缓存命中率 + 成本 (M6: 测量命中率而非靠账单倒猜)。经 onStage 流到所有 driver 的 stderr。

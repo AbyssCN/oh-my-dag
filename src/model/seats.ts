@@ -201,6 +201,55 @@ export const SEATS: readonly SeatSpec[] = [
       '"够质量的最廉" (D-14)。它是**最大的不可缓存消费** (每 lens 全读 V 个 sub-angle 正文, 永远 unique), ' +
       '且只是机械合并 —— 下沉到廉价档是单刀最大降本。绝不继承 reason 的贵模型 (mimo-pro 实测 24s×L 爆超时)。',
   },
+  {
+    id: 'fusion',
+    tier: 'judge_synth',
+    what:
+      'research 的**融合分析**: 把 K 维度 judge 的评判收敛成 5-tuple (共识/矛盾/覆盖缺口/独特洞察/**盲点**)。' +
+      '它的产出是 graft 的 ground —— graft 据此消解矛盾、补齐盲点。',
+    where: ['harness/research/fanout:researchFanout'],
+    frequency: '**每次 research 1 发** (收敛终局, 不发散)',
+    // 它干的活是**在别人的产出里找盲点**。与被找的对象同族时这一格结构性失效 —— 与 verifier
+    // 那条同源 (判与证共享盲点 = 证不出对方的错), 故标 required。
+    // ⚠ 诚实注记: 目前**没有闸消费 `crossFamily`** (INV-3 的代码检查只看 verifier 一个座, 且只查
+    // auto-assign 的死层)。这一格是**声明的意图**, 不是被强制的约束 —— 见 issue #142/#143。
+    crossFamily: 'required',
+    thinking: 'high',
+    // 收敛分析要稳定可复现: 同一批候选不该这一轮找出盲点、下一轮找不出。
+    sampling: { temperature: 0.2 },
+    recommend:
+      'claude-code:claude-opus-5 (owner 2026-08-15 裁)。**理由是异族 + 量小, 不是"更强"**: ' +
+      '实测 1 发 / 71K in / 6K out per run (`.omd/seat-usage.jsonl` byTrace `fanout:fusion`, 3 跑), ' +
+      '与 graft 合计只占单次 research 输入的 8% —— 换族的成本可以忽略。' +
+      '而上游 gen/reduce/synth 现在全在 minimax、judge 在 deepseek, 放 claude 天然异于两者。' +
+      '⚠ 代价要写在这: claude-code 通道对 user 消息里的 corpus **零缓存** ' +
+      '(`claude-sdk-complete.ts:57-64` 把 messages 压成扁字符串, 没有挂 `cache_control` 的位置; ' +
+      '实测 `claude-code:claude-haiku-4-5` 40 发 / 1.89M in / 命中恰好 0), ' +
+      '故它拿不到 judge 波暖好的 head+candDigest 缓存, 每次多付一次全额 head。1 发, 认了。',
+    preferredCoord: 'claude-code:claude-opus-5',
+  },
+  {
+    id: 'graft',
+    tier: 'judge_synth',
+    what:
+      'research 的**终笔**: 拿 K-judge 评判 + fusion 的 5-tuple + 全部候选, 合成唯一最终方案。' +
+      '**整条 research 管线的出口** —— 用户读到的那份就是它写的。',
+    where: ['harness/research/fanout:researchFanout'],
+    frequency: '**每次 research 1 发** (最稀疏的一发, 也是杠杆最高的一发)',
+    // 终笔是**合成**不是判别 —— 要的是连贯性, 不是跨族对抗。
+    crossFamily: 'no',
+    thinking: 'high',
+    sampling: {},
+    recommend:
+      'claude-code:claude-opus-5 (owner 2026-08-15 裁)。全表**性价比最高的一格**: ' +
+      '实测 1 发 / 76K in / 11K out per run (`.omd/seat-usage.jsonl` byTrace `fanout:graft`, 3 跑) —— ' +
+      '零缓存的代价在这里最小 (只 miss 一次 head + 约 9.9K 固定前言), 而它决定交付物质量。' +
+      '⚠ 此前它默认跟 `judge` 座 (`web-fanout.ts` 覆盖) 或 `reason` 座 (`fanout.ts` 内层), ' +
+      '两处默认不同 —— 这正是拆出独立座位的理由: **一个座位背多个用途时, 想单独调其中一个就得改代码**。' +
+      '⚠ 未量: M3 vs opus 在这一发上的质量差**没有臂级读数**, 上面是按"1 发 + 交付出口 + 成本可忽略"的' +
+      '结构推的。要量的话是现成的单变量对照 (cfg.graftModel 是显式旋钮)。',
+    preferredCoord: 'claude-code:claude-opus-5',
+  },
 
   // ── 执行 ────────────────────────────────────────────────────────────────────
   {

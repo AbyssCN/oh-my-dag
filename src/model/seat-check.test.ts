@@ -46,7 +46,10 @@ describe("checkSeats — 全座位自检 (纯读, 不抛)", () => {
 
 	test("覆盖全部座位 (加座位不会漏检)", () => {
 		const env = envWithConfig({});
-		expect(withEnv(env, () => checkSeats(env))).toHaveLength(16);
+		// ⚠ 这个字面量**就是闸**: 改成 `ALL_SEAT_IDS.length` 会变成恒真式 (checkSeats 遍历的正是
+		// ALL_SEATS), 绊线就没了。加座位时手动抬这个数 = 被迫确认「新座位真的进自检了」。
+		// 16 → 18: 2026-08-15 加 `fusion` / `graft` 两座 (research 终局两发从 judge/reason 拆出)。
+		expect(withEnv(env, () => checkSeats(env))).toHaveLength(18);
 	});
 });
 
