@@ -27,6 +27,7 @@ import { iterateExecutorDag } from '../../src/harness/plan/iterate';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
 import type { AgentLeafRunner } from '../../src/harness/leaf-runners';
 import type { FixpointVerdict } from '../../src/harness/plan/fixpoint';
+import { hangUntilKilled } from './hang-watchdog';
 
 // checkpoint 落 <root>/.omd/continuity/<runId>/ —— 夹具自持, 不受宿主 OMD_DATA_HOME 影响。
 delete process.env.OMD_DATA_HOME;
@@ -72,7 +73,7 @@ const agentRunner: AgentLeafRunner = async ({ prompt }) => {
   const id = /NODE=(\w+)/.exec(prompt)?.[1] ?? 'unknown';
   if (id === hangNode && curRound >= hangRound) {
     writeFileSync(join(root, `READY-${id}`), '', 'utf-8');
-    await new Promise<never>(() => {}); // 等 SIGKILL
+    await hangUntilKilled(); // 等 SIGKILL —— 但有自毁上限, 见 hang-watchdog.ts (父进程先死时不留孤儿)
   }
   appendFileSync(join(root, 'exec.log'), `${id}\n`, 'utf-8');
   const artifact = join(root, `art-${id}.txt`);
