@@ -170,12 +170,20 @@ export const SEATS: readonly SeatSpec[] = [
     // 择优要能看出差别, 不能太保守; 但也不是创作, 不需要野。
     sampling: { temperature: 0.3 },
     recommend:
-      '判别吃推理 → 单价低 + K panel 并行的模型。**真要多视角就配 `judgePool` 跨族轮转**, ' +
-      '那比换这个座位更对症 (座位只给一个默认值)。' +
-      '⚠ 它现在坐在 sol 上是**历史原因**: 内环闸拆出去 (`gate`) 之前, 这个座位同时背着"高频闸", ' +
-      '把它放强模型是为了那一半。现在那一半走了 —— 「judge 要不要从 codex 下来」是一个**待裁的开问题**, ' +
-      '本轮刻意不动 (拆座位与改路由分开做, 否则出了问题分不清是哪一半的)。',
-    preferredCoord: 'openai-codex:gpt-5.6-sol',
+      'deepseek:deepseek-v4-pro (owner 2026-08-15 裁)。判别吃推理 → 单价低 + K panel 并行的模型。' +
+      '**真要多视角就配 `judgePool` 跨族轮转**, 那比换这个座位更对症 (座位只给一个默认值)。' +
+      '✅ 「judge 要不要从 codex 下来」这个原先记在这里的**待裁开问题已裁**: 下来。' +
+      '它坐在 sol 上是历史原因 —— 内环闸拆出去 (`gate`) 之前它同时背着"高频闸", 放强模型是为了那一半; ' +
+      '那一半走了之后 sol 的理由就没了。改坐 v4-pro 另有一个结构收益: 它与 `reason`/synth (M3) **异族**, ' +
+      '否则就是「M3 写的综合由 M3 自己评判」。' +
+      '⚠ 量: 实测每次 research K 发 / 436K in / 49K out (`.omd/seat-usage.jsonl` byTrace `fanout:judge`)。' +
+      'v4-pro 是 flash 的 3.1 倍单价 (官方现价 0.435/0.87 vs 0.14/0.28 per 1M) —— ' +
+      '⚠ `auto-assign.ts` 里记的「贵一倍」是**旧数**, 现价是 3.1 倍。' +
+      '**判据**: research 周频超过 6 次就该重过一遍渠道经济学 (2026-08-16 起 deepseek 改峰谷计价, ' +
+      '谷价仍高于今天的平价)。' +
+      '⚠ 改这个座位时**必须同步改 `config.pools.judge`** —— research 路径的 judgePool 非空即完全' +
+      '压过本座位 (`fanout.ts:480`), 只改一处等于没改。见 issue #143。',
+    preferredCoord: 'deepseek:deepseek-v4-pro',
   },
   {
     id: 'reason',
@@ -334,7 +342,12 @@ export const SEATS: readonly SeatSpec[] = [
     sampling: { temperature: 0.2 },
     recommend:
       'openai-codex:gpt-5.6-sol —— **必须与 conductor/judge 异族**, 否则判与证共享盲点。' +
-      '低频稀疏, 放 flat-sub 订阅里不冲配额。',
+      '低频稀疏, 放 flat-sub 订阅里不冲配额。' +
+      '⚠ **本表的出厂默认自己违反这一条**: `conductor.preferredCoord` 也是 sol, 与本座同族。' +
+      '而且没有任何闸会报 —— `crossFamily` 字段除自己的测试外零消费点, `auto-assign.ts:344` 那条只查 ' +
+      '`autoAssigned`(已停用的死层, 见 issue #142), 从不看 `config.models`。' +
+      '生产实配靠人工避开 (owner 2026-08-15: conductor=claude-opus-5 / verifier=sol, 异族成立), ' +
+      '**出厂默认这一格待裁** —— 修法是把 conductor 出厂值挪离 sol, 或把 crossFamily 做成会红的闸。',
     preferredCoord: 'openai-codex:gpt-5.6-sol',
   },
   { id: 'review-spec', tier: 'verify',

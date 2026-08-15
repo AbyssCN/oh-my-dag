@@ -89,11 +89,16 @@ describe("autoAssign", () => {
 		});
 
 		// 2026-07-31 v4-flash 正式版上线 → **落类首选整表压到 flash** (分配表是唯一真源, 改表即改这里)。
-		// ⚠ 这里断言的是"codex 渠道**不在**时的兜底", 所以 conductor/judge 也落 flash;
-		//   渠道在时它们走 NODE_PREFERRED 的 sol —— 那条由下面那个 "GPT 订阅座位" 用例钉。
-		for (const n of ["conductor", "escalation", "judge", "reason"]) {
+		// ⚠ 这里断言的是"codex 渠道**不在**时的兜底", 所以 conductor 也落 flash;
+		//   渠道在时它走 NODE_PREFERRED 的 sol —— 那条由下面那个 "GPT 订阅座位" 用例钉。
+		for (const n of ["conductor", "escalation", "reason"]) {
 			expect(m[n]!.coord).toBe("deepseek:deepseek-v4-flash");
 		}
+		// ⚠ 2026-08-15 judge 从这一组挪出来 (owner 裁: judge 出厂值 sol → v4-pro)。
+		// 它现在**不再依赖 codex 渠道在不在** —— 自己的 NODE_PREFERRED 就在 deepseek 上, 直接命中。
+		// 换句话说这一格从"兜底"变成了"首选", via 也跟着从 preferred/fallback 变 override。
+		expect(m.judge!.coord).toBe("deepseek:deepseek-v4-pro");
+		expect(m.judge!.via).toBe("override");
 
 		// reduce → v4-flash (D-14 够质量的最廉; 高频阶段)
 		expect(m.reduce!.coord).toBe("deepseek:deepseek-v4-flash");
@@ -130,12 +135,19 @@ describe("autoAssign", () => {
 			],
 			ratingsPath,
 		});
-		// 稀疏高价值三座 → sol (flat 渠道)
-		for (const n of ["conductor", "escalation", "judge"]) {
+		// 稀疏高价值两座 → sol (flat 渠道)
+		for (const n of ["conductor", "escalation"]) {
 			expect(m[n]!.coord).toBe("openai-codex:gpt-5.6-sol");
 			expect(m[n]!.channelId).toBe("openai-codex:flat");
 		}
-		// NODE_PREFERRED 只覆盖那三座; 其余仍走类首选表 (此 fixture 无 deepseek 渠道 → 落 Go 溢出链)
+		// ⚠ 2026-08-15 judge 不再在这一组里 (owner 裁: 出厂值 sol → deepseek:v4-pro)。
+		// 裁决理由记在 seats.ts 的 judge.recommend: 内环闸 (`gate`) 拆出去之后, 把 judge 放强模型的
+		// 那一半理由没了; 且 v4-pro 与 reason/synth (M3) 异族, 否则是"自己评自己"。
+		// 此 fixture **无 deepseek 渠道** → 它的 NODE_PREFERRED 够不着 → 落溢出链, 这正是本用例要钉的:
+		// **换了首选之后, 渠道不可达时仍然优雅落链而不是挂掉。**
+		expect(m.judge!.coord).toBe("opencode-go:kimi-k3");
+		expect(m.judge!.via).toBe("fallback");
+		// NODE_PREFERRED 覆盖的其余座位仍走类首选表 (此 fixture 无 deepseek 渠道 → 落 Go 溢出链)
 		expect(m.reason!.coord).toBe("opencode-go:kimi-k3");
 		// ⚠ 2026-08-05 由 `opencode-go:mimo-v2.5` 改成这个: owner 口径「**mimo 只用于多模态**」,
 		//   而 leaf 是纯文本 worker。这条断言此前**钉住的正是那个违规值** —— 改它不是为了变绿,
@@ -351,7 +363,9 @@ describe("runAutoAssign — 端到端 (发现→分配→落盘; configPath 读�
 		// 大脑簇 → v4-flash: 分配表是**硬偏好**, 声明持仓只决定"可达不可达", 不改变优先序。
 		// (deepseek 经 DEEPSEEK_API_KEY 自探可达 → 首选命中, 不再落到声明的 kimi。)
 		expect(map.conductor?.coord).toBe("deepseek:deepseek-v4-flash");
-		expect(map.judge?.coord).toBe("deepseek:deepseek-v4-flash");
+		// ⚠ 2026-08-15: judge 出厂值改 v4-pro (owner 裁) → 它走自己的 NODE_PREFERRED 而不是类首选。
+		// 同族这件事没变 (仍是 deepseek), 变的只是档位 —— 下面那条 INV-3 断言照旧成立。
+		expect(map.judge?.coord).toBe("deepseek:deepseek-v4-pro");
 		// ⚠ INV-3 在此配置下**不成立**: 判与证同族 (deepseek-only 的代价), 由 autoAssign 打降级告警。
 		expect(map.verifier?.coord.split(":")[0]).toBe("deepseek");
 		// 落盘可读回 (configPath 读写同目标)

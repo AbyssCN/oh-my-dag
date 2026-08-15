@@ -247,6 +247,13 @@ describe("INV-MODEL-2 GWT — runtime 解析路径 0 处 deepseek 字面坐标",
 		// 产出落 config.autoAssigned, 而 autoAssigned 在解析链里**排在 env 之下**。
 		// 它不是"解不到就用谁"的兜底, 所以不违反 INV-MODEL-2 (那条禁的是静默兜底)。
 		"src/model/auto-assign.ts",
+		// 2026-08-15 加: 座位登记表本身。理由与上面 auto-assign.ts **同款** —— `preferredCoord` 就是
+		// 那张分配策略表 (`auto-assign.ts:168` 的 NODE_PREFERRED 从 `SEAT_PREFERRED_COORD` 派生),
+		// 表搬进了 seats.ts, 白名单也得跟过来。它**不是**"解不到就用谁"的兜底: 解析链是
+		// override → config.models → env → autoAssigned → defaultModel, 而 preferredCoord 只喂
+		// autoAssign 的产物 autoAssigned, 排在 env 之下。
+		// 旁证: 更严的那道闸 `eval/seat-coordinate-gate.test.ts` 也把 seats.ts 列为**声明面**排除。
+		"src/model/seats.ts",
 	];
 
 	test("src/ 下无 'deepseek:deepseek-' 字面 (白名单外)", () => {
