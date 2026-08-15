@@ -27,6 +27,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runExecutorDag, type GenerateFn } from '../../src/harness/dag/engine';
+import { awaitExitBounded, readAllBounded, spawnWithPipes } from '../../src/harness/proc/await-exit';
 
 /** 两个**无依赖**的 command 节点, 各自用 shell 重定向写文件 —— 谁都没在 output_path 里声明它。 */
 const runCommandPair = async (mode: 'collide' | 'separate') => {
@@ -51,11 +52,28 @@ const runCommandPair = async (mode: 'collide' | 'separate') => {
     generate,
     // 真跑一条 shell —— 判据吃的是**命令原文**, 所以这里必须是真的重定向写法。
     // 两条都先睡一会儿再写, 保证执行窗口真重叠 (否则测的是串行)。
+    // ⚠ **必须走加固件, 不能裸 `Bun.spawn` + `await proc.exited`**(2026-08-15)。
+    //
+    // 本条用例 2026-08-14 在满负载下红过一次(26 次全量里 1 次, `pairsInferred` 得 0)。
+    // 推导出来的链是明的:两个命令写的是**同一个文件**, 于是 `pairsInferred=0` 的直接前提就是
+    // **其中一次 shell 根本没写成** —— mtime 停在另一个的写入时刻, 而这个节点又晚起 >2s,
+    // 于是它的写目标核不过(`shell-writes.ts` 的 mtime ≥ startedAt−2s)。
+    // 「那次 spawn 静默失败了」正是 bun 1.3.14 那族子进程记账缺陷的形状(见 `await-exit.ts` 头注:
+    // `'pipe'` 拿 undefined · 读管道到不了 EOF · `proc.exited` 不 resolve 或抛 EBADF)。
+    //
+    // 换成加固件**不是为了让它变绿** —— 是为了让那次失败**响亮**:spawn 真坏时当场抛并说清
+    // 是哪一步坏的, 而不是安静地产出一个错的 `pairsInferred=0` 让人去查时序。
+    // 生产侧同族已在 `command-leaf.ts` / `fleet.ts` 修过, 夹具这条是上一程明写留下的缺口。
     commandRunner: async ({ command }) => {
       await new Promise((r) => setTimeout(r, 20));
-      const proc = Bun.spawn(['sh', '-c', command], { cwd: dir, stdout: 'pipe', stderr: 'pipe' });
-      const exitCode = await proc.exited;
-      return { text: await new Response(proc.stdout).text(), exitCode, usage: { in: 0, out: 0 } };
+      const proc = spawnWithPipes(
+        () => Bun.spawn(['sh', '-c', command], { cwd: dir, stdout: 'pipe', stderr: 'pipe' }),
+        ['stdout', 'stderr'],
+        'shell-write-visibility 的 command runner',
+      );
+      const [stdout] = await readAllBounded([proc.stdout, proc.stderr], 'shell-write-visibility 读管道');
+      const exitCode = await awaitExitBounded(proc, 'shell-write-visibility 等 command 退出');
+      return { text: stdout!, exitCode, usage: { in: 0, out: 0 } };
     },
   });
   return { res, dir };

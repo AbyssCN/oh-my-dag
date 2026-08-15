@@ -26,6 +26,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HANG_WATCHDOG_EXIT } from './hang-watchdog';
+import { awaitExitBounded } from '../../src/harness/proc/await-exit';
 
 const REPO = join(import.meta.dir, '..', '..');
 const WATCHDOG_MS = 1_500;
@@ -63,13 +64,18 @@ async function runUnkilled(
     }
 
     // ★ 关键: 这里**没有** proc.kill()。活下来的唯一途径就是看门狗。
-    const exitCode = await Promise.race([
-      proc.exited,
-      Bun.sleep(GIVE_UP_MS).then(() => {
-        proc.kill('SIGKILL'); // 闸红了也不能把孤儿留给下一条用例
-        return -1;
-      }),
-    ]);
+    //
+    // ⚠ 用 `awaitExitBounded` 而不是裸 `Promise.race([proc.exited, sleep])`:后者只挡住"不 resolve"
+    // 那一张脸, 挡不住 `proc.exited` **抛** EBADF 那一张(bun 1.3.14 同族, 见 `await-exit.ts` 头注)——
+    // 抛出来会变成一条与本闸无关的错误消息, 把"看门狗没生效"和"运行时抽风"混成一个红。
+    // 本闸要的正是退出码, 所以只能用会抛的那一档(伪造 exit 0 是推断不是观测)。
+    let exitCode: number;
+    try {
+      exitCode = await awaitExitBounded(proc, `hang-watchdog 等 ${child} 自毁`, GIVE_UP_MS);
+    } catch {
+      proc.kill('SIGKILL'); // 闸红了也不能把孤儿留给下一条用例 —— 本文件治的就是这个病
+      exitCode = -1;
+    }
     const stderr = await new Response(proc.stderr).text();
     return { exitCode, sawSentinel, stderr };
   } finally {
