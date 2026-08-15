@@ -35,12 +35,16 @@ const OUT = opt('out') ?? '.omd/eval/conductor-judge';
 const JUDGE_SEAT = 'deepseek:deepseek-v4-pro';
 const CONDUCTOR_SEAT = 'deepseek:deepseek-v4-pro';
 const LEAF_SEAT = 'deepseek:deepseek-v4-flash';
+const GATE_SEAT = 'deepseek:deepseek-v4-flash';
+const M3_SEAT = 'minimax-cn:MiniMax-M3';
 
 interface Arm {
   name: string;
   note: string;
   model: string;
-  thinking?: 'low' | 'high';
+  thinking?: 'off' | 'low' | 'high';
+  /** gate 座位出厂配 temp 0.2 (seats.ts: 裁决要稳定可复现)。不配就走通道缺省。 */
+  temperature?: number;
 }
 const ARMS: Arm[] = [
   // 生产今天的真实调用: judgeModel 没配 → 回落 conductorModel, thinkingLevel 走座位档/high。
@@ -48,7 +52,16 @@ const ARMS: Arm[] = [
   { name: 'judge-seat', note: `${JUDGE_SEAT} · high (显式配 judgeModel 时)`, model: JUDGE_SEAT, thinking: 'high' },
   // 便宜档: 内环 judge 每个 conductor 节点每轮一次, 比外层贵得多 —— 值不值得降档要有数。
   { name: 'flash-cheap', note: `${LEAF_SEAT} · high (降档省钱可行否)`, model: LEAF_SEAT, thinking: 'high' },
+  // ── gate 座位换 M3 (owner 2026-08-15 点名要量 adaptive 臂) ──
+  // ⚠ 基线是 **gate 出厂配置** (关思考 + temp 0.2), 不是上面那个 flash-cheap (high) ——
+  //    换臂比较必须同条件, 拿 high 档的旧读数当基线整个对比作废 (仓规)。
+  { name: 'flash-gate', note: `${GATE_SEAT} · 关思考 + temp 0.2 (seats.ts gate 出厂配 = 今天的生产行为)`, model: GATE_SEAT, thinking: 'off', temperature: 0.2 },
+  { name: 'flash-gate·control', note: '复制 flash-gate —— 本轮噪声地板', model: GATE_SEAT, thinking: 'off', temperature: 0.2 },
+  { name: 'm3-adaptive', note: `${M3_SEAT} · adaptive 思考 (minimax-native: 非 off 一律 adaptive)`, model: M3_SEAT, thinking: 'high', temperature: 0.2 },
+  { name: 'm3-off', note: `${M3_SEAT} · 关思考 (thinking.type=disabled, 与 gate 现配置同形)`, model: M3_SEAT, thinking: 'off', temperature: 0.2 },
 ];
+const armsOnly = opt('arms')?.split(',').map((s) => s.trim()).filter(Boolean);
+const RUN_ARMS = ARMS.filter((a) => !armsOnly || armsOnly.includes(a.name));
 
 const log = (s: string): void => void process.stderr.write(s + '\n');
 
@@ -100,7 +113,11 @@ async function trial(arm: Arm, c: JudgeRoundCase, rep: number): Promise<Trial> {
     task: c.task,
     extract: () => ({ status: 'done', summary: output }),
     callModelFn: async (req) => {
-      const r = await send(arm.thinking ? { ...req, thinkingLevel: arm.thinking } : req);
+      const r = await send({
+        ...req,
+        ...(arm.thinking ? { thinkingLevel: arm.thinking } : {}),
+        ...(arm.temperature !== undefined ? { temperature: arm.temperature } : {}),
+      });
       usage = { in: usage.in + (r.usage?.in ?? 0), out: usage.out + (r.usage?.out ?? 0) };
       return r;
     },
@@ -164,8 +181,8 @@ async function main(): Promise<void> {
   bootstrapModelRuntime();
   const cases = JUDGE_ROUND_CASES.filter((c) => !only || only.includes(c.id));
   const jobs: Array<{ arm: Arm; c: JudgeRoundCase; rep: number }> = [];
-  for (const arm of ARMS) for (const c of cases) for (let r = 1; r <= N; r++) jobs.push({ arm, c, rep: r });
-  log(`[eval] 内环 judge: ${ARMS.length} 臂 × ${cases.length} 段 × ${N} 次 = ${jobs.length} 次调用`);
+  for (const arm of RUN_ARMS) for (const c of cases) for (let r = 1; r <= N; r++) jobs.push({ arm, c, rep: r });
+  log(`[eval] 内环 judge: ${RUN_ARMS.length} 臂 × ${cases.length} 段 × ${N} 次 = ${jobs.length} 次调用`);
 
   let done = 0;
   const trials = await pool(jobs, CONCURRENCY, async (j) => {
@@ -182,7 +199,7 @@ async function main(): Promise<void> {
   lines.push(`\n内环 judge 实测 (N=${N}/格, ${cases.length} 段语料)\n`);
   lines.push('| 臂 | 铸票率 | 瞎判率 | 幽灵率 | 裁决准 | 召回全 | 平均票数 | out tok | 中位延迟 | 错误 |');
   lines.push('|---|---|---|---|---|---|---|---|---|---|');
-  for (const arm of ARMS) {
+  for (const arm of RUN_ARMS) {
     const t = trials.filter((x) => x.arm === arm.name);
     const shouldReject = t.filter((x) => !JUDGE_ROUND_CASES.find((c) => c.id === x.case)!.shouldConverge);
     const lat = t.map((x) => x.latencyMs).sort((a, b) => a - b);
@@ -199,10 +216,10 @@ async function main(): Promise<void> {
     );
   }
   lines.push('\n逐段 (裁决准 / 召回全):\n');
-  lines.push(`| 段 | ${ARMS.map((a) => a.name).join(' | ')} |`);
-  lines.push(`|---|${ARMS.map(() => '---').join('|')}|`);
+  lines.push(`| 段 | ${RUN_ARMS.map((a) => a.name).join(' | ')} |`);
+  lines.push(`|---|${RUN_ARMS.map(() => '---').join('|')}|`);
   for (const c of cases) {
-    const cells = ARMS.map((a) => {
+    const cells = RUN_ARMS.map((a) => {
       const t = trials.filter((x) => x.arm === a.name && x.case === c.id);
       return `${pct(t.filter((x) => x.verdictRight).length, t.length)} / ${pct(t.filter((x) => x.recallFull).length, t.length)}`;
     });

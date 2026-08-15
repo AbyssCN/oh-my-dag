@@ -151,8 +151,25 @@ export const SEATS: readonly SeatSpec[] = [
     // 与不夹时无差别。**两个旋钮互斥**, 而实测告诉我们这个闸该要哪一个。
     sampling: { temperature: 0.2 },
     recommend:
-      '判别档的**便宜**模型 (deepseek-v4-flash)。刻意**不**放 codex —— 它每节点每轮一发, 是高频座位, ' +
-      '与低频的 verifier 经济学完全不同。2026-07-31 那次空转 65 分钟正是"高频闸坐在强座位上"的代价。',
+      'minimax-cn:MiniMax-M3 · **关思考** (owner 2026-08-15 裁)。刻意**不**放 codex —— 它每节点每轮一发, ' +
+      '是高频座位, 与低频的 verifier 经济学完全不同。2026-07-31 那次空转 65 分钟正是"高频闸坐在强座位上"的代价。' +
+      '\n' +
+      '⚠ 换座依据 = `.omd/eval/gate-m3` (2026-08-15, 4 臂 × 6 段 × 10 次, 打生产那条链 ' +
+      '`renderRoundForJudge` + `makeLlmConvergenceJudge`)。基线取的是 **gate 出厂配** (flash 关思考 + temp 0.2), ' +
+      '不是旧读数里那个 high 档的 `flash-cheap` —— 换臂比较必须同条件。噪声地板 (基线复制一遍): ' +
+      '裁决准 0pp / 召回全 2pp。\n' +
+      '  · 召回全: flash 56% → M3 关思考 **74%** / M3 adaptive 66% (地板 2pp)\n' +
+      '  · 幽灵率: flash 37% → M3 关思考 **20%** / M3 adaptive 27%\n' +
+      '  · 代价: out tok 120 → 283 (adaptive 885) · 中位延迟 1.5s → 3.7s (adaptive 9.7s) · ' +
+      '调用失败 0/120 → 1/60\n' +
+      '  升的那 18pp **集中在两段**: `all-filler` 与 `wide-graph` —— flash 在这两段召回是 **0% 地板** ' +
+      '且幽灵 10/10 (每次都点不存在的 id)。其余四段两族基本平手。**别把它读成"M3 全面更强"**。\n' +
+      '⚠ **上面那条「闸不开思考」在 M3 上也复现了**, 这是第二个模型族的读数: M3 关思考在召回 (74 vs 66)、' +
+      '幽灵 (20% vs 27%)、延迟 (3.7s vs 9.7s)、out token (283 vs 885) 四项上全面优于 adaptive; ' +
+      'adaptive 还在 flash 本来干净的两段上**引入**幽灵 (`missing-requirement` 0/10 → 3/10, ' +
+      '`fabricated` 0/10 → 1/10)。所以本座位换模型但 `thinking: off` 不动。\n' +
+      '⚠ 未量: `halt-judge` (continuity 该不该停) 也吃本座位, 那条判词没进这份语料。',
+    preferredCoord: 'minimax-cn:MiniMax-M3',
   },
 
   // ── 判别: 择优与合成 (判"哪个更好") ─────────────────────────────────────────
