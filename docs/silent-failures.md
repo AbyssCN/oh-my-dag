@@ -1219,6 +1219,58 @@ per-lens 模型)静态看不见 —— 那一层的真值只有跑完读 `.omd/s
 
 ---
 
+### S-40 · **判据与它自己的注释相反** —— 而那条分支在当前座位下概率为 0, 于是错了几周没人知道
+
+**形状**:一段注释把两类失败的处置写得很清楚(A 是确定性、该退;B 是瞬时、该继续),
+而紧贴它下面那行判据**把两类合并了**。注释是对的,代码是错的,两者贴在一起 ——
+于是**注释在为判据背书**:任何人读这段(包括写它的人、后来照抄它的人)都会以为已经分开了。
+两边都不报错,因为两类失败**各自都有合理的出口**,只是走错了那个。
+
+**和已有几条哪里不一样**:S-38 是「注释背书了一道**不存在**的闸」(闸是空的);
+这一条闸**存在、在跑、有测试**,只是判据的语义与注释相反。S-15/S-19 那族是「两格被压平成一格」,
+但那是**数据面**(读数分不开);这一条压平的是**控制流的分叉**(走哪条路)。
+
+真正的新东西是第二半:**一条分支"有没有被执行过"不是代码属性,是配置属性。**
+判据错了几周没人知道,不是因为没测,是因为**触发它的条件在当前座位下概率为 0** ——
+gate 坐在 deepseek-v4-flash 上时,那类失败 **0/120**,分支从没通电。换到 MiniMax-M3 后
+**1/60**(`.omd/eval/gate-m3`),它第一次执行,而第一次执行就是错的。
+→ **换座位不是换质量,是给一批从未执行过的失效路径通电。**
+
+**为什么没红灯**:这一格**有测试**。`test/core/conductor-loop.test.ts` 里躺着一条
+「判词只是解析不了 → 保持原行为, 继续转」,而且它是绿的。
+但它注入的是**裸 `Error`**,真实的 parse 失败是 `ModelError('parse')` ——
+**测试守的是「裸 Error 不退」,而生产走的是另一条。** 夹具与生产真会抛的错误类型对不上,
+于是绿灯是真的,只是它证明的不是你以为的那件事。
+
+**本仓实例(2026-08-16,自己犯的)**:
+`engine.ts` 内环 judge 的 catch 里,注释写「『调不通』与『判词解析不了』不是一回事:
+前者确定性再转多少轮都一样,后者下一轮可能就好」,判据却是裸的 `err instanceof ModelError` ——
+而 `ModelError.kind` 有六个(`config|transport|http|parse|validation|truncation`),
+`parse`(invalid JSON)与 `validation`(schema 不合)**恰恰是注释说不该归的那类**。
+后果:一次判词解析抖动 → 该 conductor 节点内环当场终止、剩余轮数一轮不跑、
+goal 报 infra-error 并印「**别加轮数**」。
+
+**怎么抓**(三条,已落地):
+
+> **① 判据不许自己再写一份分类。** 改成 `isTransientModelFault`,内里复用熔断已有的
+> `isProviderFault` —— 一套分类两处用。两份分类表必然会漂,而漂的那天没有红灯。
+> **反向自检**:把 `parse` 归回确定性 → `conductor-loop.test.ts` 两条 ★ 当场红。
+>
+> **② 夹具用生产真会抛的错误类型,不用形状相近的替身。** 上面那条老测试注入裸 `Error`
+> 就是这么漏掉的。判据是 `instanceof` / `kind` 时,夹具里的类型**就是被测面本身**。
+>
+> **③ 不依赖分类正确性的兜底:闸级熔断**(§8.4 原则的第三个粒度,`judgeFailureThreshold`)。
+> judge 连续 K 轮以**逐字相同**的方式失败 = 这一格零位移 = 确定性 → 退环。
+> 它把「确定性」从**按错误码猜**改成**转一轮量**,于是分类漏了哪一格都还有一道网。
+
+⚠ 顺带记一格**还没修**的:`ModelError.status` 一格装两种含义 —— 别处是 HTTP 状态码,
+而 `minimax-native.ts` 往里塞的是 **MiniMax 业务码**(1000/1004/2049…)。业务码全 ≥ 1000,
+于是一律落进 `isProviderFault` 的 `s >= 500`:瞬时的 1000 判对了,确定性的 1004(鉴权失败)/
+2049(无效 key)也被判成瞬时。今天由上面第 ③ 条兜住(第 2 轮退),但**判据本身仍是错的**。
+同族:`NULL ≠ 0 ≠ 不适用`。
+
+---
+
 ## 已立的闸(可执行的那部分)
 
 | 闸 | 位置 | 守什么 | 抓哪几条 |
@@ -1259,6 +1311,7 @@ per-lens 模型)静态看不见 —— 那一层的真值只有跑完读 `.omd/s
 | 空转签名不被 `cd` 前缀吃掉 | `src/harness/hooks/drift-detector.ts` · `drift-detector.test.ts:103` | 取 50 字符窗口前先剥 `cd <路径> &&` 链,尺子不因 jail 路径变钝(**带反向自检**:去掉 `stripCdPrefix` → 三条不同命令签名全等,红) | S-34 |
 | 终审产物三态(unregistered ≠ missing) | `src/harness/verifier.ts:125` · `verifier-evidence.test.ts:102` | `summarizeResults` 对每个声明 `output_path` 的节点跑 `statSync`,按 registered/unregistered/missing 三态写入 prompt,`unregistered` 单独告警(`verifier.ts:155`)(**带反向自检**:三态判定改回二态、吞掉 `unregistered` → 3 条红) | S-33 |
 | fanout 每个 stage 的**真实落点**(池不许静默盖过座位) | `scripts/omd-fanout-seats.ts` | 逐 stage 印取值链 + 落点;`config.pools.lens/judge` 与 lens/judge 座不一致时显式告警(**带反向自检**:`OMD_CONFIG_PATH` 指向池=旧坐标的临时 config → 两条不一致警告当场出现)。⚠ 只覆盖静态可解那半,运行期覆盖看 `seat-usage.jsonl` 的 traceName×model | S-39 |
+| 闸失效的两类不许合并 | `src/model/index.ts` (`isTransientModelFault`) · `src/harness/dag/engine.ts` · `test/core/conductor-loop.test.ts` | 确定性 (config/transport/非 provider-fault 的 http) 才提前退环;瞬时 (parse/validation/truncation/402/403/429/5xx) 继续转;**夹具用真 `ModelError` 而非裸 `Error`**;外加闸级熔断兜底 —— 连续 K 轮逐字相同即判确定性(**带反向自检**:把 parse 归回确定性 → 2 条 ★ 红;闸级熔断实装前逐字相同那格必红) | S-40 S-38 |
 | 图的引用完整性 | `src/harness/plan/graph-cycle.ts` · `conductor-plan.ts` superRefine · `plan/static-lint.ts` | 环 = fail-closed 判死并点名环路;悬空 dep / 不可能达标的配额 = report-only,截断自报与手误分两个 kind(**带反向自检**:注掉 superRefine 环闸 → 4 红;删 ④ 段 → 5 红;删 truncatedIds 分支 → 1 红;`<=` 改 `<` → 1 红;lint 视图退回老口径 → 3 红) | S-38 |
 
 **S-24 也没有闸** —— 声明端在 `node_modules` 里,仓内的消费点/可达性闸**结构上够不着**。
