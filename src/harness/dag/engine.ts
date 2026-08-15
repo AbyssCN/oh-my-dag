@@ -125,7 +125,7 @@ import { send } from '../../model/gateway';
 // D-14v2 多模态媒体管道 (S4): attach_media 执行期从直接前驱输出解析图片 → ContentPart 注入。
 import { collectDepMedia } from '../leaf-media';
 import { recordGeneration, recordSpan } from '../../model/langfuse';
-import { ModelError } from '../../model';
+import { ModelError, isTransientModelFault } from '../../model';
 import { classifyCommandExit, withFailureKind, upstreamFailureNotice } from '../node-failure';
 import { collectRepairGuidance } from './repair-guidance';
 import { livePin } from '../../model/provider-health';
@@ -951,7 +951,7 @@ async function executePlan(
     reason: string;
     rejected: string[];
     usage: ModelUsage;
-    /** judge **调不通**时的错误原文 (ModelError = 传输/配置层确定性故障); 判词只是解析不了 → null。 */
+    /** judge **调不通**时的错误原文 (确定性故障: config / transport / 非 provider-fault 的 http); 瞬时故障 (parse/validation/truncation/429/5xx) → null。 */
     unreachable: string | null;
   }> => {
     const childIds = children.map((c) => c.id);
@@ -1036,8 +1036,16 @@ async function executePlan(
       // 传输/配置层的确定性故障 (codex 拒 temperature → 每一轮同样抛), 再转多少轮都一样;
       // 后者是模型这一发没说清楚, 下一轮可能就好了。此前两者都落"未收敛"、都继续转 ——
       // 于是一个改配置一分钟能修的事, 烧掉了全部轮数, 而症状看起来像"任务太难"。
-      // 判据取 `ModelError` (仓里既有的传输/配置错类), 不靠猜错误文本。
-      const unreachable = err instanceof ModelError ? String((err as Error).message ?? err) : null;
+      // 判据**不靠猜错误文本**, 取 model 层已有的可重试性分类 (`isTransientModelFault`,
+      // 内里复用熔断那份 `isProviderFault` —— 一套分类两处用, 不新造第二份会漂的表)。
+      //
+      // ⚠ 2026-08-16 订正: 此前判据是裸的 `err instanceof ModelError`, 而 ModelError 的 kind
+      //   有六个 —— `parse` (invalid JSON) 与 `validation` (schema 不合) 正是上面说"下一轮可能
+      //   就好"的那类, 却被归进了"再转多少轮都一样"。**注释写对了, 判据写反了。**
+      //   它一直没被发现, 是因为 gate 坐在 flash 上时这一格 0/120 从没亮过; 换 M3 后 1/60
+      //   (`.omd/eval/gate-m3`) —— 一次 parse 抖动就白白终止整个内环。
+      const unreachable =
+        err instanceof ModelError && !isTransientModelFault(err) ? String((err as Error).message ?? err) : null;
       // A5: 这句话的读者是**下一轮重画的 conductor**。旧文案 (`judge 无可解析结论 (fail-closed)`)
       // 报得对, 但它是**引擎侧的事故**, 而读者会把出现在「上一轮未通过」里的任何东西当成对自己
       // 方案的评价 —— 于是它会为了迎合一句根本不存在的判词去改图。所以第一句先把这件事撇清。

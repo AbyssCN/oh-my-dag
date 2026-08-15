@@ -539,6 +539,59 @@ describe('judge 调不通 → infra-error 提前退环', () => {
     expect(f.expands()).toBe(3); // 跑满
     expect(res.results.C!.infraStopped).toBeUndefined();
   });
+
+  /**
+   * 2026-08-16 订正 —— **上面那句「分界取 `ModelError`」与它自己的意图相反**。
+   *
+   * `ModelError` 不是"传输/配置错类": kind 有六个 (`model/index.ts`),
+   * `invalid JSON` 抛的是 `ModelError('parse')`、schema 不合抛 `ModelError('validation')` ——
+   * 正是上一条测试说"不该提前退"的那一类。它只因为**碰巧不是 ModelError**(裸 `Error`)才没红。
+   * 换句话说: 上一条守的是"裸 Error 不退", 而真实的 parse 失败一直在走提前退那条路。
+   *
+   * 打亮它的是把 gate 座位换到 M3 (owner 2026-08-15 裁): flash 上这一格 0/120 从没亮过,
+   * M3 关思考实测 1/60 (`.omd/eval/gate-m3`)。
+   *
+   * 分界改成**可重试性** (`isTransientModelFault`), 复用熔断已有的 `isProviderFault`,
+   * 不新造第二份分类表。⚠ `transport` 仍算确定性 —— 它是 `index.ts` 的**未分类兜底桶**
+   * (任何非 ModelError 的 provider 抛错都落这儿, 含 codex 那个确定性 400), 当瞬时就退回 65 分钟。
+   */
+  const kindJudge = (err: ModelError): NonNullable<ExecutorDagConfig['judgeSend']> =>
+    (async () => {
+      throw err;
+    }) as never;
+
+  test("★ ModelError('parse') 判词解析不了 → 不提前退环 (下一轮可能就好)", async () => {
+    const f = fake([P1], []);
+    const res = await runExecutorDagWithPlan(
+      node({ max_rounds: 3 }),
+      cfg(f.generate, false, true, kindJudge(new ModelError('parse', 'invalid JSON: Unrecognized token 无'))),
+    );
+    expect(f.expands()).toBe(3); // 跑满, 不提前退
+    expect(res.results.C!.infraStopped).toBeUndefined();
+  });
+
+  test('★ http provider-fault (MiniMax base_resp 1000 瞬时) → 不提前退环', async () => {
+    // minimax-native 把**业务码**塞进 status (1000 = unknown error, 官方处置"稍后再试"),
+    // 于是它落进 `isProviderFault` 的 `s >= 500` 那一支 —— 瞬时, 不该终止内环。
+    const f = fake([P1], []);
+    const res = await runExecutorDagWithPlan(
+      node({ max_rounds: 3 }),
+      cfg(f.generate, false, true, kindJudge(new ModelError('http', 'minimax: base_resp 1000 unknown error', { status: 1000 }))),
+    );
+    expect(f.expands()).toBe(3);
+    expect(res.results.C!.infraStopped).toBeUndefined();
+  });
+
+  test('对照: http 400 请求错 → 仍提前退环 (别修过头)', async () => {
+    // 4xx 非 provider-fault = 确定性请求错, 再转多少轮都同样抛 —— 这一格必须保持原行为。
+    const f = fake([P1], []);
+    const res = await runExecutorDagWithPlan(
+      node({ max_rounds: 3 }),
+      cfg(f.generate, false, true, kindJudge(new ModelError('http', 'bad request: unsupported parameter', { status: 400 }))),
+    );
+    expect(f.expands()).toBe(1);
+    expect(res.results.C!.infraStopped).toContain('unsupported parameter');
+  });
 });
 
 /**

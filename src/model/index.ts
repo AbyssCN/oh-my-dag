@@ -298,6 +298,30 @@ function isProviderFault(err: ModelError): boolean {
   return false;
 }
 
+/**
+ * 「再转一轮可能就好」的那一类 —— 供**环层**判断该不该提前退出用 (engine 的 `unreachable`)。
+ *
+ * 为什么在这里而不是在 engine 里手写一份: `isProviderFault` 已经是熔断在用的分类,
+ * 一套分类两处用, 不新造第二份会漂的表。
+ *
+ * 2026-08-16 订正的那条: engine 此前拿 `err instanceof ModelError` 当"确定性故障"的判据,
+ * 而 ModelError 的 kind 有六个 —— `parse` (invalid JSON) 与 `validation` (schema 不合)
+ * 恰恰是"模型这一发没说清楚, 下一轮可能就好"的那类, 却被当成了"再转多少轮都一样"。
+ * 打亮它的是 gate 座位换 M3 (`.omd/eval/gate-m3`): flash 上 0/120 从没亮过, M3 上 1/60。
+ *
+ * ⚠ `transport` **不算**瞬时: 它是本文件的**未分类兜底桶** (任何非 ModelError 的 provider
+ *   抛错都落这儿, 含 codex 那个确定性 `Unsupported parameter`)。当瞬时就退回 2026-07-31
+ *   那次 65 分钟空转。要拆它得先给那些错分对 kind, 那是另一件事。
+ * ⚠ `http` 这一支读的是 `err.status`, 而 `minimax-native` 往里塞的是**业务码** (1000/1004/…)。
+ *   业务码全 ≥ 1000 → 一律落进 `s >= 500`: 瞬时的 1000 判对了, 但确定性的 1004/2049 (鉴权/无效 key)
+ *   也会被判成瞬时而烧满轮数。已知缺口, 等它真发作再动 (改动面到整个 model 层)。
+ */
+export function isTransientModelFault(err: ModelError): boolean {
+  if (err.kind === 'parse' || err.kind === 'validation' || err.kind === 'truncation') return true;
+  if (err.kind === 'http') return isProviderFault(err);
+  return false;
+}
+
 export async function callModel(req: ModelRequest): Promise<ModelResponse> {
   if (!req.messages || req.messages.length === 0) {
     throw new ModelError('config', 'callModel: messages required');
