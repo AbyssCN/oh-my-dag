@@ -561,22 +561,71 @@ describe('judge 调不通 → infra-error 提前退环', () => {
     }) as never;
 
   test("★ ModelError('parse') 判词解析不了 → 不提前退环 (下一轮可能就好)", async () => {
+    // 真实的 parse 失败每轮文本不同 (错误里带随输出变的 token), 于是也不会撞上闸级熔断。
     const f = fake([P1], []);
     const res = await runExecutorDagWithPlan(
       node({ max_rounds: 3 }),
-      cfg(f.generate, false, true, kindJudge(new ModelError('parse', 'invalid JSON: Unrecognized token 无'))),
+      cfg(f.generate, false, true, streakJudge((n) => new ModelError('parse', `invalid JSON: Unrecognized token '无${n}'`))),
     );
     expect(f.expands()).toBe(3); // 跑满, 不提前退
     expect(res.results.C!.infraStopped).toBeUndefined();
   });
 
-  test('★ http provider-fault (MiniMax base_resp 1000 瞬时) → 不提前退环', async () => {
+  test('★ http provider-fault (MiniMax base_resp 1000 瞬时) → 第 1 轮不退', async () => {
     // minimax-native 把**业务码**塞进 status (1000 = unknown error, 官方处置"稍后再试"),
-    // 于是它落进 `isProviderFault` 的 `s >= 500` 那一支 —— 瞬时, 不该终止内环。
+    // 于是它落进 `isProviderFault` 的 `s >= 500` 那一支 —— 瞬时, 不该在第 1 轮就终止内环。
+    // ⚠ 断言只守**第 1 轮**: 1000 的文本每轮相同, 第 2 轮起由闸级熔断正当接管 (见下面那条)。
+    // 改动前这里是 1 (第 1 轮就退), 所以这条仍然证伪得了旧判据。
+    const f = fake([P1], []);
+    await runExecutorDagWithPlan(
+      node({ max_rounds: 3 }),
+      cfg(f.generate, false, true, kindJudge(new ModelError('http', 'minimax: base_resp 1000 unknown error', { status: 1000 }))),
+    );
+    expect(f.expands()).toBeGreaterThanOrEqual(2);
+  });
+
+  /**
+   * **闸级熔断** (2026-08-16) —— §8.4 那条原则的第三个粒度。
+   *
+   * 上面按 kind 分的判据有个够不着的角: 一个**确定性**故障如果碰巧落在"瞬时"那一类里,
+   * 就会每轮重来一次直到轮数烧光。实例: `minimax-native` 把业务码塞进 `status`, 而业务码
+   * 全 ≥ 1000 → 鉴权失败 (1004) / 无效 key (2049) 一律落进 `s >= 500` 那支被判成瞬时。
+   * 按 kind 猜不出来 —— 但**转一轮量一量**就知道。
+   *
+   * 判据沿用仓里既有的那条(轮级 D-Q、动作级 §8.4 都是它): **「相同」而不是「重复」**。
+   *   逐字相同 → 这一格零位移 → 确定性, 退环
+   *   文本在变 → 事情在动 (模型换了说法) → 继续转
+   *
+   * 为什么这个键在这里正好合适, 不用调:
+   *   · 坏 key: 每轮逐字相同 → 第 2 轮退 ✅
+   *   · 瞬时 1000: 文本也相同, 但连续两轮的概率 ≈ 0.017² ≈ 0.03% (`.omd/eval/gate-m3` 实测
+   *     M3 关思考 1/60), 几乎不会误伤; 真连挂两次, 停下来也是对的
+   *   · parse 抖动: 错误里带 `Unrecognized token '无'` 这类**随输出变**的片段 → 文本不同 → 继续 ✅
+   */
+  const streakJudge = (mk: (n: number) => ModelError): NonNullable<ExecutorDagConfig['judgeSend']> => {
+    let n = 0;
+    return (async () => {
+      throw mk(++n);
+    }) as never;
+  };
+
+  test('★ 瞬时类但**逐字相同** (坏 key 1004 每轮同一句) → 第 2 轮退环, infra-error', async () => {
     const f = fake([P1], []);
     const res = await runExecutorDagWithPlan(
       node({ max_rounds: 3 }),
-      cfg(f.generate, false, true, kindJudge(new ModelError('http', 'minimax: base_resp 1000 unknown error', { status: 1000 }))),
+      cfg(f.generate, false, true, streakJudge(() => new ModelError('http', 'minimax: base_resp 1004 鉴权失败', { status: 1004 }))),
+    );
+    expect(f.expands()).toBe(2); // 转一轮量出"零位移", 第 2 轮退 —— 不烧满 3 轮
+    expect(res.results.C!.infraStopped).toContain('1004');
+    const j = JSON.parse(readFileSync(join(runDir(), '_loop-C.json'), 'utf-8')) as NodeLoopJournal;
+    expect(j.stop?.kind).toBe('infra-error'); // 不是 blocked: 该修的是凭证/引擎, 不是"等人给输入"
+  });
+
+  test('对照: 同类错但**每轮文本不同** (parse 的 token 在变) → 跑满, 不退 (别修过头)', async () => {
+    const f = fake([P1], []);
+    const res = await runExecutorDagWithPlan(
+      node({ max_rounds: 3 }),
+      cfg(f.generate, false, true, streakJudge((n) => new ModelError('parse', `invalid JSON: Unrecognized token '第${n}个'`))),
     );
     expect(f.expands()).toBe(3);
     expect(res.results.C!.infraStopped).toBeUndefined();

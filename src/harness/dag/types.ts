@@ -345,6 +345,21 @@ export interface ExecutorDagConfig {
    */
   repeatedActionThreshold?: number;
   /**
+   * **闸级熔断**的阈值 (缺省 2, 2026-08-16)。内环 judge 连续这么多轮以**逐字相同**的方式
+   * 失败 (键 = `kind|status|message`) → 走 infra-error 出口。§8.4 那条原则的第三个粒度:
+   * 轮级看"整轮原地踏步", 动作级看"某条命令零位移", 这一条看"闸自己零位移"。
+   *
+   * ⚠ 它补的是**按 kind 分类够不着的那个角**: 一个确定性故障若碰巧被归进"瞬时"那一类
+   * (实例: `minimax-native` 把业务码塞进 `status`, 1004 鉴权失败 / 2049 无效 key 全落进
+   * `s >= 500` 被判成瞬时), 就会每轮重来直到轮数烧光。按 kind 猜不出来, 转一轮量得出来。
+   *
+   * ⚠ "逐字相同"同样不是可选优化: 文本在变 = 模型换了说法 = 事情在动, 该继续转;
+   * 只按"judge 失败 N 次"熔断会把正常的判词抖动读成故障。
+   *
+   * 设 0 或 1 = 关闭本闸 (同 repeatedActionThreshold 的口径)。
+   */
+  judgeFailureThreshold?: number;
+  /**
    * 节点级进度事件 (2026-07-20, MCP 派发简报/活体 status 的数据源):
    *   planned = 图定型 (全部节点 id+kind, 每轮 plan/escalation 重规划各发一次)
    *   start   = 节点起跑 (含 map 展开出的子节点)

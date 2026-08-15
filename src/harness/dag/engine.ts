@@ -953,13 +953,18 @@ async function executePlan(
     usage: ModelUsage;
     /** judge **调不通**时的错误原文 (确定性故障: config / transport / 非 provider-fault 的 http); 瞬时故障 (parse/validation/truncation/429/5xx) → null。 */
     unreachable: string | null;
+    /**
+     * judge 这一发**瞬时**失败时的逐字身份 (`kind|status|message`); 没失败或已判确定性 → null。
+     * 闸级熔断的比对键 —— 逐字相同连续 K 轮 = 这一格零位移 (§8.4 的「相同」而不是「重复」)。
+     */
+    faultKey: string | null;
   }> => {
     const childIds = children.map((c) => c.id);
     // 整轮就没跑成 → 直接未收敛, 省一次 judge 调用 (同 llm-judge 的 status==='failed' 短路)。
     if (leaf.status === 'failed') {
       // D-3 (2026-08-11): 判决升级为事件 (整轮没跑成 = 确定性短路, 仍给一条 judge 判词)。
       emitNodeEvent({ type: 'verdict', id, gate: 'judge', verdict: 'fail', round, reason: `整轮失败: ${leaf.output.slice(0, 300)}` });
-      return { converged: false, reason: `整轮失败: ${leaf.output.slice(0, 300)}`, rejected: [], usage: { in: 0, out: 0 }, unreachable: null };
+      return { converged: false, reason: `整轮失败: ${leaf.output.slice(0, 300)}`, rejected: [], usage: { in: 0, out: 0 }, unreachable: null, faultKey: null };
     }
     // ── D-4 谎报完成闸 (2026-08-10, SDD 切片 4) ─────────────────────────────────
     // 确定性先行: 节点声称完成 ∧ 引擎证据**实败** (校验命令正非零退出码 / 状态 failed)
@@ -980,6 +985,7 @@ async function executePlan(
         rejected: fc.findings.map((f) => f.nodeId),
         usage: { in: 0, out: 0 },
         unreachable: null,
+        faultKey: null,
       };
     }
     const judgeCoord = config.judgeModel ?? config.conductorModel;
@@ -1028,7 +1034,7 @@ async function executePlan(
         logger.warn({ node: id, round }, '[omd/executor-dag] 内环 judge 判未收敛却零理由 → 下一轮反馈为空 (A5, 应由 llm-judge 兜住)');
       }
       emitNodeEvent({ type: 'verdict', id, gate: 'judge', verdict: v.converged ? 'pass' : 'fail', round, ...(v.failureReason ? { reason: v.failureReason } : {}) });
-      return { converged: v.converged, reason: v.failureReason ?? '', rejected, usage, unreachable: null as string | null };
+      return { converged: v.converged, reason: v.failureReason ?? '', rejected, usage, unreachable: null as string | null, faultKey: null as string | null };
     } catch (err) {
       // fail-closed: 判不出来就当没达成。judge 挂掉不该变成"那就算过了吧"。
       logger.warn({ node: id, round, err: String(err) }, '[omd/executor-dag] 内环 judge 无结论 → 判未收敛 (fail-closed)');
@@ -1046,6 +1052,12 @@ async function executePlan(
       //   (`.omd/eval/gate-m3`) —— 一次 parse 抖动就白白终止整个内环。
       const unreachable =
         err instanceof ModelError && !isTransientModelFault(err) ? String((err as Error).message ?? err) : null;
+      // 闸级熔断的比对键: 只在**判成瞬时**的那支产出 —— 已判确定性的走上面那条, 不用再量。
+      // `kind|status|message` 逐字, 与 §8.4 的「失败输出逐字相同」同一个键法。
+      const faultKey =
+        unreachable === null && err instanceof ModelError
+          ? `${err.kind}|${err.status ?? ''}|${String(err.message)}`
+          : null;
       // A5: 这句话的读者是**下一轮重画的 conductor**。旧文案 (`judge 无可解析结论 (fail-closed)`)
       // 报得对, 但它是**引擎侧的事故**, 而读者会把出现在「上一轮未通过」里的任何东西当成对自己
       // 方案的评价 —— 于是它会为了迎合一句根本不存在的判词去改图。所以第一句先把这件事撇清。
@@ -1059,6 +1071,7 @@ async function executePlan(
           '不要为了迎合一句不存在的判词去改图 —— 若上一轮的产出看起来是完整的, 原样再交一次即可。',
         rejected: [],
         usage: { in: 0, out: 0 },
+        faultKey,
       };
     }
   };
@@ -1839,6 +1852,11 @@ async function executePlan(
      * **BLOCKED** 时, K 该取几的那份依据。0 读数时先定 K 等于凭感觉定闸。
      */
     let noArtifactChangeRounds = 0;
+    /** 闸级熔断的累积面: 上一轮 judge 瞬时失败的逐字身份 + 它已经连续几轮逐字相同。 */
+    let lastJudgeFaultKey: string | null = null;
+    let judgeFaultStreak = 0;
+    /** 设 0 或 1 = 关闭本闸 (阈值 1 等于一失败就熔断, 那不是熔断 —— 同 repeatedActionThreshold 的口径)。 */
+    const judgeFaultThreshold = config.judgeFailureThreshold ?? 2;
     /** 真正跑完的轮次 (取消收尾时要如实报, 不能拿 maxRounds 顶)。 */
     let doneRounds = startRound - 1;
 
@@ -2001,6 +2019,33 @@ async function executePlan(
           atRound: round,
         });
         return { ...settle(last, round, false), infraStopped: `judge 调不通: ${verdict.unreachable}` };
+      }
+
+      // ── 闸级熔断 (2026-08-16): §8.4 那条原则的第三个粒度 ────────────────────────
+      //
+      // 上面按 kind 分的判据有个够不着的角: **确定性**故障若碰巧落进"瞬时"那一类, 就会每轮
+      // 重来直到轮数烧光。实例: `minimax-native` 把业务码塞进 `status`, 业务码全 ≥ 1000 →
+      // 鉴权失败 (1004) / 无效 key (2049) 一律落进 `isProviderFault` 的 `s >= 500` 那支。
+      // 按 kind **猜**不出来 —— 但**转一轮量一量**就知道。
+      //
+      // 判据沿用仓里既有的那条 (轮级 D-Q、动作级 §8.4 都是它): **「相同」而不是「重复」**。
+      //   逐字相同 → 这一格零位移 → 确定性, 退环
+      //   文本在变 → 事情在动 (模型换了说法) → 继续转
+      // 这个键在这里不用调: 坏 key 每轮逐字相同 (第 2 轮退); 瞬时 1000 文本虽同, 但连续两轮
+      // 的概率 ≈ 0.017² ≈ 0.03% (`.omd/eval/gate-m3` 实测 M3 关思考 1/60); parse 抖动的错误里
+      // 带随输出变的 token, 文本不同 → 继续。
+      if (verdict.faultKey && verdict.faultKey === lastJudgeFaultKey) {
+        judgeFaultStreak++;
+      } else {
+        judgeFaultStreak = verdict.faultKey ? 1 : 0;
+      }
+      lastJudgeFaultKey = verdict.faultKey;
+      if (judgeFaultThreshold >= 2 && judgeFaultStreak >= judgeFaultThreshold) {
+        const evidence = `judge 连续 ${judgeFaultStreak} 轮以逐字相同的方式失败 (零位移 → 确定性): ${verdict.faultKey}`;
+        logger.warn({ node: id, round, streak: judgeFaultStreak }, '[omd/executor-dag] 闸级熔断 → 环提前退出 (infra-error, 不烧剩余轮数)');
+        // 与 judge 调不通同一个出口、同一个词: 该修的是引擎/凭证, 不是"等人给外部输入" (N5)。
+        writeLoopJournal(round, poisoned, prevReason, false, last.output, { kind: 'infra-error', evidence, atRound: round });
+        return { ...settle(last, round, false), infraStopped: evidence };
       }
       last = { ...r.leaf, usage: usageAcc };
 
