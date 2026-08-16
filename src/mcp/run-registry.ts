@@ -55,6 +55,21 @@ export interface RunProgress {
    * 只看终态的人 (我) 把轮 2 当成第一次失败, 连着两次修错了对象。
    */
   replans?: Array<{ parent: string; round: number; poisoned: string[] }>;
+  /**
+   * 闸判词留痕 (2026-08-16 补, issue #144 提议 5)。**缺席 = 没判过**, 同 `replans` 那条的
+   * 事件语义。
+   *
+   * 为什么必须记: 判词此前**只有一条持久化通路** —— 终态 `result.verification.reason`,
+   * 而它只在 `succeed()` 里写。于是「契约段就挂了」的 run 判词全丢:
+   * run 386cf35b 跑了 38m26s、`verifier 未过 → 静默升级重规划` 打在日志里,
+   * 而 `runs.db` 的 `node_details` / `result` 皆空 —— 事后**查不到哪里判不过**。
+   *
+   * 事件一直有 (`{ type:'verdict', gate, verdict, round, reason }`), 缺的是这里接一下 ——
+   * 与 2026-08-12 那次 `replan` 的坑**逐字同形**(同一个 switch, 同一种漏接)。
+   * `reason` 截断到 2000: 判词是给人读的诊断, 不是给机器 diff 的; 整份判词进活体进度会把
+   * 每次节点事件的小写放大成大写。
+   */
+  verdicts?: Array<{ gate: string; verdict: string; round: number; reason?: string; at: string }>;
 }
 
 /**
@@ -421,6 +436,18 @@ export class RunRegistry {
       case 'replan':
         (progress.replans ??= []).push({ parent: e.parent, round: e.round, poisoned: [...e.poisoned] });
         break;
+      // ⚠ 与上一条**同一个坑, 同一个 switch**: verdict 事件此前也落进这里被静默丢掉
+      // (2026-08-16 补, #144 提议 5)。代价见 RunProgress.verdicts 的注 ——
+      // 一个跑了 38 分钟、零产出的 run, 事后查不出 verifier 到底判了什么。
+      case 'verdict':
+        (progress.verdicts ??= []).push({
+          gate: e.gate,
+          verdict: e.verdict,
+          round: e.round,
+          ...(e.reason ? { reason: e.reason.slice(0, 2000) } : {}),
+          at: this.now().toISOString(),
+        });
+        break;
     }
     rec.updatedAt = this.now().toISOString(); // 同 register/transition: 三处共用一个钟, 别漏第三处
     // 同 setNodeDetails: 活体进度写穿 —— parent 的 dag_status 读盘拿子进程 run 的进度。
@@ -533,6 +560,15 @@ export class RunRegistry {
           `replan: ${p.replans.length} 次` +
             (poisoned.length ? ` (毒集 ${poisoned.slice(0, 8).join(', ')}${poisoned.length > 8 ? ` …+${poisoned.length - 8}` : ''})` : ''),
         );
+      }
+      // 闸判词: 同 replan, 没判过就整行缺席。**只印未过的那些** —— 过了的判词对"为什么没成"
+      // 零信息量, 而这一行存在的全部理由就是回答那个问题 (#144 提议 5)。
+      // 印判词首句而不只印次数: 「verifier 未过 2 次」与「未过, 因为 X」之间差的正是复盘所需的一切。
+      const failedVerdicts = p.verdicts?.filter((v) => v.verdict !== 'pass') ?? [];
+      if (failedVerdicts.length) {
+        const last = failedVerdicts[failedVerdicts.length - 1]!;
+        const head = (last.reason ?? '(判词未落盘)').replace(/\s+/g, ' ').slice(0, 160);
+        parts.push(`闸未过: ${last.gate} ×${failedVerdicts.length} (轮 ${last.round}) — ${head}`);
       }
       // 在跑节点名只在 running 态有意义 (终态没有"在跑")。
       if (rec.status === 'running' && p.started.length) {

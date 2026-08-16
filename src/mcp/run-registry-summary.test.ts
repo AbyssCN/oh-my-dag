@@ -244,3 +244,53 @@ describe('getSummary 的节点账', () => {
     expect(t).toMatch(/nodes: 2 done \/ 1 failed \/ 10 skipped/);
   });
 });
+
+describe('★ INV-11: 闸判词留痕 (#144 提议 5)', () => {
+  // 背景: run 386cf35b 跑了 38m26s、零产出, 日志里有 `verifier 未过 → 静默升级重规划`,
+  // 而 runs.db 的 node_details / result **皆空** —— 事后查不到哪里判不过。
+  // 根因不是"没记", 是 applyNodeEvent 的 switch **没有 verdict 这一 case**, 事件进来即丢
+  // (与 2026-08-12 的 replan 逐字同形)。判词唯一的持久化通路是 succeed() 写的终态 result,
+  // 而契约段就挂掉的 run 根本走不到 succeed。
+  test('未过的判词进摘要, 带 gate / 轮次 / 判词首句', () => {
+    const reg = makeReg(() => T0);
+    reg.register('rv1', { goal: 'g' });
+    reg.start('rv1');
+    reg.applyNodeEvent('rv1', { type: 'planned', nodes: [{ id: 'a', kind: 'leaf' }] } as DagNodeEvent);
+    reg.applyNodeEvent('rv1', {
+      type: 'verdict', id: 'goal-contract', gate: 'verifier', verdict: 'fail', round: 1,
+      reason: '共享文件被拆给 wire_i18n 与 wire_routes 两个节点, 不符合唯一收口节点约束',
+    } as DagNodeEvent);
+    reg.fail('rv1', 'boom');
+
+    const t = textOf(reg, 'rv1');
+    // 怎么让它红: 删掉 applyNodeEvent 里的 `case 'verdict'` → 事件回到被静默丢弃, 这三条全红。
+    expect(t).toContain('闸未过: verifier ×1');
+    expect(t).toContain('轮 1');
+    expect(t).toContain('唯一收口节点约束');
+  });
+
+  test('★ 反向自检: 判词落进 progress 而不只是摘要文本 —— 跨进程读盘的人也要看得到', () => {
+    // 摘要是**渲染**, progress 是**留痕**。只渲染不留痕的话, dag_status 之外的读者
+    // (resume / 事后翻 runs.db) 仍然什么都拿不到 —— 那正是本条要堵的洞。
+    const reg = makeReg(() => T0);
+    reg.register('rv2', { goal: 'g' });
+    reg.start('rv2');
+    reg.applyNodeEvent('rv2', {
+      type: 'verdict', id: 'p', gate: 'verifier', verdict: 'fail', round: 2, reason: 'X',
+    } as DagNodeEvent);
+    const v = reg.getRecord('rv2')?.progress?.verdicts;
+    expect(v).toEqual([{ gate: 'verifier', verdict: 'fail', round: 2, reason: 'X', at: new Date(T0).toISOString() }]);
+  });
+
+  test('★ 只印未过的 —— 全过的 run 不该多出一行噪声', () => {
+    // 怎么让它红: 去掉 `v.verdict !== 'pass'` 过滤 → 绿 run 也印「闸未过」, 这条红。
+    const reg = makeReg(() => T0);
+    reg.register('rv3', { goal: 'g' });
+    reg.start('rv3');
+    reg.applyNodeEvent('rv3', {
+      type: 'verdict', id: 'p', gate: 'verifier', verdict: 'pass', round: 1,
+    } as DagNodeEvent);
+    reg.succeed('rv3', {});
+    expect(textOf(reg, 'rv3')).not.toContain('闸未过');
+  });
+});
