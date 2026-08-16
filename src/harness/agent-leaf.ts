@@ -80,6 +80,7 @@ import type { McpPoolDeps } from '../mcp/client/pool';
 import type { McpCallLedger } from '../mcp/client/call-ledger';
 import { createHashlineCustomTools, hashlinePatchPaths } from './hashline';
 import { createDriftTracker, type DriftDetectorConfig } from './hooks/drift-detector';
+import { createParseFeedback } from './write-parse-gate';
 import { createSandboxedLeafRunner } from './hooks/sandboxed-leaf';
 import { loadSandboxConfig } from './hooks/command-policy';
 import { logger } from '../logger';
@@ -996,6 +997,15 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       opts.driftDetector === false
         ? null
         : createDriftTracker(typeof opts.driftDetector === 'object' ? opts.driftDetector : {});
+    // L0 写后即验 (2026-08-16): **每个 leaf 一份**, 理由同 drift —— 跨 leaf 复用会把别人写坏的
+    // 文件算到自己头上。只提醒不判定, 节点末那道硬闸一个字没动 (见 write-parse-gate 文件头)。
+    //
+    // ⚠ **只在 pi 通道**: 注入的出口是 `transformContext`, 而 SDK 通道没有那个钩子
+    // (同一段注里"上下文压缩/轮间停不做 (SDK 自管)"那条边界)。这里显式判 null 而不是
+    // 让它在 SDK 路上白攒一堆永远取不走的待注项 —— 那样 `parseNudges` 会恒为 0,
+    // 而"这个通道没接"与"接了但没触发"在读数上就分不开了 (缺席 ≠ 0)。
+    // 两个通道**共用节点末那道硬闸** (判在引擎侧 filesTouched 上), 所以 SDK 路没有变弱, 只是没变快。
+    const parseFeedback = isSdkChannel ? null : createParseFeedback();
     // 空转熔断 (2026-08-14): 非 null = 已熔断, 值是理由原文。controller/startedAt 声明在下方,
     // 但此处只是采集函数体 (运行时才引用), 无 TDZ 问题 —— 同 touchTimelineMs 那条注。
     let spinFused: string | null = null;
@@ -1067,6 +1077,9 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           const ps = pathByCall.get(e.toolCallId);
           if (ps) {
             const snaps = snapByCall.get(e.toolCallId);
+            // L0 写后即验: 只判**真改变了内容**的那些 (noop 写盘上逐字没动 → 不会有新损坏,
+            // 而它恰恰是 hashline stale 的指纹, 那是另一条链的活)。逐条判据在下面的循环里攒。
+            const changed: string[] = [];
             for (const p of ps) {
               if (!touched.has(p)) touchTimelineMs.push(Date.now() - startedAt);
               touched.add(p);
@@ -1074,10 +1087,17 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
               if (!before) continue; // 没取到快照 (理论上不会) → 不编一个效果数出来
               const effect = diffWriteEffect(p, before, snapshotFile(cwd, p));
               writeEffects.push(effect);
+              if (!effect.noop) changed.push(p);
               // 把 noop 回填到序列那一步。**这一位就是 hashline stale 被拒的指纹**:
               // 工具返回成功 (fail-soft 返文本), 而盘上逐字没动。多路径 patch 只要有一条真变了
               // 就不算 noop —— 判据是"这次调用有没有改变任何东西"。
               if (step) step.noop = (step.noop ?? true) && effect.noop;
+            }
+            // fail-open 不吞证据: 这是提醒面, 绝不能因为解析器抛了个没想到的错就把一次真的写带塌。
+            try {
+              if (changed.length) parseFeedback?.note(changed, cwd);
+            } catch (err) {
+              logger.warn({ err: (err as Error).message }, '[agent-leaf] 写后即验 (L0 提醒) 抛错 (已吞, 只丢这一次提醒)');
             }
           }
           // 读失败 (文件不存在等) 不算读过 —— 同"失败的写不算产物"。
@@ -1178,10 +1198,14 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       // drift 注入走 transformContext: 它只改**这一次请求**看到的消息, 不写回 context ——
       // 于是"检出 spin → 注一次"是天然的边沿行为, 不会在 transcript 里堆成 N 份 checklist。
       transformContext: async (messages: AgentMessage[]) => {
-        const text = drift?.takeInjection();
-        if (!text) return messages;
-        logger.debug('[omd/drift] stuck-checklist injected via transformContext');
-        return [...messages, { role: 'user' as const, content: text, timestamp: Date.now() }];
+        // 两条注入共用这一个边沿出口 (都是"检出 → 注一次", 都不写回 context)。
+        // 分开取、合并发: 同一轮里两件事都触发时发两条 user 消息, 模型更容易只回应最后一条。
+        const parts = [drift?.takeInjection(), parseFeedback?.takeInjection()].filter(
+          (t): t is string => typeof t === 'string' && t.length > 0,
+        );
+        if (parts.length === 0) return messages;
+        logger.debug({ parts: parts.length }, '[omd/agent-leaf] 软注入 via transformContext (drift / 写后即验)');
+        return [...messages, { role: 'user' as const, content: parts.join('\n\n'), timestamp: Date.now() }];
       },
       // ── 上下文压缩 (GP-8) ──────────────────────────────────────────────────
       // 顺序是**先压再判停**: 循环先调 prepareNextTurn 换上下文, 再拿换好的问 shouldStopAfterTurn。
@@ -1340,6 +1364,8 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       // (同 DriftTracker.summary 那条注), 信号要出 leaf 只能随结果回来。
       ...(spinFused !== null ? { spinFused } : {}),
       ...(spinSummary && spinSummary.spinEvents > 0 ? { spin: spinSummary } : {}),
+      // 一条都没注 → 缺席而不是 0 (同上一条口径)。有值时才是"这一层真的动过"。
+      ...(parseFeedback && parseFeedback.nudges() > 0 ? { parseNudges: parseFeedback.nudges() } : {}),
       // 一条都没跑 → **缺席**而不是 `[]`: 「这个 leaf 没用过 bash」与「这条采集没接」在读数上
       // 必须分得开 (同 spin / observations 那条口径)。
       // ⚠ 2026-08-12 补回: S1 埋点 (run 360405a5) 把这一行**删掉换成了下面的 watchdog 块**。

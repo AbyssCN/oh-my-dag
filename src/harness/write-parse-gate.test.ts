@@ -9,7 +9,14 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { isParseable, parseContent, parseWrittenFiles, renderParseFailures } from './write-parse-gate';
+import {
+  createParseFeedback,
+  isParseable,
+  parseContent,
+  parseWrittenFiles,
+  renderParseFailures,
+  renderParseNudge,
+} from './write-parse-gate';
 
 /** F1 #1: `routes.tsx` —— 类型联合后接没有 `/**` 开头的悬空注释体, 随后重复声明。 */
 const BROKEN_DANGLING_COMMENT = `export type FeatureTab = 'a' | 'b';
@@ -107,5 +114,100 @@ describe('parseWrittenFiles —— 走盘的那一层', () => {
     expect(t).toContain('a.tsx');
     expect(t).toContain('Unexpected token');
     expect(t).toContain('整段重写'); // run C 实测有效的那一刀; 打补丁正是损坏的来源
+  });
+});
+
+describe('createParseFeedback —— L0 会话内自愈 (只提醒不判定)', () => {
+  /** 每条用例一棵干净的树 —— 状态机跨用例串味会让"重新上膛"那条恒绿。 */
+  function tree(): { root: string; write: (rel: string, body: string) => void } {
+    const root = mkdtempSync(join(tmpdir(), 'omd-parse-fb-'));
+    return { root, write: (rel, body) => writeFileSync(join(root, rel), body) };
+  }
+
+  test('★ 红: 写坏了就注一条, 且带得出解析器原话', () => {
+    // 证伪方式: 把 note() 里的 `pending.push(failure)` 删掉 → 这条红 = 这一层哑了。
+    const { root, write } = tree();
+    const fb = createParseFeedback();
+    write('routes.tsx', BROKEN_DANGLING_COMMENT);
+    fb.note(['routes.tsx'], root);
+    const text = fb.takeInjection();
+    expect(text).toContain('routes.tsx');
+    expect(fb.nudges()).toBe(1);
+    expect(text).toContain('读全文 → 重写全文');
+    // 分刀改是这一层唯一的正当误报形态 —— 必须明写, 否则模型会为迎合判词去动对的代码。
+    expect(text).toContain('分两刀改');
+  });
+
+  test('绿: 写得好一条都不注 (这一层不许有基础噪声)', () => {
+    const { root, write } = tree();
+    const fb = createParseFeedback();
+    write('ok.tsx', GOOD_TSX);
+    fb.note(['ok.tsx'], root);
+    expect(fb.takeInjection()).toBeNull();
+    expect(fb.nudges()).toBe(0);
+  });
+
+  test('★ 边沿触发: 同一条错不重复注 (「一直坏着」= 一条, 不是每写一次一条)', () => {
+    // 这是与"每写必判"最本质的区别。证伪方式: 把 `reported.get(f) === failure.error` 那句
+    // continue 删掉 → 一个改十刀的节点会被灌十条同样的提醒, 而那正是 prompt 噪声的来源。
+    const { root, write } = tree();
+    const fb = createParseFeedback();
+    write('a.tsx', BROKEN_STMT_IN_ARGS);
+    fb.note(['a.tsx'], root);
+    expect(fb.takeInjection()).toBeTruthy();
+    fb.note(['a.tsx'], root); // 还是坏的, 还是同一条错
+    fb.note(['a.tsx'], root);
+    expect(fb.takeInjection()).toBeNull();
+    expect(fb.nudges()).toBe(1);
+  });
+
+  test('★ 修好了要**重新上膛** —— 后来再写坏必须还能注得出来', () => {
+    // 证伪方式: 把 `reported.delete(f)` 删掉 → 一个文件一辈子只提醒一次,
+    // 于是"改好了又改坏"这条最常见的返修形态整个静默 (而它正是 F1 那三次的形状)。
+    // ⚠ 两次必须坏成**同一条错**。第一版这条用例第二次换了另一种坏法, 于是靠"错不同"
+    // 就绕过了去重 —— 删掉 `reported.delete` 它照样绿。**那是一条不会红的测试**,
+    // 按仓规当场证伪时抓出来的 (证伪 2 不红 = 用例本身是空的)。
+    const { root, write } = tree();
+    const fb = createParseFeedback();
+    write('a.tsx', BROKEN_JSX_BOTH_VERSIONS);
+    fb.note(['a.tsx'], root);
+    expect(fb.takeInjection()).toBeTruthy();
+    write('a.tsx', GOOD_TSX); // 它按提醒修好了
+    fb.note(['a.tsx'], root);
+    expect(fb.takeInjection()).toBeNull();
+    write('a.tsx', BROKEN_JSX_BOTH_VERSIONS); // 后来又坏回同一个样子
+    fb.note(['a.tsx'], root);
+    expect(fb.takeInjection()).toBeTruthy();
+    expect(fb.nudges()).toBe(2);
+  });
+
+  test('★ 有上限: 注到第 4 条就闭嘴, 交给节点末硬闸', () => {
+    // 修不动的会话继续灌字只是在烧 token。证伪方式: 把 MAX_NUDGES_PER_LEAF 那道门删掉 →
+    // 一个反复改坏五个文件的 leaf 会被注五条, 上限就名存实亡了。
+    const { root, write } = tree();
+    const fb = createParseFeedback();
+    for (const n of ['a', 'b', 'c', 'd', 'e']) {
+      write(`${n}.tsx`, BROKEN_STMT_IN_ARGS);
+      fb.note([`${n}.tsx`], root);
+      fb.takeInjection();
+    }
+    expect(fb.nudges()).toBe(3);
+  });
+
+  test('认不出的扩展名 / 读不到的路径 一律不注 (同硬闸的口径)', () => {
+    const { root, write } = tree();
+    const fb = createParseFeedback();
+    write('notes.md', '# 标题\n<不闭合');
+    fb.note(['notes.md', 'nope.tsx'], root);
+    expect(fb.takeInjection()).toBeNull();
+  });
+
+  test('★ 提醒的时态与处置**不同于**事后判词 —— 两个读者不许共用一份文本', () => {
+    // 事后那份是写给下一个冷启动 leaf / 重规划轮的; 这份是写给还活着的这个 leaf 的。
+    // 证伪方式: 让 renderParseNudge 直接 return renderParseFailures(...) → 这条红。
+    const f = [{ path: 'a.tsx', error: 'Unexpected token' }];
+    expect(renderParseNudge(f)).not.toBe(renderParseFailures(f));
+    expect(renderParseNudge(f)).toContain('忽略本条'); // 提醒可以被无视, 判词不行
+    expect(renderParseFailures(f)).not.toContain('忽略本条');
   });
 });

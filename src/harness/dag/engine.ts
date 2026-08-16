@@ -885,7 +885,8 @@ async function executePlan(
    *
    * noun-gate 注释 only, material = 节点 prompt (含 deps 上下文) —— "输出了输入和 repo 都没有的
    * 名词"才是审计信号 (material 含 output 会恒真, SDD C5 消费者② 修正)。无 prompt 的节点
-   * (command/research) 不跑它。tokenUsage: agent leaf 真值不可得 → null (V2-ECON)。
+   * (command/research) 不跑它。tokenUsage: 传什么记什么 —— agent leaf 那条曾写 null,
+   * 理由见调用点 (2026-08-16 更正)。
    */
   const saveDoneCheckpoint = (opts: {
     id: string;
@@ -3177,7 +3178,15 @@ async function executePlan(
         kind: useAgent ? 'agent' : 'inproc',
         model,
         text,
-        usage: useAgent ? null : usage,
+        // 此前这里是 `useAgent ? null : usage`,注「agent leaf 真值不可得」——
+        // **那条注已经不成立了**:`agent-leaf.ts` 逐轮累加 assistant 消息自报的 usage
+        // (`sdkUsage ?? mapSessionUsage(totals)`),而同一个 `usage` 上面第 3394 行就在当真值
+        // 累进 `leavesIn/leavesOut/leavesCacheHit`,#144 补账那条 `recordSeatUsage` 也用它。
+        // 一份数三处用、只有 checkpoint 这一处写 null —— 于是 plana 四个 run 的 continuity 里,
+        // **每一个 done 的 agent 节点 `tokenUsage` 都是 null**,恰好是烧得最多的那些
+        // (实测有值的那几个 failed 节点 in 在 87K–12.8M),而"规划层 vs 执行层各烧多少"
+        // 正是 #144 要问的那句话。
+        usage,
         filesTouched,
         filesRead,
         deps: node.depends_on ?? [],
