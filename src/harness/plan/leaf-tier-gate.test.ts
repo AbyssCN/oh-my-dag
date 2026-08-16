@@ -6,7 +6,7 @@
  * 绿样本钉住三态②/③ 的合法形:声明写意图 / 无确定路径的探索 / command 档。
  */
 import { describe, expect, test } from 'bun:test';
-import { extractPathTokens, leafTierGateFindings, type StatPathFn } from './leaf-tier-gate';
+import { autoRewriteLeafTier, extractPathTokens, leafTierGateFindings, type StatPathFn } from './leaf-tier-gate';
 import type { ConductorPlan } from '../conductor-plan';
 
 const plan = (nodes: Record<string, unknown>): ConductorPlan => ({ name: 'p', nodes }) as unknown as ConductorPlan;
@@ -168,5 +168,85 @@ describe('leaf-tier-gate (g1)', () => {
     expect(toks).toContain('/a/b/paper.txt');
     expect(toks).toContain('docs/notes.md');
     expect(toks).toContain('raw');
+  });
+});
+
+describe('autoRewriteLeafTier —— 闸自己动手 (#144 提议 3 / #145 提议 3)', () => {
+  const opts = { statPath: fakeStat, thresholdBytes: 1_000_000 };
+
+  test('★ 静态 + 塞得下 → 插 command 读盘节点 + 原节点降档, findings 清空', () => {
+    // 这是省下的那一发规划座。证伪方式: 把 autoRewritable 恒设 false → rewritten 空, residual 非空。
+    const p = plan({
+      ext: { executor: 'agent', output_type: 'structured', goal: '读 /corpus/paper1.txt 与 /corpus/paper2.txt 提取证据' },
+    });
+    const r = autoRewriteLeafTier(p, opts);
+    expect(r.residual).toEqual([]);
+    expect(r.rewritten).toHaveLength(1);
+    expect(r.rewritten[0]!.readNode).toBe('ext__read');
+    // 多文件必须 tail -v -n +1: 裸 cat 拼出来的字节流没有逐源身份 (2026-08-04 买来的那条)。
+    expect(r.rewritten[0]!.command).toBe('tail -v -n +1 /corpus/paper1.txt /corpus/paper2.txt');
+    const read = r.plan.nodes.ext__read as { executor?: string; command?: string };
+    expect(read.executor).toBe('command');
+    expect(read.command).toBe('tail -v -n +1 /corpus/paper1.txt /corpus/paper2.txt');
+    const orig = r.plan.nodes.ext as { executor?: string; output_type?: string; depends_on?: string[] };
+    expect(orig.executor).toBeUndefined(); // 降档成 inproc leaf
+    expect(orig.output_type).toBe('structured'); // 其余字段逐字保留 —— 改档位不是重写节点
+    expect(orig.depends_on).toEqual(['ext__read']);
+    // 改完自己再判一次必须干净 —— 否则等于把违规从一个形状搬到另一个形状。
+    expect(leafTierGateFindings(r.plan, opts)).toEqual([]);
+  });
+
+  test('★ 读盘节点抄原节点的 depends_on —— 上游可能正是写这些文件的那个', () => {
+    // 证伪方式: 删掉 autoRewriteLeafTier 里那行 depends_on 复制 → 读盘节点变成根节点,
+    // 可能抢在写文件的上游之前跑, 读到旧内容。这条红。
+    const p = plan({
+      gen: { goal: '生成语料' },
+      ext: { executor: 'agent', output_type: 'structured', depends_on: ['gen'], goal: '读 /corpus/paper1.txt' },
+    });
+    const r = autoRewriteLeafTier(p, opts);
+    expect((r.plan.nodes.ext__read as { depends_on?: string[] }).depends_on).toEqual(['gen']);
+    expect((r.plan.nodes.ext as { depends_on?: string[] }).depends_on).toEqual(['gen', 'ext__read']);
+  });
+
+  test('★ 撞名不覆盖: 图里已有 ext__read 就往后找', () => {
+    // 证伪方式: 把 freeReadId 换成恒返 `${base}__read` → 已有节点被静默吃掉, 这条红。
+    const p = plan({
+      ext: { executor: 'agent', output_type: 'structured', goal: '读 /corpus/paper1.txt' },
+      ext__read: { goal: '同名的既有节点' },
+    });
+    const r = autoRewriteLeafTier(p, opts);
+    expect(r.rewritten[0]!.readNode).toBe('ext__read2');
+    expect((r.plan.nodes.ext__read as { goal?: string }).goal).toBe('同名的既有节点');
+  });
+
+  test('★ 改不动的两类原样拒回: map 模板 / 超阈', () => {
+    // 闸手上没有 map 的路径清单; 超阈那类的正解是 conductor 运行期展开 per-item 对, 那是
+    // **结构决策**不是改写。假装能改就是把「拿不准一律不报」反过来做。
+    const mapPlan = plan({
+      fan: {
+        executor: 'map',
+        output_type: 'structured',
+        map: { lister: { goal: 'ls', executor: 'agent' }, over: 'papers', itemVar: 'item', template: { executor: 'agent', goal: '读 {{item.path}}' } },
+      },
+    });
+    const mapRes = autoRewriteLeafTier(mapPlan, opts);
+    expect(mapRes.rewritten).toEqual([]);
+    expect(mapRes.residual).toHaveLength(1);
+    expect(mapRes.plan).toBe(mapPlan); // 无可改写 → 原对象直接返回 (零拷贝零扰动)
+
+    const bigRes = autoRewriteLeafTier(
+      plan({ ext: { executor: 'agent', output_type: 'structured', goal: '读 /corpus/raw 全部' } }),
+      { statPath: fakeStat, thresholdBytes: 100_000 }, // 360KB > 阈值
+    );
+    expect(bigRes.rewritten).toEqual([]);
+    expect(bigRes.residual[0]!.autoRewritable).toBe(false);
+  });
+
+  test('★ 不改输入 plan (调用方可能与 prior 共享引用)', () => {
+    // 同 serializeWriteRaces 那条注买过的教训。证伪方式: 把 `nodes` 那份浅拷贝去掉 → 这条红。
+    const p = plan({ ext: { executor: 'agent', output_type: 'structured', goal: '读 /corpus/paper1.txt' } });
+    autoRewriteLeafTier(p, opts);
+    expect((p.nodes.ext as { executor?: string }).executor).toBe('agent');
+    expect(p.nodes.ext__read).toBeUndefined();
   });
 });

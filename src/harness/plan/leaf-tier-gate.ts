@@ -52,6 +52,32 @@ export interface LeafTierFinding {
   /** stat 到的路径与总字节(map 模板拿不到 → 空/0)。 */
   paths: string[];
   totalBytes: number;
+  /**
+   * 这条**能不能由引擎自己改**(见 {@link autoRewriteLeafTier})。
+   *
+   * 只有「静态节点 ∧ 总量塞得下单个 leaf prompt」那一格为真 —— 那一格的改写是确定性的:
+   * 节点名、路径、字节数闸全都有,`REWRITE_SMALL` 那三步逐字可执行。map 模板与超阈那两格
+   * **真的需要模型判断**(要不要保持逐份扇出、清单从哪来),不假装能改。
+   */
+  autoRewritable: boolean;
+}
+
+/** 一次程序化改写的留证(给日志/观察渲染;静默改图与静默违规一样坏)。 */
+export interface LeafTierRewrite {
+  /** 被降档的原节点 id(仍在图上,只是不再是 agent)。 */
+  node: string;
+  /** 新插入的确定性读盘节点 id。 */
+  readNode: string;
+  command: string;
+  paths: string[];
+  totalBytes: number;
+}
+
+export interface LeafTierRewriteResult {
+  plan: ConductorPlan;
+  rewritten: LeafTierRewrite[];
+  /** 改不动的那些 —— 仍要拒回问模型。 */
+  residual: LeafTierFinding[];
 }
 
 /** 注入式 stat:文件 → {size, dir:false};目录 → {size: 直属常规文件字节和, dir:true};不存在/读不到 → null。 */
@@ -162,6 +188,8 @@ export function leafTierGateFindings(plan: ConductorPlan, opts: LeafTierGateOpts
           nodes: [id],
           paths: [],
           totalBytes: node.content_bytes ?? 0,
+          // 清单由运行期 lister 给, 闸手上没有路径也没有字节数 —— 改写不了, 只能问模型。
+          autoRewritable: false,
           message:
             `节点 "${id}" 的 map 模板用 \`executor:'agent'\` 去读 lister 已确定的路径 ({{${itemVar}.…}}) 并交结构化产出。` +
             `agent 工具环每一轮都重发累积对话 —— 读定死的文件用 agent = 内容按轮数重复计费(r2 实测 6 倍)。` +
@@ -196,6 +224,7 @@ export function leafTierGateFindings(plan: ConductorPlan, opts: LeafTierGateOpts
       nodes: [id],
       paths: hits,
       totalBytes,
+      autoRewritable: totalBytes <= threshold,
       message:
         `节点 "${id}" 用 \`executor:'agent'\` 读**确定路径**(${hits.join(', ')})且无写意图(无 output_path,产出 structured)。` +
         `agent 工具环每轮重发累积对话 —— 这类节点的内容会被重复计费(r2 实测 6 倍),且慢。` +
@@ -203,4 +232,86 @@ export function leafTierGateFindings(plan: ConductorPlan, opts: LeafTierGateOpts
     });
   }
   return out;
+}
+
+/** `<id>__read` 撞名时往后找 —— 图里已有同名节点就不许覆盖(覆盖 = 静默吃掉一个节点)。 */
+function freeReadId(taken: ReadonlySet<string>, base: string): string {
+  const first = `${base}__read`;
+  if (!taken.has(first)) return first;
+  for (let n = 2; ; n++) {
+    const cand = `${base}__read${n}`;
+    if (!taken.has(cand)) return cand;
+  }
+}
+
+/**
+ * **闸自己动手**(issue #144 提议 3 / #145 提议 3,2026-08-16)。
+ *
+ * ## 为什么改
+ *
+ * 判据是全确定性的,出口却是「拒 + 给改写建议」——**要再花一发最贵的座位让模型照着改**。
+ * 一次拒回 = 1 发规划座;叠上 `LEAF_TIER_MAX_REJECTS=2` + escalation 补丁 3 次 + D-21 复用闸,
+ * 一张坏图能烧 6+ 发规划(实测 run 386cf35b:契约段 38m26s,产出 0 行代码)。
+ *
+ * 更关键的是这条规则**早就在 conductor prompt 里**(`conductor-plan.ts:541-546`),而 codex
+ * conductor 连违 4 次 —— 「prompt 规则不可证伪,闸才可证伪」又添一个样本,但也说明
+ * **光有闸不够:闸应该自己动手,而不是把确定性的改写外包回给最贵的模型**。
+ * 同仓已有先例:`static-lint.ts` 的 `serializeWriteRaces` 就是补边而不是拒图,理由逐字相同。
+ *
+ * ## 改什么(= `REWRITE_SMALL` 的①②两步,逐字可执行)
+ *
+ * ① 插一个 `executor:'command'` 节点跑 {@link bundleReadCommand}(零 LLM;多文件走
+ *    `tail -v -n +1`,每份自带 `==> 路径 <==` 头 —— 逐源身份不许省);
+ * ② 原节点**去掉 executor** 降为普通 inproc leaf,`depends_on` 加上①,内容经 depOutputs 进 prompt。
+ *
+ * 新节点的 `depends_on` **抄原节点的** —— 不是可有可无的谨慎:原节点的上游可能正是写这些
+ * 文件的那个节点,读盘抢在它前面就读到旧内容。抄一份则前后关系逐字不变。
+ *
+ * ## 不改什么(闸改不动的,老老实实拒回问模型)
+ *
+ * - **map 模板**:清单由运行期 lister 给,闸手上没有路径;
+ * - **超阈**(`totalBytes > thresholdBytes`):塞不下单个 leaf,正解是 conductor 运行期展开
+ *   per-item 对,那是个**结构决策**不是改写;
+ * - `REWRITE_SMALL` 的③(「下游要按来源归因就保持逐份扇出」):**这一条是判断不是改写**,
+ *   闸判不了下游要不要逐源归因。所幸①选的 `tail -v -n +1` 本来就保住了逐源身份,
+ *   最坏情况是没扇出而不是丢出处。
+ *
+ * ⚠ 不改输入 plan(同 `serializeWriteRaces`:调用方可能与 prior 共享引用);无可改写命中时原对象直接返回。
+ */
+export function autoRewriteLeafTier(plan: ConductorPlan, opts: LeafTierGateOpts = {}): LeafTierRewriteResult {
+  const findings = leafTierGateFindings(plan, opts);
+  const doable = findings.filter((f) => f.autoRewritable && f.kind === 'agent-deterministic-read');
+  if (doable.length === 0) return { plan, rewritten: [], residual: findings };
+
+  const nodes: ConductorPlan['nodes'] = { ...plan.nodes };
+  const taken = new Set(Object.keys(nodes));
+  const rewritten: LeafTierRewrite[] = [];
+  for (const f of doable) {
+    const id = f.nodes[0]!;
+    const orig = nodes[id];
+    if (!orig) continue; // 防御: findings 与 plan 不同源时不猜
+    const readId = freeReadId(taken, id);
+    taken.add(readId);
+    const command = bundleReadCommand(f.paths);
+    nodes[readId] = {
+      ...(orig.depends_on?.length ? { depends_on: [...orig.depends_on] } : {}),
+      goal: `确定性读盘(引擎程序化插入, g1 闸): ${f.paths.join(', ')} — 内容交下游 "${id}" 消费`,
+      executor: 'command',
+      command,
+    } as ConductorPlan['nodes'][string];
+    // 原节点降档: executor 整个拿掉 (inproc leaf), 而不是改成 'leaf' —— 两者语义同, 但少一个
+    // 显式值就少一处将来会漂的重复。**其余字段逐字保留**: 改档位不是重写节点。
+    const { executor: _dropped, ...rest } = orig as Record<string, unknown>;
+    nodes[id] = {
+      ...rest,
+      depends_on: [...new Set([...(orig.depends_on ?? []), readId])],
+    } as ConductorPlan['nodes'][string];
+    rewritten.push({ node: id, readNode: readId, command, paths: f.paths, totalBytes: f.totalBytes });
+  }
+  const done = new Set(rewritten.map((r) => r.node));
+  return {
+    plan: { ...plan, nodes },
+    rewritten,
+    residual: findings.filter((f) => !f.nodes.every((n) => done.has(n))),
+  };
 }

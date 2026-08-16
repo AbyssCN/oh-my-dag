@@ -102,7 +102,7 @@ import { verifiedShellWriteTargets } from '../shell-writes';
 import { blamePathCandidates, failureExcerpt } from '../failure-trace';
 import { captureRollbackAnchor } from '../rollback-anchor';
 import { serializeWriteRaces, staticLintPlan } from '../plan/static-lint';
-import { leafTierGateFindings } from '../plan/leaf-tier-gate';
+import { autoRewriteLeafTier } from '../plan/leaf-tier-gate';
 import { scheduledArtifactFindings } from '../plan/invocation-facts';
 // D-Q 图外只读观察者的两个确定性 producer (零模型调用): 制品边 lint + 环空转检测。
 import {
@@ -299,15 +299,31 @@ async function planAndExecute(
       correction = `\n\n上次回复不是有效 plan (${lastErr})。只回 JSON 对象, 别的不要。`;
       continue;
     }
+    // 本轮候选图。g1 闸可能**程序化改写**它 (下面), 之后的 D-21 预览与最终 plan 都以它为准 ——
+    // 拿改写前的图去预览复用, 预览的就不是真要执行的那张图。
+    let candidate = parsed.plan;
     if (config.leafTierGate) {
-      const findings = leafTierGateFindings(parsed.plan, {
+      // #144 提议 3 / #145 提议 3: 闸自己动手。判据命中且改写是确定性的 (静态节点 + 塞得下) →
+      // 引擎直接把 `agent` 换成 `command`+`leaf` 对, **零规划发**; 改不动的残余才拒回问模型。
+      // 此前这里一律拒回, 而 conductor prompt 里早就写着同一条规则 —— 规则在、模型不听、闸抓住、
+      // 然后再花一发最贵的座位让它照着改。
+      const rw = autoRewriteLeafTier(parsed.plan, {
         ...(config.leafTierThresholdBytes !== undefined ? { thresholdBytes: config.leafTierThresholdBytes } : {}),
       });
+      candidate = rw.plan;
+      // 静默改图与静默违规一样坏 —— 每一次改写都留证 (同写竞争硬闸那条)。
+      for (const r of rw.rewritten) {
+        logger.warn(
+          { node: r.node, readNode: r.readNode, command: r.command, bytes: r.totalBytes },
+          '[omd/executor-dag] leaf 档位闸**自动改写**: agent 读确定路径 → command+leaf 对 (零规划发, g1 图#9)',
+        );
+      }
+      const findings = rw.residual;
       if (findings.length > 0 && gateRejects < LEAF_TIER_MAX_REJECTS) {
         gateRejects++;
         logger.info(
-          { nodes: findings.flatMap((f) => f.nodes), rejects: gateRejects },
-          '[omd/executor-dag] leaf 档位闸拒回 plan → 带改写建议重问 (g1 图#9)',
+          { nodes: findings.flatMap((f) => f.nodes), rejects: gateRejects, autoRewritten: rw.rewritten.length },
+          '[omd/executor-dag] leaf 档位闸拒回 plan → 带改写建议重问 (g1 图#9; 改不动的那部分)',
         );
         correction = `\n\n上一版 plan 被 leaf 档位闸拒回 (可修, 不是格式问题):\n${findings.map((f) => `- ${f.message}`).join('\n')}\n按建议改写后只回完整 plan JSON 对象, 别的不要。`;
         continue;
@@ -328,7 +344,7 @@ async function planAndExecute(
         ([id, r]) => r.status === 'done' && !prior.poisoned?.has(priorFps.get(id) ?? ''),
       ).length;
       if (eligibleDone >= REUSE_GATE_MIN_DONE) {
-        const preview = computeReuse(applyPlanFilters(parsed.plan, config), prior, prior.poisoned);
+        const preview = computeReuse(applyPlanFilters(candidate, config), prior, prior.poisoned);
         if (preview.size === 0 && reuseRejects < 1) {
           reuseRejects++;
           const keepIds = Object.keys(prior.plan.nodes).slice(0, 40).join(', ');
@@ -351,7 +367,7 @@ async function planAndExecute(
         }
       }
     }
-    plan = parsed.plan;
+    plan = candidate;
     break;
   }
   if (!plan) throw new Error(`executor-dag: conductor (${conductorModel}) 未产出有效 plan: ${lastErr}`);
@@ -456,21 +472,34 @@ async function tryPatchReplan(
     // g1 闸对补丁轮同样生效 (2026-08-04 当天实测堵洞): 首版设计只闸首轮, 结果 f2 复测 pair1 的
     // escalation 补丁把被拒的 agent 读盘模板**原样带了回来** (run 6d3f9e9b, 每篇又烧 19-141s)。
     // 违规补丁按无效补丁处理 → 重试带建议; 用尽 → exec:null 回落整图重规划 (那条路有闸)。
+    let patched = applied.applied.plan;
     if (config.leafTierGate) {
-      const gateFindings = leafTierGateFindings(applied.applied.plan, {
+      // 同首轮: 能确定性改的直接改 (零规划发), 改不动的才按无效补丁重试。
+      // 这条路上"再问一次"尤其贵 —— 补丁轮坐的是 escalation 座, 而 run A 就是在这里连拒 3 次
+      // 之后放弃补丁模式、退回整图重画、再被 D-21 拒一次。
+      const rw = autoRewriteLeafTier(patched, {
         ...(config.leafTierThresholdBytes !== undefined ? { thresholdBytes: config.leafTierThresholdBytes } : {}),
       });
+      patched = rw.plan;
+      for (const r of rw.rewritten) {
+        logger.warn(
+          { node: r.node, readNode: r.readNode, command: r.command, bytes: r.totalBytes },
+          '[omd/executor-dag] escalation 补丁被 leaf 档位闸**自动改写** → 无需重试 (g1 图#9)',
+        );
+      }
+      const gateFindings = rw.residual;
       if (gateFindings.length > 0) {
         patchGateRejects++;
         lastErr = `leaf 档位闸拒 (大内容进 prompt 不进工具环): ${gateFindings.map((f) => f.message).join(' | ')}`;
         logger.info(
-          { nodes: gateFindings.flatMap((f) => f.nodes) },
-          '[omd/executor-dag] escalation 补丁被 leaf 档位闸拒 → 带建议重试 (g1 图#9)',
+          { nodes: gateFindings.flatMap((f) => f.nodes), autoRewritten: rw.rewritten.length },
+          '[omd/executor-dag] escalation 补丁被 leaf 档位闸拒 → 带建议重试 (g1 图#9; 改不动的那部分)',
         );
         continue;
       }
     }
-    const { plan, changed, removed, added } = applied.applied;
+    const { changed, removed, added } = applied.applied;
+    const plan = patched;
     logger.info(
       { changed, removed, added, total: Object.keys(plan.nodes).length },
       '[omd/executor-dag] escalation 补丁采纳 → 程序化 merge (S3.6; 未补丁节点按构造复用)',
