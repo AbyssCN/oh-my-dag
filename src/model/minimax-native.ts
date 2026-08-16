@@ -42,10 +42,49 @@
  */
 import type { ModelMessage, ModelRequest, ModelUsage } from './types';
 // ModelError 住在 index —— 与 pi-transport 同一条既有循环 import(那条 2026-08 起一直在跑)。
-import { ModelError } from './index';
+import { ModelError, type ModelFault } from './index';
 
 /** 认这些 provider 名 —— 两个都是同一家的端点(国内/国际站)。 */
 export const MINIMAX_NATIVE_PROVIDERS = new Set(['minimax-cn', 'minimax']);
+
+/**
+ * **业务码 → 两轴归属**(2026-08-16,S-40 的后半)。
+ *
+ * 码表来源:官方错误码页(platform.minimax.io/docs/api-reference/errorcode ·
+ * platform.minimaxi.com/docs/api-reference/errorcode,两个镜像一致)。
+ *
+ * 两轴**正交**,一个字段服务不了:
+ *   `fault`     换个 provider 有没有用 → 冷却轴(provider-health)
+ *   `transient` 本跑再转一轮有没有用   → 环轴(engine 的 unreachable / 闸级熔断)
+ * 坏 key 就是那个把它们分开的例子:该冷却(换座位能跑),但本跑再转必然同样错。
+ *
+ * ⚠ 未登记的码 → `provider` + 瞬时。官方对 1000/未知的处置就是「请稍后再试」,
+ *   而重试上限由 `callModel` 的 maxRetries 与闸级熔断两道兜着,不会无限转。
+ */
+function classifyBaseResp(code: number): { fault: ModelFault; transient: boolean } {
+  switch (code) {
+    // 凭证坏:换座位能跑 → 该冷却;同一座位再转必然同样错 → 不瞬时。
+    case 1004: // 未授权 / Token 不匹配
+    case 2049: // 无效 API Key
+      return { fault: 'provider', transient: false };
+    // 配额耗尽:冷却窗按周期档算(2056 官方原话是「等下一个 5 小时窗口」)。
+    case 1008: // 余额不足
+    case 2056: // 超出 Token Plan 资源限制
+      return { fault: 'quota', transient: false };
+    // 请求本身错:换 provider 也不解决 → **不冷却**;改参数才行 → 不瞬时。
+    case 2013: // 参数错误
+    case 1039: // token 限制(该调 max_tokens)
+    case 1042: // 不可见/非法字符超限
+      return { fault: 'request', transient: false };
+    // 内容涉敏:不冷却(provider 没病),但下一轮内容不同,可能就过了 → 瞬时。
+    case 1026:
+    case 1027:
+      return { fault: 'request', transient: true };
+    // provider 侧瞬时(官方处置一律「请稍后再试」)。
+    default:
+      return { fault: 'provider', transient: true };
+  }
+}
 
 /** 原生端点只对 M3 家族开 `thinking` 旋钮(M2.x 关不掉,发了也没有意义)。 */
 const M3_ID = /^MiniMax-M3/i;
@@ -169,8 +208,13 @@ export async function minimaxCompleteRaw(
   // 一次配额耗尽会伪装成"模型回了个空的" —— 两种失效在下游再也分不开。
   const code = json.base_resp?.status_code;
   if (code !== undefined && code !== 0) {
+    const { fault, transient } = classifyBaseResp(code);
+    // ⚠ 业务码进 `providerCode`, **不进 `status`** (那格只放真 HTTP 码) —— S-40。
+    // 归属靠上面那张表**显式**给出, 不靠"业务码碰巧 ≥ 1000 于是落进 s >= 500"的数值巧合。
     throw new ModelError('http', `minimax: base_resp ${code} ${json.base_resp?.status_msg ?? ''}`.trim(), {
-      status: code,
+      providerCode: String(code),
+      fault,
+      transient,
     });
   }
   const choice = json.choices?.[0];

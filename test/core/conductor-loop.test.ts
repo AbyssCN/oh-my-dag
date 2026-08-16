@@ -631,6 +631,48 @@ describe('judge 调不通 → infra-error 提前退环', () => {
     expect(res.results.C!.infraStopped).toBeUndefined();
   });
 
+  /**
+   * **失效矩阵** (2026-08-16) —— 六个 kind + 两个显式表态, 一格一行, 谁都不许静默改归属。
+   *
+   * 为什么要一张表而不是几条散测: S-40 的病根就是「注释把两类分开了, 判据把两类合并了」,
+   * 而当时**这一格是有测试的**(只是夹具注入裸 `Error`, 与生产真抛的 `ModelError` 对不上)。
+   * 一张穷尽的表让"某一格悄悄换了边"当场可见 —— 散测只保证被点到的那几格。
+   *
+   * 每行的错误文本都带轮次(`#n`)以避开闸级熔断, 这一格由它自己的两条测试守。
+   */
+  const FAULT_MATRIX: ReadonlyArray<{ 名: string; mk: (n: number) => ModelError; 展开: number }> = [
+    // ── 确定性: 第 1 轮就退, 不烧剩余轮数 ────────────────────────────────────────
+    { 名: 'config (坐标错/缺凭证)', mk: (n) => new ModelError('config', `no creds #${n}`), 展开: 1 },
+    { 名: 'transport (未分类兜底桶, 含 codex 那个确定性 400)', mk: (n) => new ModelError('transport', `pi: Codex error #${n}`), 展开: 1 },
+    { 名: 'http 400 (请求错, 非 provider-fault)', mk: (n) => new ModelError('http', `bad request #${n}`, { status: 400 }), 展开: 1 },
+    { 名: "显式 transient:false 压过 kind (坏 key)", mk: (n) => new ModelError('http', `base_resp 1004 #${n}`, { fault: 'provider', transient: false }), 展开: 1 },
+    { 名: "fault:'request' 且不瞬时 (参数错)", mk: (n) => new ModelError('http', `invalid params #${n}`, { fault: 'request', transient: false }), 展开: 1 },
+    // ── 瞬时: 跑满, 下一轮可能就好 ───────────────────────────────────────────────
+    { 名: 'parse (invalid JSON)', mk: (n) => new ModelError('parse', `invalid JSON #${n}`), 展开: 3 },
+    { 名: 'validation (schema 不合)', mk: (n) => new ModelError('validation', `schema failed #${n}`), 展开: 3 },
+    { 名: 'truncation (推理吃光预算)', mk: (n) => new ModelError('truncation', `truncated #${n}`), 展开: 3 },
+    { 名: 'http 429 (限流)', mk: (n) => new ModelError('http', `rate limited #${n}`, { status: 429 }), 展开: 3 },
+    { 名: 'http 503 (provider 5xx)', mk: (n) => new ModelError('http', `unavailable #${n}`, { status: 503 }), 展开: 3 },
+    { 名: '显式 transient:true 压过 kind (config 也能被判瞬时)', mk: (n) => new ModelError('config', `weird #${n}`, { transient: true }), 展开: 3 },
+    { 名: "fault:'request' 但瞬时 (涉敏, 下一轮内容不同)", mk: (n) => new ModelError('http', `sensitive #${n}`, { fault: 'request', transient: true }), 展开: 3 },
+  ];
+
+  for (const row of FAULT_MATRIX) {
+    test(`矩阵: ${row.名} → 展开 ${row.展开} 次`, async () => {
+      const f = fake([P1], []);
+      const res = await runExecutorDagWithPlan(node({ max_rounds: 3 }), cfg(f.generate, false, true, streakJudge(row.mk)));
+      expect(f.expands()).toBe(row.展开);
+      // 提前退的那些必须报 infra-error (引擎/配置该修), 不是 blocked (等人给输入) —— N5 词表。
+      if (row.展开 < 3) {
+        expect(res.results.C!.infraStopped).toBeTruthy();
+        const j = JSON.parse(readFileSync(join(runDir(), '_loop-C.json'), 'utf-8')) as NodeLoopJournal;
+        expect(j.stop?.kind).toBe('infra-error');
+      } else {
+        expect(res.results.C!.infraStopped).toBeUndefined();
+      }
+    });
+  }
+
   test('对照: http 400 请求错 → 仍提前退环 (别修过头)', async () => {
     // 4xx 非 provider-fault = 确定性请求错, 再转多少轮都同样抛 —— 这一格必须保持原行为。
     const f = fake([P1], []);

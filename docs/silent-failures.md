@@ -1263,11 +1263,27 @@ goal 报 infra-error 并印「**别加轮数**」。
 > judge 连续 K 轮以**逐字相同**的方式失败 = 这一格零位移 = 确定性 → 退环。
 > 它把「确定性」从**按错误码猜**改成**转一轮量**,于是分类漏了哪一格都还有一道网。
 
-⚠ 顺带记一格**还没修**的:`ModelError.status` 一格装两种含义 —— 别处是 HTTP 状态码,
-而 `minimax-native.ts` 往里塞的是 **MiniMax 业务码**(1000/1004/2049…)。业务码全 ≥ 1000,
-于是一律落进 `isProviderFault` 的 `s >= 500`:瞬时的 1000 判对了,确定性的 1004(鉴权失败)/
-2049(无效 key)也被判成瞬时。今天由上面第 ③ 条兜住(第 2 轮退),但**判据本身仍是错的**。
-同族:`NULL ≠ 0 ≠ 不适用`。
+**后半:`status` 一格两义,已修**(2026-08-16 同日)。别处放真 HTTP 码,而 `minimax-native`
+往里塞 **MiniMax 业务码**(1000/1004/2049…)。业务码全 ≥ 1000,于是一律落进 `isProviderFault`
+的 `s >= 500` —— 今天的行为**全靠这个数值巧合**,没人选过它,而它把 1004(鉴权失败)/
+2049(无效 key)判成了"瞬时"。同族:`NULL ≠ 0 ≠ 不适用`。
+
+修法不是给 `status` 挑一个含义,而是**先承认这里有两个正交的问题**,一个字段服务不了:
+
+| 轴 | 问的是 | 字段 | 坏 key 的答案 |
+|---|---|---|---|
+| 冷却轴(provider-health) | 换个 provider 有没有用 | `fault: 'provider'\|'quota'\|'request'` | **要冷却**(换座位能跑) |
+| 环轴(engine 的 unreachable) | 本跑再转一轮有没有用 | `transient: boolean` | **别再转**(同一座位必然同样错) |
+
+> 坏 key 就是那个逼你把两轴分开的例子 —— **任何单一字段在这一格上都必然给错一半答案。**
+> 业务码原文进 `providerCode` 单列;`status` 从此只放真 HTTP 码。两个表态都**可省**,
+> 省略即回落原启发式,于是所有老调用点行为一个字不变。
+> **反向自检**(三条都真跑过,不是设想的):
+> 把 minimax 的 1004 归回 `transient: true` → `minimax-native.test.ts` 那条 ★ **1 红**;
+> 删掉 `isProviderFault` 的 `fault` 短路 → **4 红**;
+> 删掉 `isTransientModelFault` 的 `transient` 短路 → **5 红**(两条谓词测 + 失效矩阵 3 行)。
+> ⚠ 翻 minimax 码表**红不了失效矩阵** —— 矩阵注入的是手搓 `ModelError`,考的是引擎的归属判据,
+> 不是某个 provider 的码表。两者各守各的一半,别指望其中一条替另一条把关。
 
 ---
 
@@ -1311,6 +1327,7 @@ goal 报 infra-error 并印「**别加轮数**」。
 | 空转签名不被 `cd` 前缀吃掉 | `src/harness/hooks/drift-detector.ts` · `drift-detector.test.ts:103` | 取 50 字符窗口前先剥 `cd <路径> &&` 链,尺子不因 jail 路径变钝(**带反向自检**:去掉 `stripCdPrefix` → 三条不同命令签名全等,红) | S-34 |
 | 终审产物三态(unregistered ≠ missing) | `src/harness/verifier.ts:125` · `verifier-evidence.test.ts:102` | `summarizeResults` 对每个声明 `output_path` 的节点跑 `statSync`,按 registered/unregistered/missing 三态写入 prompt,`unregistered` 单独告警(`verifier.ts:155`)(**带反向自检**:三态判定改回二态、吞掉 `unregistered` → 3 条红) | S-33 |
 | fanout 每个 stage 的**真实落点**(池不许静默盖过座位) | `scripts/omd-fanout-seats.ts` | 逐 stage 印取值链 + 落点;`config.pools.lens/judge` 与 lens/judge 座不一致时显式告警(**带反向自检**:`OMD_CONFIG_PATH` 指向池=旧坐标的临时 config → 两条不一致警告当场出现)。⚠ 只覆盖静态可解那半,运行期覆盖看 `seat-usage.jsonl` 的 traceName×model | S-39 |
+| 故障归属两轴不许合一 | `src/model/model-error-fault.test.ts` · `src/model/minimax-native.test.ts` · `test/core/conductor-loop.test.ts` 失效矩阵 | `fault`(冷却轴)与 `transient`(环轴)正交, 抛错方显式表态、省略才回落启发式;业务码进 `providerCode`, `status` 只放真 HTTP 码;矩阵**穷尽** 6 个 kind + 2 个显式覆盖(**带反向自检**:1004 归回 transient:true → 码表那条红 1;删 `fault` 短路 → 4 红;删 `transient` 短路 → 5 红) | S-40 |
 | 闸失效的两类不许合并 | `src/model/index.ts` (`isTransientModelFault`) · `src/harness/dag/engine.ts` · `test/core/conductor-loop.test.ts` | 确定性 (config/transport/非 provider-fault 的 http) 才提前退环;瞬时 (parse/validation/truncation/402/403/429/5xx) 继续转;**夹具用真 `ModelError` 而非裸 `Error`**;外加闸级熔断兜底 —— 连续 K 轮逐字相同即判确定性(**带反向自检**:把 parse 归回确定性 → 2 条 ★ 红;闸级熔断实装前逐字相同那格必红) | S-40 S-38 |
 | 图的引用完整性 | `src/harness/plan/graph-cycle.ts` · `conductor-plan.ts` superRefine · `plan/static-lint.ts` | 环 = fail-closed 判死并点名环路;悬空 dep / 不可能达标的配额 = report-only,截断自报与手误分两个 kind(**带反向自检**:注掉 superRefine 环闸 → 4 红;删 ④ 段 → 5 红;删 truncatedIds 分支 → 1 红;`<=` 改 `<` → 1 红;lint 视图退回老口径 → 3 红) | S-38 |
 

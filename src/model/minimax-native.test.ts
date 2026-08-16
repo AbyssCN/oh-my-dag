@@ -104,6 +104,75 @@ describe('响应', () => {
     await expect(minimaxCompleteRaw('MiniMax-M3', msgs, { messages: msgs }, { fetch: fn, apiKey: 'k' })).rejects.toThrow('1008');
   });
 
+  /**
+   * **业务码归属表** (2026-08-16, S-40 的后半)。
+   *
+   * 此前业务码被塞进 `ModelError.status`, 而那格别处放的是真 HTTP 码。今天的行为全靠
+   * 「业务码都 ≥ 1000, 于是落进 `isProviderFault` 的 `s >= 500`」这个**数值巧合** —— 没人选过它,
+   * 而它把 1004 (鉴权失败) / 2049 (无效 key) 判成了"瞬时", 于是本跑会一直重来。
+   *
+   * 归属改成两个**显式**表态 (官方错误码表: platform.minimax.io/docs/api-reference/errorcode):
+   *   `fault`     换个 provider 有没有用 → 冷却轴
+   *   `transient` 本跑再转一轮有没有用   → 环轴
+   * 两轴正交: 坏 key 该冷却 (换座位能跑) 但本跑再转必然同样错。
+   */
+  const throwsWith = async (code: number, msg = 'x') => {
+    const { fn } = fakeFetch({ base_resp: { status_code: code, status_msg: msg }, choices: [] });
+    try {
+      await minimaxCompleteRaw('MiniMax-M3', msgs, { messages: msgs }, { fetch: fn, apiKey: 'k' });
+    } catch (e) {
+      return e as import('./index').ModelError;
+    }
+    throw new Error(`code ${code} 该抛却没抛`);
+  };
+
+  test('★ 1004 鉴权 / 2049 无效 key → provider 故障 (该冷却+兜底) 但**不瞬时** (本跑别再转)', async () => {
+    for (const code of [1004, 2049]) {
+      const e = await throwsWith(code, 'auth');
+      expect(e.fault).toBe('provider'); // 换个座位能跑 → 冷却有意义
+      expect(e.transient).toBe(false); // 同一座位再转一轮必然同样错
+      expect(e.providerCode).toBe(String(code));
+      expect(e.status).toBeUndefined(); // 业务码不再挤 status
+    }
+  });
+
+  test('★ 1008 余额 / 2056 Token Plan 用尽 → quota 档 (冷却窗按周期算)', async () => {
+    for (const code of [1008, 2056]) {
+      const e = await throwsWith(code, 'balance');
+      expect(e.fault).toBe('quota');
+      expect(e.transient).toBe(false);
+    }
+  });
+
+  test('★ 1000 未知 / 1001 超时 / 1002 限流 / 1013 内部错 → provider 且瞬时 (官方: 稍后再试)', async () => {
+    for (const code of [1000, 1001, 1002, 1013]) {
+      const e = await throwsWith(code, 'retry later');
+      expect(e.fault).toBe('provider');
+      expect(e.transient).toBe(true);
+    }
+  });
+
+  test('★ 2013 参数错 / 1039 token limit → request 档 (换 provider 也不解决, **不冷却**)', async () => {
+    for (const code of [2013, 1039]) {
+      const e = await throwsWith(code, 'invalid params');
+      expect(e.fault).toBe('request');
+      expect(e.transient).toBe(false);
+    }
+  });
+
+  test('1026/1027 涉敏 → request (不冷却) 但**瞬时** (下一轮内容不同, 可能就过了)', async () => {
+    const e = await throwsWith(1027, 'sensitive');
+    expect(e.fault).toBe('request');
+    expect(e.transient).toBe(true);
+  });
+
+  test('未登记的码 → provider + 瞬时 (官方对未知码的处置就是"请稍后再试"; 由闸级熔断兜上限)', async () => {
+    const e = await throwsWith(9999, 'brand new code');
+    expect(e.fault).toBe('provider');
+    expect(e.transient).toBe(true);
+    expect(e.providerCode).toBe('9999');
+  });
+
   test('HTTP 4xx/5xx → ModelError(http) 带 status (上游据此熔断/退避)', async () => {
     const { fn } = fakeFetch({}, { status: 429, text: 'rate limited' });
     await expect(minimaxCompleteRaw('MiniMax-M3', msgs, { messages: msgs }, { fetch: fn, apiKey: 'k' })).rejects.toThrow('429');

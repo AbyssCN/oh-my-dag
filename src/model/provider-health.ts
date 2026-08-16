@@ -41,9 +41,11 @@ export const PERIOD_COOLDOWN_MS = 6 * 3_600_000;
  */
 export function cooldownMsFor(
   httpStatus: number | undefined,
-  opts: { channel?: string; registry?: readonly ChannelQuotaEntry[]; now?: number } = {},
+  opts: { channel?: string; registry?: readonly ChannelQuotaEntry[]; now?: number; period?: boolean } = {},
 ): number {
-  if (httpStatus !== 402 && httpStatus !== 403) return DEFAULT_COOLDOWN_MS;
+  // `period` = 抛错方直说"这是配额档" (`ModelError.fault === 'quota'`)。此前只有 402/403 这一条
+  // 状态码路径, 于是把业务码伪装成 402 才走得到周期档 —— 那正是 S-40 那格 (一格两义) 的病因。
+  if (!opts.period && httpStatus !== 402 && httpStatus !== 403) return DEFAULT_COOLDOWN_MS;
   const { channel, registry = CHANNEL_QUOTA_REGISTRY, now = Date.now() } = opts;
   // INV-3 运行时闸: 配额路径用的登记表必须合法 (sourceUrl https + 原文引句非空),
   // 违规 → 抛错变红, 不静默兜底。空表合法 (fail-safe)。

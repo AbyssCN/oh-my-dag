@@ -39,22 +39,50 @@ export {
 
 export type ModelErrorKind = 'config' | 'transport' | 'http' | 'parse' | 'validation' | 'truncation';
 
+/**
+ * 故障归属 —— **冷却轴**(provider-health)。回答的是「换个 provider 有没有用」:
+ *   `provider` = 这个 provider 现在不可用 (超时/限流/内部错/坏 key) → 冷却 + 顺延兜底
+ *   `quota`    = 同上但属配额耗尽 → 冷却窗按周期档算 (与 402/403 同口径)
+ *   `request`  = 我们这一发请求本身错 (参数不合法) → **不冷却**, 换 provider 也不解决
+ */
+export type ModelFault = 'provider' | 'quota' | 'request';
+
 /** Typed error so a node's on_failure / a caller can branch on the failure mode. */
 export class ModelError extends Error {
   readonly kind: ModelErrorKind;
   /** 1-based attempt count when thrown; set at throw time so callers can budget on it (INV-3). */
   attempts: number;
+  /** **只放真 HTTP 状态码**。provider 自己的业务码放 `providerCode` —— 一格一义 (S-40)。 */
   readonly status?: number;
+  /** provider 自己的错误码原文 (minimax `base_resp.status_code` 等)。只用于留痕与判词, 不参与判据。 */
+  readonly providerCode?: string;
+  /** 冷却轴的显式表态; 省略 → 由 `status` 启发式判 (老调用点行为不变)。 */
+  readonly fault?: ModelFault;
+  /**
+   * 环轴的显式表态: **再转一轮有没有用**; 省略 → 由 `kind` 判。
+   * ⚠ 与 `fault` **正交**, 一个字段服务不了两轴: 坏 key 该冷却 (换座位能跑) 但本跑再转必然同样错。
+   */
+  readonly transient?: boolean;
   constructor(
     kind: ModelErrorKind,
     message: string,
-    opts?: { attempts?: number; status?: number; cause?: unknown },
+    opts?: {
+      attempts?: number;
+      status?: number;
+      cause?: unknown;
+      providerCode?: string;
+      fault?: ModelFault;
+      transient?: boolean;
+    },
   ) {
     super(message, opts?.cause !== undefined ? { cause: opts.cause } : undefined);
     this.name = 'ModelError';
     this.kind = kind;
     this.attempts = opts?.attempts ?? 0;
     this.status = opts?.status;
+    this.providerCode = opts?.providerCode;
+    this.fault = opts?.fault;
+    this.transient = opts?.transient;
   }
 }
 
@@ -289,7 +317,14 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  * ⚠ Codex 那条**这里仍然接不住**:它经 pi 传上来时不带 HTTP status。别去匹配 "usage limit"
  *   字符串(那是给每个 provider 的措辞打地鼠)—— 探针见交接 34 §四之二。
  */
-function isProviderFault(err: ModelError): boolean {
+/**
+ * 冷却轴: 这次失败该不该冷却该 provider 并顺延兜底 (issue #6)。
+ *
+ * 抛错方给了 `fault` 就听它的 —— 它比"从状态码猜"知道得多。省略才走原来的启发式,
+ * 于是所有老调用点行为一个字不变 (S-40 的教训: 判据靠数值巧合成立时, 没人选过那个行为)。
+ */
+export function isProviderFault(err: ModelError): boolean {
+  if (err.fault) return err.fault !== 'request';
   if (err.kind === 'transport') return !String(err.message).includes('abort');
   if (err.kind === 'http') {
     const s = err.status ?? 0;
@@ -312,11 +347,14 @@ function isProviderFault(err: ModelError): boolean {
  * ⚠ `transport` **不算**瞬时: 它是本文件的**未分类兜底桶** (任何非 ModelError 的 provider
  *   抛错都落这儿, 含 codex 那个确定性 `Unsupported parameter`)。当瞬时就退回 2026-07-31
  *   那次 65 分钟空转。要拆它得先给那些错分对 kind, 那是另一件事。
- * ⚠ `http` 这一支读的是 `err.status`, 而 `minimax-native` 往里塞的是**业务码** (1000/1004/…)。
- *   业务码全 ≥ 1000 → 一律落进 `s >= 500`: 瞬时的 1000 判对了, 但确定性的 1004/2049 (鉴权/无效 key)
- *   也会被判成瞬时而烧满轮数。已知缺口, 等它真发作再动 (改动面到整个 model 层)。
+ * ⚠ 2026-08-16 补: `http` 这一支读 `err.status`, 而 status **只放真 HTTP 码**了 ——
+ *   provider 自己的业务码走 `providerCode`, 归属走 `fault`/`transient` 两个显式表态 (S-40)。
+ *   此前 minimax 把业务码塞进 status, 靠"业务码都 ≥ 1000 于是落进 s >= 500"这个**数值巧合**
+ *   得到今天的行为; 1004/2049 (鉴权/无效 key) 就是被它判成瞬时的。
  */
 export function isTransientModelFault(err: ModelError): boolean {
+  // 抛错方显式表过态就听它的 (与 `fault` 正交: 坏 key 该冷却, 但本跑再转必然同样错)。
+  if (err.transient !== undefined) return err.transient;
   if (err.kind === 'parse' || err.kind === 'validation' || err.kind === 'truncation') return true;
   if (err.kind === 'http') return isProviderFault(err);
   return false;
@@ -359,7 +397,11 @@ export async function callModel(req: ModelRequest): Promise<ModelResponse> {
       // (provider-health)。本次 in-flight 重试仍打原 target — 冷却只改**未来**的角色路由。
       // 402/403 走周期档长窗 (配额/计费级下线, 30s 退避无意义 — NOTES 2026-08-09 样本 A)。
       if (isProviderFault(lastErr)) {
-        reportProviderFailure(target.resolved, cooldownMsFor(lastErr.kind === 'http' ? lastErr.status : undefined));
+        // 冷却窗: `fault:'quota'` 显式走周期档 (与 402/403 同口径) —— 不靠把业务码伪装成 402。
+        reportProviderFailure(
+          target.resolved,
+          cooldownMsFor(lastErr.kind === 'http' ? lastErr.status : undefined, { period: lastErr.fault === 'quota' }),
+        );
       }
       if (attempt < maxRetries) {
         await sleep(baseDelay * 2 ** attempt, req.signal);
