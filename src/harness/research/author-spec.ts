@@ -111,6 +111,8 @@ export async function authorFanoutSpec(input: {
     response = await call({
       model,
       messages,
+      // #144 洞 1: 打标签把这一发从 `(unattributed)` 里分出来; 归不了座 (模型可被 input 覆盖)。
+      meta: { role: 'research:author-spec' },
       responseSchema: ConductorOutputSchema,
       maxRetries: 2, // ≤2 retries → ≤3 attempts total
     });

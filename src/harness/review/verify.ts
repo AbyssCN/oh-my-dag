@@ -59,6 +59,9 @@ export async function extractFindings(
       if (!d.text?.trim()) return [];
       const res = await sendFn({
         model,
+        // #144 洞 1: 证伪两发吃的是 review 座 (run.ts:37 `roleModelWithFallback(..., 'review')`),
+        // 此前无 role → 与维度召回一起沉在 `(unattributed)` 里。
+        meta: { role: 'review:verify-extract' },
         messages: [{
           role: 'user',
           content: `下面是"${d.dimension}"维度代码审查的原始输出。把其中**每一条** P0/P1 主张
@@ -148,6 +151,7 @@ async function verifyOne(
     const res = await sendFn({
       model,
       thinkingLevel: verdictEffort,
+      meta: { role: 'review:verify-verdict' }, // 同上, review 座
       messages: [{
         role: 'user',
         content: `你是审查 finding 的证伪裁决员。finding 来自只看 diff 文本的审查器,

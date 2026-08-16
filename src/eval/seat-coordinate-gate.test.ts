@@ -78,6 +78,16 @@ const NOISE_PROVIDERS: ReadonlySet<string> = new Set([
   // 2026-08-14) —— 与 `conductor:plan` 同族: 它们是观测面的 meta.role, 不是模型坐标。
   // 真坐标仍由这三处各自的 resolveSeatModel('expand'/'distill') 解析, 一个字都没绕过座位链。
   'web',
+  // 同上一族, 2026-08-16 (#144 洞 1) 补的四个**角色标签**命名空间。此前这批调用点根本不带
+  // meta.role, 于是它们的量全沉在台账的 `(unattributed)` 桶里 (402 发无归属) —— 补标签才让
+  // 「verifier/gate/review/escalation 各烧了多少」问得出来。四个都不是模型坐标:
+  // escalation → engine.ts 升级重规划轮 (`escalation:plan` / `escalation:repair`),
+  //   真坐标是 `config.conductorEscalationModel`, 由座位链解析;
+  // gate → plan/llm-judge.ts 的 `gate:convergence`, 真坐标 opts.judgeModel (gate 座);
+  // review → review/run.ts 与 review/verify.ts (`review:spec` / `review:<维度>` /
+  //   `review:verify-*`), 真坐标由 resolveReviewModels 的 review 座给;
+  // best-of-n → plan/best-of-n.ts 两发, 真坐标 opts.model ?? resolveSeatModel('reason')。
+  'escalation', 'gate', 'review', 'best-of-n',
 ]);
 
 /** 扫描排除面 (与 D-4 冻结一致) —— 相对 repo 根的路径判定。 */

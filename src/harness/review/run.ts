@@ -249,6 +249,8 @@ export async function runReview(opts: RunReviewOpts): Promise<RunReviewResult> {
           });
           const res = await sendFn({
             model: specModel,
+            // #144 洞 1: review-spec 座此前在台账上完全不存在 (无 role → `(unattributed)`)。
+            meta: { role: 'review:spec' },
             messages: [{ role: 'user', content: `${diffBlock}\n\n${prompt}` }],
             thinkingLevel: findEffort,
           });
@@ -263,6 +265,8 @@ export async function runReview(opts: RunReviewOpts): Promise<RunReviewResult> {
         // resolveDimensionModels —— 同一模型跑五个维度 = 五条召回共享同一套盲点)。
         const res = await sendFn({
           model,
+          // 标签带维度: 五个维度共用 review 座, 但「哪个维度贵」只有 byTrace 分得开 (#144 洞 1)。
+          meta: { role: `review:${dimension}` },
           messages: [{ role: 'user', content: `${diffBlock}\n\n${prompt}` }],
           thinkingLevel: findEffort,
         });

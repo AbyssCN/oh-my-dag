@@ -45,6 +45,15 @@ export type GenerateFn = (req: {
    * 所以: **run 级调用(规划/修补/分类/halt-judge)一律不给**, 节点作用域的调用点才给。
    */
   traceNodeId?: string;
+  /**
+   * **这一发是第几次被闸拒回后的重问** (0 = 首问)。只进 per-seat 台账 (`seat-usage.jsonl`),
+   * 不进 prompt、不进 Langfuse 名字。
+   *
+   * 加它的原因是 #144 洞 3: 一张坏图能烧掉 6+ 发规划 (leaf 档位闸 2 次 + escalation 补丁 3 次
+   * + D-21 复用闸 1 次), 而这些发在账上与首问**长得一模一样** —— 「空转烧了多少」结构上答不出。
+   * 省略 = 不适用 (不是规划发)。⚠ 别给非规划发写 0: 那会让"首问"与"不适用"混成一格。
+   */
+  traceRejectRound?: number;
 }) => Promise<{ text: string; usage: ModelUsage }>;
 
 export interface ExecutorDagConfig {

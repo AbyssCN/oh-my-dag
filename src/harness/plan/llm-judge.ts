@@ -138,6 +138,9 @@ export function makeLlmConvergenceJudge<R>(opts: LlmJudgeOpts<R>): FixpointJudge
     }
     const r = await call({
       model: opts.judgeModel,
+      // #144 洞 1: gate 座的两条出口里, 只有 halt-judge 那条带标签; 这条此前无名 →
+      // 「gate 烧了多少」只量到一半。标签分得比座位细 (同座两条出口), 归座在 seat-usage 侧做。
+      meta: { role: 'gate:convergence' },
       messages: [{ role: 'user', content: judgePrompt(opts.task, summary, round, threshold, opts.evidenceLegend ?? true) }],
       // 采样意图取自 `gate` 座 (model/seats.ts): 闸的裁决要可复现。调用方给了就压过它。
       ...(opts.temperature !== undefined ? { temperature: opts.temperature } : seatSampling('gate')),

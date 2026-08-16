@@ -16,7 +16,7 @@ export const LEAF_OVERFLOW_MODEL = process.env.OMD_LEAF_OVERFLOW_MODEL || 'openc
  *   fleet 单 provider=opencode-go 时 spill 目标同源, 无害; 配跨 provider overflow 仍生效)。
  * sessionId 把一次 runExecutorDag 的全部 conductor+leaf 调用归到同一 Langfuse session (主路径 trace 可读)。
  */
-export function makeDefaultGenerate(sessionId: string, runLabel?: string): GenerateFn {
+export function makeDefaultGenerate(sessionId: string, runLabel?: string, phase?: string): GenerateFn {
   return async (req) => {
     const r = await send({
       messages: req.messages,
@@ -33,6 +33,11 @@ export function makeDefaultGenerate(sessionId: string, runLabel?: string): Gener
         sessionId,
         ...(runLabel ? { runLabel } : {}),
         ...(req.traceNodeId ? { nodeId: req.traceNodeId } : {}),
+        // per-seat 台账的两列 (#144)。phase = 图名 (goal-contract / goal-execute / …),
+        // 一整跑不变故绑在闭包上; rejectRound 逐发变, 由调用点给。
+        // 两者都**只进台账**, 不进 prompt 也不进 Langfuse 名 —— 与 traceName 的纪律一致。
+        ...(phase ? { phase } : {}),
+        ...(req.traceRejectRound !== undefined ? { rejectRound: req.traceRejectRound } : {}),
       },
     });
     return { text: r.text, usage: r.usage };

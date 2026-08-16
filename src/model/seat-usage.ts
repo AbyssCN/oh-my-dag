@@ -15,10 +15,19 @@
  * ## 覆盖面诚实(先写在这,免得有人拿它当全量)
  *
  * `send` **不是**模型调用的唯一物理出口:
- * - agent leaf 走 pi-agent-core 自己的循环(`agent-leaf.ts`),不经 `send` → 这本账里**没有**
- *   (与 2026-08-14 契约段读数里「agent leaf tokenUsage 未记」是同一个缺口);
+ * - agent leaf 走 pi-agent-core 自己的循环(`agent-leaf.ts`),不经 `send`;
  * - `dream/extract-*` 直调 `callModel`,同样不经 `send`。
- * 所以按座位求和出来的是**下界**。缺席 ≠ 0(本仓 §3 第 1 条),消费面别把它读成"这个座没花钱"。
+ *
+ * 前者 2026-08-16 补上了(issue #144),但**补的方式与经 send 的那些不同**,读账的人必须知道:
+ * agent leaf 由 `dag/engine.ts` 的 `settle()` 记**节点级**一条(`entry:'node'`),
+ * 数据源与 `result.usage.leavesIn/Out/CacheHit` 是**同一个** `LeafResult.usage` ——
+ * 于是两本账在 agent 这一列**按构造对得上**,不会再出现「A 有 110.9M、B 只有寥寥数发」
+ * 那种差三个数量级的对不上(#144 评论 §「补账前必须先决定哪一套是真理源」)。
+ * 经 send 的那些仍是**发级**(`entry:'call'`)。两种粒度靠 `entry` 列分辨 ——
+ * 别把两种行的条数相加当发数;`in`/`out` 相加是对的(物理上不重叠,agent 那条路不经网关)。
+ *
+ * `dream/extract-*` 仍缺席。所以按座位求和出来的仍是**下界**。缺席 ≠ 0(本仓 §3 第 1 条),
+ * 消费面别把它读成"这个座没花钱"。
  *
  * ## seat 这一列是**派生**的,traceName 才是原始观测
  *
@@ -33,6 +42,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { logger } from '../logger';
 import { omdRepoRoot } from '../harness/repo-root';
+import { resolveProject } from '../harness/project-scope';
 
 /** 账本文件名(相对 `.omd/`)。 */
 export const SEAT_USAGE_FILE = 'seat-usage.jsonl';
@@ -52,6 +62,37 @@ export interface SeatUsageEntry {
   cacheHit: number | null;
   /** 归组键(engine 里 = `config.sessionId ?? continuity.runId`)。孤立调用为 `null`。 */
   runId: string | null;
+  /**
+   * 这一行的**粒度**。`'call'` = 一次 `gateway.send`(默认,缺席按 `'call'` 读);
+   * `'node'` = 一整个 leaf 节点的模型消耗合计(agent leaf 不经网关,只能在节点出口记)。
+   * 两者的 `calls` 不可相加当发数;`in`/`out` 可以相加(物理上不重叠)。
+   *
+   * ⚠ 这一列存在的理由与本仓 §3 第 1 条同源:两种粒度混在一本账里而不留分辨列,
+   * 事后就再也分不开「84 次工具调用的 agent 节点」和「一发」。
+   */
+  entry?: 'call' | 'node';
+  /** 节点作用域调用才有(`GatewayMeta.nodeId` / settle 的节点 id);run 级调用 `null`。 */
+  nodeId?: string | null;
+  /**
+   * 这一发烧在哪一段。取**图名原文**(`goal-contract` / `goal-execute` / `goal-execute-flat` / …),
+   * 不在这里归成 contract/execute 两类 —— 同 `traceName`:原始观测落盘,归类留给消费面,
+   * 映射错了历史行还能重算。调用点没给 → 缺席。
+   */
+  phase?: string | null;
+  /**
+   * 规划座专用:这一发是**第几次被闸拒回后的重问**。`0` = 首问;`1`/`2` = 拒回重问。
+   * 缺席 = 不适用(不是规划发)。#144 洞 3 想问的「一张坏图烧了几发在拒回上」就读这一列:
+   * `sum(in) where rejectRound > 0` = 空转的规划量。
+   */
+  rejectRound?: number;
+  /**
+   * 这一跑在**哪个仓**上干活(git toplevel basename)。#144 洞 2 问的「单仓成本」由这一列答。
+   *
+   * 刻意**不**把账本按 cwd 拆到各仓 —— `repo-root.ts:38-48` 明写了为什么引擎自己的读数留痕库
+   * 必须锚在引擎仓:按 cwd 落盘会碎成一堆互相看不见的库,而那种缺数**长得像「引擎没记」**。
+   * 一列 `repo` 既留住了跨仓可比性,又答得出单仓账;拆库两样都丢一样。
+   */
+  repo?: string | null;
   /** 只在调用抛错时有:错误原文(fail-open 不吞证据,§3 第 2 条)。 */
   error?: string;
 }
@@ -63,13 +104,24 @@ export interface SeatUsageEntry {
  * ⚠ 反查不到就返 `null`。宁可缺一列,不许把两个座位的量并进一个编出来的桶。
  */
 const TRACE_SEAT_RULES: readonly [RegExp, string][] = [
-  [/^conductor:/, 'conductor'], // engine.ts:278/422/1161 → conductorModel
-  [/^judge:/, 'judge'], // engine.ts:1014
-  [/^leaf:/, 'leaf'], // engine.ts:2965 → config.leafModel
-  [/^primitive-leaf:/, 'leaf'], // engine.ts:2327 → 同 leaf 档
-  [/^map-lister:/, 'leaf'], // engine.ts:2204 → config.leafModel
-  [/^fanin-summary:/, 'leaf'], // engine.ts:3135 → faninCfg.model ?? config.leafModel(显式覆盖时会错归, model 列可查)
-  [/^halt-judge$/, 'gate'], // continuity/halt-judge.ts:233 → resolveSeatModel('gate')
+  [/^conductor:/, 'conductor'], // engine.ts:278/422/1182 → conductorModel
+  // escalation 座**此前在账上不存在**, 且不是缺数是**错归**(比缺数难发现得多): 升级重规划时
+  // engine.ts:3879 把 conductorModel 换成 conductorEscalationModel, 但 traceName 仍打
+  // `conductor:*` → escalation 的钱结构上算在 conductor 头上。2026-08-16 (#144 洞 1) 分标签。
+  [/^escalation:/, 'escalation'], // engine.ts:278/1182 在 escalated 轮改打这个前缀
+  [/^judge:/, 'judge'], // engine.ts:1018
+  [/^leaf:/, 'leaf'], // engine.ts:3018 → config.leafModel
+  [/^primitive-leaf:/, 'leaf'], // engine.ts:2380 → 同 leaf 档
+  [/^map-lister:/, 'leaf'], // engine.ts:2257 → config.leafModel
+  [/^fanin-summary:/, 'leaf'], // engine.ts:3186 → faninCfg.model ?? config.leafModel(显式覆盖时会错归, model 列可查)
+  [/^halt-judge$/, 'gate'], // continuity/halt-judge.ts:241 → resolveSeatModel('gate')
+  [/^gate:convergence$/, 'gate'], // plan/llm-judge.ts:139 → 采样/档位取 seatSpec('gate')
+  [/^verifier$/, 'verifier'], // verifier.ts:302 → opts.verifierModel(verifier 座)
+  [/^review:spec$/, 'review-spec'], // review/run.ts:250 → specModel ⚠ 必须排在 /^review:/ 前面
+  [/^review:/, 'review'], // review/run.ts:264 维度召回 + verify.ts:60/148 证伪两发, 都吃 review 座
+  // engine.ts settle() 的节点级行。**只有 agent 一种** —— 别的 kind 都经网关, 已有发级行,
+  // 再记一条会把同一份 in/out 计两遍 (判据写在 settle 里那段注)。
+  [/^agent-leaf$/, 'agent'],
   [/^omd-leaf$/, 'leaf'], // dag/defaults.ts:31 缺 traceName 时的兜底标签
   // research fanout 的分 stage 标签 (2026-08-14 加, 见 research/fanout.ts 的 CallFn.stage)。
   // **stage 才是原始观测**, 座位只是往上归一层 —— 想问「那 8M 花在哪」要看 byTrace 不是 bySeat。
@@ -94,7 +146,16 @@ export const KNOWN_UNATTRIBUTABLE: ReadonlySet<string> = new Set([
   'fanout-leaf',
   'seed-author', // web-fanout.ts:186, 种子 query 作者; 模型由调用方传, 座位不确定
   'classify:acceptance', // goal/classify-acceptance.ts:264, 模型由 run-goal 注入
+  // best-of-n 的两发 (plan/best-of-n.ts:139 生成 / :165 judge)。**核过, 归不了**:
+  // 模型是 `opts.model ?? resolveSeatModel('reason')`, 而唯一的生产调用方 (:281) 另给一份
+  // lensModel —— 同一个标签底下坐着哪个座取决于调用方, 编一个座位归进去就是错归。
+  // 想分开先在调用方把座位定死, 那是另一片的活。
+  'best-of-n:gen',
+  'best-of-n:judge',
+  'research:author-spec', // research/author-spec.ts:111, 模型 = conductorModel 但可被 input 覆盖
   'model-call', // gateway 的兜底标签(调用方没给 role)
+  // ⚠ 'model-call' 在本账本里**永远不会出现**: gateway.ts:95 那个兜底名只喂 Langfuse,
+  // seat-usage 走的是 `role ?? null`。留着是为了「核过」这层语义, 别当它是活标签。
 ]);
 
 /** traceName 反查座位;认不出返 `null`(含 `undefined` 入参)。 */
@@ -120,15 +181,34 @@ export function seatUsagePath(): string {
 }
 
 /**
+ * 当前工作仓名(`repo` 列)。`resolveProject` 要 spawn 一次 git,而本函数在**每一发**上被调用 ——
+ * 进程级记一次即可(一个进程的 cwd 不会中途换仓;换了也是隔离档,那时 runId 也不同)。
+ * 解不出来 → `null`(§3 第 1 条:不编一个 `'unknown'` 仓)。
+ */
+let _repoSlug: string | null | undefined;
+function currentRepo(): string | null {
+  if (_repoSlug === undefined) {
+    try {
+      _repoSlug = resolveProject().slug;
+    } catch {
+      _repoSlug = null; // 非 git 且无 OMD_PROJECT → fail-closed 抛, 这里当"不知道"处理
+    }
+  }
+  return _repoSlug;
+}
+
+/**
  * 记一发。**fail-open**:账本写不进去绝不能把模型调用带塌 —— 但失败要留一行证据
  * (§3 第 2 条:可以吞异常,不许吞证据)。`OMD_SEAT_USAGE=off` 显式关。
+ *
+ * `repo` 由本函数补(调用点全都不知道自己在哪个仓,而且知道了也会各算一份必漂)。
  */
 export function recordSeatUsage(entry: SeatUsageEntry): void {
   if (process.env.OMD_SEAT_USAGE === 'off') return;
   const path = seatUsagePath();
   try {
     mkdirSync(dirname(path), { recursive: true });
-    appendFileSync(path, `${JSON.stringify(entry)}\n`);
+    appendFileSync(path, `${JSON.stringify({ ...entry, repo: entry.repo ?? currentRepo() })}\n`);
   } catch (err) {
     logger.warn({ err: (err as Error).message, path }, '[omd/seat-usage] 台账写入失败 (调用本身不受影响)');
   }
@@ -183,6 +263,61 @@ function addTo(buckets: Record<string, SeatUsageBucket>, key: string, e: SeatUsa
   b.in += e.in ?? 0;
   b.out += e.out ?? 0;
   b.cacheHit += e.cacheHit ?? 0;
+}
+
+/**
+ * 「规划层」座位 —— 决定**做什么**的那些发。
+ * 分层是消费面的归类,不是账本的原始观测:改这两张表不用重跑任何 run,历史行照样重算。
+ */
+export const PLANNING_SEATS: ReadonlySet<string> = new Set([
+  'conductor',
+  'escalation',
+  'gate',
+  'verifier',
+  'judge',
+  'review',
+  'review-spec',
+]);
+
+/** 「执行层」座位 —— 真去干活的那些发。 */
+export const EXECUTION_SEATS: ReadonlySet<string> = new Set(['leaf', 'agent']);
+
+/**
+ * #144 验收判据的**直接答案**:任取一个 run,规划层 vs 执行层各烧了多少、其中多少是拒回重问。
+ *
+ * 三个桶互斥且穷尽(`other` 收两张表都不认的座位与 `(unattributed)`)—— 别把 `other` 读成 0,
+ * 它是「还没归层的量」,和"没花钱"是两回事。
+ */
+export interface RunCostBreakdown {
+  planning: SeatUsageBucket;
+  execution: SeatUsageBucket;
+  other: SeatUsageBucket;
+  /**
+   * 规划层里 `rejectRound > 0` 的那部分 = **闸拒回后重问烧掉的量**(#144 洞 3 的空转)。
+   * ⚠ 它是 `planning` 的**子集**,不是第四个桶,别把四个数加起来当总量。
+   */
+  planningRejects: SeatUsageBucket;
+  /** 按图名分(`goal-contract` / `goal-execute` / …)。没给 phase 的行进 `(unattributed)`。 */
+  byPhase: Record<string, SeatUsageBucket>;
+}
+
+/** 按层 + 拒回轮 + 图名拆一次 run 的账。`runId` 省略 = 拆全本。 */
+export function breakdownRun(entries: SeatUsageEntry[], runId?: string): RunCostBreakdown {
+  const planning = emptyBucket();
+  const execution = emptyBucket();
+  const other = emptyBucket();
+  const planningRejects = emptyBucket();
+  const byPhase: Record<string, SeatUsageBucket> = {};
+  for (const e of entries) {
+    if (runId !== undefined && e.runId !== runId) continue;
+    const seat = e.seat;
+    const isPlanning = seat !== null && PLANNING_SEATS.has(seat);
+    const target = isPlanning ? planning : seat !== null && EXECUTION_SEATS.has(seat) ? execution : other;
+    addTo({ t: target }, 't', e);
+    if (isPlanning && (e.rejectRound ?? 0) > 0) addTo({ t: planningRejects }, 't', e);
+    addTo(byPhase, e.phase ?? UNATTRIBUTED, e);
+  }
+  return { planning, execution, other, planningRejects, byPhase };
 }
 
 /** 按座位 / 按 traceName 聚合。`runId` 给则只算那一次 run 的行。 */

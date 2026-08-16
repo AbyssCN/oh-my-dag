@@ -301,6 +301,9 @@ export function createDefaultVerifier(opts: DefaultVerifierOpts): VerifierFn {
     const r = await withGoFallback(opts.verifierModel, (m) =>
       call({
         model: m,
+        // #144 洞 1: 这一发此前**不带 role** → 落进 seat-usage 的 `(unattributed)` 桶,
+        // 于是"verifier 到底烧了多少"结构上答不出来。标签原文即座位名。
+        meta: { role: 'verifier' },
         messages: [{ role: 'user', content: verifierPrompt(task, summary, truths) }],
         // 采样意图取自座位登记表 (model/seats.ts): 终审要**稳定** —— 同一份产出不该这次过下次不过。
         ...seatSampling('verifier'),

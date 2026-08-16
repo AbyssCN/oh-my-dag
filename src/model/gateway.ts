@@ -13,7 +13,7 @@ import type { ModelRequest, ModelResponse } from './types';
 import { callModel } from './index';
 import { makeBudgetedCall } from './provider-budget';
 import { promptVersionOf, recordGeneration } from './langfuse';
-import { recordSeatUsage, seatOfTrace } from './seat-usage';
+import { recordSeatUsage, seatOfTrace, type SeatUsageEntry } from './seat-usage';
 
 // ── 类型 re-export (内核统一从 gateway 取型) ─────────────────────────
 export type {
@@ -54,6 +54,16 @@ export interface GatewayMeta {
    * 给了就等于宣称"我是某个节点的子调用", 而它们不是。见 GenerationRecord.nodeId 的注。
    */
   nodeId?: string;
+  /**
+   * 这一发烧在哪一段图上 (`goal-contract` / `goal-execute` / …)。只进 seat-usage 台账,
+   * 消费面据此分「契约段 vs 执行段」。省略 = 调用点没给 (不是"没有相位")。
+   */
+  phase?: string;
+  /**
+   * 规划发专用: 这一发是**第几次被闸拒回后的重问** (0 = 首问)。只进 seat-usage 台账。
+   * 省略 = 不适用 —— 一个不是规划发的调用写 `rejectRound: 0` 会让"首问"与"不适用"混成一格。
+   */
+  rejectRound?: number;
 }
 
 /** 带网关元数据的请求 (ModelRequest 超集; callModel 忽略多余字段)。 */
@@ -69,6 +79,20 @@ export interface GatewayRequest extends ModelRequest {
 /** 生成一个 trace id。 */
 export function generateTraceId(): string {
   return randomUUID();
+}
+
+/**
+ * meta 里那三列**可缺席**的归属信息 → seat-usage 行片段。
+ * 逐个判缺席而不是无脑铺开: `nodeId: undefined` 与「run 级调用, 本就没有节点」在 JSON 里长得一样,
+ * 但 `rejectRound: 0` 与「不是规划发」长得**不一样** —— 后者必须是缺席不是 0 (§3 第 1 条)。
+ */
+function seatUsageContext(meta: GatewayMeta | undefined): Partial<SeatUsageEntry> {
+  return {
+    entry: 'call',
+    ...(meta?.nodeId !== undefined ? { nodeId: meta.nodeId } : {}),
+    ...(meta?.phase !== undefined ? { phase: meta.phase } : {}),
+    ...(meta?.rejectRound !== undefined ? { rejectRound: meta.rejectRound } : {}),
+  };
 }
 
 /** 终端调用: callModel 包上 MiMo 速率感知预算闸 (并发 + RPM + 429 退避/溢出)。 */
@@ -118,6 +142,7 @@ export async function send(req: GatewayRequest): Promise<ModelResponse> {
       out: res.usage?.out ?? null,
       cacheHit: res.usage?.cacheHit ?? null,
       runId: reqWithTrace.meta?.sessionId ?? null,
+      ...seatUsageContext(reqWithTrace.meta),
     });
     return res;
   } catch (err) {
@@ -145,6 +170,7 @@ export async function send(req: GatewayRequest): Promise<ModelResponse> {
       out: null,
       cacheHit: null,
       runId: reqWithTrace.meta?.sessionId ?? null,
+      ...seatUsageContext(reqWithTrace.meta),
       error: String(err),
     });
     throw err;

@@ -139,6 +139,10 @@ export async function bestOfNPlan(
           const r = await callModelFn({
             messages: [{ role: 'user', content: genPrompt(lens, planContext) }],
             model,
+            // #144 洞 1: 打标签是为了让这两发从 `(unattributed)` 里分出来 —— 但**归不了座**
+            // (模型由调用方给, 见 seat-usage.ts 的 KNOWN_UNATTRIBUTABLE 注)。
+            // 「还没核」与「核过, 归不了」在账上必须分得开, 这就是分法。
+            meta: { role: 'best-of-n:gen' },
             temperature: lens.temperature,
             topP: lens.topP,
             maxTokens: PLAN_MAX_TOKENS, // 2500 会切断 SDD 骨架 (contracts+GWT+落点), 实测模型自然写到 1.4-2.1 万 out-tok
@@ -165,6 +169,8 @@ export async function bestOfNPlan(
     const r = await callModelFn({
       messages: [{ role: 'user', content: judgePrompt(candidates, planContext) }],
       model: judgeModel,
+      meta: { role: 'best-of-n:judge' }, // 同上: 核过, 归不了座
+
       temperature: 0.3,
       topP: 0.85,
       maxTokens: PLAN_MAX_TOKENS, // judge 要吐完整 synthesis, 3000 必截

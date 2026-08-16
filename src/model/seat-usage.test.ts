@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { readdirSync, statSync } from 'node:fs';
 import {
   aggregateSeatUsage,
+  breakdownRun,
   readSeatUsage,
   recordSeatUsage,
   seatOfTrace,
@@ -168,17 +169,100 @@ describe('★ 覆盖率闸: src 里的每个 traceName 字面量都核过', () =
         const src = readFileSync(p, 'utf8');
         for (const m of src.matchAll(/traceName:\s*'([^']+)'/g)) seen.add(m[1]!);
         // 节点级的那些是模板串 (`leaf:${id}`) —— 只取插值前的静态前缀。**新标签基本都长这样**,
-        // 不扫它的话这道闸就只守着 4 个常量, 等于没守。
+        // 不扫它的话这道闸就只守着几个常量, 等于没守。
         for (const m of src.matchAll(/traceName:\s*`([^`$]*)\$\{/g)) if (m[1]) seen.add(m[1]);
+        // 2026-08-16 (#144 洞 1) 扩面: 直调 `send({ meta: { role: … } })` 的那批调用点**不经
+        // GenerateFn**, 标签写作 `role:` —— 老扫器一个都看不见, 而 verifier / gate / review /
+        // review-spec 恰好全在这一批里 (账上 402 发无归属)。
+        //
+        // ⚠ 必须锚在 `meta:` 上, 不能只认 `role:` —— `role` 在本仓是个**重载的键名**:
+        // 消息体 (`role:'user'`)、TUI 行类型 (`role:'divider'|'notice'`)、座位表 (`role:'leaf'`)
+        // 都用它。只认 `role:` 试过一次, 当场扫进 6 个别家的串, 闸恒红 —— 恒红的闸与恒绿的闸
+        // 一样没用。同理值这侧只认紧跟其后的字面量: 标签写成拼接式就出了闸的视野 (见 engine.ts)。
+        for (const m of src.matchAll(/\bmeta:\s*\{[^}]*?\brole:\s*'([^']+)'/g)) seen.add(m[1]!);
+        for (const m of src.matchAll(/\bmeta:\s*\{[^}]*?\brole:\s*`([^`$]*)\$\{/g)) if (m[1]) seen.add(m[1]);
       }
     };
     walk(root);
     // 至少要扫到今天在场的那几个, 否则是扫器坏了在放水 (扫不到东西的闸恒绿)。
-    // 两种写法各点一个名, 免得哪天正则少扫一半而计数照样够。
-    expect(seen.has('conductor:plan')).toBe(true); // 单引号常量
-    expect(seen.has('fanin-summary:')).toBe(true); // 模板串前缀
-    expect(seen.size).toBeGreaterThanOrEqual(8);
+    // 三种写法各点一个名, 免得哪天正则少扫一路而计数照样够。
+    expect(seen.has('conductor:plan')).toBe(true); // traceName 单引号常量
+    expect(seen.has('fanin-summary:')).toBe(true); // traceName 模板串前缀
+    expect(seen.has('verifier')).toBe(true); // meta.role 常量 (#144 补的那批)
+    expect(seen.size).toBeGreaterThanOrEqual(16);
     expect([...seen].filter((t) => !traceIsClassified(t))).toEqual([]);
+  });
+});
+
+describe('★ #144 洞 1: 八个"从未出现过一次"的座位', () => {
+  // 全账本 78KB / 6 个 runId 里, 这八座**一发都没有**, 而 owner 想量的恰好是它们。
+  // 补法分两类, 这条闸把两类都钉住 —— 少任何一条, 那个座位又变回账上的空白。
+  test('经网关的六座: 标签落地即归座', () => {
+    // 证伪方式: 把对应调用点的 `meta: { role: … }` 删掉 → 那一发回到 traceName=null,
+    // 上面那道覆盖率闸不会红 (它只查已有标签), 但这一条会。
+    expect(seatOfTrace('verifier')).toBe('verifier'); // verifier.ts:302
+    expect(seatOfTrace('gate:convergence')).toBe('gate'); // plan/llm-judge.ts
+    expect(seatOfTrace('review:spec')).toBe('review-spec'); // review/run.ts (spec 维度)
+    expect(seatOfTrace('review:security')).toBe('review'); // review/run.ts (其余维度)
+    expect(seatOfTrace('review:verify-verdict')).toBe('review'); // review/verify.ts
+    expect(seatOfTrace('escalation:plan')).toBe('escalation'); // engine.ts 升级重规划轮
+    expect(seatOfTrace('escalation:repair')).toBe('escalation'); // engine.ts 补丁轮
+  });
+
+  test('★ review-spec 必须排在 review 前面 —— 顺序错了就静默错归', () => {
+    // 两条规则都能匹配 `review:spec`; `/^review:/` 若排在前面, review-spec 座的量会**静默**
+    // 并进 review 桶。证伪方式: 把 TRACE_SEAT_RULES 里两条的顺序对调 → 这条红。
+    // 这类错归比缺数难发现得多 —— 账上有个看起来正常的数字, 没人会去怀疑它。
+    expect(seatOfTrace('review:spec')).not.toBe('review');
+  });
+
+  test('不经网关的 agent 座: 节点级行归 agent, 且只有 agent 一种', () => {
+    // agent leaf 走 pi-agent-core 自己的循环 → 网关看不见它。engine 的 settle() 补节点级一行。
+    // 证伪方式: 删掉 settle 里那段 recordSeatUsage → 端到端账里 agent 座重新归零。
+    expect(seatOfTrace('agent-leaf')).toBe('agent');
+    // ⚠ 别顺手给 inproc 也加一条: 它经网关, 已有发级行, 再记节点级会把同一份 in/out 计两遍。
+    expect(seatOfTrace('inproc-leaf')).toBeNull();
+  });
+
+  test('fusion / graft 仍归 reason —— 这是"核过, 归不了"不是"补漏了"', () => {
+    // #144 把这两座列进"从未出现过"。实测它们**在账上**, 只是 bySeat 归进 reason 桶
+    // (两者默认都吃 cfg.reasonModel, 可被 fusionModel/graftModel 覆盖)。
+    // 想按座位分开必须先在 fanout 侧把座位定死, 那是另一片的活 —— 今天分得开的层是 byTrace。
+    expect(seatOfTrace('fanout:fusion')).toBe('reason');
+    expect(seatOfTrace('fanout:graft')).toBe('reason');
+  });
+});
+
+describe('★ #144 洞 3 验收判据: 规划层 vs 执行层 vs 拒回轮', () => {
+  test('一次 run 能直接答出三个数', () => {
+    // issue 的验收原文: 「任取一个 run, 能直接答出规划层 vs 执行层各烧了多少 in/out、
+    // 其中多少发是拒回轮」。这条就是那句话的可执行版。
+    const rows: SeatUsageEntry[] = [
+      entry({ seat: 'conductor', traceName: 'conductor:plan', in: 1000, out: 100, rejectRound: 0, phase: 'goal-contract' }),
+      entry({ seat: 'conductor', traceName: 'conductor:plan', in: 1200, out: 120, rejectRound: 1, phase: 'goal-contract' }),
+      entry({ seat: 'escalation', traceName: 'escalation:repair', in: 900, out: 90, rejectRound: 2, phase: 'goal-contract' }),
+      entry({ seat: 'verifier', traceName: 'verifier', in: 500, out: 50, phase: 'goal-execute' }),
+      entry({ seat: 'agent', traceName: 'agent-leaf', entry: 'node', in: 110_000, out: 900, phase: 'goal-execute' }),
+      entry({ seat: null, traceName: 'fanout-leaf', in: 7, out: 7 }),
+    ];
+    const b = breakdownRun(rows);
+    expect(b.planning.in).toBe(3600); // conductor ×2 + escalation + verifier
+    expect(b.execution.in).toBe(110_000); // agent
+    expect(b.other.in).toBe(7); // 归不了座的那一发 —— 不是 0, 是"还没归层"
+    // 拒回轮是 planning 的**子集**: 1200 + 900 = 2100 发在"照建议重写"上, 零新产出。
+    expect(b.planningRejects.in).toBe(2100);
+    expect(b.byPhase['goal-contract']!.in).toBe(3100);
+    expect(b.byPhase['goal-execute']!.in).toBe(110_500);
+    expect(b.byPhase[UNATTRIBUTED]!.in).toBe(7);
+  });
+
+  test('★ 反向自检: rejectRound 缺席 ≠ 0 —— verifier 那发不算拒回', () => {
+    // 证伪方式: 把 breakdownRun 里的 `(e.rejectRound ?? 0) > 0` 写成 `>= 0` → 这条红。
+    // 「首问」「不适用」「拒回轮」三件事必须分得开, 否则空转量会被读成全部规划量。
+    const b = breakdownRun([entry({ seat: 'verifier', traceName: 'verifier', in: 500 })]);
+    expect(b.planning.in).toBe(500);
+    expect(b.planningRejects.in).toBe(0);
+    expect(b.planningRejects.calls).toBe(0);
   });
 });
 

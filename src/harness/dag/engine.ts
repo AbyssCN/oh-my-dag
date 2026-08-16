@@ -125,6 +125,7 @@ import { send } from '../../model/gateway';
 // D-14v2 多模态媒体管道 (S4): attach_media 执行期从直接前驱输出解析图片 → ContentPart 注入。
 import { collectDepMedia } from '../leaf-media';
 import { recordGeneration, recordSpan } from '../../model/langfuse';
+import { recordSeatUsage } from '../../model/seat-usage';
 import { ModelError, isTransientModelFault } from '../../model';
 import { classifyCommandExit, withFailureKind, upstreamFailureNotice } from '../node-failure';
 import { collectRepairGuidance } from './repair-guidance';
@@ -229,6 +230,12 @@ async function planAndExecute(
   /** D-3 反馈锚定 (SDD 2026-08-10-blame-scoped-node-retry): 闭包节点 id → 追加到其 goal 的 verifier 意见。非闭包节点不碰 (G-2)。 */
   blameAnchor?: ReadonlyMap<string, string>,
   warnedUnknownProfiles: Set<string> = new Set(),
+  /**
+   * 观测名前缀 (#144 洞 1)。升级重规划轮坐的是 `conductorEscalationModel`, 但此前 traceName 仍打
+   * `conductor:*` —— 于是 escalation 座的钱**结构上算在 conductor 头上**。这不是缺数是**错归**,
+   * 而错归比缺数难发现: 账上有一个看起来很正常的 conductor 数字, 没人会去怀疑它。
+   */
+  seatLabel: 'conductor' | 'escalation' = 'conductor',
 ): Promise<ExecOnce> {
   // ── 1. conductor: 单结构化调用规划 (显式可换) ──────────────────────────────
   // 模板注册表进规划 prompt (每卡一行 description); parsePlan 校验 template 引用 (TPL-2 规划层拒)。
@@ -275,7 +282,14 @@ async function planAndExecute(
       // S-T 优先序: config 显式 > 座位档 (auto-assign 给 decomposer 座的档) > 硬默认。
       thinkingLevel: config.conductorThinkingLevel ?? config.seatThinking?.(conductorModel) ?? 'high',
       maxTokens: conductorMaxTokens,
-      traceName: 'conductor:plan', // 顶层规划那一发 (与节点内重展开分开看)
+      // 顶层规划那一发 (与节点内重展开分开看; escalation 轮换前缀)。
+      // ⚠ 刻意写成两个**紧跟 `traceName:` 的字面量**而不是 `${seatLabel}:plan` —— seat-usage 的
+      // 覆盖率闸靠扫源码里的标签字面量守「新标签必须进映射表」, 拼出来的名字它一个都看不见
+      // (闸会从此对这条静默放水)。这个形状看着啰嗦, 换来的是标签在闸的视野里。
+      ...(seatLabel === 'escalation' ? { traceName: 'escalation:plan' } : { traceName: 'conductor:plan' }),
+      // #144 洞 3: 这一发之前**被闸拒回过几次**。parse 重试不算 —— 它有自己的预算 (parseFails),
+      // 且它是"格式没对"不是"档位派错"。台账里 `sum(in) where rejectRound > 0` = 规划层空转量。
+      traceRejectRound: gateRejects + reuseRejects,
     });
     conductorUsage = addUsage(conductorUsage, usage);
     const parsed = parsePlan(text, { knownTemplates: new Set(templates.keys()), knownServers: knownMcpServerNames(mcpRegistryRoot(config)) });
@@ -411,6 +425,9 @@ async function tryPatchReplan(
   const known = new Set(templates.keys());
   let usage: ModelUsage = { in: 0, out: 0 };
   let lastErr = '';
+  // #144 洞 3: 与 `attempt` 分开数 —— attempt 同时被 parse 失败与闸拒推进, 混在一起就答不了
+  // 「多少发烧在闸拒回上」。run A 的 7 行日志里 escalation 补丁连拒 3 次, 而账上一个字都没有。
+  let patchGateRejects = 0;
   for (let attempt = 1; attempt <= maxPlanRetries + 1; attempt++) {
     const correction = attempt === 1 ? '' : `\n\n上次回复不是有效补丁 (${lastErr})。只回 {"patch": {...}} JSON 对象, 别的不要。`;
     const { text, usage: u } = await generate({
@@ -419,7 +436,9 @@ async function tryPatchReplan(
         { role: 'user', content: `${PLAN_BOUNDARY}${requestBody}\n\n[verification failure] ${reason}${correction}` },
       ],
       model: conductorModel,
-      traceName: 'conductor:repair', // 校验失败后的补丁重试 —— 与首次规划分开看 (它的贵是有原因的)
+      // 补丁轮只在 verifier 未过之后跑, 且坐的是 escalation 模型 → 前缀是 escalation 不是 conductor。
+      traceName: 'escalation:repair', // 校验失败后的补丁重试 —— 与首次规划分开看 (它的贵是有原因的)
+      traceRejectRound: patchGateRejects,
       thinkingLevel: config.conductorThinkingLevel ?? config.seatThinking?.(conductorModel) ?? 'high',
       maxTokens: config.conductorMaxTokens ?? (Number(process.env.OMD_CONDUCTOR_MAX_TOKENS) || 32_768),
     });
@@ -442,6 +461,7 @@ async function tryPatchReplan(
         ...(config.leafTierThresholdBytes !== undefined ? { thresholdBytes: config.leafTierThresholdBytes } : {}),
       });
       if (gateFindings.length > 0) {
+        patchGateRejects++;
         lastErr = `leaf 档位闸拒 (大内容进 prompt 不进工具环): ${gateFindings.map((f) => f.message).join(' | ')}`;
         logger.info(
           { nodes: gateFindings.flatMap((f) => f.nodes) },
@@ -3257,6 +3277,35 @@ async function executePlan(
       leavesIn += r.usage.in;
       leavesOut += r.usage.out;
       leavesCacheHit += r.usage.cacheHit ?? 0;
+      // #144 洞 1: agent leaf 走 pi-agent-core 自己的循环, **不经 gateway.send** → 在
+      // seat-usage.jsonl 里 `agent` 座一行都没有, 而 run C 的 110.9M input token 全是它烧的。
+      //
+      // 记在这里而不是 agent-leaf 里, 是为了让台账与 `result.usage.leavesIn/Out/CacheHit`
+      // **共用同一个 `r.usage`** —— 两本账按构造对得上, 不会再出现差三个数量级的两套成本结论
+      // (#144 评论「补账前必须先决定哪一套是真理源」)。
+      //
+      // ⚠ **只记 `kind === 'agent'`**。别顺手把别的 kind 一起记了 —— inproc/primitive/conductor/
+      // research/map 的模型调用**都经网关**, 网关已经记过发级行; 在这里再记一条节点级行会把
+      // 同一份 in/out 计两遍。「哪些 kind 不经网关」是这条判据的全部内容, 不是省事。
+      if (r.kind === 'agent') {
+        recordSeatUsage({
+          ts: Date.now(),
+          seat: 'agent',
+          traceName: 'agent-leaf',
+          model: r.model ?? config.agentLeafModel ?? config.leafModel ?? 'unknown',
+          in: r.usage.in,
+          out: r.usage.out,
+          cacheHit: r.usage.cacheHit ?? null,
+          // 与网关那条路取同一个锚 (defaults.ts 收到的 sessionId 就是这个表达式) ——
+          // 两种行要能按 runId join 起来, 这个 join 键就是全部前提。
+          // ⚠ 诚实边界: 两处都缺时引擎侧兜一个 randomUUID, 这里落 null (不编一个不同的 id 假装
+          // 能 join)。生产路径上 continuity.runId 恒在, 缺的只有部分测试/孤立入口。
+          runId: config.sessionId ?? config.continuity?.runId ?? null,
+          entry: 'node',
+          nodeId: id,
+          ...(plan!.name ? { phase: plan!.name } : {}),
+        });
+      }
       // #13 逐字保真探针 (只报不拦, 与制品 lint 同一出口)。判在 settle 里是因为这一刻**同时**
       // 拿得到本节点输出与全部上游输出 —— 换个地方就得再存一份。零模型调用、纯子串比对。
       // 只对 done 的多入节点判; 判据本身在 detectVerbatimDrop 里(拿不准一律不报)。
@@ -3779,7 +3828,11 @@ async function runDagInternalCore(
   };
   // runLabel = 这一跑的目标, 进 Langfuse 的 trace 名 —— 列表页按 name 认 trace, 全叫一个名字
   // 等于一屏一模一样的行。截断在 langfuse 那一侧做 (那儿才知道上限)。
-  const generate = config.generate ?? makeDefaultGenerate(sessionId, typeof task === 'string' ? task : undefined);
+  // phase = 图名原文 (`goal-contract` / `goal-execute` / `goal-execute-flat`), 只在预构造图那条路
+  // 上存在 —— dag_run 直跑没有图名, 那时缺席 (不编一个 'execute', §3 第 1 条)。进 per-seat 台账,
+  // 让「契约段 vs 执行段各烧多少」一条查询答得出 (#144)。
+  const generate =
+    config.generate ?? makeDefaultGenerate(sessionId, typeof task === 'string' ? task : undefined, prebuiltPlan?.name);
   const maxPlanRetries = config.maxPlanRetries ?? 2;
   const maxEscalations = config.maxEscalations ?? 1;
   // agent 模板注册表: 注入 (测试/宿主) 或加载 (内置+.omd/agents)。每 run 载一次, 规划+执行+升级共用。
@@ -3942,7 +3995,7 @@ async function runDagInternalCore(
         exec = patched.exec;
       } else {
         conductorUsage = addUsage(conductorUsage, patched.usage); // 补丁尝试的 token 不丢账
-        exec = await planAndExecute(escTask, config, conductorModel, generate, maxPlanRetries, templates, priorExec, blameAnchor, warnedUnknownProfiles);
+        exec = await planAndExecute(escTask, config, conductorModel, generate, maxPlanRetries, templates, priorExec, blameAnchor, warnedUnknownProfiles, 'escalation');
       }
       observed.exec = exec;
       observed.conductorModel = conductorModel;
