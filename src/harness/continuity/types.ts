@@ -175,6 +175,21 @@ export interface NodeCheckpoint {
     toolTimelineMs: number[];
     spin?: { spinEvents: number; maxSameCount: number };
   };
+  /**
+   * 这个节点经 **bash 工具**跑过的命令 + 退出码(2026-08-16 补,#145 评论① 复盘)。
+   *
+   * 为什么补:run 1c9a4566 的五个 `empty-artifact` 节点,要回答的问题是
+   * 「它这一轮到底动没动盘」——而这个问题的直接证据就是它跑了哪些命令。盘上一条都没有,
+   * 判词里只截了前 3 条 × 40 字符,最后只能靠 `exec.log` 里 drift 观察者顺手打印的采样倒推。
+   *
+   * ⚠ 缺席 = 这条链上没人报(inproc 叶 / 老记录),**不是**"跑了但一次没用 bash"——
+   * 后者是 `[]`。同 `LeafResult.shellRuns` 的三态。
+   */
+  shellRuns?: { command: string; exitCode?: number; ok: boolean }[];
+  /** 工具调用次数(来自 `LeafResult.toolCalls`)。缺席 = 没报,不是 0。 */
+  toolCalls?: number;
+  /** `[写调用总数, 其中 no-op 数]`(§8.5 效果指标)。缺席 = runner 没报,不是 `[0,0]`。 */
+  writeCounts?: [total: number, noop: number];
   /** 当前版本 = 1。迁移用。 */
   schemaVersion: 1;
 }

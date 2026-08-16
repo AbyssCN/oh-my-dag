@@ -127,6 +127,7 @@ import { collectDepMedia } from '../leaf-media';
 import { recordGeneration, recordSpan } from '../../model/langfuse';
 import { recordSeatUsage } from '../../model/seat-usage';
 import { parseWrittenFiles, renderParseFailures } from '../write-parse-gate';
+import { applyPoisonRollback, planPoisonRollback } from '../poison-rollback';
 import { ModelError, isTransientModelFault } from '../../model';
 import { classifyCommandExit, withFailureKind, upstreamFailureNotice } from '../node-failure';
 import { collectRepairGuidance } from './repair-guidance';
@@ -800,7 +801,7 @@ async function executePlan(
     });
     if (continuity.resume) {
       for (const cp of continuity.manager.loadAllGreen(continuity.runId)) resumeGreens.set(cp.nodeId, cp);
-      dropPoisonedGreens(resumeGreens, plan, prior?.poisoned);
+      dropPoisonedGreens(resumeGreens, plan, prior?.poisoned, continuity?.repoRoot);
     }
   }
 
@@ -3028,6 +3029,18 @@ async function executePlan(
               filesTouched = rescued;
             }
           }
+          // **失败出口的可观测尾巴** (2026-08-16, #145 评论① 复盘)。`types.ts:639` 声称
+          // 「done/failed 两条出口都带 watchdog」—— 而下面这两个闸的**早退 return 一条都没带**,
+          // 于是最需要诊断的那批节点, checkpoint 里恰好没有工具时间线 / bash 痕迹 / 工具次数。
+          // run 1c9a4566 就是这么查不动的: 五个失败节点的 checkpoint 字段里没有 watchdog,
+          // 最后只能靠 `exec.log` 里 drift 观察者顺手打印的采样倒推。
+          // 与 verifier 判词那个坑同形: **最需要证据的那条路径, 恰好是把证据扔掉的那条。**
+          const observabilityTail = (): Partial<LeafResult> => ({
+            ...(toolCalls !== undefined ? { toolCalls } : {}),
+            ...(shellRuns ? { shellRuns } : {}),
+            ...(watchdog ? { watchdog } : {}),
+            ...(writeCounts ? { writeCounts } : {}),
+          });
           const missing = filesTouched.filter((p) => !existsSync(p.startsWith('/') ? p : `${root}/${p}`));
           if (filesTouched.length === 0 || missing.length > 0) {
             // ⚠ **别把"闸看不见"说成"它没做"** (2026-08-05 真跑实证)。上面那条救援要求节点
@@ -3038,19 +3051,35 @@ async function executePlan(
             //   「声称 vs 记录」是同一条纪律, 只不过这次说错话的是引擎自己。
             //   bash 痕迹 (2026-08-05 补的记录通道) 正好能把话说准, 并指出怎么救。
             const ranShell = shellRuns ?? [];
+            // 2026-08-16 (#145 评论① 复盘): 上面那段「给该节点声明 output_path 即可被救回」是
+            // **有前提的建议, 而它此前无条件发**。run 1c9a4566 的五个节点 output_path **全声明了**,
+            // 判词照样这么说 —— 于是排查方向被带向"采集面漏了工具名", 挖了一整晚, 而真相是
+            // 这一轮它们确实一个字都没写 (D-4 毒集丢 checkpoint 但没回滚工作区 → 重跑的 leaf
+            // 看见活已经干完, 只读不写)。**引擎说错话的代价是人查错方向**, 与它冒充"发生了什么"
+            // 是同一条纪律。所以先分「声明了没有」, 再决定说哪句。
+            const declaredNow = declaredOut
+              ? existsSync(declaredAbsPre) // 与 declaredHashPre 同一条路径, 不另算一份
+                ? hashArtifact(declaredAbsPre) === declaredHashPre
+                  ? `声明的产物 \`${declaredOut}\` **在盘上, 且内容与本节点开始时逐字相同** — 本轮没有改动它`
+                  : `声明的产物 \`${declaredOut}\` 在盘上且内容有变, 但变化发生在受控写工具之外`
+                : `声明的产物 \`${declaredOut}\` **不在盘上**`
+              : '本节点未声明 output_path';
             const why = filesTouched.length === 0
               ? ranShell.length > 0
-                ? `filesTouched 空 — 受控写工具 (write/edit) 一次没用过, 但本 leaf 跑过 ${ranShell.length} 条 bash 命令` +
-                  ` (${ranShell.slice(0, 3).map((s) => s.command.slice(0, 40)).join(' · ')}${ranShell.length > 3 ? ' …' : ''});` +
-                  ` 写操作可能经 bash 发生而产物闸看不见 —— 给该节点声明 output_path 即可被救回;` +
-                  ` 若本节点本就不产文件 (纯验证/检查), 重画时该标 output_type:'none' 而不是声明产物 —— 别让产物闸管一个没有产物的节点`
-                : 'filesTouched 空 — leaf 自报完成但未做任何文件写操作'
+                ? `filesTouched 空 — 受控写工具 (write/edit/hashline_edit) 一次没用过, 但本 leaf 跑过 ${ranShell.length} 条 bash 命令` +
+                  ` (${ranShell.slice(0, 3).map((s) => s.command.slice(0, 40)).join(' · ')}${ranShell.length > 3 ? ' …' : ''})。${declaredNow}。` +
+                  (declaredOut
+                    ? ` 已声明产物却仍判失败, 说明救援路径查过了盘: 引擎判的是「**本轮**有没有产出」, 不是「产物存不存在」`
+                    : ` 写操作可能经 bash 发生而产物闸看不见 —— 给该节点声明 output_path 即可被救回;` +
+                      ` 若本节点本就不产文件 (纯验证/检查), 重画时该标 output_type:'none' 而不是声明产物`)
+                : `filesTouched 空 — leaf 自报完成但未做任何文件写操作。${declaredNow}`
               : `声称产物不存在: ${missing.join(', ')}`;
             logger.warn({ node: id, filesTouched, missing }, '[omd/executor-dag] 产物校验失败 → 节点 failed (拒绝 empty-done)');
             return {
               id, status: 'failed', failureKind: 'empty-artifact', kind: 'agent', model,
               output: `[产物校验失败: ${why}] 原输出: ${text.slice(0, 400)}`,
               deps: node.depends_on ?? [], usage, filesTouched, ...(filesRead.length ? { filesRead } : {}),
+              ...observabilityTail(),
             };
           }
           // 写后即验 (#145 提议 1, 2026-08-16)。产物**在**不等于产物**是好的**: plana M3.5 那三次
@@ -3068,6 +3097,7 @@ async function executePlan(
               id, status: 'failed', failureKind: 'broken-artifact', kind: 'agent', model,
               output: `[${why}] 原输出: ${text.slice(0, 400)}`,
               deps: node.depends_on ?? [], usage, filesTouched, ...(filesRead.length ? { filesRead } : {}),
+              ...observabilityTail(),
             };
           }
         }
@@ -3428,6 +3458,12 @@ async function executePlan(
           // S1 埋点: failed checkpoint 也透传 watchdog (看门狗判死的叶, 盘上不该只剩 failureKind:'stall'
           // 而读不到活性; done 出口在 saveDoneCheckpoint 里同风格透传)。
           ...(settled.watchdog ? { watchdog: settled.watchdog } : {}),
+          // 2026-08-16 (#145 评论① 复盘): 再补三位。`empty-artifact` 要回答的是「它这一轮
+          // 到底动没动盘」, 而这三位正是那个问题的直接证据 —— 盘上此前一位都没有,
+          // 上次只能靠 exec.log 里 drift 观察者顺手打印的工具名采样倒推, 挖了一整晚。
+          ...(settled.shellRuns ? { shellRuns: settled.shellRuns } : {}),
+          ...(settled.toolCalls !== undefined ? { toolCalls: settled.toolCalls } : {}),
+          ...(settled.writeCounts ? { writeCounts: settled.writeCounts } : {}),
           durationMs: startedAt ? Date.now() - startedAt : 0,
           createdAt: new Date().toISOString(),
           ...(dagGeneration ? { generation: dagGeneration } : {}),
@@ -3747,6 +3783,14 @@ function dropPoisonedGreens(
   greens: Map<string, NodeCheckpoint>,
   plan: ConductorPlan,
   poisoned?: ReadonlySet<string>,
+  /**
+   * repo 根。给了 → 丢 checkpoint 的同时**把工作区一起退回去**(A, 2026-08-16)。
+   *
+   * 不给 = 老行为(只丢 checkpoint)。留这个口子是因为回滚是破坏性动作,而本函数在
+   * resume 预载阶段被调,调用方未必总有一个可写的树(测试/预览路径)。
+   * 判据与五条与门在 `poison-rollback.ts`;这里只负责喂给它「丢了谁」与「谁还活着」。
+   */
+  rollbackRoot?: string,
 ): void {
   if (!poisoned?.size || greens.size === 0) return;
   const blocked = new Set<string>();
@@ -3781,10 +3825,40 @@ function dropPoisonedGreens(
     const prefix = `${parentId}::`;
     for (const key of [...greens.keys()]) if (key.startsWith(prefix)) blocked.add(key);
   }
+  // ⚠ 丢之前先把 checkpoint 留下来 —— 回滚要读它的 outputPaths/artifactHashes,
+  //   而 `greens.delete` 之后就没了。顺序错一行,回滚就变成静默的 no-op。
+  const droppedCps = [...blocked].map((id) => [id, greens.get(id)] as const).filter(([, cp]) => cp !== undefined);
   const dropped = [...blocked].filter((id) => greens.delete(id));
   if (dropped.length) {
     logger.warn({ dropped }, '[omd/executor-dag] resume: 毒集命中 → 丢弃这些节点的已绿 checkpoint, 强制重跑 (D-4 × W2)');
   }
+  if (!rollbackRoot || droppedCps.length === 0) return;
+  // A (#145 评论① 复盘): 丢 checkpoint 而不动盘 = 让"重跑"名不副实 —— 重跑的 leaf 看见活已经
+  // 干完, 只读不写, 然后被产物闸判 empty-artifact。run 1c9a4566 五个真交付就是这么没的。
+  // 存活 green 的产物一律不许碰 (与门④), 所以先把它们收出来。
+  const keepPaths = new Set<string>();
+  for (const cp of greens.values()) for (const p of cp.outputPaths ?? []) keepPaths.add(p);
+  const plan2 = planPoisonRollback(
+    droppedCps.map(([node, cp]) => ({
+      node,
+      outputPaths: cp!.outputPaths ?? [],
+      artifactHashes: cp!.artifactHashes ?? {},
+    })),
+    keepPaths,
+    rollbackRoot,
+    {
+      hashOf: (abs) => (existsSync(abs) ? hashArtifact(abs) : null),
+      // 查不了一律当**有** —— 保守方向是"不撤", 与整个模块的取舍一致 (宁可少救一次, 不许误删)。
+      existsInHead: (rel) => {
+        try {
+          return Bun.spawnSync(['git', 'cat-file', '-e', `HEAD:${rel}`], { cwd: rollbackRoot, stdout: 'ignore', stderr: 'ignore' }).exitCode === 0;
+        } catch {
+          return true;
+        }
+      },
+    },
+  );
+  applyPoisonRollback(plan2, rollbackRoot);
 }
 
 /**
