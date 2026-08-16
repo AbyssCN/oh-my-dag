@@ -512,7 +512,19 @@ export interface DagObservation {
      * 没交叉核声称。**简报是给下一个人做决定用的**, 失真的简报让后续判断建立在错误前提上。
      * **只报不判**, 三级判据与结案条件见 `harness/claim-anchor.ts`。
      */
-    | 'claim-anchor';
+    | 'claim-anchor'
+    /**
+     * `blame-attribution` (2026-08-17, #145 提议 5 Phase B1) = **闸红的诊断有多少行归得到本跑写者头上**。
+     *
+     * 它是一把**尺子**,量的是「定向返修」(B2) 这个形状成不成立:诊断行分三桶
+     * (写者认领 / 本跑外文件 / 无路径),而后两桶说明的事**相反** ——
+     * 前者说"够不着",后者说"本来就不用归因"。
+     *
+     * **只观测,一行都不路由。** 存在的理由是 `failure-trace.ts` 记着一条对该方向不利的旧实测
+     * (`assert-failed` 只有 1/7 认得出路径),而那个数量在 800 字 summary 上、n=7 ——
+     * 口径存疑的旧数既不能用来支持一个方向,也不能用来否掉它。判据见 `dag/blame-attribution.ts`。
+     */
+    | 'blame-attribution';
   /** 涉及的节点 id (lint = [reader, writer]; 空转 = 被反复拒绝的那批)。 */
   nodes: string[];
   /** 人与模型都读的一句话 (进 prompt 的就是它)。 */

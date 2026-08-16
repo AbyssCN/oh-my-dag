@@ -101,6 +101,7 @@ const SHELL_FACT_CAP = 6;
 import { verifiedShellWriteTargets } from '../shell-writes';
 import { blamePathCandidates, failureExcerpt } from '../failure-trace';
 import { findRedOracles, renderOracleRedVerdict } from './oracle-red';
+import { attributeBlame, renderAttribution } from './blame-attribution';
 import { captureRollbackAnchor } from '../rollback-anchor';
 import { serializeWriteRaces, staticLintPlan } from '../plan/static-lint';
 import { autoRewriteLeafTier } from '../plan/leaf-tier-gate';
@@ -4078,6 +4079,21 @@ async function runDagInternalCore(
           { nodes: reds.map((r) => r.id), round: attempts },
           '[omd/executor-dag] 闸红短路 → 判词由确定性 oracle 合成, 强模型判卷这一发不打',
         );
+        // Phase B1 归因 (**只观测, 不路由**): 这一坨诊断里有多少行归得到本跑的写者头上。
+        // 这个数决定 B2 (定向返修节点) 那个形状成不成立 —— `failure-trace.ts` 记着一条
+        // 对该方向不利的旧实测 (`assert-failed` 只有 1/7 认得出路径), 但它量在 800 字
+        // summary 上且 n=7。**在这里重量一次全文的**, 攒够了再决定做不做 B2。
+        // fail-open 不吞证据: 尺子挂了不许把一次正常的短路带塌。
+        try {
+          const attribution = attributeBlame(reds.map((r) => r.excerpt).join('\n'), exec.results, {
+            root: config.continuity?.repoRoot ?? process.cwd(),
+          });
+          const line = renderAttribution(attribution);
+          logger.info({ nodes: reds.map((r) => r.id) }, `[omd/executor-dag] ${line}`);
+          exec.observations.push({ kind: 'blame-attribution', nodes: reds.map((r) => r.id), message: line });
+        } catch (err) {
+          logger.warn({ err: (err as Error).message }, '[omd/executor-dag] 闸红归因抛错 (已吞, 只丢一行读数)');
+        }
         return { pass: false, reason, usage: { in: 0, out: 0 } };
       }
       try {
