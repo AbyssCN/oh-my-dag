@@ -911,6 +911,19 @@ async function executePlan(
      */
     toolSteps?: NodeCheckpoint['toolSteps'];
     toolStepsDropped?: number;
+    /**
+     * bash 痕迹 / 工具次数 / 写效果计数 (2026-08-16 补)。
+     *
+     * ⚠ **`47bf576` 把这三位补给了失败 checkpoint, 却没补给这一条成功出口** —— 而紧邻的
+     * `toolSteps` 注里刚写过这条判据的原话:「**成功节点也要记** …… 只记失败节点的话,
+     * 攒出来的分布没有分母」。同一次改动里同一条判据只用了一半。
+     * 实测代价: plana 1029 个生产 checkpoint 里带 `shellRuns` 的是 **0 个**,
+     * 于是「`bun test` 到底跑没跑过」在成功节点上盘上无痕, 而成功节点才是常态。
+     * 这一位也是「量 tsc 在单轮墙钟里占多少」(#145 提议 5 的触发条件) 唯一的输入面。
+     */
+    shellRuns?: NodeCheckpoint['shellRuns'];
+    toolCalls?: number;
+    writeCounts?: NodeCheckpoint['writeCounts'];
   }): void => {
     if (!continuity) return;
     try {
@@ -970,6 +983,10 @@ async function executePlan(
         ...(opts.watchdog ? { watchdog: opts.watchdog } : {}),
         ...(opts.toolSteps ? { toolSteps: opts.toolSteps } : {}),
         ...(opts.toolStepsDropped ? { toolStepsDropped: opts.toolStepsDropped } : {}),
+        // 缺席 ≠ 空: 「这个 leaf 没用过 bash」与「这条采集没接」必须分得开 (同 LeafResult 的三态)。
+        ...(opts.shellRuns ? { shellRuns: opts.shellRuns } : {}),
+        ...(opts.toolCalls !== undefined ? { toolCalls: opts.toolCalls } : {}),
+        ...(opts.writeCounts ? { writeCounts: opts.writeCounts } : {}),
         durationMs: Date.now() - opts.t0,
         createdAt: new Date().toISOString(),
         ...(dagGeneration ? { generation: dagGeneration } : {}),
@@ -3197,6 +3214,10 @@ async function executePlan(
         ...(watchdog ? { watchdog } : {}),
         ...(toolSteps ? { toolSteps } : {}),
         ...(toolStepsDropped ? { toolStepsDropped } : {}),
+        // 与失败出口 (47bf576) 对齐 —— 分布要有分母, 见 saveDoneCheckpoint 的 shellRuns 注。
+        ...(shellRuns ? { shellRuns } : {}),
+        ...(toolCalls !== undefined ? { toolCalls } : {}),
+        ...(writeCounts ? { writeCounts } : {}),
       });
       return leaf;
   };

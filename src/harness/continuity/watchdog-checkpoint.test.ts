@@ -184,4 +184,72 @@ describe('watchdog 采集落 checkpoint (S1 埋点)', () => {
     }
     expect(cp.watchdog!.toolTimelineMs).toEqual([1, 4, 7]);
   });
+
+  test('★ done checkpoint 也带 shellRuns / toolCalls / writeCounts —— 分布要有分母', async () => {
+    // `47bf576` 把这三位补给了**失败** checkpoint, 却没补给成功那条出口。而同一次改动里
+    // `toolSteps` 的注刚写过这条判据的原话:「成功节点也要记 —— 只记失败节点的话,
+    // 攒出来的分布没有分母」。同一条判据只用了一半。
+    // 实测代价: plana 1029 个生产 checkpoint 里带 `shellRuns` 的是 **0 个** ——
+    // 「`bun test` 到底跑没跑过」在成功节点上盘上无痕, 而成功节点才是常态。
+    //
+    // 证伪: 把 saveDoneCheckpoint 里那三行透传删掉 (回到 47bf576 的状态) → 本条三个断言全红。
+    const root = freshRoot();
+    const mgr = new CheckpointManager(root);
+    const fakeRunner: NonNullable<ExecutorDagConfig['agentRunner']> = async () => ({
+      text: '跑完了并自验过',
+      usage: { in: 1, out: 1 },
+      filesTouched: ['a.ts'],
+      toolCalls: 7,
+      shellRuns: [
+        { command: 'bun test', exitCode: 0, ok: true },
+        { command: 'bunx tsc --noEmit', exitCode: 2, ok: false },
+      ],
+      // 两次写、其中一次 no-op → writeCounts = [2, 1] (引擎从 writeEffects 现算)。
+      writeEffects: [
+        { path: 'a.ts', lineDelta: 12, noop: false },
+        { path: 'a.ts', lineDelta: 0, noop: true },
+      ],
+    });
+    const r = await runExecutorDagWithPlan(
+      plan({ A: { goal: '自验过的叶', executor: 'agent' } }),
+      makeConfig(makeGenerate(), {
+        agentRunner: fakeRunner,
+        continuity: { manager: mgr, runId: 'r-wd-shell', repoRoot: root },
+      }),
+    );
+    expect(r.results.A!.status).toBe('done');
+    const cp = mgr.loadCheckpoint('r-wd-shell', 'A')!;
+    // 「诚实自验」的记录通道: 命令原文 + 退出码都要在, 且**失败的那条也要在**
+    // (「跑了但没过」与「压根没跑」是两件事)。
+    expect(cp.shellRuns).toEqual([
+      { command: 'bun test', exitCode: 0, ok: true },
+      { command: 'bunx tsc --noEmit', exitCode: 2, ok: false },
+    ]);
+    expect(cp.toolCalls).toBe(7);
+    expect(cp.writeCounts).toEqual([2, 1]);
+  });
+
+  test('★ 没跑过 bash 的成功叶: shellRuns **缺席**而不是 [] (缺席 ≠ 空)', async () => {
+    // 三态是这条采集的全部语义: 缺席 = 没接/没报 · [] = 接了且一条没跑 · 有值 = 跑过。
+    // 证伪: 把透传写成 `shellRuns: opts.shellRuns ?? []` → 本条红, 而且是最坏的一种红 ——
+    // 从此「这条采集没接」在盘上长得跟「它没用过 bash」一模一样。
+    const root = freshRoot();
+    const mgr = new CheckpointManager(root);
+    const fakeRunner: NonNullable<ExecutorDagConfig['agentRunner']> = async () => ({
+      text: '写完了',
+      usage: { in: 1, out: 1 },
+      filesTouched: ['a.ts'],
+    });
+    await runExecutorDagWithPlan(
+      plan({ A: { goal: '不用 bash 的叶', executor: 'agent' } }),
+      makeConfig(makeGenerate(), {
+        agentRunner: fakeRunner,
+        continuity: { manager: mgr, runId: 'r-wd-noshell', repoRoot: root },
+      }),
+    );
+    const cp = mgr.loadCheckpoint('r-wd-noshell', 'A')!;
+    expect(cp.shellRuns).toBeUndefined();
+    expect(cp.toolCalls).toBeUndefined(); // runner 没报 → 不编一个 0 出来
+    expect(cp.writeCounts).toBeUndefined(); // 同上: 没 writeEffects 不编 [0,0]
+  });
 });
