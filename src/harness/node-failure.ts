@@ -83,6 +83,16 @@ export type NodeFailureKind =
   | 'spin-fused'
   /** 产物闸:写文件节点 `filesTouched` 空,或声称的产物不在盘上(empty-done)。 */
   | 'empty-artifact'
+  /**
+   * **写后即验没过**:产物在盘上,但**语法解析不通过**(2026-08-16,issue #145 提议 1)。
+   *
+   * 过①「跟现有哪一格都不一样吗」:与 `empty-artifact` 的**证据**相反 —— 那一格是"什么都没写",
+   * 这一格是"写了,写坏了"。过②「下一步一样吗」:也不一样,而这才是分格的理由 ——
+   * `empty-artifact` 的处置是「重跑这个节点」,这一格的处置是**「点名的文件整段重写」**。
+   * plana run B/C 的读数直接支持这条区分:在坏掉的文本上继续打补丁是 58 个语法错的来源,
+   * 而「读全文 → 重写全文」那一刀 18 → 0。
+   */
+  | 'broken-artifact'
   /** research leaf 零来源:没有任何真 URL 抓取痕迹(假 grounded)。 */
   | 'no-sources'
   /** 配置面缺件:没有 agentRunner/commandRunner/researchRunner,或 attach_media 无可用媒体。 */
@@ -186,6 +196,14 @@ export const FAILURE_KIND_INFO: Record<NodeFailureKind, FailureKindInfo> = {
     loopState: 'STALLED',
     evidence: '产物闸: filesTouched 空,或声称的产物不在盘上',
     nextAction: '重跑这个节点(它自报完成但盘上没有对应改动)',
+    retryable: true,
+  },
+  'broken-artifact': {
+    loopState: 'STALLED',
+    evidence: '写后即验: 节点写完之后, 它写过的文件语法解析不通过(部分写入: 新旧内容并存 / 括号错位)',
+    nextAction:
+      '把判词点名的文件**整段重写**(读全文 → 重写全文), **别在坏掉的文本上继续打补丁** —— ' +
+      '补丁式修复正是这类损坏的来源。文件坏了不是"内容不够好", 下游一切判断在修好之前都不作数',
     retryable: true,
   },
   'no-sources': {

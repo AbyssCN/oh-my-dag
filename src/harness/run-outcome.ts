@@ -245,6 +245,9 @@ const NODE_TO_RUN: Record<NodeFailureKind, RunOutcomeKind | null> = {
   // 任务书/工具面), 与 stall 的 infra-error (换池有用) 正相反。
   'spin-fused': 'blocked',
   'empty-artifact': 'not-converged',
+  // 同 empty-artifact: run 级只回答"这跑成没成", 而"写了但写坏了"与"什么都没写"在这一层
+  // 是同一个答案 (没收敛)。两者的区别在**下一步**, 那是节点级那张表的活。
+  'broken-artifact': 'not-converged',
   'no-sources': 'not-converged',
   'missing-capability': 'missing-capability',
   'infra-error': 'infra-error',

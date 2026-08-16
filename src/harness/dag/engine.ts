@@ -126,6 +126,7 @@ import { send } from '../../model/gateway';
 import { collectDepMedia } from '../leaf-media';
 import { recordGeneration, recordSpan } from '../../model/langfuse';
 import { recordSeatUsage } from '../../model/seat-usage';
+import { parseWrittenFiles, renderParseFailures } from '../write-parse-gate';
 import { ModelError, isTransientModelFault } from '../../model';
 import { classifyCommandExit, withFailureKind, upstreamFailureNotice } from '../node-failure';
 import { collectRepairGuidance } from './repair-guidance';
@@ -3049,6 +3050,23 @@ async function executePlan(
             return {
               id, status: 'failed', failureKind: 'empty-artifact', kind: 'agent', model,
               output: `[产物校验失败: ${why}] 原输出: ${text.slice(0, 400)}`,
+              deps: node.depends_on ?? [], usage, filesTouched, ...(filesRead.length ? { filesRead } : {}),
+            };
+          }
+          // 写后即验 (#145 提议 1, 2026-08-16)。产物**在**不等于产物**是好的**: plana M3.5 那三次
+          // 编辑损坏全都通过了上面那道存在性闸, 其中一次留下 58 个语法错、整棵树编译不过。
+          // 判在这里 = pi 与 claude-sdk 两个通道共用一道闸; 判在节点末而不是每次写之后的理由
+          // (中间态假阳性) 写在 write-parse-gate.ts 的文件头。
+          const parseFailures = parseWrittenFiles(filesTouched, root);
+          if (parseFailures.length > 0) {
+            const why = renderParseFailures(parseFailures);
+            logger.warn(
+              { node: id, files: parseFailures.map((f) => f.path) },
+              '[omd/executor-dag] 写后即验: 节点写完之后文件语法解析不过 → 节点 failed (部分写入损坏)',
+            );
+            return {
+              id, status: 'failed', failureKind: 'broken-artifact', kind: 'agent', model,
+              output: `[${why}] 原输出: ${text.slice(0, 400)}`,
               deps: node.depends_on ?? [], usage, filesTouched, ...(filesRead.length ? { filesRead } : {}),
             };
           }
