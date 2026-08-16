@@ -100,6 +100,7 @@ import { gateFalseCompletion, renderFalseCompletionFindings } from '../plan/fals
 const SHELL_FACT_CAP = 6;
 import { verifiedShellWriteTargets } from '../shell-writes';
 import { blamePathCandidates, failureExcerpt } from '../failure-trace';
+import { findRedOracles, renderOracleRedVerdict } from './oracle-red';
 import { captureRollbackAnchor } from '../rollback-anchor';
 import { serializeWriteRaces, staticLintPlan } from '../plan/static-lint';
 import { autoRewriteLeafTier } from '../plan/leaf-tier-gate';
@@ -4065,6 +4066,20 @@ async function runDagInternalCore(
     // 词表同 infraStopped:「修引擎/换池, 别加轮数」。吞异常不吞证据: 错误原文进 reason 与日志。
     let verifierDown = false;
     const runVerifier = async (): Promise<VerifierVerdict> => {
+      // 闸红短路 (#145 提议 5 Phase A, 2026-08-17): 图内确定性 oracle 已经说了不 → **不请强模型**。
+      // 判据与"不短路"的那几格写在 oracle-red.ts 的文件头 (「oracle 说了不」≠「oracle 没能说话」)。
+      // 包在 runVerifier 里而不是调用点: 升级重规划轮末尾那次 (`verdict = await runVerifier()`)
+      // 走的是同一个闭包 —— 重画之后闸还红, 那一发同样不该打。两个调用点各写一份必漂。
+      // ⚠ 不置 verifierDown: 判卷官没坏, 是我们选择不问它。escalation 环照常开。
+      const reds = findRedOracles(exec.results);
+      if (reds.length > 0) {
+        const reason = renderOracleRedVerdict(reds);
+        logger.info(
+          { nodes: reds.map((r) => r.id), round: attempts },
+          '[omd/executor-dag] 闸红短路 → 判词由确定性 oracle 合成, 强模型判卷这一发不打',
+        );
+        return { pass: false, reason, usage: { in: 0, out: 0 } };
+      }
       try {
         // S-33 集成接线: artifactRoot 必须给, 终审三态 (registered/unregistered/missing) 才不会
         // 全程沉默 (summarizeResults 只在 artifactRoot 存在时判产物, 见 verifier.ts:123)。
