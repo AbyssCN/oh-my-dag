@@ -505,7 +505,14 @@ export interface DagObservation {
    * **只报不拦** (同上面几条): 要不要真把检测者的写工具收掉是单独的拨闸决定, 而今天 n=4,
    * 离读得出基率还差得远。判据与分母见 `plan/observers.detectDetectorWrites`。
    */
-  kind: 'undeclared-artifact-dep' | 'loop-no-progress' | 'write-race' | 'missing-input' | 'missing-command-target' | 'dangling-dependency' | 'truncated-dependency' | 'impossible-quorum' | 'loop-no-artifact-change' | 'leaf-spin' | 'scheduled-artifact' | 'novelty-collapse' | 'verbatim-drop' | 'unsupported-claim' | 'detector-wrote';
+  kind: 'undeclared-artifact-dep' | 'loop-no-progress' | 'write-race' | 'missing-input' | 'missing-command-target' | 'dangling-dependency' | 'truncated-dependency' | 'impossible-quorum' | 'loop-no-artifact-change' | 'leaf-spin' | 'scheduled-artifact' | 'novelty-collapse' | 'verbatim-drop' | 'unsupported-claim' | 'detector-wrote'
+    /**
+     * `claim-anchor` (2026-08-16, #145 附录 §9.5) = **产出里的「file:line + 字面量」声称与盘上对不上**。
+     * 现场: 代码早换成 token 了, 而同一个文件头的简报仍写着裸 hex —— 终审验了代码干净,
+     * 没交叉核声称。**简报是给下一个人做决定用的**, 失真的简报让后续判断建立在错误前提上。
+     * **只报不判**, 三级判据与结案条件见 `harness/claim-anchor.ts`。
+     */
+    | 'claim-anchor';
   /** 涉及的节点 id (lint = [reader, writer]; 空转 = 被反复拒绝的那批)。 */
   nodes: string[];
   /** 人与模型都读的一句话 (进 prompt 的就是它)。 */

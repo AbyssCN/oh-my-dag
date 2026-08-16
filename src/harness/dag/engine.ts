@@ -127,6 +127,7 @@ import { collectDepMedia } from '../leaf-media';
 import { recordGeneration, recordSpan } from '../../model/langfuse';
 import { recordSeatUsage } from '../../model/seat-usage';
 import { parseWrittenFiles, renderParseFailures } from '../write-parse-gate';
+import { checkClaimAnchors } from '../claim-anchor';
 import { applyPoisonRollback, planPoisonRollback } from '../poison-rollback';
 import { ModelError, isTransientModelFault } from '../../model';
 import { classifyCommandExit, withFailureKind, upstreamFailureNotice } from '../node-failure';
@@ -3097,6 +3098,27 @@ async function executePlan(
               deps: node.depends_on ?? [], usage, filesTouched, ...(filesRead.length ? { filesRead } : {}),
               ...observabilityTail(),
             };
+          }
+          // 声称锚点 (#145 附录 §9.5, 2026-08-16): 产物里的「file:line + 字面量」声称,
+          // 能不能在那个文件里找到。**只报不判** —— 判据本身 L1/L2 零误报, 但那是相对 root 的,
+          // 而节点输出里的路径未必以引擎这个 root 为基 (见 claim-anchor.ts 的 isBlockingLevel 注)。
+          // 先攒分布: L3_REVIEW_AFTER 个样本之后必须回来结案, 别再变成第二笔无人认领的账。
+          try {
+            const claims = checkClaimAnchors(text, { root });
+            if (claims.length > 0) {
+              observe([
+                {
+                  kind: 'claim-anchor',
+                  nodes: [id],
+                  message:
+                    `节点 ${id} 的产出里有 ${claims.length} 条对不上的声称: ` +
+                    claims.slice(0, 3).map((c) => `[${c.level}] ${c.message}`).join(' | '),
+                },
+              ]);
+            }
+          } catch (err) {
+            // fail-open 不吞证据: 这是观察面, 绝不能把一个真做完的节点带塌。
+            logger.warn({ node: id, err: (err as Error).message }, '[omd/executor-dag] 声称锚点检查抛错 (已吞, 只丢可见性)');
           }
           // 写后即验 (#145 提议 1, 2026-08-16)。产物**在**不等于产物**是好的**: plana M3.5 那三次
           // 编辑损坏全都通过了上面那道存在性闸, 其中一次留下 58 个语法错、整棵树编译不过。
