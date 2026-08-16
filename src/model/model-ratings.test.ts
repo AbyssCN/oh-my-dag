@@ -40,6 +40,30 @@ describe("lookupRating", () => {
 		expect(lookupRating("deepseek:deepseek-v4-pro")?.intelligence).toBe(44);
 	});
 
+	// F5 (issue #145 §6, plana M3.5 实战): 这两座在生产里跑了一整程都吃启发兜底 (45 / 0.5)。
+	// 兜底把两个真实单价差 17 倍的模型压成同一个数, 而 Opus 的 45 还压在 floor 57 之下 →
+	// conductor 白吃弱模型教练段。**证伪方式**: 从 model-ratings.json 删掉对应条目 → 落回
+	// 45/0.5, 这两条与下面 strong-coord 那条一起红。
+	test("F5 补账: claude-code:claude-opus-5 走快照不走兜底 (59 / 3.85)", () => {
+		expect(lookupRating("claude-code:claude-opus-5")).toEqual({
+			name: "claude opus 5",
+			intelligence: 59,
+			costUsd: 3.85,
+			speedTokS: 58,
+		});
+	});
+
+	test("F5 补账: minimax-cn:MiniMax-M3 走快照不走兜底 (45 / 0.22)", () => {
+		// ⚠ intelligence 恰好与兜底同为 45 —— 这条测的是 costUsd: 兜底给 0.5, 真值 0.22。
+		// 「一个在任何干预下都不动的数量的是尺子」: 只断言 intelligence 的话这条永远绿。
+		expect(lookupRating("minimax-cn:MiniMax-M3")).toEqual({
+			name: "minimax m3",
+			intelligence: 45,
+			costUsd: 0.22,
+			speedTokS: 80,
+		});
+	});
+
 	test("未知 coord 含 'pro' → 强档兜底 (45/0.5)", () => {
 		const r = lookupRating("somevendor:mystery-pro-1");
 		expect(r).toMatchObject({

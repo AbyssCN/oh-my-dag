@@ -1,13 +1,16 @@
 {
   "source": "artificialanalysis.ai",
+  "costUsdMeaning": "AA 混合单价 (7:2:1 = cacheHit:input:output), USD / 1M token。⚠ 这里记的是**牌价**, 不是我们的边际成本 —— 订阅通道的「这一发不花美元」由 cost-ledger.ts 的 channel 三态答 (subscription → costUsd:null), 不在本表抹平。'gpt 5.6 sol' 那条 0 是 2026-08-05 订阅接线时留下的旧口径偏差 (d3c57a2), 与本行相悖但无消费者读 costUsd 做决策, 未随手改 —— 见 issue #145 §6。",
   "ratings": [
     { "name": "gpt 5.6 sol", "intelligence": 62, "costUsd": 0, "speedTokS": null },
+    { "name": "claude opus 5", "intelligence": 59, "costUsd": 3.85, "speedTokS": 58 },
     { "name": "kimi k3", "intelligence": 57, "costUsd": 0.95, "speedTokS": 33 },
     { "name": "glm 5.2", "intelligence": 51, "costUsd": 0.32, "speedTokS": 179 },
     { "name": "qwen3.7 max", "intelligence": 46, "costUsd": 1.03, "speedTokS": 198 },
     { "name": "deepseek v4 pro", "intelligence": 44, "costUsd": 0.04, "speedTokS": null },
     { "name": "deepseek v4 flash", "intelligence": 40, "costUsd": 0.14, "speedTokS": null },
     { "name": "mimo v2.5", "intelligence": 42, "costUsd": 0.20, "speedTokS": null },
-    { "name": "mimo v2.5 pro", "intelligence": 45, "costUsd": 0.25, "speedTokS": null }
+    { "name": "mimo v2.5 pro", "intelligence": 45, "costUsd": 0.25, "speedTokS": null },
+    { "name": "minimax m3", "intelligence": 45, "costUsd": 0.22, "speedTokS": 80 }
   ]
 }
