@@ -903,6 +903,12 @@ async function executePlan(
     artifactRoot?: string;
     /** S1 埋点: agent leaf watchdog 采集, 形状同 {@link NodeCheckpoint.watchdog}; 只透传, 不判定。 */
     watchdog?: NodeCheckpoint['watchdog'];
+    /**
+     * 工具调用序列 (2026-08-16)。**成功节点也要记** —— hashline stale 与 §8.5 的判据都需要
+     * 「正常长什么样」当对照面; 只记失败节点的话, 攒出来的分布没有分母。
+     */
+    toolSteps?: NodeCheckpoint['toolSteps'];
+    toolStepsDropped?: number;
   }): void => {
     if (!continuity) return;
     try {
@@ -960,6 +966,8 @@ async function executePlan(
         ...(Object.keys(inputHashes).length ? { inputHashes } : {}),
         ...(nounAnnotations ? { nounAnnotations } : {}),
         ...(opts.watchdog ? { watchdog: opts.watchdog } : {}),
+        ...(opts.toolSteps ? { toolSteps: opts.toolSteps } : {}),
+        ...(opts.toolStepsDropped ? { toolStepsDropped: opts.toolStepsDropped } : {}),
         durationMs: Date.now() - opts.t0,
         createdAt: new Date().toISOString(),
         ...(dagGeneration ? { generation: dagGeneration } : {}),
@@ -2812,6 +2820,8 @@ async function executePlan(
       let filesTouched: string[] = [];
       let filesRead: string[] = [];
       let toolCalls: number | undefined;
+      let toolSteps: LeafResult['toolSteps'];
+      let toolStepsDropped: number | undefined;
       // agent leaf 经 bash 跑过的命令 + 退出码 (2026-08-05)。undefined = 这条链上没人报
       // (inproc leaf / 旧 runner / 测试替身), 与 `[]` (跑了但一次没用 bash) 刻意分开。
       let shellRuns: ShellRun[] | undefined;
@@ -2922,6 +2932,10 @@ async function executePlan(
         // **完全不存在** —— 于是「产物声称的引擎校验动作 ⊆ 引擎记录的动作」这个谓词的记录集
         // 缺了主要合法元素, 诚实节点与顺手编一句的节点在 facts 上长得一模一样。
         shellRuns = r.shellRuns;
+        // 工具序列 (2026-08-16): 既有三本账都答不了「它按什么顺序做了什么」, 而 hashline stale
+        // 那条闸与 §8.5 攒了一年的分布, 判据都写在顺序上。见 ToolStep 的注。
+        toolSteps = r.toolSteps;
+        toolStepsDropped = r.toolStepsDropped;
         // S1 埋点: 真 runner (agent-leaf.ts) 恒嵌套在 `.watchdog` 下; 隔离测试用的 fake runner
         // 为单独量出「引擎透传保真」这一段, 直喂顶层 stalled/timedOut/touchTimelineMs/toolTimelineMs
         // 四个字段 (省一次真 SDK 流) —— 两种形状都收, 嵌套优先, 都没有 = 该 runner 不统计。
@@ -3040,6 +3054,8 @@ async function executePlan(
             ...(shellRuns ? { shellRuns } : {}),
             ...(watchdog ? { watchdog } : {}),
             ...(writeCounts ? { writeCounts } : {}),
+            ...(toolSteps ? { toolSteps } : {}),
+            ...(toolStepsDropped ? { toolStepsDropped } : {}),
           });
           const missing = filesTouched.filter((p) => !existsSync(p.startsWith('/') ? p : `${root}/${p}`));
           if (filesTouched.length === 0 || missing.length > 0) {
@@ -3133,7 +3149,7 @@ async function executePlan(
         : [];
       // `artifactRoot` 跟着 `filesTouched` 一起出图: 一组相对路径离开它的根就没有意义,
       // 而 R2 隔离档下这个根与引擎进程的 cwd 不是同一个 (见 LeafResult.artifactRoot 的注)。
-      const leaf: LeafResult = { id, status: 'done', kind: useAgent ? 'agent' : 'inproc', model, output: text, deps: node.depends_on ?? [], usage, filesTouched, ...(artifactRoot ? { artifactRoot } : {}), ...(filesRead.length ? { filesRead } : {}), ...(toolCalls !== undefined ? { toolCalls } : {}), ...(shellRuns ? { shellRuns } : {}), ...(writeCounts ? { writeCounts } : {}), ...(writeCandidates.length ? { writeCandidates } : {}) };
+      const leaf: LeafResult = { id, status: 'done', kind: useAgent ? 'agent' : 'inproc', model, output: text, deps: node.depends_on ?? [], usage, filesTouched, ...(artifactRoot ? { artifactRoot } : {}), ...(filesRead.length ? { filesRead } : {}), ...(toolCalls !== undefined ? { toolCalls } : {}), ...(shellRuns ? { shellRuns } : {}), ...(writeCounts ? { writeCounts } : {}), ...(toolSteps ? { toolSteps } : {}), ...(toolStepsDropped ? { toolStepsDropped } : {}), ...(writeCandidates.length ? { writeCandidates } : {}) };
       saveDoneCheckpoint({
         id,
         kind: useAgent ? 'agent' : 'inproc',
@@ -3148,6 +3164,8 @@ async function executePlan(
         // agent leaf 自报的 cwd 最准 (它就是写文件的那个进程); inproc 无产物, 参数无所谓。
         ...(artifactRoot ? { artifactRoot } : {}),
         ...(watchdog ? { watchdog } : {}),
+        ...(toolSteps ? { toolSteps } : {}),
+        ...(toolStepsDropped ? { toolStepsDropped } : {}),
       });
       return leaf;
   };
@@ -3464,6 +3482,8 @@ async function executePlan(
           ...(settled.shellRuns ? { shellRuns: settled.shellRuns } : {}),
           ...(settled.toolCalls !== undefined ? { toolCalls: settled.toolCalls } : {}),
           ...(settled.writeCounts ? { writeCounts: settled.writeCounts } : {}),
+          ...(settled.toolSteps ? { toolSteps: settled.toolSteps } : {}),
+          ...(settled.toolStepsDropped ? { toolStepsDropped: settled.toolStepsDropped } : {}),
           durationMs: startedAt ? Date.now() - startedAt : 0,
           createdAt: new Date().toISOString(),
           ...(dagGeneration ? { generation: dagGeneration } : {}),

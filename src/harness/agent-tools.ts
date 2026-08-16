@@ -729,6 +729,7 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
 
   const bash: OmdTool<{ exitCode: number | undefined; truncated: boolean }> = {
     name: 'bash',
+
     label: 'bash',
     description:
       'Run a shell command in the working root. Irreversible commands (rm -rf /, git push --force, ' +
@@ -780,9 +781,11 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
       // ③ bwrap 围栏 (2026-08-13): 工作根 + /tmp 可写, 其余全只读。**包的是命令串** ——
       //    pi 每次 exec 都 spawn 全新 shell (无跨调用 cd 状态), 逐条包因此是安全的。
       //    沙箱起不来 → `sandboxCommand` 原样返回 (降级裸跑, 告警在 probe 那侧)。
-      const toRun = opts.sandbox
-        ? sandboxCommand(command, { root: opts.sandbox.root, ...(opts.sandbox.writable ? { extraWritable: opts.sandbox.writable } : {}) })
-        : command;
+      const toRun = withPipefail(
+        opts.sandbox
+          ? sandboxCommand(command, { root: opts.sandbox.root, ...(opts.sandbox.writable ? { extraWritable: opts.sandbox.writable } : {}) })
+          : command,
+      );
       /**
        * ★ **流式输出**(2026-08-14)。pi 一直提供两条通道,omd 此前**两条都没接**:
        * 工具签名不收 `onUpdate`、`executeShellWithCapture` 的 `onChunk` 一次都没传
@@ -876,4 +879,42 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
   };
 
   return [read, write, edit, ls, grep, bash];
+}
+
+/**
+ * **管道退出码旋钮**(2026-08-16,#145 附录「新增提议」)。默认 **off** —— 这是一次可对照的实验,
+ * 不是一次修复。
+ *
+ * ## 现场
+ *
+ * run D 的 `final_review` 节点独立重跑五闸时发现:`cmd 2>&1 | tail -5` 之后 `$?` 拿到的是
+ * `tail` 的退出码,不是 `cmd` 的 —— 于是**一条失败的验证命令看起来是绿的**。
+ * 它当时自己改写了命令重新捕获,但那**不构成"学会了"**:leaf 是冷启动,run 之间不共享,
+ * 下一次会不会再犯只取决于任务文本里有没有再写一遍(见另开的那条 issue)。
+ *
+ * **退出码错了会直接造成假绿,让"闸通过"这件事本身不可信** —— 这比本轮其余任何一条都危险。
+ *
+ * ## ⚠ 为什么默认关:它是**行为翻转**,不是补漏
+ *
+ * `set -o pipefail` 会让一批**今天正常返回 0** 的命令开始返回非 0,最典型的是
+ * `cmd | head -3` —— `head` 读够就退出,`cmd` 吃 SIGPIPE 死掉,pipefail 下整条判失败。
+ * 那种红是**假红**。所以这条要先跑对照,两侧读数都记(只记好消息的实验没有信息量):
+ *
+ * - **单一变量**:`OMD_BASH_PIPEFAIL` 开 / 关,别的一个都不动;
+ * - **预先声明的成败信号**:开臂下从 exit 0 变非 0 的命令里,**真错**(管道确实掩盖了失败)
+ *   与 **假红**(SIGPIPE 那类)各占多少。真错 > 假红 → 值得默认开;反之不开;
+ * - **对照基线**:同一批命令、同一棵树,两臂各跑一次。
+ *
+ * 判据现在读得出来了:每条命令的原文与退出码都进 `shellRuns`,工具序列进 `toolSteps`。
+ *
+ * ## 实现:shell 未知,所以必须 fail-open
+ *
+ * 命令串最终落到 pi 的 `env.exec`,**用的是哪个 shell 我们不掌握**(dash 不支持 pipefail,
+ * 它会报错并返回非 0)。所以探测写成 `2>/dev/null || true`:不支持就静默跳过,
+ * **绝不会因为加了这一句把一条本来能跑的命令弄坏**。
+ * 用 `{ }` 而不是 `( )` —— 后者起子 shell,选项设了也传不到正文那一行。
+ */
+export function withPipefail(command: string, env: NodeJS.ProcessEnv = process.env): string {
+  if (env.OMD_BASH_PIPEFAIL !== '1') return command; // 默认关 = 与改动前逐字相同
+  return `{ set -o pipefail 2>/dev/null || true; }; ${command}`;
 }

@@ -93,6 +93,32 @@ export function declaredOutput(n: PlanNodeLike): string | undefined {
   return typeof p === 'string' && p.trim() ? p.trim() : undefined;
 }
 
+/**
+ * 一个节点**声明**的写集 = `write_set` ∪ `output_path`(2026-08-16, #145 提议 2)。
+ *
+ * 两个都取,与 `plan-passes/trigger-pass.ts` 的 `writeSetOf` 同一条理由:各自都不全 ——
+ * `output_path` 只表达"主产物"一个,`write_set` 是 ex-ante 多路径声明。
+ *
+ * ⚠ **诚实边界,别把这条读成「共享文件竞写解决了」**:`conductor-plan.ts:90` 明写
+ * `write_set` **刻意不进 conductor prompt**(O-1 未裁),所以**机器画的图上它恒为空** ——
+ * 本函数在那类图上与只读 `output_path` 逐字等价。它买到的只有手写 / SDD 直通那类图。
+ *
+ * 更要紧的是:run C 那次损坏(`routes.tsx` 被两批各改一次,第二次改烂)是**先后覆盖**,
+ * 而本函数喂的闸(`serializeWriteRaces`)治的是**并发竞争** —— 补一条依赖边把它们排成
+ * 前后,并不能阻止后写的那个基于过期内容把前一个的改动洗掉。那条病的确定性判据在
+ * hashline 的 stale 检测上(`hashline.ts:16`,今天是 fail-soft),不在计划层。
+ */
+export function declaredWriteSet(n: PlanNodeLike): string[] {
+  const raw = (n as { write_set?: unknown }).write_set;
+  const out = new Set<string>();
+  if (Array.isArray(raw)) {
+    for (const p of raw) if (typeof p === 'string' && p.trim()) out.add(p.trim());
+  }
+  const main = declaredOutput(n);
+  if (main) out.add(main); // Set 去重: 两处写了同一路径不该被当成两个写者
+  return [...out];
+}
+
 /** 命令掺了任何 shell 语法/变量/引号/glob → 整条跳过, 静态解析不了的不猜。 */
 function hasShellSyntax(cmd: string): boolean {
   return /[$`"'\\&|;<>*?[\]{}]|\r|\n/.test(cmd);
@@ -204,8 +230,8 @@ export function staticLintPlan(
   // 有时候产物不对 —— 这类静默不确定性是最贵的一种。
   const byPath = new Map<string, string[]>();
   for (const id of ids) {
-    const p = declaredOutput(plan.nodes[id]!);
-    if (p) byPath.set(p, [...(byPath.get(p) ?? []), id]);
+    // 2026-08-16: 从「只看 output_path」扩到「write_set ∪ output_path」。诚实边界见 declaredWriteSet。
+    for (const p of declaredWriteSet(plan.nodes[id]!)) byPath.set(p, [...(byPath.get(p) ?? []), id]);
   }
   for (const [path, writers] of byPath) {
     if (writers.length < 2) continue;
@@ -415,8 +441,8 @@ export function serializeWriteRaces(plan: ConductorPlan): WriteRaceSerialization
   }
   const byPath = new Map<string, string[]>();
   for (const id of ids) {
-    const p = declaredOutput(plan.nodes[id]!);
-    if (p) byPath.set(p, [...(byPath.get(p) ?? []), id]);
+    // 同 staticLint 那处: write_set ∪ output_path (2026-08-16, #145 提议 2)。
+    for (const p of declaredWriteSet(plan.nodes[id]!)) byPath.set(p, [...(byPath.get(p) ?? []), id]);
   }
   const added: WriteRaceSerialization['added'] = [];
   const nodes: ConductorPlan['nodes'] = { ...plan.nodes };

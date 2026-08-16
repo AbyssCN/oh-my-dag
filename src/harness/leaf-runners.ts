@@ -137,6 +137,16 @@ export interface AgentLeafResult {
    */
   writeEffects?: FileWriteEffect[];
   /**
+   * 本次 leaf 的**工具调用序列**(按发生顺序,2026-08-16)。省略 = 该 runner 不统计。
+   *
+   * 有界:超过 {@link TOOL_STEPS_CAP} 时保**头 + 尾**(同 `failureExcerpt` 的截断口径 ——
+   * 中间截掉是因为两头才是诊断要看的:开头是它怎么起手,结尾是它卡在哪)。
+   * 截了多少写在 {@link AgentLeafResult.toolStepsDropped},**不许静默截断**。
+   */
+  toolSteps?: ToolStep[];
+  /** 被截掉的步数。缺席/0 = 没截。有值时 `toolSteps` 是头尾拼的,中间不连续。 */
+  toolStepsDropped?: number;
+  /**
    * 本次 leaf 经 **bash 工具**跑过的命令 + 退出码(2026-08-05)。省略 = 该 runner 不统计。
    *
    * 为什么补这条: agent leaf 手里有 bash,「我跑了 `bun test`,3/3 通过」是**诚实自验**的
@@ -172,6 +182,52 @@ export interface FileWriteEffect {
    */
   noop: boolean;
 }
+/**
+ * 一步工具调用的**确定性痕迹**(2026-08-16,#145 提议 2 复盘补的那一位)。
+ *
+ * ## 为什么这一位非补不可
+ *
+ * 已有的三本账各答各的,**没有一本答得了"它按什么顺序做了什么"**:
+ * `toolCalls` 只有次数 · `watchdog.toolTimelineMs` 只有时间戳没有名字 ·
+ * `drift.stuckSigs` 只在**空转时**才有签名。于是下面这些问题今天结构上答不出来:
+ *
+ * - **hashline stale 之后有没有重新接地**。`hashline.ts:16` 是 **fail-soft** 的:
+ *   stale 标签被拒只返一段文本,靠 `hashline.ts:66` 那条 prompt 规则叫模型
+ *   「STOP,重 hashline_read 接地,别在没重读的输出上继续叠行号编辑(会复合腐烂)」——
+ *   而本仓已有**五个** "prompt 规则按不住" 的实例。判据的可执行版就是一句序列判断:
+ *   *「这个节点里出现了 `hashline_edit` 的 noop,而此后没有一次 `hashline_read` 就又发了 edit」*
+ *   —— 零启发式、零模型判断,但它**要求知道顺序**,而顺序今天没人记。
+ * - **§8.5 那条攒了一年的分布**(`leaf-runners.ts` 的 `writeEffects` 注:「要不要因此判失败,
+ *   得先有分布」)。今天只有 `[写调用数, noop 数]` 两个标量,分不出"复核了一遍"(正当)
+ *   与"被 stale 连拒三次"(病)—— 而这两者的下一步正相反。
+ *
+ * ## 只记**看得见**的,不记推断
+ *
+ * 工具名与路径都取自 pi 的 `tool_execution_start/end` 事件原文;`noop` 取自同一次调用的
+ * `diffWriteEffect`。**不猜**:非读写工具没有 `path`(bash 的写目标是另一条链的活)。
+ */
+/**
+ * 工具序列上限(头 300 + 尾 100)。实测量级:run C 单节点最多 125 步、空转熔断那次 84 步 ——
+ * 400 足够装下正常与病态两类,而不至于让一次跑飞的节点把 checkpoint 撑爆。
+ */
+export const TOOL_STEPS_CAP = 400;
+/** 截断时保留的头部步数(尾部 = `TOOL_STEPS_CAP - TOOL_STEPS_HEAD`)。 */
+export const TOOL_STEPS_HEAD = 300;
+
+export interface ToolStep {
+  /** 工具名原文(`bash` / `read` / `hashline_read` / `hashline_edit` / `write` / `edit` / …)。 */
+  tool: string;
+  /** 目标路径。读写工具才有;`hashline_edit` 一个 patch 多文件时取第一个(全集在 filesTouched)。 */
+  path?: string;
+  /** 这次调用报错了(pi 的 `isError`)。**缺席 = 没报错**,不是"不知道"。 */
+  error?: boolean;
+  /**
+   * 写工具专用:写完之后内容与写前**逐字相同**。
+   * ⚠ 这正是 hashline stale 被拒的指纹 —— 工具返回"成功"(fail-soft 返文本),而盘上没动。
+   */
+  noop?: boolean;
+}
+
 /** 注入点:executor-dag 的 agent-kind 节点经此跑。 */
 export type AgentLeafRunner = (input: AgentLeafInput) => Promise<AgentLeafResult>;
 

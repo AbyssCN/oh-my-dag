@@ -3,7 +3,7 @@ import type * as Gateway from '../../model/gateway';
 import type { AgentTemplate } from '../agent-templates';
 import type { ConductorPlan } from '../conductor-plan';
 import type { CavemanLevel } from '../caveman';
-import type { AgentLeafRunner, CommandLeafRunner, LeafModelRouter, ResearchLeafRunner, ShellRun } from '../leaf-runners';
+import type { AgentLeafRunner, CommandLeafRunner, LeafModelRouter, ResearchLeafRunner, ShellRun, ToolStep } from '../leaf-runners';
 import type { CheckpointManager } from '../continuity/checkpoint-manager';
 import type { VerifierFn } from '../verifier';
 import type { FaninSummaryConfig } from '../fanin-summary';
@@ -630,6 +630,14 @@ export interface LeafResult {
    * ⚠ 缺席 = 这条链上没人报 (inproc leaf / 旧 runner), 与 `[]` (跑了但一次没用 bash) 是两件事。
    */
   shellRuns?: ShellRun[];
+  /**
+   * agent leaf 的**工具调用序列** (2026-08-16, 来自 `AgentLeafResult.toolSteps`)。
+   * 缺席 = 非 agent 叶 / runner 未报, **不是**"一步都没调"(那是 `[]`)。
+   * 它答的是既有三本账都答不了的那个问题: **它按什么顺序做了什么** —— 判据见 `ToolStep` 的注。
+   */
+  toolSteps?: ToolStep[];
+  /** 序列被截掉的步数 (头尾保留法)。缺席/0 = 没截。 */
+  toolStepsDropped?: number;
   /** 早期心跳闸判停摆 (issue #5): provider 挂起, 未等满硬超时即中止 → settle 记 failureKind='stall'。 */
   stalled?: boolean;
   /**

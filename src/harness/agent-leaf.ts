@@ -183,8 +183,9 @@ export function agentScaffold(opts: {
 }
 
 // 类型单一真理源 = leaf-runners.ts (executor-dag 只认接口形状, 不 import 实现) — 这里 re-export 保旧调用面。
-export type { AgentLeafInput, AgentLeafResult, AgentLeafRunner, FileWriteEffect, ShellRun } from './leaf-runners';
-import type { AgentLeafInput, AgentLeafResult, AgentLeafRunner, FileWriteEffect, ShellRun } from './leaf-runners';
+export type { AgentLeafInput, AgentLeafResult, AgentLeafRunner, FileWriteEffect, ShellRun, ToolStep } from './leaf-runners';
+import type { AgentLeafInput, AgentLeafResult, AgentLeafRunner, FileWriteEffect, ShellRun, ToolStep } from './leaf-runners';
+import { TOOL_STEPS_CAP, TOOL_STEPS_HEAD } from './leaf-runners';
 
 export interface AgentLeafRunnerOpts {
   /** 工具落盘的工作根。默认 process.cwd()。每个 agent leaf 应被 scope 到此根下的原子产物。 */
@@ -977,6 +978,11 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // 快照只在 start 时取一次: end 时原文已经没了, 事后补不出来 (这是为什么它必须挂在这条链上,
     // 而不能做成一个跑完之后扫一遍盘的脚本)。
     const writeEffects: FileWriteEffect[] = [];
+    // 工具调用序列 (2026-08-16)。**顺序本身就是判据** —— 见 ToolStep 的注:
+    // 「stale 被拒之后有没有重新接地」这句话只有在有序的序列上才判得了。
+    // 无界追加, 出口处再截头尾 (截断口径与 failureExcerpt 一致, 截了多少显式报)。
+    const toolSteps: ToolStep[] = [];
+    const stepByCall = new Map<string, ToolStep>();
     const snapByCall = new Map<string, Map<string, FileSnapshot>>();
     let toolCalls = 0; // 工具调用计数 (prompt 档的路由效率读数, 见 AgentLeafResult.toolCalls)。
     let pendingTools = 0; // 在飞工具数 —— >0 时看门狗不计时 (跑 10 分钟的 bun test 是正当工作)
@@ -1017,6 +1023,20 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           }
         }
         const args = (e.args ?? {}) as { path?: unknown; patch?: unknown };
+        // 序列采集: **每一次**工具调用都记一步 (不只读写工具) —— 中间夹着的 bash/grep 正是
+        // 「stale 被拒之后到底干了什么」的一部分, 只记读写会把序列剪出一个假的因果。
+        {
+          const step: ToolStep = { tool: e.toolName };
+          const p =
+            e.toolName === 'hashline_edit' && typeof args.patch === 'string'
+              ? hashlinePatchPaths(args.patch)[0]
+              : typeof args.path === 'string' && args.path.trim()
+                ? args.path
+                : undefined;
+          if (p) step.path = p;
+          toolSteps.push(step);
+          stepByCall.set(e.toolCallId, step);
+        }
         if (FILE_WRITE_TOOLS.has(e.toolName)) {
           // hashline_edit 路径嵌在 patch 头 (`¶PATH#TAG`), 不是顶层 path —— 必须解析 patch, 否则漏记 → 假 empty-done。
           const paths =
@@ -1040,6 +1060,9 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       } else if (e.type === 'tool_execution_end') {
         pendingTools = Math.max(0, pendingTools - 1);
         shell.note(e); // ⚠ 在 `!isError` 之外记 —— 理由见 createShellRunCollector 的注
+        // 序列回填也在 `!isError` 之外 —— 报错的那一步同样是序列的一部分 (而且往往是最要紧的那步)。
+        const step = stepByCall.get(e.toolCallId);
+        if (step && e.isError) step.error = true;
         if (!e.isError) {
           const ps = pathByCall.get(e.toolCallId);
           if (ps) {
@@ -1049,7 +1072,12 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
               touched.add(p);
               const before = snaps?.get(p);
               if (!before) continue; // 没取到快照 (理论上不会) → 不编一个效果数出来
-              writeEffects.push(diffWriteEffect(p, before, snapshotFile(cwd, p)));
+              const effect = diffWriteEffect(p, before, snapshotFile(cwd, p));
+              writeEffects.push(effect);
+              // 把 noop 回填到序列那一步。**这一位就是 hashline stale 被拒的指纹**:
+              // 工具返回成功 (fail-soft 返文本), 而盘上逐字没动。多路径 patch 只要有一条真变了
+              // 就不算 noop —— 判据是"这次调用有没有改变任何东西"。
+              if (step) step.noop = (step.noop ?? true) && effect.noop;
             }
           }
           // 读失败 (文件不存在等) 不算读过 —— 同"失败的写不算产物"。
@@ -1300,6 +1328,14 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     const spinSummary = drift?.summary();
     return {
       text, usage, promptVersion, filesTouched: [...touched], filesRead: [...readPaths], cwd, toolCalls, stalled, writeEffects,
+      // 工具序列 (2026-08-16)。截头尾而不是截尾: 开头是它怎么起手, 结尾是它卡在哪, 中段最不值钱。
+      // 截了多少显式带走 —— 静默截断会让"它只干了 400 步"和"它干了 4000 步"长得一样。
+      ...(toolSteps.length > TOOL_STEPS_CAP
+        ? {
+            toolSteps: [...toolSteps.slice(0, TOOL_STEPS_HEAD), ...toolSteps.slice(toolSteps.length - (TOOL_STEPS_CAP - TOOL_STEPS_HEAD))],
+            toolStepsDropped: toolSteps.length - TOOL_STEPS_CAP,
+          }
+        : { toolSteps }),
       // 熔断理由 (非 null = 熔断过)。数据不是回调 —— 隔离档 bwrap 子进程只有 JSON 过得了边界
       // (同 DriftTracker.summary 那条注), 信号要出 leaf 只能随结果回来。
       ...(spinFused !== null ? { spinFused } : {}),

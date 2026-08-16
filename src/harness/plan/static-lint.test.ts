@@ -241,7 +241,7 @@ describe('缺命令目标 · 仓库真实集成 (cwd=REPO_ROOT, 真实 scripts/d
 // ── serializeWriteRaces (2026-08-14, plana 夜报回流: 写竞争从只报升级成构造性消灭) ──
 // 反向自检: 把 engine.ts applyPlanFilters 里 serializeWriteRaces 那段删掉 → 下面 engine 侧
 // 接线测试红; 把本函数的补边逻辑删掉 → 第一条当场红。
-import { serializeWriteRaces } from './static-lint';
+import { declaredWriteSet, serializeWriteRaces } from './static-lint';
 
 describe('serializeWriteRaces (写竞争硬闸: 程序化补边串行化)', () => {
   test('★ 两个互不可达的同文件写者 → 补一条边, 补完 lint 不再报竞争', () => {
@@ -398,5 +398,44 @@ describe('悬空依赖 / 不可能达标的配额', () => {
     const f = staticLintPlan(plan({ a: { goal: 'A' }, j: { goal: '判', depends_on: ['a'], requires: 3 } }));
     expect(f[0]!.message).toContain('requires:3');
     expect(f[0]!.message).toContain('≤1');
+  });
+});
+
+describe('declaredWriteSet —— 写集输入面 (2026-08-16, #145 提议 2)', () => {
+  test('write_set ∪ output_path, 且同一路径不算两个写者', () => {
+    // 怎么让它红: 把 declaredWriteSet 改回只读 output_path → 第一条断言少两个路径。
+    expect(declaredWriteSet({ output_path: 'a.ts', write_set: ['b.ts', 'c.ts'] } as never).sort()).toEqual(['a.ts', 'b.ts', 'c.ts']);
+    // Set 去重: 两处写了同一路径, 别把它当成"这个节点写了它两次"。
+    expect(declaredWriteSet({ output_path: 'a.ts', write_set: ['a.ts'] } as never)).toEqual(['a.ts']);
+    expect(declaredWriteSet({} as never)).toEqual([]);
+    // 脏值不猜: 非数组 / 非字符串项 / 空串一律丢。
+    expect(declaredWriteSet({ write_set: 'a.ts' } as never)).toEqual([]);
+    expect(declaredWriteSet({ write_set: [1, '', '  ', 'ok.ts'] } as never)).toEqual(['ok.ts']);
+  });
+
+  test('★ 只在 write_set 里声明的碰撞也被串行化 (此前完全看不见)', () => {
+    // 两个节点各自的 output_path 不同, 但都在 write_set 里点名了同一个 routes.tsx ——
+    // 这正是 run C 那两个 wire 节点的形状。怎么让它红: 把 serializeWriteRaces 的输入
+    // 改回 declaredOutput → added 为空。
+    const plan = {
+      name: 'p',
+      nodes: {
+        wire_i18n: { goal: 'i18n', output_path: 'i18n.ts', write_set: ['shared/routes.tsx'] },
+        wire_routes: { goal: 'routes', output_path: 'nav.ts', write_set: ['shared/routes.tsx'] },
+      },
+    } as unknown as ConductorPlan;
+    const r = serializeWriteRaces(plan);
+    expect(r.added).toEqual([{ from: 'wire_i18n', to: 'wire_routes', path: 'shared/routes.tsx' }]);
+  });
+
+  test('★ 诚实边界: 机器画的图上这条是 no-op (conductor 不写 write_set)', () => {
+    // conductor-plan.ts:90 明写 write_set **刻意不进 conductor prompt**。所以只有 output_path
+    // 的图 —— 也就是 run C 那类图 —— 行为与扩面前**逐字相同**。
+    // 这条测的不是代码, 是**别把这次改动读成「共享文件竞写解决了」**。
+    const machineGraph = {
+      name: 'p',
+      nodes: { a: { goal: 'a', output_path: 'x.ts' }, b: { goal: 'b', output_path: 'y.ts' } },
+    } as unknown as ConductorPlan;
+    expect(serializeWriteRaces(machineGraph).added).toEqual([]);
   });
 });

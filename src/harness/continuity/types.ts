@@ -190,6 +190,19 @@ export interface NodeCheckpoint {
   toolCalls?: number;
   /** `[写调用总数, 其中 no-op 数]`(§8.5 效果指标)。缺席 = runner 没报,不是 `[0,0]`。 */
   writeCounts?: [total: number, noop: number];
+  /**
+   * **工具调用序列**(2026-08-16)。`{ tool, path?, error?, noop? }` 按发生顺序。
+   *
+   * 这一位补的是既有三本账的共同缺口:`toolCalls` 只有次数、`watchdog.toolTimelineMs`
+   * 只有时间戳没有名字、`drift.stuckSigs` 只在空转时才有 —— **没有一本答得了「它按什么
+   * 顺序做了什么」**。而 hashline stale 那条闸(「被拒之后有没有重新接地」)与 §8.5 那条
+   * 攒了一年的分布(「no-op 是正当复核还是被连拒」),判据都写在顺序上。
+   *
+   * 有界:超上限时保头尾,截掉多少写在 `toolStepsDropped`(**不许静默截断**)。
+   */
+  toolSteps?: { tool: string; path?: string; error?: boolean; noop?: boolean }[];
+  /** 序列被截掉的步数。缺席/0 = 没截;有值时 `toolSteps` 头尾拼接,中间不连续。 */
+  toolStepsDropped?: number;
   /** 当前版本 = 1。迁移用。 */
   schemaVersion: 1;
 }
