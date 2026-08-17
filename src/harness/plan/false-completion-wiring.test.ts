@@ -71,7 +71,7 @@ const plan: ConductorPlan = {
 };
 
 /** 一次跑的观察面: judge 调用次数 (D-4 路径 = 0) + 收敛结论 + journal.prevReason 全文。 */
-async function run(checkExit: number, leafText = '已实现 clamp 并写好测试', opts: { freeze?: boolean } = {}): Promise<{
+async function run(checkExit: number, leafText = '已实现 clamp 并写好测试', opts: { freeze?: boolean; root?: string; resume?: boolean } = {}): Promise<{
   judgeCalls: number;
   converged: boolean | undefined;
   judgeConverged: boolean | undefined;
@@ -79,7 +79,7 @@ async function run(checkExit: number, leafText = '已实现 clamp 并写好测�
   prevReason: string;
   root: string;
 }> {
-  const root = mkdtempSync(join(tmpdir(), 'omd-fcwire-'));
+  const root = opts.root ?? mkdtempSync(join(tmpdir(), 'omd-fcwire-'));
   const judgeCalls = { n: 0 };
   const cfg = {
     conductorModel: 'c:m',
@@ -105,7 +105,7 @@ async function run(checkExit: number, leafText = '已实现 clamp 并写好测�
         attempts: 1,
       };
     },
-    continuity: { manager: new CheckpointManager(root), runId: 'run-1' },
+    continuity: { manager: new CheckpointManager(root), runId: 'run-1', ...(opts.resume ? { resume: true } : {}) },
   } as unknown as ExecutorDagConfig;
   const r = await runExecutorDagWithPlan(plan, cfg);
   const journal = JSON.parse(
@@ -158,6 +158,27 @@ describe('#148 判词溯源: 合成票 ≠ judge 票 (B0 run 6251afc4 的形状)
     expect(judgeConverged).toBe(false); // judge 自己的票原样带出 —— 判据轴「judge 太紧」那格靠它
     expect(verdicts).toEqual([{ round: 1, criterion: 'green', judge: 'rejected' }]);
     rmSync(root, { recursive: true, force: true });
+  });
+
+  test('#148 尾巴 resume: journal 已收敛 → judge 票从 verdicts 尾巴还原 (真反对票不丢, 合成票仍缺席)', async () => {
+    // 真反对票那一跑 → 同 root 同 runId 续跑: 环不重开 (judge 0 发), 票跟着结论一起回来。
+    // 证伪: 把 runConductorNode 的 journal-converged 返回里 restoredJudge 那几行删掉 →
+    // 第二跑 judgeConverged=undefined, 下面倒数第二条断言红。
+    const first = await run(0, '已实现 clamp 并写好测试', { freeze: true });
+    expect(first.judgeConverged).toBe(false);
+    const resumed = await run(0, '已实现 clamp 并写好测试', { freeze: true, root: first.root, resume: true });
+    expect(resumed.judgeCalls).toBe(0); // 环没重开, 直接返上次结论
+    expect(resumed.converged).toBe(true);
+    expect(resumed.judgeConverged).toBe(false);
+    rmSync(first.root, { recursive: true, force: true });
+
+    // 合成票那一跑 (gate-rejected): resume 后同样**不**冒充 judge 票 —— 缺席还是缺席。
+    const gated = await run(1, '已实现 clamp 并写好测试', { freeze: true });
+    expect(gated.judgeConverged).toBeUndefined();
+    const gatedResumed = await run(1, '已实现 clamp 并写好测试', { freeze: true, root: gated.root, resume: true });
+    expect(gatedResumed.converged).toBe(true);
+    expect(gatedResumed.judgeConverged).toBeUndefined();
+    rmSync(gated.root, { recursive: true, force: true });
   });
 });
 

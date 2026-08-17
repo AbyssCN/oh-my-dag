@@ -1808,9 +1808,21 @@ async function executePlan(
     const journal = cm && continuity?.resume ? cm.loadNodeLoopJournal(continuity.runId, id) : null;
     if (journal?.converged) {
       logger.info({ node: id, rounds: journal.completedRounds }, '[omd/executor-dag] 内环已收敛 (journal) → 直接返上次结论');
+      // #148 尾巴 (2026-08-17): judge 自己那一票从 verdicts 尾巴**还原**, 不另存一位 ——
+      // 同一件事两处声明就是漂移源 (S-39), 停轮的 verdict 就是最后一条。还原规则与 live 路径
+      // 逐位相同: 只有「判据绿停 ∧ judge 真投过票」才有这一位 (判据 'green' ∧ judge
+      // 'converged'/'rejected'); 'gate-rejected'/'unreachable' = 没投票 → 缺席; 判据不绿时的
+      // 停轮 (judge 收敛停 / 轮尽) live 侧本就不写它 → 缺席。丢了这一位不翻终态 (裁决位是
+      // converged), 丢的是判据轴: resume 后一次真实的 judge 异议会被读成「judge 也说绿」。
+      const lastVerdict = journal.verdicts?.at(-1);
+      const restoredJudge =
+        lastVerdict?.criterion === 'green' && (lastVerdict.judge === 'converged' || lastVerdict.judge === 'rejected')
+          ? lastVerdict.judge === 'converged'
+          : undefined;
       return {
         id, status: 'done', kind: 'conductor', output: journal.lastOutput ?? '[内环已收敛]', deps,
         usage: { in: 0, out: 0 }, skipped: true, rounds: journal.completedRounds, converged: true,
+        ...(restoredJudge === undefined ? {} : { judgeConverged: restoredJudge }),
       };
     }
     const poisoned = new Set(journal?.poisoned ?? []);
