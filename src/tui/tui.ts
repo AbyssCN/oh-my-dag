@@ -30,7 +30,7 @@
 import { hostname } from 'node:os';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve as resolvePath } from 'node:path';
-import { type Component, Container, HStack, Loader, ProcessTerminal, ScrollView, Spacer, TuiAltScreen, VStack, type Terminal } from '@earendil-works/pi-tui';
+import { type Component, Container, HStack, Loader, ProcessTerminal, Spacer, TuiMainScreen, VStack, type Terminal } from '@earendil-works/pi-tui';
 import { HintedEditor } from './components/hinted-editor';
 import { logger } from '../logger';
 import type { OmdBackend } from './backend';
@@ -53,7 +53,6 @@ import { installOmdKeybindings, loadUserKeybindings } from './keys';
 import { buildSettings, parseSettingsCommand } from './settings';
 import { STARTUP_HINT, formatHelp, parseHelpCommand, parseSearchCommand, slashCommands } from './commands';
 import { formatBangEntry, parseBang } from './bang';
-import { BottomAnchor } from './components/bottom-anchor';
 import { PROMPTS_DIR, expandPrompt, loadUserPrompts } from './prompts';
 import { detectTerminalScheme, schemeFromEnv } from './scheme-detect';
 import { extractImageRefs, fmtAttachment } from './attachments';
@@ -179,7 +178,7 @@ export const CHROME = {
       ),
       '',
       `  > ${STARTUP_HINT}`,
-      '  > PgUp / PgDn scrolls back through history',
+      '  > Scroll back with your terminal (wheel / Shift+PgUp) - the transcript lives in scrollback',
       '  > Esc interrupts a turn · Esc Esc rewinds · Ctrl+O folds thinking · !cmd runs shell',
     ].join('\n'),
   /**
@@ -450,9 +449,14 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    * ⚠ 代价是终端 scrollback 不再留对话 → 由 {@link dumpTranscript} 在退出时补回主屏。
    * 那是 owner 明确要的约束,不是可选项:一退什么都没了比不好看严重得多。
    */
-  // mouse: 滚轮滚视口 + 应用内拖选复制 + 滚动条拖拽, 全在库里 (缺口清单 §1.2: 此前没传,
-  // 整个鼠标面就没有)。终端不支持 SGR mouse 时序列根本不会发来, fail-open 无害。
-  const tui = new TuiAltScreen(terminal, undefined, undefined, { mouse: true });
+  /**
+   * ★ W6·M1(owner 裁 A,2026-08-17):主形态换 **TuiMainScreen** —— 对话进终端
+   * scrollback、退出留痕、滚轮/选择/搜索全是终端**原生**的(claude code / pi interactive
+   * 同形态)。alt-screen 只在 Ctrl+G/Ctrl+P 全屏视图时临时起一个(M2,preserveScreen 往返)。
+   * ⚠ 主屏**不开**应用 mouse 捕获 —— 捕获会抢掉原生拖选,而原生正是换形态要的东西;
+   *   mouse:true 只留在 alt 实例上(那里没有原生滚回可用)。
+   */
+  const tui = new TuiMainScreen(terminal);
 
   // 键位表:补上 pi-tui 默认表认不出的双 ESC(`keys.ts` 记了实测的三行对照表)。
   // ⚠ 必须在建组件**之前** —— 组件是在 `handleInput` 里现查 `getKeybindings()` 的,
@@ -627,17 +631,11 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   const dialogSlot = new Container();
 
   /**
-   * 对话区吃掉**所有剩余高度** —— 于是输入框与状态行被顶到屏底(rubric V3)。
-   *
-   * ⚠ `grow` 必须给在 ScrollView 上,不能给 chatLog:chatLog 的高度就是内容高度,
-   * 给它 grow 只会让它长出屏幕外。"占住位置且可滚"是 viewport 的语义,不是内容的。
+   * ★ W6·M1:转录区**不再有 ScrollView/BottomAnchor** —— 主屏形态下 chatLog 按内容高
+   * 自然生长,长出终端的部分进 scrollback(滚回/贴底/虚拟化三件事全归终端原生,
+   * W3a 的 BottomAnchor 是 alt-screen 空腔的中间态,SDD 预告过随本迁移删除)。
    */
-  // 贴底 (W3a V1): 内容不足一屏时空腔在上 —— 对话贴着输入框长。视口高惰性取 (互引解环)。
-  const transcript: ScrollView = new ScrollView(new BottomAnchor(chatLog, () => transcript.viewportHeight), {
-    follow: 'end',
-    primary: true,
-    scrollbar: 'auto',
-  });
+  const transcript: Component = chatLog;
 
   /**
    * ★ **只有 transcript 可压,chrome 一律 `shrink: 0`。**
@@ -667,7 +665,6 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   let painterIdx = uiCfg.painterIdx; // 0=树 1=甘特 2=分层 (默认从 tui.ui.painter 读)
   /** `/think` 的当前档 (W1)。持久在 tui.ui.thinking; 每轮 sendChat 带上。 */
   let thinkingLevel = uiCfg.thinking;
-  const SIDEBAR_WIDTH = 34;
   /** 低于这个总宽不给侧栏。= 侧栏 34 + 对话区至少 56。 */
   const SIDEBAR_MIN_TOTAL = 90;
   const sidebarPainting = (vpWidth: number): boolean => sidebarOn && dagTree.active && vpWidth >= SIDEBAR_MIN_TOTAL;
@@ -721,9 +718,20 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     invalidate: () => {},
   };
 
-  const body = new HStack([], { gap: 1 });
-  body.addChild(dagTree, { basis: SIDEBAR_WIDTH, shrink: 0, visible: (vp: { width: number }) => sidebarPainting(vp.width) });
-  body.addChild(transcript, { grow: 1, shrink: 1, minSize: 3 });
+  /**
+   * ★ W6·M1:左列侧栏在滚回形态**不成立** —— 冻结进 scrollback 的行不能事后混两列
+   * (dsh / claude code 同理都没有常驻左列)。DAG 树改画成**底部块**(活动区原地重画,
+   * 行数封顶,全量在 Ctrl+G 全屏),`sidebarPainting` 的开关/宽度语义原样沿用。
+   */
+  const dagTreeBlock: Component = {
+    render: (width: number): string[] => {
+      const lines = dagTree.render(width);
+      const cap = 12;
+      return lines.length <= cap ? lines : [...lines.slice(0, cap), theme.chrome.dim(`... ${lines.length - cap} more nodes (Ctrl+G fullscreen)`)];
+    },
+    handleInput: () => {},
+    invalidate: () => dagTree.invalidate(),
+  };
 
   /**
    * ★ **等待指示器**(2026-08-08,还 `Loader` 那笔欠账)。
@@ -788,9 +796,12 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   let abortRequested = false;
 
   const root = new VStack();
-  root.addChild(body, { grow: 1, shrink: 1, minSize: 3, visible: () => !fullOn && !pathFullOn });
-  root.addChild(fullView, { grow: 1, shrink: 1, minSize: 3, visible: () => fullOn && !pathFullOn });
-  root.addChild(pathView, { grow: 1, shrink: 1, minSize: 3, visible: () => pathFullOn });
+  // W6·M1: 转录直接进树 (自然高, 顶部进 scrollback)。全屏 = 树内模态块 (B 案,
+  // enterAltView 处记录了对 SDD A 案的偏离与理由): 开着时转录/HUD 让位, 关掉回来。
+  root.addChild(transcript, { visible: () => !fullOn && !pathFullOn });
+  root.addChild(fullView, { shrink: 0, visible: () => fullOn && !pathFullOn });
+  root.addChild(pathView, { shrink: 0, visible: () => pathFullOn });
+  root.addChild(dagTreeBlock, { shrink: 0, visible: (vp: { width: number }) => !fullOn && !pathFullOn && sidebarPainting(vp.width) });
   root.addChild(dagHud, { shrink: 0, visible: (vp: { width: number }) => !fullOn && !pathFullOn && !sidebarPainting(vp.width) });
   /**
    * 侧栏 pathfinder 摘要:**只在还没开口说话的时候画**(2026-08-08,P3 件3 轮1)。
@@ -823,9 +834,9 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    * PTY 的 `S2-4 / S2-7` 断言的正是 `再按一次`,所以这条路径一个字没动。
    */
   root.addChild(footer, { shrink: 0, visible: () => armedAt !== null });
-  // 全屏走 `setLayoutRoot` 而不是 `addChild` —— 后者进的是隐式 ScrollView, 于是
-  // `grow` 无处可分(可用高度是"内容高度"而不是"一屏"), 布局会退化回 inline 的样子。
-  tui.setLayoutRoot(withLeftGutter(root));
+  // W6·M1: 主屏形态没有 layoutRoot 概念 (那是 viewport TUI 的口) —— 树按内容高
+  // 自然生长, 活动区 (末屏) 原地重画, 长出的顶部进 scrollback。
+  tui.addChild(withLeftGutter(root));
   // 焦点给 editor: 打字直接进输入框。Ctrl+C 仍抢在它前面 (input listener 先于焦点分派)。
   tui.setFocus(editor);
 
@@ -1821,7 +1832,26 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     reloadPathData();
     pathHud.refresh(); // 侧栏跟着换图
     refreshTicketBoard(); // 切片 S5: 看板跟着换图
-    pathFullOn = true;
+    enterAltView('path'); // W6·M2 (B 案): 树内模态块开灯
+  }
+
+  /**
+   * ★ W6·M2(B 案,**与 SDD A 案的记录偏离**):全屏视图 = **树内模态块**
+   * (fullView/pathView 高度自带封顶 rows-10),主 TUI 不停不换。
+   *
+   * 曾按 SDD 实装双 TUI(preserveScreen + capture/restore 往返)—— PTY 实测
+   * pi `ProcessTerminal` 在同进程 stop/start 循环下输入侧挂死(PF-5 复现:视图
+   * 画得出、按键进不来,alt 与主 listener 双双失聪;渲染半正常)。那是库的
+   * 生命周期假设,不值得为一个视图切换去背。代价:每次切换往 scrollback 留
+   * 一帧残影 —— 已知、可忍;pi 侧修了(或我们上游补丁)再回 A 案。
+   */
+  function enterAltView(kind: 'dag' | 'path'): void {
+    if (kind === 'dag') {
+      if (!dagTree.active) chatLog.appendNotice('No run yet - send one, then press Ctrl+G');
+      else fullOn = true;
+    } else {
+      pathFullOn = true;
+    }
     tui.requestRender();
   }
 
@@ -2365,9 +2395,16 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     }
     // 切片⑧: Ctrl+P (\x10) 开关 pathfinder 全屏; 全屏时 Tab 切画法, 上下键选票, Enter 动作。
     // ⚠ 弹窗开着时 (dialogs.busy) 这些键要让给弹窗 —— 抢了的话动作选单收不到 Enter。
+    // W6·M2 (B 案): 全屏是树内模态块, 键都在本 listener 收 —— 开关键再按 = 关。
     if (kb.matches(data, 'omd.pathFull') && !dialogs.busy) {
       if (pathFullOn) pathFullOn = false;
       else void openPathView();
+      tui.requestRender();
+      return { consume: true };
+    }
+    if (kb.matches(data, 'omd.dagFull') && !dialogs.busy) {
+      if (fullOn) fullOn = false;
+      else enterAltView('dag');
       tui.requestRender();
       return { consume: true };
     }
@@ -2388,17 +2425,6 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         if (t) void openTicketActions(t);
         return { consume: true };
       }
-    }
-    // 切片③: Ctrl+G (\x07) 开关全屏 DAG; 全屏时 Tab 循环三画法。
-    // ⚠ Tab 只在全屏时截 —— 平时它是 editor 的补全键, 抢了会让输入框残废。
-    if (kb.matches(data, 'omd.dagFull')) {
-      if (!dagTree.active && !fullOn) {
-        chatLog.appendNotice('No run yet - send one, then press Ctrl+G');
-      } else {
-        fullOn = !fullOn;
-      }
-      tui.requestRender();
-      return { consume: true };
     }
     if (fullOn && data === '\t') {
       painterIdx = (painterIdx + 1) % 3;
