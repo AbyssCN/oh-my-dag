@@ -36,7 +36,7 @@
  * - **未提交的改动不会被带进 worktree**。`git worktree add` 出来的是**该 ref 的干净 checkout**;
  *   主树上没提交的东西在那边看不见。这是隔离的定义, 但用的人容易惊讶, 所以写在这里。
  */
-import { existsSync } from 'node:fs';
+import { existsSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { logger } from './logger';
 import { captureRollbackAnchor, type RollbackAnchor } from './rollback-anchor';
@@ -75,6 +75,8 @@ export interface RunWorktreeDeps {
   isGitRepo?: (cwd: string) => boolean;
   /** 查主树上有没有未提交的东西(见 `RunWorktree.uncommittedWarning`)。默认 `captureRollbackAnchor`。 */
   checkTree?: (cwd: string) => RollbackAnchor;
+  /** #166: worktree 内链入主树 node_modules。默认 `ensureNodeModulesLink`(测试注入面)。 */
+  ensureLink?: typeof ensureNodeModulesLink;
 }
 
 /** 默认 git: 非零退出即抛(建/删 worktree 失败必须显性, 悄悄退回 head 会让隔离静默失效)。 */
@@ -97,6 +99,34 @@ export const runWorktreeDir = (cwd: string, runId: string): string => join(cwd, 
 export const runWorktreeBranch = (runId: string): string => `omd/run/${safe(runId)}`;
 
 const safe = (s: string): string => s.replace(/[^\w.-]/g, '_');
+
+/**
+ * #166 (2026-08-17): worktree 内链入主树 node_modules。
+ *
+ * `git worktree add` 出来的是干净 checkout —— 没有 node_modules。bun 的模块解析能沿父目录
+ * 走到主树那份 (worktree 在主仓 `.omd/runs/` 之内), 但**显式路径读包文件的测试走不了解析**
+ * (实测 run 5fd13a78: pi-event-coverage 用 `readFileSync(join(REPO_ROOT, 'node_modules/…'))`
+ * → ENOENT 3 红, 冻结判据带全量环在 branch 档结构性永不可绿)。symlink 是 monorepo 惯例解:
+ * 零安装成本, `worktree remove --force` 时随树删 (删的是链接不是真身)。
+ * fail-open: 主树没有 node_modules / 树内已有 / 链接失败 → 各自跳过, 隔离照常成立 ——
+ * 链接是加固不是前置条件, 但每格都留证据 (返回值进日志)。
+ */
+export function ensureNodeModulesLink(
+  mainRoot: string,
+  worktreeDir: string,
+  link: (target: string, path: string) => void = (t, p) => symlinkSync(t, p, 'dir'),
+): 'linked' | 'no-source' | 'already-present' | `link-failed: ${string}` {
+  const source = join(mainRoot, 'node_modules');
+  const dest = join(worktreeDir, 'node_modules');
+  if (!existsSync(source)) return 'no-source';
+  if (existsSync(dest)) return 'already-present';
+  try {
+    link(source, dest);
+    return 'linked';
+  } catch (e) {
+    return `link-failed: ${(e as Error).message.slice(0, 200)}`;
+  }
+}
 
 /**
  * 按策略给这次 run 准备工作目录。
@@ -127,6 +157,9 @@ export function prepareRunWorktree(
   // 隔离树里, resume 却写主树, 比不隔离更坏 (checkpoint 与半成品全在那棵树上)。
   if (existsSync(dir)) {
     logger.info({ runId, dir, branch }, '[omd/run-worktree] 隔离 worktree 已存在 → 复用 (resume)');
+    // #166: 老树 (本修复前建的) 可能缺链 —— resume 路也补, 幂等 (already-present 即跳过)。
+    const relink = (deps.ensureLink ?? ensureNodeModulesLink)(cwd, dir);
+    if (relink !== 'already-present') logger.info({ runId, dir, relink }, '[omd/run-worktree] #166 node_modules 链入 (resume 复用路)');
     return {
       cwd: dir,
       branch,
@@ -153,6 +186,10 @@ export function prepareRunWorktree(
   // **未提交的活在隔离树里看不见** —— 头注写了这条边界, 但只写在头注里。这里把它变成
   // 回话里的一句话 (2026-08-06): 带着未提交改动起隔离跑, agent 看到的是 HEAD 那一版,
   // 而回话此前只说"隔离成功"。fail-open, 不拒。
+  // #166: 干净 checkout 缺 node_modules → 显式路径读包的测试结构性红 (run 5fd13a78)。链入主树那份。
+  const linked = (deps.ensureLink ?? ensureNodeModulesLink)(cwd, dir);
+  if (linked.startsWith('link-failed')) logger.warn({ runId, dir, linked }, '[omd/run-worktree] #166 node_modules 链入失败 (fail-open, 树内测试可能环境性红)');
+  else logger.info({ runId, dir, linked }, '[omd/run-worktree] #166 node_modules 链入');
   const anchor = (deps.checkTree ?? ((c: string) => captureRollbackAnchor({ cwd: c })))(cwd);
   const dirty = (anchor.dirtyTracked ?? 0) + (anchor.untracked ?? 0);
   const uncommittedWarning =

@@ -10,9 +10,11 @@
  * 全部经注入的假 git,**不起真 worktree**。
  */
 import { describe, expect, test } from 'bun:test';
+import { join } from 'node:path';
 import {
   commitRunArtifacts,
   describeRunWorktree,
+  ensureNodeModulesLink,
   prepareRunWorktree,
   runWorktreeBranch,
   runWorktreeDir,
@@ -268,5 +270,67 @@ describe('commitRunArtifacts (#165②: worktree 内收编, 永不抛)', () => {
     const r = commitRunArtifacts({ cwd: '/wt', runId: 'r1', message: 'm' }, { gitOut });
     expect(r.committed).toBe(false);
     expect(r.detail).toContain('commit 炸了');
+  });
+});
+
+// ── #166 node_modules 链入 ───────────────────────────────────────────────────────
+describe('ensureNodeModulesLink (#166: worktree 缺 node_modules → 显式路径读包结构性红)', () => {
+  const { mkdtempSync: mkTmp, mkdirSync: mkDir, existsSync: exists, realpathSync, writeFileSync: writeF } =
+    require('node:fs') as typeof import('node:fs');
+  const { tmpdir: osTmp } = require('node:os') as typeof import('node:os');
+
+  const twoDirs = (withSource: boolean) => {
+    const root = mkTmp(join(osTmp(), 'omd-nml-'));
+    const main = join(root, 'main');
+    const wt = join(root, 'wt');
+    mkDir(main, { recursive: true });
+    mkDir(wt, { recursive: true });
+    if (withSource) {
+      mkDir(join(main, 'node_modules', 'somepkg'), { recursive: true });
+      writeF(join(main, 'node_modules', 'somepkg', 'index.js'), 'x');
+    }
+    return { main, wt };
+  };
+
+  // 证伪方式 (当场验过): 把 ensureNodeModulesLink 的 link(source, dest) 行注释掉 → 本条红; 恢复后绿。
+  test('主树有 node_modules ∧ 树内缺 → 真建 symlink, 显式路径可读', () => {
+    const { main, wt } = twoDirs(true);
+    const r = ensureNodeModulesLink(main, wt);
+    expect(r).toBe('linked');
+    // run 5fd13a78 的失败面就是这一格: 显式 join 路径读包文件。
+    expect(exists(join(wt, 'node_modules', 'somepkg', 'index.js'))).toBe(true);
+    expect(realpathSync(join(wt, 'node_modules'))).toBe(realpathSync(join(main, 'node_modules')));
+  });
+
+  test('主树没有 node_modules → no-source (不编一个空目录出来)', () => {
+    const { main, wt } = twoDirs(false);
+    expect(ensureNodeModulesLink(main, wt)).toBe('no-source');
+    expect(exists(join(wt, 'node_modules'))).toBe(false);
+  });
+
+  test('树内已有 → already-present (幂等; resume 复用路每次都会来一遍)', () => {
+    const { main, wt } = twoDirs(true);
+    ensureNodeModulesLink(main, wt);
+    expect(ensureNodeModulesLink(main, wt)).toBe('already-present');
+  });
+
+  test('link 抛错 → link-failed 带原文, 不抛 (fail-open 吞异常不吞证据)', () => {
+    const { main, wt } = twoDirs(true);
+    const r = ensureNodeModulesLink(main, wt, () => {
+      throw new Error('EPERM 假装不许');
+    });
+    expect(r).toContain('link-failed');
+    expect(r).toContain('EPERM 假装不许');
+  });
+
+  test('接线: branch 建树成功后调用链入 (注入计数), head 档不调', () => {
+    let calls: Array<[string, string]> = [];
+    const ensureLink = ((m: string, w: string) => (calls.push([m, w]), 'linked' as const)) as RunWorktreeDeps['ensureLink'];
+    const { deps } = fakeGit();
+    prepareRunWorktree({ cwd: '/repo', runId: 'r1', strategy: 'branch' }, { ...deps, ensureLink });
+    expect(calls).toEqual([['/repo', runWorktreeDir('/repo', 'r1')]]);
+    calls = [];
+    prepareRunWorktree({ cwd: '/repo', runId: 'r1', strategy: 'head' }, { ...deps, ensureLink });
+    expect(calls).toEqual([]);
   });
 });
