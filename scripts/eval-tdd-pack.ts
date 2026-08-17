@@ -114,6 +114,12 @@ async function runOnce(i: number): Promise<Record<string, unknown>> {
       s3_touchedExistingTest,
       cardsAssigned,
       nodes: Object.keys(result.results).length,
+      // 解剖修正 (2026-08-17): 死叶归因不再靠 leavesIn 反推 —— 逐节点终态与败因入读数。
+      nodeOutcomes: Object.values(result.results).reduce<Record<string, number>>((acc, r) => {
+        const k = r.status === 'failed' ? `failed:${r.failureKind ?? 'unknown'}` : r.status;
+        acc[k] = (acc[k] ?? 0) + 1;
+        return acc;
+      }, {}),
       usage: result.usage,
       wallMs: Date.now() - t0,
       sessionId: result.sessionId,
