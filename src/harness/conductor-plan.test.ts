@@ -70,6 +70,16 @@ describe('S5 conductor prompt: SDD v2 字段 + 前端 motif (G-9)', () => {
     }
   });
 
+  // #153② (2026-08-17): 验收尾链直线是实测事故形态 (run 50e48b27); 纯 command 段有机械兜底
+  // (merge-command-chain), 含「修」段只有 prompt 规则管 → 两档都必须带着它。
+  // 证伪方式 (当场验过): 删 lean 档那三行 → 本条红; 恢复后绿。
+  test('两档均含 acceptance-tail fixpoint 规则 (含修尾链 = 单 agent 有界内环)', () => {
+    for (const p of [full, lean]) {
+      expect(p).toContain('re-run ALL');
+      expect(p).toContain('a later fix can break an earlier gate');
+    }
+  });
+
   // 2026-07-26: shape 段从散文改成 src/harness/shapes 的渲染 (单一真源, 同时喂 conductor 与
   // 组合模式下的外部 agent)。断言改成"数据里的每个 shape 都出现在 prompt 里 + 硬闸标注在"。
   test('两档均含全部 shape (含反例行) 与 UI 证据链的零模型硬闸', () => {

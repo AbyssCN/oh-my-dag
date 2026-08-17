@@ -74,6 +74,7 @@ import {
 } from '../fanin-summary';
 // D-21 escalation 跨轮复用: 语义 Merkle 指纹 + 前驱闭包匹配 (semantic-key 单一真源)。
 import { computeReuse, merkleFingerprints } from '../plan-passes/semantic-key';
+import { mergeCommandChains } from '../plan-passes/merge-command-chain';
 import { expandConductorNode, subgraphLintView, subgraphWarnings } from '../plan/conductor-expand';
 import { renderRoundForJudge, splitNamedIds, type JudgeChildView } from '../plan/conductor-judge';
 import { collectJudgeArtifacts, DEFAULT_ARTIFACT_BUDGET, type ArtifactBudget } from '../plan/judge-artifacts';
@@ -392,6 +393,17 @@ async function planAndExecute(
 function applyPlanFilters(plan: ConductorPlan, config: ExecutorDagConfig): ConductorPlan {
   let p = config.oracleCmd ? filterOracleCommandNodes(plan, config.oracleCmd) : plan;
   for (const f of config.planFilters ?? []) p = f(p);
+  // #153② 验收尾链机械合并 (墙钟杠杆 2): 串行 command 直线 → 一条 && 节点 (语义保持, 每环
+  // 独立判红)。挂在这里 = 顶层图与 conductor 子图共用一条 (同 serializeWriteRaces 的理由)。
+  // 补了图就响亮留证 —— 静默改图与静默串行一样坏。
+  const chainMerge = mergeCommandChains(p);
+  for (const m of chainMerge.merged) {
+    logger.warn(
+      { into: m.into, absorbed: m.absorbed },
+      '[omd/executor-dag] #153② 串行 command 链已机械合并为一条 && 节点 (跨节点纯亏: 付摘要税换不回并行)',
+    );
+  }
+  p = chainMerge.plan;
   // 计划期写竞争硬闸 (2026-08-14): 同文件多写者且互不可达 → 程序化补边串行化 (构造性消灭,
   // 不烧重画轮)。挂在这里 = 顶层图与 conductor 子图 (D-N 管线) 两个口共用一条。方向/成环
   // 论证见 serializeWriteRaces 的注。补了边就响亮留证 —— 静默改图与静默竞争一样坏。

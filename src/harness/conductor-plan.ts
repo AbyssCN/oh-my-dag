@@ -421,6 +421,11 @@ export function conductorSystemPrompt(
           'deliverable content (never "execute step X"), and size nodes so a weak executor stays coherent.',
           'On redraw rounds re-emit un-blamed nodes byte-identical — content-addressed ids make unchanged',
           'specs free (D-21); reword only what the failure reason forces.',
+          // #153② (2026-08-17): 尾链直线是实测事故形态 (run 50e48b27 gate_fix→types→tests→build)。
+          // 纯 command 段有机械合并兜底 (plan-passes/merge-command-chain), 含「修」段只有这条规则管。
+          'Acceptance tail: verification-only steps = ONE "command" node chained with && — never stacked',
+          'gate nodes. A tail that also FIXES = ONE "agent" node looping run-gates → fix → re-run ALL',
+          'gates (bounded, state max rounds ≤3): a later fix can break an earlier gate nothing re-checks.',
           '',
         ]
       : [
@@ -470,6 +475,11 @@ export function conductorSystemPrompt(
     '  Two nodes with no data dependency between them MUST be siblings (same level), even if one "feels" logically later.',
     '- Collapse the verify tail into ONE command node: chain "bun run tsc --noEmit && bun test" — do NOT emit',
     '  separate typecheck-level → test-level → review-level. One gate, one node, not three stacked levels.',
+    // #153② (2026-08-17): 含「修」的尾链没有机械兜底 (merge-command-chain 只并纯 command 直线),
+    // 靠这条把 fix 环收进单 agent 节点 —— 后修可破先闸, 直线上没人回头重查。
+    '- If the acceptance tail also FIXES (a repair step between gates), do NOT emit fix→typecheck→tests→build',
+    '  as stacked nodes: emit ONE "agent" node whose goal is an explicit bounded loop — run all gates, fix',
+    '  what is red, re-run ALL gates (state max rounds, ≤3) — because a later fix can break an earlier gate.',
     '- After planning, scan the longest dependency chain: if a node sits on a deep level but consumes nothing',
     '  from the levels above it, LIFT it up to run in parallel. Keep the graph WIDE (many siblings) and SHALLOW.',
     '',
