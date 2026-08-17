@@ -206,7 +206,10 @@ describe('D-O 覆盖到 research 节点; command 节点刻意不落绿 checkpoin
     expect(manager.loadNodeOutput(r.outputText!)).toBe('研究结论全文');
   });
 
-  test('command 节点无绿 checkpoint (便宜且常是验收 oracle, resume 重跑比跳过闸安全)', async () => {
+  // #167 (2026-08-17) 语义翻转: command 绿 checkpoint **只当账不当闸** —— 账要诚实 (绿也落盘,
+  // 否则 base 只可能 failed/skipped, run 68cfb43f 验尸把成功读成判据红), resume 不跳的性质
+  // 由 shouldSkip 的 leafKind 卡保住 (专测在 src/harness/continuity/command-checkpoint.test.ts)。
+  test('command 节点绿 checkpoint 在盘上 (#167: 账诚实), 且 shouldSkip 恒不跳 (闸不动)', async () => {
     await runExecutorDagWithPlan(
       rcPlan,
       cfg(fake().generate, false, {
@@ -214,6 +217,7 @@ describe('D-O 覆盖到 research 节点; command 节点刻意不落绿 checkpoin
         commandRunner: async () => ({ text: 'ok', usage: { in: 0, out: 0 }, exitCode: 0 }),
       }),
     );
-    expect(existsSync(join(runDir(), 'c.json'))).toBe(false);
+    expect(existsSync(join(runDir(), 'c.json'))).toBe(true);
+    expect(manager.shouldSkip(RUN, 'c')).toBe(false);
   });
 });
