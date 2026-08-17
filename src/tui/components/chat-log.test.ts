@@ -159,6 +159,27 @@ describe('★ 流式:一条消息, 不是一堆消息', () => {
   });
 });
 
+describe('★ 欢迎屏字标让位 (W3a V5)', () => {
+  // 反向自检 (实跑): 把 render 里 hasDialogue 的 banner 过滤删掉 → 第 1 条当场红。
+  test('★ 有对话之后字标不再画; 开口之前照画', () => {
+    const log = new ChatLog(theme);
+    log.appendBanner('OMD-BANNER-MARK');
+    expect(text(log)).toContain('OMD-BANNER-MARK');
+    log.appendUser('第一句');
+    expect(text(log)).not.toContain('OMD-BANNER-MARK');
+    expect(text(log)).toContain('> 第一句');
+  });
+
+  test('让位不影响 hasDialogue 判据, 普通 notice 不受牵连', () => {
+    const log = new ChatLog(theme);
+    log.appendBanner('BANNER');
+    log.appendNotice('普通通告');
+    log.appendUser('hi');
+    expect(log.hasDialogue).toBe(true);
+    expect(text(log)).toContain('普通通告'); // 只有 banner 让位, notice 是内容不是装饰
+  });
+});
+
 describe('宽度约束', () => {
   test('★ 任意窄屏下每一行都不超宽(含 CJK 与长 URL)', () => {
     const log = new ChatLog(theme);

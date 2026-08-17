@@ -45,6 +45,8 @@ interface Entry {
   toolKey?: string;
   /** 工具行不含标记的正文(`read config.txt`)。end 复用它, 免得把参数擦掉。 */
   toolText?: string;
+  /** 欢迎屏字标 (appendBanner)。有对话之后**让位不画** —— 但条目留着, hasDialogue 判据不受它影响。 */
+  banner?: boolean;
   /** toolStart 的 now() —— toolEnd 算耗时秒的左端(契约 I6)。 */
   toolStartMs?: number;
   /** 工具名上色函数 —— toolEnd/toolUpdate 沿用 start 那次, 名字换了颜色不漂。 */
@@ -298,7 +300,7 @@ export class ChatLog implements Component {
    */
   appendBanner(text: string): void {
     this.closeStreaming();
-    this.entries.push({ role: 'notice', component: new Text(text), buffer: text, open: false });
+    this.entries.push({ role: 'notice', banner: true, component: new Text(text), buffer: text, open: false });
   }
 
   /**
@@ -413,18 +415,21 @@ export class ChatLog implements Component {
   }
 
   render(width: number): string[] {
+    // 欢迎屏字标有对话之后**让位不画** (W3a V5): 条目留着 (hasDialogue 判据不吃它),
+    // 只是渲染跳过 —— 与贴底合用后, 对话开场即接管整个转录区。
+    const entries = this.hasDialogue ? this.entries.filter((x) => !x.banner) : this.entries;
     const out: string[] = [];
     let i = 0;
-    while (i < this.entries.length) {
-      const e = this.entries[i];
+    while (i < entries.length) {
+      const e = entries[i];
       if (!e) {
         i++;
         continue;
       }
       // 找末尾:连续工具行组的右端。单条 tool 不进 Box。
       let j = i;
-      while (j < this.entries.length) {
-        const cur = this.entries[j];
+      while (j < entries.length) {
+        const cur = entries[j];
         if (!cur || cur.role !== 'tool') break;
         j++;
       }
@@ -437,7 +442,7 @@ export class ChatLog implements Component {
          */
         const box = new Box(1, 0);
         for (let k = i; k < j; k++) {
-          const entry = this.entries[k];
+          const entry = entries[k];
           if (entry) box.addChild(entry.component);
         }
         const lines = box.render(width);
@@ -451,13 +456,13 @@ export class ChatLog implements Component {
         }
         // 连续工具行不空行(一串工具是一组);分界线与紧随的 user 之间也不空 ——
         // 空了的话分界线看起来像是属于上一轮的尾巴, 而它标的是下一轮的头。
-        const prev = i > 0 ? this.entries[i - 1] : undefined;
+        const prev = i > 0 ? entries[i - 1] : undefined;
         const gap = i > 0 && prev?.role !== 'tool';
         if (gap) out.push('');
         out.push(...lines);
         i = j;
       } else {
-        const prev = i > 0 ? this.entries[i - 1] : undefined;
+        const prev = i > 0 ? entries[i - 1] : undefined;
         const glued = (e.role === 'tool' && prev?.role === 'tool') || (e.role === 'user' && prev?.role === 'divider');
         const gap = i > 0 && !glued;
         // 折叠态的思维链**一条一行**:行数照报且流式中还在涨 —— "收起"不许变成"看不出它在想"。

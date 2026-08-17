@@ -53,6 +53,7 @@ import { installOmdKeybindings } from './keys';
 import { buildSettings, parseSettingsCommand } from './settings';
 import { STARTUP_HINT, formatHelp, parseHelpCommand, parseSearchCommand, slashCommands } from './commands';
 import { formatBangEntry, parseBang } from './bang';
+import { BottomAnchor } from './components/bottom-anchor';
 import { MANUAL_COORD, choiceLabel, listModelChoices, parseModelsCommand, sortChoices } from './model-picker';
 import { buildTreeRows, formatTree, parseTreeCommand, rewindTargets, treeLabel } from './tree-picker';
 import { createOmdAutocompleteProvider } from './skill-complete';
@@ -176,6 +177,7 @@ export const CHROME = {
       '',
       `  > ${STARTUP_HINT}`,
       '  > PgUp / PgDn scrolls back through history',
+      '  > Esc interrupts a turn · Esc Esc rewinds · Ctrl+O folds thinking · !cmd runs shell',
     ].join('\n'),
   /**
    * 空输入框里的提示符(`HintedEditor`)。
@@ -588,7 +590,12 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    * ⚠ `grow` 必须给在 ScrollView 上,不能给 chatLog:chatLog 的高度就是内容高度,
    * 给它 grow 只会让它长出屏幕外。"占住位置且可滚"是 viewport 的语义,不是内容的。
    */
-  const transcript = new ScrollView(chatLog, { follow: 'end', primary: true, scrollbar: 'auto' });
+  // 贴底 (W3a V1): 内容不足一屏时空腔在上 —— 对话贴着输入框长。视口高惰性取 (互引解环)。
+  const transcript: ScrollView = new ScrollView(new BottomAnchor(chatLog, () => transcript.viewportHeight), {
+    follow: 'end',
+    primary: true,
+    scrollbar: 'auto',
+  });
 
   /**
    * ★ **只有 transcript 可压,chrome 一律 `shrink: 0`。**
