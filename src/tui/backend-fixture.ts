@@ -131,7 +131,7 @@ export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend 
          * ⇒ 给一组**写死的**读数, 让 `ctx` 变成可断言的东西。`ratio` 由 used/window 算,
          * 与生产同一条公式(`analyzeContextPressure`), 不在这里另编一个百分比。
          */
-        emit('session', { sessionId, messageCount: msgs.length + 1, pressure: FIXTURE_PRESSURE });
+        emit('session', { sessionId, messageCount: msgs.length + 1, pressure: FIXTURE_PRESSURE, usage: FIXTURE_USAGE });
         sessions.set(sessionId, msgs);
         return { ok: true };
       }
@@ -160,7 +160,7 @@ export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend 
         push({ type: 'start', id: 'shard-3', kind: 'agent' });
         push({ type: 'progress', id: 'shard-3', tool: 'bash', note: 'edit engine.ts', calls: 2, elapsedMs: 900 });
         emit('chat', { type: 'delta', text: 'fan-out demo graph sent.' });
-        emit('session', { sessionId, messageCount: msgs.length + 1, pressure: FIXTURE_PRESSURE });
+        emit('session', { sessionId, messageCount: msgs.length + 1, pressure: FIXTURE_PRESSURE, usage: FIXTURE_USAGE });
         sessions.set(sessionId, msgs);
         return { ok: true };
       }
@@ -169,7 +169,7 @@ export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend 
         emit('chat', { type: 'delta', text: FIXTURE_SLOW_CHUNKS[0] });
         await new Promise((r) => setTimeout(r, 2500)); // 秒计时至少走满两个 tick
         emit('chat', { type: 'delta', text: FIXTURE_SLOW_CHUNKS[1] });
-        emit('session', { sessionId, messageCount: msgs.length + 1, pressure: FIXTURE_PRESSURE });
+        emit('session', { sessionId, messageCount: msgs.length + 1, pressure: FIXTURE_PRESSURE, usage: FIXTURE_USAGE });
         sessions.set(sessionId, msgs);
         return { ok: true };
       }
@@ -180,7 +180,7 @@ export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend 
           emit('tool', { phase: 'end', name: 'read', id: `fx-read-${i}`, ok: true });
         }
         emit('chat', { type: 'delta', text: 'Read the same file three times.' });
-        emit('session', { sessionId, messageCount: msgs.length + 1, pressure: FIXTURE_PRESSURE });
+        emit('session', { sessionId, messageCount: msgs.length + 1, pressure: FIXTURE_PRESSURE, usage: FIXTURE_USAGE });
         sessions.set(sessionId, msgs);
         return { ok: true };
       }
@@ -196,7 +196,7 @@ export function createFixtureBackend(deps: FixtureBackendDeps = {}): OmdBackend 
       for (const text of FIXTURE_CHUNKS) emit('chat', { type: 'delta', text });
       // 切片②: 上账本 (固定读数), 让 session 事件之后底栏行①②有真数可画。
       deps.usage?.record(FIXTURE_USAGE, 'fixture:model', 'chat');
-      emit('session', { sessionId, messageCount: msgs.length + 1, pressure: FIXTURE_PRESSURE });
+      emit('session', { sessionId, messageCount: msgs.length + 1, pressure: FIXTURE_PRESSURE, usage: FIXTURE_USAGE });
       sessions.set(sessionId, msgs);
       return { ok: true };
     },

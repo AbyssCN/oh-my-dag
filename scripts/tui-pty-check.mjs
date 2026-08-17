@@ -314,7 +314,8 @@ async function scenarioHappyPath() {
      * 两张 live 帧都缺 ctx, 而我一时分不清是时序还是我把它改坏了。
      * fixture 现在发一组写死的读数(`FIXTURE_PRESSURE` = 12k/200k = **6%**)。
      */
-    check(await waitFor(p, (t) => t.includes('ctx 6%')), 'SB-5 ★ 底栏: ctx 段有真百分比(12k/200k = 6%)', p.text().slice(-400));
+    // 2026-08-17 判据换锚: 仪表 ctx 条在场时平文 `ctx 6%` 段撤下 (同屏两个 ctx 是重复读数, 帧实测) —— 锚改条形 + 真百分比两半合读。
+    check(await waitFor(p, (t) => t.includes('ctx #') && t.includes(' 6%')), 'SB-5 ★ 底栏: ctx 条形段有真百分比(12k/200k = 6%)', p.text().slice(-400));
 
     // ── 切片⑦: 会话树 —— fork 一条、切回去、两条互不污染 (G 判据逐字)。──
     // ⚠ 2026-08-09: 默认会话 id 不再是写死的 `tui`(写死会让多开的两个窗口写同一条会话),

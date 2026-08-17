@@ -743,6 +743,17 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     handleInput: () => {},
     invalidate: () => dagHud.invalidate(),
   };
+  /**
+   * ★ 列对齐(帧实测,owner「都修了」):正文条目在 gutter(1) + paddingX(1) = 第 2 列,
+   * 而各块(pathHud / 看板 / DAG 树·HUD)只有 gutter = 第 1 列 —— 差一列,读起来毛边。
+   * 统一法:**装配层**包一格(内宽 -1 + 行首 ' '),组件与其测试一字不动;
+   * 空行不包(空行加空格是尾随空白)。
+   */
+  const alignToContent = (c: Component): Component => ({
+    render: (width: number): string[] => c.render(Math.max(1, width - 1)).map((l) => (l === '' ? l : ` ${l}`)),
+    handleInput: () => {},
+    invalidate: () => c.invalidate(),
+  });
 
   /**
    * ★ **等待指示器**(2026-08-08,还 `Loader` 那笔欠账)。
@@ -812,8 +823,8 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   root.addChild(transcript, { visible: () => !fullOn && !pathFullOn });
   root.addChild(fullView, { shrink: 0, visible: () => fullOn && !pathFullOn });
   root.addChild(pathView, { shrink: 0, visible: () => pathFullOn });
-  root.addChild(dagTreeBlock, { shrink: 0, visible: (vp: { width: number }) => !fullOn && !pathFullOn && sidebarPainting(vp.width) });
-  root.addChild(dagHudBlock, { shrink: 0, visible: (vp: { width: number }) => !fullOn && !pathFullOn && !sidebarPainting(vp.width) });
+  root.addChild(alignToContent(dagTreeBlock), { shrink: 0, visible: (vp: { width: number }) => !fullOn && !pathFullOn && sidebarPainting(vp.width) });
+  root.addChild(alignToContent(dagHudBlock), { shrink: 0, visible: (vp: { width: number }) => !fullOn && !pathFullOn && !sidebarPainting(vp.width) });
   /**
    * 侧栏 pathfinder 摘要:**只在还没开口说话的时候画**(2026-08-08,P3 件3 轮1)。
    *
@@ -826,9 +837,9 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    * ⚠ 判据是 `chatLog.hasDialogue`(有 `user` 条目)**不是** `length > 0` —— 后者被欢迎屏字标满足。
    * ⚠ 全屏散雾图开着时同样不画(同一张图画两遍会读成两张)。
    */
-  root.addChild(pathHud, { shrink: 0, visible: () => pathHudVisible({ pathFullOn, hasDialogue: chatLog.hasDialogue }) });
+  root.addChild(alignToContent(pathHud), { shrink: 0, visible: () => pathHudVisible({ pathFullOn, hasDialogue: chatLog.hasDialogue }) });
   // 切片 S5: 票看板与 pathHud 同一可见性 —— 它属于欢迎屏, 不属于对话主屏 (要常看按 Ctrl+P)。
-  root.addChild(ticketBoard, { shrink: 0, visible: () => pathHudVisible({ pathFullOn, hasDialogue: chatLog.hasDialogue }) });
+  root.addChild(alignToContent(ticketBoard), { shrink: 0, visible: () => pathHudVisible({ pathFullOn, hasDialogue: chatLog.hasDialogue }) });
   root.addChild(waiting, { shrink: 0, visible: () => turnInFlight });
   root.addChild(dialogSlot, chrome);
   root.addChild(editorContainer, chrome);
@@ -912,31 +923,25 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     if (o.refreshGit) ws = readWorkspaceInfo(opts.cwd);
     const win = opts.usage?.window() ?? null;
     const session = opts.usage?.sessionTotal() ?? null;
-    // 底栏一行:ssh/tmux 与计价口径一起交给它(原来那是第二行的活)。
+    // 活仪表(切片② + 2026-08-17 帧实测去重)。还没跑过一轮 ⇒ 没有 usage ⇒ 整块缺席,
+    // 那时行①与仪表落地前**逐字相同**(I1)。
+    const gauge = formatStatusGauge({
+      usage: lastUsage === null ? null : { completionTokens: lastUsage.out },
+      pressure: lastPressure !== null && lastPressure.ratio !== null ? { ratio: lastPressure.ratio } : null,
+      tps: lastTps,
+    });
+    // 仪表的 ctx 条在场时, 行①的平文 `ctx N%` 段撤下 —— 同屏两个 ctx 是重复读数 (帧抓的)。
+    const gaugeHasCtx = gauge.startsWith('ctx ');
     const line = formatStatusLine(
       {
         ws,
         seat: opts.backend.connection.url.replace(/^embedded:\/\//, ''),
-        pressure: lastPressure,
+        pressure: gaugeHasCtx ? null : lastPressure,
         session: session && session.calls > 0 ? session : null,
         win,
       },
       { ssh: sshHost, tmux },
     );
-    // 活仪表(切片②)追加在行①尾部。还没跑过一轮 ⇒ 没有 usage ⇒ 整块缺席,
-    // 那时这一行与仪表落地前**逐字相同**(I1)。
-    const gauge = formatStatusGauge({
-      usage:
-        lastUsage === null
-          ? null
-          : {
-              completionTokens: lastUsage.out,
-              cacheRead: lastUsage.cacheHit ?? 0,
-              uncached: Math.max(0, lastUsage.in - (lastUsage.cacheHit ?? 0)),
-            },
-      pressure: lastPressure !== null && lastPressure.ratio !== null ? { ratio: lastPressure.ratio } : null,
-      tps: lastTps,
-    });
     statusLine.setText(gauge === '' ? line : `${line}${FOOTER_SEP}${gauge}`);
   }
   /** 已唤起、等着挂到下一句上的 skill 正文。**用完即清** —— 一条 skill 只管一轮。 */
@@ -2321,7 +2326,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     if (parseHelpCommand(prompt)) {
       chatLog.appendUser(prompt);
       editor.setText('');
-      chatLog.appendNotice(formatHelp());
+      chatLog.appendNotice(formatHelp(Math.max(60, (terminal.columns || 100) - 4)));
       tui.requestRender();
       return;
     }

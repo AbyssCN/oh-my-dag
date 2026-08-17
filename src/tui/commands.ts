@@ -82,12 +82,35 @@ export function parseHelpCommand(text: string): boolean {
   return t === '/help' || t === '/?' || t === '/h';
 }
 
-export function formatHelp(): string {
+/** 贪心按词折行 (描述全英文, 按空格切)。宽度 ≤0 时整句一行 —— 别切成竖条。 */
+function wrapWords(text: string, width: number): string[] {
+  if (width <= 8) return [text];
+  const out: string[] = [];
+  let line = '';
+  for (const word of text.split(' ')) {
+    if (line !== '' && line.length + 1 + word.length > width) {
+      out.push(line);
+      line = word;
+    } else {
+      line = line === '' ? word : `${line} ${word}`;
+    }
+  }
+  if (line !== '') out.push(line);
+  return out;
+}
+
+export function formatHelp(width = 110): string {
   // ★ **一行一条**(2026-08-09):换纯英文之后两行一条的排法把整屏顶穿了 ——
   //   `/help` 的前几条直接滚出屏幕, L3 的 HELP-1 当场红(那不是假红, 是真看不到了)。
   //   一行一条同时也是密度上的改善:同一屏能读完。
+  // ★ 悬挂缩进(2026-08-17,帧实测):描述超宽时终端硬折行会顶格,续行落进命令列 ——
+  //   自己按词折并缩进到描述列,窄终端下再由终端兜底。
   const w = Math.max(...COMMANDS.map((c) => `${c.name}${c.args ? ` ${c.args}` : ''}`.length));
-  const rows = COMMANDS.map((c) => `  ${`${c.name}${c.args ? ` ${c.args}` : ''}`.padEnd(w)}  ${c.what}`);
+  const descWidth = Math.max(24, width - (w + 4));
+  const rows = COMMANDS.flatMap((c) => {
+    const head = `  ${`${c.name}${c.args ? ` ${c.args}` : ''}`.padEnd(w)}  `;
+    return wrapWords(c.what, descWidth).map((chunk, i) => (i === 0 ? `${head}${chunk}` : `${' '.repeat(head.length)}${chunk}`));
+  });
   return `Commands (plain text sends a chat turn):\n${rows.join('\n')}\n\nType @ or part of a path in the editor to fuzzy-complete file names.
 !<cmd> runs a local shell command in the repo; its output joins the session context.
 Custom prompts: drop a markdown file in .omd/prompts/ and call it as /<filename> [args].

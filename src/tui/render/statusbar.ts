@@ -192,20 +192,16 @@ export function countTokens(line: string): number {
 const GAUGE_SEP = ' · ';
 const GAUGE_WIDTH = 10;
 
-/** 活仪表要的 usage 子集(`ModelUsage` 的 in/out/cacheHit 在接线层折过来)。 */
+/** 活仪表要的 usage 子集。2026-08-17 帧实测后收窄:cache% 删了 —— 窗口段已有 `cacheNN%`, 同屏两个 cache 是重复读数。 */
 export interface StatusGaugeUsage {
   /** 本轮 completion token 数。 */
   completionTokens: number;
-  /** 命中 prompt-cache 的 token 数 —— cache% 的分子。 */
-  cacheRead: number;
-  /** 未命中的 token 数;与 `cacheRead` 合计作 cache% 的分母。 */
-  uncached: number;
 }
 
 export interface StatusGaugeInput {
-  /** `null` = 还没跑过一轮 ⇒ **三格整体缺席**(仪表整块是"这一轮的读数")。 */
+  /** `null` = 还没跑过一轮 ⇒ **整块缺席**(仪表是"这一轮的读数")。 */
   usage: StatusGaugeUsage | null;
-  /** 只看 `ratio`;`null`(含窗口未知)⇒ ctx 格缺席。 */
+  /** 只看 `ratio`;`null`(含窗口未知)⇒ ctx 格缺席。**本格在场时调用方要把平文 `ctx N%` 段撤下** —— 同屏两个 ctx 是重复读数(帧实测)。 */
   pressure: { ratio: number } | null;
   /** 由接线层用注入的 `now()` 算好;`null` = 无上一轮值 ⇒ t/s 格缺席。 */
   tps: number | null;
@@ -220,8 +216,10 @@ export function formatStatusGauge(i: StatusGaugeInput): string {
     segs.push(`ctx ${bar} ${Math.round(i.pressure.ratio * 100)}%`);
   }
   // `fmtUsd` 同款口径:小数只在读起来有意义的量级留 —— 0.4t/s 画成 `0t/s` 就是编的 0。
-  if (i.tps !== null) segs.push(`${i.tps < 10 ? i.tps.toFixed(1) : String(Math.round(i.tps))}t/s`);
-  const cacheTotal = i.usage.cacheRead + i.usage.uncached;
-  if (cacheTotal > 0) segs.push(`cache ${Math.round((i.usage.cacheRead / cacheTotal) * 100)}%`);
+  // ≥1000 上 k 档 (帧实测 fixture 秒回画出 `92000t/s` —— 数是真的, 量级格式不能缺)。
+  if (i.tps !== null) {
+    const t = i.tps >= 1000 ? `${Math.round(i.tps / 1000)}k` : i.tps < 10 ? i.tps.toFixed(1) : String(Math.round(i.tps));
+    segs.push(`${t}t/s`);
+  }
   return segs.join(GAUGE_SEP);
 }

@@ -19,10 +19,6 @@ import { StatusLine } from './status-line';
 type StatusGaugeUsage = {
   /** 完成 token 数(本轮);未进入算式(契约 I6:时钟外给,下游 now() 算好 tps 送来)。 */
   completionTokens: number;
-  /** 缓存命中 token 数,作为 cache% 分子。 */
-  cacheRead: number;
-  /** 未命中 token 数,与 cacheRead 合计作 cache% 分母(契约 §3 改法)。 */
-  uncached: number;
 };
 
 /** 切片②纯函数入参。照契约:任一字段为 `null` ⇒ 对应段缺席(I2: NULL ≠ 0)。 */
@@ -70,7 +66,8 @@ describe('StatusLine', () => {
 /**
  * ★ 底栏活仪表(SDD V3 / 切片②)—— 契约 I2/I3/I4 的闸。
  *
- * 契约给的模板:`ctx <进度> <pct>% · <n>t/s · cache <pct>%`,
+ * 模板 (2026-08-17 帧实测收窄):`ctx <进度> <pct>% · <n>t/s` —— cache% 删了,
+ * 窗口段已有 `cacheNN%`,同屏两个 cache 是重复读数;ctx 平文段由接线层在本仪表在场时撤下。
  * 进度条按 I4 用 ASCII `#-` 实现(白名单内 block 元素 `▰▱` 未量真终端,降级)。
  * `session` 事件已带 `usage`(completion/cacheRead/uncached)与 `pressure`,
  * 底栏行①追加的三格就是这里断言的输出;`tps` 由 I6 注入 now() 算好送来。
@@ -88,7 +85,7 @@ describe('★ 底栏活仪表(SDD V3 / 切片②,契约 I2/I3/I4)', () => {
    */
   test('★ 喂入固定 usage + pressure + tps → 三格文本逐字等于契约模板', () => {
     const out = formatStatusGauge({
-      usage: { completionTokens: 120, cacheRead: 194, uncached: 6 },
+      usage: { completionTokens: 120 },
       pressure: { ratio: 0.62 },
       tps: 12,
     } satisfies StatusGaugeInput);
@@ -96,7 +93,7 @@ describe('★ 底栏活仪表(SDD V3 / 切片②,契约 I2/I3/I4)', () => {
     // ctx%    = round(0.62 * 100) = 62
     // cache%  = round(194 / (194 + 6) * 100) = 97
     // 分隔符 U+00B7(`·`)已在字形白名单(GROUND_TRUTH 量过 = 1 列),不踩 I4。
-    expect(out).toBe('ctx ######---- 62% · 12t/s · cache 97%');
+    expect(out).toBe('ctx ######---- 62% · 12t/s');
   });
 
   /**
@@ -116,7 +113,6 @@ describe('★ 底栏活仪表(SDD V3 / 切片②,契约 I2/I3/I4)', () => {
     expect(out).toBe('');
     expect(out).not.toContain('ctx');
     expect(out).not.toContain('t/s');
-    expect(out).not.toContain('cache');
     expect(out).not.toContain(' · ');
     // 不许出现 0(任何形状的 0 都算编数):这是 I2 的硬规定,
     // 与上面几个 not.toContain 不重叠 —— `0` 可能在某段尾巴(比如未来误算的 cache% = 0)。
@@ -130,19 +126,26 @@ describe('★ 底栏活仪表(SDD V3 / 切片②,契约 I2/I3/I4)', () => {
    * 把 ctx / cache 两条 push 也放进 `if (input.tps !== null)` 守卫里 → 期望串少 ctx/cache 红;
    * 把 `tps: null` 改成 `tps: 0`(把"无值"误读成"是零")→ 期望串变 `0t/s` → 红(I2)。
    */
+  test('tps ≥1000 上 k 档 —— 帧实测 fixture 秒回画出 92000t/s, 数真格式不能缺', () => {
+    const out = formatStatusGauge({
+      usage: { completionTokens: 184 },
+      pressure: null,
+      tps: 92000,
+    } satisfies StatusGaugeInput);
+    expect(out).toBe('92kt/s');
+  });
+
   test('★ tps 无上一轮值 → 该格单独缺席,其余两格照画', () => {
     const out = formatStatusGauge({
-      usage: { completionTokens: 120, cacheRead: 194, uncached: 6 },
+      usage: { completionTokens: 120 },
       pressure: { ratio: 0.62 },
       tps: null,
     } satisfies StatusGaugeInput);
-    expect(out).toBe('ctx ######---- 62% · cache 97%');
+    expect(out).toBe('ctx ######---- 62%');
     expect(out).toContain('ctx');
-    expect(out).toContain('cache');
     expect(out).not.toContain('t/s');
-    // 没有 t/s 段 ⇒ 也不该出现空分隔符(` ·  · ` 的中间那一段)。
-    // 用正则钉: `·` 在分隔位必须**恰好** 1 个( ctx 段尾 1 个, cache 段后没有)。
-    expect((out.match(/·/g) ?? []).length).toBe(1);
+    // 没有 t/s 段 ⇒ 也不该出现空分隔符 —— cache 段已删 (帧实测: 窗口段已有 cacheNN%, 同屏两个 cache 是重复读数), 分隔符恒 0 个。
+    expect((out.match(/·/g) ?? []).length).toBe(0);
   });
 
   /**
@@ -156,7 +159,7 @@ describe('★ 底栏活仪表(SDD V3 / 切片②,契约 I2/I3/I4)', () => {
    */
   test('★ 仪表挤进既有底栏行① —— 行数不增 (I3)', () => {
     const gaugeText = formatStatusGauge({
-      usage: { completionTokens: 120, cacheRead: 194, uncached: 6 },
+      usage: { completionTokens: 120 },
       pressure: { ratio: 0.62 },
       tps: 12,
     } satisfies StatusGaugeInput);
