@@ -19,11 +19,35 @@
  * 扩展 `console.log` 一句的话,长度前缀协议会直接错位解不出来,而行协议只是多一条"看不懂的行"。
  */
 
-/** 这一版**只**实现这两样。多一样都要先过体检读数,证明真有包需要。 */
-export const SUPPORTED_EVENTS = ['before_agent_start'] as const;
+/**
+ * D1 事件词表 v2 (2026-08-17, dsh/cordis 吸收线 D): 每个事件的**分发语义是公开契约**
+ * (学 dsh 的 @mode 纪律 —— 语义属于事件, 不属于订阅者):
+ *
+ * - **observe**: 引擎执行流的只读通知。宿主发帧后**不消费回复** —— 扩展崩溃/超时/返回什么,
+ *   都结构上够不到 run 的结果与任何 prompt (前缀零字节是构造保证, 不是约定)。
+ * - **gate**: 宿主消费回复且有闸。`before_agent_start` = append-only 闸 (下方
+ *   enforceAppendOnly) + **超时/崩溃走声明默认 = 放行原串** (一个挂了的扩展不许拖死对话轮)。
+ *
+ * 词表外事件在**加载期**被体检拒 (missingApis 对 `on:<词表外>` 红) —— 不发布不能兑现的事件,
+ * 注册了没人发的事件也不许静默跑。
+ */
+export const OBSERVE_EVENTS = ['after_plan', 'before_node', 'after_node', 'on_verdict', 'on_escalation'] as const;
+export const GATE_EVENTS = ['before_agent_start'] as const;
+export const SUPPORTED_EVENTS = [...GATE_EVENTS, ...OBSERVE_EVENTS] as const;
 export const SUPPORTED_API = ['on', 'registerTool'] as const;
 
 export type SupportedEvent = (typeof SUPPORTED_EVENTS)[number];
+export type ObserveEvent = (typeof OBSERVE_EVENTS)[number];
+
+/** 事件 → 分发语义 (Record 全覆盖: 新事件不声明语义是编译错)。 */
+export const EVENT_MODES: Record<SupportedEvent, 'observe' | 'gate'> = {
+  before_agent_start: 'gate',
+  after_plan: 'observe',
+  before_node: 'observe',
+  after_node: 'observe',
+  on_verdict: 'observe',
+  on_escalation: 'observe',
+};
 
 /** 扩展声明的工具 —— **纯数据**。`execute` 留在子进程里,宿主经 IPC 代理调用。 */
 export interface ToolDecl {

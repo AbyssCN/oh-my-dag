@@ -52,6 +52,7 @@ import { createOwnerInbox, type OwnerInbox } from './owner-inbox';
 import { createTriageTools } from './tools/triage';
 import { runExecutorDag, runExecutorDagWithPlan } from '../harness/dag/engine';
 import type { DagNodeEvent, ExecutorDagConfig } from '../harness/dag/types';
+import { extNodeEventSink } from '../harness/ext-tools';
 import type { ConductorPlan } from '../harness/conductor-plan';
 import { prunePass } from '../harness/plan-passes/prune-pass';
 import { dedupPass } from '../harness/plan-passes/dedup-pass';
@@ -666,11 +667,19 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   // 早晚对不上 (D-P 把取消把手放进 RunRegistry 是同一条理由)。
   const inbox = deps.inbox ?? createOwnerInbox({ path: join(cwd, '.omd', 'runs.db') });
 
+  // D1 (ext 词表 v2): 节点事件桥进 ext observe 通知 —— **组合**进既有 onNodeEvent 不替换
+  // (单回调形状不变, 不引监听者集合)。桥全程 fail-open, 观察者不许扰动被观察者。
+  const extSink = extNodeEventSink(cwd);
+  const onNodeEventComposed = (runId: string, e: DagNodeEvent): void => {
+    deps.onNodeEvent?.(runId, e);
+    extSink(e);
+  };
+
   // 三层改名 (owner 2026-08-04, t7): 表内工具挂新名 map_*/solve/run, 旧名留 deprecated alias。
   // 真源 = tool-renames.ts 一张表; 文档/徽章两条闸 import 同表, 注册面与闸不可能漂移。
   const assembled = applyToolRenames([
     // continuity 恒开 (D-3): checkpoint 落 <cwd>/.omd/continuity/<runId>/, dag_run_plan resume 可续。
-    ...createDagTools({ engine, runRegistry, defaultConfig: buildDefaultConfig, continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd }, hudMirror, ledger, recorder, ...(deps.onNodeEvent ? { onNodeEvent: deps.onNodeEvent } : {}) }),
+    ...createDagTools({ engine, runRegistry, defaultConfig: buildDefaultConfig, continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd }, hudMirror, ledger, recorder, onNodeEvent: onNodeEventComposed }),
     createDagResearchTool(researchFanout, { runRegistry }),
     // 自主 goal 环 (P1 / INV-GOAL-1): buildDefaultConfig 传 thunk = 每次调用重解座位 (INV-MODEL-3)。
     // continuity 同 dag_run 恒开: 内层节点 checkpoint + **外层轮 journal** (INV-P2-6),

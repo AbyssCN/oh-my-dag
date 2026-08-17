@@ -23,7 +23,7 @@ import { z } from 'zod';
 import { zodIssues, type ConfigIssueSink } from '../../config/issues';
 import { logger } from '../../logger';
 import { bwrapArgs, defaultRoBinds } from '../../harness/hooks/bwrap';
-import { type ChildMsg, type HostMsg, SUPPORTED_API, SUPPORTED_EVENTS, type ToolDecl, decodeFrames, encodeFrame, enforceAppendOnly } from './protocol';
+import { type ChildMsg, type HostMsg, type ObserveEvent, SUPPORTED_API, SUPPORTED_EVENTS, type ToolDecl, decodeFrames, encodeFrame, enforceAppendOnly } from './protocol';
 
 export interface LoadedExtension {
   name: string;
@@ -32,8 +32,17 @@ export interface LoadedExtension {
   /** 沙箱状态。`false` = bwrap 不在,**响亮降级**(扩展照跑但没有进程级隔离)。 */
   sandboxed: boolean;
   callTool(name: string, params: unknown): Promise<string>;
-  /** 跑 `before_agent_start`,返回**校验过**的 systemPrompt。 */
+  /**
+   * 跑 `before_agent_start`(gate),返回**校验过**的 systemPrompt。
+   * D1: 超时/子进程死 → **走声明默认 = 放行原串** (warn 留痕), 不再把拒绝向上抛 ——
+   * 一个挂了的扩展不许拖死对话轮。
+   */
   beforeAgentStart(systemPrompt: string): Promise<string>;
+  /**
+   * observe 事件通知 (D1)。发帧即返回, **不消费回复**: 扩展没订阅 → 不发帧;
+   * 崩溃/超时/返回值 → 只留 debug 痕, 结构上够不到调用方的任何状态。
+   */
+  notify(event: ObserveEvent, payload: unknown): void;
   stop(): void;
 }
 
@@ -210,7 +219,17 @@ export async function loadExtension(name: string, entry: string, deps: HostDeps)
         return `[扩展 ${name} 的工具返回了不认识的形状]\n${JSON.stringify(v).slice(0, 500)}`;
       },
       async beforeAgentStart(systemPrompt) {
-        const raw = await call({ t: 'event', id: ++seq, event: 'before_agent_start', payload: { systemPrompt } });
+        let raw: unknown;
+        try {
+          raw = await call({ t: 'event', id: ++seq, event: 'before_agent_start', payload: { systemPrompt } });
+        } catch (err) {
+          // D1 gate 默认: 超时/子进程死 → 放行原串。留痕不吞证据, 但不再拖死调用方。
+          logger.warn(
+            { ext: name, err: err instanceof Error ? err.message : String(err) },
+            '[omd/ext] before_agent_start 调用失败 → 走 gate 声明默认 (放行原串)',
+          );
+          return systemPrompt;
+        }
         const returned = (raw as { systemPrompt?: unknown } | undefined)?.systemPrompt;
         const verdict = enforceAppendOnly(systemPrompt, returned);
         if (!verdict.ok) {
@@ -218,6 +237,16 @@ export async function loadExtension(name: string, entry: string, deps: HostDeps)
           logger.warn({ ext: name, reason: verdict.reason }, '[omd/ext] 扩展试图替换 system prompt → 已拦下, 用原串');
         }
         return verdict.value;
+      },
+      notify(event, payload) {
+        // observe: 没订阅不发帧; 回复/错误只留 debug 痕 —— 前缀零字节与"崩溃不扰动"是构造保证。
+        if (!handshake.events.includes(event)) return;
+        call({ t: 'event', id: ++seq, event, payload }).catch((err: unknown) => {
+          logger.debug(
+            { ext: name, event, err: err instanceof Error ? err.message : String(err) },
+            '[omd/ext] observe 事件回执失败 (按语义忽略)',
+          );
+        });
       },
       stop() {
         child.write(encodeFrame({ t: 'shutdown' }));

@@ -17,7 +17,9 @@
  * (防重议段 ③)。wrap 形状与 cli.ts:156-167 的 TUI chat-seat 加载块同款。
  */
 import { loadExtension, readExtensionList, type HostDeps, type LoadedExtension } from '../tui/ext/host';
+import type { ObserveEvent } from '../tui/ext/protocol';
 import type { AnyOmdTool } from './agent-tools';
+import type { DagNodeEvent } from './dag/types';
 import { logger } from '../logger';
 
 /**
@@ -103,4 +105,32 @@ export function stopExtTools(cwd: string): void {
   for (const e of extsCache.get(cwd) ?? []) e.stop();
   extsCache.delete(cwd);
   toolsCache.delete(cwd);
+}
+
+/** DagNodeEvent.type → ext observe 事件名 (D1)。不在表里的 (expanded/progress) 不通知。 */
+const EXT_EVENT_OF: Partial<Record<DagNodeEvent['type'], ObserveEvent>> = {
+  planned: 'after_plan',
+  start: 'before_node',
+  settle: 'after_node',
+  verdict: 'on_verdict',
+  replan: 'on_escalation',
+};
+
+/**
+ * D1: 引擎节点事件 → ext observe 通知的桥。**不是事件总线** —— 与 onNodeEvent 同族的
+ * 单回调形状 (可静态检查), 组合进既有回调而非替换。语义链条上全程 fail-open:
+ * notify 本身不消费回复 (host.ts), 本函数再包一层 try/catch —— 观察者不许扰动被观察者
+ * (与 emitNodeEvent 的契约逐字同款)。每事件按 ext 的订阅清单过滤 (没订阅不发帧)。
+ * exts 按 cwd 从缓存现读: 装配先于 run, 缓存到位; 没装扩展 = 每次读到空数组 = 零开销。
+ */
+export function extNodeEventSink(cwd: string): (e: DagNodeEvent) => void {
+  return (e) => {
+    try {
+      const event = EXT_EVENT_OF[e.type];
+      if (!event) return;
+      for (const ext of extsCache.get(cwd) ?? []) ext.notify(event, e);
+    } catch (err) {
+      logger.debug({ err: err instanceof Error ? err.message : String(err) }, '[omd/ext] observe 桥抛错 (已吞, 不扰动 run)');
+    }
+  };
 }
