@@ -47,12 +47,13 @@ describe('★ 三态分得开', () => {
     expect(h.active).toBe(false);
   });
 
-  test('★ 有图有票 → 照实画前沿票(真地图, 经真 API 写盘再读回)', () => {
+  test('★ 有图有票 → 画标题 + 计数, **不再画票清单**(2026-08-17 去重: 清单唯一归票看板)', () => {
+    // 反向自检 (实跑): 把 render 里 frontier 表加回来 → 「不画票行」那半当场红。
     const h = hudFor(world([ticket('t1'), ticket('t2')]));
     const out = h.render(100).join('\n');
     expect(out).toContain('把 TUI 做出来');
-    expect(out).toContain('t1');
-    expect(out).toContain('t2');
+    expect(out).toContain('frontier 2');
+    expect(out).not.toContain('t1'); // 票行不在这 —— 同屏票看板画, 两处都画就是 dump 两遍
   });
 
   test('★ 有图但前沿为空(全被挡着)→ 画 0 并说清为什么, 不是空白', () => {
@@ -109,7 +110,8 @@ describe('读侧', () => {
       map: { destination: 'd', slug: 's', tickets: [], decisionsLog: [] },
     };
     h.refresh();
-    expect(h.render(80).join('\n')).toContain('x');
+    // 2026-08-17 去重后票 id 不再进 HUD —— 状态变化的证据改看计数与标题。
+    expect(h.render(80).join('\n')).toContain('frontier 1');
   });
 });
 
@@ -123,9 +125,11 @@ describe('宽度', () => {
     }
   });
 
-  test('票多到画不下时说"另有 N 张", 不静默截断', () => {
+  test('票再多也只有计数行 —— 12 票不撑高 HUD (行数与票数无关)', () => {
     const h = hudFor(world(Array.from({ length: 12 }, (_, i) => ticket(`t${i}`))));
-    expect(h.render(100).join('\n')).toContain('7 more frontier tickets');
+    const out = h.render(100);
+    expect(out.join('\n')).toContain('frontier 12');
+    expect(out.length).toBeLessThanOrEqual(4); // 空行 + 标题 + 进度条 + 计数
   });
 });
 

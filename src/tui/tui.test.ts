@@ -15,6 +15,8 @@ import { join } from 'node:path';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { Component } from '@earendil-works/pi-tui';
 import { CHROME, CTRL_C_WINDOW_MS, DOUBLE_ESC_WINDOW_MS, decideCtrlC, decideEsc, pathHudVisible, withLeftGutter } from './tui';
+import { paintTicketRow } from './components/ticket-board';
+import { createTheme } from './theme';
 import { defaultExportPath, exportTranscriptMarkdown } from './export';
 import { formatStatus } from './status';
 
@@ -36,6 +38,27 @@ describe('Ctrl+C 双击判定 (§4.1 第 1 条)', () => {
 
   test('★ 超窗的第二击重新预备, 不是退出 —— 否则"隔十分钟按两次"会误退', () => {
     expect(decideCtrlC(1000, 99999)).toBe('arm');
+  });
+});
+
+describe('paintTicketRow —— 上色是装饰, 不许改内容', () => {
+  // 反向自检 (实跑): 把重拼串里任一段删掉 (如 sp) → 关色恒等那条当场红。
+  const off = createTheme({ color: false }).chrome;
+  test('★ 关色下逐字节恒等 —— 三种行形状 + 拆不动的行', () => {
+    for (const l of [
+      '· r1 [research] 实测并发只到 ~4 · frontier',
+      '✗ STALE x1 [grill] 串行审计 · escalated · waiting 3h',
+      '✓ g1 [task] 已裁 · ruled',
+      '... 3 more tickets',
+    ]) {
+      expect(paintTicketRow(off, l)).toBe(l);
+    }
+  });
+  test('开色下内容不变 (去掉 ANSI 后逐字节 = 原行)', () => {
+    const on = createTheme({ color: true }).chrome;
+    const l = '· r1 [research] 标题 · frontier';
+    // eslint-disable-next-line no-control-regex
+    expect(paintTicketRow(on, l).replace(/\x1b\[[0-9;]*m/g, '')).toBe(l);
   });
 });
 

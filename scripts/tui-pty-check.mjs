@@ -921,9 +921,12 @@ async function scenarioTicketBoard() {
   const p = startTui({ cwd });
   try {
     check(await waitFor(p, (t) => bootReady(t)), 'TB-0 (场景 S5) 启动');
+    // 2026-08-17 判据换锚 (facelift 去重): 表头 `ticket board ·` 不再上屏 (map 标题唯一归
+    // PathHud 的 `map <destination>`), 票行成了看板**独有**产出 (PathHud 收缩后不再画票)。
+    // 证伪同原款: 夹具票标题 `夹具票` 全仓只有 seedTicketMap 产得出, 空图连行都没有。
     check(
-      await waitFor(p, (t) => t.includes('ticket board')),
-      'TB-1 ★ 欢迎屏画出票看板头 (盘上 map 非空才出 —— 空图返回 [] 连头都没有)',
+      await waitFor(p, (t) => t.includes('map PTY 夹具图') && t.includes('夹具票')),
+      'TB-1 ★ 欢迎屏画出 map 标题 (PathHud) + 票行 (看板) —— 各自唯一, 合读 = 两件都在且不重复',
       p.text().slice(-600),
     );
     check(

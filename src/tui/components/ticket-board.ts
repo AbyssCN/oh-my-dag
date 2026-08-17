@@ -56,6 +56,36 @@ function waitLabel(t: Ticket, nowMs: number): string {
   }
 }
 
+/**
+ * 票行上色(2026-08-17 facelift:owner 截图判"零色彩层级")。基于本文件自己的行形状
+ * `<mark> <id> [<type>] …` 就地拆色:状态字形按语义(✓绿 ✗红 ·蓝 ○黄)、id 亮、
+ * type 徽章按类、其余 dim。拆不动的行整行 dim —— 上色是装饰,拆错不许改内容;
+ * **关色下所有画笔是 identity,重拼出来必须逐字节 = 原行**(tui.test 有闸)。
+ * ⚠ 标记字形从 `STALE_PREFIX`/`MARK` **引用拼进 regex**,不写第二份字面量 ——
+ *   边框族闸(tokens.test)只认 token 引用,而且词表变了这里自动跟。
+ */
+const MARK_ALT = `${STALE_PREFIX}|[${Object.values(MARK).join('')}]`;
+const ROW_RE = new RegExp(`^(${MARK_ALT})( )(\\S+)( \\[)([a-z]+)(\\])([^]*)$`);
+
+export interface TicketRowChrome {
+  dim: (t: string) => string;
+  accent: (t: string) => string;
+  warn: (t: string) => string;
+  user: (t: string) => string;
+  toolRead: (t: string) => string;
+  toolOk: (t: string) => string;
+  toolFail: (t: string) => string;
+}
+
+export function paintTicketRow(chrome: TicketRowChrome, l: string): string {
+  const m = ROW_RE.exec(l);
+  if (!m) return chrome.dim(l);
+  const [, mark, sp, id, lb, type, rb, rest] = m;
+  const markC = mark!.startsWith(STALE_PREFIX) ? chrome.toolFail : mark === MARK.ruled ? chrome.toolOk : mark === MARK.open ? chrome.accent : chrome.warn;
+  const typeC = type === 'grill' ? chrome.warn : type === 'research' ? chrome.toolRead : chrome.accent;
+  return `${markC(mark!)}${sp}${chrome.user(id!)}${chrome.dim(lb!)}${typeC(type!)}${chrome.dim(rb!)}${chrome.dim(rest!)}`;
+}
+
 /** 片3 (W2 执行契约) 的列宽选项。缺席 = 旧行为原文平铺 —— 既有调用者一行不改。 */
 export interface TicketBoardOpts {
   /** 组件 `render(width)` 拿到的实宽。给了就逐行不溢出 (含选中态展开出来的续行)。 */

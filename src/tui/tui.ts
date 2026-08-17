@@ -39,7 +39,7 @@ import { type DialogHost, type InputOpts, type SelectOpts, confirm as dialogConf
 import { DagHud } from './components/dag-hud';
 import { DagTree } from './components/dag-tree';
 import { type PathReader, PathHud, createPathReader } from './components/path-hud';
-import { renderTicketBoard } from './components/ticket-board';
+import { paintTicketRow, renderTicketBoard } from './components/ticket-board';
 import { renderGantt } from './render/dag-gantt';
 import { type PathViewData, buildPathViewData, renderDelta, renderFogLine } from './render/path-fog';
 import { fitLine } from './render/line';
@@ -497,11 +497,12 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       if (!ticketBoardMap) return [];
       // ⚠ 侧栏行数必须封顶 (实跑钉的): 19 票的图整张画会把 transcript 挤到 3 行,
       //   欢迎屏那张表 (engine/session) 被挤出可见窗, PTY 的 bootReady 一条接一条红。
-      //   与 pathHud 同款 MAX_ROWS 惯例 —— 画表头 + 前几票 + "... N more", 全量仍在盘上。
-      const lines = renderTicketBoard(ticketBoardMap, now());
-      const cap = 7; // 表头 + 6 票; 超出再补一行 "... N more tickets"
-      const shown = lines.length <= cap ? lines : [...lines.slice(0, cap), `... ${lines.length - cap} more tickets`];
-      return shown.map((l) => theme.chrome.dim(fitLine(l, width)));
+      // 列宽治理走 renderTicketBoard 自己的 {width} (W2 片3; 此前这里没传, 靠外层 fitLine 硬裁);
+      // 表头不画 —— 同屏上方 PathHud 的 map 标题就是它, 同一句话两遍是 dump 不是 UI。
+      const rows = renderTicketBoard(ticketBoardMap, now(), { width }).slice(1);
+      const cap = 6;
+      const shown = rows.length <= cap ? rows : [...rows.slice(0, cap), `... ${rows.length - cap} more tickets`];
+      return shown.map((l) => paintTicketRow(theme.chrome, l));
     },
     handleInput: () => {},
     invalidate: () => {},
