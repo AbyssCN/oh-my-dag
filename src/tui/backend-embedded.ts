@@ -102,6 +102,15 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
     textOf((await t.handler(args as never, {} as never)) as McpResult);
   /** 每会话一个 controller —— `abortChat` 要能只掐一条会话,不是掐全部。 */
   const inflight = new Map<string, AbortController>();
+  /** 在飞排队(steering/follow-up 共用一队)。key = sessionId;残留跨轮存活,由 drainQueued 排空。 */
+  const steerQueues = new Map<string, string[]>();
+  /** 取空队列并映射成 user 消息。pi loop 契约: 不许抛、无货返 [] —— 这里天然满足。 */
+  const drainAsMessages = (sessionId: string): AgentMessage[] => {
+    const q = steerQueues.get(sessionId);
+    if (!q || q.length === 0) return [];
+    steerQueues.delete(sessionId);
+    return q.map((text) => ({ role: 'user', content: [{ type: 'text', text }], timestamp: Date.now() }) as AgentMessage);
+  };
   let seq = 0;
   let onEvent: ((e: OmdTuiEvent) => void) | undefined;
 
@@ -220,7 +229,7 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
       inflight.clear();
     },
 
-    async sendChat({ sessionId, prompt }) {
+    async sendChat({ sessionId, prompt, thinking }) {
       const controller = new AbortController();
       inflight.set(sessionId, controller);
       try {
@@ -233,6 +242,11 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
           tools: deps.tools,
           onEvent: mapAgentEvent,
           signal: controller.signal,
+          // /think 控制面: TUI 每轮带当前档; 缺省时 agent.ts 自己的默认 ('high') 生效。
+          ...(thinking !== undefined ? { thinkingLevel: thinking as ChatTurnOpts['thinkingLevel'] } : {}),
+          // 在飞排队两钩子: 工具间隙注入 + 本该停时续跑。同一条队 —— 谁先问到谁拿走。
+          getSteeringMessages: async () => drainAsMessages(sessionId),
+          getFollowUpMessages: async () => drainAsMessages(sessionId),
           ...(deps.memory ? { memory: deps.memory } : {}),
           ...(deps.systemPromptHook ? { systemPromptHook: deps.systemPromptHook } : {}),
         };
@@ -261,6 +275,20 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
       c.abort();
       inflight.delete(sessionId);
       return { ok: true, aborted: true };
+    },
+
+    // ── 在飞排队 (2026-08-17, W1): 台账里 0 次的两钩子第一次有了供货方。 ──
+    async queueChat({ sessionId, prompt }) {
+      const q = steerQueues.get(sessionId) ?? [];
+      q.push(prompt);
+      steerQueues.set(sessionId, q);
+      return { ok: true, queued: q.length };
+    },
+
+    async drainQueued({ sessionId }) {
+      const q = steerQueues.get(sessionId) ?? [];
+      steerQueues.delete(sessionId);
+      return { prompts: q };
     },
 
     async loadHistory({ sessionId }): Promise<AgentMessage[]> {

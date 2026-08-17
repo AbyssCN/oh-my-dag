@@ -430,3 +430,33 @@ describe('★ 会话树与分支(§1.3)', () => {
     expect(r?.text).toContain('no such session');
   });
 });
+
+describe('★ 在飞排队 + /think 直通 (W1)', () => {
+  test('★ queueChat 入队 → sendChat 的钩子按序取走成 user 消息; 空队返 [] 不抛', async () => {
+    // 反向自检 (实跑): 把 sendChat 里 getSteeringMessages 那行删掉 → 「钩子在」当场红。
+    let hook: (() => Promise<AgentMessage[]>) | undefined;
+    const { backend } = make({ runTurn: fakeTurn({ onCall: (o) => { hook = o.getSteeringMessages; } }) });
+    await backend.queueChat?.({ sessionId: 's', prompt: '插话一' });
+    const r = await backend.queueChat?.({ sessionId: 's', prompt: '插话二' });
+    expect(r?.queued).toBe(2);
+    await backend.sendChat({ sessionId: 's', prompt: '主问' });
+    expect(hook).toBeDefined();
+    const msgs = await hook!();
+    expect(msgs.map((m) => ((m as { content: { text: string }[] }).content)[0]?.text)).toEqual(['插话一', '插话二']);
+    expect(msgs.every((m) => m.role === 'user')).toBe(true);
+    expect(await hook!()).toEqual([]); // 契约: 无货返 [], 不许抛
+  });
+
+  test('drainQueued 排空残留且幂等; thinking 给了直通 turn opts, 没给不塞', async () => {
+    // 反向自检 (实跑): 把 sendChat 里 thinking 那条 spread 删掉 → 「直通」当场红。
+    let seen: ChatTurnOpts | undefined;
+    const { backend } = make({ runTurn: fakeTurn({ onCall: (o) => { seen = o; } }) });
+    await backend.queueChat?.({ sessionId: 's', prompt: '残留' });
+    expect((await backend.drainQueued?.({ sessionId: 's' }))?.prompts).toEqual(['残留']);
+    expect((await backend.drainQueued?.({ sessionId: 's' }))?.prompts).toEqual([]);
+    await backend.sendChat({ sessionId: 's', prompt: 'x', thinking: 'low' });
+    expect(seen?.thinkingLevel).toBe('low');
+    await backend.sendChat({ sessionId: 's', prompt: 'y' });
+    expect('thinkingLevel' in (seen ?? {})).toBe(false);
+  });
+});

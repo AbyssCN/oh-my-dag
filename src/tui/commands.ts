@@ -55,6 +55,7 @@ export const COMMANDS: readonly CommandDoc[] = [
   { handler: 'parseNewForkCommand', name: '/fork', args: '[id]', what: 'copy this session into a second one and switch to it (alias of /session fork)' },
   { handler: 'handleTree', name: '/tree', args: null, what: 'browse this session tree; branch from an earlier entry - the abandoned branch becomes a [branch summary] node in the same file (**side effect**)' },
   { handler: 'handleSearch', name: '/search', args: '<text>', what: 'full-text search across all sessions; pick a hit to switch to that session' },
+  { handler: 'handleThink', name: '/think', args: '[off|low|medium|high|xhigh]', what: 'show or set the thinking level for chat turns (persisted to .omd/config.json)' },
   { handler: 'handleRuns', name: '/runs', args: null, what: 'list DAG runs (registry + on-disk checkpoints)' },
   { handler: 'handleRuns', name: '/resume', args: '<runId>', what: 'resume a broken run from its checkpoint (**side effect**)' },
   { handler: 'handleCompact', name: '/compact', args: null, what: 'compress the current session context (**side effect**)' },

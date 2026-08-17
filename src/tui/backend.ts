@@ -65,7 +65,14 @@ export interface OmdBackend {
   stop(): void | Promise<void>;
 
   // ── 请求 (UI → 后端) ──
-  sendChat(o: { sessionId: string; prompt: string }): Promise<{ ok: boolean; runId?: string }>;
+  sendChat(o: { sessionId: string; prompt: string; thinking?: string }): Promise<{ ok: boolean; runId?: string }>;
+  /**
+   * 在飞排队:轮跑着时把这句话入队,pi loop 在下一个工具间隙注入(steering),
+   * 本该停时续跑(follow-up)。claude-sdk 座不吃钩子 → 残留由 `drainQueued` 兜底。
+   */
+  queueChat?(o: { sessionId: string; prompt: string }): Promise<{ ok: boolean; queued: number }>;
+  /** 排空未被本轮消费的队列残留(轮后调)。返回残留原文 —— 调用方决定怎么续发。 */
+  drainQueued?(o: { sessionId: string }): Promise<{ prompts: string[] }>;
   abortChat(o: { sessionId: string }): Promise<{ ok: boolean; aborted: boolean }>;
   loadHistory(o: { sessionId: string }): Promise<AgentMessage[]>;
   listSessions(): Promise<TuiSessionMeta[]>;

@@ -13,17 +13,26 @@ import { loadTuiUiConfig, patchOmdConfig, setTuiUi } from './ui-config';
 const tdir = () => mkdtempSync(join(tmpdir(), 'omd-uicfg-'));
 
 describe('loadTuiUiConfig', () => {
-  test('没有文件 → 默认: 左栏开, 画法 0(树)', () => {
-    expect(loadTuiUiConfig(tdir(), {})).toEqual({ sidebar: true, painterIdx: 0 });
+  test('没有文件 → 默认: 左栏开, 画法 0(树), 思考档 high', () => {
+    expect(loadTuiUiConfig(tdir(), {})).toEqual({ sidebar: true, painterIdx: 0, thinking: 'high' });
   });
 
   test('读回写过的值; 非法 painter 名回落 0', () => {
     const dir = tdir();
     setTuiUi(dir, { sidebar: false, painterIdx: 1 }, {});
-    expect(loadTuiUiConfig(dir, {})).toEqual({ sidebar: false, painterIdx: 1 });
+    expect(loadTuiUiConfig(dir, {})).toEqual({ sidebar: false, painterIdx: 1, thinking: 'high' });
     mkdirSync(join(dir, '.omd'), { recursive: true });
     writeFileSync(join(dir, '.omd', 'config.json'), JSON.stringify({ tui: { ui: { painter: 'nonsense' } } }));
     expect(loadTuiUiConfig(dir, {}).painterIdx).toBe(0);
+  });
+
+  test('★ thinking 档往返; 非法值回落 high; off 是合法一档不是缺席 (W1)', () => {
+    // 反向自检 (实跑): 把 loadTuiUiConfig 里 THINKING_LEVELS.includes 校验删掉 → 非法值那半红。
+    const dir = tdir();
+    setTuiUi(dir, { thinking: 'off' }, {});
+    expect(loadTuiUiConfig(dir, {}).thinking).toBe('off');
+    writeFileSync(join(dir, '.omd', 'config.json'), JSON.stringify({ tui: { ui: { thinking: 'ultra' } } }));
+    expect(loadTuiUiConfig(dir, {}).thinking).toBe('high');
   });
 });
 

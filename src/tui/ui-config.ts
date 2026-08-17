@@ -20,11 +20,21 @@ import { omdConfigPath } from '../config/config-discovery';
 export const PAINTER_NAMES = ['tree', 'gantt', 'layers'] as const;
 export type PainterName = (typeof PAINTER_NAMES)[number];
 
+/**
+ * `/think` 的合法档 —— **本仓词表**(`role-models.ts` 的 ThinkingLevel,单一词汇),
+ * 不是 pi 的(pi 另有 minimal/max;两表混用会让座位配置读不懂)。'off' 也是一档。
+ * `satisfies` 钉住:词表漂移时 tsc 当场红。
+ */
+export const THINKING_LEVELS = ['off', 'low', 'medium', 'high', 'xhigh'] as const satisfies readonly ThinkingLevelName[];
+export type ThinkingLevelName = import('../model/role-models').ThinkingLevel;
+
 export interface TuiUiConfig {
   /** 左栏默认开不开。默认 true。 */
   sidebar: boolean;
   /** 全屏默认画法(下标进 tui.ts 的 PAINTERS)。默认 0 = 树。 */
   painterIdx: number;
+  /** chat 轮的思考档。默认 'high'(`agent.ts` 的既有默认,这里只是把旋钮露出来)。 */
+  thinking: ThinkingLevelName;
 }
 
 const configPathOf = (cwd: string, env: Record<string, string | undefined>): string => {
@@ -48,6 +58,7 @@ export function loadTuiUiConfig(cwd: string, env: Record<string, string | undefi
   return {
     sidebar: typeof ui?.sidebar === 'boolean' ? ui.sidebar : true,
     painterIdx: painter >= 0 ? painter : 0,
+    thinking: THINKING_LEVELS.includes(ui?.thinking as ThinkingLevelName) ? (ui?.thinking as ThinkingLevelName) : 'high',
   };
 }
 
@@ -82,7 +93,11 @@ const tuiSection = (root: Record<string, unknown>): Record<string, unknown> => {
   return tui;
 };
 
-export function setTuiUi(cwd: string, patch: { sidebar?: boolean; painterIdx?: number }, env?: Record<string, string | undefined>): string {
+export function setTuiUi(
+  cwd: string,
+  patch: { sidebar?: boolean; painterIdx?: number; thinking?: ThinkingLevelName },
+  env?: Record<string, string | undefined>,
+): string {
   return patchOmdConfig(
     cwd,
     (root) => {
@@ -90,6 +105,7 @@ export function setTuiUi(cwd: string, patch: { sidebar?: boolean; painterIdx?: n
       const ui = (tui.ui ??= {}) as Record<string, unknown>;
       if (patch.sidebar !== undefined) ui.sidebar = patch.sidebar;
       if (patch.painterIdx !== undefined) ui.painter = PAINTER_NAMES[patch.painterIdx] ?? 'tree';
+      if (patch.thinking !== undefined) ui.thinking = patch.thinking;
     },
     env,
   );

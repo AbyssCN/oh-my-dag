@@ -64,6 +64,14 @@ export interface ChatTurnOpts {
   onEvent?: (e: AgentEvent) => void;
   signal?: AbortSignal;
   /**
+   * 在飞插话(steering,工具间隙注入)/ 轮尾追加(follow-up,本该停时续跑)两队列的
+   * 取数钩子 —— pi loop 契约:**不许抛、无货返 []**(types.d.ts:202/214)。
+   * ⚠ 只在 pi loop 路生效;claude-sdk 路(`runChatTurnSdk`)不吃这两个钩子,
+   *   队列残留由调用方轮后排空兜底(TUI 的 drainQueued 那条)。
+   */
+  getSteeringMessages?: () => Promise<AgentMessage[]>;
+  getFollowUpMessages?: () => Promise<AgentMessage[]>;
+  /**
    * 测试接缝:替换真循环(真循环要真模型)。生产不传。
    */
   loopFn?: typeof runAgentLoop;
@@ -249,6 +257,10 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
     ...(thinking !== 'off' ? { reasoning: thinking } : {}),
     // 凭证每轮现取(同 agent-leaf: OAuth token 会在长会话中途过期)。
     getApiKey: (p: string) => resolvePiApiKey(p),
+    // 两队列钩子直通 (在飞插话 / 轮尾追加)。契约(不许抛)由提供方保证 —— 这里不再包一层,
+    // 包了反而把"提供方违约"藏成静默空轮。
+    ...(opts.getSteeringMessages ? { getSteeringMessages: opts.getSteeringMessages } : {}),
+    ...(opts.getFollowUpMessages ? { getFollowUpMessages: opts.getFollowUpMessages } : {}),
     // 记忆注入走甲类钩子 `transformContext` (S16): 只改这一次请求看到的消息, 不写回 context。
     // C-9: 召回打点路径显式拼 cwd (不吃进程 cwd), INJECTED 从此有盘上痕迹。
     ...(opts.memory

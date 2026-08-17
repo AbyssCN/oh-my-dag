@@ -42,6 +42,22 @@ const fakeLoop =
     return [...prompts, reply];
   };
 
+describe('★ 两队列钩子直通 loop config (W1 —— 台账 0 次的字段第一次有供货方)', () => {
+  test('给了原样直通, 没给不塞 undefined 占位', async () => {
+    // 反向自检 (实跑): 把 agent.ts config 里两条 spread 删掉 → 「原样直通」当场红。
+    const seen: { cfg?: Record<string, unknown> } = {};
+    const loop = (async (prompts: AgentMessage[], context: { messages: AgentMessage[] }, cfg: Record<string, unknown>) => {
+      seen.cfg = cfg;
+      return fakeLoop('答')(prompts, context);
+    }) as never;
+    const steer = async (): Promise<AgentMessage[]> => [];
+    await runChatTurn({ store, sessionId: 's1', prompt: 'x', model: MODEL, cwd: root, loopFn: loop, getSteeringMessages: steer });
+    expect(seen.cfg?.getSteeringMessages).toBe(steer);
+    // 没给的那个不许出现在 config 里 —— 塞个 undefined 键会盖掉 pi 侧"字段在不在"的判断。
+    expect('getFollowUpMessages' in (seen.cfg ?? {})).toBe(false);
+  });
+});
+
 describe('持久化拼接语义', () => {
   test('★ 首轮:会话新建 + 标题取自首条输入 + 落盘 = user+assistant 两条', async () => {
     const r = await runChatTurn({

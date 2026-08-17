@@ -57,7 +57,7 @@ import { MANUAL_COORD, choiceLabel, listModelChoices, parseModelsCommand, sortCh
 import { buildTreeRows, formatTree, parseTreeCommand, rewindTargets, treeLabel } from './tree-picker';
 import { createOmdAutocompleteProvider } from './skill-complete';
 import { createContextHealth } from './health';
-import { loadTuiUiConfig, setTuiUi } from './ui-config';
+import { THINKING_LEVELS, loadTuiUiConfig, setTuiUi, type ThinkingLevelName } from './ui-config';
 import { renderLogo } from './render/logo';
 import { summarizeToolArg } from './render/tool-arg';
 import { summarizeToolResult } from './render/tool-result';
@@ -257,6 +257,14 @@ export const CHROME = {
   // ── `!` bash 直通(2026-08-17): 本地跑命令, 输出进上下文。 ──
   bangUsage: () => 'Usage: !<command> - runs locally in the repo; the output joins the session context',
   bangBusy: () => 'A turn is in flight - run local commands after it finishes (Esc interrupts)',
+  // ── 在飞排队 (W1): 三句回执把"什么时候真的发出去"说清 —— 排队最怕的是黑盒。 ──
+  queued: (n: number) => `Queued (#${n}) - joins the running turn at the next tool boundary, or right after it ends`,
+  queuedFlush: (n: number) => `Sending ${n} queued message(s) as the next turn`,
+  queuedHeld: (n: number) => `Interrupted - ${n} queued message(s) put back into the editor, Enter re-sends`,
+  // ── /think (W1): 回执印**写盘后的真值**, 不印入参。 ──
+  thinkShown: (level: string) => `thinking level: ${level} (set with /think <${'off|low|medium|high|xhigh'}>)`,
+  thinkSet: (level: string, path: string) => `thinking level -> ${level} (persisted to ${path})`,
+  thinkBad: (given: string) => `Unknown thinking level "${given}" - valid: off, low, medium, high, xhigh`,
   logoutCancelled: () => 'logout cancelled, nothing removed',
   logoutClaude: () => 'claude-code uses the Claude CLI subscription - run `claude logout` in a terminal; omd does not touch its credentials.',
   logoutDone: (provider: string, removed: { file: string; key: string }[], warnings: string[]) =>
@@ -594,6 +602,8 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   let sidebarOn = uiCfg.sidebar;
   let fullOn = false;
   let painterIdx = uiCfg.painterIdx; // 0=树 1=甘特 2=分层 (默认从 tui.ui.painter 读)
+  /** `/think` 的当前档 (W1)。持久在 tui.ui.thinking; 每轮 sendChat 带上。 */
+  let thinkingLevel = uiCfg.thinking;
   const SIDEBAR_WIDTH = 34;
   /** 低于这个总宽不给侧栏。= 侧栏 34 + 对话区至少 56。 */
   const SIDEBAR_MIN_TOTAL = 90;
@@ -907,13 +917,14 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     waiting.stop();
   }
 
-  async function submit(prompt: string): Promise<void> {
-    chatLog.appendUser(prompt);
+  /** @param alreadyPainted 排队续发路:文本入队时已画过 user 气泡, 这里不再画第二遍。 */
+  async function submit(prompt: string, alreadyPainted = false): Promise<void> {
+    if (!alreadyPainted) chatLog.appendUser(prompt);
     // A7: skill 正文前置到这一句上。**用完即清** —— 不清的话它会在往后每一轮里重复出现。
     const withSkill = pendingSkill ? `${pendingSkill}\n\n${prompt}` : prompt;
     pendingSkill = null;
     editor.setText('');
-    editor.addToHistory(prompt);
+    if (!alreadyPainted) editor.addToHistory(prompt);
     // 等待态开满整轮(2026-08-11,见 `waiting` 声明处)。文案先回到基态 ——
     // 不回的话第二轮的头一秒还挂着上一轮的秒数。
     turnInFlight = true;
@@ -927,7 +938,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     }, 1000);
     tui.requestRender();
     try {
-      const res = await opts.backend.sendChat({ sessionId, prompt: withSkill });
+      const res = await opts.backend.sendChat({ sessionId, prompt: withSkill, thinking: thinkingLevel });
       // `ok:false` 是**响亮的否**, 不是空回复。打断的轮不算拒 —— 那是人叫停的。
       if (!res.ok && !abortRequested) chatLog.appendNotice(CHROME.refused(opts.backend.connection.url));
     } catch (err) {
@@ -946,6 +957,26 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     stopWaiting();
     chatLog.closeStreaming();
     tui.requestRender();
+    // 排队残留兜底: 轮内没被钩子消费的 (claude-sdk 座不吃钩子 / 入队晚于最后一个间隙)。
+    // 正常收尾 → 拼成下一轮续发 (painted=true: 入队时已画过气泡);
+    // 打断收尾 → **不续发**(人叫停时静默续发最吓人), 也不许残留在后端 (下轮会意外注入) ——
+    // 取回放进输入框, 人按回车才走。
+    if (opts.backend.drainQueued) {
+      try {
+        const { prompts } = await opts.backend.drainQueued({ sessionId });
+        if (prompts.length > 0) {
+          if (abortRequested) {
+            chatLog.appendNotice(CHROME.queuedHeld(prompts.length));
+            editor.setText(prompts.join('\n'));
+          } else {
+            chatLog.appendNotice(CHROME.queuedFlush(prompts.length));
+            void submit(prompts.join('\n\n'), true);
+          }
+        }
+      } catch (err) {
+        logger.warn({ err: err instanceof Error ? err.message : String(err), sessionId }, '[omd/tui] drainQueued 抛了');
+      }
+    }
   }
 
   /**
@@ -1485,6 +1516,31 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       const reason = err instanceof Error ? err.message : String(err);
       logger.warn({ err: reason }, '[omd/tui] /tree 抛了');
       chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
+    }
+    tui.requestRender();
+    return true;
+  }
+
+  /**
+   * `/think [档]` —— chat 轮思考档的控制面(W1)。裸 `/think` 只看不改;
+   * 档进本仓词表(role-models 的 ThinkingLevel, 不是 pi 的);写盘后回执印真值。
+   * 屏上常驻显示排在 W2 仪表合入之后 —— 那片正在 status-line 上动, 现在碰它必撞。
+   */
+  function handleThink(text: string): boolean {
+    const t = text.trim();
+    if (t !== '/think' && !t.startsWith('/think ')) return false;
+    chatLog.appendUser(t);
+    editor.setText('');
+    const arg = t.slice('/think'.length).trim();
+    if (!arg) {
+      chatLog.appendNotice(CHROME.thinkShown(thinkingLevel));
+    } else if (!(THINKING_LEVELS as readonly string[]).includes(arg)) {
+      chatLog.appendNotice(CHROME.thinkBad(arg));
+    } else {
+      const path = setTuiUi(opts.cwd, { thinking: arg as ThinkingLevelName });
+      // 真值回盘上读 (applySetting 同口径): 写盘失败不许在屏上留"改好了"的假象。
+      thinkingLevel = loadTuiUiConfig(opts.cwd).thinking;
+      chatLog.appendNotice(CHROME.thinkSet(thinkingLevel, path));
     }
     tui.requestRender();
     return true;
@@ -2108,6 +2164,20 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       void handleBang(bang.cmd);
       return;
     }
+    // 在飞排队 (W1): 轮跑着时的**普通聊天文本**入队 (钩子在工具间隙注入 / 轮尾续跑)。
+    // 斜杠命令不入队 —— 命令是对 TUI 说的, 不是对模型说的, 各命令自己决定在飞时接不接。
+    if (turnInFlight && !prompt.startsWith('/') && opts.backend.queueChat) {
+      chatLog.appendUser(prompt);
+      editor.setText('');
+      editor.addToHistory(prompt);
+      void opts.backend.queueChat({ sessionId, prompt }).then(({ queued }) => {
+        chatLog.appendNotice(CHROME.queued(queued));
+        tui.requestRender();
+      });
+      tui.requestRender();
+      return;
+    }
+    if (handleThink(prompt)) return;
     if (parseHelpCommand(prompt)) {
       chatLog.appendUser(prompt);
       editor.setText('');
