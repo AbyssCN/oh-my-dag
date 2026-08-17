@@ -19,6 +19,8 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { z } from 'zod';
+import { zodIssues, type ConfigIssueSink } from '../../config/issues';
 import { logger } from '../../logger';
 import { bwrapArgs, defaultRoBinds } from '../../harness/hooks/bwrap';
 import { type ChildMsg, type HostMsg, SUPPORTED_API, SUPPORTED_EVENTS, type ToolDecl, decodeFrames, encodeFrame, enforceAppendOnly } from './protocol';
@@ -232,22 +234,33 @@ export async function loadExtension(name: string, entry: string, deps: HostDeps)
  * ⚠ 这一版**只认绝对路径** —— npm 包名解析要先决定"装在哪、谁装",那是另一片。
  * 文件不在 → 空数组(没配过扩展不是错误)。
  */
-export function readExtensionList(cwd: string): { name: string; entry: string }[] {
+/** C2: 清单条目闸字段 (looseObject: 多余键照旧忽略)。 */
+const extensionEntrySchema = z.looseObject({ name: z.string().min(1), entry: z.string().min(1) });
+
+export function readExtensionList(cwd: string, issues?: ConfigIssueSink): { name: string; entry: string }[] {
   const f = join(cwd, '.omd', 'extensions.json');
   if (!existsSync(f)) return [];
   try {
-    const parsed = JSON.parse(readFileSync(f, 'utf8')) as {
-      extensions?: { name?: string; entry?: string }[];
-    };
-    return (parsed.extensions ?? [])
-      .filter((e): e is { name: string; entry: string } => !!e.name && !!e.entry)
-      .filter((e) => {
-        if (existsSync(e.entry)) return true;
-        logger.warn({ name: e.name, entry: e.entry }, '[omd/ext] 清单里的入口文件不存在 → 跳过');
-        return false;
-      });
+    const parsed = JSON.parse(readFileSync(f, 'utf8')) as { extensions?: unknown[] };
+    const out: { name: string; entry: string }[] = [];
+    for (const [i, rawEntry] of (parsed.extensions ?? []).entries()) {
+      const p = extensionEntrySchema.safeParse(rawEntry);
+      if (!p.success) {
+        // C2: 此前无效条目 (缺 name/entry) 是静默 filter 掉的 —— 跳过行为不变, 证据补上。
+        issues?.push(...zodIssues(f, `extensions[${i}]`, p.error.issues));
+        continue;
+      }
+      if (!existsSync(p.data.entry)) {
+        logger.warn({ name: p.data.name, entry: p.data.entry }, '[omd/ext] 清单里的入口文件不存在 → 跳过');
+        issues?.push({ source: f, path: `extensions[${i}].entry`, message: `入口文件不存在: ${p.data.entry}` });
+        continue;
+      }
+      out.push({ name: p.data.name, entry: p.data.entry });
+    }
+    return out;
   } catch (err) {
     logger.warn({ f, err: (err as Error).message }, '[omd/ext] extensions.json 解不出来 → 当没配扩展');
+    issues?.push({ source: f, path: '', message: (err as Error).message });
     return [];
   }
 }

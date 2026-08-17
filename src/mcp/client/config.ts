@@ -12,6 +12,8 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { z } from 'zod';
+import { zodIssues, type ConfigIssueSink } from '../../config/issues';
 import { logger } from '../../logger';
 
 export type McpTransportKind = 'stdio' | 'sse' | 'http';
@@ -40,17 +42,24 @@ export interface McpClientConfig {
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 const DEFAULT_CALL_TIMEOUT_MS = 60_000;
 
-interface RawServerEntry {
-  command?: string;
-  args?: string[];
-  env?: Record<string, string>;
-  url?: string;
-  headers?: Record<string, string>;
-  type?: string;
-  disabled?: boolean;
-  connectTimeoutMs?: number;
-  callTimeoutMs?: number;
-}
+/**
+ * C2: 条目字段类型走 zod (looseObject: 未知键照旧容忍 —— 生态配置常带别家扩展字段)。
+ * 类型不对的条目从"静默载入坏值、在 pool spawn 时以怪异方式炸"改为"跳过 + warn + issue
+ * 点名字段" —— 与本文件"坏配置不静默"的既有纪律同向 (这是 C2 唯一的刻意行为变化)。
+ */
+const rawServerEntrySchema = z.looseObject({
+  command: z.string().optional(),
+  args: z.array(z.string()).optional(),
+  env: z.record(z.string(), z.string()).optional(),
+  url: z.string().optional(),
+  headers: z.record(z.string(), z.string()).optional(),
+  type: z.string().optional(),
+  disabled: z.boolean().optional(),
+  connectTimeoutMs: z.number().optional(),
+  callTimeoutMs: z.number().optional(),
+});
+
+type RawServerEntry = z.infer<typeof rawServerEntrySchema>;
 
 /** 传输判定:显式 `type` 优先;否则 url → http(streamable),command → stdio(与生态惯例一致)。 */
 function inferKind(name: string, raw: RawServerEntry): McpTransportKind | null {
@@ -68,18 +77,37 @@ function inferKind(name: string, raw: RawServerEntry): McpTransportKind | null {
   return null;
 }
 
-function parseServers(mcpServers: Record<string, RawServerEntry>): McpServerConfig[] {
+function parseServers(
+  mcpServers: Record<string, unknown>,
+  filePath: string,
+  issues?: ConfigIssueSink,
+): McpServerConfig[] {
   const out: McpServerConfig[] = [];
-  for (const [name, raw] of Object.entries(mcpServers)) {
+  for (const [name, rawEntry] of Object.entries(mcpServers)) {
+    const parsed = rawServerEntrySchema.safeParse(rawEntry);
+    if (!parsed.success) {
+      issues?.push(...zodIssues(filePath, `mcpServers.${name}`, parsed.error.issues));
+      logger.warn(
+        { server: name, issues: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`) },
+        '[omd/mcp-client] 条目字段类型不对 —— 跳过 (载入坏值只会在 spawn 时更晚更怪地炸)',
+      );
+      continue;
+    }
+    const raw = parsed.data;
     if (raw.disabled) continue;
     const kind = inferKind(name, raw);
-    if (!kind) continue;
+    if (!kind) {
+      issues?.push({ source: filePath, path: `mcpServers.${name}`, message: '无法判定 transport (type/command/url)' });
+      continue;
+    }
     if (kind === 'stdio' && !raw.command) {
       logger.warn({ server: name }, '[omd/mcp-client] stdio server 缺 command —— 跳过');
+      issues?.push({ source: filePath, path: `mcpServers.${name}.command`, message: 'stdio server 缺 command' });
       continue;
     }
     if (kind !== 'stdio' && !raw.url) {
       logger.warn({ server: name, kind }, '[omd/mcp-client] 远程 server 缺 url —— 跳过');
+      issues?.push({ source: filePath, path: `mcpServers.${name}.url`, message: '远程 server 缺 url' });
       continue;
     }
     out.push({
@@ -97,22 +125,23 @@ function parseServers(mcpServers: Record<string, RawServerEntry>): McpServerConf
   return out;
 }
 
-function readMcpServersFile(path: string): Record<string, RawServerEntry> | null {
+function readMcpServersFile(path: string): Record<string, unknown> | null {
   let text: string;
   try {
     text = readFileSync(path, 'utf8');
   } catch {
     return null; // 文件不存在 = 没注册,不是错误。
   }
-  const parsed = JSON.parse(text) as { mcpServers?: Record<string, RawServerEntry> };
+  const parsed = JSON.parse(text) as { mcpServers?: Record<string, unknown> };
   return parsed.mcpServers ?? {};
 }
 
 /**
  * 读注册表。文件不存在 → 空表(meta-tool 不挂,I-2);文件坏 → 空表 + loadError(meta-tool
  * 照挂并暴露错误)。`.omd/mcp.json` 同名条目**覆盖** `.mcp.json` 的(本仓配置优先)。
+ * C2: 被跳过的条目额外进可选 issues sink (省略 = 行为与证据面同前)。
  */
-export function loadMcpClientConfig(cwd: string): McpClientConfig {
+export function loadMcpClientConfig(cwd: string, issues?: ConfigIssueSink): McpClientConfig {
   const ownPath = join(cwd, '.omd', 'mcp.json');
   try {
     const own = readMcpServersFile(ownPath);
@@ -127,12 +156,14 @@ export function loadMcpClientConfig(cwd: string): McpClientConfig {
       } catch (e) {
         // `.mcp.json` 坏不拖垮自家配置 —— warn 留痕,继续用 .omd 的。
         logger.warn({ err: (e as Error).message }, '[omd/mcp-client] .mcp.json 读取失败 (importClaudeConfig) —— 忽略该文件');
+        issues?.push({ source: join(cwd, '.mcp.json'), path: '', message: (e as Error).message });
       }
     }
-    return { servers: parseServers(merged) };
+    return { servers: parseServers(merged, ownPath, issues) };
   } catch (e) {
     const msg = (e as Error).message;
     logger.warn({ err: msg, path: ownPath }, '[omd/mcp-client] .omd/mcp.json 读取失败 —— servers 空 + loadError 暴露');
+    issues?.push({ source: ownPath, path: '', message: msg });
     return { servers: [], loadError: `${ownPath}: ${msg}` };
   }
 }

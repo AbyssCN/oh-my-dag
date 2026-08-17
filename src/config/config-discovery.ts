@@ -20,7 +20,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import type { BillingKind, DeclaredPlan } from "../model/channels";
+import { zodIssues, type ConfigIssueSink } from "./issues";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -47,16 +49,22 @@ export interface DiscoveredProvider {
 
 // ── Internal: file readers (fail-open) ─────────────────────────────────────
 
-/** Read and parse JSON; returns null on any failure (fail-open, D20-3). */
-function readJsonSafe(path: string): Record<string, unknown> | null {
+/**
+ * Read and parse JSON; returns null on any failure (fail-open, D20-3).
+ * C2: 失败原文进可选 issues sink —— 文件不存在不是错误 (不进 sink), 解析失败/根不是对象才进。
+ */
+function readJsonSafe(path: string, issues?: ConfigIssueSink): Record<string, unknown> | null {
 	try {
 		if (!existsSync(path)) return null;
 		const raw = readFileSync(path, "utf8");
 		const parsed = JSON.parse(raw);
-		return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-			? (parsed as Record<string, unknown>)
-			: null;
-	} catch {
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			return parsed as Record<string, unknown>;
+		}
+		issues?.push({ source: path, path: "", message: "根不是 JSON 对象" });
+		return null;
+	} catch (err) {
+		issues?.push({ source: path, path: "", message: err instanceof Error ? err.message : String(err) });
 		return null;
 	}
 }
@@ -107,9 +115,10 @@ function probeEnv(
 function probeAuthJson(
 	env: Record<string, string | undefined>,
 	pathOverride?: string,
+	issues?: ConfigIssueSink,
 ): DiscoveredProvider[] {
 	const path = pathOverride ?? authJsonPath(env);
-	const root = readJsonSafe(path);
+	const root = readJsonSafe(path, issues);
 	if (!root?.providers || typeof root.providers !== "object") return [];
 
 	const out: DiscoveredProvider[] = [];
@@ -137,9 +146,10 @@ function probeAuthJson(
 function probeModelsJson(
 	env: Record<string, string | undefined>,
 	pathOverride?: string,
+	issues?: ConfigIssueSink,
 ): DiscoveredProvider[] {
 	const path = pathOverride ?? modelsJsonPath(env);
-	const root = readJsonSafe(path);
+	const root = readJsonSafe(path, issues);
 	if (!root?.providers || typeof root.providers !== "object") return [];
 
 	const out: DiscoveredProvider[] = [];
@@ -176,29 +186,46 @@ export function omdConfigPath(env: Record<string, string | undefined> = process.
 	return env.OMD_CONFIG_PATH?.trim() || ".omd/config.json";
 }
 
-const DECLARED_KINDS = new Set<BillingKind>(["token", "request", "session", "flat"]);
+/**
+ * declaredPlans 条目的闸字段 schema (C2: 决定"条目收不收"的字段走 zod; rateUsd/plan 是
+ * 有默认值的补充字段, 坏了照旧回落默认 —— 与引入前的接受集逐字相同, 变的只是被拒条目
+ * 从静默消失变成 issue 点名字段路径)。looseObject: 多余键照旧忽略。
+ */
+const declaredPlanEntrySchema = z.looseObject({
+	provider: z.string().min(1),
+	kind: z.enum(["token", "request", "session", "flat"]),
+});
 
 /**
  * 读 .omd/config.json 的 declaredPlans 段 (D-20): 用户**显式声明** auto-probe 探不到的持仓 ——
  * 如 Kimi Allegretto (OAuth, auth.json 里没有)、Go 订阅 (OPENCODE_API_KEY 没配) 等。
- * 形如 [{ provider, kind, rateUsd?, plan? }]。坏条目静默跳过 (fail-open)。
+ * 形如 [{ provider, kind, rateUsd?, plan? }]。坏条目跳过 (fail-open) + 进 issues sink。
  */
 export function readDeclaredPlans(
 	env: Record<string, string | undefined> = process.env,
 	pathOverride?: string,
+	issues?: ConfigIssueSink,
 ): DeclaredPlan[] {
-	const root = readJsonSafe(pathOverride ?? omdConfigPath(env));
+	const path = pathOverride ?? omdConfigPath(env);
+	const root = readJsonSafe(path, issues);
 	const raw = root?.declaredPlans;
-	if (!Array.isArray(raw)) return [];
+	if (!Array.isArray(raw)) {
+		if (root && raw !== undefined) {
+			issues?.push({ source: path, path: "declaredPlans", message: "不是数组" });
+		}
+		return [];
+	}
 	const out: DeclaredPlan[] = [];
-	for (const d of raw) {
-		if (!d || typeof d !== "object") continue;
+	for (const [i, d] of raw.entries()) {
+		const parsed = declaredPlanEntrySchema.safeParse(d);
+		if (!parsed.success) {
+			issues?.push(...zodIssues(path, `declaredPlans[${i}]`, parsed.error.issues));
+			continue;
+		}
 		const e = d as Record<string, unknown>;
-		if (typeof e.provider !== "string" || !e.provider) continue;
-		if (typeof e.kind !== "string" || !DECLARED_KINDS.has(e.kind as BillingKind)) continue;
 		out.push({
-			provider: e.provider,
-			kind: e.kind as BillingKind,
+			provider: parsed.data.provider,
+			kind: parsed.data.kind as BillingKind,
 			rateUsd: typeof e.rateUsd === "number" ? e.rateUsd : 0,
 			plan: typeof e.plan === "string" ? e.plan : "declared",
 		});
@@ -230,14 +257,14 @@ function probeGoSubscription(
  */
 export function discoverProviders(
 	env: Record<string, string | undefined> = process.env,
-	opts?: { authPath?: string; modelsPath?: string },
+	opts?: { authPath?: string; modelsPath?: string; issues?: ConfigIssueSink },
 ): DiscoveredProvider[] {
 	const byId = new Map<string, DiscoveredProvider>();
 
 	// Probe order matters: later overwrites earlier (last-write-wins, D20-2).
 	for (const p of probeEnv(env)) byId.set(p.id, p);
-	for (const p of probeAuthJson(env, opts?.authPath)) byId.set(p.id, p);
-	for (const p of probeModelsJson(env, opts?.modelsPath)) byId.set(p.id, p);
+	for (const p of probeAuthJson(env, opts?.authPath, opts?.issues)) byId.set(p.id, p);
+	for (const p of probeModelsJson(env, opts?.modelsPath, opts?.issues)) byId.set(p.id, p);
 	const go = probeGoSubscription(env);
 	if (go) byId.set(go.id, go);
 
@@ -296,6 +323,8 @@ export function discoverChannels(
 		modelsPath?: string;
 		configPath?: string;
 		planOverrides?: Record<string, PlanType>;
+		/** C2: 结构化 issue 收集 (省略 = 不收集, 行为不变)。 */
+		issues?: ConfigIssueSink;
 	},
 ): { discovered: DiscoveredProvider[]; declarations: DeclaredPlan[] } {
 	const discovered = discoverProviders(env, opts);
@@ -307,7 +336,7 @@ export function discoverChannels(
 	const auto = buildChannelDeclarations(plans, discovered);
 	// D-20: 合并用户显式声明的持仓 (auto-probe 探不到的 OAuth plan / Go 等)。同 provider 声明胜
 	// (用户显式知情 > 自动推断)。
-	const declared = readDeclaredPlans(env, opts?.configPath);
+	const declared = readDeclaredPlans(env, opts?.configPath, opts?.issues);
 	const byProvider = new Map<string, DeclaredPlan>();
 	for (const d of auto) byProvider.set(d.provider, d);
 	for (const d of declared) byProvider.set(d.provider, d);
