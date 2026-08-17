@@ -882,8 +882,8 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
 }
 
 /**
- * **管道退出码旋钮**(2026-08-16,#145 附录「新增提议」)。默认 **off** —— 这是一次可对照的实验,
- * 不是一次修复。
+ * **管道退出码旋钮**(2026-08-16,#145 附录「新增提议」)。默认 **on**(2026-08-17 对照实验
+ * 裁决,读数见下;`OMD_BASH_PIPEFAIL=0` 显式关)。
  *
  * ## 现场
  *
@@ -894,16 +894,27 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
  *
  * **退出码错了会直接造成假绿,让"闸通过"这件事本身不可信** —— 这比本轮其余任何一条都危险。
  *
- * ## ⚠ 为什么默认关:它是**行为翻转**,不是补漏
+ * ## ⚠ 它是**行为翻转**,不是补漏 —— 所以先关着跑了对照
  *
  * `set -o pipefail` 会让一批**今天正常返回 0** 的命令开始返回非 0,最典型的是
  * `cmd | head -3` —— `head` 读够就退出,`cmd` 吃 SIGPIPE 死掉,pipefail 下整条判失败。
- * 那种红是**假红**。所以这条要先跑对照,两侧读数都记(只记好消息的实验没有信息量):
+ * 那种红是**假红**。所以这条先跑对照,两侧读数都记(只记好消息的实验没有信息量):
  *
  * - **单一变量**:`OMD_BASH_PIPEFAIL` 开 / 关,别的一个都不动;
  * - **预先声明的成败信号**:开臂下从 exit 0 变非 0 的命令里,**真错**(管道确实掩盖了失败)
  *   与 **假红**(SIGPIPE 那类)各占多少。真错 > 假红 → 值得默认开;反之不开;
  * - **对照基线**:同一批命令、同一棵树,两臂各跑一次。
+ *
+ * ## 读数与裁决(2026-08-17,`scripts/probes/pipefail-2arm.ts`,#146 表内项②)
+ *
+ * 命令源 = checkpoints 的 shellRuns 真实生产管道命令(去重后只读白名单形),同树两臂回放:
+ * 182 条(176 light + 6 heavy)→ 不翻转 155 · 翻转(0→非0) 27 = **真错 19 vs 假红 8**
+ * (SIGPIPE 7 + 其他 1)。真错里含 `bunx tsc --noEmit … | head -30` —— run D 假绿的原型
+ * 在今天的树上仍然复现。⚠ 诚实注记:回放态真错含 state-artifact 成分(cat/ls 于回放树缺文件,
+ * 录制当时未必失败);保守剔除后 9 vs 8 仍不小于。逐条读数 `.omd/eval/pipefail-2arm.jsonl`。
+ * **按预先冻结的判据 → 默认开**。逃生门:`OMD_BASH_PIPEFAIL=0` 显式关。
+ * 假红代价有界:SIGPIPE 类约 4%(7/176)的管道命令变红,红的是探索型 grep|head,
+ * 模型可改写;而假绿的代价是闸不可信 —— 两侧不对称。
  *
  * 判据现在读得出来了:每条命令的原文与退出码都进 `shellRuns`,工具序列进 `toolSteps`。
  *
@@ -915,6 +926,6 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
  * 用 `{ }` 而不是 `( )` —— 后者起子 shell,选项设了也传不到正文那一行。
  */
 export function withPipefail(command: string, env: NodeJS.ProcessEnv = process.env): string {
-  if (env.OMD_BASH_PIPEFAIL !== '1') return command; // 默认关 = 与改动前逐字相同
+  if (env.OMD_BASH_PIPEFAIL === '0') return command; // 显式 '0' = 逃生门, 命令逐字不变
   return `{ set -o pipefail 2>/dev/null || true; }; ${command}`;
 }

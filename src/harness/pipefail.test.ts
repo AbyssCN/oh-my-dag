@@ -1,21 +1,20 @@
 /**
- * `withPipefail` —— 管道退出码旋钮(2026-08-16,#145 附录)。**默认关**,这是一次可对照的实验。
+ * `withPipefail` —— 管道退出码旋钮(2026-08-16,#145 附录)。**默认开**(2026-08-17 对照实验
+ * 裁决:两臂回放 182 条生产管道命令,翻转 27 = 真错 19 vs 假红 8,按预先冻结判据默认开;
+ * 读数与诚实注记在 `withPipefail` 的注里,逐条在 `.omd/eval/pipefail-2arm.jsonl`)。
  *
  * 现场:run D 的 `final_review` 发现 `cmd 2>&1 | tail -5` 之后 `$?` 拿到的是 `tail` 的退出码 ——
  * 一条失败的验证命令看起来是绿的。**退出码错了会直接造成假绿,让"闸通过"本身不可信。**
- *
- * ⚠ 但它是**行为翻转**不是补漏(`cmd | head -3` 在 pipefail 下会因 SIGPIPE 变红,而那是假红),
- * 所以先做成旋钮让两臂可跑,不改默认。判据与四要素写在 `withPipefail` 的注里。
  */
 import { describe, expect, test } from 'bun:test';
 import { withPipefail } from './agent-tools';
 
 describe('withPipefail', () => {
-  test('★ 默认关 → 命令逐字不变(零回归)', () => {
-    // 怎么让它红: 把 early return 删掉 → 每条命令都被包一层, 默认行为当场变。
-    expect(withPipefail('bun test', {})).toBe('bun test');
+  test('★ 默认开 → 包 pipefail 前缀; 显式 "0" 是唯一逃生门(命令逐字不变)', () => {
+    // 怎么让它红: 把判据改回 `!== '1'`(旧默认关)→ 第一条当场红。
+    expect(withPipefail('bun test', {})).toContain('set -o pipefail');
     expect(withPipefail('bun test', { OMD_BASH_PIPEFAIL: '0' })).toBe('bun test');
-    expect(withPipefail('bun test', { OMD_BASH_PIPEFAIL: 'true' })).toBe('bun test'); // 只认 '1'
+    expect(withPipefail('bun test', { OMD_BASH_PIPEFAIL: '1' })).toContain('set -o pipefail');
   });
 
   test('开了才包, 且原命令原样在尾', () => {
