@@ -1,0 +1,12 @@
+{
+  "name": "omd-pack-tdd-bugfix",
+  "version": "0.1.0",
+  "description": "参考 pack: TDD 修 bug 纪律 —— 复现红 → 最小修复 → 回归绿。含卡/playbook/skill/eval 完整四件套, 供 pack 作者照抄结构。",
+  "omd": {
+    "pack": {
+      "agents": "./agents",
+      "playbooks": "./playbooks",
+      "skills": "./skills"
+    }
+  }
+}

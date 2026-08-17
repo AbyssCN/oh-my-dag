@@ -1,0 +1,16 @@
+{
+  "name": "tdd-bugfix",
+  "steps": [
+    { "doc": "1_REPRODUCE.md" },
+    { "doc": "2_FIX.md" },
+    { "doc": "3_REGRESS.md", "reset": true }
+  ],
+  "loop": { "maxRounds": 3 },
+  "acceptance": {
+    "command": "bun test",
+    "negativeSample": {
+      "path": "seeded-red.test.ts",
+      "content": "import { test, expect } from 'bun:test';\ntest('seeded red: 判据必须能判出失败世界', () => {\n  expect(1).toBe(2);\n});\n"
+    }
+  }
+}

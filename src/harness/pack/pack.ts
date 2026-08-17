@@ -38,7 +38,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { z } from 'zod';
@@ -108,6 +108,24 @@ function collectFiles(dir: string, base = dir): string[] {
 
 function isGitSource(src: string): boolean {
   return /^(https?:\/\/|git@)/.test(src) || src.endsWith('.git');
+}
+
+/**
+ * 从被删文件的目录向上清空目录, 至 .omd 为止 (不含)。
+ * 不是洁癖: loadPlaybooks 对 `.omd/playbooks/<空目录>` **fail-loud** (空目录 = 坏 playbook),
+ * 留一个空壳等于卸载动作把整个 playbook 面砖掉 —— 参考包测试当场抓到的真形状。
+ */
+function pruneEmptyDirs(cwd: string, relFile: string): void {
+  const stop = join(cwd, '.omd');
+  let dir = dirname(join(cwd, '.omd', relFile));
+  while (dir !== stop && dir.startsWith(stop)) {
+    try {
+      rmdirSync(dir); // 非空抛 ENOTEMPTY → 停
+    } catch {
+      return;
+    }
+    dir = dirname(dir);
+  }
 }
 
 /**
@@ -292,7 +310,10 @@ export async function addPack(cwd: string, source: string): Promise<PackResult> 
     for (const f of owned) {
       if (!incoming.has(f)) {
         const p = join(cwd, '.omd', f);
-        if (existsSync(p)) unlinkSync(p);
+        if (existsSync(p)) {
+          unlinkSync(p);
+          pruneEmptyDirs(cwd, f);
+        }
       }
     }
     for (const [f] of incoming) {
@@ -331,8 +352,10 @@ export function removePack(cwd: string, name: string): PackResult {
   for (const [f, h] of Object.entries(entry.files)) {
     const p = join(cwd, '.omd', f);
     if (!existsSync(p)) continue;
-    if (sha256(readFileSync(p)) === h) unlinkSync(p);
-    else {
+    if (sha256(readFileSync(p)) === h) {
+      unlinkSync(p);
+      pruneEmptyDirs(cwd, f);
+    } else {
       kept.push(f);
       logger.warn({ pack: name, file: f }, '[omd/pack] 文件安装后被本地修改 → 保留不删 (remove 不吞用户的活)');
     }
