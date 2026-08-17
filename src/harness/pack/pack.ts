@@ -112,15 +112,25 @@ function isGitSource(src: string): boolean {
 
 /**
  * 校验 staging 世界 (镜像 .omd 布局: staging/.omd/{agents,playbooks,skills})。
- * 返回 null = 全过; 否则第一条拒绝理由。
+ * `reject` 非 null = 第一条拒绝理由; 全过时附**知情安装清单** (grill 决策 1, owner 2026-08-17
+ * 裁 "add 即信任 + 知情安装": 卡/playbook 是 prompt 载荷, 装了什么至少过一遍人眼)。
  */
-function validateStaging(staging: string, sections: Partial<Record<PackSection, string[]>>): string | null {
+function validateStaging(
+  staging: string,
+  sections: Partial<Record<PackSection, string[]>>,
+): { reject: string | null; listing: string[] } {
+  const listing: string[] = [];
   // playbook: 真 loadPlaybooks, 三道闸任一不过整包拒 (throw 原文即理由)
   if (sections.playbooks?.length) {
     try {
-      loadPlaybooks(staging);
+      const all = loadPlaybooks(staging);
+      const packNames = new Set(sections.playbooks.map((f) => f.split('/')[0]!));
+      for (const name of packNames) {
+        const pb = all.get(name);
+        if (pb) listing.push(`  playbook: ${name} (${pb.steps.length} 步, 判据已自证) · acceptance: ${pb.acceptance.command}`);
+      }
     } catch (err) {
-      return `playbook 校验不过: ${err instanceof Error ? err.message : String(err)}`;
+      return { reject: `playbook 校验不过: ${err instanceof Error ? err.message : String(err)}`, listing };
     }
   }
   // agent 卡: 文件数与生效卡数对得上 (装不出的卡 = 坏卡)
@@ -129,15 +139,18 @@ function validateStaging(staging: string, sections: Partial<Record<PackSection, 
     try {
       const baseline = loadAgentTemplates({ root: baselineDir });
       const withPack = loadAgentTemplates({ root: staging });
-      let effective = 0;
+      const effective: { name: string; description: string }[] = [];
       for (const [name, tpl] of withPack) {
         const base = baseline.get(name);
-        if (!base || base.body !== tpl.body || base.description !== tpl.description) effective++;
+        if (!base || base.body !== tpl.body || base.description !== tpl.description) {
+          effective.push({ name, description: tpl.description });
+        }
       }
       const cardFiles = sections.agents.filter((f) => f.endsWith('.md')).length;
-      if (effective < cardFiles) {
-        return `agent 卡校验不过: ${cardFiles} 个 .md 只装出 ${effective} 张有效卡 (坏卡在加载日志里有 warn)`;
+      if (effective.length < cardFiles) {
+        return { reject: `agent 卡校验不过: ${cardFiles} 个 .md 只装出 ${effective.length} 张有效卡 (坏卡在加载日志里有 warn)`, listing };
       }
+      for (const c of effective) listing.push(`  agent 卡: ${c.name} —— ${c.description}`);
     } finally {
       rmSync(baselineDir, { recursive: true, force: true });
     }
@@ -146,13 +159,14 @@ function validateStaging(staging: string, sections: Partial<Record<PackSection, 
   if (sections.skills?.length) {
     const skillsRoot = join(staging, '.omd', 'skills');
     for (const entry of readdirSync(skillsRoot, { withFileTypes: true })) {
-      if (!entry.isDirectory()) return `skills 校验不过: ${entry.name} 不是目录 (规范 = <skill>/SKILL.md)`;
+      if (!entry.isDirectory()) return { reject: `skills 校验不过: ${entry.name} 不是目录 (规范 = <skill>/SKILL.md)`, listing };
       if (!existsSync(join(skillsRoot, entry.name, 'SKILL.md'))) {
-        return `skills 校验不过: ${entry.name}/ 缺 SKILL.md`;
+        return { reject: `skills 校验不过: ${entry.name}/ 缺 SKILL.md`, listing };
       }
+      listing.push(`  skill: ${entry.name}`);
     }
   }
-  return null;
+  return { reject: null, listing };
 }
 
 /** `omd pack add <本地目录|git URL>`。全程原子: 校验全过才拷入, 拒绝时 .omd/ 零残留。 */
@@ -204,8 +218,10 @@ export async function addPack(cwd: string, source: string): Promise<PackResult> 
       for (const f of files) incoming.set(join(section, f), sha256(readFileSync(join(to, f))));
     }
     if (incoming.size === 0) return { ok: false, message: 'pack 声明的目录全为空 —— 没有可安装内容' };
-    const reject = validateStaging(staging, sections);
+    const { reject, listing } = validateStaging(staging, sections);
     if (reject) return { ok: false, message: `拒绝安装 ${name}: ${reject}` };
+    // 知情安装 (grill 决策 1): 内容总哈希 = 文件清单+逐文件哈希的摘要, 与账本可互验。
+    const contentDigest = sha256(JSON.stringify([...incoming].sort())).slice(0, 12);
 
     // ── 幂等 / 升级 / 冲突判定 (全判完才动盘, 原子性) ─────────────────────────
     const ledger = readLedger(cwd);
@@ -254,7 +270,14 @@ export async function addPack(cwd: string, source: string): Promise<PackResult> 
     };
     writeLedger(cwd, ledger);
     const counts = PACK_SECTIONS.filter((s) => sections[s]?.length).map((s) => `${s} ${sections[s]!.length}`).join(' · ');
-    return { ok: true, message: `${prior ? '升级' : '安装'} ${name}${version ? `@${version}` : ''}: ${counts} → .omd/ (账: .omd/packs.json)` };
+    return {
+      ok: true,
+      message: [
+        `${prior ? '升级' : '安装'} ${name}${version ? `@${version}` : ''}: ${counts} → .omd/ (账: .omd/packs.json)`,
+        ...listing,
+        `  内容哈希: ${contentDigest} (add 即信任 —— 以上载荷会进 prompt, 过一遍眼)`,
+      ].join('\n'),
+    };
   } finally {
     await scope.dispose();
   }

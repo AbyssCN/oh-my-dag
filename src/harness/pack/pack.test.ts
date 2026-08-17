@@ -130,6 +130,11 @@ describe('omd pack', () => {
     });
     const r = await addPack(cwd, src);
     expect(r.ok).toBe(true);
+    // 知情安装回执 (grill 决策 1, owner 裁): 卡名+描述 / playbook 判据 / 内容哈希都在回执里
+    expect(r.message).toContain('pack-card —— 来自 pack 的测试卡');
+    expect(r.message).toContain('pack-pb (1 步, 判据已自证)');
+    expect(r.message).toContain('skill: pack-skill');
+    expect(r.message).toMatch(/内容哈希: [0-9a-f]{12}/);
     // 叠加机制真的看得见它们 (不是只拷了文件)
     expect(loadAgentTemplates({ root: cwd }).get('pack-card')?.description).toBe('来自 pack 的测试卡');
     expect(loadPlaybooks(cwd).get('pack-pb')?.steps).toHaveLength(1);
