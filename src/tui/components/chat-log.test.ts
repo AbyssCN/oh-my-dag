@@ -85,6 +85,34 @@ describe('★ 流式:一条消息, 不是一堆消息', () => {
     expect(text(log)).toContain('weighing A vs B');
   });
 
+  /**
+   * ★ Ctrl+O 折叠(2026-08-17)。
+   * 反向自检(实跑):把 render 里 `!this.thinkingExpanded` 那条分支删掉 →
+   * 「折叠后正文不画」当场红;把行数换成写死的 1 → 「行数照报」当场红。
+   */
+  test('★ Ctrl+O 折叠: 正文收起、行数照报、正文条目不受累; 再按展开回来', () => {
+    const log = new ChatLog(theme);
+    log.appendThinkingChunk('line1\nline2\nline3');
+    log.closeStreaming();
+    log.appendAssistantChunk('answer');
+    expect(log.toggleThinking()).toBe(false); // 默认展开 → 切成收起
+    const collapsed = text(log);
+    expect(collapsed).not.toContain('line2'); // 思考正文收起
+    expect(collapsed).toContain('thinking (3 lines)'); // 行数是真数, 不是装饰
+    expect(collapsed).toContain('answer'); // 正文条目不受累
+    expect(log.toggleThinking()).toBe(true);
+    expect(text(log)).toContain('line2'); // 展开回来, 一个字不丢
+  });
+
+  test('折叠态流式追加, 行数还在涨 —— "收起"不许变成"看不出它在想"', () => {
+    const log = new ChatLog(theme);
+    log.toggleThinking(); // 收起
+    log.appendThinkingChunk('a\nb');
+    expect(text(log)).toContain('(2 lines)');
+    log.appendThinkingChunk('\nc');
+    expect(text(log)).toContain('(3 lines)');
+  });
+
   test('★ 思考与正文是**两条** —— 压成一条就等于把草稿当答案发了', () => {
     const log = new ChatLog(theme);
     log.appendThinkingChunk('draft');

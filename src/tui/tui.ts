@@ -413,7 +413,9 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    * ⚠ 代价是终端 scrollback 不再留对话 → 由 {@link dumpTranscript} 在退出时补回主屏。
    * 那是 owner 明确要的约束,不是可选项:一退什么都没了比不好看严重得多。
    */
-  const tui = new TuiAltScreen(terminal);
+  // mouse: 滚轮滚视口 + 应用内拖选复制 + 滚动条拖拽, 全在库里 (缺口清单 §1.2: 此前没传,
+  // 整个鼠标面就没有)。终端不支持 SGR mouse 时序列根本不会发来, fail-open 无害。
+  const tui = new TuiAltScreen(terminal, undefined, undefined, { mouse: true });
 
   // 键位表:补上 pi-tui 默认表认不出的双 ESC(`keys.ts` 记了实测的三行对照表)。
   // ⚠ 必须在建组件**之前** —— 组件是在 `handleInput` 里现查 `getKeybindings()` 的,
@@ -2106,6 +2108,12 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     }
     if (fullOn && data === '\t') {
       painterIdx = (painterIdx + 1) % 3;
+      tui.requestRender();
+      return { consume: true };
+    }
+    // Ctrl+O (\x0f): 思维链折叠/展开。弹窗开着时不抢 (Ctrl+P 同款守则); 效果直接体现在重绘里, 不发回执。
+    if (data === '\x0f' && !dialogs.busy) {
+      chatLog.toggleThinking();
       tui.requestRender();
       return { consume: true };
     }

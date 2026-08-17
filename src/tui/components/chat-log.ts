@@ -106,6 +106,8 @@ export class TurnDivider implements Component {
 
 export class ChatLog implements Component {
   private entries: Entry[] = [];
+  /** 思维链展开态。默认展开 —— owner 2026-08-13 点名"思维链也看不到", 默认收起会复发同一条。 */
+  private thinkingExpanded = true;
 
   /** 时钟从外面给 —— 时间戳要可测, 不能靠在测试里 sleep 出一个不确定的读数。 */
   constructor(
@@ -344,6 +346,15 @@ export class ChatLog implements Component {
     }
   }
 
+  /**
+   * Ctrl+O:思维链折叠/展开(dsh-TUI / claude code 同款键)。
+   * @returns 切换后的状态(true = 展开)—— 调用方拿它写回执。
+   */
+  toggleThinking(): boolean {
+    this.thinkingExpanded = !this.thinkingExpanded;
+    return this.thinkingExpanded;
+  }
+
   render(width: number): string[] {
     // 条目之间空一行:没有分隔的话两条消息读起来是一段。
     // ⚠ 例外:**连续的工具行不空行** —— 一串工具本来就是一组,每行之间插空会把它们
@@ -354,7 +365,13 @@ export class ChatLog implements Component {
       // 空了的话分界线看起来像是属于上一轮的尾巴, 而它标的是下一轮的头。
       const glued = (e.role === 'tool' && prev?.role === 'tool') || (e.role === 'user' && prev?.role === 'divider');
       const gap = i > 0 && !glued;
-      return gap ? ['', ...e.component.render(width)] : e.component.render(width);
+      // 折叠态的思维链**一条一行**:行数照报且流式中还在涨 —— "收起"不许变成"看不出它在想"。
+      // 字形全在白名单内('·' 由 TOOL_MARK.running 早已解锁, 其余 ASCII)。
+      const lines =
+        e.role === 'thinking' && !this.thinkingExpanded
+          ? [this.theme.chrome.dim(`· thinking (${e.buffer.split('\n').length} lines) - Ctrl+O expands`)]
+          : e.component.render(width);
+      return gap ? ['', ...lines] : lines;
     });
   }
 
