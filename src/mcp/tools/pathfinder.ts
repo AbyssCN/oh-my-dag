@@ -178,16 +178,27 @@ function renderStatus(map: PathMap, hudMirror?: HudMirror): string {
   return lines.join('\n');
 }
 
-/** goal 档判定 (D-G1.1): 显式 executorKind='goal', 或 prototype 票未显式选档 (spike 默认要收敛)。 */
+/** goal 档判定 (D-G1.1 / #135 裁②): 显式 executorKind='goal', 或 **prototype 一律** ——
+ * 按 type 判, 与 executorKind 无关。旧判据 (prototype 仅在 executorKind 省略时走 goal) 让
+ * prototype+agent 掉进 slice 而 compileSlice 拒非 task 票, 建票合法、几天后交付才炸 (#103 实踩)。
+ * prototype 的语义就是"要收敛的实验", solve 环正是四要素实验的载体。 */
 function isGoalKind(t: Ticket): boolean {
-  return t.executorKind === 'goal' || (t.type === 'prototype' && t.executorKind === undefined);
+  return t.executorKind === 'goal' || t.type === 'prototype';
 }
 
 /** 可交付区域, 分流形状 (D-G1.2): slice = 编入 DAG 的票; goals = 逐张走 detached solve 的票。
  * ruled 的 task/prototype 票进区域 (delivered 终态不复入); 未散尽 → null。
+ * #138: 交付级前置未满足的 ruled 票**排除** (ruled-but-waiting) 而不是冻结整区 ——
+ * 一张等数据的票不押别的可交付票当人质; regionIsClear 另有硬闸拦绕行。
  * export 给 suggested.test 钉 INV-S1-1 (suggested 永不入区域); 生产只有本文件消费。 */
 export function readyRegion(map: PathMap): { slice: string[]; goals: string[] } | null {
-  const ruled = map.tickets.filter((t) => (t.type === 'task' || t.type === 'prototype') && t.status === 'ruled');
+  const delivered = new Set(map.tickets.filter((t) => t.status === 'delivered').map((t) => t.id));
+  const ruled = map.tickets.filter(
+    (t) =>
+      (t.type === 'task' || t.type === 'prototype') &&
+      t.status === 'ruled' &&
+      (t.blockedByDelivery ?? []).every((id) => delivered.has(id)),
+  );
   if (ruled.length === 0) return null;
   const ids = ruled.map((t) => t.id);
   if (!regionIsClear(map, ids).clear) return null;
@@ -358,13 +369,15 @@ function makeAdd(deps: PathfinderToolDeps): OmdMcpTool {
       type: z.enum(TICKET_TYPES).default('task').describe('Ticket type (default task)'),
       slug: z.string().optional().describe('Map slug (omit = the single open map)'),
       id: z.string().optional().describe('Stable ticket id (omit = auto t1/r1/…)'),
-      blockedBy: z.array(z.string()).default([]).describe('Prerequisite ticket ids'),
-      executorKind: z.enum(['command', 'inproc', 'agent', 'map', 'primitive', 'goal']).optional().describe("task/prototype: executor kind (default inproc; 'goal' = converge via detached solve, D-G1)"),
+      blockedBy: z.array(z.string()).default([]).describe('Prerequisite ticket ids (gates ruling: all must be ruled before this enters the frontier)'),
+      blockedByDelivery: z.array(z.string()).default([]).describe('#138: delivery-level prerequisites — these tickets must be DELIVERED (not just ruled) before this one can enter the deliverable region. Use when the prerequisite must actually produce data first.'),
+      executorKind: z.enum(['command', 'inproc', 'agent', 'map', 'primitive', 'goal']).optional().describe("task: executor kind (default inproc; 'goal' = converge via detached solve, D-G1). prototype always converges via solve (#135) — non-goal values are inert for it."),
     },
-    handler: async ({ title, type, slug, id, blockedBy, executorKind }) => {
+    handler: async ({ title, type, slug, id, blockedBy, blockedByDelivery, executorKind }) => {
       // 防御缺省 (schema default 只在 SDK 层生效; 直调 handler 也要稳)。
       const ttype = ((type as string | undefined) ?? 'task') as TicketType;
       const bb = (blockedBy as string[] | undefined) ?? [];
+      const bbd = (blockedByDelivery as string[] | undefined) ?? [];
       const { cwd } = deps;
       const backend = backendOf(deps);
       const r = resolveSlug(backend, cwd, slug as string | undefined);
@@ -375,14 +388,21 @@ function makeAdd(deps: PathfinderToolDeps): OmdMcpTool {
           type: ttype,
           title: title as string,
           blockedBy: bb,
+          ...(bbd.length ? { blockedByDelivery: bbd } : {}),
           ...(id ? { id: id as string } : {}),
           ...(executorKind ? { executorKind: executorKind as Ticket['executorKind'] } : {}),
         });
       } catch (e) {
         return err(errMsg(e));
       }
+      // #135: prototype 恒走 goal 档 (isGoalKind 按 type 判) —— 非 goal 的 executorKind 在它身上
+      // 是死旋钮, 死旋钮必须出声 (「配了但不生效」是本仓最难查的一种)。响亮提示, 不拒建票。
+      const deadKnob =
+        ttype === 'prototype' && executorKind !== undefined && executorKind !== 'goal'
+          ? `\n⚠ prototype 恒走 goal 档 (detached solve, #135) — executorKind='${executorKind}' 不生效, 可去掉。`
+          : '';
       const map = backend.readMap(cwd, r.slug);
-      return ok(`✓ 已加票 ${created.id}${map ? `\n${renderStatus(map, deps.hudMirror)}` : ''}`);
+      return ok(`✓ 已加票 ${created.id}${deadKnob}${map ? `\n${renderStatus(map, deps.hudMirror)}` : ''}`);
     },
   };
 }

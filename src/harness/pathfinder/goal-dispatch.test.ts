@@ -22,17 +22,40 @@ const t = (over: Partial<Ticket> & { id: string }): Ticket => ({
 });
 
 describe('readyRegion 分流 (D-G1.1/G1.2)', () => {
-  test('goal 档票进 goals 侧; prototype 未选档默认 goal; 普通 task 进 slice 侧', () => {
+  test('goal 档票进 goals 侧; prototype **一律** goal (#135 裁②, 与 executorKind 无关); 普通 task 进 slice 侧', () => {
     const map: PathMap = {
       destination: 'd', slug: 'm', decisionsLog: [],
       tickets: [
         t({ id: 't1' }),
         t({ id: 't2', executorKind: 'goal' }),
         t({ id: 'p1', type: 'prototype' }),
-        t({ id: 'p2', type: 'prototype', executorKind: 'agent' }), // 显式选档的 prototype 不走 goal
+        // #135 (#103 实踩): 旧判据让 prototype+agent 掉进 slice, 而 compileSlice 拒非 task 票 ——
+        // 建票合法、几天后 path_deliver 才炸。现在按 type 判, prototype 恒归 goals。
+        // 证伪: isGoalKind 换回 `type==='prototype' && executorKind===undefined` 即此条红。
+        t({ id: 'p2', type: 'prototype', executorKind: 'agent' }),
       ],
     };
-    expect(readyRegion(map)).toEqual({ slice: ['t1', 'p2'], goals: ['t2', 'p1'] });
+    expect(readyRegion(map)).toEqual({ slice: ['t1'], goals: ['t2', 'p1', 'p2'] });
+  });
+
+  test('#138: 交付级前置未满足的 ruled 票被**排除**出区域 (不冻结整区); 前置 delivered 后才进', () => {
+    // #102/#124 的真实形状: A (S2) 已裁未交付, B (S3) 已裁且 blockedByDelivery=[A] ——
+    // 旧行为 B 进区域 (被裁即解锁), 差一步就拿没量出来过的 T=10/W=5 实装 (误杀回测 72:2)。
+    // 证伪: readyRegion 去掉 blockedByDelivery 过滤 → 第一段 slice 含 'b', 断言红。
+    const a = t({ id: 'a' });
+    const b = t({ id: 'b', blockedByDelivery: ['a'] });
+    const waiting: PathMap = { destination: 'd', slug: 'm', decisionsLog: [], tickets: [a, b] };
+    expect(readyRegion(waiting)).toEqual({ slice: ['a'], goals: [] }); // b 排除, a 不受牵连
+    const done: PathMap = { destination: 'd', slug: 'm', decisionsLog: [], tickets: [{ ...a, status: 'delivered' }, b] };
+    expect(readyRegion(done)).toEqual({ slice: ['b'], goals: [] }); // a 真出数后 b 解锁
+  });
+
+  test('#138 硬闸半: regionIsClear 对交付前置未满足的票直接拒 (绕过 readyRegion 直呼编译也拦得住)', () => {
+    const map: PathMap = {
+      destination: 'd', slug: 'm', decisionsLog: [],
+      tickets: [t({ id: 'a' }), t({ id: 'b', blockedByDelivery: ['a'] })],
+    };
+    expect(() => compileSlice(map, ['b'])).toThrow(/交付前置/);
   });
 
   test('compileSlice 收到 goal 档票 → 响亮炸 (D-G1.2 fail-loud, 不静默降级 leaf)', () => {

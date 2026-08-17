@@ -28,6 +28,16 @@ export interface Ticket {
   title: string;
   /** 前置票 id → 编译时成 depends_on。空数组 = 无前置 (前沿候选)。 */
   blockedBy: string[];
+  /**
+   * 交付级前置 (#138, 2026-08-17): 这些票必须 **delivered**(不只是 ruled)本票才可交付。
+   *
+   * 与 {@link blockedBy} 的分工: blockedBy 闸**裁决**(前置裁完才进前沿), 本字段闸**执行**
+   * (前置真出数才进可交付区域)。刻意**不进** deriveStatus/computeFrontier —— 提前裁一张
+   * "等数据"的票本来合法 (#124 就是), 错的是提前执行它。消费点只有两处: readyRegion
+   * (排除 ruled-but-waiting, 不冻结整区) 与 regionIsClear (硬闸, 绕过 readyRegion 也拦)。
+   * 缺席 = 今天的语义, 逐位不变。gh 持久化 = 正文/评论锚 `Blocked-by-delivery:` 并集 (append-only)。
+   */
+  blockedByDelivery?: string[];
   status: TicketStatus;
   /** 裁决内容 (status='ruled' 时填; 编译时成 PlanNode.goal)。 */
   ruling?: string;

@@ -633,6 +633,33 @@ describe('归因剥离: gh 出口的 --body/--title 不放行 session 链接与�
     expect(create[create.indexOf('--body') + 1]!).toContain('Executor-kind: agent');
   });
 
+  // #138 交付级前置: 出生正文锚 + 追加评论锚**并集** (append-only 加边, 退补存量票零正文 RMW)。
+  // 证伪: readMap 去掉评论侧解析 → 第二条断言少 '#7' 红; addTicket 不落锚 → 第一条红。
+  test('#138 addTicket 带 blockedByDelivery → 正文落 Blocked-by-delivery 锚', () => {
+    const seen: string[][] = [];
+    const b = createGhBackend(
+      fakeGh((args) => {
+        seen.push(args);
+        if (args[0] === 'issue' && args[1] === 'create') return okr('https://github.com/o/r/issues/9');
+        if (args[0] === 'issue' && args[1] === 'view') return okr('{"id":"NODE_X"}');
+        if (args[0] === 'api') return okr('{"id":"NODE_X"}');
+        return okr('[]');
+      }),
+    );
+    b.addTicket('/tmp', '#1', { type: 'task', title: '等数据的活', blockedBy: [], blockedByDelivery: ['#5'] });
+    const create = seen.find((a) => a[0] === 'issue' && a[1] === 'create')!;
+    expect(create[create.indexOf('--body') + 1]!).toContain('Blocked-by-delivery: #5');
+  });
+
+  test('#138 readMap: 正文锚 ∪ 评论锚并集 → blockedByDelivery (评论 = 事后退补边的通道)', () => {
+    const resp = mapResp([{
+      number: 60, title: '[task] 等数据的活', body: 'Blocked-by-delivery: #5', labels: ['path:task'],
+      comments: ['Blocked-by-delivery: #7'],
+    }]);
+    const b = createGhBackend(fakeGh(() => okr(resp)));
+    expect(b.readMap('/tmp', '5')!.tickets[0]!.blockedByDelivery!.sort()).toEqual(['#5', '#7']);
+  });
+
   test('readMap 读回 `Executor-kind:` 锚 → 票带 executorKind (往返对称)', () => {
     const resp = mapResp([{ number: 40, title: '[task] 施工票', body: 'Executor-kind: agent', labels: ['path:task'] }]);
     const b = createGhBackend(fakeGh(() => okr(resp)));

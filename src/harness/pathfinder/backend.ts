@@ -49,6 +49,8 @@ export interface NewTicket {
   type: TicketType;
   title: string;
   blockedBy: string[];
+  /** #138 交付级前置 (语义见 Ticket.blockedByDelivery)。省略 = 无。 */
+  blockedByDelivery?: string[];
   /** issue 正文 (gh); md 无独立 body 字段 → 忽略。 */
   body?: string;
   /** 母票 id (挂 sub-issue / children); 省略 → 挂地图本身 (gh) 或不挂 (md)。 */
@@ -197,6 +199,9 @@ function createMdBackend(): PathBackend {
         for (const dep of nt.blockedBy) {
           if (!ids.has(dep)) throw new Error(`blockedBy 引用不存在的票 "${dep}"`);
         }
+        for (const dep of nt.blockedByDelivery ?? []) {
+          if (!ids.has(dep)) throw new Error(`blockedByDelivery 引用不存在的票 "${dep}"`);
+        }
         let tid = nt.id ?? '';
         if (!tid) {
           const prefix = nt.type[0]!; // r/g/p/t
@@ -211,6 +216,7 @@ function createMdBackend(): PathBackend {
           type: nt.type,
           title: nt.title,
           blockedBy: nt.blockedBy,
+          ...(nt.blockedByDelivery?.length ? { blockedByDelivery: nt.blockedByDelivery } : {}),
           status: 'open',
           ...(nt.executorKind ? { executorKind: nt.executorKind } : {}),
           ...(nt.suggestedBy ? { suggestedBy: nt.suggestedBy } : {}),

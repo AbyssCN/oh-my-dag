@@ -475,6 +475,16 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false, notify: Waitin
       const children = sub.subIssues.nodes.map((c) => `#${c.number}`);
       // blockedBy 单真相 (D-C.2): native 读原生依赖字段, legacy 读 body 尾行, 二选一不混用。
       const blockedBy = nativeDeps ? (sub.blockedBy?.nodes ?? []).map((n) => `#${n.number}`) : parseBlockedBy(body);
+      // #138 交付级前置: 出生正文锚 ∪ 追加评论锚 (append-only 加边, 退补已存在的票零正文 RMW;
+      // 与 #136/#137 同一条评论纪律)。union 语义: 边只增不减 —— 要撤边等于改裁决, 那是 re-rule 的事。
+      const blockedByDelivery = [
+        ...new Set(
+          [parseAnchor(body, 'Blocked-by-delivery'), ...sub.comments.nodes.map((c) => parseAnchor(c.body, 'Blocked-by-delivery'))]
+            .flatMap((v) => v?.split(',') ?? [])
+            .map((s) => s.trim())
+            .filter(Boolean),
+        ),
+      ];
       // S-1 溯源/指纹走正文锚往返 (缺锚 → undefined, 不编)。
       const suggestedBy = parseAnchor(body, 'Suggested-by');
       const fingerprint = parseAnchor(body, 'Fingerprint');
@@ -490,6 +500,7 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false, notify: Waitin
         type,
         title: fullTitle,
         blockedBy,
+        ...(blockedByDelivery.length ? { blockedByDelivery } : {}),
         status,
         ...(ruling !== undefined ? { ruling } : {}),
         ...(executorKind !== undefined ? { executorKind } : {}),
@@ -553,6 +564,9 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false, notify: Waitin
       if (fit.overlong) bodyLines.push(`Origin-title: ${nt.title}`);
       // legacy 策略: blockedBy 落 body 尾行 (单真相)。native 策略: body 绝不写尾行, 前置边走原生 REST (见下)。
       if (!nativeDeps && nt.blockedBy.length > 0) bodyLines.push(`Blocked-by: ${nt.blockedBy.join(', ')}`);
+      // #138 交付级前置: **两种策略都走正文锚** —— 这是我们自己的语义 (delivered 才解锁),
+      // gh 原生依赖没有这一档, 塞进去会被读成普通 blockedBy (语义降级比缺席更坏)。
+      if (nt.blockedByDelivery?.length) bodyLines.push(`Blocked-by-delivery: ${nt.blockedByDelivery.join(', ')}`);
       const body = bodyLines.join('\n\n');
       // sub-issue 挂接 (归属血缘, D-G): parentId 给则挂母票, 否则挂地图。
       const number = createTicketIssue({

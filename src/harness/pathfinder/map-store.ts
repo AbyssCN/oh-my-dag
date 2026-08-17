@@ -61,6 +61,7 @@ function unesc(s: string): string {
 /** 渲染一张票为一段 markdown (稳定字段顺序; 可选字段缺则省行 → 区分 undefined 与空)。 */
 function renderTicket(t: Ticket): string {
   const lines = [`### ${t.id}`, `- type: ${t.type}`, `- title: ${esc(t.title)}`, `- status: ${t.status}`, `- blockedBy: ${t.blockedBy.join(', ')}`];
+  if (t.blockedByDelivery !== undefined) lines.push(`- blockedByDelivery: ${t.blockedByDelivery.join(', ')}`);
   if (t.ruling !== undefined) lines.push(`- ruling: ${esc(t.ruling)}`);
   if (t.executorKind !== undefined) lines.push(`- executorKind: ${t.executorKind}`);
   if (t.children !== undefined) lines.push(`- children: ${t.children.join(', ')}`);
@@ -166,6 +167,7 @@ export function parseMapMarkdown(md: string): PathMap {
         type: cur.type ?? 'task',
         title: cur.title ?? '',
         blockedBy: cur.blockedBy ?? [],
+        ...(cur.blockedByDelivery !== undefined ? { blockedByDelivery: cur.blockedByDelivery } : {}),
         status: cur.status ?? 'open',
         ...(cur.ruling !== undefined ? { ruling: cur.ruling } : {}),
         ...(cur.executorKind !== undefined ? { executorKind: cur.executorKind } : {}),
@@ -234,6 +236,7 @@ export function parseMapMarkdown(md: string): PathMap {
     else if ((v = fieldValue(line, 'title')) !== null) cur.title = unesc(v);
     else if ((v = fieldValue(line, 'status')) !== null) cur.status = v as TicketStatus;
     else if ((v = fieldValue(line, 'blockedBy')) !== null) cur.blockedBy = splitIds(v);
+    else if ((v = fieldValue(line, 'blockedByDelivery')) !== null) cur.blockedByDelivery = splitIds(v);
     else if ((v = fieldValue(line, 'ruling')) !== null) cur.ruling = unesc(v);
     else if ((v = fieldValue(line, 'executorKind')) !== null) cur.executorKind = v as ExecutorKind;
     else if ((v = fieldValue(line, 'children')) !== null) cur.children = splitIds(v);
@@ -351,7 +354,7 @@ export function saveMapDb(map: PathMap, dbPath: string | Database): void {
         t.waitingSince ?? null,
         t.ruledAt ?? null,
         t.staleAt ?? null,
-        // ponytail: D-6③ 派发锚**没进 db 索引** —— 加列要给既有 .omd/pathfinder.db 走 ALTER 迁移,
+        // ponytail: D-6③ 派发锚与 #138 blockedByDelivery **没进 db 索引** —— 加列要给既有 .omd/pathfinder.db 走 ALTER 迁移,
         // 而 `loadMapDb` 今天在生产里零消费者 (只有本模块与一段 eval 描述引用它)。真源是 markdown,
         // 索引随时可由 rebuildDbFromMarkdown 重建。**记在这儿而不是默默留着**: 哪天 loadMapDb 真被
         // 生产消费, 这条就得先还 —— 否则索引读出来的票一律没有锚, 而且不会报错。

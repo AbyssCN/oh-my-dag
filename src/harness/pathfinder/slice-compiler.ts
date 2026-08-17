@@ -86,6 +86,14 @@ export function compileSlice(map: PathMap, regionTicketIds: string[]): Conductor
   for (const t of region) {
     if (t.status !== 'ruled') throw new Error(`slice-compiler: region 含未裁票 "${t.id}" (status=${t.status}), 雾未散不能编译`);
     if (t.type !== 'task') throw new Error(`slice-compiler: region 含非 task 票 "${t.id}" (type=${t.type})`);
+    // #138 交付级前置硬闸 (readyRegion 的排除是好走的路, 这里拦绕过它直呼编译的):
+    // "被裁"≠"真出数" —— #124 差一步就拿从没量出来过的 T=10/W=5 实装 (误杀回测 72:2)。
+    for (const dep of t.blockedByDelivery ?? []) {
+      const st = map.tickets.find((x) => x.id === dep)?.status;
+      if (st !== 'delivered') {
+        throw new Error(`slice-compiler: 票 "${t.id}" 的交付前置 "${dep}" 未交付 (status=${st ?? '未知'}) — 等它真出数 (#138)`);
+      }
+    }
   }
   assertAcyclic(region);
 
@@ -124,6 +132,13 @@ export function regionIsClear(map: PathMap, regionTicketIds: string[]): { clear:
     if (t.status !== 'ruled') return { clear: false, reason: `票 "${id}" 未裁 (status=${t.status})` };
     for (const dep of t.blockedBy) {
       if (!ruled.has(dep)) return { clear: false, reason: `票 "${id}" 的前置 "${dep}" 未裁 (open blocker 指进来)` };
+    }
+    // #138 交付级前置的**硬闸半** (readyRegion 的排除是好走的路, 这里拦绕过它直呼编译的):
+    // "被裁"不等于"真出数" —— #124 差一步就拿着从没量出来过的 T=10/W=5 实装 (误杀回测 72:2)。
+    for (const dep of t.blockedByDelivery ?? []) {
+      if (byId.get(dep)?.status !== 'delivered') {
+        return { clear: false, reason: `票 "${id}" 的交付前置 "${dep}" 未交付 (status=${byId.get(dep)?.status ?? '未知'}) — 等它真出数 (#138)` };
+      }
     }
   }
   return { clear: true };
