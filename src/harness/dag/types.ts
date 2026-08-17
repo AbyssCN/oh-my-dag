@@ -56,7 +56,15 @@ export type GenerateFn = (req: {
   traceRejectRound?: number;
 }) => Promise<{ text: string; usage: ModelUsage }>;
 
-export interface ExecutorDagConfig {
+/**
+ * Seam 分组 (A1, 2026-08-17): ExecutorDagConfig 按能力拆成 8 个具名 seam 接口。
+ * 结构类型不变 —— extends 的并 = 原扁平字段集, 对全部消费方零可见变化 (纯类型重排)。
+ * 每个接口 = 一个可替换接缝; "字段/消费方" 目录由 scripts/gen-seam-catalog.ts 生成
+ * docs/architecture/seams.md, `--check` 进测试闸 (seam-catalog.test.ts) 防漂移。
+ * 新字段必须落进某个 seam 且在 src 里有真实消费方 —— 目录生成器对零消费方字段直接红。
+ */
+/** 模型座位 seam: 引擎各角色绑哪个模型坐标。装配层由座位表 (src/model/seats.ts) 解析注入。 */
+export interface DagSeatsSeam {
   /** conductor 模型 'provider:modelId' (规划用, 我们=mimo:mimo-v2.5-pro)。**必填, 无硬默认。** */
   conductorModel: string;
   /** inproc leaf 模型 'provider:modelId' (生成/判断单发)。**必填, 无硬默认** —— 装配层由 'leaf' 座位解析。 */
@@ -66,6 +74,121 @@ export interface ExecutorDagConfig {
    * (MiMo agentic flaky + 无 cache, 不适合工具循环 → agent leaf 走 DeepSeek; inproc 才用 MiMo 烧额度)。
    */
   agentLeafModel?: string;
+  /**
+   * 收敛 judge 的模型坐标。两个消费方:
+   *  - 外层 fixpoint (`plan/iterate` 的默认 LLM judge);
+   *  - **conductor 节点的内环 judge** (D-A, `max_rounds > 1` 时) —— 缺省回落 conductorModel
+   *    (判"goal 达成没有"与"怎么分解"同属大脑簇, 回落到 leaf 档会让判决比分解还弱)。
+   */
+  judgeModel?: string;
+  /**
+   * conductor 升级模型 'provider:modelId' (verifier fail 时用更强模型重规划重跑)。
+   * **provider 未注册 (没配对应 API key) → 自动不升级, 维持弱模型** (Nick: 没配 SOTA API 就维持弱)。
+   * 省略 = 永不升级。
+   *
+   * 三个消费方: ① executor-dag 内部 verifier-fail 升级; ② 外层 fixpoint 的轮级升级
+   * (`plan/iterate`); ③ **conductor 节点内环的轮级升级** (D-F 之后 —— 撤外层不该顺手把
+   * "多轮不收敛就换更强的脑子"这个能力一起撤掉)。
+   */
+  conductorEscalationModel?: string;
+}
+
+/** 推理档 seam: 各角色的 thinking 档与输出预算 (S-T: 座位档由接线层注入, 显式永远赢)。 */
+export interface DagThinkingSeam {
+  /** conductor 分解推理档 (high 默认/复杂 plan 升 max; conductor 是分解器不需深推理, 见 fleet 注释)。 */
+  conductorThinkingLevel?: 'off' | 'low' | 'medium' | 'high' | 'xhigh';
+  /**
+   * conductor 输出 token 预算 (plan JSON 随任务规模涨; thinking conductor 的推理可计入 completion)。
+   * 省略 → env OMD_CONDUCTOR_MAX_TOKENS → 8192 (deepseek 系安全顶)。k3 大 plan 建议 32768。
+   */
+  conductorMaxTokens?: number;
+  /** inproc leaf 推理档 (默认 high; mass fan-out 省成本, 不走 max — 那是 omd 设计 / best-of-N 的档)。 */
+  inprocThinkingLevel?: 'off' | 'low' | 'medium' | 'high' | 'xhigh';
+  /**
+   * S-T 座位推理档查询 (坐标 → 档): auto-assign 把「模型 + 推理档」成对下发, 执行期按节点已钉的
+   * 坐标反查该座位的档。接线层注入 (读 .omd/config.json 是接线层的活, 执行器不碰 IO);
+   * 省略 / 返 undefined → 回落原有默认, 老 config 行为不变 (向后兼容)。
+   * 优先序 (同 TPL-3 哲学: 显式永远赢): node.thinking > 本 config 的显式档 > 座位档 > 硬默认。
+   */
+  seatThinking?: (coord: string) => 'off' | 'low' | 'medium' | 'high' | 'xhigh' | undefined;
+}
+
+/** 执行器 seam: 各 kind leaf 的可替换执行体与模型调用注入点 (引擎不直连 transport)。 */
+export interface DagRunnersSeam {
+  /** 注入式模型调用 (inproc leaf, 默认 callModel)。 */
+  generate?: GenerateFn;
+  /**
+   * agent-kind leaf 的执行器 (带工具子 agent, 能改文件)。给则 `executor:'agent'` 节点经此跑;
+   * 省略 → agent 节点降级为 inproc 单发 (无工具, 只生成文本) + warn。默认 createAgentLeafRunner。
+   */
+  agentRunner?: AgentLeafRunner;
+  /**
+   * command-kind leaf 的执行器 (确定性 CLI, 零 LLM, 方案 A)。给则 `executor:'command'` 节点经此跑
+   * node.command (经 fail-closed 闸 + 白名单)。省略 → command 节点失败 (无 runner)。
+   * codegraph / piolium 等"方法论+CLI工具"型能力的并行检索底座。
+   */
+  commandRunner?: CommandLeafRunner;
+  /**
+   * research-kind leaf 的执行器 (真 web 检索 + 有界内环, D-6)。给则 `executor:'research'` 节点经此跑。
+   * 省略 → research 节点失败 —— **刻意不降级成 inproc**: 无 web 的 leaf 只会拿模型记忆编引用,
+   * 那是假 grounded (与"写文件节点无 agentRunner → 失败"同一条纪律: 拒绝静默假成功)。
+   */
+  researchRunner?: ResearchLeafRunner;
+  /**
+   * 注入式 judge 调用 (测试)。默认真 `model/gateway.send` —— 内环 judge 走 `responseSchema`
+   * 强制结构化, 与只回文本的 `generate` 不是同一个接口, 故单开一个注入口。
+   */
+  judgeSend?: typeof Gateway.send;
+  /**
+   * executor leaf 模型选型路由器 (B-2 bandit, 见 model-router.ts)。省略 = 静态 (leafModel/agentLeafModel)。
+   * 给则 inproc/agent leaf 经 router.select(bucket, 静态) 选模型, DAG 校验后按 reward 回更新。
+   * pool 未配 → router no-op = 静态 (ship 安全)。node.model 显式给时仍最高优先 (绕过 router)。
+   */
+  router?: LeafModelRouter;
+}
+
+/** 规划管线 seam: conductor 的输入约束 (roster/模板) 与 plan 的确定性变换/过滤。 */
+export interface DagPlanningSeam {
+  /** conductor 规划无效输出的有界重试 (默认 2 → ≤3 次)。 */
+  maxPlanRetries?: number;
+  /** 限定 conductor 可派的 agent roster (进规划 system prompt)。 */
+  agents?: string[];
+  /**
+   * Agent 模板注册表 (name → 角色卡, 见 agent-templates.ts)。省略 = loadAgentTemplates()
+   * (内置 5 卡 + cwd/.omd/agents/*.md 项目卡覆盖)。传 Map 注入 (测试 fake / 宿主定制);
+   * 传空 Map = 关闭模板机制 (conductor prompt 无注册表段, 行为回退纯 persona)。
+   */
+  agentTemplates?: ReadonlyMap<string, AgentTemplate>;
+  /**
+   * conductor system prompt 档位 (SDD v2, 2026-07-25): 'full' (默认, 弱 conductor 教练全量) |
+   * 'lean' (只留环境事实, 顶级 conductor 如 k3 用 — 教练是保守偏置疑压平分解)。
+   * 省略 → env OMD_CONDUCTOR_PROMPT ('lean'/'full') → 'full'。档位由 A/B eval 定, 见 conductor-plan。
+   */
+  conductorPromptProfile?: 'full' | 'lean';
+  /**
+   * oracle 命令 (如 "bun run typecheck && bun test"): plan 中 command 与之等价的节点
+   * 在执行前被确定性过滤 (空白规范化后精确匹配, 最小无害边重连)。
+   * 选型理由: oracle 已跑过该命令, conductor 重规划出等价节点 = 浪费 token + 时间。
+   * 省略 = 不过滤 (向后兼容)。
+   */
+  oracleCmd?: string;
+  /**
+   * SDD v2 pass 管线 (plan-passes/): oracle 过滤之后、执行之前依序应用的确定性 plan 变换
+   * (接线层组装 prune → dedup → stamp; INV-8 pass 纯函数, 配置由接线层闭包注入)。
+   * 每轮 plan (conductor 首轮 + escalation 重规划轮) 都过同一管线。省略 = 不变换 (零回归)。
+   * 抛错上抛 fail-closed — 坏 pass 不静默跳过 (与 parsePlan 校验同哲学)。
+   */
+  planFilters?: Array<(plan: ConductorPlan) => ConductorPlan>;
+  /**
+   * primitive 候选模型池 (SDD v2 D-8v2, INV-7): judge/parallel/tournament 原语的 N 路
+   * attempts 按此池轮转分配 (跨家族多样性; 接线层从 stamp pools 注入)。省略 = 全部
+   * attempts 用 leafModel (旧行为, 零回归)。
+   */
+  primitiveCandidates?: string[];
+}
+
+/** 调度与并发 seam: fan-out 上限、per-kind/per-channel 闸、暖发调度与协作式取消。 */
+export interface DagSchedulingSeam {
   /** 内层 fan-out 并发上限 (传给 primitives.parallel)。省略 → primitives 的 OMD_MAX_FANOUT/CPU 兜底。 */
   maxFanout?: number;
   /**
@@ -76,6 +199,39 @@ export interface ExecutorDagConfig {
    * 旧注释"仅对 inproc 有意义"系误判(mimo 控制台实测 41% hit, thundering herd 成分可治)。
    */
   warmThenFanout?: boolean;
+  /**
+   * per-kind 并发闸 (fanout 最大化设计, 2026-07-21): inproc 叶纯 API 等待、无本地足迹 →
+   * 默认不限 (只受 maxFanout/图宽/provider 池); agent 叶 (本地工具调用) 与 command 叶
+   * (本地 CLI) 物理共享本机 CPU/磁盘 → 各自独立小闸。省略的 kind = 不限。
+   * 调度期按节点声明的 executor 记账 (运行期 leaf→agent 提升不改变记账桶 — 提升是罕见纠错路径)。
+   */
+  kindFanout?: { agent?: number; command?: number; inproc?: number };
+  /**
+   * per-channel 并发闸 (SDD v2 D-23, TFFInfer 多 Stream 同构): key = provider 前缀
+   * (调度期由 node.model ?? kind 静态模型推出), value = 该渠道并发上限。多模型 stamp 后
+   * 争用单元从 kind 变渠道 (Allegretto/Lite/Go 各有额度限速) — 一个渠道饱和不阻塞其它
+   * 渠道就绪节点 (非严格 FIFO 让位逻辑原样适用)。省略/未列渠道 = 不限。channels 熔断是
+   * 事后, 此闸是事前限流, 互补。
+   */
+  channelFanout?: Record<string, number>;
+  /**
+   * **协作式取消** (D-P): 叫停这次 run。给了就在每个**调度接缝**上查一次。
+   *
+   * "协作式"是字面意思 —— **不杀在飞的节点**: 已经起跑的 leaf 跑到它自己结束 (它的产物、
+   * checkpoint、账本一样不少), 引擎只是**不再派新活**。理由是杀进程救不回半个产物, 却会
+   * 把一个正在写文件的 agent 留在半路上; 而"停止派新活"这件事在 ready-set 调度器里是免费的。
+   *
+   * 查的四个接缝: ① 外层 pump 派新节点前 ② conductor 内环 pump 派新子节点前 ③ 内环开新一轮前
+   * ④ verifier-fail 升级重规划前。接缝之外一律不查 —— 中途插一刀等于回到"杀"。
+   *
+   * 收尾语义: `ExecutorDagResult.cancelled` 留痕 + `notRun` 列出一个都没起跑过的节点。
+   * **同一个 runId 可以直接 resume** (已绿节点全跳过) —— 这才是"已跑完的节点全保留"的兑现处。
+   */
+  cancelSignal?: AbortSignal;
+}
+
+/** leaf prompt 整形 seam: 注入 leaf 上下文/前缀/压缩级与档位闸 (省 token 与护 cache 的旋钮)。 */
+export interface DagLeafShapingSeam {
   /**
    * 干活 leaf 的 caveman 压缩级 (省 output token)。默认 'full' (2026-07-21: 从 ultra 降 —— ultra 的边际
    * 压缩是弱模型削 substance 的风险位且无 per-node 出口, 省 token 大头改由 fan-in 定向摘要接管)。
@@ -94,8 +250,6 @@ export interface ExecutorDagConfig {
    * 只挂 leaf 不挂 conductor — 规划相位要发散 (拆得对), 构建相位才收敛 (建得少)。见 ponytail plan/build 相位分离。
    */
   leafPonytail?: boolean;
-  /** conductor 规划无效输出的有界重试 (默认 2 → ≤3 次)。 */
-  maxPlanRetries?: number;
   /**
    * 每个 leaf 的 prompt 是否携带**原始任务全文** (默认 true, 见 buildLeafPrompt 的注)。
    *
@@ -119,77 +273,6 @@ export interface ExecutorDagConfig {
    * 装配层给实测值之半; 缺省不做体量分支 (建议文案给两条路)。
    */
   leafTierThresholdBytes?: number;
-  /** 限定 conductor 可派的 agent roster (进规划 system prompt)。 */
-  agents?: string[];
-  /**
-   * Agent 模板注册表 (name → 角色卡, 见 agent-templates.ts)。省略 = loadAgentTemplates()
-   * (内置 5 卡 + cwd/.omd/agents/*.md 项目卡覆盖)。传 Map 注入 (测试 fake / 宿主定制);
-   * 传空 Map = 关闭模板机制 (conductor prompt 无注册表段, 行为回退纯 persona)。
-   */
-  agentTemplates?: ReadonlyMap<string, AgentTemplate>;
-  /** 注入式模型调用 (inproc leaf, 默认 callModel)。 */
-  generate?: GenerateFn;
-  /**
-   * 本次 run 的 Langfuse trace 分组 session id (conductor+leaf 全部经 send 归此 session)。
-   * 省略 → 内部生成 randomUUID (current behavior)。给则**调用方可拿同一 id 做跨平面关联** (如派活
-   * 飞轮把 dispatch_outcome ↔ Langfuse session 用此 id join → 按 pattern-class 归因成本/调试 mined skill)。
-   */
-  sessionId?: string;
-  /** conductor 分解推理档 (high 默认/复杂 plan 升 max; conductor 是分解器不需深推理, 见 fleet 注释)。 */
-  conductorThinkingLevel?: 'off' | 'low' | 'medium' | 'high' | 'xhigh';
-  /**
-   * conductor system prompt 档位 (SDD v2, 2026-07-25): 'full' (默认, 弱 conductor 教练全量) |
-   * 'lean' (只留环境事实, 顶级 conductor 如 k3 用 — 教练是保守偏置疑压平分解)。
-   * 省略 → env OMD_CONDUCTOR_PROMPT ('lean'/'full') → 'full'。档位由 A/B eval 定, 见 conductor-plan。
-   */
-  conductorPromptProfile?: 'full' | 'lean';
-  /**
-   * conductor 输出 token 预算 (plan JSON 随任务规模涨; thinking conductor 的推理可计入 completion)。
-   * 省略 → env OMD_CONDUCTOR_MAX_TOKENS → 8192 (deepseek 系安全顶)。k3 大 plan 建议 32768。
-   */
-  conductorMaxTokens?: number;
-  /** inproc leaf 推理档 (默认 high; mass fan-out 省成本, 不走 max — 那是 omd 设计 / best-of-N 的档)。 */
-  inprocThinkingLevel?: 'off' | 'low' | 'medium' | 'high' | 'xhigh';
-  /**
-   * S-T 座位推理档查询 (坐标 → 档): auto-assign 把「模型 + 推理档」成对下发, 执行期按节点已钉的
-   * 坐标反查该座位的档。接线层注入 (读 .omd/config.json 是接线层的活, 执行器不碰 IO);
-   * 省略 / 返 undefined → 回落原有默认, 老 config 行为不变 (向后兼容)。
-   * 优先序 (同 TPL-3 哲学: 显式永远赢): node.thinking > 本 config 的显式档 > 座位档 > 硬默认。
-   */
-  seatThinking?: (coord: string) => 'off' | 'low' | 'medium' | 'high' | 'xhigh' | undefined;
-  /**
-   * agent-kind leaf 的执行器 (带工具子 agent, 能改文件)。给则 `executor:'agent'` 节点经此跑;
-   * 省略 → agent 节点降级为 inproc 单发 (无工具, 只生成文本) + warn。默认 createAgentLeafRunner。
-   */
-  agentRunner?: AgentLeafRunner;
-  /**
-   * W2 continuity (SDD C4): 节点级 checkpoint 落盘 + 崩溃恢复跳过。
-   * manager+runId 给则启用: done 节点写 `.omd/continuity/<runId>/<nodeId>.json` (fail-open, 写挂不阻断);
-   * resume=true 时, checkpoint 存在 ∧ 产物 hash 匹配的节点跳过执行 (LeafResult.skipped=true)。
-   * repoRoot 供 noun-gate 注释 + 产物路径相对化 (省略 = process.cwd())。
-   */
-  continuity?: { manager: CheckpointManager; runId: string; resume?: boolean; repoRoot?: string };
-  /**
-   * per-kind 并发闸 (fanout 最大化设计, 2026-07-21): inproc 叶纯 API 等待、无本地足迹 →
-   * 默认不限 (只受 maxFanout/图宽/provider 池); agent 叶 (本地工具调用) 与 command 叶
-   * (本地 CLI) 物理共享本机 CPU/磁盘 → 各自独立小闸。省略的 kind = 不限。
-   * 调度期按节点声明的 executor 记账 (运行期 leaf→agent 提升不改变记账桶 — 提升是罕见纠错路径)。
-   */
-  kindFanout?: { agent?: number; command?: number; inproc?: number };
-  /**
-   * per-channel 并发闸 (SDD v2 D-23, TFFInfer 多 Stream 同构): key = provider 前缀
-   * (调度期由 node.model ?? kind 静态模型推出), value = 该渠道并发上限。多模型 stamp 后
-   * 争用单元从 kind 变渠道 (Allegretto/Lite/Go 各有额度限速) — 一个渠道饱和不阻塞其它
-   * 渠道就绪节点 (非严格 FIFO 让位逻辑原样适用)。省略/未列渠道 = 不限。channels 熔断是
-   * 事后, 此闸是事前限流, 互补。
-   */
-  channelFanout?: Record<string, number>;
-  /**
-   * primitive 候选模型池 (SDD v2 D-8v2, INV-7): judge/parallel/tournament 原语的 N 路
-   * attempts 按此池轮转分配 (跨家族多样性; 接线层从 stamp pools 注入)。省略 = 全部
-   * attempts 用 leafModel (旧行为, 零回归)。
-   */
-  primitiveCandidates?: string[];
   /**
    * fan-in **定向摘要** (引擎接缝, 2026-07-21): 一个 producer 的输出被 ≥2 个下游 consumer 消费时,
    * 不再把全文复制 ≥2 份灌进各 consumer, 而是跑 1 发定向摘要 (按下游目标提炼) + 全文落盘留指针,
@@ -198,12 +281,10 @@ export interface ExecutorDagConfig {
    * 的行为旋钮惯例——默认档由引擎给); `{ enabled: false }` 关闭。fail-open: 摘要失败 → 回退全文注入。
    */
   faninSummary?: FaninSummaryConfig;
-  /**
-   * command-kind leaf 的执行器 (确定性 CLI, 零 LLM, 方案 A)。给则 `executor:'command'` 节点经此跑
-   * node.command (经 fail-closed 闸 + 白名单)。省略 → command 节点失败 (无 runner)。
-   * codegraph / piolium 等"方法论+CLI工具"型能力的并行检索底座。
-   */
-  commandRunner?: CommandLeafRunner;
+}
+
+/** 内环控制 seam: 判据进环/judge 视图/预算/熔断/升级 —— 环的四条停止轴与跨模型校验。 */
+export interface DagLoopControlSeam {
   /**
    * **冻结判据进环**(2026-08-01)。给了 → conductor 内环**每轮**跑一次这条确定性命令;
    * 退出码对上 = 这一轮定为最后一轮。省略 = 旧行为(判据只在环外跑一次)。
@@ -228,72 +309,6 @@ export interface ExecutorDagConfig {
    */
   freezeCriterion?: { command: string; expectExit?: number };
   /**
-   * research-kind leaf 的执行器 (真 web 检索 + 有界内环, D-6)。给则 `executor:'research'` 节点经此跑。
-   * 省略 → research 节点失败 —— **刻意不降级成 inproc**: 无 web 的 leaf 只会拿模型记忆编引用,
-   * 那是假 grounded (与"写文件节点无 agentRunner → 失败"同一条纪律: 拒绝静默假成功)。
-   */
-  researchRunner?: ResearchLeafRunner;
-  /**
-   * oracle 命令 (如 "bun run typecheck && bun test"): plan 中 command 与之等价的节点
-   * 在执行前被确定性过滤 (空白规范化后精确匹配, 最小无害边重连)。
-   * 选型理由: oracle 已跑过该命令, conductor 重规划出等价节点 = 浪费 token + 时间。
-   * 省略 = 不过滤 (向后兼容)。
-   */
-  oracleCmd?: string;
-  /**
-   * SDD v2 pass 管线 (plan-passes/): oracle 过滤之后、执行之前依序应用的确定性 plan 变换
-   * (接线层组装 prune → dedup → stamp; INV-8 pass 纯函数, 配置由接线层闭包注入)。
-   * 每轮 plan (conductor 首轮 + escalation 重规划轮) 都过同一管线。省略 = 不变换 (零回归)。
-   * 抛错上抛 fail-closed — 坏 pass 不静默跳过 (与 parsePlan 校验同哲学)。
-   */
-  planFilters?: Array<(plan: ConductorPlan) => ConductorPlan>;
-  /**
-   * 收敛 judge 的模型坐标。两个消费方:
-   *  - 外层 fixpoint (`plan/iterate` 的默认 LLM judge);
-   *  - **conductor 节点的内环 judge** (D-A, `max_rounds > 1` 时) —— 缺省回落 conductorModel
-   *    (判"goal 达成没有"与"怎么分解"同属大脑簇, 回落到 leaf 档会让判决比分解还弱)。
-   */
-  judgeModel?: string;
-  /**
-   * 注入式 judge 调用 (测试)。默认真 `model/gateway.send` —— 内环 judge 走 `responseSchema`
-   * 强制结构化, 与只回文本的 `generate` 不是同一个接口, 故单开一个注入口。
-   */
-  judgeSend?: typeof Gateway.send;
-  /**
-   * 跨模型校验器 (model-agnostic skeptic, 见 verifier.ts)。省略 = 不校验 (back-compat 老行为)。
-   * 给则 DAG 跑完用它审结果 → fail 且配了可用升级模型时触发 conductor 静默升级重规划。
-   */
-  verifier?: VerifierFn;
-  /**
-   * conductor 升级模型 'provider:modelId' (verifier fail 时用更强模型重规划重跑)。
-   * **provider 未注册 (没配对应 API key) → 自动不升级, 维持弱模型** (Nick: 没配 SOTA API 就维持弱)。
-   * 省略 = 永不升级。
-   *
-   * 三个消费方: ① executor-dag 内部 verifier-fail 升级; ② 外层 fixpoint 的轮级升级
-   * (`plan/iterate`); ③ **conductor 节点内环的轮级升级** (D-F 之后 —— 撤外层不该顺手把
-   * "多轮不收敛就换更强的脑子"这个能力一起撤掉)。
-   */
-  conductorEscalationModel?: string;
-  /**
-   * 从第几轮起用 `conductorEscalationModel` 重画 (默认 2 = 第 1 轮弱 conductor, 后续升级)。
-   * 外层 fixpoint 与 conductor 节点内环共用这一个旋钮 —— 两处各写一份默认值就会漂。
-   * 仅在 `conductorEscalationModel` 给定且其 provider 已注册时生效。
-   */
-  escalateAfterRound?: number;
-  /** verifier-fail → 升级重规划的最大次数 (默认 1)。每次升级 = 一整轮重规划 + 重跑 leaves。 */
-  maxEscalations?: number;
-  /**
-   * executor leaf 模型选型路由器 (B-2 bandit, 见 model-router.ts)。省略 = 静态 (leafModel/agentLeafModel)。
-   * 给则 inproc/agent leaf 经 router.select(bucket, 静态) 选模型, DAG 校验后按 reward 回更新。
-   * pool 未配 → router no-op = 静态 (ship 安全)。node.model 显式给时仍最高优先 (绕过 router)。
-   */
-  router?: LeafModelRouter;
-  /**
-   * 运行完成钩子 (留痕层接口)。每次 runExecutorDag 结束前调用一次, 传完整 result (含升级后的最终态)。
-   * 传 createDagRecorder().record 的闭包 → 自动落 SQLite 运行记录 (node 图谱可回溯)。抛错不阻断返回。
-   */
-  onComplete?: (result: ExecutorDagResult) => void | Promise<void>;
-  /**
    * **产物内容进 judge 视图** (S1, 2026-08-03)。省略/`true` = 默认预算 (**缺省开**);
    * 给对象 = 自定预算; `false` = 关。
    *
@@ -310,18 +325,6 @@ export interface ExecutorDagConfig {
    */
   judgeArtifacts?: boolean | ArtifactBudget;
   /**
-   * **环的预算上限**(2026-07-31)—— Loop Engineering 四条停止轴里我们唯一缺的那条。
-   *
-   * 另外三条早就有:轮数上限(`max_rounds`)· 空转(D-Q 确定性判据)· 完成检查(judge ∧ 环外
-   * `accept`)。缺预算轴的后果很具体:judge 每轮说"还不行",环就一路烧到轮数上限,**全程没有
-   * 任何一处问过"这已经花了多少"**。而实测一次 goal 的执行段 leafIn 是 43 万 token 量级。
-   *
-   * 在**轮边界**上查(与 D-P 取消同一个接缝):不打断在飞的一轮 —— 半轮的钱已经花了,
-   * 打断只是把产出也扔掉。省略 = 不设限(老语义,零回归)。
-   *
-   * ⚠ 这是**软停不是硬杀**:超了就不开下一轮,已跑完的全保留,`resume` 时给个更大的预算就能接着跑。
-   */
-  /**
    * **owner 指令通道** (S3, 2026-07-31 / D-S)。每开一轮调一次, 返回**已渲染**的一段;
    * 空串 = 本轮没有 owner 指令。消费记账 (哪条被哪一轮吃掉了) 由实现方做, 引擎不认识收件箱。
    *
@@ -336,6 +339,18 @@ export interface ExecutorDagConfig {
    * 但复制不了一个它写那张网页时还不存在的值。渲染方须用它, 见 `renderOwnerDirectives`。
    */
   ownerDirectives?: (round: number, nonce: string) => string;
+  /**
+   * **环的预算上限**(2026-07-31)—— Loop Engineering 四条停止轴里我们唯一缺的那条。
+   *
+   * 另外三条早就有:轮数上限(`max_rounds`)· 空转(D-Q 确定性判据)· 完成检查(judge ∧ 环外
+   * `accept`)。缺预算轴的后果很具体:judge 每轮说"还不行",环就一路烧到轮数上限,**全程没有
+   * 任何一处问过"这已经花了多少"**。而实测一次 goal 的执行段 leafIn 是 43 万 token 量级。
+   *
+   * 在**轮边界**上查(与 D-P 取消同一个接缝):不打断在飞的一轮 —— 半轮的钱已经花了,
+   * 打断只是把产出也扔掉。省略 = 不设限(老语义,零回归)。
+   *
+   * ⚠ 这是**软停不是硬杀**:超了就不开下一轮,已跑完的全保留,`resume` 时给个更大的预算就能接着跑。
+   */
   loopBudget?: {
     /** 累计 leaf+conductor token(in+out)上限。 */
     tokens?: number;
@@ -377,6 +392,34 @@ export interface ExecutorDagConfig {
    */
   judgeFailureThreshold?: number;
   /**
+   * 跨模型校验器 (model-agnostic skeptic, 见 verifier.ts)。省略 = 不校验 (back-compat 老行为)。
+   * 给则 DAG 跑完用它审结果 → fail 且配了可用升级模型时触发 conductor 静默升级重规划。
+   */
+  verifier?: VerifierFn;
+  /**
+   * 从第几轮起用 `conductorEscalationModel` 重画 (默认 2 = 第 1 轮弱 conductor, 后续升级)。
+   * 外层 fixpoint 与 conductor 节点内环共用这一个旋钮 —— 两处各写一份默认值就会漂。
+   * 仅在 `conductorEscalationModel` 给定且其 provider 已注册时生效。
+   */
+  escalateAfterRound?: number;
+  /** verifier-fail → 升级重规划的最大次数 (默认 1)。每次升级 = 一整轮重规划 + 重跑 leaves。 */
+  maxEscalations?: number;
+}
+
+/** 观察与留痕 seam: 事件/回执/trace 分组/checkpoint —— 观察者不许扰动被观察者 (fail-open)。 */
+export interface DagObservabilitySeam {
+  /**
+   * 本次 run 的 Langfuse trace 分组 session id (conductor+leaf 全部经 send 归此 session)。
+   * 省略 → 内部生成 randomUUID (current behavior)。给则**调用方可拿同一 id 做跨平面关联** (如派活
+   * 飞轮把 dispatch_outcome ↔ Langfuse session 用此 id join → 按 pattern-class 归因成本/调试 mined skill)。
+   */
+  sessionId?: string;
+  /**
+   * 运行完成钩子 (留痕层接口)。每次 runExecutorDag 结束前调用一次, 传完整 result (含升级后的最终态)。
+   * 传 createDagRecorder().record 的闭包 → 自动落 SQLite 运行记录 (node 图谱可回溯)。抛错不阻断返回。
+   */
+  onComplete?: (result: ExecutorDagResult) => void | Promise<void>;
+  /**
    * 节点级进度事件 (2026-07-20, MCP 派发简报/活体 status 的数据源):
    *   planned = 图定型 (全部节点 id+kind, 每轮 plan/escalation 重规划各发一次)
    *   start   = 节点起跑 (含 map 展开出的子节点)
@@ -385,20 +428,18 @@ export interface ExecutorDagConfig {
    */
   onNodeEvent?: (e: DagNodeEvent) => void;
   /**
-   * **协作式取消** (D-P): 叫停这次 run。给了就在每个**调度接缝**上查一次。
-   *
-   * "协作式"是字面意思 —— **不杀在飞的节点**: 已经起跑的 leaf 跑到它自己结束 (它的产物、
-   * checkpoint、账本一样不少), 引擎只是**不再派新活**。理由是杀进程救不回半个产物, 却会
-   * 把一个正在写文件的 agent 留在半路上; 而"停止派新活"这件事在 ready-set 调度器里是免费的。
-   *
-   * 查的四个接缝: ① 外层 pump 派新节点前 ② conductor 内环 pump 派新子节点前 ③ 内环开新一轮前
-   * ④ verifier-fail 升级重规划前。接缝之外一律不查 —— 中途插一刀等于回到"杀"。
-   *
-   * 收尾语义: `ExecutorDagResult.cancelled` 留痕 + `notRun` 列出一个都没起跑过的节点。
-   * **同一个 runId 可以直接 resume** (已绿节点全跳过) —— 这才是"已跑完的节点全保留"的兑现处。
+   * W2 continuity (SDD C4): 节点级 checkpoint 落盘 + 崩溃恢复跳过。
+   * manager+runId 给则启用: done 节点写 `.omd/continuity/<runId>/<nodeId>.json` (fail-open, 写挂不阻断);
+   * resume=true 时, checkpoint 存在 ∧ 产物 hash 匹配的节点跳过执行 (LeafResult.skipped=true)。
+   * repoRoot 供 noun-gate 注释 + 产物路径相对化 (省略 = process.cwd())。
    */
-  cancelSignal?: AbortSignal;
+  continuity?: { manager: CheckpointManager; runId: string; resume?: boolean; repoRoot?: string };
 }
+
+/** DAG 执行引擎总配置 = 上述八个 seam 的并 (分组即目录, 见文件头 Seam 分组注)。 */
+export interface ExecutorDagConfig
+  extends DagSeatsSeam, DagThinkingSeam, DagRunnersSeam, DagPlanningSeam,
+    DagSchedulingSeam, DagLeafShapingSeam, DagLoopControlSeam, DagObservabilitySeam {}
 
 /**
  * 节点进度事件 (onNodeEvent 载荷)。kind 与 LeafResult.kind 同词表 + 'map'/'primitive'。
