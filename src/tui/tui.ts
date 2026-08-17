@@ -1516,6 +1516,9 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       else {
         await switchTo(sessionId); // 换分支 = 换了一份历史, 屏上必须跟着换 (handleTree 同款)
         chatLog.appendNotice(CHROME.treeBranched(target.parentId, r.text));
+        // 原句逐字预填回输入框 (claude-code 同款): 回退是为了改一改重发, 不是重打一遍。
+        // 没有全文就不填 —— 预览是截断的, 填截断文本进输入框是丢半句的静默坑。
+        if (target.text) editor.setText(target.text);
       }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);

@@ -121,6 +121,8 @@ export interface RewindTarget {
   id: string;
   parentId: string;
   preview: string;
+  /** 逐字全文(有才带)—— 回退后预填回输入框, 让人改一改重发, 而不是重打一遍。 */
+  text?: string;
 }
 
 /**
@@ -144,7 +146,7 @@ export function rewindTargets(entries: readonly TuiTreeEntry[], leafId: string |
     const e = byId.get(cursor);
     if (!e) break;
     if (e.kind === 'message/user' && e.parentId !== null) {
-      out.push({ id: e.id, parentId: e.parentId, preview: e.preview });
+      out.push({ id: e.id, parentId: e.parentId, preview: e.preview, ...(e.text !== undefined ? { text: e.text } : {}) });
     }
     cursor = e.parentId;
   }

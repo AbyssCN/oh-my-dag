@@ -23,7 +23,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { callModel } from '../../model';
-import { branchSummaryMessage, entryKind, entryPreview, planBranchNavigation } from './branch-summary';
+import { branchSummaryMessage, entryKind, entryPreview, entryUserText, planBranchNavigation } from './branch-summary';
 import { type OmdSession, type OmdSessionStore, createOmdSessionStore, resetSessionCacheForTest } from './session-store';
 
 const MODEL = 'deepseek:deepseek-v4-flash'; // pi 内置目录离线可解
@@ -189,6 +189,22 @@ describe('/tree 的取材(纯投影)', () => {
     const cut = entryPreview({ ...long, message: { role: 'user', content: [{ type: 'text', text: 'x'.repeat(99) }] } } as never, 10);
     expect(cut).toHaveLength(10);
     expect(cut.endsWith('...')).toBe(true);
+  });
+
+  test('★ entryUserText 逐字不截不压 —— 预填截断文本是丢半句的静默坑', async () => {
+    // 反向自检 (实跑): 把 string 形分支删掉 → string content 那条读成 undefined, 当场红;
+    //   把 role 过滤删掉 → assistant 那条带出文字, 当场红。
+    const { s } = await seed();
+    const all = await s.allEntries();
+    const user = all[0]!;
+    // 与 entryPreview 对照: 同一条目, 预览截 6, 全文一字不动。
+    expect(entryPreview(user, 6)).toBe('第一问');
+    expect(entryUserText(user)).toContain('第一问');
+    // string 形 content (agent.ts 发轮时就是这个形) 与多行都保真。
+    expect(entryUserText({ ...user, message: { role: 'user', content: '两行\n原文' } } as never)).toBe('两行\n原文');
+    // assistant / 无文字 → undefined, 不编空串。
+    expect(entryUserText(all[1]!)).toBeUndefined();
+    expect(entryUserText({ ...user, message: { role: 'user', content: [] } } as never)).toBeUndefined();
   });
 
   test('branchSummaryMessage 用 pi 的构造器 —— 与投影产出的**同一个形状**', async () => {

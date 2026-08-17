@@ -113,4 +113,6 @@ export interface TuiTreeEntry {
   kind: string;
   /** 一行预览(已截断)。空串 = 这条投影不出文字,不是"没读到"。 */
   preview: string;
+  /** user 消息的逐字全文(回退预填用)。只有 `message/user` 且有文字时才带 —— 预览是给看的, 这份是给填回去的。 */
+  text?: string;
 }

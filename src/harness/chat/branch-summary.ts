@@ -227,6 +227,28 @@ export function branchSummaryMessage(entry: Pick<BranchSummaryEntryPlan, 'summar
   return createBranchSummaryMessage(entry.summary, entry.fromId, timestamp);
 }
 
+/**
+ * user 消息的**逐字全文**(双 Esc 回退后预填输入框用;纯投影,不改数据)。
+ *
+ * 与 `entryPreview` 是两回事:预览截断 + 压空白是给列表看的,预填必须一字不动 ——
+ * 截断文本填回输入框、人没注意就重发,丢的那半句是静默的。
+ * 非 message / 非 user / 没有文字 → `undefined`(没有可预填的,不编一个空串)。
+ */
+export function entryUserText(entry: Entry): string | undefined {
+  if (entry.type !== 'message') return undefined;
+  const m = entry.message as { role?: string; content?: unknown };
+  if (m.role !== 'user') return undefined;
+  // pi 的 UserMessage.content 是 `string | (TextContent | ImageContent)[]` 两形 —— 两边都接。
+  if (typeof m.content === 'string') return m.content || undefined;
+  const parts = Array.isArray(m.content) ? m.content : [];
+  const text = parts
+    .map((p) => p as { type?: string; text?: string })
+    .filter((p) => p.type === 'text')
+    .map((p) => p.text ?? '')
+    .join('\n');
+  return text || undefined;
+}
+
 /** 一条条目在 `/tree` 里的一行预览(**纯投影**,不改数据)。 */
 export function entryPreview(entry: Entry, max = 60): string {
   const text = rawPreview(entry).replace(/\s+/g, ' ').trim();

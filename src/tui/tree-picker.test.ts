@@ -139,6 +139,17 @@ describe('★ rewindTargets —— 双 Esc 回退的取材', () => {
     expect(rewindTargets(linear, 'd').map((t) => t.id)).toEqual(['c']);
   });
 
+  test('全文字段原样透传 (有才带) —— 预填靠它, 预览是截断的不能用', () => {
+    const withText: TuiTreeEntry[] = [
+      e('a', null, 1),
+      e('b', 'a', 2, 'message/assistant'),
+      { ...e('c', 'b', 3), preview: '截断的预...', text: '截断的预览之外还有一整段原文' },
+    ];
+    const out = rewindTargets(withText, 'c');
+    expect(out[0]?.text).toBe('截断的预览之外还有一整段原文');
+    expect('text' in (rewindTargets(FORKED, 'e')[0] ?? {})).toBe(false); // 没有就不带, 不编 undefined 占位
+  });
+
   test('最近的在前 (叶往根的自然序), 空会话给空表', () => {
     const linear: TuiTreeEntry[] = [
       e('a', null, 1),

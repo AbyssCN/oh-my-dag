@@ -23,7 +23,7 @@ import { logger } from '../logger';
 import type { OmdSessionStore } from '../harness/chat/session-store';
 import type { AnyOmdTool } from '../harness/agent-tools';
 import { type ChatTurnOpts, runChatTurn } from '../harness/chat/agent';
-import { type BranchSummaryCallModel, entryKind, entryPreview, planBranchNavigation } from '../harness/chat/branch-summary';
+import { type BranchSummaryCallModel, entryKind, entryPreview, entryUserText, planBranchNavigation } from '../harness/chat/branch-summary';
 import { type CompactionCallModel, compactChatMessages } from '../harness/chat/compaction';
 import type { OmdBackend, OmdTuiEvent, TuiSessionMeta, TuiTreeEntry } from './backend';
 
@@ -338,13 +338,17 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
       const entries = await session.allEntries();
       return {
         leafId: await session.leafId(),
-        entries: entries.map((e) => ({
-          id: e.id,
-          parentId: e.parentId,
-          seq: e.seq,
-          kind: entryKind(e),
-          preview: entryPreview(e),
-        })),
+        entries: entries.map((e) => {
+          const text = entryUserText(e);
+          return {
+            id: e.id,
+            parentId: e.parentId,
+            seq: e.seq,
+            kind: entryKind(e),
+            preview: entryPreview(e),
+            ...(text !== undefined ? { text } : {}),
+          };
+        }),
       };
     },
 
