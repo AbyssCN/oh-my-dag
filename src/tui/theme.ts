@@ -83,6 +83,14 @@ export interface OmdTuiTheme {
     user: (t: string) => string;
     /** 字标 / 标题 —— 整屏最亮的一处。 */
     brand: (t: string) => string;
+    /** 读类工具(read/grep/find) —— 蓝。 */
+    toolRead: (t: string) => string;
+    /** 写类工具(write/edit/bash) —— 黄。 */
+    toolWrite: (t: string) => string;
+    /** 工具成功 —— 亮绿(留给"真的成功",不再兼职"用户说的话")。 */
+    toolOk: (t: string) => string;
+    /** 工具失败 —— 亮红。 */
+    toolFail: (t: string) => string;
   };
 }
 
@@ -106,6 +114,15 @@ export function createTheme(opts: { color?: boolean; truecolor?: boolean } = {})
   const user = c('96', MOCHA.sky);
   /** 字标 / 标题:亮蓝加粗,整屏最亮的一处 —— 首屏第一眼该落在这儿。 */
   const brand = c('1;94', MOCHA.blue);
+  /**
+   * 工具行配色三态 + 成功/失败:读=蓝、写=黄、OK=亮绿、Fail=亮红。
+   * 命名与契约文本逐字一致(`toolRead` / `toolWrite` / `toolOk` / `toolFail`)。
+   * 关色下 `c()` 返回 identity → 零 ANSI(与硬约束"createTheme({color:false}) 不发转义"一致)。
+   */
+  const toolRead = c('94', MOCHA.blue);
+  const toolWrite = c('33', MOCHA.yellow);
+  const toolOk = c('92', MOCHA.green);
+  const toolFail = c('91', MOCHA.red);
 
   const theme: OmdTuiTheme = {
     markdown: {
@@ -148,7 +165,7 @@ export function createTheme(opts: { color?: boolean; truecolor?: boolean } = {})
       cursor: `${accent('→')} `,
       hint: dim,
     },
-    chrome: { dim, accent, warn, user, brand },
+    chrome: { dim, accent, warn, user, brand, toolRead, toolWrite, toolOk, toolFail },
   };
   // S7: 代码高亮挂在 theme 上 —— 组件不认识 highlight 这回事, 换主题即换高亮配色。
   // 后挂是因为 highlightCode 要拿到 chrome 那几档语义色, 而它们就在这个对象里。

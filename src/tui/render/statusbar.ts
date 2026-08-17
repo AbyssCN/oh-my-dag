@@ -58,7 +58,8 @@ export interface StatusBarInput {
   win: WindowSummary | null;
 }
 
-const SEP = ` ${BORDER.v} `;
+/** 行①的段间分隔符。接线层拼「活仪表」时也要用它 —— 两处各写一遍必漂。 */
+export const FOOTER_SEP = ` ${BORDER.v} `;
 
 /** `$0.83` / `$12.4`;未计价的调用在场时 → `$…+`(后缀 + = 下界,不冒充真值;`≥` 是未量字形不能用)。 */
 export function fmtUsd(costUsd: number, unpriced: boolean): string {
@@ -150,7 +151,7 @@ export function formatStatusLine(i: StatusBarInput, o: StatusBarOpts = {}): stri
   }
   const tail = [o.ssh ? `ssh ${o.ssh}` : null, o.tmux ? 'tmux' : null].filter(Boolean);
   if (tail.length > 0) segs.push(tail.join(' '));
-  return segs.join(SEP);
+  return segs.join(FOOTER_SEP);
 }
 
 /** 底栏一行的可选上下文(计价口径 / 远程环境)。 */
@@ -176,3 +177,51 @@ export function countTokens(line: string): number {
     .filter((x) => x !== '').length;
 }
 
+/**
+ * ★ **底栏活仪表**(SDD V3 切片②)—— 行①尾部追加的三格:
+ * `ctx <进度> <pct>% · <n>t/s · cache <pct>%`。
+ *
+ * 与 {@link formatStatusLine} 同一条纪律(段模型):**没数据的格整格不画** ——
+ * 不画 0、不画占位符、不留孤立分隔符(I2:NULL ≠ 0)。返回单行字符串,
+ * 行数由调用方的 `StatusLine` 保证不增(I3)。
+ *
+ * ⚠ 进度条用 ASCII `#-`,不是 `render/bar.ts` 的 `█░`:那两个字形量过一次真终端,
+ * 而这一格要在**任意**终端里与右边的百分比对齐,ASCII 是唯一不用赌的一档(I4)。
+ * ⚠ 函数**不碰时钟**:`tps` 由接线层用注入的 `now()` 算好送来(I6)。
+ */
+const GAUGE_SEP = ' · ';
+const GAUGE_WIDTH = 10;
+
+/** 活仪表要的 usage 子集(`ModelUsage` 的 in/out/cacheHit 在接线层折过来)。 */
+export interface StatusGaugeUsage {
+  /** 本轮 completion token 数。 */
+  completionTokens: number;
+  /** 命中 prompt-cache 的 token 数 —— cache% 的分子。 */
+  cacheRead: number;
+  /** 未命中的 token 数;与 `cacheRead` 合计作 cache% 的分母。 */
+  uncached: number;
+}
+
+export interface StatusGaugeInput {
+  /** `null` = 还没跑过一轮 ⇒ **三格整体缺席**(仪表整块是"这一轮的读数")。 */
+  usage: StatusGaugeUsage | null;
+  /** 只看 `ratio`;`null`(含窗口未知)⇒ ctx 格缺席。 */
+  pressure: { ratio: number } | null;
+  /** 由接线层用注入的 `now()` 算好;`null` = 无上一轮值 ⇒ t/s 格缺席。 */
+  tps: number | null;
+}
+
+export function formatStatusGauge(i: StatusGaugeInput): string {
+  if (i.usage === null) return '';
+  const segs: string[] = [];
+  if (i.pressure !== null) {
+    const done = Math.min(GAUGE_WIDTH, Math.max(0, Math.round(i.pressure.ratio * GAUGE_WIDTH)));
+    const bar = `${'#'.repeat(done)}${'-'.repeat(GAUGE_WIDTH - done)}`;
+    segs.push(`ctx ${bar} ${Math.round(i.pressure.ratio * 100)}%`);
+  }
+  // `fmtUsd` 同款口径:小数只在读起来有意义的量级留 —— 0.4t/s 画成 `0t/s` 就是编的 0。
+  if (i.tps !== null) segs.push(`${i.tps < 10 ? i.tps.toFixed(1) : String(Math.round(i.tps))}t/s`);
+  const cacheTotal = i.usage.cacheRead + i.usage.uncached;
+  if (cacheTotal > 0) segs.push(`cache ${Math.round((i.usage.cacheRead / cacheTotal) * 100)}%`);
+  return segs.join(GAUGE_SEP);
+}

@@ -19,8 +19,8 @@
  * 64 个 token 变成 64 条记录 —— 屏幕上看着像在动,其实是错的。判据就是
  * "整段文本恰好出现一次"(`chat-log.test.ts`)。
  */
-import { type Component, Markdown, Text, visibleWidth } from '@earendil-works/pi-tui';
-import { rule } from '../design/tokens';
+import { type Component, Box, Markdown, Text, visibleWidth } from '@earendil-works/pi-tui';
+import { card, rule } from '../design/tokens';
 import type { OmdTuiTheme } from '../theme';
 
 export type ChatRole = 'user' | 'assistant' | 'thinking' | 'notice' | 'tool' | 'divider';
@@ -45,6 +45,10 @@ interface Entry {
   toolKey?: string;
   /** 工具行不含标记的正文(`read config.txt`)。end 复用它, 免得把参数擦掉。 */
   toolText?: string;
+  /** toolStart 的 now() —— toolEnd 算耗时秒的左端(契约 I6)。 */
+  toolStartMs?: number;
+  /** 工具名上色函数 —— toolEnd/toolUpdate 沿用 start 那次, 名字换了颜色不漂。 */
+  toolColor?: (t: string) => string;
   /** assistant 用 Markdown,其余用 Text —— 两者都实现 `Component`。 */
   component: Component;
   /** 流式累积缓冲;只有 assistant 用得上。 */
@@ -64,6 +68,12 @@ function plainText(content: unknown): string | null {
     .trim();
   return t || null;
 }
+/**
+ * 工具名 → 颜色分类(契约逐字):`read grep find` 蓝、`write edit bash` 黄。
+ * 未在表里的工具默认蓝 — 读类默认比"任意猜"诚实,工具卡也是这套色。
+ */
+const READ_TOOLS = new Set(['read', 'grep', 'find']);
+const WRITE_TOOLS = new Set(['write', 'edit', 'bash']);
 
 /**
  * 角色前缀。字形全在 S6 白名单里(`✓ ✗ ·` 由 2026-08-07 的真终端读数解锁)。
@@ -108,12 +118,16 @@ export class ChatLog implements Component {
   private entries: Entry[] = [];
   /** 思维链展开态。默认展开 —— owner 2026-08-13 点名"思维链也看不到", 默认收起会复发同一条。 */
   private thinkingExpanded = true;
+  /** 关色下 `chrome.dim` 是 identity(0 字节);开色下是 ANSI 包裹(非 0)。契约冻结用同一闸。 */
+  private readonly colorOn: boolean;
 
   /** 时钟从外面给 —— 时间戳要可测, 不能靠在测试里 sleep 出一个不确定的读数。 */
   constructor(
     private theme: OmdTuiTheme,
     private now: () => number = Date.now,
-  ) {}
+  ) {
+    this.colorOn = theme.chrome.dim('') !== '';
+  }
 
   /** @returns 条目数 —— 测试用它区分"追加进同一条"与"新开一条"。 */
   get length(): number {
@@ -152,11 +166,24 @@ export class ChatLog implements Component {
   toolStart(name: string, opts: ToolLineOpts = {}): void {
     this.closeStreaming();
     const text = opts.detail ? `${name} ${opts.detail}` : name;
+    const startMs = this.now();
+    const colorFn = READ_TOOLS.has(name)
+      ? this.theme.chrome.toolRead
+      : WRITE_TOOLS.has(name)
+        ? this.theme.chrome.toolWrite
+        : this.theme.chrome.toolRead;
+    /**
+     * 标记 `dim` + 名字 `toolRead/toolWrite` —— **关色下两路都是 identity**,
+     * 拼出来的串与旧 `chrome.dim(\`· ${text}\`)` 逐字同 (I1)。
+     */
+    const painted = `${this.theme.chrome.dim(`${TOOL_MARK.running} `)}${colorFn(text)}`;
     this.entries.push({
       role: 'tool',
       toolKey: opts.id ?? name,
       toolText: text,
-      component: new Text(this.theme.chrome.dim(`${TOOL_MARK.running} ${text}`)),
+      toolStartMs: startMs,
+      toolColor: colorFn,
+      component: new Text(painted),
       buffer: text,
       open: false,
     });
@@ -182,7 +209,17 @@ export class ChatLog implements Component {
     if (!hit) return;
     const tail = opts.tail?.trim() ? ` · ${opts.tail.trim()}` : '';
     const progress = `${opts.lines} line${opts.lines === 1 ? '' : 's'}${tail}`;
-    (hit.component as Text).setText(this.theme.chrome.dim(`${TOOL_MARK.running} ${hit.toolText ?? name} → ${progress}`));
+    const body = hit.toolText ?? name;
+    const colorFn = hit.toolColor
+      ?? (READ_TOOLS.has(name)
+        ? this.theme.chrome.toolRead
+        : WRITE_TOOLS.has(name)
+          ? this.theme.chrome.toolWrite
+          : this.theme.chrome.toolRead);
+    const rest = `${body} → ${progress}`;
+    /** 同 toolStart:标记 dim, 名字上色。关色下逐字同旧 `chrome.dim(\`· ${body} → ${progress}\`)`。 */
+    const painted = `${this.theme.chrome.dim(`${TOOL_MARK.running} `)}${colorFn(rest)}`;
+    (hit.component as Text).setText(painted);
   }
 
   /**
@@ -198,18 +235,38 @@ export class ChatLog implements Component {
     const hit = [...this.entries].reverse().find((e) => e.role === 'tool' && e.toolKey === key);
     // 参数那半句以 start 那一行为准 —— end 事件不带 args, 拿不到就别把已经画对的擦掉。
     const body = hit?.toolText ?? (opts.detail ? `${name} ${opts.detail}` : name);
+    const colorFn = hit?.toolColor
+      ?? (READ_TOOLS.has(name)
+        ? this.theme.chrome.toolRead
+        : WRITE_TOOLS.has(name)
+          ? this.theme.chrome.toolWrite
+          : this.theme.chrome.toolRead);
     /**
-     * 结果那半句(2026-08-13)。用 `→` 与参数分开 —— 「搜什么」与「搜到什么」是两件事,
-     * 中间没有分隔的话 `grep foo in src/ 8 in 3 files` 读起来是一串数字。
-     * ⚠ 挑不出结果就**什么都不加**,不画一个 `→ ?` 占位(空着至少诚实)。
+     * 耗时秒(契约 I6):`toolEnd` 的 now() 减 `toolStart` 的 now()。
+     * **≤ 1s 一字不加** —— 显式门控,不是靠 fmt 短路;持续几百毫秒就跑出 `0.5s` 没意义。
      */
-    const text = opts.result ? `${mark} ${body} → ${opts.result}` : `${mark} ${body}`;
-    const paint = (t: string) => (ok ? this.theme.chrome.dim(t) : this.theme.chrome.warn(t));
+    const dur = hit?.toolStartMs !== undefined ? this.now() - hit.toolStartMs : 0;
+    const suffix = dur > 1000 ? ` ${(dur / 1000).toFixed(1)}s` : '';
+    const rest = opts.result ? `${body} → ${opts.result}${suffix}` : `${body}${suffix}`;
+    /**
+     * 标记 `toolOk/toolFail` + 名字 `toolRead/toolWrite` —— **关色下两路都是 identity**,
+     * 拼出来的串与旧 `chrome.dim(text)` / `chrome.warn(text)` 逐字同 (I1)。
+     */
+    const markColor = ok ? this.theme.chrome.toolOk : this.theme.chrome.toolFail;
+    const painted = `${markColor(`${mark} `)}${colorFn(rest)}`;
     if (hit) {
-      (hit.component as Text).setText(paint(text));
+      (hit.component as Text).setText(painted);
       return;
     }
-    this.entries.push({ role: 'tool', toolKey: key, toolText: body, component: new Text(paint(text)), buffer: body, open: false });
+    this.entries.push({
+      role: 'tool',
+      toolKey: key,
+      toolText: body,
+      toolColor: colorFn,
+      component: new Text(painted),
+      buffer: body,
+      open: false,
+    });
   }
 
   /**
@@ -356,23 +413,65 @@ export class ChatLog implements Component {
   }
 
   render(width: number): string[] {
-    // 条目之间空一行:没有分隔的话两条消息读起来是一段。
-    // ⚠ 例外:**连续的工具行不空行** —— 一串工具本来就是一组,每行之间插空会把它们
-    //   拆成看起来互不相关的十件事。首条前面也不空。
-    return this.entries.flatMap((e, i) => {
-      const prev = this.entries[i - 1];
-      // 连续工具行不空行(一串工具是一组);分界线与紧随的 user 之间也不空 ——
-      // 空了的话分界线看起来像是属于上一轮的尾巴, 而它标的是下一轮的头。
-      const glued = (e.role === 'tool' && prev?.role === 'tool') || (e.role === 'user' && prev?.role === 'divider');
-      const gap = i > 0 && !glued;
-      // 折叠态的思维链**一条一行**:行数照报且流式中还在涨 —— "收起"不许变成"看不出它在想"。
-      // 字形全在白名单内('·' 由 TOOL_MARK.running 早已解锁, 其余 ASCII)。
-      const lines =
-        e.role === 'thinking' && !this.thinkingExpanded
-          ? [this.theme.chrome.dim(`· thinking (${e.buffer.split('\n').length} lines) - Ctrl+O expands`)]
-          : e.component.render(width);
-      return gap ? ['', ...lines] : lines;
-    });
+    const out: string[] = [];
+    let i = 0;
+    while (i < this.entries.length) {
+      const e = this.entries[i];
+      if (!e) {
+        i++;
+        continue;
+      }
+      // 找末尾:连续工具行组的右端。单条 tool 不进 Box。
+      let j = i;
+      while (j < this.entries.length) {
+        const cur = this.entries[j];
+        if (!cur || cur.role !== 'tool') break;
+        j++;
+      }
+      const groupSize = j - i;
+      if (groupSize >= 2 && this.colorOn) {
+        /**
+         * ★ 工具卡(I3):连续工具行组画进 pi-tui 现成的 Box, 卡界用既有空行位画 ——
+         * Box `paddingX=1, paddingY=0` 不新增行, 单条工具行=Text 默认 padding=3 行不变。
+         * 卡顶/卡底用 `card.top/bottom` 画 — 边框字形是 token 的事,不在组件里再开第二源。
+         */
+        const box = new Box(1, 0);
+        for (let k = i; k < j; k++) {
+          const entry = this.entries[k];
+          if (entry) box.addChild(entry.component);
+        }
+        const lines = box.render(width);
+        const top = this.theme.chrome.dim(card.top('', width, 0));
+        const bot = this.theme.chrome.dim(card.bottom(width));
+        if (lines.length > 0) {
+          lines[0] = top;
+          lines[lines.length - 1] = bot;
+        } else {
+          lines.push(top, bot);
+        }
+        // 连续工具行不空行(一串工具是一组);分界线与紧随的 user 之间也不空 ——
+        // 空了的话分界线看起来像是属于上一轮的尾巴, 而它标的是下一轮的头。
+        const prev = i > 0 ? this.entries[i - 1] : undefined;
+        const gap = i > 0 && prev?.role !== 'tool';
+        if (gap) out.push('');
+        out.push(...lines);
+        i = j;
+      } else {
+        const prev = i > 0 ? this.entries[i - 1] : undefined;
+        const glued = (e.role === 'tool' && prev?.role === 'tool') || (e.role === 'user' && prev?.role === 'divider');
+        const gap = i > 0 && !glued;
+        // 折叠态的思维链**一条一行**:行数照报且流式中还在涨 —— "收起"不许变成"看不出它在想"。
+        // 字形全在白名单内('·' 由 TOOL_MARK.running 早已解锁, 其余 ASCII)。
+        const lines =
+          e.role === 'thinking' && !this.thinkingExpanded
+            ? [this.theme.chrome.dim(`· thinking (${e.buffer.split('\n').length} lines) - Ctrl+O expands`)]
+            : e.component.render(width);
+        if (gap) out.push('');
+        out.push(...lines);
+        i++;
+      }
+    }
+    return out;
   }
 
   invalidate(): void {

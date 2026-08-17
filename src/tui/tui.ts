@@ -61,7 +61,7 @@ import { THINKING_LEVELS, loadTuiUiConfig, setTuiUi, type ThinkingLevelName } fr
 import { renderLogo } from './render/logo';
 import { summarizeToolArg } from './render/tool-arg';
 import { summarizeToolResult } from './render/tool-result';
-import { fmtUsd, formatStatusLine } from './render/statusbar';
+import { FOOTER_SEP, fmtUsd, formatStatusGauge, formatStatusLine } from './render/statusbar';
 import { humanTokens } from './render/pressure';
 import { formatStatus } from './status';
 import type { ExtReloadResult } from './ext/session';
@@ -414,6 +414,20 @@ export function withLeftGutter(root: Component, cols: number = GUTTER_COLS): Com
   shell.addChild(new Spacer(1), { basis: cols, shrink: 0 });
   shell.addChild(root, { grow: 1, shrink: 1, minSize: 10 });
   return shell;
+}
+
+/**
+ * ★ 一轮的 t/s(切片②)。分子 = 本轮 completion tokens,分母 = 流式墙钟秒。
+ *
+ * 时钟**从外面给**(I6:`runOmdTui` 里注入的 `now()`)—— 自己摸 `Date.now` 的函数测不动。
+ * 算不出来时给 `null` 不给 0(I2:没读数 ≠ 0 t/s):还没跑过一轮(`startedAt === 0`)、
+ * 墙钟非正(时钟回拨 / 同毫秒收尾)、一个 token 都没出,都是"这一格没有数据"。
+ */
+export function computeTps(completionTokens: number, startedAt: number, endedAt: number): number | null {
+  if (startedAt <= 0 || completionTokens <= 0) return null;
+  const seconds = (endedAt - startedAt) / 1000;
+  if (seconds <= 0) return null;
+  return completionTokens / seconds;
 }
 
 export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
@@ -828,20 +842,40 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     const win = opts.usage?.window() ?? null;
     const session = opts.usage?.sessionTotal() ?? null;
     // 底栏一行:ssh/tmux 与计价口径一起交给它(原来那是第二行的活)。
-    statusLine.setText(
-      formatStatusLine({
+    const line = formatStatusLine(
+      {
         ws,
         seat: opts.backend.connection.url.replace(/^embedded:\/\//, ''),
         pressure: lastPressure,
         session: session && session.calls > 0 ? session : null,
         win,
-      }, { ssh: sshHost, tmux }),
+      },
+      { ssh: sshHost, tmux },
     );
+    // 活仪表(切片②)追加在行①尾部。还没跑过一轮 ⇒ 没有 usage ⇒ 整块缺席,
+    // 那时这一行与仪表落地前**逐字相同**(I1)。
+    const gauge = formatStatusGauge({
+      usage:
+        lastUsage === null
+          ? null
+          : {
+              completionTokens: lastUsage.out,
+              cacheRead: lastUsage.cacheHit ?? 0,
+              uncached: Math.max(0, lastUsage.in - (lastUsage.cacheHit ?? 0)),
+            },
+      pressure: lastPressure !== null && lastPressure.ratio !== null ? { ratio: lastPressure.ratio } : null,
+      tps: lastTps,
+    });
+    statusLine.setText(gauge === '' ? line : `${line}${FOOTER_SEP}${gauge}`);
   }
   /** 已唤起、等着挂到下一句上的 skill 正文。**用完即清** —— 一条 skill 只管一轮。 */
   let pendingSkill: string | null = null;
   /** 最近一轮的上下文压力 —— 设置面板要显示它。`null` = 还没跑过一轮(**不是 0**)。 */
   let lastPressure: import('../harness/chat/usage').ContextPressure | null = null;
+  /** 最近一轮的 token 读数 —— 活仪表的 cache% 分子分母。`null` = 还没跑过一轮(整块缺席)。 */
+  let lastUsage: import('../model/types').ModelUsage | null = null;
+  /** 最近一轮的 t/s。轮间屏上显示的就是这个上一轮值;`null` = 还没算出过(那一格缺席)。 */
+  let lastTps: number | null = null;
   // `turnInFlight` 的声明在等待指示器那一段(root 装配之前,TDZ)—— 2026-08-11 与
   // `waitingOn` 合并:指示器活满整轮之后,两者就是同一件事。
   /**
@@ -929,12 +963,12 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     // 不回的话第二轮的头一秒还挂着上一轮的秒数。
     turnInFlight = true;
     abortRequested = false;
-    turnStartedAt = Date.now();
+    turnStartedAt = now();
     waiting.setMessage(CHROME.waiting);
     waiting.start();
     waitTicker = setInterval(() => {
       // 对话框开着时在等的是人不是模型 —— 不改文案不触发重绘(loader 那侧 dialogs.open 已停)。
-      if (!dialogs.busy) waiting.setMessage(CHROME.waitingElapsed(Math.floor((Date.now() - turnStartedAt) / 1000)));
+      if (!dialogs.busy) waiting.setMessage(CHROME.waitingElapsed(Math.floor((now() - turnStartedAt) / 1000)));
     }, 1000);
     tui.requestRender();
     try {
@@ -1046,6 +1080,12 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       chatLog.closeStreaming();
       const p = e.payload as { pressure?: import('../harness/chat/usage').ContextPressure; usage?: import('../model/types').ModelUsage };
       lastPressure = p?.pressure ?? lastPressure;
+      // 切片②: 本轮 t/s —— 墙钟用既有 turnStartedAt 与注入的 now()(I6)。
+      // 算不出来就留上一轮的值,不退回 0(I2)。
+      if (p?.usage) {
+        lastUsage = p.usage;
+        lastTps = computeTps(p.usage.out, turnStartedAt, now()) ?? lastTps;
+      }
       // 切片②: 一轮跑完 → 底栏行①②重取数 (账本刚被 backend 记过, git 可能被这一轮改过)。
       updateStatusBar({ refreshGit: true });
       // 一轮跑完可能动过地图 (conductor 有 map_* 工具) → 重读一次。
