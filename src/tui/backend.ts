@@ -96,6 +96,11 @@ export interface OmdBackend {
   branchTo?(o: { sessionId: string; entryId: string }): Promise<{ ok: boolean; text: string; summarized: boolean }>;
   /** 跨会话全文搜索(只读)。命中带会话 id + 片段;无命中 = 空表,不是错误。 */
   searchSessions?(o: { text: string }): Promise<{ hits: { sessionId: string; entryId: string; snippet?: string }[] }>;
+  /**
+   * 往会话追加一条 user 角色的上下文条目(`!` bash 直通的输出走这里)。
+   * 会话不存在就建 —— "还没说过话就先跑了条命令"是合法起手。
+   */
+  appendContext?(o: { sessionId: string; text: string }): Promise<{ ok: boolean }>;
 }
 
 /**

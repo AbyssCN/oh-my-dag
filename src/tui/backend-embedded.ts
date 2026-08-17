@@ -382,6 +382,13 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
       return { hits: await deps.store.search(text) };
     },
 
+    // ── `!` bash 直通的落账半: 输出以 user 条目进会话, 下一轮投影自然带上。 ──
+    async appendContext({ sessionId, text }: { sessionId: string; text: string }) {
+      const s = (await deps.store.open(sessionId)) ?? (await deps.store.create(sessionId));
+      await s.append({ role: 'user', content: [{ type: 'text', text }], timestamp: Date.now() } as AgentMessage);
+      return { ok: true };
+    },
+
     // 切片⑦: fork 直调 store (显式动作, 立刻建文件)。错误转成 ok:false + 原因原文 ——
     // "为什么 fork 不了"这个问题必须答得出来 (源没写过盘 / id 冲突是两个不同的答案)。
     async forkSession({ fromId, newId }): Promise<{ ok: boolean; text: string }> {

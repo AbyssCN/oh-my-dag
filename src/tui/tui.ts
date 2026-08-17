@@ -52,6 +52,7 @@ import { SPINNER_FRAMES } from './design/tokens';
 import { installOmdKeybindings } from './keys';
 import { buildSettings, parseSettingsCommand } from './settings';
 import { STARTUP_HINT, formatHelp, parseHelpCommand, parseSearchCommand, slashCommands } from './commands';
+import { formatBangEntry, parseBang } from './bang';
 import { MANUAL_COORD, choiceLabel, listModelChoices, parseModelsCommand, sortChoices } from './model-picker';
 import { buildTreeRows, formatTree, parseTreeCommand, rewindTargets, treeLabel } from './tree-picker';
 import { createOmdAutocompleteProvider } from './skill-complete';
@@ -253,6 +254,9 @@ export const CHROME = {
   // ── `/search`(2026-08-17): 跨会话全文搜索的三句回执。 ──
   searchUsage: () => 'Usage: /search <text> - full-text search across all sessions',
   searchNone: (q: string) => `No hits for "${q}" in any session`,
+  // ── `!` bash 直通(2026-08-17): 本地跑命令, 输出进上下文。 ──
+  bangUsage: () => 'Usage: !<command> - runs locally in the repo; the output joins the session context',
+  bangBusy: () => 'A turn is in flight - run local commands after it finishes (Esc interrupts)',
   logoutCancelled: () => 'logout cancelled, nothing removed',
   logoutClaude: () => 'claude-code uses the Claude CLI subscription - run `claude logout` in a terminal; omd does not touch its credentials.',
   logoutDone: (provider: string, removed: { file: string; key: string }[], warnings: string[]) =>
@@ -1487,6 +1491,51 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   }
 
   /**
+   * `!cmd` —— 本地跑命令,输出进上下文(pi / claude code / dsh 同款)。
+   *
+   * - 跑在 `opts.cwd`,bash -c,120s 超时;信任模型同用户自己的终端(命令是人打的)。
+   * - **在飞时拒绝**:命令输出与流式回复抢会话写序,谁先落说不清。
+   * - 屏与账**同一份文本**(`formatBangEntry`):屏上截显示、账上截 `BANG_OUTPUT_CAP` ——
+   *   两边各拼一份就是 S-1 那一族。
+   */
+  async function handleBang(cmd: string): Promise<void> {
+    chatLog.appendUser(`! ${cmd}`);
+    editor.setText('');
+    editor.addToHistory(`!${cmd}`);
+    tui.requestRender();
+    if (!cmd) {
+      chatLog.appendNotice(CHROME.bangUsage());
+      tui.requestRender();
+      return;
+    }
+    if (turnInFlight) {
+      chatLog.appendNotice(CHROME.bangBusy());
+      tui.requestRender();
+      return;
+    }
+    const { execFile } = require('node:child_process') as typeof import('node:child_process');
+    const { code, out } = await new Promise<{ code: number | null; out: string }>((resolve) => {
+      execFile('bash', ['-c', cmd], { cwd: opts.cwd, timeout: 120_000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+        // err.code: number = 退出码; 其余 (超时/信号) → null, formatBangEntry 印 'signal'。
+        const c = err ? (typeof (err as { code?: unknown }).code === 'number' ? ((err as { code: number }).code) : null) : 0;
+        resolve({ code: c, out: `${stdout ?? ''}${stderr ?? ''}` });
+      });
+    });
+    const entry = formatBangEntry(cmd, code, out);
+    // 屏上最多 1200 字符 —— 全文在会话里, 屏是给人扫的不是给人存档的。
+    chatLog.appendNotice(entry.length > 1200 ? `${entry.slice(0, 1200)}\n[... display truncated; the session keeps the capped text]` : entry);
+    if (opts.backend.appendContext) {
+      try {
+        await opts.backend.appendContext({ sessionId, text: entry });
+      } catch (err) {
+        // 落账失败要响亮: 屏上有、账上没有正是"看起来在动其实没生效"那一族。
+        chatLog.appendNotice(CHROME.failed(err instanceof Error ? err.message : String(err)));
+      }
+    } else chatLog.appendNotice(CHROME.noRunCapability('appendContext'));
+    tui.requestRender();
+  }
+
+  /**
    * `/search <词>` —— 跨会话全文搜索(pi 的扫描式现成件,只读)。
    * 命中选单选中 → 切进那条会话;同一会话的多条命中各占一行(片段不同,读起来不是重复)。
    */
@@ -2054,6 +2103,11 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   editor.onSubmit = (text: string) => {
     const prompt = text.trim();
     if (!prompt) return; // 空回车不算一轮 —— 否则会往会话里塞空消息
+    const bang = parseBang(prompt);
+    if (bang) {
+      void handleBang(bang.cmd);
+      return;
+    }
     if (parseHelpCommand(prompt)) {
       chatLog.appendUser(prompt);
       editor.setText('');
