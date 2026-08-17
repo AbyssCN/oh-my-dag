@@ -91,7 +91,7 @@ function clip(s: string, n = TITLE_MAX): string {
  * 留下的 `not-converged` / `oracle-failed` / `infra-error` / `empty-result` 才是真发现物。
  * ⚠ `success` **刻意不在这张表里** —— 该不该收成票是词表的判断, 这里只管别喂错料。
  */
-const NON_DISCOVERY_OUTCOMES = new Set<RunOutcomeKind>([
+export const NON_DISCOVERY_OUTCOMES = new Set<RunOutcomeKind>([
   'not-needed',
   'missing-capability',
   'blocked',

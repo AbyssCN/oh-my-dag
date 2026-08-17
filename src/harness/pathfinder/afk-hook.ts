@@ -16,9 +16,11 @@ import { existsSync, readFileSync } from 'node:fs';
 import { computeFrontier } from './frontier';
 import { researchResultPath } from './dispatch';
 import { distill, MAX_CHILDREN_PER_TICKET, parseChildren } from './result-format';
+import { NON_DISCOVERY_OUTCOMES } from './run-tickets';
+import type { RunOutcomeKind } from '../run-outcome';
+import type { SuggestionDraft } from './suggest';
 import type { PathBackend } from './backend';
 import type { PathMap, Ticket, WaitingLogEntry } from './types';
-
 // distill / parseChildren 的真身在 result-format.ts (双端共享契约); 这里 re-export 兼容既有 import。
 export { distill, parseChildren } from './result-format';
 
@@ -324,11 +326,24 @@ export interface GoalReflowOutcome {
 }
 
 /**
- * D-G1.5 发现物词表 (第一版规则式, 从 summarizeGoal 的结构化行拿):
- *   ① `阻塞 (需外部输入): X`      → [阻塞] X       (grill: 要人讨论)
- *   ② `预算停: X`                → [预算停] X     (task: 加预算或拆小)
- *   ③ stage 行 `  [<outcome>[/status]] <stage> — <summary>` 且 outcome≠success
- *                                → [未收敛·<stage>] <summary> (task)
+ * D-G1.5 发现物词表 (第一版规则式, 从 summarizeGoal 的结构化行拿):纯函数,
+ * 入参 = 整个结果文件正文 (含 outcome / runId 头也行, 词表不认它, 只扫行)。
+ *   ① `阻塞 (需外部输入): X`      → [阻塞] X                          (grill: 要人讨论)
+ *   ② `预算停: X`                → [预算停] X                        (task: 加预算或拆小)
+ *   ③ 其它 stage 行 (outcome ∉ NON_DISCOVERY_OUTCOMES ∪ {success})
+ *                                → [未收敛·<stage>] <summary>         (task)
+ *
+ * **纯词表, 不挂 resume 锚**: `· resume: dag_goal resume=<runId>` 由 caller
+ * (本模块 `reflowGoalResults.suggestFrom` + run-tickets.collectRunTickets) 在
+ * 提取**之后**统一挂, 保持词表本身的语义稳定。两路挂同一锚 → 同 runId 双向可达
+ * (INV-S1-2 / G-2)。
+ *
+ * **五格 NON_DISCOVERY_OUTCOMES (not-needed / missing-capability / blocked /
+ * budget-exhausted / cancelled) 的过滤不在词表里**:词表只认"是不是成功",不替
+ * caller 决定"这格开不开"。afk-hook 的 `reflowGoalResults` 在拿到 drafts **之后**
+ * 按 stage 行的 outcome 二次过滤 (与 run-tickets 侧的过滤对齐, 契约 (3) 一致);
+ * 老 `阻塞 (需外部输入):` / `预算停:` 行**不**做 title-string 过滤 (那是历史耦合)。
+ *
  * 提取质量由接受率读数说话 (S-1 片 d), 差再上蒸馏档 (spec 未决第 1 条)。
  */
 export function extractGoalDiscoveries(body: string): Array<{ type: 'grill' | 'task'; title: string }> {
@@ -345,9 +360,9 @@ export function extractGoalDiscoveries(body: string): Array<{ type: 'grill' | 't
       continue;
     }
     const stage = line.match(/^\s+\[([a-z-]+)(?:\/[a-z-]+)?\] (\S+) — (.+)$/);
-    if (stage && stage[1] !== 'success') {
-      drafts.push({ type: 'task', title: `[未收敛·${stage[2]}] ${stage[3]!.trim()}` });
-    }
+    if (!stage) continue;
+    if (stage[1] === 'success') continue;
+    drafts.push({ type: 'task', title: `[未收敛·${stage[2]}] ${stage[3]!.trim()}` });
   }
   return drafts;
 }
@@ -380,9 +395,36 @@ export function reflowGoalResults(
   const at = opts.at ?? new Date().toISOString();
   // D-G1.5: 失败面结果 (blocked/resumable) 提取发现物草稿 → suggested 态 (人确认才成真票)。
   // 去重/上限/溯源全部由 applySuggestions 管 (S-1 管线), 这里只做词表提取。
+  // D-G1.5 (refactor 2026-08-17, #134): 失败面结果 → suggested 态。
+  // 词表只产纯草稿 (无 resume 锚); 这里在**提取之后**做两件事:
+  //   (a) 滤掉 stage 行 outcome ∈ NON_DISCOVERY_OUTCOMES 的草稿 (与 run-tickets 侧对齐, 契约 (3))。
+  //       词表产 `[未收敛·<stage>] <summary>` 时已丢原 outcome —— 在这里**重扫 body 一遍**拿
+  //       (stage, summary) 键, 命中 NON_DISCOVERY 的跳过; `阻塞:`/`预算停:` 行不走 stage 模板,
+  //       它们的 `[阻塞] X` / `[预算停] X` 草稿不命中 `[未收敛·...]` 正则, 不会被误滤 (G-2 真信号)。
+  //   (b) 给保留下来的草稿挂 `· resume: dag_goal resume=${runId}` (G-2 把手指 grep),
+  //       runId 用真 runId (从结果文件 head 拿, 不允许 fixture 兜底)。
+  // 去重 / 上限 / 溯源全在 applySuggestions (S-1 管线)。
   const suggestFrom = (body: string, runId: string): string | undefined => {
     if (!backend.suggest) return undefined;
-    const drafts = extractGoalDiscoveries(body).map((d) => ({ ...d, suggestedBy: runId }));
+    if (!runId) return undefined; // 没真 runId = caller 缺陷, 响亮拒 (INV-S1-2 整批前置同款)
+    // 一次扫 body 收集 (stage, summary) → 属 NON_DISCOVERY outcome 的 stage 行键。
+    const skipKeys = new Set<string>();
+    for (const line of body.split('\n')) {
+      const m = line.match(/^\s+\[([a-z-]+)(?:\/[a-z-]+)?\] (\S+) — (.+)$/);
+      if (m && m[1] !== 'success' && NON_DISCOVERY_OUTCOMES.has(m[1] as RunOutcomeKind)) {
+        skipKeys.add(`${m[2]}|${m[3]!.trim()}`);
+      }
+    }
+    const drafts: SuggestionDraft[] = [];
+    for (const d of extractGoalDiscoveries(body)) {
+      const stageM = d.title.match(/^\[未收敛·(\S+)\] (.+)$/);
+      if (stageM && skipKeys.has(`${stageM[1]}|${stageM[2]}`)) continue;
+      drafts.push({
+        type: d.type,
+        title: `${d.title} · resume: dag_goal resume=${runId}`,
+        suggestedBy: runId,
+      });
+    }
     if (drafts.length === 0) return undefined;
     return backend.suggest(cwd, slug, drafts, { at }).summary;
   };

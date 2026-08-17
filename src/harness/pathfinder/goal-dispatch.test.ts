@@ -240,7 +240,8 @@ describe('c3 折入端到端: 发现物入图 suggested 态', () => {
     expect(out[0]!.suggested).toContain('建议入图 1');
     const m = mdBackend(cwd).readMap(cwd, 'm1')!;
     const sugg = m.tickets.find((x) => x.status === 'suggested')!;
-    expect(sugg.title).toBe('[阻塞] 要 owner 给 API key');
+    // 契约 (2): caller (suggestFrom) 统一挂 resume 锚; runId = 结果文件 head.runId = 'run-g9'。
+    expect(sugg.title).toBe('[阻塞] 要 owner 给 API key · resume: dag_goal resume=run-g9');
     expect(sugg.type).toBe('grill');
     expect(sugg.suggestedBy).toBe('run-g9');
     rmSync(cwd, { recursive: true, force: true });
