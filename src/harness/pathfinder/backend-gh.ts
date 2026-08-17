@@ -142,7 +142,12 @@ function parseBlockedBy(body: string): string[] {
 }
 
 /**
- * 评论里的裁决: `**ruling**: <text>` → text, **text 一直取到评论末尾** (取第一条命中)。
+ * 评论里的裁决: `**ruling**: <text>` → text, **text 一直取到评论末尾** (取**最后一条**命中)。
+ *
+ * 取最后一条是 #137 (2026-08-17) 改的: `rule()` 每次**新发**一条评论 (gh 上改不了旧评论),
+ * comments 按时间正序抓 → 重裁同一张票时最后一条才是现行判词。此前取第一条, 而 `ruledAt`
+ * (parseWaitingStamps) 取最后一条的 createdAt —— 同一条记录的两半各指一条评论, 重裁后
+ * 文本是旧的、时间戳是新的, 且两侧都不报错。现在两者指同一条。
  *
  * ⚠ `[\s\S]*` 不是 `.*`: JS 里 `.` 不匹配换行、`$` 在 `/m` 下是行尾, 用 `(.*)` 会把判词
  * 截到第一行。实测代价 (2026-08-12 切 gh 当天): issue #103 评论全长 1850 → 读回 93,
@@ -152,8 +157,8 @@ function parseBlockedBy(body: string): string[] {
  * 整段闸在 `backend-gh-ruling-parse.test.ts`。
  */
 export function parseRuling(comments: Array<{ body: string }>): string | undefined {
-  for (const c of comments) {
-    const mm = c.body.match(/^\*\*ruling\*\*:\s*([\s\S]*)$/m);
+  for (let i = comments.length - 1; i >= 0; i--) {
+    const mm = comments[i]!.body.match(/^\*\*ruling\*\*:\s*([\s\S]*)$/m);
     if (mm) return mm[1]!.trim();
   }
   return undefined;
@@ -175,6 +180,25 @@ export function baseStatus(state: string, labels: string[]): TicketStatus {
 function parseAnchor(body: string, key: string): string | undefined {
   const mm = body.match(new RegExp(`^${key}:\\s*(.+)$`, 'm'));
   return mm ? mm[1]!.trim() : undefined;
+}
+
+/**
+ * 评论流里**最新一条**锚 (#136): retitle 的标题锚走追加评论 (gh 上改正文 = 读-改-写整段,
+ * 正是 1890115 事故的形状; 评论 append-only 零 RMW)。取最新与「评论事件戳盖过出生正文锚」
+ * (D-5 三戳) 及 parseRuling (#137) 同一个次序纪律。
+ */
+function latestCommentAnchor(comments: Array<{ body: string }>, key: string): string | undefined {
+  for (let i = comments.length - 1; i >= 0; i--) {
+    const v = parseAnchor(comments[i]!.body, key);
+    if (v !== undefined) return v;
+  }
+  return undefined;
+}
+
+/** #136: 三条写题路 (addTicket / suggest / confirmSuggestion retitle) 共用的截断 —— 一处实现, 三处同兜。 */
+function fitTitle(full: string): { display: string; overlong: boolean } {
+  const overlong = full.length > GH_TITLE_MAX;
+  return { display: overlong ? `${full.slice(0, GH_TITLE_MAX - 1)}…` : full, overlong };
 }
 
 /** 评论里的 S-1 台账行 `**suggestion-log**: <outcome> <at> <runId>` (一票可多行, 按序收)。 */
@@ -209,7 +233,7 @@ function escalatedCommentBody(atIso: string): string {
  *    (= 纯核 `markWaitingHuman` 的 delete staleAt; gh 上删不掉旧评论, 靠重放顺序等价实现)。
  *  - `**stale-at**: <iso>`      → 本轮已提醒过 (幂等键, 由 notify-gh 写)。
  *  - `**ruling**: …` 评论的 `createdAt` → ruledAt (最后一条为准: "最近一次裁决被记下的时刻";
- *    `parseRuling` 取第一条是取**判词文本**, 两者要的不是同一条, 别合并)。
+ *    #137 后 `parseRuling` 也取最后一条 —— 判词文本与时间戳指**同一条**评论, 重裁不再各说各话)。
  *    响应没给 createdAt (老 fixture / 精简查询) → ruledAt 缺席 = **没记上**, 不编时间 (NULL≠0)。
  */
 function parseWaitingStamps(comments: Array<{ body: string; createdAt?: string }>): Pick<Ticket, 'waitingSince' | 'ruledAt' | 'staleAt'> {
@@ -441,7 +465,8 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false, notify: Waitin
       const { type, title } = parseTicketTitle(sub.title, labels);
       const body = sub.body ?? '';
       // 超长票的全文标题锚 (见 addTicket 处注记): 有锚就以锚为准, issue title 只是被截断的显示名。
-      const fullTitle = parseAnchor(body, 'Origin-title') ?? title;
+      // #136: retitle 的锚走追加评论, 最新评论锚 > 出生正文锚 (次序同 D-5 三戳)。
+      const fullTitle = latestCommentAnchor(sub.comments.nodes, 'Origin-title') ?? parseAnchor(body, 'Origin-title') ?? title;
       // escalated 也读判词 (2026-08-12): types.ts:49 明写「票可被裁过又重新升人, escalate **不清**
       // ruling」—— 本仓真有这张 (proto-cube-sandbox-leaf, 判词 1108 字后升人)。漏掉这一档 = 升一次人
       // 就把判词读没了, 而 md 侧留着 ⇒ 同一张票两个后端读出两个内容。open/blocked/suggested 仍不读:
@@ -524,15 +549,14 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false, notify: Waitin
       // gh issue title 硬上限 256 字 (GraphQL `Title is too long`), 而票的 title 是**不限长的自由文本**
       // —— 本仓真有一张 1600 字的 grill 票 (整篇分析写在标题里)。超长 → issue title 截断作显示名,
       // 全文落 `Origin-title` 锚, readMap 优先读锚 ⇒ **往返无损**, 截断只影响 gh 网页上的那一行。
-      const fullTitle = `[${nt.type}] ${nt.title}`;
-      const overlong = fullTitle.length > GH_TITLE_MAX;
-      if (overlong) bodyLines.push(`Origin-title: ${nt.title}`);
+      const fit = fitTitle(`[${nt.type}] ${nt.title}`);
+      if (fit.overlong) bodyLines.push(`Origin-title: ${nt.title}`);
       // legacy 策略: blockedBy 落 body 尾行 (单真相)。native 策略: body 绝不写尾行, 前置边走原生 REST (见下)。
       if (!nativeDeps && nt.blockedBy.length > 0) bodyLines.push(`Blocked-by: ${nt.blockedBy.join(', ')}`);
       const body = bodyLines.join('\n\n');
       // sub-issue 挂接 (归属血缘, D-G): parentId 给则挂母票, 否则挂地图。
       const number = createTicketIssue({
-        title: overlong ? `${fullTitle.slice(0, GH_TITLE_MAX - 1)}…` : fullTitle,
+        title: fit.display,
         labels: [`path:${nt.type}`],
         body,
         parent: nt.parentId ?? slug,
@@ -580,8 +604,12 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false, notify: Waitin
         // 等人确认, 没这一戳它的等待读数恒为 waiting-unknown-since, 超时永不触发 (切片 6 的 md 教训)。
         if (t.waitingSince) bodyLines.push(`Waiting-since: ${t.waitingSince}`);
         if (!nativeDeps && t.blockedBy.length > 0) bodyLines.push(`Blocked-by: ${t.blockedBy.join(', ')}`);
+        // #136 路②: 机器建议票的标题同样不限长 (afk-hook 生成), 与 addTicket 同兜 —— 此前裸传,
+        // 超 256 直接抛, 整批 suggest 断在半路。
+        const fit = fitTitle(`[${t.type}] ${t.title}`);
+        if (fit.overlong) bodyLines.push(`Origin-title: ${t.title}`);
         const number = createTicketIssue({
-          title: `[${t.type}] ${t.title}`,
+          title: fit.display,
           labels: [`path:${t.type}`, SUGGESTED_LABEL],
           body: bodyLines.join('\n\n'),
           parent: slug,
@@ -612,7 +640,12 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false, notify: Waitin
         run(gh, ['issue', 'close', n], 'confirmSuggestion:close');
       } else {
         if (entry.outcome === 'edited') {
-          run(gh, ['issue', 'edit', n, '--title', `[${before!.type}] ${opts.title!}`], 'confirmSuggestion:retitle');
+          // #136 路③: 改题同兜 256。标题锚走**追加评论**而不是改正文 —— 改正文 = 读-改-写整段
+          // (1890115 事故的形状, 手写字段静默丢); 且不只超长时发: 出生若截断过, 正文里的旧
+          // Origin-title 锚还在, 不盖会赢过新题 (readMap 次序: 评论锚 > 正文锚 > issue title)。
+          const fit = fitTitle(`[${before!.type}] ${opts.title!}`);
+          run(gh, ['issue', 'edit', n, '--title', fit.display], 'confirmSuggestion:retitle');
+          run(gh, ['issue', 'comment', n, '--body', `Origin-title: ${opts.title!}`], 'confirmSuggestion:retitle-anchor');
         }
         logComment(ticketId, entry, 'confirmSuggestion:log');
         run(gh, ['issue', 'edit', n, '--remove-label', SUGGESTED_LABEL], 'confirmSuggestion:unlabel');

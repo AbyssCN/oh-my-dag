@@ -67,8 +67,16 @@ describe('gh 后端: 判词读回来必须是整段', () => {
     expect(parseRuling([])).toBeUndefined();
   });
 
-  test('取第一条命中 (重复裁决时的既有语义不变)', () => {
-    const got = parseRuling([{ body: '**ruling**: 第一条' }, { body: '**ruling**: 第二条' }]);
-    expect(got).toBe('第一条');
+  test('#137 重裁取**最后一条** —— 与 ruledAt 指同一条评论, 两半不再各说各话', () => {
+    // rule() 每次新发一条评论 (gh 改不了旧评论), comments 时间正序 → 最后一条 = 现行判词。
+    // 旧语义取第一条, 而 ruledAt 取最后一条的 createdAt: 重裁后文本旧、时间戳新, 双侧无警。
+    // 证伪: parseRuling 换回正向遍历 (第一条命中) 即此条红。
+    const got = parseRuling([{ body: '**ruling**: 第一条 (已被重裁覆盖)' }, { body: '**ruling**: 第二条 (现行)' }]);
+    expect(got).toBe('第二条 (现行)');
+  });
+
+  test('对照 (修不修都绿): 判词评论只有一条时, 前后遍历同答案', () => {
+    const got = parseRuling([{ body: '闲聊' }, { body: '**ruling**: 唯一判词' }, { body: '后续普通评论' }]);
+    expect(got).toBe('唯一判词');
   });
 });

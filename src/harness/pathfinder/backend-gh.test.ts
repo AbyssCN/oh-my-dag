@@ -673,6 +673,44 @@ describe('归因剥离: gh 出口的 --body/--title 不放行 session 链接与�
     expect(b.readMap('/tmp', '5')!.tickets[0]!.title).toBe('普通标题');
   });
 
+  // #136: 三条写题路同兜 256 (此前只有 addTicket 有, 2026-08-12 当场复现②③两条裸传)。
+  // 反向自检: 摘掉 suggest 的 fitTitle 分支 → ② 红 (title 原样发出); 摘掉 retitle 的
+  // Origin-title 评论 → ③ 红 (锚没写); 摘掉 readMap 的 latestCommentAnchor → ④ 红 (读回旧题)。
+  test('#136 路②: suggest 超长标题 → 截断 + Origin-title 锚 (机器建议票同兜)', () => {
+    const long = '议'.repeat(300);
+    const calls: string[][] = [];
+    const b = createGhBackend(recording(mapResp([]), calls));
+    const res = b.suggest!('/repo', '5', [{ type: 'research', title: long, suggestedBy: 'run-1' }], { at: AT });
+    expect(res.added).toHaveLength(1);
+    const create = calls.find((c) => c[0] === 'issue' && c[1] === 'create')!;
+    expect(create[create.indexOf('--title') + 1]!.length).toBeLessThanOrEqual(256);
+    expect(create[create.indexOf('--body') + 1]!).toContain(`Origin-title: ${long}`);
+  });
+
+  test('#136 路③: confirm 改题超长 → 截断 + 锚走追加评论 (不做正文 RMW)', () => {
+    const long = '判'.repeat(300);
+    const resp = mapResp([{ number: 31, title: '[research] 查一下 X', body: 'Suggested-by: run-42', labels: ['path:research', 'path:suggested'] }]);
+    const calls: string[][] = [];
+    const b = createGhBackend(recording(resp, calls));
+    const entry = b.confirmSuggestion!('/repo', '5', '#31', 'accept', { at: AT, title: long });
+    expect(entry.outcome).toBe('edited');
+    const edit = calls.find((c) => c[1] === 'edit' && c.includes('--title'))!;
+    expect(edit[edit.indexOf('--title') + 1]!.length).toBeLessThanOrEqual(256);
+    const anchor = calls.find((c) => c[1] === 'comment' && String(c[c.indexOf('--body') + 1]).startsWith('Origin-title: '))!;
+    expect(anchor[anchor.indexOf('--body') + 1]).toBe(`Origin-title: ${long}`);
+  });
+
+  test('#136 路④: readMap 评论锚 > 正文锚 (重改题后最新的赢; 次序同 D-5 三戳)', () => {
+    const born = '生'.repeat(300);
+    const renamed = '改'.repeat(300);
+    const resp = mapResp([{
+      number: 52, title: '[task] 生生生…', body: `Origin-title: ${born}`, labels: ['path:task'],
+      comments: [`Origin-title: ${renamed}`],
+    }]);
+    const b = createGhBackend(fakeGh(() => okr(resp)));
+    expect(b.readMap('/tmp', '5')!.tickets[0]!.title).toBe(renamed);
+  });
+
   // 证伪: 把 readMap 的 status 条件改回 `ruled || delivered` → 本条红 (升一次人判词就读没了)。
   test('escalated 票的判词也读得回来 (escalate 不清 ruling, types.ts:49)', () => {
     const resp = mapResp([{ number: 52, title: '[prototype] 四要素定稿', body: '', labels: ['path:prototype', 'path:escalated'], comments: ['**ruling**: 判过了才升的人'] }]);
