@@ -569,7 +569,15 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         width: bannerWidth,
       })
         .split('\n')
-        .map(theme.chrome.dim),
+        // 分层上色 (facelift): 键值行的值亮、提示行的 `>` 亮, 其余 dim —— 一整块同灰
+        // 是截图判丑的第三半。关色下画笔全 identity, 重拼逐字节 = 原行。
+        .map((l) => {
+          const kv = /^(\s*)(engine|session)(\s+)(\S.*)$/.exec(l);
+          if (kv) return `${kv[1]}${theme.chrome.dim(kv[2]!)}${kv[3]}${theme.chrome.user(kv[4]!)}`;
+          const hint = /^(\s*> )([^]*)$/.exec(l);
+          if (hint) return `${theme.chrome.accent(hint[1]!)}${theme.chrome.dim(hint[2]!)}`;
+          return theme.chrome.dim(l);
+        }),
     ].join('\n'),
   );
   /**
