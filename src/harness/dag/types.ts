@@ -242,7 +242,8 @@ export interface DagLeafShapingSeam {
   /**
    * inproc leaf 的共享冻结 system 前缀 (字节稳定 → 暖发后跨 leaf 命中 prompt-cache)。
    * 省略 = 内置精简指令 (~80 token, 对 DeepSeek cache 粒度偏短, 命中≈0)。要真省 input, 设成
-   * 大前缀 (如 VALAR_IDENTITY + 指令, ~800+ token) —— 既给 leaf omd 灵魂 (VAL-DAG-6) 又过 cache 阈值。
+   * 大前缀 (~800+ token, 现役调用方传共享 spec/契约上下文, 如 eval oracle 的 fx.spec 与
+   * dag-build 的 context) —— 内容承重之余也过 cache 阈值。
    */
   leafSystemPrefix?: string;
   /**
