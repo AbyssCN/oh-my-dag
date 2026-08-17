@@ -8,8 +8,9 @@
  * 测试传 fake 即可端到端跑。
  */
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, openSync, writeFileSync } from 'node:fs';
+import { mkdirSync, openSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { detectAnchorMismatch, gitToplevelOf } from '../../harness/goal/anchor-precheck';
 import { z } from 'zod';
 import type { OmdMcpTool } from '../server';
 import type { RunGoalConfig, RunGoalResult, GoalTier, GoalClassification } from '../../harness/goal/run-goal';
@@ -345,9 +346,17 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           "Where this run's writes land. 'head' (default) = current working tree, today's behavior. " +
             "'branch' = isolated git worktree on branch omd/run/<runId>; the engine never merges back — you do.",
         ),
+      cwd: z
+        .string()
+        .optional()
+        .describe(
+          '#147: Anchor repo for this run. Paths inside the goal text do NOT change the execution anchor — ' +
+            'this parameter does. Same repo as the server = explicit anchor confirmation (skips the foreign-path ' +
+            'precheck). A different repo requires detached:true — state/logs/continuity land in the target repo via goal-worker.',
+        ),
     },
     handler: async (args) => {
-      const { goal, tier, maxRounds, researchRounds, resume, detached, budgetTokens, budgetMinutes, branchStrategy, resultOut, sddPath, force, slug } = args as {
+      const { goal, tier, maxRounds, researchRounds, resume, detached, budgetTokens, budgetMinutes, branchStrategy, resultOut, sddPath, force, slug, cwd } = args as {
         goal?: string;
         tier?: GoalTier;
         maxRounds?: number;
@@ -361,9 +370,58 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         sddPath?: string;
         force?: boolean;
         slug?: string;
+        cwd?: string;
       };
       if (!goal?.trim()) {
         return { content: [{ type: 'text' as const, text: 'dag_goal: goal 必填' }], isError: true };
+      }
+      // ── #147 点火锚预检: goal 文本里的别仓路径**不改执行锚** ─────────────────────
+      // B0 实测 (f5984f2b): 锚错的 solve 烧完 1.11M in 才看得见, 症状与"活没干成"同形。
+      // resume 是续跑不是点火, 首跑已裁过锚 (worker 面走 resume 语义, 其 --cwd 即锚决定) → 不再过。
+      // 显式 cwd = owner 的锚声明: 同仓 → 确认锚, 跳文本预检; 他仓 → 必须 detached
+      // (状态/日志/continuity 全要落目标仓, 进程内路径的 registry 烤死在本锚, 半落半不落比拒绝更坏)。
+      let runAnchor = deps.cwd;
+      if (cwd !== undefined) {
+        let target: string;
+        try {
+          target = realpathSync(cwd);
+          if (!statSync(target).isDirectory()) throw new Error('不是目录');
+        } catch (e) {
+          return { content: [{ type: 'text' as const, text: `dag_goal: cwd 无效 (${cwd}): ${(e as Error).message}` }], isError: true };
+        }
+        const anchorRoot = gitToplevelOf(deps.cwd);
+        const sameRepo = anchorRoot !== null && gitToplevelOf(target) === anchorRoot;
+        if (!sameRepo) {
+          if (!detached) {
+            return {
+              content: [{
+                type: 'text' as const,
+                text:
+                  `dag_goal 拒绝 (#147): cwd 指向别仓 (${target}), 而本 server 锚在 ${deps.cwd}。` +
+                  `跨仓点火要 detached:true —— 状态/日志/continuity 由 goal-worker 落在目标仓; ` +
+                  `进程内路径的 registry 烤死在本锚, 跨仓会写出半边状态。`,
+              }],
+              isError: true,
+            };
+          }
+          runAnchor = target;
+        }
+      } else if (!resume) {
+        const mismatch = detectAnchorMismatch(goal, deps.cwd);
+        if (mismatch) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text:
+                `dag_goal 点火锚预检拒绝 (#147): goal 文本提到别仓 [${mismatch.foreign.join(', ')}], ` +
+                `而执行锚 = ${mismatch.anchorRoot} (本 server 的 cwd) —— goal 里的路径**不改执行锚**, ` +
+                `上一次这样点火 (B0 f5984f2b) 烧完 1.11M in 才看得见。\n` +
+                `要在那个仓跑 → 重发带 cwd: "${mismatch.foreign[0]}" + detached: true;\n` +
+                `确要在本锚仓跑 (别仓路径只是引用) → 重发带 cwd: "${mismatch.anchorRoot}" 作显式确认。`,
+            }],
+            isError: true,
+          };
+        }
       }
       let dag: Partial<ExecutorDagConfig>;
       try {
@@ -384,13 +442,15 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
       if (detached) {
         const spawn = deps.spawnDetached ?? defaultSpawnDetached;
         const runId = resume || randomUUID();
-        const logPath = join(deps.cwd, '.omd', 'goal-logs', `${runId}.log`);
+        // #147: 跨仓点火时锚 = 显式 cwd (runAnchor), 状态/日志随锚走 —— worker 对 --cwd 的语义
+        // 本就是"一切 .omd 状态落在这" (B0 第二跑手动验证过的那条路), 这里只是把它接上 MCP 面。
+        const logPath = join(runAnchor, '.omd', 'goal-logs', `${runId}.log`);
         const cmd = [
           'bun',
           'run',
           workerScriptPath(),
           '--run-id', runId,
-          '--cwd', deps.cwd,
+          '--cwd', runAnchor,
           '--goal', goal,
           ...(tier ? ['--tier', tier] : []),
           ...(maxRounds ? ['--max-rounds', String(maxRounds)] : []),
@@ -419,7 +479,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         }
         let pid: number | undefined;
         try {
-          pid = spawn(cmd, { cwd: deps.cwd, logPath });
+          pid = spawn(cmd, { cwd: runAnchor, logPath });
         } catch (e) {
           // 起不来要**当场响亮失败**, 不能回一个永远不会出现的 runId —— 那比不支持 detached 更坏。
           return {
@@ -437,7 +497,10 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
               (branchStrategy === 'branch' ? `branchStrategy: branch — worker 将建隔离 worktree (omd/run/${runId}); 建树失败会退回 head 并在日志/回执标注 degraded。\n` : '') +
               `日志: ${logPath}\n` +
               ignitionForecastLine(dag, sddPath) +
-              `它不随本会话结束而死。查进度 dag_status runId=${runId} (新会话也查得到; 若刚起跑查无此 run, 等几秒)。`,
+              // #147: 跨仓锚要念出来 —— run 登记在目标仓的 runs.db, 本 server 的 dag_status 查不到它。
+              (runAnchor !== deps.cwd
+                ? `锚仓: ${runAnchor} — run 状态落在该仓 .omd/, 本 server 的 dag_status 查不到; 看日志或在该仓起 omd server 查。`
+                : `它不随本会话结束而死。查进度 dag_status runId=${runId} (新会话也查得到; 若刚起跑查无此 run, 等几秒)。`),
           }],
         };
       }
