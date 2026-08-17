@@ -3141,22 +3141,11 @@ async function executePlan(
         // 那条闸与 §8.5 攒了一年的分布, 判据都写在顺序上。见 ToolStep 的注。
         toolSteps = r.toolSteps;
         toolStepsDropped = r.toolStepsDropped;
-        // S1 埋点: 真 runner (agent-leaf.ts) 恒嵌套在 `.watchdog` 下; 隔离测试用的 fake runner
-        // 为单独量出「引擎透传保真」这一段, 直喂顶层 stalled/timedOut/touchTimelineMs/toolTimelineMs
-        // 四个字段 (省一次真 SDK 流) —— 两种形状都收, 嵌套优先, 都没有 = 该 runner 不统计。
-        if (r.watchdog) {
-          watchdog = r.watchdog;
-        } else {
-          const flatWd = r as unknown as { timedOut?: boolean; touchTimelineMs?: number[]; toolTimelineMs?: number[] };
-          if (flatWd.timedOut !== undefined || flatWd.touchTimelineMs !== undefined || flatWd.toolTimelineMs !== undefined) {
-            watchdog = {
-              stalled: r.stalled ?? false,
-              timedOut: flatWd.timedOut ?? false,
-              touchTimelineMs: flatWd.touchTimelineMs ?? [],
-              toolTimelineMs: flatWd.toolTimelineMs ?? [],
-            };
-          }
-        }
+        // S1 埋点: watchdog 只收 `.watchdog` 嵌套一种形状 (真源 LeafWatchdog), 缺席 = 该 runner
+        // 不统计。2026-08-18 删掉了"顶层平铺四字段"双形兼容旁路 (一个类型收两种形状 = aposd C1
+        // 抓到的晦涩源); 它唯一的消费者是 watchdog-checkpoint.test 的透传保真 fixture, 已随本次
+        // 改喂嵌套形状 —— 透传保真钉的是「结果 → checkpoint」通路, 与入参形状无关。
+        watchdog = r.watchdog;
         // 早期心跳闸 (issue #5): provider 挂起判停摆 → 标 failed (不把近零输出当 done), 附 stall 标记
         // 供 settle 记 failureKind='stall' (issue #4 败因留痕)。heal 回路可据此重试/换池。
         // G5 频率读数 (2026-08-03): leaf 在自己的工具循环里反复发同一个动作。**只报不拦** ——

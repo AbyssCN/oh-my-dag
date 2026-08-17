@@ -151,8 +151,11 @@ describe('watchdog 采集落 checkpoint (S1 埋点)', () => {
     // 实装前的今天: watchdog 不存在 → 本条红。
     // 证伪: ① 删掉 touchTimelineMs 采集/透传 → length 断言必红; ② 同一路径重复追加
     // (去重前就 push) → 长度 > filesTouched 数量, 必红; ③ 乱序 push → 单调断言必红。
-    // 用 fake runner 直喂四字段: 钉的是引擎「结果 → checkpoint」透传这一段 (真 runner 的
+    // 用 fake runner 喂嵌套 watchdog: 钉的是引擎「结果 → checkpoint」透传这一段 (真 runner 的
     // 采集面在 agent-leaf 侧, 无工具事件时恒空, 量不出这个形状)。
+    // 2026-08-18: 原本直喂顶层平铺四字段, 走 engine 的双形兼容旁路 —— 那条旁路随 LeafWatchdog
+    // 类型收敛删除 (一个类型收两种形状 = aposd C1 的晦涩源), fixture 改喂现役唯一的嵌套形状,
+    // 透传保真的三条证伪路径 (删透传/重复 push/乱序) 不受影响。
     const root = freshRoot();
     const mgr = new CheckpointManager(root);
     const fakeRunner: NonNullable<ExecutorDagConfig['agentRunner']> = async () => ({
@@ -160,10 +163,16 @@ describe('watchdog 采集落 checkpoint (S1 埋点)', () => {
       usage: { in: 1, out: 1 },
       filesTouched: ['a.ts', 'b.ts', 'c.ts'],
       stalled: false,
-      timedOut: false,
-      // 升序相对毫秒; 允许同毫秒相等 (同一时刻批量写) —— 断言只要求单调不减。
-      touchTimelineMs: [3, 8, 8],
-      toolTimelineMs: [1, 4, 7],
+      watchdog: {
+        stalled: false,
+        timedOut: false,
+        // 升序相对毫秒; 允许同毫秒相等 (同一时刻批量写) —— 断言只要求单调不减。
+        touchTimelineMs: [3, 8, 8],
+        toolTimelineMs: [1, 4, 7],
+        advisorFiredAt: null,
+        wrapupFiredAt: null,
+        abortedByGrind: false,
+      },
     });
     const r = await runExecutorDagWithPlan(
       plan({ A: { goal: '三文件叶', executor: 'agent' } }),

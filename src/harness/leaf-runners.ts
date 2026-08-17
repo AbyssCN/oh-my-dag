@@ -42,6 +42,54 @@ export interface AgentLeafInput {
    */
   profile?: LeafProfile;
 }
+
+/**
+ * leaf watchdog 采集的**单一真源形状** (2026-08-18 收敛; 此前 AgentLeafResult / LeafResult /
+ * NodeCheckpoint 三处手抄同形, b87196e 加 grind 字段时只改了生产侧 —— 类型静默漂移的实证)。
+ * 生产/透传/落盘三处都引用本接口: 加字段改这里, 漏改任何一处直接 tsc 红。
+ *
+ * 缺席语义 (NULL ≠ 0 ≠ 不适用, 全仓同一条纪律):
+ * - 整个 `watchdog` 缺席 = 非 agent 叶 / 该 runner 不统计 / 老记录, **不代表**"量过了且没触发"。
+ * - 存在时 `stalled`/`timedOut` 恒写 boolean —— `false` = 量过了且没发生, 不许用缺席表示 false。
+ * - grind 三字段 (`advisorFiredAt`/`wrapupFiredAt`/`abortedByGrind`) 在**落盘真相**里是可选的:
+ *   缺席 = S1 时代老记录 / 该 runner 不统计新档 (盘上真实存在这批 checkpoint, required 会让
+ *   类型对旧数据撒谎); 现役生产侧的恒写纪律由 {@link LiveLeafWatchdog} 收紧到类型层。
+ * - `touchTimelineMs`/`toolTimelineMs` 是距叶启动的相对毫秒数 (升序), 不是绝对时间戳。
+ * - `spin` 仅在 `spinEvents > 0` 时出现, 同 drift-detector 惯例。
+ */
+export interface LeafWatchdog {
+  stalled: boolean;
+  timedOut: boolean;
+  touchTimelineMs: number[];
+  toolTimelineMs: number[];
+  /**
+   * grind advisor 软看门狗触发时刻 (S3), 距叶启动的相对毫秒数, 与 `touchTimelineMs` 同口径。
+   * 现役生产恒写: `null` = 量过了且没触发 (LiveLeafWatchdog 收紧); 缺席 = 老记录/不统计。
+   * 触发后保持非空 —— 每叶至多 1 次, 不重试不硬停。
+   */
+  advisorFiredAt?: number | null;
+  /** grind advisor 诊断原文 (S3)。缺席/undefined = 没触发; 触发时非空, 与 `advisorFiredAt` 成对。 */
+  advisorAdvice?: string;
+  /**
+   * grind 二档 wrap-up 触发时刻 (2026-08-17, #146), 距叶启动的相对毫秒数, 同 `advisorFiredAt` 口径。
+   * 现役生产恒写 `null` = 量过了且没触发 (INV-5); 缺席 = 老记录/不统计。触发后保持非空,
+   * 严格次于 advisor, 各至多 1 次。
+   */
+  wrapupFiredAt?: number | null;
+  /**
+   * grind 三档 abort 是否触发 (2026-08-17, #146)。`false` = 量过且没发生, `true` = 三档全过
+   * 仍停滞, 节点判 failed + failureKind 'spin-fused' (INV-5)。缺席 = 老记录/不统计。
+   */
+  abortedByGrind?: boolean;
+  spin?: { spinEvents: number; maxSameCount: number };
+}
+
+/**
+ * 现役 agent-leaf **生产侧**形状: grind 三字段恒写 (INV-5 —— 忘写任何一个 = tsc 红, 这正是
+ * b87196e 那次漂移的类型层闸)。落盘/透传侧 (LeafResult / NodeCheckpoint) 用宽的 LeafWatchdog。
+ */
+export type LiveLeafWatchdog = LeafWatchdog & Required<Pick<LeafWatchdog, 'advisorFiredAt' | 'wrapupFiredAt' | 'abortedByGrind'>>;
+
 export interface AgentLeafResult {
   text: string;
   usage: ModelUsage;
@@ -95,38 +143,10 @@ export interface AgentLeafResult {
    */
   spinFused?: string;
   /**
-   * agent leaf watchdog 采集(2026-08-12, S1 埋点)。省略 = 该 runner 不统计(非 agent leaf /
-   * 老记录),不代表"量过了且没触发"。存在时 `stalled`/`timedOut` 必须恒写 boolean —— `false`
-   * 是"量过了且没发生",不许用省略表示 false。`touchTimelineMs`/`toolTimelineMs` 是距叶启动的
-   * 相对毫秒数(升序),不是绝对时间戳。`spin` 仅在 `spinEvents > 0` 时出现,同 drift-detector 惯例。
-   * 形状与 {@link NodeCheckpoint.watchdog} 一致(见 continuity/types.ts)。
+   * agent leaf watchdog 采集 (2026-08-12, S1 埋点)。形状与缺席语义的真源 = {@link LeafWatchdog};
+   * 生产侧取恒写收紧版 {@link LiveLeafWatchdog} (grind 三字段 required, INV-5)。
    */
-  watchdog?: {
-    stalled: boolean;
-    timedOut: boolean;
-    touchTimelineMs: number[];
-    toolTimelineMs: number[];
-    /**
-     * grind advisor 软看门狗触发时刻 (S3), 距叶启动的相对毫秒数, 与 `touchTimelineMs` 同口径。
-     * 恒写: `null` = 量过了且没触发 (同 `stalled`/`timedOut` 那条纪律, 不用缺席表示 null)。
-     * 触发后保持非空 —— 每叶至多 1 次, 不重试不硬停。
-     */
-    advisorFiredAt: number | null;
-    /** grind advisor 诊断原文 (S3)。缺席/undefined = 没触发; 触发时非空, 与 `advisorFiredAt` 成对。 */
-    advisorAdvice?: string;
-    /**
-     * grind 二档 wrap-up 触发时刻 (2026-08-17, #146), 距叶启动的相对毫秒数, 同 `advisorFiredAt` 口径。
-     * 恒写: `null` = 量过了且没触发 (INV-5)。触发后保持非空, 严格次于 advisor, 各至多 1 次。
-     * 缺席 = 老记录 (该 runner 不统计新档), 不代表「没触发」。
-     */
-    wrapupFiredAt: number | null;
-    /**
-     * grind 三档 abort 是否触发 (2026-08-17, #146)。boolean —— `false` = 量过且没发生,
-     * `true` = 三档全过仍停滞, 节点判 failed + failureKind 'spin-fused' (INV-5)。
-     */
-    abortedByGrind: boolean;
-    spin?: { spinEvents: number; maxSameCount: number };
-  };
+  watchdog?: LiveLeafWatchdog;
   /**
    * 本次 leaf 的空转累计 (2026-08-03, G5)。缺席 = 没跑 drift 检测 (关掉了 / 非 agent leaf)。
    *

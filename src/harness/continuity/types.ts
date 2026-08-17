@@ -9,6 +9,7 @@
  *   - scripts/continuity-writer.ts (W1 回灌)
  */
 import type { ModelUsage } from '../../model/gateway';
+import type { LeafWatchdog } from '../leaf-runners';
 import type { NodeFailureKind } from '../node-failure';
 
 /**
@@ -156,25 +157,13 @@ export interface NodeCheckpoint {
    */
   generation?: string;
   /**
-   * agent leaf watchdog 采集 (2026-08-12, S1 埋点)。**缺席语义**: 整个 `watchdog` 缺席 =
-   * 非 agent 叶 / 老记录 (这条采集不适用或没接), 不代表"量过了且没触发"。
-   *
-   * 存在时 `stalled`/`timedOut` **必须恒写 boolean** —— `false` 是"量过了且没发生",
-   * 不许用字段缺席去表示 false (NULL ≠ 0 ≠ 不适用, 与本仓其余可选字段同一条纪律)。
-   *
-   * `touchTimelineMs` = 每次 `filesTouched` 集合新增一个路径时距叶启动的相对毫秒数 (升序);
-   * `toolTimelineMs` = 每次 `tool_execution_start` 距叶启动的相对毫秒数。两者都是相对值,
-   * 不是绝对时间戳。
-   *
-   * `spin` 沿用既有 drift-detector 惯例, 仅在 `spinEvents > 0` 时出现。
+   * agent leaf watchdog 采集 (2026-08-12, S1 埋点)。形状与缺席语义的真源 = {@link LeafWatchdog}
+   * (2026-08-18 收敛: 此前这里手抄 S1 五字段, 与生产侧的 grind 字段静默漂移)。本仓落盘特有的
+   * 补充: `touchTimelineMs` = 每次 `filesTouched` 集合新增一个路径的时刻;
+   * `toolTimelineMs` = 每次 `tool_execution_start` 的时刻 —— 都是距叶启动的相对毫秒数 (升序)。
+   * grind 字段缺席 = S1 时代老 checkpoint (盘上真实存在), 见 LeafWatchdog 的缺席语义。
    */
-  watchdog?: {
-    stalled: boolean;
-    timedOut: boolean;
-    touchTimelineMs: number[];
-    toolTimelineMs: number[];
-    spin?: { spinEvents: number; maxSameCount: number };
-  };
+  watchdog?: LeafWatchdog;
   /**
    * 这个节点经 **bash 工具**跑过的命令 + 退出码(2026-08-16 补,#145 评论① 复盘)。
    *

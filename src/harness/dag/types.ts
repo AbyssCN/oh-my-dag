@@ -3,7 +3,7 @@ import type * as Gateway from '../../model/gateway';
 import type { AgentTemplate } from '../agent-templates';
 import type { ConductorPlan } from '../conductor-plan';
 import type { CavemanLevel } from '../caveman';
-import type { AgentLeafRunner, CommandLeafRunner, LeafModelRouter, ResearchLeafRunner, ShellRun, ToolStep } from '../leaf-runners';
+import type { AgentLeafRunner, CommandLeafRunner, LeafModelRouter, LeafWatchdog, ResearchLeafRunner, ShellRun, ToolStep } from '../leaf-runners';
 import type { CheckpointManager } from '../continuity/checkpoint-manager';
 import type { VerifierFn } from '../verifier';
 import type { FaninSummaryConfig } from '../fanin-summary';
@@ -721,18 +721,12 @@ export interface LeafResult {
   /** 早期心跳闸判停摆 (issue #5): provider 挂起, 未等满硬超时即中止 → settle 记 failureKind='stall'。 */
   stalled?: boolean;
   /**
-   * agent leaf watchdog 采集 (2026-08-12, S1 埋点)。缺席 = 非 agent 叶 / runner 未报 (不代表
-   * "量过了且没触发")。存在则内部 stalled/timedOut 恒写 boolean (false = 量过了且没发生,
-   * 不许用缺席表示)。engine 从 AgentLeafResult.watchdog 原样透传 (done/failed 两条出口都带),
-   * 供 checkpoint 落盘 (形状与 NodeCheckpoint.watchdog / AgentLeafResult.watchdog 一致)。
+   * agent leaf watchdog 采集 (2026-08-12, S1 埋点)。engine 从 AgentLeafResult.watchdog 原样透传
+   * (done/failed 两条出口都带), 供 checkpoint 落盘。形状/缺席语义真源 = {@link LeafWatchdog}
+   * (2026-08-18 收敛: 此前这里手抄 S1 五字段, b87196e 加 grind 字段后与生产侧漂移了 6 天,
+   * 注释还写着「形状一致」—— 引用同一类型后这类漂移直接 tsc 红)。
    */
-  watchdog?: {
-    stalled: boolean;
-    timedOut: boolean;
-    touchTimelineMs: number[];
-    toolTimelineMs: number[];
-    spin?: { spinEvents: number; maxSameCount: number };
-  };
+  watchdog?: LeafWatchdog;
   /**
    * **引擎推断的写目标**(2026-08-06):命令原文点名要写、且那个文件在本节点执行窗口内变过。
    * 与 `filesTouched` 同一个 `artifactRoot` 根。
