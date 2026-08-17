@@ -134,6 +134,8 @@ const TRACE_SEAT_RULES: readonly [RegExp, string][] = [
   [/^web:expand$/, 'expand'], // web/query-expand.ts → resolveSeatModel('expand')
   [/^web:distill-/, 'distill'], // web/distill-source.ts 与 distill-challenger.ts → resolveSeatModel('distill')
 ];
+/** 归座规则覆盖到的座位集合(由 TRACE_SEAT_RULES 第二列机器去重) —— 与 seats.ts 的 ALL_SEAT_IDS 是两套独立真源, 覆盖闸判的是二者的差集。 */
+export const SEAT_USAGE_RULE_SEATS: ReadonlySet<string> = new Set(TRACE_SEAT_RULES.map(([, seat]) => seat));
 
 /**
  * 明知归不了座的标签 —— 列在这里是为了把「还没核」与「核过, 归不了」分开
