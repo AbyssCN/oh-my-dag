@@ -29,12 +29,23 @@ function dnsBinds(): string[] {
   }
 }
 
-/** 自 start 向上找最近含 node_modules 的祖先目录, 返 node_modules 绝对路径 (无则 null)。 */
+/** 自 start 向上找最近含 node_modules 的祖先目录, 返 node_modules **真身**绝对路径 (无则 null)。
+ * ⚠ realpath 是承重的 (#166 后, run 68cfb43f 实测): 隔离 worktree 的 node_modules 是指向
+ * 主树的 symlink —— ro-bind 链接路径本身, jail 里链接的**目标**不可见 → typebox 悬空 ENOENT,
+ * agent 子进程整个起不来。bind 真身路径, jail 内链接解析即达; 非链接时 realpath 恒等, 零行为差。 */
 export function findNodeModules(start: string): string | null {
   let dir = resolve(start);
   for (;;) {
     const nm = join(dir, 'node_modules');
-    if (existsSync(nm)) return nm;
+    // existsSync 跟随链接: 悬空链接在这里本来就是 false, 继续向上。realpath 抛错只剩竞态一格,
+    // 那格照旧向上找真身 (fail-open, 一个解析不了依赖的路径 bind 进去也没用)。
+    if (existsSync(nm)) {
+      try {
+        return realpathSync(nm);
+      } catch {
+        /* 竞态: 刚没的, 向上继续 */
+      }
+    }
     const parent = dirname(dir);
     if (parent === dir) return null;
     dir = parent;

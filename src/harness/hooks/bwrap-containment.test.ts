@@ -165,3 +165,41 @@ describe('bwrap git 元数据 — 隔离档里 git 到底能不能用 (run 7d50f
     rmSync(tree, { recursive: true, force: true });
   });
 });
+
+// ── #166 后续 (run 68cfb43f): 隔离 worktree 的 node_modules 是 symlink, jail 里必须解析得到真身 ──
+describe('findNodeModules realpath — symlink node_modules 的 jail 可见性', () => {
+  const { mkdirSync, symlinkSync, writeFileSync } = require('node:fs') as typeof import('node:fs');
+
+  const mainAndWt = () => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-bwrap-nm-'));
+    const main = join(root, 'main');
+    const wt = join(root, 'wt');
+    mkdirSync(join(main, 'node_modules', 'testpkg'), { recursive: true });
+    writeFileSync(join(main, 'node_modules', 'testpkg', 'index.js'), 'ok');
+    mkdirSync(wt, { recursive: true });
+    symlinkSync(join(main, 'node_modules'), join(wt, 'node_modules'), 'dir');
+    return { root, main, wt };
+  };
+
+  // 证伪方式 (当场验过): findNodeModules 改回直返 nm (不 realpath) → 本条红; 恢复后绿。
+  test('symlink node_modules → findNodeModules 返真身路径 (ro-bind 才 bind 得到目标)', () => {
+    const { root, main, wt } = mainAndWt();
+    try {
+      const { findNodeModules } = require('./bwrap') as typeof import('./bwrap');
+      expect(findNodeModules(wt)).toBe(realpathSync(join(main, 'node_modules')));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  if (HAS_BWRAP) {
+    test('jail 内经 symlink 读包文件真的读得到 (run 68cfb43f 的失败面)', () => {
+      const { root, wt } = mainAndWt();
+      try {
+        expect(inJail(wt, 'cat node_modules/testpkg/index.js')).toBe(0);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+});
