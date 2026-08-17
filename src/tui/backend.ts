@@ -94,6 +94,8 @@ export interface OmdBackend {
    * (纯往前导航),后者 = 没切(摘要失败 / 条目不存在)。压成一个布尔就再也分不开。
    */
   branchTo?(o: { sessionId: string; entryId: string }): Promise<{ ok: boolean; text: string; summarized: boolean }>;
+  /** 跨会话全文搜索(只读)。命中带会话 id + 片段;无命中 = 空表,不是错误。 */
+  searchSessions?(o: { text: string }): Promise<{ hits: { sessionId: string; entryId: string; snippet?: string }[] }>;
 }
 
 /**

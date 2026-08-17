@@ -377,6 +377,11 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
       }
     },
 
+    // ── `/search`: 跨会话全文搜索 (store 的只读扫描件直通, 后端不做展示决策)。 ──
+    async searchSessions({ text }: { text: string }) {
+      return { hits: await deps.store.search(text) };
+    },
+
     // 切片⑦: fork 直调 store (显式动作, 立刻建文件)。错误转成 ok:false + 原因原文 ——
     // "为什么 fork 不了"这个问题必须答得出来 (源没写过盘 / id 冲突是两个不同的答案)。
     async forkSession({ fromId, newId }): Promise<{ ok: boolean; text: string }> {

@@ -51,7 +51,7 @@ import { createSettingsPanel } from './components/settings-panel';
 import { SPINNER_FRAMES } from './design/tokens';
 import { installOmdKeybindings } from './keys';
 import { buildSettings, parseSettingsCommand } from './settings';
-import { STARTUP_HINT, formatHelp, parseHelpCommand, slashCommands } from './commands';
+import { STARTUP_HINT, formatHelp, parseHelpCommand, parseSearchCommand, slashCommands } from './commands';
 import { MANUAL_COORD, choiceLabel, listModelChoices, parseModelsCommand, sortChoices } from './model-picker';
 import { buildTreeRows, formatTree, parseTreeCommand, rewindTargets, treeLabel } from './tree-picker';
 import { createOmdAutocompleteProvider } from './skill-complete';
@@ -250,6 +250,9 @@ export const CHROME = {
     `Compacted ${id}: ~${before} -> ~${after} tokens (${n} messages -> summary + tail)`,
   /** 静态串一律走函数形(与 footer/footerArmed 同款):字形闸只采样字符串常量,ASCII 串不占样本表。 */
   compactNone: () => 'Nothing to compact: session is empty or already at the tail',
+  // ── `/search`(2026-08-17): 跨会话全文搜索的三句回执。 ──
+  searchUsage: () => 'Usage: /search <text> - full-text search across all sessions',
+  searchNone: (q: string) => `No hits for "${q}" in any session`,
   logoutCancelled: () => 'logout cancelled, nothing removed',
   logoutClaude: () => 'claude-code uses the Claude CLI subscription - run `claude logout` in a terminal; omd does not touch its credentials.',
   logoutDone: (provider: string, removed: { file: string; key: string }[], warnings: string[]) =>
@@ -1484,6 +1487,53 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   }
 
   /**
+   * `/search <词>` —— 跨会话全文搜索(pi 的扫描式现成件,只读)。
+   * 命中选单选中 → 切进那条会话;同一会话的多条命中各占一行(片段不同,读起来不是重复)。
+   */
+  async function handleSearch(text: string): Promise<boolean> {
+    const cmd = parseSearchCommand(text);
+    if (!cmd) return false;
+    chatLog.appendUser(text.trim());
+    editor.setText('');
+    tui.requestRender();
+    if (!opts.backend.searchSessions) {
+      chatLog.appendNotice(CHROME.noRunCapability('session search'));
+      tui.requestRender();
+      return true;
+    }
+    if (!cmd.text) {
+      chatLog.appendNotice(CHROME.searchUsage());
+      tui.requestRender();
+      return true;
+    }
+    try {
+      const { hits } = await opts.backend.searchSessions({ text: cmd.text });
+      if (hits.length === 0) {
+        chatLog.appendNotice(CHROME.searchNone(cmd.text));
+        tui.requestRender();
+        return true;
+      }
+      // 一条都没有时上面已经拦了 —— 这里恒有内容, 不会开空框。
+      const pick = await dialogSelect(dialogs, theme, {
+        title: `${hits.length} hit(s) for "${cmd.text}"  (Enter switches session - Esc cancels)`,
+        options: hits.map((h) => ({
+          value: h.sessionId,
+          label: `${h.sessionId === sessionId ? '* ' : '  '}${h.sessionId}`,
+          ...(h.snippet ? { description: h.snippet } : {}),
+        })),
+        search: true,
+      });
+      if (pick !== null && pick !== sessionId) await switchTo(pick);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      logger.warn({ err: reason }, '[omd/tui] /search 抛了');
+      chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
+    }
+    tui.requestRender();
+    return true;
+  }
+
+  /**
    * 双 Esc 的回退选单 —— `/tree` 的近路(dsh-TUI / claude-code 的惯用键)。
    *
    * 与 `/tree` 是同一套机件(`sessionTree` + `branchTo` + `switchTo`),分野在取材:
@@ -2036,14 +2086,17 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
           if (handledSession) return;
           void handleTree(prompt).then((handledTree) => {
             if (handledTree) return;
-            void handleCompact(prompt).then((handledCompact) => {
-              if (handledCompact) return;
-              void handleExport(prompt).then((handledExport) => {
-                if (handledExport) return;
-                void handleReload(prompt).then((handledReload) => {
-                  if (handledReload) return;
-                  void handleRuns(prompt).then((handled) => {
-                    if (!handled) void submit(prompt);
+            void handleSearch(prompt).then((handledSearch) => {
+              if (handledSearch) return;
+              void handleCompact(prompt).then((handledCompact) => {
+                if (handledCompact) return;
+                void handleExport(prompt).then((handledExport) => {
+                  if (handledExport) return;
+                  void handleReload(prompt).then((handledReload) => {
+                    if (handledReload) return;
+                    void handleRuns(prompt).then((handled) => {
+                      if (!handled) void submit(prompt);
+                    });
                   });
                 });
               });

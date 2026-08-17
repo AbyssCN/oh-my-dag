@@ -29,7 +29,7 @@
  */
 import { join } from 'node:path';
 import { uuidv7 } from '@earendil-works/pi-ai';
-import { JsonlSessionRepo, buildSessionContext, type AgentMessage, type Session } from '@earendil-works/pi-agent-core';
+import { JsonlSessionRepo, buildSessionContext, createScanningSessionSearch, type AgentMessage, type Session } from '@earendil-works/pi-agent-core';
 import { NodeExecutionEnv } from '@earendil-works/pi-agent-core/node';
 import { dataPath } from '../project-scope';
 import { acquireWriteLock, type LockDeps } from './session-lock';
@@ -113,10 +113,19 @@ export interface OmdSession {
   ): Promise<void>;
 }
 
+/** 全文搜索的一条命中(给 TUI 的最小面)。`snippet` 缺席 = 搜索件没给片段,不是空片段。 */
+export interface SessionSearchHitLite {
+  sessionId: string;
+  entryId: string;
+  snippet?: string;
+}
+
 export interface OmdSessionStore {
   list(): Promise<ChatSessionMeta[]>;
   /** 不存在返回 `null`(不是抛)—— 与 `ChatStore.load` 同语义。 */
   open(id: string): Promise<OmdSession | null>;
+  /** 跨会话全文搜索(pi 的扫描式现成件,**只读**)。无命中 = 空表,不是错误。 */
+  search(text: string): Promise<SessionSearchHitLite[]>;
   create(id: string, title?: string): Promise<OmdSession>;
   /** 经 `repo.fork` —— **不再手抄消息**,而且它会记 `parentSessionId`。 */
   fork(fromId: string, newId: string): Promise<OmdSession>;
@@ -156,6 +165,8 @@ const iso = (ms: number): string => new Date(ms).toISOString();
 export function createOmdSessionStore(repoRoot: string, lockDeps?: LockDeps): OmdSessionStore {
   const fs = new NodeExecutionEnv({ cwd: repoRoot });
   const repo = new JsonlSessionRepo({ fs, sessionsRoot: sessionsRootFor(repoRoot) });
+  // 全文搜索走 pi 的扫描式现成件。**只读不进单写者表**:它只扫文件,不产生第二个写者。
+  const searcher = createScanningSessionSearch(repo);
 
   /** 同一份文件只许有一个 `Session` —— 见文件头第 1 条。 */
   const hold = (path: string, make: () => Promise<Session>): Promise<Session> => {
@@ -276,6 +287,16 @@ export function createOmdSessionStore(repoRoot: string, lockDeps?: LockDeps): Om
           ...(m.parentSessionId ? { parent: m.parentSessionId } : {}),
         } satisfies ChatSessionMeta;
       });
+    },
+
+    async search(text) {
+      const hits = await searcher.search({ text, cwd: repoRoot });
+      return hits.map((h) => ({
+        sessionId: h.metadata.id,
+        entryId: h.entryId,
+        // snippet 缺席原样缺席 —— 不编空串占位 (NULL ≠ '' 的同一条)。
+        ...(h.snippet !== undefined ? { snippet: h.snippet } : {}),
+      }));
     },
 
     async open(id) {

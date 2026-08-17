@@ -54,6 +54,7 @@ export const COMMANDS: readonly CommandDoc[] = [
   //    (一份真值, 同时只有一个活分支)。说不清分野时人会随便点一个, 而两者的产物完全不同。
   { handler: 'parseNewForkCommand', name: '/fork', args: '[id]', what: 'copy this session into a second one and switch to it (alias of /session fork)' },
   { handler: 'handleTree', name: '/tree', args: null, what: 'browse this session tree; branch from an earlier entry - the abandoned branch becomes a [branch summary] node in the same file (**side effect**)' },
+  { handler: 'handleSearch', name: '/search', args: '<text>', what: 'full-text search across all sessions; pick a hit to switch to that session' },
   { handler: 'handleRuns', name: '/runs', args: null, what: 'list DAG runs (registry + on-disk checkpoints)' },
   { handler: 'handleRuns', name: '/resume', args: '<runId>', what: 'resume a broken run from its checkpoint (**side effect**)' },
   { handler: 'handleCompact', name: '/compact', args: null, what: 'compress the current session context (**side effect**)' },
@@ -64,6 +65,16 @@ export const COMMANDS: readonly CommandDoc[] = [
 
 /** 清单里出现过的命令名 —— 接线闸拿它跟 `tui.ts` 对表。 */
 export const COMMAND_NAMES: readonly string[] = COMMANDS.map((c) => c.name);
+
+/**
+ * `/search <词>` 的解析。`/search`(裸)也认 —— 词交空串,由处理层画用法;
+ * 解析层只认形状不判语义(`parseSeatCommand` 同款分工)。
+ */
+export function parseSearchCommand(text: string): { text: string } | null {
+  const t = text.trim();
+  if (t !== '/search' && !t.startsWith('/search ')) return null;
+  return { text: t.slice('/search'.length).trim() };
+}
 
 export function parseHelpCommand(text: string): boolean {
   const t = text.trim();

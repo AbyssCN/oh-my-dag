@@ -8,7 +8,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { COMMANDS, COMMAND_NAMES, STARTUP_HINT, formatHelp, parseHelpCommand } from './commands';
+import { COMMANDS, COMMAND_NAMES, STARTUP_HINT, formatHelp, parseHelpCommand, parseSearchCommand } from './commands';
 
 const TUI_SRC = readFileSync(join(import.meta.dir, 'tui.ts'), 'utf8');
 
@@ -108,5 +108,16 @@ describe('★ 启动提示必须提到 /help', () => {
 
   test('tui.ts 的 hint 用的就是它(不是另写一句)', () => {
     expect(TUI_SRC).toContain('hint: STARTUP_HINT');
+  });
+});
+
+describe('parseSearchCommand', () => {
+  // 反向自检 (实跑): 把前缀判断改成 startsWith('/sea') → 「/seat 不被吃」当场红。
+  test('认 /search <词> 与裸 /search (词空交处理层画用法)', () => {
+    expect(parseSearchCommand('/search 鲸鱼 词')).toEqual({ text: '鲸鱼 词' });
+    expect(parseSearchCommand('  /search  ')).toEqual({ text: '' });
+  });
+  test('/seat 等邻居不被吃, 普通文本回落', () => {
+    for (const t of ['/seat conductor x:y', '/searchx', 'search 词']) expect(parseSearchCommand(t)).toBeNull();
   });
 });

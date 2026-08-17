@@ -86,6 +86,22 @@ describe('六件事与 ChatStore 语义对得上', () => {
   });
 });
 
+describe('★ search 跨会话全文搜索(pi 扫描件直通, 只读)', () => {
+  // 反向自检 (实跑): 把 search 实现改成恒返回 [] → 「搜得到」当场红;
+  //   把 sessionId 映射写成 h.entryId → 「命中标对会话」当场红。
+  test('搜得到: 命中标对会话, 搜不到给空表不抛', async () => {
+    const s = createOmdSessionStore(world());
+    const a = await s.create('alpha');
+    await a.append(msg('user', '独一无二的鲸鱼词'));
+    const b = await s.create('beta');
+    await b.append(msg('user', '完全无关的内容'));
+    const hits = await s.search('鲸鱼');
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits.every((h) => h.sessionId === 'alpha')).toBe(true);
+    expect(await s.search('这串谁都没说过')).toEqual([]);
+  });
+});
+
 describe('★ append 前 JSON round-trip 净化(pi loop 产 undefined 键 × pi storage 拒 undefined)', () => {
   test('★ 带 details/usage: undefined 的 toolResult 落得进去、读得回来(去掉 jsonSafe 当场红)', async () => {
     // 逐字复刻 pi `createToolResultMessage`(agent-loop.js:538)的形状:工具没给 details/usage
