@@ -2224,13 +2224,24 @@ async function executePlan(
       // 而 command 子节点通过时 facts 会写「命令退出码符合预期」。judge 一旦看得见判据结论
       // 就会抄答案, 两条判据永远一致 —— 而判据轴量的恰恰是它们的不一致。
       // 顺序上先于 judge (同 §8.4 与 D-Q 那两条: 确定性的先问, 早一步就少烧一次贵座调用)。
+      // 赦免证据原文 (S-37 下沉): freezeGreen 走 waived 路径时, evidence 字段带它进 journal
+      // —— 否则 verifier/judge 看到的是 "silent green", 那正是本契约要杀的形状 (INV-3)。
+      let freezeWaivedNote: string | undefined;
       const freezeGreen = await (async (): Promise<boolean | null> => {
         const fc = config.freezeCriterion;
         if (!fc || !config.commandRunner) return null; // 没配 = 旧行为, 判据只在环外跑
         try {
           const cr = await config.commandRunner({ command: fc.command });
-          const ok = cr.exitCode === (fc.expectExit ?? 0);
-          logger.info({ node: id, round, command: fc.command, exitCode: cr.exitCode, ok }, '[omd/executor-dag] 冻结判据 (环内)');
+          const blocked = cr.exitCode < 0; // 闸拒 ≠ 跑出红, 不赦免 (D-4 同款纪律)
+          let ok = !blocked && cr.exitCode === (fc.expectExit ?? 0);
+          if (!ok && !blocked && fc.waiveRed) {
+            const waived = fc.waiveRed(cr.text);
+            if (waived !== null) {
+              ok = true;
+              freezeWaivedNote = waived;
+            }
+          }
+          logger.info({ node: id, round, command: fc.command, exitCode: cr.exitCode, ok, waived: !!freezeWaivedNote }, '[omd/executor-dag] 冻结判据 (环内)');
           return ok;
         } catch (e) {
           // 判据本身跑不起来 ≠ 判据没过 —— 但对停止决定而言两者一样 (不能据此判绿)。
@@ -2261,9 +2272,10 @@ async function executePlan(
         const oneGate = verdict.unreachable ? ` · ⚠ judge 调不通 (${verdict.unreachable}) —— 这一跑只有一道闸` : '';
         if (verdict.unreachable) logger.warn({ node: id, round }, '[omd/executor-dag] 冻结判据绿但 judge 调不通 → 按判据收敛, 但这一跑只有一道闸');
         logger.info({ node: id, round, judgeSaid: verdict.converged }, '[omd/executor-dag] 冻结判据绿 → 环提前收敛 (judge 的票只记录)');
+        const waiverTag = freezeWaivedNote ? ` · 赦免: ${freezeWaivedNote}` : '';
         writeLoopJournal(round, poisoned, prevReason, true, last.output, {
           kind: 'success',
-          evidence: `冻结判据绿 (${config.freezeCriterion!.command})${oneGate}`,
+          evidence: `冻结判据绿 (${config.freezeCriterion!.command})${oneGate}${waiverTag}`,
           atRound: round,
         });
         return {
@@ -2738,7 +2750,22 @@ async function executePlan(
         // conductor 写 -1; 这条是给**预构造 plan** (不经 zod) 的运行期硬闸, 两层都要有。
         const want = node.expect_exit ?? 0;
         const blocked = r.exitCode < 0;
-        const ok = !blocked && r.exitCode === want;
+        let ok = !blocked && r.exitCode === want;
+        // S-37 下沉 (2026-08-17): D-K 红 → 先过 freezeCriterion.waiveRed 闭包。
+        //   节点命令 = 判据命令 (同串判据构造, INV-4) ∧ 非闸拒 (D-4) ∧ 闭包返非 null
+        //   → 按 done 落 + 节点输出前缀赦免注记。
+        let waiveNote: string | undefined;
+        if (!ok && !blocked) {
+          const fc = config.freezeCriterion;
+          if (fc && node.command === fc.command && fc.waiveRed) {
+            const waived = fc.waiveRed(r.text);
+            if (waived !== null) {
+              waiveNote = waived;
+              ok = true;
+              logger.info({ node: id, command: node.command, waived }, '[omd/executor-dag] D-K 红 → 基线赦免 (S-37 下沉), 按 done 落');
+            }
+          }
+        }
         if (!ok && want !== 0) {
           logger.warn({ node: id, want, got: r.exitCode, blocked }, '[omd/executor-dag] command 节点未命中 expect_exit → failed (D-K)');
         }
@@ -2747,8 +2774,9 @@ async function executePlan(
         // 红一攻绿一攻, 盘上只剩红那份, 验尸把一单成功读成判据红。resume 不跳的性质原样保住,
         // 但执法点挪进 shouldSkip (leafKind==='command' 恒不跳) —— 账与闸各归各。
         // filesTouched 传空: command 是闸不是产物生产者, 产物归属写它的节点 (可见性另有 write_set 位)。
+        const waivePrefix = waiveNote ? `[waiveRed: ${waiveNote}]\n` : '';
         if (ok) {
-          saveDoneCheckpoint({ id, kind: 'command', text: r.text, usage: r.usage, filesTouched: [], deps, t0: nodeStartedAt.get(id) ?? Date.now() });
+          saveDoneCheckpoint({ id, kind: 'command', text: `${waivePrefix}${r.text}`, usage: r.usage, filesTouched: [], deps, t0: nodeStartedAt.get(id) ?? Date.now() });
         }
         return {
           id,
@@ -2760,9 +2788,11 @@ async function executePlan(
           kind: 'command',
           // 期望非 0 却拿到别的码时, 把"想要什么/拿到什么"写进 output —— 否则 verify-red 失败时
           // 下游只看到一串正常的测试输出, 看不出它失败在"本该红却绿了"。
-          output: !ok && want !== 0
-            ? `[expect_exit ${want}, 实得 ${r.exitCode}${blocked ? ' (命令被闸拒, 未执行)' : ''}]\n${r.text}`
-            : r.text,
+          output: waiveNote
+            ? `${waivePrefix}${r.text}`
+            : (!ok && want !== 0
+              ? `[expect_exit ${want}, 实得 ${r.exitCode}${blocked ? ' (命令被闸拒, 未执行)' : ''}]\n${r.text}`
+              : r.text),
           deps,
           usage: r.usage,
           // 闸拒(负码)与普通失败(断言没成立)后续动作相反, 记下来才分得开 —— 见 DagNodeResult.exitCode。

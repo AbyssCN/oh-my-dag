@@ -91,7 +91,7 @@ leaf prompt 整形 seam: 注入 leaf 上下文/前缀/压缩级与档位闸 (省
 
 | 字段 | 必填 | 类型 | 一句话 | 消费方 (前3) |
 |---|---|---|---|---|
-| `freezeCriterion` |  | `{ command: string; expectExit?: number }` | **冻结判据进环**(2026-08-01)。 | `src/harness/dag/engine.ts`<br>`src/harness/goal/run-goal.ts` (2 文件) |
+| `freezeCriterion` |  | `{ command: string; expectExit?: number; waiveRed?: (outpu…` | 冻结判据 + (S-37 下沉 2026-08-17): 基线赦免谓词。 | `src/harness/dag/engine.ts`<br>`src/harness/goal/run-goal.ts` (2 文件) |
 | `judgeArtifacts` |  | `boolean \| ArtifactBudget` | **产物内容进 judge 视图** (S1, 2026-08-03)。 | `src/harness/dag/engine.ts` (1 文件) |
 | `ownerDirectives` |  | `(round: number, nonce: string) => string` | **owner 指令通道** (S3, 2026-07-31 / D-S)。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/goal.ts` (2 文件) |
 | `loopBudget` |  | `{ /** 累计 leaf+conductor token(in+out)上限。 */ tokens?: numb…` | **环的预算上限**(2026-07-31)—— Loop Engineering 四条停止轴里我们唯一缺的那条。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/goal.ts` (2 文件) |

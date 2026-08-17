@@ -308,7 +308,17 @@ export interface DagLoopControlSeam {
    *    代价是每**跑**多一发 judge, 不是每轮。
    * ③ **只有可执行判据配这个字段。** 非可执行判据的 `oracleOk` 恒 true, 给了它就等于第一轮必停。
    */
-  freezeCriterion?: { command: string; expectExit?: number };
+  /**
+   * 冻结判据 + (S-37 下沉 2026-08-17): 基线赦免谓词。
+   *
+   * 引擎判红点 (D-K 节点命令红 `engine.ts:2739` / 环内冻结判据红 `engine.ts:2228`) 先过此闭包:
+   *   - 返 null = 不赦免, 维持 failed
+   *   - 返字符串 = 赦免证据原文 (含被赦免的失败名清单), 按 done 落 + 节点输出/loop journal 带赦免注记
+   *
+   * 由 run-goal 用 baselineSide.failSet 构造 (D-1/D-3), 引擎 (dag 层) 不 import goal —— 依赖方向
+   * 不倒灌。缺席 → 两点行为逐字节不变 (INV-1)。
+   */
+  freezeCriterion?: { command: string; expectExit?: number; waiveRed?: (outputText: string) => string | null };
   /**
    * **产物内容进 judge 视图** (S1, 2026-08-03)。省略/`true` = 默认预算 (**缺省开**);
    * 给对象 = 自定预算; `false` = 关。

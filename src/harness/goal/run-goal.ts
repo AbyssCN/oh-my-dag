@@ -37,7 +37,7 @@ import { acceptanceCommandBlockReason } from './acceptance-gate';
 import type { RunOutcomeKind } from '../run-outcome';
 import { loadSddContract } from './sdd-direct';
 import type { ExecutorDagConfig } from '../dag/types';
-import { TEST_STEP_PREFIX, acceptSideOf, buildAcceptDelta, stableFailSet, unstableFailSet, type AcceptSide } from './accept-delta';
+import { TEST_STEP_PREFIX, acceptSideOf, buildAcceptDelta, extractFailSet, stableFailSet, unstableFailSet, type AcceptSide } from './accept-delta';
 import { readExperimentFlags } from './experiment-flags';
 import { summarizeDelta, type DeltaReport, type VerifyStepStatus } from './delta-compare';
 import { parseBreakdown, type SddContract } from './sdd-direct';
@@ -523,6 +523,26 @@ interface GoalPhaseState {
  * @returns 每阶段的结论 + spec 路径 + 证据 URL + 收敛情况。**失败不抛** —— 阶段级失败记在
  *   stages 里往下走 (execute 阶段仍会拿到手上有的东西), 调用方按 stages 判要不要人接手。
  */
+/**
+ * S-37 下沉 (2026-08-17): 基线赦免闭包 (D-3, goal 层半) —— 由 `runGoal` 在
+ * `baselineSide` 算出来后注入 `freezeCriterion.waiveRed`, 引擎在判红点 (D-K / 环内)
+ * 调用。判据 = `extractFailSet(text)` 出失败名集: **非空 ∧ 全在基线** → 返注记;
+ * **空集** (解析不出测试名 = 编译错/跑不起来/超时, INV-2) → null;
+ * **任一新名字不在基线** → null (D-3 fail-closed)。
+ *
+ * 注记原文含被赦免名单 (INV-3 响亮): `存量红赦免 (S-37 下沉): N 条失败全在基线 — <names>`。
+ * 这是 goal 层的**判断逻辑**: engine (dag 层) 不 import goal, 依赖方向不倒灌 (D-1)。
+ */
+export function makeBaselineWaiver(baselineFailSet: readonly string[]): (text: string) => string | null {
+  const baselineSet = new Set(baselineFailSet);
+  return (text: string): string | null => {
+    const after = extractFailSet(text);
+    if (after.length === 0) return null;
+    for (const n of after) if (!baselineSet.has(n)) return null;
+    return `存量红赦免 (S-37 下沉): ${after.length} 条失败全在基线 — ${after.join(', ')}`;
+  };
+}
+
 export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunGoalResult> {
   const stages: GoalStage[] = [];
   const sources: string[] = [];
@@ -926,9 +946,12 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
     // 护栏③: **只有可执行判据**才进环。非可执行判据的 `oracleOk` 恒 true, 给了它就等于第一轮必停。
     // 环外那个 `accept` 节点保留不动 —— 它仍是收尾时那次权威判定 (`oracleOk` 的取值源没变),
     // 环内这份只负责"能不能早点停", 两者判的是同一条命令, 不会给出相反的结论。
+    // S-37 下沉 (D-3, goal 层半): baselineSide 算出来了就把闭包挂进 freezeCriterion.waiveRed,
+    //   引擎在红点 (D-K 节点命令判红 / 环内冻结判据) 调用。缺席 → 闸缺席, 行为逐字节不变 (INV-1)。
+    const waiveRed = baselineSide !== undefined ? makeBaselineWaiver(baselineSide.failSet) : undefined;
     const execCfg =
       acceptance.kind === 'executable'
-        ? { ...config.dag, freezeCriterion: { command: acceptance.command, ...(acceptance.expectExit !== undefined ? { expectExit: acceptance.expectExit } : {}) } }
+        ? { ...config.dag, freezeCriterion: { command: acceptance.command, ...(acceptance.expectExit !== undefined ? { expectExit: acceptance.expectExit } : {}), ...(waiveRed ? { waiveRed } : {}) } }
         : config.dag;
     exec = await (config._runDag ?? runExecutorDagWithPlan)(execPlan, execCfg);
   } catch (err) {
