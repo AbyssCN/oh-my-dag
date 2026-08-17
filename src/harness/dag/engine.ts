@@ -2779,6 +2779,14 @@ async function executePlan(
         if (!ok && want !== 0) {
           logger.warn({ node: id, want, got: r.exitCode, blocked }, '[omd/executor-dag] command 节点未命中 expect_exit → failed (D-K)');
         }
+        // #167 (2026-08-17): command 绿也落 checkpoint —— **只当账, 不当闸**。此前刻意不落
+        // (重跑闸比跳过安全), 代价是 base 文件只可能 failed/skipped: run 68cfb43f 的 accept
+        // 红一攻绿一攻, 盘上只剩红那份, 验尸把一单成功读成判据红。resume 不跳的性质原样保住,
+        // 但执法点挪进 shouldSkip (leafKind==='command' 恒不跳) —— 账与闸各归各。
+        // filesTouched 传空: command 是闸不是产物生产者, 产物归属写它的节点 (可见性另有 write_set 位)。
+        if (ok) {
+          saveDoneCheckpoint({ id, kind: 'command', text: r.text, usage: r.usage, filesTouched: [], deps, t0: nodeStartedAt.get(id) ?? Date.now() });
+        }
         return {
           id,
           status: ok ? 'done' : 'failed',
@@ -2841,8 +2849,8 @@ async function executePlan(
         logger.info({ node: id, sources: r.sources.length, reportPath: r.reportPath }, '[omd/executor-dag] research 节点完成');
         // D-O: research 节点此前**没有绿 checkpoint** —— 于是每次 resume 都重跑一遍真联网检索
         // (实测 104s + token)。它正是最该被 resume 兜住的一类。
-        // 对照: command 节点**刻意不落绿 checkpoint** —— 它便宜 (这是它存在的理由) 且往往就是验收
-        // oracle, resume 时重跑一遍比"跳过一个闸"安全 (同 map 节点"lister 便宜, 重展开保正确")。
+        // 对照: command 节点绿 checkpoint **只当账不当闸** (#167): resume 仍恒重跑, 执法在
+        // shouldSkip 的 leafKind 卡 —— 它便宜且往往就是验收 oracle, 重跑比"跳过一个闸"安全。
         saveDoneCheckpoint({
           id,
           kind: 'research',

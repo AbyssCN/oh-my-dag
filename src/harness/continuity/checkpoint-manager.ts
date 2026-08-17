@@ -402,6 +402,12 @@ export class CheckpointManager {
     const cp = this.loadCheckpoint(runId, nodeId);
     if (!cp || cp.status !== 'done') return false;
 
+    // #167 (2026-08-17): command 节点恒不跳 —— 它的绿 checkpoint **只当账不当闸** (engine 的
+    // command 出口自此也落绿, base 文件不再只可能 failed/skipped)。command 便宜且往往就是验收
+    // oracle, resume 重跑一遍比"跳过一个闸"安全 —— 这条性质此前靠"不落绿"由构造成立, 现在
+    // 账要诚实了, 执法点收进这里 (单点, 两个消费者 resumeGreens∧shouldSkip 都经过本函数)。
+    if (cp.leafKind === 'command') return false;
+
     // D-O 输入面守卫: `generation` 只签图的**形态** (nodeIds + deps), 形态没变而上游重跑出**不同内容**
     // 时它一无所知 —— 于是下游被当绿跳过, 拿旧输入的产物冒充新输入的产物。这一段补的就是那个洞。
     if (cp.inputHashes && currentInputs) {
