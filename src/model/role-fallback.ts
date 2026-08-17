@@ -186,9 +186,13 @@ export interface PoolCheck {
 
 /**
  * **池子自检** (2026-07-29)。座位自检管不到这里 —— `config.pools` 是**第三条轴**:
- * 它不回答"某个座位用哪个模型", 而是"stamp pass 把节点判成 cheap 档时从哪几个坐标里轮换"。
- * 显式配了 pools 的档位 (config.pools 或 OMD_POOL_*) **完全不经过座位链** (`mcp/assemble.ts` 的 `cfgPools.x ?? 座位推导`),
- * 于是既躲开 env 覆盖, 也躲开 checkSeats —— 一池子欠费 provider 照样开跑, 直到 429/403 才炸。
+ * 它不回答"某个座位用哪个模型", 而是"某档从哪几个坐标里轮换"。
+ *
+ * ⚠ 时效订正 (#143, 2026-08-17): 「显式配了 pools 的档位完全不经过座位链」这句**已过期两处** ——
+ * stamp 在 SEAT-1 (2026-08-11) 后忽略 config.pools (assemble.ts 座位推导 + 响亮 warn),
+ * research 的 lens/judge 在 #143 后同样退役 (web-fanout 入口有会红的闸: 配了且≠座位当场 throw)。
+ * 今天仍真吃 config.pools 的只剩 multimodal* (能力硬约束, 刻意保留)。
+ * 本自检**保留**: 盘上还配着 pools 的仓, 这里是它欠费坐标唯一被看见的地方。
  *
  * 只查**显式配置**的池子: 未配的档位由座位推导而来, 那些坐标已被 checkSeats 覆盖, 重复查是噪声。
  */

@@ -19,7 +19,7 @@
  *   没有它, 前两条可以靠"把某发重复计数"之类的错法凑对, 也分不清恒等式是不是本来就假。
  */
 import { describe, expect, test } from 'bun:test';
-import { researchWebFanout, type WebFanoutOpts } from './web-fanout';
+import { assertResearchPoolsRetired, researchWebFanout, type WebFanoutOpts } from './web-fanout';
 import { PassthroughCleaner } from '../web/clean';
 import type { WebStack } from '../web';
 import type { FetchProvider, FetchResult, SearchResult } from '../web/types';
@@ -89,6 +89,7 @@ function opts(over: Partial<WebFanoutOpts>, call: NonNullable<WebFanoutOpts['_ca
     fusionModel: 'fake:fusion',
     divergePool: [],
     judgePool: [],
+    _configuredPools: () => ({}), // #143 密封: 不读机器上的 config/env pools
     _callModel: call,
     ...over,
   };
@@ -127,5 +128,33 @@ describe('researchWebFanout 账本恒等式: 每一发调用都进 costStats', (
 
     expect(r.fanout.costStats.perModel['fake:conductor']).toBeUndefined();
     expect(totalCalls(r.fanout.costStats)).toBe(calls());
+  });
+});
+
+describe('#143 config.pools 退役闸 (座位是唯一真源的 research 半)', () => {
+  const seats = { lens: 'prov:lens-seat', judge: 'prov:judge-seat' };
+
+  test('池与座位不一致 → 红 (旧行为是池静默赢; 证伪: 把 assertResearchPoolsRetired 的 throw 改回 warn 即此条红)', () => {
+    expect(() => assertResearchPoolsRetired({ lens: ['other:model'] }, seats)).toThrow(/#143.*lens/);
+    expect(() => assertResearchPoolsRetired({ judge: ['other:model'] }, seats)).toThrow(/#143.*judge/);
+    // 多坐标池即使**含**座位坐标也算不一致 —— 轮换行为与单座位不同, 不是"无差遗留"。
+    expect(() => assertResearchPoolsRetired({ lens: ['prov:lens-seat', 'other:model'] }, seats)).toThrow(/#143/);
+  });
+
+  test('池与座位逐字一致 (单坐标) → 不红, 只警告催删 (今天盘上仓的形状, 不断人跑)', () => {
+    expect(() => assertResearchPoolsRetired({ lens: ['prov:lens-seat'], judge: ['prov:judge-seat'] }, seats)).not.toThrow();
+  });
+
+  test('池缺席/空 → 闸无声', () => {
+    expect(() => assertResearchPoolsRetired({}, seats)).not.toThrow();
+    expect(() => assertResearchPoolsRetired({ lens: [], judge: [] }, seats)).not.toThrow();
+  });
+
+  test('接线: researchWebFanout 在花第一分钱之前就红 (零模型调用)', async () => {
+    const { call, calls } = countingCall();
+    await expect(
+      researchWebFanout(fakeStack(), 'q', opts({ _configuredPools: () => ({ lens: ['fake-legacy:pool-model'] }) }, call)),
+    ).rejects.toThrow(/#143/);
+    expect(calls()).toBe(0);
   });
 });

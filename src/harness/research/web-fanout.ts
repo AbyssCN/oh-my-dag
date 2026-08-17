@@ -25,6 +25,7 @@ import { repoProbe, renderRepoHits } from './repo-probe';
 import { normalizeUrl } from '../web/types';
 import type { WebStack } from '../web';
 import type { ModelUsage } from '../../model/types';
+import { logger } from '../logger';
 
 /** 通用 web 研究 lens (证据/批判/实践三视角, 各 3 sub-angle)。领域研究覆盖之。 */
 export const DEFAULT_WEB_LENSES: ResearchLens[] = [
@@ -72,7 +73,10 @@ export const DEFAULT_WEB_STABLE_PREFIX =
  *
  * 这里只保留导出名(eval 脚本按名引用)。搬家的理由见那个文件的头注:池是**选择**不是事实表,
  * 而"改一个选择要改代码+提交"正是 owner 撞了一整天的那堵墙。
- * 运行期解析序:调用方显式 > `OMD_POOL_LENS`/`OMD_POOL_JUDGE` > `.omd/config.json` 的 pools 段 > 这里。
+ * 运行期解析序 (#143, 2026-08-17 改): 调用方显式 opts > **座位** (缺省, 池缺席 = 直用
+ * lens/judge 座)。`config.pools` / `OMD_POOL_LENS/JUDGE` 那层**已退役** —— 它是压过座位的
+ * 第二真源, 实测全 run 输入的 65% (gen 42% + judge 23%) 由它静默决定, 换座要人肉双改。
+ * 本常量保留导出只作显式 opts 的素材 (eval/实验要跨族发散时自带), 不再是缺省。
  */
 export const LENS_DIVERGENCE_POOL = [...(POOL_DEFAULTS.lens ?? [])];
 /** 发散权重 (coord→权重)。今天为空 —— 它当初只为那条已撤掉的 mimo 订阅坐标存在。 */
@@ -99,11 +103,13 @@ export interface WebFanoutOpts extends RetrieveOpts {
   reasonModel?: string;
   reduceModel?: string;
   judgeModel?: string;
-  /** 跨家族发散池覆盖 (省略 → LENS_DIVERGENCE_POOL; 传 [] 或单坐标数组 = 关发散, mono baseline)。 */
+  /** 跨家族发散池覆盖 (#143: 省略 → 不发散, gen 全走 lens 座; 显式传池才轮转)。 */
   divergePool?: string[];
   divergeWeights?: Record<string, number>;
-  /** judge panel 跨族池覆盖 (省略 → JUDGE_PANEL_POOL)。 */
+  /** judge panel 跨族池覆盖 (#143: 省略 → 全维度走 judge 座; 显式传池才轮转)。 */
   judgePool?: string[];
+  /** #143 退役闸的池读取注入口 (测试密封; 省略 = 读 config/env)。 */
+  _configuredPools?: () => { lens?: string[]; judge?: string[] };
   /** fusion 融合分析模型 (省略 → `fusion` 座)。收敛单发。 */
   fusionModel?: string;
   /** graft 终笔模型 (省略 → `graft` 座)。eval 用它测臂级对照 (单变量旋钮)。 */
@@ -294,11 +300,49 @@ export function buildSecondPassProbe(
  * web 研究一条龙。检索零结果 → 抛 (无语料无从研究)。
  * 模型默认全 flash (reason 用 pro 慢但推理厚; 覆盖走 opts/env)。
  */
+/**
+ * #143 会红的闸: `config.pools` 的 lens/judge 层已退役 (座位是唯一真源, SEAT-1 的 research 半)。
+ * 配了且**与座位不一致** = 两个真源打架 → 当场 throw, 不许静默挑一个 (旧行为是池赢, 于是改座位
+ * 对 research 完全无效, 2026-08-15 实踩)。配了且一致 = 纯遗留 → 警告催删, 不断人跑。
+ * 反向自检: web-fanout.test.ts 把池与座位配成不同坐标, 断言它真的红 (删掉本闸那条测试即红)。
+ */
+export function assertResearchPoolsRetired(
+  pools: { lens?: string[]; judge?: string[] },
+  seats: { lens: string; judge: string },
+): void {
+  for (const tier of ['lens', 'judge'] as const) {
+    const pool = pools[tier];
+    if (!pool?.length) continue;
+    const consistent = pool.length === 1 && pool[0] === seats[tier];
+    if (!consistent) {
+      throw new Error(
+        `#143 config.pools.${tier} 已退役且与座位不一致: 池 [${pool.join(', ')}] ≠ ${tier} 座 ${seats[tier]}。` +
+          `座位是唯一真源 —— 删掉 config.json 的 pools.${tier} (改档走 omd_set_role / config.models); ` +
+          `实验要跨族发散用调用方 opts.divergePool/judgePool。`,
+      );
+    }
+    logger.warn(
+      { tier, pool, seat: seats[tier] },
+      '[omd/research] config.pools 已失效并被忽略 (#143: 座位是唯一真源) — 与座位一致, 行为无差; 请删掉 config.json 的 pools 段',
+    );
+  }
+}
+
 export async function researchWebFanout(
   stack: WebStack,
   question: string,
   opts: WebFanoutOpts = {},
 ): Promise<WebFanoutResult> {
+  // #143: 检索之前先验池 —— 配置打架要在花第一分钱之前红。比的是 config.pools vs **座位**
+  // (config.models), 不掺 opts 覆盖: opts 是调用方实验旋钮, 不是会漂的持久配置。
+  // 池空 → 零座位解析零日志 (闸缺席即无声)。`_configuredPools` 是测试密封口 (同 _callModel 范式)。
+  const legacyPools = (opts._configuredPools ?? configuredPools)();
+  if (legacyPools.lens?.length || legacyPools.judge?.length) {
+    assertResearchPoolsRetired(legacyPools, {
+      lens: resolveRoleModelConfigured('lens').model,
+      judge: resolveRoleModelConfigured('judge').model,
+    });
+  }
   opts.onStage?.('retrieve', `检索 "${question}" (mode=${opts.mode ?? 'rotate'})`);
   const retrieval = await retrieveWeb(stack, question, opts);
   if (retrieval.sources.length === 0) throw new Error('researchWebFanout: 检索零结果, 无语料可研究');
@@ -399,12 +443,12 @@ export async function researchWebFanout(
     reasonModel,
     reduceModel: opts.reduceModel,
     judgeModel: opts.judgeModel,
-    // 跨家族发散 (统一 rotateFamilies): lens+synth 走发散池, judge panel 走 judge 池; 终局 fusion/graft 单强不发散。
-    // 解析序: 调用方显式 > `.omd/config.json` 的 pools 段 (或 OMD_POOL_LENS/OMD_POOL_JUDGE) > 源码默认。
-    // 中间那层是 2026-08-05 加的 —— 在那之前改一个判优池要改代码+跑测试+提交, 而池是**选择**不是事实表。
-    divergePool: opts.divergePool ?? configuredPools().lens ?? LENS_DIVERGENCE_POOL,
+    // 跨家族发散 (统一 rotateFamilies): 只在调用方**显式给池**时发生 (#143, 2026-08-17)。
+    // 缺省 = 池缺席 → fanout 直用 lensModel/judgeModel (座位解析), 于是换座即生效, 零第二真源。
+    // 旧解析序里 config.pools 与源码白名单都压过座位 —— 那层已退役 (入口有会红的闸)。
+    divergePool: opts.divergePool,
     divergeWeights: opts.divergeWeights ?? LENS_DIVERGENCE_WEIGHTS,
-    judgePool: opts.judgePool ?? configuredPools().judge ?? JUDGE_PANEL_POOL,
+    judgePool: opts.judgePool,
     // 座位化 (owner 2026-08-15): 两者省略即落 `fusion` / `graft` 座 (fanout.ts 内层解析)。
     // 此前这里把 graft 覆盖成 judge 座, 而 fanout.ts 内层默认是 reasonModel —— 两个调用方两个默认。
     fusionModel: opts.fusionModel,
