@@ -13,8 +13,11 @@
  *      → read 录的快照, edit 一定验得到 (同 key 命中)。两工具不可各持一份 store。
  *   2. read 录快照前必**归一化** (stripBom + normalizeToLF), 与 Patcher 内部归一一致 → 标签可直接命中
  *      快路径 (live hash == section tag), 不每次走 recovery。
- *   3. **fail-soft**: parse 错 / stale 标签 / 越界锚点 → 返**文本结果**(非 throw), 文本明确指示弱模型
+ *   3. **fail-soft**: parse 错 / 越界锚点 → 返**文本结果**(非 throw), 文本明确指示弱模型
  *      「STOP 并重 read」→ agent loop 不中断, 模型自我纠偏。这是弱模型 edit 韧性的核心 (prompt.md <rules>)。
+ *   4. **stale 闸 (s2, 杠杆 4)**: edit 撞 stale 标签 → MismatchError 时该 path 入闸; 后续 edit 同一 path
+ *      未先 hashline_read 整拒 (fail-closed 文本, 不 throw 中断 loop)。read 成功 = 接地, 清闸。
+ *      治弱模型「stale 被拒后继续叠行号编辑 → 复合腐烂」 (#146 反面样本)。
  *
  * 接线: createHashlineTools() → ToolDefinition[] → createAgentLeafRunner({ customTools })。
  * 新建文件仍走 pi 原生 `write` (hashline 只编辑已存在文件)。
@@ -154,6 +157,13 @@ export function createHashlineTools(opts: HashlineToolsOpts = {}): HashlineTools
   const snapshots: SnapshotStore = opts.snapshots ?? new InMemorySnapshotStore();
   const patcher = new Patcher({ fs, snapshots });
 
+  // s2 stale 闸闭包状态 (杠杆 4): path → true = 该 path 上一次 hashline_edit 撞 MismatchError
+  // 后未重新 hashline_read。后续 hashline_edit 整拒 (fail-closed 文本, 不 throw 中断 loop)。
+  // INV-4 (s2): 不 throw, loop 不断; 文本含「未执行」语义与明确下一步。
+  // D-4: read 成功 = 接地 → 清集; edit 成功 = 自带新 #TAG 回执 = 接地等价 → 不入集。仅被拒入集。
+  // INV-1: 不触发时 (read 正常 / edit 正常 / 多文件 patch 无在集 path) 行为逐字节不变。
+  const staleSince = new Map<string, true>();
+
   const readTool: OmdTool<Record<string, unknown>> = {
     name: 'hashline_read',
     label: 'Hashline Read',
@@ -185,10 +195,11 @@ export function createHashlineTools(opts: HashlineToolsOpts = {}): HashlineTools
           reason: 'read_error',
         });
       }
-
       // 归一与 Patcher 内部一致 (stripBom + LF), 录快照 → 标签可命中编辑快路径。
       const normalized = normalizeToLF(stripBom(raw).text);
       const key = fs.canonicalPath(path);
+      // s2: 成功 read = 该 path 重新接地, 清 stale 闸 (INV-4: read 后同 path 编辑恢复可用)。
+      staleSince.delete(key);
       const tag = snapshots.record(key, normalized);
       const header = formatHashlineHeader(path, tag);
 
@@ -241,6 +252,19 @@ export function createHashlineTools(opts: HashlineToolsOpts = {}): HashlineTools
         );
       }
 
+      // s2 stale 闸 (D-3): 任一目标 path 在 staleSince 集 → 整拒 (GWT-6), 部分 apply 比全拒更坏。
+      // 顺序在 parse 之后, 空 patch/parse 错仍走原 reject 路径 (不浪费闸)。
+      const blockedPaths: string[] = [];
+      for (const p of hashlinePatchPaths(patch)) {
+        if (staleSince.has(fs.canonicalPath(p))) blockedPaths.push(p);
+      }
+      if (blockedPaths.length > 0) {
+        return textResult(
+          `BLOCKED: 以下文件上一次编辑因 stale 被拒且尚未重新 hashline_read —— 先 read 再编辑 (本次编辑未执行):\n${blockedPaths.map((p) => `  - ${p}`).join('\n')}`,
+          { ok: false, reason: 'stale_unre-grounded', blockedPaths },
+        );
+      }
+
       try {
         const result = await patcher.apply(parsed);
         const summary = result.sections
@@ -268,6 +292,10 @@ export function createHashlineTools(opts: HashlineToolsOpts = {}): HashlineTools
       } catch (err) {
         // stale 标签 / 越界锚点 → fail-soft 文本, 指示模型重 read (不 throw 中断 loop)。
         if (err instanceof MismatchError) {
+          // s2 stale 闸入集 (D-3): MismatchError = 标签与文件不符, 该 path 在重 read 之前的所有
+          // hashline_edit 都拒。INV-4: 不 throw, loop 不断; 文本含明确下一步。
+          // D-4: 仅被拒入集, apply 成功自带新 #TAG 等价接地, 不入集。
+          if (err.path) staleSince.set(fs.canonicalPath(err.path), true);
           return textResult(`STALE: 标签与文件当前内容不符, 已拒绝。STOP 并重 hashline_read 接地后再编辑。\n${err.displayMessage}`, {
             ok: false,
             reason: 'stale_tag',

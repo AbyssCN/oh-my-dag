@@ -114,6 +114,17 @@ export interface AgentLeafResult {
     advisorFiredAt: number | null;
     /** grind advisor 诊断原文 (S3)。缺席/undefined = 没触发; 触发时非空, 与 `advisorFiredAt` 成对。 */
     advisorAdvice?: string;
+    /**
+     * grind 二档 wrap-up 触发时刻 (2026-08-17, #146), 距叶启动的相对毫秒数, 同 `advisorFiredAt` 口径。
+     * 恒写: `null` = 量过了且没触发 (INV-5)。触发后保持非空, 严格次于 advisor, 各至多 1 次。
+     * 缺席 = 老记录 (该 runner 不统计新档), 不代表「没触发」。
+     */
+    wrapupFiredAt: number | null;
+    /**
+     * grind 三档 abort 是否触发 (2026-08-17, #146)。boolean —— `false` = 量过且没发生,
+     * `true` = 三档全过仍停滞, 节点判 failed + failureKind 'spin-fused' (INV-5)。
+     */
+    abortedByGrind: boolean;
     spin?: { spinEvents: number; maxSameCount: number };
   };
   /**

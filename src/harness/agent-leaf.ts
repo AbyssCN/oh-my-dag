@@ -391,13 +391,24 @@ export interface AgentLeafRunnerOpts {
  */
 export const GRIND_WALL_MS = 600_000;
 export const GRIND_STALL_MS = 300_000;
+/**
+ * grind 二档阶梯 (2026-08-17, #146): advisor 触发后再停滞这些毫秒 → 注入强制收尾指令;
+ * 同条纪律 —— 只问「还活着吗」, CPU / 字节数依然禁入。
+ */
+export const GRIND_WRAPUP_MS = 300_000;
+export const GRIND_ABORT_MS = 600_000;
 
-/** shouldFireGrindAdvisor 的输入快照 (纯数据; 同形于 runOnce 里同作用域的状态)。 */
+/** shouldFireGrindAdvisor / nextGrindAction 的输入快照 (纯数据; 同形于 runOnce 里同作用域的状态)。 */
 export interface GrindAdvisorSnapshot {
   startedAtMs: number;
   nowMs: number;
   lastTouchGrowthAtMs: number;
   advisorFiredAt: number | null;
+  /**
+   * wrap-up 触发时刻 (距 startedAtMs 的相对毫秒数, 与 advisorFiredAt 同口径)。
+   * 缺席 = 老调用方/老谓词, nextGrindAction 仍按未触发处理。INV-5: null = 未触发。
+   */
+  wrapupFiredAt?: number | null;
 }
 
 /** askAdvisor 收到的一次性诊断上下文 (测试钉的就是这个形状)。 */
@@ -416,6 +427,31 @@ export interface GrindAdvisorContext {
 export function shouldFireGrindAdvisor(s: GrindAdvisorSnapshot): boolean {
   if (s.advisorFiredAt !== null) return false;
   return s.nowMs - s.startedAtMs > GRIND_WALL_MS && s.nowMs - s.lastTouchGrowthAtMs >= GRIND_STALL_MS;
+}
+
+/**
+ * grind 三档阶梯纯谓词 (2026-08-17, #146): advisor → wrapup → abort, 严格次序, 各至多一次。
+ * stall 仍读 lastTouchGrowthAtMs —— 模型收到建议/收尾指令后真动了 (touched 有新增), 钟随
+ * touch 重置, 高档不再触发 (INV-2)。返回值 = 当前该走的下一步; null = 不动。
+ */
+export function nextGrindAction(s: GrindAdvisorSnapshot): 'advisor' | 'wrapup' | 'abort' | null {
+  const wall = s.nowMs - s.startedAtMs;
+  const stall = s.nowMs - s.lastTouchGrowthAtMs;
+  // 一档 advisor: 双条件齐备 + 尚未触发
+  if (s.advisorFiredAt === null) {
+    if (wall > GRIND_WALL_MS && stall >= GRIND_STALL_MS) return 'advisor';
+    return null;
+  }
+  // 二档 wrapup: advisor 已触发 + 距 advisor 触发 ≥ GRIND_WRAPUP_MS + 仍停滞
+  const sinceAdvisor = s.nowMs - s.advisorFiredAt;
+  if (s.wrapupFiredAt === null || s.wrapupFiredAt === undefined) {
+    if (sinceAdvisor >= GRIND_WRAPUP_MS && stall >= GRIND_STALL_MS) return 'wrapup';
+    return null;
+  }
+  // 三档 abort: wrapup 已触发 + 距 wrapup 触发 ≥ GRIND_ABORT_MS + 仍停滞
+  const sinceWrapup = s.nowMs - s.wrapupFiredAt;
+  if (sinceWrapup >= GRIND_ABORT_MS && stall >= GRIND_STALL_MS) return 'abort';
+  return null;
 }
 
 /**
@@ -1229,6 +1265,11 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // SDK 通道无该钩子, 建议只落 watchdog 记录, 同 parseFeedback 那条通道边界)。
     let lastTouchGrowthAtMs = startedAt;
     let pendingGrindAdvice: string | undefined;
+    // grind 三档阶梯状态 (2026-08-17, #146): wrapupFiredAt 恒写 (null = 没触发, 同
+    // advisorFiredAt 那条「量过且没发生」口径); abortedByGrind 恒写 boolean (false = 量过且没发生,
+    // 同 stalled/timedOut 口径 —— INV-5)。
+    let wrapupFiredAt: number | null = null;
+    let abortedByGrind = false;
     const hardTimer =
       timeoutMs > 0
         ? setTimeout(() => {
@@ -1250,10 +1291,20 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
         controller.abort();
       }, idleTimeoutMs);
     };
-    // S3 grind 软看门狗 (2026-08-17, #124): 与 armIdle/hardTimer 同一处挂闸 —— 双条件
-    // (墙钟 > GRIND_WALL_MS 且 GRIND_STALL_MS 内 touched 零新增) 都满足才算研磨。命中 →
-    // escalation 座位发一次指导并注进下一回合; advisorFiredAt 同步占位 (谓词短路 + 异步
-    // 窗口双保险) = 每叶至多 1 次。失败只吞不截停 (软介入语义)。
+    // S3 grind 三档阶梯 (2026-08-17, #124 + #146): 与 armIdle/hardTimer 同一处挂闸 ——
+    // nextGrindAction 纯谓词判档 (advisor→wrapup→abort), 各至多一次, 不开新轮询。advisor 档
+    // 双条件 (墙钟 > GRIND_WALL_MS 且 GRIND_STALL_MS 内 touched 零新增) → 异步发指导注下一回合;
+    // wrapup 档 = advisor 后再停滞 GRIND_WRAPUP_MS → 注入强制收尾指令 (与 advisor 同通道
+    // pendingGrindAdvice); abort 档 = wrapup 后再停滞 GRIND_ABORT_MS → controller.abort() +
+    // spinFused 写三档时间线 (failureKind 'spin-fused', 同 drift 熔断那条优雅停路)。
+    // 失败只吞不截停的纪律仅适用 advisor 档 (软介入语义); wrapup/abort 是硬动作。
+    //
+    // wrap-up 注入文本 (与 advisor 走同一条 transformContext user-msg 通道):「立即停止继续尝试,
+    // 用 ≤2 个工具调用收尾: 把当前已完成部分落盘/汇报, 说明未完成项与原因, 然后结束」。
+    const GRIND_WRAPUP_INSTRUCTION =
+      '「强制收尾指令」: 你已研磨超过一级 advisor + 二级 wrap-up 阈值仍未推进。立即停止继续尝试, ' +
+      '用 ≤2 个工具调用收尾: 把当前已完成部分落盘/汇报, 说明未完成项与原因, 然后结束。' +
+      '不要继续尝试新的修改路径 —— 直接交还不完整结果。';
     const askAdvisor = opts.deps?.askAdvisor ?? (async (ctx: GrindAdvisorContext): Promise<string> => {
       const seat = resolveRoleModelConfigured('escalation');
       const res = await callModel({
@@ -1276,33 +1327,74 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       pendingGrindAdvice = undefined;
       return advice;
     };
-    const maybeFireGrindAdvisor = (): void => {
+    // 三档统一闸: nextGrindAction 判档 → 各档就地处理。advisor 档异步发指导, wrapup 档同步
+    // 塞 user-msg 进下回合, abort 档同步 controller.abort() + spinFused 写时间线 (节点判
+    // spin-fused, 失败正文带 advisor/wrapup/abort 三档各自的时刻 + stall)。
+    const maybeFireGrindEscalation = (): void => {
       const nowMs = now();
-      if (!shouldFireGrindAdvisor({ startedAtMs: startedAt, nowMs, lastTouchGrowthAtMs, advisorFiredAt })) return;
-      advisorFiredAt = nowMs;
+      const action = nextGrindAction({
+        startedAtMs: startedAt,
+        nowMs,
+        lastTouchGrowthAtMs,
+        advisorFiredAt,
+        wrapupFiredAt,
+      });
+      if (action === null) return;
+      if (action === 'advisor') {
+        advisorFiredAt = nowMs;
+        logger.warn(
+          { cwd, goal: prompt, wallMs: nowMs - startedAt, stallMs: nowMs - lastTouchGrowthAtMs },
+          '[agent-leaf] grind 一档命中 → escalation advisor 软介入 (不截停)',
+        );
+        askAdvisor({ startedAtMs: startedAt, nowMs, lastTouchGrowthAtMs, cwd, goal: prompt })
+          .then((advice) => {
+            const trimmed = typeof advice === 'string' ? advice.trim() : '';
+            if (!trimmed) return;
+            advisorAdvice = trimmed;
+            pendingGrindAdvice = trimmed;
+          })
+          .catch((err: unknown) => {
+            logger.warn(
+              { err: (err as Error)?.message ?? String(err) },
+              '[agent-leaf] grind advisor 调用失败 (已吞, 软介入不截停)',
+            );
+          });
+        return;
+      }
+      if (action === 'wrapup') {
+        wrapupFiredAt = nowMs;
+        pendingGrindAdvice = GRIND_WRAPUP_INSTRUCTION;
+        logger.warn(
+          { cwd, goal: prompt, sinceAdvisorMs: nowMs - (advisorFiredAt ?? nowMs), stallMs: nowMs - lastTouchGrowthAtMs },
+          '[agent-leaf] grind 二档命中 → 注入强制收尾指令 (不截停, 留给模型两轮收尾机会)',
+        );
+        return;
+      }
+      // action === 'abort': 三档全过且仍停滞 → 硬截停 + spin-fused 标记。失败正文含三级时间线,
+      // 供 escalation 的定向重派辨别这是 advisor/wrapup 都没救回来的真研磨 (而非 drift 熔断
+      // 那条同样判 spin-fused 但原因不同的路)。
+      abortedByGrind = true;
+      const sinceStart = nowMs - startedAt;
+      const stallAtAbort = nowMs - lastTouchGrowthAtMs;
+      const advisorAt = advisorFiredAt !== null ? advisorFiredAt - startedAt : null;
+      const wrapupAt = wrapupFiredAt !== null ? wrapupFiredAt - startedAt : null;
+      const timeline =
+        `grind 三档阶梯命中 abort: ` +
+        `advisor=${advisorAt}ms wrapup=${wrapupAt}ms abort=${sinceStart}ms ` +
+        `stallAtAbort=${stallAtAbort}ms`;
+      spinFused = timeline;
       logger.warn(
-        { cwd, goal: prompt, wallMs: nowMs - startedAt, stallMs: nowMs - lastTouchGrowthAtMs },
-        '[agent-leaf] grind 双条件命中 → escalation advisor 软介入 (不截停)',
+        { cwd, goal: prompt, timeline },
+        '[agent-leaf] grind 三档阶梯命中 abort → controller.abort() (spin-fused)',
       );
-      askAdvisor({ startedAtMs: startedAt, nowMs, lastTouchGrowthAtMs, cwd, goal: prompt })
-        .then((advice) => {
-          const trimmed = typeof advice === 'string' ? advice.trim() : '';
-          if (!trimmed) return;
-          advisorAdvice = trimmed;
-          pendingGrindAdvice = trimmed;
-        })
-        .catch((err: unknown) => {
-          logger.warn(
-            { err: (err as Error)?.message ?? String(err) },
-            '[agent-leaf] grind advisor 调用失败 (已吞, 软介入不截停)',
-          );
-        });
+      controller.abort();
     };
     function noteProgress(): void {
       if (idleTimer) clearTimeout(idleTimer);
       armIdle();
-      maybeFireGrindAdvisor();
+      maybeFireGrindEscalation();
     }
+    armIdle();
     armIdle();
 
     const context: AgentContext = {
@@ -1502,22 +1594,26 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       // watchdog: S1 埋点 —— stalled/timedOut 恒写 boolean (false = 量过了且没发生, 不用缺席表示),
       // advisorFiredAt 恒写 (null = 没触发, 同"量过且没发生"口径); advisorAdvice 缺席 = 没触发。
       // spin 子字段沿用同一份 spinSummary、同一条「仅 spinEvents>0 才出现」惯例。
+      // 口径统一 (2026-08-17, INV-5): 本结构里所有时刻一律**相对 startedAt 的毫秒数**
+      // (touchTimelineMs/toolTimelineMs 一直如此)。advisorFiredAt 旧版曾写绝对纪元 ——
+      // 存量 checkpoint 里 >1e12 的值即旧口径, 读旧语料时按此辨别。
       watchdog: {
         stalled,
         timedOut,
         touchTimelineMs,
         toolTimelineMs,
-        advisorFiredAt,
+        advisorFiredAt: advisorFiredAt !== null ? advisorFiredAt - startedAt : null,
         advisorAdvice,
+        // grind 三档阶梯收尾 (INV-5, 2026-08-17): wrapupFiredAt 同 advisorFiredAt 口径
+        // (null = 没触发, 相对毫秒); abortedByGrind 同 stalled/timedOut 口径 (boolean)。
+        wrapupFiredAt: wrapupFiredAt !== null ? wrapupFiredAt - startedAt : null,
+        abortedByGrind,
         ...(spinSummary && spinSummary.spinEvents > 0
           ? { spin: { spinEvents: spinSummary.spinEvents, maxSameCount: spinSummary.maxSameCount } }
           : {}),
       },
     };
   };
-
-  // per-call 状态 (session + mcpAllow) 一次 run() 落进 ALS: 引擎侧 runId 与 node.mcp ∪ 模板卡
-  // mcp 都只在调用期可知 (runner 跨 run/跨节点复用) → 不能烤进装配期。用 run() 开**独立 async
   // 上下文** —— 并发调用各一个上下文互不串。⚠ 不用 enterWith: 它在同步前缀里改的是**调用方
   // (引擎) 的共享上下文**, 并发节点会互相覆盖 (withScope 文档明说的坑); run() 的上下文随调用
   // 结束自动回收, 无需 exit。

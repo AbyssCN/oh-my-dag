@@ -145,7 +145,8 @@ describe('agent leaf S3 软看门狗 (注入时钟 + 假 advisor)', () => {
 
     // 单触发: askAdvisor 整轮只被叫 1 次 (谓词短路 + advisorFiredAt!==null 闸共同保证)
     expect(askAdvisorCalls).toBe(1);
-    expect(r.watchdog?.advisorFiredAt).toBe(fakeNowMs);
+    // 口径统一 (2026-08-17): checkpoint 里的时刻一律相对 startedAt (与 touch/tool 时间线同)
+    expect(r.watchdog?.advisorFiredAt).toBe(fakeNowMs - startedAtMs);
     expect(r.watchdog?.advisorAdvice).toBe(fakeAdvice);
     expect(r.watchdog?.advisorAdvice).not.toBe('');
     // askAdvisor 收到的 ctx 形状逐字段对得上
@@ -225,7 +226,7 @@ describe('agent leaf S3 软看门狗 (注入时钟 + 假 advisor)', () => {
 
       // 软介入**仍**触发 (grindAdvisorHardStop=false 不挡 askAdvisor)
       expect(askAdvisorCalls).toBe(1);
-      expect(r.watchdog?.advisorFiredAt).toBe(fakeNowMs);
+      expect(r.watchdog?.advisorFiredAt).toBe(fakeNowMs - startedAtMs);
       // 但**不**截停:
       //  - S1 契约: stalled/timedOut 恒写 boolean (false = 量过了且没发生)
       expect(r.watchdog?.stalled).toBe(false);
