@@ -60,7 +60,17 @@ function crystallizedSdds(root: string): { file: string; union: string[] }[] {
 
 // ─── 冻结接口实现 ────────────────────────────────────────────────────────────
 
-export function ignitionPreflight(root: string, myWriteSet: string[], opts?: { force?: boolean }): PreflightReport {
+export function ignitionPreflight(
+  root: string,
+  myWriteSet: string[],
+  opts?: {
+    force?: boolean;
+    /** 测试/外部注入: 替身 `crystallizedSdds(root)` —— 用于断言「不走磁盘扫描」或注入假数据。 */
+    crystallizedProvider?: (root: string) => { file: string; union: string[] }[];
+    /** 票源真值 (D-1): 当 ticket 自带写集 → crystallized advisory 按票读, **不**触发 docs/plan 目录扫描。 */
+    ticketSource?: { writeSet: string[] };
+  },
+): PreflightReport {
   const mine = new Set(myWriteSet);
   const live = liveRuns(readBoard(root));
 
@@ -72,9 +82,15 @@ export function ignitionPreflight(root: string, myWriteSet: string[], opts?: { f
   }
 
   // ③ 已结晶未点火 SDD 相交 → 只进 advisories (D-1/D-10)。
+  //    票上有 writeSet 真源 → 按票读 (注入 provider **不**被调, 零磁盘访问);
+  //    票缺席 → 回落 provider ?? 今天的目录扫描 (crystallizedSdds 内部已 try/catch fail-open)。
   const advisories: string[] = [];
   if (mine.size > 0) {
-    for (const sdd of crystallizedSdds(root)) {
+    const crystallized =
+      opts?.ticketSource?.writeSet !== undefined
+        ? [{ file: '(ticket)', union: opts.ticketSource.writeSet }]
+        : (opts?.crystallizedProvider?.(root) ?? crystallizedSdds(root));
+    for (const sdd of crystallized) {
       const sddSet = new Set(sdd.union);
       const overlap = sdd.union.filter((f) => mine.has(f)).sort();
       if (overlap.length === 0) continue;

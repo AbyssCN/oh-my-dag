@@ -14,7 +14,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadSddContract, parseBreakdown } from './sdd-direct';
+import { loadSddContract, parseBreakdown, ticketFieldsFromSdd } from './sdd-direct';
 import { runGoal, type RunGoalConfig } from './run-goal';
 import type { AcceptanceSpec, GoalClassification } from './classify-acceptance';
 import type { ConductorPlan } from '../conductor-plan';
@@ -280,6 +280,55 @@ describe('parseBreakdown — 表解析 (切片 1)', () => {
         ),
       ),
     ).not.toThrow();
+  });
+});
+
+describe('ticketFieldsFromSdd — 挂票字段机械提取 (切片 6 后置, D-3 #ticket 写集)', () => {
+  test('真实样例: 多切片分解表 → 各片写集并集去重保首次出现序 + sddPath 原样回', () => {
+    // 这张表故意让 1 与 3 共享 `src/x.ts`, 验证并集去重; 切片 2 自带 `+ test` 简写展开。
+    const sdd = [
+      '# 契约',
+      '## 契约 (Contracts)',
+      '- G-1',
+      '## 分解 (Breakdown)',
+      '',
+      '| 切片 | 写集 | 依赖 | verify |',
+      '|---|---|---|---|',
+      '| 1 a | src/x.ts | — | bun test src/x.test.ts |',
+      '| 2 b | src/y.ts + test | 1 | bun test src/y.test.ts |',
+      '| 3 c | src/x.ts, src/z.ts | 1 | bun test src/z.test.ts |',
+      '',
+    ].join('\n');
+    const p = tmpSdd(sdd);
+    const got = ticketFieldsFromSdd(p);
+    // 保序: 1 的写集整段进 → 2 的 `+ test` 兄弟接上 → 3 重复的 x.ts 跳过, z.ts 收尾。
+    expect(got.writeSet).toEqual(['src/x.ts', 'src/y.ts', 'src/y.test.ts', 'src/z.ts']);
+    expect(got.sddPath).toBe(p);
+  });
+
+  test('闸: SDD 缺契约段 → throw (沿 loadSddContract 的 fail-loud, 不返空字段)', () => {
+    // 证伪: 把 helper 改成 swallow parseBreakdown 错误返 `{ writeSet: [], sddPath }` → 这条红
+    // (下游票会得到空 `Write-set:` 锚, 闸缺席而读侧以为「承诺了」)。
+    const p = tmpSdd('# t\n## 分解 (Breakdown)\n| 1 a | src/a.ts | — | bun test |');
+    expect(() => ticketFieldsFromSdd(p)).toThrow(/契约/);
+  });
+
+  test('闸: SDD 缺分解段 → throw', () => {
+    const p = tmpSdd('# t\n## 契约 (Contracts)\n- G-1');
+    expect(() => ticketFieldsFromSdd(p)).toThrow(/分解/);
+  });
+
+  test('闸: 写集为空表 (闸 fail-loud) → throw', () => {
+    const p = tmpSdd(
+      ['# t', '## 契约 (Contracts)', '- G-1', '## 分解 (Breakdown)', '',
+        '| 切片 | 写集 | 依赖 | verify |', '|---|---|---|---|',
+        '| 1 a | — | — | bun test |', ''].join('\n'),
+    );
+    expect(() => ticketFieldsFromSdd(p)).toThrow(/写集/);
+  });
+
+  test('闸: 文件不存在 → throw', () => {
+    expect(() => ticketFieldsFromSdd('/nonexistent/x.md')).toThrow(/读不到/);
   });
 });
 

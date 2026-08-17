@@ -57,6 +57,10 @@ export interface NewTicket {
   parentId?: string;
   /** task 票用: slice 编译器执行器种类 (md path_add 透传, 保留)。 */
   executorKind?: ExecutorKind;
+  /** 票承诺改动的文件清单 (NULL≠0: 缺席 = 不承诺, 显式 `[]` = 承诺但本轮空改)。gh 后端走正文锚 `Write-set:` 往返。 */
+  writeSet?: string[];
+  /** 票承诺遵循的 SDD 路径。gh 后端走正文锚 `Sdd-path:` 往返。 */
+  sddPath?: string;
   /** 显式 id (md; 省略 = 自动)。gh 忽略 (id 由 issue number 定)。 */
   id?: string;
   /**

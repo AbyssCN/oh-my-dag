@@ -184,3 +184,18 @@ export function parseBreakdown(text: string): SddBreakdown {
     : undefined;
   return waves?.length ? { slices, waves } : { slices };
 }
+/**
+ * 从 SDD 落盘路径机械提取挂票要带的两样: 各切片写集的并集 + sddPath 本体。
+ *
+ * 复用 parseBreakdown —— 不重写第二遍, 不抄一遍表解析; 写集并集用 Set 保首次出现序
+ * (slice 编号是稳定的, 哈希去重后顺序仍可复演)。**解析失败 → throw** (fail-loud 与
+ * loadSddContract / parseBreakdown 同款, 缺段或表坏时宁可不挂票也不静默塞空)。
+ *
+ * 闸 C「契约段产物复用」的同一条消费通路在 runGoal 那侧复用 contract.text —— 这里只取
+ * 挂票要的两样, 不返合同全文 (那是 SddContract 的事)。
+ */
+export function ticketFieldsFromSdd(sddPath: string): { writeSet: string[]; sddPath: string } {
+  const { text } = loadSddContract(sddPath);
+  const writeSet = [...new Set(parseBreakdown(text).slices.flatMap((s) => s.writeSet))];
+  return { writeSet, sddPath };
+}

@@ -30,6 +30,10 @@ type ParsedTicket = Partial<StoredTicket> & {
   dispatchStartedAt?: string;
   dispatchFinishedAt?: string;
   dispatchOutcome?: string;
+  // D-3 #ticket 写集 (md 锚名沿 gh 面 `Write-set:` / `Sdd-path:`, 完全一致)。
+  // 字段名用 camelCase (TS 标识符), 实际锚行写为 `Write-set:` / `Sdd-path:`, 与 gh 文件可互读。
+  writeSet?: string[];
+  sddPath?: string;
 };
 
 // ── 路径 helper (与纯 render/parse 分离) ──────────────────────────────────────
@@ -64,6 +68,10 @@ function renderTicket(t: Ticket): string {
   if (t.blockedByDelivery !== undefined) lines.push(`- blockedByDelivery: ${t.blockedByDelivery.join(', ')}`);
   if (t.ruling !== undefined) lines.push(`- ruling: ${esc(t.ruling)}`);
   if (t.executorKind !== undefined) lines.push(`- executorKind: ${t.executorKind}`);
+  // D-3 #ticket 写集 (与 gh 面锚同款 `Write-set:` / `Sdd-path:`, NULL≠0)。
+  // writeSet 缺省不写, 但 `[]` 必须写出空锚 (与缺省区分); sddPath 空串不写 (与 gh truthy 闸同)。
+  if (t.writeSet !== undefined) lines.push(`- Write-set: ${t.writeSet.join(',')}`);
+  if (t.sddPath) lines.push(`- Sdd-path: ${t.sddPath}`);
   if (t.children !== undefined) lines.push(`- children: ${t.children.join(', ')}`);
   if (t.dNumber !== undefined) lines.push(`- dNumber: ${t.dNumber}`);
   if (t.suggestedBy !== undefined) lines.push(`- suggestedBy: ${t.suggestedBy}`);
@@ -170,8 +178,11 @@ export function parseMapMarkdown(md: string): PathMap {
         ...(cur.blockedByDelivery !== undefined ? { blockedByDelivery: cur.blockedByDelivery } : {}),
         status: cur.status ?? 'open',
         ...(cur.ruling !== undefined ? { ruling: cur.ruling } : {}),
-        ...(cur.executorKind !== undefined ? { executorKind: cur.executorKind } : {}),
-        ...(cur.children !== undefined ? { children: cur.children } : {}),
+  ...(cur.executorKind !== undefined ? { executorKind: cur.executorKind } : {}),
+  // D-3 #ticket 写集: writeSet/sddPath 严格沿 gh 闸, NULL≠0 防与空串混淆。
+  ...(cur.writeSet !== undefined ? { writeSet: cur.writeSet } : {}),
+  ...(cur.sddPath ? { sddPath: cur.sddPath } : {}),
+  ...(cur.children !== undefined ? { children: cur.children } : {}),
         ...(cur.dNumber !== undefined ? { dNumber: cur.dNumber } : {}),
         ...(cur.suggestedBy !== undefined ? { suggestedBy: cur.suggestedBy } : {}),
         ...(cur.fingerprint !== undefined ? { fingerprint: cur.fingerprint } : {}),
@@ -250,7 +261,11 @@ export function parseMapMarkdown(md: string): PathMap {
     else if ((v = fieldValue(line, 'dispatchRunId')) !== null) cur.dispatchRunId = v;
     else if ((v = fieldValue(line, 'dispatchStartedAt')) !== null) cur.dispatchStartedAt = v;
     else if ((v = fieldValue(line, 'dispatchFinishedAt')) !== null) cur.dispatchFinishedAt = v;
-    else if ((v = fieldValue(line, 'dispatchOutcome')) !== null) cur.dispatchOutcome = v;
+  else if ((v = fieldValue(line, 'dispatchOutcome')) !== null) cur.dispatchOutcome = v;
+  // D-3 #ticket 写集 (md 锚名沿 gh: `Write-set:` / `Sdd-path:`)。空锚 → `[]`, 与缺省 undefined 区分。
+  else if ((v = fieldValue(line, 'Write-set')) !== null) {
+    cur.writeSet = v === '' ? [] : v.split(',').map((s) => s.trim()).filter(Boolean);
+  } else if ((v = fieldValue(line, 'Sdd-path')) !== null) cur.sddPath = v;
   }
   flush();
 
@@ -300,6 +315,8 @@ function ensureSchema(db: Database): void {
       waiting_since TEXT,
       ruled_at      TEXT,
       stale_at      TEXT,
+      write_set     TEXT,
+      sdd_path      TEXT,
       PRIMARY KEY (map_slug, id)
     )
   `);
@@ -312,11 +329,13 @@ function ensureSchema(db: Database): void {
   if (!tcols.includes('waiting_since')) db.run(`ALTER TABLE tickets ADD COLUMN waiting_since TEXT`);
   if (!tcols.includes('ruled_at')) db.run(`ALTER TABLE tickets ADD COLUMN ruled_at TEXT`);
   if (!tcols.includes('stale_at')) db.run(`ALTER TABLE tickets ADD COLUMN stale_at TEXT`);
+  // D-3 #ticket 写集 (`write_set` 存 JSON 字符串, NULL≠0: [] 与 undefined 在该列分明)。
+  if (!tcols.includes('write_set')) db.run(`ALTER TABLE tickets ADD COLUMN write_set TEXT`);
+  if (!tcols.includes('sdd_path')) db.run(`ALTER TABLE tickets ADD COLUMN sdd_path TEXT`);
   const mcols = (db.query(`PRAGMA table_info(pathmaps)`).all() as { name: string }[]).map((c) => c.name);
   if (!mcols.includes('suggestions_log')) db.run(`ALTER TABLE pathmaps ADD COLUMN suggestions_log TEXT`);
   if (!mcols.includes('waiting_log')) db.run(`ALTER TABLE pathmaps ADD COLUMN waiting_log TEXT`);
 }
-
 /** 落一张图到 db (幂等: 先删同 slug 的旧行)。map = 内存 PathMap, dbPath = 路径或 Database 句柄。 */
 export function saveMapDb(map: PathMap, dbPath: string | Database): void {
   const { db, owned } = openDb(dbPath);
@@ -332,8 +351,8 @@ export function saveMapDb(map: PathMap, dbPath: string | Database): void {
       map.waitingLog !== undefined ? JSON.stringify(map.waitingLog) : null,
     );
     const ins = db.query(
-      `INSERT INTO tickets (map_slug, ord, id, type, title, blocked_by, status, ruling, executor_kind, children, d_number, suggested_by, fingerprint, ticket_class, waiting_since, ruled_at, stale_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tickets (map_slug, ord, id, type, title, blocked_by, status, ruling, executor_kind, children, d_number, suggested_by, fingerprint, ticket_class, waiting_since, ruled_at, stale_at, write_set, sdd_path)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     map.tickets.forEach((t, i) => {
       ins.run(
@@ -354,10 +373,14 @@ export function saveMapDb(map: PathMap, dbPath: string | Database): void {
         t.waitingSince ?? null,
         t.ruledAt ?? null,
         t.staleAt ?? null,
-        // ponytail: D-6③ 派发锚与 #138 blockedByDelivery **没进 db 索引** —— 加列要给既有 .omd/pathfinder.db 走 ALTER 迁移,
+        // D-3 #ticket 写集: `write_set` 存 JSON 串 (NULL≠0 — `[]` 与 undefined 在该列分明),
+        // `sdd_path` 直存字符串 (NULL=undefined, 空串=空串)。
+        JSON.stringify(t.writeSet) ?? null,
+        t.sddPath ?? null,
+        // ponytail: D-6③ dispatch 与 #138 blockedByDelivery **没进 db 索引** —— 加列要给既有 .omd/pathfinder.db 走 ALTER 迁移,
         // 而 `loadMapDb` 今天在生产里零消费者 (只有本模块与一段 eval 描述引用它)。真源是 markdown,
         // 索引随时可由 rebuildDbFromMarkdown 重建。**记在这儿而不是默默留着**: 哪天 loadMapDb 真被
-        // 生产消费, 这条就得先还 —— 否则索引读出来的票一律没有锚, 而且不会报错。
+        // 生产消费, 这条就得先还 —— 否则索引读出来的票一律没有 dispatch/blockedByDelivery 锚, 而且不会报错。
       );
     });
   } finally {
@@ -388,6 +411,10 @@ interface TicketRow {
   waiting_since: string | null;
   ruled_at: string | null;
   stale_at: string | null;
+  // D-3 #ticket 写集: `write_set` 存 JSON 字符串 (NULL≠0 — `[]` 与 undefined 在该列分明),
+  // `sdd_path` 直存字符串 (NULL=undefined)。
+  write_set: string | null;
+  sdd_path: string | null;
 }
 
 /**
@@ -421,6 +448,10 @@ export function loadMapDb(dbPath: string | Database, slug?: string): PathMap {
       ...(r.waiting_since !== null ? { waitingSince: r.waiting_since } : {}),
       ...(r.ruled_at !== null ? { ruledAt: r.ruled_at } : {}),
       ...(r.stale_at !== null ? { staleAt: r.stale_at } : {}),
+      // D-3 #ticket 写集: `write_set` 经 JSON.parse 还原为 string[] (NULL≠0: `[]` 与 undefined 在该列分明),
+      // `sdd_path` 直取字符串 (NULL=undefined, 空串=空串)。
+      ...(r.write_set !== null ? { writeSet: JSON.parse(r.write_set) as string[] } : {}),
+      ...(r.sdd_path !== null ? { sddPath: r.sdd_path } : {}),
     }));
     return {
       destination: mapRow.destination,

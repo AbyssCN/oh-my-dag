@@ -16,7 +16,7 @@ import type { OmdMcpTool } from '../server';
 import type { RunGoalConfig, RunGoalResult, GoalTier, GoalClassification } from '../../harness/goal/run-goal';
 import { ignitionPreflight } from '../../harness/goal/ignition-preflight';
 import { readIgnitionBandwidth, renderIgnitionForecast } from '../../harness/goal/ignition-forecast';
-import { loadSddContract, parseBreakdown } from '../../harness/goal/sdd-direct';
+import { loadSddContract, parseBreakdown, ticketFieldsFromSdd } from '../../harness/goal/sdd-direct';
 import { resolveBackend as realResolveBackend, type PathBackend } from '../../harness/pathfinder/backend';
 import type { ExecutorDagConfig } from '../../harness/dag/types';
 import type { CheckpointManager } from '../../harness/continuity/checkpoint-manager';
@@ -217,10 +217,20 @@ function ticketTitle(goal: string): string {
  * 出生状态 `open` 而非 `ruled` —— **ruled 的 task 票会被 `readyRegion` 收进待交付区域**,
  * 于是 path_deliver 会把一趟正在飞的 run 再编译执行一遍 (双跑双烧)。开票只是让它在图上看得见。
  */
-function openRunTicket(target: RunTicketTarget, cwd: string, runId: string, goal: string): string | undefined {
+function openRunTicket(
+  target: RunTicketTarget,
+  cwd: string,
+  runId: string,
+  goal: string,
+  sddPath: string | undefined,
+): string | undefined {
   try {
     const existing = target.backend.readMap(cwd, target.slug)?.tickets.find((t) => t.suggestedBy === runId);
     if (existing) return existing.id;
+    // 已结晶 SDD 直通档 (sddPath 给了): 把分解表里**整张 SDD 的写集并集 + sddPath 本体**一并带上
+    // —— gh 后端走 `Write-set:` / `Sdd-path:` 锚往返 (切片 6 后置, ticket-writeset-anchor.test 是证);
+    // md 后端走 StoredTicket 落盘 (同 map-store 写面)。同一份合同, 两条落盘路径, 此处只管 NewTicket。
+    const sddFields = sddPath ? ticketFieldsFromSdd(sddPath) : undefined;
     const t = target.backend.addTicket(cwd, target.slug, {
       type: 'task',
       title: ticketTitle(goal),
@@ -229,6 +239,8 @@ function openRunTicket(target: RunTicketTarget, cwd: string, runId: string, goal
       suggestedBy: runId, // G-2: 票 → runId → 回执双向可达
       executorKind: 'goal', // 这张票的执行档位就是"收敛一个开放目标" (D-1: solve 降级为票的一种档位)
       body: `runId: ${runId}\n\n${goal}`, // gh 后端的 issue 正文; md 忽略
+      // D-3「#ticket 写集」契约: 缺席 = 不承诺, 显式 `[]` = 承诺但本轮空改 (NULL≠0)。
+      ...(sddFields ? { writeSet: sddFields.writeSet, sddPath: sddFields.sddPath } : {}),
     });
     logger.info({ slug: target.slug, ticketId: t.id, runId }, '[dag_goal] D-6③ run 挂票: 已在图上开任务票');
     return t.id;
@@ -581,7 +593,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
       // ── D-6①③ (切片 6): 这趟 run 在决策地图上的落点 ────────────────────────────
       // 无图 / 多图未指定 / 后端解析失败 → undefined, 下面两处全部跳过 = 行为逐字节照旧 (INV-1)。
       const ticketTarget = resolveRunTicketTarget(deps, slug);
-      const runTicketId = ticketTarget ? openRunTicket(ticketTarget, deps.cwd, runId, goal) : undefined;
+      const runTicketId = ticketTarget ? openRunTicket(ticketTarget, deps.cwd, runId, goal, sddPath) : undefined;
 
       // INV-P2-6: continuity 给了才落环 journal; resume 时才读它 (与 per-node resume 同一开关)。
       // D-P: 取消把手一并挂上 —— 自主环是最长活的那条路 (research + 多轮执行), 也是最需要能叫停的。

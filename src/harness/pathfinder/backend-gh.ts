@@ -492,6 +492,13 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false, notify: Waitin
       // 宁可读成"没标"走缺省, 也不把 `agnet` 这种手滑喂进 toPlanExecutor 的 switch)。
       const ekRaw = parseAnchor(body, 'Executor-kind');
       const executorKind = (EXECUTOR_KINDS as readonly string[]).includes(ekRaw ?? '') ? (ekRaw as ExecutorKind) : undefined;
+      // D-3 控制面统一 (#ticket 写集): 同 Executor-kind 同款解析写法。显式空 `Write-set: ` 必须与缺省区分 (NULL≠0)
+      // — parseAnchor 因 `(.+)` 不空匹配 → 未命中 → 走正则 `^Write-set:[ \t]*$` 兜 `[]`，既不会把空编成 undefined 也不会写出写空成员。
+      const writeSetRaw = parseAnchor(body, 'Write-set');
+      const writeSet = writeSetRaw !== undefined
+        ? writeSetRaw.split(',').map((s) => s.trim()).filter(Boolean)
+        : (body.match(/^Write-set:[ \t]*$/m) ? [] : undefined);
+      const sddPath = parseAnchor(body, 'Sdd-path');
       // D-5 三戳: 评论流的事件戳**盖过**出生正文锚 (建议票被接受后又被升人 → 后一轮才是当前那轮)。
       const stamps = parseWaitingStamps(sub.comments.nodes);
       const waitingSince = stamps.waitingSince ?? parseAnchor(body, 'Waiting-since');
@@ -504,6 +511,8 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false, notify: Waitin
         status,
         ...(ruling !== undefined ? { ruling } : {}),
         ...(executorKind !== undefined ? { executorKind } : {}),
+        ...(writeSet !== undefined ? { writeSet } : {}),
+        ...(sddPath !== undefined ? { sddPath } : {}),
         ...(children.length > 0 ? { children } : {}),
         ...(suggestedBy !== undefined ? { suggestedBy } : {}),
         ...(fingerprint !== undefined ? { fingerprint } : {}),
@@ -554,6 +563,11 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false, notify: Waitin
       const bodyLines: string[] = [];
       if (nt.body) bodyLines.push(nt.body);
       // executorKind 正文锚 (2026-08-12, md→gh 迁移前置): 不落锚就**静默改变交付行为** ——
+      // D-3 #ticket 写集 (同 Executor-kind 同款写法): 两锚都需 `!== undefined` 区分缺省/空
+      // (`Write-set: ` 空锚必须写出, 否则读回时分不出"没写"与"写空", NULL≠0)。
+      // `Sdd-path: ` 只在非空串时落 (`sddPath:''` 也写出空串锚 = bug, 故用 truthy 闸)。
+      if (nt.sddPath) bodyLines.push(`Sdd-path: ${nt.sddPath}`);
+      if (nt.writeSet !== undefined) bodyLines.push(`Write-set: ${nt.writeSet.join(',')}`);
       // slice-compiler 的 toPlanExecutor 缺省 `inproc → leaf`, 于是一张 `agent` 票搬上 gh 再读回来
       // 会被编译成单发 leaf, 而症状是沉默的 (图照跑, 只是执行器换了)。形状对称 Suggested-by/Fingerprint。
       if (nt.executorKind) bodyLines.push(`Executor-kind: ${nt.executorKind}`);
@@ -596,6 +610,8 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false, notify: Waitin
         blockedBy: nt.blockedBy,
         status: 'open',
         ...(nt.executorKind ? { executorKind: nt.executorKind } : {}),
+        ...(nt.writeSet !== undefined ? { writeSet: nt.writeSet } : {}),
+        ...(nt.sddPath !== undefined ? { sddPath: nt.sddPath } : {}),
       };
       return t;
     },

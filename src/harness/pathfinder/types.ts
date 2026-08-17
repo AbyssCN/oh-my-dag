@@ -43,6 +43,10 @@ export interface Ticket {
   ruling?: string;
   /** task 票用: 喂 slice 编译器决定 PlanNode 执行器种类 (D-9)。 */
   executorKind?: ExecutorKind;
+  /** 票承诺改动的文件清单 (NULL≠0: 缺席 ≠ 空数组, 见 Ticket.writeSet)。gh 后端走正文锚往返 (`Write-set:`)。 */
+  writeSet?: string[];
+  /** 票承诺遵循的 SDD 路径 (NULL≠0: 缺席 = 没链 SDD)。gh 后端走正文锚往返 (`Sdd-path:`)。 */
+  sddPath?: string;
   /** 自展开子票 id (research map-node 运行时发现, D-10)。★ children **不** block parent。 */
   children?: string[];
   /** 溯源到决策记录 (D-numbers)。 */
