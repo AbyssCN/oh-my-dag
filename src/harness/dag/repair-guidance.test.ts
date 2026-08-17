@@ -3,7 +3,10 @@
  * 实质红样本必须零命中(误注入的指引会把修复轮带偏)。
  */
 import { describe, expect, test } from 'bun:test';
-import { REPAIR_FINGERPRINTS, collectRepairGuidance } from './repair-guidance';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { REPAIR_FINGERPRINTS, REPAIR_LEDGER_FILE, collectRepairGuidance, loadRepairFingerprints } from './repair-guidance';
 
 describe('fingerprint 逐条命中历史真原文', () => {
   // 证伪方式 (当场验过): 把对应 pattern 改成 /永不命中/ → 该条断言红; 恢复后绿。
@@ -58,5 +61,57 @@ describe('登记表纪律', () => {
       "[blocked git-write: 'merge-base' ∉ 只读子命令 a] … [blocked git-write: 'push' ∉ 只读子命令 a]";
     const hits = collectRepairGuidance(evidence);
     expect(hits.filter((h) => h.includes('git-subcommand-blocked')).length).toBe(1);
+  });
+});
+
+describe('纠正台账 (.omd/repair-guidance.jsonl)', () => {
+  /** 临时根 + 台账内容 → 生效登记表(判据自证式:把台账摆进 mkdtemp 的临时世界跑一遍)。 */
+  const withLedger = (content: string | null) => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-repair-ledger-'));
+    if (content !== null) {
+      mkdirSync(join(root, '.omd'), { recursive: true });
+      writeFileSync(join(root, REPAIR_LEDGER_FILE), content);
+    }
+    return loadRepairFingerprints({ root });
+  };
+
+  test('台账缺席 → 纯内置零变化', () => {
+    expect(withLedger(null).map((f) => f.id)).toEqual(REPAIR_FINGERPRINTS.map((f) => f.id));
+  });
+
+  // 证伪方式 (当场验过): 注释掉 loadRepairFingerprints 里的 byId.set(id, …) → 本条红; 恢复后绿。
+  test('台账条目生效: 同形失败命中新指引', () => {
+    const fps = withLedger(
+      JSON.stringify({
+        id: 'hashline-stale-loop',
+        pattern: 'stale 标签被拒.{0,80}未重新 hashline_read',
+        guidance: '被拒后先重 hashline_read 接地, 别在旧行号上继续叠编辑。',
+        anchor: 'run 6692b415 验尸 / issue #146 反面样本表',
+      }) + '\n',
+    );
+    const hits = collectRepairGuidance('编辑失败: stale 标签被拒 3 次, 工具序列显示未重新 hashline_read', fps);
+    expect(hits.some((h) => h.includes('[修复指引 hashline-stale-loop]'))).toBe(true);
+  });
+
+  test('同 id 覆盖内置(不改码修正内置指引)', () => {
+    const fps = withLedger(
+      JSON.stringify({ id: 'bun-x-form', pattern: 'Script not found "x"', guidance: '覆盖版指引', anchor: 'NOTES 2026-08-17' }) + '\n',
+    );
+    const hits = collectRepairGuidance('error: Script not found "x"', fps);
+    expect(hits).toEqual(['[修复指引 bun-x-form] 覆盖版指引']);
+    expect(fps.length).toBe(REPAIR_FINGERPRINTS.length);
+  });
+
+  test('坏行拒载不阻断: JSON 坏 / 缺 anchor / regex 坏 → 跳过, 内置完好', () => {
+    const fps = withLedger(
+      [
+        '{ 这不是 JSON',
+        JSON.stringify({ id: 'no-anchor', pattern: 'x', guidance: 'y' }),
+        JSON.stringify({ id: 'bad-re', pattern: '([', guidance: 'y', anchor: 'z' }),
+        '# 注释行照跳',
+        '',
+      ].join('\n'),
+    );
+    expect(fps.map((f) => f.id)).toEqual(REPAIR_FINGERPRINTS.map((f) => f.id));
   });
 });

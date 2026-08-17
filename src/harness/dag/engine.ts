@@ -135,7 +135,7 @@ import { checkClaimAnchors } from '../claim-anchor';
 import { applyPoisonRollback, planPoisonRollback } from '../poison-rollback';
 import { ModelError, isTransientModelFault } from '../../model';
 import { classifyCommandExit, withFailureKind, upstreamFailureNotice } from '../node-failure';
-import { collectRepairGuidance } from './repair-guidance';
+import { collectRepairGuidance, loadRepairFingerprints } from './repair-guidance';
 import { livePin } from '../../model/provider-health';
 import { makeRunNonce, fenceUntrusted, trustHeader } from '../prompt-fence';
 import type { ContentPart } from '../../model/gateway';
@@ -4356,7 +4356,12 @@ async function runDagInternalCore(
       // 分解; 未点名节点逐字保留 → 语义指纹跨轮复用零 LLM (措辞漂移 = 白白重算)。
       // Tier-0 事件触发召回 (repair-guidance.ts): 失败判词命中已知死形态 fingerprint →
       // 把「上次怎么处置的」可教指引直接喂给修复轮 (零 LLM 零 embedding; 零命中 = escTask 零变化)。
-      const repairGuidance = collectRepairGuidance(verdict.reason);
+      // 登记表 = 内置 + .omd/repair-guidance.jsonl 纠正台账 (owner 2026-08-17: 验尸抓到的 leaf
+      // 纠正 append 进台账, 下一次同形失败在这里被吃到 —— escalation 稀少, 逐次现读不缓存)。
+      const repairGuidance = collectRepairGuidance(
+        verdict.reason,
+        loadRepairFingerprints({ root: config.continuity?.repoRoot }),
+      );
       const escTask = [
         task,
         '',

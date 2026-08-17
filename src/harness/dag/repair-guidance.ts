@@ -24,7 +24,22 @@
  * ② 指引给的是**处置路**不是任务改写吗?③ 历史样本锚(NOTES/commit)写了吗?
  * pattern 宁窄勿宽 —— 误注入的指引会把修复轮带偏(node-failure.ts 同款警告:
  * 「宁可窄而准,不靠输出正则去猜」;这里允许正则只因触发面是引擎自产的固定判词)。
+ *
+ * ## 纠正台账(owner 2026-08-17:leaf 被纠正 → 持久迭代,不靠改码重建)
+ *
+ * 内置表之外,`<root>/.omd/repair-guidance.jsonl` 是**项目级追加源**(同 agent-templates
+ * 的 .omd/agents 先例):每行一条 `{"id","pattern","guidance","anchor","flags"?}`。
+ * 验尸/收编时抓到一条可指纹化的 leaf 纠正 → append 一行,下一次同形失败在修复轮直接吃到
+ * 处置路 —— 这就是「被纠正 → 迭代」的记录方法。三问纪律照过:anchor(runId/NOTES 引用)
+ * **必填**,缺锚的行拒载(纪律③ 的机器化)。同 id 覆盖内置(允许不改码修正内置指引)。
+ * 坏行(JSON 坏 / regex 坏 / 缺字段)→ warn 留原行证据 + 跳过,永不阻断修复轮(fail-open
+ * 吞异常不吞证据)。不可指纹化的纠正不进这里 —— 那是 memory 层(advisory)的活,见 #146。
+ * ⚠ .omd/ 在 .gitignore 里 → 台账是机器本地件;反复被命中、值得跨机器的条目**提干进上面的
+ * 内置表**(带测试与历史锚),台账里同 id 行即可删 —— 台账是暂存区,内置表才是真源。
  */
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { logger } from '../logger';
 
 export interface RepairFingerprint {
   /** 受控键(唯一;NOTES 样本对照用)。 */
@@ -90,13 +105,63 @@ export const REPAIR_FINGERPRINTS: readonly RepairFingerprint[] = [
   },
 ];
 
+/** 纠正台账文件(root 相对)。追加式 JSONL,格式与纪律见文件头「纠正台账」节。 */
+export const REPAIR_LEDGER_FILE = '.omd/repair-guidance.jsonl';
+
+/**
+ * 加载生效登记表 = 内置表 + root 纠正台账(同 id 台账覆盖内置,登记序 = 内置序 + 台账行序)。
+ * 台账缺席 → 纯内置(零变化)。坏行 warn 带原行证据 + 跳过,永不抛(修复轮不因台账坏而断)。
+ */
+export function loadRepairFingerprints(opts: { root?: string } = {}): RepairFingerprint[] {
+  const file = join(opts.root ?? process.cwd(), REPAIR_LEDGER_FILE);
+  if (!existsSync(file)) return [...REPAIR_FINGERPRINTS];
+  const byId = new Map<string, RepairFingerprint>(REPAIR_FINGERPRINTS.map((f) => [f.id, f]));
+  let lines: string[];
+  try {
+    lines = readFileSync(file, 'utf8').split('\n');
+  } catch (err) {
+    logger.warn({ file, err: (err as Error).message }, '[omd/repair-guidance] 纠正台账读取失败 → 纯内置 (fail-open)');
+    return [...REPAIR_FINGERPRINTS];
+  }
+  for (const [i, raw] of lines.entries()) {
+    const line = raw.trim();
+    if (!line || line.startsWith('//') || line.startsWith('#')) continue;
+    let entry: { id?: unknown; pattern?: unknown; guidance?: unknown; anchor?: unknown; flags?: unknown };
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      logger.warn({ file, lineNo: i + 1, line: line.slice(0, 120) }, '[omd/repair-guidance] 台账行 JSON 坏 → 跳过 (证据在此)');
+      continue;
+    }
+    const { id, pattern, guidance, anchor, flags } = entry;
+    if (typeof id !== 'string' || !id || typeof pattern !== 'string' || !pattern || typeof guidance !== 'string' || !guidance) {
+      logger.warn({ file, lineNo: i + 1, line: line.slice(0, 120) }, '[omd/repair-guidance] 台账行缺 id/pattern/guidance → 跳过');
+      continue;
+    }
+    if (typeof anchor !== 'string' || !anchor.trim()) {
+      logger.warn({ file, lineNo: i + 1, id }, '[omd/repair-guidance] 台账行缺 anchor (历史样本锚, 纪律③) → 拒载');
+      continue;
+    }
+    let re: RegExp;
+    try {
+      re = new RegExp(pattern, typeof flags === 'string' ? flags : undefined);
+    } catch (err) {
+      logger.warn({ file, lineNo: i + 1, id, err: (err as Error).message }, '[omd/repair-guidance] 台账行 regex 坏 → 跳过');
+      continue;
+    }
+    byId.set(id, { id, pattern: re, guidance });
+  }
+  return [...byId.values()];
+}
+
 /**
  * 对失败证据原文跑登记表,返回命中的可教指引(按 id 去重,保持登记序)。
  * 零命中 → 空数组(escTask 零变化 —— 本模块对无指纹的失败完全中立)。
+ * fingerprints 缺省内置表;要吃纠正台账的调用方传 `loadRepairFingerprints({ root })`。
  */
-export function collectRepairGuidance(evidence: string): string[] {
+export function collectRepairGuidance(evidence: string, fingerprints: readonly RepairFingerprint[] = REPAIR_FINGERPRINTS): string[] {
   const out: string[] = [];
-  for (const f of REPAIR_FINGERPRINTS) {
+  for (const f of fingerprints) {
     if (f.pattern.test(evidence)) out.push(`[修复指引 ${f.id}] ${f.guidance}`);
   }
   return out;
