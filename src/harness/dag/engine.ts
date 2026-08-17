@@ -1038,13 +1038,19 @@ async function executePlan(
      * 闸级熔断的比对键 —— 逐字相同连续 K 轮 = 这一格零位移 (§8.4 的「相同」而不是「重复」)。
      */
     faultKey: string | null;
+    /**
+     * 这份判词是**确定性闸合成的**, 不是 LLM judge 投的票 (#148, 2026-08-17)。
+     * 有值 → judge 没被问过 —— 「没投票」≠「投了反对票」(仓规坑 1): 合成票不得写进
+     * `LeafResult.judgeConverged` (那一位按契约只装 judge 自己的票), journal 里记 `gate-rejected`。
+     */
+    synthetic?: 'round-failed' | 'false-completion';
   }> => {
     const childIds = children.map((c) => c.id);
     // 整轮就没跑成 → 直接未收敛, 省一次 judge 调用 (同 llm-judge 的 status==='failed' 短路)。
     if (leaf.status === 'failed') {
       // D-3 (2026-08-11): 判决升级为事件 (整轮没跑成 = 确定性短路, 仍给一条 judge 判词)。
       emitNodeEvent({ type: 'verdict', id, gate: 'judge', verdict: 'fail', round, reason: `整轮失败: ${leaf.output.slice(0, 300)}` });
-      return { converged: false, reason: `整轮失败: ${leaf.output.slice(0, 300)}`, rejected: [], usage: { in: 0, out: 0 }, unreachable: null, faultKey: null };
+      return { converged: false, reason: `整轮失败: ${leaf.output.slice(0, 300)}`, rejected: [], usage: { in: 0, out: 0 }, unreachable: null, faultKey: null, synthetic: 'round-failed' as const };
     }
     // ── D-4 谎报完成闸 (2026-08-10, SDD 切片 4) ─────────────────────────────────
     // 确定性先行: 节点声称完成 ∧ 引擎证据**实败** (校验命令正非零退出码 / 状态 failed)
@@ -1066,6 +1072,7 @@ async function executePlan(
         usage: { in: 0, out: 0 },
         unreachable: null,
         faultKey: null,
+        synthetic: 'false-completion' as const,
       };
     }
     const judgeCoord = config.judgeModel ?? config.conductorModel;
@@ -2063,7 +2070,7 @@ async function executePlan(
       roundVerdicts.push({
         round,
         criterion: freezeGreen === null ? 'none' : freezeGreen ? 'green' : 'red',
-        judge: verdict.unreachable ? 'unreachable' : verdict.converged ? 'converged' : 'rejected',
+        judge: verdict.unreachable ? 'unreachable' : verdict.converged ? 'converged' : verdict.synthetic ? 'gate-rejected' : 'rejected',
       });
       // judge **调不通** → 立刻退环, 不把剩下的轮数烧在一个确定性故障上 (2026-07-31)。
       // 与 §8.4 熔断同一个出口形状, 但 kind 是 `infra-error` 不是 `blocked`: N5 词表里这两格的
@@ -2087,7 +2094,9 @@ async function executePlan(
           ...settle(last, round, true),
           // judge 自己那一票**单独带出去**: `converged` 现在是判据说的, 不再等于 judge 说的。
           // 混在一起会让判据轴把"判据绿"误记成"judge 也说绿" —— 那正是它要量的那一格。
-          ...(verdict.unreachable ? {} : { judgeConverged: verdict.converged }),
+          // synthetic (确定性闸合成的判词) 同 unreachable 一样**不写这一位** (#148):
+          // judge 没被问过, 「没投票」≠「投了反对票」—— 写了就是拿闸的回声冒充 judge 的票。
+          ...(verdict.unreachable || verdict.synthetic ? {} : { judgeConverged: verdict.converged }),
         };
       }
 

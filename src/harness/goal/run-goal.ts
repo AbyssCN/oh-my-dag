@@ -235,9 +235,9 @@ export interface RunGoalResult {
    * `oracle` = 冻结判据(可执行验收命令的退出码;判据不是可执行式时恒 true)。
    *
    * 为什么要把两个布尔单独暴露, 而不是让调用方从 {@link outcome} 反推:**反推不出来**。
-   * 上面那段 outcome 的算式里, `judge` 为假时一律落 `not-converged` ——
-   * **不管 `oracle` 是什么**。于是「judge 说没收敛、而冻结判据其实过了」(= 白转了几轮)
-   * 这一格在词表上根本不存在, 两个布尔算完就被扔了。
+   * `judge` 是**观测位不是裁决位** (#148, 2026-08-17): 终态由环的结论 × oracle 定,
+   * judge 的票不进算式 —— 于是「判据绿收敛而 judge 判没成」这一格在 outcome 上是 `success`,
+   * 只有这两个布尔 (加 summary 里的 ⚠ judge 异议注记) 能把它读出来。
    *
    * 而那一格恰恰是「收敛判据可不可信」的另一半证据: 只看 `oracle-failed` 只能发现 judge 太松,
    * 发现不了 judge 太紧。两侧都要看得见, 这条轴才是对称的。
@@ -936,10 +936,16 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   const acceptLeaf = acceptance.kind === 'executable' ? exec.results.accept : undefined;
   const oracleOk = acceptance.kind !== 'executable' ? true : acceptLeaf?.status === 'done';
   // `converged` 缺席 = 没人判过 → 一律**不算成** (judge_final 已保证它在, 缺席意味着引擎跑歪了)。
-  // judge 自己那一票优先: 环内判据绿时 `converged` 是**判据**说的, 不是 judge 说的
-  // (见 LeafResult.judgeConverged)。混用会让判据轴把"判据绿"误记成"judge 也说绿"。
+  // **裁决位 = 环自己的结论** (#148, 2026-08-17): 判据停时它是判据说的 (D-I 以判据为准),
+  // judge 停时它是 judge 说的。此前这里让 judgeConverged **压过** converged —— 而那一位的类型
+  // 契约 (LeafResult.judgeConverged) 明写「judge 的票只记录不决定, 单独带出去是给判据轴量的」。
+  // 观测位当裁决位用的实测后果 (B0 run 6251afc4): 环记 stop.kind=success·判据绿, 回执判
+  // not-converged, 指引「加轮数 resume」—— 而 resume 进环判据仍绿、round 1 再停, 是个不动点。
   // 平铺路径 (D-3): 没有 conductor 节点就没有 judge 投票 —— 停止规则唯一 = 冻结判据,
   // criteria.judge 恒等于 oracle, 「判词✅/判据❌打架」这个状态在平铺图上从型别消灭。
+  const loopOk = flatUsed ? oracleOk : execLeaf!.converged === true;
+  // judge 自己那一票 (判据轴观测位, 进 criteria.judge; 与裁决位分开 —— 「judge 太紧」那一格
+  // 靠它才观测得到)。缺席 = 没走环内判据那条路, 环结论即 judge 说的。
   const judgeSaidOk = flatUsed ? oracleOk : ((execLeaf!.judgeConverged ?? execLeaf!.converged === true));
   // D-1 delta: after 侧 = accept 节点的实判 (done→pass / failed→fail / 没跑→缺席)。
   // 缺席 + 两侧都 full → 比对器判 new-failure (fail-closed, 与 oracleOk 同一条纪律:
@@ -1046,7 +1052,10 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
       logger.warn({ err: String(err) }, '[run-goal] 设计审核起不来 → 闸缺席 (fail-open, INV-3)');
     }
   }
-  const converged = judgeSaidOk && oracleOk;
+  const converged = loopOk && oracleOk;
+  // judge 异议 (判据绿收敛而 judge 判没成): **只报不翻终态** —— 这一格是判据轴「judge 太紧 /
+  // 判据覆盖不够」的样本, 判词在 continuity 的 _loop-execute.json。翻终态的版本就是 #148。
+  const judgeDissent = converged && !judgeSaidOk;
   // 平铺路径没有内环 —— rounds 恒 0 是事实不是缺数 (摘要有「直通v2平铺」注记, 不会读成"没跑")。
   const roundCount = execLeaf?.rounds ?? 0;
   // INV-GOAL-3 可证面: 复用现在全发生在**内环**里 (子节点内容寻址, 同 id ≡ 同规格 + 同祖先规格)。
@@ -1082,7 +1091,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
           ? 'budget-exhausted'
           : blocked
             ? 'blocked'
-          : judgeSaidOk && !oracleOk
+          : loopOk && !oracleOk
             ? 'oracle-failed'
             : 'not-converged';
   stages.push({
@@ -1098,9 +1107,9 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
         : outcome === 'budget-exhausted' ? `预算停: ${budgetStopped!.slice(0, 300)}`
         : outcome === 'infra-error' ? `引擎侧停: ${infraStopped!.slice(0, 300)} —— **别加轮数**, 这是引擎该修的`
         : outcome === 'blocked' ? `阻塞: ${blocked!.slice(0, 300)}`
-        : outcome === 'oracle-failed' ? '判词说成了但冻结判据没过 (D-I: 以判据为准)'
+        : outcome === 'oracle-failed' ? '环说成了但冻结判据(环外)没过 (D-I: 以判据为准)'
         : `未收敛 (${execLeaf?.status ?? '平铺图未过冻结判据'})`
-      }${oracleNote}` +
+      }${oracleNote}${judgeDissent ? ' · ⚠ judge 异议: 判据绿收敛而 judge 判没成 —— 判据轴「judge 太紧/判据覆盖不够」样本, 判词见 continuity _loop-execute.json' : ''}` +
       `${flatUsed ? ` · 直通v2平铺 (并行读数: ${flatParallelism})` : ''}${flatFallback ? ` · 直通v2回落: ${flatFallback}` : ''}` +
       `${reusedNodes.length ? ` · 复用 ${reusedNodes.length} 节点` : ''}` +
       `${exec.observations?.length ? ` · 图外观察 ${exec.observations.length} 条` : ''}` +

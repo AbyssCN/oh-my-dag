@@ -56,6 +56,8 @@ function contractDag(opts: { survey?: string; sources?: string[]; specFile?: str
 function executeDag(
   opts: {
     converged?: boolean;
+    /** judge 自己那一票 (LeafResult.judgeConverged) —— 判据停时与 converged 可以不同向。 */
+    judgeConverged?: boolean;
     rounds?: number;
     reused?: string[];
     status?: 'done' | 'failed';
@@ -98,6 +100,7 @@ function executeDag(
         usage: { in: 1, out: 1 },
         rounds: opts.rounds ?? 1,
         ...(opts.converged === undefined ? {} : { converged: opts.converged }),
+        ...(opts.judgeConverged === undefined ? {} : { judgeConverged: opts.judgeConverged }),
         ...(opts.blocked === undefined ? {} : { blocked: opts.blocked }),
         ...(opts.budgetStopped === undefined ? {} : { budgetStopped: opts.budgetStopped }),
         ...(opts.infraStopped === undefined ? {} : { infraStopped: opts.infraStopped }),
@@ -254,6 +257,28 @@ describe('D-I 冻结判据 — 环外确定性闸', () => {
       _runDag: (async () => executeDag({ converged: false, accept: 'done' })) as never,
     }));
     expect(r.converged).toBe(false);
+  });
+
+  // #148 (B0 run 6251afc4 的形状): 环按判据绿收敛 (converged=true), judge 的票是反对
+  // (judgeConverged=false, 当时还是 D-4 合成的), 环外 accept 也绿 → 终态必须是 success ——
+  // 旧代码让观测位压裁决位, 判 not-converged 且指引「加轮数 resume」(resume 进环判据仍绿,
+  // round 1 再停, 不动点)。怎么让它红: 把 run-goal 的 loopOk 换回 judgeConverged 优先即红。
+  test('#148 判据绿收敛 + judge 异议 → success (judge 票只观测不裁决), 异议进摘要', async () => {
+    const r = await runGoal('写个文件', execCfg({
+      _runDag: (async () => executeDag({ converged: true, judgeConverged: false, accept: 'done' })) as never,
+    }));
+    expect(r.converged).toBe(true);
+    expect(r.outcome).toBe('success');
+    expect(r.criteria).toEqual({ judge: false, oracle: true }); // 判据轴仍看得见那格异议
+    expect(r.stages.at(-1)!.summary).toContain('judge 异议');
+  });
+
+  test('#148 反向: 判据绿收敛 + judge 异议 + 环外 accept 红 → oracle-failed (异议不救判据红)', async () => {
+    const r = await runGoal('写个文件', execCfg({
+      _runDag: (async () => executeDag({ converged: true, judgeConverged: false, accept: 'failed' })) as never,
+    }));
+    expect(r.converged).toBe(false);
+    expect(r.outcome).toBe('oracle-failed');
   });
 
   test('两边都过 → 收敛, 摘要里两条结论都在', async () => {

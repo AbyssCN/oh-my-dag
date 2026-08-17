@@ -324,8 +324,13 @@ export interface RoundVerdict {
   round: number;
   /** 冻结判据这一道:绿 / 红 / 没配。 */
   criterion: 'green' | 'red' | 'none';
-  /** judge 这一道:说收敛 / 说没成 / 调不通。 */
-  judge: 'converged' | 'rejected' | 'unreachable';
+  /**
+   * judge 这一道:说收敛 / 说没成 / 确定性闸替它说了 / 调不通。
+   * `gate-rejected` (#148, 2026-08-17) = 判词由确定性闸合成 (整轮失败 / D-4 谎报完成),
+   * judge **没被问过** —— 与 `rejected` (judge 真投了反对票) 分开, 不然判据轴的
+   * 「judge 太紧」那一格会被闸的回声灌满 (「没投票」≠「投了反对票」, 仓规坑 1)。
+   */
+  judge: 'converged' | 'rejected' | 'gate-rejected' | 'unreachable';
 }
 
 export interface NodeLoopJournal {

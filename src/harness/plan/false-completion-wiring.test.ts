@@ -71,9 +71,11 @@ const plan: ConductorPlan = {
 };
 
 /** 一次跑的观察面: judge 调用次数 (D-4 路径 = 0) + 收敛结论 + journal.prevReason 全文。 */
-async function run(checkExit: number, leafText = '已实现 clamp 并写好测试'): Promise<{
+async function run(checkExit: number, leafText = '已实现 clamp 并写好测试', opts: { freeze?: boolean } = {}): Promise<{
   judgeCalls: number;
   converged: boolean | undefined;
+  judgeConverged: boolean | undefined;
+  verdicts: NodeLoopJournal['verdicts'];
   prevReason: string;
   root: string;
 }> {
@@ -87,7 +89,11 @@ async function run(checkExit: number, leafText = '已实现 clamp 并写好测�
     // repeatedActionThreshold 调高: 同一失败命令连跑两轮会触发 §8.4 动作级熔断提前退环,
     // 与 D-4 无关 —— 熔断与否不该决定这条网的可观察性。
     repeatedActionThreshold: 99,
-    commandRunner: async () => ({ text: LIAR_CLAIM, usage: { in: 0, out: 0 }, exitCode: checkExit }),
+    // #148 那格要的是「图内命令红 ∧ 冻结判据绿」同时成立 —— 判据命令 ('true') 与
+    // 子图命令 ('bun test') 分开给退出码, 不然一个 runner 一刀切模不出那个组合。
+    ...(opts.freeze ? { freezeCriterion: { command: 'true' } } : {}),
+    commandRunner: async ({ command }: { command: string }) =>
+      ({ text: LIAR_CLAIM, usage: { in: 0, out: 0 }, exitCode: command === 'true' ? 0 : checkExit }),
     judgeSend: async () => {
       judgeCalls.n++;
       return {
@@ -105,7 +111,14 @@ async function run(checkExit: number, leafText = '已实现 clamp 并写好测�
   const journal = JSON.parse(
     readFileSync(join(root, '.omd', 'continuity', 'run-1', '_loop-P.json'), 'utf-8'),
   ) as NodeLoopJournal;
-  return { judgeCalls: judgeCalls.n, converged: r.results.P?.converged, prevReason: journal.prevReason ?? '', root };
+  return {
+    judgeCalls: judgeCalls.n,
+    converged: r.results.P?.converged,
+    judgeConverged: r.results.P?.judgeConverged,
+    verdicts: journal.verdicts,
+    prevReason: journal.prevReason ?? '',
+    root,
+  };
 }
 
 describe('接线: 已知谎报样本当场红 (G-6 全引擎路径)', () => {
@@ -119,6 +132,31 @@ describe('接线: 已知谎报样本当场红 (G-6 全引擎路径)', () => {
     expect(prevReason).toContain('全部完成');
     expect(prevReason).toContain('节点状态: failed');
     // 证伪: 若引擎侧删了挂点 / judge 视图漏接 status → judge 被调用且 journal 里没有 D-4 头。
+    rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe('#148 判词溯源: 合成票 ≠ judge 票 (B0 run 6251afc4 的形状)', () => {
+  test('图内命令红 (D-4 合成拒绝) ∧ 冻结判据绿 → 环按判据收敛; journal 记 gate-rejected, judgeConverged 缺席', async () => {
+    const { judgeCalls, converged, judgeConverged, verdicts, root } = await run(1, '已实现 clamp 并写好测试', { freeze: true });
+    // 环的结论由判据定 (D-I 以判据为准), 中途闸红不翻它 —— 旧行为链: D-4 合成的 rejected
+    // 被写进 judgeConverged → goal 层拿它压过 converged → 全绿的 run 判 not-converged (#148)。
+    expect(converged).toBe(true);
+    expect(judgeCalls).toBe(0); // D-4 确定性先行, judge 一发没烧
+    // 「没投票」≠「投了反对票」: 合成票不进 judgeConverged, journal 里与真 judge 票分词记。
+    expect(judgeConverged).toBeUndefined();
+    expect(verdicts).toEqual([{ round: 1, criterion: 'green', judge: 'gate-rejected' }]);
+    // 证伪: engine 的 criterion-green return 去掉 `verdict.synthetic` 守卫 → judgeConverged=false
+    //   回来, 第三条断言红; roundVerdicts 不分 synthetic → 第四条断言红 (judge:'rejected')。
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test('真 judge 反对票 ∧ 冻结判据绿 → 环仍按判据收敛, 但 judgeConverged=false 且 journal 记 rejected (真票不降级)', async () => {
+    const { judgeCalls, converged, judgeConverged, verdicts, root } = await run(0, '已实现 clamp 并写好测试', { freeze: true });
+    expect(judgeCalls).toBeGreaterThan(0); // 没有硬矛盾 → judge 真被问了 (fake 判「还差一点」)
+    expect(converged).toBe(true);
+    expect(judgeConverged).toBe(false); // judge 自己的票原样带出 —— 判据轴「judge 太紧」那格靠它
+    expect(verdicts).toEqual([{ round: 1, criterion: 'green', judge: 'rejected' }]);
     rmSync(root, { recursive: true, force: true });
   });
 });
