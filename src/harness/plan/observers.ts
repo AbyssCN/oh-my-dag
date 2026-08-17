@@ -598,15 +598,65 @@ export function detectLoopNoProgress(prev: RoundShape | null, cur: RoundShape): 
  * 短引号绝大多数是术语标注(`"budget"`)而不是引文,把它们算进来会让判据在任何图上都命中。
  * 长度阈值取 24 —— 不是调出来的,是"一句可定位的原文"的量级下限;拿不准就不报(同 static-lint)。
  */
-export function extractQuotedSpans(text: string, minLen = 24): string[] {
-  const out: string[] = [];
-  for (const re of [/"([^"\n]{24,})"/g, /[“]([^”\n]{24,})[”]/g, /`([^`\n]{24,})`/g]) {
+// 三种引号对 regex 数组 —— extractQuotedSpans 与 extractQuoteSegments 共用此 matcher,
+// 保证 INV-1 逐字节同源。模块私有 (不 export), 禁止在他处复制第二份。
+const QUOTED_SPAN_PATTERNS: readonly RegExp[] = [
+  /"([^"\n]{24,})"/g,
+  /[“]([^”\n]{24,})[”]/g,
+  /`([^`\n]{24,})`/g,
+];
+
+/**
+ * 逐字引文段 —— `extractQuotedSpans` 的「位置感知」形态, 给 fan-in 拼回注入体用。
+ *
+ * 与 `extractQuotedSpans` 同 matcher, 仅多带来源节点 id 与原文里的起止偏移;
+ * `text` 与 `extractQuotedSpans` 产出的那一段**逐字节相同** (trim 后), 不做改写、不做去重
+ * (同文两处 = 两段, 位置不同)。位置公式: `m.index + m[0].indexOf(trimmedSpan)`, 无歧义。
+ */
+export interface QuoteSegment {
+  /** 逐字引文原文 —— trim 后, 与 extractQuotedSpans 判据同一面, 不得改写。 */
+  text: string;
+  /** 来源节点 id —— 该段引文从哪个上游节点的输出里来 (plan node id)。 */
+  nodeId: string;
+  /** 在来源输出里的起止偏移 [start, end), 0-based, 按 start 升序输出。 */
+  start: number;
+  end: number;
+}
+
+/**
+ * 从文本里抠**逐字引文段**: 同 {@link extractQuotedSpans} 的 matcher, 多带来源节点 id 与
+ * 原文里的 [start, end) 位置 (供 fan-in 拼回注入体时定位与标注)。同文多段 → 多段, 不去重。
+ */
+export function extractQuoteSegments(
+  text: string,
+  nodeId: string,
+  minLen = 24,
+): QuoteSegment[] {
+  const out: QuoteSegment[] = [];
+  for (const re of QUOTED_SPAN_PATTERNS) {
     for (const m of text.matchAll(re)) {
       const s = m[1]!.trim();
-      if (s.length >= minLen) out.push(s);
+      if (s.length < minLen) continue;
+      const start = m.index! + m[0].indexOf(s);
+      out.push({ text: s, nodeId, start, end: start + s.length });
     }
   }
+  // 三种引号对交替匹配时不保证按原文位置有序, 这里按 start 升序。
+  out.sort((a, b) => a.start - b.start);
   return out;
+}
+
+/**
+ * 从文本里抠**逐字引文**片段 (老签名: 返回 trim 后的字符串数组)。
+ *
+ * 认三种引号对(直角双引号 / 中文弯引号 / 反引号),只收**够长**的片段:
+ * 短引号绝大多数是术语标注(`"budget"`)而不是引文,把它们算进来会让判据在任何图上都命中。
+ * 长度阈值取 24 —— 不是调出来的,是"一句可定位的原文"的量级下限;拿不准就不报(同 static-lint)。
+ *
+ * 行为 = `extractQuoteSegments(text, '').map(s => s.text)` (同 matcher 派生)。
+ */
+export function extractQuotedSpans(text: string, minLen = 24): string[] {
+  return extractQuoteSegments(text, '', minLen).map((s) => s.text);
 }
 
 /** 一个汇总节点的逐字保真读数。 */
@@ -649,5 +699,23 @@ export function detectVerbatimDrop(
       '如果下游要按原文逐字定位 (引用/出处核对/证据链), 这一跳就把它要的东西弄没了。' +
       '改法: 让汇总节点**原样透传引文**(把引文放进结构化字段, 或在 goal 里明确"逐字保留原句, 不要转述"), ' +
       '或者干脆别在证据与交付物之间加这一跳。',
-  };
+};
+}
+
+/**
+ * **逐字引文丢失 → 升闸谓词** (#153 契约 D-7, 2026-08-17)。
+ *
+ * 命中规则 (两条同时成立):
+ *   ① 观察条目 = `verbatim-drop` 这一种 —— 观察者只读, 谓词只对这一种加路由, 旁路其它判据会破坏观察者纪律;
+ *   ② 节点 `goal` 文本包含「契约源」「行号」「出处」「逐字」**任一** (纯子串, 非正则,
+ *      关键词作为整词的子串亦算 —— 纯 contains)。
+ *
+ * 命中 = 该 verbatim-drop 观察成为该节点的**判红输入** (走 detector.rejected 同一毒集通道);
+ * 未命中 = 维持今天的只报不拦 (观察条目照常进账本)。
+ *
+ * ⚠ 与观察者其它升闸器同源: 谓词自身**只判不铸**, 路由决定在外层 settle 处消费。
+ */
+export function gateVerbatimRed(obs: DagObservation, goal: string): boolean {
+  if (obs.kind !== 'verbatim-drop') return false;
+  return goal.includes('契约源') || goal.includes('行号') || goal.includes('出处') || goal.includes('逐字');
 }

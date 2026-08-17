@@ -91,7 +91,7 @@ import { officialAdvisorModelId, runSdkAgentLoop } from './claude-sdk-loop';
 import { createAdvisorTool, createTranscriptRecorder } from './advisor-tool';
 import { promptVersionOfText } from '../model/langfuse';
 import type { ModelUsage } from '../model/types';
-import type { ThinkingLevel } from '../model/role-models';
+import { resolveRoleModelConfigured, type ThinkingLevel } from '../model/role-models';
 import { isStrongCoord } from '../model/model-ratings';
 
 /**
@@ -318,6 +318,17 @@ export interface AgentLeafRunnerOpts {
    */
   skillDeps?: SkillToolDeps;
   /**
+   * S3 grind 软看门狗依赖注入 (测试缝, 同 sdkQueryFn 纪律): 注入时钟与 advisor 替身,
+   * 全程不发真实模型请求。生产省略 → now = Date.now, askAdvisor = 解析 config 的
+   * escalation 座位经 callModel 发一次指导 (一句话诊断 + 下一步)。
+   */
+  deps?: { now?: () => number; askAdvisor?: (ctx: GrindAdvisorContext) => Promise<string> };
+  /**
+   * S3 硬截停配置位 (预留): 默认 **false** —— 默认路径软介入照发、零中止。
+   * 硬截停行为本步不接 (只留位), 后续硬截停步 (双条件持续到硬阈值才截停 + blame 记账) 接这个位。
+   */
+  grindAdvisorHardStop?: boolean;
+  /**
    * drift 检测 (代码级 spinning 防护): agent-leaf 是 headless 工具循环 = spin 高发面,
    * 默认开 (low-invasive: 仅同调用同参重复 ≥阈值才经 transformContext 注 stuck-checklist)。
    * false 关; 对象调阈值。
@@ -371,6 +382,51 @@ export interface AgentLeafRunnerOpts {
    */
   onEvent?: (event: { type: string; [k: string]: unknown }) => void;
 }
+
+/**
+ * S3 grind 软看门狗 (#124, 2026-08-17)。双条件闸: 墙钟 > T **且** 停滞窗口 W 内 touched
+ * 零新增才算研磨 —— 纯墙钟单条件会一刀切掉跑得久但仍高产的叶子 (历史回测误杀 25:1),
+ * 所以它被禁写进判据。CPU 占用 / 产物数量 / 文本字节同样禁入 (都不是「还活着」信号)。
+ */
+export const GRIND_WALL_MS = 600_000;
+export const GRIND_STALL_MS = 300_000;
+
+/** shouldFireGrindAdvisor 的输入快照 (纯数据; 同形于 runOnce 里同作用域的状态)。 */
+export interface GrindAdvisorSnapshot {
+  startedAtMs: number;
+  nowMs: number;
+  lastTouchGrowthAtMs: number;
+  advisorFiredAt: number | null;
+}
+
+/** askAdvisor 收到的一次性诊断上下文 (测试钉的就是这个形状)。 */
+export interface GrindAdvisorContext {
+  startedAtMs: number;
+  nowMs: number;
+  lastTouchGrowthAtMs: number;
+  cwd: string;
+  goal: string;
+}
+
+/**
+ * 纯谓词: 双条件齐备才 true (wall>W **且** stall>=T, 缺一不触发);
+ * advisorFiredAt 非空短路 = 每叶至多 1 次。
+ */
+export function shouldFireGrindAdvisor(s: GrindAdvisorSnapshot): boolean {
+  if (s.advisorFiredAt !== null) return false;
+  return s.nowMs - s.startedAtMs > GRIND_WALL_MS && s.nowMs - s.lastTouchGrowthAtMs >= GRIND_STALL_MS;
+}
+
+/**
+ * grind advisor 的唯一 system prompt —— 与 advisor-tool 的 ADVISOR_SYSTEM_PROMPT 分家:
+ * 那条吃 transcript, 这条只吃状态摘要 (grind 判据本身已是确定性结论, advisor 只需诊断 + 下一步)。
+ */
+const GRIND_ADVISOR_SYSTEM_PROMPT =
+  'You are the escalation advisor for a worker agent that appears to be grinding: long wall ' +
+  'time while no new files have been touched for a while. You receive a short status summary, ' +
+  'not a transcript. Reply with exactly two lines. Line 1: one-line diagnosis of the most likely ' +
+  'reason the worker is stuck. Line 2: the single best next action for the worker to take. ' +
+  'No preamble, no hedging, no other text.';
 
 /**
  * 造一个真 agent-leaf runner: 每次调用起一个一次性带工具子 session, 跑完 dispose。
@@ -1020,7 +1076,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       } else if (e.type === 'tool_execution_start') {
         toolCalls++;
         pendingTools++;
-        toolTimelineMs.push(Date.now() - startedAt);
+        toolTimelineMs.push(now() - startedAt);
         drift?.note(e.toolName, e.args);
         // 熔断闸: 软注入 (takeInjection) 之后还在加深的空转 → 硬停, 走与超时同一条优雅停路
         // (SDK 通道 tolerateAbort 返已累积; pi 通道 signal 停轮)。已落盘产物保留, 节点判 spin-fused。
@@ -1081,7 +1137,11 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
             // 而它恰恰是 hashline stale 的指纹, 那是另一条链的活)。逐条判据在下面的循环里攒。
             const changed: string[] = [];
             for (const p of ps) {
-              if (!touched.has(p)) touchTimelineMs.push(Date.now() - startedAt);
+              if (!touched.has(p)) {
+                const t = now();
+                lastTouchGrowthAtMs = t;
+                touchTimelineMs.push(t - startedAt);
+              }
               touched.add(p);
               const before = snaps?.get(p);
               if (!before) continue; // 没取到快照 (理论上不会) → 不编一个效果数出来
@@ -1149,10 +1209,22 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     const pureEstimate = (msgs: AgentMessage[]): number =>
       msgs.reduce((n, msg) => n + estimateTokens(msg), 0);
     const controller = new AbortController();
-    const startedAt = Date.now();
+    // S3 grind 软看门狗时钟 (#124): 看门狗家族 (startedAt / 两条时间线 / 轮间超时判据) 共读
+    // 这一个钟; deps.now 是测试注入缝 (生产 = Date.now)。startedAt 改读注入钟后, 下方
+    // 仍用 Date.now() 的地方必须一起换 —— 各读各的钟会让注入时钟的测试读到两个「现在」。
+    const now = opts.deps?.now ?? Date.now;
+    const startedAt = now();
     let timedOut = false;
     let stalled = false;
     let contextExhausted = false;
+    // S3 grind advisor 软看门狗状态: advisorFiredAt 恒写 (null = 没触发), 触发后保持非空不重试。
+    let advisorFiredAt: number | null = null;
+    let advisorAdvice: string | undefined;
+    // S3 grind 软看门狗状态: touched 新增的最近时刻 (无新增 = startedAt) —— 停滞判据读它;
+    // pendingGrindAdvice 是一次性注入缓冲 (takeGrindAdvice 消费, pi transformContext 出口 ——
+    // SDK 通道无该钩子, 建议只落 watchdog 记录, 同 parseFeedback 那条通道边界)。
+    let lastTouchGrowthAtMs = startedAt;
+    let pendingGrindAdvice: string | undefined;
     const hardTimer =
       timeoutMs > 0
         ? setTimeout(() => {
@@ -1174,9 +1246,58 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
         controller.abort();
       }, idleTimeoutMs);
     };
+    // S3 grind 软看门狗 (2026-08-17, #124): 与 armIdle/hardTimer 同一处挂闸 —— 双条件
+    // (墙钟 > GRIND_WALL_MS 且 GRIND_STALL_MS 内 touched 零新增) 都满足才算研磨。命中 →
+    // escalation 座位发一次指导并注进下一回合; advisorFiredAt 同步占位 (谓词短路 + 异步
+    // 窗口双保险) = 每叶至多 1 次。失败只吞不截停 (软介入语义)。
+    const askAdvisor = opts.deps?.askAdvisor ?? (async (ctx: GrindAdvisorContext): Promise<string> => {
+      const seat = resolveRoleModelConfigured('escalation');
+      const res = await callModel({
+        model: seat.model,
+        messages: [
+          { role: 'system', content: GRIND_ADVISOR_SYSTEM_PROMPT },
+          {
+            role: 'user',
+            content:
+              `worker goal: ${ctx.goal}\ncwd: ${ctx.cwd}\n` +
+              `wall: ${ctx.nowMs - ctx.startedAtMs}ms, stall: ${ctx.nowMs - ctx.lastTouchGrowthAtMs}ms`,
+          },
+        ],
+        thinkingLevel: 'high',
+      });
+      return res.text;
+    });
+    const takeGrindAdvice = (): string | undefined => {
+      const advice = pendingGrindAdvice;
+      pendingGrindAdvice = undefined;
+      return advice;
+    };
+    const maybeFireGrindAdvisor = (): void => {
+      const nowMs = now();
+      if (!shouldFireGrindAdvisor({ startedAtMs: startedAt, nowMs, lastTouchGrowthAtMs, advisorFiredAt })) return;
+      advisorFiredAt = nowMs;
+      logger.warn(
+        { cwd, goal: prompt, wallMs: nowMs - startedAt, stallMs: nowMs - lastTouchGrowthAtMs },
+        '[agent-leaf] grind 双条件命中 → escalation advisor 软介入 (不截停)',
+      );
+      askAdvisor({ startedAtMs: startedAt, nowMs, lastTouchGrowthAtMs, cwd, goal: prompt })
+        .then((advice) => {
+          const trimmed = typeof advice === 'string' ? advice.trim() : '';
+          if (!trimmed) return;
+          advisorAdvice = trimmed;
+          pendingGrindAdvice = trimmed;
+        })
+        .catch((err: unknown) => {
+          logger.warn(
+            { err: (err as Error)?.message ?? String(err) },
+            '[agent-leaf] grind advisor 调用失败 (已吞, 软介入不截停)',
+          );
+        });
+    };
     function noteProgress(): void {
       if (idleTimer) clearTimeout(idleTimer);
       armIdle();
+      maybeFireGrindAdvisor();
     }
     armIdle();
 
@@ -1198,13 +1319,13 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       // drift 注入走 transformContext: 它只改**这一次请求**看到的消息, 不写回 context ——
       // 于是"检出 spin → 注一次"是天然的边沿行为, 不会在 transcript 里堆成 N 份 checklist。
       transformContext: async (messages: AgentMessage[]) => {
-        // 两条注入共用这一个边沿出口 (都是"检出 → 注一次", 都不写回 context)。
-        // 分开取、合并发: 同一轮里两件事都触发时发两条 user 消息, 模型更容易只回应最后一条。
-        const parts = [drift?.takeInjection(), parseFeedback?.takeInjection()].filter(
+        // 三条注入共用这一个边沿出口 (都是"检出 → 注一次", 都不写回 context)。
+        // 分开取、合并发: 同一轮里多件事都触发时发多条 user 消息, 模型更容易只回应最后一条。
+        const parts = [drift?.takeInjection(), parseFeedback?.takeInjection(), takeGrindAdvice()].filter(
           (t): t is string => typeof t === 'string' && t.length > 0,
         );
         if (parts.length === 0) return messages;
-        logger.debug({ parts: parts.length }, '[omd/agent-leaf] 软注入 via transformContext (drift / 写后即验)');
+        logger.debug({ parts: parts.length }, '[omd/agent-leaf] 软注入 via transformContext (drift / 写后即验 / grind advisor)');
         return [...messages, { role: 'user' as const, content: parts.join('\n\n'), timestamp: Date.now() }];
       },
       // ── 上下文压缩 (GP-8) ──────────────────────────────────────────────────
@@ -1237,7 +1358,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           }
         : {}),
       shouldStopAfterTurn: ({ context: ctx }) => {
-        if (timeoutMs > 0 && Date.now() - startedAt >= timeoutMs) {
+        if (timeoutMs > 0 && now() - startedAt >= timeoutMs) {
           timedOut = true;
           return true;
         }
@@ -1375,12 +1496,15 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       // 两者不冲突, 并列写。删这一行前先看 agent-leaf-shellruns-wiring.test.ts。
       ...(shell.runs().length ? { shellRuns: shell.runs() } : {}),
       // watchdog: S1 埋点 —— stalled/timedOut 恒写 boolean (false = 量过了且没发生, 不用缺席表示),
+      // advisorFiredAt 恒写 (null = 没触发, 同"量过且没发生"口径); advisorAdvice 缺席 = 没触发。
       // spin 子字段沿用同一份 spinSummary、同一条「仅 spinEvents>0 才出现」惯例。
       watchdog: {
         stalled,
         timedOut,
         touchTimelineMs,
         toolTimelineMs,
+        advisorFiredAt,
+        advisorAdvice,
         ...(spinSummary && spinSummary.spinEvents > 0
           ? { spin: { spinEvents: spinSummary.spinEvents, maxSameCount: spinSummary.maxSameCount } }
           : {}),

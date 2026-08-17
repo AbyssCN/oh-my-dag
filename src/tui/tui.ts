@@ -53,7 +53,7 @@ import { installOmdKeybindings } from './keys';
 import { buildSettings, parseSettingsCommand } from './settings';
 import { STARTUP_HINT, formatHelp, parseHelpCommand, slashCommands } from './commands';
 import { MANUAL_COORD, choiceLabel, listModelChoices, parseModelsCommand, sortChoices } from './model-picker';
-import { buildTreeRows, formatTree, parseTreeCommand, treeLabel } from './tree-picker';
+import { buildTreeRows, formatTree, parseTreeCommand, rewindTargets, treeLabel } from './tree-picker';
 import { createOmdAutocompleteProvider } from './skill-complete';
 import { createContextHealth } from './health';
 import { loadTuiUiConfig, setTuiUi } from './ui-config';
@@ -104,6 +104,28 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  */
 export function decideCtrlC(armedAt: number | null, now: number, windowMs = CTRL_C_WINDOW_MS): 'exit' | 'arm' {
   if (armedAt !== null && now - armedAt <= windowMs) return 'exit';
+  return 'arm';
+}
+
+/** 双击 Esc 的窗口。比 Ctrl+C 宽:回退开的是选单(Esc 可反悔),误触代价低,漏触代价是"以为没这功能"。 */
+export const DOUBLE_ESC_WINDOW_MS = 600;
+
+/**
+ * Esc 键的分派(纯函数,时钟外给 —— `decideCtrlC` 同款)。
+ *
+ * - 在飞 → `'interrupt'`:**单按就打断**,不要求双击 —— 等着的人最不想多按一下,
+ *   且等待行早就承诺了 `(Esc interrupts)`(此前那是句没接线的空话)。
+ * - 空闲、窗口内第二击 → `'rewind'`(开回退选单)。
+ * - 空闲、第一击 → `'arm'`:只记时刻,**键不吃** —— editor 自己也用 Esc(清补全)。
+ */
+export function decideEsc(
+  turnInFlight: boolean,
+  armedAt: number | null,
+  now: number,
+  windowMs = DOUBLE_ESC_WINDOW_MS,
+): 'interrupt' | 'rewind' | 'arm' {
+  if (turnInFlight) return 'interrupt';
+  if (armedAt !== null && now - armedAt <= windowMs) return 'rewind';
   return 'arm';
 }
 
@@ -197,6 +219,10 @@ export const CHROME = {
   waiting: 'Waiting for the model...(Esc interrupts)',
   /** 同一行的计时态(首个整秒起)。秒数是"活着"的证据 —— 静止的等待行与死机在屏上长得一样。 */
   waitingElapsed: (s: number) => `Working... ${s}s (Esc interrupts)`,
+  /** Esc 打断的回执。要说清**部分回复留没留** —— "停了"与"停了且这段话作数"是两件事。 */
+  interrupted: () => 'Interrupted - whatever was generated so far is kept in the session',
+  /** 双 Esc 回退但没有可回的点 —— 说真话,不开空选单(开空框让人按 Esc 是耍人)。 */
+  rewindNone: () => 'Nothing to rewind to yet - need an earlier user message (the very first one has no "before")',
   footer: () => 'omd tui · /help for commands · Ctrl+C twice to quit',
   footerArmed: () => 'omd tui · press Ctrl+C again to quit',
   /**
@@ -674,6 +700,10 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    * 装配到声明之间只要发生一次同步渲染就是 `ReferenceError`。tsc 看不出这一类。
    */
   let armedAt: number | null = null;
+  /** 上一次(空闲态)Esc 的时刻;`null` = 没有预备中的双击。`armedAt` 的 Esc 版。 */
+  let escArmedAt: number | null = null;
+  /** 本轮是否被 Esc 打断过。`submit` 开轮清零 —— 回执与错误抑制都看它。 */
+  let abortRequested = false;
 
   const root = new VStack();
   root.addChild(body, { grow: 1, shrink: 1, minSize: 3, visible: () => !fullOn && !pathFullOn });
@@ -878,6 +908,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     // 等待态开满整轮(2026-08-11,见 `waiting` 声明处)。文案先回到基态 ——
     // 不回的话第二轮的头一秒还挂着上一轮的秒数。
     turnInFlight = true;
+    abortRequested = false;
     turnStartedAt = Date.now();
     waiting.setMessage(CHROME.waiting);
     waiting.start();
@@ -888,14 +919,18 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     tui.requestRender();
     try {
       const res = await opts.backend.sendChat({ sessionId, prompt: withSkill });
-      // `ok:false` 是**响亮的否**, 不是空回复。
-      if (!res.ok) chatLog.appendNotice(CHROME.refused(opts.backend.connection.url));
+      // `ok:false` 是**响亮的否**, 不是空回复。打断的轮不算拒 —— 那是人叫停的。
+      if (!res.ok && !abortRequested) chatLog.appendNotice(CHROME.refused(opts.backend.connection.url));
     } catch (err) {
       // fail-open 可以吞异常, 不许吞证据: 错误原文进屏, 同时进日志文件 (已改道)。
       const reason = err instanceof Error ? err.message : String(err);
-      logger.warn({ err: reason, sessionId }, '[omd/tui] sendChat 抛了');
-      chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
+      logger.warn({ err: reason, sessionId, abortRequested }, '[omd/tui] sendChat 抛了');
+      // Esc 打断的轮抛出的 AbortError 不画成失败 —— 人叫停的不是事故 (回执在下面统一画)。
+      if (!abortRequested) chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
     }
+    // 打断回执画在收尾处 (唯一出口): 正常返回 (pi 把 stopReason:'aborted' 的部分消息照常
+    // 返回并落盘) 与抛错 (压缩中被掐) 两条路都汇到这里, 只画一次。
+    if (abortRequested) chatLog.appendNotice(CHROME.interrupted());
     // 无论成败都收尾: 抛错那条路上 `session` 事件不会来, 不收尾的话下一轮会续进这条气泡。
     // ⚠ 等待态只在这里关(**`finally` 语义**)—— 指示器活满整轮, 不在 delta 分支收。
     turnInFlight = false;
@@ -1444,6 +1479,50 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     }
     tui.requestRender();
     return true;
+  }
+
+  /**
+   * 双 Esc 的回退选单 —— `/tree` 的近路(dsh-TUI / claude-code 的惯用键)。
+   *
+   * 与 `/tree` 是同一套机件(`sessionTree` + `branchTo` + `switchTo`),分野在取材:
+   * `/tree` 给整棵树(含旁支,带搜索),这里只给**当前分支上的 user 消息**,
+   * 选中 = 回到那句话**之前**(`branchTo` 它的 parent;被放弃的那段照旧摘要成
+   * `[branch summary]` 节点,一条消息都不丢)。
+   */
+  async function openRewind(): Promise<void> {
+    const { sessionTree, branchTo } = opts.backend;
+    if (!sessionTree || !branchTo) {
+      chatLog.appendNotice(CHROME.noRunCapability('session tree'));
+      tui.requestRender();
+      return;
+    }
+    try {
+      const { leafId, entries } = await sessionTree({ sessionId });
+      const targets = rewindTargets(entries, leafId);
+      if (targets.length === 0) {
+        chatLog.appendNotice(CHROME.rewindNone());
+        tui.requestRender();
+        return;
+      }
+      const pick = await dialogSelect(dialogs, theme, {
+        title: 'Rewind to before which message?  (↑↓ select · Enter rewind · Esc cancel)',
+        options: targets.map((t) => ({ value: t.id, label: t.preview || t.id.slice(0, 8) })),
+      });
+      if (pick === null) return; // Esc: 不切不写
+      const target = targets.find((t) => t.id === pick);
+      if (!target) return;
+      const r = await branchTo({ sessionId, entryId: target.parentId });
+      if (!r.ok) chatLog.appendNotice(CHROME.treeBranchFailed(r.text));
+      else {
+        await switchTo(sessionId); // 换分支 = 换了一份历史, 屏上必须跟着换 (handleTree 同款)
+        chatLog.appendNotice(CHROME.treeBranched(target.parentId, r.text));
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      logger.warn({ err: reason }, '[omd/tui] 双 Esc 回退抛了');
+      chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
+    }
+    tui.requestRender();
   }
 
   /**

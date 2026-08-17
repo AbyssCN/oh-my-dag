@@ -115,3 +115,38 @@ export function formatTree(rows: readonly TreeRow[], limit = 40): string {
 export function parseTreeCommand(text: string): boolean {
   return text.trim() === '/tree';
 }
+
+/** 双 Esc 回退选单的一项。`parentId` 就是要 `branchTo` 的目标 —— "回到这句话**之前**"。 */
+export interface RewindTarget {
+  id: string;
+  parentId: string;
+  preview: string;
+}
+
+/**
+ * 双 Esc 回退的取材(纯函数,`buildTreeRows` 同款分层理由)。
+ *
+ * 只取**当前分支上的 user 消息**,最近的在前 —— 回退是沿自己刚走过的路往回跳,
+ * 旁支上的消息属于 `/tree`(整棵树)的事,混进来会把"往回"变成"乱跳"。
+ *
+ * ⚠ 根消息(`parentId === null`)**不进选单**:`branchTo` 表达不了"回到一切之前",
+ * 那件事是 `/new`。选单里放一个选了会失败的项,比少一项更糟。
+ */
+export function rewindTargets(entries: readonly TuiTreeEntry[], leafId: string | null): RewindTarget[] {
+  const byId = new Map(entries.map((e) => [e.id, e]));
+  const out: RewindTarget[] = [];
+  const seen = new Set<string>();
+  let cursor = leafId;
+  // 叶往根走 ⇒ 天然最近的在前,不用再排序。
+  while (cursor !== null) {
+    if (seen.has(cursor)) break; // 环:数据坏了也不许把这里挂死(buildTreeRows 同款)
+    seen.add(cursor);
+    const e = byId.get(cursor);
+    if (!e) break;
+    if (e.kind === 'message/user' && e.parentId !== null) {
+      out.push({ id: e.id, parentId: e.parentId, preview: e.preview });
+    }
+    cursor = e.parentId;
+  }
+  return out;
+}

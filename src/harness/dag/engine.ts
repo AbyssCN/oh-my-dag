@@ -115,11 +115,13 @@ import {
   detectRuntimeWriteRace,
   detectDetectorWrites,
   detectVerbatimDrop,
+  gateVerbatimRed,
+  extractQuoteSegments,
+  type QuoteSegment,
   type RoundShape,
-  ARTIFACT_ABSENT,
   type RoundArtifacts,
+  ARTIFACT_ABSENT,
 } from '../plan/observers';
-// D-Q detector 节点: 图内 fan-in 检测者的输出协议解析 (REJECT: / BLOCKED:)。
 import { parseDetectorVerdict, DETECTOR_PROTOCOL } from '../plan/detector';
 import { repeatedActionBlock, type ActionAttempt } from '../plan/repeated-action';
 import { makeLlmConvergenceJudge } from '../plan/llm-judge';
@@ -670,6 +672,14 @@ async function executePlan(
     }
     return fresh;
   };
+  /**
+   * #153 D-7 升闸收集面: 谓词命中的节点 id (逐字保真通道断了 **且** goal 明写要出处/逐字)。
+   *
+   * run 作用域 —— 探针点火处 (外层 settle / 内环局部 settle) 只往里放, 判前在
+   * `runConductorRound` 的检测者票合并处消费 (取出即删, 免得上一轮的红漂到下一轮)。
+   * 没有 conductor 环的平铺路径没有消费者 → 结构性只报不拦 (账本照记, 同 trigger-pass O-2)。
+   */
+  const verbatimReds = new Set<string>();
   /** 制品路径的解析根 (lint 用; 与产物闸的兜底根同一个)。 */
   const artifactLintRoot = config.continuity?.repoRoot ?? process.cwd();
   /**
@@ -859,19 +869,72 @@ async function executePlan(
    * (No-silent-caps): 有工具的 consumer 拿路径分页读, 无工具的至少知道自己看的是节选。
    * ⚠ 只截 prompt 视图, **不碰 depOutputs** —— 那是 staleness 的语义锚, 截了它 resume 必判 stale。
    */
-  const FANIN_HARD_CAP_CHARS = 24_000;
+  // 「上限 24K 字符 ≈ 8K token」是契约的语义; 实际硬截 budget 留 500 字符 slack 给 fence + caveman
+  // + section header + 截断告示 (No-silent-caps), 保证 prompt 总长 ≤ upstream (fanin-quotes #b 反向自检)。
+  const FANIN_HARD_CAP_CHARS = 23_500;
+  // #153 D-4 拼回块: 注入体末尾追加一段「逐字引文保留」(两个注入点共用同一模板)。
+  // 抽段器 = observers.extractQuoteSegments (INV-1: 全仓唯一引文判据源)。
+  // 字段格式 = `[来源节点 X] ${s.text} "${s.text}"` —— 一行一段; 含 `${s.text}` 与 `"${s.text}"` 两种形态,
+  // 前者供下游消费按节点 id 取段, 后者保「原句含外侧引号」逐字 (下游 verifier/出处核对直接子串命中)。
+  // 已含于 injectedBody 的段零新增字节跳过 (D-4 纪律, 与 composeAnchorBlock 的「只补摘要没含的」同源)。
+  // 段按 (nodeId, start) 升序 —— 同一节点的多段按原文位置; 跨节点按 id 字典序。
+  const quoteBlock = (segments: readonly QuoteSegment[], injectedBody: string): string => {
+    const filtered = segments.filter((s) => !injectedBody.includes(s.text));
+    if (filtered.length === 0) return '';
+    const sorted = [...filtered].sort((a, b) =>
+      a.nodeId !== b.nodeId ? (a.nodeId < b.nodeId ? -1 : 1) : a.start - b.start,
+    );
+    const lines = sorted.map((s) => `[来源节点 ${s.nodeId}] ${s.text} "${s.text}"`);
+    return `\n\n<fan-in 逐字引文保留>\n${lines.join('\n')}\n`;
+  };
   const capFanin = (d: string, body: string): string => {
     if (body.length <= FANIN_HARD_CAP_CHARS) return body;
+    // 实测 (fanin-quotes.test.ts #153): capFanin 输出要 + fence + leafPrompt 头/尾 ≈ 770 字符,
+    // prompt 总长才能 ≤ upstream (硬上限的 fanin 截断用例)。24_000 留给内容; 截断预算 = 23_500。
+    // 仍守「24K 上限」契约 (engine.ts:842, contract D-5): 真正装进 prompt 的 dep 内容 ≤ 23_500,
+    // 余下 500 字符给 fence + caveman + section header + 截断告示 (No-silent-caps)。
     const fullPath = continuity ? continuity.manager.saveFaninFull(continuity.runId, d, body) : null;
+    // D-5 截断排序: 引文先保, 叙述先砍。先抠全部引文段, 算 QUOTE_BLOCK 全长, 再扣指针与截断告示的预算,
+    // 余下 = 叙述预算。病态引文超预算时, 引文按序保留, 叙述归零 (Math.max(0, …))。
+    const segments = extractQuoteSegments(body, d);
+    const sortedSegs = [...segments].sort((a, b) => a.start - b.start);
+    // 叙述 = body 抠掉引文段的剩余文本。
+    let narrativeFull = '';
+    let cursor = 0;
+    for (const s of sortedSegs) {
+      if (s.start > cursor) narrativeFull += body.slice(cursor, s.start);
+      cursor = Math.max(cursor, s.end);
+    }
+    if (cursor < body.length) narrativeFull += body.slice(cursor);
+    // 估一次预算: 按「全部引文都进 QUOTE_BLOCK」算 quotesLen + pointerLen, 余下即叙述。
+    // 迭代一遍: 第一遍用 0 占位的 pointer 算 narrBudget; 第二遍用真 pointer 长度重扣,
+    // 收敛 (二次之后 quoteBlock 与 pointer 都不会再变 —— 长度差仅来自数字位)。
+    const buildPointer = (narrBudget: number): string =>
+      `\n…[fan-in 硬上限: 上游 ${d} 输出 ${body.length} 字符, 此处只含前 ${narrBudget};` +
+      (fullPath ? ` 全文在 ${fullPath} —— 有 read 工具就按需分页读它]` : ' 全文未落盘 (无 continuity), 需要时让上游改写进文件]');
+    let narrative = '';
+    let qb = '';
+    let pointer = '';
+    for (let iter = 0; iter < 3; iter++) {
+      const trialQb = quoteBlock(segments, narrative);
+      const trialPtr = iter === 0 ? buildPointer(0) : pointer;
+      const narrBudget = Math.max(0, FANIN_HARD_CAP_CHARS - trialQb.length - trialPtr.length);
+      narrative = narrativeFull.slice(0, narrBudget);
+      const newQb = quoteBlock(segments, narrative);
+      const newPtr = buildPointer(narrative.length);
+      if (newQb === qb && newPtr === pointer) {
+        qb = newQb;
+        pointer = newPtr;
+        break;
+      }
+      qb = newQb;
+      pointer = newPtr;
+    }
     logger.warn(
-      { dep: d, len: body.length, cap: FANIN_HARD_CAP_CHARS, persisted: !!fullPath },
-      '[omd/executor-dag] fan-in 硬上限截断 (爆窗闸) —— 上游全文过大, 注入节选 + 指针',
+      { dep: d, len: body.length, cap: FANIN_HARD_CAP_CHARS, persisted: !!fullPath, quotesKept: qb ? qb.split('\n').length - 2 : 0 },
+      '[omd/executor-dag] fan-in 硬上限截断 (爆窗闸) —— 上游全文过大, 引文先保, 叙述先砍',
     );
-    return (
-      body.slice(0, FANIN_HARD_CAP_CHARS) +
-      `\n…[fan-in 硬上限: 上游 ${d} 输出 ${body.length} 字符, 此处只含前 ${FANIN_HARD_CAP_CHARS};` +
-      (fullPath ? ` 全文在 ${fullPath} —— 有 read 工具就按需分页读它]` : ' 全文未落盘 (无 continuity), 需要时让上游改写进文件]')
-    );
+    return narrative + qb + pointer;
   };
 
   /**
@@ -1211,6 +1274,8 @@ async function executePlan(
     claimObs: DagObservation[];
     /** 本轮展开出的子节点 id (D-Q 空转检测的比对面)。 */
     childIds: string[];
+    /** #158 轮内派发闸触发原文 (null = 没触发) —— 冒给 runConductorNode 上叶。 */
+    budgetHalt: string | null;
   }> => {
     const node = plan!.nodes[id]!;
     const deps = node.depends_on ?? [];
@@ -1302,6 +1367,7 @@ async function executePlan(
       return {
         leaf: { id, status: 'failed', failureKind: 'infra-error', kind: 'conductor', output: `[conductor 展开失败: ${msg}]`, deps, usage: usageAcc },
         children: [], usage: usageAcc, results: new Map(), detector: { rejected: [] }, lint: [], claims: [], claimObs: [], childIds: [],
+        budgetHalt: null,
       };
     }
 
@@ -1326,6 +1392,7 @@ async function executePlan(
           deps, usage: usageAcc,
         },
         children: [], usage: usageAcc, results: new Map(), detector: { rejected: [] }, lint: [], claims: [], claimObs: [], childIds: [],
+        budgetHalt: null,
       };
     }
     if (expand.truncated > 0) {
@@ -1499,6 +1566,8 @@ async function executePlan(
     const touchedAll = new Set<string>();
     const roundResults = new Map<string, LeafResult>();
     const byId = new Map(expand.children.map((c) => [c.id, c]));
+    /** #158 轮内派发闸触发原文 (null = 没触发)。冒到轮结果上, 让终态词说得出"是预算停的"。 */
+    let budgetHalt: string | null = null;
 
     await new Promise<void>((resolve) => {
       const pump = (): void => {
@@ -1520,6 +1589,7 @@ async function executePlan(
         // 超跑 —— d39b559e 第 2 轮单轮跑 44min 越过 90min 上限, 轮边界与环入口都量不到轮中。
         const budgetHitNow = dispatchBudgetHit();
         if (budgetHitNow && runningLocal === 0) {
+          budgetHalt = `${budgetHitNow} (轮内派发闸, 已派 ${settledLocal}/${childIds.length})`;
           logger.warn(
             { node: id, round, settled: settledLocal, total: childIds.length },
             `[omd/executor-dag] ${budgetHitNow} → 内环停止派新子节点 (#158)`,
@@ -1527,6 +1597,7 @@ async function executePlan(
           resolve();
           return;
         }
+        if (budgetHitNow) budgetHalt = `${budgetHitNow} (轮内派发闸, 已派 ${settledLocal}/${childIds.length})`;
         while (!isCancelled() && !budgetHitNow && runningLocal < capLocal && readyLocal.length > 0) {
           const cid = readyLocal.shift()!;
           runningLocal++;
@@ -1580,6 +1651,19 @@ async function executePlan(
               });
               roundResults.set(cid, settledR);
               depOutputs[cid] = settledR.output;
+              // #153 D-7: 子节点绕过外层 settle → 逐字保真探针在这里同样点一次 (同一个
+              // detectVerbatimDrop 调用, 不是第二判据)。观察条目两条路都照常进账本 (INV-6),
+              // 差别只在升闸谓词命中时把 id 收进 verbatimReds → 判前并进本轮毒集。
+              if (settledR.status === 'done') {
+                const upsCid = (plan!.nodes[cid]?.depends_on ?? [])
+                  .map((d) => depOutputs[d])
+                  .filter((t): t is string => typeof t === 'string' && t.length > 0);
+                const vdCid = detectVerbatimDrop(cid, upsCid, settledR.output ?? '');
+                if (vdCid) {
+                  observe([vdCid]);
+                  if (gateVerbatimRed(vdCid, plan!.nodes[cid]?.goal ?? '')) verbatimReds.add(cid);
+                }
+              }
               usageAcc = addUsage(usageAcc, settledR.usage);
               if (settledR.status === 'failed') failedLocal++;
               // 失败子节点**带上败因** (截断防爆), 不是一个光秃秃的 `[failed]`。
@@ -1675,6 +1759,14 @@ async function executePlan(
         );
       }
     }
+    // #153 D-7 升闸消费点: 逐字保真升闸的红并进**检测者同一个毒集** —— 它说的是同一件事
+    // ("这一段产出不作数"), 另开一条平行通道就会出现两套毒集语义各自漂移。取出即删: 这一轮
+    // 的红只毒这一轮, 下一轮要红得由下一轮的探针重新点火。
+    for (const cid of childIds) {
+      if (!verbatimReds.delete(cid)) continue;
+      if (!detectorVerdict.rejected.includes(cid)) detectorVerdict.rejected.push(cid);
+      logger.info({ node: id, child: cid }, '[omd/executor-dag] 逐字保真升闸 → 子节点进本轮毒集 (#153 D-7)');
+    }
     const lintFindings = runArtifactLint();
 
     // ── 5. 汇总 (INV-U7 同款: 子节点部分失败 = 部分成功; 全失败才算 conductor 节点失败) ──
@@ -1749,6 +1841,7 @@ async function executePlan(
       claims,
       claimObs,
       childIds,
+      budgetHalt,
     };
   };
 
@@ -2050,6 +2143,16 @@ async function executePlan(
       }
       const r = await runConductorRound(id, round, prevReason, poisoned, prevResults);
       doneRounds = round;
+      // #158: 轮内派发闸触发 → 终态词上叶 (不然 goal 层把预算停读成普通未收敛, 指引就错了)。
+      // journal 在这儿写一条; 后面 settle 的"跑完才发现"账 `if (!budgetStopped)` 自然不重记。
+      if (r.budgetHalt && !budgetStopped) {
+        budgetStopped = r.budgetHalt;
+        writeLoopJournal(round, poisoned, prevReason, false, r.leaf.output, {
+          kind: 'budget-exhausted',
+          evidence: r.budgetHalt,
+          atRound: round,
+        });
+      }
       prevResults = r.results;
       usageAcc = addUsage(usageAcc, r.usage);
       last = { ...r.leaf, usage: usageAcc };
@@ -2101,7 +2204,7 @@ async function executePlan(
       // 判"这个节点上次到底成没成"), 省掉它等于让 resume 拿一个空白的结论重跑。
       // 配了冻结判据就一定要问 judge —— 判据轴要的是**两个布尔**, 缺了 judge 那一半,
       // 「judge 太紧」(判据过了而 judge 说没成) 这一格就永远观测不到。
-      if (maxRounds === 1 && !judgeFinal && !config.freezeCriterion) return settle(last, round);
+      if (maxRounds === 1 && !judgeFinal && !config.freezeCriterion) return { ...settle(last, round), ...(budgetStopped ? { budgetStopped } : {}) };
 
       // ── 冻结判据进环 (2026-08-01) ────────────────────────────────────────────
       // **在这儿直接跑, 不作为子节点** —— 这是护栏①: `renderRoundForJudge` 渲染的是 children,
@@ -3436,7 +3539,10 @@ async function executePlan(
       // 依据是同一批真实语料的实测 —— LLM 摘要保锚 31.8%(双峰: 4/9 不丢, 2/9 丢光), 而
       // fan-in consumer 里**无工具的占 47%**, 全文指针对它们无效, 丢了就永久丢。
       // 只补摘要没含的 → 摘要保住了就零新增字节 (见 composeAnchorBlock)。
-      const view = composeFaninView(summaryJson, fullPath, output.length, extractPathAnchors(output));
+      // D-6 拼回: 摘要可能丢引文 (LLM 摘要保锚实测仅 31.8%, 见 fanin-summary.ts)。view 末尾追加
+      // QUOTE_BLOCK 把逐字引文段按 D-4 模板拼回; 已含于 view 的段零新增字节跳过。
+      const baseView = composeFaninView(summaryJson, fullPath, output.length, extractPathAnchors(output));
+      const view = baseView + quoteBlock(extractQuoteSegments(output, id), baseView);
       // 保留率读数留着: 它现在量的是**LLM 那一半**做得如何 (补回之前), 仍是基率不是闸。
       const anchorLoss = faninAnchorLoss(output, JSON.stringify(summaryJson));
       logger.info(
@@ -3532,7 +3638,12 @@ async function executePlan(
           .map((d) => depOutputs[d])
           .filter((t): t is string => typeof t === 'string' && t.length > 0);
         const vd = detectVerbatimDrop(id, ups, r.output ?? '');
-        if (vd) observe([vd]);
+        if (vd) {
+          observe([vd]);
+          // #153 D-7: goal 明写要契约源/行号/出处/逐字 → 这条检出从 advisory 升为判红输入
+          // (走检测者同一毒集通道, 在 runConductorRound 判前合并处消费)。谓词不满足 → 只报不拦。
+          if (gateVerbatimRed(vd, plan!.nodes[id]?.goal ?? '')) verbatimReds.add(id);
+        }
       }
     }
     const settled = results[id]!;

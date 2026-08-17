@@ -1149,14 +1149,18 @@ describe('内环跑完才发现超预算 (只报不拦, S1 埋点)', () => {
           continuity: { manager: mgr, runId: 'r-budget-post', repoRoot: root },
         }),
       );
-      // 只报不拦: 节点该怎么收敛还怎么收敛, 判定逻辑一个字没变。
-      expect(r.results.A!.status).toBe('done');
+      // ⚠ 契约取代 (#158, owner 2026-08-17 P0): 本 describe 头注那句 2026-08-12 冻结
+      // (「不许把判点搬进轮里, 不许提前 break」) 被更新的 owner 裁决**明文取代** ——
+      // d39b559e 90min 预算实跑 164min, 判据写死「run 必须真的停」。轮内派发闸落地后,
+      // 本场景 (展开期就烧穿预算) 的行为从「只报不拦」变为「不再派新子节点 → 该轮部分失败,
+      // budgetStopped 上叶」。「跑完才发现」那格仍存在 (预算在**最后一个已派子节点**在飞时
+      // 才耗尽 → 闸无处触发 → post-settle 只报), 只是本场景不再落那格。
+      expect(r.results.A!.status).toBe('failed'); // 子节点 0/1 → 轮败 (不是引擎坏, 是钱没了)
+      expect(r.results.A!.budgetStopped).toContain('派发闸'); // 终态词上叶: goal 层能读出"预算停"
       const journal = mgr.loadNodeLoopJournal('r-budget-post', 'A');
       expect(journal?.stop).toBeDefined();
       expect(journal!.stop!.kind).toBe('budget-exhausted');
-      // 与「开轮前拦下」那条 (evidence: "预算用尽: 已花/已用 ... (第 N 轮后)") 刻意不同文案 ——
-      // 这条是"这一轮已经真的跑完了才发现超" (atRound = 真正跑完的那一轮, 不是没开成的下一轮)。
-      expect(journal!.stop!.evidence).toContain('跑完');
+      expect(journal!.stop!.evidence).toContain('派发闸');
       expect(journal!.stop!.atRound).toBe(1);
     } finally {
       rmSync(root, { recursive: true, force: true });

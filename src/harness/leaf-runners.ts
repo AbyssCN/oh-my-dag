@@ -106,6 +106,14 @@ export interface AgentLeafResult {
     timedOut: boolean;
     touchTimelineMs: number[];
     toolTimelineMs: number[];
+    /**
+     * grind advisor 软看门狗触发时刻 (S3), 距叶启动的相对毫秒数, 与 `touchTimelineMs` 同口径。
+     * 恒写: `null` = 量过了且没触发 (同 `stalled`/`timedOut` 那条纪律, 不用缺席表示 null)。
+     * 触发后保持非空 —— 每叶至多 1 次, 不重试不硬停。
+     */
+    advisorFiredAt: number | null;
+    /** grind advisor 诊断原文 (S3)。缺席/undefined = 没触发; 触发时非空, 与 `advisorFiredAt` 成对。 */
+    advisorAdvice?: string;
     spin?: { spinEvents: number; maxSameCount: number };
   };
   /**

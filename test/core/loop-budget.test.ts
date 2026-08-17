@@ -97,10 +97,12 @@ describe('环的预算轴', () => {
     expect(judged.length).toBeGreaterThanOrEqual(1);
   });
 
-  test('时间预算同轴 (ms) —— 上限 0 = 第一轮跑完即停', async () => {
+  test('时间预算同轴 (ms) —— 上限 0 = 一轮不开 (#158 契约取代: 预算尽则不再开新贵活)', async () => {
+    // ⚠ 旧契约「上限 0 = 第一轮跑完即停」被 #158 (owner 2026-08-17 P0) 取代: d39b559e 实证
+    // "至少跑一轮"的豁免正是 90min 预算跑成 164min 的一半根因。0 预算 = 零授权, 环入口即停。
     const r = await run({ loopBudget: { ms: 0 } });
-    expect(r.results.C?.budgetStopped).toContain('时间预算用尽');
-    expect(r.results.C?.converged).toBe(false);
+    expect(r.results.C?.budgetStopped).toContain('预算');
+    expect(r.results.C?.status).toBe('failed'); // 一轮没跑, 没有可谎报的收敛
   });
 
   test('预算足够 → 不干扰 (证明上面不是"永远停"的空转断言)', async () => {
