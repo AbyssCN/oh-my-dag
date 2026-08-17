@@ -171,6 +171,11 @@ interface ConfigFile {
    * claude-code 座走官方 server tool, pi 座走内部升档 tool。
    */
   advisors?: Record<string, string>;
+  /**
+   * C4 座位字段覆盖段 (seat id → { sampling })。语义与消费方在 src/model/seat-overrides.ts;
+   * 本接口只登记形状。纯增量段: 缺席 = 编译期默认 (seatSampling) 逐字节不变。
+   */
+  seats?: Record<string, unknown>;
 }
 
 let fileCache: { path: string; mtimeMs: number; config: ConfigFile } | null = null;
@@ -202,6 +207,12 @@ function fileConfig(path = configPath()): ConfigFile {
 function fileModels(path = configPath()): Record<string, string> {
   const m = fileConfig(path).models;
   return m && typeof m === 'object' ? m : {};
+}
+
+/** Seats 覆盖段 (C4, mtime-cached; 消费方 src/model/seat-overrides.ts)。 */
+export function fileSeats(path = configPath()): Record<string, unknown> {
+  const s = fileConfig(path).seats;
+  return s && typeof s === 'object' && !Array.isArray(s) ? (s as Record<string, unknown>) : {};
 }
 
 /** Drop the mtime + 路径发现缓存 — test hook + after an out-of-band file write / chdir。 */

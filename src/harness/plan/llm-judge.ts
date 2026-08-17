@@ -11,7 +11,8 @@
  */
 import { z } from 'zod';
 import { send } from '../../model/gateway';
-import { seatSampling, seatSpec } from '../../model/seats';
+import { seatSpec } from '../../model/seats';
+import { effectiveSeatSampling } from '../../model/seat-overrides';
 import type { FixpointJudge, FixpointVerdict } from './fixpoint';
 
 export const CONVERGENCE_VERDICT_SCHEMA = z.object({
@@ -143,7 +144,8 @@ export function makeLlmConvergenceJudge<R>(opts: LlmJudgeOpts<R>): FixpointJudge
       meta: { role: 'gate:convergence' },
       messages: [{ role: 'user', content: judgePrompt(opts.task, summary, round, threshold, opts.evidenceLegend ?? true) }],
       // 采样意图取自 `gate` 座 (model/seats.ts): 闸的裁决要可复现。调用方给了就压过它。
-      ...(opts.temperature !== undefined ? { temperature: opts.temperature } : seatSampling('gate')),
+      // C4: 座位采样经 config.seats 覆盖层 (无覆盖 = 编译期表逐字节同值); 显式 opts 仍最高优先。
+      ...(opts.temperature !== undefined ? { temperature: opts.temperature } : effectiveSeatSampling('gate')),
       // 档由**座位登记表**驱动 (不是"什么都不传碰巧关着")。gate 座实测定在 off, 理由见 seats.ts。
       thinkingLevel: opts.thinkingLevel ?? seatSpec('gate')?.thinking ?? 'off',
       maxTokens: 4096, // 700 会被推理族的 reasoning 吃光 → 空裁决

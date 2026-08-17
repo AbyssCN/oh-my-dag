@@ -26,7 +26,8 @@ import { z } from 'zod';
 import { send, listProviders, assertModelResolvable } from '../model/gateway';
 import { resolveRoleModel, listRoleModels } from '../model/gateway';
 import { tryResolveSeatModel } from '../model/role-models';
-import { seatSampling, seatSpec } from '../model/seats';
+import { seatSpec } from '../model/seats';
+import { effectiveSeatSampling } from '../model/seat-overrides';
 import { withGoFallback } from '../model/gateway';
 import { logger } from './logger';
 import type { ModelUsage } from '../model/gateway';
@@ -306,7 +307,8 @@ export function createDefaultVerifier(opts: DefaultVerifierOpts): VerifierFn {
         meta: { role: 'verifier' },
         messages: [{ role: 'user', content: verifierPrompt(task, summary, truths) }],
         // 采样意图取自座位登记表 (model/seats.ts): 终审要**稳定** —— 同一份产出不该这次过下次不过。
-        ...seatSampling('verifier'),
+        // C4: 座位采样经 config.seats 覆盖层 (无覆盖 = 编译期表逐字节同值)。
+        ...effectiveSeatSampling('verifier'),
         // xhigh 推理档 + 700 预算 = reasoning 必吃光正文 (这是审查 oracle 闸, 空裁决最伤)。
         maxTokens: 8192,
         // 档由**座位登记表**驱动 (同 gate: 别让 seats.ts 写的东西到不了调用上)。

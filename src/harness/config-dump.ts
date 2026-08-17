@@ -15,6 +15,7 @@ import type { ConfigIssue } from '../config/issues';
 import { discoverChannels, omdConfigPath } from '../config/config-discovery';
 import { loadMcpClientConfig } from '../mcp/client/config';
 import { ALL_SEAT_IDS } from '../model/seats';
+import { readSeatOverrides } from '../model/seat-overrides';
 import { tryResolveSeatModel } from '../model/role-models';
 import { reportPools, renderPoolReport } from '../model/pool-report';
 import { langfuseStatus } from '../model/langfuse';
@@ -40,6 +41,12 @@ export function renderConfigDump(o: ConfigDumpOpts): string {
   for (const seat of ALL_SEAT_IDS) {
     const r = tryResolveSeatModel(seat, { env, ...(o.seatConfigPath ? { configPath: o.seatConfigPath } : {}) });
     lines.push(r ? `  ${seat.padEnd(12)} ${r.model.padEnd(36)} [${r.via}]` : `  ${seat.padEnd(12)} ${'—'.padEnd(36)} (default: 未配, 按 tier 类首选分配)`);
+  }
+  // C4: config.seats 采样覆盖 (生效可见; 未知 id / 坏条目进 issues 汇总节)。
+  const seatOverrides = readSeatOverrides({ ...(o.seatConfigPath ? { configPath: o.seatConfigPath } : {}), issues });
+  const overridden = Object.entries(seatOverrides).filter(([, v]) => v.sampling);
+  if (overridden.length > 0) {
+    lines.push(`  ↳ config.seats 采样覆盖: ${overridden.map(([id, v]) => `${id}=${JSON.stringify(v.sampling)}`).join(' · ')}`);
   }
   lines.push('');
 
