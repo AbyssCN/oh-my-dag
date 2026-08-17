@@ -59,6 +59,10 @@ export const DEFAULT_PROVIDER_POOLS: Record<string, number> = {
   // 把两件事压在一个数上, 结果就是为了保护本机而顺手把网络等待型的 inproc 扇出也钳到 64。
   deepseek: Number.MAX_SAFE_INTEGER,
   'xiaomi-token-plan-ams': 8, // probe: >8 即 429, 硬上限 = 8 (**这个是真硬顶, 别跟着放**)
+  // 2026-08-18 owner: minimax-cn 官方 RPM=200, 此前没登记 → 吃兜底 8 纯冤枉 (墙钟四跑拆解
+  // 已点名「现吃兜底 8, 未探真顶」)。agentic 叶单发分钟级 → 32 并发 ≈ 每分钟十几发, 离 200
+  // 一个数量级余量; TPM 未探, 429 由 heal 兜底。本机足迹另有 per-kind 闸 (AGENT_DEFAULT_FANOUT) 管。
+  'minimax-cn': 32,
 };
 /** 未列出 provider 的兜底 cap。 */
 const FALLBACK_PROVIDER_CAP = 8;
