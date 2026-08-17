@@ -81,6 +81,9 @@ const GRID: Candidate<MixConfig>[] = [
   { label: 'C3 ds-flash/ds-flash', config: { conductorModel: 'deepseek:deepseek-v4-flash', leafModel: 'deepseek:deepseek-v4-flash' } },
   // leaf 走 mimo-platform (models.json 正门, agent-leaf 唯一能用的 mimo 注册; 'mimo:' 只在 callModel/conductor 栈可用)。
   { label: 'C5 kimi-k3/mimo-platform-us', config: { conductorModel: 'kimi-coding:k3', leafModel: 'mimo-platform:mimo-v2.5-pro-ultraspeed' } },
+  // C6 (2026-08-18, #171): 生产 conductor 座 (owner 2026-08-15 实配 claude-opus-5, 订阅通道) ——
+  // 基线必须与生产同条件 (2026-08-14 detector 教训: 量在 v4-pro 上而生产是别的座 = 对比作废)。
+  { label: 'C6 claude-opus-5/ds-flash', config: { conductorModel: 'claude-code:claude-opus-5', leafModel: 'deepseek:deepseek-v4-flash' } },
 ];
 
 const HEAL_TASK = (digest: string): string =>
