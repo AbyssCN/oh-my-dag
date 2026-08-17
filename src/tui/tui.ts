@@ -55,6 +55,7 @@ import { STARTUP_HINT, formatHelp, parseHelpCommand, parseSearchCommand, slashCo
 import { formatBangEntry, parseBang } from './bang';
 import { BottomAnchor } from './components/bottom-anchor';
 import { PROMPTS_DIR, expandPrompt, loadUserPrompts } from './prompts';
+import { detectTerminalScheme, schemeFromEnv } from './scheme-detect';
 import { MANUAL_COORD, choiceLabel, listModelChoices, parseModelsCommand, sortChoices } from './model-picker';
 import { buildTreeRows, formatTree, parseTreeCommand, rewindTargets, treeLabel } from './tree-picker';
 import { createOmdAutocompleteProvider } from './skill-complete';
@@ -454,7 +455,12 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   //   所以顺序上其实没那么脆;放这儿是为了"键位是启动期的事"读起来一眼清楚。
   installOmdKeybindings();
 
-  const theme = opts.theme ?? createTheme();
+  // W4②: 亮暗自适应 —— OMD_THEME 显式覆盖 > OSC 11 探测 > 暗色默认 (探测失败留日志不拦启动)。
+  const detected = opts.theme ? null : await detectTerminalScheme();
+  if (!opts.theme && detected === null && schemeFromEnv() === null) {
+    logger.info({}, '[omd/tui] 终端亮暗探测无响应 → 暗色默认 (OMD_THEME=light|dark 可显式指定)');
+  }
+  const theme = opts.theme ?? createTheme({ scheme: detected ?? 'dark' });
 
   // 状态行走 StatusLine (截断, 不折行) —— 状态行一折, 下面所有东西的行号整体下移,
   // 而 HUD 是按行差分画的, 结果是布局错位。对话正文走 ChatLog (折行是对的)。

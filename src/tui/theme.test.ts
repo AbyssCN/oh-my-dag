@@ -8,7 +8,8 @@
  */
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { describe, expect, test } from 'bun:test';
-import { MOCHA, colorEnabled, createTheme, fg24, truecolorEnabled } from './theme';
+import { LATTE, MOCHA, colorEnabled, createTheme, fg24, schemeFromBackground, truecolorEnabled } from './theme';
+import { schemeFromEnv } from './scheme-detect';
 
 describe('开关', () => {
   test('★ NO_COLOR 只要存在就关色(哪怕是空串)', () => {
@@ -74,5 +75,33 @@ describe('★ createTheme 三档', () => {
     expect(typeof t.markdown.highlightCode).toBe('function'); // S7 挂上去的
     expect(typeof t.editor.borderColor).toBe('function');
     expect(typeof t.chrome.dim).toBe('function');
+  });
+});
+
+describe('★ 亮暗主题 (W4②)', () => {
+  // 反向自检 (实跑): createTheme 里 P 的三元删掉恒取 MOCHA → 「light 用 Latte 值」当场红;
+  //   schemeFromBackground 阈值改 >1 → 「白底判亮」当场红。
+  test('★ light 档 truecolor 下 accent 用 Latte blue, dark 用 Mocha blue', () => {
+    const light = createTheme({ color: true, truecolor: true, scheme: 'light' });
+    const dark = createTheme({ color: true, truecolor: true, scheme: 'dark' });
+    expect(light.chrome.accent('x')).toContain('38;2;30;102;245'); // #1e66f5
+    expect(dark.chrome.accent('x')).toContain('38;2;137;180;250'); // #89b4fa
+  });
+
+  test('schemeFromBackground: 白底亮、黑底暗、中灰按 BT.709 亮度落界', () => {
+    expect(schemeFromBackground({ r: 255, g: 255, b: 255 })).toBe('light');
+    expect(schemeFromBackground({ r: 0, g: 0, b: 0 })).toBe('dark');
+    expect(schemeFromBackground({ r: 30, g: 30, b: 46 })).toBe('dark'); // Mocha base 实值
+  });
+
+  test('两板同键同语义 (satisfies 之外的运行时双保险)', () => {
+    expect(Object.keys(LATTE).sort()).toEqual(Object.keys(MOCHA).sort());
+  });
+
+  test('OMD_THEME 显式覆盖: 合法值直取, 非法/缺席给 null (探测才接手)', () => {
+    expect(schemeFromEnv({ OMD_THEME: 'light' })).toBe('light');
+    expect(schemeFromEnv({ OMD_THEME: 'dark' })).toBe('dark');
+    expect(schemeFromEnv({ OMD_THEME: 'blue' })).toBeNull();
+    expect(schemeFromEnv({})).toBeNull();
   });
 });

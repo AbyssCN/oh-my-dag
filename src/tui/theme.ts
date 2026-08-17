@@ -59,6 +59,34 @@ export const MOCHA = {
   mauve: '#cba6f7',
 } as const;
 
+/**
+ * Catppuccin **Latte**(亮色半,W4② 2026-08-17)。与 MOCHA **同键同语义** ——
+ * `satisfies` 钉住:两板键集漂开 tsc 当场红。值来自 Catppuccin 官方 Latte 定义。
+ * 16 色回落码两板共用(亮暗差异只在 24 位 hex;回落码由终端自己的亮暗配色消化)。
+ */
+export const LATTE = {
+  text: '#4c4f69',
+  subtext0: '#6c6f85',
+  overlay1: '#8c8fa1',
+  blue: '#1e66f5',
+  sky: '#04a5e5',
+  green: '#40a02b',
+  yellow: '#df8e1d',
+  red: '#d20f39',
+  mauve: '#8839ef',
+} as const satisfies Record<keyof typeof MOCHA, string>;
+
+export type ColorScheme = 'dark' | 'light';
+
+/**
+ * 亮暗判定的纯半:背景色相对亮度(ITU-R BT.709)> 0.5 ⇒ 亮底。
+ * OSC 11 的响应解析在 pi-tui(`parseOsc11BackgroundColor`),这里只做判定 —— 可单测。
+ */
+export function schemeFromBackground(rgb: { r: number; g: number; b: number }): ColorScheme {
+  const lum = (0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b) / 255;
+  return lum > 0.5 ? 'light' : 'dark';
+}
+
 /** `#rrggbb` → 24 位前景 SGR。非法 hex 直接抛 —— 那是打字错误,不是运行时状况。 */
 export function fg24(hex: string): (t: string) => string {
   const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
@@ -94,9 +122,11 @@ export interface OmdTuiTheme {
   };
 }
 
-export function createTheme(opts: { color?: boolean; truecolor?: boolean } = {}): OmdTuiTheme {
+export function createTheme(opts: { color?: boolean; truecolor?: boolean; scheme?: ColorScheme } = {}): OmdTuiTheme {
   const on = opts.color ?? colorEnabled();
   const tc = opts.truecolor ?? truecolorEnabled();
+  // W4②: 亮暗只换 24 位色板 (同键同语义), 16 色回落码不变 —— 那一档由终端配色消化。
+  const P = opts.scheme === 'light' ? LATTE : MOCHA;
   /** 16 色码 + Mocha hex 成对给:认 24 位就用 hex,不认就回落,关色就是恒等。 */
   const c = (code: string, hex?: string) => (!on ? identity : tc && hex ? fg24(hex) : sgr(code));
   /**
@@ -108,28 +138,28 @@ export function createTheme(opts: { color?: boolean; truecolor?: boolean } = {})
    *
    * ⚠ `warn` 保持黄:警告色跟着主题走会让"这条要注意"读不出来。**主题管好看,语义管对错。**
    */
-  const dim = c('2', MOCHA.overlay1);
-  const accent = c('94', MOCHA.blue);
-  const warn = c('33', MOCHA.yellow);
-  const user = c('96', MOCHA.sky);
+  const dim = c('2', P.overlay1);
+  const accent = c('94', P.blue);
+  const warn = c('33', P.yellow);
+  const user = c('96', P.sky);
   /** 字标 / 标题:亮蓝加粗,整屏最亮的一处 —— 首屏第一眼该落在这儿。 */
-  const brand = c('1;94', MOCHA.blue);
+  const brand = c('1;94', P.blue);
   /**
    * 工具行配色三态 + 成功/失败:读=蓝、写=黄、OK=亮绿、Fail=亮红。
    * 命名与契约文本逐字一致(`toolRead` / `toolWrite` / `toolOk` / `toolFail`)。
    * 关色下 `c()` 返回 identity → 零 ANSI(与硬约束"createTheme({color:false}) 不发转义"一致)。
    */
-  const toolRead = c('94', MOCHA.blue);
-  const toolWrite = c('33', MOCHA.yellow);
-  const toolOk = c('92', MOCHA.green);
-  const toolFail = c('91', MOCHA.red);
+  const toolRead = c('94', P.blue);
+  const toolWrite = c('33', P.yellow);
+  const toolOk = c('92', P.green);
+  const toolFail = c('91', P.red);
 
   const theme: OmdTuiTheme = {
     markdown: {
       heading: brand,
-      link: c('4;36', MOCHA.blue),
+      link: c('4;36', P.blue),
       linkUrl: dim,
-      code: c('33', MOCHA.yellow),
+      code: c('33', P.yellow),
       codeBlock: identity, // 代码块正文交给 highlightCode (S7);这里不再叠一层底色
       codeBlockBorder: dim,
       quote: dim,
@@ -147,7 +177,7 @@ export function createTheme(opts: { color?: boolean; truecolor?: boolean } = {})
       borderColor: accent,
       selectList: {
         selectedPrefix: accent,
-        selectedText: c('1', MOCHA.text),
+        selectedText: c('1', P.text),
         description: dim,
         scrollInfo: dim,
         noMatch: dim,
@@ -156,7 +186,7 @@ export function createTheme(opts: { color?: boolean; truecolor?: boolean } = {})
     settingsList: {
       // 焦点行加粗、非焦点行常色 —— 两列对齐靠的是**同宽的标签列**, 不是靠给非焦点行调暗
       //   (调暗之后一屏 13 行里 12 行是灰的, 读起来像"只有一项能用")。
-      label: (t, selected) => (selected ? c('1', MOCHA.text)(t) : t),
+      label: (t, selected) => (selected ? c('1', P.text)(t) : t),
       // 值那一列是这张表的信息主体 —— 焦点行给 accent, 其余给 dim: 眼睛先落在"现在是什么"。
       value: (t, selected) => (selected ? accent(t) : dim(t)),
       description: dim,
