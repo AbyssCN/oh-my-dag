@@ -59,6 +59,7 @@ import { makeDefaultGenerate, LEAF_SYSTEM_PREFIX, PONYTAIL_LEAF_DISPOSITION } fr
 import { topoLevels, buildLeafPrompt, addUsage, filterOracleCommandNodes } from './planner';
 // ready-set 调度器 (拓扑推进 + 三层并发闸 + quorum 判定; 纯同步零 IO, 见 dag-scheduler.ts)。
 import { DagScheduler, type SchedKind, type QuorumVerdict } from '../dag-scheduler';
+import { nodeExecKind, type NodeExecKind } from './node-kind';
 import { loadAgentTemplates, templateRoster, type AgentTemplate } from '../agent-templates';
 import { expandMapNode, mapSpecHash } from '../plan/map-expand';
 // SDD 0013 S1 约束选择: primitive 节点 → compile(复用 primitives.ts)→ run。
@@ -2714,53 +2715,15 @@ async function executePlan(
   //   算进"起跑时就脏"里, 判词当场失真)。
   const rollback = captureRollbackAnchor({ cwd: continuity?.repoRoot ?? process.cwd() });
 
-  // runNodeOnce: **单次尝试** (resume-skip / primitive / map / command / agent / inproc + checkpoint)。
-  // 重试策略在下方 runNode 包一层 —— 这里只管跑一次, 不认识 max_retry。
-  // attempt.causeNote: L0 重试把上一次的失败原因追加进 goal (经 buildLeafPrompt 进 prompt), 不原样重放。
-  const runNodeOnce = async (id: string, attempt?: { causeNote?: string }): Promise<LeafResult> => {
-      const rawNode = plan!.nodes[id]!;
-      const node = attempt?.causeNote ? { ...rawNode, goal: `${rawNode.goal ?? ''}${attempt.causeNote}` } : rawNode;
-      const deps = node.depends_on ?? [];
-      // D-21: 跨轮复用命中 → 上轮输出直接注入 (零 LLM 零工具; id/deps 归本轮, skipped 同 resume 语义)。
-      const prev = reuse.get(id);
-      if (prev) {
-        logger.info({ node: id }, '[omd/executor-dag] 跨轮语义复用命中 → 注入上轮输出 (D-21)');
-        return { ...prev, id, deps, usage: { in: 0, out: 0 }, skipped: true };
-      }
-      // SDD 0013 S1: primitive 节点 (约束选择) → compile+run 分支 (先于 map/executor, 与自由 node 并存)。
-      if (node.kind === 'primitive' && node.primitive) return runPrimitiveNode(id);
-      // U1: map 节点走运行时展开分支 (永不整体 resume-skip — lister 便宜, 子节点各自续)。
-      if (node.executor === 'map' && node.map) return runMapNode(id);
-      // P3 批次 3: conductor 节点走运行时**异构**展开。与 map 同理**永不整体 resume-skip** ——
-      // 重新展开是便宜的一次 conductor 调用, 而子节点因 D-B 内容寻址各自命中自己的 checkpoint:
-      // 内容没变 → id 没变 → 子节点全跳过, 只白花一次展开; 内容变了 → id 变了 → 本就该重跑。
-      if (node.executor === 'conductor') return runConductorNode(id);
-      // S3 跨 run 等待: engine park 该节点, 等 run-board 上出现匹配 published 条目后 unpark (git 合入 commit)。
-      if (node.executor === 'await' && node.await) return runAwaitNode(id);
-      // W2 resume: checkpoint done ∧ 代数匹配 ∧ **输入面未变 (D-O)** ∧ 产物存在且 hash 匹配 → 跳过执行。
-      if (
-        continuity?.resume &&
-        resumeGreens.has(id) &&
-        continuity.manager.shouldSkip(continuity.runId, id, dagGeneration, inputsOf(deps))
-      ) {
-        const cp = resumeGreens.get(id)!;
-        // D-O: 还原**全文**产物, 不是 800 字 summary —— 下游吃的就是这份输出, 拿摘要顶替等于
-        // 每 resume 一次上游信息就被静默截断一次, 且它的 hash 与下游 inputHashes 对不上,
-        // 会让整条下游误判 stale 全体重跑 (省下的钱又赔回去)。
-        const full = cp.outputText ? continuity.manager.loadNodeOutput(cp.outputText) : null;
-        if (cp.outputText && full === null) {
-          logger.warn({ node: id, path: cp.outputText }, '[omd/executor-dag] resume: 输出制品读不到 → 退回 800 字 summary (下游可能因此重跑)');
-        }
-        logger.info({ node: id, restored: full !== null ? 'full' : 'summary' }, '[omd/executor-dag] continuity resume: 节点已绿, 跳过');
-        // D-12: 读过的文件一并还原 —— 不还原的话, 续跑一次制品 lint 与读毒的观察面就静默窄一截。
-        return {
-          id, status: 'done', kind: cp.leafKind, output: full ?? cp.summary, deps,
-          usage: { in: 0, out: 0 }, skipped: true, filesTouched: cp.outputPaths,
-          ...(cp.inputPaths?.length ? { filesRead: cp.inputPaths } : {}),
-        };
-      }
+  // ── B1 (2026-08-17, dsh/cordis 吸收线 B): 节点执行分发查表化 ────────────────────
+  // 判定与执行分离: nodeExecKind (dag/node-kind.ts, 纯函数) 判"这是哪类节点",
+  // nodeExecutors 表定"这类节点谁来跑"。三个内联分支体 (command/research/leaf) 从原
+  // if-链**逐字搬移**成同 scope 闭包 (行为保持重构, 单一变量 = 分发机制); 表类型
+  // Record<NodeExecKind, …> — 删一行是编译错, 新增 kind = 闭包 + 表一行 + 词表一员。
+  type NodeExecCtx = { id: string; node: NonNullable<ConductorPlan['nodes'][string]>; deps: string[] };
+
       // command leaf (方案 A): 确定性 CLI, 零 LLM, 无 caveman/prompt。exitCode 0 = done。
-      if (node.executor === 'command') {
+  const runCommandNode = async ({ id, node, deps }: NodeExecCtx): Promise<LeafResult> => {
         if (!config.commandRunner || !node.command) {
           logger.warn({ node: id, hasRunner: !!config.commandRunner, hasCmd: !!node.command }, '[omd/executor-dag] executor:command 缺 commandRunner/command → failed');
           return { id, status: 'failed', failureKind: 'missing-capability', kind: 'command', output: '', deps, usage: { in: 0, out: 0 } };
@@ -2816,16 +2779,12 @@ async function executePlan(
             return cands.length ? { writeCandidates: cands } : {};
           })(),
         };
-      }
-      // 明示即承诺的反面守卫: expect_exit 只有 command 分支消费, 设在别处等于一个静默无效的旋钮
-      // (正是 2026-07-28 空旋钮全仓扫要杀的形态) → 响亮 WARN, 不改变执行 (fail-open)。
-      if (node.expect_exit !== undefined) {
-        logger.warn({ node: id, executor: node.executor, expect_exit: node.expect_exit }, '[omd/executor-dag] expect_exit 只对 executor:command 生效 → 本节点忽略 (D-K)');
-      }
+  };
+
       // research leaf (D-6): 真 web 检索 + 有界内环。**零来源 = failed** —— INV-GOAL-2 要的是
       // 真抓取痕迹, 一个没抓到还吐终稿的节点吐的是模型记忆里的引用 (假 grounded), 比失败更坏:
       // 它会带着编造的事实往下游走。与 producesFiles 的 filesTouched 闸同一条纪律。
-      if (node.executor === 'research') {
+  const runResearchNode = async ({ id, node, deps }: NodeExecCtx): Promise<LeafResult> => {
         if (!config.researchRunner) {
           logger.warn({ node: id }, "[omd/executor-dag] executor:research 缺 researchRunner → failed (拒绝降级 inproc 编引用)");
           return { id, status: 'failed', failureKind: 'missing-capability', kind: 'research', output: '[research 节点无 researchRunner, 无 web 能力]', deps, usage: { in: 0, out: 0 } };
@@ -2870,7 +2829,10 @@ async function executePlan(
           sources: r.sources,
           ...(r.reportPath ? { filesTouched: [r.reportPath] } : {}),
         };
-      }
+  };
+
+  // leaf 家族 (agent/inproc 双模): 模板卡/profile/caveman/prompt 组装 + 产物闸全在这里。
+  const runLeafNode = async ({ id, node, deps }: NodeExecCtx): Promise<LeafResult> => {
       // agent 模板卡解析: 命中注册表 → body 注入 prompt 前缀 (buildLeafPrompt 前置放)。
       // 未知名 = 预构造 plan 绕过了规划层校验 → TPL-2 执行层兜底: warn + 忽略, 不崩节点。
       const tpl = node.template ? templates.get(node.template) : undefined;
@@ -3414,6 +3376,71 @@ async function executePlan(
         ...(writeCounts ? { writeCounts } : {}),
       });
       return leaf;
+  };
+
+  const nodeExecutors: Record<NodeExecKind, (c: NodeExecCtx) => Promise<LeafResult>> = {
+    primitive: (c) => runPrimitiveNode(c.id),
+    map: (c) => runMapNode(c.id),
+    conductor: (c) => runConductorNode(c.id),
+    await: (c) => runAwaitNode(c.id),
+    command: (c) => runCommandNode(c),
+    research: (c) => runResearchNode(c),
+    leaf: (c) => runLeafNode(c),
+  };
+
+  // runNodeOnce: **单次尝试** (resume-skip / primitive / map / command / agent / inproc + checkpoint)。
+  // 重试策略在下方 runNode 包一层 —— 这里只管跑一次, 不认识 max_retry。
+  // attempt.causeNote: L0 重试把上一次的失败原因追加进 goal (经 buildLeafPrompt 进 prompt), 不原样重放。
+  const runNodeOnce = async (id: string, attempt?: { causeNote?: string }): Promise<LeafResult> => {
+      const rawNode = plan!.nodes[id]!;
+      const node = attempt?.causeNote ? { ...rawNode, goal: `${rawNode.goal ?? ''}${attempt.causeNote}` } : rawNode;
+      const deps = node.depends_on ?? [];
+      // D-21: 跨轮复用命中 → 上轮输出直接注入 (零 LLM 零工具; id/deps 归本轮, skipped 同 resume 语义)。
+      const prev = reuse.get(id);
+      if (prev) {
+        logger.info({ node: id }, '[omd/executor-dag] 跨轮语义复用命中 → 注入上轮输出 (D-21)');
+        return { ...prev, id, deps, usage: { in: 0, out: 0 }, skipped: true };
+      }
+      const kind = nodeExecKind(node);
+      if (kind === null) {
+        // fail-closed (B1 唯一刻意行为变化): 词表外 executor 此前静默落 inproc leaf ——
+        // 与 command 负退出码闸同理, 这是给预构造 plan (不经 zod) 的运行期硬闸。
+        logger.warn({ node: id, executor: node.executor }, '[omd/executor-dag] 词表外 executor → failed (fail-closed, 不再静默当 inproc)');
+        return { id, status: 'failed', failureKind: 'missing-capability', kind: 'inproc', output: `[词表外 executor: ${String(node.executor)}]`, deps, usage: { in: 0, out: 0 } };
+      }
+      // resume 预步只对 command/research/leaf 生效 —— primitive/map/conductor/await 在原链中
+      // 于 resume 检查之前 return (map/conductor 永不整体 resume-skip 的语义原样保留);
+      // command 到得了这里但 shouldSkip 内部恒不跳 (#167 账与闸各归各), 同原链。
+      if (kind === 'command' || kind === 'research' || kind === 'leaf') {
+      // W2 resume: checkpoint done ∧ 代数匹配 ∧ **输入面未变 (D-O)** ∧ 产物存在且 hash 匹配 → 跳过执行。
+      if (
+        continuity?.resume &&
+        resumeGreens.has(id) &&
+        continuity.manager.shouldSkip(continuity.runId, id, dagGeneration, inputsOf(deps))
+      ) {
+        const cp = resumeGreens.get(id)!;
+        // D-O: 还原**全文**产物, 不是 800 字 summary —— 下游吃的就是这份输出, 拿摘要顶替等于
+        // 每 resume 一次上游信息就被静默截断一次, 且它的 hash 与下游 inputHashes 对不上,
+        // 会让整条下游误判 stale 全体重跑 (省下的钱又赔回去)。
+        const full = cp.outputText ? continuity.manager.loadNodeOutput(cp.outputText) : null;
+        if (cp.outputText && full === null) {
+          logger.warn({ node: id, path: cp.outputText }, '[omd/executor-dag] resume: 输出制品读不到 → 退回 800 字 summary (下游可能因此重跑)');
+        }
+        logger.info({ node: id, restored: full !== null ? 'full' : 'summary' }, '[omd/executor-dag] continuity resume: 节点已绿, 跳过');
+        // D-12: 读过的文件一并还原 —— 不还原的话, 续跑一次制品 lint 与读毒的观察面就静默窄一截。
+        return {
+          id, status: 'done', kind: cp.leafKind, output: full ?? cp.summary, deps,
+          usage: { in: 0, out: 0 }, skipped: true, filesTouched: cp.outputPaths,
+          ...(cp.inputPaths?.length ? { filesRead: cp.inputPaths } : {}),
+        };
+      }
+      }
+      // 明示即承诺的反面守卫 (D-K): expect_exit 只有 command 分支消费。原链中该警告在
+      // command return 之后、research/leaf 之前 —— 等价于只对这两类响。
+      if ((kind === 'research' || kind === 'leaf') && node.expect_exit !== undefined) {
+        logger.warn({ node: id, executor: node.executor, expect_exit: node.expect_exit }, '[omd/executor-dag] expect_exit 只对 executor:command 生效 → 本节点忽略 (D-K)');
+      }
+      return nodeExecutors[kind]({ id, node, deps });
   };
 
   /**
