@@ -1,0 +1,181 @@
+{
+  "status": "go",
+  "anchors": {
+    "resumeGreens": {
+      "fileLine": "src/harness/dag/engine.ts:785",
+      "present": true
+    },
+    "loadAllGreen": {
+      "fileLine": "src/harness/continuity/checkpoint-manager.ts:360",
+      "smokeGreenCount": 2
+    },
+    "resumePassthrough": {
+      "fileLine": "src/harness/dag/types.ts:171 + src/harness/dag/engine.ts:2578",
+      "resumeFlag": true,
+      "smokeASkipped": true,
+      "smokeWorktreeRoot": "/tmp/omd-nrr-smoke-s2-KOG6AP"
+    }
+  },
+  "arms": [
+    {
+      "arm": "control",
+      "sample": 0,
+      "goal": {
+        "baseline": "control: 读 data/values.txt 报行数与数字和。",
+        "rerun": "control: 读 data/values.txt 报行数与数字和。",
+        "identical": true
+      },
+      "cwd": "/tmp/omd-nrr-control-0-s2-eZp9LY",
+      "cacheReadInputTokens": {
+        "value": 352,
+        "fromNodeId": "b",
+        "reason": null
+      },
+      "diffDistance": 0,
+      "wallMs": {
+        "baselineMs": 8,
+        "rerunMs": 5,
+        "maxMs": 8,
+        "sumMs": 13
+      },
+      "aSkippedOnResume": true,
+      "bOutputBaseline": "B_OUT lines=3 sum=40 upstream=A_OUT。\n\nProduce this step's deliverable directly goalHash=6123199cabe59e94",
+      "bOutputRerun": "B_OUT lines=3 sum=40 upstream=A_OUT。\n\nProduce this step's deliverable directly goalHash=6123199cabe59e94"
+    },
+    {
+      "arm": "control",
+      "sample": 1,
+      "goal": {
+        "baseline": "control: 读 data/values.txt 报行数与数字和。",
+        "rerun": "control: 读 data/values.txt 报行数与数字和。",
+        "identical": true
+      },
+      "cwd": "/tmp/omd-nrr-control-1-s2-GcHRwW",
+      "cacheReadInputTokens": {
+        "value": 352,
+        "fromNodeId": "b",
+        "reason": null
+      },
+      "diffDistance": 0,
+      "wallMs": {
+        "baselineMs": 8,
+        "rerunMs": 5,
+        "maxMs": 8,
+        "sumMs": 13
+      },
+      "aSkippedOnResume": true,
+      "bOutputBaseline": "B_OUT lines=3 sum=40 upstream=A_OUT。\n\nProduce this step's deliverable directly goalHash=6123199cabe59e94",
+      "bOutputRerun": "B_OUT lines=3 sum=40 upstream=A_OUT。\n\nProduce this step's deliverable directly goalHash=6123199cabe59e94"
+    },
+    {
+      "arm": "control",
+      "sample": 2,
+      "goal": {
+        "baseline": "control: 读 data/values.txt 报行数与数字和。",
+        "rerun": "control: 读 data/values.txt 报行数与数字和。",
+        "identical": true
+      },
+      "cwd": "/tmp/omd-nrr-control-2-s2-vcCwyN",
+      "cacheReadInputTokens": {
+        "value": 352,
+        "fromNodeId": "b",
+        "reason": null
+      },
+      "diffDistance": 0,
+      "wallMs": {
+        "baselineMs": 9,
+        "rerunMs": 5,
+        "maxMs": 9,
+        "sumMs": 14
+      },
+      "aSkippedOnResume": true,
+      "bOutputBaseline": "B_OUT lines=3 sum=40 upstream=A_OUT。\n\nProduce this step's deliverable directly goalHash=6123199cabe59e94",
+      "bOutputRerun": "B_OUT lines=3 sum=40 upstream=A_OUT。\n\nProduce this step's deliverable directly goalHash=6123199cabe59e94"
+    },
+    {
+      "arm": "treatment",
+      "sample": 0,
+      "goal": {
+        "baseline": "treatment v1: 报行数与数字和。",
+        "rerun": "treatment v2: 报行数、和与积。",
+        "identical": false
+      },
+      "cwd": "/tmp/omd-nrr-treatment-0-s2-bO8tD6",
+      "cacheReadInputTokens": {
+        "value": 0,
+        "fromNodeId": "a",
+        "reason": null
+      },
+      "diffDistance": 0.5,
+      "wallMs": {
+        "baselineMs": 10,
+        "rerunMs": 7,
+        "maxMs": 10,
+        "sumMs": 17
+      },
+      "aSkippedOnResume": null,
+      "bOutputBaseline": "B_OUT lines=3 sum=40 upstream=A_OUT。\n\nProduce this step's deliverable directly goalHash=832120d3ef192534",
+      "bOutputRerun": "B_OUT lines=3 sum=40 upstream=A_OUT。\n\nProduce this step's deliverable directly goalHash=7f9e66af0b76df6e"
+    },
+    {
+      "arm": "treatment",
+      "sample": 1,
+      "goal": {
+        "baseline": "treatment v1: 报行数与数字和。",
+        "rerun": "treatment v2: 报行数、和与积。",
+        "identical": false
+      },
+      "cwd": "/tmp/omd-nrr-treatment-1-s2-x2ik7b",
+      "cacheReadInputTokens": {
+        "value": 311,
+        "fromNodeId": "a",
+        "reason": null
+      },
+      "diffDistance": 0.5,
+      "wallMs": {
+        "baselineMs": 8,
+        "rerunMs": 7,
+        "maxMs": 8,
+        "sumMs": 15
+      },
+      "aSkippedOnResume": null,
+      "bOutputBaseline": "B_OUT lines=3 sum=40 upstream=A_OUT。\n\nProduce this step's deliverable directly goalHash=832120d3ef192534",
+      "bOutputRerun": "B_OUT lines=3 sum=40 upstream=A_OUT。\n\nProduce this step's deliverable directly goalHash=7f9e66af0b76df6e"
+    },
+    {
+      "arm": "treatment",
+      "sample": 2,
+      "goal": {
+        "baseline": "treatment v1: 报行数与数字和。",
+        "rerun": "treatment v2: 报行数、和与积。",
+        "identical": false
+      },
+      "cwd": "/tmp/omd-nrr-treatment-2-s2-YrES8b",
+      "cacheReadInputTokens": {
+        "value": 311,
+        "fromNodeId": "a",
+        "reason": null
+      },
+      "diffDistance": 0.5,
+      "wallMs": {
+        "baselineMs": 8,
+        "rerunMs": 8,
+        "maxMs": 8,
+        "sumMs": 16
+      },
+      "aSkippedOnResume": null,
+      "bOutputBaseline": "B_OUT lines=3 sum=40 upstream=A_OUT。\n\nProduce this step's deliverable directly goalHash=832120d3ef192534",
+      "bOutputRerun": "B_OUT lines=3 sum=40 upstream=A_OUT。\n\nProduce this step's deliverable directly goalHash=7f9e66af0b76df6e"
+    }
+  ],
+  "wallclock": {
+    "maxMs": 10,
+    "sumMs": 88
+  },
+  "samplesPerArm": 3,
+  "notes": [
+    "cacheHit 来源 = 注入 generate 的确定性 prompt-cache 模型, 非 provider 遥测",
+    "per-arm shared cache table: 跨样本累积 prompt-cache 命中 (key=model|goalHash|prompt.length)",
+    "extractUpstream 取 prompt 内首次出现 'A_OUT' 起的 48 字符 (实际落在 task 轮廓里 'A_OUT。' 起点,而非 a 节点输出 'A_OUT run=…' 的 48 字符后段);同 goal 仍确定,故控制臂 diff=0"
+  ]
+}

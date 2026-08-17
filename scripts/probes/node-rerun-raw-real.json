@@ -1,0 +1,182 @@
+{
+  "status": "go",
+  "anchors": {
+    "resumeGreens": {
+      "fileLine": "src/harness/dag/engine.ts:785",
+      "present": true
+    },
+    "loadAllGreen": {
+      "fileLine": "src/harness/continuity/checkpoint-manager.ts:360",
+      "smokeGreenCount": 2
+    },
+    "resumePassthrough": {
+      "fileLine": "src/harness/dag/types.ts:171 + src/harness/dag/engine.ts:2578",
+      "resumeFlag": true,
+      "smokeASkipped": true,
+      "smokeWorktreeRoot": "/home/nick/.cache/tmp/omd-nrr-smoke-s2-LYzbkC"
+    }
+  },
+  "arms": [
+    {
+      "arm": "control",
+      "sample": 0,
+      "goal": {
+        "baseline": "control: 读 data/values.txt 报行数与数字和。",
+        "rerun": "control: 读 data/values.txt 报行数与数字和。",
+        "identical": true
+      },
+      "cwd": "/home/nick/.cache/tmp/omd-nrr-control-0-s2-Nmq75b",
+      "cacheReadInputTokens": {
+        "value": 148,
+        "fromNodeId": "b",
+        "reason": null
+      },
+      "diffDistance": 1,
+      "wallMs": {
+        "baselineMs": 6727,
+        "rerunMs": 3072,
+        "maxMs": 6727,
+        "sumMs": 9799
+      },
+      "aSkippedOnResume": true,
+      "bOutputBaseline": "No data: file contents not provided, no tool access in this leaf. Cannot fabricate line count or sum.\n\nNeed: actual contents of `data/values.txt` injected via predecessor or tool call.",
+      "bOutputRerun": "Can't read file. No file tool available—only web search. No `data/values.txt` content provided in upstream. Cannot fabricate line count or sum."
+    },
+    {
+      "arm": "control",
+      "sample": 1,
+      "goal": {
+        "baseline": "control: 读 data/values.txt 报行数与数字和。",
+        "rerun": "control: 读 data/values.txt 报行数与数字和。",
+        "identical": true
+      },
+      "cwd": "/home/nick/.cache/tmp/omd-nrr-control-1-s2-GH1JAg",
+      "cacheReadInputTokens": {
+        "value": 148,
+        "fromNodeId": "b",
+        "reason": null
+      },
+      "diffDistance": 1,
+      "wallMs": {
+        "baselineMs": 8039,
+        "rerunMs": 4789,
+        "maxMs": 8039,
+        "sumMs": 12828
+      },
+      "aSkippedOnResume": true,
+      "bOutputBaseline": "No file access. `data/values.txt` not provided to this leaf. Cannot report line count or sum without data. No fabrication per policy.",
+      "bOutputRerun": "no file-read tool available. cannot access data/values.txt. report blocked."
+    },
+    {
+      "arm": "control",
+      "sample": 2,
+      "goal": {
+        "baseline": "control: 读 data/values.txt 报行数与数字和。",
+        "rerun": "control: 读 data/values.txt 报行数与数字和。",
+        "identical": true
+      },
+      "cwd": "/home/nick/.cache/tmp/omd-nrr-control-2-s2-SHKXY4",
+      "cacheReadInputTokens": {
+        "value": 148,
+        "fromNodeId": "b",
+        "reason": null
+      },
+      "diffDistance": 1,
+      "wallMs": {
+        "baselineMs": 8720,
+        "rerunMs": 3235,
+        "maxMs": 8720,
+        "sumMs": 11955
+      },
+      "aSkippedOnResume": true,
+      "bOutputBaseline": "无法执行。无文件读取工具,上游为占位符无实际数据。需 predecessor a 提供 data/values.txt 真实内容后才能报行数与数字和。",
+      "bOutputRerun": "No file access available. Upstream payload is placeholder `[placeholder — upstream payload pending]`, no actual contents provided. Cannot fabricate line count or sum without real data."
+    },
+    {
+      "arm": "treatment",
+      "sample": 0,
+      "goal": {
+        "baseline": "treatment v1: 报行数与数字和。",
+        "rerun": "treatment v2: 报行数、和与积。",
+        "identical": false
+      },
+      "cwd": "/home/nick/.cache/tmp/omd-nrr-treatment-0-s2-Sno6pY",
+      "cacheReadInputTokens": {
+        "value": 472,
+        "fromNodeId": "a",
+        "reason": null
+      },
+      "diffDistance": 1,
+      "wallMs": {
+        "baselineMs": 12476,
+        "rerunMs": 6921,
+        "maxMs": 12476,
+        "sumMs": 19397
+      },
+      "aSkippedOnResume": null,
+      "bOutputBaseline": "lines: 33\ndigits found: 0 (A.0), 1 (A.1), 2 (A.2), 0,1,0 (version 0.1.0)\nsum: 0+1+2+0+1+0 = 4",
+      "bOutputRerun": "无输入数据 -> 无法报行数、和、积。空 seed,空数据,无行列可计。上游仅锚点声明,未携带任何可处理内容。若需计算,请提供实际数据。"
+    },
+    {
+      "arm": "treatment",
+      "sample": 1,
+      "goal": {
+        "baseline": "treatment v1: 报行数与数字和。",
+        "rerun": "treatment v2: 报行数、和与积。",
+        "identical": false
+      },
+      "cwd": "/home/nick/.cache/tmp/omd-nrr-treatment-1-s2-EPzm1l",
+      "cacheReadInputTokens": {
+        "value": 472,
+        "fromNodeId": "a",
+        "reason": null
+      },
+      "diffDistance": 1,
+      "wallMs": {
+        "baselineMs": 4775,
+        "rerunMs": 9278,
+        "maxMs": 9278,
+        "sumMs": 14053
+      },
+      "aSkippedOnResume": null,
+      "bOutputBaseline": "```\nTREATMENT v1\ninput: <empty>\nrows: 0\ndigit_sum: N/A (no digits in input)\nnote: payload empty -> nothing to count\n```",
+      "bOutputRerun": "No data rows in upstream. Upstream = single anchor text \"anchor point — all downstream nodes bind to this revision; do not mutate.\"\n\nCannot compute row count / sum / product without numeric dataset. Refusing to fabricate.\n\nIf dataset expected at this node, supply it. If intent was to define reporting schema for downstream dataset, clarify: schema = {row_count: int, sum: number, product: number}."
+    },
+    {
+      "arm": "treatment",
+      "sample": 2,
+      "goal": {
+        "baseline": "treatment v1: 报行数与数字和。",
+        "rerun": "treatment v2: 报行数、和与积。",
+        "identical": false
+      },
+      "cwd": "/home/nick/.cache/tmp/omd-nrr-treatment-2-s2-TJLE60",
+      "cacheReadInputTokens": {
+        "value": 472,
+        "fromNodeId": "a",
+        "reason": null
+      },
+      "diffDistance": 1,
+      "wallMs": {
+        "baselineMs": 5399,
+        "rerunMs": 3206,
+        "maxMs": 5399,
+        "sumMs": 8605
+      },
+      "aSkippedOnResume": null,
+      "bOutputBaseline": "Lines: 4\nSum: 0",
+      "bOutputRerun": "No data in A_OUT. Cannot compute. Provide actual numbers."
+    }
+  ],
+  "wallclock": {
+    "maxMs": 12476,
+    "sumMs": 76637
+  },
+  "samplesPerArm": 3,
+  "notes": [
+    "cacheHit 来源 = 注入 generate 的确定性 prompt-cache 模型, 非 provider 遥测",
+    "per-arm shared cache table: 跨样本累积 prompt-cache 命中 (key=model|goalHash|prompt.length)",
+    "extractUpstream 取 prompt 内首次出现 'A_OUT' 起的 48 字符 (实际落在 task 轮廓里 'A_OUT。' 起点,而非 a 节点输出 'A_OUT run=…' 的 48 字符后段);同 goal 仍确定,故控制臂 diff=0",
+    "control divergence: probe nondeterminism"
+  ]
+}
