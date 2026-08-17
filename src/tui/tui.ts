@@ -49,7 +49,7 @@ import { formatSeatRows, parseSeatCommand, seatRows } from './seat-picker';
 import { defaultTuiSessionId, forkSessionId, formatSessions, newSessionId, parseNewForkCommand, parseSessionCommand } from './sessions';
 import { createSettingsPanel } from './components/settings-panel';
 import { SPINNER_FRAMES } from './design/tokens';
-import { installOmdKeybindings } from './keys';
+import { installOmdKeybindings, loadUserKeybindings } from './keys';
 import { buildSettings, parseSettingsCommand } from './settings';
 import { STARTUP_HINT, formatHelp, parseHelpCommand, parseSearchCommand, slashCommands } from './commands';
 import { formatBangEntry, parseBang } from './bang';
@@ -453,7 +453,10 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   // 键位表:补上 pi-tui 默认表认不出的双 ESC(`keys.ts` 记了实测的三行对照表)。
   // ⚠ 必须在建组件**之前** —— 组件是在 `handleInput` 里现查 `getKeybindings()` 的,
   //   所以顺序上其实没那么脆;放这儿是为了"键位是启动期的事"读起来一眼清楚。
-  installOmdKeybindings();
+  // W4③: 键位表 = pi 全表 + omd 五键, 用户文件 (.omd/keybindings.json) 可覆盖任意一条。
+  // 坏文件 fail-open 用默认, 但证据上屏 (启动后画 notice, 不是日志里一行)。
+  const userKb = loadUserKeybindings(opts.cwd);
+  const kb = installOmdKeybindings(userKb.config);
 
   // W4②: 亮暗自适应 —— OMD_THEME 显式覆盖 > OSC 11 探测 > 暗色默认 (探测失败留日志不拦启动)。
   const detected = opts.theme ? null : await detectTerminalScheme();
@@ -591,6 +594,12 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    * owner 裁的兜底是「降级裸跑 + 红字告警」,而围栏在不在,屏上没有别的痕迹。
    * `ok` 时一个字都不画:一条"一切正常"的常驻横幅只会训练人不看它。
    */
+  // W4③: 键位文件的坏账上屏 —— fail-open 用了默认, 但"为什么我的绑定没生效"必须一眼可见。
+  if (userKb.diagnostic) chatLog.appendNotice(userKb.diagnostic);
+  // 冲突检测是换上 KeybindingsManager 白得的 —— 同一键绑了两个动作时说出来, 不静默让后到的赢。
+  for (const c of kb.getConflicts()) {
+    chatLog.appendNotice(`keybinding conflict: "${c.key}" is bound to ${c.keybindings.join(' and ')}`);
+  }
   if (opts.sandbox && !opts.sandbox.ok) {
     chatLog.appendNotice(CHROME.sandboxOff(opts.sandbox.reason ?? 'unknown'));
   }
@@ -2330,7 +2339,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   // input listener 在**焦点分派之前**跑, 且 `consume: true` 能截住 —— Ctrl+C 必须
   // 抢在任何组件之前, 否则将来 editor 一拿到焦点就把它吃了。
   tui.addInputListener((data: string) => {
-    if (data === '\x03') {
+    if (kb.matches(data, 'omd.quit')) {
       if (decideCtrlC(armedAt, now()) === 'exit') {
         requestCleanExit();
       } else {
@@ -2342,7 +2351,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     }
     // 切片⑧: Ctrl+P (\x10) 开关 pathfinder 全屏; 全屏时 Tab 切画法, 上下键选票, Enter 动作。
     // ⚠ 弹窗开着时 (dialogs.busy) 这些键要让给弹窗 —— 抢了的话动作选单收不到 Enter。
-    if (data === '\x10' && !dialogs.busy) {
+    if (kb.matches(data, 'omd.pathFull') && !dialogs.busy) {
       if (pathFullOn) pathFullOn = false;
       else void openPathView();
       tui.requestRender();
@@ -2368,7 +2377,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     }
     // 切片③: Ctrl+G (\x07) 开关全屏 DAG; 全屏时 Tab 循环三画法。
     // ⚠ Tab 只在全屏时截 —— 平时它是 editor 的补全键, 抢了会让输入框残废。
-    if (data === '\x07') {
+    if (kb.matches(data, 'omd.dagFull')) {
       if (!dagTree.active && !fullOn) {
         chatLog.appendNotice('No run yet - send one, then press Ctrl+G');
       } else {
@@ -2382,8 +2391,8 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       tui.requestRender();
       return { consume: true };
     }
-    // Ctrl+O (\x0f): 思维链折叠/展开。弹窗开着时不抢 (Ctrl+P 同款守则); 效果直接体现在重绘里, 不发回执。
-    if (data === '\x0f' && !dialogs.busy) {
+    // 思维链折叠/展开 (默认 Ctrl+O)。弹窗开着时不抢 (pathFull 同款守则); 效果直接体现在重绘里, 不发回执。
+    if (kb.matches(data, 'omd.thinkingToggle') && !dialogs.busy) {
       chatLog.toggleThinking();
       tui.requestRender();
       return { consume: true };
@@ -2393,7 +2402,9 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     // ⚠ 全屏(DAG / pathfinder)时不开回退 —— 选单会开在全屏底下,谁在收键说不清。
     // ⚠ 只认裸 `\x1b`:方向键等序列(`\x1b[A`)整块到达,不会误入;快速双击并包成
     //   `\x1b\x1b` 到达的情形单独认。
-    if ((data === '\x1b' || data === '\x1b\x1b') && !dialogs.busy) {
+    // ⚠ `\x1b\x1b` 保留字节比较: 那是快速双击被终端并包的**编码产物**不是键
+    //   (parseKey 读成 ctrl+alt+[), 跟着 omd.interrupt 重绑走反而错。
+    if ((kb.matches(data, 'omd.interrupt') || data === '\x1b\x1b') && !dialogs.busy) {
       const twice = data === '\x1b\x1b';
       const act = twice && !turnInFlight ? 'rewind' : decideEsc(turnInFlight, escArmedAt, now());
       if (act === 'interrupt') {
