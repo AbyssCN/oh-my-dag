@@ -1,7 +1,7 @@
 /**
  * scripts/eval-tdd-pack —— tdd-bugfix 参考 pack 的 A/B eval 驱动 (PLAN.md 的机械化)。
  *
- * 用法: bun scripts/eval-tdd-pack.ts --arm bare|pack [--n 2] [--keep]
+ * 用法: bun scripts/eval-tdd-pack.ts --arm bare|pack [--task broken-calc|weighted-ledger] [--n 2] [--keep] [--gapMs 20000]
  *
  * 四要素照 templates/packs/tdd-bugfix/eval/PLAN.md:
  *   单一变量 = 世界里装/不装 pack (agentTemplates 从世界现读, 差异只来自世界状态);
@@ -26,9 +26,23 @@ import { bootstrapModelRuntime } from '../src/model/bootstrap';
 import { tryResolveSeatModel } from '../src/model/role-models';
 
 const PACK_DIR = join(import.meta.dir, '../templates/packs/tdd-bugfix');
-const FIXTURE = join(PACK_DIR, 'eval/tasks/broken-calc');
-const ORACLE = join(PACK_DIR, 'eval/oracle/regression.oracle.ts');
 const READINGS_DIR = join(PACK_DIR, 'eval/readings');
+
+/** 任务注册表: fixture 目录 + 隐藏 oracle + oracle 拷入世界时的 import 改写对。 */
+const TASKS: Record<string, { fixture: string; oracle: string; importFrom: string; importTo: string[] }> = {
+  'broken-calc': {
+    fixture: join(PACK_DIR, 'eval/tasks/broken-calc'),
+    oracle: join(PACK_DIR, 'eval/oracle/regression.oracle.ts'),
+    importFrom: '../tasks/broken-calc/src/',
+    importTo: ['split-bill'],
+  },
+  'weighted-ledger': {
+    fixture: join(PACK_DIR, 'eval/tasks/weighted-ledger'),
+    oracle: join(PACK_DIR, 'eval/oracle/weighted-ledger.oracle.ts'),
+    importFrom: '../tasks/weighted-ledger/src/',
+    importTo: ['settle', 'report'],
+  },
+};
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -42,6 +56,12 @@ if (arm !== 'bare' && arm !== 'pack') {
 }
 const n = Number(arg('n') ?? '2');
 const keep = process.argv.includes('--keep');
+const taskName = arg('task') ?? 'broken-calc';
+const TASK = TASKS[taskName] ?? ((): never => {
+  console.error(`未知任务 ${taskName}; 可选: ${Object.keys(TASKS).join(', ')}`);
+  process.exit(1);
+})();
+const gapMs = Number(arg('gapMs') ?? '20000');
 
 bootstrapModelRuntime();
 
@@ -54,14 +74,24 @@ function seat(id: string): string {
 
 /** 任务文本: 两臂逐字相同, 刻意中性 —— 纪律只许来自卡 (单一变量)。 */
 function taskText(world: string): string {
-  return `${readFileSync(join(FIXTURE, 'BUG_REPORT.md'), 'utf8')}\n仓库在 ${world}。修复这个 bug。`;
+  return `${readFileSync(join(TASK.fixture, 'BUG_REPORT.md'), 'utf8')}\n仓库在 ${world}。修复这个 bug。`;
+}
+
+/**
+ * 死叶判定 (解剖修正 2026-08-17): 全部叶子几乎零输入且零文件写 = 执行通道没干活
+ * (n=8 解剖: 9/16 跑此形态, 产物一字未动)。通道故障不进能力分母 —— 重试一次, 仍死则
+ * 标 channelDead, 读数消费方剔除。
+ */
+function isChannelDead(result: Awaited<ReturnType<typeof runExecutorDag>>): boolean {
+  const touchedAny = Object.values(result.results).some((r) => (r.filesTouched ?? []).length > 0);
+  return !touchedAny && result.usage.leavesIn < 10_000;
 }
 
 async function runOnce(i: number): Promise<Record<string, unknown>> {
   const world = mkdtempSync(join(tmpdir(), `omd-tddeval-${arm}-`));
   const t0 = Date.now();
   try {
-    cpSync(FIXTURE, world, { recursive: true });
+    cpSync(TASK.fixture, world, { recursive: true });
     if (arm === 'pack') {
       const r = await addPack(world, PACK_DIR);
       if (!r.ok) throw new Error(`pack 装不进 eval 世界: ${r.message}`);
@@ -78,11 +108,20 @@ async function runOnce(i: number): Promise<Record<string, unknown>> {
       cancelSignal: AbortSignal.timeout(12 * 60_000), // 协作式软停, 防单跑挂死
       sessionId: `tddeval-${arm}-${i}-${Date.now()}`,
     };
-    const result = await runExecutorDag(taskText(world), config);
+    let result = await runExecutorDag(taskText(world), config);
+    let retriedDead = false;
+    if (isChannelDead(result)) {
+      console.error('[eval-tdd-pack] 死叶形态 → 通道故障重试一次 (不进能力分母)');
+      retriedDead = true;
+      result = await runExecutorDag(taskText(world), { ...config, sessionId: `${config.sessionId}-retry` });
+    }
+    const channelDead = isChannelDead(result);
 
     // ── S1: 隐藏 oracle (跑完才拷入, 执行体全程不可见) ──────────────────────
     const oraclePath = join(world, 'src', 'oracle.test.ts');
-    writeFileSync(oraclePath, readFileSync(ORACLE, 'utf8').replace("'../tasks/broken-calc/src/split-bill'", "'./split-bill'"));
+    let oracleSrc = readFileSync(TASK.oracle, 'utf8');
+    for (const mod of TASK.importTo) oracleSrc = oracleSrc.replaceAll(`'${TASK.importFrom}${mod}'`, `'./${mod}'`);
+    writeFileSync(oraclePath, oracleSrc);
     const oracleRun = spawnSync('bun', ['test', 'src/oracle.test.ts'], { cwd: world, encoding: 'utf8', timeout: 60_000 });
     const s1_oraclePass = oracleRun.status === 0;
 
@@ -108,7 +147,10 @@ async function runOnce(i: number): Promise<Record<string, unknown>> {
     return {
       ts: new Date().toISOString(),
       arm,
+      task: taskName,
       i,
+      ...(retriedDead ? { retriedDead } : {}),
+      ...(channelDead ? { channelDead } : {}),
       s1_oraclePass,
       s2_verifyRed,
       s3_touchedExistingTest,
@@ -129,6 +171,7 @@ async function runOnce(i: number): Promise<Record<string, unknown>> {
     return {
       ts: new Date().toISOString(),
       arm,
+      task: taskName,
       i,
       error: err instanceof Error ? err.message.slice(0, 500) : String(err),
       wallMs: Date.now() - t0,
@@ -140,11 +183,12 @@ async function runOnce(i: number): Promise<Record<string, unknown>> {
 }
 
 mkdirSync(READINGS_DIR, { recursive: true });
-const out = join(READINGS_DIR, `${arm}.jsonl`);
+const out = join(READINGS_DIR, `${taskName === 'broken-calc' ? '' : `${taskName}-`}${arm}.jsonl`);
 for (let i = 0; i < n; i++) {
-  console.error(`[eval-tdd-pack] arm=${arm} run ${i + 1}/${n} …`);
+  console.error(`[eval-tdd-pack] task=${taskName} arm=${arm} run ${i + 1}/${n} …`);
   const reading = await runOnce(i);
   appendFileSync(out, `${JSON.stringify(reading)}\n`);
   console.error(`[eval-tdd-pack] → ${JSON.stringify(reading).slice(0, 200)}`);
+  if (i < n - 1 && gapMs > 0) await new Promise((r) => setTimeout(r, gapMs)); // 连跑限流缓冲 (死叶解剖的直接回应)
 }
 console.error(`[eval-tdd-pack] 读数 append 至 ${out}`);
