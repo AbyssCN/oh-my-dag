@@ -66,4 +66,26 @@ describe('buildDeepenPlan', () => {
   test('零热点 → 抛错 (图至少 1 叶)', () => {
     expect(() => buildDeepenPlan([])).toThrow();
   });
+
+  test('aposd 信号注入: 相关热点 goal 含信号行; 无关热点与不传 signals 逐字节相同', () => {
+    const signals = {
+      coChange: [{ a: 'src/harness/plan/planner.ts', b: 'src/harness/review/run.ts', count: 4 }],
+      passThrough: [{ path: 'src/harness/plan/planner.ts', line: 12, name: 'plan', callee: 'inner.plan' }],
+    };
+    const plan = buildDeepenPlan(HOTSPOTS, { signals });
+    const g1 = plan.nodes['scan_1']!.goal ?? ''; // 热点 src/harness/plan
+    expect(g1).toContain('确定性预扫信号');
+    expect(g1).toContain('src/harness/plan/planner.ts ↔ src/harness/review/run.ts');
+    expect(g1).toContain('src/harness/plan/planner.ts:12 plan → inner.plan');
+    // coChange 的 b 端落在 scan_2 (src/harness/review) 目录 → 它也看得到这条
+    expect(plan.nodes['scan_2']!.goal ?? '').toContain('确定性预扫信号');
+    // scan_3 (src/model) 与两类信号都无关 → goal 与不传 signals 时逐字节相同 (零污染)
+    const bare = buildDeepenPlan(HOTSPOTS);
+    expect(plan.nodes['scan_3']!.goal).toBe(bare.nodes['scan_3']!.goal);
+    // 反向自检: 强写守卫也对带信号的 goal 跑 — 信号行自带 .ts 路径, 措辞若写「同步修改」这里当场红
+    const PRODUCES_FILES_RE = /(?:实现|创建|新建|写入|生成|修改|实装|落地)[^。\n]{0,40}\.(?:ts|tsx|js|jsx|mjs|cjs|sql|json|md|css|html|py|go|rs)\b/;
+    for (const [id, node] of Object.entries(plan.nodes)) {
+      expect({ id, hit: PRODUCES_FILES_RE.test(node.goal ?? '') }).toEqual({ id, hit: false });
+    }
+  });
 });

@@ -57,10 +57,11 @@ describe('conductor 档:冻结前缀在前,动态尾在后(cache 面结构)', ()
     expect(p.startsWith(`${CONDUCTOR_HARNESS_CORE}\n\n${CONDUCTOR_SITUATIONAL}`)).toBe(true);
   });
 
-  test('情境段覆盖 Y-1..Y-5 五条(丢一条当场红)', () => {
+  test('情境段覆盖 Y-1..Y-6 六条(丢一条当场红)', () => {
     for (const anchor of [
       '<cross-validation>', '<recall-discipline>', '<iteration-bound>',
-      '<vertical-slicing>', '<scope-lock>',
+      // Y-6 knowledge-boundary (2026-08-17 APoSD 蒸馏: 按知识边界分解, 反时序性分解)
+      '<vertical-slicing>', '<knowledge-boundary>', '<scope-lock>',
     ]) {
       expect(CONDUCTOR_SITUATIONAL).toContain(anchor);
     }

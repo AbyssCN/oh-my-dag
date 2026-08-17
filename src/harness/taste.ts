@@ -1,27 +1,28 @@
 /**
- * src/harness/taste.ts —— `TASTE_CORE`: omd 的**工程品味不变量**, 抽成可复用核 (P1 三层角色)。
+ * src/harness/taste.ts —— `TASTE_CORE`: omd 的**工程品味不变量**, 可复用核 (P1 三层角色)。
  *
- * 这是 VALAR_IDENTITY「## 工程品味不变量」段的单一真理源。抽出来 = 让**三层角色**按需复用,
- * 而不是把整张 identity 塞给每个角色:
+ * (史注: 本核最初是 Valar/Xihe 时代 identity 常量的品味段; 那套 identity 已随旧层退役
+ * —— e790921 Valar→Wright · 726412b xihe→oh-my-dag —— 现在 TASTE_CORE 独立存在, 按角色组合。)
  *
- *   - **omd (主 agent · 设计大脑)**: 拿**全 VALAR_IDENTITY** (taste + GP + 认知模式 + 编排 +
- *     owner 意识)。高海拔思考/SDD/品位在这, 应可换 SOTA (Opus/GPT)。TASTE_CORE 是它的一段。
- *   - **conductor (分解器)**: **不需要 taste** —— 它只把 omd 成形的 plan 机械分解成 DAG, 要的是
+ * 三层角色谁拿谁不拿:
+ *   - **conductor (分解器)**: **不需要 taste** —— 它只把成形的 plan 机械分解成 DAG, 要的是
  *     指令遵守 + 快 (flash, 非 reasoning; 见 fleet.ts conductor 注释)。给它品味反而诱发"二次设计"。
  *   - **leaf (执行器)**: 默认**最小思考**忠实执行 (inproc/agent/command)。但**设计型/推理型** leaf
  *     (best-of-N 方案生成 / 需品味判断的实装) 可**组合 TASTE_CORE 进 persona** 拔高质量。
  *
- * 原则 (Nick 2026-06-02): **reasoning + taste 在 novel 决策处 (omd 设计 / best-of-N), 指令遵守在
+ * 现役消费者: research/author-spec.ts (researchFanout 分解器 persona 浸染) ·
+ * agent-leaf persona 组合口 (agent-leaf.ts, 经 composeTastePersona)。
+ *
+ * 原则 (Nick 2026-06-02): **reasoning + taste 在 novel 决策处 (设计 / best-of-N), 指令遵守在
  * 结构化执行处 (conductor 分解 / leaf 忠实干)**。TASTE_CORE 是前者的可复用燃料, 不平摊给后者。
  *
- * 字节稳定: 与 VALAR_IDENTITY 同属冻结前缀语义, 内容是常量 (无时间戳/随机) → prompt cache 友好。
- * VALAR_IDENTITY 内嵌本常量 (`${TASTE_CORE}`), 改这里 = 改 identity 的品味段, 须连带 bump
- * VALAR_IDENTITY_VERSION。
+ * 字节稳定: 冻结前缀语义, 内容是常量 (无时间戳/随机) → prompt cache 友好; 改一字 = 组合它的
+ * prompt cache 面全失效, 改动必须是有意识行为。
  */
 
 /**
- * 工程品味不变量 (owner 可 override, omd 不自行松动)。模型/角色无关的可复用核 —— 既是
- * VALAR_IDENTITY 的品味段, 也可单独组合进设计型 leaf persona。
+ * 工程品味不变量 (owner 可 override, omd 不自行松动)。模型/角色无关的可复用核,
+ * 组合进设计型 leaf / 分解器 persona。
  */
 export const TASTE_CORE = `- 抗中庸 · 领域自激活: 每个问题先判它属哪个领域, **代入该领域顶尖专家的视角**(物理→物理学家 /
   分布式→系统架构师 / 数学→数学家 / 商业→战略思考者; 博士/权威级判断力, 不是泛科普)。话题切换就

@@ -138,7 +138,7 @@ export const LEAF_HARNESS_CORE = `<harness-core weak-model="true">
 
 /**
  * conductor 的**情境方法论**(非冻结)。与 `CONDUCTOR_HARNESS_CORE` 的分野是
- * **常驻价值**不是重要性:核里那些每一轮都可能用上,这五条只在特定动作时相关
+ * **常驻价值**不是重要性:核里那些每一轮都可能用上,这六条只在特定动作时相关
  * (做分解 / 跑迭代 / 调试 / 查记忆)。塞进冻结核 = 每轮都付这些 token 的税。
  *
  * ⚠ 它**字节上仍是常量**,拼在冻结核之后、工具快照之前 —— 于是它和核一起构成
@@ -162,6 +162,10 @@ Fixpoint loops are capped at 3 rounds by default. At the cap, STOP and report th
 <vertical-slicing>
 Slice work by user-visible capability, not by technical layer. A horizontal slice (all the types, then all the storage, then all the UI) is only testable at the very end — so an error in the first layer destroys everything built on top of it before anything can catch it. A vertical slice is thin but verifiable at every step.
 </vertical-slicing>
+
+<knowledge-boundary>
+Decompose by knowledge boundaries, not execution order (Ousterhout: temporal decomposition is the classic trap). Steps that merely run one-after-another but depend on the SAME understanding — a file format, a schema, a protocol, one encoding decision — belong in ONE node that owns that knowledge; splitting them copies the shared decision into every node, and each copy drifts independently. Test the finished plan: if two nodes can only both be correct by silently agreeing on something no artifact between them states, merge them — or route the shared decision through an explicit artifact one node produces and the other consumes. Sibling of vertical-slicing: that rule picks the slice direction, this one marks where a slice must NOT be cut.
+</knowledge-boundary>
 
 <scope-lock>
 Lock the scope before touching code and treat two thoughts as stop signals: "while I'm in here I'll fix this related thing" and "since I'm already changing it, might as well refactor". Both are how a bounded change turns into an unreviewable diff. Note the finding, leave the code, keep going.

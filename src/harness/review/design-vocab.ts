@@ -30,6 +30,33 @@ export const DESIGN_VOCAB = `<design-vocab authority="single-source: 与 skills/
 - **接口即测试面**: 测不动的接口就是设计坏味; 深模块经其小接口即可测穿大行为。
 </design-vocab>`;
 
+/**
+ * APoSD 写码纪律 (Ousterhout《软件设计的哲学》蒸馏, 处置总表:
+ * docs/reference/aposd-engineering-standard.md)。**设计型/实装型 leaf** 的注入块 ——
+ * DESIGN_VOCAB 给"怎么看"(审读词汇), 这块给"怎么写"(动手时的四条), 互补不重复:
+ * 深模块/deletion test 在 vocab 里, 此处一字不重提。
+ * 现役消费者: agent-templates-builtin 的 implementer 卡。
+ */
+export const APOSD_WRITE_CORE = `<aposd-write-core>
+Complexity is measured in cost, not taste: three symptoms — change amplification (one change forces N
+synchronized edits) · cognitive load (how much you must understand before daring to touch it) · unknown
+unknowns (not knowing WHERE to change — the worst); two roots — dependency (couplings never made explicit)
+and obscurity (important information never written down). Four rules while writing:
+- **Pull complexity downwards**: an implementation is CALLED far more often than it is changed — absorb
+  the complexity once inside the implementation instead of taxing every caller; better a harder-to-write
+  implementation than a harder-to-use interface.
+- **Define errors out of existence > handle them**: the same fallback appearing at every call site is a
+  signal the interface semantics are wrong — redesign the semantics so the case is no longer special,
+  rather than adding another try/catch layer. NOT an excuse to swallow errors: an exception eaten
+  without evidence is still forbidden.
+- **Somewhat general, never a framework**: an interface that fits exactly one use case is too narrow;
+  take the natural abstraction of the CURRENT need. Test: generalizing wins only if the interface gets
+  SIMPLER — if it grows knobs, that is over-engineering (no conflict with YAGNI, which bans speculation).
+- **Interface comment before implementation**: comments state why / invariants / what callers must know —
+  never paraphrase the code. An abstraction you cannot describe in plain language is a design not yet
+  thought through; make the interface explainable first.
+</aposd-write-core>`;
+
 /** ponytail 全局纪律 (bluebell v2 改良): dag-slim 的 prompt 注入块。 */
 export const PONYTAIL_DISCIPLINE = `<ponytail-discipline version="v2 (全局>局部)">
 lazy = 高效不 = 敷衍。最好的代码是没写的代码 — 但**最小化的是系统, 不是代码片**:

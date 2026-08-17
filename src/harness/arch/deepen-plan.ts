@@ -15,7 +15,8 @@
  */
 import { PlanSchema, type ConductorPlan } from '../conductor-plan';
 import { DESIGN_VOCAB } from '../review/design-vocab';
-import type { Hotspot } from './hotspots';
+import type { CoChangePair, PassThroughFinding } from './aposd-signals';
+import { moduleDir, type Hotspot } from './hotspots';
 
 /** 综合节点固定 id (脚本收结果 + 测试都锚它)。 */
 export const SYNTH_NODE_ID = 'synthesis';
@@ -35,13 +36,42 @@ export const CANDIDATE_FORMAT = `## C<序号>: <候选一句话名字>
 - **leverage/locality**: <预期回报: 多少调用点受益 / 改动会不会集中一处>
 - **strength**: <strong|moderate|speculative>`;
 
+/** aposd-signals 预扫结果 (可选注入): 确定性线索, 按热点目录过滤后进对应扫描叶 goal。 */
+export interface DeepenSignals {
+  coChange?: CoChangePair[];
+  passThrough?: (PassThroughFinding & { path: string })[];
+}
+
 export interface DeepenPlanOptions {
   /** synthesis 保留的候选上限 (默认 8)。 */
   maxCandidates?: number;
+  /** APoSD 确定性预扫信号 (scripts/dag-deepen.ts 从同一份 git log + 热点文件现算)。 */
+  signals?: DeepenSignals;
+}
+
+/** 每叶注入的信号行上限 (护 prompt 尺寸; 信号是线索不是清单, 多了反而稀释)。 */
+const MAX_SIGNAL_LINES = 8;
+
+/**
+ * 热点相关的确定性信号 → goal 区块 (无相关信号 → 空串, goal 零变化)。
+ * ⚠ 措辞同文件头警告: 避开 producesFiles 强写信号词 (修改/写入/生成…+文件后缀) —— 这里说
+ * 「同步变更」不说「同步修改」不是文风偏好, 是回归守卫在钉的判据。
+ */
+function signalSection(h: Hotspot, signals?: DeepenSignals): string {
+  if (!signals) return '';
+  const inDir = (p: string) => moduleDir(p) === h.dir;
+  const cc = (signals.coChange ?? []).filter((p) => inDir(p.a) || inDir(p.b)).slice(0, MAX_SIGNAL_LINES);
+  const pt = (signals.passThrough ?? []).filter((f) => inDir(f.path)).slice(0, MAX_SIGNAL_LINES - cc.length);
+  if (cc.length === 0 && pt.length === 0) return '';
+  return [
+    `确定性预扫信号 (零 LLM 线索, 不是结论 — 逐条核实; 采信的把证据记进 friction/deletion-test, 不实的明说不实):`,
+    ...cc.map((p) => `- 跨目录同步变更 (信息泄露嫌疑): ${p.a} ↔ ${p.b} (近期同 commit 共现 ${p.count} 次)`),
+    ...pt.map((f) => `- 疑似透传方法 (浅模块嫌疑): ${f.path}:${f.line} ${f.name} → ${f.callee}`),
+  ].join('\n');
 }
 
 /** 单热点扫描叶的 goal (只读探查, 见文件头 producesFiles 措辞警告)。 */
-function scanGoal(h: Hotspot): string {
+function scanGoal(h: Hotspot, signals?: DeepenSignals): string {
   const fileLines = h.files
     .slice(0, MAX_FILES_IN_PROMPT)
     .map((f) => `- ${f.path} (近期触碰 ${f.touches} 次)`)
@@ -52,6 +82,7 @@ function scanGoal(h: Hotspot): string {
     ``,
     `热点 module: ${h.dir} (近期 commit 触碰合计 ${h.touches} 次${h.files.length ? '' : '; git 日志无明细, 请自行探查该目录'})`,
     fileLines ? `组内文件:\n${fileLines}${more}` : '',
+    signalSection(h, signals),
     ``,
     DESIGN_VOCAB,
     ``,
@@ -97,7 +128,7 @@ export function buildDeepenPlan(hotspots: Hotspot[], opts: DeepenPlanOptions = {
     scanIds.push(id);
     nodes[id] = {
       executor: 'agent', // 要读真文件 → 带工具; goal 已钉只读纪律
-      goal: scanGoal(h),
+      goal: scanGoal(h, opts.signals),
       persona: '软件设计审读者 (Ousterhout 深模块/删除测试视角, 证据优先宁缺毋滥)',
     };
   });
