@@ -35,10 +35,12 @@ import {
   writeSync,
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { FAILURE_KIND_ORDER } from '../node-failure';
+
 
 // ─── 冻结接口 ────────────────────────────────────────────────────────────────
 
-export type BoardEvent = 'claimed' | 'published' | 'terminal' | 'note';
+export type BoardEvent = 'claimed' | 'published' | 'terminal' | 'note' | 'verified' | 'intervened';
 
 export interface BoardEntry {
   v: 1;
@@ -50,12 +52,19 @@ export interface BoardEntry {
   commit?: string;
   outcome?: string;
   note?: string;
+  /** verified 专用: verifier/冻结判据的结论。 */
+  verdict?: 'pass' | 'fail';
+  /** intervened 专用: 人为什么不得不伸手 —— 值域 = NodeFailureKind (node-failure 词表复用, #160 判据①)。 */
+  cause?: string;
 }
 
 
 // ─── constants ───────────────────────────────────────────────────────────────
 
-const EVENTS: ReadonlySet<string> = new Set(['claimed', 'published', 'terminal', 'note']);
+const EVENTS: ReadonlySet<string> = new Set(['claimed', 'published', 'terminal', 'note', 'verified', 'intervened']);
+
+/** intervened 专用 cause 合法值域 = node-failure 词表全集(fail-loud 校验复用)。 */
+const FAILURE_KINDS: ReadonlySet<string> = new Set(FAILURE_KIND_ORDER);
 
 /** 证据 note 专用 runId(不指向任何真实 run, 不进 liveRuns 判定)。 */
 export const BOARD_RUN_ID = '__board__';
@@ -286,8 +295,26 @@ function compactBoard(path: string): void {
 
 // ─── 冻结接口实现 ────────────────────────────────────────────────────────────
 
+/** D-2: verified / intervened 在落盘前 fail-loud 校验 —— 非法 verdict/cause 不写盘。 */
+function validateEntry(e: BoardEntry): void {
+  if (e.event === 'verified') {
+    if (e.verdict !== 'pass' && e.verdict !== 'fail') {
+      throw new Error(
+        `run-board appendBoard: verified event requires verdict in {"pass","fail"}, got ${JSON.stringify(e.verdict)}`,
+      );
+    }
+  } else if (e.event === 'intervened') {
+    if (typeof e.cause !== 'string' || !FAILURE_KINDS.has(e.cause)) {
+      throw new Error(
+        `run-board appendBoard: intervened event requires cause in FAILURE_KIND_ORDER (${FAILURE_KIND_ORDER.join('|')}), got ${JSON.stringify(e.cause)}`,
+      );
+    }
+  }
+}
+
 /** 追加一条 entry(O_APPEND 单次写, 原子); 追加后顺手 compact。追加失败抛(调用方决定怎么报)。 */
 export function appendBoard(root: string, e: BoardEntry): void {
+  validateEntry(e);
   const path = boardPath(root);
   mkdirSync(dirname(path), { recursive: true });
   appendRaw(path, serializeEntry(e));
