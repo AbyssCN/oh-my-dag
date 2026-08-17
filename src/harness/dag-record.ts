@@ -35,6 +35,14 @@ export interface DagRunNode {
    */
   command?: string;
   /**
+   * R0 派卡记账位 (2026-08-17): plan 节点的 `template` (conductor 给该节点派的 agent 模板卡名)。
+   * **缺席 = 没派卡**, 不编 '' —— 与「没记」(2026-08-17 之前的历史行) 靠 created_at 分开。
+   * 从 **plan** 取 (同 command 那条纪律): 派卡是规划层决策, result 里没有它。
+   * 消费方: 派卡率读数 (scripts/omd-readout.ts) + pack eval 的 per-card 归因 join。
+   * 背景: 467 跑零派卡的读数就是因为此前没这个位, 只能 LIKE 扫 JSON 猜。
+   */
+  template?: string;
+  /**
    * §8.5 效果指标 `[总写次数, no-op 次数]`(来自 `DagNodeResult.writeCounts`)。
    * **缺席 ≠ [0,0]**: 缺席 = 这条链上没人报(inproc/command 节点, 或早于 2026-07-31 的记录);
    * `[0,0]` = 这个节点跑了但一次文件都没写。
@@ -530,7 +538,7 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
       // 而 plan 是这次跑的那张图的原文。plan 里没有对应 id (map 动态扇出的子节点) → undefined, 不编。
       const planNodes = result.plan.nodes as Record<
         string,
-        { command?: string; detector?: unknown; max_rounds?: unknown } | undefined
+        { command?: string; detector?: unknown; max_rounds?: unknown; template?: string } | undefined
       >;
       // 这一跑复用了哪些节点 —— 引擎给的是 id 列表, 留痕层此前只存了它的**长度**。
       const reusedIds = new Set(result.reusedNodes ?? []);
@@ -558,6 +566,8 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
           status: r.status,
           deps: r.deps,
           ...(typeof cmd === 'string' && cmd.trim() ? { command: cmd } : {}),
+          // R0: 派卡从 plan 取; 缺席 = 没派 (map 动态子节点无 plan 行 → 缺席 = 真不知道, 同 loopShape)。
+          ...(typeof planNode?.template === 'string' && planNode.template.trim() ? { template: planNode.template } : {}),
           ...(planNodes[r.id]?.detector === true ? { detector: true as const } : {}),
           ...(outHash ? { outputHash: outHash } : {}),
           ...(typeof r.exitCode === 'number' ? { exitCode: r.exitCode } : {}),

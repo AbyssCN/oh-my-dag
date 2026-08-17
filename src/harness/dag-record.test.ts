@@ -111,6 +111,37 @@ describe('留痕的派生面 — 命令原文 + 效果指标计数', () => {
     rec.close();
   });
 
+  test('R0 派卡记账位: plan 的 template 进留痕; 没派 = 缺席不编空串', () => {
+    const rec = createDagRecorder({ path: ':memory:' });
+    const id = rec.record(
+      withNodes(
+        { t: { goal: 'x', template: 'researcher' }, p: { goal: 'y' }, e: { goal: 'z', template: '  ' } },
+        {
+          t: { id: 't', kind: 'agent', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 } },
+          p: { id: 'p', kind: 'inproc', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 } },
+          // map 动态子节点: plan 里没有这个 id → 缺席 = 真不知道 (同 loopShape 口径)
+          dyn: { id: 'dyn', kind: 'inproc', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 } },
+        },
+      ),
+      { runId: 'run-tpl' },
+    );
+    const nodes = rec.get(id)!.nodes;
+    expect(nodes.find((n) => n.id === 't')!.template).toBe('researcher');
+    expect(nodes.find((n) => n.id === 'p')!.template).toBeUndefined(); // 没派 = 缺席
+    expect(nodes.find((n) => n.id === 'dyn')!.template).toBeUndefined(); // plan 无此 id = 缺席
+    // 空白串不算派卡 (别让 '  ' 混进派卡率分子)
+    expect(nodes.find((n) => n.id === 'e')).toBeUndefined(); // e 无 result 行, 不入账 —— 见下一断言的世界
+    const id2 = rec.record(
+      withNodes(
+        { e: { goal: 'z', template: '  ' } },
+        { e: { id: 'e', kind: 'inproc', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 } } },
+      ),
+      { runId: 'run-tpl-2' },
+    );
+    expect(rec.get(id2)!.nodes.find((n) => n.id === 'e')!.template).toBeUndefined();
+    rec.close();
+  });
+
   test('writeCounts 原样进留痕; **缺席与 [0,0] 不许被抹平**', () => {
     const rec = createDagRecorder({ path: ':memory:' });
     const id = rec.record(
