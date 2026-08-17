@@ -2106,6 +2106,31 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       tui.requestRender();
       return { consume: true };
     }
+    // Esc:在飞单按 = 打断本轮;空闲双按(600ms 窗)= 回退选单。判定在 decideEsc(纯函数)。
+    // ⚠ dialogs.busy 时不碰 —— Esc 是对话框自己的关闭键(pi-tui `tui.select.cancel`),抢了框关不上。
+    // ⚠ 全屏(DAG / pathfinder)时不开回退 —— 选单会开在全屏底下,谁在收键说不清。
+    // ⚠ 只认裸 `\x1b`:方向键等序列(`\x1b[A`)整块到达,不会误入;快速双击并包成
+    //   `\x1b\x1b` 到达的情形单独认。
+    if ((data === '\x1b' || data === '\x1b\x1b') && !dialogs.busy) {
+      const twice = data === '\x1b\x1b';
+      const act = twice && !turnInFlight ? 'rewind' : decideEsc(turnInFlight, escArmedAt, now());
+      if (act === 'interrupt') {
+        escArmedAt = null;
+        abortRequested = true;
+        // 回执不在这画 —— submit 的收尾是唯一出口(正常返回与抛错两条路都汇那儿)。
+        void opts.backend.abortChat({ sessionId }).catch((err: unknown) => {
+          logger.warn({ err: err instanceof Error ? err.message : String(err), sessionId }, '[omd/tui] abortChat 抛了');
+        });
+        return { consume: true };
+      }
+      if (act === 'rewind' && !fullOn && !pathFullOn) {
+        escArmedAt = null;
+        void openRewind();
+        return { consume: true };
+      }
+      escArmedAt = now();
+      return undefined; // 第一下不吃 —— editor 自己也用 Esc (清补全)
+    }
     // HUD 滚动:Alt+↑ / Alt+↓ / Alt+Home。
     // ⚠ 为什么走 input listener 而不是组件的 handleInput:焦点在 editor 上,
     // 组件路由不到这几个键。这里在**焦点分派之前**截,与 Ctrl+C 同一条路。
@@ -2116,6 +2141,8 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       if (moved) tui.requestRender();
       return { consume: true };
     }
+    // 任何非 Esc 的键都解除双击预备 —— 否则"Esc、打半句话、再 Esc"会被当成双击。
+    escArmedAt = null;
     // 任何非 Ctrl+C 的键都解除预备 —— 否则"按了 C、过一会儿又按 C"会被当成双击。
     if (armedAt !== null) {
       armedAt = null;

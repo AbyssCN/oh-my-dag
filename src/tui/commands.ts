@@ -77,6 +77,7 @@ export function formatHelp(): string {
   const w = Math.max(...COMMANDS.map((c) => `${c.name}${c.args ? ` ${c.args}` : ''}`.length));
   const rows = COMMANDS.map((c) => `  ${`${c.name}${c.args ? ` ${c.args}` : ''}`.padEnd(w)}  ${c.what}`);
   return `Commands (plain text sends a chat turn):\n${rows.join('\n')}\n\nType @ or part of a path in the editor to fuzzy-complete file names.
+Esc interrupts a running turn; Esc twice (when idle) rewinds to before an earlier message.
 When the HUD has many nodes: Alt+↑ / Alt+↓ scrolls, Alt+Home follows again.`;
 }
 

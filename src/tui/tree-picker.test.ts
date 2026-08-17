@@ -11,7 +11,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import type { TuiTreeEntry } from './backend';
-import { buildTreeRows, formatTree, parseTreeCommand, treeLabel } from './tree-picker';
+import { buildTreeRows, formatTree, parseTreeCommand, rewindTargets, treeLabel } from './tree-picker';
 
 const e = (id: string, parentId: string | null, seq: number, kind = 'message/user', preview = id): TuiTreeEntry => ({
   id,
@@ -121,5 +121,33 @@ describe('parseTreeCommand', () => {
     expect(parseTreeCommand('  /tree ')).toBe(true);
     // `/treex` 回落成普通文本 —— 与 `/sessionx` 同纪律。
     for (const t of ['/treex', 'tree', '/tree 3', '/t']) expect(parseTreeCommand(t)).toBe(false);
+  });
+});
+
+describe('★ rewindTargets —— 双 Esc 回退的取材', () => {
+  test('★ 只取当前分支上的 user 消息, 旁支的不进 —— 回退是沿刚走过的路往回跳', () => {
+    // 反向自检 (实跑): 把 kind 过滤删掉 → 's' (branch_summary) 混进来, 当场红;
+    //   改用全表遍历而不是叶往根 → 旁支的 'c' 混进来, 当场红。
+    const out = rewindTargets(FORKED, 'e');
+    expect(out.map((t) => t.id)).toEqual(['e']); // 'c' 在被放弃的旧分支上; 'a' 是根 (见下一条)
+    expect(out[0]?.parentId).toBe('s'); // branchTo 的目标 = "这句话之前"
+  });
+
+  test('★ 根消息不进选单 —— branchTo 表达不了"回到一切之前", 那是 /new', () => {
+    // 反向自检 (实跑): 把 parentId !== null 的判断删掉 → 'a' 带着 parentId null 进来, 当场红。
+    const linear: TuiTreeEntry[] = [e('a', null, 1), e('b', 'a', 2, 'message/assistant'), e('c', 'b', 3), e('d', 'c', 4, 'message/assistant')];
+    expect(rewindTargets(linear, 'd').map((t) => t.id)).toEqual(['c']);
+  });
+
+  test('最近的在前 (叶往根的自然序), 空会话给空表', () => {
+    const linear: TuiTreeEntry[] = [
+      e('a', null, 1),
+      e('b', 'a', 2, 'message/assistant'),
+      e('c', 'b', 3),
+      e('d', 'c', 4, 'message/assistant'),
+      e('f', 'd', 5),
+    ];
+    expect(rewindTargets(linear, 'f').map((t) => t.id)).toEqual(['f', 'c']);
+    expect(rewindTargets([], null)).toEqual([]);
   });
 });

@@ -14,7 +14,7 @@ import { describe, expect, test } from 'bun:test';
 import { join } from 'node:path';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { Component } from '@earendil-works/pi-tui';
-import { CHROME, CTRL_C_WINDOW_MS, decideCtrlC, pathHudVisible, withLeftGutter } from './tui';
+import { CHROME, CTRL_C_WINDOW_MS, DOUBLE_ESC_WINDOW_MS, decideCtrlC, decideEsc, pathHudVisible, withLeftGutter } from './tui';
 import { defaultExportPath, exportTranscriptMarkdown } from './export';
 import { formatStatus } from './status';
 
@@ -36,6 +36,25 @@ describe('Ctrl+C 双击判定 (§4.1 第 1 条)', () => {
 
   test('★ 超窗的第二击重新预备, 不是退出 —— 否则"隔十分钟按两次"会误退', () => {
     expect(decideCtrlC(1000, 99999)).toBe('arm');
+  });
+});
+
+describe('Esc 分派判定 (打断 / 回退 / 预备)', () => {
+  // 反向自检 (实跑): 把在飞分支删掉 → 「在飞单按就打断」红 (读成 'arm');
+  //   把 <= 改成 < → 「边界上算双击」红; 把 armedAt 判断删掉 → 「空闲单按只预备」红。
+  test('★ 在飞时单按就打断 —— 不要求双击, 等着的人最不想多按一下', () => {
+    expect(decideEsc(true, null, 1000)).toBe('interrupt');
+    // 在飞时哪怕窗口内的第二击也还是打断, 不是回退 —— 轮没停之前没有"回退到哪"可言。
+    expect(decideEsc(true, 900, 1000)).toBe('interrupt');
+  });
+
+  test('空闲单按只预备, 键继续走到 editor', () => {
+    expect(decideEsc(false, null, 1000)).toBe('arm');
+  });
+
+  test('空闲窗口内第二击 → 回退 (边界 <=, decideCtrlC 同口径)', () => {
+    expect(decideEsc(false, 1000, 1000 + DOUBLE_ESC_WINDOW_MS)).toBe('rewind');
+    expect(decideEsc(false, 1000, 1000 + DOUBLE_ESC_WINDOW_MS + 1)).toBe('arm');
   });
 });
 
