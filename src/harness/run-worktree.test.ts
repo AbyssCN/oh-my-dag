@@ -15,6 +15,7 @@ import {
   commitRunArtifacts,
   describeRunWorktree,
   ensureNodeModulesLink,
+  ensureNodeModulesLinks,
   prepareRunWorktree,
   runWorktreeBranch,
   runWorktreeDir,
@@ -325,12 +326,66 @@ describe('ensureNodeModulesLink (#166: worktree 缺 node_modules → 显式路�
 
   test('接线: branch 建树成功后调用链入 (注入计数), head 档不调', () => {
     let calls: Array<[string, string]> = [];
-    const ensureLink = ((m: string, w: string) => (calls.push([m, w]), 'linked' as const)) as RunWorktreeDeps['ensureLink'];
+    const ensureLink = ((m: string, w: string) =>
+      (calls.push([m, w]), [{ rel: '.', result: 'linked' as const }])) as RunWorktreeDeps['ensureLink'];
     const { deps } = fakeGit();
     prepareRunWorktree({ cwd: '/repo', runId: 'r1', strategy: 'branch' }, { ...deps, ensureLink });
     expect(calls).toEqual([['/repo', runWorktreeDir('/repo', 'r1')]]);
     calls = [];
     prepareRunWorktree({ cwd: '/repo', runId: 'r1', strategy: 'head' }, { ...deps, ensureLink });
     expect(calls).toEqual([]);
+  });
+});
+
+// ── #174 一级子包 node_modules 链入 ──────────────────────────────────────────────
+describe('ensureNodeModulesLinks (#174: web/ 等一级子包自己的 node_modules, #166 只链了仓根)', () => {
+  const { mkdtempSync: mkTmp, mkdirSync: mkDir, existsSync: exists, writeFileSync: writeF } =
+    require('node:fs') as typeof import('node:fs');
+  const { tmpdir: osTmp } = require('node:os') as typeof import('node:os');
+
+  const monorepo = () => {
+    const root = mkTmp(join(osTmp(), 'omd-nmls-'));
+    const main = join(root, 'main');
+    const wt = join(root, 'wt');
+    // 主树: 仓根 node_modules + web/node_modules (run a828a672 的失败面) + 无包子目录 + 点目录
+    mkDir(join(main, 'node_modules'), { recursive: true });
+    mkDir(join(main, 'web', 'node_modules', 'react'), { recursive: true });
+    writeF(join(main, 'web', 'node_modules', 'react', 'jsx-dev-runtime.js'), 'x');
+    mkDir(join(main, 'docs'), { recursive: true });
+    mkDir(join(main, '.omd', 'node_modules'), { recursive: true });
+    // worktree checkout: web/ 是跟踪目录所以存在, node_modules 不在
+    mkDir(join(wt, 'web'), { recursive: true });
+    return { main, wt };
+  };
+
+  // 证伪方式 (当场验过): 把 ensureNodeModulesLinks 的一级扫描循环注释掉 → 本条红 (只剩仓根); 恢复后绿。
+  test('仓根 + web/ 都链上; 无 node_modules 的子目录与点目录不碰', () => {
+    const { main, wt } = monorepo();
+    const r = ensureNodeModulesLinks(main, wt);
+    expect(r).toEqual([
+      { rel: '.', result: 'linked' },
+      { rel: 'web', result: 'linked' },
+    ]);
+    // #174 的失败面就是这一格: web/ 下按子包解析读 react。
+    expect(exists(join(wt, 'web', 'node_modules', 'react', 'jsx-dev-runtime.js'))).toBe(true);
+    expect(exists(join(wt, 'docs'))).toBe(false);
+    expect(exists(join(wt, '.omd'))).toBe(false);
+  });
+
+  test('子目录在 worktree 里缺席 → link-failed 记账不抛 (fail-open 吞异常不吞证据)', () => {
+    const { main, wt } = monorepo();
+    const { rmSync } = require('node:fs') as typeof import('node:fs');
+    rmSync(join(wt, 'web'), { recursive: true });
+    const r = ensureNodeModulesLinks(main, wt);
+    expect(r[0]).toEqual({ rel: '.', result: 'linked' });
+    expect(r[1]!.rel).toBe('web');
+    expect(r[1]!.result).toContain('link-failed');
+  });
+
+  test('幂等: 第二遍全 already-present (resume 复用路每次都来一遍)', () => {
+    const { main, wt } = monorepo();
+    ensureNodeModulesLinks(main, wt);
+    const r = ensureNodeModulesLinks(main, wt);
+    expect(r.map((x) => x.result)).toEqual(['already-present', 'already-present']);
   });
 });

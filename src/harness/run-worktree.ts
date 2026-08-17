@@ -36,7 +36,7 @@
  * - **未提交的改动不会被带进 worktree**。`git worktree add` 出来的是**该 ref 的干净 checkout**;
  *   主树上没提交的东西在那边看不见。这是隔离的定义, 但用的人容易惊讶, 所以写在这里。
  */
-import { existsSync, symlinkSync } from 'node:fs';
+import { existsSync, readdirSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { logger } from './logger';
 import { captureRollbackAnchor, type RollbackAnchor } from './rollback-anchor';
@@ -75,8 +75,8 @@ export interface RunWorktreeDeps {
   isGitRepo?: (cwd: string) => boolean;
   /** 查主树上有没有未提交的东西(见 `RunWorktree.uncommittedWarning`)。默认 `captureRollbackAnchor`。 */
   checkTree?: (cwd: string) => RollbackAnchor;
-  /** #166: worktree 内链入主树 node_modules。默认 `ensureNodeModulesLink`(测试注入面)。 */
-  ensureLink?: typeof ensureNodeModulesLink;
+  /** #166/#174: worktree 内链入主树 node_modules(仓根 + 一级子包)。默认 `ensureNodeModulesLinks`(测试注入面)。 */
+  ensureLink?: typeof ensureNodeModulesLinks;
 }
 
 /** 默认 git: 非零退出即抛(建/删 worktree 失败必须显性, 悄悄退回 head 会让隔离静默失效)。 */
@@ -129,6 +129,36 @@ export function ensureNodeModulesLink(
 }
 
 /**
+ * #174 (2026-08-18): #166 只链了仓根, 而一级子包 (本仓 web/) 有**自己的** node_modules ——
+ * 隔离 run 里 `web/src/**.tsx` 解析 `react/jsx-dev-runtime` 走的是 `web/node_modules`,
+ * 缺了就每个 branch 档 accept 确定性红 ×4 (run a828a672 / 60f58f3f 连撞)。
+ *
+ * 只扫**一级**: bun/npm workspace 的独立子包都在一级; 更深的路径由模块解析沿父目录兜底。
+ * 子目录在 worktree 里缺席 (未跟踪目录不进 checkout) → symlink ENOENT → 记 link-failed,
+ * 不抛 (fail-open, 证据在返回值里)。
+ */
+export function ensureNodeModulesLinks(
+  mainRoot: string,
+  worktreeDir: string,
+  link?: (target: string, path: string) => void,
+): Array<{ rel: string; result: ReturnType<typeof ensureNodeModulesLink> }> {
+  const out: Array<{ rel: string; result: ReturnType<typeof ensureNodeModulesLink> }> = [
+    { rel: '.', result: ensureNodeModulesLink(mainRoot, worktreeDir, link) },
+  ];
+  try {
+    for (const e of readdirSync(mainRoot, { withFileTypes: true })) {
+      if (!e.isDirectory() || e.name.startsWith('.') || e.name === 'node_modules') continue;
+      if (!existsSync(join(mainRoot, e.name, 'node_modules'))) continue;
+      out.push({ rel: e.name, result: ensureNodeModulesLink(join(mainRoot, e.name), join(worktreeDir, e.name), link) });
+    }
+  } catch (e) {
+    // fail-open 吞异常不吞证据: 扫不了主树目录 → 仓根那条照样生效, 失败原文进结果。
+    out.push({ rel: '(scan)', result: `link-failed: 一级子包扫描失败: ${(e as Error).message.slice(0, 200)}` });
+  }
+  return out;
+}
+
+/**
  * 按策略给这次 run 准备工作目录。
  *
  * @param strategy 缺省 `head` —— **不传就是今天的行为**, 零回归。
@@ -158,8 +188,9 @@ export function prepareRunWorktree(
   if (existsSync(dir)) {
     logger.info({ runId, dir, branch }, '[omd/run-worktree] 隔离 worktree 已存在 → 复用 (resume)');
     // #166: 老树 (本修复前建的) 可能缺链 —— resume 路也补, 幂等 (already-present 即跳过)。
-    const relink = (deps.ensureLink ?? ensureNodeModulesLink)(cwd, dir);
-    if (relink !== 'already-present') logger.info({ runId, dir, relink }, '[omd/run-worktree] #166 node_modules 链入 (resume 复用路)');
+    for (const { rel, result } of (deps.ensureLink ?? ensureNodeModulesLinks)(cwd, dir)) {
+      if (result !== 'already-present') logger.info({ runId, dir, rel, result }, '[omd/run-worktree] #166/#174 node_modules 链入 (resume 复用路)');
+    }
     return {
       cwd: dir,
       branch,
@@ -186,10 +217,12 @@ export function prepareRunWorktree(
   // **未提交的活在隔离树里看不见** —— 头注写了这条边界, 但只写在头注里。这里把它变成
   // 回话里的一句话 (2026-08-06): 带着未提交改动起隔离跑, agent 看到的是 HEAD 那一版,
   // 而回话此前只说"隔离成功"。fail-open, 不拒。
-  // #166: 干净 checkout 缺 node_modules → 显式路径读包的测试结构性红 (run 5fd13a78)。链入主树那份。
-  const linked = (deps.ensureLink ?? ensureNodeModulesLink)(cwd, dir);
-  if (linked.startsWith('link-failed')) logger.warn({ runId, dir, linked }, '[omd/run-worktree] #166 node_modules 链入失败 (fail-open, 树内测试可能环境性红)');
-  else logger.info({ runId, dir, linked }, '[omd/run-worktree] #166 node_modules 链入');
+  // #166: 干净 checkout 缺 node_modules → 显式路径读包的测试结构性红 (run 5fd13a78)。链入主树那份
+  // (#174: 含一级子包, 如 web/node_modules)。
+  for (const { rel, result } of (deps.ensureLink ?? ensureNodeModulesLinks)(cwd, dir)) {
+    if (result.startsWith('link-failed')) logger.warn({ runId, dir, rel, result }, '[omd/run-worktree] #166/#174 node_modules 链入失败 (fail-open, 树内测试可能环境性红)');
+    else logger.info({ runId, dir, rel, result }, '[omd/run-worktree] #166/#174 node_modules 链入');
+  }
   const anchor = (deps.checkTree ?? ((c: string) => captureRollbackAnchor({ cwd: c })))(cwd);
   const dirty = (anchor.dirtyTracked ?? 0) + (anchor.untracked ?? 0);
   const uncommittedWarning =
