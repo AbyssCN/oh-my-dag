@@ -20,6 +20,7 @@
  */
 import '../src/harness/script-bootstrap';
 import { computeHotspots } from '../src/harness/arch/hotspots';
+import { computeCoChange, scanPassThrough, type PassThroughFinding } from '../src/harness/arch/aposd-signals';
 import { buildDeepenPlan, SYNTH_NODE_ID } from '../src/harness/arch/deepen-plan';
 import { renderDeepenReport } from '../src/harness/arch/deepen-report';
 import { runExecutorDagWithPlan } from '../src/harness/dag/engine';
@@ -80,6 +81,27 @@ if (hotspots.length === 0) {
 process.stderr.write(`[dag-deepen] 热点 ${hotspots.length} 个 (近 ${commits} commit${scope ? ` · scope=${scope}` : ''}):\n`);
 for (const h of hotspots) process.stderr.write(`  - ${h.dir} (触碰 ${h.touches} · ${h.files.length} 文件)\n`);
 
+// ---- ①b APoSD 确定性预扫 (零 LLM): co-change 用同一份 git log; 透传扫热点文件 ----
+const coChange = computeCoChange(gitLog);
+const passThrough: (PassThroughFinding & { path: string })[] = [];
+const MAX_SCAN_BYTES = 256 * 1024; // 超大文件跳过 (生成物/打包物, 不是设计信号的对象)
+for (const h of hotspots) {
+  for (const f of h.files.slice(0, 10)) {
+    try {
+      const file = Bun.file(resolve(repoRoot, f.path));
+      if (file.size > MAX_SCAN_BYTES) continue;
+      const src = await file.text();
+      for (const hit of scanPassThrough(src)) passThrough.push({ ...hit, path: f.path });
+    } catch (err) {
+      // fail-open 但留证据: git 史里有、今盘上无 (删除/改名) 属正常, 一行说明即可
+      process.stderr.write(`[dag-deepen] 透传预扫跳过 ${f.path}: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+  }
+}
+if (coChange.length || passThrough.length) {
+  process.stderr.write(`[dag-deepen] APoSD 预扫信号: 跨目录 co-change ${coChange.length} 对 · 疑似透传 ${passThrough.length} 处 (advisory, 喂扫描叶核实)\n`);
+}
+
 // ---- 模型运行时 (缺 API key → 明确报错不崩溃) ----
 const providers = bootstrapModelRuntime();
 if (providers.length === 0) {
@@ -93,7 +115,7 @@ const model = flags.model ?? process.env.OMD_LEAF_MODEL ?? 'deepseek:deepseek-v4
 process.stderr.write(`[dag-deepen] leaf=${model} · 预构造 plan 直执 (零 conductor LLM)\n`);
 
 // ---- ② 预构造 plan → runExecutorDagWithPlan (D-7 入口, 跳过 conductor) ----
-const plan = buildDeepenPlan(hotspots);
+const plan = buildDeepenPlan(hotspots, { signals: { coChange, passThrough } });
 const res = await runExecutorDagWithPlan(plan, {
   conductorModel: model, // 预构造路径不触 conductor; 仅类型必填
   leafModel: model,

@@ -12,6 +12,7 @@
  * 每卡 ≤ ~300 词 (内置卡是起点; 项目可在 .omd/agents/*.md 覆盖/扩充, 同名项目卡赢)。
  */
 import type { AgentTemplate } from './agent-templates';
+import { APOSD_WRITE_CORE } from './review/design-vocab';
 
 export const BUILTIN_AGENT_TEMPLATES: AgentTemplate[] = [
   {
@@ -205,6 +206,9 @@ export const BUILTIN_AGENT_TEMPLATES: AgentTemplate[] = [
       '- Never drop error handling to simplify; invariants and safety checks are not in scope for cuts.',
       '- If the goal names a verify command (typecheck/test), run it before reporting done; report the',
       '  actual result honestly — a failing check is a report, not a secret.',
+      // APoSD 写码纪律 (单一真源 review/design-vocab, 2026-08-17): 实装卡是"动手写码"的唯一内置卡,
+      // 深模块品味在这里落点 — 其它执行卡 (reviewer/verifier/researcher) 不写码, 不平摊这份 token。
+      APOSD_WRITE_CORE,
       'Output: what changed (files + one line each), how it was verified, and any follow-up the change',
       'genuinely requires. Claim done ONLY if the artifact really exists on disk.',
     ].join('\n'),

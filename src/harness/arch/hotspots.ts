@@ -32,8 +32,8 @@ export interface HotspotOptions {
 /** 默认纳入的代码文件后缀 (架构摩擦长在代码里, md/lock/图片不算)。 */
 export const CODE_FILE_RE = /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|rb|sql|css|scss|html|vue|svelte)$/;
 
-/** `--oneline` 的 commit 抬头行: 7-40 位 hex hash + 空格 + 标题。 */
-const COMMIT_HEADER_RE = /^[0-9a-f]{7,40}\s/;
+/** `--oneline` 的 commit 抬头行: 7-40 位 hex hash + 空格 + 标题。(aposd-signals 共用同一份解析) */
+export const COMMIT_HEADER_RE = /^[0-9a-f]{7,40}\s/;
 
 /**
  * 从 `git log --oneline --name-only` 原始输出数出每个文件的触碰次数。
@@ -51,8 +51,8 @@ export function countTouches(gitLog: string, include: (p: string) => boolean = (
   return counts;
 }
 
-/** 文件 → 所属目录簇 key (根文件归 '.')。 */
-function moduleDir(path: string): string {
+/** 文件 → 所属目录簇 key (根文件归 '.')。(aposd-signals 共用同一份聚簇口径) */
+export function moduleDir(path: string): string {
   const i = path.lastIndexOf('/');
   return i < 0 ? '.' : path.slice(0, i);
 }
