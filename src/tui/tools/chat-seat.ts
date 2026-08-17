@@ -36,6 +36,7 @@
 import type { AnyOmdTool } from '../../harness/agent-tools';
 import { createOmdAgentTools } from '../../harness/agent-tools';
 import { loadSandboxConfig } from '../../harness/hooks/command-policy';
+import { createInspectTool } from '../../harness/inspect-tool';
 import { createMcpClientTools } from '../../mcp/client/meta-tools';
 import type { OmdMcpTool } from '../../mcp/server';
 import { createConductorChatTools } from '../../serve/chat-tools';
@@ -94,6 +95,9 @@ export function createChatSeatTools(o: ChatSeatToolsOpts): AnyOmdTool[] {
     // 开放生态 S1: 外部 MCP 经双 meta-tool (find/call) 接入 —— 零注册不挂 (I-2),
     // 外部工具数不进冻结前缀 (schema 全走返回值, SDD D-2)。
     ...createMcpClientTools({ cwd: o.cwd }),
+    // A2: 能力目录 (座位/原语/agent 卡/playbook/skills/外部 MCP)。恒定单工具, 动态清单
+    // 全走返回值 —— 冻结前缀零字节 (inspect-tool.test.ts 钉)。恒挂载: 空仓也有座位/原语可报。
+    ...createInspectTool({ cwd: o.cwd }),
     // ★ `ask_user`(2026-08-08):让它能反问一句。**没有 host 就不挂** ——
     //   能力探测面靠"工具在不在", 挂一个必然问不出来的工具比没有更糟(同 codegraph 那条)。
     ...(o.askUser ? createAskUserTool(o.askUser) : []),

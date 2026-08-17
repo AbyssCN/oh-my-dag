@@ -21,6 +21,7 @@ import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { buildLeafSystemPrompt, createAgentLeafRunner, loadProjectContext } from '../../harness/agent-leaf';
 import { createOmdAgentTools, type AnyOmdTool } from '../../harness/agent-tools';
 import { loadExtTools, stopExtTools } from '../../harness/ext-tools';
+import { createInspectTool } from '../../harness/inspect-tool';
 import { serializableOpts } from '../../harness/hooks/sandboxed-leaf';
 import { logger } from '../../logger';
 
@@ -143,14 +144,16 @@ describe('② I-1: 零 extensions.json → 工具面字节零变化 (冻结基�
         skillDeps: { roots: [] },
       });
       await run({ prompt: 'x', model: MODEL });
+      // 基线 2026-08-17 抬一次: + omd_inspect (A2 恒挂载静态件, 同 agent-tools.test S3-C8-B 口径)。
       const baseline = buildLeafSystemPrompt({
         cwd: root,
-        tools: createOmdAgentTools({ cwd: root }),
+        tools: [...createOmdAgentTools({ cwd: root }), ...createInspectTool({ cwd: root })],
         contextFiles: loadProjectContext(root),
       });
       expect(seen.options?.systemPrompt).toBe(baseline);
       expect(seen.options?.allowedTools).toEqual([
         'mcp__omd__read', 'mcp__omd__write', 'mcp__omd__edit', 'mcp__omd__ls', 'mcp__omd__grep', 'mcp__omd__bash',
+        'mcp__omd__omd_inspect',
       ]);
     } finally {
       rmSync(root, { recursive: true, force: true });

@@ -52,7 +52,7 @@
 | 字段 | 必填 | 类型 | 一句话 | 消费方 (前3) |
 |---|---|---|---|---|
 | `maxPlanRetries` |  | `number` | conductor 规划无效输出的有界重试 (默认 2 → ≤3 次)。 | `src/harness/dag/engine.ts`<br>`src/harness/plan/graph-cycle.ts` (2 文件) |
-| `agents` |  | `string[]` | 限定 conductor 可派的 agent roster (进规划 system prompt)。 | `src/harness/dag/engine.ts`<br>`src/harness/conductor-plan.ts`<br>`src/harness/skills/compile.ts` (9 文件) |
+| `agents` |  | `string[]` | 限定 conductor 可派的 agent roster (进规划 system prompt)。 | `src/harness/inspect-tool.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/conductor-plan.ts` (10 文件) |
 | `agentTemplates` |  | `ReadonlyMap<string, AgentTemplate>` | Agent 模板注册表 (name → 角色卡, 见 agent-templates.ts)。 | `src/harness/dag/engine.ts` (1 文件) |
 | `conductorPromptProfile` |  | `'full' \| 'lean'` | conductor system prompt 档位 (SDD v2, 2026-07-25): 'full' (默认, 弱 conductor 教练全量) \| 'lean' (只留环境事实, 顶级 conductor 如 k3 用 … | `src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts`<br>`src/eval/oracles/conductor-modelmix.ts` (3 文件) |
 | `oracleCmd` |  | `string` | oracle 命令 (如 "bun run typecheck && bun test"): plan 中 command 与之等价的节点 在执行前被确定性过滤 (空白规范化后精确匹配, 最小无害边重连)。 | `src/mcp/tools/fleet.ts`<br>`src/eval/tasks/oracle-plan-filter.ts`<br>`src/eval/oracles/agent-leaf-prompt.ts` (10 文件) |

@@ -72,6 +72,7 @@ export function leafMcpPolicy(mcpAllow?: string[]): { sideEffects: { allow: stri
 
 import { LEAF_HARNESS_CORE } from './harness-prompts';
 import { createOmdAgentTools, type AnyOmdTool } from './agent-tools';
+import { createInspectTool } from './inspect-tool';
 import { createSkillTools, type SkillToolDeps } from './skills/skill-tool';
 import type { LeafProfile } from './profiles/profile';
 import { defaultSkillRoots } from './skills/skills';
@@ -936,8 +937,11 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
   // (O-1 2026-08-11: 撤 skill 正文预载, createSkillTools 不动, 不建并行渲染路径)。
   const skillRoots = opts.skillDeps?.roots ?? defaultSkillRoots(cwd);
   const skillTools = createSkillTools({ roots: skillRoots, ...(opts.skillDeps?.cwd ? { cwd: opts.skillDeps.cwd } : {}) });
+  // A2 能力目录 (omd_inspect): leaf 同权纪律 (open-ecosystem §7 —— mcp/skills/ext 不做
+  // chat-seat 专属)。恒定单工具, 动态清单全走返回值, 跨 leaf 字节稳定 (不破共享冻结前缀)。
+  const inspectTools = createInspectTool({ cwd });
   const excluded = new Set(opts.hashlineEdit ? ['edit'] : []);
-  const availableTools = [...baseTools, ...hashlineTools, ...mcpTools, ...skillTools, ...(opts.customTools ?? [])];
+  const availableTools = [...baseTools, ...hashlineTools, ...mcpTools, ...skillTools, ...inspectTools, ...(opts.customTools ?? [])];
   // profile 按调用到达, tools 也必须按调用求值。undefined = 普通全工具策略; [] = 明确无工具;
   // 非空 = 与 opts.tools 的并集再和真实可用工具取交集。
   const toolsForProfile = (profile: LeafProfile | undefined): AnyOmdTool[] => {

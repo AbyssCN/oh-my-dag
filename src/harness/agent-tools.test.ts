@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { createOmdAgentTools, shouldSkipDir, walkFiles, type AnyOmdTool } from './agent-tools';
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { createAgentLeafRunner, buildLeafSystemPrompt, loadProjectContext } from './agent-leaf';
+import { createInspectTool } from './inspect-tool';
 import { createSkillTools } from './skills/skill-tool';
 
 function fixture(): string {
@@ -450,14 +451,21 @@ describe('I-1 零配置叶子: tools 数组与 system prompt 与接线前字节�
     const run = createAgentLeafRunner({ cwd: root, sdkQueryFn: fakeQuery([asst('改完了'), success()], seen), skillDeps: { roots: [] } });
     await run({ prompt: 'x', model: MODEL });
     // 桥的 allowedTools = runner tools 数组逐件映射 (buildOmdSdkMcpBridge) —— 断言**恰好**
-    // 六件自有工具 (S2 收官基线): 多挂 read_skill 或任何 mcp_* 件即红。
+    // 七件 (S2 六手 + A2 omd_inspect 恒挂载, 2026-08-17 有意识抬基线): 多挂 read_skill
+    // 或任何 mcp_* 件即红。omd_inspect 是无条件静态件 (恒定 schema, 跨仓字节稳定),
+    // 与"零注册不挂"的条件件不同族, 允许进基线。
     expect(seen.options?.allowedTools).toEqual([
       'mcp__omd__read', 'mcp__omd__write', 'mcp__omd__edit', 'mcp__omd__ls', 'mcp__omd__grep', 'mcp__omd__bash',
+      'mcp__omd__omd_inspect',
     ]);
-    // 完整 system prompt 逐字节相等 (= S2 基线, 与原 I-1 同口径): 零 skill 注入下 S3 接线后的
-    // prompt ≡ 只用六件基线工具拼出的 prompt —— 不许停在「不含 mcp_find」弱化版
+    // 完整 system prompt 逐字节相等 (= S2 基线 + inspect, 与原 I-1 同口径): 零 skill 注入下
+    // S3 接线后的 prompt ≡ 基线工具集拼出的 prompt —— 不许停在「不含 mcp_find」弱化版
     // (那会放过前缀/工具守则段的静默变化)。
-    const baseline = buildLeafSystemPrompt({ cwd: root, tools: createOmdAgentTools({ cwd: root }), contextFiles: loadProjectContext(root) });
+    const baseline = buildLeafSystemPrompt({
+      cwd: root,
+      tools: [...createOmdAgentTools({ cwd: root }), ...createInspectTool({ cwd: root })],
+      contextFiles: loadProjectContext(root),
+    });
     expect(seen.options?.systemPrompt).toBe(baseline);
     // 显式 mcpAllow 也不能在零注册下凭空造出工具 (零注册短路优先于授权清单)。
     const seen2: { options?: Options } = {};
