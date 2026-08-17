@@ -163,9 +163,10 @@ export interface DagPlanningSeam {
   /**
    * conductor system prompt 档位 (SDD v2, 2026-07-25): 'full' (默认, 弱 conductor 教练全量) |
    * 'lean' (只留环境事实, 顶级 conductor 如 k3 用 — 教练是保守偏置疑压平分解)。
+   * '-kb' 两档 (#171, 2026-08-18) = 基档 + 知识边界段, 仅供 conductor-modelmix A/B, 裁决前无默认消费者。
    * 省略 → env OMD_CONDUCTOR_PROMPT ('lean'/'full') → 'full'。档位由 A/B eval 定, 见 conductor-plan。
    */
-  conductorPromptProfile?: 'full' | 'lean';
+  conductorPromptProfile?: 'full' | 'lean' | 'full-kb' | 'lean-kb';
   /**
    * oracle 命令 (如 "bun run typecheck && bun test"): plan 中 command 与之等价的节点
    * 在执行前被确定性过滤 (空白规范化后精确匹配, 最小无害边重连)。

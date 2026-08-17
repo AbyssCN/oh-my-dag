@@ -51,11 +51,15 @@ interface TournamentSpec<C> {
   maxRounds?: number;
 }
 
+/** prompt 档轴的合法值 (与 dag/types.ts conductorPromptProfile 同构; -kb 两档 = #171 A/B 处理臂)。 */
+type PromptProfile = 'full' | 'lean' | 'full-kb' | 'lean-kb';
+const PROMPT_PROFILES: readonly PromptProfile[] = ['full', 'lean', 'full-kb', 'lean-kb'];
+
 interface MixConfig {
   conductorModel: string;
   leafModel: string;
-  /** conductor prompt 档 (2026-07-26 加轴)。省略 = 引擎按座位模型档自选 (S-P)。 */
-  profile?: 'full' | 'lean';
+  /** conductor prompt 档 (2026-07-26 加轴; 2026-08-18 加 -kb 两档, #171 A/B)。省略 = 引擎按座位模型档自选 (S-P)。 */
+  profile?: PromptProfile;
 }
 
 /** 锁定的 4 格网格 (SDD D3; C1/C2/C3 固定 leaf=ds-flash 为干净 conductor 轴, C5 独立组合)。 */
@@ -64,7 +68,7 @@ interface MixConfig {
  * 只能改代码跑两次, **不可复现**, 而 2026-07-25 的 full/lean 裁决正是这么做的。
  * 现在档位是候选的一维: `--profiles full,lean` 把每个模型格展开成两格, 同一轮 sweep 内对照。
  */
-function withProfiles(grid: Candidate<MixConfig>[], profiles: Array<'full' | 'lean'>): Candidate<MixConfig>[] {
+function withProfiles(grid: Candidate<MixConfig>[], profiles: PromptProfile[]): Candidate<MixConfig>[] {
   if (profiles.length === 0) return grid;
   return grid.flatMap((c) =>
     profiles.map((profile) => ({ label: `${c.label} [${profile}]`, config: { ...c.config, profile } })),
@@ -209,7 +213,7 @@ export default function conductorModelmixSpec(opts: Record<string, string> = {})
   const profiles = (opts.profiles ?? '')
     .split(',')
     .map((x) => x.trim())
-    .filter((x): x is 'full' | 'lean' => x === 'full' || x === 'lean');
+    .filter((x): x is PromptProfile => (PROMPT_PROFILES as readonly string[]).includes(x));
   // leafTimeout: agent-leaf wall-clock 上界 (ms)。默认 30min (远宽于旧 240s), '0'=不限。
   const leafTimeoutMs = opts.leafTimeout != null && opts.leafTimeout !== ''
     ? Math.max(0, Number.parseInt(opts.leafTimeout, 10) || 0)

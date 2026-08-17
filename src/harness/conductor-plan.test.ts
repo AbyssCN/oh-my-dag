@@ -5,7 +5,7 @@
  * 修后: fence 只定位起点, 终点一律括号平衡扫描。
  */
 import { describe, expect, test } from 'bun:test';
-import { conductorPatchSystemPrompt, conductorSystemPrompt, extractPlanJson, parsePlan } from './conductor-plan';
+import { conductorPatchSystemPrompt, conductorSystemPrompt, extractPlanJson, parsePlan, PLAN_KB_SECTION } from './conductor-plan';
 import { DEFAULT_COMMAND_ALLOWLIST } from './command-leaf';
 import { topoLevels } from './dag/planner';
 
@@ -51,6 +51,27 @@ describe('extractPlanJson', () => {
     const text = '```json\n{"name": "p", "nodes": {"a": {"goal": "截断';
     const r = parsePlan(text, { knownServers: new Set() });
     expect(r.ok).toBe(false);
+  });
+});
+
+// ── #171 '-kb' A/B 处理臂: 单一变量 = 只插 PLAN_KB_SECTION, 其余逐字节不动 ────────
+
+describe("'-kb' 档 (#171): 基档字节 + 单点插入知识边界段", () => {
+  // 证伪方式 (当场验过): 在 conductorSystemPrompt 里给 kb 分支多插一行 → 字节等式两条红; 恢复后绿。
+  test('lean-kb 去掉 KB 段 === lean (字节级单一变量)', () => {
+    const lean = conductorSystemPrompt({ profile: 'lean' });
+    const kb = conductorSystemPrompt({ profile: 'lean-kb' });
+    expect(kb).not.toBe(lean); // 反向: 处理臂必须真的不同
+    expect(kb).toContain('KNOWLEDGE boundaries');
+    expect(lean).not.toContain('KNOWLEDGE boundaries');
+    expect(kb.replace(PLAN_KB_SECTION.join('\n') + '\n', '')).toBe(lean);
+  });
+
+  test('full-kb 去掉 KB 段 === full (字节级单一变量)', () => {
+    const full = conductorSystemPrompt();
+    const kb = conductorSystemPrompt({ profile: 'full-kb' });
+    expect(kb).not.toBe(full);
+    expect(kb.replace(PLAN_KB_SECTION.join('\n') + '\n', '')).toBe(full);
   });
 });
 

@@ -357,6 +357,29 @@ export interface ConductorProfileRosterEntry {
 }
 
 /**
+ * conductor prompt 档位 (issue #171 加 `-kb` 两档, 2026-08-18)。
+ * `full-kb` / `lean-kb` = 对应基档字节 + **单点插入** {@link PLAN_KB_SECTION}, 其余逐字节不动
+ * (单一变量; 测试以字节级 replace 钉死)。A/B 裁决前不进任何默认路径 —— 只有 conductor-modelmix
+ * oracle 的 `--profiles` 轴能选到; 判据冻结在 issue #171, 塌了整段撤。
+ */
+export type ConductorPromptProfile = 'full' | 'lean' | 'full-kb' | 'lean-kb';
+
+/**
+ * APoSD「按知识边界分解、反时序性分解」段 (#171 处理臂)。与 chat conductor 的
+ * `<knowledge-boundary>` (harness-prompts.ts) 同源同义, 措辞换成 PLAN-1 的祈使句 register。
+ */
+export const PLAN_KB_SECTION: readonly string[] = [
+  'Split on KNOWLEDGE boundaries, never on execution order (temporal decomposition is the classic trap):',
+  '- Steps that merely run one-after-another but depend on the SAME understanding — a file format, a',
+  '  schema, a protocol, one encoding decision — belong in ONE node that OWNS that knowledge. Splitting',
+  '  them copies the shared decision into every node, and each copy drifts independently.',
+  '- Test the finished plan: if two nodes can only both be correct by silently agreeing on something no',
+  '  artifact between them states, merge them — or route the shared decision through an explicit artifact',
+  '  one node produces and the others consume (the "ONE decision, THEN the fan-out" rule below).',
+  '',
+];
+
+/**
  * summary 单行 + ≤80 code points 归一化 (INV-7 第一道防线, 在 conductor-plan.ts 本地做 —— 不依赖
  * 调用方守规矩)。折叠任意空白/换行成单空格再按 Unicode code point 截断 (`.slice` 按 UTF-16 code
  * unit 会切碎代理对; `Array.from` 按 code point 迭代更安全)。
@@ -371,10 +394,11 @@ export function conductorSystemPrompt(
     agents?: string[];
     templates?: { name: string; description: string }[];
     profiles?: readonly ConductorProfileRosterEntry[];
-    profile?: 'full' | 'lean';
+    profile?: ConductorPromptProfile;
   } = {},
 ): string {
-  const lean = opts.profile === 'lean';
+  const lean = opts.profile === 'lean' || opts.profile === 'lean-kb';
+  const kb = opts.profile === 'full-kb' || opts.profile === 'lean-kb';
   // roster 段 2026-07-26 撤下: node.agent 在 executor-dag 零消费者 (分流看 executor/model), 且
   // conductor 每轮重掷它 → 系统性打空 D-21 跨轮复用。宿主若真注入 agents 名单才提一句, 否则不提。
   const roster = opts.agents?.length
@@ -484,6 +508,8 @@ export function conductorSystemPrompt(
     '  from the levels above it, LIFT it up to run in parallel. Keep the graph WIDE (many siblings) and SHALLOW.',
     '',
         ]),
+    // #171 处理臂: '-kb' 档在此单点插入知识边界段; 基档 (full/lean) 走空数组, 字节零变化。
+    ...(kb ? PLAN_KB_SECTION : []),
     ...(lean
       ? [
           'Parallel-safety: siblings run CONCURRENTLY with NO level barrier — two nodes may be siblings only',
