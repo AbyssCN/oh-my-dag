@@ -10,6 +10,10 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { StaleChecker, wrapToolStale, type OmdMcpTool } from './server.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { omdRepoRoot } from '../harness/repo-root';
 
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
@@ -96,5 +100,32 @@ describe('S1 陈旧自检 (SDD §2 S1)', () => {
     const res2 = await wrapToolStale(tool, clean).handler({} as never, {} as never);
     expect(res2.content).toHaveLength(1);
     expect(res2.content[0]).toEqual({ type: 'text', text: 'body' });
+  });
+});
+
+describe('#141 真 cwd 语义: 陈旧自检量的是引擎仓, 不是宿主仓', () => {
+  test('process.cwd() 指向别的 git 仓时, bootSha 仍是引擎仓 HEAD (证伪: runGit cwd 换回 process.cwd() 即红)', () => {
+    // 实测形状 (issue #141): MCP server 被 `cd 宿主仓 && exec bun … mcp` 拉起, 宿主提交 4 个
+    // commit → 误报 "omd stale +4"; 而 omd 自己更新反而不报。oracle = 造一个真 git 仓当宿主 cwd。
+    const host = mkdtempSync(join(tmpdir(), 'omd-stale-host-'));
+    const g = (args: string[]): string =>
+      Bun.spawnSync(['git', ...args], { cwd: host, stdout: 'pipe', stderr: 'pipe' }).stdout.toString().trim();
+    g(['init', '-q']);
+    g(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '--allow-empty', '-q', '-m', 'host']);
+    const hostSha = g(['rev-parse', 'HEAD']);
+    const engineSha = Bun.spawnSync(['git', 'rev-parse', 'HEAD'], { cwd: omdRepoRoot(), stdout: 'pipe' })
+      .stdout.toString().trim();
+    expect(hostSha).not.toBe(engineSha); // 前提: 两个仓 HEAD 确实不同, 否则本测量不出方向
+
+    const prev = process.cwd();
+    try {
+      process.chdir(host);
+      const chk = new StaleChecker(); // 全默认 deps = 真 git 路径
+      expect(chk.bootSha).toBe(engineSha);
+      expect(chk.bootSha).not.toBe(hostSha);
+    } finally {
+      process.chdir(prev);
+      rmSync(host, { recursive: true, force: true });
+    }
   });
 });

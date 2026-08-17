@@ -10,6 +10,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import type { Implementation } from '@modelcontextprotocol/sdk/types.js';
 import type { ZodRawShapeCompat } from '@modelcontextprotocol/sdk/server/zod-compat.js';
 import { logger } from '../logger';
+import { omdRepoRoot } from '../harness/repo-root';
 
 /** 注册面工具定义。D-11: description 一行 ≤120 字符 (说明书住 SKILL/CLAUDE.md, 客户端每轮付 description 税)。 */
 export interface OmdMcpTool {
@@ -62,10 +63,15 @@ export interface StaleState {
   checkedAt: number;
 }
 
-/** 跑一条 git 命令; 非零退出/抛错 → {ok:false} (fail-open 语义, 不 throw)。 */
+/**
+ * 跑一条 git 命令; 非零退出/抛错 → {ok:false} (fail-open 语义, 不 throw)。
+ * cwd = **引擎自己的仓** (#141, 2026-08-17): 本自检量的是「omd 代码是否落后」, 而 MCP server
+ * 的 process.cwd() 是宿主项目仓 (Claude Code cd 过去再 exec) —— 用它等于量宿主 HEAD:
+ * 宿主正常提交 4 个 commit 就误报 "omd stale +4", omd 自己真更新了反而不报 (方向双错)。
+ */
 function runGit(args: string[]): { ok: boolean; out: string } {
   try {
-    const r = Bun.spawnSync(['git', ...args], { cwd: process.cwd(), stdout: 'pipe', stderr: 'pipe' });
+    const r = Bun.spawnSync(['git', ...args], { cwd: omdRepoRoot(), stdout: 'pipe', stderr: 'pipe' });
     if (r.exitCode !== 0) return { ok: false, out: '' };
     return { ok: true, out: r.stdout.toString().trim() };
   } catch {
