@@ -34,6 +34,7 @@ discipline (when to escalate, how to accept, who holds the trigger).
 | `dag_cancel` | cooperative stop: no new nodes dispatched, in-flight ones finish, ends `cancelled` (resumable) |
 | `dag_triage` | **owner inbox** (read-only): decision forks a running graph raised, plus runs that need a human look |
 | `dag_rule` | rule on one of those forks; the ruling becomes a verbatim owner directive for the run's next round |
+| `dag_intervene` | record a human intervention: append an `intervened` entry to the run-board (cause = `NodeFailureKind`); powers the avoidability readout |
 
 **Pathfinder** — persistent planning for foggy, multi-session work:
 

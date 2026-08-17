@@ -34,6 +34,8 @@ const ALL_TOOLS = [
   // S3 owner 收件箱 (2026-07-31): 无人值守的产出必须有去处 —— dag_triage 看, dag_rule 裁。
   'dag_triage',
   'dag_rule',
+  // #160 发射片 (2026-08-17): 人工介入记录面 —— intervened 上板, 读数板算可避免性率。
+  'dag_intervene',
   'dag_node_output',
   'dag_research',
   'memory_recall',

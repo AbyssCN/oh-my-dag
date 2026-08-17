@@ -541,13 +541,17 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   // claimed 由 liveRuns 当活 run 显形 —— 板的工作是把它显出来, 不是替引擎撒谎。
   const boardRunId = config.tickets?.runId ?? config.dag.continuity?.runId ?? config.dag.sessionId ?? randomUUID();
   const boardDeclared = config.writeSet?.declared ?? SDD_DECLARED_WRITE_SET;
+  // #160 D-1 (s1): 板根钉主仓状态锚。branch 档 run 的 config.cwd 是 worktree (产物树),
+  // 板落那里 = 主仓 (生产侧 + ignition 预检 + readout 全读者) 看不到这张 run; 钉到
+  // continuity.repoRoot → 主仓。head 档 (repoRoot 缺席或 = cwd) 行为逐字节不变 (INV-1)。
+  const boardRoot = config.dag.continuity?.repoRoot ?? config.cwd;
   const emitBoard = (event: 'claimed' | 'terminal', outcome?: RunOutcomeKind): void => {
     try {
       const entry: BoardEntry =
         event === 'claimed'
           ? { v: 1, ts: new Date().toISOString(), runId: boardRunId, event, writeSet: [...boardDeclared.allowed] }
           : boardTerminalEntry(boardRunId, outcome!);
-      appendBoard(config.cwd, entry);
+      appendBoard(boardRoot, entry);
     } catch (e) {
       // 板不是承重墙: 写板失败不掀桌, 留日志, run 照跑 (与 saveState 同款纪律)。
       console.error(`[run-goal] board ${event} 写失败 (不影响 run): ${String(e)}`);
@@ -1170,6 +1174,25 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   // D-2 散雾出口 (切片 1): 拿到 map 句柄才开票; 没配 = 这一行直接返回, 行为逐字节不变 (INV-1)。
   // 放在 result 成形之后: 票身要的原因/未决/发现物全从终态读, 不从中途状态猜。
   openRunTickets(result, exec, config);
+  // #160 D-2 (s1): 终态前发 verified (判据真身, 不是 converged; INV-2)。
+  // 只在 executable 验收时发 (非可执行没机器结论, 不编)。同一 fail-open 性格: 写板失败不掀桌,
+  // run 照跑。verdict = oracleOk ∨ oracleRecheckGreen (#165①: 判据被级联压死没跑时, 复验绿也算 pass)，
+  // note = 验收命令 + accept 节点 status 指纹 (板层 serializeEntry 自截 500B)。
+  if (acceptance.kind === 'executable') {
+    try {
+      const verdict: 'pass' | 'fail' = oracleOk || oracleRecheckGreen ? 'pass' : 'fail';
+      appendBoard(boardRoot, {
+        v: 1,
+        ts: new Date().toISOString(),
+        runId: boardRunId,
+        event: 'verified',
+        verdict,
+        note: `${acceptance.command} → ${acceptLeaf?.status ?? '没跑'}`,
+      });
+    } catch (e) {
+      console.error(`[run-goal] board verified 写失败 (不影响 run): ${String(e)}`);
+    }
+  }
   emitBoard('terminal', outcome);
   return result;
 }

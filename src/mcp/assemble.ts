@@ -34,6 +34,7 @@ import { runGoal } from '../harness/goal/run-goal';
 import { createFleetTools, type SpawnFn } from './tools/fleet';
 import { AGENT_DEFAULT_FANOUT, CPU_FALLBACK_FANOUT, effectiveFanout, resolveProviderCap } from '../harness/fleet';
 import { createRunsTools } from './tools/runs';
+import { createInterveneTools } from './tools/intervene';
 import { createConfigTools } from './tools/config-tools';
 import { createComposeTools } from './tools/compose';
 import { createWebTools, createDistillTools } from './tools/web';
@@ -711,6 +712,8 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     ...createRunsTools({ runRegistry, cwd }),
     // S3 owner 收件箱: dag_triage (看) + dag_rule (裁)。无人值守的产出必须有去处。
     ...createTriageTools({ inbox, runRegistry }),
+    // #160 D-4: dag_intervene —— 人介入记录面 (appendBoard event:'intervened'), 读数板据此算可避免性率。
+    ...createInterveneTools({ cwd }),
     // config 工具族: set_key/apply_preset/set_role/config_status/toggle_hud (omd init 的 MCP 面, 即时生效)。
     ...createConfigTools({ cwd, router }),
     // 组合模式入口 (2026-07-26): 原语与图式递到图外, 让外部 SOTA agent 不必先出图就能用引擎能力。

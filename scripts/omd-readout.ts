@@ -64,6 +64,7 @@ import type { RollbackAnchorKind } from '../src/harness/rollback-anchor';
 import { detectRuntimeWriteRace, overlapPairsFromWindows, type NodeWindow } from '../src/harness/plan/observers';
 import { capsFor } from '../src/model/model-caps';
 import { CheckpointManager } from '../src/harness/continuity/checkpoint-manager';
+import { readBoard } from '../src/harness/board/run-board';
 import type { NodeLoopJournal } from '../src/harness/continuity/types';
 import type { DagRunNode } from '../src/harness/dag-record';
 import type { AcceptanceProbe } from '../src/harness/goal/acceptance-gate';
@@ -609,6 +610,29 @@ export interface ReadoutResult {
     zeroIn: number;
     unmeasured: number;
   };
+  /**
+   * ⑱ **可避免性率** (#160 发射片 · D-5): 板上「被人工介入过的完结 run」占「完结 run」的比例。
+   *
+   * 数据源 = `readBoard(boardRoot)` —— 与 ⑨/⑫ 那个 outcome 分布**不同源**: 那是留痕库
+   * (永久), 这里是公告板 (24h 保留期 compact, 见 run-board.ts)。两边的窗口**不同**——
+   * 留痕库是全史, 板是窗口内; 这一段量的是**窗口**可避免性率, 头注里如实标。
+   *
+   * ⚠ **分子 ⊆ 分母** (GWT 5): 介入条目 (intervened) 属于无 terminal 的 runId
+   * (在跑的孤儿/还没收尾) → **不进分子**。「在跑的 run」不算「介入过的完结 run」。
+   *
+   * ⚠ **NULL ≠ 0** (D-5 同款纪律): `boardMissing=true` = **板文件不存在**, 不是零介入 —
+   * 两者在输出里**可分辨**。`null` (整段缺席) 仅在**没给 boardRoot** 时发生 (注入夹具)。
+   */
+  avoidability: {
+    /** 板上有 terminal 条目的 distinct runId 数 (= 完结 run 数, 窗口内)。 */
+    denominator: number;
+    /** 上面那些里, 同时有 intervened 条目的 runId 数 (⊆ denominator)。 */
+    numerator: number;
+    /** `numerator/denominator`; `denominator=0` → null (算不出 ≠ 0%)。 */
+    rate: number | null;
+    /** `true` = 板文件缺席 (这条数是 NULL 不是 0, 与「板存在但零介入」分得开)。 */
+    boardMissing: boolean;
+  } | null;
 }
 
 /** 单面的样本充分性(`enough=false` 时这一面的比例**不许当结论读**)。 */
@@ -962,7 +986,7 @@ function zeroTwoGridRisk(): ReadoutResult['criteria_grid']['two_grid_risk'] {
 }
 
 /** 空世界 (表不存在或零记录): 合法, 各分布全零, 不是错误。 */
-function emptyWorld(meta: ReadoutResult['meta'], seats?: Record<string, string>, mcpPolicy?: ReadoutResult['mcp_policy']): ReadoutResult {
+function emptyWorld(meta: ReadoutResult['meta'], seats?: Record<string, string>, mcpPolicy?: ReadoutResult['mcp_policy'], avoidability?: ReadoutResult['avoidability']): ReadoutResult {
   return {
     meta,
     runs: [],
@@ -1037,6 +1061,8 @@ function emptyWorld(meta: ReadoutResult['meta'], seats?: Record<string, string>,
     },
     mcp_policy: mcpPolicy ?? null,
     cache_trend: { rows: [], zeroIn: 0, unmeasured: 0 },
+    // ⑱ 空世界: 没给 boardRoot → null; 给了但板缺席 → {0,0,null,true} (在 computeAvoidability 里算好, 这里只搬运)。
+    avoidability: avoidability ?? null,
   };
 }
 
@@ -1210,13 +1236,48 @@ function computeMcpPolicy(mcpDb: Database | undefined): ReadoutResult['mcp_polic
 }
 
 
-export function readout(opts: { db: Database; limit?: number; dbPath?: string; mapsCwd?: string; mcpDb?: Database; seats?: Record<string, string> }): ReadoutResult {
+/**
+ * ⑱ 可避免性率 (D-5): 「窗口内被人工介入过的完结 run」/「完结 run」 = 分子/分母。
+ * 数据源 = `readBoard(boardRoot)` —— 与 ⑨/⑫ outcome 分布**不同源** (留痕库永久, 板 24h compact)。
+ *
+ * 三态 (NULL ≠ 0 纪律, 同 ⑱ 头注):
+ *   - `null`                : 没给 boardRoot (注入夹具), 整段缺席;
+ *   - `{0,0,null,true}`     : 给了 boardRoot 但板文件不存在 (与「零介入」分得开);
+ *   - 其它 `{n,m,r,false}`  : 板存在, 算出来 (含 numerator=0, denominator>0)。
+ *
+ * 分子 ⊆ 分母 (GWT 5): intervened 属于无 terminal 的 runId → 不进分子, 由 `terminal` 集合守门。
+ */
+function computeAvoidability(boardRoot: string | null): ReadoutResult['avoidability'] {
+  if (boardRoot === null) return null;
+  const path = join(boardRoot, '.omd', 'run-board.jsonl');
+  if (!existsSync(path)) return { denominator: 0, numerator: 0, rate: null, boardMissing: true };
+  const entries = readBoard(boardRoot);
+  const terminal = new Set<string>();
+  const intervened = new Set<string>();
+  for (const e of entries) {
+    if (e.event === 'terminal') terminal.add(e.runId);
+    else if (e.event === 'intervened') intervened.add(e.runId);
+  }
+  let numerator = 0;
+  for (const id of terminal) if (intervened.has(id)) numerator++;
+  const denominator = terminal.size;
+  return {
+    denominator,
+    numerator,
+    rate: denominator > 0 ? numerator / denominator : null,
+    boardMissing: false,
+  };
+}
+
+export function readout(opts: { db: Database; limit?: number; dbPath?: string; mapsCwd?: string; mcpDb?: Database; seats?: Record<string, string>; boardRoot?: string | null }): ReadoutResult {
   const limit = opts.limit ?? 20;
   const meta: ReadoutResult['meta'] = { db: opts.dbPath ?? '(injected)', limit, readonly: true };
   const mcpPolicy = computeMcpPolicy(opts.mcpDb);
+  // ⑱ 可避免性率 (D-5): 数据源独立于 db —— 算一次, 空世界也照出, 不混进两源。
+  const avoidability = computeAvoidability(opts.boardRoot ?? null);
   const db = opts.db;
   const hasTable = db.query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'omd_dag_runs'`).get() != null;
-  if (!hasTable) return emptyWorld(meta, opts.seats, mcpPolicy);
+  if (!hasTable) return emptyWorld(meta, opts.seats, mcpPolicy, avoidability);
 
   // 老库可能缺后加的列 → 查一次 pragma 再拼, 缺的列补 NULL (正是"这批记录没记"那一格,
   // 与"记了但为空"分开数; 同 CLI ⑦ 段的做法, 不另起一套)。
@@ -1987,6 +2048,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
     seat_health,
     mcp_policy: mcpPolicy,
     cache_trend,
+    avoidability,
   };
 }
 

@@ -8,7 +8,7 @@
 
 <img src="assets/diagrams/omd-architecture.gif" alt="omd 架构" width="820">
 
-[![MCP server: 49 tools](https://img.shields.io/badge/MCP%20server-49%20tools-c9a227?style=flat-square&labelColor=140f0a)](docs/guide/mcp-tools.md)
+[![MCP server: 50 tools](https://img.shields.io/badge/MCP%20server-50%20tools-c9a227?style=flat-square&labelColor=140f0a)](docs/guide/mcp-tools.md)
 [![Clients: Claude Code · Codex · any MCP](https://img.shields.io/badge/clients-Claude%20Code%20%C2%B7%20Codex%20%C2%B7%20any%20MCP-6f9488?style=flat-square&labelColor=140f0a)](client-skills/)
 [![Models: bring your own](https://img.shields.io/badge/models-bring%20your%20own-b3382a?style=flat-square&labelColor=140f0a)](docs/architecture/model-layer.md)
 [![Runtime: Bun ≥ 1.3](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.3-b3382a?style=flat-square&labelColor=140f0a)](https://bun.sh)
