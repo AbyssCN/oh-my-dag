@@ -184,6 +184,28 @@ describe('omd pack', () => {
     expect(snapshot(join(cwd, '.omd'))).toEqual(before);
   });
 
+  test('⑦ grill 决策 3: 不同文件名装同名卡 → 整包拒并点名 (文件冲突闸盖不住的洞)', async () => {
+    const cwd = tmp();
+    const cardNamed = (file: string) =>
+      makePack({ name: `pack-${file}`, agents: { [`${file}.md`]: ['---', 'name: shared-card', 'description: 同名卡', '---', '', '正文'].join('\n') } });
+    expect((await addPack(cwd, cardNamed('aaa'))).ok).toBe(true);
+    const r = await addPack(cwd, cardNamed('bbb'));
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('shared-card');
+    expect(r.message).toContain('冲突');
+  });
+
+  test('⑧ grill 决策 3: 覆盖内置卡合法, 回执标 [覆盖内置]', async () => {
+    const cwd = tmp();
+    const src = makePack({
+      name: 'p8',
+      agents: { 'my-researcher.md': ['---', 'name: researcher', 'description: 换了打底的调研卡', '---', '', '定制正文'].join('\n') },
+    });
+    const r = await addPack(cwd, src);
+    expect(r.ok).toBe(true);
+    expect(r.message).toContain('researcher [覆盖内置]');
+  });
+
   test('⑥ 用户改过的文件: remove 保留不删', async () => {
     const cwd = tmp();
     const src = makePack({ name: 'p6', agents: { 'card.md': GOOD_CARD } });

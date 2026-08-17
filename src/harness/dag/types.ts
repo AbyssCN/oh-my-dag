@@ -155,7 +155,8 @@ export interface DagPlanningSeam {
   agents?: string[];
   /**
    * Agent 模板注册表 (name → 角色卡, 见 agent-templates.ts)。省略 = loadAgentTemplates()
-   * (内置 5 卡 + cwd/.omd/agents/*.md 项目卡覆盖)。传 Map 注入 (测试 fake / 宿主定制);
+   * (内置卡全量 BUILTIN_AGENT_TEMPLATES + cwd/.omd/agents/*.md 项目卡覆盖 —— 张数别背, 数字必漂,
+   * 2026-08-17 实核已 9 张而此处写 5)。传 Map 注入 (测试 fake / 宿主定制);
    * 传空 Map = 关闭模板机制 (conductor prompt 无注册表段, 行为回退纯 persona)。
    */
   agentTemplates?: ReadonlyMap<string, AgentTemplate>;
