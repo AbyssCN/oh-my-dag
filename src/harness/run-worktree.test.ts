@@ -11,10 +11,12 @@
  */
 import { describe, expect, test } from 'bun:test';
 import {
+  commitRunArtifacts,
   describeRunWorktree,
   prepareRunWorktree,
   runWorktreeBranch,
   runWorktreeDir,
+  shouldAutoCommit,
   type RunWorktreeDeps,
 } from './run-worktree';
 import type { RollbackAnchor } from './rollback-anchor';
@@ -207,5 +209,64 @@ describe('⑤ 未提交的活在隔离树里看不见 — 必须念进回话', (
     );
     expect(w.uncommittedWarning).toBeUndefined();
     expect(checked).toBe(0);
+  });
+});
+
+// ── #165② 自动收编闸 ─────────────────────────────────────────────────────────────
+describe('shouldAutoCommit (#165②: 冻结判据绿才收编)', () => {
+  // 证伪方式 (当场验过): 把 shouldAutoCommit 改成恒 true → 「判据红不许 commit」两条红; 恢复后绿。
+  test('隔离档 ∧ 判据可执行 ∧ success / delivered-with-red → 收编', () => {
+    expect(shouldAutoCommit({ acceptanceKind: 'executable', outcome: 'success' }, 'branch')).toBe(true);
+    expect(shouldAutoCommit({ acceptanceKind: 'executable', outcome: 'delivered-with-red' }, 'branch')).toBe(true);
+  });
+
+  test('★ 反向自检: 判据红 (not-converged / oracle-failed / blocked) 不许 commit', () => {
+    for (const outcome of ['not-converged', 'oracle-failed', 'blocked', 'infra-error', 'cancelled']) {
+      expect(shouldAutoCommit({ acceptanceKind: 'executable', outcome }, 'branch')).toBe(false);
+    }
+  });
+
+  test('head 档不收编 (自动 commit 主树 = 替 owner 扣扳机)', () => {
+    expect(shouldAutoCommit({ acceptanceKind: 'executable', outcome: 'success' }, 'head')).toBe(false);
+  });
+
+  test('非可执行判据不收编 (oracle 恒 true 不是机器绿)', () => {
+    expect(shouldAutoCommit({ acceptanceKind: 'descriptive', outcome: 'success' }, 'branch')).toBe(false);
+  });
+});
+
+describe('commitRunArtifacts (#165②: worktree 内收编, 永不抛)', () => {
+  const fakeGitOut = (statusOut: string, failOn?: string) => {
+    const calls: string[][] = [];
+    const gitOut = (args: string[]): string => {
+      calls.push(args);
+      if (failOn && args[0] === failOn) throw new Error(`${failOn} 炸了`);
+      if (args[0] === 'status') return statusOut;
+      if (args[0] === 'rev-parse') return 'abc1234';
+      return '';
+    };
+    return { calls, gitOut };
+  };
+
+  test('脏树 → add -A + commit + 短 sha 回执', () => {
+    const { calls, gitOut } = fakeGitOut(' M src/x.ts\n?? tmp.txt');
+    const r = commitRunArtifacts({ cwd: '/wt', runId: 'r1', message: 'omd run r1: 收编' }, { gitOut });
+    expect(r).toEqual({ committed: true, sha: 'abc1234', detail: '已收编 commit abc1234 (run r1)' });
+    expect(calls.map((c) => c[0])).toEqual(['status', 'add', 'commit', 'rev-parse']);
+  });
+
+  test('干净树 → 不 commit, 说明原因', () => {
+    const { calls, gitOut } = fakeGitOut('');
+    const r = commitRunArtifacts({ cwd: '/wt', runId: 'r1', message: 'm' }, { gitOut });
+    expect(r.committed).toBe(false);
+    expect(r.detail).toContain('干净');
+    expect(calls.map((c) => c[0])).toEqual(['status']);
+  });
+
+  test('commit 炸了 → 不抛, 失败原因进 detail (吞异常不吞证据)', () => {
+    const { gitOut } = fakeGitOut(' M x', 'commit');
+    const r = commitRunArtifacts({ cwd: '/wt', runId: 'r1', message: 'm' }, { gitOut });
+    expect(r.committed).toBe(false);
+    expect(r.detail).toContain('commit 炸了');
   });
 });

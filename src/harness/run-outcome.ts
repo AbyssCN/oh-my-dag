@@ -53,6 +53,12 @@ export type RunOutcomeKind =
   | 'not-converged'
   /** judge 说成了、**冻结判据没过**(D-I 要抓的那种作弊达标 —— 也可能是判据本身是虚的)。 */
   | 'oracle-failed'
+  /**
+   * **交付达标但图内有节点红** (#165①, 2026-08-17): accept 节点被红级联压死没跑 →
+   * 冻结判据在收尾独立复验绿。红节点不许静默漂白 (converged 仍 false), 但整跑也不许
+   * 念成「交付没达标」—— 实测 (216f30a1 / b378929b) 两种被混念的代价是每单一次人工验尸。
+   */
+  | 'delivered-with-red'
   /** 环判定「没有外部输入推不动」(空转 / §8.4 熔断 / 检测者喊停)。**加轮数没用。** */
   | 'blocked'
   /** 预算耗尽而停(第四条停止轴)。与 `blocked` 分开的理由是下一步不同:加预算 resume 很可能就成。 */
@@ -160,6 +166,14 @@ export const RUN_OUTCOME_INFO: Record<RunOutcomeKind, RunOutcomeInfo> = {
       '**先人看一眼是哪一边错** —— 产物没真达标(作弊达标)还是判据本身是虚的(G4)。两种的修法相反,加轮数对哪种都不对症',
     // 不知道该归哪边之前, 原样 resume 有没有用是答不了的 —— 拍一个 false 会挡掉"判据虚但产物对"那半边。
     resumable: null,
+  },
+  'delivered-with-red': {
+    spendBucket: 'delivery',
+    // 判据说成了而环没走完 —— 书上五态没有这格 (SUCCESS 会漂白红节点, STALLED 会骗人重跑)。
+    loopState: null,
+    evidence: 'accept 节点没跑 (被红级联压死), 而冻结判据在收尾独立复验退出码符合期望, 且图内 ≥1 节点红',
+    nextAction: '产物可收编 (隔离档已自动 commit, 见 #165②) —— 人审**红节点**是否要紧 (成因见节点级表), 别整轮重跑',
+    resumable: false,
   },
   blocked: {
     spendBucket: 'blocked',

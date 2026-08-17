@@ -26,7 +26,7 @@ import { recordDagRun, type DagRecorder } from '../../harness/dag-record';
 import type { AcceptanceProbe } from '../../harness/goal/acceptance-gate';
 import { RUN_OUTCOME_INFO } from '../../harness/run-outcome';
 import { summarizeGoalFailure } from '../../harness/goal/summarize-goal-failure';
-import { describeRunWorktree, prepareRunWorktree, type BranchStrategy } from '../../harness/run-worktree';
+import { commitRunArtifacts, describeRunWorktree, prepareRunWorktree, shouldAutoCommit, type BranchStrategy } from '../../harness/run-worktree';
 import { captureRollbackAnchor, describeRollback } from '../../harness/rollback-anchor';
 import { renderOwnerDirectives, type OwnerInbox } from '../owner-inbox';
 import { logger } from '../../harness/logger';
@@ -703,6 +703,19 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           // N9 判据轴: 两条判据回填到这个 runId 的全部记录。**在这里而不是随 record 一起写** ——
           // 冻结判据的结论要整趟收尾才有, 而 record 是每张图跑完就落的 (执行段落盘时验收还没判)。
           if (r.criteria) deps.recorder?.updateCriteria(runId, r.criteria);
+          // #165② 收编闸: 隔离档 ∧ 机器判据绿 (success / delivered-with-red) → worktree 内自动
+          // commit (留 run 锚)。判据红不 commit (shouldAutoCommit 单点判, 反向自检在 run-worktree
+          // 测试)。detached 同 handler 同路。合回主树仍由 owner 扣扳机 —— 收编 ≠ 合入。
+          let autoCommitLine = '';
+          if (shouldAutoCommit({ acceptanceKind: r.acceptance.kind, outcome: r.outcome }, worktree.strategy)) {
+            const c = commitRunArtifacts({
+              cwd: worktree.cwd,
+              runId,
+              message: `omd run ${runId}: 冻结判据绿自动收编 (${r.outcome})\n\n${r.acceptance.kind === 'executable' ? `判据: ${r.acceptance.command}` : ''}`,
+            });
+            autoCommitLine = `autoCommit: ${c.committed ? (c.sha ?? 'ok') : 'no'} — ${c.detail}\n`;
+            logger.info({ runId, ...c }, '[dag_goal] #165② 自动收编');
+          }
           // 未收敛 = 自主环没达成 goal → 记 failed (**不算完成**): 谎报成功比失败更贵,
           // 调用方据此决定要不要人接手。
           // D-P 例外: 被叫停的记 cancelled —— 它没失败, 只是没跑完, 而这两者的下一步不一样
@@ -741,7 +754,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
               mkdirSync(dirname(resultOut), { recursive: true });
               // acceptance 头是回流侧闸 B 的信号线: 探索型 (无机器判据) 的 not-converged 永远
               // 判不出机器收敛, 自动续跑期望收益为零 —— reflow 读到它直接升人, 不写续跑锚。
-              writeFileSync(resultOut, `outcome: ${r.outcome}\nrunId: ${runId}\nacceptance: ${r.acceptance.kind}\n\n${summarizeGoal(r)}`);
+              writeFileSync(resultOut, `outcome: ${r.outcome}\nrunId: ${runId}\nacceptance: ${r.acceptance.kind}\n${autoCommitLine}\n${summarizeGoal(r)}`);
             } catch (e) {
               logger.warn({ err: (e as Error).message, resultOut }, '[dag_goal] resultOut 写失败 (回流将看不到这跑)');
             }

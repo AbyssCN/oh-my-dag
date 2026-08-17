@@ -49,9 +49,15 @@ const cfg = (commandRunner: CommandLeafRunner, extra: Partial<ExecutorDagConfig>
   ...extra,
 });
 
-/** 同一条命令串跑两个节点, b 在 a 之后 —— 老缓存正是在这一格上返旧值。 */
+/**
+ * 同一条命令串跑两个节点, b 在 a 之后 —— 老缓存正是在这一格上返旧值。
+ * ⚠ `outputs: ['a']` 是 #153② 合并 pass 的挡板 (2026-08-17): 纯串行 command 直线会被机械并成
+ * 一条 && 节点 (a 消失), 而本文件测的是 **runner 层不缓存**, 要的就是两个独立节点各真跑 ——
+ * 把 a 标成图外引用让链不合并, 测试原意逐字保留。合并本身的语义在 merge-command-chain.test。
+ */
 const plan: ConductorPlan = {
   name: 'p',
+  outputs: ['a'],
   nodes: {
     a: { goal: '读探针', executor: 'command', command: 'echo probe' },
     b: { goal: '再读一次同一条', executor: 'command', command: 'echo probe', depends_on: ['a'] },

@@ -312,6 +312,8 @@ export const BOARD_TERMINAL_OUTCOME: Record<RunOutcomeKind, 'converged' | 'faile
   success: 'converged',
   cancelled: 'cancelled',
   'not-converged': 'not-converged',
+  // #165①: 交付达标 (判据复验绿) 但有红节点 —— 板上粗态按「没全绿」念, 细粒度在 outcome 词。
+  'delivered-with-red': 'not-converged',
   'oracle-failed': 'failed',
   blocked: 'failed',
   'budget-exhausted': 'failed',
@@ -1052,6 +1054,24 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
       logger.warn({ err: String(err) }, '[run-goal] 设计审核起不来 → 闸缺席 (fail-open, INV-3)');
     }
   }
+  // ── #165① (2026-08-17): accept 被红级联压死「没跑」→ 冻结判据在收尾独立复验一次 ──────
+  // 只覆盖没跑那格 (acceptLeaf 缺席/skipped): accept 真跑真红 = 判据红, 不复验 (抖动那半由
+  // S-37 管)。复验绿**不翻 converged** (红节点不许静默漂白) —— 它只把终态词从「交付没达标」
+  // 换成 delivered-with-red, 收编闸 (#165②) 据此放行。实测代价 (216f30a1 / b378929b):
+  // 混念成 failed 的每一单都要人工验尸 + 独立复跑判据才发现交付真身完好。
+  let oracleRecheckGreen = false;
+  if (acceptance.kind === 'executable' && !oracleOk && acceptLeaf?.status !== 'failed' && config.dag.commandRunner) {
+    try {
+      const rc = await config.dag.commandRunner({ command: acceptance.command });
+      oracleRecheckGreen = rc.exitCode === (acceptance.expectExit ?? 0);
+      logger.info(
+        { command: acceptance.command, exitCode: rc.exitCode, green: oracleRecheckGreen },
+        '[run-goal] #165① accept 没跑 (级联压死) → 冻结判据收尾复验',
+      );
+    } catch (err) {
+      logger.warn({ err: String(err) }, '[run-goal] #165① 冻结判据复验跑不起来 → 维持原判 (fail-closed, 不吞证据)');
+    }
+  }
   const converged = loopOk && oracleOk;
   // judge 异议 (判据绿收敛而 judge 判没成): **只报不翻终态** —— 这一格是判据轴「judge 太紧 /
   // 判据覆盖不够」的样本, 判词在 continuity 的 _loop-execute.json。翻终态的版本就是 #148。
@@ -1091,6 +1111,10 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
           ? 'budget-exhausted'
           : blocked
             ? 'blocked'
+          // #165①: 复验绿排在环内结论细分之前 —— 交付真身已被独立判据证实, 「加轮数/看哪边错」
+          // 的指引对它都是误导; 但排在外部事件/资源轴之后 (取消/引擎出事/预算停的止损动作更强)。
+          : oracleRecheckGreen
+            ? 'delivered-with-red'
           : loopOk && !oracleOk
             ? 'oracle-failed'
             : 'not-converged';
@@ -1108,6 +1132,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
         : outcome === 'infra-error' ? `引擎侧停: ${infraStopped!.slice(0, 300)} —— **别加轮数**, 这是引擎该修的`
         : outcome === 'blocked' ? `阻塞: ${blocked!.slice(0, 300)}`
         : outcome === 'oracle-failed' ? '环说成了但冻结判据(环外)没过 (D-I: 以判据为准)'
+        : outcome === 'delivered-with-red' ? `交付达标但有节点红 (#165①: accept 被级联压死没跑, 冻结判据收尾复验绿 \`${acceptance.kind === 'executable' ? acceptance.command : ''}\` — 人审红节点, 别整轮重跑)`
         : `未收敛 (${execLeaf?.status ?? '平铺图未过冻结判据'})`
       }${oracleNote}${judgeDissent ? ' · ⚠ judge 异议: 判据绿收敛而 judge 判没成 —— 判据轴「judge 太紧/判据覆盖不够」样本, 判词见 continuity _loop-execute.json' : ''}` +
       `${flatUsed ? ` · 直通v2平铺 (并行读数: ${flatParallelism})` : ''}${flatFallback ? ` · 直通v2回落: ${flatFallback}` : ''}` +

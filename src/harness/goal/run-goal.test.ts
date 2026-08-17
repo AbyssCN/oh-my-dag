@@ -1584,3 +1584,48 @@ describe('实验臂 contract-distill — 契约段 fan-in 摘要扇出闸', () =
     expect(specStage!.summary).toContain(' · 实验臂: contract-distill');
   });
 });
+
+// ── #165① accept 被红级联压死 → 冻结判据收尾复验 (delivered-with-red) ──────────────
+describe('#165① delivered-with-red: accept 没跑而判据复验绿', () => {
+  // 证伪方式 (当场验过): 删掉 run-goal 里 oracleRecheckGreen 复验块 → 第一条红 (退回 not-converged); 恢复后绿。
+  test('accept absent (级联压死) ∧ 复验 exit 0 → outcome=delivered-with-red, converged 仍 false (红节点不漂白)', async () => {
+    const r = await runGoal('goal', {
+      ...cfg({ commandRunner: cmdRunner(0) }),
+      _classify: cls('complex'),
+      _runDag: dagRouter({ execute: async () => executeDag({ converged: false, accept: 'absent', status: 'failed' }) }),
+    });
+    expect(r.outcome).toBe('delivered-with-red');
+    expect(r.converged).toBe(false);
+    const exec = r.stages.find((s) => s.stage === 'execute')!;
+    expect(exec.status).toBe('failed');
+    expect(exec.summary).toContain('交付达标但有节点红');
+  });
+
+  test('accept absent ∧ 复验 exit 1 → 维持原判 (not-converged), 不编绿', async () => {
+    const r = await runGoal('goal', {
+      ...cfg({ commandRunner: cmdRunner(1) }),
+      _classify: cls('complex'),
+      _runDag: dagRouter({ execute: async () => executeDag({ converged: false, accept: 'absent', status: 'failed' }) }),
+    });
+    expect(r.outcome).toBe('not-converged');
+  });
+
+  test('accept 真跑真红 → 不复验 (交付没达标如实报 oracle-failed, 抖动那半归 S-37)', async () => {
+    // commandRunner 给 0: 若实现错把「真红」也拿去复验, 会误判 delivered-with-red —— 本断言即闸。
+    const r = await runGoal('goal', {
+      ...cfg({ commandRunner: cmdRunner(0) }),
+      _classify: cls('complex'),
+      _runDag: dagRouter({ execute: async () => executeDag({ converged: true, accept: 'failed' }) }),
+    });
+    expect(r.outcome).toBe('oracle-failed');
+  });
+
+  test('无 commandRunner → 不复验, 行为与今天一致', async () => {
+    const r = await runGoal('goal', {
+      ...cfg(),
+      _classify: cls('complex'),
+      _runDag: dagRouter({ execute: async () => executeDag({ converged: false, accept: 'absent', status: 'failed' }) }),
+    });
+    expect(r.outcome).toBe('not-converged');
+  });
+});

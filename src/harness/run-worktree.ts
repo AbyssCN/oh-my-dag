@@ -179,6 +179,67 @@ export function prepareRunWorktree(
   };
 }
 
+// ── #165② (2026-08-17): 冻结判据绿 → worktree 内自动收编 commit ──────────────────
+
+/**
+ * **要不要自动 commit** 的唯一判据 (#165②, 纯函数)。
+ * 三条全真才放行: 隔离档 (head 档写的是主树, 自动 commit 主树是替 owner 扣扳机, 不做) ∧
+ * 判据可执行 (非可执行的 oracle 恒 true, 那不是机器绿) ∧ 终态 = success 或 delivered-with-red
+ * (#165①: 判据复验绿)。**判据红时不许 commit** —— 反向自检见 run-worktree.test。
+ */
+export function shouldAutoCommit(
+  run: { acceptanceKind: string; outcome: string },
+  strategy: BranchStrategy,
+): boolean {
+  return (
+    strategy === 'branch' &&
+    run.acceptanceKind === 'executable' &&
+    (run.outcome === 'success' || run.outcome === 'delivered-with-red')
+  );
+}
+
+export interface CommitRunArtifactsResult {
+  committed: boolean;
+  /** commit 成功时的短 sha。 */
+  sha?: string;
+  /** 人话: 干净树 / 失败原因 / 成功摘要。**永不抛** —— 收编是增益, 不许把已终态的 run 带塌。 */
+  detail: string;
+}
+
+/**
+ * 在隔离 worktree 内把本次 run 的改动收进一个 commit (留 run 锚, 人只审不搬)。
+ *
+ * **`git add -A` 而不是按声明写集挑拣**: 隔离树单跑独占, 树内一切改动就是本 run 的写集真身;
+ * 按 write_set 声明面挑会静默丢产物 (声明缺席的 plan 不在少数, D-2 那条只是对账不是全集)。
+ * 垃圾临时件跟着进 commit 是**可见的** (git show 即审), 丢产物是不可见的 —— 两害取可见的。
+ */
+export function commitRunArtifacts(
+  opts: { cwd: string; runId: string; message: string },
+  deps: { gitOut?: (args: string[], opts: { cwd: string }) => string } = {},
+): CommitRunArtifactsResult {
+  const gitOut =
+    deps.gitOut ??
+    ((args: string[], o: { cwd: string }): string => {
+      const r = Bun.spawnSync(['git', ...args], { cwd: o.cwd, stdout: 'pipe', stderr: 'pipe' });
+      if (r.exitCode !== 0) {
+        throw new Error(`git ${args.join(' ')} 失败 (exit ${r.exitCode}): ${new TextDecoder().decode(r.stderr).trim()}`);
+      }
+      return new TextDecoder().decode(r.stdout).trim();
+    });
+  try {
+    if (gitOut(['status', '--porcelain'], { cwd: opts.cwd }) === '') {
+      return { committed: false, detail: '工作树干净, 无可收编改动 (产物可能已在既有 commit 里)' };
+    }
+    gitOut(['add', '-A'], { cwd: opts.cwd });
+    gitOut(['commit', '-m', opts.message], { cwd: opts.cwd });
+    const sha = gitOut(['rev-parse', '--short', 'HEAD'], { cwd: opts.cwd });
+    return { committed: true, sha, detail: `已收编 commit ${sha} (run ${opts.runId})` };
+  } catch (err) {
+    // fail-open 吞异常不吞证据: run 已终态, 收编失败只能响亮说, 不能抛。
+    return { committed: false, detail: `自动收编失败: ${String(err).slice(0, 300)}` };
+  }
+}
+
 /**
  * 给回话用的一段人话。**隔离档必须把目录与分支念出来** —— 否则 owner 拿不到那次产出的把手,
  * "隔离"就退化成"东西不见了"。
