@@ -726,11 +726,22 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   const dagTreeBlock: Component = {
     render: (width: number): string[] => {
       const lines = dagTree.render(width);
+      if (lines.length === 0) return lines;
       const cap = 12;
-      return lines.length <= cap ? lines : [...lines.slice(0, cap), theme.chrome.dim(`... ${lines.length - cap} more nodes (Ctrl+G fullscreen)`)];
+      const shown = lines.length <= cap ? lines : [...lines.slice(0, cap), theme.chrome.dim(`... ${lines.length - cap} more nodes (Ctrl+G fullscreen)`)];
+      return ['', ...shown]; // 顶部留一口气 (PathHud 同款) —— 帧读出来与正文贴死
     },
     handleInput: () => {},
     invalidate: () => dagTree.invalidate(),
+  };
+  /** 帧实测: dagHud 也与正文贴死 —— 同样补一口气 (有内容才补, 空块不占行)。 */
+  const dagHudBlock: Component = {
+    render: (width: number): string[] => {
+      const lines = dagHud.render(width);
+      return lines.length > 0 ? ['', ...lines] : lines;
+    },
+    handleInput: () => {},
+    invalidate: () => dagHud.invalidate(),
   };
 
   /**
@@ -802,7 +813,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   root.addChild(fullView, { shrink: 0, visible: () => fullOn && !pathFullOn });
   root.addChild(pathView, { shrink: 0, visible: () => pathFullOn });
   root.addChild(dagTreeBlock, { shrink: 0, visible: (vp: { width: number }) => !fullOn && !pathFullOn && sidebarPainting(vp.width) });
-  root.addChild(dagHud, { shrink: 0, visible: (vp: { width: number }) => !fullOn && !pathFullOn && !sidebarPainting(vp.width) });
+  root.addChild(dagHudBlock, { shrink: 0, visible: (vp: { width: number }) => !fullOn && !pathFullOn && !sidebarPainting(vp.width) });
   /**
    * 侧栏 pathfinder 摘要:**只在还没开口说话的时候画**(2026-08-08,P3 件3 轮1)。
    *

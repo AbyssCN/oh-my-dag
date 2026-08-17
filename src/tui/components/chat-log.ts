@@ -185,7 +185,7 @@ export class ChatLog implements Component {
       toolText: text,
       toolStartMs: startMs,
       toolColor: colorFn,
-      component: new Text(painted),
+      component: new Text(painted, 1, 0),
       buffer: text,
       open: false,
     });
@@ -265,7 +265,7 @@ export class ChatLog implements Component {
       toolKey: key,
       toolText: body,
       toolColor: colorFn,
-      component: new Text(painted),
+      component: new Text(painted, 1, 0),
       buffer: body,
       open: false,
     });
@@ -285,7 +285,7 @@ export class ChatLog implements Component {
     });
     this.entries.push({
       role: 'user',
-      component: new Text(this.theme.chrome.user(PREFIX.user + text)),
+      component: new Text(this.theme.chrome.user(PREFIX.user + text), 1, 0),
       buffer: text,
       open: false,
     });
@@ -300,7 +300,7 @@ export class ChatLog implements Component {
    */
   appendBanner(text: string): void {
     this.closeStreaming();
-    this.entries.push({ role: 'notice', banner: true, component: new Text(text), buffer: text, open: false });
+    this.entries.push({ role: 'notice', banner: true, component: new Text(text, 1, 0), buffer: text, open: false });
   }
 
   /**
@@ -310,7 +310,7 @@ export class ChatLog implements Component {
     this.closeStreaming();
     this.entries.push({
       role: 'notice',
-      component: new Text(this.theme.chrome.warn(PREFIX.notice + text)),
+      component: new Text(this.theme.chrome.warn(PREFIX.notice + text), 1, 0),
       buffer: text,
       open: false,
     });
@@ -331,7 +331,7 @@ export class ChatLog implements Component {
     }
     this.entries.push({
       role: 'assistant',
-      component: new Markdown(chunk, 0, 0, this.theme.markdown),
+      component: new Markdown(chunk, 1, 0, this.theme.markdown),
       buffer: chunk,
       open: true,
     });
@@ -360,7 +360,7 @@ export class ChatLog implements Component {
     }
     this.entries.push({
       role: 'thinking',
-      component: new Text(this.theme.chrome.dim(chunk)),
+      component: new Text(this.theme.chrome.dim(chunk), 1, 0),
       buffer: chunk,
       open: true,
     });
