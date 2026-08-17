@@ -39,6 +39,7 @@ const USAGE = `omd —— DAG 执行引擎 (纯 MCP + web 控制台)
   omd init    首次配置向导 (写 .env)
   omd touch <path> --op read|write [--hash <h>] --session <id>   碰撞台账写面 (SDD S3 只记不拦; 锚 cwd 的 git toplevel/.omd/touch.db)
   omd touches [--pairs|--findings]   碰撞台账查询面 (pairs 与 findings 分开读)
+  omd config dump   打印本仓生效配置全叠加结果 (座位/渠道/池/MCP/ext, 每值标来源层 + 结构化 issues)
 
 终端对话前端: 原 pi TUI 2026-08-01 撤除, 2026-08-07 以自建 TUI 回归。
 
@@ -244,6 +245,14 @@ if (userArgs[0] === 'serve') {
 } else if (userArgs[0] === 'touches') {
   await runTouches(userArgs.slice(1));
   process.exit(process.exitCode ?? 0);
+} else if (userArgs[0] === 'config' && userArgs[1] === 'dump') {
+  // C3 (dsh --dump-config 的可见性承诺): 打印生效配置全叠加, 每值标来源层。
+  // 与 mcp/tui 同款引导: 不 bootstrap 的话 provider 注册表是空的, dump 出来全是假"未配"。
+  const { bootstrapModelRuntime } = await import('../model/bootstrap');
+  bootstrapModelRuntime();
+  const { renderConfigDump } = await import('./config-dump');
+  process.stdout.write(`${renderConfigDump({ cwd: process.cwd() })}\n`);
+  process.exit(0);
 } else if (userArgs[0] === 'init') {
   await runInit();
 } else {
