@@ -58,6 +58,25 @@ describe('★ 两队列钩子直通 loop config (W1 —— 台账 0 次的字段
   });
 });
 
+describe('★ W5 片1: 图片附件进开轮消息', () => {
+  test('有图 content 变 parts (文本逐字保留在首格); 无图仍是 string 原形', async () => {
+    // 反向自检 (实跑): 把 parts 分支删掉恒走 string → 「有图变 parts」当场红。
+    const seen: { prompts?: AgentMessage[] } = {};
+    const loop = (async (prompts: AgentMessage[], context: { messages: AgentMessage[] }) => {
+      seen.prompts = prompts;
+      return fakeLoop('答')(prompts, context);
+    }) as never;
+    const img = { type: 'image' as const, data: 'aGk=', mimeType: 'image/png' };
+    await runChatTurn({ store, sessionId: 's1', prompt: '看图 @a.png', model: MODEL, cwd: root, loopFn: loop, promptImages: [img] });
+    const c1 = (seen.prompts?.[0] as { content?: unknown })?.content as { type: string; text?: string }[];
+    expect(Array.isArray(c1)).toBe(true);
+    expect(c1[0]).toEqual({ type: 'text', text: '看图 @a.png' }); // I2: 文本逐字保留
+    expect(c1[1]).toMatchObject({ type: 'image', mimeType: 'image/png' });
+    await runChatTurn({ store, sessionId: 's2', prompt: '无图', model: MODEL, cwd: root, loopFn: loop });
+    expect((seen.prompts?.[0] as { content?: unknown })?.content).toBe('无图'); // 无图路径零改动
+  });
+});
+
 describe('持久化拼接语义', () => {
   test('★ 首轮:会话新建 + 标题取自首条输入 + 落盘 = user+assistant 两条', async () => {
     const r = await runChatTurn({

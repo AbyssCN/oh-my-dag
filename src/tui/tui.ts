@@ -56,6 +56,7 @@ import { formatBangEntry, parseBang } from './bang';
 import { BottomAnchor } from './components/bottom-anchor';
 import { PROMPTS_DIR, expandPrompt, loadUserPrompts } from './prompts';
 import { detectTerminalScheme, schemeFromEnv } from './scheme-detect';
+import { extractImageRefs, fmtAttachment } from './attachments';
 import { MANUAL_COORD, choiceLabel, listModelChoices, parseModelsCommand, sortChoices } from './model-picker';
 import { buildTreeRows, formatTree, parseTreeCommand, rewindTargets, treeLabel } from './tree-picker';
 import { createOmdAutocompleteProvider } from './skill-complete';
@@ -269,6 +270,9 @@ export const CHROME = {
   thinkShown: (level: string) => `thinking level: ${level} (set with /think <${'off|low|medium|high|xhigh'}>)`,
   thinkSet: (level: string, path: string) => `thinking level -> ${level} (persisted to ${path})`,
   thinkBad: (given: string) => `Unknown thinking level "${given}" - valid: off, low, medium, high, xhigh`,
+  // ── W5 图片附件的两句回执 (I5: 附了什么、跳了什么, 都说真话)。 ──
+  attached: (items: string[]) => `attached: ${items.join(', ')}`,
+  attachSkipped: (ref: string, reason: string) => `not attached: ${ref} (${reason})`,
   logoutCancelled: () => 'logout cancelled, nothing removed',
   logoutClaude: () => 'claude-code uses the Claude CLI subscription - run `claude logout` in a terminal; omd does not touch its credentials.',
   logoutDone: (provider: string, removed: { file: string; key: string }[], warnings: string[]) =>
@@ -1016,8 +1020,18 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       if (!dialogs.busy) waiting.setMessage(CHROME.waitingElapsed(Math.floor((now() - turnStartedAt) / 1000)));
     }, 1000);
     tui.requestRender();
+    // W5 片2: `@图.png` 引用抽附件 (判定保守, 见 attachments.ts I1); 文本逐字不动 (I2)。
+    // 回执两侧都说真话 (I5): 附上的报名字+体积, 读不出/超限的逐张明说。
+    const att = extractImageRefs(withSkill, opts.cwd);
+    if (att.images.length > 0) chatLog.appendNotice(CHROME.attached(att.images.map(fmtAttachment)));
+    for (const s of att.skipped) chatLog.appendNotice(CHROME.attachSkipped(s.ref, s.reason));
     try {
-      const res = await opts.backend.sendChat({ sessionId, prompt: withSkill, thinking: thinkingLevel });
+      const res = await opts.backend.sendChat({
+        sessionId,
+        prompt: withSkill,
+        thinking: thinkingLevel,
+        ...(att.images.length > 0 ? { images: att.images.map((i) => ({ type: 'image' as const, data: i.data, mimeType: i.mimeType })) } : {}),
+      });
       // `ok:false` 是**响亮的否**, 不是空回复。打断的轮不算拒 —— 那是人叫停的。
       if (!res.ok && !abortRequested) chatLog.appendNotice(CHROME.refused(opts.backend.connection.url));
     } catch (err) {

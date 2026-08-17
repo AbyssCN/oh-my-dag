@@ -229,7 +229,7 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
       inflight.clear();
     },
 
-    async sendChat({ sessionId, prompt, thinking }) {
+    async sendChat({ sessionId, prompt, thinking, images }) {
       const controller = new AbortController();
       inflight.set(sessionId, controller);
       try {
@@ -244,6 +244,8 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
           signal: controller.signal,
           // /think 控制面: TUI 每轮带当前档; 缺省时 agent.ts 自己的默认 ('high') 生效。
           ...(thinking !== undefined ? { thinkingLevel: thinking as ChatTurnOpts['thinkingLevel'] } : {}),
+          // W5: 图片附件直通 (无图不塞键 —— agent 侧按"字段在不在"分形)。
+          ...(images && images.length > 0 ? { promptImages: images } : {}),
           // 在飞排队两钩子: 工具间隙注入 + 本该停时续跑。同一条队 —— 谁先问到谁拿走。
           getSteeringMessages: async () => drainAsMessages(sessionId),
           getFollowUpMessages: async () => drainAsMessages(sessionId),

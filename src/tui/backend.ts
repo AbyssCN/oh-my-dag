@@ -65,7 +65,13 @@ export interface OmdBackend {
   stop(): void | Promise<void>;
 
   // ── 请求 (UI → 后端) ──
-  sendChat(o: { sessionId: string; prompt: string; thinking?: string }): Promise<{ ok: boolean; runId?: string }>;
+  sendChat(o: {
+    sessionId: string;
+    prompt: string;
+    thinking?: string;
+    /** W5: 图片附件 (pi ImageContent 形)。文本 prompt 逐字不动, 附件是加不是换。 */
+    images?: { type: 'image'; data: string; mimeType: string }[];
+  }): Promise<{ ok: boolean; runId?: string }>;
   /**
    * 在飞排队:轮跑着时把这句话入队,pi loop 在下一个工具间隙注入(steering),
    * 本该停时续跑(follow-up)。claude-sdk 座不吃钩子 → 残留由 `drainQueued` 兜底。

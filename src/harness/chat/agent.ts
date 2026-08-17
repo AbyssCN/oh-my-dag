@@ -72,6 +72,11 @@ export interface ChatTurnOpts {
   getSteeringMessages?: () => Promise<AgentMessage[]>;
   getFollowUpMessages?: () => Promise<AgentMessage[]>;
   /**
+   * W5 片1: 本轮附带的图片(pi `ImageContent` 形)。座位模型不吃图 → provider 错误
+   * 按 C-5b 响亮上抛,**不做**静默丢图(I3)—— 丢图是"说了一句没说过的话"的镜像。
+   */
+  promptImages?: { type: 'image'; data: string; mimeType: string }[];
+  /**
    * 测试接缝:替换真循环(真循环要真模型)。生产不传。
    */
   loopFn?: typeof runAgentLoop;
@@ -302,7 +307,17 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
   advisorRecorder?.seed(messages);
   const loop = opts.loopFn ?? runAgentLoop;
   const returned = await loop(
-    [{ role: 'user', content: opts.prompt, timestamp: Date.now() }],
+    // W5 片1: 有图时 content 变 parts (文本逐字保留 + 图, I2 附件是加不是换); 无图零改动。
+    [
+      {
+        role: 'user',
+        content:
+          opts.promptImages && opts.promptImages.length > 0
+            ? [{ type: 'text', text: opts.prompt }, ...opts.promptImages]
+            : opts.prompt,
+        timestamp: Date.now(),
+      },
+    ],
     context,
     config,
     (e) => {
