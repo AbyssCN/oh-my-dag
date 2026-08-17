@@ -364,6 +364,16 @@ describe('acceptCommandFromBreakdown — 验收命令从 verify 列推 (2026-08-
     expect(acceptCommandFromBreakdown(b)).toBe('bun test src/a.test.ts && tsc --noEmit && bun test');
   });
 
+  // 反向自检: 把 links 收集从段级退回整串级 (`if (!links.includes(verify)) links.push(verify)`)
+  // → 本条红 (a.test.ts 出现两遍)。实测 run 68cfb43f 的 accept 同一测试文件连跑两发, 白烧墙钟。
+  test('段级去重: 两条 verify 共享同一段 → 该段只留一环', () => {
+    const b = bdRows([
+      '| 1 a | src/a.ts | — | bun test src/a.test.ts |',
+      '| 2 b | src/b.ts | 1 | bun test src/a.test.ts && bun test src/b.test.ts |',
+    ]);
+    expect(acceptCommandFromBreakdown(b)).toBe('bun test src/a.test.ts && bun test src/b.test.ts && bun test');
+  });
+
   // 推法本身不认识生态 (只认"哪些参数像路径"); 这条命令在本仓会被命令白名单拒 —— 那是另一道
   // 闸的事, run-goal 见拒即回落分类器 (sdd-direct.test 里那条)。
   test('跨生态: pytest 一样推得出 (末环 = 去掉路径限定那截)', () => {

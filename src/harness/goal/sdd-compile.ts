@@ -244,7 +244,11 @@ export function acceptCommandFromBreakdown(breakdown: SddBreakdown): string | un
   for (const s of breakdown.slices) {
     const verify = s.verify.trim();
     if (!verify) continue;
-    if (!links.includes(verify)) links.push(verify);
+    // 去重按**段**不按整串: 两条不同 verify 串共享同一段 (`bun test a` 与 `bun test a && bun test b`)
+    // 时, 整串去重会让同一测试文件跑两遍 (实测 run 68cfb43f 的 accept 就是这形状, 白烧一发)。
+    for (const seg of verify.split('&&').map((x) => x.trim()).filter(Boolean)) {
+      if (!links.includes(seg)) links.push(seg);
+    }
     for (const seg of verify.split('&&')) {
       const head = dropPathArgs(seg);
       // 裸形仍含引号参数 = 模式参在而文件参没了 (grep 族 `ugrep -qF "x" path` → `ugrep -qF "x"`

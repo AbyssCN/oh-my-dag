@@ -48,6 +48,7 @@ bootstrapModelRuntime();
 function seat(id: string): string {
   const r = tryResolveSeatModel(id as never);
   if (!r) throw new Error(`座位 ${id} 未配置 —— 先 omd config dump 看缺哪层`);
+  console.error(`[eval-tdd-pack] 座位 ${id} = ${r.model} (来源 ${r.source})`);
   return r.model;
 }
 
