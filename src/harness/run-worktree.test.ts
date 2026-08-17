@@ -389,3 +389,60 @@ describe('ensureNodeModulesLinks (#174: web/ 等一级子包自己的 node_modul
     expect(r.map((x) => x.result)).toEqual(['already-present', 'already-present']);
   });
 });
+
+// ── #168 候选① resume 落后检测 (run 20984d68 现场: 主树修补对续跑不可见) ────────
+describe('behindWarning (#168): resume 复用且分支落后 HEAD → 响亮报, 其余一律沉默', () => {
+  const { mkdtempSync: mkTmp, mkdirSync: mkDir } = require('node:fs') as typeof import('node:fs');
+  const { tmpdir: osTmp } = require('node:os') as typeof import('node:os');
+
+  /** 真临时 cwd + 预建 runWorktreeDir → 打中 resume 复用路 (existsSync 真判)。 */
+  const resumeWorld = () => {
+    const cwd = mkTmp(join(osTmp(), 'omd-behind-'));
+    mkDir(runWorktreeDir(cwd, 'r1'), { recursive: true });
+    const noLink = (() => []) as unknown as RunWorktreeDeps['ensureLink'];
+    return { cwd, noLink };
+  };
+
+  // 证伪方式 (当场验过): 注释掉 prepareRunWorktree 复用路的 detectBehind 调用行 → 本条红。
+  test('落后 3 → behindWarning 含条数与隔离树内 cherry-pick 命令, 且进 describeRunWorktree', () => {
+    const { cwd, noLink } = resumeWorld();
+    const { deps } = fakeGit();
+    const gitOut = (args: string[]): string =>
+      args[0] === 'rev-list' ? '3' : args[0] === 'rev-parse' ? 'abc1234' : '';
+    const w = prepareRunWorktree({ cwd, runId: 'r1', strategy: 'branch' }, { ...deps, ensureLink: noLink, gitOut });
+    expect(w.behindWarning).toContain('落后主仓 HEAD 3 个 commit');
+    // 方向必须是隔离树 (-C <dir>), 不是主仓 —— run 87e43ded 的 M3 产出把方向写反, 此断言钉死。
+    expect(w.behindWarning).toContain(`git -C ${runWorktreeDir(cwd, 'r1')} cherry-pick`);
+    expect(w.behindWarning).toContain('abc1234');
+    expect(describeRunWorktree(w)).toContain('落后主仓 HEAD 3 个 commit');
+  });
+
+  test('不落后 (count=0) → 一字不提 (反向自检, 票内判据)', () => {
+    const { cwd, noLink } = resumeWorld();
+    const { deps } = fakeGit();
+    const gitOut = (args: string[]): string => (args[0] === 'rev-list' ? '0' : '');
+    const w = prepareRunWorktree({ cwd, runId: 'r1', strategy: 'branch' }, { ...deps, ensureLink: noLink, gitOut });
+    expect(w.behindWarning).toBeUndefined();
+    expect(describeRunWorktree(w)).not.toContain('落后');
+  });
+
+  test('分叉 (--is-ancestor 抛) → speak-not, 不据此说任何话', () => {
+    const { cwd, noLink } = resumeWorld();
+    const { deps } = fakeGit();
+    const gitOut = (args: string[]): string => {
+      if (args[0] === 'merge-base') throw new Error('exit 1');
+      return '99';
+    };
+    const w = prepareRunWorktree({ cwd, runId: 'r1', strategy: 'branch' }, { ...deps, ensureLink: noLink, gitOut });
+    expect(w.behindWarning).toBeUndefined();
+  });
+
+  test('新建路 (树不存在) → gitOut 一次都不调 (落后检测只属复用路)', () => {
+    const { deps } = fakeGit();
+    const calls: string[][] = [];
+    const gitOut = (args: string[]): string => (calls.push(args), '3');
+    const noLink = (() => []) as unknown as RunWorktreeDeps['ensureLink'];
+    prepareRunWorktree({ cwd: '/repo', runId: 'r1', strategy: 'branch' }, { ...deps, ensureLink: noLink, gitOut });
+    expect(calls).toEqual([]);
+  });
+});

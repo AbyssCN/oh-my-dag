@@ -64,6 +64,14 @@ export interface RunWorktree {
    *   下次看得见 —— 但它必须进 `describeRunWorktree`,否则和写在头注里没有区别。
    */
   uncommittedWarning?: string;
+  /**
+   * **resume 复用时 run 分支落后主仓 HEAD**(#168 候选①, 2026-08-18)—— 只读检测, 只警告。
+   * 现场 (run 20984d68): 首攻根因在主树修掉后 resume, 复用路原样接旧树, 修补不在树里,
+   * 冻结判据带全量环仍撞同一条已修的红 —— 而这件事此前盘上无痕、回执不报。
+   * `undefined` = 不落后 / 分叉 / 检测失败 —— **任何不确定都不说话, 更不代合**
+   * (候选②自动 cherry-pick 刻意不做: 可能冲掉树内未提交产物, 且替 owner 扣扳机)。
+   */
+  behindWarning?: string;
   /** 弃用这棵树(`head` 档 = 空操作)。**不自动调**,见头注。 */
   dispose: () => void;
 }
@@ -77,6 +85,12 @@ export interface RunWorktreeDeps {
   checkTree?: (cwd: string) => RollbackAnchor;
   /** #166/#174: worktree 内链入主树 node_modules(仓根 + 一级子包)。默认 `ensureNodeModulesLinks`(测试注入面)。 */
   ensureLink?: typeof ensureNodeModulesLinks;
+  /**
+   * #168: **读类** git 查询(返回 stdout; 非零退出抛错)。与 `git` 分开: 那个管"建/删"等
+   * 写语义命令, 这个管 `merge-base --is-ancestor` / `rev-list --count` 这类要读输出的查询
+   * (`--is-ancestor` 退 1 = 分叉, 以抛错表达, `detectBehind` 收成 speak-not)。默认 `defaultGitOut`。
+   */
+  gitOut?: (args: string[], opts: { cwd: string }) => string;
 }
 
 /** 默认 git: 非零退出即抛(建/删 worktree 失败必须显性, 悄悄退回 head 会让隔离静默失效)。 */
@@ -99,6 +113,46 @@ export const runWorktreeDir = (cwd: string, runId: string): string => join(cwd, 
 export const runWorktreeBranch = (runId: string): string => `omd/run/${safe(runId)}`;
 
 const safe = (s: string): string => s.replace(/[^\w.-]/g, '_');
+
+/** 默认读类 git: 非零退出抛错, 返回 stdout(与 `commitRunArtifacts` 的内置 gitOut 同形)。 */
+function defaultGitOut(args: string[], opts: { cwd: string }): string {
+  const r = Bun.spawnSync(['git', ...args], { cwd: opts.cwd, stdout: 'pipe', stderr: 'pipe' });
+  if (r.exitCode !== 0) {
+    throw new Error(`git ${args.join(' ')} 失败 (exit ${r.exitCode}): ${new TextDecoder().decode(r.stderr).trim()}`);
+  }
+  return new TextDecoder().decode(r.stdout).trim();
+}
+
+/**
+ * #168 候选① — resume 复用路的**只读**落后检测。
+ *
+ * 两步: `merge-base --is-ancestor <branch> HEAD`(退 1 = 分叉 → speak-not)→
+ * `rev-list --count <branch>..HEAD`(≤0 / 解析失败 → speak-not)。任何不确定都返回
+ * `undefined`, **绝不据此起任何写语义命令**(候选②红线)。
+ *
+ * cherry-pick 建议在**隔离树里**挑(`git -C <dir>`), 不在主仓 —— 方向反了会把补丁
+ * 挑到 main 上(run 87e43ded 的 M3 产出犯的就是这个错, 人工收尾时修正)。
+ */
+function detectBehind(
+  cwd: string,
+  dir: string,
+  branch: string,
+  gitOut: (args: string[], opts: { cwd: string }) => string,
+): string | undefined {
+  try {
+    gitOut(['merge-base', '--is-ancestor', branch, 'HEAD'], { cwd });
+    const n = Number.parseInt(gitOut(['rev-list', '--count', `${branch}..HEAD`], { cwd }), 10);
+    if (!Number.isFinite(n) || n <= 0) return undefined;
+    const head = gitOut(['rev-parse', '--short', 'HEAD'], { cwd });
+    return (
+      `⚠ run 分支 ${branch} 落后主仓 HEAD ${n} 个 commit —— 主树后来的修补在这棵树里**看不见** (#168)。` +
+      `要带上它们: \`git -C ${dir} cherry-pick ${branch}..${head}\`(在隔离树里挑, 冲突即停, 引擎不代合)。`
+    );
+  } catch {
+    // 分叉 / 命令失败 → speak-not: 不确定就不说话(说错方向的警告比沉默更坏)。
+    return undefined;
+  }
+}
 
 /**
  * #166 (2026-08-17): worktree 内链入主树 node_modules。
@@ -191,10 +245,14 @@ export function prepareRunWorktree(
     for (const { rel, result } of (deps.ensureLink ?? ensureNodeModulesLinks)(cwd, dir)) {
       if (result !== 'already-present') logger.info({ runId, dir, rel, result }, '[omd/run-worktree] #166/#174 node_modules 链入 (resume 复用路)');
     }
+    // #168 候选①: 只在复用路检测 (新建路刚从 HEAD 建出, 不可能落后)。只警告, 不代合。
+    const behindWarning = detectBehind(cwd, dir, branch, deps.gitOut ?? defaultGitOut);
+    if (behindWarning) logger.warn({ runId, dir, branch }, `[omd/run-worktree] ${behindWarning}`);
     return {
       cwd: dir,
       branch,
       strategy: 'branch',
+      ...(behindWarning ? { behindWarning } : {}),
       dispose: () => {
         try {
           git(['worktree', 'remove', '--force', dir], { cwd });
@@ -324,6 +382,8 @@ export function describeRunWorktree(w: RunWorktree): string {
     // 这一行**必须在合回/弃用之前**: 它说的是"这次跑看见的世界不是你以为的那个",
     // 排在操作命令后面等于让人先动手再发现前提不对。
     ...(w.uncommittedWarning ? [w.uncommittedWarning] : []),
+    // #168: 落后警告与 uncommittedWarning 同一条理由 —— 只写在返回值里 owner 看不见, 必须念进回话。
+    ...(w.behindWarning ? [w.behindWarning] : []),
     `合回主树由你扣扳机(引擎刻意不自动合): \`git merge ${w.branch}\``,
     `不要了: \`git worktree remove --force ${w.cwd} && git branch -D ${w.branch}\``,
   ].join('\n');
