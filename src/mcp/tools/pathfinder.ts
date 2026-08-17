@@ -444,8 +444,14 @@ function makeRule(deps: PathfinderToolDeps): OmdMcpTool {
       ticketId: z.string().describe('Frontier ticket id to rule'),
       ruling: z.string().describe('The decision text (becomes the slice node goal for task tickets)'),
       slug: z.string().optional().describe('Map slug (omit = the single open map)'),
+      disposition: z
+        .enum(['execute', 'close'])
+        .optional()
+        .describe(
+          "终结语义 (#161): 'execute' (默认, 与既有行为逐字节一致) = 裁后进区域; 'close' = 裁决即终结 (rule + markDelivered 复合路), 不进区域不执行。",
+        ),
     },
-    handler: async ({ ticketId, ruling, slug }) => {
+    handler: async ({ ticketId, ruling, slug, disposition }) => {
       const backend = backendOf(deps);
       const r = resolveSlug(backend, deps.cwd, slug as string | undefined);
       if ('error' in r) return err(r.error);
@@ -456,17 +462,37 @@ function makeRule(deps: PathfinderToolDeps): OmdMcpTool {
       if (target?.status === 'suggested') {
         return err(`票 "${ticketId}" 是机器建议 (suggested) — 先 map_confirm accept/reject, 确认后才可裁决`);
       }
+      // D-1 (切片 1 #161): close 路 = rule 带前缀锚 + markDelivered (复用 delivered 终态;
+      // 不加新 TicketStatus, 视图需求不污染真源 types.ts:75 的备注)。md / gh 两后端同步生效
+      // (backend.ts:102/112 必备)。
+      const mode = (disposition ?? 'execute') as 'execute' | 'close';
+      const rulingText = mode === 'close' ? `[closed-by-ruling] ${ruling as string}` : (ruling as string);
       try {
-        backend.rule(deps.cwd, r.slug, ticketId as string, ruling as string);
+        backend.rule(deps.cwd, r.slug, ticketId as string, rulingText);
       } catch (e) {
         return err(errMsg(e));
       }
+      if (mode === 'close') {
+        try {
+          backend.markDelivered(deps.cwd, r.slug, [ticketId as string]);
+        } catch (e) {
+          // 部分失败缝 (收编时补): rule 已成、终态没落 —— 票此刻是「带锚的 ruled」, 仍会进区域。
+          // 两步都幂等, 补救 = 原样重跑同一条命令; 不写这句, 读错误的人不知道盘上停在半路。
+          return err(`${errMsg(e)} — ruling 已写入 (带 [closed-by-ruling] 锚) 但终态未落, 票仍是 ruled 会进区域; 原样重跑本命令即可补上终态`);
+        }
+      }
       const map = backend.readMap(deps.cwd, r.slug)!;
-      const memNote = await rememberRuling(deps, map, ticketId as string, ruling as string);
+      const memNote = await rememberRuling(deps, map, ticketId as string, rulingText);
+      // D-5 (切片 1 #161): 裁与终结在回话里必须可分辨 (同 N5「一次正确的 BLOCKED 被念成 failed」
+      // 那条纪律)。close 路显式念「已终结 (closed-by-ruling)」, 不会与「✓ 已裁」串味。
+      const ack =
+        mode === 'close'
+          ? `✓ 已终结 (closed-by-ruling) ${ticketId}: ${(ruling as string).slice(0, 60)}`
+          : `✓ 已裁 ${ticketId}: ${(ruling as string).slice(0, 60)}`;
       return ok(
         [
           ...reflow,
-          `✓ 已裁 ${ticketId}: ${(ruling as string).slice(0, 60)}`,
+          ack,
           ...(memNote ? [memNote] : []),
           renderStatus(map, deps.hudMirror),
         ].join('\n'),
