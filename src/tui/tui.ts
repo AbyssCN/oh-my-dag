@@ -54,6 +54,7 @@ import { buildSettings, parseSettingsCommand } from './settings';
 import { STARTUP_HINT, formatHelp, parseHelpCommand, parseSearchCommand, slashCommands } from './commands';
 import { formatBangEntry, parseBang } from './bang';
 import { BottomAnchor } from './components/bottom-anchor';
+import { PROMPTS_DIR, expandPrompt, loadUserPrompts } from './prompts';
 import { MANUAL_COORD, choiceLabel, listModelChoices, parseModelsCommand, sortChoices } from './model-picker';
 import { buildTreeRows, formatTree, parseTreeCommand, rewindTargets, treeLabel } from './tree-picker';
 import { createOmdAutocompleteProvider } from './skill-complete';
@@ -513,9 +514,22 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   // 切片④ (G-4): 三段式 —— `/` 只出组, `/omd-` 出全名成员带描述, `/omd ` 出不带前缀的成员。
   // 成员清单 5s TTL 现扫 (装新 skill 不用重启), 组清单仍启动时算一次 (见 commands.ts 的说明)。
   const startupGroups = groupSkills(listSkills()).groups.map((g) => ({ name: g.name, count: g.members.length }));
+  // custom prompts 进补全 (启动冻结; 分发每次现扫, 新文件立即可用只是补全要重启才见)。
+  // fail-open: 扫挂了补全少一段, 不拦启动 —— 但不吞证据。
+  const startupPrompts = await loadUserPrompts(opts.cwd).catch((err: unknown) => {
+    logger.warn({ err: err instanceof Error ? err.message : String(err) }, '[omd/tui] 启动扫 custom prompts 抛了 → 补全不含模板');
+    return { promptTemplates: [], diagnostics: [] };
+  });
   editor.setAutocompleteProvider(
     createOmdAutocompleteProvider({
-      commands: slashCommands(startupGroups),
+      commands: [
+        ...slashCommands(startupGroups),
+        ...startupPrompts.promptTemplates.map((t) => ({
+          name: t.name,
+          description: t.description ?? `custom prompt (${PROMPTS_DIR}/${t.name}.md)`,
+          argumentHint: '[args]',
+        })),
+      ],
       cwd: opts.cwd,
       grouping: () => groupSkills(listSkills()),
     }),
@@ -2265,8 +2279,26 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
                   if (handledExport) return;
                   void handleReload(prompt).then((handledReload) => {
                     if (handledReload) return;
-                    void handleRuns(prompt).then((handled) => {
-                      if (!handled) void submit(prompt);
+                    void handleRuns(prompt).then(async (handled) => {
+                      if (handled) return;
+                      // custom prompts (W4): 内建全未命中的 `/名` 试模板展开 —— 现扫目录,
+                      // 新建文件立即可用 (补全启动时冻结, commands.ts:130 同款取舍)。
+                      // 展开失败/无此模板 → 照旧当聊天文本发 (斜杠打错不该被吞)。
+                      if (prompt.startsWith('/')) {
+                        try {
+                          const { promptTemplates } = await loadUserPrompts(opts.cwd);
+                          const expanded = expandPrompt(promptTemplates, prompt);
+                          if (expanded !== null) {
+                            chatLog.appendUser(prompt); // 屏上留调用原文, 模型吃展开文 (pi I7: core 不感知)
+                            editor.addToHistory(prompt);
+                            void submit(expanded, true);
+                            return;
+                          }
+                        } catch (err) {
+                          logger.warn({ err: err instanceof Error ? err.message : String(err) }, '[omd/tui] custom prompt 展开抛了 → 按聊天文本发');
+                        }
+                      }
+                      void submit(prompt);
                     });
                   });
                 });
