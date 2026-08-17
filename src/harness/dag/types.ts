@@ -343,6 +343,14 @@ export interface ExecutorDagConfig {
     ms?: number;
   };
   /**
+   * #158 预算时间轴的**锚时刻** (epoch ms)。缺省 = 每次 `runExecutorDagWithPlan` 自锚 ——
+   * 于是升级重规划轮 (同一次调用内) 与调用方多相位 (goal 的 contract→execute, 由 goal 层
+   * 注入同一个锚) 共享同一只时钟。它存在的理由: d39b559e 带 90min 预算实跑 164min ——
+   * 预算此前只在内环轮边界、且锚在环起点, 单轮超跑 / 环收敛后的重规划 / 前相位烧穿
+   * 三条路都量不到。下划线 = 内部接缝 (goal 层与测试注入), 不进公开文档。
+   */
+  _budgetAnchor?: number;
+  /**
    * **§8.4 动作级熔断**的阈值 (缺省 2)。同一条命令以**逐字相同**的方式失败到这个次数 →
    * 内环走 BLOCKED 出口。
    *

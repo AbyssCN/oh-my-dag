@@ -577,6 +577,21 @@ async function executePlan(
   // ── D-P 协作式取消 (2026-07-30) ────────────────────────────────────────────
   // 只在**调度接缝**上问一句"还要不要派新活", 不碰在飞的节点 (见 ExecutorDagConfig.cancelSignal)。
   const isCancelled = (): boolean => config.cancelSignal?.aborted === true;
+
+  // ── #158 预算派发闸: 「不再开新贵活」的共用判定 ─────────────────────────────
+  // 消费点三个: 环入口 (跨相位烧穿一轮不开) / 子图 pump (轮内不再派新子节点, 在飞跑完 ——
+  // 与 D-P 取消缝同形, 「不打断在飞」教义不破) / 轮边界 (原检查照旧, 这里补运行锚那半)。
+  // 只管时间轴: token 轴在轮边界照旧 (轮内没有便宜的累计读点)。锚 = config._budgetAnchor
+  // (goal 层注入 = 整个 solve 一只钟; 缺省 = 本次 executePlan 起跑)。fail-open: 没配 ms → 恒 null。
+  const planStartedAt = Date.now();
+  const dispatchBudgetHit = (): string | null => {
+    const msCap = config.loopBudget?.ms;
+    if (msCap === undefined) return null;
+    const spent = Date.now() - (config._budgetAnchor ?? planStartedAt);
+    return spent >= msCap
+      ? `时间预算已尽: 已用 ${Math.round(spent / 1000)}s / 上限 ${Math.round(msCap / 1000)}s`
+      : null;
+  };
   const cancelReason = (): string => {
     const r = config.cancelSignal?.reason;
     return typeof r === 'string' && r.trim() ? r : r instanceof Error ? r.message : '调用方叫停';
@@ -1501,7 +1516,18 @@ async function executePlan(
           resolve();
           return;
         }
-        while (!isCancelled() && runningLocal < capLocal && readyLocal.length > 0) {
+        // #158 预算派发闸 (与 D-P 取消缝同形: 不打断在飞, 只不再派新的)。这里管**单轮内**的
+        // 超跑 —— d39b559e 第 2 轮单轮跑 44min 越过 90min 上限, 轮边界与环入口都量不到轮中。
+        const budgetHitNow = dispatchBudgetHit();
+        if (budgetHitNow && runningLocal === 0) {
+          logger.warn(
+            { node: id, round, settled: settledLocal, total: childIds.length },
+            `[omd/executor-dag] ${budgetHitNow} → 内环停止派新子节点 (#158)`,
+          );
+          resolve();
+          return;
+        }
+        while (!isCancelled() && !budgetHitNow && runningLocal < capLocal && readyLocal.length > 0) {
           const cid = readyLocal.shift()!;
           runningLocal++;
           // ── 运行时写竞争: **子图这一层也要进重叠集** (2026-08-06 补) ────────────────
@@ -1970,6 +1996,23 @@ async function executePlan(
      */
     const failedActions: ActionAttempt[] = [];
 
+    // #158 环入口预算检查: 前面的相位/节点把钱烧光 → 本环一轮不开。此前唯一判点在轮边界
+    // 且带 `round > startRound` 首轮豁免 —— 跨相位烧穿后本环照样满额起跑。
+    const preloopHit = dispatchBudgetHit();
+    if (preloopHit) {
+      const msg = `${preloopHit} → 内环一轮不开 (#158)`;
+      logger.warn({ node: id, startRound }, `[omd/executor-dag] ${msg}`);
+      writeLoopJournal(doneRounds, poisoned, prevReason, false, '', {
+        kind: 'budget-exhausted',
+        evidence: msg,
+        atRound: startRound,
+      });
+      return (
+        // resume 场景 last 缺席 → 合成失败叶; 语义词全在 budgetStopped 上 (outcome 阶梯读它)。
+        { id, status: 'failed', kind: 'conductor', output: `[${msg}]`, deps, usage: usageAcc, budgetStopped: msg }
+      );
+    }
+
     for (let round = startRound; round <= maxRounds; round++) {
       // D-P 取消接缝③: 不开新一轮。已判完的轮次全在 journal 里, resume 从下一轮接着跑。
       if (isCancelled()) {
@@ -1988,6 +2031,11 @@ async function executePlan(
           budgetStopped = `token 预算用尽: 已花 ${spentTokens} / 上限 ${tokenCap} (第 ${round - 1} 轮后)`;
         } else if (msCap !== undefined && spentMs >= msCap) {
           budgetStopped = `时间预算用尽: 已用 ${Math.round(spentMs / 1000)}s / 上限 ${Math.round(msCap / 1000)}s (第 ${round - 1} 轮后)`;
+        } else {
+          // #158 运行锚那半: 环锚 (loopStartedAt) 量不到前相位烧掉的钱, goal 层注入的
+          // _budgetAnchor 才是整个 solve 的一只钟。
+          const runHit = dispatchBudgetHit();
+          if (runHit) budgetStopped = `${runHit} (第 ${round - 1} 轮后, 运行锚)`;
         }
         if (budgetStopped) {
           logger.warn({ node: id, round, spentTokens, spentMs }, `[omd/executor-dag] ${budgetStopped} → 内环不开新一轮`);
@@ -4021,6 +4069,8 @@ async function runDagInternalCore(
   /** 上一**外层轮**的 {plan, results} (D-21 跨轮复用)。轮内 escalation 的 prior 另在下方组装。 */
   prior?: PriorExec,
 ): Promise<ExecutorDagResult> {
+  /** #158 预算时间轴的本函数级锚 (config._budgetAnchor 缺席时的回落; 升级重规划闸读它)。 */
+  const runStartedAt = Date.now();
   // sessionId: 本次 run 的 conductor+leaf 全部经 send → 同一 Langfuse session (B2)。
   // 可注入 (config.sessionId): 调用方传则跨平面关联 (派活飞轮 dispatchId ↔ Langfuse session)。
   //
@@ -4140,6 +4190,17 @@ async function runDagInternalCore(
     let sameCauseStreak = 0;
     let circuitBroken = false;
     // D-P 取消接缝④: 不开新的升级重规划轮 (那是一整轮重规划 + 重跑, 最贵的一种"新活")。
+    // #158 预算接缝: 同一句话对预算也成立 —— 环收敛/结束后, 预算已尽还开重规划轮, 正是
+    // d39b559e 「134min 收敛后又跑 30min」那段的来源。判据与 executePlan 的派发闸同源
+    // (时间轴, 锚 = _budgetAnchor ?? 本函数起跑)。
+    const escBudgetHit = (): string | null => {
+      const msCap = config.loopBudget?.ms;
+      if (msCap === undefined) return null;
+      const spent = Date.now() - (config._budgetAnchor ?? runStartedAt);
+      return spent >= msCap
+        ? `时间预算已尽: 已用 ${Math.round(spent / 1000)}s / 上限 ${Math.round(msCap / 1000)}s`
+        : null;
+    };
     while (
       !verdict.pass &&
       !verifierDown &&
@@ -4147,6 +4208,11 @@ async function runDagInternalCore(
       escCount < maxEscalations &&
       escalationProviderReady(config.conductorEscalationModel)
     ) {
+      const budgetHit = escBudgetHit();
+      if (budgetHit) {
+        logger.warn({ escCount }, `[omd/executor-dag] ${budgetHit} → 不开升级重规划轮 (#158)`);
+        break;
+      }
       const blameKey = verdict.reason
         .replace(/第\s*\d+\s*轮/g, '')
         .replace(/\d+/g, '#')

@@ -607,6 +607,10 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
                 ...(budgetTokens ? { tokens: budgetTokens } : {}),
                 ...(budgetMinutes ? { ms: Math.round(budgetMinutes * 60_000) } : {}),
               },
+              // #158: 整个 solve 一只钟 —— contract 与 execute 两相位共享同一个锚。
+              // 不注入的话每次 runExecutorDagWithPlan 自锚, 90min 预算实际是"每相位 90min"
+              // (d39b559e 164min 未停的第三半根因)。
+              _budgetAnchor: Date.now(),
             }
           : {}),
         // **活体进度** (2026-07-30 取消冒烟撞出来的): `dag_goal` 此前**一个事件都不发** ——
