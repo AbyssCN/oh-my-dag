@@ -3,9 +3,12 @@
  * 这组用真 `git init`/`commit`/`rev-list` 验真实行为 —— 写集真身是否真进 commit、
  * 判据红时脏树是否真留在外面, 都得用真 git 才验得出)。
  *
- * 两条用例, 各一格反向自检: ① 删 src/mcp/tools/goal.ts:727 commitRunArtifacts 调用 →
- *   HEAD +1 断言红; ② 删 src/mcp/tools/goal.ts:719 `if (shouldAutoCommit(...))` 门卫行 →
- *   工作树仍脏断言红。grep "反向自检" 冻结判据。
+ * ⚠ 2026-08-19 修:本文件原先两条反向自检都写着「删 src/mcp/tools/goal.ts:719/727 的某行 → 红」,
+ *   而它 import 面里根本没有 goal.ts —— **实测把 `:719` 的门卫换成 `if (true)`, 两条仍 2 pass 0 fail**。
+ *   那是一条永远绿的闸,正是本仓「一条永远绿的闸不是闸」要拦的东西。反向自检只能指向
+ *   **本文件真的会执行到的代码**,也就是 run-worktree.ts 那两个纯函数。
+ *
+ * 两条用例, 各一格反向自检 (均已实测会红, 破坏方式写在各自用例末尾)。grep "反向自检" 冻结判据。
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -72,25 +75,32 @@ describe('auto-commit #165②: 冻结判据绿 → 真 git 端到端收编', () 
     expect(msg).toContain('omd run r1');
     expect(msg).toContain('冻结判据绿自动收编');
     expect(msg).toContain('判据: bun test');
-    // 反向自检: 删 src/mcp/tools/goal.ts:727 commitRunArtifacts 调用 → 这里 r.committed=false、+1 红。
+    // ★ 反向自检 (已实测会红): 把 run-worktree.ts 的 commitRunArtifacts 里 `git add -A` 那步去掉
+    //   → 没有可提交的改动, commit 失败进 catch → r.committed=false 与 HEAD +1 两条断言同时红。
   });
 
-  test('判据红 (executable + failed + branch) → 拒绝收编, 脏文件仍在工作树', () => {
-    const root = freshRoot();
-    initRepoWithDirtyB(root);
+  // 三个真红终态逐个过一遍 —— `RunOutcomeKind` 里**没有 'failed' 这一格**, 拿它当"判据红"
+  // 的样本等于在测一个永不出现的值 (shouldAutoCommit 收的是宽松 string, tsc 拦不住)。
+  for (const outcome of ['not-converged', 'oracle-failed', 'blocked'] as const) {
+    test(`判据红 (executable + ${outcome} + branch) → 门卫挡住, 脏文件仍在工作树`, () => {
+      const root = freshRoot();
+      initRepoWithDirtyB(root);
 
-    const baselineCount = Number(git(root, ['rev-list', '--count', 'HEAD']));
-    expect(git(root, ['status', '--porcelain'])).not.toBe('');
+      const baselineCount = Number(git(root, ['rev-list', '--count', 'HEAD']));
+      expect(git(root, ['status', '--porcelain'])).not.toBe('');
 
-    // 判据红 — shouldAutoCommit 恒 false, 真仓也绝不调 commitRunArtifacts (那行 if 是门卫)。
-    expect(shouldAutoCommit({ acceptanceKind: 'executable', outcome: 'failed' }, 'branch')).toBe(false);
+      // **照 src/mcp/tools/goal.ts:719 的形状原样走一遍门卫** —— 只断言 shouldAutoCommit 返回 false
+      // 而不真的走这个 if, 那条断言就是重言式: 什么都没调, 树当然还脏。
+      if (shouldAutoCommit({ acceptanceKind: 'executable', outcome }, 'branch')) {
+        commitRunArtifacts({ cwd: root, runId: 'r1', message: `omd run r1: 不该发生 (${outcome})` });
+      }
 
-    // 拒绝路径不调 commitRunArtifacts —— 工作树维持脏。
-    expect(git(root, ['status', '--porcelain'])).not.toBe('');
-    expect(Number(git(root, ['rev-list', '--count', 'HEAD']))).toBe(baselineCount);
-    // 脏文件 B 仍可见 —— 真没收走。
-    expect(git(root, ['status', '--porcelain'])).toContain('b.txt');
-    // 反向自检: 删 src/mcp/tools/goal.ts:719 `if (shouldAutoCommit(...))` 门卫行 → 上面 shouldAutoCommit 仍 false,
-    //   但 commitRunArtifacts 一旦被无门卫地调走, 脏文件消失 → status 空与 b.txt 仍可见两个断言红。
-  });
+      // 门卫挡住了 → 一个 commit 都没多, 脏文件 B 原样留在工作树里等人审。
+      expect(Number(git(root, ['rev-list', '--count', 'HEAD']))).toBe(baselineCount);
+      expect(git(root, ['status', '--porcelain'])).toContain('b.txt');
+      // ★ 反向自检 (已实测会红): 把 run-worktree.ts 的 shouldAutoCommit 白名单加上本 outcome
+      //   (如 `|| run.outcome === 'not-converged'`) → 门卫放行 → commitRunArtifacts 把 b.txt 收走
+      //   → 上面两条断言同时红。
+    });
+  }
 });

@@ -1171,7 +1171,12 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
         : outcome === 'infra-error' ? `引擎侧停: ${infraStopped!.slice(0, 300)} —— **别加轮数**, 这是引擎该修的`
         : outcome === 'blocked' ? `阻塞: ${blocked!.slice(0, 300)}`
         : outcome === 'oracle-failed' ? '环说成了但冻结判据(环外)没过 (D-I: 以判据为准)'
-        : outcome === 'delivered-with-red' ? `交付达标但有节点红 (#165①: accept 被级联压死没跑, 冻结判据收尾复验绿 \`${acceptance.kind === 'executable' ? acceptance.command : ''}\` — 人审红节点, 别整轮重跑)`
+        // 两条路都落 delivered-with-red, 摘要必须说清是哪一条 —— 混着念就是在编现场:
+        // converged=true 那条 accept **真跑真绿**, 照抄「accept 被级联压死没跑」会让读的人
+        // 去查一个不存在的级联。判据 = converged (复验路恒 false, 见上面 oracleRecheckGreen 分支)。
+        : outcome === 'delivered-with-red' ? (converged
+            ? `交付达标但有节点红 (#165①: 冻结判据 ✅ 而图内 ≥1 子节点红 — 人审红节点, 别整轮重跑)`
+            : `交付达标但有节点红 (#165①: accept 被级联压死没跑, 冻结判据收尾复验绿 \`${acceptance.kind === 'executable' ? acceptance.command : ''}\` — 人审红节点, 别整轮重跑)`)
         : `未收敛 (${execLeaf?.status ?? '平铺图未过冻结判据'})`
       }${oracleNote}${judgeDissent ? ' · ⚠ judge 异议: 判据绿收敛而 judge 判没成 —— 判据轴「judge 太紧/判据覆盖不够」样本, 判词见 continuity _loop-execute.json' : ''}` +
       `${flatUsed ? ` · 直通v2平铺 (并行读数: ${flatParallelism})` : ''}${flatFallback ? ` · 直通v2回落: ${flatFallback}` : ''}` +
