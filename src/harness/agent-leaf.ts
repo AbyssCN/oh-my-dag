@@ -1313,6 +1313,11 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
     const armIdle = (): void => {
       if (idleTimeoutMs <= 0) return;
+      // **先清后设**: `idleTimer` 只存得下一个句柄, 少这一行, 任何重复 arm 都会留下一个
+      // 无人持有、永不 clear 的孤儿 timer —— 它在 startedAt + idleTimeoutMs 处无条件开刀,
+      // 与"上次活动在什么时候"完全无关 (run 14b49f79 四节点全灭的根因, 见
+      // leaf-watchdog-rolling.test.ts 的读数)。clear 放在这里而不是各调用点: 调用点会被人加。
+      if (idleTimer) clearTimeout(idleTimer);
       idleTimer = setTimeout(() => {
         if (pendingTools > 0) {
           armIdle(); // 有工具在跑 = 在干活, 续窗口
@@ -1439,11 +1444,9 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       controller.abort();
     };
     function noteProgress(): void {
-      if (idleTimer) clearTimeout(idleTimer);
-      armIdle();
+      armIdle(); // armIdle 自己先清 —— 这里不再重复 clear
       maybeFireGrindEscalation();
     }
-    armIdle();
     armIdle();
 
     const context: AgentContext = {
