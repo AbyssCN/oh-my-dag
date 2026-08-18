@@ -151,7 +151,7 @@ function latencyMs(seenTs: (bigint | null)[], appendTs: (bigint | null)[]): (num
   for (let s = 1; s <= N; s++) {
     const a = appendTs[s];
     const t = seenTs[s];
-    out.push(a !== null && t !== null ? nsToMs(t - a) : null);
+    out.push(a != null && t != null ? nsToMs(t - a) : null);
   }
   return out;
 }
@@ -159,7 +159,7 @@ function latencyMs(seenTs: (bigint | null)[], appendTs: (bigint | null)[]): (num
 /** 最近秩分位数; 无有限样本 → null。 */
 function quantile(sorted: number[], p: number): number | null {
   if (sorted.length === 0) return null;
-  return sorted[Math.max(0, Math.ceil(p * sorted.length) - 1)];
+  return sorted[Math.max(0, Math.ceil(p * sorted.length) - 1)] ?? null;
 }
 
 function stats(lat: (number | null)[]): { p50: number | null; p95: number | null; max: number | null } {
@@ -167,7 +167,7 @@ function stats(lat: (number | null)[]): { p50: number | null; p95: number | null
   return {
     p50: quantile(finite, 0.5),
     p95: quantile(finite, 0.95),
-    max: finite.length > 0 ? finite[finite.length - 1] : null,
+    max: finite.length > 0 ? (finite[finite.length - 1] ?? null) : null,
   };
 }
 
