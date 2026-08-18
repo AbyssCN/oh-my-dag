@@ -49,6 +49,7 @@ import {
   DEFAULT_MAX_LINES,
   createCompactionSummaryMessage,
   type AgentContext,
+  type AgentLoopTurnUpdate,
   type AgentEvent,
   type AgentLoopConfig,
   type AgentMessage,
@@ -61,6 +62,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
+import { homedir } from 'node:os';
 import { parseModelRef } from './fleet';
 /**
  * D-7 leaf 侧 MCP 策略真源: 授权清单非空 → {allow}, 否则 deny —— 执行叶子不声明不授权
@@ -533,10 +535,49 @@ export function mapSessionUsage(tokens?: { input?: number; output?: number; cach
 export const DEFAULT_MINIMAL_TOOLFACE_SEATS: readonly string[] = ['deepseek-v4-pro'];
 
 /**
- * 极简面的工具名。四个名字**同时列**是刻意的:`hashlineEdit` 开着时 `edit` 被排除、改文件走
- * hashline 对;关着时反过来。列全之后与真实可用工具取交集,两种装配下都得到"能读能改能跑"的最小集。
+ * 极简面的工具名 = pi 那套最小集(read / write / edit / bash)。
+ *
+ * **为什么不是只给 bash + edit**(owner 2026-08-18 追加):碰撞台账只在 `write`(strict)、
+ * `edit`(strict)、`bash`(inferred,hash 为 NULL)三处写行 —— `read` 不写行,`hashline_edit`
+ * **一行都不写**。所以极简面若只留 bash 与 hashline 对,这个座位改的每一个文件在台账上
+ * 要么缺席、要么只剩一条没有 hash 的 inferred 行,并发多 run 时就没有交叉证据了。
+ * 给回 `write` / `edit` 是为了把它记回 strict 档。`read` 一并给,是因为不给它模型只能用
+ * `bash cat`,而那条路连 inferred 行都不写。
+ *
+ * ⚠ 极简面**刻意绕开 `hashlineEdit` 的排除**:那个开关把 `edit` 换成 hashline 对,而 hashline
+ * 侧没有台账接线。这条例外只对极简座位成立,其余座位照旧。
  */
-export const MINIMAL_TOOLFACE_TOOLS: readonly string[] = ['bash', 'hashline_read', 'hashline_edit', 'edit'];
+export const MINIMAL_TOOLFACE_TOOLS: readonly string[] = ['read', 'write', 'edit', 'bash'];
+
+/**
+ * **首轮之后放开工具面**(owner 2026-08-18)—— 把这件事包在既有 `prepareNextTurn` 外面。
+ *
+ * 为什么是包一层而不是并排挂两个:pi 的循环只认**一个** `prepareNextTurn`,两处各挂各的
+ * 就是后设的胜、前一个一声不吭地失效。包起来之后顺序是明确的:先换工具面,再把**换好的**
+ * context 交给内层(压缩),于是内层 `{ ...ctx, messages }` 自然带着新工具面。
+ *
+ * `face` 为 `null` = 这一发不做升级(非极简座位),此时退化成内层本身。
+ * 只升一次:`escalated` 置位后就一直走内层。
+ */
+export function withToolFaceEscalation(
+  face: { tools: readonly AnyOmdTool[]; systemPrompt: string; onEscalate?: () => void } | null,
+  inner?: (c: { context: AgentContext }) => Promise<AgentLoopTurnUpdate | undefined>,
+): (c: { context: AgentContext }) => Promise<AgentLoopTurnUpdate | undefined> {
+  let escalated = false;
+  return async ({ context }) => {
+    let ctx = context;
+    let changed = false;
+    if (face && !escalated) {
+      escalated = true;
+      changed = true;
+      ctx = { ...context, tools: [...face.tools], systemPrompt: face.systemPrompt };
+      face.onEscalate?.();
+    }
+    const innerUpdate = await inner?.({ context: ctx });
+    if (innerUpdate) return innerUpdate; // 内层从升级后的 ctx 派生, 工具面已在里面
+    return changed ? { context: ctx } : undefined;
+  };
+}
 
 /**
  * 项目上下文文件 (AGENTS.md / CLAUDE.md) —— 从 cwd 逐级往上收, **外层在前**。
@@ -545,13 +586,27 @@ export const MINIMAL_TOOLFACE_TOOLS: readonly string[] = ['bash', 'hashline_read
  * agent leaf 干的是在**别人的仓库里改代码**, 而那些文件正是那个仓库对"该怎么改"的说明书;
  * 省掉它等于让每个 leaf 从零猜项目约定。每级只取第一个命中 (AGENTS 优先于 CLAUDE, 同 pi)。
  */
-const CONTEXT_FILE_NAMES = ['AGENTS.md', 'AGENTS.MD', 'CLAUDE.md', 'CLAUDE.MD'];
+const CONTEXT_FILE_NAMES = ['AGENTS.md', 'AGENTS.MD', 'CLAUDE.md', 'CLAUDE.MD', '.claude/CLAUDE.md'];
 // (chat conductor 复用同一条向上走的加载路 → export;两处各读一份会漂)。
 
-export function loadProjectContext(cwd: string, maxDepth = 8): { path: string; content: string }[] {
+/**
+ * `.claude/CLAUDE.md` 2026-08-18 加入(owner 裁)。加之前实测:本仓根目录**一份都没命中** ——
+ * 仓根没有 `AGENTS.md`/`CLAUDE.md`,说明书住在 `.claude/CLAUDE.md` 里,而它不在名单上。
+ * 于是"给叶子喂项目说明书"这个机制在本仓从来没生效过,且没有任何症状(机制在、生产零生效)。
+ *
+ * ⚠ 走到 `$HOME` 就停:`~/.claude/CLAUDE.md` 是**人的**全局 harness(身份/派遣/安全底线),
+ * 不是任何仓库的说明书。把它喂给叶子 = 把 conductor 那边刚拆掉的东西从后门放回来
+ * (`a426e09`)。`home` 参数是为了让这条能被测 —— 不注入的话闸只能在真 home 上跑。
+ */
+export function loadProjectContext(
+  cwd: string,
+  maxDepth = 8,
+  home: string = homedir(),
+): { path: string; content: string }[] {
   const found: { path: string; content: string }[] = [];
   let dir = isAbsolute(cwd) ? cwd : join(process.cwd(), cwd);
   for (let i = 0; i < maxDepth; i++) {
+    if (dir === home) break;
     for (const name of CONTEXT_FILE_NAMES) {
       const full = join(dir, name);
       try {
@@ -1063,13 +1118,18 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     const { provider, modelId } = parseModelRef(model);
     // 座位级极简工具面 (owner 2026-08-18)。显式的 profile.tools / opts.tools 永远胜过它 ——
     // 这只是"没人指定时按座位挑"的缺省。
-    const wantMinimalFace =
+    const seatWantsMinimal =
       !input.profile && !opts.tools && (opts.minimalToolFaceSeats ?? DEFAULT_MINIMAL_TOOLFACE_SEATS).includes(modelId);
-    const perCallTools = input.profile
-      ? toolsForProfile(leafProfile)
-      : wantMinimalFace
-        ? toolsForProfile({ name: 'seat-minimal', tools: [...MINIMAL_TOOLFACE_TOOLS] })
-        : defaultTools;
+    // 全工具面 = 这一发**升级后**要用的那副 (也是其它座位从头到尾用的那副)。
+    const fullTools = input.profile ? toolsForProfile(leafProfile) : defaultTools;
+    // 极简面**不过 `excluded`**: hashlineEdit 把 `edit` 排掉, 而台账只认 write/edit —— 见
+    // MINIMAL_TOOLFACE_TOOLS 的注释。空集 (工具名全对不上) → 退回全工具面并留一行, 不静默跑一个没有手的叶子。
+    const minimalTools = availableTools.filter((t) => MINIMAL_TOOLFACE_TOOLS.includes(t.name));
+    const wantMinimalFace = seatWantsMinimal && minimalTools.length > 0;
+    if (seatWantsMinimal && minimalTools.length === 0) {
+      logger.warn({ model, want: MINIMAL_TOOLFACE_TOOLS }, '[agent-leaf] 极简工具面一个都没匹配上 → 退回全工具面');
+    }
+    const perCallTools = wantMinimalFace ? minimalTools : fullTools;
     const perCallSystemPrompt = input.profile || wantMinimalFace
       ? buildLeafSystemPrompt({ cwd, tools: perCallTools, contextFiles })
       : defaultSystemPrompt;
@@ -1115,6 +1175,21 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     const runSystemPrompt = advisorRecorder
       ? buildLeafSystemPrompt({ cwd, tools: runTools, contextFiles })
       : perCallSystemPrompt;
+
+    /**
+     * 第一轮之后把工具面放开(owner 2026-08-18)。极简面只管**第一轮**:那一轮最贵
+     * (整副 schema 都是新的),而后续轮里模型已经知道自己在干什么,少一把 grep 就要多跑几轮 bash。
+     *
+     * ⚠ 只在 **pi 通道**生效:SDK 通道的工具面写在 `query` 的 options 里,一发定死,中途换不了。
+     * 生产名单里的座位(deepseek-*)全走 pi,所以这条限制目前不影响谁 —— 但要是哪天把一个
+     * claude-code 座放进名单,它就只有极简面、没有第二轮升级,`escalated` 会一直是 false。
+     * ⚠ 换工具面同时要换 systemPrompt(工具清单在里面),两者不同步 = 模型照着 prompt 调不存在的工具。
+     *   代价是这一发的前缀在第二轮变一次(多一次 cache 写),之后稳定。
+     */
+    const escalatedTools = advisorRecorder
+      ? [...fullTools, createAdvisorTool({ advisor: opts.advisor!, seatCoord: model, transcript: () => advisorRecorder.serialize() })]
+      : fullTools;
+    const escalatedSystemPrompt = buildLeafSystemPrompt({ cwd, tools: escalatedTools, contextFiles });
 
     // filesTouched 采集 (2026-07-20 修产物闸冤杀): start 记 toolCallId→path 候选,
     // end 且 !isError 才计入 (失败的写不算产物)。
@@ -1515,9 +1590,25 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       // 顺序是**先压再判停**: 循环先调 prepareNextTurn 换上下文, 再拿换好的问 shouldStopAfterTurn。
       // 于是压缩成功 → 下一句判据自然就在线下, 不停; 压不动 (返 null / 压完还超) → 下一句接住停。
       // 不需要额外的"压过了没"标志位, 也就没有那个标志位漂掉的可能。
-      ...(wantCompaction
+      // ⚠ 工具面升级与压缩**共用这一个钩子**: pi 只认一个 prepareNextTurn, 各挂各的会互相覆盖
+      //   (后设的胜, 前一个静默失效)。所以外层包一层 (withToolFaceEscalation), 压缩仍是原样的内层。
+      ...(wantCompaction || wantMinimalFace
         ? {
-            prepareNextTurn: async ({ context: ctx }) => {
+            prepareNextTurn: withToolFaceEscalation(
+              wantMinimalFace
+                ? {
+                    tools: escalatedTools,
+                    systemPrompt: escalatedSystemPrompt,
+                    onEscalate: () =>
+                      logger.info(
+                        { model, from: perCallTools.length, to: escalatedTools.length },
+                        '[agent-leaf] 第一轮跑完 → 工具面放开 (极简座位只在首轮省 schema)',
+                      ),
+                  }
+                : null,
+              !wantCompaction
+                ? undefined
+                : async ({ context: ctx }) => {
               const window = piModel?.contextWindow ?? 0;
               if (window <= 0) return undefined;
               const before = estimateContextTokens(ctx.messages).tokens;
@@ -1536,8 +1627,10 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
                 { model, window, before, after, msgs: `${ctx.messages.length}→${compacted.messages.length}` },
                 '[agent-leaf] 上下文压缩 (auto-compaction) —— 接着干, 不是交卷',
               );
+              // 从 `ctx` 派生: 外层已经把升级后的 ctx 传进来了, 所以这里 spread 出去的工具面就是新的。
               return { context: { ...ctx, messages: compacted.messages } };
-            },
+                  },
+            ),
           }
         : {}),
       shouldStopAfterTurn: ({ context: ctx }) => {

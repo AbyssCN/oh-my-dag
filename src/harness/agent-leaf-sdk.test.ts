@@ -77,7 +77,7 @@ describe('claude-code leaf 分支', () => {
    * 第一条(工具面缩没缩)当场红;把 `!input.profile && !opts.tools` 这个"显式优先"条件删掉 →
    * 第三条红(显式 tools 被座位规则盖住)。
    */
-  test('★ 座位命中极简名单 → 工具面缩到 bash + hashline 对; systemPrompt 同步只列这几个', async () => {
+  test('★ 座位命中极简名单 → 首轮工具面缩到 read/write/edit/bash; systemPrompt 同步只列这几个', async () => {
     const seen: { options?: Options } = {};
     const run = createAgentLeafRunner({
       cwd,
@@ -87,7 +87,10 @@ describe('claude-code leaf 分支', () => {
     });
     await run({ prompt: 'x', model: MODEL });
     const names = (seen.options?.allowedTools ?? []).map((n) => n.replace('mcp__omd__', '')).sort();
-    expect(names).toEqual(['bash', 'hashline_edit', 'hashline_read']);
+    // read/write/edit/bash = pi 那套最小集。**`edit` 必须在**: hashlineEdit 开着它本该被排除,
+    // 而碰撞台账只认 write/edit(strict)与 bash(inferred), hashline 侧一行都不写 ——
+    // 极简面刻意绕开那条排除, 否则这个座位改的文件在台账上就没有 strict 证据。
+    expect(names).toEqual(['bash', 'edit', 'read', 'write']);
     // prompt 里的工具清单是另一份真源 —— 只缩 allowedTools 会让模型照着 prompt 去调不存在的工具。
     expect(seen.options?.systemPrompt).not.toContain('grep');
     expect(seen.options?.systemPrompt).toContain('bash');
