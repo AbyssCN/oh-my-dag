@@ -382,6 +382,13 @@ function makeAdd(deps: PathfinderToolDeps): OmdMcpTool {
       const backend = backendOf(deps);
       const r = resolveSlug(backend, cwd, slug as string | undefined);
       if ('error' in r) return err(r.error);
+      // 缺 executorKind 拒绝闸 (与 slice-compiler 同源契约的装配期版): task/prototype 票进 compileSlice
+      // 反向自检: 摘掉本闸 → task 票不带 executorKind 一路溜到 deliverSlice, 在 slice-compiler 里炸
+      if ((ttype === 'task' || ttype === 'prototype') && executorKind === undefined) {
+        return err(
+          `task/prototype 票缺 executorKind — 默认会被编成无工具 leaf (单发模型调用, 写不了文件), 跑完却把票翻 delivered; 修复: 显式给 executorKind`,
+        );
+      }
       let created: Ticket;
       try {
         created = backend.addTicket(cwd, r.slug, {

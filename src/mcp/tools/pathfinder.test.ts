@@ -39,6 +39,40 @@ function tools(cwd: string, overrides: Partial<PathfinderToolDeps> = {}) {
 }
 
 describe('pathfinder MCP tools', () => {
+  /**
+   * #197③ 装配期那一半 —— 裁决要求「两处各证一次」, 而实装落地时只钉了 slice-compiler 那半
+   * (slice-compiler.test.ts:47 `executorKind 缺省 → 抛`), map_add 这半只有注释没有用例。
+   * 冻结判据 `grep -q "无工具" src/mcp/tools/pathfinder.ts` 只查这三个字在不在文件里,
+   * 拦不住「有闸无证」—— 同 #165 那条假反向自检, 今晚第三次同一形状, 故补钉。
+   *
+   * ★ 反向自检 (已实测会红): 摘掉 pathfinder.ts:387 那个 `executorKind === undefined` 判断
+   *   → task/prototype 两条 isError 断言同时红 (票会被正常建出来)。
+   */
+  test('#197③ map_add 缺 executorKind 即拒 (task/prototype), research/grill 不受影响', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pf-mcp-'));
+    try {
+      const { call } = tools(dir);
+      await call('path_map', { destination: 'Ship X' });
+
+      for (const type of ['task', 'prototype'] as const) {
+        const r = await call('path_add', { title: `缺 kind 的 ${type} 票`, type });
+        expect(r.isError).toBe(true);
+        // 判词要说清「为什么」, 不能只说「缺参数」—— 裁决①逐字要求。
+        expect(r.text).toContain('无工具');
+        expect(r.text).toContain('delivered');
+      }
+      // 一张都没建出来。
+      expect((await call('path_tickets')).text).toContain('0 tickets');
+
+      // research/grill 不是交付单位 → 缺省照收 (裁决①的范围下界)。
+      for (const type of ['research', 'grill'] as const) {
+        expect((await call('path_add', { title: `${type} 票`, type })).isError).toBe(false);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('map→add→rule→deliver 全链: 区域报信 → 显式交付 → 票翻 delivered', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'pf-mcp-'));
     try {
@@ -55,7 +89,8 @@ describe('pathfinder MCP tools', () => {
       expect((await call('path_map')).text).toContain('无开放地图');
       expect((await call('path_map', { destination: 'Ship X' })).text).toContain('slug=ship-x');
 
-      const add = await call('path_add', { title: 'build the thing', type: 'task' });
+      // #197: executorKind 显式给 (用 'inproc' 取代旧静默回落; 'agent' 会撞 spec gate 因 ruling 无 docs/plan/)
+      const add = await call('path_add', { title: 'build the thing', type: 'task', executorKind: 'inproc' });
       expect(add.text).toContain('✓ 已加票 t1');
 
       const rule = await call('path_rule', { ticketId: 't1', ruling: 'do it with bun' });
@@ -85,7 +120,8 @@ describe('pathfinder MCP tools', () => {
         executeSlice: (async () => ({ results: { t1: { status: 'failed' } } })) as unknown as PathfinderToolDeps['executeSlice'],
       });
       await call('path_map', { destination: 'Ship X' });
-      await call('path_add', { title: 'build', type: 'task' });
+      // #197: 同上 ('inproc' 取代旧静默回落)
+      await call('path_add', { title: 'build', type: 'task', executorKind: 'inproc' });
       await call('path_rule', { ticketId: 't1', ruling: 'go' });
       const deliver = await call('path_deliver');
       expect(deliver.isError).toBe(true);
@@ -110,7 +146,8 @@ describe('pathfinder MCP tools', () => {
       await call('path_map', { destination: 'Ship X' });
       // 3 张 task 票 → 复杂区域, ruling 都无 docs/plan/ 引用 → 应被闸拦。
       for (const id of ['t1', 't2', 't3']) {
-        await call('path_add', { title: `build ${id}`, type: 'task', id });
+        // #197: executorKind 显式给
+        await call('path_add', { title: `build ${id}`, type: 'task', id, executorKind: 'agent' });
         await call('path_rule', { ticketId: id, ruling: `just do ${id}` });
       }
       const deliver = await call('path_deliver');
@@ -145,7 +182,8 @@ describe('pathfinder MCP tools', () => {
         dispatchGoal: (() => ({ runId: 'r-proto', already: false })) as unknown as PathfinderToolDeps['dispatchGoal'],
       });
       await call('path_map', { destination: 'Ship X' });
-      await call('path_add', { title: 'spike 一下', type: 'prototype', id: 'p1' });
+      // #197: prototype 显式 executorKind='goal' (#135 prototype 恒 goal 档)
+      await call('path_add', { title: 'spike 一下', type: 'prototype', id: 'p1', executorKind: 'goal' });
       await call('path_rule', { ticketId: 'p1', ruling: '试一版看看' });
       const deliver = await call('path_deliver');
       expect(deliver.text).toContain('prototype');
@@ -402,7 +440,8 @@ describe('pathfinder MCP tools', () => {
 describe('★ 切片6② path_deliver 的两条派发路径都拒裁决票 (G-4/G-6)', () => {
   /** 造一张图: 一张 ruled task 票, 可选标类。 */
   function seed(dir: string, cls?: string): void {
-    const t: Ticket = { id: 't1', type: 'task', title: '干活', blockedBy: [], status: 'ruled', ruling: '按 docs/plan/x.md 干' };
+    // #197: executorKind 显式给; 旧缺省 inproc→leaf 已被裁
+    const t: Ticket = { id: 't1', type: 'task', title: '干活', blockedBy: [], status: 'ruled', ruling: '按 docs/plan/x.md 干', executorKind: 'agent' };
     if (cls) (t as Ticket & { ticketClass?: string }).ticketClass = cls;
     saveMap({ destination: 'Ship X', slug: 'ship-x', tickets: [t], decisionsLog: [] }, dir);
   }
@@ -533,7 +572,8 @@ describe('D-6③ 派发锚: 票 → runId', () => {
   const setup = async (dir: string, exec: unknown) => {
     const { call } = tools(dir, { executeSlice: exec as PathfinderToolDeps['executeSlice'] });
     await call('path_map', { destination: 'Ship X' });
-    await call('path_add', { title: 'build the thing', type: 'task' });
+    // #197: executorKind 显式给 ('inproc' 取代旧静默回落, 不撞 spec gate)
+    await call('path_add', { title: 'build the thing', type: 'task', executorKind: 'inproc' });
     await call('path_rule', { ticketId: 't1', ruling: 'do it with bun' });
     return call;
   };
