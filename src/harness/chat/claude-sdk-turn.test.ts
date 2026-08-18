@@ -116,6 +116,10 @@ describe('持久化 + 账本 + 会话映射', () => {
     });
     expect((seen.options?.settings as { advisorModel?: string })?.advisorModel).toBe('claude-opus-5');
     expect(seen.options?.strictMcpConfig).toBe(true); // 全局 MCP 注入 = ~23k/session + 破工具闸
+    // ★ 文件系统设置一律不读: 省略此字段 = CLI 默认全读 → `~/.claude/CLAUDE.md` + 项目 CLAUDE.md
+    // 进 conductor 上下文, 且用户 settings.json 的 hooks 在 omd 每一轮里跑。
+    // 反向自检 (2026-08-18 真跑过): 删掉 claude-sdk-loop.ts 的 `settingSources: []` → 本行红。
+    expect(seen.options?.settingSources).toEqual([]);
 
     const seen2: { options?: Options } = {};
     await runChatTurnSdk({

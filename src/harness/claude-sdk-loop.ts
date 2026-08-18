@@ -258,6 +258,15 @@ export async function runSdkAgentLoop(o: SdkLoopOpts): Promise<SdkLoopOut> {
     // 只认上面显式传的 MCP —— 不设它 CLI 会把用户全局 MCP 的工具 schema 全量注入
     // (两臂实测 32,612 → 9,126 prompt 侧 token/session), 且违背「工具面就是闸」。
     strictMcpConfig: true,
+    // 文件系统设置一律不读。**省略这个字段 = 全读** (SDK 0.3.226 sdk.d.ts:1985 原话:
+    // "When omitted, all sources are loaded"; "Must include 'project' to load CLAUDE.md files")
+    // —— 两臂实测 (2026-08-18, 临时 cwd 植入暗号): 省略臂模型逐字背出 `~/.claude/CLAUDE.md`
+    // 与项目 `CLAUDE.md` (18KB 中文 ≈ 9-12k token), 且 settings.json 的 hooks **真的会跑**
+    // (探针 UserPromptSubmit hook 落了一行); `[]` 臂回 NONE、hook 零触发。
+    // omd 座位的上下文只能来自 omd 自己装配的 systemPrompt (叶子的 harness 文件走
+    // `agent-leaf.ts` 的 loadProjectContext, 由 CLI 再灌一遍就是双份), 围栏也走 omd 自己的
+    // hooks/shell-sandbox —— 两套护栏叠着跑会互相盖住证据。
+    settingSources: [],
     allowedTools: bridge.allowedTools,
     abortController: abort,
     ...(o.effort ? { effort: o.effort } : {}),

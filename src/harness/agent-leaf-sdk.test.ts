@@ -59,6 +59,10 @@ describe('claude-code leaf 分支', () => {
     expect(seen.options?.allowedTools).toContain('mcp__omd__read');
     expect(seen.options?.allowedTools).toContain('mcp__omd__write');
     expect(seen.options?.resume).toBeUndefined(); // leaf 每发独立, 无会话续接
+    // ★ 文件系统设置一律不读: 叶子的 harness 文件由 loadProjectContext 显式拼进 systemPrompt,
+    // 省略此字段的话 CLI 会把同两份 CLAUDE.md **再灌一遍** (双份计费), 且用户 hooks 进叶子轮。
+    // 反向自检 (2026-08-18 真跑过): 删掉 claude-sdk-loop.ts 的 `settingSources: []` → 本行红。
+    expect(seen.options?.settingSources).toEqual([]);
   });
 
   test('★ 显式 thinkingLevel 恒覆盖通道缺省(A/B 钉档位的前提)', async () => {
