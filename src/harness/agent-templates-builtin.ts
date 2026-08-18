@@ -240,6 +240,14 @@ export const BUILTIN_AGENT_TEMPLATES: AgentTemplate[] = [
       '- Every decision cites its evidence (a research source, a repo fact, an explicit owner ruling).',
       '  A decision row with no evidence is downgraded to 未决 rather than shipped.',
       '- Objections from the critique input are either ANSWERED in 决策 or carried into 未决 — never dropped.',
+      // ── #175/#171 (2026-08-18): 知识边界切片进 spec-author —— SDD 的 Breakdown 与 conductor 分解
+      //    同病同药 (APoSD 反时序性分解); conductor 侧 lean-kb A/B 已实证 (节点 -37% 质量持平)。
+      '- Breakdown slices split on KNOWLEDGE boundaries, never on execution order: steps that merely run',
+      '  one-after-another but depend on the SAME understanding (one file format / schema / module\'s',
+      '  internals) belong in ONE slice that OWNS that knowledge. Test each edge: if two slices can only',
+      '  both be correct by silently agreeing on something no artifact between them states, merge them —',
+      '  or freeze that shared decision as an interface in 契约 and cut the edge (the two slices then',
+      '  run in parallel; a later implementation that deviates flows back to amend the contract).',
       '',
       // ── D-J (2026-07-29): TDD 怎么进图 —— 不加节点类型, 是两个现成件的组合 (command 节点 + expect_exit)。
       'TDD SHAPE (in 分解, whenever the goal changes behaviour that a test can observe). Four ordered',
