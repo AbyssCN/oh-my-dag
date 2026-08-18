@@ -179,10 +179,19 @@ function touchedProtected(t: BenchTask, dir: string): string[] {
   });
 }
 
-/** 交给被测方的题面 —— 两臂**逐字相同**,否则量到的是提示词差异不是编排差异。 */
+/**
+ * 交给被测方的题面 —— 两臂**逐字相同**,否则量到的是提示词差异不是编排差异。
+ *
+ * `--no-hint` (2026-08-18 加难度): 去掉「相关实现文件」那一行。带着它, 题面等价于
+ * "issue 里指出了大致位置"; 去掉之后被测方要自己定位, 读改轮次变多 —— 那正是行锚定编辑
+ * (hashline) 该显出差别的地方。**两臂同开同关**, 否则量的是提示词不是工具。
+ */
 function candidatePrompt(t: BenchTask): string {
+  const statement = argv.includes('--no-hint')
+    ? t.statement.split('\n').filter((l) => !l.startsWith('相关实现文件')).join('\n')
+    : t.statement;
   return (
-    `${t.statement}\n\n` +
+    `${statement}\n\n` +
     `工作目录就是当前仓库。改完之后本地跑一次 \`${t.command}\` 自查。\n` +
     '只改实现, 不要改测试文件。'
   );
@@ -203,7 +212,10 @@ async function runArm(t: BenchTask, arm: 'a' | 'b', dir: string): Promise<ArmCos
     // `--seat <coord>`: 钉这一跑的座位, 不动全局 config。env 旋钮在这里无效 ——
     // INV-MODEL-1 让 config.models 压过 env, 所以换座只能靠显式传 (实测 OMD_AGENT_MODEL 不生效)。
     const model = opt('seat') ?? seats.agentLeafModel ?? seats.leafModel;
-    const runner = createAgentLeafRunner({ cwd: dir, hashlineEdit: true, leafTimeoutMs: 1_800_000 });
+    // `--no-hashline` (2026-08-18 A/B): 关掉行锚定编辑, 回到 pi 原生 `edit`。
+    // 单一变量就是这一个开关 —— 座位/题面/超时/隔离世界全不动。
+    const hashlineEdit = !argv.includes('--no-hashline');
+    const runner = createAgentLeafRunner({ cwd: dir, hashlineEdit, leafTimeoutMs: 1_800_000 });
     // `--profile <name>`: 工具面 A/B 用 —— 档案从**主仓**解析, 隔离世界是 git worktree, 里面没有 .omd/。
     // 不传 = 生产全工具面 (与本 flag 加入前逐字节相同, 老读数仍可比)。
     const profileName = opt('profile');
@@ -249,7 +261,7 @@ async function main(): Promise<void> {
   if (cmdName === 'run') {
     const id = opt('id');
     const arm = (opt('arm') ?? '') as 'a' | 'b';
-    if (!id || (arm !== 'a' && arm !== 'b')) { log('用法: run --id <taskId> --arm a|b [--regression] [--profile <岗位档案名>] [--seat <模型坐标>]  (后两个仅 arm b)'); process.exit(2); }
+    if (!id || (arm !== 'a' && arm !== 'b')) { log('用法: run --id <taskId> --arm a|b [--regression] [--profile <岗位档案名>] [--seat <模型坐标>] [--no-hashline] [--no-hint]  (后四个仅 arm b)'); process.exit(2); }
     const t = loadTasks().find((x) => x.id === id);
     if (!t) { log(`没有这道题: ${id}`); process.exit(2); }
     const dir = makeCandidateWorld(t);
@@ -266,7 +278,7 @@ async function main(): Promise<void> {
       mkdirSync(out, { recursive: true });
       const stamp = `${t.id}-${arm}-${Date.now()}`;
       // profile: null = 没用档案 (生产全工具面), 不是"空档案" —— 事后比读数要分得开这两件事。
-      writeFileSync(join(out, `${stamp}.json`), JSON.stringify({ task: t.id, arm, profile: opt('profile') ?? null, seatPinned: opt('seat') ?? null, verdict, run, touched, regressionGreen, cost }, null, 1));
+      writeFileSync(join(out, `${stamp}.json`), JSON.stringify({ task: t.id, arm, profile: opt('profile') ?? null, seatPinned: opt('seat') ?? null, hashlineEdit: !argv.includes('--no-hashline'), hinted: !argv.includes('--no-hint'), verdict, run, touched, regressionGreen, cost }, null, 1));
       console.log(`${verdict.verdict === 'pass' ? '✅' : verdict.verdict === 'invalid' ? '⚠' : '✘'} ${t.id} [臂 ${arm}] ${verdict.verdict}`);
       console.log(`   ${verdict.reason}`);
       console.log(`   墙钟 ${(cost.wallMs / 1000).toFixed(0)}s · 判分命令 exit ${run.exitCode} · 落盘 ${join(out, `${stamp}.json`)}`);
@@ -288,7 +300,18 @@ async function main(): Promise<void> {
       if (kept >= max) break;
       const t = taskOf(c);
       if (existsSync(join(TASKS_DIR, `${t.id}.json`))) { log(`  · ${t.id} 已存在, 跳过`); kept++; continue; }
-      const ev = proveContract(t);
+      // 合约跑不起来 (文件在 fixSha 上不存在 = 重命名/删除的候选, `git show` status 128) →
+      // **跳过并留证**, 不让整轮扫描死在一个坏候选上 (2026-08-18 实测: 扫到第 49 个候选时崩,
+      // 前面收下的题还在盘上, 但后面的一个都没试)。
+      let ev: ReturnType<typeof proveContract>;
+      try {
+        ev = proveContract(t);
+      } catch (e) {
+        const why = (e as Error).message.split('\n')[0] ?? String(e);
+        rejected.push(`${t.id}: 合约跑不起来 — ${why}`);
+        log(`  ✘ ${t.id}  合约跑不起来 — ${why}`);
+        continue;
+      }
       const v = judgeContract(ev);
       if (v.ok) {
         writeFileSync(join(TASKS_DIR, `${t.id}.json`), JSON.stringify(t, null, 1));

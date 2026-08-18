@@ -6,7 +6,8 @@
  *     engine config 与 execute-extension 已解析形状同款: conductor/leaf/agent 模型从 env 角色矩阵读
  *     (OMD_ITER_* > runtime 坐标 OMD_RUNTIME_PROVIDER:OMD_RUNTIME_MODEL —— 解析序镜像
  *     resolveConductorDefault, 但 env 可注入故此处自带纯函数版),
- *     agentRunner = createAgentLeafRunner({cwd, hashlineEdit:true}) (tui 同款真改文件叶子),
+ *     agentRunner = createAgentLeafRunner({cwd, hashlineEdit:false}) (tui 同款真改文件叶子;
+ *     行锚定编辑 2026-08-18 起默认关, 见 readings/2026-08-18-hashline-ab.md),
  *     commandRunner = tui 同款白名单 (D-10: fail-closed 闸在引擎层, 入口不新增权限)。
  *   - memory 两工具: createOmdMemory (OMD_MEMORY_PATH ?? .omd/memory.db + UNIVERSAL_SAFEGUARD, 同 tui 默认;
  *     写入仍过 validateFactWrite 校验闸, D-5)。
@@ -105,7 +106,7 @@ export interface AssembleOmdMcpDeps {
   memory?: OmdMemory;
   /** research 接缝 (默认 createDefaultResearchFanout: 真 researchFanout + 报告落盘)。 */
   researchFanout?: ResearchFanout;
-  /** agent-kind leaf 执行器 (默认 createAgentLeafRunner({cwd, hashlineEdit:true}))。 */
+  /** agent-kind leaf 执行器 (默认 createAgentLeafRunner({cwd, hashlineEdit:false}))。 */
   agentRunner?: AgentLeafRunner;
   /** command-kind leaf 执行器 (默认 tui 同款白名单 bun/tsc/npx, 180s 超时)。 */
   commandRunner?: CommandLeafRunner;
@@ -368,8 +369,12 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   const agentRunner =
     deps.agentRunner ??
     createAgentLeafRunner({
+      // hashlineEdit **默认关** (owner 2026-08-18, 读数见 scripts/probes/readings/2026-08-18-hashline-ab.md):
+      // 加难度 A/B (4 题, 两题的实现文件 3.9k 行, 两臂同去位置提示, 座位钉 M3) 8/8 全过,
+      // 关闭臂 tokensIn 中位 675,683 → 404,930。开关与实装都留着 —— 优化+补测之后再考虑上线。
+      // ⚠ 逐题配对是 2:2, 每格 n=1, 而同臂方差实测 1.4–1.8×: 这是"没证据支持开着", 不是"证明了它有害"。
+      hashlineEdit: false,
       cwd,
-      hashlineEdit: true,
       leafTimeoutMs,
       ...(agentAdvisor ? { advisor: agentAdvisor } : {}),
       // S4 ext (D-1): 调用方按 run cwd 预加载注入。空数组 → 不传 customTools 键 = 工具面零变化 (D-4)。
@@ -441,7 +446,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       overrideCwd && !deps.agentRunner
         ? createAgentLeafRunner({
             cwd: root,
-            hashlineEdit: true,
+            hashlineEdit: false, // 同上 (owner 2026-08-18): 两个装配点必须同档, 分叉就是两套工具面
             leafTimeoutMs,
             ...(agentAdvisor ? { advisor: agentAdvisor } : {}),
             // 隔离档 = 生产 (branch worktree), 不是 eval —— 这里的 jail 里**要有 git**:
