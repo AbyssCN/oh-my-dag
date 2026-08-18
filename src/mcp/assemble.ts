@@ -586,8 +586,11 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     // maxTokens **不并进这张表** —— 它是另一根轴 (provider 的输出上限能力, 32768 只在 kimi 系实测过;
     // deepseek 系 ~8k 硬顶)。把"prompt 要不要教练段"和"能吐多少 token"混成一个条件是两次埋雷。
     const strongConductor = models.conductorModel ? isStrongCoord(models.conductorModel) : false;
+    // #171 (2026-08-18 A/B 裁决, large R=3 @ C6 opus-5): lean-kb (= lean + 知识边界段) 对比 lean ——
+    // firstShot 持平 0.988、同深同宽下节点 24→15 (时序性碎步合并)、conductor token 持平、总成本反降
+    // → 采纳。读数与塌回条件全文在 issue #171 (质量降则撤回 'lean')。
     const conductorTuning: Partial<ExecutorDagConfig> = {
-      ...(strongConductor ? { conductorPromptProfile: 'lean' as const } : {}),
+      ...(strongConductor ? { conductorPromptProfile: 'lean-kb' as const } : {}),
       ...(models.conductorModel?.startsWith('kimi-coding:') ? { conductorMaxTokens: 32768 } : {}),
     };
     // S-T 座位推理档 (坐标 → 档): auto-assign 把「模型 + 推理档」成对落盘, 执行期按节点已钉的坐标反查。
