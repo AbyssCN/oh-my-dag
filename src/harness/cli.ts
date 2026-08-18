@@ -134,7 +134,7 @@ if (userArgs[0] === 'tui') {
       // 与 `omd serve` 同一条路: 同一个 runChatTurn、同一批 chatTools、同一条座位解析。
       const { bootstrapModelRuntime } = await import('../model/bootstrap');
       bootstrapModelRuntime(); // 不引导则注册表空, 一句话都发不出去
-      const { assembleOmdMcpTools, resolveEngineModels, createDefaultMemory } = await import('../mcp/assemble');
+      const { assembleOmdMcpTools, resolveEngineModels } = await import('../mcp/assemble');
       const { createChatSeatTools } = await import('../tui/tools/chat-seat');
       // S15a 扩展宿主: 每个扩展一个子进程 (bwrap 在就沙箱)。**加载期硬失败** ——
       // 碰了没实现的 API 就拒绝并逐条列出, 不半残地跑起来。
@@ -151,13 +151,16 @@ if (userArgs[0] === 'tui') {
       let sink: { pushDagEvent(runId: string, e: unknown): void } | null = null;
       const { loadExtTools } = await import('./ext-tools');
       const tools = assembleOmdMcpTools({ onNodeEvent: (runId, e) => sink?.pushDagEvent(runId, e), extTools: await loadExtTools(cwd) });
-      // S16: 自记忆与装配层共用同一个库 (D-5 共库) —— 两处各开一个会得到两份互不可见的记忆。
-      // S0: 对话位 memory 走 assemble.ts 的同一真源 (OMD_MEMORY_PATH ?? .omd/memory.db + UNIVERSAL_SAFEGUARD);
-      // 无参 createOmdMemory 调用会落到 ':memory:' 临时库, 进程一退全丢 —— 那正是上行注释警告的事。
+      // ⚠ **不传 memory** (owner 2026-08-18): 传了 = `agent.ts` 挂 `transformContext`,
+      // 每一轮请求前自动召回一次。实测读数 (`~/.omd/recall-events.jsonl` 当天 8 次注入,
+      // 每次 hits:1, 屏上重复同一条) 与 memory-hub 每-prompt 注入被关掉 (NOTES.md M1,
+      // 2026-08-18) 是同一条判据: **召回按需调, 不每轮塞**。对话位的 `memory_recall` 工具
+      // 仍在工具面里 (`serve/chat-tools.ts`), 模型想查随时能查; 写记忆照旧不给对话位。
+      // 顺带修掉一处不一致: SDK 通道本就不吃 `transformContext` —— 此前同一个 TUI 换个座位
+      // 就换一套隐性上下文 (pi 座每轮有召回, claude-code 座一次都没有)。
       const embedded = createEmbeddedBackend({
         cwd,
         store: createOmdSessionStore(cwd),
-        memory: createDefaultMemory(process.env),
         // S-4: 对话位的工具面(含六只手)。装配在 `tui/tools/chat-seat`, 那里有闸盯着 ——
         // 长在这个内联块里的话, "对话位到底拿到了哪些工具"没有任何测试看得见(坑 #7 同族)。
         // 切片①: 审批闸包住整个工具面; 六只手的内层危险命令闸随之交给 admin 档 (闸永远有一层)。

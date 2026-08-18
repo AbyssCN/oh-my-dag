@@ -9,9 +9,9 @@
  * 闸的两层:
  *  ① 运行时探针: 真源函数 createDefaultMemory 解析出的路径 = env.OMD_MEMORY_PATH ?? '.omd/memory.db'
  *     —— 不看源码看盘面: 库文件落盘位置 + 同 env 两实例互见 / 异 env 互不可见。
- *  ② 结构性断言: cli.ts 的对话位确实接线到 assemble.ts 导出的**同一个** createDefaultMemory
- *     (纯单元测试观测不到 cli.ts 动态 import 的真实接线, 故用源码断言 —— 断言的是
- *     "接线"这个事实本身, 不是恒绿套套逻辑: 它同时断言旧接线 `createOmdMemory()` **不存在**)。
+ *  ② 结构性断言: cli.ts 的对话位不自己开第二份库 —— 旧接线 `createOmdMemory()` **不存在**;
+ *     2026-08-18 起对话位干脆不接记忆 (owner 裁: 召回按需调, 不每轮注入), 故该断言改成
+ *     条件式: 一处 `memory:` 都不许有; 哪天接回来也只能是 assemble.ts 那一份。
  *
  * ⚠ 反向自检 (已当场证伪, 2026-08-09):
  *   把 cli.ts 改回旧接线 ——
@@ -100,11 +100,19 @@ describe('S0 结构性闸: cli.ts 对话位接线到 assemble.ts 的同一真源
     expect(assembleSrc).toContain('deps.memory ?? createDefaultMemory(env)');
   });
 
-  test('对话位接线同一真源 createDefaultMemory (与 MCP 同一 env 来源 process.env)', () => {
-    // import 行: 与 assembleOmdMcpTools 同一次 import('../mcp/assemble') 解构 —— 不是第二份路径解析。
-    const importLines = cliSrc.split('\n').filter((l) => l.includes("import('../mcp/assemble')"));
-    expect(importLines.some((l) => l.includes('createDefaultMemory'))).toBe(true);
-    expect(cliSrc).toContain('memory: createDefaultMemory(process.env)');
+  /**
+   * 2026-08-18 owner 裁: 对话位**不接记忆** —— 传 `memory` 就等于每轮自动召回
+   * (`agent.ts` 的 `transformContext`), 而召回改成按需调 `memory_recall` 工具。
+   * 于是原来那条 `expect(cliSrc).toContain('memory: createDefaultMemory(process.env)')`
+   * 不再成立: 它钉的是"接了, 且接对了", 而现在的判据是"没接; 若哪天接回来, 只能接这一份"。
+   * **单一真源这条不变量本身没变**, 上面两组运行时探针仍在量它。
+   * 「对话位每轮不召回」那条独立的闸在 `src/tui/tools/chat-seat.test.ts` (只看 tui 分支)。
+   */
+  test('对话位不接记忆; 若接回来只能是同一真源 createDefaultMemory(process.env)', () => {
+    const memoryKeyLines = cliSrc.split('\n').filter((l) => /^\s*memory:/.test(l));
+    expect(memoryKeyLines).toEqual([]); // 现状: 一处都不传
+    // 条件式判据 (接回来那天才生效): 任何 `memory:` 键都必须来自 assemble.ts 那一份。
+    for (const l of memoryKeyLines) expect(l).toContain('createDefaultMemory(process.env)');
   });
 
   test('旧的无参 createOmdMemory() 接线不复存在 (cli.ts 全文无 createOmdMemory 出现)', () => {

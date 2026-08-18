@@ -109,6 +109,18 @@ describe('接线闸:cli.ts 真的走这条装配', () => {
     expect(b).toMatch(/runOmdTui\(\{[^)]*sandbox:/); // UI 那半(画告警)
   });
 
+  test('★ 2026-08-18:tui 分支不给 backend 传 memory —— 传了就是每轮自动召回', () => {
+    // owner 裁:召回按需调(`memory_recall` 工具),不每轮往 prompt 里塞。传 `memory` 会让
+    // `agent.ts` 挂上 `transformContext`,每次请求前召回一次 —— 实测屏上重复同一条
+    // (`~/.omd/recall-events.jsonl` 8 次注入,每次 hits:1)。
+    // 反向自检(2026-08-18 真跑过):把 `memory: createDefaultMemory(process.env),` 加回
+    // cli.ts 的 createEmbeddedBackend 调用 → 本行红。
+    // ⚠ 判据是**行首的键**,不是 `createEmbeddedBackend\(\{[^)]*memory:` —— 那个写法当场被
+    //   证伪打回:`[^)]*` 在同一段里的 `createOmdSessionStore(cwd)` 就断了,永远够不到 memory 键
+    //   (加回 memory 行照样绿)。这条注释留着,因为那正是「一条永远绿的闸」的样子。
+    expect(tuiBranch()).not.toMatch(/^\s*memory:/m);
+  });
+
   test('★ 审批层真的不在了 —— 留一句 setAsk 就等于打断器还活着', () => {
     const b = tuiBranch();
     expect(b).not.toContain('createApprovalGate');
