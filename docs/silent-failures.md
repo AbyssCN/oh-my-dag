@@ -1330,6 +1330,68 @@ type ManagerHomeRouteProps = ManagerHomeScreenProps & Readonly<{ onOpenVoice: ()
 
 ---
 
+### S-42 · **同一个句柄被 arm 两次 —— 孤儿定时器在固定墙钟处开刀,而日志把它写成「provider 挂起」**
+
+**现场**(2026-08-18,run 14b49f79 / c61c775d / 41845cb6 连续停摆)。进展看门狗是**滚动**窗口:
+每来一个循环事件就 `clearTimeout` 再重挂。而 `#169`(`b87196e`,2026-08-17)在起手处多留了一行:
+
+```ts
+armIdle();
+armIdle();   // ← idleTimer 只存得下一个句柄
+```
+
+第一个 timer 从此**无人持有、永不 clear**,在 `startedAt + 180s` 处开刀 —— 与「上次活动在什么时候」
+完全无关。它不是必杀:回调里 `pendingTools > 0` 会续窗口,所以**每个跑过 180s 的 agent 叶过一次抽签**,
+那一刻恰好没有工具在飞就被砍。实测中签率 24/68 ≈ 35%。
+
+| | 结果 | 为什么 |
+|---|---|---|
+| `tsc` + 全量 2841 条 harness 测试 | **全绿** | 见下面「为什么两边都不报错」 |
+| 引擎日志 | **说「疑 provider 挂起/排队」** | 判词是照 `stalled` 这个**结论**印的,没有人回头看它是怎么被置位的 |
+| 节点账本 | `failureKind: 'stall'` | 与真停摆同形,分不出来 |
+
+**读数**(`.omd/continuity` 全量 checkpoint,同一把尺子分前后两段):
+
+| 窗口 | agent 叶 | 停摆 | 活过 180s | 停摆里 >180s 的 |
+|---|---|---|---|---|
+| 08-10 → 08-17(#169 **之前**) | 541 | **0** | 172 | — |
+| 08-17 → 08-18(#169 **之后**) | 246 | **24(9.8%)** | 68 | **24 / 24** |
+
+被杀时距**上一次工具事件**只有 0.51 / 0.95 / 1.13 / 1.44 / 1.47 / 2.05 秒 —— 判「停摆」的那一刻,
+叶子上一秒还在调工具。最锋利的一例(`tests.__r3`):48 次工具调用、最后一次在 178s、
+烧掉 1.73M input token,180.4s 被判死;按滚动窗口它该活到 358s。
+
+**它伪装成了什么**:一次**运维结论**——「minimax / deepseek 这两天不稳,跨家族跨重试稳定复现」。
+形状太像 provider 侧的问题了(跨模型、跨重试、时长整齐、0B 产出),于是排查方向被带去查
+provider 的 agentic 调用形状,而缺陷在自己的 6 行代码里。**跨家族稳定复现本该是"共因在我方"的
+提示,却被读成了"外部普遍故障"。**
+
+**为什么两边都不报错**:`src/harness/leaf-watchdog.test.ts` 里**重写了一个 `class Watchdog`**,
+测的是那个重写件的滚动逻辑,不是 `agent-leaf.ts` 的真闸。于是「窗口到底滚不滚」从来没有被真代码
+验过 —— 这个缺陷在 2841 条测试全绿的情况下活了一整天。
+
+> **与 S-35 同族**:两侧测试都碰不到真发射点。不同的地方在于 S-35 是**注入夹具**挡在中间,
+> 这一条是**被测对象本身是个重写件** —— 测试与实装长得像在测同一件事,而它们连同一份代码都不是。
+
+**抓法**:`src/harness/leaf-watchdog-rolling.test.ts`(打在**真** `createAgentLeafRunner` 上)。
+带反向自检:恢复重复的 `armIdle()`(或删掉 `armIdle` 里的 `clearTimeout`)→ 必红,
+读到的正是线上那个错值 `stalled: true`。修法是把 `clearTimeout` 放进 `armIdle` **本身**
+(先清后设),不留在各调用点 —— **调用点会被人加**,函数内部不会。
+
+**这一程的元形态(三次同一个错,值得单独记住)**:
+
+1. `OMD_LEAF_IDLE_TIMEOUT_MS` 没到达长驻 MCP server 进程(env 在它启动那刻就冻了),
+   于是「旋钮拧了没反应」被记成「env 在 bwrap 那跳被构造掉」——
+   而 `/proc/<pid>/environ` 一条命令就能看见,**这是 P-2 的又一例**;
+2. 修复没到达 run worktree(bwrap 档下 `resolveWorker` 优先用**那棵树自己的** `leaf-worker.ts`),
+   差一点又跑一轮旧代码;
+3. 缺陷本身 = 定时器句柄没到达该被 `clearTimeout` 的地方。
+
+**同一句话**:*东西没到达它该去的地方,而现场看起来一切正常。* 三处的共同抓法也一样 ——
+**别问「我改了吗」,问「它到了吗」**,并且用一条能看见的命令回答。
+
+---
+
 ## 已立的闸(可执行的那部分)
 
 | 闸 | 位置 | 守什么 | 抓哪几条 |
@@ -1338,7 +1400,8 @@ type ManagerHomeRouteProps = ManagerHomeScreenProps & Readonly<{ onOpenVoice: ()
 | 座位真接上引擎 | `src/mcp/seat-wiring.test.ts` | 判据取**引擎真收到的 config** | S-2 |
 | 登记表完整性 | `src/model/seats.test.ts` | 每格填齐 + **消费点文件真存在** + 派生视图一致 | S-1 S-4 S-7 |
 | MCP 零 CLI 依赖 | `src/mcp/no-cli-dep.test.ts` | 走 import 图,命中即红(**带反向自检**) | S-3 S-7 |
-| 进展看门狗 | `src/harness/leaf-watchdog.test.ts` | 「在想」不等于「没反应」 | S-6 |
+| 进展看门狗(判据本身) | `src/harness/leaf-watchdog.test.ts` | 「在想」不等于「没反应」。⚠ 测的是该文件里**重写的 `class Watchdog`**,不是 `agent-leaf.ts` 的真闸 —— 它碰不到 S-42 那类缺陷 | S-6 |
+| 进展看门狗**真的在滚**(真 runner) | `src/harness/leaf-watchdog-rolling.test.ts` | 每 60ms 有活动、跑满 3.6 倍窗口不许判停摆;`clearTimeout` 必须在 `armIdle` 内(**带反向自检**:恢复重复的 `armIdle()` → 红,读到线上那个错值 `stalled:true`;另一条真静默仍判停摆,确保没把闸修松) | S-42 |
 | 压缩切点 | `src/harness/leaf-compaction.test.ts` | 保留段不许以孤儿 toolResult 开头 | S-6 |
 | 传输合一没掉东西 | `src/model/single-transport.test.ts` | effort / 上限 / top_p / JSON 模式全在 | S-7 |
 | command leaf 不许有结果缓存 | `src/harness/command-leaf-cache-scope.test.ts` | 跨图 · 图内 agent 写完之后 · 同层并发,同一命令串一律真跑(**带反向自检**:加回缓存 → 3/4 红) | S-9 |
