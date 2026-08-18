@@ -8,7 +8,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { createAgentLeafRunner } from './agent-leaf';
+import { DEFAULT_MINIMAL_TOOLFACE_SEATS, createAgentLeafRunner } from './agent-leaf';
+import { parseModelRef } from './fleet';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { buildOmdSdkMcpBridge } from './claude-sdk-loop';
@@ -59,10 +60,57 @@ describe('claude-code leaf 分支', () => {
     expect(seen.options?.allowedTools).toContain('mcp__omd__read');
     expect(seen.options?.allowedTools).toContain('mcp__omd__write');
     expect(seen.options?.resume).toBeUndefined(); // leaf 每发独立, 无会话续接
+    // ★ 座位不在极简名单里 → 全工具面 (owner 2026-08-18: 只有 deepseek-v4-pro 极简, 其余全给)。
+    expect(seen.options?.allowedTools).toContain('mcp__omd__grep');
     // ★ 文件系统设置一律不读: 叶子的 harness 文件由 loadProjectContext 显式拼进 systemPrompt,
     // 省略此字段的话 CLI 会把同两份 CLAUDE.md **再灌一遍** (双份计费), 且用户 hooks 进叶子轮。
     // 反向自检 (2026-08-18 真跑过): 删掉 claude-sdk-loop.ts 的 `settingSources: []` → 本行红。
     expect(seen.options?.settingSources).toEqual([]);
+  });
+
+  /**
+   * 座位级极简工具面(owner 2026-08-18)。生产名单里的座位是 `deepseek-v4-pro`,它走 pi 通道 ——
+   * 那条路上测试看不见 `allowedTools`,所以名单经 `minimalToolFaceSeats` 注入,在 SDK 座上观察
+   * **同一条装配路**的产物。判的是"名单命中就缩面",不是"deepseek 这四个字"。
+   *
+   * 反向自检(2026-08-18 真跑过):把 agent-leaf.ts 里 `wantMinimalFace` 的三元分支删掉 →
+   * 第一条(工具面缩没缩)当场红;把 `!input.profile && !opts.tools` 这个"显式优先"条件删掉 →
+   * 第三条红(显式 tools 被座位规则盖住)。
+   */
+  test('★ 座位命中极简名单 → 工具面缩到 bash + hashline 对; systemPrompt 同步只列这几个', async () => {
+    const seen: { options?: Options } = {};
+    const run = createAgentLeafRunner({
+      cwd,
+      hashlineEdit: true,
+      minimalToolFaceSeats: [MODEL.split(':')[1]!], // = claude-sonnet-5, 本测试的座位
+      sdkQueryFn: fakeQuery([asst('好'), success()], seen),
+    });
+    await run({ prompt: 'x', model: MODEL });
+    const names = (seen.options?.allowedTools ?? []).map((n) => n.replace('mcp__omd__', '')).sort();
+    expect(names).toEqual(['bash', 'hashline_edit', 'hashline_read']);
+    // prompt 里的工具清单是另一份真源 —— 只缩 allowedTools 会让模型照着 prompt 去调不存在的工具。
+    expect(seen.options?.systemPrompt).not.toContain('grep');
+    expect(seen.options?.systemPrompt).toContain('bash');
+  });
+
+  test('★ 极简名单不盖显式 tools —— 显式的永远胜(否则岗位档案就形同虚设)', async () => {
+    const seen: { options?: Options } = {};
+    const run = createAgentLeafRunner({
+      cwd,
+      tools: ['read', 'grep'],
+      minimalToolFaceSeats: [MODEL.split(':')[1]!],
+      sdkQueryFn: fakeQuery([asst('好'), success()], seen),
+    });
+    await run({ prompt: 'x', model: MODEL });
+    const names = (seen.options?.allowedTools ?? []).map((n) => n.replace('mcp__omd__', '')).sort();
+    expect(names).toEqual(['grep', 'read']);
+  });
+
+  test('★ 生产名单写的是 modelId 不是全坐标 —— 写成全坐标就永远命不中, 而且一声不吭', () => {
+    // 失效形态: 名单里写 'deepseek:deepseek-v4-pro', 匹配的却是 parseModelRef 出来的 modelId,
+    // 于是规则恒不触发、日志无一行、读数上只表现为"没省钱" (静默失效, NULL≠0 同族)。
+    expect(DEFAULT_MINIMAL_TOOLFACE_SEATS).toContain(parseModelRef('deepseek:deepseek-v4-pro').modelId);
+    expect(DEFAULT_MINIMAL_TOOLFACE_SEATS).not.toContain(parseModelRef('minimax-cn:MiniMax-M3').modelId);
   });
 
   test('★ 显式 thinkingLevel 恒覆盖通道缺省(A/B 钉档位的前提)', async () => {

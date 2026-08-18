@@ -285,6 +285,12 @@ export interface AgentLeafRunnerOpts {
    */
   hashlineEdit?: boolean;
   /**
+   * 拿极简工具面的座位名单(按 `modelId` 匹配)。省略 = `DEFAULT_MINIMAL_TOOLFACE_SEATS`。
+   * 传 `[]` = 谁都不极简。**测试接缝**:闸要在真装配路上观察工具面缩没缩,而生产名单里那个
+   * 座位走 pi 通道(测试里看不见 `allowedTools`),所以名单必须可注入。
+   */
+  minimalToolFaceSeats?: readonly string[];
+  /**
    * advisor 坐标(resolveSeatAdvisor('agent') 的产物,省略 = 无)。按座位通道分派:
    * claude-code 座 → 官方 server tool(settings.advisorModel,配对由 CLI/API 校验);
    * pi 座 → 内部升档 tool(advisor-tool.ts,本次运行注入工具面)。NOTES 2026-08-10。
@@ -511,6 +517,26 @@ export function mapSessionUsage(tokens?: { input?: number; output?: number; cach
   const cacheHit = tokens.cacheRead ?? 0;
   return { in: (tokens.input ?? 0) + cacheHit, out: tokens.output ?? 0, cacheHit };
 }
+
+/**
+ * **座位级极简工具面**(owner 2026-08-18 裁)。按 `modelId` 匹配,不看 provider ——
+ * 同一个模型经哪个 provider 进来都该拿同一副工具面。
+ *
+ * 读数(`scripts/probes/readings/2026-08-18-leaf-toolface-ab.md`,同题同座位只动工具面):
+ * `deepseek-v4-pro` 上全面臂 2,800,492 in vs 极简臂 1,098,391 in(**−61%**,两臂都判 pass);
+ * 而 M3 上六个配对里四个反过来 —— 极简臂更贵(工具调用中位 17.5 → 21:工具少了它就用更多轮
+ * bash 兜,而每轮都重发上下文)。所以极简是**这一个座位的**结论,不是通用结论。
+ *
+ * ⚠ 诚实标注:v4-pro 那一侧 **n=1**,且单臂方差实测到过 1.8×(同题同臂两跑 707,417 vs 398,464)。
+ * owner 明示按现有读数落,加密测量没做。哪天要推翻它,先补 n 再说。
+ */
+export const DEFAULT_MINIMAL_TOOLFACE_SEATS: readonly string[] = ['deepseek-v4-pro'];
+
+/**
+ * 极简面的工具名。四个名字**同时列**是刻意的:`hashlineEdit` 开着时 `edit` 被排除、改文件走
+ * hashline 对;关着时反过来。列全之后与真实可用工具取交集,两种装配下都得到"能读能改能跑"的最小集。
+ */
+export const MINIMAL_TOOLFACE_TOOLS: readonly string[] = ['bash', 'hashline_read', 'hashline_edit', 'edit'];
 
 /**
  * 项目上下文文件 (AGENTS.md / CLAUDE.md) —— 从 cwd 逐级往上收, **外层在前**。
@@ -1005,6 +1031,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
   // A2 能力目录 (omd_inspect): leaf 同权纪律 (open-ecosystem §7 —— mcp/skills/ext 不做
   // chat-seat 专属)。恒定单工具, 动态清单全走返回值, 跨 leaf 字节稳定 (不破共享冻结前缀)。
   const inspectTools = createInspectTool({ cwd });
+  // 极简工具面按**座位**挑 (owner 2026-08-18 裁), 名单与工具名见文件尾部常量。
   const excluded = new Set(opts.hashlineEdit ? ['edit'] : []);
   const availableTools = [...baseTools, ...hashlineTools, ...mcpTools, ...skillTools, ...inspectTools, ...(opts.customTools ?? [])];
   // profile 按调用到达, tools 也必须按调用求值。undefined = 普通全工具策略; [] = 明确无工具;
@@ -1028,16 +1055,24 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // 2026-08-11-leaf-profile库 D-3): 引擎侧每节点各自 resolveProfile, 不能烤进 runner 装配期。
     // opts.profile 仍是兼容回退 (未经 input 传时的旧调用形状)。
     const leafProfile = input.profile ?? opts.profile;
-    const perCallTools = input.profile ? toolsForProfile(leafProfile) : defaultTools;
-    const perCallSystemPrompt = input.profile
-      ? buildLeafSystemPrompt({ cwd, tools: perCallTools, contextFiles })
-      : defaultSystemPrompt;
     // profile.seat 当节点无显式模型时的回退 (引擎侧未 pin model 且无 router → 传空串)。
     const model = inputModel || leafProfile?.seat || '';
     if (!model) {
       throw new Error('[agent-leaf] 无模型: input.model 空且 profile.seat 未设');
     }
     const { provider, modelId } = parseModelRef(model);
+    // 座位级极简工具面 (owner 2026-08-18)。显式的 profile.tools / opts.tools 永远胜过它 ——
+    // 这只是"没人指定时按座位挑"的缺省。
+    const wantMinimalFace =
+      !input.profile && !opts.tools && (opts.minimalToolFaceSeats ?? DEFAULT_MINIMAL_TOOLFACE_SEATS).includes(modelId);
+    const perCallTools = input.profile
+      ? toolsForProfile(leafProfile)
+      : wantMinimalFace
+        ? toolsForProfile({ name: 'seat-minimal', tools: [...MINIMAL_TOOLFACE_TOOLS] })
+        : defaultTools;
+    const perCallSystemPrompt = input.profile || wantMinimalFace
+      ? buildLeafSystemPrompt({ cwd, tools: perCallTools, contextFiles })
+      : defaultSystemPrompt;
     // Claude 订阅通道 (NOTES 2026-08-10): claude-code:* 不在两栈, 循环走 SDK (下方调用点分派)。
     // ⚠ sandboxRoot 模式下 claude CLI 的凭证目录 (~/.claude) 不在 bwrap 视图里 —— 订阅座位
     // 暂不支持沙箱叶, 要用得先把凭证挂载进视图 (二期, 见 NOTES)。

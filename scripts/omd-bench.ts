@@ -200,9 +200,16 @@ async function runArm(t: BenchTask, arm: 'a' | 'b', dir: string): Promise<ArmCos
 
   if (arm === 'b') {
     const { createAgentLeafRunner } = await import('../src/harness/agent-leaf');
-    const model = seats.agentLeafModel ?? seats.leafModel;
+    // `--seat <coord>`: 钉这一跑的座位, 不动全局 config。env 旋钮在这里无效 ——
+    // INV-MODEL-1 让 config.models 压过 env, 所以换座只能靠显式传 (实测 OMD_AGENT_MODEL 不生效)。
+    const model = opt('seat') ?? seats.agentLeafModel ?? seats.leafModel;
     const runner = createAgentLeafRunner({ cwd: dir, hashlineEdit: true, leafTimeoutMs: 1_800_000 });
-    const r = await runner({ prompt: candidatePrompt(t), model });
+    // `--profile <name>`: 工具面 A/B 用 —— 档案从**主仓**解析, 隔离世界是 git worktree, 里面没有 .omd/。
+    // 不传 = 生产全工具面 (与本 flag 加入前逐字节相同, 老读数仍可比)。
+    const profileName = opt('profile');
+    const profile = profileName ? (await import('../src/harness/profiles/profile')).resolveProfile(profileName, REPO) : undefined;
+    if (profileName && !profile) throw new Error(`omd-bench: 主仓 .omd/profiles 里没有档案 ${profileName}`);
+    const r = await runner({ prompt: candidatePrompt(t), model, ...(profile ? { profile } : {}) });
     return {
       wallMs: Date.now() - started,
       tokensIn: r.usage.in, tokensOut: r.usage.out,
@@ -242,7 +249,7 @@ async function main(): Promise<void> {
   if (cmdName === 'run') {
     const id = opt('id');
     const arm = (opt('arm') ?? '') as 'a' | 'b';
-    if (!id || (arm !== 'a' && arm !== 'b')) { log('用法: run --id <taskId> --arm a|b [--regression]'); process.exit(2); }
+    if (!id || (arm !== 'a' && arm !== 'b')) { log('用法: run --id <taskId> --arm a|b [--regression] [--profile <岗位档案名>] [--seat <模型坐标>]  (后两个仅 arm b)'); process.exit(2); }
     const t = loadTasks().find((x) => x.id === id);
     if (!t) { log(`没有这道题: ${id}`); process.exit(2); }
     const dir = makeCandidateWorld(t);
@@ -258,7 +265,8 @@ async function main(): Promise<void> {
       const out = join(REPO, '.omd', 'eval', 'omd-bench');
       mkdirSync(out, { recursive: true });
       const stamp = `${t.id}-${arm}-${Date.now()}`;
-      writeFileSync(join(out, `${stamp}.json`), JSON.stringify({ task: t.id, arm, verdict, run, touched, regressionGreen, cost }, null, 1));
+      // profile: null = 没用档案 (生产全工具面), 不是"空档案" —— 事后比读数要分得开这两件事。
+      writeFileSync(join(out, `${stamp}.json`), JSON.stringify({ task: t.id, arm, profile: opt('profile') ?? null, seatPinned: opt('seat') ?? null, verdict, run, touched, regressionGreen, cost }, null, 1));
       console.log(`${verdict.verdict === 'pass' ? '✅' : verdict.verdict === 'invalid' ? '⚠' : '✘'} ${t.id} [臂 ${arm}] ${verdict.verdict}`);
       console.log(`   ${verdict.reason}`);
       console.log(`   墙钟 ${(cost.wallMs / 1000).toFixed(0)}s · 判分命令 exit ${run.exitCode} · 落盘 ${join(out, `${stamp}.json`)}`);
