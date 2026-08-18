@@ -276,7 +276,7 @@ describe('runGoal — onClassified 暴露定稿后的 acceptanceProbe', () => {
 
   test('production 接线 (_classify 缺席): 真实 classify→vet 走完, 回调拿到定稿终局', async () => {
     let received: { acceptanceProbe?: unknown } | undefined;
-    const cmdRunner: CommandLeafRunner = async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode: 1 }); // 空世界红
+    const cmdRunner: CommandLeafRunner = async () => ({ text: '', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 1 }); // 空世界红
     await runGoal('把目标数写进 docs/from-api.md', {
       ...baseCfg({
         generate: gen(

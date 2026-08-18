@@ -2232,7 +2232,8 @@ async function executePlan(
         if (!fc || !config.commandRunner) return null; // 没配 = 旧行为, 判据只在环外跑
         try {
           const cr = await config.commandRunner({ command: fc.command });
-          const blocked = cr.exitCode < 0; // 闸拒 ≠ 跑出红, 不赦免 (D-4 同款纪律)
+          // `null` (死于信号) 不是闸拒: 闸拒 = 命令没执行, 死于信号 = 执行了没跑完 —— 两者下一步相反。
+          const blocked = cr.exitCode !== null && cr.exitCode < 0; // 闸拒 ≠ 跑出红, 不赦免 (D-4 同款纪律)
           let ok = !blocked && cr.exitCode === (fc.expectExit ?? 0);
           if (!ok && !blocked && fc.waiveRed) {
             const waived = fc.waiveRed(cr.text);
@@ -2749,7 +2750,7 @@ async function executePlan(
         // 把一次安全拒绝翻译成 done, 等于给闸开了一条从 plan 里绕过去的路。schema 已 min(0) 挡住
         // conductor 写 -1; 这条是给**预构造 plan** (不经 zod) 的运行期硬闸, 两层都要有。
         const want = node.expect_exit ?? 0;
-        const blocked = r.exitCode < 0;
+        const blocked = r.exitCode !== null && r.exitCode < 0; // 同上: null = 死于信号, 不是闸拒
         let ok = !blocked && r.exitCode === want;
         // S-37 下沉 (2026-08-17): D-K 红 → 先过 freezeCriterion.waiveRed 闭包。
         //   节点命令 = 判据命令 (同串判据构造, INV-4) ∧ 非闸拒 (D-4) ∧ 闭包返非 null

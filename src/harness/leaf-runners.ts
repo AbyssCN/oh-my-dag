@@ -310,7 +310,19 @@ export interface CommandLeafInput {
 export interface CommandLeafResult {
   text: string;
   usage: ModelUsage;
-  exitCode: number;
+  /**
+   * 子进程退出码。**`null` ≠ 0**:`null` = 死于信号(没有主动退出码),0 = 自己正常退 0。
+   *
+   * 三字段**互不推断**(H5, 2026-08-19):`timedOut` 由超时闸上报、`exitCode` 与 {@link signal}
+   * 从运行时的内核观测直读。禁止「`exitCode !== 0` ⇒ 超时」、禁止用 124 哨兵覆写真实退出码、
+   * 禁止把信号折成 `128+n` 当退出码。于是 `{ timedOut: true, exitCode: 0, signal: null }`
+   * 这个合法组合(超时被杀、进程自己优雅退 0)必须分辨得出来。
+   */
+  exitCode: number | null;
+  /** 超时闸响了没有。`false` = 量过且没超时(不是"不知道")。 */
+  timedOut: boolean;
+  /** 杀死子进程的**实际**信号。`null` = 正常 exit,不是"不知道";不许拿「我发了什么」冒充「它怎么死的」。 */
+  signal: string | null;
 }
 /**
  * 注入点:executor-dag 的 command-kind 节点经此跑。

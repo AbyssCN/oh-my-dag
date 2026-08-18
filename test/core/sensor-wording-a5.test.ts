@@ -80,7 +80,7 @@ describe('A5 · 没过的前驱进下游 prompt 时必须带可执行告示', ()
   test('命令断言失败的前驱: 下游认得出它没过, 而不是"产出为空"', async () => {
     const { res, downPrompt } = await runFanin(
       { executor: 'command', command: 'grep -q x f.txt' },
-      { commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode: 1 }) },
+      { commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 1 }) },
     );
     expect(res.results['down']!.status).toBe('done'); // fan-in 'any': 下游照跑 (零回归)
     expect(downPrompt).toContain('前驱 bad 未通过');
@@ -103,7 +103,7 @@ describe('A5 · 没过的前驱进下游 prompt 时必须带可执行告示', ()
   test('过了的前驱一个字都不多 —— 正常材料不许被告示污染', async () => {
     const { downPrompt } = await runFanin(
       { executor: 'command', command: 'true' },
-      { commandRunner: async () => ({ text: 'OK', usage: { in: 0, out: 0 }, exitCode: 0 }) },
+      { commandRunner: async () => ({ text: 'OK', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 0 }) },
     );
     expect(downPrompt).not.toContain('未通过');
     expect(downPrompt).toContain('OUT'); // 上游材料照旧
@@ -113,7 +113,7 @@ describe('A5 · 没过的前驱进下游 prompt 时必须带可执行告示', ()
     // 两者刻意分开: `depOutputs` 是 inputsOf 算输入面 hash 的锚, 措辞一改就会让全图下游判 stale。
     const { res } = await runFanin(
       { executor: 'command', command: 'grep -q x f.txt' },
-      { commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode: 1 }) },
+      { commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 1 }) },
     );
     expect(res.results['bad']!.output).not.toContain('未通过');
     expect(res.results['bad']!.output).not.toContain('不要引用它');

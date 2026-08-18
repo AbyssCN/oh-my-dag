@@ -686,7 +686,9 @@ export interface LeafResult {
    * ⚠ **本字段只记不判**:是否该据它走 BLOCKED 出口, 取决于「连续几轮找不到一条合法命令」这个数,
    * 而那个数今天是 0 读数(第三跑实测 conductor 会从闸拒里自愈:拒→拒→过)。先记,再定 K。
    */
-  exitCode?: number;
+  // 三态 (H5-1, 2026-08-19): 缺席 = 非 command 节点 / 老记录; `null` = **死于信号**(没有主动退出码);
+  // 数字 = 真退出码 (负数 = 闸拒)。别把 null 折成 undefined —— 那会把"被杀了"读成"没记"。
+  exitCode?: number | null;
   /**
    * agent leaf **读过**的文件 (D-12, 来自 AgentLeafResult.filesRead)。图外数据流的观察面 ——
    * `plan/observers.lintArtifactEdges` 据它报「未声明的制品依赖」, 复用滤镜据它拦「读过被拒制品的

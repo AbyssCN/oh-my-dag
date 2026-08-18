@@ -139,7 +139,9 @@ export function summarizeResults(
       node?.command ? `$ ${node.command}` : '',
       leaf.exitCode === undefined
         ? ''
-        : `exit ${leaf.exitCode}${leaf.exitCode < 0 ? ' (command-leaf 闸拒 — 命令未执行)' : ''}`,
+        : leaf.exitCode === null
+          ? 'exit —— 死于信号 (没有主动退出码: 跑了但没跑完, 没有判词)'
+          : `exit ${leaf.exitCode}${leaf.exitCode < 0 ? ' (command-leaf 闸拒 — 命令未执行)' : ''}`,
     ].filter(Boolean);
     if (artifactRoot && node?.output_path) {
       const resolved = isAbsolute(node.output_path) ? node.output_path : join(artifactRoot, node.output_path);

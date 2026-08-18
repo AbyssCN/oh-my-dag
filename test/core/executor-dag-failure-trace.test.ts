@@ -82,7 +82,7 @@ describe('失败留痕加厚 —— 盘上真有那一位吗 (2026-08-06)', () =
       conductorModel: CONDUCTOR,
       leafModel: LEAF,
       generate: gen(failCmdPlan),
-      commandRunner: async () => ({ text, exitCode: 1, usage: { in: 0, out: 0 } }),
+      commandRunner: async () => ({ text, exitCode: 1, usage: { in: 0, out: 0 }, timedOut: false, signal: null }),
       continuity: { manager, runId, repoRoot: root, resume: false },
     });
 
@@ -120,7 +120,7 @@ describe('失败留痕加厚 —— 盘上真有那一位吗 (2026-08-06)', () =
       conductorModel: CONDUCTOR,
       leafModel: LEAF,
       generate: gen(failCmdPlan),
-      commandRunner: async () => ({ text, exitCode: 1, usage: { in: 0, out: 0 } }),
+      commandRunner: async () => ({ text, exitCode: 1, usage: { in: 0, out: 0 }, timedOut: false, signal: null }),
       continuity: { manager, runId: 'run-paths', repoRoot: root, resume: false },
     });
     const cp = manager.loadCheckpoint('run-paths', 'n1')!;

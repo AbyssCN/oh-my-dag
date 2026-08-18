@@ -67,6 +67,8 @@ const CONC = 6;
 const runCmd = createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], timeoutMs: 120_000 });
 const ev = async (command: string): Promise<{ out: string; exit: number }> => {
   const r = await runCmd({ command });
+  // `null` = 死于信号 (多半是超时被杀) —— 校准要的是**真判词**, 半截读数不许进台架。
+  if (r.exitCode === null) throw new Error(`校准证据命令死于信号 (${r.signal ?? '未知'}, timedOut=${r.timedOut}), 本次读数无效: ${command}`);
   if (r.exitCode < 0) throw new Error(`校准证据命令被闸拒, 改一条: ${command}\n${r.text}`);
   return { out: r.text, exit: r.exitCode };
 };

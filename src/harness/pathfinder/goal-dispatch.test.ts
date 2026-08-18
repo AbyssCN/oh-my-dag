@@ -103,7 +103,7 @@ describe('path_deliver 分流 (GWT-G1-1)', () => {
       env: { OMD_PATH_BACKEND: 'md' },
       models: { conductorModel: 'x', leafModel: 'x' },
       agentRunner: (async () => ({ text: '', usage: { in: 0, out: 0 } })) as never,
-      commandRunner: (async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode: 0 })) as never,
+      commandRunner: (async () => ({ text: '', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 0 })) as never,
       resolveBackend: (c) => resolveBackend(c, { env: { OMD_PATH_BACKEND: 'md' } }),
       // 切片 6: 派发口收**票**不收 id (D-3 闸够得着类了) —— 替身跟着改形状。
       dispatchGoal: ((_c: string, _s: string, gt: Ticket, goalText: string) => {

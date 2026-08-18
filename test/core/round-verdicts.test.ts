@@ -77,7 +77,7 @@ describe('逐轮裁决进 journal (D-I 那条预设判据的观测面)', () => {
   test('判据绿 → 记 green, 而 **judge 的票单独记下来** (它不决定, 但要看得见)', async () => {
     await run({
       freezeCriterion: { command: 'true' },
-      commandRunner: async () => ({ text: '', exitCode: 0, usage: { in: 0, out: 0 } }),
+      commandRunner: async () => ({ text: '', exitCode: 0, usage: { in: 0, out: 0 }, timedOut: false, signal: null }),
       // judge 说没成, 但判据绿说了算 —— 「judge 太紧」那一格全靠这条记录才观测得到
       judgeSend: judgeOf(false),
     });
@@ -89,7 +89,7 @@ describe('逐轮裁决进 journal (D-I 那条预设判据的观测面)', () => {
   test('⭐ 判据红 ∧ judge 说收敛 —— **这正是那条预设判据要找的组合**, 现在它在盘上了', async () => {
     await run({
       freezeCriterion: { command: 'false' },
-      commandRunner: async () => ({ text: '', exitCode: 1, usage: { in: 0, out: 0 } }),
+      commandRunner: async () => ({ text: '', exitCode: 1, usage: { in: 0, out: 0 }, timedOut: false, signal: null }),
       judgeSend: judgeOf(true),
     });
     const j = manager.loadNodeLoopJournal(RUN, 'C');
@@ -135,7 +135,7 @@ describe('逐轮裁决进 journal (D-I 那条预设判据的观测面)', () => {
       {
         continuity: { manager, runId: RUN, repoRoot: root, resume: true },
         freezeCriterion: { command: 'true' },
-        commandRunner: async () => ({ text: '', exitCode: 0, usage: { in: 0, out: 0 } }),
+        commandRunner: async () => ({ text: '', exitCode: 0, usage: { in: 0, out: 0 }, timedOut: false, signal: null }),
         judgeSend: judgeOf(true),
       },
       2,

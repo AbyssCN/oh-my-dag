@@ -68,7 +68,7 @@ const makeGenerate = (planScript: string[], seen: { planPrompts: string[] }): Ge
 /** 假 command runner: 只记命令串, 不真跑 (这份测的是接线, 不是 shell)。 */
 const makeCommandRunner = (seen: { commands: string[] }): CommandLeafRunner => async ({ command }: CommandLeafInput) => {
   seen.commands.push(command);
-  return { text: `[fake] ${command}`, usage: { in: 0, out: 0 }, exitCode: 0 };
+  return { text: `[fake] ${command}`, usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 0 };
 };
 
 const cfg = (

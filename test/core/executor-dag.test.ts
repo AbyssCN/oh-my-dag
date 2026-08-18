@@ -238,7 +238,7 @@ describe('omd executor-dag (in-process, fake model)', () => {
         : { text: `synth saw: ${messages.map((m) => m.content).join(' ')}`, usage: { in: 1, out: 1 } };
     const commandRunner = async ({ command }: { command: string }) => {
       cmdCalls.push(command);
-      return { text: 'PATH: A -> svc -> B', usage: { in: 0, out: 0 }, exitCode: 0 };
+      return { text: 'PATH: A -> svc -> B', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 0 };
     };
     const res = await runExecutorDag('t', { conductorModel: CONDUCTOR, leafModel: LEAF, generate: gen, commandRunner });
 

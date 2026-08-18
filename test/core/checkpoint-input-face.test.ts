@@ -197,7 +197,7 @@ describe('D-O 覆盖到 research 节点; command 节点刻意不落绿 checkpoin
       rcPlan,
       cfg(fake().generate, false, {
         researchRunner: async () => ({ text: '研究结论全文', sources: ['https://x.test/1'], usage: { in: 5, out: 5 } }),
-        commandRunner: async () => ({ text: 'ok', usage: { in: 0, out: 0 }, exitCode: 0 }),
+        commandRunner: async () => ({ text: 'ok', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 0 }),
       }),
     );
     const r = cp('r');
@@ -214,7 +214,7 @@ describe('D-O 覆盖到 research 节点; command 节点刻意不落绿 checkpoin
       rcPlan,
       cfg(fake().generate, false, {
         researchRunner: async () => ({ text: 't', sources: ['https://x.test/1'], usage: { in: 1, out: 1 } }),
-        commandRunner: async () => ({ text: 'ok', usage: { in: 0, out: 0 }, exitCode: 0 }),
+        commandRunner: async () => ({ text: 'ok', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 0 }),
       }),
     );
     expect(existsSync(join(runDir(), 'c.json'))).toBe(true);

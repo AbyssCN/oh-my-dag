@@ -54,7 +54,7 @@ describe('S-37 下沉: D-K 节点判红点 (engine.ts:2751 附近)', () => {
     const r = await runExecutorDagWithPlan(
       plan({ accept: { goal: '判据', executor: 'command', command: 'test' } }),
       cmdConfig({
-        commandRunner: async () => ({ text: failOutput(['A']), usage: { in: 0, out: 0 }, exitCode: 1 }),
+        commandRunner: async () => ({ text: failOutput(['A']), usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 1 }),
         freezeCriterion: { command: 'test', waiveRed: makeWaiver(['A', 'B']) },
       }),
     );
@@ -69,7 +69,7 @@ describe('S-37 下沉: D-K 节点判红点 (engine.ts:2751 附近)', () => {
     const r = await runExecutorDagWithPlan(
       plan({ accept: { goal: '判据', executor: 'command', command: 'test' } }),
       cmdConfig({
-        commandRunner: async () => ({ text: failOutput(['A', 'C']), usage: { in: 0, out: 0 }, exitCode: 1 }),
+        commandRunner: async () => ({ text: failOutput(['A', 'C']), usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 1 }),
         freezeCriterion: { command: 'test', waiveRed: makeWaiver(['A']) },
       }),
     );
@@ -82,7 +82,7 @@ describe('S-37 下沉: D-K 节点判红点 (engine.ts:2751 附近)', () => {
     const r = await runExecutorDagWithPlan(
       plan({ accept: { goal: '判据', executor: 'command', command: 'test' } }),
       cmdConfig({
-        commandRunner: async () => ({ text: 'error TS2322: 类型不匹配 (无测试名)', usage: { in: 0, out: 0 }, exitCode: 1 }),
+        commandRunner: async () => ({ text: 'error TS2322: 类型不匹配 (无测试名)', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 1 }),
         freezeCriterion: { command: 'test', waiveRed: makeWaiver(['A', 'B']) },
       }),
     );
@@ -95,7 +95,7 @@ describe('S-37 下沉: D-K 节点判红点 (engine.ts:2751 附近)', () => {
     const r = await runExecutorDagWithPlan(
       plan({ accept: { goal: '判据', executor: 'command', command: 'test' } }),
       cmdConfig({
-        commandRunner: async () => ({ text: failOutput(['A']), usage: { in: 0, out: 0 }, exitCode: 1 }),
+        commandRunner: async () => ({ text: failOutput(['A']), usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 1 }),
         freezeCriterion: { command: 'test' }, // 无 waiveRed
       }),
     );
@@ -111,7 +111,7 @@ describe('S-37 下沉: D-K 节点判红点 (engine.ts:2751 附近)', () => {
     const r = await runExecutorDagWithPlan(
       plan({ other: { goal: '别的 command', executor: 'command', command: 'other-test' } }),
       cmdConfig({
-        commandRunner: async () => ({ text: failOutput(['A']), usage: { in: 0, out: 0 }, exitCode: 1 }),
+        commandRunner: async () => ({ text: failOutput(['A']), usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 1 }),
         freezeCriterion: { command: 'test', waiveRed: makeWaiver(['A', 'B']) },
       }),
     );
@@ -123,7 +123,7 @@ describe('S-37 下沉: D-K 节点判红点 (engine.ts:2751 附近)', () => {
     const r = await runExecutorDagWithPlan(
       plan({ accept: { goal: '判据', executor: 'command', command: 'rm -rf /' } }),
       cmdConfig({
-        commandRunner: async () => ({ text: '[blocked: 危险命令]', usage: { in: 0, out: 0 }, exitCode: -1 }),
+        commandRunner: async () => ({ text: '[blocked: 危险命令]', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: -1 }),
         freezeCriterion: { command: 'rm -rf /', waiveRed: makeWaiver(['A', 'B']) },
       }),
     );
@@ -151,7 +151,7 @@ describe('S-37 下沉: 环内冻结判据点 (engine.ts:2227 附近)', () => {
           leafModel: 'test:leaf',
           generate,
           agentTemplates: new Map(),
-          commandRunner: async () => ({ text: failOutput(['A']), usage: { in: 0, out: 0 }, exitCode: 1 }),
+          commandRunner: async () => ({ text: failOutput(['A']), usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 1 }),
           freezeCriterion: { command: 'test', waiveRed: makeWaiver(['A', 'B']) },
           continuity: { manager: mgr, runId: 's37-waive', repoRoot: root },
         },
@@ -182,7 +182,7 @@ describe('S-37 下沉: 环内冻结判据点 (engine.ts:2227 附近)', () => {
           leafModel: 'test:leaf',
           generate,
           agentTemplates: new Map(),
-          commandRunner: async () => ({ text: failOutput(['A', 'C']), usage: { in: 0, out: 0 }, exitCode: 1 }),
+          commandRunner: async () => ({ text: failOutput(['A', 'C']), usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 1 }),
           freezeCriterion: { command: 'test', waiveRed: makeWaiver(['A']) },
           continuity: { manager: mgr, runId: 's37-no-waive', repoRoot: root },
         },

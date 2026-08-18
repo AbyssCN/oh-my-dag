@@ -281,7 +281,10 @@ export const NOT_EXECUTED_EXITS: ReadonlySet<number> = new Set([126, 127]);
  * `expect_exit` 显式写成 124/127 的节点**到不了这里** —— 它命中期望就是 done,
  * 这一格不会去抢它。
  */
-export function classifyCommandExit(exitCode: number): NodeFailureKind {
+export function classifyCommandExit(exitCode: number | null): NodeFailureKind {
+  // `null` = 死于信号 (没有主动退出码, H5-1) ⇒ 跑了但没跑完、没有判词 —— 与 124 同一格。
+  // 刻意不先编一个数再去分类: 那正是「三字段互不推断」要禁的那一步。
+  if (exitCode === null) return 'timed-out';
   if (exitCode < 0) return 'gate-rejected'; // command-leaf 闸拒: 命令未执行
   if (exitCode === TIMEOUT_EXIT) return 'timed-out'; // 跑了但没跑完: 没有判词
   if (NOT_EXECUTED_EXITS.has(exitCode)) return 'missing-capability'; // 压根没执行: 缺可执行文件

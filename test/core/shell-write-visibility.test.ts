@@ -73,7 +73,7 @@ const runCommandPair = async (mode: 'collide' | 'separate') => {
       );
       const [stdout] = await readAllBounded([proc.stdout, proc.stderr], 'shell-write-visibility 读管道');
       const exitCode = await awaitExitBounded(proc, 'shell-write-visibility 等 command 退出');
-      return { text: stdout!, exitCode, usage: { in: 0, out: 0 } };
+      return { text: stdout!, exitCode, usage: { in: 0, out: 0 }, timedOut: false, signal: null };
     },
   });
   return { res, dir };

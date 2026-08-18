@@ -40,7 +40,7 @@ describe('P1 · 闸拒 vs 断言没成立 (整个词表的原型格)', () => {
       leafModel: LEAF,
       generate: gen(cmdPlan('rm -rf /')),
       // -1 = command-leaf 的闸拒返回值 (命令根本没执行), 不是被执行命令的退出码。
-      commandRunner: async () => ({ text: '[闸拒]', usage: { in: 0, out: 0 }, exitCode: -1 }),
+      commandRunner: async () => ({ text: '[闸拒]', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: -1 }),
     });
     const r = res.results['n1']!;
     expect(r.status).toBe('failed');
@@ -53,7 +53,7 @@ describe('P1 · 闸拒 vs 断言没成立 (整个词表的原型格)', () => {
       conductorModel: CONDUCTOR,
       leafModel: LEAF,
       generate: gen(cmdPlan('grep -qx "3000" out.txt')),
-      commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode: 1 }),
+      commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 1 }),
     });
     const r = res.results['n1']!;
     expect(r.status).toBe('failed');
@@ -67,7 +67,7 @@ describe('P1 · 闸拒 vs 断言没成立 (整个词表的原型格)', () => {
         conductorModel: CONDUCTOR,
         leafModel: LEAF,
         generate: gen(cmdPlan('cmd')),
-        commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode }),
+        commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode, timedOut: false, signal: null }),
       });
       return res.results['n1']!;
     };
@@ -85,7 +85,7 @@ describe('P1 · 闸拒 vs 断言没成立 (整个词表的原型格)', () => {
       conductorModel: CONDUCTOR,
       leafModel: LEAF,
       generate: gen(cmdPlan('test-red', 1)),
-      commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode: 1 }),
+      commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 1 }),
     });
     expect(res.results['n1']!.status).toBe('done');
     expect(res.results['n1']!.failureKind).toBeUndefined();
@@ -103,7 +103,7 @@ describe('P1 · 闸拒 vs 断言没成立 (整个词表的原型格)', () => {
       leafModel: LEAF,
       generate: gen(cmdPlan('bun test')),
       // 124 = command-leaf 的 Promise.race 超时哨 (也是 GNU timeout(1) 的标准码)。
-      commandRunner: async () => ({ text: '[timeout 600000ms]', usage: { in: 0, out: 0 }, exitCode: 124 }),
+      commandRunner: async () => ({ text: '[timeout 600000ms]', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 124 }),
     });
     const r = res.results['n1']!;
     expect(r.status).toBe('failed');
@@ -118,7 +118,7 @@ describe('P1 · 闸拒 vs 断言没成立 (整个词表的原型格)', () => {
         conductorModel: CONDUCTOR,
         leafModel: LEAF,
         generate: gen(cmdPlan('pytest')),
-        commandRunner: async () => ({ text: 'command not found', usage: { in: 0, out: 0 }, exitCode }),
+        commandRunner: async () => ({ text: 'command not found', usage: { in: 0, out: 0 }, exitCode, timedOut: false, signal: null }),
       });
       const r = res.results['n1']!;
       expect(r.failureKind, `exit ${exitCode}`).toBe('missing-capability');
@@ -132,7 +132,7 @@ describe('P1 · 闸拒 vs 断言没成立 (整个词表的原型格)', () => {
         conductorModel: CONDUCTOR,
         leafModel: LEAF,
         generate: gen(cmdPlan('bun test')),
-        commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode }),
+        commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode, timedOut: false, signal: null }),
       });
       return res.results['n1']!;
     };
@@ -152,7 +152,7 @@ describe('P1 · 闸拒 vs 断言没成立 (整个词表的原型格)', () => {
         conductorModel: CONDUCTOR,
         leafModel: LEAF,
         generate: gen(cmdPlan('bun test')),
-        commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode }),
+        commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode, timedOut: false, signal: null }),
       });
       expect(res.results['n1']!.failureKind, `exit ${exitCode}`).toBe('assert-failed');
     }
@@ -163,7 +163,7 @@ describe('P1 · 闸拒 vs 断言没成立 (整个词表的原型格)', () => {
       conductorModel: CONDUCTOR,
       leafModel: LEAF,
       generate: gen(cmdPlan('sleep 999', 124)),
-      commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode: 124 }),
+      commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 124 }),
     });
     expect(res.results['n1']!.status).toBe('done');
     expect(res.results['n1']!.failureKind).toBeUndefined();
@@ -177,7 +177,7 @@ describe('P1 · 闸拒 vs 断言没成立 (整个词表的原型格)', () => {
       conductorModel: CONDUCTOR,
       leafModel: LEAF,
       generate: gen(cmdPlan('rm -rf /', 2)),
-      commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode: -1 }),
+      commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: -1 }),
     });
     expect(res.results['n1']!.status).toBe('failed');
     expect(res.results['n1']!.failureKind).toBe('gate-rejected');
@@ -356,7 +356,7 @@ describe('P1 · 其余各格各有自己的直接判据', () => {
       conductorModel: CONDUCTOR,
       leafModel: LEAF,
       generate: gen(plan),
-      commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode: 1 }),
+      commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 1 }),
     });
     expect(res.results['a']!.failureKind).toBe('assert-failed'); // 上游: 断言没成立
     expect(res.results['b']!.status).toBe('skipped'); // 下游: 粗态没变
@@ -458,7 +458,7 @@ describe('P1 · 成因要能出得了图 (留痕 + checkpoint 两条链)', () =>
       conductorModel: CONDUCTOR,
       leafModel: LEAF,
       generate: gen(cmdPlan('rm -rf /')),
-      commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode: -1 }),
+      commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: -1 }),
     });
     const id = recorder.record(res, { runId: 'run-p1' });
     const rec = recorder.get(id)!;

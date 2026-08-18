@@ -57,7 +57,7 @@ async function configSeenByEngine(env: NodeJS.ProcessEnv): Promise<Partial<Execu
     },
   } as unknown as DagEngine;
   const noopAgent: AgentLeafRunner = async () => ({ text: '', usage: { in: 0, out: 0 } });
-  const noopCommand: CommandLeafRunner = async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode: 0 });
+  const noopCommand: CommandLeafRunner = async () => ({ text: '', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 0 });
   const deps: AssembleOmdMcpDeps = {
     env,
     cwd: process.cwd(),
@@ -151,7 +151,7 @@ describe('verify 闸挂在 MCP 装配上', () => {
       runRegistry: new RunRegistry(),
       memory: createOmdMemory({ path: ':memory:', safeguard: UNIVERSAL_SAFEGUARD }),
       agentRunner: async () => ({ text: '', usage: { in: 0, out: 0 } }),
-      commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode: 0 }),
+      commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 0 }),
       ledger: createPlanLedger({ db: new Database(':memory:') }),
       recorder: createDagRecorder({ db: new Database(':memory:') }),
       inbox: createOwnerInbox({ db: new Database(':memory:') }),

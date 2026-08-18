@@ -189,7 +189,7 @@ describe('path_deliver 的运行留痕接线', () => {
       models: { conductorModel: '', leafModel: 'fake:leaf' },
       agentRunner: (async () => ({ text: '', usage: { in: 0, out: 0 } })) as PathfinderToolDeps['agentRunner'],
       commandRunner: (async () => ({
-        text: '', usage: { in: 0, out: 0 }, exitCode: 0,
+        text: '', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 0,
       })) as PathfinderToolDeps['commandRunner'],
       dispatchFrontier: (() => ({ dispatched: [], reported: [] })) as unknown as PathfinderToolDeps['dispatchFrontier'],
       executeSlice: (async (plan: { nodes: Record<string, unknown> }, opts: Record<string, unknown>) => {
@@ -225,7 +225,7 @@ describe('path_deliver 的运行留痕接线', () => {
       models: { conductorModel: '', leafModel: 'fake:leaf' },
       agentRunner: (async () => ({ text: '', usage: { in: 0, out: 0 } })) as PathfinderToolDeps['agentRunner'],
       commandRunner: (async () => ({
-        text: '', usage: { in: 0, out: 0 }, exitCode: 0,
+        text: '', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 0,
       })) as PathfinderToolDeps['commandRunner'],
       dispatchFrontier: (() => ({ dispatched: [], reported: [] })) as unknown as PathfinderToolDeps['dispatchFrontier'],
       executeSlice: (async (plan: { nodes: Record<string, unknown> }, opts: Record<string, unknown>) => {

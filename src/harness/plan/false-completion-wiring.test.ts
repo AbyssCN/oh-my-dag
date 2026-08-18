@@ -93,7 +93,7 @@ async function run(checkExit: number, leafText = '已实现 clamp 并写好测�
     // 子图命令 ('bun test') 分开给退出码, 不然一个 runner 一刀切模不出那个组合。
     ...(opts.freeze ? { freezeCriterion: { command: 'true' } } : {}),
     commandRunner: async ({ command }: { command: string }) =>
-      ({ text: LIAR_CLAIM, usage: { in: 0, out: 0 }, exitCode: command === 'true' ? 0 : checkExit }),
+      ({ text: LIAR_CLAIM, usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: command === 'true' ? 0 : checkExit }),
     judgeSend: async () => {
       judgeCalls.n++;
       return {

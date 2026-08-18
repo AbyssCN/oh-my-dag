@@ -20,7 +20,7 @@
  * cwd 锚 + 超时 + 危险模式表; 需要强隔离的是 agent leaf (那边有 bwrap jail)。
  */
 import { classifyCommand } from './hooks/dangerous-cmd';
-import { awaitExitBounded, readAllBounded, spawnWithPipes } from './proc/await-exit';
+import { awaitDeath, awaitExitBounded, readAllBounded, spawnWithPipes } from './proc/await-exit';
 import { logger } from '../logger';
 import type { ModelUsage } from '../model/types';
 
@@ -170,8 +170,18 @@ export interface CommandLeafRunnerOpts {
   timeoutMs?: number;
   /** cwd。默认 process.cwd()。 */
   cwd?: string;
-  /** 注入式 spawn (测试替身)。默认 `defaultSpawn` —— Bun.spawn 捕获 stdout/stderr/exit。 */
-  spawn?: (command: string, cwd: string, timeoutMs?: number) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
+  /**
+   * 注入式 spawn (测试替身)。默认 `defaultSpawn` —— Bun.spawn 捕获 stdout/stderr/exit。
+   *
+   * `timedOut` / `signal` 是**可选**的 (H5, 2026-08-19): 老替身只返三元组, 缺席时按
+   * 「量过且没发生」补 `false` / `null` —— 把它们改成必填会让一批既有替身在类型层红,
+   * 而那批测试关心的根本不是子进程记账面。
+   */
+  spawn?: (
+    command: string,
+    cwd: string,
+    timeoutMs?: number,
+  ) => Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut?: boolean; signal?: string | null }>;
   /**
    * 注入 `Bun.spawn` **本身**(不是整条采集)—— 只给 `defaultSpawn` 用,给了 `spawn` 时它不生效。
    *
@@ -227,20 +237,179 @@ type BoundedProc = {
  * 两道界撞在同一个时刻会让谁先响成为运气。内层先响才有分辨力:它分得开
  * 「进程还活着 = 真慢」与「进程已经没了 = 退出事件丢了」,而外层只会印一个 124。
  */
+/**
+ * 命中即摘的凭证键判据 —— **大小写不敏感的子串**, 不是全等表。
+ *
+ * 为什么是子串: 真实世界的键名是 `AWS_SECRET_ACCESS_KEY` / `GITHUB_TOKEN` / `DATABASE_PASSWORD`
+ * 这种复合词, 列全等表等于每来一个 provider 补一次表, 而漏的那次没有任何声音。
+ */
+const CREDENTIAL_KEY_RE = /(KEY|SECRET|TOKEN|PASSWORD)/i;
+
+/**
+ * 选择性摘掉凭证类环境变量, **返副本** (H5-3, 2026-08-19)。
+ *
+ * 三条边界写死在这里, 因为每一条都是一种"看起来做了"的假实现:
+ *  · **选择性**, 不是清空 —— 整个清空会连 `PATH`/`HOME` 一起端走, 于是命令根本跑不起来,
+ *    而"跑不起来"和"凭证摘干净了"在读数上长得一样。
+ *  · **返副本**, 不许原地删 —— 原地删会把 engine 自己的 `process.env` 一起改掉,
+ *    下一个要用 key 的调用点就在别处莫名其妙地失败。
+ *  · **只作用于用户命令这一路** —— 不许全局挂钩 `Bun.spawn`。engine 自己起子进程要带全 env。
+ */
+export function scrubCredentialEnv(env: Record<string, string | undefined>): Record<string, string | undefined> {
+  const out: Record<string, string | undefined> = {};
+  for (const [k, v] of Object.entries(env)) if (!CREDENTIAL_KEY_RE.test(k)) out[k] = v;
+  return out;
+}
+
+/** {@link disposeCommandLeafChild} 收的那一小块子进程面 (与 {@link BoundedProc} 同源, 多一个可选的摘听钩子)。 */
+export interface CommandLeafChild {
+  exited: Promise<number>;
+  pid: number;
+  kill: (sig?: number | NodeJS.Signals) => void;
+  /** 有就调 (Bun.Subprocess 实测**没有**这个; Node 的 ChildProcess 有)。 */
+  removeAllListeners?: () => void;
+}
+
+/**
+ * 把一个命令叶子的子进程**完全停稳**才返回 (H5-2, 2026-08-19)。
+ *
+ * 协议顺序是判据的一部分:**发信号 → 等真实退出 → 摘监听器 → 才返回**。
+ * 少任何一步都会留下同一个外部可观测的中间态:*属主已经回来了, 而进程还标着 running*。
+ * 那个中间态最坏的地方不是资源没回收, 是**下一步会照着一个假的"已停"往下走**。
+ *
+ * 「真实退出」按 `awaitDeath` 的口径 —— 先等记账 (`exited`), 记账丢了就按 pid 直接观测,
+ * 必要时内核补刀。**不拿"我发了 SIGTERM"当"它死了"**:那是推断不是观测。
+ */
+export async function disposeCommandLeafChild(
+  child: CommandLeafChild,
+  reason: 'timeout' | 'cancel' | 'error',
+  opts: { signal?: NodeJS.Signals; graceMs?: number; waitMs?: number } = {},
+): Promise<void> {
+  const what = `停稳命令叶子子进程 (${reason})`;
+  try {
+    child.kill(opts.signal ?? 'SIGTERM');
+  } catch {
+    // 已经死了 / 句柄失效 —— 下面按 pid 实测判, 不靠这一刀的返回值。
+    logger.debug({ pid: child.pid, reason }, '[omd/command-leaf] kill 抛了 (多半已退出), 转按 pid 实测');
+  }
+  // ⚠ 等退出事件的窗口**要短**: `awaitDeath` 是先等事件、超时之后才按 pid 实测。给它 60s 的话,
+  // 「pid 早就没了但退出事件永不来」这张脸会让停稳整整卡一分钟 —— 而那件事一秒就能问清楚。
+  await awaitDeath(child, what, opts.waitMs ?? 1_000, opts.graceMs ?? 3_000);
+  child.removeAllListeners?.(); // 摘听必须在**真死之后**: 早摘等于把退出事件自己丢掉
+}
+
+/** 两条等待各自的读预算宽限 (超时那条路 kill 之后还要能把残余读完)。 */
+const DRAIN_GRACE_MS = 3_000;
+/** kill 之后收残余的短窗口 —— 真进程死了管道立刻 EOF, 这里不该按预算等。 */
+const POST_KILL_DRAIN_MS = 500;
+
 const defaultSpawn = async (command: string, cwd: string, timeoutMs = 60_000, spawnRaw?: () => BoundedProc) => {
-  const proc = spawnWithPipes(
-    spawnRaw ?? (() => Bun.spawn(['sh', '-c', command], { cwd, stdout: 'pipe', stderr: 'pipe' }) as BoundedProc),
-    ['stdout', 'stderr'],
-    `跑命令 \`${command.slice(0, 60)}\``,
-  );
   const what = `跑命令 \`${command.slice(0, 60)}\``;
-  const [pipes, exitCode] = await Promise.all([
-    readAllBounded([proc.stdout!, proc.stderr!], what, timeoutMs),
-    awaitExitBounded(proc, what, timeoutMs),
-  ]);
+  const proc = spawnWithPipes(
+    spawnRaw ??
+      // ⚠ **必须显式传 env**: bun 1.3.14 实测「不传 env = 子进程 env 为空」(不是继承父进程)。
+      // 于是"凭证摘掉了"曾经是白捡的 —— 连 PATH 都没了。现在是选择性 scrub, 见 scrubCredentialEnv。
+      (() =>
+        Bun.spawn(['sh', '-c', command], {
+          cwd,
+          stdout: 'pipe',
+          stderr: 'pipe',
+          env: scrubCredentialEnv(process.env) as Record<string, string>,
+        }) as BoundedProc),
+    ['stdout', 'stderr'],
+    what,
+  );
+  // 两条等待各自留够宽限 (超时那条路要在 kill 之后还能把残余读完), 超时判据由下面的 race 出。
+  let pipesErr: unknown;
+  let exitErr: unknown;
+  // **退出事件在超时那一刻到没到** —— 这一位是「真超时」与「记账丢了」的分水岭, 见下方 race 后的分派。
+  let exitSettled = false;
+  const pipesP = readAllBounded([proc.stdout!, proc.stderr!], what, timeoutMs + DRAIN_GRACE_MS).then(
+    (v) => v,
+    (e: unknown) => {
+      pipesErr = e;
+      return null;
+    },
+  );
+  const exitP = awaitExitBounded(proc, what, timeoutMs + DRAIN_GRACE_MS).then(
+    (v) => {
+      exitSettled = true;
+      return v;
+    },
+    (e: unknown) => {
+      exitSettled = true;
+      exitErr = e;
+      return null;
+    },
+  );
+  const TIMEOUT = Symbol('timeout');
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<typeof TIMEOUT>((resolve) => {
+    timer = setTimeout(() => resolve(TIMEOUT), timeoutMs);
+    (timer as unknown as { unref?: () => void }).unref?.();
+  });
+  const raced = await Promise.race([Promise.all([pipesP, exitP]), deadline]);
+  clearTimeout(timer);
+
+  if (raced === TIMEOUT) {
+    // ── 分水岭: **超时那一刻进程退了没有** ────────────────────────────────────────
+    // 这两件事的下一步相反, 所以判据必须分得开 (与 await-exit.ts 那条「进程还在 = 正常长跑,
+    // 进程没了而事件仍没落定 = 记账丢了」同源):
+    //   · 退出事件**早就到了**, 而管道还没 EOF ⇒ 管道被运行时丢了 ⇒ **抛**, 本次读数无效, 重跑;
+    //   · 到点了还没退 ⇒ **真超时** ⇒ 停稳它, 如实回报三字段 (不抛 —— 抛了调用方只剩一个异常,
+    //     分不出「命令跑太久」与「记账丢了」, 而这正是这道闸要留住的分辨力)。
+    if (exitSettled) {
+      throw new Error(
+        `${what}: 子进程的退出事件已经到了, 而管道 ${timeoutMs}ms 还没到 EOF ⇒ 管道被运行时丢了 (bun ${Bun.version}),` +
+          ' 本次读数无效, 重跑。**不是**命令跑太久 —— 别兑成一个退出码。',
+      );
+    }
+    await disposeCommandLeafChild(proc, 'timeout');
+    // 进程已经停稳 ⇒ 真管道立刻 EOF, 短窗口就够。**不再等满整个读预算**: 注入的假管道
+    // 根本不会 EOF, 那样等于让每条超时用例都替一个已死进程把预算耗光。
+    const after = <T>(p: Promise<T>): Promise<T | null> =>
+      Promise.race([p, Bun.sleep(POST_KILL_DRAIN_MS).then(() => null)]);
+    const [pipes, code] = await Promise.all([after(pipesP), after(exitP)]);
+    if (exitErr !== undefined) throw exitErr; // 记账层自己的具名判词优先
+    if (!exitSettled) {
+      // 停稳之后 (dispose 已按 pid 确认它没了) 退出事件仍然没来 —— 这是记账缺陷的另一张脸,
+      // 不是"命令跑太久"。同样响亮抛, 不许编一个退出码替它圆场。
+      throw new Error(
+        `${what}: 子进程已停稳 (pid ${proc.pid}) 而退出事件始终没来 ⇒ 运行时的子进程记账缺陷` +
+          ` (bun ${Bun.version}: 退出事件丢了), 本次读数无效, 重跑。`,
+      );
+    }
+    return {
+      stdout: pipes?.[0] ?? '',
+      stderr: pipes?.[1] ?? '',
+      // `code` 是替身/运行时自己给的退出值, 不是我们编的; 有原生字段时 observeExit 只信原生。
+      ...observeExit(proc, code ?? null),
+      timedOut: true,
+    };
+  }
+  // 非超时路: 记账层自己出的错照旧响亮抛 (「本次读数无效, 重跑」的判词比编一个退出码有用)。
+  if (pipesErr !== undefined) throw pipesErr;
+  if (exitErr !== undefined) throw exitErr;
+  const [pipes, code] = raced as [string[] | null, number | null];
   // readAllBounded 逐条对应输入流, 两条进两条出; 拿不到就是它抛, 走不到这里。
-  return { stdout: pipes[0]!, stderr: pipes[1]!, exitCode };
+  return { stdout: pipes![0]!, stderr: pipes![1]!, ...observeExit(proc, code), timedOut: false };
 };
+
+/**
+ * 从**内核观测**读退出事实, 而不是从 `exited` 折出来的那个数推断 (H5-1)。
+ *
+ * bun 把信号致死折成 `128+n` 交给 `proc.exited` (SIGTERM → 143), 而 `Bun.Subprocess` 同时提供
+ * `exitCode`(信号致死时为 `null`)与 `signalCode`。折出来的 143 会让「死于信号」和「自己退 143」
+ * 变成同一个数, 所以**有原生字段就只信原生字段**;注入的替身没有这两个字段时, 才回落到折出来的码
+ * (那是替身自己声明的退出值, 不是我们编的)。
+ */
+function observeExit(proc: BoundedProc, folded: number | null): { exitCode: number | null; signal: string | null } {
+  const native = proc as unknown as { exitCode?: number | null; signalCode?: string | null };
+  const signal = native.signalCode ?? null;
+  if (signal !== null) return { exitCode: null, signal }; // 死于信号 ⇒ 没有主动退出码, 不许折 128+n
+  const exitCode = native.exitCode !== undefined ? native.exitCode : folded;
+  return { exitCode, signal: null };
+}
 
 /** git 的「带值全局 flag」—— 取子命令时必须连它的值一起跳过, 否则 `git -C /repo status` 会把 /repo 当子命令。 */
 const GIT_VALUE_FLAGS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--config-env']);
@@ -382,20 +551,35 @@ export function createCommandLeafRunner(opts: CommandLeafRunnerOpts): CommandLea
   return async ({ command }) => {
     // 先拆后闸: 每环独立 spawn, 无 sh 级注入面 (判据见 commandBlockReason)。
     const blocked = commandBlockReason(command, allowlist);
-    if (blocked) return { text: blocked, usage: { in: 0, out: 0 }, exitCode: -1 };
+    // 闸拒: 三字段都是"量过且没发生" —— 没起过进程, 所以没超时也没有信号。
+    if (blocked) return { text: blocked, usage: { in: 0, out: 0 }, exitCode: -1, timedOut: false, signal: null };
     const links = command.split('&&').map((s) => s.trim());
     // ③ 顺序执行, 首败即停 (shell && 语义); 每环独立超时 (Promise.race: 超时返 exitCode 124, 不悬挂 leaf)。
     const outParts: string[] = [];
-    let exitCode = 0;
+    let exitCode: number | null = 0;
+    // 三字段互不推断 (H5-1): 各走各的源, 逐环覆盖 —— 最后一环的事实就是这条命令串的事实。
+    let timedOut = false;
+    let signal: string | null = null;
     for (const link of links) {
       // ⚠ 哨兵**比内层界晚 5s**(2026-08-14 晚)。此前两者同为 timeoutMs, 而 `defaultSpawn` 内层
       //   分得开「进程还活着 = 真慢」与「进程已经没了 = 退出事件丢了」, 外层只会印一个 124。
       //   同一时刻起跑的两道界谁先响是运气 —— 让有分辨力的那道先响。
       //   哨兵留着不是冗余: 注入进来的 `opts.spawn` 是外部代码, 它挂住时只有这道拦得住。
-      const { stdout, stderr, exitCode: code } = await Promise.race([
+      const {
+        stdout,
+        stderr,
+        exitCode: code,
+        timedOut: linkTimedOut,
+        signal: linkSignal,
+      } = await Promise.race([
         spawn(link, cwd, timeoutMs),
-        new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve) => {
-          const id = setTimeout(() => resolve({ stdout: '', stderr: `[timeout ${timeoutMs}ms]`, exitCode: 124 }), timeoutMs + 5_000);
+        new Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut?: boolean; signal?: string | null }>((resolve) => {
+          const id = setTimeout(
+            // 124 是**这道哨兵自己的**记号 (注入的 spawn 挂住了), 不是子进程的退出码 ——
+            // 所以 timedOut 由这里如实置 true, 而不是让下游从 124 反推。
+            () => resolve({ stdout: '', stderr: `[timeout ${timeoutMs}ms]`, exitCode: 124, timedOut: true, signal: null }),
+            timeoutMs + 5_000,
+          );
           (id as unknown as { unref?: () => void }).unref?.();
         }),
       ]);
@@ -413,8 +597,11 @@ export function createCommandLeafRunner(opts: CommandLeafRunnerOpts): CommandLea
       const part = [stdout.trim(), stderr.trim()].filter(Boolean).join('\n');
       if (part) outParts.push(part);
       exitCode = code;
-      if (exitCode !== 0) break; // && 语义: 前环失败, 后环不跑
+      // 老替身只返三元组 → 缺席按「量过且没发生」补, 不留 undefined (缺席≠false 那条口径)。
+      timedOut = linkTimedOut ?? false;
+      signal = linkSignal ?? null;
+      if (exitCode !== 0) break; // && 语义: 前环失败 (含 null = 死于信号), 后环不跑
     }
-    return { text: outParts.join('\n'), usage: { in: 0, out: 0 }, exitCode };
+    return { text: outParts.join('\n'), usage: { in: 0, out: 0 }, exitCode, timedOut, signal };
   };
 }

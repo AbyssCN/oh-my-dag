@@ -121,7 +121,7 @@ function makeCfg(outputs: string[], extra: Partial<ExecutorDagConfig> = {}): {
     commandRunner: async () => {
       const text = outputs[Math.min(cmdCalls, outputs.length - 1)]!;
       cmdCalls++;
-      return { text, usage: { in: 0, out: 0 }, exitCode: 1 };
+      return { text, usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 1 };
     },
     judgeSend: async () => ({
       text: '',

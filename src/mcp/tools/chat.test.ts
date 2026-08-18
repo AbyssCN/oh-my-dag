@@ -397,7 +397,7 @@ describe('装配点(坑 #7:装配点没闸 = 完全没接)', () => {
 
   test('★ assembleOmdMcpTools 产物里有 conductor_chat,一句话走得通(chatLoopFn/chatStore 接缝生效)', async () => {
     const noopAgent: AgentLeafRunner = async () => ({ text: '', usage: { in: 0, out: 0 } });
-    const noopCommand: CommandLeafRunner = async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode: 0 });
+    const noopCommand: CommandLeafRunner = async () => ({ text: '', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 0 });
     const deps: AssembleOmdMcpDeps = {
       env: Object.fromEntries(ALL_SEATS.map((seat) => [seatEnvKey(seat), `faux:${seat}`])),
       cwd: root,

@@ -99,7 +99,7 @@ describe('闸红短路 —— 端到端: 强模型那一发到底打没打', () 
     const r = await runExecutorDagWithPlan(
       plan({ gate: { goal: '验收', executor: 'command', command: 'false' } }),
       baseConfig({
-        commandRunner: async () => ({ text: 'error TS2322: 类型不匹配', usage: { in: 0, out: 0 }, exitCode: 1 }),
+        commandRunner: async () => ({ text: 'error TS2322: 类型不匹配', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 1 }),
         verifier: async () => {
           calls++;
           return { pass: true, reason: '强模型说好', usage: { in: 99_999, out: 999 } };
@@ -120,7 +120,7 @@ describe('闸红短路 —— 端到端: 强模型那一发到底打没打', () 
     const r = await runExecutorDagWithPlan(
       plan({ gate: { goal: '验收', executor: 'command', command: 'true' } }),
       baseConfig({
-        commandRunner: async () => ({ text: 'ok', usage: { in: 0, out: 0 }, exitCode: 0 }),
+        commandRunner: async () => ({ text: 'ok', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 0 }),
         verifier: async () => {
           calls++;
           return { pass: true, reason: '过', usage: { in: 1, out: 1 } };
@@ -145,7 +145,7 @@ describe('闸红短路 —— 端到端: 强模型那一发到底打没打', () 
     const r = await runExecutorDagWithPlan(
       plan({ gate: { goal: '验收', executor: 'command', command: 'rm -rf /' } }),
       baseConfig({
-        commandRunner: async () => ({ text: '[blocked: 危险命令]', usage: { in: 0, out: 0 }, exitCode: -1 }),
+        commandRunner: async () => ({ text: '[blocked: 危险命令]', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: -1 }),
         verifier: async () => {
           calls++;
           return { pass: false, reason: '强模型判的', usage: { in: 1, out: 1 } };

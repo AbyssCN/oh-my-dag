@@ -88,7 +88,7 @@ function executeDag(
         : {
             accept: {
               id: 'accept', status: accept, kind: 'command', output: opts.acceptOutput ?? (accept === 'done' ? '' : '[exit 1]'),
-              deps: ['execute'], usage: { in: 0, out: 0 },
+              deps: ['execute'], usage: { in: 0, out: 0 }, timedOut: false, signal: null,
             },
           }),
       execute: {
@@ -113,7 +113,7 @@ function executeDag(
 
 /** D-1 基线用 commandRunner fake: 固定退出码, 零副作用。 */
 const cmdRunner = (exitCode: number) => async ({ command: _command }: { command: string }) => ({
-  text: '', usage: { in: 0, out: 0 }, exitCode,
+  text: '', usage: { in: 0, out: 0 }, exitCode, timedOut: false, signal: null,
 });
 
 /** 两段共用一个 `_runDag`, 按 plan.name 路由 (省略的那段走缺省的"一切正常")。 */
@@ -325,7 +325,7 @@ describe('runGoal — D-1 mode 感知基线 delta (SDD cairness-distill D-1, 挂
   /** 按调用次序吐不同输出的 commandRunner(第 1 次 = 基线,第 2 次 = 判红前的复跑)。 */
   const cmdRunnerSeq = (...outs: Array<{ exitCode: number; text: string }>) => {
     let n = 0;
-    return async ({ command: _command }: { command: string }) => ({ usage: { in: 0, out: 0 }, ...(outs[Math.min(n++, outs.length - 1)]!) });
+    return async ({ command: _command }: { command: string }) => ({ usage: { in: 0, out: 0 }, timedOut: false, signal: null, ...(outs[Math.min(n++, outs.length - 1)]!) });
   };
   const failLines = (...names: string[]): string => names.map((s) => `(fail) ${s} [1.00ms]`).join('\n');
 

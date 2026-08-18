@@ -25,7 +25,7 @@ function makeCommandRunner() {
     peak = Math.max(peak, inFlight);
     await new Promise((r) => setTimeout(r, 30));
     inFlight--;
-    return { text: 'ok', usage: { in: 0, out: 0 }, exitCode: 0 };
+    return { text: 'ok', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 0 };
   };
   return { runner, peak: () => peak };
 }

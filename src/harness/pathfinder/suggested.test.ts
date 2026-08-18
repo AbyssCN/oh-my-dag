@@ -206,7 +206,7 @@ describe('工具面: map_confirm + map_rule 挡 suggested (GWT-8)', () => {
       env: { OMD_PATH_BACKEND: 'md' },
       models: { conductorModel: 'x', leafModel: 'x' },
       agentRunner: (async () => ({ text: '', usage: { in: 0, out: 0 } })) as never,
-      commandRunner: (async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode: 0 })) as never,
+      commandRunner: (async () => ({ text: '', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 0 })) as never,
       resolveBackend: (c) => resolveBackend(c, { env: { OMD_PATH_BACKEND: 'md' } }),
     });
     const call = async (name: string, args: Record<string, unknown>) =>

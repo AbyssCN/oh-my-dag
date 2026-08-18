@@ -245,7 +245,7 @@ export async function classifyGoal(
      * 活还没干之前它就过 = 它不是判据 → 降级探索型并把原因写进学习目标。
      * 省略 = 不自检(fail-open;自检是加固不是前置条件)。
      */
-    runCommand?: (input: { command: string }) => Promise<{ exitCode: number }>;
+    runCommand?: (input: { command: string }) => Promise<{ exitCode: number | null }>;
   },
 ): Promise<GoalClassification> {
   const { generate, model, runCommand } = deps;

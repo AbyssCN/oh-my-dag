@@ -19,7 +19,7 @@ const generate: GenerateFn = async () => ({ text: 'leaf-out', usage: { in: 1, ou
 
 /** 定值 command runner (注入式: 不跑真 CLI)。 */
 const runnerReturning = (exitCode: number, text = 'cmd-out'): ExecutorDagConfig['commandRunner'] =>
-  async () => ({ text, usage: { in: 0, out: 0 }, exitCode });
+  async () => ({ text, usage: { in: 0, out: 0 }, exitCode, timedOut: false, signal: null });
 
 const cfg = (exitCode: number, text?: string): ExecutorDagConfig => ({
   conductorModel: 'c:m',

@@ -121,7 +121,7 @@ const cfgWith = (
   leafModel: 'l:m',
   generate,
   agentTemplates: new Map(),
-  commandRunner: async () => ({ text: detectorOut, usage: { in: 0, out: 0 }, exitCode }),
+  commandRunner: async () => ({ text: detectorOut, usage: { in: 0, out: 0 }, exitCode, timedOut: false, signal: null }),
   // 内环 judge 恒不收敛 → 环走满轮数, 好让第 2 轮的复用/重跑看得见。
   judgeSend: async () => ({
     text: '',
@@ -131,7 +131,7 @@ const cfgWith = (
       failureReason: judgeConverged ? undefined : '还没对齐',
       rejectedNodes: [],
     },
-    usage: { in: 0, out: 0 },
+    usage: { in: 0, out: 0 }, timedOut: false, signal: null,
     raw: {},
     model: 'judge:fake',
     attempts: 1,

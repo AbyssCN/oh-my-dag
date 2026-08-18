@@ -83,7 +83,7 @@ async function run(leafText: string): Promise<{
     leafModel: 'l:m',
     generate: makeGenerate(leafText),
     agentTemplates: new Map(),
-    commandRunner: async () => ({ text: COMMAND_CLAIM, usage: { in: 0, out: 0 }, exitCode: 0 }),
+    commandRunner: async () => ({ text: COMMAND_CLAIM, usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 0 }),
     judgeSend: async (req: { messages: { role: string; content: string | ContentPart[] }[] }) => {
       views.push(req.messages.map((m) => contentText(m.content)).join('\n'));
       // 恒不收敛 → 环走满 2 轮, 于是 journal 上留下的是**最后一轮**的 prevReason

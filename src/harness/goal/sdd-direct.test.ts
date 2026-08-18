@@ -554,7 +554,7 @@ describe('runGoal 直通 v2 — O-6 vacuous 探针 (切片 verify 实装前已�
         // 探针与 D-1 基线共用这一个 runner: 切片 verify 回 verifyExit, 验收命令恒 0。
         commandRunner: (async ({ command }: { command: string }) => {
           probed.push(command);
-          return { text: '', usage: { in: 0, out: 0 }, exitCode: command === 'bun test' ? 0 : verifyExit };
+          return { text: '', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: command === 'bun test' ? 0 : verifyExit };
         }) as never,
       } as unknown as ExecutorDagConfig,
       _classify: classify,

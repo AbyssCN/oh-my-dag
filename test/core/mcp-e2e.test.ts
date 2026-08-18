@@ -131,10 +131,10 @@ function gatedEngine() {
 async function wire(overrides: Partial<AssembleOmdMcpDeps> = {}) {
   const { engine, release } = gatedEngine();
   const memory = createOmdMemory({ path: ':memory:', safeguard: UNIVERSAL_SAFEGUARD });
-  const fakeAgentRunner: AgentLeafRunner = async () => ({ text: 'noop', usage: { in: 0, out: 0 } });
+  const fakeAgentRunner: AgentLeafRunner = async () => ({ text: 'noop', usage: { in: 0, out: 0 }, timedOut: false, signal: null });
   const fakeCommandRunner: CommandLeafRunner = async () => ({
     text: 'noop',
-    usage: { in: 0, out: 0 },
+    usage: { in: 0, out: 0 }, timedOut: false, signal: null,
     exitCode: 0,
   });
   const deps: AssembleOmdMcpDeps = {

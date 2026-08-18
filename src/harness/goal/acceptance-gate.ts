@@ -126,7 +126,7 @@ export const NO_NEGATIVE_SAMPLE = '[omd/goal] 分类器没给反面样本 → �
  */
 export async function acceptanceVacuityReason(
   command: string,
-  runCommand: (input: { command: string }) => Promise<{ exitCode: number }>,
+  runCommand: (input: { command: string }) => Promise<{ exitCode: number | null }>,
   expectExit = 0,
 ): Promise<string | null> {
   const v = await probeVacuity(command, runCommand, expectExit);
@@ -144,10 +144,10 @@ export type ProbeVacuityVerdict =
 
 export async function probeVacuity(
   command: string,
-  runCommand: (input: { command: string }) => Promise<{ exitCode: number }>,
+  runCommand: (input: { command: string }) => Promise<{ exitCode: number | null }>,
   expectExit = 0,
 ): Promise<ProbeVacuityVerdict> {
-  let exitCode: number;
+  let exitCode: number | null;
   try {
     ({ exitCode } = await runCommand({ command }));
   } catch (err) {
@@ -156,7 +156,8 @@ export async function probeVacuity(
   }
   // 负退出码 = command-leaf 的闸拒返回值, 不是被执行命令的退出码 —— 那说明命令根本没跑,
   // 自检对它无话可说 (而"跑不起来"这件事已经由 acceptanceCommandBlockReason 管了)。
-  if (exitCode < 0) return { status: 'fail_open' };
+  // null = 死于信号: 跑了但没跑完, 没有判词 ⇒ 与闸拒同样无话可说, 不许读成「空世界里是红的」。
+  if (exitCode === null || exitCode < 0) return { status: 'fail_open' };
   if (exitCode !== expectExit) return { status: 'ok' }; // 空世界里是红的 —— 通过自检
   return {
     status: 'ring',
@@ -202,7 +203,7 @@ export async function acceptanceDiscriminationReason(
   command: string,
   sample: NegativeSample | undefined,
   expectExit = 0,
-  deps: { runIn?: (input: { command: string; cwd: string }) => Promise<{ exitCode: number }> } = {},
+  deps: { runIn?: (input: { command: string; cwd: string }) => Promise<{ exitCode: number | null }> } = {},
 ): Promise<string | null> {
   const d = await probeDiscrimination(command, sample, expectExit, deps);
   return d.status === 'ring' ? d.why : null;
@@ -222,7 +223,7 @@ export async function probeDiscrimination(
   command: string,
   sample: NegativeSample | undefined,
   expectExit = 0,
-  deps: { runIn?: (input: { command: string; cwd: string }) => Promise<{ exitCode: number }> } = {},
+  deps: { runIn?: (input: { command: string; cwd: string }) => Promise<{ exitCode: number | null }> } = {},
 ): Promise<ProbeDiscriminationVerdict> {
   if (!sample?.path || !sample.content) return { status: 'skipped', why: NO_NEGATIVE_SAMPLE };
   // 相对路径且不许 `..` —— 探针要写盘, 而"分类器给的路径"是**模型产的字符串**, 按不可信处理。
@@ -240,6 +241,8 @@ export async function probeDiscrimination(
     writeFileSync(file, sample.content.endsWith('\n') ? sample.content : `${sample.content}\n`, 'utf-8');
     const run = deps.runIn ?? defaultProbeRunner;
     const { exitCode } = await run({ command, cwd: dir });
+    // null = 死于信号(跑了但没跑完, 没有判词)→ 与闸拒同样"探针无话可说", 但成因不同, 判词分开写。
+    if (exitCode === null) return { status: 'fail_open', why: '判据自证: 探针命令死于信号(没拿到判词)—— 本次自检无效, 不据此降级' };
     // 负码 = 闸拒(命令没跑)→ 探针无话可说, 那件事由 acceptanceCommandBlockReason 管。
     if (exitCode < 0) return { status: 'fail_open', why: DISCRIM_BLOCKED };
     if (exitCode !== expectExit) return { status: 'ok' }; // 错答案上命令失败 —— 通过探针
@@ -265,5 +268,5 @@ export async function probeDiscrimination(
  * 而探针的全部意义就是换一个世界跑。也刻意不为此给 `CommandLeafInput` 加一个 `cwd` 口 ——
  * 那是给节点执行面开一个由模型填的根路径,为一道自检开这种口子不划算。
  */
-const defaultProbeRunner = async ({ command, cwd }: { command: string; cwd: string }): Promise<{ exitCode: number }> =>
+const defaultProbeRunner = async ({ command, cwd }: { command: string; cwd: string }): Promise<{ exitCode: number | null }> =>
   createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], cwd, timeoutMs: 30_000 })({ command });

@@ -29,7 +29,7 @@ function cfg(root: string, runId: string, resume: boolean, spawns: { n: number }
     agentTemplates: new Map(),
     commandRunner: async () => {
       spawns.n++;
-      return { text: 'oracle ok', usage: { in: 0, out: 0 }, exitCode: 0 };
+      return { text: 'oracle ok', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 0 };
     },
     continuity: { manager: new CheckpointManager(root), runId, repoRoot: root, ...(resume ? { resume: true } : {}) },
   } as unknown as ExecutorDagConfig;

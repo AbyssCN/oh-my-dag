@@ -728,7 +728,7 @@ describe('冻结判据进环 (四条护栏)', () => {
   /** 假 command runner: 前 n 轮红, 之后绿。 */
   const freezeRunner = (greenFrom: number) => {
     let n = 0;
-    return async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode: ++n >= greenFrom ? 0 : 1 });
+    return async () => ({ text: '', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: ++n >= greenFrom ? 0 : 1 });
   };
 
   test('★ 判据绿 → 这一轮就是最后一轮, 不烧剩余轮数', async () => {

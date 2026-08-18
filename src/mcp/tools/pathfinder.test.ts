@@ -22,7 +22,7 @@ function tools(cwd: string, overrides: Partial<PathfinderToolDeps> = {}) {
     env: {},
     models: { conductorModel: '', leafModel: 'fake:leaf' },
     agentRunner: (async () => ({ text: '', usage: { in: 0, out: 0 } })) as PathfinderToolDeps['agentRunner'],
-    commandRunner: (async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode: 0 })) as PathfinderToolDeps['commandRunner'],
+    commandRunner: (async () => ({ text: '', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 0 })) as PathfinderToolDeps['commandRunner'],
     dispatchFrontier: (() => ({ dispatched: [], reported: [] })) as unknown as PathfinderToolDeps['dispatchFrontier'],
     ...overrides,
   };

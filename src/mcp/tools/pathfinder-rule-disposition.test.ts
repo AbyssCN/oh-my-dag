@@ -19,7 +19,7 @@ function makeTools(cwd: string, overrides: Partial<PathfinderToolDeps> = {}) {
     env: { OMD_PATH_BACKEND: 'md' },
     models: { conductorModel: '', leafModel: 'fake:leaf' },
     agentRunner: (async () => ({ text: '', usage: { in: 0, out: 0 } })) as PathfinderToolDeps['agentRunner'],
-    commandRunner: (async () => ({ text: '', usage: { in: 0, out: 0 }, exitCode: 0 })) as PathfinderToolDeps['commandRunner'],
+    commandRunner: (async () => ({ text: '', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 0 })) as PathfinderToolDeps['commandRunner'],
     dispatchFrontier: (() => ({ dispatched: [], reported: [] })) as unknown as PathfinderToolDeps['dispatchFrontier'],
     resolveBackend: (c: string) => resolveBackend(c, { env: { OMD_PATH_BACKEND: 'md' } }),
     ...overrides,

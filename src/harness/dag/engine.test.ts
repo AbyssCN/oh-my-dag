@@ -1584,7 +1584,7 @@ describe('conductor 局部子图 fan-in 摘要 (双视图 + 三态闸)', () => {
         faninSummary: { minFanout: 1 },
         // A 是 command 节点: 长输出 + 非零退出码 (expect_exit 缺省 0) → status:'failed',
         // 且失败输出本身 > minChars —— 确保这里短路的只能是 status 闸, 不是长度/扇出闸。
-        commandRunner: async () => ({ text: A_FULL, usage: { in: 0, out: 0 }, exitCode: 1 }),
+        commandRunner: async () => ({ text: A_FULL, usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 1 }),
       }),
     );
     const aEntry = Object.entries(r.results).find(([, v]) => v.kind === 'command');
