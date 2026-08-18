@@ -398,9 +398,25 @@ export class CheckpointManager {
     nodeId: string,
     currentGeneration?: string,
     currentInputs?: Record<string, string>,
+    /**
+     * `baselineGate` = 这个节点是**基线测量型**(`expect_exit` 非 0)。调用方给, 因为
+     * checkpoint 里没有 expect_exit 而 plan 里有 —— 与其为一个判据加一列账, 不如让知道的人说。
+     */
+    opts?: { baselineGate?: boolean },
   ): boolean {
     const cp = this.loadCheckpoint(runId, nodeId);
     if (!cp || cp.status !== 'done') return false;
+
+    // ── S-43 第二张脸 (2026-08-18, run dbfe0c66): #167 那条「command 恒不跳」的**例外** ──
+    // `expect_exit` 非 0 的闸验的是「**实装前**这条测试会不会红」, 而"实装前"在一个 run 里
+    // 按定义只存在一次。resume 时重跑它, 量的是一个**已经不存在的时刻** —— 读到绿是必然的,
+    // 而且毫无意义。实盘: s1-red/s3-red 双双 `[expect_exit 1, 实得 0]` → s1/s2 dep-skip,
+    // 整张图塌掉, 而实装其实是好的。
+    // #167 的理由 (command 便宜、往往就是验收 oracle, 重跑比跳过安全) 对**期望绿**的闸成立,
+    // 对**期望红**的闸正好相反: 同一条规则两种语义, 不能共用一个出口。
+    // ⚠ 已知的松处 (与 semantic-key.ts 那条同源): 若上游本轮重跑并改了被测文件, 继承的是
+    // 旧文件的读数。仍然继承 —— 另一条路 (实装之后重测) 是**确定**错的, 这条只是**可能**旧。
+    if (opts?.baselineGate) return true;
 
     // #167 (2026-08-17): command 节点恒不跳 —— 它的绿 checkpoint **只当账不当闸** (engine 的
     // command 出口自此也落绿, base 文件不再只可能 failed/skipped)。command 便宜且往往就是验收

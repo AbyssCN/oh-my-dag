@@ -3439,7 +3439,10 @@ async function executePlan(
       if (
         continuity?.resume &&
         resumeGreens.has(id) &&
-        continuity.manager.shouldSkip(continuity.runId, id, dagGeneration, inputsOf(deps))
+        // S-43 第二张脸: expect_exit 非 0 = 基线测量型, resume 只量一次 (判据在 shouldSkip 里)。
+        continuity.manager.shouldSkip(continuity.runId, id, dagGeneration, inputsOf(deps), {
+          baselineGate: (node.expect_exit ?? 0) !== 0,
+        })
       ) {
         const cp = resumeGreens.get(id)!;
         // D-O: 还原**全文**产物, 不是 800 字 summary —— 下游吃的就是这份输出, 拿摘要顶替等于
