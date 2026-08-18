@@ -173,5 +173,34 @@ export function computeReuse(
 		return ok;
 	};
 	for (const id of Object.keys(plan.nodes)) check(id);
+
+	// ── S-43: **基线测量型节点只量一次** ─────────────────────────────────────────
+	// `expect_exit` 非 0 的节点验的是「**实装前**这条测试会不会红」。而"实装前"在一个 run 里
+	// 按定义只存在一次 —— replan 之后重跑它, 不是量得不准, 是它要量的那个时刻已经不存在了
+	// (上一轮的实装即使失败, 产物也按熔断的明文约定留在树上)。
+	// 实盘代价 (run 14b49f79): 轮 1 三条 red 闸全绿 (exit 1, 证伪成立) → impl 熔断前把 244 行
+	// 留在树上 → 轮 2 重跑同样的闸读到 exit 0 → 判 assert-failed → 终审据此说「实装未完成」。
+	// 事后在干净主树上跑同一份测试: 3/3 全红。**轮 1 的读数才是真的。**
+	//
+	// 这一条刻意按 **id** 匹配而不是按指纹 —— 指纹恰恰是因为 replan 改写了 goal 措辞才失配的,
+	// 而要认的是「同一个闸的同一次测量」。逐字相同的 `command` + 相同的 `expect_exit` 做二次确认:
+	// 命令变了就是另一次测量, 不许拿旧读数冒充。毒集命中 (judge 说这条闸本身写错了) 照常重跑。
+	//
+	// ⚠ 已知的松处: 若上游 (写测试那个节点) 本轮也重跑并改了测试文件, 继承的就是"旧文件的读数"。
+	// 仍然继承, 因为另一条路 (实装之后重测) 是**确定**错的, 而这条只是**可能**旧 —— 两害相权。
+	for (const id of Object.keys(plan.nodes)) {
+		if (reuse.has(id)) continue;
+		const n = plan.nodes[id]!;
+		if (n.expect_exit === undefined || n.expect_exit === 0) continue;
+		const prevNode = prior.plan.nodes[id];
+		const prevRes = prior.results[id];
+		if (!prevNode || !prevRes || prevRes.status !== "done") continue;
+		if (prevNode.expect_exit !== n.expect_exit) continue;
+		if (!n.command || prevNode.command !== n.command) continue;
+		const prevF = priorFp.get(id);
+		if (prevF && poisoned?.has(prevF)) continue;
+		if (readsPoisoned(prevRes)) continue;
+		reuse.set(id, prevRes);
+	}
 	return reuse;
 }

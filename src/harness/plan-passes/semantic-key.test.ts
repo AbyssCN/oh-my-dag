@@ -92,3 +92,70 @@ describe("computeReuse (G-21)", () => {
 		expect(reuse.size).toBe(3);
 	});
 });
+
+/**
+ * S-43: **基线测量型节点只量一次**(图鉴 `docs/silent-failures.md` S-43)。
+ *
+ * `expect_exit` 非 0 的节点验的是「**实装前**这条测试会不会红」,而"实装前"按定义在一个 run 里
+ * 只存在一次。replan 之后重跑它,不是量得不准 —— 是它要量的那个时刻已经不存在了。
+ * run 14b49f79 实盘:轮 1 三条 red 闸全绿(exit 1,证伪成立),impl 熔断前把 244 行实装留在树上,
+ * 轮 2 重跑同样的闸读到 exit 0 → 判 `assert-failed` → verifier 据此说「实装未完成」。全错。
+ *
+ * 为什么它们会被重跑:`nodeFieldsKey` 把 `goal` 入指纹,而 replan 时 conductor 会重写 goal 措辞 →
+ * 指纹变 → 复用落空 → 重跑。**指纹机制没坏,坏的是"这类节点可以重测"这个前提。**
+ */
+describe("computeReuse · S-43 基线测量型节点只量一次", () => {
+	const redPlan = plan({
+		tests: { goal: "写测试" },
+		red: { goal: "证伪: 跑新测试, 必须红", executor: "command", command: "bun test x.test.ts", expect_exit: 1, depends_on: ["tests"] },
+		impl: { goal: "实装", depends_on: ["red"] },
+	});
+	const redResults: Record<string, LeafResult> = {
+		tests: done("tests", "测试已写"),
+		red: done("red", "exit 1 = 红, 证伪成立"),
+		impl: { ...done("impl", "半成品"), status: "failed" },
+	};
+
+	test("★ 上轮 done + 命令逐字未变, 但 replan 改写了 goal → 仍复用 (不重跑, 不重测已消失的基线)", () => {
+		// 证伪: 删掉 computeReuse 末尾那段 S-43 复用 → 本条红 (reuse.has('red') === false),
+		// 读到的正是实盘那个错值 —— 闸被重跑, 而树上已经有实装。
+		const next = plan({
+			tests: { goal: "写测试" },
+			// conductor 重规划惯例:措辞改了,命令一个字没动。
+			red: { goal: "证伪(重规划轮): 跑新测试, 必须红", executor: "command", command: "bun test x.test.ts", expect_exit: 1, depends_on: ["tests"] },
+			impl: { goal: "实装(补上轮未完成部分)", depends_on: ["red"] },
+		});
+		const reuse = computeReuse(next, { plan: redPlan, results: redResults });
+		expect(reuse.get("red")?.output).toBe("exit 1 = 红, 证伪成立");
+		expect(reuse.has("impl")).toBe(false); // 上轮 failed, 照常重跑
+	});
+
+	test("命令变了 → 不复用 (旧读数不许冒充新命令的读数)", () => {
+		const next = plan({
+			tests: { goal: "写测试" },
+			red: { goal: "证伪: 跑新测试, 必须红", executor: "command", command: "bun test 另一个.test.ts", expect_exit: 1, depends_on: ["tests"] },
+			impl: { goal: "实装", depends_on: ["red"] },
+		});
+		expect(computeReuse(next, { plan: redPlan, results: redResults }).has("red")).toBe(false);
+	});
+
+	test("被 judge 点名 (毒集) → 不复用, 必须重跑 (闸本身写错了那一路)", () => {
+		const priorFp = merkleFingerprints(redPlan);
+		const next = plan({
+			tests: { goal: "写测试" },
+			red: { goal: "证伪(重规划轮)", executor: "command", command: "bun test x.test.ts", expect_exit: 1, depends_on: ["tests"] },
+			impl: { goal: "实装", depends_on: ["red"] },
+		});
+		const reuse = computeReuse(next, { plan: redPlan, results: redResults }, new Set([priorFp.get("red")!]));
+		expect(reuse.has("red")).toBe(false);
+	});
+
+	test("expect_exit 缺席/为 0 的普通节点不吃这条 (规则不外溢)", () => {
+		const next = plan({
+			tests: { goal: "写测试(措辞改了)" }, // 无 expect_exit → 指纹变就该重跑
+			red: { goal: "证伪", executor: "command", command: "bun test x.test.ts", expect_exit: 1, depends_on: ["tests"] },
+			impl: { goal: "实装", depends_on: ["red"] },
+		});
+		expect(computeReuse(next, { plan: redPlan, results: redResults }).has("tests")).toBe(false);
+	});
+});
