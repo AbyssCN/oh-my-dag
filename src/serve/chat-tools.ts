@@ -78,6 +78,8 @@ export function createConductorChatTools(tools: readonly OmdMcpTool[]): AnyOmdTo
   const ticketsTool = must(tools, 'map_tickets');
   const plansTool = must(tools, 'omd_plans');
   const recallTool = must(tools, 'memory_recall');
+  const historyReadTool = must(tools, 'history_read');
+  const historySearchTool = must(tools, 'history_search');
 
   return [
     textTool(
@@ -160,6 +162,32 @@ export function createConductorChatTools(tools: readonly OmdMcpTool[]): AnyOmdTo
         k: Type.Optional(Type.Number({ description: 'Max results (default 10)' })),
       }),
       (p) => invoke(recallTool, { query: p.query, k: p.k ?? 10 }),
+    ),
+    textTool(
+      'history_read',
+      'Read paged original messages hidden by one compaction entry.',
+      'history_read(compactionEntryId, offset?) — 读取压缩遮蔽的原文',
+      Type.Object({
+        compactionEntryId: Type.String(),
+        offset: Type.Optional(Type.Number({ description: 'Transcript character offset (default 0)' })),
+      }),
+      (p) => invoke(historyReadTool, { compactionEntryId: p.compactionEntryId, ...(p.offset !== undefined ? { offset: p.offset } : {}) }),
+    ),
+    textTool(
+      'history_search',
+      'Search original messages hidden by compaction entries in this session.',
+      'history_search(query, compactionEntryId?, limit?) — 搜索压缩遮蔽的原文',
+      Type.Object({
+        query: Type.String(),
+        compactionEntryId: Type.Optional(Type.String()),
+        limit: Type.Optional(Type.Number({ description: 'Maximum snippets to return' })),
+      }),
+      (p) =>
+        invoke(historySearchTool, {
+          query: p.query,
+          ...(p.compactionEntryId !== undefined ? { compactionEntryId: p.compactionEntryId } : {}),
+          ...(p.limit !== undefined ? { limit: p.limit } : {}),
+        }),
     ),
   ];
 }

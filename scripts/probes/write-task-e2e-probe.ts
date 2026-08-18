@@ -91,7 +91,7 @@ async function main(): Promise<void> {
   // (黑名单硬拒不可逆命令, 其余在 bwrap 围栏里直接跑) **语义相同**。
   // ⚠ 少掉的读数是"档位分布"那一列; 它量的是审批层, 而审批层已经不存在了。
   const mcpTools = assembleOmdMcpTools({ onNodeEvent: () => {} });
-  const tools = createChatSeatTools({ cwd: repo, mcpTools });
+  const tools = createChatSeatTools({ cwd: repo, mcpTools })('probe');
   const model = resolveEngineModels(process.env).conductorModel;
 
   const toolCalls: string[] = [];

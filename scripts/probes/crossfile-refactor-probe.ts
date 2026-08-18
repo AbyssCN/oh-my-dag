@@ -74,7 +74,7 @@ async function main(): Promise<void> {
   // 2026-08-13: 审批闸删了。这个探针原本「admin 拒 · 其余放行」—— 与新默认
   // (黑名单硬拒不可逆命令, 其余在 bwrap 围栏里直接跑) **语义相同**, 所以直接去掉那一层,
   // 而不是造一个假的替身。少掉的只有 allowed/denied 两个计数, 报告行随之收窄。
-  const tools = createChatSeatTools({ cwd: repo, mcpTools: assembleOmdMcpTools({ onNodeEvent: () => {} }) });
+  const tools = createChatSeatTools({ cwd: repo, mcpTools: assembleOmdMcpTools({ onNodeEvent: () => {} }) })('probe');
   const model = resolveEngineModels(process.env).conductorModel;
   const toolCalls: string[] = [];
   let out = '';

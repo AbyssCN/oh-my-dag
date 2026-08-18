@@ -56,7 +56,7 @@ const FAKE_MCP_TOOLS: OmdMcpTool[] = [
   fakeMcpTool('run', 'runId: run-abc\nstatus: running'),
   fakeMcpTool('solve', 'runId: solve-should-not-count\nerror: leafModel required', true),
   fakeMcpTool('dag_run_plan', 'runId: plan-xyz\nstatus: running'),
-  ...['dag_status', 'dag_runs', 'dag_node_output', 'dag_cancel', 'map_tickets', 'omd_plans', 'memory_recall'].map(
+  ...['dag_status', 'dag_runs', 'dag_node_output', 'dag_cancel', 'map_tickets', 'omd_plans', 'memory_recall', 'history_read', 'history_search'].map(
     (n) => fakeMcpTool(n, `${n} ok`),
   ),
 ];

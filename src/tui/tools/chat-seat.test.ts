@@ -18,7 +18,7 @@ import { HAND_TOOLS, createChatSeatTools } from './chat-seat';
 // recorder 注入 :memory: —— 默认 createDagRecorder() 打开真仓 .omd/dag-runs.db (进程 cwd 锚,
 // 缺陷②同族第四例): 外部 run 活跃时并发出 SQLiteError: disk I/O error 的假红 (NOTES 2026-08-10)。
 const mcpTools = () => assembleOmdMcpTools({ recorder: createDagRecorder({ db: new Database(':memory:') }) });
-const seat = () => createChatSeatTools({ cwd: process.cwd(), mcpTools: mcpTools() });
+const seat = () => createChatSeatTools({ cwd: process.cwd(), mcpTools: mcpTools() })('t');
 
 describe('对话位工具面 (S-4)', () => {
   // 反向自检 (实跑): 把 createChatSeatTools 里的 createOmdAgentTools 那一行去掉 → 这条当场红。
@@ -138,7 +138,7 @@ describe('接线闸:cli.ts 真的走这条装配', () => {
  *   · 把 `sandbox: { root: o.cwd, … }` 那段删掉 → 第 3 条当场红(越界写会真的成功)。
  */
 describe('yolo 之后剩下的两层闸(黑名单 + 围栏)', () => {
-  const seatIn = (cwd: string) => createChatSeatTools({ cwd, mcpTools: mcpTools() });
+  const seatIn = (cwd: string) => createChatSeatTools({ cwd, mcpTools: mcpTools() })('t');
 
   test('★ 黑名单:不可逆命令硬拒(没有审批可以按 y 绕过去了)', async () => {
     const bash = seatIn(process.cwd()).find((t) => t.name === 'bash');
@@ -152,7 +152,7 @@ describe('yolo 之后剩下的两层闸(黑名单 + 围栏)', () => {
       cwd: process.cwd(),
       mcpTools: mcpTools(),
       sandbox: { enabled: false, writable: [], allow: [/^echo pardoned$/], deny: [{ label: 't', reason: 'test', re: /^echo / }] },
-    }).find((t) => t.name === 'bash');
+    })('t').find((t) => t.name === 'bash');
     await expect(bash!.execute('t', { command: 'echo blocked' } as never)).rejects.toThrow('BLOCKED');
     const ok = await bash!.execute('t', { command: 'echo pardoned' } as never);
     expect((ok.content[0] as { text: string }).text).toContain('pardoned');
@@ -179,7 +179,7 @@ describe('开放生态 S1:外部 MCP 双 meta-tool 接线 (I-1 / I-2)', () => {
   // 反向自检: 把 chat-seat.ts 里 createMcpClientTools 那行删掉 → I-2 那条当场红。
   test('★ I-1 零注册 → 工具面与今日相同, 没有 mcp_find/mcp_call', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-seat-nomcp-'));
-    const names = createChatSeatTools({ cwd, mcpTools: mcpTools() }).map((t) => t.name);
+    const names = createChatSeatTools({ cwd, mcpTools: mcpTools() })('t').map((t) => t.name);
     expect(names).not.toContain('mcp_find');
     expect(names).not.toContain('mcp_call');
   });
@@ -188,8 +188,8 @@ describe('开放生态 S1:外部 MCP 双 meta-tool 接线 (I-1 / I-2)', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-seat-mcp-'));
     mkdirSync(join(cwd, '.omd'), { recursive: true });
     writeFileSync(join(cwd, '.omd', 'mcp.json'), JSON.stringify({ mcpServers: { some: { command: 'x' } } }));
-    const bare = createChatSeatTools({ cwd: mkdtempSync(join(tmpdir(), 'omd-seat-nomcp2-')), mcpTools: mcpTools() });
-    const withMcp = createChatSeatTools({ cwd, mcpTools: mcpTools() });
+    const bare = createChatSeatTools({ cwd: mkdtempSync(join(tmpdir(), 'omd-seat-nomcp2-')), mcpTools: mcpTools() })('t');
+    const withMcp = createChatSeatTools({ cwd, mcpTools: mcpTools() })('t');
     expect(withMcp.length).toBe(bare.length + 2);
     expect(withMcp.map((t) => t.name)).toEqual(expect.arrayContaining(['mcp_find', 'mcp_call']));
   });
@@ -198,7 +198,7 @@ describe('开放生态 S1:外部 MCP 双 meta-tool 接线 (I-1 / I-2)', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-seat-mcp2-'));
     mkdirSync(join(cwd, '.omd'), { recursive: true });
     writeFileSync(join(cwd, '.omd', 'mcp.json'), JSON.stringify({ mcpServers: { some: { command: 'x' } } }));
-    const tools = createChatSeatTools({ cwd, mcpTools: mcpTools() });
+    const tools = createChatSeatTools({ cwd, mcpTools: mcpTools() })('t');
     const p = buildConductorChatSystemPrompt({ cwd, tools });
     expect(p).toContain('mcp_find');
     expect(p).toContain('mcp_call');
