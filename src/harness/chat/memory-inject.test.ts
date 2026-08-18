@@ -131,6 +131,10 @@ describe('★ human_verified 在 headless 下 fail-closed', () => {
       { name: 'map_open', handler: async () => ({ content: [] }) },
       { name: 'map_tickets', handler: async () => ({ content: [] }) },
       { name: 'omd_plans', handler: async () => ({ content: [] }) },
+      // D-8 之后 chat 白名单恒查这两个 —— 夹具不带它们, 不是「少了个 mock」,
+      // 是这次 createConductorChatTools 调用本身不再合法 (must 会响亮抛)。
+      { name: 'history_read', handler: async () => ({ content: [] }) },
+      { name: 'history_search', handler: async () => ({ content: [] }) },
     ] as never;
     const names = createConductorChatTools(fake).map((t) => t.name);
     expect(names).toContain('omd_recall');

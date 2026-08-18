@@ -68,7 +68,7 @@ function wireEverything() {
   const backend: ReturnType<typeof createEmbeddedBackend> = createEmbeddedBackend({
     cwd,
     store: createOmdSessionStore(cwd),
-    tools: [],
+    tools: () => [],
     resolveModel: () => 'fake:conductor',
     runTurn: (async () => ({ session: { messages: [] }, reply: '', newMessages: [], compactions: 0, usage: { in: 0, out: 0 }, pressure: { systemTokens: 0, harnessTokens: 0, historyTokens: 0, usedTokens: 0, windowTokens: 0, ratio: null } })) as never,
   });

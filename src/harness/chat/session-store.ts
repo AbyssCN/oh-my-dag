@@ -29,10 +29,49 @@
  */
 import { join } from 'node:path';
 import { uuidv7 } from '@earendil-works/pi-ai';
-import { JsonlSessionRepo, buildSessionContext, createScanningSessionSearch, type AgentMessage, type Session } from '@earendil-works/pi-agent-core';
+import { JsonlSessionRepo, buildSessionContext, createScanningSessionSearch, type AgentMessage, type Entry, type Session } from '@earendil-works/pi-agent-core';
 import { NodeExecutionEnv } from '@earendil-works/pi-agent-core/node';
 import { dataPath } from '../project-scope';
 import { acquireWriteLock, type LockDeps } from './session-lock';
+
+/**
+ * 在 compaction 落条**之前**由代码(不是模型)拼到 summary 末行的确定性指针。
+ *
+ * 格式逐字节钉死 —— 读者(以及 §1.2 的任何工具)用它**直接定位**被这条 compaction 遮蔽的
+ * 原始消息,不必再回放整段对话。原文仍在 JSONL 里:append-only 的契约保证**不删**,
+ * 走 `history_read` 按 seq 区间取。
+ *
+ * D-7:span = 分支路径上「前一条 compaction 之后(无则从根)到本次 compaction 之前」的
+ * 全部**消息型**条目;shadowed = span 去掉末尾 `retainedTailLength` 条
+ * (retainedTail 不带 entry id,只能按条数对位 —— 这是它唯一能给出的对齐键)。
+ * count=0 时照拼:读者得看见「这次没遮蔽东西」。
+ *
+ * 只依赖条目序列 —— 禁时钟、禁随机、禁 LLM、禁网络。同一条 `branchEntries` 喂进去
+ * 多少次都吐同一行,这是它能被快照测试锁住的前提。
+ *
+ * @param id 本次 compaction 的 entryId(由调用方先用 uuidv7 领出来,以便 footer 与
+ *   落条时用的 id 是同一份)。
+ */
+export function buildCompactionFooter(opts: {
+  id: string;
+  branchEntries: readonly Entry[];
+  retainedTailLength: number;
+}): string {
+  const { id, branchEntries, retainedTailLength } = opts;
+  let previousCompactionIdx = -1;
+  for (let i = branchEntries.length - 1; i >= 0; i--) {
+    if (branchEntries[i]!.type === 'compaction') { previousCompactionIdx = i; break; }
+  }
+  const start = previousCompactionIdx === -1 ? 0 : previousCompactionIdx + 1;
+  const span = branchEntries.slice(start).filter((e) => e.type === 'message');
+  const shadowed = span.length > retainedTailLength
+    ? span.slice(0, span.length - retainedTailLength)
+    : [];
+  const count = shadowed.length;
+  const startSeq = count > 0 ? shadowed[0]!.seq : 0;
+  const endSeq = count > 0 ? shadowed[shadowed.length - 1]!.seq : 0;
+  return `\n[compaction ${id}: shadows ${count} msgs seq ${startSeq}-${endSeq}; originals via history_read]`;
+}
 
 const CHAT_DIR = '.omd/chat';
 
@@ -257,10 +296,16 @@ export function createOmdSessionStore(repoRoot: string, lockDeps?: LockDeps): Om
       ensureWritable(path);
       // `ProvisionedEntry` = Omit<Entry,'parentId'|'seq'|'timestamp'> ⇒ 只用给 id 与内容。
       // id 用 pi 自己的 `uuidv7`(**借,不手搓** —— 它就是 Session 默认 idGenerator 用的那个)。
+      // 同一个 id 既写进 footer 也写进 entry —— 读者按 footer 里的 id 反查条目,**同一份**。
+      const id = uuidv7();
+      // 必须在 appendEntry **之前**算 span:此刻 branch 的叶是「本次 compaction 之前」的那条,
+      // append 完就多了一条 compaction,找「前一条 compaction」会落到自己头上(见 buildCompactionFooter)。
+      const footer = buildCompactionFooter({ id, branchEntries: await branch(s), retainedTailLength: x.retainedTail.length });
       await s.appendEntry({
         type: 'compaction',
-        id: uuidv7(),
-        summary: x.summary,
+        id,
+        // footer 拼在 summary 末行 —— 它是确定性指针,不是摘要本身;模型在拼 summary 时看不见它。
+        summary: x.summary + footer,
         tokensBefore: x.tokensBefore,
         // retainedTail 是 AgentMessage[] —— toolResult 的 undefined 键问题同 append,一并净化。
         retainedTail: jsonSafe(x.retainedTail),

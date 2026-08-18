@@ -78,7 +78,7 @@ async function main(): Promise<void> {
 
   // 只读闸:这一格不需要写, 会改盘的一律拒 ⇒ 结构上改不了目标仓。
   // (2026-08-13 由审批闸搬到 `readonly-face` —— 审批层已随 TUI yolo 化删除。)
-  const face = readonlyFace(createChatSeatTools({ cwd: repo, mcpTools: assembleOmdMcpTools({ onNodeEvent: () => {} }) }));
+  const face = readonlyFace(createChatSeatTools({ cwd: repo, mcpTools: assembleOmdMcpTools({ onNodeEvent: () => {} }) })('probe'));
   const tools = face.tools;
   const model = resolveEngineModels(process.env).conductorModel;
   const store = createOmdSessionStore(repo);

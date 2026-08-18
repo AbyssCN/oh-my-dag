@@ -80,7 +80,7 @@ async function runOne(repo: string): Promise<Reading> {
   // ② 只读闸(2026-08-13 由审批闸搬到 `readonly-face`: 审批层已随 TUI yolo 化删除)。
   //    工具面形状不变 —— 会改盘的那几只仍在面上, 被拒是调用时抛错。
   const mcpTools = assembleOmdMcpTools({ onNodeEvent: () => {} });
-  const face = readonlyFace(createChatSeatTools({ cwd: repo, mcpTools }));
+  const face = readonlyFace(createChatSeatTools({ cwd: repo, mcpTools })('probe'));
   const tools = face.tools;
   // 座位走**生产的同一条解析**(env + .omd/config.json)。探针里另指一个模型的话,
   // 量的就不是生产装配了。

@@ -35,7 +35,7 @@ function make(over: Partial<Parameters<typeof createEmbeddedBackend>[0]> = {}) {
   const backend = createEmbeddedBackend({
     cwd,
     store: createOmdSessionStore(cwd),
-    tools: [],
+    tools: () => [],
     resolveModel: () => 'deepseek:deepseek-v4-flash',
     runTurn: fakeTurn(),
     ...over,
@@ -265,7 +265,7 @@ describe('会话读侧', () => {
     const s = await store.create('s1', '标题');
     await s.append({ role: 'user', content: 'hi', timestamp: 1 } as never);
     const backend = createEmbeddedBackend({
-      cwd, store, tools: [], resolveModel: () => 'a:1', runTurn: fakeTurn(),
+      cwd, store, tools: () => [], resolveModel: () => 'a:1', runTurn: fakeTurn(),
     });
     expect((await backend.listSessions()).map((m) => m.id)).toEqual(['s1']);
     expect((await backend.loadHistory({ sessionId: 's1' })).length).toBe(1);
@@ -291,7 +291,7 @@ describe('★ 一轮 chat 只上一次账 (2026-08-09 双计账修复)', () => {
       const backend = createEmbeddedBackend({
         cwd,
         store: createOmdSessionStore(cwd),
-        tools: [],
+        tools: () => [],
         resolveModel: () => 'deepseek:deepseek-v4-flash',
         // 真 `runChatTurn` + 假循环 —— 逐条 emit 那一段必须真的跑到 (假轮子会绕过它)。
         runTurn: ((o: ChatTurnOpts): Promise<ChatTurnResult> =>

@@ -158,15 +158,18 @@ if (userArgs[0] === 'tui') {
       // 仍在工具面里 (`serve/chat-tools.ts`), 模型想查随时能查; 写记忆照旧不给对话位。
       // 顺带修掉一处不一致: SDK 通道本就不吃 `transformContext` —— 此前同一个 TUI 换个座位
       // 就换一套隐性上下文 (pi 座每轮有召回, claude-code 座一次都没有)。
+      // D-8: 工具面与 backend **共用同一个 store 实例** —— 两个实例写同一份会话文件会写出
+      // 重复 seq, 而下一次 open() 直接抛 non-consecutive seq (见 session-store 的单写者注)。
+      const chatStore = createOmdSessionStore(cwd);
       const embedded = createEmbeddedBackend({
         cwd,
-        store: createOmdSessionStore(cwd),
+        store: chatStore,
         // S-4: 对话位的工具面(含六只手)。装配在 `tui/tools/chat-seat`, 那里有闸盯着 ——
         // 长在这个内联块里的话, "对话位到底拿到了哪些工具"没有任何测试看得见(坑 #7 同族)。
         // 切片①: 审批闸包住整个工具面; 六只手的内层危险命令闸随之交给 admin 档 (闸永远有一层)。
         // ★ `ask_user`(2026-08-08):UI 走**惰性取** —— 工具面装在 TUI 之前, 那时 dialogs
         //   还不存在(同上面那个"延迟指针接环"的理由)。`runOmdTui` 起来后把它填上。
-        tools: createChatSeatTools({ cwd, mcpTools: tools, extTools, sandbox: sandboxCfg, askUser: () => askUserUi }),
+        tools: createChatSeatTools({ cwd, mcpTools: tools, extTools, sandbox: sandboxCfg, askUser: () => askUserUi, store: chatStore }),
         // 多个扩展**串起来**追加(串接在 session 里, 每轮现取当前扩展)。
         // ⚠ 钩子**无条件挂**: 挂不挂此前按启动那一刻的扩展数决定, 而 `/reload` 能把
         //   0 个变成 N 个 —— 按启动数决定的话, 空仓里装上第一个扩展再重载, 工具进来了

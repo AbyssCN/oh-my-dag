@@ -38,7 +38,7 @@ const store = createOmdSessionStore(cwd);
 const backend = createEmbeddedBackend({
   cwd,
   store,
-  tools: createConductorChatTools(assembleOmdMcpTools()),
+  tools: () => createConductorChatTools(assembleOmdMcpTools()), // D-8: backend 收按会话工厂 (本冒烟不测回捞)
   resolveModel: () => model,
 });
 

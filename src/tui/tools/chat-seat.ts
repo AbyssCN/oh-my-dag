@@ -38,6 +38,8 @@ import { createOmdAgentTools } from '../../harness/agent-tools';
 import { loadSandboxConfig } from '../../harness/hooks/command-policy';
 import { createInspectTool } from '../../harness/inspect-tool';
 import { createMcpClientTools } from '../../mcp/client/meta-tools';
+import { createHistoryTools } from '../../mcp/tools/history';
+import { createOmdSessionStore } from '../../harness/chat/session-store';
 import type { OmdMcpTool } from '../../mcp/server';
 import { createConductorChatTools } from '../../serve/chat-tools';
 import { type AskUserResolver, createAskUserTool } from './ask-user';
@@ -71,23 +73,44 @@ export interface ChatSeatToolsOpts {
    * `omd serve` / `mcp` 那两条路没有对话框, 挂上去只会是个必然问不出来的工具。
    */
   askUser?: AskUserResolver;
+  /**
+   * 会话持久层(D-8,2026-08-18)。`history_read` / `history_search` 是**按会话绑定**的,
+   * 而对话位支持多会话并发 —— 所以它们不能在装配期建、也不能靠一个「当前会话」取值器
+   * (并发下会串台)。本工厂返回的函数按每轮的 sessionId 现建这两件。
+   *
+   * 省略 = 按 `cwd` 现建一个。**安全**:单写者表 `SESSIONS` 是模块级的
+   * (`session-store.ts:180`),同一份会话文件在一个进程里只会有一个 `Session` 实例,
+   * 拿到几个 store 对象都不改变这一点。生产路径仍显式传同一个实例(读起来不必推)。
+   */
+  store?: import('../../harness/chat/session-store').OmdSessionStore;
 }
 
 /**
  * 装配对话位的工具面。**顺序即 system prompt 里的列举顺序**:
  * 手在最前(最常用),然后指挥面,再符号面,最后扩展。
+ *
+ * ## 为什么返回**工厂**而不是数组(D-8,2026-08-18)
+ *
+ * `history_read` / `history_search` 绑到具体会话,而工具面在 TUI 起来之前就装好了
+ * (`cli.ts` 那一处,同 `ask_user` 惰性取 UI 的理由)。**多会话并发**下,「当前会话」
+ * 这种取值器会串台,所以走与 MCP 位(`mcp/tools/chat.ts`)同一条解法:
+ * **持资源的静态部分建一次,只有指挥面每轮按 sessionId 重建。**
+ *
+ * 静态部分包含 `createOmdAgentTools`(持 `NodeExecutionEnv`)、codegraph 探测、skill 读盘 ——
+ * 每轮重建它们会给每次对话加 I/O,那正是这里要避开的。
  */
-export function createChatSeatTools(o: ChatSeatToolsOpts): AnyOmdTool[] {
+export function createChatSeatTools(o: ChatSeatToolsOpts): (sessionId: string) => AnyOmdTool[] {
   // 2026-08-13 owner 裁: 默认 yolo —— 不弹审批框, 安全靠 **围栏 + 黑名单** 两层。
   // 配置逐仓读 (`tui.sandbox`); `enabled:false` 只关围栏, 黑名单永远在。
   const sandboxCfg = o.sandbox ?? loadSandboxConfig(o.cwd);
-  const all = [
-    ...createOmdAgentTools({
-      cwd: o.cwd,
-      commandPolicy: sandboxCfg,
-      ...(sandboxCfg.enabled ? { sandbox: { root: o.cwd, writable: sandboxCfg.writable } } : {}),
-    }),
-    ...createConductorChatTools(o.mcpTools),
+  const store = o.store ?? createOmdSessionStore(o.cwd);
+  // ── 一次性:持资源 / 要探测 / 要读盘的那些 ──
+  const hands = createOmdAgentTools({
+    cwd: o.cwd,
+    commandPolicy: sandboxCfg,
+    ...(sandboxCfg.enabled ? { sandbox: { root: o.cwd, writable: sandboxCfg.writable } } : {}),
+  });
+  const tail = [
     // S17: 符号能力是**探测式**的 —— 探不到就一个工具都不挂(不是挂了、调了才失败)。
     ...createCodegraphTools({ cwd: o.cwd }),
     // S-6: 让模型自己取 skill 正文。一条 skill 都没有时不挂(同上:恒失败的工具比没有更糟)。
@@ -103,5 +126,10 @@ export function createChatSeatTools(o: ChatSeatToolsOpts): AnyOmdTool[] {
     ...(o.askUser ? createAskUserTool(o.askUser) : []),
     ...(o.extTools ?? []),
   ];
-  return all;
+  // ── 每轮:指挥面 + 本轮会话的两件回捞工具 ──
+  return (sessionId: string): AnyOmdTool[] => [
+    ...hands,
+    ...createConductorChatTools([...o.mcpTools, ...createHistoryTools({ store, sessionId })]),
+    ...tail,
+  ];
 }

@@ -30,8 +30,14 @@ import type { OmdBackend, OmdTuiEvent, TuiSessionMeta, TuiTreeEntry } from './ba
 export interface EmbeddedBackendDeps {
   cwd: string;
   store: OmdSessionStore;
-  /** chat 位工具白名单(`createConductorChatTools` 的产物)。 */
-  tools: AnyOmdTool[];
+  /**
+   * chat 位工具面的**按会话工厂**(`createChatSeatTools` 的产物,D-8 2026-08-18)。
+   *
+   * 收工厂而不是数组:`history_read` / `history_search` 绑到具体会话,而对话位**支持多会话并发** ——
+   * 装配期建一次拿不到 sessionId,靠「当前会话」取值器在并发下会串台。持资源的静态部分
+   * (`NodeExecutionEnv` / codegraph 探测 / skill 读盘)仍在工厂内部只建一次。
+   */
+  tools: (sessionId: string) => AnyOmdTool[];
   /**
    * 装配层的**全套** MCP 工具(S14)。`dag_runs` / `dag_resume` 从这里取。
    *
@@ -239,7 +245,7 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
           prompt,
           model: deps.resolveModel(),
           cwd: deps.cwd,
-          tools: deps.tools,
+          tools: deps.tools(sessionId), // D-8: 本轮会话的工具面 (回捞两件按 sid 现建)
           onEvent: mapAgentEvent,
           signal: controller.signal,
           // /think 控制面: TUI 每轮带当前档; 缺省时 agent.ts 自己的默认 ('high') 生效。

@@ -24,6 +24,7 @@ import type { OmdMcpTool } from '../server';
 import type { AnyOmdTool } from '../../harness/agent-tools';
 import { createOmdAgentTools } from '../../harness/agent-tools';
 import { createConductorChatTools } from '../../serve/chat-tools';
+import { createHistoryTools } from './history';
 import { runChatTurn, type ChatTurnOpts } from '../../harness/chat/agent';
 import { resolveSeatAdvisor } from '../../model/role-models';
 import type { OmdSessionStore } from '../../harness/chat/session-store';
@@ -116,15 +117,18 @@ export interface ConductorChatDeps {
   budget?: () => WeeklyBudgetStatus;
 }
 
+/** Read-only leaf hands are resource-bearing and therefore created once per conductor tool. */
+function buildHeadlessHands(cwd: string): AnyOmdTool[] {
+  return createOmdAgentTools({ cwd }).filter((t) => HEADLESS_HANDS.includes(t.name));
+}
+
 /**
- * headless 对话位的工具面(D-1)。抽成导出函数是为了让闸看得见 ——
- * 「对话位到底拿到了哪些工具」长在 handler 内联块里就没有任何测试盯得住(chat-seat 同理)。
+ * Headless tool surface used by tests and non-session callers. `createConductorChatTool`
+ * keeps the hands from this split at assembly time and rebuilds only its session-bound
+ * conductor wrappers per turn.
  */
 export function buildHeadlessChatTools(deps: Pick<ConductorChatDeps, 'cwd' | 'tools'>): AnyOmdTool[] {
-  return [
-    ...createOmdAgentTools({ cwd: deps.cwd }).filter((t) => HEADLESS_HANDS.includes(t.name)),
-    ...createConductorChatTools(deps.tools),
-  ];
+  return [...buildHeadlessHands(deps.cwd), ...createConductorChatTools(deps.tools)];
 }
 
 /**
@@ -180,9 +184,9 @@ function guardBudget(tools: AnyOmdTool[], budget: () => WeeklyBudgetStatus): Any
 }
 
 export function createConductorChatTool(deps: ConductorChatDeps): OmdMcpTool {
-  // 装配期建一次(createOmdAgentTools 持 NodeExecutionEnv 资源);runIds 收集器 per-call 包装。
-  const baseTools = buildHeadlessChatTools(deps);
-  // 默认读数源:账本目录与 harness/cli.ts 的 mcp 分支同一条解析(env 现读 —— 改上限不必重启 server)。
+  // NodeExecutionEnv is held by agent hands: build once at assembly, not once per turn.
+  const hands = buildHeadlessHands(deps.cwd);
+  // Default read source: ledger dir and harness/cli.ts MCP branch share this parser.
   const budget = deps.budget ?? (() => checkWeeklyBudget({ dir: usageLedgerDir(deps.cwd) }));
   return {
     name: 'conductor_chat',
@@ -216,6 +220,10 @@ export function createConductorChatTool(deps: ConductorChatDeps): OmdMcpTool {
         ].join('\n');
         return { content: [{ type: 'text' as const, text: `${head}\n---\n${renderBudgetEscalation(preTurn)}` }] };
       }
+      // Session-bound history tools are rebuilt per round; sessionId stays explicit and fixed.
+      const historyTools = createHistoryTools({ store: deps.store, sessionId: sid });
+      const roundTools = [...hands, ...createConductorChatTools([...deps.tools, ...historyTools])];
+
       const runIds: string[] = [];
       try {
         const r = await runChatTurn({
@@ -229,7 +237,7 @@ export function createConductorChatTool(deps: ConductorChatDeps): OmdMcpTool {
             return a ? { advisor: a } : {};
           })(),
           cwd: deps.cwd,
-          tools: guardBudget(collectRunIds(baseTools, runIds), budget),
+          tools: guardBudget(collectRunIds(roundTools, runIds), budget),
           // S2:headless 块拼在整份 prompt 尾部 —— 冻结前缀逐字不动,cache 面不伤。
           // S-C:路由阶梯同层追加 (C-1)。
           systemPromptHook: async (p) => `${p}\n\n${HEADLESS_PROMPT_BLOCK}\n\n${ROUTING_LADDER_BLOCK}`,
