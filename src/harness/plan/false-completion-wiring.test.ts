@@ -80,6 +80,10 @@ async function run(checkExit: number, leafText = '已实现 clamp 并写好测�
   root: string;
 }> {
   const root = opts.root ?? mkdtempSync(join(tmpdir(), 'omd-fcwire-'));
+  // 2026-08-18: OMD_DATA_HOME 设 → engine 把 journal 落 `~/.omd/projects/<slug>/continuity/<runId>/`, 而非
+  // `<root>/.omd/...`。 旧硬编码读 `<root>/.omd/continuity/run-1/_loop-P.json` 在 OMD_DATA_HOME 存在时
+  // 一定 ENOENT。 改用 `cm.loopPath` 走与 engine 同一份 `runDir` 解析, 保证读路径 = 写路径。
+  const cm = new CheckpointManager(root);
   const judgeCalls = { n: 0 };
   const cfg = {
     conductorModel: 'c:m',
@@ -105,11 +109,12 @@ async function run(checkExit: number, leafText = '已实现 clamp 并写好测�
         attempts: 1,
       };
     },
-    continuity: { manager: new CheckpointManager(root), runId: 'run-1', ...(opts.resume ? { resume: true } : {}) },
+    continuity: { manager: cm, runId: 'run-1', ...(opts.resume ? { resume: true } : {}) },
   } as unknown as ExecutorDagConfig;
   const r = await runExecutorDagWithPlan(plan, cfg);
+  // 路径经 `cm.loopPath` 解析, 与 `runConductorNode.writeLoopJournal` 走的 `runDir` 同源 (MP-INV-5)。
   const journal = JSON.parse(
-    readFileSync(join(root, '.omd', 'continuity', 'run-1', '_loop-P.json'), 'utf-8'),
+    readFileSync(cm.loopPath('run-1', 'P'), 'utf-8'),
   ) as NodeLoopJournal;
   return {
     judgeCalls: judgeCalls.n,

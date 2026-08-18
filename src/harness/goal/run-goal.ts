@@ -1128,8 +1128,20 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   // 此前这道阶梯只活在下面那句摘要文本里 —— 于是 `status` 那一位不得不用 `converged ? done : failed`
   // 独立再判一遍, 两处一漂就出现了 2026-07-31 live 那行「一次正确的 BLOCKED 被念成 failed」。
   // 阶梯顺序一字未改 (外部事件 > 资源轴 > 环的结论 > 判据分歧), 只是把它的结论抬成了一个词。
+  // #165① 洞①: 走 outcome 细分路, 不走 verification 附注路 —— verification 附注路要动
+  // `dag-record.ts:272/410/508/624` + `dag-tools.ts:247-274/272/350-352` +
+  // `omd-readout.ts:952/961/1293/1348/1824-1866/2427` + `read-api.ts:22` 共 9+ 消费面, 并需
+  // `ALTER omd_dag_runs` 存 attempts/escalated/circuitBroken; outcome 细分只扩
+  // `run-goal.ts:1131-1147` 里已存在的 `delivered-with-red` 行为与测试, db schema 不变, 消费者改动面显著更小。
+  // D-2 真值表: converged=true 不再无条件 success —— 图内有 status === 'failed' 的子节点 →
+  // delivered-with-red (交付达标但有节点红, INV-2), 无红 → success (INV-1)。红节点检查只在
+  // converged 真分支问 (converged=false 分支一字不动: 交付没达标优先, INV-3, 且保留既有
+  // oracleRecheckGreen → delivered-with-red 复验分支)。
+  const hasRedLeaf = Object.values(exec.results).some((n) => n.status === 'failed');
   const outcome: RunOutcomeKind = converged
-    ? 'success'
+    ? hasRedLeaf
+      ? 'delivered-with-red'
+      : 'success'
     : cancelledReason
       ? 'cancelled'
       : infraStopped
