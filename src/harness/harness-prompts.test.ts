@@ -57,11 +57,14 @@ describe('conductor 档:冻结前缀在前,动态尾在后(cache 面结构)', ()
     expect(p.startsWith(`${CONDUCTOR_HARNESS_CORE}\n\n${CONDUCTOR_SITUATIONAL}`)).toBe(true);
   });
 
-  test('情境段覆盖 Y-1..Y-6 六条(丢一条当场红)', () => {
+  test('情境段覆盖 12 块(丢一块当场红)', () => {
     for (const anchor of [
       '<cross-validation>', '<recall-discipline>', '<iteration-bound>',
       // Y-6 knowledge-boundary (2026-08-17 APoSD 蒸馏: 按知识边界分解, 反时序性分解)
       '<vertical-slicing>', '<knowledge-boundary>', '<scope-lock>',
+      // 2026-08-18: conductor 不再读 CLAUDE.md (a426e09) 之后补进来的六块
+      '<experiment-discipline>', '<ruler-honesty>', '<silent-failure-modes>',
+      '<before-asserting>', '<solve-ignition>', '<output-style>',
     ]) {
       expect(CONDUCTOR_SITUATIONAL).toContain(anchor);
     }
@@ -69,7 +72,9 @@ describe('conductor 档:冻结前缀在前,动态尾在后(cache 面结构)', ()
 
   test('★ 情境段与冻结核不重复(重复 = 每轮付两遍 token 且蒸馏走样)', () => {
     // 核里已焊的承重词不许在情境段再现 —— 分野是"常驻价值", 重复即分野失效。
-    for (const dup of ['<gates>', '3 strikes', 'Anti-happy-path', 'ceremonial asking']) {
+    // 'Cost is the test' = 核 <question-triage> FACT 车道的 P-2 原句 —— 2026-08-18 补进来的
+    // 六块刻意不重写它 (M3 那版草稿重写了, 会让同一条纪律每轮付两遍 token)。
+    for (const dup of ['<gates>', '3 strikes', 'Anti-happy-path', 'ceremonial asking', 'Cost is the test']) {
       expect(CONDUCTOR_SITUATIONAL).not.toContain(dup);
     }
   });
