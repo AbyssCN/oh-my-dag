@@ -119,6 +119,29 @@ if (import.meta.main) {
 
   console.error(`goal-worker: runId=${runId} 已起跑 (pid ${process.pid}), 等终态…`);
 
+  // #179: worker 真身自报 —— 母进程 (MCP server) 点火回执的座位行是它的内存态, 与本进程
+  // (新进程, 读盘上 config + env) 漂移时以本自报为准。落 continuity 目录 —— **刻意不落**
+  // `.omd/runs/<runId>` (那是 branch 档 worktree 的目标, 提前建目录会让 `git worktree add` 失败)。
+  // fail-open 但留证据: 自报写不出不阻断 run, 一行错误原文进 stderr。
+  try {
+    const { resolveRoleModelConfigured } = await import('../src/model/role-models');
+    const { writeSeatSelfReport } = await import('../src/mcp/seat-self-report');
+    const actual = resolveRoleModelConfigured('agent', { env: process.env }).model;
+    writeSeatSelfReport(join(cwd, '.omd', 'continuity', runId), {
+      v: 1,
+      schema: 'oh-my-dag.seat-self-report.v1',
+      runId,
+      seatId: 'agent',
+      actualModel: actual,
+      actualSeatLabel: null,
+      reportedAt: new Date().toISOString(),
+      source: `goal-worker pid=${process.pid}`,
+    });
+    console.error(`goal-worker: #179 seat 自报 agent=${actual}`);
+  } catch (e) {
+    console.error(`goal-worker: #179 seat 自报失败 (不阻断): ${e instanceof Error ? e.message : String(e)}`);
+  }
+
   // 轮询自己的 registry 直到终态。`dag_goal` 的 .then 会把状态写成 done/failed/cancelled。
   const TERMINAL = new Set(['done', 'failed', 'cancelled']);
   for (;;) {

@@ -28,6 +28,7 @@ import { RUN_OUTCOME_INFO } from '../../harness/run-outcome';
 import { summarizeGoalFailure } from '../../harness/goal/summarize-goal-failure';
 import { commitRunArtifacts, describeRunWorktree, prepareRunWorktree, shouldAutoCommit, type BranchStrategy } from '../../harness/run-worktree';
 import { captureRollbackAnchor, describeRollback } from '../../harness/rollback-anchor';
+import { readSeatSelfReport, renderSeatLine } from '../seat-self-report';
 import { renderOwnerDirectives, type OwnerInbox } from '../owner-inbox';
 import { logger } from '../../harness/logger';
 
@@ -509,6 +510,14 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
               (branchStrategy === 'branch' ? `branchStrategy: branch — worker 将建隔离 worktree (omd/run/${runId}); 建树失败会退回 head 并在日志/回执标注 degraded。\n` : '') +
               `日志: ${logPath}\n` +
               ignitionForecastLine(dag, sddPath) +
+              // #179: 上面 forecast 里的「烧哪本账」座位行是**本 server 内存态** —— 与 detached
+              // worker (新进程读盘上 config) 漂移时它撒谎 (实证 run 5382bd05: 回执 mimo, 真身 M3)。
+              // 点火时 worker 尚未起跑, 自报恒缺席 → 恒印 UNCONFIRMED 提示; 真身自报落
+              // continuity/<runId>/seat-self-report.json, 终审/dag_status 读那份。
+              `${renderSeatLine({
+                readSelfReport: () => readSeatSelfReport(join(runAnchor, '.omd', 'continuity', runId), runId),
+                getServerSeatMemory: () => 'unused (本模块契约: 永不读内存态)',
+              })} (自报盘: .omd/continuity/${runId}/seat-self-report.json)\n` +
               // #147: 跨仓锚要念出来 —— run 登记在目标仓的 runs.db, 本 server 的 dag_status 查不到它。
               (runAnchor !== deps.cwd
                 ? `锚仓: ${runAnchor} — run 状态落在该仓 .omd/, 本 server 的 dag_status 查不到; 看日志或在该仓起 omd server 查。`
