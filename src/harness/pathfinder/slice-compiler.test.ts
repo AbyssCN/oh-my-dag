@@ -29,13 +29,24 @@ describe('compileSlice', () => {
     expect(plan.nodes.b!.executor).toBe('agent');
   });
 
-  test('goal 缺 ruling 时回落 title; executorKind 缺省 inproc → leaf', () => {
-    const m = mapOf([ticket({ id: 'a', title: 'do the thing', ruling: undefined, executorKind: undefined })]);
+  /**
+   * #197: 旧「executorKind 缺省 → inproc → leaf」静默回落已摘; 缺 kind 编译期必抛
+   * (语义同 pathfinder.ts map_add 装配期闸, 同一份契约两面印)。本条只保留**goal 回落
+   * title**那一半, 缺 executorKind 的失败形状搬到下条独立钉。
+   */
+  test('goal 缺 ruling 时回落 title (executorKind 显式给)', () => {
+    const m = mapOf([ticket({ id: 'a', title: 'do the thing', ruling: undefined, executorKind: 'agent' })]);
     // ruling 缺 但 status ruled — 这里显式不给 ruling 测回落
     const withRuled = mapOf([{ ...m.tickets[0]!, status: 'ruled' }]);
     const plan = compileSlice(withRuled, ['a']);
     expect(plan.nodes.a!.goal).toBe('do the thing');
-    expect(plan.nodes.a!.executor).toBe('leaf'); // inproc → leaf
+    expect(plan.nodes.a!.executor).toBe('agent');
+  });
+
+  /** #197: 缺 executorKind 不再静默 inproc→leaf; 编译期当场抛, 契约抄自 map_add 同源闸。 */
+  test('executorKind 缺省 → 抛 (不再静默回落 leaf, #197)', () => {
+    const m = mapOf([ticket({ id: 'a', ruling: 'r' })]); // factory 缺省 executorKind 缺席
+    expect(() => compileSlice(m, ['a'])).toThrow(/缺 executorKind/);
   });
 
   test('executorKind 映射: command/agent 直通, inproc/primitive/map → leaf (map/primitive 无 spec 降级)', () => {
@@ -55,17 +66,17 @@ describe('compileSlice', () => {
     expect(PlanSchema.safeParse(plan).success).toBe(true);
   });
 
-  test('depends_on 只保留 region 内的边 (region 外前置被裁掉)', () => {
+  test('depends_on 只保留 region 内的边 (region 外前置被裁掉) — #197: executorKind 显式给', () => {
     const m = mapOf([
-      ticket({ id: 'a', ruling: 'r' }),
-      ticket({ id: 'b', ruling: 'r', blockedBy: ['a', 'outside'] }),
+      ticket({ id: 'a', ruling: 'r', executorKind: 'agent' }),
+      ticket({ id: 'b', ruling: 'r', blockedBy: ['a', 'outside'], executorKind: 'agent' }),
     ]);
     const plan = compileSlice(m, ['b']); // a 不在 region
     expect(plan.nodes.b!.depends_on ?? []).toEqual([]); // a 与 outside 都被过滤
   });
 
   test('抛错: region 含未裁票 (雾未散)', () => {
-    const m = mapOf([ticket({ id: 'a', status: 'open', ruling: undefined })]);
+    const m = mapOf([ticket({ id: 'a', status: 'open', ruling: undefined, executorKind: 'agent' })]);
     expect(() => compileSlice(m, ['a'])).toThrow(/ruled|裁/);
   });
 

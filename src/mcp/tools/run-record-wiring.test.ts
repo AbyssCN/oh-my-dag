@@ -203,7 +203,8 @@ describe('path_deliver 的运行留痕接线', () => {
       (await byName.get(n)!.handler(a as never, {} as never)) as { content: { text: string }[]; isError?: boolean };
 
     await call('path_map', { destination: 'Ship X' });
-    await call('path_add', { title: 'build the thing', type: 'task' });
+    // #197: executorKind 显式给 ('inproc' 取代旧静默回落, 不撞 spec gate)
+    await call('path_add', { title: 'build the thing', type: 'task', executorKind: 'inproc' });
     await call('path_rule', { ticketId: 't1', ruling: 'do it with bun' });
     const deliver = await call('path_deliver');
 
@@ -238,7 +239,8 @@ describe('path_deliver 的运行留痕接线', () => {
       (await byName.get(n)!.handler(a as never, {} as never)) as { content: { text: string }[]; isError?: boolean };
 
     await call('path_map', { destination: 'Ship Y' });
-    await call('path_add', { title: 'x', type: 'task' });
+    // #197: executorKind 显式给 ('inproc' 取代旧静默回落, 不撞 spec gate)
+    await call('path_add', { title: 'x', type: 'task', executorKind: 'inproc' });
     await call('path_rule', { ticketId: 't1', ruling: 'go' });
     await call('path_deliver');
 

@@ -24,11 +24,12 @@ const t = (over: Partial<Ticket> & { id: string }): Ticket => ({
 });
 
 /** 一张图: t1 已裁 (可交付区域), s1 suggested (带溯源+指纹), t2 open。 */
+/** #197: t1 显式 executorKind='agent', 否则 slice 编译必抛 (旧缺省 inproc→leaf 已被裁)。 */
 const mapWithSuggested = (): PathMap => ({
   destination: '测试图',
   slug: 'sugg-map',
   tickets: [
-    t({ id: 't1', status: 'ruled', ruling: '干活' }),
+    t({ id: 't1', status: 'ruled', ruling: '干活', executorKind: 'agent' }),
     t({ id: 's1', status: 'suggested', suggestedBy: 'run-42', fingerprint: 'f'.repeat(64) }),
     t({ id: 't2', status: 'open' }),
   ],

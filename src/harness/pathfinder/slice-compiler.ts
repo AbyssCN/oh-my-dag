@@ -16,7 +16,7 @@ import { PlanSchema, type ConductorPlan } from '../conductor-plan';
 import type { ExecutorKind, PathMap, Ticket } from './types';
 
 /**
- * Ticket.executorKind → ConductorPlan.executor 枚举映射 (缺省 inproc → leaf)。
+ * Ticket.executorKind → ConductorPlan.executor 枚举映射。
  * command/agent 直通。inproc/primitive/map → leaf:
  *  - inproc = 单发模型调用 = leaf 语义。
  *  - primitive 需 kind/primitive/params, map 需完整 MapSpec (lister/over/template) —— 票在编译期
@@ -24,7 +24,11 @@ import type { ExecutorKind, PathMap, Ticket } from './types';
  *    map⇔executor 互 required 交叉校验。故 P0 降级为 leaf (runtime-finalize P1 可再展开)。
  */
 function toPlanExecutor(kind: ExecutorKind | undefined): 'agent' | 'leaf' | 'command' | 'map' {
-  switch (kind ?? 'inproc') {
+  if (kind === undefined) {
+    // 反向自检: 绕过加票入口直接喂 slice-compiler 一张缺省票 → 编译必抛
+    throw new Error('票缺 executorKind 不进 slice 图 — 默认会被编成无工具 leaf (单发模型调用, 写不了文件), 跑完却把票翻 delivered; 修复: 显式给 executorKind');
+  }
+  switch (kind) {
     // D-G1.2: goal 档票不进 slice 图 — 走到这里 = deliver 没分流, 响亮炸而不是静默降级成 leaf
     // (静默降级会把"要收敛的子目标"跑成单发调用, 症状是沉默的)。
     case 'goal':

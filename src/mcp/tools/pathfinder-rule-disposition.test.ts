@@ -40,7 +40,8 @@ async function openMapAndAddPrototype(
   call: (n: string, a?: Record<string, unknown>) => Promise<{ text: string; isError: boolean }>,
 ) {
   await call('path_map', { destination: 'Ship X' });
-  await call('path_add', { title: '砸网实验 prototype', type: 'prototype' });
+  // #197: prototype 显式 executorKind='goal' (#135 prototype 恒 goal 档; 缺 kind 被 map_add 闸裁)
+  await call('path_add', { title: '砸网实验 prototype', type: 'prototype', executorKind: 'goal' });
   return 'p1';
 }
 
@@ -158,7 +159,8 @@ describe('path_rule disposition (#161 · 切片 1)', () => {
     try {
       const { call } = makeTools(dir);
       await call('path_map', { destination: 'Ship X' });
-      await call('path_add', { title: '终结实验 prototype', type: 'prototype' });
+      // #197: prototype 显式 executorKind='goal' (同 openMapAndAddPrototype 一致性)
+      await call('path_add', { title: '终结实验 prototype', type: 'prototype', executorKind: 'goal' });
       const rule = await call('path_rule', {
         ticketId: 'p1',
         ruling: '放弃 (CubeSandbox 砸网)',
