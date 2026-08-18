@@ -1031,6 +1031,31 @@ import 得到、类型对得上、调用写得出来。
 
 **回链**:`docs/plan/NOTES.md` 2026-08-11 两节(四缺陷 + 已修);修复 commit `a16043a`。
 
+#### 第二次复现(2026-08-18)—— **同一把尺子,补在了隔壁那一支**
+
+2026-08-11 修的是 `computeSig` 的 **bash** 分支(`stripCdPrefix`)。而同一个函数里
+**read/edit/hashline 那一支**照旧 `path.slice(0, 60)` —— 隔离档的 worktree 根
+(`/home/nick/repos/oh-my-dag/.omd/runs/<uuid>`)本身就 **73 字符 > 60**,于是
+**jail 里任意两个文件的签名逐字节相同**。这是 S-7(同一条规则散在多处,漏掉第三处)的形状,
+只不过"多处"近到在**同一个函数的下面五行**。
+
+读数(三片实装叶,两个 run,同一形状):
+
+| run / 节点 | 时长 | 工具数 | input | 判词 |
+|---|---|---|---|---|
+| `14b49f79` / `impl` | 508s | 61 | 3.97M | `spin-fused`,卡在 `hashline_edit` |
+| `dbfe0c66` / `s1` | 509s | 63 | 4.11M | 同上 |
+| `dbfe0c66` / `s2` | 440s | 60 | 3.16M | 同上 |
+
+**三片都在改不同的文件。** 它伪装成的东西这次特别贵:「MiniMax-M3 在 `hashline_edit` 上原地打转」——
+一个关于**模型能力**的结论。差一步就要按它去换座位烧美元验证,而那个假设的**前提**是坏的。
+「一个在任何干预下都不动的数,通常量的是尺子」——本仓 CLAUDE.md 那句,这次是字面意义上的。
+
+**修法刻意不是"剥掉已知的 run root"**:路径的区分度天然在**文件名那一端**,所以改成**取尾不取头**
+(`pathSig`)。取尾对任何长前缀都免疫(jail 根 / 深层嵌套 / 下一个更长的根);剥已知前缀只挡今天
+这一种,下一个长前缀来的时候又是一次静默失效。grep 的 `pattern` 仍取头 —— 模式的区分度在头部,
+**两种参数的区分度在两端**,合成一个分支正是这次的病根。
+
 ### S-35 · **新埋点挤掉旧证据** —— 而两侧测试都用注入夹具,碰不到真发射点
 
 **形状**:往一个返回值里加新采集字段时,新字段**替换**掉了旧字段那一行。旧字段的消费者还在、还在跑,只是永远收到空值。
@@ -1510,6 +1535,7 @@ verifier 据此判「实装未完成,需重新执行 impl」。**而这句话是
 | 产物闸的输入字段还在发(同一行的邻居) | `src/harness/agent-leaf-filestouched-wiring.test.ts` | `filesTouched` 生产端**无条件**发(空数组是读数,缺席会被下游 `?? []` 读成「没碰文件」→ 恒冤杀复活)+ engine 产物闸还在读(**带反向自检**:删发射行 → 3 红;改成有条件发射 → 1 红;消费端改名 → 1 红) | S-35 |
 | 隔离档 git 能用 | `src/harness/hooks/bwrap.ts` · `bwrap-containment.test.ts:98` | 真造「主 repo + worktree」跑真 bwrap:ro 共享 `.git` + rw 本树 gitdir;jail 内写 ref/objects 仍拒(**带反向自检**:删 `gitBinds` 段 → ② 红,①③ 仍绿。⚠ 无 bwrap 的机器自报**未测**,不是绿) | S-34 |
 | 空转签名不被 `cd` 前缀吃掉 | `src/harness/hooks/drift-detector.ts` · `drift-detector.test.ts:103` | 取 50 字符窗口前先剥 `cd <路径> &&` 链,尺子不因 jail 路径变钝(**带反向自检**:去掉 `stripCdPrefix` → 三条不同命令签名全等,红) | S-34 |
+| 空转签名不被**路径前缀**吃掉(同一把尺子的第二支) | `src/harness/hooks/drift-detector.ts` (`pathSig`) · `drift-detector.test.ts` 路径前缀组 | 路径取**尾**不取头(73 字符的 jail 根 > 60 字符窗口),grep 的 pattern 仍取头(**带反向自检**:换回 `path.slice(0,60)` → 两条 ★ 红,读到实盘那个错值;另两条守住短路径与 pattern 不外溢) | S-34 S-7 |
 | 终审产物三态(unregistered ≠ missing) | `src/harness/verifier.ts:125` · `verifier-evidence.test.ts:102` | `summarizeResults` 对每个声明 `output_path` 的节点跑 `statSync`,按 registered/unregistered/missing 三态写入 prompt,`unregistered` 单独告警(`verifier.ts:155`)(**带反向自检**:三态判定改回二态、吞掉 `unregistered` → 3 条红) | S-33 |
 | fanout 每个 stage 的**真实落点**(池不许静默盖过座位) | `scripts/omd-fanout-seats.ts` | 逐 stage 印取值链 + 落点;`config.pools.lens/judge` 与 lens/judge 座不一致时显式告警(**带反向自检**:`OMD_CONFIG_PATH` 指向池=旧坐标的临时 config → 两条不一致警告当场出现)。⚠ 只覆盖静态可解那半,运行期覆盖看 `seat-usage.jsonl` 的 traceName×model | S-39 |
 | 故障归属两轴不许合一 | `src/model/model-error-fault.test.ts` · `src/model/minimax-native.test.ts` · `test/core/conductor-loop.test.ts` 失效矩阵 | `fault`(冷却轴)与 `transient`(环轴)正交, 抛错方显式表态、省略才回落启发式;业务码进 `providerCode`, `status` 只放真 HTTP 码;矩阵**穷尽** 6 个 kind + 2 个显式覆盖(**带反向自检**:1004 归回 transient:true → 码表那条红 1;删 `fault` 短路 → 4 红;删 `transient` 短路 → 5 红) | S-40 |

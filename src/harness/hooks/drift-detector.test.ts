@@ -193,3 +193,47 @@ describe('熔断闸 fuseTripped (2026-08-14; 阈值依据 2026-08-13 夜 + 2026-
     expect(t.fuseTripped()).not.toBeNull();
   });
 });
+
+/**
+ * computeSig 的**路径前缀** (2026-08-18, run dbfe0c66 / 14b49f79 的假熔断)。
+ *
+ * 与上面 `bash cd 前缀` 那一组**是同一种病, 补在了隔壁那一支**: 签名窗口落在了对所有调用
+ * 都相同的那一段上。bash 支 2026-08-11 修过 (stripCdPrefix), 而 read/edit/hashline 这一支
+ * 直接 `path.slice(0, 60)` —— 隔离档的 worktree 根就有 **73 字符**, 于是窗口全被前缀吃掉,
+ * **jail 里任意两个文件的签名逐字节相同**。
+ *
+ * 代价 (2026-08-18 实盘): run dbfe0c66 的 s1 (509s / 63 工具 / 4.11M) 与 s2 (440s / 60 工具 /
+ * 3.16M)、run 14b49f79 的 impl (508s / 61 工具 / 3.97M) 三片全被判 spin-fused —— 而它们在改
+ * **不同的文件**。判词写的是"卡在 hashline_edit", 于是差点被归因成"模型在原地打转"。
+ */
+describe('computeSig 的路径前缀 (2026-08-18 run dbfe0c66 尺子修)', () => {
+  // 真样本: 隔离 worktree 的 run root 本身就 73 字符 > 60 字符签名窗口。
+  const jail = '/home/nick/repos/oh-my-dag/.omd/runs/dbfe0c66-681c-42cb-89f7-a67e3f569b99';
+  const files = ['/src/harness/chat/history-recall.ts', '/src/mcp/tools/history.ts', '/src/serve/chat-tools.ts'];
+
+  // 反向自检: 把 computeSig 里的 pathSig 换回 `path.slice(0, 60)` → 本条当场红 (三个签名全等),
+  // 读到的正是实盘那个错值 `hashline_edit:/home/nick/repos/oh-my-dag/.omd/runs/dbfe0c66-681c-42cb-89f7`。
+  test('★ 同一 jail 下三个不同文件 → 三个不同签名, 不触发 spinning', () => {
+    const sigs = files.map((f) => computeSig('read', { file_path: jail + f }));
+    expect(new Set(sigs).size).toBe(3);
+    const t = createDriftTracker({ threshold: 4 });
+    for (const f of [...files, '/src/harness/chat/session-store.ts']) t.note('edit', { file_path: jail + f });
+    expect(t.summary().spinEvents).toBe(0);
+  });
+
+  // 反向自检同上: hashline 那条走的是 patch 头提取, 提出来的同样是绝对路径, 一样会被前缀吃掉。
+  test('★ hashline_edit 的 patch 头路径同样不许被 jail 前缀吃掉', () => {
+    const patchFor = (p: string): string => `¶${p}#abc\n+ x`;
+    const sigs = files.map((f) => computeSig('hashline_edit', { patch: patchFor(jail + f) }));
+    expect(new Set(sigs).size).toBe(3);
+  });
+
+  test('短路径的签名逐字不变 (只动长路径那一格, 不外溢)', () => {
+    expect(computeSig('read', { file_path: 'src/a.ts' })).toBe('read:src/a.ts');
+  });
+
+  test('grep pattern 仍取**头** (路径看尾, 模式看头 —— 两种参数的区分度在两端)', () => {
+    const long = `${'a'.repeat(70)}XYZ`;
+    expect(computeSig('grep', { pattern: long })).toBe(`grep:${long.slice(0, 60)}`);
+  });
+});

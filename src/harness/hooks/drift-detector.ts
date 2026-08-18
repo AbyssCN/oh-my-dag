@@ -82,6 +82,24 @@ function stripCdPrefix(cmd: string): string {
 }
 
 /**
+ * 路径签名**取尾不取头** (2026-08-18, run dbfe0c66 / 14b49f79 的假熔断)。
+ *
+ * 与 {@link stripCdPrefix} 是同一种病, 而当时只补在了 bash 那一支: 签名窗口落在了对所有调用
+ * 都相同的那一段上。隔离档的 worktree 根 (`…/.omd/runs/<uuid>`) 本身就 **73 字符** > 60 字符窗口,
+ * 于是 `path.slice(0, 60)` 之后, **jail 里任意两个文件的签名逐字节相同** —— 检测器量的是尺子。
+ *
+ * 实盘代价: 三片实装叶 (509s/63 工具/4.11M · 440s/60/3.16M · 508s/61/3.97M) 全被判 spin-fused,
+ * 而它们改的是**不同的文件**; 判词写"卡在 hashline_edit", 差点被归因成"模型在原地打转"。
+ *
+ * 为什么取尾而不是"剥掉已知的 run root": 路径的区分度**天然在文件名那一端**, 取尾对**任何**
+ * 长前缀都免疫 (jail 根 / 深层嵌套 / 未来某个更长的根), 而剥已知前缀只挡今天这一种,
+ * 下一个长前缀来的时候又是一次静默失效。
+ */
+function pathSig(p: string, n = 60): string {
+  return p.length <= n ? p : `…${p.slice(-n)}`;
+}
+
+/**
  * 从一次工具调用计算归一化签名。含目标参数值 (不含 transient 字段如 timeout)。
  *
  * 入参是 **(工具名, 参数对象)** 而不是某个宿主的事件类型 —— 检测逻辑与"事件长什么样"无关,
@@ -96,10 +114,15 @@ export function computeSig(toolName: string, input: unknown): string {
     const prefix = stripCdPrefix(cmd.replace(/[\n\r]/g, ' ')).slice(0, 50);
     return `bash:${prefix}`;
   }
-  // read/write/edit/grep/ls/find: 含目标路径或模式第一参数
-  const path = args.file_path ?? args.path ?? args.pattern;
+  // read/write/edit/ls/find: 目标**路径** —— 取尾不取头 (见 pathSig)。
+  const path = args.file_path ?? args.path;
   if (typeof path === 'string' && path.length > 0) {
-    return `${toolName}:${path.slice(0, 60)}`;
+    return `${toolName}:${pathSig(path)}`;
+  }
+  // grep: 第一参数是**模式**, 区分度在头部 (`^foo` / `TODO:` …), 照旧取头。
+  const pattern = args.pattern;
+  if (typeof pattern === 'string' && pattern.length > 0) {
+    return `${toolName}:${pattern.slice(0, 60)}`;
   }
   // hashline_edit/read: 参数是 patch/内容文本, 无 file_path —— 落键名兜底会把**所有**调用并成
   // 一个签名 `hashline_edit:patch` (2026-08-10 S2/S3 实测: 连改 4 刀即误报 spinning, 单 run 20 次)。
@@ -107,7 +130,7 @@ export function computeSig(toolName: string, input: unknown): string {
   const patch = args.patch ?? args.content;
   if (typeof patch === 'string') {
     const target = hashlinePatchPaths(patch)[0];
-    if (target) return `${toolName}:${target.slice(0, 60)}`;
+    if (target) return `${toolName}:${pathSig(target)}`;
   }
   const keys = Object.keys(args).sort().join(',');
   return `${toolName}:${keys}`;
