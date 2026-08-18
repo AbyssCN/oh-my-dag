@@ -41,6 +41,13 @@ export interface AgentLeafInput {
    * runner 实现决定优先序。profile 内容不进 promptVersion (INV-2, 与 persona 同边界)。
    */
   profile?: LeafProfile;
+  /**
+   * #178: 产物意图 —— 引擎侧 producesFiles 路由为真时**按调用**传 (值 = node.output_path;
+   * 无显式路径传 '(路径见 goal)')。在场 = 本叶必须落盘产物, agent-leaf 据此启用 produce-by
+   * 软推 (勘探超预算仍零写 → 注入一次催产指令, pi 通道; SDK 通道同 grind 边界只记不注)。
+   * 缺席 = 非产物叶, produce-by 恒不触发 —— 非 produces-files 节点零行为变化 (#178 硬约束)。
+   */
+  expectsArtifactPath?: string;
 }
 
 /**
@@ -142,6 +149,12 @@ export interface AgentLeafResult {
    * 没反应,这是模型有反应地原地打转 —— 下一步相反(见 node-failure 的 spin-fused 注)。
    */
   spinFused?: string;
+  /**
+   * #178 produce-by 软推触发次数 (恒 ≤1, 每叶至多一次)。仅触发时出现 (同 `spin` 仅在
+   * spinEvents>0 时出现的惯例) —— 缺席 = 没触发或非产物叶; 分母 (产物叶总数) 由引擎侧
+   * expectsArtifactPath 的传参面提供, 不在本字段上编码。
+   */
+  produceByNudges?: number;
   /**
    * agent leaf watchdog 采集 (2026-08-12, S1 埋点)。形状与缺席语义的真源 = {@link LeafWatchdog};
    * 生产侧取恒写收紧版 {@link LiveLeafWatchdog} (grind 三字段 required, INV-5)。

@@ -455,6 +455,35 @@ export function nextGrindAction(s: GrindAdvisorSnapshot): 'advisor' | 'wrapup' |
 }
 
 /**
+ * #178 produce-by 软推 (2026-08-19): 与 grind 三档**正交**的触发轴 —— grind 读 stall (touched
+ * 停止增长), 抓的是"卡住"; 这条读"从未写过" (filesTouchedCount === 0), 抓的是**勘探耗尽空手终止**
+ * (账本实测 16/66: 只读工具连发几分钟、零写、output 空、静默收场 —— 忙着读, grind 的 idle 轴恒不触发)。
+ * 墙钟阈值取 180s: 16 例死亡区间 25-280s 的上沿之下、留出注入后收尾余量 (30min 硬顶的 1/10)。
+ */
+export const PRODUCE_BY_WALL_MS = 180_000;
+
+/** produce-by 注入指令 (pi 通道经 pendingGrindAdvice 缓冲下发; SDK 通道同 grind 边界只记不注)。 */
+export const produceByInstruction = (path: string): string =>
+  `[produce-by] 你已勘探较久但**还没有写任何文件**。停止继续勘探 —— 以现有理解**现在就写**产物到 ${path}。` +
+  `先落盘第一版, 再用剩余预算补勘探/修正。零产物结束 = 本节点作废 (empty-artifact), 勘探成果全部白费。`;
+
+/**
+ * produce-by 纯谓词 (可测缝, 同 nextGrindAction 纪律)。触发条件四与: 产物叶 ∧ 尚未触发过 ∧
+ * 一个文件都没写过 ∧ 墙钟超阈值。非产物叶 (expectsArtifact=false) 恒 false —— #178 硬约束
+ * "非 produces-files 节点零行为变化" 的判据落点。
+ */
+export function shouldFireProduceBy(s: {
+  expectsArtifact: boolean;
+  nowMs: number;
+  startedAtMs: number;
+  filesTouchedCount: number;
+  produceByFiredAt: number | null;
+}): boolean {
+  if (!s.expectsArtifact || s.produceByFiredAt !== null) return false;
+  return s.filesTouchedCount === 0 && s.nowMs - s.startedAtMs > PRODUCE_BY_WALL_MS;
+}
+
+/**
  * grind advisor 的唯一 system prompt —— 与 advisor-tool 的 ADVISOR_SYSTEM_PROMPT 分家:
  * 那条吃 transcript, 这条只吃状态摘要 (grind 判据本身已是确定性结论, advisor 只需诊断 + 下一步)。
  */
@@ -1265,6 +1294,8 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // SDK 通道无该钩子, 建议只落 watchdog 记录, 同 parseFeedback 那条通道边界)。
     let lastTouchGrowthAtMs = startedAt;
     let pendingGrindAdvice: string | undefined;
+    // #178 produce-by 状态: null = 没触发 (量过且没发生, 恒写口径同 advisorFiredAt); 至多 1 次。
+    let produceByFiredAt: number | null = null;
     // grind 三档阶梯状态 (2026-08-17, #146): wrapupFiredAt 恒写 (null = 没触发, 同
     // advisorFiredAt 那条「量过且没发生」口径); abortedByGrind 恒写 boolean (false = 量过且没发生,
     // 同 stalled/timedOut 口径 —— INV-5)。
@@ -1332,6 +1363,24 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // spin-fused, 失败正文带 advisor/wrapup/abort 三档各自的时刻 + stall)。
     const maybeFireGrindEscalation = (): void => {
       const nowMs = now();
+      // #178 produce-by: 与 grind 阶梯正交, 先判 (它抓"忙着读从没写", grind 抓"卡住不动")。
+      // 不清 pendingGrindAdvice 里已有的 wrapup/advisor 指令 —— 高档语义优先, 缓冲空才占用。
+      if (
+        shouldFireProduceBy({
+          expectsArtifact: !!input.expectsArtifactPath,
+          nowMs,
+          startedAtMs: startedAt,
+          filesTouchedCount: touched.size,
+          produceByFiredAt,
+        })
+      ) {
+        produceByFiredAt = nowMs;
+        if (!pendingGrindAdvice) pendingGrindAdvice = produceByInstruction(input.expectsArtifactPath!);
+        logger.warn(
+          { cwd, wallMs: nowMs - startedAt, artifactPath: input.expectsArtifactPath },
+          '[agent-leaf] #178 produce-by 命中 → 注入催产指令 (勘探超预算仍零写)',
+        );
+      }
       const action = nextGrindAction({
         startedAtMs: startedAt,
         nowMs,
@@ -1569,6 +1618,8 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     const spinSummary = drift?.summary();
     return {
       text, usage, promptVersion, filesTouched: [...touched], filesRead: [...readPaths], cwd, toolCalls, stalled, writeEffects,
+      // #178 produce-by: 仅触发时出现 (同 spin 惯例); 恒 ≤1 (谓词 firedAt 非空短路)。
+      ...(produceByFiredAt !== null ? { produceByNudges: 1 } : {}),
       // 工具序列 (2026-08-16)。截头尾而不是截尾: 开头是它怎么起手, 结尾是它卡在哪, 中段最不值钱。
       // 截了多少显式带走 —— 静默截断会让"它只干了 400 步"和"它干了 4000 步"长得一样。
       ...(toolSteps.length > TOOL_STEPS_CAP

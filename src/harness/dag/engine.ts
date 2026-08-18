@@ -3086,6 +3086,9 @@ async function executePlan(
           ...(leafProfile ? { profile: leafProfile } : {}),
           ...(touchRunId ? { touchSession: `${touchRunId}:${id}` } : {}),
           ...(mcpAllow.length ? { mcpAllow } : {}),
+          // #178: 产物意图下发 —— produces-files 节点让叶知道"必须落盘 + 落到哪",
+          // agent-leaf 据此启用 produce-by 软推 (勘探超预算零写 → 催产)。非产物节点不传, 叶行为零变化。
+          ...(producesFiles ? { expectsArtifactPath: node.output_path ?? '(路径见 goal)' } : {}),
           onEvent: leafProgress,
         });
         recordGeneration({
