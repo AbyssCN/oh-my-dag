@@ -39,6 +39,40 @@ function tools(cwd: string, overrides: Partial<PathfinderToolDeps> = {}) {
 }
 
 describe('pathfinder MCP tools', () => {
+  /**
+   * #197③ 装配期那一半 —— 裁决要求「两处各证一次」, 而实装落地时只钉了 slice-compiler 那半
+   * (slice-compiler.test.ts:47 `executorKind 缺省 → 抛`), map_add 这半只有注释没有用例。
+   * 冻结判据 `grep -q "无工具" src/mcp/tools/pathfinder.ts` 只查这三个字在不在文件里,
+   * 拦不住「有闸无证」—— 同 #165 那条假反向自检, 今晚第三次同一形状, 故补钉。
+   *
+   * ★ 反向自检 (已实测会红): 摘掉 pathfinder.ts:387 那个 `executorKind === undefined` 判断
+   *   → task/prototype 两条 isError 断言同时红 (票会被正常建出来)。
+   */
+  test('#197③ map_add 缺 executorKind 即拒 (task/prototype), research/grill 不受影响', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pf-mcp-'));
+    try {
+      const { call } = tools(dir);
+      await call('path_map', { destination: 'Ship X' });
+
+      for (const type of ['task', 'prototype'] as const) {
+        const r = await call('path_add', { title: `缺 kind 的 ${type} 票`, type });
+        expect(r.isError).toBe(true);
+        // 判词要说清「为什么」, 不能只说「缺参数」—— 裁决①逐字要求。
+        expect(r.text).toContain('无工具');
+        expect(r.text).toContain('delivered');
+      }
+      // 一张都没建出来。
+      expect((await call('path_tickets')).text).toContain('0 tickets');
+
+      // research/grill 不是交付单位 → 缺省照收 (裁决①的范围下界)。
+      for (const type of ['research', 'grill'] as const) {
+        expect((await call('path_add', { title: `${type} 票`, type })).isError).toBe(false);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('map→add→rule→deliver 全链: 区域报信 → 显式交付 → 票翻 delivered', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'pf-mcp-'));
     try {
