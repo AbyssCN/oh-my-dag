@@ -23,6 +23,7 @@
  * 而不是自己去猜 cwd 在哪儿。
  */
 import { parsePlanDoc, type PlanDoc } from './plan-doc-score';
+import { parseBreakdown } from '../goal/sdd-direct';
 
 export type GapSeverity = 'blocker' | 'major' | 'minor';
 
@@ -179,6 +180,53 @@ export function findPlanDocGaps(md: string, opts: PlanDocGapsOptions = {}): Plan
           ' ② 这是**要新建**的文件 → 那读的人分不出"写错了"和"还没建", 判不了。',
         fix: '改对路径; 确实是新建的, 在切片里明写「新建」两个字, 让静态检查与读的人都不必猜。',
         evidence: [...missing].map(([p, label]) => `${p} (切片 ${label})`),
+      });
+    }
+  }
+
+  // ---------- 直通可编译性: 这份文档机器吃不吃得下 (2026-08-18) ----------
+  //
+  // 与这个模块其余判据的分野: 上面那些问「写得好不好」, 这一格问「`solve --sddPath` 能不能
+  // 消费它」。两次实测都是在**点火那一刻**才响 —— 一次 `S1` 切片列当场拒, 一次波形被静默丢掉,
+  // 而这个闸当时**一次都没跑过 `parseBreakdown`**: 评分全绿, 文档吃不下。
+  //
+  // ⚠ **判据刻意收窄到「自称直通契约」** —— 分解段的表头同时声明「写集」与 verify。
+  // 不是所有分解段都打算走直通 (实验契约 / 对比报告 / `| 序 | 切片 | 内容 |` 这类人读表),
+  // 拿这把尺子量它们是**尺子量错对象**: 全量实测会一次红 38 份, 而那正是让人把闸关掉的原因。
+  // 收窄之后的实测面: 149 份里 23 份自称直通, 其中 9 份抛错 · 6 份波形读不到。
+  const breakdownSection = (() => {
+    const sec = md.split(/^##\s+/m).find((p) => /^(分解|Breakdown)/.test(p));
+    if (!sec) return null;
+    const header = /^\s*\|.*$/m.exec(sec)?.[0] ?? '';
+    return /写集/.test(header) && /verify/i.test(header) ? sec : null;
+  })();
+  if (breakdownSection) {
+    try {
+      const bd = parseBreakdown(md);
+      // 波形读不到**不拦交付**: 图会退回按依赖边排, 只是文档里那句"并行波形"没人消费 ——
+      // 一句写了没人读的话, 与写错同样危险, 但代价小一档。
+      if (!bd.waves) {
+        add({
+          id: 'sdd-waves-unread',
+          severity: 'minor',
+          title: '声明了并行波形, 但机器读不到 (`WAVE_LINE` 锚行首)。',
+          impact:
+            '写成「写集两两不相交 ✓。并行波形:…」这种同行形式会被**静默忽略** —— 文档上写着波形,' +
+            ' 引擎实际按依赖边排, 而两者不一致时没有任何提示。',
+          fix: '把「并行波形:`{1,2} → {3}`」放到**独占的一行**上。',
+          evidence: [],
+        });
+      }
+    } catch (err) {
+      add({
+        id: 'sdd-breakdown-unparseable',
+        severity: 'major',
+        title: '分解表自称直通契约 (表头有写集 + verify), 但 `sddPath` 解析不了。',
+        impact:
+          '`solve --sddPath` 会在**点火那一刻**当场拒 —— 夜批空跑一次才发现。' +
+          ' 真源判据在 `src/harness/goal/sdd-direct.ts`: 切片列裸数字开头 · 写集只收相对路径且不许留空。',
+        fix: '照判词改表; 改完当场 `bun run plan-doc-check <本文档>` 复验 (一秒, 比夜批便宜)。',
+        evidence: [String(err instanceof Error ? err.message : err).slice(0, 200)],
       });
     }
   }

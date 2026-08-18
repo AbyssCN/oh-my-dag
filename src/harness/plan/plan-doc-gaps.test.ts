@@ -160,3 +160,53 @@ describe('countGaps', () => {
     expect(countGaps(findPlanDocGaps(OK_SDD))).toEqual({ blocker: 0, major: 0, minor: 0 });
   });
 });
+
+/**
+ * 直通可编译性(2026-08-18)——「这份文档机器吃不吃得下」与「它写得好不好」是两个问题。
+ *
+ * 起因:两次结晶两次被解析器当场拦(第一次 `S1` 切片列点火即拒,第二次波形被静默丢掉),
+ * 而 `plan-doc-check` 那时**一次都没跑过 `parseBreakdown`** —— 它只评分,不验可消费性。
+ * 全量量过:149 份 plan 文档里 23 份**自称**直通契约(表头声明了写集 + verify),
+ * 其中 9 份解析抛错、6 份波形读不到。而 `sddPath` 直通是夜批的默认路径。
+ *
+ * ## 判据为什么收窄到「表头声明写集 + verify」
+ *
+ * 不是所有分解段都打算走直通:实验契约、对比报告、`| 序 | 切片 | 内容 |` 这类人读表本来就不是
+ * 直通输入,拿这把尺子量它们是**尺子量错对象**(会一次红 38 份,然后闸被关掉)。
+ * 表头同时声明「写集」与 verify = 它自称是直通契约,才该被量。
+ */
+describe('直通可编译性 (sddPath 能不能吃下这份文档)', () => {
+  const head = ['## 目标 (Destination)', '', 'x', '', '## 契约 (Contracts)', '', '- **INV-1 x**:y。', '  - GWT:*Given* a,*When* b,*Then* c。', '', '## 分解 (Breakdown)', ''];
+  const tail = ['', '## 非目标 (Non-goals)', '', '- 不做 y'];
+  const table = (sliceCol: string) => ['| 切片 | 写集 | 依赖 | verify |', '|---|---|---|---|', `| ${sliceCol} | \`src/a.ts\` | 无 | \`bun test src/a.test.ts\` |`];
+
+  // 证伪: 删掉 plan-doc-gaps 里那段 parseBreakdown 调用 → 本条红 (不再报 unparseable),
+  // 读到的正是 2026-08-18 那两次点火当场拒之前的状态: 闸全绿而文档吃不下。
+  test('★ 自称直通契约但切片列不是裸数字 → 报 unparseable (major)', () => {
+    const md = [...head, ...table('S1 做事'), '', '并行波形:`{1}`', ...tail].join('\n');
+    expect(ids(md)).toContain('sdd-breakdown-unparseable');
+  });
+
+  // 证伪: 把 waves 那一格判据删掉 → 本条红。波形读不到不拦交付 (图退回按依赖边排), 故 minor。
+  test('★ 能解析但波形写在行中间(锚行首读不到) → 报 waves-unread (minor)', () => {
+    const md = [...head, ...table('1 做事'), '', '写集两两不相交 ✓。并行波形:`{1}`', ...tail].join('\n');
+    const gs = findPlanDocGaps(md);
+    expect(gs.map((g) => g.id)).toContain('sdd-waves-unread');
+    expect(gs.find((g) => g.id === 'sdd-waves-unread')!.severity).toBe('minor');
+  });
+
+  test('合法的直通表 → 两条都不报', () => {
+    const md = [...head, ...table('1 做事'), '', '并行波形:`{1}`', ...tail].join('\n');
+    const got = ids(md);
+    expect(got).not.toContain('sdd-breakdown-unparseable');
+    expect(got).not.toContain('sdd-waves-unread');
+  });
+
+  // **不许误报**那一侧 —— 这条比上面三条更重要: 一个假 major 会让人把整个闸关掉。
+  test('不外溢: 分解段是列表 / 表头不声明写集+verify → 一条都不报', () => {
+    const list = ids(OK_SDD); // OK_SDD 的分解段是列表
+    expect(list).not.toContain('sdd-breakdown-unparseable');
+    const humanTable = [...head, '| 序 | 切片 | 内容 |', '|---|---|---|', '| 一 | A | 做 A |', ...tail].join('\n');
+    expect(ids(humanTable)).not.toContain('sdd-breakdown-unparseable');
+  });
+});
