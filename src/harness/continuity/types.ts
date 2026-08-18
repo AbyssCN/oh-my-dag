@@ -9,9 +9,15 @@
  *   - scripts/continuity-writer.ts (W1 回灌)
  */
 import type { ModelUsage } from '../../model/gateway';
-import type { LeafWatchdog } from '../leaf-runners';
+import type { LeafTelemetry } from '../leaf-runners';
 import type { NodeFailureKind } from '../node-failure';
 
+/**
+ * NodeCheckpoint 上属于叶遥测的字段子集 — 经 Pick 引用 {@link LeafTelemetry},
+ * 避免在落盘侧手抄同形 (b87196e 那次漂移的根因)。后续叶侧加字段时, 只改 LeafTelemetry,
+ * 这里靠 Pick 自动传播; 想进 checkpoint 才在此处把键名加进 Pick —— 类型层只一处真源。
+ */
+type NodeCheckpointLeafTelemetry = Pick<LeafTelemetry, 'watchdog' | 'shellRuns' | 'toolSteps' | 'toolStepsDropped'>;
 /**
  * 单个 DAG 节点的 checkpoint 快照。
  * schemaVersion=1 以支撑未来迁移 (字段增删不改旧读)。
@@ -157,13 +163,13 @@ export interface NodeCheckpoint {
    */
   generation?: string;
   /**
-   * agent leaf watchdog 采集 (2026-08-12, S1 埋点)。形状与缺席语义的真源 = {@link LeafWatchdog}
+   * agent leaf watchdog 采集 (2026-08-12, S1 埋点)。形状与缺席语义的真源 = {@link LeafTelemetry}
    * (2026-08-18 收敛: 此前这里手抄 S1 五字段, 与生产侧的 grind 字段静默漂移)。本仓落盘特有的
    * 补充: `touchTimelineMs` = 每次 `filesTouched` 集合新增一个路径的时刻;
    * `toolTimelineMs` = 每次 `tool_execution_start` 的时刻 —— 都是距叶启动的相对毫秒数 (升序)。
    * grind 字段缺席 = S1 时代老 checkpoint (盘上真实存在), 见 LeafWatchdog 的缺席语义。
    */
-  watchdog?: LeafWatchdog;
+  watchdog?: NodeCheckpointLeafTelemetry['watchdog'];
   /**
    * 这个节点经 **bash 工具**跑过的命令 + 退出码(2026-08-16 补,#145 评论① 复盘)。
    *
@@ -174,7 +180,7 @@ export interface NodeCheckpoint {
    * ⚠ 缺席 = 这条链上没人报(inproc 叶 / 老记录),**不是**"跑了但一次没用 bash"——
    * 后者是 `[]`。同 `LeafResult.shellRuns` 的三态。
    */
-  shellRuns?: { command: string; exitCode?: number; ok: boolean }[];
+  shellRuns?: NodeCheckpointLeafTelemetry['shellRuns'];
   /** 工具调用次数(来自 `LeafResult.toolCalls`)。缺席 = 没报,不是 0。 */
   toolCalls?: number;
   /** `[写调用总数, 其中 no-op 数]`(§8.5 效果指标)。缺席 = runner 没报,不是 `[0,0]`。 */
@@ -189,9 +195,9 @@ export interface NodeCheckpoint {
    *
    * 有界:超上限时保头尾,截掉多少写在 `toolStepsDropped`(**不许静默截断**)。
    */
-  toolSteps?: { tool: string; path?: string; error?: boolean; noop?: boolean }[];
+  toolSteps?: NodeCheckpointLeafTelemetry['toolSteps'];
   /** 序列被截掉的步数。缺席/0 = 没截;有值时 `toolSteps` 头尾拼接,中间不连续。 */
-  toolStepsDropped?: number;
+  toolStepsDropped?: NodeCheckpointLeafTelemetry['toolStepsDropped'];
   /** 当前版本 = 1。迁移用。 */
   schemaVersion: 1;
 }

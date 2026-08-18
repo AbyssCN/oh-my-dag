@@ -350,3 +350,56 @@ export interface LeafModelRouter {
   /** 记一次 reward(∈[0,1])给 (bucket, model);pool ≤1 或 model ∉ pool → no-op。 */
   recordReward(bucket: string, model: string, reward: number): void;
 }
+// ── leaf telemetry 投影器(INV-2: 平铺,无嵌套 telemetry 层)───────────
+// 7 个遥测字段的单一真源形状。AgentLeafResult (生产侧) / LeafResult (透传侧) /
+// NodeCheckpoint (落盘侧) 都经 Pick 引用本类型 — 此前三处手抄同形,b87196e 加 grind
+// 字段时只改了生产侧,类型漂移 6 天没人发现。引用同一类型后这类漂移直接 tsc 红。
+// 字段形状对齐 AgentLeafResult: watchdog 取宽的 LeafWatchdog (落盘可松),
+// spin/writeEffects 同 AgentLeafResult; pickLeafTelemetry 用 keep-undefined 策略
+// (缺键不省略键),spin/writeEffects 缺席时补默认 {0,0,[]} / {[],[]},其余缺席 = undefined。
+export type LeafTelemetry = {
+  watchdog?: LeafWatchdog;
+  spin?: { spinEvents: number; maxSameCount: number; stuckSigs: string[] };
+  writeEffects?: FileWriteEffect[];
+  toolSteps?: ToolStep[];
+  toolStepsDropped?: number;
+  shellRuns?: ShellRun[];
+  parseNudges?: number;
+};
+
+// 7 键的字面元组 —— 顺序冻结,加/删/改字面顺序都算违约。`satisfies` 只挡多写,
+// 真正的穷尽闸在 _KeysEq: 双向 extends 相等 ⇒ 漏写任何一个直接 tsc 红。
+export const LEAF_TELEMETRY_KEYS = [
+  'watchdog',
+  'spin',
+  'writeEffects',
+  'toolSteps',
+  'toolStepsDropped',
+  'shellRuns',
+  'parseNudges',
+] as const satisfies readonly (keyof LeafTelemetry)[];
+
+// 双向相等闸(注释掉 KEYS 里任一键 → _KeysEq = false → tsc 红)。
+// 用 union extends 而非 array extends tuple: tuple 与同元素 union 不等价,
+// 反向 extends 恒 false。第一项挡多写, 第二项挡漏写, length 闸钉死 7。
+type _KeysEq = typeof LEAF_TELEMETRY_KEYS[number] extends keyof LeafTelemetry
+  ? keyof LeafTelemetry extends typeof LEAF_TELEMETRY_KEYS[number]
+    ? typeof LEAF_TELEMETRY_KEYS['length'] extends 7
+      ? true
+      : false
+    : false
+  : false;
+const _leafTelemetryGate: _KeysEq = true;
+
+// 纯投影器 (INV-2: 7 键平铺, 无嵌套包裹层)。**缺席保缺席** —— 「没记」「量了为 0」「不适用」
+// 是三件事 (仓纪律 NULL≠0), 这里绝不给 spin/writeEffects 编默认值; engine 侧同款判例:
+// 「runner 没报 writeEffects → 保持 undefined, 不编一个 [0,0] 出来」。
+// 加字段流程: LeafTelemetry 加键 → _KeysEq 逼 KEYS 同步 → 本函数经 KEYS 循环自动覆盖。
+export function pickLeafTelemetry(r: Partial<LeafTelemetry>): LeafTelemetry {
+  const out: Record<string, unknown> = {};
+  for (const k of LEAF_TELEMETRY_KEYS) {
+    const v = r[k];
+    if (v !== undefined) out[k] = v;
+  }
+  return out as LeafTelemetry;
+}
