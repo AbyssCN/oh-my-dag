@@ -12,10 +12,11 @@
  * │  - 无 memory 注入(hook 环境未装配)→ 静默跳过,返回 {ok:false},不报错。            │
  * └────────────────────────────────────────────────────────────────────────────────────┘
  *
- * ⚠️ 当前为 no-op 默认(W1 独立可跑)。真实 SQLite 实装 = pathfinder 票 t2(W4),经 omd DAG 交付:
- *    - sinkCheckpoint: 调 OmdMemory.writeFact({ namespace:'continuity', id:sessionId, ... })。
- *    - listCheckpoints: 读回时间线(read-only)。
- *    交付时**保持下列导出类型与函数签名逐字不变**(W1 依赖它们),只填函数体 + 加 bun test。
+ * ⚠️ **无 memory 注入时才是 no-op**(函数体自 W4 起就是真实装,别再照着这段读成"整个模块没实装")。
+ *    两条静默失效路径,`{ok:false}` 的 `error` 字段是唯一痕迹:
+ *      ① 调用方不传 `deps.memory` → 直接跳过(2026-08-19 之前 `scripts/session-writer.ts` 就是这样);
+ *      ② `continuity` 未注册进 safeguard → 记忆层 REJECT-by-default 闸掉每一次写
+ *         (注册在 `src/memory/safeguards/continuity-namespace.ts`,#206)。
  *
  * @module
  */
@@ -27,7 +28,10 @@ import type { ValidatedFact } from '../../memory/safeguards/namespaces';
 export interface CheckpointSinkInput {
   sessionId: string;
   mode: 'rolling' | 'final' | 'precompact';
-  /** 全 checkpoint markdown(落 payload,供重放/显示)。 */
+  /**
+   * 全 checkpoint markdown。**不进 fact**(#206,理由见 `sinkCheckpoint` 内注)——
+   * 调用方从它切 §1/§2 与降级标记,真源是磁盘上那个文件,地址走 `checkpointPath`。
+   */
   md: string;
   /** §1 摘要(fact text + 召回/显示用)。 */
   intent?: string;
@@ -108,11 +112,14 @@ export async function sinkCheckpoint(
   try {
     // agent_tentative(单源事件):同 session 再写 = replace(廉价 supersede);闲置 30 天过期
     // (prune 清陈旧快照,不堆积)。source_event_id 锚 checkpoint 写事件。
+    // md 全文**不进 fact**(#206): `CheckpointRow` 零消费者 · markdown 文件才是真源且
+    // `checkpointPath` 已经存了它的地址(存副本正是本轮退役要去掉的东西) · `factToText` 会把
+    // 每个声明字段拼进 embedding/FTS,几 KB markdown 会把 intent 那点召回信号淹掉。
+    // 契约字段 `input.md` 保留:调用方从它切 §1/§2,且降级判定读它。
     const res = await deps.memory.writeFact({
       namespace: 'continuity',
       id: input.sessionId,
       mode: input.mode,
-      md: input.md,
       intent: input.intent,
       next: input.next,
       ctxTokens: input.ctxTokens ?? null,

@@ -10,12 +10,19 @@
  * script-bootstrap 首行引导:OMD_DATA_HOME=~/.omd + setActiveProject → checkpoint 落
  * ~/.omd/projects/<slug>/session/<sessionId>/,不污染当前 repo git status,也不碰 DAG-run 的 .omd/continuity/。
  *
- * 注:MVP 阶段不注入 OmdMemory → SQLite 镜像层为 no-op(markdown 已是真理源)。
- * W5(config 接线)交付后在此构造 createDefaultMemory 并传入 runWriter({ memory }) 打开镜像。
+ * 镜像层(#206, 2026-08-19 接线):这里构造 OmdMemory 传进 `runWriter({ memory })`,
+ * checkpoint 才会镜像进 `namespace='continuity'`。此前这一行不存在 = 镜像层从来没被打开过,
+ * 而 sink 全程 fail-open ⇒ 症状是「代码在、调用在、facts 表里 continuity 零行」。
+ * safeguard 用 `CONTINUITY_SAFEGUARD` 而不是 `UNIVERSAL_SAFEGUARD`:后者的 allowedNamespaces
+ * 里没有 continuity,记忆层 REJECT-by-default 会把每一次写闸掉(同样只在 `{ok:false}` 里留痕)。
  */
 import '../src/harness/script-bootstrap';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { runWriter, type WriterMode } from '../src/harness/session/writer';
+import { createOmdMemory } from '../src/harness/memory';
+import { resolveMemoryDbPath } from '../src/harness/memory/db-path';
+import { CONTINUITY_SAFEGUARD } from '../src/memory/safeguards/continuity-namespace';
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -37,11 +44,18 @@ if (!transcript || !sessionId || !existsSync(transcript)) {
   process.exit(0); // fail-open:派遣方不感知失败
 }
 
+// 镜像层的库位置与 MCP 装配同一真源(resolveMemoryDbPath);script-bootstrap 已把
+// OMD_DATA_HOME 指到 ~/.omd ⇒ 落 ~/.omd/memory.db,不污染当前 repo。
+const memoryPath = resolveMemoryDbPath(process.env);
+mkdirSync(dirname(memoryPath), { recursive: true });
+const memory = createOmdMemory({ path: memoryPath, safeguard: CONTINUITY_SAFEGUARD });
+
 const res = await runWriter({
   transcript,
   sessionId,
   mode,
   mechanical: process.argv.includes('--mechanical'),
+  memory,
 });
 
 console.error(

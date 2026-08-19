@@ -8,51 +8,21 @@
  * - 同 session 多写 = 演化更新一行 (supersede, 非追加): 第二次写 factStatus=`updated`, live 行数不变。
  * - `listCheckpoints`: 只读时间线 (live 快照); 无 memory → `[]` (fail-open)。
  *
- * 闸料说明: `continuity` 未注册于 DEFAULT_SAFEGUARD (仅 user 与 omd 两族) → 本测试注入
- * `OmdMemory({ safeguard })` 时装配含 continuity branch 的 pack (真闸真库, 非 fake memory;
- * namespace 注册属 W5 接线前置, 见实施报告遗留项)。
+ * 闸料说明 (#206 改, 2026-08-19): 本文件此前**自带一份 continuity pack** —— 于是它测的是
+ * 「假如 continuity 注册了会怎样」, 而生产侧根本没注册, 每一次真写入都被 REJECT-by-default 闸掉。
+ * 测试与实装各自成立、互相担保, 而库里 continuity 零行整整挂了几周没人看见。现在改成 import
+ * **生产那一份** `CONTINUITY_SAFEGUARD` —— 谁把注册摘了, 这里就红。
+ * (「continuity 没注册会怎样」由本文件下方那条 DEFAULT_SAFEGUARD 用例守着, 一正一反都在。)
  */
 import { describe, expect, test } from 'bun:test';
-import { z } from 'zod';
 import { createOmdMemory } from '../../src/harness/memory';
-import {
-  assembleSafeguard,
-  confidenceField,
-  sourceAnchor,
-  type NamespacePack,
-} from '../../src/memory/safeguards/namespace-kernel';
+import { CONTINUITY_SAFEGUARD } from '../../src/memory/safeguards/continuity-namespace';
 import {
   listCheckpoints,
   sinkCheckpoint,
   type CheckpointSinkInput,
   type CheckpointRow,
 } from '../../src/harness/session/sink';
-
-// ─── continuity pack (测试侧装配; 生产注册见 W5 接线)──────────────────────────
-
-const CONTINUITY_PACK: NamespacePack = {
-  branches: [
-    z.object({
-      namespace: z.literal('continuity'),
-      /** session id —— identity 字段: 同 session 多写 supersede 一行。 */
-      id: z.string().min(1),
-      mode: z.enum(['rolling', 'final', 'precompact']),
-      md: z.string().min(1),
-      intent: z.string().optional(),
-      next: z.string().optional(),
-      ctxTokens: z.number().nullable().optional(),
-      degraded: z.boolean().optional(),
-      checkpointPath: z.string().optional(),
-      ...sourceAnchor,
-      ...confidenceField,
-    }),
-  ],
-  allowedNamespaces: ['continuity'],
-  identityFields: { continuity: ['id'] },
-  banGlobs: [],
-};
-
-const CONTINUITY_SAFEGUARD = assembleSafeguard([CONTINUITY_PACK]);
 
 function memoryWithContinuity() {
   return createOmdMemory({ path: ':memory:', safeguard: CONTINUITY_SAFEGUARD });
@@ -90,8 +60,11 @@ describe('sinkCheckpoint — GWT-4 (有 memory 分支)', () => {
       const fact = memory.liveByIdentity('continuity', JSON.stringify(['continuity', 'sess-w4-1']));
       expect(fact).not.toBeNull();
       expect(fact!.id).toBe('sess-w4-1');
-      expect(fact!.md).toBe(sampleInput().md);
       expect(fact!.ctxTokens).toBe(226451);
+      // md 全文**不进 fact** (#206): 真源是磁盘上那份 markdown, 镜像只存它的地址 ——
+      // 存副本正是这轮记忆退役要去掉的东西, 且 factToText 会把每个声明字段灌进 embedding。
+      expect(fact!.md).toBeUndefined();
+      expect(fact!.checkpointPath).toBe('/tmp/omd/data/session/sess-w4-1/checkpoint.md');
     } finally {
       memory.close();
     }
