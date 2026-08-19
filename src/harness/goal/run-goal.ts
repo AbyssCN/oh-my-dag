@@ -625,6 +625,10 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
           // 它区分不了"做完了"与"还没做"。给不给 runner 决定这层加固在不在, 与 `generate` 那条
           // 教训同源: 只在测试里接、生产不接, 就是又一个"机制在、生产零生效"的空旋钮。
           ...(config.dag.commandRunner ? { runCommand: config.dag.commandRunner } : {}),
+          // #204 (承 #199 D1): 判别力探针的反面世界要建成**真仓副本**才量得到判别力 —— 不给
+          // repoRoot 它就退回空目录, 而空目录里任何仓内判据都必然失败 ⇒ 探针恒判「分得出」
+          // (账本读数: 真跑过的 69 跑里它红过 0 次)。这一行就是那条 wire。
+          repoRoot: config.cwd,
         })))(goal);
   // 探针裁决钩子: 分类定稿后恰好调一次 (含 fallback / 探索型), 进 `_runDag` 与任何运行记录之前。
   // `_classify` 抛错时这行到不了 → 天然不调, 不存在"抛错也硬调"的路径。

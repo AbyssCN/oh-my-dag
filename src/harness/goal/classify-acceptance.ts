@@ -246,9 +246,16 @@ export async function classifyGoal(
      * 省略 = 不自检(fail-open;自检是加固不是前置条件)。
      */
     runCommand?: (input: { command: string }) => Promise<{ exitCode: number | null }>;
+    /**
+     * #204 (承 #199 D1): 真仓根。给了则**判别力探针**的反面世界建成 HEAD 的真副本
+     * (`git archive` + node_modules 软链), 而不是一个空目录 —— 空目录里 `bun test` / `tsc` /
+     * 相对路径 grep 必然失败, 于是探针恒判「分得出」, 量的是尺子不是被测物 (账本: 69 跑 0 红)。
+     * 省略 = 退回空目录形态 (fail-open, 原因进 why)。
+     */
+    repoRoot?: string;
   },
 ): Promise<GoalClassification> {
-  const { generate, model, runCommand } = deps;
+  const { generate, model, runCommand, repoRoot } = deps;
   if (!generate || !model) {
     return {
       tier: 'complex',
@@ -302,7 +309,7 @@ export async function classifyGoal(
       ? await probeVacuity(command, runCommand, c.acceptance.expectExit)
       : { status: 'fail_open' }; // 没给 runner = 不自检 (fail-open, 不降级)
     if (v.status === 'ring') return demoteG4(v.why);
-    const d = await probeDiscrimination(command, c.negativeSample, c.acceptance.expectExit);
+    const d = await probeDiscrimination(command, c.negativeSample, c.acceptance.expectExit, repoRoot ? { repoRoot } : {});
     if (d.status === 'ring') return demoteG4(d.why);
     // 两道都没响 (没有 ring)。**剩下的组合别压成一个 kind** —— 「探针跑不起来」与「分类器没给
     // 反面样本」是两件不同的事, 而账本这一列存在的全部理由就是事后分得开:
@@ -323,7 +330,12 @@ export async function classifyGoal(
       ? { kind: 'skipped', why: failOpenWhy }
       : d.status === 'skipped'
         ? { kind: 'vacuity-only', why: d.why }
-        : { kind: 'passed-both' };
+        : d.status === 'ok' && d.why
+          ? // #204: 探针过了, 但**这次过得值多少钱**要写下来 —— 反面世界退回过空目录 (那次通过
+            // 什么都没证明), 或某几段零判别力。记进账本而不是只 log: 本仓的每条纪律都要能被量,
+            // 而 log 量不了 —— #199 就是靠账本那一列才量出「69 跑 0 红」的。
+            { kind: 'passed-both' as const, why: d.why }
+          : { kind: 'passed-both' };
     return { ...c, acceptanceProbe: probe };
   };
 

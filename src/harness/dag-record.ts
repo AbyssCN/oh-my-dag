@@ -370,7 +370,9 @@ function parseAcceptanceProbe(raw: string): AcceptanceProbe | undefined {
   const keys = Object.keys(o);
   switch (o.kind) {
     case 'passed-both':
-      return keys.length === 1 ? { kind: 'passed-both' } : undefined;
+      // #204: why 缺席合法 (没有弱段); 在就必须是字符串 —— 同 vacuity-only 那条的形状。
+      if (keys.length === 1) return { kind: 'passed-both' };
+      return keys.length === 2 && typeof o.why === 'string' ? { kind: 'passed-both', why: o.why } : undefined;
     case 'exploratory':
       return keys.length === 1 ? { kind: 'exploratory' } : undefined;
     case 'vacuity-only':

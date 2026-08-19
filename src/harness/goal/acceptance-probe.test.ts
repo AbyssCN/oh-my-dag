@@ -295,7 +295,13 @@ describe('runGoal — onClassified 暴露定稿后的 acceptanceProbe', () => {
       },
     });
     // 回调看到的是 vet 盖完章的定稿: 两道探针都真跑且都过 → passed-both, 执行型原样。
-    expect(received?.acceptanceProbe).toEqual({ kind: 'passed-both' });
+    const probe = received?.acceptanceProbe as { kind?: string; why?: string } | undefined;
+    expect(probe?.kind).toBe('passed-both');
+    // #204: 本用例的 cwd 是 mkdtemp 出来的**非 git 目录**, 于是判别力探针的反面世界建不成真副本,
+    // 退回空目录 —— 而空目录里仓内判据必然失败, 那次"通过"几乎什么都没证明。这句话必须留在
+    // 账本里 (`passed-both.why`), 否则读的人会把一次降级的探针读成一次真探针。
+    // 生产的 cwd 恒是 git 仓 → 这句不出现。
+    expect(probe?.why).toContain('不是 git 仓');
   });
 
   test('_classify 抛错 → 不调 (没有定稿的分类可持久化)', async () => {

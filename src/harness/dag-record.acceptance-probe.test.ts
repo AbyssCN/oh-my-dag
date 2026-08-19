@@ -285,7 +285,11 @@ describe('坏行 (读路径) · 词表外形状一律按 NULL 读, 不编桶, �
       '{oops',                              // 坏 JSON
       'null',                               // JSON null
       '{"kind":"unknown"}',                 // 词表外 kind
-      '{"kind":"passed-both","why":"x"}',   // 多余键
+      // ⚠ `{"kind":"passed-both","why":"x"}` **2026-08-19 (#204) 从坏形状挪走了**: 那一格现在合法 ——
+      // `why` 装「零判别力的判据段」与「反面世界降级过」两类附注 (探针过了, 但这次过得值多少钱)。
+      // 契约扩的是可选字段, 旧记录 (无 why) 照样解析, 所以这是兼容扩展不是破坏。
+      // 坏形状那一侧改由下面这条守: why 在但**不是字符串**照旧拒。
+      '{"kind":"passed-both","why":123}',   // why 非字符串 (数字不许进盘)
       '{"kind":"vacuity-only","why":null}', // why 非字符串 (null 不许进盘)
       '{"kind":"demoted"}',                 // demoted 缺 why (形状不对)
     ];
