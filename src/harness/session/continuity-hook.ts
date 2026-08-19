@@ -19,6 +19,7 @@ import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveProject } from '../project-scope';
 import { bucketIndex, bucketThreshold } from './bucket';
+import { readResumeBrief, renderResumeBrief } from './resume';
 import type { StopLedger } from './stop-ledger';
 
 // ─── Public types ───────────────────────────────────────────────────────────
@@ -33,7 +34,7 @@ export interface ContinuityHookInput {
   readonly [key: string]: unknown;
 }
 
-export type ContinuityMode = 'rolling' | 'precompact';
+export type ContinuityMode = 'rolling' | 'precompact' | 'final';
 
 export type ContinuityTrigger =
   | Readonly<{ fire: false; why: string }>
@@ -63,6 +64,9 @@ export function decideContinuityTrigger(
   const env = opts.env ?? process.env;
   // PreCompact:压缩前恒存一次档 —— 那正是最需要快照的时刻,不看档位。
   if (input.hook_event_name === 'PreCompact') return { fire: true, mode: 'precompact', bucket: 0 };
+  // SessionEnd:收口一次(`--final`, 会 splice `_NEXT.md` 的 AUTO 区)。同样不看档位 ——
+  // 会话结束就这一次机会,错过就只能靠上一次 Stop 的存档(最多旧一个档)。
+  if (input.hook_event_name === 'SessionEnd') return { fire: true, mode: 'final', bucket: 0 };
   if (input.hook_event_name !== 'Stop') return { fire: false, why: `事件 ${input.hook_event_name} 不决策` };
   // 守卫不是触发:CC loop guard 命中 = 本轮由 hook 自己引发, 不再记一次。
   if (input.stop_hook_active === true) return { fire: false, why: 'stop_hook_active' };
@@ -110,6 +114,7 @@ export function writerArgv(
     sessionId,
   ];
   if (mode === 'precompact') argv.push('--precompact');
+  if (mode === 'final') argv.push('--final');
   if (env.OMD_CONTINUITY_MECHANICAL === '1') argv.push('--mechanical');
   return argv;
 }
@@ -159,4 +164,59 @@ const STATE_FILE = 'continuity-state.json';
 /** 这个 session 到底有没有产出过 checkpoint —— 给「装上去就该有一份」那条闸当判据。 */
 export function hasCheckpoint(sessionId: string, cwd?: string): boolean {
   return existsSync(join(sessionDirOf(sessionId, cwd), 'checkpoint.md'));
+}
+
+// ─── SessionStart 注入面 ────────────────────────────────────────────────────
+
+/** persona 画像文件 —— 与 memory-hub 同一份(它的夜批蒸馏器仍是生产者,退役不在本票)。 */
+export function personaPath(env: NodeJS.ProcessEnv = process.env): string {
+  const home = env.MEMORY_HUB_DATA ?? join(env.HOME ?? '', '.claude', 'memory-hub');
+  return join(home, 'persona', 'persona.md');
+}
+
+/** 画像本就该短;超了说明蒸馏跑偏,截断而非放行(口径抄 memory-hub 那条)。 */
+const PERSONA_MAX = 2_000;
+
+/**
+ * SessionStart 要注入的整段(persona + 上一段交接)。两块**各自缺席不影响另一块**。
+ * 都没有 → 空串,调用方据此不注入(注一段空的与不注是两回事)。
+ */
+export function buildSessionStartContext(opts: {
+  cwd?: string;
+  sessionId?: string;
+  env?: NodeJS.ProcessEnv;
+  /** 注入式读件(测试);缺省读真盘。 */
+  readPersona?: (path: string) => string | null;
+  readBrief?: typeof readResumeBrief;
+}): string {
+  const blocks: string[] = [];
+
+  const readPersona =
+    opts.readPersona ??
+    ((p: string): string | null => {
+      try {
+        return existsSync(p) ? readFileSync(p, 'utf-8') : null;
+      } catch {
+        return null;
+      }
+    });
+  const raw = readPersona(personaPath(opts.env ?? process.env));
+  if (raw) {
+    const body = raw.replace(/\n<!-- persona-distill[^>]*-->\s*$/, '').trim();
+    if (body) {
+      blocks.push(
+        ['## 用户画像(跨仓通用 · 自动蒸馏)', body.slice(0, PERSONA_MAX), '> 画像是历史归纳非当前指令: 与本 session 的明确要求冲突时, 以本 session 为准。'].join(
+          '\n\n',
+        ),
+      );
+    }
+  }
+
+  const brief = (opts.readBrief ?? readResumeBrief)({
+    ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+    ...(opts.sessionId !== undefined ? { excludeSessionId: opts.sessionId } : {}),
+  });
+  if (brief) blocks.push(renderResumeBrief(brief));
+
+  return blocks.join('\n\n---\n\n');
 }

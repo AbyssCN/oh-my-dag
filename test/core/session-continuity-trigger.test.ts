@@ -27,6 +27,7 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import {
+  buildSessionStartContext,
   decideContinuityTrigger,
   readLastFiredBucket,
   writeLastFiredBucket,
@@ -186,6 +187,15 @@ describe('A3 触发 policy — decideContinuityTrigger', () => {
     });
   });
 
+  test('SessionEnd 恒触发且 mode=final(收口那一次错过就没有了)', () => {
+    expect(decideContinuityTrigger({ hook_event_name: 'SessionEnd' }, ledgerOf(10), { env })).toEqual({
+      fire: true,
+      mode: 'final',
+      bucket: 0,
+    });
+    expect(writerArgv('/tmp/t.jsonl', 'sid', 'final', {})).toContain('--final');
+  });
+
   test('PreCompact 恒触发且 mode=precompact(压缩前那一刻不看档位)', () => {
     expect(decideContinuityTrigger({ hook_event_name: 'PreCompact' }, ledgerOf(10), { env })).toEqual({
       fire: true,
@@ -195,7 +205,7 @@ describe('A3 触发 policy — decideContinuityTrigger', () => {
   });
 
   test('其它事件 / 空 ledger / 最新条缺 token / 坏档位配置 → 一律不触发', () => {
-    expect(decideContinuityTrigger({ hook_event_name: 'SessionEnd' }, ledgerOf(5000), { env }).fire).toBe(false);
+    expect(decideContinuityTrigger({ hook_event_name: 'Notification' }, ledgerOf(5000), { env }).fire).toBe(false);
     expect(decideContinuityTrigger(stop(), ledgerOf(), { env }).fire).toBe(false);
     expect(decideContinuityTrigger(stop(), ledgerOf(800, null), { env }).fire).toBe(false);
     // 坏配置不拿来造档位 —— 不伪造数比"猜一个默认"重要
@@ -407,4 +417,50 @@ describe('A1 端到端 — 喂一次 hook, 库里真出 continuity 行', () => {
     },
     90_000,
   );
+});
+
+// ─── SessionStart 注入面(#190:替下 memory-hub 那条腿)──────────────────────
+
+describe('SessionStart 注入 — persona 与交接两块各自独立', () => {
+  const brief = {
+    sessionId: 'prev-x',
+    checkpointPath: '/tmp/cp.md',
+    intent: '在做 #190',
+    next: '摘腿',
+    degraded: false,
+    updatedAt: null,
+  };
+
+  test('两块都在 → 都注, 中间有分隔', () => {
+    const out = buildSessionStartContext({
+      readPersona: () => '## 工作方式\n- 文档先行',
+      readBrief: () => brief,
+    });
+    expect(out).toContain('用户画像');
+    expect(out).toContain('文档先行');
+    expect(out).toContain('上一段会话的交接');
+    expect(out).toContain('---');
+  });
+
+  test('缺 persona → 只注交接;缺交接 → 只注 persona(一块挂了不拖累另一块)', () => {
+    const onlyBrief = buildSessionStartContext({ readPersona: () => null, readBrief: () => brief });
+    expect(onlyBrief).not.toContain('用户画像');
+    expect(onlyBrief).toContain('上一段会话的交接');
+
+    const onlyPersona = buildSessionStartContext({ readPersona: () => '## 画像', readBrief: () => null });
+    expect(onlyPersona).toContain('画像');
+    expect(onlyPersona).not.toContain('上一段会话的交接');
+  });
+
+  test('两块都没有 → 空串(调用方据此不注入;注一段空的与不注是两回事)', () => {
+    expect(buildSessionStartContext({ readPersona: () => null, readBrief: () => null })).toBe('');
+  });
+
+  test('persona 尾部的蒸馏标记不进注入正文', () => {
+    const out = buildSessionStartContext({
+      readPersona: () => '## 画像\n- 一条\n<!-- persona-distill 2026-08-06 -->',
+      readBrief: () => null,
+    });
+    expect(out).not.toContain('persona-distill');
+  });
 });

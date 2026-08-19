@@ -28,6 +28,7 @@ import { spawn } from 'node:child_process';
 import { parseStopLedger } from '../src/harness/session/stop-ledger';
 import { appendLedger } from '../src/harness/session/ledger';
 import {
+  buildSessionStartContext,
   decideContinuityTrigger,
   readLastFiredBucket,
   sessionDirOf,
@@ -45,6 +46,20 @@ try {
   const sessionId = typeof input.session_id === 'string' ? input.session_id : '';
   const cwd = typeof input.cwd === 'string' ? input.cwd : process.cwd();
   if (!transcript || !sessionId) throw new Error('缺 transcript_path / session_id');
+
+  // SessionStart 是**注入面**不是写入面:读 persona + 上一段交接,吐回给 CC 当开场上下文。
+  // 它不碰 ledger、不派 writer —— 与下面那条写入路完全分开(memory-hub 那边也是两个文件)。
+  if (eventName === 'SessionStart') {
+    const ctx = buildSessionStartContext({ cwd, sessionId });
+    if (ctx) {
+      marker = ctx;
+      console.error(`[continuity-hook] SessionStart 注入 ${ctx.length} 字符`);
+    }
+    process.stdout.write(
+      marker ? JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: marker } }) : '{}',
+    );
+    process.exit(0);
+  }
 
   const parsed = parseStopLedger(await Bun.file(transcript).text());
   if (!parsed.ok) throw new Error(`transcript 不可解析 (line ${parsed.error.line}): ${parsed.error.message}`);
@@ -68,8 +83,10 @@ try {
     }).unref();
 
     // 确定性 inline 标记:蒸馏在后台,这一行同步发,不靠模型记得说自己存过档。
-    if (trigger.mode !== 'precompact') writeLastFiredBucket(sessionId, trigger.bucket, cwd);
-    const trig = trigger.mode === 'precompact' ? 'precompact' : `${trigger.bucket} 档`;
+    // 档位状态只由**档位触发**更新:precompact / final 是"到点就存", 与档位无关,
+    // 拿它们的 bucket=0 去覆盖会把已存档位擦回 0, 下一轮就又存一次。
+    if (trigger.mode === 'rolling') writeLastFiredBucket(sessionId, trigger.bucket, cwd);
+    const trig = trigger.mode === 'rolling' ? `${trigger.bucket} 档` : trigger.mode;
     marker = `💾 continuity checkpoint · 触发=${trig} · [distill pending]`;
     console.error(`[continuity-hook] ${marker}`);
   }
