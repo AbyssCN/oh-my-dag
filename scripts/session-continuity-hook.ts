@@ -29,7 +29,9 @@ import { parseStopLedger } from '../src/harness/session/stop-ledger';
 import { appendLedger } from '../src/harness/session/ledger';
 import {
   decideContinuityTrigger,
+  readLastFiredBucket,
   sessionDirOf,
+  writeLastFiredBucket,
   writerArgv,
   type ContinuityHookInput,
 } from '../src/harness/session/continuity-hook';
@@ -51,7 +53,10 @@ try {
   const appended = appendLedger({ ledger: parsed.ledger, sessionId, cwd });
   if (!appended.ok) console.error(`[continuity-hook] ledger append 跳过 (fail-open): ${appended.error}`);
 
-  const trigger = decideContinuityTrigger(input, parsed.ledger);
+  // 基准是**盘上记着的「已存到第几档」**, 不是历史读数的最高档 —— 后者会让中途装上的 hook
+  // 永远哑掉(2026-08-19 实测:ledger 372 行 / ctx 408k / 零 checkpoint)。
+  const lastFiredBucket = readLastFiredBucket(sessionId, cwd);
+  const trigger = decideContinuityTrigger(input, parsed.ledger, { lastFiredBucket });
   if (trigger.fire) {
     const contDir = sessionDirOf(sessionId, cwd);
     mkdirSync(contDir, { recursive: true });
@@ -63,6 +68,7 @@ try {
     }).unref();
 
     // 确定性 inline 标记:蒸馏在后台,这一行同步发,不靠模型记得说自己存过档。
+    if (trigger.mode !== 'precompact') writeLastFiredBucket(sessionId, trigger.bucket, cwd);
     const trig = trigger.mode === 'precompact' ? 'precompact' : `${trigger.bucket} 档`;
     marker = `💾 continuity checkpoint · 触发=${trig} · [distill pending]`;
     console.error(`[continuity-hook] ${marker}`);

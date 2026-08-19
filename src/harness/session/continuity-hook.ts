@@ -14,6 +14,7 @@
  *
  * @module
  */
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveProject } from '../project-scope';
@@ -41,15 +42,25 @@ export type ContinuityTrigger =
 // ─── 触发判定(纯函数,零副作用)────────────────────────────────────────────
 
 /**
- * 跨档判定用 **bucket 序号跨越**(`floor(now/B) > floor(prev/B)`),与 memory-hub
- * `continuity-stop.mjs:89-90` 同形 —— 冻结模块那条「≥ 档位且前一条 <」一个 session 只响一次,
- * 400k / 600k 全部漏掉(#206 D-4)。
+ * 跨档判定用 **bucket 序号跨越**,基准是 **`lastFiredBucket` —— 我实际存到过第几档**,
+ * 不是历史读数里出现过的最高档。
+ *
+ * ⚠ 这一条是 2026-08-19 在生产盘上撞出来的,两次都写错过,记法在此:
+ *   ① 最早比「前一条 entry」→ 一个 Stop 之间会追加多条 entry,跨档那一跳落在中间就永远看不见;
+ *   ② 改成比「此前全部 entry 的最高档」→ **hook 装在会话中途时彻底哑掉**:第一次跑就把整条
+ *      历史读进来,历史最高档已经是 N,于是 `N > N` 永假,这个 session 剩下每一轮都不再响。
+ *      实测证据:本仓一条 session 的 ledger 372 行、ctx 408k、档位 0/1/2 全过,
+ *      而 `checkpoint.md` 与 `writer.log` **一个都没有**。
+ * 正确的基准只能是「已经存到第几档」,那是**状态**,必须落盘(hook 是短命进程)。
+ * 首次跑(无状态,`lastFiredBucket = 0`)且已过首档 → 存一次:装上去就该立刻有一份,
+ * 而不是等下一个 20 万 token。
  */
 export function decideContinuityTrigger(
   input: ContinuityHookInput,
   ledger: StopLedger,
-  env: NodeJS.ProcessEnv = process.env,
+  opts: { env?: NodeJS.ProcessEnv; lastFiredBucket?: number } = {},
 ): ContinuityTrigger {
+  const env = opts.env ?? process.env;
   // PreCompact:压缩前恒存一次档 —— 那正是最需要快照的时刻,不看档位。
   if (input.hook_event_name === 'PreCompact') return { fire: true, mode: 'precompact', bucket: 0 };
   if (input.hook_event_name !== 'Stop') return { fire: false, why: `事件 ${input.hook_event_name} 不决策` };
@@ -67,21 +78,10 @@ export function decideContinuityTrigger(
   const nowIdx = bucketIndex(last.tokenBucket, threshold);
   if (nowIdx < 1) return { fire: false, why: `未过首档 (${last.tokenBucket} < ${threshold})` };
 
-  // 基准取**此前全部** entry 的最高档,不是"前一条"。
-  // ⚠ 这条是真跑出来的:一个 Stop 之间会追加**多条** entry(一轮里每次 tool 调用各一条 assistant
-  // 记录)。只比最后两条,跨档那一跳落在中间时就永远看不见了 —— 实测本仓一条 transcript 末尾是
-  // `220262, 220956, 221759, 221759, 221759`,最后两条恒等,任何档距都判不出跨越。
-  // 取历史最高档是无状态的,且天然幂等:同档再来多少条都不会重复触发;ctx 因压缩回落也不会误触发。
-  let prevIdx = 0;
-  for (let i = 0; i < entries.length - 1; i++) {
-    const t = entries[i]!.tokenBucket;
-    if (t === null) continue; // 缺读数的条跳过 —— 不伪造,也不因它抬高基准
-    prevIdx = Math.max(prevIdx, bucketIndex(t, threshold));
-  }
-
+  const prevIdx = opts.lastFiredBucket ?? 0;
   return nowIdx > prevIdx
     ? { fire: true, mode: 'rolling', bucket: nowIdx }
-    : { fire: false, why: `同档延续 (${nowIdx})` };
+    : { fire: false, why: `已存到 ${prevIdx} 档, 当前 ${nowIdx} 档 → 不重复` };
 }
 
 // ─── 派发装配 ───────────────────────────────────────────────────────────────
@@ -121,4 +121,42 @@ export function writerArgv(
 export function sessionDirOf(sessionId: string, cwd?: string): string {
   const scope = resolveProject(cwd);
   return resolve(scope.rootPath, scope.dataPath(join('session', sessionId)));
+}
+
+// ─── 已存档位状态(hook 是短命进程 → 只能落盘)────────────────────────────────
+
+/**
+ * `<sessionDir>/continuity-state.json` —— 只存一件事:**这个 session 已经存到第几档**。
+ *
+ * 为什么不塞进 writer 的 `state.json`:那份是 writer 自己的(蒸馏游标),两个写者写同一个文件
+ * 就得约定合并规则,而这里只需要一个数。分开文件,谁写谁的。
+ */
+export function readLastFiredBucket(sessionId: string, cwd?: string): number {
+  try {
+    const raw = JSON.parse(readFileSync(join(sessionDirOf(sessionId, cwd), STATE_FILE), 'utf-8')) as {
+      lastFiredBucket?: unknown;
+    };
+    const n = raw.lastFiredBucket;
+    return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : 0;
+  } catch {
+    return 0; // 没有 / 坏了 → 当没存过。方向安全:宁可多存一次
+  }
+}
+
+/** 写已存档位。失败只记 stderr —— 存档本身已经成了,状态没写上最多下次多存一份。 */
+export function writeLastFiredBucket(sessionId: string, bucket: number, cwd?: string): void {
+  try {
+    const dir = sessionDirOf(sessionId, cwd);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, STATE_FILE), JSON.stringify({ lastFiredBucket: bucket, updatedAt: Date.now() }));
+  } catch (e) {
+    console.error(`[continuity-hook] 档位状态写失败 (下次可能多存一份): ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+const STATE_FILE = 'continuity-state.json';
+
+/** 这个 session 到底有没有产出过 checkpoint —— 给「装上去就该有一份」那条闸当判据。 */
+export function hasCheckpoint(sessionId: string, cwd?: string): boolean {
+  return existsSync(join(sessionDirOf(sessionId, cwd), 'checkpoint.md'));
 }

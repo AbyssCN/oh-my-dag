@@ -28,6 +28,8 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import {
   decideContinuityTrigger,
+  readLastFiredBucket,
+  writeLastFiredBucket,
   engineRoot,
   sessionDirOf,
   writerArgv,
@@ -153,22 +155,24 @@ async function waitForCheckpoint(
 describe('A3 触发 policy — decideContinuityTrigger', () => {
   const env = { OMD_SESSION_BUCKET: '1000' } as NodeJS.ProcessEnv;
 
-  test('跨档触发一次, 同档第二次不触发(这一对就是彼此的反向自检)', () => {
-    expect(decideContinuityTrigger(stop(), ledgerOf(800, 1200), env)).toEqual({
+  test('跨档触发一次, 存过之后同档不再触发(这一对就是彼此的反向自检)', () => {
+    // 「同档不重复」现在由**已存到第几档**决定, 不由历史读数决定 —— 见下方「中途装上」那条:
+    // 拿历史当基准时, 中途装上的 hook 会整条 session 哑掉。
+    expect(decideContinuityTrigger(stop(), ledgerOf(800, 1200), { env, lastFiredBucket: 0 })).toEqual({
       fire: true,
       mode: 'rolling',
       bucket: 1,
     });
-    expect(decideContinuityTrigger(stop(), ledgerOf(1200, 1600), env).fire).toBe(false);
+    expect(decideContinuityTrigger(stop(), ledgerOf(1200, 1600), { env, lastFiredBucket: 1 }).fire).toBe(false);
   });
 
   test('D-4: 第二、第三档同样触发(冻结模块那条「≥ 档位且前一条 <」一个 session 只响一次)', () => {
-    expect(decideContinuityTrigger(stop(), ledgerOf(1600, 2100), env)).toEqual({
+    expect(decideContinuityTrigger(stop(), ledgerOf(1600, 2100), { env, lastFiredBucket: 1 })).toEqual({
       fire: true,
       mode: 'rolling',
       bucket: 2,
     });
-    expect(decideContinuityTrigger(stop(), ledgerOf(2900, 3050), env)).toEqual({
+    expect(decideContinuityTrigger(stop(), ledgerOf(2900, 3050), { env, lastFiredBucket: 2 })).toEqual({
       fire: true,
       mode: 'rolling',
       bucket: 3,
@@ -176,14 +180,14 @@ describe('A3 触发 policy — decideContinuityTrigger', () => {
   });
 
   test('守卫不是触发: stop_hook_active 命中 → 不决策(否则 hook 自激循环)', () => {
-    expect(decideContinuityTrigger(stop({ stop_hook_active: true }), ledgerOf(800, 5000), env)).toEqual({
+    expect(decideContinuityTrigger(stop({ stop_hook_active: true }), ledgerOf(800, 5000), { env })).toEqual({
       fire: false,
       why: 'stop_hook_active',
     });
   });
 
   test('PreCompact 恒触发且 mode=precompact(压缩前那一刻不看档位)', () => {
-    expect(decideContinuityTrigger({ hook_event_name: 'PreCompact' }, ledgerOf(10), env)).toEqual({
+    expect(decideContinuityTrigger({ hook_event_name: 'PreCompact' }, ledgerOf(10), { env })).toEqual({
       fire: true,
       mode: 'precompact',
       bucket: 0,
@@ -191,32 +195,53 @@ describe('A3 触发 policy — decideContinuityTrigger', () => {
   });
 
   test('其它事件 / 空 ledger / 最新条缺 token / 坏档位配置 → 一律不触发', () => {
-    expect(decideContinuityTrigger({ hook_event_name: 'SessionEnd' }, ledgerOf(5000), env).fire).toBe(false);
-    expect(decideContinuityTrigger(stop(), ledgerOf(), env).fire).toBe(false);
-    expect(decideContinuityTrigger(stop(), ledgerOf(800, null), env).fire).toBe(false);
+    expect(decideContinuityTrigger({ hook_event_name: 'SessionEnd' }, ledgerOf(5000), { env }).fire).toBe(false);
+    expect(decideContinuityTrigger(stop(), ledgerOf(), { env }).fire).toBe(false);
+    expect(decideContinuityTrigger(stop(), ledgerOf(800, null), { env }).fire).toBe(false);
     // 坏配置不拿来造档位 —— 不伪造数比"猜一个默认"重要
-    expect(decideContinuityTrigger(stop(), ledgerOf(5000), { OMD_SESSION_BUCKET: 'abc' }).fire).toBe(false);
+    expect(decideContinuityTrigger(stop(), ledgerOf(5000), { env: { OMD_SESSION_BUCKET: 'abc' } as NodeJS.ProcessEnv }).fire).toBe(false);
   });
 
-  test('前一条缺 token → 记 0 档: 宁可多存一次, 不因一条读数缺失把跨档吞掉', () => {
-    expect(decideContinuityTrigger(stop(), ledgerOf(null, 1200), env)).toEqual({
+  test('前一条缺 token 不影响判定: 判的是最新那条与已存档位', () => {
+    expect(decideContinuityTrigger(stop(), ledgerOf(null, 1200), { env, lastFiredBucket: 0 })).toEqual({
       fire: true,
       mode: 'rolling',
       bucket: 1,
     });
   });
 
-  test('基准是**此前最高档**不是前一条: 跨档那一跳落在中间, 末尾几条恒等 → 仍不误触发', () => {
-    // 真形状(2026-08-19 实测本仓 transcript 末尾): 一个 Stop 之间会追加多条 entry,
-    // 末尾几条 tokenBucket 逐字相同。只比最后两条时这里恒判"不跨",跨档那一跳被永久漏掉。
+  test('末尾几条读数恒等也判得出 —— 基准是"已存到第几档", 不是"前一条"', () => {
+    // 真形状(2026-08-19 实测): 一个 Stop 之间会追加多条 entry, 末尾几条 tokenBucket 逐字相同。
+    // 只比最后两条时这里恒判"不跨", 跨档那一跳被永久漏掉。
     const tail = ledgerOf(800, 1050, 1200, 1200, 1200);
-    expect(decideContinuityTrigger(stop(), tail, env).fire).toBe(false); // 1 档已在历史里 → 不重复
-    // 而真正跨到 2 档时照样响, 哪怕它出现在末尾恒等段之后
-    expect(decideContinuityTrigger(stop(), ledgerOf(800, 1200, 1200, 2050), env)).toEqual({
-      fire: true,
-      mode: 'rolling',
-      bucket: 2,
+    expect(decideContinuityTrigger(stop(), tail, { env, lastFiredBucket: 0 })).toMatchObject({ fire: true, bucket: 1 });
+    expect(decideContinuityTrigger(stop(), tail, { env, lastFiredBucket: 1 }).fire).toBe(false); // 已存过 1 档
+  });
+
+  test('★ 中途装上 hook: 历史里早已过档, 仍必须**立刻存一次**', () => {
+    // 这条是生产盘上撞出来的洞(#206 二次): 基准曾取"历史最高档", 而 hook 装在会话中途时
+    // 第一次跑就把整条历史读进来 —— 历史最高档已是 N, `N > N` 永假, 这个 session 剩下
+    // 每一轮都不再响。实测: ledger 372 行 / ctx 408k / 档位 0·1·2 全过 / checkpoint 零个。
+    // 反向自检: 把基准换回 `max(历史)` → 本条当场红。
+    const longHistory = ledgerOf(50_000, 210_000, 250_000, 402_000, 408_000);
+    const d = decideContinuityTrigger(stop(), longHistory, {
+      env: { OMD_SESSION_BUCKET: '200000' } as NodeJS.ProcessEnv,
+      lastFiredBucket: 0, // 盘上没有状态 = 没存过
     });
+    expect(d).toEqual({ fire: true, mode: 'rolling', bucket: 2 });
+  });
+
+  test('存过之后状态落盘 → 同档不再重复(读写往返, 不是只测内存)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'omd-hook-state-'));
+    expect(readLastFiredBucket('st-1', root)).toBe(0); // 没有状态文件 → 0, 不是崩
+    writeLastFiredBucket('st-1', 2, root);
+    expect(readLastFiredBucket('st-1', root)).toBe(2);
+    expect(
+      decideContinuityTrigger(stop(), ledgerOf(408_000), {
+        env: { OMD_SESSION_BUCKET: '200000' } as NodeJS.ProcessEnv,
+        lastFiredBucket: readLastFiredBucket('st-1', root),
+      }).fire,
+    ).toBe(false);
   });
 });
 
