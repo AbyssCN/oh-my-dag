@@ -142,7 +142,7 @@ describe('persona 注入面 — 与 Claude 那条同一份文件', () => {
 
     const { buildSessionStartContext, personaPath } = await import('../../src/harness/session/resume');
     expect(personaPath(process.env)).toBe(join(hub, 'persona', 'persona.md'));
-    const out = buildSessionStartContext({ cwd: root, sessionId: 'x' });
+    const out = buildSessionStartContext({ cwd: root });
     expect(out).toContain('文档先行');
     expect(out).not.toContain('persona-distill'); // 尾部标记不进正文
   });

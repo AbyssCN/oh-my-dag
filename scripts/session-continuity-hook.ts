@@ -50,7 +50,7 @@ try {
   // SessionStart 是**注入面**不是写入面:读 persona + 上一段交接,吐回给 CC 当开场上下文。
   // 它不碰 ledger、不派 writer —— 与下面那条写入路完全分开(memory-hub 那边也是两个文件)。
   if (eventName === 'SessionStart') {
-    const ctx = buildSessionStartContext({ cwd, sessionId });
+    const ctx = buildSessionStartContext({ cwd });
     if (ctx) {
       marker = ctx;
       console.error(`[continuity-hook] SessionStart 注入 ${ctx.length} 字符`);

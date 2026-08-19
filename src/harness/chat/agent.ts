@@ -256,7 +256,7 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
   if (existing === null) {
     // 与 Claude Code 那条 hook **同一个函数**: persona 画像 + 上一段交接, 两块各自独立。
     // #211 首版只注了交接 —— 于是 omd 自己比 Claude 那条少一角, 而 omd 才是要建的 harness。
-    const opening = buildSessionStartContext({ cwd: opts.cwd, sessionId: opts.sessionId });
+    const opening = buildSessionStartContext({ cwd: opts.cwd });
     if (opening) {
       systemPrompt = `${systemPrompt}\n\n${opening}`;
       logger.info({ sessionId: opts.sessionId, chars: opening.length }, '[session-continuity] 开场上下文已注入');

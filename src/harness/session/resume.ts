@@ -41,12 +41,16 @@ export interface ResumeBrief {
  * 读最近一次 checkpoint。**全程 fail-open**:没有 / 读不动 / 段切不出 → `null`,
  * 调用方据此不注入。返回 `null` 与"注入了一段空的"是两回事,别塌成一个。
  *
- * `excludeSessionId` = 当前 session —— 自己刚写的那份不该回喂给自己。
+ * ## 为什么**不**排除"本 session 自己写的那份"
+ *
+ * 首版有过一条 `excludeSessionId`(「自己刚写的不该回喂给自己」),2026-08-19 实测证明它是错的:
+ * Claude Code 重开时**沿用同一个 session id**,于是新会话开场恰好被这条规则挡掉 ——
+ * 拿到的只有 persona,交接一个字没有。压缩后的 `SessionStart(source=compact)` 更是**必须**
+ * 注回本 session 那份(memory-hub 那条腿一直是这么做的:`compact → 本 session 的`)。
+ * 而"自己回喂自己"担心的那个场景不存在:注入只发生在会话**第一轮/开场**,
+ * 那一刻本次会话还没写过任何 checkpoint。
  */
-export function readResumeBrief(opts: {
-  cwd?: string;
-  excludeSessionId?: string;
-}): ResumeBrief | null {
+export function readResumeBrief(opts: { cwd?: string }): ResumeBrief | null {
   try {
     const scope = resolveProject(opts.cwd);
     const latestPath = resolve(scope.rootPath, scope.dataPath(join('session', 'latest.json')));
@@ -60,7 +64,6 @@ export function readResumeBrief(opts: {
     const sessionId = typeof latest.sessionId === 'string' ? latest.sessionId : '';
     const checkpointPath = typeof latest.path === 'string' ? latest.path : '';
     if (!sessionId || !checkpointPath) return null;
-    if (opts.excludeSessionId && sessionId === opts.excludeSessionId) return null;
     if (!existsSync(checkpointPath)) return null;
 
     const md = readFileSync(checkpointPath, 'utf-8');
@@ -120,7 +123,6 @@ const PERSONA_MAX = 2_000;
  */
 export function buildSessionStartContext(opts: {
   cwd?: string;
-  sessionId?: string;
   env?: NodeJS.ProcessEnv;
   /** 注入式读件(测试);缺省读真盘。 */
   readPersona?: (path: string) => string | null;
@@ -151,7 +153,6 @@ export function buildSessionStartContext(opts: {
 
   const brief = (opts.readBrief ?? readResumeBrief)({
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
-    ...(opts.sessionId !== undefined ? { excludeSessionId: opts.sessionId } : {}),
   });
   if (brief) blocks.push(renderResumeBrief(brief));
 

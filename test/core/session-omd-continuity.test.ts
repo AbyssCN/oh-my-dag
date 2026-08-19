@@ -252,7 +252,11 @@ describe('A2 读回 — 下一段会话接得住上一段', () => {
     expect(rendered).toContain(written.checkpointPath);
   });
 
-  test('不回喂自己: excludeSessionId 命中最近那份 → null', async () => {
+  test('★ 同一个 session id 重开也读得回(**不**排除"自己写的那份")', async () => {
+    // 首版有过一条「不回喂自己」的排除, 2026-08-19 实测证明是错的:
+    // Claude Code 重开时沿用同一个 session id, 于是开场恰好被那条规则挡掉 ——
+    // 真实症状是新会话只拿到 persona、交接一个字没有。压缩后的 SessionStart 更是必须注回本 session 那份。
+    // 反向: 把 `excludeSessionId` 判断加回去 → 本条红。
     const root = mkRoot('omd-211-self-');
     await runWriter({
       sessionId: 'same-sess',
@@ -260,8 +264,9 @@ describe('A2 读回 — 下一段会话接得住上一段', () => {
       mechanical: true,
       source: omdSessionSource({ entries: () => Promise.resolve([userMsg('自己写的')]) }),
     });
-    expect(readResumeBrief({ cwd: root, excludeSessionId: 'same-sess' })).toBeNull();
-    expect(readResumeBrief({ cwd: root, excludeSessionId: 'another-sess' })).not.toBeNull();
+    const brief = readResumeBrief({ cwd: root });
+    expect(brief).not.toBeNull();
+    expect(brief!.sessionId).toBe('same-sess');
   });
 
   test('没写过任何 checkpoint → null(而不是一段空的)', () => {
