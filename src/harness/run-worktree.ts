@@ -102,6 +102,48 @@ function defaultGit(args: string[], opts: { cwd: string }): void {
   }
 }
 
+// ── #202 (2026-08-19, 承 #200 裁决): 产物到主树了吗 ────────────────────────────
+
+/**
+ * 一次 run 的产物**落地状态**。**三值不是布尔** —— NULL≠0 那条铁律压在这里:
+ *  · `landed`         分支已是主干的祖先 = 这些字节真在 main 里;
+ *  · `awaiting-merge` 分支在, 但没合 = 活做完了、产物已收编, **等人合**;
+ *  · `no-branch`      分支不存在 = head 档(产物本就写在主树)或分支已被删。
+ *    **这一格既不是"已合入"也不是"没合"**, 编成任一个都是拿猜当事实; 由调用方按它知道的
+ *    策略决定怎么读 (settleRunTicket 知道 strategy, reflow 不知道 —— 两处各自表态, 见各自注)。
+ */
+export type RunLanded = 'landed' | 'awaiting-merge' | 'no-branch';
+
+/**
+ * 这次 run 的分支合进主干了没有 (#200 D1: `delivered` 锚在**已合入**, 不锚 run 自称 success)。
+ *
+ * **判据就是退出码**: `git merge-base --is-ancestor <branch> <main>` 退 0 = 是祖先。不解析 stdout ——
+ * 它没有 stdout, 而拿 `git branch --merged` 的文本去匹配分支名会被同名前缀坑 (`omd/run/abc` 与
+ * `omd/run/abcd`)。
+ *
+ * **为什么这条判得准**: 2026-08-19 实测四个分支全对 —— 当天合进 main 的 `3e5f7e94` / `06f0e996` /
+ * `657f6804` 报 landed, 而 checkpoint 明写「留档不并」的 `dbfe0c66` 报 awaiting-merge。#200 票面
+ * 原本假设「合主树是人做的, 引擎无从知道」, 这条实测把那个前提证伪了。
+ *
+ * ★ 反向自检 (已实测会红): 把 `=== 0` 改成恒 true → `run-landed.test.ts` 的 awaiting-merge 那条红。
+ */
+export function runBranchLanded(
+  runId: string,
+  opts: { cwd: string; mainRef?: string },
+  deps: { gitExit?: (args: string[], cwd: string) => number } = {},
+): RunLanded {
+  const gitExit =
+    deps.gitExit ??
+    ((args: string[], cwd: string): number =>
+      Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' }).exitCode);
+  const branch = runWorktreeBranch(runId);
+  // 先问分支在不在: 不在时 `merge-base` 也会非零退出, 而那与"在但没合"是两件事 (NULL≠0)。
+  if (gitExit(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], opts.cwd) !== 0) return 'no-branch';
+  return gitExit(['merge-base', '--is-ancestor', branch, opts.mainRef ?? 'main'], opts.cwd) === 0
+    ? 'landed'
+    : 'awaiting-merge';
+}
+
 /**
  * `.git` 存在即当 git 工作树。**不用 `git rev-parse`** —— 那要起一个进程, 而这个判断在
  * 每次 goal 起跑时都要做一遍; 而且 worktree 里的 `.git` 是个文件不是目录, `existsSync` 两者都认。

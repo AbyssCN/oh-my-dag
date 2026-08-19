@@ -220,6 +220,40 @@ describe('★ 切片6③ run 天然挂票 —— 起跑开任务票, 终态如�
     }
   });
 
+  /**
+   * #202 (承 #200 D1/D6): head 档产物直接写主树 → 照旧翻 delivered (上面两条钉的就是它);
+   * **branch 档翻不动** —— 产物在隔离分支上, 合主树是人扣扳机, 而这行代码跑在 run 刚结束那一刻。
+   *
+   * ⚠ 这里**不问「合了吗」**: 一个零 commit 的分支是 main 的祖先, `merge-base` 会判成 landed ——
+   * 那恰是 2026-08-19 #197 的现场 (票 delivered 时分支零 commit)。settle 该问的是「有没有东西
+   * 等着合」, 答案 `commitRunArtifacts` 刚给过。
+   */
+  test('★ #202 branch 档 → 票留 ruled + awaiting-merge 记录 (delivered 锚在已合入 main, 不锚 run 自称成了)', async () => {
+    const { tool, root, readMap } = make(['ship-x']);
+    try {
+      // 真 git 仓才让 prepareRunWorktree 不退回 head (非 git 目录会 degraded)。
+      const g = (args: string[]): void => {
+        Bun.spawnSync(['git', '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd: root, stdout: 'pipe', stderr: 'pipe' });
+      };
+      g(['init', '-q', '-b', 'main']);
+      g(['add', '-A']);
+      g(['commit', '-m', 'base']);
+
+      const r = await call(tool, { goal: '隔离档的活', branchStrategy: 'branch' });
+      const tid = /ticket: (\S+)/.exec(r.content.map((c) => c.text ?? '').join('\n'))![1]!;
+      await settle();
+      const tk = ticketOf(readMap('ship-x'), tid)!;
+      // ★ 反向自检 (已实测会红): 把 settleRunTicket 里 `landing.strategy === 'branch'` 那个
+      //   前置去掉 (或改成 'head') → 票翻 delivered, 下面两条同时红。
+      expect(tk.status).toBe('ruled');
+      expect(tk.ruling).toContain('awaiting-merge');
+      // 判词要说清下一步是谁的 —— 这张票在盘上与「裁了还没跑」长得一样, 全靠这句话分辨。
+      expect(tk.ruling).toContain('合主树是人扣扳机');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('★ blocked (BLOCKED) → 票翻 escalated, 并打上等人进入戳 (G-2 + D-5)', async () => {
     const { tool, root, readMap } = make(['ship-x'], (g) =>
       result(g, { converged: false, outcome: 'blocked', blocked: '需要 owner 给个凭证' }),

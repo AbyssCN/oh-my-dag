@@ -145,6 +145,30 @@ const goalMapOn = (cwd: string, id = 'g9'): void => {
 
 const mdBackend = (cwd: string) => resolveBackend(cwd, { env: { OMD_PATH_BACKEND: 'md' } });
 
+/**
+ * #202: 在 cwd 上起一个**真 git 仓**并把 `omd/run/<runId>` 造成「有产物但没合」。
+ * 用真 git 的理由同 `run-landed.test.ts`: 这条判据的价值就在它对真仓判得准。
+ */
+const gitRepoWithUnmergedRun = (cwd: string, runId: string): void => {
+  const g = (args: string[]): void => {
+    const r = Bun.spawnSync(['git', '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
+    if (r.exitCode !== 0) throw new Error(`git ${args.join(' ')}: ${new TextDecoder().decode(r.stderr).trim()}`);
+  };
+  g(['init', '-q', '-b', 'main']);
+  writeFileSync(join(cwd, 'base.txt'), 'base\n');
+  g(['add', 'base.txt']);
+  g(['commit', '-m', 'base']);
+  g(['checkout', '-q', '-b', `omd/run/${runId}`]);
+  writeFileSync(join(cwd, 'artifact.txt'), 'run 产物\n');
+  g(['add', 'artifact.txt']);
+  g(['commit', '-m', `omd run ${runId}: 收编`]);
+  g(['checkout', '-q', 'main']);
+};
+const gitMergeRun = (cwd: string, runId: string): void => {
+  const r = Bun.spawnSync(['git', '-c', 'user.email=t@t', '-c', 'user.name=t', 'merge', '--no-ff', '-m', 'merge', `omd/run/${runId}`], { cwd, stdout: 'pipe', stderr: 'pipe' });
+  if (r.exitCode !== 0) throw new Error(new TextDecoder().decode(r.stderr).trim());
+};
+
 describe('reflowGoalResults 三态映射 (D-G1.4, GWT-G1-2)', () => {
   test('success → 票 delivered, 结果文件归档 .done, 标记清空', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'goal-rf-'));
@@ -180,6 +204,47 @@ describe('reflowGoalResults 三态映射 (D-G1.4, GWT-G1-2)', () => {
     // 红不静默: 翻 delivered 之后没人再看图, warning 是它唯一的出口。
     expect(out[0]!.warning).toContain('红');
     expect(existsSync(`${researchResultPath(cwd, 'm1', 'g9')}.done`)).toBe(true);
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  /**
+   * #202 (承 #200 D1/D6): `delivered` 锚在**已合入 main**。判据绿但分支没合 = 第四格
+   * `awaiting-merge` —— 与 `resumable` 分开的理由是下一步相反: resumable 要再跑一轮,
+   * 这一格要**人去合**, 再跑一轮只会把做完的活重做。
+   *
+   * 一条用例走完整条时间线 (等合 → 人合 → 自动翻), 因为**这三步的连贯性才是判据**:
+   * 拆成三条会各自绿而链条断了没人发现 (result 文件被归档 → 下次 reflow 看不见 → 永远等不到复查)。
+   */
+  test('#202 判据绿但分支未合 → awaiting-merge: 票留 ruled · 不落续跑锚 · **result 文件不归档**; 人合了之后自动翻 delivered', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'goal-rf-'));
+    goalMapOn(cwd);
+    gitRepoWithUnmergedRun(cwd, 'run-g9'); // 分支名与 writeResult 写的 runId 对上
+    writeResult(cwd, 'm1', 'g9', 'success');
+
+    // ① 等合
+    const out1 = reflowGoalResults(mdBackend(cwd), cwd, 'm1');
+    // ★ 反向自检 (已实测会红): 把 runBranchLanded 的 `merge-base --is-ancestor` 判成恒 landed
+    //   → 这里直接 delivered, 下面四条同时红。
+    expect(out1[0]!.disposition).toBe('awaiting-merge');
+    expect(out1[0]!.warning).toContain('合主树是人扣扳机');
+    expect(mdBackend(cwd).readMap(cwd, 'm1')!.tickets[0]!.status).toBe('ruled');
+    // **不落续跑锚** —— 落了下次 deliver 会把做完的活再派一遍。
+    expect(existsSync(goalResumePath(cwd, 'm1', 'g9'))).toBe(false);
+    // **不归档** —— 归档了下次 reflow 就看不见这张票, 它永远等不到「合了没有」的复查。
+    expect(existsSync(researchResultPath(cwd, 'm1', 'g9'))).toBe(true);
+    expect(existsSync(`${researchResultPath(cwd, 'm1', 'g9')}.done`)).toBe(false);
+
+    // ② 幂等: 没合之前折多少次都是同一格, 不累积副作用。
+    expect(reflowGoalResults(mdBackend(cwd), cwd, 'm1')[0]!.disposition).toBe('awaiting-merge');
+    expect(mdBackend(cwd).readMap(cwd, 'm1')!.tickets[0]!.status).toBe('ruled');
+
+    // ③ 人合了 → 下一次回流自动翻 delivered (#200 D6: 机器判, 不用人再点一次)
+    gitMergeRun(cwd, 'run-g9');
+    const out3 = reflowGoalResults(mdBackend(cwd), cwd, 'm1');
+    expect(out3[0]!.disposition).toBe('delivered');
+    expect(mdBackend(cwd).readMap(cwd, 'm1')!.tickets[0]!.status).toBe('delivered');
+    expect(existsSync(`${researchResultPath(cwd, 'm1', 'g9')}.done`)).toBe(true);
+
     rmSync(cwd, { recursive: true, force: true });
   });
 

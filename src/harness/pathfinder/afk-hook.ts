@@ -18,6 +18,7 @@ import { researchResultPath } from './dispatch';
 import { distill, MAX_CHILDREN_PER_TICKET, parseChildren } from './result-format';
 import { NON_DISCOVERY_OUTCOMES } from './run-tickets';
 import { isDeliveredOutcome, type RunOutcomeKind } from '../run-outcome';
+import { runBranchLanded } from '../run-worktree';
 import type { SuggestionDraft } from './suggest';
 import type { PathBackend } from './backend';
 import type { PathMap, Ticket, WaitingLogEntry } from './types';
@@ -316,8 +317,14 @@ import { goalAttemptsPath, goalDispatchedPath, goalResumePath, readGoalAttempts 
 /** goal 票一次折入的结局 (与 ReflowOutcome 分开: 语义是交付不是蒸馏)。 */
 export interface GoalReflowOutcome {
   ticketId: string;
-  /** 三态映射结果: delivered / escalated / resumable; warning = 后端缺操作等异常。 */
-  disposition: 'delivered' | 'escalated' | 'resumable';
+  /**
+   * 映射结果: delivered / escalated / resumable / awaiting-merge; warning = 后端缺操作等异常。
+   *
+   * `awaiting-merge` (#202, 承 #200 D1): 判据绿、产物已收编, 但分支还没合进 main ——
+   * **既不是交付完成也不是没跑成**, 它是第四格。与 `resumable` 分开的理由是下一步相反:
+   * resumable 要**再跑一轮**, awaiting-merge 要**人去合**, 再跑一轮只会把做完的活重做。
+   */
+  disposition: 'delivered' | 'escalated' | 'resumable' | 'awaiting-merge';
   outcome: string;
   runId: string;
   /** D-G1.5 (c3): 本次折入产出的建议票摘要 (applySuggestions 的 summary; 无发现物/后端缺 suggest = undefined)。 */
@@ -461,6 +468,25 @@ export function reflowGoalResults(
       return true;
     };
     if (isDeliveredOutcome(head.outcome)) {
+      // ── #202 (承 #200 D1/D6): delivered 锚在**已合入 main**, 不锚 run 自称成了 ──────────
+      //
+      // `no-branch` 在**这条路上**读作已落地, 不是猜: `dispatchGoalTicket` (dispatch.ts:409) 起
+      // goal-worker 时**不传** `--branch-strategy` → worker 缺省 head 档 → 产物直接写主树,
+      // 压根没有待合的分支。⚠ 哪天 dispatch 开始传 branch, 这一格就变成「分支被删」, 要回来重判。
+      const landed = runBranchLanded(head.runId, { cwd });
+      if (landed === 'awaiting-merge') {
+        // **三个都不做**: 不落续跑锚 (活做完了, 再派一轮是重做) · 不清标记 · **不归档 result 文件**
+        // —— 归档了下次 reflow 就看不见这张票, 于是它永远等不到那次「合了没有」的复查, 卡死在 ruled。
+        // 幂等: 文件留在原地, 每次 reflow 重跑一遍 merge-base, 合上的那一刻自动翻 delivered。
+        outcomes.push({
+          ticketId: t.id,
+          disposition: 'awaiting-merge',
+          outcome: head.outcome,
+          runId: head.runId,
+          warning: `判据绿、产物已收编, 但 ${'omd/run/'}${head.runId} 未合入 main — **合主树是人扣扳机**; 合了之后下次回流自动翻 delivered`,
+        });
+        continue;
+      }
       backend.markDelivered(cwd, slug, [t.id]);
       renameSync(resultFile, `${resultFile}.done`);
       rmSyncGoal(marker, { force: true });

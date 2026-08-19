@@ -26,7 +26,7 @@ import { recordDagRun, type DagRecorder } from '../../harness/dag-record';
 import type { AcceptanceProbe } from '../../harness/goal/acceptance-gate';
 import { isDeliveredOutcome, RUN_OUTCOME_INFO } from '../../harness/run-outcome';
 import { summarizeGoalFailure } from '../../harness/goal/summarize-goal-failure';
-import { commitRunArtifacts, describeRunWorktree, prepareRunWorktree, shouldAutoCommit, type BranchStrategy } from '../../harness/run-worktree';
+import { commitRunArtifacts, describeRunWorktree, prepareRunWorktree, runWorktreeBranch, shouldAutoCommit, type BranchStrategy } from '../../harness/run-worktree';
 import { captureRollbackAnchor, describeRollback } from '../../harness/rollback-anchor';
 import { readSeatSelfReport, renderSeatLine } from '../seat-self-report';
 import { renderOwnerDirectives, type OwnerInbox } from '../owner-inbox';
@@ -266,10 +266,48 @@ function openRunTicket(
  *  - 其余 (EXHAUSTED 加预算 resume / cancelled 原样 resume / ERROR 看栈) → 票留 open:
  *    它们的下一步都是"接着跑", 翻成终态会把一件没完的事记成完了。
  */
-function settleRunTicket(target: RunTicketTarget, cwd: string, ticketId: string, r: RunGoalResult): void {
+function settleRunTicket(
+  target: RunTicketTarget,
+  cwd: string,
+  ticketId: string,
+  r: RunGoalResult,
+  landing: { runId: string; strategy: BranchStrategy; committed: boolean },
+): void {
   const { backend, slug } = target;
   const state = RUN_OUTCOME_INFO[r.outcome].loopState;
   try {
+    // ── #202 (承 #200 D1/D6): 交付达标 ≠ 可以翻 delivered ───────────────────────
+    //
+    // `delivered` 锚在**已合入 main**, 不锚「run 自称成了」。head 档没有待合的东西 (产物直接
+    // 写在主树上), 照旧翻; branch 档**此刻必然还没合** —— 合主树是人做的, 而这一行代码跑在
+    // run 刚结束的那一刻。
+    //
+    // ⚠ 所以这里**不问「合了吗」**: 一个零 commit 的分支是 main 的祖先, `merge-base` 会把它
+    // 判成 landed —— 那恰好是今晚 #197 的现场 (票 delivered 时分支零 commit)。settle 这一刻
+    // 该问的是「有没有东西等着合」, 而那个答案 `commitRunArtifacts` 刚给过 (landing.committed)。
+    // 真正的翻票交给之后的 `runBranchLanded` 复查 (afk-hook / 人合完再回流)。
+    //
+    // 实测现场 (2026-08-19): #196 的票 22:31:58 标 delivered, 而它的收编 commit 22:37:49 才落 ——
+    // 票比产物早 6 分钟。这就是本闸要关的窗口。
+    if (isDeliveredOutcome(r.outcome) && landing.strategy === 'branch') {
+      // 票留 ruled —— 但**留一条可见记录**, 否则它与「裁了还没跑」在盘上长得一模一样。
+      // 用评论注记而不是新字段: escalated 票的 `waiting-human` 已是同款先例, 两个后端都通。
+      const what = landing.committed
+        ? `产物已在 \`${runWorktreeBranch(landing.runId)}\` 收编, 等人合进 main`
+        : `但**这一跑没有可收编的改动** (工作树干净) —— 判据绿而写集为空, 值得看一眼是不是白跑了`;
+      backend.rule(
+        cwd,
+        slug,
+        ticketId,
+        `**awaiting-merge**: run \`${landing.runId}\` 判据绿 (${r.outcome}), ${what}。` +
+          `**合主树是人扣扳机** (#200 D1: delivered 锚在已合入 main); 合了之后下一次回流会自动翻 delivered。`,
+      );
+      logger.info(
+        { slug, ticketId, runId: landing.runId, committed: landing.committed },
+        '[dag_goal] D-6③ 终态: 判据绿但未合入主树 → 票留 ruled, 等合 (#202)',
+      );
+      return;
+    }
     if (isDeliveredOutcome(r.outcome)) {
       // #201: 有红节点时判词里点名 —— 票翻 delivered 之后没人会再回来看图, 这行字是红节点
       // 唯一的落盘提醒 (run-outcome 表的 nextAction 逐字: 「人审**红节点**, 别整轮重跑」)。
@@ -724,6 +762,8 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           // commit (留 run 锚)。判据红不 commit (shouldAutoCommit 单点判, 反向自检在 run-worktree
           // 测试)。detached 同 handler 同路。合回主树仍由 owner 扣扳机 —— 收编 ≠ 合入。
           let autoCommitLine = '';
+          // #202: 「这一跑有没有产物」是 settleRunTicket 判「等不等合」的依据 —— 此刻拿得到, 别让它掉。
+          let autoCommitted = false;
           if (shouldAutoCommit({ acceptanceKind: r.acceptance.kind, outcome: r.outcome }, worktree.strategy)) {
             const c = commitRunArtifacts({
               cwd: worktree.cwd,
@@ -731,6 +771,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
               message: `omd run ${runId}: 冻结判据绿自动收编 (${r.outcome})\n\n${r.acceptance.kind === 'executable' ? `判据: ${r.acceptance.command}` : ''}`,
             });
             autoCommitLine = `autoCommit: ${c.committed ? (c.sha ?? 'ok') : 'no'} — ${c.detail}\n`;
+            autoCommitted = c.committed;
             logger.info({ runId, ...c }, '[dag_goal] #165② 自动收编');
           }
           // 未收敛 = 自主环没达成 goal → 记 failed (**不算完成**): 谎报成功比失败更贵,
@@ -742,7 +783,8 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           else deps.runRegistry.fail(runId, summarizeGoalFailure(r));
           // ③ 终态如实翻票 (D-6③)。开票失败过 (runTicketId 缺席) 就没有可翻的 —— 不重开一张:
           // 一张只在终态出现的票读不出"这活跑过多久", 而那正是挂票要给人的信息。
-          if (ticketTarget && runTicketId) settleRunTicket(ticketTarget, deps.cwd, runTicketId, r);
+          if (ticketTarget && runTicketId)
+            settleRunTicket(ticketTarget, deps.cwd, runTicketId, r, { runId, strategy: worktree.strategy, committed: autoCommitted });
           // t4 (S-3): BLOCKED = 需外部输入 = **红线岔口进收件箱** —— openFork 的第一个生产喂入点
           // (S3 建好收件箱后引擎从没铸过 fork; 无人值守的 BLOCKED 此前只活在 run 摘要里)。
           // blocking=true 语义成立: goal 环判 blocked 时已真停 (证据链 = R3 验证过的采集件, 见
