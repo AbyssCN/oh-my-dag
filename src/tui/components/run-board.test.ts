@@ -25,7 +25,8 @@ describe('#96 renderRunBoard —— 纯读零写的活 run 观察面', () => {
   test('活 run → 画 runId + 已跑时长 + 写集; 表头报活/产出两个计数', () => {
     const entries = [e({ runId: 'r1', event: 'claimed', writeSet: ['src/a.ts', 'src/b.ts'] })];
     const out = renderRunBoard(entries, NOW);
-    expect(out[0]).toBe('run board · 1 活 · 0 产出');
+    // #205: 表头多了「N 等」一段 —— 三样各自一个计数, 少一个就有一类事实在屏上没有位置。
+    expect(out[0]).toBe('run board · 1 活 · 0 产出 · 0 等');
     expect(out[1]).toBe(`${RUN_MARK.live} r1 10m · src/a.ts src/b.ts`);
   });
 
@@ -68,7 +69,7 @@ describe('#96 renderRunBoard —— 纯读零写的活 run 观察面', () => {
     const out = renderRunBoard(entries, NOW);
     // ★ 反向自检 (已实测会红): 把 published 过滤成 `live.has(e.runId)` → 这条红, 且红的方式
     //   正是它防的那件事 —— 下游会以为产物不在。
-    expect(out[0]).toBe('run board · 0 活 · 1 产出');
+    expect(out[0]).toBe('run board · 0 活 · 1 产出 · 0 等');
     expect(out[1]).toBe(`${RUN_MARK.published} sdd.md · r1`);
   });
 
@@ -87,6 +88,57 @@ describe('#96 renderRunBoard —— 纯读零写的活 run 观察面', () => {
     expect(narrow).toEqual(wide.map((l) => new TruncatedText(l).render(20)[0]!));
     // 真的收窄了 (否则上面那条在"没收"时也成立)。
     expect(narrow.some((l, i) => l !== wide[i])).toBe(true);
+  });
+
+  // ── #205: 第三行「谁在等」 ────────────────────────────────────────────────
+  describe('#205 awaiting 行', () => {
+    const waiting = (o: Partial<BoardEntry> = {}) =>
+      e({ runId: 'r-wait', event: 'awaiting', artifact: 'sdd.md', timeoutMs: 3_600_000, ...o });
+
+    test('未收口的等待 → 画 ⏳ 行 + 已等时长; 表头计数跟上', () => {
+      const out = renderRunBoard([waiting()], NOW);
+      expect(out[0]).toBe('run board · 0 活 · 0 产出 · 1 等');
+      expect(out[1]).toBe(`${RUN_MARK.awaiting} sdd.md · 等 10m`);
+    });
+
+    /**
+     * ★ 收口两条, 都不另设事件 —— 板上已有的事实够用。这条钉的是**已结束的等待不许挂在屏上**:
+     * 把判定改成「不看收口事件」时它会永久显示, 而那正是观察面最会骗人的形态。
+     */
+    test('★ 等到了 (published 匹配) → 该行消失', () => {
+      const out = renderRunBoard([waiting(), e({ runId: 'r-src', event: 'published', artifact: 'sdd.md' })], NOW);
+      // ★ 反向自检 (已实测会红): awaitingRuns 里去掉 `if (got) continue` → 这条红。
+      expect(out.some((l) => l.startsWith(RUN_MARK.awaiting))).toBe(false);
+    });
+
+    test('★ 不等了 (等待方 terminal) → 该行消失', () => {
+      const out = renderRunBoard([waiting(), e({ runId: 'r-wait', event: 'terminal' })], NOW);
+      // ★ 反向自检 (已实测会红): awaitingRuns 里去掉 terminal 那一判 → 这条红。
+      expect(out.some((l) => l.startsWith(RUN_MARK.awaiting))).toBe(false);
+    });
+
+    test('fromRun 限定时, 别人发的同名 artifact 不算收口 (等的是那一份)', () => {
+      const out = renderRunBoard(
+        [waiting({ fromRun: 'r-src' }), e({ runId: 'r-other', event: 'published', artifact: 'sdd.md' })],
+        NOW,
+      );
+      expect(out.some((l) => l.startsWith(RUN_MARK.awaiting))).toBe(true);
+      expect(out.find((l) => l.startsWith(RUN_MARK.awaiting))).toContain('← r-src');
+    });
+
+    /**
+     * 阈值取比例不取绝对值: 等 3 小时与等 30 秒的「快到了」差两个数量级。
+     * timeoutMs 缺席 → **不画形变** (不假设默认值, 那又是拿猜当事实)。
+     */
+    test('★ 逼近超时按 timeoutMs 的比例判; 缺 timeoutMs 则不画形变', () => {
+      const near = renderRunBoard([waiting({ timeoutMs: 600_000 })], NOW); // 等 10m / 上限 10m = 100%
+      expect(near[1]).toContain('逼近超时');
+      const far = renderRunBoard([waiting({ timeoutMs: 36_000_000 })], NOW); // 10m / 10h ≈ 1.7%
+      expect(far[1]).not.toContain('逼近超时');
+      // ★ 反向自检 (已实测会红): 把阈值换成硬编绝对值 (如 waited > 5min) → far 那条红。
+      const noTimeout = renderRunBoard([waiting({ timeoutMs: undefined })], NOW);
+      expect(noTimeout[1]).not.toContain('逼近超时');
+    });
   });
 
   test('★ 渲染零写: 入参数组本身不被改动 (观察面一旦写盘就成了参与者)', () => {

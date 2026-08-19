@@ -15,28 +15,35 @@
  * 不碰盘。观察面一旦开始写, 它就成了参与者 —— 而公告板的全部价值在于它是**旁观者记的账**。
  * (票面把这条列在判据里: 「纯读零写(渲染零写铁律)」。)
  *
- * ## 画两样, 各自答一个不同的问题
+ * ## 画三样, 各自答一个不同的问题
  *
  * | 行 | 答的问题 | 数据源 |
  * |---|---|---|
  * | `▶ <runId>` | **谁在跑**, 占了哪些写集 | `liveRuns` (claimed 且无 terminal) |
  * | `⇧ <artifact>` | **谁产出了什么**, 下游可以接了 | `published` 事件 |
+ * | `⏳ <artifact>` | **谁在等**, 等的那份还没出现 | `awaitingRuns` (awaiting 且无收口) |
  *
- * ⚠ **票面第三样「await 等待中」这次没画, 因为它在板上没有位置**: `BoardEvent` 的六格
- * (`claimed/published/terminal/note/verified/intervened`) 里**没有 await**, 而 `await-node`
- * 只**读**板、从不写。也就是说「谁在等」这件事今天根本没被记下来 —— 要画它得先给板加一个事件位,
- * 那是写侧的改动, 不属于「渲染零写」这张票。
+ * ⚠ 第三行是 2026-08-19 (#205) 才有的。在那之前 `BoardEvent` 里**没有 awaiting 这一格**,
+ * 而 `await-node` 只读板从不写 —— 「谁在等」根本没被记下来。当时**没有去推一个出来**
+ * (比如"某 artifact 至今没被 published 就算有人在等"): 那是把「没人在等」与「等这件事没被记」
+ * 压成一行, 本仓坑① (`NULL` ≠ 0 ≠ 不适用)。#205 给板补了事件位, 这一行才有真数据可画。
  *
- * 这里**不去推一个出来** (比如"某 artifact 至今没被 published 就算有人在等"): 那是把
- * 「没人在等」与「等这件事没被记」压成一行, 而这两件事的下一步完全不同 —— 本仓坑①
- * (`NULL` ≠ 0 ≠ 不适用) 的同一形状。缺就是缺, 单开票。
+ * **逼近超时的形变阈值取 `timeoutMs` 的比例, 不硬编**: 一次等 3 小时与一次等 30 秒,
+ * 「快到了」是完全不同的绝对值。`timeoutMs` 缺席 (老行 / 没记) → **不画形变**,
+ * 不假设一个默认值 (那又是拿猜当事实)。
  */
 import { TruncatedText } from '@earendil-works/pi-tui';
-import { liveRuns, type BoardEntry } from '../../harness/board/run-board';
+import { awaitingRuns, liveRuns, type BoardEntry } from '../../harness/board/run-board';
 import { fmtDur } from '../render/dag-gantt';
 
 /** 三种行的字形 (与 ticket-board 的 MARK 同族: 一眼可辨, 且被上色器按行首拆色)。 */
-export const RUN_MARK = { live: '▶', published: '⇧' } as const;
+export const RUN_MARK = { live: '▶', published: '⇧', awaiting: '⏳' } as const;
+
+/**
+ * 逼近超时的形变阈值 (#205): 已等时长 / timeoutMs 超过它就在行尾加提示。
+ * **比例不是绝对值** —— 等 3 小时与等 30 秒的「快到了」差着两个数量级。
+ */
+export const AWAIT_NEAR_TIMEOUT_RATIO = 0.8;
 
 export interface RunBoardOpts {
   /** 列宽治理; 缺席 = 原文平铺 (同 ticket-board)。 */
@@ -68,7 +75,7 @@ export function renderRunBoard(entries: BoardEntry[], nowMs: number, opts: RunBo
   // published 只画**还活着的那些 run** 产的? 不 —— 产物一旦发布就对下游有效, 哪怕产它的 run 已终态。
   // 这正是 await-node 的语义 (它匹配 published.artifact, 不问那个 run 死没死)。
   const published = entries.filter((e) => e.event === 'published' && e.artifact);
-  if (live.size === 0 && published.length === 0) return [];
+  if (live.size === 0 && published.length === 0 && awaitingRuns(entries).length === 0) return [];
 
   const cap = opts.maxWriteSet ?? 3;
   const rows: string[] = [];
@@ -84,6 +91,14 @@ export function renderRunBoard(entries: BoardEntry[], nowMs: number, opts: RunBo
   for (const p of published) {
     rows.push(`${RUN_MARK.published} ${p.artifact} · ${p.runId}`);
   }
-  const head = `run board · ${live.size} 活 · ${published.length} 产出`;
+  const awaiting = awaitingRuns(entries);
+  for (const a of awaiting) {
+    const waited = Math.max(0, nowMs - Date.parse(a.since));
+    // timeoutMs 缺席 → 不画形变 (不假设默认值); 有则按**比例**判「快到了」。
+    const near = typeof a.timeoutMs === 'number' && a.timeoutMs > 0 && waited / a.timeoutMs >= AWAIT_NEAR_TIMEOUT_RATIO;
+    const from = a.fromRun ? ` ← ${a.fromRun}` : '';
+    rows.push(`${RUN_MARK.awaiting} ${a.artifact} · 等 ${fmtDur(waited)}${near ? ' (逼近超时)' : ''}${from}`);
+  }
+  const head = `run board · ${live.size} 活 · ${published.length} 产出 · ${awaiting.length} 等`;
   return [head, ...rows].map((l) => fit(l, opts.width));
 }

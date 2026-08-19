@@ -26,7 +26,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { appendBoard, type BoardEntry } from '../board/run-board';
+import { appendBoard, awaitingRuns, readBoard, type BoardEntry } from '../board/run-board';
 import { createCommandLeafRunner } from '../command-leaf';
 import type { ConductorPlan } from '../conductor-plan';
 import { CheckpointManager } from '../continuity/checkpoint-manager';
@@ -152,6 +152,36 @@ describe('超时 → STALLED + suggested 票 (D-8)', () => {
     expect(res.tickets[0]!).toMatchObject({ status: 'suggested', reason: 'timeout', suggestedBy: 'r-await' });
     expect(res.tickets[0]!.title.length).toBeGreaterThan(0);
     expect(res.llmCalls).toBe(0);
+  });
+});
+
+describe('#205 awaiting 落板 —— 「谁在等」这件事要被记下来', () => {
+  test('★ 真进等待 → 板上出现 awaiting (带 artifact/timeoutMs), 且 awaitingRuns 认得出它', async () => {
+    const root = freshRoot();
+    await awaitNode(root, spec({ timeoutMs: 120 }), opts()); // 等到超时 STALLED
+    const entries = readBoard(root);
+    const aw = entries.filter((e) => e.event === 'awaiting');
+    // ★ 反向自检 (已实测会红): 去掉 await-node 里那段 appendBoard → 这条红,
+    //   而红的方式正是它防的那件事 —— 观察面永远看不见有人在等。
+    expect(aw).toHaveLength(1);
+    expect(aw[0]!).toMatchObject({ runId: 'r-await', artifact: 'X', timeoutMs: 120 });
+    // 此刻 run 还没 terminal、也没人 published ⇒ 判定认它是「未收口的等待」。
+    expect(awaitingRuns(entries).map((a) => a.artifact)).toEqual(['X']);
+  });
+
+  /**
+   * 落在两次首检**之后**是刻意的: 前面任一命中就直接返回, 那种「根本没等」的情况记一条
+   * awaiting 会让观察面闪一个从不存在的等待 —— 而板是 append-only, 抹不掉。
+   */
+  test('★ 首检就 STALLED (前置已 terminal) → **不记** awaiting (根本没等过就不该有记录)', async () => {
+    const root = freshRoot();
+    appendBoard(root, entry('r-pre', 'claimed', { writeSet: ['pre.ts'] }));
+    appendBoard(root, entry('r-pre', 'terminal', { outcome: 'failed' }));
+    const res = await awaitNode(root, spec({ fromRun: 'r-pre' }), opts());
+    expect(res.verdict).toBe('stalled'); // 首检那一条就返回了, 循环没进
+    // ★ 反向自检 (已实测会红): 把 appendBoard 那段挪到两次首检**之前** → 这条红,
+    //   而红的方式正是它防的那件事 —— 观察面闪一个从不存在的等待, 且板 append-only 抹不掉。
+    expect(readBoard(root).filter((e) => e.event === 'awaiting')).toHaveLength(0);
   });
 });
 

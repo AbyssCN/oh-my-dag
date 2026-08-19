@@ -22,11 +22,25 @@
  * - fs.watch 盯 .omd/run-board.jsonl (主触发, 事件即醒)
  * - 低频 poll (opts.pollMs) 兜底 (WSL2 触发可靠性未实测)
  *
+ * ## 本模块**写**板 (#205, 2026-08-19) —— 为什么这不违反「渲染零写」
+ *
+ * 到 2026-08-19 为止本模块只 `readBoard` 从不写, 于是「有个节点正卡在等某份 artifact」
+ * 这件事**根本没被记下来**: #96 的观察面画不出它, 而**从别的事实去推它是错的**
+ * (「某 artifact 至今没 published」既可能是有人在等, 也可能压根没人等 —— NULL≠0)。
+ *
+ * 所以这里进等待时 `appendBoard` 一条 `awaiting`。这与「渲染零写铁律」不冲突, 因为那条约束
+ * 的是**观察面**: 观察面一旦写盘就从旁观者变成了参与者。而 await-node **本来就是参与者** ——
+ * 它写的是**自己的等待事实**(我在等哪份、从什么时候起、最多等多久), 不是别人的状态,
+ * 也不改任何判定。板上其它写者 (goal / intervene / ignition-preflight) 记的同样是自己那半。
+ *
+ * 只记不改判: 这一条 `awaiting` **不参与** unpark 谓词与中止条件 —— 上面那两节一字未动。
+ *
  * @module
  */
 import { mkdirSync, watch, type FSWatcher } from 'node:fs';
 import { join } from 'node:path';
-import { readBoard } from '../board/run-board';
+import { appendBoard, readBoard } from '../board/run-board';
+import { logger } from '../logger';
 
 // ─── 冻结接口 ──────────────────────────────────────────────────────────────────
 
@@ -171,6 +185,28 @@ export async function awaitNode(
     {
       const r = tryUnpark(root, readBoard(root), spec, opts);
       if (r) return r;
+    }
+
+    // ── #205: 真要等了才记 ──
+    // 落在两次首检**之后**是刻意的: 前面两条任一命中就直接返回, 那种"根本没等"的情况
+    // 记一条 awaiting 会让观察面闪一下一个从不存在的等待 (而板是 append-only, 抹不掉)。
+    // 只记不改判 —— 下面的谓词与中止条件一字未动。
+    // fail-open: 写板失败不拦等待 (板是观测面, 等待才是本职), 但不吞证据。
+    try {
+      appendBoard(root, {
+        v: 1,
+        ts: new Date().toISOString(),
+        runId: opts.runId,
+        event: 'awaiting',
+        artifact: spec.artifact,
+        timeoutMs: spec.timeoutMs || DEFAULT_TIMEOUT_MS,
+        ...(spec.fromRun ? { fromRun: spec.fromRun } : {}),
+      });
+    } catch (err) {
+      logger.warn(
+        { runId: opts.runId, artifact: spec.artifact, err: err instanceof Error ? err.message : String(err) },
+        '[omd/await] 记 awaiting 失败 → 观察面看不见这次等待 (等待本身照跑)',
+      );
     }
 
     // ── 等待循环: watch 主触发, poll 兜底 ──

@@ -40,7 +40,17 @@ import { FAILURE_KIND_ORDER } from '../node-failure';
 
 // ─── 冻结接口 ────────────────────────────────────────────────────────────────
 
-export type BoardEvent = 'claimed' | 'published' | 'terminal' | 'note' | 'verified' | 'intervened';
+/**
+ * `awaiting` (#205, 2026-08-19): **谁在等哪份产物**。
+ *
+ * 此前板上没有这一格 —— `await-node` 只读板从不写, 于是「有个节点正卡在等」这件事根本没被记
+ * 下来, #96 的观察面也就画不出它。**不许从别的事实推它**(比如"某 artifact 至今没 published
+ * 就算有人在等"): 那是把「没人在等」与「等这件事没被记」压成一行, 本仓坑① (NULL≠0)。
+ *
+ * 收口不另设事件: 等到了走 `published` (谓词匹配), 等不到走 `terminal` —— 与 `liveRuns`
+ * (claimed 减 terminal) 同款判法, 见 {@link awaitingRuns}。
+ */
+export type BoardEvent = 'claimed' | 'published' | 'terminal' | 'note' | 'verified' | 'intervened' | 'awaiting';
 
 export interface BoardEntry {
   v: 1;
@@ -56,12 +66,16 @@ export interface BoardEntry {
   verdict?: 'pass' | 'fail';
   /** intervened 专用: 人为什么不得不伸手 —— 值域 = NodeFailureKind (node-failure 词表复用, #160 判据①)。 */
   cause?: string;
+  /** awaiting 专用 (#205): 这一等最多等多久 (ms) —— 观察面据它算"逼近超时", 不硬编阈值。 */
+  timeoutMs?: number;
+  /** awaiting 专用 (#205): 限定的前置 run id; 缺席 = 任意 run 的 published 都算数 (同 AwaitSpec)。 */
+  fromRun?: string;
 }
 
 
 // ─── constants ───────────────────────────────────────────────────────────────
 
-const EVENTS: ReadonlySet<string> = new Set(['claimed', 'published', 'terminal', 'note', 'verified', 'intervened']);
+const EVENTS: ReadonlySet<string> = new Set(['claimed', 'published', 'terminal', 'note', 'verified', 'intervened', 'awaiting']);
 
 /** intervened 专用 cause 合法值域 = node-failure 词表全集(fail-loud 校验复用)。 */
 const FAILURE_KINDS: ReadonlySet<string> = new Set(FAILURE_KIND_ORDER);
@@ -362,4 +376,47 @@ export function liveRuns(entries: BoardEntry[]): Map<string, string[]> {
     out.set(e.runId, e.writeSet ?? []);
   }
   return out;
+}
+
+/** 一条**未收口**的等待 (#205)。 */
+export interface AwaitingEntry {
+  runId: string;
+  artifact: string;
+  /** 开始等的时刻 (ISO, 取该 run+artifact 最后一次 awaiting)。 */
+  since: string;
+  /** 这一等最多等多久; 缺席 = 没记 (观察面据此**不画**逼近超时的形变, 不假设一个默认值)。 */
+  timeoutMs?: number;
+  fromRun?: string;
+}
+
+/**
+ * **谁还在等** (#205)。判法与 {@link liveRuns} 同款: 有 `awaiting` 且**无对应收口事件**。
+ *
+ * 收口有两条, 都不另设事件 —— 板上已有的事实够用:
+ *   · **等到了** —— 出现满足谓词的 `published` (同 artifact; awaiting 若限定了 `fromRun`,
+ *     则那条 published 的 runId 也要对上)。⚠ 这里**不复刻 await-node 的写集不相交判据**:
+ *     那是"能不能合入"的问题, 而这里答的是"还在不在等"。两者混一起会让一次因写集相交而
+ *     继续等的节点从观察面上消失 —— 那正是最该看见它的时候。
+ *   · **不等了** —— 等待方自己 `terminal` (超时 STALLED 也走这条)。
+ *
+ * 同一 run+artifact 多次 awaiting → 取最后一次 (后写者胜, 同 liveRuns 的写集语义)。
+ */
+export function awaitingRuns(entries: BoardEntry[]): AwaitingEntry[] {
+  const terminal = new Set(entries.filter((e) => e.event === 'terminal').map((e) => e.runId));
+  const published = entries.filter((e) => e.event === 'published' && e.artifact);
+  const open = new Map<string, AwaitingEntry>();
+  for (const e of entries) {
+    if (e.event !== 'awaiting' || !e.artifact) continue;
+    if (terminal.has(e.runId)) continue; // 等待方已终态 = 不等了
+    const got = published.some((p) => p.artifact === e.artifact && (!e.fromRun || p.runId === e.fromRun));
+    if (got) continue; // 等到了
+    open.set(`${e.runId} ${e.artifact}`, {
+      runId: e.runId,
+      artifact: e.artifact,
+      since: e.ts,
+      ...(typeof e.timeoutMs === 'number' ? { timeoutMs: e.timeoutMs } : {}),
+      ...(e.fromRun ? { fromRun: e.fromRun } : {}),
+    });
+  }
+  return [...open.values()];
 }
