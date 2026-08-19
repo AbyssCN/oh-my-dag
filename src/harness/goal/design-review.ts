@@ -15,6 +15,7 @@
 import { join } from 'node:path';
 import { resolveProfile, type LeafProfile } from '../profiles/profile';
 import { appendFindings, fingerprintOf, loadLedger, type ReviewFinding } from '../profiles/review-ledger';
+import { runMechanicalLayer, type MechanicalDeps } from './design-review-mechanical';
 import { logger } from '../logger';
 
 /** 默认前端文件 glob (profile.frontendGlob 缺席时的回退)。 */
@@ -56,6 +57,8 @@ export interface DesignReviewOpts {
    * 默认实现走 agent leaf 调度 (需 agentRunner)。
    */
   runReview?: (diff: string, cwd: string) => Promise<{ findings: ReviewFinding[]; usage: { in: number; out: number } }>;
+  /** #98 机械层的注入面 (测试用: 永不起真进程)。缺省 = 真跑 `.omd/skills/impeccable/scripts/detect.mjs`。 */
+  mechanical?: MechanicalDeps;
 }
 
 /**
@@ -150,6 +153,17 @@ export async function maybeRunDesignReview(opts: DesignReviewOpts): Promise<Desi
     // 收集原始 findings (跑审核或 diff-only 退化)
     const rawFindings: ReviewFinding[] = [];
     let usage = { in: 0, out: 0 };
+
+    // ── #98 (persona 判序①): 机械层**先跑** ──────────────────────────────────
+    //
+    // `impeccable` 那套自带一个确定性、零 LLM 的反模式检测器, 它认得出边框/动效/辉光/排版/
+    // 布局那一族「AI 生成界面的口音」。**规则命中是事实不是意见** —— 拿模型去重新发现一遍
+    // 既慢又贵, 而且模型还可能漏。机械层拦得住的不进模型, 模型只审整读与品味。
+    //
+    // 顺序上放在模型审**之前**是刻意的: 机械 finding 与模型 finding 走同一套指纹去重
+    // (见 design-review-mechanical.ts 的说明), 先落的那批能把模型重复报的同一条吃掉。
+    // fail-open: 机械层跑不起来只 warn, 模型层照审 —— 它是加固不是前置条件。
+    rawFindings.push(...runMechanicalLayer(frontendFiles, opts.cwd, opts.mechanical ?? {}));
 
     if (opts.runReview) {
       const diff = frontendFiles.map((f) => `# ${f}\n(文件路径: ${f})`).join('\n\n');
