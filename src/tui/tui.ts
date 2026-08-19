@@ -33,6 +33,7 @@ import { dirname, resolve as resolvePath } from 'node:path';
 import { type Component, Container, HStack, Loader, ProcessTerminal, Spacer, TuiMainScreen, VStack, type Terminal } from '@earendil-works/pi-tui';
 import { HintedEditor } from './components/hinted-editor';
 import { logger } from '../logger';
+import { spawnFinalCheckpoint } from '../harness/session/final-spawn';
 import type { OmdBackend } from './backend';
 import { ChatLog } from './components/chat-log';
 import { type DialogHost, type InputOpts, type SelectOpts, confirm as dialogConfirm, input as dialogInput, select as dialogSelect } from './components/dialog';
@@ -1009,6 +1010,10 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       return;
     }
     exiting = true;
+    // 交接收口(#212): 退出是这条会话**最后一次**存档机会, 错过就只剩上一次跨档那份。
+    // detached 派子进程, 不在这里等 —— 蒸馏要打一次模型(秒级), 而"退出要等几秒"
+    // 是不能接受的; 进程内 fire-and-forget 又活不过 exit。全程 fail-open。
+    spawnFinalCheckpoint(sessionId, opts.cwd ?? process.cwd());
     // §4.1 第 5 条:先停动画再拆传输。S2 无动画,留住顺序本身 ——
     // 等 S11 的 HUD 有了动画, 这里已经是对的位置, 不用再想一次。
     stopAnimations();

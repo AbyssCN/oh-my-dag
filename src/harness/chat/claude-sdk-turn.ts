@@ -29,7 +29,7 @@ import { logger } from '../../logger';
 import { CLAUDE_SDK_PROVIDER, effortOf } from '../../model/claude-sdk-complete';
 import type { ModelUsage } from '../../model/types';
 import { analyzeContextPressure } from './usage';
-import { readResumeBrief, renderResumeBrief } from '../session/resume';
+import { buildSessionStartContext } from '../session/resume';
 import { maybeCheckpointOmdSession } from '../session/omd-checkpoint';
 import type { ChatTurnOpts, ChatTurnResult } from './agent';
 
@@ -86,13 +86,12 @@ export async function runChatTurnSdk(opts: ChatTurnOpts): Promise<ChatTurnResult
   // 交接读回 (#211) —— 与 pi 通道逐字同一条(`agent.ts` 那处):只在会话第一轮注。
   // 两个通道都要接:omd 主座位跑的正是这条 SDK 通道,漏了它等于这个功能对 owner 不存在。
   if (existing === null) {
-    const brief = readResumeBrief({ cwd: opts.cwd, excludeSessionId: opts.sessionId });
-    if (brief) {
-      systemPrompt = `${systemPrompt}\n\n${renderResumeBrief(brief)}`;
-      logger.info(
-        { sessionId: opts.sessionId, from: brief.sessionId, degraded: brief.degraded },
-        '[session-continuity] 上一段交接已注入开场 (sdk 通道)',
-      );
+    // 与 Claude Code 那条 hook **同一个函数**: persona 画像 + 上一段交接, 两块各自独立。
+    // #211 首版只注了交接 —— 于是 omd 自己比 Claude 那条少一角, 而 omd 才是要建的 harness。
+    const opening = buildSessionStartContext({ cwd: opts.cwd, sessionId: opts.sessionId });
+    if (opening) {
+      systemPrompt = `${systemPrompt}\n\n${opening}`;
+      logger.info({ sessionId: opts.sessionId, chars: opening.length }, '[session-continuity] 开场上下文已注入 (sdk 通道)');
     }
   }
 

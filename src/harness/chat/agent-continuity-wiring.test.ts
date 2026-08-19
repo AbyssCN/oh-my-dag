@@ -15,7 +15,7 @@
  * ⚠ 不设这个 env 的既有 chat 测试**不会**被误触发:fake 循环那两条消息的 ctx 远在默认 200k 档以下。
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
@@ -36,7 +36,7 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'omd-chat-continuity-'));
   resetSessionCacheForTest();
   resetOmdCheckpointStateForTest();
-  for (const k of ['OMD_DATA_HOME', 'OMD_SESSION_BUCKET', 'OMD_CONTINUITY_MECHANICAL']) {
+  for (const k of ['OMD_DATA_HOME', 'OMD_SESSION_BUCKET', 'OMD_CONTINUITY_MECHANICAL', 'MEMORY_HUB_DATA']) {
     savedEnv[k] = process.env[k];
     delete process.env[k];
   }
@@ -121,6 +121,20 @@ describe('★ #211 接线 — 交接读回进 system prompt', () => {
     const second: { systemPrompt?: string } = {};
     await runChatTurn({ store, sessionId: 's-two', prompt: '二', model: MODEL, cwd: root, loopFn: fakeLoop('答二', second) as never });
     expect(second.systemPrompt).not.toContain('上一段会话的交接');
+  });
+
+  test('★ persona 也注(#212): omd 开场与 Claude 那条同一份画像文件', async () => {
+    // #211 首版 omd 只注交接不注 persona —— 于是 omd 自己比 Claude 那条少一角,
+    // 而 omd 才是要建的 harness。反向: 把 agent.ts 换回 readResumeBrief → 本条红。
+    const hub = join(root, 'hub');
+    mkdirSync(join(hub, 'persona'), { recursive: true });
+    writeFileSync(join(hub, 'persona', 'persona.md'), '## 工作方式\n- 文档先行, 先写 SDD 再编码');
+    process.env.MEMORY_HUB_DATA = hub;
+
+    const seen: { systemPrompt?: string } = {};
+    await runChatTurn({ store, sessionId: 'persona-1', prompt: '一', model: MODEL, cwd: root, loopFn: fakeLoop('答', seen) as never });
+    expect(seen.systemPrompt).toContain('用户画像');
+    expect(seen.systemPrompt).toContain('先写 SDD 再编码');
   });
 
   test('没有上一段 → 不注(而不是注一段空的)', async () => {

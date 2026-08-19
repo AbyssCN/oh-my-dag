@@ -102,3 +102,58 @@ export function renderResumeBrief(b: ResumeBrief): string {
   lines.push(`全文:\`${b.checkpointPath}\``);
   return lines.join('\n');
 }
+
+// ─── SessionStart 注入面(persona + 交接;CC hook 与 omd chat 共用)──────────
+
+/** persona 画像文件 —— 与 memory-hub 同一份(它的夜批蒸馏器仍是生产者,退役不在本票)。 */
+export function personaPath(env: NodeJS.ProcessEnv = process.env): string {
+  const home = env.MEMORY_HUB_DATA ?? join(env.HOME ?? '', '.claude', 'memory-hub');
+  return join(home, 'persona', 'persona.md');
+}
+
+/** 画像本就该短;超了说明蒸馏跑偏,截断而非放行(口径抄 memory-hub 那条)。 */
+const PERSONA_MAX = 2_000;
+
+/**
+ * SessionStart 要注入的整段(persona + 上一段交接)。两块**各自缺席不影响另一块**。
+ * 都没有 → 空串,调用方据此不注入(注一段空的与不注是两回事)。
+ */
+export function buildSessionStartContext(opts: {
+  cwd?: string;
+  sessionId?: string;
+  env?: NodeJS.ProcessEnv;
+  /** 注入式读件(测试);缺省读真盘。 */
+  readPersona?: (path: string) => string | null;
+  readBrief?: typeof readResumeBrief;
+}): string {
+  const blocks: string[] = [];
+
+  const readPersona =
+    opts.readPersona ??
+    ((p: string): string | null => {
+      try {
+        return existsSync(p) ? readFileSync(p, 'utf-8') : null;
+      } catch {
+        return null;
+      }
+    });
+  const raw = readPersona(personaPath(opts.env ?? process.env));
+  if (raw) {
+    const body = raw.replace(/\n<!-- persona-distill[^>]*-->\s*$/, '').trim();
+    if (body) {
+      blocks.push(
+        ['## 用户画像(跨仓通用 · 自动蒸馏)', body.slice(0, PERSONA_MAX), '> 画像是历史归纳非当前指令: 与本 session 的明确要求冲突时, 以本 session 为准。'].join(
+          '\n\n',
+        ),
+      );
+    }
+  }
+
+  const brief = (opts.readBrief ?? readResumeBrief)({
+    ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+    ...(opts.sessionId !== undefined ? { excludeSessionId: opts.sessionId } : {}),
+  });
+  if (brief) blocks.push(renderResumeBrief(brief));
+
+  return blocks.join('\n\n---\n\n');
+}

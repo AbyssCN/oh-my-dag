@@ -191,7 +191,18 @@ function assertId(id: string): void {
 }
 
 /** 与 `ChatStore.dir()` 同一条判断:`OMD_DATA_HOME` 在就走它,否则仓内 `.omd/chat`。 */
-function sessionsRootFor(repoRoot: string): string {
+/**
+ * 会话文件根。
+ *
+ * ⚠ **导出是刻意的**(#212):它依赖 `OMD_DATA_HOME`,而这个 env 会**跨进程漂** ——
+ * TUI 不 import `script-bootstrap`(该模块头注写明), 于是 TUI 的会话落 `<repo>/.omd/chat`;
+ * 而任何 `scripts/*.ts` 一 import 就把 `OMD_DATA_HOME` 置成 `~/.omd`, 同一个 `repoRoot`
+ * 算出来是**另一个目录**, `list()` 一条都找不到 —— 症状是"会话不存在", 不报错。
+ * 所以派子进程去读会话时, 由**父进程**算好这个根、经 `OMD_CHAT_ROOT` 传下去。
+ */
+export function sessionsRootFor(repoRoot: string): string {
+  const explicit = process.env.OMD_CHAT_ROOT?.trim();
+  if (explicit) return explicit;
   return process.env.OMD_DATA_HOME?.trim() ? dataPath('chat') : join(repoRoot, CHAT_DIR);
 }
 

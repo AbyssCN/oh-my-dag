@@ -28,7 +28,7 @@ import {
 import { streamSimple } from '@earendil-works/pi-ai/compat';
 import { assistantText } from '../agent-leaf';
 import { logger } from '../../logger';
-import { readResumeBrief, renderResumeBrief } from '../session/resume';
+import { buildSessionStartContext } from '../session/resume';
 import { maybeCheckpointOmdSession } from '../session/omd-checkpoint';
 import { emitModelUsage } from '../../model/accounting';
 import type { ModelUsage } from '../../model/types';
@@ -254,13 +254,12 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
   // 每轮重放一遍上一段,而且会把它自己写进新 checkpoint 里滚雪球。
   // 读的是 markdown 真源不是 facts 镜像(理由见 resume.ts 头注);全程 fail-open,读不到就不注。
   if (existing === null) {
-    const brief = readResumeBrief({ cwd: opts.cwd, excludeSessionId: opts.sessionId });
-    if (brief) {
-      systemPrompt = `${systemPrompt}\n\n${renderResumeBrief(brief)}`;
-      logger.info(
-        { sessionId: opts.sessionId, from: brief.sessionId, degraded: brief.degraded },
-        '[session-continuity] 上一段交接已注入开场',
-      );
+    // 与 Claude Code 那条 hook **同一个函数**: persona 画像 + 上一段交接, 两块各自独立。
+    // #211 首版只注了交接 —— 于是 omd 自己比 Claude 那条少一角, 而 omd 才是要建的 harness。
+    const opening = buildSessionStartContext({ cwd: opts.cwd, sessionId: opts.sessionId });
+    if (opening) {
+      systemPrompt = `${systemPrompt}\n\n${opening}`;
+      logger.info({ sessionId: opts.sessionId, chars: opening.length }, '[session-continuity] 开场上下文已注入');
     }
   }
   if (opts.systemPromptHook) {
