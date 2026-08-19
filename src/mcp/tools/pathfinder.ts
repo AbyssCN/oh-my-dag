@@ -101,6 +101,34 @@ function resolveSlug(backend: PathBackend, cwd: string, slug: string | undefined
   return { slug: maps[0]!.slug };
 }
 
+/**
+ * 把调用方给的票 id 解成**盘上真实的那个 id** (#206, 2026-08-19)。
+ *
+ * ## 为什么需要它 (这不是人体工学, 是个洞)
+ *
+ * gh 后端的票 id 是 `#N`, 而工具面历来也收裸 `N` —— 因为**写路**会 `bareNumber()` 归一
+ * (`backend-gh.ts`)。但**读路**是精确匹配 (`t.id === ticketId`)。于是同一次调用里同一个字符串
+ * 指向两个东西:
+ *   · `path_rule` 的 suggested 守卫 (GWT-8 / INV-S1-1「suggested 票不许绕过人确认直接裁」)
+ *     走读路 → 传裸 `177` 时 `find` 返回 undefined → **守卫不响**;
+ *   · `backend.rule` 走写路 → 裸 `177` 照样命中 → **真去 comment + close 了**。
+ * 实测 (2026-08-19): 同一张 suggested 票, `#177` 被守卫拒, `177` 直接裁掉并写了 gh。
+ * 而 `map_confirm` 完全不归一 → 裸 `177` 报「票不存在」。**同一个 id 在三处三种行为。**
+ *
+ * 归一放在**工具层**而不是各后端: 后端的 id 形状是它自己的事 (md 是 `t1`, gh 是 `#N`),
+ * 而"用户打的那串指哪张票"是工具面的职责。解出来之后读路写路共用**同一个值**, 漂移无处发生。
+ *
+ * @returns 盘上的真 id; 认不出 → null (调用方响亮拒, 不猜)。
+ */
+export function resolveTicketId(map: PathMap | null, raw: string): string | null {
+  if (!map) return null;
+  const want = raw.trim();
+  if (!want) return null;
+  const bare = (s: string): string => s.replace(/^#/, '');
+  // 精确优先; 再按"去掉 # 之后相等"认 —— 只这两档, 不做模糊前缀匹配 (猜错票比认不出坏得多)。
+  return map.tickets.find((t) => t.id === want)?.id ?? map.tickets.find((t) => bare(t.id) === bare(want))?.id ?? null;
+}
+
 /** 列图 + 现算 open/frontier 计数 (两后端一致: listMaps 只给 slug/destination, 计数用 readMap+computeFrontier)。 */
 function listMapsWithCounts(backend: PathBackend, cwd: string): Array<{ slug: string; destination: string; openCount: number; frontierCount: number }> {
   return backend.listMaps(cwd).map(({ slug, destination }) => {
@@ -463,8 +491,14 @@ function makeRule(deps: PathfinderToolDeps): OmdMcpTool {
       const r = resolveSlug(backend, deps.cwd, slug as string | undefined);
       if ('error' in r) return err(r.error);
       const reflow = reflowOnce(deps, backend, r.slug); // 先折回流, 避免在过期视图上裁
-      // GWT-8 (INV-S1-1): suggested 票不许绕过人确认直接裁 — rule 是裁决, confirm 才是收件。
+      // #206: **先把 id 解成盘上真实的那个**, 之后读路写路共用它。
+      // 此前守卫走精确匹配而写路走 bareNumber 归一 —— 传裸 `177` 时守卫查不到 → 不响,
+      // 写路照样命中 → suggested 票被直接裁掉 (实测)。解析放这里, 两条路不再各认各的。
       const pre = backend.readMap(deps.cwd, r.slug);
+      const resolvedId = resolveTicketId(pre, ticketId as string);
+      if (!resolvedId) return err(`找不到票 "${ticketId}" — map_tickets 看现有票 (gh 后端的 id 形如 #206)`);
+      ticketId = resolvedId;
+      // GWT-8 (INV-S1-1): suggested 票不许绕过人确认直接裁 — rule 是裁决, confirm 才是收件。
       const target = pre?.tickets.find((t) => t.id === ticketId);
       if (target?.status === 'suggested') {
         return err(`票 "${ticketId}" 是机器建议 (suggested) — 先 map_confirm accept/reject, 确认后才可裁决`);
@@ -526,6 +560,11 @@ function makeConfirm(deps: PathfinderToolDeps): OmdMcpTool {
       const r = resolveSlug(backend, deps.cwd, slug as string | undefined);
       if ('error' in r) return err(r.error);
       if (!backend.confirmSuggestion) return err(`后端 ${backend.kind} 未实装 confirmSuggestion (S-1 片e) — md 后端可用`);
+      // #206: 与 path_rule 同一把尺 —— 此前这里完全不归一, 于是裸 `177` 在 rule 那边能用、
+      // 在这边报「票不存在」。同一个 id 在两个工具面上两种行为, 绊过人。
+      const confirmId = resolveTicketId(backend.readMap(deps.cwd, r.slug), ticketId as string);
+      if (!confirmId) return err(`找不到票 "${ticketId}" — map_tickets 看现有票 (gh 后端的 id 形如 #206)`);
+      ticketId = confirmId;
       try {
         const entry = backend.confirmSuggestion(deps.cwd, r.slug, ticketId as string, action as 'accept' | 'reject', {
           at: new Date().toISOString(),
