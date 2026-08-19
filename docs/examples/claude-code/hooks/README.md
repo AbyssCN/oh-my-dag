@@ -7,10 +7,43 @@
 
 ---
 
+## 两条 continuity hook —— 先看这里选哪条(#206)
+
+同一个 token 档判据长在两个入口上,**互斥安装,别同装**:
+
+| | `session-continuity.ts`(本目录,冻结) | `scripts/session-continuity-hook.ts`(仓根) |
+|---|---|---|
+| 做什么 | 吐 `decision:"block"` 让 CC **多走一轮** + 记 ledger | detached 派 `scripts/session-writer.ts` **真蒸馏** + 记 ledger |
+| 产不产 checkpoint | **不产**。它从不调 writer | 产:`checkpoint.md` + `facts` 的 `namespace='continuity'` 行 |
+| 事件 | 仅 `Stop` | `Stop`(跨档)+ `PreCompact`(恒触发) |
+| 跨档语义 | 「≥ 档位且前一条 <」→ **一个 session 只响一次** | bucket 序号跨越 → 每跨一档响一次 |
+
+**要数据就装下面那条**(`session-continuity-hook.ts`)。装上面这条只会记 ledger,
+库里 continuity 依旧零行 —— 这正是 #206 之前的实况。
+
+### settings.json 接线(产数据的那条)
+
+```json
+{
+  "hooks": {
+    "Stop":      [{ "matcher": "", "hooks": [{ "type": "command", "command": "bun run <omd>/scripts/session-continuity-hook.ts" }] }],
+    "PreCompact":[{ "matcher": "", "hooks": [{ "type": "command", "command": "bun run <omd>/scripts/session-continuity-hook.ts" }] }]
+  }
+}
+```
+
+`<omd>` 写 omd 仓绝对路径 —— 引擎锚不随 cwd(别的 repo 里 CC 也会跑这条 hook,那个 repo 没有 writer 脚本)。
+落盘分两处:`checkpoint.md` / `ledger.jsonl` 走 `OMD_DATA_HOME`(`~/.omd/projects/<slug>/session/<id>/`),
+facts 走 `<当前 repo>/.omd/memory.db`(与该 repo 的 MCP 读面同库)。env 旋钮:
+`OMD_SESSION_BUCKET`(档距,默认 200k)· `OMD_CONTINUITY_MECHANICAL=1`(跳过模型调用,测试用)。
+
+---
+
 ## session-continuity.ts — Stop hook(冻结,W2 opt-in)
 
 **作用**:会话跨 token 档时(默认 200k,env `OMD_SESSION_BUCKET` 可覆盖)输出
 `decision: "block"` 拦下 Stop,让 Claude Code 续接一次;同档延续不重复触发。
+**它不产 checkpoint** —— 要数据看上一节。
 
 ### settings.json 接线
 

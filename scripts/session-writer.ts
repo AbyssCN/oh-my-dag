@@ -44,8 +44,12 @@ if (!transcript || !sessionId || !existsSync(transcript)) {
   process.exit(0); // fail-open:派遣方不感知失败
 }
 
-// 镜像层的库位置与 MCP 装配同一真源(resolveMemoryDbPath);script-bootstrap 已把
-// OMD_DATA_HOME 指到 ~/.omd ⇒ 落 ~/.omd/memory.db,不污染当前 repo。
+// 镜像层的库位置与 MCP 装配同一真源(resolveMemoryDbPath = `OMD_MEMORY_PATH ?? '.omd/memory.db'`)。
+// ⚠ 它**不认 OMD_DATA_HOME**(与上面 checkpoint.md 那条路不同)⇒ 落的是 `<cwd>/.omd/memory.db`,
+//   即**本进程 cwd 那个 repo** 的库。这正是要的:MCP 读面以 `cd "${CLAUDE_PROJECT_DIR:-$PWD}"`
+//   起、走同一条解析,两面同库才读得回;`.omd/` 已在 .gitignore,不脏 git status。
+//   派发方(scripts/session-continuity-hook.ts)因此必须带 `cwd = input.cwd` spawn 本脚本。
+//   (2026-08-19 #206 修:此处原注写「⇒ 落 ~/.omd/memory.db」—— 推的,不是看的,而且是反的。)
 const memoryPath = resolveMemoryDbPath(process.env);
 mkdirSync(dirname(memoryPath), { recursive: true });
 const memory = createOmdMemory({ path: memoryPath, safeguard: CONTINUITY_SAFEGUARD });

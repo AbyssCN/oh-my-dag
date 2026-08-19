@@ -9,8 +9,9 @@
  * safeguard): daemon/a sibling project 装配 ValalMemory/DreamEngine 时显式传; dream 经
  * DreamEngine 构造器线到 restraint/router/purify; 测试显式 import a sibling project 注入。core 永不静态依赖它。
  */
-import { globToRegExp, ConfidenceSchema, type Confidence, type ConfidenceLevel, type AssembledSafeguard } from './namespace-kernel';
-import { UNIVERSAL_SAFEGUARD } from './universal-namespaces';
+import { assembleSafeguard, globToRegExp, ConfidenceSchema, type Confidence, type ConfidenceLevel, type AssembledSafeguard } from './namespace-kernel';
+import { UNIVERSAL_SAFEGUARD, USER_NAMESPACE_PACK, OMD_NAMESPACE_PACK } from './universal-namespaces';
+import { CONTINUITY_NAMESPACE_PACK } from './continuity-namespace';
 
 // ---- 通用机制 re-export ----
 export { ConfidenceSchema };
@@ -35,6 +36,24 @@ export { UNIVERSAL_SAFEGUARD };
  *  omd 两族 universal namespace, 拒一切 domain namespace。a sibling project 行为需调用边界显式注入
  *  a sibling project。 */
 export const DEFAULT_SAFEGUARD: AssembledSafeguard = UNIVERSAL_SAFEGUARD;
+
+/**
+ * **宿主进程**装配 (= universal + continuity)。MCP / TUI 这类**开共享库**的进程用它。
+ *
+ * 不变量:**读一个库的 safeguard, 它的 schema 必须覆盖那个库里出现过的每一个 namespace。**
+ * 读路不是"只走库不走闸" —— `store.liveFactsByNamespace` / `liveTentativeFacts` / `fact()`
+ * 三处都 `safeguard.schema.parse(payload)`。分支缺了那个 namespace ⇒ parse 抛:
+ *   - `listCheckpoints` 有 `catch → []` ⇒ **静默空列表**(#206 实测:写入侧成功、读面恒空);
+ *   - `liveTentativeFacts` 没有 catch ⇒ 整趟扫描抛。
+ * 而 `sinkCheckpoint` 把 continuity 写进的就是 `resolveMemoryDbPath` 那个共享库,
+ * 所以宿主装配必须带上 continuity 分支。**写入面仍窄**:写入侧另用
+ * `CONTINUITY_SAFEGUARD`(只 continuity 一格),见 `continuity-namespace.ts`。
+ */
+export const HOST_SAFEGUARD: AssembledSafeguard = assembleSafeguard([
+  USER_NAMESPACE_PACK,
+  OMD_NAMESPACE_PACK,
+  CONTINUITY_NAMESPACE_PACK,
+]);
 
 // ---- 公共面 (= DEFAULT_SAFEGUARD = universal 装配的派生导出) ----
 export const FactNamespaceSchema = DEFAULT_SAFEGUARD.schema;

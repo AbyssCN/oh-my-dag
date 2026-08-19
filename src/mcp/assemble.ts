@@ -9,7 +9,7 @@
  *     agentRunner = createAgentLeafRunner({cwd, hashlineEdit:false}) (tui 同款真改文件叶子;
  *     行锚定编辑 2026-08-18 起默认关, 见 readings/2026-08-18-hashline-ab.md),
  *     commandRunner = tui 同款白名单 (D-10: fail-closed 闸在引擎层, 入口不新增权限)。
- *   - memory 两工具: createOmdMemory (OMD_MEMORY_PATH ?? .omd/memory.db + UNIVERSAL_SAFEGUARD, 同 tui 默认;
+ *   - memory 两工具: createOmdMemory (OMD_MEMORY_PATH ?? .omd/memory.db + HOST_SAFEGUARD, 同 tui 默认;
  *     写入仍过 validateFactWrite 校验闸, D-5)。
  *   - research 工具: 现有 researchFanout 接缝 (harness/research/fanout) 适配成 MCP 三段返回
  *     {runId, reportPath, summary} (报告全文落盘 .omd/research/, D-8 宽出)。
@@ -79,7 +79,7 @@ import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../harness/c
 import type { AgentLeafRunner, CommandLeafRunner } from '../harness/leaf-runners';
 import { createOmdMemory, type OmdMemory } from '../harness/memory';
 import { resolveMemoryDbPath } from '../harness/memory/db-path';
-import { UNIVERSAL_SAFEGUARD } from '../memory/safeguards/namespaces';
+import { HOST_SAFEGUARD } from '../memory/safeguards/namespaces';
 import type { ResearchFanoutResult } from '../harness/research/fanout';
 import { logger } from '../harness/logger';
 import { applyToolRenames } from './tool-renames';
@@ -102,7 +102,7 @@ export interface AssembleOmdMcpDeps {
   engine?: DagEngine;
   /** run 注册表 (默认新 RunRegistry, 纯内存; 三段式 runId 生命周期的载体, D-3)。 */
   runRegistry?: RunRegistry;
-  /** 记忆接缝 (默认 createOmdMemory tui 同款路径 + UNIVERSAL_SAFEGUARD, D-5 共库)。 */
+  /** 记忆接缝 (默认 createOmdMemory tui 同款路径 + HOST_SAFEGUARD, D-5 共库)。 */
   memory?: OmdMemory;
   /** research 接缝 (默认 createDefaultResearchFanout: 真 researchFanout + 报告落盘)。 */
   researchFanout?: ResearchFanout;
@@ -168,11 +168,18 @@ export function resolveEngineModels(
   };
 }
 
-/** 生产 memory 接缝 (MCP 装配与 TUI 对话位**同一真源**, S0 共库): resolveMemoryDbPath + UNIVERSAL_SAFEGUARD。 */
+/**
+ * 生产 memory 接缝 (MCP 装配与 TUI 对话位**同一真源**, S0 共库): resolveMemoryDbPath + HOST_SAFEGUARD。
+ *
+ * ⚠ 2026-08-19 (#206) 由 `UNIVERSAL_SAFEGUARD` 换成 `HOST_SAFEGUARD`(= universal + continuity)。
+ * 原因是读路**也**走 schema:`sinkCheckpoint` 把 continuity 写进的正是这个共享库,而 universal
+ * 装配没有 continuity 分支 ⇒ `listCheckpoints` 每次 parse 抛、被 `catch` 吞成空列表。
+ * 判据在 `test/core/session-continuity-trigger.test.ts` 的「读面装配」那组(换回 universal 即红)。
+ */
 export function createDefaultMemory(env: NodeJS.ProcessEnv): OmdMemory {
   const memoryPath = resolveMemoryDbPath(env);
   mkdirSync(dirname(memoryPath), { recursive: true });
-  return createOmdMemory({ path: memoryPath, safeguard: UNIVERSAL_SAFEGUARD });
+  return createOmdMemory({ path: memoryPath, safeguard: HOST_SAFEGUARD });
 }
 
 /**

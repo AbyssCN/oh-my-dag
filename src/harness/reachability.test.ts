@@ -60,12 +60,9 @@ const DYNAMIC_ENTRIES: Record<string, string> = {
   'src/eval/tasks/oracle-plan-filter.ts':
     'eval fixture: 消费方是 colocated 的 `.test.ts`(worktree 隔离 → 清空目标模块 → fleet 照 SPEC 重建)。' +
     '**生产零消费者是它的设计**, 不是缺陷 —— 它量的就是"照 spec 重建"这件事本身。',
-  'src/harness/session/ledger.ts':
-    'W2→W1 ledger.jsonl 写者(SDD 契约 D-4 接缝)。**唯一生产消费者是 hook 例子** ' +
-    '`docs/examples/claude-code/hooks/session-continuity.ts`,而 Claude Code 是按 ' +
-    '`settings.json` 里的**路径字符串**拉起 hook 的 —— 本仓的 import 图里当然看不见那条边\n' +
-    '(同 stop-ledger.ts 的 hook 边界 —— 该条豁免已随 scripts/verify-ledger-windows.ts 的生产 import 删除;' +
-    '消费点若哪天进了 `src/` 或 `scripts/`, 请删掉本条豁免)。',
+  // 'src/harness/session/ledger.ts' 的豁免 2026-08-19 (#206) 删除 —— 照它自己写的退出条件:
+  // 「消费点若哪天进了 src/ 或 scripts/, 请删掉本条豁免」。消费点进来了:
+  // `scripts/session-continuity-hook.ts` 静态 import `appendLedger`。本闸当场抓到,没靠人记得。
   'src/tui/ext/runner.ts':
     '扩展子进程的入口, 按**路径字符串**拉起: `tui/ext/host.ts` 的 ' +
     '`join(import.meta.dir, \'runner.ts\')` → `bwrap [binds] bun run <它> <扩展入口>`。\n' +
