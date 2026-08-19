@@ -40,6 +40,8 @@ import { DagHud } from './components/dag-hud';
 import { DagTree } from './components/dag-tree';
 import { type PathReader, PathHud, createPathReader } from './components/path-hud';
 import { paintTicketRow, renderTicketBoard } from './components/ticket-board';
+import { renderRunBoard } from './components/run-board';
+import { readBoard } from '../harness/board/run-board';
 import { renderGantt } from './render/dag-gantt';
 import { type PathViewData, buildPathViewData, renderDelta, renderFogLine } from './render/path-fog';
 import { fitLine } from './render/line';
@@ -524,6 +526,33 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     handleInput: () => {},
     invalidate: () => {},
   };
+
+  // ── #96: 活 run 观察面 (公告板) ──
+  // 与 ticketBoard **同一套纪律**: 不在 render 里读盘 (D-12 ②, 复用同一次 refresh 时机),
+  // 渲染路径零写 (D-12 ③), 无源恒缺席不画空框。
+  // 为什么要有它: 板的写侧与判定侧 2026-08-11 就齐了 (appendBoard 五个生产调用方 + liveRuns
+  // 的 D-9 语义), 而**没有任何消费者** —— 盘上有数据、没人看得见, 正是本仓在杀的空旋钮形态。
+  let boardEntries: import('../harness/board/run-board').BoardEntry[] = [];
+  function refreshRunBoard(): void {
+    try {
+      boardEntries = readBoard(opts.cwd);
+    } catch (err) {
+      // fail-open 吞异常不吞证据: 观察面读不到不该拦住 TUI, 但原因要留痕。
+      boardEntries = [];
+      logger.warn({ err: err instanceof Error ? err.message : String(err) }, '[omd/tui] 读 run board 抛了 → 观察面本轮空');
+    }
+  }
+  refreshRunBoard();
+  const runBoard: Component = {
+    render: (width: number): string[] => {
+      // 同 ticketBoard: 侧栏行数封顶, 否则一屏活 run 会把 transcript 挤没。
+      const rows = renderRunBoard(boardEntries, now(), { width });
+      const cap = 5;
+      return rows.length <= cap ? rows : [...rows.slice(0, cap), `... ${rows.length - cap} more`];
+    },
+    handleInput: () => {},
+    invalidate: () => {},
+  };
   // 空态在框里画一句提示符 —— 见 `components/hinted-editor.ts` 文件头(gauntlet critic 的判词)。
   const editor = new HintedEditor(tui, theme.editor, { hint: CHROME.editorHint, paint: theme.chrome.dim });
   // 补全:**行首 `/` 出命令,其余出文件** —— 底座是 pi-tui 的 `CombinedAutocompleteProvider`。
@@ -840,6 +869,9 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   root.addChild(alignToContent(pathHud), { shrink: 0, visible: () => pathHudVisible({ pathFullOn, hasDialogue: chatLog.hasDialogue }) });
   // 切片 S5: 票看板与 pathHud 同一可见性 —— 它属于欢迎屏, 不属于对话主屏 (要常看按 Ctrl+P)。
   root.addChild(alignToContent(ticketBoard), { shrink: 0, visible: () => pathHudVisible({ pathFullOn, hasDialogue: chatLog.hasDialogue }) });
+  // #96: 活 run 观察面挂在票看板下面, **同一可见性** —— 它和票看板回答的是同一屏上的两个问题
+  // ("图上还剩什么" / "现在谁在跑"), 分开挂会让其中一个在欢迎屏之外孤零零地出现。
+  root.addChild(alignToContent(runBoard), { shrink: 0, visible: () => pathHudVisible({ pathFullOn, hasDialogue: chatLog.hasDialogue }) });
   root.addChild(waiting, { shrink: 0, visible: () => turnInFlight });
   root.addChild(dialogSlot, chrome);
   root.addChild(editorContainer, chrome);
@@ -1178,6 +1210,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       // 不在 render 里读盘: render 每帧都调, 那会变成每帧一次目录扫描。
       pathHud.refresh();
       refreshTicketBoard(); // 切片 S5: 同一时机重读看板 (一轮跑完可能动过地图)
+      refreshRunBoard(); // #96: 板与看板同一时机重读 —— 一轮跑完 claimed/published 都可能变
       if (pathSlugSel) reloadPathData(); // 切片⑧: 全屏图的数据同一时机重读
       tui.requestRender();
     }
@@ -1848,6 +1881,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     reloadPathData();
     pathHud.refresh(); // 侧栏跟着换图
     refreshTicketBoard(); // 切片 S5: 看板跟着换图
+    refreshRunBoard(); // #96: 板不随图走 (它是全仓的), 但借同一次时机刷新
     enterAltView('path'); // W6·M2 (B 案): 树内模态块开灯
   }
 
