@@ -158,6 +158,31 @@ describe('reflowGoalResults 三态映射 (D-G1.4, GWT-G1-2)', () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
+  /**
+   * #201 (2026-08-19): `delivered-with-red` 与 `success` 同档 —— 都是**冻结判据绿**, 差别只在
+   * 图里有没有红节点。它此前掉进最下面那个 else, 与 not-converged 同待遇 (票留 ruled + 落续跑锚),
+   * 于是一个判据已绿、产物已被 `shouldAutoCommit` 自动收编的 run, 会在下次 deliver 时被再派一次
+   * (上限 3) —— 而 run-outcome 表对这一格写的 nextAction 逐字是「**别整轮重跑**」。两处打架。
+   *
+   * 这条与紧邻的 not-converged 那条并排放才看得出不是"恒翻": 一格清锚, 一格落锚。
+   */
+  test('#201 delivered-with-red → 同 success 一档: 票 delivered + **不落续跑锚**, 红节点走 warning 报出去', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'goal-rf-'));
+    goalMapOn(cwd);
+    writeResult(cwd, 'm1', 'g9', 'delivered-with-red');
+    const out = reflowGoalResults(mdBackend(cwd), cwd, 'm1');
+    // ★ 反向自检 (已实测): 把 run-outcome.ts 的 isDeliveredOutcome 改回只认 'success'
+    //   → disposition 变 'resumable'、票停 ruled、续跑锚落盘, 下面四条同时红。
+    expect(out[0]!.disposition).toBe('delivered');
+    expect(mdBackend(cwd).readMap(cwd, 'm1')!.tickets[0]!.status).toBe('delivered');
+    // **不落续跑锚** —— 这一条才是省掉那次重跑的判据 (锚在 = 下次 deliver 会再派)。
+    expect(existsSync(goalResumePath(cwd, 'm1', 'g9'))).toBe(false);
+    // 红不静默: 翻 delivered 之后没人再看图, warning 是它唯一的出口。
+    expect(out[0]!.warning).toContain('红');
+    expect(existsSync(`${researchResultPath(cwd, 'm1', 'g9')}.done`)).toBe(true);
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
   test('blocked → 票 escalated (需人)', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'goal-rf-'));
     goalMapOn(cwd);

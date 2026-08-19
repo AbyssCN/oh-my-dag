@@ -242,6 +242,34 @@ export const RUN_OUTCOME_INFO: Record<RunOutcomeKind, RunOutcomeInfo> = {
 export const RUN_OUTCOME_ORDER = Object.keys(RUN_OUTCOME_INFO) as RunOutcomeKind[];
 
 /**
+ * **判据说交付达标了吗** —— 单点判 (#201, 2026-08-19)。
+ *
+ * `success` 与 `delivered-with-red` 是同一档: 两者都是**冻结判据绿**, 差别只在图里有没有
+ * 红节点。上面那张表对 `delivered-with-red` 写的就是这个意思 —— `spendBucket: 'delivery'` ·
+ * `resumable: false` · nextAction「产物可收编 …… 人审**红节点**, **别整轮重跑**」。
+ *
+ * **为什么要一个函数而不是各处写 `=== 'success'`**: 2026-08-19 实测, 同一个词在三处被读成
+ * 三个意思 ——
+ *   · `run-worktree.ts` 的收编闸 (`shouldAutoCommit`): 收编 ✅ (它当时手写了 `||`, 接对了);
+ *   · `goal.ts` 的 `settleRunTicket`: 走 `loopState`, 而这一格的 loopState 是 `null` → 落 else
+ *     → 票留 open, 理由写着「下一步是接着跑」;
+ *   · `afk-hook.ts` 的 `reflowGoalResults`: 只认 `success` → 票留 ruled + 落续跑锚, 下次交付再派。
+ * 后两处与这张表自己的 nextAction「别整轮重跑」直接打架, 而 tsc 与全量测试都抓不到 ——
+ * 因为三处各自都是合法代码。**判据只有一份实现, 漂移才无处发生。**
+ *
+ * ⚠ **刻意不改 `loopState`**: 那一位回答的是「自主环走完了没有」, 而这一格的答案确实是
+ * 「没走完」(书上五态没有这格 —— SUCCESS 会漂白红节点, STALLED 会骗人重跑)。**交付达标**
+ * 与**环走完**是两个问题, 用两位分别回答; 把 loopState 改成 SUCCESS 才是真的漂白。
+ *
+ * ★ 反向自检 (已实测会红): 把 `|| outcome === 'delivered-with-red'` 删掉 →
+ *   `run-outcome-delivered.test.ts` 的真值表条、`goal-run-tickets.test.ts` 与
+ *   `afk-hook.test.ts` 里 #201 那三条同时红。
+ */
+export function isDeliveredOutcome(outcome: string): boolean {
+  return outcome === 'success' || outcome === 'delivered-with-red';
+}
+
+/**
  * **节点级成因 → run 级终止原因**的映射。`null` = 这一格**不作数**(不是"归不了类"):
  *
  *   · `dep-skip` —— 级联跳过,真因在上游那个节点身上,拿它当 run 的终止原因是把因果读反了;

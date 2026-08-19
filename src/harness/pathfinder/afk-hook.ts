@@ -17,7 +17,7 @@ import { computeFrontier } from './frontier';
 import { researchResultPath } from './dispatch';
 import { distill, MAX_CHILDREN_PER_TICKET, parseChildren } from './result-format';
 import { NON_DISCOVERY_OUTCOMES } from './run-tickets';
-import type { RunOutcomeKind } from '../run-outcome';
+import { isDeliveredOutcome, type RunOutcomeKind } from '../run-outcome';
 import type { SuggestionDraft } from './suggest';
 import type { PathBackend } from './backend';
 import type { PathMap, Ticket, WaitingLogEntry } from './types';
@@ -460,13 +460,18 @@ export function reflowGoalResults(
       outcomes.push({ ticketId: t.id, disposition: 'escalated', outcome: head.outcome, runId: head.runId, ...(why ? { warning: why } : {}), ...(sug ? { suggested: sug } : {}) });
       return true;
     };
-    if (head.outcome === 'success') {
+    if (isDeliveredOutcome(head.outcome)) {
       backend.markDelivered(cwd, slug, [t.id]);
       renameSync(resultFile, `${resultFile}.done`);
       rmSyncGoal(marker, { force: true });
       rmSyncGoal(anchor, { force: true });
       rmSyncGoal(attemptsFile, { force: true });
-      outcomes.push({ ticketId: t.id, disposition: 'delivered', outcome: head.outcome, runId: head.runId });
+      // #201: delivered-with-red 也是交付达标 —— 它此前掉进最下面那个 else, 与 not-converged
+      // 同待遇 (票留 ruled + 落续跑锚), 于是一个判据已绿、产物已被自动收编的 run 会在下次
+      // deliver 时被再派一次 (上限 3)。run-outcome 表对它写的是「别整轮重跑」, 两处直接打架。
+      // 红节点不静默: 走 warning 位报出去 (与 escalateTicket 用同一个位, 调用方本来就在读)。
+      const redWarn = head.outcome === 'delivered-with-red' ? '图内有节点红 — 交付达标已收编, 但红节点待人审 (别整轮重跑)' : undefined;
+      outcomes.push({ ticketId: t.id, disposition: 'delivered', outcome: head.outcome, runId: head.runId, ...(redWarn ? { warning: redWarn } : {}) });
     } else if (head.outcome === 'blocked') {
       escalateTicket();
     } else {

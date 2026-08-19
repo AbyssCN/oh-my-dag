@@ -24,7 +24,7 @@ import type { RunRegistry } from '../run-registry';
 import type { HudRunRecordLike } from '../../hud/mirror';
 import { recordDagRun, type DagRecorder } from '../../harness/dag-record';
 import type { AcceptanceProbe } from '../../harness/goal/acceptance-gate';
-import { RUN_OUTCOME_INFO } from '../../harness/run-outcome';
+import { isDeliveredOutcome, RUN_OUTCOME_INFO } from '../../harness/run-outcome';
 import { summarizeGoalFailure } from '../../harness/goal/summarize-goal-failure';
 import { commitRunArtifacts, describeRunWorktree, prepareRunWorktree, shouldAutoCommit, type BranchStrategy } from '../../harness/run-worktree';
 import { captureRollbackAnchor, describeRollback } from '../../harness/rollback-anchor';
@@ -253,9 +253,14 @@ function openRunTicket(
 
 /**
  * ③ 终态如实翻票。**只翻读得出的那两格**, 其余留 open 并留痕 (NULL≠0: 不把"没结论"翻成结论):
- *  - `SUCCESS`            → ruled(判词=收敛回执) + delivered。两步是因为 `markDelivered` 只认
- *                           ruled 票 (它的语义是"已裁且已交付"), 与 afk-hook 折入 research 时
- *                           先 rule 再走同一条路一致 —— 不发明第三个状态翻转口。
+ *  - **交付达标** (`isDeliveredOutcome`) → ruled(判词=收敛回执) + delivered。两步是因为
+ *                           `markDelivered` 只认 ruled 票 (它的语义是"已裁且已交付"), 与 afk-hook
+ *                           折入 research 时先 rule 再走同一条路一致 —— 不发明第三个状态翻转口。
+ *                           #201 (2026-08-19): 这一格原先判的是 `loopState === 'SUCCESS'`, 于是
+ *                           `delivered-with-red` (loopState 恒 null) 掉进最后那个 else, 被念成
+ *                           「下一步是接着跑」—— 而 run-outcome 表对它写的是「**别整轮重跑**」。
+ *                           判**交付达标**要问 outcome, 不是问环走完没有: 那是两个问题。
+ *                           红节点不靠"把票留在重跑队列里"提醒人, 靠判词里写着 (见下)。
  *  - `STALLED` / `BLOCKED` → escalated (G-2: 停在这里, 等人)。顺带打上 D-5 的等人进入戳
  *                           (在 backend.escalate 里, 于是超时升级对这张票也成立)。
  *  - 其余 (EXHAUSTED 加预算 resume / cancelled 原样 resume / ERROR 看栈) → 票留 open:
@@ -265,10 +270,13 @@ function settleRunTicket(target: RunTicketTarget, cwd: string, ticketId: string,
   const { backend, slug } = target;
   const state = RUN_OUTCOME_INFO[r.outcome].loopState;
   try {
-    if (state === 'SUCCESS') {
-      backend.rule(cwd, slug, ticketId, `[run 收敛] ${r.rounds} 轮 · 验收 ${r.acceptance.kind}${r.specPath ? ` · spec ${r.specPath}` : ''}`);
+    if (isDeliveredOutcome(r.outcome)) {
+      // #201: 有红节点时判词里点名 —— 票翻 delivered 之后没人会再回来看图, 这行字是红节点
+      // 唯一的落盘提醒 (run-outcome 表的 nextAction 逐字: 「人审**红节点**, 别整轮重跑」)。
+      const red = r.outcome === 'delivered-with-red' ? ' · **图内有节点红, 待人审** (交付达标, 别整轮重跑)' : '';
+      backend.rule(cwd, slug, ticketId, `[run 收敛] ${r.rounds} 轮 · 验收 ${r.acceptance.kind}${r.specPath ? ` · spec ${r.specPath}` : ''}${red}`);
       backend.markDelivered(cwd, slug, [ticketId]);
-      logger.info({ slug, ticketId }, '[dag_goal] D-6③ 终态: 票翻 delivered');
+      logger.info({ slug, ticketId, outcome: r.outcome }, '[dag_goal] D-6③ 终态: 票翻 delivered');
     } else if (state === 'STALLED' || state === 'BLOCKED') {
       if (!backend.escalate) {
         logger.warn({ slug, ticketId, outcome: r.outcome }, `[dag_goal] D-6③ 终态: 后端 ${backend.kind} 未实装 escalate → 票留 open (闸缺席)`);

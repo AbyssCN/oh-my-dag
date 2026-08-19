@@ -197,6 +197,29 @@ describe('★ 切片6③ run 天然挂票 —— 起跑开任务票, 终态如�
     }
   });
 
+  test('★ #201 delivered-with-red → 同样翻 delivered, 且判词点名「有节点红待人审」', async () => {
+    // 这一格此前掉进最后那个 else (它的 loopState 恒 null), 票停在 open, 理由念成
+    // 「下一步是接着跑」—— 而 run-outcome 表对它写的是「别整轮重跑」。判交付达标要问
+    // outcome, 不是问环走完没有。红节点不靠"留在重跑队列"提醒人, 靠判词里那句话。
+    const { tool, root, readMap } = make(['ship-x'], (g) =>
+      result(g, { outcome: 'delivered-with-red' }),
+    );
+    try {
+      const r = await call(tool, { goal: '判据绿但图里有红节点的活' });
+      const tid = /ticket: (\S+)/.exec(r.content.map((c) => c.text ?? '').join('\n'))![1]!;
+      await settle();
+      const tk = ticketOf(readMap('ship-x'), tid)!;
+      // ★ 反向自检 (已实测): 把 run-outcome.ts 的 isDeliveredOutcome 改回只认 'success'
+      //   → 票停在 open, 下面两条断言同时红。
+      expect(tk.status).toBe('delivered');
+      expect(tk.ruling).toContain('[run 收敛]');
+      // 翻 delivered 之后没人会再回来看图, 这行字是红节点唯一的落盘提醒。
+      expect(tk.ruling).toContain('图内有节点红, 待人审');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('★ blocked (BLOCKED) → 票翻 escalated, 并打上等人进入戳 (G-2 + D-5)', async () => {
     const { tool, root, readMap } = make(['ship-x'], (g) =>
       result(g, { converged: false, outcome: 'blocked', blocked: '需要 owner 给个凭证' }),

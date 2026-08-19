@@ -40,6 +40,7 @@ import { existsSync, readdirSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { logger } from './logger';
 import { captureRollbackAnchor, type RollbackAnchor } from './rollback-anchor';
+import { isDeliveredOutcome } from './run-outcome';
 
 export type BranchStrategy = 'head' | 'branch';
 
@@ -312,17 +313,18 @@ export function prepareRunWorktree(
 /**
  * **要不要自动 commit** 的唯一判据 (#165②, 纯函数)。
  * 三条全真才放行: 隔离档 (head 档写的是主树, 自动 commit 主树是替 owner 扣扳机, 不做) ∧
- * 判据可执行 (非可执行的 oracle 恒 true, 那不是机器绿) ∧ 终态 = success 或 delivered-with-red
- * (#165①: 判据复验绿)。**判据红时不许 commit** —— 反向自检见 run-worktree.test。
+ * 判据可执行 (非可执行的 oracle 恒 true, 那不是机器绿) ∧ 终态说交付达标 (`isDeliveredOutcome`)。
+ * **判据红时不许 commit** —— 反向自检见 run-worktree.test。
+ *
+ * #201 (2026-08-19): 第三个条件原先是手写的 `outcome === 'success' || outcome === 'delivered-with-red'`。
+ * 这里接对了, 另外两处消费者没接对 —— 改成共用 `isDeliveredOutcome` 一份实现, 语义只有一个出处。
  */
 export function shouldAutoCommit(
   run: { acceptanceKind: string; outcome: string },
   strategy: BranchStrategy,
 ): boolean {
   return (
-    strategy === 'branch' &&
-    run.acceptanceKind === 'executable' &&
-    (run.outcome === 'success' || run.outcome === 'delivered-with-red')
+    strategy === 'branch' && run.acceptanceKind === 'executable' && isDeliveredOutcome(run.outcome)
   );
 }
 
