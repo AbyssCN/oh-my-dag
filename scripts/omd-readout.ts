@@ -60,6 +60,7 @@ import { readFileSync } from 'node:fs';
 import { parseMapMarkdown } from '../src/harness/pathfinder/map-store';
 import { computeCost } from '../src/model/cost-ledger';
 import { shellWriteTargets } from '../src/harness/shell-writes';
+import { isSpecWrite, type SpecWrite } from '../src/harness/goal/spec-write';
 import type { RollbackAnchorKind } from '../src/harness/rollback-anchor';
 import { detectRuntimeWriteRace, overlapPairsFromWindows, type NodeWindow } from '../src/harness/plan/observers';
 import { capsFor } from '../src/model/model-caps';
@@ -107,6 +108,8 @@ export interface RunReadout {
   criteria: { judge: boolean; oracle: boolean } | null;
   /** 冻结契约的验收探针结局 (仅 dag_goal 记); 解析失败/词表外 → null = 没记, 不编桶。 */
   acceptanceProbe: AcceptanceProbe | null;
+  /** #209 spec 落盘裁决 (仅 solve 记); 解析失败/词表外 → null = 没记, **不是**「没落盘」。 */
+  specWrite: SpecWrite | null;
 }
 
 /** 统一契约的完整读数 (测试钉死的形状)。 */
@@ -265,6 +268,22 @@ export interface ReadoutResult {
     demoted: number;
     skipped: number;
     exploratory: number;
+  };
+  /**
+   * #209 spec 落盘频率 —— 「契约段跑了却没产出 spec 文件」有多常见。
+   *
+   * 分母 `denominator` = entry='solve' 且 `spec_write` 非 NULL 的 run (老行 / 没记的不进)。
+   * `missRate` 的分母**只算真跑了契约段的那部分** (`wrote + missing`) —— `notNeeded`
+   * (simple 档 / 缺 agentRunner) 压根没有契约段, 混进去会把这个数稀释成没意义的小数。
+   * 真跑过契约段的 run 为零 → `missRate: null` (**不知道**, 不编 0)。
+   */
+  spec_write_sampling: {
+    denominator: number;
+    wrote: number;
+    missing: number;
+    notNeeded: number;
+    contractRuns: number;
+    missRate: number | null;
   };
   /**
    * **闸的分母** (2026-08-03) —— 全量, **不受展示窗口截断**。
@@ -948,6 +967,7 @@ interface ReadoutRow {
   rollback: string | null;
   observations: string | null;
   acceptance_probe: string | null;
+  spec_write: string | null;
   plan_name: string | null;
   verification: string | null;
 }
@@ -967,6 +987,7 @@ interface ParsedRow {
   reused: number | null;
   criteria: { judge: boolean; oracle: boolean } | null;
   acceptanceProbe: AcceptanceProbe | null;
+  specWrite: SpecWrite | null;
 }
 
 /** 词表校验 (老库可能有词表之外的字面量 → 归 unclassified, 同 ⑦ 段的三态纪律)。 */
@@ -1001,6 +1022,7 @@ function emptyWorld(meta: ReadoutResult['meta'], seats?: Record<string, string>,
     criteria_axis: { agree: 0, oracleFailed: 0, wastedRounds: 0, agreeFail: 0, recorded: 0, unrecorded: 0 },
     criteria_consistency: { agree: 0, oracleFailed: 0, wastedRounds: 0, agreeFail: 0, unrecorded: 0, recorded: 0 },
     g4_sampling: { denominator: 0, passedBoth: 0, vacuityOnly: 0, demoted: 0, skipped: 0, exploratory: 0 },
+    spec_write_sampling: { denominator: 0, wrote: 0, missing: 0, notNeeded: 0, contractRuns: 0, missRate: null },
     suggestion_acceptance: null,
     reuse_rate: { reused_nodes: 0, total_nodes: 0, rate: null, unknownRuns: 0 },
     claim_check: {
@@ -1088,6 +1110,18 @@ function parseCriteria(raw: string | null): { judge: boolean; oracle: boolean } 
   return null;
 }
 
+
+/** spec_write 只认 `SpecWrite` 的确切形状 (`isSpecWrite`): 解析失败 / JSON null / 词表外 kind
+ * → null (= **没记**, 不是「没落盘」—— 把这两件事混为一谈正是 #209 要修的)。 */
+function parseSpecWrite(raw: string | null): SpecWrite | null {
+  if (!raw) return null;
+  try {
+    const p: unknown = JSON.parse(raw);
+    return isSpecWrite(p) ? p : null;
+  } catch {
+    return null;
+  }
+}
 
 /** acceptance_probe 只认五条终局的**确切形状** (见 src/harness/goal/acceptance.ts 的 AcceptanceProbe):
  * 解析失败 / JSON null / 词表外 kind / 多余键 / why 非字符串 → null (= 没记, 不编桶, 不炸整块板)。
@@ -1290,7 +1324,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
   const optionalCol = (name: string) => (haveCols.includes(name) ? `, ${name}` : `, NULL AS ${name}`);
   const rows = db
     .query(
-      `SELECT id, created_at, levels, nodes, usage${optionalCol('run_id')}${optionalCol('observations')}${optionalCol('entry')}${optionalCol('outcome')}${optionalCol('reused')}${optionalCol('criteria')}${optionalCol('claim_check')}${optionalCol('artifact_move')}${optionalCol('write_race')}${optionalCol('rollback')}${optionalCol('acceptance_probe')}${optionalCol('plan_name')}${optionalCol('verification')}` +
+      `SELECT id, created_at, levels, nodes, usage${optionalCol('run_id')}${optionalCol('observations')}${optionalCol('entry')}${optionalCol('outcome')}${optionalCol('reused')}${optionalCol('criteria')}${optionalCol('claim_check')}${optionalCol('artifact_move')}${optionalCol('write_race')}${optionalCol('rollback')}${optionalCol('acceptance_probe')}${optionalCol('spec_write')}${optionalCol('plan_name')}${optionalCol('verification')}` +
         ` FROM omd_dag_runs ORDER BY created_at ASC`,
     )
     .all() as ReadoutRow[];
@@ -1344,6 +1378,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
       reused: r.reused,
       criteria: parseCriteria(r.criteria),
       acceptanceProbe: parseAcceptanceProbe(r.acceptance_probe),
+      specWrite: parseSpecWrite(r.spec_write),
       planName: r.plan_name,
       verification: r.verification,
     };
@@ -1548,6 +1583,21 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
         break;
     }
   }
+
+  // ── #209 spec 落盘频率: 同 G4 的口径, 走 `allRuns` 不走 `shown` (判据不搭展示窗口的车) ──
+  // NULL 不进分母 —— 「没记」与「没落盘」是两件事, 而把它们混为一谈正是这一列存在的理由。
+  const spec_write_sampling: ReadoutResult['spec_write_sampling'] = { denominator: 0, wrote: 0, missing: 0, notNeeded: 0, contractRuns: 0, missRate: null };
+  for (const run of allRuns) {
+    if (run.entry !== 'solve' || run.specWrite === null) continue;
+    spec_write_sampling.denominator++;
+    if (run.specWrite.kind === 'wrote') spec_write_sampling.wrote++;
+    else if (run.specWrite.kind === 'missing') spec_write_sampling.missing++;
+    else spec_write_sampling.notNeeded++;
+  }
+  spec_write_sampling.contractRuns = spec_write_sampling.wrote + spec_write_sampling.missing;
+  spec_write_sampling.missRate = spec_write_sampling.contractRuns
+    ? spec_write_sampling.missing / spec_write_sampling.contractRuns
+    : null;
 
   // ── 闸的分母 (2026-08-03): 全量, 不搭展示窗口的车 —— 见 gate_denominators 的注 ──
   const g3LiveRuns = allRuns.filter((r) => r.entry !== null && r.entry !== '未记').length;
@@ -2041,6 +2091,7 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
     criteria_axis,
     criteria_consistency,
     g4_sampling,
+    spec_write_sampling,
     suggestion_acceptance: sa,
     gate_denominators,
     reuse_rate: { reused_nodes, total_nodes, rate: total_nodes > 0 ? reused_nodes / total_nodes : null, unknownRuns: reusedUnknownRuns },
@@ -2145,6 +2196,8 @@ function mergeRun(runId: string, recs: ParsedRow[]): RunReadout {
     entry: recs.find((r) => r.entry !== null)?.entry ?? '未记',
     criteria: recs.find((r) => r.criteria !== null)?.criteria ?? null,
     acceptanceProbe: recs.find((r) => r.acceptanceProbe !== null)?.acceptanceProbe ?? null,
+    // #209: 一次 solve 两条记录同值 (契约段靠回填, 执行段靠 meta); 都没记 → null。
+    specWrite: recs.find((r) => r.specWrite !== null)?.specWrite ?? null,
   };
 }
 

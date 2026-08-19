@@ -19,6 +19,7 @@ import type { ExecutorDagResult } from './dag/engine';
 import type { NodeFailureKind } from './node-failure';
 import { deriveRunOutcome, type RunOutcomeKind } from './run-outcome';
 import type { AcceptanceProbe } from './goal/acceptance-gate';
+import { isSpecWrite, type SpecWrite } from './goal/spec-write';
 import type { RollbackAnchor } from './rollback-anchor';
 
 export interface DagRunNode {
@@ -309,13 +310,32 @@ export interface DagRunRecord {
    *   坏 JSON / 词表外形状 (读到) = 按 NULL 读 (视为未记录), 读数不崩。
    */
   acceptanceProbe?: AcceptanceProbe;
+  /**
+   * **这一跑的契约段有没有产出 spec 文件** (#209, entry:'solve' 专列; 词表在 `goal/spec-write.ts`)。
+   *
+   * 存在的理由是**事后量不出来**: 隔离档跑完 worktree 就被清, 分支合进 main 之后
+   * `main..omd/run/<id>` 的新增也归零 —— 两个信号同时消失, 而扫基座树看到的是本来就有的
+   * 145 份 `docs/plan/*.md`。这一位由 run-goal 在契约段收尾那一刻产出 (`onContract`),
+   * **执行期事实**, 与盘上现在还在不在无关。
+   *
+   * 取值矩阵 (entry × 列值) —— 三格 NULL 语义不同:
+   *   `solve` + 有效 JSON = 那一跑的逐字裁决 (`wrote` / `missing` / `not-needed`)。
+   *   `solve` + NULL      = 历史行 / 契约段没走到记账点 (回调抛错) —— **没记**, 不进分母。
+   *   其它入口 + NULL     = 对非 goal 入口**不适用** (`run` 没有契约段这个概念)。
+   *   其它入口 + 有效 JSON = 写方状态错 (只该由 solve 写) —— 读数板忽略这一格。
+   *
+   * ⚠ 三值不是布尔 (判据 ②): 「无 spec」(契约段跑了空手而归, 要人看一眼) 与
+   *   「不跑契约段」(simple 档 / 缺 agentRunner, 什么都不用做) 的下一步相反。
+   *   坏 JSON / 词表外形状 = 按 NULL 读 (`isSpecWrite` 把关), 不编一个 kind。
+   */
+  specWrite?: SpecWrite;
 }
 
 export interface DagRecorder {
   /** 落一次运行, 返回这条记录的主键 (**不是** runId — 见 DagRunRecord.runId)。 */
   record(
     result: ExecutorDagResult,
-    meta?: { question?: string; id?: string; now?: number; runId?: string; entry?: string; acceptanceProbe?: AcceptanceProbe },
+    meta?: { question?: string; id?: string; now?: number; runId?: string; entry?: string; acceptanceProbe?: AcceptanceProbe; specWrite?: SpecWrite },
   ): string;
   /** 取一次运行 (重建 node 图谱)。 */
   get(id: string): DagRunRecord | null;
@@ -331,6 +351,14 @@ export interface DagRecorder {
    * 一次 goal 的两条记录都写同一份 (读数板按 runId 去重, 不按行数)。
    */
   updateCriteria(runId: string, criteria: { judge: boolean; oracle: boolean }): void;
+  /**
+   * 回填 spec 落盘裁决到该 runId 的**已有**记录 (#209)。
+   *
+   * 为什么既回填又随 `record` 走: 一次 solve 落两条记录 (契约段图 + 执行段图), 而这一位在
+   * **契约段那张图已经落盘之后**才算得出来 —— 只走 record 的话契约段那行恒 NULL, 而 NULL 在
+   * 这张表里是"没记", 会被读数板念成缺数。回填补前一行, `record` 的 meta 管后一行, 两行同值。
+   */
+  updateSpecWrite(runId: string, specWrite: SpecWrite): void;
   close(): void;
 }
 
@@ -355,6 +383,7 @@ interface Row {
   reused: number | null;
   criteria: string | null;
   acceptance_probe: string | null;
+  spec_write: string | null;
 }
 
 /** 只认 `AcceptanceProbe` 五条终局的**确切形状**; 词表外 kind / 形状不对 / JSON null → undefined (= 未记录)。 */
@@ -388,10 +417,22 @@ function parseAcceptanceProbe(raw: string): AcceptanceProbe | undefined {
   }
 }
 
+/** 只认 `SpecWrite` 的确切形状 (`isSpecWrite`); 坏 JSON / 词表外 kind / JSON null → undefined (= 未记录)。 */
+function parseSpecWrite(raw: string): SpecWrite | undefined {
+  try {
+    const p: unknown = JSON.parse(raw);
+    return isSpecWrite(p) ? p : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function rowToRecord(row: Row): DagRunRecord {
   // 探针列按**五条终局的确切形状**校验后读: 坏 JSON / 词表外 kind / 形状不对 / JSON null → undefined
   // (= 未记录) —— 一条写坏的记录不许让整张读数板崩, 也不许读出一个编造的分支。
   const probe = row.acceptance_probe ? parseAcceptanceProbe(row.acceptance_probe) : undefined;
+  // #209 同一条纪律: 坏 JSON / 词表外形状 → undefined (= 未记录), 不让一行写坏的记录读出编造的分支。
+  const sw = row.spec_write ? parseSpecWrite(row.spec_write) : undefined;
   return {
     id: row.id,
     createdAt: row.created_at,
@@ -421,6 +462,8 @@ function rowToRecord(row: Row): DagRunRecord {
     ...(row.criteria ? { criteria: JSON.parse(row.criteria) } : {}),
     // 取值矩阵见 DagRunRecord.acceptanceProbe 的注: NULL = 没记 (非 goal / 探针没跑 / 老行); 坏 JSON 已按 NULL 读。
     ...(probe ? { acceptanceProbe: probe } : {}),
+    // 同上 (#209): NULL = 没记 / 非 solve 入口不适用。词表外形状按 NULL 读, 不编一个 kind。
+    ...(sw ? { specWrite: sw } : {}),
   };
 }
 
@@ -443,7 +486,7 @@ function rowToRecord(row: Row): DagRunRecord {
  */
 export function recordDagRun(
   recorder: DagRecorder,
-  meta: { runId: string; entry: string; question?: string; acceptanceProbe?: AcceptanceProbe },
+  meta: { runId: string; entry: string; question?: string; acceptanceProbe?: AcceptanceProbe; specWrite?: SpecWrite },
   prev?: (result: ExecutorDagResult) => void | Promise<void>,
 ): (result: ExecutorDagResult) => Promise<void> {
   return async (result) => {
@@ -454,6 +497,8 @@ export function recordDagRun(
       ...(meta.question ? { question: meta.question } : {}),
       // t7 词表迁移 (2026-08-04): goal 入口现写 'solve'; 'dag_goal' 只存在于历史行 (读侧归一), 写侧不再产生。
       ...(meta.entry === 'solve' && meta.acceptanceProbe ? { acceptanceProbe: meta.acceptanceProbe } : {}),
+      // #209: 同 acceptanceProbe 一样走可变 meta —— 契约段收尾时填进去, 执行段那张图落盘时带上。
+      ...(meta.entry === 'solve' && meta.specWrite ? { specWrite: meta.specWrite } : {}),
     });
   };
 }
@@ -522,15 +567,19 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
   // 同上 (goal 验收探针): 之前建的表没这一列, 老行留 NULL (= 没记, 不是 'unknown')。
   // 只由 entry='solve' (历史行 'dag_goal') 的 recordDagRun 写入 —— 见 DagRunRecord.acceptanceProbe 的取值矩阵。
   if (!cols.includes('acceptance_probe')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN acceptance_probe TEXT`);
+  // 同上 (#209, 2026-08-19): spec 落盘裁决。老行留 NULL (= 没记, 不是"没落盘")——
+  // 那两件事被混为一谈正是这一列存在的理由。只由 entry='solve' 的 recordDagRun 写入。
+  if (!cols.includes('spec_write')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN spec_write TEXT`);
   db.run(`CREATE INDEX IF NOT EXISTS omd_dag_runs_run_id ON omd_dag_runs (run_id)`);
   const ins = db.query(
-    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage, observations, claim_check, artifact_move, write_race, rollback, outcome, verification, reused, criteria, acceptance_probe)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage, observations, claim_check, artifact_move, write_race, rollback, outcome, verification, reused, criteria, acceptance_probe, spec_write)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const byId = db.query(`SELECT * FROM omd_dag_runs WHERE id = ?`);
   const recent = db.query(`SELECT * FROM omd_dag_runs ORDER BY created_at DESC LIMIT ?`);
   const byRun = db.query(`SELECT * FROM omd_dag_runs WHERE run_id = ? ORDER BY created_at ASC`);
   const upd = db.query(`UPDATE omd_dag_runs SET criteria = ? WHERE run_id = ?`);
+  const updSpec = db.query(`UPDATE omd_dag_runs SET spec_write = ? WHERE run_id = ?`);
 
   return {
     record(result, meta = {}) {
@@ -632,11 +681,17 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
         // 缺席 → NULL, 不编 'unknown'; 存一份紧凑 JSON, 绝不双编码。
         // t7 词表: 'solve' (写侧新词; 'dag_goal' 只在历史行, 写侧不再产生)。
         meta.entry === 'solve' && meta.acceptanceProbe !== undefined ? JSON.stringify(meta.acceptanceProbe) : null,
+        // #209 spec 落盘裁决: 同上, 只持久化 entry='solve'; 其它入口误传必须留 NULL
+        // (那一格的语义是"契约段对这个入口不适用", 不是"没记")。
+        meta.entry === 'solve' && meta.specWrite !== undefined ? JSON.stringify(meta.specWrite) : null,
       );
       return id;
     },
     updateCriteria(runId, criteria) {
       upd.run(JSON.stringify(criteria), runId);
+    },
+    updateSpecWrite(runId, specWrite) {
+      updSpec.run(JSON.stringify(specWrite), runId);
     },
     get(id) {
       const row = byId.get(id) as Row | null;

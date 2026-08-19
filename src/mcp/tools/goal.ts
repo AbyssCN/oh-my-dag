@@ -24,6 +24,7 @@ import type { RunRegistry } from '../run-registry';
 import type { HudRunRecordLike } from '../../hud/mirror';
 import { recordDagRun, type DagRecorder } from '../../harness/dag-record';
 import type { AcceptanceProbe } from '../../harness/goal/acceptance-gate';
+import type { SpecWrite } from '../../harness/goal/spec-write';
 import { isDeliveredOutcome, RUN_OUTCOME_INFO } from '../../harness/run-outcome';
 import { summarizeGoalFailure } from '../../harness/goal/summarize-goal-failure';
 import { commitRunArtifacts, describeRunWorktree, prepareRunWorktree, runWorktreeBranch, shouldAutoCommit, type BranchStrategy } from '../../harness/run-worktree';
@@ -43,6 +44,8 @@ export interface GoalToolDeps {
       researchRounds?: number;
       tier?: GoalTier;
       onClassified?: (classified: GoalClassification) => void;
+      /** #209 spec 落盘记账钩子: 契约段收尾恰好一次 (worktree 还在的时候), 见 RunGoalConfig.onContract。 */
+      onContract?: (specWrite: SpecWrite) => void;
       /** D-2 散雾出口的注入面 (切片 6 接线; 无 map 的仓不传 = 闸缺席, 行为逐字节照旧)。 */
       tickets?: RunGoalConfig['tickets'];
     },
@@ -657,7 +660,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
       // record 时才读 meta.acceptanceProbe —— 所以这里持同一个可变对象, 分类回调 (onClassified)
       // 里填进去, 两段图的记录就都带上; 非 dag_goal 入口不传 → 列 NULL (见 DagRunRecord 取值矩阵)。
       // entry 词表 (t7, 2026-08-04): 'solve' (旧 'dag_goal' 只在历史行里, 读侧归一合并)。
-      const goalMeta: { runId: string; entry: 'solve'; question: string; acceptanceProbe?: AcceptanceProbe } = {
+      const goalMeta: { runId: string; entry: 'solve'; question: string; acceptanceProbe?: AcceptanceProbe; specWrite?: SpecWrite } = {
         runId,
         entry: 'solve',
         question: goal,
@@ -732,6 +735,13 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           // 时才读 meta.acceptanceProbe, 于是两段图的记录都带上同一份)。
           onClassified: (classified) => {
             goalMeta.acceptanceProbe = classified.acceptanceProbe;
+          },
+          // #209: 契约段收尾那一刻记 spec 落没落盘 —— **worktree 还在的时候**, 不是事后扫盘。
+          // 两处写: ① goalMeta 供执行段那张图落盘时带上; ② 回填契约段那张图 (它已经落盘了,
+          // 只走 ① 会让那一行恒 NULL, 而这张表里 NULL = 没记)。
+          onContract: (specWrite) => {
+            goalMeta.specWrite = specWrite;
+            deps.recorder?.updateSpecWrite(runId, specWrite);
           },
           ...(maxRounds ? { maxRounds } : {}),
           ...(researchRounds ? { researchRounds } : {}),

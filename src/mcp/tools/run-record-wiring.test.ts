@@ -89,6 +89,36 @@ describe('dag_goal 的运行留痕接线', () => {
     recorder.close();
   });
 
+  test('#209 spec 落盘接线: 契约段那行靠回填, 执行段那行靠 meta —— 两行同值, 谁都不留 NULL', async () => {
+    const recorder = createDagRecorder({ path: ':memory:' });
+    const root = mkdtempSync(join(tmpdir(), 'omd-rec-'));
+    const sw = { kind: 'wrote', source: 'contract', path: '/repo/docs/plan/2026-08-19-x.md' } as const;
+    const tool = createGoalTool({
+      // 照生产时序驱动: 契约段那张图**先落盘** (那一刻这一位还算不出来), 回调随后才发 ——
+      // 只接 meta 不接回填的话, 契约段那行就恒 NULL, 而这张表里 NULL = 没记。
+      runGoal: async (goal, cfg) => {
+        await cfg.dag.onComplete?.(stubResult('goal-contract', 1, 0));
+        cfg.onContract?.(sw);
+        await cfg.dag.onComplete?.(stubResult('goal-execute', 1, 0));
+        return {
+          goal, tier: 'complex', acceptance: { kind: 'executable', command: 'bun test', expectExit: 0 },
+          stages: [], sources: [], repoContext: '', converged: true, rounds: 1, reusedNodes: [], outcome: 'success' as const,
+        } satisfies RunGoalResult;
+      },
+      runRegistry: new RunRegistry(),
+      cwd: root,
+      buildConfig: () => ({ conductorModel: 'c:m', leafModel: 'l:m' }),
+      recorder,
+    });
+    const out = (await tool.handler({ goal: '干点活' } as never, {} as never)) as { content: { text: string }[] };
+    const runId = runIdOf(out.content[0]!.text);
+    await Bun.sleep(5);
+    const group = recorder.listByRun(runId);
+    expect(group.map((r) => r.planName)).toEqual(['goal-contract', 'goal-execute']);
+    expect(group.map((r) => r.specWrite)).toEqual([sw, sw]);
+    recorder.close();
+  });
+
   test('没给 recorder → 不记, 也不炸 (留痕是可选项, 不是执行前提)', async () => {
     const root = mkdtempSync(join(tmpdir(), 'omd-rec-'));
     let seen: ExecutorDagConfig | undefined;

@@ -39,7 +39,7 @@
 | 字段 | 必填 | 类型 | 一句话 | 消费方 (前3) |
 |---|---|---|---|---|
 | `generate` |  | `GenerateFn` | 注入式模型调用 (inproc leaf, 默认 callModel)。 | `src/harness/dag/engine.ts`<br>`src/harness/goal/classify-acceptance.ts`<br>`src/harness/goal/run-goal.ts` (11 文件) |
-| `agentRunner` |  | `AgentLeafRunner` | agent-kind leaf 的执行器 (带工具子 agent, 能改文件)。 | `src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/goal/run-goal.ts` (15 文件) |
+| `agentRunner` |  | `AgentLeafRunner` | agent-kind leaf 的执行器 (带工具子 agent, 能改文件)。 | `src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/goal/run-goal.ts` (17 文件) |
 | `commandRunner` |  | `CommandLeafRunner` | command-kind leaf 的执行器 (确定性 CLI, 零 LLM, 方案 A)。 | `src/harness/goal/run-goal.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts` (11 文件) |
 | `researchRunner` |  | `ResearchLeafRunner` | research-kind leaf 的执行器 (真 web 检索 + 有界内环, D-6)。 | `src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/node-failure.ts` (5 文件) |
 | `judgeSend` |  | `typeof Gateway.send` | 注入式 judge 调用 (测试)。 | `src/harness/dag/engine.ts` (1 文件) |

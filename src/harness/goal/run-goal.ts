@@ -39,6 +39,7 @@ import { loadSddContract } from './sdd-direct';
 import type { ExecutorDagConfig } from '../dag/types';
 import { TEST_STEP_PREFIX, acceptSideOf, buildAcceptDelta, extractFailSet, stableFailSet, unstableFailSet, type AcceptSide } from './accept-delta';
 import { readExperimentFlags } from './experiment-flags';
+import { classifySpecWrite, type SpecWrite, type SpecWriteSource } from './spec-write';
 import { summarizeDelta, type DeltaReport, type VerifyStepStatus } from './delta-compare';
 import { parseBreakdown, type SddContract } from './sdd-direct';
 import { acceptCommandFromBreakdown, compileBreakdown, describeParallelism, parallelismReadout } from './sdd-compile';
@@ -142,6 +143,16 @@ export interface RunGoalConfig {
    * 分类器抛错时**不调** (那时没有定稿的分类可持久化)。
    */
   onClassified?: (classified: GoalClassification) => void;
+  /**
+   * 契约段定稿回调 (#209 落盘证据钩子): 契约段收尾后**恰好调一次** —— 每条路都调, 包括
+   * simple 档 / 无 agentRunner / 直通 / 复用 / 契约段抛错。调用方在此持久化 `SpecWrite`
+   * (账本 `omd_dag_runs.spec_write`)。
+   *
+   * ⚠ **时机就是判据**: 它在 execute 段之前、worktree 还在的时候发。挪到整趟收尾之后
+   * (或改成 `existsSync` 事后扫盘) 这一列在隔离档下会恒 NULL —— run-goal.spec-write.test.ts
+   * 里那条"记录时盘上文件已不存在, 账本仍记 wrote"就是钉这一点的。
+   */
+  onContract?: (spec: SpecWrite) => void;
   /**
    * 注入式 DAG 执行 (测试传 fake; 默认 runExecutorDagWithPlan)。
    * **契约段与执行段共用这一个注入口** —— 两段都是一张单 conductor 节点的图 (D-F),
@@ -551,6 +562,9 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   let specPath: string | undefined = sdd?.path;
   let evidence = sdd?.text ?? '';
   let repoContext = '';
+  // #209: 契约段这一位走的是**哪条路**。默认 simple 档 (下面 tier 分支各自改写它),
+  // 契约段收尾时一次性发给 `onContract` —— 只有一个发射点, 于是新增分支漏发时 tsc/测试看得见。
+  let specSource: SpecWriteSource = 'tier-simple';
 
   // ── S4: run 生命周期接线 (board = 协调介质, 不是真源; D-3/INV-1) ────────────────
   // 点火 → claimed (带声明写集, 相对路径, 与 sdd-direct 写集列同物); 终态 → terminal。
@@ -682,11 +696,13 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
     // specPath 记了但盘上文件没了 → 条件不成立, 掉进下面照常重跑 (状态不是真源, 盘上文件才是)。
     const priorContract = prior?.contract;
     if (sdd) {
+      specSource = 'sdd-direct';
       // 直通 (G-1): 契约已结晶 —— 不勘察不调研不转录, SDD 全文 (含并行波形) 原样进 execute。
       stages.push({ stage: 'survey', status: 'skipped', outcome: 'not-needed', summary: 'SDD 直通: 契约已结晶, 不勘察' });
       stages.push({ stage: 'research', status: 'skipped', outcome: 'not-needed', summary: 'SDD 直通: 不调研' });
       stages.push({ stage: 'spec', status: 'done', outcome: 'success', summary: `SDD 直通 (零转录): ${sdd.path}` });
     } else if (priorContract && (!priorContract.specPath || existsSync(priorContract.specPath))) {
+      specSource = 'reused';
       specPath = priorContract.specPath;
       evidence = priorContract.evidence;
       repoContext = priorContract.repoContext;
@@ -700,6 +716,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
       stages.push({ stage: 'research', status: 'skipped', outcome: 'not-needed', summary: '复用续跑前契约段 (闸 C): 不重新调研' });
       stages.push({ stage: 'spec', status: 'done', outcome: 'success', summary: specPath ?? '复用首跑契约正文 (spec 未落盘那次, 正文当契约)' });
     } else if (config.dag.agentRunner) {
+      specSource = 'contract';
       const dir = config.specDir ?? join(config.cwd, 'docs', 'plan');
       const path = join(dir, `${(config._today ?? todayStr)()}-${goalSlug(goal)}.md`);
       const prepPlan: ConductorPlan = {
@@ -801,9 +818,11 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
         }
       } catch (err) {
         // 抛错 = 引擎自己出事, 与"契约写了但没达标"是两回事 (ERROR vs STALLED)。
+        specSource = 'contract-error';
         stages.push({ stage: 'spec', status: 'failed', outcome: 'infra-error', summary: `契约段抛错: ${String(err).slice(0, 200)}` });
       }
     } else {
+      specSource = 'no-agent-runner';
       // 缺件跳过与"不需要"跳过共用 status: 'skipped', 而下一步相反 (补配置 vs 什么都不用做)。
       stages.push({ stage: 'survey', status: 'skipped', outcome: 'missing-capability', summary: '无 agentRunner → 无仓内事实' });
       stages.push({ stage: 'research', status: 'skipped', outcome: 'missing-capability', summary: '无 agentRunner → 契约段整体跳过' });
@@ -812,6 +831,18 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   } else {
     stages.push({ stage: 'research', status: 'skipped', outcome: 'not-needed', summary: 'simple 档: 直接 Execute→Verify (D-5)' });
     stages.push({ stage: 'spec', status: 'skipped', outcome: 'not-needed', summary: 'simple 档: 无需先定契约 (D-5)' });
+  }
+
+  // ── #209: 「契约段有没有产出 spec 文件」在**这一刻**记账 ──────────────────────────
+  // 这一位的原料是执行期事实 (契约段那张图的 filesTouched → 上面的 `wrote` → specPath),
+  // **不是** `existsSync`。隔离档跑完 worktree 就被清、分支合进 main 后新增也归零 ——
+  // 事后再问这一位就只剩 NULL, 而 NULL 会被念成"没落盘" (#177 那次连错三次的根因)。
+  // 回调不给 = 一行不多跑 (INV-1); 抛错只留痕不掀桌 —— 记账挂了不该让整趟 goal 陪葬。
+  const specWrite = classifySpecWrite(specSource, specPath);
+  try {
+    config.onContract?.(specWrite);
+  } catch (err) {
+    logger.warn({ specWrite, err: String(err) }, '[run-goal] #209 spec 落盘记账回调抛错 → 该跑这一列留 NULL (不影响执行)');
   }
 
   // ── S5-S8 Execute + Verify + 1 轮修复: 内层 DAG 的外层 fixpoint。

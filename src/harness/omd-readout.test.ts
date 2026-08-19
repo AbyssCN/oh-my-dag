@@ -29,6 +29,7 @@
 import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { createDagRecorder } from './dag-record';
+import type { SpecWrite } from './goal/spec-write';
 import type { ExecutorDagResult } from './dag/types';
 import { CLAIM_CHECK_MIN_NODES, LOOP_NO_MOVE_MIN_N, faceSufficiency, readout, reconstructWriteRace, summarizeFaces, summarizeLoopRounds, type ReadoutResult } from '../../scripts/omd-readout';
 import type { NodeWindow } from './plan/observers';
@@ -1798,5 +1799,52 @@ describe('omd-readout · ⑭-⑰ 空态与防御 (2026-08-10)', () => {
     const r = readout({ db });
     expect(r.seat_health.badNodesRows).toBe(1);
     expect(r.runs.length).toBe(1); // 坏行不吞, 板照常出数
+  });
+});
+
+/**
+ * #209 spec 落盘频率 —— 「契约段跑了却没产出 spec 文件」有多常见。
+ *
+ * 这一格存在的理由是**事后量不出来**: worktree 一清、分支一合, 两个信号同时归零, 而扫基座树
+ * 数到的是它本来就有的文档。所以数据在 run 期就记进 `spec_write` 列, 这里只负责把它读成频率。
+ */
+describe('#209 spec_write_sampling', () => {
+  test('三值各计一格; missRate 的分母只算真跑了契约段的那部分 (not-needed 不稀释)', async () => {
+    const db = new Database(':memory:');
+    const rec = createDagRecorder({ db });
+    const mk = (runId: string, now: number, specWrite?: SpecWrite) =>
+      rec.record(fakeResult({ planName: 'goal-execute', plan: { a: { goal: 'x' } }, done: ['a'] }), { runId, entry: 'solve', now, ...(specWrite ? { specWrite } : {}) });
+    mk('s-wrote', 1, { kind: 'wrote', source: 'contract', path: '/repo/docs/plan/x.md' });
+    mk('s-missing', 2, { kind: 'missing', source: 'contract' });
+    mk('s-simple', 3, { kind: 'not-needed', source: 'tier-simple' });
+    mk('s-unrecorded', 4); // 没记 → 不进分母 (与"没落盘"不是一回事)
+    const r = readout({ db });
+    expect(r.spec_write_sampling).toEqual({ denominator: 3, wrote: 1, missing: 1, notNeeded: 1, contractRuns: 2, missRate: 0.5 });
+    rec.close();
+  });
+
+  test('一个契约段都没跑过 → missRate = null (不知道), **不编 0**', () => {
+    const db = new Database(':memory:');
+    const rec = createDagRecorder({ db });
+    rec.record(fakeResult({ planName: 'goal-execute', plan: { a: { goal: 'x' } }, done: ['a'] }), {
+      runId: 's1', entry: 'solve', now: 1, specWrite: { kind: 'not-needed', source: 'tier-simple' },
+    });
+    const r = readout({ db });
+    expect(r.spec_write_sampling.denominator).toBe(1);
+    expect(r.spec_write_sampling.missRate).toBeNull();
+    rec.close();
+  });
+
+  test('老库无 spec_write 列 → readout 只 SELECT, 整列读成没记, 分母为零, 不炸', () => {
+    const db = new Database(':memory:');
+    db.run(`CREATE TABLE omd_dag_runs (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, plan_name TEXT NOT NULL,
+            node_count INTEGER NOT NULL, question TEXT, run_id TEXT, levels TEXT NOT NULL, nodes TEXT NOT NULL,
+            usage TEXT NOT NULL, observations TEXT, outcome TEXT, verification TEXT, reused INTEGER, criteria TEXT, entry TEXT)`);
+    db.run(`INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, run_id, entry, levels, nodes, usage)
+            VALUES ('old-1', 1, '老图', 1, 'g1', 'solve', '[]', '[]', '{}')`);
+    const r = readout({ db });
+    expect(r.runs[0]!.specWrite).toBeNull();
+    expect(r.spec_write_sampling).toEqual({ denominator: 0, wrote: 0, missing: 0, notNeeded: 0, contractRuns: 0, missRate: null });
+    db.close();
   });
 });
