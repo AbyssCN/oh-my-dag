@@ -195,6 +195,34 @@ function latestCommentAnchor(comments: Array<{ body: string }>, key: string): st
   return undefined;
 }
 
+/**
+ * 派发锚的评论载体 (#203, 承 #202/#200)。**两条独立锚**, 各取最新一条:
+ *   `Dispatch-open: <runId> <startedAt>`      —— 派发时打
+ *   `Dispatch-settle: <finishedAt> <outcome>` —— 收工时打
+ *
+ * **为什么拆两条而不是一条写全**: settle 若写一条含 runId/startedAt 的完整锚, 就得先读回来再重编 ——
+ * 读-改-写正是 1890115 事故的形状。拆开之后两条都是纯 append, settle 不需要知道 open 写了什么。
+ *
+ * **为什么走评论而不是正文**: 正文只在建票那一刻写一次, 而派发锚是**可变状态** (open → settle);
+ * 改正文 = 读-改-写整段 (同上)。评论 append-only, 零 RMW。同 `Origin-title` (#136) 的判断。
+ *
+ * 幂等 (与 md 后端 `backend.ts:303` 逐字同义): 已有 settle 锚的**不再写第二条** —— 一次派发只
+ * settle 一次, 覆写会把第一次的真相抹掉。缺 open 锚而只有 settle → 当作**无锚** (NULL≠0:
+ * "跑完了但没人派过"不是一个真状态, 不许拼一个出来)。
+ */
+function parseDispatchAnchors(comments: Array<{ body: string }>): Ticket['dispatch'] | undefined {
+  const open = latestCommentAnchor(comments, 'Dispatch-open');
+  if (!open) return undefined;
+  const [runId, startedAt] = open.split(/\s+/);
+  if (!runId || !startedAt) return undefined; // 形状不对 = 读成无锚, 不编半个
+  const settle = latestCommentAnchor(comments, 'Dispatch-settle');
+  if (!settle) return { runId, startedAt };
+  const [finishedAt, outcome] = settle.split(/\s+/);
+  // outcome 词表外 → 只收 finishedAt? 不 —— 两者「同生同死」(types.ts:98), 半个都不收。
+  if (!finishedAt || (outcome !== 'passed' && outcome !== 'failed')) return { runId, startedAt };
+  return { runId, startedAt, finishedAt, outcome };
+}
+
 /** #136: 三条写题路 (addTicket / suggest / confirmSuggestion retitle) 共用的截断 —— 一处实现, 三处同兜。 */
 function fitTitle(full: string): { display: string; overlong: boolean } {
   const overlong = full.length > GH_TITLE_MAX;
@@ -502,6 +530,7 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false, notify: Waitin
       // D-5 三戳: 评论流的事件戳**盖过**出生正文锚 (建议票被接受后又被升人 → 后一轮才是当前那轮)。
       const stamps = parseWaitingStamps(sub.comments.nodes);
       const waitingSince = stamps.waitingSince ?? parseAnchor(body, 'Waiting-since');
+      const dispatch = parseDispatchAnchors(sub.comments.nodes);
       tickets.push({
         id,
         type,
@@ -519,6 +548,7 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false, notify: Waitin
         ...(waitingSince !== undefined ? { waitingSince } : {}),
         ...(stamps.ruledAt !== undefined ? { ruledAt: stamps.ruledAt } : {}),
         ...(stamps.staleAt !== undefined ? { staleAt: stamps.staleAt } : {}),
+        ...(dispatch !== undefined ? { dispatch } : {}),
       });
     }
 
@@ -542,7 +572,18 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false, notify: Waitin
   return {
     kind: 'gh',
     listMaps: () => {
-      const out = run(gh, ['issue', 'list', '--label', MAP_LABEL, '--state', 'all', '--json', 'number,title'], 'listMaps');
+      // #198: `--state open` 而不是 `--state all` —— 端口名与全部消费者的措辞都是「**开放**地图」
+      // (`resolveSlug` 的判词、`goal.ts:191` 的挂票判断、TUI 的图列表), 而 `all` 让**已完成的图
+      // 永远退不了场**: 开图数只增不减, `resolveSlug` 的歧义清单越长越没法用。
+      //
+      // 现场 (2026-08-19): 图 14 (session-continuity-port) 13/13 散尽、前沿空、issue 已 close,
+      // 而 `map_tickets` 无 slug 时仍报「需显式 slug: 181, 91, 14」。
+      //
+      // **退役 = close 那张 map issue, 复活 = reopen** —— 可逆, 且**不是删除**: `readMapImpl`
+      // 按 number 取, 不看 state, 所以退役后显式给 slug 仍读得回来 (归档不等于失忆)。
+      // md 那边的同款动作是把图文件移进 `docs/plan/pathfinder/archive/` (scanMdMaps 只扫顶层 `.md`),
+      // 仓里已是这个用法 —— 两个后端的退役语义因此对上了。
+      const out = run(gh, ['issue', 'list', '--label', MAP_LABEL, '--state', 'open', '--json', 'number,title'], 'listMaps');
       const rows = JSON.parse(out) as Array<{ number: number; title: string }>;
       return rows.map((r) => ({
         slug: String(r.number),
@@ -733,6 +774,34 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false, notify: Waitin
     markDelivered: (_cwd, _slug, ticketIds) => {
       for (const id of ticketIds) {
         run(gh, ['issue', 'edit', bareNumber(id), '--add-label', DELIVERED_LABEL], 'markDelivered');
+      }
+    },
+
+    /**
+     * D-6③ 派发锚 (#203)。语义与 md 后端 (`backend.ts:303`) 逐字同义, 只是载体是评论锚:
+     *  · `open`   只打在 **ruled** 票上 —— 别的状态本就不该被派发, 给它们打锚等于把一个假事实
+     *             写进真源。已有 open 锚的不重打 (同一次派发重入 = 幂等)。
+     *  · `settle` 只在**有 open 锚且还没 settle 过**时打 —— 没锚的不凭空造 (那会造出"跑完了但
+     *             没人派过"的记录); 已 settle 的不覆写 (第一次的真相是这次派发的真相)。
+     *
+     * 判前置要读一次图 —— gh 上票的状态与已有锚都只在远端。读一次比写错一条便宜:
+     * 评论是 append-only, 写错了**删不掉**。
+     */
+    markDispatch: (_cwd, slug, ticketIds, anchor) => {
+      const map = readMapImpl(slug);
+      if (!map) return; // 图读不到 → 不猜, 不写 (缺席 = 没打锚, 不是打了没记)
+      const want = new Set(ticketIds);
+      for (const t of map.tickets) {
+        if (!want.has(t.id)) continue;
+        const n = bareNumber(t.id);
+        if ('open' in anchor) {
+          if (t.status !== 'ruled') continue;
+          if (t.dispatch) continue; // 已有锚 → 幂等跳过
+          run(gh, ['issue', 'comment', n, '--body', `Dispatch-open: ${anchor.open.runId} ${anchor.open.startedAt}`], 'markDispatch:open');
+        } else {
+          if (!t.dispatch || t.dispatch.finishedAt) continue;
+          run(gh, ['issue', 'comment', n, '--body', `Dispatch-settle: ${anchor.settle.finishedAt} ${anchor.settle.outcome}`], 'markDispatch:settle');
+        }
       }
     },
 

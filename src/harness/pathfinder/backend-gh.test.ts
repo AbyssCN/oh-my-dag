@@ -11,6 +11,7 @@ import { describe, expect, test } from 'bun:test';
 import { createGhBackend } from './backend-gh';
 import { waitingHumanState } from './frontier';
 import { ghWaitingReminderBody, parseStaleAt } from './notify-gh';
+import { dispatchPhaseOf } from '../../serve/board-page';
 import type { GhResult, GhRunner } from './backend';
 import type { PathMap, WaitingLogEntry } from './types';
 
@@ -760,5 +761,129 @@ describe('归因剥离: gh 出口的 --body/--title 不放行 session 链接与�
     };
     expect(b('').executorKind).toBeUndefined();
     expect(b('Executor-kind: agnet').executorKind).toBeUndefined(); // 手滑的词表外值
+  });
+
+  // ── #198 图退役 ─────────────────────────────────────────────────────────────
+  describe('#198 listMaps 只列**开放**图 —— 退役 = close, 复活 = reopen, 且不是删除', () => {
+    test('查询带 --state open (不是 all): 已完成的图 close 掉就退出歧义清单', () => {
+      const seen: string[][] = [];
+      const b = createGhBackend(
+        fakeGh((args) => {
+          seen.push(args);
+          return okr('[]');
+        }),
+      );
+      b.listMaps('/tmp');
+      const q = seen.find((a) => a[0] === 'issue' && a[1] === 'list')!;
+      // ★ 反向自检 (已实测会红): 改回 `--state all` → 这条红。
+      //   现场: 图 14 已 close 且 13/13 散尽, 而 `all` 让它继续占着「需显式 slug」那一行。
+      expect(q[q.indexOf('--state') + 1]).toBe('open');
+    });
+
+    test('退役 ≠ 删除: 显式给 slug 仍读得回那张图 (readMap 按 number 取, 不看 state)', () => {
+      // gh 的 `issue list --state open` 不返它, 但 GraphQL 按号取照样有 —— 归档不等于失忆。
+      const b = createGhBackend(
+        fakeGh((args) => (args.includes('graphql') ? okr(mapResp([{ number: 9, title: '[task] 老票', labels: ['path:task'] }], 14)) : okr('[]'))),
+      );
+      expect(b.listMaps('/tmp')).toEqual([]); // 不在开放清单里
+      expect(b.readMap('/tmp', '14')!.tickets).toHaveLength(1); // 但读得回
+    });
+  });
+
+  // ── #203 派发锚 (D-6③ 的 gh 那一半) ──────────────────────────────────────────
+  //
+  // 此前 gh 后端**没有** markDispatch, 于是 `Ticket.dispatch` 在图 91 上恒 undefined,
+  // board 的 `in-review` 列 (`board-page.ts:58` 的 dispatchPhaseOf) 永远是空的 ——
+  // 而 #202 落地后「跑完了没合」的票会长期停在 ruled, 正是那一列该显示的东西。
+  describe('#203 markDispatch —— 派发锚走评论, 语义与 md 后端逐字同义', () => {
+    /** ruled 票 = CLOSED (gh 上"已裁"就是关着且无 path:delivered)。 */
+    const ruledSub = (comments: string[] = []) => ({
+      number: 77,
+      title: '[task] 施工票',
+      body: '',
+      state: 'CLOSED',
+      labels: ['path:task'],
+      comments: ['**ruling**: 干', ...comments],
+    });
+    const backendWith = (comments: string[] = []) => {
+      const seen: string[][] = [];
+      const resp = mapResp([ruledSub(comments)]);
+      const b = createGhBackend(
+        fakeGh((args) => {
+          seen.push(args);
+          return okr(resp);
+        }),
+      );
+      return { b, seen };
+    };
+    const bodyOf = (seen: string[][], marker: string): string | undefined =>
+      seen.find((a) => a[0] === 'issue' && a[1] === 'comment' && a.some((x) => x.startsWith(marker)))?.at(-1);
+
+    test('open → 落 `Dispatch-open:` 评论; readMap 读回 runId/startedAt, 无 finishedAt = 还在跑', () => {
+      const { b, seen } = backendWith();
+      b.markDispatch!('/tmp', '5', ['#77'], { open: { runId: 'run-1', startedAt: '2026-08-19T00:00:00Z' } });
+      // ★ 反向自检 (已实测会红): 删掉 markDispatch 的 open 分支 → 这条断言红。
+      expect(bodyOf(seen, 'Dispatch-open')).toBe('Dispatch-open: run-1 2026-08-19T00:00:00Z');
+
+      const t = createGhBackend(fakeGh(() => okr(mapResp([ruledSub(['Dispatch-open: run-1 2026-08-19T00:00:00Z'])]))))
+        .readMap('/tmp', '5')!.tickets[0]!;
+      expect(t.dispatch).toEqual({ runId: 'run-1', startedAt: '2026-08-19T00:00:00Z' });
+      // finishedAt 缺席 = **还在跑** (types.ts:96), 不是"跑完了没记"。
+      expect(t.dispatch!.finishedAt).toBeUndefined();
+    });
+
+    test('settle → 落 `Dispatch-settle:`; 往返读回四个字段齐全 (in-review 那一列的数据源)', () => {
+      const { b, seen } = backendWith(['Dispatch-open: run-1 2026-08-19T00:00:00Z']);
+      b.markDispatch!('/tmp', '5', ['#77'], { settle: { finishedAt: '2026-08-19T01:00:00Z', outcome: 'passed' } });
+      expect(bodyOf(seen, 'Dispatch-settle')).toBe('Dispatch-settle: 2026-08-19T01:00:00Z passed');
+
+      const t = createGhBackend(
+        fakeGh(() => okr(mapResp([ruledSub(['Dispatch-open: run-1 2026-08-19T00:00:00Z', 'Dispatch-settle: 2026-08-19T01:00:00Z passed'])]))),
+      ).readMap('/tmp', '5')!.tickets[0]!;
+      expect(t.dispatch).toEqual({ runId: 'run-1', startedAt: '2026-08-19T00:00:00Z', finishedAt: '2026-08-19T01:00:00Z', outcome: 'passed' });
+      // 这张票在 board 上落 in-review: 锚在 · 有 finishedAt · 票仍 ruled。
+      expect(dispatchPhaseOf(t)).toBe('in-review');
+    });
+
+    test('★ 幂等: 已有 open 锚不重打; 已 settle 的不覆写 (第一次的真相是这次派发的真相)', () => {
+      const a = backendWith(['Dispatch-open: run-1 2026-08-19T00:00:00Z']);
+      a.b.markDispatch!('/tmp', '5', ['#77'], { open: { runId: 'run-2', startedAt: '2026-08-19T02:00:00Z' } });
+      // ★ 反向自检 (已实测会红): 去掉 `if (t.dispatch) continue` → 这条红 (会打出第二条 open 锚,
+      //   而 latestCommentAnchor 取最新 ⇒ 第一次派发的 runId 被抹掉)。
+      expect(bodyOf(a.seen, 'Dispatch-open')).toBeUndefined();
+
+      const s = backendWith(['Dispatch-open: run-1 2026-08-19T00:00:00Z', 'Dispatch-settle: 2026-08-19T01:00:00Z passed']);
+      s.b.markDispatch!('/tmp', '5', ['#77'], { settle: { finishedAt: '2026-08-19T09:00:00Z', outcome: 'failed' } });
+      // ★ 反向自检: 去掉 `t.dispatch.finishedAt` 那半 → 这条红。
+      expect(bodyOf(s.seen, 'Dispatch-settle')).toBeUndefined();
+    });
+
+    test('★ open 只打 ruled 票 · settle 不给无锚票凭空造 (别的状态被派发 = 把假事实写进真源)', () => {
+      // 开着的 open 票 (没裁过) —— 不该被派发。
+      const openSub = { number: 78, title: '[task] 还没裁', body: '', labels: ['path:task'], comments: [] as string[] };
+      const seen: string[][] = [];
+      const b = createGhBackend(
+        fakeGh((args) => {
+          seen.push(args);
+          return okr(mapResp([openSub]));
+        }),
+      );
+      b.markDispatch!('/tmp', '5', ['#78'], { open: { runId: 'r', startedAt: 't' } });
+      expect(seen.some((a) => a[0] === 'issue' && a[1] === 'comment')).toBe(false);
+
+      // 无 open 锚的 ruled 票直接 settle → 不写 (那会造出"跑完了但没人派过"的记录)。
+      const s = backendWith();
+      s.b.markDispatch!('/tmp', '5', ['#77'], { settle: { finishedAt: 't', outcome: 'passed' } });
+      expect(bodyOf(s.seen, 'Dispatch-settle')).toBeUndefined();
+    });
+
+    test('锚形状不对 → 读成**无锚**, 不拼半个 (NULL≠0: 半个锚不是一个真状态)', () => {
+      const read = (comments: string[]) =>
+        createGhBackend(fakeGh(() => okr(mapResp([ruledSub(comments)])))).readMap('/tmp', '5')!.tickets[0]!.dispatch;
+      expect(read(['Dispatch-open: 只有runId'])).toBeUndefined(); // 缺 startedAt
+      expect(read(['Dispatch-settle: 2026-08-19T01:00:00Z passed'])).toBeUndefined(); // 只有 settle 没 open
+      // outcome 词表外 → finishedAt/outcome 同生同死 (types.ts:98), 两个都不收, 但 open 那半仍在。
+      expect(read(['Dispatch-open: r t', 'Dispatch-settle: 2026-08-19T01:00:00Z 大概过了'])).toEqual({ runId: 'r', startedAt: 't' });
+    });
   });
 });

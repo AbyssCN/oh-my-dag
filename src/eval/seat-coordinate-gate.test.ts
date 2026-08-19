@@ -74,6 +74,9 @@ const NOISE_PROVIDERS: ReadonlySet<string> = new Set([
   // backend-gh 的 run(gh, …, op) 操作标签命名空间 (c2f87e6 新增三步 escalate:stamp/reopen/label,
   // 与上一行 addTicket/syncFromMap 同族) —— 非模型坐标。
   'escalate',
+  // 同族再一条 (#203, 2026-08-19): `markDispatch:open` / `markDispatch:settle` ——
+  // gh 派发锚的两阶段操作标签, 不是模型坐标。
+  'markDispatch',
   // per-seat 台账的**角色标签**命名空间 (`web:expand` / `web:distill-source` / `web:distill-challenger`,
   // 2026-08-14) —— 与 `conductor:plan` 同族: 它们是观测面的 meta.role, 不是模型坐标。
   // 真坐标仍由这三处各自的 resolveSeatModel('expand'/'distill') 解析, 一个字都没绕过座位链。
