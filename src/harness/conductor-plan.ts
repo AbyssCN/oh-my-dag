@@ -367,6 +367,31 @@ export interface ConductorProfileRosterEntry {
  */
 export type ConductorPromptProfile = 'full' | 'lean' | 'full-kb' | 'lean-kb' | 'bare';
 
+/** 档位合法值的运行时全集 (engine 的 env 校验用; 与上面类型并排, 加档时两处一起改)。 */
+export const CONDUCTOR_PROMPT_PROFILES: readonly ConductorPromptProfile[] = [
+  'full',
+  'lean',
+  'full-kb',
+  'lean-kb',
+  'bare',
+];
+
+/**
+ * env `OMD_CONDUCTOR_PROMPT` → 档位 (engine 的 config 显式覆盖优先, 在调用点 `??` 之前)。
+ *
+ * #182 接上 bare: 此前 engine 里只认 'lean' (其余一律 'full'), 于是 -kb / bare 无法经 env 选到 ——
+ * 一个合法档位值被静默吞成 'full' (与「写错值」在读数上不可分)。现在对 `CONDUCTOR_PROMPT_PROFILES`
+ * 全集映射; 非法/未设仍落 'full' (零回归, 与旧行为一致)。单一真源: engine 两处解析都调这里。
+ */
+export function conductorPromptProfileFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): ConductorPromptProfile {
+  const v = env.OMD_CONDUCTOR_PROMPT;
+  return (CONDUCTOR_PROMPT_PROFILES as readonly string[]).includes(v as string)
+    ? (v as ConductorPromptProfile)
+    : 'full';
+}
+
 /**
  * APoSD「按知识边界分解、反时序性分解」段 (#171 处理臂)。与 chat conductor 的
  * `<knowledge-boundary>` (harness-prompts.ts) 同源同义, 措辞换成 PLAN-1 的祈使句 register。

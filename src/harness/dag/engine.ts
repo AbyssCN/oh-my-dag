@@ -33,6 +33,7 @@ import {
   parsePlan,
   mergeMcpAllow,
   PLAN_BOUNDARY,
+  conductorPromptProfileFromEnv,
   type ConductorPlan,
   type ConductorProfileRosterEntry,
 } from '../conductor-plan';
@@ -249,8 +250,7 @@ async function planAndExecute(
   // ── 1. conductor: 单结构化调用规划 (显式可换) ──────────────────────────────
   // 模板注册表进规划 prompt (每卡一行 description); parsePlan 校验 template 引用 (TPL-2 规划层拒)。
   // prompt 档位: config > env OMD_CONDUCTOR_PROMPT > 'full' (弱 conductor 教练全量; 'lean' 给顶级模型)。
-  const promptProfile =
-    config.conductorPromptProfile ?? (process.env.OMD_CONDUCTOR_PROMPT === 'lean' ? 'lean' : 'full');
+  const promptProfile = config.conductorPromptProfile ?? conductorPromptProfileFromEnv();
   const sys = conductorSystemPrompt({
     agents: config.agents,
     templates: templateRoster(templates),
@@ -1336,7 +1336,7 @@ async function executePlan(
         ...(config.agents ? { agents: config.agents } : {}),
         templates: templateRoster(templates),
         profiles: profileRoster(config),
-        profile: config.conductorPromptProfile ?? (process.env.OMD_CONDUCTOR_PROMPT === 'lean' ? 'lean' : 'full'),
+        profile: config.conductorPromptProfile ?? conductorPromptProfileFromEnv(),
       });
       const userMsg =
         // A8: token 声明必须排在**任何**不可信内容之前 —— 读者先拿到判据, 再看材料。

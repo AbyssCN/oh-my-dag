@@ -165,7 +165,8 @@ export interface DagPlanningSeam {
    * 'lean' (只留环境事实, 顶级 conductor 如 k3 用 — 教练是保守偏置疑压平分解)。
    * '-kb' 两档 (#171, 2026-08-18) = 基档 + 知识边界段, 仅供 conductor-modelmix A/B, 裁决前无默认消费者。
    * 'bare' (#182, 2026-08-19) = 零附加内容基线 (只留身份 + 分解指令 + 输出 schema), 供跑分对照, 无默认消费者。
-   * 省略 → env OMD_CONDUCTOR_PROMPT ('lean'/'full') → 'full'。档位由 A/B eval 定, 见 conductor-plan。
+   * 省略 → env OMD_CONDUCTOR_PROMPT ('full'/'lean'/'full-kb'/'lean-kb'/'bare', 非法/未设落 'full') → 'full'。
+   * 档位由 A/B eval 定, 见 conductor-plan。
    */
   conductorPromptProfile?: 'full' | 'lean' | 'full-kb' | 'lean-kb' | 'bare';
   /**

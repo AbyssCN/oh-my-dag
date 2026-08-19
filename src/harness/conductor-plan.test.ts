@@ -5,7 +5,7 @@
  * 修后: fence 只定位起点, 终点一律括号平衡扫描。
  */
 import { describe, expect, test } from 'bun:test';
-import { conductorPatchSystemPrompt, conductorSystemPrompt, extractPlanJson, parsePlan, PLAN_KB_SECTION } from './conductor-plan';
+import { conductorPatchSystemPrompt, conductorSystemPrompt, extractPlanJson, parsePlan, PLAN_KB_SECTION, conductorPromptProfileFromEnv, CONDUCTOR_PROMPT_PROFILES } from './conductor-plan';
 import { DEFAULT_COMMAND_ALLOWLIST } from './command-leaf';
 import { topoLevels } from './dag/planner';
 
@@ -51,6 +51,24 @@ describe('extractPlanJson', () => {
     const text = '```json\n{"name": "p", "nodes": {"a": {"goal": "截断';
     const r = parsePlan(text, { knownServers: new Set() });
     expect(r.ok).toBe(false);
+  });
+});
+
+// ── #182 env 档位解析: 全集映射 + 非法落 'full' (零回归) ─────────────────────────
+
+describe('conductorPromptProfileFromEnv (#182 env 接线)', () => {
+  test('全集合法值逐一映射 (含新增 bare, 不再被吞成 full)', () => {
+    for (const p of CONDUCTOR_PROMPT_PROFILES) {
+      expect(conductorPromptProfileFromEnv({ OMD_CONDUCTOR_PROMPT: p })).toBe(p);
+    }
+  });
+
+  test('未设 → full (旧默认)', () => {
+    expect(conductorPromptProfileFromEnv({})).toBe('full');
+  });
+
+  test('非法值 → full, 且与「合法 full」同落点 (不静默区分)', () => {
+    expect(conductorPromptProfileFromEnv({ OMD_CONDUCTOR_PROMPT: 'garbage' })).toBe('full');
   });
 });
 
