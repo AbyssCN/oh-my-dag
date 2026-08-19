@@ -357,12 +357,15 @@ export interface ConductorProfileRosterEntry {
 }
 
 /**
- * conductor prompt 档位 (issue #171 加 `-kb` 两档, 2026-08-18)。
+ * conductor prompt 档位 (issue #171 加 `-kb` 两档, 2026-08-18; issue #182 加 `bare`, 2026-08-19)。
  * `full-kb` / `lean-kb` = 对应基档字节 + **单点插入** {@link PLAN_KB_SECTION}, 其余逐字节不动
  * (单一变量; 测试以字节级 replace 钉死)。A/B 裁决前不进任何默认路径 —— 只有 conductor-modelmix
  * oracle 的 `--profiles` 轴能选到; 判据冻结在 issue #171, 塌了整段撤。
+ * `bare` = **零附加内容**基线 (见 {@link bareConductorSystemPrompt}) —— 只留身份 + 分解指令 +
+ * 输出 schema, 一切教练与环境事实全裁, 供跑分对照 (量 harness 增量到底值多少)。同不默认:
+ * 只有显式 `config.conductorPromptProfile:'bare'` / oracle `--profiles bare` 能选到。
  */
-export type ConductorPromptProfile = 'full' | 'lean' | 'full-kb' | 'lean-kb';
+export type ConductorPromptProfile = 'full' | 'lean' | 'full-kb' | 'lean-kb' | 'bare';
 
 /**
  * APoSD「按知识边界分解、反时序性分解」段 (#171 处理臂)。与 chat conductor 的
@@ -389,6 +392,44 @@ function oneLineSummary(summary: string): string {
   return Array.from(normalized).slice(0, 80).join('');
 }
 
+/**
+ * bare 档 (#182): **零附加内容** conductor system prompt —— 只有身份 + 分解指令 + 输出 schema。
+ *
+ * 与 full/lean 的分界: 一切「教练」(decomposition stance / granularity / redraw / parallel-safety /
+ * discipline / command 闸 / shapes / trust fence / 知识边界段) 与一切「环境事实」(白名单、模板注册表、
+ * 岗位名册) 全裁掉。只留引擎 `PlanSchema` 能解析的最小契约 —— 字段名 + 枚举值 (枚举值写错整 plan
+ * 被 zod 拒, 所以它们属于"接口"而非"教练"; 教练是教你**怎么用**这些字段, 那才是增量)。
+ *
+ * 供跑分对照 (conductor-modelmix `--profiles bare`): A/B 量 full/lean/lean-kb 的 harness 增量到底
+ * 值多少, 快照锁管没人手滑改坏 —— 两者不互替 (issue #182 verify)。零 harness 增量断言在
+ * conductor-prompt-snapshot.test.ts: bare 不含任何教练/环境事实标记, 且字节被快照钉死。
+ */
+export function bareConductorSystemPrompt(): string {
+  return [
+    'You are the CONDUCTOR — the planner of the omd agent runtime. Decompose the task below into a',
+    'directed acyclic graph of executor nodes.',
+    '',
+    'Output STRICTLY one JSON object, no prose, matching:',
+    '{ "name": string, "description"?: string, "outputs"?: string[],',
+    '  "nodes": { "<node_id>": {',
+    '    "goal"?: string, "depends_on"?: string[],',
+    '    "executor"?: "leaf"|"agent"|"command"|"map"|"research"|"conductor"|"await",',
+    '    "command"?: string, "expect_exit"?: number,',
+    '    "output_type"?: "structured"|"file"|"git"|"none", "output_path"?: string,',
+    '    "content_bytes"?: number, "requires"?: "all"|"any"|number, "cluster"?: string,',
+    '    "tier"?: "strong"|"mid"|"cheap", "attach_media"?: boolean, "creative"?: boolean,',
+    '    "persona"?: string, "profile"?: string, "template"?: string, "mcp"?: string[],',
+    '    "max_nodes"?: number, "max_rounds"?: number, "max_retry"?: number,',
+    '    "detector"?: boolean, "judge_final"?: boolean,',
+    '    "kind"?: "primitive",',
+    '    "primitive"?: "parallel"|"pipeline"|"loop-until"|"verify"|"judge"|"discovery"|"iterate"|"tournament"|"router"|"race"|"escalation"|"saga"|"escape-hatch",',
+    '    "params"?: object,',
+    '    "map"?: { "lister": object, "over": string, "itemVar": string, "keyBy"?: string, "template": object, "maxItems"?: number, "concurrency"?: number },',
+    '    "research"?: { "k"?: number, "rounds"?: number },',
+    '    "await"?: { "artifact": string, "fromRun"?: string, "timeoutMs"?: number } } } }',
+  ].join('\n');
+}
+
 export function conductorSystemPrompt(
   opts: {
     agents?: string[];
@@ -397,6 +438,7 @@ export function conductorSystemPrompt(
     profile?: ConductorPromptProfile;
   } = {},
 ): string {
+  if (opts.profile === 'bare') return bareConductorSystemPrompt();
   const lean = opts.profile === 'lean' || opts.profile === 'lean-kb';
   const kb = opts.profile === 'full-kb' || opts.profile === 'lean-kb';
   // roster 段 2026-07-26 撤下: node.agent 在 executor-dag 零消费者 (分流看 executor/model), 且

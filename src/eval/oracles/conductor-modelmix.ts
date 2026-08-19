@@ -51,9 +51,9 @@ interface TournamentSpec<C> {
   maxRounds?: number;
 }
 
-/** prompt 档轴的合法值 (与 dag/types.ts conductorPromptProfile 同构; -kb 两档 = #171 A/B 处理臂)。 */
-type PromptProfile = 'full' | 'lean' | 'full-kb' | 'lean-kb';
-const PROMPT_PROFILES: readonly PromptProfile[] = ['full', 'lean', 'full-kb', 'lean-kb'];
+/** prompt 档轴的合法值 (与 dag/types.ts conductorPromptProfile 同构; -kb 两档 = #171 A/B 处理臂, bare = #182 零附加内容基线)。 */
+type PromptProfile = 'full' | 'lean' | 'full-kb' | 'lean-kb' | 'bare';
+const PROMPT_PROFILES: readonly PromptProfile[] = ['full', 'lean', 'full-kb', 'lean-kb', 'bare'];
 
 interface MixConfig {
   conductorModel: string;
