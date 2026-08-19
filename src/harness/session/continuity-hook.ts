@@ -17,6 +17,7 @@
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveProject } from '../project-scope';
+import { bucketIndex, bucketThreshold } from './bucket';
 import type { StopLedger } from './stop-ledger';
 
 // ─── Public types ───────────────────────────────────────────────────────────
@@ -36,17 +37,6 @@ export type ContinuityMode = 'rolling' | 'precompact';
 export type ContinuityTrigger =
   | Readonly<{ fire: false; why: string }>
   | Readonly<{ fire: true; mode: ContinuityMode; bucket: number }>;
-
-/** 冻结档位缺省,与 `docs/examples/.../session-continuity.ts:45` 同 env 同值。 */
-export const DEFAULT_SESSION_BUCKET = 200_000;
-
-/** 档位阈值:env 未设 → 缺省;设了但非正有限数 → null(fail-open:不拿坏配置造档位)。 */
-function bucketThreshold(env: NodeJS.ProcessEnv): number | null {
-  const raw = env.OMD_SESSION_BUCKET;
-  if (raw === undefined) return DEFAULT_SESSION_BUCKET;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : null;
-}
 
 // ─── 触发判定(纯函数,零副作用)────────────────────────────────────────────
 
@@ -74,7 +64,7 @@ export function decideContinuityTrigger(
   if (last === undefined) return { fire: false, why: '空 ledger' };
   if (last.tokenBucket === null) return { fire: false, why: '最新条缺 token → 绝不伪造' };
 
-  const nowIdx = Math.floor(last.tokenBucket / threshold);
+  const nowIdx = bucketIndex(last.tokenBucket, threshold);
   if (nowIdx < 1) return { fire: false, why: `未过首档 (${last.tokenBucket} < ${threshold})` };
 
   // 基准取**此前全部** entry 的最高档,不是"前一条"。
@@ -86,7 +76,7 @@ export function decideContinuityTrigger(
   for (let i = 0; i < entries.length - 1; i++) {
     const t = entries[i]!.tokenBucket;
     if (t === null) continue; // 缺读数的条跳过 —— 不伪造,也不因它抬高基准
-    prevIdx = Math.max(prevIdx, Math.floor(t / threshold));
+    prevIdx = Math.max(prevIdx, bucketIndex(t, threshold));
   }
 
   return nowIdx > prevIdx

@@ -28,6 +28,8 @@ import {
 import { streamSimple } from '@earendil-works/pi-ai/compat';
 import { assistantText } from '../agent-leaf';
 import { logger } from '../../logger';
+import { readResumeBrief, renderResumeBrief } from '../session/resume';
+import { maybeCheckpointOmdSession } from '../session/omd-checkpoint';
 import { emitModelUsage } from '../../model/accounting';
 import type { ModelUsage } from '../../model/types';
 import { type CompactionCallModel, compactChatMessages } from './compaction';
@@ -246,6 +248,21 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
     cwd: opts.cwd,
     tools,
   });
+
+  // ── 交接读回 (#211) ────────────────────────────────────────────────────────
+  // 只在**这条会话的第一轮**注:`existing === null` = 会话文件还没建。往后每轮都注就是
+  // 每轮重放一遍上一段,而且会把它自己写进新 checkpoint 里滚雪球。
+  // 读的是 markdown 真源不是 facts 镜像(理由见 resume.ts 头注);全程 fail-open,读不到就不注。
+  if (existing === null) {
+    const brief = readResumeBrief({ cwd: opts.cwd, excludeSessionId: opts.sessionId });
+    if (brief) {
+      systemPrompt = `${systemPrompt}\n\n${renderResumeBrief(brief)}`;
+      logger.info(
+        { sessionId: opts.sessionId, from: brief.sessionId, degraded: brief.degraded },
+        '[session-continuity] 上一段交接已注入开场',
+      );
+    }
+  }
   if (opts.systemPromptHook) {
     // fail-open: 钩子挂了不该让这一句发不出去; 但不吞证据。
     try {
@@ -361,6 +378,18 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
     messages: after,
     windowTokens: window,
   });
+  // ── 交接写入 (#211) ────────────────────────────────────────────────────────
+  // omd 自己的存档出口。**不 await**:蒸馏要打一次模型(秒级),这一轮的回答不等它。
+  // 触发口径与 Claude Code 那条共用 `bucket.ts`;`maybeCheckpointOmdSession` 自身全 fail-open。
+  void maybeCheckpointOmdSession({
+    sessionId: opts.sessionId,
+    cwd: opts.cwd,
+    entries: () => session.entries(),
+    // omd 侧引擎自己握着这个数(CC 那头只能从 transcript 事后推)。
+    ctxTokens: pressure.usedTokens,
+    compacted: compactions > 0,
+  });
+
   return {
     sessionId: opts.sessionId,
     messageCount: after.length,

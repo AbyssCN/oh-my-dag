@@ -29,6 +29,8 @@ import { logger } from '../../logger';
 import { CLAUDE_SDK_PROVIDER, effortOf } from '../../model/claude-sdk-complete';
 import type { ModelUsage } from '../../model/types';
 import { analyzeContextPressure } from './usage';
+import { readResumeBrief, renderResumeBrief } from '../session/resume';
+import { maybeCheckpointOmdSession } from '../session/omd-checkpoint';
 import type { ChatTurnOpts, ChatTurnResult } from './agent';
 
 import { officialAdvisorModelId, runSdkAgentLoop } from '../claude-sdk-loop';
@@ -80,6 +82,20 @@ export async function runChatTurnSdk(opts: ChatTurnOpts): Promise<ChatTurnResult
     cwd: opts.cwd,
     tools,
   });
+
+  // 交接读回 (#211) —— 与 pi 通道逐字同一条(`agent.ts` 那处):只在会话第一轮注。
+  // 两个通道都要接:omd 主座位跑的正是这条 SDK 通道,漏了它等于这个功能对 owner 不存在。
+  if (existing === null) {
+    const brief = readResumeBrief({ cwd: opts.cwd, excludeSessionId: opts.sessionId });
+    if (brief) {
+      systemPrompt = `${systemPrompt}\n\n${renderResumeBrief(brief)}`;
+      logger.info(
+        { sessionId: opts.sessionId, from: brief.sessionId, degraded: brief.degraded },
+        '[session-continuity] 上一段交接已注入开场 (sdk 通道)',
+      );
+    }
+  }
+
   if (opts.systemPromptHook) {
     try {
       systemPrompt = await opts.systemPromptHook(systemPrompt);
@@ -127,13 +143,26 @@ export async function runChatTurnSdk(opts: ChatTurnOpts): Promise<ChatTurnResult
   const windowTokens =
     Object.values((result.modelUsage ?? {}) as Record<string, { contextWindow?: number }>)[0]?.contextWindow ?? 1_000_000;
   const total: ModelUsage = out.totalUsage;
+  // 压力读数**算一次**给两个消费者(返回值 + 交接触发)。算两遍就是同一个数两个来源,
+  // 而这两处将来漂开时没人看得出来。
+  const pressure = analyzeContextPressure({ systemPrompt, messages: await session.messages(), windowTokens });
+
+  // 交接写入 (#211) —— 与 pi 通道同一个出口。SDK 通道 `compactions` 恒 0(SDK 自管压缩),
+  // 所以这条路只有档位触发。**不 await**。
+  void maybeCheckpointOmdSession({
+    sessionId: opts.sessionId,
+    cwd: opts.cwd,
+    entries: () => session.entries(),
+    ctxTokens: pressure.usedTokens,
+  });
+
   return {
     sessionId: opts.sessionId,
     messageCount: after,
     reply: out.generated.map(assistantText).join(''),
     newMessages,
     usage: total,
-    pressure: analyzeContextPressure({ systemPrompt, messages: await session.messages(), windowTokens }),
+    pressure,
     compactions: 0, // 委托给 SDK 的通道恒 0 —— 语义是「SDK 自管」,不是「没压」(见文件头注 ①)
   };
 }

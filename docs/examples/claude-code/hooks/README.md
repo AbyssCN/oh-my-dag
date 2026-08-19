@@ -21,6 +21,12 @@
 **要数据就装下面那条**(`session-continuity-hook.ts`)。装上面这条只会记 ledger,
 库里 continuity 依旧零行 —— 这正是 #206 之前的实况。
 
+> **omd 自己的会话不用装 hook**(#211)。TUI / conductor_chat 的循环是 omd 自己的代码,
+> 存档与读回直接接在 `runChatTurn` / `runChatTurnSdk` 里(轮尾跨档存一次、压缩存一次;
+> 新会话第一轮把上一段的 §1/§2 注进 system prompt)。本目录这两条 hook **只为 Claude Code 存在** ——
+> 它是别人的程序,我们只能等它发事件。
+> 蒸馏器是同一个:来源缝在 `src/harness/session/source.ts`,再接一家 agent 就再写一个 `SessionSource`。
+
 ### settings.json 接线(产数据的那条)
 
 ```json

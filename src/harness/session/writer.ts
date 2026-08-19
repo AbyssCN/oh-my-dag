@@ -15,16 +15,7 @@
  *
  * @module
  */
-import {
-  existsSync,
-  openSync,
-  readSync,
-  fstatSync,
-  closeSync,
-  readFileSync,
-  writeFileSync,
-  mkdirSync,
-} from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { callModel as defaultCallModel, type ModelRequest, type ModelResponse } from '../../model';
@@ -35,7 +26,12 @@ import { resolveProject } from '../project-scope';
 import type { OmdMemory } from '../memory';
 import { checkNouns } from './noun-gate';
 import { sinkCheckpoint, type CheckpointSinkResult } from './sink';
-import { SYSTEM_REMINDER_PREFIX, TASK_NOTIFICATION_PREFIX, SKILL_PREAMBLE_PREFIX } from './stop-ledger';
+import { ccTranscriptSource, excerpt, type SessionSource } from './source';
+
+// `excerpt` 的实装 2026-08-19 (#211) 搬进 `session/source.ts` —— 它是「认 Claude Code 记录
+// 格式」那一件事,属于**来源**层不属于蒸馏器。这里原样再导出:既有消费者
+// (`test/core/session-writer.test.ts`) 的 import 路径不变。
+export { excerpt };
 
 // ─── constants ──────────────────────────────────────────────────────────────
 
@@ -52,8 +48,6 @@ const SECTION_HEADERS = [
 ] as const;
 const SECTION_BUDGET_HINT = '§1≤500tok §2≤800 §3≤600 §4≤800 §5≤1200 §6≤800 §7≤800 §8≤800 §9≤1000';
 const MAX_CHECKPOINT_CHARS = 54_000; // ≈1.5× 总预算(6k tok ×4 chars ×1.5)
-const MAX_EXCERPT_CHARS = 100_000; // 喂便宜模型的 transcript 摘录上限
-const TRANSCRIPT_CHUNK_CAP = 6 * 1024 * 1024;
 
 export type WriterMode = 'rolling' | 'final' | 'precompact';
 
@@ -61,8 +55,16 @@ export type WriterMode = 'rolling' | 'final' | 'precompact';
 export type CallModelFn = (req: ModelRequest) => Promise<ModelResponse>;
 
 export interface WriterOptions {
-  /** CC transcript JSONL 绝对路径。 */
-  transcript: string;
+  /**
+   * CC transcript JSONL 绝对路径 —— 等价于 `source: ccTranscriptSource(transcript)` 的简写。
+   * 与 `source` **二选一**,都不给则抛(不静默产一份空 checkpoint)。
+   */
+  transcript?: string;
+  /**
+   * 会话来源(#211)。谁能吐出自己的对话记录谁就能接:`ccTranscriptSource`(Claude Code)、
+   * `omdSessionSource`(omd 自己的会话)、将来别家 agent 各写一个。蒸馏器不认来源格式。
+   */
+  source?: SessionSource;
   /** session id(会被清洗为文件名安全串)。 */
   sessionId: string;
   /** rolling(每轮) / final(收尾 splice _NEXT.md) / precompact(压缩前)。默认 rolling。 */
@@ -106,83 +108,6 @@ function loadState(statePath: string): WriterState {
   } catch {
     return {};
   }
-}
-
-function readChunk(path: string, from: number, cap: number): { text: string; end: number } {
-  const fd = openSync(path, 'r');
-  try {
-    const size = fstatSync(fd).size;
-    let start = Math.min(Math.max(from, 0), size);
-    if (size - start > cap) start = size - cap;
-    const buf = Buffer.alloc(size - start);
-    readSync(fd, buf, 0, buf.length, start);
-    const text = buf.toString('utf-8');
-    const lastNl = text.lastIndexOf('\n');
-    return { text: lastNl >= 0 ? text.slice(0, lastNl) : text, end: start + (lastNl >= 0 ? lastNl + 1 : 0) };
-  } finally {
-    closeSync(fd);
-  }
-}
-
-/** transcript JSONL → 紧凑对话摘录(U/A/T/R 行),控制在 MAX_EXCERPT_CHARS 内。 */
-/** 与 W3 parser 同名单的三精确前缀过滤 (D-4): 噪音 user 文本 (system-reminder/task-notification/skill 前导) 不进 U: 行。 */
-function isNoiseUserText(s: string): boolean {
-  return (
-    s.startsWith(SYSTEM_REMINDER_PREFIX) ||
-    s.startsWith(TASK_NOTIFICATION_PREFIX) ||
-    s.startsWith(SKILL_PREAMBLE_PREFIX)
-  );
-}
-
-export function excerpt(chunk: string): string {
-  const out: string[] = [];
-  for (const line of chunk.split('\n')) {
-    if (!line.trim()) continue;
-    let j: {
-      type?: string;
-      message?: { content?: unknown };
-    };
-    try {
-      j = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const content = j?.message?.content;
-    if (j.type === 'user') {
-      if (typeof content === 'string') {
-        if (!isNoiseUserText(content)) out.push(`U: ${content.slice(0, 500)}`);
-        continue;
-      }
-      if (!Array.isArray(content)) continue;
-      for (const p of content as Array<Record<string, unknown>>) {
-        if (p.type === 'text' && typeof p.text === 'string' && !isNoiseUserText(p.text))
-          out.push(`U: ${(p.text as string).slice(0, 500)}`);
-        if (p.type === 'tool_result') {
-          const raw = p.content;
-          const t =
-            typeof raw === 'string'
-              ? raw
-              : Array.isArray(raw)
-                ? raw.map((c: Record<string, unknown>) => (c.text as string) || '').join(' ')
-                : '';
-          if (t) out.push(`R: ${t.slice(0, 200)}`);
-        }
-      }
-    } else if (j.type === 'assistant' && Array.isArray(content)) {
-      for (const p of content as Array<Record<string, unknown>>) {
-        if (p.type === 'text' && p.text) out.push(`A: ${String(p.text).slice(0, 800)}`);
-        if (p.type === 'tool_use') {
-          const inp = (p.input as Record<string, unknown>) || {};
-          const brief =
-            inp.file_path || inp.command || inp.query || inp.prompt || JSON.stringify(inp).slice(0, 120);
-          out.push(`T: ${String(p.name)} ${String(brief).slice(0, 160)}`);
-        }
-      }
-    }
-  }
-  let text = out.join('\n');
-  if (text.length > MAX_EXCERPT_CHARS) text = `…(更早内容已截)\n${text.slice(-MAX_EXCERPT_CHARS)}`;
-  return text;
 }
 
 // ─── 验真闸(零 LLM)──────────────────────────────────────────────────────────
@@ -252,7 +177,12 @@ function mechanicalCheckpoint(ledgerTail: string, excerptText: string, reason: s
 
 // ─── section 抽取 + _NEXT.md AUTO 区 splice ────────────────────────────────────
 
-function section(md: string, tag: string): string {
+/**
+ * checkpoint.md 里某一段的正文(`§1` / `§2` …)。**导出**是给读回面用的(`resume.ts`)——
+ * 写的时候怎么切,读回来就怎么切,不许两处各写一份正则(`session-roundtrip.test.ts` 里
+ * 那份 inline 复刻是测试自证的一部分,不是第二个实装)。
+ */
+export function section(md: string, tag: string): string {
   const n = tag.replace('§', '');
   const re = new RegExp(`## §${n}[^\\n]*\\n([\\s\\S]*?)(?=\\n## §|$)`);
   return (md.match(re)?.[1] || '').trim().slice(0, 600);
@@ -364,13 +294,23 @@ export async function runWriter(opts: WriterOptions): Promise<WriterResult> {
   const statePath = join(contDir, 'state.json');
   const latestPath = resolve(projectRoot, scope.dataPath(join('session', 'latest.json')));
 
+  // 来源缝(#211): 蒸馏器只认「摘录 + ctx 真值」, 不认谁家的记录格式。
+  // `transcript` 是 `ccTranscriptSource` 的简写; 两个都不给 = 调用方装配错了, 响亮抛 ——
+  // 静默产一份空 checkpoint 正是本轮要消灭的那种失效。
+  const source =
+    opts.source ??
+    (opts.transcript !== undefined
+      ? ccTranscriptSource(opts.transcript)
+      : (() => {
+          throw new Error('[session-writer] 必须给 transcript 或 source 其一');
+        })());
+
   const state = loadState(statePath);
-  const { text: chunk, end: newOffset } = readChunk(
-    opts.transcript,
-    state.distillOffset || 0,
-    TRANSCRIPT_CHUNK_CAP,
-  );
-  const excerptText = excerpt(chunk);
+  const {
+    text: excerptText,
+    cursor: newOffset,
+    ctxTokens: srcCtxTokens,
+  } = await source.read(state.distillOffset || 0);
   const prevCheckpoint = existsSync(checkpointPath) ? readFileSync(checkpointPath, 'utf-8') : '';
   let ledgerTail = '';
   try {
@@ -410,7 +350,10 @@ export async function runWriter(opts: WriterOptions): Promise<WriterResult> {
 
   const degraded = md.startsWith('<!-- DEGRADED');
   writeFileSync(checkpointPath, md);
-  writeFileSync(statePath, JSON.stringify({ ...state, distillOffset: newOffset, lastDistillAt: now(), mode }));
+  writeFileSync(
+    statePath,
+    JSON.stringify({ ...state, distillOffset: newOffset, lastDistillAt: now(), mode, source: source.kind }),
+  );
   writeFileSync(latestPath, JSON.stringify({ sessionId, path: checkpointPath, updatedAt: now() }));
   if (mode === 'final') spliceNext(md, projectRoot, sessionId, checkpointPath, now());
 
@@ -424,7 +367,9 @@ export async function runWriter(opts: WriterOptions): Promise<WriterResult> {
         md,
         intent: section(md, '§1'),
         next: section(md, '§2'),
-        ctxTokens: latestCtxTokens(ledgerTail),
+        // source 报得出真值就用它(omd 侧引擎自己握着数); 报不出(CC 侧恒 null)才回落 ledger 尾。
+        // ⚠ 用 `??` 不用 `||`: ctx 真的是 0 与"没量到"是两回事(仓规坑①)。
+        ctxTokens: srcCtxTokens ?? latestCtxTokens(ledgerTail),
         degraded,
         checkpointPath,
       },
