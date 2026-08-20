@@ -13,6 +13,7 @@
 import { type Static, Type } from 'typebox';
 import type { AnyOmdTool } from '../harness/agent-tools';
 import type { OmdMcpTool } from '../mcp/server';
+import { zodShapeToFields } from './zod-typebox';
 
 /** MCP handler 的返回形状 (content 数组取 text 拼接; isError → 前缀标注, 让模型看得见失败)。 */
 async function invoke(tool: OmdMcpTool, args: Record<string, unknown>): Promise<string> {
@@ -56,6 +57,134 @@ function textTool<S extends ReturnType<typeof Type.Object>>(
 }
 
 /**
+ * 本体 conductor 工具面 ⊇ MCP 装配面 (conductor 类工具) 的闸 + 工具清单。
+ *
+ * owner 2026-08-19 裁决: 本体 chat 位应持**超集** —— MCP 是给外部 agent (Claude Code/Codex)
+ * 的窄桥, 不是本体够引擎能力的唯一通道。COVERED_MCP_NAMES 是「MCP 面 → 本体工具」的映射真源;
+ * assertSurfaceComplete 保证: MCP 面里任何非别名、非显式排除的工具, 本体都有对应, 否则装配期响亮抛
+ * (静默少一个工具 = chat 位悄悄残废, 那是最贵的静默失效 —— 与 must() 同一条纪律)。
+ */
+const CHAT_EXCLUSIONS: ReadonlySet<string> = new Set(['conductor_chat']);
+
+const COVERED_MCP_NAMES: ReadonlySet<string> = new Set([
+  // 既有 12 (createConductorChatTools 手写 textTool)。
+  'run', 'solve', 'dag_run_plan', 'dag_status', 'dag_runs', 'dag_node_output',
+  'dag_cancel', 'map_tickets', 'omd_plans', 'memory_recall', 'history_read', 'history_search',
+  // 扩展 30 (下方 EXTRA_CONDUCTOR_TOOLS 经 wrapMcpTool 装配)。
+  'dag_research', 'dag_review', 'dag_slim', 'dag_deepen', 'dag_debug',
+  'dag_triage', 'dag_rule', 'dag_intervene', 'dag_resume', 'dag_result',
+  'map_init', 'map_open', 'map_add', 'map_rule', 'map_deliver', 'map_prefetch', 'map_confirm',
+  'memory_remember', 'omd_web', 'omd_distill',
+  'omd_set_key', 'omd_apply_preset', 'omd_set_role', 'omd_models_auto', 'omd_register_provider',
+  'omd_set_model', 'omd_config_status', 'omd_toggle_hud', 'omd_primitive', 'omd_shapes',
+]);
+
+function assertSurfaceComplete(tools: readonly OmdMcpTool[]): void {
+  const missing: string[] = [];
+  for (const t of tools) {
+    if (t.description.startsWith('[deprecated →')) continue; // 改名 alias —— 同一扇门, 不重复计数。
+    if (CHAT_EXCLUSIONS.has(t.name)) continue;
+    if (!COVERED_MCP_NAMES.has(t.name)) missing.push(t.name);
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `[serve/chat-tools] 本体 chat 白名单缺 conductor 工具: ${missing.join(', ')} — ` +
+        'MCP 面有而本体没有 (本体应 ⊇ MCP)。把缺的加进 COVERED_MCP_NAMES, 或显式加进 CHAT_EXCLUSIONS。',
+    );
+  }
+}
+
+/**
+ * 把 MCP 工具薄包装成本体 chat 工具: 复用 MCP description + 转换 zod schema → typebox,
+ * handler 直调同一 assembled handler (零业务逻辑, 与 textTool 同款)。
+ * confirmRequired = 凭证写工具 —— 每次调用必须带 confirm:true (owner 经 ask_user 确认后才 set)。
+ */
+function wrapMcpTool(
+  chatName: string,
+  mcpName: string,
+  tools: readonly OmdMcpTool[],
+  opts: { confirmRequired?: boolean; promptSnippet?: string } = {},
+): AnyOmdTool {
+  const tool = must(tools, mcpName);
+  const fields = zodShapeToFields(tool.inputSchema);
+  const parameters = Type.Object({
+    ...fields,
+    ...(opts.confirmRequired
+      ? {
+          confirm: Type.Optional(
+            Type.Boolean({ description: 'Owner 已确认 (先 ask_user 征得明确同意, 再 set true)' }),
+          ),
+        }
+      : {}),
+  });
+  return {
+    name: chatName,
+    label: chatName,
+    description: tool.description,
+    promptSnippet: opts.promptSnippet ?? tool.description,
+    parameters,
+    executionMode: 'sequential',
+    async execute(_id, params) {
+      const p = params as Record<string, unknown>;
+      if (opts.confirmRequired && p.confirm !== true) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `[BLOCKED] ${chatName} 是凭证写工具 —— 必须先 ask_user 征得 owner 明确同意, ` +
+                '再带 confirm:true 重调。本次未执行。',
+            },
+          ],
+          details: undefined,
+        };
+      }
+      const text = await invoke(tool, p);
+      return { content: [{ type: 'text', text }], details: undefined };
+    },
+  } as AnyOmdTool;
+}
+
+/** 扩展工具: mcpName (装配面) → chatName (本体原生名)。描述/提示复用 MCP 的一行说明。 */
+const EXTRA_CONDUCTOR_TOOLS: ReadonlyArray<{
+  chatName: string;
+  mcpName: string;
+  confirmRequired?: boolean;
+  promptSnippet?: string;
+}> = [
+  { chatName: 'omd_research', mcpName: 'dag_research', promptSnippet: 'omd_research(question, council?, super?, k?, rounds?) — 真 web 深度调研/议会 (无 provider 响亮拒)' },
+  { chatName: 'omd_review', mcpName: 'dag_review', promptSnippet: 'omd_review(gate?, scope?, deep?) — 对抗式 diff 审 (异步, 返 runId)' },
+  { chatName: 'omd_slim', mcpName: 'dag_slim', promptSnippet: 'omd_slim(scope?) — 过度工程只删不增审计 (异步)' },
+  { chatName: 'omd_deepen', mcpName: 'dag_deepen', promptSnippet: 'omd_deepen(commits?, hotspots?) — 架构加深热点扫描 (异步, 返 HTML 报告路径)' },
+  { chatName: 'omd_debug', mcpName: 'dag_debug', promptSnippet: 'omd_debug(failure, repro?, oracleCmd?, rounds?, hypotheses?) — 并发多假设根因调试 (异步)' },
+  { chatName: 'omd_triage', mcpName: 'dag_triage', promptSnippet: 'omd_triage(runId?) — owner 收件箱: 待决岔口 + 需人看的 run (只读)' },
+  { chatName: 'omd_rule', mcpName: 'dag_rule', promptSnippet: 'omd_rule(forkId, ruling) — 裁决决策岔口 (ruling 逐字进下一轮 conductor)' },
+  { chatName: 'omd_intervene', mcpName: 'dag_intervene', promptSnippet: 'omd_intervene(runId, cause, note?) — 记录一次人工介入' },
+  { chatName: 'omd_resume', mcpName: 'dag_resume', promptSnippet: 'omd_resume(runId, leafModel?, maxFanout?) — 从 checkpoint 续跑失败/中断的 run (跳过已绿节点)' },
+  { chatName: 'omd_result', mcpName: 'dag_result', promptSnippet: 'omd_result(runId) — 取完整 run 结果 (非 done 状态报错)' },
+  { chatName: 'omd_map_init', mcpName: 'map_init', promptSnippet: 'omd_map_init(destination?, backend?, cloudAfk?) — 初始化 pathfinder 后端 (无参 = 探针报告)' },
+  { chatName: 'omd_map_open', mcpName: 'map_open', promptSnippet: 'omd_map_open(destination?) — 列开放地图 / 开或续一张图' },
+  { chatName: 'omd_map_add', mcpName: 'map_add', promptSnippet: 'omd_map_add(title, type?, slug?, id?, blockedBy?, blockedByDelivery?, executorKind?) — 加票' },
+  { chatName: 'omd_map_rule', mcpName: 'map_rule', promptSnippet: 'omd_map_rule(ticketId, ruling, slug?, disposition?) — 裁决前沿票' },
+  { chatName: 'omd_map_deliver', mcpName: 'map_deliver', promptSnippet: 'omd_map_deliver(slug?) — 执行可交付区域 (编译 ruled 票成 slice 跑 DAG)' },
+  { chatName: 'omd_map_prefetch', mcpName: 'map_prefetch', promptSnippet: 'omd_map_prefetch(slug?) — 预取地图上下文' },
+  { chatName: 'omd_map_confirm', mcpName: 'map_confirm', promptSnippet: 'omd_map_confirm(...) — 确认/拒绝 suggested 票' },
+  { chatName: 'omd_remember', mcpName: 'memory_remember', promptSnippet: 'omd_remember(fact) — 写一条记忆 (只写已验证事实/裁决; append 不覆盖)' },
+  { chatName: 'omd_web', mcpName: 'omd_web', promptSnippet: 'omd_web(query, k?, crawl?, mode?) — 搜+抓网页, 零 LLM, 全文落盘 (无 provider 不挂)' },
+  { chatName: 'omd_distill', mcpName: 'omd_distill', promptSnippet: 'omd_distill(text, question?, lens?, url?, title?) — 吃已有原文蒸馏洞察' },
+  { chatName: 'omd_set_key', mcpName: 'omd_set_key', confirmRequired: true, promptSnippet: 'omd_set_key(provider, key, target?) — 写 API key (凭证写, 每次 ask_user 确认)' },
+  { chatName: 'omd_apply_preset', mcpName: 'omd_apply_preset', promptSnippet: 'omd_apply_preset(presetId) — 套角色模型预设 (.env + config.json)' },
+  { chatName: 'omd_set_role', mcpName: 'omd_set_role', promptSnippet: 'omd_set_role(role, coord) — 覆盖单座位模型坐标 (改敏感座报备, 绝不偷降档)' },
+  { chatName: 'omd_models_auto', mcpName: 'omd_models_auto', promptSnippet: 'omd_models_auto() — 按渠道经济学自动分配各节点模型并落盘' },
+  { chatName: 'omd_register_provider', mcpName: 'omd_register_provider', confirmRequired: true, promptSnippet: 'omd_register_provider(id, baseUrl, keyEnv, api?, models?) — 登记 provider (凭证写, 每次确认)' },
+  { chatName: 'omd_set_model', mcpName: 'omd_set_model', promptSnippet: 'omd_set_model(coord, maxTokens?, contextWindow?) — 更新模型参数' },
+  { chatName: 'omd_config_status', mcpName: 'omd_config_status', promptSnippet: 'omd_config_status() — 查引擎角色→模型绑定 + 凭证状态 + 全座位自检 (只读)' },
+  { chatName: 'omd_toggle_hud', mcpName: 'omd_toggle_hud', promptSnippet: 'omd_toggle_hud(on) — 装/卸 HUD 状态行' },
+  { chatName: 'omd_primitive', mcpName: 'omd_primitive', promptSnippet: 'omd_primitive(primitive, params, model?) — 直接跑一个控制流原语' },
+  { chatName: 'omd_shapes', mcpName: 'omd_shapes', promptSnippet: 'omd_shapes(id?) — 取图式 (触发条件/什么时候别用/步骤)' },
+];
+
+/**
  * @param tools assembleOmdMcpTools() 的产物(改名表已应用)。
  */
 /**
@@ -68,6 +197,7 @@ export const SOLVE_BUDGET_TOKENS = 3_000_000;
 export const SOLVE_BUDGET_MINUTES = 30;
 
 export function createConductorChatTools(tools: readonly OmdMcpTool[]): AnyOmdTool[] {
+  assertSurfaceComplete(tools);
   const runTool = must(tools, 'run');
   const solveTool = must(tools, 'solve');
   const runPlanTool = must(tools, 'dag_run_plan');
@@ -189,5 +319,17 @@ export function createConductorChatTools(tools: readonly OmdMcpTool[]): AnyOmdTo
           ...(p.limit !== undefined ? { limit: p.limit } : {}),
         }),
     ),
+    // ── 扩展 30 (本体 ⊇ MCP, owner 2026-08-19) ──────────────────────────────
+    ...EXTRA_CONDUCTOR_TOOLS.flatMap((s) => {
+      // 部分装配面 (最小 boot / 测试) 或条件挂载缺件 (omd_web 无 search provider) → 跳过,
+      // 不抛 —— 只有核心 12 用 must() 硬性要求; 扩展工具是「有就给, 没有就少」。
+      if (!tools.some((x) => x.name === s.mcpName)) return [];
+      return [
+        wrapMcpTool(s.chatName, s.mcpName, tools, {
+          ...(s.confirmRequired ? { confirmRequired: true } : {}),
+          ...(s.promptSnippet ? { promptSnippet: s.promptSnippet } : {}),
+        }),
+      ];
+    }),
   ];
 }
