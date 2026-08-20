@@ -242,6 +242,24 @@ async function preflightCredentials(model: string): Promise<void> {
     );
   } catch (e) {
     const d = describeErr(e);
+    /**
+     * ★ `truncation` **不是凭据问题, 是探活自己设计得太紧**(2026-08-21 实测)。
+     *
+     * 本探活发 `maxTokens: 5`。推理档模型(实测 `minimax-cn:MiniMax-M3`)会把这 5 个 token
+     * 全用在 reasoning 上, 于是返回空内容 → `ModelError kind=truncation`。
+     * 而**这条错误恰恰证明凭据是通的** —— 请求到达了模型、模型回了话, 只是被预算截断。
+     *
+     * 把它判死会得到与 402 一模一样的出口(非零退出 + 不产读数), 而两者性质相反:
+     * 402 = 真的没量到; truncation = 量到了、只是探活的尺子太短。**压成一种就再也分不开**
+     * (本仓 `NULL ≠ 0 ≠ 不适用` 同族)。所以这里放行, 并把它打出来留证。
+     */
+    if (e instanceof ModelError && e.kind === 'truncation') {
+      process.stderr.write(
+        `[H3 AB · 凭据探活] OK(truncation)— ${model} 把 maxTokens=5 全用在 reasoning 上, 返回空内容。` +
+          `请求已到达模型 = 凭据通; 这不是余额/鉴权问题, 放行。原文: ${d.raw}\n`,
+      );
+      return;
+    }
     die('凭据探活', `model=${model}\n${d.raw}${d.status ? `  http_status=${d.status}` : ''}${d.providerCode ? `  provider_code=${d.providerCode}` : ''}`);
   }
 }
