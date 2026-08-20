@@ -26,6 +26,7 @@ import {
 } from '@earendil-works/pi-agent-core';
 // 0.84 起 `runAgentLoop` 第 6 参 streamFn **必填** (同 agent-leaf 头注)。0.80 的内部默认就是它。
 import { streamSimple } from '@earendil-works/pi-ai/compat';
+import { uuidv7 } from '@earendil-works/pi-ai';
 import { assistantText } from '../agent-leaf';
 import { logger } from '../../logger';
 import { buildSessionStartContext } from '../session/resume';
@@ -33,6 +34,7 @@ import { maybeCheckpointOmdSession } from '../session/omd-checkpoint';
 import { emitModelUsage } from '../../model/accounting';
 import type { ModelUsage } from '../../model/types';
 import { type CompactionCallModel, compactChatMessages } from './compaction';
+import { clearCompactionJournal, journalPathFor, writeCompactionJournal } from './compaction-journal';
 import { type ContextPressure, analyzeContextPressure, sumUsage, turnUsages } from './usage';
 import { join } from 'node:path';
 import { createMemoryTransform } from './memory-inject';
@@ -211,6 +213,10 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
 
   if (wantCompaction && existing && overBudget(messages)) {
     const before = pureEstimate(messages);
+    // H4 事务日志 (#185):start → summary → replace → end 四步入 sidecar, 中途崩溃能分辨停在哪一步。
+    // 全程 fail-open —— 日志写失败只 warn, 不拦压缩。路径 = 会话 JSONL 的 sidecar。
+    const journal = journalPathFor(existing.path);
+    writeCompactionJournal(journal, { step: 'start', sessionId: opts.sessionId, tokensBefore: before, at: Date.now() });
     const compacted = await compactChatMessages({
       messages,
       model: opts.model,
@@ -224,7 +230,26 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
       // 立刻**写进会话**: 不写的话下一轮载入的还是老的那一堆, 这次压缩等于白花钱。
       // 落成一条 `compaction` 条目 (append-only), 投影自己会把它之前的东西截掉 ——
       // 这就是 SDD 里"改完数组再全量 save 整块消失"的那一步。
-      await existing.appendCompaction({ summary: compacted.summary, tokensBefore: before, retainedTail: compacted.retainedTail });
+      // H4:entry id 写前一步领好(写进 replace 日志), 与落条的是同一份 —— 恢复时拿它反查 store。
+      const entryId = uuidv7();
+      writeCompactionJournal(journal, {
+        step: 'summary',
+        sessionId: opts.sessionId,
+        tokensBefore: before,
+        summary: compacted.summary,
+        retainedTailLength: compacted.retainedTail.length,
+        at: Date.now(),
+      });
+      writeCompactionJournal(journal, {
+        step: 'replace',
+        sessionId: opts.sessionId,
+        summary: compacted.summary,
+        retainedTailLength: compacted.retainedTail.length,
+        entryId,
+        at: Date.now(),
+      });
+      await existing.appendCompaction({ summary: compacted.summary, tokensBefore: before, retainedTail: compacted.retainedTail, id: entryId });
+      clearCompactionJournal(journal); // 干净收尾:删 sidecar (end 不落盘)。
       // ⚠ **重新取投影**, 不用 `compacted.messages`: 存进去的是条目, 而这一轮要发给模型的
       //   必须与下一轮载入时看到的**是同一份**。两处各拼一次就是 S-1 那一族 (都"有内容", 只是不同)。
       messages = await existing.messages();
@@ -238,6 +263,7 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
         '[chat-agent] 轮前上下文压缩 —— 已写进会话',
       );
     } else {
+      clearCompactionJournal(journal); // 压不动 = 干净结束, 不留半截日志。
       // 压不动不是致命错: 这一轮照跑, 撞窗口由 provider 报。但**不许静默** ——
       // "压缩开着却一次没压成"与"没开压缩"读数上长得一样, 分不开就查不出。
       logger.warn({ sessionId: opts.sessionId, window }, '[chat-agent] 超预算但压不动 (消息太少或切不出点)');

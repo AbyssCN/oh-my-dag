@@ -105,6 +105,12 @@ export interface ChatSessionMeta {
 
 export interface OmdSession {
   readonly id: string;
+  /**
+   * 会话文件的**绝对路径**(JSONL)。给事务日志/锁这类 sidecar 用(见 `compaction-journal.ts`
+   * 的 `${path}.compaction-journal`)。只读 —— 写仍必须走 `append` / `appendCompaction` /
+   * `navigateTo` 三条过写锁的路。
+   */
+  readonly path: string;
   /** 投影出来的对话视图 —— **不是持久单元**。 */
   messages(): Promise<AgentMessage[]>;
   /** 追加一条消息(替掉 `push` + 全量 `save`)。 */
@@ -112,8 +118,11 @@ export interface OmdSession {
   /**
    * 压缩落成一条 `compaction` 条目。
    * 投影会从**最后一条** compaction 起截断,所以调用方不必再改数组。
+   *
+   * @param x.id 可选:compaction 条目 id。省略 = 本层现领一个。事务日志要**写前一步**
+   * (write-ahead)时, 调用方先领好 id 写进日志、再传进来, 保证日志里的 entryId 与落条的是同一份。
    */
-  appendCompaction(x: { summary: string; tokensBefore: number; retainedTail: AgentMessage[] }): Promise<void>;
+  appendCompaction(x: { summary: string; tokensBefore: number; retainedTail: AgentMessage[]; id?: string }): Promise<void>;
   /** 逐条读原始条目(compaction / custom 都在里面)—— §1.2 与 §1.3 要吃它。 */
   entries(): Promise<Awaited<ReturnType<Session['findEntriesOnBranch']>>>;
   /**
@@ -273,6 +282,7 @@ export function createOmdSessionStore(repoRoot: string, lockDeps?: LockDeps): Om
 
   const wrap = (id: string, s: Session, path: string): OmdSession => ({
     id,
+    path,
     tree: s,
     entries: () => branch(s),
     // ⚠ **不带 `start`** —— `findEntries` 是全表, 这正是它与 `entries()` 的差别所在。
@@ -308,7 +318,8 @@ export function createOmdSessionStore(repoRoot: string, lockDeps?: LockDeps): Om
       // `ProvisionedEntry` = Omit<Entry,'parentId'|'seq'|'timestamp'> ⇒ 只用给 id 与内容。
       // id 用 pi 自己的 `uuidv7`(**借,不手搓** —— 它就是 Session 默认 idGenerator 用的那个)。
       // 同一个 id 既写进 footer 也写进 entry —— 读者按 footer 里的 id 反查条目,**同一份**。
-      const id = uuidv7();
+      // 调用方写前一步日志时先领好 id 传进来(同一份), 省略则这里现领。
+      const id = x.id ?? uuidv7();
       // 必须在 appendEntry **之前**算 span:此刻 branch 的叶是「本次 compaction 之前」的那条,
       // append 完就多了一条 compaction,找「前一条 compaction」会落到自己头上(见 buildCompactionFooter)。
       const footer = buildCompactionFooter({ id, branchEntries: await branch(s), retainedTailLength: x.retainedTail.length });
