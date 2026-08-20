@@ -203,6 +203,7 @@ export function openTouchLedger(opts: OpenTouchLedgerOpts = {}): TouchLedger {
       return new Database(join(dir, 'touch.db'));
     })();
   db.run('PRAGMA journal_mode = WAL');
+  db.run('PRAGMA busy_timeout = 20000');
   db.run(`
     CREATE TABLE IF NOT EXISTS touches (
       abs_path TEXT NOT NULL,

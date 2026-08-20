@@ -71,6 +71,7 @@ export function createWatermark(opts: WatermarkOpts = {}): Watermark {
   if (!opts.db && path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
   const db = opts.db ?? new Database(path);
   db.run('PRAGMA journal_mode = WAL');
+  db.run('PRAGMA busy_timeout = 20000');
 
   db.run(`
     CREATE TABLE IF NOT EXISTS dream_watermark (

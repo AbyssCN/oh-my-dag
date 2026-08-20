@@ -104,7 +104,10 @@ export class SqliteEdgeStore implements EdgeStore {
     if (to != null && to <= from) {
       throw new Error('[omd/edge] put: validTo must be strictly after validFrom');
     }
-    // Check-before-insert inside a transaction (single-writer ⇒ no TOCTOU).
+    // Check-before-insert inside a transaction. INV-8: SELECT inside same tx as
+    // the dependent INSERT ⇒ run as BEGIN IMMEDIATE so the write lock is grabbed
+    // at BEGIN, not after a DEFERRED read → write upgrade (which can deadlock
+    // against another writer that already grabbed the read lock).
     const tx = this.db.transaction(() => {
       for (const r of this.siblings(edge.subject, edge.predicate, edge.object)) {
         if (rangesOverlap(from, to, r.valid_from, r.valid_to)) {
@@ -128,7 +131,7 @@ export class SqliteEdgeStore implements EdgeStore {
         ],
       );
     });
-    tx();
+    tx.immediate();
   }
 
   async asOf(
@@ -207,7 +210,7 @@ export class SqliteEdgeStore implements EdgeStore {
         ],
       );
     });
-    tx();
+    tx.immediate();
   }
 }
 

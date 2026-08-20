@@ -75,6 +75,43 @@ export interface DagRunNode {
    */
   detector?: true;
   /**
+   * 节点级 token 账五位列 (C-1, 2026-08-19)。与 run 级 `usage` 聚合 (conductorIn/Out +
+   * leavesIn/Out/CacheHit) 分开: 那一位是**全图聚合**, 这一组是**每节点原值**。
+   *
+   * 存在理由是**事后还原不回来**: 节点级数据只能当场从 `LeafResult.usage` 摘; 它不进入
+   * 全图聚合 (那是 sum), 而 sum 一旦落盘就拆不回"哪几个节点贡献了大头" —— 而这正是
+   * 留痕层该有的颗粒度 (N9 同族: 存原值, 派生的事读数板现算)。
+   *
+   * 五列同源同义, 共享一条**三态纪律** (INV-1):
+   *   · 数字 = 真值 (含 0; "这个节点用了 0 个 input token" 是合法观察);
+   *   · `null` = 来源报 null/缺席 (写 NULL 到 DB, **不许**编 0);
+   *   · 整个字段缺席 = 早于本次改动的行 / 来源链没接 (老行 NULL)。
+   *
+   * ⚠ **0 与 NULL 严禁互换** (INV-1): 一条 inproc leaf 真没用过模型时 in=0 是事实; 而
+   *   `cacheHit` 在 provider 不报时是 unknown, 写成 0 会把"没报"读成"零命中", 然后被算进
+   *   命中率当分母。
+   *
+   * 来源 (C-1, 写入函数见 `record()` 的构造处):
+   *   · `tokensIn` / `tokensOut`: `LeafResult.usage.in/out` (ModelUsage 必填, 几乎总有)。
+   *   · `cacheHitTokens`: `LeafResult.usage.cacheHit` (ModelUsage 可选, provider 不报则 NULL)。
+   *   · `durationMs` / `turns`: LeafResult 上**当前没接** —— 写入函数一律写 NULL, 等源头接上
+   *     再说 (不留 0 当占位)。
+   */
+  tokensIn?: number | null;
+  tokensOut?: number | null;
+  cacheHitTokens?: number | null;
+  durationMs?: number | null;
+  turns?: number | null;
+  /**
+   * ⑥(c) injectedTokens (2026-08-19): 语义 ⊆ tokensIn, 标记**注入**部分 token
+   * (来自预置上下文 / prompt cache / 模板 / 工具结果) 与自然生成的比例。Per-node。
+   *
+   * ⚠ 当前来源链未接通 (引擎采集片独占写点): 读到一律 `null`, 老行也 `null` (INV-1)。
+   *   未来采集片接上后, 留痕层读侧不需要再动 —— 本字段已在 `r` 上 typeof === 'number'
+   *   判一下就接住。
+   */
+  injectedTokens?: number | null;
+  /**
    * 失败输出的指纹 (sha1 前 12 位; 只对**失败的 command 节点**记)。
    *
    * 存在的理由是回答一个**设计问题**而不是排障: §8.4 熔断的键是「命令 + 逐字相同的失败」,
@@ -384,6 +421,12 @@ interface Row {
   criteria: string | null;
   acceptance_probe: string | null;
   spec_write: string | null;
+  // C-1 节点级五位列 (2026-08-19): nullable INTEGER, 缺席 = 来源链没接 / 老行 (NULL ≠ 0, INV-1)。
+  tokens_in: number | null;
+  tokens_out: number | null;
+  cache_hit_tokens: number | null;
+  duration_ms: number | null;
+  turns: number | null;
 }
 
 /** 只认 `AcceptanceProbe` 五条终局的**确切形状**; 词表外 kind / 形状不对 / JSON null → undefined (= 未记录)。 */
@@ -464,6 +507,8 @@ function rowToRecord(row: Row): DagRunRecord {
     ...(probe ? { acceptanceProbe: probe } : {}),
     // 同上 (#209): NULL = 没记 / 非 solve 入口不适用。词表外形状按 NULL 读, 不编一个 kind。
     ...(sw ? { specWrite: sw } : {}),
+    // C-1 节点级五位列 (2026-08-19): 写在每个 DagRunNode 里 (JSON.parse(row.nodes) 已带回),
+    // 这里**不**在顶层复读 —— 否则就成了 run 级聚合, 而那是 `usage` 那五位的活 (INV-3)。
   };
 }
 
@@ -529,17 +574,25 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
   if (!opts.db && path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
   const db = opts.db ?? new Database(path);
   db.run('PRAGMA journal_mode = WAL');
+  // C-1 独占 (2026-08-19): 20s busy timeout, 让并发读卡到锁释放而不是立刻 SQLITE_BUSY。
+  // 其它 10 处开库点 (未在本节点) 不动 —— 那是它们节点的活。
+  db.run('PRAGMA busy_timeout = 20000');
   db.run(`
     CREATE TABLE IF NOT EXISTS omd_dag_runs (
-      id         TEXT PRIMARY KEY,
-      created_at INTEGER NOT NULL,
-      plan_name  TEXT NOT NULL,
-      node_count INTEGER NOT NULL,
-      question   TEXT,
-      run_id     TEXT,
-      levels     TEXT NOT NULL,
-      nodes      TEXT NOT NULL,
-      usage      TEXT NOT NULL
+      id              TEXT PRIMARY KEY,
+      created_at      INTEGER NOT NULL,
+      plan_name       TEXT NOT NULL,
+      node_count      INTEGER NOT NULL,
+      question        TEXT,
+      run_id          TEXT,
+      levels          TEXT NOT NULL,
+      nodes           TEXT NOT NULL,
+      usage           TEXT NOT NULL,
+      tokens_in       INTEGER,
+      tokens_out      INTEGER,
+      cache_hit_tokens INTEGER,
+      duration_ms     INTEGER,
+      turns           INTEGER
     )
   `);
   // 就地补列: `CREATE TABLE IF NOT EXISTS` 对**已存在**的老表一个字都不改, 于是 2026-08-02 之前
@@ -570,10 +623,17 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
   // 同上 (#209, 2026-08-19): spec 落盘裁决。老行留 NULL (= 没记, 不是"没落盘")——
   // 那两件事被混为一谈正是这一列存在的理由。只由 entry='solve' 的 recordDagRun 写入。
   if (!cols.includes('spec_write')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN spec_write TEXT`);
+  // C-1 节点级五位列 (2026-08-19): 与 run 级 `usage` 聚合分开的每节点原值, 见 DagRunNode 的注。
+  // 老行留 NULL (= 没记, 不是 0) —— 同上 (INV-1)。
+  if (!cols.includes('tokens_in')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN tokens_in INTEGER`);
+  if (!cols.includes('tokens_out')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN tokens_out INTEGER`);
+  if (!cols.includes('cache_hit_tokens')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN cache_hit_tokens INTEGER`);
+  if (!cols.includes('duration_ms')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN duration_ms INTEGER`);
+  if (!cols.includes('turns')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN turns INTEGER`);
   db.run(`CREATE INDEX IF NOT EXISTS omd_dag_runs_run_id ON omd_dag_runs (run_id)`);
   const ins = db.query(
-    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage, observations, claim_check, artifact_move, write_race, rollback, outcome, verification, reused, criteria, acceptance_probe, spec_write)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage, observations, claim_check, artifact_move, write_race, rollback, outcome, verification, reused, criteria, acceptance_probe, spec_write, tokens_in, tokens_out, cache_hit_tokens, duration_ms, turns)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const byId = db.query(`SELECT * FROM omd_dag_runs WHERE id = ?`);
   const recent = db.query(`SELECT * FROM omd_dag_runs ORDER BY created_at DESC LIMIT ?`);
@@ -635,6 +695,17 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
           ...loopShape,
           // 复用面 (2026-08-06): 不记就只能靠推, 而推的前提是假的 —— 见 DagRunNode.reused。
           ...(reusedIds.has(r.id) ? { reused: true as const } : {}),
+          // C-1 节点级 token/duration/turns 五位列 (2026-08-19): `r.usage.in/out` 是 ModelUsage 必填,
+          // 几乎总有; `cacheHit` 是 ModelUsage 可选, provider 不报 → null; `durationMs` / `turns`
+          // 在 LeafResult 上**当前没接**, 一律 null, **绝不** `?? 0` 顶替 (INV-1: NULL ≠ 0)。
+          // JS 端允许 null (类型 `number | null`), 与 rowToRecord 的读侧对称。
+          tokensIn: typeof r.usage?.in === 'number' ? r.usage.in : null,
+          tokensOut: typeof r.usage?.out === 'number' ? r.usage.out : null,
+          cacheHitTokens: typeof r.usage?.cacheHit === 'number' ? r.usage.cacheHit : null,
+          durationMs: typeof (r as { durationMs?: unknown }).durationMs === 'number' ? (r as { durationMs: number }).durationMs : null,
+          turns: typeof (r as { turns?: unknown }).turns === 'number' ? (r as { turns: number }).turns : null,
+          // ⑥(c) 同上接住形状: 当前来源链未通 → 一律 null; 采集片接上后本行无需再动。
+          injectedTokens: typeof (r as { injectedTokens?: unknown }).injectedTokens === 'number' ? (r as unknown as { injectedTokens: number }).injectedTokens : null,
         };
       });
       const usage = {
@@ -684,6 +755,16 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
         // #209 spec 落盘裁决: 同上, 只持久化 entry='solve'; 其它入口误传必须留 NULL
         // (那一格的语义是"契约段对这个入口不适用", 不是"没记")。
         meta.entry === 'solve' && meta.specWrite !== undefined ? JSON.stringify(meta.specWrite) : null,
+        // C-1 节点级五位列 (2026-08-19): 表列**只作 schema 兼容**(老库 ALTER 通道), 真值在
+        // `nodes` JSON 里(per-node)。**严禁求和压平** —— 把 NULL/0/不适用抹成一格的正是 INV-1 禁的,
+        // 真要走"一跑用了多少 token"该读 `usage.conductor/leaves` (run 级聚合 = 那两位的活), 或
+        // 读数板按 JSON `nodes[]` 现算。**不**在 SQL 行层面做这一层聚合。
+        // (硬约束 ↔ 上一版 5 个 SUM-IIFE 直接违反, 已收回: 一律 NULL, 与 GWT-1c 老行同形态。)
+        null, // tokens_in      —— schema 仅占位
+        null, // tokens_out     —— schema 仅占位
+        null, // cache_hit_tokens —— schema 仅占位
+        null, // duration_ms    —— schema 仅占位
+        null, // turns          —— schema 仅占位
       );
       return id;
     },

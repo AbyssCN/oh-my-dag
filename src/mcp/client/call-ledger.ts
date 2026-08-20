@@ -54,6 +54,7 @@ export function openMcpCallLedger(opts: OpenMcpCallLedgerOpts = {}): McpCallLedg
       return new Database(join(dir, 'mcp-calls.db'));
     })();
   db.run('PRAGMA journal_mode = WAL');
+  db.run('PRAGMA busy_timeout = 20000');
   db.run(`
     CREATE TABLE IF NOT EXISTS calls (
       ts INTEGER NOT NULL,      -- ms epoch

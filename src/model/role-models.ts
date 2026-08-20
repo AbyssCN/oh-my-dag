@@ -27,6 +27,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'no
 import { dirname, isAbsolute, join, parse, resolve } from 'node:path';
 // worktree → 主仓的识别与留痕库锚点同源 (src/harness/repo-root), 两处各算一份必漂。
 import { mainRepoRootOfWorktree } from '../harness/repo-root';
+import { withConfigLock } from '../harness/config-lock';
 import { logger } from '../logger';
 
 /**
@@ -224,20 +225,27 @@ export function resetConfigCache(): void {
 /**
  * Read-modify-write the config file, preserving all sections. Shared by every persist*.
  * New / unreadable file → start fresh (do not clobber beyond the mutated section).
+ *
+ * INV-10/C-4: 整段 读-改-写 在 `.omd/config.json` 独占锁内完成 (复用 ledger.ts 的 O_EXCL 形状)。
+ * 上游若有别的写者已盘改了 config (sqlite 片改过的旁路),锁内重新 readFileSync 取当前内容,
+ * 不回退别人刚写的段。
  */
 function mutateConfig(mutator: (cfg: ConfigFile) => void, path = configPath()): void {
-  let cfg: ConfigFile = { version: 2 };
-  try {
-    const parsed = JSON.parse(readFileSync(path, 'utf8')) as ConfigFile;
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) cfg = parsed;
-  } catch {
-    /* fresh */
-  }
-  if (cfg.version === undefined || cfg.version < 2) cfg.version = 2;
-  mutator(cfg);
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(cfg, null, 2)}\n`);
-  fileCache = null; // invalidate so THIS process sees the write immediately
+  withConfigLock(path, () => {
+    let cfg: ConfigFile = { version: 2 };
+    try {
+      // 锁内重读: 抢到锁时文件已被并发写者刷过, 沿用其最新内容; 不回退别人刚落的段。
+      const parsed = JSON.parse(readFileSync(path, 'utf8')) as ConfigFile;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) cfg = parsed;
+    } catch {
+      /* fresh */
+    }
+    if (cfg.version === undefined || cfg.version < 2) cfg.version = 2;
+    mutator(cfg);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `${JSON.stringify(cfg, null, 2)}\n`);
+    fileCache = null; // invalidate so THIS process sees the write immediately
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -23,6 +23,21 @@
  */
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
+
+/**
+ * C-1 (2026-08-19, 引擎采集片独占):
+ *   `_engineRound` = 引擎外层轮计数 (executePlan 每次进入 ++1, 初始=1 = 首轮, 升级/补丁重规划后=2/3/...)。
+ *   落到节点的 `dagRound` 字段, 是「跨轮身份」的真源。A 片 (dag-record) 落库列未就位, 这里先在
+ *   LeafResult 上留痕, 等 A 加列后自动接上 (read 侧同模式: `typeof (r as {...}).x === 'number'`)。
+ *   单调跨进程 (不跨 run 重置) —— 跨 run 的区分靠 runId (dag-runs.db 自带), 不会撞车。
+ *
+ *   `_nodeLastSettled` = 上一轮该 id 的 settle 结果, 用于「上一轮已被本轮覆盖」标记。
+ *   mutate 上轮的 LeafResult 是允许的: prev round 的 results 已经写回, 与 computeReuse 解耦
+ *   (复用判 = `usage.in/out === 0 ∧ skipped:true`, 与 overriddenBy 无关); 下一轮读它只看 settled 落账面,
+ *   对 `_overriddenBy` 字段无依赖。
+ */
+let _engineRound = 0;
+const _nodeLastSettled = new Map<string, LeafResult>();
 import { join } from 'node:path';
 import type { ModelUsage } from '../../model/gateway';
 import { escalationProviderReady, type VerifierVerdict } from '../verifier';
@@ -549,6 +564,10 @@ async function executePlan(
   blameAnchor?: ReadonlyMap<string, string>,
   warnedUnknownProfiles: Set<string> = new Set(),
 ): Promise<ExecOnce> {
+  // C-1 (2026-08-19): 引擎外层轮 ++。每次 executePlan 入口 = 新一轮; planAndExecute 走主路径,
+  // tryPatchReplan 走补丁路径 (两者最终都进 executePlan, 单点 ++ 即可覆盖), 预构造入口也走这里。
+  // 跨 run 不重置 —— 不同 run 在 db 靠 runId 区分。
+  const currentEngineRound = ++_engineRound;
   // D-3 反馈锚定 (SDD 2026-08-10-blame-scoped-node-retry): verifier 意见只 append 到被责备
   // (闭包内) 节点自己的 goal —— 非闭包节点字节不动 → 语义指纹与上轮相同 → D-21 复用成立 (G-2)。
   // 闭包节点指纹已入 D-4 毒集 (computeReuse 见毒即 skip), append 只影响它自己的重跑 prompt,
@@ -2912,6 +2931,22 @@ async function executePlan(
       }
       const detectorNote = detectorNode && conductorChildIds.has(id) ? `\n${DETECTOR_PROTOCOL}` : '';
       const prompt = (cav ? `${basePrompt}\n\n${cav}` : basePrompt) + pony + detectorNote;
+      // C-1 (2026-08-19): 注入文本 token 计量。与 buildLeafPrompt (planner.ts:82-89) 一致口径:
+      // 「注入」= 累加 `(deps 文本) 被 fencedUpstream 包过 → 拼成 Predecessor outputs 块」那一段。
+      // chars/4 与 agent-leaf.ts:778 `BYTES_PER_TOKEN` 同族 (pi-agent-core `estimateTokens` 口径),
+      // **不另造换算**。inproc 路径下为可观察量, 算完写 leaf; agent leaf prompt 由 SDK 包, 这里
+      // 数不到注入部分 → null (INV-1「拿不到传 null 不传 0」)。
+      let injectedTokens: number | null;
+      const upstreamParts = (node.depends_on ?? [])
+        .filter((d) => depOutputs[d] !== undefined)
+        .map((d) => fencedUpstream(d));
+      if (upstreamParts.length > 0) {
+        const joined = upstreamParts.join('\n\n');
+        injectedTokens = joined.length > 0 ? Math.ceil(joined.length / 4) : 0;
+      } else {
+        // 空上游 (无 dep / 没产出) = 真注入零, 与「拿不到」是两种事实, 此处 assignment 见 useAgent 分流。
+        injectedTokens = 0;
+      }
       // 双模分流: executor:'agent' + 有 agentRunner → 带工具子 agent (能改文件); 否则 inproc 单发。
       // M3 bug 修 (2026-06-20): conductor (M3 非确定性) 把"写文件"节点标成 leaf → inproc 不能写文件 →
       //   exit 0 但无产物 (静默假成功)。判别"写文件意图" = output_type:file/git ∨ 有 output_path ∨
@@ -3368,7 +3403,10 @@ async function executePlan(
         : [];
       // `artifactRoot` 跟着 `filesTouched` 一起出图: 一组相对路径离开它的根就没有意义,
       // 而 R2 隔离档下这个根与引擎进程的 cwd 不是同一个 (见 LeafResult.artifactRoot 的注)。
-      const leaf: LeafResult = { id, status: 'done', kind: useAgent ? 'agent' : 'inproc', model, output: text, deps: node.depends_on ?? [], usage, filesTouched, ...(artifactRoot ? { artifactRoot } : {}), ...(filesRead.length ? { filesRead } : {}), ...(toolCalls !== undefined ? { toolCalls } : {}), ...(shellRuns ? { shellRuns } : {}), ...(writeCounts ? { writeCounts } : {}), ...(toolSteps ? { toolSteps } : {}), ...(toolStepsDropped ? { toolStepsDropped } : {}), ...(writeCandidates.length ? { writeCandidates } : {}) };
+      const leaf: LeafResult = { id, status: 'done', kind: useAgent ? 'agent' : 'inproc', model, output: text, deps: node.depends_on ?? [], usage, filesTouched, ...(artifactRoot ? { artifactRoot } : {}), ...(filesRead.length ? { filesRead } : {}), ...(toolCalls !== undefined ? { toolCalls } : {}), ...(shellRuns ? { shellRuns } : {}), ...(writeCounts ? { writeCounts } : {}), ...(toolSteps ? { toolSteps } : {}), ...(toolStepsDropped ? { toolStepsDropped } : {}), ...(writeCandidates.length ? { writeCandidates } : {}), // C-1 (2026-08-19): 注入文本 token。inproc 路径可观察 → 写真值或 0 (无上游);
+        // agent 路径 SDK 自管 prompt → **不传 0** 一律 null (INV-1: 「拿不到」≠「零」)。
+        // 通过条件 spread 落, 接住 A 片 `typeof === 'number'` 的读侧断言。
+        ...(useAgent ? {} : { injectedTokens }), };
       saveDoneCheckpoint({
         id,
         kind: useAgent ? 'agent' : 'inproc',
@@ -3718,6 +3756,38 @@ async function executePlan(
           if (gateVerbatimRed(vd, plan!.nodes[id]?.goal ?? '')) verbatimReds.add(id);
         }
       }
+    }
+    // C-1 (2026-08-19): 给 dag-record 的节点落库函数递 durationMs (引擎侧墙钟) + turns (leaf 内环轮数),
+    // 统一两条通道: `r.usage` 已被上方 recordSeatUsage (entry:'node' seat-usage.jsonl) 与
+    // `recorder.record()` (dag-runs.db 节点行) 共用, 同一对象 → INV-2 逐字相等按构造成立。
+    // 这里 **不**再碰 usage —— 各自换算 = 两套会漂的成本结论 (#144), 留痕层只接一手数。
+    // INV-1: 拿不到的位写 null (`nodeStartedAt` 没记到 / kind 非 conductor) —— **绝不** 编 0 占位,
+    // 否则「没记」与「真零」会被算进同一分母。
+    //
+    // 同时 (② 覆盖判据): 引擎外层轮计数 `currentEngineRound` 进 `dagRound` 字段 (跨轮身份);
+    // 同 id 上一轮已被本轮覆盖 → 在上一轮那条 LeafResult 上落 `overriddenBy = currentEngineRound`。
+    // `_nodeLastSettled` 是模块级 Map<id, LeafResult>, mutate 上轮 leaf 是允许的: 上轮 results
+    // 已落账, 与 computeReuse/recordSeatUsage 都解耦 (复用判 = `usage==0 ∧ skipped:true`,
+    // 不读 overriddenBy; seat-usage 也只看 usage/model)。
+    //
+    // 同时 (③ 注入文本 token): 读 `base.injectedTokens` —— 来自 inproc 路径上游 lengths/4 的
+    // 现场采集 (agent 节点 SDK 自管 prompt → 该字段未设 → 取 null, 不编 0)。
+    {
+      const base = results[id]!;
+      const t0 = nodeStartedAt.get(id);
+      const durationMs = t0 !== undefined ? Date.now() - t0 : null;
+      const turns = base.kind === 'conductor' && typeof base.rounds === 'number' ? base.rounds : null;
+      const injectedTokens = typeof (base as { injectedTokens?: unknown }).injectedTokens === 'number' ? (base as unknown as { injectedTokens: number }).injectedTokens : null;
+      const prev = _nodeLastSettled.get(id);
+      // ② 覆盖判据: 同一节点身份被本轮重新 settle → 上一轮的 _nodeLastSettled 条目被覆盖。
+      // `prev` 与 `currentEngineRound` 同 id 才算"被覆盖"; prev 缺席 = 该节点只跑过这一轮, 不需要标记。
+      // **最后一轮不算被覆盖** —— 它自己进 _nodeLastSettled 后, 下一轮没有同 id, 不被任何轮覆盖。
+      if (prev) {
+        (prev as unknown as { overriddenBy?: number | null }).overriddenBy = currentEngineRound;
+      }
+      const settledLeaf = { ...base, durationMs, turns, injectedTokens, dagRound: currentEngineRound };
+      results[id] = settledLeaf;
+      _nodeLastSettled.set(id, settledLeaf);
     }
     const settled = results[id]!;
     // 节点级 span: 让一条 trace 打开就是**整张图的形状**。父子关系写在 id 里 (`父::子`, D-B),

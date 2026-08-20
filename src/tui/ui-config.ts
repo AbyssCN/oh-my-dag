@@ -16,6 +16,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import { omdConfigPath } from '../config/config-discovery';
+import { withConfigLock } from '../harness/config-lock';
 
 export const PAINTER_NAMES = ['tree', 'gantt', 'layers'] as const;
 export type PainterName = (typeof PAINTER_NAMES)[number];
@@ -63,7 +64,7 @@ export function loadTuiUiConfig(cwd: string, env: Record<string, string | undefi
 }
 
 /**
- * 读-改-写 `.omd/config.json`。
+ * 读-改-写 `.omd/config.json`(INV-10/C-4 锁内, 锁内重读以反映并发写者最新落盘)。
  *
  * ⚠ **坏 JSON 时拒绝写**(抛错)而不是拿 `{}` 覆盖 —— 覆盖会把座位配置等所有别人写的段
  * 静默抹掉,那比"改不了设置"严重得多。
@@ -74,18 +75,21 @@ export function patchOmdConfig(
   env: Record<string, string | undefined> = process.env,
 ): string {
   const path = configPathOf(cwd, env);
-  let root: Record<string, unknown> = {};
-  if (existsSync(path)) {
-    try {
-      root = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
-    } catch (err) {
-      throw new Error(`${path} is not valid JSON, refusing to overwrite it (fix it by hand first): ${(err as Error).message}`);
+  return withConfigLock(path, () => {
+    let root: Record<string, unknown> = {};
+    if (existsSync(path)) {
+      try {
+        // 锁内重读: 别人刚写的段 (座位/池/多模态/autoAssigned 等) 不被回退。
+        root = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+      } catch (err) {
+        throw new Error(`${path} is not valid JSON, refusing to overwrite it (fix it by hand first): ${(err as Error).message}`);
+      }
     }
-  }
-  mutate(root);
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(root, null, 2)}\n`);
-  return path;
+    mutate(root);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `${JSON.stringify(root, null, 2)}\n`);
+    return path;
+  });
 }
 
 const tuiSection = (root: Record<string, unknown>): Record<string, unknown> => {
