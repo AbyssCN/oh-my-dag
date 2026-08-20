@@ -23,6 +23,7 @@
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { configPath } from '../model/role-models';
+import { withConfigLock } from './config-lock';
 
 export type Lang = 'en' | 'zh';
 
@@ -112,18 +113,21 @@ export function m(b: Bilingual, active: Lang = lang()): string {
 // durable persistence (symmetric with persistRoleModel; backs a future TUI /lang)
 // ---------------------------------------------------------------------------
 
-/** Durably set the UI language in .omd/config.json, preserving other sections. */
+/** Durably set the UI language in .omd/config.json, preserving other sections. (INV-10/C-4 锁内.) */
 export function persistLang(l: Lang, path = configPath()): void {
-  let cfg: Record<string, unknown> = { version: 1 };
-  try {
-    const parsed = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
-    if (parsed && typeof parsed === 'object') cfg = parsed;
-  } catch {
-    // new / unreadable — start fresh
-  }
-  if (cfg.version === undefined) cfg.version = 1;
-  cfg.lang = l;
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(cfg, null, 2)}\n`);
-  resetLangCache();
+  withConfigLock(path, () => {
+    let cfg: Record<string, unknown> = { version: 1 };
+    try {
+      // 锁内重读: 别人刚写的段不丢。
+      const parsed = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+      if (parsed && typeof parsed === 'object') cfg = parsed;
+    } catch {
+      // new / unreadable — start fresh
+    }
+    if (cfg.version === undefined) cfg.version = 1;
+    cfg.lang = l;
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `${JSON.stringify(cfg, null, 2)}\n`);
+    resetLangCache();
+  });
 }

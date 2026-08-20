@@ -164,12 +164,21 @@ export function pruneExpired(opts: { db: Database; ttlMs?: number; now?: number 
   const now = opts.now ?? Date.now();
   const ttlMs = opts.ttlMs ?? DEFAULT_PRUNE_TTL_MS;
   const cutoff = now - ttlMs;
-  const doomed = (db.query('SELECT count(*) AS n FROM touches WHERE ts < ?').get(cutoff) as { n: number }).n;
+  // INV-8: 数一遍再删再记 = check-then-write。裸着跑, 两个进程会各自读到同一个 doomed,
+  // 各删各的 (第二个删到 0 条) 而 prunes 表落**两条**摘要 —— 台账把一次清理记成两次。
+  // 所以 SELECT 与两条写必须同在 BEGIN IMMEDIATE 里 (先拿写锁再读)。
+  let doomed = 0;
+  db.transaction(() => {
+    doomed = (db.query('SELECT count(*) AS n FROM touches WHERE ts < ?').get(cutoff) as { n: number }).n;
+    if (doomed > 0) {
+      db.query('DELETE FROM touches WHERE ts < ?').run(cutoff);
+      db.query('INSERT INTO prunes (ts, pruned, ttl_ms, reason) VALUES (?, ?, ?, ?)').run(
+        now, doomed, ttlMs, `ts < ${cutoff} (超过 TTL ${ttlMs}ms)`,
+      );
+    }
+  }).immediate();
+  // 留证在事务外 —— 日志是副作用, 不该跟着回滚重放。
   if (doomed > 0) {
-    db.query('DELETE FROM touches WHERE ts < ?').run(cutoff);
-    db.query('INSERT INTO prunes (ts, pruned, ttl_ms, reason) VALUES (?, ?, ?, ?)').run(
-      now, doomed, ttlMs, `ts < ${cutoff} (超过 TTL ${ttlMs}ms)`,
-    );
     logger.warn(
       { pruned: doomed, ttlMs, cutoff, 依据: `ts < ${cutoff} (now ${now} - ttl ${ttlMs}ms)` },
       '[omd/touch-ledger] pruneExpired 清理过期 touch 记录',
@@ -203,6 +212,7 @@ export function openTouchLedger(opts: OpenTouchLedgerOpts = {}): TouchLedger {
       return new Database(join(dir, 'touch.db'));
     })();
   db.run('PRAGMA journal_mode = WAL');
+  db.run('PRAGMA busy_timeout = 20000');
   db.run(`
     CREATE TABLE IF NOT EXISTS touches (
       abs_path TEXT NOT NULL,

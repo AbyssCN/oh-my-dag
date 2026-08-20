@@ -764,6 +764,26 @@ export interface LeafResult {
   /** conductor 节点实跑的内环轮数 (D-A)。其它 kind 缺席。 */
   rounds?: number;
   /**
+   * **节点墙钟耗时** (2026-08-19, C-1):由 settle 在节点落账点写一次, 喂 dag-record 的节点级列
+   * `duration_ms`。真源 = `nodeStartedAt` (引擎侧起跑时刻), 而**不是**事件到达间隔 (D-5)。
+   *
+   * ⚠ 三态 (INV-1): 数字 = 真值 · `null` = `nodeStartedAt` 没记到 (runNode 早退分支 / 引擎异常) ·
+   *   整个字段缺席 = 早于本次改动的行 (dag-record 读侧已按 `typeof === 'number'` 处理,
+   *   undefined 与 null 都得 null 入 DB —— 这里统一写 null 不留缺席)。
+   * ⚠ **0 与 NULL 严禁互换** (INV-1): 一条真实耗时 0ms 的节点是合法观察, 而缺失把它写成
+   *   `0` 会把"没记"读成"瞬时跑完", 与「真零」分不开。
+   */
+  durationMs?: number | null;
+  /**
+   * **leaf 内环轮数** (2026-08-19, C-1):与 DAG 表列 `turns` 对齐。仅 conductor 节点有内环
+   * (`rounds`), 其它 kind (inproc/agent/command/map/primitive/research/await) 没有这个概念
+   * —— 写 null 而不是 1, 因为「单发没有 turn 数」与「跑了 1 圈」是两种事实, 后者只见于
+   * conductor 内环 (cross-off check: `settled.rounds === 1` 是真"只跑了一圈")。
+   *
+   * 拿不到 (`rounds` 缺席) 也写 null —— 同 (INV-1):「不知几圈」≠「一圈」。
+   */
+  turns?: number | null;
+  /**
    * conductor 节点内环 judge 的最终裁决 (D-F)。
    *
    * ⚠ **缺席 ≠ 未收敛**: 缺席意思是**没人判过** —— 最后一轮默认不请 judge (省一次贵座调用),

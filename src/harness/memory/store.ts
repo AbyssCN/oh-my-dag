@@ -134,6 +134,7 @@ export class OmdMemory {
     this.embed = opts.embed ?? defaultEmbed;
     this.safeguard = opts.safeguard ?? DEFAULT_SAFEGUARD;
     this.db.run('PRAGMA journal_mode = WAL');
+    this.db.run('PRAGMA busy_timeout = 20000');
     this.db.run(`
       CREATE TABLE IF NOT EXISTS facts (
         id           TEXT PRIMARY KEY,
