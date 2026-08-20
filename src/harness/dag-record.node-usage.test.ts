@@ -500,7 +500,7 @@ describe('dag-record 节点级五位列', () => {
           duration_ms: number | null;
           turns: number | null;
         },
-        []
+        [typeof id]
       >(
         `SELECT tokens_in, tokens_out, cache_hit_tokens, duration_ms, turns
            FROM omd_dag_runs WHERE id = ?`,

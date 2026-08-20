@@ -625,27 +625,109 @@ function listFunctionBodies(lines: string[]): Array<{ start: number; end: number
   return bodies;
 }
 
-/** 在 src/ 下找所有 check-then-write 候选 (同函数体内同时含 SELECT 与 INSERT/UPDATE)。 */
+/**
+ * 把「预备语句」从函数体里抹掉 (用等长空白替换, 行号不变)。
+ *
+ * ⚠ 这一步是闸的**精度**所系, 不是可选的美化。首版没有它, 实测 9 处命中里 **8 处是
+ * prepare-only 工厂** (`createRunStore` / `createModelRouter` / `createPlanLedger` …):
+ * 那些函数体里的 SELECT 与 INSERT 只是 `const q = db.query(...)` 备好的语句, 根本不在
+ * 同一个事务里执行, 包 `tx.immediate` 没有意义。精度 1/9 ≈ 11% —— 与 `beforeToolCall`
+ * 写域闸那次撤回 (12% 在正当工作上开火) 是同一个形状, 所以判据必须收紧, 而不是加 8 条白名单
+ * (白名单按**函数声明行号**钉, 上面插一行就悄悄错位)。
+ *
+ * 判据: `db.query(...)` / `db.prepare(...)` 之后**没有**链式执行调用
+ * (`.get(` / `.all(` / `.run(` / `.values(` / `.iterate(`) = 预备, 抹掉;
+ * 有 = 即用即弃的真查询, 保留。
+ * 所以 `const q = db.query(sql);` 被抹, 而 `const rows = db.query(sql).all(1);` 保留
+ * —— 后者正是三条反向自检里 `racyLedger` 的形状, 收紧后它**仍然必须被抓到**。
+ */
+export function stripPreparedStatements(body: string): string {
+  const blank = (s: string) => s.replace(/[^\n]/g, ' ');
+  let out = '';
+  let i = 0;
+  const re = /\bdb\s*\.\s*(?:query|prepare)\s*\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(body)) !== null) {
+    if (m.index < i) continue;
+    // 从 `(` 开始做括号平衡, 找到这次调用的收尾位置
+    let depth = 0;
+    let j = m.index + m[0].length - 1;
+    for (; j < body.length; j++) {
+      const c = body[j]!;
+      if (c === '(') depth++;
+      else if (c === ')') {
+        depth--;
+        if (depth === 0) break;
+      }
+    }
+    if (j >= body.length) break; // 括号不平衡 —— 不猜, 原样留下
+    // 跳过空白与换行, 看下一个非空字符是不是 `.` (链式执行)
+    let k = j + 1;
+    while (k < body.length && /\s/.test(body[k]!)) k++;
+    const chained = body[k] === '.';
+    out += body.slice(i, m.index);
+    out += chained ? body.slice(m.index, j + 1) : blank(body.slice(m.index, j + 1));
+    i = j + 1;
+    re.lastIndex = i;
+  }
+  return out + body.slice(i);
+}
+
+/**
+ * SQL 形状判据 —— 只认「长得像 SQL」的, 不认散文里的英文词。
+ *
+ * ⚠ 实测反例 (收紧前 `src/tui/tui.ts` 恒红): 「写」命中的是
+ * `p?.phase === 'update'`, 「读」命中的是 `'… Enter model · Esc cancel'` 里的 `select`
+ * —— 两个都是普通字符串, 一句 SQL 都没有。裸 `\bSELECT\b` 会把任何写了这两个英文词的
+ * 函数算成 check-then-write。
+ */
+const looksLikeSelect = (t: string) => /\bSELECT\b[\s\S]{0,400}?\bFROM\b/i.test(t);
+const looksLikeWrite = (t: string) =>
+  /\bINSERT\s+INTO\b/i.test(t) || /\bUPDATE\b[\s\S]{0,200}?\bSET\b/i.test(t);
+
+/** 包含 line (0-based) 的**最内层**函数体; 没有则 null。 */
+function innermostBodyAt(
+  bodies: ReadonlyArray<{ start: number; end: number }>,
+  line: number,
+): { start: number; end: number } | null {
+  let best: { start: number; end: number } | null = null;
+  for (const b of bodies) {
+    if (line < b.start || line > b.end) continue;
+    if (!best || b.end - b.start < best.end - best.start) best = b;
+  }
+  return best;
+}
+
+/** 在 src/ 下找所有 check-then-write 候选 (同一**最内层**函数体内同时含**执行中的** SELECT 与 INSERT/UPDATE)。 */
 export function findCheckThenWrites(files: string[]): CheckThenWriteHit[] {
   const hits: CheckThenWriteHit[] = [];
   for (const f of files) {
     const src = readFileSync(f, 'utf8');
-    const lines = src.split('\n');
-    for (const { start, end } of listFunctionBodies(lines)) {
-      // 函数体 = lines[start..end] (含两端)
-      const body = lines.slice(start, end + 1).join('\n');
-      const hasSelect = /\bSELECT\b/i.test(body);
-      const hasWrite = /\bINSERT\s+INTO\b/i.test(body) || /\bUPDATE\b/i.test(body);
-      if (!hasSelect || !hasWrite) continue;
-      // 第一个 SELECT 行 / 第一个 INSERT/UPDATE 行
+    const allLines = src.split('\n');
+    const bodies = listFunctionBodies(allLines);
+    for (const { start, end } of bodies) {
+      // 函数体 = allLines[start..end] (含两端), 先抹掉预备语句再判
+      const body = stripPreparedStatements(allLines.slice(start, end + 1).join('\n'));
+      const lines = [...allLines];
+      body.split('\n').forEach((l, idx) => {
+        lines[start + idx] = l;
+      });
+      if (!looksLikeSelect(body) || !looksLikeWrite(body)) continue;
+      // 第一个 SELECT 行 / 第一个 INSERT/UPDATE 行 (SQL 可跨行, 故取该行起 4 行的窗口)
+      const win = (k: number) => lines.slice(k, k + 4).join('\n');
       let selectLine: number | null = null;
       let writeLine: number | null = null;
       for (let k = start; k <= end; k++) {
-        if (selectLine === null && /\bSELECT\b/i.test(lines[k]!)) selectLine = k + 1;
-        if (writeLine === null && (/\bINSERT\s+INTO\b/i.test(lines[k]!) || /\bUPDATE\b/i.test(lines[k]!))) {
-          writeLine = k + 1;
-        }
+        if (selectLine === null && looksLikeSelect(win(k))) selectLine = k + 1;
+        if (writeLine === null && looksLikeWrite(win(k))) writeLine = k + 1;
         if (selectLine !== null && writeLine !== null) break;
+      }
+      // 读与写落在**不同的兄弟闭包**里 → 从不在同一次调用中执行, 不是 check-then-write。
+      // 实测反例: `openMcpCallLedger` 的 INSERT 在 record()、SELECT 在 rows(), 外层工厂体把两者圈在一起。
+      if (selectLine !== null && writeLine !== null) {
+        const bs = innermostBodyAt(bodies, selectLine - 1);
+        const bw = innermostBodyAt(bodies, writeLine - 1);
+        if (bs && bw && (bs.start !== bw.start || bs.end !== bw.end)) continue;
       }
       const hasImmediate =
         /\btx\.immediate\s*\(/.test(body) || /\bBEGIN\s+IMMEDIATE\b/i.test(body);
@@ -743,6 +825,54 @@ describe('INV-8: 全仓 check-then-write 清单闸', () => {
       ].join('\n'),
     );
     expect(findCheckThenWrites([f]).length).toBe(0);
+  });
+
+  it('INV-8 反向自检: 全仓命中集非空且至少一处已 immediate (闸不许退化成恒空式)', () => {
+    // 收紧判据 (prepare-only 抹除 / SQL 形状 / 同一最内层闭包) 把首版 9 处假阳降到了真阳。
+    // 代价是: 收得过头会让全仓一处都不命中, 那时 ★ 那条恒绿, 闸就死了而没人知道。
+    // 这条钉死两件: ① 还检得出东西 ② 我们对 pruneExpired 加的 tx.immediate() 被认了出来。
+    const hits = findCheckThenWrites(tsFiles(join(REPO, 'src')));
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits.filter((h) => h.hasImmediate).length).toBeGreaterThan(0);
+  });
+
+  it('INV-8 反向自检: prepare-only 工厂 (备语句不执行) 不该被算成 check-then-write', () => {
+    // 这条钉的是收紧本身。抹掉它 (让 stripPreparedStatements 直接 return body),
+    // 本条即红 —— 那正是首版的行为: 9 处命中 8 处是这种工厂。
+    const dir = mkdtempSync(join(tmpdir(), 'omd-inv8-'));
+    const f = join(dir, 'factory.ts');
+    writeFileSync(
+      f,
+      [
+        'export function createStore(db: any) {',
+        '  const qGet = db.query(`SELECT id FROM t WHERE x = ?`);',
+        '  const qUpsert = db.query(',
+        '    `INSERT INTO t (id) VALUES (?) ON CONFLICT(id) DO UPDATE SET y = 1`,',
+        '  );',
+        '  return { qGet, qUpsert };',
+        '}',
+      ].join('\n'),
+    );
+    expect(findCheckThenWrites([f]).length).toBe(0);
+  });
+
+  it('INV-8 反向自检: 备了语句但**也**即用即弃地执行 → 仍要被抓 (收紧不许放过真的)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omd-inv8-'));
+    const f = join(dir, 'mixed.ts');
+    writeFileSync(
+      f,
+      [
+        'export function mixed(db: any) {',
+        '  const qPrepared = db.query(`SELECT 1`);', // 预备 —— 抹掉
+        '  const n = db.query(`SELECT count(*) AS n FROM t`).get() as any;', // 执行 —— 留
+        '  if (n.n > 0) db.query(`UPDATE t SET y = 1`).run();', // 执行 —— 留
+        '  return qPrepared;',
+        '}',
+      ].join('\n'),
+    );
+    const hits = findCheckThenWrites([f]);
+    expect(hits.length).toBe(1);
+    expect(hits[0]!.hasImmediate).toBe(false);
   });
 
   it('INV-8 白名单每条 reason 必填且必须含「纯读/单条写/单写者/SELECT 在 tx 体外/写 在 tx 体外/纯 INSERT」之一', () => {
