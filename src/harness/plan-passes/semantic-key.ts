@@ -89,6 +89,8 @@ export function nodeFieldsKey(node: PlanNode): string {
 		// D-8: await spec 是语义 —— 等 artifact A 与等 artifact B 是**不同的执行** (匹配面不同,
 		// 连 git 合入的 commit 都不同); 判重把两者合成一个 = 吞掉某一方等待的目标 (同 write_set 形态)。
 		node.await ? JSON.stringify(node.await) : NONE,
+		// P1 D-3 (2026-08-21): self_check 是语义 —— 不同判据 = 自修环决策路径不同 = 不同的执行。
+		node.self_check ? JSON.stringify(node.self_check) : NONE,
 	]);
 }
 

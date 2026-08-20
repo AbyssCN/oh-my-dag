@@ -815,6 +815,57 @@ export interface LeafResult {
    */
   budgetStopped?: string;
   /**
+   * **引擎外层轮号**(2026-08-21, C-0): 该节点落在引擎外层的第几轮 (跨轮身份)。
+   *
+   * ⚠ 三态 (INV-0-3): 数字 = 真轮号 (跨轮身份) · `null` = 没记 / 来源链没接 · 整个字段
+   *   缺席 = 早于本次改动的节点。读数板按 `typeof === 'number'` 取, `null` 与 `undefined`
+   *   都得 null 入 DB。
+   */
+  dagRound?: number | null;
+  /**
+   * **早轮同 id 节点被本轮覆盖时被落上的轮号**(2026-08-21, C-0): 末轮那条不设 (INV-0-1)。
+   *
+   * 语义 = 「这一轮的工作被后一轮重做, 这部分的 token 算浪费」。引擎在 settle 落账时给早轮
+   * 那条 LeafResult 上写 `overriddenBy = currentEngineRound`; 末轮那条 LeafResult 此位为
+   * `null` —— 「最后一轮不算被覆盖」。
+   *
+   * ⚠ 三态 (INV-0-3): 数字 = 真轮号 (被覆盖的证据) · `null` = 末轮 / 没记 · 整个字段
+   *   缺席 = 早于本次改动的节点。
+   */
+  overriddenBy?: number | null;
+  /**
+   * **注入文本的 token 数**(2026-08-21, C-0): 本节点 prompt 里由上游注入的那部分 (fan-in 视图)
+   * 折成的 token。语义 ⊆ `tokensIn`, 与 `fanin-summary` 实际注入进 prompt 的那段一致
+   * (摘要就数摘要, 全文就数全文, INV-0-2)。
+   *
+   * 来源: inproc 路径可观察, 引擎按 `(deps 文本) fencedUpstream → chars/4` 真值写;
+   * agent 路径 SDK 自管 prompt, 这里数不到 → **null** (INV-1: 「拿不到」≠「零」)。
+   *
+   * ⚠ 三态 (INV-0-3): 数字 = 真值 (含 0 = 已知无上游, **不是**没记) · `null` = 没记 /
+   *   agent 路径 · 整个字段缺席 = 早于本次改动的节点。
+   */
+  injectedTokens?: number | null;
+  /**
+   * **节点级 self_check 自修环的落账** (P1 C-4, 2026-08-21)。
+   *
+   * 严格三态 (INV-4-1, 不许压平):
+   *   - **整个字段缺席** (`undefined`) = 该节点**没有** self_check (旁路, INV-1-2) — 「这条路不适用」;
+   *   - `null` = self_check 存在但**没有**被听见 (SDK 通道, INV-2-1: 无 followUp 钩子) —「路在但被截断」;
+   *   - `{rounds, oracleExit, convergedAt}` = self_check 真的跑了 (INV-4-2 长度 = rounds + 1; INV-4-3 末项 = expect_exit ⟺ convergedAt !== null)。
+   *
+   * `null` 与 `{rounds: 0, …}` **绝对不互换**: 前者是「路在但截断」, 后者是「判据一次就绿」——
+   * 读数板要的是这一格的下一步不同。分辨靠 **字段在不在**, 不靠猜值。
+   *
+   * 来源: `agent-leaf.ts` 的 `AgentLeafResult.selfRepair` (`leaf-runners.ts:259`); 引擎在
+   * settle 时透传 (本字段当前**未**在 `dag/engine.ts` 接线, 测试通过构造 `LeafResult.selfRepair`
+   * 直接落库验证 — 同 slice 1 round-fields 的写法)。
+   *
+   * ⚠ **缺席 / null / 对象三态纪律** (INV-4-1 与切片 1 的 INV-0-3 同一条根): 缺席是「不适用」,
+   *   null 是「截断」, 对象是「真跑了」。三者对应的下一步完全不同, 任何一处把它折成一个都会
+   *   让读数板误诊。「`null` ⟺ 跑过但首轮没过」这种**直觉翻译**正是这一位要挡的错。
+   */
+  selfRepair?: { rounds: number; oracleExit: number[]; convergedAt: number | null } | null;
+  /**
    * **引擎自己出事导致环提前退出**的原因(2026-07-31)。今天唯一的来源: judge 调不通
    * (`ModelError` —— 传输/配置层的确定性故障, 如 codex 拒 temperature)。
    *

@@ -3777,13 +3777,13 @@ async function executePlan(
       const t0 = nodeStartedAt.get(id);
       const durationMs = t0 !== undefined ? Date.now() - t0 : null;
       const turns = base.kind === 'conductor' && typeof base.rounds === 'number' ? base.rounds : null;
-      const injectedTokens = typeof (base as { injectedTokens?: unknown }).injectedTokens === 'number' ? (base as unknown as { injectedTokens: number }).injectedTokens : null;
+      const injectedTokens = typeof base.injectedTokens === 'number' ? base.injectedTokens : null;
       const prev = _nodeLastSettled.get(id);
       // ② 覆盖判据: 同一节点身份被本轮重新 settle → 上一轮的 _nodeLastSettled 条目被覆盖。
       // `prev` 与 `currentEngineRound` 同 id 才算"被覆盖"; prev 缺席 = 该节点只跑过这一轮, 不需要标记。
       // **最后一轮不算被覆盖** —— 它自己进 _nodeLastSettled 后, 下一轮没有同 id, 不被任何轮覆盖。
       if (prev) {
-        (prev as unknown as { overriddenBy?: number | null }).overriddenBy = currentEngineRound;
+        prev.overriddenBy = currentEngineRound;
       }
       const settledLeaf = { ...base, durationMs, turns, injectedTokens, dagRound: currentEngineRound };
       results[id] = settledLeaf;

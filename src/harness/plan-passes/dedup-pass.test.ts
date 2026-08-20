@@ -190,6 +190,9 @@ describe("dedupPass (D-20)", () => {
 			research: [{ rounds: 1 }, { rounds: 2 }],
 			thinking: ["low", "xhigh"],
 			await: [{ artifact: "a.ts" }, { artifact: "b.ts" }],
+			// P1 D-3 (2026-08-21): self_check 是语义 —— 判据不同 = 自修环决策路径不同 = 不同的执行,
+			// 缺席 (B 侧) = 旁路 (INV-1-2) —— 与「有 self_check 但判据一次就绿」严格分开 (INV-4-1)。
+			self_check: [{ command: "c1", expect_exit: 0 }, undefined],
 		};
 		for (const key of Object.keys(shape)) {
 			if (EXCLUDED.has(key)) continue;

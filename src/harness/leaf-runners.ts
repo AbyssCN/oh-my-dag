@@ -48,6 +48,18 @@ export interface AgentLeafInput {
    * 缺席 = 非产物叶, produce-by 恒不触发 —— 非 produces-files 节点零行为变化 (#178 硬约束)。
    */
   expectsArtifactPath?: string;
+  /**
+   * **节点级确定性判据** (P1 C-2, 2026-08-21): agent leaf 在内环将停时跑这条命令, 退出码
+   * `=== expect_exit` → 该节点收敛; 不等 → 引擎**借 pi 的 `getFollowUpMessages` 钩子**把
+   * (命令 + 实际退出码 + 截断输出) 作为 follow-up 注入, 同节点再转一轮 —— 而非新建节点、
+   * 改图、进毒集 (INV-2-3)。
+   *
+   * 缺席 = 旁路 (INV-1-2): 执行路径与无 self_check 逐字节相同。SDK 通道 (Claude 订阅) 显式
+   * 不启用 (INV-2-1): 该通道无 `getFollowUpMessages` 钩子, 不许静默降级 —— agent-leaf 在
+   * self_check 存在且走 SDK 时 WARN 日志一条说明。**借用的诚实边界**: pi 的 followUp 原设计是
+   * 交互式 steering, headless 当自动喂料通道是借用 (D-6), 借完要明写。
+   */
+  self_check?: { command: string; expect_exit: number };
 }
 
 /**
@@ -229,6 +241,22 @@ export interface AgentLeafResult {
    * 所以这一格**不许**被读成"省下了 N 次重跑" —— 它是上界不是点估计。
    */
   parseNudges?: number;
+  /**
+   * **节点级 self_check 自修环的落账** (P1 C-4, 2026-08-21)。
+   *
+   * `null` 严格区分于 `{rounds: 0, …}`:
+   *   - `null` = 该节点**没有** self_check (旁路, INV-1-2) — 「这条路不适用」;
+   *   - `{rounds: 0, …}` = 有 self_check, **判据一次就绿**, 没注 follow-up (INV-4-1)。
+   * 分辨靠 `AgentLeafInput.self_check` 字段在不在, **不靠猜**。
+   *
+   * 字段形状 (INV-4-2/INV-4-3):
+   *   - `rounds` = 实际自修轮数 (注了几次 follow-up);
+   *   - `oracleExit` = 每一轮 self_check 的实际退出码, **含首轮** (长度 = rounds + 1);
+   *   - `convergedAt` = 第几轮转绿 (首轮 = 0; 始终没绿 = null) — `null` ⟺ `oracleExit` 末项 `!== expect_exit`。
+   *
+   * SDK 通道 (Claude 订阅) 永远 = null (INV-2-1: 无 followUp 钩子, 节点级判据不被听见)。
+   */
+  selfRepair?: { rounds: number; oracleExit: number[]; convergedAt: number | null } | null;
 }
 /** 一次 bash 工具调用的确定性痕迹(命令原文 + 退出码)。 */
 export interface ShellRun {

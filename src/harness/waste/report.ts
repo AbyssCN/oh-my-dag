@@ -33,15 +33,6 @@ import { Database } from 'bun:sqlite';
 import { existsSync } from 'node:fs';
 import type { DagRunNode, DagRunRecord } from '../dag-record';
 
-/**
- * 跨轮身份 + 覆盖标记列 —— `dag-record.ts` 的 `DagRunNode` 暂未声明
- * (A 片独占那片 schema),这里局部扩展。语义由 `engine.ts` 的 settle 写入:
- *   · `dagRound`     当前节点所在的引擎外层轮号 (跨轮身份)
- *   · `overriddenBy` 上一轮同 id 节点被本轮覆盖时被落上的轮号 (覆盖标记);
- *                    末轮同 id 节点不设 (与契约「最后一轮不算被覆盖」一致)
- */
-type DagRunNodeX = DagRunNode & { dagRound?: number | null; overriddenBy?: number | null };
-
 /** 单指标的形状 (C-2 契约)。`value` 缺列时是 `null`,`n` / `unknownRuns` 始终是 `number`。 */
 export interface WasteMetric<T> {
   value: T | null;
@@ -136,7 +127,7 @@ export function readDagRuns(dbPath: string): DagRunRecord[] {
 
 /** 扫一遍所有节点,看某个字段是否在**任何**节点里出现过非 null 的 number 值。 */
 function hasAnyDataField(nodes: readonly DagRunNode[], field: 'dagRound' | 'overriddenBy' | 'injectedTokens' | 'cacheHitTokens'): boolean {
-  for (const n of nodes as readonly DagRunNodeX[]) {
+  for (const n of nodes) {
     const v = n[field];
     if (typeof v === 'number') return true;
   }
@@ -166,16 +157,21 @@ export function computeWaste(records: readonly DagRunRecord[]): WasteReport {
   }
 
   // ─── 2. 检测每个指标所依赖的列是否在库里**有任何数** ───
+  // ⚠ GWT-2b 「库为空 / 文件不存在」→ missingColumns=[]: 空库 = 「没跑」≠ 「跑过但缺列」,
+  // 把 4 个字段全列上违反 doc 注释的契约, 也会让首次接通 DB 的用户看到「4 列都缺」的伪信号。
+  // 老库 (LEGACY_SCHEMA + 旧行无新字段) 仍走下面的列名点名, 不变 (GWT-2b legacy case 测试钉死)。
   const hasDagRound = hasAnyDataField(allNodes, 'dagRound');
   const hasOverriddenBy = hasAnyDataField(allNodes, 'overriddenBy');
   const hasInjected = hasAnyDataField(allNodes, 'injectedTokens');
   const hasCacheHit = hasAnyDataField(allNodes, 'cacheHitTokens');
 
   const missingColumns: string[] = [];
-  if (!hasDagRound) missingColumns.push('dagRound');
-  if (!hasOverriddenBy) missingColumns.push('overriddenBy');
-  if (!hasInjected) missingColumns.push('injectedTokens');
-  if (!hasCacheHit) missingColumns.push('cacheHitTokens');
+  if (allNodes.length > 0) {
+    if (!hasDagRound) missingColumns.push('dagRound');
+    if (!hasOverriddenBy) missingColumns.push('overriddenBy');
+    if (!hasInjected) missingColumns.push('injectedTokens');
+    if (!hasCacheHit) missingColumns.push('cacheHitTokens');
+  }
 
   // ─── 3. nodeWasteTokens ───
   // 契约:分子 = 被后一轮覆盖的节点的 tokensIn 之和;
@@ -195,7 +191,7 @@ export function computeWaste(records: readonly DagRunRecord[]): WasteReport {
       let runTokens = 0;
       let runWasted = 0;
       let anyContributing = false;
-      for (const n of nodes as DagRunNodeX[]) {
+      for (const n of nodes) {
         const inTok = n.tokensIn;
         if (typeof inTok !== 'number') continue;
         anyContributing = true;
