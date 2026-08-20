@@ -42,6 +42,29 @@ export type ContinuityTrigger =
 // ─── 触发判定(纯函数,零副作用)────────────────────────────────────────────
 
 /**
+ * **自喂闸**:本会话是不是 agent-SDK 起的子会话。
+ *
+ * ⚠ 2026-08-20 生产盘上烧了一天六小时的 fork bomb 的唯一止血位,链是闭的:
+ *   writer 派 agent-SDK 子会话做蒸馏 → 子会话结束 → 它继承 `~/.claude/settings.json` 的
+ *   `SessionEnd` hook 再点火 → 又一个 detached writer → 又一个子会话 → 无限。
+ *   `stop_hook_active` 挡不住:那是 CC **只给 `Stop`** 的 loop guard,`SessionEnd` 没有对应位。
+ *   实测代价:load 131 / 24 核 · WSL 吃满全机 88% CPU · ~1.7 圈/秒,每圈一次 Sonnet 调用 ·
+ *   `~/.omd/projects/nick/session/` 攒到 84,890 个目录。
+ *
+ * ⚠ **别用 `CLAUDE_CODE_CHILD_SESSION` / `CLAUDE_CODE_FORK_SUBAGENT` 当判别位** —— 实测
+ *   交互式会话里这两个**同样是 1**(`env | grep CLAUDE_CODE_` 就能看见),拿它们当闸会把真人
+ *   会话的 continuity 一起打死,而且是静默的:checkpoint 不再生成,没有任何报错。
+ *   真正分得开的只有 `CLAUDE_CODE_ENTRYPOINT`:交互 = `cli`,SDK 起的 = `sdk-cli`。
+ *   `CLAUDE_AGENT_SDK_VERSION` 作第二个冗余位(只 SDK 侧注入),防 entrypoint 改名。
+ *
+ * 语义上这也是对的:SDK 子会话是 DAG worker / 蒸馏器这类一次性执行体,没有交接价值,
+ * 它们的 continuity 走的是另一套(`.omd/continuity/`,与本层分家)。
+ */
+export function isSdkChildSession(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.CLAUDE_CODE_ENTRYPOINT === 'sdk-cli' || env.CLAUDE_AGENT_SDK_VERSION !== undefined;
+}
+
+/**
  * 跨档判定用 **bucket 序号跨越**,基准是 **`lastFiredBucket` —— 我实际存到过第几档**,
  * 不是历史读数里出现过的最高档。
  *
@@ -61,6 +84,9 @@ export function decideContinuityTrigger(
   opts: { env?: NodeJS.ProcessEnv; lastFiredBucket?: number } = {},
 ): ContinuityTrigger {
   const env = opts.env ?? process.env;
+  // 自喂闸放在**所有**事件之前:三条 fire 路径(Stop / PreCompact / SessionEnd)一条都不能漏,
+  // 漏一条 fork bomb 就照跑。理由见 `isSdkChildSession`。
+  if (isSdkChildSession(env)) return { fire: false, why: 'SDK 子会话 → 不自喂' };
   // PreCompact:压缩前恒存一次档 —— 那正是最需要快照的时刻,不看档位。
   if (input.hook_event_name === 'PreCompact') return { fire: true, mode: 'precompact', bucket: 0 };
   // SessionEnd:收口一次(`--final`, 会 splice `_NEXT.md` 的 AUTO 区)。同样不看档位 ——

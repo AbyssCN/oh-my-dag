@@ -29,6 +29,7 @@ import { basename, join } from 'node:path';
 import {
   buildSessionStartContext,
   decideContinuityTrigger,
+  isSdkChildSession,
   readLastFiredBucket,
   writeLastFiredBucket,
   engineRoot,
@@ -113,12 +114,22 @@ interface HookRun {
   stderr: string;
 }
 
+/**
+ * 端到端闸的 env 基线。`CLAUDE_CODE_ENTRYPOINT` 必须**显式钉成 `cli`** ——
+ * 否则谁在 SDK 子会话里跑 `bun test`(omd DAG worker 就是这么跑的),`sdk-cli` 顺着
+ * `...process.env` 漏进来,自喂闸命中,整组 A1/A2 变成"看谁跑"的假红。
+ */
+function hookBaseEnv(): NodeJS.ProcessEnv {
+  const { CLAUDE_AGENT_SDK_VERSION: _drop, ...rest } = process.env;
+  return { ...rest, CLAUDE_CODE_ENTRYPOINT: 'cli' };
+}
+
 function runHook(world: World, input: unknown, envOver: Record<string, string> = {}): HookRun {
   const p = Bun.spawnSync(['bun', 'run', HOOK], {
     cwd: world.repo,
     stdin: Buffer.from(JSON.stringify(input)),
     env: {
-      ...process.env,
+      ...hookBaseEnv(),
       OMD_DATA_HOME: world.dataHome,
       OMD_CONTINUITY_MECHANICAL: '1', // 零模型调用 —— 端到端闸才可能是确定性的
       OMD_SESSION_BUCKET: '1000',
@@ -194,6 +205,43 @@ describe('A3 触发 policy — decideContinuityTrigger', () => {
       bucket: 0,
     });
     expect(writerArgv('/tmp/t.jsonl', 'sid', 'final', {})).toContain('--final');
+  });
+
+  test('自喂闸: SDK 子会话下三条 fire 路径全哑(2026-08-20 fork bomb 的止血位)', () => {
+    // 反向自检:把 `isSdkChildSession` 的 `return` 改成 `false` → 本组三条全红。
+    for (const sdkEnv of [
+      { OMD_SESSION_BUCKET: '1000', CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' },
+      { OMD_SESSION_BUCKET: '1000', CLAUDE_AGENT_SDK_VERSION: '0.3.226' }, // entrypoint 改名也拦得住
+    ] as NodeJS.ProcessEnv[]) {
+      expect(isSdkChildSession(sdkEnv)).toBe(true);
+      // SessionEnd 是 fork bomb 的实际入口:writer 派 SDK 子会话 → 子会话结束 → 再派 writer。
+      expect(decideContinuityTrigger({ hook_event_name: 'SessionEnd' }, ledgerOf(10), { env: sdkEnv })).toEqual({
+        fire: false,
+        why: 'SDK 子会话 → 不自喂',
+      });
+      expect(decideContinuityTrigger({ hook_event_name: 'PreCompact' }, ledgerOf(10), { env: sdkEnv }).fire).toBe(false);
+      expect(decideContinuityTrigger(stop(), ledgerOf(800, 5000), { env: sdkEnv }).fire).toBe(false);
+    }
+  });
+
+  test('自喂闸只认 entrypoint: CHILD_SESSION / FORK_SUBAGENT 是诱饵, 交互式会话同样为 1', () => {
+    // 实测(2026-08-20, 交互式 CC 里 `env | grep CLAUDE_CODE_`):
+    //   CLAUDE_CODE_CHILD_SESSION=1 · CLAUDE_CODE_FORK_SUBAGENT=1 · CLAUDE_CODE_ENTRYPOINT=cli
+    // 拿前两个当闸 → 真人会话的 checkpoint 静默停产(不报错、不留痕)。本条钉的就是那个静默。
+    const decoy = {
+      OMD_SESSION_BUCKET: '1000',
+      CLAUDE_CODE_CHILD_SESSION: '1',
+      CLAUDE_CODE_FORK_SUBAGENT: '1',
+      CLAUDE_CODE_ENTRYPOINT: 'cli',
+      CLAUDECODE: '1',
+    } as NodeJS.ProcessEnv;
+    expect(isSdkChildSession(decoy)).toBe(false);
+    expect(decideContinuityTrigger({ hook_event_name: 'SessionEnd' }, ledgerOf(10), { env: decoy })).toEqual({
+      fire: true,
+      mode: 'final',
+      bucket: 0,
+    });
+    expect(decideContinuityTrigger(stop(), ledgerOf(800, 5000), { env: decoy }).fire).toBe(true);
   });
 
   test('PreCompact 恒触发且 mode=precompact(压缩前那一刻不看档位)', () => {
@@ -298,7 +346,7 @@ describe('A5 fail-open — 坏输入永不阻断 session', () => {
       const p = Bun.spawnSync(['bun', 'run', HOOK], {
         cwd: world.repo,
         stdin: Buffer.from(bad),
-        env: { ...process.env, OMD_DATA_HOME: world.dataHome },
+        env: { ...hookBaseEnv(), OMD_DATA_HOME: world.dataHome },
       });
       expect(p.exitCode).toBe(0);
       expect(p.stdout.toString()).toBe('{}');
