@@ -120,21 +120,21 @@ describe('★ human_verified 在 headless 下 fail-closed', () => {
   // conductor 的工具白名单里只有 recall 没有 remember。
   test('chat 位工具面**没有**任何写记忆的口 —— 对话位不能自主写下一条事实', () => {
     const fake = [
-      { name: 'memory_recall', handler: async () => ({ content: [] }) },
-      { name: 'run', handler: async () => ({ content: [] }) },
-      { name: 'solve', handler: async () => ({ content: [] }) },
-      { name: 'dag_run_plan', handler: async () => ({ content: [] }) },
-      { name: 'dag_status', handler: async () => ({ content: [] }) },
-      { name: 'dag_node_output', handler: async () => ({ content: [] }) },
-      { name: 'dag_runs', handler: async () => ({ content: [] }) },
-      { name: 'dag_cancel', handler: async () => ({ content: [] }) },
-      { name: 'map_open', handler: async () => ({ content: [] }) },
-      { name: 'map_tickets', handler: async () => ({ content: [] }) },
-      { name: 'omd_plans', handler: async () => ({ content: [] }) },
+      { name: 'memory_recall', description: '', inputSchema: {}, handler: async () => ({ content: [] }) },
+      { name: 'run', description: '', inputSchema: {}, handler: async () => ({ content: [] }) },
+      { name: 'solve', description: '', inputSchema: {}, handler: async () => ({ content: [] }) },
+      { name: 'dag_run_plan', description: '', inputSchema: {}, handler: async () => ({ content: [] }) },
+      { name: 'dag_status', description: '', inputSchema: {}, handler: async () => ({ content: [] }) },
+      { name: 'dag_node_output', description: '', inputSchema: {}, handler: async () => ({ content: [] }) },
+      { name: 'dag_runs', description: '', inputSchema: {}, handler: async () => ({ content: [] }) },
+      { name: 'dag_cancel', description: '', inputSchema: {}, handler: async () => ({ content: [] }) },
+      { name: 'map_open', description: '', inputSchema: {}, handler: async () => ({ content: [] }) },
+      { name: 'map_tickets', description: '', inputSchema: {}, handler: async () => ({ content: [] }) },
+      { name: 'omd_plans', description: '', inputSchema: {}, handler: async () => ({ content: [] }) },
       // D-8 之后 chat 白名单恒查这两个 —— 夹具不带它们, 不是「少了个 mock」,
       // 是这次 createConductorChatTools 调用本身不再合法 (must 会响亮抛)。
-      { name: 'history_read', handler: async () => ({ content: [] }) },
-      { name: 'history_search', handler: async () => ({ content: [] }) },
+      { name: 'history_read', description: '', inputSchema: {}, handler: async () => ({ content: [] }) },
+      { name: 'history_search', description: '', inputSchema: {}, handler: async () => ({ content: [] }) },
     ] as never;
     const names = createConductorChatTools(fake).map((t) => t.name);
     expect(names).toContain('omd_recall');
