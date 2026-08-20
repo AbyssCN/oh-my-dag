@@ -41,6 +41,7 @@ import { secretPathInCommand, SECRET_BASENAMES, SECRET_BASENAME_EXEMPT } from '.
 import { logger } from '../logger';
 import { openTouchLedger, type TouchLedger, type TouchOp, type TouchSource } from './touch-ledger';
 import { verifiedShellWriteTargets } from './shell-writes';
+import { HAND_TOOL_RENDERERS } from './tool-render';
 
 /**
  * omd 工具 = `AgentTool` + 两个**给系统提示用**的可选字段。
@@ -56,6 +57,17 @@ export interface OmdTool<TDetails = unknown> extends AgentTool<TSchema, TDetails
   promptGuidelines?: string[];
   /** 声明 true = 扩展作者确认工具沙箱叶内安全。未声明/非 true → sandboxed-leaf 剥除 + warn。 */
   sandboxSafe?: boolean;
+  /**
+   * H6 (#187, owner 2026-08-20 裁 A 案): **规范值 → 展示串**的纯函数投影。
+   *
+   * `execute` 返回的 `details` 是规范值; `render` 把它投成人看的那半句。**纯函数, 不重跑工具**
+   * —— 回放一条历史调用、eval 采 fixture、给人/给模型投两种详略, 都不必再跑一次工具。
+   * 省略 = 这个工具没有可投的那半句 (调用方就不画, **不编一个占位**)。
+   *
+   * 实现体在 `tool-render.ts` (单一真源, 覆盖闸读同一份)。搬来之前它是 UI 里按工具名派发的
+   * switch —— 改名即静默失效 (名字对不上就落 null, 屏上那半句无声消失)。
+   */
+  render?: (details: TDetails) => string | null;
 }
 
 /** 工具执行体的松类型面 —— 各工具 schema 各不同, 装进同一个数组时统一按这个形状看。 */
@@ -878,7 +890,17 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
     },
   };
 
-  return [read, write, edit, ls, grep, bash];
+  /**
+   * H6 (#187): 给每个工具挂上它的 `render` 投影。**按工具自己的 `name` 取** ——
+   * 改名时投影跟着走, 不会像旧的 UI 侧 switch 那样落进 `null` 无声消失。
+   * 覆盖完整性由 `tool-render.test.ts` 钉死 (少挂一个即红), 不靠这里巧合写全。
+   */
+  const withRender = (t: AnyOmdTool): AnyOmdTool => {
+    const render = HAND_TOOL_RENDERERS.get(t.name);
+    return render ? { ...t, render } : t;
+  };
+
+  return [read, write, edit, ls, grep, bash].map(withRender);
 }
 
 /**

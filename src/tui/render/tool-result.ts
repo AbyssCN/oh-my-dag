@@ -14,73 +14,31 @@
  * `bash → {exitCode, truncated}` …… 拿它渲染而不是去解析正文,是因为正文是给**模型**看的、
  * 随时可能改措辞,而 `details` 是契约。解析正文那条路第一次改文案就会静默失效。
  *
- * ## 后端只传数据,展示决策在这里
+ * ## H6 (#187, owner 2026-08-20 裁 A 案):投影搬走了,这里只剩查表
  *
- * 与 `tool-arg` 同一条纪律(`backend-embedded.ts` 那句「`args` 原样透传, 由 UI 去挑那半句」):
- * 后端把 `details` 原样发出来,**挑哪几格、怎么措辞是排版**,归 UI。
+ * 本文件原先是一段**按工具名字符串派发的 switch**(`if (tool === 'grep') …`),未命中落 `null`。
+ * 两个后果:①加一个工具要改第二处;②**改名即静默失效** —— 名字对不上就落 `null`,
+ * 屏上那半句无声消失,无报错无日志。
+ *
+ * 现在投影体在 `harness/tool-render.ts`,并由 `agent-tools.ts` 按工具自己的 `name`
+ * 挂到 `OmdTool.render` 上 —— **同一份**。本文件退成一次查表:
+ *
+ *  - 手上有工具对象(回放 / eval / 任何拿得到 tool 的地方)→ 直接 `tool.render(details)`;
+ *  - 只有事件流(TUI 这条路只收到 name + details)→ `summarizeToolResult(name, details)`
+ *    从同一张 `HAND_TOOL_RENDERERS` 取。
+ *
+ * ⚠ 刻意**没有**把投影挪到后端去做:「后端只传数据,挑哪几格是排版归 UI」那条纪律
+ * (`backend-embedded.ts` 的 `details` 透传注)**不必为 H6 让路** —— 单一真源 + 覆盖闸
+ * 已经把「改名静默失效」这条治掉了,再去倒转依赖是多花的代价。
  */
-
-/** 千分位 —— 四位数以上的读数不加分隔符在一行里读不出量级。 */
-const n = (v: number): string => v.toLocaleString('en-US');
-
-/** `details` 的松类型面:各工具形状不同,这里只按字段名取。 */
-type Details = Record<string, unknown>;
-
-const num = (d: Details, k: string): number | null => (typeof d[k] === 'number' ? (d[k] as number) : null);
-const bool = (d: Details, k: string): boolean => d[k] === true;
+import { HAND_TOOL_RENDERERS } from '../../harness/tool-render';
 
 /**
  * 工具 `details` → 工具行右半句。挑不出 → `null`(调用方就不画右半句,**不编一个占位**)。
  *
- * ⚠ 每个工具只挑「人在意的那一格或两格」,不铺全部字段 —— 铺开就变回流水账,
- * 而工具行折叠成一行本来就是为了不让流水账挤掉真正的回复。
+ * 没有该工具的投影也返回 `null` —— 但这不再是**静默**的:`tool-render.test.ts` 的覆盖闸
+ * 保证每个手工具都挂得上投影,少一个当场红。
  */
 export function summarizeToolResult(tool: string, details: unknown): string | null {
-  if (!details || typeof details !== 'object' || Array.isArray(details)) return null;
-  const d = details as Details;
-
-  if (tool === 'grep') {
-    const matches = num(d, 'matches');
-    if (matches === null) return null;
-    const files = num(d, 'files') ?? 0;
-    // 0 命中要**说成 0**,不是留空 —— 「没搜到」是一个读数,不是"没读数"。
-    const head = matches === 0 ? 'no match' : `${n(matches)} in ${n(files)} file${files === 1 ? '' : 's'}`;
-    // 截断与剪枝**必须跟着命中数一起出现**:`no match` 单独出现读起来是"那儿没有",
-    // 而它可能只是"我没走到那儿"。这两条是 agent-tools 那边同一条纪律的屏幕侧。
-    const flags: string[] = [];
-    if (bool(d, 'walkCapped')) flags.push('capped');
-    const skipped = num(d, 'skippedMounts') ?? 0;
-    if (skipped > 0) flags.push(`${n(skipped)} mount${skipped === 1 ? '' : 's'} skipped`);
-    return flags.length > 0 ? `${head} · ${flags.join(' · ')}` : head;
-  }
-
-  if (tool === 'read') {
-    const lines = num(d, 'lines');
-    if (lines === null) return null;
-    return bool(d, 'truncated') ? `${n(lines)} lines · truncated` : `${n(lines)} lines`;
-  }
-
-  if (tool === 'ls') {
-    const count = num(d, 'count');
-    return count === null ? null : `${n(count)} entr${count === 1 ? 'y' : 'ies'}`;
-  }
-
-  if (tool === 'write') {
-    const bytes = num(d, 'bytes');
-    return bytes === null ? null : `${n(bytes)} B`;
-  }
-
-  if (tool === 'edit') {
-    return d.replaced === true ? '1 replaced' : null;
-  }
-
-  if (tool === 'bash') {
-    const exitCode = num(d, 'exitCode');
-    // ⚠ `exitCode` 可以是 `undefined`(被中止/超时杀掉)—— 那与 `exit 0` **不是一回事**,
-    //   压成 `exit 0` 就是把"没跑完"画成"跑成功了"。分不出来时说 `no exit code`。
-    const head = exitCode === null ? 'no exit code' : `exit ${exitCode}`;
-    return bool(d, 'truncated') ? `${head} · output truncated` : head;
-  }
-
-  return null;
+  return HAND_TOOL_RENDERERS.get(tool)?.(details) ?? null;
 }
