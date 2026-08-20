@@ -34,7 +34,7 @@ import { maybeCheckpointOmdSession } from '../session/omd-checkpoint';
 import { emitModelUsage } from '../../model/accounting';
 import type { ModelUsage } from '../../model/types';
 import { type CompactionCallModel, compactChatMessages } from './compaction';
-import { clearCompactionJournal, journalPathFor, writeCompactionJournal } from './compaction-journal';
+import { clearCompactionJournal, journalPathFor, recoverCompaction, writeCompactionJournal } from './compaction-journal';
 import { type ContextPressure, analyzeContextPressure, sumUsage, turnUsages } from './usage';
 import { join } from 'node:path';
 import { createMemoryTransform } from './memory-inject';
@@ -176,6 +176,27 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
   const existing = await opts.store.open(opts.sessionId);
   let messages = existing ? await existing.messages() : [];
   let tools = opts.tools ?? [];
+
+  // ── H4 崩溃恢复 (#185) ─────────────────────────────────────────────────────
+  // 上一次压缩若死在半路, sidecar 还留着。这里是**唯一**读它的地方: 开会话即分辨停在哪一步,
+  // 把状态写进日志(留证), 再清掉 sidecar —— 否则一次崩溃会让它永远脏着, 之后每轮都误报。
+  // 「换没换」由 `hasEntry` 反查 store 回答, 不猜(entryId 是 replace 写前一步领的那一个)。
+  //
+  // ⚠ **不复用摘要**: `crashed-before-replace` / `replace-lost` 手里有摘要, 但补 replace 还需要
+  //   `retainedTail` 的**内容**, 而日志只存了它的**条数** —— 重放不出忠实的条目。所以这里只
+  //   分辨 + 留证 + 清理, 那次摘要的钱照旧白花。要真省下来得先把 retainedTail 也入日志(未做)。
+  if (existing) {
+    const journal = journalPathFor(existing.path);
+    const entries = await existing.entries();
+    const recovery = recoverCompaction(journal, (id) => entries.some((e) => e.id === id));
+    if (recovery.status !== 'clean') {
+      logger.warn(
+        { sessionId: opts.sessionId, status: recovery.status },
+        '[chat-agent] 上次压缩没干净收尾 —— 已分辨停在哪一步并清理事务日志 (#185)',
+      );
+      clearCompactionJournal(journal);
+    }
+  }
 
   // 内部升档 advisor(pi 座,NOTES 2026-08-10):无参 advisor 工具进本轮工具面,
   // prompt 面随 buildConductorChatSystemPrompt 的工具列举自动到位。recorder 挂 onEvent 链,
