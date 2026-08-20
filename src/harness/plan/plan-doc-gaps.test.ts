@@ -210,3 +210,55 @@ describe('直通可编译性 (sddPath 能不能吃下这份文档)', () => {
     expect(ids(humanTable)).not.toContain('sdd-breakdown-unparseable');
   });
 });
+
+// ---------------------------------------------------------------------------
+// S-45: 分解表能不能被真正吃它的那个编译器吃下
+// ---------------------------------------------------------------------------
+
+/** 把 OK_SDD 的分解段换成给定内容 (其余骨架不动)。 */
+const withBreakdown = (body: string) =>
+  OK_SDD.replace('- **P0**:改 src/harness/model-seat.ts。', body);
+
+describe('S-45 · 分解表与直通编译器不许各说各话', () => {
+  test('写成表格但首列不是编号 → 报 breakdown-not-compilable, 且带编译器原话', () => {
+    const md = withBreakdown(
+      [
+        '| 片 | 内容 | 改哪里 | verify |',
+        '|---|---|---|---|',
+        '| **A** | 加五列 | 改 src/harness/dag-record.ts | 新建 x.test.ts |',
+      ].join('\n'),
+    );
+    const gaps = findPlanDocGaps(md);
+    const hit = gaps.find((g) => g.id === 'breakdown-not-compilable');
+    expect(hit).toBeDefined();
+    // 判词必须转述编译器自己的话 —— 否则读的人还得再猜一次它到底嫌什么。
+    expect(hit!.evidence.join(' ')).toContain('编号');
+  });
+
+  test('四列 + 首列编号 + 波形 → 不报 (这是编译器吃得下的形状)', () => {
+    const md = withBreakdown(
+      [
+        '| 切片 | 写集 | 依赖 | verify |',
+        '|---|---|---|---|',
+        '| 1 加五列 | src/harness/dag-record.ts | — | bun test src/harness/dag-record.test.ts |',
+        '| 2 尺子 | scripts/omd-waste.ts | 1 | bun test scripts/omd-waste.test.ts |',
+        '',
+        '波形: {1}{2}',
+      ].join('\n'),
+    );
+    expect(ids(md)).not.toContain('breakdown-not-compilable');
+  });
+
+  test('误报侧: 分解段写成列表 (不主张直通) → 一个字都不许报', () => {
+    // 本仓多数 SDD 是这个形状。对它们开火 = 假 major = 整条闸被关掉。
+    expect(ids(OK_SDD)).not.toContain('breakdown-not-compilable');
+    expect(findPlanDocGaps(OK_SDD)).toEqual([]);
+  });
+
+  test('误报侧: 压根没有分解段 → 只报 breakdown-missing, 不报编译不过', () => {
+    const md = OK_SDD.replace(/## 分解 \(Breakdown\)[\s\S]*?(?=## 非目标)/, '');
+    const got = ids(md);
+    expect(got).toContain('breakdown-missing');
+    expect(got).not.toContain('breakdown-not-compilable');
+  });
+});

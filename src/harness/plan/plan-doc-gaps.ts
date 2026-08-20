@@ -59,6 +59,21 @@ const CAP = 8;
  * @param md 计划文档全文
  * @param opts 可选注入 (文件存在性)
  */
+/**
+ * 分解段里有没有 markdown 表格。
+ *
+ * 判据取「至少两行以 `|` 开头」—— 一行 `|` 可能是别处的散文, 两行才是表 (表头 + 分隔行起步)。
+ * 段的边界与 `parseBreakdown` 同法: 从分解标题起到下一个 `## ` 止。
+ */
+function breakdownHasTable(md: string): boolean {
+  const head = /^##\s+.*(分解|Breakdown|切片|施工序|实施计划).*$/im.exec(md);
+  if (!head) return false;
+  const after = md.slice(head.index + head[0].length);
+  const next = /^##\s/m.exec(after);
+  const section = next ? after.slice(0, next.index) : after;
+  return section.split('\n').filter((l) => l.trim().startsWith('|')).length >= 2;
+}
+
 export function findPlanDocGaps(md: string, opts: PlanDocGapsOptions = {}): PlanDocGap[] {
   const doc = parsePlanDoc(md);
   const gaps: PlanDocGap[] = [];
@@ -157,6 +172,35 @@ export function findPlanDocGaps(md: string, opts: PlanDocGapsOptions = {}): Plan
       fix: '加一张切片表: 每片写「内容 / 闸 / 依赖」, 至少指出改哪几个文件或哪几个符号。',
       evidence: [],
     });
+  }
+
+  // 分解表能不能被**真正吃它的那个编译器**吃下 (S-45)。
+  //
+  // ⚠ 这一条治的是「同一段文字两套解析器」: 本闸对切片的定义是「表行或顶层列表项」(见文件头
+  // §切片), 而 `solve --sddPath` 的直通编译器 `parseBreakdown` 要的是**四列 + 首列以编号开头**。
+  // 2026-08-20 实盘: 一份 `plan-doc-check` 判 PASS 的契约点火时编译失败, fail-open 回落
+  // conductor 现画图 —— 白付一次铺图的钱, 而回执上什么都看不出来 (日志里有一行, 但人只看回执)。
+  // 两个函数本来就都在仓里, 缺的只是把它们接上。
+  // ⚠ 只在分解段**真的写成表格**时才要求它能编译。散文/列表式的分解段是合法的
+  //    (本仓多数 SDD 如此), 它们没有在主张「我能直通」—— 对它们开火就是误报,
+  //    而一个假 major 会让人把整个闸关掉 (比没有闸更坏, 见本文件头注)。
+  if (doc.has.breakdown && breakdownHasTable(md)) {
+    try {
+      parseBreakdown(md);
+    } catch (err) {
+      add({
+        id: 'breakdown-not-compilable',
+        severity: 'major',
+        title: '分解段过不了直通编译器 (`solve --sddPath` 会 fail-open 回落 conductor 铺图)。',
+        impact:
+          '本闸绿 ≠ 能直通。回落是**静默于回执**的 (只写日志), 于是你以为走了零契约段的直通,' +
+          ' 实际付了一次 conductor 铺图的钱, 而且图的形状由模型定而不是由你这张表定。',
+        fix:
+          '按编译器的形状改: 四列 `切片 | 写集 | 依赖 | verify`, **首列以编号开头** (`1` / `2` …,' +
+          ' 编号是波形与依赖引用它的唯一方式), 依赖列填编号, 可选再加一行波形 `{1,2}{3}`。',
+        evidence: [String((err as Error).message ?? err)],
+      });
+    }
   }
 
   // 分解段点名的文件在不在 (仅当调用方注入了存在性判定)。
