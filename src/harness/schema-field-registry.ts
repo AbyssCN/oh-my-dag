@@ -152,5 +152,11 @@ export const REGISTRY: Record<string, FieldEntry> = {
     declared: false,
     note: 'D-8: 等待目标不同 (artifact/fromRun/timeoutMs) = 匹配面与成本不同 = 不同的执行 → 入键。不明示: 同 research, executor 词表由 schema 兜, 旋钮由接线层/手写 plan 给 (等什么、等多久是调用方的成本决策)。',
   },
+  self_check: {
+    consumer: 'executor-dag.runNodeOnce (P1 D-3/C-2 INV-2-3: 内环将停时跑命令, 退出码不合则造 follow-up 让同一节点再转一轮) + plan/vetSelfCheck (规划期判据自证: 跑 probeDiscrimination/probeVacuity, 恒真 = 悄悄丢弃, 退回旁路)',
+    fingerprint: 'fields',
+    declared: true,
+    note: 'P1 D-3 (2026-08-21): 节点级确定性判据, 自修环(bounded)让「确定性判据没过」从整图重画降到同节点多转一轮; 缺席 = 旁路 (INV-1-2, 与落地前逐字节相同); 恒真判据在规划期被闸拒/丢弃, 拒绝路径不许判节点红 (INV-1-3 诚实边界: 探针是 fail-open, fail-open 必须留 why)。明示是**被迫的**: 输出产物节点 (output_path 存在) 自动附 self_check 比让 conductor 手写一条更易腐烂; 但本字段的取舍开不开归 caller, 故仍走明示。',
+  },
 };
 

@@ -54,6 +54,7 @@ const DECLARED_CONSUMERS: Record<string, string> = {
   tier: 'stamp pass (D-17 选池档位)',
   attach_media: 'executor-dag (D-14v2 多模态 content parts)',
   detector: 'executor-dag.runConductorRound (parseDetectorVerdict → 内环毒集 / BLOCKED 出口, D-Q)',
+  self_check: 'executor-dag.runNodeOnce (P1 D-3/C-2 INV-2-3: 内环将停时跑命令, 退出码不合则造 follow-up 让同一节点再转一轮) + plan/vetSelfCheck (规划期判据自证: 跑 probeDiscrimination/probeVacuity, 恒真 = 悄悄丢弃, 退回旁路)',
   kind: 'executor-dag.runPrimitiveNode',
   primitive: 'primitive-registry (compile + run)',
   params: 'primitive-registry (paramsSchema 深校验)',

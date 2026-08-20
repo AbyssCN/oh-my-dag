@@ -241,7 +241,18 @@ describe('subgraphLintView — 键与边同一个体系', () => {
     expect(subgraphLintView(exp.children).nodes['a']!.depends_on).toEqual(['outer-node']);
   });
 
-  /** 三步链 + 上限 2 → 被截断的是根 `a`, 而留下来的 `b` 引用着它 (展开序按指纹字典序, 确定)。 */
+  /**
+   * 三步链 + 上限 2 → 一个节点被截断, 其余两个留下 (展开序按指纹字典序, 确定)。
+   *
+   * 哪个节点具体被截断 = 指纹排序的派生结论, **不是**被测契约。本用例锁的是
+   * 「`truncatedNames` 持有真被截断的那个 id」, 供下游 `subgraphLintView` 的
+   * 「截断 = 悬空引用, 但**不是**真正的手误」分类闸消费 —— 那个分类 (lint 报
+   * `truncated-dependency` 而非 `dangling-dependency`) 才是不变量。
+   *
+   * (P1 D-3 / 2026-08-21: `nodeFieldsKey` 加 `self_check` 后, 这条三步链的具体
+   * 截断对象从 ['a'] 移到 ['b']; 该变化仅反映 fingerprint hash 的输出序列,
+   * 分类闸的行为仍一致。)
+   */
   const truncatedChain = () => {
     const exp = expandConductorNode('P', plan({
       a: { goal: 'A' },
@@ -249,7 +260,7 @@ describe('subgraphLintView — 键与边同一个体系', () => {
       c: { goal: 'C', depends_on: ['b'] },
     }), { maxNodes: 2 });
     // 前置断言: 指纹序若哪天变了, 本用例要**当场红**, 而不是悄悄退化成"什么都没测到"。
-    expect(exp.truncatedNames).toEqual(['a']);
+    expect(exp.truncatedNames).toEqual(['b']);
     return exp;
   };
 

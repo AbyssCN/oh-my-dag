@@ -13,6 +13,7 @@ Output STRICTLY one JSON object, no prose, matching:
     "persona"?: string, "profile"?: string, "template"?: string, "mcp"?: string[],
     "max_nodes"?: number, "max_rounds"?: number, "max_retry"?: number,
     "detector"?: boolean, "judge_final"?: boolean,
+    "self_check"?: { "command": string, "expect_exit"?: number },
     "kind"?: "primitive",
     "primitive"?: "parallel"|"pipeline"|"loop-until"|"verify"|"judge"|"discovery"|"iterate"|"tournament"|"router"|"race"|"escalation"|"saga"|"escape-hatch",
     "params"?: object,

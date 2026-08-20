@@ -296,6 +296,7 @@ Output STRICTLY one JSON object, no prose, matching:
   "nodes": { "<node_id>": { "goal"?: string, "persona"?: string, "profile"?: string, "template"?: string, "mcp"?: string[] (server name or "server:tool" — an unregistered server makes the whole plan INVALID, like "template"),
     "args"?: object, "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map"|"conductor", "command"?: string, "expect_exit"?: number, "creative"?: boolean,
     "max_nodes"?: number, "detector"?: boolean (MUST be true on any node that cross-checks ≥2 siblings),
+    "self_check"?: { "command": string, "expect_exit"?: number } (only on output_path nodes),
     "map"?: { "lister": object, "over": string, "itemVar": string, "keyBy"?: string, "template": object, "maxItems"?: number },
     "output_type"?: "structured"|"file"|"git"|"none", "output_path"?: string,
     "content_bytes"?: number (estimated bytes of content this node must ingest — see the big-content HARD RULE),

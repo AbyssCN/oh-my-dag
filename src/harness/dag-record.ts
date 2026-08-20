@@ -112,6 +112,43 @@ export interface DagRunNode {
    */
   injectedTokens?: number | null;
   /**
+   * **引擎外层轮号**(2026-08-21, C-0): 该节点落在引擎外层的第几轮 (跨轮身份)。
+   * 真源 = `engine.ts` settle 处的 `currentEngineRound`。缺席 = 早于本次改动的节点 / 链未接。
+   * 三态纪律同 C-1 五位列: 数字 / null / 缺席 必须分开念。
+   */
+  dagRound?: number | null;
+  /**
+   * **早轮同 id 节点被本轮覆盖时被落上的轮号**(2026-08-21, C-0 / INV-0-1)。
+   *
+   * 引擎在 settle 时给早轮那条 LeafResult 上写 `overriddenBy = currentEngineRound`;
+   * 末轮那条 LeafResult 此位为 null (最后一轮不算被覆盖)。读数板用 `> 0` 判定覆盖
+   * (报告.ts `computeWaste`),末轮 0 与 undefined 都不算浪费。
+   *
+   * ⚠ 0 不会从此处写出 (引擎落的就是 `currentEngineRound`, 起始 1 永远 ≥ 1);
+   *   但**读侧**必须接受 0 是「存在但未被覆盖」的合法值。
+   */
+  overriddenBy?: number | null;
+  /**
+   * **节点级 self_check 自修环的落账** (P1 C-4, 2026-08-21)。真源 = `LeafResult.selfRepair`
+   * (切片 3 在 agent-leaf 写, 引擎在 settle 透传, 见 dag/types.ts)。
+   *
+   * 三态严格区分 (INV-4-1, 与切片 1 的 INV-0-3 同一条根):
+   *   - **整个字段缺席** = 该节点没有 self_check (旁路, INV-1-2) —「这条路不适用」;
+   *   - `null` = self_check 存在但**被截断** (SDK 通道, INV-2-1) —「路在但截断」;
+   *   - `{rounds, oracleExit, convergedAt}` = self_check 真的跑了 —
+   *     `rounds` = 注了几次 follow-up, `oracleExit.length === rounds + 1` (INV-4-2 至少一次),
+   *     `convergedAt !== null` ⟺ `oracleExit` 末项 `=== expect_exit` (INV-4-3)。
+   *
+   * 为什么 `null` 与 `{rounds: 0, …}` 必须**分开**: 前者是「路在但没听见」(下一步 = 看 SDK
+   * 通道是否该重开), 后者是「判据一次就绿」(下一步 = 看判据强度是否合理) — 两个不同的下一步
+   * 念同一句话会读错成其中之一, 而本字段**正是**为这两条不同的下一步而生的 (见 `zero-shot-success`
+   * 与 `sdk-channel-mute` 这两条潜在的读数)。
+   *
+   * 三态在 record() 里靠 `r.selfRepair !== undefined` 严格守住: undefined → 不写键 (JSON 化后缺席),
+   * null → 写 null (JSON 化后是字面量 null), 对象 → 原样写 — 任何 `?? 0` / `?? null` 都把这格抹掉。
+   */
+  selfRepair?: { rounds: number; oracleExit: number[]; convergedAt: number | null } | null;
+  /**
    * 失败输出的指纹 (sha1 前 12 位; 只对**失败的 command 节点**记)。
    *
    * 存在的理由是回答一个**设计问题**而不是排障: §8.4 熔断的键是「命令 + 逐字相同的失败」,
@@ -705,7 +742,18 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
           durationMs: typeof (r as { durationMs?: unknown }).durationMs === 'number' ? (r as { durationMs: number }).durationMs : null,
           turns: typeof (r as { turns?: unknown }).turns === 'number' ? (r as { turns: number }).turns : null,
           // ⑥(c) 同上接住形状: 当前来源链未通 → 一律 null; 采集片接上后本行无需再动。
-          injectedTokens: typeof (r as { injectedTokens?: unknown }).injectedTokens === 'number' ? (r as unknown as { injectedTokens: number }).injectedTokens : null,
+          injectedTokens: typeof r.injectedTokens === 'number' ? r.injectedTokens : null,
+          // C-0 (2026-08-21): 跨轮身份 (引擎在 settle 时写 currentEngineRound)。读侧允许 `null` (= 没记 / 链未接),
+          // `undefined` 缺席与 `null` 不许互换 (INV-0-3) —— 真源 LeafResult 上未声明的字段也走 null 通道。
+          dagRound: typeof r.dagRound === 'number' ? r.dagRound : null,
+          // C-0 (2026-08-21, INV-0-1): 引擎在 settle 时给早轮那条落 `overriddenBy = currentEngineRound` (起始 1);
+          // 末轮那条 / 单轮节点 = null。「最后一轮不算被覆盖」的不变量在 engine.ts 守住, 留痕层只做搬运。
+          overriddenBy: typeof r.overriddenBy === 'number' ? r.overriddenBy : null,
+          // C-4 (2026-08-21, INV-4-1): 三态严格区分。`r.selfRepair === undefined` (节点根本
+          // 没 self_check) → 不写键 (JSON 化后 = 缺席); `null` (SDK 通道截断, INV-2-1) → 写 null;
+          // 对象 → 原样写。**严禁** `?? null` / `?? {rounds:0,...}` — 任一种都会把"缺席"读成
+          // 截断或判据一次就绿, 抹掉下一条不变量。
+          ...(r.selfRepair !== undefined ? { selfRepair: r.selfRepair } : {}),
         };
       });
       const usage = {

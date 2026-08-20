@@ -258,6 +258,27 @@ const PlanNode = z
      * 注入本 leaf 调用,模型走 multimodal 池。
      */
     attach_media: z.boolean().optional(),
+    /**
+     * **节点级确定性判据** (P1 D-3, 2026-08-21) ——「这个节点自己判自己做完没有」。
+     *
+     * 在 leaf 内环将停时由引擎跑一遍 (执行器内 pi 通道专属: 见 C-2 INV-2-1) —— 退出码
+     * `=== expect_exit` → 节点转绿;否则构造一条 follow-up 让同节点**再多转一轮** (有界,
+     * 见 P1 C-3) 而**不**新建节点、不重画图。命令承接与 `command` 节点同源的安全闸
+     * (白名单/元字符/git 写子命令, 危险命令直接拒 —— 见 INV-2-2)。
+     *
+     * **规划期判据自证** (P1 INV-1-3): conductor 写出的 `self_check` 必须过
+     * `acceptance-gate.ts` 的判别力/空世界自证 —— 一份**明显错**的产物上仍通过的判据会被
+     * **悄悄丢弃**(节点退回无 `self_check` 的旁路, 不判节点红 —— 那会逼真红为虚红)。
+     * 缺席 = 旁路 (INV-1-2): 执行路径与无 `self_check` 逐字节相同。
+     */
+    self_check: z
+      .object({
+        /** 跑在 leaf 工作根内的命令。须过 `command-leaf` 的白名单/危险命令闸 (INV-2-2)。 */
+        command: z.string().min(1),
+        /** 期望退出码。缺省 0。0..255, 与 `expect_exit` 字段同源 (POSIX 域)。 */
+        expect_exit: z.number().int().min(0).max(255).default(0),
+      })
+      .optional(),
   })
   .passthrough()
   // U1 map 节点交叉校验: map spec ⇔ executor:'map' 互为 required + INV-U5 禁嵌套 map。
@@ -446,6 +467,7 @@ export function bareConductorSystemPrompt(): string {
     '    "persona"?: string, "profile"?: string, "template"?: string, "mcp"?: string[],',
     '    "max_nodes"?: number, "max_rounds"?: number, "max_retry"?: number,',
     '    "detector"?: boolean, "judge_final"?: boolean,',
+    '    "self_check"?: { "command": string, "expect_exit"?: number },',
     '    "kind"?: "primitive",',
     '    "primitive"?: "parallel"|"pipeline"|"loop-until"|"verify"|"judge"|"discovery"|"iterate"|"tournament"|"router"|"race"|"escalation"|"saga"|"escape-hatch",',
     '    "params"?: object,',
@@ -807,6 +829,12 @@ export function conductorSystemPrompt(
     // 刻意不用 `//` 注释: 这份形状里一条注释都没有, 引进注释语法等于邀请它在输出的 JSON 里也写
     // 注释 (那会直接解析失败)。用括号补语, 与 "requires"?: "all"|"any"|number 同一个 register。
     '    "max_nodes"?: number, "detector"?: boolean (MUST be true on any node that cross-checks ≥2 siblings),',
+    // P1 D-3 (2026-08-21): self_check = 节点级确定性判据, 让 leaf 在内环将停时跑一条命令验自己;
+    // 退出码不合则同节点再转一轮 (有界)。**只对** output_path 存在的产物节点写: 这一类节点才会
+    // 「交付物长什么样」可被外部命令判; 抽象节点 (analysis / research / drafting) 写它 = 逼模型
+    // 给自己的观点想一条退出码, 那是本仓 P2 空旋钮的全貌。命令承接 `command` 节点的同一道闸
+    // (白名单/元字符); expect_exit 缺省 0, 0..255。
+    '    "self_check"?: { "command": string, "expect_exit"?: number } (only on output_path nodes),',
     '    "map"?: { "lister": object, "over": string, "itemVar": string, "keyBy"?: string, "template": object, "maxItems"?: number },',
     // "postcondition" 2026-07-28 从明示 schema 撤下 (同 skill/agent 的理由, 空旋钮全仓扫): 全仓零消费者,
     // 引擎从不检查它。明示它比明示 skill 更坏 —— 那是在请 conductor 给"正确性敏感的节点"写验证条件,

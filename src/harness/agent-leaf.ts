@@ -86,6 +86,7 @@ import { createDriftTracker, type DriftDetectorConfig } from './hooks/drift-dete
 import { createParseFeedback } from './write-parse-gate';
 import { createSandboxedLeafRunner } from './hooks/sandboxed-leaf';
 import { loadSandboxConfig } from './hooks/command-policy';
+import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from './command-leaf';
 import { logger } from '../logger';
 import { callModel } from '../model';
 import { resolvePiApiKey, resolvePiModel } from '../model/pi-transport';
@@ -338,6 +339,17 @@ export interface AgentLeafRunnerOpts {
    */
   grindAdvisorHardStop?: boolean;
   /**
+   * **节点级 self_check 自修环上限** (P1 C-3 INV-3-1, 2026-08-21)。默认 **2**——
+   * 自修 0 轮就是「判据一次就绿」(节点正常结束), 2 轮 = 「首轮判红 + 一次自修」是常规态,
+   * 留余量给偶发 (不靠无限轮换取收敛)。被闸拒 (`vetSelfCheck` 恒真 = 退回旁路) 与缺席
+   * (INV-1-2) 的节点**与本旋钮无关**, 永远不进自修环。
+   *
+   * **0 也合法** = 判据**仍跑一次**(用于判定 done/failed), 但**绝不注入任何 follow-up**;
+   * 与默认路径行为差仅在「节点级判据是否被听见」(INV-3-1)。开关 env `OMD_SELF_CHECK=0`
+   * 与本旋钮**并列**生效 (INV-3-3) —— 任一关掉都退回旁路。
+   */
+  maxSelfRepair?: number;
+  /**
    * drift 检测 (代码级 spinning 防护): agent-leaf 是 headless 工具循环 = spin 高发面,
    * 默认开 (low-invasive: 仅同调用同参重复 ≥阈值才经 transformContext 注 stuck-checklist)。
    * false 关; 对象调阈值。
@@ -501,6 +513,235 @@ const GRIND_ADVISOR_SYSTEM_PROMPT =
   'not a transcript. Reply with exactly two lines. Line 1: one-line diagnosis of the most likely ' +
   'reason the worker is stuck. Line 2: the single best next action for the worker to take. ' +
   'No preamble, no hedging, no other text.';
+
+// ── P1 self_check 自修环 (C-2/C-3, 2026-08-21) ──────────────────────────────────────
+//
+// pi 的 `getFollowUpMessages` 钩子是**交互式 steering 通道** (D-6, 借用的诚实边界 ——
+// 设计为人中途插话, headless 当自动喂料通道没验过)。本切片用它当节点级判据的反馈环:
+// 内环将停 → 跑 self_check.command → 退出码 === expect_exit 收敛; 不等 → 造一条 follow-up
+// 让同一节点再转一轮。**只在 pi 通道** (SDK 通道没有这个钩子, 不许静默降级, INV-2-1)。
+//
+// 闸接 command-leaf 的 `commandBlockReason` (fail-closed: 危险命令 / 元字符 / 凭证路径 /
+// git 写子命令 全拒) — 与 command 节点同一道闸, 不新造第二道 (INV-2-2)。
+//
+// 有界 (C-3): `maxSelfRepair` 默认 2; 第 n+1 轮开轮的必要条件是第 n 轮 touched **有新增**
+// (复用 grind 已有口径 `lastTouchGrowthAtMs` 同款, 不新造第二把尺子 —— 仓内回测明写纯墙钟
+// / CPU / 字节数当空转判据**误杀 25:1**)。
+//
+// 关闭方式: env `OMD_SELF_CHECK=0` 或 opts.maxSelfRepair = 0 —— 任一关掉退回旁路
+// (INV-3-3, 实验的对照臂, 不是可选)。
+
+/** self_check 的输出截断上限 (字节)。同 command-leaf 的 `MIN_TOOL_RESULT_BYTES` 上界。 */
+export const SELF_CHECK_OUTPUT_MAX_BYTES = 8_000;
+
+/** self_check 在 SDK 通道 + self_check 在场时打一次的告警文案 (INV-2-1 必须有日志)。 */
+export const SELF_CHECK_SDK_SKIP_LOG =
+  '[agent-leaf] self_check 在 SDK 通道不启用 (INV-2-1: claude-sdk-loop 无 getFollowUpMessages 钩子) —— ' +
+  '本节点按旁路走, 判据**不被听见**。重写为 command 节点或换 pi 通道方可自修。';
+
+/** env `OMD_SELF_CHECK=0` ⇒ 整条自修环关掉 (INV-3-3 开关)。其他值(含未设)= 默认开。 */
+export function selfCheckEnvEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.OMD_SELF_CHECK !== '0';
+}
+
+/**
+ * self_check 自修环的可观察状态 (C-4 落账)。在 result 上**有 self_check 时恒写** (INV-4-2
+ * 长度 = rounds + 1, 至少一次), `null` = 该节点无 self_check (不是「判据一次就绿」)。
+ */
+export interface SelfRepairLedger {
+  /** 实际自修轮数 (0 = 判据一次就绿, 没注 follow-up)。INV-4-1: 与 null 严格分开。 */
+  rounds: number;
+  /** 每一轮 self_check 的实际退出码, 按序。INV-4-2: length === rounds + 1。 */
+  oracleExit: number[];
+  /** 第几轮转绿 (0 = 首轮就绿); 始终没绿 = null。INV-4-3: ⟺ oracleExit 末项 === expect_exit。 */
+  convergedAt: number | null;
+}
+
+/**
+ * 单次 self_check 探测的产出 (buildSelfCheckFollowUp 内部状态机用)。
+ *
+ * - `blocked` = 命令被 `commandBlockReason` 闸拒 (危险命令 / 元字符 / 凭证路径 / git 写子命令);
+ *   exitCode 是 -1, **不注入 follow-up** (再跑也是同样结果, 不属于「还可以转一轮」)。
+ * - `exited`  = 命令真跑了 (或超时被杀), exitCode 是真值; 与 expect_exit 不等时构造 follow-up。
+ */
+export type SelfCheckOutcome =
+  | { kind: 'blocked'; reason: string }
+  | { kind: 'exited'; exitCode: number | null; stdout: string; stderr: string };
+
+/**
+ * 跑一次 self_check 命令 (闸拒与超时由调用面决定如何落账)。本函数**只负责**:
+ *   ① 经 `commandBlockReason` 过安全闸;
+ *   ② 通过则 spawn 一次并取 stdout/stderr + 退出码;
+ *   ③ **不**做截断 (留给调用方按 pi 的 `truncateTail` 口径走);
+ *   ④ **不**写入 selfRepair 账本 (调用方决定)。
+ *
+ * `allowlist` 由调用方提供 —— 测试可注入, 生产经 agent-leaf-runner 闭包从同源 config 取
+ * (与 `commandRunner` 共享白名单, INV-2-2)。
+ */
+export async function runSelfCheckProbe(opts: {
+  command: string;
+  cwd: string;
+  allowlist: readonly string[];
+  timeoutMs?: number;
+  spawn?: (c: string, d: string, t?: number) => Promise<{
+    stdout: string;
+    stderr: string;
+    exitCode: number | null;
+    signal: string | null;
+    timedOut?: boolean;
+  }>;
+}): Promise<SelfCheckOutcome> {
+  const { commandBlockReason } = await import('./command-leaf');
+  const blocked = commandBlockReason(opts.command, opts.allowlist);
+  if (blocked) return { kind: 'blocked', reason: blocked };
+  const timeoutMs = opts.timeoutMs ?? 60_000;
+  const spawn = opts.spawn ?? ((c: string, d: string, t?: number) => defaultSpawn(c, d, t));
+  const { stdout, stderr, exitCode, signal } = await spawn(opts.command, opts.cwd, timeoutMs);
+  // 信号死 (signal !== null) 一律折成 exitCode = null —— 与 commandRunner 同款口径 (H5-1
+  // 「三字段互不推断」)。命令超时被杀 = 已 timedOut, exitCode 可能是 124 (bash 内建) 也可能
+  // 是 null (signal); 不论哪种, 都是「没拿到主动退出码」。
+  if (signal !== null) return { kind: 'exited', exitCode: null, stdout, stderr };
+  return { kind: 'exited', exitCode, stdout, stderr };
+}
+
+/** runSelfCheckProbe 的默认 spawn —— 与 commandRunner 共享 defaultSpawn 的派生口径。 */
+async function defaultSpawn(
+  command: string,
+  cwd: string,
+  timeoutMs?: number,
+  spawnRaw?: (cmd: string, cwd: string, timeoutMs: number) => Promise<{
+    stdout: string;
+    stderr: string;
+    exitCode: number | null;
+    timedOut: boolean;
+    signal: string | null;
+  }>,
+): Promise<{
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  signal: string | null;
+  timedOut?: boolean;
+}> {
+  // 走 command-leaf 的真 runner (createCommandLeafRunner 返回一次性 runner 函数)。
+  // 单次 inline 创建: runner 闭包持有 allowlist/timeoutMs, 与 command 节点共用同一套闸
+  // (commandBlockReason + 白名单 + 超时, INV-2-2)。
+  const runner = createCommandLeafRunner({
+    allowlist: ['bun', 'bunx', 'node', 'tsc', 'git', 'echo', 'ls', 'cat', 'pwd', 'true', 'false'],
+    timeoutMs: timeoutMs ?? 60_000,
+    cwd,
+  });
+  const r = await runner({ command });
+  return {
+    stdout: r.text,
+    stderr: '',
+    exitCode: r.exitCode,
+    signal: r.signal,
+    timedOut: r.timedOut,
+  };
+}
+
+/**
+ * **getFollowUpMessages 闭包工厂** (C-2/C-3 主件)。
+ *
+ * 把每次被 pi 循环在收尾调到的 `getFollowUpMessages` 闭包**单实例化**, 内部维护:
+ *   - `roundsSoFar` —— 已注 follow-up 的次数 (与 `selfRepair.rounds` 一致);
+ *   - `oracleExit` —— 每次跑的退出码, **含首次**(INV-4-2: 长度 ≥ 1);
+ *   - `lastTouchedCount` —— 上次自修前的 touched 大小, 用作「有新增才开下一轮」的判据;
+ *   - `converged` —— 收敛后短路, 后续调用一律 [] (防御性, 不该再被调)。
+ *
+ * 返回 [] 的几条路径:
+ *   ① OMD_SELF_CHECK 关闭 / opts 关 / maxSelfRepair = 0 → 永不启动;
+ *   ② 已收敛 → 短路;
+ *   ③ rounds >= maxSelfRepair → 边界 (INV-3-1);
+ *   ④ 自修轮 touched 零新增 → 停 (INV-3-2);
+ *   ⑤ 闸拒 (dangerous command) → 不注 follow-up, 节点按旁路收尾 (INV-2-2 配套, 见 runOnce);
+ *   ⑥ 退出码 === expect_exit → 收敛。
+ */
+export function buildSelfCheckFollowUp(opts: {
+  spec: { command: string; expect_exit: number };
+  cwd: string;
+  allowlist: readonly string[];
+  /** 该闭包**每次**被调时取的「本节点当前 touched 大小」。 */
+  getTouchedSize: () => number;
+  /** 是否启用 (env / opts.maxSelfRepair / 全局旁路 三路取与)。 */
+  enabled: boolean;
+  /** 自修轮数上限。<= 0 = 不注任何 follow-up。 */
+  maxSelfRepair: number;
+  /** truncator: 给定 stdout/stderr, 返回 trunc 后文本。测试可注入, 生产走 pi `truncateTail`。 */
+  truncate?: (s: string, maxBytes: number) => string;
+  /** 探测跑法 (默认 = `runSelfCheckProbe`)。测试可注入。 */
+  probe?: (input: { command: string; cwd: string; allowlist: readonly string[] }) => Promise<SelfCheckOutcome>;
+  /** 注入观测 (按 outcome 记一笔账本)。测试可观察, 生产 = console logger。 */
+  observe?: (info: { kind: 'blocked' | 'exited' | 'no-progress' | 'round-cap' | 'converged' | 'disabled'; exitCode?: number | null; rounds: number }) => void;
+}): { followUp: () => Promise<AgentMessage[]>; ledger: SelfRepairLedger } {
+  const ledger: SelfRepairLedger = { rounds: 0, oracleExit: [], convergedAt: null };
+  let lastTouched = opts.getTouchedSize();
+  let converged = false;
+  const probe = opts.probe ?? ((p) => runSelfCheckProbe({ ...p, timeoutMs: 60_000 }));
+  const truncate = opts.truncate ?? ((s, n) => (s.length <= n ? s : truncateTail(s, { maxBytes: n }).content));
+  const followUp = async (): Promise<AgentMessage[]> => {
+    if (!opts.enabled || opts.maxSelfRepair <= 0) {
+      opts.observe?.({ kind: 'disabled', rounds: ledger.rounds });
+      return [];
+    }
+    if (converged) return [];
+    if (ledger.rounds >= opts.maxSelfRepair) {
+      opts.observe?.({ kind: 'round-cap', rounds: ledger.rounds });
+      return [];
+    }
+    const curTouched = opts.getTouchedSize();
+    if (ledger.rounds > 0 && curTouched === lastTouched) {
+      // INV-3-2: 自修一轮后零新增 → 不再开下一轮 (避免注空 follow-up 烧 token)。
+      opts.observe?.({ kind: 'no-progress', rounds: ledger.rounds });
+      return [];
+    }
+    lastTouched = curTouched;
+    const out = await probe({ command: opts.spec.command, cwd: opts.cwd, allowlist: opts.allowlist });
+    if (out.kind === 'blocked') {
+      // 闸拒: 退出码折成 -1 落账, 不注 follow-up (再跑一样被拒, 不是收敛机会)。
+      ledger.oracleExit.push(-1);
+      opts.observe?.({ kind: 'blocked', exitCode: -1, rounds: ledger.rounds });
+      converged = true; // 不再被调 (节点收尾由闸拒结果决定, 见 runOnce 注释)
+      return [];
+    }
+    // exitCode 可能是 null (信号死) —— 落账时折成 -1, 与 commandRunner 的闸拒/被信号杀
+    // 同款 (H5-1: 三字段互不推断, 异常路径统一进 -1 槽, 不留 null 让下游类型失稳)。
+    ledger.oracleExit.push(out.exitCode ?? -1);
+    opts.observe?.({ kind: 'exited', exitCode: out.exitCode, rounds: ledger.rounds });
+    if (out.exitCode === opts.spec.expect_exit) {
+      ledger.convergedAt = ledger.rounds; // 首轮就绿 ⇒ 0; 后续 ⇒ 对应轮次
+      converged = true;
+      opts.observe?.({ kind: 'converged', exitCode: out.exitCode, rounds: ledger.rounds });
+      return [];
+    }
+    // 不等: 构造 follow-up。轮数 +1。
+    ledger.rounds += 1;
+    const userMsg: AgentMessage = {
+      role: 'user',
+      content: formatSelfCheckFollowUp(opts.spec, out, truncate),
+      timestamp: Date.now(),
+    } as AgentMessage;
+    return [userMsg];
+  };
+  return { followUp, ledger };
+}
+
+/** 把一次 self_check 失败的输出格式化成 follow-up user 消息。 */
+function formatSelfCheckFollowUp(
+  spec: { command: string; expect_exit: number },
+  out: { exitCode: number | null; stdout: string; stderr: string },
+  truncate: (s: string, maxBytes: number) => string,
+): string {
+  const stdoutT = truncate(out.stdout, SELF_CHECK_OUTPUT_MAX_BYTES);
+  const stderrT = truncate(out.stderr, SELF_CHECK_OUTPUT_MAX_BYTES);
+  return (
+    `[self_check 未通过 (退出码 ${out.exitCode ?? '(信号死)'} ≠ 期望 ${spec.expect_exit})]\n` +
+    `命令: ${spec.command}\n` +
+    `---\nstdout:\n${stdoutT || '(空)'}\nstderr:\n${stderrT || '(空)'}\n---\n` +
+    `请基于上述失败原因继续修复你的产物。再次结束时不要重复上次同样的做法。`
+  );
+}
 
 /**
  * 造一个真 agent-leaf runner: 每次调用起一个一次性带工具子 session, 跑完 dispose。
@@ -1559,6 +1800,40 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     }
     armIdle();
 
+    // P1 self_check 自修环 (C-2/C-3): 在闭包里把状态机装好, 让上面的 config 块直接拿现成的
+    // getFollowUpMessages 句柄 (这样 config 块本身只关心接线, 不读懂状态机)。
+    //
+    // 三道闸, 任一关掉都退回旁路 (INV-3-3):
+    //   ① `input.self_check` 缺席 (INV-1-2) → 根本没这条 cfg;
+    //   ② `OMD_SELF_CHECK=0` env 关 → selfCheckEnabled = false;
+    //   ③ `opts.maxSelfRepair <= 0` → 自修轮上限 0 (判据仍跑一次用于判定, 不注 follow-up)。
+    const inputSelfCheck = input.self_check;
+    const selfCheckEnabled = selfCheckEnvEnabled();
+    const maxSelfRepair = opts.maxSelfRepair ?? 2;
+    const selfCheck: { command: string; expect_exit: number } | undefined =
+      inputSelfCheck && selfCheckEnabled && maxSelfRepair > 0 ? inputSelfCheck : undefined;
+    // 自修环的 follow-up 闭包 (pi 通道专属, SDK 走不到这里)。getTouchedSize 读最新值
+    // (闭包里再 getSize, 不是快照, 否则 INV-3-2「无新增停」的判据全是过期的)。
+    // 工厂返 `{followUp, ledger}`: followUp 接 AgentLoopConfig 的 getFollowUpMessages,
+    // ledger 在 leaf 跑完后落到 AgentLeafResult.selfRepair (C-4 落账)。
+    const selfCheckBundle = selfCheck
+      ? buildSelfCheckFollowUp({
+          spec: selfCheck,
+          cwd,
+          allowlist: DEFAULT_COMMAND_ALLOWLIST,
+          getTouchedSize: () => touched.size,
+          enabled: true,
+          maxSelfRepair,
+          observe: (info) =>
+            logger.info(
+              { cwd, command: selfCheck.command, expect_exit: selfCheck.expect_exit, ...info },
+              '[agent-leaf] self_check 自修环观察点 (C-3 落账)',
+            ),
+        })
+      : null;
+    const selfCheckFollowUp = selfCheckBundle?.followUp ?? null;
+    const selfRepairLedger = selfCheckBundle?.ledger ?? { rounds: 0, oracleExit: [], convergedAt: null };
+
     const context: AgentContext = {
       systemPrompt: runSystemPrompt,
       messages: [],
@@ -1586,6 +1861,18 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
         logger.debug({ parts: parts.length }, '[omd/agent-leaf] 软注入 via transformContext (drift / 写后即验 / grind advisor)');
         return [...messages, { role: 'user' as const, content: parts.join('\n\n'), timestamp: Date.now() }];
       },
+      // ── P1 self_check 自修环 (C-2/C-3, INV-2-1: 只在 pi 通道) ────────────────────────
+      // SDK 通道没有 `getFollowUpMessages` 钩子 —— 上面 provider === CLAUDE_SDK_PROVIDER 时整段
+      // config (含 prepareNextTurn/shouldStopAfterTurn) 不被 SDK 消费, 这条 getFollowUpMessages
+      // 也就自然不走; SDK 分支在本 runOnce 末尾的 `isSdkChannel` log 显式说一句。结构上靠
+      // `isSdkChannel` 短路, 不靠 env 关 —— env 关走 `selfCheckEnabled === false` 那条路 (旁路)。
+      ...(selfCheck && !isSdkChannel && selfCheckEnabled && maxSelfRepair > 0
+        ? {
+            // `selfCheck` truthy ⇒ `selfCheckBundle` 是 buildSelfCheckFollowUp 真值 ⇒ followUp 非空
+            // (上面三行已定), TS 跨变量不自动 narrow —— `!` 是给编译器的真相, 不是运行时假设。
+            getFollowUpMessages: selfCheckFollowUp!,
+          }
+        : {}),
       // ── 上下文压缩 (GP-8) ──────────────────────────────────────────────────
       // 顺序是**先压再判停**: 循环先调 prepareNextTurn 换上下文, 再拿换好的问 shouldStopAfterTurn。
       // 于是压缩成功 → 下一句判据自然就在线下, 不停; 压不动 (返 null / 压完还超) → 下一句接住停。
@@ -1794,6 +2081,15 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           ? { spin: { spinEvents: spinSummary.spinEvents, maxSameCount: spinSummary.maxSameCount } }
           : {}),
       },
+      // P1 self_check 自修环落账 (C-4): self_check 缺席 = null (INV-1-2 / INV-4-1 严格区分);
+      // SDK 通道 (Claude 订阅) 同样落 null (INV-2-1) —— 无 followUp 钩子, 判据不被听见。
+      // 其他通道落闭包内累计的 ledger —— 即使闭包没被调过 (maxSelfRepair=0 / env 关),
+      // selfRepairState 仍保有初始 `{rounds:0, oracleExit:[], convergedAt:null}`, 与 null 严格分得开。
+      selfRepair: inputSelfCheck
+        ? isSdkChannel
+          ? null
+          : (selfCheckFollowUp ? selfRepairLedger : { rounds: 0, oracleExit: [], convergedAt: null })
+        : null,
     };
   };
   // 上下文** —— 并发调用各一个上下文互不串。⚠ 不用 enterWith: 它在同步前缀里改的是**调用方
