@@ -319,6 +319,17 @@ async function once(arm: ArmConfig, rep: number): Promise<Row> {
     // ★ 同一根 opts, 只差 minimalToolFaceSeats 这一个键 (B 加, A 不加)
     const run = createAgentLeafRunner({
       ...BASE_OPTS,
+      /**
+       * ★ **必须给 `cwd`**(2026-08-21 实测教训)。省略 → leaf 落在 `process.cwd()` = **主仓**,
+       * 而种了 bug 的 fixture 在 `fx.root`(临时目录)。三个后果, 每个都静默:
+       *   ① leaf 在主仓里找那个 bug —— 它不在那儿, 找不到;
+       *   ② oracle 查的是 `fx.root`(下面两行), 那里没人动过 → **`pass` 恒为 false**,
+       *      而这个 false 一点信息量都没有(不是"模型没修好", 是"根本没让它修对地方");
+       *   ③ leaf 拿 bash 在主仓跑全量 `bun test`(~100s/次), 十分钟零 API 调用就卡在这里,
+       *      顺带往生产账本灌合成记录。
+       * 上一跑(pid 2109861)就是这么废掉的 —— 它"在跑", 只是跑错了地方。
+       */
+      cwd: fx.root,
       // MINIMAL_TOOLFACE_TOOLS (read/write/edit/bash) 经 hashlineEdit=false 后, 两臂都不
       // 注入 hashline 工具对 → 工具**集合**真的对得上: B 拿到这 4 件后扩成全, A 从一开始就拿到全。
       ...(arm.minimalToolFaceSeats ? { minimalToolFaceSeats: arm.minimalToolFaceSeats } : {}),

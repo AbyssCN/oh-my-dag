@@ -183,6 +183,48 @@ export function seatUsagePath(): string {
 }
 
 /**
+ * 真 provider 前缀。**判「这条是不是真调用」的一半**(另一半是 usage 量级, 见下)。
+ *
+ * 与 `.omd/config.json` 的 `subscriptionProviders` **不是**一回事 —— 那张表分的是"烧哪本账",
+ * 这张分的是"是不是真发出去过"。夹具坐标(`fixture:none` / `l:l` / `fake:leaf` / `c:m` / `test:leaf`)
+ * 一个都不在这里。
+ */
+const REAL_PROVIDER_PREFIXES = [
+  'deepseek:', 'minimax-cn:', 'minimax:', 'claude-code:', 'openai-codex:', 'openai:',
+  'anthropic:', 'kimi-coding:', 'opencode-go:', 'mimo-platform:', 'mimo:', 'google:',
+] as const;
+
+/**
+ * 这一条是**测试夹具写的合成记录**吗?返回原因串,`null` = 真调用。
+ *
+ * ## 为什么需要它
+ *
+ * 2026-08-21 实测:`.omd/seat-usage.jsonl` 里 **21,028 / 23,392 条是合成的**(≈90%)——
+ * 全仓测试跑在真仓根目录, `emitSeatUsage` 于是把夹具的每一发都写进**生产账本**。
+ * 后果不是"文件大了": **任何直接读这个账本的读数, 不过滤就是九成噪声**。
+ * 实际踩过 —— 报「verifier 占全部调用 0.23%」时分母用的是被污染的 21,674,
+ * 真实分母是 2,183(真占比 2.4%)。结论方向没变, 但那个数是错的。
+ *
+ * ## 两条判据(都要过才算真)
+ *
+ * ① **provider 前缀是真的** —— 夹具爱用 `fixture:none` / `l:l` / `fake:leaf` 这种;
+ * ② **`in > 10`** —— 真 LLM 调用光系统提示就几百 token。实测分布有干净断崖:
+ *    `in ≤ 10` 有 20,698 条, `in > 10` 只有 2,185 条, 中间近乎空。
+ *    ⚠ 阈值取 10 不取 0: 夹具里有一批用**真坐标**(如 `claude-code:claude-sonnet-5`)
+ *    配 `in=1 out=1`, 只看前缀漏得掉。
+ *
+ * ⚠ **`in === null` 不算合成** —— 那是"这一发没读到 usage"(抛错 / provider 不报),
+ * 是真调用的一种失败形态。`NULL ≠ 0 ≠ 不适用`, 压成合成就把真失败抹掉了。
+ */
+export function syntheticSeatUsageReason(entry: Pick<SeatUsageEntry, 'model' | 'in'>): string | null {
+  const model = String(entry.model ?? '');
+  if (!REAL_PROVIDER_PREFIXES.some((p) => model.startsWith(p))) return 'fake-model';
+  // null 显式放行: 没读到 usage ≠ 合成。
+  if (typeof entry.in === 'number' && entry.in <= 10) return 'toy-usage';
+  return null;
+}
+
+/**
  * 当前工作仓名(`repo` 列)。`resolveProject` 要 spawn 一次 git,而本函数在**每一发**上被调用 ——
  * 进程级记一次即可(一个进程的 cwd 不会中途换仓;换了也是隔离档,那时 runId 也不同)。
  * 解不出来 → `null`(§3 第 1 条:不编一个 `'unknown'` 仓)。

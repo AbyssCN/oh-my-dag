@@ -50,6 +50,10 @@ interface ChildOut {
 /** 起一个子进程跑 iterate。回 {exitCode, signal, parsed}。 */
 async function runChild(args: string[]): Promise<{ code: number | null; signal: string | null; out: ChildOut | null; stderr: string }> {
   const proc = Bun.spawn(['bun', 'run', CHILD, '--root', root, '--run', RUN_ID, ...args], {
+      // 子进程**不继承**父进程运行时改过的 env (Bun.spawn 的 env 是启动快照, 见
+      // test/setup/tmpdir-isolation.ts 的已知边界)。不显式传, 夹具的 seat-usage / seat-health
+      // 就会写进**生产** .omd/ —— 实测一次全量漏 66 条 `fixture:none` 进真账本。
+      env: { ...process.env },
     cwd: join(import.meta.dir, '..', '..'),
     stdout: 'pipe',
     stderr: 'pipe',
@@ -71,6 +75,10 @@ async function runChild(args: string[]): Promise<{ code: number | null; signal: 
  */
 async function crashAt(hangNode: string, args: string[]): Promise<void> {
   const proc = Bun.spawn(['bun', 'run', CHILD, '--root', root, '--run', RUN_ID, '--hang', hangNode, ...args], {
+      // 子进程**不继承**父进程运行时改过的 env (Bun.spawn 的 env 是启动快照, 见
+      // test/setup/tmpdir-isolation.ts 的已知边界)。不显式传, 夹具的 seat-usage / seat-health
+      // 就会写进**生产** .omd/ —— 实测一次全量漏 66 条 `fixture:none` 进真账本。
+      env: { ...process.env },
     cwd: join(import.meta.dir, '..', '..'),
     stdout: 'pipe',
     stderr: 'pipe',

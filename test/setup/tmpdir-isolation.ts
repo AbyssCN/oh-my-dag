@@ -90,6 +90,47 @@ mkdirSync(TEST_RUN_TMPDIR, { recursive: true });
 process.env.TMPDIR = TEST_RUN_TMPDIR;
 
 /**
+ * ★ **座位账本也改道本轮目录**(2026-08-21, owner 点名)。
+ *
+ * ## 它修的是什么
+ *
+ * `emitSeatUsage` 往 `<omdRepoRoot>/.omd/seat-usage.jsonl` 追加, 而测试**跑在真仓根目录** ——
+ * 于是每个夹具的每一发都写进**生产账本**。实测累计 **21,028 / 23,392 条是合成的(≈90%)**
+ * (`fixture:none` 13,350 · `l:l` 1,488 · `fake:leaf` 744 …)。
+ *
+ * 代价不是"文件大了", 是**读数被污染**: 任何直接读这个账本的统计, 不过滤就是九成噪声。
+ * 已经踩过一次 —— 「verifier 占全部调用 0.23%」的分母用的是被污染的 21,674, 真分母 2,183
+ * (真占比 2.4%)。结论方向没变, 但那个数是错的, 而**错得看不出来**。
+ *
+ * ## 为什么放这儿, 而不是逐个测试文件打桩
+ *
+ * 与本文件治 TMPDIR 完全同构: 污染源不是某一个测试, 是几十个夹具各写几发。
+ * `seat-usage.ts` 的 `seatUsagePath()` 本来就留了 `OMD_SEAT_USAGE_PATH` 覆盖口
+ * (注释写着"测试/隔离档用"), 只是**没人在测试侧设它**。这里补上 = 单点修复, 零测试文件改动。
+ *
+ * ⚠ 与 TMPDIR 同一条已知边界: **子进程不继承**(`Bun.spawn` 的 env 是启动快照)。
+ *   夹具子进程若自己发真调用仍会写进生产账本。判据现成 —— `syntheticSeatUsageReason`
+ *   数一遍就知道有没有回潮, 不必靠感觉。
+ */
+process.env.OMD_SEAT_USAGE_PATH = join(TEST_RUN_TMPDIR, 'seat-usage.jsonl');
+
+/**
+ * ★ **熔断状态也改道**(2026-08-21, 与账本同一次)。
+ *
+ * `provider-health.ts:107` 的周期档持久化在 `<cwd>/.omd/seat-health.json`, 测试跑在真仓 →
+ * **读的是生产熔断状态**。这不是"脏一点"的问题, 是测试结论随外部世界漂:
+ *
+ *   实测当天 deepseek 被 402 打进冷却(`seat-health.json` 里 until 戳还在), 于是
+ *   `role-fallback.test.ts` 的「env 提供凭证 → 视为有凭证, 不兜底」**当场红** ——
+ *   因为 `usable()` = `credentialed && !channelInCooldown`, 而 deepseek 真的在冷却里。
+ *   代码一个字没改, 测试却红了; 明天冷却窗过了它又会自己绿。**这种红最费人**:
+ *   它看起来像回归, 实际是测试读了不该读的生产状态。
+ *
+ * 与账本同一条路子: 覆盖口(`OMD_SEAT_HEALTH_PATH`)本来就有, 只是没人在测试侧设。
+ */
+process.env.OMD_SEAT_HEALTH_PATH = join(TEST_RUN_TMPDIR, 'seat-health.json');
+
+/**
  * 收尾删除。
  *
  * ⚠ **用 `afterAll` 而不是 `process.on('exit')`** —— 后者在 `bun test` 下**根本不触发**。

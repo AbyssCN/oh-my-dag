@@ -62,7 +62,13 @@ interface ChildOut {
 }
 
 async function runChild(args: string[]): Promise<ChildOut | null> {
-  const proc = Bun.spawn(['bun', 'run', CHILD, '--root', root, '--run', RUN_ID, ...args], { cwd: REPO, stdout: 'pipe', stderr: 'pipe' });
+  // env 显式传 —— 见下一个 spawn 的注: 不传, 夹具会把 seat-usage / seat-health 写进**生产** .omd/。
+  const proc = Bun.spawn(['bun', 'run', CHILD, '--root', root, '--run', RUN_ID, ...args], {
+    cwd: REPO,
+    stdout: 'pipe',
+    stderr: 'pipe',
+    env: { ...process.env },
+  });
   // 本文件的 runChild **不看退出码**(返回值里没有它, 判据全在 `##RESULT##` 那行),
   // 所以退出事件丢了不该让整条用例红 —— 用 awaitDeath 而不是 awaitExitBounded。
   const [stdout, stderr] = await readAllBounded([proc.stdout, proc.stderr], 'runChild(resume 子进程) 读管道') as [string, string];
@@ -78,6 +84,10 @@ async function runChild(args: string[]): Promise<ChildOut | null> {
  */
 async function crashAt(hangNode: string, args: string[]): Promise<void> {
   const proc = Bun.spawn(['bun', 'run', CHILD, '--root', root, '--run', RUN_ID, '--hang', hangNode, ...args], {
+      // 子进程**不继承**父进程运行时改过的 env (Bun.spawn 的 env 是启动快照, 见
+      // test/setup/tmpdir-isolation.ts 的已知边界)。不显式传, 夹具的 seat-usage / seat-health
+      // 就会写进**生产** .omd/ —— 实测一次全量漏 66 条 `fixture:none` 进真账本。
+      env: { ...process.env },
     cwd: REPO,
     stdout: 'pipe',
     stderr: 'pipe',
