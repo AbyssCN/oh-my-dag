@@ -1,0 +1,147 @@
+{
+  "arm": "control",
+  "entry": "ran",
+  "groups": [
+    {
+      "group": 1,
+      "paths": [
+        {
+          "pathId": "g1-c1",
+          "goal": "在 cwd 对应的 detached worktree 中,按 README_TASK.md 完成 sandbox 小改动。不得修改 test_task.py、README_TASK.md、verify.sh。改完运行 verify 命令: bash verify.sh,直到 exit 0。最终输出第一行必须是 RESULT-STATUS: pass 或 RESULT-STATUS: fail。第一行之后,按原样复述你在上游节点输出中看到的所有 CONTRACT-FACT-* 事实;一个都没看到就写 NO-FACT。不得改动 worktree 之外的任何文件。",
+          "entry": "ran",
+          "wallclockMs": 15761,
+          "tokensIn": 69684,
+          "tokensOut": 461,
+          "cacheReadInputTokensFirst": 3225,
+          "cacheCreationInputTokensFirst": 10181,
+          "contextRebuilt": true,
+          "verifyPassed": false,
+          "quotaWall": {
+            "hit": false,
+            "rawError": null
+          }
+        },
+        {
+          "pathId": "g1-c2",
+          "goal": "在 cwd 对应的 detached worktree 中,按 README_TASK.md 完成 sandbox 小改动。不得修改 test_task.py、README_TASK.md、verify.sh。改完运行 verify 命令: bash verify.sh,直到 exit 0。最终输出第一行必须是 RESULT-STATUS: pass 或 RESULT-STATUS: fail。第一行之后,按原样复述你在上游节点输出中看到的所有 CONTRACT-FACT-* 事实;一个都没看到就写 NO-FACT。不得改动 worktree 之外的任何文件。",
+          "entry": "ran",
+          "wallclockMs": 11706,
+          "tokensIn": 69714,
+          "tokensOut": 472,
+          "cacheReadInputTokensFirst": 3225,
+          "cacheCreationInputTokensFirst": 10183,
+          "contextRebuilt": true,
+          "verifyPassed": false,
+          "quotaWall": {
+            "hit": false,
+            "rawError": null
+          }
+        }
+      ],
+      "armWallclockMaxMs": 15761,
+      "pairDistance": 0,
+      "contextRebuilt": true
+    },
+    {
+      "group": 2,
+      "paths": [
+        {
+          "pathId": "g2-c1",
+          "goal": "在 cwd 对应的 detached worktree 中,按 README_TASK.md 完成 sandbox 小改动。不得修改 test_task.py、README_TASK.md、verify.sh。改完运行 verify 命令: bash verify.sh,直到 exit 0。最终输出第一行必须是 RESULT-STATUS: pass 或 RESULT-STATUS: fail。第一行之后,按原样复述你在上游节点输出中看到的所有 CONTRACT-FACT-* 事实;一个都没看到就写 NO-FACT。不得改动 worktree 之外的任何文件。",
+          "entry": "ran",
+          "wallclockMs": 10770,
+          "tokensIn": 69666,
+          "tokensOut": 460,
+          "cacheReadInputTokensFirst": 3225,
+          "cacheCreationInputTokensFirst": 10181,
+          "contextRebuilt": true,
+          "verifyPassed": false,
+          "quotaWall": {
+            "hit": false,
+            "rawError": null
+          }
+        },
+        {
+          "pathId": "g2-c2",
+          "goal": "在 cwd 对应的 detached worktree 中,按 README_TASK.md 完成 sandbox 小改动。不得修改 test_task.py、README_TASK.md、verify.sh。改完运行 verify 命令: bash verify.sh,直到 exit 0。最终输出第一行必须是 RESULT-STATUS: pass 或 RESULT-STATUS: fail。第一行之后,按原样复述你在上游节点输出中看到的所有 CONTRACT-FACT-* 事实;一个都没看到就写 NO-FACT。不得改动 worktree 之外的任何文件。",
+          "entry": "ran",
+          "wallclockMs": 13122,
+          "tokensIn": 69074,
+          "tokensOut": 585,
+          "cacheReadInputTokensFirst": 3225,
+          "cacheCreationInputTokensFirst": 10051,
+          "contextRebuilt": true,
+          "verifyPassed": false,
+          "quotaWall": {
+            "hit": false,
+            "rawError": null
+          }
+        }
+      ],
+      "armWallclockMaxMs": 13122,
+      "pairDistance": 0.8928571428571429,
+      "contextRebuilt": true
+    },
+    {
+      "group": 3,
+      "paths": [
+        {
+          "pathId": "g3-c1",
+          "goal": "在 cwd 对应的 detached worktree 中,按 README_TASK.md 完成 sandbox 小改动。不得修改 test_task.py、README_TASK.md、verify.sh。改完运行 verify 命令: bash verify.sh,直到 exit 0。最终输出第一行必须是 RESULT-STATUS: pass 或 RESULT-STATUS: fail。第一行之后,按原样复述你在上游节点输出中看到的所有 CONTRACT-FACT-* 事实;一个都没看到就写 NO-FACT。不得改动 worktree 之外的任何文件。",
+          "entry": "ran",
+          "wallclockMs": 11189,
+          "tokensIn": 69268,
+          "tokensOut": 519,
+          "cacheReadInputTokensFirst": 3225,
+          "cacheCreationInputTokensFirst": 10055,
+          "contextRebuilt": true,
+          "verifyPassed": false,
+          "quotaWall": {
+            "hit": false,
+            "rawError": null
+          }
+        },
+        {
+          "pathId": "g3-c2",
+          "goal": "在 cwd 对应的 detached worktree 中,按 README_TASK.md 完成 sandbox 小改动。不得修改 test_task.py、README_TASK.md、verify.sh。改完运行 verify 命令: bash verify.sh,直到 exit 0。最终输出第一行必须是 RESULT-STATUS: pass 或 RESULT-STATUS: fail。第一行之后,按原样复述你在上游节点输出中看到的所有 CONTRACT-FACT-* 事实;一个都没看到就写 NO-FACT。不得改动 worktree 之外的任何文件。",
+          "entry": "ran",
+          "wallclockMs": 11658,
+          "tokensIn": 71702,
+          "tokensOut": 510,
+          "cacheReadInputTokensFirst": 3225,
+          "cacheCreationInputTokensFirst": 10547,
+          "contextRebuilt": true,
+          "verifyPassed": false,
+          "quotaWall": {
+            "hit": false,
+            "rawError": null
+          }
+        }
+      ],
+      "armWallclockMaxMs": 11658,
+      "pairDistance": 0,
+      "contextRebuilt": true
+    }
+  ],
+  "distances": [
+    0,
+    0.8928571428571429,
+    0
+  ],
+  "armWallclockMaxMs": 15761,
+  "distanceStats": {
+    "n": 3,
+    "min": 0,
+    "median": 0,
+    "max": 0.8928571428571429
+  },
+  "distanceNote": "distances 由 exec-fork-runner.ts 内联算出 (dist(p1.output, p2.output), 全 agent stdout 文本, 非 diff)。exec-fork-distance.ts --readings-dir 读本文件时 3 组全 SKIP (PathReading schema 无 diffText/diffFile/outputDiff 字段, resolveDiffText 返回 null) —— 已实跑验证 (见 exec-fork-distance.ts 输出: 'group N: 缺 diff 文本, 跳过'), 不是漏跑而是 schema 未含 diff 字段的已知缺口, 不在本节点写集 (scripts/probes/) 之外修引擎/契约。噪声底读数以本文件内联 distances 为准。",
+  "verdict": null,
+  "abort": {
+    "triggered": true,
+    "reason": "budget_3_groups",
+    "atGroup": 3,
+    "atPath": null,
+    "cumulativeWallclockMs": 74206
+  }
+}

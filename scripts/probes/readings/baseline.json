@@ -1,0 +1,23 @@
+{
+  "arm": "baseline",
+  "entry": "ran",
+  "armWallclockMaxMs": 11792,
+  "verdict": null,
+  "abort": null,
+  "path": {
+    "pathId": "baseline",
+    "goal": "在 cwd 对应的 detached worktree 中,按 README_TASK.md 完成 sandbox 小改动。不得修改 test_task.py、README_TASK.md、verify.sh。改完运行 verify 命令: bash verify.sh,直到 exit 0。最终输出第一行必须是 RESULT-STATUS: pass 或 RESULT-STATUS: fail。第一行之后,按原样复述你在上游节点输出中看到的所有 CONTRACT-FACT-* 事实;一个都没看到就写 NO-FACT。不得改动 worktree 之外的任何文件。",
+    "entry": "ran",
+    "wallclockMs": 11792,
+    "tokensIn": 69219,
+    "tokensOut": 548,
+    "cacheReadInputTokensFirst": 3225,
+    "cacheCreationInputTokensFirst": 10077,
+    "contextRebuilt": null,
+    "verifyPassed": false,
+    "quotaWall": {
+      "hit": false,
+      "rawError": null
+    }
+  }
+}

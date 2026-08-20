@@ -99,6 +99,12 @@ export function reconcileCodeAndTickets(commits: CommitClaim[], issues: IssueSta
   for (const issue of issues) {
     if (issue.state !== 'CLOSED') continue;
     if (issue.mapState === 'CLOSED') continue; // 图已退役 → 这张票进不了任何 slice, 报它是噪声
+    // CLOSED + `path:suggested` = **已拒建议**, 不是「交付了没贴标签」。backend-gh.ts:492 那一行
+    // 直接 `continue` 把它从票集里摘掉 —— 它压根不会成为票, 更进不了 readyRegion。
+    // ⚠ 这一格是本闸首版的**假阳性**(2026-08-20 实测): 首版对 #177/#164/#156/#155/#154/#140/#139
+    //   报了 7 条硬漂移, 而这 7 张全是被拒的机器建议票(`Suggested-by: <runId>` 的未收敛票)。
+    //   照首版判词去贴 `path:delivered`, 等于把**拒绝**改写成**交付** —— 比不报还坏。
+    if (issue.labels.includes('path:suggested')) continue;
     const type = ticketTypeOf(issue.labels);
     if (type === null || !(REEXECUTABLE_TYPES as readonly string[]).includes(type)) continue;
     if (issue.labels.includes('path:delivered')) continue;

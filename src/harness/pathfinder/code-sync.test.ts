@@ -77,6 +77,16 @@ describe('硬闸 — CLOSED 的 task 票缺 path:delivered', () => {
     expect(reconcileCodeAndTickets([], [ISSUE_185]).filter((d) => d.kind === 'closed-not-delivered')).toEqual([]);
   });
 
+  test('★ 已拒建议(CLOSED + path:suggested)→ 不报: 拒绝不是交付', () => {
+    // 本闸首版的**真实假阳性**(2026-08-20): 对 #177/#164/#156/#155/#154/#140/#139 报了 7 条硬漂移,
+    // 而这 7 张全是被拒的机器建议票(标题 `[未收敛·…]`, 正文带 `Suggested-by: <runId>`)。
+    // backend-gh.ts:492 直接 `continue` 把它们摘出票集 —— 进不了 readyRegion, 零重跑风险。
+    // 照首版判词贴 `path:delivered` 会把「拒绝」改写成「交付」, 比漏报更坏。
+    // 反向自检: 摘掉 path:suggested 判断 → 本条红。
+    const rejected: IssueState = { number: 177, state: 'CLOSED', labels: ['path:task', 'path:suggested'] };
+    expect(reconcileCodeAndTickets([], [rejected])).toEqual([]);
+  });
+
   test('★ 图已退役(mapState CLOSED)→ 不报: 它进不了任何 slice, 没有重跑风险', () => {
     // 真实样本: 图 #14 (session-continuity) 已 close, 它的 #15–#26 全是这一格。
     // 反向自检: 摘掉 mapState 判断 → 本条红(而线上会多出 12 条纯噪声, 实测过)。

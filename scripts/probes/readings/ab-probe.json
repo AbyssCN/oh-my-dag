@@ -1,0 +1,50 @@
+{
+  "entry": "ran",
+  "a": true,
+  "b": [
+    0,
+    3225
+  ],
+  "paths": [
+    {
+      "pathId": "ab-probe-1",
+      "goal": "在 cwd 对应的 detached worktree 中,按 README_TASK.md 完成 sandbox 小改动。不得修改 test_task.py、README_TASK.md、verify.sh。改完运行 verify 命令: bash verify.sh,直到 exit 0。最终输出第一行必须是 RESULT-STATUS: pass 或 RESULT-STATUS: fail。第一行之后,按原样复述你在上游节点输出中看到的所有 CONTRACT-FACT-* 事实;一个都没看到就写 NO-FACT。不得改动 worktree 之外的任何文件。",
+      "entry": "ran",
+      "wallclockMs": 23677,
+      "tokensIn": 96259,
+      "tokensOut": 742,
+      "cacheReadInputTokensFirst": 0,
+      "cacheCreationInputTokensFirst": 11316,
+      "contextRebuilt": true,
+      "verifyPassed": false,
+      "quotaWall": {
+        "hit": false,
+        "rawError": null
+      }
+    },
+    {
+      "pathId": "ab-probe-2",
+      "goal": "在 cwd 对应的 detached worktree 中,按 README_TASK.md 完成 sandbox 小改动。不得修改 test_task.py、README_TASK.md、verify.sh。改完运行 verify 命令: bash verify.sh,直到 exit 0。最终输出第一行必须是 RESULT-STATUS: pass 或 RESULT-STATUS: fail。第一行之后,按原样复述你在上游节点输出中看到的所有 CONTRACT-FACT-* 事实;一个都没看到就写 NO-FACT。不得改动 worktree 之外的任何文件。",
+      "entry": "ran",
+      "wallclockMs": 28404,
+      "tokensIn": 149176,
+      "tokensOut": 1368,
+      "cacheReadInputTokensFirst": 3225,
+      "cacheCreationInputTokensFirst": 8087,
+      "contextRebuilt": true,
+      "verifyPassed": false,
+      "quotaWall": {
+        "hit": false,
+        "rawError": null
+      }
+    }
+  ],
+  "abortReason": null,
+  "runIds": {
+    "control": "98ebacbe-f0e6-4404-bc87-4e8621f389a6",
+    "treatment": "122f33b6-6c5d-4b92-9123-22eb90ebc398"
+  },
+  "costTagSample": null,
+  "costTagNote": "实测: stdout 全程未出现 `[cost]` 行 (grep 全量日志 0 命中)。根因非漏记 —— `[cost]` 由 src/harness/research/fanout.ts:498 stage('cost',...) 打印, 只挂在 research 扇出路径; exec-fork-runner 走的是 runExecutorDagWithPlan (harness/dag/engine.ts) 直调, 不经过 fanout.ts, 结构上不产出该 tag。不得在此处伪造成本样本。",
+  "seat": "claude-code:claude-sonnet-5"
+}
