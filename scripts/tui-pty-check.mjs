@@ -212,9 +212,26 @@ function bootReady(t) {
   return t.includes('engine');
 }
 
-/** 场景 1:起得来 → 有回显 → Ctrl+C 两次干净退出。 */
+/**
+ * 场景 1:起得来 → 有回显 → Ctrl+C 两次干净退出。
+ *
+ * ⚠ **这条 lane 显式要 160 列**(2026-08-21,一次误诊换来的)。
+ *
+ * 底栏是 `fitLine` —— **截断不折行**。而分支段排在 `↑in ↓out cacheNN%` 与 `ctx N%` **前面**,
+ * 于是分支名一长就把行尾的读数挤出终端宽度。默认 100 列时分支段的预算只有**约 5 列**:
+ * `main`(4)险过,`tui-obs`(7)就溢出。
+ *
+ * 后果是 `SB-1` / `SB-5` 这两条**实际上在量「你在不在 main 上」,不是在量底栏** ——
+ * 判据有一个没写出来的前提(分支名短),于是读数量的是尺子。
+ * 2026-08-14 同一族已经犯过一次(见 `render/statusbar.ts` 头注:worktree 的 uuid 分支名),
+ * 当时只缩了 uuid,通用宽度那半留着 —— 今天在一个普通长分支名上复发。
+ *
+ * 加宽只是把**混淆变量**移出这条 lane:它要量的是"数有没有到屏上",不是"能不能画得下"。
+ * ⚠ 底栏在窄终端下会丢读数**这件事本身仍未修**(那要给分支段做宽度预算,属 TUI 那条线);
+ *   下方 SB-1 前的自诊断就是为了它万一复发时红得能自己解释。
+ */
 async function scenarioHappyPath() {
-  const p = startTui();
+  const p = startTui({ cols: 160 });
   try {
     check(await waitFor(p, (t) => bootReady(t)), 'S2-1 启动后 TUI 壳出现', p.text().slice(0, 200));
     // 这条 lane 用的是 fixture 后端, footer 上必须**自报家门** ——
@@ -290,9 +307,19 @@ async function scenarioHappyPath() {
     // ⚠ 2026-08-09 底栏**从两行减到一行**, 判据跟着改:`in/out/cache` 三个词换成 `↑↓`,
     //   绝对 cache 数不画了(与命中率重复)⇒ 现在钉 `↑3.1k ↓184 缓存88%`。
     //   数还是那三个(3120/184/2760 → 88%), 变的是词元数不是信息。
+    // 自诊断: 这条一旦红, 先排除"被分支名挤掉"这个混淆变量再去查底栏 (见本函数头注)。
+    const sbOk = await waitFor(p, (t) => t.includes('↑3.1k ↓184 cache88%'));
+    const branchLen = (() => {
+      try {
+        return execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim().length;
+      } catch {
+        return -1;
+      }
+    })();
     check(
-      await waitFor(p, (t) => t.includes('↑3.1k ↓184 cache88%')),
-      'SB-1 ★ 底栏: token 与命中率非零且与账本一致(3120/184/2760 → 88%)',
+      sbOk,
+      'SB-1 ★ 底栏: token 与命中率非零且与账本一致(3120/184/2760 → 88%)' +
+        (sbOk ? '' : ` ⚠ 当前分支名 ${branchLen} 字符 —— 若底栏被截断, 这条量的是分支名长度不是底栏 (见 scenarioHappyPath 头注)`),
       p.text().slice(-500),
     );
     // fixture:model 不在价表 → unpriced → `$0.00+`(下界标注), **不是** 0% 也不是编一个百分比。
