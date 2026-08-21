@@ -317,6 +317,11 @@ export interface AgentLeafRunnerOpts {
    */
   mcpAllow?: string[];
   /**
+   * **runner 级**写域缺省 (节点没给时用它)。缺省 undefined = 闸缺席。
+   * 逐调用的那份走 `AgentLeafInput.writeAllow` —— 同 mcpAllow 的两层。
+   */
+  writeAllow?: string[];
+  /**
    * 测试注入 (同 sdkQueryFn 纪律): 外部 MCP pool 的 transport / 台账 —— 进程内测试换
    * InMemory linked pair + ':memory:' ledger; 生产省略 (stdio 子进程 + cwd 懒落库)。
    */
@@ -1295,7 +1300,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
   // (下方 wrapper 用 run() 开, 不用 enterWith —— enterWith 会改到调用方的共享上下文, 并发节点互踩)。
   // per-call 状态 (碰撞台账 session + MCP 授权清单) 落**同一个** ALS: 装配期闭包只挂 getter,
   // 调用期由下方 wrapper 的 run() 写入 —— 并发调用各一个上下文互不串 (enterWith 会串, 见下)。
-  const touchSessionStore = new AsyncLocalStorage<{ session?: string; mcpAllow?: string[] } | undefined>();
+  const touchSessionStore = new AsyncLocalStorage<{ session?: string; mcpAllow?: string[]; writeAllow?: string[] } | undefined>();
   const touchOpt = opts.touch; // const 让闭包里的收窄成立 (getter 里引用 touchOpt.session)
   const baseTools = createOmdAgentTools({
     cwd,
@@ -1304,6 +1309,10 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // 误报没有任何赦免出口, leaf 只能撞墙重试 (S-36 同形: 护栏装在一侧, 同名通道绕过全部)。
     // loadSandboxConfig 在 runner 装配期读一次 (cwd 固定); 改 config 后新 run 生效 (thunk 每 run 重建)。
     commandPolicy: loadSandboxConfig(cwd),
+    // 写域闸的判据面 (2026-08-21): **thunk 不是值** —— runner 跨 run 复用, 写集只能按调用取,
+    // 烤进装配期就会拿上一个节点的写集去判这一个 (同 mcpAllow / touchSession 那条纪律)。
+    // 返回 undefined = 闸缺席放行 (没声明 write_set 的 plan); [] = 声明了"什么都不许写"。
+    writeAllow: () => touchSessionStore.getStore()?.writeAllow ?? opts.writeAllow,
     ...(touchOpt ? { touch: { session: () => touchSessionStore.getStore()?.session ?? touchOpt.session } } : {}),
   });
   const hashlineTools = opts.hashlineEdit ? createHashlineCustomTools({ cwd }) : [];
@@ -2096,8 +2105,11 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
   // (引擎) 的共享上下文**, 并发节点会互相覆盖 (withScope 文档明说的坑); run() 的上下文随调用
   // 结束自动回收, 无需 exit。
   return async (input) => {
-    if (opts.touch || input.mcpAllow !== undefined) {
-      return touchSessionStore.run({ session: input.touchSession, mcpAllow: input.mcpAllow }, () => runOnce(input));
+    if (opts.touch || input.mcpAllow !== undefined || input.writeAllow !== undefined) {
+      return touchSessionStore.run(
+        { session: input.touchSession, mcpAllow: input.mcpAllow, writeAllow: input.writeAllow },
+        () => runOnce(input),
+      );
     }
     return runOnce(input);
   };

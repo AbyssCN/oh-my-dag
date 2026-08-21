@@ -29,6 +29,15 @@ export interface AgentLeafInput {
    */
   mcpAllow?: string[];
   /**
+   * **本次调用允许写的路径**(引擎侧取自 `node.write_set`)—— 写域闸的判据面,
+   * `write` / `edit` 在**写的那一刻**判,越界当场拒。
+   *
+   * 缺省 = **闸缺席, 放行**(conductor 铺图路径 / plan 没写 `write_set`)——
+   * 那是「没配这道闸」不是「这个节点没越界」(NULL≠0≠不适用)。
+   * ⚠ 只管工具通道: leaf 的 bash 绕得过去, 那一侧的边界是 jail 的 worktree。
+   */
+  writeAllow?: string[];
+  /**
    * 内部事件汇 (SDD D-8, 2026-08-11): runner 把本次调用的**内部工具事件** (tool_execution_start/end)
    * 转发给它 —— 引擎在节点调 runner 时挂节流转发器, 转成 DAG 的 `progress` 事件 (节流在引擎侧,
    * 与 chat 通道同形: 回调抛错被吞, 永不影响执行)。省略 = 不转发 (零开销, 老 runner 行为不变)。

@@ -35,6 +35,8 @@ import {
 } from '@earendil-works/pi-agent-core';
 import { type Static, type TSchema, Type } from 'typebox';
 import { classifyCommand } from './hooks/dangerous-cmd';
+// 写域闸 (写前, 与沙箱边界正交): 节点只准写自己声明的写集。
+import { checkWriteAllowed, describeWriteDenied } from './write-allow';
 import { type CommandPolicy, DEFAULT_SANDBOX_CONFIG, judgeCommand } from './hooks/command-policy';
 import { sandboxCommand } from './hooks/shell-sandbox';
 import { secretPathInCommand, SECRET_BASENAMES, SECRET_BASENAME_EXEMPT } from './command-leaf';
@@ -438,6 +440,16 @@ const BASH_SCHEMA = Type.Object({
 });
 
 export interface OmdAgentToolsOpts {
+  /**
+   * **本次调用允许写的路径**(节点 `write_set`)—— 写域闸的判据面,`write` / `edit` 写前判。
+   *
+   * 是 **thunk 不是值**: runner 跨 run 复用 (MCP 长驻进程), 写集只能**按调用**取,
+   * 烤进装配期就会拿上一个节点的写集去判这一个 —— 同 `mcpAllow` / `touchSession` 那条纪律。
+   *
+   * 返回 `undefined` = **闸缺席, 放行**(conductor 铺图路径 / plan 没写 `write_set`)。
+   * 返回 `[]` = 声明了"什么都不许写", 与缺席是两件事 (NULL≠0≠不适用)。
+   */
+  writeAllow?: () => readonly string[] | undefined;
   /** 工作根。相对路径对它解析, bash 在它里面跑。 */
   cwd: string;
   /** bash 不可逆命令 fail-closed 闸。默认 true (安全侧); false = 逃生关闸。 */
@@ -512,6 +524,15 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
     writableRoots === null || writableRoots.some((r) => target === r || target.startsWith(r.endsWith(sep) ? r : r + sep));
   /** 越界即拒 —— 错误里带边界原文, 模型才知道该改去哪写, 而不是反复试同一个路径。 */
   const requireWritable = (target: string, tool: string): void => {
+    // ── 写域闸 (2026-08-21): 节点只准写自己声明的写集 ─────────────────────────────
+    // 与下面的沙箱边界**正交**: 边界判「在不在工作根里」, 写域判「是不是这个节点该动的文件」。
+    // 分两处判而不是合并: 两者的修法完全不同 (一个改 config.writable, 一个改分解表的写集列),
+    // 判词混在一起会让人去改错的那个。
+    const allow = opts.writeAllow?.();
+    if (allow !== undefined) {
+      const v = checkWriteAllowed(target, allow, cwd);
+      if (!v.allowed) throw new Error(describeWriteDenied(display(cwd, target), allow, tool));
+    }
     if (writable(target)) return;
     throw new Error(
       `BLOCKED 沙箱越界: ${tool} 的目标 ${target} 不在可写边界内 (${(writableRoots ?? []).join(' · ')})。` +

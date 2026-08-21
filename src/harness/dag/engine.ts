@@ -3106,6 +3106,16 @@ async function executePlan(
         // "server:tool" 判)。空清单 → 不传字段, leaf 回落 deny (执行叶子不声明不授权)。
         // 合并真源 = conductor-plan.mergeMcpAllow (接线测试共用, 禁复刻)。
         const mcpAllow = mergeMcpAllow(node, tpl);
+        // 写域闸的判据面 (2026-08-21, run e2d204b7 节点 s4 复盘): 节点声明了 `write_set`
+        // 就只准写那些文件, `write` / `edit` 在**写的那一刻**判。
+        //
+        // 平铺图早就把它放在节点上了 (goal/sdd-compile.ts), 但此前**只以散文进 prompt**
+        // (「写集 (只许动这些文件): …」) —— 而本仓实测结论是**讲道理拦不住**。
+        //
+        // `output_path` 并进来: 声明了产物路径却没列进写集是常见写法, 不并会造假 major,
+        // 而**假 major 的代价是有人把整条闸关掉**。
+        // 没声明 → 不传字段 → 闸缺席放行 (conductor 铺图路径本就没有逐节点写集)。
+        const writeAllow = [...new Set([...(node.write_set ?? []), ...(node.output_path ? [node.output_path] : [])])];
         // SDD D-2 (2026-08-11): 挂 leaf 事件汇 → 转成 DAG progress 事件。只认工具起跑;
         // text_delta 不进 DAG 事件 (D-10: DAG 面板不是 transcript)。回调抛错 fail-open。
         const leafProgress = (e: AgentEvent): void => {
@@ -3138,6 +3148,7 @@ async function executePlan(
           ...(leafProfile ? { profile: leafProfile } : {}),
           ...(touchRunId ? { touchSession: `${touchRunId}:${id}` } : {}),
           ...(mcpAllow.length ? { mcpAllow } : {}),
+          ...(writeAllow.length ? { writeAllow } : {}),
           // #178: 产物意图下发 —— produces-files 节点让叶知道"必须落盘 + 落到哪",
           // agent-leaf 据此启用 produce-by 软推 (勘探超预算零写 → 催产)。非产物节点不传, 叶行为零变化。
           ...(producesFiles ? { expectsArtifactPath: node.output_path ?? '(路径见 goal)' } : {}),
