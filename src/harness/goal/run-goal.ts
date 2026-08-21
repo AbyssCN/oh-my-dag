@@ -41,8 +41,9 @@ import { TEST_STEP_PREFIX, acceptSideOf, buildAcceptDelta, extractFailSet, stabl
 import { readExperimentFlags } from './experiment-flags';
 import { classifySpecWrite, type SpecWrite, type SpecWriteSource } from './spec-write';
 import { summarizeDelta, type DeltaReport, type VerifyStepStatus } from './delta-compare';
-import { parseBreakdown, type SddContract } from './sdd-direct';
+import { parseBreakdown, type SddContract, type SddSlice } from './sdd-direct';
 import { acceptCommandFromBreakdown, compileBreakdown, describeParallelism, parallelismReadout } from './sdd-compile';
+import { coverSlices, describeSliceCoverage, type SliceCoverageReport } from './slice-coverage';
 import { attributeWriteSet, classifyWriteScope, describeWriteSet, SDD_DECLARED_WRITE_SET, type DeclaredWriteSet, type WriteScopeKind, type WriteSetDeclaration, type WriteSetReport } from '../write-set';
 import { collectRunTickets, type RunTicketSink } from '../pathfinder/run-tickets';
 import { logger } from '../logger';
@@ -294,6 +295,13 @@ export interface RunGoalResult {
    * 声明缺席 ≠ 违规, 读数不冒充零越界)。缺席 = 没配 writeSet 注入面 (闸缺席, fail-open)。
    */
   writeScope?: WriteScopeReport;
+  /**
+   * **S-46 缺片闸**: 分解表每一片的写集有没有真的落出东西。与 writeSet 严格正交 ——
+   * writeSet 判「改了没声明的」(orphan), 本项判「声明了没改的」(缺片)。
+   * 缺席 = 没配 writeSet 注入面, **或走的不是直通v2**(回落 conductor 铺图时切片不是执行单位)
+   * —— 闸缺席不是「零缺片」。`red` = 存在零产出的片; `partial` 有产出, 告警不红。
+   */
+  sliceCoverage?: SliceCoverageReport;
   /** P4 设计审核结果 (advisory, 不参与收敛判定)。缺席 = 未启用设计审核。 */
   designReview?: DesignReviewResult;
 }
@@ -877,6 +885,8 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   let flatPlan: ConductorPlan | undefined;
   let flatFallback: string | undefined;
   let flatParallelism: string | undefined;
+  /** S-46 缺片闸的判据面 —— 只在直通v2真编译成功时有值 (回落 conductor 铺图时切片不是执行单位)。 */
+  let flatSlices: readonly SddSlice[] | undefined;
   if (sdd && acceptance.kind === 'executable') {
     try {
       const breakdown = parseBreakdown(sdd.text);
@@ -915,6 +925,9 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
       } as ConductorPlan;
       // 并行性 advisory (owner 2026-08-11): 只报不拒 —— 假串行点名给结晶期审问, 假并行归乱序闸。
       flatParallelism = describeParallelism(parallelismReadout(breakdown));
+      // 赋值放在编译成功**之后**: 编译不过就回落 conductor 铺图, 那时切片只是给人读的,
+      // 拿它去判缺片会对每一次回落都造一片假红。
+      flatSlices = breakdown.slices;
     } catch (err) {
       flatFallback = String(err instanceof Error ? err.message : err).slice(0, 160);
       logger.warn(
@@ -1052,11 +1065,15 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   // 本文件不重写; 两轴 (节点归属 / run 声明面) 分开报, 不混成一个红 (INV-4)。
   let writeSet: WriteSetReport | undefined;
   let writeScope: WriteScopeReport | undefined;
+  let sliceCoverage: SliceCoverageReport | undefined;
   if (config.writeSet) {
     try {
       const diffFiles = config.writeSet._collectChangedFiles
         ? config.writeSet._collectChangedFiles()
         : collectChangedFiles(config.cwd);
+      // S-46 缺片闸: 与上面两轴共用**同一份 diffFiles** (各收各的 = 两个判词能互相矛盾)。
+      // 只在直通v2真用上时判 —— flatUsed 之外切片不是执行单位。
+      if (flatUsed && flatSlices) sliceCoverage = coverSlices(flatSlices, diffFiles);
       // S-2 run 级声明写集面 (与节点级阶梯正交: 阶梯裁「谁写的」, 声明面裁「该不该写」)。
       // forbidden = 撞并发 run 的写面 (红, 非零退出码语义); outside = 声明面外 (INV-3 读数,
       // 声明缺席 ≠ 违规, 不红)。缺省面 = write-set.ts 的 SDD_DECLARED_WRITE_SET (本 SDD run);
@@ -1222,7 +1239,10 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
       // 而那正是下一个人判断这条闸可不可信时唯一能拿到的证据。
       `${flakyFailures.length ? ` · 复跑未复现 ${flakyFailures.length} [${flakyFailures.join(', ')}]` : ''}` +
       `${writeSet ? ` · D-2 写集: ${describeWriteSet(writeSet)}` : ''}` +
-      `${writeScope ? ` · D-2 声明面: ${describeWriteScope(writeScope)}` : ''}`,
+      `${writeScope ? ` · D-2 声明面: ${describeWriteScope(writeScope)}` : ''}` +
+      // S-46: 缺片必须**印在同一行**。P2 那跑判词齐全而「只做了 1/4」一个字都看不出来,
+      // 就是因为没有任何一处印过「声明了几片、落了几片」。
+      `${sliceCoverage ? ` · S-46 缺片: ${describeSliceCoverage(sliceCoverage)}` : ''}`,
   });
 
   const result: RunGoalResult = {
@@ -1244,6 +1264,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
     ...(verifyDelta ? { verifyDelta } : {}),
     ...(writeSet ? { writeSet } : {}),
     ...(writeScope ? { writeScope } : {}),
+    ...(sliceCoverage ? { sliceCoverage } : {}),
     ...(designReview ? { designReview } : {}),
    };
   // D-2 散雾出口 (切片 1): 拿到 map 句柄才开票; 没配 = 这一行直接返回, 行为逐字节不变 (INV-1)。

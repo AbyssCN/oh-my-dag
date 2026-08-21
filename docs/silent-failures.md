@@ -1579,6 +1579,108 @@ verifier 据此判「实装未完成,需重新执行 impl」。**而这句话是
 
 ---
 
+### S-46 · **判据判「它做的那部分对不对」,不判「它做了没做全」**
+
+**现场**(2026-08-21,P2 那跑,`docs/plan/2026-08-21-夜间汇总.md` §5)。分解表 4 片,
+盘上只有切片 1 的 `width.ts` + `width.test.ts`,**2 文件 / 293 行,切片 2/3/4 一个字都没做**。
+
+而这一跑**没有触发任何失败信号**:
+
+| 判词 | 读数 |
+|---|---|
+| 终态 | `done` |
+| 冻结判据 | ✅ 绿 |
+| 写穿核验 | `consistent` |
+| D-2 写集对账 | 无越界 |
+
+写集对账为什么看不见?**它的输入是 diff** —— 没改的那三片的文件根本不在输入里。
+它判的是「改了的这些该不该改」,而「该改的没改」在它的坐标系里不存在。
+
+**它伪装成了什么**:一次干净的交付。四个判词全绿,回执上没有一处能读出「1/4」。
+是我拿分解表逐片对盘才发现的 —— 而**那一步不在任何流程里**。
+
+> **与 S-19 一族同根**(分母没人写),但缺的不是分母而是**被除数的清单**:
+> 所有既有判据都从「引擎做了什么」出发,没有一条从「契约要求什么」出发反查。
+
+**抓法(2026-08-21 已立闸:`src/harness/goal/slice-coverage.ts` 的 `coverSlices`)**
+
+与 `write-set.ts` 严格正交、共用同一份 `diffFiles`(各收各的 = 两个判词能互相矛盾而没人看得出来)
+、共用同一份 `globToRegExp`(第二份 glob 实现 = 同一路径能判出两个结果)。
+四态:`produced` / `partial` / `missing`(红)/ 零切片 → `no-breakdown`(判不了,**不是绿**)。
+判词进 goal 的 summary 行:`S-46 缺片: 缺片 3/4 [片 2, 3, 4]`。
+
+**收窄两处,写在这里而不是藏着**:
+① **`partial` 不红** —— 一片声明三个文件而只落两个,合法成因太多(表里写宽了 / 那个文件本轮无需改)。
+   判红即造假 major,而**假 major 的代价是有人把整条闸关掉**(S-45 收窄时已经买过一次)。
+   真正没有合法解释的只有「这一片零产出」。不红但**必须印出来** —— 不印就和「全做完了」不可分。
+② **只在直通v2真编译成功时判** —— 回落 conductor 铺图时切片只是给人读的,
+   拿它判缺片会对每一次回落都造一片假红。
+
+**带反向自检**(`slice-coverage.test.ts`,5 条变异逐条实测红过):
+缺片判据恒不命中 → 3 红 · `partial` 并进 `missing` → 1 红(假 major 复现)· `red` 恒 false → 2 红 ·
+`no-breakdown` 冒充 `reconciled` → 1 红 · glob 退化成精确匹配 → 2 红。
+
+---
+
+### S-47 · **每一环都在正确地做自己的事,错的是环成了圈**
+
+**现场**(2026-08-20,跑了 **1 天 6 小时**才被看见,而看见它的不是任何一条闸 ——
+是 Nick 截了一张任务管理器的图问「CPU 怎么这么高」)。
+
+`session-continuity` hook 的 `SessionEnd` 分支派 writer 蒸馏 checkpoint;writer 派一个
+agent-SDK 子会话去做蒸馏;子会话结束时**继承同一份 `~/.claude/settings.json`**,于是它自己的
+`SessionEnd` 又点火 —— 又一个 detached writer,又一个子会话,无限。
+
+**每一环都履行了自己的契约**:hook 的契约是「会话结束存一次档」,它每次都存了;
+writer 的契约是「产出一份 checkpoint」,它每次都产了(哪怕是 `<!-- DEGRADED -->`);
+子会话的契约是「跑完退出」,它每次都退了。**没有任何一个组件失败过。**
+
+**它伪装成了什么**:一台很忙的机器。实测读数:
+
+| 量 | 值 |
+|---|---|
+| WSL 占全机 CPU(`vmmemwsl` / `_Total`) | **1986% / 2255% = 88%** |
+| load average(24 核) | **131** |
+| 循环频率 | **~1.7 圈/秒**,每圈一次 Sonnet 调用 |
+| 攒出的垃圾 | **84,945** 个 session 目录 + **227,066** 个自嵌套 transcript(2.0 GB) |
+
+产物全是 `<!-- DEGRADED: OAuth session expired -->`,或者更荒诞的:蒸馏器**成功地蒸馏了自己的递归**,
+写出 §1「本 session 身份为 W2:session-continuity 蒸馏 writer……该循环无法由本角色自身打破,
+请具备完整 agent 能力的 session 读取并行动」—— 连续多轮把「应通知 Nick」写成计划留给下一轮。
+
+**为什么所有闸都看不见**:仓里每一条闸判的都是**单次调用**(这一次的输出对不对 / 这一次的写集越没越界 /
+这一次的判据绿不绿)。**「调用了多少次」这个维度不在任何判据的坐标系里。**
+S-45 是「两个面都在但互不相识」,这一条更远一层:**输出回流成了输入**,而没有任何一处在数圈数。
+
+**抓法**
+
+① **已立闸**(`continuity-hook.ts` 的 `isSdkChildSession`,commit `002b542`):
+   `CLAUDE_CODE_ENTRYPOINT === 'sdk-cli' || CLAUDE_AGENT_SDK_VERSION !== undefined`,
+   放在 `decideContinuityTrigger` 所有事件判定**之前**(三条 fire 路径漏一条就照跑)。
+   ⚠ **判别位是量出来的不是推的**:原本要用 `CLAUDE_CODE_CHILD_SESSION`,一条 `env | grep CLAUDE_CODE_`
+   看见**交互式会话里它同样是 1**(`FORK_SUBAGENT` 同理)—— 拿它当闸会静默停掉真人会话的 checkpoint,
+   不报错、不留痕,等于用一个 S-1 换掉一个 S-47。
+   **带反向自检**:闸改 `return false` → 缺片组当场红;另有诱饵组钉死
+   `CHILD_SESSION=1 + FORK_SUBAGENT=1 + ENTRYPOINT=cli` **必须照常触发**。
+   还顺手修了端到端闸的 `hookBaseEnv()`:原来裸 `...process.env`,谁在 SDK 子会话里跑 `bun test`
+   (omd DAG worker 正是如此)就漏进 `sdk-cli`,整组变成「看谁跑」的假红。
+
+② **闸只挡这一个已知回路,可泛化的那半是量纲闸** —— 一个本该与人类会话数同量级的计数器,
+   涨到人类不可能的量级即红。现成的两个:`~/.omd/projects/<slug>/session/` 的目录增长率
+   (真实用量 ≈ 个位数/天;事发时 **147,000/天**)· `seat-usage.jsonl` 行数 vs 真实 run 数
+   (S-46 那条夜批查出 **90% 是夹具写的合成记录**,同一种病的另一个部位)。**这条还没有闸。**
+
+③ **装任何「事件 → 派生新进程」的 hook 之前,先问一句**:
+   这个新进程会不会再触发同一个事件?CC 只给 `Stop` 配了 `stop_hook_active` 这个 loop guard,
+   `SessionEnd` / `PreCompact` **没有对应位** —— 别假设 harness 帮你数圈。
+
+**我在这一条上犯的 P-2,照写**:诊断中途我说「近 1 小时新建 transcript = 0」,据此排除了
+「fork bomb 在造 transcript」这条线。实际 `bfs` **不认 `-newermt '-1 hours'` 这种相对时间**,
+报错被我自己的 `2>/dev/null` 吞掉,空输出被我读成 0。真值是 227,071 个。
+**一个在任何条件下都返回 0 的查询,量的是尺子不是盘** —— 而我当时没有对它起疑。
+
+---
+
 ## 已立的闸(可执行的那部分)
 
 | 闸 | 位置 | 守什么 | 抓哪几条 |
@@ -1626,6 +1728,14 @@ verifier 据此判「实装未完成,需重新执行 impl」。**而这句话是
 | 故障归属两轴不许合一 | `src/model/model-error-fault.test.ts` · `src/model/minimax-native.test.ts` · `test/core/conductor-loop.test.ts` 失效矩阵 | `fault`(冷却轴)与 `transient`(环轴)正交, 抛错方显式表态、省略才回落启发式;业务码进 `providerCode`, `status` 只放真 HTTP 码;矩阵**穷尽** 6 个 kind + 2 个显式覆盖(**带反向自检**:1004 归回 transient:true → 码表那条红 1;删 `fault` 短路 → 4 红;删 `transient` 短路 → 5 红) | S-40 |
 | 闸失效的两类不许合并 | `src/model/index.ts` (`isTransientModelFault`) · `src/harness/dag/engine.ts` · `test/core/conductor-loop.test.ts` | 确定性 (config/transport/非 provider-fault 的 http) 才提前退环;瞬时 (parse/validation/truncation/402/403/429/5xx) 继续转;**夹具用真 `ModelError` 而非裸 `Error`**;外加闸级熔断兜底 —— 连续 K 轮逐字相同即判确定性(**带反向自检**:把 parse 归回确定性 → 2 条 ★ 红;闸级熔断实装前逐字相同那格必红) | S-40 S-38 |
 | 图的引用完整性 | `src/harness/plan/graph-cycle.ts` · `conductor-plan.ts` superRefine · `plan/static-lint.ts` | 环 = fail-closed 判死并点名环路;悬空 dep / 不可能达标的配额 = report-only,截断自报与手误分两个 kind(**带反向自检**:注掉 superRefine 环闸 → 4 红;删 ④ 段 → 5 红;删 truncatedIds 分支 → 1 红;`<=` 改 `<` → 1 红;lint 视图退回老口径 → 3 红) | S-38 |
+| 契约要求的每一片都得有产出(缺片即红) | `src/harness/goal/slice-coverage.ts` · `slice-coverage.test.ts` · `run-goal.ts` 接线 | 分解表逐片对 diff:零产出 = 红并点名片号;`partial` 有产出不红**但必须印**;零切片 = `no-breakdown`(判不了 ≠ 绿);与写集对账共用同一份 `diffFiles` 与同一份 `globToRegExp`(**带反向自检** 5 条:缺片判据恒不命中 → 3 红;`partial` 并进 `missing` → 1 红;`red` 恒 false → 2 红;`no-breakdown` 冒充 `reconciled` → 1 红;glob 退化成精确匹配 → 2 红) | S-46 S-19 |
+| hook 不许自喂(事件派生的新进程再触发同一事件) | `src/harness/session/continuity-hook.ts` (`isSdkChildSession`) · `test/core/session-continuity-trigger.test.ts` | `ENTRYPOINT==='sdk-cli' ∨ 有 CLAUDE_AGENT_SDK_VERSION` → 三条 fire 路径(Stop/PreCompact/SessionEnd)全哑;判别位**实测选定**,`CHILD_SESSION`/`FORK_SUBAGENT` 在交互式会话里同样为 1,是诱饵(**带反向自检**:闸改 `return false` → 缺片组红;诱饵组钉死交互式必须照常触发;端到端闸的 `hookBaseEnv()` 显式钉 `ENTRYPOINT=cli`,防 SDK 子会话里跑测试漏进 `sdk-cli` 变假红) | S-47 |
+
+**S-47 的第二半没有闸** —— 已立的那道只挡「continuity hook 自喂」这一个**已知**回路。
+可泛化的是**量纲闸**(本该与人类会话数同量级的计数器涨到人类不可能的量级即红),
+它要一个跨 run 的时间序列面,不在任何单次判据的坐标系里,**没有顺手做**。
+**在它落地之前**:任何「事件 → 派生新进程」的 hook 装上去之后,隔一天看一眼产物目录的条目数 ——
+一条 `ls | wc -l` 就够,而事发那次一整天没有人看。
 
 **S-24 也没有闸** —— 声明端在 `node_modules` 里,仓内的消费点/可达性闸**结构上够不着**。
 落在纪律上的是一条前置动作:**压架构之前读上游的 `.js` 不读 `.d.ts`**(三条便宜读法见该条)。

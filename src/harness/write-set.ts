@@ -143,8 +143,12 @@ export const SDD_DECLARED_WRITE_SET: DeclaredWriteSet = {
 
 export type WriteScopeKind = 'allowed' | 'forbidden' | 'outside';
 
-/** 简易 glob → RegExp (`*` 不跨 `/`, `**` 跨, `?` 单字符; `**` 后跟 `/` 匹配零层目录)。同 agent-tools.ts:178 语义。 */
-function globToRegExp(glob: string): RegExp {
+/**
+ * 简易 glob → RegExp (`*` 不跨 `/`, `**` 跨, `?` 单字符; `**` 后跟 `/` 匹配零层目录)。同 agent-tools.ts:178 语义。
+ * 导出是给 goal/slice-coverage.ts 的缺片闸复用 —— 两轴 (改了没声明 / 声明了没改) 读同一份
+ * 路径语义, 否则同一条路径能被判出两个结果而没人看得出来。
+ */
+export function globToRegExp(glob: string): RegExp {
   let re = '';
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i]!;
