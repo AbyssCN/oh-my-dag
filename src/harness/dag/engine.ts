@@ -178,6 +178,67 @@ export { PONYTAIL_LEAF_DISPOSITION } from './defaults';
 export { parseBlameVerdict, invalidationClosure } from './blame';
 
 /**
+ * 产物路径解析 (SDD 2026-08-22 · S50 根治切片 1)。
+ *
+ * 把「绝对路径怎么解析到 run 的产物根」收成一处 —— 之前散落在 `:217 / :825 / :837 / :1121`
+ * 四处, 任何一处漏写 INV-2/3 锚回都会导致 leaf 报的路径 (绝对 / 相对) 落不到产物根上,
+ * 失败方向**全部静默** (hashArtifact 返回 null 不抛不记)。本 helper 是这四处的唯一实现。
+ *
+ * INV (与 SDD C-1 一字对齐):
+ * - INV-1 相对路径 ⇒ `${root}/${p}`, 与今天逐字相同。
+ * - INV-2 绝对路径原样存在 ⇒ 返回原样。
+ * - INV-3 绝对路径不存在 ∧ 以 `repoRoot + '/'` 开头 ∧ `root !== repoRoot`
+ *   ⇒ 返回 `root + p.slice(repoRoot.length)` (当且仅当它存在)。
+ * - INV-4 `root === repoRoot` 或 `repoRoot` 为空 ⇒ 不锚回 (恒等, 省一次 stat)。
+ * - INV-5 两个候选都不存在 ⇒ 返回**原样 `p`**, 由调用方决定怎么处置 ("不存在" 不能冒充 "存在")。
+ *
+ * 反向自检 (S-49 · 承重那一位):
+ *   1. INV-3 短路 ⇒ GWT1 (worktree 命中) 必红。
+ *   2. INV-5 短路 ⇒ GWT2 (两边都 miss) 必红 (错把不存在放行 = 闸判废)。
+ *   3. 既有的 `artifact-gate-anchor.test.ts` 一条不改也一条不红 (D-2 纯重构的证据)。
+ */
+export function resolveArtifactPath(
+  p: string,
+  opts: {
+    /** 本 run 的产物根 (worktree 锚点)。 */
+    root: string;
+    /** 主干根; INV-3 剥前缀锚点。空串 ⇒ 不锚回 (INV-4 双保险)。 */
+    repoRoot: string;
+    /** 注入点; 默认 `existsSync` (与今天逐字相同)。 */
+    exists?: (p: string) => boolean;
+    /**
+     * 注入点: 每条候选路径 stat 前回调一次, 用于 `probed` 跟踪 (默认 no-op)。
+     *
+     * 不影响返回语义 (INV-1..5 仍是字符串) —— 是 `resolveMissingArtifacts` 的「多路径
+     * probe 列表」职责的承载面, 不属于本 helper 的契约面 (INV 集合不动)。
+     */
+    onProbe?: (candidate: string) => void;
+  },
+): string {
+  const existsFn = opts.exists ?? existsSync;
+  const onProbe = opts.onProbe ?? (() => {});
+  const { root, repoRoot } = opts;
+  // INV-1: 相对路径 ⇒ `${root}/${p}`, 一颗钉子都没动 (存在与否由调用方处理)。
+  if (!p.startsWith('/')) {
+    const candidate = `${root}/${p}`;
+    onProbe(candidate);
+    return candidate;
+  }
+  // INV-2: 绝对路径原样命中 ⇒ 直接返回。
+  onProbe(p);
+  if (existsFn(p)) return p;
+  // INV-3 / INV-4: 锚回试一次。INV-4 短路 (`root === repoRoot` 或 `repoRoot` 空) ⇒
+  // 不剥前缀 (剥了再拼 = 恒等, 每个绝对路径白 stat 一次; `p.startsWith('')` 还恒真)。
+  if (repoRoot.length > 0 && root !== repoRoot && p.startsWith(repoRoot + '/')) {
+    const anchored = root + p.slice(repoRoot.length);
+    onProbe(anchored);
+    if (existsFn(anchored)) return anchored;
+  }
+  // INV-5: 两个候选都不存在 ⇒ 返回原样 (让调用方按自己的语义处置, 不冒充存在)。
+  return p;
+}
+
+/**
  * 产物闸「绝对路径判定」(SDD 2026-08-22 · S1 Step B · 锚回上线)。
  *
  * 把 engine.ts 第 3320 行的内联表达式提到 helper (Step A 纯提取),
@@ -207,33 +268,29 @@ export function resolveMissingArtifacts(args: {
   const existsFn = args.exists ?? existsSync;
   const root = args.root;
   const repoRoot = args.repoRoot;
-  // D-3 / INV-4: root === 主干根 ⇒ 锚回恒等, 跳过。`repoRoot` 为空也跳过,
-  // 防止 `p.startsWith('')` 恒真把每条绝对路径都当锚回对象 (运行期 `repoRoot`
-  // 由 `continuity?.repoRoot ?? process.cwd()` 兜底, 实际不为空, 这里是双保险)。
-  const shouldAnchor = repoRoot.length > 0 && root !== repoRoot;
   const missing: string[] = [];
   const probed: Record<string, string[]> = {};
+  // D-2: 路径解析逻辑一律委托 `resolveArtifactPath` (INV-1..5 的唯一实现处)。
+  // 本函数只承担「多路径 probed 列表」与「missing 判定」 —— 调用方契约面 (`probed[p]` =
+  // 实际 stat 过的路径列表) 不变, 反向自检 (`artifact-gate-anchor.test.ts` 一字不改) 守住。
   for (const p of args.filesTouched) {
     const isAbsolute = p.startsWith('/');
     // INV-1 / INV-5: 与今天逐字相同 —— 绝对路径原样 stat, 相对路径拼 root。
     const statPath = isAbsolute ? p : `${root}/${p}`;
-    if (existsFn(statPath)) {
-      // INV-1: 原样命中 ⇒ 不判 missing, 不需要锚回。
-      probed[p] = [statPath];
-      continue;
-    }
-    // 原样 stat miss: 试 INV-2 锚回。
-    if (isAbsolute && shouldAnchor && p.startsWith(repoRoot + '/')) {
-      // INV-2: 剥主干根前缀, 拼 root 再 stat。
-      const anchored = root + p.slice(repoRoot.length);
-      probed[p] = [statPath, anchored];
-      if (!existsFn(anchored)) missing.push(p);
-      // 命中 ⇒ 不判 missing (INV-2 出口)。
-    } else {
-      // INV-3: 锚回不适用 (相对路径 / 不以主干根开头 / INV-4 短路)。
-      probed[p] = [statPath];
-      missing.push(p);
-    }
+    const probedSet: string[] = [];
+    const resolved = resolveArtifactPath(p, {
+      root,
+      repoRoot,
+      exists: existsFn,
+      onProbe: (candidate) => {
+        if (!probedSet.includes(candidate)) probedSet.push(candidate);
+      },
+    });
+    probed[p] = probedSet;
+    // missing ⇔ helper 没有替我们找到存在的候选 (resolved 仍是 statPath, 即 INV-2 命中或 INV-5 都 miss)。
+    // 相对路径在 helper 里不 stat ⇒ 这里补一次; 绝对路径走 helper 已 stat ⇒ 这再 stat 一次是幂等的,
+    // 既不改变 missing 也与今天逐字相同的语义 (单源 `existsSync`, 副作用无)。
+    if (resolved === statPath && !existsFn(statPath)) missing.push(p);
   }
   return { missing, probed };
 }
@@ -821,8 +878,11 @@ async function executePlan(
       // **用这个节点自己的根**, 不是引擎进程的 cwd —— R2 隔离档下 leaf 跑在另一棵 worktree 里。
       // 拿错根去找文件会全部 hash 成 null, 于是检测器在最该用它的配置里静默失效 (端到端用例抓住的)。
       const root = r.artifactRoot ?? continuity?.repoRoot ?? process.cwd();
+      // S50 收敛: 路径解析走 `resolveArtifactPath` (INV-6 · detector population 不再恒 null
+      // —— 主干绝对前缀的产物落在 worktree 时, 这条把锚回补上)。
+      const repoRoot = continuity?.repoRoot ?? process.cwd();
       for (const p of r.filesTouched ?? []) {
-        hashes[p] = hashArtifact(p.startsWith('/') ? p : join(root, p));
+        hashes[p] = hashArtifact(resolveArtifactPath(p, { root, repoRoot }));
       }
       // ── N7 (2026-07-31): **声明了产物却没写出来** 的那一格 ──────────────────────
       //
@@ -834,7 +894,8 @@ async function executePlan(
       // (确定性事实, 可跨轮比较); 在 → 照常 hash (它可能只是没记 filesTouched)。
       const declared = (plan?.nodes[r.id] as { output_path?: string } | undefined)?.output_path;
       if (declared && !(declared in hashes)) {
-        const abs = declared.startsWith('/') ? declared : join(root, declared);
+        // S50: 同 helper (INV-8 · 相对路径行为一字不变)。
+        const abs = resolveArtifactPath(declared, { root, repoRoot });
         hashes[declared] = existsSync(abs) ? hashArtifact(abs) : ARTIFACT_ABSENT;
       }
     }
@@ -1111,14 +1172,20 @@ async function executePlan(
     if (!continuity) return;
     try {
       const root = opts.artifactRoot ?? continuity.repoRoot ?? process.cwd();
-      // 产物路径相对化到 repoRoot (worktree 可移植; shouldSkip 用 repoRoot 锚回)。
-      const rel = (p: string): string => (p.startsWith(`${root}/`) ? p.slice(root.length + 1) : p);
+      // S50: 主干根也带进作用域 —— `resolveArtifactPath` 锚回用它剥前缀 (INV-3/4)。
+      const repoRoot = continuity.repoRoot ?? process.cwd();
+      // 产物路径相对化到 root (worktree 可移植; shouldSkip 用 repoRoot 锚回)。
+      // S50 (INV-7): `rel()` 现在从 **helper 解析后的 `abs`** 剥前缀, 与 stat 同一套规则
+      // —— 修前 `rel(p)` 对非 `${root}/` 前缀的绝对路径会保留原样, `${root}/${rp}` = 损坏路径
+      // ⇒ hashArtifact 恒 null (静默)。
+      const rel = (abs: string): string => (abs.startsWith(`${root}/`) ? abs.slice(root.length + 1) : abs);
       const artifactHashes: Record<string, string> = {};
       const outputPaths: string[] = [];
       for (const p of opts.filesTouched) {
-        const rp = rel(p);
+        const abs = resolveArtifactPath(p, { root, repoRoot });
+        const rp = rel(abs);
         outputPaths.push(rp);
-        const h = hashArtifact(p.startsWith('/') ? p : `${root}/${rp}`);
+        const h = hashArtifact(abs);
         if (h) artifactHashes[rp] = h;
       }
       const summary = opts.text.slice(0, 800);
