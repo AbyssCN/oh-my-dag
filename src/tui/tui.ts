@@ -44,10 +44,13 @@ import { paintTicketRow, renderTicketBoard } from './components/ticket-board';
 import { renderRunBoard } from './components/run-board';
 import { readBoard } from '../harness/board/run-board';
 import { renderGantt } from './render/dag-gantt';
+import { renderDagScreen } from './render/dag-screen';
 import { type PathViewData, buildPathViewData, renderDelta, renderFogLine } from './render/path-fog';
 import { fitLine } from './render/line';
 import { initHyperlinks } from './render/link';
 import { renderLayers } from './render/dag-layers';
+import { renderRunList } from './render/run-list';
+import { readDagShards } from '../hud/load';
 import { StatusLine } from './components/status-line';
 import { formatSeatRows, parseSeatCommand, seatRows } from './seat-picker';
 import { defaultTuiSessionId, forkSessionId, formatSessions, newSessionId, parseNewForkCommand, parseSessionCommand, sessionPickerOptions } from './sessions';
@@ -136,6 +139,67 @@ export function decideEsc(
   if (turnInFlight) return 'interrupt';
   if (armedAt !== null && now - armedAt <= windowMs) return 'rewind';
   return 'arm';
+}
+
+// ── 切片 S3 · 全屏状态机 (DAG 屏 ⇄ 活图列表, 2026-08-22) ──
+//
+// 纯函数 dispatcher 提在模块层 → 单测不必起 TUI,直接喂事件就行。
+// `runOmdTui` 内部只持 `let dagFullState` 与 ticker,把 listener 的键事件
+// 收成一次 `decideDagFull` 调用 + 应用结果,没分支膨胀。
+
+/** 全屏状态。`fullOn = false` 时其它字段不读 — 但保留供关闭时记忆,
+ *  重开仍是关闭前的"哪一屏 + 选到哪儿" — 同 `painterIdx` 的"上次用过的"。 */
+export interface DagFullState {
+  fullOn: boolean;
+  kind: 'dag' | 'run-list';
+  dagSelected: number;
+  runListSelected: number;
+}
+
+export const initialDagFullState = (): DagFullState => ({
+  fullOn: false,
+  kind: 'dag',
+  dagSelected: 0,
+  runListSelected: 0,
+});
+
+export type DagFullEvent =
+  | { type: 'toggle'; dagActive: boolean }
+  | { type: 'tab' }
+  | { type: 'up' }
+  | { type: 'down' }
+  | { type: 'enter'; runListNotEmpty: boolean };
+
+/**
+ * 全屏状态机的**唯一决策点**(纯函数, 时钟外给 — `decideCtrlC` 同款)。
+ *
+ * - `toggle`  Ctrl+G 开关。开时归零选中(打开应是"刚开"的那一份, 不是上次闭的位置)。
+ * - `tab`     DAG ⇄ run-list 循环(关着时 no-op)。
+ * - `up/down` 当前屏里的选中位 ±1(mod 由 renderer 侧 `pickSelected` 处理,
+ *            dispatcher 只递增递减, 不需 count)。
+ * - `enter`   仅在 run-list 屏 + 列表非空时切回 DAG(空列表 = INV-DAG-8, 不假装进图)。
+ */
+export function decideDagFull(state: DagFullState, event: DagFullEvent): DagFullState {
+  if (event.type === 'toggle') {
+    if (state.fullOn) return { ...state, fullOn: false };
+    return { fullOn: true, kind: 'dag', dagSelected: 0, runListSelected: 0 };
+  }
+  if (!state.fullOn) return state;
+  if (event.type === 'tab') {
+    return { ...state, kind: state.kind === 'dag' ? 'run-list' : 'dag' };
+  }
+  if (event.type === 'up') {
+    if (state.kind === 'dag') return { ...state, dagSelected: state.dagSelected - 1 };
+    return { ...state, runListSelected: state.runListSelected - 1 };
+  }
+  if (event.type === 'down') {
+    if (state.kind === 'dag') return { ...state, dagSelected: state.dagSelected + 1 };
+    return { ...state, runListSelected: state.runListSelected + 1 };
+  }
+  // enter
+  if (state.kind !== 'run-list') return state;
+  if (!event.runListNotEmpty) return state; // 空列表 → 不切 (INV-DAG-8)
+  return { ...state, kind: 'dag' };
 }
 
 /**
@@ -709,34 +773,88 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   const chrome = { shrink: 0 } as const;
 
   /**
-   * ★ **左侧栏 + 全屏图**(切片③,G-3)。
+   * ★ **左侧栏 + 全屏图**(切片③,G-3 + 切片 S3, 2026-08-22)。
    *
    * - 侧栏(画法 A 树):`/hud` 开关(默认开),**且**要 ① 有 run ② 屏够宽 才画 ——
    *   80 列的终端里再切 34 列给侧栏,剩下的对话区就没法读了(窄终端自动收起)。
-   * - 全屏:`Ctrl+G` 开关,`Tab` 在 树 / 泳道甘特 / 分层依赖 三画法间循环。
-   * - 侧栏或全屏画着时**不再画底部那张表** —— 同一份 DAG 画两遍,人会以为是两个 run。
+   * - 全屏:`Ctrl+G` 开关,`Tab` 在 **DAG 屏 ⇄ 活图列表** 之间切(D-1: 不再是三画法轮换 —
+   *   信息整合在一起而不是分这么多的形态和信息分散)。
+   * - 侧栏或全屏画着时**不再画底部那张表** —— 同一张 DAG 画两遍,人会以为是两个 run。
    */
   const uiCfg = loadTuiUiConfig(opts.cwd);
   let sidebarOn = uiCfg.sidebar;
-  let fullOn = false;
-  let painterIdx = uiCfg.painterIdx; // 0=树 1=甘特 2=分层 (默认从 tui.ui.painter 读)
+  /** `painterIdx` 在本片**不再被读**(三画法已被 DAG 屏合并) —— 字段留着,
+   *  因为 `applySetting('ui-painter', ...)` 的旧面板还得能写而不抛;
+   *  `render/dag-gantt.ts` / `render/dag-layers.ts` 是否孤儿,留给单独裁决(SDD 非目标)。 */
+  let painterIdx = uiCfg.painterIdx; // 0=树 1=甘特 2=分层 (默认从 tui.ui.painter 读) — 本片后 dead
   /** `/think` 的当前档 (W1)。持久在 tui.ui.thinking; 每轮 sendChat 带上。 */
   let thinkingLevel = uiCfg.thinking;
   /** 低于这个总宽不给侧栏。= 侧栏 34 + 对话区至少 56。 */
   const SIDEBAR_MIN_TOTAL = 90;
   const sidebarPainting = (vpWidth: number): boolean => sidebarOn && dagTree.active && vpWidth >= SIDEBAR_MIN_TOTAL;
 
-  /** 全屏视图:一个薄 Component,按当前画法把快照交给对应的纯渲染函数。 */
+  /** `PAINTERS` 仍导出(用在 `applySetting('ui-painter', ...)` 的合法值校验上),
+   *  不再传给 fullView 的 `now:` hint — 那是死字符串。 */
   const PAINTERS = ['tree', 'gantt', 'layers'] as const;
+
+  // ── 切片 S3 · 接线状态机 (DAG 屏 ⇄ 活图列表) ──
+  // 纯函数 dispatcher 在模块层 (单测盖得到);这里只持状态 + 应用结果。
+  // ⚠ 声明必须在 `root` 装配之前(`fullView.render` 闭包读它, TDZ 同 `armedAt` 那一条)。
+
+  let dagFullState: DagFullState = initialDagFullState();
+
+  // 活图列表数据源 = **磁盘分片** (`readDagShards`), 不是本进程内存。
+  // 这是整片存在的理由 (INV-DAG-7): run / research 恒 detached, 进程内订阅在生产上
+  // 基本是空的, 而这个列表画的是盘上有什么, 与哪个进程无关。
+  let runList: import('../hud/load').DagView[] = [];
+  let runListTicker: ReturnType<typeof setInterval> | null = null;
+  function refreshRunList(): void {
+    try {
+      runList = readDagShards(opts.cwd, now());
+    } catch (err) {
+      // fail-open 吞异常不吞证据: 读不到不该拦住 TUI, 但原因进日志, 不在屏上糊一句。
+      runList = [];
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        '[omd/tui] readDagShards 抛了 → 活图列表本轮空',
+      );
+    }
+    // 数据变了 → 触发重绘。其它 ticker (loader / dagTicker) 也走同一通道, 不发明新机制。
+    tui.requestRender();
+  }
+  /** 轮询仅在 `fullOn` 时跑 (D-2): 全屏关掉就停, 0 CPU 静止。 */
+  function syncRunListTicker(): void {
+    if (dagFullState.fullOn && runListTicker === null) {
+      refreshRunList(); // 立刻读一次 — 开屏第一次画就要有数, 不等 1s
+      runListTicker = setInterval(refreshRunList, 1000);
+    } else if (!dagFullState.fullOn && runListTicker !== null) {
+      clearInterval(runListTicker);
+      runListTicker = null;
+    }
+  }
+
+  /** 全屏视图:按当前屏调对应的纯渲染函数。两屏都靠 `readDagShards` 间接吃到磁盘分片,
+   *  `paint` 走 `theme.chrome` 的同名钩子(ok/fail 是 `renderDagScreen` / `renderRunList` 都有的)。 */
   const fullView: Component = {
     render: (width: number): string[] => {
-      if (!dagTree.active) return [fitLine('(no run yet - send one, then press Ctrl+G)', width)];
+      if (!dagFullState.fullOn) return [];
       const height = Math.max(6, (terminal.rows || 30) - 10);
-      const hint = theme.chrome.dim(fitLine(`Tab switches view (now: ${PAINTERS[painterIdx]}) · Ctrl+G exits`, width));
-      if (painterIdx === 0) return [...dagTree.render(width).slice(0, height), hint];
-      const snap = dagTree.snapshot();
-      const lines = painterIdx === 1 ? renderGantt(snap, { width, height, now: now() }) : renderLayers(snap, { width, height });
-      return [...lines, hint];
+      const paint = {
+        accent: theme.chrome.accent,
+        dim: theme.chrome.dim,
+        warn: theme.chrome.warn,
+        sel: theme.chrome.user,
+        ok: theme.chrome.toolOk ?? theme.chrome.accent, // 主题若未定义 ok/fail → 退到 accent/warn
+        fail: theme.chrome.toolFail ?? theme.chrome.warn,
+      };
+      if (dagFullState.kind === 'dag') {
+        const snap = dagTree.snapshot();
+        if (snap.nodes.length === 0) return [fitLine('(no run yet - send one, then press Ctrl+G)', width)];
+        return renderDagScreen(snap, { width, height, selected: dagFullState.dagSelected, now: now(), paint });
+      }
+      // run-list 屏: INV-DAG-8 由 renderRunList 自己保证 (空 → [])。这里不再画"空框"。
+      if (runList.length === 0) return [fitLine('(no run shards on disk yet)', width)];
+      return renderRunList(runList, { width, height, selected: dagFullState.runListSelected, now: now(), paint });
     },
     handleInput: () => {},
     invalidate: () => dagTree.invalidate(),
@@ -877,11 +995,11 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   const root = new VStack();
   // W6·M1: 转录直接进树 (自然高, 顶部进 scrollback)。全屏 = 树内模态块 (B 案,
   // enterAltView 处记录了对 SDD A 案的偏离与理由): 开着时转录/HUD 让位, 关掉回来。
-  root.addChild(transcript, { visible: () => !fullOn && !pathFullOn });
-  root.addChild(fullView, { shrink: 0, visible: () => fullOn && !pathFullOn });
+  root.addChild(transcript, { visible: () => !dagFullState.fullOn && !pathFullOn });
+  root.addChild(fullView, { shrink: 0, visible: () => dagFullState.fullOn && !pathFullOn });
   root.addChild(pathView, { shrink: 0, visible: () => pathFullOn });
-  root.addChild(alignToContent(dagTreeBlock), { shrink: 0, visible: (vp: { width: number }) => !fullOn && !pathFullOn && sidebarPainting(vp.width) });
-  root.addChild(alignToContent(dagHudBlock), { shrink: 0, visible: (vp: { width: number }) => !fullOn && !pathFullOn && !sidebarPainting(vp.width) });
+  root.addChild(alignToContent(dagTreeBlock), { shrink: 0, visible: (vp: { width: number }) => !dagFullState.fullOn && !pathFullOn && sidebarPainting(vp.width) });
+  root.addChild(alignToContent(dagHudBlock), { shrink: 0, visible: (vp: { width: number }) => !dagFullState.fullOn && !pathFullOn && !sidebarPainting(vp.width) });
   /**
    * 侧栏 pathfinder 摘要:**只在还没开口说话的时候画**(2026-08-08,P3 件3 轮1)。
    *
@@ -1073,12 +1191,17 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     process.stdout.write(`${lines.join('\n')}\n`);
   }
 
-  /** §4.1 第 5 条:先停动画再拆传输。等待指示器(loader 帧 + 秒计时 ticker)与 DAG 活秒数 ticker 是目前的动画。 */
+  /** §4.1 第 5 条:先停动画再拆传输。等待指示器(loader 帧 + 秒计时 ticker)、
+   *  DAG 活秒数 ticker 与活图列表 1s 轮询 ticker 是目前的动画。 */
   function stopAnimations(): void {
     stopWaiting();
     if (dagTicker) {
       clearInterval(dagTicker);
       dagTicker = null;
+    }
+    if (runListTicker) {
+      clearInterval(runListTicker);
+      runListTicker = null;
     }
   }
 
@@ -2014,7 +2137,11 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   function enterAltView(kind: 'dag' | 'path'): void {
     if (kind === 'dag') {
       if (!dagTree.active) chatLog.appendNotice('No run yet - send one, then press Ctrl+G');
-      else fullOn = true;
+      else {
+        // palette 走的是这条 — palette 的 liveRun 已隐含 dagTree.active, 直接 toggle。
+        dagFullState = decideDagFull(dagFullState, { type: 'toggle', dagActive: true });
+        syncRunListTicker();
+      }
     } else {
       pathFullOn = true;
     }
@@ -2569,8 +2696,15 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       return { consume: true };
     }
     if (kb.matches(data, 'omd.dagFull') && !dialogs.busy) {
-      if (fullOn) fullOn = false;
-      else enterAltView('dag');
+      // 关 → 开: 两屏 (DAG / run-list) 任一有源才开, 两者都空则一句话告知。
+      // INV-DAG-8: 无源恒缺席 — 按了键什么都没发生比开空屏更难查。
+      if (!dagFullState.fullOn && !dagTree.active && runList.length === 0) {
+        chatLog.appendNotice('No run yet - send one, then press Ctrl+G');
+        tui.requestRender();
+        return { consume: true };
+      }
+      dagFullState = decideDagFull(dagFullState, { type: 'toggle', dagActive: dagTree.active });
+      syncRunListTicker();
       tui.requestRender();
       return { consume: true };
     }
@@ -2599,10 +2733,43 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         return { consume: true };
       }
     }
-    if (fullOn && data === '\t') {
-      painterIdx = (painterIdx + 1) % 3;
-      tui.requestRender();
-      return { consume: true };
+    if (dagFullState.fullOn) {
+      // Tab 在两屏之间循环 (D-1: 信息整合, 不再是三画法轮换)。
+      if (data === '\t') {
+        dagFullState = decideDagFull(dagFullState, { type: 'tab' });
+        tui.requestRender();
+        return { consume: true };
+      }
+      // ↑↓ 在当前屏里移动选中。fullOn 时 editor 不可见, 裸方向键不会到达它, 这里接管。
+      if (data === '\x1b[A' || data === '\x1b[B') {
+        dagFullState = decideDagFull(dagFullState, { type: data === '\x1b[A' ? 'up' : 'down' });
+        tui.requestRender();
+        return { consume: true };
+      }
+      // Enter: run-list 屏上 = 加载那张图并切回 DAG (caller 拿 `runList[idx]` 调 `loadSnapshot`);
+      //        DAG 屏上 = no-op — 选中即展开是 renderer 内部的事, dispatcher 不管。
+      if (data === '\r' || data === '\n') {
+        const before = dagFullState.kind;
+        dagFullState = decideDagFull(dagFullState, { type: 'enter', runListNotEmpty: runList.length > 0 });
+        if (before === 'run-list' && dagFullState.kind === 'dag') {
+          // mod 口径与 renderer 一致 (`pickSelected` / `renderRunList`)。
+          const len = runList.length;
+          const idx = ((dagFullState.runListSelected % len) + len) % len;
+          const view = runList[idx];
+          if (view) {
+            try {
+              dagTree.loadSnapshot(view.snap);
+            } catch (err) {
+              logger.warn(
+                { err: err instanceof Error ? err.message : String(err), runId: view.snap.runId },
+                '[omd/tui] run-list Enter → loadSnapshot 抛了',
+              );
+            }
+          }
+        }
+        tui.requestRender();
+        return { consume: true };
+      }
     }
     // 思维链折叠/展开 (默认 Ctrl+O)。弹窗开着时不抢 (pathFull 同款守则); 效果直接体现在重绘里, 不发回执。
     if (kb.matches(data, 'omd.thinkingToggle') && !dialogs.busy) {
@@ -2629,7 +2796,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         });
         return { consume: true };
       }
-      if (act === 'rewind' && !fullOn && !pathFullOn) {
+      if (act === 'rewind' && !dagFullState.fullOn && !pathFullOn) {
         escArmedAt = null;
         void openRewind();
         return { consume: true };
