@@ -148,8 +148,8 @@ export function createPlanLedger(opts: PlanLedgerOpts = {}): PlanLedger {
   const path = opts.path ?? join('.omd', 'plan-ledger.db');
   if (!opts.db) mkdirSync(dirname(path), { recursive: true });
   const db = opts.db ?? new Database(path);
-  db.run('PRAGMA journal_mode = WAL');
   db.run('PRAGMA busy_timeout = 20000');
+  db.run('PRAGMA journal_mode = WAL');
   db.run(`
     CREATE TABLE IF NOT EXISTS plan_families (
       id TEXT PRIMARY KEY,

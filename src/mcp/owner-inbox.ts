@@ -121,8 +121,8 @@ export function createOwnerInbox(opts: { path?: string; db?: Database } = {}): O
   const path = opts.path ?? '.omd/runs.db';
   if (!opts.db && path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
   const db = opts.db ?? new Database(path);
-  db.run('PRAGMA journal_mode = WAL');
   db.run('PRAGMA busy_timeout = 20000');
+  db.run('PRAGMA journal_mode = WAL');
   db.run(`
     CREATE TABLE IF NOT EXISTS omd_owner_forks (
       id TEXT PRIMARY KEY, run_id TEXT NOT NULL, node_id TEXT NOT NULL, round INTEGER NOT NULL,

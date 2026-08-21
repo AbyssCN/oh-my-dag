@@ -211,8 +211,8 @@ export function openTouchLedger(opts: OpenTouchLedgerOpts = {}): TouchLedger {
       mkdirSync(dir, { recursive: true });
       return new Database(join(dir, 'touch.db'));
     })();
-  db.run('PRAGMA journal_mode = WAL');
   db.run('PRAGMA busy_timeout = 20000');
+  db.run('PRAGMA journal_mode = WAL');
   db.run(`
     CREATE TABLE IF NOT EXISTS touches (
       abs_path TEXT NOT NULL,

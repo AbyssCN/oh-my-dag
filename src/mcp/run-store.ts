@@ -116,8 +116,8 @@ export function createRunStore(opts: { path?: string; db?: Database } = {}): Run
   const path = opts.path ?? '.omd/runs.db';
   if (!opts.db && path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
   const db = opts.db ?? new Database(path);
-  db.run('PRAGMA journal_mode = WAL');
   db.run('PRAGMA busy_timeout = 20000');
+  db.run('PRAGMA journal_mode = WAL');
   db.run(`
     CREATE TABLE IF NOT EXISTS omd_runs (
       run_id       TEXT PRIMARY KEY,

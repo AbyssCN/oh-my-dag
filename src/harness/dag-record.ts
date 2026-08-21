@@ -610,10 +610,11 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
   const path = opts.path ?? ledgerPath();
   if (!opts.db && path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
   const db = opts.db ?? new Database(path);
-  db.run('PRAGMA journal_mode = WAL');
   // C-1 独占 (2026-08-19): 20s busy timeout, 让并发读卡到锁释放而不是立刻 SQLITE_BUSY。
-  // 其它 10 处开库点 (未在本节点) 不动 —— 那是它们节点的活。
+  // ⚠ 2026-08-21: 它必须排在 `journal_mode = WAL` **之前** —— busy_timeout 是连接级设置,
+  // 只对其后的语句生效, 而 WAL 那条自己就要拿锁。排在后面 = WAL 那条用默认值 0, 一撞就 BUSY。
   db.run('PRAGMA busy_timeout = 20000');
+  db.run('PRAGMA journal_mode = WAL');
   db.run(`
     CREATE TABLE IF NOT EXISTS omd_dag_runs (
       id              TEXT PRIMARY KEY,

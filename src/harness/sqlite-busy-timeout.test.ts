@@ -126,6 +126,22 @@ export interface WalSite {
   functionStart: number; // 1-based
   functionEnd: number; // 1-based
   hasBusyTimeout: boolean;
+  /**
+   * busy_timeout 排在 WAL **之前**吗(1-based 行号比较)。
+   *
+   * ⚠ 这一位 2026-08-21 才加,而**它才是这条闸真正要保的东西**:
+   * `busy_timeout` 是**连接级**设置,只对它**之后**的语句生效。而
+   * `PRAGMA journal_mode = WAL` 自己就要拿锁 —— 排在 busy_timeout 前面时它用的是
+   * 默认值 **0**,一撞就立刻 `SQLITE_BUSY`。
+   *
+   * 现场:`session-continuity-trigger` 的 A1 端到端偶发红,堆栈**逐字指在
+   * `store.ts` 的 `journal_mode = WAL` 那一行**。查下去发现全仓 **7 处开 WAL 的点
+   * 顺序全反**,一处不漏 —— 而这条闸一直是绿的,因为它只问"两条都在同一个函数体里吗"。
+   *
+   * **闸在,但它量的不是那件事。** 缺席(`hasBusyTimeout:false`)与顺序反是两种病,
+   * 判词分开报 —— 修法不同:前者是补一行,后者是换两行的位置。
+   */
+  busyBeforeWal: boolean;
 }
 
 export function scanFileForWalBusyTimeout(file: string): WalSite[] {
@@ -138,14 +154,41 @@ export function scanFileForWalBusyTimeout(file: string): WalSite[] {
     if (!range) continue;
     const [s, e] = range;
     const body = lines.slice(s, e + 1).join('\n');
+    // 函数体内**第一条** busy_timeout 的行号 —— 它必须早于本 WAL 行。
+    let firstBusy = -1;
+    for (let k = s; k <= e; k++) {
+      if (BUSY_RE.test(lines[k]!)) {
+        firstBusy = k;
+        break;
+      }
+    }
     results.push({
       walLine: i + 1,
       functionStart: s + 1,
       functionEnd: e + 1,
       hasBusyTimeout: BUSY_RE.test(body),
+      busyBeforeWal: firstBusy !== -1 && firstBusy < i,
     });
   }
   return results;
+}
+
+/** 扫一批文件, 返回 [file → busy_timeout **在 WAL 之后**的点]。缺席的那半归 findMissingBusyTimeout。 */
+export function findLateBusyTimeout(
+  files: string[],
+  repoRoot: string = REPO,
+): Map<string, { walLine: number; functionStart: number; functionEnd: number }[]> {
+  const late = new Map<string, { walLine: number; functionStart: number; functionEnd: number }[]>();
+  for (const f of files) {
+    const bad = scanFileForWalBusyTimeout(f).filter((h) => h.hasBusyTimeout && !h.busyBeforeWal);
+    if (bad.length) {
+      late.set(
+        relative(repoRoot, f),
+        bad.map((h) => ({ walLine: h.walLine, functionStart: h.functionStart, functionEnd: h.functionEnd })),
+      );
+    }
+  }
+  return late;
 }
 
 /** 扫一批文件, 返回 [file (相对 repoRoot) → 缺 busy_timeout 的 WAL 点]。 */
@@ -194,6 +237,61 @@ describe('INV-7: 全仓 WAL 开库点必须有 busy_timeout', () => {
         : `${misses.size} 个文件里的 ${flat.length} 处 WAL 缺 busy_timeout:\n${detail}\n` +
           '修法: 在该 WAL 所在的**同一个**函数体内 db.run(\'PRAGMA busy_timeout = …\')。',
     ).toBe('');
+  });
+
+  it('★★ busy_timeout 必须排在 WAL **之前** (2026-08-21: 全仓 7 处顺序全反, 而本闸一直绿)', () => {
+    // `busy_timeout` 是连接级设置, 只对它**之后**的语句生效; 而 `journal_mode = WAL` 自己要拿锁。
+    // 排在后面时 WAL 那条用的是默认值 0 —— 一撞就立刻 SQLITE_BUSY。
+    // 现场: session-continuity-trigger 的 A1 偶发红, 堆栈逐字指在 store.ts 的 WAL 那一行。
+    // 怎么让它红: 把任意一处的两行换回去 → 这条点名该文件 + WAL 行号。
+    const files = tsFiles(join(REPO, 'src'));
+    expect(files.length).toBeGreaterThan(100);
+    const late = findLateBusyTimeout(files);
+    const flat = [...late.entries()].flatMap(([f, hits]) =>
+      hits.map((h) => `  ${f}:${h.walLine}  (函数体 L${h.functionStart}–L${h.functionEnd})`),
+    );
+    expect(
+      late.size === 0
+        ? ''
+        : `${late.size} 个文件里的 ${flat.length} 处 busy_timeout **排在 WAL 之后** (等于对 WAL 那条不生效):\n` +
+          `${flat.join('\n')}\n修法: 把 \`PRAGMA busy_timeout\` 那行挪到 \`PRAGMA journal_mode = WAL\` **之前**。`,
+    ).toBe('');
+  });
+
+  it('顺序闸反向自检: 合成"WAL 在前 busy 在后" 必须被抓到 + 点名行号', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omd-inv7-'));
+    const f = join(dir, 'late-busy.ts');
+    writeFileSync(
+      f,
+      [
+        'export function openLedger(opts: { path: string }): void {',
+        '  const db = new Database(opts.path);',
+        "  db.run('PRAGMA journal_mode = WAL');",
+        "  db.run('PRAGMA busy_timeout = 20000');",
+        '}',
+      ].join('\n'),
+    );
+    const late = findLateBusyTimeout([f], dir);
+    expect(late.size).toBe(1);
+    expect(late.get('late-busy.ts')![0]!.walLine).toBe(3);
+    // 而"缺席"那条闸对同一份 fixture **不该**开火 —— 两种病判词分开, 修法不同。
+    expect(findMissingBusyTimeout([f], dir).size).toBe(0);
+  });
+
+  it('顺序闸正控: busy 在前 WAL 在后 → 放过 (闸不是恒红)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omd-inv7-'));
+    const f = join(dir, 'ordered.ts');
+    writeFileSync(
+      f,
+      [
+        'export function openLedger(opts: { path: string }): void {',
+        '  const db = new Database(opts.path);',
+        "  db.run('PRAGMA busy_timeout = 20000');",
+        "  db.run('PRAGMA journal_mode = WAL');",
+        '}',
+      ].join('\n'),
+    );
+    expect(findLateBusyTimeout([f], dir).size).toBe(0);
   });
 
   it('GWT-3a 反向自检: WAL 但无 busy_timeout 必须被抓到 + 点名行号', () => {
