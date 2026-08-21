@@ -148,13 +148,29 @@ function validate(md: string, material: string, projectRoot: string): string[] {
     }
   }
 
-  // grounding ③: 标识符/文件名类名词 ∈ 材料 ∪ repo 文件树,容差 3
+  // grounding ③: 标识符/文件名类名词 ∈ 材料 ∪ repo 文件树(含按需 `git grep` 仓内内容),
+  // 容差 3 (S-49:补了「材料与文件树都缺」的 ③ 这一跳)。
+  //
+  // 错误信息原样回显 noun-gate 报上来的 `sourcesChecked`,**不许再写没查过的东西** —— 之前
+  // 那句「材料与 repo 文件树均未出现」与判法不符(实际没查内容),在 S-49 里就把 38 处仓内
+  // 真实命中的 `MiniMax` 判成编造,导致一份手写完整 checkpoint 被机械降级版覆盖。
   try {
     const ng = checkNouns({ text: md, material, repoRoot: projectRoot, maxNovel: 3, annotate: false });
-    if (!ng.pass)
+    if (!ng.pass) {
+      const sources = ng.sourcesChecked?.length ? ng.sourcesChecked.join(' / ') : '材料 / repo 文件树';
       errors.push(
-        `编造名词(材料与 repo 文件树均未出现,超容差 3): ${ng.novelNouns.slice(0, 6).join(', ')} — 标识符/文件名只写材料中真实出现过的`,
+        `编造名词(以下来源均未出现,超容差 3): ${ng.novelNouns.slice(0, 6).join(', ')} — 检查过: ${sources}; 标识符/文件名只写材料中真实出现过的`,
       );
+      // ③ 的失败积累 —— 「这条是没查成,不是查过没命中」(D-3 · S-49 坑②)。
+      if (ng.contentLookupsFailed && ng.contentLookupsFailed.length > 0) {
+        errors.push(
+          `仓内内容 grep 部分失败(fail-open,候选未被判定): ${ng.contentLookupsFailed
+            .slice(0, 3)
+            .map((f) => `${f.noun} (${f.reason})`)
+            .join('; ')}`,
+        );
+      }
+    }
   } catch {
     /* noun-gate 自身挂 → 不阻断(路径/hash 闸仍在) */
   }

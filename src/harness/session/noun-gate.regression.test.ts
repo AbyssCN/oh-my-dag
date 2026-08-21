@@ -26,6 +26,7 @@
  * (覆盖那一半在 writer.ts 一并修了,见那边的注。)
  */
 import { describe, expect, test } from 'bun:test';
+import { randomUUID } from 'node:crypto';
 import { checkNouns } from './noun-gate';
 
 const check = (text: string, material = '') =>
@@ -51,8 +52,15 @@ describe('noun-gate 假阳性回归 —— 属性访问不是文件名', () => {
   test('★ 真的编造一个文件名 → 仍然抓得住(闸没被改废)', () => {
     // 这条是"修假阳性"的护栏: 别为了不误伤把闸调成永远绿。
     // 怎么让它红: 把 fileRe 整条删掉 → 编造的文件名不再进 novel, 这条红。
-    const r = check('见 src/harness/totally-made-up-module.ts 与 another-invented-file.ts 的实装。');
-    expect(r.novelNouns.some((n) => n.includes('another-invented-file'))).toBe(true);
+    //
+    // ⚠ **样本必须运行时生成, 不许写死** (2026-08-22 改, 原先写死的是
+    // `another-invented-file.ts`)。已知集加了来源③「按需 `git grep` 查仓内文件内容」之后,
+    // 任何写死在仓里的"编造"样本都会**命中它自己所在的这个测试文件** → grounded → 本条恒红。
+    // 那不是闸被改废, 是样本失效了 —— **断言一个字没动, 只换夹具**。
+    // 反过来说: 恒绿的闸不是闸, 而一个因自指而恒红的用例同样不是闸。
+    const invented = `zz${randomUUID().replace(/-/g, '').slice(0, 12)}-invented.ts`;
+    const r = check(`见 src/harness/totally-made-up-module.ts 与 ${invented} 的实装。`);
+    expect(r.novelNouns.some((n) => n.includes(invented.replace('.ts', '')))).toBe(true);
   });
 
   test('★ 真实存在的文件名不算编造(正控)', () => {
