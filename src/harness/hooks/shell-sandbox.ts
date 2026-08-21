@@ -35,6 +35,9 @@
  * 而 `which` 在那种机器上照样返回 0。判据是成本:一次 `bwrap … true` 是毫秒级的,
  * 没有任何理由用推的(P-2)。结果缓存,不每条命令探一次。
  */
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { logger } from '../../logger';
 
 /** 沙箱起不来的原因(UI 要画出来 —— 「降级裸跑」不许静默)。 */
@@ -74,6 +77,35 @@ export function probeShellSandbox(o: { refresh?: boolean } = {}): SandboxStatus 
 }
 
 /**
+ * **凭证目录盖成空 tmpfs**(owner 裁,2026-08-21)——(围栏管写,这一条管**读**)。
+ *
+ * 围栏是 `--ro-bind / /`,整台机器可读。所以 `cat ~/.ssh/id_ed25519` 在对话位里是**通的**,
+ * 而那正是 `docs/security/blast-radius.md` §三·五 那条实测攻击链的第 ② 环
+ * (`node -e` 任意执行 → 读私钥 → NAS 直通 → sudo 免密 → docker socket → 39 个容器 root)。
+ *
+ * 今天挡它的是 `agent-tools.ts` 的 basename 拒,而那份文档自己写明了边界:
+ * 「按文件名拒,不按内容拒。`grep -r` 仍扫得出,`node -e` 更是绕开整张表。」
+ * 盖成 tmpfs 就把那道护栏从**名字级**升成**结构性**的:jail 里这些文件根本不存在,
+ * `node -e` 也读不出不存在的文件。
+ *
+ * 能力代价 = 零:conductor 的活是在仓里改文件 + 跑测试,这几个目录用不到。
+ *
+ * ⚠ **`~/.claude` 不能盖** —— Claude 订阅座位的凭证在那儿,`agent-leaf.ts` 已经踩过一次。
+ * ⚠ 只盖**存在**的目录:`--tmpfs` 的挂载点必须在源里存在,否则 bwrap 整个起不来
+ *    (一条安全加固把 bash 全弄挂,比不加固坏)。
+ */
+const CREDENTIAL_DIRS = ['.ssh', '.aws', '.gnupg', join('.config', 'omd')] as const;
+
+export function credentialTmpfsArgs(home: string = homedir()): string[] {
+  const args: string[] = [];
+  for (const rel of CREDENTIAL_DIRS) {
+    const abs = join(home, rel);
+    if (existsSync(abs)) args.push('--tmpfs', abs);
+  }
+  return args;
+}
+
+/**
  * 组 bwrap argv(不含末尾要跑的程序)。`root` 可写,`/tmp` 是 tmpfs,其余全只读。
  *
  * `extraWritable` 是**逃生口**(`.omd/config.json` 的 `tui.sandbox.writable`):
@@ -106,6 +138,7 @@ export function shellSandboxArgs(root: string, extraWritable: readonly string[] 
     // 两侧都要有:这次事故的**主因**恰恰是进程内那一侧。
     '--tmpfs',
     '/mnt',
+    ...credentialTmpfsArgs(),
     '--bind',
     root,
     root,

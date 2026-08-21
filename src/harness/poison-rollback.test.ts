@@ -37,11 +37,12 @@ describe('planPoisonRollback —— 五条与门', () => {
     expect(r.skipped).toEqual([]);
   });
 
-  test('★ 与门③ git 跟踪的既有文件 → 不撤(撤它可能连起跑前的未提交改动一起抹掉)', () => {
+  test('★ 与门③ git 跟踪的既有文件 + **无基线** → 不撤(撤它可能连起跑前的未提交改动一起抹掉)', () => {
     // 这是整个模块最重要的一条护栏, 理由见 rollback-anchor.ts 的 `dirty-tracked` 那一态。
     // 怎么让它红: 删掉 existsInHead 那个分支 → 跟踪文件被撤, 这条红。
     const r = planPoisonRollback(dropped(), new Set(), ROOT, deps({ existsInHead: () => true }));
     expect(r.remove).toEqual([]);
+    expect(r.restore).toEqual([]); // 无基线时 restore 恒空 —— 别把"没接线"读成"零跟踪文件"
     expect(r.skipped[0]!.why).toContain('git 跟踪');
   });
 
@@ -81,6 +82,36 @@ describe('planPoisonRollback —— 五条与门', () => {
     const r = planPoisonRollback(dropped(), new Set(), ROOT, deps({ hashOf: () => null }));
     expect(r.remove).toEqual([]);
     expect(r.skipped[0]!.why).toContain('无需撤');
+  });
+
+  // ── 2026-08-21 跟踪文件那一半 (run 58df6b9e 复盘): 有轮基线才敢动, 且动法是"还原"不是删 ──
+  //
+  // 那一跑 9 条声明产物**全是**跟踪文件 → 全部「没撤」→ 重跑的 leaf 看见实装还在,
+  // 判「已经做完了」, 一次写工具都没用 → empty-artifact → 5 个下游 dep-skip。
+  test('★ 跟踪文件 + 有轮基线 → 落 restore(不是 remove), 且 remove 必须为空', () => {
+    // 怎么让它红: 把 `restore.push` 改成 `remove.push` → 跟踪文件被**删掉**而不是还原, 这条红。
+    // 两者分开列的理由: 删错 = 丢新写的活, 还原错 = 覆盖既有代码, 失败模式不同。
+    const r = planPoisonRollback(dropped(), new Set(), ROOT, deps({ existsInHead: () => true }), 'base1234');
+    expect(r.restore).toEqual([{ path: P, node: 's09_voice' }]);
+    expect(r.remove).toEqual([]);
+    expect(r.skipped).toEqual([]);
+  });
+
+  test('★ 跟踪文件 + 有轮基线, 但盘上内容被别人碰过 → 仍然不动(② 必须排在 ③ 前面)', () => {
+    // 这条钉的是 2026-08-21 那次**闸序调整**本身。原先 ③ 先判, 跟踪文件在"有没有被别人碰过"
+    // 上从来没被问过。怎么让它红: 把 ② 挪回 ③ 后面 → 这条落进 restore, 断言红。
+    const r = planPoisonRollback(dropped(), new Set(), ROOT, deps({ existsInHead: () => true, hashOf: () => 'bbbb2222' }), 'base1234');
+    expect(r.restore).toEqual([]);
+    expect(r.remove).toEqual([]);
+    expect(r.skipped[0]!.why).toContain('有别的东西碰过');
+  });
+
+  test('★ 与门④ 对 restore 一样管用: 存活节点还声明写它 → 连还原都不许', () => {
+    // 还原会把存活节点这一轮写进去的内容一起冲掉 —— 与 remove 同一条理由, 不许因为
+    // "还原听起来比删温和"就放行。怎么让它红: 把 ④ 挪到 ③ 后面 → 这条落进 restore。
+    const r = planPoisonRollback(dropped(), new Set([P]), ROOT, deps({ existsInHead: () => true }), 'base1234');
+    expect(r.restore).toEqual([]);
+    expect(r.skipped[0]!.why).toContain('仍然作数');
   });
 
   test('同一路径被两个被毒节点声明 → 只判一次(别删两遍, 也别留两条自相矛盾的证据)', () => {

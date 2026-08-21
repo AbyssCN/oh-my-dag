@@ -25,6 +25,8 @@ import { basename, dirname, join } from 'node:path';
 import type { OmdMcpTool } from './server';
 import { RunRegistry } from './run-registry';
 import { CheckpointManager } from '../harness/continuity/checkpoint-manager';
+// 生产 jail 的可用性判据 —— 与对话位围栏**共用同一个已缓存的真探针** (2026-08-21, 见下方 jailRoot 注)。
+import { probeShellSandbox } from '../harness/hooks/shell-sandbox';
 import { HudMirror } from '../hud/mirror';
 import { createDagTools, type DagEngine } from './tools/dag-tools';
 import { createMemoryTools } from './tools/memory';
@@ -444,10 +446,25 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     //
     // 只在**隔离档**接: 你要了隔离就给你真隔离; `head` 档一个字不动 (零回归 —— 给每个 leaf 都套
     // bwrap 是另一个量级的行为改变, 不该搭这趟车)。
-    // bwrap 不在 → 响亮降级: 隔离仍是"相对路径级"的, 但**调用方必须知道**它没拿到进程级隔离。
-    const jailRoot = overrideCwd && !deps.agentRunner ? (Bun.which('bwrap') ? root : undefined) : undefined;
+    // bwrap 起不来 → 响亮降级: 隔离仍是"相对路径级"的, 但**调用方必须知道**它没拿到进程级隔离。
+    //
+    // ⚠ 2026-08-21 判据换成 `probeShellSandbox()`, 原先是 `Bun.which('bwrap')` ——
+    // 而**本仓自己早就判定过那个判据不够**。`shell-sandbox.ts` 的文件头逐字写着:
+    // 「二进制在、内核不给 unprivileged user namespace(部分发行版 / 容器)是常见组合,
+    //  而 `which` 在那种机器上照样返回 0。判据是成本:一次 `bwrap … true` 是毫秒级的,
+    //  没有任何理由用推的(P-2)。结果缓存,不每条命令探一次。」
+    // 对话位那条路 08-13 就照这条改了, 生产 jail 这条**没跟上** —— 同一个判断在仓里有两套判据,
+    // 弱的那套还坐在更要紧的位置上。复用隔壁那个**已缓存**的真探针: 延迟仍是零 (整进程一次),
+    // 判据严格更强。实测 6ms/次, 且只在首次。
+    const sandbox = overrideCwd && !deps.agentRunner ? probeShellSandbox() : { ok: false as const };
+    const jailRoot = overrideCwd && !deps.agentRunner && sandbox.ok ? root : undefined;
     if (overrideCwd && !deps.agentRunner && !jailRoot) {
-      logger.warn({ root }, '[omd/mcp] 隔离档要求进程级 jail 但找不到 bwrap → 降级为相对路径级隔离 (绝对路径写仍能逃出去)');
+      // 原因原文进日志: 「二进制不在」与「内核不给 userns」的**修法完全不同**, 编成一句
+      // "找不到 bwrap" 就把唯一能定方向的证据吞了 (S-12 那一族)。
+      logger.warn(
+        { root, reason: sandbox.ok ? undefined : ((sandbox as { reason?: string }).reason ?? 'bwrap 探测未通过 (无原文)') },
+        '[omd/mcp] 隔离档要求进程级 jail 但 bwrap 起不来 → 降级为相对路径级隔离 (绝对路径写仍能逃出去)',
+      );
     }
     const agentRunnerForRun =
       overrideCwd && !deps.agentRunner

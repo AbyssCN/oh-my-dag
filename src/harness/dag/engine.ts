@@ -71,6 +71,8 @@ import { logger } from '../logger';
 import { NOVELTY_COLLAPSE_LINE, pushNoveltyRound } from '../pathfinder/proximity';
 // ── T2#5 按簇拆出的兄弟文件 (引擎消费) ──
 import type { GenerateFn, ExecutorDagConfig, LeafResult, ExecutorDagResult, DagObservation, BlameRetryLedger, DagNodeEvent } from './types';
+// C 无效否决闸 (2026-08-21): 判词可不可证伪 —— 纯函数, 判据与用例都在那边。
+import { classifyVeto, isInfraVerdict } from './veto-guard';
 import { makeDefaultGenerate, LEAF_SYSTEM_PREFIX, PONYTAIL_LEAF_DISPOSITION } from './defaults';
 import { topoLevels, buildLeafPrompt, addUsage, filterOracleCommandNodes } from './planner';
 // ready-set 调度器 (拓扑推进 + 三层并发闸 + quorum 判定; 纯同步零 IO, 见 dag-scheduler.ts)。
@@ -861,7 +863,15 @@ async function executePlan(
     });
     if (continuity.resume) {
       for (const cp of continuity.manager.loadAllGreen(continuity.runId)) resumeGreens.set(cp.nodeId, cp);
-      dropPoisonedGreens(resumeGreens, plan, prior?.poisoned, continuity?.repoRoot);
+      // ⚠ 回滚根用**执行锚**, 不是状态锚 (2026-08-21, run 58df6b9e 复盘)。隔离档下 checkpoint
+      // 落主仓而文件写在 worktree 里 —— 拿 repoRoot 当回滚根 = 对着一棵没有那些产物的树做回滚。
+      dropPoisonedGreens(
+        resumeGreens,
+        plan,
+        prior?.poisoned,
+        continuity?.execRoot ?? continuity?.repoRoot,
+        continuity?.rollbackBaseline,
+      );
     }
   }
 
@@ -2300,6 +2310,9 @@ async function executePlan(
         });
         return {
           ...settle(last, round, true),
+          // C (2026-08-21): 这一位往外带, 外层 verifier 才知道"这一轮拿到过机器绿"。
+          // 不带的话, 外层只能看见一堆 done 节点, 而"done"与"判据绿"是两个问题。
+          freezeGreen: true,
           // judge 自己那一票**单独带出去**: `converged` 现在是判据说的, 不再等于 judge 说的。
           // 混在一起会让判据轴把"判据绿"误记成"judge 也说绿" —— 那正是它要量的那一格。
           // synthetic (确定性闸合成的判词) 同 unreachable 一样**不写这一位** (#148):
@@ -4188,6 +4201,11 @@ function dropPoisonedGreens(
    * 判据与五条与门在 `poison-rollback.ts`;这里只负责喂给它「丢了谁」与「谁还活着」。
    */
   rollbackRoot?: string,
+  /**
+   * 跟踪文件还原基线 (2026-08-21)。给了才动跟踪文件;省略 = 老行为(跟踪文件一律留在盘上并留证)。
+   * 前提由调用方担保:执行树自该 commit 以来的改动全是本次跑写的 —— 今天只有隔离档成立。
+   */
+  rollbackBaseline?: string,
 ): void {
   if (!poisoned?.size || greens.size === 0) return;
   const blocked = new Set<string>();
@@ -4254,8 +4272,9 @@ function dropPoisonedGreens(
         }
       },
     },
+    rollbackBaseline,
   );
-  applyPoisonRollback(plan2, rollbackRoot);
+  applyPoisonRollback(plan2, rollbackRoot, rollbackBaseline ? { baseline: rollbackBaseline } : {});
 }
 
 /**
@@ -4486,6 +4505,33 @@ async function runDagInternalCore(
       } else {
         sameCauseStreak = 0;
         lastBlameKey = blameKey;
+      }
+      // ── C (2026-08-21, run 58df6b9e 复盘): 否决**已拿到机器绿**的一轮, 判词必须可证伪 ──
+      //
+      // 那一跑: 内环 stop={success, '冻结判据绿'} · poisoned=[] · judge 的点名因 ghost id 被丢弃,
+      // 而外层 verifier 照样推翻它触发重规划 → 毒集丢绿 → 半回滚 → leaf 空转 → 5 个 dep-skip。
+      // 然后重规划后的判词抱怨「5/7 成功、2 个失败」—— **那两个失败是它自己那次否决造成的**。
+      //
+      // 这是 fail-open: 无效的 blame 也能推翻已绿的轮次。这里改成 fail-closed 到"不改"
+      // (而不是 fail-open 到"重画") —— 与本仓「finding ≠ ground truth, oracle 证伪可驳」同口径。
+      // ⚠ 只在**这一轮拿到过冻结判据绿**时才拦: 没拿到机器绿的否决本来就该放行 (活确实没干完)。
+      // ⚠ 基础设施故障判词 (`[verifier-error]`) 不归本闸管, 那条路自己 fail-closed。
+      const freezeGreenThisRound = Object.values(exec.results).some((r) => r.freezeGreen === true);
+      if (freezeGreenThisRound && !isInfraVerdict(verdict.reason)) {
+        const veto = classifyVeto(verdict.reason, Object.keys(exec.plan.nodes));
+        if (!veto.falsifiable) {
+          logger.warn(
+            { reason: verdict.reason.slice(0, 300), why: veto.why, round: escCount },
+            '[omd/executor-dag] C 无效否决闸: verifier 推翻了冻结判据绿的一轮却给不出可核对的理由 → **不开重规划轮** (fail-closed 到"不改"; 判据绿的活留在盘上, 红判词照记, 交人审)',
+          );
+          exec.observations.push({
+            kind: 'blame-attribution',
+            nodes: [],
+            message: `C 无效否决闸: verifier 否决了冻结判据绿的一轮, 但${veto.why} → 未触发重规划。判词原文: ${verdict.reason.slice(0, 300)}`,
+          });
+          break;
+        }
+        logger.info({ anchors: veto.anchors, round: escCount }, '[omd/executor-dag] C 无效否决闸: 判词可证伪 → 放行重规划');
       }
       escCount++;
       attempts++;

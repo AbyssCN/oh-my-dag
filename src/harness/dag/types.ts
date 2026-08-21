@@ -448,7 +448,30 @@ export interface DagObservabilitySeam {
    * resume=true 时, checkpoint 存在 ∧ 产物 hash 匹配的节点跳过执行 (LeafResult.skipped=true)。
    * repoRoot 供 noun-gate 注释 + 产物路径相对化 (省略 = process.cwd())。
    */
-  continuity?: { manager: CheckpointManager; runId: string; resume?: boolean; repoRoot?: string };
+  continuity?: {
+    manager: CheckpointManager;
+    runId: string;
+    resume?: boolean;
+    /** **状态锚** —— checkpoint 落在哪。隔离档下它**仍是主仓** (双 cwd 分离, 见 mcp/tools/goal.ts)。 */
+    repoRoot?: string;
+    /**
+     * **执行锚** —— leaf 真写文件的那棵树 (隔离档 = `.omd/runs/<runId>`)。省略 = `repoRoot`。
+     *
+     * ⚠ 2026-08-21 立此字段的现场 (run 58df6b9e): 毒集回滚一直拿 `repoRoot` 当回滚根,
+     * 而隔离档下那是**主仓**, 活写在 worktree 里 —— 于是回滚对着一棵**没有那些产物的树**
+     * 逐条判"盘上已经没有这个文件/是 git 跟踪的既有文件", 9 条全"没撤", 一个字都没真回滚。
+     * **一个字段同时当两个锚**用是本仓的常见错法; 分开写死在这里。
+     */
+    execRoot?: string;
+    /**
+     * 毒集回滚时**跟踪文件还原到哪个 commit**。给了才动跟踪文件, 省略 = 老行为(一律不动)。
+     *
+     * 给它的人要能保证:**执行树自该 commit 以来的改动全是本次跑写的**。今天只有隔离档
+     * (`branchStrategy:'branch'`) 满足 —— worktree 从 HEAD 建出/复用, 树里的未提交改动
+     * 只可能来自这个 runId 自己。**head 档一律不给**: 那棵树上有 owner 自己的活。
+     */
+    rollbackBaseline?: string;
+  };
 }
 
 /** DAG 执行引擎总配置 = 上述八个 seam 的并 (分组即目录, 见文件头 Seam 分组注)。 */
@@ -885,6 +908,17 @@ export interface LeafResult {
    * 缺席 = 这一跑没走环内判据那条路, 或 judge 调不通(**没投过票, 不是投了反对票**)。
    */
   judgeConverged?: boolean;
+  /**
+   * **这个节点是靠冻结判据绿停的**(C,2026-08-21,run `58df6b9e` 复盘)。
+   *
+   * 立它的理由只有一个:外层 verifier 要否决一轮时,得知道这一轮**有没有拿到过机器绿**。
+   * P2 那跑的形状是 —— 内环 `stop:{kind:'success', evidence:'冻结判据绿'}`、`poisoned:[]`,
+   * 然后外层 verifier 照样推翻它触发重规划;而重规划之后 verifier 的判词抱怨
+   * 「5/7 成功、2 个失败」,**那两个失败正是它自己那次否决造成的**。判词在给自己制造的残骸打分。
+   *
+   * 缺席 = 没走环内冻结判据那条路(**不是**"判据红")。判据红的节点 `status` 自己会说。
+   */
+  freezeGreen?: boolean;
 }
 
 /**

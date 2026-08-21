@@ -697,6 +697,15 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
                 manager: deps.continuity.manager,
                 runId,
                 repoRoot: deps.continuity.repoRoot,
+                // 执行锚与回滚基线 (2026-08-21, run 58df6b9e 复盘)。上面那行 repoRoot 是**状态锚**
+                // (checkpoint 落主仓, 双 cwd 分离是有意的); 而毒集回滚是对**文件**动手, 必须对着
+                // leaf 真写的那棵树。此前两者共用 repoRoot, 隔离档下整个回滚打在主仓上 —— 9 条
+                // 声明产物逐条判"盘上没有/是跟踪文件", 全部"没撤"。
+                //
+                // `rollbackBaseline: 'HEAD'` **只给隔离档**: worktree 里的未提交改动只可能来自
+                // 这个 runId 自己, 所以"还原到 HEAD"按构造不会误伤 owner 的活。head 档那棵树上
+                // 有 owner 自己的未提交改动 —— 一律不给, 保持老行为。
+                ...(worktree.strategy === 'branch' ? { execRoot: worktree.cwd, rollbackBaseline: 'HEAD' } : {}),
                 ...(resume ? { resume: true } : {}),
               },
             }

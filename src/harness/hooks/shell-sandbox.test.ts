@@ -17,9 +17,9 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { probeShellSandbox, sandboxCommand, shellQuote, shellSandboxArgs } from './shell-sandbox';
+import { credentialTmpfsArgs, probeShellSandbox, sandboxCommand, shellQuote, shellSandboxArgs } from './shell-sandbox';
 
 const SANDBOX = probeShellSandbox();
 
@@ -148,6 +148,36 @@ describe.if(SANDBOX.ok)('围栏真跑(bwrap 可用)', () => {
 
   test('网络与工具链不受影响 —— 围栏挡的是写, 不是干活', () => {
     expect(run('git rev-parse --is-inside-work-tree; command -v bash').code).toBe(0);
+  });
+
+  // ── 凭证读面 (owner 裁 2026-08-21): 围栏管写, 这一组管**读** ──────────────────────
+  //
+  // blast-radius.md §三·五 那条实测攻击链的第 ② 环就是 `cat ~/.ssh/id_ed25519`, 而围栏是
+  // `--ro-bind / /` —— 读是通的。basename 拒挡不住 `grep -r` / `node -e` (文档自己写明的边界)。
+  test('★ `~/.ssh` 在 jail 里是**空的** —— 结构性挡掉私钥读取, 不靠文件名判据', () => {
+    // 怎么让它红: 从 shellSandboxArgs 里删掉 credentialTmpfsArgs() → 宿主的 ~/.ssh 内容出现, 这条红。
+    // ⚠ 前提: 宿主上 ~/.ssh 存在 (不存在时本就没什么可挡, 跳过而不是假绿)。
+    const ssh = join(homedir(), '.ssh');
+    if (!existsSync(ssh)) {
+      console.warn('[shell-sandbox.test] 宿主无 ~/.ssh, 这条跳过 —— 不是通过');
+      return;
+    }
+    const r = sh(sandboxCommand(`ls -A ${shellQuote(ssh)}`, { root }));
+    expect(r.code).toBe(0);
+    expect(r.out.trim()).toBe(''); // tmpfs = 空目录; 非空 = 盖漏了
+  });
+
+  test('★ `~/.claude` **不许**被盖 —— 订阅座位凭证在那儿 (agent-leaf 踩过一次)', () => {
+    // 这条是护栏的护栏: 防止下次"顺手多盖几个目录"把座位凭证一起盖没。
+    // 怎么让它红: 往 CREDENTIAL_DIRS 里加 '.claude' → jail 里读不到, 这条红。
+    expect(credentialTmpfsArgs()).not.toContain(join(homedir(), '.claude'));
+  });
+
+  test('★ 不存在的凭证目录**不进 argv** —— 挂载点不存在会让 bwrap 整个起不来', () => {
+    // 一条安全加固把 bash 全弄挂, 比不加固坏。
+    // 怎么让它红: 去掉 existsSync 过滤 → 这里会出现一个不存在的路径, 断言红。
+    const args = credentialTmpfsArgs(mkdtempSync(join(tmpdir(), 'omd-nohome-')));
+    expect(args).toEqual([]);
   });
 });
 
