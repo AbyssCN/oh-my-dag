@@ -25,6 +25,9 @@
  *   → 成立; 否则撤。
  *
  * - **两侧读数都记**: pass-rate · token 原始/折价 (cacheHit 段) · 工具调用次数 · 墙钟 · 不成立也写。
+ *   墙钟**分三段记** (leaf / fixture / oracle, 2026-08-21 加): 首跑只有合数, 而合数里
+ *   fixture 建树与整仓 `tsc` 占大头, 又受盘缓存冷热支配 —— A 臂恒先跑吃冷、B 臂后跑吃热,
+ *   偏差是**系统性单向**的。拿合数归因给"B 少 3 次工具调用"当场就错。判时间只准用 `leafMs`。
  *
  * ## 失败关闸 (跑前钉死, 不可绕过)
  *
@@ -194,7 +197,20 @@ interface Row {
   noopWrites: number;
   stalled: boolean;
   spinFused: boolean;
+  /**
+   * 整行墙钟 = fixtureMs + leafMs + oracleMs。**别拿它比两臂** —— 它里面三分之二不是被测物:
+   * 建 worktree + 种 bug + 一次全量 `bun test` 红检 (fixtureMs), 以及 `npx tsc --noEmit` 整仓
+   * + scoped test + git diff (oracleMs)。这两段跟工具面时序无关, 却受盘缓存冷热支配 ——
+   * 而 A 臂总是先跑 (吃冷), B 臂后跑 (吃热), 于是**这个偏差是系统性单向的**, 不是噪声。
+   * 2026-08-21 首跑报的「B 快 46%」量的就是这个合数, 归因不成立。要比时间只能比 `leafMs`。
+   */
   wallMs: number;
+  /** 只有 leaf 循环本身 (模型往返 + 工具执行)。**这才是被测物的时间。** */
+  leafMs: number;
+  /** fixture 建树 + 种 bug + 红检。两臂同代码路径, 差值应≈盘缓存冷热。 */
+  fixtureMs: number;
+  /** oracle: 整仓 tsc + scoped test + git diff。同上, 与被测变量无关。 */
+  oracleMs: number;
   diffLines: number;
   testsModified: number;
   strayFiles: number;
@@ -306,15 +322,23 @@ async function once(arm: ArmConfig, rep: number): Promise<Row> {
     stalled: false,
     spinFused: false,
     wallMs: 0,
+    leafMs: 0,
+    fixtureMs: 0,
+    oracleMs: 0,
     diffLines: 0,
     testsModified: 0,
     strayFiles: 0,
     textTail: '',
   };
   let fx: DebugFixture | undefined;
+  // 分段计时 —— 塌在中途时已量到的段也要留住 (catch 里照样报), 别只剩一个合数。
+  let fixtureMs = 0;
+  let leafMs = 0;
+  let oracleMs = 0;
   try {
     // 创工作树 (常见 sandbox 拒写 .git/worktrees/ → 这里抛 ShellError, 落到 catch)
     fx = await createDebugFixture();
+    fixtureMs = Date.now() - t0;
     base.task = fx.bugs.map((b) => b.id).join('+') || base.task;
     // ★ 同一根 opts, 只差 minimalToolFaceSeats 这一个键 (B 加, A 不加)
     const run = createAgentLeafRunner({
@@ -334,9 +358,12 @@ async function once(arm: ArmConfig, rep: number): Promise<Row> {
       // 注入 hashline 工具对 → 工具**集合**真的对得上: B 拿到这 4 件后扩成全, A 从一开始就拿到全。
       ...(arm.minimalToolFaceSeats ? { minimalToolFaceSeats: arm.minimalToolFaceSeats } : {}),
     });
+    const tLeaf0 = Date.now();
     const r = await run({ prompt: fx.spec, model: MODEL });
+    leafMs = Date.now() - tLeaf0;
 
     // oracle: scoped test (种了哪个就只看那一个文件) + whole-project tsc
+    const tOracle0 = Date.now();
     const tsc = await $`npx tsc --noEmit -p tsconfig.json`.cwd(fx.root).quiet().nothrow();
     const t = await $`bun test ${fx.testPaths.join(' ')}`.cwd(fx.root).quiet().nothrow();
     const tOut = t.stdout.toString() + t.stderr.toString();
@@ -347,6 +374,7 @@ async function once(arm: ArmConfig, rep: number): Promise<Row> {
 
     // 反作弊 + 精准度
     const diff = await inspectDiff(fx);
+    oracleMs = Date.now() - tOracle0;
     const testsModified = diff.testsModified.length;
     const oraclePass = testsGreen && tscClean && testsModified === 0;
 
@@ -368,6 +396,9 @@ async function once(arm: ArmConfig, rep: number): Promise<Row> {
       stalled: r.stalled === true,
       spinFused: r.spinFused != null,
       wallMs: Date.now() - t0,
+      leafMs,
+      fixtureMs,
+      oracleMs,
       diffLines: diff.insertions + diff.deletions,
       testsModified,
       strayFiles: diff.strayFiles.length,
@@ -379,6 +410,9 @@ async function once(arm: ArmConfig, rep: number): Promise<Row> {
     return {
       ...base,
       wallMs: Date.now() - t0,
+      leafMs,
+      fixtureMs,
+      oracleMs,
       textTail: '',
       error: `${d.raw}${d.status ? `  http_status=${d.status}` : ''}${d.providerCode ? `  provider_code=${d.providerCode}` : ''}`.slice(0, 500),
     };
@@ -410,7 +444,8 @@ async function main(): Promise<void> {
         `  ${row.pass ? 'PASS' : 'FAIL'} ` +
           `in=${row.rawIn} out=${row.rawOut} hit=${row.cacheHit ?? 'null'} ` +
           `disc=${row.discountedIn} tools=${row.toolCalls} files=${row.filesTouched} ` +
-          `${(row.wallMs / 1000).toFixed(1)}s` +
+          `leaf=${(row.leafMs / 1000).toFixed(1)}s (fx=${(row.fixtureMs / 1000).toFixed(1)}s ` +
+          `oracle=${(row.oracleMs / 1000).toFixed(1)}s 合=${(row.wallMs / 1000).toFixed(1)}s)` +
           (row.error ? `  ERR ${row.error}` : '') +
           (cls ? `  [${cls}]` : ''),
       );
@@ -437,16 +472,19 @@ async function main(): Promise<void> {
   md += `座位: \`${MODEL}\` · 任务集: \`${TASK_ID}\` · reps=${REPS} · 工作树隔离\n`;
   md += `单一变量: 工具面时序 (A=开局全 / B=开局最小+首调后放全)。其余全同, 见脚本头四要素段。\n\n`;
   md += `## 摘要 (按契约段钉死的成败信号, 严格比较, 无容差)\n\n`;
-  md += `| 臂 | 题次 | pass-rate | 平均 raw-in | 平均 raw-out | 平均 cacheHit | 平均折价 in | 平均工具调用 | 平均墙钟 |\n`;
-  md += `|---|---|---|---|---|---|---|---|---|\n`;
+  md += `| 臂 | 题次 | pass-rate | 平均 raw-in | 平均 raw-out | 平均 cacheHit | 平均折价 in | 平均工具调用 | 平均 leaf 墙钟 | (整行墙钟) |\n`;
+  md += `|---|---|---|---|---|---|---|---|---|---|\n`;
   for (const arm of ARMS) {
     const xs = armRows(arm.name);
     md +=
       `| ${arm.name} | ${xs.length} | ${(passRate(xs) * 100).toFixed(0)}% | ` +
       `${avg(xs, (r) => r.rawIn).toFixed(0)} | ${avg(xs, (r) => r.rawOut).toFixed(0)} | ` +
       `${avg(xs, (r) => r.cacheHit ?? 0).toFixed(0)} | ${avg(xs, (r) => r.discountedIn).toFixed(0)} | ` +
-      `${avg(xs, (r) => r.toolCalls).toFixed(1)} | ${(avg(xs, (r) => r.wallMs) / 1000).toFixed(1)}s |\n`;
+      `${avg(xs, (r) => r.toolCalls).toFixed(1)} | ${(avg(xs, (r) => r.leafMs) / 1000).toFixed(1)}s | ` +
+      `${(avg(xs, (r) => r.wallMs) / 1000).toFixed(1)}s |\n`;
   }
+  md += `\n⚠ **比时间只看 \`leaf 墙钟\`**。整行墙钟含 fixture 建树 + 整仓 \`tsc\` + 红检, 与工具面时序无关,\n`;
+  md += `且 A 臂总先跑吃冷盘缓存 → 那一列对 B 有系统性单向偏袒, 不是噪声。分段见逐行表。\n`;
   const a = armRows('A-standard');
   const b = armRows('B-anchored');
   const pa = passRate(a);
@@ -469,13 +507,15 @@ async function main(): Promise<void> {
   md += `- ${verdict}\n`;
 
   md += `\n## 逐行 (原始行: rows.json)\n\n`;
-  md += `| 臂 | rep | task | pass | raw in/out | cacheHit | 折价 in | 工具调 | 文件 | diff 行 | wall |\n`;
-  md += `|---|---|---|---|---|---|---|---|---|---|---|\n`;
+  md += `| 臂 | rep | task | pass | raw in/out | cacheHit | 折价 in | 工具调 | 文件 | diff 行 | leaf | fixture | oracle | 合计 |\n`;
+  md += `|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n`;
   for (const r of rows) {
     md +=
       `| ${r.arm} | ${r.rep} | ${r.task} | ${r.pass ? '✓' : '✗'} | ` +
       `${r.rawIn}/${r.rawOut} | ${r.cacheHit ?? 'null'} | ${r.discountedIn} | ` +
-      `${r.toolCalls} | ${r.filesTouched} | ${r.diffLines} | ${(r.wallMs / 1000).toFixed(1)}s` +
+      `${r.toolCalls} | ${r.filesTouched} | ${r.diffLines} | ` +
+      `${(r.leafMs / 1000).toFixed(1)}s | ${(r.fixtureMs / 1000).toFixed(1)}s | ` +
+      `${(r.oracleMs / 1000).toFixed(1)}s | ${(r.wallMs / 1000).toFixed(1)}s` +
       (r.error ? ` | **ERR** ${r.error.slice(0, 80)}` : '') +
       ` |\n`;
   }
