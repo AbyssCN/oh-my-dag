@@ -15,8 +15,47 @@ export interface DangerousPattern {
   label: string;
   /** 命中时给 agent 的拦截理由。 */
   reason: string;
-  /** 匹配正则 (大小写不敏感)。 */
+  /** 匹配正则 (大小写不敏感)。给了 `match` 时它只当形状文档, 判定以 `match` 为准。 */
   re: RegExp;
+  /**
+   * 可选谓词 —— 判据需要**一张可读的名单**时用它 (如 `rm-rf-source-dir` 的易失目录白名单)。
+   * 给了则 `classifyCommand` 用它代替 `re.test`: 把名单编进正则没人看得懂,
+   * 而看不懂的闸没人敢改, 最后要么被绕过要么被关掉。
+   */
+  match?: (command: string) => boolean;
+}
+
+/**
+ * **易失目录** —— 递归删它们是每天都在跑的正当清理,`rm-rf-source-dir` 放行这些。
+ *
+ * 这张表是那条闸的**假阳性阀门**:少一个名字就多一类被误拦的正当命令,而误拦的代价不是
+ * "多问一次",是**有人把整条闸关掉**。加名字往这里加,别去放宽正则。
+ */
+export const EPHEMERAL_DIRS: readonly string[] = [
+  'node_modules', 'dist', 'build', 'out', 'coverage', 'target',
+  '.next', '.nuxt', '.turbo', '.cache', '.parcel-cache', '.pytest_cache',
+  '__pycache__', '.venv', 'venv', 'tmp', 'temp', '.tmp',
+];
+
+/** `rm -rf <target>` 的形状(flag 任意序,双 lookahead 保证 r+f 都在,同 `rm-rf-root`)。 */
+const RM_RF_TARGET = /rm\s+-(?=[a-z]*r)(?=[a-z]*f)[a-z]+\s+(\S+)/i;
+
+/**
+ * 递归 rm ∧ 目标**不在**易失名单里 ∧ 不在 `/tmp` 下 ∧ 不是根/家目录(那几个归 `rm-rf-root`)。
+ *
+ * 写成**谓词函数**而不是塞进正则:易失名单要能被读、被审、被加,编进正则就没人看得懂,
+ * 而看不懂的闸没人敢改,最后要么绕过要么关掉。
+ */
+export function isRecursiveRmOfSourceDir(command: string): boolean {
+  const m = RM_RF_TARGET.exec(command);
+  if (!m) return false;
+  const raw = m[1]!;
+  if (/^\/tmp(\/|$)/.test(raw)) return false; // 约定的临时区, 放行
+  const cleaned = raw.replace(/\/\*$/, '').replace(/\/+$/, '');
+  // 根 / 家目录归 `rm-rf-root` —— 两条闸报同一件事会让判词打架。
+  if (/^(\/|~|\$HOME)$/.test(cleaned)) return false;
+  const last = cleaned.split('/').filter(Boolean).pop() ?? '';
+  return !EPHEMERAL_DIRS.includes(last);
 }
 
 /**
@@ -62,6 +101,24 @@ export const DANGEROUS_PATTERNS: readonly DangerousPattern[] = [
     re: /rm\s+-(?=[a-z]*r)(?=[a-z]*f)[a-z]+\s+(\/|~|\/\*|\$HOME)(\s|$)/i,
   },
   {
+    label: 'rm-rf-source-dir',
+    // 2026-08-21, run e2d204b7 的节点 s4: 一个 leaf 在隔离 worktree 里把整个 `src/` 删了
+    // (867 文件 / 253564 行)。而 `rm-rf-root` 只认 `/` `~` `/*` `$HOME` —— 实测 `rm -rf src`
+    // 与 `rm -rf $HOME/repos` **全部放行**。这正是「黑名单挡写法不挡能力」那句话的活样本。
+    //
+    // ⚠ 判据刻意**不是**"任何递归 rm": `rm -rf node_modules` / `dist` / `.next` 是每天都在跑的
+    // 正当清理, 拦它们就是造假 major —— **而假 major 的代价是有人把整条闸关掉** (S-45 买过一次)。
+    // 所以判据 = 递归 rm ∧ 目标**不在易失名单里**。易失名单显式列在下方 EPHEMERAL_DIRS,
+    // 加名字要往那张表里加 —— 显式表比"碰巧不匹配"可审得多。
+    //
+    // ⚠ 这条**堵不严**, 如实写在这: `find -delete` 由上一条管, 而
+    // `python3 -c 'shutil.rmtree(...)'` / `node -e fs.rmSync` / `> file` 一条都拦不住。
+    // 真正的边界是 jail 的 worktree, 不是这张表 —— 这条只把最常见、代价最大的那个写法堵上。
+    reason: 'rm -rf 递归删除源码目录不可逆 (易失目录如 node_modules/dist 不在此列)',
+    re: RM_RF_TARGET,
+    match: isRecursiveRmOfSourceDir,
+  },
+  {
     label: 'find-delete',
     // command-leaf 白名单收了 find/bfs/fd (验证叶要能找产物), 而 `-delete` 是它们自带的递归删除,
     // 不经 rm 因此绕开 rm-rf-root。`-exec rm` 的 `\;` 已被 command-leaf 元字符闸挡, 这里补全另一半。
@@ -103,7 +160,7 @@ export interface CommandVerdict {
 export function classifyCommand(command: string | undefined | null): CommandVerdict {
   if (!command || typeof command !== 'string') return { dangerous: false };
   for (const p of DANGEROUS_PATTERNS) {
-    if (p.re.test(command)) {
+    if (p.match ? p.match(command) : p.re.test(command)) {
       return { dangerous: true, label: p.label, reason: p.reason };
     }
   }
