@@ -2732,6 +2732,9 @@ async function executePlan(
       ...(r.model ? { model: r.model } : {}),
       ...(startedAt !== undefined ? { durationMs: Math.max(0, Date.now() - startedAt) } : {}),
       ...(failReason ? { failReason } : {}),
+      // 2026-08-21: 闸的分类随事件出去 —— 观测面此前只拿得到 failReason 那 160 字符首行,
+      // 「是哪个闸拦的」画不出来。`r.failureKind` 在 settle 出口已过 `withFailureKind` 归一化。
+      ...(r.failureKind ? { failureKind: r.failureKind } : {}),
       ...(r.usage ? { usage: { in: r.usage.in, out: r.usage.out } } : {}),
     };
   };

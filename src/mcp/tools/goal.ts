@@ -18,7 +18,7 @@ import { ignitionPreflight } from '../../harness/goal/ignition-preflight';
 import { readIgnitionBandwidth, renderIgnitionForecast } from '../../harness/goal/ignition-forecast';
 import { loadSddContract, parseBreakdown, ticketFieldsFromSdd } from '../../harness/goal/sdd-direct';
 import { resolveBackend as realResolveBackend, type PathBackend } from '../../harness/pathfinder/backend';
-import type { ExecutorDagConfig } from '../../harness/dag/types';
+import type { DagNodeEvent, ExecutorDagConfig } from '../../harness/dag/types';
 import type { CheckpointManager } from '../../harness/continuity/checkpoint-manager';
 import type { RunRegistry } from '../run-registry';
 import type { HudRunRecordLike } from '../../hud/mirror';
@@ -74,6 +74,18 @@ export interface GoalToolDeps {
    * omd-hud 活体镜像 (同 dag_run)。省略 = 不写 (HUD 空闲), 不影响执行。
    */
   hudMirror?: { write: (runId: string, record: HudRunRecordLike | null, levels?: string[][]) => void };
+  /**
+   * 节点事件旁路订阅者 (TUI 活图 / fleet)。**与 `dag_run` 同一个接缝**, 见 `dag-tools.ts:415-425`。
+   *
+   * ⚠ 2026-08-21 补的正是「同一个洞补了一半」: `:704` 那条注释记着 2026-07-30 撞出的事故 ——
+   * 「`dag_goal` 此前一个事件都不发」。当时补了 `runRegistry` 与 `hudMirror` 两半, **这一半没补**。
+   * 后果是两个观测面看同一次 run 各说各话: statusline 吃 `.omd/hud/dag.json` 所以是亮的,
+   * TUI 吃进程内订阅所以全程是黑的 —— 而「一个面有一个面没有」比「两个面都没有」更难撞见,
+   * 这就是它活到今天的原因。
+   *
+   * 省略 = 不转发 (与补线前逐字节一致)。
+   */
+  onNodeEvent?: (runId: string, e: DagNodeEvent) => void;
   /**
    * DAG 运行留痕器 (同 dag_run 那一个实例)。
    *
@@ -708,6 +720,16 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         onNodeEvent: (e) => {
           deps.runRegistry.applyNodeEvent(runId, e);
           deps.hudMirror?.write(runId, deps.runRegistry.getRecord(runId));
+          // 旁路在镜像写盘**之后** —— 顺序与 `dag-tools.ts:418-425` 逐字同, 且理由也同:
+          // 订阅者再慢也不许让 statusline 的数据源等它; 反过来 statusline 写盘失败 (fail-open)
+          // 也不该吃掉这一份转发。订阅者抛错吞掉不打断执行。
+          if (deps.onNodeEvent) {
+            try {
+              deps.onNodeEvent(runId, e);
+            } catch (err) {
+              logger.warn({ runId, err: (err as Error).message }, '[omd/goal] onNodeEvent 订阅者抛错 (已吞, 不打断执行)');
+            }
+          }
         },
         ...(deps.continuity
           ? {

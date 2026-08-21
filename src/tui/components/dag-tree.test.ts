@@ -8,7 +8,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
-import { DagTree } from './dag-tree';
+import { DagTree, runUsage } from './dag-tree';
 import { createTheme } from '../theme';
 
 const theme = createTheme({ color: false });
@@ -180,5 +180,97 @@ describe('C-6 画法 (SDD 2026-08-11)', () => {
     const line = t.render(80).find((l) => l.includes('shard-3 agent'));
     expect(line).toContain('[bash edit engine.ts]');
     // 反向自检: 去掉行尾 progress 段 → 断言红。
+  });
+});
+
+/**
+ * run 级词元合计(2026-08-21)。
+ *
+ * 它要杀死的失效形态:`settle` 事件**一直带着** `usage:{in,out}`(`dag/types.ts:493-494`),
+ * 而 TUI **收下就扔** —— 于是「这一次 run 花了多少」在 TUI 上一处都没有。
+ * 底栏那行答的是另一个问题(**进程级** 5h 窗口,切 `/session` 都不清零)。
+ *
+ * 证伪方式:删掉 `apply` 里 `if (e.usage !== undefined) n.usage = e.usage;` → 第一条红;
+ * 把 `runUsage` 的 `withUsage.length === 0 → null` 改成返回 0 → 「无源恒缺席」那条红;
+ * 把 `partial` 恒设 false → 「下界」那条红。
+ */
+describe('runUsage — 这一次 run 花了多少', () => {
+  const mk = (): DagTree => new DagTree(createTheme({ color: false }), () => 1000);
+  const settle = (t: DagTree, id: string, usage?: { in: number; out: number }): void =>
+    t.apply({ type: 'settle', id, status: 'done', kind: 'agent', ...(usage ? { usage } : {}) });
+
+  test('★ settle 带的 usage 真的被收下并合计 (此前收下就扔)', () => {
+    const t = mk();
+    settle(t, 'a', { in: 1200, out: 300 });
+    settle(t, 'b', { in: 800, out: 200 });
+    const u = runUsage(t.snapshot().nodes);
+    expect(u).toEqual({ in: 2000, out: 500, partial: false });
+    expect(t.render(80)[0]).toContain('2.5k tok');
+  });
+
+  test('★ 无源恒缺席: 一个都没报 → null, 头行整段不画 (不许画 0 tok 冒充没花钱)', () => {
+    const t = mk();
+    settle(t, 'a');
+    settle(t, 'b');
+    expect(runUsage(t.snapshot().nodes)).toBeNull();
+    expect(t.render(80)[0]).not.toContain('tok');
+  });
+
+  test('★ 下界要标出来: 有定局节点没报 → partial, 渲染带 `+` (同 statusbar 的 $0.00+)', () => {
+    const t = mk();
+    settle(t, 'a', { in: 1000, out: 0 });
+    settle(t, 'b'); // 老发射点, 没报
+    const u = runUsage(t.snapshot().nodes)!;
+    expect(u.partial).toBe(true);
+    expect(t.render(80)[0]).toContain('1.0k+ tok');
+  });
+
+  test('还在跑的不算进「谁没报」—— 它本来就还没有 usage', () => {
+    const t = mk();
+    settle(t, 'a', { in: 1000, out: 0 });
+    t.apply({ type: 'start', id: 'b', kind: 'agent' });
+    expect(runUsage(t.snapshot().nodes)!.partial).toBe(false);
+  });
+});
+
+/**
+ * 「是哪个闸拦的」(2026-08-21)。
+ *
+ * 它要杀死的失效形态:七个闸里只有三类发 `verdict`(judge / gate 谎报完成 / verifier);
+ * **心跳闸 `stall`、空转熔断 `spin-fused`、产物闸、`expect_exit` oracle、轮数耗尽全部只以
+ * `settle{failed}` 露面**,而 `failureKind` 此前**不在事件字段里** —— 它只进 checkpoint。
+ * 于是观测面只画得出一句被截断的错误原文,画不出闸名。
+ *
+ * 证伪方式:删掉 `engine.ts` settleEvent 里那行 `...(r.failureKind ? ...)` → 引擎侧不再带,
+ * 本组第一条红;删掉 `dag-tree.ts` 渲染里的 `why` 前缀 → 同样红。
+ */
+describe('failureKind — 是哪个闸拦的', () => {
+  const mk = (): DagTree => new DagTree(createTheme({ color: false }), () => 1000);
+
+  test('★ 成因作为前缀画在失败子行上 (心跳闸这类不发 verdict 的, 全靠它)', () => {
+    const t = mk();
+    t.apply({ type: 'planned', nodes: [{ id: 'a', kind: 'agent' }] });
+    t.apply({ type: 'settle', id: 'a', status: 'failed', kind: 'agent', failReason: 'provider 30s 无字节', failureKind: 'stall' });
+    const body = t.render(100).join('\n');
+    expect(body).toContain('[stall] provider 30s 无字节');
+  });
+
+  test('★ 缺席 ≠ unclassified: 老发射点没带成因 → 只画原文, 不编一个出来充数', () => {
+    const t = mk();
+    t.apply({ type: 'planned', nodes: [{ id: 'a', kind: 'agent' }] });
+    t.apply({ type: 'settle', id: 'a', status: 'failed', kind: 'agent', failReason: '某个老失败' });
+    const body = t.render(100).join('\n');
+    expect(body).toContain('某个老失败');
+    expect(body).not.toContain('[');
+  });
+
+  test('空转熔断与心跳闸分得开 —— 两者的下一步正好相反', () => {
+    const t = mk();
+    t.apply({ type: 'planned', nodes: [{ id: 'a', kind: 'agent' }, { id: 'b', kind: 'agent' }] });
+    t.apply({ type: 'settle', id: 'a', status: 'failed', kind: 'agent', failReason: 'x', failureKind: 'stall' });
+    t.apply({ type: 'settle', id: 'b', status: 'failed', kind: 'agent', failReason: 'y', failureKind: 'spin-fused' });
+    const body = t.render(100).join('\n');
+    expect(body).toContain('[stall]');
+    expect(body).toContain('[spin-fused]');
   });
 });

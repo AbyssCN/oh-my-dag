@@ -723,7 +723,12 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       buildConfig: buildDefaultConfig,
       continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd },
       // 活体进度/HUD 与 dag_run 同一条线 (2026-07-30 补: goal 这条从 P1 起就漏了)。
+      // ⚠ 2026-08-21: 上面这句在补线前**是不成立的** —— dag_run 那条线有三半 (registry ·
+      //   hudMirror · 订阅者旁路), 而 goal 只接了前两半, TUI 那半一直空着。补齐见下一行。
       hudMirror,
+      // 节点事件旁路 —— **与 dag_run 同一个 composed 实例**, 于是 TUI 活图 / fleet 对
+      // solve 与 run 两条路一视同仁。缺了这行, 走 solve 的 run 在 TUI 上全程是黑的。
+      onNodeEvent: onNodeEventComposed,
       // 运行留痕与 dag_run 同一个实例 (2026-08-02 补: 与上面那条同一个形态的漏)。
       recorder,
       // S3: owner 指令通道 —— 每轮取一次未消费指令, 逐字渲染, 取完记账 (防每轮重放)。

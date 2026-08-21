@@ -155,4 +155,36 @@ describe('C-4 耗时与死因 (D-5)', () => {
     //   ② failReason 不截断 160 (把 settleEvent 的 slice(0,160) 删掉) → 超长输出下断言红 (已当场
     //   证伪: 2 pass 1 fail, 本用例 fail; 复原后回绿)。
   });
+
+  /**
+   * `failureKind` 随事件出去 (2026-08-21 加)。
+   *
+   * ## 它要杀死的失效形态
+   *
+   * 七个闸里**只有三类发 `verdict`**(judge / gate 谎报完成 / verifier)。心跳闸 `stall`、
+   * 空转熔断 `spin-fused`、产物闸、`expect_exit` oracle、轮数耗尽 —— 全部只以 `settle{failed}`
+   * 露面。而 `failureKind` 此前**不在事件字段里**(只进 checkpoint), 于是观测面画不出
+   * 「是哪个闸拦的」, 只能画一句被截断 160 字符的错误原文。
+   *
+   * ⚠ 这条闸补的是**引擎那一半**。消费端那一半在 `src/tui/components/dag-tree.test.ts`;
+   *   2026-08-21 实测: 只有消费端的测试时, 把 settleEvent 里那行删掉**整个 dag 目录 160 测全绿** ——
+   *   「一条永远绿的闸不是闸」, 所以这一条必须在这里。
+   *
+   * 证伪方式: 删掉 `settleEvent` 里 `...(r.failureKind ? { failureKind: r.failureKind } : {})` → 本条红。
+   */
+  test('★ settle 带 failureKind (闸的分类); done 节点不带 —— 恒非空当且仅当没过', async () => {
+    const events: DagNodeEvent[] = [];
+    const r = await runExecutorDagWithPlan(
+      plan({ A: { goal: '会过的叶' }, B: { goal: '会 FAIL 的叶', depends_on: ['A'] } }),
+      makeConfig(makeGenerate({ delayMs: 1 }), { onNodeEvent: (e) => events.push(e) }),
+    );
+    const settles = events.filter((e): e is Extract<DagNodeEvent, { type: 'settle' }> => e.type === 'settle');
+    const sB = settles.find((e) => e.id === 'B')!;
+    expect(sB.status).toBe('failed');
+    // 归一化在 settle 出口 (`withFailureKind`), 没人标的显式记 'unclassified' —— 总之**非空**。
+    expect(sB.failureKind).toBeDefined();
+    expect(sB.failureKind).toBe(r.results.B!.failureKind);
+    // done 的节点不带成因: 「恒非空当且仅当 status !== 'done'」(types.ts:640 的契约)。
+    expect(settles.find((e) => e.id === 'A')!.failureKind).toBeUndefined();
+  });
 });

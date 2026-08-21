@@ -490,8 +490,15 @@ export type DagNodeEvent =
   | { type: 'planned'; nodes: Array<{ id: string; kind: string }> }
   | { type: 'expanded'; parent: string; nodes: Array<{ id: string; kind: string; deps: string[] }> }
   | { type: 'start'; id: string; kind: string }
+  // `failureKind` (2026-08-21 补, additive): **闸的分类信息此前在事件面上是丢失的**。
+  // 七个闸里只有三类发 `verdict` (judge / gate 谎报完成 / verifier); 心跳闸 `stall`、
+  // 空转熔断 `spin-fused`、产物闸 `empty-artifact`/`broken-artifact`、`expect_exit` oracle、
+  // 轮数耗尽 —— 全部只以 settle{failed} 露面, 而观测面只拿得到 `failReason` 那 160 字符首行。
+  // 于是 TUI/HUD **画不出「是哪个闸拦的」**, 只能画一句被截断的错误原文。
+  // `LeafResult.failureKind` 一直都在 (:640), 之前只是没往事件里放; 词表见 `node-failure.ts:49`。
+  // ⚠ **缺席 ≠ 'unclassified'**: 缺席 = 早于本次改动的发射点, unclassified = 记了但归不了类。
   | { type: 'settle'; id: string; status: 'done' | 'failed' | 'skipped'; kind: string; model?: string;
-      durationMs?: number; failReason?: string; usage?: { in: number; out: number } }
+      durationMs?: number; failReason?: string; failureKind?: NodeFailureKind; usage?: { in: number; out: number } }
   // 新增三型 (SDD 2026-08-11-dag-观察面与审核跟踪升级, additive)。id 均为节点 id;
   // 未知 type 消费者必须静默忽略 (C-1)。verdict 的 pass/fail 指**被审对象** (D-9)。
   | { type: 'progress'; id: string; tool?: string; note?: string; calls: number; elapsedMs: number }

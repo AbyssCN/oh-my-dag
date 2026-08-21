@@ -24,9 +24,11 @@
  */
 import type { Component } from '@earendil-works/pi-tui';
 import type { DagNodeEvent } from '../../harness/dag/types';
+import type { NodeFailureKind } from '../../harness/node-failure';
 import { logger } from '../../logger';
 import { fmtDur } from '../render/dag-gantt';
 import { fitLine } from '../render/line';
+import { humanTokens } from '../render/pressure';
 import type { OmdTuiTheme } from '../theme';
 
 export type TreeStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
@@ -60,6 +62,23 @@ export interface TreeNode {
   durationMs?: number;
   /** settle 带的失败原文首行 (≤160 字符, S1 截断)。只画在 failed 行下 (C-6 ②)。 */
   failReason?: string;
+  /**
+   * settle 带的**没过的成因** —— 也就是「是哪个闸拦的」(2026-08-21 起事件才带它)。
+   *
+   * 七个闸里只有三类发 `verdict`; 心跳闸 / 空转熔断 / 产物闸 / oracle / 轮数耗尽全部只以
+   * settle{failed} 露面。没有这一位, 观测面只画得出一句被截断的错误原文, 画不出闸名。
+   * ⚠ **缺席 ≠ `'unclassified'`**: 缺席 = 早于本次改动的发射点, unclassified = 记了但归不了类。
+   */
+  failureKind?: NodeFailureKind;
+  /**
+   * settle 带的词元用量 (`DagNodeEvent.settle.usage`, `dag/types.ts:493-494`)。
+   *
+   * ⚠ 2026-08-21 补: 这个字段**引擎一直在发, TUI 一直收下就扔**。于是「这一次 run 花了多少」
+   * 在 TUI 上一处都没有 —— 而底栏那行是**进程级**的 5h 窗口 (`usage/ledger.ts:96`, 切 /session
+   * 都不清零), 答的根本不是同一个问题。按本仓「dogfood 即测量」, run 级用量是一等读数。
+   * 缺席 = 老发射点没报, **不是 0** (见 runUsage 的下界标记)。
+   */
+  usage?: { in: number; out: number };
   /** 最近一条 progress 的展示量 (C-6 ④; 生产端已节流 ≥500ms, 只留最新)。 */
   progress?: { tool?: string; note?: string };
   /**
@@ -78,6 +97,29 @@ export interface VerdictLine {
   verdict: 'pass' | 'fail';
   round: number;
   reason?: string;
+}
+
+/**
+ * run 级词元合计 —— 「这一次 run 花了多少」。
+ *
+ * ## 三条读数纪律,一条都不许省
+ *
+ * ① **无源恒缺席**:一个节点都没报 usage → 返回 `null`,调用方整段不画。
+ *    画 `0 tok` 会把「没报」冒充成「没花」。
+ * ② **下界要标出来**:只要有**已定局**的节点没报 usage,合计就是**下界不是真值** →
+ *    `partial: true`,渲染带 `+`。这个记号本仓已有先例:`statusbar.ts:65-68` 的
+ *    `$0.00+` 就是「有未计价调用,是下界」。
+ * ③ **只数定局的**:还在跑的节点本来就还没有 usage,不算进「谁没报」。
+ */
+export function runUsage(nodes: readonly TreeNode[]): { in: number; out: number; partial: boolean } | null {
+  const settled = nodes.filter((n) => n.status === 'done' || n.status === 'failed' || n.status === 'skipped');
+  const withUsage = settled.filter((n) => n.usage !== undefined);
+  if (withUsage.length === 0) return null;
+  return {
+    in: withUsage.reduce((a, n) => a + (n.usage?.in ?? 0), 0),
+    out: withUsage.reduce((a, n) => a + (n.usage?.out ?? 0), 0),
+    partial: withUsage.length < settled.length,
+  };
 }
 
 /** 三画法共用的一份快照(纯数据,渲染函数吃它)。 */
@@ -148,6 +190,8 @@ export class DagTree implements Component {
         // D-5: 耗时真源 = 引擎侧墙钟;老发射点不给 → 渲染回落到达间隔。
         if (e.durationMs !== undefined) n.durationMs = e.durationMs;
         if (e.failReason !== undefined) n.failReason = e.failReason;
+        if (e.failureKind !== undefined) n.failureKind = e.failureKind;
+        if (e.usage !== undefined) n.usage = e.usage; // 2026-08-21: 此前收下就扔
         return;
       }
       case 'progress': {
@@ -205,7 +249,13 @@ export class DagTree implements Component {
       if (n.status === 'running') return this.theme.chrome.accent;
       return this.theme.chrome.dim;
     };
-    const out: string[] = [this.theme.chrome.accent(fitLine(this.runLabel ? `DAG ${this.runLabel}` : 'DAG', width))];
+    // 头行带 run 级词元合计 (2026-08-21)。**没有一个节点报过就整段不画** —— 底栏那行是
+    // 进程级 5h 窗口, 答的不是同一个问题, 这里画 0 会让人以为这次 run 没花钱。
+    const u = runUsage([...this.nodes.values()]);
+    const tok = u ? ` · ${humanTokens(u.in + u.out)}${u.partial ? '+' : ''} tok` : '';
+    const out: string[] = [
+      this.theme.chrome.accent(fitLine(`${this.runLabel ? `DAG ${this.runLabel}` : 'DAG'}${tok}`, width)),
+    ];
 
     /**
      * 递归画一层。`prefix` 是这一层左边已经积累的竖线。
@@ -233,7 +283,11 @@ export class DagTree implements Component {
         // 子行:C-6 ② failed 节点下一行缩进画 failReason; C-6 ③ 审核判决子行 (✗/✓ <gate> r<N>: <reason>)。
         // 子行缩进对齐节点行的 **id 起始列**(行首 = prefix + 分支宽 2 + 标记 2)。
         const subPrefix = prefix + (branch ? '    ' : '  ');
-        if (n.status === 'failed' && n.failReason) out.push(paint(n)(fitLine(`${subPrefix}${n.failReason}`, width)));
+        if (n.status === 'failed' && n.failReason) {
+          // 成因前缀 = 「是哪个闸拦的」。缺席就只画原文 —— 不编一个 `unclassified` 出来充数。
+          const why = n.failureKind ? `[${n.failureKind}] ` : '';
+          out.push(paint(n)(fitLine(`${subPrefix}${why}${n.failReason}`, width)));
+        }
         for (const v of n.verdicts ?? []) {
           out.push(this.theme.chrome.dim(fitLine(`${subPrefix}${v.verdict === 'pass' ? TREE_MARK.done : TREE_MARK.failed} ${v.gate} r${v.round}${v.reason ? `: ${v.reason}` : ''}`, width)));
         }
