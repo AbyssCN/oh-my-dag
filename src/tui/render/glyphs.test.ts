@@ -112,6 +112,9 @@ describe('★ 字形闸: TUI 的 chrome 文案里不许有画不准的字形', (
     ['seatFailed', CHROME.seatFailed('coord is not provider:model')],
     ['seatUnresolved', CHROME.seatUnresolved('seat not configured')],
     ['noRunCapability', CHROME.noRunCapability('listRuns')],
+    // Ctrl+K 去哪 (2026-08-22)。新增 chrome 文案一律进这张表, 否则它不过字形闸。
+    ['paletteEmpty', CHROME.paletteEmpty()],
+    ['paletteSessionsFailed', CHROME.paletteSessionsFailed('EACCES: permission denied')],
     ['resumeStarted', CHROME.resumeStarted('abc', 'runId: abc status: running')],
     ['resumeRefused', CHROME.resumeRefused('abc', 'no checkpoint')],
     ['skillArmed', CHROME.skillArmed('omd-council')],

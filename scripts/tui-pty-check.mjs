@@ -910,6 +910,58 @@ async function scenarioPathfinder() {
 }
 
 /**
+ * 场景 PK:**`Ctrl+K` 去哪**(2026-08-22,视觉系统稿第 6 屏 = 片 1)。
+ *
+ * ## 为什么这一条必须在 PTY 上而不只是单测
+ *
+ * 选项构造(`palette.ts`)有单测,但**单测证明不了那个键接上了**。这一程刚踩过同一形状:
+ * 「只写消费端的测试,把引擎那行删掉整个 dag 目录 160 测全绿」。这里量的是整条链:
+ * 按键 → input listener 收到 → 开框 → Enter → 真的换了视图。
+ *
+ * ## 判据的证伪方式(照做即可复验)
+ *
+ * · 把 `tui.ts` 里 `omd.palette` 那个分支删掉 → PK-1 当场红(框根本不开)。
+ * · 把 `openPalette` 里 `enterMap(target.slug)` 换成 `return` → PK-2 红(框关了但没换屏)。
+ *
+ * ⚠ 判据锚 `Go to (` 而不是 `Go to`:带上那个左括号才咬住"是这个框的标题"。
+ *   ⚠ 别在标题里用**连续两个空格**当分隔:这条 lane 的 `p.text()` 会把空白压成一个,
+ *      于是判据串与屏上串对不上而红 —— 2026-08-22 第一版就这么红过一次(接线是好的)。
+ * ⚠ **cwd 自带一张图**,与 `scenarioPathfinder` / `scenarioTicketBoard` 同一条纪律 ——
+ *   读"这台机器仓里恰好有几张图"的闸量的是那台机器,不是这段代码。
+ */
+async function scenarioPalette() {
+  const cwd = mkdtempSync(join(tmpdir(), 'omd-tui-palette-'));
+  const mapDir = join(cwd, 'docs', 'plan', 'pathfinder');
+  mkdirSync(mapDir, { recursive: true });
+  writeFileSync(join(mapDir, 'fog-acceptance.md'), readFileSync(join(ROOT, 'src/harness/pathfinder/fog-acceptance.fixture.md'), 'utf8'));
+  const p = startTui({ cwd });
+  try {
+    check(await waitFor(p, (t) => bootReady(t)), 'PK-0 (场景 PK) 启动');
+    // 首屏必须自己说出这个入口 —— 它同时是"启动时接上一条会话"的唯一痕迹
+    // (`defaultTuiSessionId` 让每个进程直接开新会话, 屏上原本零提示)。
+    check(p.text().includes('Ctrl+K'), 'PK-1 ★ 首屏印着 Ctrl+K 这个入口', p.text().slice(-800));
+    p.write('\x0b'); // Ctrl+K
+    check(
+      await waitFor(p, (t) => t.includes('Go to (')),
+      'PK-2 ★ Ctrl+K 开得出去处选单',
+      p.text().slice(-800),
+    );
+    // fixture 后端起步零会话、本进程零 run ⇒ 唯一一行是地图行(无源恒缺席的活证据)。
+    check(p.text().includes('地图'), 'PK-3 ★ 选单里有地图那一行(会话/活图无源时不画空行)', p.text().slice(-800));
+    p.write('\r');
+    check(
+      await waitFor(p, (t) => t.includes('fog line')),
+      'PK-4 ★ Enter 真的换到了那张图的全屏(不是只把框关掉)',
+      p.text().slice(-800),
+    );
+    p.write('\x10'); // Ctrl+P 退出全屏
+    await new Promise((r) => setTimeout(r, 300));
+  } finally {
+    p.kill();
+  }
+}
+
+/**
  * 场景 S5:**决策地图票看板**(切片 S5, D-12 ①③)。
  *
  * 欢迎屏侧栏画 `ticket board` 块 —— 数据只读盘上 PathMap (resolveBackend(cwd).readMap),
@@ -1389,6 +1441,7 @@ await scenarioLogRedirect();
 await scenarioSeat();
 await scenarioSkillComplete();
 await scenarioPathfinder();
+await scenarioPalette();
 await scenarioTicketBoard();
 await scenarioDagViews();
 await scenarioDagNarrow();

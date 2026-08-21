@@ -74,6 +74,27 @@ describe('★ W4③ 键位文件 + omd 五键', () => {
     expect(re.matches('\x0f', 'omd.thinkingToggle')).toBe(false); // 旧键让位
   });
 
+  /**
+   * ★ **`omd.palette` 抢的是 pi 的 `tui.editor.deleteToLineEnd`**(2026-08-22)。
+   *
+   * 这条闸看的不是"能不能匹配"(上面那条已经看了), 是**这次抢占仍然成立**:
+   * omd 五键由 input listener 在焦点分派**之前** `consume`, 所以 `ctrl+k` 装上之后
+   * 编辑器里的「删到行尾」是**静默**没的。而 `findKeyClashes` 抓不到它(两条都是默认值,
+   * 判据要求"至少一条是用户改的")⇒ 除了这条闸和 keys.ts 的注释, 它没有别的痕迹。
+   *
+   * 上游哪天把 `ctrl+k` 挪走, 这条会红 —— 那时该做的是回去把 keys.ts 那段取舍注释删掉。
+   * 证伪:把 `omd.palette` 的 defaultKeys 改成 `ctrl+e` → 第二个断言当场红。
+   */
+  test('★ omd.palette 的 ctrl+k 是从 tui.editor.deleteToLineEnd 手里抢的(记录, 不是意外)', () => {
+    const kb = installOmdKeybindings();
+    expect(kb.matches('\x0b', 'omd.palette')).toBe(true); // \x0b = ctrl+k
+    expect(kb.getKeys('tui.editor.deleteToLineEnd')).toEqual(['ctrl+k']);
+    // 还得回去 —— 这就是取舍能被接受的前提。
+    const re = installOmdKeybindings({ 'omd.palette': 'ctrl+e' });
+    expect(re.matches('\x0b', 'omd.palette')).toBe(false);
+    installOmdKeybindings(); // 收尾复位全局, 不污染别的测试
+  });
+
   test('用户文件能覆盖内置 select.cancel 补丁 (用户在后, 说的算)', () => {
     const kb = installOmdKeybindings({ 'tui.select.cancel': ['escape'] });
     expect(kb.getKeys('tui.select.cancel')).toEqual(['escape']);

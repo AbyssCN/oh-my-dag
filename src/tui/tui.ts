@@ -51,6 +51,7 @@ import { renderLayers } from './render/dag-layers';
 import { StatusLine } from './components/status-line';
 import { formatSeatRows, parseSeatCommand, seatRows } from './seat-picker';
 import { defaultTuiSessionId, forkSessionId, formatSessions, newSessionId, parseNewForkCommand, parseSessionCommand, sessionPickerOptions } from './sessions';
+import { paletteOptions, parsePaletteValue } from './palette';
 import { createSettingsPanel } from './components/settings-panel';
 import { SPINNER_FRAMES } from './design/tokens';
 import { findKeyClashes, formatKeyClashes, installOmdKeybindings, loadUserKeybindings } from './keys';
@@ -182,6 +183,10 @@ export const CHROME = {
       ),
       '',
       `  > ${STARTUP_HINT}`,
+      // ★ 启动时的 resume 入口(2026-08-22)。`defaultTuiSessionId` 让每个进程直接开新会话,
+      // 从不问要不要接上次那个 —— 那条路一直存在(`/session`), 只是**屏上没有任何痕迹**。
+      // 不做「启动时弹一个框问你」: 那会拦在第一句话前面, 而多数时候答案是「不接」。
+      '  > Ctrl+K goes to a session / the live graph / a map - press it then Enter to pick up the last session',
       '  > Scroll back with your terminal (wheel / Shift+PgUp) - the transcript lives in scrollback',
       '  > Esc interrupts a turn · Esc Esc rewinds · Ctrl+O folds thinking · !cmd runs shell',
     ].join('\n'),
@@ -209,6 +214,14 @@ export const CHROME = {
   sessionSwitched: (id: string, n: number) => `Switched to session ${id} (replayed ${n} messages)`,
   sessionNew: (id: string) => `New session ${id} (the file is only created when you say something)`,
   sessionFailed: (reason: string) => `Cannot switch: ${reason}`,
+  /**
+   * `Ctrl+K` 一行候选都没有。**说出探了什么、为什么空**,不静默 ——
+   * 按了键什么都不发生比开一个空框更难查。
+   */
+  paletteEmpty: () =>
+    'Nowhere to go yet: no stored sessions, no pathfinder map under docs/plan/pathfinder/, and no run in this process. Say something first, or press Ctrl+P once a map exists.',
+  /** 会话表读不出来是**异常**(与「一条都没有」分得开)—— 原因原样上屏,选单照开但少一段。 */
+  paletteSessionsFailed: (reason: string) => `Sessions could not be listed, this palette has no session rows: ${reason}`,
   /** skill 已挂在**下一句**上 —— 说清它什么时候生效, 别让人以为已经跑了。 */
   skillArmed: (name: string) => `Skill "${name}" armed: it is injected as extra discipline on the **next** message only (this turn, not stored in the session)`,
   skillMissing: (name: string) => `No such skill: ${name} (use /skill to see what is available)`,
@@ -1902,6 +1915,14 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       if (picked === null) return; // Esc: 不切不开
       slug = picked;
     }
+    enterMap(slug);
+  }
+
+  /**
+   * 换到某张图并进全屏。**抽出来是因为 `Ctrl+P` 与 `Ctrl+K` 两条路都要走它** ——
+   * 两份必漂(`switchTo` 同一条理由)。
+   */
+  function enterMap(slug: string): void {
     pathSlugSel = slug;
     pathSelected = 0;
     reloadPathData();
@@ -1909,6 +1930,75 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     refreshTicketBoard(); // 切片 S5: 看板跟着换图
     refreshRunBoard(); // #96: 板不随图走 (它是全仓的), 但借同一次时机刷新
     enterAltView('path'); // W6·M2 (B 案): 树内模态块开灯
+  }
+
+  /**
+   * ★ **`Ctrl+K` 去哪**(2026-08-22,视觉系统稿第 6 屏)。会话 / 活图 / 地图 一个选单。
+   *
+   * 选项构造是纯函数(`palette.ts`),这里只做三件事:取数 → 开框 → 按 target 跳。
+   *
+   * ⚠ **一行都取不到时说话,不静默** —— 按了键什么都不发生,比开一个空框更难查。
+   * 会话读不出来是**异常**(与「一条都没有」分得开),所以那一路不吞证据。
+   */
+  async function openPalette(): Promise<void> {
+    let sessions: import('./backend').TuiSessionMeta[] = [];
+    try {
+      sessions = [...(await opts.backend.listSessions())];
+    } catch (err) {
+      // fail-open 可以吞异常, 不许吞证据: 少一段候选, 但原因要留痕 + 上屏。
+      const reason = err instanceof Error ? err.message : String(err);
+      logger.warn({ err: reason }, '[omd/tui] palette 读会话表抛了 → 本次不含会话行');
+      chatLog.appendNotice(CHROME.paletteSessionsFailed(reason));
+    }
+    let maps: import('../harness/pathfinder/maps').OpenMapSummary[] = [];
+    try {
+      const { summarizeOpenMaps } = require('../harness/pathfinder/maps') as typeof import('../harness/pathfinder/maps');
+      maps = summarizeOpenMaps(opts.cwd);
+    } catch (err) {
+      logger.warn({ err: (err as Error).message }, '[omd/tui] palette 扫地图抛了 → 本次不含地图行');
+    }
+    // 活图只有本进程这一张 —— 别的进程的 run 要等 #215/#216 (每 run 一份磁盘镜像 + 快照加载)。
+    const snap = dagTree.snapshot();
+    const options = paletteOptions({
+      sessions,
+      currentSession: sessionId,
+      maps,
+      liveRun:
+        dagTree.active && snap.runLabel
+          ? { label: snap.runLabel, nodes: snap.nodes.length, running: snap.nodes.filter((n) => n.status === 'running').length }
+          : null,
+      now: now(),
+    });
+    if (options.length === 0) {
+      chatLog.appendNotice(CHROME.paletteEmpty());
+      tui.requestRender();
+      return;
+    }
+    const picked = await dialogSelect(dialogs, theme, {
+      title: `Go to (${options.length})`,
+      options,
+      search: true,
+      maxVisible: 12,
+    });
+    if (picked === null) return; // Esc: 不去哪
+    const target = parsePaletteValue(picked);
+    if (target === null) return; // 认不出就什么都不做, 不猜一个去处
+    if (target.kind === 'session') {
+      if (target.id === sessionId) return; // 已经在这条会话上 —— 重放一遍纯属浪费
+      try {
+        await switchTo(target.id);
+      } catch (err) {
+        // 与 handleSession 同一条: 切失败**不许改 sessionId** (半切会让下一句发进不存在的会话)。
+        const reason = err instanceof Error ? err.message : String(err);
+        logger.warn({ err: reason, id: target.id }, '[omd/tui] palette 切会话抛了');
+        chatLog.appendNotice(CHROME.sessionFailed(reason));
+      }
+    } else if (target.kind === 'map') {
+      enterMap(target.slug);
+    } else {
+      enterAltView('dag');
+    }
+    tui.requestRender();
   }
 
   /**
@@ -2482,6 +2572,13 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       if (fullOn) fullOn = false;
       else enterAltView('dag');
       tui.requestRender();
+      return { consume: true };
+    }
+    // Ctrl+K 去哪(会话 / 活图 / 地图)。⚠ 这个键是从 pi 的 `tui.editor.deleteToLineEnd`
+    // 手里抢来的 —— 取舍与还回去的办法记在 `keys.ts` 的 `omd.palette` 上。
+    // 弹窗开着时不抢(与 pathFull / dagFull 同款守则):抢了的话框收不到键。
+    if (kb.matches(data, 'omd.palette') && !dialogs.busy) {
+      void openPalette();
       return { consume: true };
     }
     if (pathFullOn && !dialogs.busy) {

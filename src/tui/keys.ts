@@ -51,6 +51,22 @@ export const OMD_KEYBINDINGS = {
   'omd.thinkingToggle': { defaultKeys: 'ctrl+o', description: 'Collapse/expand thinking sections' },
   'omd.dagFull': { defaultKeys: 'ctrl+g', description: 'Toggle fullscreen DAG view' },
   'omd.pathFull': { defaultKeys: 'ctrl+p', description: 'Toggle fullscreen pathfinder view' },
+  /**
+   * ★ **`ctrl+k` 是从 pi 手里抢来的**(2026-08-22)—— 记在这里,因为它不会有别的痕迹。
+   *
+   * pi 默认表里 `ctrl+k` = `tui.editor.deleteToLineEnd`(实读
+   * `dist/keybindings.js:67-70`),而 omd 五键由 input listener **在焦点分派之前**
+   * 收并 `consume`(`tui.ts` 那一段)⇒ 装上之后编辑器里的「删到行尾」**静默消失**。
+   *
+   * 而 `findKeyClashes` 抓不到这一条:它的判据是「同键 ≥2 命令**且至少一条是用户改的**」
+   * (下面那段的原话),这里两条都是默认值。⇒ 判据本身是对的(默认表天然有 9 处
+   * 跨上下文同键),抓不到不是它的漏 —— 所以这条记录就是唯一的痕迹。
+   *
+   * **取舍说清楚**:换来的是一个跨工具通用的去处选单(VS Code / Claude Code 同键),
+   * 付掉的是聊天输入框里的 `ctrl+k`。`ctrl+u`(删到行首)/ `ctrl+w`(删词)都还在,
+   * 而且这一条**可改** —— `.omd/keybindings.json` 里写 `{"omd.palette": "ctrl+e"}` 就还回去。
+   */
+  'omd.palette': { defaultKeys: 'ctrl+k', description: 'Go to: session / live graph / map (takes ctrl+k from tui.editor.deleteToLineEnd)' },
 } as const;
 
 declare module '@earendil-works/pi-tui' {
@@ -60,6 +76,7 @@ declare module '@earendil-works/pi-tui' {
     'omd.thinkingToggle': true;
     'omd.dagFull': true;
     'omd.pathFull': true;
+    'omd.palette': true;
   }
 }
 
