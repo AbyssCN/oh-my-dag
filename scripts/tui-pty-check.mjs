@@ -1026,8 +1026,41 @@ async function scenarioTicketBoard() {
  * 形状与引擎逐字一致)。判据:侧栏树画出 ├─ └─;Ctrl+G 全屏后 Tab 在 树/甘特/分层 间切;
  * 80 列窄终端下侧栏自动收起、底部表顶上。
  */
+/**
+ * 播一份 hud 活图分片到 `cwd` —— **经真 `HudMirror` 写, 不在这里手抄盘上格式**
+ * (抄一份必漂, 而漂了不报错; 同 `seedTicketMap` 那条)。本 lane 是 node 跑的,
+ * 所以借 `bun -e` 动态 import TS 源。
+ *
+ * ⚠ 为什么必须播: DG-5 量的是「Tab 真的换到了活图列表」, 而活图列表**无源恒缺席**。
+ *   不播的话它读的是**这台机器仓里 `.omd/hud/` 恰好有没有分片** —— 今天没有所以画空态,
+ *   明天跑过几个 run 就有了, 同一条闸会自己翻面。那是 `scenarioTicketBoard` 头注
+ *   骂过的同一个形状: 闸量的是那台机器, 不是这段代码。
+ */
+function seedHudShard(cwd) {
+  const mirror = JSON.stringify(join(ROOT, 'src/hud/mirror.ts'));
+  const rec = JSON.stringify({
+    goal: 'PTY 夹具活图',
+    status: 'running',
+    updatedAt: new Date().toISOString(),
+    progress: {
+      planned: [{ id: 'plan', kind: 'conductor' }, { id: 'work', kind: 'agent', deps: ['plan'] }],
+      started: ['work'],
+      startedAt: { work: new Date().toISOString() },
+      settled: [{ id: 'plan', status: 'done', kind: 'conductor', model: 'fake:m' }],
+    },
+  });
+  execFileSync(
+    BUN,
+    ['-e', `const m = await import(${mirror}); new m.HudMirror(${JSON.stringify(cwd)}).write('deadbeef-0000-4000-8000-000000000000', ${rec});`],
+    { stdio: 'pipe' },
+  );
+}
+
 async function scenarioDagViews() {
-  const p = startTui();
+  // 自带 hud 分片 + 临时 cwd (见 seedHudShard 的注): DG-5 不许去读"这台机器恰好有没有分片"。
+  const cwd = mkdtempSync(join(tmpdir(), 'omd-tui-dag-'));
+  seedHudShard(cwd);
+  const p = startTui({ cwd });
   try {
     check(await waitFor(p, (t) => bootReady(t)), 'DG-0 (场景4.6) 启动');
     p.write('fixture:dag\r');
@@ -1069,18 +1102,31 @@ async function scenarioDagViews() {
       p.text().slice(-400),
     );
 
-    p.write('\x07'); // Ctrl+G → 全屏 (画法 0 = 树)
-    check(await waitFor(p, (t) => t.includes('now: tree')), 'DG-4 ★ Ctrl+G 进全屏(画法提示可见)', p.text().slice(-400));
-    p.write('\t');
-    check(await waitFor(p, (t) => t.includes('swimlane gantt')), 'DG-5 ★ Tab 切到泳道甘特', p.text().slice(-600));
-    check(p.text().includes('running'), 'DG-6 甘特上有在跑的条(shard-3 没 settle)', p.text().slice(-600));
+    /**
+     * ★ **2026-08-22 换锚点(片 4)**:`Ctrl+G` 全屏从「三画法 Tab 轮换」变成**两个屏**
+     * (DAG 屏 ⇄ 活图列表),于是 `now: tree` / `swimlane gantt` / `layered deps` 三个锚
+     * 全部不再存在。
+     *
+     * ⚠ **换锚点不许顺手放宽** —— 逐条对着「它原本管的是什么」重写:
+     *   · DG-4 管「Ctrl+G 真的进了全屏」   → 锚 DAG 屏自己的键位行
+     *   · DG-5 管「Tab 真的换了另一个面」   → 锚活图列表自己的键位行 + 它的数据源声明
+     *   · DG-6 管「在跑的那个看得出在跑」   → 锚 running 的**专属字形** `◉`
+     *                                        (五态五个字形, 合并任意两个就分不出
+     *                                         「卡住了」与「还没轮到」)
+     *   · DG-7+DG-9 管「Tab 循环得回来」    → 合成一条: 再按一次 Tab 回到 DAG 屏
+     *   · DG-8 管「fan-in 汇聚点标出来」    → 锚新形态的 `╋ +`(INV-DAG-1: 每个节点只画一次,
+     *                                        其余上游标在行尾)。**这条最要紧, 原样保住。**
+     */
+    p.write('\x07'); // Ctrl+G → 全屏 (片 4 起: DAG 屏)
+    check(await waitFor(p, (t) => t.includes('选节点')), 'DG-4 ★ Ctrl+G 进全屏(DAG 屏键位行可见)', p.text().slice(-400));
+    check(p.text().includes('◉'), 'DG-6 ★ 在跑的节点用它自己的字形 ◉(五态五个字形)', p.text().slice(-600));
+    check(p.text().includes('╋ +'), 'DG-8 ★ fan-in 汇聚点标在行尾(shard-3 deps 2 条, 节点只画一次)', p.text().slice(-600));
     p.write('\t');
     check(
-      await waitFor(p, (t) => t.includes('layered deps') && t.includes('L0')),
-      'DG-7 ★ Tab 再切到分层依赖(L0 层可见)',
+      await waitFor(p, (t) => t.includes('选 run') && t.includes('.omd/hud/dag-')),
+      'DG-5 ★ Tab 切到活图列表(键位行 + 数据源声明都在)',
       p.text().slice(-600),
     );
-    check(p.text().includes('[fan-in]'), 'DG-8 fan-in 汇聚点标出来(shard-3 deps 2 条)', p.text().slice(-600));
 
     /**
      * ★★ **G-C 的第三句:节点失败看得出是**哪一条**。**
@@ -1128,7 +1174,7 @@ async function scenarioDagViews() {
       );
     }
     p.write('\t');
-    check(await waitFor(p, (t) => t.includes('now: tree')), 'DG-9 Tab 循环回到树');
+    check(await waitFor(p, (t) => t.includes('选节点')), 'DG-9 ★ Tab 再按一次循环回 DAG 屏(两屏来回)');
     p.write('\x07'); // 退出全屏
     await new Promise((r) => setTimeout(r, 300));
   } finally {

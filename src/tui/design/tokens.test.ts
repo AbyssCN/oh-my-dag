@@ -31,6 +31,13 @@ const ALLOWED = new Set([
   'render/path-fog.ts', // 雾场画布
   'components/dag-tree.ts', // 树形
   'render/dag-gantt.ts', // 甘特
+  // 2026-08-22 片 4: Ctrl+G 全屏换成两个屏, 两个新画布进白名单。
+  // ⚠ 白名单是**声明**不是豁免 —— 进表意味着「这个文件确实是画图的」,
+  //   而不是「这个文件可以随便写框线」。下面的反测会正面证明扫描器在它们身上真的命中。
+  'render/dag-screen.ts', // DAG 屏 (树 + 微型时间条)
+  // ⚠ `render/run-list.ts` **刻意不进表**: 2026-08-22 加它进来时反测当场红 ——
+  //   `borderHits('render/run-list.ts') === 0`, 它一个框线字形都没用 (行是纯文本 + `▸`)。
+  //   不需要豁免的文件不进白名单, 否则表会慢慢烂成「加进来就不用管」。
 ]);
 
 /** 框线字形:**字面量与转义形都要认**。 */
@@ -106,6 +113,9 @@ describe('边框族 token', () => {
   it('反测: 扫描器在已知含框线的文件上确实命中', () => {
     expect(borderHits('render/glyphs.ts')).toBeGreaterThan(0);
     expect(borderHits('render/path-fog.ts')).toBeGreaterThan(0);
+    // 新进表的两个也要正面证明「确实含框线」—— 否则白名单会慢慢变成一张
+    // 「加进来就不用管了」的豁免表, 而扫描器扫的是不是空集就没人知道了。
+    expect(borderHits('render/dag-screen.ts')).toBeGreaterThan(0);
     expect(tsFiles(TUI_ROOT).length).toBeGreaterThan(30); // 真的走到文件了
   });
 
