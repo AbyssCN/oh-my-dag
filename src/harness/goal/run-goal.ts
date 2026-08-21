@@ -1011,7 +1011,62 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   // D-I 环外闸: 执行型才有这个节点。它**没跑**(引擎没走到 / 被 quorum 级联跳过)也算没过 ——
   // 冻结判据的意义就是"没被证明过就不算成", fail-closed 与 converged 缺席同一条纪律。
   const acceptLeaf = acceptance.kind === 'executable' ? exec.results.accept : undefined;
-  const oracleOk = acceptance.kind !== 'executable' ? true : acceptLeaf?.status === 'done';
+  // ── 判据的绿有「它是哪一轮量的」这个属性 (2026-08-21, run 58df6b9e 复盘) ──────────────
+  //
+  // P2 那跑的形状, 逐跳全部有盘上证据:
+  //   05:25:50  accept 节点真跑真绿, 写下 checkpoint (accept.json, status:'done')
+  //   ~05:28    verifier 否决 → 重规划 → 毒集丢绿 → 半回滚, **盘被改坏**
+  //   第 2 轮    accept **不在毒集前向闭包里** → resume-skip 直接复用那份绿
+  //   收尾      oracleOk = (status === 'done') = true → 终态 delivered-with-red + done
+  //
+  // 扎人的地方: 下面那道 #165① 收尾复验**只在 `!oracleOk` 时触发**, 而 oracleOk 已经被这份
+  // **旧的**绿撑成 true —— **闸被自己要防的那个东西关上了**。P2 日志里确实没有任何 #165① 行。
+  //
+  // 所以判据要多问一句: 这份绿**属不属于最终这棵树**。两个条件都真才叫不属于 ——
+  //   ① 它是 resume 复用来的 (`skipped === true`), 不是这一轮真量的;
+  //   ② 本次 run 重规划过 (verifier 否决 → escalation), 也就是盘**可能**在那之后变过。
+  // 少任一个都不判 stale: 只复用没重规划 = 盘没动过, 那份绿仍然作数 (别给每次 resume 都加
+  // 一次全量测试的钱); 只重规划没复用 = accept 这一轮真跑过, 本来就算数。
+  //
+  // ⚠ `status === 'skipped'` (quorum 级联压死) 与 `skipped === true` (resume 复用) 是两个正交概念
+  //   (见 LeafResult 那两个字段的注), 这里问的是后者。
+  const acceptCheckpointGreen = acceptance.kind !== 'executable' ? true : acceptLeaf?.status === 'done';
+  const replanned = exec.verification?.escalated === true || (exec.verification?.attempts ?? 1) > 1;
+  const acceptStale = acceptance.kind === 'executable' && acceptCheckpointGreen && acceptLeaf?.skipped === true && replanned;
+  // 复验一次。**两个触发条件合并在这一处** —— 分两处写就是两处会漂 (而这条闸的病正是"触发
+  // 条件被另一个变量关掉"): ① 原 #165①: accept 压根没跑 (缺席 / 被级联压死), 复验绿只换终态词;
+  // ② 新: 绿是陈旧的, 复验结果**直接顶替** oracleOk (它才是最终这棵树上的答案)。
+  let oracleRecheckGreen = false;
+  let oracleRecheckRan = false;
+  if (
+    acceptance.kind === 'executable' &&
+    (!acceptCheckpointGreen || acceptStale) &&
+    acceptLeaf?.status !== 'failed' &&
+    config.dag.commandRunner
+  ) {
+    try {
+      const rc = await config.dag.commandRunner({ command: acceptance.command });
+      oracleRecheckGreen = rc.exitCode === (acceptance.expectExit ?? 0);
+      oracleRecheckRan = true;
+      logger.info(
+        { command: acceptance.command, exitCode: rc.exitCode, green: oracleRecheckGreen, why: acceptStale ? 'stale-green' : 'accept-没跑' },
+        acceptStale
+          ? '[run-goal] 判据陈旧闸: accept 的绿是 resume 复用来的, 而本 run 重规划过 → 在最终这棵树上重量一次'
+          : '[run-goal] #165① accept 没跑 (级联压死) → 冻结判据收尾复验',
+      );
+    } catch (err) {
+      // fail-closed 不吞证据: 复验跑不起来时**不许**拿那份陈旧的绿冒充最终答案。
+      logger.warn({ err: String(err), stale: acceptStale }, '[run-goal] 冻结判据复验跑不起来 → 维持原判 (fail-closed, 不吞证据)');
+    }
+  }
+  // stale 时以复验为准; 复验没跑成 → 陈旧的绿**不作数** (fail-closed: 没在最终这棵树上证明过就不算成)。
+  const oracleOk = acceptStale ? oracleRecheckRan && oracleRecheckGreen : acceptCheckpointGreen;
+  if (acceptStale && !oracleOk) {
+    logger.warn(
+      { command: acceptance.command, recheckRan: oracleRecheckRan },
+      '[run-goal] 判据陈旧闸: 复用的绿在最终这棵树上**不成立** → 判据判红 (原实装会拿它发 delivered 终态)',
+    );
+  }
   // `converged` 缺席 = 没人判过 → 一律**不算成** (judge_final 已保证它在, 缺席意味着引擎跑歪了)。
   // **裁决位 = 环自己的结论** (#148, 2026-08-17): 判据停时它是判据说的 (D-I 以判据为准),
   // judge 停时它是 judge 说的。此前这里让 judgeConverged **压过** converged —— 而那一位的类型
@@ -1133,24 +1188,13 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
       logger.warn({ err: String(err) }, '[run-goal] 设计审核起不来 → 闸缺席 (fail-open, INV-3)');
     }
   }
-  // ── #165① (2026-08-17): accept 被红级联压死「没跑」→ 冻结判据在收尾独立复验一次 ──────
-  // 只覆盖没跑那格 (acceptLeaf 缺席/skipped): accept 真跑真红 = 判据红, 不复验 (抖动那半由
-  // S-37 管)。复验绿**不翻 converged** (红节点不许静默漂白) —— 它只把终态词从「交付没达标」
-  // 换成 delivered-with-red, 收编闸 (#165②) 据此放行。实测代价 (216f30a1 / b378929b):
-  // 混念成 failed 的每一单都要人工验尸 + 独立复跑判据才发现交付真身完好。
-  let oracleRecheckGreen = false;
-  if (acceptance.kind === 'executable' && !oracleOk && acceptLeaf?.status !== 'failed' && config.dag.commandRunner) {
-    try {
-      const rc = await config.dag.commandRunner({ command: acceptance.command });
-      oracleRecheckGreen = rc.exitCode === (acceptance.expectExit ?? 0);
-      logger.info(
-        { command: acceptance.command, exitCode: rc.exitCode, green: oracleRecheckGreen },
-        '[run-goal] #165① accept 没跑 (级联压死) → 冻结判据收尾复验',
-      );
-    } catch (err) {
-      logger.warn({ err: String(err) }, '[run-goal] #165① 冻结判据复验跑不起来 → 维持原判 (fail-closed, 不吞证据)');
-    }
-  }
+  // ── #165① 的复验**已上移**到 oracleOk 的定义处 (2026-08-21) ────────────────────────
+  //
+  // 原先它在这里, 而它的触发条件是 `!oracleOk` —— 于是 oracleOk 被一份**陈旧的**绿撑成 true 时,
+  // 这道闸就再也不开火 (run 58df6b9e 的死法)。上移之后 oracleOk 在它的定义处就是可信的,
+  // 下游一个字都不用改; 两个触发条件 (accept 没跑 / 绿是陈旧的) 也合并成一处, 不留两份会漂的判据。
+  // 语义保持: #165① 那半复验绿仍然**不翻 converged** (见 `oracleRecheckGreen` 的下游用法),
+  // 只把终态词从「交付没达标」换成 delivered-with-red。
   const converged = loopOk && oracleOk;
   // judge 异议 (判据绿收敛而 judge 判没成): **只报不翻终态** —— 这一格是判据轴「judge 太紧 /
   // 判据覆盖不够」的样本, 判词在 continuity 的 _loop-execute.json。翻终态的版本就是 #148。
