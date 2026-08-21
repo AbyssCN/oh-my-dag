@@ -104,12 +104,30 @@ function workerScriptPath(): string {
   return join(import.meta.dir, '..', '..', '..', 'scripts', 'goal-worker.ts');
 }
 
-/** 默认 spawnDetached: Bun.spawn detached, stdout/stderr → 日志文件, unref (母进程不等)。 */
-function defaultSpawnDetached(cmd: string[], opts: { cwd: string; logPath: string }): number | undefined {
+/**
+ * 默认 spawnDetached: Bun.spawn **detached** + stdout/stderr → 日志文件 + unref (母进程不等)。
+ *
+ * ⚠ `detached: true` 与 `unref()` 是**两件事**, 少哪个都不叫脱离 (2026-08-21 实测补上):
+ *   · `unref()` 只让母进程的事件循环不等它 —— 母进程正常退出时子进程能活;
+ *   · `detached: true` 才让子进程**自成会话与进程组**(实测 pid=pgid=sid)。
+ * 不给 detached 时子进程的 pgid **就是母进程的 pid**、sid 是母进程的会话, 于是一条
+ * 组信号 (`kill -- -PGID`) 或会话拆除时的 SIGHUP 会把它一起带走。
+ *
+ * 单变量实测 (第三方观察者发信号, 两个方向都量了):
+ *   A 只 unref            → 组信号之后子进程**被连坐杀掉**
+ *   B 加 detached:true    → 组信号之后子进程**存活**
+ *
+ * 这条原先只写在注释里 ("Bun.spawn detached"), 而实装没传 —— 声明面与实装面差一个字段,
+ * 症状是"后台 run 偶尔莫名其妙没了"且**不留任何痕迹**。仓里 `dag-tools.ts` /
+ * `session/final-spawn.ts` / `scripts/session-continuity-hook.ts` 三处一直是对的,
+ * 漏的是这里与 `pathfinder/dispatch.ts` 的两处。
+ */
+export function defaultSpawnDetached(cmd: string[], opts: { cwd: string; logPath: string }): number | undefined {
   mkdirSync(dirname(opts.logPath), { recursive: true });
   const fd = openSync(opts.logPath, 'a');
   const proc = Bun.spawn(cmd, {
     cwd: opts.cwd,
+    detached: true,
     stdin: 'ignore',
     stdout: fd as unknown as number,
     stderr: fd as unknown as number,

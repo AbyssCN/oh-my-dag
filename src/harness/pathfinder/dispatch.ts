@@ -134,6 +134,9 @@ function defaultSpawnDetached(cmd: string[], opts: { cwd: string; logPath: strin
   const fd = openSync(opts.logPath, 'a');
   const proc = Bun.spawn(cmd, {
     cwd: opts.cwd,
+    // ⚠ detached 与 unref 是两件事, 少哪个都不叫脱离 —— 判据与实测见 mcp/tools/goal.ts
+    // 的 defaultSpawnDetached 头注 (只 unref 时组信号会把 AFK 子进程一起带走)。
+    detached: true,
     stdin: 'ignore',
     stdout: fd as unknown as number,
     stderr: fd as unknown as number,
@@ -422,7 +425,8 @@ export function dispatchGoalTicket(
 function defaultGoalSpawn(cmd: string[], opts: { cwd: string; logPath: string }): number | undefined {
   mkdirSync(dirname(opts.logPath), { recursive: true });
   const fd = openSync(opts.logPath, 'a');
-  const proc = Bun.spawn(cmd, { cwd: opts.cwd, stdout: fd, stderr: fd, stdin: 'ignore' });
+  // detached: 同上, 见 goal.ts 的 defaultSpawnDetached 头注。
+  const proc = Bun.spawn(cmd, { cwd: opts.cwd, detached: true, stdout: fd, stderr: fd, stdin: 'ignore' });
   proc.unref();
   return proc.pid;
 }
