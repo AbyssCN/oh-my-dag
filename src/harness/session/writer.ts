@@ -24,6 +24,7 @@ import { resolveRoleModel } from '../../model/role-models';
 import { roleModelWithFallback } from '../../model/role-fallback';
 import { resolveProject } from '../project-scope';
 import type { OmdMemory } from '../memory';
+import { logger } from '../logger';
 import { checkNouns } from './noun-gate';
 import { sinkCheckpoint, type CheckpointSinkResult } from './sink';
 import { ccTranscriptSource, excerpt, type SessionSource } from './source';
@@ -349,6 +350,29 @@ export async function runWriter(opts: WriterOptions): Promise<WriterResult> {
   }
 
   const degraded = md.startsWith('<!-- DEGRADED');
+  // ⚠ **降级版不许盖掉一份不降级的 checkpoint**(2026-08-21,实测两次被抹之后补)。
+  //
+  // 现场:一份手写的、信息完整的 checkpoint 被机械降级版覆盖了两次,而降级版的 §1–§9
+  // **全是「(无)」** —— 也就是说 fail-open 在这里不是"吞了异常",是**把数据删了**。
+  // 本仓的规矩是「fail-open 可以吞异常,不许吞证据」,这条比吞证据还重一档。
+  //
+  // 判据方向:**陈旧但真**优于**新鲜但空**。旧那份至少还写着上一程干了什么;
+  // 降级版一个字都没有,留着它等于交接断档。
+  //
+  // 降级版本身仍然落盘 —— 落到 sidecar,因为「蒸馏为什么失败」是修 writer 的唯一线索,
+  // 直接丢掉就又犯一次吞证据。
+  if (degraded && prevCheckpoint && !prevCheckpoint.startsWith('<!-- DEGRADED')) {
+    try {
+      writeFileSync(`${checkpointPath}.degraded`, md);
+    } catch {
+      /* sidecar 写不出不阻断 —— 但下面那行日志必须留 */
+    }
+    logger.warn(
+      { sessionId, mode, checkpointPath, prevChars: prevCheckpoint.length, degradedChars: md.length },
+      '[session-writer] 蒸馏降级 → **保留原 checkpoint 不覆盖** (陈旧但真 > 新鲜但空); 降级版落 .degraded sidecar',
+    );
+    return { ok: true, checkpointPath, degraded: true, chars: prevCheckpoint.length, skipped: false };
+  }
   writeFileSync(checkpointPath, md);
   writeFileSync(
     statePath,

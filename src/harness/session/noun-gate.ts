@@ -126,11 +126,29 @@ function extractCandidateNouns(text: string): string[] {
     return token.startsWith('/') || token.includes('://');
   }
 
-  // 1. 文件名模式:字母或数字开头,含扩展名(1-6 字母)。
+  // 1. 文件名模式:字母或数字开头 + **已知扩展名** + 词边界。
+  //
   //    起点用 [A-Za-z0-9] 而非 [A-Za-z]:否则数字前缀文件名(如 session log
   //    `2026-07-06-w603-...md`)被截成字母起点的后缀 `w603-...md`,normalizeNoun
   //    去连字符后与已知集里的全段(带日期前缀)不等 → 误报 novel(连字符文件名分词误伤)。
-  const fileRe = /[A-Za-z0-9][A-Za-z0-9_-]*\.[a-z]{1,6}/g;
+  //
+  //    ⚠ 扩展名原先写的是 `[a-z]{1,6}`,**两个方向都错**(2026-08-21,交接被抹两次之后查出来):
+  //
+  //    ① **截断**:任何属性名 ≥7 个小写字母的 `对象.属性` 会被砍成 6 个字符当文件名抽走 ——
+  //       `first.message` → `first.messag` · `omd_runs.converged` → `omd_runs.conver` ·
+  //       `continuity.repoRoot` → `continuity.repo`。截出来的串在材料与文件树里**必然**找不到,
+  //       于是**必然**判成编造。这是一个按构造产生假阳性的判据。
+  //    ② **误分类**:`proc.pid` / `parsed.error` / `verdict.reason` 是属性访问,不是文件名,
+  //       而这条正则分不出它们和 `foo.ts`。本闸问的是「有没有编造**文件**」,那就只该认文件。
+  //
+  //    实际后果:一份手写的完整 checkpoint 被机械降级版覆盖了两次(降级版 §1–§9 全是「(无)」)。
+  //    **闸误伤的代价不是漏判,是把真东西删了。**
+  //
+  //    改成已知扩展名白名单 + `\b` 收尾:不截断(整个扩展名要么匹配要么不匹配),
+  //    也不再把属性访问当文件。新扩展名要加就往这张表里加 —— 显式表比 `{1,6}` 这种
+  //    "碰巧长度对得上"的判据可审得多。
+  const fileRe =
+    /[A-Za-z0-9][A-Za-z0-9_-]*\.(?:ts|tsx|js|jsx|mjs|cjs|json|jsonl|md|mdx|py|go|rs|rb|java|kt|swift|c|h|cpp|hpp|cs|php|sh|bash|zsh|fish|sql|ya?ml|toml|ini|cfg|conf|env|txt|csv|tsv|html?|css|scss|less|svg|png|jpe?g|gif|webp|pdf|lock|log|db|sqlite3?|zip|tar|gz)\b/g;
   let m: RegExpExecArray | null;
   while ((m = fileRe.exec(text)) !== null) {
     if (!isInsidePathOrUrl(m.index)) {
