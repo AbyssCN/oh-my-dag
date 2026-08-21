@@ -15,6 +15,7 @@
  * 2. **拿不到就写「未知」** —— 不画 0%,0% 会被读成"还没用";
  * 3. **本地估算要标注** —— 「本地 N+」与官方读数在屏上分得开。
  */
+import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 import type { ContextPressure } from '../../harness/chat/usage';
 import { BORDER } from '../design/tokens';
 import type { WindowSummary } from '../usage/ledger';
@@ -106,12 +107,50 @@ export function fmtUsd(costUsd: number, unpriced: boolean): string {
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
 const shortenIds = (s: string): string => s.replace(UUID_RE, (m) => m.slice(0, 8));
 
+/**
+ * ★ **超宽时让位的是分支,不是读数**(2026-08-21)。
+ *
+ * ## 它修的失效形态
+ *
+ * 底栏是**定宽一行**(`StatusLine.render` = `fitLine`,**截断不折行**)。
+ * 而分支名是这行里**唯一由用户控制、且没有上界**的字符串。于是一个正常的特性分支名
+ * (`fix/tui-wiring-and-observability` = 32 列)会把行尾整段挤出屏幕。
+ *
+ * 挤掉的偏偏是最要紧的:调用方在活仪表在场时会把平文 `ctx N%` 段**撤下**
+ * (`tui.ts` 的 `gaugeHasCtx`,理由是同屏两个 ctx 是重复读数),而活仪表**追加在行尾** ——
+ * ⇒ 长分支名下**两个 ctx 显示同时消失**,不是降级成平文。撤下平文那条的前提
+ * 「活仪表总看得见」在窄屏 / 长分支名下不成立。
+ *
+ * 实测(100 列、fixture lane):分支段的预算只有 **5 列** —— `main`(4)险过,
+ * 7 个字符就溢出。所以固定上限救不了,必须是**宽度感知**的。
+ *
+ * ⚠ 只缩分支,不缩别的:repo 名、座位坐标、读数都不是用户随手起的名字。
+ * ⚠ `maxWidth` 省略 = **与本次改动前逐字节一致**(既有调用方与测试不受影响)。
+ * ⚠ 缩到地板还装不下 ⇒ 原样返回,交给 `fitLine` 截 —— **fail-open,不抛**。
+ */
+const BRANCH_MIN_COLS = 6;
+
 export function formatStatusLine(i: StatusBarInput, o: StatusBarOpts = {}): string {
+  const line = assemble(i, o, null);
+  if (o.maxWidth === undefined || i.ws?.branch == null) return line;
+  const over = visibleWidth(line) - o.maxWidth;
+  if (over <= 0) return line;
+  const full = shortenIds(i.ws.branch);
+  const want = visibleWidth(full) - over;
+  if (want >= visibleWidth(full)) return line;
+  // 地板之下不再缩 —— 一个只剩 `f…` 的分支名不如不画, 而这时溢出的成因不在分支上。
+  const cols = Math.max(BRANCH_MIN_COLS, want);
+  if (cols >= visibleWidth(full)) return line;
+  return assemble(i, o, truncateToWidth(full, cols, '…'));
+}
+
+/** @param branchOverride 非 null = 用它替掉分支段(已缩过的)。 */
+function assemble(i: StatusBarInput, o: StatusBarOpts, branchOverride: string | null): string {
   const segs: string[] = [];
   if (i.ws) {
     // `repo branch+dirty` —— 原来是 `repo · branch +2`, 三个词元变两个, 信息一样。
     const parts = [i.ws.repo];
-    const branch = i.ws.branch === null ? null : shortenIds(i.ws.branch);
+    const branch = i.ws.branch === null ? null : (branchOverride ?? shortenIds(i.ws.branch));
     if (branch !== null) parts.push(`${branch}${i.ws.dirty > 0 ? `+${i.ws.dirty}` : ''}`);
     // worktree 名已经在分支里 ⇒ 不画第二遍(omd 隔离档:分支 `omd/run/<id>`, worktree 目录名同为 `<id>`)。
     // 名字不同的 worktree 照画 —— 那时 `wt:` 才带新信息。
@@ -154,8 +193,13 @@ export function formatStatusLine(i: StatusBarInput, o: StatusBarOpts = {}): stri
   return segs.join(FOOTER_SEP);
 }
 
-/** 底栏一行的可选上下文(计价口径 / 远程环境)。 */
+/** 底栏一行的可选上下文(计价口径 / 远程环境 / 宽度预算)。 */
 export interface StatusBarOpts {
+  /**
+   * 这一行能占多宽(**不含**调用方之后要追加的活仪表 —— 那部分由调用方从预算里先扣)。
+   * 省略 = 不做宽度自适应,行为与本次改动前逐字节一致。
+   */
+  maxWidth?: number;
   billing?: Readonly<Record<string, BillingMode>>;
   ssh?: string | null;
   tmux?: boolean;

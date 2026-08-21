@@ -30,7 +30,7 @@
 import { hostname } from 'node:os';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve as resolvePath } from 'node:path';
-import { type Component, Container, HStack, Loader, ProcessTerminal, Spacer, TuiMainScreen, VStack, type Terminal } from '@earendil-works/pi-tui';
+import { type Component, Container, HStack, Loader, ProcessTerminal, Spacer, TuiMainScreen, VStack, type Terminal, visibleWidth } from '@earendil-works/pi-tui';
 import { HintedEditor } from './components/hinted-editor';
 import { logger } from '../logger';
 import { spawnFinalCheckpoint } from '../harness/session/final-spawn';
@@ -987,7 +987,14 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         session: session && session.calls > 0 ? session : null,
         win,
       },
-      { ssh: sshHost, tmux },
+      {
+        ssh: sshHost,
+        tmux,
+        // 宽度预算 = 终端宽 - 活仪表要占的位(含分隔符)。超了就**缩分支段**, 不让读数掉出屏。
+        // ⚠ `terminal.columns` 在这里取的是**本次重画那一刻**的值, 而本函数只在启动与每轮收尾跑;
+        //   窗口中途改大小 → 下一轮才重算, 那一段时间里退回今天的行为(fitLine 截), 不是回归。
+        maxWidth: Math.max(40, (terminal.columns || 100) - (gauge === '' ? 0 : visibleWidth(FOOTER_SEP) + visibleWidth(gauge))),
+      },
     );
     statusLine.setText(gauge === '' ? line : `${line}${FOOTER_SEP}${gauge}`);
   }

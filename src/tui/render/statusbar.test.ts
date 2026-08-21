@@ -17,7 +17,7 @@ import { visibleWidth } from '@earendil-works/pi-tui';
 import { describe, expect, test } from 'bun:test';
 import type { WindowSummary } from '../usage/ledger';
 import { fitLine } from './line';
-import { FOOTER_MAX_TOKENS, countTokens, fmtUsd, formatStatusLine } from './statusbar';
+import { FOOTER_MAX_TOKENS, countTokens, fmtUsd, formatStatusLine, type StatusBarInput } from './statusbar';
 
 const win = (over: Partial<WindowSummary> = {}): WindowSummary => ({
   since: 0,
@@ -201,5 +201,76 @@ describe('★ 减法这件事本身要有闸(否则下一程会把字段加回�
   test('走 fitLine 截断后不超宽(窄屏)', () => {
     const line = formatStatusLine({ ...base, win: win() }, { ssh: 'ms02', tmux: true });
     for (const w of [20, 40, 80]) expect(visibleWidth(fitLine(line, w))).toBeLessThanOrEqual(w);
+  });
+});
+
+/**
+ * ★ 超宽时让位的是分支,不是读数(2026-08-21)。
+ *
+ * ## 它要杀死的失效形态
+ *
+ * 底栏是**定宽一行**(`StatusLine.render` = `fitLine`,截断不折行),而分支名是这行里
+ * **唯一由用户控制、且没有上界**的字符串。一个正常的特性分支名
+ * (`fix/tui-wiring-and-observability` = 32 列)会把行尾整段挤出屏。
+ *
+ * 挤掉的偏偏最要紧:活仪表在场时调用方把平文 `ctx N%` **撤下**(同屏两个 ctx 是重复读数),
+ * 而活仪表**追加在行尾** ⇒ 长分支名下**两个 ctx 同时消失**,不是降级成平文。
+ *
+ * ⚠ 这条缺陷是被 **PTY lane 的 SB-1/SB-5** 照出来的,而那两条自己也带着一个**未声明的前提**:
+ * 分支段只有 5 列预算,`main`(4)险过。实测两方向单变量:
+ * 「main 的代码 + 32 字符分支名」= 红,「新代码 + 4 字符分支名」= 全过 ——
+ * **唯一变量是分支名**。修完之后判据不再依赖「你在不在 main 上」。
+ *
+ * 证伪方式:把 `formatStatusLine` 里 `over <= 0` 之后那段缩分支的逻辑删掉 → 本组前两条红。
+ */
+describe('★ 宽度预算: 超宽时缩分支段', () => {
+  const ws = (branch: string): StatusBarInput['ws'] => ({ repo: 'oh-my-dag', branch, dirty: 3, worktree: null });
+  const base = (branch: string): StatusBarInput => ({
+    ws: ws(branch),
+    seat: 'fixture://l3-test',
+    pressure: null,
+    session: null,
+    win: { calls: 1, costUsd: 0, unpriced: true, in: 3120, out: 184, cacheHit: 2760, byProvider: [] },
+  });
+  const LONG = 'fix/tui-wiring-and-observability';
+
+  // ⚠ 预算要选**够得着**的:其它段(repo/座位/花费/token)加起来就 ~67 列, 加分支地板 6 = 73。
+  //   第一版写了 70 —— 低于地板线, 于是缩到底也装不下, 是测试数据错不是代码错。
+  test('★ 给了 maxWidth 且超宽 → 分支被缩且带 `…`, 行装得下', () => {
+    const out = formatStatusLine(base(LONG), { maxWidth: 85 });
+    expect(visibleWidth(out)).toBeLessThanOrEqual(85);
+    expect(out).toContain('…');
+    expect(out).toContain('oh-my-dag'); // repo 名不动 —— 它不是用户随手起的
+    expect(out).toContain('cache88%'); // ★ 读数保住了, 这才是这条闸的目的
+  });
+
+  test('★ 缩的只有分支 —— 座位与读数一个字不动', () => {
+    const out = formatStatusLine(base(LONG), { maxWidth: 85 });
+    expect(out).toContain('fixture://l3-test');
+    expect(out).toContain('↑3.1k ↓184');
+    expect(out).not.toContain(LONG); // 确实缩了
+  });
+
+  test('不超宽就不缩(不许把「行短」也当成要缩的理由)', () => {
+    const wide = formatStatusLine(base(LONG), { maxWidth: 500 });
+    expect(wide).toContain(LONG);
+  });
+
+  test('★ 省略 maxWidth = 与本次改动前逐字节一致', () => {
+    expect(formatStatusLine(base(LONG))).toBe(formatStatusLine(base(LONG), { maxWidth: undefined }));
+    expect(formatStatusLine(base(LONG))).toContain(LONG);
+  });
+
+  test('缩到地板还装不下 → 原样返回交给 fitLine, 不抛也不缩成一个字', () => {
+    const out = formatStatusLine(base(LONG), { maxWidth: 20 });
+    expect(out.length).toBeGreaterThan(0); // fail-open
+    // 地板 6 列: 不许出现只剩 `f…` 这种读不出是哪条分支的残段
+    const seg = out.split(' ')[1] ?? '';
+    expect(visibleWidth(seg)).toBeGreaterThanOrEqual(6);
+  });
+
+  test('没有分支(不是 git 仓)→ 有 maxWidth 也不动', () => {
+    const noBranch: StatusBarInput = { ...base(LONG), ws: { repo: 'x', branch: null, dirty: 0, worktree: null } };
+    expect(formatStatusLine(noBranch, { maxWidth: 10 })).toBe(formatStatusLine(noBranch));
   });
 });
