@@ -183,6 +183,36 @@ describe('parseBreakdown — 表解析 (切片 1)', () => {
     expect(bd.slices.find((s) => s.id === 1)!.verify).toBe('G-1 前半、G-6');
   });
 
+  /**
+   * 2026-08-21: 写集列用 `·` 分隔 + `**新建**` 加粗标注 —— 这是本仓写契约的**实际习惯**
+   * (P2/P3 两份契约逐格都是), 而 `ITEM_SEP` 当时不收 `·`。后果不是报错而是**静默**:
+   * 整格并成一条, 那一条恰好含 `/` 所以过了"不像路径"闸, 一路走到直通编译下一段才炸,
+   * 回落 conductor 铺图 —— 两晚白付两次铺图钱, 而 `parseBreakdown` 与 `plan-doc-check`
+   * 两边都判 PASS。
+   *
+   * ★ 反向自检 (已实测会红): 把 `ITEM_SEP` 里的 `·` 删掉 → 第一条断言拿到
+   *   `['**新建** src/a.ts · **新建** src/a.test.ts']` 那样的单条; 把 stripAnnotations
+   *   里的 `\*\*…\*\*` 那行删掉 → 每条路径前面挂着 `**新建**`。
+   */
+  test('写集列的 `·` 分隔与 `**新建**` 标注 (本仓契约的真实形状) 解析成逐条路径', () => {
+    const bd = parseBreakdown(
+      table([
+        '| 1 注册表 | **新建** src/a.ts · **新建** src/a.test.ts | — | bun test src/a.test.ts |',
+        '| 2 接线 | src/b.ts · **新建** src/b.test.ts | 1 | bun test src/b.test.ts |',
+      ]),
+    );
+    expect(bd.slices.map((s) => s.writeSet)).toEqual([
+      ['src/a.ts', 'src/a.test.ts'],
+      ['src/b.ts', 'src/b.test.ts'],
+    ]);
+  });
+
+  /** glob 里的 `**` 紧跟 `/`, 与 `**加粗**` 形状不同 —— 剥标注不许把它一起吃掉。 */
+  test('写集里的 glob `src/**/*.ts` 不被剥标注误伤', () => {
+    const bd = parseBreakdown(table(['| 1 扫 | src/**/*.ts | — | bun test |']));
+    expect(bd.slices[0]!.writeSet).toEqual(['src/**/*.ts']);
+  });
+
   test('最小表: id/名称/写集/依赖/verify 各列到位', () => {
     const bd = parseBreakdown(
       table([
