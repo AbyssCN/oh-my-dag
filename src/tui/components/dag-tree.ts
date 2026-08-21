@@ -25,6 +25,7 @@
 import type { Component } from '@earendil-works/pi-tui';
 import type { DagNodeEvent } from '../../harness/dag/types';
 import type { NodeFailureKind } from '../../harness/node-failure';
+import type { HudDagSnapshot } from '../../hud/types';
 import { logger } from '../../logger';
 import { fmtDur } from '../render/dag-gantt';
 import { fitLine } from '../render/line';
@@ -165,6 +166,67 @@ export class DagTree implements Component {
     this.runLabel = label;
   }
 
+  /**
+   * 从磁盘快照 hydrate 一棵树 (2026-08-22 SDD 片 3, INV-HUD-6)。
+   *
+   * 设计为**与事件驱动逐字段等价**(钉在 `dag-tree-snapshot.test.ts`):
+   * 同一组事实 (planned + start/settle 经 `RunProgress` 落到 `HudDagSnapshot`),
+   * 走事件 vs 走 hydrate, `snapshot()` 必须相等。
+   *
+   ## 三相位 (与 `apply` 的事件到达序同形, 保证 `seq` 对得上)
+   *  ① `snap.planned` —— 按数组序 put (assigned seq); `deps` 缺席 = 根, 否则按
+   *     `deps[0]` 认树父 (SDD 逐字; 见 `dag-tree-snapshot.test.ts` §deps[0] 与
+   *     apply expanded 的差异注释)。
+   *  ② `snap.settled` —— 走 `put(id, kind, null, keepParent=true)` 把状态落到
+   *     既有的 planned 节点上 (或新建, 当节点**没有**经过 planned/expanded —— 罕见)。
+   *     有 `startedAt` + `durationMs` → endAt = startAt + durationMs (稳);
+   *     有 `startedAt` 但无 `durationMs` → endAt = `now()` (与 `apply` 的 settle
+   *     分支同形); 都没 → startAt = endAt = `now()` (与「settle 先于 start」同形)。
+   *  ③ `snap.started` —— 同 put 模式, status='running', endAt=null,
+   *     startAt = parseISO(snap.startedAt[id])。
+   *
+   * `runLabel` 直接落到 `snap.goal` (与 `beginRun(label)` 同形)。
+   */
+  loadSnapshot(snap: HudDagSnapshot): void {
+    this.nodes.clear();
+    this.seq = 0;
+    this.runLabel = snap.goal;
+
+    // ① planned —— 给所有节点按到达序发 seq
+    for (const p of snap.planned) {
+      const parent = p.deps && p.deps.length > 0 ? p.deps[0]! : null;
+      this.put(p.id, p.kind, parent, false, p.deps);
+    }
+
+    // ② settled —— 落状态, 沿用 put 的 keepParent (planned 已有父 → 不覆盖)
+    for (const s of snap.settled) {
+      const n = this.put(s.id, s.kind, null, true);
+      n.status = s.status;
+      if (s.startedAt) {
+        n.startAt = Date.parse(s.startedAt);
+        n.endAt = s.durationMs !== undefined ? n.startAt + s.durationMs : this.now();
+      } else {
+        // 无 prior start —— 与 apply 的「settle 先于 start」同形: startAt=endAt=now
+        n.endAt = this.now();
+        n.startAt = n.endAt;
+      }
+      if (s.durationMs !== undefined) n.durationMs = s.durationMs;
+      if (s.usage !== undefined) n.usage = s.usage;
+      // snap.failureKind 是 string, TreeNode 是 NodeFailureKind 联合 —— 运行期同形态 (生产端
+      // 由 `withFailureKind` 收口, 见 harness/dag/types.ts:643), 此处直接断言。
+      if (s.failureKind !== undefined) n.failureKind = s.failureKind as NodeFailureKind;
+    }
+
+    // ③ running —— startAt 来自 snap.startedAt, endAt=null
+    for (const id of snap.started) {
+      const n = this.put(id, '', null, true); // kind='' 留待既有的 planned 提供
+      n.status = 'running';
+      const at = snap.startedAt[id];
+      n.startAt = at ? Date.parse(at) : null;
+      n.endAt = null;
+    }
+  }
+
   apply(e: DagNodeEvent): void {
     switch (e.type) {
       case 'planned': {
@@ -185,7 +247,12 @@ export class DagTree implements Component {
       case 'settle': {
         const n = this.put(e.id, e.kind, null, true);
         n.status = e.status;
-        n.endAt = this.now();
+        // endAt 真源 = 引擎侧墙钟 (startAt+durationMs); 缺席回落观察时刻。
+        // 这一改与 hydrate 路径同源 (snapshot 只存 startedAt+durationMs, 拿不到 settle 观察时刻)
+        // —— 双通路等价闸 (INV-HUD-6) 钉在 dag-tree-snapshot.test.ts。
+        n.endAt = e.durationMs !== undefined && n.startAt !== null
+          ? n.startAt + e.durationMs
+          : this.now();
         if (n.startAt === null) n.startAt = n.endAt; // settle 先于 start 到 (乱序): 画零长条, 不编时长
         // D-5: 耗时真源 = 引擎侧墙钟;老发射点不给 → 渲染回落到达间隔。
         if (e.durationMs !== undefined) n.durationMs = e.durationMs;
