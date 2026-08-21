@@ -155,7 +155,9 @@ describe('画法 C 雾退线', () => {
     const out = renderFogLine(buildPathViewData(m), { width: 100, height: 20, selected: 15 });
     const body = out.join('\n');
     expect(body).toMatch(/… \d+ more/);     // 折叠行说清剪了多少
-    expect(body).toContain('↑↓ vote');      // 末三行(键位)贴底
+    // 2026-08-22 打磨: 键位行原文从 `↑↓ vote` 改成 `up/down picks a ticket`
+    // (`vote` 是把「选票」误译成了投票)。这条闸管的事没变: **末三行(键位)贴底**。
+    expect(body).toContain('up/down picks a ticket');
   });
 
   test('没有 run 推进过 → 说真话, 不画 0 个', () => {
@@ -207,6 +209,8 @@ describe('宽度闸(CJK 标题不超宽)', () => {
     // 清单自己按预算裁, 于是整屏本来就装得下, clampHeight 不再触发。
     // 不变的是这条闸真正管的事: 剪掉了就得说剪了多少。
     expect(out.join('\n')).toMatch(/… \d+ more/);
-    expect(out[11]).toContain('Ctrl+P quit'); // v2 键位行仍贴屏底
+    // ⚠ 锚点不许锚在**行尾** —— 80 列下这一行本来就被截(`…` 结尾), `Ctrl+P quit` 不在。
+    // 这条闸管的是「键位行仍贴屏底」, 所以锚**行首**那段, 它在任何宽度下都活着。
+    expect(out[11]).toContain('up/down picks a ticket');
   });
 });

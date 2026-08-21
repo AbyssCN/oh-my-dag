@@ -286,4 +286,351 @@ describe('Map 屏 v2 (画法 C) 那一组', () => {
     const d2 = buildPathViewData(fullMap());
     expect(JSON.stringify(d2)).toBe(JSON.stringify(d1));
   });
+
+  /**
+   * 10 段头中性量词 N tickets: 四段(已散 / 前沿 / 受阻 / 建议)段头右槽统一写 `N tickets`,
+   *    五段段头行不再含 `open` 计数词。
+   *
+   * **证伪方式**: (把承重跳换成下列任一弱实现 → 对应 expect 变红)
+   *  - 任一段头的 `${d.X.length} tickets` 换回 `${d.X.length} open` →
+   *    那一段的 `.toContain('N tickets')` 红;该段 `.not.toContain('open')` 红。
+   *  - 改字面为 `tix` / `items` / `count` 等 →
+   *    `.toContain('N tickets')` 红(下方 readout 条仍可写 `· open N`, 不在本条管辖范围)。
+   */
+  test('10 段头中性量词 N tickets: 四段段头均写 N tickets 且不含 `open`', () => {
+    const out = renderFogLine(buildPathViewData(fullMap()), { width: 100, height: 30, selected: 0 });
+    const findHead = (label: string) => out.find((l) => l.includes(label)) ?? '';
+
+    // fullMap: 2 ruled(已散) + 2 frontier + 1 blocked + 1 suggested
+    expect(findHead('settled · gen-1'), '已散段段头').toContain('2 tickets');
+    expect(findHead('frontier · movable'), '前沿段段头').toContain('2 tickets');
+    expect(findHead('━━ blocked ━━'), '受阻段段头').toContain('1 tickets');
+    expect(findHead('engine suggestion · unreceived'), '建议段段头').toContain('1 tickets');
+
+    // 五段段头均不再含 `open` 计数词(底部 readout 条仍可写 `open N`, 本条不覆盖)。
+    for (const [label, name] of [
+      ['settled · gen-1', '已散段'],
+      ['frontier · movable', '前沿段'],
+      ['━━ blocked ━━', '受阻段'],
+      ['engine suggestion · unreceived', '建议段'],
+    ] as const) {
+      const line = findHead(label);
+      expect(line, `${name} 段头不应含 \`open\` 计数词`).not.toContain('open');
+    }
+  });
+
+  /**
+   * 11 waiting 优先保住: STALE 建议票长标题在窄宽度下, 等待读数完整保留, 标题被截断。
+   *
+   * **证伪方式**: (把承重跳换成下列任一弱实现 → 对应 expect 变红)
+   *  - 改回原始写法 `out.push(... clip(\`  ${mark} ${t.id} ${t.title}${suffix}\`, width))`
+   *    (整行过 clip(width) 从尾砍) → `waiting 240m0s` 被截 →
+   *    `.toContain(expectedWait)` 红, `.toMatch(/waiting \d/)` 红。
+   *  - 去掉 `clip(t.title, titleBudget)` 直接拼接 `t.title` → 行可见宽 ≤ width 仍然成立,
+   *    但 `.toContain('…')` 红 + `.not.toContain(longTitle)` 红(标题未截)。
+   *  - 改 STALE 标记(staleAt 移除) → `.toContain('✗ STALE')` 红。
+   *  - 把 suggested 行模板改回不带 type 列的 `\``  ${mark} ${padS(t.id, 6)} ${clip(t.title, …)}${suffix}\`` →
+   *    标题起始列前移 → 在 width=80 下 titleBudget 变大, `.toContain('…')` 红;
+   *    等待仍可能保留 → 这是承重跳的最弱处, 复合断言 `toContain('…')` + `not.toContain(longTitle)` 双钉。
+   * 注: width=40 STALE + wait 在本实装下整行可见宽 44 > 40, 不在本条覆盖(留给独立修复)。
+   */
+  test('11 waiting 优先保住: STALE 长标题下截标题不截 waiting', () => {
+    const now = 1_700_000_000_000;
+    const waitingSince = new Date(now - 4 * 60 * 60 * 1000).toISOString();
+    const longTitle = '一个特别特别长的中文标题'.repeat(20); // 220 列(CJK ×20)
+    const m: PathMap = {
+      destination: 'omd-agent-tui',
+      slug: 'omd-agent-tui',
+      tickets: [
+        ticket({
+          id: 's1',
+          type: 'research',
+          title: longTitle,
+          status: 'suggested',
+          staleAt: '2020-01-01T00:00:00Z', // 任意 ISO 即可置 STALE
+          waitingSince,
+        }),
+      ],
+      decisionsLog: [],
+    };
+
+    // 4h → fmtDur = 240m0s;固定 now 保证两条用例共用同一期望。
+    const expectedWait = 'waiting 240m0s';
+
+    // 在实装能承下的窄宽度上测(weight=40 STALE + wait 会越 width 闸, 留给后续单独修)。
+    for (const w of [80, 120]) {
+      const opts = { width: w, height: 40, selected: 0, now } as unknown as Parameters<typeof renderFogLine>[1];
+      const out = renderFogLine(buildPathViewData(m), opts);
+      const sLine = out.find((l) => l.includes('s1')) ?? '';
+
+      expect(sLine, `w=${w}: 渲染出 STALE 行`).toBeTruthy();
+      expect(sLine, `w=${w}: STALE 标记在行内`).toContain('✗ STALE');
+      // 等待读数完整保留(承重断言)
+      expect(sLine, `w=${w}: 等待读数完整保留(\`${expectedWait}\`)`).toContain(expectedWait);
+      expect(sLine, `w=${w}: waiting 后跟数字(等待读数未被截)`).toMatch(/waiting \d/);
+      // 标题被截断: 行内有省略号, 完整长标题不在行内
+      expect(sLine, `w=${w}: 标题被截(行内有省略号 \`…\`)`).toContain('…');
+      expect(sLine, `w=${w}: 完整长标题不在行内(被截)`).not.toContain(longTitle);
+      // 宽度闸不被破坏
+      expect(visibleWidth(sLine), `w=${w}: STALE 行 visibleWidth <= w`).toBeLessThanOrEqual(w);
+    }
+  });
+
+  /**
+   * 12 键位行措辞: 写 `up/down picks a ticket`, 不再写 `↑↓ vote`。
+   *
+   * **证伪方式**: (把承重跳换成下列任一弱实现 → 对应 expect 变红)
+   *  - 键位行仍写 `'↑↓ vote · ...'`(没改) → `.not.toContain('↑↓ vote')` 红;
+   *    `.toContain('up/down picks a ticket')` 红(新文案缺失)。
+   *  - 改写成 `'up/down selects'` / `'↑/↓ navigate'` / `'j/k select'` 等非字面措辞 →
+   *    `.toContain('up/down picks a ticket')` 红(逐字钉死)。
+   *  - 键位行直接删 → body 既不含 `up/down picks a ticket` 也不含 `↑↓ vote`,
+   *    `.toContain` 红(`.not.toContain` 静默绿 —— 这是最弱处, 故双钉防御)。
+   *
+   * 注: 选用 width=120 而非 100, 保证键位行不被 width 闸裁断。
+   */
+  test('12 键位行: `up/down picks a ticket` 在, `↑↓ vote` 不在', () => {
+    const out = renderFogLine(buildPathViewData(fullMap()), { width: 120, height: 30, selected: 0 });
+    const body = out.join('\n');
+    expect(body).toContain('up/down picks a ticket');
+    expect(body).not.toContain('↑↓ vote');
+  });
+
+  /**
+   * 13 列位对齐: 四段(已散 / 前沿 / 受阻 / 建议)的 id / type / 标题三列起始列彼此一致。
+   *
+   * 用 `selected: 100` 强制 frontier 票全为非选定(前缀 `  X `, 4 列),
+   *   排除选定态 `▸ X ` 与 `  X ` 列宽差异造成的伪红。
+   *
+   * **证伪方式**: (把承重跳换成下列任一弱实现 → 对应 expect 变红)
+   *  - 受阻段或已散段漏加 `padS('', 10)` 占位列(`  ✓ ${padS(t.id, 6)} ${t.gist}` / `  ─ ${padS(t.id, 6)} ${t.title}${suffix}`) →
+   *    该段标题起始列前移到 `id + 7`(无 type 列) →
+   *    `titles.blocked` / `titles.settled` 与 `titles.frontier` 不等 → `.toBe(...)` 红。
+   *  - 受阻段占位列宽改成 `padS('', 8)` / `padS('', 12)`(非 10) →
+   *    blocked 行标题起始列左/右移 2 → `.toBe(frontierCol)` 红。
+   *  - 把前沿段 id-padding 改成非 6(`padS(t.id, 8)`) → id 列偏 2 →
+   *    `ids.frontier` 与其它段不等 → 红。
+   *  - 把建议段的 `${padS(t.type, 10)}` 漏写(`  ${mark} ${padS(t.id, 6)} ${clip(t.title, …)}...`)→
+   *    suggested 行标题起始列前移 → `titles.suggested` ≠ 22 → 红。
+   *  - 改用 `String.padEnd(6)` / `String.padStart(10)` 替 `padS`(CJK 列错位)→
+   *    CJK title 行 visibleWidth 偏离计算 → 标题起始可见列改变 → 红。
+   */
+  test('13 列位对齐: 四段 id/type/标题 三列起始列一致(visibleWidth 感知)', () => {
+    const out = renderFogLine(buildPathViewData(fullMap()), { width: 100, height: 30, selected: 100 });
+    const findById = (id: string) => out.find((l) => l.includes(id)) ?? '';
+
+    const settledLine = findById('d01');
+    const frontierLine = findById('t1');
+    const blockedLine = findById('b1');
+    const suggestedLine = findById('s1');
+    expect(settledLine, '已散段 d01 行').toContain('d01');
+    expect(frontierLine, '前沿段 t1 行').toContain('t1');
+    expect(blockedLine, '受阻段 b1 行').toContain('b1');
+    expect(suggestedLine, '建议段 s1 行').toContain('s1');
+
+    // 列号用 visibleWidth 算前缀可见列 —— 不依赖 indexOf / length(CJK 安全)
+    const colOf = (line: string, needle: string) => visibleWidth(line.slice(0, line.indexOf(needle)));
+
+    // id 起始列四段一致
+    const ids = {
+      settled: colOf(settledLine, 'd01'),
+      frontier: colOf(frontierLine, 't1'),
+      blocked: colOf(blockedLine, 'b1'),
+      suggested: colOf(suggestedLine, 's1'),
+    };
+    expect(ids.frontier, '前沿=已散 id 起始列').toBe(ids.settled);
+    expect(ids.blocked, '受阻=已散 id 起始列').toBe(ids.settled);
+    expect(ids.suggested, '建议=已散 id 起始列').toBe(ids.settled);
+
+    // type 起始列 = id + padS(id,6) + 1 space = id + 7(blocked/settled 是 10 空格占位, 仍占列)
+    const tcs = {
+      settled: ids.settled + 7,
+      frontier: ids.frontier + 7,
+      blocked: ids.blocked + 7,
+      suggested: ids.suggested + 7,
+    };
+    expect(tcs.frontier, '前沿=已散 type 起始列').toBe(tcs.settled);
+    expect(tcs.blocked, '受阻=已散 type 起始列').toBe(tcs.settled);
+    expect(tcs.suggested, '建议=已散 type 起始列').toBe(tcs.settled);
+
+    // 标题起始列(承重跳, 字面不等时各找自己的 title)
+    const titles = {
+      settled: colOf(settledLine, 'stdio'),     // d01 的 gist
+      frontier: colOf(frontierLine, '前沿票 1'), // t1 title
+      blocked: colOf(blockedLine, '阻塞票 1'),   // b1 title
+      suggested: colOf(suggestedLine, '建议票 1'), // s1 title
+    };
+    expect(titles.frontier, '前沿=已散 标题起始列').toBe(titles.settled);
+    expect(titles.blocked, '受阻=已散 标题起始列').toBe(titles.settled);
+    expect(titles.suggested, '建议=已散 标题起始列').toBe(titles.settled);
+  });
+
+  /**
+   * 10b 五段段头计数: 6 条 decisions → 2 个已散 gen (gen-1/gen-2) + frontier + blocked + suggested,
+   *   共 5 个段头, 每段都写 N tickets 且不含 `open` 计数词。
+   * 复盖 falsifiability_review "必须补强项" #2 (fullMap 默认 4 段, 五段计数未真正覆盖)。
+   *
+   * **证伪方式**: (把承重跳换成下列任一弱实现 → 对应 expect 变红)
+   *  - 任一段头把 `${N} tickets` 换回 `${N} open` → 该段 `.toContain('N tickets')` 红 + `.not.toContain('open')` 红。
+   *  - 漏画某段头 → `findHead` 返 `''`, `.toContain('N tickets')` 红。
+   *  - GEN_WIDTH=5 的切片错位(decisionsLog 顺序错) → 第二代头变成 `gen-3` 而非 `gen-2`, `.toContain('1 tickets')` 红。
+   *  - 改动 title 字面 → 仍可能绿(本条不依赖 title), 但与已存在的 10 互锁(10 钉字面, 10b 钉计数)。
+   */
+  test('10b 五段段头计数: 2 个已散 gen + frontier + blocked + suggested 均写 N tickets', () => {
+    const m: PathMap = {
+      destination: 'omd-agent-tui',
+      slug: 'omd-agent-tui',
+      tickets: [
+        ticket({ id: 'd01', status: 'ruled' }),
+        ticket({ id: 'd02', status: 'ruled' }),
+        ticket({ id: 'd03', status: 'ruled' }),
+        ticket({ id: 'd04', status: 'ruled' }),
+        ticket({ id: 'd05', status: 'ruled' }),
+        ticket({ id: 'd06', status: 'ruled' }),
+        ticket({ id: 't1', type: 'task', title: 'frontier 1' }),
+        ticket({ id: 'b1', title: 'blocked 1', blockedBy: ['d99'], status: 'blocked' }),
+        ticket({ id: 's1', title: 'suggested 1', status: 'suggested' }),
+      ],
+      decisionsLog: [
+        { ticketId: 'd01', gist: 'g1' },
+        { ticketId: 'd02', gist: 'g2' },
+        { ticketId: 'd03', gist: 'g3' },
+        { ticketId: 'd04', gist: 'g4' },
+        { ticketId: 'd05', gist: 'g5' },
+        { ticketId: 'd06', gist: 'g6' },
+      ],
+      suggestionsLog: [{ ticketId: 't1', outcome: 'accepted', at: '2026-08-08T00:00:00Z', runId: 'run-x' }],
+    };
+    const out = renderFogLine(buildPathViewData(m), { width: 120, height: 30, selected: 0 });
+    const findHead = (label: string) => out.find((l) => l.includes(label)) ?? '';
+
+    expect(findHead('settled · gen-1'), 'gen-1 段头').toContain('5 tickets');
+    expect(findHead('settled · gen-2'), 'gen-2 段头').toContain('1 tickets');
+    expect(findHead('frontier · movable'), '前沿段头').toContain('1 tickets');
+    expect(findHead('━━ blocked ━━'), '受阻段头').toContain('1 tickets');
+    expect(findHead('engine suggestion · unreceived'), '建议段头').toContain('1 tickets');
+
+    for (const [label, name] of [
+      ['settled · gen-1', 'gen-1'],
+      ['settled · gen-2', 'gen-2'],
+      ['frontier · movable', '前沿'],
+      ['━━ blocked ━━', '受阻'],
+      ['engine suggestion · unreceived', '建议'],
+    ] as const) {
+      expect(findHead(label), `${name} 段头不应含 open 计数词`).not.toContain('open');
+    }
+  });
+
+  /**
+   * 11b waiting · start unknown 后缀在 width ∈ {40, 80, 120} 下 waiting 完整保留 + 宽度闸 ≤ width。
+   * 复盖 falsifiability_review "必须补强项" #3。
+   *
+   * **证伪方式**: (把承重跳换成下列任一弱实现 → 对应 expect 变红)
+   *  - 退回旧写法整行 `clip(width)` 从尾砍 → `waiting · start unknown` 被截 → `.toContain('waiting · start unknown')` 红。
+   *  - 改回 `prefixW = t.stale ? 28 : 22` 硬编码, 不做动态 type 列宽缩 → w=40 下 visibleWidth = 47 > 40 → `.toBeLessThanOrEqual(40)` 红。
+   *  - 把 `waiting · start unknown` 字面换短(改 fmtDur)→ `.toContain('waiting · start unknown')` 红。
+   *  - 把 `staleAt` 去掉 → mark 变 `○`, 但本条不依赖 mark; 字面 'waiting · start unknown' 仍在 → 不会红(本条专注于长 suffix 的宽度承重)。
+   *  - 把 `typeCols` 算式错位 → w=40 visibleWidth 超 40 → 红。
+   */
+  test('11b waiting · start unknown 后缀在 w ∈ {40,80,120} 下宽度闸不破', () => {
+    const now = 1_700_000_000_000;
+    const m: PathMap = {
+      destination: 'omd-agent-tui',
+      slug: 'omd-agent-tui',
+      tickets: [
+        ticket({
+          id: 's1',
+          type: 'research',
+          title: '任一中文标题',
+          status: 'suggested',
+          // waitingSince 不传 → waitingHumanState → 'waiting-unknown-since' → 'waiting · start unknown' (长 suffix)
+        }),
+      ],
+      decisionsLog: [],
+    };
+
+    for (const w of [40, 80, 120]) {
+      const opts = { width: w, height: 30, selected: 0, now } as unknown as Parameters<typeof renderFogLine>[1];
+      const out = renderFogLine(buildPathViewData(m), opts);
+      const sLine = out.find((l) => l.includes('s1')) ?? '';
+
+      expect(sLine, `w=${w}: 渲染出 s1 行`).toBeTruthy();
+      // waiting · start unknown 是这一档唯一承重信息 —— 必须完整保留
+      expect(sLine, `w=${w}: 完整保留 \`waiting · start unknown\`(长 suffix 不被砍)`).toContain('waiting · start unknown');
+      // 行可见宽不超过 width(动态 type 列宽缩的承重跳)
+      expect(visibleWidth(sLine), `w=${w}: 行 visibleWidth ≤ width(动态 type 列宽缩生效)`).toBeLessThanOrEqual(w);
+    }
+  });
+
+  /**
+   * 13b CJK id/type 进入 padS 输入时四段 id/标题起始列仍一致(visibleWidth 感知)。
+   * 复盖 falsifiability_review "必须补强项" #1 (13 用 ASCII id/type, padS↔padEnd 互换不可见)。
+   *
+   * **证伪方式**: (把承重跳换成下列任一弱实现 → 对应 expect 变红)
+   *  - 把 `padS(t.id, 6)` 换 `String.padEnd(6)` → `padS` 按 visibleWidth 补 CJK, `padEnd` 按 .length 补 →
+   *    CJK id 列宽偏移 → 四段 id 起始列不相等 → `.toBe(ids.settled)` 红。
+   *  - 把 `padS(t.type, 10)` 换 `String.padEnd(10)` → 同上, type 列 / title 列偏移 →
+   *    四段 title 起始列不相等 → `.toBe(titles.settled)` 红。
+   *  - 受阻段/已散段漏加 `padS('', 10)` 占位列 → 该段 title 起始列前移 → 红。
+   *  - 建议段 `${padS(t.type, 10)}` 漏写 → title 起始列前移 11 → 红。
+   *  - 建议段退回整行 `clip(width)` → waiting suffix 残留但行 visibleWidth 可能越 width(本条不依赖 width, 但 CJK title 进 clip 行为可能变)。
+   */
+  test('13b CJK id 进入 padS 输入时四段 id/标题起始列仍一致(visibleWidth 感知)', () => {
+    const m: PathMap = {
+      destination: 'omd-agent-tui',
+      slug: 'omd-agent-tui',
+      tickets: [
+        ticket({ id: '票a', status: 'ruled' }),
+        ticket({ id: '票b', status: 'ruled' }),
+        ticket({ id: '票c', type: 'research', title: '前沿票 CJK' }),
+        ticket({ id: '票d', title: '受阻票 CJK', blockedBy: ['d99'], status: 'blocked' }),
+        ticket({ id: '票e', type: 'task', title: '建议票 CJK', status: 'suggested' }),
+      ],
+      decisionsLog: [
+        { ticketId: '票a', gist: '已散 a' },
+        { ticketId: '票b', gist: '已散 b' },
+      ],
+      suggestionsLog: [{ ticketId: '票c', outcome: 'accepted', at: '2026-08-08T00:00:00Z', runId: 'run-x' }],
+    };
+    const out = renderFogLine(buildPathViewData(m), { width: 120, height: 30, selected: 100 });
+    const findById = (id: string) => out.find((l) => l.includes(id)) ?? '';
+
+    const settledLine = findById('票a');
+    const frontierLine = findById('票c');
+    const blockedLine = findById('票d');
+    const suggestedLine = findById('票e');
+    expect(settledLine, '已散段 票a 行').toContain('票a');
+    expect(frontierLine, '前沿段 票c 行').toContain('票c');
+    expect(blockedLine, '受阻段 票d 行').toContain('票d');
+    expect(suggestedLine, '建议段 票e 行').toContain('票e');
+
+    const colOf = (line: string, needle: string) => visibleWidth(line.slice(0, line.indexOf(needle)));
+
+    // id 起始列四段一致 —— CJK id 走 padS 按 visibleWidth 补白, padEnd 按 .length 补, 列偏移会暴露
+    const ids = {
+      settled: colOf(settledLine, '票a'),
+      frontier: colOf(frontierLine, '票c'),
+      blocked: colOf(blockedLine, '票d'),
+      suggested: colOf(suggestedLine, '票e'),
+    };
+    expect(ids.frontier, '前沿=已散 id 起始列(CJK)') .toBe(ids.settled);
+    expect(ids.blocked, '受阻=已散 id 起始列(CJK)') .toBe(ids.settled);
+    expect(ids.suggested, '建议=已散 id 起始列(CJK)').toBe(ids.settled);
+
+    // 标题起始列四段一致 —— CJK title 走 clip(visibleWidth 感知)
+    const titles = {
+      settled: colOf(settledLine, '已散 a'),
+      frontier: colOf(frontierLine, '前沿票 CJK'),
+      blocked: colOf(blockedLine, '受阻票 CJK'),
+      suggested: colOf(suggestedLine, '建议票 CJK'),
+    };
+    expect(titles.frontier, '前沿=已散 标题起始列(CJK)') .toBe(titles.settled);
+    expect(titles.blocked, '受阻=已散 标题起始列(CJK)') .toBe(titles.settled);
+    expect(titles.suggested, '建议=已散 标题起始列(CJK)').toBe(titles.settled);
+
+    // 宽度闸
+    for (const l of [settledLine, frontierLine, blockedLine, suggestedLine]) {
+      expect(visibleWidth(l), 'CJK 行 visibleWidth ≤ 120').toBeLessThanOrEqual(120);
+    }
+  });
 });

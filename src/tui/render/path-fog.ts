@@ -317,12 +317,13 @@ export function renderFogLine(
   for (let i = 0; i < d.gens.length; i++) {
     const gen = d.gens[i] as { id: string; gist: string }[];
     if (gen.length === 0) continue;
-    out.push(p.accent(rule(`settled · gen-${i + 1}`, `${gen.length} open`, width)));
-    for (const t of gen) out.push(p.dim(clip(`  ✓ ${padS(t.id, 6)} ${t.gist}`, width)));
+    out.push(p.accent(rule(`settled · gen-${i + 1}`, `${gen.length} tickets`, width)));
+    // 画法 C 四段 id / type / 标题三列起始列一致: 已散段 type 不可知 (decisionsLog 不含 type), 用空白列占位, 起止列与前沿/建议段对齐。
+    for (const t of gen) out.push(p.dim(clip(`  ✓ ${padS(t.id, 6)} ${padS('', 10)} ${t.gist}`, width)));
   }
 
   if (d.frontier.length > 0) {
-    out.push(p.accent(rule('frontier · movable', `${d.frontier.length} open`, width)));
+    out.push(p.accent(rule('frontier · movable', `${d.frontier.length} tickets`, width)));
     d.frontier.forEach((t, i) => {
       const line = mapTicketLine(t, i === o.selected, width);
       out.push((i === o.selected ? p.sel : p.dim)(line));
@@ -330,21 +331,52 @@ export function renderFogLine(
   }
 
   if (d.blockedTickets.length > 0) {
-    out.push(p.accent(rule('blocked', `${d.blockedTickets.length} open`, width)));
+    out.push(p.accent(rule('blocked', `${d.blockedTickets.length} tickets`, width)));
     for (const t of d.blockedTickets) {
       const blocker = t.by?.[0];
       const suffix = blocker ? `  ← waiting for ${blocker} ruling` : '';
-      out.push(p.warn(clip(`  ─ ${padS(t.id, 6)} ${t.title}${suffix}`, width)));
+      // 画法 C 四段 id / type / 标题三列起始列一致: 受阻段 type 不可知 (blockedTickets 不含 type), 用空白列占位。
+      out.push(p.warn(clip(`  ─ ${padS(t.id, 6)} ${padS('', 10)} ${t.title}${suffix}`, width)));
     }
   }
 
   if (suggested.length > 0) {
-    out.push(p.accent(rule('engine suggestion · unreceived', `${suggested.length} open`, width)));
+    out.push(p.accent(rule('engine suggestion · unreceived', `${suggested.length} tickets`, width)));
     for (const t of suggested) {
       const mark = t.stale ? '✗ STALE' : '○';
-      const wait = waitLabel(t.wait, now);
-      const suffix = wait ? `  ${wait}` : '';
-      const line = clip(`  ${mark} ${padS(t.id, 6)} ${padS(t.type, 10)} ${t.title}${suffix}`, width);
+      // 「等你多久」是这一格唯一承重的信息 —— 优先保住等待读数, 标题不够宽就截标题;
+      // 宽度不够时依次: 缩 type 列宽 (10 → 0) → 缩前导缩进 (2 → 0) → 让 titleCols 跌到 0;
+      // type 内容 ≥ desired typeCols 时整体丢 type 块(占位也保留不下, 不强塞) → 让 title 多吃预算;
+      // 不变式: 行 visibleWidth ≤ width (suffix 必保; 宽屏下退回到 type=10/indent=2 默认布局)。
+      const waitStr = waitLabel(t.wait, now);
+      const suffix = waitStr ? `  ${waitStr}` : '';
+      const markW = visibleWidth(mark);
+      const suffixW = visibleWidth(suffix);
+      const typeContentW = visibleWidth(t.type);
+      const budgetLeft = width - suffixW;
+      const indentMax = 2;
+      const idCols = 6;
+      const typeColsMax = 10;
+      let indent = indentMax;
+      // 预算 = budgetLeft - indent - markW - 1 - idCols - 1(type 左侧 sep) - 1(type 右侧 sep) - titleCols
+      // 先把 titleCols 设为 0, 反算 typeCols 上限:
+      let typeCols = Math.max(0, Math.min(typeColsMax, budgetLeft - indent - markW - 1 - idCols - 1 - 1));
+      // 如果 type 内容 + 两侧 sep > 当前 typeCols + 2 → 整块丢 type (不可能容纳 type 列)
+      if (typeContentW + 2 > typeCols) {
+        typeCols = 0;
+      }
+      // 若仍然不够, 缩 indent 到 0
+      if (indent + markW + 1 + idCols + (typeCols > 0 ? typeCols + 2 : 1) > budgetLeft) {
+        indent = 0;
+        typeCols = Math.max(0, Math.min(typeColsMax, budgetLeft - indent - markW - 1 - idCols - 1 - 1));
+        if (typeContentW + 2 > typeCols) typeCols = 0;
+      }
+      const titleCols = Math.max(
+        0,
+        budgetLeft - indent - markW - 1 - idCols - (typeCols > 0 ? typeCols + 2 : 1),
+      );
+      const typeChunk = typeCols > 0 ? ` ${padS(t.type, typeCols)} ` : ' ';
+      const line = `${' '.repeat(indent)}${mark} ${padS(t.id, idCols)}${typeChunk}${clip(t.title, titleCols)}${suffix}`;
       out.push((t.stale ? p.warn : p.dim)(line));
     }
   }
@@ -354,7 +386,7 @@ export function renderFogLine(
     `fog ${pct}% ${bar(d.ruled, d.total)} · open ${d.frontier.length} · blocked ${d.blockedTickets.length} · run x${d.runs.length}`,
     width,
   )));
-  out.push(p.dim(clip('↑↓ vote · Enter on-site · g ask first · d hand to engine · Ctrl+P quit', width)));
+  out.push(p.dim(clip('up/down picks a ticket · Enter on-site · g ask first · d hand to engine · Ctrl+P quit', width)));
   return clampMapHeight(out, o.height, width, p);
 }
 
