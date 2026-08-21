@@ -177,6 +177,67 @@ export { PONYTAIL_LEAF_DISPOSITION } from './defaults';
 // 引擎只接线不重实现 (INV-2); 顶层具名导出保持公共面可见, 无别名包裹。
 export { parseBlameVerdict, invalidationClosure } from './blame';
 
+/**
+ * 产物闸「绝对路径判定」(SDD 2026-08-22 · S1 Step B · 锚回上线)。
+ *
+ * 把 engine.ts 第 3320 行的内联表达式提到 helper (Step A 纯提取),
+ * 再叠加 INV-2/3/4 「绝对路径锚回 worktree」 (Step B):
+ * - INV-1 `existsSync(p)` 命中 ⇒ 不判 missing (绝对路径原样 stat)。
+ * - INV-2 不中 ∧ 绝对路径 ∧ `p` 以主干根 (`repoRoot + '/'`) 开头
+ *   ⇒ 剥主干根前缀, 拼到 `root` 再 stat; 命中 ⇒ 不判 missing。
+ * - INV-3 不中 ∧ 锚回不适用 (相对路径 / 不以主干根开头 / INV-4 短路) ⇒ 判 missing。
+ * - INV-4 `root === repoRoot` ⇒ 跳过锚回 (D-3: 剥了再拼 = 恒等, 每个绝对路径白 stat 一次)。
+ * - INV-5 相对路径走 `${root}/${p}`, 字字与今天相同 (一颗钉子都没动)。
+ *
+ * `probed[p]` = 实际 stat 过的绝对路径列表 (INV-2 命中时 1 条; 都 miss 时 2 条; INV-3 时 1 条)。
+ * 判词 (call site) 据此补 INV-6 「两基准都查过」叙述。
+ *
+ * `exists` 仍在签名上: 反向自检时把 INV-2 那条 exists 短路 ⇒ GWT1/5/6 必红。
+ */
+export function resolveMissingArtifacts(args: {
+  /** 本 run 的产物根 (worktree 锚点); leaf 自报 cwd > continuity.repoRoot > cwd。 */
+  root: string;
+  /** 主干根 (`continuity?.repoRoot ?? process.cwd()`); INV-2 剥前缀锚点。 */
+  repoRoot: string;
+  /** leaf 自报碰过的路径 (绝对或相对)。 */
+  filesTouched: string[];
+  /** 注入点; 默认 `existsSync` (与今天逐字相同)。 */
+  exists?: (p: string) => boolean;
+}): { missing: string[]; probed: Record<string, string[]> } {
+  const existsFn = args.exists ?? existsSync;
+  const root = args.root;
+  const repoRoot = args.repoRoot;
+  // D-3 / INV-4: root === 主干根 ⇒ 锚回恒等, 跳过。`repoRoot` 为空也跳过,
+  // 防止 `p.startsWith('')` 恒真把每条绝对路径都当锚回对象 (运行期 `repoRoot`
+  // 由 `continuity?.repoRoot ?? process.cwd()` 兜底, 实际不为空, 这里是双保险)。
+  const shouldAnchor = repoRoot.length > 0 && root !== repoRoot;
+  const missing: string[] = [];
+  const probed: Record<string, string[]> = {};
+  for (const p of args.filesTouched) {
+    const isAbsolute = p.startsWith('/');
+    // INV-1 / INV-5: 与今天逐字相同 —— 绝对路径原样 stat, 相对路径拼 root。
+    const statPath = isAbsolute ? p : `${root}/${p}`;
+    if (existsFn(statPath)) {
+      // INV-1: 原样命中 ⇒ 不判 missing, 不需要锚回。
+      probed[p] = [statPath];
+      continue;
+    }
+    // 原样 stat miss: 试 INV-2 锚回。
+    if (isAbsolute && shouldAnchor && p.startsWith(repoRoot + '/')) {
+      // INV-2: 剥主干根前缀, 拼 root 再 stat。
+      const anchored = root + p.slice(repoRoot.length);
+      probed[p] = [statPath, anchored];
+      if (!existsFn(anchored)) missing.push(p);
+      // 命中 ⇒ 不判 missing (INV-2 出口)。
+    } else {
+      // INV-3: 锚回不适用 (相对路径 / 不以主干根开头 / INV-4 短路)。
+      probed[p] = [statPath];
+      missing.push(p);
+    }
+  }
+  return { missing, probed };
+}
+
 /** 一轮 plan+execute 的产物 (verify/升级编排在 runExecutorDag 外层组装)。 */
 interface ExecOnce {
   plan: ConductorPlan;
@@ -3255,6 +3316,10 @@ async function executePlan(
         //   没代价, 宽在这里的代价是判一个只读节点失败 (盘上 6/21)。
         if (declaredArtifact) {
           const root = artifactRoot ?? continuity?.repoRoot ?? process.cwd();
+          // 「主干根」用于 INV-2 锚回 (SDD 2026-08-22): leaf 报主干绝对路径时,
+          // 剥这个前缀再拼 root 才能命中 worktree。**不**等于 `root` (非 branch 时相等,
+          // branch 时 = 主干根); D-3 的短路在 helper 里做。
+          const repoRoot = continuity?.repoRoot ?? process.cwd();
           // 救回「经非受控工具 (bash 重定向等) 写入」的声明产物, 见上面快照那段注。
           // 根不一致时**不救**: 快照量的是另一棵树上的文件, 拿它当证据等于没量 (fail-closed)。
           if (filesTouched.length === 0 && declaredOut) {
@@ -3317,7 +3382,11 @@ async function executePlan(
             ...(toolSteps ? { toolSteps } : {}),
             ...(toolStepsDropped ? { toolStepsDropped } : {}),
           });
-          const missing = filesTouched.filter((p) => !existsSync(p.startsWith('/') ? p : `${root}/${p}`));
+          // 产物闸「绝对路径锚回」(SDD 2026-08-22 · s1 Step B): 判词据 `probed`
+          // 自动补 INV-6 「两基准都查过」叙述 —— 锚回试过仍不中时写清路径基准,
+          // 否则还是逐字 `声称产物不存在: <路径>`。`filesTouched` 为空那条分支
+          // 的判词 INV-7 一字不动。
+          const { missing, probed } = resolveMissingArtifacts({ root, repoRoot, filesTouched });
           if (filesTouched.length === 0 || missing.length > 0) {
             // ⚠ **别把"闸看不见"说成"它没做"** (2026-08-05 真跑实证)。上面那条救援要求节点
             //   声明了 `output_path`; conductor 没给的时候, 经 bash 写入的产物就彻底隐形 ——
@@ -3349,7 +3418,16 @@ async function executePlan(
                     : ` 写操作可能经 bash 发生而产物闸看不见 —— 给该节点声明 output_path 即可被救回;` +
                       ` 若本节点本就不产文件 (纯验证/检查), 重画时该标 output_type:'none' 而不是声明产物`)
                 : `filesTouched 空 — leaf 自报完成但未做任何文件写操作。${declaredNow}`
-              : `声称产物不存在: ${missing.join(', ')}`;
+              : `声称产物不存在: ${missing
+                  .map((p) => {
+                    // INV-6: 锚回试过仍不中 ⇒ 写明两基准, 列出实际 stat 过的路径。
+                    // 否则 (INV-3 / INV-4 短路) 保持原样, 判词不冗余。
+                    const probes = probed[p];
+                    return probes && probes.length >= 2
+                      ? `${p} (主干与 worktree 两基准都查过: ${probes.join(' / ')})`
+                      : p;
+                  })
+                  .join(', ')}`;
             logger.warn({ node: id, filesTouched, missing }, '[omd/executor-dag] 产物校验失败 → 节点 failed (拒绝 empty-done)');
             return {
               id, status: 'failed', failureKind: 'empty-artifact', kind: 'agent', model,
