@@ -1,39 +1,24 @@
 /**
  * src/tui/render/path-fog —— **pathfinder 散雾图两画法**(切片⑧,owner 裁决主 C 副 B)。
  *
- * ## 2026-08-08 重画:对齐 HTML 稿的空间构图(owner 指出初版"列表 + 雾带"与稿不符)
- *
- * - 画法 C「雾退线」:凝固层(逐代地层)→ **前沿线(票钉在一条横线上,↓ 指向雾)** → 雾层
- *   (密度渐变)→ 底部散雾读数。判据:构图与 `2026-08-08-pathfinder-tui-三方案.html` 的 C 案同形。
+- 画法 C「Map 屏」:goal → settled → frontier → blocked → engine suggestions → fog horizon → readout。
  * - 画法 B「三角洲」:主干(goal)→ 凝固支流(实线链,左→右)→ 梢头挂前沿票(虚段)→
  *   **右侧雾场列**(密度随行渐变)。
  * - 画法 A(声呐)**不实现**(owner 裁决)。
  *
- * ## 与稿仍存的三处偏离(记录,不静默)
- *
- * 1. **重线族待量**:稿用 `━ ┄ ┃ ◉ ▼ ⛓`,字形闸判 unmeasured。候选已扩进探针
- *    (`glyphs.ts` box-heavy/box-round/mock-extra),owner 真终端跑
- *    `bun run scripts/tui-glyph-probe.ts --tty` 重生成白名单后,这里的 `─ · ↓ ●` 逐个换回。
- * 2. **雾不呼吸**:动画留待后续(挂 §4.1-4 约束)。
- * 3. **雾不再是"大面积"**(2026-08-21,owner 实测截图后改):稿的 C 案里雾占大块版面,
- *    初版照做成"撑满剩余高度"。真终端上那读成**整屏马赛克** —— 60 行屏 + 3 张票 =
- *    内容 8 行、雾 50 行,图什么都预览不出来。现在雾带封顶 `FOG_BAND_MAX`,空出来的行
- *    给票清单(一票一行、全标题)。判据:雾携带的信息是**一个标量**(fog%),
- *    而底部读数条已经印了它;票清单才是随票数增长的信息。
- *    回归闸在 `path-fog.test.ts` 的「高屏少票」一条(去掉封顶当场量到 48 行雾)。
- *
- * 纯函数;颜色经注入的 paint 钩子(测试与 NO_COLOR 下是恒等,**选中态靠 [] 结构可见,不靠色**)。
+ * `glyph-table.ts` 的 `GROUND_TRUTH === true`; `━ ┄ ┃ ◉ ▼ ⛓` 全在 SAFE 档,这里直接使用。
+ * 纯函数;颜色经注入的 paint 钩子(测试与 NO_COLOR 下是恒等,选中态靠 `▸` 结构可见,不靠色)。
  */
 import { visibleWidth } from '@earendil-works/pi-tui';
 import type { PathMap, Ticket } from '../../harness/pathfinder/types';
-import { computeFrontier } from '../../harness/pathfinder/frontier';
+import { computeFrontier, waitingHumanState, type WaitingHumanState } from '../../harness/pathfinder/frontier';
 import { BAR_DONE, BAR_TODO } from './bar';
 import { fitLine } from './line';
 
 /** 票类型字形(全在白名单):task ● · grill ◆ · research ◇ · prototype ○。 */
 export const TICKET_MARK: Record<string, string> = { task: '●', grill: '◆', research: '◇', prototype: '○' };
 
-/** 颜色钩子。省略/NO_COLOR = 恒等 —— 结构信息(选中 []、阻塞行)不许只靠颜色携带。 */
+/** 颜色钩子。省略/NO_COLOR = 恒等 —— 结构信息(选中 `▸`、stale 文字、阻塞行)不许只靠颜色携带。 */
 export interface FogPaint {
   accent(s: string): string;
   dim(s: string): string;
@@ -45,18 +30,32 @@ const PLAIN: FogPaint = { accent: (s) => s, dim: (s) => s, warn: (s) => s, sel: 
 export interface PathViewData {
   destination: string;
   slug: string;
-  /** 凝固层:已裁决票按裁决顺序分代(id + 裁决 gist —— 稿里地层带的就是 gist)。 */
+  /** 凝固层:已裁决票按裁决顺序分代(id + 裁决 gist)。 */
   gens: { id: string; gist: string }[][];
-  frontier: { id: string; type: string; title: string; runId?: string }[];
-  /** 阻塞票(id + 标题)—— 稿里它们也钉在前沿线上,只是标记不同。 */
-  blockedTickets: { id: string; title: string }[];
+  frontier: { id: string; type: string; title: string; runId?: string; stale?: boolean }[];
+  /** suggested/escalated 单列;等待起点保留 null,渲染时才按 now 算时长。 */
+  suggested?: {
+    id: string;
+    type: string;
+    title: string;
+    wait: { kind: WaitingHumanState; sinceMs: number | null };
+    stale?: boolean;
+  }[];
+  /** 阻塞票保留直接前置,行尾说明正在等谁裁。 */
+  blockedTickets: { id: string; title: string; by?: string[] }[];
   ruled: number;
   total: number;
-  /** 推进过本图的 run(suggestedBy + suggestionsLog 的去重 runId)—— 票与 run 的关系。 */
+  /** 推进过本图的 run(suggestedBy + suggestionsLog 的去重 runId)。 */
   runs: string[];
 }
 
 const GEN_WIDTH = 5;
+
+const msOf = (iso: string | undefined): number | undefined => {
+  if (iso === undefined) return undefined;
+  const ms = Date.parse(iso);
+  return Number.isNaN(ms) ? undefined : ms;
+};
 
 export function buildPathViewData(map: PathMap): PathViewData {
   const frontier = computeFrontier(map);
@@ -77,37 +76,131 @@ export function buildPathViewData(map: PathMap): PathViewData {
       type: t.type,
       title: t.title,
       ...(t.suggestedBy ? { runId: t.suggestedBy } : {}),
+      ...(t.staleAt !== undefined ? { stale: true } : {}),
     })),
+    suggested: map.tickets
+      .filter((t) => t.status === 'suggested' || t.status === 'escalated')
+      .map((t) => ({
+        id: t.id,
+        type: t.type,
+        title: t.title,
+        wait: { kind: waitingHumanState(t), sinceMs: msOf(t.waitingSince) ?? null },
+        ...(t.staleAt !== undefined ? { stale: true } : {}),
+      })),
     // ⚠ 排除已在前沿的: blockedBy 非空但前置都已裁决的票是**可动的**, 同时出现在两边
-    //   会读成"又能动又被挡" (fog-v2 截图抓到 g4 两边都在)。
+    //   会读成“又能动又被挡”。
     blockedTickets: map.tickets
       .filter(
         (t) =>
           t.status !== 'ruled' &&
           t.status !== 'delivered' &&
           t.status !== 'suggested' &&
+          t.status !== 'escalated' &&
           t.blockedBy.length > 0 &&
           !frontier.some((f) => f.id === t.id),
       )
-      .map((t) => ({ id: t.id, title: t.title })),
+      .map((t) => ({ id: t.id, title: t.title, by: [...t.blockedBy] })),
     ruled,
     total: map.tickets.length,
     runs: [...runs],
   };
 }
 
-/** 截到 n 可见列(不加省略号 —— 线上的短标签,截断本身就是形态)。 */
-const clip = (s: string, n: number): string => {
-  if (visibleWidth(s) <= n) return s;
-  let out = '';
-  for (const ch of s) {
-    if (visibleWidth(out + ch) > n) break;
-    out += ch;
+/** 可见列感知的右补白。 */
+const padS = (text: string, cols: number): string => text + ' '.repeat(Math.max(0, cols - visibleWidth(text)));
+
+/** 可见列感知的左补白。 */
+const padSL = (text: string, cols: number): string => ' '.repeat(Math.max(0, cols - visibleWidth(text))) + text;
+
+/** CJK 按字列断行;西文优先整词搬到下一行,超长单词仍按列拆开。 */
+const wrap = (text: string, cols: number): string[] => {
+  if (cols <= 0) return [''];
+  const tokens: string[] = [];
+  let latin = '';
+  for (const ch of text) {
+    if (ch.codePointAt(0)! < 0x80 && !/\s/.test(ch)) {
+      latin += ch;
+      continue;
+    }
+    if (latin) {
+      tokens.push(latin);
+      latin = '';
+    }
+    tokens.push(/\s/.test(ch) ? ' ' : ch);
   }
-  return out;
+  if (latin) tokens.push(latin);
+
+  const out: string[] = [];
+  let cur = '';
+  const flush = (): void => {
+    const row = cur.trimEnd();
+    if (row) out.push(row);
+    cur = '';
+  };
+  for (const token of tokens) {
+    if (token === ' ' && cur === '') continue;
+    if (visibleWidth(cur + token) <= cols) {
+      cur += token;
+      continue;
+    }
+    flush();
+    if (token === ' ') continue;
+    let chunk = '';
+    for (const ch of token) {
+      if (chunk && visibleWidth(chunk + ch) > cols) {
+        out.push(chunk);
+        chunk = '';
+      }
+      chunk += ch;
+    }
+    cur = chunk;
+  }
+  flush();
+  return out.length > 0 ? out : [''];
 };
 
-/** 静态密度纹理(░▒)。呼吸动画刻意不做,见文件头偏离 ②。`phase` 让相邻行错开。 */
+/** 截到可见列并补 `…`;只用于 chrome/票行,goal 正文走 wrap。 */
+const clip = (text: string, cols: number): string => {
+  if (cols <= 0) return '';
+  if (visibleWidth(text) <= cols) return text;
+  if (cols === 1) return '…';
+  let out = '';
+  for (const ch of text) {
+    if (visibleWidth(out + ch) > cols - 1) break;
+    out += ch;
+  }
+  return out + '…';
+};
+
+/** `━━ label ━━━━━ right ━━` 分区线。 */
+const rule = (label: string, right: string | undefined, cols: number): string => {
+  const head = `━━ ${label} ━━`;
+  const tail = right ? ` ${right} ━━` : '';
+  const fill = '━'.repeat(Math.max(0, cols - visibleWidth(head) - visibleWidth(tail)));
+  return clip(head + fill + tail, cols);
+};
+
+/** 未知边界只画地平线,不画雾纹理。 */
+const horizon = (cols: number, label: string): string => {
+  const text = ` ${label} `;
+  const room = Math.max(0, cols - visibleWidth(text));
+  const left = Math.floor(room / 2);
+  return clip('┄'.repeat(left) + text + '┄'.repeat(room - left), cols);
+};
+
+/** 固定格数进度条。 */
+const bar = (done: number, total: number, cells = 12): string => {
+  const filled = total > 0 ? Math.round((Math.max(0, Math.min(done, total)) / total) * cells) : 0;
+  return BAR_DONE.repeat(filled) + BAR_TODO.repeat(cells - filled);
+};
+
+const fmtDur = (ms: number): string => {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.floor(ms / 60000)}m${Math.round((ms % 60000) / 1000)}s`;
+};
+
+/** 静态密度纹理(░▒)。画法 B 与 fogBand 仍共用。`phase` 让相邻行错开。 */
 const fog = (width: number, density: 0 | 1 | 2, phase = 0): string => {
   const units = ['░░░░▒░░░', '░▒▒░░░▒░', '▒▒░░▒▒▒░'] as const;
   const u = units[density];
@@ -118,18 +211,10 @@ const fog = (width: number, density: 0 | 1 | 2, phase = 0): string => {
 const clampHeight = (out: string[], height: number): string[] =>
   out.length > height ? [...out.slice(0, Math.max(1, height - 1)), `… ${out.length - height + 1} more lines`] : out;
 
-/**
- * 雾带高度上下限(2026-08-21 owner 实测改)。
- *
- * 原实现是「撑满剩余高度」(注释理由: 稿里雾是大面积的, 三行雾读不出体量)。在真终端上
- * 那读成**整屏马赛克**: 60 行屏 + 3 张票 = 内容 8 行、雾 50 行, 图什么都预览不出来。
- * 判据: 雾携带的信息是**一个标量** (fog%), 而底部读数条已经印了它 —— 它不值一整屏。
- * 空出来的行给票清单 (见 `ticketList`), 那才是随票数增长的信息。
- */
-const FOG_BAND_MIN = 2;
+/** 雾带封顶只供旧画法 B 的雾场与保留画法使用。 */
 const FOG_BAND_MAX = 5;
 
-/** 雾带: 第一行最密, `? ? ?` 居中, 往下逐行变薄。`n` 由调用方按 MIN/MAX 夹好。 */
+/** 雾带: 第一行最密, `? ? ?` 居中, 往下逐行变薄。 */
 const fogBand = (n: number, width: number, p: FogPaint): string[] => {
   const fw = Math.max(0, width - 8);
   const rows = [p.dim(fitLine(`fog    ${fog(fw, 2)}`, width))];
@@ -144,31 +229,7 @@ const fogBand = (n: number, width: number, p: FogPaint): string[] => {
   return rows;
 };
 
-/**
- * 前沿票清单: 一票一行, 标题**不缩到 8 字**。
- *
- * 反的是原先的信息密度 —— 前沿线上每张票只剩 8 字缩写, 全文只有选中那一张(`selectedDetail`)
- * 看得见, 而屏幕 85% 是雾。窗口始终含 `selected`; 装不下时尾行折叠成 `… N more`。
- */
-const ticketList = (d: PathViewData, selected: number, budget: number, width: number, p: FogPaint): string[] => {
-  if (budget <= 0) return [];
-  const rows = d.frontier.map((t, i) => {
-    const run = t.runId ? `  <- run ${t.runId.slice(0, 8)}` : '';
-    const body = `${i === selected ? '>' : ' '} ${TICKET_MARK[t.type] ?? '●'} ${t.id} ${t.type}  ${t.title}${run}`;
-    return (i === selected ? p.sel : p.dim)(fitLine(body, width));
-  });
-  for (const b of d.blockedTickets) {
-    rows.push(p.warn(fitLine(`  x ${b.id} blocked  ${b.title}`, width)));
-  }
-  if (rows.length === 0) return [];
-  if (rows.length <= budget) return rows;
-  // 窗口贴着 selected 走, 末行留给折叠标记。
-  const span = Math.max(1, budget - 1);
-  const start = Math.max(0, Math.min(selected - span + 1, rows.length - span));
-  return [...rows.slice(start, start + span), p.dim(fitLine(`  … ${rows.length - span} more`, width))];
-};
-
-/** 头两行:短读数在前(长 destination 会把 run 段截出屏,PF-3 红过一次)。 */
+/** 画法 B 的旧头部;Map 屏有自己的单行头 + 可换行 goal 段。 */
 const header = (d: PathViewData, painter: string, width: number, p: FogPaint): string[] => {
   const pct = d.total > 0 ? Math.round((d.ruled / d.total) * 100) : 0;
   const runsSeg = d.runs.length > 0 ? ` · ${d.runs.length} runs` : ' · no runs';
@@ -181,7 +242,7 @@ const header = (d: PathViewData, painter: string, width: number, p: FogPaint): s
 const keysLine = (width: number, p: FogPaint): string =>
   p.dim(fitLine('up/down picks a ticket · Enter acts · Tab switches view · Ctrl+P exits', width));
 
-/** 底部读数条(稿的最后一行):`散雾 62% ████░░ · open 4 · blocked 1 · 本图被 3 个 run 推进过`。 */
+/** 画法 B 的底部读数条。 */
 const summaryLine = (d: PathViewData, width: number, p: FogPaint): string => {
   const pct = d.total > 0 ? Math.round((d.ruled / d.total) * 100) : 0;
   const filled = Math.round((pct / 100) * 12);
@@ -191,7 +252,7 @@ const summaryLine = (d: PathViewData, width: number, p: FogPaint): string => {
   );
 };
 
-/** 选中票的详情行(线上是短标签,全文在这):`> ◆ g4 grill 全标题 <- run 78f1951c`。 */
+/** 画法 B 选中票详情。 */
 const selectedDetail = (d: PathViewData, selected: number, width: number, p: FogPaint): string | null => {
   const t = d.frontier[selected];
   if (!t) return null;
@@ -199,74 +260,106 @@ const selectedDetail = (d: PathViewData, selected: number, width: number, p: Fog
   return p.sel(fitLine(`> ${TICKET_MARK[t.type] ?? '●'} ${t.id} ${t.type}  ${t.title}${run}`, width));
 };
 
+const waitLabel = (wait: NonNullable<PathViewData['suggested']>[number]['wait'], now: number): string => {
+  switch (wait.kind) {
+    case 'waiting':
+      return wait.sinceMs === null ? 'waiting · start unknown' : `waiting ${fmtDur(now - wait.sinceMs)}`;
+    case 'waiting-unknown-since':
+      return 'waiting · start unknown';
+    case 'ruled-unrecorded':
+      return 'waiting · ruled, time unknown';
+    case 'not-waiting':
+      return '';
+  }
+};
+
+const mapTicketLine = (
+  t: { id: string; type: string; title: string; runId?: string; stale?: boolean },
+  selected: boolean,
+  width: number,
+): string => {
+  const sel = selected ? '▸ ' : '  ';
+  const mark = t.stale ? '✗ STALE' : (TICKET_MARK[t.type] ?? '●');
+  const suffix = t.runId ? `  ← run ${t.runId.slice(0, 8)}` : '';
+  return clip(`${sel}${mark} ${padS(t.id, 6)} ${padS(t.type, 10)} ${t.title}${suffix}`, width);
+};
+
+const clampMapHeight = (out: string[], height: number, width: number, p: FogPaint): string[] => {
+  if (out.length <= height) return out;
+  if (height <= 3) return clampHeight(out, height);
+  const tail = out.slice(-3);
+  const kept = Math.max(0, height - tail.length - 1);
+  return [...out.slice(0, kept), p.dim(clip(`… ${out.length - height + 1} more lines`, width)), ...tail];
+};
+
 /**
- * 画法 C · 雾退线:凝固地层 → 票钉在前沿线上(↓ 指雾)→ 雾层渐变 → 底部读数。
+ * 画法 C · Map 屏 v2。选择域只有 frontier;等待时长使用注入的 now,数据构建不读时钟。
  */
+// 2026-08-22 裁定:Map v2 段头、读数与键位行属于 chrome,按 owner 2026-08-09 裁决及 src/tui/render/glyphs.test.ts「chrome 文案一律纯英文」改用英文;票标题等数据不受限。
 export function renderFogLine(
   d: PathViewData,
-  o: { width: number; height: number; selected: number; paint?: FogPaint },
+  o: { width: number; height: number; selected: number; paint?: FogPaint; now?: number },
 ): string[] {
   const p = o.paint ?? PLAIN;
-  const w = o.width;
-  const out: string[] = [...header(d, 'fog line', w, p)];
+  const width = o.width;
+  const now = o.now ?? Date.now();
+  const pct = d.total > 0 ? Math.round((d.ruled / d.total) * 100) : 0;
+  const runsSeg = d.runs.length > 0 ? `${d.runs.length} runs` : 'no runs';
+  const suggested = d.suggested ?? [];
+  const out: string[] = [
+    p.accent(clip(`map ${d.slug} · fog line · fog ${pct}% (${d.ruled}/${d.total}) · ${runsSeg}`, width)),
+  ];
 
-  // ── 凝固层: 逐代地层 (id + gist)。
-  out.push(p.dim(fitLine(`settled ${'─'.repeat(Math.max(0, w - 8))}`, w)));
-  if (d.gens.length === 0) out.push(p.dim('  (nothing ruled yet)'));
+  const goal = wrap(d.destination, Math.max(1, width - 9));
+  out.push(p.accent(clip(` goal   ${goal[0] ?? ''}`, width)));
+  for (const row of goal.slice(1)) out.push(p.accent(clip(`${padSL('', 9)}${row}`, width)));
+
   for (let i = 0; i < d.gens.length; i++) {
-    const row = (d.gens[i] as { id: string; gist: string }[]).map((e) => `${e.id} ${clip(e.gist, 10)}`).join(' · ');
-    out.push(p.dim(fitLine(` gen-${i + 1}  ${row}`, w)));
+    const gen = d.gens[i] as { id: string; gist: string }[];
+    if (gen.length === 0) continue;
+    out.push(p.accent(rule(`settled · gen-${i + 1}`, `${gen.length} open`, width)));
+    for (const t of gen) out.push(p.dim(clip(`  ✓ ${padS(t.id, 6)} ${t.gist}`, width)));
   }
 
-  // ── 前沿线: 票钉在一条横线上。选中的用 [] 包 (结构可见, 不靠颜色)。阻塞票也钉着, 前缀 x。
-  const marks: number[] = []; // 每张 open 票的 id 起始列 → ↓ 指针行
-  let line = 'frontier ';
-  let overflow = 0;
-  const pin = (body: string, isSel: boolean, track: boolean): void => {
-    const seg = isSel ? `═[${body}]` : `──${body}`;
-    if (visibleWidth(line) + visibleWidth(seg) + 4 > w) {
-      overflow += 1;
-      return;
-    }
-    if (track) marks.push(visibleWidth(line) + 2); // `──` 或 `═[` 都是 2 列, id 从第 3 列起
-    line += seg;
-  };
-  d.frontier.forEach((t, i) => pin(`${t.id}${TICKET_MARK[t.type] ?? '●'}${clip(t.title, 8)}`, i === o.selected, true));
-  for (const b of d.blockedTickets.slice(0, 2)) pin(`x${b.id} ${clip(b.title, 6)}`, false, false);
-  if (overflow > 0) line += `──(+${overflow})`;
-  line += '──';
-  if (d.frontier.length === 0 && d.blockedTickets.length === 0) {
-    out.push(p.dim(fitLine('frontier ──── frontier 0 (everything ruled) ────', w)));
-  } else {
-    out.push(p.accent(fitLine(line, w)));
-    // ↓ 指针行: 每张 open 票往雾里指一根。
-    if (marks.length > 0) {
-      let ptr = '';
-      for (const col of marks) {
-        if (col <= visibleWidth(ptr)) continue;
-        ptr += ' '.repeat(col - visibleWidth(ptr)) + '↓';
-      }
-      out.push(p.dim(fitLine(ptr, w)));
+  if (d.frontier.length > 0) {
+    out.push(p.accent(rule('frontier · movable', `${d.frontier.length} open`, width)));
+    d.frontier.forEach((t, i) => {
+      const line = mapTicketLine(t, i === o.selected, width);
+      out.push((i === o.selected ? p.sel : p.dim)(line));
+    });
+  }
+
+  if (d.blockedTickets.length > 0) {
+    out.push(p.accent(rule('blocked', `${d.blockedTickets.length} open`, width)));
+    for (const t of d.blockedTickets) {
+      const blocker = t.by?.[0];
+      const suffix = blocker ? `  ← waiting for ${blocker} ruling` : '';
+      out.push(p.warn(clip(`  ─ ${padS(t.id, 6)} ${t.title}${suffix}`, width)));
     }
   }
-  // 原先这里有一行 `blocked N: id · id` —— 票清单接手后它是**第三份**同一事实
-  // (清单里每张阻塞票一行 + 底部读数条的 blocked N), 由本次改动造成的冗余, 删。
 
-  // ── 票清单吃掉大头, 雾带封顶 (FOG_BAND_MAX)。`selectedDetail` 在这里已冗余 —— 清单里
-  //    选中行带 `>` 且就是全标题; 画法 B 仍用它。尾部 2 行 = 读数条 + 键位行。
-  out.push(...ticketList(d, o.selected, o.height - out.length - FOG_BAND_MIN - 2, w, p));
-  const band = Math.max(FOG_BAND_MIN, Math.min(FOG_BAND_MAX, o.height - out.length - 2));
-  // 票少时把余量留成空行, 让雾带 + 读数条 + 键位行仍贴屏底 —— 否则 chrome 浮在半空读成"画崩了"。
-  for (let i = o.height - out.length - band - 2; i > 0; i--) out.push('');
-  out.push(...fogBand(band, w, p));
+  if (suggested.length > 0) {
+    out.push(p.accent(rule('engine suggestion · unreceived', `${suggested.length} open`, width)));
+    for (const t of suggested) {
+      const mark = t.stale ? '✗ STALE' : '○';
+      const wait = waitLabel(t.wait, now);
+      const suffix = wait ? `  ${wait}` : '';
+      const line = clip(`  ${mark} ${padS(t.id, 6)} ${padS(t.type, 10)} ${t.title}${suffix}`, width);
+      out.push((t.stale ? p.warn : p.dim)(line));
+    }
+  }
 
-  out.push(summaryLine(d, w, p));
-  out.push(keysLine(w, p));
-  return clampHeight(out, o.height);
+  out.push(p.dim(horizon(width, `fog · ${d.total - d.ruled} unruled`)));
+  out.push(p.accent(clip(
+    `fog ${pct}% ${bar(d.ruled, d.total)} · open ${d.frontier.length} · blocked ${d.blockedTickets.length} · run x${d.runs.length}`,
+    width,
+  )));
+  out.push(p.dim(clip('↑↓ vote · Enter on-site · g ask first · d hand to engine · Ctrl+P quit', width)));
+  return clampMapHeight(out, o.height, width, p);
 }
 
 /**
- * 画法 B · 三角洲:主干(goal)→ 凝固支流(实线链)→ 梢头挂票(虚段)→ 右侧雾场列。
+ * 画法 B · 三角洲:主干(goal)→ 凝固支流(实线链,左→右)→ 梢头挂票(虚段)→ 右侧雾场列。
  */
 export function renderDelta(
   d: PathViewData,
