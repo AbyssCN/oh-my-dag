@@ -1726,6 +1726,79 @@ S-45 是「两个面都在但互不相识」,这一条更远一层:**输出回�
 
 ---
 
+### S-49 · **闸在,跑着,绿着 —— 而它量的不是承重的那一位**
+
+**形状**:一道闸存在、每次都跑、一直是绿的,而它的**谓词没有编码那个真正承重的条件**。
+于是它既拦不住该拦的,又用"有闸"这件事把那块地方**标记成已覆盖**。
+症状永远长成别的样子:随机的偶发红、一条"看起来没问题"的日志、或者干脆什么都没有。
+
+**和已有几条哪里不一样**:
+- S-1/S-11 那族是**没有消费者**(声明了没人用);这一条有消费者、跑得好好的。
+- S-19/S-46 那族是**判据面不全**(判「做的那部分对不对」不判「做没做全」);
+  这一条的**面是对的**,错在**谓词**——同一个面上问了一个不承重的问题。
+- 与"没有闸"相比它**更坏**:没有闸时人还会警惕,有一道绿闸时人不会再看第二眼。
+
+**为什么没红灯**:绿就是它的正常状态。**闸的存在感掩盖了它没在量的那一半**,
+而"它到底在量什么"这件事**在任何读数里都不出现** —— 你只能靠去读它的谓词才知道。
+
+---
+
+**本仓实例(2026-08-21 一天之内四条,前三条是既有的闸,第四条是我自己当天写的)**
+
+**① INV-7 只问"两条 pragma 在不在同一个函数体",不问顺序。**
+`sqlite-busy-timeout.test.ts` 写得很细 —— 括号平衡定位函数体、跨函数逃逸检测、类方法边界、
+两条并发实证 GWT。而 `busy_timeout` 是**连接级**设置,只对它**之后**的语句生效;
+`journal_mode = WAL` 自己要拿锁,排在前面时用的是默认值 **0**,一撞就立刻 `SQLITE_BUSY`。
+**全仓 10 处开 WAL 的点顺序全反,一处不漏,而闸十次全绿。**
+症状:`session-continuity-trigger` 的 A1 端到端偶发红,堆栈逐字指在那一行。
+(修:`cd5153c` —— 十处换序 + 闸补 `busyBeforeWal` 一位。)
+
+**② `#165①` 收尾复验的触发条件被它要防的那个东西关掉了。**
+那道复验只在 `!oracleOk` 时跑,而 `oracleOk` 被一份**陈旧的绿**撑成了 true ——
+`accept` 第 1 轮真跑真绿写下 checkpoint,第 2 轮因为不在毒集前向闭包里被 resume-skip
+直接复用那份绿,**而第 2 轮恰恰把盘改坏了**。run `58df6b9e` 的日志里没有任何 `#165①` 行。
+⇒ **闸被自己要防的那个东西关上了**,这是本形态里最刁的一种。
+(修:`13345c5` —— 复验上移到 `oracleOk` 的定义处,两个触发条件合并成一处。)
+
+**③ noun-gate 的文件名正则按构造产生假阳性。**
+`[a-z]{1,6}` 的扩展名上限把任何属性名 ≥7 个小写字母的 `对象.属性` 砍成 6 个字符当"文件名"抽走
+(`first.message` → `first.messag`,`omd_runs.converged` → `omd_runs.conver`),
+截出来的串在材料与文件树里**必然**找不到,于是**必然**判成编造。
+代价不是漏判是**误伤**:手写的交接 checkpoint 被机械降级版覆盖了两次,§1–§9 全是「(无)」。
+(修:`dfda018` —— 扩展名换显式白名单 + 降级版不许覆盖不降级的 checkpoint。)
+
+**④ 我自己写的反向自检没有判别力(当天,做证伪时当场抓到)。**
+写域闸的两种实现 `allow !== undefined` 与 `allow?.length` 只在**空写集 `[]`** 这一格分叉
+(声明「什么都不许写」vs 没配这道闸)。而我的用例传的是"整个不传",**两种实现结果相同** ——
+那条用例并不判别它声称判别的东西。若不是做证伪时发现它没红,这条假闸会带着"已证伪"的名义留下来。
+(补:`163f12c` 加了 `[]` 那一格。)
+
+**⑤ 同族的第五个,owner 抓的(判据有一个没写出来的前提)**:
+`tui-pty` 的 `SB-1`/`SB-5` 声称量的是底栏读数,**实际上在量「你在不在 main 上」** ——
+底栏是 `fitLine`(截断不折行),分支段排在读数前面,100 列下它的预算只有约 **5 列**。
+⚠ 而我在定性这条时**自己犯了对照错误**:切分支同时换了代码与分支名两个变量,却当成单变量用。
+(修:`9e19021` —— 那条 lane 显式要 160 列,把混淆变量移出去 + 红时自报分支名长度。)
+
+---
+
+**抓法(两条,都是可执行的动作,不是态度)**
+
+> **A. 反向自检必须证伪"承重那一位",不是随便一个改动。**
+> 具体做法:把闸的实现换成一个**语义更弱、但对现有用例输入等价**的版本
+> (`!== undefined` → `?.length`、`{1,6}` → `{1,12}`、去掉顺序只留存在性 …)。
+> **用例还是绿的 ⇒ 那条用例没有判别力**,它证明的不是你以为的那件事。
+> 这一步比"写了反向自检"多一层:**反向自检本身也要被证伪一次。**
+
+> **B. 每条闸出口前用一句话回答:「它红的时候,是因为什么?」**
+> 答不出一个**具体的、承重的**条件,就说明谓词还没写对。
+> ⚠ 特别当心答案里出现闸**自己算出来的中间量**(如 `#165①` 的 `oracleOk`)——
+> 那意味着闸的触发条件可以被它要防的那件事关掉,自证自闭。
+
+⚠ **本条不适用于"没有闸"的地方** —— 那一族的问题是覆盖,归 S-19/S-46。
+这一条专治**有闸而闸问错了问题**,判别标志是:**闸是绿的,而事情坏了**。
+
+---
+
 ## 已立的闸(可执行的那部分)
 
 | 闸 | 位置 | 守什么 | 抓哪几条 |
@@ -1774,6 +1847,11 @@ S-45 是「两个面都在但互不相识」,这一条更远一层:**输出回�
 | 闸失效的两类不许合并 | `src/model/index.ts` (`isTransientModelFault`) · `src/harness/dag/engine.ts` · `test/core/conductor-loop.test.ts` | 确定性 (config/transport/非 provider-fault 的 http) 才提前退环;瞬时 (parse/validation/truncation/402/403/429/5xx) 继续转;**夹具用真 `ModelError` 而非裸 `Error`**;外加闸级熔断兜底 —— 连续 K 轮逐字相同即判确定性(**带反向自检**:把 parse 归回确定性 → 2 条 ★ 红;闸级熔断实装前逐字相同那格必红) | S-40 S-38 |
 | 图的引用完整性 | `src/harness/plan/graph-cycle.ts` · `conductor-plan.ts` superRefine · `plan/static-lint.ts` | 环 = fail-closed 判死并点名环路;悬空 dep / 不可能达标的配额 = report-only,截断自报与手误分两个 kind(**带反向自检**:注掉 superRefine 环闸 → 4 红;删 ④ 段 → 5 红;删 truncatedIds 分支 → 1 红;`<=` 改 `<` → 1 红;lint 视图退回老口径 → 3 红) | S-38 |
 | 契约要求的每一片都得有产出(缺片即红) | `src/harness/goal/slice-coverage.ts` · `slice-coverage.test.ts` · `run-goal.ts` 接线 | 分解表逐片对 diff:零产出 = 红并点名片号;`partial` 有产出不红**但必须印**;零切片 = `no-breakdown`(判不了 ≠ 绿);与写集对账共用同一份 `diffFiles` 与同一份 `globToRegExp`(**带反向自检** 5 条:缺片判据恒不命中 → 3 红;`partial` 并进 `missing` → 1 红;`red` 恒 false → 2 红;`no-breakdown` 冒充 `reconciled` → 1 红;glob 退化成精确匹配 → 2 红) | S-46 S-19 |
+| `busy_timeout` 必须排在 `journal_mode = WAL` **之前** | `src/harness/sqlite-busy-timeout.test.ts` (`findLateBusyTimeout`) | 连接级设置只对其后的语句生效,而 WAL 那条自己要拿锁 —— 排在后面 = 它用默认值 0。缺席与顺序反**判词分开**(修法不同:补一行 vs 换两行位置)(**带反向自检**:把任一处换回原顺序 → 点名文件 + WAL 行号;正控:busy 在前 → 放过) | S-49 |
+| 判据的绿必须属于**最终那棵树** | `src/harness/goal/run-goal.ts` (`acceptStale`) · `goal/stale-acceptance.test.ts` | accept 的绿是 resume 复用来的 ∧ 本 run 重规划过 → 那份绿不属于最终树,强制重量;复验跑不起来则 fail-closed 判红。少任一条件都不判 stale(**带反向自检 6 条**:去掉信任逻辑 → P2 那条 + fail-closed 红;摘掉两个条件之一 → 两条"别过度触发"的护栏红) | S-49 S-44 |
+| 节点只准写自己声明的写集(写前) | `src/harness/write-allow.ts` · `write-allow.test.ts` · `write-allow-wiring.test.ts` | `write`/`edit` 写前判 `node.write_set ∪ output_path`,越界当场拒且判词列出允许清单;**缺席 = 闸缺席放行**,`[]` = 什么都不许写(NULL≠0)。⚠ 只管工具通道,bash 绕得过去(**带反向自检**:摘掉判定 → 接线组 3 红;`!== undefined` 改 `?.length` → 空写集那条红) | S-49 |
+| jail 挂载面对不上就当场说 | `src/harness/hooks/jail-preflight.ts` · `jail-preflight.test.ts` | 构造期(每 run 一次,不是每 leaf 一次)判 argv:工作根可写 / worker 在挂载覆盖下 / 要了 git 有没有挂 / 调用方 roBinds 是不是 realpath / 叠挂顺序。fatal 当场抛,warn 只留证(**带反向自检**:摘掉 worker 那条 → 1 红;关掉 S-34 那条 → 2 红;并照生产路径真构造过一次验零假阳性) | S-49 S-34 |
+| leaf 挂了先判「挂载面缺 X」再判「模型不行」 | `src/harness/hooks/jail-diagnosis.ts` · `jail-diagnosis.test.ts` | 只在失败路径跑(jail 是 per-leaf 构造的,探针会乘以叶子数)。判据不是"stderr 里有没有这句话",是**它指的东西在宿主上存不存在** —— 宿主也没有 → 不抢答返 null(**带反向自检**:摘掉宿主存在性那一问 → 「不抢答」那条红) | S-34 |
 | hook 不许自喂(事件派生的新进程再触发同一事件) | `src/harness/session/continuity-hook.ts` (`isSdkChildSession`) · `test/core/session-continuity-trigger.test.ts` | `ENTRYPOINT==='sdk-cli' ∨ 有 CLAUDE_AGENT_SDK_VERSION` → 三条 fire 路径(Stop/PreCompact/SessionEnd)全哑;判别位**实测选定**,`CHILD_SESSION`/`FORK_SUBAGENT` 在交互式会话里同样为 1,是诱饵(**带反向自检**:闸改 `return false` → 缺片组红;诱饵组钉死交互式必须照常触发;端到端闸的 `hookBaseEnv()` 显式钉 `ENTRYPOINT=cli`,防 SDK 子会话里跑测试漏进 `sdk-cli` 变假红) | S-47 |
 
 **S-47 的第二半没有闸** —— 已立的那道只挡「continuity hook 自喂」这一个**已知**回路。
