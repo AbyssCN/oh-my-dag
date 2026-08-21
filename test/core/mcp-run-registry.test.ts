@@ -86,7 +86,11 @@ describe('applyNodeEvent', () => {
     reg.applyNodeEvent('r1', { type: 'settle', id: 'a', status: 'done', kind: 'inproc', model: 'fake:m' });
     p = reg.getRecord('r1')!.progress!;
     expect(p.started).toEqual([]);
-    expect(p.settled).toEqual([{ id: 'a', status: 'done', kind: 'inproc', model: 'fake:m' }]);
+    // D-3 (slice 1 加宽账): settle 时把 start 时刻搬进 settled 项, 事后读快照无需回头 join startedAt 表。
+    // 实时钟 → ISO 串变长, 用 expect.any(String) 断言其存在即可, 不钉值。
+    expect(p.settled).toEqual([
+      { id: 'a', status: 'done', kind: 'inproc', model: 'fake:m', startedAt: expect.any(String) },
+    ]);
     // 升级重规划: planned 整体覆盖
     reg.applyNodeEvent('r1', { type: 'planned', nodes: [{ id: 'c', kind: 'inproc' }] });
     expect(reg.getRecord('r1')!.progress!.planned).toEqual([{ id: 'c', kind: 'inproc' }]);

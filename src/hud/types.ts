@@ -24,14 +24,39 @@ export interface HudDagSnapshot {
   updatedAt: string;
   /** topo 层级 (dag_run_plan 有 plan 可算; dag_run conductor 路径出图晚 → null → 平铺一行)。 */
   levels: string[][] | null;
-  /** 全部节点 id+kind (每轮重规划整体覆盖)。 */
-  planned: Array<{ id: string; kind: string }>;
+  /**
+   * 全部节点 id+kind (每轮重规划整体覆盖)。
+   *
+   * `deps` (2026-08-22 补, slice 1 加宽账): 只有 `expanded` 事件**真带**的那份才记下来;
+   * `planned` 事件本来就不带 deps —— 根层节点这里**就是缺席** (= undefined),
+   * 不许编一个 `[]` 顶上 (INV-HUD-5; 与 `DagTree.apply` 从事件建树的行为逐字一致)。
+   */
+  planned: Array<{ id: string; kind: string; deps?: string[] }>;
   /** 正在跑的节点 id (renderProgressAscii 的 started: string[])。 */
   started: string[];
-  /** start 时刻 (ISO) — running 行耗时由 now - startedAt 算。 */
+  /** start 时刻 (ISO) — 只留**还在跑的**节点的起点; settle 时把起点搬进 `settled[i].startedAt`。 */
   startedAt: Record<string, string>;
-  /** 已定局节点 (done/failed/skipped + 实际模型; skipped = D-7v2 quorum 级联跳过)。 */
-  settled: Array<{ id: string; status: 'done' | 'failed' | 'skipped'; kind: string; model?: string }>;
+  /**
+   * 已定局节点 (done/failed/skipped + 实际模型; skipped = D-7v2 quorum 级联跳过)。
+   *
+   * 四个可选字段都是 2026-08-22 slice 1 加宽账接进来的, 事件上**本来就有**, 只是账本没接:
+   *   - `startedAt`   = 该节点当时的 start 时刻; settle 时从 `progress.startedAt` 搬过来, 不是抄 createdAt
+   *   - `durationMs`  = settle 带的引擎侧墙钟 (D-5); 老发射点没报 → 缺席 (不是 0)
+   *   - `usage`       = settle 带的词元用量; 老发射点没报 → 缺席 (不是 0)
+   *   - `failureKind` = 闸的分类信息 (2026-08-21 起事件才有); 缺席 = 早于本次改动的发射点,
+   *                     **与 `'unclassified'` 是两件事** (`types.ts:499` 的注逐字如此)。
+   * INV-HUD-4: 缺席 ≠ 0 ≠ 不适用; 读侧画「—」, 不画 `0s`、不画 `0 tok`、不编 `unclassified`。
+   */
+  settled: Array<{
+    id: string;
+    status: 'done' | 'failed' | 'skipped';
+    kind: string;
+    model?: string;
+    startedAt?: string;
+    durationMs?: number;
+    usage?: { in: number; out: number };
+    failureKind?: string;
+  }>;
 }
 
 /** pathfinder 战争迷雾快照 — pathfinder 存图时写, statusline 直接印 bar (零 SQLite)。 */

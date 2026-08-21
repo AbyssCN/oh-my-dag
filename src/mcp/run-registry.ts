@@ -39,11 +39,40 @@ export interface NodeDetail {
 
 /** 活体进度快照 (applyNodeEvent 累积; planned 每轮重规划整体覆盖)。 */
 export interface RunProgress {
-  planned: Array<{ id: string; kind: string }>;
+  /**
+   * 全部节点 id+kind (`planned` 整体覆盖; `expanded` 追加)。
+   *
+   * `deps` (2026-08-22 补, slice 1 加宽账) —— 只有 `expanded` 事件**真带**的那份记下来;
+   * `planned` 事件不带 deps (`types.ts:490`), 这里就是 undefined, 不编 `[]` (INV-HUD-5)。
+   */
+  planned: Array<{ id: string; kind: string; deps?: string[] }>;
   started: string[];
-  /** start 事件时刻 (ISO, settle 时清理) — running 行耗时由 now - startedAt 算出。 */
+  /**
+   * start 事件时刻 (ISO)。
+   *
+   * settle 时**搬进 `settled[i].startedAt`** (而不是清掉) —— 此前 `delete` 让结束节点的起点
+   * 在账上彻底消失, 事后画甘特无从下手 (SDD 切片 1, INV-HUD-4)。`startedAt` 的语义仍是
+   * 「**还在跑的**节点的起点」, 不变; settled 里那份是同事件的另一面, 各说一件事。
+   */
   startedAt: Record<string, string>;
-  settled: Array<{ id: string; status: 'done' | 'failed' | 'skipped'; kind: string; model?: string }>;
+  /**
+   * 已定局节点。每条在写时**拿一份 start 时刻**带上, settled 落完就是完整记录 —
+   * 事后读快照不需要回头去 join `startedAt` 表。
+   *
+   * `durationMs` / `usage` / `failureKind` 三个字段事件上一直有 (D-5 / 2026-08-21
+   * 加宽事件), 缺的只是账这边接一下; 缺席 = 早于本次改动的发射点, **不是 0**
+   * (INV-HUD-4; 同 `DagNodeEvent.settle` 的注释 `types.ts:499`)。
+   */
+  settled: Array<{
+    id: string;
+    status: 'done' | 'failed' | 'skipped';
+    kind: string;
+    model?: string;
+    startedAt?: string;
+    durationMs?: number;
+    usage?: { in: number; out: number };
+    failureKind?: string;
+  }>;
   /**
    * 重规划留痕 (2026-08-12 补)。**缺席 = 没重规划过**, 不是「没统计」——
    * 与四格计数「0 也印」相反, 这是**事件**不是**分格**: 分格回答「这一格是多少」,
@@ -416,20 +445,37 @@ export class RunRegistry {
       // 运行时展开 (map/conductor 子节点): **追加**进 planned, 不覆盖 —— 覆盖等于把父节点从图上抹掉。
       // 这是"观察面变窄"那条的活体侧: 此前子节点只有 start/settle 两个事件, 于是进度行的分母
       // (planned 的长度) 里根本没有它们, 一个展开出 5 个子节点的执行段永远显示 "0/1"。
+      // 2026-08-22 (slice 1 加宽账): `deps` 是 expanded 事件**本就有**的字段
+      // (`types.ts:491`), 此前收下就扔; 现在带上, 读侧 hydrate 父子边。
+      // ⚠ `planned` 那 case 不许编 deps —— 那条事件的节点本就没 deps (INV-HUD-5)。
       case 'expanded': {
         const known = new Set(progress.planned.map((n) => n.id));
-        for (const n of e.nodes) if (!known.has(n.id)) progress.planned.push({ id: n.id, kind: n.kind });
+        for (const n of e.nodes) if (!known.has(n.id)) progress.planned.push({ id: n.id, kind: n.kind, deps: [...n.deps] });
         break;
       }
       case 'start':
         progress.started.push(e.id);
         progress.startedAt[e.id] = this.now().toISOString();
         break;
-      case 'settle':
-        progress.settled.push({ id: e.id, status: e.status, kind: e.kind, model: e.model });
+      // 2026-08-22 (slice 1 加宽账): settle 时把**起点搬进 settled 记录**, 而不是清掉 —
+      // `startedAt` 的语义仍是「还在跑的节点的起点」; 结束节点的起点在 settled 里那份。
+      // 同时把事件上一直有的 durationMs / usage / failureKind 一起带上 (此前都收下就扔)。
+      case 'settle': {
+        const startAt = progress.startedAt[e.id];
+        progress.settled.push({
+          id: e.id,
+          status: e.status,
+          kind: e.kind,
+          model: e.model,
+          ...(startAt ? { startedAt: startAt } : {}),
+          ...(e.durationMs !== undefined ? { durationMs: e.durationMs } : {}),
+          ...(e.usage !== undefined ? { usage: { in: e.usage.in, out: e.usage.out } } : {}),
+          ...(e.failureKind !== undefined ? { failureKind: e.failureKind } : {}),
+        });
         progress.started = progress.started.filter((id) => id !== e.id);
         delete progress.startedAt[e.id];
         break;
+      }
       // ⚠ 这一 case 此前**不存在** —— replan 事件落进 switch 就被静默丢掉了 (2026-08-12 补)。
       // 事件本身一直有 (`DagNodeEvent` 的 `{ type:'replan', parent, round, poisoned }`),
       // 缺的只是这里接一下。不接的代价见 RunProgress.replans 的注。
