@@ -230,7 +230,7 @@ describe('★ 宽度预算: 超宽时缩分支段', () => {
     seat: 'fixture://l3-test',
     pressure: null,
     session: null,
-    win: { calls: 1, costUsd: 0, unpriced: true, in: 3120, out: 184, cacheHit: 2760, byProvider: [] },
+    win: { since: 0, calls: 1, costUsd: 0, unpriced: true, in: 3120, out: 184, cacheHit: 2760, byProvider: [] },
   });
   const LONG = 'fix/tui-wiring-and-observability';
 
