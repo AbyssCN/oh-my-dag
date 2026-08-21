@@ -66,6 +66,35 @@ async function waitForNamed(dir: string, name: string, timeoutMs = 40_000): Prom
   }
 }
 
+/**
+ * ★ 等一个文件**长出某段内容**, 不是等它出现(2026-08-22 修一条真 flaky)。
+ *
+ * 症状与诊断:单跑这个文件 3/3 绿, 进全量 `bun test` 就红在
+ * `readFileSync(writer.log).toContain('mode=final')`, 判词是 `Received: ""` ——
+ * **文件在、内容空**。根因是收口子进程**先建 checkpoint.md 再把 writer.log 刷出去**,
+ * 而判据只等了前者; 机器一忙(本机当时并行跑着两个 omd run), 这个窗口就够大到被撞上。
+ *
+ * ⚠ 它不是"偶发噪声"这种可以按掉的东西:全量 `bun test` 是每个 omd run 的 **accept 命令**,
+ * 一条按负载翻面的闸会把**任意一个做对了的 run** 判成 not-converged。
+ * 证伪方式:把下面的循环换回单次 `readFileSync`, 在满载的机器上跑全量 —— 它会再红。
+ */
+async function waitForContent(path: string, needle: string, timeoutMs = 30_000): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    // 读失败(还没建出来)与内容还没到, 是同一档处理 —— 都继续等, 超时后把**当时读到的**原样返回,
+    // 让断言的判词仍然印真实内容(不吞证据)。
+    let text = '';
+    try {
+      text = readFileSync(path, 'utf-8');
+    } catch {
+      /* 还没建出来 */
+    }
+    if (text.includes(needle)) return text;
+    if (Date.now() >= deadline) return text;
+    await Bun.sleep(100);
+  }
+}
+
 async function waitForFile(path: string, timeoutMs = 30_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -119,7 +148,8 @@ describe('端到端 — 退出那一刻真存下来', () => {
       const cp = await waitForNamed(join(root, 'data'), 'checkpoint.md');
       expect(cp).not.toBeNull();
       const log = join(cp!, '..', 'writer.log');
-      expect(readFileSync(log, 'utf-8')).toContain('mode=final');
+      // 等它长出 `mode=final` —— checkpoint.md 先落、writer.log 后刷, 见 waitForContent 的注。
+      expect(await waitForContent(log, 'mode=final')).toContain('mode=final');
       expect(readFileSync(cp!, 'utf-8')).toContain('## §1 Active intent');
     },
     60_000,
