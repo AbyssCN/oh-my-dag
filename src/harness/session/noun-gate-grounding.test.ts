@@ -126,14 +126,22 @@ describe('noun-gate · D-4 文件名简称后缀段匹配', () => {
     expect(r.novelNouns).not.toContain('next-session.md');
   });
 
-  test('★ 后缀匹配只对文件名形状生效(camelCase 形如 getSessionBar 不被通融)', () => {
-    // getSessionBar 不是文件名形状(包含大写字母)→ 走精确归一化 → 仓内没有 = novel。
+  test('★ 后缀匹配只对文件名形状生效(camelCase 形如 getXxxBar 不被通融)', () => {
+    // camelCase 不是文件名形状(包含大写字母)→ 走精确归一化 → 仓内没有 = novel。
     // 这条是 D-4 的「不放松符号类」的护栏。
     //
-    // 反向自检:把 isFilenameShape 改成「恒 true」会让这条红(getSessionBar 被任意
-    // suffix 命中),印证形状检查在起作用。
-    const r = check('调用 getSessionBar 这个函数。');
-    expect(r.novelNouns).toContain('getSessionBar');
+    // ⚠ **反例词必须运行时生成**(2026-08-22 修,契约 `79d6ff8` 已经写下这条纪律,
+    // 而这条用例自己违反了它)。原来写死的是字面量 `getSessionBar`,
+    // 而 `d07d724` 把已知集扩到**仓内文件内容**之后,这个词在**本文件里就出现 5 次** ——
+    // 于是闸扫仓时把它扫成了「已知」,`novelNouns` 恒空,这条当场红。
+    // **夹具把自己泄进了被测语料**,而那正是这道闸唯一不能容忍的事。
+    // 运行时拼出来的词不可能在盘上,这条判据从此只依赖形状检查,不依赖"我没写过这个词"。
+    //
+    // 反向自检:把 isFilenameShape 改成「恒 true」会让这条红(该词被任意 suffix 命中),
+    // 印证形状检查在起作用。
+    const coined = `get${Math.random().toString(36).slice(2, 10).replace(/^./, (c) => c.toUpperCase())}Bar`;
+    const r = check(`调用 ${coined} 这个函数。`);
+    expect(r.novelNouns).toContain(coined);
   });
 });
 
