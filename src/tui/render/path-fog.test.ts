@@ -78,7 +78,8 @@ describe('画法 C 雾退线', () => {
       paint: { accent: tag('a'), dim: tag('d'), warn: tag('w'), sel: tag('s') },
     }).join('\n');
     expect(out).toContain('<s>> ● t9');
-    expect(out).toContain('<w>  blocked');
+    // 2026-08-21: 阻塞票从汇总行 (`blocked N: ids`) 挪进票清单一票一行, warn 通道不变。
+    expect(out).toContain('<w>  x b1 blocked');
   });
 
   test('前沿空时说清为什么(灰常量即真值)', () => {
@@ -86,6 +87,34 @@ describe('画法 C 雾退线', () => {
     for (const t of m.tickets) t.status = 'ruled';
     const out = renderFogLine(buildPathViewData(m), { width: 80, height: 30, selected: 0 }).join('\n');
     expect(out).toContain('frontier 0 (everything ruled)');
+  });
+
+  /**
+   * ★ 2026-08-21 回归闸: 高屏 + 少票时雾不许占屏。
+   *
+   * 缺陷实况 (owner 截图): 60 行终端 + 3 张票 → 内容 8 行, 雾 50 行, 整屏马赛克。
+   * 旧测试全瞎, 因为它们只跑 height 30/40 且从不量雾占几行。
+   * **证伪方式**: 把 renderFogLine 里的 `Math.min(FOG_BAND_MAX, ...)` 去掉 (退回"撑满剩余高度"),
+   * 本条立刻红 —— 量到 ~47 行雾。
+   */
+  test('★ 高屏少票: 雾带封顶 ≤5 行, 票全标题上屏 (不缩到 8 字)', () => {
+    const out = renderFogLine(buildPathViewData(map()), { width: 100, height: 60, selected: 0 });
+    // ≥30 个块字符才算雾行 —— 底部读数条的 12 格进度条 (BAR_TODO = '░') 否则会混进来。
+    const fogRows = out.filter((l) => (l.match(/[░▒]/g)?.length ?? 0) >= 30);
+    expect(fogRows.length, `雾行数 (整屏马赛克回归)`).toBeLessThanOrEqual(5);
+    // 空出来的行给票 —— 两张前沿票的全标题都在, 不再只有选中那张可见。
+    const body = out.join('\n');
+    expect(body).toContain('审批层四档');
+    expect(body).toContain('ledger 判据');
+  });
+
+  test('票多于预算 → 窗口贴着 selected 走, 尾行折叠', () => {
+    const m = map();
+    for (let i = 0; i < 20; i++) m.tickets.push(ticket({ id: `x${i}`, title: `第 ${i} 张` }));
+    const out = renderFogLine(buildPathViewData(m), { width: 100, height: 20, selected: 15 });
+    const body = out.join('\n');
+    expect(body).toContain('more');
+    expect(body).toMatch(/>.*x13/); // selected 必须在窗口内
   });
 
   test('没有 run 推进过 → 说真话, 不画 0 个', () => {
@@ -133,6 +162,10 @@ describe('宽度闸(CJK 标题不超宽)', () => {
     for (let i = 0; i < 40; i++) m.tickets.push(ticket({ id: `x${i}` }));
     const out = renderFogLine(buildPathViewData(m), { width: 80, height: 12, selected: 0 });
     expect(out.length).toBe(12);
-    expect(out[11]).toContain('more lines');
+    // 2026-08-21: 折叠标记从**最后一行**(clampHeight 兜底)挪到**票清单内**——
+    // 清单自己按预算裁, 于是整屏本来就装得下, clampHeight 不再触发。
+    // 不变的是这条闸真正管的事: 剪掉了就得说剪了多少。
+    expect(out.join('\n')).toMatch(/… \d+ more/);
+    expect(out[11]).toContain('Ctrl+P exits'); // 键位行仍贴屏底
   });
 });

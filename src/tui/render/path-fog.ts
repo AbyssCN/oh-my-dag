@@ -9,12 +9,18 @@
  *   **右侧雾场列**(密度随行渐变)。
  * - 画法 A(声呐)**不实现**(owner 裁决)。
  *
- * ## 与稿仍存的两处偏离(记录,不静默)
+ * ## 与稿仍存的三处偏离(记录,不静默)
  *
  * 1. **重线族待量**:稿用 `━ ┄ ┃ ◉ ▼ ⛓`,字形闸判 unmeasured。候选已扩进探针
  *    (`glyphs.ts` box-heavy/box-round/mock-extra),owner 真终端跑
  *    `bun run scripts/tui-glyph-probe.ts --tty` 重生成白名单后,这里的 `─ · ↓ ●` 逐个换回。
  * 2. **雾不呼吸**:动画留待后续(挂 §4.1-4 约束)。
+ * 3. **雾不再是"大面积"**(2026-08-21,owner 实测截图后改):稿的 C 案里雾占大块版面,
+ *    初版照做成"撑满剩余高度"。真终端上那读成**整屏马赛克** —— 60 行屏 + 3 张票 =
+ *    内容 8 行、雾 50 行,图什么都预览不出来。现在雾带封顶 `FOG_BAND_MAX`,空出来的行
+ *    给票清单(一票一行、全标题)。判据:雾携带的信息是**一个标量**(fog%),
+ *    而底部读数条已经印了它;票清单才是随票数增长的信息。
+ *    回归闸在 `path-fog.test.ts` 的「高屏少票」一条(去掉封顶当场量到 48 行雾)。
  *
  * 纯函数;颜色经注入的 paint 钩子(测试与 NO_COLOR 下是恒等,**选中态靠 [] 结构可见,不靠色**)。
  */
@@ -112,6 +118,56 @@ const fog = (width: number, density: 0 | 1 | 2, phase = 0): string => {
 const clampHeight = (out: string[], height: number): string[] =>
   out.length > height ? [...out.slice(0, Math.max(1, height - 1)), `… ${out.length - height + 1} more lines`] : out;
 
+/**
+ * 雾带高度上下限(2026-08-21 owner 实测改)。
+ *
+ * 原实现是「撑满剩余高度」(注释理由: 稿里雾是大面积的, 三行雾读不出体量)。在真终端上
+ * 那读成**整屏马赛克**: 60 行屏 + 3 张票 = 内容 8 行、雾 50 行, 图什么都预览不出来。
+ * 判据: 雾携带的信息是**一个标量** (fog%), 而底部读数条已经印了它 —— 它不值一整屏。
+ * 空出来的行给票清单 (见 `ticketList`), 那才是随票数增长的信息。
+ */
+const FOG_BAND_MIN = 2;
+const FOG_BAND_MAX = 5;
+
+/** 雾带: 第一行最密, `? ? ?` 居中, 往下逐行变薄。`n` 由调用方按 MIN/MAX 夹好。 */
+const fogBand = (n: number, width: number, p: FogPaint): string[] => {
+  const fw = Math.max(0, width - 8);
+  const rows = [p.dim(fitLine(`fog    ${fog(fw, 2)}`, width))];
+  if (n >= 2) {
+    const q = '? ? ?';
+    const pad = Math.max(0, Math.floor((fw - q.length) / 2));
+    rows.push(p.dim(fitLine(`       ${fog(pad, 1, 3)} ${q} ${fog(pad, 1, 5)}`, width)));
+  }
+  for (let i = 2; i < n; i++) {
+    rows.push(p.dim(fitLine(`       ${fog(fw, i < n - 1 ? 1 : 0, i * 2)}`, width)));
+  }
+  return rows;
+};
+
+/**
+ * 前沿票清单: 一票一行, 标题**不缩到 8 字**。
+ *
+ * 反的是原先的信息密度 —— 前沿线上每张票只剩 8 字缩写, 全文只有选中那一张(`selectedDetail`)
+ * 看得见, 而屏幕 85% 是雾。窗口始终含 `selected`; 装不下时尾行折叠成 `… N more`。
+ */
+const ticketList = (d: PathViewData, selected: number, budget: number, width: number, p: FogPaint): string[] => {
+  if (budget <= 0) return [];
+  const rows = d.frontier.map((t, i) => {
+    const run = t.runId ? `  <- run ${t.runId.slice(0, 8)}` : '';
+    const body = `${i === selected ? '>' : ' '} ${TICKET_MARK[t.type] ?? '●'} ${t.id} ${t.type}  ${t.title}${run}`;
+    return (i === selected ? p.sel : p.dim)(fitLine(body, width));
+  });
+  for (const b of d.blockedTickets) {
+    rows.push(p.warn(fitLine(`  x ${b.id} blocked  ${b.title}`, width)));
+  }
+  if (rows.length === 0) return [];
+  if (rows.length <= budget) return rows;
+  // 窗口贴着 selected 走, 末行留给折叠标记。
+  const span = Math.max(1, budget - 1);
+  const start = Math.max(0, Math.min(selected - span + 1, rows.length - span));
+  return [...rows.slice(start, start + span), p.dim(fitLine(`  … ${rows.length - span} more`, width))];
+};
+
 /** 头两行:短读数在前(长 destination 会把 run 段截出屏,PF-3 红过一次)。 */
 const header = (d: PathViewData, painter: string, width: number, p: FogPaint): string[] => {
   const pct = d.total > 0 ? Math.round((d.ruled / d.total) * 100) : 0;
@@ -193,20 +249,16 @@ export function renderFogLine(
       out.push(p.dim(fitLine(ptr, w)));
     }
   }
-  const detail = selectedDetail(d, o.selected, w, p);
-  if (detail) out.push(detail);
-  if (d.blockedTickets.length > 0) {
-    out.push(p.warn(fitLine(`  blocked ${d.blockedTickets.length}: ${d.blockedTickets.map((b) => b.id).join(' · ')}`, w)));
-  }
+  // 原先这里有一行 `blocked N: id · id` —— 票清单接手后它是**第三份**同一事实
+  // (清单里每张阻塞票一行 + 底部读数条的 blocked N), 由本次改动造成的冗余, 删。
 
-  // ── 雾层: 密度渐变并**撑满剩余高度**(稿里雾是大面积的, 三行雾读不出"体量")。
-  out.push(p.dim(fitLine(`fog    ${fog(Math.max(0, w - 8), 2)}`, w)));
-  const q = '? ? ?';
-  const pad = Math.max(0, Math.floor((w - 8 - q.length) / 2));
-  out.push(p.dim(fitLine(`       ${fog(pad, 1, 3)} ${q} ${fog(pad, 1, 5)}`, w)));
-  const fill = o.height - out.length - 3; // 3 = 最后一行雾 + 读数条 + 键位行
-  for (let i = 0; i < fill; i++) out.push(p.dim(fitLine(`       ${fog(Math.max(0, w - 8), i < fill / 2 ? 1 : 0, i * 2)}`, w)));
-  out.push(p.dim(fitLine(`       ${fog(Math.max(0, w - 8), 0, 1)}`, w)));
+  // ── 票清单吃掉大头, 雾带封顶 (FOG_BAND_MAX)。`selectedDetail` 在这里已冗余 —— 清单里
+  //    选中行带 `>` 且就是全标题; 画法 B 仍用它。尾部 2 行 = 读数条 + 键位行。
+  out.push(...ticketList(d, o.selected, o.height - out.length - FOG_BAND_MIN - 2, w, p));
+  const band = Math.max(FOG_BAND_MIN, Math.min(FOG_BAND_MAX, o.height - out.length - 2));
+  // 票少时把余量留成空行, 让雾带 + 读数条 + 键位行仍贴屏底 —— 否则 chrome 浮在半空读成"画崩了"。
+  for (let i = o.height - out.length - band - 2; i > 0; i--) out.push('');
+  out.push(...fogBand(band, w, p));
 
   out.push(summaryLine(d, w, p));
   out.push(keysLine(w, p));
@@ -253,8 +305,8 @@ export function renderDelta(
   }
   const detail = selectedDetail(d, o.selected, w, p);
   if (detail) out.push(detail);
-  // 雾场撑满剩余高度 (与画法 C 同一条理由: 雾的体量感)。
-  const fill = o.height - out.length - 3;
+  // 底部雾场封顶 (同画法 C 的理由, 见 FOG_BAND_MAX): 原先撑满剩余高度 = 整屏马赛克。
+  const fill = Math.max(0, Math.min(FOG_BAND_MAX - 1, o.height - out.length - 3));
   for (let i = 0; i < fill; i++) out.push(p.dim(fitLine(`     ${fog(Math.max(0, w - 6), i < fill / 2 ? 1 : 0, i * 3)}`, w)));
   out.push(p.dim(fitLine(`fog  ${fog(Math.max(0, w - 6), 0, 4)}`, w)));
   out.push(summaryLine(d, w, p));
