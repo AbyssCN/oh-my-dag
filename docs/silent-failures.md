@@ -1885,17 +1885,29 @@ S-45 是「两个面都在但互不相识」,这一条更远一层:**输出回�
    ⚠ **它命中 5 处,不是 2 处。** 我第一次写这条抓法时凭印象写了个跑不出来的正则,
    还断言"会同时命中两处" —— 一跑就露馅,而露馅露出了额外的东西:
 
-   | 行 | 形状 | 核实了吗 |
+   | 行 | 形状 | 核实结果 |
    |---|---|---|
-   | `:217` | 新修的 `resolveMissingArtifacts`(已锚回)| ✅ 已修 |
-   | `:1121` | `hashArtifact(p.startsWith('/') ? p : …)` | ❓ **未核实** |
-   | `:806` | `readFileSync(p.startsWith('/') ? p : join(artifactLintRoot, p))` | ❓ **未核实** |
-   | `:825` | `hashArtifact(p.startsWith('/') ? p : join(root, p))` | ❓ **未核实** |
-   | `:837` | `declared.startsWith('/') ? declared : join(root, declared)` | ❓ **未核实** |
+   | `:217` | 新修的 `resolveMissingArtifacts` | ✅ 已修(`ff94801`)|
+   | `:806` | `readFileSync(p.startsWith('/') ? p : join(artifactLintRoot, p))` | ❌ **不是同病** |
+   | `:825` | `hashArtifact(p.startsWith('/') ? p : join(root, p))` | ⚠ **是同病,静默** |
+   | `:837` | `declared.startsWith('/') ? declared : join(root, declared)` | 同形,风险低 |
+   | `:1121` | `hashArtifact(p.startsWith('/') ? p : ${root}/${rp})` | ⚠ **是同病,静默** |
 
-   后四处**看起来同形**,但 `root` 是否本就是正确锚点、绝对路径是否本就该原样用,
-   **没有逐一核实**。**当线索,别当结论** —— 尤其 `hashArtifact` 那两处失败时返回 `null`,
-   是静默的。
+   **逐条依据(都是读到的,不是推的):**
+
+   - `:806` **不是同病** —— 注释自己写明:「对不上的后果是**读不到**,而读不到会如实
+     写进视图(`引擎未能读到`),不是悄悄跳过 —— 这个失败方向是安全的」。设计者想过了。
+   - `:825` **是同病** —— `root` 取 `r.artifactRoot ?? continuity?.repoRoot ?? cwd`,
+     **相对路径那一半防住了**(注释:「拿错根去找文件会全部 hash 成 null,
+     于是检测器在最该用它的配置里静默失效」),而**绝对路径那一半仍原样用**。
+     防了一半,漏的正是本条讲的那一半。
+   - `:1121` **是同病,而且更微妙** —— `rel(p)` 只剥 `${root}/` 前缀:
+     worktree 绝对路径 → 剥不剥都对;**主干**绝对路径 → 剥不掉,
+     再走 `p.startsWith('/')` 用原样 `p` → hash 成 `null` → `if (h)` 直接不存。
+   - `:837` declared 来自 conductor 画的图,通常是相对路径,绝对的情况少。
+
+   ⚠ **后果都是静默的**:`hashArtifact` 失败返回 `null`,不抛不记 ——
+   resume 时判毒与复用的依据就这么缺了一块。**排队待修,未结晶契约。**
 2. **能自动化的形式是跨实现一致性测试**:对同一组输入,断言两处给出一致判定。
    ⚠ 本条**尚未落成这样的闸** —— 2026-08-22 修的 `artifact-gate-anchor.test.ts`
    只钉了产物闸这一侧(带反向自检:把锚回那一跳换成永不存在的路径 → 4 用例红)。
