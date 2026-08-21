@@ -14,6 +14,7 @@
  * 挑不出来就**什么都不画**,不编一个 `{...}` 占位 —— 空着至少诚实。
  */
 import { fitLine } from './line';
+import { linkPath } from './link';
 
 /** 参数摘要最多占多少列。整行还要留给工具名与标记。 */
 export const ARG_BUDGET = 56;
@@ -25,6 +26,8 @@ export const ARG_BUDGET = 56;
  * 换个工具就指向别的东西 —— 而屏幕上看不出它猜错了。
  */
 const FIELDS: readonly string[] = ['path', 'file_path', 'command', 'pattern', 'query', 'name', 'runId', 'goal'];
+/** 上表里**真是路径**的那两格 —— 只有它们能包成 OSC-8 可点链接。 */
+const PATH_FIELDS: ReadonlySet<string> = new Set(['path', 'file_path']);
 
 /**
  * ★ **搜索是两格,不是一格**(2026-08-13,owner 原话「搜了什么文件…能看到」)。
@@ -45,7 +48,7 @@ const SEARCH_TOOLS = new Set(['grep', 'search', 'codegraph_search']);
  * `tool` 给了且属于搜索一族 → 走「词 in 范围」两格;省略 = 老行为逐字不变
  * (`summarizeToolArg` 有别的调用点,不能因为多了一个可选参数就改它们的读数)。
  */
-export function summarizeToolArg(args: unknown, budget = ARG_BUDGET, tool?: string): string | null {
+export function summarizeToolArg(args: unknown, budget = ARG_BUDGET, tool?: string, cwd?: string): string | null {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return null;
   const rec = args as Record<string, unknown>;
   if (tool && SEARCH_TOOLS.has(tool)) {
@@ -56,7 +59,12 @@ export function summarizeToolArg(args: unknown, budget = ARG_BUDGET, tool?: stri
   }
   for (const key of FIELDS) {
     const v = rec[key];
-    if (typeof v === 'string' && v.trim()) return fitLine(v.trim(), budget, '…');
+    if (typeof v === 'string' && v.trim()) {
+      // 先截再包链接 —— 顺序是判据: OSC-8 计 0 列, 反过来先包再截会把转义序列截断成乱码。
+      // 只有 `path` / `file_path` 两格是真路径; `command` / `pattern` / `query` 不是, 不许包。
+      const shown = fitLine(v.trim(), budget, '…');
+      return PATH_FIELDS.has(key) ? linkPath(shown, v.trim(), cwd ?? process.cwd()) : shown;
+    }
     // 数字也画(如 offset/limit 场景下的 runId 之类);布尔与对象不画 —— 画出来读不出信息。
     if (typeof v === 'number') return String(v);
   }
@@ -64,7 +72,7 @@ export function summarizeToolArg(args: unknown, budget = ARG_BUDGET, tool?: stri
 }
 
 /** 工具行正文:`read config.txt` / `grep foo in src/` / 挑不出参数时就 `read`。标记由调用方加。 */
-export function formatToolLine(name: string, args: unknown, budget = ARG_BUDGET): string {
-  const arg = summarizeToolArg(args, budget, name);
+export function formatToolLine(name: string, args: unknown, budget = ARG_BUDGET, cwd?: string): string {
+  const arg = summarizeToolArg(args, budget, name, cwd);
   return arg ? `${name} ${arg}` : name;
 }

@@ -79,6 +79,49 @@ export function formatSessions(list: readonly TuiSessionMeta[], current: string)
   return `Sessions (\`*\` = current):\n${rows.join('\n')}\nUsage: /session <id> to switch · /session new [id] to start one · /session fork [id] to branch`;
 }
 
+/**
+ * 相对时间(`2h 前` / `3d 前`)。
+ *
+ * ⚠ **NULL ≠ 0**:`updatedAt === 0` 是「没记时间」不是「刚刚」,返回 `—`
+ * (与同文件 `formatSessions` 那一列逐字一致)。写成 `0s 前` 会把「没记」冒充成「刚发生」。
+ */
+export function relTime(updatedAt: number, now: number): string {
+  if (!(updatedAt > 0)) return '—';
+  const s = Math.max(0, Math.round((now - updatedAt) / 1000));
+  if (s < 60) return `${s}s 前`;
+  if (s < 3600) return `${Math.floor(s / 60)}m 前`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h 前`;
+  return `${Math.floor(s / 86400)}d 前`;
+}
+
+/**
+ * `/session` 选择器的选项 —— **纯函数**,逻辑不留在 `tui.ts` 里(可测)。
+ *
+ * ## 为什么改这一处
+ *
+ * 选择器本来就有(`tui.ts` 的 `handleSession`),但三处让它形同虚设,owner 2026-08-21 点名:
+ *   ① **主标签是裸 id**(`s-1787309805-834625`),标题被降到第二列 —— 于是整屏是一列
+ *      认不出来的时间戳,而人是靠"那次聊的是什么"找会话的;
+ *   ② **没传 `search: true`** —— 而同一个 `dialogSelect` 在 `/models` / `/tree` 那两处都开了;
+ *   ③ **没传 `maxVisible`** —— 走默认 10 行,会话一多就翻不到。
+ *
+ * 于是这里把 **title 提成主标签**,id 与相对时间降到副列。
+ * ⚠ 硬约束:pi-tui 的 `SelectList` **一个 item 只画一行**(`description` 被压成单行放右列),
+ * 所以副列是 `id · 时间 · 来源` 拼成的一行,不是第二行卡片。
+ */
+export function sessionPickerOptions(
+  list: readonly TuiSessionMeta[],
+  current: string,
+  now: number,
+): { value: string; label: string; description: string }[] {
+  return list.map((s) => ({
+    value: s.id,
+    // `*` 标当前 —— 与 formatSessions 同一个记号。不标的话切完不知道切没切成。
+    label: `${s.id === current ? '* ' : '  '}${s.title || '(no title)'}`,
+    description: [s.id, relTime(s.updatedAt, now), ...(s.parent ? [`forked from ${s.parent}`] : [])].join(' · '),
+  }));
+}
+
 /** 新会话 id:`s-<秒级时间戳>`。**不用随机串** —— 列表里按时间读得出先后。 */
 export function newSessionId(now: () => number = Date.now): string {
   return `s-${Math.floor(now() / 1000)}`;

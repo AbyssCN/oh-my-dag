@@ -46,13 +46,14 @@ import { readBoard } from '../harness/board/run-board';
 import { renderGantt } from './render/dag-gantt';
 import { type PathViewData, buildPathViewData, renderDelta, renderFogLine } from './render/path-fog';
 import { fitLine } from './render/line';
+import { initHyperlinks } from './render/link';
 import { renderLayers } from './render/dag-layers';
 import { StatusLine } from './components/status-line';
 import { formatSeatRows, parseSeatCommand, seatRows } from './seat-picker';
-import { defaultTuiSessionId, forkSessionId, formatSessions, newSessionId, parseNewForkCommand, parseSessionCommand } from './sessions';
+import { defaultTuiSessionId, forkSessionId, formatSessions, newSessionId, parseNewForkCommand, parseSessionCommand, sessionPickerOptions } from './sessions';
 import { createSettingsPanel } from './components/settings-panel';
 import { SPINNER_FRAMES } from './design/tokens';
-import { installOmdKeybindings, loadUserKeybindings } from './keys';
+import { findKeyClashes, formatKeyClashes, installOmdKeybindings, loadUserKeybindings } from './keys';
 import { buildSettings, parseSettingsCommand } from './settings';
 import { STARTUP_HINT, formatHelp, parseHelpCommand, parseSearchCommand, slashCommands } from './commands';
 import { formatBangEntry, parseBang } from './bang';
@@ -476,6 +477,12 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   }
   const theme = opts.theme ?? createTheme({ scheme: detected ?? 'dark' });
 
+  // 2026-08-21: OSC-8 可点路径。**能力位问 pi**(screen 不转发 / tmux 要真探一次,
+  // 见 `render/link.ts` 头注);`OMD_NO_HYPERLINKS` 是用户侧一票否决(照 NO_COLOR 的形)。
+  // 默认关 → 渲染函数恒等, 所以不开这一行时全仓行为逐字节照旧。
+  const linksOn = initHyperlinks(process.env);
+  logger.info({ hyperlinks: linksOn }, '[omd/tui] OSC-8 可点路径');
+
   // 状态行走 StatusLine (截断, 不折行) —— 状态行一折, 下面所有东西的行号整体下移,
   // 而 HUD 是按行差分画的, 结果是布局错位。对话正文走 ChatLog (折行是对的)。
   // ⚠ 顶栏(`omd tui - cwd`)已去掉 —— v5 裁决: 信息下沉到底部三行, 仓名/分支在行①。
@@ -634,6 +641,13 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    */
   // W4③: 键位文件的坏账上屏 —— fail-open 用了默认, 但"为什么我的绑定没生效"必须一眼可见。
   if (userKb.diagnostic) chatLog.appendNotice(userKb.diagnostic);
+  // 2026-08-21: 键位冲突走**同一条** diagnostic 通道 —— 此前用户把某条绑到已占用的键上,
+  // 一条无声死掉且零提示。⚠ 不用 pi 的 `getConflicts()`: 它只比用户绑定之间, 不比默认绑定
+  // (实测对「绑到默认键上」返回 []), 判据见 `keys.ts` 的 findKeyClashes。
+  {
+    const clashes = formatKeyClashes(findKeyClashes(kb, userKb.config));
+    if (clashes) chatLog.appendNotice(clashes);
+  }
   // 冲突检测是换上 KeybindingsManager 白得的 —— 同一键绑了两个动作时说出来, 不静默让后到的赢。
   for (const c of kb.getConflicts()) {
     chatLog.appendNotice(`keybinding conflict: "${c.key}" is bound to ${c.keybindings.join(' and ')}`);
@@ -1580,13 +1594,13 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         chatLog.appendNotice(formatSessions(list, sessionId));
         tui.requestRender();
         // 列表留痕 + 选择器现挑。一条都没有时 `select` 自己不开框(开个空框让人按 Esc 是耍人)。
+        // 2026-08-21: title 提成主标签 + 开搜索 + 放宽行数, 三处与 `/models`(:1287) 对齐。
+        // 选项构造是纯函数 (`sessionPickerOptions`), 逻辑不留在这里。
         const pick = await dialogSelect(dialogs, theme, {
-          title: 'Switch to which session?',
-          options: list.map((m) => ({
-            value: m.id,
-            label: `${m.id === sessionId ? '* ' : '  '}${m.id}`,
-            ...(m.title ? { description: m.title } : {}),
-          })),
+          title: `Switch to which session? (${list.length})`,
+          options: sessionPickerOptions(list, sessionId, Date.now()),
+          search: true,
+          maxVisible: 12,
         });
         if (pick !== null && pick !== sessionId) await switchTo(pick);
       } else if (cmd.kind === 'usage') {

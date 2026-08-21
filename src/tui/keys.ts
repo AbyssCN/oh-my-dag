@@ -81,6 +81,60 @@ export function loadUserKeybindings(cwd: string): { config: KeybindingsConfig; d
 }
 
 /**
+ * **生效后的键位冲突** —— 2026-08-21 补。
+ *
+ * ## 为什么不能直接用 pi 的 `getConflicts()`
+ *
+ * 它**只比用户绑定之间**的冲突(`dist/keybindings.js:137-151` 的 `userClaims`),
+ * **不拿用户绑定去比默认绑定**。而真实场景恰恰是后者:用户把 `omd.dagFull` 绑成 `ctrl+o`,
+ * 而 `ctrl+o` 是 `omd.thinkingToggle` 的**默认**键 —— 实测 `getConflicts()` 对这条返回 `[]`。
+ * ⇒ 照抄那个 API 是白接。这里用 `getResolvedBindings()`(生效后的全表)自己算。
+ *
+ * ## 判据:同键 ≥2 命令 **且至少一条是用户改的**
+ *
+ * 默认表里天然有 **9 处**同键多命令(实测),全是跨上下文的 ——
+ * `up` 归 `tui.editor.cursorUp` 与 `tui.select.up`、`ctrl+c` 归三家、`escape` 归两家……
+ * 不同焦点态各自拥有该键,**是设计不是冲突**,报出来是纯噪音。
+ * 而用户一旦把某条挪到已被占用的键上,就必然有一条无声死掉 —— 尤其 `omd.*` 五键由
+ * **同一个 input listener 在焦点分派之前**处理(`tui.ts` 那一段),先匹配到的赢。
+ *
+ * ⇒ 默认态返回空数组(**无源恒缺席**,不画空表);用户一动就说话。
+ */
+export interface KeyClash {
+  key: string;
+  /** 抢这个键的全部命令 id(按登记序)。 */
+  ids: string[];
+}
+
+export function findKeyClashes(kb: KeybindingsManager, user: KeybindingsConfig): KeyClash[] {
+  const byKey = new Map<string, string[]>();
+  for (const [id, keys] of Object.entries(kb.getResolvedBindings())) {
+    for (const k of Array.isArray(keys) ? keys : [keys]) {
+      if (typeof k !== 'string' || !k) continue; // 空表/未定义键位不算占用
+      byKey.set(k, [...(byKey.get(k) ?? []), id]);
+    }
+  }
+  const out: KeyClash[] = [];
+  for (const [key, ids] of byKey) {
+    if (ids.length < 2) continue;
+    if (!ids.some((id) => id in user)) continue; // 天然重复(跨上下文)不报
+    out.push({ key, ids });
+  }
+  return out;
+}
+
+/** 冲突 → 一行人话。没冲突返回 `null`(调用方据此整条不画)。 */
+export function formatKeyClashes(clashes: readonly KeyClash[]): string | null {
+  if (clashes.length === 0) return null;
+  const rows = clashes.map((c) => `  ${c.key} → ${c.ids.join(' / ')}`);
+  return [
+    `${KEYBINDINGS_FILE}: ${clashes.length} 个键位被多个命令抢占, 每个键只有一条会生效:`,
+    ...rows,
+    '  (改掉其中一条, 或删掉该行回到默认)',
+  ].join('\n');
+}
+
+/**
  * 装上:全局 manager 换成「pi 全表 + omd 五键」的并集,user bindings =
  * select.cancel 补丁 + 用户文件(**用户文件在后,能覆盖包括补丁在内的一切**)。
  * **幂等** —— 同样入参调几次结果一样。

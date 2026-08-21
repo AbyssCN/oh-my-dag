@@ -20,7 +20,7 @@
  * 对话框开着时再开一个 → **拒绝并说明**,不是叠上去。叠加之后"哪个在收键"就说不清了,
  * 而 Esc 会关掉哪一个也说不清。
  */
-import { type Component, Input, SelectList, Text, getKeybindings, visibleWidth } from '@earendil-works/pi-tui';
+import { type Component, Input, SelectList, Text, decodeKittyPrintable, getKeybindings, truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 import { StatusLine } from './status-line';
 import { card } from '../design/tokens';
 import { fitLine } from '../render/line';
@@ -102,11 +102,27 @@ export function selectComponent(
   requestRender: () => void,
 ): DialogBox | null {
   if (opts.options.length === 0) return null;
-  const list = new SelectList(
-    opts.options.map((o) => ({ value: o.value, label: o.label, ...(o.description ? { description: o.description } : {}) })),
-    opts.maxVisible ?? 10,
-    theme.editor.selectList,
-  );
+  const toItem = (o: SelectOption) => ({ value: o.value, label: o.label, ...(o.description ? { description: o.description } : {}) });
+  /**
+   * ★ **第四个参数 `SelectListLayoutOptions` 此前没传**(2026-08-21 补)。
+   *
+   * pi 的默认值是 `min = max = DEFAULT_PRIMARY_COLUMN_WIDTH = 32`
+   * (`dist/components/select-list.js:3, 125-126`), 于是 `clamp(widest, 32, 32)` ⇒
+   * **主列恒定 32 列** —— 不随内容, 也不随终端宽。短候选表白留一大片, 长标题被切。
+   *
+   * 更糟的是默认截断:`truncateToWidth(displayValue, maxWidth, "")`
+   * (`select-list.js:141`)—— **省略号是空串**, 标题在第 30 列处**无声**断掉,
+   * 读起来像"这条就叫这个名字"。这违反本仓「剪掉了就得说剪了多少」那条。
+   *
+   * 这里给 24–48 的弹性区间 + 带 `…` 的截断。
+   */
+  const mkList = (rows: readonly SelectOption[]): SelectList =>
+    new SelectList(rows.map(toItem), opts.maxVisible ?? 10, theme.editor.selectList, {
+      minPrimaryColumnWidth: 24,
+      maxPrimaryColumnWidth: 48,
+      truncatePrimary: ({ text, maxWidth }) => truncateToWidth(text, maxWidth, '…'),
+    });
+  let list = mkList(opts.options);
   /**
    * S-7:**可搜索**。四十个模型里靠上下箭头找一个是不能用的。
    *
@@ -114,28 +130,74 @@ export function selectComponent(
    * `SelectList` —— 把它们当成查询串会出现"按一下下箭头, 搜索框里多了个 `[A`"。
    */
   let query = '';
+  let hits = opts.options.length;
   const titleOf = (): string => {
     const hint = opts.search ? 'type to search · ↑↓ select · Enter ok · Esc cancel' : '↑↓ select · Enter ok · Esc cancel';
-    const q = opts.search && query ? `  「${query}」` : '';
+    // 命中数画在标题上 —— 0 命中必须**看得见**, 否则「搜不到」与「没这条」长得一样。
+    const q = opts.search && query ? `  「${query}」 ${hits}` : '';
     return `${opts.title}${q}  (${hint})`;
   };
+  /**
+   * **omd 自己过滤 —— 不用 `SelectList.setFilter`。**
+   *
+   * ⚠ pi 那个的实现是(`dist/components/select-list.js:25-29` 实读):
+   *   `items.filter((it) => it.value.toLowerCase().startsWith(filter.toLowerCase()))`
+   * 也就是 **`value` 上的前缀匹配** —— 既不是模糊也不是子串, 而且匹的是 `value` **不是 `label`**。
+   *
+   * 后果在 omd 这边是致命的:七个 `search: true` 的选择框里, `value` 全是 id / 坐标
+   * (session id、run id、`provider:model`), 而人看见并想去搜的是 **label 里的标题**。
+   * 于是「看得见的搜不到,搜得到的看不见」。2026-08-21 把 `/session` 的主标签换成标题之后,
+   * 这个坑从「难用」变成了**「标题就在眼前, 打进去 0 命中」** —— 同一次改动把它踩实了。
+   *
+   * 这里改成:**三字段(label / value / description)子串 + 多词 AND**, 大小写不敏感。
+   * 不用 pi 的 `fuzzyFilter`(子序列)是因为短 CJK 串上子序列会给出很意外的命中。
+   */
+  const matching = (q: string): readonly SelectOption[] => {
+    const toks = q.toLowerCase().split(/\s+/).filter(Boolean);
+    if (toks.length === 0) return opts.options;
+    return opts.options.filter((o) => {
+      const hay = `${o.label} ${o.value} ${o.description ?? ''}`.toLowerCase();
+      return toks.every((t) => hay.includes(t));
+    });
+  };
+  /** 重建候选表并换进框里(`SelectList` 没有 `setItems`)。 */
+  const refilter = (): void => {
+    const rows = matching(query);
+    hits = rows.length;
+    list = mkList(rows);
+    box.setBody(list);
+    box.setTitle(titleOf());
+    requestRender();
+  };
+
   const box = new DialogBox(theme, titleOf(), list, (data) => {
     if (ESC.has(data)) return done(null);
     if (ENTER.has(data)) return done(list.getSelectedItem()?.value ?? null);
     if (opts.search && (data === '\x7f' || data === '\b')) {
       query = query.slice(0, -1);
-      list.setFilter(query);
-      box.setTitle(titleOf());
-      requestRender();
+      refilter();
       return undefined;
     }
-    // 可打印 ASCII + 非控制的多字节(中文)都算查询串;`\x1b` 开头的一律不是。
-    if (opts.search && data.length > 0 && !data.startsWith('\x1b') && !/^[\x00-\x1f]/.test(data)) {
-      query += data;
-      list.setFilter(query);
-      box.setTitle(titleOf());
-      requestRender();
-      return undefined;
+    if (opts.search) {
+      // ★ **Kitty 键盘协议先解**(2026-08-21)。`ProcessTerminal` 启动即协商该协议
+      // (`dist/terminal.js:13` flags=7 / `:101` queryAndEnableKittyProtocol), 之后**连普通字母
+      // 都以 CSI-u 序列到达** —— 而 CSI-u 里含 `\x1b`, 会被下面那条「`\x1b` 开头的一律不是」
+      // 拒掉。⇒ Kitty/Ghostty/WezTerm 下**打字搜索整个静默失效**, 而标题还写着 `type to search`。
+      // pi 自己的 `Input` 就防了这一手, 注释原话:「Decode before the control-char check
+      // since CSI-u sequences contain \x1b which would be rejected」(`dist/components/input.js:158-164`)。
+      // 认不出 → `undefined` → 回落到下面的老判据, 所以这是**纯加法**。
+      const kitty = decodeKittyPrintable(data);
+      if (kitty !== undefined) {
+        query += kitty;
+        refilter();
+        return undefined;
+      }
+      // 可打印 ASCII + 非控制的多字节(中文)都算查询串;`\x1b` 开头的一律不是。
+      if (data.length > 0 && !data.startsWith('\x1b') && !/^[\x00-\x1f]/.test(data)) {
+        query += data;
+        refilter();
+        return undefined;
+      }
     }
     list.handleInput(data);
     requestRender();
@@ -215,6 +277,15 @@ export function inputComponent(
       if (ENTER.has(data)) return done(buf);
       if (data === '\x7f' || data === '\b') buf = buf.slice(0, -1);
       else {
+        // ★ 同 selectComponent 那条: Kitty 协议下普通字母以 CSI-u 到达, 会被下面那条
+        // 剥离正则**整段吃掉** ⇒ 敲/粘 API key 时 `*` 一个都不涨, 零报错。认不出回落, 纯加法。
+        const kitty = decodeKittyPrintable(data);
+        if (kitty !== undefined) {
+          buf += kitty;
+          paint();
+          requestRender();
+          return undefined;
+        }
         // 只收可打印的:控制码/方向键进来会画出 `[A` 这种看起来像用户真打了字的假回显。
         // biome-ignore lint/suspicious/noControlCharactersInRegex: 终端输入本来就是控制码
         const printable = data.replace(/\x1b(?:\[[0-9;?]*[ -/]*[@-~]|O.|.)?/g, '').replace(/[\x00-\x1f\x7f]/g, '');
@@ -292,6 +363,14 @@ export class DialogBox implements Component {
   /** 改标题(搜索态把查询串与命中计数画在标题上 —— 不另占一行)。 */
   setTitle(title: string): void {
     this.title = title;
+  }
+
+  /**
+   * 换内容组件。搜索态重建 `SelectList` 用 —— pi 的 `SelectList` **没有 `setItems`**,
+   * 换一批候选只能新建一个再塞进来。
+   */
+  setBody(body: Component): void {
+    this.body = body;
   }
 
   render(width: number): string[] {

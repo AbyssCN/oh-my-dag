@@ -257,3 +257,176 @@ describe('★ 取消/确认键走 pi-tui 键位表(2026-08-08,还台账最后一
     }
   });
 });
+
+/**
+ * ★ 搜索过滤(2026-08-21)—— **不用 pi 的 `SelectList.setFilter`**。
+ *
+ * ## 它要杀死的失效形态
+ *
+ * pi 那个的实现是(`dist/components/select-list.js:25-29` 实读):
+ * `items.filter((it) => it.value.toLowerCase().startsWith(filter.toLowerCase()))`
+ * —— **`value` 上的前缀匹配**,既不是模糊也不是子串,而且匹的是 `value` **不是 `label`**。
+ *
+ * omd 的七个 `search: true` 选择框里,`value` 全是 id / 坐标(session id、run id、
+ * `provider:model`),而人看见并想去搜的是 label 里的标题。⇒「看得见的搜不到」。
+ * 2026-08-21 把 `/session` 主标签换成标题之后,这个坑被**踩实**:标题就在眼前,打进去 0 命中。
+ *
+ * 证伪方式:把 `refilter()` 里的 `matching(query)` 换回 `list.setFilter(query)` →
+ * 「按标题搜」「按描述搜」「子串不是前缀」三条当场红。
+ */
+describe('★ 选择框搜索:按 label / description 子串, 不是 pi 的 value 前缀', () => {
+  beforeAll(() => installOmdKeybindings());
+  const ROWS = [
+    { value: 's-1787309805', label: '了解 outputstyle 和 omd-plain 输出格式', description: '2h 前 · 81KB' },
+    { value: 's-1787223401', label: '审查 omd 的交付和修复 continuity 缺陷', description: '1d 前 · 3.1MB' },
+    { value: 's-1787140022', label: '调查为什么任务状态仍为 open', description: '2d 前 · 454KB' },
+  ];
+  const openIt = (): ReturnType<typeof fakeHost> => {
+    const h = fakeHost();
+    void select(h.host, createTheme({ color: false }), { title: '切到哪个会话?', options: ROWS, search: true });
+    return h;
+  };
+
+  test('★ 按标题搜 —— pi 的前缀匹配下这条永远 0 命中', () => {
+    const h = openIt();
+    for (const c of '审查') h.key(c);
+    const body = h.render(90);
+    expect(body).toContain('审查 omd 的交付');
+    expect(body).not.toContain('了解 outputstyle');
+  });
+
+  test('★ 按描述搜 (pi 根本不看 description)', () => {
+    const h = openIt();
+    for (const c of '3.1MB') h.key(c);
+    expect(h.render(90)).toContain('审查 omd 的交付');
+  });
+
+  test('★ 子串不是前缀 —— 打中间那段也要命中', () => {
+    const h = openIt();
+    for (const c of 'plain') h.key(c);
+    expect(h.render(90)).toContain('了解 outputstyle');
+  });
+
+  test('多词 AND: 两个词都命中才留', () => {
+    const h = openIt();
+    for (const c of 'omd 交付') h.key(c);
+    const body = h.render(90);
+    expect(body).toContain('审查 omd 的交付');
+    expect(body).not.toContain('了解 outputstyle'); // 有 omd 没有「交付」
+  });
+
+  test('★ 0 命中要在标题上看得见 —— 否则「搜不到」与「没这条」长得一样', () => {
+    const h = openIt();
+    for (const c of 'zzz') h.key(c);
+    expect(h.render(90)).toContain('「zzz」 0');
+  });
+
+  test('退格回退查询串, 命中数跟着回来', () => {
+    const h = openIt();
+    for (const c of 'zzz') h.key(c);
+    h.key('\x7f'); h.key('\x7f'); h.key('\x7f');
+    expect(h.render(90)).toContain('了解 outputstyle');
+    expect(h.render(90)).toContain('审查 omd 的交付');
+  });
+
+  test('value 仍然能搜 (id 前缀那条老路不许丢)', () => {
+    const h = openIt();
+    for (const c of '1787140022') h.key(c);
+    expect(h.render(90)).toContain('调查为什么任务状态');
+  });
+});
+
+/**
+ * ★ Kitty 键盘协议下的可打印字符(2026-08-21)。
+ *
+ * ## 它要杀死的失效形态
+ *
+ * `ProcessTerminal` **启动即协商 Kitty 协议**(`dist/terminal.js:13` flags=7 →
+ * disambiguate|report-event-types|report-alternates,`:101` `queryAndEnableKittyProtocol()`)。
+ * 协议开着时,**连普通字母都以 CSI-u 序列到达** —— 而 CSI-u 里含 `\x1b`。
+ * omd 两处手搓的「可打印」判据都以「`\x1b` 开头的一律不是」为前提,于是:
+ *   · 选择框:Kitty/Ghostty/WezTerm 下**打字搜索整个静默失效**,标题却写着 `type to search`;
+ *   · 遮蔽输入框:敲/粘 API key 时 `*` 一个都不涨,零报错。
+ *
+ * pi 自己的 `Input` 就防了这一手,注释原话(`dist/components/input.js:158-164`):
+ * 「Decode before the control-char check since CSI-u sequences contain \x1b which would be rejected」。
+ *
+ * ⚠ **这一条是照 pi 的编码契约构造的输入,不是在真 Kitty 终端量的。**
+ *   要坐实,在 Ghostty 里跑 `bun run scripts/tui-key-probe.ts` 看字母到达时的字节。
+ *
+ * 证伪方式:把两处的 `decodeKittyPrintable` 分支删掉 → 本组两条当场红。
+ */
+describe('★ Kitty CSI-u 下的可打印字符', () => {
+  beforeAll(() => installOmdKeybindings());
+  /** `a` 的 CSI-u:codepoint 97,无修饰键(mod=1)。 */
+  const CSI_U_a = '\x1b[97u';
+  const CSI_U_b = '\x1b[98u';
+
+  test('★ 选择框: CSI-u 的字母进得了查询串 (此前被 `\\x1b` 那条拒掉)', () => {
+    const h = fakeHost();
+    void select(h.host, createTheme({ color: false }), {
+      title: 'pick', search: true,
+      // ⚠ 候选要选**互不含对方查询字符**的 —— 第一版用了 alpha/beta, 而 `beta` 里也有 `a`,
+      //   子串匹配理应两条都命中, 是断言写错不是代码错。
+      options: [{ value: 'x1', label: 'alpha' }, { value: 'x2', label: 'zulu' }],
+    });
+    h.key(CSI_U_a); // 'a'
+    const body = h.render(80);
+    expect(body).toContain('「a」 1');
+    expect(body).toContain('alpha');
+    expect(body).not.toContain('zulu');
+  });
+
+  test('★ 遮蔽输入框: CSI-u 的字母进得了缓冲 (此前 `*` 一个都不涨)', () => {
+    const h = fakeHost();
+    void input(h.host, createTheme({ color: false }), { title: 'key', mask: true });
+    h.key(CSI_U_a);
+    h.key(CSI_U_b);
+    expect(h.render(60)).toContain('**');
+  });
+
+  test('方向键仍然不当字符收 (CSI-u 只认可打印那一档)', () => {
+    const h = fakeHost();
+    void select(h.host, createTheme({ color: false }), {
+      title: 'pick', search: true,
+      options: [{ value: 'x1', label: 'alpha' }, { value: 'x2', label: 'zulu' }],
+    });
+    h.key('\x1b[A'); // 上箭头
+    expect(h.render(80)).not.toContain('「');
+  });
+});
+
+/**
+ * ★ 主列宽度与截断(2026-08-21)—— pi 的第四个构造参数此前没传。
+ *
+ * pi 默认 `min = max = 32`(`dist/components/select-list.js:3,125-126`)⇒ 主列**恒定 32 列**;
+ * 截断走 `truncateToWidth(v, maxWidth, "")` —— **省略号是空串**,标题无声断掉,
+ * 读起来像「这条就叫这个名字」。本仓的纪律是「剪掉了就得说剪了多少」。
+ *
+ * 证伪方式:把 `mkList` 的第四个参数删掉 → 本组两条红。
+ */
+describe('★ 选择框主列: 弹性宽度 + 截断要看得见', () => {
+  beforeAll(() => installOmdKeybindings());
+  const LONG = '了解 outputstyle 和 omd-plain 输出格式并且还要更长一点让它必须被截断';
+
+  test('★ 长标题被截时带 `…`, 不是无声切掉', () => {
+    const h = fakeHost();
+    void select(h.host, createTheme({ color: false }), {
+      title: 'pick', options: [{ value: 'v1', label: LONG, description: 'd' }],
+    });
+    const body = h.render(100);
+    expect(body).toContain('…');
+    expect(body).not.toContain(LONG); // 确实截了
+  });
+
+  test('短标题不被撑到 32 列 —— 描述列拿得回空间', () => {
+    const h = fakeHost();
+    void select(h.host, createTheme({ color: false }), {
+      title: 'pick',
+      options: [{ value: 'v1', label: 'ab', description: '这是描述' }, { value: 'v2', label: 'cd', description: '另一个' }],
+    });
+    const line = h.render(100).split('\n').find((l) => l.includes('ab'))!;
+    // 主列下限 24 —— 描述不该被推到第 32 列开外。
+    expect(line.indexOf('这是描述')).toBeLessThan(32);
+  });
+});

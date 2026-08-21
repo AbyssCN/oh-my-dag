@@ -9,9 +9,10 @@
  *   唯一可能造成静默回退的地方。
  * - 「没有冲突」:把 `'escape'` 改成 `'enter'` → `getConflicts()` 非空,当场红。
  */
+import type { KeybindingsConfig } from '@earendil-works/pi-tui';
 import { describe, expect, test } from 'bun:test';
 import { getKeybindings } from '@earendil-works/pi-tui';
-import { SELECT_CANCEL_KEYS, installOmdKeybindings, loadUserKeybindings } from './keys';
+import { SELECT_CANCEL_KEYS, findKeyClashes, formatKeyClashes, installOmdKeybindings, loadUserKeybindings } from './keys';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -87,5 +88,65 @@ describe('★ W4③ 键位文件 + omd 五键', () => {
     const r = loadUserKeybindings(dir);
     expect(r.config).toEqual({});
     expect(r.diagnostic).toContain('keybindings.json');
+  });
+});
+
+/**
+ * ★ 生效后的键位冲突(2026-08-21)。
+ *
+ * ## 它要杀死的失效形态
+ *
+ * 用户在 `.omd/keybindings.json` 里把某条绑到**已被占用**的键上,得到的是
+ * 「一条无声死掉」——零提示,而 `loadUserKeybindings` 的 diagnostic 通道一直空着。
+ *
+ * ## 为什么不用 pi 的 `getConflicts()`
+ *
+ * 它**只比用户绑定之间**(`dist/keybindings.js:137-151` 的 `userClaims`),
+ * **不拿用户绑定去比默认绑定**。而真实场景恰恰是后者。本组第一条就把这件事钉住:
+ * 同一份配置下 `getConflicts()` 返回空,而 `findKeyClashes` 必须报出来。
+ *
+ * 证伪方式:把 `findKeyClashes` 里 `ids.some((id) => id in user)` 那行删掉 →
+ * 「默认态零噪音」当场红(会报出 9 条天然重复)。
+ */
+describe('★ findKeyClashes —— 生效后的冲突, 不是 pi 的 getConflicts', () => {
+  test('★ 默认态零噪音 —— 9 处天然重复(跨上下文)不许报', () => {
+    const kb = installOmdKeybindings({});
+    // 天然重复确实存在(up / ctrl+c / escape …), 但它们是设计不是冲突。
+    const resolved = kb.getResolvedBindings();
+    expect(Object.keys(resolved).length).toBeGreaterThan(30);
+    expect(findKeyClashes(kb, {})).toEqual([]);
+    expect(formatKeyClashes([])).toBeNull();
+  });
+
+  test('★ 绑到「默认键」上 —— pi 的 getConflicts 看不见, 这条必须看得见', () => {
+    const user: KeybindingsConfig = { 'omd.dagFull': 'ctrl+o' }; // ctrl+o 是 omd.thinkingToggle 的默认键
+    const kb = installOmdKeybindings(user);
+    expect(kb.getConflicts()).toEqual([]); // ← pi 的判据在这里是瞎的
+    const clashes = findKeyClashes(kb, user);
+    expect(clashes).toHaveLength(1);
+    expect(clashes[0]!.key).toBe('ctrl+o');
+    expect(clashes[0]!.ids.sort()).toEqual(['omd.dagFull', 'omd.thinkingToggle']);
+  });
+
+  test('两条用户绑定互撞也报(pi 那条能看见的, 这条也得看见)', () => {
+    // ⚠ 键要挑**真空闲**的。第一版用了 ctrl+y —— 它是 tui.editor.yank, 于是多出一条
+    //   本该报的冲突, 是测试数据错不是代码错(而我当时是「假设它空」没去查)。
+    const user: KeybindingsConfig = { 'omd.dagFull': 'ctrl+q', 'omd.pathFull': 'ctrl+q' };
+    const kb = installOmdKeybindings(user);
+    const clashes = findKeyClashes(kb, user);
+    expect(clashes).toHaveLength(1);
+    expect(clashes[0]!.ids.sort()).toEqual(['omd.dagFull', 'omd.pathFull']);
+  });
+
+  test('挪到没人占的键上 → 不报(不许把「改了键位」本身当冲突)', () => {
+    const user: KeybindingsConfig = { 'omd.dagFull': 'f5' }; // f5 实测空闲
+    expect(findKeyClashes(installOmdKeybindings(user), user)).toEqual([]);
+  });
+
+  test('文案点名键与全部抢占者, 并给出下一步', () => {
+    const out = formatKeyClashes([{ key: 'ctrl+o', ids: ['omd.thinkingToggle', 'omd.dagFull'] }])!;
+    expect(out).toContain('ctrl+o');
+    expect(out).toContain('omd.thinkingToggle / omd.dagFull');
+    expect(out).toContain('只有一条会生效');
   });
 });

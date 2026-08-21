@@ -7,7 +7,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { TuiSessionMeta } from './backend';
 import { ChatLog } from './components/chat-log';
-import { defaultTuiSessionId, forkSessionId, formatSessions, newSessionId, parseNewForkCommand, parseSessionCommand } from './sessions';
+import { defaultTuiSessionId, forkSessionId, formatSessions, newSessionId, parseNewForkCommand, parseSessionCommand, relTime, sessionPickerOptions } from './sessions';
 import { createTheme } from './theme';
 
 describe('parseSessionCommand', () => {
@@ -213,5 +213,59 @@ describe('切片⑦: fork 解析与 lineage', () => {
     const long = forkSessionId('x'.repeat(80), () => 9_000);
     expect(long.length).toBeLessThanOrEqual(64);
     expect(long.endsWith('-f9')).toBe(true);
+  });
+});
+
+/**
+ * 会话选择器的选项(2026-08-21)。
+ *
+ * 它要杀死的失效形态(owner 点名):选择器**本来就有**,但主标签是裸 id
+ * (`s-1787309805-834625`),标题被降到第二列 —— 于是整屏是一列认不出来的时间戳,
+ * 而人是靠「那次聊的是什么」找会话的。加上没搜索、只 10 行,结果是"有等于没有"。
+ *
+ * 证伪方式:把 `label` 换回 `${mark}${s.id}` → 第一条测红;
+ * 把 `relTime` 的 `updatedAt <= 0` 分支删掉 → 「没记时间」那条红(会画成 `0s 前`)。
+ */
+describe('sessionPickerOptions', () => {
+  const now = Date.parse('2026-08-21T12:00:00Z');
+  const meta = (over: Partial<TuiSessionMeta> & { id: string }): TuiSessionMeta => ({
+    title: '', updatedAt: now - 7200_000, ...over,
+  });
+
+  test('★ 主标签是标题不是 id —— 人靠"聊的是什么"找会话, 不靠时间戳', () => {
+    const [o] = sessionPickerOptions([meta({ id: 's-1787309805', title: '了解 outputstyle 和 omd-plain' })], 'other', now);
+    expect(o!.label).toBe('  了解 outputstyle 和 omd-plain');
+    expect(o!.value).toBe('s-1787309805');
+    // id 与时间降到副列, 一行装下 (pi-tui 的 SelectList 一个 item 只画一行)。
+    expect(o!.description).toBe('s-1787309805 · 2h 前');
+  });
+
+  test('当前会话带 `*` —— 不标的话切完不知道切没切成', () => {
+    const [a, b] = sessionPickerOptions([meta({ id: 'x', title: 'A' }), meta({ id: 'y', title: 'B' })], 'y', now);
+    expect(a!.label.startsWith('  ')).toBe(true);
+    expect(b!.label.startsWith('* ')).toBe(true);
+  });
+
+  test('没标题 → `(no title)`, 不画空白标签', () => {
+    const [o] = sessionPickerOptions([meta({ id: 'z' })], 'z', now);
+    expect(o!.label).toBe('* (no title)');
+  });
+
+  test('fork 的来源画在副列 (树的边是数据不是装饰)', () => {
+    const [o] = sessionPickerOptions([meta({ id: 'c', title: 'T', parent: 'p1' })], 'c', now);
+    expect(o!.description).toBe('c · 2h 前 · forked from p1');
+  });
+
+  test('★ NULL ≠ 0: 没记时间画 `—`, 不画 `0s 前`', () => {
+    const [o] = sessionPickerOptions([meta({ id: 'n', title: 'T', updatedAt: 0 })], 'n', now);
+    expect(o!.description).toBe('n · —');
+    expect(o!.description).not.toContain('0s');
+  });
+
+  test('relTime 四档', () => {
+    expect(relTime(now - 30_000, now)).toBe('30s 前');
+    expect(relTime(now - 5 * 60_000, now)).toBe('5m 前');
+    expect(relTime(now - 3 * 3600_000, now)).toBe('3h 前');
+    expect(relTime(now - 2 * 86400_000, now)).toBe('2d 前');
   });
 });
