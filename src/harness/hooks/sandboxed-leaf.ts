@@ -16,6 +16,8 @@ import type { AnyOmdTool } from '../agent-tools';
 import { bwrapArgs, defaultRoBinds, makePiAgentCopy, resolveGitBinds, type GitBinds } from './bwrap';
 // jail 自检层③: leaf 挂了之后认「挂载面缺东西」还是「模型不行」(只在失败路径跑)。
 import { describeJailDiagnosis, diagnoseJailFailure } from './jail-diagnosis';
+// jail 自检层①: 构造期把 argv 上能判的挂载面问题一次判掉 (纯函数, 不跑任何东西)。
+import { checkJailArgv, describeJailProblems } from './jail-preflight';
 
 /** worker 在 worktree 内的相对路径 (eval 档: worktree = omd 自己的 HEAD checkout, 含此文件)。 */
 const WORKER_REL = 'src/harness/leaf-worker.ts';
@@ -157,6 +159,32 @@ export function createSandboxedLeafRunner(opts: AgentLeafRunnerOpts): AgentLeafR
   // 真调用经文件桥回到**这里的原有实例** (与 serializableOpts 同一张 `sandboxSafe === true` 判据)。
   // 零保留工具 → 不开桥、payload 不落 toolBridge 键 —— 与零 ext 基线逐字节一致。
   const bridgeTools = new Map((opts.customTools ?? []).filter((t) => t.sandboxSafe === true).map((t) => [t.name, t] as const));
+
+  // ── jail 自检层① (2026-08-21): 构造期把挂载面对一遍 ──────────────────────────────
+  //
+  // **一次, 不是每个 leaf 一次** —— jail 是 per-leaf 构造的, 任何"每次起跑探一下"都会乘以叶子数。
+  // 这里判的全是 argv 上的纯数据 (微秒级), 而下面那些输入 (root / roBinds / gitBinds / workerPath)
+  // 在一个 run 里不会变, 所以对一次就够。piAgentCopy 是唯一每 leaf 变的, 它不参与这几条判据。
+  //
+  // fatal 当场抛, 与 resolveWorker 同一条理由: 让它到第一个 leaf 才炸, 代价是先烧掉一整轮
+  // conductor 规划 (3f8e366 就是这么烧的 —— 9 节点全灭, 而单测与容器性探针全绿)。
+  {
+    const problems = checkJailArgv({
+      argv: bwrapArgs(root, roBinds, { ...(gitBinds ? { gitBinds } : {}) }),
+      root,
+      workerPath,
+      wantGit: opts.sandboxGit === true,
+      roBinds,
+    });
+    const fatal = problems.filter((p) => p.level === 'fatal');
+    const warns = problems.filter((p) => p.level === 'warn');
+    if (warns.length) {
+      logger.warn({ root, problems: warns }, `[omd/sandboxed-leaf] jail 起跑自检: ${describeJailProblems(warns)}`);
+    }
+    if (fatal.length) {
+      throw new Error(`[sandboxed-leaf] jail 挂载面对不上, 每个 leaf 都会挂 —— 与其烧一轮规划再炸, 不如现在就说: ${describeJailProblems(fatal)}`);
+    }
+  }
 
   return async (input: AgentLeafInput): Promise<AgentLeafResult> => {
     const id = `${process.pid}-${++seq}`;
