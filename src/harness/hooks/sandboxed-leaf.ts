@@ -14,6 +14,8 @@ import type { AgentLeafRunnerOpts } from '../agent-leaf';
 import type { LeafWorkerPayload } from '../leaf-worker';
 import type { AnyOmdTool } from '../agent-tools';
 import { bwrapArgs, defaultRoBinds, makePiAgentCopy, resolveGitBinds, type GitBinds } from './bwrap';
+// jail 自检层③: leaf 挂了之后认「挂载面缺东西」还是「模型不行」(只在失败路径跑)。
+import { describeJailDiagnosis, diagnoseJailFailure } from './jail-diagnosis';
 
 /** worker 在 worktree 内的相对路径 (eval 档: worktree = omd 自己的 HEAD checkout, 含此文件)。 */
 const WORKER_REL = 'src/harness/leaf-worker.ts';
@@ -215,8 +217,19 @@ export function createSandboxedLeafRunner(opts: AgentLeafRunnerOpts): AgentLeafR
       // (leaf-worker 恒 `process.exit(0)`, 失败经结果文件的 `{ok:false,error}` 回传) 在日志上
       // 长成一句无解的「worker 失败 code:0」—— 退出码 0 与"判失败"看着矛盾, 其实成因就写在
       // 那个字段里, 只是没被记下来。吞异常不吞证据。
-      logger.error({ root, code, timedOut, why, stderr: stderr.slice(-600) }, '[omd/sandboxed-leaf] worker 失败');
-      throw new Error(`[sandboxed-leaf] ${why} — stderr 尾: ${stderr.slice(-400)}`);
+      // jail 自检层③ (owner 裁 2026-08-21): 认一认这是不是**挂载面缺东西**, 而不是模型不行。
+      // 只在这条失败路径上跑 —— jail 是 per-leaf 构造的, 任何起跑探针都会乘以叶子数。
+      // 认不出来返回 null, 原判词原样出去 (不许瞎猜)。
+      const jail = diagnoseJailFailure(stderr, root);
+      const why2 = jail ? `${describeJailDiagnosis(jail)} — 原始判词: ${why}` : why;
+      // **组装出来的 bwrap argv 一次都没打过** (2026-08-21 查全部 logger.* 调用点确认)。
+      // 打出来你就能把它复制走、手工进同一个 jail 坐着调 —— 这正是"调试空间", 且不用动隔离。
+      // 只在失败时打: 正常路径上它是每个 leaf 一行的噪音。
+      logger.error(
+        { root, code, timedOut, why: why2, ...(jail ? { jailMissing: jail.missing } : {}), bwrapArgv: argv, stderr: stderr.slice(-600) },
+        '[omd/sandboxed-leaf] worker 失败',
+      );
+      throw new Error(`[sandboxed-leaf] ${why2} — stderr 尾: ${stderr.slice(-400)}`);
     } finally {
       stopBridge?.();
       rmSync(payloadAbs, { force: true });
