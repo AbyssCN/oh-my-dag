@@ -139,7 +139,13 @@ describe('noun-gate · D-4 文件名简称后缀段匹配', () => {
     //
     // 反向自检:把 isFilenameShape 改成「恒 true」会让这条红(该词被任意 suffix 命中),
     // 印证形状检查在起作用。
-    const coined = `get${Math.random().toString(36).slice(2, 10).replace(/^./, (c) => c.toUpperCase())}Bar`;
+    // ⚠ **只用字母, 不许有数字** —— `Math.random().toString(36)` 会掺进数字,
+    // 而带数字的 token 根本进不了名词表, 于是 `novelNouns` 里没有它, 这条按运气红。
+    // 2026-08-22 实测: 主干上连跑 3 次全绿, 换一棵树跑就红 —— 一条**靠运气的闸**
+    // 比没有闸更坏, 因为它绿的时候你以为它在守。
+    const letters = 'abcdefghijklmnopqrstuvwxyz';
+    const rand = Array.from({ length: 10 }, () => letters[Math.floor(Math.random() * 26)]).join('');
+    const coined = `get${rand[0]!.toUpperCase()}${rand.slice(1)}Bar`;
     const r = check(`调用 ${coined} 这个函数。`);
     expect(r.novelNouns).toContain(coined);
   });
