@@ -63,13 +63,15 @@ const LITERAL_COORD = /(['"])((?:[a-z0-9._-]+):(?:(?!\/\/)[^\s,'"]+))\1/gi;
  * path = pathfinder 节点键 (`path:map`) 与 `node:path`; seat = TUI/设置键 (`seat:more`);
  * off = verifier lint 键 (`off:flag`); exec/classify/canary/grill/setSecrets/addTicket/rule/
  * research/contract/W2/file/fixture = 各自领域键; config = 配置段键; urn = OAuth 标识;
- * HH = 时间串 (`HH:MM:ss.l`); suggest/confirmSuggestion/syncFromMap = backend-gh 的
+ * HH = 时间串 (`HH:MM:ss.l`); SYS = pino-pretty 的**本机时区**前缀 (`SYS:HH:MM:ss.l`,
+ * 2026-08-21 加, 见 `src/logger.ts` 那段注释 —— 没它就按 UTC 打且不标时区);
+ * suggest/confirmSuggestion/syncFromMap = backend-gh 的
  * GhRunner ctx 键 (`syncFromMap:state` 等, 与 rule/addTicket 同族 —— 2026-08-11 切片 4 新增)。
  */
 const NOISE_PROVIDERS: ReadonlySet<string> = new Set([
   'node', 'bun', 'path', 'server', 'provider', 'config', 'exec', 'classify', 'seat',
   'channel', 'rule', 'off', 'grill', 'canary', 'addTicket', 'setSecrets', 'contract',
-  'urn', 'W2', 'fixture', 'research', 'file', 'HH', 'package.json', 'conductor',
+  'urn', 'W2', 'fixture', 'research', 'file', 'HH', 'SYS', 'package.json', 'conductor',
   'suggest', 'confirmSuggestion', 'syncFromMap',
   // backend-gh 的 run(gh, …, op) 操作标签命名空间 (c2f87e6 新增三步 escalate:stamp/reopen/label,
   // 与上一行 addTicket/syncFromMap 同族) —— 非模型坐标。

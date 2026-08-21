@@ -35,7 +35,12 @@ const destination = new Writable({
 // ② `logger.warn(...)` 紧接 `process.exit(0)` 不丢行 (同步写穿)。
 const sink =
   env.NODE_ENV === 'development'
-    ? pretty({ colorize: true, translateTime: 'HH:MM:ss.l', ignore: 'pid,hostname', destination })
+    // `SYS:` 前缀 = **按本机时区渲染**。没有它 pino-pretty 一律按 UTC 打, 而打出来的
+    // `[02:25:50.681]` 不带任何时区标记 —— 与 `ls --time-style` / `git log --date=iso-local`
+    // 的本地时间(赫尔辛基 UTC+3)差 3 小时, 而两边长得一模一样。2026-08-21 我照这行读
+    // run 58df6b9e 的时间线, 两次把 UTC 当本地, 凭空多算 3 小时。**这是渲染缺陷不是看错**:
+    // 时间串上没有能让人自查的位, 所以只能靠标记补, 不能靠纪律。
+    ? pretty({ colorize: true, translateTime: 'SYS:HH:MM:ss.l', ignore: 'pid,hostname', destination })
     : destination;
 
 export const logger = pino({ level: env.LOG_LEVEL }, sink);
