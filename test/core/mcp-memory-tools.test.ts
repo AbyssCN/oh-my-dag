@@ -69,3 +69,59 @@ describe('memory 工具 (真校验闸)', () => {
     memory.close();
   });
 });
+
+// ── inputSchema 那一层 (2026-08-21): 上面那组**全部直接调 handler**, 绕过了 zod ─────────
+//
+// 于是 `fact` 的入参编码从来没被测过, 而生产上 memory_remember 正是死在那里:
+// Claude Code 这条通道把整个 `fact` 当 JSON 字符串塞进来, 原 `z.record(...)` 报
+// `Invalid input: expected object, received string` —— 实测四次里三次写不进去, 一条都没落库。
+//
+// 扎人的地方: 它的失败**长得像内容问题**。判词说 schema 不合格, 于是人去反复改 fact 的字段
+// (真实发生过三轮), 而字段从头到尾都是对的。这与本仓「判词指错方向比不报还贵」同一族。
+describe('memory_remember 的 inputSchema —— 入口宽, 判据不宽', () => {
+  /** 直接拿工具自己声明的那份 schema, 不复制一份会漂的。 */
+  const factSchema = () => {
+    const memory = createOmdMemory({ path: ':memory:', safeguard: UNIVERSAL_SAFEGUARD });
+    const tools = createMemoryTools({ memory });
+    const t = tools.find((x) => x.name === 'memory_remember')!;
+    memory.close();
+    return (t.inputSchema as unknown as { fact: { parse: (v: unknown) => unknown } }).fact;
+  };
+
+  test('★ fact 传对象 → 原样收下 (老行为, 零回归)', () => {
+    expect(factSchema().parse(VALID_FACT)).toMatchObject({ namespace: 'user.preference' });
+  });
+
+  test('★ fact 传 **JSON 字符串** → parse 成对象收下 (这条红过: 生产上写不进去)', () => {
+    // 怎么让它红: 把 FactInput 改回单独的 z.record(...) → 这条抛, 而那正是 2026-08-21 的生产实况。
+    const parsed = factSchema().parse(JSON.stringify(VALID_FACT));
+    expect(parsed).toMatchObject({ namespace: 'user.preference', category: 'editor' });
+  });
+
+  test('★ 收宽的只是**编码**, 不是判据: 字符串里的域外 namespace 照样被闸拒', async () => {
+    // 这条是"入口宽"的护栏 —— 防止下次有人把它读成"字符串走后门可以绕闸"。
+    const memory = createOmdMemory({ path: ':memory:', safeguard: UNIVERSAL_SAFEGUARD });
+    const tools = createMemoryTools({ memory });
+    const t = tools.find((x) => x.name === 'memory_remember')!;
+    const fact = (t.inputSchema as unknown as { fact: { parse: (v: unknown) => unknown } }).fact.parse(
+      JSON.stringify(OUT_OF_NAMESPACE_FACT),
+    );
+    const res = (await (t.handler as (a: Record<string, unknown>, e?: unknown) => unknown)({ fact }, {})) as {
+      content: { text: string }[];
+      isError?: boolean;
+    };
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toMatch(/^REJECTED/);
+    memory.close();
+  });
+
+  test('★ 不是合法 JSON 的字符串 → 拒, 且判词说的是**传输**不是内容', () => {
+    // 判词指错方向比不报还贵 —— 这条钉住它别再把编码问题说成 schema 问题。
+    expect(() => factSchema().parse('这不是 JSON')).toThrow(/不是合法 JSON/);
+  });
+
+  test('★ JSON 数组 / 标量 → 拒 (parse 得出来但不是 fact, 不许带着错形状往下走)', () => {
+    expect(() => factSchema().parse('[1,2,3]')).toThrow(/不是对象/);
+    expect(() => factSchema().parse('"just a string"')).toThrow(/不是对象/);
+  });
+});
