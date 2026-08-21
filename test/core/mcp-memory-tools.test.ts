@@ -7,7 +7,7 @@
  *   写入后 recall 命中 (混合检索真跑, 默认 embed 零依赖)。
  */
 import { describe, expect, test } from 'bun:test';
-import { createMemoryTools } from '../../src/mcp/tools/memory';
+import { coerceFact, createMemoryTools } from '../../src/mcp/tools/memory';
 import { createOmdMemory } from '../../src/harness/memory';
 import { UNIVERSAL_SAFEGUARD } from '../../src/memory/safeguards/namespaces';
 
@@ -123,5 +123,50 @@ describe('memory_remember 的 inputSchema —— 入口宽, 判据不宽', () =>
   test('★ JSON 数组 / 标量 → 拒 (parse 得出来但不是 fact, 不许带着错形状往下走)', () => {
     expect(() => factSchema().parse('[1,2,3]')).toThrow(/不是对象/);
     expect(() => factSchema().parse('"just a string"')).toThrow(/不是对象/);
+  });
+});
+
+// ── handler 那一层 (2026-08-21 第二次实测) ────────────────────────────────────────
+//
+// 上面那组只证明了 **schema 声明**收字符串。而改完重连 MCP 之后**生产照样拒**,
+// 判词前缀是 `REJECTED: schema:` —— 那是 writeFact 的拒因格式, 不是 inputSchema 的。
+// 结论: `server.registerTool` 那条路上 SDK **没有**拿 inputSchema 去 parse 入参,
+// 字符串一路直达 handler。所以兜底必须放在 handler, 不能只放在 schema。
+//
+// 教训: **"我加了一道校验"与"那道校验真的跑了"是两件事**, 而两者的失败长得一样(都是被拒)。
+// 分辨靠**拒因前缀属于谁** —— 这与本仓「NULL≠0≠不适用, 分辨靠另一列」同一条。
+describe('memory_remember handler —— 兜底在消费点, 不靠 schema', () => {
+  test('★ handler 直接收字符串 → 照样写入 OK (这条钉的是生产实况)', async () => {
+    // 怎么让它红: 把 handler 里的 coerceFact 摘掉 → writeFact 拿到字符串, 回 REJECTED, 这条红。
+    // 这个调用形状**逐字等于**生产: 上面 wire() 的 remember 就是直接调 handler, 不过 zod。
+    const { memory, remember } = wire();
+    const res = await remember({ fact: JSON.stringify(VALID_FACT) });
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0]!.text).toMatch(/^OK id=/);
+    memory.close();
+  });
+
+  test('★ 判词说**传输层**, 不说 schema —— 别再把编码问题指成内容问题', async () => {
+    const { memory, remember } = wire();
+    const res = await remember({ fact: '这不是 JSON' });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain('传输层');
+    expect(res.content[0]!.text).not.toContain('schema:');
+    memory.close();
+  });
+
+  test('★ 收宽的只是编码: 字符串里的域外 namespace 照样被闸拒', async () => {
+    const { memory, remember } = wire();
+    const res = await remember({ fact: JSON.stringify(OUT_OF_NAMESPACE_FACT) });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain('schema:'); // 这次是**真**的 schema 拒, 前缀对得上
+    memory.close();
+  });
+
+  test('coerceFact: 数组 / 标量 / null 一律拒', () => {
+    expect(coerceFact([1, 2])).toHaveProperty('error');
+    expect(coerceFact(42)).toHaveProperty('error');
+    expect(coerceFact(null)).toHaveProperty('error');
+    expect(coerceFact({ namespace: 'x' })).toHaveProperty('fact');
   });
 });
