@@ -158,10 +158,23 @@ export function validateFactWrite(
   //    哪些 namespace 在 allowlist (universal user.*/omd.* / +a sibling project domain)。
   const parsed = safeguard.schema.safeParse(fact);
   if (!parsed.success) {
-    // Keep the message terse; the structured issues live in the Zod error.
+    // ⚠ 判词必须带**字段路径** (2026-08-21, 一次真实误诊换来的)。
+    //
+    // 原实现只取 `first.message`, 注释写着「structured issues live in the Zod error」——
+    // 可那个 error 在这一行之后就被丢弃了, 没有任何消费者见得到。于是一条
+    // `confidence` 传成字符串的写入, 拒因是光秃秃的 `schema:Invalid input: expected object,
+    // received string`。那句话在**顶层 `fact`** 上读起来同样成立, 于是我一路误诊成"MCP 传输把
+    // fact 序列化成字符串了", 连改三轮 fact、写了两个补丁, 而问题从头到尾在一个嵌套字段上。
+    //
+    // **path 就是那条证据**, 丢掉它 = fail-open 吞证据 (本仓 §3), 而且吞的是判词自己的定位信息。
+    // 判词指错方向比不报还贵: 不报会让人去查, 指错方向会让人去改一个没坏的东西。
     const first = parsed.error.issues[0];
     const msg = first?.message ?? 'invalid';
-    return { ok: false, reason: `schema:${msg}` };
+    // path 为空 = 顶层问题 (如 namespace 不在 allowlist), 那时不加前缀 —— 空路径写成 `` 会更难读。
+    const at = first && first.path.length > 0 ? `${first.path.join('.')}: ` : '';
+    // 多条 issue 时报个数: 修完第一条还有第二条, 不说的话人会以为改完就好了。
+    const more = parsed.error.issues.length > 1 ? ` (另有 ${parsed.error.issues.length - 1} 处)` : '';
+    return { ok: false, reason: `schema:${at}${msg}${more}` };
   }
   // 装配 union 的 schema 是 z.ZodTypeAny (多 pack 合并, 见 namespace-kernel.assembleSafeguard) →
   // data 静态为 unknown; 运行时已过 reject-by-default 校验, cast 回 ValidatedFact (共享字段精确)。
