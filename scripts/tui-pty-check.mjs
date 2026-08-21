@@ -885,7 +885,7 @@ async function scenarioPathfinder() {
       p.write('\r');
     }
     check(
-      await waitFor(p, (t) => t.includes('fog line') && t.includes('settled')),
+      await waitFor(p, (t) => t.includes('fog line') && t.includes('settled · gen-1')),
       'PF-2 ★ 切得动 —— 进了那张图的全屏雾退线 (画法 C 默认)',
       p.text().slice(-800),
     );

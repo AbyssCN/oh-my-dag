@@ -768,7 +768,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       const height = Math.max(6, (terminal.rows || 30) - 10);
       // 颜色分层照 HTML 稿: 前沿/读数 accent · 地层/雾 dim · 阻塞 warn · 选中 user 档。
       const paint = { accent: theme.chrome.accent, dim: theme.chrome.dim, warn: theme.chrome.warn, sel: theme.chrome.user };
-      const o = { width, height, selected: pathSelected, paint };
+      const o = { width, height, selected: pathSelected, paint, now: now() };
       return pathPainter === 0 ? renderFogLine(pathData, o) : renderDelta(pathData, o);
     },
     handleInput: () => {},
