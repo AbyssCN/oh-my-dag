@@ -642,6 +642,22 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     invalidate: () => {},
   };
 
+  /**
+   * ★ **声明必须排在 `refreshNowBandData` 之前**(2026-08-22 修一次启动即死)。
+   *
+   * `let` 是 TDZ 的:`refreshNowBandData()` 里读 `runList`,而它原来声明在**两百多行之后**——
+   * 启动那一次调用当场抛 `Cannot access 'runList' before initialization`,**TUI 根本起不来**。
+   * ⚠ 值得记的是它是怎么漏过去的:`tsc --noEmit` 干净、`bun test` **6390 pass / 0 fail** ——
+   * 两道闸都碰不到「模块顶层的调用顺序」。抓到它的是 **L3 PTY lane**(S2-1 起七条一起红,
+   * 判词就是那句 TDZ)。⇒ 「屏起不起得来」这件事只有真起一次才知道。
+   *
+   * 数据源 = **磁盘分片**(`readDagShards`),不是本进程内存。这是片 4 存在的理由(INV-DAG-7):
+   * run / research 恒 detached,进程内订阅在生产上基本是空的,而这个列表画的是盘上有什么,
+   * 与哪个进程无关。
+   */
+  let runList: import('../hud/load').DagView[] = [];
+  let runListTicker: ReturnType<typeof setInterval> | null = null;
+
   // ── 片 5 切片 3 · 「当前」区数据 + 收件箱数据 ──
   // 与 ticketBoard / runBoard 同条纪律:不在 render 里读盘 (D-12 ②),复用既有刷新时机
   // (启动 / 每轮收尾 / Ctrl+P 切图)。data 是 already-fetched 结构,纯函数吃它就够。
@@ -919,8 +935,6 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   // 活图列表数据源 = **磁盘分片** (`readDagShards`), 不是本进程内存。
   // 这是整片存在的理由 (INV-DAG-7): run / research 恒 detached, 进程内订阅在生产上
   // 基本是空的, 而这个列表画的是盘上有什么, 与哪个进程无关。
-  let runList: import('../hud/load').DagView[] = [];
-  let runListTicker: ReturnType<typeof setInterval> | null = null;
   function refreshRunList(): void {
     try {
       runList = readDagShards(opts.cwd, now());
