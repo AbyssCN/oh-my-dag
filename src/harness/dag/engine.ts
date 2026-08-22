@@ -22,7 +22,7 @@
  * - `planner.ts` —— 纯 helper(topoLevels / buildLeafPrompt / addUsage)
  */
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 
 /**
  * C-1 (2026-08-19, 引擎采集片独占):
@@ -98,6 +98,8 @@ import { expandConductorNode, subgraphLintView, subgraphWarnings } from '../plan
 import { renderRoundForJudge, splitNamedIds, type JudgeChildView } from '../plan/conductor-judge';
 import { collectJudgeArtifacts, DEFAULT_ARTIFACT_BUDGET, type ArtifactBudget } from '../plan/judge-artifacts';
 import type { ShellRun } from '../leaf-runners';
+import type { CommandLeafResult } from '../leaf-runners';
+import type { FalsifyMutate, FalsifyNodeExtras } from './types';
 import {
   appendClaimEvidence,
   checkableFromJudgeView,
@@ -2904,7 +2906,96 @@ async function executePlan(
           logger.warn({ node: id, hasRunner: !!config.commandRunner, hasCmd: !!node.command }, '[omd/executor-dag] executor:command 缺 commandRunner/command → failed');
           return { id, status: 'failed', failureKind: 'missing-capability', kind: 'command', output: '', deps, usage: { in: 0, out: 0 } };
         }
-        const r = await config.commandRunner({ command: node.command });
+        // C-3 falsify mutation (sN-falsify, 2026-08-22): passthrough `mutate` + `expects_nonzero`
+        // 字段 (sdd-compile.ts 编译时挂上, Zod passthrough 透传, 字段契约见 types.ts FalsifyMutate)。
+        // 切片 1 承诺了节点构造 (sN / sN-green / sN-falsify-i 字段表逐字不变), 切片 2 承诺执行面语义。
+        const extras = node as FalsifyNodeExtras;
+        const falsifyMut: FalsifyMutate | undefined = extras.mutate;
+        const expectsNonzero: boolean = extras.expects_nonzero === true;
+
+        // mutation 前置 (INV-8/9): 读原文 → 唯一匹配校验 → 替换 → 写盘。原文留在内存给 finally 用,
+        // 不依赖 git baseline (INV-3 的承重姿态: head / branch 两条路都能用)。
+        let mutatePath: string | undefined;
+        let mutateOriginal: string | undefined;
+        let mutateApplied = false;
+
+        if (falsifyMut) {
+          mutatePath = falsifyMut.file.startsWith('/')
+            ? falsifyMut.file
+            : join(continuity?.repoRoot ?? process.cwd(), falsifyMut.file);
+
+          let matches = -1; // -1 = 读盘失败 (把"文件不在"与"oldText 零匹配"分开, 落到不同出口)
+          let readErr: unknown;
+          try {
+            mutateOriginal = readFileSync(mutatePath, 'utf-8');
+            // split 计数: 'a'.split('a').length - 1 = 1; 'abab'.split('ab').length - 1 = 2。
+            // 副作用: 空 oldText 会算成全文长度, 自然走 ≥2 那路拒掉 (与「唯一匹配」语义对齐)。
+            matches = mutateOriginal.split(falsifyMut.oldText).length - 1;
+          } catch (err) {
+            readErr = err;
+          }
+
+          if (matches !== 1) {
+            // INV-9: 0 匹配 / ≥2 匹配 / 读盘失败都拒。**不跑 command, 不改文件** (mutateOriginal
+            // 从未被写过盘, 旧内容原封)。点名匹配数 / 失败原因, 让 owner 知道是该改 SDD 还是该
+            // 删多余字面量。
+            logger.warn(
+              { node: id, file: falsifyMut.file, matches, readErr: readErr ? String(readErr) : undefined },
+              '[omd/executor-dag] falsify mutate.oldText 唯一匹配校验失败 → failed (INV-9, 命令未跑, 文件未动)',
+            );
+            return {
+              id, status: 'failed',
+              failureKind: 'assert-failed',
+              kind: 'command',
+              output: `[falsify-mutate: file=${falsifyMut.file} oldText matches=${matches} (必须 = 1)${readErr ? `, readErr=${String(readErr).slice(0, 200)}` : ''}; command 未执行, 文件未改动]`,
+              deps, usage: { in: 0, out: 0 }, exitCode: null,
+            };
+          }
+
+          // 唯一匹配 (matches === 1) → 应用替换并写盘
+          const mutated = mutateOriginal!.split(falsifyMut.oldText).join(falsifyMut.newText);
+          try {
+            writeFileSync(mutatePath, mutated, 'utf-8');
+            mutateApplied = true;
+          } catch (err) {
+            // 写盘失败也是 INV-9 范畴 (mutation 步骤失败, 不许"半 mutation 半跑命令")。
+            // mutateOriginal 仍在内存但没写过盘 → 不需要 finally 还原 (文件没被动过)。
+            logger.warn(
+              { node: id, file: falsifyMut.file, err: String(err) },
+              '[omd/executor-dag] falsify mutate 写盘失败 → failed (INV-9)',
+            );
+            return {
+              id, status: 'failed',
+              failureKind: 'assert-failed',
+              kind: 'command',
+              output: `[falsify-mutate: write failed: ${String(err).slice(0, 200)}]`,
+              deps, usage: { in: 0, out: 0 }, exitCode: null,
+            };
+          }
+        }
+
+        // 运行命令 + finally 还原 (INV-10): 任何出口 (成功 / 抛错 / 超时 / 进程被杀) 都把原文写回。
+        // finally 内再抛会盖掉原异常, 故 catch 写盘错误只 WARN 不重抛, 防止把"命令结果"也吞掉。
+        let r: CommandLeafResult | undefined;
+        try {
+          r = await config.commandRunner({ command: node.command });
+        } finally {
+          if (mutateApplied && mutatePath && mutateOriginal !== undefined) {
+            try {
+              writeFileSync(mutatePath, mutateOriginal, 'utf-8');
+            } catch (err) {
+              logger.error(
+                { node: id, file: falsifyMut!.file, err: String(err) },
+                '[omd/executor-dag] falsify mutate finally 还原失败 — 文件已污染 (INV-10 硬告警, owner 必须看)',
+              );
+            }
+          }
+        }
+        // commandRunner 类型上返 CommandLeafResult, 走 finally 后必有值; 此处兜底防 TS narrowing。
+        if (!r) {
+          throw new Error(`[omd/executor-dag] commandRunner 无返回值 (command=${node.command}, 命令过程中抛错, 文件已还原)`);
+        }
+
         // D-K: expect_exit = 判 done 的期望退出码 (缺省 0)。verify-red 靠它表达 —— "证明新测试现在是红的"
         // 的成功判据就是非 0 退出, 而 shell 取反整族被注入闸拒 (command-leaf.ts:145)。
         //
@@ -2912,9 +3003,18 @@ async function executePlan(
         // (危险命令 / 不在白名单 / 含元字符 / git 写子命令), 不是被执行命令的退出码。让 expect_exit
         // 把一次安全拒绝翻译成 done, 等于给闸开了一条从 plan 里绕过去的路。schema 已 min(0) 挡住
         // conductor 写 -1; 这条是给**预构造 plan** (不经 zod) 的运行期硬闸, 两层都要有。
+        //
+        // Falsify 节点走 INV-11 的 "expects_nonzero" 分支: 退出码 ≠ 0 判 done, = 0 判 failed
+        // —— 是 sN-falsify 切片 2 的判别力通道 (mutation 后 verify 必须红; 仍然绿 = 这条自检没判别力)。
         const want = node.expect_exit ?? 0;
         const blocked = r.exitCode !== null && r.exitCode < 0; // 同上: null = 死于信号, 不是闸拒
-        let ok = !blocked && r.exitCode === want;
+        let ok: boolean;
+        if (expectsNonzero) {
+          // INV-11: blocked (闸拒) 仍恒 failed —— 闸拒 ≠ 跑出红, 不能被 translates 成 done。
+          ok = !blocked && r.exitCode !== 0;
+        } else {
+          ok = !blocked && r.exitCode === want;
+        }
         // S-37 下沉 (2026-08-17): D-K 红 → 先过 freezeCriterion.waiveRed 闭包。
         //   节点命令 = 判据命令 (同串判据构造, INV-4) ∧ 非闸拒 (D-4) ∧ 闭包返非 null
         //   → 按 done 落 + 节点输出前缀赦免注记。
@@ -2930,7 +3030,11 @@ async function executePlan(
             }
           }
         }
-        if (!ok && want !== 0) {
+        if (!ok && expectsNonzero) {
+          // Falsify 节点红 = 「判别力不足」= mutation 后 verify 仍绿 = 这条自检没用。点名通道留给
+          // 外层 verifier / 读数板, 自身文案明示是 falsify 出口, 不是普通 D-K 红。
+          logger.warn({ node: id, got: r.exitCode, blocked }, '[omd/executor-dag] falsify 节点命中 exit=0 / 闸拒 → failed (判别力不足, INV-11)');
+        } else if (!ok && want !== 0) {
           logger.warn({ node: id, want, got: r.exitCode, blocked }, '[omd/executor-dag] command 节点未命中 expect_exit → failed (D-K)');
         }
         // #167 (2026-08-17): command 绿也落 checkpoint —— **只当账, 不当闸**。此前刻意不落
@@ -2952,11 +3056,15 @@ async function executePlan(
           kind: 'command',
           // 期望非 0 却拿到别的码时, 把"想要什么/拿到什么"写进 output —— 否则 verify-red 失败时
           // 下游只看到一串正常的测试输出, 看不出它失败在"本该红却绿了"。
+          // expects_nonzero 那路 (INV-11) 走专有文案, 把「mutation 后仍绿」的信号写在最前,
+          // 让 verifier 一眼读出"判别力不足"而不是把它当成普通 D-K 红误诊。
           output: waiveNote
             ? `${waivePrefix}${r.text}`
-            : (!ok && want !== 0
-              ? `[expect_exit ${want}, 实得 ${r.exitCode}${blocked ? ' (命令被闸拒, 未执行)' : ''}]\n${r.text}`
-              : r.text),
+            : (!ok && expectsNonzero
+              ? `[expects_nonzero, 实得 exit ${r.exitCode}${blocked ? ' (命令被闸拒, 未执行)' : ' (=0, mutation 后 verify 仍绿, 判别力不足)'}]`
+              : (!ok && want !== 0
+                ? `[expect_exit ${want}, 实得 ${r.exitCode}${blocked ? ' (命令被闸拒, 未执行)' : ''}]\n${r.text}`
+                : r.text)),
           deps,
           usage: r.usage,
           // 闸拒(负码)与普通失败(断言没成立)后续动作相反, 记下来才分得开 —— 见 DagNodeResult.exitCode。

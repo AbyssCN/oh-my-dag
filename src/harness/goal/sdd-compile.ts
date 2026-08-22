@@ -54,7 +54,7 @@
  */
 import { DEFAULT_COMMAND_ALLOWLIST } from '../command-leaf';
 import { PlanSchema, type ConductorPlan } from '../conductor-plan';
-import type { SddBreakdown, SddSlice } from './sdd-direct';
+import type { SddBreakdown, SddFalsify, SddSlice } from './sdd-direct';
 
 export interface SddCompileOptions {
   /** 终局全量回归命令 (G-2: 整张图里只出现在 accept 节点, 恰一次)。 */
@@ -68,6 +68,7 @@ export interface SddCompileOptions {
 const nodeId = (id: number): string => `s${id}`;
 const redId = (id: number): string => `s${id}-red`;
 const greenId = (id: number): string => `s${id}-green`;
+const falsifyId = (id: number, i: number): string => `s${id}-falsify-${i}`;
 
 /** 命令首词须在引擎白名单里 —— 不在 = 起跑即被命令闸拒(退出码 -1), 读数上是**假红**。 */
 function assertRunnable(command: string, where: string): void {
@@ -104,6 +105,29 @@ function assertDepsExist(slices: readonly SddSlice[], ids: ReadonlySet<number>):
   for (const s of slices)
     for (const d of s.deps)
       if (!ids.has(d)) throw new Error(`切片 ${s.id} 依赖不存在的切片 ${d}`);
+}
+
+/**
+ * 反向自检 INV-2: 每条 mutation 的 file 列必须在**该片**的写集内。
+ *
+ * 伸到片外 = 「把别人那片刚刚实装的代码临时拿掉看它会不会红」—— 那把判据闸变成了
+ * 进攻工具 (能借 mutation 让任何片跑挂), 而图上节点归属还是它本来那片, 验尸时
+ * 看到红就再也分不清是这条自检不严还是别片实装有问题。编译期拒掉是唯一的关口。
+ *
+ * 写集在这里走 **精确包含** —— `globToRegExp` 留给执行期跑后对账 (slice-coverage 那条);
+ * 编译期闸用最严的那一种匹配, 把 `src/foo*.ts` 这种 glob 错配挡在外面。写集表本身的格式
+ * 是 `parseWriteSet` 在 sdd-direct 闸过一次, 编译期再放它过 glob 是把第二份实现挪到了
+ * 第一份的位上。
+ */
+function assertFalsifyFilesInWriteSet(s: SddSlice, rows: readonly SddFalsify[]): void {
+  for (const f of rows) {
+    if (!s.writeSet.includes(f.file)) {
+      throw new Error(
+        `切片 ${s.id} 的反向自检 #${f.index} 指向 "${f.file}", 不在该片写集 [${s.writeSet.join(', ')}] 内 — ` +
+          'mutation 不许伸到片外 (INV-2): 改到写集或在表里把这一行挪到对应的那一片。',
+      );
+    }
+  }
 }
 
 /**
@@ -326,7 +350,19 @@ export function compileBreakdown(
   if (waves) assertWaveOrder(slices, waves);
   else assertAcyclic(slices);
 
+  // 反向自检文件归属闸 (INV-2): mutation file 必须在该片写集内 —— 伸到片外 = 替别片
+  // 「撤销实装」, 闸变成了进攻工具。**只校验**不**修**: 写错位置的人在契约层就该看见报错,
+  // 不该是编译器悄悄把它挪回片里。
+  const falsifyById = breakdown.falsify ?? {};
+  for (const s of slices) {
+    const rows = falsifyById[s.id];
+    if (!rows) continue;
+    assertFalsifyFilesInWriteSet(s, rows);
+  }
+
   const nodes: Record<string, Record<string, unknown>> = {};
+  /** accept 的依赖边 = 各片 GREEN + 所有 falsify 节点 (INV-5); 单元素也照样保留。 */
+  const acceptDeps: string[] = [];
   for (const s of slices) {
     nodes[nodeId(s.id)] = {
       executor: 'agent',
@@ -349,12 +385,38 @@ export function compileBreakdown(
       output_type: 'none',
       goal: `GREEN: 切片 ${s.id} 的切片级判据转绿`,
     };
+    acceptDeps.push(greenId(s.id));
+
+    // 反向自检各条编译成一节点 (C-2 / INV-4): command 节点跑同一条 verify, 跑前在
+    // `mutate.file` 上 apply 一行替换, 期望非零。
+    //
+    // 「期望非零」不能用 PlanSchema 现成的 `expect_exit: number` 精确表达 (它只收 0..255
+    // 具体码); 走 passthrough 字段 + `expect_exit: 1` 占位让它过 schema 的闸。引擎层
+    // (切片 2) 读 `expects_nonzero: true` 走「非零判 done」通道, 不读占位码 —— 抄一遍
+    // 现有 expect_exit 比较再做一次 `!== 0` 是把契约复制了一回, 早晚漂。
+    const falsifyRows = falsifyById[s.id];
+    if (!falsifyRows) continue;
+    falsifyRows.forEach((f, idx) => {
+      const fid = falsifyId(s.id, idx + 1);
+      nodes[fid] = {
+        executor: 'command',
+        command: s.verify,
+        expect_exit: 1,
+        // passthrough 字段 (PlanNode 走 `.passthrough()`): 引擎在切片 2 读它 apply/revert。
+        mutate: { file: f.file, oldText: f.oldText, newText: f.newText },
+        expects_nonzero: true,
+        depends_on: [greenId(s.id)],
+        output_type: 'none',
+        goal: `FALSIFY: 切片 ${s.id} 反向自检 #${f.index}`,
+      };
+      acceptDeps.push(fid);
+    });
   }
   nodes['accept'] = {
     executor: 'command',
     command: opts.acceptCommand,
     expect_exit: opts.acceptExpectExit ?? 0,
-    depends_on: slices.map((s) => greenId(s.id)),
+    depends_on: acceptDeps,
     output_type: 'none',
     goal: '终局全量回归 (确定性验收 · D-3 唯一停止规则)',
   };

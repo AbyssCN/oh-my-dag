@@ -12,6 +12,41 @@ import type { NodeFailureKind } from '../node-failure';
 import type { RollbackAnchor } from '../rollback-anchor';
 import type { BlameEntry, BlameResolution } from './blame';
 
+/**
+ * Falsify 节点 mutation 规约 (SDD `sN-falsify` 2026-08-22, C-3 / INV-8)。
+ *
+ * 命令执行前在 `file` 上 apply 一行替换, 期望非零退出 (见 {@link FalsifyNodeExtras.expects_nonzero})。
+ * 引擎层 (`runCommandNode` in engine.ts) 在执行 command 节点时:
+ *   1) 读 `file` 全文存内存
+ *   2) `oldText` 必须**唯一匹配** —— 0 次或 ≥2 次直接 `failed` (不跑命令, 不改文件)
+ *   3) 应用 `newText` 替换并写盘
+ *   4) `finally` 把内存里的原文写回 (任何出口都还原, INV-10)
+ *
+ * ⚠ `mutate` 与 `expects_nonzero` 是 passthrough 进 PlanNode 的字段
+ * (`PlanSchema` 在 conductor-plan.ts 走 `.passthrough()`, 不进字段表), 编译面 (sdd-compile.ts)
+ * 把它附在编译产物上, 运行期 engine / 读面用此类型断言取 —— 见 (s1) Slice 1 INV-4 / (s2) Slice 2 INV-8。
+ * 不用 schema 字段是因为「判别力是否真的存在」是**执行期**事实, 规划期表达不出来
+ * (期望非零是个语义, 不在 0..255 的 POSIX 码域里 —— 见 sdd-compile.ts INV-4 那段注)。
+ */
+export interface FalsifyMutate {
+  /** 目标文件路径, 相对写集根 (`continuity.repoRoot ?? process.cwd()`) 解析; 绝对路径直用。 */
+  file: string;
+  /** 必须唯一匹配, 否则节点 `failed` 并点名匹配数 (INV-9)。 */
+  oldText: string;
+  /** 替换文本。允许包含 `|` 以外的任意字符, 不做模板/插值。 */
+  newText: string;
+}
+
+/** Falsify 节点附带的执行语义 (挂在 passthrough 字段上, 与 `mutate` 同源)。 */
+export interface FalsifyNodeExtras {
+  mutate?: FalsifyMutate;
+  /**
+   * `true` = 退出码 ≠ 0 判 done, = 0 判 failed (INV-11)。
+   * `undefined`/缺省 = 老语义 (退出码 `=== expect_exit` 才算 done, 0..255 POSIX 域)。
+   */
+  expects_nonzero?: boolean;
+}
+
 /** omd 本体编排的注入式模型调用 (单一注入点; 默认 callModel, 测试传 fake)。 */
 export type GenerateFn = (req: {
   /**

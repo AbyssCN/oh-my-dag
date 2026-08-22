@@ -52,6 +52,23 @@ export function loadSddContract(path: string): SddContract {
 // conductor。解析器只管形状, 跨列的引用完整性 (依赖/波形指向的 id 存不存在、写集相不相交)
 // 归编译器 —— 那是画图时才需要成立的事 (见 ./sdd-compile)。
 
+/** 反向自检的一行 (sN-falsify · SDD 2026-08-22)。一组 `{file, oldText, newText}` 编译成图上的一个
+ * `sN-falsify-i` 节点: 跑同一条 verify, 但 apply 这一行替换于文件 → 期望非零。
+ *
+ * 表头固定 (`# | 文件 | oldText | newText`), 列表头不在表内时按 0 个处理 —— D-7:
+ * 不写 = 零列表, 不报错, 但意味着「这一片承重的那一跳没有判别力检查」。
+ */
+export interface SddFalsify {
+  /** 表里的 `#` 列 (1-based), 编译时据其生成 `sN-falsify-<i>`。 */
+  readonly index: number;
+  /** 即将被替换那一行所在的文件 (相对仓根, 必须在该片写集内 — 见 sdd-compile INV-2)。 */
+  readonly file: string;
+  /** 唯一匹配必须命中的原文 (sdd-compile INV-9 与 EDIT_SCHEMA 同源: 零/多匹配 ⇒ 节点 failed)。 */
+  readonly oldText: string;
+  /** 替换后写入的新文本。允许多行, 但不许含 markdown 表里的列分隔 (代码上下文里通常没有)。 */
+  readonly newText: string;
+}
+
 /** 分解表的一行 = 平铺图上的一个执行节点 (编译在 ./sdd-compile)。 */
 export interface SddSlice {
   /** 切片编号 (表里的前导数字, 也是波形/依赖列引用它的方式)。 */
@@ -75,12 +92,25 @@ export interface SddBreakdown {
    * NULL ≠ 0 ≠ 不适用: undefined 在这里明确是「作者没声明」, 不是「只有一层」。
    */
   readonly waves?: readonly (readonly number[])[];
+  /**
+   * 每片反向自检 (可选; 缺 key = 该片没写反向自检表, 编译成零节点 — D-7)。
+   * 放在 `SddBreakdown` 上而不是 `SddSlice` 上, 是为了让 `SddSlice` 的形状零变化 ——
+   * 现有 parseBreakdown 用户 (slice-coverage / ignition-preflight / plan-doc-gaps …)
+   * 解构 SddSlice 的写法不需要任何补丁。
+   */
+  readonly falsify?: Readonly<Record<number, readonly SddFalsify[]>>;
 }
 
 /** 分解段起点 (与 REQUIRED_SECTIONS 同一族匹配; 段止于下一个 `## `)。 */
 const BREAKDOWN_HEADING = /^##\s*(?:分解|Breakdown)/m;
 /** 波形行: `并行波形:{1,3} → {2}` (允许 backtick / 引用前缀 / 全半角冒号)。 */
 const WAVE_LINE = /^[>\s*-]*(?:并行波形|波形|Waves?)\s*[:：]\s*(.+)$/m;
+/**
+ * 反向自检小节标题 (sN-falsify): `### 反向自检 (切片 N)` 或 `（切片 N）` —— 半全角括号皆收,
+ * 与本仓契约里习惯中文标点一致。「切片」前后空格都收, 因为不同作者写法不同。
+ * 仅 `### ` 起头, 不匹配 `#### ` (避免误吞嵌套注释) 也不匹配 `## ` 整段大标题。
+ */
+const FALSIFY_HEADING = /^###\s+反向自检\s*[（(]\s*切[片片]?\s*(\d+)\s*[）)]/m;
 /** 表格分隔行 `|---|:--:|`。 */
 const SEPARATOR_CELL = /^:?-{2,}:?$/;
 /** 表头行 (列名由 /omd-contract 规范钉死)。 */
@@ -147,7 +177,150 @@ function parseDeps(cell: string, id: number): number[] {
 }
 
 /**
- * 解析「## 分解 (Breakdown)」段: 四列表 + 可选波形行 → 结构 (G-1 前半)。
+ * 反向自检一行 (`# | 文件 | oldText | newText`) → 列表。**留给那一片写一个表头** 而不是
+ * 借分解段的 HEADER_CELL: 切片列头是 `切片|slice`, 这里列头是 `#` —— 不能复用。
+ *
+ * 收多遍宽松的 markdown 惯例: 表头一行 / 分隔一行 / 数据若干行; 数据行 first line 出现即起,
+ * 第一个非 `|` 行即止 (节点文档里写散文时这一节可能插一句例示, 不让它乱入)。
+ *
+ * **oldText / newText 的转义规则 (INV-3)**: 数据单元格的内容是 markdown cell, 表格惯例会
+ * 把列间塞一格 (`| ... | ... |`). 这一格在源码上下文里往往**有语义** (前导缩进) —— `.trim()`
+ * 把它无声吞掉, **引擎 mutation 寻找 unique-match 时找不到, 判 failed, 报一个与根因 (契约
+ * 层把缩进丢了) 离得远的错**。所以:
+ *
+ *   · 列内 trim 仅剥 markdown 列表格自身的单格边距 (一格的 ` | ` 填充);
+ *   · 源码里的前导空格**用反引号括起来** —— markdown 的标准转义。`\`  const x; \`` 即「这段
+ *     字面内容首尾各有一格, 不要当作表格填充剥掉」, 与现有分解表对路径/backtick 的处理同款。
+ *   · 全列纯文本 (无反引号) 时 trim 一轮: 与本仓其它列一致 ——
+ *     `oldText/newText` 不带反引号时作者写的就是"清洁源码片段", 表格填充不属于它。
+ */
+function parseFalsifyTable(section: string, sliceId: number): SddFalsify[] {
+  const out: SddFalsify[] = [];
+  let passedSeparator = false;
+  for (const rawLine of section.split('\n')) {
+    const trimmed = rawLine.trim();
+    if (!trimmed.startsWith('|')) {
+      if (passedSeparator) break;
+      continue;
+    }
+    // 不在每 cell 上 .trim() —— 用首尾 split 后剥空字符串, 把 markdown 表格的 outer padding
+    // 剥掉, 但**保留**内部的源代码缩进 (见上方 INV-3 转义规则的注解)。
+    const rawCells = trimmed.split('|');
+    if (rawCells[0] === '') rawCells.shift();
+    if (rawCells[rawCells.length - 1] === '') rawCells.pop();
+    if (rawCells.every((c) => SEPARATOR_CELL.test(c.trim()))) {
+      passedSeparator = true;
+      continue;
+    }
+    if (!passedSeparator) continue; // header 行, 跳过
+    if (rawCells.length < 4)
+      throw new Error(
+        `反向自检 (切片 ${sliceId}) 的一行不足四列 (#|文件|oldText|newText): ${rawLine}`,
+      );
+    const idx = Number(rawCells[0]!.trim());
+    if (!Number.isInteger(idx) || idx < 1)
+      throw new Error(
+        `反向自检 (切片 ${sliceId}) 的 "#" 列必须是正整数 (按行计序号, 是 sN-falsify-<i> 的 i 来源): ${rawLine}`,
+      );
+    const file = extractCell(rawCells[1]!);
+    if (!file || !file.includes('/'))
+      throw new Error(
+        `反向自检 (切片 ${sliceId}) 的文件列不是相对路径 (mutation file 必须在该片写集内): ${rawLine}`,
+      );
+    out.push({
+      index: idx,
+      file,
+      // 源码列 — 见 INV-3: 反引号 = 字面保留 (含缩进 / 末空格), 否则 trim
+      oldText: extractCodeCell(rawCells[2]!),
+      newText: extractCodeCell(rawCells[3]!),
+    });
+  }
+  return out;
+}
+
+/** `\`foo\`` → `foo`; 否则原样返回。markdown cell 转义 — 见 parseFalsifyTable 顶上的 INV-3 注释。 */
+function extractCell(raw: string): string {
+  const t = raw.trim();
+  const m = /^`([^`]+)`$/.exec(t);
+  return m ? m[1]! : t;
+}
+
+/**
+ * 源码专用 cell 提取 (INV-3):
+ *  · 反引号 = 字面保留 (含源缩进 / 末格) —— 与 `\`  const x = 1;\`` 形态对齐;
+ *  · 无反引号 = 一轮 trim, 允许 `    const x = 1;    ` 写成 `    const x = 1;` 而**不丢**起末空格 —
+ *    等等, trim 还是会丢。所以无反引号路真的就是「作者该自己负责前后空格」。
+ *    真要保留缩进, 加反引号。
+ */
+function extractCodeCell(raw: string): string {
+  const t = raw.trim();
+  const m = /^`([^`]+)`$/.exec(t);
+  return m ? m[1]! : t;
+}
+
+/**
+ * 把 ``` 围栏块的内容换成等长空格 (行数与每行长度都不变 → 偏移语义不变)。
+ *
+ * 反向自检的解析要用它 —— 契约必须能在文档里举例说明自己的格式, 而围栏正是 markdown 里
+ * 「这是示例不是内容」的表达方式。**证伪方式**: 去掉这一跳 → `falsify-compile.test.ts`
+ * 的「围栏里的示例表不被当成真表」用例当场红 (示例指向片外文件 → 编译期 INV-2 拒)。
+ */
+function stripFencedBlocks(text: string): string {
+  let inFence = false;
+  return text
+    .split('\n')
+    .map((line) => {
+      if (/^\s*```/.test(line)) {
+        inFence = !inFence;
+        return ' '.repeat(line.length);
+      }
+      return inFence ? ' '.repeat(line.length) : line;
+    })
+    .join('\n');
+}
+
+/**
+ * 整份 SDD 文本里扫所有 `### 反向自检 (切片 N)` H3 小节, 合成一个 `sliceId → SddFalsify[]` 表。
+ *
+ * 只在表头命中且其后真跟着一个表时才计入 (`parseFalsifyTable` 返空数组 = 等价于该片没写,
+ * 仍计入空数组, 由 D-7「缺表 = 零列表」承接)。**不命中任何小节 → 返 undefined**,
+ * `parseBreakdown` 据此把 `falsify` 字段从 breakdown 里抽掉 —— 这样无反向自检的 SDD 与改造前
+ * 的 breakdown 字面一致 (承 sdd-compile 的零回归闸)。
+ */
+function parseAllFalsify(
+  text: string,
+  slices: readonly SddSlice[],
+): Record<number, SddFalsify[]> | undefined {
+  // ``` 围栏里的示例不是真表 (2026-08-22 实测): 本片自己的契约在 C-1 里用围栏举了一张
+  // 示例表说明格式, 而解析器把它当真表 —— 编译期 INV-2 当场拒「mutation 伸到片外」。
+  // 闸判得对, 错在解析面: **一份契约必须能在文档里举例说明自己的格式**。
+  // 剔除用等长空格替换 (不删行不缩短行), 保持 `h.index` / `text.slice` 的偏移语义不变。
+  // ⚠ 只改 falsify 这一路; `parseBreakdown` 的四列表解析**一个字不动** —— 它是既有行为,
+  //   没有读数说它被这条坑过 (Surgical: 不顺手改没坏的东西)。
+  text = stripFencedBlocks(text);
+  const headings = [...text.matchAll(/^###\s+反向自检\s*[（(]\s*切[片片]?\s*(\d+)\s*[）)][^\n]*$/gm)];
+  if (headings.length === 0) return undefined;
+  const out: Record<number, SddFalsify[]> = {};
+  const validIds = new Set(slices.map((s) => s.id));
+  for (const h of headings) {
+    const sliceId = Number(h[1]);
+    if (!validIds.has(sliceId))
+      throw new Error(
+        `反向自检小节 (切片 ${sliceId}) 在分解表里没有对应切片 —— 表头编号必须先在切片列出现`,
+      );
+    const start = (h.index ?? 0) + h[0].length;
+    const rest = text.slice(start);
+    // 小节止于下一个 H3 或下一个 H2 (后者更宽 — 同 parseBreakdown 的 section 切法)。
+    // 注意别用 H1: 文档顶部 # 标题在 markdown 里出现一次, 它不是 section 边界。
+    const next = /^#{2,3}\s/m.exec(rest);
+    const sub = next ? rest.slice(0, next.index) : rest;
+    out[sliceId] = parseFalsifyTable(sub, sliceId);
+  }
+  return out;
+}
+
+/**
+ * 解析「## 分解 (Breakdown)」段: 四列表 + 可选波形行 + 每片可选反向自检小节 → 结构 (G-1 前半)。
  *
  * fail-loud 承 loadSddContract 的性格 (G-6): 解析不了的行**不跳过**——跳过 = 整片切片凭空
  * 消失, 图少一个节点而台账上什么都看不出来 (silent-failures 图鉴那一族)。
@@ -199,7 +372,18 @@ export function parseBreakdown(text: string): SddBreakdown {
         (g[1]!.match(/\d+/g) ?? []).map(Number),
       )
     : undefined;
-  return waves?.length ? { slices, waves } : { slices };
+
+  // 反向自检小节 (sN-falsify · SDD 2026-08-22, C-1) —— 整份 SDD 里 `### 反向自检 (切片 N)`
+  // 风格的 H3, 每片一张四列表 (# | 文件 | oldText | newText)。**缺表 = 零列表, 不报错** (D-7):
+  // 把所有反向自检关掉是契约作者的真合法选项 (那片就没写), 把它搞成硬闸会逼出一堆空表占位节点。
+  // 解析失败 → throw (同 parseBreakdown 的性格, 走过头的行不悄悄丢)。
+  const falsify = parseAllFalsify(text, slices);
+
+  return {
+    slices,
+    ...(waves?.length ? { waves } : {}),
+    ...(falsify ? { falsify } : {}),
+  };
 }
 /**
  * 从 SDD 落盘路径机械提取挂票要带的两样: 各切片写集的并集 + sddPath 本体。
