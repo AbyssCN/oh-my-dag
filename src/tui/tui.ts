@@ -51,7 +51,7 @@ import { initHyperlinks } from './render/link';
 import { renderLayers } from './render/dag-layers';
 import { renderRunList } from './render/run-list';
 import { renderNowBand, type NowBandInput, type NowPaint } from './render/now-band';
-import { renderInbox, type InboxItem } from './render/inbox';
+import { applyInboxAction, decideInboxKey, renderInbox, type InboxAction, type InboxItem } from './render/inbox';
 import { readDagShards } from '../hud/load';
 import { readAttention } from '../serve/read-api';
 import { StatusLine } from './components/status-line';
@@ -765,6 +765,85 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     inboxOpen = false; // 关掉全屏,把焦点还给输入框
     editor.setText(prompt);
     tui.setFocus(editor);
+    tui.requestRender();
+  }
+
+  /**
+   * 收件箱动作执行(片 6 切片 3,SDD §2.3)。
+   *
+   * 路由 `InboxAction`:
+   *   - `rule-input` → `dialogs.input(...)` 收 ruling(空串/Esc = 取消, INV-BOX-3) →
+   *     `applyInboxAction` 走 `backend.rule(...)`(写失败响亮, INV-BOX-4) → 重读盘(INV-BOX-7)。
+   *   - `confirm` → `applyInboxAction` 走 `backend.confirmSuggestion(...)` → 重读盘。
+   *   - `resume`  → `opts.backend.resumeRun?.(...)`(INV-BOX-6 真接线;后端没能力就 no-op)。
+   *   - `prefill` → `prefillInboxItem(item)`(原有路径)。
+   *   - `noop`    → 关掉收件箱, 不写盘。
+   *
+   * `applyInboxAction` 之后**无条件** `refreshNowBandData()` —— 与每轮收尾同一时机
+   * (切片 S5/片 5 那条纪律, 见 `tui.ts:1520-1522` 的注释): 收件箱是当前区的子集,
+   * 当前区是它的真源, 不在内存里把 `inboxItems` 改一改假装同步。
+   */
+  async function executeInboxAction(action: InboxAction): Promise<void> {
+    if (action.kind === 'noop') {
+      inboxOpen = false;
+      tui.requestRender();
+      return;
+    }
+    if (action.kind === 'prefill') {
+      prefillInboxItem(action.item);
+      return;
+    }
+    if (action.kind === 'resume') {
+      // INV-BOX-6: 只有 `r` 真接线。`resumeRun` 是 OmdBackend 可选能力, 没能力就走
+      // `noRunCapability` 同款 (CHROME.noRunCapability) —— 不画一个点了没反应的入口。
+      const item = action.item;
+      if (!opts.backend.resumeRun) {
+        chatLog.appendNotice(CHROME.noRunCapability('resume'));
+        tui.requestRender();
+        return;
+      }
+      try {
+        const r = await opts.backend.resumeRun({ runId: item.runId });
+        chatLog.appendNotice(r.ok ? CHROME.resumeStarted(item.runId, r.text) : CHROME.resumeRefused(item.runId, r.text));
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        logger.warn({ err: reason, runId: item.runId }, '[omd/tui] resumeRun threw');
+        chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
+      }
+      tui.requestRender();
+      return;
+    }
+    // rule-input / confirm —— 两者都走 applyInboxAction(纯函数层), 它替你:
+    //   · 开输入框收 ruling(只在 rule-input 上)
+    //   · 调 backend 写侧
+    //   · 写失败 → onError 把原文贴屏 (INV-BOX-4)
+    //   · 写完调 refreshItems 重读盘 (INV-BOX-7)
+    const { resolveBackend } = require('../harness/pathfinder/backend') as typeof import('../harness/pathfinder/backend');
+    const pathBackend = resolveBackend(opts.cwd);
+    const result = await applyInboxAction(action, {
+      cwd: opts.cwd,
+      backend: pathBackend,
+      promptRuling: async (item, closedByRuling) => {
+        // 复用 dialogs.input —— 它的语义就是 "null = Esc / 空串 = 取消", 跟 INV-BOX-3 一致。
+        // 标题里把 closedByRuling 说出来: 用户看见前缀警告就不打了。
+        const title = closedByRuling
+          ? `Close-by-ruling on ${item.ticketId} (text becomes [closed-by-ruling] goal):`
+          : `Rule on ${item.ticketId} (text becomes the goal):`;
+        return dialogInput(dialogs, theme, { title });
+      },
+      nowIso: () => new Date(now()).toISOString(),
+      refreshItems: async () => {
+        // INV-BOX-7: 写完重读盘——重读的是 readAttention(), 跟 inboxItems 的真源一致,
+        // 而不是改内存里那份。这样 "票裁掉了 → 收件箱里那件没了" 是磁盘变化的结果, 不是 TUI 的把戏。
+        refreshNowBandData();
+        return inboxItems;
+      },
+      onError: (reason) => {
+        // INV-BOX-4: 原文上屏, fail-open 不吞证据。
+        chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
+      },
+    });
+    inboxItems = [...result.items];
     tui.requestRender();
   }
   // 空态在框里画一句提示符 —— 见 `components/hinted-editor.ts` 文件头(gauntlet critic 的判词)。
@@ -2861,6 +2940,42 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     // 弹窗开着时不抢(与 pathFull / dagFull 同款守则):抢了的话框收不到键。
     if (kb.matches(data, 'omd.palette') && !dialogs.busy) {
       void openPalette();
+      return { consume: true };
+    }
+    // 切片⑥ 收件箱(片 6 切片 3, 2026-08-22)。Ctrl+N 切(omd.inbox);开时本 listener 接管
+    // ↑↓/Enter/Esc/x/c/r/i/s —— 与 pathFull / dagFull 同款"全屏是树内模态"约定。
+    // 弹窗开着时不抢(同款守则): 框(审批单 / 选择器)收不到 Enter 就关不上。
+    if (kb.matches(data, 'omd.inbox') && !dialogs.busy) {
+      inboxOpen = !inboxOpen;
+      inboxSelected = 0; // 每次开都从第一件开始 —— 不要把上次闭在哪带回来, "刚开" 就是第一件。
+      tui.requestRender();
+      return { consume: true };
+    }
+    // 收件箱开时的键盘分派: ↑↓ 移动, Enter / x / c / r / i / s 走 decideInboxKey,
+    // Esc 关掉。空仓时只认 Esc (开空屏按上下键就读成"按了没反应", 那更难查)。
+    if (inboxOpen && !dialogs.busy) {
+      const len = inboxItems.length;
+      if (kb.matches(data, 'omd.interrupt') || data === '\x1b') {
+        inboxOpen = false;
+        tui.requestRender();
+        return { consume: true };
+      }
+      if (len === 0) {
+        // 空仓: 仅 Esc 有效, 其余键吃掉不冒到 editor(editor 看不见, 冒上去会让人以为按了没接收)。
+        return { consume: true };
+      }
+      if (data === '\x1b[A' || data === '\x1b[B') {
+        inboxSelected = (inboxSelected + (data === '\x1b[A' ? -1 : 1) + len) % len;
+        tui.requestRender();
+        return { consume: true };
+      }
+      const action = decideInboxKey({ items: inboxItems, selected: inboxSelected, key: data });
+      if (action.kind === 'noop') {
+        // 路由说 noop 也要吃掉(吞掉否则会落到 editor, editor 看键盘时被吞键很迷)。
+        // 但不重画 —— 没东西变。
+        return { consume: true };
+      }
+      void executeInboxAction(action);
       return { consume: true };
     }
     if (pathFullOn && !dialogs.busy) {

@@ -32,6 +32,11 @@ import {
 import { reflowGoalResults, reflowOwnerCommands, reflowResearchResults } from '../../harness/pathfinder/afk-hook';
 import { computeFrontier } from '../../harness/pathfinder/frontier';
 import { compileSlice, regionIsClear, specGateViolation } from '../../harness/pathfinder/slice-compiler';
+import {
+  canConfirm,
+  canRule,
+  resolveTicketId,
+} from '../../harness/pathfinder/ticket-guard';
 import type { PathMap, Ticket, TicketType } from '../../harness/pathfinder/types';
 import type { OmdMemory } from '../../harness/memory/store';
 import type { DagRecorder } from '../../harness/dag-record';
@@ -102,32 +107,24 @@ function resolveSlug(backend: PathBackend, cwd: string, slug: string | undefined
 }
 
 /**
- * 把调用方给的票 id 解成**盘上真实的那个 id** (#206, 2026-08-19)。
+ * `resolveTicketId` 已在切片 1 抽到 `src/harness/pathfinder/ticket-guard.ts` (INV-BOX-1) ——
+ * MCP 与 TUI 共用一份实现。下面这一行是**唯一**对外接口, 别再在本文件里改它。
  *
- * ## 为什么需要它 (这不是人体工学, 是个洞)
+ * ## 这处漂的历史 (2026-08-19 实测, 改前记录)
  *
- * gh 后端的票 id 是 `#N`, 而工具面历来也收裸 `N` —— 因为**写路**会 `bareNumber()` 归一
- * (`backend-gh.ts`)。但**读路**是精确匹配 (`t.id === ticketId`)。于是同一次调用里同一个字符串
- * 指向两个东西:
- *   · `path_rule` 的 suggested 守卫 (GWT-8 / INV-S1-1「suggested 票不许绕过人确认直接裁」)
- *     走读路 → 传裸 `177` 时 `find` 返回 undefined → **守卫不响**;
- *   · `backend.rule` 走写路 → 裸 `177` 照样命中 → **真去 comment + close 了**。
- * 实测 (2026-08-19): 同一张 suggested 票, `#177` 被守卫拒, `177` 直接裁掉并写了 gh。
- * 而 `map_confirm` 完全不归一 → 裸 `177` 报「票不存在」。**同一个 id 在三处三种行为。**
+ * 同一个票 id 写法曾在这里的三条路里各做各事:
+ *   · `path_rule` 的 suggested 守卫走精确匹配 (`t.id === ticketId`); 传裸 `177` 时
+ *     `find` 返回 undefined → **守卫不响**;
+ *   · `backend.rule` 写路走 `bareNumber()` 归一 (`backend-gh.ts`) → 裸 `177` 照样命中
+ *     → **真去 comment + close**;
+ *   · `map_confirm` 完全不归一 → 裸 `177` 报「票不存在」。
+ * 同一张 suggested 票, `#177` 被守卫拒, `177` 直接裁掉并写了 gh。
  *
- * 归一放在**工具层**而不是各后端: 后端的 id 形状是它自己的事 (md 是 `t1`, gh 是 `#N`),
- * 而"用户打的那串指哪张票"是工具面的职责。解出来之后读路写路共用**同一个值**, 漂移无处发生。
- *
- * @returns 盘上的真 id; 认不出 → null (调用方响亮拒, 不猜)。
+ * 抽到 `ticket-guard.ts` 后 `canRule` / `canConfirm` 同一把 `resolveTicketId`,
+ * 该漂移**已经封堵**: 裸 id 与 `#` 前缀从此同解, suggested 守卫也不再走精确匹配。
+ * 本注释保留作为闸存在的理由 —— 谁删谁负责 (#206 / SDD 片 6 INV-BOX-1)。
  */
-export function resolveTicketId(map: PathMap | null, raw: string): string | null {
-  if (!map) return null;
-  const want = raw.trim();
-  if (!want) return null;
-  const bare = (s: string): string => s.replace(/^#/, '');
-  // 精确优先; 再按"去掉 # 之后相等"认 —— 只这两档, 不做模糊前缀匹配 (猜错票比认不出坏得多)。
-  return map.tickets.find((t) => t.id === want)?.id ?? map.tickets.find((t) => bare(t.id) === bare(want))?.id ?? null;
-}
+export { resolveTicketId } from '../../harness/pathfinder/ticket-guard';
 
 /** 列图 + 现算 open/frontier 计数 (两后端一致: listMaps 只给 slug/destination, 计数用 readMap+computeFrontier)。 */
 function listMapsWithCounts(backend: PathBackend, cwd: string): Array<{ slug: string; destination: string; openCount: number; frontierCount: number }> {
@@ -491,18 +488,12 @@ function makeRule(deps: PathfinderToolDeps): OmdMcpTool {
       const r = resolveSlug(backend, deps.cwd, slug as string | undefined);
       if ('error' in r) return err(r.error);
       const reflow = reflowOnce(deps, backend, r.slug); // 先折回流, 避免在过期视图上裁
-      // #206: **先把 id 解成盘上真实的那个**, 之后读路写路共用它。
-      // 此前守卫走精确匹配而写路走 bareNumber 归一 —— 传裸 `177` 时守卫查不到 → 不响,
-      // 写路照样命中 → suggested 票被直接裁掉 (实测)。解析放这里, 两条路不再各认各的。
+      // INV-BOX-1: 守卫抽到 `ticket-guard.ts` —— MCP / TUI 共用一份 `canRule`, 同一根尺。
+      // 经此改写, 裸 `177` 与 `#177` 同解, suggested 守卫也按归一后的 id 走读路, 漂封堵。
       const pre = backend.readMap(deps.cwd, r.slug);
-      const resolvedId = resolveTicketId(pre, ticketId as string);
-      if (!resolvedId) return err(`找不到票 "${ticketId}" — map_tickets 看现有票 (gh 后端的 id 形如 #206)`);
-      ticketId = resolvedId;
-      // GWT-8 (INV-S1-1): suggested 票不许绕过人确认直接裁 — rule 是裁决, confirm 才是收件。
-      const target = pre?.tickets.find((t) => t.id === ticketId);
-      if (target?.status === 'suggested') {
-        return err(`票 "${ticketId}" 是机器建议 (suggested) — 先 map_confirm accept/reject, 确认后才可裁决`);
-      }
+      const guard = canRule(pre, ticketId as string);
+      if (!guard.ok) return err(guard.reason);
+      ticketId = guard.id;
       // D-1 (切片 1 #161): close 路 = rule 带前缀锚 + markDelivered (复用 delivered 终态;
       // 不加新 TicketStatus, 视图需求不污染真源 types.ts:75 的备注)。md / gh 两后端同步生效
       // (backend.ts:102/112 必备)。
@@ -560,11 +551,10 @@ function makeConfirm(deps: PathfinderToolDeps): OmdMcpTool {
       const r = resolveSlug(backend, deps.cwd, slug as string | undefined);
       if ('error' in r) return err(r.error);
       if (!backend.confirmSuggestion) return err(`后端 ${backend.kind} 未实装 confirmSuggestion (S-1 片e) — md 后端可用`);
-      // #206: 与 path_rule 同一把尺 —— 此前这里完全不归一, 于是裸 `177` 在 rule 那边能用、
-      // 在这边报「票不存在」。同一个 id 在两个工具面上两种行为, 绊过人。
-      const confirmId = resolveTicketId(backend.readMap(deps.cwd, r.slug), ticketId as string);
-      if (!confirmId) return err(`找不到票 "${ticketId}" — map_tickets 看现有票 (gh 后端的 id 形如 #206)`);
-      ticketId = confirmId;
+      // INV-BOX-1: 同 path_rule, 守卫共享一份 `canConfirm` (suggested 是它的合法目标, 不挡)。
+      const confirm = canConfirm(backend.readMap(deps.cwd, r.slug), ticketId as string);
+      if (!confirm.ok) return err(confirm.reason);
+      ticketId = confirm.id;
       try {
         const entry = backend.confirmSuggestion(deps.cwd, r.slug, ticketId as string, action as 'accept' | 'reject', {
           at: new Date().toISOString(),

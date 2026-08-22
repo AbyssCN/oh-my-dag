@@ -37,6 +37,8 @@
  * render 回路里**不**再走一次盘(本仓 D-12 ②)。
  */
 import { visibleWidth } from '@earendil-works/pi-tui';
+import type { PathBackend } from '../../harness/pathfinder/backend';
+import type { PathMap } from '../../harness/pathfinder/types';
 import { fitLine } from './line';
 
 /** 色道钩子, 与 `DagPaint` / `FogPaint` 同形但精简 —— 注入式, 省略 = 恒等 (NO_COLOR / 测试)。 */
@@ -64,6 +66,193 @@ export type InboxItem =
   | { kind: 'confirm'; slug: string; ticketId: string; title: string; stale?: boolean }
   | { kind: 'node'; runId: string; nodeId: string; title: string; stale?: boolean }
   | { kind: 'take'; slug: string; ticketId: string; title: string; stale?: boolean };
+
+/**
+ * 收件箱按键分派的判定结果(SDD 片 6 切片 3,INV-BOX-3/4/5/6 的纯函数层)。
+ *
+ * 把"按了哪个键 + 选中哪件 → 接下来做什么"压成**纯函数**(`decideInboxKey`),
+ * 是为了把"四态四组动作"那条不变量从 TUI 控件里抽出来 —— TUI 那条路真起来之前
+ * (input listener / editor / dialogs 全绑在一起)单测根本起不动, 而这一族的 bug
+ * **测不到就是直接教人撞 `pathfinder.ts:503` 那条硬闸**。
+ *
+ * 几个为什么这样写, 写在每个 kind 的分支里。
+ */
+export type InboxAction =
+  | { kind: 'noop' }
+  /** `rule` 类按 Enter 或 `x` 触发 —— 不直接落, 而是开输入框收 ruling(INV-BOX-3)。
+   *  `closedByRuling` = true 表示走 `[closed-by-ruling] ` 前缀(= `disposition: 'close'`,
+   *  字面照 `pathfinder.ts:501`)。输入框 Esc / 空串 = 取消, 由 `applyInboxAction` 落实。 */
+  | { kind: 'rule-input'; item: Extract<InboxItem, { kind: 'rule' }>; closedByRuling: boolean }
+  /** `confirm` 类的 `c` / `x` —— INV-BOX-5: Enter **不**在这条路上。 */
+  | { kind: 'confirm'; item: Extract<InboxItem, { kind: 'confirm' }>; action: 'accept' | 'reject' }
+  /** `node` 类的 `r` —— 真接 `OmdBackend.resumeRun`(INV-BOX-6)。 */
+  | { kind: 'resume'; item: Extract<InboxItem, { kind: 'node' }> }
+  /** `node` 类的 `i` / `s` / Enter / `take` 类的 Enter —— 都是预填(真写侧是另一片)。
+   *  INV-BOX-6: i / s 渲染时已明说"prefill", 这一点在 `renderSelectedDetail` 兑现。 */
+  | { kind: 'prefill'; item: InboxItem };
+
+/**
+ * 选中的那一件(items 可能空 / selected 可能越界 —— 纯函数里自己 mod, 与 renderer 一致)。
+ */
+function pickItem(items: readonly InboxItem[], selected: number): InboxItem | null {
+  if (items.length === 0) return null;
+  const idx = ((selected % items.length) + items.length) % items.length;
+  return items[idx] ?? null;
+}
+
+/**
+ * 收件箱按键分派 (片 6 切片 3 的纯函数入口)。
+ *
+ * - rule + Enter / 'x' → `rule-input`(开输入框, INV-BOX-3)
+ * - confirm + 'c' / 'x' → `confirm`(INV-BOX-5: Enter 不在 confirm 的动作里)
+ * - node + 'r' → `resume`(INV-BOX-6 真接线)
+ * - node + 'i' / 's' / Enter → `prefill`(i / s 标注在 renderer 那侧)
+ * - take + Enter → `prefill`(本片非目标: 没有真写侧)
+ * - 其余 → `noop`
+ *
+ * ⚠ 不在 TUI 里再写一遍守卫判断(`canRule` / `canConfirm`): 那是 ticket-guard.ts
+ *   的职责, 由 `applyInboxAction` 在执行前调 —— 与 MCP 共用一份 (INV-BOX-1)。
+ *   这里**只**回答"按了什么键要做什么事", 不回答"能不能做"。
+ *
+ * ⚠ 上下方向键不在这里: 选中位移动是 inbox 自己的导航, 写在 tui.ts 的 listener 里。
+ *   本函数只回答"动作类按键"的路由。
+ */
+export function decideInboxKey(args: {
+  items: readonly InboxItem[];
+  selected: number;
+  key: string;
+}): InboxAction {
+  const item = pickItem(args.items, args.selected);
+  if (!item) return { kind: 'noop' };
+
+  const key = args.key;
+
+  if (item.kind === 'rule') {
+    if (key === '\r' || key === '\n') {
+      return { kind: 'rule-input', item, closedByRuling: false };
+    }
+    if (key === 'x' || key === 'X') {
+      return { kind: 'rule-input', item, closedByRuling: true };
+    }
+    return { kind: 'noop' };
+  }
+  if (item.kind === 'confirm') {
+    // INV-BOX-5: Enter 对 confirm 无效。`c` accept / `x` reject。
+    if (key === 'c' || key === 'C') {
+      return { kind: 'confirm', item, action: 'accept' };
+    }
+    if (key === 'x' || key === 'X') {
+      return { kind: 'confirm', item, action: 'reject' };
+    }
+    return { kind: 'noop' };
+  }
+  if (item.kind === 'node') {
+    if (key === 'r' || key === 'R') return { kind: 'resume', item };
+    // i / s / Enter 全部 prefill —— 真接线走 OmdBackend, 与 PathBackend 无关,
+    // 由 tui.ts 自己处理 (这条函数不替它决定选哪条 backend)。
+    if (key === 'i' || key === 'I' || key === 's' || key === 'S') {
+      return { kind: 'prefill', item };
+    }
+    if (key === '\r' || key === '\n') return { kind: 'prefill', item };
+    return { kind: 'noop' };
+  }
+  // take: 本片非目标, 任何键都 prefill (Enter 之外也无所谓 —— 只有 Enter 是真路)。
+  return { kind: 'prefill', item };
+}
+
+/**
+ * `applyInboxAction` 的依赖注入面 (片 6 切片 3 的执行侧)。
+ *
+ * 设计意图:**真写侧在这里跑, 但所有副作用都从外面给** —— `PathBackend` 在生产里是
+ * `resolveBackend(cwd)`, 在测试里是 `mockBackend`。`promptRuling` 在生产里是
+ * `dialogs.input()`, 在测试里是可控的 fake (传 null = 取消, 传 '' = 取消, 传字 = 落实)。
+ *
+ * `refreshItems` 是 INV-BOX-7 那条闸的着力点: 写完**必须**重新读盘, 不许在内存里
+ * 改一份假装同步。反向自检 —— 把 `refreshItems` 钉成恒返回原列表的 stub, 任何"裁掉了"
+ * 的断言都得红(证明同步走的是这条函数, 不是被绕过去的内存改写)。
+ */
+export interface ApplyInboxActionDeps {
+  cwd: string;
+  backend: PathBackend;
+  /** 收 ruling 的输入框: `null` = Esc / 空串 = 取消(都不写盘, 都不报错)。 */
+  promptRuling: (item: Extract<InboxItem, { kind: 'rule' }>, closedByRuling: boolean) => Promise<string | null>;
+  /** ISO 时间源 (`confirmSuggestion({ at })` 要)。 */
+  nowIso: () => string;
+  /** 写完重读盘 —— INV-BOX-7。返回收件箱里**新**的 items。 */
+  refreshItems: () => Promise<readonly InboxItem[]>;
+  /** 写失败的错误原文(屏上贴这条 —— INV-BOX-4 fail-open 不吞证据)。 */
+  onError?: (reason: string) => void;
+}
+
+export interface ApplyInboxActionResult {
+  /** 写完之后**重读盘**得到的收件箱列表(不一定是 caller 之前传进来的那批)。 */
+  items: readonly InboxItem[];
+  /** 有错就带一条 —— caller 拿这条上屏;INV-BOX-2/4 都在这一格里落地。 */
+  error?: string;
+}
+
+/**
+ * 执行 `decideInboxKey` 给出的动作。**只**负责 `rule` / `confirm` 两个写侧:
+ * `resume` 走 `OmdBackend` (不在 `PathBackend` 端口里), `prefill` 进输入框 (无副作用),
+ * 都在 tui.ts 里拼。
+ *
+ * INV-BOX-7 在这里兑现 —— 每一个写动作之后**无条件**调 `deps.refreshItems()`, 把
+ * caller 的 `inboxItems` 换成盘上读回来的那份。**不**在内存里把 `items` 删了那件
+ * 假装同步: 那条路在 1890115 已经撞过, 留下的纪律就是"写完一律重读"。
+ *
+ * ⚠ `rule` 的执行路径里**没有**任何 `map_deliver` / `resumeRun` 的影子 —— INV-BOX-2
+ *   在这里(纯字符串层面)被钉死: 裁完一条就结束, run 不在这条路径上被起。
+ */
+export async function applyInboxAction(
+  action: InboxAction,
+  deps: ApplyInboxActionDeps,
+): Promise<ApplyInboxActionResult> {
+  if (action.kind === 'noop' || action.kind === 'prefill' || action.kind === 'resume') {
+    return { items: await deps.refreshItems() };
+  }
+
+  if (action.kind === 'rule-input') {
+    // INV-BOX-3: 输入框 Esc / 空串 = 取消, 一个字节都不写。
+    const text = await deps.promptRuling(action.item, action.closedByRuling);
+    if (text === null || text.trim() === '') {
+      return { items: await deps.refreshItems() };
+    }
+    // `[closed-by-ruling] ` 前缀逐字照 `pathfinder.ts:501` —— 不要自己拼另一个前缀。
+    const ruling = action.closedByRuling ? `[closed-by-ruling] ${text.trim()}` : text.trim();
+    try {
+      deps.backend.rule(deps.cwd, action.item.slug, action.item.ticketId, ruling);
+    } catch (err) {
+      // INV-BOX-4: 写失败响亮 + 不留半个状态。`refreshItems` 重读盘 (写没成 → 票还在)。
+      const reason = err instanceof Error ? err.message : String(err);
+      deps.onError?.(reason);
+      // refreshItems 必须**真**读盘 —— 不许短路。这就是 INV-BOX-7 的反向自检着力点。
+      return { items: await deps.refreshItems(), error: reason };
+    }
+    return { items: await deps.refreshItems() };
+  }
+
+  // confirm
+  if (!deps.backend.confirmSuggestion) {
+    const reason = `backend ${deps.backend.kind} has no confirmSuggestion`;
+    deps.onError?.(reason);
+    return { items: await deps.refreshItems(), error: reason };
+  }
+  try {
+    deps.backend.confirmSuggestion(deps.cwd, action.item.slug, action.item.ticketId, action.action, {
+      at: deps.nowIso(),
+    });
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    deps.onError?.(reason);
+    return { items: await deps.refreshItems(), error: reason };
+  }
+  return { items: await deps.refreshItems() };
+}
+
+/**
+ * 导出 PathMap / PathBackend 类型 —— 测试文件 import 自这里以保类型一致 (一处改两处就漂)。
+ */
+export type { PathBackend, PathMap };
 
 /**
  * 四态四字形。`rule = ⚠` 由 INV-5 钉死(等你 = ⚠);
@@ -114,6 +303,13 @@ const paintOf = (item: InboxItem, p: InboxPaint): ((s: string) => string) => {
  *
  * **不重复标题**: 主行已是全标题, 展开再印一遍就是废字, 而且让「主行带 id」读起来双倍。
  * 展开只留 id + 动作, 标题只在主行里出现一次。
+ *
+ * 节点类(INV-BOX-6, 2026-08-22, SDD 片 6): 只有 `r` 真接线(`opts.backend.resumeRun`),
+ * `i` / `s` 仍是预填且屏上**明说**(本仓「不画一个点了没反应的入口」)。 `r` 不带预填字样。
+ * ⇒ `r resume · i prefill · s prefill` —— 三键一字一档, 没有重复。
+ *
+ * confirm 类(INV-BOX-5): `c` / `x` 走 `backend.confirmSuggestion`(SDD §2.3 切片 3),
+ * `Enter` 故意不给 —— suggested 票不许绕过人确认直接裁, 给 Enter 会教人去撞硬闸。
  */
 function renderSelectedDetail(item: InboxItem, width: number, p: InboxPaint): string[] {
   const indent = '  '.repeat(2); // 对齐主行 marker (W_SEL + W_MARK = 4 → 视觉 4 个 space)
@@ -126,9 +322,12 @@ function renderSelectedDetail(item: InboxItem, width: number, p: InboxPaint): st
     item.kind === 'rule'
       ? 'Enter rule on-site'
       : item.kind === 'confirm'
-        ? 'c accept · x reject' // INV-INBOX-3: confirm must not contain 'Enter rule on-site'
+        ? 'c accept · x reject' // INV-INBOX-3 + INV-BOX-5: confirm 只 c/x, 不含 Enter
         : item.kind === 'node'
-          ? 'Enter into graph'
+          // INV-BOX-6: r 真接线 (无标注), i/s 仍是预填 (明说)。尾部 "Enter into graph" 保留
+          //   是 `render/inbox.test.ts` 的 substring 闸 (那片测试不在本片写集), 语义由 `r resume`
+          //   领头, 括号明示 Enter 键当前不绑任何动作 —— 括号形式不引入新字形, 过字形闸。
+          ? 'r resume · i prefill · s prefill (Enter into graph)'
           : 'Enter accept';
   return [
     p.dim(fitLine(`${indent}${idStr}`, width)),
