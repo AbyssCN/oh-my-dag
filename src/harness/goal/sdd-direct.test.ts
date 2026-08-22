@@ -421,12 +421,12 @@ describe('runGoal 直通 v2 (切片 5: 分解表可编译 → 零 conductor 平�
     return { r, seenPlans };
   };
 
-  test('可编译分解表 → goal-execute-flat: 7 节点 (2×3+accept)、零 conductor、accept = 冻结判据恰一次 (G-1/G-2 接线面)', async () => {
+  test('可编译分解表 → goal-execute-flat: 5 节点 (2×2+accept)、零 conductor、accept = 冻结判据恰一次 (G-1/G-2 接线面)', async () => {
     const { r, seenPlans } = await run(SDD_FLAT);
     expect(seenPlans.length).toBe(1);
     const plan = seenPlans[0]!;
     expect(plan.name).toBe('goal-execute-flat');
-    expect(Object.keys(plan.nodes).length).toBe(7);
+    expect(Object.keys(plan.nodes).length).toBe(5); // 2026-08-22 RED 删掉: 每片 2 节点 + accept
     expect(Object.values(plan.nodes).some((n) => n.executor === 'conductor')).toBe(false);
     // G-2: 全量回归恰一次, 且就是冻结判据那条命令。**命令来自 verify 列** (2026-08-11 起,
     // 不再是分类器那条 `bun test`): 各片 verify 串联 + 末环去路径限定的全量版。
@@ -446,9 +446,10 @@ describe('runGoal 直通 v2 (切片 5: 分解表可编译 → 零 conductor 平�
     expect(String(s1.goal)).toContain('并行波形'); // SDD 全文在节点里
     expect(String(s1.goal)).toContain('实施切片 1');
     expect(s1.write_set).toEqual(['src/a.ts', 'src/a.test.ts']);
-    // RED 已降为 agent 证据探针,沿用 agent 契约注入;GREEN 仍是 command,不背 SDD 全文。
-    expect(String(seenPlans[0]!.nodes['s1-red']!.goal)).toContain('并行波形');
+    // 2026-08-22 RED 删掉之后, 图里只剩「实装 (agent, 背 SDD 全文) + GREEN (command, 不背)」。
+    // 这一对断言真正管的是**契约注入只给需要读它的那一类节点** —— 命令节点背全文是纯浪费。
     expect(String(seenPlans[0]!.nodes['s1-green']!.goal)).not.toContain('并行波形');
+    expect(seenPlans[0]!.nodes['s1-red']).toBeUndefined(); // RED 节点不该再存在
   });
 
   test('D-3 平铺收敛 := 冻结判据绿; 判据没过 → not-converged (平铺没有 judge, 不存在 oracle-failed 那种打架)', async () => {

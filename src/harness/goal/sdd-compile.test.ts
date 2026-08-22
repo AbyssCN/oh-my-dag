@@ -46,19 +46,19 @@ describe('compileBreakdown — G-1 平铺: 节点数 = 切片数 + RED/GREEN + a
     // 节点数与 kind 断言双红 —— ①号税 (contract 段 69.7% token) 正是从那个节点进来的。
     const plan = compile();
     expect(Object.keys(plan.nodes).sort()).toEqual(
-      ['accept', 's1', 's1-green', 's1-red', 's2', 's2-green', 's2-red'].sort(),
+      ['accept', 's1', 's1-green', 's2', 's2-green'].sort(),
     );
     expect(Object.values(plan.nodes).some((n) => n.executor === 'conductor')).toBe(false);
     expect(Object.values(plan.nodes).some((n) => n.executor === 'map')).toBe(false);
   });
 
-  test('G-1: 依赖边 = 表中声明 (2 依赖 1 → s2-red 等 s1-green), TDD 链 red→impl→green', () => {
+  test('G-1: 依赖边 = 表中声明 (2 依赖 1 → s2 等 s1-green), 链 impl→green', () => {
     const plan = compile();
-    expect(plan.nodes['s1-red']!.depends_on).toEqual([]);
-    expect(plan.nodes['s1']!.depends_on).toEqual(['s1-red']);
+    // 2026-08-22 RED 删掉之后: 实装直接挂上游片的 GREEN (根片就是空依赖)。
+    expect(plan.nodes['s1']!.depends_on).toEqual([]);
     expect(plan.nodes['s1-green']!.depends_on).toEqual(['s1']);
     // 表里 2 依赖 1 → 等的是 1 的 **GREEN** (1 的实装真绿了才轮到 2), 不是 1 的执行节点。
-    expect(plan.nodes['s2-red']!.depends_on).toEqual(['s1-green']);
+    expect(plan.nodes['s2']!.depends_on).toEqual(['s1-green']);
     expect(plan.nodes['accept']!.depends_on).toEqual(['s1-green', 's2-green']);
   });
 
@@ -67,15 +67,14 @@ describe('compileBreakdown — G-1 平铺: 节点数 = 切片数 + RED/GREEN + a
     const plan = compileBreakdown(bd([slice(1, ['src/a.ts'], []), slice(2, ['src/b.ts'], [])]), {
       acceptCommand: FULL_REGRESSION,
     });
-    expect(plan.nodes['s2-red']!.depends_on).toEqual([]);
+    expect(plan.nodes['s2']!.depends_on).toEqual([]);
   });
 
   test('D-2: 写集列填进 executor 节点的 write_set', () => {
     const plan = compile();
     expect(plan.nodes['s1']!.write_set).toEqual(['src/a.ts', 'src/a.test.ts']);
     expect(plan.nodes['s1']!.executor).toBe('agent');
-    // MIRROR RULE: 只验证的 RED/GREEN 节点不声明产物 (声明了会被产物闸误杀)。
-    expect(plan.nodes['s1-red']!.write_set).toBeUndefined();
+    // MIRROR RULE: 只验证的 GREEN 节点不声明产物 (声明了会被产物闸误杀)。
     expect(plan.nodes['s1-green']!.write_set).toBeUndefined();
   });
 
@@ -84,99 +83,35 @@ describe('compileBreakdown — G-1 平铺: 节点数 = 切片数 + RED/GREEN + a
   });
 });
 
-describe('compileBreakdown — G-2/D-4 定向 TDD: RED/GREEN 同串, 全量回归恰一次', () => {
-  test('G-2: verify 列逐字进 RED 探针 goal, GREEN command 仍跑该串', () => {
+describe('compileBreakdown — G-2/D-4 定向 TDD: GREEN 即 verify 串, 全量回归恰一次', () => {
+  test('G-2: verify 列逐字进 GREEN 的 command', () => {
     const verify = 'bun test src/x.test.ts';
     const plan = compileBreakdown(bd([slice(1, ['src/x.ts'], [], verify)]), {
       acceptCommand: FULL_REGRESSION,
     });
-    expect(plan.nodes['s1-red']!.goal).toContain(`\`${verify}\``);
+
     expect(plan.nodes['s1-green']!.command).toBe(verify);
   });
 
-  test('D-4 (降级): RED 是 agent 证据探针, GREEN 仍是 expect_exit:0 的真闸', () => {
-    // 证伪: 把 RED 改回 command 或加回 `expect_exit: 1` → RED 形状断言红;把 GREEN 的
-    // expect_exit 拿掉 → 0 的断言红。运行语义由下方非零退出用例另钉,不拿形状冒充行为。
-    const plan = compile();
-    expect(plan.nodes['s1-red']!.executor).toBe('agent');
-    expect(plan.nodes['s1-red']!.command).toBeUndefined();
-    expect(plan.nodes['s1-red']!.expect_exit).toBeUndefined();
-    expect(plan.nodes['s1-red']!.output_type).toBe('structured');
-    // GREEN 真闸: expect_exit=0, 是「实装之后判据真绿」的判据 (这条没动, 不能放宽)
-    expect(plan.nodes['s1-green']!.expect_exit).toBe(0);
-    expect(plan.nodes['s1-green']!.output_type).toBe('none');
+  /**
+   * ★ **RED 节点已删**(2026-08-22)。这条替它守住那个删除:图里**不许**再出现
+   * `sN-red`,也不许出现任何 `executor: 'agent'` 的验证型节点 ——
+   * 本模块的招牌不变量是「机械编译,**零 LLM**」(文件头第一段),
+   * 而 RED 曾一度被降级成 agent 探针,那一版正是违反了它。
+   *
+   * 证伪:把 `sN-red` 那段对象字面量加回 `compileBreakdown` → 本条当场红。
+   */
+  test('★ 图里没有 RED 节点, 且验证型节点一个模型调用都不烧 (零 LLM)', () => {
+    const plan = compileBreakdown(bd([slice(1, ['src/a.ts'], []), slice(2, ['src/b.ts'], [1])]), { acceptCommand: FULL_REGRESSION });
+    expect(Object.keys(plan.nodes).filter((k) => k.endsWith('-red'))).toEqual([]);
+    // 只有实装节点是 agent; GREEN 与 accept 都是 command。
+    const agents = Object.entries(plan.nodes).filter(([, n]) => n.executor === 'agent').map(([k]) => k);
+    expect(agents.sort()).toEqual(['s1', 's2']);
   });
 
-  test('RED 探针幂等: 同一份 breakdown 编译两次 (模拟 replan 重跑), 两次的 RED 节点都不含 expect_exit', () => {
-    // 证伪: 把 `expect_exit: 1` 加回 sN-red 对象字面量 → 本 test 当场红
-    // (toBeUndefined 红)。S-43 兜底: RED 不再是硬闸, replan 重跑不因旧红判据卡死。
-    const plan1 = compile();
-    const plan2 = compile();
-    for (const plan of [plan1, plan2]) {
-      for (const id of ['s1-red', 's2-red']) {
-        expect(plan.nodes[id]!.expect_exit).toBeUndefined();
-      }
-    }
-  });
 
-  test('RED 探针仍逐字承载该片 verify 原文,不换成别的探针', () => {
-    // 证伪: 若 goal 改跑环境探针 (如 `ls src/` 或 `echo probe`) 或丢掉 verify 原文 → 当场红。
-    const verify = 'bun test src/x.test.ts';
-    const plan = compileBreakdown(bd([slice(1, ['src/x.ts'], [], verify)]), {
-      acceptCommand: FULL_REGRESSION,
-    });
-    expect(plan.nodes['s1-red']!.goal).toContain(`运行本片判据 \`${verify}\``);
-  });
 
-  test('RED 运行语义: verify 非零仍 done,产出保留退出码与 stdout/stderr', async () => {
-    // 证伪: 把 RED 改回 executor:'command' (expect_exit 缺省 0 或旧值 1) → 本命令退 7,
-    // 真实执行路径把节点判 failed,本条当场红。形状断言不能替代这条终态证据。
-    const script = "console.log('red-probe-stdout'); console.error('red-probe-stderr'); process.exit(7)";
-    const verify = `bun -e "${script}"`;
-    const compiled = compileBreakdown(bd([slice(1, ['src/x.ts'], [], verify)]), {
-      acceptCommand: FULL_REGRESSION,
-    });
-    const runProbe = async () => {
-      const proc = Bun.spawn(['bun', '-e', script], { stdout: 'pipe', stderr: 'pipe' });
-      const [exitCode, stdout, stderr] = await Promise.all([
-        proc.exited,
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-      ]);
-      return { exitCode, stdout: stdout.trim(), stderr: stderr.trim() };
-    };
-    const result = await runExecutorDagWithPlan(
-      { name: 'red-probe-runtime', nodes: { 's1-red': compiled.nodes['s1-red']! } },
-      {
-        conductorModel: 'test:conductor',
-        leafModel: 'test:leaf',
-        agentTemplates: new Map(),
-        agentRunner: async ({ prompt }) => {
-          expect(prompt).toContain(verify);
-          const evidence = await runProbe();
-          return {
-            text: `exitCode=${evidence.exitCode}\nstdout=${evidence.stdout}\nstderr=${evidence.stderr}`,
-            usage: { in: 0, out: 0 },
-          };
-        },
-        commandRunner: async ({ command }) => {
-          expect(command).toBe(verify);
-          const evidence = await runProbe();
-          return {
-            text: `stdout=${evidence.stdout}\nstderr=${evidence.stderr}`,
-            usage: { in: 0, out: 0 },
-            exitCode: evidence.exitCode,
-            timedOut: false,
-            signal: null,
-          };
-        },
-      },
-    );
-    expect(result.results['s1-red']!.status).toBe('done');
-    expect(result.results['s1-red']!.output).toContain('exitCode=7');
-    expect(result.results['s1-red']!.output).toContain('red-probe-stdout');
-    expect(result.results['s1-red']!.output).toContain('red-probe-stderr');
-  });
+
 
   test('G-2: 全量回归命令只在 accept 节点出现, 恰一次', () => {
     // 证伪: 若把全量回归也铺进每片的 GREEN → 命令计数 >1 当场红。那正是 D-4 要消掉的
@@ -311,10 +246,10 @@ describe('compileBreakdown — 端到端: 解析器 → 编译器 (切片 1+2 �
       '并行波形:`{1} → {2}`',
     ].join('\n');
     const plan = compileBreakdown(parseBreakdown(text), { acceptCommand: FULL_REGRESSION });
-    expect(Object.keys(plan.nodes).length).toBe(7);
+    expect(Object.keys(plan.nodes).length).toBe(5); // 2 切片 × (实装 + GREEN) + accept
     expect(plan.nodes['s2']!.write_set).toEqual(['src/b.ts', 'src/b.test.ts']);
-    expect(plan.nodes['s2-red']!.goal).toContain('`bun test src/b.test.ts`');
-    expect(plan.nodes['s2-red']!.depends_on).toEqual(['s1-green']);
+
+    expect(plan.nodes['s2']!.depends_on).toEqual(['s1-green']);
     // 切片名进 goal —— 执行节点得知道自己在干哪一片 (SDD 全文注入与否由接线方 5 号切片裁)。
     expect(plan.nodes['s2']!.goal).toContain('编译器');
   });

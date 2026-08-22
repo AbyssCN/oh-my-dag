@@ -7,12 +7,22 @@
  * 一份已经写好的东西。所以这里**没有任何模型调用**: 输入是 parseBreakdown 的结构,
  * 输出是可直接进引擎的 plan。
  *
- * D-4 定向 TDD (降级版): 每片编译成 RED → 实装 → GREEN 三节点。GREEN 仍是 expect_exit:0 的
- * **真闸**,判「实装之后本片判据真绿」—— 这条没毛病,不动。RED 已**降级为不判成败的证据探针**:
- * 它用 agent 执行器跑 goal 里逐字携带的同一条切片级命令,原样记录退出码与 stdout/stderr;
- * 命令退出码无论为何都只交证据,不据此判节点失败。不能只把 command 节点的 `expect_exit` 删掉:
- * 引擎会按 `node.expect_exit ?? 0` 补 0,非零仍判 failed。`output_type: 'structured'` 把探针回执
- * 归档为节点产出,给未来诊断留证据。
+ * D-4 定向 TDD: 每片编译成 **实装 → GREEN** 两节点。GREEN 是 expect_exit:0 的**真闸**,
+ * 判「实装之后本片判据真绿」—— 这条没毛病,不动。
+ *
+ * ## RED 节点 2026-08-22 **删了**(不是降级)
+ *
+ * 它原本在实装**之前**跑同一条 verify、`expect_exit: 1`,用来证明「这一片的测试在实装前
+ * 是红的」(O-6)。两条根因见下。**曾降级成 agent 探针(跑命令、只交证据、不判成败),
+ * 那一版被驳回**:
+ *  · `command` 执行器**表达不出「任意退出码都算过」** —— 删掉 `expect_exit` 也没用,
+ *    引擎按 `node.expect_exit ?? 0` 补 0,非零仍判 failed(**这一条是实测的**);
+ *  · 于是只能换 `executor: 'agent'` —— 那是**每片一发模型调用**去跑一条命令再自报。
+ *    它同时违反本模块第一行的招牌不变量(**「机械编译,零 LLM」**)、把一个会说谎的节点
+ *    放在每片的关键路径上(本仓另有「谎报完成」闸专门防这个形状),
+ *    而它换来的那个读数**由构造就是废的**(恒为「文件不存在」)。
+ *  ⇒ **留一个节点去记一个废读数是 cargo cult。删。**
+ *
  *
  * 为什么不判红 —— 两个根因,下一个人会问,答案写在这里:
  *  · S-49 — SDD 直通模式下**测试文件与实装文件在同一片的写集里一起产出**。实装前跑
@@ -318,15 +328,6 @@ export function compileBreakdown(
 
   const nodes: Record<string, Record<string, unknown>> = {};
   for (const s of slices) {
-    nodes[redId(s.id)] = {
-      executor: 'agent',
-      output_type: 'structured',
-      depends_on: s.deps.map(greenId),
-      goal:
-        `探针:运行本片判据 \`${s.verify}\`,原样记录退出码与 stdout/stderr;无论退出码是多少都不算失败,只交证据。` +
-        `(不判成败 —— 直通模式下测试与实装同片产出,实装前的红多半只是"文件不存在",` +
-        `判别力不在这里,在每条闸自己的反向自检)`,
-    };
     nodes[nodeId(s.id)] = {
       executor: 'agent',
       // 切片级契约 (名 + 写集 + verify) 进 goal。**SDD 全文不在这里内联** —— 每节点一份
@@ -337,7 +338,8 @@ export function compileBreakdown(
         `完成判据: \`${s.verify}\` 退出码 0`,
       write_set: [...s.writeSet],
       output_type: 'file',
-      depends_on: [redId(s.id)],
+      // RED 节点删掉之后, 实装直接挂在**上游片的 GREEN** 上 (语义不变: 1 真绿了才轮到 2)。
+      depends_on: s.deps.map(greenId),
     };
     nodes[greenId(s.id)] = {
       executor: 'command',
