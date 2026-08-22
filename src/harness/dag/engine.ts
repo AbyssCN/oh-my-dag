@@ -5130,6 +5130,13 @@ async function runDagInternalCore(
       // 平铺图确定性重规划 (SDD 2026-08-22 「平铺图确定性重规划」): 给则**直跳过**补丁与整图两段,
       // 不请 conductor (这一发 LLM 对编译产物是冗余 —— 重算等价复用)。返回 undefined 走今天路径 (INV-3)。
       const rerunStart = Date.now();
+      // 切片 (2026-08-23, 引擎自纠错片 1 续) — 重规划轮开始判词 (C-1 INV-1): 时间戳进 payload
+      // (goal-worker 不 import cli.ts, 薄壳 logger 不打时间, 复用片 1 roundStampNow —— D-1/D-2)。
+      // 节点数 = 上一轮 (exec 仍是上轮 exec) 图规模, 让读日志的人能直观判「重规划规模 vs 原图」。
+      logger.info(
+        { round: escCount, at: roundStampNow(), poisoned: closure ? closure.size : 0, nodes: Object.keys(exec.plan.nodes).length },
+        '[omd/executor-dag] 重规划轮开始',
+      );
       const deterministicPlan = config.deterministicReplan?.();
       let replanMode: 'patch' | 'full' | 'deterministic';
       let patched: Awaited<ReturnType<typeof tryPatchReplan>> | null = null;
@@ -5168,6 +5175,20 @@ async function runDagInternalCore(
         replanMode,
         replanTokens,
       };
+      // 切片 (2026-08-23, 引擎自纠错片 1 续) — 重规划轮结束判词 (C-1 INV-2):
+      // ms = 该轮墙钟, sinceRunStartMs = 距 run 起跑的墙钟 (本片交付物「第 2 轮占总墙钟百分比」
+      // 的分子与分母由读日志的人自己算, 引擎不算比值 —— D-5)。
+      logger.info(
+        {
+          round: escCount,
+          at: roundStampNow(),
+          ms: rerunWallMs,
+          mode: replanMode,
+          reuseHits: exec.reusedNodes?.length ?? 0,
+          sinceRunStartMs: Date.now() - runStartedAt,
+        },
+        '[omd/executor-dag] 重规划轮结束',
+      );
       conductorUsage = addUsage(conductorUsage, exec.conductorUsage);
       leavesIn += exec.leavesIn;
       leavesOut += exec.leavesOut;
