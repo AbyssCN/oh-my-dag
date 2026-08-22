@@ -135,6 +135,9 @@ export function summarizeResults(
   for (const [id, leaf] of Object.entries(results)) {
     const node = plan.nodes[id];
     const head = `### ${id} [${leaf.status}]${node?.goal ? ` — ${node.goal}` : ''}`;
+    // C-2: 合并记录随节点进 verifier 材料 (2026-08-22, #153② 同病二次发作)。
+    // 不挂这条 = verifier 读到「少一个节点」, 而少的那条命令其实排在链首、没丢。
+    // 只在带 `absorbed_from` 时渲染一行 —— 不带该字段的节点 (绝大多数) 卷面逐字节同旧。
     const meta = [
       node?.command ? `$ ${node.command}` : '',
       leaf.exitCode === undefined
@@ -142,6 +145,11 @@ export function summarizeResults(
         : leaf.exitCode === null
           ? 'exit —— 死于信号 (没有主动退出码: 跑了但没跑完, 没有判词)'
           : `exit ${leaf.exitCode}${leaf.exitCode < 0 ? ' (command-leaf 闸拒 — 命令未执行)' : ''}`,
+      ...(Array.isArray(node?.absorbed_from) && node!.absorbed_from.length > 0
+        ? [
+            `merged_from: [${node!.absorbed_from.join(', ')}] —— 引擎机械合并 (#153②), 命令一条不少且被吸收者排在链首, 不是执行体省略。`,
+          ]
+        : []),
     ].filter(Boolean);
     if (artifactRoot && node?.output_path) {
       const resolved = isAbsolute(node.output_path) ? node.output_path : join(artifactRoot, node.output_path);

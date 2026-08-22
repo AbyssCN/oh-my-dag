@@ -90,8 +90,12 @@ export function mergeCommandChains(plan: ConductorPlan): {
     for (const c of chain) absorbed.add(c);
     const links = [...chain, id];
     const linkNodes = links.map((l) => nodes[l]).filter((x): x is PlanNode => x !== undefined);
+    // C-1: 合并记录挂到存活节点上 (链序, 与 `merged[].absorbed` 同值), 让
+    // summarizeResults 不用改签名就拿得到 (D-1)。`absorbed_from` 仅出现在
+    // 参与合并的尾节点; 未参与合并的节点不带这一字段 (INV-2, NULL ≠ 0 ≠ 不适用)。
     rewrites.set(id, {
       ...n,
+      absorbed_from: chain,
       goal: linkNodes.map((x) => x.goal ?? '').filter(Boolean).join(' && '),
       command: linkNodes.map((x) => (x.command ?? '').trim()).filter(Boolean).join(' && '),
       depends_on: nodes[chain[0]!]?.depends_on ?? [],
