@@ -86,7 +86,9 @@ const res = await runWriter({
 });
 
 console.error(
-  `[session-writer] ok=${res.ok} mode=${mode} chars=${res.chars} degraded=${res.degraded} ` +
+  // sha = 返回时**盘上**那份 checkpoint.md 的 sha256 前 12 位。事后判漂:
+  //   sha256sum <checkpoint> | cut -c1-12   不等 = 落盘之后有人改过它 (现场见 writer.ts 的 `sha` 字段注)。
+  `[session-writer] ok=${res.ok} mode=${mode} chars=${res.chars} sha=${res.sha} degraded=${res.degraded} ` +
     `skipped=${res.skipped} checkpoint=${res.checkpointPath}` +
     (res.sink ? ` sink.ok=${res.sink.ok}${res.sink.error ? ` (${res.sink.error})` : ''}` : ''),
 );

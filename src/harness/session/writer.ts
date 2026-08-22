@@ -17,6 +17,7 @@
  */
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { callModel as defaultCallModel, type ModelRequest, type ModelResponse } from '../../model';
 import { bootstrapModelRuntime } from '../../model/bootstrap';
@@ -94,6 +95,36 @@ export interface WriterResult {
   skipped: boolean;
   /** SQLite 镜像结果(fail-open)。 */
   sink?: CheckpointSinkResult;
+  /**
+   * **本次返回时 `checkpoint.md` 盘上内容**的 sha256 前 12 位(owner 2026-08-22)。
+   *
+   * ## 它治的那个病(有现场)
+   *
+   * session `50f0173c` :writer 于 20:35:17 蒸馏出 5,821 字符落盘并镜像进 SQLite,
+   * **20 秒后**一次进程外的 Write 把 `checkpoint.md` 换成了另一份 2,902 字符的手写版。
+   * 事后能看见的只有 `writer.log` 里那个对不上的 `chars=5821` —— 而对不对得上,
+   * 得先有人去数盘上那份有多少字符,没人会去数。**漂了不留痕。**
+   *
+   * ⚠ 这不是"闸",omd 拦不住自己进程外的覆盖,也不该拦(手写覆盖机器版通常正是想要的)。
+   * 这一条只让**漂本身可判**:`writer.log` 记的是"它写了什么",盘上是"现在是什么",
+   * 两者能分叉,而分叉前一直没有可比的锚。
+   *
+   * 判法(一条命令):
+   * ```
+   * sha256sum <checkpointPath> | cut -c1-12   # 与 writer.log 的 sha= 比
+   * ```
+   * 不等 = 落盘之后有人改过它。**不等不代表出错** —— 只代表 SQLite 那面镜像的是旧内容。
+   *
+   * ⚠ 三条返回路径都要有值,且都必须是**盘上那份**的哈希,不是"本次蒸馏出的那份":
+   * `skipped` 与「降级不覆盖」两条路都不写盘,它们的哈希是**旧** checkpoint 的。
+   * 混成一个就废了 —— 那正好是这个字段要抓的漂。
+   */
+  sha: string;
+}
+
+/** `checkpoint.md` 内容锚:sha256 前 12 位。与 `sha256sum … | cut -c1-12` 逐字一致。 */
+function sha12(content: string): string {
+  return createHash('sha256').update(content, 'utf-8').digest('hex').slice(0, 12);
 }
 
 // ─── transcript 增量摘录 ──────────────────────────────────────────────────────
@@ -347,6 +378,8 @@ export async function runWriter(opts: WriterOptions): Promise<WriterResult> {
       degraded: prevCheckpoint.startsWith('<!-- DEGRADED'),
       chars: prevCheckpoint.length,
       skipped: true,
+      // 这条路不写盘 → 盘上仍是旧那份, 哈希就得是旧那份的。
+      sha: sha12(prevCheckpoint),
     };
   }
 
@@ -387,7 +420,8 @@ export async function runWriter(opts: WriterOptions): Promise<WriterResult> {
       { sessionId, mode, checkpointPath, prevChars: prevCheckpoint.length, degradedChars: md.length },
       '[session-writer] 蒸馏降级 → **保留原 checkpoint 不覆盖** (陈旧但真 > 新鲜但空); 降级版落 .degraded sidecar',
     );
-    return { ok: true, checkpointPath, degraded: true, chars: prevCheckpoint.length, skipped: false };
+    // 同上: 降级版只落 sidecar, `checkpoint.md` 一个字没动 → 哈希是旧那份的。
+    return { ok: true, checkpointPath, degraded: true, chars: prevCheckpoint.length, skipped: false, sha: sha12(prevCheckpoint) };
   }
   writeFileSync(checkpointPath, md);
   writeFileSync(
@@ -419,5 +453,5 @@ export async function runWriter(opts: WriterOptions): Promise<WriterResult> {
     sink = { ok: false, error: `sink threw (fail-open): ${e instanceof Error ? e.message : e}` };
   }
 
-  return { ok: true, checkpointPath, degraded, chars: md.length, skipped: false, sink };
+  return { ok: true, checkpointPath, degraded, chars: md.length, skipped: false, sink, sha: sha12(md) };
 }
