@@ -67,6 +67,14 @@ export const OMD_KEYBINDINGS = {
    * 而且这一条**可改** —— `.omd/keybindings.json` 里写 `{"omd.palette": "ctrl+e"}` 就还回去。
    */
   'omd.palette': { defaultKeys: 'ctrl+k', description: 'Go to: session / live graph / map (takes ctrl+k from tui.editor.deleteToLineEnd)' },
+  /**
+   * ★ **片 5 切片 3**(2026-08-22): 收件箱开关。**实测见 `now-band-wiring.test.ts`** ——
+   * `ctrl+i` 与 `Tab` 是同一字节(`\x09`),而 Tab 是**上下文粘合键**(补全/换屏),
+   * 重绑会把那两条路静默吃掉。**取舍**:`ctrl+i` 留给系统(终端里与 Tab 互换),omd 改用
+   * `ctrl+n`(next)。Claude Code / dsh-TUI 沿用 `ctrl+i` 是因为它们的编辑器没有常驻补全
+   * —— omd 有(`CombinedAutocompleteProvider` 在输入框里),抢键会咬补全。
+   */
+  'omd.inbox': { defaultKeys: 'ctrl+n', description: 'Open the inbox (one-thing-needing-you)' },
 } as const;
 
 declare module '@earendil-works/pi-tui' {
@@ -77,6 +85,7 @@ declare module '@earendil-works/pi-tui' {
     'omd.dagFull': true;
     'omd.pathFull': true;
     'omd.palette': true;
+    'omd.inbox': true;
   }
 }
 

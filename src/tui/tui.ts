@@ -50,7 +50,10 @@ import { fitLine } from './render/line';
 import { initHyperlinks } from './render/link';
 import { renderLayers } from './render/dag-layers';
 import { renderRunList } from './render/run-list';
+import { renderNowBand, type NowBandInput, type NowPaint } from './render/now-band';
+import { renderInbox, type InboxItem } from './render/inbox';
 import { readDagShards } from '../hud/load';
+import { readAttention } from '../serve/read-api';
 import { StatusLine } from './components/status-line';
 import { formatSeatRows, parseSeatCommand, seatRows } from './seat-picker';
 import { defaultTuiSessionId, forkSessionId, formatSessions, newSessionId, parseNewForkCommand, parseSessionCommand, sessionPickerOptions } from './sessions';
@@ -638,6 +641,116 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     handleInput: () => {},
     invalidate: () => {},
   };
+
+  // ── 片 5 切片 3 · 「当前」区数据 + 收件箱数据 ──
+  // 与 ticketBoard / runBoard 同条纪律:不在 render 里读盘 (D-12 ②),复用既有刷新时机
+  // (启动 / 每轮收尾 / Ctrl+P 切图)。data 是 already-fetched 结构,纯函数吃它就够。
+  let nowBandData: NowBandInput = { awaiting: [], suggested: [], live: [], maps: [] };
+  /** 收件箱四态由各数据源汇成。`InboxItem` 形状见 `render/inbox.ts` 类型定义。 */
+  let inboxItems: InboxItem[] = [];
+  function refreshNowBandData(): void {
+    const attention = (() => {
+      try {
+        return readAttention(opts.cwd);
+      } catch (err) {
+        // fail-open 吞异常不吞证据:日志留痕,屏上空仓。
+        logger.warn({ err: err instanceof Error ? err.message : String(err) }, '[omd/tui] readAttention 抛了 → 当前区本轮空');
+        return { awaiting: [], frontier: [], suggested: [], maps: [] };
+      }
+    })();
+    const liveViews = runList.filter((v) => v.phase === 'live');
+    nowBandData = {
+      awaiting: attention.awaiting,
+      suggested: attention.suggested,
+      live: liveViews,
+      maps: attention.maps,
+    };
+    // 收件箱 = 等裁票 (rule) + 建议票 (confirm) + 活图 await 节点 (node) + 产物待收 (take)。
+    // take 这一态本片只画出**那一行**,真收件走 `Enter` 预填 (INV-INBOX-4);空仓即空。
+    const items: InboxItem[] = [];
+    for (const t of attention.awaiting) {
+      items.push({ kind: 'rule', slug: t.slug, ticketId: t.ticketId, title: t.title });
+    }
+    for (const t of attention.suggested) {
+      items.push({ kind: 'confirm', slug: t.slug, ticketId: t.ticketId, title: t.title });
+    }
+    // ⚠ 收件箱的 node / take 两态本片不接真源 (SDD 非目标 §2.2: 真取数是另一片)。
+    inboxItems = items;
+  }
+  refreshNowBandData();
+
+  /** 「当前」区渲染器组件。
+   *  常驻:由 `renderNowBand` 自己决定有几行 (INV-NOW-3 无源恒缺席 → []),
+   *  与 pathHudVisible 那条三块**完全脱钩**(那一族照样被人开口后收起 —— 判词判的就是那条)。
+   *  颜色走 `theme.chrome` 同形钩子,与 `run-list` / `dag-screen` 同款(关色 → 恒等)。 */
+  const nowBand: Component = {
+    render: (width: number): string[] => {
+      const paint: NowPaint = {
+        accent: theme.chrome.accent,
+        dim: theme.chrome.dim,
+        warn: theme.chrome.warn,
+        // `chrome` 没单独的 `ok` 档;「真成功」色 = `toolOk`(亮绿,留给"真的成功")。
+        // NowPaint 声明 `ok` 是为与 dim/accent/warn 同形,组件内未消费,这里只为类型满足。
+        ok: theme.chrome.toolOk,
+      };
+      // 留一行顶气,与下方输入框分隔开 —— 空仓时 renderNowBand 自返 [],也不画那一行。
+      const lines = renderNowBand(nowBandData, { width, now: now(), paint });
+      return lines.length > 0 ? ['', ...lines] : lines;
+    },
+    handleInput: () => {},
+    invalidate: () => {},
+  };
+
+  /**
+   * 收件箱全屏(片 5 切片 3)。与 fullView / pathView 同款树内模态 —— `renderInbox`
+   * 本身已是纯函数(见 `render/inbox.ts`),底边常驻一句话(INV-INBOX-1/2)。
+   * `selected` 越界 / 负数由 `renderInbox` 自己 mod(见 INV-INBOX-1 的 GWT 用例)。
+   */
+  const inboxView: Component = {
+    render: (width: number): string[] => {
+      const height = Math.max(6, (terminal.rows || 30) - 6);
+      return renderInbox(inboxItems, {
+        width,
+        height,
+        selected: inboxSelected,
+        now: now(),
+        paint: {
+          accent: theme.chrome.accent,
+          dim: theme.chrome.dim,
+          warn: theme.chrome.warn,
+          sel: theme.chrome.user,
+        },
+      });
+    },
+    handleInput: () => {},
+    invalidate: () => {},
+  };
+
+  /** 收件箱开关状态 + 选中索引。Ctrl+N 切换;开时本 listener 接管 ↑↓/Enter/Esc。 */
+  let inboxOpen = false;
+  let inboxSelected = 0;
+
+  /**
+   * 收件箱「Enter → 预填不发送」(INV-INBOX-4)。四态四句话 —— 不合并,合并就教人去撞
+   * `pathfinder.ts:503` 的硬闸(SDD 表四态四组动作那条)。**只动 editor.setText,
+   * 永远不调 submit**;用户在输入框里回车那一下才决定是不是真发。
+   */
+  function prefillInboxItem(item: InboxItem): void {
+    let prompt: string;
+    if (item.kind === 'rule') {
+      prompt = `Map rule on ticket ${item.ticketId} of map ${item.slug} (ruling = goal): `;
+    } else if (item.kind === 'confirm') {
+      prompt = `Accept/reject ticket ${item.ticketId} of map ${item.slug}: `;
+    } else if (item.kind === 'node') {
+      prompt = `Look at node ${item.nodeId} in run ${item.runId.slice(0, 8)}: `;
+    } else {
+      prompt = `Take delivery for ticket ${item.ticketId} of map ${item.slug}: `;
+    }
+    inboxOpen = false; // 关掉全屏,把焦点还给输入框
+    editor.setText(prompt);
+    tui.setFocus(editor);
+    tui.requestRender();
+  }
   // 空态在框里画一句提示符 —— 见 `components/hinted-editor.ts` 文件头(gauntlet critic 的判词)。
   const editor = new HintedEditor(tui, theme.editor, { hint: CHROME.editorHint, paint: theme.chrome.dim });
   // 补全:**行首 `/` 出命令,其余出文件** —— 底座是 pi-tui 的 `CombinedAutocompleteProvider`。
@@ -995,11 +1108,18 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   const root = new VStack();
   // W6·M1: 转录直接进树 (自然高, 顶部进 scrollback)。全屏 = 树内模态块 (B 案,
   // enterAltView 处记录了对 SDD A 案的偏离与理由): 开着时转录/HUD 让位, 关掉回来。
-  root.addChild(transcript, { visible: () => !dagFullState.fullOn && !pathFullOn });
+  root.addChild(transcript, { visible: () => !dagFullState.fullOn && !pathFullOn && !inboxOpen });
   root.addChild(fullView, { shrink: 0, visible: () => dagFullState.fullOn && !pathFullOn });
   root.addChild(pathView, { shrink: 0, visible: () => pathFullOn });
-  root.addChild(alignToContent(dagTreeBlock), { shrink: 0, visible: (vp: { width: number }) => !dagFullState.fullOn && !pathFullOn && sidebarPainting(vp.width) });
-  root.addChild(alignToContent(dagHudBlock), { shrink: 0, visible: (vp: { width: number }) => !dagFullState.fullOn && !pathFullOn && !sidebarPainting(vp.width) });
+  /**
+   * ★ **收件箱全屏**(片 5 切片 3,2026-08-22):与 fullView / pathView 同款树内模态。
+   * `Ctrl+N` 切(`omd.inbox`,见 `keys.ts`);开时 transcript 让位,Esc 关。
+   * 与三块(pathHud/ticketBoard/runBoard)**无关** —— 收件箱开时那一族照常按
+   * `pathHudVisible` 决定收不收,本片不动那一族(判词判的就是那一族)。
+   */
+  root.addChild(inboxView, { shrink: 0, visible: () => inboxOpen });
+  root.addChild(alignToContent(dagTreeBlock), { shrink: 0, visible: (vp: { width: number }) => !dagFullState.fullOn && !pathFullOn && !inboxOpen && sidebarPainting(vp.width) });
+  root.addChild(alignToContent(dagHudBlock), { shrink: 0, visible: (vp: { width: number }) => !dagFullState.fullOn && !pathFullOn && !inboxOpen && !sidebarPainting(vp.width) });
   /**
    * 侧栏 pathfinder 摘要:**只在还没开口说话的时候画**(2026-08-08,P3 件3 轮1)。
    *
@@ -1012,14 +1132,26 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
    * ⚠ 判据是 `chatLog.hasDialogue`(有 `user` 条目)**不是** `length > 0` —— 后者被欢迎屏字标满足。
    * ⚠ 全屏散雾图开着时同样不画(同一张图画两遍会读成两张)。
    */
-  root.addChild(alignToContent(pathHud), { shrink: 0, visible: () => pathHudVisible({ pathFullOn, hasDialogue: chatLog.hasDialogue }) });
+  root.addChild(alignToContent(pathHud), { shrink: 0, visible: () => pathHudVisible({ pathFullOn, hasDialogue: chatLog.hasDialogue }) && !inboxOpen });
   // 切片 S5: 票看板与 pathHud 同一可见性 —— 它属于欢迎屏, 不属于对话主屏 (要常看按 Ctrl+P)。
-  root.addChild(alignToContent(ticketBoard), { shrink: 0, visible: () => pathHudVisible({ pathFullOn, hasDialogue: chatLog.hasDialogue }) });
+  root.addChild(alignToContent(ticketBoard), { shrink: 0, visible: () => pathHudVisible({ pathFullOn, hasDialogue: chatLog.hasDialogue }) && !inboxOpen });
   // #96: 活 run 观察面挂在票看板下面, **同一可见性** —— 它和票看板回答的是同一屏上的两个问题
   // ("图上还剩什么" / "现在谁在跑"), 分开挂会让其中一个在欢迎屏之外孤零零地出现。
-  root.addChild(alignToContent(runBoard), { shrink: 0, visible: () => pathHudVisible({ pathFullOn, hasDialogue: chatLog.hasDialogue }) });
+  root.addChild(alignToContent(runBoard), { shrink: 0, visible: () => pathHudVisible({ pathFullOn, hasDialogue: chatLog.hasDialogue }) && !inboxOpen });
   root.addChild(waiting, { shrink: 0, visible: () => turnInFlight });
   root.addChild(dialogSlot, chrome);
+  /**
+   * ★ **「当前」区**(片 5 切片 3,2026-08-22):画在输入框**正上方**,**对话中常驻**。
+   *
+   * 判词(`tui.ts:861-863`)判的是「与本题无关的 3 块」,不是「不许有常驻区」。
+   * ⇒ 这一条带子**与 pathHudVisible 那条三块脱钩**(INV-NOW-1 阶梯只选一档,
+   *   INV-NOW-3 无源恒缺席)。`renderNowBand` 自己返空仓时 `[]`,这里转出来还是 `[]`,
+   *   VStack 自然不画 —— 一条常驻的「一切正常」只会训练人不看它。
+   * 全屏态(DAG / 散雾图 / 收件箱)让位:同一区域画三遍是 dump 不是 UI。
+   * ⚠ `nowBand` 是声明在 `root` 之上的 Component,这里**只引用** —— 真实定义在上面
+   *   「当前」区数据那一段(行号随 commit 漂移,看上面 `nowBand:` 那条声明)。
+   */
+  root.addChild(nowBand, { shrink: 0, visible: () => !dagFullState.fullOn && !pathFullOn && !inboxOpen });
   root.addChild(editorContainer, chrome);
   root.addChild(healthLine, { shrink: 0, visible: () => health.line() !== null });
   root.addChild(statusLine, chrome);
@@ -1373,6 +1505,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       pathHud.refresh();
       refreshTicketBoard(); // 切片 S5: 同一时机重读看板 (一轮跑完可能动过地图)
       refreshRunBoard(); // #96: 板与看板同一时机重读 —— 一轮跑完 claimed/published 都可能变
+      refreshNowBandData(); // 片 5: 当前区 + 收件箱同一时机重读 (一轮跑完 map/run 都可能变)
       if (pathSlugSel) reloadPathData(); // 切片⑧: 全屏图的数据同一时机重读
       tui.requestRender();
     }
@@ -2052,6 +2185,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     pathHud.refresh(); // 侧栏跟着换图
     refreshTicketBoard(); // 切片 S5: 看板跟着换图
     refreshRunBoard(); // #96: 板不随图走 (它是全仓的), 但借同一次时机刷新
+    refreshNowBandData(); // 片 5: 当前区 + 收件箱同一时机重读 (切图可能改 awaiting 列表)
     enterAltView('path'); // W6·M2 (B 案): 树内模态块开灯
   }
 
