@@ -2944,7 +2944,7 @@ async function executePlan(
         if (falsifyMut) {
           mutatePath = falsifyMut.file.startsWith('/')
             ? falsifyMut.file
-            : join(continuity?.repoRoot ?? process.cwd(), falsifyMut.file);
+            : join(continuity?.execRoot ?? continuity?.repoRoot ?? process.cwd(), falsifyMut.file);
 
           let matches = -1; // -1 = 读盘失败 (把"文件不在"与"oldText 零匹配"分开, 落到不同出口)
           let readErr: unknown;
