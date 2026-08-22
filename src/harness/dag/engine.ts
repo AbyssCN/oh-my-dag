@@ -169,6 +169,12 @@ import { awaitNode } from './await-node';
 /** 上一轮 plan+results (escalation 重规划轮传入, D-21 跨轮复用的匹配源)。 */
 import type { PriorExec } from './types';
 
+// ── 切片 1 (2026-08-23, 引擎自纠错片 1) —— conductor 内环留轮边界时间戳 ───────────
+//   时间戳取值收进模块作用域的具名 helper, 三处埋点共用。理由 (SDD D-5):
+//   反向自检的 mutation 定位要**唯一**, 内联 `new Date().toISOString()` 会让这一跳
+//   落在 6+ 个 toISOString 调用点上, 闸红的时候分不清是哪个。改成 stub → 立刻红。
+const roundStampNow = (): string => new Date().toISOString();
+
 // ── barrel re-export: 保持 ./executor-dag 公共面稳定 (importer-closure, 消费方零改) ──
 export type { GenerateFn, ExecutorDagConfig, ExecutorDagResult, LeafResult, DagNodeEvent } from './types';
 export { topoLevels } from './planner';
@@ -2155,6 +2161,12 @@ async function executePlan(
      */
     const settle = (leaf: LeafResult, rounds: number, converged?: boolean): LeafResult => {
       const out: LeafResult = { ...leaf, rounds, ...(converged === undefined ? {} : { converged }) };
+      // 切片 1 (C-1 INV-3): 内环收尾 —— 环定局这一刻, 留总墙钟。埋这里是因为环的三条 return
+      // (收敛 / 轮数用尽 / 空转 BLOCKED) 都过 settle, 写在外面会被 return 跳过。
+      logger.info(
+        { node: id, rounds, at: roundStampNow(), loopMs: Date.now() - loopStartedAt },
+        '[omd/executor-dag] 内环收尾',
+      );
       if (out.status === 'done') {
         saveDoneCheckpoint({
           id,
@@ -2313,7 +2325,17 @@ async function executePlan(
           break;
         }
       }
+      // 切片 1 (C-1 INV-1): 轮开始 —— 取消/预算闸之后, runConductorRound 之前。
+      // ms 取值从这里起算, judge 时间落在轮结束与下一条轮开始之间, 由内环收尾的 loopMs 兜住。
+      const roundStartedAt = Date.now();
+      logger.info({ node: id, round, at: roundStampNow() }, '[omd/executor-dag] 轮开始');
       const r = await runConductorRound(id, round, prevReason, poisoned, prevResults);
+      // 切片 1 (C-1 INV-2): 轮结束 —— runConductorRound 返回后立刻 (D-3: ms 只覆盖展开+执行,
+      // 不含轮末 judge, 三段时间加起来无主)。r.results 是 Map, 子图节点数 = .size。
+      logger.info(
+        { node: id, round, at: roundStampNow(), ms: Date.now() - roundStartedAt, nodes: r.results.size },
+        '[omd/executor-dag] 轮结束',
+      );
       doneRounds = round;
       // #158: 轮内派发闸触发 → 终态词上叶 (不然 goal 层把预算停读成普通未收敛, 指引就错了)。
       // journal 在这儿写一条; 后面 settle 的"跑完才发现"账 `if (!budgetStopped)` 自然不重记。
