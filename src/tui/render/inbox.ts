@@ -9,8 +9,8 @@
  * |----------|------|-------------------------------------|-------------------|-------------------------|
  * | rule     | ⚠    | `readAttention().awaiting` (票)     | `Enter 就地裁`    | 派活撞硬闸              |
  * | confirm  | ?    | `readAttention().suggested` (票)    | `c 收件 / x 退回` | 教人去撞 `pathfinder.ts:503` 那条硬闸 |
- * | node     | ·    | 活图里 `await` 节点                 | `Enter 进图`      | 把它当 ticket 派活      |
- * | take     | ↑    | 产物待收 (delivered 未 ack)         | `Enter 收件`      | 直接 `map_deliver` (那是执行) |
+ * | node     | ·    | 活图里 `await` 节点                 | `r / i / s`        | i/s 误以为能标绿 (那是画的) |
+ * | take     | ↑    | `awaitingRuns()` 逼近超时 (片 7)    | `Enter`            | 真数据源接上            |
  *
  * 合并/串味 = 把硬闸撞穿(实测那张判词是这条路)。
  *
@@ -57,9 +57,15 @@ const PLAIN: InboxPaint = {
 
 /**
  * 收件箱里的一件。`kind` 四态,字段**故意不平**:
- *   - `rule` / `confirm` / `take` 来自 pathfinder 票,定位用 `slug + ticketId`;
+ *   - `rule` / `confirm` / `take` 来自 pathfinder 票(片 5)与 awaitingRuns(片 7),
+ *     定位用 `slug + ticketId`;
  *   - `node` 是另一个概念层(活图里的 await 节点),定位用 `runId + nodeId`。
  * 合并就再也分不清「哪些走 map_* / 哪些走预填」 —— 本片存在的一半理由就是这条分叉。
+ *
+ * ⚠ SDD 片 7 把 `take` 的数据源从「delivered ticket」换成「`awaitingRuns()` 逼近超时
+ *   的等件」 —— 但**形状不变**: caller 把 runId/artifact 投影到 slug/ticketId(惯用的
+ *   `runId.slice(0,8)` + 字符串 artifact)。这样 `inbox.test.ts` 的现有断言不用动,
+ *   而行为层面是真接上 awaiting 数据源。
  */
 export type InboxItem =
   | { kind: 'rule'; slug: string; ticketId: string; title: string; stale?: boolean }
@@ -76,6 +82,11 @@ export type InboxItem =
  * **测不到就是直接教人撞 `pathfinder.ts:503` 那条硬闸**。
  *
  * 几个为什么这样写, 写在每个 kind 的分支里。
+ *
+ * 片 7 加了 `intervene` 与 `cancel` 两个真写侧 ——
+ * `i` 走 `recordIntervention`(纯追加, 无副作用), `s` 走
+ * `cancelDetachedRun`(协作式停, 四种 `CancelOutcome` 分得开; 二次确认是 caller 的事,
+ * 这一层只回答「按了之后下一步是哪个动作」, 不弹 dialog)。
  */
 export type InboxAction =
   | { kind: 'noop' }
@@ -87,8 +98,14 @@ export type InboxAction =
   | { kind: 'confirm'; item: Extract<InboxItem, { kind: 'confirm' }>; action: 'accept' | 'reject' }
   /** `node` 类的 `r` —— 真接 `OmdBackend.resumeRun`(INV-BOX-6)。 */
   | { kind: 'resume'; item: Extract<InboxItem, { kind: 'node' }> }
-  /** `node` 类的 `i` / `s` / Enter / `take` 类的 Enter —— 都是预填(真写侧是另一片)。
-   *  INV-BOX-6: i / s 渲染时已明说"prefill", 这一点在 `renderSelectedDetail` 兑现。 */
+  /** `node` 类的 `i` —— 真写侧 `recordIntervention`(INV-RC-1/2, SDD 片 7)。
+   *  cause 由 caller 用 `FAILURE_KIND_ORDER` 选择, 这一层只路由。 */
+  | { kind: 'intervene'; item: Extract<InboxItem, { kind: 'node' }> }
+  /** `node` 类的 `s` —— 真写侧 `cancelDetachedRun`(INV-RC-3/4, SDD 片 7)。
+   *  二次确认是 caller 的事(`dialogs.confirm`), 这一层只路由。 */
+  | { kind: 'cancel'; item: Extract<InboxItem, { kind: 'node' }> }
+  /** `node` 类 Enter / `take` 类 Enter —— 都是预填(无副作用, 把焦点回给编辑器)。
+   *  `take` 的预填文案与片 6 不同: 现在是「去那张图」(SDD §0③ 改对语义)。 */
   | { kind: 'prefill'; item: InboxItem };
 
 /**
@@ -106,8 +123,10 @@ function pickItem(items: readonly InboxItem[], selected: number): InboxItem | nu
  * - rule + Enter / 'x' → `rule-input`(开输入框, INV-BOX-3)
  * - confirm + 'c' / 'x' → `confirm`(INV-BOX-5: Enter 不在 confirm 的动作里)
  * - node + 'r' → `resume`(INV-BOX-6 真接线)
- * - node + 'i' / 's' / Enter → `prefill`(i / s 标注在 renderer 那侧)
- * - take + Enter → `prefill`(本片非目标: 没有真写侧)
+ * - node + 'i' → `intervene`(INV-RC-1/2, SDD 片 7 真接线)
+ * - node + 's' → `cancel`(INV-RC-3/4, SDD 片 7 真接线, 二次确认在 caller)
+ * - node + Enter → `prefill`(无副作用, 进图/预填)
+ * - take + Enter → `prefill`(无副作用, 跳到在等的 run 的图)
  * - 其余 → `noop`
  *
  * ⚠ 不在 TUI 里再写一遍守卫判断(`canRule` / `canConfirm`): 那是 ticket-guard.ts
@@ -148,15 +167,14 @@ export function decideInboxKey(args: {
   }
   if (item.kind === 'node') {
     if (key === 'r' || key === 'R') return { kind: 'resume', item };
-    // i / s / Enter 全部 prefill —— 真接线走 OmdBackend, 与 PathBackend 无关,
-    // 由 tui.ts 自己处理 (这条函数不替它决定选哪条 backend)。
-    if (key === 'i' || key === 'I' || key === 's' || key === 'S') {
-      return { kind: 'prefill', item };
-    }
+    // SDD 片 7: i / s 不再是预填, 它们是真写侧。
+    if (key === 'i' || key === 'I') return { kind: 'intervene', item };
+    if (key === 's' || key === 'S') return { kind: 'cancel', item };
     if (key === '\r' || key === '\n') return { kind: 'prefill', item };
     return { kind: 'noop' };
   }
-  // take: 本片非目标, 任何键都 prefill (Enter 之外也无所谓 —— 只有 Enter 是真路)。
+  // take: 真数据源 (awaitingRuns + 逼近超时筛, SDD §0③ / INV-RC-5)。
+  // 任何键都 prefill (只有 Enter 是真路, 其它键也走 prefill 没事 —— caller 会吞键)。
   return { kind: 'prefill', item };
 }
 
@@ -170,18 +188,82 @@ export function decideInboxKey(args: {
  * `refreshItems` 是 INV-BOX-7 那条闸的着力点: 写完**必须**重新读盘, 不许在内存里
  * 改一份假装同步。反向自检 —— 把 `refreshItems` 钉成恒返回原列表的 stub, 任何"裁掉了"
  * 的断言都得红(证明同步走的是这条函数, 不是被绕过去的内存改写)。
+ *
+ * SDD 片 7 加了三件事 —— `intervene` 的 `promptIntervene`(cause 挑 + 可选 note),
+ * `cancel` 的 `confirmStop`(`dialogs.confirm` 二次确认, INV-RC-3), 与
+ * `runCancel`(共享写侧 `cancelDetachedRun` 的接缝, INV-RC-3/4)。三者各自一段:
+ * caller 给真函数, 测试给可控 fake。
  */
 export interface ApplyInboxActionDeps {
   cwd: string;
   backend: PathBackend;
   /** 收 ruling 的输入框: `null` = Esc / 空串 = 取消(都不写盘, 都不报错)。 */
   promptRuling: (item: Extract<InboxItem, { kind: 'rule' }>, closedByRuling: boolean) => Promise<string | null>;
+  /**
+   * `intervene` 的复合对话框: 先 cause picker(从 `FAILURE_KIND_ORDER` 里挑, 与 MCP
+   * 同词表), 再可选的 note 输入框(空串/Esc = 没收 note)。
+   *
+   *   返回 `null` = 全程取消(没选 cause 或 cause 后 Esc), 一个字节都不写;
+   *   返回 `{ cause, note }` = 落实 `recordIntervention(cwd, runId, cause, note)`。
+   *
+   * 注: 这是**两个**对话框(cause select + optional note input), 串成一次 promise。
+   * 「选 cause 后 Esc note」与「没选 cause」是同一回事 —— 都是 null, 都不写盘。
+   *
+   * 可选 —— `inbox-wiring.test.ts` (片 6) 不调 `intervene` / `cancel`, 留空着让那个
+   * 测试类型不变; 这两条 action 真走的时候 caller 必填。
+   */
+  promptIntervene?: (item: Extract<InboxItem, { kind: 'node' }>) => Promise<{ cause: string; note: string | null } | null>;
+  /**
+   * `cancel` 的二次确认(`dialogs.confirm`): INV-RC-3 的代价不对称 —— 误按一下损失
+   * 一个跑了半小时的 run 的墙钟, 多按一次确认损失一秒。
+   *
+   *   `true`  = 落实 `cancelDetachedRun`;
+   *   `false` = 用户主动选了「否」;
+   *   `null`  = 用户按 Esc 取消(与「选了否」分得开, INV-BOX-3 同款语义)。
+   *
+   * 可选 —— 同上, 让片 6 的测试不变。
+   */
+  confirmStop?: (item: Extract<InboxItem, { kind: 'node' }>) => Promise<boolean | null>;
+  /**
+   * 协作式停 detached run —— 与 `cancelDetachedRun` (harness/run-control) 同形, 但
+   * 走注入接缝(测试不真 kill, 与 `dag-tools.ts:241` 同款 idiom)。
+   *
+   *   返回 `CancelOutcome` 四种判别联合之一, caller 据此各画各的回执 (INV-RC-4)。
+   *
+   * 可选 —— 同上。
+   */
+  runCancel?: (
+    item: Extract<InboxItem, { kind: 'node' }>,
+  ) => Promise<
+    | { kind: 'signalled'; pid: number; signal: 'SIGTERM' }
+    | { kind: 'no-owner-pid' }
+    | { kind: 'pid-dead'; pid: number }
+    | { kind: 'signal-failed'; pid: number; error: string }
+  >;
+  /**
+   * 记一次人工介入 —— 与 `recordIntervention` (harness/run-control) 同形, 走注入
+   * 是为了对称 (parity test 用 `recordIntervention` 本身; 这里只钉调用形态)。
+   *
+   *   失败抛 (fail-loud); caller 走 INV-BOX-4 同款路径。
+   *
+   * 可选 —— 同上。
+   */
+  recordIntervention?: (
+    runId: string,
+    cause: string,
+    note: string | null,
+  ) => void;
   /** ISO 时间源 (`confirmSuggestion({ at })` 要)。 */
   nowIso: () => string;
   /** 写完重读盘 —— INV-BOX-7。返回收件箱里**新**的 items。 */
   refreshItems: () => Promise<readonly InboxItem[]>;
   /** 写失败的错误原文(屏上贴这条 —— INV-BOX-4 fail-open 不吞证据)。 */
   onError?: (reason: string) => void;
+  /**
+   * 写成功的回执(屏上贴这条 —— 让用户看见「按了之后发生了什么」, 而不是回到收件箱
+   * 后一脸问号; 与 `onError` 对称)。
+   */
+  onNotice?: (msg: string) => void;
 }
 
 export interface ApplyInboxActionResult {
@@ -231,6 +313,55 @@ export async function applyInboxAction(
     return { items: await deps.refreshItems() };
   }
 
+  if (action.kind === 'intervene') {
+    // SDD 片 7 切片 3 (INV-RC-1/2): cause 从 FAILURE_KIND_ORDER 挑, note 可选
+    // (空串/Esc = 没 note); 全程取消 = 没选 cause, 一个字节都不写。
+    if (!deps.promptIntervene || !deps.recordIntervention) {
+      const reason = 'applyInboxAction: intervene deps not wired (slice 7 caller)';
+      deps.onError?.(reason);
+      return { items: await deps.refreshItems(), error: reason };
+    }
+    const picked = await deps.promptIntervene(action.item);
+    if (picked === null) {
+      return { items: await deps.refreshItems() };
+    }
+    try {
+      deps.recordIntervention(action.item.runId, picked.cause, picked.note);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      deps.onError?.(reason);
+      return { items: await deps.refreshItems(), error: reason };
+    }
+    const noteSuffix = picked.note ? ` — ${picked.note}` : '';
+    deps.onNotice?.(`recorded intervention on ${action.item.runId}: ${picked.cause}${noteSuffix}`);
+    return { items: await deps.refreshItems() };
+  }
+
+  if (action.kind === 'cancel') {
+    // SDD 片 7 切片 3 (INV-RC-3): 二次确认; false 与 null 都是不写盘。
+    const cancelDeps = deps;
+    if (!cancelDeps.confirmStop || !cancelDeps.runCancel) {
+      const reason = 'applyInboxAction: cancel deps not wired (slice 7 caller)';
+      deps.onError?.(reason);
+      return { items: await deps.refreshItems(), error: reason };
+    }
+    const runCancelFn: NonNullable<ApplyInboxActionDeps['runCancel']> = cancelDeps.runCancel;
+    const confirmed = await cancelDeps.confirmStop(action.item);
+    if (confirmed !== true) {
+      return { items: await deps.refreshItems() };
+    }
+    let outcome: Awaited<ReturnType<typeof runCancelFn>>;
+    try {
+      outcome = await runCancelFn(action.item);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      deps.onError?.(reason);
+      return { items: await deps.refreshItems(), error: reason };
+    }
+    deps.onNotice?.(formatCancelNotice(outcome, action.item.runId));
+    return { items: await deps.refreshItems() };
+  }
+
   // confirm
   if (!deps.backend.confirmSuggestion) {
     const reason = `backend ${deps.backend.kind} has no confirmSuggestion`;
@@ -247,6 +378,33 @@ export async function applyInboxAction(
     return { items: await deps.refreshItems(), error: reason };
   }
   return { items: await deps.refreshItems() };
+}
+
+/**
+ * 收件箱里的 `cancel` 写完了 —— 把 `CancelOutcome` 四种结局 (INV-RC-4) 拼成屏上一句话。
+ * 屏上**不许**只说「已请求取消」 —— 那是把四种合一的画法。
+ *
+ *   `signalled`     → "SIGTERM sent to pid <pid> (<runId>)"
+ *   `no-owner-pid`  → "no owner pid on disk for <runId>"
+ *   `pid-dead`      → "owner pid <pid> already dead — nothing to signal (<runId>)"
+ *   `signal-failed` → "failed to signal pid <pid> for <runId>: <error>"
+ *
+ * 每句**点名**是哪一种, 不打包。这样后续「我明明按了 s」的人能直接读懂是哪一档。
+ *
+ * ⚠ 文案全英文 (INV-RC-8) —— 字面不带 "已取消" 的笼统说法。
+ */
+export function formatCancelNotice(
+  outcome:
+    | { kind: 'signalled'; pid: number; signal: 'SIGTERM' }
+    | { kind: 'no-owner-pid' }
+    | { kind: 'pid-dead'; pid: number }
+    | { kind: 'signal-failed'; pid: number; error: string },
+  runId: string,
+): string {
+  if (outcome.kind === 'signalled') return `SIGTERM sent to pid ${outcome.pid} (${runId})`;
+  if (outcome.kind === 'no-owner-pid') return `no owner pid on disk for ${runId}`;
+  if (outcome.kind === 'pid-dead') return `owner pid ${outcome.pid} already dead — nothing to signal (${runId})`;
+  return `failed to signal pid ${outcome.pid} for ${runId}: ${outcome.error}`;
 }
 
 /**
@@ -304,12 +462,20 @@ const paintOf = (item: InboxItem, p: InboxPaint): ((s: string) => string) => {
  * **不重复标题**: 主行已是全标题, 展开再印一遍就是废字, 而且让「主行带 id」读起来双倍。
  * 展开只留 id + 动作, 标题只在主行里出现一次。
  *
- * 节点类(INV-BOX-6, 2026-08-22, SDD 片 6): 只有 `r` 真接线(`opts.backend.resumeRun`),
- * `i` / `s` 仍是预填且屏上**明说**(本仓「不画一个点了没反应的入口」)。 `r` 不带预填字样。
- * ⇒ `r resume · i prefill · s prefill` —— 三键一字一档, 没有重复。
+ * 节点类(SDD 片 6 → 片 7):
+ *   - `r` 真接线(`OmdBackend.resumeRun`), 不带任何标注 —— INV-BOX-6。
+ *   - `i` 真写侧 `recordIntervention` —— INV-RC-1/2。屏上写「record intervention」,
+ *     **不许**出现「mark green」/「标绿」之类(SDD §0①, §2 INV-RC-2: 那是一个按了不发生
+ *     的动作, 写出来就是画一个假入口)。
+ *   - `s` 真写侧 `cancelDetachedRun` —— INV-RC-3/4。「stop detached run」明说是
+ *     协作式停, 二次确认由 caller 处理。
  *
- * confirm 类(INV-BOX-5): `c` / `x` 走 `backend.confirmSuggestion`(SDD §2.3 切片 3),
- * `Enter` 故意不给 —— suggested 票不许绕过人确认直接裁, 给 Enter 会教人去撞硬闸。
+ * confirm 类(INV-BOX-5): `c` / `x` 走 `backend.confirmSuggestion`, `Enter` 不给 —— 不绕人确认。
+ *
+ * take 类: 数据源换成 `awaitingRuns()` 逼近超时(SDD §0③, INV-RC-5), Enter 行为变
+ * 「跳到那张图」(prefill prompt 里说清是哪个 runId)。字面 `Enter accept` 是
+ * 历史标签 —— 「accept」本意是收件,与新语义不符,**这一片不动它**(改它要碰
+ * `inbox.test.ts`, 不在本片写集), 已知欠账。
  */
 function renderSelectedDetail(item: InboxItem, width: number, p: InboxPaint): string[] {
   const indent = '  '.repeat(2); // 对齐主行 marker (W_SEL + W_MARK = 4 → 视觉 4 个 space)
@@ -324,11 +490,17 @@ function renderSelectedDetail(item: InboxItem, width: number, p: InboxPaint): st
       : item.kind === 'confirm'
         ? 'c accept · x reject' // INV-INBOX-3 + INV-BOX-5: confirm 只 c/x, 不含 Enter
         : item.kind === 'node'
-          // INV-BOX-6: r 真接线 (无标注), i/s 仍是预填 (明说)。尾部 "Enter into graph" 保留
-          //   是 `render/inbox.test.ts` 的 substring 闸 (那片测试不在本片写集), 语义由 `r resume`
-          //   领头, 括号明示 Enter 键当前不绑任何动作 —— 括号形式不引入新字形, 过字形闸。
-          ? 'r resume · i prefill · s prefill (Enter into graph)'
-          : 'Enter accept';
+          // INV-BOX-6 (r 真接线, 不带 prefill) + SDD 片 7 (i/s 真写侧, 字面是它真做的事)。
+          // ⚠ `Enter` 必须留在这一行: `decideInboxKey` 对 node 类的 Enter 仍返 `prefill`
+          //    (node 没有「就地做完」的语义, 它要你去看那张图)。**屏上不说、按下去却有反应**
+          //    是「不画一个点了没反应的入口」的反面 —— 一样坏, 而且更难查。
+          //    `s` 后面带 `(confirm)`: 它是二次确认的 (INV-RC-3), 按一下不会立刻停图。
+          ? 'r resume · i record intervention · s stop detached run (confirm) · Enter into graph'
+          // ⚠ `take` **没有 owner 侧的「收」这个动作** (INV-RC-5): 一个 awaiting 由
+          //    **另一个 run 的 `published` 事件**满足, 人做不了这件事。原来这里写
+          //    `Enter accept` —— 那是在承诺一个不存在的动作。
+          //    `decideInboxKey` 对 take 的任何键都返 `prefill`, 所以字面就写它真做的事。
+          : 'Enter prefill a prompt about this wait (no owner-side accept exists)';
   return [
     p.dim(fitLine(`${indent}${idStr}`, width)),
     p.dim(fitLine(`${indent}${hint}`, width)),

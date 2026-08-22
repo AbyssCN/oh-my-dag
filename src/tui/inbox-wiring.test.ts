@@ -225,19 +225,27 @@ describe('INV-BOX-6 · node 只接 r 真接线; i / s / Enter 全部 prefill', (
       item,
     });
   });
-  test('node + i → prefill (无接线, INV-BOX-6 在 renderer 那侧写明 "prefill")', () => {
+  /**
+   * ★ **2026-08-22(片 7)更正:`i` / `s` 已经真接线,这两条原本钉的是「它们还没接」。**
+   *
+   * 片 6 写它们时 `OmdBackend` 上没有 cancel/intervene,于是 INV-BOX-6 定的是
+   * 「只有 `r` 真接线,`i`/`s` 预填并在屏上明说」。片 7 查清楚了写侧其实都在
+   * (`dag_intervene` 的全部身体是 `appendBoard` 追一条;`dag_cancel` 对 detached run
+   * 是「写 `.omd/continuity/<runId>/cancel` + 对属主 pid SIGTERM」),于是接上了。
+   *
+   * ⚠ 这两条真正管的事**没变**:**键位分派得分得开,不许合并成一个 prefill 兜底**。
+   * 合并了就等于「按哪个键都一样」,而那三个键的后果完全不同(记一条 / 停一张图 / 续跑)。
+   * 所以这里改成逐键钉住它各自的 action kind。
+   *
+   * 证伪:把 `decideInboxKey` 里 `i`/`s` 那两支删掉让它们落回 `prefill` → 本条当场红。
+   */
+  test('★ node 的三个键各走各的路 (i 记一条 / s 停图 / r 续跑), 不许合并成一个兜底', () => {
     const item = nodeItem();
-    expect(decideInboxKey({ items: [item], selected: 0, key: 'i' })).toEqual({
-      kind: 'prefill',
-      item,
-    });
-  });
-  test('node + s → prefill', () => {
-    const item = nodeItem();
-    expect(decideInboxKey({ items: [item], selected: 0, key: 's' })).toEqual({
-      kind: 'prefill',
-      item,
-    });
+    expect(decideInboxKey({ items: [item], selected: 0, key: 'i' })).toEqual({ kind: 'intervene', item });
+    expect(decideInboxKey({ items: [item], selected: 0, key: 's' })).toEqual({ kind: 'cancel', item });
+    expect(decideInboxKey({ items: [item], selected: 0, key: 'r' })).toEqual({ kind: 'resume', item });
+    // Enter 仍是预填 —— node 类没有「就地做完」的语义, 它要你去看那张图。
+    expect(decideInboxKey({ items: [item], selected: 0, key: '\r' })).toEqual({ kind: 'prefill', item });
   });
   test('node + Enter → prefill (ENTER 之外的真接线只有 r)', () => {
     const item = nodeItem();
@@ -524,8 +532,14 @@ describe('INV-BOX-6 · renderer 那侧 i / s 必须带 "prefill" 标注 (本片 
     const { renderInbox } = await import('./render/inbox');
     const out = renderInbox([nodeItem()], { width: 100, height: 30, selected: 0, now: 1_700_000_000_000 });
     const body = out.join('\n');
-    expect(body).toContain('i prefill');
-    expect(body).toContain('s prefill');
+    // 2026-08-22(片 7): `i`/`s` 接真之后标注从 `prefill` 换成它们真做的事。
+    // ⚠ 这条闸管的是**屏上说的与实际做的一致**, 不是那个词 —— 所以现在反过来钉:
+    //   `i` 说 record(它只往公告板追一条, **不标绿任何东西**),
+    //   `s` 说 stop 且带 confirm 提示(二次确认, INV-RC-3),
+    //   而**整段不许再出现 `prefill`**(那是接线前的说法)。
+    expect(body).toMatch(/i\s+record/);
+    expect(body).toMatch(/s\s+stop/);
+    expect(body).not.toContain('prefill');
     // r 那段必须不带 "prefill" —— 它是真接线, 不该混进预填字样。
     expect(body).toMatch(/r\s+resume/); // r resume 头, 但 r 后面不带 prefill
   });

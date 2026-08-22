@@ -124,7 +124,12 @@ describe('INV-INBOX-3 · confirm must not contain "Enter rule on-site"', () => {
     expect(outNode).toContain('Enter into graph');
     // select take (i=1)
     const outTake = renderInbox(items, { width: 100, height: 30, selected: 1, now: NOW }).join('\n');
-    expect(outTake).toContain('Enter accept');
+    // 2026-08-22(片 7): 原来钉的是 `Enter accept` —— 而 **owner 侧根本没有「收」这个动作**
+    // (awaiting 由另一个 run 的 published 满足, INV-RC-5)。那句话在承诺一个不存在的动作,
+    // 而这条闸替它背了书。这条真正管的是「四态各有各的提示, 不互相冒充」, 所以改成:
+    // take 的提示与 node 的**不同**, 且明说没有 accept。
+    expect(outTake).toContain('no owner-side accept exists');
+    expect(outTake).not.toContain('Enter into graph'); // 不冒充 node 那一态
   });
 });
 

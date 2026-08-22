@@ -29,11 +29,14 @@
  */
 import { hostname } from 'node:os';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, resolve as resolvePath } from 'node:path';
+import { dirname, join, resolve as resolvePath } from 'node:path';
 import { type Component, Container, HStack, Loader, ProcessTerminal, Spacer, TuiMainScreen, VStack, type Terminal, visibleWidth } from '@earendil-works/pi-tui';
 import { HintedEditor } from './components/hinted-editor';
 import { logger } from '../logger';
 import { spawnFinalCheckpoint } from '../harness/session/final-spawn';
+import { cancelDetachedRun, recordIntervention } from '../harness/run-control';
+import { FAILURE_KIND_ORDER } from '../harness/node-failure';
+import { createRunStore } from '../mcp/run-store';
 import type { OmdBackend } from './backend';
 import { ChatLog } from './components/chat-log';
 import { type DialogHost, type InputOpts, type SelectOpts, confirm as dialogConfirm, input as dialogInput, select as dialogSelect } from './components/dialog';
@@ -42,7 +45,7 @@ import { DagTree } from './components/dag-tree';
 import { type PathReader, PathHud, createPathReader } from './components/path-hud';
 import { paintTicketRow, renderTicketBoard } from './components/ticket-board';
 import { renderRunBoard } from './components/run-board';
-import { readBoard } from '../harness/board/run-board';
+import { readBoard, awaitingRuns } from '../harness/board/run-board';
 import { renderGantt } from './render/dag-gantt';
 import { renderDagScreen } from './render/dag-screen';
 import { type PathViewData, buildPathViewData, renderDelta, renderFogLine } from './render/path-fog';
@@ -681,8 +684,8 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       live: liveViews,
       maps: attention.maps,
     };
-    // 收件箱 = 等裁票 (rule) + 建议票 (confirm) + 活图 await 节点 (node) + 产物待收 (take)。
-    // take 这一态本片只画出**那一行**,真收件走 `Enter` 预填 (INV-INBOX-4);空仓即空。
+    // 收件箱 = 等裁票 (rule) + 建议票 (confirm) + 活图 await 节点 (node) + 逼近超时等件 (take)。
+    // node 一态本片非目标(SDD 非目标: 取数在另一处)。
     const items: InboxItem[] = [];
     for (const t of attention.awaiting) {
       items.push({ kind: 'rule', slug: t.slug, ticketId: t.ticketId, title: t.title });
@@ -690,7 +693,26 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     for (const t of attention.suggested) {
       items.push({ kind: 'confirm', slug: t.slug, ticketId: t.ticketId, title: t.title });
     }
-    // ⚠ 收件箱的 node / take 两态本片不接真源 (SDD 非目标 §2.2: 真取数是另一片)。
+    // SDD 片 7 切片 3 (INV-RC-5/6): take 真接 `awaitingRuns(board)`,过「逼近超时」筛子
+    //   (已等 ≥ timeoutMs × 0.75, timeoutMs 缺席不收)。caller 拼 InboxItem 时把 runId
+    //   投影到 slug (runId.slice(0,8)),artifact 投影到 ticketId —— 见 `InboxItem`
+    //   类型注释。
+    const FRACTION = 0.75;
+    const nowMs = now();
+    const approaching = awaitingRuns(boardEntries).filter((a) => {
+      if (typeof a.timeoutMs !== 'number') return false;
+      const since = Date.parse(a.since);
+      if (!Number.isFinite(since)) return false;
+      return nowMs - since >= a.timeoutMs * FRACTION;
+    });
+    for (const a of approaching) {
+      items.push({
+        kind: 'take',
+        slug: a.runId.slice(0, 8),
+        ticketId: a.artifact,
+        title: a.artifact,
+      });
+    }
     inboxItems = items;
   }
   refreshNowBandData();
@@ -769,12 +791,16 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   }
 
   /**
-   * 收件箱动作执行(片 6 切片 3,SDD §2.3)。
+   * 收件箱动作执行(片 6 切片 3 + 片 7 切片 3,SDD §2.3)。
    *
    * 路由 `InboxAction`:
-   *   - `rule-input` → `dialogs.input(...)` 收 ruling(空串/Esc = 取消, INV-BOX-3) →
-   *     `applyInboxAction` 走 `backend.rule(...)`(写失败响亮, INV-BOX-4) → 重读盘(INV-BOX-7)。
+   *   - `rule-input` → `applyInboxAction` 走 `backend.rule(...)`(写失败响亮, INV-BOX-4)
+   *                    → 重读盘(INV-BOX-7)。
    *   - `confirm` → `applyInboxAction` 走 `backend.confirmSuggestion(...)` → 重读盘。
+   *   - `intervene` → `applyInboxAction` 走 `recordIntervention(...)`(INV-RC-1/2) →
+   *                   重读盘; cause 由 caller 的 `dialogSelect` + 可选 note 输入框。
+   *   - `cancel` → `applyInboxAction` 走 `cancelDetachedRun(...)`(INV-RC-3/4) →
+   *                重读盘; 二次确认由 caller 的 `dialogConfirm`。
    *   - `resume`  → `opts.backend.resumeRun?.(...)`(INV-BOX-6 真接线;后端没能力就 no-op)。
    *   - `prefill` → `prefillInboxItem(item)`(原有路径)。
    *   - `noop`    → 关掉收件箱, 不写盘。
@@ -813,9 +839,11 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       tui.requestRender();
       return;
     }
-    // rule-input / confirm —— 两者都走 applyInboxAction(纯函数层), 它替你:
-    //   · 开输入框收 ruling(只在 rule-input 上)
-    //   · 调 backend 写侧
+    // rule-input / confirm / intervene / cancel —— 四个都走 applyInboxAction
+    // (纯函数层), 它替你:
+    //   · 开对话框收 ruling / cause / note / 二次确认 (按 action 走不同 prompt)
+    //   · 调 backend 写侧 (rule / confirm) 或 `harness/run-control` 写侧
+    //     (intervene / cancel, 与 MCP 同源 —— INV-RC-1)
     //   · 写失败 → onError 把原文贴屏 (INV-BOX-4)
     //   · 写完调 refreshItems 重读盘 (INV-BOX-7)
     const { resolveBackend } = require('../harness/pathfinder/backend') as typeof import('../harness/pathfinder/backend');
@@ -831,6 +859,50 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
           : `Rule on ${item.ticketId} (text becomes the goal):`;
         return dialogInput(dialogs, theme, { title });
       },
+      // SDD 片 7 切片 3 (INV-RC-2/3): 复合对话框——先 cause picker(FAILURE_KIND_ORDER
+      // 全集,与 MCP 同词表, INV-RC-1 共享写侧), 再可选 note 输入框。两个都 Esc/空 = null
+      // = 一个字节都不写。
+      promptIntervene: async (item) => {
+        const causeOptions = FAILURE_KIND_ORDER.map((k) => ({ value: k, label: k }));
+        const cause = await dialogSelect(dialogs, theme, {
+          title: `Why intervene on ${item.runId.slice(0, 8)}?`,
+          options: causeOptions,
+        });
+        if (cause === null) return null;
+        const noteRaw = await dialogInput(dialogs, theme, {
+          title: `Note (optional, empty to skip):`,
+        });
+        // dialogInput 的语义: null = Esc, 空串 = 合法空串。这里把两者都收成 null ——
+        // recordIntervention 自己有「trim 后空串不留字段」那条,但我们这里直接传 null
+        // 比传空串更省(写盘那条路径已经在 run-control 里钉死)。
+        if (noteRaw === null) return { cause, note: null };
+        const note = noteRaw.trim();
+        return { cause, note: note === '' ? null : note };
+      },
+      // 二次确认 —— INV-RC-3 的代价不对称 (误按损失墙钟)。复用 `dialogConfirm`,不新造。
+      confirmStop: async (item) => {
+        const r = await dialogConfirm(dialogs, theme, `Stop detached run ${item.runId.slice(0, 8)}? (cooperative, resumable)`);
+        return r;
+      },
+      // 真写侧经 `cancelDetachedRun`(harness/run-control, 与 MCP 共用一份, INV-RC-1)。
+      // ownerPid 从 `runs.db` 现读 (TUI 自己不持有 runRegistry —— 用 `createRunStore` 直读,
+      // 与 mcp/dream 那些 consumer 同款 idiom)。不存 connection, 每次新开新关。
+      runCancel: async (item) => {
+        const rs = createRunStore({ path: join(opts.cwd, '.omd', 'runs.db') });
+        try {
+          return cancelDetachedRun(opts.cwd, item.runId, `stopped from TUI by ${opts.cwd}`, {
+            readOwnerPid: (runId) => rs.get(runId)?.ownerPid ?? null,
+          });
+        } finally {
+          rs.close();
+        }
+      },
+      recordIntervention: (runId, cause, note) => {
+        // run-control 的 recordIntervention 签名 note 是 string | undefined, 这里 note
+        // 是 string | null —— 透传 null=没 note, 透传字=有 note(空白会被 run-control
+        // 自己 trim 后丢弃,见 run-control.test.ts)。
+        recordIntervention(opts.cwd, runId, cause as never, note ?? undefined);
+      },
       nowIso: () => new Date(now()).toISOString(),
       refreshItems: async () => {
         // INV-BOX-7: 写完重读盘——重读的是 readAttention(), 跟 inboxItems 的真源一致,
@@ -841,6 +913,11 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       onError: (reason) => {
         // INV-BOX-4: 原文上屏, fail-open 不吞证据。
         chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
+      },
+      // SDD 片 7 切片 3 (INV-RC-1/2/4): 写成功的回执——`formatCancelNotice` 已把
+      // CancelOutcome 四种判别联合各画各的, 这里只负责把它贴屏。
+      onNotice: (msg) => {
+        chatLog.appendNotice(msg);
       },
     });
     inboxItems = [...result.items];
