@@ -30,10 +30,21 @@ import { seatSpec } from '../model/seats';
 import { effectiveSeatSampling } from '../model/seat-overrides';
 import { withGoFallback } from '../model/gateway';
 import { logger } from './logger';
+import { engineFacts } from './plan/claimed-actions';
 import type { ModelUsage } from '../model/gateway';
 import type { ConductorPlan } from './conductor-plan';
 import type { LeafResult } from './dag/engine';
 import type { BlameEntry } from './dag/blame';
+
+/**
+ * 引擎记录展示预算 (SDD 2026-08-22 verifier-engine-facts, D-4)。
+ * 与 `dag/engine.ts:122` 的 `SHELL_FACT_CAP` 同值, 但**各自持常量**:
+ * verifier.ts 与 engine.ts 是两个可以独立调的旋钮 (其中一份可能收紧, 另一份放
+ * —— 比如 verifier 想缩到 4 留更多上下文给正文), 绑死是给未来挖坑。
+ * ⚠ 反向 import 会成环: engine.ts 已经 import verifier.ts, 这里不许反过来。
+ * falsify 节点靠这一行**逐字**存在才能 matches=1, 见 `verifier-engine-facts.test.ts`。
+ */
+const ENGINE_FACT_SHELL_CAP = 6;
 
 export interface VerifierVerdict {
   /** 结果是否满足任务的全部明确要求 (true = 放行)。 */
@@ -169,8 +180,23 @@ export function summarizeResults(
         );
       }
     }
+    // SDD 2026-08-22 verifier-engine-facts (切片 1): 引擎记录进卷面, **正文之前**。
+    // 事实来源是 `engineFacts()` (plan/claimed-actions.ts:181) —— 它已经把「哪条命令算校验」的取舍
+    // 写死过, 这里**不**另造一份渲染, 否则两条记录规则分裂 = S-45 的形状 (D-2)。
+    // INV-3 (D-5): 返空 ⇒ 不加这一段, 节点段逐字节同旧。
+    // INV-4: 超过预算由 `engineFacts` 自己按校验类优先截, 这里不另发明截断。
+    // ⚠ 这一行必须**逐字**长成这样 (含常量名 ENGINE_FACT_SHELL_CAP): falsify 节点用 `edit` 把
+    // 这条调用整段换成 `[]` ⇒ GWT-1/2/INV-2 当场红, 验的是「引擎记录到底有没有上卷面」。
+    // 多行拆开 → falsify 节点 `matches=0` 一整轮白烧 (2026-08-22 run 75c39d15 实测)。
+    const engineFactLines = engineFacts(leaf, { expectExit: node?.expect_exit ?? 0, shellCap: ENGINE_FACT_SHELL_CAP });
+    const sectionLines: string[] = [head, ...meta];
+    if (engineFactLines.length > 0) {
+      sectionLines.push(`引擎记录 (ground truth, 优先于本节点自述):`);
+      for (const f of engineFactLines) sectionLines.push(`- ${f}`);
+    }
     const body = leaf.status === 'failed' ? '(failed)' : (leaf.output ?? '').slice(0, effMaxPerNode);
-    lines.push([head, ...meta, body].join('\n'));
+    sectionLines.push(body);
+    lines.push(sectionLines.join('\n'));
   }
   return lines.join('\n\n');
 }
@@ -243,6 +269,10 @@ function verifierPrompt(task: string, summary: string, truths: JudgingTruths = {
 2. **高风险接缝** (契约边界 / 状态机 / 法定数字 / 安全) 即使"看起来对"也要质疑其正确性; 无法确证正确 → 不过。
 3. 结果是**捏造的数据 / 假执行确认** (凭空编输入、"已发送/已录入" 这类没真做却声称做了的) → 不过。
 4. 计划有节点失败导致结果不完整 → 不过。
+
+证据来源 (SDD 2026-08-22 verifier-engine-facts, C-2): 本卷面里所有「引擎记录」段落的「执行命令」「exit N」「写入文件」「读取文件」行都是引擎观测值, **优于**本节点自述。
+- 引擎记录里已有的命令与退出码, **不必**再要求执行体复述 (那是冗余; 真值在卷面上)。
+- 执行体自述与引擎记录**冲突** ⇒ **以引擎记录为准, 且判不通过** (那正是谎报完成 —— 看见「执行命令: bun test (exit 1)」而自述写「全量 0 fail」就是这条; ⚠ 只写上一句 = 给假执行确认开了一道门, 必须两句齐下)。
 ${renderJudgingTruths(truths)}
 原始任务:
 ---
