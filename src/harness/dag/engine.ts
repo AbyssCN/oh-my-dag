@@ -572,6 +572,61 @@ async function planAndExecute(
  * 链由接线层组装, 见 plan-passes/)。确定性纯函数链; 抛错上抛 fail-closed (坏 pass 不静默跳过)。
  * conductor 首轮与 escalation 重规划轮都过同一管线 (planAndExecute 每轮调用)。
  */
+/**
+ * 冻结节点复原(SDD 2026-08-22 「冻结判据在重规划轮里并不冻结」, C-2/INV-1..INV-5)。
+ *
+ * 调用方在 `config.frozenNodes` 里点名 (run-goal 的 flatPlan 路径传 `['accept']`);
+ * `snapshot` 是 round-1 post-filter 那一刻 `exec.plan.nodes` 的字面快照 (run-goal
+ * 路径 = 调用方铺图后被 `applyPlanFilters` 改写过的形态, 与 `s1-green 被吸进 accept`
+ * 那条「不算违约」对得齐 — 引擎**不会**因为复原把串行 command 链合并给拆开)。
+ *
+ * 行为表:
+ *   - INV-1  新定义 ≠ 快照 → 整个覆盖 + 一行 warn (payload 含 `node` 与 `changedFields`)
+ *   - INV-2  id 在新图缺席 → 补回 + 一行 warn (D-3)
+ *   - INV-3  逐字相同 → 零触碰零噪声(常态)
+ *   - INV-4  `frozenNodes` 缺省 / 空数组 → 调用方不进来 (snapshot 也空), 一字节不变
+ *   - INV-5  只动 `plan.nodes[id]` 的定义; `exec.results` / 毒集 / blame 闭包 / 复用集一律不碰
+ *
+ * 反向自检 (切片 1): 把循环源替成 `for (const id of [])` → GWT-1/GWT-2 当场红。
+ *   注释里禁止 `|` (falsify 行用 `config.frozenNodes ?? []` 而非 `[]`)。
+ */
+function restoreFrozenNodes(
+  exec: ExecOnce,
+  snapshot: ReadonlyMap<string, ConductorPlan['nodes'][string]>,
+  frozenNodes: readonly string[] | undefined,
+): void {
+  for (const id of frozenNodes ?? []) {
+    const original = snapshot.get(id);
+    if (!original) continue;
+    const current = exec.plan.nodes[id];
+    if (!current) {
+      // INV-2: conductor 把节点删了 → 补回 + warn (图上没判卷标准是最坏的一类漂移)
+      exec.plan.nodes[id] = original;
+      logger.warn(
+        { node: id },
+        '[omd/executor-dag] 冻结节点被 conductor 删除 → 逐字补回 (D-3, INV-2)',
+      );
+      continue;
+    }
+    // INV-1: 逐字比较 (字段全等)
+    const changedFields: string[] = [];
+    const oRec = original as Record<string, unknown>;
+    const cRec = current as Record<string, unknown>;
+    const allKeys = new Set([...Object.keys(oRec), ...Object.keys(cRec)]);
+    for (const k of allKeys) {
+      if (JSON.stringify(oRec[k]) !== JSON.stringify(cRec[k])) changedFields.push(k);
+    }
+    if (changedFields.length > 0) {
+      exec.plan.nodes[id] = original;
+      logger.warn(
+        { node: id, changedFields },
+        '[omd/executor-dag] 冻结节点被 conductor 改写 → 逐字复原 (D-2, INV-1)',
+      );
+    }
+    // INV-3: 逐字相同 → 静默
+  }
+}
+
 function applyPlanFilters(plan: ConductorPlan, config: ExecutorDagConfig): ConductorPlan {
   let p = config.oracleCmd ? filterOracleCommandNodes(plan, config.oracleCmd) : plan;
   for (const f of config.planFilters ?? []) p = f(p);
@@ -4770,6 +4825,17 @@ async function runDagInternalCore(
     exec = await planAndExecute(task, config, conductorModel, generate, maxPlanRetries, templates, prior, undefined, warnedUnknownProfiles);
   }
   observed.exec = exec;
+  // ── 冻结节点快照(SDD 2026-08-22 「冻结判据在重规划轮里并不冻结」, C-1/C-2/D-1/D-5):
+  //   在 round-1 跑完**之后**立刻快照调用方点名的节点定义(post-filter 形态, 与
+  //   `s1-green 被吸进 accept` 那条「不算违约」对得齐 — 我们复原的是引擎已采纳的形态,
+  //   不去反向拆「串行 command 链机械合并」)。缺省 / 空数组 → 一字节不变(D-5)。
+  //   后续每次升级重规划之后, 引擎用这张快照把点名节点的定义逐字盖回(`restoreFrozenNodes`)。
+  //   ⚠ 不复制 exec.results / 毒集 / 复用集 — 只 snapshot plan.nodes 的字面 (INV-5)。
+  const frozenNodeSnapshot = new Map<string, ConductorPlan['nodes'][string]>();
+  for (const id of config.frozenNodes ?? []) {
+    const n = exec.plan.nodes[id];
+    if (n) frozenNodeSnapshot.set(id, n);
+  }
   let conductorUsage = exec.conductorUsage;
   let leavesIn = exec.leavesIn;
   let leavesOut = exec.leavesOut;
@@ -4995,6 +5061,9 @@ async function runDagInternalCore(
         conductorUsage = addUsage(conductorUsage, patched.usage); // 补丁尝试的 token 不丢账
         exec = await planAndExecute(escTask, config, conductorModel, generate, maxPlanRetries, templates, priorExec, blameAnchor, warnedUnknownProfiles, 'escalation');
       }
+      // 冻结节点复原(SDD 2026-08-22, C-2): 补丁模式与整图重规划两条路都在这里收敛后再做。
+      // 先复原先于 observed.exec = exec 是有意的 — 把复原后的 plan 一起 snapshot 给观察者。
+      restoreFrozenNodes(exec, frozenNodeSnapshot, config.frozenNodes);
       observed.exec = exec;
       observed.conductorModel = conductorModel;
       const replanTokens = replanMode === 'patch' ? patched.usage : addUsage(patched.usage, exec.conductorUsage);

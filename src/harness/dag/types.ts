@@ -454,6 +454,26 @@ export interface DagLoopControlSeam {
   escalateAfterRound?: number;
   /** verifier-fail → 升级重规划的最大次数 (默认 1)。每次升级 = 一整轮重规划 + 重跑 leaves。 */
   maxEscalations?: number;
+  /**
+   * **冻结判据节点**(SDD 2026-08-22 「冻结判据在重规划轮里并不冻结」)。由调用方在铺图时
+   * 钉下的节点 id 清单 — 每次升级重规划之后, 引擎把点名节点按**调用方铺图时**(round-1
+   * post-filter)的定义逐字复原 (changed → 整定义覆盖 + 一行 warn; absent → 补回 + warn;
+   * 逐字相同 → 零噪声, INV-3)。
+   *
+   * **设计意图**: 判卷标准必须是执行体动不了的东西。环每轮重画子图, 判据进环就跟着能变
+   * (run `9f5bed0c` 现场: 重规划把 `accept.command` 换成四条护栏 + tsc, 跑过一轮, 而原
+   * 第 1 轮的「全量 bun test」那条被静默摘掉)。`frozenNodes` 是把这条纪律从「环外 + 调用方
+   * 自构造」拓宽到「环外 + 调用方点名 + 引擎每轮复原」 — 后者兼容了平铺图 (flatPlan) 那种
+   * `accept` 与其他切片并列摆的形态。
+   *
+   * **零回归**: 缺省 / 空数组 → 引擎对升级重规划轮的所有图改动照单全收 (旧行为, D-5)。
+   *
+   * ⚠ **与 `freezeCriterion` 的边界**: `freezeCriterion` 是把判据**命令**灌进内环每轮
+   * 短停路径 (D-37 那条); `frozenNodes` 是把判据**节点定义**钉在升级重规划之后。两者
+   * 在平铺图上协同: 前者保证环内早停 / 后者保证环外不被改。v1 (环外自带 `accept` 节点)
+   * 路径不传 frozenNodes (那条路今天就是对的, 无需补救)。
+   */
+  frozenNodes?: readonly string[];
 }
 
 /** 观察与留痕 seam: 事件/回执/trace 分组/checkpoint —— 观察者不许扰动被观察者 (fail-open)。 */

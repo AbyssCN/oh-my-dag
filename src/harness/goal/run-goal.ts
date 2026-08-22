@@ -999,7 +999,15 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
     const waiveRed = baselineSide !== undefined ? makeBaselineWaiver(baselineSide.failSet) : undefined;
     const execCfg =
       acceptance.kind === 'executable'
-        ? { ...config.dag, freezeCriterion: { command: acceptance.command, ...(acceptance.expectExit !== undefined ? { expectExit: acceptance.expectExit } : {}), ...(waiveRed ? { waiveRed } : {}) } }
+        ? {
+            ...config.dag,
+            freezeCriterion: { command: acceptance.command, ...(acceptance.expectExit !== undefined ? { expectExit: acceptance.expectExit } : {}), ...(waiveRed ? { waiveRed } : {}) },
+            // SDD 2026-08-22 「冻结判据在重规划轮里并不冻结」, C-3/INV-6:
+            // 只在 flatPlan 编译成功**之后**挂上 `accept` 钉点 — 回落 conductor 铺图
+            // 那条路上 accept 由 run-goal 自己构造在环外 (今天的 v1 行为, 不动)。
+            // 这里 `flatUsed` 还**没**赋值(线 1008 才赋), 用 `flatPlan !== undefined` 等价判。
+            ...(flatPlan !== undefined ? { frozenNodes: ['accept'] } : {}),
+          }
         : config.dag;
     exec = await (config._runDag ?? runExecutorDagWithPlan)(execPlan, execCfg);
   } catch (err) {
