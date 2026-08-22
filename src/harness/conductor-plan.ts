@@ -84,7 +84,7 @@ const PlanNode = z
     output_schema: z.record(z.string(), z.unknown()).optional(),
     /**
      * D-2 (SDD cairness-distill 2026-08-10): **ex-ante 写集声明** —— 本节点预期写入的相对路径
-     * 清单 (可选字段, 声明了才对账, 声明成本读数见该 SDD O-1)。消费者 = harness/write-set 的
+     * 清单 (可选字段, 声明了才对账, 声明成本读数见该 SDD O-1)。消费者 = harness/writeset/write-set 的
      * 归属阶梯: 跑后 git diff 逐文件走 ①治理产物 → ②全局豁免 → ③在跑节点声明命中 (>1 → ambiguous)
      * → ④intentional 例外 → ⑤orphan 红。只在真写文件的 executor 节点上设; verify/check 节点声明了
      * 反而惹 orphan (与 MIRROR RULE「检查节点不声明制品」同源)。**刻意不进 conductor prompt** ——

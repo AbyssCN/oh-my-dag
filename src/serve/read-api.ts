@@ -18,7 +18,7 @@ import type { HudFogSnapshot } from '../hud/types';
 import { loadMap } from '../harness/pathfinder/map-store';
 import { computeFog, type FogView } from '../harness/pathfinder/fog';
 import { dispatchPhaseOf, type DispatchPhase } from './board-page';
-import { ledgerPath } from '../harness/dag-record';
+import { ledgerPath } from '../harness/dag/dag-record';
 import { readout, type ReadoutResult } from '../../scripts/omd-readout';
 import { Database } from 'bun:sqlite';
 import type { PathMap } from '../harness/pathfinder/types';

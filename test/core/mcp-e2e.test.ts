@@ -19,7 +19,7 @@ import type { ExecutorDagResult } from '../../src/harness/dag/types';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
 import type { AgentLeafRunner, CommandLeafRunner } from '../../src/harness/leaf-runners';
 import { Database } from 'bun:sqlite';
-import { createPlanLedger } from '../../src/harness/plan-ledger';
+import { createPlanLedger } from '../../src/harness/plan/plan-ledger';
 import { TOOL_RENAMES } from '../../src/mcp/tool-renames';
 
 /** v1 工具面全清单 (SDD §工具面 P1 期)。 */

@@ -8,13 +8,13 @@
 import { createWorktreeFixture, type WorktreeFixture } from './worktree';
 
 const TARGETS = [
-  'src/harness/dag-mermaid.ts',
+  'src/harness/dag/dag-mermaid.ts',
   'src/harness/slim/debt-scan.ts',
   'src/harness/arch/hotspots.ts',
 ];
 
 const TESTS = [
-  'src/harness/dag-mermaid.test.ts',
+  'src/harness/dag/dag-mermaid.test.ts',
   'src/harness/slim/debt-scan.test.ts',
   'src/harness/arch/hotspots.test.ts',
 ];
@@ -24,7 +24,7 @@ const SPEC = `# Medium reuse-own 任务: 重建 3 个纯模块
 重建下列 3 个**互相独立**的纯函数模块, 使各自 colocated 测试全绿、且 whole-project tsc 无错。
 每个模块的**测试文件就是精确契约** (导出名 / 签名 / 行为), 照它们重建 —— 不要改测试。
 
-1. src/harness/dag-mermaid.ts — planToMermaid(plan: ConductorPlan, opts?: MermaidOpts): string
+1. src/harness/dag/dag-mermaid.ts — planToMermaid(plan: ConductorPlan, opts?: MermaidOpts): string
    ConductorPlan → Mermaid flowchart 文本 (不含 \`\`\` 围栏)。command 节点画 [[双框]], agent 画 ([圆角]),
    其余 inproc leaf 画 [方框]; 带 results 时 failed 节点加 class failed; 节点 id 须 sanitize 防 mermaid 语法炸裂。
 

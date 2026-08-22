@@ -68,7 +68,7 @@ const DYNAMIC_ENTRIES: Record<string, string> = {
     '`join(import.meta.dir, \'runner.ts\')` → `bwrap [binds] bun run <它> <扩展入口>`。\n' +
     '⚠ 它是**唯一 import 第三方扩展代码的地方**, 而宿主 (host.ts) 永远不 import 扩展 —— ' +
     '这条边界正是沙箱成立的前提, 所以它必须在子进程里, 也就必然不在静态 import 图上。',
-  'src/harness/dag-mermaid.ts':
+  'src/harness/dag/dag-mermaid.ts':
     '**benchmark 靶子**: `eval/tasks/medium.ts` 与 `large.ts` 都把这个路径列进目标集 —— ' +
     'eval 会清空它让 fleet 照 SPEC 重建。⚠ `planToMermaid` 生产零消费者, ' +
     '存在的唯一理由就是当靶子; 删它会同时打断两个 fixture。',

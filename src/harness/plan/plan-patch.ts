@@ -1,5 +1,5 @@
 /**
- * src/harness/plan-patch —— D-21 escalation patch 模式 (SDD v2 S3.6, G-21 强化)。
+ * src/harness/plan/plan-patch —— D-21 escalation patch 模式 (SDD v2 S3.6, G-21 强化)。
  *
  * 信任反转: S3.5 实证逐字指纹跨 LLM 重规划命中率低 (k3 每轮重措辞, 「逐字保留」指令 4 采样 1 中)
  * → 不再指望 conductor 逐字复述整图, 改让它只输出**节点补丁 JSON**, 引擎程序化 merge 到上轮 plan。
@@ -15,7 +15,7 @@
  * 失败姿态: 解析/校验失败返回 error, 由 executor-dag 回退现行整图重规划 (SDD 钉死 fail-open)。
  */
 import { z } from 'zod';
-import { PlanSchema, extractPlanJson, type ConductorPlan } from './conductor-plan';
+import { PlanSchema, extractPlanJson, type ConductorPlan } from '../conductor-plan';
 
 /** 补丁外形 (深校验走 merge 后整图 PlanSchema — 弱模型不可信原则, 代码校验不信格式)。 */
 const PlanPatchSchema = z

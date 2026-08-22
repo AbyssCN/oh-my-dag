@@ -13,7 +13,7 @@ import { BOARD_TERMINAL_OUTCOME, boardTerminalEntry, goalSlug, runGoal, type Run
 import type { AcceptanceSpec, GoalClassification, GoalTier } from './classify-acceptance';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../dag/types';
-import { SDD_DECLARED_WRITE_SET, SDD_REPORT_FILE, type DeclaredWriteSet } from '../write-set';
+import { SDD_DECLARED_WRITE_SET, SDD_REPORT_FILE, type DeclaredWriteSet } from '../writeset/write-set';
 import { appendBoard, BOARD_RUN_ID, liveRuns, readBoard, type BoardEntry } from '../board/run-board';
 import { publishEntry } from '../../../scripts/board-publish';
 import type { RunOutcomeKind } from '../run-outcome';

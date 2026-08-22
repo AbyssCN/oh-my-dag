@@ -19,7 +19,7 @@
  *      `git clean -fd` 一起删掉,那种"回滚"是破坏不是还原。
  */
 import { describe, expect, test } from 'bun:test';
-import { captureRollbackAnchor, classifyRollbackAnchor, describeRollback } from '../../src/harness/rollback-anchor';
+import { captureRollbackAnchor, classifyRollbackAnchor, describeRollback } from '../../src/harness/writeset/rollback-anchor';
 
 const cls = (statusOutput: string) => classifyRollbackAnchor({ head: 'abc1234', statusOutput });
 

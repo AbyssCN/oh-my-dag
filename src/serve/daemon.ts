@@ -16,7 +16,7 @@ import type { AgentEvent } from '@earendil-works/pi-agent-core';
 import { logger } from '../logger';
 import { boardHtml } from './board-page';
 import type { OmdMcpTool } from '../mcp/server';
-import type { PlanLedger } from '../harness/plan-ledger';
+import type { PlanLedger } from '../harness/plan/plan-ledger';
 import type { AnyOmdTool } from '../harness/agent-tools';
 import type { OmdSessionStore } from '../harness/chat/session-store';
 import { runChatTurn, type ChatTurnOpts } from '../harness/chat/agent';

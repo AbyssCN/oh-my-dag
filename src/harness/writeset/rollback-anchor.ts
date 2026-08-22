@@ -35,7 +35,7 @@
  * 「这次要是跑坏了,我有没有一条回得去的路」。要不要把「脏树不许起跑」升成闸,
  * 是单独的拨闸决定 —— 而今天连"多少跑是从脏树起跑的"这个数都还没有。
  */
-import { logger } from './logger';
+import { logger } from '../logger';
 
 export type RollbackAnchorKind = 'clean' | 'dirty-tracked' | 'dirty-untracked' | 'not-a-repo' | 'unknown';
 

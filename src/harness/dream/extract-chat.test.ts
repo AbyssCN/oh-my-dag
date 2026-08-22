@@ -740,7 +740,7 @@ describe('live (OMD_DREAM_LIVE=1) — S4 真座位验收', () => {
     }
 
     // 动态 import 真实 callModel + provider 注册 (deepseek 端点/凭证, 同 bootstrap 路径)
-    const { callModel, registerProvidersFromEnv } = await import('../../model/index');
+    const { callModel, registerProvidersFromEnv } = await import('../../model');
     registerProvidersFromEnv();
 
     // 挂载账本: createCostLedger + attachLedger (观察者钩子, callModel 出口自动记账)

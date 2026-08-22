@@ -39,7 +39,7 @@ import {
 } from '../../harness/pathfinder/ticket-guard';
 import type { PathMap, Ticket, TicketType } from '../../harness/pathfinder/types';
 import type { OmdMemory } from '../../harness/memory/store';
-import type { DagRecorder } from '../../harness/dag-record';
+import type { DagRecorder } from '../../harness/dag/dag-record';
 import type { HudMirror } from '../../hud/mirror';
 import { compactFog } from '../../hud/fog';
 

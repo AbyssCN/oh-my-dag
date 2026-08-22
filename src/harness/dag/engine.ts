@@ -77,7 +77,7 @@ import { loadProfiles, resolveProfile, type LeafProfile } from '../profiles/prof
 // D-3 注册 server 集真源 (parsePlan knownServers 必传): 该 run 的 cwd 经 loadMcpClientConfig。
 import { knownMcpServerNames } from '../../mcp/client/config';
 // S3.6 escalation patch 模式: 补丁解析 + 程序化 merge (未补丁节点字节不动 → D-21 复用按构造成立)。
-import { parsePlanPatch, applyPlanPatch, buildPatchRequest } from '../plan-patch';
+import { parsePlanPatch, applyPlanPatch, buildPatchRequest } from '../plan/plan-patch';
 import { hashArtifact, hashText, computeDagGeneration } from '../continuity/checkpoint-manager';
 import type { NodeCheckpoint, NodeLoopJournal, RoundVerdict } from '../continuity/types';
 // noun-gate 接缝(INV-X3):宿主注入(上游宿主传 memory-hub checkNouns);包不依赖 memory-hub。
@@ -95,7 +95,7 @@ import { classifyVeto, isInfraVerdict } from './veto-guard';
 import { makeDefaultGenerate, LEAF_SYSTEM_PREFIX, PONYTAIL_LEAF_DISPOSITION } from './defaults';
 import { topoLevels, buildLeafPrompt, addUsage, filterOracleCommandNodes } from './planner';
 // ready-set 调度器 (拓扑推进 + 三层并发闸 + quorum 判定; 纯同步零 IO, 见 dag-scheduler.ts)。
-import { DagScheduler, type SchedKind, type QuorumVerdict } from '../dag-scheduler';
+import { DagScheduler, type SchedKind, type QuorumVerdict } from './dag-scheduler';
 import { nodeExecKind, type NodeExecKind } from './node-kind';
 import { loadAgentTemplates, templateRoster, type AgentTemplate } from '../agent-templates';
 import { expandMapNode, mapSpecHash } from '../plan/map-expand';
@@ -140,11 +140,11 @@ import { gateFalseCompletion, renderFalseCompletionFindings } from '../plan/fals
  * 超出的条数如实列出来, 不静默丢。
  */
 const SHELL_FACT_CAP = 6;
-import { verifiedShellWriteTargets } from '../shell-writes';
+import { verifiedShellWriteTargets } from '../writeset/shell-writes';
 import { blamePathCandidates, failureExcerpt } from '../failure-trace';
 import { findRedOracles, renderOracleRedVerdict } from './oracle-red';
 import { attributeBlame, renderAttribution } from './blame-attribution';
-import { captureRollbackAnchor } from '../rollback-anchor';
+import { captureRollbackAnchor } from '../writeset/rollback-anchor';
 import { serializeWriteRaces, staticLintPlan } from '../plan/static-lint';
 import { autoRewriteLeafTier } from '../plan/leaf-tier-gate';
 import { scheduledArtifactFindings } from '../plan/invocation-facts';
@@ -172,9 +172,9 @@ import { send } from '../../model/gateway';
 import { collectDepMedia } from '../leaf-media';
 import { recordGeneration, recordSpan } from '../../model/langfuse';
 import { recordSeatUsage } from '../../model/seat-usage';
-import { parseWrittenFiles, renderParseFailures } from '../write-parse-gate';
-import { checkClaimAnchors } from '../claim-anchor';
-import { applyPoisonRollback, planPoisonRollback } from '../poison-rollback';
+import { parseWrittenFiles, renderParseFailures } from '../writeset/write-parse-gate';
+import { checkClaimAnchors } from '../writeset/claim-anchor';
+import { applyPoisonRollback, planPoisonRollback } from '../writeset/poison-rollback';
 import { ModelError, isTransientModelFault } from '../../model';
 import { classifyCommandExit, withFailureKind, upstreamFailureNotice } from '../node-failure';
 import { collectRepairGuidance, loadRepairFingerprints } from './repair-guidance';

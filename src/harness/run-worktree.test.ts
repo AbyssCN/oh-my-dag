@@ -22,7 +22,7 @@ import {
   shouldAutoCommit,
   type RunWorktreeDeps,
 } from './run-worktree';
-import type { RollbackAnchor } from './rollback-anchor';
+import type { RollbackAnchor } from './writeset/rollback-anchor';
 
 /**
  * 假 git: 记下每条命令; `fail` 给了就抛(模拟 worktree 已存在 / 分支重名之类)。

@@ -1,5 +1,5 @@
 /**
- * src/harness/dag-record —— omd DAG 运行**留痕层** (轻量持久, 治"无 node 记录/重建")。
+ * src/harness/dag/dag-record —— omd DAG 运行**留痕层** (轻量持久, 治"无 node 记录/重建")。
  *
  * 把每次 runExecutorDag 的 ExecutorDagResult 落独立 SQLite (omd_dag_runs 表): plan / 拓扑层 /
  * 每 node {kind, status, deps} / token usage。→ 运行记录 + 审计 + **node 图谱可回溯重建**。
@@ -14,13 +14,13 @@
 import { Database } from 'bun:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { omdRepoRoot } from './repo-root';
-import type { ExecutorDagResult } from './dag/engine';
-import type { NodeFailureKind } from './node-failure';
-import { deriveRunOutcome, type RunOutcomeKind } from './run-outcome';
-import type { AcceptanceProbe } from './goal/acceptance-gate';
-import { isSpecWrite, type SpecWrite } from './goal/spec-write';
-import type { RollbackAnchor } from './rollback-anchor';
+import { omdRepoRoot } from '../repo-root';
+import type { ExecutorDagResult } from './engine';
+import type { NodeFailureKind } from '../node-failure';
+import { deriveRunOutcome, type RunOutcomeKind } from '../run-outcome';
+import type { AcceptanceProbe } from '../goal/acceptance-gate';
+import { isSpecWrite, type SpecWrite } from '../goal/spec-write';
+import type { RollbackAnchor } from '../writeset/rollback-anchor';
 
 export interface DagRunNode {
   id: string;

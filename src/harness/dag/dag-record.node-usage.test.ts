@@ -15,8 +15,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 import { createDagRecorder } from './dag-record';
-import type { ExecutorDagResult } from './dag/types';
-import type { SeatUsageEntry } from '../model/seat-usage';
+import type { ExecutorDagResult } from './types';
+import type { SeatUsageEntry } from '../../model/seat-usage';
 
 /** 最小可记的一张图结果 (沿用 dag-record.test.ts:17 的形状)。 */
 const fakeResult = (

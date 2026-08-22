@@ -67,8 +67,8 @@
 |---|---|---|---|---|
 | `maxFanout` |  | `number` | 内层 fan-out 并发上限 (传给 primitives.parallel)。 | `src/mcp/tools/dag-tools.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/fleet.ts` (15 文件) |
 | `warmThenFanout` |  | `boolean` | 暖发调度 (契约 §10.2): 全局先串行暖 1 发(写 cache)→ 再并行轰其余(命中共享冻结前缀)。 | `src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts`<br>`src/eval/oracles/conductor-modelmix.ts` (6 文件) |
-| `kindFanout` |  | `{ agent?: number; command?: number; inproc?: number }` | per-kind 并发闸 (fanout 最大化设计, 2026-07-21): inproc 叶纯 API 等待、无本地足迹 → 默认不限 (只受 maxFanout/图宽/provider 池); agent 叶 (本地工具调用)… | `src/harness/dag-scheduler.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/fleet.ts` (4 文件) |
-| `channelFanout` |  | `Record<string, number>` | per-channel 并发闸 (SDD v2 D-23, TFFInfer 多 Stream 同构): key = provider 前缀 (调度期由 node.model ?? kind 静态模型推出), value = 该渠道并… | `src/mcp/assemble.ts`<br>`src/harness/dag-scheduler.ts`<br>`src/harness/dag/engine.ts` (3 文件) |
+| `kindFanout` |  | `{ agent?: number; command?: number; inproc?: number }` | per-kind 并发闸 (fanout 最大化设计, 2026-07-21): inproc 叶纯 API 等待、无本地足迹 → 默认不限 (只受 maxFanout/图宽/provider 池); agent 叶 (本地工具调用)… | `src/harness/dag/dag-scheduler.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/fleet.ts` (4 文件) |
+| `channelFanout` |  | `Record<string, number>` | per-channel 并发闸 (SDD v2 D-23, TFFInfer 多 Stream 同构): key = provider 前缀 (调度期由 node.model ?? kind 静态模型推出), value = 该渠道并… | `src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/dag/dag-scheduler.ts` (3 文件) |
 | `cancelSignal` |  | `AbortSignal` | **协作式取消** (D-P): 叫停这次 run。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/dag-tools.ts`<br>`src/mcp/tools/goal.ts` (4 文件) |
 
 ## DagLeafShapingSeam

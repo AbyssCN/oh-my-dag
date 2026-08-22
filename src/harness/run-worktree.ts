@@ -39,7 +39,7 @@
 import { existsSync, readdirSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { logger } from './logger';
-import { captureRollbackAnchor, type RollbackAnchor } from './rollback-anchor';
+import { captureRollbackAnchor, type RollbackAnchor } from './writeset/rollback-anchor';
 import { isDeliveredOutcome } from './run-outcome';
 
 export type BranchStrategy = 'head' | 'branch';

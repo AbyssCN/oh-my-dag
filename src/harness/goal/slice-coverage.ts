@@ -24,7 +24,7 @@
  *
  * @module
  */
-import { globToRegExp } from '../write-set';
+import { globToRegExp } from '../writeset/write-set';
 import type { SddSlice } from './sdd-direct';
 
 export type SliceCoverageKind = 'produced' | 'partial' | 'missing';

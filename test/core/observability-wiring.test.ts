@@ -24,7 +24,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runExecutorDagWithPlan } from '../../src/harness/dag/engine';
 import { CheckpointManager } from '../../src/harness/continuity/checkpoint-manager';
-import { createDagRecorder } from '../../src/harness/dag-record';
+import { createDagRecorder } from '../../src/harness/dag/dag-record';
 import type { ConductorPlan } from '../../src/harness/conductor-plan';
 import type { ExecutorDagConfig } from '../../src/harness/dag/types';
 

@@ -44,7 +44,7 @@
 import { readFileSync, existsSync, appendFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { callModel } from '../../src/model/index';
+import { callModel } from '../../src/model';
 import { bootstrapModelRuntime } from '../../src/model/bootstrap';
 
 const REFS = 'docs/bars/refs';

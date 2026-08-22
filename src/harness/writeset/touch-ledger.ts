@@ -18,7 +18,7 @@
 import { Database } from 'bun:sqlite';
 import { mkdirSync } from 'node:fs';
 import { isAbsolute, join, normalize, resolve } from 'node:path';
-import { logger } from './logger';
+import { logger } from '../logger';
 
 /** 触碰操作。read = 读侧证据 (hash 校验是后面刀, 现在只记); write = 碰撞判据里「至少一侧」的那一侧。 */
 export type TouchOp = 'read' | 'write';

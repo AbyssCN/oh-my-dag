@@ -18,7 +18,7 @@ import { createPathfinderTools, type PathfinderToolDeps } from './pathfinder';
 import { createDagTools, type DagEngine } from './dag-tools';
 import { createComposeTools } from './compose';
 import { RunRegistry } from '../run-registry';
-import { createDagRecorder } from '../../harness/dag-record';
+import { createDagRecorder } from '../../harness/dag/dag-record';
 import type { ExecutorDagConfig, ExecutorDagResult } from '../../harness/dag/types';
 import type { RunGoalResult } from '../../harness/goal/run-goal';
 import type { ConductorPlan } from '../../harness/conductor-plan';

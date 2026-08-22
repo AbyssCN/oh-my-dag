@@ -4,7 +4,7 @@
  * 未补丁节点字节不动 (D-21 复用按构造成立的前提)。
  */
 import { describe, expect, test } from 'bun:test';
-import type { ConductorPlan } from './conductor-plan';
+import type { ConductorPlan } from '../conductor-plan';
 import { applyPlanPatch, buildPatchRequest, parsePlanPatch } from './plan-patch';
 
 const prev = (): ConductorPlan =>

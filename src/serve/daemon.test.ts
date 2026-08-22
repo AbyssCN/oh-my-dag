@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
-import type { PlanLedger } from '../harness/plan-ledger';
+import type { PlanLedger } from '../harness/plan/plan-ledger';
 import { type OmdSessionStore, createOmdSessionStore, resetSessionCacheForTest } from '../harness/chat/session-store';
 import { createDaemonFetch } from './daemon';
 

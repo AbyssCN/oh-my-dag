@@ -20,9 +20,9 @@
 import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { createDagRecorder, recordDagRun } from './dag-record';
-import type { ExecutorDagResult } from './dag/types';
-import type { AcceptanceProbe } from './goal/acceptance-gate';
-import { readout } from '../../scripts/omd-readout';
+import type { ExecutorDagResult } from './types';
+import type { AcceptanceProbe } from '../goal/acceptance-gate';
+import { readout } from '../../../scripts/omd-readout';
 
 /** 最小可记的一张图结果 (只填 record 真读的那几个字段) —— 与 dag-record.test.ts 同款。 */
 const fakeResult = (planName: string): ExecutorDagResult =>

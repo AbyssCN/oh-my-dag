@@ -224,7 +224,7 @@ if (userArgs[0] === 'serve') {
   const { createConductorChatTools } = await import('../serve/chat-tools');
   const { startDaemon } = await import('../serve/daemon');
   const { createOmdSessionStore } = await import('./chat/session-store');
-  const { createPlanLedger } = await import('./plan-ledger');
+  const { createPlanLedger } = await import('./plan/plan-ledger');
   const { existsSync } = await import('node:fs');
   const { join } = await import('node:path');
   const cwd = process.cwd();
@@ -336,7 +336,7 @@ async function runTouch(args: string[]): Promise<void> {
   const { resolve } = await import('node:path');
   const absPath = resolve(process.cwd(), pathArg);
   try {
-  const { openTouchLedger } = await import('./touch-ledger');
+  const { openTouchLedger } = await import('./writeset/touch-ledger');
   const ledger = openTouchLedger({ root });
   // hash 缺省落 NULL (没算 hash ≠ 空串, NULL≠0 纪律) —— 这里不传 ''。
   // ledger.recordTouch 自带 fail-open (内部 warn 留痕), ts 由 ledger 自己打, 调用方不传。
@@ -360,7 +360,7 @@ async function runTouches(args: string[]): Promise<void> {
   const showFindings = wantFindings || (!wantPairs && !wantFindings);
   const root = await touchLedgerRoot();
   try {
-  const { openTouchLedger } = await import('./touch-ledger');
+  const { openTouchLedger } = await import('./writeset/touch-ledger');
   const ledger = openTouchLedger({ root });
   if (showPairs) {
     const pairs = ledger.crossSessionPairs();

@@ -6,7 +6,7 @@
  */
 import { z } from 'zod';
 import type { OmdMcpTool } from '../server';
-import type { PlanLedger } from '../../harness/plan-ledger';
+import type { PlanLedger } from '../../harness/plan/plan-ledger';
 
 export function createPlansTool(ledger: PlanLedger | undefined): OmdMcpTool {
   return {

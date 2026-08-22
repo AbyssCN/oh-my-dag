@@ -51,7 +51,7 @@ export async function heartbeatOnce(tools: HeartbeatTools, opts: { apply: boolea
 
 if (import.meta.main) {
   // 真装配 (与 scripts/omd-deliver.ts 同款生产件, 含账本留痕)。
-  const { createDagRecorder } = await import('../src/harness/dag-record');
+  const { createDagRecorder } = await import('../src/harness/dag/dag-record');
   const { createAgentLeafRunner } = await import('../src/harness/agent-leaf');
   const { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } = await import('../src/harness/command-leaf');
   const { createPathfinderTools, readyRegion } = await import('../src/mcp/tools/pathfinder');

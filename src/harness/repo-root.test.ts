@@ -15,7 +15,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { ledgerPath } from './dag-record';
+import { ledgerPath } from './dag/dag-record';
 import { mainRepoRootOfWorktree, omdRepoRoot } from './repo-root';
 
 const origCwd = process.cwd();

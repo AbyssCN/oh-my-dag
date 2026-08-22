@@ -15,7 +15,7 @@ import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openTouchLedger } from './touch-ledger';
-import { logger } from './logger';
+import { logger } from '../logger';
 
 /** 临时接管 logger.warn 收集证据 (用完必须还原 —— logger 是模块级单例, 别的文件也用它)。 */
 const captureWarns = (): { msgs: string[]; restore: () => void } => {

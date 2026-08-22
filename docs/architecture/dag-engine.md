@@ -200,7 +200,7 @@ caps · `sessionId` · SQLite run recording · `planToMermaid()`.
 | goal loop · classification · acceptance probes | `src/harness/goal/{run-goal,classify-acceptance,acceptance-gate}.ts` |
 | detached worker | `scripts/goal-worker.ts` |
 | MCP surface · layer renames · entry tools | `src/mcp/{assemble,tool-renames}.ts`, `src/mcp/tools/{goal,chat,dag-tools}.ts` |
-| run recording | `src/harness/dag-record.ts` |
+| run recording | `src/harness/dag/dag-record.ts` |
 
 The `executor-dag*` family was renamed into `src/harness/dag/` on 2026-08-07 (`4a0909a`). The
 `executor-` prefix existed to distinguish it from a "macro PG DAG" layer that was planned once

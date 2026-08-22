@@ -22,7 +22,7 @@ const TARGETS = [
   // 易 ×5 (48–87 行, 纯函数/纯数据)
   'src/harness/pathfinder/types.ts',
   'src/harness/plan/sdd-template.ts',
-  'src/harness/dag-mermaid.ts',
+  'src/harness/dag/dag-mermaid.ts',
   'src/harness/slim/debt-scan.ts',
   'src/harness/arch/hotspots.ts',
   // 中 ×4 (73–185 行, 有依赖注入/分支逻辑)
@@ -54,7 +54,7 @@ const SPEC = `# Large reuse-own 任务: 重建 11 个模块 (难度梯度)
    导出 const SDD_EXTRA_SECTIONS (字节稳定的骨架文本: 接缝/先红/oracle 硬闸/文件边界/review gate/D-number 决策表)
    + renderSddDoc(base: string): string (把增强段拼进传入的 base plan)。无时间戳/随机, 常量字节稳定。
 
-3. src/harness/dag-mermaid.ts — planToMermaid(plan, opts?): string
+3. src/harness/dag/dag-mermaid.ts — planToMermaid(plan, opts?): string
    ConductorPlan → Mermaid flowchart 文本 (不含围栏)。command 节点画 [[双框]], agent 画 ([圆角]),
    其余 inproc leaf 画 [方框]; 带 results 时 failed 节点加 class failed; 节点 id 须 sanitize 防语法炸裂。
 

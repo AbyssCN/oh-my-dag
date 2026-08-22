@@ -1,5 +1,5 @@
 /**
- * src/harness/dag-scheduler —— executor-DAG 的**纯调度器**(从 executor-dag.ts 的 executePlan 里抽出)。
+ * src/harness/dag/dag-scheduler —— executor-DAG 的**纯调度器**(从 executor-dag.ts 的 executePlan 里抽出)。
  *
  * 只管三件事, 且**只管这三件**:
  *   ① 拓扑推进   —— indeg 归零即入 ready (取代逐层 barrier);
@@ -14,7 +14,7 @@
  * ⚠ 这是搬迁不是重写: 所有判据 (幻象 dep 视为已满足 / cap 缺省 / 非严格 FIFO 让位 / quorum 缺省启发)
  *   与原 executePlan 逐字一致, 任何"顺手改进"都是行为变更。
  */
-import type { ConductorPlan } from './conductor-plan';
+import type { ConductorPlan } from '../conductor-plan';
 
 /** 调度期 kind 词表。按**声明的 executor** 记账 (运行期 router 的选择不改记账)。 */
 export type SchedKind = 'agent' | 'command' | 'inproc';

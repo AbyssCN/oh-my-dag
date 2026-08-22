@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { DagScheduler, type DagSchedulerOpts, type SchedKind } from './dag-scheduler';
-import type { ConductorPlan } from './conductor-plan';
+import type { ConductorPlan } from '../conductor-plan';
 
 // 调度语义的**穷举表征测试**: 纯同步、零 mock、零 async、零 LLM。
 // 这些规则以前只能连着真跑一张图 (fake generate + 定时器) 才验得到, 抽出调度器后可以直接断言。

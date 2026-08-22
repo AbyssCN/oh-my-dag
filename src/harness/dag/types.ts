@@ -9,7 +9,7 @@ import type { VerifierFn } from '../verifier';
 import type { FaninSummaryConfig } from '../fanin-summary';
 import type { ArtifactBudget } from '../plan/judge-artifacts';
 import type { NodeFailureKind } from '../node-failure';
-import type { RollbackAnchor } from '../rollback-anchor';
+import type { RollbackAnchor } from '../writeset/rollback-anchor';
 import type { BlameEntry, BlameResolution } from './blame';
 
 /**
@@ -639,7 +639,7 @@ export interface DagObservation {
      * `claim-anchor` (2026-08-16, #145 附录 §9.5) = **产出里的「file:line + 字面量」声称与盘上对不上**。
      * 现场: 代码早换成 token 了, 而同一个文件头的简报仍写着裸 hex —— 终审验了代码干净,
      * 没交叉核声称。**简报是给下一个人做决定用的**, 失真的简报让后续判断建立在错误前提上。
-     * **只报不判**, 三级判据与结案条件见 `harness/claim-anchor.ts`。
+     * **只报不判**, 三级判据与结案条件见 `harness/writeset/claim-anchor.ts`。
      */
     | 'claim-anchor'
     /**

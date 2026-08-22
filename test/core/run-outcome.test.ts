@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runGoal, type RunGoalConfig } from '../../src/harness/goal/run-goal';
 import { summarizeGoal } from '../../src/mcp/tools/goal';
-import { createDagRecorder } from '../../src/harness/dag-record';
+import { createDagRecorder } from '../../src/harness/dag/dag-record';
 import { RUN_OUTCOME_INFO, RUN_OUTCOME_ORDER, deriveRunOutcome, type RunOutcomeKind } from '../../src/harness/run-outcome';
 import type { ExecutorDagResult } from '../../src/harness/dag/types';
 

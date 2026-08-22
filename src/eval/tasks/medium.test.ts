@@ -17,8 +17,8 @@ async function exists(p: string): Promise<boolean> {
   try { await stat(p); return true; } catch { return false; }
 }
 
-const TARGETS = ['src/harness/dag-mermaid.ts', 'src/harness/slim/debt-scan.ts', 'src/harness/arch/hotspots.ts'];
-const TESTS = ['src/harness/dag-mermaid.test.ts', 'src/harness/slim/debt-scan.test.ts', 'src/harness/arch/hotspots.test.ts'];
+const TARGETS = ['src/harness/dag/dag-mermaid.ts', 'src/harness/slim/debt-scan.ts', 'src/harness/arch/hotspots.ts'];
+const TESTS = ['src/harness/dag/dag-mermaid.test.ts', 'src/harness/slim/debt-scan.test.ts', 'src/harness/arch/hotspots.test.ts'];
 
 test('O1: medium worktree 建成, oracle 含 3 个测试', async () => {
   fx = await createMediumFixture();
@@ -32,7 +32,7 @@ test('3 个目标模块全被清空 (impl 移除, 换 EVAL FIXTURE 桩头)', asy
     expect(content).toContain('EVAL FIXTURE');
   }
   // 具体实现符号确实没了 (fleet 要照 SPEC 重建)
-  const mermaid = await readFile(join(fx!.root, 'src/harness/dag-mermaid.ts'), 'utf8');
+  const mermaid = await readFile(join(fx!.root, 'src/harness/dag/dag-mermaid.ts'), 'utf8');
   expect(mermaid).not.toContain('export function planToMermaid');
 });
 

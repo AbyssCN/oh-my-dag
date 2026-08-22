@@ -1,5 +1,5 @@
 /**
- * src/harness/plan-ledger —— plan-memory Phase A 数据层 (SDD docs/plan/2026-07-21-plan-memory.md)。
+ * src/harness/plan/plan-ledger —— plan-memory Phase A 数据层 (SDD docs/plan/2026-07-21-plan-memory.md)。
  *
  * DAG 图记忆的账本: 每次 dag_run 跑完记一笔 (family 聚类 + 版本去重 + 战绩计数)。
  * **纯记账, 零行为改变** —— 召回闸 (Phase B) 压在证据门后 (issue #10, 2026-08-11 检查复现分布)。
@@ -23,7 +23,7 @@ import { Database } from 'bun:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { logger } from './logger';
+import { logger } from '../logger';
 
 /** 并族阈值: 字符 bigram Jaccard ≥ 0.8 = 同 family (近同文本; 同参重放的匹配前提)。 */
 const FAMILY_JACCARD_THRESHOLD = 0.8;

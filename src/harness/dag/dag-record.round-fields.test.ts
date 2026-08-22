@@ -1,5 +1,5 @@
 /**
- * src/harness/dag-record.round-fields.test.ts —— C-0 采集补口的反向闸 (2026-08-21)。
+ * src/harness/dag/dag-record.round-fields.test.ts —— C-0 采集补口的反向闸 (2026-08-21)。
  *
  * 五条 GWT 钉死三件事:
  *   · **GWT-0a/b**  跨轮身份 + 覆盖标记 `overriddenBy` 的写入不变量 (INV-0-1);
@@ -28,8 +28,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 import { createDagRecorder } from './dag-record';
-import { computeWaste, readDagRuns } from './waste/report';
-import type { ExecutorDagResult } from './dag/types';
+import { computeWaste, readDagRuns } from '../waste/report';
+import type { ExecutorDagResult } from './types';
 import type { DagRunNode, DagRunRecord } from './dag-record';
 
 /** mkdtemp 临时夹具根 — afterAll 清掉。 */

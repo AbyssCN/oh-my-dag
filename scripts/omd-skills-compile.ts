@@ -13,7 +13,7 @@ import '../src/harness/script-bootstrap';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { bootstrapModelRuntime } from '../src/model/bootstrap';
-import { callModel } from '../src/model/index';
+import { callModel } from '../src/model';
 import { resolveRoleModel } from '../src/model/role-models';
 import { DISTILL_SCHEMA, compileSkills, suggestSkills, type Distilled } from '../src/harness/skills/compile';
 

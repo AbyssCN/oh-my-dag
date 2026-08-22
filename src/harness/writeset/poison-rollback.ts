@@ -54,7 +54,7 @@
  */
 import { existsSync, rmSync } from 'node:fs';
 import { isAbsolute, relative, resolve } from 'node:path';
-import { logger } from './logger';
+import { logger } from '../logger';
 
 /** 一条待撤销的路径 + 为什么它过了与门。 */
 export interface PoisonRollbackAction {

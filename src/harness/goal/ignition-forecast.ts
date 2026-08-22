@@ -23,7 +23,7 @@
 import { Database } from 'bun:sqlite';
 import { existsSync } from 'node:fs';
 import { channelOf } from '../../model/cost-ledger';
-import { ledgerPath } from '../dag-record';
+import { ledgerPath } from '../dag/dag-record';
 import { logger } from '../logger';
 
 /** 一个相位的历史带宽(输入 token = conductorIn + leavesIn)。 */

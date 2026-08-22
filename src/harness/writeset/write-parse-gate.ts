@@ -47,7 +47,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { extname, isAbsolute, join } from 'node:path';
-import { logger } from '../logger';
+import { logger } from '../../logger';
 
 /** 一条解析失败。`error` 已是人话(解析器原文首行),给下游 leaf 直接消费。 */
 export interface ParseFailure {

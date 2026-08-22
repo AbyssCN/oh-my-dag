@@ -32,7 +32,7 @@ import {
 import * as costLedger from '../model/cost-ledger';
 import { channelOf } from '../model/cost-ledger';
 import { ALL_SEAT_IDS, SEAT_PREFERRED_COORD } from '../model/seats';
-import type { PlanLedger } from '../harness/plan-ledger';
+import type { PlanLedger } from '../harness/plan/plan-ledger';
 import { createOmdSessionStore, resetSessionCacheForTest } from '../harness/chat/session-store';
 import { createDaemonFetch } from './daemon';
 

@@ -83,7 +83,7 @@ import type { McpPoolDeps } from '../mcp/client/pool';
 import type { McpCallLedger } from '../mcp/client/call-ledger';
 import { createHashlineCustomTools, hashlinePatchPaths } from './hashline';
 import { createDriftTracker, type DriftDetectorConfig } from './hooks/drift-detector';
-import { createParseFeedback } from './write-parse-gate';
+import { createParseFeedback } from './writeset/write-parse-gate';
 import { createSandboxedLeafRunner } from './hooks/sandboxed-leaf';
 import { loadSandboxConfig } from './hooks/command-policy';
 import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from './command-leaf';

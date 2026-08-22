@@ -10,7 +10,7 @@
  *   · GWT-2c  CLI 把 INV-6 那行覆盖边界**字面**印出。
  *
  * ⚠ 已知上下游债 (留给后续闸环, 不在本节点修, 本节点只测 `computeWaste` 契约):
- *   · `src/harness/dag-record.ts` 的 recorder (A 片独占) 暂未把 `dagRound` /
+ *   · `src/harness/dag/dag-record.ts` 的 recorder (A 片独占) 暂未把 `dagRound` /
  *     `overriddenBy` 透到 JSON `nodes` 字段 —— 真表里这两个键缺席,
  *     `nodeWasteTokens` 在生产数据上必然 value=null。`report.ts` 已经按契约报
  *     unknown + missingColumns,**没有**回退到代理 (那正是 GWT-2a 防的回潮);
@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 import { computeWaste, readDagRuns } from './report';
-import type { DagRunNode, DagRunRecord } from '../dag-record';
+import type { DagRunNode, DagRunRecord } from '../dag/dag-record';
 
 /** 仓根 (脚本路径从这里解析,跨 cwd 也行)。 */
 const REPO_ROOT = join(import.meta.dir, '..', '..', '..');

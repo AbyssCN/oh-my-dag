@@ -21,7 +21,7 @@ import { Database } from 'bun:sqlite';
 import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createDagRecorder, recordDagRun } from '../dag-record';
+import { createDagRecorder, recordDagRun } from '../dag/dag-record';
 import type { ExecutorDagResult, ExecutorDagConfig } from '../dag/types';
 import type { AgentLeafRunner } from '../leaf-runners';
 import { runGoal, type RunGoalConfig } from './run-goal';

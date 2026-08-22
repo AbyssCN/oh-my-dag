@@ -22,7 +22,7 @@
  *
  * 退出码: 0 成功 (空库合法) · 1 内部错。
  */
-import { ledgerPath } from '../src/harness/dag-record';
+import { ledgerPath } from '../src/harness/dag/dag-record';
 import {
   computeWaste,
   readDagRuns,

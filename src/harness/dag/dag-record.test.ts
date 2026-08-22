@@ -11,7 +11,7 @@
 import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { createDagRecorder, recordDagRun } from './dag-record';
-import type { ExecutorDagResult } from './dag/types';
+import type { ExecutorDagResult } from './types';
 
 /** 最小可记的一张图结果 (只填 record 真读的那几个字段)。 */
 const fakeResult = (planName: string, usage?: { leavesIn?: number; cacheHit?: number }): ExecutorDagResult =>

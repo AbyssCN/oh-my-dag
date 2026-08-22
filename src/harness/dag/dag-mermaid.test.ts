@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { planToMermaid } from './dag-mermaid';
-import type { ConductorPlan } from './conductor-plan';
+import type { ConductorPlan } from '../conductor-plan';
 
 const plan: ConductorPlan = {
   name: 'demo',

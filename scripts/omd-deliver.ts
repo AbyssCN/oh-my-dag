@@ -14,7 +14,7 @@
  * 后端遵从 resolveBackend 解析序(env OMD_PATH_BACKEND > .omd/pathfinder/config.json > md)。
  * ⚠ 本 repo 的 gh 配置指老 remote(见交接 18 勘误), md 图操作要 OMD_PATH_BACKEND=md。
  */
-import { createDagRecorder } from '../src/harness/dag-record';
+import { createDagRecorder } from '../src/harness/dag/dag-record';
 import { createAgentLeafRunner } from '../src/harness/agent-leaf';
 import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../src/harness/command-leaf';
 import { createPathfinderTools } from '../src/mcp/tools/pathfinder';

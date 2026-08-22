@@ -30,7 +30,7 @@
  *     GWT-4b 的 in === true 段红。
  */
 import { describe, expect, test } from 'bun:test';
-import { createDagRecorder, type DagRunNode } from './dag-record';
+import { createDagRecorder, type DagRunNode } from './dag/dag-record';
 import type { ExecutorDagResult } from './dag/types';
 
 /**

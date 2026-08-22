@@ -31,7 +31,7 @@
  */
 import { Database } from 'bun:sqlite';
 import { existsSync } from 'node:fs';
-import type { DagRunNode, DagRunRecord } from '../dag-record';
+import type { DagRunNode, DagRunRecord } from '../dag/dag-record';
 
 /** 单指标的形状 (C-2 契约)。`value` 缺列时是 `null`,`n` / `unknownRuns` 始终是 `number`。 */
 export interface WasteMetric<T> {

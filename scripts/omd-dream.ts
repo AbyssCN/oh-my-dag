@@ -29,7 +29,7 @@ import { validateDreamCandidate, dreamFactInput } from '../src/harness/dream/val
 import { mergeDreamCandidates } from '../src/harness/dream/merge';
 import { promoteDreamFacts } from '../src/harness/dream/promote';
 import { createRunStore } from '../src/mcp/run-store';
-import { callModel } from '../src/model/index';
+import { callModel } from '../src/model';
 import type { DreamCandidate } from '../src/harness/dream/validate';
 
 // ---------------------------------------------------------------------------

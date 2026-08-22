@@ -489,7 +489,7 @@ harness 也在读,**读的方式错了** —— 缺了切分这一步。
 - 随后把检出扫描扩到平铺图(39d3398):口径修对了,但**有效样本仍是 0** —— run+dag_run 17 跑走平铺路,那条路一个 conductor 节点都没有。两道分开记 `claimCheck.conductor` / `.flat`,**合并即错**(conductor 面 = output+facts+产物内容,flat 面 = output+facts,两个分母不重叠);只进账本、不进任何 prompt —— 纯测量,零行为风险。facts 构造器收成一份 `engineFacts`(两处各写一份,同一个谓词会判出不同答案,差异是静默的)。
 - ⚠ 写这道扫描时被闸抓到两个自己的错:conductor 父节点的 output 是子节点输出的**拼接** → 子节点那句声称被父节点复述一遍,而父节点手里没有子节点的 facts → 一次已被内环放过的诚实自验在父节点这格被反报成「无据」(已跳过 conductor 节点);外层组装**漏了透传** —— `executePlan` 算出来了,`runExecutorDagWithPlan` 没往结果里放,账本那一列恒 NULL,读上去像「早于该改动」—— 正是本仓反复警告的「逐字重建」那一格。
 
-**怎么抓**:`src/harness/dag-record.test.ts`(闸 4 条,含老库补列)。
+**怎么抓**:`src/harness/dag/dag-record.test.ts`(闸 4 条,含老库补列)。
 > 读数板落「检出数」前先问一句:**这条路径上判据够得着吗?** 够不着就记「不适用」,不许记 0。
 > 证伪:把「不适用」编成 `findings:0` → 当场红。
 
@@ -571,7 +571,7 @@ harness 也在读,**读的方式错了** —— 缺了切分这一步。
 - 修:判据从二态(`DagObservation | null`)改成三态 `ArtifactMoveVerdict`(`unobserved{first-round|no-population|unreadable}` / `moved` / `no-move`),引擎按跑累加 `artifactMove {transitions, unobserved, findings}` 落账本(缺席 = 没记,`transitions:0` = 这一跑一次机会都没有 —— 两格分得开);读数板 ⑧ 段印三个槽并按 `LOOP_NO_MOVE_MIN_N` 分别判,基率分母**只认 `transitions - unobserved`**。
 - ⚠ 改三态时当场揪出一个**只有换了返回值形状才看得见的真洞**:null 判定写成 `p in prev.hashes ? prev.hashes[p] : cur.hashes[p]` —— 路径在上一轮出现过时,**本轮那侧的 null 永远不被检查**,会掉进「hash 不等 → 有位移」。二态下两条路都返 `null`(都不报),既有 4 条误报守卫用例**照样全绿**;三态下两者的结论相反(一个不进分母、一个进),才露出来。**返回值把两件事压成一个符号时,测试也跟着测不出它们的区别。**
 
-**怎么抓**:`test/core/no-artifact-change.test.ts`(三态组 4 条 + 端到端分母 2 条)· `src/harness/dag-record.test.ts`(账本三态 4 条)· `src/harness/omd-readout.test.ts`(分母口径 + 三槽门槛 5 条)。
+**怎么抓**:`test/core/no-artifact-change.test.ts`(三态组 4 条 + 端到端分母 2 条)· `src/harness/dag/dag-record.test.ts`(账本三态 4 条)· `src/harness/omd-readout.test.ts`(分母口径 + 三槽门槛 5 条)。
 > 读数板要印一个比率之前先问:**这个分母是哪一行代码写出来的?** 答不出来 = 你正在替它挑一个。
 > 证伪:把 `classifyArtifactMove` 的三条 `unobserved` 出口改回 `moved` → 三态组当场红,而「响不响」那组照绿(证明铃不是恒响的)。
 
@@ -609,7 +609,7 @@ harness 也在读,**读的方式错了** —— 缺了切分这一步。
 - 修(**只印不拦**,同 S-12 的处理):探针紧挨着多印两行 —— 写可见性百分比,
   以及「『数可信』管的是伪影不是覆盖;撞车 N 的分母是 `pairs` 不是 `overlaps`」。
 
-**怎么抓**:`src/harness/dag-record.test.ts`(内环形状 4 条)· `src/harness/omd-readout.test.ts`(⑧.1 六条,含「四格之和 = conductorNodes」的不重不漏闸)。
+**怎么抓**:`src/harness/dag/dag-record.test.ts`(内环形状 4 条)· `src/harness/omd-readout.test.ts`(⑧.1 六条,含「四格之和 = conductorNodes」的不重不漏闸)。
 实例 ② **没有闸**:出错的是 `console.log` 里的四个字,写不出会红的断言。落在代码里的是探针那两行输出。
 > 印一个判词之前先问:**这个数取某个值时,读的人能不能反推出唯一一个下一步?** 不能 = 判词里还压着一层没被记下来的分类。
 > 实例 ② 补一问:**给一批读数贴「可信」标签之前,先说清它可信在哪一维** ——
@@ -975,7 +975,7 @@ dag_run 生产面**恒 detached**」。我读了那个文件、引用了那个�
 
 **本仓实例**(2026-08-10,SDD cairness-distill D-2,照抄 cc-deps 四段式归属阶梯 + deps.py:405-410 语义):plan 节点可声明预期写集 (可选字段 `write_set`,声明了才对账,声明成本见 SDD O-1);跑后把 git diff 逐文件走归属阶梯 ①治理产物 → ②全局豁免 → ③在跑节点声明命中 (>1 记 ambiguous)→ ④intentional 例外 → ⑤都不中 = orphan 红。**只有 `activeNodeIds` (本窗口在跑) 里的声明者算数** —— done/历史声明不放行 (G-4)。声明缺席 ≠ 违规 (INV-3,NULL≠0 纪律):整 run 无声明 → `undeclared` 闸缺席不红,那是 O-1 声明覆盖率读数面。touch 对账面:已知 writer 的 orphan 带 writer 证据 (「声明了 A 却改了 B」的机器可证形态)。
 
-**怎么抓**:`src/harness/write-set.ts`(`attributeWriteSet`:58 纯函数,零 LLM;`describeWriteSet`:116;②④ 豁免清单由装配层注入 `goal/run-goal.ts:618-619`);声明面 = `conductor-plan.ts:92` (`write_set`,刻意不进 conductor prompt —— O-1 未裁默认开之前只收手写 plan 的声明)+ `semantic-key.ts:49` (写集不同 = 越界判定面不同 → 入语义键,判重不吞契约)+ `schema-field-registry.ts:82` 登记;挂点 = goal 引擎验收路径。反向自检 (`write-set.test.ts`,G-3/G-4 逐条落):声明 `[a.ts]` 而 diff 含 `a.ts + b.ts` → b.ts orphan 红 (把 b.ts 放行 → 红);done 节点声明过 c.ts 而后续 diff 再改 c.ts → 不因历史声明放行 (把 done 声明也算数 → 红);`write_set: []` 声明空集 ≠ 未声明 (把空集当未声明 → 声明者用空集就能让闸永远缺席)。
+**怎么抓**:`src/harness/writeset/write-set.ts`(`attributeWriteSet`:58 纯函数,零 LLM;`describeWriteSet`:116;②④ 豁免清单由装配层注入 `goal/run-goal.ts:618-619`);声明面 = `conductor-plan.ts:92` (`write_set`,刻意不进 conductor prompt —— O-1 未裁默认开之前只收手写 plan 的声明)+ `semantic-key.ts:49` (写集不同 = 越界判定面不同 → 入语义键,判重不吞契约)+ `schema-field-registry.ts:82` 登记;挂点 = goal 引擎验收路径。反向自检 (`write-set.test.ts`,G-3/G-4 逐条落):声明 `[a.ts]` 而 diff 含 `a.ts + b.ts` → b.ts orphan 红 (把 b.ts 放行 → 红);done 节点声明过 c.ts 而后续 diff 再改 c.ts → 不因历史声明放行 (把 done 声明也算数 → 红);`write_set: []` 声明空集 ≠ 未声明 (把空集当未声明 → 声明者用空集就能让闸永远缺席)。
 
 ### S-30 · 声称完成 + 验收命令实败 —— 两边同框,判据不看
 
@@ -1940,13 +1940,13 @@ S-45 是「两个面都在但互不相识」,这一条更远一层:**输出回�
 | 闸的环境事实两份 prompt 都有 | `src/harness/conductor-plan.test.ts` | 白名单全表 + 元字符禁令 + `expect_exit` 在**规划与补丁重规划**两份里 | S-7 |
 | 可达性(没有孤儿) | `src/harness/reachability.test.ts` | 每个非测试 `.ts` 都从 `cli.ts` + `scripts/*.ts` import 得到;**测试刻意不算根**;动态入口登记豁免 + 反向闸(**带反向自检**:种一个孤儿 → 红;种一个只有测试用的文件 → 也红) | S-11 |
 | 臂可见题面不许泄题 | `src/eval/tasks/no-graph-baseline/task-text.test.ts` | 每份题面的臂可见部分过泄题词表(评分件名 / 40 位 git 对象 id / 自指注记),且**逐份**反查注记还在(**反向自检按份**:删掉 f2 那份 → f2 那条红,不是整组绿) | S-13 S-14 |
-| 检出器三态(够不着 ≠ 零检出) | `src/harness/dag-record.test.ts` | 「不适用」/「零检出」/「检出」分开记,conductor 与平铺两道分母不重叠(**带反向自检**:把「不适用」编成 `findings:0` → 红) | S-15 |
+| 检出器三态(够不着 ≠ 零检出) | `src/harness/dag/dag-record.test.ts` | 「不适用」/「零检出」/「检出」分开记,conductor 与平铺两道分母不重叠(**带反向自检**:把「不适用」编成 `findings:0` → 红) | S-15 |
 | 产物闸判词不许冒充事实 | `src/harness/plan/honest-self-verification.test.ts` | 跑过 bash 的 leaf,判词必须说「闸看不见」,不许说「它没做」(**带反向自检**:回到原判词 → 红) | S-16 |
 | 账本只有一个位置 | `src/harness/repo-root.test.ts` | `ledgerPath()` 锚在 omd 仓根、与 cwd 无关;linked worktree 回主仓、submodule 不回、找不到锚点 fail-open(**带反向自检**:改回 `join(cwd,…)` → 红;拿掉 worktree 重定向 → 红) | S-17 |
 | 安全侧路不许冒充主路 | `src/model/auto-assign.test.ts` | 座位降级必须在返回值里留位次(`via`)并 warn,判词要说出跳过了哪些坐标(**带反向自检**:`via` 恒设 `preferred` → 红;首选可达那条照绿) | S-18 |
-| 判据的分母要有人写 | `test/core/no-artifact-change.test.ts` · `src/harness/dag-record.test.ts` · `src/harness/omd-readout.test.ts` | 「判不了」与「判了有位移」分开返回、分开落账、分开印;基率分母只认 `transitions - unobserved`(**带反向自检**:三条 `unobserved` 出口改回 `moved` → 三态组红,「响不响」那组照绿) | S-19 S-15 |
+| 判据的分母要有人写 | `test/core/no-artifact-change.test.ts` · `src/harness/dag/dag-record.test.ts` · `src/harness/omd-readout.test.ts` | 「判不了」与「判了有位移」分开返回、分开落账、分开印;基率分母只认 `transitions - unobserved`(**带反向自检**:三条 `unobserved` 出口改回 `moved` → 三态组红,「响不响」那组照绿) | S-19 S-15 |
 | 运行时写竞争(与静态那条同名不同义) | `test/core/runtime-write-race.test.ts` | 重叠窗口 × 双方**绝对路径**才算撞(隔离档同名不同根不报);`overlaps`/`pairs`/`findings` 三个数分开(**带反向自检**:删掉「一侧没报写就跳过」那行 → 机会分母被污染当场红) | S-19 S-7 |
-| 内环形状四格不许互相冒充 | `src/harness/dag-record.test.ts` · `src/harness/omd-readout.test.ts` | 「不适用 / 单轮档 / 首轮收敛 / 真转了 / 没记」各落各格,四格之和 = conductor 节点数(不重不漏);plan 里没有的 conductor **两位都缺席**(**带反向自检**:`?? 1` 补缺省 → 红;「没记」并进「单轮档」→ 红) | S-20 S-19 |
+| 内环形状四格不许互相冒充 | `src/harness/dag/dag-record.test.ts` · `src/harness/omd-readout.test.ts` | 「不适用 / 单轮档 / 首轮收敛 / 真转了 / 没记」各落各格,四格之和 = conductor 节点数(不重不漏);plan 里没有的 conductor **两位都缺席**(**带反向自检**:`?? 1` 补缺省 → 红;「没记」并进「单轮档」→ 红) | S-20 S-19 |
 | 写竞争的两档证据不许合并 | `test/core/shell-write-visibility.test.ts` | 受控写(事实)与 shell 候选(推断)各记一套数;`command` 节点与 agent 的 bash 写进推断口径而**严格口径一个字不变**(**带反向自检**:严格集也换成推断集 → 两条端到端红) | S-19 S-16 |
 | 复用率不许再"推" | `src/harness/omd-readout.test.ts` | 分子分母都只认**节点面记了复用的跑**;老行算不出**不进分母**(**带反向自检**:把老行当 0 复用 → 红);夹具已改成像真引擎(复用节点进 `results`) | S-23 S-19 |
 | 回溯读数的单位 | `src/harness/omd-readout.test.ts` | 不同轮不算一对 · 同一节点不能和自己撞车 · 按 runId 分组(跨 run 的同名路径不是同一个文件)(**带反向自检**:拿掉跨轮排除 → 红;拿掉自配对守卫 → 红) | S-22 S-19 |
@@ -1954,7 +1954,7 @@ S-45 是「两个面都在但互不相识」,这一条更远一层:**输出回�
 | 审查锚点反幻觉 | `src/harness/review/anchor-check.ts` · `anchor-check.test.ts` | 每条 finding 一次 stat;文件存在 + line ≤ 行数 + repo 相对路径;P0/P1 无合法锚 → 降级记账;未填模板整体 skip(**带反向自检**:文件不存在判 valid → 红) | S-27 |
 | 验收 delta 只红新引入失败 | `src/harness/goal/delta-compare.ts` · `delta-compare.test.ts` | 六档矩阵 + mode 感知;老失败单列、新步 newly-run、缺席按 mode 判 skipped/new-failure(**带反向自检**:把 pass→fail 判成 fixed → 红;把 unchanged fail 判红 → 红) | S-28 |
 | 验收 delta 的**分辨率**(基线红时仍看得见新失败) | `src/harness/goal/accept-delta.ts` · `accept-delta.test.ts` · `run-goal.test.ts` 两条接线闸 | 两侧 `(fail)` 名字集取并集当 step 集,判据降到一条测试;判红前复跑一次只留复现的,抖动名字进判词(**带反向自检**:删逐条段 → 4 红;并集改 after-only → 1 红;交集改并集 → 2 红;after 侧不喂输出 → 接线闸 2 红) | S-37 S-28 S-35 |
-| 写集声明对账(越界即 orphan) | `src/harness/write-set.ts` · `write-set.test.ts` | 跑后 diff 走五档归属阶梯;done/历史声明不放行;无声明 → undeclared 不红(**带反向自检**:把 b.ts 放行 → 红;把 done 声明也算数 → 红) | S-29 |
+| 写集声明对账(越界即 orphan) | `src/harness/writeset/write-set.ts` · `write-set.test.ts` | 跑后 diff 走五档归属阶梯;done/历史声明不放行;无声明 → undeclared 不红(**带反向自检**:把 b.ts 放行 → 红;把 done 声明也算数 → 红) | S-29 |
 | 谎报完成硬矛盾闸 | `src/harness/plan/false-completion.ts` · `false-completion.test.ts` · `src/harness/dag/engine.ts` | 声称完成 ∧ 验收命令实败 → 判 fail;LLM judge 前确定性先行,被点节点铸票(**带反向自检**:把 exit 1 当支撑声称 → 红) | S-30 |
 | 证据字段的真发射点还在 | `src/harness/agent-leaf-shellruns-wiring.test.ts` | `shellRuns` 生产端(在代码里、不在注释上、条件形状不变)与消费端(`claimed-actions` 还读它)两头都钉(**带反向自检**:删发射行 → 2 红;注释掉 → 1 红;消费端改名 → 1 红) | S-35 S-30 |
 | 产物闸的输入字段还在发(同一行的邻居) | `src/harness/agent-leaf-filestouched-wiring.test.ts` | `filesTouched` 生产端**无条件**发(空数组是读数,缺席会被下游 `?? []` 读成「没碰文件」→ 恒冤杀复活)+ engine 产物闸还在读(**带反向自检**:删发射行 → 3 红;改成有条件发射 → 1 红;消费端改名 → 1 红) | S-35 |
@@ -1969,7 +1969,7 @@ S-45 是「两个面都在但互不相识」,这一条更远一层:**输出回�
 | 契约要求的每一片都得有产出(缺片即红) | `src/harness/goal/slice-coverage.ts` · `slice-coverage.test.ts` · `run-goal.ts` 接线 | 分解表逐片对 diff:零产出 = 红并点名片号;`partial` 有产出不红**但必须印**;零切片 = `no-breakdown`(判不了 ≠ 绿);与写集对账共用同一份 `diffFiles` 与同一份 `globToRegExp`(**带反向自检** 5 条:缺片判据恒不命中 → 3 红;`partial` 并进 `missing` → 1 红;`red` 恒 false → 2 红;`no-breakdown` 冒充 `reconciled` → 1 红;glob 退化成精确匹配 → 2 红) | S-46 S-19 |
 | `busy_timeout` 必须排在 `journal_mode = WAL` **之前** | `src/harness/sqlite-busy-timeout.test.ts` (`findLateBusyTimeout`) | 连接级设置只对其后的语句生效,而 WAL 那条自己要拿锁 —— 排在后面 = 它用默认值 0。缺席与顺序反**判词分开**(修法不同:补一行 vs 换两行位置)(**带反向自检**:把任一处换回原顺序 → 点名文件 + WAL 行号;正控:busy 在前 → 放过) | S-49 |
 | 判据的绿必须属于**最终那棵树** | `src/harness/goal/run-goal.ts` (`acceptStale`) · `goal/stale-acceptance.test.ts` | accept 的绿是 resume 复用来的 ∧ 本 run 重规划过 → 那份绿不属于最终树,强制重量;复验跑不起来则 fail-closed 判红。少任一条件都不判 stale(**带反向自检 6 条**:去掉信任逻辑 → P2 那条 + fail-closed 红;摘掉两个条件之一 → 两条"别过度触发"的护栏红) | S-49 S-44 |
-| 节点只准写自己声明的写集(写前) | `src/harness/write-allow.ts` · `write-allow.test.ts` · `write-allow-wiring.test.ts` | `write`/`edit` 写前判 `node.write_set ∪ output_path`,越界当场拒且判词列出允许清单;**缺席 = 闸缺席放行**,`[]` = 什么都不许写(NULL≠0)。⚠ 只管工具通道,bash 绕得过去(**带反向自检**:摘掉判定 → 接线组 3 红;`!== undefined` 改 `?.length` → 空写集那条红) | S-49 |
+| 节点只准写自己声明的写集(写前) | `src/harness/writeset/write-allow.ts` · `write-allow.test.ts` · `write-allow-wiring.test.ts` | `write`/`edit` 写前判 `node.write_set ∪ output_path`,越界当场拒且判词列出允许清单;**缺席 = 闸缺席放行**,`[]` = 什么都不许写(NULL≠0)。⚠ 只管工具通道,bash 绕得过去(**带反向自检**:摘掉判定 → 接线组 3 红;`!== undefined` 改 `?.length` → 空写集那条红) | S-49 |
 | jail 挂载面对不上就当场说 | `src/harness/hooks/jail-preflight.ts` · `jail-preflight.test.ts` | 构造期(每 run 一次,不是每 leaf 一次)判 argv:工作根可写 / worker 在挂载覆盖下 / 要了 git 有没有挂 / 调用方 roBinds 是不是 realpath / 叠挂顺序。fatal 当场抛,warn 只留证(**带反向自检**:摘掉 worker 那条 → 1 红;关掉 S-34 那条 → 2 红;并照生产路径真构造过一次验零假阳性) | S-49 S-34 |
 | leaf 挂了先判「挂载面缺 X」再判「模型不行」 | `src/harness/hooks/jail-diagnosis.ts` · `jail-diagnosis.test.ts` | 只在失败路径跑(jail 是 per-leaf 构造的,探针会乘以叶子数)。判据不是"stderr 里有没有这句话",是**它指的东西在宿主上存不存在** —— 宿主也没有 → 不抢答返 null(**带反向自检**:摘掉宿主存在性那一问 → 「不抢答」那条红) | S-34 |
 | hook 不许自喂(事件派生的新进程再触发同一事件) | `src/harness/session/continuity-hook.ts` (`isSdkChildSession`) · `test/core/session-continuity-trigger.test.ts` | `ENTRYPOINT==='sdk-cli' ∨ 有 CLAUDE_AGENT_SDK_VERSION` → 三条 fire 路径(Stop/PreCompact/SessionEnd)全哑;判别位**实测选定**,`CHILD_SESSION`/`FORK_SUBAGENT` 在交互式会话里同样为 1,是诱饵(**带反向自检**:闸改 `return false` → 缺片组红;诱饵组钉死交互式必须照常触发;端到端闸的 `hookBaseEnv()` 显式钉 `ENTRYPOINT=cli`,防 SDK 子会话里跑测试漏进 `sdk-cli` 变假红) | S-47 |

@@ -19,7 +19,7 @@ import { z } from 'zod';
 import type { OmdMcpTool } from '../server';
 import type { ConductorPlan } from '../../harness/conductor-plan';
 import { GRAPH_SHAPES, shapeById } from '../../harness/shapes';
-import { recordDagRun, type DagRecorder } from '../../harness/dag-record';
+import { recordDagRun, type DagRecorder } from '../../harness/dag/dag-record';
 import { randomUUID } from 'node:crypto';
 
 /** 可从图外直接调的原语 (escape-hatch 刻意不列: 它是 gated 的最后手段, 不该被顺手调到)。 */

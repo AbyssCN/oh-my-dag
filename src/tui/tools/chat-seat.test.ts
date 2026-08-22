@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { assembleOmdMcpTools } from '../../mcp/assemble';
-import { createDagRecorder } from '../../harness/dag-record';
+import { createDagRecorder } from '../../harness/dag/dag-record';
 import { buildConductorChatSystemPrompt } from '../../harness/harness-prompts';
 import { HAND_TOOLS, createChatSeatTools } from './chat-seat';
 

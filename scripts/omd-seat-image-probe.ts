@@ -34,7 +34,7 @@
  */
 
 import { deflateSync } from 'node:zlib';
-import { callModel } from '../src/model/index';
+import { callModel } from '../src/model';
 import { bootstrapModelRuntime } from '../src/model/bootstrap';
 import type { ContentPart } from '../src/model/types';
 

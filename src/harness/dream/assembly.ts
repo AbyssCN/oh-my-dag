@@ -31,7 +31,7 @@ import { createCostLedger, attachLedger, type CostLedger } from '../../model/acc
 import { createOmdMemory, type OmdMemory } from '../memory';
 import type { EdgeStore } from '../memory/types';
 import { createRunStore, type RunStore, type PersistedRun } from '../../mcp/run-store';
-import { createPlanLedger, type PlanLedger } from '../plan-ledger';
+import { createPlanLedger, type PlanLedger } from '../plan/plan-ledger';
 import { createOmdSessionStore } from '../chat/session-store';
 
 import { gather, type GatherReport } from './gather';

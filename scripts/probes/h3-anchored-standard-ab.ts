@@ -57,7 +57,7 @@ import {
   PLANTED_BUGS,
   type DebugFixture,
 } from '../../src/eval/tasks/debug-planted';
-import { callModel, ModelError } from '../../src/model/index';
+import { callModel, ModelError } from '../../src/model';
 
 // ── CLI ────────────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);

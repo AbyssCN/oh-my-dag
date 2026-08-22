@@ -69,7 +69,7 @@ interface Row {
 async function main(): Promise<void> {
   const { bootstrapModelRuntime } = await import('../../src/model/bootstrap');
   await bootstrapModelRuntime?.();
-  const { callModel } = await import('../../src/model/index');
+  const { callModel } = await import('../../src/model');
 
   const prefix = bigPrefix(CHARS);
   const rows: Row[] = [];

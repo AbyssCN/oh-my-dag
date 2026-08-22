@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import { runExecutorDag, type GenerateFn } from '../../src/harness/dag/engine';
 import type { AgentLeafInput } from '../../src/harness/leaf-runners';
 import { CheckpointManager } from '../../src/harness/continuity/checkpoint-manager';
-import { createDagRecorder } from '../../src/harness/dag-record';
+import { createDagRecorder } from '../../src/harness/dag/dag-record';
 import { FAILURE_KIND_INFO, FAILURE_KIND_ORDER, withFailureKind } from '../../src/harness/node-failure';
 
 const CONDUCTOR = 'mimo:mimo-v2.5-pro';

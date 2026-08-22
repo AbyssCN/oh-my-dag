@@ -36,13 +36,13 @@ import {
 import { type Static, type TSchema, Type } from 'typebox';
 import { classifyCommand } from './hooks/dangerous-cmd';
 // 写域闸 (写前, 与沙箱边界正交): 节点只准写自己声明的写集。
-import { checkWriteAllowed, describeWriteDenied } from './write-allow';
+import { checkWriteAllowed, describeWriteDenied } from './writeset/write-allow';
 import { type CommandPolicy, DEFAULT_SANDBOX_CONFIG, judgeCommand } from './hooks/command-policy';
 import { sandboxCommand } from './hooks/shell-sandbox';
 import { secretPathInCommand, SECRET_BASENAMES, SECRET_BASENAME_EXEMPT } from './command-leaf';
 import { logger } from '../logger';
-import { openTouchLedger, type TouchLedger, type TouchOp, type TouchSource } from './touch-ledger';
-import { verifiedShellWriteTargets } from './shell-writes';
+import { openTouchLedger, type TouchLedger, type TouchOp, type TouchSource } from './writeset/touch-ledger';
+import { verifiedShellWriteTargets } from './writeset/shell-writes';
 import { HAND_TOOL_RENDERERS } from './tool-render';
 
 /**

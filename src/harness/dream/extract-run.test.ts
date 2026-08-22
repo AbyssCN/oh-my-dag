@@ -880,7 +880,7 @@ describe('live (OMD_DREAM_LIVE=1) — S5 真座位验收', () => {
       );
     }
 
-    const { callModel, registerProvidersFromEnv } = await import('../../model/index');
+    const { callModel, registerProvidersFromEnv } = await import('../../model');
     registerProvidersFromEnv();
 
     const { createCostLedger, attachLedger, observeModelUsage } = await import(

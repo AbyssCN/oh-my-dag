@@ -14,7 +14,7 @@
  * 结论与解读见 `docs/plan/2026-08-14-wave-gate-预研.md`。
  */
 import { Database } from 'bun:sqlite';
-import { ledgerPath } from '../../src/harness/dag-record';
+import { ledgerPath } from '../../src/harness/dag/dag-record';
 
 const argv = process.argv.slice(2);
 const dbPath = argv.includes('--db') ? argv[argv.indexOf('--db') + 1]! : ledgerPath();

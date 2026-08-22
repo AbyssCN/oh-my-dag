@@ -6,7 +6,7 @@
  * 其余 inproc leaf [方框]。带 results 时失败节点标红 (class failed)。
  * 输出为 ```mermaid 代码块内容 (不含围栏), id 统一 sanitize 防 mermaid 语法炸裂。
  */
-import type { ConductorPlan } from './conductor-plan';
+import type { ConductorPlan } from '../conductor-plan';
 
 export interface MermaidOpts {
   /** 每个节点的终态 (dag-record LeafResult.status), 缺省不着色。 */
