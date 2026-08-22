@@ -272,17 +272,35 @@ export function resolveMissingArtifacts(args: {
   filesTouched: string[];
   /** 注入点; 默认 `existsSync` (与今天逐字相同)。 */
   exists?: (p: string) => boolean;
-}): { missing: string[]; probed: Record<string, string[]> } {
+}): { missing: string[]; probed: Record<string, string[]>; outOfScope: string[] } {
   const existsFn = args.exists ?? existsSync;
   const root = args.root;
   const repoRoot = args.repoRoot;
   const missing: string[] = [];
   const probed: Record<string, string[]> = {};
+  // s1 Step C (SDD 2026-08-22): 写域外绝对路径 (既不在 root 也不在 repoRoot 之下) 从判据剔除,
+  // 只留一份 `outOfScope` 账 (D-2: 不动 `LeafResult.filesTouched` 记录)。
+  const outOfScope: string[] = [];
+  // D-1 (s1 Step C): 「在根之下」单行定义, 锚回式 INV-2 已在 helper 里覆盖 ——
+  // 这里只判「绝对路径是不是落在任一根目录里」(不替它 stat, 也不进 missing / probed)。
+  const isUnderRoot = (p: string, r: string): boolean => r.length > 0 && (p === r || p.startsWith(r.endsWith('/') ? r : r + '/'));
   // D-2: 路径解析逻辑一律委托 `resolveArtifactPath` (INV-1..5 的唯一实现处)。
   // 本函数只承担「多路径 probed 列表」与「missing 判定」 —— 调用方契约面 (`probed[p]` =
   // 实际 stat 过的路径列表) 不变, 反向自检 (`artifact-gate-anchor.test.ts` 一字不改) 守住。
   for (const p of args.filesTouched) {
     const isAbsolute = p.startsWith('/');
+    // s1 Step C · INV-1: 绝对路径 ∧ 既不在 root 之下也不在 repoRoot 之下 ⇒ 写域外。
+    //   相对路径按 root 解析, 构造上就在域内, D-4 一字不变。
+    //
+    // ⚠ **写域外只免死, 不免功** (2026-08-22 收编时补): 剔除的条件要再加一条「盘上也没有」。
+    //   第一版无条件剔除, 于是「leaf 真在 root 之外写了一个文件并且它还在」也被算成没产出 ——
+    //   `test/core/executor-dag-file-producer.test.ts` 当场红 (它建的真产物落在临时目录里)。
+    //   本片要治的是**跑完就没了的一次性脚本**, 不是「写在别处的真产物」。两者的差别恰好是
+    //   `existsFn(p)`: 盘上还在 = 有产出的证据, 照旧计入; 盘上没有 = 不判死也不计入 (D-3 仍成立)。
+    if (isAbsolute && !isUnderRoot(p, root) && !isUnderRoot(p, repoRoot) && !existsFn(p)) {
+      outOfScope.push(p);
+      continue;
+    }
     // INV-1 / INV-5: 与今天逐字相同 —— 绝对路径原样 stat, 相对路径拼 root。
     const statPath = isAbsolute ? p : `${root}/${p}`;
     const probedSet: string[] = [];
@@ -300,7 +318,7 @@ export function resolveMissingArtifacts(args: {
     // 既不改变 missing 也与今天逐字相同的语义 (单源 `existsSync`, 副作用无)。
     if (resolved === statPath && !existsFn(statPath)) missing.push(p);
   }
-  return { missing, probed };
+  return { missing, probed, outOfScope };
 }
 
 /** 一轮 plan+execute 的产物 (verify/升级编排在 runExecutorDag 外层组装)。 */
@@ -3583,8 +3601,20 @@ async function executePlan(
           // 自动补 INV-6 「两基准都查过」叙述 —— 锚回试过仍不中时写清路径基准,
           // 否则还是逐字 `声称产物不存在: <路径>`。`filesTouched` 为空那条分支
           // 的判词 INV-7 一字不动。
-          const { missing, probed } = resolveMissingArtifacts({ root, repoRoot, filesTouched });
-          if (filesTouched.length === 0 || missing.length > 0) {
+          const { missing, probed, outOfScope } = resolveMissingArtifacts({ root, repoRoot, filesTouched });
+          // s1 Step C · INV-5/6: 判据面用剔除后的 `scopedTouched`; 写域外剔除 ≠ 放宽 (D-3 承重)
+          //   —— 只碰过 `/tmp` 的节点 `scopedTouched` 为空 ⇒ 仍按「filesTouched 空」判死。
+          // INV-8: `LeafResult.filesTouched` 一字不变 (D-2); 这里只是判据用。
+          const outOfScopeSet = new Set(outOfScope);
+          const scopedTouched = filesTouched.filter((p) => !outOfScopeSet.has(p));
+          if (outOfScope.length > 0) {
+            // INV-7: 剔除的事实打一行判词 (payload 至少 `{ node, outOfScope }`)。
+            logger.warn(
+              { node: id, outOfScope },
+              '[omd/executor-dag] 产物闸写域外路径剔除 (不参与判死, 仅记账; s1 Step C)',
+            );
+          }
+          if (scopedTouched.length === 0 || missing.length > 0) {
             // ⚠ **别把"闸看不见"说成"它没做"** (2026-08-05 真跑实证)。上面那条救援要求节点
             //   声明了 `output_path`; conductor 没给的时候, 经 bash 写入的产物就彻底隐形 ——
             //   而当时这句话写的是「leaf 自报完成但**未做任何文件写操作**」。实测那一跑:
