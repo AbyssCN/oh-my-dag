@@ -374,6 +374,7 @@ export function compileBreakdown(
         `完成判据: \`${s.verify}\` 退出码 0`,
       write_set: [...s.writeSet],
       output_type: 'file',
+      self_check: { command: s.verify, expect_exit: 0 },
       // RED 节点删掉之后, 实装直接挂在**上游片的 GREEN** 上 (语义不变: 1 真绿了才轮到 2)。
       depends_on: s.deps.map(greenId),
     };
