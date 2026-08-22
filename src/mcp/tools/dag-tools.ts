@@ -29,6 +29,7 @@ import { liveRunsNotice } from '../../harness/board/dag-run-board.js';
 import { envSummaryLine } from '../../model/bootstrap.js';
 import { listProviders } from '../../model/providers.js';
 import { defaultIsAlive } from '../run-store.js';
+import { cancelDetachedRun } from '../../harness/run-control.js';
 import {
   describeRunWorktree,
   prepareRunWorktree,
@@ -566,48 +567,60 @@ function makeDagCancel(deps: DagToolDeps): OmdMcpTool {
       // 子进程 run (S2): 写 cancel 标记 + 对属主 pid 发 SIGTERM (SDD §2 生命周期)。
       // 子进程 (dag-exec) 轮询标记 → requestCancel 自己 → 引擎协作式停 (既有优雅停语义接住);
       // SIGTERM 是兜底 (子进程卡死, 或无取消把手的 dag_research 直接死; checkpoint 保底可 resume)。
+      //
+      // ⚠ **写侧不在这里** —— 它是 `harness/run-control.cancelDetachedRun`, 与 TUI 收件箱的
+      // `s` 同一份 (INV-RC-1)。这里只做两件事: 喂 deps, 把 `CancelOutcome` 翻译成回执。
+      // 2026-08-23 之前这里自己抄了一份 (还把标记 writeFileSync 了两遍), 而 parity 闸只钉
+      // 了 intervene —— 两份 cancel 可以静默漂开而没有任何东西会红。
+      // 闸: `run-control-parity.test.ts` 的 GWT-PARITY-C1..C4。
       const cwd = deps.continuity?.repoRoot ?? process.cwd();
-      const disk = runRegistry.diskRecord(runId);
-      const pid = disk?.ownerPid ?? null;
-      const isAlive = deps.isAlive ?? defaultIsAlive;
-      if (pid !== null && isAlive(pid)) {
-        try {
-          // 目录防御性建: 生产里 spawn 时已建好 (spec/exec.log 住这), 但"写标记"不该因目录
-          // 缺席而失败 —— SIGTERM 是兜底, 标记是协作通道, 两者都要尽力送达。
-          mkdirSync(join(cwd, '.omd', 'continuity', runId), { recursive: true });
-          writeFileSync(join(cwd, '.omd', 'continuity', runId, 'cancel'), why);
-          writeFileSync(join(cwd, '.omd', 'continuity', runId, 'cancel'), why);
-        } catch (e) {
-          logger.warn({ runId, err: (e as Error).message }, '[omd/dag-tools] cancel 标记写失败 (SIGTERM 仍会发)');
-        }
-        try {
-          (deps.killPid ?? ((p: number) => process.kill(p, 'SIGTERM')))(pid);
-        } catch (e) {
+      const outcome = cancelDetachedRun(cwd, runId, why, {
+        readOwnerPid: (id) => runRegistry.diskRecord(id)?.ownerPid ?? null,
+        ...(deps.isAlive ? { isAlive: deps.isAlive } : {}),
+        ...(deps.killPid ? { killPid: deps.killPid } : {}),
+      });
+      // INV-RC-4: 四种结局各画各的 —— 全吞成"已取消"就是画一个按了不发生的东西。
+      switch (outcome.kind) {
+        case 'signalled':
           return {
-            content: [{ type: 'text' as const, text: `dag_cancel: 标记已写但 SIGTERM 失败: ${(e as Error).message} — 子进程可能还在跑, 稍后重试` }],
+            content: [{
+              type: 'text' as const,
+              text:
+                `dag_cancel: 已请求取消 ${runId} (${why})\n` +
+                `子进程 pid ${outcome.pid}: cancel 标记 + SIGTERM 已发 — 协作式停, 看 dag_status 等它转 cancelled;\n` +
+                '若它无视标记 (卡死), 重启 session 后 hydrate 会按打断落 failed, 然后 dag_resume 接着跑。',
+            }],
+          };
+        case 'signal-failed':
+          return {
+            content: [{ type: 'text' as const, text: `dag_cancel: 标记已写但 SIGTERM 失败: ${outcome.error} — 子进程可能还在跑, 稍后重试` }],
             isError: true,
           };
-        }
-        return {
-          content: [{
-            type: 'text' as const,
-            text:
-              `dag_cancel: 已请求取消 ${runId} (${why})\n` +
-              `子进程 pid ${pid}: cancel 标记 + SIGTERM 已发 — 协作式停, 看 dag_status 等它转 cancelled;\n` +
-              '若它无视标记 (卡死), 重启 session 后 hydrate 会按打断落 failed, 然后 dag_resume 接着跑。',
-          }],
-        };
+        case 'pid-dead':
+          // 属主 pid 已死 → 孤儿 (stalled): 没有活进程可停, 如实说没停到 (比回"已取消"诚实)。
+          return {
+            content: [{
+              type: 'text' as const,
+              text:
+                `dag_cancel: run ${runId} 的属主进程 (pid ${outcome.pid}) 已不在 — **没有活进程可停**。` +
+                '它是孤儿 (dag_status 会标 stalled); 重连 session 后 hydrate 按打断落 failed, 然后 dag_resume 接着跑。',
+            }],
+            isError: true,
+          };
+        case 'no-owner-pid':
+          // 与 pid-dead 分开说: "盘上没记 ownerPid" 是**账本缺一列**, 不是"进程死了"。
+          // 合并两者会让一条记账缺陷长年伪装成孤儿 run (CLAUDE.md 坑①: NULL ≠ 0 ≠ 不适用)。
+          return {
+            content: [{
+              type: 'text' as const,
+              text:
+                `dag_cancel: run ${runId} 盘上**没记 ownerPid** — 够不着属主进程, 一个字节都没写。\n` +
+                '这不是"进程已死", 是账本缺这一列 (老记录 / 非 spawn 路起的 run)。' +
+                '若它其实还在飞, 只能等它自己收尾或按 pid 手动处理。',
+            }],
+            isError: true,
+          };
       }
-      // 属主 pid 已死 → 孤儿 (stalled): 没有活进程可停, 如实说没停到 (比回"已取消"诚实)。
-      return {
-        content: [{
-          type: 'text' as const,
-          text:
-            `dag_cancel: run ${runId} 的属主进程 (pid ${pid ?? '?'}) 已不在 — **没有活进程可停**。` +
-            '它是孤儿 (dag_status 会标 stalled); 重连 session 后 hydrate 按打断落 failed, 然后 dag_resume 接着跑。',
-        }],
-        isError: true,
-      };
     },
   };
 }
