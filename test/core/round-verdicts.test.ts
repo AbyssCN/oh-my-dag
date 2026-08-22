@@ -82,7 +82,7 @@ describe('逐轮裁决进 journal (D-I 那条预设判据的观测面)', () => {
       judgeSend: judgeOf(false),
     });
     const j = manager.loadNodeLoopJournal(RUN, 'C');
-    expect(j?.verdicts).toEqual([{ round: 1, criterion: 'green', judge: 'rejected' }]);
+    expect(j?.verdicts).toEqual([{ round: 1, criterion: 'green', judge: 'rejected', reason: '还不行' }]);
     expect(j?.converged).toBe(true); // 判据说了算
   });
 
@@ -127,7 +127,7 @@ describe('逐轮裁决进 journal (D-I 那条预设判据的观测面)', () => {
       nodeId: 'C',
       completedRounds: 1,
       poisoned: [],
-      verdicts: [{ round: 1, criterion: 'red', judge: 'rejected' }],
+      verdicts: [{ round: 1, criterion: 'red', judge: 'rejected', reason: '' }],
       updatedAt: new Date().toISOString(),
       schemaVersion: 1,
     });
@@ -141,7 +141,7 @@ describe('逐轮裁决进 journal (D-I 那条预设判据的观测面)', () => {
       2,
     );
     const j = manager.loadNodeLoopJournal(RUN, 'C');
-    expect(j?.verdicts?.[0]).toEqual({ round: 1, criterion: 'red', judge: 'rejected' }); // 旧的还在
+    expect(j?.verdicts?.[0]).toEqual({ round: 1, criterion: 'red', judge: 'rejected', reason: '' }); // 旧的还在
     expect(j?.verdicts?.[1]?.round).toBe(2); // 新的接在后面
   });
 });

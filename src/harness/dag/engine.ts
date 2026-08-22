@@ -2602,12 +2602,37 @@ async function executePlan(
 
       const verdict = await judgeConductorRound(id, node.goal ?? id, r.leaf, round, r.children, r.claims);
       usageAcc = addUsage(usageAcc, verdict.usage);
+      // 四态各自的判词原文 (D-3, 2026-08-23):
+      //   · `unreachable` → 错误原文 (judge 调用本身挂了, 它没投过票);
+      //   · 其它三态     → verdict.reason (converged/rejected 是 judge 的 failureReason;
+      //                                gate-rejected 是闸合成的, judge 没被问过 —— 这一格
+      //                                **不许**被冒充成 judge 的票, 否则又把"没投票"灌进
+      //                                "投了反对票"那一格了)。
+      // No-silent-caps (D-2): 超 2000 字符 → 全文落 `<runDir>/reason-<nodeId>-r<round>.txt`,
+      // journal 存告示 + 指针, 与交接 / fanin / debug-plan redEvidence 同形。
+      const REASON_CAP_CHARS = 2000;
+      const rawReason = verdict.unreachable ? (verdict.unreachable ?? '') : (verdict.reason ?? '');
+      let reasonField: string;
+      if (rawReason.length <= REASON_CAP_CHARS) {
+        reasonField = rawReason;
+      } else {
+        const fullPath = continuity ? continuity.manager.saveReasonFull(continuity.runId, id, round, rawReason) : null;
+        const kept = rawReason.slice(0, REASON_CAP_CHARS);
+        reasonField = kept + (fullPath
+          ? `\n[判词已截断 (cap=${REASON_CAP_CHARS}, 原文 ${rawReason.length} 字符); 全文在 ${fullPath} —— 有 read 工具就按需分页读它]`
+          : `\n[判词已截断 (cap=${REASON_CAP_CHARS}, 原文 ${rawReason.length} 字符); 全文未落盘 (无 continuity), 判词尾部已丢]`);
+        logger.warn(
+          { node: id, round, len: rawReason.length, cap: REASON_CAP_CHARS, persisted: !!fullPath },
+          '[omd/executor-dag] 内环判词超 cap → 全文落盘 + journal 存指针',
+        );
+      }
       // 两道闸各说了什么, 逐轮记一条。**只记不判** —— 下面的收敛判定一个字没改。
       // 三态/两态不压平的理由见 `RoundVerdict`: 「没配判据」≠「判据红」,「judge 调不通」≠「judge 说没成」。
       roundVerdicts.push({
         round,
         criterion: freezeGreen === null ? 'none' : freezeGreen ? 'green' : 'red',
         judge: verdict.unreachable ? 'unreachable' : verdict.converged ? 'converged' : verdict.synthetic ? 'gate-rejected' : 'rejected',
+        reason: reasonField,
       });
       // judge **调不通** → 立刻退环, 不把剩下的轮数烧在一个确定性故障上 (2026-07-31)。
       // 与 §8.4 熔断同一个出口形状, 但 kind 是 `infra-error` 不是 `blocked`: N5 词表里这两格的

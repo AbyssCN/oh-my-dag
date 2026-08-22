@@ -16,7 +16,7 @@
  * 打印内容, `bun -e` 等价任意代码执行。它挡的是"模型顺手 cat 一下配置"这类手滑, 不是对抗性外泄。
  * 真隔离在 agent leaf 的 bwrap jail (hooks/sandboxed-leaf.ts)。
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import { readdir, readFile, stat } from 'node:fs/promises';
@@ -439,6 +439,12 @@ const BASH_SCHEMA = Type.Object({
   timeout: Type.Optional(Type.Number({ description: 'Timeout in seconds. Default 120.' })),
 });
 
+/**
+ * bash 截断全文的旁路累积硬顶。10 MiB 约为当前 50 KiB 正文窗的 200 倍，足够分页检索
+ * 常见 build/test transcript，同时把每条失控命令额外占用的内存和落盘量锁在单个数量级内。
+ */
+const BASH_SPILL_MAX_BYTES = 10 * 1024 * 1024;
+
 export interface OmdAgentToolsOpts {
   /**
    * **本次调用允许写的路径**(节点 `write_set`)—— 写域闸的判据面,`write` / `edit` 写前判。
@@ -848,8 +854,31 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
        * 原始 chunk 判脏、再原样转发 —— 不改变真实执行/截断路径,只加一条旁路观测。
        */
       let sawRawControlChars = false;
+      let rawOutput = Buffer.alloc(0);
+      let rawOutputBytes = 0;
+      let rawOutputCapped = false;
       const rawChunkWatcher = (chunk: string): void => {
         if (!sawRawControlChars && sanitizeBinaryOutput(chunk) !== chunk) sawRawControlChars = true;
+        const remaining = BASH_SPILL_MAX_BYTES - rawOutputBytes;
+        if (remaining <= 0) {
+          if (chunk.length > 0) rawOutputCapped = true;
+          return;
+        }
+        const source = Buffer.from(chunk);
+        if (source.length > remaining) rawOutputCapped = true;
+        const kept = source.subarray(0, remaining);
+        const needed = rawOutputBytes + kept.length;
+        if (needed > rawOutput.length) {
+          const capacity = Math.min(
+            BASH_SPILL_MAX_BYTES,
+            Math.max(64 * 1024, needed, rawOutput.length * 2),
+          );
+          const grown = Buffer.allocUnsafe(capacity);
+          rawOutput.copy(grown, 0, 0, rawOutputBytes);
+          rawOutput = grown;
+        }
+        kept.copy(rawOutput, rawOutputBytes);
+        rawOutputBytes = needed;
       };
       const execEnv = Object.create(env) as typeof env;
       execEnv.exec = (cmd, execOptions) =>
@@ -899,10 +928,30 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
           touchWrite(touchLedger, opts.touch, { path: hit, op: 'write', source: 'inferred' });
         }
       }
+      let truncationNotice = '';
+      if (truncated) {
+        const candidate = resolve(cwd, '.omd', `bash-output-${Date.now()}-${randomUUID()}.log`);
+        let fullOutputPath: string | null = null;
+        try {
+          const persisted = await env.writeFile(candidate, rawOutput.subarray(0, rawOutputBytes));
+          if (!persisted.ok) throw persisted.error;
+          fullOutputPath = candidate;
+        } catch (err) {
+          logger.warn(
+            { path: candidate, bytes: rawOutputBytes, err: err instanceof Error ? err.message : String(err) },
+            '[omd/agent-tools] bash 截断全文落盘失败 (fail-open, 返回尾部)',
+          );
+        }
+        truncationNotice = fullOutputPath
+          ? rawOutputCapped
+            ? `[输出已截断, 只保留尾部; 完整输出被截断, 仅留前 ${rawOutputBytes} 字节; 完整输出: ${fullOutputPath} —— 有 read 工具就按需分页读它]`
+            : `[输出已截断, 只保留尾部; 完整输出: ${fullOutputPath} —— 有 read 工具就按需分页读它]`
+          : '[输出已截断, 只保留尾部; 全文未落盘]';
+      }
       const tail = [
         cancelled ? '[命令被中止]' : '',
         exitCode !== undefined && exitCode !== 0 ? `[exit ${exitCode}]` : '',
-        truncated ? '[输出已截断, 只保留尾部]' : '',
+        truncationNotice,
         sanitized ? '[输出含控制字符, 已清洗]' : '',
       ]
         .filter(Boolean)

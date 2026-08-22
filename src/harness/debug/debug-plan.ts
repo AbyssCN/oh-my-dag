@@ -38,6 +38,13 @@ export interface DebugPlanOptions {
   priorRefuted?: string[];
   /** 假设扇出上限(默认 5)。 */
   maxHypotheses?: number;
+  /**
+   * redEvidence **全文落盘钩子**(C-3 · 2026-08-23)—— 形状照 `saveHandoffFull` /
+   * `saveFaninFull`: 返回的绝对路径会被拼进 lister goal 的截断告示里,
+   * 落 `.omd/` 下不进 git(D-6)。抛错/返 null → fail-open, 退化为「裸截断 +
+   * 告示里写明未落盘」,catch 留一行证据(同 capFanin,见 silent-failures 坑 2)。
+   */
+  saveRedFull?: (text: string) => string | null;
 }
 
 /** scope_lock goal: 只读锁最窄受影响范围, 按 codegraph 可用性分双路(SDD §3.1 降级)。 */
@@ -65,11 +72,42 @@ function scopeLockGoal(cgAvailable: boolean): string {
   ].join('\n');
 }
 
+/** redEvidence 注入块渲染(含 C-3 No-silent-caps 截断告示 + 全文指针)。 */
+function renderRedEvidence(opts: DebugPlanOptions): string {
+  const RED_CAP = 2000;
+  const raw = opts.redEvidence ?? '';
+  if (!raw.trim()) return `\n(无 --repro 复现证据; 据症状描述 + 上游范围推断。)\n`;
+  if (raw.length <= RED_CAP) {
+    // ≤ 阈值: 零回归, 一个字节不变 —— 任何 wrapper 改动(加告示/改措辞/改格式)
+    //   都让 debug-plan-caps.test.ts 的 buildBaselineGoal500 镜像基线失真, 测试会响亮报红。
+    return `\n复现拿到的确定失败证据(red):\n\`\`\`\n${raw.slice(0, RED_CAP)}\n\`\`\`\n`;
+  }
+  // 超阈值: 截断告示 + 全文指针。形状照 capFanin/renderHandoff(同源同形,
+  // 告示带总长/留长, 全文可找回); 全文章节通过 opts.saveRedFull 落 .omd/。
+  let fullPath: string | null = null;
+  try {
+    fullPath = opts.saveRedFull?.(raw) ?? null;
+  } catch (err) {
+    // fail-open: 退到裸截断 + 告示里写明未落盘; catch 留一行证据
+    // (silent-failures 坑 2: fail-open 可以吞异常, 不许吞证据)。
+    console.warn(
+      '[omd/debug-plan] redEvidence 全文落盘失败 (saveRedFull throw) — 退回裸截断',
+      { err: err instanceof Error ? err.message : String(err), fullLen: raw.length },
+    );
+    fullPath = null;
+  }
+  const slice = raw.slice(0, RED_CAP);
+  const notice =
+    `\n…[redEvidence 已截断: 全文 ${raw.length} 字符, 此处只含前 ${slice.length}; ` +
+    (fullPath
+      ? `全文在 ${fullPath} —— 有 read 工具就按需分页读它]`
+      : '全文未落盘 (saveRedFull 不可用/失败), 原文尾部已丢 —— 需要时让上游把全文写进文件]');
+  return `\n复现拿到的确定失败证据(red):\n\`\`\`\n${slice}\n\`\`\`${notice}\n`;
+}
+
 /** 假设 lister goal(🆕 新逻辑): 读 failure+red+scope → emit 结构化假设数组。 */
 function hypothesisListerGoal(opts: DebugPlanOptions): string {
-  const red = opts.redEvidence?.trim()
-    ? `\n复现拿到的确定失败证据(red):\n\`\`\`\n${opts.redEvidence.slice(0, 2000)}\n\`\`\`\n`
-    : `\n(无 --repro 复现证据; 据症状描述 + 上游范围推断。)\n`;
+  const red = renderRedEvidence(opts);
   const avoid = opts.priorRefuted?.length
     ? [
         ``,

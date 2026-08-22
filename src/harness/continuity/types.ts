@@ -326,6 +326,18 @@ export interface RoundVerdict {
    * 「judge 太紧」那一格会被闸的回声灌满 (「没投票」≠「投了反对票」, 仓规坑 1)。
    */
   judge: 'converged' | 'rejected' | 'gate-rejected' | 'unreachable';
+  /**
+   * 这一轮判词原文 (#227, 2026-08-23)。
+   *
+   * 四态各写各的,**不许压成一列**(D-3: 闸合成 ≠ judge 投了反对票):
+   *   · `converged` / `rejected` → judge 自己的 failureReason;
+   *   · `gate-rejected`         → 闸合成的判词 (judge 没被问过);
+   *   · `unreachable`            → 调不通的错误原文。
+   *
+   * 过长 → 全文落盘 + 告示 + 指针路径 (`<runDir>/reason-<nodeId>-r<round>.txt`),
+   * 与交接 / fanin / debug-plan redEvidence 守同一条 **No-silent-caps**(D-2)。
+   */
+  reason: string;
 }
 
 export interface NodeLoopJournal {

@@ -299,6 +299,20 @@ export class CheckpointManager {
   }
 
   /**
+   * **内环判词全文**落 `<runDir>/reason-<nodeId>-r<round>.txt` (#227, 2026-08-23)。
+   *
+   * 与 {@link saveHandoffFull} 同一条 No-silent-caps 纪律, 但**必须分开落**:
+   * handoff 是「prompt 注入前那道交接」, reason 是「journal 里那一格」, 同节点同轮的两份全文
+   * 是不同的事(交接给下一轮的输入 vs 留给自己回看的判词); 同前缀会让两者互相覆盖,
+   * 而事后复盘要问的恰恰是「当时那一轮的判词原文是什么」(resume / verifier 旁路 / 读数板都靠它)。
+   *
+   * 写失败 → null (fail-open: 告示里说"全文未落盘", 退回今天的"只有告示无指针")。
+   */
+  saveReasonFull(runId: string, nodeId: string, round: number, text: string): string | null {
+    return this.saveTextArtifact(runId, 'reason-', `${nodeId}-r${round}`, text);
+  }
+
+  /**
    * **D-O 产出面**: 节点输出**全文**落 `<runDir>/out-<nodeId>.txt`, 返绝对路径写进 checkpoint
    * (`NodeCheckpoint.outputText`)。summary 自此只给人看 —— 下游拿的是这份全文。
    * 写失败 → null (fail-open: checkpoint 无该字段, resume 退回 summary 并留痕)。
