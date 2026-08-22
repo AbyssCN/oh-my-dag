@@ -17,8 +17,11 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
-import type { DagSnapshot, TreeNode, VerdictLine } from '../components/dag-tree';
+import { DagTree, type DagSnapshot, type TreeNode, type VerdictLine } from '../components/dag-tree';
+import { createTheme } from '../theme';
 import { renderDagScreen } from './dag-screen';
+
+const theme = createTheme({ color: false });
 
 const node = (over: Partial<TreeNode> & { id: string; model?: string }): TreeNode => ({
   kind: 'agent',
@@ -420,5 +423,160 @@ describe('基础格式', () => {
     const out = renderDagScreen(snap(many), opts({ height: 5 }));
     expect(out.length).toBe(5);
     expect(out[4]).toContain('more lines');
+  });
+});
+
+describe('★ conductor expanded 子图不拍平(实装 v2 缺陷 1,deps[0] 退化)', () => {
+  // 引擎 expanded 事件里**第一个子节点的 deps 是空数组**(dag-tree.ts:put 把 parent 与 deps
+  // 分别存, 入参的 e.deps 不补 parent)。老 childrenOf 用 `(n.deps[0] ?? null) === parent`
+  // 认树父 —— work 的 deps=[] → deps[0]=undefined → 回落 null → 被判为根, 与 C 同级;
+  // check 因 deps[0]='work' 不在根列表里, 但 work 已经是根 → check 挂到根级 work 下,
+  // 整张子图被拍平成 [C, work, check(work 的孩子)] 而不是 [C → work → check]。
+  //
+  // 反向自检: 把 dag-screen.ts:124-127 的 filter 改回 `(n.deps[0] ?? null) === parent`,
+  //          本例 work 不再带 ├─/└─(变成 depth 0 的根), check 的 ├─/└─ 列号 ≤ work 的列号
+  //          (都成了 depth 1), → workLine 不匹配 [├└]─ 且 checkBranchIdx ≤ workBranchIdx → 本测试红。
+  test('用真 DagTree 喂 planned+expanded: work 挂在 C 下(check 列深于 work)', () => {
+    const t = new DagTree(theme, () => 0);
+    t.beginRun('run-tree-shape');
+    t.apply({ type: 'planned', nodes: [{ id: 'C', kind: 'conductor' }] });
+    t.apply({
+      type: 'expanded',
+      parent: 'C',
+      nodes: [
+        { id: 'work', kind: 'agent', deps: [] },
+        { id: 'check', kind: 'agent', deps: ['work'] },
+      ],
+    });
+    const s: DagSnapshot = t.snapshot();
+    const out = renderDagScreen(s, opts());
+    const body = out.join('\n');
+
+    // 定位三节点行 (\bC\b 不撞 check 的 C)
+    const cLine = out.find((l) => /\bC\b/.test(l) && !/check/.test(l))!;
+    const workLine = out.find((l) => /\bwork\b/.test(l))!;
+    const checkLine = out.find((l) => /\bcheck\b/.test(l))!;
+    expect(cLine).toBeDefined();
+    expect(workLine).toBeDefined();
+    expect(checkLine).toBeDefined();
+
+    // C 是根 → 行里无 ├─/└─(depth 0 时 branch 是 '')
+    expect(cLine).not.toMatch(/[├└]─/);
+
+    // work 是 C 的孩子 → 行里必须有 ├─/└─, 老实现里 work 是根,这条会红
+    expect(workLine).toMatch(/[├└]─/);
+    const workBranchIdx = workLine.search(/[├└]─/);
+
+    // check 是 work 的孩子(deps[0]='work')→ 行里必须有 ├─/└─, 且列号 > work 的列号
+    expect(checkLine).toMatch(/[├└]─/);
+    const checkBranchIdx = checkLine.search(/[├└]─/);
+    expect(checkBranchIdx).toBeGreaterThan(workBranchIdx);
+
+    // 防退化: work 行与 check 行都不是 C 行(子图没被拍平成单层)
+    expect(workLine).not.toBe(cLine);
+    expect(checkLine).not.toBe(cLine);
+    expect(checkLine).not.toBe(workLine);
+  });
+
+  // 反向自检: 把 dag-screen.ts:249 那段 `if (n.deps.length > 1) { parts.push('╋ +...') }` 注释掉
+  //          → merge 行尾不带 ╋ +b → expect(mergeLine).toContain('╋ +b') 红。
+  test('用真 DagTree 喂 expanded: fan-in 节点只画一次, 行尾 ╋ +<其余上游>(INV-DAG-1)', () => {
+    const t = new DagTree(theme, () => 0);
+    t.beginRun('run-fanin');
+    t.apply({ type: 'planned', nodes: [{ id: 'plan', kind: 'conductor' }] });
+    t.apply({
+      type: 'expanded',
+      parent: 'plan',
+      nodes: [
+        { id: 'a', kind: 'agent', deps: [] },
+        { id: 'b', kind: 'agent', deps: [] },
+        { id: 'merge', kind: 'inproc', deps: ['a', 'b'] },
+      ],
+    });
+    const s: DagSnapshot = t.snapshot();
+    const out = renderDagScreen(s, opts());
+    const body = out.join('\n');
+
+    // merge 在输出里只出现一次(不是 a 一个 + b 一个)
+    expect(body.split('merge').length - 1).toBe(1);
+
+    // merge 行带 ╋ +b
+    const mergeLine = out.find((l) => /\bmerge\b/.test(l))!;
+    expect(mergeLine).toBeDefined();
+    expect(mergeLine).toContain('╋ +');
+    expect(mergeLine).toContain('b');
+    // deps[0]='a' 仍走树父,所以 merge 是 a 的孩子(depth 2)—— 不是 b 的孩子也不是 plan 的孩子
+    expect(mergeLine.search(/[├└]─/)).toBeGreaterThan(
+      out.find((l) => /\ba\b/.test(l))!.search(/[├└]─/),
+    );
+  });
+});
+
+describe('★ 头行总用时: 起点缺席画 `—`,不画 28333333m25s(实装 v2 缺陷 2)', () => {
+  // 老实装在头行无条件画 `fmtDur(o.now)`(= wall-clock 当总用时)。任一节点都没 start 时,
+  // 本来该画 `—`(NULL ≠ 0 ≠ 不适用), 实际却把 now=1.7e12 ms 当成耗时分母 →
+  // `28333333m20s` 跑进头行, 整个输出含 `\d{2,}m` 这种荒谬数字。
+  //
+  // 反向自检: 把 dag-screen.ts:180 的 `fmtDur(minStart !== null ? Math.max(0, o.now - minStart) : null)`
+  //          改回 `fmtDur(o.now)`, 在 now = 1.7e12 时 → 头行出现 `\d{2,}m`, 本测试两条断言都红。
+  test('全 pending 节点: 头行总用时是 `—`, 整个输出不含 `\d{2,}m`(巨大荒谬数字)', () => {
+    const t = new DagTree(theme, () => 0);
+    t.beginRun('run-no-start');
+    t.apply({ type: 'planned', nodes: [{ id: 'p1', kind: 'agent' }, { id: 'p2', kind: 'agent' }] });
+    const s: DagSnapshot = t.snapshot();
+    // 用一个 wall-clock 量级的 now 故意去戳老实现: 若不钉起点, 老实现会把它当总用时画出来。
+    const hugeNow = 1_700_000_000_000;
+    const out = renderDagScreen(s, opts({ now: hugeNow }));
+    const body = out.join('\n');
+
+    // 整个输出不含 `多位数 + m` 这种荒谬时长
+    expect(body).not.toMatch(/\d{2,}m/);
+    // 头行那一格是 `—` (em-dash)
+    expect(out[0]).toContain('—');
+    // 头行也不含 `\d{2,}m`(本仓头行不带时间条刻度文字, 任何 m 都只能是 fmtDur 输出)
+    expect(out[0]).not.toMatch(/\d{2,}m/);
+  });
+
+  // 反向自检: 把扫描条件的 `n.startAt != null` 改回 `n.startAt !== null`
+  //          → undefined 抢占 minStart, 后续有效起点无法替换它,头行从 `10s` 退成 `—`,红。
+  test('兼容旧快照的 startAt=undefined: 跳过缺席值,仍采用后续有效起点', () => {
+    const legacy = { ...node({ id: 'legacy', seq: 0 }), startAt: undefined } as unknown as TreeNode;
+    const out = renderDagScreen(
+      snap([legacy, node({ id: 'started', seq: 1, status: 'running', startAt: 2000 })]),
+      opts({ now: 12_000 }),
+    );
+
+    expect(out[0]).toContain('10s');
+    expect(out[0]).not.toContain('—');
+  });
+});
+
+describe('★ 宽度闸(钉住实装 v2 的两处改动不退化列宽)', () => {
+  // 反向自检: 拿 fitLine 替成不截断 → visibleWidth 超 width, 红。
+  test('conductor expanded + fan-in: 60 / 70 / 84 / 120 四档宽度, 每行 visibleWidth <= width', () => {
+    const t = new DagTree(theme, () => 0);
+    t.beginRun('run-width');
+    t.apply({ type: 'planned', nodes: [{ id: 'C', kind: 'conductor' }] });
+    t.apply({
+      type: 'expanded',
+      parent: 'C',
+      nodes: [
+        { id: 'work', kind: 'agent', deps: [] },
+        { id: 'check', kind: 'agent', deps: ['work'] },
+        { id: 'merge', kind: 'inproc', deps: ['work', 'check'] },
+      ],
+    });
+    // 给节点落定局, 让时间条 + model 列都画出来, 跑满宽度闸
+    for (const id of ['C', 'work', 'check', 'merge']) {
+      t.apply({ type: 'start', id, kind: id === 'C' ? 'conductor' : id === 'merge' ? 'inproc' : 'agent' });
+      t.apply({ type: 'settle', id, status: 'done', kind: id === 'C' ? 'conductor' : id === 'merge' ? 'inproc' : 'agent', durationMs: 1000 });
+    }
+    const s: DagSnapshot = t.snapshot();
+    for (const w of [60, 70, 84, 120]) {
+      const out = renderDagScreen(s, opts({ width: w }));
+      for (const line of out) {
+        expect(visibleWidth(line)).toBeLessThanOrEqual(w);
+      }
+    }
   });
 });

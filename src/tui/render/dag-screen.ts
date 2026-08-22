@@ -113,10 +113,17 @@ const fmtDur = (ms: number | null | undefined): string => {
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${s % 60 ? `${s % 60}s` : ''}`;
 };
 
-/** `deps[0] === parent` 的子集(按 seq 排序);DAG fan-in 时仍只画一次(INV-DAG-1)。 */
+/**
+ * 树父: deps 非空 → `deps[0]`(INV-DAG-1:fan-in 仍只画一次); deps 为空 → 回落 `n.parent`。
+ *
+ * 引擎 `expanded` 事件里**第一个子节点的 `deps` 是空数组**(`dag-tree.ts:put` 把 `parent` 与 `deps` 分别
+ * 存, 入参的 `e.deps` 不补 `parent`),`deps[0]` 是 undefined → 老实现把那个节点当根, 把整张
+ * conductor 子图拍平。与 `DagTree.childrenOf`(走 `n.parent`)对照时同一份快照画出两棵树,
+ * 这里与它对齐: deps 有就信任 deps[0], 没有就信任 n.parent。
+ */
 const childrenOf = (nodes: readonly TreeNode[], parent: string | null): TreeNode[] =>
   nodes
-    .filter((n) => (n.deps[0] ?? null) === parent)
+    .filter((n) => (n.deps.length > 0 ? (n.deps[0] ?? null) : n.parent) === parent)
     .sort((a, b) => a.seq - b.seq);
 
 /** 按索引 mod 选节点(与 `tui-screens.mjs` 同形)。 */
@@ -158,13 +165,19 @@ export function renderDagScreen(
   const out: string[] = [];
 
   // ── 头行: run 标识 + done/total + 失败数 + 总用时
+  //    总用时 = `o.now − earliest.startAt`(任一节点都没 start 时就是 `—`,NULL ≠ 0)。
+  //    老实现用 `fmtDur(o.now)` 直接拿 wall-clock 当时长, 跑久了会冒 `28333333m25s` 这种数。
   const done = snap.nodes.filter((n) => n.status === 'done').length;
   const failed = snap.nodes.filter((n) => n.status === 'failed').length;
   const total = snap.nodes.length;
+  let minStart: number | null = null;
+  for (const n of snap.nodes) {
+    if (n.startAt != null && (minStart === null || n.startAt < minStart)) minStart = n.startAt;
+  }
   const headerSegs: string[] = [p.accent(`run ${snap.runLabel ?? '?'}`)];
   headerSegs.push(p.dim(`${done}/${total}`));
   if (failed > 0) headerSegs.push(p.fail(`✗ ${failed}`));
-  headerSegs.push(p.dim(fmtDur(o.now)));
+  headerSegs.push(p.dim(fmtDur(minStart != null ? Math.max(0, o.now - minStart) : null)));
   out.push(fitLine(headerSegs.join(' · '), width));
 
   // ── 表头 (对齐树行的列): kind / model / 用时 / 时间条刻度
