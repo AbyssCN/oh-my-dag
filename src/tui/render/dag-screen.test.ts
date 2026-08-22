@@ -580,3 +580,108 @@ describe('★ 宽度闸(钉住实装 v2 的两处改动不退化列宽)', () => 
     }
   });
 });
+
+/**
+ * ★ 片 5 列对齐 (实装 v2 缺陷 3):
+ * 老实装把 kind 段跟着树枝深度走 — root 在第 6 列, 二层子在第 12/15 列, 表头 `kind`
+ * 却在第 6 列, 三行对齐不上。修法: padToCol(prefix, colStart) 把 prefix 补到 colStart,
+ * header 也用 padToCol('', colStart), 让 kind 列固定在 colStart。
+ *
+ * 反向自检 (三件事, 写在注释里):
+ *   ① 把 `parts.push(padToCol(prefix, colStart))` 退回老实装
+ *      `parts.push(' ')` (kind 紧跟 idCell) → work 行 'agent' 起始列 ≈ 16 (跟 depth 漂),
+ *      与表头 'kind' 起始列 26/30 不等, expect 立刻红。
+ *   ② 把 padToCol 改成 `' '.repeat(target - s.length)` (数字符不数列) — 在本例 ASCII 行
+ *      真不会红 (因为没人放 CJK), 但宽度守门 (列 60 的截断闸) 会把窄屏那行撑超宽 → 红。
+ *   ③ 必须喂**含树枝深度差异**的图 (root + 二层子节点), 平图测不出 — 故意挑了 C/work/check。
+ */
+describe('★ 列对齐 · 表头 kind 列 === 每行 kind 列(树枝深度无关)', () => {
+  // 反查辅助: 头行 + 主体行的 kind 起始列。返 -1 表示没找到。
+  const kindCol = (line: string, needle: string): number => {
+    // 行里可能含 ANSI / paint 标签, 这里用色 → 关 (theme.color=false), 行里只有可见字。
+    // 也用 indexOf 单义锚 — 选 id (C/work/check) 与 kind (conductor/agent) 都互不子串。
+    return line.indexOf(needle);
+  };
+
+  // 用真 DagTree 造 root + 二层子图, 验 colStart = 4 + (w>=100 ? 26 : 22)
+  const build = () => {
+    const t = new DagTree(theme, () => 0);
+    t.beginRun('run-align');
+    t.apply({ type: 'planned', nodes: [{ id: 'C', kind: 'conductor' }] });
+    t.apply({
+      type: 'expanded',
+      parent: 'C',
+      nodes: [
+        { id: 'work', kind: 'agent', deps: [] },
+        { id: 'check', kind: 'agent', deps: ['work'] },
+      ],
+    });
+    // 给节点落定, 让 done + 用时列都画出来, 行更长、列号差异更明显
+    for (const id of ['C', 'work', 'check']) {
+      t.apply({ type: 'start', id, kind: id === 'C' ? 'conductor' : 'agent' });
+      t.apply({ type: 'settle', id, status: 'done', kind: id === 'C' ? 'conductor' : 'agent', durationMs: 1000 });
+    }
+    return t.snapshot();
+  };
+
+  test('w=80 (colStart=26): 表头 kind 列 === C / work / check 三行 kind 列', () => {
+    const out = renderDagScreen(build(), opts({ width: 80 }));
+    // 头行: `...kind model 用时...`, 行 1 是表头 (行 0 是 run 标识 + 计数)
+    const header = out.find((l) => /\bkind\b/.test(l));
+    expect(header).toBeDefined();
+    const colStart = kindCol(header!, 'kind');
+
+    // 节点行
+    const cLine = out.find((l) => /\bC\b/.test(l) && !/check/.test(l))!;
+    const workLine = out.find((l) => /\bwork\b/.test(l))!;
+    const checkLine = out.find((l) => /\bcheck\b/.test(l))!;
+    expect(cLine).toBeDefined();
+    expect(workLine).toBeDefined();
+    expect(checkLine).toBeDefined();
+
+    // depth 不同 (0 / 1 / 2) 但 kind 段都从 colStart 起
+    expect(kindCol(cLine, 'conductor')).toBe(colStart);
+    expect(kindCol(workLine, 'agent')).toBe(colStart);
+    expect(kindCol(checkLine, 'agent')).toBe(colStart);
+  });
+
+  test('w=120 (colStart=30): 表头 kind 列 === C / work / check 三行 kind 列', () => {
+    const out = renderDagScreen(build(), opts({ width: 120 }));
+    const header = out.find((l) => /\bkind\b/.test(l));
+    expect(header).toBeDefined();
+    const colStart = kindCol(header!, 'kind');
+
+    const cLine = out.find((l) => /\bC\b/.test(l) && !/check/.test(l))!;
+    const workLine = out.find((l) => /\bwork\b/.test(l))!;
+    const checkLine = out.find((l) => /\bcheck\b/.test(l))!;
+    expect(kindCol(cLine, 'conductor')).toBe(colStart);
+    expect(kindCol(workLine, 'agent')).toBe(colStart);
+    expect(kindCol(checkLine, 'agent')).toBe(colStart);
+  });
+
+  test('★ 宽度闸 · 60/80/100/120 四档宽度, 每行 visibleWidth <= width', () => {
+    // 与原宽度闸同形, 按 goal 加 100 档。三层树 + 落定节点, 让 model / bar / dur 列都画出来。
+    const t = new DagTree(theme, () => 0);
+    t.beginRun('run-width-final');
+    t.apply({ type: 'planned', nodes: [{ id: 'C', kind: 'conductor' }] });
+    t.apply({
+      type: 'expanded',
+      parent: 'C',
+      nodes: [
+        { id: 'work', kind: 'agent', deps: [] },
+        { id: 'check', kind: 'agent', deps: ['work'] },
+      ],
+    });
+    for (const id of ['C', 'work', 'check']) {
+      t.apply({ type: 'start', id, kind: id === 'C' ? 'conductor' : 'agent' });
+      t.apply({ type: 'settle', id, status: 'done', kind: id === 'C' ? 'conductor' : 'agent', durationMs: 1000 });
+    }
+    const s: DagSnapshot = t.snapshot();
+    for (const w of [60, 80, 100, 120]) {
+      const out = renderDagScreen(s, opts({ width: w }));
+      for (const line of out) {
+        expect(visibleWidth(line), `w=${w}, line=${JSON.stringify(line)}`).toBeLessThanOrEqual(w);
+      }
+    }
+  });
+});

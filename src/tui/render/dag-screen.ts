@@ -105,6 +105,17 @@ const clip = (text: string, cols: number): string => {
   return s + '…';
 };
 
+/**
+ * 补到目标列(visibleWidth 感知)。至少 1 格空格以防吞列。
+ *
+ * ⚠ 不用 `.padEnd(target)` —— 它数字符不数列, CJK 串会让补白差一格而宽度闸看不出来。
+ * (mjs `dagScreen` 同款: `lineW(l)` 后 `'.repeat(max(1, colStart - lineW(l)))`。)
+ */
+const padToCol = (s: string, target: number): string => {
+  const w = visibleWidth(s);
+  return s + ' '.repeat(Math.max(1, target - w));
+};
+
 /** `null/undefined` → `—`;ms → `0.4s` / `42s` / `1m11s` (NULL ≠ 0: 缺席不画 0s)。 */
 const fmtDur = (ms: number | null | undefined): string => {
   if (ms === null || ms === undefined || !Number.isFinite(ms)) return '—';
@@ -161,6 +172,9 @@ export function renderDagScreen(
   const kindW = 11;
   const modelW = showModel ? 13 : 0;
   const durW = 7;
+  // kind / model / 用时 列的起始列 —— 树枝把 id 推右了, 用「补到目标列」对齐。
+  // 两档屏宽: w<100 → 26; w>=100 → 30(与 scripts/tui-screens.mjs:96 / 136 同)。
+  const colStart = 4 + (width >= 100 ? 26 : 22);
 
   const out: string[] = [];
 
@@ -183,7 +197,9 @@ export function renderDagScreen(
   // ── 表头 (对齐树行的列): kind / model / 用时 / 时间条刻度
   //    注: 时间条刻度**只画线不画文字**(SDD INV-DAG-2 GWT 禁止 `0s` 在输出里 —— 参考稿写的是
   //    `0s────32s`, 但契约 GWT 要求 pending-only 图整个输出不含 `0s`, 这里以契约为准)。
-  const headSegs: string[] = [' '.repeat(4 + 2) + p.dim('kind'.padEnd(kindW - 1))];
+  //    用 padToCol('', colStart) 把 'kind' 锚到与每行 kind 同一列 —— 否则表头贴在第 6 列,
+  //    树行(尤其 depth>=1)kind 列漂到第 12/15 列, 两边对不上(实装 v2 缺陷 3)。
+  const headSegs: string[] = [padToCol('', colStart) + p.dim('kind'.padEnd(kindW - 1))];
   if (showModel) headSegs.push(' ' + p.dim('model'.padEnd(modelW - 1)));
   headSegs.push(' ' + p.dim('用时'.padStart(durW - 1)));
   if (showBar) headSegs.push(' ' + p.dim('─'.repeat(barW)));
@@ -219,13 +235,11 @@ export function renderDagScreen(
     const durText = n.status === 'pending' ? '—' : fmtDur(durMs);
     const durCell = durText.padStart(durW - 1);
 
-    // 行组装
+    // 行组装 —— 树枝把 id 推右了, 用 padToCol 补到 colStart, kind 列与表头对齐。
+    // ⚠ 不用 `' '.repeat(colStart)` 硬补: id 段可见宽度不固定, 必须用 visibleWidth 算余量。
+    const prefix = `${selCell}${branch}${mark} ${isSel ? p.sel(idCell) : idCell}`;
     const parts: string[] = [];
-    parts.push(selCell);
-    parts.push(branch);
-    parts.push(`${mark} `);
-    parts.push(isSel ? p.sel(idCell) : idCell);
-    parts.push(' ');
+    parts.push(padToCol(prefix, colStart));
     parts.push(kindCell);
     if (showModel) {
       parts.push(' ');

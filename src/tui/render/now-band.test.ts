@@ -2,15 +2,16 @@
  * L1:「当前」区渲染器 (SDD 片 5 切片 1, 2026-08-22)。
  *
  * 钉死的 INV (见 SDD §契约):
- *   - INV-NOW-1 阶梯只选一档: 同时有 awaiting 与 live → 只画 awaiting, live 的 runId 不出现。
- *   - INV-NOW-2 封顶 3 行, width ∈ {60,80,120} 各档都不超宽。
+ *   - INV-NOW-1 阶梯只选一档: 同时有 awaiting ∪ suggested 与 live → 只画 ① 等你档, live 的 runId 不出现。
+ *   - INV-NOW-2 封顶 3 行, width ∈ {60,80,100,120} 各档都不超宽。
  *   - INV-NOW-3 无源恒缺席: 全空 → []。
- *   - INV-NOW-4 数据只来自真源: live=[] 时跳过 ② 档, 不画「0 在跑」。
+ *   - INV-NOW-4 数据只来自真源: live=[] 时跳过 ② 档, 不画「0 在跑」; ③ 欠账当前无源, 跳过。
  *   - INV-NOW-5 纯函数: 同一输入连画两次 → 逐字节相同。
  *   - INV-5    结构信息不靠颜色: paint 恒等 → 剥标签后逐字节等。
  *
  * 反向自检 (改实现 → 这条当场红):
- *   - 「四档一选」: 把 renderNowBand 里 awaiting 那条早返回删掉 → 'INV-NOW-1 awaiting 优先' 红。
+ *   - 「四档一选」: 把 renderNowBand 里 `awaiting.length > 0 || suggested.length > 0` 退回只看
+ *     `awaiting.length > 0` → 'INV-NOW-1 bug 回归 · 只有 suggested + live 同时, 走等你档' 红。
  *   - 「无源恒缺席」: 把早返回删掉 → 'INV-NOW-3 全空 → []' 红。
  *   - 「NULL ≠ 0 (坏时戳)」: 把 fmtAge 里的 `!Number.isFinite` 删掉 → 'INV-NOW-2 等你 不超宽' 那条
  *     套娃红 (因为 Infinity 字符串会撑超宽)。
@@ -76,7 +77,7 @@ describe('INV-NOW-3 · 无源恒缺席', () => {
 });
 
 describe('INV-NOW-1 · 阶梯只选一档', () => {
-  test('同时有 awaiting 与 live → 只画等你, live 的 runId 不出现', () => {
+  test('同时有 awaiting、suggested、live → 只画等你档, live 的 runId 不出现, suggested 内容被吸收到计数', () => {
     const out = renderNowBand(
       {
         awaiting: [ticket({ ticketId: 't-1', title: '请你定个调' })],
@@ -88,21 +89,25 @@ describe('INV-NOW-1 · 阶梯只选一档', () => {
     );
     expect(out.length).toBe(1);
     const body = out.join('\n');
-    // 等你那一档的标记 + 第一张票 id 都在屏上
+    // 等你档的标记 + 第一张 awaiting 票 id 都在屏上
     expect(body).toContain(TIER_MARK_FOR('awaiting'));
     expect(body).toContain('t-1');
+    // suggested 折入 ① 档 — 行文里把 "其中 N 待收件" 数标出来 (新契约)
+    expect(body).toContain('其中 1 待收件');
     // live 的 runId8 / goal 不许出现
     expect(body).not.toContain('bbbbbbbb');
     expect(body).not.toContain('在跑的活');
-    // suggested 的内容也不许出现 (阶梯还在更高一档)
+    // suggested[0] 的内容也不出现 (awaiting 优先, 屏上展示的是 awaiting[0])
     expect(body).not.toContain('建议');
   });
 
-  test('awaiting 空 + live 在 → 只画在跑, 等你的字形不出现', () => {
+  test('awaiting 空 + suggested 空 + live 在 → 只画在跑档, 等你字形不出现', () => {
+    // 注: suggested 不为空 → 走等你档 (新契约)。这条要单独验证「live 单独在」,
+    // 必须 suggested 也空。
     const out = renderNowBand(
       {
         awaiting: [],
-        suggested: [ticket()],
+        suggested: [],
         live: [view({ snap: snap({ runId: 'bbbbbbbb-1111-2222-3333-444444444444' }) })],
         maps: [map()],
       },
@@ -113,10 +118,44 @@ describe('INV-NOW-1 · 阶梯只选一档', () => {
     expect(body).toContain(TIER_MARK_FOR('live'));
     expect(body).toContain('bbbbbbbb');
     expect(body).not.toContain(TIER_MARK_FOR('awaiting'));
-    expect(body).not.toContain(TIER_MARK_FOR('suggested'));
   });
 
-  test('awaiting 空 + live 空 + suggested 在 → 只画欠账', () => {
+  test('★ bug 回归 · 只 suggested(无 awaiting) + live 同时在 → 走等你档, 不被「在跑」埋掉', () => {
+    // 反向自检: 把 renderNowBand 里 `if (input.awaiting.length > 0 || input.suggested.length > 0)`
+    // 退回 `if (input.awaiting.length > 0)` (只看 awaiting, 不看 suggested) →
+    // suggested 单独 + live 在时, 走到 live 那条分支 → 输出含 `▶` 与 runId →
+    // expect(body).toContain(TIER_MARK_FOR('awaiting')) 红。
+    // 这就是契约的硬约束: suggested 必须折入 ① 等你, 否则它会被「在跑」埋掉。
+    const out = renderNowBand(
+      {
+        awaiting: [],
+        suggested: [ticket({ ticketId: 't-sug', title: '机器建议待裁' })],
+        live: [view({ snap: snap({ runId: 'cccccccc-1111-2222-3333-444444444444', goal: '后台在跑' }) })],
+        maps: [map()],
+      },
+      { width: 100, now: NOW },
+    );
+    expect(out.length).toBe(1);
+    const body = out.join('\n');
+    // 等你档, 不是在跑
+    expect(body).toContain(TIER_MARK_FOR('awaiting'));
+    expect(body).not.toContain(TIER_MARK_FOR('live'));
+    // suggested 那张票的 id 在屏上 (awaiting[0] ?? suggested[0] 取的是这张)
+    expect(body).toContain('t-sug');
+    // 「其中 1 待收件」点明这是 suggested 那类
+    expect(body).toContain('其中 1 待收件');
+    // live 的 runId8 / goal 不许出现 (被等你档盖住了)
+    expect(body).not.toContain('cccccccc');
+    expect(body).not.toContain('后台在跑');
+    // 欠账字形 `?` 不出现 — ③ 档无源直接跳过, 不画占位
+    expect(body).not.toContain(TIER_MARK_FOR('debt'));
+  });
+
+  test('awaiting 空 + live 空 + suggested 在 → 仍走等你档 (suggested 已折入 ①), 不画欠账占位', () => {
+    // 老契约里这是「suggested 单独 → 走欠账档 (③)」; 新契约里 suggested 已折入 ①。
+    // 反向自检: 把 renderNowBand 里 `awaiting || suggested` 退回 `awaiting` →
+    // suggested 单独 + live 空 → 直接落到 ④ 闲 → 输出含 `~` →
+    // expect(body).toContain(TIER_MARK_FOR('awaiting')) 红。
     const out = renderNowBand(
       {
         awaiting: [],
@@ -128,10 +167,16 @@ describe('INV-NOW-1 · 阶梯只选一档', () => {
     );
     expect(out.length).toBe(1);
     const body = out.join('\n');
-    expect(body).toContain(TIER_MARK_FOR('suggested'));
+    // 走等你档 — ⚠ + 等你 + 「其中 N 待收件」
+    expect(body).toContain(TIER_MARK_FOR('awaiting'));
+    expect(body).toContain(TIER_LABEL.awaiting);
+    expect(body).toContain('其中 1 待收件');
     expect(body).toContain('t-2');
-    expect(body).not.toContain(TIER_MARK_FOR('awaiting'));
-    expect(body).not.toContain(TIER_MARK_FOR('live'));
+    // ③ 欠账档 (debt) 不画 — 字形与字面值都不出现
+    expect(body).not.toContain(TIER_MARK_FOR('debt'));
+    expect(body).not.toContain(TIER_LABEL.debt);
+    // ④ 闲也不画 — 等你档已选中
+    expect(body).not.toContain(TIER_MARK_FOR('maps'));
   });
 
   test('只有 maps → 只画闲', () => {
@@ -148,34 +193,42 @@ describe('INV-NOW-1 · 阶梯只选一档', () => {
 });
 
 describe('INV-NOW-4 · 数据只来自真源, 取不到就跳过那一档', () => {
-  test('live 空 → 跳过「在跑」, 落到下一档 (suggested)', () => {
+  test('live 空 + ①档空 → 跳过「在跑」, ③ 欠账无源跳过, 落到「闲」', () => {
+    // ③ 欠账目前无源, 阶梯直接跳过 → 落到 ④ 闲。空仓的真话是「没有等你裁的票,
+    // 没有活图, 但有几张存图」。
     const out = renderNowBand(
       {
         awaiting: [],
-        suggested: [ticket()],
+        suggested: [],
         live: [], // ← 关键, 不画「0 在跑」
         maps: [map()],
       },
       { width: 100, now: NOW },
     );
     const body = out.join('\n');
-    expect(body).toContain(TIER_MARK_FOR('suggested'));
-    // 关键: 不画「0 在跑」/「0 run」这种东西
+    // 落到闲档
+    expect(body).toContain(TIER_MARK_FOR('maps'));
+    expect(body).toContain('1 张图');
+    // 关键: 不画「0 在跑」/「0 run」这种东西 (INV-NOW-4: NULL ≠ 0)
     expect(body).not.toMatch(/\b0 在跑\b/);
     expect(body).not.toMatch(/\b0 runs?\b/);
+    // ③ 档不画占位 (无源就空)
+    expect(body).not.toContain(TIER_MARK_FOR('debt'));
+    expect(body).not.toContain(TIER_LABEL.debt);
   });
 });
 
 describe('INV-NOW-2 · 封顶 3 行, 宽度闸', () => {
-  test('各档 × width ∈ {60, 80, 120} 每行 visibleWidth(line) <= width', () => {
+  test('各档 × width ∈ {60, 80, 100, 120} 每行 visibleWidth(line) <= width', () => {
     const inputs = [
-      // 等你
+      // 等你 (awaiting + suggested 都有, 验新折叠行文 + 宽度)
       {
         awaiting: [
           ticket({ ticketId: 't-1', title: '需要裁定的事情 — '.repeat(30) }),
           ticket({ ticketId: 't-2', title: '还有一件' }),
         ],
-        suggested: [], live: [], maps: [],
+        suggested: [ticket({ ticketId: 't-3', title: '机器建议 — '.repeat(15) })],
+        live: [], maps: [],
       },
       // 在跑 (含坏时戳 / 长 goal / 多 run)
       {
@@ -186,8 +239,8 @@ describe('INV-NOW-2 · 封顶 3 行, 宽度闸', () => {
         ],
         maps: [],
       },
-      // 欠账
-      { awaiting: [], suggested: [ticket({ ticketId: 't-3', title: '建议: '.repeat(40) })], live: [], maps: [] },
+      // suggested 单独 (走等你档, 长 title 也走宽度闸)
+      { awaiting: [], suggested: [ticket({ ticketId: 't-4', title: '建议: '.repeat(40) })], live: [], maps: [] },
       // 闲 (含 bands 全 0 的边角)
       {
         awaiting: [], suggested: [], live: [],
@@ -198,7 +251,7 @@ describe('INV-NOW-2 · 封顶 3 行, 宽度闸', () => {
       },
     ];
     for (let i = 0; i < inputs.length; i++) {
-      for (const w of [60, 80, 120]) {
+      for (const w of [60, 80, 100, 120]) {
         const out = renderNowBand(inputs[i]!, { width: w, now: NOW });
         // ≤ 3 行
         expect(out.length, `case=${i}, w=${w}`).toBeLessThanOrEqual(3);
@@ -214,7 +267,8 @@ describe('INV-NOW-2 · 封顶 3 行, 宽度闸', () => {
     const out = renderNowBand(
       {
         awaiting: [ticket({ ticketId: 't-1', title: '一个特别特别长的中文目标 — '.repeat(10) })],
-        suggested: [], live: [], maps: [],
+        suggested: [ticket({ ticketId: 't-2', title: '短' })],
+        live: [], maps: [],
       },
       { width: 60, now: NOW },
     ).join('\n');
@@ -222,19 +276,21 @@ describe('INV-NOW-2 · 封顶 3 行, 宽度闸', () => {
     expect(out).toContain('t-1');
     // 超长 title 被截: 含 ...
     expect(out).toContain('...');
+    // 「其中 1 待收件」窄屏下也得在屏上 (这条是 suggested 折入 ① 的契约硬钉)
+    expect(out).toContain('其中 1 待收件');
   });
 });
 
 describe('INV-5 · 结构信息不靠颜色', () => {
-  test('paint 恒等 → 剥标签后逐字节等 (四档各自标记 + 标签肉眼可读)', () => {
+  test('paint 恒等 → 剥标签后逐字节等 (各档标记 + 标签肉眼可读)', () => {
     const tag = (n: string) => (s: string) => `<${n}>${s}</${n}>`;
     const paint: NowPaint = { accent: tag('a'), dim: tag('d'), warn: tag('w'), ok: tag('ok') };
     const cases = [
-      // 等你
+      // 等你 (awaiting)
       { awaiting: [ticket({ ticketId: 't-1', title: '裁定' })], suggested: [], live: [], maps: [] },
       // 在跑
       { awaiting: [], suggested: [], live: [view()], maps: [] },
-      // 欠账
+      // 等你 (suggested 单独 → 折入 ①)
       { awaiting: [], suggested: [ticket()], live: [], maps: [] },
       // 闲
       { awaiting: [], suggested: [], live: [], maps: [map()] },
@@ -246,11 +302,13 @@ describe('INV-5 · 结构信息不靠颜色', () => {
     }
   });
 
-  test('四档各自的前缀字形 + 文字标签都在屏上 (剥标签后逐字节存在)', () => {
-    const cases: Array<{ tier: keyof typeof TIER_LABEL; input: Parameters<typeof renderNowBand>[0] }> = [
+  test('实际可绘的各档前缀字形 + 文字标签都在屏上 (剥标签后逐字节存在)', () => {
+    // ③ 欠账档当前无源 — 没输入能触发它, 不在画字面这一层测。
+    // 字面值 (`TIER_LABEL.debt` / `TIER_MARK.debt`) 仍挂在导出表里, 是为
+    // 4 档一选的契约与未来 CheckpointManager 接真读数时直接复用, 由类型层保证。
+    const cases: Array<{ tier: 'awaiting' | 'live' | 'maps'; input: Parameters<typeof renderNowBand>[0] }> = [
       { tier: 'awaiting', input: { awaiting: [ticket()], suggested: [], live: [], maps: [] } },
       { tier: 'live', input: { awaiting: [], suggested: [], live: [view()], maps: [] } },
-      { tier: 'suggested', input: { awaiting: [], suggested: [ticket()], live: [], maps: [] } },
       { tier: 'maps', input: { awaiting: [], suggested: [], live: [], maps: [map()] } },
     ];
     for (const { tier, input } of cases) {
@@ -263,7 +321,7 @@ describe('INV-5 · 结构信息不靠颜色', () => {
 
 describe('INV-NOW-5 · 纯函数, 同一输入两次输出逐字节相同', () => {
   test('连画两次 → []、行数、行内容都一致', () => {
-    const input = { awaiting: [ticket()], suggested: [], live: [view()], maps: [map()] };
+    const input = { awaiting: [ticket()], suggested: [ticket()], live: [view()], maps: [map()] };
     const a = renderNowBand(input, { width: 80, now: NOW });
     const b = renderNowBand(input, { width: 80, now: NOW });
     expect(b).toEqual(a);
@@ -280,7 +338,7 @@ describe('INV-NOW-5 · 纯函数, 同一输入两次输出逐字节相同', () =
 });
 
 describe('细节 · 多条等你 / 在跑 / 闲档', () => {
-  test('等你 ≥2 → 头里出现计数 (N 票), 第一张的 id 在屏上', () => {
+  test('等你 ≥2 (纯 awaiting) → 头里出现计数 (N 票), 第一张的 id 在屏上', () => {
     const out = renderNowBand(
       {
         awaiting: [
@@ -293,6 +351,22 @@ describe('细节 · 多条等你 / 在跑 / 闲档', () => {
     ).join('\n');
     expect(out).toMatch(/等你:2 票/);
     expect(out).toContain('t-1');
+  });
+
+  test('等你 = awaiting+suggested 混合 → 头里标 N 票 (其中 M 待收件), 第一张 awaiting id 在屏上', () => {
+    const out = renderNowBand(
+      {
+        awaiting: [ticket({ ticketId: 't-1', title: '第一件' })],
+        suggested: [ticket({ ticketId: 't-2', title: '建议' })],
+        live: [], maps: [],
+      },
+      { width: 100, now: NOW },
+    ).join('\n');
+    expect(out).toContain('2 票');
+    expect(out).toContain('其中 1 待收件');
+    expect(out).toContain('t-1');
+    // 屏上展示的是 awaiting[0] (优先级最高), suggested[0] 不展开
+    expect(out).not.toContain('建议');
   });
 
   test('在跑 ≥2 → 头里出现计数 (N), 第一条的 runId8 在屏上', () => {
@@ -371,7 +445,7 @@ function TIER_MARK_FOR(tier: keyof typeof TIER_LABEL): string {
   switch (tier) {
     case 'awaiting': return '⚠';
     case 'live': return '▶';
-    case 'suggested': return '?';
+    case 'debt': return '?';
     case 'maps': return '~';
   }
 }

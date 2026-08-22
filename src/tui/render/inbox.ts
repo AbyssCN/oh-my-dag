@@ -19,6 +19,18 @@
  * INV-INBOX-1/2 钉死:**屏上每一轮都得念**「裁决不等于执行 · map_deliver 才执行 · ruling 即 goal」 ——
  * 收件箱是唯一回答「该做什么」的地方,不念就丢。
  *
+ * ## 主行带 id(可引用)
+ *
+ * 选中展开才出 `#226` 在对话里没法引用 —— 主行就把 id 写在状态标记后、标题前:
+ *   `▸ ? 226 机器建议:…`。这样在对话里直接说「226 票」就能指向同一件。
+ *
+ * ## 表头分隔符单空格 / 空态跳过表头
+ *
+ * `4 件 1 等裁 ·  1 建议 ·  1 节点` 是「list join with ` · `」叠 leading-space count 的味道 ——
+ * count 不再带 leading space, left 与 counts 间手动加 1 空格, `·` 前后就只剩各 1 空格。
+ *
+ * `收件箱 · 0 件` 是「画 0」, 空仓直接跳过表头, 只留那句真话与底边。
+ *
  * ## 不读盘(纯函数)
  *
  * 与 `run-list` / `now-band` 同款 —— 取数在 `tui.ts`,复用 `refreshTicketBoard` 的时机;
@@ -71,6 +83,12 @@ const W_SEL = 2; // `▸ ` / `  `
 const W_MARK = 2; // `⚠ ` / `? ` / `· ` / `↑ `
 const STALE_TXT = '✗ STALE '; // 长 7 + 1 空格 = 8
 
+/** 主行 id 列 —— rule/confirm/take 是 ticketId(node 走 runId 前 8 + `/` + nodeId)。 */
+const mainIdOf = (item: InboxItem): string =>
+  item.kind === 'node'
+    ? `${item.runId.slice(0, 8)}/${item.nodeId}`
+    : item.ticketId;
+
 /** 截断补 `…`;只用于标题列,正文(展开行)不走这条。CJK 列宽由 `visibleWidth` 算。 */
 const clip = (text: string, cols: number): string => {
   if (cols <= 0) return '';
@@ -91,7 +109,12 @@ const paintOf = (item: InboxItem, p: InboxPaint): ((s: string) => string) => {
   return p.dim; // node
 };
 
-/** 选中行的就地展开: ID + 全 title + 动作提示。INV-INBOX-3 在第三行上钉死。 */
+/**
+ * 选中行的就地展开: ID + 动作提示。INV-INBOX-3 在第二行上钉死。
+ *
+ * **不重复标题**: 主行已是全标题, 展开再印一遍就是废字, 而且让「主行带 id」读起来双倍。
+ * 展开只留 id + 动作, 标题只在主行里出现一次。
+ */
 function renderSelectedDetail(item: InboxItem, width: number, p: InboxPaint): string[] {
   const indent = '  '.repeat(2); // 对齐主行 marker (W_SEL + W_MARK = 4 → 视觉 4 个 space)
   const idStr =
@@ -109,27 +132,31 @@ function renderSelectedDetail(item: InboxItem, width: number, p: InboxPaint): st
           : 'Enter 收件';
   return [
     p.dim(fitLine(`${indent}${idStr}`, width)),
-    p.dim(fitLine(`${indent}${item.title}`, width)),
     p.dim(fitLine(`${indent}${hint}`, width)),
   ];
 }
 
-/** 画一行。选中 → 整行 sel;否则各段走自己的色道(marker 走相位色, 其余 dim)。 */
+/** 画一行。选中 → 整行 sel;否则各段走自己的色道(marker + stale + id 走相位色, 标题走 dim)。 */
 function renderRow(item: InboxItem, selected: boolean, width: number, p: InboxPaint): string {
   const selMark = selected ? '▸ ' : '  ';
   const mark = INBOX_MARK[item.kind] + ' ';
   const staleStr = item.stale ? STALE_TXT : '';
+  const idStr = mainIdOf(item);
   const title = item.title;
-  const titleCols = Math.max(0, width - (W_SEL + W_MARK + visibleWidth(staleStr)));
+  // 标题可用列 = 总宽 - 选择标记 - 状态标记 - stale - 1(id 前的空格) - id 列宽。
+  const titleCols = Math.max(
+    0,
+    width - (W_SEL + W_MARK + visibleWidth(staleStr) + 1 + visibleWidth(idStr)),
+  );
   const titleClip = clip(title, titleCols);
-  const line = `${selMark}${mark}${staleStr}${titleClip}`;
+  const line = `${selMark}${mark}${staleStr}${idStr} ${titleClip}`;
   if (selected) return p.sel(fitLine(line, width));
-  // 非选中: marker 走相位色, stale 走 dim (与 marker 同行, 一并上色), title 走 dim。
-  const head = `${selMark}${mark}${staleStr}`;
+  // 非选中: marker + stale + id 走相位色, 标题走 dim。
+  const head = `${selMark}${mark}${staleStr}${idStr} `;
   return fitLine(paintOf(item, p)(head) + p.dim(titleClip), width);
 }
 
-/** 头行 + 右侧按 kind 分计。0 省略 —— 「0 件」与「列表空」不同, 后者走空分支。 */
+/** 头行 + 右侧按 kind 分计。0 省略 —— 「0 件」与「列表空」不同, 后者走空分支(不画表头)。 */
 function renderHeader(items: readonly InboxItem[], width: number, p: InboxPaint): string {
   let rule = 0;
   let confirm = 0;
@@ -143,13 +170,14 @@ function renderHeader(items: readonly InboxItem[], width: number, p: InboxPaint)
   }
   const total = items.length;
   const left = p.accent(`收件箱 · ${total} 件`);
-  if (total === 0) return fitLine(left, width);
   const counts: string[] = [];
-  if (rule) counts.push(p.warn(` ${rule} 等裁`));
-  if (confirm) counts.push(p.accent(` ${confirm} 建议`));
-  if (node) counts.push(p.dim(` ${node} 节点`));
-  if (take) counts.push(p.dim(` ${take} 待收`));
-  return fitLine(left + counts.join(p.dim(' · ')), width);
+  if (rule) counts.push(p.warn(`${rule} 等裁`));
+  if (confirm) counts.push(p.accent(`${confirm} 建议`));
+  if (node) counts.push(p.dim(`${node} 节点`));
+  if (take) counts.push(p.dim(`${take} 待收`));
+  if (counts.length === 0) return fitLine(left, width);
+  // 分隔符单空格 —— count 不带 leading space(否则 `·  X` 看着是双空格)。
+  return fitLine(left + ' ' + counts.join(p.dim(' · ')), width);
 }
 
 /**
@@ -190,13 +218,16 @@ export function renderInbox(
   const p = o.paint ?? PLAIN;
   const width = o.width;
   const len = items.length;
-  const out: string[] = [renderHeader(items, width, p)];
-  // 空仓:头 + 「(空 · …)」+ 底边三件 —— 底边 invariant 是教育性的, 空仓也念。
+  // 空仓: 那句真话 + 底边 —— 底边 invariant 是教育性的, 空仓也念。
+  // 表头那个 `0 件` 是「画 0」, 空仓直接跳过表头。
   if (len === 0) {
-    out.push(p.dim(fitLine('(空 · 没有待裁的票 / 待进的图 / 待收的产物)', width)));
-    out.push(renderFooter(width, p));
+    const out: string[] = [
+      p.dim(fitLine('(空 · 没有待裁的票 / 待进的图 / 待收的产物)', width)),
+      renderFooter(width, p),
+    ];
     return clampHeight(out, o.height, width, p);
   }
+  const out: string[] = [renderHeader(items, width, p)];
   const sel = ((o.selected % len) + len) % len;
   for (let i = 0; i < len; i++) {
     out.push(renderRow(items[i]!, i === sel, width, p));

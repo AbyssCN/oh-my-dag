@@ -17,14 +17,13 @@
  *
  * `① 等你 → ② 在跑 → ③ 欠账 → ④ 闲`; 选中一档就只画那一档, 不叠加 (PRODUCT.md 那
  * 句定位「把**哪一件事**在等你放在最亮处」是单数, 叠加就没有「最亮处」了)。
- * 数据源:
- *   - ① 等你 = `awaiting`              (票上 `band==='awaiting-owner'`)
+ * 数据源 (契约 §INV-NOW-4 原话):
+ *   - ① 等你 = `awaiting` ∪ `suggested`  (两栏都属于 owner 注意力, 折一档)
  *   - ② 在跑 = `phase==='live'` 的分片 (`readDagShards`)
- *   - ③ 欠账 = `suggested`              (机器建议待 owner accept/reject)
+ *   - ③ 欠账 = (无源, 见下)            (原计划「checkpoint 落后 N 轮」在 SDD 非目标里被砍)
  *   - ④ 闲   = `maps` 的雾档汇总
  *
- * ⚠ 「等你 = `awaiting` + `suggested`」是**数据取数**那一行 (两栏都属于 owner
- * 注意力), 阶梯上仍是两档: `awaiting` 优先, `suggested` 在它空时落到 ③ 欠账。
+ * ⚠ 「③ 欠账」目前无源, 等 CheckpointManager 有真读数再接 —— 不许拿更高优先级的东西去填。
  *
  * ## 封顶 3 行 (INV-NOW-2)
  *
@@ -81,6 +80,10 @@ export interface NowBandInput {
 /**
  * 四档标签的字面值。导出供单测断言 (反查 ↔ 数据契约)。
  *
+ * `debt` 是「③ 欠账」那一档的位子 —— 当前无源, 但 4 档一选的契约 (INV-NOW-1)
+ * 与「四档各自的字面值」那张表 (单测用) 都不许少一格。等 CheckpointManager 接上
+ * 真读数时, 这张表就是字形锚点。
+ *
  * 选了 ASCII 标点 + 已有白名单字形, 没引入新字形 (INV-5)。中文档上那一句
  * 「把哪一件事在等你放在最亮处」是这个梯队的语义, 不是要把文案全改成 CJK —
  * 「当前」区的字面值在这里看得出就行。
@@ -88,7 +91,7 @@ export interface NowBandInput {
 export const TIER_LABEL = {
   awaiting: '等你',
   live: '在跑',
-  suggested: '欠账',
+  debt: '欠账',
   maps: '闲',
 } as const;
 
@@ -96,7 +99,7 @@ export const TIER_LABEL = {
 const TIER_MARK: Record<keyof typeof TIER_LABEL, string> = {
   awaiting: '⚠',  // U+26A0, width 1, SAFE
   live: '▶',      // U+25B6, width 1, SAFE (复用 run-list 的 RUN_MARK.live)
-  suggested: '?',  // ASCII, 没用过的字形 = 0 风险
+  debt: '?',      // ASCII; ③ 档目前无渲染器, 字形先占位 (TASK 守则: 不许删键)
   maps: '~',      // ASCII
 };
 
@@ -132,12 +135,35 @@ function liveProgress(v: DagView): { done: number; total: number } | null {
  * 四档各自的行构造
  * ────────────────────────────────────────────────────────────────────────── */
 
-/** ① 等你: 一行。`⚠ 等你:N 票 · <id> <title…>`。 */
-function renderAwaiting(items: readonly AttentionTicket[], width: number, p: NowPaint): string {
+/** ① 等你: 一行。`⚠ 等你 · N 票(其中 M 待收件) · <id> <title…>`。
+ * 等你 = `awaiting` ∪ `suggested` (契约 §INV-NOW-4 原话: 两栏都属于 owner 注意力)。
+ * 两类折到一档, 行文里把「待收件」(`suggested` 那部分) 的数单独点出来,
+ * 让读者一眼分得清「等你裁的」与「机器建议待 accept/reject」。
+ *
+ * - `awaiting` 优先: 第一张 (屏上那行展示的) 总是 `awaiting[0]`, 它空才用 `suggested[0]`。
+ *   理由: 等你裁的更紧迫, 把它压在建议票后面反而把这条带子的核心给埋了。
+ * - 无 `suggested` 时不画括号 (无信息就不造噪音, 与闲档不画 0 同条)。*/
+function renderAwaiting(
+  awaiting: readonly AttentionTicket[],
+  suggested: readonly AttentionTicket[],
+  width: number,
+  p: NowPaint,
+): string {
   const mark = p.warn(TIER_MARK.awaiting);
   const label = p.warn(TIER_LABEL.awaiting);
-  const head = items.length > 1 ? `${mark} ${label}:${items.length} 票 · ` : `${mark} ${label} · `;
-  const first = items[0]!;
+  const nAwait = awaiting.length;
+  const nSug = suggested.length;
+  const n = nAwait + nSug;
+  // awaitng 优先 (awaiting[0] ?? suggested[0]!); 调用方已保证 n>0。
+  const first = (awaiting[0] ?? suggested[0])!;
+  // 行文: `⚠ 等你 · N 票(其中 M 待收件) · <id> <title…>`
+  // 无 suggested 时退回到旧的多行计数格式 `⚠ 等你:N 票 · …`, 跟单件无后缀的旧格式区分开。
+  const head =
+    nSug > 0
+      ? `${mark} ${label} · ${n} 票(其中 ${nSug} 待收件) · `
+      : n > 1
+        ? `${mark} ${label}:${n} 票 · `
+        : `${mark} ${label} · `;
   // id 与 title 之间用空格分隔 (id 单字 word, title 可能很长 → title 走截断)。
   const tail = `${first.ticketId} ${first.title}`;
   return fitLine(`${head}${tail}`, width, '...');
@@ -163,15 +189,10 @@ function renderLive(views: readonly DagView[], width: number, p: NowPaint): stri
   return fitLine(line, width, '...');
 }
 
-/** ③ 欠账: 一行。`? 欠账:N 待确认 · <id> <title…>`。 */
-function renderSuggested(items: readonly AttentionTicket[], width: number, p: NowPaint): string {
-  const mark = p.dim(TIER_MARK.suggested);
-  const label = p.dim(TIER_LABEL.suggested);
-  const head = items.length > 1 ? `${mark} ${label}:${items.length} 待确认 · ` : `${mark} ${label} · 待确认 · `;
-  const first = items[0]!;
-  const tail = `${first.ticketId} ${first.title}`;
-  return fitLine(`${head}${tail}`, width, '...');
-}
+/** ③ 欠账: 无源, 等 CheckpointManager 有真读数再接 (见文件头 ⚠)。
+ * 阶梯这一格**故意落空**: 不许拿更高优先级的东西去填, 阶梯落空是诚实的。
+ * 字面值/字形 (TIER_LABEL.debt / TIER_MARK.debt) 仍然挂着, 是为 4 档一选的
+ * 契约 (INV-NOW-1) 与「四档字面值」那张表 (单测) 都不许少一格。*/
 
 /** ④ 闲: 一行。`~ 闲 · N 张图 · <bands 概要>`。无 bands 时只留计数。 */
 function renderMaps(items: readonly MapFogSummary[], width: number, p: NowPaint): string {
@@ -240,9 +261,15 @@ export function renderNowBand(
     return [];
   }
   // INV-NOW-1 + INV-NOW-4: 阶梯只选一档, 选中就只画那一档; 上一档空才往下走。
-  if (input.awaiting.length > 0) return [renderAwaiting(input.awaiting, w, p)];
+  // ① 等你 = `awaiting` ∪ `suggested` (INV-NOW-4 原话) —— 折一档: 任意一边非空都走这一档,
+  // 否则建议票会被「在跑」埋掉 (这条带子的存在理由)。
+  if (input.awaiting.length > 0 || input.suggested.length > 0) {
+    return [renderAwaiting(input.awaiting, input.suggested, w, p)];
+  }
+  // ② 在跑
   if (input.live.length > 0) return [renderLive(input.live, w, p)];
-  if (input.suggested.length > 0) return [renderSuggested(input.suggested, w, p)];
+  // ③ 欠账 = (无源, 见文件头 ⚠) —— 阶梯这一格故意落空。
+  // ④ 闲
   // 闲档在没有任何 owner 注意力 / 活图时画 —— 但 `readAttention(cwd).maps` 可能含
   // 没票的空图, 这里以 maps.length > 0 为准 (一张图都没有 = 全空, 早返回时已兜)。
   if (input.maps.length > 0) return [renderMaps(input.maps, w, p)];
