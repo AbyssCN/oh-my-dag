@@ -80,6 +80,15 @@ export interface TreeNode {
    * 缺席 = 老发射点没报, **不是 0** (见 runUsage 的下界标记)。
    */
   usage?: { in: number; out: number };
+  /**
+   * settle 带的**实际跑这一节点的座位坐标**(`provider:model`)。
+   *
+   * 2026-08-22 补:事件面(`types.ts:500`)与账本(`RunProgress.settled[].model`)
+   * 一直都有它, 只有这里没接 —— 于是 DAG 屏那一列**结构上永远是 `—`**,
+   * 一个画得出来却永远没数的列(本仓在杀的空旋钮)。
+   * ⚠ 缺席 = 老发射点没报, **不是**「跑在默认座位上」—— 画 `—`, 不编一个坐标。
+   */
+  model?: string;
   /** 最近一条 progress 的展示量 (C-6 ④; 生产端已节流 ≥500ms, 只留最新)。 */
   progress?: { tool?: string; note?: string };
   /**
@@ -212,6 +221,9 @@ export class DagTree implements Component {
       }
       if (s.durationMs !== undefined) n.durationMs = s.durationMs;
       if (s.usage !== undefined) n.usage = s.usage;
+      // 双通路等价 (INV-HUD-6): 事件那侧接了 model, 这侧也必须接, 否则同一份事实
+      // 走两条路画出两棵不一样的树。
+      if (s.model !== undefined) n.model = s.model;
       // snap.failureKind 是 string, TreeNode 是 NodeFailureKind 联合 —— 运行期同形态 (生产端
       // 由 `withFailureKind` 收口, 见 harness/dag/types.ts:643), 此处直接断言。
       if (s.failureKind !== undefined) n.failureKind = s.failureKind as NodeFailureKind;
@@ -259,6 +271,7 @@ export class DagTree implements Component {
         if (e.failReason !== undefined) n.failReason = e.failReason;
         if (e.failureKind !== undefined) n.failureKind = e.failureKind;
         if (e.usage !== undefined) n.usage = e.usage; // 2026-08-21: 此前收下就扔
+        if (e.model !== undefined) n.model = e.model; // 2026-08-22: 同上, model 也一直收下就扔
         return;
       }
       case 'progress': {
