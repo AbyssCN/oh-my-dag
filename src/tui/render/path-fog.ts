@@ -248,7 +248,13 @@ const summaryLine = (d: PathViewData, width: number, p: FogPaint): string => {
   const filled = Math.round((pct / 100) * 12);
   const bar = BAR_DONE.repeat(filled) + BAR_TODO.repeat(12 - filled);
   return p.accent(
-    fitLine(`fog ${pct}% ${bar} · open ${d.frontier.length} · blocked ${d.blockedTickets.length} · run x${d.runs.length}`, width),
+    // ⚠ `run x0` 与同屏头行的 `no runs` 是**同一件事两个口径**, 而「不画 0」那条纪律
+    //   头行做对了、这里没有。统一成头行那套: 没有就说没有。
+    fitLine(
+      `fog ${pct}% ${bar} · open ${d.frontier.length} · blocked ${d.blockedTickets.length} · ` +
+        (d.runs.length > 0 ? `run x${d.runs.length}` : 'no runs'),
+      width,
+    ),
   );
 };
 
@@ -317,13 +323,13 @@ export function renderFogLine(
   for (let i = 0; i < d.gens.length; i++) {
     const gen = d.gens[i] as { id: string; gist: string }[];
     if (gen.length === 0) continue;
-    out.push(p.accent(rule(`settled · gen-${i + 1}`, `${gen.length} tickets`, width)));
+    out.push(p.accent(rule(`settled · gen-${i + 1}`, `${gen.length} ${gen.length === 1 ? 'ticket' : 'tickets'}`, width)));
     // 画法 C 四段 id / type / 标题三列起始列一致: 已散段 type 不可知 (decisionsLog 不含 type), 用空白列占位, 起止列与前沿/建议段对齐。
     for (const t of gen) out.push(p.dim(clip(`  ✓ ${padS(t.id, 6)} ${padS('', 10)} ${t.gist}`, width)));
   }
 
   if (d.frontier.length > 0) {
-    out.push(p.accent(rule('frontier · movable', `${d.frontier.length} tickets`, width)));
+    out.push(p.accent(rule('frontier · movable', `${d.frontier.length} ${d.frontier.length === 1 ? 'ticket' : 'tickets'}`, width)));
     d.frontier.forEach((t, i) => {
       const line = mapTicketLine(t, i === o.selected, width);
       out.push((i === o.selected ? p.sel : p.dim)(line));
@@ -331,7 +337,7 @@ export function renderFogLine(
   }
 
   if (d.blockedTickets.length > 0) {
-    out.push(p.accent(rule('blocked', `${d.blockedTickets.length} tickets`, width)));
+    out.push(p.accent(rule('blocked', `${d.blockedTickets.length} ${d.blockedTickets.length === 1 ? 'ticket' : 'tickets'}`, width)));
     for (const t of d.blockedTickets) {
       const blocker = t.by?.[0];
       const suffix = blocker ? `  ← waiting for ${blocker} ruling` : '';
@@ -341,7 +347,7 @@ export function renderFogLine(
   }
 
   if (suggested.length > 0) {
-    out.push(p.accent(rule('engine suggestion · unreceived', `${suggested.length} tickets`, width)));
+    out.push(p.accent(rule('engine suggestion · unreceived', `${suggested.length} ${suggested.length === 1 ? 'ticket' : 'tickets'}`, width)));
     for (const t of suggested) {
       const mark = t.stale ? '✗ STALE' : '○';
       // 「等你多久」是这一格唯一承重的信息 —— 优先保住等待读数, 标题不够宽就截标题;

@@ -304,8 +304,10 @@ describe('Map 屏 v2 (画法 C) 那一组', () => {
     // fullMap: 2 ruled(已散) + 2 frontier + 1 blocked + 1 suggested
     expect(findHead('settled · gen-1'), '已散段段头').toContain('2 tickets');
     expect(findHead('frontier · movable'), '前沿段段头').toContain('2 tickets');
-    expect(findHead('━━ blocked ━━'), '受阻段段头').toContain('1 tickets');
-    expect(findHead('engine suggestion · unreceived'), '建议段段头').toContain('1 tickets');
+    // 2026-08-22: 加了单复数 —— 1 张写 `1 ticket`。这条闸管的是**中性量词**(不写 `open`),
+    // 不是那个 `s`, 所以两种写法都收, 但仍然逐段咬住「有计数且不是 open」。
+    expect(findHead('━━ blocked ━━'), '受阻段段头').toContain('1 ticket');
+    expect(findHead('engine suggestion · unreceived'), '建议段段头').toContain('1 ticket');
 
     // 五段段头均不再含 `open` 计数词(底部 readout 条仍可写 `open N`, 本条不覆盖)。
     for (const [label, name] of [
@@ -473,7 +475,7 @@ describe('Map 屏 v2 (画法 C) 那一组', () => {
    * **证伪方式**: (把承重跳换成下列任一弱实现 → 对应 expect 变红)
    *  - 任一段头把 `${N} tickets` 换回 `${N} open` → 该段 `.toContain('N tickets')` 红 + `.not.toContain('open')` 红。
    *  - 漏画某段头 → `findHead` 返 `''`, `.toContain('N tickets')` 红。
-   *  - GEN_WIDTH=5 的切片错位(decisionsLog 顺序错) → 第二代头变成 `gen-3` 而非 `gen-2`, `.toContain('1 tickets')` 红。
+   *  - GEN_WIDTH=5 的切片错位(decisionsLog 顺序错) → 第二代头变成 `gen-3` 而非 `gen-2`, `.toContain('1 ticket')` 红。
    *  - 改动 title 字面 → 仍可能绿(本条不依赖 title), 但与已存在的 10 互锁(10 钉字面, 10b 钉计数)。
    */
   test('10b 五段段头计数: 2 个已散 gen + frontier + blocked + suggested 均写 N tickets', () => {
@@ -505,10 +507,11 @@ describe('Map 屏 v2 (画法 C) 那一组', () => {
     const findHead = (label: string) => out.find((l) => l.includes(label)) ?? '';
 
     expect(findHead('settled · gen-1'), 'gen-1 段头').toContain('5 tickets');
-    expect(findHead('settled · gen-2'), 'gen-2 段头').toContain('1 tickets');
-    expect(findHead('frontier · movable'), '前沿段头').toContain('1 tickets');
-    expect(findHead('━━ blocked ━━'), '受阻段头').toContain('1 tickets');
-    expect(findHead('engine suggestion · unreceived'), '建议段头').toContain('1 tickets');
+    // 2026-08-22 单复数: 1 张写 `1 ticket`(闸管的是中性量词, 不是那个 s)。
+    expect(findHead('settled · gen-2'), 'gen-2 段头').toContain('1 ticket');
+    expect(findHead('frontier · movable'), '前沿段头').toContain('1 ticket');
+    expect(findHead('━━ blocked ━━'), '受阻段头').toContain('1 ticket');
+    expect(findHead('engine suggestion · unreceived'), '建议段头').toContain('1 ticket');
 
     for (const [label, name] of [
       ['settled · gen-1', 'gen-1'],

@@ -128,11 +128,28 @@ describe('INV-INBOX-3 · confirm must not contain "Enter rule on-site"', () => {
   });
 });
 
-describe('INV-INBOX-4 · renderer does not call MCP — "Enter prefills" literal', () => {
-  test('footer explicitly says "Enter prefills"', () => {
+/**
+ * ★ **2026-08-22 更正:这条闸曾经替一句谎话背书。**
+ *
+ * 它原本断言底边**必须**含 `Enter prefills`。而同一片(片 6 切片 3)把 `rule` / `confirm`
+ * 两类的 `Enter` 接成了**真写盘**(`dialogs.input` 收 ruling → `backend.rule`)——
+ * 于是屏上「行说 `Enter rule on-site`、底边说 `Enter prefills`」**自相矛盾**,
+ * 而这条测试是绿的、还把那句谎话钉死了。**测试与实装同片产出而只改了一半,互相背书。**
+ *
+ * 它真正该管的是 INV-INBOX-1/2:底边**恒**带那两句承重的话。
+ * 「哪些键只预填」由**各行自己**标(`i prefill · s prefill`),不由底边统一表态。
+ *
+ * 证伪:把 `renderFooter` 里 `map_deliver executes` 删掉 → 本条当场红。
+ */
+describe('INV-INBOX-1/2 · 底边恒带两句承重的话, 且不替各行的键位表态', () => {
+  test('底边有「裁决≠执行」与「ruling = goal」, 且不再统一声称 Enter 只预填', () => {
     const out = renderInbox([ruleItem()], { width: 80, height: 30, selected: 0, now: NOW });
     const last = out[out.length - 1]!;
-    expect(last).toContain('Enter prefills');
+    expect(last).toContain('ruling is not execution');
+    expect(last).toContain('map_deliver executes');
+    expect(last).toContain('ruling = goal');
+    // Enter 对 rule/confirm 是真写盘 —— 底边不许再说它只预填。
+    expect(last).not.toContain('Enter prefills');
   });
 });
 
@@ -286,7 +303,7 @@ describe('height gate · overflow collapse', () => {
 });
 
 describe('header · per-kind counts', () => {
-  test('2 awaiting rule · 1 suggested · 1 nodes · 1 unreceived', () => {
+  test('2 awaiting rule · 1 suggested · 1 node · 1 unreceived', () => {
     const items: InboxItem[] = [
       ruleItem({ ticketId: '1', title: 'r1' }),
       ruleItem({ ticketId: '2', title: 'r2' }),
@@ -300,7 +317,7 @@ describe('header · per-kind counts', () => {
     expect(head).toContain('5 items');
     expect(head).toContain('2 awaiting rule');
     expect(head).toContain('1 suggested');
-    expect(head).toContain('1 nodes');
+    expect(head).toContain('1 node'); // 单数不写 `1 nodes`
     expect(head).toContain('1 unreceived');
   });
   test('zero counts still count as truth — only rule present: no 0 suggested / 0 nodes', () => {
@@ -350,7 +367,7 @@ describe('★ 片 5 收尾 · 四条', () => {
     // 头行包含计数 (正向)
     expect(head).toContain('1 awaiting rule');
     expect(head).toContain('1 suggested');
-    expect(head).toContain('1 nodes');
+    expect(head).toContain('1 node'); // 单数不写 `1 nodes`
     // 分隔符 ` · ` 前后**各**一个空格 — 整个头行没有「· 」(双空格)串
     expect(head).not.toMatch(/·  /);
     expect(head).not.toMatch(/  ·/);

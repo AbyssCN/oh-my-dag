@@ -368,11 +368,11 @@ function renderHeader(items: readonly InboxItem[], width: number, p: InboxPaint)
     else take++;
   }
   const total = items.length;
-  const left = p.accent(`inbox · ${total} items`);
+  const left = p.accent(`inbox · ${total} ${total === 1 ? 'item' : 'items'}`);
   const counts: string[] = [];
   if (rule) counts.push(p.warn(`${rule} awaiting rule`));
   if (confirm) counts.push(p.accent(`${confirm} suggested`));
-  if (node) counts.push(p.dim(`${node} nodes`));
+  if (node) counts.push(p.dim(`${node} ${node === 1 ? 'node' : 'nodes'}`));
   if (take) counts.push(p.dim(`${take} unreceived`));
   if (counts.length === 0) return fitLine(left, width);
   // 分隔符单空格 —— count 不带 leading space(否则 `·  X` 看着是双空格)。
@@ -385,9 +385,12 @@ function renderHeader(items: readonly InboxItem[], width: number, p: InboxPaint)
  * 字面用全 ASCII + 中文字词, 不撞 `glyphs.test.ts` 的 chrome 字形闸。
  */
 function renderFooter(width: number, p: InboxPaint): string {
-  return p.dim(
-    fitLine('ruling is not execution · Enter prefills · map_deliver executes · ruling = goal', width),
-  );
+  // ⚠ 2026-08-22: 这里原来写 `Enter prefills` —— 那是**预填时代的遗留**, 而片 6 之后
+  //   `rule` / `confirm` 两类的 Enter **真的写盘**(经 `dialogs.input` 收 ruling 再
+  //   `backend.rule`)。同一屏上行说「Enter rule on-site」、底边说「Enter prefills」,
+  //   **屏在对「按下去到底写不写」这件事自相矛盾** —— 这比说少了更坏。
+  //   哪些键只预填, 由**各行自己**标(`i prefill · s prefill`), 底边不再统一表态。
+  return p.dim(fitLine('ruling is not execution · map_deliver executes · ruling = goal', width));
 }
 
 /** 折叠高度溢出:头 kept + 「… N more」 + 尾 3 (footer 贴底)。 */
