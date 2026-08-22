@@ -3536,7 +3536,7 @@ async function executePlan(
       // 光查存在性等于把一个早就在那儿的文件当成本次产物, 闸就白设了 (这正是 empty-done 的同一种坏)。
       // 没声明产物的节点不救: 那种节点"我做完了"之外没有任何可核对的东西, 该继续 fail。
       const declaredOut = producesFiles && node.output_path ? String(node.output_path) : '';
-      const preRoot = continuity?.repoRoot ?? process.cwd();
+      const preRoot = continuity?.execRoot ?? continuity?.repoRoot ?? process.cwd();
       const declaredAbsPre = declaredOut ? (declaredOut.startsWith('/') ? declaredOut : `${preRoot}/${declaredOut}`) : '';
       const declaredHashPre = declaredAbsPre ? hashArtifact(declaredAbsPre) : null;
       // ── 写集跑前快照 (SDD s1 · C-1, 2026-08-23) ───────────────────────────────
