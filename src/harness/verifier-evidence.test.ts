@@ -79,11 +79,20 @@ describe('verifier 的证据面: command 节点必须带命令串与退出码', 
     expect(seen).toContain('exit -1');
   });
 
+  // ⚠ 2026-08-23 改判 (SDD `2026-08-23-卷面正文保尾-执行契约.md`): 原断言是
+  // `toContain('x'.repeat(100))` —— 它拿「有 100 个连续字符」当「预算仍然生效」的代理,
+  // 而那个代理只在**头截断**时代成立。正文改成头 + 省略标记 + 尾之后, 100 字节预算被切成
+  // 头 30 / 尾 70, 再没有连续 100 个 —— **预算照样生效, 代理却红了**。
+  // 换成直接量这件事本身: 正文里 `x` 的**总数** = 预算, 且中间那段确实被省掉了。
   test('每节点截断仍生效 (证据面变宽不等于 prompt 可以爆)', () => {
     const long = 'x'.repeat(5000);
     const s = summarizeResults(plan, { count: leaf({ id: 'count', output: long, exitCode: 0 }) }, 100);
-    expect(s).toContain('x'.repeat(100));
-    expect(s).not.toContain('x'.repeat(101));
+    // ⚠ 别数整串里的 `x` —— 卷面别处也有 (`expect_exit` 两个、`exit 0` 一个, 实测多出 3)。
+    // 只数正文那两段连续的 `x`。
+    const runs = s.match(/x{5,}/g) ?? [];
+    expect(runs.length).toBe(2); // 头一段 + 尾一段
+    expect(runs.join('').length).toBe(100); // 头 + 尾 = 预算, 一字节不涨
+    expect(s).toContain('中间省略 4900 字节');
   });
 });
 

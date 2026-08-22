@@ -194,11 +194,37 @@ export function summarizeResults(
       sectionLines.push(`引擎记录 (ground truth, 优先于本节点自述):`);
       for (const f of engineFactLines) sectionLines.push(`- ${f}`);
     }
-    const body = leaf.status === 'failed' ? '(failed)' : (leaf.output ?? '').slice(0, effMaxPerNode);
+    // C-1 (SDD 2026-08-23 verifier-body-tail): 卷面正文头尾双保 —— 短输出零回归,
+    // 超预算取头 + 一行省略标记 + 尾, 头/尾字节和 ≤ 预算 (D-2 一字节不涨)。
+    // 头有节点自述 (声称面), 尾有机械判词 (证据面); D-3 尾重于头, 比例 0.3/0.7
+    // 是实现侧钉的初值, 待生产读数再调 (SDD 「未决」条); D-4 标记带被省略字节数,
+    // D-5 失败节点走 `(failed)` 分支, 不进这里 (verifier.ts:123 那条没有校准读数支持,
+    // 别搭车改); D-6 不动 engineFacts / artifact: / meta / ENGINE_FACT_SHELL_CAP。
+    const body = leaf.status === 'failed'
+      ? '(failed)'
+      : truncateBody(leaf.output ?? '', effMaxPerNode);
     sectionLines.push(body);
     lines.push(sectionLines.join('\n'));
   }
   return lines.join('\n\n');
+}
+
+/**
+ * C-1 (SDD 2026-08-23 verifier-body-tail): 短输出原样返回; 超预算 = 头 + 一行省略标记 + 尾,
+ * 头/尾字节和 ≤ `effMaxPerNode`, 标记带被省略字节数 (D-4)。尾段 > 头段 > 0 (D-3,
+ * 判词行在尾)。失败节点不进这里 (D-5, 上面写死 `(failed)`)。
+ *
+ * ⚠ 反向自检 (本片手做): 把下面 `output.slice(-tailLen)` 改成 `''` ⇒ GWT-2 / GWT-4
+ * 当场红 (卷面里不再含 `6684 pass / 0 fail` / `HEAD_MARKER`)。
+ */
+function truncateBody(output: string, effMaxPerNode: number): string {
+  if (output.length <= effMaxPerNode) return output;
+  const headLen = Math.max(1, Math.floor(effMaxPerNode * 0.3));
+  const tailLen = Math.max(0, effMaxPerNode - headLen);
+  const head = output.slice(0, headLen);
+  const tail = tailLen > 0 ? output.slice(-tailLen) : '';
+  const omitted = output.length - head.length - tail.length;
+  return `${head}\n... 中间省略 ${omitted} 字节 ...\n${tail}`;
 }
 
 /**
