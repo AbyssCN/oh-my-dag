@@ -3539,6 +3539,23 @@ async function executePlan(
       const preRoot = continuity?.repoRoot ?? process.cwd();
       const declaredAbsPre = declaredOut ? (declaredOut.startsWith('/') ? declaredOut : `${preRoot}/${declaredOut}`) : '';
       const declaredHashPre = declaredAbsPre ? hashArtifact(declaredAbsPre) : null;
+      // ── 写集跑前快照 (SDD s1 · C-1, 2026-08-23) ───────────────────────────────
+      // 合同写的是「产出这些文件」(write_set), 判据就该判这个 (D-1) —— 不问谁写的、
+      // 不问用什么工具写的、命令文本长什么样都不进判据。证据 = 跑前跑后哈希 (D-2,
+      // mtime 那条因为窗口必带时钟偏斜容差, 而容差必然把「节点起跑前 2s 内被别人创建
+      // 的文件」算成本节点的产出, 第一次点火 `f0c706b8` 用 mtime 当场被既有测试打回)。
+      // 写集为空 ⇒ 不快照、不复算 (INV-3, 零开销; 没有合同就没有判据)。
+      // 锚 = `execRoot ?? repoRoot ?? cwd` (D-3 / D-6, 两侧同一个锚, 隔离档下
+      // 与 `root` 一致; 跟救援① 同源 `preRoot` 的差别是这一份走执行锚, 因为
+      // 隔离档 leaf 真写文件的那棵树是 execRoot, 抢救① 的「根不一致 → 不救」也是
+      // 因为同一个根两份取法不一致)。
+      const writeSetSnapshotRoot = continuity?.execRoot ?? continuity?.repoRoot ?? process.cwd();
+      const writeSetSnapshot = (node.write_set ?? []).filter((p) => typeof p === 'string' && p.length > 0);
+      const writeSetPreHashes: Record<string, string | null> = {};
+      for (const p of writeSetSnapshot) {
+        const abs = p.startsWith('/') ? p : `${writeSetSnapshotRoot}/${p}`;
+        writeSetPreHashes[p] = hashArtifact(abs); // 不存在 ⇒ null (INV-2)
+      }
       let text: string;
       let usage: ModelUsage;
       let filesTouched: string[] = [];
@@ -3726,6 +3743,36 @@ async function executePlan(
           // 剥这个前缀再拼 root 才能命中 worktree。**不**等于 `root` (非 branch 时相等,
           // branch 时 = 主干根); D-3 的短路在 helper 里做。
           const repoRoot = continuity?.repoRoot ?? process.cwd();
+          // **写集核实为正判据** (SDD s1 · C-2, 2026-08-23)。节点声明了 `write_set` ⇒
+          // **正判据** = 跑前跑后哈希变了 ⇒ 判真写入, 把通过的路径并进 `filesTouched`。
+          // 不知道谁写的、用什么工具写的、命令文本里有没有字面路径, 一律不进判据 (D-1)。
+          //
+          // ⚠ 故意放在救援①②③ **之前**: 这是**正判据**, 不是「没救活才救」。它与救援
+          //   并存跑 (D-5: 删救援要看读数, 本片不删), 救援兜的是「写集没声明产物
+          //   (没合同) 的情况」, 本条兜的是「写了但经 bash 等非受控通道」—— 后者原本
+          //   落在救援①② 的盲区 (`shellWriteTargets` 解析命令文本、救援① 要 output_path)。
+          //
+          // ⚠ D-4: 「至少一个」非「全部」。一片改 3 个文件而这次只动了 1 个是正常交付,
+          //   要求全部命中会把正常交付判死。判据要分「干了活」与「什么都没干」, 不是「干全没」。
+          // ⚠ D-2: 「null → 有值」**算变** (INV-2), 跑前不存在的文件被新建是最常见的产出。
+          // ⚠ 锚 = `writeSetSnapshotRoot`, 与跑前**同一个** (D-3)。绝对路径原样, 相对路径拼根。
+          if (filesTouched.length === 0 && writeSetSnapshot.length > 0) {
+            const verified: string[] = [];
+            for (const p of writeSetSnapshot) {
+              const abs = p.startsWith('/') ? p : `${writeSetSnapshotRoot}/${p}`;
+              const before = writeSetPreHashes[p] ?? null;
+              const after = hashArtifact(abs);
+              // null !== 'hash' 与 'hashA' !== 'hashB' 一视同仁地算变。
+              if (before !== after) verified.push(p);
+            }
+            if (verified.length > 0) {
+              logger.info(
+                { node: id, verified, writeSet: writeSetSnapshot },
+                '[omd/executor-dag] 按写集核实判真写入 (不问谁写的; s1 写集核实正判据)',
+              );
+              filesTouched = verified;
+            }
+          }
           // 救回「经非受控工具 (bash 重定向等) 写入」的声明产物, 见上面快照那段注。
           // 根不一致时**不救**: 快照量的是另一棵树上的文件, 拿它当证据等于没量 (fail-closed)。
           if (filesTouched.length === 0 && declaredOut) {
