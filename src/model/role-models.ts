@@ -374,10 +374,16 @@ export type NodeModelResult = SeatModelResult;
 export class SeatUnresolvedError extends Error {
   constructor(readonly seat: OmdSeat) {
     super(
-      `[omd/model] 座位 '${seat}' 未配模型 —— 无 config.models['${seat}'] / ${seatEnvKey(seat)} / ` +
-        `config.autoAssigned['${seat}'] / config.defaultModel。` +
-        `修: 跑 \`omd models auto\` (按渠道自动分配) 或 \`omd_set_role ${seat} <provider:model>\`, ` +
-        `或设 config.defaultModel 兜住全部座位。`,
+      // ⚠ **这句话是用户面的** —— TUI 起不来时经 `formatBootFailure` 原样上屏
+      // (`Engine said: ${raw}`), 所以它跟着 TUI 走英文, 而不是跟着引擎侧的中文走。
+      // ⚠⚠ 子串 `no model configured` 是 `src/tui/boot.ts:35` 的**判据锚**
+      // (`classifyBootFailure` 靠它认这一类失败; 那里的注释说明了为什么不能只认 `name`)。
+      // **改这句文案要同改那里**, 否则分类器静默退化成 `unknown` —— 屏上还有话,
+      // 只是丢了那两条"怎么修"的出路。
+      `[omd/model] seat '${seat}' has no model configured - missing config.models['${seat}'] / ${seatEnvKey(seat)} / ` +
+        `config.autoAssigned['${seat}'] / config.defaultModel. ` +
+        `Fix: run \`omd models auto\` (auto-assign by channel) or \`omd_set_role ${seat} <provider:model>\`, ` +
+        `or set config.defaultModel to cover every seat.`,
     );
     this.name = 'SeatUnresolvedError';
   }

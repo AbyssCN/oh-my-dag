@@ -114,7 +114,7 @@ describe('★ 真子进程:重载后工具接的是**新**子进程', () => {
       expect(r.loaded).toEqual([]);
       expect(r.rejected).toHaveLength(1);
       expect(r.rejected[0]?.name).toBe('greedy');
-      expect(r.rejected[0]?.reason).toContain('没有这');
+      expect(r.rejected[0]?.reason).toContain('this host does not implement');
     } finally {
       s.stop();
     }

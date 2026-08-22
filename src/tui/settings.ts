@@ -204,7 +204,7 @@ export function buildSettings(i: SettingsInput): SettingItem[] {
       label: 'extensions',
       value: `${ok.length} loaded / ${bad.length} rejected`,
       // 被拒的**说出缺什么** —— 这就是加载期硬失败的价值,藏在日志里就白做了。
-      detail: bad.length > 0 ? `rejected: ${bad.map((e) => `${e.name}(缺 ${(e.missing ?? []).join('、') || 'unknown'})`).join(' · ')}` : undefined,
+      detail: bad.length > 0 ? `rejected: ${bad.map((e) => `${e.name}(missing ${(e.missing ?? []).join(', ') || 'unknown'})`).join(' · ')}` : undefined,
       action: 'extensions',
     });
   }

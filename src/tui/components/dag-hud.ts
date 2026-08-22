@@ -164,7 +164,7 @@ export class DagHud implements Component {
         // C-1 (SDD 2026-08-11): 词表外 type / 缺 type 的畸形对象 —— fail-open:
         // 不 throw、不造节点、既有渲染不变, 只留一条日志痕。
         const u = e as unknown as { type?: unknown };
-        logger.warn({ type: u.type }, '[dag-hud] C-1: 忽略未知 DAG 事件 (不造节点)');
+        logger.warn({ type: u.type }, '[dag-hud] C-1: ignoring unknown DAG event (no node created)');
       }
     }
   }

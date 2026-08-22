@@ -122,7 +122,7 @@ describe('★ 真子进程:三种拒绝', () => {
     if (r.ok) return;
     expect(r.rejected.missing).toContain('ctx.sessionManager');
     expect(r.rejected.missing).toContain('registerShortcut');
-    expect(r.rejected.reason).toContain('没有这');
+    expect(r.rejected.reason).toContain('this host does not implement');
   });
 
   test('★ 加载就炸 → 带原文, 不只说"加载失败"', async () => {

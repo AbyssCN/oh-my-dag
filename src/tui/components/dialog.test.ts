@@ -318,7 +318,7 @@ describe('★ 选择框搜索:按 label / description 子串, 不是 pi 的 valu
   test('★ 0 命中要在标题上看得见 —— 否则「搜不到」与「没这条」长得一样', () => {
     const h = openIt();
     for (const c of 'zzz') h.key(c);
-    expect(h.render(90)).toContain('「zzz」 0');
+    expect(h.render(90)).toContain('"zzz" 0');
   });
 
   test('退格回退查询串, 命中数跟着回来', () => {
@@ -372,7 +372,7 @@ describe('★ Kitty CSI-u 下的可打印字符', () => {
     });
     h.key(CSI_U_a); // 'a'
     const body = h.render(80);
-    expect(body).toContain('「a」 1');
+    expect(body).toContain('"a" 1');
     expect(body).toContain('alpha');
     expect(body).not.toContain('zulu');
   });

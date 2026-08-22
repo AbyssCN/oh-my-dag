@@ -89,10 +89,10 @@ export interface NowBandInput {
  * 「当前」区的字面值在这里看得出就行。
  */
 export const TIER_LABEL = {
-  awaiting: '等你',
-  live: '在跑',
-  debt: '欠账',
-  maps: '闲',
+  awaiting: 'needs you',
+  live: 'running',
+  debt: 'owed',
+  maps: 'idle',
 } as const;
 
 /** 四档各自的前缀字形 (白名单里)。结构信息走前缀 + 文字, 不靠颜色 (INV-5)。 */
@@ -160,9 +160,9 @@ function renderAwaiting(
   // 无 suggested 时退回到旧的多行计数格式 `⚠ 等你:N 票 · …`, 跟单件无后缀的旧格式区分开。
   const head =
     nSug > 0
-      ? `${mark} ${label} · ${n} 票(其中 ${nSug} 待收件) · `
+      ? `${mark} ${label} · ${n} tickets (${nSug} unreceived) · `
       : n > 1
-        ? `${mark} ${label}:${n} 票 · `
+        ? `${mark} ${label}:${n} tickets · `
         : `${mark} ${label} · `;
   // id 与 title 之间用空格分隔 (id 单字 word, title 可能很长 → title 走截断)。
   const tail = `${first.ticketId} ${first.title}`;
@@ -178,7 +178,7 @@ function renderLive(views: readonly DagView[], width: number, p: NowPaint): stri
   const prog = liveProgress(first);
   const progStr = prog ? `${prog.done}/${prog.total}` : '—/—';
   const progPad = padS(progStr, W_PROG - 1) + ' ';
-  const ageStr = fmtAge(first.ageMs) ?? '起点未记';
+  const ageStr = fmtAge(first.ageMs) ?? 'start not recorded';
   const agePad = padS(ageStr, W_AGE - 1) + ' ';
   const goalCols = Math.max(0, width - W_LIVE_FIXED);
   const goal = clip(first.snap.goal, goalCols);
@@ -210,7 +210,7 @@ function renderMaps(items: readonly MapFogSummary[], width: number, p: NowPaint)
   const tail = bands
     ? ` · ${bands}${total > 1 ? `, +${total - 1}` : ''} · phantoms:${phantoms}`
     : ` · phantoms:${phantoms}`;
-  const head = `${mark} ${label} · ${total} 张图`;
+  const head = `${mark} ${label} · ${total} runs`;
   return fitLine(`${head}${tail}`, width, '...');
 }
 

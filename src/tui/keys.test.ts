@@ -168,6 +168,6 @@ describe('★ findKeyClashes —— 生效后的冲突, 不是 pi 的 getConflic
     const out = formatKeyClashes([{ key: 'ctrl+o', ids: ['omd.thinkingToggle', 'omd.dagFull'] }])!;
     expect(out).toContain('ctrl+o');
     expect(out).toContain('omd.thinkingToggle / omd.dagFull');
-    expect(out).toContain('只有一条会生效');
+    expect(out).toContain('only one wins per key');
   });
 });

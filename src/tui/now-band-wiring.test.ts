@@ -149,7 +149,7 @@ describe('★ 接线契约 4 · 渲染器导出仍可被 tui.ts 装配层引用(
     ];
     const out = renderInbox(items, { width: 80, height: 20, selected: 0, now: NOW });
     const last = out[out.length - 1]!;
-    expect(last).toContain('裁决不等于执行');
+    expect(last).toContain('ruling is not execution');
     expect(last).toContain('map_deliver');
     expect(last).toContain('ruling');
     expect(last).toContain('goal');
@@ -162,7 +162,7 @@ describe('★ 接线契约 4 · 渲染器导出仍可被 tui.ts 装配层引用(
     const out = renderInbox(items, { width: 80, height: 20, selected: 0, now: NOW });
     const body = out.join('\n');
     expect(body).toContain('c ');
-    expect(body).toContain('收件');
+    expect(body).toContain('accept');
     expect(body).not.toContain('Enter 就地裁');
   });
 });

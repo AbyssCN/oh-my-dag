@@ -85,24 +85,24 @@ export function paletteOptions(input: PaletteInput): PaletteOption[] {
   for (const s of byRecency) {
     out.push({
       value: `${SESSION_PREFIX}${s.id}`,
-      label: `${s.id === input.currentSession ? '* ' : '  '}会话  ${s.title || '(no title)'}`,
+      label: `${s.id === input.currentSession ? '* ' : '  '}session  ${s.title || '(no title)'}`,
       description: [s.id, relTime(s.updatedAt, input.now), ...(s.parent ? [`forked from ${s.parent}`] : [])].join(' · '),
     });
   }
   if (input.liveRun) {
     out.push({
       value: RUN_VALUE,
-      label: `  活图  ${input.liveRun.label}`,
+      label: `  run  ${input.liveRun.label}`,
       // 「几个在跑」是 0 时照写 0 —— 这里 0 是**量到的真值**(图还在、节点都结了),
       // 与 NULL ≠ 0 不冲突:缺席的那一档在上面由 `liveRun === null` 整行不画。
-      description: `${input.liveRun.nodes} 节点 · ${input.liveRun.running} 在跑`,
+      description: `${input.liveRun.nodes} nodes · ${input.liveRun.running} running`,
     });
   }
   for (const m of input.maps) {
     out.push({
       value: `${MAP_PREFIX}${m.slug}`,
-      label: `  地图  ${m.destination || m.slug}`,
-      description: `map ${m.slug} · 前沿 ${m.frontierCount} · 未结 ${m.openCount}`,
+      label: `  map  ${m.destination || m.slug}`,
+      description: `map ${m.slug} · frontier ${m.frontierCount} · open ${m.openCount}`,
     });
   }
   return out;

@@ -98,13 +98,13 @@ function realSpawn(argv: string[], cwd: string): ChildHandle {
       const { frames, rest, garbage } = decodeFrames(buf);
       buf = rest;
       // ⚠ 扩展往 stdout 打的字**留证据**:不记的话"协议错乱"这件事永远查不出来。
-      for (const g of garbage) logger.warn({ line: g.slice(0, 200) }, '[omd/ext] 扩展往 stdout 打了非协议内容');
+      for (const g of garbage) logger.warn({ line: g.slice(0, 200) }, '[omd/ext] extension wrote non-protocol content to stdout');
       for (const f of frames) for (const fn of listeners) fn(JSON.stringify(f));
     }
   })();
   void (async () => {
     const err = await new Response(proc.stderr).text();
-    if (err.trim()) logger.warn({ err: err.slice(0, 500) }, '[omd/ext] 扩展子进程 stderr');
+    if (err.trim()) logger.warn({ err: err.slice(0, 500) }, '[omd/ext] extension child stderr');
   })();
   return {
     write: (s) => proc.stdin.write(s),
@@ -127,7 +127,7 @@ export async function loadExtension(name: string, entry: string, deps: HostDeps)
   const hasBwrap = !!which('bwrap');
   if (!hasBwrap) {
     // 响亮降级, 同 `assemble.ts:395`: 不是静默不隔离, 是记一行说清楚少了什么。
-    logger.warn({ name }, '[omd/ext] 找不到 bwrap → 扩展**没有进程级隔离**(仍在子进程里跑, 崩溃/超时仍隔离)');
+    logger.warn({ name }, '[omd/ext] bwrap not found -> extension runs WITHOUT process-level isolation (still in child process; crash/timeout still isolated)');
   }
   const argv = hasBwrap
     ? ['bwrap', ...bwrapArgs(deps.cwd, defaultRoBinds(deps.cwd)), 'bun', 'run', runner, entry]
@@ -159,7 +159,7 @@ export async function loadExtension(name: string, entry: string, deps: HostDeps)
   });
 
   const handshake = await new Promise<Extract<ChildMsg, { t: 'ready' }> | { error: string }>((resolve) => {
-    const timer = setTimeout(() => resolve({ error: `握手超时 (${timeoutMs}ms) —— 扩展没报 ready` }), timeoutMs);
+    const timer = setTimeout(() => resolve({ error: `handshake timed out (${timeoutMs}ms) -- extension did not report ready` }), timeoutMs);
     ready = (m) => {
       clearTimeout(timer);
       resolve(m);
@@ -180,7 +180,7 @@ export async function loadExtension(name: string, entry: string, deps: HostDeps)
     child.kill();
     return {
       ok: false,
-      rejected: { name, missing, reason: `这一版宿主没有这 ${missing.length} 个 API` },
+      rejected: { name, missing, reason: `this host does not implement these ${missing.length} APIs` },
     };
   }
 
@@ -188,7 +188,7 @@ export async function loadExtension(name: string, entry: string, deps: HostDeps)
     new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(msg.id);
-        reject(new Error(`扩展 ${name} 调用超时 (${timeoutMs}ms)`));
+        reject(new Error(`extension ${name} call timed out (${timeoutMs}ms)`));
       }, timeoutMs);
       pending.set(msg.id, {
         resolve: (v) => {
@@ -216,7 +216,7 @@ export async function loadExtension(name: string, entry: string, deps: HostDeps)
         if (typeof v === 'string') return v;
         const content = (v as { content?: { text?: string }[] })?.content;
         if (Array.isArray(content)) return content.map((c) => c.text ?? '').filter(Boolean).join('\n');
-        return `[扩展 ${name} 的工具返回了不认识的形状]\n${JSON.stringify(v).slice(0, 500)}`;
+        return `[tool from extension ${name} returned unknown shape]\n${JSON.stringify(v).slice(0, 500)}`;
       },
       async beforeAgentStart(systemPrompt) {
         let raw: unknown;
@@ -226,7 +226,7 @@ export async function loadExtension(name: string, entry: string, deps: HostDeps)
           // D1 gate 默认: 超时/子进程死 → 放行原串。留痕不吞证据, 但不再拖死调用方。
           logger.warn(
             { ext: name, err: err instanceof Error ? err.message : String(err) },
-            '[omd/ext] before_agent_start 调用失败 → 走 gate 声明默认 (放行原串)',
+            '[omd/ext] before_agent_start call failed -> falling back to gate default (pass through original)',
           );
           return systemPrompt;
         }
@@ -234,7 +234,7 @@ export async function loadExtension(name: string, entry: string, deps: HostDeps)
         const verdict = enforceAppendOnly(systemPrompt, returned);
         if (!verdict.ok) {
           // owner 裁决 ③:**block + 提醒**, 不是静默吞掉。
-          logger.warn({ ext: name, reason: verdict.reason }, '[omd/ext] 扩展试图替换 system prompt → 已拦下, 用原串');
+          logger.warn({ ext: name, reason: verdict.reason }, '[omd/ext] extension tried to replace system prompt -> blocked, using original');
         }
         return verdict.value;
       },
@@ -244,7 +244,7 @@ export async function loadExtension(name: string, entry: string, deps: HostDeps)
         call({ t: 'event', id: ++seq, event, payload }).catch((err: unknown) => {
           logger.debug(
             { ext: name, event, err: err instanceof Error ? err.message : String(err) },
-            '[omd/ext] observe 事件回执失败 (按语义忽略)',
+            '[omd/ext] observe event reply failed (semantically ignored)',
           );
         });
       },
@@ -280,15 +280,15 @@ export function readExtensionList(cwd: string, issues?: ConfigIssueSink): { name
         continue;
       }
       if (!existsSync(p.data.entry)) {
-        logger.warn({ name: p.data.name, entry: p.data.entry }, '[omd/ext] 清单里的入口文件不存在 → 跳过');
-        issues?.push({ source: f, path: `extensions[${i}].entry`, message: `入口文件不存在: ${p.data.entry}` });
+        logger.warn({ name: p.data.name, entry: p.data.entry }, '[omd/ext] entry file missing in manifest -> skipped');
+        issues?.push({ source: f, path: `extensions[${i}].entry`, message: `entry file does not exist: ${p.data.entry}` });
         continue;
       }
       out.push({ name: p.data.name, entry: p.data.entry });
     }
     return out;
   } catch (err) {
-    logger.warn({ f, err: (err as Error).message }, '[omd/ext] extensions.json 解不出来 → 当没配扩展');
+    logger.warn({ f, err: (err as Error).message }, '[omd/ext] extensions.json could not be parsed -> treating as no extensions configured');
     issues?.push({ source: f, path: '', message: (err as Error).message });
     return [];
   }

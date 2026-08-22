@@ -112,7 +112,7 @@ export function createTuiUsageLedger(opts: { dir: string; now?: () => number }):
         writeFileSync(path, `${records.map((r) => JSON.stringify(r)).join('\n')}\n`);
       }
     } catch (err) {
-      logger.warn({ err: (err as Error).message, path }, '[omd/tui-usage] 账本读回失败 (从空开始, 5h 窗口丢失)');
+      logger.warn({ err: (err as Error).message, path }, '[omd/tui-usage] ledger readback failed (starting empty, 5h window lost)');
     }
   }
 
@@ -122,7 +122,7 @@ export function createTuiUsageLedger(opts: { dir: string; now?: () => number }):
       appendFileSync(path, `${JSON.stringify(r)}\n`);
     } catch (err) {
       // fail-open: 记账失败不打断调用 —— 但证据要留。
-      logger.warn({ err: (err as Error).message, path }, '[omd/tui-usage] 账本写入失败 (该笔只在内存)');
+      logger.warn({ err: (err as Error).message, path }, '[omd/tui-usage] ledger write failed (this record stays in memory only)');
     }
   };
 

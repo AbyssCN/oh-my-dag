@@ -553,7 +553,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   // W4②: 亮暗自适应 —— OMD_THEME 显式覆盖 > OSC 11 探测 > 暗色默认 (探测失败留日志不拦启动)。
   const detected = opts.theme ? null : await detectTerminalScheme();
   if (!opts.theme && detected === null && schemeFromEnv() === null) {
-    logger.info({}, '[omd/tui] 终端亮暗探测无响应 → 暗色默认 (OMD_THEME=light|dark 可显式指定)');
+    logger.info({}, '[omd/tui] terminal scheme probe failed -> dark default (OMD_THEME=light|dark to override)');
   }
   const theme = opts.theme ?? createTheme({ scheme: detected ?? 'dark' });
 
@@ -561,7 +561,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   // 见 `render/link.ts` 头注);`OMD_NO_HYPERLINKS` 是用户侧一票否决(照 NO_COLOR 的形)。
   // 默认关 → 渲染函数恒等, 所以不开这一行时全仓行为逐字节照旧。
   const linksOn = initHyperlinks(process.env);
-  logger.info({ hyperlinks: linksOn }, '[omd/tui] OSC-8 可点路径');
+  logger.info({ hyperlinks: linksOn }, '[omd/tui] OSC-8 clickable paths');
 
   // 状态行走 StatusLine (截断, 不折行) —— 状态行一折, 下面所有东西的行号整体下移,
   // 而 HUD 是按行差分画的, 结果是布局错位。对话正文走 ChatLog (折行是对的)。
@@ -627,7 +627,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     } catch (err) {
       // fail-open 吞异常不吞证据: 观察面读不到不该拦住 TUI, 但原因要留痕。
       boardEntries = [];
-      logger.warn({ err: err instanceof Error ? err.message : String(err) }, '[omd/tui] 读 run board 抛了 → 观察面本轮空');
+      logger.warn({ err: err instanceof Error ? err.message : String(err) }, '[omd/tui] read run board threw -> observation pane empty this round');
     }
   }
   refreshRunBoard();
@@ -670,7 +670,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         return readAttention(opts.cwd);
       } catch (err) {
         // fail-open 吞异常不吞证据:日志留痕,屏上空仓。
-        logger.warn({ err: err instanceof Error ? err.message : String(err) }, '[omd/tui] readAttention 抛了 → 当前区本轮空');
+        logger.warn({ err: err instanceof Error ? err.message : String(err) }, '[omd/tui] readAttention threw -> current zone empty this round');
         return { awaiting: [], frontier: [], suggested: [], maps: [] };
       }
     })();
@@ -778,7 +778,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   // custom prompts 进补全 (启动冻结; 分发每次现扫, 新文件立即可用只是补全要重启才见)。
   // fail-open: 扫挂了补全少一段, 不拦启动 —— 但不吞证据。
   const startupPrompts = await loadUserPrompts(opts.cwd).catch((err: unknown) => {
-    logger.warn({ err: err instanceof Error ? err.message : String(err) }, '[omd/tui] 启动扫 custom prompts 抛了 → 补全不含模板');
+    logger.warn({ err: err instanceof Error ? err.message : String(err) }, '[omd/tui] startup scan of custom prompts threw -> completion omits templates');
     return { promptTemplates: [], diagnostics: [] };
   });
   editor.setAutocompleteProvider(
@@ -943,7 +943,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       runList = [];
       logger.warn(
         { err: err instanceof Error ? err.message : String(err) },
-        '[omd/tui] readDagShards 抛了 → 活图列表本轮空',
+        '[omd/tui] readDagShards threw -> live run list empty this round',
       );
     }
     // 数据变了 → 触发重绘。其它 ticker (loader / dagTicker) 也走同一通道, 不发明新机制。
@@ -1004,7 +1004,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       if (pathData && pathSelected >= pathData.frontier.length) pathSelected = Math.max(0, pathData.frontier.length - 1);
     } catch (err) {
       pathData = null;
-      logger.warn({ err: (err as Error).message, slug: pathSlugSel }, '[omd/tui] pathfinder 图读不出来');
+      logger.warn({ err: (err as Error).message, slug: pathSlugSel }, '[omd/tui] pathfinder map failed to read');
     }
   }
   const pathView: Component = {
@@ -1404,7 +1404,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     } catch (err) {
       // fail-open 可以吞异常, 不许吞证据: 错误原文进屏, 同时进日志文件 (已改道)。
       const reason = err instanceof Error ? err.message : String(err);
-      logger.warn({ err: reason, sessionId, abortRequested }, '[omd/tui] sendChat 抛了');
+      logger.warn({ err: reason, sessionId, abortRequested }, '[omd/tui] sendChat threw');
       // Esc 打断的轮抛出的 AbortError 不画成失败 —— 人叫停的不是事故 (回执在下面统一画)。
       if (!abortRequested) chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
     }
@@ -1434,7 +1434,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
           }
         }
       } catch (err) {
-        logger.warn({ err: err instanceof Error ? err.message : String(err), sessionId }, '[omd/tui] drainQueued 抛了');
+        logger.warn({ err: err instanceof Error ? err.message : String(err), sessionId }, '[omd/tui] drainQueued threw');
       }
     }
   }
@@ -1582,11 +1582,11 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     // 不同: 它有合法的"不配"态 (不自动选, transcript 会外发), 座位模型没有。
     const isAdvisor = role.startsWith('advisor.');
     return {
-      title: `${role} 换成哪个模型? (${choices.length} 个)`,
+      title: `${role} -> which model? (${choices.length})`,
       options: [
-        ...(isAdvisor ? [{ value: ADVISOR_NONE, label: '(none) 清掉 advisor', description: 'delete advisors key - back to unset' }] : []),
+        ...(isAdvisor ? [{ value: ADVISOR_NONE, label: '(none) clear advisor', description: 'delete advisors key - back to unset' }] : []),
         ...choices.map((c) => ({ value: c.coord, label: choiceLabel(c, current) })),
-        { value: MANUAL_COORD, label: '手动输入坐标…', description: '目录里没有登记的 provider:model' },
+        { value: MANUAL_COORD, label: 'manual input coord…', description: 'provider:model not in catalog' },
       ],
       search: true,
       maxVisible: 12,
@@ -1595,7 +1595,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
 
   /** 手输坐标那条退路 —— 同样只此一份。 */
   function seatManualOpts(role: string, now: string): InputOpts {
-    return { title: `${role} 换成哪个坐标? (provider:model)`, initial: now.startsWith('(') ? '' : now };
+    return { title: `${role} -> which coordinate? (provider:model)`, initial: now.startsWith('(') ? '' : now };
   }
 
   /**
@@ -1792,7 +1792,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      logger.warn({ err: reason, cmd: t }, '[omd/tui] run 命令抛了');
+      logger.warn({ err: reason, cmd: t }, '[omd/tui] run command threw');
       chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
     }
     tui.requestRender();
@@ -1920,7 +1920,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     } catch (err) {
       // 切失败时**不许改 sessionId** —— 半切过去会让下一句发进一条不存在的会话。
       const reason = err instanceof Error ? err.message : String(err);
-      logger.warn({ err: reason, cmd: text }, '[omd/tui] session 命令抛了');
+      logger.warn({ err: reason, cmd: text }, '[omd/tui] session command threw');
       chatLog.appendNotice(CHROME.sessionFailed(reason));
     }
     footer.setText(CHROME.footer());
@@ -1982,7 +1982,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      logger.warn({ err: reason }, '[omd/tui] /tree 抛了');
+      logger.warn({ err: reason }, '[omd/tui] /tree threw');
       chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
     }
     tui.requestRender();
@@ -2099,7 +2099,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       if (pick !== null && pick !== sessionId) await switchTo(pick);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      logger.warn({ err: reason }, '[omd/tui] /search 抛了');
+      logger.warn({ err: reason }, '[omd/tui] /search threw');
       chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
     }
     tui.requestRender();
@@ -2147,7 +2147,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      logger.warn({ err: reason }, '[omd/tui] 双 Esc 回退抛了');
+      logger.warn({ err: reason }, '[omd/tui] double-Esc rewind threw');
       chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
     }
     tui.requestRender();
@@ -2218,7 +2218,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
     } catch (err) {
       // fail-open 可以吞异常, 不许吞证据: 少一段候选, 但原因要留痕 + 上屏。
       const reason = err instanceof Error ? err.message : String(err);
-      logger.warn({ err: reason }, '[omd/tui] palette 读会话表抛了 → 本次不含会话行');
+      logger.warn({ err: reason }, '[omd/tui] palette read session table threw -> no session row this time');
       chatLog.appendNotice(CHROME.paletteSessionsFailed(reason));
     }
     let maps: import('../harness/pathfinder/maps').OpenMapSummary[] = [];
@@ -2226,7 +2226,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       const { summarizeOpenMaps } = require('../harness/pathfinder/maps') as typeof import('../harness/pathfinder/maps');
       maps = summarizeOpenMaps(opts.cwd);
     } catch (err) {
-      logger.warn({ err: (err as Error).message }, '[omd/tui] palette 扫地图抛了 → 本次不含地图行');
+      logger.warn({ err: (err as Error).message }, '[omd/tui] palette scan maps threw -> no map row this time');
     }
     // 活图只有本进程这一张 —— 别的进程的 run 要等 #215/#216 (每 run 一份磁盘镜像 + 快照加载)。
     const snap = dagTree.snapshot();
@@ -2261,7 +2261,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       } catch (err) {
         // 与 handleSession 同一条: 切失败**不许改 sessionId** (半切会让下一句发进不存在的会话)。
         const reason = err instanceof Error ? err.message : String(err);
-        logger.warn({ err: reason, id: target.id }, '[omd/tui] palette 切会话抛了');
+        logger.warn({ err: reason, id: target.id }, '[omd/tui] palette switch session threw');
         chatLog.appendNotice(CHROME.sessionFailed(reason));
       }
     } else if (target.kind === 'map') {
@@ -2376,7 +2376,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       chatLog.appendNotice(CHROME.loginDone(r.provider, r.target, r.warnings));
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      logger.warn({ err: reason }, '[omd/tui] /login 抛了');
+      logger.warn({ err: reason }, '[omd/tui] /login threw');
       chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
     }
     tui.requestRender();
@@ -2432,7 +2432,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       chatLog.appendNotice(r.removed.length > 0 ? CHROME.logoutDone(r.provider, r.removed, r.warnings) : CHROME.logoutNone(r.provider, r.warnings));
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      logger.warn({ err: reason }, '[omd/tui] /logout 抛了');
+      logger.warn({ err: reason }, '[omd/tui] /logout threw');
       chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
     }
     tui.requestRender();
@@ -2490,7 +2490,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      logger.warn({ err: reason }, '[omd/tui] /compact 抛了');
+      logger.warn({ err: reason }, '[omd/tui] /compact threw');
       chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
     }
     tui.requestRender();
@@ -2519,7 +2519,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       chatLog.appendNotice(CHROME.exportDone(history.length, abs));
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      logger.warn({ err: reason }, '[omd/tui] /export 抛了');
+      logger.warn({ err: reason }, '[omd/tui] /export threw');
       chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
     }
     tui.requestRender();
@@ -2559,7 +2559,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       } catch (err) {
         // fail-open 可以吞异常, 不许吞证据:原文进屏也进日志。
         const reason = err instanceof Error ? err.message : String(err);
-        logger.warn({ err: reason }, '[omd/tui] /reload 抛了');
+        logger.warn({ err: reason }, '[omd/tui] /reload threw');
         chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
       }
     }
@@ -2804,7 +2804,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
                             return;
                           }
                         } catch (err) {
-                          logger.warn({ err: err instanceof Error ? err.message : String(err) }, '[omd/tui] custom prompt 展开抛了 → 按聊天文本发');
+                          logger.warn({ err: err instanceof Error ? err.message : String(err) }, '[omd/tui] custom prompt expansion threw -> sent as chat text');
                         }
                       }
                       void submit(prompt);
@@ -2910,7 +2910,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
             } catch (err) {
               logger.warn(
                 { err: err instanceof Error ? err.message : String(err), runId: view.snap.runId },
-                '[omd/tui] run-list Enter → loadSnapshot 抛了',
+                '[omd/tui] run-list Enter -> loadSnapshot threw',
               );
             }
           }
@@ -2940,7 +2940,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
         abortRequested = true;
         // 回执不在这画 —— submit 的收尾是唯一出口(正常返回与抛错两条路都汇那儿)。
         void opts.backend.abortChat({ sessionId }).catch((err: unknown) => {
-          logger.warn({ err: err instanceof Error ? err.message : String(err), sessionId }, '[omd/tui] abortChat 抛了');
+          logger.warn({ err: err instanceof Error ? err.message : String(err), sessionId }, '[omd/tui] abortChat threw');
         });
         return { consume: true };
       }

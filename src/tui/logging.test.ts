@@ -64,7 +64,7 @@ describe('redirectTuiLogs —— 开不出文件时:静默且说得出为什么'
     const handle = redirectTuiLogs({ cwd: notADir });
     try {
       expect(handle.path).toBeNull();
-      expect(handle.reason).toContain('日志文件开不出');
+      expect(handle.reason).toContain('cannot open log file');
       expect(handle.reason).toContain(join(notADir, '.omd', 'logs'));
       // 失败路径的要求是**静默**, 不是"继续往终端上打" —— 后者是必然花屏的 UI。
       expect(logger.level).toBe('silent');

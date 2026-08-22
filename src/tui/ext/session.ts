@@ -81,7 +81,7 @@ export function createExtSession(cwd: string, deps?: ExtSessionDeps): ExtSession
       if (!r.ok) {
         logger.warn(
           { ext: spec.name, missing: r.rejected.missing, reason: r.rejected.reason },
-          '[omd/ext] 扩展**拒绝加载**(缺的 API 已逐条列出, 不半残地跑)',
+          '[omd/ext] extension REJECTED (missing APIs listed, not running half-loaded)',
         );
         nextStatus.push({ name: spec.name, ok: false, missing: r.rejected.missing });
         nextRejected.push({ name: spec.name, reason: r.rejected.reason });
@@ -89,7 +89,7 @@ export function createExtSession(cwd: string, deps?: ExtSessionDeps): ExtSession
       }
       next.push(r.ext);
       nextStatus.push({ name: spec.name, ok: true, sandboxed: r.ext.sandboxed });
-      logger.info({ ext: spec.name, tools: r.ext.tools.length, sandboxed: r.ext.sandboxed }, '[omd/ext] 扩展已加载');
+      logger.info({ ext: spec.name, tools: r.ext.tools.length, sandboxed: r.ext.sandboxed }, '[omd/ext] extension loaded');
     }
     exts = next;
     status = nextStatus;
@@ -145,7 +145,7 @@ export function createExtSession(cwd: string, deps?: ExtSessionDeps): ExtSession
               e.stop();
             } catch (err) {
               // fail-open 可以吞异常, 不许吞证据: 停不掉的那个扩展名要留下来。
-              logger.warn({ ext: e.name, err: (err as Error).message }, '[omd/ext] 停旧子进程时抛了 → 继续重载');
+              logger.warn({ ext: e.name, err: (err as Error).message }, '[omd/ext] stopping old child process threw -> continuing reload');
             }
           }
           exts = [];

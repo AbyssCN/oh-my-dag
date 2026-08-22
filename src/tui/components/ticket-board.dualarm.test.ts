@@ -142,8 +142,8 @@ describe('C-7 ④ md 臂: saveMapForStamp → readMap 往返', () => {
       expect(byId.get('#1')!).toMatch(/^· #1 \[research\] frontier survey · frontier$/);
       expect(byId.get('#2')!).toMatch(/^─ #2 \[task\] blocked work · blocked$/);
       expect(byId.get('#3')!).toMatch(/^○ #3 \[research\] machine idea · suggested · waiting 60m$/);
-      // C-7 ②: waiting-unknown-since 画「起点未记」, 不画 0 (NULL≠0; 证伪: 编 0 时长 → /0/ 命中, 红)。
-      expect(byId.get('#4')!).toMatch(/^○ #4 \[grill\] owner please · escalated · waiting · 起点未记$/);
+      // C-7 ②: waiting-unknown-since 画「start not recorded」, 不画 0 (NULL≠0; 证伪: 编 0 时长 → /0/ 命中, 红)。
+      expect(byId.get('#4')!).toMatch(/^○ #4 \[grill\] owner please · escalated · waiting · start not recorded$/);
       expect(byId.get('#4')!).not.toMatch(/0/);
       expect(byId.get('#5')!).toMatch(/^✓ #5 \[task\] ruled work · ruled$/);
       expect(byId.get('#6')!).toMatch(/^✓ #6 \[task\] shipped slice · delivered$/);

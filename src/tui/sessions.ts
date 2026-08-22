@@ -88,10 +88,10 @@ export function formatSessions(list: readonly TuiSessionMeta[], current: string)
 export function relTime(updatedAt: number, now: number): string {
   if (!(updatedAt > 0)) return '—';
   const s = Math.max(0, Math.round((now - updatedAt) / 1000));
-  if (s < 60) return `${s}s 前`;
-  if (s < 3600) return `${Math.floor(s / 60)}m 前`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h 前`;
-  return `${Math.floor(s / 86400)}d 前`;
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
 }
 
 /**

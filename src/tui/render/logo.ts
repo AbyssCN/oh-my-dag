@@ -52,7 +52,7 @@ const LETTER_GAP = ' ';
 export function renderWord(word: string): string[] {
   const glyphs = [...word].map((ch) => {
     const g = LETTERS[ch.toUpperCase()];
-    if (!g) throw new Error(`renderWord: 字标点阵里没有 ${JSON.stringify(ch)}`);
+    if (!g) throw new Error(`renderWord: no glyph in LETTERS for ${JSON.stringify(ch)}`);
     return g;
   });
   return Array.from({ length: LOGO_ROWS }, (_, row) => glyphs.map((g) => g[row] as string).join(LETTER_GAP));
