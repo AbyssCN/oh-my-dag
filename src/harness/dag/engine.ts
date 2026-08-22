@@ -5073,7 +5073,9 @@ async function runDagInternalCore(
       try {
         // S-33 集成接线: artifactRoot 必须给, 终审三态 (registered/unregistered/missing) 才不会
         // 全程沉默 (summarizeResults 只在 artifactRoot 存在时判产物, 见 verifier.ts:123)。
-        return await config.verifier!({ task, plan: exec.plan, results: exec.results, artifactRoot: config.continuity?.repoRoot ?? process.cwd() });
+        // 2026-08-23 s1 切片 1: 取执行锚 (execRoot), 不是状态锚 (repoRoot) —— 隔离档下两棵树,
+        // leaf 真写的产物只在 execRoot 这棵上, 喂 repoRoot 给 verifier ⇒ 假 missing 判词。
+        return await config.verifier!({ task, plan: exec.plan, results: exec.results, artifactRoot: config.continuity?.execRoot ?? config.continuity?.repoRoot ?? process.cwd() });
       } catch (err) {
         verifierDown = true;
         const detail = String(err).slice(0, 300);
