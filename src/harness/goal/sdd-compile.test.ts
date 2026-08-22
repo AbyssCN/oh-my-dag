@@ -11,8 +11,9 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { parseBreakdown, type SddBreakdown } from './sdd-direct';
-import { acceptCommandFromBreakdown, compileBreakdown, describeParallelism, parallelismReadout, RED_EXPECT_EXIT } from './sdd-compile';
+import { acceptCommandFromBreakdown, compileBreakdown, describeParallelism, parallelismReadout } from './sdd-compile';
 import { PlanSchema } from '../conductor-plan';
+import { runExecutorDagWithPlan } from '../dag/engine';
 
 const FULL_REGRESSION = 'bunx tsc --noEmit && bun test';
 
@@ -84,21 +85,97 @@ describe('compileBreakdown — G-1 平铺: 节点数 = 切片数 + RED/GREEN + a
 });
 
 describe('compileBreakdown — G-2/D-4 定向 TDD: RED/GREEN 同串, 全量回归恰一次', () => {
-  test('G-2: verify 列 `bun test src/x.test.ts` → RED/GREEN 命令即该串', () => {
-    const plan = compileBreakdown(bd([slice(1, ['src/x.ts'], [], 'bun test src/x.test.ts')]), {
+  test('G-2: verify 列逐字进 RED 探针 goal, GREEN command 仍跑该串', () => {
+    const verify = 'bun test src/x.test.ts';
+    const plan = compileBreakdown(bd([slice(1, ['src/x.ts'], [], verify)]), {
       acceptCommand: FULL_REGRESSION,
     });
-    expect(plan.nodes['s1-red']!.command).toBe('bun test src/x.test.ts');
-    expect(plan.nodes['s1-green']!.command).toBe('bun test src/x.test.ts');
+    expect(plan.nodes['s1-red']!.goal).toContain(`\`${verify}\``);
+    expect(plan.nodes['s1-green']!.command).toBe(verify);
   });
 
-  test('D-4: RED 期望非零退出, GREEN 期望 0 (同一命令串, 只差期望码)', () => {
-    // 证伪: 若 RED 也期望 0 → "证明测试先是红的"这一步永远失败, TDD 的第一拍表达不出来
-    // (conductor-plan expect_exit 的存在理由就是这个)。
+  test('D-4 (降级): RED 是 agent 证据探针, GREEN 仍是 expect_exit:0 的真闸', () => {
+    // 证伪: 把 RED 改回 command 或加回 `expect_exit: 1` → RED 形状断言红;把 GREEN 的
+    // expect_exit 拿掉 → 0 的断言红。运行语义由下方非零退出用例另钉,不拿形状冒充行为。
     const plan = compile();
-    expect(plan.nodes['s1-red']!.expect_exit).toBe(RED_EXPECT_EXIT);
-    expect(RED_EXPECT_EXIT).not.toBe(0);
+    expect(plan.nodes['s1-red']!.executor).toBe('agent');
+    expect(plan.nodes['s1-red']!.command).toBeUndefined();
+    expect(plan.nodes['s1-red']!.expect_exit).toBeUndefined();
+    expect(plan.nodes['s1-red']!.output_type).toBe('structured');
+    // GREEN 真闸: expect_exit=0, 是「实装之后判据真绿」的判据 (这条没动, 不能放宽)
     expect(plan.nodes['s1-green']!.expect_exit).toBe(0);
+    expect(plan.nodes['s1-green']!.output_type).toBe('none');
+  });
+
+  test('RED 探针幂等: 同一份 breakdown 编译两次 (模拟 replan 重跑), 两次的 RED 节点都不含 expect_exit', () => {
+    // 证伪: 把 `expect_exit: 1` 加回 sN-red 对象字面量 → 本 test 当场红
+    // (toBeUndefined 红)。S-43 兜底: RED 不再是硬闸, replan 重跑不因旧红判据卡死。
+    const plan1 = compile();
+    const plan2 = compile();
+    for (const plan of [plan1, plan2]) {
+      for (const id of ['s1-red', 's2-red']) {
+        expect(plan.nodes[id]!.expect_exit).toBeUndefined();
+      }
+    }
+  });
+
+  test('RED 探针仍逐字承载该片 verify 原文,不换成别的探针', () => {
+    // 证伪: 若 goal 改跑环境探针 (如 `ls src/` 或 `echo probe`) 或丢掉 verify 原文 → 当场红。
+    const verify = 'bun test src/x.test.ts';
+    const plan = compileBreakdown(bd([slice(1, ['src/x.ts'], [], verify)]), {
+      acceptCommand: FULL_REGRESSION,
+    });
+    expect(plan.nodes['s1-red']!.goal).toContain(`运行本片判据 \`${verify}\``);
+  });
+
+  test('RED 运行语义: verify 非零仍 done,产出保留退出码与 stdout/stderr', async () => {
+    // 证伪: 把 RED 改回 executor:'command' (expect_exit 缺省 0 或旧值 1) → 本命令退 7,
+    // 真实执行路径把节点判 failed,本条当场红。形状断言不能替代这条终态证据。
+    const script = "console.log('red-probe-stdout'); console.error('red-probe-stderr'); process.exit(7)";
+    const verify = `bun -e "${script}"`;
+    const compiled = compileBreakdown(bd([slice(1, ['src/x.ts'], [], verify)]), {
+      acceptCommand: FULL_REGRESSION,
+    });
+    const runProbe = async () => {
+      const proc = Bun.spawn(['bun', '-e', script], { stdout: 'pipe', stderr: 'pipe' });
+      const [exitCode, stdout, stderr] = await Promise.all([
+        proc.exited,
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]);
+      return { exitCode, stdout: stdout.trim(), stderr: stderr.trim() };
+    };
+    const result = await runExecutorDagWithPlan(
+      { name: 'red-probe-runtime', nodes: { 's1-red': compiled.nodes['s1-red']! } },
+      {
+        conductorModel: 'test:conductor',
+        leafModel: 'test:leaf',
+        agentTemplates: new Map(),
+        agentRunner: async ({ prompt }) => {
+          expect(prompt).toContain(verify);
+          const evidence = await runProbe();
+          return {
+            text: `exitCode=${evidence.exitCode}\nstdout=${evidence.stdout}\nstderr=${evidence.stderr}`,
+            usage: { in: 0, out: 0 },
+          };
+        },
+        commandRunner: async ({ command }) => {
+          expect(command).toBe(verify);
+          const evidence = await runProbe();
+          return {
+            text: `stdout=${evidence.stdout}\nstderr=${evidence.stderr}`,
+            usage: { in: 0, out: 0 },
+            exitCode: evidence.exitCode,
+            timedOut: false,
+            signal: null,
+          };
+        },
+      },
+    );
+    expect(result.results['s1-red']!.status).toBe('done');
+    expect(result.results['s1-red']!.output).toContain('exitCode=7');
+    expect(result.results['s1-red']!.output).toContain('red-probe-stdout');
+    expect(result.results['s1-red']!.output).toContain('red-probe-stderr');
   });
 
   test('G-2: 全量回归命令只在 accept 节点出现, 恰一次', () => {
@@ -236,7 +313,7 @@ describe('compileBreakdown — 端到端: 解析器 → 编译器 (切片 1+2 �
     const plan = compileBreakdown(parseBreakdown(text), { acceptCommand: FULL_REGRESSION });
     expect(Object.keys(plan.nodes).length).toBe(7);
     expect(plan.nodes['s2']!.write_set).toEqual(['src/b.ts', 'src/b.test.ts']);
-    expect(plan.nodes['s2-red']!.command).toBe('bun test src/b.test.ts');
+    expect(plan.nodes['s2-red']!.goal).toContain('`bun test src/b.test.ts`');
     expect(plan.nodes['s2-red']!.depends_on).toEqual(['s1-green']);
     // 切片名进 goal —— 执行节点得知道自己在干哪一片 (SDD 全文注入与否由接线方 5 号切片裁)。
     expect(plan.nodes['s2']!.goal).toContain('编译器');

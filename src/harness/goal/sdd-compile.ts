@@ -7,9 +7,36 @@
  * 一份已经写好的东西。所以这里**没有任何模型调用**: 输入是 parseBreakdown 的结构,
  * 输出是可直接进引擎的 plan。
  *
- * D-4 定向 TDD: 每片编译成 RED → 实装 → GREEN 三节点, RED/GREEN 跑**同一条**切片级命令
- * (只差期望退出码)。全量回归留给终局 accept 一次 —— 全量 `bun test` 是分钟级, 铺进
- * 每片每轮就是墙钟的乘法项 (D-4 的原话: 把乘法降为加法)。
+ * D-4 定向 TDD (降级版): 每片编译成 RED → 实装 → GREEN 三节点。GREEN 仍是 expect_exit:0 的
+ * **真闸**,判「实装之后本片判据真绿」—— 这条没毛病,不动。RED 已**降级为不判成败的证据探针**:
+ * 它用 agent 执行器跑 goal 里逐字携带的同一条切片级命令,原样记录退出码与 stdout/stderr;
+ * 命令退出码无论为何都只交证据,不据此判节点失败。不能只把 command 节点的 `expect_exit` 删掉:
+ * 引擎会按 `node.expect_exit ?? 0` 补 0,非零仍判 failed。`output_type: 'structured'` 把探针回执
+ * 归档为节点产出,给未来诊断留证据。
+ *
+ * 为什么不判红 —— 两个根因,下一个人会问,答案写在这里:
+ *  · S-49 — SDD 直通模式下**测试文件与实装文件在同一片的写集里一起产出**。实装前跑
+ *    verify 必然是 `bun test <还不存在的文件>` 的 exit 1 —— 红的理由是「文件不存在」,
+ *    不是「断言不成立」。判红 = 在量一个永远先成立的文件存在性,判别力为零。2026-08-22
+ *    verifier 逐字判过,主干 d4f08bc 有记录。
+ *  · S-43 — replan 重跑时实装已落地、测试已绿,RED 再也红不了 ⇒ 节点永久 failed ⇒
+ *    整张图卡死。实测代价:run 6e8c2765 卡了 1h47m,conductor 为造红去发明一条 grep
+ *    判据,又被命令闸以 shell 元字符拒掉 (日志原文
+ *    `[omd/executor-dag] command 节点未命中 expect_exit → failed (D-K) {"want":1,"got":-1}`)。
+ *
+ * 判别力去哪了:每条闸自己的反向自检 —— sdd-compile.test.ts 里每条 `expect.toThrow` 的
+ * test 注释里都写了「把该闸删掉 (或改成 warn),test 当场由绿转红」的证伪方式。RED 探针
+ * 的产物作为运行期读数归档,不在引擎层当硬闸。
+ *
+ * 全量回归留给终局 accept 一次 —— 全量 `bun test` 是分钟级,铺进每片每轮就是墙钟的乘法项
+ * (D-4 的原话: 把乘法降为加法)。这条不变。
+ *
+ * ── 下一步 (明写属于下一片,不在本片做) ──
+ * 真正把判别力补回来的做法是把它挪到 GREEN 之后、改问「**把实装拿掉,它还红吗**」:
+ * 测试文件留新版,退回实装文件,verify 必须非零 —— 这才能验「测试确实在测实装」,而不是
+ * 验「文件存不存在」。这需要一个「退回若干文件到某 revision、跑一条命令、再恢复」的引擎
+ * 原语,今天没有:`primitives.ts` 全是组合子;命令闸不收 `sh`;`git stash` / `checkout`
+ * 不在 `GIT_READONLY_SUBCOMMANDS`,放开等于给 leaf 一把能抹掉 DAG 产物的刀。
  *
  * fail-loud 同 ./sdd-direct 的性格 (G-6): 乱序波形 / 写集相交 / verify 不可跑 / 依赖悬空 /
  * 依赖成环 / 全量回归下沉到切片 —— 逐条 throw 且判词指名切片与问题所在。每条闸在
@@ -18,13 +45,6 @@
 import { DEFAULT_COMMAND_ALLOWLIST } from '../command-leaf';
 import { PlanSchema, type ConductorPlan } from '../conductor-plan';
 import type { SddBreakdown, SddSlice } from './sdd-direct';
-
-/**
- * RED 节点的期望退出码。TDD 第一拍的成功判据恰是「测试失败」, 而 shell 取反整族元字符
- * 被命令闸拒 —— conductor-plan 的 `expect_exit` 就是为这一步存在的 (D-K)。取 1 = bun test
- * 失败的退出码; 引擎按「实际码 === expect_exit」判 done。
- */
-export const RED_EXPECT_EXIT = 1;
 
 export interface SddCompileOptions {
   /** 终局全量回归命令 (G-2: 整张图里只出现在 accept 节点, 恰一次)。 */
@@ -267,9 +287,9 @@ export function acceptCommandFromBreakdown(breakdown: SddBreakdown): string | un
  * 分解表结构 → 平铺 plan (G-1: 节点 = 切片×3 + accept, 零 conductor 展开)。
  *
  * 节点形状 (每片):
- *  · `sN-red`   command, expect_exit=1 —— 证明本片的测试**先是红的** (D-4)
+ *  · `sN-red`   agent 证据探针 —— goal 携带 verify 原文,记录退出码与输出但不判成败
  *  · `sN`       agent + write_set (D-2), 依赖自己的 RED
- *  · `sN-green` command, expect_exit=0 —— 同一命令串转绿
+ *  · `sN-green` command, expect_exit=0 —— 同一条 verify 命令转绿
  * 表里的依赖边接到**上游片的 GREEN** 上: 「2 依赖 1」的语义是 1 真绿了才轮到 2, 而不是
  * 1 的实装节点跑完就算数 (跑完 ≠ 对, 这个仓的静默失效图鉴专门有一条)。
  */
@@ -299,12 +319,13 @@ export function compileBreakdown(
   const nodes: Record<string, Record<string, unknown>> = {};
   for (const s of slices) {
     nodes[redId(s.id)] = {
-      executor: 'command',
-      command: s.verify,
-      expect_exit: RED_EXPECT_EXIT,
+      executor: 'agent',
+      output_type: 'structured',
       depends_on: s.deps.map(greenId),
-      output_type: 'none',
-      goal: `RED: 证明切片 ${s.id} 的测试在实装前是红的`,
+      goal:
+        `探针:运行本片判据 \`${s.verify}\`,原样记录退出码与 stdout/stderr;无论退出码是多少都不算失败,只交证据。` +
+        `(不判成败 —— 直通模式下测试与实装同片产出,实装前的红多半只是"文件不存在",` +
+        `判别力不在这里,在每条闸自己的反向自检)`,
     };
     nodes[nodeId(s.id)] = {
       executor: 'agent',

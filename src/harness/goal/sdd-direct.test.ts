@@ -446,8 +446,9 @@ describe('runGoal 直通 v2 (切片 5: 分解表可编译 → 零 conductor 平�
     expect(String(s1.goal)).toContain('并行波形'); // SDD 全文在节点里
     expect(String(s1.goal)).toContain('实施切片 1');
     expect(s1.write_set).toEqual(['src/a.ts', 'src/a.test.ts']);
-    // RED/GREEN 是 command 节点, 不背 SDD 全文那份 token
-    expect(String(seenPlans[0]!.nodes['s1-red']!.goal)).not.toContain('并行波形');
+    // RED 已降为 agent 证据探针,沿用 agent 契约注入;GREEN 仍是 command,不背 SDD 全文。
+    expect(String(seenPlans[0]!.nodes['s1-red']!.goal)).toContain('并行波形');
+    expect(String(seenPlans[0]!.nodes['s1-green']!.goal)).not.toContain('并行波形');
   });
 
   test('D-3 平铺收敛 := 冻结判据绿; 判据没过 → not-converged (平铺没有 judge, 不存在 oracle-failed 那种打架)', async () => {
