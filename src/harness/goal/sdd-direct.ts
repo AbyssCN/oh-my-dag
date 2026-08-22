@@ -326,6 +326,13 @@ function parseAllFalsify(
  * 消失, 图少一个节点而台账上什么都看不出来 (silent-failures 图鉴那一族)。
  */
 export function parseBreakdown(text: string): SddBreakdown {
+  // ``` 围栏里的表是**示例不是内容** —— 与 parseAllFalsify 同一条理由 (2026-08-22)。
+  // 实测: 分解段里放一张围栏内的示例四列表, 解析出 2 片 (应为 1) —— 示例被当成真切片,
+  // 图上凭空多一个节点, 而台账上看不出来 (正是本函数注释下面那条 fail-loud 要防的病, 只是
+  // 从"少一片"换成了"多一片")。
+  // ⚠ 安全性查过: 扫 `docs/plan/*.md`, **没有任何契约把分解表写在围栏内** ⇒ 零历史影响。
+  // 证伪方式: 去掉这一跳 → `sdd-direct.test.ts` 的「围栏内的示例四列表不被当成切片」当场红。
+  text = stripFencedBlocks(text);
   const head = BREAKDOWN_HEADING.exec(text);
   if (!head) throw new Error('分解 (Breakdown) 段缺失 —— 无表可解析');
   const after = text.slice(head.index + head[0].length);

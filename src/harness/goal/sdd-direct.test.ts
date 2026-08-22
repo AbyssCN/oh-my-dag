@@ -621,3 +621,31 @@ describe('runGoal 直通 v2 — O-6 vacuous 探针 (切片 verify 实装前已�
     expect(seenPlans[0]!.name).toBe('goal-execute-flat');
   });
 });
+
+describe('围栏内的示例四列表不被当成切片 (2026-08-22)', () => {
+  // 现场: 一份契约想在文档里举例说明分解表格式, 而解析器把围栏里的示例当真切片 ——
+  // 图上凭空多一个节点, 台账上看不出来。
+  // 证伪方式: 去掉 parseBreakdown 开头的 stripFencedBlocks 那一跳 → 本条当场红 (2 片)。
+  const sdd = [
+    '## 分解 (Breakdown)',
+    '',
+    '| 切片 | 写集 | 依赖 | verify |',
+    '|---|---|---|---|',
+    '| 1 真片 | src/a.ts | — | bun test x |',
+    '',
+    '举例说明格式:',
+    '',
+    '```',
+    '| 切片 | 写集 | 依赖 | verify |',
+    '|---|---|---|---|',
+    '| 9 示例 | src/示例.ts | — | echo 示例 |',
+    '```',
+  ].join('\n');
+
+  test('只解析围栏外的真表', () => {
+    const b = parseBreakdown(sdd);
+    expect(b.slices.length).toBe(1);
+    expect(b.slices[0]!.id).toBe(1);
+    expect(b.slices.some((s) => s.id === 9)).toBe(false);
+  });
+});
