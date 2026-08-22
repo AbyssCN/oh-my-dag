@@ -474,6 +474,24 @@ export interface DagLoopControlSeam {
    * 路径不传 frozenNodes (那条路今天就是对的, 无需补救)。
    */
   frozenNodes?: readonly string[];
+  /**
+   * **平铺图确定性重规划** (SDD 2026-08-22 「升级重规划成事件」续 / 平铺图 v2)。
+   *
+   * 调用方给个函数 = 引擎在升级重规划轮**不**调 conductor (跳过 `tryPatchReplan` 也跳过
+   * `planAndExecute`), 直接 `executePlan` 这个函数当轮返回的图; 返回 `undefined` =
+   * 这一轮回落今天的补丁 → 整图路径 (fail-open, 不因重编译失败就整跑崩)。
+   *
+   * **为什么是个 seam 而不是引擎内嵌**: 引擎不认 SDD (它只吃 plan), 知道怎么重编译的是
+   * `run-goal` (它有 `compileBreakdown`)。seam 把"图从哪来"与"图怎么跑"切开 —— 别的 caller
+   * (v1 conductor 铺图、`iterate` 之类) 不传这条, 走今天路径逐字不变 (INV-4)。
+   *
+   * **它与 `frozenNodes` 互补**: `frozenNodes` 假定图会变、钉住名字里那几位; 这一条假定图
+   * **不该变** (平铺图是 `compileBreakdown(SDD)` 的确定产物), 从根上不让它变。两者各自防
+   * 的不是同一条风险。
+   *
+   * **零回归**: 缺省 / 不给 → 升级重规划轮照旧走 `tryPatchReplan` (INV-4)。
+   */
+  deterministicReplan?: () => ConductorPlan | undefined;
 }
 
 /** 观察与留痕 seam: 事件/回执/trace 分组/checkpoint —— 观察者不许扰动被观察者 (fail-open)。 */
@@ -1035,7 +1053,7 @@ export type BlameRetryLedger = {
    * 但补丁尝试烧掉的 token 不丢账, 见 replanTokens)。未发生补丁重规划的轮次不应出现该字段
    * (NULL≠0: 用字段是否存在区分"没走这条路"与"走了记 0")。
    */
-  replanMode: 'patch' | 'full';
+  replanMode: 'patch' | 'full' | 'deterministic';
   /**
    * 本轮重规划请求的 token 用量。回落到整图时两段都算总账 (补丁尝试 + 整图重灌之和), 不因
    * 回落就丢掉补丁那段的花费。

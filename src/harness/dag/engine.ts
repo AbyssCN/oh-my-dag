@@ -5048,25 +5048,36 @@ async function runDagInternalCore(
         ...(closure ? { poisoned: closureFps } : prior?.poisoned?.size ? { poisoned: prior.poisoned } : {}),
       };
       // S3.6 补丁模式优先 (未补丁节点字节不动 → 复用按构造成立); 补丁失败回退整图重规划 (fail-open)。
+      // 平铺图确定性重规划 (SDD 2026-08-22 「平铺图确定性重规划」): 给则**直跳过**补丁与整图两段,
+      // 不请 conductor (这一发 LLM 对编译产物是冗余 —— 重算等价复用)。返回 undefined 走今天路径 (INV-3)。
       const rerunStart = Date.now();
-      const patched = await tryPatchReplan(escTask, verdict.reason, priorExec, config, conductorModel, generate, maxPlanRetries, templates, blameAnchor, closure, warnedUnknownProfiles);
-      // D-3 (SDD 2026-08-11-l2-diff-replan): replanMode 记这一轮走的是补丁差量还是回落整图,
-      // replanTokens 是这一轮的总账 —— 补丁成功时 exec.conductorUsage 已折进补丁尝试的 token
-      // (tryPatchReplan 内部注释同证); 回落时补丁尝试 (patched.usage) 与整图重灌 (exec.conductorUsage)
-      // 两段都要, 不因回落就丢补丁那段的花费 (NULL≠0)。
-      const replanMode: 'patch' | 'full' = patched.exec ? 'patch' : 'full';
-      if (patched.exec) {
-        exec = patched.exec;
+      const deterministicPlan = config.deterministicReplan?.();
+      let replanMode: 'patch' | 'full' | 'deterministic';
+      let patched: Awaited<ReturnType<typeof tryPatchReplan>> | null = null;
+      let deterministicUsage: ModelUsage = { in: 0, out: 0 };
+      if (deterministicPlan) {
+        replanMode = 'deterministic';
+        exec = await executePlan(applyPlanFilters(deterministicPlan, config), escTask, config, generate, { in: 0, out: 0 }, templates, priorExec, blameAnchor, warnedUnknownProfiles);
       } else {
-        conductorUsage = addUsage(conductorUsage, patched.usage); // 补丁尝试的 token 不丢账
-        exec = await planAndExecute(escTask, config, conductorModel, generate, maxPlanRetries, templates, priorExec, blameAnchor, warnedUnknownProfiles, 'escalation');
+        patched = await tryPatchReplan(escTask, verdict.reason, priorExec, config, conductorModel, generate, maxPlanRetries, templates, blameAnchor, closure, warnedUnknownProfiles);
+        // D-3 (SDD 2026-08-11-l2-diff-replan): replanMode 记这一轮走的是补丁差量还是回落整图,
+        // replanTokens 是这一轮的总账 —— 补丁成功时 exec.conductorUsage 已折进补丁尝试的 token
+        // (tryPatchReplan 内部注释同证); 回落时补丁尝试 (patched.usage) 与整图重灌 (exec.conductorUsage)
+        // 两段都要, 不因回落就丢补丁那段的花费 (NULL≠0)。
+        replanMode = patched.exec ? 'patch' : 'full';
+        if (patched.exec) {
+          exec = patched.exec;
+        } else {
+          conductorUsage = addUsage(conductorUsage, patched.usage); // 补丁尝试的 token 不丢账
+          exec = await planAndExecute(escTask, config, conductorModel, generate, maxPlanRetries, templates, priorExec, blameAnchor, warnedUnknownProfiles, 'escalation');
+        }
       }
       // 冻结节点复原(SDD 2026-08-22, C-2): 补丁模式与整图重规划两条路都在这里收敛后再做。
       // 先复原先于 observed.exec = exec 是有意的 — 把复原后的 plan 一起 snapshot 给观察者。
       restoreFrozenNodes(exec, frozenNodeSnapshot, config.frozenNodes);
       observed.exec = exec;
       observed.conductorModel = conductorModel;
-      const replanTokens = replanMode === 'patch' ? patched.usage : addUsage(patched.usage, exec.conductorUsage);
+      const replanTokens = replanMode === 'deterministic' ? deterministicUsage : replanMode === 'patch' ? patched!.usage : addUsage(patched!.usage, exec.conductorUsage);
       const rerunWallMs = Date.now() - rerunStart;
       // D-4 打回读数入账 (SDD 契约 f): 每次打回追加一条。reuseHits = 闭包外命中数 ——
       // 闭包指纹已入毒集, reusedNodes 里不可能有闭包节点, 这个数就是「闭包外且 D-21 命中」, 无第二套判定。

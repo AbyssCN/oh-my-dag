@@ -1007,6 +1007,12 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
             // 那条路上 accept 由 run-goal 自己构造在环外 (今天的 v1 行为, 不动)。
             // 这里 `flatUsed` 还**没**赋值(线 1008 才赋), 用 `flatPlan !== undefined` 等价判。
             ...(flatPlan !== undefined ? { frozenNodes: ['accept'] } : {}),
+            // 平铺图确定性重规划 (SDD 2026-08-22 「平铺图确定性重规划」, C-3/INV-6/INV-7):
+            // 只在 flatPlan 编译成功**之后**挂上 `deterministicReplan`。回落 conductor
+            // 铺图那条路上图是 conductor 跑出来的, 不是 `compileBreakdown(SDD)` 的产物
+            // — 不传这条, 走今天逐字节相同的升级路径 (INV-4 零回归那一半)。
+            // 传的是同一份编译产物 (`compileBreakdown` 是纯函数, 重算与复用等价; INV-7)。
+            ...(flatPlan !== undefined ? { deterministicReplan: () => flatPlan } : {}),
           }
         : config.dag;
     exec = await (config._runDag ?? runExecutorDagWithPlan)(execPlan, execCfg);

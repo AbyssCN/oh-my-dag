@@ -24,7 +24,7 @@ describe('seam 目录 (gen-seam-catalog)', () => {
     expect(`${onDisk} `).not.toBe(built.markdown);
   });
 
-  test('死旋钮闸: 当前 48 个字段全部有非测试消费方', () => {
+  test('死旋钮闸: 当前 50 个字段全部有非测试消费方', () => {
     expect(built.dead).toEqual([]);
   });
 
@@ -42,11 +42,11 @@ describe('seam 目录 (gen-seam-catalog)', () => {
     expect(deadFields(seams)).toEqual(['DagZzzSeam.zzzUnusedKnob9']);
   });
 
-  test('结构绊线: 8 seam / 49 字段 (改了分组或增删字段 → 抬这两个数并重跑生成器)', () => {
+  test('结构绊线: 8 seam / 50 字段 (改了分组或增删字段 → 抬这两个数并重跑生成器)', () => {
     // 刻意保留字面量 —— 派生成 length 就成恒真式, 绊线就没了 (同 seat-check 16→18 的先例)
     const seams = extractSeams(readFileSync(join(ROOT, 'src/harness/dag/types.ts'), 'utf8'));
     expect(seams).toHaveLength(8);
-    expect(seams.reduce((n, s) => n + s.fields.length, 0)).toBe(49);
+    expect(seams.reduce((n, s) => n + s.fields.length, 0)).toBe(50);
   });
 
   test('抽取保真: 必填/可选与 JSDoc 首句都进目录', () => {
