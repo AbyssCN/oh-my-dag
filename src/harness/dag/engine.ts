@@ -140,6 +140,16 @@ import { gateFalseCompletion, renderFalseCompletionFindings } from '../plan/fals
  * 超出的条数如实列出来, 不静默丢。
  */
 const SHELL_FACT_CAP = 6;
+
+/**
+ * 交接块之后那句「这一轮该怎么重画」(#226 从内联字符串提出来, 逐字未改)。
+ * 提出来只为让 `renderHandoff` 与它各管一件事:前者管**交接怎么渲染**, 这句管**要它做什么**。
+ */
+const RETRY_INSTRUCTION =
+  '这一轮请**重新分解**: 该补的步骤补上 (包括上一轮压根没有的那种, 比如先去把某个事实查清楚), ' +
+  '该改的改掉。原样再画一遍上一轮的图只会再失败一次。' +
+  '但**没被点名的节点请逐字节保持原规格** (goal 文本/依赖/executor 一字不动) —— ' +
+  '节点 id 按内容寻址, 规格没变的节点零成本复用上轮产出; 顺手改写无辜节点 = 它整棵子树白烧重跑。';
 import { verifiedShellWriteTargets } from '../writeset/shell-writes';
 import { blamePathCandidates, failureExcerpt } from '../failure-trace';
 import { findRedOracles, renderOracleRedVerdict } from './oracle-red';
@@ -1222,6 +1232,58 @@ async function executePlan(
   };
 
   /**
+   * **内环轮间交接的渲染** (#226, 2026-08-23)。上一条 `capFanin` 的同族 —— 同一条
+   * No-silent-caps 纪律,而这里此前**没有**守。
+   *
+   * ## 它治的两条 (读数在 #226 的评论里)
+   *
+   * ① **静默头切**: 原实装是裸 `prevReason.slice(0, 1500)` —— 没有告示、没有指针、不落盘。
+   *    账本 542 跑实测: 模型判词单项长度 p90 = 1337 · p95 = 1854,**单它就 ≥1500 的占 7.8%**,
+   *    而交接 = 判词 + 观察者块(后者 p90 再加 561)。切掉的是判词**尾部** ——
+   *    判词尾部通常正是「所以下一步该做什么」,也就是这一轮唯一真正要传下去的东西。
+   *    (⚠ 那 7.8% 量的是 `verification.reason`,拿 verifier 判词当内环 judge 判词的**代理**;
+   *     内环 judge 判词盘上没有任何一处持久化 —— 这条本身还欠着。)
+   *
+   * ② **必达块正好排在被切掉的那一侧**: `NOVELTY_COLLAPSE_LINE` 是在 prevReason
+   *    **末尾**追加的,而截断从**头部**切 ⇒ 一旦超界就 100% 丢。而它「只进 prompt 不进控制流」,
+   *    prompt 是它唯一的通道。于是账本记着 `novelty-collapse` observation(读起来像"提示发过了"),
+   *    模型一个字没看到 —— `docs/silent-failures.md` 正在收的那个形状。
+   *
+   * ## 判据: 必达块不参与截断预算
+   *
+   * 这跟 `ownerCtx` 是同一条纪律(人的指令独立成块、逐字、不参与任何加工)。
+   * 判断"是不是必达"的判据: **它的唯一通道是不是 prompt**。是 → 摘出去,单独成块。
+   *
+   * ⚠ 单一变量: 保留下来的正文与改动前**逐字相同**(仍是 `slice(0, HANDOFF_CAP_CHARS)`)。
+   * 本片只加告示/指针/必达块,不动额度 —— 额度该多大是另一个问题,别混在一次改动里。
+   */
+  const HANDOFF_CAP_CHARS = 1500;
+  const renderHandoff = (nodeId: string, round: number, reason: string): string => {
+    // 必达块先摘出去。用逐字常量比对而不是正则: 这几个块的文本是常量,正则只会带来误伤面。
+    const mustReach: string[] = [];
+    let body = reason;
+    if (body.includes(NOVELTY_COLLAPSE_LINE)) {
+      mustReach.push(NOVELTY_COLLAPSE_LINE);
+      body = body.split(NOVELTY_COLLAPSE_LINE).join('').trimEnd();
+    }
+    const tail = mustReach.length ? `\n${mustReach.join('\n')}` : '';
+    if (body.length <= HANDOFF_CAP_CHARS) return `\n\n<上一轮未通过>\n${body}\n</上一轮未通过>${tail}\n`;
+    // 落**全文原文** (含必达块), 不落摘出去之后的 body —— 事后复盘要问的是"当时整份交接长什么样"。
+    const fullPath = continuity ? continuity.manager.saveHandoffFull(continuity.runId, nodeId, round, reason) : null;
+    const kept = body.slice(0, HANDOFF_CAP_CHARS);
+    const pointer =
+      `\n…[交接硬上限: 上一轮判词 ${body.length} 字符, 此处只含前 ${kept.length};` +
+      (fullPath
+        ? ` 全文在 ${fullPath} —— 有 read 工具就按需分页读它]`
+        : ' 全文未落盘 (无 continuity), 判词尾部已丢 —— 需要时让上一轮把结论写进文件]');
+    logger.warn(
+      { node: nodeId, round, len: body.length, cap: HANDOFF_CAP_CHARS, persisted: !!fullPath, mustReach: mustReach.length },
+      '[omd/executor-dag] 轮间交接硬上限截断 —— 必达块不参与预算, 已单独成块',
+    );
+    return `\n\n<上一轮未通过>\n${kept}${pointer}\n</上一轮未通过>${tail}\n`;
+  };
+
+  /**
    * **上游内容 = 不可信数据** (A8, 2026-07-31)。
    *
    * 上游里混着 research 节点从真外部网页抓回来的正文, 而它此前与 owner 指令、引擎观察
@@ -1579,13 +1641,7 @@ async function executePlan(
     // **环的信息通道**: 上一轮的失败原因回灌给 conductor, 让它**重新画**而不是重跑同一张图。
     // 这是 D-A 环的全部价值 —— 重跑只能把同样的活再干一遍, 重画才补得出上一轮压根没有的步骤
     // (D-G′ 说的「补调研」正是这个形状: 不需要回边, 每一轮都是一张全新的无环子图)。
-    const retryCtx = prevReason
-      ? `\n\n<上一轮未通过>\n${prevReason.slice(0, 1500)}\n</上一轮未通过>\n` +
-        '这一轮请**重新分解**: 该补的步骤补上 (包括上一轮压根没有的那种, 比如先去把某个事实查清楚), ' +
-        '该改的改掉。原样再画一遍上一轮的图只会再失败一次。' +
-        '但**没被点名的节点请逐字节保持原规格** (goal 文本/依赖/executor 一字不动) —— ' +
-        '节点 id 按内容寻址, 规格没变的节点零成本复用上轮产出; 顺手改写无辜节点 = 它整棵子树白烧重跑。'
-      : '';
+    const retryCtx = prevReason ? `${renderHandoff(id, round, prevReason)}\n${RETRY_INSTRUCTION}` : '';
     // **owner 指令** (S3 / D-S): 与失败原因同一条管道、**独立的块**、**逐字**。
     // 排在失败原因**之前** —— 人的指令优先级高于机器的观察, 顺序上也该先看见。
     // ⚠ 一个字都不许加工: 观测者在这条链上只是信使, 它改写了, 失真的地方 owner 自己看不见。

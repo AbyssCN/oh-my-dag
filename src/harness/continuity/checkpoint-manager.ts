@@ -285,6 +285,20 @@ export class CheckpointManager {
   }
 
   /**
+   * **内环轮间交接全文**落 `<runDir>/handoff-<nodeId>-r<round>.txt` (#226, 2026-08-23)。
+   *
+   * 与 {@link saveFaninFull} 同一条 No-silent-caps 纪律, 但**必须分开落**:
+   * fan-in 的键是「哪个上游」(一个 dep 一份), 交接的键是「哪个节点的第几轮」——
+   * 同一个 conductor 节点跨轮各有一份, 挤进 `fanin-<nodeId>` 会**逐轮互相覆盖**,
+   * 而事后复盘要问的恰恰是"第 2 轮当时看见了什么"。
+   *
+   * 写失败 → null (fail-open: 注入退化为"有告示无指针", 不阻断 DAG)。
+   */
+  saveHandoffFull(runId: string, nodeId: string, round: number, text: string): string | null {
+    return this.saveTextArtifact(runId, 'handoff-', `${nodeId}-r${round}`, text);
+  }
+
+  /**
    * **D-O 产出面**: 节点输出**全文**落 `<runDir>/out-<nodeId>.txt`, 返绝对路径写进 checkpoint
    * (`NodeCheckpoint.outputText`)。summary 自此只给人看 —— 下游拿的是这份全文。
    * 写失败 → null (fail-open: checkpoint 无该字段, resume 退回 summary 并留痕)。
