@@ -43,18 +43,28 @@ export interface IgnitionBandwidth {
   execute: PhaseBandwidth | null;
 }
 
-/** 契约段 / 执行段在账本里的图名(run-goal 落的就是这两个)。 */
-const CONTRACT_PLAN = 'goal-contract';
-const EXECUTE_PLAN = 'goal-execute';
+/**
+ * 契约段 / 执行段在账本里的图名 —— 这是**前缀**而不是精确名。
+ * 写死成精确名= 把"下一次图改名"这件事藏进静默 bug:
+ * 2026-08-22 实测: 执行段曾以 `goal-execute` 落账, 后改 `goal-execute-flat`,
+ * phaseOf 用 `=` 一查一个准,函数照样返数,量的全是已停用的那条老 plan —— 这种漂移
+ * 比「精确名不存在 → null」更坏, 因为它**返值有效但量错东西**。所以这里只写"族名前缀",
+ * 下一档(`-flat` / `-batch` / 任何后继)不再需要同步改这一行,也不需要再被 contract 复提。
+ */
+const CONTRACT_PLAN_PREFIX = 'goal-contract';
+const EXECUTE_PLAN_PREFIX = 'goal-execute';
 
 /** 最近秩分位(不插值)—— 印出来的每个数都是**真跑过的一次**,不是算出来的中间值。 */
 const quantile = (sorted: number[], q: number): number =>
   sorted.length === 0 ? 0 : sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(q * sorted.length) - 1))]!;
 
-function phaseOf(db: Database, plan: string, limit: number): PhaseBandwidth | null {
+function phaseOf(db: Database, planPrefix: string, limit: number): PhaseBandwidth | null {
+  // planPrefix 是**前缀**: 见上方 CONTRACT/EXECUTE_PLAN_PREFIX 上的注释。
+  // SQL `LIKE` 不接受 `?` 占位符当通配符的语法糖, 所以手拼前缀 + `%` —— planPrefix
+  // 的内容是字面量(仓内常量, 不会来路不明的输入), 不是 SQL 注入面。
   const rows = db
-    .query(`SELECT usage FROM omd_dag_runs WHERE plan_name = ? ORDER BY created_at DESC LIMIT ?`)
-    .all(plan, limit) as { usage: string }[];
+    .query(`SELECT usage FROM omd_dag_runs WHERE plan_name LIKE ? ORDER BY created_at DESC LIMIT ?`)
+    .all(`${planPrefix}%`, limit) as { usage: string }[];
   const vals: number[] = [];
   for (const r of rows) {
     try {
@@ -68,7 +78,7 @@ function phaseOf(db: Database, plan: string, limit: number): PhaseBandwidth | nu
   }
   if (vals.length === 0) return null;
   const s = vals.sort((a, b) => a - b);
-  return { plan, n: s.length, median: quantile(s, 0.5), p75: quantile(s, 0.75), max: s[s.length - 1]! };
+  return { plan: planPrefix, n: s.length, median: quantile(s, 0.5), p75: quantile(s, 0.75), max: s[s.length - 1]! };
 }
 
 /**
@@ -82,7 +92,10 @@ export function readIgnitionBandwidth(opts: { path?: string; limit?: number } = 
   let db: Database | undefined;
   try {
     db = new Database(path, { readonly: true });
-    return { contract: phaseOf(db, CONTRACT_PLAN, limit), execute: phaseOf(db, EXECUTE_PLAN, limit) };
+    return {
+      contract: phaseOf(db, CONTRACT_PLAN_PREFIX, limit),
+      execute: phaseOf(db, EXECUTE_PLAN_PREFIX, limit),
+    };
   } catch (err) {
     logger.warn({ err: (err as Error).message, path }, '[omd/ignition] 带宽账本读不了 → 预告缺席 (点火不受影响)');
     return { contract: null, execute: null };
