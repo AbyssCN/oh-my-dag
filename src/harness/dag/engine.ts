@@ -4586,6 +4586,37 @@ async function executePlan(
     );
   }
 
+  // ── 「绿节点配空盘」后果网 (SDD 2026-08-22 · 片 3g 后续网) ───────────────────────
+  // 写集全空闸: `done` 且声明了 `write_set` 且写集里**一个文件都不在盘上** ⇒ 出观察 (D-1
+  // 只报不判)。判据刻意窄到「**一个都不在**」(D-2): 少几个太常见, 会刷屏; 「一个都不在」
+  // 在正常交付里不可能。根用 `execRoot ?? repoRoot ?? cwd` (D-4, 隔离档下断言 worktree 那棵树
+  // 而不是主仓 —— 片 1.5 的同款教训)。
+  //
+  // ⚠ 不给 `failed` / `skipped` 节点参与判定 (D-3: 它们没承诺产出);
+  // 不给无 `write_set` 的节点参与判定 (D-3: 没有合同, 不判)。
+  {
+    const emptyWriteSetRoot = continuity?.execRoot ?? continuity?.repoRoot ?? process.cwd();
+    const emptyNodes: string[] = [];
+    for (const [id, r] of Object.entries(results)) {
+      if (!r || r.status !== 'done') continue;
+      // (2026-08-22) 节点定义从 plan.nodes 读, 不从 LeafResult —— results 上没有 write_set。
+      const node = plan.nodes[id] as { write_set?: readonly string[] } | undefined;
+      const ws = node?.write_set;
+      if (!ws || ws.length === 0) continue;
+      // INV-4: 写集里**哪怕只有一个**文件在盘上 ⇒ 不报。
+      // 绝对路径原样, 相对路径按执行锚解析 (与产物闸同一根, 与产物语义一致)。
+      const allMissing = ws.every((p) => !existsSync(p.startsWith('/') ? p : join(emptyWriteSetRoot, p)));
+      if (allMissing) emptyNodes.push(id);
+    }
+    if (emptyNodes.length > 0) {
+      observe([{
+        kind: 'empty-write-set',
+        nodes: emptyNodes,
+        message: `声明了 write_set 却没有产物落盘 (绿节点配空盘): [${emptyNodes.join(', ')}] 全部 done, 写集里一个文件都不在盘上 — 通常是回滚把产物擦掉了 / 写错了根 / worktree 被外力清理。`,
+      }]);
+    }
+  }
+
   const notRun = Object.keys(plan.nodes).filter((id) => results[id] === undefined);
   return {
     plan,

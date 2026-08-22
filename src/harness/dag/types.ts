@@ -691,7 +691,18 @@ export interface DagObservation {
      * (`assert-failed` 只有 1/7 认得出路径),而那个数量在 800 字 summary 上、n=7 ——
      * 口径存疑的旧数既不能用来支持一个方向,也不能用来否掉它。判据见 `dag/blame-attribution.ts`。
      */
-    | 'blame-attribution';
+    | 'blame-attribution'
+    /**
+     * `empty-write-set` (2026-08-22, run c4edb14f 现场, 片 3g 后续网) = **节点判 done 且声明了
+     * `write_set`, 而写集里**一个文件都不在盘上** = 绿节点配空盘。
+     *
+     * 判据刻意窄到「**一个都不在**」(D-2): 少一个文件的形态太常见(切片只改了写集里的一部分),
+     * 报它等于制造噪声;「一个都不在」在正常交付里不可能发生。**只报不判**(D-1): 判死会误伤
+     * 「产物在别处 / 被引擎合并 / 路径根不同」的形态, 今天没那类读数。
+     *
+     * ⚠ **升成拦要先有基率读数**: 这条闸真跑起来一年报几次、几次是真的, 今天答不上来。
+     */
+    | 'empty-write-set';
   /** 涉及的节点 id (lint = [reader, writer]; 空转 = 被反复拒绝的那批)。 */
   nodes: string[];
   /** 人与模型都读的一句话 (进 prompt 的就是它)。 */
