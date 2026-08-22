@@ -109,6 +109,6 @@ export function formatSeatRows(rows: SeatRow[]): string {
   // ⚠ advisor 的语法**不另起一行**: 多一行就把最后一个 `does:` 挤出视口。
   //   语法在 /help 与设置面板里可发现。
   const more =
-    tooMany ? `\n其余座位见 /seat 面板 — 面板里可改全部 ${TUNABLE_CONFIG_ROLES.length} 座` : '';
+    tooMany ? `\nOther seats: see /seat panel - it lists all ${TUNABLE_CONFIG_ROLES.length} tunable seats` : '';
   return `${lines.join('\n')}${more}\nUsage: /seat <role> <provider:model> - tunable seats write .omd/config.json and take effect immediately`;
 }

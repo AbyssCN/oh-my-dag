@@ -85,7 +85,7 @@ export function renderRunBoard(entries: BoardEntry[], nowMs: number, opts: RunBo
     const dur = at ? ` ${fmtDur(Math.max(0, nowMs - Date.parse(at)))}` : '';
     const shown = writeSet.slice(0, cap);
     const more = writeSet.length > shown.length ? ` +${writeSet.length - shown.length}` : '';
-    const ws = writeSet.length === 0 ? '(未声明写集)' : `${shown.join(' ')}${more}`;
+    const ws = writeSet.length === 0 ? '(no write set declared)' : `${shown.join(' ')}${more}`;
     rows.push(`${RUN_MARK.live} ${runId}${dur} · ${ws}`);
   }
   for (const p of published) {
@@ -97,8 +97,8 @@ export function renderRunBoard(entries: BoardEntry[], nowMs: number, opts: RunBo
     // timeoutMs 缺席 → 不画形变 (不假设默认值); 有则按**比例**判「快到了」。
     const near = typeof a.timeoutMs === 'number' && a.timeoutMs > 0 && waited / a.timeoutMs >= AWAIT_NEAR_TIMEOUT_RATIO;
     const from = a.fromRun ? ` ← ${a.fromRun}` : '';
-    rows.push(`${RUN_MARK.awaiting} ${a.artifact} · 等 ${fmtDur(waited)}${near ? ' (逼近超时)' : ''}${from}`);
+    rows.push(`${RUN_MARK.awaiting} ${a.artifact} · waiting ${fmtDur(waited)}${near ? ' (near timeout)' : ''}${from}`);
   }
-  const head = `run board · ${live.size} 活 · ${published.length} 产出 · ${awaiting.length} 等`;
+  const head = `run board · ${live.size} live · ${published.length} published · ${awaiting.length} awaiting`;
   return [head, ...rows].map((l) => fit(l, opts.width));
 }

@@ -42,9 +42,9 @@ export interface CodegraphDeps {
 export function probeCodegraph(deps: CodegraphDeps): CodegraphProbe {
   const which = deps.which ?? ((b: string) => Bun.which(b));
   const bin = which('codegraph');
-  if (!bin) return { available: false, reason: 'PATH 里没有 codegraph 二进制' };
+  if (!bin) return { available: false, reason: 'codegraph binary not found on PATH' };
   if (!existsSync(join(deps.cwd, '.codegraph'))) {
-    return { available: false, reason: `${deps.cwd} 没建过索引 (先跑 codegraph index)` };
+    return { available: false, reason: `${deps.cwd} not indexed yet (run codegraph index first)` };
   }
   return { available: true, bin };
 }
@@ -88,28 +88,28 @@ export function createCodegraphTools(deps: CodegraphDeps): AnyOmdTool[] {
   const probe = probeCodegraph(deps);
   if (!probe.available) {
     // 响亮降级,同 `assemble.ts:395` 的惯例: 不是静默少两个工具, 是记一行说清缺什么。
-    logger.info({ reason: probe.reason }, '[omd/tui] 符号能力 (codegraph) 不可用 → 工具面不挂这两个');
+    logger.info({ reason: probe.reason }, '[omd/tui] symbol capability (codegraph) unavailable -> tools not registered');
     return [];
   }
   const run = deps.run ?? defaultRun;
   const exec = async (args: string[]): Promise<string> => {
     const r = await run(probe.bin, args, deps.cwd);
     // 失败原文原样给模型 —— 「索引过期了」和「这个符号不存在」是两种完全不同的下一步。
-    return r.ok ? r.text || '(无结果)' : `[codegraph 失败]\n${r.text}`;
+    return r.ok ? r.text || '(no results)' : `[codegraph failed]\n${r.text}`;
   };
 
   return [
     textTool(
       'codegraph_query',
       'Search symbols in this repo by name (indexed knowledge graph, not grep).',
-      'codegraph_query(q, limit?) —— 按名字查符号 (走已建索引的知识图, 不是 grep)',
+      'codegraph_query(q, limit?) — search symbols by name (uses the indexed knowledge graph, not grep)',
       Type.Object({ q: Type.String(), limit: Type.Optional(Type.Integer()) }),
       (p) => exec(['query', String(p.q), '-l', String(p.limit ?? 10)]),
     ),
     textTool(
       'codegraph_context',
       'Build a task-scoped context bundle (symbols + call edges + code) from the index.',
-      'codegraph_context(task) —— 给一个任务拉出相关符号/调用边/代码 (一次调用顶多次 grep+read)',
+      'codegraph_context(task) — pull relevant symbols, call edges, and code for a task (one call replaces many grep+read)',
       Type.Object({ task: Type.String(), maxNodes: Type.Optional(Type.Integer()) }),
       (p) => exec(['context', String(p.task), '-n', String(p.maxNodes ?? 30)]),
     ),

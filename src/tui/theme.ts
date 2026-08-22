@@ -90,7 +90,7 @@ export function schemeFromBackground(rgb: { r: number; g: number; b: number }): 
 /** `#rrggbb` → 24 位前景 SGR。非法 hex 直接抛 —— 那是打字错误,不是运行时状况。 */
 export function fg24(hex: string): (t: string) => string {
   const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
-  if (!m) throw new Error(`fg24: 非法 hex ${JSON.stringify(hex)}`);
+  if (!m) throw new Error(`fg24: invalid hex ${JSON.stringify(hex)}`);
   const [r, g, b] = [m[1], m[2], m[3]].map((x) => Number.parseInt(x as string, 16));
   return sgr(`38;2;${r};${g};${b}`);
 }

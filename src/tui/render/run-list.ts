@@ -150,7 +150,7 @@ function renderRow(
   const progStr = prog ? `${prog.done}/${prog.total}` : '—/—';
   const progPad = padS(progStr, W_PROG - 1) + ' ';
   // NULL ≠ 0: 坏时戳 → "起点未记" (warn), 否则 dim。
-  const ageStr = fmtAge(view.ageMs) ?? '起点未记';
+  const ageStr = fmtAge(view.ageMs) ?? 'start not recorded';
   const agePad = padS(ageStr, W_AGE - 1) + ' ';
   const goalCols = Math.max(0, width - FIXED);
   const goal = clip(view.snap.goal, goalCols);
@@ -182,7 +182,7 @@ function renderSelectedDetail(
   const indent = '  '; // 对齐主行 runId 起点 (W_SEL + W_MARK = 4 → 视觉上 2 个 space 就够)
   const goalCols = Math.max(1, width - indent.length * 2);
   const goalWrap = clip(view.snap.goal, goalCols);
-  const keysHint = p.dim(`${indent}${indent}Enter 进这张图`);
+  const keysHint = p.dim(`${indent}${indent}Enter enters`);
   return [p.dim(fitLine(`${indent}goal`, width)), p.dim(fitLine(`${indent}${goalWrap}`, width)), fitLine(keysHint, width)];
 }
 
@@ -200,18 +200,18 @@ function renderHeader(views: readonly DagView[], width: number, p: DagPaint): st
     else if (v.phase === 'finished') finished++;
     else stalled++;
   }
-  const left = p.accent('活图');
-  const mid1 = p.accent(` ${live} 活`);
+  const left = p.accent('run');
+  const mid1 = p.accent(` ${live} live`);
   const mid2 = p.dim(' · ');
-  const mid3 = p.ok(` ${finished} 产出`);
+  const mid3 = p.ok(` ${finished} published`);
   const mid4 = p.dim(' · ');
-  const mid5 = p.warn(` ${stalled} 等`);
+  const mid5 = p.warn(` ${stalled} waiting`);
   return fitLine(left + mid1 + mid2 + mid3 + mid4 + mid5, width);
 }
 
 /** 底部键位行。`数据源 = 磁盘分片` 写在这里 —— 别的进程跑的 run 也画得出来。 */
 function renderKeysLine(width: number, p: DagPaint): string {
-  return p.dim(fitLine('↑↓ 选 run · Enter 进图 · Ctrl+G 退出 · 数据源 = .omd/hud/dag-*.json', width));
+  return p.dim(fitLine('up/down picks a run · Enter enters · Ctrl+G exits · source = .omd/hud/dag-*.json', width));
 }
 
 /**

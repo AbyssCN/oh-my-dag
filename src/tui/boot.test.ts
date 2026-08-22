@@ -19,7 +19,7 @@ describe('启动失败的分类', () => {
   // ★ 错误跨了动态 import 边界之后 instanceof / name 未必还在 —— 只认一种的话,
   //   换个抛法这一层就静默退化成 unknown, 而症状是"又开始吐堆栈了"。
   test('★ name 丢了也要按 message 认出来', () => {
-    expect(classifyBootFailure(new Error("[omd/model] 座位 'conductor' 未配模型 —— 无 config.models"))).toBe('seat-unresolved');
+    expect(classifyBootFailure(new Error("[omd/model] seat 'conductor' has no model configured - missing config.models"))).toBe('seat-unresolved');
   });
 
   test('认不出的就说认不出, 不猜', () => {
@@ -31,7 +31,7 @@ describe('启动失败的分类', () => {
 describe('给用户的那几行', () => {
   // 反向自检 (实跑): 把 formatBootFailure 里的 raw 拼接删掉 → 这条当场红。
   test('★ 引擎原话一字不改地带着 —— fail-open 可以吞异常, 不许吞证据', () => {
-    const raw = "[omd/model] 座位 'conductor' 未配模型 —— 无 config.models['conductor']";
+    const raw = "[omd/model] seat 'conductor' has no model configured - missing config.models['conductor']";
     expect(formatBootFailure(new SeatUnresolvedError(raw), '/tmp/x')).toContain(raw);
     expect(formatBootFailure(new Error('ECONNREFUSED'), '/tmp/x')).toContain('ECONNREFUSED');
   });

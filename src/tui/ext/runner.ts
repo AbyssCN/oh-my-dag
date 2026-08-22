@@ -77,7 +77,7 @@ const ctx = new Proxy(
 async function main(): Promise<void> {
   const entry = process.argv[2];
   if (!entry) {
-    send({ t: 'fatal', error: 'runner: 缺扩展入口路径' });
+    send({ t: 'fatal', error: 'runner: missing extension entry path' });
     return;
   }
   try {
@@ -85,7 +85,7 @@ async function main(): Promise<void> {
     const factory = typeof mod.default === 'function' ? (mod.default as (a: unknown, c: unknown) => unknown) : null;
     // pi 的扩展默认导出一个 (api, ctx) => void 的注册函数。不是函数 → 说清楚, 不静默当成功。
     if (!factory) {
-      send({ t: 'fatal', error: `扩展的 default 导出不是函数 (实得 ${typeof mod.default}) —— 不是一个 pi extension?` });
+      send({ t: 'fatal', error: `extension default export is not a function (got ${typeof mod.default}) - not a pi extension?` });
       return;
     }
     await factory(api, ctx);
@@ -116,7 +116,7 @@ async function main(): Promise<void> {
           send({ t: 'result', id: msg.id, ok: true, value: h ? await h(msg.payload) : undefined });
         } else if (msg.t === 'tool') {
           const tool = tools.get(msg.name);
-          if (!tool) throw new Error(`扩展没有注册工具 '${msg.name}'`);
+          if (!tool) throw new Error(`extension did not register tool '${msg.name}'`);
           send({ t: 'result', id: msg.id, ok: true, value: await tool.execute(msg.params) });
         }
       } catch (err) {

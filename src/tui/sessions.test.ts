@@ -232,12 +232,12 @@ describe('sessionPickerOptions', () => {
     title: '', updatedAt: now - 7200_000, ...over,
   });
 
-  test('★ 主标签是标题不是 id —— 人靠"聊的是什么"找会话, 不靠时间戳', () => {
-    const [o] = sessionPickerOptions([meta({ id: 's-1787309805', title: '了解 outputstyle 和 omd-plain' })], 'other', now);
-    expect(o!.label).toBe('  了解 outputstyle 和 omd-plain');
+  test('★ main label is the title, not id - finding a session by topic, not by timestamp', () => {
+    const [o] = sessionPickerOptions([meta({ id: 's-1787309805', title: 'about outputstyle and omd-plain' })], 'other', now);
+    expect(o!.label).toBe('  about outputstyle and omd-plain');
     expect(o!.value).toBe('s-1787309805');
     // id 与时间降到副列, 一行装下 (pi-tui 的 SelectList 一个 item 只画一行)。
-    expect(o!.description).toBe('s-1787309805 · 2h 前');
+    expect(o!.description).toBe('s-1787309805 · 2h ago');
   });
 
   test('当前会话带 `*` —— 不标的话切完不知道切没切成', () => {
@@ -253,19 +253,19 @@ describe('sessionPickerOptions', () => {
 
   test('fork 的来源画在副列 (树的边是数据不是装饰)', () => {
     const [o] = sessionPickerOptions([meta({ id: 'c', title: 'T', parent: 'p1' })], 'c', now);
-    expect(o!.description).toBe('c · 2h 前 · forked from p1');
+    expect(o!.description).toBe('c · 2h ago · forked from p1');
   });
 
-  test('★ NULL ≠ 0: 没记时间画 `—`, 不画 `0s 前`', () => {
+  test('★ NULL ≠ 0: 没记时间画 `—`, 不画 `0s ago`', () => {
     const [o] = sessionPickerOptions([meta({ id: 'n', title: 'T', updatedAt: 0 })], 'n', now);
     expect(o!.description).toBe('n · —');
     expect(o!.description).not.toContain('0s');
   });
 
   test('relTime 四档', () => {
-    expect(relTime(now - 30_000, now)).toBe('30s 前');
-    expect(relTime(now - 5 * 60_000, now)).toBe('5m 前');
-    expect(relTime(now - 3 * 3600_000, now)).toBe('3h 前');
-    expect(relTime(now - 2 * 86400_000, now)).toBe('2d 前');
+    expect(relTime(now - 30_000, now)).toBe('30s ago');
+    expect(relTime(now - 5 * 60_000, now)).toBe('5m ago');
+    expect(relTime(now - 3 * 3600_000, now)).toBe('3h ago');
+    expect(relTime(now - 2 * 86400_000, now)).toBe('2d ago');
   });
 });

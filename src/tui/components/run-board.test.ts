@@ -26,7 +26,7 @@ describe('#96 renderRunBoard —— 纯读零写的活 run 观察面', () => {
     const entries = [e({ runId: 'r1', event: 'claimed', writeSet: ['src/a.ts', 'src/b.ts'] })];
     const out = renderRunBoard(entries, NOW);
     // #205: 表头多了「N 等」一段 —— 三样各自一个计数, 少一个就有一类事实在屏上没有位置。
-    expect(out[0]).toBe('run board · 1 活 · 0 产出 · 0 等');
+    expect(out[0]).toBe('run board · 1 live · 0 published · 0 awaiting');
     expect(out[1]).toBe(`${RUN_MARK.live} r1 10m · src/a.ts src/b.ts`);
   });
 
@@ -39,8 +39,8 @@ describe('#96 renderRunBoard —— 纯读零写的活 run 观察面', () => {
    * NULL≠0 那条: **写集空**与**没声明写集**在盘上是同一个 `[]`(BoardEntry.writeSet 可缺席),
    * 但读的人要的是"这个 run 没说它要写哪儿" —— 画成空白会被读成"它不写盘"。
    */
-  test('无写集 → 明写「未声明写集」, 不留空白', () => {
-    expect(renderRunBoard([e({ runId: 'r1', event: 'claimed' })], NOW)[1]).toBe(`${RUN_MARK.live} r1 10m · (未声明写集)`);
+  test('无写集 → 明写「no write set declared」, 不留空白', () => {
+    expect(renderRunBoard([e({ runId: 'r1', event: 'claimed' })], NOW)[1]).toBe(`${RUN_MARK.live} r1 10m · (no write set declared)`);
   });
 
   /**
@@ -69,7 +69,7 @@ describe('#96 renderRunBoard —— 纯读零写的活 run 观察面', () => {
     const out = renderRunBoard(entries, NOW);
     // ★ 反向自检 (已实测会红): 把 published 过滤成 `live.has(e.runId)` → 这条红, 且红的方式
     //   正是它防的那件事 —— 下游会以为产物不在。
-    expect(out[0]).toBe('run board · 0 活 · 1 产出 · 0 等');
+    expect(out[0]).toBe('run board · 0 live · 1 published · 0 awaiting');
     expect(out[1]).toBe(`${RUN_MARK.published} sdd.md · r1`);
   });
 
@@ -97,8 +97,8 @@ describe('#96 renderRunBoard —— 纯读零写的活 run 观察面', () => {
 
     test('未收口的等待 → 画 ⏳ 行 + 已等时长; 表头计数跟上', () => {
       const out = renderRunBoard([waiting()], NOW);
-      expect(out[0]).toBe('run board · 0 活 · 0 产出 · 1 等');
-      expect(out[1]).toBe(`${RUN_MARK.awaiting} sdd.md · 等 10m`);
+      expect(out[0]).toBe('run board · 0 live · 0 published · 1 awaiting');
+      expect(out[1]).toBe(`${RUN_MARK.awaiting} sdd.md · waiting 10m`);
     });
 
     /**
@@ -132,12 +132,12 @@ describe('#96 renderRunBoard —— 纯读零写的活 run 观察面', () => {
      */
     test('★ 逼近超时按 timeoutMs 的比例判; 缺 timeoutMs 则不画形变', () => {
       const near = renderRunBoard([waiting({ timeoutMs: 600_000 })], NOW); // 等 10m / 上限 10m = 100%
-      expect(near[1]).toContain('逼近超时');
+      expect(near[1]).toContain('near timeout');
       const far = renderRunBoard([waiting({ timeoutMs: 36_000_000 })], NOW); // 10m / 10h ≈ 1.7%
-      expect(far[1]).not.toContain('逼近超时');
+      expect(far[1]).not.toContain('near timeout');
       // ★ 反向自检 (已实测会红): 把阈值换成硬编绝对值 (如 waited > 5min) → far 那条红。
       const noTimeout = renderRunBoard([waiting({ timeoutMs: undefined })], NOW);
-      expect(noTimeout[1]).not.toContain('逼近超时');
+      expect(noTimeout[1]).not.toContain('near timeout');
     });
   });
 

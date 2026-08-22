@@ -35,9 +35,9 @@ import { select } from '../components/dialog';
 import type { OmdTuiTheme } from '../theme';
 
 /** Esc 的回值。**是答案不是错误** —— 措辞要让模型看得懂它该自己决定下一步。 */
-export const ASK_USER_CANCELLED = '用户没有选(按了 Esc)。这不是错误 —— 请你自己判断:要么按最合理的默认继续, 要么说明你需要什么再问一次。';
+export const ASK_USER_CANCELLED = 'User did not choose (pressed Esc). This is not an error - decide yourself: either continue with the most reasonable default, or say what you need and ask again.';
 /** 框被占时的回值。同样是答案不是错误。 */
-export const ASK_USER_BUSY = '问不出来:界面上已经开着另一个对话框。请先不要问, 按最合理的默认继续, 或者等这一轮结束再问。';
+export const ASK_USER_BUSY = 'Cannot ask: another dialog is already open on screen. Do not ask; either continue with the most reasonable default, or wait until this turn ends to ask.';
 
 /**
  * ★ **「先聊聊这个」** —— owner 裁决 R5(`docs/plan/2026-08-08-tui-gauntlet-重建-plan.md` §1):
@@ -51,8 +51,8 @@ export const ASK_USER_BUSY = '问不出来:界面上已经开着另一个对话�
  * 抹成同一个回值, 就等于告诉模型"随便挑一个吧" —— 而那正是用户按这一项时最不想要的。
  */
 export const ASK_USER_DISCUSS =
-  '用户选了「先聊聊这个」—— 他**不想现在做选择**。不要按默认继续, 也不要重复问同一个问题。' +
-  '请把这几个选项背后的取舍讲清楚(各自的代价与前提), 然后等他回话。';
+  'User chose "talk it through first" - they do NOT want to decide now. Do not default, and do not re-ask the same question. ' +
+  'Explain the trade-offs behind the options (cost and prerequisites each), then wait for their reply.';
 /** 「先聊聊」那一项的 value。用不可能与序号撞的串。 */
 const DISCUSS = '\u0000discuss';
 
@@ -97,7 +97,7 @@ export function createAskUserTool(resolve: AskUserResolver): AnyOmdTool[] {
       'Ask the human a multiple-choice question and wait for their answer. ' +
       'Use it when the answer would change what you build and you cannot settle it from the code or the request — ' +
       'not for choices with an obvious default. The answer may be "cancelled"; handle that yourself.',
-    promptSnippet: 'ask_user(question, options[]) — 反问用户一个选择题(答案会不同做法才问; 有明显默认就别问)。',
+    promptSnippet: 'ask_user(question, options[]) - ask the user a multiple-choice question (only when the answer would change what you do; skip if there is an obvious default).',
     parameters: SCHEMA,
     // 它占住输入区并等人 —— 绝不能与别的工具并行跑。
     executionMode: 'sequential',
@@ -135,7 +135,7 @@ export function createAskUserTool(resolve: AskUserResolver): AnyOmdTool[] {
       }
       deps.appendNotice(`you chose: ${chosen.label}`);
       return {
-        content: [{ type: 'text' as const, text: `用户选了: ${chosen.label}` }],
+        content: [{ type: 'text' as const, text: `User chose: ${chosen.label}` }],
         details: { answered: true, index: idx, label: chosen.label },
       };
     },

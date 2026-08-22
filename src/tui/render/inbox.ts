@@ -124,12 +124,12 @@ function renderSelectedDetail(item: InboxItem, width: number, p: InboxPaint): st
   // 四态四组动作 —— 不要合并(SDD §2.2 钉死)。
   const hint =
     item.kind === 'rule'
-      ? 'Enter 就地裁'
+      ? 'Enter rule on-site'
       : item.kind === 'confirm'
-        ? 'c 收件 · x 退回' // INV-INBOX-3: confirm 不能含「Enter 就地裁」
+        ? 'c accept · x reject' // INV-INBOX-3: confirm must not contain 'Enter rule on-site'
         : item.kind === 'node'
-          ? 'Enter 进图'
-          : 'Enter 收件';
+          ? 'Enter into graph'
+          : 'Enter accept';
   return [
     p.dim(fitLine(`${indent}${idStr}`, width)),
     p.dim(fitLine(`${indent}${hint}`, width)),
@@ -169,12 +169,12 @@ function renderHeader(items: readonly InboxItem[], width: number, p: InboxPaint)
     else take++;
   }
   const total = items.length;
-  const left = p.accent(`收件箱 · ${total} 件`);
+  const left = p.accent(`inbox · ${total} items`);
   const counts: string[] = [];
-  if (rule) counts.push(p.warn(`${rule} 等裁`));
-  if (confirm) counts.push(p.accent(`${confirm} 建议`));
-  if (node) counts.push(p.dim(`${node} 节点`));
-  if (take) counts.push(p.dim(`${take} 待收`));
+  if (rule) counts.push(p.warn(`${rule} awaiting rule`));
+  if (confirm) counts.push(p.accent(`${confirm} suggested`));
+  if (node) counts.push(p.dim(`${node} nodes`));
+  if (take) counts.push(p.dim(`${take} unreceived`));
   if (counts.length === 0) return fitLine(left, width);
   // 分隔符单空格 —— count 不带 leading space(否则 `·  X` 看着是双空格)。
   return fitLine(left + ' ' + counts.join(p.dim(' · ')), width);
@@ -187,7 +187,7 @@ function renderHeader(items: readonly InboxItem[], width: number, p: InboxPaint)
  */
 function renderFooter(width: number, p: InboxPaint): string {
   return p.dim(
-    fitLine('裁决不等于执行 · Enter 预填不发送 · map_deliver 才执行 · ruling 即 goal', width),
+    fitLine('ruling is not execution · Enter prefills · map_deliver executes · ruling = goal', width),
   );
 }
 
@@ -222,7 +222,7 @@ export function renderInbox(
   // 表头那个 `0 件` 是「画 0」, 空仓直接跳过表头。
   if (len === 0) {
     const out: string[] = [
-      p.dim(fitLine('(空 · 没有待裁的票 / 待进的图 / 待收的产物)', width)),
+      p.dim(fitLine('(empty · no tickets / graphs / artifacts waiting)', width)),
       renderFooter(width, p),
     ];
     return clampHeight(out, o.height, width, p);

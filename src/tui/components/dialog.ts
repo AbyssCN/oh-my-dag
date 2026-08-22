@@ -134,7 +134,7 @@ export function selectComponent(
   const titleOf = (): string => {
     const hint = opts.search ? 'type to search · ↑↓ select · Enter ok · Esc cancel' : '↑↓ select · Enter ok · Esc cancel';
     // 命中数画在标题上 —— 0 命中必须**看得见**, 否则「搜不到」与「没这条」长得一样。
-    const q = opts.search && query ? `  「${query}」 ${hits}` : '';
+    const q = opts.search && query ? `  "${query}" ${hits}` : '';
     return `${opts.title}${q}  (${hint})`;
   };
   /**

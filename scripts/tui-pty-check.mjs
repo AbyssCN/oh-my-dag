@@ -511,10 +511,10 @@ async function scenarioSeat() {
      * ⚠ 判据锚 `lastIndexOf` 的**先后**, 不锚子串 —— oracle 是累积缓冲,
      * `改哪个座位` 前面早就打印过, `includes` 无论收没收敛都是真(本文件头那一族假绿)。
      */
-    const seatPanelAt = p.text().lastIndexOf('改哪个座位');
+    const seatPanelAt = p.text().lastIndexOf('Which seat?');
     p.write('\r');
     check(
-      await waitFor(p, (t) => Math.max(t.lastIndexOf('换成哪个模型'), t.lastIndexOf('换成哪个坐标')) > seatPanelAt),
+      await waitFor(p, (t) => Math.max(t.lastIndexOf('-> which model?'), t.lastIndexOf('-> which coordinate?')) > seatPanelAt),
       'S12-2b2 ★★ /seat 里 Enter **直接**开模型子层(中间那层没了 = 与 /settings 同一个组件)',
       p.text().slice(-900),
     );
@@ -562,7 +562,7 @@ async function scenarioSeat() {
     //   第三版只认 `换成哪个模型` 所以红 —— **那是我的判据挑食, 不是产品缺陷**。
     //   ⚠ 代价说清楚:目录为空时这条只能证明"进的是同形状的子页", 分不出是哪一个 ——
     //   与那两条兄弟闸同一个标准, 不更强也不更弱。
-    const titleAt = (t) => Math.max(t.lastIndexOf('conductor 换成哪个模型'), t.lastIndexOf('conductor 换成哪个坐标'));
+    const titleAt = (t) => Math.max(t.lastIndexOf('conductor -> which model?'), t.lastIndexOf('conductor -> which coordinate?'));
     const beforeModels = titleAt(p.text());
     p.write('/models\r');
     check(
@@ -641,10 +641,10 @@ async function scenarioSeat() {
      * oracle 是累积缓冲,`改哪一项` / `审批 token TTL` 在前面早就出现过,
      * `includes` 无论修没修都是真(本文件头记的那一族假绿)。
      */
-    const panelAt = p.text().lastIndexOf('改哪一项');
+    const panelAt = p.text().lastIndexOf('Which setting?');
     p.write('\r'); // 选中第一行(座位 conductor)→ **直接**开模型选单
     check(
-      await waitFor(p, (t) => Math.max(t.lastIndexOf('换成哪个模型'), t.lastIndexOf('换成哪个坐标')) > panelAt),
+      await waitFor(p, (t) => Math.max(t.lastIndexOf('-> which model?'), t.lastIndexOf('-> which coordinate?')) > panelAt),
       'SET-8 ★ 设置页 Enter 座位行 → 直接开模型子层(SettingsList.submenu; 中间那层没了)',
       p.text().slice(-900),
     );
@@ -677,11 +677,11 @@ async function scenarioSeat() {
     check(onLeaf, 'SET-10 ↓ 走得到「seat leaf」那一行(光标钉在它上面)', p.text().slice(-900));
     p.write('\r'); // 开座位子层
     check(
-      await waitFor(p, (t) => t.lastIndexOf('leaf 换成哪个模型?') > t.lastIndexOf('→ seat leaf')),
+      await waitFor(p, (t) => t.lastIndexOf('leaf -> which model?') > t.lastIndexOf('→ seat leaf')),
       'SET-11 座位子层开出来了(不是第一行那个 conductor 的)',
       p.text().slice(-900),
     );
-    const subAt = p.text().lastIndexOf('leaf 换成哪个模型?');
+    const subAt = p.text().lastIndexOf('leaf -> which model?');
     p.write('\x1b');
     check(
       await waitFor(p, (t) => t.lastIndexOf('→ seat leaf') > subAt),
@@ -947,7 +947,15 @@ async function scenarioPalette() {
       p.text().slice(-800),
     );
     // fixture 后端起步零会话、本进程零 run ⇒ 唯一一行是地图行(无源恒缺席的活证据)。
-    check(p.text().includes('地图'), 'PK-3 ★ 选单里有地图那一行(会话/活图无源时不画空行)', p.text().slice(-800));
+    // 2026-08-22 英文化换锚: 原来锚中文「地图」。⚠ **不许锚 `  map  ` 那个主标签** ——
+    // 这条 lane 的 `p.text()` 把连续空白压成一个 (PK-2 第一版就栽在这), 双空格对不上。
+    // 改锚**副列**的 `map <slug> · frontier` —— 它是地图行独有的形状 (会话行是 `<id> · <相对时间>`,
+    // 活图行是 `<n> nodes · <k> running`), 咬得比一个 `map ` 子串紧。
+    check(
+      /map \S+ · frontier \d+/.test(p.text()),
+      'PK-3 ★ 选单里有地图那一行(会话/活图无源时不画空行)',
+      p.text().slice(-800),
+    );
     p.write('\r');
     check(
       await waitFor(p, (t) => t.includes('fog line')),
@@ -1118,12 +1126,12 @@ async function scenarioDagViews() {
      *                                        其余上游标在行尾)。**这条最要紧, 原样保住。**
      */
     p.write('\x07'); // Ctrl+G → 全屏 (片 4 起: DAG 屏)
-    check(await waitFor(p, (t) => t.includes('选节点')), 'DG-4 ★ Ctrl+G 进全屏(DAG 屏键位行可见)', p.text().slice(-400));
+    check(await waitFor(p, (t) => t.includes('picks a node')), 'DG-4 ★ Ctrl+G 进全屏(DAG 屏键位行可见)', p.text().slice(-400));
     check(p.text().includes('◉'), 'DG-6 ★ 在跑的节点用它自己的字形 ◉(五态五个字形)', p.text().slice(-600));
     check(p.text().includes('╋ +'), 'DG-8 ★ fan-in 汇聚点标在行尾(shard-3 deps 2 条, 节点只画一次)', p.text().slice(-600));
     p.write('\t');
     check(
-      await waitFor(p, (t) => t.includes('选 run') && t.includes('.omd/hud/dag-')),
+      await waitFor(p, (t) => t.includes('picks a run') && t.includes('.omd/hud/dag-')),
       'DG-5 ★ Tab 切到活图列表(键位行 + 数据源声明都在)',
       p.text().slice(-600),
     );
@@ -1174,7 +1182,7 @@ async function scenarioDagViews() {
       );
     }
     p.write('\t');
-    check(await waitFor(p, (t) => t.includes('选节点')), 'DG-9 ★ Tab 再按一次循环回 DAG 屏(两屏来回)');
+    check(await waitFor(p, (t) => t.includes('picks a node')), 'DG-9 ★ Tab 再按一次循环回 DAG 屏(两屏来回)');
     p.write('\x07'); // 退出全屏
     await new Promise((r) => setTimeout(r, 300));
   } finally {

@@ -22,13 +22,13 @@ describe('★ 两段探测, 少一段就会给出垃圾答案', () => {
   test('二进制不在 → 不可用, 且说得出是这一段', () => {
     const p = probeCodegraph({ cwd: freshCwd(true), which: withBin(null) });
     expect(p.available).toBe(false);
-    expect((p as { reason: string }).reason).toContain('二进制');
+    expect((p as { reason: string }).reason).toContain('binary');
   });
 
   test('★ 二进制在但**没建索引** → 也不可用 —— 查询会返回空, 而模型会把空读成"这符号不存在"', () => {
     const p = probeCodegraph({ cwd: freshCwd(false), which: withBin('/usr/bin/codegraph') });
     expect(p.available).toBe(false);
-    expect((p as { reason: string }).reason).toContain('没建过索引');
+    expect((p as { reason: string }).reason).toContain('not indexed yet');
   });
 
   test('两段都过 → 可用, 带上二进制路径', () => {
@@ -90,16 +90,16 @@ describe('调用形状', () => {
     });
     const r = (await (tools[0] as { execute: (id: string, p: unknown) => Promise<{ content: { text: string }[] }> }).execute('1', { q: 'x' }));
     expect(r.content[0]?.text).toContain('index is stale');
-    expect(r.content[0]?.text).toContain('codegraph 失败');
+    expect(r.content[0]?.text).toContain('codegraph failed');
   });
 
-  test('空结果说"(无结果)", 不返回空串', async () => {
+  test('空结果说"(no results)", 不返回空串', async () => {
     const tools = createCodegraphTools({
       cwd: freshCwd(true),
       which: withBin('/x/codegraph'),
       run: async () => ({ ok: true, text: '' }),
     });
     const r = (await (tools[0] as { execute: (id: string, p: unknown) => Promise<{ content: { text: string }[] }> }).execute('1', { q: 'x' }));
-    expect(r.content[0]?.text).toBe('(无结果)');
+    expect(r.content[0]?.text).toBe('(no results)');
   });
 });

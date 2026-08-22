@@ -64,21 +64,21 @@ describe('renderTicketBoard', () => {
     expect(row(T0_MS + 5 * 60_000)).not.toContain('起点未记');
   });
 
-  test('C-7 ② waiting-unknown-since 画「起点未记」, 不编 0 时长 (NULL≠0)', () => {
+  test('C-7 ② waiting-unknown-since draws "start not recorded", no fake 0 duration (NULL≠0)', () => {
     const u = ticket({ id: 'u1', status: 'escalated' }); // waitingSince 缺席
     expect(waitingHumanState(u)).toBe('waiting-unknown-since');
     const line = lines([u]).find((l) => l.includes('u1'))!;
-    expect(line).toContain('起点未记');
+    expect(line).toContain('start not recorded');
     // 证伪: 把起点缺席当 0 算 (nowMs − 0 = 1970 至今 56 年) 或编 'waiting 0m' → 这条红。
     expect(line).not.toContain('waiting 0');
   });
 
-  test('D-5 四态直接用: ruled-unrecorded 画「裁了没记」, 不抹平成 waiting', () => {
+  test('D-5 four states used directly: ruled-unrecorded draws "ruled but unrecorded", not flattened to waiting', () => {
     const r = ticket({ id: 'r1', status: 'escalated', waitingSince: T0, ruledAt: T0 });
     expect(waitingHumanState(r)).toBe('ruled-unrecorded');
     const line = lines([r]).find((l) => l.includes('r1'))!;
-    expect(line).toContain('裁了没记');
-    expect(line).not.toContain('起点未记');
+    expect(line).toContain('ruled but unrecorded');
+    expect(line).not.toContain('start not recorded');
     // 证伪: 不接 waitingHumanState、自己按 status 猜 → ruledAt 被无视, 这条红。
   });
 

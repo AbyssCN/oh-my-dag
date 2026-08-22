@@ -124,7 +124,7 @@ describe('ask_user', () => {
     expect(text(r)).not.toBe(ASK_USER_CANCELLED); // ★ 分得开
     expect(r.details).toMatchObject({ answered: false, reason: 'discuss' });
     // 措辞要让模型看得懂"别按默认继续"
-    expect(text(r)).toContain('不要按默认继续');
+    expect(text(r)).toContain('Do not default');
   });
 
   test('schema 要求 2–8 个选项 —— 一个选项的"选择"不是选择', () => {

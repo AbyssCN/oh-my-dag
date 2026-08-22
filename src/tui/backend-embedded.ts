@@ -126,7 +126,7 @@ export function createEmbeddedBackend(deps: EmbeddedBackendDeps): OmdBackend & D
       onEvent?.({ event, payload, seq });
     } catch (err) {
       // 回调抛错不许打断这一轮 —— 但**不许吞证据**(fail-open 的两半)。
-      logger.warn({ err: (err as Error).message, event, seq }, '[omd/tui] onEvent 回调抛错 (已吞, 不打断本轮)');
+      logger.warn({ err: (err as Error).message, event, seq }, '[omd/tui] onEvent callback threw (swallowed, not interrupting this turn)');
     }
   };
 

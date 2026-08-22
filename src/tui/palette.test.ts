@@ -36,7 +36,7 @@ describe('paletteOptions', () => {
     });
     expect(row?.label).toContain('了解 outputstyle');
     // id 与相对时间降到副列 —— 仍然搜得到(dialog 的 matching 吃 label/value/description 三段)。
-    expect(row?.description).toBe('s-1787309805 · 2h 前');
+    expect(row?.description).toBe('s-1787309805 · 2h ago');
   });
 
   test('当前会话标 `*` —— 与 formatSessions / sessionPickerOptions 同一个记号', () => {
@@ -79,9 +79,9 @@ describe('paletteOptions', () => {
       now: NOW,
     });
     expect(rows.map((r) => r.value)).toEqual(['session:s-1', 'run:', 'map:214']);
-    expect(rows[1]?.description).toBe('8 节点 · 1 在跑');
+    expect(rows[1]?.description).toBe('8 nodes · 1 running');
     expect(rows[2]?.label).toContain('OMD TUI 观测面');
-    expect(rows[2]?.description).toBe('map 214 · 前沿 9 · 未结 11');
+    expect(rows[2]?.description).toBe('map 214 · frontier 9 · open 11');
   });
 
   test('地图没写 destination 时退回 slug —— 不画一行空白', () => {

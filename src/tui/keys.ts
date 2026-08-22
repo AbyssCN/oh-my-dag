@@ -154,9 +154,9 @@ export function formatKeyClashes(clashes: readonly KeyClash[]): string | null {
   if (clashes.length === 0) return null;
   const rows = clashes.map((c) => `  ${c.key} → ${c.ids.join(' / ')}`);
   return [
-    `${KEYBINDINGS_FILE}: ${clashes.length} 个键位被多个命令抢占, 每个键只有一条会生效:`,
+    `${KEYBINDINGS_FILE}: ${clashes.length} keybinding(s) clobbered by multiple commands, only one wins per key:`,
     ...rows,
-    '  (改掉其中一条, 或删掉该行回到默认)',
+    '  (change one of them, or delete the line to restore the default)',
   ].join('\n');
 }
 

@@ -201,7 +201,7 @@ export function renderDagScreen(
   //    树行(尤其 depth>=1)kind 列漂到第 12/15 列, 两边对不上(实装 v2 缺陷 3)。
   const headSegs: string[] = [padToCol('', colStart) + p.dim('kind'.padEnd(kindW - 1))];
   if (showModel) headSegs.push(' ' + p.dim('model'.padEnd(modelW - 1)));
-  headSegs.push(' ' + p.dim('用时'.padStart(durW - 1)));
+  headSegs.push(' ' + p.dim('duration'.padStart(durW - 1)));
   if (showBar) headSegs.push(' ' + p.dim('─'.repeat(barW)));
   out.push(fitLine(headSegs.join(''), width));
 
@@ -275,7 +275,7 @@ export function renderDagScreen(
       const verdicts = n.verdicts ?? [];
       if (verdicts.length > 0 && n.status !== 'pending' && n.status !== 'running') {
         for (const v of verdicts) {
-          const head = `${v.gate} 判 ${v.verdict}${v.reason ? `: ${v.reason}` : ''}`;
+          const head = `${v.gate} verdict ${v.verdict}${v.reason ? `: ${v.reason}` : ''}`;
           for (const w of wrap(head, innerW)) {
             const markChar = v.verdict === 'fail' ? '✗' : '✓';
             const tint = v.verdict === 'fail' ? p.fail : p.ok;
@@ -283,7 +283,7 @@ export function renderDagScreen(
           }
         }
         // INV-DAG-6 的硬限: 展开里必须带这句限定
-        out.push(fitLine(`${ind}  ${p.dim('判词的 pass/fail 指的是被审对象, 不是闸本身')}`, width));
+        out.push(fitLine(`${ind}  ${p.dim('verdict pass/fail refers to the subject, not the gate')}`, width));
       }
 
       // 失败原文 (INV-DAG-2: failureKind 缺席 → 不编 `[unclassified]`, 只画原文)
@@ -301,7 +301,7 @@ export function renderDagScreen(
         const reason = u.failReason ? `  ${clip(u.failReason, Math.max(0, innerW - 12))}` : '';
         out.push(
           fitLine(
-            `${ind}${p.dim('上游')} ${p.fail(`✗ ${u.id}`)}${u.failReason ? p.dim(reason) : ''}`,
+            `${ind}${p.dim('upstream')} ${p.fail(`✗ ${u.id}`)}${u.failReason ? p.dim(reason) : ''}`,
             width,
           ),
         );
@@ -311,11 +311,11 @@ export function renderDagScreen(
       if (n.status === 'failed' || n.kind === 'await') {
         out.push(
           fitLine(
-            `${ind}${p.accent('r')} 重跑并续图    ${p.accent('i')} 介入: 手改后标绿    ${p.accent('s')} 停图, 记进台账`,
+            `${ind}${p.accent('r')} rerun and resume    ${p.accent('i')} intervene: hand-edit then mark green    ${p.accent('s')} stop, log to ledger`,
             width,
           ),
         );
-        out.push(fitLine(`${ind}  ${p.warn('(按键未接线)')}`, width));
+        out.push(fitLine(`${ind}  ${p.warn('(keys not wired)')}`, width));
       }
     }
 
@@ -330,7 +330,7 @@ export function renderDagScreen(
   // ── 键位行
   out.push(
     fitLine(
-      p.dim('↑↓ 选节点 · Enter 展开输出 · r/i/s 处理失败 · Ctrl+G 退出'),
+      p.dim('↑↓ picks a node · Enter expand output · r/i/s handle failure · Ctrl+G exit'),
       width,
     ),
   );

@@ -46,7 +46,7 @@ export function redirectTuiLogs(opts: { cwd: string; now?: () => number }): TuiL
     path = join(dir, `omd-tui-${(opts.now ?? Date.now)()}.log`);
     fd = openSync(path, 'a');
   } catch (err) {
-    const reason = `[omd/tui] 日志文件开不出 → 本程日志已关闭 (${dir}): ${(err as Error).message}`;
+    const reason = `[omd/tui] cannot open log file -> logging disabled for this run (${dir}): ${(err as Error).message}`;
     const restoreLevel = logger.level;
     logger.level = 'silent';
     let closed = false;

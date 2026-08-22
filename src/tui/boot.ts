@@ -10,7 +10,7 @@
  * 428 |  * 座位模型解析, 解不到即抛 (INV-MODEL-5 计划期响亮失败)。
  * 433 |   if (!r) throw new SeatUnresolvedError(seat);
  *                       ^
- * SeatUnresolvedError: [omd/model] 座位 'conductor' 未配模型 —— ...
+ * SeatUnresolvedError: [omd/model] seat 'conductor' has no model configured - ...
  *      at resolveSeatModel (src/model/role-models.ts:433:17)
  * ```
  *
@@ -32,7 +32,7 @@ export function classifyBootFailure(err: unknown): BootFailureKind {
   const msg = err instanceof Error ? err.message : String(err);
   // ⚠ 认 name **也**认 message:错误跨了动态 import 边界之后 `instanceof` 未必成立,
   //   而只认 name 的话换个抛法就静默退化成 unknown(那是"翻译层看起来还在、其实不翻了")。
-  if (name === 'SeatUnresolvedError' || msg.includes('未配模型')) return 'seat-unresolved';
+  if (name === 'SeatUnresolvedError' || msg.includes('no model configured')) return 'seat-unresolved';
   return 'unknown';
 }
 

@@ -93,7 +93,7 @@ describe('INV-NOW-1 · 阶梯只选一档', () => {
     expect(body).toContain(TIER_MARK_FOR('awaiting'));
     expect(body).toContain('t-1');
     // suggested 折入 ① 档 — 行文里把 "其中 N 待收件" 数标出来 (新契约)
-    expect(body).toContain('其中 1 待收件');
+    expect(body).toContain('1 unreceived');
     // live 的 runId8 / goal 不许出现
     expect(body).not.toContain('bbbbbbbb');
     expect(body).not.toContain('在跑的活');
@@ -143,7 +143,7 @@ describe('INV-NOW-1 · 阶梯只选一档', () => {
     // suggested 那张票的 id 在屏上 (awaiting[0] ?? suggested[0] 取的是这张)
     expect(body).toContain('t-sug');
     // 「其中 1 待收件」点明这是 suggested 那类
-    expect(body).toContain('其中 1 待收件');
+    expect(body).toContain('1 unreceived');
     // live 的 runId8 / goal 不许出现 (被等你档盖住了)
     expect(body).not.toContain('cccccccc');
     expect(body).not.toContain('后台在跑');
@@ -170,7 +170,7 @@ describe('INV-NOW-1 · 阶梯只选一档', () => {
     // 走等你档 — ⚠ + 等你 + 「其中 N 待收件」
     expect(body).toContain(TIER_MARK_FOR('awaiting'));
     expect(body).toContain(TIER_LABEL.awaiting);
-    expect(body).toContain('其中 1 待收件');
+    expect(body).toContain('1 unreceived');
     expect(body).toContain('t-2');
     // ③ 欠账档 (debt) 不画 — 字形与字面值都不出现
     expect(body).not.toContain(TIER_MARK_FOR('debt'));
@@ -187,7 +187,7 @@ describe('INV-NOW-1 · 阶梯只选一档', () => {
     expect(out.length).toBe(1);
     const body = out.join('\n');
     expect(body).toContain(TIER_MARK_FOR('maps'));
-    expect(body).toContain('1 张图');
+    expect(body).toContain('1 runs');
     expect(body).not.toContain(TIER_MARK_FOR('awaiting'));
   });
 });
@@ -208,7 +208,7 @@ describe('INV-NOW-4 · 数据只来自真源, 取不到就跳过那一档', () =
     const body = out.join('\n');
     // 落到闲档
     expect(body).toContain(TIER_MARK_FOR('maps'));
-    expect(body).toContain('1 张图');
+    expect(body).toContain('1 runs');
     // 关键: 不画「0 在跑」/「0 run」这种东西 (INV-NOW-4: NULL ≠ 0)
     expect(body).not.toMatch(/\b0 在跑\b/);
     expect(body).not.toMatch(/\b0 runs?\b/);
@@ -277,7 +277,7 @@ describe('INV-NOW-2 · 封顶 3 行, 宽度闸', () => {
     // 超长 title 被截: 含 ...
     expect(out).toContain('...');
     // 「其中 1 待收件」窄屏下也得在屏上 (这条是 suggested 折入 ① 的契约硬钉)
-    expect(out).toContain('其中 1 待收件');
+    expect(out).toContain('1 unreceived');
   });
 });
 
@@ -349,7 +349,7 @@ describe('细节 · 多条等你 / 在跑 / 闲档', () => {
       },
       { width: 100, now: NOW },
     ).join('\n');
-    expect(out).toMatch(/等你:2 票/);
+    expect(out).toMatch(/needs you:2 tickets/);
     expect(out).toContain('t-1');
   });
 
@@ -362,8 +362,8 @@ describe('细节 · 多条等你 / 在跑 / 闲档', () => {
       },
       { width: 100, now: NOW },
     ).join('\n');
-    expect(out).toContain('2 票');
-    expect(out).toContain('其中 1 待收件');
+    expect(out).toContain('2 tickets');
+    expect(out).toContain('1 unreceived');
     expect(out).toContain('t-1');
     // 屏上展示的是 awaiting[0] (优先级最高), suggested[0] 不展开
     expect(out).not.toContain('建议');
@@ -381,11 +381,11 @@ describe('细节 · 多条等你 / 在跑 / 闲档', () => {
       },
       { width: 100, now: NOW },
     ).join('\n');
-    expect(out).toMatch(/在跑:2/);
+    expect(out).toMatch(/running:2/);
     expect(out).toContain('aaaaaaaa');
   });
 
-  test('坏时戳 (ageMs = Infinity) → 在跑那行含「起点未记」, 不画 Infinity / 0m', () => {
+  test('坏时戳 (ageMs = Infinity) → 在跑那行含「start not recorded」, 不画 Infinity / 0m', () => {
     const out = renderNowBand(
       {
         awaiting: [], suggested: [],
@@ -394,7 +394,7 @@ describe('细节 · 多条等你 / 在跑 / 闲档', () => {
       },
       { width: 100, now: NOW },
     ).join('\n');
-    expect(out).toContain('起点未记');
+    expect(out).toContain('start not recorded');
     expect(out).not.toContain('Infinity');
     expect(out).not.toMatch(/\b0m\b/);
   });
@@ -417,7 +417,7 @@ describe('细节 · 多条等你 / 在跑 / 闲档', () => {
       { awaiting: [], suggested: [], live: [], maps: [map({ total: 1, bands: {}, phantoms: 0 })] },
       { width: 100, now: NOW },
     ).join('\n');
-    expect(out).toContain('1 张图');
+    expect(out).toContain('1 runs');
     expect(out).toContain('phantoms:0');
   });
 
@@ -433,7 +433,7 @@ describe('细节 · 多条等你 / 在跑 / 闲档', () => {
       },
       { width: 100, now: NOW },
     ).join('\n');
-    expect(out).toContain('3 张图');
+    expect(out).toContain('3 runs');
     expect(out).toContain('frontier:2');
     expect(out).toContain('+2');
   });

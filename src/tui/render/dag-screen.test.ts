@@ -263,18 +263,18 @@ describe('★ INV-DAG-5 选中就地展开', () => {
       node({ id: 'verify', status: 'failed', deps: ['shard-3'], seq: 2, startAt: 10000, endAt: 15000, failReason: 'verifier 没过' }),
     ]);
 
-  test('done 节点被选中: 不含 `重跑`(无下一步提示)', () => {
+  test('done 节点被选中: 不含 `rerun`(无下一步提示)', () => {
     const out = renderDagScreen(withDoneAndFailed(), opts({ selected: 0 }));
-    expect(out.join('\n')).not.toContain('重跑');
+    expect(out.join('\n')).not.toContain('rerun and resume');
   });
 
-  test('同一张图里 failed 节点被选中: 含 `r` 与 `重跑`', () => {
+  test('同一张图里 failed 节点被选中: 含 `r` 与 `rerun`', () => {
     // selected=1 → shard-3 (failed)
     const out = renderDagScreen(withDoneAndFailed(), opts({ selected: 1 }));
     const body = out.join('\n');
-    expect(body).toContain('重跑');
+    expect(body).toContain('rerun');
     // r 键标注存在(键位行也有 ↑↓ ... r/i/s, 所以放宽到行内, 只要"含 r"就行)
-    expect(body).toContain('r');
+    expect(body).toContain('r ');
   });
 
   test('失败原文只在 failed 节点选中时画(其他节点展开无 `✗ tsc 错`)', () => {
@@ -283,21 +283,21 @@ describe('★ INV-DAG-5 选中就地展开', () => {
     expect(out.join('\n')).not.toContain('tsc 错');
   });
 
-  test('(按键未接线) 提示必须出现(SDD: 不许画一个点了没反应的入口)', () => {
+  test('(keys not wired) 提示必须出现(SDD: 不许画一个点了没反应的入口)', () => {
     const out = renderDagScreen(withDoneAndFailed(), opts({ selected: 1 }));
-    expect(out.join('\n')).toContain('按键未接线');
+    expect(out.join('\n')).toContain('keys not wired');
   });
 
-  test('上游失败节点: verify 选中时,展开里指明上游 shard-3 挂了', () => {
+  test('upstream failure node: verify selected, detail shows upstream shard-3 failed', () => {
     const out = renderDagScreen(withDoneAndFailed(), opts({ selected: 2 }));
     const body = out.join('\n');
-    expect(body).toContain('上游');
+    expect(body).toContain('upstream');
     expect(body).toContain('shard-3');
   });
 });
 
-describe('★ INV-DAG-6 判词的 pass/fail 指的是被审对象', () => {
-  // 反向自检: 把 `判词的 pass/fail 指的是被审对象` 那句限定行去掉
+describe('★ INV-DAG-6 verdict pass/fail refers to the subject', () => {
+  // 反向自检: 把 `verdict pass/fail refers to the subject` 那句限定行去掉
   //          → 该段不含此句,红。
   test('verdict: fail 展开 → 含这句限定', () => {
     const out = renderDagScreen(
@@ -315,7 +315,7 @@ describe('★ INV-DAG-6 判词的 pass/fail 指的是被审对象', () => {
       opts({ selected: 0 }),
     );
     const body = out.join('\n');
-    expect(body).toContain('判词的 pass/fail 指的是被审对象');
+    expect(body).toContain('verdict pass/fail refers to the subject');
     expect(body).toContain('verifier');
     expect(body).toContain('fail');
   });
@@ -334,7 +334,7 @@ describe('★ INV-DAG-6 判词的 pass/fail 指的是被审对象', () => {
       ]),
       opts({ selected: 0 }),
     );
-    expect(out.join('\n')).toContain('判词的 pass/fail 指的是被审对象');
+    expect(out.join('\n')).toContain('verdict pass/fail refers to the subject');
   });
 
   test('pending / running 节点的 verdict 不画(还没结果)', () => {
@@ -351,7 +351,7 @@ describe('★ INV-DAG-6 判词的 pass/fail 指的是被审对象', () => {
       ]),
       opts({ selected: 0 }),
     );
-    expect(out.join('\n')).not.toContain('判词的 pass/fail 指的是被审对象');
+    expect(out.join('\n')).not.toContain('verdict pass/fail refers to the subject');
   });
 });
 

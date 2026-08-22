@@ -119,10 +119,10 @@ export function enforceAppendOnly(
 ): { ok: true; value: string } | { ok: false; value: string; reason: string } {
   if (returned === undefined || returned === null) return { ok: true, value: original };
   if (typeof returned !== 'string') {
-    return { ok: false, value: original, reason: `systemPrompt 不是字符串 (${typeof returned})` };
+    return { ok: false, value: original, reason: `systemPrompt is not a string (${typeof returned})` };
   }
   if (!returned.startsWith(original)) {
-    return { ok: false, value: original, reason: 'systemPrompt 被**替换**而不是追加 —— 冻结前缀不许动' };
+    return { ok: false, value: original, reason: 'systemPrompt was REPLACED rather than appended - frozen prefix must not change' };
   }
   return { ok: true, value: returned };
 }

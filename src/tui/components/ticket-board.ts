@@ -44,13 +44,13 @@ function waitLabel(t: Ticket, nowMs: number): string {
     case 'waiting': {
       const since = Date.parse(t.waitingSince!);
       // waitingHumanState 已验 waitingSince 可解析; 双保险不编 0 —— 解析失败仍画「起点未记」。
-      const dur = Number.isNaN(since) ? '起点未记' : fmtDur(nowMs - since);
+      const dur = Number.isNaN(since) ? 'start not recorded' : fmtDur(nowMs - since);
       return `waiting ${dur}`;
     }
     case 'waiting-unknown-since':
-      return 'waiting · 起点未记';
+      return 'waiting · start not recorded';
     case 'ruled-unrecorded':
-      return 'waiting · 裁了没记';
+      return 'waiting · ruled but unrecorded';
     case 'not-waiting':
       return '';
   }

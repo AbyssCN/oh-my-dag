@@ -101,9 +101,9 @@ describe('INV-DAG-9 · 三态三记号, 结构信息不靠颜色', () => {
     const tag = (n: string) => (s: string) => `<${n}>${s}</${n}>`;
     const paint = { accent: tag('a'), dim: tag('d'), warn: tag('w'), sel: tag('s'), ok: tag('ok'), fail: tag('f') };
     const vs: DagView[] = [
-      view({ snap: snap({ runId: 'aaaaaaaa-1111-2222-3333-444444444444', goal: '活' }), phase: 'live' }),
-      view({ snap: snap({ runId: 'bbbbbbbb-1111-2222-3333-444444444444', goal: '等' }), phase: 'stalled' }),
-      view({ snap: snap({ runId: 'cccccccc-1111-2222-3333-444444444444', goal: '完' }), phase: 'finished' }),
+      view({ snap: snap({ runId: 'aaaaaaaa-1111-2222-3333-444444444444', goal: 'live' }), phase: 'live' }),
+      view({ snap: snap({ runId: 'bbbbbbbb-1111-2222-3333-444444444444', goal: 'wait' }), phase: 'stalled' }),
+      view({ snap: snap({ runId: 'cccccccc-1111-2222-3333-444444444444', goal: 'done' }), phase: 'finished' }),
     ];
     const tagged = renderRunList(vs, { width: 100, height: 30, selected: 1, now: NOW, paint });
     const plain = renderRunList(vs, { width: 100, height: 30, selected: 1, now: NOW });
@@ -130,12 +130,12 @@ describe('INV-DAG-9 · 三态三记号, 结构信息不靠颜色', () => {
 });
 
 describe('INV-DAG-2 · NULL ≠ 0 ≠ 不适用', () => {
-  test('坏时戳 (ageMs = Infinity) → 画「起点未记」, 不画 0m / Infinitym', () => {
+  test('坏时戳 (ageMs = Infinity) → 画「start not recorded」, 不画 0m / Infinitym', () => {
     const vs: DagView[] = [
       view({ snap: snap({ runId: 'aaaaaaaa-1111-2222-3333-444444444444' }), phase: 'live', ageMs: Infinity }),
     ];
     const out = renderRunList(vs, { width: 100, height: 30, selected: 0, now: NOW }).join('\n');
-    expect(out).toContain('起点未记');
+    expect(out).toContain('start not recorded');
     // 不画 Infinity / 0m / 0s
     expect(out).not.toContain('Infinity');
     expect(out).not.toMatch(/\b0m\b/);
@@ -175,8 +175,8 @@ describe('宽度闸 · 行不超宽', () => {
   test('各列在 120/84/70/60 列下都不超', () => {
     const vs: DagView[] = [
       view({ snap: snap({ runId: 'aaaaaaaa-1111-2222-3333-444444444444', goal: 'a'.repeat(200) }), phase: 'live' }),
-      view({ snap: snap({ runId: 'bbbbbbbb-1111-2222-3333-444444444444', goal: '一个特别特别长的中文目标 — '.repeat(20) }), phase: 'stalled' }),
-      view({ snap: snap({ runId: 'cccccccc-1111-2222-3333-444444444444', goal: '短' }), phase: 'finished' }),
+      view({ snap: snap({ runId: 'bbbbbbbb-1111-2222-3333-444444444444', goal: 'a very very very long English goal that goes on and on - '.repeat(20) }), phase: 'stalled' }),
+      view({ snap: snap({ runId: 'cccccccc-1111-2222-3333-444444444444', goal: 'short' }), phase: 'finished' }),
     ];
     for (const w of [120, 84, 70, 60]) {
       const out = renderRunList(vs, { width: w, height: 30, selected: 0, now: NOW });
@@ -187,7 +187,7 @@ describe('宽度闸 · 行不超宽', () => {
   test('窄屏 (60 列) 下 goal 列被截, 截断补 … (goal 是摘要列, 允许截)', () => {
     const vs: DagView[] = [
       view({
-        snap: snap({ runId: 'aaaaaaaa-1111-2222-3333-444444444444', goal: '一个特别特别长的中文目标'.repeat(5) }),
+        snap: snap({ runId: 'aaaaaaaa-1111-2222-3333-444444444444', goal: 'a very very very long English goal that goes on'.repeat(5) }),
         phase: 'live',
       }),
     ];
@@ -208,13 +208,13 @@ describe('高度闸 · 超出折叠', () => {
     const out = renderRunList(vs, { width: 100, height: 10, selected: 0, now: NOW });
     expect(out.length).toBe(10);
     expect(out.join('\n')).toMatch(/… \d+ more/);
-    // 末三行: detail (selected 在第 0) + keys 贴底 —— 末行必含「Ctrl+G 退出」(键位行)。
-    expect(out[out.length - 1]).toContain('Ctrl+G 退出');
+    // 末三行: detail (selected 在第 0) + keys 贴底 —— 末行必含「Ctrl+G exits」(键位行)。
+    expect(out[out.length - 1]).toContain('Ctrl+G exits');
   });
 });
 
 describe('头行 · 三态计数', () => {
-  test('2 活 · 1 产出 · 1 等 (计数与 phase 一致)', () => {
+  test('2 live · 1 published · 1 waiting (counts align with phase)', () => {
     const vs: DagView[] = [
       view({ snap: snap({ runId: 'aaaaaaaa-1111-2222-3333-444444444444' }), phase: 'live' }),
       view({ snap: snap({ runId: 'bbbbbbbb-1111-2222-3333-444444444444' }), phase: 'live' }),
@@ -223,20 +223,20 @@ describe('头行 · 三态计数', () => {
     ];
     const out = renderRunList(vs, { width: 100, height: 30, selected: 0, now: NOW });
     const head = out[0]!;
-    expect(head).toContain('2 活');
-    expect(head).toContain('1 产出');
-    expect(head).toContain('1 等');
-    expect(head).toContain('活图');
+    expect(head).toContain('2 live');
+    expect(head).toContain('1 published');
+    expect(head).toContain('1 waiting');
+    expect(head).toContain('run');
   });
 
-  test('零计数也算真值 —— 全部 finished → 「0 活 · N 产出 · 0 等」', () => {
+  test('零计数也算真值 —— 全部 finished → 「0 live · N published · 0 waiting」', () => {
     const vs: DagView[] = [
       view({ snap: snap({ runId: 'aaaaaaaa-1111-2222-3333-444444444444' }), phase: 'finished' }),
     ];
     const out = renderRunList(vs, { width: 100, height: 30, selected: 0, now: NOW });
-    expect(out[0]).toContain('0 活');
-    expect(out[0]).toContain('1 产出');
-    expect(out[0]).toContain('0 等');
+    expect(out[0]).toContain('0 live');
+    expect(out[0]).toContain('1 published');
+    expect(out[0]).toContain('0 waiting');
   });
 });
 
@@ -256,11 +256,11 @@ describe('选中 · 索引 mod 与 detail 行', () => {
 
   test('选中行下面挂 goal 全文 + Enter 提示', () => {
     const vs: DagView[] = [
-      view({ snap: snap({ runId: 'aaaaaaaa-1111-2222-3333-444444444444', goal: '一个非常非常非常长的目标'.repeat(10) }), phase: 'live' }),
+      view({ snap: snap({ runId: 'aaaaaaaa-1111-2222-3333-444444444444', goal: 'a very very very long goal that goes on and on'.repeat(10) }), phase: 'live' }),
     ];
     const out = renderRunList(vs, { width: 60, height: 30, selected: 0, now: NOW }).join('\n');
     // 主行 goal 被截 (60 列), 但 detail 行露出完整 goal 段, 含 `goal` 字面标识。
     expect(out).toContain('goal');
-    expect(out).toContain('Enter 进这张图');
+    expect(out).toContain('Enter enters');
   });
 });
