@@ -224,11 +224,17 @@ describe('纯函数 · 同输入 → 同输出 (INV-NOW-5 同款)', () => {
 });
 
 describe('空仓', () => {
-  test('空 items → 头 + (空 · …) + 底边三件, 不画空框', () => {
+  // 反向自检: 把 `if (len === 0) { return [empty, footer] }` 退回老实装 `out[0] = renderHeader(...)` →
+  // 空仓头行含「收件箱」+「0 件」 → expect(out[0]).not.toContain('0 件') 红, expect(out.join('\n')).not.toContain('0 件') 红。
+  test('空 items → 那句真话 + 底边, 不画「收件箱 · 0 件」表头', () => {
     const out = renderInbox([], { width: 80, height: 30, selected: 0, now: NOW });
-    expect(out[0]).toContain('收件箱');
-    expect(out[0]).toContain('0 件');
-    expect(out.join('\n')).toContain('(空');
+    const body = out.join('\n');
+    // 首行是那句真话, 不是表头
+    expect(out[0]).toContain('(空');
+    expect(out[0]).not.toContain('收件箱');
+    // 不画「0 件」(「画 0」是噪音, NULL ≠ 0: 全空走空态分支)
+    expect(body).not.toContain('0 件');
+    expect(body).not.toMatch(/\b0 /);
     // 底边还在 (INV-INBOX-1/2)
     expect(out[out.length - 1]).toContain('裁决不等于执行');
   });
@@ -245,13 +251,13 @@ describe('选中索引 mod', () => {
 });
 
 describe('宽度闸 · 行不超宽', () => {
-  test('各列在 120/84/70/60 列下都不超 (含 CJK)', () => {
+  test('各列在 60/80/100/120 列下都不超 (含 CJK, 含主行新加 id 列)', () => {
     const items: InboxItem[] = [
       ruleItem({ title: 'a'.repeat(200) }),
       ruleItem({ title: '一个特别特别长的中文目标 — '.repeat(20), ticketId: '99' }),
       confirmItem({ title: '短' }),
     ];
-    for (const w of [120, 84, 70, 60]) {
+    for (const w of [60, 80, 100, 120]) {
       const out = renderInbox(items, { width: w, height: 30, selected: 0, now: NOW });
       for (const line of out) expect(visibleWidth(line), `w=${w}, line=${line}`).toBeLessThanOrEqual(w);
     }
@@ -304,5 +310,72 @@ describe('头行 · 按 kind 分计', () => {
     expect(head).not.toContain('0 建议');
     expect(head).not.toContain('0 节点');
     expect(head).not.toContain('0 待收');
+  });
+});
+
+/**
+ * 片 5 收尾 · 四条 (SDD §2.2 钉死, 反向自检写在每条注释里)。
+ *
+ * 每条都是「改实现 → 这条当场红」型的反向闸: 把承重那一跳退回弱实现就红。
+ * 测试不要为了变绿而放宽 —— 闸红说明实装错了。
+ */
+describe('★ 片 5 收尾 · 四条', () => {
+  test('主行带 id (在对话里可直接引用 ticketId)', () => {
+    // 反向自检: 把 `renderRow` 里 `${staleStr}${idStr} ` 段删去 → 主行只剩 title →
+    // expect(body).toMatch(/▸ \? 226/) 红 (无 id)。
+    const out = renderInbox([confirmItem({ ticketId: '226', title: '机器建议' })], {
+      width: 100, height: 30, selected: 0, now: NOW,
+    }).join('\n');
+    // 主行 = marker + id + title: `▸ ? 226 机器建议…`
+    expect(out).toMatch(/▸ \? 226/);
+    // node 件走 runId8/nodeId 形式
+    const nodeOut = renderInbox([nodeItem({ title: '节点', runId: 'dddddddd-1111-2222-3333-444444444444', nodeId: 'e1' })], {
+      width: 100, height: 30, selected: 0, now: NOW,
+    }).join('\n');
+    expect(nodeOut).toMatch(/· dddddddd\/e1/);
+  });
+
+  test('表头分隔符前后单空格 (无双空格 ·· 串)', () => {
+    // 反向自检: 把 `renderHeader` 里 `${count} ` (counts.push 带 leading space) 加回 →
+    // 拼出 `收件箱 · N 件  1 等裁 · 1 建议`(分隔符左右各 1 + count leading 1 = 双空格) →
+    // expect(head).not.toMatch(/·  /) 红。
+    const items: InboxItem[] = [
+      ruleItem({ ticketId: '1', title: 'r1' }),
+      confirmItem({ ticketId: '2', title: 'c1' }),
+      nodeItem({ title: 'n1' }),
+    ];
+    const out = renderInbox(items, { width: 100, height: 30, selected: 0, now: NOW });
+    const head = out[0]!;
+    // 头行包含计数 (正向)
+    expect(head).toContain('1 等裁');
+    expect(head).toContain('1 建议');
+    expect(head).toContain('1 节点');
+    // 分隔符 ` · ` 前后**各**一个空格 — 整个头行没有「· 」(双空格)串
+    expect(head).not.toMatch(/·  /);
+    expect(head).not.toMatch(/  ·/);
+  });
+
+  test('选中展开不重复标题 (主行已是全标题, 展开只留 id + 动作)', () => {
+    // 反向自检: 把 `renderSelectedDetail` 里 title 那行加回 (3 行: id / title / hint) →
+    // expect(body.match(new RegExp(title))!).toHaveLength(1) 失败, 红。
+    const title = '一个不太常见的标题串 — 唯一锚点';
+    const items: InboxItem[] = [ruleItem({ ticketId: '301', title })];
+    const out = renderInbox(items, { width: 100, height: 30, selected: 0, now: NOW }).join('\n');
+    // 标题恰好出现 1 次 (主行), 不在展开里再印
+    const occurrences = out.split(title).length - 1;
+    expect(occurrences).toBe(1);
+    // 展开里仍含动作提示 (那行还在, 只是不重复标题)
+    expect(out).toContain('Enter 就地裁');
+  });
+
+  test('空态不画「0 件」(NULL ≠ 0: 全空走空态分支, 不画表头)', () => {
+    // 与上面 `空仓` 的检查互为反向: 这里钉的是「空态返回里**没有任何**带 0 的字节」。
+    // 反向自检: 把 `if (len === 0) return [empty, footer]` 退回老实装
+    // `out[0] = renderHeader(items)` → renderHeader 走 `total=0` 那条会写「0 件」 →
+    // expect(body).not.toContain('0 件') 红。
+    const out = renderInbox([], { width: 100, height: 30, selected: 0, now: NOW });
+    const body = out.join('\n');
+    expect(body).not.toContain('0 件');
+    expect(body).not.toContain('收件箱 ·');
   });
 });
