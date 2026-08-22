@@ -40,9 +40,84 @@ GWT 验收点越可证伪,验收越不含糊;一个模糊验收点 = 执行器�
 - 收尾写并行波形一行,conductor 照铺:`并行波形:{1,3,5} → {2} → {4}`。全串行波形须给整体理由,默认视为写错。
 - 优先序(哪片价值高)写波形注释或 Open 段,不进依赖边。
 
+### ⚠ 分解表的四条机器硬要求(写错 = 点火当场拒 / 静默回落,而它只在点火那一刻才响)
+
+真源 `src/harness/goal/sdd-direct.ts` + `sdd-compile.ts`。2026-08-18 量过全量语料:
+**149 份 plan 文档、52 份有分解段,只有 14 份吃得下 `sddPath` 直通** —— 而直通是夜批的默认路径。
+73% 的失败**全部**来自下面四条,一条都没写进过本模板:
+
+1. **切片列必须裸数字开头** —— `| 1 span 计算 …`。写 `S1` / `**S1 …**` / `Phase` 一律拒
+   (`sdd-direct.ts` 的 `/^(\d+)/`;编号是波形/依赖引用它的唯一方式)。
+2. **波形行独占一行** —— `WAVE_LINE` 锚行首。写成「写集两两不相交 ✓。并行波形:…」会被
+   **静默忽略**(不报错,图退回按依赖边排;2026-08-18 实测)。
+3. **写集只收相对路径,且不许留空** —— 写「无」/「dispatch」这类词会被拒;空写集直接拒
+   (写集是并行安全的机器判据)。
+4. **verify 只许指向本片新建的、实装前天然红的测试**(O-6)。`run-goal.ts` 会在编图前
+   逐片预跑一枪 verify:**读到绿 = RED 前提不成立 → 整图回落 v1 conductor 铺图**,
+   而点火回执那句「SDD 直通」只讲契约段、**不报执行段已回落** —— 唯一线索是节点名从
+   `s1-red/s1/s1-green` 变成 `execute::<hash>`。既有测试要跟着改,写进**写集**,别写进 verify。
+
+## 结晶后立刻验证 —— 不验不算结晶
+
+写完**当场**跑一次,编译不过就地重写。**别等点火才发现**(2026-08-23 一晚 15 片实测:
+所有「契约编译通过、跑起来必挂」的错法,都是在这一步能机械判死的)。
+
+```bash
+bun -e '
+const { parseBreakdown, loadSddContract } = await import("./src/harness/goal/sdd-direct.ts");
+const { compileBreakdown } = await import("./src/harness/goal/sdd-compile.ts");
+const p = "docs/plan/<刚写的>.md";
+loadSddContract(p);                                   // 契约段 + 分解段齐不齐
+const b = parseBreakdown(await Bun.file(p).text());
+console.log("writeSet:", JSON.stringify(b.slices.map((s) => s.writeSet)));
+console.log("falsify:", JSON.stringify(b.falsify));   // ← 逐条核对是不是你写的那一行
+console.log("nodes:", Object.keys(compileBreakdown(b, { acceptCommand: "bun test" }).nodes).join(" "));
+'
+```
+
+**逐条核对(每条都花过一整轮)**:
+
+| 看什么 | 判据 |
+|---|---|
+| `falsify` 解出来的 `oldText` | 与你写的**逐字相同**。含 `\|`(TS 的 `\|\|`)会被 markdown 切列 ⇒ 截成半句 ⇒ 跑起来 `matches=0` |
+| 写集含 `src/harness/dag/types.ts` | 必须同时含 `docs/architecture/seams.md` **与** `src/harness/dag/seam-catalog.test.ts`(结构绊线写死了两个字面量,增删字段必红)|
+| 命令首词 | **不许 `npx`** —— 执行体沙箱里退出 **127**;用 `./node_modules/.bin/<bin>` |
+| `nodes` 清单 | 与你预期的节点数一致;`sN-falsify-*` 该在的在、不该在的没有 |
+
+⚠ 上面前三条今天已由编译器**硬拒**(`sdd-direct` / `sdd-compile`),
+所以这一步跑不过 = 契约真有问题,**不是工具挑剔**。
+
+### 还有一条,抓的是**另一半**
+
+```bash
+bun run plan-doc-check <文档>
+```
+
+它查的是**文档形态**:切片列编号是不是裸数字、波形行有没有独占一行、有没有未决段。
+上面那条 `bun -e` 查的是**跑起来会不会挂**。**两条抓的不是同一批错,都要跑。**
+
+⚠ **别被它的总分吓住**:2026-08-23 实测,本仓**既有**的执行契约(如
+`2026-08-22-falsify节点-执行契约.md`)在它下面也是「0 过 / 1 不过」——
+它常报「有验收的样子而没有验收」,而那些文档的 INV / GWT 写得很明确。
+**看逐条判词,别看总分**;真拦人的只有 blocker 与分数不达标(major 要 `--strict`)。
+
+### falsify 表的锚点两条硬规矩(拿不准就别写表)
+
+① 锚点必须是「**实装写完之后一定长这样**」的一行 ——
+拿不准(数组还是 Set、一行还是多行、字段顺序)⇒ **别写进表**;
+② 锚点必须**改了真会变行为** —— 改完测试照样绿的锚点是**哑弹**,
+那种 falsify 节点**必然判失败**,白挂一个节点。
+
+两条有一条不满足,就把判别力交给**手做**那一跳(验收里写清「改什么 → 哪条必红 → 还原复绿」)。
+
 ## 纪律
 
 - 只写已定型的决策;未决进 Open 段(或 `map_add` 开票)。
+- **验收分两栏**:判据(必须能区分做完/没做)与护栏(防回归、本来就该绿)。
+  把护栏当判据写会被判据自证闸判 `[vacuous]` —— 它在活还没干之前就已经满足。
+- **每条验收出口前问两遍**:这条能不能验?**执行体有没有能力遵守它?**
+  (实测写过的做不到条款:`npx tsc`、「全量 0 fail」在执行体沙箱里、
+  「`s1-green` 不许被合并」——那是引擎的优化,执行体控制不了。)
 - 无证据的决策行,先补证据或降级进 Open,不进 Contracts。
 - 写完提示 owner:确认后 `/omd-execute` 执行。
 - 看已有结晶 → `ls docs/plan/*.md` 按时间列出。
