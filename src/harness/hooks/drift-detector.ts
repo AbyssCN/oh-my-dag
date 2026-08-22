@@ -114,7 +114,24 @@ export function computeSig(toolName: string, input: unknown): string {
     const prefix = stripCdPrefix(cmd.replace(/[\n\r]/g, ' ')).slice(0, 50);
     return `bash:${prefix}`;
   }
-  // read/write/edit/ls/find: 目标**路径** —— 取尾不取头 (见 pathSig)。
+  // edit: 位置锚 = oldText 前 N 字符的 8 位短 hash (SDD §D-1/D-4/D-5, 2026-08-22)。
+  // 目的: 让"同一文件的不同处"与"反复改同一处"在签名上可分 —— 今天两者同签名, 多点改动
+  // 必被并成同一个 → sameCount 超阈值 (默认 4) → 判 spin → 累计 10 回合 → 熔断。
+  // oldText 缺席 → 退回今天的纯路径签名 (fail-open, 不许算成"新签名")。
+  if (toolName === 'edit') {
+    const path = args.file_path ?? args.path;
+    if (typeof path === 'string' && path.length > 0) {
+      const oldText = typeof args.oldText === 'string' ? args.oldText : '';
+      if (oldText.length > 0) {
+        // Bun.hash 重载返 `number | bigint` (按 seed 类型); 显式选 wyhash 拿 BigInt,
+        // 取低 32 bit 后截 8 hex 位 (BigInt 不带 `-` 前缀, 不用 `>>> 0`)。
+        const posHash = (Bun.hash.wyhash(oldText.slice(0, 32)) & 0xffffffffn).toString(16).padStart(8, '0').slice(-8);
+        return `${toolName}:${pathSig(path)}#${posHash}`;
+      }
+      return `${toolName}:${pathSig(path)}`;
+    }
+  }
+  // read/write/ls/find: 目标**路径** —— 取尾不取头 (见 pathSig)。
   const path = args.file_path ?? args.path;
   if (typeof path === 'string' && path.length > 0) {
     return `${toolName}:${pathSig(path)}`;
