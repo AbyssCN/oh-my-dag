@@ -1088,13 +1088,32 @@ async function executePlan(
       for (const cp of continuity.manager.loadAllGreen(continuity.runId)) resumeGreens.set(cp.nodeId, cp);
       // ⚠ 回滚根用**执行锚**, 不是状态锚 (2026-08-21, run 58df6b9e 复盘)。隔离档下 checkpoint
       // 落主仓而文件写在 worktree 里 —— 拿 repoRoot 当回滚根 = 对着一棵没有那些产物的树做回滚。
-      dropPoisonedGreens(
+      const rolledBackIds: readonly string[] = dropPoisonedGreens(
         resumeGreens,
         plan,
         prior?.poisoned,
         continuity?.execRoot ?? continuity?.repoRoot,
         continuity?.rollbackBaseline,
       );
+      // SDD 2026-08-22 C-2: 回滚集 ∩ 复用集 = ∅。两处都按指纹算、按理应当一致, 实测不一致
+      // (根因未查) —— 先按 id 对账兜住整族。回滚是破坏性 (产物已回 HEAD), 复用只是省钱优化,
+      // 冲突时强制重跑 (D-2)。相交非空必留判词 (D-3, fail-open 不许吞证据)。
+      if (rolledBackIds.length > 0) {
+        const rolledBack = new Set(rolledBackIds);
+        const intersection: string[] = [];
+        for (const id of [...reuse.keys()]) {
+          if (rolledBack.has(id)) {
+            reuse.delete(id);
+            intersection.push(id);
+          }
+        }
+        if (intersection.length > 0) {
+          logger.warn(
+            { nodes: intersection, count: intersection.length },
+            '[omd/executor-dag] 回滚集∩复用集非空: 产出已被回滚, 复用会让绿节点配一张空盘 (SDD C-2 × INV-4)',
+          );
+        }
+      }
     }
   }
 
@@ -4643,15 +4662,18 @@ function dropPoisonedGreens(
    * 前提由调用方担保:执行树自该 commit 以来的改动全是本次跑写的 —— 今天只有隔离档成立。
    */
   rollbackBaseline?: string,
-): void {
-  if (!poisoned?.size || greens.size === 0) return;
+  // D-4/C-1 (SDD 2026-08-22): 返回**本次真回滚过**(checkpoint 被丢) 的节点 id 列表。
+  // 判定逻辑**逐字不变**;返回值是新增的观察面 (C-1/INV-1) —— 调用方据此把"已回滚"节点
+  // 从跨轮复用集里踢出去 (C-2/INV-3)。回滚是破坏性的, 已发生;复用只是省钱优化, 冲突时让路。
+): readonly string[] {
+  if (!poisoned?.size || greens.size === 0) return [];
   const blocked = new Set<string>();
   for (const [id, fp] of merkleFingerprints(plan)) if (poisoned.has(fp)) blocked.add(id);
   // 通道⑤-b: 上面那行只认**图里现在有的**节点, 而 map/conductor 的子节点是运行期才挂进去的 ——
   // 预载这一刻它们不在图里, 重算够不着。judge 恰恰最可能点名的就是它们 (它在轮结果里看得见
   // 具体哪个子节点坏了)。改判 checkpoint 自己存下来的指纹, 不依赖当前图的形状。
   for (const [id, cp] of greens) if (cp.fingerprint && poisoned.has(cp.fingerprint)) blocked.add(id);
-  if (blocked.size === 0) return;
+  if (blocked.size === 0) return [];
   for (let changed = true; changed; ) {
     changed = false;
     for (const [id, n] of Object.entries(plan.nodes)) {
@@ -4684,7 +4706,7 @@ function dropPoisonedGreens(
   if (dropped.length) {
     logger.warn({ dropped }, '[omd/executor-dag] resume: 毒集命中 → 丢弃这些节点的已绿 checkpoint, 强制重跑 (D-4 × W2)');
   }
-  if (!rollbackRoot || droppedCps.length === 0) return;
+  if (!rollbackRoot || droppedCps.length === 0) return dropped;
   // A (#145 评论① 复盘): 丢 checkpoint 而不动盘 = 让"重跑"名不副实 —— 重跑的 leaf 看见活已经
   // 干完, 只读不写, 然后被产物闸判 empty-artifact。run 1c9a4566 五个真交付就是这么没的。
   // 存活 green 的产物一律不许碰 (与门④), 所以先把它们收出来。
@@ -4712,6 +4734,7 @@ function dropPoisonedGreens(
     rollbackBaseline,
   );
   applyPoisonRollback(plan2, rollbackRoot, rollbackBaseline ? { baseline: rollbackBaseline } : {});
+  return dropped;
 }
 
 /**
