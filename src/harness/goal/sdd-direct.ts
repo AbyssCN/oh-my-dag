@@ -217,6 +217,11 @@ function parseFalsifyTable(section: string, sliceId: number): SddFalsify[] {
       throw new Error(
         `反向自检 (切片 ${sliceId}) 的一行不足四列 (#|文件|oldText|newText): ${rawLine}`,
       );
+    if (rawCells.length > 4)
+      throw new Error(
+        `反向自检 (切片 ${sliceId}) 的一行超过四列 (#|文件|oldText|newText): ${rawLine} — ` +
+          '单元格里不许出现 `|`，否则 markdown 表格会把它静默拆成多列。',
+      );
     const idx = Number(rawCells[0]!.trim());
     if (!Number.isInteger(idx) || idx < 1)
       throw new Error(

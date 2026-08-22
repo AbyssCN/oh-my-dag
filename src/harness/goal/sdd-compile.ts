@@ -73,6 +73,11 @@ const falsifyId = (id: number, i: number): string => `s${id}-falsify-${i}`;
 /** 命令首词须在引擎白名单里 —— 不在 = 起跑即被命令闸拒(退出码 -1), 读数上是**假红**。 */
 function assertRunnable(command: string, where: string): void {
   const first = command.trim().split(/\s+/)[0] ?? '';
+  if (first === 'npx')
+    throw new Error(
+      `${where} 不可运行: "${command}" — 执行体沙箱中的 npx 会退出 127；` +
+        '请改用 `./node_modules/.bin/<bin>`，把 npx 后的 bin 放进去。',
+    );
   if (!DEFAULT_COMMAND_ALLOWLIST.includes(first))
     throw new Error(
       `${where} 不是可跑命令: "${command}" — 首词 "${first}" 不在命令白名单里。` +
@@ -97,6 +102,29 @@ function assertDisjointWriteSets(slices: readonly SddSlice[]): void {
         );
       owner.set(f, s.id);
     }
+  }
+}
+
+const SEAM_TYPES = 'src/harness/dag/types.ts';
+const SEAM_DOC = 'docs/architecture/seams.md';
+const SEAM_GUARD = 'src/harness/dag/seam-catalog.test.ts';
+
+/**
+ * seam 类型真源不能单独进入写集: 目录是生成器产物, 测试是刻意写死的结构绊线。
+ * 只在写集含 types.ts 时触发, 不含它的契约沿用原编译路径。
+ */
+function assertSeamWriteSet(slices: readonly SddSlice[]): void {
+  if (!slices.some((s) => s.writeSet.includes(SEAM_TYPES))) return;
+  const union = new Set(slices.flatMap((s) => s.writeSet));
+  const missing: Array<{ file: string; reason: string }> = [];
+  if (!union.has(SEAM_DOC)) missing.push({ file: SEAM_DOC, reason: '生成器产物' });
+  if (!union.has(SEAM_GUARD)) missing.push({ file: SEAM_GUARD, reason: '刻意写死的结构绊线' });
+  if (missing.length) {
+    const missingText = missing.map(({ file, reason }) => `${file} (${reason})`).join('、');
+    throw new Error(
+      `写集含 ${SEAM_TYPES} 时, 全部切片写集并集还必须包含 ${missingText}；` +
+        `缺的是 ${missing.map(({ file }) => file).join('、')}。`,
+    );
   }
 }
 
@@ -347,6 +375,7 @@ export function compileBreakdown(
   }
   assertDepsExist(slices, new Set(slices.map((s) => s.id)));
   assertDisjointWriteSets(slices);
+  assertSeamWriteSet(slices);
   if (waves) assertWaveOrder(slices, waves);
   else assertAcyclic(slices);
 
