@@ -38,6 +38,25 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
  */
 let _engineRound = 0;
 const _nodeLastSettled = new Map<string, LeafResult>();
+// C-1 (2026-08-22, falsify 兄弟节点并发): 同树互斥 (一执行树 = 一个 key, 一把尾队列 promise)。
+// 临界区 = 唯一匹配校验 → 写 mutation → 跑命令 → finally 还原 (D-3); 同一 key 上排队的 falsify
+// 节点**不并发** (INV-1/3), 不同 key (不同 worktree) 互不排队 (INV-5)。返回 release 函数 ——
+// 调用方在 finally 内无条件调 (D-4, 任何出口都释放)。
+const mutationLocks = new Map<string, Promise<void>>();
+function acquireMutationLock(key: string): Promise<() => void> {
+  // 证伪方式: 把下一行换成 `const prev = Promise.resolve();` (后到者不等前一个 = 关掉互斥)
+  // ⇒ `falsify-mutex.test.ts` 的 GWT-1/GWT-2 当场红 (2026-08-22 实跑过, 红在"看见了别人的
+  // mutation"与"第二个节点拿不到锁")。
+  const prev = mutationLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const next = new Promise<void>((res) => { release = res; });
+  const chain: Promise<void> = prev.then(() => next);
+  mutationLocks.set(key, chain);
+  return prev.then(() => () => {
+    release();
+    if (mutationLocks.get(key) === chain) mutationLocks.delete(key);
+  });
+}
 import { join } from 'node:path';
 import type { ModelUsage } from '../../model/gateway';
 import { escalationProviderReady, type VerifierVerdict } from '../verifier';
@@ -2954,87 +2973,103 @@ async function executePlan(
         const falsifyMut: FalsifyMutate | undefined = extras.mutate;
         const expectsNonzero: boolean = extras.expects_nonzero === true;
 
-        // mutation 前置 (INV-8/9): 读原文 → 唯一匹配校验 → 替换 → 写盘。原文留在内存给 finally 用,
-        // 不依赖 git baseline (INV-3 的承重姿态: head / branch 两条路都能用)。
-        let mutatePath: string | undefined;
-        let mutateOriginal: string | undefined;
-        let mutateApplied = false;
+        // INV-1 (C-1, 2026-08-22, falsify 兄弟互斥): 同树互斥。**仅 falsify 节点取锁**, 普通 command
+        // 一个字节不受影响 (D-5 / INV-2)。key = `execRoot ?? repoRoot ?? process.cwd()` —— 一棵
+        // 执行树 = 一个 key (D-2); 不同 worktree 各跑各的 (INV-5)。
+        let r: CommandLeafResult | undefined;  // 在临界区**外**声明: let 是 block-scoped, 临界区结束后 want/ok/... 仍要读 r。
+        const releaseLock: (() => void) | null = falsifyMut
+          ? await acquireMutationLock(continuity?.execRoot ?? continuity?.repoRoot ?? process.cwd())
+          : null;
 
-        if (falsifyMut) {
-          mutatePath = falsifyMut.file.startsWith('/')
-            ? falsifyMut.file
-            : join(continuity?.execRoot ?? continuity?.repoRoot ?? process.cwd(), falsifyMut.file);
-
-          let matches = -1; // -1 = 读盘失败 (把"文件不在"与"oldText 零匹配"分开, 落到不同出口)
-          let readErr: unknown;
-          try {
-            mutateOriginal = readFileSync(mutatePath, 'utf-8');
-            // split 计数: 'a'.split('a').length - 1 = 1; 'abab'.split('ab').length - 1 = 2。
-            // 副作用: 空 oldText 会算成全文长度, 自然走 ≥2 那路拒掉 (与「唯一匹配」语义对齐)。
-            matches = mutateOriginal.split(falsifyMut.oldText).length - 1;
-          } catch (err) {
-            readErr = err;
-          }
-
-          if (matches !== 1) {
-            // INV-9: 0 匹配 / ≥2 匹配 / 读盘失败都拒。**不跑 command, 不改文件** (mutateOriginal
-            // 从未被写过盘, 旧内容原封)。点名匹配数 / 失败原因, 让 owner 知道是该改 SDD 还是该
-            // 删多余字面量。
-            logger.warn(
-              { node: id, file: falsifyMut.file, matches, readErr: readErr ? String(readErr) : undefined },
-              '[omd/executor-dag] falsify mutate.oldText 唯一匹配校验失败 → failed (INV-9, 命令未跑, 文件未动)',
-            );
-            return {
-              id, status: 'failed',
-              failureKind: 'assert-failed',
-              kind: 'command',
-              output: `[falsify-mutate: file=${falsifyMut.file} oldText matches=${matches} (必须 = 1)${readErr ? `, readErr=${String(readErr).slice(0, 200)}` : ''}; command 未执行, 文件未改动]`,
-              deps, usage: { in: 0, out: 0 }, exitCode: null,
-            };
-          }
-
-          // 唯一匹配 (matches === 1) → 应用替换并写盘
-          const mutated = mutateOriginal!.split(falsifyMut.oldText).join(falsifyMut.newText);
-          try {
-            writeFileSync(mutatePath, mutated, 'utf-8');
-            mutateApplied = true;
-          } catch (err) {
-            // 写盘失败也是 INV-9 范畴 (mutation 步骤失败, 不许"半 mutation 半跑命令")。
-            // mutateOriginal 仍在内存但没写过盘 → 不需要 finally 还原 (文件没被动过)。
-            logger.warn(
-              { node: id, file: falsifyMut.file, err: String(err) },
-              '[omd/executor-dag] falsify mutate 写盘失败 → failed (INV-9)',
-            );
-            return {
-              id, status: 'failed',
-              failureKind: 'assert-failed',
-              kind: 'command',
-              output: `[falsify-mutate: write failed: ${String(err).slice(0, 200)}]`,
-              deps, usage: { in: 0, out: 0 }, exitCode: null,
-            };
-          }
-        }
-
-        // 运行命令 + finally 还原 (INV-10): 任何出口 (成功 / 抛错 / 超时 / 进程被杀) 都把原文写回。
-        // finally 内再抛会盖掉原异常, 故 catch 写盘错误只 WARN 不重抛, 防止把"命令结果"也吞掉。
-        let r: CommandLeafResult | undefined;
         try {
-          r = await config.commandRunner({ command: node.command });
-        } finally {
-          if (mutateApplied && mutatePath && mutateOriginal !== undefined) {
+          // mutation 前置 (INV-8/9): 读原文 → 唯一匹配校验 → 替换 → 写盘。原文留在内存给 finally 用,
+          // 不依赖 git baseline (INV-3 的承重姿态: head / branch 两条路都能用)。
+          let mutatePath: string | undefined;
+          let mutateOriginal: string | undefined;
+          let mutateApplied = false;
+
+          if (falsifyMut) {
+            mutatePath = falsifyMut.file.startsWith('/')
+              ? falsifyMut.file
+              : join(continuity?.execRoot ?? continuity?.repoRoot ?? process.cwd(), falsifyMut.file);
+
+            let matches = -1; // -1 = 读盘失败 (把"文件不在"与"oldText 零匹配"分开, 落到不同出口)
+            let readErr: unknown;
             try {
-              writeFileSync(mutatePath, mutateOriginal, 'utf-8');
+              mutateOriginal = readFileSync(mutatePath, 'utf-8');
+              // split 计数: 'a'.split('a').length - 1 = 1; 'abab'.split('ab').length - 1 = 2。
+              // 副作用: 空 oldText 会算成全文长度, 自然走 ≥2 那路拒掉 (与「唯一匹配」语义对齐)。
+              matches = mutateOriginal.split(falsifyMut.oldText).length - 1;
             } catch (err) {
-              logger.error(
-                { node: id, file: falsifyMut!.file, err: String(err) },
-                '[omd/executor-dag] falsify mutate finally 还原失败 — 文件已污染 (INV-10 硬告警, owner 必须看)',
+              readErr = err;
+            }
+
+            if (matches !== 1) {
+              // INV-9: 0 匹配 / ≥2 匹配 / 读盘失败都拒。**不跑 command, 不改文件** (mutateOriginal
+              // 从未被写过盘, 旧内容原封)。点名匹配数 / 失败原因, 让 owner 知道是该改 SDD 还是该
+              // 删多余字面量。
+              logger.warn(
+                { node: id, file: falsifyMut.file, matches, readErr: readErr ? String(readErr) : undefined },
+                '[omd/executor-dag] falsify mutate.oldText 唯一匹配校验失败 → failed (INV-9, 命令未跑, 文件未动)',
               );
+              return {
+                id, status: 'failed',
+                failureKind: 'assert-failed',
+                kind: 'command',
+                output: `[falsify-mutate: file=${falsifyMut.file} oldText matches=${matches} (必须 = 1)${readErr ? `, readErr=${String(readErr).slice(0, 200)}` : ''}; command 未执行, 文件未改动]`,
+                deps, usage: { in: 0, out: 0 }, exitCode: null,
+              };
+            }
+
+            // 唯一匹配 (matches === 1) → 应用替换并写盘
+            const mutated = mutateOriginal!.split(falsifyMut.oldText).join(falsifyMut.newText);
+            try {
+              writeFileSync(mutatePath, mutated, 'utf-8');
+              mutateApplied = true;
+            } catch (err) {
+              // 写盘失败也是 INV-9 范畴 (mutation 步骤失败, 不许"半 mutation 半跑命令")。
+              // mutateOriginal 仍在内存但没写过盘 → 不需要 finally 还原 (文件没被动过)。
+              logger.warn(
+                { node: id, file: falsifyMut.file, err: String(err) },
+                '[omd/executor-dag] falsify mutate 写盘失败 → failed (INV-9)',
+              );
+              return {
+                id, status: 'failed',
+                failureKind: 'assert-failed',
+                kind: 'command',
+                output: `[falsify-mutate: write failed: ${String(err).slice(0, 200)}]`,
+                deps, usage: { in: 0, out: 0 }, exitCode: null,
+              };
             }
           }
-        }
-        // commandRunner 类型上返 CommandLeafResult, 走 finally 后必有值; 此处兜底防 TS narrowing。
-        if (!r) {
-          throw new Error(`[omd/executor-dag] commandRunner 无返回值 (command=${node.command}, 命令过程中抛错, 文件已还原)`);
+
+          // 运行命令 + finally 还原 (INV-10): 任何出口 (成功 / 抛错 / 超时 / 进程被杀) 都把原文写回。
+          // finally 内再抛会盖掉原异常, 故 catch 写盘错误只 WARN 不重抛, 防止把"命令结果"也吞掉。
+          try {
+            r = await config.commandRunner({ command: node.command });
+          } finally {
+            if (mutateApplied && mutatePath && mutateOriginal !== undefined) {
+              try {
+                writeFileSync(mutatePath, mutateOriginal, 'utf-8');
+              } catch (err) {
+                logger.error(
+                  { node: id, file: falsifyMut!.file, err: String(err) },
+                  '[omd/executor-dag] falsify mutate finally 还原失败 — 文件已污染 (INV-10 硬告警, owner 必须看)',
+                );
+              }
+            }
+          }
+          // commandRunner 类型上返 CommandLeafResult, 走 finally 后必有值; 此处兜底防 TS narrowing。
+          if (!r) {
+            throw new Error(`[omd/executor-dag] commandRunner 无返回值 (command=${node.command}, 命令过程中抛错, 文件已还原)`);
+          }
+
+          // 临界区结束: 还原已完成 (mutation 路径) 或无须还原 (普通路径)。后续只读 r/不写盘,
+          // 锁在此放掉, 兄弟 falsify 节点可以进来 (INV-3 的"看到的是原文")。
+          // —— 走正常出口 (return 后续处理结果)。返回本身在 finally 之后发生, finally 仍在。
+        } finally {
+          // D-4: 任何出口都释放 — 成功 / 早退 return / 抛错 / 超时。无条件, finally 内不抛。
+          if (releaseLock) releaseLock();
         }
 
         // D-K: expect_exit = 判 done 的期望退出码 (缺省 0)。verify-red 靠它表达 —— "证明新测试现在是红的"
