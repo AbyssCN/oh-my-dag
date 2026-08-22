@@ -97,6 +97,7 @@ import { mergeCommandChains } from '../plan-passes/merge-command-chain';
 import { expandConductorNode, subgraphLintView, subgraphWarnings } from '../plan/conductor-expand';
 import { renderRoundForJudge, splitNamedIds, type JudgeChildView } from '../plan/conductor-judge';
 import { collectJudgeArtifacts, DEFAULT_ARTIFACT_BUDGET, type ArtifactBudget } from '../plan/judge-artifacts';
+import { writeSetChangedSinceBaseline } from './writeset-evidence';
 import type { ShellRun } from '../leaf-runners';
 import type { CommandLeafResult } from '../leaf-runners';
 import type { FalsifyMutate, FalsifyNodeExtras } from './types';
@@ -3581,6 +3582,33 @@ async function executePlan(
                 '[omd/executor-dag] filesTouched 空, 但 bash 命令点名的文件在本节点窗口内被改过 → 判真写入, 补进 filesTouched',
               );
               filesTouched = rescued;
+            }
+          }
+          // **救援③**: 写集相对 run 基线有改动 → 判真写入 (SDD s1 切片 1, 2026-08-22)。
+          //
+          // 死因: 隔离档 (`branchStrategy:'branch'`) 下被点名的叶子进毒集后被重跑,
+          // 看见活已经在盘上干完,于是**理性地**只读不写 —— 而闸要求「本轮真碰了文件」。
+          // 救援①② 量的是**本节点窗口**,救不回"上一轮已干完"的形状。本条把判据换成
+          // 「**本 run** 有没有动过写集」,证据 = git, 不是 mtime。
+          //
+          // ⚠ **只在隔离档启用** (D-2): `continuity.rollbackBaseline` 缺席 ⇒ head 档,
+          //   一字节都不生效。`writeSetChangedSinceBaseline` 自己**不**做这个短路,
+          //   写在这里让闸的可读性高于 helper 自带判断 —— helper 一处复用更容易测,
+          //   闸里这一行让"什么时候救"和"怎么救"都看 engine.ts 一眼就明白。
+          if (filesTouched.length === 0 && continuity?.rollbackBaseline) {
+            const writeSetEvidence = writeSetChangedSinceBaseline({
+              // 执行锚 (隔离档 = execRoot) 是 leaf 真写文件的那棵树; git 必须在这里跑。
+              // 见 types.ts:493-500 的 execRoot 注。省略 = `repoRoot`, 与上面的 `root` 解析一致。
+              root: continuity?.execRoot ?? continuity?.repoRoot ?? process.cwd(),
+              writeSet: node.write_set ?? [],
+              baseline: continuity.rollbackBaseline,
+            });
+            if (filesTouched.length === 0 && writeSetEvidence.changed.length > 0) {
+              logger.warn(
+                { node: id, changed: writeSetEvidence.changed, baseline: continuity.rollbackBaseline },
+                '[omd/executor-dag] filesTouched 空但写集相对 run 基线有改动 → 判真写入 (修复轮只读不写), 补进 filesTouched',
+              );
+              filesTouched = [...writeSetEvidence.changed];
             }
           }
           // **失败出口的可观测尾巴** (2026-08-16, #145 评论① 复盘)。`types.ts:639` 声称
