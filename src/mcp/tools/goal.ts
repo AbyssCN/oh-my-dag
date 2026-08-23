@@ -16,6 +16,7 @@ import type { OmdMcpTool } from '../server';
 import type { RunGoalConfig, RunGoalResult, GoalTier, GoalClassification } from '../../harness/goal/run-goal';
 import { ignitionPreflight } from '../../harness/goal/ignition-preflight';
 import { readIgnitionBandwidth, renderIgnitionForecast } from '../../harness/goal/ignition-forecast';
+import { renderNumericClaimNotice } from '../../harness/goal/numeric-claims';
 import { loadSddContract, parseBreakdown, ticketFieldsFromSdd } from '../../harness/goal/sdd-direct';
 import { resolveBackend as realResolveBackend, type PathBackend } from '../../harness/pathfinder/backend';
 import type { DagNodeEvent, ExecutorDagConfig } from '../../harness/dag/types';
@@ -369,6 +370,21 @@ function settleRunTicket(
  * 坐标取自**这趟真正会用的** dag config,不另解析一遍座位表(第二处解析必漂)。
  * 整段 fail-open:预告算不出来不许把点火挡下来,留一行日志。
  */
+/**
+ * 规格里的数量声明有没有可跑的出处(2026-08-23,派 #238 时写错「7 条」实为 6 条,
+ * 烧掉一趟 23 分钟的现场)。**告知层:只报不拦**,判别靠启发式,误报率还没量过 ——
+ * 没量过的启发式不许做成硬闸(仓规 §④)。
+ */
+function numericClaimLine(goalText: string): string {
+  try {
+    const notice = renderNumericClaimNotice(goalText);
+    return notice ? `${notice}\n` : '';
+  } catch (e) {
+    logger.warn({ err: (e as Error).message }, '[dag_goal] 数量声明自查失败 (点火照常)');
+    return '';
+  }
+}
+
 function ignitionForecastLine(dag: Partial<ExecutorDagConfig>, sddPath: string | undefined): string {
   try {
     const coords: { label: string; coord: string }[] = [];
@@ -617,6 +633,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
               (branchStrategy === 'branch' ? `branchStrategy: branch — worker 将建隔离 worktree (omd/run/${runId}); 建树失败会退回 head 并在日志/回执标注 degraded。\n` : '') +
               `日志: ${logPath}\n` +
               ignitionForecastLine(dag, sddPath) +
+              numericClaimLine(goal) +
               // #179: 上面 forecast 里的「烧哪本账」座位行是**本 server 内存态** —— 与 detached
               // worker (新进程读盘上 config) 漂移时它撒谎 (实证 run 5382bd05: 回执 mimo, 真身 M3)。
               // 点火时 worker 尚未起跑, 自报恒缺席 → 恒印 UNCONFIRMED 提示; 真身自报落
@@ -950,6 +967,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
               (preflightAdvisories.length ? `注意 (点火预检 advisory, 不阻塞): ${preflightAdvisories.join('; ')}\n` : '') +
               // 同 describeRollback 那条纪律: 要用这个数的人正是此刻扣扳机的人, 跑完再说没用。
               ignitionForecastLine(dag, sddPath) +
+              numericClaimLine(goal) +
               `${describeRunWorktree(worktree)}\n` +
               // ⚠ 回滚锚在**这一行**拍照。点火留档写 `.omd/continuity/<runId>/ignition.json`,
               //   排在它之前 ⇒ 拍照时树上多一个未跟踪文件 ⇒ 回执从「有完整回滚」退化成「半个」。
