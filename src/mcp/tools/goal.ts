@@ -32,6 +32,7 @@ import { captureRollbackAnchor, describeRollback } from '../../harness/writeset/
 import { readSeatSelfReport, renderSeatLine } from '../seat-self-report';
 import { renderOwnerDirectives, type OwnerInbox } from '../owner-inbox';
 import { logger } from '../../harness/logger';
+import { loadIgnitionArgs, RECOVERABLE, resolveResumeArgs, saveIgnitionArgs } from '../../harness/run-ignition';
 
 export interface GoalToolDeps {
   /** 自主环实现 (默认注入真 runGoal)。 */
@@ -448,7 +449,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         ),
     },
     handler: async (args) => {
-      const { goal, tier, maxRounds, researchRounds, resume, detached, budgetTokens, budgetMinutes, branchStrategy, resultOut, sddPath, force, slug, cwd } = args as {
+      const raw = args as {
         goal?: string;
         tier?: GoalTier;
         maxRounds?: number;
@@ -464,6 +465,33 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         slug?: string;
         cwd?: string;
       };
+      // ── 续跑恢复入参 (2026-08-23, owner 现场报) ────────────────────────────────
+      // `resume` 只带 runId, 其余入参由**本次调用**给 —— 漏传一个就按缺省跑, 而缺省未必是
+      // 首跑那次的值。判据不是「能不能恢复」, 是「**改了它还是不是同一个 run**」:
+      // sddPath/tier/researchRounds/cwd 属前者(恢复); maxRounds/budget* 属后者
+      //(**不恢复** —— schema 自己写着「resume with a bigger budget」, 那正是 resume 的用法)。
+      // branchStrategy 不在这套里: 它由 prepareRunWorktree 按**盘上有没有那棵树**判, 比读档案准。
+      const savedIgnition = raw.resume ? loadIgnitionArgs(deps.cwd, raw.resume) : null;
+      const { merged: resolvedArgs, recovered: recoveredKeys } = raw.resume
+        ? resolveResumeArgs('dag_goal', raw as Record<string, unknown>, savedIgnition)
+        : { merged: raw as Record<string, unknown>, recovered: [] as string[] };
+      if (raw.resume && recoveredKeys.length > 0) {
+        logger.info(
+          { runId: raw.resume, recovered: recoveredKeys },
+          '[omd/goal] 续跑从点火档案恢复入参 (本次调用没给这几位; 本次给了的一律以本次为准)',
+        );
+      } else if (raw.resume && !savedIgnition && RECOVERABLE.dag_goal.every((k) => (raw as Record<string, unknown>)[k] === undefined)) {
+        // ⚠ 只在**真丢了东西**时警告: 没档案 **且** 本次也一位没给。
+        //   若本次自己给了(或这是 detached 首跑, 下面就会把它留档), 那什么都没丢, 别嚷。
+        //   「没档案」与「档案里首跑就没传」是两件事 (仓规 §静默坑 1)。
+        logger.warn(
+          { runId: raw.resume },
+          '[omd/goal] 续跑没找到点火档案且本次也没给这几位 → 按缺省跑 (本模块之前的老 run 会这样)',
+        );
+      }
+      const { goal, tier, maxRounds, researchRounds, resume, detached, budgetTokens, budgetMinutes, branchStrategy, resultOut, sddPath, force, slug, cwd } =
+        resolvedArgs as typeof raw;
+
       if (!goal?.trim()) {
         return { content: [{ type: 'text' as const, text: 'dag_goal: goal 必填' }], isError: true };
       }
@@ -678,6 +706,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
       // 声明面动了执行面没跟上, 而读数上看起来是成功的。
       if (worktree.strategy === 'branch') dag = deps.buildConfig(worktree.cwd);
 
+
       // ── D-6①③ (切片 6): 这趟 run 在决策地图上的落点 ────────────────────────────
       // 无图 / 多图未指定 / 后端解析失败 → undefined, 下面两处全部跳过 = 行为逐字节照旧 (INV-1)。
       const ticketTarget = resolveRunTicketTarget(deps, slug);
@@ -888,6 +917,19 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           }
         });
 
+      // ⚠ 回滚锚**必须在点火留档之前**拍照: 留档写 `.omd/continuity/<runId>/ignition.json`,
+      //   排在它之后就多一个未跟踪文件 ⇒ 回执从「有完整回滚」退化成「半个」
+      //   (2026-08-23 实测 `goal-blocked-fork.test.ts` 的「干净树起跑」当场红; 真实仓
+      //   `.gitignore` 有 `.omd/` 所以不受影响, 但**不靠 gitignore 保正确性**)。
+      //   ⇒ **留档不许改变回滚读数**, 两句的先后是判据不是风格。
+      const rollbackLine = describeRollback(captureRollbackAnchor({ cwd: worktree.cwd }));
+      // ── 点火留档 (2026-08-23, owner 报「resume 不继承入参」) ──────────────────────
+      // 续跑要恢复入参, 先得有档案。**首写者赢, 不按「是不是 resume」判**: detached 的首跑
+      // 在 worker 里也以 resume 身份回调 handler (`goal-worker.ts:51` 的
+      // `resume: opt('run-id') ?? ''`, 那注释写着「首次跑也走 resume 这个参数名」) ——
+      // 按 resume 判会在 detached 这条路上**永不触发**, 而 detached 正是要治的那条。
+      // 已有档案 ⇒ 不覆盖 (真续跑不许改掉首跑的值)。fail-open (helper 内部留证据)。
+      saveIgnitionArgs(deps.cwd, runId, 'dag_goal', { tier, researchRounds, sddPath, cwd }, { ifAbsent: true });
       return {
         content: [
           {
@@ -909,7 +951,12 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
               // 同 describeRollback 那条纪律: 要用这个数的人正是此刻扣扳机的人, 跑完再说没用。
               ignitionForecastLine(dag, sddPath) +
               `${describeRunWorktree(worktree)}\n` +
-              describeRollback(captureRollbackAnchor({ cwd: worktree.cwd })),
+              // ⚠ 回滚锚在**这一行**拍照。点火留档写 `.omd/continuity/<runId>/ignition.json`,
+              //   排在它之前 ⇒ 拍照时树上多一个未跟踪文件 ⇒ 回执从「有完整回滚」退化成「半个」。
+              //   2026-08-23 实测: `goal-blocked-fork.test.ts` 的「干净树起跑」当场红
+              //   (真实仓 `.gitignore` 有 `.omd/` 所以不受影响, 但**不靠 gitignore 保正确性**)。
+              //   ⇒ 留档挪到锚之后 (下一句), **留档不许改变回滚读数**。
+              rollbackLine,
           },
         ],
       };

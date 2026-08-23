@@ -15,8 +15,8 @@
 
 | 字段 | 必填 | 类型 | 一句话 | 消费方 (前3) |
 |---|---|---|---|---|
-| `conductorModel` | **是** | `string` | conductor 模型 'provider:modelId' (规划用, 我们=mimo:mimo-v2.5-pro)。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/dag-tools.ts`<br>`src/eval/oracles/conductor-modelmix.ts` (17 文件) |
-| `leafModel` | **是** | `string` | inproc leaf 模型 'provider:modelId' (生成/判断单发)。 | `src/mcp/tools/dag-tools.ts`<br>`src/harness/dag/engine.ts`<br>`src/eval/oracles/conductor-modelmix.ts` (19 文件) |
+| `conductorModel` | **是** | `string` | conductor 模型 'provider:modelId' (规划用, 我们=mimo:mimo-v2.5-pro)。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/dag-tools.ts`<br>`src/eval/oracles/conductor-modelmix.ts` (18 文件) |
+| `leafModel` | **是** | `string` | inproc leaf 模型 'provider:modelId' (生成/判断单发)。 | `src/mcp/tools/dag-tools.ts`<br>`src/harness/dag/engine.ts`<br>`src/eval/oracles/conductor-modelmix.ts` (20 文件) |
 | `agentLeafModel` |  | `string` | agent leaf 模型 (带工具改文件)。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/pathfinder.ts`<br>`src/harness/execute-slice.ts` (11 文件) |
 | `judgeModel` |  | `string` | 收敛 judge 的模型坐标。 | `src/harness/research/fanout.ts`<br>`src/harness/plan/best-of-n.ts`<br>`src/harness/research/web-fanout.ts` (9 文件) |
 | `conductorEscalationModel` |  | `string` | conductor 升级模型 'provider:modelId' (verifier fail 时用更强模型重规划重跑)。 | `src/harness/dag/engine.ts`<br>`src/harness/plan/iterate.ts`<br>`src/harness/execute-slice.ts` (8 文件) |
@@ -65,7 +65,7 @@
 
 | 字段 | 必填 | 类型 | 一句话 | 消费方 (前3) |
 |---|---|---|---|---|
-| `maxFanout` |  | `number` | 内层 fan-out 并发上限 (传给 primitives.parallel)。 | `src/mcp/tools/dag-tools.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/fleet.ts` (15 文件) |
+| `maxFanout` |  | `number` | 内层 fan-out 并发上限 (传给 primitives.parallel)。 | `src/mcp/tools/dag-tools.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/fleet.ts` (16 文件) |
 | `warmThenFanout` |  | `boolean` | 暖发调度 (契约 §10.2): 全局先串行暖 1 发(写 cache)→ 再并行轰其余(命中共享冻结前缀)。 | `src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts`<br>`src/eval/oracles/conductor-modelmix.ts` (6 文件) |
 | `kindFanout` |  | `{ agent?: number; command?: number; inproc?: number }` | per-kind 并发闸 (fanout 最大化设计, 2026-07-21): inproc 叶纯 API 等待、无本地足迹 → 默认不限 (只受 maxFanout/图宽/provider 池); agent 叶 (本地工具调用)… | `src/harness/dag/dag-scheduler.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/fleet.ts` (4 文件) |
 | `channelFanout` |  | `Record<string, number>` | per-channel 并发闸 (SDD v2 D-23, TFFInfer 多 Stream 同构): key = provider 前缀 (调度期由 node.model ?? kind 静态模型推出), value = 该渠道并… | `src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/dag/dag-scheduler.ts` (3 文件) |
@@ -113,4 +113,4 @@ leaf prompt 整形 seam: 注入 leaf 上下文/前缀/压缩级与档位闸 (省
 | `sessionId` |  | `string` | 本次 run 的 Langfuse trace 分组 session id (conductor+leaf 全部经 send 归此 session)。 | `src/tui/tui.ts`<br>`src/tui/backend-embedded.ts`<br>`src/harness/dag/engine.ts` (35 文件) |
 | `onComplete` |  | `(result: ExecutorDagResult) => void \| Promise<void>` | 运行完成钩子 (留痕层接口)。 | `src/mcp/tools/dag-tools.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/plan/iterate.ts` (7 文件) |
 | `onNodeEvent` |  | `(e: DagNodeEvent) => void` | 节点级进度事件 (2026-07-20, MCP 派发简报/活体 status 的数据源): planned = 图定型 (全部节点 id+kind, 每轮 plan/escalation 重规划各发一次) start = 节点起跑 … | `src/mcp/tools/fleet.ts`<br>`src/mcp/tools/dag-tools.ts`<br>`src/mcp/assemble.ts` (11 文件) |
-| `continuity` |  | `{ manager: CheckpointManager; runId: string; resume?: boo…` | W2 continuity (SDD C4): 节点级 checkpoint 落盘 + 崩溃恢复跳过。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/dag-tools.ts`<br>`src/mcp/tools/goal.ts` (44 文件) |
+| `continuity` |  | `{ manager: CheckpointManager; runId: string; resume?: boo…` | W2 continuity (SDD C4): 节点级 checkpoint 落盘 + 崩溃恢复跳过。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/dag-tools.ts`<br>`src/mcp/tools/goal.ts` (45 文件) |
