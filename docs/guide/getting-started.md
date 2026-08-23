@@ -1,62 +1,72 @@
-# omd over MCP — Onboarding
+# Getting started
 
-> Your coding agent (Claude Code / Codex / any MCP client) stays the smart brain;
-> omd provides the cheap concurrent hands and the memory that doesn't forget.
-> [中文速览](#中文速览) at the bottom.
+[← docs index](../README.md) · [why omd exists](../why-omd.md) ·
+[driving omd (for your agent)](../driving-omd.md) · [MCP tools](mcp-tools.md)
 
-`omd mcp` is a stdio MCP server exposing oh-my-dag's three subsystems as tools:
+Fifteen minutes, start to a finished graph. You need [Bun](https://bun.sh) ≥ 1.3 and one API
+key for any OpenAI-compatible provider. Nothing here is vendor-locked.
 
-- **DAG execution engine** — decompose a task into a typed node graph, fan out to
-  *your choice of cheap models* concurrently, verify cross-model, escalate only on
-  failure. The frontier model judges; the fleet executes.
-- **Pathfinder** — persistent decision maps for work too big for one session:
-  typed tickets in git-tracked markdown, AFK background research that keeps running
-  after you close the client, an explicit delivery gate.
-- **Self-memory** — hybrid FTS+vector fact store that survives across sessions.
-
-Everything is **stateless in the server**: maps live in `docs/plan/pathfinder/`
-(git), runtime state in `.omd/` — crash the server, switch clients, resume freely.
+> **What you are installing.** `omd mcp` is a stdio MCP server. Your coding agent — Claude
+> Code, Codex, or any MCP client — stays the thing you talk to; omd becomes the engine it
+> hands work to. See [why omd exists](../why-omd.md) if you want the argument before the
+> install.
 
 ---
 
-## 1 · Install (2 minutes)
-
-Prereqs: [Bun](https://bun.sh) ≥ 1.3, one API key for any OpenAI-compatible
-provider (nothing is vendor-locked).
+## 1 · Install
 
 ```bash
-git clone https://github.com/AbyssCN/oh-my-dag.git
-cd oh-my-dag && bun install
-bun link          # puts `omd` on your PATH
+git clone https://github.com/AbyssCN/oh-my-dag.git && cd oh-my-dag
+bun install
+bun link              # puts `omd` on your PATH
 ```
 
-## 2 · Configure (models are coordinates, not bindings)
+Not on npm yet, so the clone is the install.
 
-omd bakes **no model**. Every role (conductor / leaf / agent / verifier…) is a
-`provider:model` coordinate — DeepSeek, Kimi k3, GLM, GPT, MiMo, or any
-OpenAI-compatible gateway, mix freely.
+## 2 · Configure your models
 
-**Wizard (recommended):**
+omd bakes in **no model**. Every seat is a `provider:model` coordinate — DeepSeek, Kimi, GLM,
+GPT, Qwen, MiMo, MiniMax, or any OpenAI-compatible gateway, mixed freely.
+
+**The wizard is the easy path:**
 
 ```bash
-omd init          # keys, model presets, reachability probe → writes .env
+omd init
 ```
 
-**Manual** — copy [.env.example](../../.env.example), minimum set:
+It asks for keys, offers three guided presets that fill the whole seat matrix, probes each
+provider for reachability, and writes `.env`.
+
+**By hand** — copy [.env.example](../../.env.example); the minimum is a runtime coordinate plus
+that provider's credentials:
 
 ```bash
-OMD_RUNTIME_PROVIDER=deepseek          # runtime coordinate (conductor defaults to it, D-8)
+OMD_RUNTIME_PROVIDER=deepseek
 OMD_RUNTIME_MODEL=deepseek-v4-pro
 DEEPSEEK_API_KEY=sk-...
 DEEPSEEK_BASE_URL=https://api.deepseek.com
-# optional role matrix:
-# OMD_ITER_CONDUCTOR_MODEL / OMD_ITER_LEAF_MODEL / OMD_ITER_AGENT_MODEL = provider:model
 ```
 
-## 3 · Wire into your client
+Check it took:
 
-**Claude Code, project-level (zero commands)** — drop a `.mcp.json` into the target
-repo (this repo ships one you can copy):
+```bash
+omd mcp &            # or just let your client start it
+# then, from your agent:  omd_config_status
+```
+
+`omd_config_status` prints every seat, the model bound to it, and whether the credential for
+that provider is actually present — the readout is a probe, not a guess. Details and the full
+seat matrix: [model config](model-config.md).
+
+## 3 · Wire it into your client
+
+**Claude Code:**
+
+```bash
+cd <your-project> && claude mcp add omd -- omd mcp
+```
+
+Or drop a `.mcp.json` into the target repo (this repo ships one you can copy):
 
 ```jsonc
 {
@@ -66,91 +76,92 @@ repo (this repo ships one you can copy):
 }
 ```
 
-**Claude Code, manual:**
+**Codex / any other MCP client:** point it at the same command, `omd mcp`, over stdio.
 
-```bash
-cd <your-project> && claude mcp add omd -- omd mcp
+> **The one rule that catches everyone: the server's working directory is the repo it operates
+> on.** Decision maps land in `<repo>/docs/plan/pathfinder/`, runtime state in `<repo>/.omd/`.
+> Start it from the project you want it to work on, not from the omd checkout.
+
+**Skills install themselves.** On first start the server copies 22 methodology skills into
+`~/.claude/skills/`, idempotently, under an `omd-` prefix so they cannot collide with yours —
+and it **never overwrites one you have edited** (it compares a content hash). You get
+`/omd-path`, `/omd-review`, `/omd-debug` and the rest in your next session. Opt out with
+`OMD_INSTALL_SKILLS=0`. Codex has no skills mechanism — merge the SKILL.md bodies you want
+into that repo's `AGENTS.md`. See [skills](skills.md).
+
+## 4 · The three entry layers
+
+Each one contains the next, and each states a different promise. Pick by how settled the work
+is, not by how big it is.
+
+| Layer | Use it when | Promise |
+|---|---|---|
+| `run` | the approach is already decided | execute this graph |
+| `solve` | you have a goal, not a plan | converge on the goal, including repair rounds |
+| `map_*` | the work spans many sessions and half of it is still unclear | a decision map in git, with a human at the frontier |
+
+There is also `conductor_chat` — a persistent conductor session over MCP, useful when you want
+to ask the engine's own planner something rather than hand it a job.
+
+The older names `dag_run`, `dag_goal` and `path_*` still work as deprecated aliases with
+identical behaviour. New code should use the new ones.
+
+## 5 · Your first graph
+
+From inside your agent, hand omd something small and checkable:
+
+```
+run(task: "Add a `--json` flag to scripts/omd-seats.ts that prints the seat table as JSON.
+           Then run `bun run scripts/omd-seats.ts --json | head -3` and it must exit 0.")
 ```
 
-**Key rule: the server's cwd is the repo it operates on.** Decision maps land in
-`<repo>/docs/plan/pathfinder/`, runtime state in `<repo>/.omd/`.
+You get back a `runId` immediately — dispatch is fire-and-forget, so a dropped connection does
+not kill the graph:
 
-**Skills (strongly recommended)** — install the slash-command workflow pack so your
-agent knows the disciplines (who rules, who delivers, how to iterate):
-
-```bash
-cp -r client-skills/omd-* ~/.claude/skills/
+```
+runId: 8437dca5-ee2d-47b3-8e2c-078a3a879842
+status: running
 ```
 
-Codex has no skills mechanism — merge the SKILL.md bodies you need into the target
-repo's `AGENTS.md`. See [client-skills/README.md](../../client-skills/README.md) for
-the full command-migration table and workflows.
+Poll it:
 
-## 4 · What you get (19 tools, three groups)
+```
+dag_status(runId: "8437dca5-…")
+```
 
-**Engine group** — delegate work to the cheap fleet:
+```
+status: running
+nodes: 5 done / 0 failed / 0 skipped / 1 running / 2 pending (共 8)
+running: judge_panel(agent, 22s)
+```
 
-| Tool | What it does |
+When it reaches `done`, `dag_result` gives you the full result and `dag_node_output` gives you
+one node's artifact. If it fails, `dag_resume` reloads the plan from the on-disk checkpoint and
+re-runs only the nodes that are not green.
+
+**→ In practice you will not type any of this yourself — you tell your agent to. Hand it
+[driving omd](../driving-omd.md) first.**
+
+## 6 · The invariants worth knowing on day one
+
+- **The owner holds the trigger.** Research runs itself and tickets expand themselves, but
+  `map_rule` and `map_deliver` fire only on your explicit word. Automation never starts writing
+  files on its own.
+- **Everything true is on disk.** Maps in git, runtime state and checkpoints in `.omd/`. Crash
+  the server, switch clients, resume freely — there is nothing to lose in memory.
+- **Spend is bounded.** Fan-out is capped, background research obeys a budget counted across
+  sessions on disk, and escalation to a stronger model triggers only after a failed verify.
+- **Isolate anything unattended.** For background runs and anything that fetches the open web,
+  pass `branchStrategy: 'branch'` — an isolated git worktree plus a jail. The engine never
+  merges that branch back; you do.
+
+## Where to go next
+
+| | |
 |---|---|
-| `dag_run` | task → conductor decomposes into a typed DAG → concurrent execution (agent leaves **really write files**, command leaves run tsc/tests) |
-| `dag_run_plan` | skip the conductor: execute a pre-built plan JSON directly; `resume=<runId>` skips checkpointed done nodes (a 429-interrupted run continues instead of re-running the whole graph) |
-| `dag_status` / `dag_result` / `dag_node_output` | three-phase async: dispatch, keep chatting, poll, fetch artifacts |
-| `dag_runs` | list runs — memory registry merged with on-disk continuity checkpoints (disk-only ones marked `unknown(restart)`); optional `status` filter |
-| `dag_research` | multi-lens parallel research + judged synthesis; full report on disk, only a summary enters context |
-| `dag_review` | adversarial multi-dimension diff review fleet, async — `gate` G0|G1|G2|G3 (default G2), `scope` comma paths; returns runId → poll via `dag_status` / `dag_result` |
-| `dag_slim` | over-engineering cut-only audit fleet, async — optional `scope`; returns runId |
-| `dag_deepen` | architecture-deepening scan: git-hotspot discovery → one agent per hotspot → leverage-ranked HTML report; `commits` (default 200) / `hotspots` (default 6); returns runId |
-
-**Pathfinder group** — persistent planning for foggy multi-session work:
-
-| Tool | What it does |
-|---|---|
-| `path_map` | list / create / resume decision maps |
-| `path_add` | add typed tickets (research / grill / prototype / task) with dependency edges |
-| `path_tickets` | show the frontier; folds in landed AFK results first (pull reflow + budgeted self-expansion) |
-| `path_rule` | adjudicate a decision onto the map (owner's call) |
-| `path_deliver` | **the power gate**: compile the clear region to a slice, run the DAG, mark delivered only on full success |
-| `path_prefetch` | dispatch frontier research to detached background processes — they keep running after you close the client |
-
-**Memory group**: `memory_recall` / `memory_remember` — persistent fact store with
-namespace safeguards. (`dream_consolidate` was removed 2026-08-02 — under pure-MCP usage
-not a single signal producer remained, so it could only ever have returned `0 events`.
-Ruled in internal ADR-0003.)
-
-## 5 · Five-minute walkthrough
-
-```
-you:    /path add OCR to the invoice module
-agent:  (path_map) empty map — let's break it down:
-        r1[research] which OCR service?   g1[grill] fallback policy on failed recognition?
-        t1[task] integrate API (blockedBy: r1)   t2[task] persist + reconcile (blockedBy: t1,g1)
-you:    prefetch
-agent:  (path_prefetch) r1 researching in background. Meanwhile — g1?
-        … deliberation …
-you:    /rule g1 failures go to a manual queue, never auto-post
-agent:  ✓ ruled. (path_tickets) r1's result landed: recommends service X … confirm and I'll draft t1's ruling
-you:    /rule t1 use X, key via env
-agent:  region clear, slice compiles — awaiting /deliver
-you:    /deliver
-agent:  (path_deliver) 3 nodes done, tickets delivered. Here's the diff — please review.
-```
-
-## 6 · Cost & safety invariants
-
-- **Humans hold the trigger**: research runs itself, tickets self-expand, but
-  `path_rule` and `path_deliver` fire only on the owner's explicit word.
-- **Bounded spend**: AFK self-expansion obeys `OMD_PATH_RESEARCH_BUDGET`
-  (default 12, counted across sessions on disk); DAG fan-out is capped;
-  escalation to stronger models triggers only on a failed verify.
-- **Nothing to lose**: all truth is on disk — maps in git, results and budgets in
-  `.omd/`. Any client can pick up where another left off.
-
----
-
-## 中文速览
-
-**装**:`git clone … && bun install && bun link`(需 Bun ≥1.3)。
-**配**:`omd init` 向导写 `.env`;模型是 `provider:model` 坐标,任何 OpenAI 兼容后端可用,不锁厂商。
-**接**:目标 repo 放 `.mcp.json`(本仓库带模板)或 `claude mcp add omd -- omd mcp`;**server 的 cwd = 它作用的仓库**。技能包:`cp -r client-skills/... ~/.claude/skills/`,获得 `/path` `/rule` `/deliver` `/execute` 等斜杠工作流。
-**得到什么**:38 个工具三组——DAG 引擎组(任务分解成类型化节点图、廉价模型车队并发真改文件、三段式异步、review/slim/deepen 质量车队与 `dag_runs` 运行台账)、pathfinder 组(持久决策地图、AFK 后台研究关了客户端还在跑、显式交付闸)、记忆组(跨 session 事实库 `memory_recall` / `memory_remember`)。
-**边界**:裁决与执行永远等 owner 显式指令;自续研究受预算约束(`OMD_PATH_RESEARCH_BUDGET`,默认 12);状态全在磁盘,换客户端零损失。
+| Let your agent drive it | [driving omd](../driving-omd.md) — written for the agent, not for you |
+| Understand why this layer exists | [why omd exists](../why-omd.md) |
+| Every tool and its arguments | [MCP tools](mcp-tools.md) |
+| Which door for which job | [workflow](workflow.md) |
+| Seats, presets, per-seat pins | [model config](model-config.md) |
+| How the engine is built | [architecture overview](../architecture/overview.md) |

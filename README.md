@@ -2,11 +2,11 @@
 
 # oh-my-dag
 
-### An agent of its own — and an open execution engine anything can call.
+### The orchestration layer under your coding agent.
 
-*Four ways in: compose one capability, hand off a whole graph, talk to the conductor, or open the TUI.*
+*Your agent says "I'm done." omd doesn't ask — it runs the work as a typed graph, picks a model per node, and takes the verdict from outside the model.*
 
-<img src="assets/diagrams/omd-architecture.gif" alt="omd architecture" width="820">
+<img src="assets/diagrams/omd-layer-position.svg" alt="Where omd sits: session layer, orchestration layer, what persists, model layer" width="900">
 
 [![MCP server: 50 tools](https://img.shields.io/badge/MCP%20server-50%20tools-c9a227?style=flat-square&labelColor=140f0a)](docs/guide/mcp-tools.md)
 [![Clients: Claude Code · Codex · any MCP](https://img.shields.io/badge/clients-Claude%20Code%20%C2%B7%20Codex%20%C2%B7%20any%20MCP-6f9488?style=flat-square&labelColor=140f0a)](client-skills/)
@@ -14,162 +14,47 @@
 [![Runtime: Bun ≥ 1.3](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.3-b3382a?style=flat-square&labelColor=140f0a)](https://bun.sh)
 [![License: MIT](https://img.shields.io/badge/license-MIT-c9a227?style=flat-square&labelColor=140f0a)](LICENSE)
 
-**English** · [中文](README.zh-CN.md) · **[Get started →](docs/guide/getting-started.md)**
+**English** · [中文](README.zh-CN.md) · **[Why omd exists →](docs/why-omd.md)** · **[Give this to your agent →](docs/driving-omd.md)**
 
 </div>
 
-## Four ways in
+You close the tab. The model said *all changes applied*. `git diff` says the file is untouched.
 
-One engine, four doors. Pick by how much you want to hand over at once.
+omd never reads that sentence. It reads an exit code.
 
-| | |
-|---|---|
-| **MCP · compose** | Call one capability and look at the result — run a `judge` over three attempts, fetch and distil a page, recall what you decided last week. Two to five steps, you stay in the loop. |
-| **MCP · graph & goal** | Hand off a whole fan-out. `run` lets a conductor decompose the task; `solve` takes an *open* goal and researches its way toward one — its findings come back as tickets a human rules on. Already have a crystallised SDD? Pass `sddPath`: the engine compiles it straight to a flat graph — no research pass, no planning tax, the acceptance command is the only stop rule. Ten nodes or a hundred, you go do something else. |
-| **`conductor_chat`** | A persistent conductor session over MCP. Ask it questions, or let it dispatch graphs mid-conversation — including from a phone, since the session lives on the server and the run outlives the connection. |
-| **`omd tui`** *(in development)* | omd's own terminal client: a chat seat with seat/model pickers and live run views. Usable today, still moving — see [the TUI guide](docs/guide/tui.md). |
+You keep Claude Code, Codex, gemini-cli or opencode. omd is what they call over MCP when the work is bigger than one conversation.
 
-Every door lands on the same substrate: a typed plan, deterministic passes, oracle gates, a
-cross-family verifier, per-node checkpoints, model pools, and cost accounting.
+## Where omd sits
 
-## Two lanes, one engine
+Every open-source coding harness of 2026 — codex, gemini-cli, qwen-code, opencode, kimi-code, deepseek-harness, oh-my-pi — is a **session-layer** tool. The unit of work is a turn. The loop is ReAct: sample, run tools, feed the result back. They compete on context compaction, sandbox depth, event sourcing. They compete well.
 
-<div align="center">
-<img src="assets/diagrams/omd-workflow.svg" alt="omd workflow: the contract lane and the map lane" width="820">
-</div>
+They also share one assumption: **whether the work is correct is something the model reports.**
 
-**The contract lane** — one task, one pass. Research the ground truth, grill the plan until the
-open questions are named, crystallise it into a written contract, then execute against that
-contract. The contract is what the executor reads; it never has to guess what the conversation
-meant.
+They can't do otherwise. The forward pass that produced the work is the one assessing it — same context, same beliefs. Without stepping outside the session there is nowhere else for a verdict to come from.
 
-**The map lane** — long work across many sessions. A decision map lives in git. Ambiguity becomes
-typed tickets, tickets get ruled on, a ruled region gets delivered, and delivery flips the ticket
-to `delivered` back on the map. The map is the memory the context window does not have.
+omd steps outside it. The unit of work is a **node**. The verdict comes from **code**.
 
-The two lanes meet at the same engine and the same gates. And they meet at one deliberate
-bottleneck: **`deliver` is the trigger the owner pulls.** A region going quiet only reports; it
-never starts writing. Automation is free to research, fetch, plan and argue on its own — changing
-files stays a human decision, every time.
+|  | Session-layer harness | Workflow engine<br>(LangGraph, Temporal) | Eval & gate framework<br>(Inspect, promptfoo) | **omd** |
+|---|---|---|---|---|
+| **Unit of work** | a turn | a step you wrote | a scored sample | **a node in a typed graph** |
+| **Where the graph comes from** | no graph — a ReAct loop | you write it | no graph | **a conductor, an SDD contract, a decision map, or your own hand** |
+| **Who decides it's correct** | the model | your assertion | your rubric | **oracle → cross-family verifier → human. In that order** |
+| **Which model runs it** | the one you launched | the one you configured | n/a | **one per node, and a model you pin by hand is never overwritten** |
+| **When it breaks mid-run** | session ends, re-prompt | retry per your policy | graded and over | **per-node checkpoints; resume re-bills only what changed** |
+| **How you invoke it** | you chat with it | you embed it | you call it from CI | **`claude mcp add omd -- omd mcp`** |
 
-## Five problems, five mechanisms
+**The overlap is real.** LangGraph and Temporal run graphs. Eval frameworks run gates. Neither is a new idea. What is combined here: a typed plan as the interchange format, gates inside the run that produced the artifact rather than afterwards on a trace, a verifier from another model family, per-node resume, and an MCP surface so any harness drives all of it.
 
-### 1 · "It said it was done. It wasn't."
+**What omd is not:**
 
-An objective gate runs before any model judgement: `tsc`, the test suite, a scanner, a file that
-must exist on disk. Zero model in the loop, so it cannot be talked into passing. A node that
-claims a file it never wrote fails; a "reviewed" screenshot that does not exist fails.
+- **Not a coding CLI.** Keep the harness you have.
+- **Not a chat agent.** Its unit is a node, not a conversation.
+- **Not an eval framework.** You don't ship it traces.
+- **Not a vendor product.** MIT, TypeScript on Bun, any OpenAI-compatible model.
 
-The same discipline applies to the criterion itself. Before an acceptance command is trusted,
-the engine runs it twice in a throwaway world — once **before any work exists** (still green
-means it has nothing to do with this task), and once against a **deliberately wrong artifact**
-the classifier had to supply alongside the command (still green means it cannot tell a right
-answer from a wrong one). Either way the goal drops to exploratory instead of collecting a fake
-pass. Source: `src/harness/goal/acceptance-gate.ts`.
+**→ [The long version](docs/why-omd.md)**
 
-### 2 · "The context ran out and everything started over."
-
-<div align="center">
-<img src="assets/diagrams/omd-run-states.svg" alt="run states: queued, running, checkpointed, resumed, done" width="700">
-</div>
-
-Every finished node lands atomically on disk. Resuming a broken run re-checks input hashes:
-nodes whose inputs are unchanged stay green and are not re-billed, and only the rest re-runs.
-`solve` with `detached: true` hands the loop to a worker process that outlives your session —
-close the client, the graph keeps going. Facts you want to keep go into a store with a hybrid
-recall path (a lexical leg and a deterministic hashed-vector leg, both zero-model), so next
-week's session can look them up instead of re-deriving them.
-
-### 3 · "Deep research is expensive, and half of it is made up."
-
-Retrieval has a deterministic floor. `omd_web` searches and fetches with **no model in the
-loop**: full text lands on disk and only an index comes back. Gaps close by *re-crawling the
-missing source*, never by a model filling them from memory. The model does synthesis; the engine
-does recall.
-
-```bash
-bun run scripts/dag-research.ts "<your question>" --deep
-```
-
-Same question — a mid-2026 MCP ecosystem review — run twice, two configurations of our own:
-
-| | **omd `--deep`, cheap seats** | **106-agent frontier workflow** |
-|---|---|---|
-| Cash cost | **$2.19** | subscription quota · 3.76M tokens |
-| Result | 132k-char report · 32 sources | 23 claims, verified 3-of-3 |
-| Finished? | ran clean to the end | hit the quota mid-verify |
-
-The cheap configuration independently reproduced **13 of the 15** facts the frontier
-configuration had verified. Not because small models are secretly frontier-grade — because the
-part that decides fact coverage is retrieval, and retrieval is the part with no model in it.
-
-**→ [Deep research guide, seat assignment, full A/B](docs/guide/deep-research.md)** ·
-[sample output](docs/examples/deep-research-mcp-2026.md)
-
-### 4 · "I don't trust a cheap model with anything that matters."
-
-Then don't trust it — check it. Between the plan and execution sit four pure functions (prune
-dead nodes, merge duplicates by semantic key, enforce the evidence gate, pin a model on every
-node); after execution sits the oracle gate, and after that a verifier drawn from a **different
-model family** than the author, because a verifier that shares the author's family shares its
-blind spots.
-
-Underneath, work routes to **16 named seats** in four classes — decomposer, judge/synthesis,
-worker, verify. Auto-assign fills them by channel economics: strong where being wrong is
-expensive and rare, cheap where volume is high and an oracle catches the mistakes, and family
-diversity spent only where it changes the answer. Pin any seat once in `.omd/config.json` and
-every resolver reads that one value. Registry: `src/model/seats.ts`.
-
-### 5 · "The method only exists inside one person's prompt."
-
-omd ships **20 methodology skills** in the package — adversarial review, root-cause debugging,
-contract crystallisation, a decision-map workflow, a deletion-only over-engineering audit, and
-more. They install into `~/.claude/skills/` on first server start, idempotently, and never
-overwrite a skill you edited.
-
-They are not just for your top-level agent. An `agent` leaf inside a graph gets the **same**
-skill set through the same tool, so a method you wrote once applies whether you invoke it by
-hand or a node reaches for it forty levels into a fan-out.
-
-## Skills: the method ships with the package
-
-Skills are grouped under an umbrella. Your prompt carries the **listing** — group names and
-one-line descriptions — not the bodies. A model that wants a method calls `read_skill` and gets
-that one body, at that moment. A hundred installed skills therefore cost roughly a hundred
-lines of prompt, not a hundred documents, and the discovery surface stays the same whether you
-have three skills or three hundred.
-
-Three roots are scanned, project first: `<cwd>/.omd/skills`, the package's own set, then
-`~/.claude/skills`. Same name, project wins.
-
-`/omd-review` for a diff, `/omd-debug` for a bug, `/omd-grill` then `/omd-contract` to lock a
-plan, `/omd-path` to open a map — **[the full list and how to write your own →](docs/guide/skills.md)**
-
-## What you can call
-
-Six families, 49 tools.
-
-| | |
-|---|---|
-| **EXECUTE** | Run a graph, state a goal, resume a broken run, cancel cooperatively, ask a running graph's owner inbox for a ruling, or fire a single control-flow shape without a graph at all. |
-| **RESEARCH** | Search and fetch with zero model in the loop, distil text you already have through a faithful lens and an adversarial one, or run a full multi-lens synthesis with a judge panel. |
-| **AUDIT** | Multi-dimension diff review with cross-family falsification, root-cause debugging, a deletion-only over-engineering pass, and an architecture-hotspot scan. |
-| **MEMORY** | A fact store with hybrid recall, plus a decision map in git advanced by typed tickets — machine-suggested tickets must be confirmed before they can be ruled on. |
-| **KNOWLEDGE** | Proven graph shapes, each carrying its trigger *and* its "not when"; template cards that inject a vetted specialist checklist into a node at run time. |
-| **CONFIG** | Point the engine at your models: keys, presets, per-seat pins, provider registration, auto-assignment, and a status readout. |
-
-Control flow belongs to the runtime, never to the model: you pick the shape and its parameters
-— `parallel`, `pipeline`, `loop-until`, `verify`, `judge`, `discovery`, `iterate`, `tournament`,
-`router`, `race`, `escalation`, `saga` — and the loop, branch, stop and scoring logic is the
-engine's. A thirteenth, `escape-hatch`, stays off unless you set `OMD_ESCAPE_HATCH=1`.
-
-One safety note: for anything unattended, or anything that fetches the open web, run with
-`branchStrategy: 'branch'` — an isolated git worktree plus a jail, so the leaf cannot read or
-write outside it. Details in [the engine doc](docs/architecture/dag-engine.md).
-
-**→ [Full tool reference](docs/guide/mcp-tools.md)**
-
-## Quick start
+## Install
 
 ```bash
 git clone https://github.com/AbyssCN/oh-my-dag.git && cd oh-my-dag
@@ -181,33 +66,117 @@ omd init                     # wizard: keys, model presets, reachability probe �
 cd <your-project> && claude mcp add omd -- omd mcp
 ```
 
-Then either drive it from your MCP client, or run `omd tui` for omd's own terminal seat.
-Prefer to configure by hand? Set `OMD_RUNTIME_PROVIDER`, `OMD_RUNTIME_MODEL` and your backend
-key in `.env` (copy [.env.example](.env.example)). Skill installation opts out with
-`OMD_INSTALL_SKILLS=0`.
+Not on npm yet, so the clone is the install. The server's working directory *is* the repo it operates on. First start installs 22 skills into `~/.claude/skills/`, idempotently, never overwriting one you edited (`OMD_INSTALL_SKILLS=0` opts out).
 
-**→ [Full walkthrough](docs/guide/getting-started.md)** · [command reference](client-skills/README.md)
+Then tell your agent:
 
-## Docs
+> Read `docs/driving-omd.md`, then use omd to …
+
+**[docs/driving-omd.md](docs/driving-omd.md)** is written for the agent, not for you — which tool for which job, why it must never block on a `runId`, how to phrase a task so a gate exists, and the failure modes it will hit. **[Full walkthrough for humans](docs/guide/getting-started.md)**.
+
+## The verdict comes from outside the model
+
+<div align="center">
+<img src="assets/diagrams/omd-verdict-ladder.svg" alt="The acceptance ladder, and the exam a criterion has to sit first" width="900">
+</div>
+
+A model asked to judge its own work can stop running entirely without anything turning red. So rung ① has no model in it. A `command` node runs `tsc`, the suite, or your script; the exit code must equal `expect_exit`. Beside it: write-set reconciliation — did it write what it claims — and artifact gates — is the file on disk. A node that reports a file it never wrote fails.
+
+**The criterion sits an exam before it is trusted.** This is the part worth reading twice. The engine runs the proposed acceptance command twice in a throwaway world: once **before any work exists** — still green means it has nothing to do with this task — and once against a **deliberately wrong artifact** the classifier had to supply alongside it — still green means it can't tell right from wrong. Either way the goal is demoted to exploratory instead of collecting a fake pass. Both probes are fail-open: a probe that can't run marks the criterion unproven rather than blocking the run. `src/harness/goal/acceptance-gate.ts`.
+
+When no oracle can judge semantics, rung ② is a verifier from a **different model family**. Same family, same blind spots. Its job is to attack the result, not stamp it. Fail escalates: stronger conductor, re-plan, only the rejected nodes re-run. `src/harness/verifier.ts`.
+
+⚠ **Oracle-green is not semantically right.** This engine once shipped `tsc` clean and the full suite passing, with a status mapping labelled backwards and the test freezing the mistake in place. A test and its implementation from the same change can be wrong together and endorse each other. Rung ① cannot catch that. Rung ③ is a human.
+
+> **Reliability comes from outside the model. Creativity comes from inside it.**
+> Gates judge — deterministic, zero-model, fail-closed. Models generate — what to do, how, what's missing. Inside the gates, don't replace that with rules.
+
+## Where a graph comes from
+
+Four sources. The engine only checks that the plan validates.
+
+| Source | What it costs |
+|---|---|
+| **A conductor draws it** | one LLM call. `run` and `solve` do this |
+| **An SDD contract compiles to it** | **zero LLM.** Flat graph, no research pass, no re-planning |
+| **A decision map compiles to it** | **zero LLM.** Ruled tickets plus their edges are already a graph |
+| **You write it** | zero LLM, total control |
+
+The **contract lane** is the one worth learning. `/omd-grill` interrogates the design until the open questions are named. `/omd-contract` writes it down as a spec. Then `solve(sddPath: …)` compiles that spec straight to a flat graph — and the acceptance command becomes the only stop rule. The spec is not a prompt: it carries the decomposition, the gates, and the verify column, so the engine has nothing left to guess.
+
+One precondition, and it is real: the spec's verify column must point at something **red today**. A spec whose tests already pass turns the run into an expensive no-op.
+
+The **map lane** is for work that outlives sessions. Ambiguity becomes typed tickets in git, you rule on them, and a ruled region compiles and runs. `map_deliver` is a trigger **you** pull. Automation may research, fetch, plan and argue. It may not decide to start writing.
+
+## Build your own pipeline
+
+Every node can name its own model, and **an explicitly pinned model is never overwritten**. The precedence is `node.model` > `template.model` > auto-assign (`src/harness/plan-passes/stamp-pass.ts:66`).
+
+So hand `dag_run_plan` a graph you wrote:
+
+```jsonc
+{
+  "nodes": {
+    "draft_a":  { "goal": "…", "executor": "leaf", "model": "deepseek:deepseek-v4-pro" },
+    "draft_b":  { "goal": "…", "executor": "leaf", "model": "minimax-cn:MiniMax-M3" },
+    "critique": { "goal": "…", "executor": "leaf", "model": "openai-codex:gpt-5.6-sol",
+                  "depends_on": ["draft_a", "draft_b"] },
+    "gate":     { "goal": "run the suite", "executor": "command",
+                  "command": "bun test", "expect_exit": 0, "depends_on": ["critique"] }
+  },
+  "outputs": ["gate"]
+}
+```
+
+That is a cross-family best-of-N with a deterministic gate on the end, and you chose every seat in it. `omd_primitive` takes a `model` the same way for a single shape.
+
+**This is why a shipped pipeline beats a skill.** A skill is a prompt: it can only ask the model in front of you to behave differently. A pipeline picks cheap models for volume, a different family for the critique so it doesn't inherit the author's blind spots, and a zero-LLM command for the verdict. A prompt cannot do that.
+
+## What ships with it
+
+22 methodology skills, and each is a graph rather than a prompt. They install into `~/.claude/skills/` on first start. An `agent` leaf **inside** a graph gets the same set through the same tool, so a method you wrote once applies forty levels into a fan-out.
 
 | | |
 |---|---|
-| [Getting started](docs/guide/getting-started.md) | install, connect a client, first run |
-| [MCP tools](docs/guide/mcp-tools.md) | every tool, grouped, with arguments |
-| [Model config](docs/guide/model-config.md) | seats, presets, OAuth/subscription backends |
-| [Workflow](docs/guide/workflow.md) | the contract lane and the map lane, end to end |
-| [Skills](docs/guide/skills.md) | the umbrella, the shipped set, writing your own |
-| [Deep research](docs/guide/deep-research.md) | the pipeline, the seats, the A/B benchmark |
-| [TUI](docs/guide/tui.md) | omd's own terminal client *(in development)* |
-| [Architecture overview](docs/architecture/overview.md) | how the pieces fit |
-| [DAG engine](docs/architecture/dag-engine.md) | node kinds, passes, scheduling, isolation, checkpoints |
-| [Goal loop](docs/architecture/goal-loop.md) | plan → execute → judge → repair, and the four stop axes |
-| [Memory & dream](docs/architecture/memory-dream.md) | fact store, hybrid recall, consolidation |
-| [Model layer](docs/architecture/model-layer.md) | seats, pools, stamp rules, reasoning effort |
-| [Primitives](docs/architecture/primitives.md) | the 13 control-flow shapes, and when a plain node is better |
-| [Open ecosystem](docs/architecture/open-ecosystem.md) | external MCP servers and skills on the agent leaf |
+| `/omd-grill` → `/omd-contract` | argue the design, then write the contract the engine executes |
+| `/omd-research-deep` | seeded multi-angle crawl → council decomposition → multi-round gap-filling |
+| `/omd-council` | multi-persona deliberation with a judge panel |
+| `/omd-review` | multi-dimension diff review, every finding falsified cross-model |
+| `/omd-debug` | reproduce → scope lock → parallel hypotheses → verify |
+| `/omd-path` · `/omd-rule` · `/omd-deliver` | the decision-map loop |
+
+Control flow belongs to the runtime, never the model. You pick the shape — `parallel`, `pipeline`, `loop-until`, `verify`, `judge`, `discovery`, `iterate`, `tournament`, `router`, `race`, `escalation`, `saga` — and the loop, branch, stop and scoring stay in code. A thirteenth, `escape-hatch`, is off unless you set `OMD_ESCAPE_HATCH=1`.
+
+Work routes to **18 seats**. A seat is a *model-selection axis*, not a role, so unrelated calls can share one. Auto-assign fills them by channel economics: strong where being wrong is expensive and rare, cheap where volume is high and an oracle catches the mistake. `src/model/seats.ts`.
+
+**→ [All 50 tools](docs/guide/mcp-tools.md)** · [the skills in full](docs/guide/skills.md)
+
+## Measured, not asserted
+
+Same question — a mid-2026 MCP ecosystem review — two configurations of our own:
+
+| | **omd `--deep`, cheap seats** | **106-agent frontier workflow** |
+|---|---|---|
+| Cash cost | **$2.19** | subscription quota · 3.76M tokens |
+| Result | 132k-char report · 32 sources | 23 claims, verified 3-of-3 |
+| Finished? | ran clean to the end | hit the quota mid-verify |
+
+The cheap run reproduced **13 of the 15** facts the frontier run had verified. Not because small models are secretly frontier-grade. Because fact coverage is decided by retrieval, and retrieval is the part with no model in it. `omd_web` searches and fetches with **zero model in the loop**: full text to disk, only an index back, gaps closed by re-crawling rather than by a model filling them in.
+
+Engine test suite: **6812 passing, 0 failing, 590 files** (`bun test`).
+
+**→ [The full A/B](docs/guide/deep-research.md)** · [sample output](docs/examples/deep-research-mcp-2026.md)
+
+## Docs
+
+| | | |
+|---|---|---|
+| **For your agent** | [driving omd](docs/driving-omd.md) | which tool for which job, the dispatch contract, the gates it will hit |
+| **Why** | [why omd exists](docs/why-omd.md) | the layer argument, and what a session harness structurally cannot do |
+| **How to use** | [getting started](docs/guide/getting-started.md) · [workflow](docs/guide/workflow.md) · [MCP tools](docs/guide/mcp-tools.md) · [model config](docs/guide/model-config.md) · [skills](docs/guide/skills.md) · [deep research](docs/guide/deep-research.md) · [TUI](docs/guide/tui.md) | install, connect, and the reference surface |
+| **Why this shape** | [architecture](docs/architecture/overview.md) · [DAG engine](docs/architecture/dag-engine.md) · [goal loop](docs/architecture/goal-loop.md) · [model layer](docs/architecture/model-layer.md) · [primitives](docs/architecture/primitives.md) · [open ecosystem](docs/architecture/open-ecosystem.md) | node kinds, the four pure passes, scheduling, isolation, seats |
+| **What went wrong before** | [silent failures](docs/silent-failures.md) | every defect family this engine shipped with no red light |
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
-</content>

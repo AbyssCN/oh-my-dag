@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 830" width="1240" height="830" data-generator="fireworks-tech-graph" data-schema-version="1" data-style-id="3" data-visual-theme="Blueprint" data-diagram-type="flowchart">
+  <style>
+    text { font-family: 'Courier New', 'Lucida Console', 'Microsoft YaHei', 'SimHei', monospace; fill: #caf0f8; }
+    .title  { font-size: 25px; font-weight: 700; fill: #ffffff; letter-spacing: 0.06em; }
+    .sub    { font-size: 15px; fill: #48cae4; }
+    .hdr    { font-size: 17px; font-weight: 700; fill: #ffffff; letter-spacing: 0.05em; }
+    .hdrg   { font-size: 17px; font-weight: 700; fill: #06d6a0; letter-spacing: 0.05em; }
+    .hdro   { font-size: 17px; font-weight: 700; fill: #f77f00; letter-spacing: 0.05em; }
+    .ann    { font-size: 14px; fill: #90e0ef; }
+    .warn   { font-size: 14px; fill: #f77f00; }
+    .ok     { font-size: 14px; fill: #06d6a0; }
+    .key    { font-size: 15px; fill: #caf0f8; }
+    .edge   { font-size: 13px; fill: #48cae4; }
+  </style>
+  <defs>
+    <pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse">
+      <path d="M 30 0 L 0 0 0 30" fill="none" stroke="#112240" stroke-width="0.5"/>
+    </pattern>
+    <marker id="ac" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+      <polygon points="0 0, 9 3.5, 0 7" fill="#00b4d8"/>
+    </marker>
+    <marker id="ao" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+      <polygon points="0 0, 9 3.5, 0 7" fill="#f77f00"/>
+    </marker>
+    <marker id="ag" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+      <polygon points="0 0, 9 3.5, 0 7" fill="#06d6a0"/>
+    </marker>
+  </defs>
+
+  <rect width="1240" height="830" fill="#0a1628"/>
+  <rect width="1240" height="830" fill="url(#grid)" opacity="0.6"/>
+
+  <text class="title" x="60" y="42">HOW A CLAIM BECOMES A VERDICT</text>
+  <text class="sub"   x="60" y="66">the model proposes · the engine disposes · no rung may be skipped</text>
+
+  <!-- ============ LEFT: the ladder ============ -->
+  <rect x="60" y="96" width="420" height="52" rx="2" fill="#0d1f3c" stroke="#f77f00" stroke-width="1.2"/>
+  <text class="hdro" x="80" y="128">A NODE REPORTS: &#8220;done&#8221;</text>
+  <line x1="270" y1="148" x2="270" y2="172" stroke="#00b4d8" stroke-width="1" marker-end="url(#ac)"/>
+
+  <rect x="60" y="174" width="420" height="156" rx="2" fill="#0d1f3c" stroke="#06d6a0" stroke-width="1.2"/>
+  <line x1="60" y1="204" x2="480" y2="204" stroke="#06d6a0" stroke-width="0.8"/>
+  <text class="hdrg" x="80" y="196">RUNG &#9312; MECHANICAL ORACLE</text>
+  <text class="ann" x="80" y="228">a command node runs tsc, the test suite, your</text>
+  <text class="ann" x="80" y="246">own script. the exit code must equal</text>
+  <text class="key" x="80" y="268">expect_exit</text>
+  <text class="ann" x="80" y="290">write-set reconciliation: it wrote what it said.</text>
+  <text class="ann" x="80" y="308">artifact gate: the file is really on disk.</text>
+  <text class="ok"  x="80" y="326">no model in it. nothing to talk into passing.</text>
+
+  <line x1="270" y1="330" x2="270" y2="362" stroke="#00b4d8" stroke-width="1" marker-end="url(#ac)"/>
+  <text class="edge" x="478" y="352" text-anchor="end">no oracle can judge this one</text>
+
+  <rect x="60" y="364" width="420" height="134" rx="2" fill="#0d1f3c" stroke="#00b4d8" stroke-width="1.2"/>
+  <line x1="60" y1="394" x2="480" y2="394" stroke="#00b4d8" stroke-width="0.8"/>
+  <text class="hdr" x="80" y="386">RUNG &#9313; CROSS-FAMILY VERIFIER</text>
+  <text class="ann" x="80" y="418">a different model family than the author.</text>
+  <text class="ann" x="80" y="436">its job is to attack the result, not stamp it.</text>
+  <text class="warn" x="80" y="458">same family = same blind spot.</text>
+  <text class="ann" x="80" y="480">fail &#8594; escalate: re-plan, re-run.</text>
+
+  <line x1="270" y1="498" x2="270" y2="530" stroke="#00b4d8" stroke-width="1" marker-end="url(#ac)"/>
+  <text class="edge" x="478" y="520" text-anchor="end">neither rung can decide</text>
+
+  <rect x="60" y="532" width="420" height="76" rx="2" fill="#0d1f3c" stroke="#caf0f8" stroke-width="1.2"/>
+  <line x1="60" y1="562" x2="480" y2="562" stroke="#caf0f8" stroke-width="0.8"/>
+  <text class="hdr" x="80" y="554">RUNG &#9314; A HUMAN</text>
+  <text class="ann" x="80" y="586">escalate. no deferring, no unilateral call.</text>
+
+  <!-- ============ RIGHT: criterion self-proof ============ -->
+  <rect x="500" y="96" width="680" height="596" rx="2" fill="none" stroke="#00b4d8" stroke-width="1" stroke-dasharray="6,3"/>
+  <text class="hdr" x="520" y="128">BEFORE THE ENGINE TRUSTS A CRITERION,</text>
+  <text class="hdr" x="520" y="150">THE CRITERION SITS AN EXAM</text>
+  <text class="sub" x="520" y="174">a criterion nobody checked is just another sentence a model wrote</text>
+
+  <rect x="520" y="190" width="640" height="54" rx="2" fill="#0d1f3c" stroke="#00b4d8" stroke-width="1"/>
+  <text class="ann" x="538" y="212">the acceptance command the classifier proposed:</text>
+  <text class="key" x="538" y="234">bun test src/invoice/ocr.test.ts    expect: exit 0</text>
+
+  <line x1="840" y1="244" x2="840" y2="270" stroke="#00b4d8" stroke-width="1" marker-end="url(#ac)"/>
+
+  <rect x="520" y="272" width="640" height="238" rx="2" fill="none" stroke="#48cae4" stroke-width="1" stroke-dasharray="4,3"/>
+  <text class="sub" x="538" y="296">a throwaway world (mkdtemp) — run it twice</text>
+
+  <rect x="538" y="310" width="290" height="152" rx="2" fill="#0d1f3c" stroke="#00b4d8" stroke-width="1"/>
+  <text class="hdr" x="554" y="336">PROBE A</text>
+  <text class="ann" x="554" y="362">run the command</text>
+  <text class="ann" x="554" y="380">before any work exists</text>
+  <line x1="554" y1="396" x2="812" y2="396" stroke="#00b4d8" stroke-width="0.6"/>
+  <text class="warn" x="554" y="418">still green?</text>
+  <text class="ann"  x="554" y="438">it has nothing to do</text>
+  <text class="ann"  x="554" y="454">with this task at all</text>
+
+  <rect x="852" y="310" width="290" height="152" rx="2" fill="#0d1f3c" stroke="#00b4d8" stroke-width="1"/>
+  <text class="hdr" x="868" y="336">PROBE B</text>
+  <text class="ann" x="868" y="362">run it against a wrong</text>
+  <text class="ann" x="868" y="380">artifact, supplied on purpose</text>
+  <line x1="868" y1="396" x2="1126" y2="396" stroke="#00b4d8" stroke-width="0.6"/>
+  <text class="warn" x="868" y="418">still green?</text>
+  <text class="ann"  x="868" y="438">it cannot tell a right</text>
+  <text class="ann"  x="868" y="454">answer from a wrong one</text>
+
+  <line x1="683" y1="510" x2="683" y2="538" stroke="#f77f00" stroke-width="1" marker-end="url(#ao)"/>
+  <line x1="997" y1="510" x2="997" y2="538" stroke="#06d6a0" stroke-width="1" marker-end="url(#ag)"/>
+
+  <rect x="538" y="540" width="290" height="112" rx="2" fill="#0d1f3c" stroke="#f77f00" stroke-width="1.2"/>
+  <text class="hdro" x="554" y="566">EITHER ONE GREEN</text>
+  <text class="ann"  x="554" y="594">the criterion is hollow.</text>
+  <text class="ann"  x="554" y="614">the goal drops to</text>
+  <text class="ann"  x="554" y="632">exploratory. no fake pass.</text>
+
+  <rect x="852" y="540" width="290" height="112" rx="2" fill="#0d1f3c" stroke="#06d6a0" stroke-width="1.2"/>
+  <text class="hdrg" x="868" y="566">BOTH RED</text>
+  <text class="ann"  x="868" y="594">the criterion can tell the</text>
+  <text class="ann"  x="868" y="614">difference. only now may</text>
+  <text class="ann"  x="868" y="632">it judge the work.</text>
+
+  <text class="sub" x="520" y="676">src/harness/goal/acceptance-gate.ts</text>
+
+  <!-- ============ footer ============ -->
+  <text class="warn" x="60" y="726">&#9888; oracle-green is not the same as semantically right.</text>
+  <text class="ann"  x="60" y="750">when the test and the implementation come out of the same change, they can be wrong together — and endorse each other.</text>
+  <text class="ann"  x="60" y="772">that is the thing rung &#9312; cannot catch, and the reason rung &#9313; is not optional.</text>
+  <text class="ann"  x="60" y="800">the discipline the engine applies to the work, it first applies to the ruler.</text>
+</svg>

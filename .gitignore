@@ -40,3 +40,8 @@ docs/articles/
 # web 前端产物 (daemon 托管 dist, 构建产物不进 git)
 web/dist/
 web/node_modules/
+
+# 第三方绘图技能, 不随本仓分发
+.claude/skills/fireworks-tech-graph/
+# best-of-N 文案候选 (过程产物, 不进公开仓)
+docs/notes/readme-candidates/
