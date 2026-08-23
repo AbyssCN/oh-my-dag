@@ -94,7 +94,7 @@ From that one change, the rest follows:
 ## 4 · The verdict comes from outside the model
 
 <div align="center">
-<img src="../assets/diagrams/omd-verdict-ladder.svg" alt="the acceptance ladder" width="880">
+<img src="../assets/diagrams/omd-pipeline-contract.svg" alt="the contract pipeline, ending in the acceptance ladder" width="920">
 </div>
 
 A ladder, in order, no skipping.

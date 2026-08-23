@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 440" width="1000" height="440" role="img" aria-labelledby="layers-title layers-desc">
+  <title id="layers-title">Where omd sits</title>
+  <desc id="layers-desc">A four-layer stack: the coding agent you talk to sits on top, omd's orchestration layer sits under it behind an MCP boundary, with persistent memory and a pool of models beneath.</desc>
+
+  <rect width="1000" height="440" fill="#faf8f5"/>
+
+  <!-- L1 SESSION -->
+  <rect x="60" y="56" width="880" height="72" rx="6" fill="#ffffff" stroke="rgba(20,15,10,0.3)" stroke-width="1"/>
+  <text x="80" y="88" fill="#918878" font-size="8" font-weight="500" letter-spacing="0.18em"
+        font-family="'Geist Mono', ui-monospace, monospace">L1</text>
+  <text x="156" y="88" fill="#140f0a" font-size="16" font-weight="600"
+        font-family="'Geist', system-ui, sans-serif">Session</text>
+  <text x="156" y="112" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Claude Code · Codex · gemini-cli · opencode — and omd&#8217;s own conductor_chat</text>
+  <text x="920" y="88" fill="#6f6558" font-size="9" text-anchor="end"
+        font-family="'Geist Mono', ui-monospace, monospace">unit of work: a turn</text>
+
+  <!-- MCP boundary -->
+  <text x="500" y="148" fill="#918878" font-size="8" font-weight="500" letter-spacing="0.18em"
+        text-anchor="middle" font-family="'Geist Mono', ui-monospace, monospace">MCP · 50 TOOLS</text>
+
+  <!-- L2 ORCHESTRATION — focal -->
+  <rect x="60" y="160" width="880" height="88" rx="6" fill="rgba(179,56,42,0.08)" stroke="#b3382a" stroke-width="1.2"/>
+  <text x="80" y="196" fill="#b3382a" font-size="8" font-weight="500" letter-spacing="0.18em"
+        font-family="'Geist Mono', ui-monospace, monospace">L2</text>
+  <text x="156" y="196" fill="#140f0a" font-size="16" font-weight="600"
+        font-family="'Geist', system-ui, sans-serif">Orchestration · omd</text>
+  <text x="156" y="220" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">a typed graph · gates with no model in them · one model per node</text>
+  <text x="156" y="236" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">the graph comes from a conductor, an SDD contract, a decision map, or your hand</text>
+  <text x="920" y="196" fill="#b3382a" font-size="9" text-anchor="end"
+        font-family="'Geist Mono', ui-monospace, monospace">unit of work: a node</text>
+
+  <!-- L3 MEMORY -->
+  <rect x="60" y="256" width="880" height="72" rx="6" fill="rgba(20,15,10,0.05)" stroke="#6f6558" stroke-width="1"/>
+  <text x="80" y="288" fill="#918878" font-size="8" font-weight="500" letter-spacing="0.18em"
+        font-family="'Geist Mono', ui-monospace, monospace">L3</text>
+  <text x="156" y="288" fill="#140f0a" font-size="16" font-weight="600"
+        font-family="'Geist', system-ui, sans-serif">Memory</text>
+  <text x="156" y="312" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">a decision map of typed tickets in git · per-node checkpoints · a fact store</text>
+  <text x="920" y="288" fill="#6f6558" font-size="9" text-anchor="end"
+        font-family="'Geist Mono', ui-monospace, monospace">outlives the run</text>
+
+  <!-- L4 MODELS -->
+  <rect x="60" y="336" width="880" height="72" rx="6" fill="rgba(20,15,10,0.03)" stroke="rgba(20,15,10,0.3)" stroke-width="1"/>
+  <text x="80" y="368" fill="#918878" font-size="8" font-weight="500" letter-spacing="0.18em"
+        font-family="'Geist Mono', ui-monospace, monospace">L4</text>
+  <text x="156" y="368" fill="#140f0a" font-size="16" font-weight="600"
+        font-family="'Geist', system-ui, sans-serif">Models</text>
+  <text x="156" y="392" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">18 seats · a model you pin by hand is never overwritten</text>
+  <text x="920" y="368" fill="#6f6558" font-size="9" text-anchor="end"
+        font-family="'Geist Mono', ui-monospace, monospace">bring your own</text>
+</svg>

@@ -6,7 +6,7 @@
 
 *Your agent says "I'm done." omd doesn't ask — it runs the work as a typed graph, picks a model per node, and takes the verdict from outside the model.*
 
-<img src="assets/diagrams/omd-layer-position.svg" alt="Where omd sits: session layer, orchestration layer, what persists, model layer" width="900">
+<img src="assets/diagrams/omd-layers.svg" alt="Where omd sits: the session layer on top, omd underneath behind an MCP boundary, memory and models below" width="920">
 
 [![MCP server: 50 tools](https://img.shields.io/badge/MCP%20server-50%20tools-c9a227?style=flat-square&labelColor=140f0a)](docs/guide/mcp-tools.md)
 [![Clients: Claude Code · Codex · any MCP](https://img.shields.io/badge/clients-Claude%20Code%20%C2%B7%20Codex%20%C2%B7%20any%20MCP-6f9488?style=flat-square&labelColor=140f0a)](client-skills/)
@@ -77,7 +77,7 @@ Then tell your agent:
 ## The verdict comes from outside the model
 
 <div align="center">
-<img src="assets/diagrams/omd-verdict-ladder.svg" alt="The acceptance ladder, and the exam a criterion has to sit first" width="900">
+<img src="assets/diagrams/omd-pipeline-contract.svg" alt="The contract pipeline: grill, contract, a zero-LLM compile, execute, verdict" width="960">
 </div>
 
 A model asked to judge its own work can stop running entirely without anything turning red. So rung ① has no model in it. A `command` node runs `tsc`, the suite, or your script; the exit code must equal `expect_exit`. Beside it: write-set reconciliation — did it write what it claims — and artifact gates — is the file on disk. A node that reports a file it never wrote fails.
@@ -133,6 +133,10 @@ That is a cross-family best-of-N with a deterministic gate on the end, and you c
 **This is why a shipped pipeline beats a skill.** A skill is a prompt: it can only ask the model in front of you to behave differently. A pipeline picks cheap models for volume, a different family for the critique so it doesn't inherit the author's blind spots, and a zero-LLM command for the verdict. A prompt cannot do that.
 
 ## What ships with it
+
+<div align="center">
+<img src="assets/diagrams/omd-pipeline-research.svg" alt="The deep-research pipeline: four stages, four models, and a fetch step with no model in it" width="960">
+</div>
 
 22 methodology skills, and each is a graph rather than a prompt. They install into `~/.claude/skills/` on first start. An `agent` leaf **inside** a graph gets the same set through the same tool, so a method you wrote once applies forty levels into a fan-out.
 

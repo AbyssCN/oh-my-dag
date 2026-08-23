@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 320" width="1080" height="320" role="img" aria-labelledby="pipeline-contract-title pipeline-contract-desc">
+  <title id="pipeline-contract-title">The contract pipeline</title>
+  <desc id="pipeline-contract-desc">A five-stage pipeline that turns an argued design into a written spec, compiles the spec into an executable graph with no model involved, runs it, and takes the verdict from outside the model.</desc>
+  <defs>
+    <marker id="pc-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#6f6558"/>
+    </marker>
+  </defs>
+
+  <rect width="1080" height="320" fill="#faf8f5"/>
+
+  <text x="60" y="40" fill="#918878" font-size="8" font-weight="500" letter-spacing="0.18em"
+        font-family="'Geist Mono', ui-monospace, monospace">IN · A DESIGN NOBODY HAS PINNED DOWN</text>
+  <text x="1020" y="40" fill="#918878" font-size="8" font-weight="500" letter-spacing="0.18em"
+        text-anchor="end" font-family="'Geist Mono', ui-monospace, monospace">OUT · A DIFF THAT PASSED</text>
+
+  <line x1="236" y1="132" x2="252" y2="132" stroke="#6f6558" stroke-width="1" marker-end="url(#pc-arrow)"/>
+  <line x1="432" y1="132" x2="448" y2="132" stroke="#6f6558" stroke-width="1" marker-end="url(#pc-arrow)"/>
+  <line x1="628" y1="132" x2="644" y2="132" stroke="#6f6558" stroke-width="1" marker-end="url(#pc-arrow)"/>
+  <line x1="824" y1="132" x2="840" y2="132" stroke="#6f6558" stroke-width="1" marker-end="url(#pc-arrow)"/>
+
+  <!-- 01 GRILL -->
+  <rect x="60" y="64" width="176" height="136" rx="6" fill="rgba(20,15,10,0.03)" stroke="rgba(20,15,10,0.3)" stroke-width="1"/>
+  <rect x="72" y="76" width="28" height="16" rx="4" fill="none" stroke="rgba(20,15,10,0.4)" stroke-width="0.8"/>
+  <text x="86" y="88" fill="#140f0a" font-size="8" font-weight="600" text-anchor="middle"
+        font-family="'Geist Mono', ui-monospace, monospace">01</text>
+  <text x="72" y="120" fill="#140f0a" font-size="14" font-weight="600"
+        font-family="'Geist', system-ui, sans-serif">Grill</text>
+  <text x="72" y="144" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">argue it out with a human</text>
+  <text x="72" y="160" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">wide forks open a council</text>
+  <line x1="72" y1="172" x2="224" y2="172" stroke="rgba(20,15,10,0.12)" stroke-width="0.8"/>
+  <text x="72" y="188" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">/omd-grill</text>
+
+  <!-- 02 CONTRACT -->
+  <rect x="256" y="64" width="176" height="136" rx="6" fill="#ffffff" stroke="#140f0a" stroke-width="1"/>
+  <rect x="268" y="76" width="28" height="16" rx="4" fill="none" stroke="rgba(20,15,10,0.4)" stroke-width="0.8"/>
+  <text x="282" y="88" fill="#140f0a" font-size="8" font-weight="600" text-anchor="middle"
+        font-family="'Geist Mono', ui-monospace, monospace">02</text>
+  <text x="268" y="120" fill="#140f0a" font-size="14" font-weight="600"
+        font-family="'Geist', system-ui, sans-serif">Contract</text>
+  <text x="268" y="144" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">a spec on disk, carrying</text>
+  <text x="268" y="160" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">steps, gates, verify column</text>
+  <line x1="268" y1="172" x2="420" y2="172" stroke="rgba(20,15,10,0.12)" stroke-width="0.8"/>
+  <text x="268" y="188" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">/omd-contract</text>
+
+  <!-- 03 COMPILE — focal -->
+  <rect x="452" y="64" width="176" height="136" rx="6" fill="rgba(179,56,42,0.08)" stroke="#b3382a" stroke-width="1.2"/>
+  <rect x="464" y="76" width="28" height="16" rx="4" fill="none" stroke="rgba(179,56,42,0.5)" stroke-width="0.8"/>
+  <text x="478" y="88" fill="#b3382a" font-size="8" font-weight="600" text-anchor="middle"
+        font-family="'Geist Mono', ui-monospace, monospace">03</text>
+  <text x="464" y="120" fill="#140f0a" font-size="14" font-weight="600"
+        font-family="'Geist', system-ui, sans-serif">Compile</text>
+  <text x="464" y="144" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">the spec becomes a flat</text>
+  <text x="464" y="160" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">graph — no re-planning</text>
+  <line x1="464" y1="172" x2="616" y2="172" stroke="rgba(20,15,10,0.12)" stroke-width="0.8"/>
+  <text x="464" y="188" fill="#b3382a" font-size="9" font-weight="600" font-family="'Geist Mono', ui-monospace, monospace">zero LLM · solve --sddPath</text>
+
+  <!-- 04 EXECUTE -->
+  <rect x="648" y="64" width="176" height="136" rx="6" fill="#ffffff" stroke="#140f0a" stroke-width="1"/>
+  <rect x="660" y="76" width="28" height="16" rx="4" fill="none" stroke="rgba(20,15,10,0.4)" stroke-width="0.8"/>
+  <text x="674" y="88" fill="#140f0a" font-size="8" font-weight="600" text-anchor="middle"
+        font-family="'Geist Mono', ui-monospace, monospace">04</text>
+  <text x="660" y="120" fill="#140f0a" font-size="14" font-weight="600"
+        font-family="'Geist', system-ui, sans-serif">Execute</text>
+  <text x="660" y="144" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">ready-set fan-out</text>
+  <text x="660" y="160" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">one model per node</text>
+  <line x1="660" y1="172" x2="812" y2="172" stroke="rgba(20,15,10,0.12)" stroke-width="0.8"/>
+  <text x="660" y="188" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">agent + command leaves</text>
+
+  <!-- 05 VERDICT -->
+  <rect x="844" y="64" width="176" height="136" rx="6" fill="#ffffff" stroke="#140f0a" stroke-width="1"/>
+  <rect x="856" y="76" width="28" height="16" rx="4" fill="none" stroke="rgba(20,15,10,0.4)" stroke-width="0.8"/>
+  <text x="870" y="88" fill="#140f0a" font-size="8" font-weight="600" text-anchor="middle"
+        font-family="'Geist Mono', ui-monospace, monospace">05</text>
+  <text x="856" y="120" fill="#140f0a" font-size="14" font-weight="600"
+        font-family="'Geist', system-ui, sans-serif">Verdict</text>
+  <text x="856" y="144" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">exit code → a verifier</text>
+  <text x="856" y="160" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">from another family → you</text>
+  <line x1="856" y1="172" x2="1008" y2="172" stroke="rgba(20,15,10,0.12)" stroke-width="0.8"/>
+  <text x="856" y="188" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">no rung skipped</text>
+
+  <text x="60" y="236" fill="#6f6558" font-size="11" font-family="'Geist', system-ui, sans-serif">The spec is not a prompt. It carries the decomposition, the gates and the verify column — so the compile step needs no model.</text>
+
+  <line x1="60" y1="268" x2="1020" y2="268" stroke="rgba(20,15,10,0.12)" stroke-width="0.8"/>
+  <text x="60" y="288" fill="#918878" font-size="8" font-weight="500" letter-spacing="0.14em"
+        font-family="'Geist Mono', ui-monospace, monospace">LEGEND</text>
+  <rect x="160" y="278" width="16" height="12" rx="3" fill="rgba(20,15,10,0.03)" stroke="rgba(20,15,10,0.3)" stroke-width="1"/>
+  <text x="184" y="288" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">a human is in this stage</text>
+  <rect x="400" y="278" width="16" height="12" rx="3" fill="#ffffff" stroke="#140f0a" stroke-width="1"/>
+  <text x="424" y="288" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">the engine runs it</text>
+  <rect x="600" y="278" width="16" height="12" rx="3" fill="rgba(179,56,42,0.08)" stroke="#b3382a" stroke-width="1"/>
+  <text x="624" y="288" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">deterministic · zero LLM</text>
+</svg>

@@ -6,7 +6,7 @@
 
 *agent 说「做完了」,omd 不问它 —— 它把活跑成一张有类型的图,逐节点点名模型,判词取自模型之外。*
 
-<img src="assets/diagrams/omd-layer-position.svg" alt="omd 的位置:会话层、编排层、跨 run 存续的东西、模型层" width="900">
+<img src="assets/diagrams/omd-layers.svg" alt="omd 的位置:会话层在上, omd 隔着 MCP 在下, 再下面是记忆与模型" width="920">
 
 [![MCP server: 50 tools](https://img.shields.io/badge/MCP%20server-50%20tools-c9a227?style=flat-square&labelColor=140f0a)](docs/guide/mcp-tools.md)
 [![Clients: Claude Code · Codex · any MCP](https://img.shields.io/badge/clients-Claude%20Code%20%C2%B7%20Codex%20%C2%B7%20any%20MCP-6f9488?style=flat-square&labelColor=140f0a)](client-skills/)
@@ -77,7 +77,7 @@ cd <你的项目> && claude mcp add omd -- omd mcp
 ## 判词来自模型之外
 
 <div align="center">
-<img src="assets/diagrams/omd-verdict-ladder.svg" alt="验收阶梯,以及判据在被信任之前要先过的考试" width="900">
+<img src="assets/diagrams/omd-pipeline-contract.svg" alt="契约管线:审问 → 契约 → 零 LLM 编译 → 执行 → 判词" width="960">
 </div>
 
 让模型判自己做没做成,它可以整个不跑,而没有任何东西变红。所以第一级里没有模型。一个 `command` 节点跑 `tsc`、跑测试、或跑你的脚本,退出码必须等于 `expect_exit`。旁边是写集对账 —— 它是不是真写了它声称写的 —— 和产物闸 —— 文件在盘上到底有没有。报告了自己从未写过的文件的节点,判败。
@@ -133,6 +133,10 @@ cd <你的项目> && claude mcp add omd -- omd mcp
 **这就是出厂管线凭什么强过一个技能。** 技能是 prompt:它只能要求**你眼前这一个模型**换个行为。管线可以让便宜模型铺量、让另一个家族做批判(于是它不继承作者的盲点)、让零 LLM 的命令下最终判词。prompt 做不到这件事。
 
 ## 随包出厂的东西
+
+<div align="center">
+<img src="assets/diagrams/omd-pipeline-research.svg" alt="深度调研管线:四个阶段、四个模型,抓取那一步没有模型" width="960">
+</div>
 
 22 个方法论技能,**每一个都是一张图,不是一段 prompt**。首次启动铺进 `~/.claude/skills/`。图**内部**的 `agent` 叶子经同一个工具拿到同一套技能,所以你写一次的方法,在扇出四十层深的地方照样成立。
 
