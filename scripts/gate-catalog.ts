@@ -10,6 +10,9 @@
  *
  * ⇒ 这个脚本是它的生产调用点,同时兑现片 5 定义里的另一半:
  * **闸门清单由代码维护,文档降级为派生视图**(owner 2026-08-22)。
+ *   具体: 表里登记稳定 id;每条 id 的判词原文由 `scanGateVerdicts` 从
+ *   `src/harness/dag/engine.ts` 源码里**扫**出来,而不是手抄进表里 —— 同一 id 的
+ *   多个出口 / 文案微调,改一处不再要求同步抬表。
  *
  * 用法:
  *   `bun run scripts/gate-catalog.ts`         打印表 + 对账,漂移则 exit 1
@@ -19,26 +22,49 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { GATE_REGISTRY, formatGateDrift, reconcileGates } from '../src/harness/gates/gate-registry';
+import {
+  GATE_REGISTRY,
+  scanGateVerdicts,
+  reconcileGateIds,
+} from '../src/harness/gates/gate-registry';
 
 const ROOT = join(import.meta.dir, '..');
 const quiet = process.argv.includes('--quiet');
 
-const drifts = reconcileGates(GATE_REGISTRY, (p) => readFileSync(join(ROOT, p), 'utf8'));
+// 派生视图 (D-4): 判词原文从 engine.ts 源码里扫,不再从表里手抄。
+const ENGINE_FILE = 'src/harness/dag/engine.ts';
+const source = readFileSync(join(ROOT, ENGINE_FILE), 'utf8');
+const verdicts = scanGateVerdicts(source);
 
 if (!quiet) {
-  console.log('| id | family | file | count | verdict |');
-  console.log('|---|---|---|---|---|');
+  console.log(`| id | verdict (扫自 \`${ENGINE_FILE}\`) |`);
+  console.log('|---|---|');
   for (const g of GATE_REGISTRY) {
-    console.log(`| \`${g.id}\` | ${g.family} | \`${g.file}\` | ${g.count} | ${g.verdict} |`);
+    const verdict = verdicts.get(g.id);
+    console.log(`| \`${g.id}\` | ${verdict ?? '`(源码未扫到)`'} |`);
   }
   console.log(`\n共 ${GATE_REGISTRY.length} 道判生死的图级闸。`);
 }
 
-if (drifts.length > 0) {
-  console.error(`\n闸门目录漂移 ${drifts.length} 条:`);
-  for (const d of drifts) console.error(`  ${formatGateDrift(d)}`);
+const drift = reconcileGateIds(source);
+const driftTotal = drift.missing.length + drift.unregistered.length + drift.empty.length;
+
+if (driftTotal > 0) {
+  console.error(`\n闸门目录漂移 (${driftTotal} 条):`);
+  if (drift.missing.length > 0) {
+    console.error(`  missing (登记的 id 在 ${ENGINE_FILE} 源码里扫不到):`);
+    for (const id of drift.missing) console.error(`    - \`${id}\``);
+  }
+  if (drift.unregistered.length > 0) {
+    console.error(`  unregistered (源码里有但表没登记):`);
+    for (const id of drift.unregistered) console.error(`    - \`${id}\``);
+  }
+  if (drift.empty.length > 0) {
+    console.error(`  empty (扫到了但判词原文为空):`);
+    for (const id of drift.empty) console.error(`    - \`${id}\``);
+  }
   process.exit(1);
 }
 
 if (!quiet) console.log('对账通过: 表与实装一致。');
+process.exit(0);

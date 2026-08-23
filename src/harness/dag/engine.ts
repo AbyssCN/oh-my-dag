@@ -1491,7 +1491,7 @@ async function executePlan(
     if (fc.findings.length) {
       logger.warn(
         { node: id, round, hits: fc.lexiconHits, nodes: fc.findings.map((f) => f.nodeId) },
-        '[omd/executor-dag] D-4 谎报完成闸: 声称完成而验收命令实败 → 判未收敛',
+        '[omd/executor-dag][false-completion] D-4 谎报完成闸: 声称完成而验收命令实败 → 判未收敛',
       );
       // D-3 (2026-08-11): 确定性闸的判决独立成 gate:'gate' 词表 (与 LLM judge 分开, D-9 同一读法)。
       emitNodeEvent({ type: 'verdict', id, gate: 'gate', verdict: 'fail', round, reason: renderFalseCompletionFindings(fc.findings) });
@@ -2530,7 +2530,7 @@ async function executePlan(
       }
       const actionBlock = repeatedActionBlock(failedActions, config.repeatedActionThreshold);
       if (actionBlock) {
-        logger.warn({ node: id, round, reason: actionBlock.split('\n')[0] }, '[omd/executor-dag] 动作级熔断 → 环提前退出 (§8.4)');
+        logger.warn({ node: id, round, reason: actionBlock.split('\n')[0] }, '[omd/executor-dag][fuse-action] 动作级熔断 → 环提前退出 (§8.4)');
         // 与检测者 BLOCKED 同一个出口、同一条 fail-closed 纪律 (恒 converged=false):
         // 阻塞更不该被读成成功。
         writeLoopJournal(round, poisoned, prevReason, false, last.output, {
@@ -2697,7 +2697,7 @@ async function executePlan(
       lastJudgeFaultKey = verdict.faultKey;
       if (judgeFaultThreshold >= 2 && judgeFaultStreak >= judgeFaultThreshold) {
         const evidence = `judge 连续 ${judgeFaultStreak} 轮以逐字相同的方式失败 (零位移 → 确定性): ${verdict.faultKey}`;
-        logger.warn({ node: id, round, streak: judgeFaultStreak }, '[omd/executor-dag] 闸级熔断 → 环提前退出 (infra-error, 不烧剩余轮数)');
+        logger.warn({ node: id, round, streak: judgeFaultStreak }, '[omd/executor-dag][fuse-judge] 闸级熔断 → 环提前退出 (infra-error, 不烧剩余轮数)');
         // 与 judge 调不通同一个出口、同一个词: 该修的是引擎/凭证, 不是"等人给外部输入" (N5)。
         writeLoopJournal(round, poisoned, prevReason, false, last.output, { kind: 'infra-error', evidence, atRound: round });
         return { ...settle(last, round, false), infraStopped: evidence };
@@ -3266,7 +3266,7 @@ async function executePlan(
           // 外层 verifier / 读数板, 自身文案明示是 falsify 出口, 不是普通 D-K 红。
           logger.warn({ node: id, got: r.exitCode, blocked }, '[omd/executor-dag] falsify 节点命中 exit=0 / 闸拒 → failed (判别力不足, INV-11)');
         } else if (!ok && want !== 0) {
-          logger.warn({ node: id, want, got: r.exitCode, blocked }, '[omd/executor-dag] command 节点未命中 expect_exit → failed (D-K)');
+          logger.warn({ node: id, want, got: r.exitCode, blocked }, '[omd/executor-dag][oracle-exit-miss] command 节点未命中 expect_exit → failed (D-K)');
         }
         // #167 (2026-08-17): command 绿也落 checkpoint —— **只当账, 不当闸**。此前刻意不落
         // (重跑闸比跳过安全), 代价是 base 文件只可能 failed/skipped: run 68cfb43f 的 accept
@@ -3713,7 +3713,7 @@ async function executePlan(
           ]);
         }
         if (r.stalled) {
-          logger.warn({ node: id, model, outLen: text.length }, '[omd/executor-dag] agent leaf 停摆 (心跳闸) → 节点 failed');
+          logger.warn({ node: id, model, outLen: text.length }, '[omd/executor-dag][heartbeat] agent leaf 停摆 (心跳闸) → 节点 failed');
           return {
             id, status: 'failed', failureKind: 'stall', kind: 'agent', model,
             output: `[停摆: 心跳闸提前中止, 疑 provider 挂起/排队] 原输出(${text.length}B): ${text.slice(0, 400)}`,
@@ -3724,7 +3724,7 @@ async function executePlan(
         // 空转熔断 (2026-08-14): fuse 硬停的 leaf 判 failed + spin-fused 败因 (retryable:false ——
         // 原样重试大概率原地再烧一遍, 见 node-failure 的注)。已落盘产物在 filesTouched 里保留。
         if (r.spinFused) {
-          logger.warn({ node: id, model, reason: r.spinFused }, '[omd/executor-dag] agent leaf 空转熔断 → 节点 failed');
+          logger.warn({ node: id, model, reason: r.spinFused }, '[omd/executor-dag][fuse-spin] agent leaf 空转熔断 → 节点 failed');
           return {
             id, status: 'failed', failureKind: 'spin-fused', kind: 'agent', model,
             output: `[${r.spinFused}] 原输出(${text.length}B): ${text.slice(0, 400)}`,
@@ -3880,7 +3880,7 @@ async function executePlan(
             // INV-7: 剔除的事实打一行判词 (payload 至少 `{ node, outOfScope }`)。
             logger.warn(
               { node: id, outOfScope },
-              '[omd/executor-dag] 产物闸写域外路径剔除 (不参与判死, 仅记账; s1 Step C)',
+              '[omd/executor-dag][writescope-drop] 产物闸写域外路径剔除 (不参与判死, 仅记账; s1 Step C)',
             );
           }
           if (scopedTouched.length === 0 || missing.length > 0) {
@@ -3924,13 +3924,13 @@ async function executePlan(
                       : p;
                   })
                   .join(', ')}`;
-            logger.warn({ node: id, filesTouched, missing }, '[omd/executor-dag] 产物校验失败 → 节点 failed (拒绝 empty-done)');
+            logger.warn({ node: id, filesTouched, missing }, '[omd/executor-dag][artifact-empty] 产物校验失败 → 节点 failed (拒绝 empty-done)');
             // 产物闸判定 (判死出口, SDD C-1 INV-1/2): 无论判死判活都打这一行
             // (entry 取自进闸态, exit = 此刻 filesTouched.length, 救援/核实重赋值之后
             // —— 出闸态 —— 的真值)。与同出口的 `产物校验失败` 判词**并存**,非二选一。
             logger.info(
               { node: id, entry: entryFilesTouched, exit: filesTouched.length, verdict: 'dead' },
-              '[omd/executor-dag] 产物闸判定 (declaredArtifact 节点; entry = 进闸条数)',
+              '[omd/executor-dag][artifact-verdict] 产物闸判定 (declaredArtifact 节点; entry = 进闸条数)',
             );
             return {
               id, status: 'failed', failureKind: 'empty-artifact', kind: 'agent', model,
@@ -3969,13 +3969,13 @@ async function executePlan(
             const why = renderParseFailures(parseFailures);
             logger.warn(
               { node: id, files: parseFailures.map((f) => f.path) },
-              '[omd/executor-dag] 写后即验: 节点写完之后文件语法解析不过 → 节点 failed (部分写入损坏)',
+              '[omd/executor-dag][artifact-broken] 写后即验: 节点写完之后文件语法解析不过 → 节点 failed (部分写入损坏)',
             );
             // 产物闸判定 (判死出口, SDD C-1 INV-1/2): 第二个判死出口 (broken-artifact)
             // 同样打这一行 —— payload 形状与 empty-artifact 出口**逐字相同** (D-3)。
             logger.info(
               { node: id, entry: entryFilesTouched, exit: filesTouched.length, verdict: 'dead' },
-              '[omd/executor-dag] 产物闸判定 (declaredArtifact 节点; entry = 进闸条数)',
+              '[omd/executor-dag][artifact-verdict] 产物闸判定 (declaredArtifact 节点; entry = 进闸条数)',
             );
             return {
               id, status: 'failed', failureKind: 'broken-artifact', kind: 'agent', model,
@@ -3989,7 +3989,7 @@ async function executePlan(
           // 不让两条出口各自微调文案, 漂移的代价从来不只在这一次。
           logger.info(
             { node: id, entry: entryFilesTouched, exit: filesTouched.length, verdict: 'live' },
-            '[omd/executor-dag] 产物闸判定 (declaredArtifact 节点; entry = 进闸条数)',
+            '[omd/executor-dag][artifact-verdict] 产物闸判定 (declaredArtifact 节点; entry = 进闸条数)',
           );
         }
       } else {
@@ -4123,7 +4123,7 @@ async function executePlan(
       // 明示即承诺的反面守卫 (D-K): expect_exit 只有 command 分支消费。原链中该警告在
       // command return 之后、research/leaf 之前 —— 等价于只对这两类响。
       if ((kind === 'research' || kind === 'leaf') && node.expect_exit !== undefined) {
-        logger.warn({ node: id, executor: node.executor, expect_exit: node.expect_exit }, '[omd/executor-dag] expect_exit 只对 executor:command 生效 → 本节点忽略 (D-K)');
+        logger.warn({ node: id, executor: node.executor, expect_exit: node.expect_exit }, '[omd/executor-dag][oracle-exit-scope] expect_exit 只对 executor:command 生效 → 本节点忽略 (D-K)');
       }
       return nodeExecutors[kind]({ id, node, deps });
   };
@@ -5154,7 +5154,7 @@ async function runDagInternalCore(
           circuitBroken = true;
           logger.warn(
             { reason: blameKey, streak: sameCauseStreak + 1, round: escCount },
-            '[omd/executor-dag] D-6 同因熔断 → 停止重试 (连撞同一根因), STALLED 交人',
+            '[omd/executor-dag][fuse-samecause] D-6 同因熔断 → 停止重试 (连撞同一根因), STALLED 交人',
           );
           break;
         }

@@ -55,7 +55,7 @@ const captureLogger = (): { logger: CoreLogger; lines: Captured[] } => {
 };
 const dumpLogger = (): CoreLogger => ({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {} });
 
-const VERDICT_MSG = '[omd/executor-dag] 产物闸判定 (declaredArtifact 节点; entry = 进闸条数)';
+const VERDICT_MSG = '[omd/executor-dag][artifact-verdict] 产物闸判定 (declaredArtifact 节点; entry = 进闸条数)';
 const pickMsg = (lines: Captured[], msg: string): Captured[] => lines.filter((l) => l.msg === msg);
 const pickVerdict = (lines: Captured[]): VerdictPayload[] =>
   pickMsg(lines, VERDICT_MSG).map((l) => l.payload as unknown as VerdictPayload);
@@ -182,7 +182,7 @@ describe('GWT-2 leaf 什么都没写 ⇒ 产物校验失败**之外**另有一�
     expect(result.results.W!.status).toBe('failed');
     expect(result.results.W!.failureKind).toBe('empty-artifact');
     // INV-2: 两条并存, 非二选一
-    const failMsgs = pickMsg(cap.lines, '[omd/executor-dag] 产物校验失败 → 节点 failed (拒绝 empty-done)');
+    const failMsgs = pickMsg(cap.lines, '[omd/executor-dag][artifact-empty] 产物校验失败 → 节点 failed (拒绝 empty-done)');
     expect(failMsgs).toHaveLength(1);
     const verdicts = pickVerdict(cap.lines);
     expect(verdicts).toHaveLength(1);
