@@ -77,12 +77,27 @@ const captureLogger: CoreLogger = {
     captured.push({ msg: m ?? '', fields });
   },
 };
+/**
+ * ⚠ **换回去的那一只**(2026-08-23 收编时补): `setCoreLogger` 改的是**模块级单例**,
+ * 而 bun 把多个测试文件跑在同一个进程里 —— 只清数组不换回 logger, 这只"什么都不打印、
+ * warn/error 全塞进一个没人读的数组"的假 logger 就会**留给后面每一个测试文件**。
+ * 实测代价: 收编当趟全量 `handoff-next-steps.test.ts` 3 条红, 而单跑该文件 4 pass ——
+ * 典型的跨文件污染(症状出现在受害者身上, 根因在这里)。
+ * 照 `design-review.test.ts` / `profile-assembly.test.ts` 的既有惯例换回 console 直通。
+ */
+const consoleLogger: CoreLogger = {
+  debug: () => {},
+  info: (o, m) => console.log(m ?? '', typeof o === 'string' ? o : ''),
+  warn: (o, m) => console.warn(m ?? '', typeof o === 'string' ? o : ''),
+  error: (o, m) => console.error(m ?? '', o),
+};
 beforeEach(() => {
   captured.length = 0;
   setCoreLogger(captureLogger);
 });
 afterEach(() => {
   captured.length = 0;
+  setCoreLogger(consoleLogger);
 });
 
 /** 永不被叫到的 _runDag —— 探针在调用 _runDag **之前**就抛了, 走到平铺图编译后那条 for 循环
