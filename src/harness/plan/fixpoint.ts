@@ -23,6 +23,17 @@ export interface FixpointVerdict {
   /** converged=false 时: 下一轮改进方向, 经 enrich 注入下一轮 input。 */
   failureReason?: string;
   /**
+   * converged=false 时: **下一轮该做什么** (机制级动作), 与 `failureReason` 分开的独立通道 (#228)。
+   *
+   * 拆出来的理由是**通道**不是措辞: judge 回答的是「为什么没过」, 而环真正要传下去的是
+   * 「下一步做什么」。两件事挤在一个字符串里时, 绑定层没有办法只保住后者 —— 而 #226 实测
+   * 判词单项 ≥1500 字符占 7.8%, 交接从头部保留、切掉**尾部**, 「下一步」偏偏住在尾部。
+   *
+   * ⚠ 缺席是合法的, **不许编占位**: 整轮 failed / 闸合成判词这两条路径 judge 根本没被问过
+   * (仓规坑①: `undefined` ≠ 空串 ≠ 不适用)。绑定层据此决定挂不挂这一块。
+   */
+  nextSteps?: string;
+  /**
    * D-4 DeltaTicket (P1.5): judge 点名"产出有问题"的节点 id, **本轮 id 空间**。
    *
    * 本层只负责透传 —— 它是不是有效 id、怎么翻成跨轮可用的键, 是绑定层的事

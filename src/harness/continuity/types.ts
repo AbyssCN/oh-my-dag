@@ -338,6 +338,18 @@ export interface RoundVerdict {
    * 与交接 / fanin / debug-plan redEvidence 守同一条 **No-silent-caps**(D-2)。
    */
   reason: string;
+  /**
+   * 这一轮 judge 给的**下一步** (#228, 2026-08-23) —— 与 `reason` 分开的独立一列。
+   *
+   * `reason` 回答「为什么没过」, 这一列回答「下一步做什么」。分开存是为了让它能走**必达块**
+   * 通道进下一轮提示词 (`renderHandoff` 的 `mustReach`, 不参与截断预算) —— 混在 `reason` 里
+   * 就只能连着判词一起被头切, 而切掉的正是尾部。
+   *
+   * ⚠ **缺席合法, 不许编占位**: `gate-rejected` / `unreachable` 两态 judge 没被问过,
+   * `converged` 态没有下一步 —— 这三种都是**没有这一列**, 与「judge 答了一句空话」不是一回事
+   * (仓规坑①)。分辨靠字段在不在, 不靠猜内容。
+   */
+  nextSteps?: string;
 }
 
 export interface NodeLoopJournal {

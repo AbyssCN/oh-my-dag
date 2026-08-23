@@ -1258,7 +1258,13 @@ async function executePlan(
    * 本片只加告示/指针/必达块,不动额度 —— 额度该多大是另一个问题,别混在一次改动里。
    */
   const HANDOFF_CAP_CHARS = 1500;
-  const renderHandoff = (nodeId: string, round: number, reason: string): string => {
+  /**
+   * #228 的必达块前缀。judge 的「下一步」走**独立参数**进来, 不并进 `reason` 字符串再拆 ——
+   * 并进去就得靠正则找回边界, 而每多一种必达块就要改一处正则, 漂一次坏一处 (`mustReach`
+   * 现有那条用逐字常量比对正是为了躲开这个)。
+   */
+  const NEXT_STEPS_PREFIX = '上一轮 judge 给的下一步 (机制级动作, 逐字):\n';
+  const renderHandoff = (nodeId: string, round: number, reason: string, nextSteps?: string): string => {
     // 必达块先摘出去。用逐字常量比对而不是正则: 这几个块的文本是常量,正则只会带来误伤面。
     const mustReach: string[] = [];
     let body = reason;
@@ -1266,10 +1272,16 @@ async function executePlan(
       mustReach.push(NOVELTY_COLLAPSE_LINE);
       body = body.split(NOVELTY_COLLAPSE_LINE).join('').trimEnd();
     }
+    // #228: 「下一步」与 NOVELTY_COLLAPSE_LINE 同判据 —— 唯一通道就是 prompt, 所以不参与预算。
+    // 缺席 → **一个字都不写**: 不挂空标题、不写占位。judge 没答就是没答 (仓规坑①)。
+    if (nextSteps) mustReach.push(`${NEXT_STEPS_PREFIX}${nextSteps}`);
     const tail = mustReach.length ? `\n${mustReach.join('\n')}` : '';
     if (body.length <= HANDOFF_CAP_CHARS) return `\n\n<上一轮未通过>\n${body}\n</上一轮未通过>${tail}\n`;
     // 落**全文原文** (含必达块), 不落摘出去之后的 body —— 事后复盘要问的是"当时整份交接长什么样"。
-    const fullPath = continuity ? continuity.manager.saveHandoffFull(continuity.runId, nodeId, round, reason) : null;
+    // #228: `nextSteps` 走独立参数进来 (不在 `reason` 串里), 所以要在这里补回去, 否则落盘的
+    // "全文"会缺掉这一块 —— 那就成了另一种静默丢证据。
+    const fullText = nextSteps ? `${reason}\n${NEXT_STEPS_PREFIX}${nextSteps}` : reason;
+    const fullPath = continuity ? continuity.manager.saveHandoffFull(continuity.runId, nodeId, round, fullText) : null;
     const kept = body.slice(0, HANDOFF_CAP_CHARS);
     const pointer =
       `\n…[交接硬上限: 上一轮判词 ${body.length} 字符, 此处只含前 ${kept.length};` +
@@ -1474,6 +1486,13 @@ async function executePlan(
      * `LeafResult.judgeConverged` (那一位按契约只装 judge 自己的票), journal 里记 `gate-rejected`。
      */
     synthetic?: 'round-failed' | 'false-completion';
+    /**
+     * judge 给的**下一步** (#228, 2026-08-23) —— 只有 LLM judge 真答了才有值。
+     *
+     * 与 `synthetic` / `unreachable` 互斥: 那两条出口 judge 没被问过, 合成一条"下一步"
+     * 就是拿闸的回声冒充 judge 的动作建议。缺席合法, 由 `renderHandoff` 决定不挂这一块。
+     */
+    nextSteps?: string;
   }> => {
     const childIds = children.map((c) => c.id);
     // 整轮就没跑成 → 直接未收敛, 省一次 judge 调用 (同 llm-judge 的 status==='failed' 短路)。
@@ -1551,7 +1570,10 @@ async function executePlan(
         logger.warn({ node: id, round }, '[omd/executor-dag] 内环 judge 判未收敛却零理由 → 下一轮反馈为空 (A5, 应由 llm-judge 兜住)');
       }
       emitNodeEvent({ type: 'verdict', id, gate: 'judge', verdict: v.converged ? 'pass' : 'fail', round, ...(v.failureReason ? { reason: v.failureReason } : {}) });
-      return { converged: v.converged, reason: v.failureReason ?? '', rejected, usage, unreachable: null as string | null, faultKey: null as string | null };
+      // #228: `nextSteps` 只在 judge 真答了这条路径上带出去。上面 false-completion 的 synthetic
+      // 出口与下面 catch 的 unreachable 出口都**不带** —— 那两处 judge 没被问过, 合成一条
+      // "下一步"就是拿闸的回声冒充 judge 的动作建议 (与 `judgeConverged` 同一条纪律)。
+      return { converged: v.converged, reason: v.failureReason ?? '', nextSteps: v.nextSteps, rejected, usage, unreachable: null as string | null, faultKey: null as string | null };
     } catch (err) {
       // fail-closed: 判不出来就当没达成。judge 挂掉不该变成"那就算过了吧"。
       logger.warn({ node: id, round, err: String(err) }, '[omd/executor-dag] 内环 judge 无结论 → 判未收敛 (fail-closed)');
@@ -1598,6 +1620,11 @@ async function executePlan(
     id: string,
     round: number,
     prevReason: string,
+    /**
+     * 上一轮 judge 给的「下一步」(#228) —— 与 `prevReason` **分两个参数**, 不并串。
+     * 缺席 (judge 没被问过 / 没答) → undefined, `renderHandoff` 据此不挂这一块。
+     */
+    prevNextSteps: string | undefined,
     poisoned: ReadonlySet<string>,
     /** 上一轮的子节点结果 (D-21 内环版: 跨轮复用的匹配源, 键 = 内容寻址 id)。 */
     prevResults: ReadonlyMap<string, LeafResult>,
@@ -1641,7 +1668,7 @@ async function executePlan(
     // **环的信息通道**: 上一轮的失败原因回灌给 conductor, 让它**重新画**而不是重跑同一张图。
     // 这是 D-A 环的全部价值 —— 重跑只能把同样的活再干一遍, 重画才补得出上一轮压根没有的步骤
     // (D-G′ 说的「补调研」正是这个形状: 不需要回边, 每一轮都是一张全新的无环子图)。
-    const retryCtx = prevReason ? `${renderHandoff(id, round, prevReason)}\n${RETRY_INSTRUCTION}` : '';
+    const retryCtx = prevReason ? `${renderHandoff(id, round, prevReason, prevNextSteps)}\n${RETRY_INSTRUCTION}` : '';
     // **owner 指令** (S3 / D-S): 与失败原因同一条管道、**独立的块**、**逐字**。
     // 排在失败原因**之前** —— 人的指令优先级高于机器的观察, 顺序上也该先看见。
     // ⚠ 一个字都不许加工: 观测者在这条链上只是信使, 它改写了, 失真的地方 owner 自己看不见。
@@ -2292,6 +2319,10 @@ async function executePlan(
     }
     const poisoned = new Set(journal?.poisoned ?? []);
     let prevReason = journal?.prevReason ?? '';
+    // #228: 「下一步」不另开 journal 字段 —— 它已经随 `RoundVerdict` 落盘 (见 types.ts),
+    // resume 时从**最后一条 verdict** 还原即可。同一件事两处声明就是漂移源 (S-39, 与上面
+    // `restoredJudge` 同一条纪律)。缺席 = 那一轮 judge 没被问过 / 没答 → 下一轮不挂这一块。
+    let prevNextSteps: string | undefined = journal?.verdicts?.at(-1)?.nextSteps;
     // r1 片3/4 (INV-R1-4 + C2): 各轮发现文本→累计簇数; resume 接回旧序列 (journal 持久)。
     const noveltyTexts: string[] = journal?.noveltyTexts ? [...journal.noveltyTexts] : [];
     const noveltySeq: number[] = journal?.noveltySeq ? [...journal.noveltySeq] : [];
@@ -2497,7 +2528,7 @@ async function executePlan(
       // ms 取值从这里起算, judge 时间落在轮结束与下一条轮开始之间, 由内环收尾的 loopMs 兜住。
       const roundStartedAt = Date.now();
       logger.info({ node: id, round, at: roundStampNow() }, '[omd/executor-dag] 轮开始');
-      const r = await runConductorRound(id, round, prevReason, poisoned, prevResults);
+      const r = await runConductorRound(id, round, prevReason, prevNextSteps, poisoned, prevResults);
       // 切片 1 (C-1 INV-2): 轮结束 —— runConductorRound 返回后立刻 (D-3: ms 只覆盖展开+执行,
       // 不含轮末 judge, 三段时间加起来无主)。r.results 是 Map, 子图节点数 = .size。
       logger.info(
@@ -2633,6 +2664,9 @@ async function executePlan(
         criterion: freezeGreen === null ? 'none' : freezeGreen ? 'green' : 'red',
         judge: verdict.unreachable ? 'unreachable' : verdict.converged ? 'converged' : verdict.synthetic ? 'gate-rejected' : 'rejected',
         reason: reasonField,
+        // #228: judge 真答了才有这一列。缺席 = 不写键 (不是空串) —— 事后要能分出
+        // 「judge 没被问过」与「judge 答了一句空话」(仓规坑①)。
+        ...(verdict.nextSteps ? { nextSteps: verdict.nextSteps } : {}),
       });
       // judge **调不通** → 立刻退环, 不把剩下的轮数烧在一个确定性故障上 (2026-07-31)。
       // 与 §8.4 熔断同一个出口形状, 但 kind 是 `infra-error` 不是 `blocked`: N5 词表里这两格的
@@ -2741,6 +2775,11 @@ async function executePlan(
       // 一条逐轮重复的发现会让各轮文本更像, 于是簇数更容易不增 —— 那条同样只报不拦 (只追加一行
       // 建议进 prompt), 所以不改控制流; 但它的读数从此不是纯净的, 解读时要知道有这一路输入。
       const roundObs = [...r.lint, ...r.claimObs, ...(noMove ? [noMove] : [])];
+      // #228: 「下一步」**不并进 prevReason** —— 并进去它就跟判词一起进 `body`, 一起被头切,
+      // 而它偏偏住在尾部 (那正是这一票要治的)。走独立变量 → 独立参数 → 必达块。
+      // 缺席 (judge 没被问过 / 没答) 时置回 undefined, 不留上一轮的残值: 挂一条**上上轮**的
+      // 下一步比不挂更坏 —— 读者无从知道它已经过期了。
+      prevNextSteps = verdict.nextSteps;
       prevReason = roundObs.length
         ? `${verdict.reason}\n\n[图外观察者]\n${roundObs.map((o) => `- ${o.message}`).join('\n')}`
         : verdict.reason;

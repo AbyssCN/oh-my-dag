@@ -19,6 +19,11 @@ export const CONVERGENCE_VERDICT_SCHEMA = z.object({
   converged: z.coerce.boolean(),
   score: z.coerce.number().min(0).max(1),
   failureReason: z.coerce.string().optional(),
+  /**
+   * #228: 下一轮该做什么 (机制级动作)。**必须在 schema 里**, 不然 zod 会把它当未知键剥掉,
+   * 于是模型答了、绑定层收不到 —— 那正是本仓在收的静默形状。
+   */
+  nextSteps: z.coerce.string().optional(),
   /** D-4 DeltaTicket (P1.5): 产出有问题的节点 id (本轮 id 空间); 绑定层翻成指纹毒集禁止复用。 */
   rejectedNodes: z.array(z.coerce.string()).optional(),
 });
@@ -112,10 +117,14 @@ ${task}
 ${summary}
 ---
 
-输出 JSON 四字段:
+输出 JSON 五字段:
 - converged (bool): 是否已达收敛标准 (不动点到达)。这是裁决, 必须与你的 score 一致。
 - score (0..1): 质量分
-- failureReason (string, converged=false 时必填): 缺哪条明确要求 / 哪里捏造 + 下一轮该怎么改 (机制级, 不是"不够好")
+- failureReason (string, converged=false 时必填): 缺哪条明确要求 / 哪里捏造。**只写诊断, 不写动作。**
+- nextSteps (string, converged=false 时必填): **下一轮该做什么** —— 机制级动作 (改哪个文件的哪一处 /
+  补哪条验证命令 / 先做哪一步), 不是"再仔细些""质量不够"这类评价。这一段会**逐字**送进下一轮的
+  提示词且不参与截断预算, 所以它是你唯一能让下一轮真正改变行为的通道; 与 failureReason 分两个字段写,
+  **不要把动作混回 failureReason**。
 - rejectedNodes (string[], converged=false 时必填): **点名产出有问题的节点 id** —— 上面结果里每段
   \`### <id> [状态]\` 开头的那个 id, 逐字照抄。判据是"这段产出本身错了/缺了/是编的", 不是"这个节点无关"。
   **宁可多点名, 不可漏点名**: 没被点名的节点, 它这一轮的产出会被原样当作已批准结果复用进下一轮 ——
@@ -152,7 +161,7 @@ export function makeLlmConvergenceJudge<R>(opts: LlmJudgeOpts<R>): FixpointJudge
       responseSchema: CONVERGENCE_VERDICT_SCHEMA,
     });
     const v = r.parsed as
-      | { converged: boolean; score: number; failureReason?: string; rejectedNodes?: string[] }
+      | { converged: boolean; score: number; failureReason?: string; nextSteps?: string; rejectedNodes?: string[] }
       | undefined;
     // A5 (2026-07-31): 这句话的**读者是下一轮重画的 conductor**, 而它出现在 `<上一轮未通过>` 里 ——
     // 读者会把那块里的任何东西当成对自己方案的评价, 于是"judge 未结构化输出"会让它去迎合一句
@@ -181,6 +190,10 @@ export function makeLlmConvergenceJudge<R>(opts: LlmJudgeOpts<R>): FixpointJudge
           'judge 判未收敛, **但没有给出理由** —— 这一轮没有可用的失败信息。' +
             '不要去猜上一轮哪一步错了 (猜错了会连对的那步一起改掉): 请回到目标本身重新审一遍, ' +
             '优先补上"怎么才算做完"这类可验证的步骤。',
+      // #228: 收敛了没有"下一步"; 未收敛而 judge 漏填 → **留缺席**, 不许像 failureReason 那样
+      // 兜一段话。两者的读者不同: failureReason 的兜底是说给下一轮听的"别去猜", 而 nextSteps
+      // 是要被逐字当动作执行的 —— 编一条假动作比没有动作更坏。缺席由绑定层决定不挂这一块。
+      ...(converged || !v.nextSteps ? {} : { nextSteps: v.nextSteps }),
       // D-4: 收敛了就没有毒 (产出全批准); 未收敛才带票。judge 漏填 = 空票, 由绑定层记账 (不静默当"全批准")。
       ...(converged || !v.rejectedNodes?.length ? {} : { rejectedNodes: v.rejectedNodes }),
     };
