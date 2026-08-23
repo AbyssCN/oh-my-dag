@@ -80,12 +80,31 @@ console.log("nodes:", Object.keys(compileBreakdown(b, { acceptCommand: "bun test
 | 看什么 | 判据 |
 |---|---|
 | `falsify` 解出来的 `oldText` | 与你写的**逐字相同**。含 `\|`(TS 的 `\|\|`)会被 markdown 切列 ⇒ 截成半句 ⇒ 跑起来 `matches=0` |
-| 写集含 `src/harness/dag/types.ts` | 必须同时含 `docs/architecture/seams.md` **与** `src/harness/dag/seam-catalog.test.ts`(结构绊线写死了两个字面量,增删字段必红)|
+| 写集碰 `src/` 任何文件 | **多半要把 `docs/architecture/seams.md` 也放进写集**,见下面那条 ⚠ |
 | 命令首词 | **不许 `npx`** —— 执行体沙箱里退出 **127**;用 `./node_modules/.bin/<bin>` |
 | `nodes` 清单 | 与你预期的节点数一致;`sN-falsify-*` 该在的在、不该在的没有 |
 
 ⚠ 上面前三条今天已由编译器**硬拒**(`sdd-direct` / `sdd-compile`),
 所以这一步跑不过 = 契约真有问题,**不是工具挑剔**。
+
+### ⚠ seam 漂移闸的规则比「改了 types.ts 才要重跑」宽得多
+
+`docs/architecture/seams.md` 记的**不只是字段**,还有**每个字段的「提及文件清单与计数」**
+(`| \`verifier\` | … | \`src/harness/verifier.ts\`<br>… (61 文件) |`)。
+
+⇒ **任何 `src/` 改动只要改变了某个 seam 字段的提及文件数,`seams.md` 就过期,漂移闸就红** ——
+**包括只在一句注释里写下那个字段名。**
+
+2026-08-23 现场:一片完全不碰 `dag/types.ts` 的改动,因为执行体在两个源文件的注释里
+写了 `verifier` 这个词,计数 61→63,整跑判 `failed`。而我在契约里明写过
+「已查证:不碰 seam 漂移闸,不用跑 `gen-seam-catalog.ts`」——
+**我验的是「`ShellRun` 在不在目录里」,断言的却是「不碰漂移闸」。验了一条,断言了一片。**
+
+**⇒ 两条照做**:
+① 只要写集里有 `src/**`,就把 `docs/architecture/seams.md` **一并放进写集**,
+   并在契约里写「实装完跑一次 `bun run scripts/gen-seam-catalog.ts`」;
+② 真要断言「本片不碰漂移闸」,**唯一算数的证据是跑一遍生成器看 diff 是不是空**,
+   不是 grep 一个类型名。
 
 ### 还有一条,抓的是**另一半**
 
