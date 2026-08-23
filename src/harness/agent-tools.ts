@@ -39,7 +39,7 @@ import { classifyCommand } from './hooks/dangerous-cmd';
 import { checkWriteAllowed, describeWriteDenied } from './writeset/write-allow';
 import { type CommandPolicy, DEFAULT_SANDBOX_CONFIG, judgeCommand } from './hooks/command-policy';
 import { sandboxCommand } from './hooks/shell-sandbox';
-import { secretPathInCommand, SECRET_BASENAMES, SECRET_BASENAME_EXEMPT } from './command-leaf';
+import { gitWriteBlockReason, secretPathInCommand, SECRET_BASENAMES, SECRET_BASENAME_EXEMPT } from './command-leaf';
 import { logger } from '../logger';
 import { openTouchLedger, type TouchLedger, type TouchOp, type TouchSource } from './writeset/touch-ledger';
 import { verifiedShellWriteTargets } from './writeset/shell-writes';
@@ -805,6 +805,17 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
         if (dangerous.dangerous) {
           logger.warn({ command, label: dangerous.label }, '[omd/agent-tools] 危险命令拦截 (fail-closed)');
           throw new Error(`BLOCKED 不可逆命令 [${dangerous.label}]: ${dangerous.reason}`);
+        }
+        // ①.5 git 写操作闸 (#239, 2026-08-23): 上面那道是**黑名单**, 实测认识 `reset --hard`
+        //     却不认识 `checkout` / `restore` —— 而三者对「抹掉本跑刚写、还没提交的文件」等效。
+        //     实账: run 5ec238df 的 agent 节点拿 `git checkout HEAD -- <files>` 当 stash 用,
+        //     四个文件的实装全部丢失, 整跑作废; 而写集对账只看最终盘面, 写了又还原照报
+        //     `consistent` —— 这个洞**不留痕**, 是本仓最怕的那一族。
+        //     判据与判词都取 command-leaf 那份 (同一个导出): 两条执行路从此逐字同一句话。
+        const gitBlocked = gitWriteBlockReason(command);
+        if (gitBlocked) {
+          logger.warn({ command }, '[omd/agent-tools] git 子命令非只读, 拒绝 (与 command leaf 同一道闸)');
+          throw new Error(`BLOCKED ${gitBlocked} —— 要回滚本跑的改动请升 owner, 执行体不自行抹写`);
         }
       }
       // ② 凭证文件拒: 按 shell 分隔符拆段逐段查 —— `ls && cat .env` 的尾环也要被看见。

@@ -414,6 +414,46 @@ function observeExit(proc: BoundedProc, folded: number | null): { exitCode: numb
 /** git 的「带值全局 flag」—— 取子命令时必须连它的值一起跳过, 否则 `git -C /repo status` 会把 /repo 当子命令。 */
 const GIT_VALUE_FLAGS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--config-env']);
 
+/**
+ * **git 写操作闸 (单段版)** —— 一条已拆好的命令链, 是非只读 git 就返判词, 否则 null。
+ *
+ * ## 为什么是**白名单**而不是黑名单 (#239, 2026-08-23)
+ *
+ * 实账: run `5ec238df` 的 agent 节点跑 `git checkout HEAD -- <files>` 当 stash 用, 抹掉了
+ * 本跑刚写的四个文件的实装, 整跑作废。那条路当时走的是黑名单 (`judgeCommand`), 而黑名单
+ * 实测**认识 `reset --hard`, 不认识 `checkout` / `restore`** —— 三者对「抹掉本跑还没提交的
+ * 写入」完全等效。黑名单必然如此: 它要穷举危险, 而危险的写法不止一种; 白名单穷举的是
+ * **安全**, 而安全的写法是有限的、可枚举的。
+ *
+ * ⚠ 这个判词是**两条路共用的那一份**: command leaf 的 `commandBlockReason` ②.6 与 agent leaf
+ * 的 bash 都返回它逐字相同的串。别在任何一侧另写一句 —— 两份判词必然随时间漂成两个意思
+ * (S-39)。回归网见 `git-write-gate.test.ts`。
+ */
+export function gitWriteBlockReasonForLink(link: string): string | null {
+  if (commandBin(link) !== 'git') return null;
+  const sub = gitSubcommand(link);
+  if (sub && GIT_READONLY_SUBCOMMANDS.includes(sub)) return null;
+  return `[blocked git-write: '${sub ?? '(none)'}' ∉ 只读子命令 ${GIT_READONLY_SUBCOMMANDS.join('/')}]`;
+}
+
+/**
+ * **git 写操作闸 (整串版)** —— 自己按 shell 分隔符拆段, 任一段命中就返判词。
+ *
+ * command leaf 那条路进闸前命令已经拆过链、且元字符闸保证单链里没有 `; | &`, 所以它用单段版。
+ * agent leaf 的 bash **收的是整串**且不过元字符闸 —— `ls && git checkout .` 的首 token 是 `ls`,
+ * 只看首 token 就等于没闸。拆法与同文件那道凭证闸逐字相同 (`agent-tools.ts:812` 的 `[;&|]+|\n`):
+ * 同一条命令串上两道闸拆法不一致本身就是缺陷。
+ */
+export function gitWriteBlockReason(command: string): string | null {
+  for (const seg of command.split(/[;&|]+|\n/)) {
+    const s = seg.trim();
+    if (!s) continue;
+    const blocked = gitWriteBlockReasonForLink(s);
+    if (blocked) return blocked;
+  }
+  return null;
+}
+
 /** 从 git 命令串里定位子命令 (跳过全局 flag 及其值)。找不到 → undefined (裸 git)。 */
 function gitSubcommand(link: string): string | undefined {
   const toks = link.trim().split(/\s+/).slice(1);
@@ -518,14 +558,13 @@ export function commandBlockReason(command: string, allowlist: readonly string[]
       logger.warn({ command: link }, '[omd/command-leaf] 命令含 shell 元字符, 拒绝 (防注入)');
       return '[blocked shell-metachar: ; & | ` $ < > ( ) \\ newline not allowed]';
     }
-    // ②.6 git 子命令只读闸: bin 在白名单只说明「可以调 git」, 改仓库状态的子命令仍拒
-    // (`git checkout .` 会抹掉 DAG 刚写的文件; `git commit` 越权代 owner 提交)。
-    if (bin === 'git') {
-      const sub = gitSubcommand(link);
-      if (!sub || !GIT_READONLY_SUBCOMMANDS.includes(sub)) {
-        logger.warn({ command: link, sub }, '[omd/command-leaf] git 子命令非只读, 拒绝');
-        return `[blocked git-write: '${sub ?? '(none)'}' ∉ 只读子命令 ${GIT_READONLY_SUBCOMMANDS.join('/')}]`;
-      }
+    // ②.6 git 子命令只读闸: bin 在白名单只说明「可以调 git」, 改仓库状态的子命令仍拒。
+    // 判据与判词都在 `gitWriteBlockReasonForLink` 里 —— agent leaf 的 bash 调的是同一个导出
+    // (#239: 此前那条路走的是黑名单, 认识 `reset --hard` 却不认识 `checkout`/`restore`)。
+    const gitBlocked = gitWriteBlockReasonForLink(link);
+    if (gitBlocked) {
+      logger.warn({ command: link, sub: gitSubcommand(link) }, '[omd/command-leaf] git 子命令非只读, 拒绝');
+      return gitBlocked;
     }
     // ③ 凭证文件拒 (见 SECRET_BASENAMES): 白名单管「哪个 bin」, 这条管「读的是什么」。
     //    放行 `cat` 不等于放行 `cat .env` —— 后者与被刻意排除的 `printenv` 是同一件事。
