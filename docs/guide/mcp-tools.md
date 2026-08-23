@@ -72,28 +72,33 @@ discipline (when to escalate, how to accept, who holds the trigger).
 
 ### Claude slash commands (the [client-skills](../../client-skills/) pack)
 
-Copy into `~/.claude/skills/` (Codex: merge into `AGENTS.md`). Each wraps the MCP
-tool(s) in the right column and adds the workflow discipline.
+All 22 install themselves into `~/.claude/skills/` on first server start (Codex: merge the
+SKILL.md bodies into `AGENTS.md`). Each wraps the MCP tool(s) in the middle column and adds the
+discipline — when to escalate, how to accept, who holds the trigger. **They are graphs, not
+prompts**: each carries its own shape, seat assignment and gates.
 
 | Command | Wraps | What it adds |
 |---|---|---|
-| `/path` | `map_open` · `map_add` | open or resume a decision map, break a goal into tickets |
-| `/tickets` | `map_tickets` · `map_prefetch` | show the frontier, pull landed research, dispatch background work |
-| `/rule` | `map_rule` | adjudicate a decision onto the map — owner's explicit call |
-| `/deliver` | `map_deliver` | the delivery gate: compile the clear zone and run it |
-| `/sdd` | writes spec to `docs/plan/` | crystallize the conversation into a spec on disk before building |
-| `/execute` | `run` → `dag_status`/`dag_result` | run a spec as a DAG, then actively accept the result against it |
-| `/iterate` | `run` (fixpoint loop) | re-run to convergence — your agent is the judge |
-| `/resume` | `dag_runs` · `dag_resume` | list failed/interrupted runs, pick one, resume it from disk |
-| `/grill` | deliberation → `map_rule` | interrogate an idea before it's locked; land the ruling |
-| `/note` | `map_add` · `map_rule` | a decision ledger for the conversation |
-| `/council` | `dag_research` (--council) | judged multi-persona debate over a hard call |
-| `/audit` | `run` (security lenses) | multi-lens security audit as a DAG |
-| `/sast` | semgrep (local) | deterministic static scan, no LLM |
-| `/review` | `dag_review` | adversarial diff-review fleet, gate G0–G3 |
-| `/slim` | `dag_slim` | deletion-only over-engineering audit |
-| `/deepen` | `dag_deepen` | architecture-hotspot scan → leverage-ranked report |
-| `/debug` | `dag_debug` | root-cause debug fleet: reproduce → multi-hypothesis → verify |
-| `/recall` | `memory_recall` | proactively pull prior facts when reasoning stalls |
-| `/video` | (local) | video → structured per-segment notes (frames + audio) |
+| `/omd-path` | `map_open` · `map_add` · `map_prefetch` | open or resume a decision map, break a goal into tickets |
+| `/omd-tickets` | `map_tickets` | show the frontier, folding in landed background research |
+| `/omd-rule` | `map_rule` | adjudicate a decision onto the map — the owner's explicit call |
+| `/omd-deliver` | `map_deliver` | the delivery gate: compile the ruled region and run it |
+| `/omd-grill` | deliberation → `map_rule` | interrogate a plan before it's locked; open a council at wide forks |
+| `/omd-contract` | writes a spec to `docs/plan/` | crystallise the argument into the contract the engine executes |
+| `/omd-execute` | `run` → `dag_status` / `dag_result` | run a spec as a DAG, then accept the result against it |
+| `/omd-iterate` | `run` (fixpoint loop) | re-run to convergence, carrying the failure reason forward |
+| `/omd-resume` | `dag_runs` · `dag_resume` | list broken runs, pick one, resume it from its checkpoint |
+| `/omd-note` | `map_add` · `map_rule` | a decision ledger for the conversation |
+| `/omd-recall` | `memory_recall` | pull prior facts when reasoning stalls |
+| `/omd-council` | `dag_research` (council) | judged multi-persona debate over a hard call |
+| `/omd-research-deep` | `dag_research` (`super` + `rounds`) | seeded multi-angle crawl → council → multi-round gap-filling |
+| `/omd-review` | `dag_review` | adversarial diff review, gate `G0`–`G3`, every finding falsified |
+| `/omd-audit` | `run` (security lenses) | trust-boundary audit as a DAG |
+| `/omd-sast` | semgrep (local) | deterministic static scan, zero LLM |
+| `/omd-slim` | `dag_slim` | deletion-only over-engineering audit |
+| `/omd-deepen` | `dag_deepen` | architecture-hotspot scan → leverage-ranked report |
+| `/omd-debug` | `dag_debug` | reproduce → scope lock → parallel hypotheses → verify |
+| `/omd-docs-drift` | `run` | the semantic half of doc drift: does the doc still hold? |
+| `/omd-ui-reviewer` | (local) | judge rendered UI screenshots — hierarchy, spacing, states |
+| `/omd-video` | (local) | video → structured per-segment notes (frames + audio) |
 
