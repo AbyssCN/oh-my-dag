@@ -15,7 +15,7 @@
  * 全程零 LLM (预构造图 + command 叶子 + 注入 judge) → 可无限重跑, 读数不含模型噪声。
  */
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { awaitDeath, awaitExitBounded, readAllBounded } from '../../src/harness/proc/await-exit';
@@ -83,17 +83,54 @@ async function crashAt(hangNode: string, args: string[]): Promise<void> {
     stdout: 'pipe',
     stderr: 'pipe',
   });
+  // ⚠ **管道必须有人读** (2026-08-23): 上面开了 `stdout/stderr: 'pipe'` 而这里从头到尾不读,
+  //   子进程日志量一旦超过管道缓冲就**阻塞在写上**, 永远到不了哨兵 —— 那时 60s 超时是
+  //   **结果不是原因**, 而判词却说「夹具没能进入崩溃点」, 把人带向错误方向。
+  //   边读边丢, 只留尾巴作诊断。
+  let sawBytes = 0;
+  let tail = '';
+  const drain = async (stream: ReadableStream<Uint8Array> | null): Promise<void> => {
+    if (!stream) return;
+    const dec = new TextDecoder();
+    for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
+      sawBytes += chunk.byteLength;
+      tail = (tail + dec.decode(chunk, { stream: true })).slice(-600);
+    }
+  };
+  const draining = Promise.all([drain(proc.stdout), drain(proc.stderr)]).catch(() => {});
+
   const sentinel = join(root, `READY-${hangNode}`);
-  const deadline = Date.now() + 60_000;
+  // ⚠ **按「有没有进展」判, 不按墙钟判**: 上面那条注释说得对 —— 定时会在慢机器上杀早。
+  //   而原来的兜底仍是 60s 墙钟, 于是机器一忙就复现同一个病 (2026-08-23 实测: 今晚全量里
+  //   这一族红过三次, 每次都恰好 60.2s, 单跑该文件 11 pass/0 fail)。
+  //   改成: 只要子进程还在**产出字节**就不算卡住; 连续 NO_PROGRESS_MS 一个字节没有才判死。
+  const NO_PROGRESS_MS = 30_000;
+  let lastBytes = -1;
+  let lastProgressAt = Date.now();
   while (!existsSync(sentinel)) {
-    if (Date.now() > deadline) {
+    if (sawBytes !== lastBytes) {
+      lastBytes = sawBytes;
+      lastProgressAt = Date.now();
+    }
+    if (Date.now() - lastProgressAt > NO_PROGRESS_MS) {
       proc.kill('SIGKILL');
-      throw new Error(`子进程 60s 内没跑到 ${hangNode} —— 夹具没能进入崩溃点, 本次读数无效`);
+      await draining;
+      // ⚠ 判词要**可诊断**: 原来只说「没跑到, 本次读数无效」—— 那句话是诚实的, 但它把
+      //   「机器慢」「子进程死了」「管道堵了」三件事压成一句, 查不动。
+      const files = existsSync(root) ? readdirSync(root).slice(0, 12).join(', ') : '(root 不在)';
+      throw new Error(
+        `子进程 ${NO_PROGRESS_MS / 1000}s 内一个字节都没产出且没跑到 ${hangNode} —— ` +
+          `累计收到 ${sawBytes} 字节; root 里有: ${files}; 输出尾: ${tail.slice(-300) || '(空)'}`,
+      );
     }
     await Bun.sleep(50);
   }
+  // ⚠ **不许在 kill 之前 await draining**: 子进程此刻正挂在崩溃点上, stdout 永远不关,
+  //   drain 永远不 resolve ⇒ 整个用例死挂 (2026-08-23 我第一版就是这么写的, 跑一遍就照出来)。
+  //   先杀, 流随之关闭, drain 自然收尾。
   proc.kill('SIGKILL');
   await awaitDeath(proc, `crashAt(${hangNode}) 的 SIGKILL 之后`);
+  await draining;
 }
 
 describe('F1 崩在一轮中途 —— 轮内已绿节点不重跑, 制品不丢', () => {
