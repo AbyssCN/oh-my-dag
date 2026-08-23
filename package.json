@@ -40,6 +40,8 @@
     "!src/**/*.test.ts",
     "scripts",
     "!scripts/**/*.test.ts",
+    "!src/harness/gates/discipline-registry.ts",
+    "!scripts/discipline-catalog.ts",
     "client-skills",
     "templates",
     "substrate",
