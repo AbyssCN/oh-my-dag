@@ -9,7 +9,7 @@
  * × **Spec 轴** (spec 维度 — 做的是不是 SDD 说该做的事)。Spec 轴对照 findLatestSdd(cwd/docs/plan)
  * 的最新 SDD; 无 SDD → 报"spec 轴跳过"(非失败)。G3 强制含 spec。收敛层 (verify) 两轴共用。
  *
- * 全文落盘 (零丢失), 返回结构化 finding 供调用方 (CLI 打印 / build 内嵌摘要进报告)。
+ * 全文写盘 (零丢失), 返回结构化 finding 供调用方 (CLI 打印 / build 内嵌摘要进报告)。
  */
 import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -101,7 +101,7 @@ export interface RunReviewResult {
   verified?: VerifiedFinding[];
   /** D-3 锚点反幻觉闸裁定 (opts.verify 且有结构化 finding 时有)。red = 有 P0/P1 被降级记账。 */
   anchorCheck?: AnchorCheckResult;
-  /** 全文落盘路径 (零丢失)。 */
+  /** 全文写盘路径 (零丢失)。 */
   outPath: string;
   model: string;
   /** spec 轴对照的 SDD 文件 (spec 在 dims 且找到时有)。 */
@@ -146,7 +146,7 @@ export interface RunReviewOpts {
   model?: string;
   /** verify 判决层模型 (默认 env OMD_REVIEW_VERIFY_MODEL → 回落 findModel; 窄/高风险/跨模型)。 */
   verifyModel?: string;
-  /** 全文落盘路径 (默认 /tmp/omd-review-<gate>-<ts>.md)。 */
+  /** 全文写盘路径 (默认 /tmp/omd-review-<gate>-<ts>.md)。 */
   outPath?: string;
   /** 收敛层 (extract→仓库取证→证伪裁决; 不加发散加收敛)。 */
   verify?: boolean;
@@ -169,7 +169,7 @@ export const SPEC_SKIPPED_NOTE = '无 SDD (docs/plan 下未找到 .md) — spec 
 
 /**
  * 跑一轮对抗审查。providers 须已注册 (bootstrapModelRuntime / registerProvidersFromEnv)。
- * 返回 finding 清单 + 落盘路径; 不打印 (调用方决定 CLI 打印 / 报告摘要)。
+ * 返回 finding 清单 + 写盘路径; 不打印 (调用方决定 CLI 打印 / 报告摘要)。
  */
 export async function runReview(opts: RunReviewOpts): Promise<RunReviewResult> {
   const dims = opts.dims ?? DIMS_BY_GATE[opts.gate];
@@ -311,7 +311,7 @@ export async function runReview(opts: RunReviewOpts): Promise<RunReviewResult> {
     anchorCheck = await checkFindingAnchors(verified, cwd);
   }
 
-  // ---- 落盘报告: 收敛层裁决 (两轴共用) + Standards 轴 / Spec 轴 双段 ----
+  // ---- 写盘报告: 收敛层裁决 (两轴共用) + Standards 轴 / Spec 轴 双段 ----
   const standards = findings.filter((f) => f.dimension !== 'spec');
   const specFindings = findings.filter((f) => f.dimension === 'spec');
   const doc: string[] = [`# 对抗审查 [${opts.gate}] ${opts.scope.split('\n')[0]}`, ''];

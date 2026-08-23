@@ -47,7 +47,7 @@ import { FAILURE_KIND_ORDER } from '../node-failure';
  * 下来, #96 的观察面也就画不出它。**不许从别的事实推它**(比如"某 artifact 至今没 published
  * 就算有人在等"): 那是把「没人在等」与「等这件事没被记」压成一行, 本仓坑① (NULL≠0)。
  *
- * 收口不另设事件: 等到了走 `published` (谓词匹配), 等不到走 `terminal` —— 与 `liveRuns`
+ * 收尾不另设事件: 等到了走 `published` (谓词匹配), 等不到走 `terminal` —— 与 `liveRuns`
  * (claimed 减 terminal) 同款判法, 见 {@link awaitingRuns}。
  */
 export type BoardEvent = 'claimed' | 'published' | 'terminal' | 'note' | 'verified' | 'intervened' | 'awaiting';
@@ -309,7 +309,7 @@ function compactBoard(path: string): void {
 
 // ─── 冻结接口实现 ────────────────────────────────────────────────────────────
 
-/** D-2: verified / intervened 在落盘前 fail-loud 校验 —— 非法 verdict/cause 不写盘。 */
+/** D-2: verified / intervened 在写盘前 fail-loud 校验 —— 非法 verdict/cause 不写盘。 */
 function validateEntry(e: BoardEntry): void {
   if (e.event === 'verified') {
     if (e.verdict !== 'pass' && e.verdict !== 'fail') {
@@ -378,7 +378,7 @@ export function liveRuns(entries: BoardEntry[]): Map<string, string[]> {
   return out;
 }
 
-/** 一条**未收口**的等待 (#205)。 */
+/** 一条**未收尾**的等待 (#205)。 */
 export interface AwaitingEntry {
   runId: string;
   artifact: string;
@@ -390,9 +390,9 @@ export interface AwaitingEntry {
 }
 
 /**
- * **谁还在等** (#205)。判法与 {@link liveRuns} 同款: 有 `awaiting` 且**无对应收口事件**。
+ * **谁还在等** (#205)。判法与 {@link liveRuns} 同款: 有 `awaiting` 且**无对应收尾事件**。
  *
- * 收口有两条, 都不另设事件 —— 板上已有的事实够用:
+ * 收尾有两条, 都不另设事件 —— 板上已有的事实够用:
  *   · **等到了** —— 出现满足谓词的 `published` (同 artifact; awaiting 若限定了 `fromRun`,
  *     则那条 published 的 runId 也要对上)。⚠ 这里**不复刻 await-node 的写集不相交判据**:
  *     那是"能不能合入"的问题, 而这里答的是"还在不在等"。两者混一起会让一次因写集相交而

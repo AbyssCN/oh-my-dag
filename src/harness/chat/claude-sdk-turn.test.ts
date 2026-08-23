@@ -1,6 +1,6 @@
 /**
  * claude-sdk-turn 契约测试(sdkQueryFn 测试接缝替换真 SDK —— 真 SDK 要真订阅 + claude CLI)。
- * 钉六条:分派路由 / 持久化+账本+映射 / resume 续接 / 失败不落盘(反向自检) /
+ * 钉六条:分派路由 / 持久化+账本+映射 / resume 续接 / 失败不写盘(反向自检) /
  * MCP 桥真回路(InMemoryTransport,不摸内部 handler 表) / 工具循环消息映射。
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';

@@ -6,7 +6,7 @@
  * 二者经 primitives 的 LeafFn 统一(mimo-leaf 契约 INV-5: 同一原语既驱动 callModel 也驱动 spawn_agent)。
  *
  * scope 原子化(契约 §granularity): 每个 agent leaf 应锁定**一个原子产物**(如一个文件),并行 leaf 改
- * 不重叠文件 = 天然原子;冲突走 DAG 依赖串行。cwd = 工作根,工具直接落盘。
+ * 不重叠文件 = 天然原子;冲突走 DAG 依赖串行。cwd = 工作根,工具直接写盘。
  *
  * ## 2026-08-01: 从 `pi-coding-agent` 搬到 `pi-agent-core` 的 `runAgentLoop`
  *
@@ -193,7 +193,7 @@ import type { AgentLeafInput, AgentLeafResult, AgentLeafRunner, FileWriteEffect,
 import { TOOL_STEPS_CAP, TOOL_STEPS_HEAD, SHELL_OUTPUT_TAIL_CAP } from './leaf-runners';
 
 export interface AgentLeafRunnerOpts {
-  /** 工具落盘的工作根。默认 process.cwd()。每个 agent leaf 应被 scope 到此根下的原子产物。 */
+  /** 工具写盘的工作根。默认 process.cwd()。每个 agent leaf 应被 scope 到此根下的原子产物。 */
   cwd?: string;
   /** thinking 档位。默认 xhigh (agent leaf 改文件/工具循环, 质量优先; 见下方赋值处注)。 */
   thinkingLevel?: ThinkingLevel;
@@ -1212,7 +1212,7 @@ export async function compactLeafContext(opts: {
     });
     summary = res.text.trim();
   } catch (err) {
-    // 压不动不是致命错: 调用方回落"优雅停", 已落盘的产物照样交。
+    // 压不动不是致命错: 调用方回落"优雅停", 已写盘的产物照样交。
     logger.warn({ model, err: (err as Error).message }, '[agent-leaf] 上下文压缩失败 → 回落优雅停');
     return null;
   }
@@ -1508,7 +1508,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
         toolTimelineMs.push(now() - startedAt);
         drift?.note(e.toolName, e.args);
         // 熔断闸: 软注入 (takeInjection) 之后还在加深的空转 → 硬停, 走与超时同一条优雅停路
-        // (SDK 通道 tolerateAbort 返已累积; pi 通道 signal 停轮)。已落盘产物保留, 节点判 spin-fused。
+        // (SDK 通道 tolerateAbort 返已累积; pi 通道 signal 停轮)。已写盘产物保留, 节点判 spin-fused。
         if (drift && spinFused === null) {
           const trip = drift.fuseTripped();
           if (trip) {
@@ -1615,7 +1615,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     };
 
     // ── 有界性 (两级) ────────────────────────────────────────────────────────────
-    // ① shouldStopAfterTurn: 超时/上下文预算到了 → 在**轮之间**优雅停, 已落盘的产物完整保留。
+    // ① shouldStopAfterTurn: 超时/上下文预算到了 → 在**轮之间**优雅停, 已写盘的产物完整保留。
     // ② AbortSignal: 单轮自己跑过头 (provider 挂着不返) 的硬兜底。
     // 此前这两件事都只能靠外部秒表 + SIGKILL —— 高层 prompt() 既没有 maxTurns 也不收 signal。
     const timeoutMs = opts.leafTimeoutMs ?? 3_600_000;
@@ -1696,7 +1696,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // 失败只吞不截停的纪律仅适用 advisor 档 (软介入语义); wrapup/abort 是硬动作。
     //
     // wrap-up 注入文本 (与 advisor 走同一条 transformContext user-msg 通道):「立即停止继续尝试,
-    // 用 ≤2 个工具调用收尾: 把当前已完成部分落盘/汇报, 说明未完成项与原因, 然后结束」。
+    // 用 ≤2 个工具调用收尾: 把当前已完成部分写盘/汇报, 说明未完成项与原因, 然后结束」。
     const GRIND_WRAPUP_INSTRUCTION =
       '「强制收尾指令」: 你已研磨超过一级 advisor + 二级 wrap-up 阈值仍未推进。立即停止继续尝试, ' +
       '用 ≤2 个工具调用收尾: 把当前已完成部分落盘/汇报, 说明未完成项与原因, 然后结束。' +
@@ -2022,7 +2022,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
         `[agent-leaf] provider 报错 (model=${model}): ${last.errorMessage ?? '(无 errorMessage)'}`,
       );
     }
-    // 零产出兜底: 没错误、没正文、没落盘、也不是被我们停下来的 → 仍然响亮失败
+    // 零产出兜底: 没错误、没正文、没写盘、也不是被我们停下来的 → 仍然响亮失败
     // (executor-dag failedFromThrow 接住, 保留败因入 heal 回路), 不把 empty-done 当成功。
     // stalled / 超时 / 上下文到顶都**不在此列**: 它们有各自的语义, 由下游按语义判。
     if (!text.trim() && touched.size === 0 && !stalled && !timedOut && !contextExhausted && spinFused === null) {

@@ -1539,7 +1539,7 @@ describe('conductor 局部子图 fan-in 摘要 (双视图 + 三态闸)', () => {
     // 局部泵恰好跑了一发 (minFanout:1 把单 consumer 从"不触发"翻成"触发"), 不多不少。
     expect(faninSummaryCalls).toHaveLength(1);
 
-    // A 的 checkpoint 来源 (settledR, 经 results[cid] 落盘) —— 全文账不受消费视图影响。
+    // A 的 checkpoint 来源 (settledR, 经 results[cid] 写入磁盘) —— 全文账不受消费视图影响。
     // `depOutputs[A]` 与 `results[A].output` 同源 (engine.ts 内环 `depOutputs[cid] = settledR.output`),
     // 故这条 `toBe(A_FULL)` 同时钉住「depOutputs[A] 仍全文」: 摘要只换消费视图, 不换账本。
     const aCheckpoint = r.results[aId]!;

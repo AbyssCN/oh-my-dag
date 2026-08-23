@@ -1,5 +1,5 @@
 /**
- * headless-config 不变量: key 路由 (auth.json/​.env) + 合并不伤他人 + 活注入 + preset 落盘 +
+ * headless-config 不变量: key 路由 (auth.json/​.env) + 合并不伤他人 + 活注入 + preset 写盘 +
  * 角色校验 (plan 拒) + HUD 开关 + key 反向删除。凭证 flag 依赖真 ~/.pi/auth.json, 由 dag_run 端到端验, 此处不锁。
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
@@ -39,12 +39,12 @@ describe('setKeyHeadless 路由', () => {
     expect(auth.deepseek).toEqual({ type: 'api_key', key: 'keep-me' }); // 未被吞
   });
 
-  test('auto: mimo → .env 落盘 + process.env 活注入 + re-register', () => {
+  test('auto: mimo → .env 写盘 + process.env 活注入 + re-register', () => {
     const env: Record<string, string | undefined> = { MIMO_BASE_URL: 'https://x/v1' };
     const r = setKeyHeadless('mimo', 'sk-mimo-x', 'auto', { cwd: dir, env, authPath: join(dir, 'auth.json') });
     expect(r.target).toBe('env');
     expect(env.MIMO_API_KEY).toBe('sk-mimo-x'); // 活注入
-    expect(readFileSync(join(dir, '.env'), 'utf8')).toContain('MIMO_API_KEY'); // 落盘
+    expect(readFileSync(join(dir, '.env'), 'utf8')).toContain('MIMO_API_KEY'); // 写盘
     expect(getProvider('mimo')).toBeTruthy(); // base 在 → 注册成功
   });
 
@@ -128,7 +128,7 @@ describe('removeKeyHeadless 反向删除', () => {
   });
 });
 describe('applyPresetHeadless', () => {
-  test('cn-trio: env 矩阵落盘+注入 + config 角色落 config.json (无 plan)', () => {
+  test('cn-trio: env 矩阵写盘+注入 + config 角色落 config.json (无 plan)', () => {
     const env: Record<string, string | undefined> = {};
     const r = applyPresetHeadless('cn-trio', { cwd: dir, env });
     expect(r.presetId).toBe('cn-trio');
@@ -138,7 +138,7 @@ describe('applyPresetHeadless', () => {
     expect(env.OMD_ITER_LEAF_MODEL).toBe('deepseek:deepseek-v4-flash');
     expect(env.OMD_REDUCE_MODEL).toBe('mimo:mimo-v2.5-pro-ultraspeed');
     expect(env.OMD_JUDGE_MODEL).toBe('kimi-coding:k3-256k');
-    // 落盘。
+    // 写盘。
     expect(readFileSync(join(dir, '.env'), 'utf8')).toContain('OMD_ITER_CONDUCTOR_MODEL');
 
     // config 角色 → config.json (无 plan)。

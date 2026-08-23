@@ -42,7 +42,7 @@ const res = await researchFanout({
 
 process.stderr.write(`\n[dag-fanout] ${res.leafCount} leaves · $${res.costStats.totalUsd.toFixed(4)} (saved $${res.costStats.totalSavingsUsd.toFixed(4)})\n\n`);
 
-// 全文落盘 (零丢失, 每 run 独立路径 — 固定路径会被并发/历史 run 覆盖) + stdout 首行=路径
+// 全文写入磁盘 (零丢失, 每 run 独立路径 — 固定路径会被并发/历史 run 覆盖) + stdout 首行=路径
 const sections = [
   '===== LENS CHAMPIONS =====',
   ...res.lensChampions.map((c) => `\n## ${c.key}\n${c.text}`),
@@ -50,5 +50,5 @@ const sections = [
 ].join('\n');
 const artifactPath = `/tmp/dag-fanout-${slugify(String(spec.question ?? specPath))}-${Date.now()}.md`;
 writeFileSync(artifactPath, `<!-- dag-fanout zero-loss artifact · ${new Date().toISOString()} -->\n\n${sections}\n`);
-console.log(`📄 全文落盘: ${artifactPath}`);
+console.log(`📄 全文写入磁盘: ${artifactPath}`);
 console.log(sections);

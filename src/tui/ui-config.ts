@@ -64,7 +64,7 @@ export function loadTuiUiConfig(cwd: string, env: Record<string, string | undefi
 }
 
 /**
- * 读-改-写 `.omd/config.json`(INV-10/C-4 锁内, 锁内重读以反映并发写者最新落盘)。
+ * 读-改-写 `.omd/config.json`(INV-10/C-4 锁内, 锁内重读以反映并发写者最新写入磁盘)。
  *
  * ⚠ **坏 JSON 时拒绝写**(抛错)而不是拿 `{}` 覆盖 —— 覆盖会把座位配置等所有别人写的段
  * 静默抹掉,那比"改不了设置"严重得多。

@@ -225,7 +225,7 @@ export interface UpsertProviderInput {
   id: string;
   /** OpenAI/Anthropic-兼容 base URL。 */
   baseUrl: string;
-  /** 读 key 的 env 变量名 (落盘为 `$<keyEnv>` 引用, 不落明文)。 */
+  /** 读 key 的 env 变量名 (写入磁盘时为 `$<keyEnv>` 引用, 不落明文)。 */
   keyEnv: string;
   /** pi api 名。省略 = 保留既有条目的 api, 全新条目默认 'openai-completions'。 */
   api?: string;

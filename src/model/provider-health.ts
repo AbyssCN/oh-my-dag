@@ -14,7 +14,7 @@
  * 周期档跨进程持久化 (S-B2): `.omd/seat-health.json` (进程 cwd 锚, OMD_SEAT_HEALTH_PATH
  * 测试接缝) —— 每个 detached goal-worker 都是新 spawn 的进程 (goal.ts → goal-worker.ts),
  * 不持久化 = 每个新 worker 把已知死到周期边界的座位再撞一遍 (普查 §1.7)。只持久化周期档
- * (瞬时 30s 落盘只有陈旧害处); 存**到期时刻**不存布尔, 窗过即自愈, 过期行读写时过滤。
+ * (瞬时 30s 写入只有陈旧害处); 存**到期时刻**不存布尔, 窗过即自愈, 过期行读写时过滤。
  * 写法 = 读-合-写 + 临时文件 rename (原子; 双进程同刻写最坏丢一条 → 该座多被撞一次瞬败,
  * 可接受)。读失败 fail-open 但留证据 (不吞)。载体自查: config.json 是用户意图面不收状态;
  * runs.db 在 mcp 层, model 层引它是层次倒挂; 独立小 json 与 tui-usage.jsonl 同类文件面。
@@ -122,7 +122,7 @@ function readPersisted(now: number): PersistedCooldown[] {
   }
 }
 
-/** 周期档落盘: 读-合-写 + rename 原子。失败 fail-open 留证据。 */
+/** 周期档写入磁盘: 读-合-写 + rename 原子。失败 fail-open 留证据。 */
 function persistPeriodCooldown(key: string, until: number, now: number): void {
   const path = seatHealthPath();
   try {
@@ -168,7 +168,7 @@ export function reportProviderFailure(coord: string, cooldownMs = DEFAULT_COOLDO
   const now = Date.now();
   const until = now + Math.max(0, cooldownMs);
   cooldownUntil.set(keyOf(coord), until);
-  // 周期档 (窗长达周期级) 才落盘 —— 瞬时 30s 落盘只有陈旧害处 (S-B2)。
+  // 周期档 (窗长达周期级) 才写入磁盘 —— 瞬时 30s 写入只有陈旧害处 (S-B2)。
   if (cooldownMs >= PERIOD_COOLDOWN_MS) persistPeriodCooldown(keyOf(coord), until, now);
 }
 

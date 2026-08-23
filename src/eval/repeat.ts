@@ -3,14 +3,14 @@
  *
  * 缺口 (#159 / #97 缺口②): src/eval 全域无「同段跑 n 次取分布」概念 —— G6 换座关键读数建立在
  * 1/21 (n=1 事件) 上, 尺子问题与采样噪声分不开。本文件交三件:
- *   1. repeatSegment  —— 任一段可跑 n 次、逐次落盘, 单次 run 抛错不中断段。
+ *   1. repeatSegment  —— 任一段可跑 n 次、逐次写入磁盘, 单次 run 抛错不中断段。
  *   2. aggregateBool / aggregateNum / renderRepeatLine  —— 冻结口径 (INV-3: 仓内 Wilson/均值
  *      方差只在此出现一次, 消费者 import, 不重写)。
  *   3. 判据③的反向自检面 —— 确定性 50% 段必须把"尺子本身在动"显出来, 不然尺子是死的。
  *
  * 不变量:
- *   INV-1 逐次落盘: 第 k 次跑完, 盘上 ≥ k 行 (中途死了已跑次数在盘上, 不是终局一次性写)。
- *   INV-2 单次 run 抛错不中断段: 该次记 {error} 且照落盘, 后续次照跑; error 次不进 bool/num
+ *   INV-1 逐次写入磁盘: 第 k 次跑完, 盘上 ≥ k 行 (中途死了已跑次数在盘上, 不是终局一次性写)。
+ *   INV-2 单次 run 抛错不中断段: 该次记 {error} 且照写入磁盘, 后续次照跑; error 次不进 bool/num
  *        聚合的分母, 但 renderRepeatLine 带 `err=<m>` 注记 (错误被静默并进分母或蒸发都是撒谎)。
  *   INV-3 聚合口径单点: Wilson/均值方差只在本文件出现一次。
  */
@@ -20,7 +20,7 @@ import { dirname } from 'node:path';
 /** 一次重复测量的记录; value = run(i) 的返回, 或 `{error: string}` 当该次抛错 (INV-2)。 */
 export interface RepeatRecord<T> {
   i: number;
-  /** ISO 时间戳 (UTC), 落盘后的可重放锚; 同一秒内也唯一是因为 `i`。 */
+  /** ISO 时间戳 (UTC), 写入磁盘后的可重放锚; 同一秒内也唯一是因为 `i`。 */
   at: string;
   value: T;
 }
@@ -43,12 +43,12 @@ export interface AggregateNum {
 }
 
 /**
- * 任一段可跑 n 次, 逐次落盘, 单次 run 抛错不中断段 (INV-2)。
+ * 任一段可跑 n 次, 逐次写入磁盘, 单次 run 抛错不中断段 (INV-2)。
  *
- * @param opts.id       段名, 同时是落盘文件名锚 (`<cwd>/.omd/eval/repeats/<id-sanitized>.jsonl` 默认 sink)
+ * @param opts.id       段名, 同时是存盘文件名锚 (`<cwd>/.omd/eval/repeats/<id-sanitized>.jsonl` 默认 sink)
  * @param opts.n        ≥1, 违约抛。决定了聚合分母与口径行 `n=N`。
- * @param opts.run      一次测量。抛错 → 该次记 `{error}` 落盘 + 后续次照跑。
- * @param opts.sink     可选逐次落盘注入面; 缺省 append 到默认路径。Hermetic 测试一律用注入 sink
+ * @param opts.run      一次测量。抛错 → 该次记 `{error}` 写入磁盘 + 后续次照跑。
+ * @param opts.sink     可选逐次写入注入面; 缺省 append 到默认路径。Hermetic 测试一律用注入 sink
  *                      不碰真 .omd。
  *
  * 返回的 records 与 sink 的顺序一致 (1..n); error 次的 value 是 `{error: string}` 形状。
@@ -76,7 +76,7 @@ export async function repeatSegment<T>(opts: {
     }
     const rec: RepeatRecord<T | { error: string }> = { i, at, value };
     records.push(rec);
-    // INV-1: 逐次落盘, 立刻写, 不攒批。
+    // INV-1: 逐次写入磁盘, 立刻写, 不攒批。
     sink(JSON.stringify(rec));
   }
   return records;
@@ -96,7 +96,7 @@ function defaultSink(id: string): (line: string) => void {
   };
 }
 
-/** 段 id → 落盘路径。纯函数, 单测用它验文件名安全化 (不碰盘)。 */
+/** 段 id → 存盘路径。纯函数, 单测用它验文件名安全化 (不碰盘)。 */
 export function repeatPath(id: string, base = '.omd/eval/repeats'): string {
   const safe = id.replace(/[^A-Za-z0-9_-]/g, '_');
   return `${base}/${safe}.jsonl`;

@@ -12,7 +12,7 @@
  *   - memory 两工具: createOmdMemory (OMD_MEMORY_PATH ?? .omd/memory.db + HOST_SAFEGUARD, 同 tui 默认;
  *     写入仍过 validateFactWrite 校验闸, D-5)。
  *   - research 工具: 现有 researchFanout 接缝 (harness/research/fanout) 适配成 MCP 三段返回
- *     {runId, reportPath, summary} (报告全文落盘 .omd/research/, D-8 宽出)。
+ *     {runId, reportPath, summary} (报告全文写入磁盘 .omd/research/, D-8 宽出)。
  *   - fleet 四工具: createFleetTools (dag_review/slim/deepen/debug 异步子进程;
  *     spawn 接缝默认 Bun.spawn; runRegistry/cwd 同现有)。
  *   - runs 工具: createRunsTools (dag_runs 同步列表: 内存 registry ∪ 磁盘 continuity 合并去重)。
@@ -96,7 +96,7 @@ const PROD_ENGINE: DagEngine = { runExecutorDag, runExecutorDagWithPlan };
 export interface AssembleOmdMcpDeps {
   /** env 注入 (默认 process.env) —— 角色矩阵解析可测, 测试不必污染进程 env。 */
   env?: NodeJS.ProcessEnv;
-  /** 工作目录 (默认 process.cwd()): 工具作用域 + agent/command runner 基准 + 报告落盘根 (D-10)。 */
+  /** 工作目录 (默认 process.cwd()): 工具作用域 + agent/command runner 基准 + 报告写入磁盘的根目录 (D-10)。 */
   cwd?: string;
   /** ext 工具 (S4): 调用方 (cli.ts / goal.ts, 本就在 async 上下文) 按 run cwd 预加载后注入。空数组 = 不挂 (D-4 零变化)。 */
   extTools?: AnyOmdTool[];
@@ -106,7 +106,7 @@ export interface AssembleOmdMcpDeps {
   runRegistry?: RunRegistry;
   /** 记忆接缝 (默认 createOmdMemory tui 同款路径 + HOST_SAFEGUARD, D-5 共库)。 */
   memory?: OmdMemory;
-  /** research 接缝 (默认 createDefaultResearchFanout: 真 researchFanout + 报告落盘)。 */
+  /** research 接缝 (默认 createDefaultResearchFanout: 真 researchFanout + 报告写入磁盘)。 */
   researchFanout?: ResearchFanout;
   /** agent-kind leaf 执行器 (默认 createAgentLeafRunner({cwd, hashlineEdit:false}))。 */
   agentRunner?: AgentLeafRunner;
@@ -275,7 +275,7 @@ export function createDefaultResearchRunner(deps: {
   };
 }
 
-/** 研究报告全文 (零丢失, D-8: 客户端上下文只拿 summary, 细节自己 Read 落盘文件)。 */
+/** 研究报告全文 (零丢失, D-8: 客户端上下文只拿 summary, 细节自己 Read 写入磁盘的文件)。 */
 function renderResearchReport(question: string, runId: string, result: ResearchFanoutResult): string {
   const sections = [
     `# omd research — ${question}`,
@@ -429,7 +429,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   /**
    * @param overrideCwd R2 (2026-07-31): 隔离 worktree 档下**必须重建 leaf runner**。
    *   `agentRunner`/`commandRunner` 在装配期就把 cwd 烤进去了(上面那两行), 而 `runGoal` 的
-   *   `cwd` 参数只管 spec 落盘目录 —— live 实测到过这个洞: worktree 建起来了、回话说"隔离成功",
+   *   `cwd` 参数只管 spec 存盘目录 —— live 实测到过这个洞: worktree 建起来了、回话说"隔离成功",
    *   **产物却全落在主树**。声明面动了执行面没跟上, 而读数上看起来是成功的。
    *   宿主显式注入的 runner (`deps.agentRunner`) 不动: 那是调用方自己选的根, 我们不替它改。
    * @param extToolsForRun S4 (D-3): 隔离档下 runner 的 ext 工具, 由 goal.ts:288 按 worktree cwd
@@ -622,7 +622,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       ...(strongConductor ? { conductorPromptProfile: 'lean-kb' as const } : {}),
       ...(models.conductorModel?.startsWith('kimi-coding:') ? { conductorMaxTokens: 32768 } : {}),
     };
-    // S-T 座位推理档 (坐标 → 档): auto-assign 把「模型 + 推理档」成对落盘, 执行期按节点已钉的坐标反查。
+    // S-T 座位推理档 (坐标 → 档): auto-assign 把「模型 + 推理档」成对写入磁盘, 执行期按节点已钉的坐标反查。
     // 不在此加缓存 —— 底层 fileConfig 已按 mtime 缓存, 自己再存一层会在 `omd models auto` 重写 config
     // 后拿着旧档不放 (daemon 长活)。config 无该段 → 恒 undefined → 执行器回落原默认, 老 config 零变化。
     const seatThinking = (coord: string): ThinkingLevel | undefined => resolveSeatThinking(coord);

@@ -7,13 +7,13 @@
  *   尾读 `readFileSync(join(contDir, 'ledger.jsonl'), …)`(writer.ts:367),
  *   `contDir = resolve(projectRoot, scope.dataPath(join('session', sessionId)))`(writer.ts:351)。
  * - 本模块 = 全仓唯一 serializer(tokenBucket→ctxTokens 映射, I-5: 该映射只许发生在这里)
- *   + ledger.jsonl append 写者;落盘路径与 writer.ts:351,367 逐字对齐 —— 对不齐 W1 尾读永远读不到。
+ *   + ledger.jsonl append 写者;存储路径与 writer.ts:351,367 逐字对齐 —— 对不齐 W1 尾读永远读不到。
  * - 五项契约:
  *   - append: 只增不覆写, 新行单批一次 appendFileSync;
  *   - offset: 追加前已有行数为去重基准, 跨调用(同 transcript 多次 Stop)不重复追加;
  *   - lock: 独占锁文件(ledger.jsonl.lock, O_EXCL), 防并发 hook 双写;
  *   - owner: 每行记录写者标识;
- *   - path: 与 W1 尾读对齐的落盘路径(见上)。
+ *   - path: 与 W1 尾读对齐的存储路径(见上)。
  * - 全程 fail-open: 任何异常/未知状态 → { ok:false, error }, 绝不抛(hook 链零阻断)、
  *   绝不在状态未知时追加(宁缺勿重, 不伪造、不半写)。
  *
@@ -54,7 +54,7 @@ export interface AppendLedgerOptions extends LedgerSerializeOptions {
 
 export interface AppendLedgerResult {
   ok: boolean;
-  /** 落盘路径(与 W1 尾读对齐);失败时为 null。 */
+  /** 存储路径(与 W1 尾读对齐);失败时为 null。 */
   ledgerPath: string | null;
   /** 本次追加行数(0 = ledger 已是最新, 无新增)。 */
   appended: number;

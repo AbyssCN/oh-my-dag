@@ -4,7 +4,7 @@
  * omd 早就有整套 web 层 (retrieve / pool / fetch-racing / quota / source-tier / clean + provider),
  * 但只在 TUI 里挂 —— 外部 agent 够不着。这两个工具把它交出去:
  *
- *   omd_web      搜 + 抓, **零 LLM**。全文落盘, stdout 只回索引 + 已抓 URL 集。
+ *   omd_web      搜 + 抓, **零 LLM**。全文写入磁盘, stdout 只回索引 + 已抓 URL 集。
  *   omd_distill  吃**已有原文**多 lens 蒸馏 (expert 忠实 / challenger 挖长尾), 不抓网。
  *
  * 分工承 xihe 三段链 (fusang/scripts/xihe-{web,research,distill}.ts —— 在 Aalto 派活里跑了很久):
@@ -13,7 +13,7 @@
  *   distill  **已有原文** → 蒸洞察    不抓网, 吃你给的料
  * 三段独立可调, 不是一条焊死的管线 —— 这正是"组合模式"在 research 这条线上的具体形态。
  *
- * **原文零丢失 + context 零污染** (同 xihe 红线): 全文永远落盘, stdout 只回索引/蒸馏结果。
+ * **原文零丢失 + context 零污染** (同 xihe 红线): 全文永远写入磁盘, stdout 只回索引/蒸馏结果。
  * 调用方按需 Read 那个文件, 而不是把几万字灌进对话。
  *
  * `omd_web` 的返回**带 fetchedUrls** —— 它是 research 第二轮那个确定性探测器的原料:
@@ -41,7 +41,7 @@ export interface WebToolDeps {
   cwd: string;
 }
 
-/** 落盘路径: .omd/web/<slug>-<n>.md (与 render 产物同纹理 — 无空格, 便于被路径正则拾取)。 */
+/** 存盘路径: .omd/web/<slug>-<n>.md (与 render 产物同纹理 — 无空格, 便于被路径正则拾取)。 */
 function corpusPath(cwd: string, query: string, stamp: string): string {
   const slug = query.replace(/[^A-Za-z0-9一-龥]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'web';
   const dir = join(cwd, '.omd', 'web');

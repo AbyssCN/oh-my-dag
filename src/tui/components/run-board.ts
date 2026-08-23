@@ -21,7 +21,7 @@
  * |---|---|---|
  * | `▶ <runId>` | **谁在跑**, 占了哪些写集 | `liveRuns` (claimed 且无 terminal) |
  * | `⇧ <artifact>` | **谁产出了什么**, 下游可以接了 | `published` 事件 |
- * | `⏳ <artifact>` | **谁在等**, 等的那份还没出现 | `awaitingRuns` (awaiting 且无收口) |
+ * | `⏳ <artifact>` | **谁在等**, 等的那份还没出现 | `awaitingRuns` (awaiting 且无收尾) |
  *
  * ⚠ 第三行是 2026-08-19 (#205) 才有的。在那之前 `BoardEvent` 里**没有 awaiting 这一格**,
  * 而 `await-node` 只读板从不写 —— 「谁在等」根本没被记下来。当时**没有去推一个出来**

@@ -2,10 +2,10 @@
  * acceptance_probe 列的**集成面** (goal 验收探针, 2026-08-02) —— 写 → 存 → 读 → 读数板, 一条链。
  *
  * 探针裁决 (`AcceptanceProbe`, 词表在 `goal/acceptance.ts`) 只由 entry='dag_goal' 的
- * `recordDagRun` 随 record 落盘。这条文件在**同一个 :memory: 连接**上把整条生产链跑一遍:
+ * `recordDagRun` 随 record 写入磁盘。这条文件在**同一个 :memory: 连接**上把整条生产链跑一遍:
  *
  *  ① 迁移面: 老库 (无 acceptance_probe 列) 经 `createDagRecorder` 就地补列, 老行留 NULL;
- *  ② 正向:   dag_goal 的探针经**生产 recordDagRun** 落盘, 逐字紧凑 JSON 读得回来 (五条 kind 全过);
+ *  ② 正向:   dag_goal 的探针经**生产 recordDagRun** 写入磁盘, 逐字紧凑 JSON 读得回来 (五条 kind 全过);
  *  ③ 反向自检: entry='dag_run' 及其余非 goal 入口**不许**拿到探针 —— SQL 层真 NULL;
  *  ④ NULL 两义: dag_goal+NULL (历史/未记) 与 dag_run+NULL (不适用) 都是 NULL, 但 entry
  *     把两格分得开; 读数板 (`readout`) 只把「dag_goal 且探针非 NULL」算进 G4 分母。
@@ -14,7 +14,7 @@
  * `readout` 与留痕器**共用同一连接** (两个 :memory: 连接互不相通)。
  *
  * ⚠ 断言纪律: 正向/反向/NULL 的证明**全部走生产 recorder** (`recordDagRun` / `rec.record`) +
- * 其读回 (`get` / `listByRun`) + `readout`; 原始 SQL 只用于**检查落盘值** (`rawProbe`) 与两处
+ * 其读回 (`get` / `listByRun`) + `readout`; 原始 SQL 只用于**核对持久化值** (`rawProbe`) 与两处
  * 没有生产路径、不得不手工造的坏行 (老表结构 / 坏 JSON —— 写坏 JSON 没有合法入口, 只能 INSERT)。
  */
 import { describe, expect, test } from 'bun:test';
@@ -34,7 +34,7 @@ const fakeResult = (planName: string): ExecutorDagResult =>
     usage: { conductor: { in: 10, out: 20 }, leavesIn: 100, leavesOut: 50, leavesCacheHit: 0 },
   }) as unknown as ExecutorDagResult;
 
-/** 直接读 SQL 列原文 —— 证明的是**落盘值**, 不是 TS 读回 (后者已经过 rowToRecord 解释)。 */
+/** 直接读 SQL 列原文 —— 证明的是**持久化值**, 不是 TS 读回 (后者已经过 rowToRecord 解释)。 */
 const rawProbe = (db: Database, id: string): string | null =>
   (db.query(`SELECT acceptance_probe FROM omd_dag_runs WHERE id = ?`).get(id) as { acceptance_probe: string | null })
     .acceptance_probe;
@@ -124,7 +124,7 @@ describe('dag_goal · 探针经生产 recordDagRun 落盘, 逐字读回 (正向)
     expect(both).toHaveLength(2);
     for (const r of both) {
       expect(r.acceptanceProbe).toEqual(probe);
-      expect(rawProbe(db, r.id)).toBe(JSON.stringify(probe)); // 两段都落盘
+      expect(rawProbe(db, r.id)).toBe(JSON.stringify(probe)); // 两段都写入磁盘
     }
     const run = readout({ db }).runs.find((x) => x.run_id === 'g1')!;
     expect(run.attempts).toBe(2);

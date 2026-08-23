@@ -129,7 +129,7 @@ export interface WatchDeps {
   readIfReady?: (path: string) => string | null;
   /**
    * 每 tick 开头从真相源重载地图; 返回 null → 沿用当前工作态。**生产必须注入** (loadMap(cwd, slug)):
-   * 否则 watcher 抱着启动时的内存快照, 会把用户 tick 间 /rule 落盘的裁决整文件覆写回滚。
+   * 否则 watcher 抱着启动时的内存快照, 会把用户 tick 间 /rule 写盘的裁决整文件覆写回滚。
    * 纯测试可省略 (无盘, 工作态即真相)。
    */
   reloadMap?: () => PathMap | null;
@@ -193,7 +193,7 @@ export function watchAfkResults(map: PathMap, opts: WatchOpts, deps: WatchDeps =
 
   const tick = (): AfkReflow[] => {
     const reflows: AfkReflow[] = [];
-    // 每 tick 从真相源重载 (防旧快照覆写他人落盘的裁决); 读-改-写在本 tick 内全同步, 不跨 await。
+    // 每 tick 从真相源重载 (防旧快照覆写他人写盘的裁决); 读-改-写在本 tick 内全同步, 不跨 await。
     const fresh = deps.reloadMap?.();
     if (fresh) current = fresh;
     // 只回流 status=open 的 research 票: ruled/delivered 已定, escalated 是人的裁定权 ——
@@ -267,7 +267,7 @@ export interface ReflowOutcome {
 
 /**
  * 后端无关的 research 结果折入 (S3 · SDD §4): distill + `## children` 解析 + 状态翻转的**编排**留此处,
- * "结果从哪来 / 状态往哪写" 全经 PathBackend 端口 (md 走落盘文件+ruled 状态, gh 走 issue 评论+label)。
+ * "结果从哪来 / 状态往哪写" 全经 PathBackend 端口 (md 走写盘文件+ruled 状态, gh 走 issue 评论+label)。
  *
  * 一张结果的折入序:
  *   1. collect: backend.collectResearchResults 出料 (母票 id + 结果正文)。
@@ -501,7 +501,7 @@ export function reflowGoalResults(
     } else if (head.outcome === 'blocked') {
       escalateTicket();
     } else {
-      // not-converged / error / budget-stop: 默认票留 ruled + 续跑锚落盘 (deliver 可再派) ——
+      // not-converged / error / budget-stop: 默认票留 ruled + 续跑锚写盘 (deliver 可再派) ——
       // 但先过两道闸 (2026-08-10 事故: 心跳无人续派 3.5 天烧掉一周 76% token, 单次闸拦不住跨次重派):
       // 闸 B — 探索型验收没有机器判据, "再给几轮可能就成"对它不成立 (judge 意见环可以永远说不),
       //        自动续跑期望收益为零 → 直接升人。

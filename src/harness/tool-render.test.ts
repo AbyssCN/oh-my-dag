@@ -51,7 +51,7 @@ describe('★ #187 回放等价 — 存规范值 + render 重投影 === 原始�
 
     // ① 当场投影(工具还在手上)
     const live = read.render!(result.details);
-    // ② 只把**规范值**存下来 —— 模拟落盘/回放:工具不再跑, 只剩这一份 JSON
+    // ② 只把**规范值**存下来 —— 模拟写盘/回放:工具不再跑, 只剩这一份 JSON
     const persisted = JSON.parse(JSON.stringify(result.details)) as unknown;
     // ③ 回放:重投影
     const replayed = renderReadResult(persisted);

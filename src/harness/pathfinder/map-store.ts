@@ -85,7 +85,7 @@ function renderTicket(t: Ticket): string {
   // D-6③ 派发锚 (Ticket.dispatch)。嵌套对象在这个扁平 `- key: value` 格式里存不下, 故**拆平成四行**,
   // 每行独立"缺则省行" —— 与上面三戳同规, 没锚的存量票渲染输出逐字节不变。
   // ⚠ 这里是**字段白名单**: 新增 Ticket 字段不同时改「写行 / 解析 / 重建」三处, 它就在盘上被静默丢弃
-  // (本字段第一版就是这么丢的 —— 内存里写进去了, 落盘读回来是 undefined, 而没有任何报错)。
+  // (本字段第一版就是这么丢的 —— 内存里写进去了, 写盘读回来是 undefined, 而没有任何报错)。
   if (t.dispatch !== undefined) {
     lines.push(`- dispatchRunId: ${t.dispatch.runId}`);
     lines.push(`- dispatchStartedAt: ${t.dispatch.startedAt}`);

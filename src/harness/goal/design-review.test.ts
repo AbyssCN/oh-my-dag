@@ -142,7 +142,7 @@ describe('maybeRunDesignReview — 注入式 runner', () => {
     expect(r.usage.out).toBe(50);
     expect(r.added).toBe(1);
 
-    // 台账落盘可读
+    // 台账写入磁盘可读
     const found = loadLedger(join(cwd, '.omd', 'review-ledger.json'));
     expect(found).toHaveLength(1);
     expect(found[0]!.fingerprint).toBe(fp1);

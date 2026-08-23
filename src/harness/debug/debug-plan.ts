@@ -39,10 +39,10 @@ export interface DebugPlanOptions {
   /** 假设扇出上限(默认 5)。 */
   maxHypotheses?: number;
   /**
-   * redEvidence **全文落盘钩子**(C-3 · 2026-08-23)—— 形状照 `saveHandoffFull` /
+   * redEvidence **全文写盘钩子**(C-3 · 2026-08-23)—— 形状照 `saveHandoffFull` /
    * `saveFaninFull`: 返回的绝对路径会被拼进 lister goal 的截断告示里,
    * 落 `.omd/` 下不进 git(D-6)。抛错/返 null → fail-open, 退化为「裸截断 +
-   * 告示里写明未落盘」,catch 留一行证据(同 capFanin,见 silent-failures 坑 2)。
+   * 告示里写明未写盘」,catch 留一行证据(同 capFanin,见 silent-failures 坑 2)。
    */
   saveRedFull?: (text: string) => string | null;
 }
@@ -88,7 +88,7 @@ function renderRedEvidence(opts: DebugPlanOptions): string {
   try {
     fullPath = opts.saveRedFull?.(raw) ?? null;
   } catch (err) {
-    // fail-open: 退到裸截断 + 告示里写明未落盘; catch 留一行证据
+    // fail-open: 退到裸截断 + 告示里写明未写盘; catch 留一行证据
     // (silent-failures 坑 2: fail-open 可以吞异常, 不许吞证据)。
     console.warn(
       '[omd/debug-plan] redEvidence 全文落盘失败 (saveRedFull throw) — 退回裸截断',

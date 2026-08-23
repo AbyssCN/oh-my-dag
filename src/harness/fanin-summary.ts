@@ -11,10 +11,10 @@
  *      扇出 1 无摊薄且单 consumer 常需全文 → 不摘)。
  *   ② output_schema 默认化 —— 摘要按结构化 schema 产出; producer 声明了 output_schema 则遵之,
  *      否则用 DEFAULT_FANIN_SCHEMA (定向 = 结论 + 产物锚 + 遗留)。
- *   ③ 全文指针 —— producer 全文落盘, 摘要视图附 `[full output … → <path>]`, 带工具的 agent
+ *   ③ 全文指针 —— producer 全文写盘, 摘要视图附 `[full output … → <path>]`, 带工具的 agent
  *      consumer 需细节可自 Read (inproc consumer 靠摘要本身, artifacts 字段逐字保路径/符号)。
  *
- * 本模块 = 纯逻辑 + 注入式 generate (触发判定 / 落盘 / usage 折算留在 executor-dag, 因需 plan/continuity)。
+ * 本模块 = 纯逻辑 + 注入式 generate (触发判定 / 写盘 / usage 折算留在 executor-dag, 因需 plan/continuity)。
  * fail-open: 摘要器失败 / 解析失败 → 调用方回退全文注入, 绝不断 DAG。
  */
 import type { GenerateFn } from './dag/types';
@@ -187,7 +187,7 @@ export function parseFaninSummary(text: string): Record<string, unknown> | null 
   }
 }
 
-/** 组装注入视图: 定向摘要 (紧凑 JSON, `<fan-in-summary>` 标记) + 全文指针 (落盘则附)。 */
+/** 组装注入视图: 定向摘要 (紧凑 JSON, `<fan-in-summary>` 标记) + 全文指针 (写盘则附)。 */
 export function composeFaninView(
   summary: Record<string, unknown>,
   fullPath: string | null,
@@ -246,7 +246,7 @@ export function composeAnchorBlock(body: string, anchors?: readonly string[], ca
 
 /**
  * 跑一次定向摘要 (注入 generate)。返回解析后的 summary JSON + usage。
- * 解析失败 → summaryJson=null (调用方全文兜底)。**本函数只做"调用+解析", 不落盘/不判触发。**
+ * 解析失败 → summaryJson=null (调用方全文兜底)。**本函数只做"调用+解析", 不写盘/不判触发。**
  */
 export async function runFaninSummary(args: {
   generate: GenerateFn;

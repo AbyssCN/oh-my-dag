@@ -65,7 +65,7 @@ describe('review/run 双轴', () => {
     expect(specCall!.content).toContain(FAKE_SDD.text);
     expect(specCall!.content).toContain('未兑现的承诺');
     expect(specCall!.content).toContain('超范围改动');
-    // 落盘报告: 双段 + SDD 溯源
+    // 写盘报告: 双段 + SDD 溯源
     const doc = await Bun.file(opts.outPath!).text();
     expect(doc).toContain('## Standards 轴');
     expect(doc).toContain('## Spec 轴');
@@ -254,7 +254,7 @@ describe('D-4 观察面 (onProgress 汇, SDD C-5)', () => {
       delete process.env.OMD_REVIEW_EVENT_FILE;
       rmSync(dir, { recursive: true, force: true });
     }
-    // 反向自检 (C-5): 断开子进程通道 (不设 env) → 零落盘 —— 若 run.ts 绕过 env 直写盘, 这条红。
+    // 反向自检 (C-5): 断开子进程通道 (不设 env) → 零字节写盘 —— 若 run.ts 绕过 env 直写盘, 这条红。
     // 对应"断开 onProgress → TUI 事件数为 0 (今天的现状)": 事件只经汇出来, 汇可断。
     const dir2 = mkdtempSync(join(tmpdir(), 'omd-review-evfile2-'));
     const file2 = join(dir2, 'events.ndjson');

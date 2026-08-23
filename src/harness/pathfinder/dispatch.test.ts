@@ -227,7 +227,7 @@ describe('D-3 票类型闸 — 裁决票永不可派发 (G-4/G-6)', () => {
       const spawns: string[][] = [];
       const smuggled = ruling('g9', 'task') as unknown as DispatchableTicket;
       // 证伪: 摘掉 dispatchGoalTicket 首行的 assertDispatchable → 票被真 fire (spawns 变 1) 且
-      // 标记落盘, 这条当场红。标记那一位单独钉: 假阳性标记 = 票永远卡在"在飞"。
+      // 标记写盘, 这条当场红。标记那一位单独钉: 假阳性标记 = 票永远卡在"在飞"。
       expect(() => dispatchGoalTicket(cwd, 'm', smuggled, '收敛这个', { spawnDetached: (c) => (spawns.push(c), 1) })).toThrow(/装配期拒/);
       expect(spawns).toHaveLength(0);
       expect(existsSync(goalDispatchedPath(cwd, 'm', 'g9'))).toBe(false);

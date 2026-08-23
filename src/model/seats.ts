@@ -236,7 +236,7 @@ export const SEATS: readonly SeatSpec[] = [
     frequency: '**每次 research 1 发** (收敛终局, 不发散)',
     // 它干的活是**在别人的产出里找盲点**。与被找的对象同族时这一格结构性失效 —— 与 verifier
     // 那条同源 (判与证共享盲点 = 证不出对方的错), 故标 required。
-    // ✅ 2026-08-23 已上闸 (#142/#143 收口): `model/seat-conformance.ts` 的 `reconcileSeats`
+    // ✅ 2026-08-23 已上闸 (#142/#143 收尾): `model/seat-conformance.ts` 的 `reconcileSeats`
     // 按 `AUDITS` 逐座位对账「它审谁的产出」, 同族 ⇒ error; `scripts/seat-check.ts` 在**真**
     // config 上跑。触发它的现场: `review` 掉队两次没人报。
     // ⚠ 仍是**声明**的那一半: `AUDITS` 表外的 `required` 座位不判 (宁可漏不可误报)。

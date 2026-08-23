@@ -6,7 +6,7 @@
  *   - key 单独经 setKeyHeadless 落 auth.json(pi 通道)/ .env(native registry), 按坐标解析路由。
  *   - preset 只写角色矩阵 + config.json, 不 prompt key (key 由 setKeyHeadless 单独补)。
  *
- * 全部"写盘 + 活进程注入"双写 (沿 wizard.ts 的 §同步 process.env 模式): 落盘跨重启, 注入令当前
+ * 全部"写盘 + 活进程注入"双写 (沿 wizard.ts 的 §同步 process.env 模式): 写盘跨重启, 注入令当前
  * MCP 子进程即时生效 —— 角色 env 调用时现读 process.env · config.json 靠 mtime 重读 · native
  * provider 靠 registerProvidersFromEnv/registerProvidersFromModelsJson re-register。故改配置**不必重连 MCP**。
  *

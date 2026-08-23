@@ -155,9 +155,9 @@ export interface WebFanoutResult {
   retrieval: RetrieveResult;
   /** fanout 综合判优产物 (final / lensChampions / costStats / ...)。 */
   fanout: ResearchFanoutResult;
-  /** rounds>1 时 probe 补抓的增量语料 (附录落盘用; 巨源带显式截断标记, 全文经源 URL; 单轮/无补抓 = undefined)。 */
+  /** rounds>1 时 probe 补抓的增量语料 (附录写盘用; 巨源带显式截断标记, 全文经源 URL; 单轮/无补抓 = undefined)。 */
   secondPassCorpus?: string;
-  /** seedQueries 的各自检索产物 (fullCorpus 附录落盘用; 未用种子 = undefined)。 */
+  /** seedQueries 的各自检索产物 (fullCorpus 附录写盘用; 未用种子 = undefined)。 */
   seedRetrievals?: RetrieveResult[];
 }
 
@@ -409,7 +409,7 @@ export async function researchWebFanout(
     synthesisFramings = synthesisFramings.map((f) => ({ ...f, framing: `${f.framing}\n${opts.finalExtraInstruction}` }));
   }
 
-  // rounds>1: 挂确定性 probe (下限半边)。wrap 收集补抓语料 → 附录落盘 (与进 prompt 的同份, 巨源带截断标记)。
+  // rounds>1: 挂确定性 probe (下限半边)。wrap 收集补抓语料 → 附录写盘 (与进 prompt 的同份, 巨源带截断标记)。
   const rounds = Math.max(1, Math.trunc(opts.rounds ?? 1));
   const probeSections: string[] = [];
   let probe: ResearchFanoutConfig['probe'];

@@ -3,7 +3,7 @@
  *
  * 模型 id 字符串只住这里 (provider 换代改这一个文件); wizard 泛化消费:
  * env 合并进 updates → keyPrompt 补缺 key → upsertProvider (自定 provider → models.json) /
- * persistMultimodalPool / persistMultimodalPoolPremium / persistRoleModel 落盘 → 汇总表。
+ * persistMultimodalPool / persistMultimodalPoolPremium / persistRoleModel 写盘 → 汇总表。
  *
  * 三档哲学:
  *   ① 基础档 base-opencode-go —— 一把 OPENCODE_API_KEY 走 opencode go 网关, 多家族混编:

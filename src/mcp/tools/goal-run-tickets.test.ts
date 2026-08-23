@@ -213,7 +213,7 @@ describe('★ 切片6③ run 天然挂票 —— 起跑开任务票, 终态如�
       //   → 票停在 open, 下面两条断言同时红。
       expect(tk.status).toBe('delivered');
       expect(tk.ruling).toContain('[run 收敛]');
-      // 翻 delivered 之后没人会再回来看图, 这行字是红节点唯一的落盘提醒。
+      // 翻 delivered 之后没人会再回来看图, 这行字是红节点唯一的存盘提醒。
       expect(tk.ruling).toContain('图内有节点红, 待人审');
     } finally {
       rmSync(root, { recursive: true, force: true });

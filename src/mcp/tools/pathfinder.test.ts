@@ -526,7 +526,7 @@ describe('★ 切片6④ path_tickets 顺手扫等人超时 (D-5/G-5)', () => {
       // 证伪: 摘掉 makeTickets 里的 backend.sweepWaiting 调用 → 回话没这行且盘上没 staleAt, 这条红。
       expect(r.text).toContain('等人超时: g1');
       const after = loadMap(dir, 'ship-x')!;
-      expect(after.tickets[0]!.staleAt).toBeTruthy(); // 落盘了 (mutateMap 那一跳真的走到)
+      expect(after.tickets[0]!.staleAt).toBeTruthy(); // 存盘了 (mutateMap 那一跳真的走到)
       expect(after.waitingLog).toHaveLength(1);
       // 幂等: 同一轮等待只标一次 (再看一次不再重复报)。
       expect((await call('path_tickets')).text).not.toContain('等人超时: g1');

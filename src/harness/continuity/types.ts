@@ -14,7 +14,7 @@ import type { NodeFailureKind } from '../node-failure';
 
 /**
  * NodeCheckpoint 上属于叶遥测的字段子集 — 经 Pick 引用 {@link LeafTelemetry},
- * 避免在落盘侧手抄同形 (b87196e 那次漂移的根因)。后续叶侧加字段时, 只改 LeafTelemetry,
+ * 避免在写入侧手抄同形 (b87196e 那次漂移的根因)。后续叶侧加字段时, 只改 LeafTelemetry,
  * 这里靠 Pick 自动传播; 想进 checkpoint 才在此处把键名加进 Pick —— 类型层只一处真源。
  */
 type NodeCheckpointLeafTelemetry = Pick<LeafTelemetry, 'watchdog' | 'shellRuns' | 'toolSteps' | 'toolStepsDropped'>;
@@ -93,7 +93,7 @@ export interface NodeCheckpoint {
    */
   summary: string;
   /**
-   * **D-O 产出面**: 本节点输出**全文**的落盘路径 (绝对路径, runDir 下的 `out-<nodeId>.txt`)。
+   * **D-O 产出面**: 本节点输出**全文**的存储路径 (绝对路径, runDir 下的 `out-<nodeId>.txt`)。
    *
    * 三个用处: ① resume 跳过时还原全文而非 summary ② 中途直接读产物看成果 ③ 单独重跑某节点时,
    * 它的上游输入是别的节点的这份文件 (不是 800 字截断)。写失败 → 字段缺席 (fail-open, 退回 summary)。
@@ -139,7 +139,7 @@ export interface NodeCheckpoint {
   /** U1 map 节点: spec hash (INV-U3 两级 resume; spec 变 → 子树作废)。optional。 */
   expansionHash?: string;
   /**
-   * **落盘时的语义 Merkle 指纹** (2026-07-29, 通道⑤-b)。
+   * **写入磁盘时的语义 Merkle 指纹** (2026-07-29, 通道⑤-b)。
    *
    * 毒集的键是**指纹**不是 id (指纹刻意不含 id, 这样 conductor 重命名不破匹配)。resume 预载时
    * 要判"这个绿是不是被拒过的", 原先靠**当场重算** `merkleFingerprints(plan)` —— 对 plan-time
@@ -147,7 +147,7 @@ export interface NodeCheckpoint {
    * 预载那一刻它们根本不在图里, 重算够不着, 于是 judge 点名过的子节点照样被当绿跳过。
    *
    * 存下来就不用重算了。节点的 Merkle 指纹只依赖它的**祖先**, 而祖先在它跑起来的那一刻已经定死,
-   * 所以落盘时算的值与轮末 judge 算的值一致 (后加的无关节点不影响)。
+   * 所以写入磁盘时算的值与轮末 judge 算的值一致 (后加的无关节点不影响)。
    */
   fingerprint?: string;
   /** noun-gate 注释标签 (W2: 注释 only; W1: 硬闸)。optional。 */
@@ -157,14 +157,14 @@ export interface NodeCheckpoint {
   /** ISO-8601 创建时间。 */
   createdAt: string;
   /**
-   * W4 SHADOW-3/4: checkpoint 落盘时的 DAG 代数签名 (computeDagGeneration)。
+   * W4 SHADOW-3/4: checkpoint 写入磁盘时的 DAG 代数签名 (computeDagGeneration)。
    * resume 时 currentGeneration 对不上 → 该 checkpoint 是过期 DAG 形态的, 丢弃重执行
    * (防"过期切点乱截"); 对得上 → 安全跳过 (幂等)。optional = 向后兼容旧 checkpoint。
    */
   generation?: string;
   /**
    * agent leaf watchdog 采集 (2026-08-12, S1 埋点)。形状与缺席语义的真源 = {@link LeafTelemetry}
-   * (2026-08-18 收敛: 此前这里手抄 S1 五字段, 与生产侧的 grind 字段静默漂移)。本仓落盘特有的
+   * (2026-08-18 收敛: 此前这里手抄 S1 五字段, 与生产侧的 grind 字段静默漂移)。本仓写入磁盘特有的
    * 补充: `touchTimelineMs` = 每次 `filesTouched` 集合新增一个路径的时刻;
    * `toolTimelineMs` = 每次 `tool_execution_start` 的时刻 —— 都是距叶启动的相对毫秒数 (升序)。
    * grind 字段缺席 = S1 时代老 checkpoint (盘上真实存在), 见 LeafWatchdog 的缺席语义。
@@ -334,7 +334,7 @@ export interface RoundVerdict {
    *   · `gate-rejected`         → 闸合成的判词 (judge 没被问过);
    *   · `unreachable`            → 调不通的错误原文。
    *
-   * 过长 → 全文落盘 + 告示 + 指针路径 (`<runDir>/reason-<nodeId>-r<round>.txt`),
+   * 过长 → 全文写入磁盘 + 告示 + 指针路径 (`<runDir>/reason-<nodeId>-r<round>.txt`),
    * 与交接 / fanin / debug-plan redEvidence 守同一条 **No-silent-caps**(D-2)。
    */
   reason: string;
@@ -444,7 +444,7 @@ export interface GoalStageJournal {
   /** research 证据正文 (零来源时为空 —— 与"假 grounded 不进 spec"同判据)。 */
   evidence?: string;
   sources?: string[];
-  /** spec 落盘路径 (未落盘则无)。 */
+  /** spec 存储路径 (未保存则无)。 */
   specPath?: string;
   updatedAt: string;
   schemaVersion: 1;

@@ -108,7 +108,7 @@ export interface RunReadout {
   criteria: { judge: boolean; oracle: boolean } | null;
   /** 冻结契约的验收探针结局 (仅 dag_goal 记); 解析失败/词表外 → null = 没记, 不编桶。 */
   acceptanceProbe: AcceptanceProbe | null;
-  /** #209 spec 落盘裁决 (仅 solve 记); 解析失败/词表外 → null = 没记, **不是**「没落盘」。 */
+  /** #209 spec 写入磁盘裁决 (仅 solve 记); 解析失败/词表外 → null = 没记, **不是**「没写入磁盘」。 */
   specWrite: SpecWrite | null;
 }
 
@@ -270,7 +270,7 @@ export interface ReadoutResult {
     exploratory: number;
   };
   /**
-   * #209 spec 落盘频率 —— 「契约段跑了却没产出 spec 文件」有多常见。
+   * #209 spec 写入磁盘频率 —— 「契约段跑了却没产出 spec 文件」有多常见。
    *
    * 分母 `denominator` = entry='solve' 且 `spec_write` 非 NULL 的 run (老行 / 没记的不进)。
    * `missRate` 的分母**只算真跑了契约段的那部分** (`wrote + missing`) —— `notNeeded`
@@ -1112,7 +1112,7 @@ function parseCriteria(raw: string | null): { judge: boolean; oracle: boolean } 
 
 
 /** spec_write 只认 `SpecWrite` 的确切形状 (`isSpecWrite`): 解析失败 / JSON null / 词表外 kind
- * → null (= **没记**, 不是「没落盘」—— 把这两件事混为一谈正是 #209 要修的)。 */
+ * → null (= **没记**, 不是「没写入磁盘」—— 把这两件事混为一谈正是 #209 要修的)。 */
 function parseSpecWrite(raw: string | null): SpecWrite | null {
   if (!raw) return null;
   try {
@@ -1584,8 +1584,8 @@ export function readout(opts: { db: Database; limit?: number; dbPath?: string; m
     }
   }
 
-  // ── #209 spec 落盘频率: 同 G4 的口径, 走 `allRuns` 不走 `shown` (判据不搭展示窗口的车) ──
-  // NULL 不进分母 —— 「没记」与「没落盘」是两件事, 而把它们混为一谈正是这一列存在的理由。
+  // ── #209 spec 写入磁盘频率: 同 G4 的口径, 走 `allRuns` 不走 `shown` (判据不搭展示窗口的车) ──
+  // NULL 不进分母 —— 「没记」与「没写入磁盘」是两件事, 而把它们混为一谈正是这一列存在的理由。
   const spec_write_sampling: ReadoutResult['spec_write_sampling'] = { denominator: 0, wrote: 0, missing: 0, notNeeded: 0, contractRuns: 0, missRate: null };
   for (const run of allRuns) {
     if (run.entry !== 'solve' || run.specWrite === null) continue;

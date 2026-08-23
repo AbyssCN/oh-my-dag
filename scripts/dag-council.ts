@@ -13,9 +13,9 @@
  *
  * 输出:
  *   1. stderr: conductor authored 的 lens keys + personas (验证分解对不对) + 进度。
- *   2. stdout: 首行 = 落盘路径, 然后 lens champions + candidates + final (标记段落,
+ *   2. stdout: 首行 = 存盘路径, 然后 lens champions + candidates + final (标记段落,
  *      下游 split 依赖此格式, 勿改 marker)。
- *   3. **全文落盘 /tmp/dag-council-<slug>-<ts>.md (零丢失, 每 run 独立路径)** —
+ *   3. **全文写入磁盘 /tmp/dag-council-<slug>-<ts>.md (零丢失, 每 run 独立路径)** —
  *      教训: 固定路径会被并发/历史 run 覆盖, 消费别 run 的产出。
  */
 import '../src/harness/script-bootstrap';
@@ -90,7 +90,7 @@ const res = await researchFanout({
 
 process.stderr.write(`\n[council] ${res.leafCount} leaves · $${res.costStats.totalUsd.toFixed(4)} (saved $${res.costStats.totalSavingsUsd.toFixed(4)})\n\n`);
 
-// ── Step 3: 全文落盘 (先于 stdout — 即使消费方截断 stdout 也零丢失) ──
+// ── Step 3: 全文写入磁盘 (先于 stdout — 即使消费方截断 stdout 也零丢失) ──
 const sections = [
   '===== LENS CHAMPIONS =====',
   ...res.lensChampions.map((c) => `\n## ${c.key}\n${c.text}`),

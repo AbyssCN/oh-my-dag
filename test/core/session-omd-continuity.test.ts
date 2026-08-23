@@ -4,7 +4,7 @@
  * 此前整条 continuity 只服务 Claude Code:写入触发是 CC 的 hook、蒸馏器的输入面认 CC 的
  * transcript 格式、读回面两头都没有。本件钉的就是这三处:
  *   - A3 来源缝:omd 会话 → 与 CC 同形的 `U:/A:/T:/R:` 摘录,且**增量**(游标按条目序);
- *   - A1 写入:omd 会话跑一次 → checkpoint.md 落盘 + `facts` 出 continuity 行,`id` = omd session id;
+ *   - A1 写入:omd 会话跑一次 → checkpoint.md 写入磁盘 + `facts` 出 continuity 行,`id` = omd session id;
  *   - A2 读回:下一段会话读得回上一段的 §1/§2,且**不回喂自己**;
  *   - 触发口径:压缩即存 · 跨档即存 · 同档不重复 · ctx 量不到**不伪造**。
  *

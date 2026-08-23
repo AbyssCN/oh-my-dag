@@ -11,7 +11,7 @@
  * `cause` 的合法值域直接复用 `FAILURE_KIND_ORDER` (node-failure.ts) —— 同一份词表,
  * 不在本工具里再列一遍 (列两份必漂)。schema enum 与 recordIntervention 的 fail-loud
  * 校验同源: 非法 cause 在 schema 层拒, 即便绕过 schema 直接调 handler 也再次拒, 抛 →
- * err 回执, 不落盘。
+ * err 回执, 不写入磁盘。
  *
  * ## 写侧共享件 (INV-RC-1 · SDD 片 7 切片 2)
  *

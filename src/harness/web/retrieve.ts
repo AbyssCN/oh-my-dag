@@ -3,7 +3,7 @@
  *
  * 单一真理源, 复用点:
  *   - `src/harness/research/web-fanout` 把 .markdown 当 groundTruth 喂 researchFanout (要综合判优的答案)
- *   - dag-research CLI (要内容, 全文落盘零丢失)
+ *   - dag-research CLI (要内容, 全文写盘零丢失)
  *
  * 升级阶梯 (fetchRacing minChars): race 档并发竞速 → tail 档串行兜底, 空-but-200 也降级;
  * 全 provider 空/失败 → 收进 needsBrowserHarness (调用方升级为有登录态的浏览器手动接管)。
@@ -93,7 +93,7 @@ export interface RetrieveResult {
    */
   markdown: string;
   /**
-   * **全文语料附录** (零丢失红线): 检索命中全列 + 逐条清洗后**全文**, 永不蒸馏。--out 落盘用这份。
+   * **全文语料附录** (零丢失红线): 检索命中全列 + 逐条清洗后**全文**, 永不蒸馏。--out 写盘用这份。
    * 无蒸馏发生时与 markdown 同引用 (省一次拼接)。
    */
   fullCorpus: string;

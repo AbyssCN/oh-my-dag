@@ -2,7 +2,7 @@
  * debug-plan No-silent-caps (C-3) —— redEvidence 超 2000 字符时补告示 + 全文指针;
  * 未超界路径与今天 hypothesisListerGoal 逐字节相同 (零回归)。
  *
- * 对应 docs/plan/2026-08-23-判词落盘与两个No-silent-caps缺口-执行契约.md §C-3 · D-6。
+ * 对应 docs/plan/2026-08-23-判词写盘与两个No-silent-caps缺口-执行契约.md §C-3 · D-6。
  * 与 §片 2 (agent-tools spill) 同源同形, 参照物 = `capFanin` / `renderHandoff` 的
  * 「告示 + 全文路径」写法。
  *
@@ -79,12 +79,12 @@ function buildBaselineGoal500(opts: DebugPlanOptions): string {
 }
 
 /**
- * 给实现注入「全文落盘 + 返指针路径」的钩子 —— 实装在 DebugPlanOptions 上加
+ * 给实现注入「全文写盘 + 返指针路径」的钩子 —— 实装在 DebugPlanOptions 上加
  * `saveRedFull?: (text: string) => string | null` 字段, 此处通过交叉类型声明,
  * 当前实装不读此字段 → 行为不变 → 用例如预期在 ① ② ③ 处自然红。
  *
  * 命名刻意避开 `saveFull` / `saveText` 等宽泛词 —— 与 `saveHandoffFull` / `saveFaninFull`
- * 的字面同族, 后续若并列多个「全文落盘」可收敛到一个统一签名。
+ * 的字面同族, 后续若并列多个「全文写盘」可收敛到一个统一签名。
  */
 type OptsWithSave = DebugPlanOptions & {
   saveRedFull?: (text: string) => string | null;

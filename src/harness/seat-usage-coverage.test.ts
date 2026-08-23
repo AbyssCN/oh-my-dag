@@ -16,7 +16,7 @@
  *      issue 八座 ALL_SEAT_IDS 注册断言红(gate 不再是注册座位,用例①挂)。
  *
  * **不**改任何既有文件(本闸只读两套真源做纯符号集合断言);
- * **不**落盘、**不**读 JSONL、**不**调模型、**不**联网。
+ * **不**写盘、**不**读 JSONL、**不**调模型、**不**联网。
  */
 import { describe, expect, test } from 'bun:test';
 import { ALL_SEAT_IDS } from '../model/seats';

@@ -335,7 +335,7 @@ describe('★ 平铺图(无 conductor 节点)也要被扫到', () => {
   });
 });
 
-// ── ⑤ 产物闸救援②: 从 bash 命令认写目标 + 落盘核实 ────────────────────────────
+// ── ⑤ 产物闸救援②: 从 bash 命令认写目标 + 磁盘核实 ────────────────────────────
 
 describe('★ 产物闸救回经 bash 写入的产物(必须有盘上证据)', () => {
   const writePlan = { name: 'p', nodes: { w: { goal: '写文件', executor: 'agent', output_type: 'file' } } } as unknown as ConductorPlan;

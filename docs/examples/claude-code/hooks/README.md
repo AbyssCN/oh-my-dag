@@ -39,7 +39,7 @@
 ```
 
 `<omd>` 写 omd 仓绝对路径 —— 引擎锚不随 cwd(别的 repo 里 CC 也会跑这条 hook,那个 repo 没有 writer 脚本)。
-落盘分两处:`checkpoint.md` / `ledger.jsonl` 走 `OMD_DATA_HOME`(`~/.omd/projects/<slug>/session/<id>/`),
+文件写入两处:`checkpoint.md` / `ledger.jsonl` 走 `OMD_DATA_HOME`(`~/.omd/projects/<slug>/session/<id>/`),
 facts 走 `<当前 repo>/.omd/memory.db`(与该 repo 的 MCP 读面同库)。env 旋钮:
 `OMD_SESSION_BUCKET`(档距,默认 200k)· `OMD_CONTINUITY_MECHANICAL=1`(跳过模型调用,测试用)。
 
@@ -73,7 +73,7 @@ facts 走 `<当前 repo>/.omd/memory.db`(与该 repo 的 MCP 读面同库)。env
 }
 ```
 
-> hooks 目录下不存在 `ledger.ts` —— 落盘逻辑在 `src/harness/session/ledger.ts`,
+> hooks 目录下不存在 `ledger.ts` —— 写入磁盘的逻辑在 `src/harness/session/ledger.ts`,
 > session-continuity.ts 经 `appendLedger` 调它(W2→W1 接缝)。
 
 ### 输入输出契约(一句话)
@@ -95,7 +95,7 @@ stdin 读 `{hook_event_name, stop_hook_active, writer_locked, transcript_path, s
 
 ---
 
-## ledger.jsonl 落盘位置
+## ledger.jsonl 写入位置
 
 `appendLedger` 写到 `<projectRoot>/<scope.dataPath>/session/<sessionId>/ledger.jsonl`,
 逐字对齐 `src/harness/session/writer.ts:351,367` 的 W1 尾读路径:
@@ -137,7 +137,7 @@ stdin 读 `{hook_event_name, stop_hook_active, writer_locked, transcript_path, s
 ## 待确认
 
 - hooks 目录下是否存在 `ledger.ts`:**无**。本 README 把 session-continuity.ts 引用
-  的 `src/harness/session/ledger.ts` 当作"hook 的落盘后端"描述;若将来 hooks 目录新增
+  的 `src/harness/session/ledger.ts` 当作"hook 的写入磁盘后端"描述;若将来 hooks 目录新增
   独立 ledger 脚本,需同步更新本文。
 - `writer_locked` 字段在 CC 标准 Stop 输入里是否存在:**未在 session-continuity.ts
   头注之外的源码里追到**,按现有契约照搬描述;若上游 CC 不下发该字段,守卫等价于永远

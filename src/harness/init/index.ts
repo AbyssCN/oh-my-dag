@@ -1,5 +1,5 @@
 /**
- * init barrel —— omd 首次配置向导 (检测 + 交互配置 + 探针 + .env 落盘)。
+ * init barrel —— omd 首次配置向导 (检测 + 交互配置 + 探针 + .env 写盘)。
  */
 export {
   detectRuntimeConfig,

@@ -209,7 +209,7 @@ describe('★ /status —— 四段真话 (formatStatus, 只读零副作用)', (
 describe('★ /export —— markdown 形状与缺省路径 (export.ts 纯函数半边)', () => {
   /**
    * 文件系统副作用在 tui.ts handleExport, 这里只钉形状与路径格式。
-   * 反向自检: 把每消息的 `## role · ts` 行改成别样 → 「role 与 iso 时间戳原样落盘」红。
+   * 反向自检: 把每消息的 `## role · ts` 行改成别样 → 「role 与 iso 时间戳原样写入磁盘」红。
    */
   const ts = new Date('2024-01-02T03:04:05.000Z').getTime();
   const userMsg = (t: string): AgentMessage => ({ role: 'user', content: t, timestamp: ts }) as unknown as AgentMessage;

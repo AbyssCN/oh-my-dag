@@ -98,7 +98,7 @@ async function dirtyRealFiles(): Promise<Set<string>> {
 interface LeafRun {
   /** 闸绿 = 1 (客观, 零 LLM 裁判)。 */
   pass: number;
-  /** 真落盘的文件数 —— "done 但没产物" 在这里现形。 */
+  /** 真写入磁盘的文件数 —— "done 但没产物" 在这里现形。 */
   filesTouched: number;
   /** 工具调用次数 —— prompt 档影响的**路由效率**代理量 (档位教的就是"别拿 grep 当 codegraph 用")。 */
   toolCalls: number;

@@ -52,7 +52,7 @@ export interface AgentLeafInput {
   profile?: LeafProfile;
   /**
    * #178: 产物意图 —— 引擎侧 producesFiles 路由为真时**按调用**传 (值 = node.output_path;
-   * 无显式路径传 '(路径见 goal)')。在场 = 本叶必须落盘产物, agent-leaf 据此启用 produce-by
+   * 无显式路径传 '(路径见 goal)')。在场 = 本叶必须写入产物, agent-leaf 据此启用 produce-by
    * 软推 (勘探超预算仍零写 → 注入一次催产指令, pi 通道; SDK 通道同 grind 边界只记不注)。
    * 缺席 = 非产物叶, produce-by 恒不触发 —— 非 produces-files 节点零行为变化 (#178 硬约束)。
    */
@@ -74,12 +74,12 @@ export interface AgentLeafInput {
 /**
  * leaf watchdog 采集的**单一真源形状** (2026-08-18 收敛; 此前 AgentLeafResult / LeafResult /
  * NodeCheckpoint 三处手抄同形, b87196e 加 grind 字段时只改了生产侧 —— 类型静默漂移的实证)。
- * 生产/透传/落盘三处都引用本接口: 加字段改这里, 漏改任何一处直接 tsc 红。
+ * 生产/透传/写盘三处都引用本接口: 加字段改这里, 漏改任何一处直接 tsc 红。
  *
  * 缺席语义 (NULL ≠ 0 ≠ 不适用, 全仓同一条纪律):
  * - 整个 `watchdog` 缺席 = 非 agent 叶 / 该 runner 不统计 / 老记录, **不代表**"量过了且没触发"。
  * - 存在时 `stalled`/`timedOut` 恒写 boolean —— `false` = 量过了且没发生, 不许用缺席表示 false。
- * - grind 三字段 (`advisorFiredAt`/`wrapupFiredAt`/`abortedByGrind`) 在**落盘真相**里是可选的:
+ * - grind 三字段 (`advisorFiredAt`/`wrapupFiredAt`/`abortedByGrind`) 在**写入的真相**里是可选的:
  *   缺席 = S1 时代老记录 / 该 runner 不统计新档 (盘上真实存在这批 checkpoint, required 会让
  *   类型对旧数据撒谎); 现役生产侧的恒写纪律由 {@link LiveLeafWatchdog} 收紧到类型层。
  * - `touchTimelineMs`/`toolTimelineMs` 是距叶启动的相对毫秒数 (升序), 不是绝对时间戳。
@@ -114,7 +114,7 @@ export interface LeafWatchdog {
 
 /**
  * 现役 agent-leaf **生产侧**形状: grind 三字段恒写 (INV-5 —— 忘写任何一个 = tsc 红, 这正是
- * b87196e 那次漂移的类型层闸)。落盘/透传侧 (LeafResult / NodeCheckpoint) 用宽的 LeafWatchdog。
+ * b87196e 那次漂移的类型层闸)。写盘/透传侧 (LeafResult / NodeCheckpoint) 用宽的 LeafWatchdog。
  */
 export type LiveLeafWatchdog = LeafWatchdog & Required<Pick<LeafWatchdog, 'advisorFiredAt' | 'wrapupFiredAt' | 'abortedByGrind'>>;
 
@@ -415,7 +415,7 @@ export interface ResearchLeafResult {
    * executor 判 failed, 拒绝"引用来自模型记忆"的假 grounded 通过。
    */
   sources: string[];
-  /** 报告全文落盘路径 (宽出: 节点输出只带终稿, 细节自己 Read)。 */
+  /** 报告全文写盘路径 (宽出: 节点输出只带终稿, 细节自己 Read)。 */
   reportPath?: string;
 }
 /** 注入点:executor-dag 的 research-kind 节点经此跑。未注入 = research 节点判 failed (不静默降级)。 */
@@ -430,9 +430,9 @@ export interface LeafModelRouter {
 }
 // ── leaf telemetry 投影器(INV-2: 平铺,无嵌套 telemetry 层)───────────
 // 7 个遥测字段的单一真源形状。AgentLeafResult (生产侧) / LeafResult (透传侧) /
-// NodeCheckpoint (落盘侧) 都经 Pick 引用本类型 — 此前三处手抄同形,b87196e 加 grind
+// NodeCheckpoint (写盘侧) 都经 Pick 引用本类型 — 此前三处手抄同形,b87196e 加 grind
 // 字段时只改了生产侧,类型漂移 6 天没人发现。引用同一类型后这类漂移直接 tsc 红。
-// 字段形状对齐 AgentLeafResult: watchdog 取宽的 LeafWatchdog (落盘可松),
+// 字段形状对齐 AgentLeafResult: watchdog 取宽的 LeafWatchdog (写盘侧可松),
 // spin/writeEffects 同 AgentLeafResult; pickLeafTelemetry 用 keep-undefined 策略
 // (缺键不省略键),spin/writeEffects 缺席时补默认 {0,0,[]} / {[],[]},其余缺席 = undefined。
 export type LeafTelemetry = {

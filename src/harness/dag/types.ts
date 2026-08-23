@@ -315,7 +315,7 @@ export interface DagLeafShapingSeam {
   leafTierThresholdBytes?: number;
   /**
    * fan-in **定向摘要** (引擎接缝, 2026-07-21): 一个 producer 的输出被 ≥2 个下游 consumer 消费时,
-   * 不再把全文复制 ≥2 份灌进各 consumer, 而是跑 1 发定向摘要 (按下游目标提炼) + 全文落盘留指针,
+   * 不再把全文复制 ≥2 份灌进各 consumer, 而是跑 1 发定向摘要 (按下游目标提炼) + 全文写入磁盘留指针,
    * 各 consumer 的 fan-in 上下文注入摘要而非全文 (省 token + 护 prompt-cache; 强制 conductor-plan
    * "Fan-in carries SUMMARIES" 纪律)。省略 = 引擎内默认 ON (minChars=1800, minFanout=2; 同 caveman
    * 的行为旋钮惯例——默认档由引擎给); `{ enabled: false }` 关闭。fail-open: 摘要失败 → 回退全文注入。
@@ -516,7 +516,7 @@ export interface DagObservabilitySeam {
    */
   onNodeEvent?: (e: DagNodeEvent) => void;
   /**
-   * W2 continuity (SDD C4): 节点级 checkpoint 落盘 + 崩溃恢复跳过。
+   * W2 continuity (SDD C4): 节点级 checkpoint 写入磁盘 + 崩溃恢复跳过。
    * manager+runId 给则启用: done 节点写 `.omd/continuity/<runId>/<nodeId>.json` (fail-open, 写挂不阻断);
    * resume=true 时, checkpoint 存在 ∧ 产物 hash 匹配的节点跳过执行 (LeafResult.skipped=true)。
    * repoRoot 供 noun-gate 注释 + 产物路径相对化 (省略 = process.cwd())。
@@ -841,7 +841,7 @@ export interface LeafResult {
   stalled?: boolean;
   /**
    * agent leaf watchdog 采集 (2026-08-12, S1 埋点)。engine 从 AgentLeafResult.watchdog 原样透传
-   * (done/failed 两条出口都带), 供 checkpoint 落盘。形状/缺席语义真源 = {@link LeafWatchdog}
+   * (done/failed 两条出口都带), 供 checkpoint 写入磁盘。形状/缺席语义真源 = {@link LeafWatchdog}
    * (2026-08-18 收敛: 此前这里手抄 S1 五字段, b87196e 加 grind 字段后与生产侧漂移了 6 天,
    * 注释还写着「形状一致」—— 引用同一类型后这类漂移直接 tsc 红)。
    */

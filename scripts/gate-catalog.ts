@@ -18,7 +18,7 @@
  *   `bun run scripts/gate-catalog.ts`         打印表 + 对账,漂移则 exit 1
  *   `bun run scripts/gate-catalog.ts --quiet` 只对账,绿则不打印
  *
- * ⚠ 它**不**写文件。目录落盘由 owner 决定要不要做,现在没有消费者就不造。
+ * ⚠ 它**不**写文件。目录存盘由 owner 决定要不要做,现在没有消费者就不造。
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';

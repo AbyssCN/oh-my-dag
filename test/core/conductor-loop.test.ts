@@ -210,7 +210,7 @@ describe('D-A 毒集的新家 — 节点级 journal, 每轮判完就写', () => 
       cfg(generate, false, true, judgeSendOf([{ converged: false, failureReason: 'r1 不行' }])),
     );
     expect(journalAtRound2).toBeTruthy();
-    expect(journalAtRound2!.completedRounds).toBe(1); // 第 1 轮判完就已落盘
+    expect(journalAtRound2!.completedRounds).toBe(1); // 第 1 轮判完就已存盘
     expect(journalAtRound2!.prevReason).toContain('r1 不行');
   });
 

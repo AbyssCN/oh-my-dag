@@ -196,7 +196,7 @@ const clip = (s: string): string => (s.length > MAX_FIELD_CHARS ? `${s.slice(0, 
  * 老写法是 `JSON.parse(clip(JSON.stringify(v)))` —— **先序列化、截断、再 parse 那截断过的串**。
  * 截断过的 JSON 几乎必然非法, 于是它对任何超过 MAX_FIELD_CHARS 的输入**按构造必崩**
  * (`SyntaxError: Unterminated string`), 只是此前的输入都小, 一直没撞上。
- * 2026-08-01 一次 574KB 的 diff 审查当场引爆: 整张图挂掉, 而崩点在观测层。
+ * 2026-08-01 一次 574KB 的 diff 审查当场触发: 整张图挂掉, 而崩点在观测层。
  *
  * 更坏的是它的调用位置 —— `gateway.send` 的 **catch 块**里也记一发(失败的调用比成功的更值得看)。
  * 于是这个异常**顶掉了原始错误**: 看到的是观测层的 JSON 报错, 真正的失败原因一个字都没露面。
@@ -334,7 +334,7 @@ export function recordGeneration(rec: GenerationRecord, env: Record<string, stri
     recordGenerationInner(rec, env);
   } catch (err) {
     // **观测层永不带走执行层** (2026-08-01 实测: clipDeep 的 truncate-then-parse 让一次 574KB
-    // 输入的调用整跑崩掉)。收口放在这儿而不是四个调用点上 —— 其中一个调用点在 `gateway.send`
+    // 输入的调用整跑崩掉)。收尾放在这儿而不是四个调用点上 —— 其中一个调用点在 `gateway.send`
     // 的 catch 块里, 那里抛出去会**顶掉原始错误**, 于是真正的失败原因永远不露面。
     // 一个接线点记得包 ≠ 下一个也记得; 这个函数的契约就该是"不抛"。
     logger.warn({ err, name: rec.name, model: rec.model }, '[omd/langfuse] 观测记录失败 (fail-open, 不影响执行)');
@@ -405,7 +405,7 @@ function scheduleFlush(env: Record<string, string | undefined>): void {
  * 送一批。**任何失败都只 fail-open**:事件丢掉、吼一次、继续跑。
  *
  * 为什么丢而不重试:重试要么占内存(排队积压)要么占主路径(阻塞),而这是**观测层** ——
- * 丢几条 trace 的代价远小于把引擎拖慢。真要一条不丢,那是另一个设计(落盘再补送),
+ * 丢几条 trace 的代价远小于把引擎拖慢。真要一条不丢,那是另一个设计(写入磁盘再补送),
  * 到时候再谈;今天先让它有。
  */
 export async function flushLangfuse(

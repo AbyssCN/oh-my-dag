@@ -11,7 +11,7 @@
  * D-4 观察面 (SDD 2026-08-11-dag-观察面与审核跟踪升级, C-5): dag_review 有 onNodeEvent 订阅者
  * (TUI) 时, 子进程经 run.ts 的 OMD_REVIEW_EVENT_FILE 汇把进度 NDJSON 逐行追加到事件文件,
  * 本模块轮询翻成标准 DagNodeEvent 灌 pushDagEvent (合成 runId = 本工具 runId, 维度 = 节点)。
- * 合成 run 不进 dag_runs 列表 (D-11) —— 只上 TUI 实时面板, 回看走 review 全文落盘。
+ * 合成 run 不进 dag_runs 列表 (D-11) —— 只上 TUI 实时面板, 回看走 review 全文写入磁盘。
  */
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -226,7 +226,7 @@ function dispatchFleetRun(
   return runId;
 }
 
-/** 报告落盘路径 (本模块定 → 确定可知)。 */
+/** 报告存盘路径 (本模块定 → 确定可知)。 */
 function reportPathFor(tool: string): string {
   return `/tmp/omd-fleet-${tool}-${randomUUID()}.md`;
 }

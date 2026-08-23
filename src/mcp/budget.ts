@@ -10,12 +10,12 @@
  * `.omd/tui-usage.jsonl` 是**一个仓一本账**(`harness/cli.ts` 的 mcp 分支已把 emitModelUsage
  * 订上去,engine 侧逐条落这里)。
  *
- * ## 增量读(S-E, 契约 C-7;此前每次检查整本重解析,压实阈值 50k 行 = 稳态 ~190× 今日量)
+ * ## 增量读(S-E, 契约 C-7;此前每次检查整本重解析,合并阈值 50k 行 = 稳态 ~190× 今日量)
  *
  * 唯一合法形态 = **append 字节偏移续读,禁 TTL**(普查 §1.2:账本多写者——TUI、别的 omd
  * 进程、本进程 engine 钩子各自 append;这条闸的全部意义是「图 N 看得见图 1..N−1 烧掉的」,
  * 按偏移读新增字节保住了「轮中途越线下一次派图当场被拦」)。三条护栏:
- * ① 文件尺寸 < 已读偏移 → 压实/重写发生过 → memo 作废整本重读(账本压实在 ledger 构造时
+ * ① 文件尺寸 < 已读偏移 → 合并/重写发生过 → memo 作废整本重读(账本合并在 ledger 构造时
  *    会把 50k 行截成 10k 行,偏移必失效);
  * ② 尾部半行(写者写到一半)留 carry 下轮拼——多写者 append 原子性只到行粒度;
  * ③ 出窗修剪只对**窗口前移**成立;更宽窗口的查询(since < prunedBefore)→ memo 作废重读,
@@ -51,7 +51,7 @@ interface BudgetRow {
   /** 可能缺失(老行)—— 求和成 NaN 是「尺子坏了」信号,原样保留。 */
   costUsd?: number;
   unpriced: boolean;
-  /** 订阅通道行(costUsd=null 落盘):不花美元预算,整行跳过。缺席 = api。 */
+  /** 订阅通道行(costUsd=null 写入磁盘):不花美元预算,整行跳过。缺席 = api。 */
   channel?: 'subscription';
 }
 interface LedgerMemo {
@@ -85,7 +85,7 @@ function readWeeklyWindow(dir: string, windowMs: number, nowMs: number): { calls
   }
   const size = statSync(path).size;
   if (size < memo.offset) {
-    // 护栏①:压实/重写发生过,偏移作废。
+    // 护栏①:合并/重写发生过,偏移作废。
     memo = freshMemo();
     ledgerMemos.set(path, memo);
   }

@@ -1,6 +1,6 @@
 /**
  * repeat.ts 单测 —— 三件套 + 判据③尺子自检 (SDD #159 切片 1)。
- * 逐次落盘 (INV-1) 在 run 回调**内部**验: 第 i 次 run 跑起来时 sink 缓冲恰有 i 行 (前 i 行已落、第 i 行未落) —— 攒批到循环末的实现这里读到 0 行会红。
+ * 逐次写入磁盘 (INV-1) 在 run 回调**内部**验: 第 i 次 run 跑起来时 sink 缓冲恰有 i 行 (前 i 行已落、第 i 行未落) —— 攒批到循环末的实现这里读到 0 行会红。
  *
  * 单测纯注入, 不碰真 .omd —— sink 收行计数直接验, 不读盘; 拼装路径用 repeatPath 纯函数。
  */
@@ -38,7 +38,7 @@ describe('repeatSegment — GWT 1', () => {
       id: 'gwt1',
       n: 3,
       run: async (i) => {
-        // INV-1 反向自检: sink 在 await run(i) 之后才落第 i 行 —— 这里应恰有 i 行。
+        // INV-1 反向自检: sink 在 await run(i) 之后才写入第 i 行 —— 这里应恰有 i 行。
         expect(lines).toHaveLength(i);
         return seq[i]!;
       },
@@ -74,7 +74,7 @@ describe('repeatSegment — GWT 2 (INV-2 单次抛错不中断)', () => {
       sink,
     });
     expect(calls).toEqual([0, 1, 2]); // 后续次照跑
-    expect(lines).toHaveLength(3); // 三次都落盘, 第 2 行含 error 原文
+    expect(lines).toHaveLength(3); // 三次都写入磁盘, 第 2 行含 error 原文
     const parsed = lines.map((l) => JSON.parse(l) as RepeatRecord<unknown>);
     expect(parsed[0]!.value).toBe(true);
     expect(parsed[1]!.value).toEqual({ error: 'boom' });

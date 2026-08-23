@@ -9,10 +9,10 @@
  *        的等待循环按契约收敛 ('unparked' | 'stalled'); **中止 ≠ 终态** (stall 后 run 仍活, 板无伪造
  *        terminal, 写面仍被 preflight 挡)。
  * - G-4  compact: >1MB 含**超保留期**终态 → 追加后 ≤1MB, 活 run 条目全在; 且活 run 的写面证据
- *        在 compact 后仍被 preflight 看见 (G-1 与 G-4 闭环)。
+ *        在 compact 后仍被 preflight 看见 (G-1 与 G-4 形成回路)。
 
  *
- * 留账 (await-node 已落盘): S3 切片补完 src/harness/dag/await-node.ts 后, 本文件把契约脚手架
+ * 留账 (await-node 已写入磁盘): S3 切片补完 src/harness/dag/await-node.ts 后, 本文件把契约脚手架
  * `waitForRunOnBoard` 换成其**真实 API** `awaitNode`, 断言口径不变 (done↔unparked, aborted↔stalled;
  * 中止 ≠ 终态 判据原样: stall 后 run 仍活、板无伪造 terminal、写面仍被 preflight 挡; 短 deadline↔短
  * timeoutMs 被尊重); 引擎级判据另补: engine dispatch 经 runAwaitNode 消费**同一真实 awaitNode** (S3 接缝)。
@@ -181,7 +181,7 @@ describe('G-2/G-3: await 谓词与中止 (真实 awaitNode API; 谓词真源 = �
     expect(liveRuns(readBoard(root)).has('r1')).toBe(true); // 中止 ≠ 终态: run 仍活
     expect(readBoard(root).some((e) => e.runId === 'r1' && e.event === 'terminal')).toBe(false); // 无伪造 terminal
     expect(elapsed).toBeLessThan(1000); // 注入的短 timeout 被尊重, 不是 3h
-    // 闭环: abort 后写面仍在 → 无 force 预检仍 blocked
+    // 回路闭合: abort 后写面仍在 → 无 force 预检仍 blocked
     expect(ignitionPreflight(root, ['src/a.ts']).verdict).toBe('blocked');
   });
 });
@@ -255,7 +255,7 @@ describe('G-4: compact ≤1MB 且活条目仍在', () => {
     }
     expect(got.some((e) => e.runId === 'r-live-3')).toBe(true); // 新追加的也在
     expect(got.some((e) => e.runId.startsWith('r-done-'))).toBe(false); // 超保留期终态 run 全清
-    // G-1 ↔ G-4 闭环: compact 没丢活 run 的写面证据 → preflight 仍能挡冲突
+    // G-1 ↔ G-4 回路闭合: compact 没丢活 run 的写面证据 → preflight 仍能挡冲突
     expect(ignitionPreflight(root, ['src/a.ts']).verdict).toBe('blocked');
   });
 });

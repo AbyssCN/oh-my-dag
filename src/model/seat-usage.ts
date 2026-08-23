@@ -33,7 +33,7 @@
  *
  * 网关手上没有座位 id —— 座位在调用点就被解析成坐标了(`resolveSeatModel`),传到网关的只剩
  * 一个人可读的角色标签。所以 `seat` 由 {@link seatOfTrace} 从 `traceName` 反查,而
- * `traceName` **原样落盘**:映射表将来发现是错的,历史行还能重算。认不出的写 `null`,
+ * `traceName` **原样写入磁盘**:映射表将来发现是错的,历史行还能重算。认不出的写 `null`,
  * 不编一个 `'unknown'` 座位(§3 第 1 条:`NULL` ≠ 0 ≠ 不适用,抹平了事后就分不开)。
  *
  * 同理,调用抛错时 `in`/`out` 落 `null` 而不是 0 —— 那是「没读到」不是「没烧」,靠 `error` 列分辨。
@@ -75,7 +75,7 @@ export interface SeatUsageEntry {
   nodeId?: string | null;
   /**
    * 这一发烧在哪一段。取**图名原文**(`goal-contract` / `goal-execute` / `goal-execute-flat` / …),
-   * 不在这里归成 contract/execute 两类 —— 同 `traceName`:原始观测落盘,归类留给消费面,
+   * 不在这里归成 contract/execute 两类 —— 同 `traceName`:原始观测写入磁盘,归类留给消费面,
    * 映射错了历史行还能重算。调用点没给 → 缺席。
    */
   phase?: string | null;
@@ -89,7 +89,7 @@ export interface SeatUsageEntry {
    * 这一跑在**哪个仓**上干活(git toplevel basename)。#144 洞 2 问的「单仓成本」由这一列答。
    *
    * 刻意**不**把账本按 cwd 拆到各仓 —— `repo-root.ts:38-48` 明写了为什么引擎自己的读数留痕库
-   * 必须锚在引擎仓:按 cwd 落盘会碎成一堆互相看不见的库,而那种缺数**长得像「引擎没记」**。
+   * 必须锚在引擎仓:按 cwd 写入磁盘会碎成一堆互相看不见的库,而那种缺数**长得像「引擎没记」**。
    * 一列 `repo` 既留住了跨仓可比性,又答得出单仓账;拆库两样都丢一样。
    */
   repo?: string | null;

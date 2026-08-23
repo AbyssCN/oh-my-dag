@@ -74,7 +74,7 @@ export function isSdkChildSession(env: NodeJS.ProcessEnv = process.env): boolean
  *      历史读进来,历史最高档已经是 N,于是 `N > N` 永假,这个 session 剩下每一轮都不再响。
  *      实测证据:本仓一条 session 的 ledger 372 行、ctx 408k、档位 0/1/2 全过,
  *      而 `checkpoint.md` 与 `writer.log` **一个都没有**。
- * 正确的基准只能是「已经存到第几档」,那是**状态**,必须落盘(hook 是短命进程)。
+ * 正确的基准只能是「已经存到第几档」,那是**状态**,必须写入磁盘(hook 是短命进程)。
  * 首次跑(无状态,`lastFiredBucket = 0`)且已过首档 → 存一次:装上去就该立刻有一份,
  * 而不是等下一个 20 万 token。
  */
@@ -89,7 +89,7 @@ export function decideContinuityTrigger(
   if (isSdkChildSession(env)) return { fire: false, why: 'SDK 子会话 → 不自喂' };
   // PreCompact:压缩前恒存一次档 —— 那正是最需要快照的时刻,不看档位。
   if (input.hook_event_name === 'PreCompact') return { fire: true, mode: 'precompact', bucket: 0 };
-  // SessionEnd:收口一次(`--final`, 会 splice `_NEXT.md` 的 AUTO 区)。同样不看档位 ——
+  // SessionEnd:收尾一次(`--final`, 会 splice `_NEXT.md` 的 AUTO 区)。同样不看档位 ——
   // 会话结束就这一次机会,错过就只能靠上一次 Stop 的存档(最多旧一个档)。
   if (input.hook_event_name === 'SessionEnd') return { fire: true, mode: 'final', bucket: 0 };
   if (input.hook_event_name !== 'Stop') return { fire: false, why: `事件 ${input.hook_event_name} 不决策` };
@@ -153,7 +153,7 @@ export function sessionDirOf(sessionId: string, cwd?: string): string {
   return resolve(scope.rootPath, scope.dataPath(join('session', sessionId)));
 }
 
-// ─── 已存档位状态(hook 是短命进程 → 只能落盘)────────────────────────────────
+// ─── 已存档位状态(hook 是短命进程 → 只能写入磁盘)────────────────────────────────
 
 /**
  * `<sessionDir>/continuity-state.json` —— 只存一件事:**这个 session 已经存到第几档**。

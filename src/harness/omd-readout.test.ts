@@ -1803,7 +1803,7 @@ describe('omd-readout · ⑭-⑰ 空态与防御 (2026-08-10)', () => {
 });
 
 /**
- * #209 spec 落盘频率 —— 「契约段跑了却没产出 spec 文件」有多常见。
+ * #209 spec 写盘频率 —— 「契约段跑了却没产出 spec 文件」有多常见。
  *
  * 这一格存在的理由是**事后量不出来**: worktree 一清、分支一合, 两个信号同时归零, 而扫基座树
  * 数到的是它本来就有的文档。所以数据在 run 期就记进 `spec_write` 列, 这里只负责把它读成频率。
@@ -1817,7 +1817,7 @@ describe('#209 spec_write_sampling', () => {
     mk('s-wrote', 1, { kind: 'wrote', source: 'contract', path: '/repo/docs/plan/x.md' });
     mk('s-missing', 2, { kind: 'missing', source: 'contract' });
     mk('s-simple', 3, { kind: 'not-needed', source: 'tier-simple' });
-    mk('s-unrecorded', 4); // 没记 → 不进分母 (与"没落盘"不是一回事)
+    mk('s-unrecorded', 4); // 没记 → 不进分母 (与"没写盘"不是一回事)
     const r = readout({ db });
     expect(r.spec_write_sampling).toEqual({ denominator: 3, wrote: 1, missing: 1, notNeeded: 1, contractRuns: 2, missRate: 0.5 });
     rec.close();

@@ -144,9 +144,9 @@ describe('runInit md 执行 (退化本地图, 零 gh)', () => {
       const o = runInit({ destination: 'Local Only', backend: 'md' }, { cwd: dir, env: {}, probes: probes(), gh: throwGh() });
       expect(o.isError).toBeUndefined();
       expect(o.text).toContain('backend=md');
-      // 本地图落盘。
+      // 本地图写盘。
       expect(existsSync(join(dir, 'docs', 'plan', 'pathfinder', 'local-only.md'))).toBe(true);
-      // config 落盘 backend:md。
+      // config 写盘 backend:md。
       const cfg = JSON.parse(readFileSync(join(dir, '.omd', 'pathfinder', 'config.json'), 'utf8')) as PathfinderConfig;
       expect(cfg.backend).toBe('md');
     } finally {

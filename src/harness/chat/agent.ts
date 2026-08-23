@@ -270,7 +270,7 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
         at: Date.now(),
       });
       await existing.appendCompaction({ summary: compacted.summary, tokensBefore: before, retainedTail: compacted.retainedTail, id: entryId });
-      clearCompactionJournal(journal); // 干净收尾:删 sidecar (end 不落盘)。
+      clearCompactionJournal(journal); // 干净收尾:删 sidecar (end 不写盘)。
       // ⚠ **重新取投影**, 不用 `compacted.messages`: 存进去的是条目, 而这一轮要发给模型的
       //   必须与下一轮载入时看到的**是同一份**。两处各拼一次就是 S-1 那一族 (都"有内容", 只是不同)。
       messages = await existing.messages();
@@ -391,7 +391,7 @@ export async function runChatTurn(opts: ChatTurnOpts): Promise<ChatTurnResult> {
     streamSimple,
   );
 
-  // provider 错误响亮上抛 (C-5b 同纪律): error 轮不算成功, 不落盘。
+  // provider 错误响亮上抛 (C-5b 同纪律): error 轮不算成功, 不写盘。
   const errored = returned.find(
     (m) => (m as { stopReason?: string }).stopReason === 'error',
   ) as { errorMessage?: string } | undefined;

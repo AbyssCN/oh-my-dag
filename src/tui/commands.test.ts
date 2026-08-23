@@ -57,7 +57,7 @@ describe('formatHelp', () => {
   test('★ 有副作用的命令要说出来 —— 改文件和只读列表不是一回事', () => {
     const out = formatHelp();
     expect(out).toContain('side effect');
-    // 会改东西的八条: /seat /login /resume (落 key/写配置/续跑) + /compact (真 model call+落盘)
+    // 会改东西的八条: /seat /login /resume (落 key/写配置/续跑) + /compact (真 model call+写入磁盘)
     // /logout (删凭证键) /export (写盘) + /reload (kill 掉扩展子进程再起一批 —— 进程级副作用)
     // + /tree (§1.3: 真 model call 生成分支摘要 + 往会话文件追加一条 branch_summary 条目)。
     // 只读的 (/status /new /fork /quit) 不许标 —— 标了这条也红。

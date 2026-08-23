@@ -155,13 +155,13 @@ describe('#228 轮间交接:nextSteps 必达', () => {
     expect(p).not.toMatch(/<nextSteps[> \n]/i);
   });
 
-  test('★ nextSteps 原文随 RoundVerdict 落盘, 能从 NodeLoopJournal.verdicts 逐字读回', async () => {
+  test('★ nextSteps 原文随 RoundVerdict 写入磁盘, 能从 NodeLoopJournal.verdicts 逐字读回', async () => {
     // 怎么让它红 (反向自检): `engine.ts` 里把 verdict.nextSteps 漏接到 roundVerdicts.push →
     // journal.verdicts 上的 RoundVerdict 没有该字段, 断言红。
-    // 同时也是 #227 「判词落盘」的延伸: 这一位钉的是 nextSteps **没被吞进 prevReason 字符串里**。
+    // 同时也是 #227 「判词写入磁盘」的延伸: 这一位钉的是 nextSteps **没被吞进 prevReason 字符串里**。
     const { journal } = await run({ reason: reasonOf(200), nextSteps: NEXT_STEPS, maxRounds: 2 });
 
-    expect(journal, '节点级环 journal 必须落盘').not.toBeNull();
+    expect(journal, '节点级环 journal 必须写入磁盘').not.toBeNull();
     const verdicts = journal!.verdicts ?? [];
     expect(verdicts.length).toBeGreaterThanOrEqual(1);
 

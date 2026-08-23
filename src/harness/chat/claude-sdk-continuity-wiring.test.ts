@@ -74,7 +74,7 @@ const fakeQuery =
     })();
   };
 
-/** 轮尾存档是 `void` 派出去的 —— 等它落盘或超时。 */
+/** 轮尾存档是 `void` 派出去的 —— 等它写盘或超时。 */
 async function waitForFile(path: string, timeoutMs = 15_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {

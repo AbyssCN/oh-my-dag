@@ -1,6 +1,6 @@
 /**
  * dogfood 执行脚本 —— owner 签字 ("按照sdd执行", 2026-07-19) 后的全链条:
- *   裁 grill-signoff + 7 task 票 → compileSlice → executeSlice (D-7 预构造入口, 跳 conductor) → 落盘 plan。
+ *   裁 grill-signoff + 7 task 票 → compileSlice → executeSlice (D-7 预构造入口, 跳 conductor) → 存盘 plan。
  * run3: task-server-skeleton 已人工交付 (run2 产物审阅沿用, commit 54f0c53) → 置 delivered 并剔出 region,
  *   只跑其余 6 票 (重跑会被叶子覆写已交付骨架)。
  * oracle 闸 (tsc + bun test) 由调用方 (runtime) 跑完后执行, 绿 → 票置 delivered (回流)。

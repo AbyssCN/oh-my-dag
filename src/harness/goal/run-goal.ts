@@ -126,7 +126,7 @@ export interface RunGoalConfig {
   tier?: GoalTier;
   /** 强制验收分型 (判据轴, D-I); 省略 = 自动分类。 */
   acceptance?: AcceptanceSpec;
-  /** spec 落盘目录 (默认 <cwd>/docs/plan)。 */
+  /** spec 写入磁盘目录 (默认 <cwd>/docs/plan)。 */
   specDir?: string;
   /**
    * 直通入口 (SDD 2026-08-10-solve-sdd-direct-entry): 已结晶 SDD 的路径。给了 → 契约段子图
@@ -145,7 +145,7 @@ export interface RunGoalConfig {
    */
   onClassified?: (classified: GoalClassification) => void;
   /**
-   * 契约段定稿回调 (#209 落盘证据钩子): 契约段收尾后**恰好调一次** —— 每条路都调, 包括
+   * 契约段定稿回调 (#209 写入磁盘证据钩子): 契约段收尾后**恰好调一次** —— 每条路都调, 包括
    * simple 档 / 无 agentRunner / 直通 / 复用 / 契约段抛错。调用方在此持久化 `SpecWrite`
    * (账本 `omd_dag_runs.spec_write`)。
    *
@@ -220,7 +220,7 @@ export interface RunGoalResult {
   /** D-I 验收分型 + 冻结的判卷标准 (执行型带可跑命令; 探索型带学习目标 + 可承受损失)。 */
   acceptance: AcceptanceSpec;
   stages: GoalStage[];
-  /** spec 落盘路径 (simple 档 / 无 agentRunner → undefined)。 */
+  /** spec 写入磁盘路径 (simple 档 / 无 agentRunner → undefined)。 */
   specPath?: string;
   /** research 阶段真抓到正文的 URL (INV-GOAL-2 证据面)。 */
   sources: string[];
@@ -499,7 +499,7 @@ function openRunTickets(result: RunGoalResult, exec: ExecutorDagResult, config: 
       logger.warn({ slug: t.slug }, '[run-goal] D-2 散雾出口: 取不到 runId 锚 → 不开票 (票回不去 run 违反 G-2)');
       return;
     }
-    // ① 未决的料 = 落盘 spec 全文。读不到 → 该条出口缺席 (NULL≠0: 不冒充"零未决")。
+    // ① 未决的料 = 写入磁盘的 spec 全文。读不到 → 该条出口缺席 (NULL≠0: 不冒充"零未决")。
     let specText: string | undefined;
     if (result.specPath) {
       try {
@@ -525,7 +525,7 @@ function openRunTickets(result: RunGoalResult, exec: ExecutorDagResult, config: 
 const todayStr = (): string => new Date().toISOString().slice(0, 10);
 
 /**
- * 闸 C (2026-08-10) 的落盘状态: resume 同一 runId 且 goal 文本未变时, classify 与契约段
+ * 闸 C (2026-08-10) 的写入磁盘状态: resume 同一 runId 且 goal 文本未变时, classify 与契约段
  * (survey/research/spec) 的产物直接复用, 不重跑。事故背景: 同一段 goal 被心跳续派重分类 117 遍
  * (平均 2.1M tokens/遍) —— 节点级 checkpoint 拦不住, conductor 子图逐轮重展开, D-O 输入面
  * 恒判"依赖输出已变"。状态键 = goal 全文 sha256: 文本动一个字就作废, "未变"是精确判据不是猜。
@@ -734,7 +734,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
             executor: 'conductor',
             ...(config.specRounds && config.specRounds > 1 ? { max_rounds: config.specRounds } : {}),
             goal: [
-              `为下面这个目标产出一份**可执行的 SDD 契约**, 落盘到 ${path}。`,
+              `为下面这个目标产出一份**可执行的 SDD 契约**, 存盘到 ${path}。`,
               '',
               `## 目标\n${goal}`,
               '',
@@ -820,7 +820,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
           outcome: wrote ? 'success' : 'empty-result',
           summary: (wrote ? path : 'spec 未落盘 (契约段没产出文件), 下游改用其正文当契约') + (experimentFlags.contractFaninDistill ? ' · 实验臂: contract-distill' : ''),
         });
-        // 闸 C: 有东西可复用才落状态 —— 全空的契约段 (evidence 空且没落盘) 下次续跑照常重跑。
+        // 闸 C: 有东西可复用才落状态 —— 全空的契约段 (evidence 空且没写入磁盘) 下次续跑照常重跑。
         if (evidence || specPath) {
           saveState({ goalHash, classified, contract: { ...(specPath ? { specPath } : {}), evidence, repoContext, sources: [...sources] } });
         }
@@ -844,7 +844,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   // ── #209: 「契约段有没有产出 spec 文件」在**这一刻**记账 ──────────────────────────
   // 这一位的原料是执行期事实 (契约段那张图的 filesTouched → 上面的 `wrote` → specPath),
   // **不是** `existsSync`。隔离档跑完 worktree 就被清、分支合进 main 后新增也归零 ——
-  // 事后再问这一位就只剩 NULL, 而 NULL 会被念成"没落盘" (#177 那次连错三次的根因)。
+  // 事后再问这一位就只剩 NULL, 而 NULL 会被念成"没写入磁盘" (#177 那次连错三次的根因)。
   // 回调不给 = 一行不多跑 (INV-1); 抛错只留痕不掀桌 —— 记账挂了不该让整趟 goal 陪葬。
   const specWrite = classifySpecWrite(specSource, specPath);
   try {
@@ -857,7 +857,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   // task = spec 全文 (有则) 否则 goal 本身; 执行器读到的是契约, 不是对话。
   //
   // D-I: 判卷标准**无条件**附在任务文本末尾 —— 包括 simple 档 (它不产 spec, 判据没有别的落点)
-  // 与 spec 未落盘的降级路径。conductor 据它把验收命令连成图里一个 executor:'command' 节点;
+  // 与 spec 未写入磁盘的降级路径。conductor 据它把验收命令连成图里一个 executor:'command' 节点;
   // 探索型则据它知道"这次没有机器判据"从而不去伪造一个。
   const body = specPath
     ? sdd

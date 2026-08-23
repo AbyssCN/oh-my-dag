@@ -206,7 +206,7 @@ describe('D-O 覆盖到 research 节点; command 节点刻意不落绿 checkpoin
     expect(manager.loadNodeOutput(r.outputText!)).toBe('研究结论全文');
   });
 
-  // #167 (2026-08-17) 语义翻转: command 绿 checkpoint **只当账不当闸** —— 账要诚实 (绿也落盘,
+  // #167 (2026-08-17) 语义翻转: command 绿 checkpoint **只当账不当闸** —— 账要诚实 (绿也写入磁盘,
   // 否则 base 只可能 failed/skipped, run 68cfb43f 验尸把成功读成判据红), resume 不跳的性质
   // 由 shouldSkip 的 leafKind 卡保住 (专测在 src/harness/continuity/command-checkpoint.test.ts)。
   test('command 节点绿 checkpoint 在盘上 (#167: 账诚实), 且 shouldSkip 恒不跳 (闸不动)', async () => {

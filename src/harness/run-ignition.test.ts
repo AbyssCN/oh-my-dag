@@ -85,7 +85,7 @@ describe('saveIgnitionArgs / loadIgnitionArgs — 落盘一侧', () => {
     saveIgnitionArgs(cwd, 'r1', 'dag_goal', {
       sddPath: 'docs/plan/a.md',
       tier: 'simple',
-      maxRounds: 4, // 不在可恢复集 ⇒ 不许落盘
+      maxRounds: 4, // 不在可恢复集 ⇒ 不许写盘
       goal: '一大段目标文本', // 同上
     });
     const rec = loadIgnitionArgs(cwd, 'r1');

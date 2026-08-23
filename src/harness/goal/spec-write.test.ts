@@ -14,7 +14,7 @@
  *     把写入点挪到整趟收尾之后 / 改成 `existsSync` 扫盘 → 那两条当场红。
  *
  * 账本侧 (列迁移 / entry 归属 / 坏 JSON / 回填) 与 dag-record.acceptance-probe.test.ts 同一套姿势:
- * 注入 `new Database(':memory:')`, 生产路径写, 原始 SQL 只用来验落盘值与手工造坏行。
+ * 注入 `new Database(':memory:')`, 生产路径写, 原始 SQL 只用来验持久化值与手工造坏行。
  */
 import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -76,9 +76,9 @@ const fakeContractDag = (filesTouched: string[]): ExecutorDagResult =>
     reusedNodes: [],
   }) as unknown as ExecutorDagResult;
 
-/** 契约段任务文本里那句 `落盘到 <path>。` —— 从图上抓 path, 不抄 goalSlug 的实现。 */
+/** 契约段任务文本里的 spec 路径占位句式 — 从图上抓 path, 不抄 goalSlug 的实现。 */
 const specPathFromPlan = (plan: { nodes: Record<string, { goal?: string }> }): string =>
-  /落盘到 (.+?)。/.exec(plan.nodes.contract?.goal ?? '')?.[1] ?? '';
+  /存盘到 (.+?)。/.exec(plan.nodes.contract?.goal ?? '')?.[1] ?? '';
 
 const noopAgentRunner = (async () => ({ text: '', usage: { in: 0, out: 0 }, filesTouched: [] })) as unknown as AgentLeafRunner;
 
@@ -292,7 +292,7 @@ describe('账本 spec_write 列', () => {
   test('updateSpecWrite 回填该 runId 的**全部**行 —— 契约段那行不留 NULL', async () => {
     const db = new Database(':memory:');
     const rec = createDagRecorder({ db });
-    // 生产时序: 契约段那张图先落盘 (那时这一位还算不出来), 回调再回填。
+    // 生产时序: 契约段那张图先写入磁盘 (那时这一位还算不出来), 回调再回填。
     const contractId = rec.record(fakeResult('goal-contract'), { runId: 'g1', entry: 'solve', now: 1 });
     expect(rec.get(contractId)!.specWrite).toBeUndefined();
     const sw: SpecWrite = { kind: 'wrote', source: 'contract', path: '/repo/docs/plan/x.md' };

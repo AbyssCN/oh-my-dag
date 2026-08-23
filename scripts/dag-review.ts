@@ -19,7 +19,7 @@
  *   默认: gate=G2, base=main 的 branch diff。--staged = 审暂存区。
  *   --paths = 逗号分隔 pathspec, 把 diff 限到指定目录/文件 (防部署产物/无关域污染)。
  *   收敛层默认开 (extract→仓库取证→证伪, 见 review/verify.ts; --no-verify 关), **两轴共用**:
- *   出口只放 CONFIRMED/UNVERIFIED, REFUTED 留档落盘。--brief = stdout 只出裁决清单 (~500t 护 ctx)。
+ *   出口只放 CONFIRMED/UNVERIFIED, REFUTED 留档写入磁盘。--brief = stdout 只出裁决清单 (~500t 护 ctx)。
  */
 import '../src/harness/script-bootstrap';
 import { runReview, DIMS_BY_GATE, SPEC_SKIPPED_NOTE, type ReviewDimension, type ReviewGate } from '../src/harness/review';
@@ -92,7 +92,7 @@ bootstrapModelRuntime();
 process.stderr.write(`[dag-review] gate=${gate} diff=${diff.length}chars\n`);
 
 // ---- 编排走单一真理源 runReview (与 dag-build 内嵌 review 共用) ----
-// 收敛层默认开 (--no-verify 关); --brief = stdout 只出裁决清单, 全文看落盘。
+// 收敛层默认开 (--no-verify 关); --brief = stdout 只出裁决清单, 全文看写入磁盘。
 const { findings, verified, outPath, sddPath, specSkipped } = await runReview({
   diff,
   scope,
@@ -117,7 +117,7 @@ if (verified) {
     console.log(`  ${v.verdict === 'UNVERIFIED' ? '❓' : '🔴'} [${v.severity}] ${v.file}${v.line ? `:${v.line}` : ''} — ${v.claim}`);
     console.log(`     ${v.reason}`);
   }
-  // REFUTED 也在 brief 一行一条(证伪可能误判 → 敏感 diff 一眼扫过);详情看落盘。
+  // REFUTED 也在 brief 一行一条(证伪可能误判 → 敏感 diff 一眼扫过);详情看写入磁盘。
   for (const v of refutedList) {
     console.log(`  ⚪ REFUTED [${v.severity}] ${v.file}${v.line ? `:${v.line}` : ''} — ${v.claim}`);
   }

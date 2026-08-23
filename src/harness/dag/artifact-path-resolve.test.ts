@@ -209,7 +209,7 @@ describe('resolveArtifactPath —— 产物路径解析单源 (S50 切片 1)', (
 
   // ─────────── 集成 · 主干绝对前缀解析到 worktree 后, `rel()` 也能剥回相对 ───────────
   test('集成 (INV-7 续): 主干绝对前缀 ⇒ helper 解析到 worktree ⇒ rel() 剥回相对', () => {
-    // 闭环: p 是主干前缀, 文件只在 worktree, helper 返回 worktree 绝对路径, rel() 应当把它
+    // 往返: p 是主干前缀, 文件只在 worktree, helper 返回 worktree 绝对路径, rel() 应当把它
     //   剥成相对 key —— 这样 checkpoint 复用的 key 在 worktree 内外都是同一个串。
     const wt = mkWorktreeWith(['src/round-trip/y.ts']);
     try {

@@ -488,7 +488,7 @@ describe('dag-record 节点级五位列', () => {
 
     // 直查 SQL: run 行的 tokens_in/tokens_out/cache_hit_tokens/duration_ms/turns **全是 NULL** ──
     // 不许是 Σ (那是上一版 5 个 SUM-IIFE 违反 INV-1/INV-3 的写法, 闸就是不让它回来)。
-    //   必须走**新句柄**读同一份落盘 ── rowToRecord 已经把 nodes JSON 解出来了, 查 SQL
+    //   必须走**新句柄**读同一份写入磁盘的内容 ── rowToRecord 已经把 nodes JSON 解出来了, 查 SQL
     //   是为了钉死「run 行那五列**也是** NULL, 不在 SQL 层做 Σ」。
     const probe = new Database(dbPath);
     const row = probe

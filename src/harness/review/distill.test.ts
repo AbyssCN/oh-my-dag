@@ -383,7 +383,7 @@ describe('D-4 谎报完成闸 — 切片 4: review 报告层 re-export 面 (G-6)
 
   test('声称落在产物文件里 + 实败 → 闸红, 证据标 source=file: (伪造尾缀写进文件也拦)', () => {
     // 证伪: 若只扫 output 不扫产物 → 谎报尾缀写进产物文件就绕过闸 (2026-07-29 fabricated
-    // 段「本文件已由引擎实测通过」正是落盘形态)。
+    // 段「本文件已由引擎实测通过」正是写盘形态)。
     const v = gateFalseCompletion([
       lying({ output: '已交付', artifacts: [{ path: 'docs/report.md', content: '本文件已由引擎实测通过' }] }),
     ]);

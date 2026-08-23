@@ -19,7 +19,7 @@ const REQUIRED_SECTIONS: readonly { key: string; pattern: RegExp }[] = [
 export interface SddContract {
   /** SDD 原文 (原样进 execute 任务文本, 含并行波形)。 */
   readonly text: string;
-  /** 装载路径 (= specPath, 契约已落盘的那份就是它)。 */
+  /** 装载路径 (= specPath, 契约已写入磁盘的那份就是它)。 */
   readonly path: string;
 }
 
@@ -398,7 +398,7 @@ export function parseBreakdown(text: string): SddBreakdown {
   };
 }
 /**
- * 从 SDD 落盘路径机械提取挂票要带的两样: 各切片写集的并集 + sddPath 本体。
+ * 从 SDD 写入磁盘路径机械提取挂票要带的两样: 各切片写集的并集 + sddPath 本体。
  *
  * 复用 parseBreakdown —— 不重写第二遍, 不抄一遍表解析; 写集并集用 Set 保首次出现序
  * (slice 编号是稳定的, 哈希去重后顺序仍可复演)。**解析失败 → throw** (fail-loud 与

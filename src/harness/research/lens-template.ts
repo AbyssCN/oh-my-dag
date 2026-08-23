@@ -5,7 +5,7 @@
  * 为什么存在(化解 Q2 张力 = 一个分解器 + 质量结构不丢):
  *   P3 之前有**两个分解器** —— (1) conductor 吐 DAG,(2) `authorFanoutSpec` 每次调用**现推**
  *   researchFanout 的五阶段镜头结构。第二条路每次重新 author 结构 = 出错源(漏阶段 / 篡改 /
- *   幻觉模型名),且是重复的"第二真理源"。P3 收口成**一个分解器**: conductor 需要研究扇出时
+ *   幻觉模型名),且是重复的"第二真理源"。P3 收敛成**一个分解器**: conductor 需要研究扇出时
  *   **引用本冻结模板** emit 一个 `executor:'map'` over-lenses 节点,**不现推**结构 → 质量层
  *   (per-lens reduce / M-framing 综合 / K-judge panel / graft)由 researchFanout 保留,不被
  *   塌成一条扁平 map 而丢失(spec 红字「防丢质量」)。

@@ -2,7 +2,7 @@
  * src/harness/pathfinder/result-format —— AFK research 结果的**双端共享契约** (生产者 dag-research /
  * 消费者 afk-hook 同一模块, 防止格式各表)。
  *
- * 结果文件形状 (dag-research --out 落盘):
+ * 结果文件形状 (dag-research --out 写盘):
  *   # 研究: <question>
  *   > <N> leaves · $<cost> · 检索命中 <n> …        ← 成本统计 blockquote (非内容, distill 必须跳过)
  *   ## 终稿 (综合判优)
@@ -21,7 +21,7 @@ import type { TicketType } from './types';
 const FINAL_HEADING = /^##\s+终稿/;
 
 /**
- * 原子落盘 (tmp+rename, 同目录同文件系统 → rename 原子): 轮询方看到的文件要么不存在要么完整。
+ * 原子写盘 (tmp+rename, 同目录同文件系统 → rename 原子): 轮询方看到的文件要么不存在要么完整。
  */
 export function writeResultAtomic(path: string, text: string): void {
   mkdirSync(dirname(path), { recursive: true });

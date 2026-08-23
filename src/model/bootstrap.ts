@@ -3,7 +3,7 @@
  *
  * 背景: TUI (tui.ts) 启动时 registerProvidersFromEnv() + registerProvidersFromModelsJson(),
  * 但 dag-* 脚本是独立短命进程, 需要同一套引导。本模块把这两件事收成一个调用
- * bootstrapModelRuntime(), 每个脚本一行搞定:
+ * bootstrapModelRuntime(), 每个脚本一行完成:
  *   ① registerProvidersFromEnv()            — 内置 provider 注册 (deepseek/mimo/… from .env)
  *   ② registerProvidersFromModelsJson()     — 自定 provider (~/.pi/agent/models.json, 统一-registry 单一真源) 叠加
  *

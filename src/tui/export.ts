@@ -51,7 +51,7 @@ function messageText(msg: AgentMessage): string {
  * <文本块>
  * ```
  *
- * 空历史 → 只有表头,不编消息。角色与时间戳原样落盘,不做美化。
+ * 空历史 → 只有表头,不编消息。角色与时间戳原样写入磁盘,不做美化。
  */
 export function exportTranscriptMarkdown(messages: AgentMessage[], meta: { sessionId: string }): string {
   const lines: string[] = [`# Session ${meta.sessionId}`, ''];

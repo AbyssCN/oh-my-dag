@@ -17,7 +17,7 @@
  * ## ★ 一条这次才量到的结论(写在最前面,免得被读成"没测出东西")
  *
  * 交接文让这份夹具去「造出**写了一半的 checkpoint**」。**SIGKILL 造不出来,而且是构造上造不出来** ——
- * `CheckpointManager` 全部落盘走 tmp + `renameSync`,rename 在 POSIX 上是原子的:进程被杀时
+ * `CheckpointManager` 全部写入磁盘走 tmp + `renameSync`,rename 在 POSIX 上是原子的:进程被杀时
  * 盘上要么是旧那份完整文件,要么是新那份完整文件,**没有第三种**。写到一半的只可能是那个
  * 从不被读的 `.tmp`。
  *

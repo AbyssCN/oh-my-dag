@@ -235,7 +235,7 @@ export function readyRegion(map: PathMap): { slice: string[]; goals: string[] } 
 
 /**
  * once-tick 回流 + 预算内 D-10 自续 (MCP 无常驻 watcher 的 pull 等价):
- * landed 结果经**后端无关**折入 (reflowResearchResults: md 落盘文件 / gh issue 评论) → 新孵 research
+ * landed 结果经**后端无关**折入 (reflowResearchResults: md 存盘文件 / gh issue 评论) → 新孵 research
  * 子票在预算内自动续派。返回回流摘要行 (无事 → [])。折入的状态读写全经 backend, 此处只做编排 + 记账。
  */
 function reflowOnce(deps: PathfinderToolDeps, backend: PathBackend, slug: string): string[] {

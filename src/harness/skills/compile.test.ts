@@ -49,7 +49,7 @@ describe('D-6: mcp__<server> 宿主判据查注册表 (compile.ts)', () => {
   });
 
   it('S3-D6-UNREGISTERED: 注册表为空时 mcp__foo 照旧 skip 且 reason 列明该标记', () => {
-    const cwd = tmpCwd(); // 不落盘 .omd/mcp.json → knownMcpServerNames 返空 Set
+    const cwd = tmpCwd(); // 不写盘 .omd/mcp.json → knownMcpServerNames 返空 Set
     const cls = classifySkill(srcWithBody('调用 mcp__foo__search 拿数据'), cwd);
     expect(cls.kind).toBe('skip');
     if (cls.kind === 'skip') expect(cls.reason).toContain('mcp__foo'); // 列明原因, 含标记原文

@@ -576,7 +576,7 @@ async function main(): Promise<void> {
 }
 
 
-/** control 臂的 distances 落盘后, treatment 侧要读它来判 verdict (两臂各自独立起跑)。 */
+/** control 臂的 distances 存盘后, treatment 侧要读它来判 verdict (两臂各自独立起跑)。 */
 function readSiblingDistances(arm: 'control'): (number | null)[] {
   const p = join(READINGS_DIR, `${arm}.json`);
   if (!existsSync(p)) return [];

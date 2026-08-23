@@ -2,7 +2,7 @@
  * src/harness/chat/history-recall.test.ts —— C-1 纯函数的闸(SDD 2026-08-18-recallable-compaction-chat 切片 1)。
  *
  * 本仓惯例:每条新闸先证过一次会红,证伪方式写在各自注释里(全部实测,非空谈)。
- * fixture 都是字面条目序列,不落盘 —— 本文件零 IO,与被测件同为纯函数。
+ * fixture 都是字面条目序列,不写盘 —— 本文件零 IO,与被测件同为纯函数。
  */
 import { describe, expect, it } from 'bun:test';
 import {

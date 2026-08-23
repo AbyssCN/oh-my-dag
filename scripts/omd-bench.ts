@@ -6,7 +6,7 @@
  * `src/eval/bench/task.ts` 顶注(那里有 OpenAI 停报 / Berkeley 刷穿 / ICSE 7-8% 虚高的出处)。
  *
  * ```
- *   omd-bench extract [--limit 300] [--max 8]   扫 git 历史挑候选, 逐个跑合约, **合格的才落盘**
+ *   omd-bench extract [--limit 300] [--max 8]   扫 git 历史挑候选, 逐个跑合约, **合格的才存盘**
  *   omd-bench list                              列已建成的题
  *   omd-bench validate [--id X]                 重跑合约(题库体检: 环境漂了会红)
  * ```

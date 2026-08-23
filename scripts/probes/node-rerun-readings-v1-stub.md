@@ -113,7 +113,7 @@ raw.arms[treatment] 字面: `baselineGoal="treatment baseline: 返回 TREAT_LITE
 | 锚点 | 期望 | 实测 | 备注 |
 |---|---|---|---|
 | `resumeGreens` (resume 后 a 通过) | true×6 | `null` | **raw 缺数**, 未提供 resumeGreens 字段. 由 `aSkippedOnResume=false×6 ∧ bOutput.aSeen=1×6` 间接佐证 resume 路径仍走 a. |
-| `loadAllGreen` (全部样本落盘) | true×6 | `null` | **raw 缺数**, 未提供 loadAllGreen 字段. |
+| `loadAllGreen` (全部样本写入磁盘) | true×6 | `null` | **raw 缺数**, 未提供 loadAllGreen 字段. |
 | `resume` 透传 (aSkippedOnResume) | false×6 | `false, false, false, false, false, false` | 在, 未漂. |
 
 漂移报告: 锚点本身未漂 (resume 透传在); raw 缺 anchor 字段, 下游无法直接核实 resumeGreens / loadAllGreen.

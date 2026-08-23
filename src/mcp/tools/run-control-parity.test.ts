@@ -151,7 +151,7 @@ describe('INV-RC-1 · 介入写侧对位 (MCP dag_intervene ↔ recordInterventi
       /FAILURE_KIND_ORDER/,
     );
 
-    // 两路都不落盘
+    // 两路都不写入磁盘
     expect(readBoard(cwd)).toEqual([]);
   });
 

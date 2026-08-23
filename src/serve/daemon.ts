@@ -211,7 +211,7 @@ export function createDaemonFetch(deps: DaemonDeps): (req: Request) => Promise<R
           try {
             controller.enqueue(sseFrame(event, data));
           } catch {
-            /* 客户端断开 → enqueue 抛; 轮子继续跑完落盘, 这里静默 (对话不因刷新丢) */
+            /* 客户端断开 → enqueue 抛; 轮子继续跑完写入磁盘, 这里静默 (对话不因刷新丢) */
           }
         };
         const onEvent = (e: AgentEvent): void => {

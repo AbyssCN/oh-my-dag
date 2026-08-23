@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createDistillTools, createWebTools } from './web';
 
-// web 能力递到图外。红线: 原文零丢失 (落盘) + context 零污染 (stdout 只回索引)。
+// web 能力递到图外。红线: 原文零丢失 (写入磁盘) + context 零污染 (stdout 只回索引)。
 // fetchedUrls 是 research 第二轮那个确定性探测器的原料 —— 它必须准。
 
 const SOURCES = [

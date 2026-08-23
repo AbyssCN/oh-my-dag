@@ -9,7 +9,7 @@
  *   bun run scripts/session-writer.ts --omd-session <id> [--cwd <repo>] [--final] [--mechanical]
  *
  * 两种来源二选一(#212):`--transcript` = Claude Code 的记录文件;`--omd-session` = omd 自己的
- * 会话(从 ChatStore 读条目)。后者让 TUI 退出时能 **detached 派** 一次收口蒸馏 ——
+ * 会话(从 ChatStore 读条目)。后者让 TUI 退出时能 **detached 派** 一次收尾蒸馏 ——
  * 同步等几秒钟才退出是不能接受的, 而 fire-and-forget 在进程里活不过 exit。
  *
  * script-bootstrap 首行引导:OMD_DATA_HOME=~/.omd + setActiveProject → checkpoint 落
@@ -87,7 +87,7 @@ const res = await runWriter({
 
 console.error(
   // sha = 返回时**盘上**那份 checkpoint.md 的 sha256 前 12 位。事后判漂:
-  //   sha256sum <checkpoint> | cut -c1-12   不等 = 落盘之后有人改过它 (现场见 writer.ts 的 `sha` 字段注)。
+  //   sha256sum <checkpoint> | cut -c1-12   不等 = 写入磁盘之后有人改过它 (现场见 writer.ts 的 `sha` 字段注)。
   `[session-writer] ok=${res.ok} mode=${mode} chars=${res.chars} sha=${res.sha} degraded=${res.degraded} ` +
     `skipped=${res.skipped} checkpoint=${res.checkpointPath}` +
     (res.sink ? ` sink.ok=${res.sink.ok}${res.sink.error ? ` (${res.sink.error})` : ''}` : ''),

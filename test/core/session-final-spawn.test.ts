@@ -1,8 +1,8 @@
 /**
- * test/core/session-final-spawn —— omd 会话**收口存档**(#212)。
+ * test/core/session-final-spawn —— omd 会话**收尾存档**(#212)。
  *
  * 补的是 #211 缺的那一角:omd 自己的会话此前只在「轮尾跨档」与「压缩」存档,
- * **退出时没有收口那一次** —— 而 Claude Code 那条腿(`continuity-end.mjs` → 现在是
+ * **退出时没有收尾那一次** —— 而 Claude Code 那条腿(`continuity-end.mjs` → 现在是
  * omd hook 的 SessionEnd)一直有。omd 才是要建的 harness, 它不该比 Claude 那条少一角。
  *
  * 时机是这件事的全部难点, 两条都不行:
@@ -11,7 +11,7 @@
  * 所以走 detached 子进程。本件钉:派了什么(纯函数)+ 真派出去之后盘上真出东西(端到端)。
  *
  * 反向自检(实跑):
- *   - `finalWriterArgv` 里 `--final` 去掉 → 「收口用 final 档」红;
+ *   - `finalWriterArgv` 里 `--final` 去掉 → 「收尾用 final 档」红;
  *   - `spawnFinalCheckpoint` 的 `spawn` 那行去掉 → 端到端红;
  *   - session-writer 的 `--omd-session` 分支去掉 → 端到端红(会走成"缺 transcript"直接退)。
  */
@@ -71,7 +71,7 @@ async function waitForNamed(dir: string, name: string, timeoutMs = 40_000): Prom
  *
  * 症状与诊断:单跑这个文件 3/3 绿, 进全量 `bun test` 就红在
  * `readFileSync(writer.log).toContain('mode=final')`, 判词是 `Received: ""` ——
- * **文件在、内容空**。根因是收口子进程**先建 checkpoint.md 再把 writer.log 刷出去**,
+ * **文件在、内容空**。根因是收尾子进程**先建 checkpoint.md 再把 writer.log 刷出去**,
  * 而判据只等了前者; 机器一忙(本机当时并行跑着两个 omd run), 这个窗口就够大到被撞上。
  *
  * ⚠ 它不是"偶发噪声"这种可以按掉的东西:全量 `bun test` 是每个 omd run 的 **accept 命令**,
@@ -111,7 +111,7 @@ describe('派了什么 — finalWriterArgv', () => {
     expect(argv).toContain('sess-1');
     expect(argv).toContain('--cwd');
     expect(argv).toContain('/repo/x');
-    expect(argv).toContain('--final'); // 收口就是 final 档:它会 splice _NEXT.md 的 AUTO 区
+    expect(argv).toContain('--final'); // 收尾就是 final 档:它会 splice _NEXT.md 的 AUTO 区
     expect(argv).not.toContain('--transcript'); // omd 会话没有 transcript 文件
     expect(argv).not.toContain('--mechanical'); // env 没开就不该有
   });

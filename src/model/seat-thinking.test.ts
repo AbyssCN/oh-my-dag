@@ -7,7 +7,7 @@ import { autoAssign, type SeatThinking } from "./auto-assign";
 import { persistAutoAssigned, resolveSeatThinking } from "./role-models";
 
 // S-T 座位推理档随座位下发 (SDD 2026-07-25 skills-compile-evidence-gate S-T)。
-// GWT: ① 落盘分配含座位档 → 按坐标反查得该档 ② 老 config 无该段 → undefined (行为不变)
+// GWT: ① 写入磁盘分配含座位档 → 按坐标反查得该档 ② 老 config 无该段 → undefined (行为不变)
 //      ③ 多座位共用坐标档位不一致 → 取最高档 (不静默降 verify/judge)。
 
 let dir: string;
