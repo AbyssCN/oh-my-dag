@@ -3,6 +3,12 @@
  *
  * 表只登记稳定 id；判词原文从引擎源码里的 id 化判词串派生。这样改文案不再要求同步抬表，
  * 同一 id 的多个出口也不需要维护脆弱的出现次数。
+ *
+ * 多前缀多源码：每条 {@link GateEntry} 自带 {@link GateEntry.file}（默认引擎侧）
+ * + 可选 {@link GateEntry.prefix}（默认 {@link VERDICT_PREFIX}）。扫描器按 entry 自己的
+ * (file, prefix) 扫 —— 一份源码里同时混多前缀、或一份源码只装一种前缀都行。旧调用方
+ * 传字符串等价于「把同一份源码放在所有 entry.file 下」，对仍然只走 engine.ts + VERDICT_PREFIX
+ * 的既有 12 条而言字节等价。
  */
 
 /** 引擎侧判词前缀。完整形状为 `[omd/executor-dag][<id>] <原文>`。 */
@@ -12,6 +18,8 @@ export interface GateEntry {
   id: string;
   family: string;
   file: string;
+  /** 该 entry 的判词前缀；缺省走引擎侧 {@link VERDICT_PREFIX}。 */
+  prefix?: string;
 }
 
 /** 判生死的图级闸；一道闸可能在多个出口打印同一条 id 化判词。 */
@@ -76,15 +84,66 @@ export const GATE_REGISTRY: readonly GateEntry[] = [
     family: '谎报完成',
     file: 'src/harness/dag/engine.ts',
   },
+  {
+    // O-6 (2026-08-11 二发教训): RED 的前提是切片 verify 在实装前是红的 —— 引用既有绿测试时
+    // 结构性不成立。run-goal 的 vacuous 探针: 已绿 = 判据虚 / 活已干完, 都进 v1 回落。
+    // 前缀 [run-goal] 而非引擎侧 —— 因为这是 goal 层的判词, 不归 dag.ts 的 12 道闸管。
+    id: 'o6-vacuous-verify',
+    family: 'acceptance-oracle',
+    file: 'src/harness/goal/run-goal.ts',
+    prefix: '[run-goal]',
+  },
 ];
 
-const GATE_VERDICT_LITERAL = /(['"`])\[omd\/executor-dag\]\[([a-z-]+)\]((?:\\.|(?!\1)[^\\\r\n])*)\1/g;
+/** 转义正则元字符 —— 仅用于把动态 prefix 内容注入字面量正则文本。 */
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
-/** 从源码里的 id 化字符串字面量派生 id → 判词原文；重复 id 直接归入同一 Map 项。 */
-export function scanGateVerdicts(source: string): Map<string, string> {
+/**
+ * 按 entry 自己的 prefix 拼正则。prefix 可带方括号（如 `[omd/executor-dag]`）也可裸
+ * 文本（如 `omd/executor-dag`）—— 内部统一剥掉外层方括号再 escape。
+ *
+ * 文本除前缀段外与旧硬编码那条逐字符等价：捕获组编号 1=引号 / 2=id / 3=原文 不变,
+ * g flag 保留。id 字符类从旧 `[a-z-]+` 放宽到 `[a-z0-9-]+` —— O-6 `o6-vacuous-verify`
+ * 含数字; 老 12 条只用 `[a-z-]`, 放宽后仍能命中, 无回归。
+ */
+function buildGateVerdictRegex(prefix: string): RegExp {
+  const inner = prefix.startsWith('[') && prefix.endsWith(']') ? prefix.slice(1, -1) : prefix;
+  return new RegExp(
+    `(['"\`])\\[${escapeRegex(inner)}\\]\\[([a-z0-9-]+)\\]((?:\\\\.|(?!\\1)[^\\\\\\r\\n])*)\\1`,
+    'g',
+  );
+}
+
+/**
+ * 从源码里的 id 化字符串字面量派生 id → 判词原文；重复 id 直接归入同一 Map 项。
+ *
+ * 支持两形：
+ *  - `string`：等价于把所有 entry.file 都指同一份源码（既有 12 条行为字节等价）。
+ *  - `Record<file, source>`：按 entry.file 取源码；文件缺失 = 该 entry 不扫。
+ * 同一 (file, prefix) 组合只 matchAll 一次 —— 重复 entry 共用一次扫描结果。
+ * 跨 entry 的重复 id = 后写覆盖前写（GATE_REGISTRY 顺序保证既有 12 条先于 O-6）。
+ */
+export function scanGateVerdicts(
+  input: string | Readonly<Record<string, string>>,
+): Map<string, string> {
   const verdicts = new Map<string, string>();
-  for (const match of source.matchAll(GATE_VERDICT_LITERAL)) {
-    verdicts.set(match[2]!, match[3]!.trim());
+  const legacySource = typeof input === 'string' ? input : null;
+  const sources = typeof input === 'string' ? null : input;
+
+  const seen = new Set<string>();
+  for (const entry of GATE_REGISTRY) {
+    const prefix = entry.prefix ?? VERDICT_PREFIX;
+    const key = `${entry.file}\0${prefix}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const regex = buildGateVerdictRegex(prefix);
+    const source = legacySource !== null ? legacySource : (sources?.[entry.file] ?? '');
+    for (const match of source.matchAll(regex)) {
+      verdicts.set(match[2]!, match[3]!.trim());
+    }
   }
   return verdicts;
 }
@@ -93,7 +152,7 @@ export function scanGateVerdicts(source: string): Map<string, string> {
  * **覆盖欠账**（片 5c，2026-08-23）—— 还没有「它真的开火过」用例的闸。
  *
  * 判据是 {@link gateCoverage}：一道闸算被覆盖，当且仅当**某个测试文件里出现
- * `[omd/executor-dag][<id>]` 这个整串**。它只可能来自捕获到的判词，所以这是
+ * `[<prefix>][<id>]` 这个整串**。它只可能来自捕获到的判词，所以这是
  * **运行时**证据，不是「测试里提过这个词」——`expect_exit` 这种词在 35 个测试文件里
  * 出现过，co-occurrence 证明不了任何事（实测，2026-08-23）。
  *
@@ -130,19 +189,25 @@ export function gateCoverage(testSources: readonly string[]): {
   const covered: string[] = [];
   const uncovered: string[] = [];
   for (const entry of GATE_REGISTRY) {
-    const marker = `${VERDICT_PREFIX}[${entry.id}]`;
+    const marker = `${entry.prefix ?? VERDICT_PREFIX}[${entry.id}]`;
     (testSources.some((src) => src.includes(marker)) ? covered : uncovered).push(entry.id);
   }
   return { covered, uncovered };
 }
 
-/** 对账登记 id 与源码 id；不读盘，也不把重复出现次数当成漂移。 */
-export function reconcileGateIds(source: string): {
+/** 对账登记 id 与源码 id；不读盘，也不把重复出现次数当成漂移。
+ *
+ * 入参形态同 {@link scanGateVerdicts}：字符串（既有 12 条走单源，行为字节等价）
+ * 或 `Record<file, source>`（按 entry.file 分源）。
+ */
+export function reconcileGateIds(
+  input: string | Readonly<Record<string, string>>,
+): {
   missing: string[];
   unregistered: string[];
   empty: string[];
 } {
-  const verdicts = scanGateVerdicts(source);
+  const verdicts = scanGateVerdicts(input);
   const registered = new Set(GATE_REGISTRY.map((entry) => entry.id));
 
   return {
