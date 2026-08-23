@@ -275,7 +275,23 @@ export interface ShellRun {
   exitCode?: number;
   /** `exitCode === 0`。缺席的退出码一律 false —— 不许把"没记"读成"跑通了"。 */
   ok: boolean;
+  /**
+   * 该命令的**输出尾**(片 3m, 2026-08-23) —— 单行(连续空白已压平、无换行)、
+   * 有上限(`{@link SHELL_OUTPUT_TAIL_CAP}`)、取末尾。verifier 要的是
+   * 「这条命令打印了什么」(判词常驻尾部:`6694 pass / 0 fail`、编译错误汇总、
+   * 栈尾),而引擎此前只记了命令与退出码 —— 通道是通的, 没接的只是输出那一位。
+   *
+   * 缺席语义 (NULL ≠ 0 ≠ 不适用):
+   * - **整个 `outputTail` 缺席** = 该命令没产生输出 (内容缺席 / 空串 / 压平后为空) ——
+   *   「这条路不适用」,不是"采到了空串"(仓规 §静默坑 1)。
+   * - 字段在 ⇒ 长度 ≤ 上限、不含 `\n`, 取的是**末尾**那段。
+   */
+  outputTail?: string;
 }
+/** `outputTail` 单条上限(字节 / 字符数 = JS `.length`)。契约 D-6 钉「有上限且是常量」;
+ *  实测量级: 单条 `bun test` 摘要 + 几行错误栈尾通常 < 800, 取 2000 留余量又不至于
+ *  一次跑飞的节点把 `shellRuns` 撑爆。 */
+export const SHELL_OUTPUT_TAIL_CAP = 2000;
 /** 一次成功的写调用**实际改变了什么**(§8.5 效果指标)。 */
 export interface FileWriteEffect {
   /** 写的目标路径(与 filesTouched 同一个 cwd 根)。 */

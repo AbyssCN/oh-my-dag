@@ -184,7 +184,7 @@ export function engineFacts(
     filesRead?: readonly string[];
     kind?: string;
     status?: string;
-    shellRuns?: readonly { command: string; exitCode?: number }[];
+    shellRuns?: readonly { command: string; exitCode?: number; ok?: boolean; outputTail?: string }[];
   },
   opts: { expectExit?: number; shellCap: number },
 ): string[] {
@@ -199,7 +199,11 @@ export function engineFacts(
   //   不许丢判据证据。代价是这几行不再是时间序。
   const runs = r.shellRuns ?? [];
   const ordered = [...runs].sort((a, b) => Number(isVerificationRun(b)) - Number(isVerificationRun(a)));
-  for (const s of ordered.slice(0, opts.shellCap)) facts.push(renderShellRunFact(s));
+  for (const s of ordered.slice(0, opts.shellCap)) {
+    facts.push(renderShellRunFact(s));
+    // 片 3m: `outputTail` 另起一行 (D-1 不动老那行), 单行有上限, 缺席就不加这一行 (D-4)。
+    if (s.outputTail !== undefined) facts.push(`命令输出尾: ${s.outputTail}`);
+  }
   if (runs.length > opts.shellCap) {
     facts.push(`(另有 ${runs.length - opts.shellCap} 条命令未展示; 已优先展示校验类)`);
   }

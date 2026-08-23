@@ -190,7 +190,7 @@ export function agentScaffold(opts: {
 // 类型单一真理源 = leaf-runners.ts (executor-dag 只认接口形状, 不 import 实现) — 这里 re-export 保旧调用面。
 export type { AgentLeafInput, AgentLeafResult, AgentLeafRunner, FileWriteEffect, ShellRun, ToolStep } from './leaf-runners';
 import type { AgentLeafInput, AgentLeafResult, AgentLeafRunner, FileWriteEffect, ShellRun, ToolStep } from './leaf-runners';
-import { TOOL_STEPS_CAP, TOOL_STEPS_HEAD } from './leaf-runners';
+import { TOOL_STEPS_CAP, TOOL_STEPS_HEAD, SHELL_OUTPUT_TAIL_CAP } from './leaf-runners';
 
 export interface AgentLeafRunnerOpts {
   /** 工具落盘的工作根。默认 process.cwd()。每个 agent leaf 应被 scope 到此根下的原子产物。 */
@@ -2145,6 +2145,31 @@ export interface FileSnapshot {
  *   ③ **闸拒的命令也要记**。写/读那两条采集只记成功是对的 (失败的写不是产物), 而这里记的是
  *      **动作发生过** —— 「跑了但被拒」与「压根没跑」是两件事, 只记成功就把它们抹平了。
  */
+
+/**
+ * 从 bash 工具的 end 事件 `result` 里取出**输出尾巴**(片 3m)。**纯函数**, 与
+ * {@link createShellRunCollector} 的配对逻辑分开 —— 那两跳容易静默错
+ * (见 D-2/D-3/D-4), 单独钉比塞进闭包里强。
+ *
+ * 行为 (INV-1/2/3/4):
+ * - `content` 缺席 / 不是数组 / 首项非 text / text 不是 string ⇒ `undefined` (D-4 字段缺席);
+ * - text 经 `\s+` 压平 + trim 后为空 ⇒ `undefined`;
+ * - 否则取**末尾** `SHELL_OUTPUT_TAIL_CAP` 个字符, 无换行 (单行事实, 与 `执行命令:` 行同口径)。
+ */
+export function extractShellOutputTail(result: unknown): string | undefined {
+  const content = (result as { content?: unknown } | undefined)?.content;
+  if (!Array.isArray(content) || content.length === 0) return undefined;
+  const first = content[0];
+  if (!first || typeof first !== 'object' || (first as { type?: unknown }).type !== 'text') return undefined;
+  const raw = (first as { text?: unknown }).text;
+  if (typeof raw !== 'string') return undefined;
+  // 压平连续空白 + 去首尾空白:多行会被 `renderShellRunFact` 那条「事实是单行」的注释误读成
+  // 独立事实 (verifier.ts:195 把每条事实渲染成 `- ${f}`), 单换行也得消掉。
+  const flat = raw.replace(/\s+/g, ' ').trim();
+  if (!flat) return undefined;
+  return flat.length > SHELL_OUTPUT_TAIL_CAP ? flat.slice(-SHELL_OUTPUT_TAIL_CAP) : flat;
+}
+
 export function createShellRunCollector(): {
   note(e: { type: string; toolCallId?: string; toolName?: string; args?: unknown; result?: unknown; isError?: boolean }): void;
   runs(): ShellRun[];
@@ -2165,7 +2190,16 @@ export function createShellRunCollector(): {
       byCall.delete(e.toolCallId);
       const details = e.isError ? undefined : (e.result as { details?: { exitCode?: unknown } } | undefined)?.details;
       const exitCode = typeof details?.exitCode === 'number' ? details.exitCode : undefined;
-      out.push({ command, ...(exitCode === undefined ? {} : { exitCode }), ok: exitCode === 0 });
+      // 输出尾 (片 3m): 采集器此前路过 `e.result.content[0].text` —— 那段里有 `bun test` 摘要
+      // 与编译错误汇总, verifier 反复要原样, 而引擎手里从来没有过。压平 + 取末尾 + 单行
+      // 上限 `SHELL_OUTPUT_TAIL_CAP`(D-2/D-3/D-6)。**没输出 ⇒ 字段缺席**(D-4, 仓规 §静默坑 1)。
+      const outputTail = extractShellOutputTail(e.result);
+      out.push({
+        command,
+        ...(exitCode === undefined ? {} : { exitCode }),
+        ok: exitCode === 0,
+        ...(outputTail === undefined ? {} : { outputTail }),
+      });
     },
     runs: () => out,
   };
