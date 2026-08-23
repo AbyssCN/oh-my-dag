@@ -13,6 +13,36 @@
  * 声称能兜住撕裂, 这里就把撕裂/残留/损坏都造出来, 看恢复路径是真 fail-open 还是当场炸。
  *
  * 全程零 LLM (预构造图 + command 叶子 + 注入 judge) → 可无限重跑, 读数不含模型噪声。
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 反向自检实际读数 (skill: 闸只有被证伪过一次才算闸)
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * ① 桩掉「等退出事件」那一句 (`awaitExitBounded(proc, ...)` → 立即抛
+ *    `Error('模拟退出事件丢')`):
+ *      - 命令: `bun test test/core/fault-injection.test.ts`
+ *      - 读数: 11 pass / 0 fail / 49 expect() calls
+ *      - 结论: 该句抛 → EXIT 有界轮询兜住, EXIT 仍在 → code = 0; 不依赖该 await,
+ *        闸**仍全绿** —— 退出事件的 await 不是单点失败源。
+ *
+ * ② 桩掉「读 stdout/stderr 管道」那一句 (`readAllBounded(...)` → 立即抛同款 Error):
+ *      - 命令: `bun test test/core/fault-injection.test.ts`
+ *      - 读数: 11 pass / 0 fail / 49 expect() calls
+ *      - 结论: 管道抛 → stdoutText = '' (空串, 不外抛) → RESULT.json 走兜底路径,
+ *        EXIT/RESULT.json 在盘, code/out 仍能取; 闸**仍全绿** —— 读管道也不是单点。
+ *
+ * ③ 注入「子进程写 EXIT 文件之前抛未捕获异常」
+ *    (`fault-injection-child.ts:135` 的 `writeFileSync(join(root, 'EXIT'), '0')`
+ *    之前 `throw new Error('模拟写 EXIT 之前崩')`):
+ *      - 命令: `bun test test/core/fault-injection.test.ts`
+ *      - 读数: 5 pass / 6 fail / 34 expect() calls; 6 红**全部**落在「code 应为 0」
+ *        的断言上 (F3 四条 + F4 两条, 满 6 条), 收到的全是 1 (未捕获异常 →
+ *        proc.exitCode = 1)。
+ *      - 结论: 没有 EXIT 文件 → code 退回 proc.exitCode (1), 不是 0 → 6 条全红。
+ *        证明『没有标记』**没被**当成成功, 闸被这一击证伪, 反过来证明它是真闸。
+ *
+ * 注: ③ 的注入落在 child.ts, 不在 test 文件; 闸本体的全部修改 + 头注写在这里。
+ *     还原后 (`bun test test/core/fault-injection.test.ts`) 回到 11 pass / 0 fail。
  */
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -49,6 +79,13 @@ interface ChildOut {
 
 /** 起一个子进程跑 iterate。回 {exitCode, signal, parsed}。 */
 async function runChild(args: string[]): Promise<{ code: number | null; signal: string | null; out: ChildOut | null; stderr: string }> {
+  // 子进程在 process.exit(0) 紧邻前同步写这两个文件 —— spawn 前清掉, 否则上一轮残留会污染本次读数
+  // (同一个 <root> 在同一条用例内被复用, F1/F2 都是先 crashAt 再 runChild)。
+  const exitPath = join(root, 'EXIT');
+  const resultPath = join(root, 'RESULT.json');
+  rmSync(exitPath, { force: true });
+  rmSync(resultPath, { force: true });
+
   const proc = Bun.spawn(['bun', 'run', CHILD, '--root', root, '--run', RUN_ID, ...args], {
       // 子进程**不继承**父进程运行时改过的 env (Bun.spawn 的 env 是启动快照, 见
       // test/setup/tmpdir-isolation.ts 的已知边界)。不显式传, 夹具的 seat-usage / seat-health
@@ -58,14 +95,82 @@ async function runChild(args: string[]): Promise<{ code: number | null; signal: 
     stdout: 'pipe',
     stderr: 'pipe',
   });
-  const [stdout, stderr] = await readAllBounded([proc.stdout, proc.stderr], 'runChild 读管道') as [string, string];
-  await awaitExitBounded(proc, 'runChild(resume 子进程)');
-  const line = stdout.split('\n').find((l) => l.startsWith('##RESULT## '));
+
+  // 读管道与等退出**各自单独** try/catch:一个抛不要连累另一个。
+  // 错误只入局部变量不外抛 —— 子进程已把 EXIT/RESULT.json 写盘的话, 那些是更直接的读数 (P-2)。
+  let readErr: unknown;
+  let exitErr: unknown;
+  let stdoutText = '';
+  let stderrText = '';
+  try {
+    const [stdout, stderr] = await readAllBounded([proc.stdout, proc.stderr], 'runChild 读管道') as [string, string];
+    stdoutText = stdout;
+    stderrText = stderr;
+  } catch (e) {
+    readErr = e;
+  }
+  try {
+    await awaitExitBounded(proc, 'runChild(resume 子进程)');
+  } catch (e) {
+    exitErr = e;
+  }
+
+  // 任一句抛过 → 对 EXIT 有界轮询 (5s/50ms, 远低于 60s 的 awaitExitBounded 内置界, 不再调它/不杀进程/
+  // 不读 RESULT.json —— 把决策权留给子进程本身:它要写就会写, 超时即承认这次拿不到 EXIT 事实)。
+  if (readErr !== undefined || exitErr !== undefined) {
+    const CAP_MS = 5_000;
+    const INTERVAL_MS = 50;
+    const deadline = Date.now() + CAP_MS;
+    while (!existsSync(exitPath) && Date.now() < deadline) {
+      await Bun.sleep(INTERVAL_MS);
+    }
+  }
+
+  // code 优先级:EXIT 解析出的整数 > proc.exitCode 真值。EXIT 不在场或解析失败才退回。
+  // 不许写 ?? 常数兜底 (如 ?? 0 / ?? 1 / ?? 137) —— null 是 ChildOut.code 类型自洽的空态, 不是兜底。
+  let code: number | null;
+  if (existsSync(exitPath)) {
+    const codeRaw = readFileSync(exitPath, 'utf-8').trim();
+    const parsed = /^-?\d+$/.test(codeRaw) ? Number.parseInt(codeRaw, 10) : NaN;
+    code = Number.isFinite(parsed) ? parsed : (proc.exitCode ?? null);
+  } else {
+    code = proc.exitCode ?? null;
+  }
+
+  // out 优先级:stdout 的 ##RESULT## 行 > <root>/RESULT.json。stdout 没找到或 parse 抛才读 RESULT.json;
+  // 都不在 → out = null。
+  let out: ChildOut | null = null;
+  const resultLine = stdoutText.split('\n').find((l) => l.startsWith('##RESULT## '));
+  if (resultLine) {
+    try {
+      out = JSON.parse(resultLine.slice('##RESULT## '.length)) as ChildOut;
+    } catch {
+      if (existsSync(resultPath)) {
+        try {
+          out = JSON.parse(readFileSync(resultPath, 'utf-8')) as ChildOut;
+        } catch {
+          out = null;
+        }
+      }
+    }
+  } else if (existsSync(resultPath)) {
+    try {
+      out = JSON.parse(readFileSync(resultPath, 'utf-8')) as ChildOut;
+    } catch {
+      out = null;
+    }
+  }
+
+  // 两句都抛**且**两文件都不在场 → 读数真报废, 抛;否则照常返回 (不让本次读数报废)。
+  if (readErr !== undefined && exitErr !== undefined && !existsSync(exitPath) && !existsSync(resultPath)) {
+    throw readErr ?? exitErr;
+  }
+
   return {
-    code: proc.exitCode,
+    code,
     signal: proc.signalCode,
-    out: line ? (JSON.parse(line.slice('##RESULT## '.length)) as ChildOut) : null,
-    stderr,
+    out,
+    stderr: stderrText,
   };
 }
 

@@ -119,18 +119,19 @@ const res = await iterateExecutorDag('把三步做完', {
 
 const after = manager.loadFixpointJournal(runId);
 const statuses = res.finalRound?.result.results ?? {};
-process.stdout.write(
-  `##RESULT## ${JSON.stringify({
-    startedFromRound: (resume ? before?.completedRounds ?? 0 : 0) + 1,
-    roundsThisProcess: res.rounds.length,
-    converged: res.converged,
-    completedRounds: after?.completedRounds ?? 0,
-    poisoned: after?.poisoned.length ?? 0,
-    lastRoundStatuses: Object.fromEntries(
-      NODE_IDS.map((id) => [id, (statuses[id] as { status?: string } | undefined)?.status ?? 'absent']),
-    ),
-    reusedNodes: res.finalRound?.result.reusedNodes ?? [],
-  })}\n`,
-);
+const resultJson = JSON.stringify({
+  startedFromRound: (resume ? before?.completedRounds ?? 0 : 0) + 1,
+  roundsThisProcess: res.rounds.length,
+  converged: res.converged,
+  completedRounds: after?.completedRounds ?? 0,
+  poisoned: after?.poisoned.length ?? 0,
+  lastRoundStatuses: Object.fromEntries(
+    NODE_IDS.map((id) => [id, (statuses[id] as { status?: string } | undefined)?.status ?? 'absent']),
+  ),
+  reusedNodes: res.finalRound?.result.reusedNodes ?? [],
+});
+writeFileSync(join(root, 'RESULT.json'), resultJson, 'utf-8');
+process.stdout.write(`##RESULT## ${resultJson}\n`);
+writeFileSync(join(root, 'EXIT'), '0', 'utf-8');
 // 引擎里有存活的 keep-alive (心跳/池), 事件循环不会自己空 → 显式退出, 否则父进程永远等不到 exited。
 process.exit(0);
