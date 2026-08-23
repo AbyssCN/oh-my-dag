@@ -236,8 +236,10 @@ export const SEATS: readonly SeatSpec[] = [
     frequency: '**每次 research 1 发** (收敛终局, 不发散)',
     // 它干的活是**在别人的产出里找盲点**。与被找的对象同族时这一格结构性失效 —— 与 verifier
     // 那条同源 (判与证共享盲点 = 证不出对方的错), 故标 required。
-    // ⚠ 诚实注记: 目前**没有闸消费 `crossFamily`** (INV-3 的代码检查只看 verifier 一个座, 且只查
-    // auto-assign 的死层)。这一格是**声明的意图**, 不是被强制的约束 —— 见 issue #142/#143。
+    // ✅ 2026-08-23 已上闸 (#142/#143 收口): `model/seat-conformance.ts` 的 `reconcileSeats`
+    // 按 `AUDITS` 逐座位对账「它审谁的产出」, 同族 ⇒ error; `scripts/seat-check.ts` 在**真**
+    // config 上跑。触发它的现场: `review` 掉队两次没人报。
+    // ⚠ 仍是**声明**的那一半: `AUDITS` 表外的 `required` 座位不判 (宁可漏不可误报)。
     crossFamily: 'required',
     thinking: 'high',
     // 收敛分析要稳定可复现: 同一批候选不该这一轮找出盲点、下一轮找不出。
