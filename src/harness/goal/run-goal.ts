@@ -905,7 +905,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
           const probe = await config.dag.commandRunner({ command: s.verify });
           if (probe.exitCode === 0) {
             throw new Error(
-              `切片 ${s.id} 的 verify 实装前已绿 (\`${s.verify}\` → 0): RED 无法成立 —— ` +
+              `[run-goal][o6-vacuous-verify] 切片 ${s.id} 的 verify 实装前已绿 (\`${s.verify}\` → 0): RED 无法成立 —— ` +
                 '判据虚 (换实装前天然红的命令, 如产物 grep) 或活已干完 (O-6 vacuous 探针)',
             );
           }

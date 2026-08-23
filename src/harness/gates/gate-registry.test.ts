@@ -9,7 +9,7 @@
  *  - GWT-3: 注入一段假源码**缺** heartbeat ⇒ `missing` 点名它
  *  - GWT-5: 第一项不含 `verdict`/`count` 字段 (旧 API 已删)
  *  - GWT-6: `scanGateVerdicts` 不读盘, 注入纯假内容应逐条一致
- *  - GWT-7: 12 条原文以整串仍在 engine.ts 里, 反向钉死「只插不改」
+ *  - GWT-7: 13 条原文以整串仍在 entry.file 里, 反向钉死「只插不改」
  */
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
@@ -27,16 +27,23 @@ import { readdirSync, statSync } from 'node:fs';
 
 // 与 seam-catalog.test.ts 同构造: 从 src/harness/gates/ 上溯三层到仓根
 const ROOT = join(import.meta.dir, '../../..');
-const ENGINE_TS = join(ROOT, 'src/harness/dag/engine.ts');
-const ENGINE_SRC = readFileSync(ENGINE_TS, 'utf8');
+
+// 真源锚: 按每条 GateEntry 自己的 (file, prefix) 去对应源码里扫。13 条: 12 条走
+// engine.ts + [omd/executor-dag], 第 13 条 o6-vacuous-verify 走 run-goal.ts + [run-goal]。
+// 用 scanGateVerdicts 的 Record 入参形态 —— 库内已按 (file, prefix) 去重 + 派发,
+// 不在测试侧再开一份并行调度。Record 的 key 必须与 entry.file 一字不差 (仓根相对路径)。
+const SOURCE_BY_FILE: Readonly<Record<string, string>> = {
+  'src/harness/dag/engine.ts': readFileSync(join(ROOT, 'src/harness/dag/engine.ts'), 'utf8'),
+  'src/harness/goal/run-goal.ts': readFileSync(join(ROOT, 'src/harness/goal/run-goal.ts'), 'utf8'),
+};
 
 // 实扫 — 用于 GWT-1 / GWT-4 / GWT-7 (这些要求「扫真源码」)
-const REAL_VERDICTS = scanGateVerdicts(ENGINE_SRC);
+const REAL_VERDICTS = scanGateVerdicts(SOURCE_BY_FILE);
 
-describe('GWT-1 — INV-1: 扫真 engine.ts 的 id 集合 ⊇ 表里全部 12 个 id', () => {
-  test('登记的 12 个 id 都被实扫命中', () => {
+describe('GWT-1 — INV-1: 扫真源 (engine.ts + run-goal.ts) 的 id 集合 ⊇ 表里全部 13 个 id', () => {
+  test('登记的 13 个 id 都被实扫命中', () => {
     const registryIds = GATE_REGISTRY.map((e) => e.id);
-    expect(registryIds).toHaveLength(12);
+    expect(registryIds).toHaveLength(13);
     for (const id of registryIds) {
       expect(REAL_VERDICTS.has(id)).toBe(true);
     }
@@ -64,21 +71,22 @@ describe('GWT-3 — INV-3: 判别力锚 + 真源锚 (缺 heartbeat 必红; 真 e
     expect(result.missing).toContain('heartbeat');
   });
 
-  // (b) 真源锚: 用真 engine.ts 文本跑 scanGateVerdicts + reconcileGateIds,
+  // (b) 真源锚: 用真 engine.ts + run-goal.ts 双源跑 scanGateVerdicts + reconcileGateIds,
   //     必须断言 missing 为空且扫到的 id 集合含 'heartbeat'。
   //     删掉 engine.ts 里任意一条 `[heartbeat]` 标记 → 本测试当场红。
+  //     删掉 run-goal.ts 里那段 `[run-goal][o6-vacuous-verify]` ⇒ 同红 (13 条登记全收)。
   //     (只验合成 fixture 的写法不合格)
-  test('真 engine.ts: missing 为空 且 扫到的 id 集合含 heartbeat', () => {
-    const verdicts = scanGateVerdicts(ENGINE_SRC);
-    const reconciled = reconcileGateIds(ENGINE_SRC);
+  test('真源 (engine.ts + run-goal.ts): missing 为空 且 扫到的 id 集合含 heartbeat', () => {
+    const verdicts = scanGateVerdicts(SOURCE_BY_FILE);
+    const reconciled = reconcileGateIds(SOURCE_BY_FILE);
     expect(reconciled.missing).toEqual([]);
     expect(verdicts.has('heartbeat')).toBe(true);
   });
 });
 
-describe('GWT-4 — INV-4: 12 条原文都非空且不含换行', () => {
+describe('GWT-4 — INV-4: 13 条原文都非空且不含换行', () => {
   test('实扫的每条 verdict .length > 0 且 !.includes(\\n)', () => {
-    expect(REAL_VERDICTS.size).toBe(12);
+    expect(REAL_VERDICTS.size).toBe(GATE_REGISTRY.length);
     for (const [id, verdict] of REAL_VERDICTS) {
       expect(verdict.length).toBeGreaterThan(0);
       expect(verdict.includes('\n')).toBe(false);
@@ -93,7 +101,7 @@ describe('GWT-5 — INV-5: GateEntry 不再带 verdict / count', () => {
     expect('count' in first).toBe(false);
   });
 
-  test('(兜底) 全表 12 项都不带 verdict / count', () => {
+  test('(兜底) 全表 13 项都不带 verdict / count', () => {
     for (const entry of GATE_REGISTRY as unknown as Record<string, unknown>[]) {
       expect('verdict' in entry).toBe(false);
       expect('count' in entry).toBe(false);
@@ -123,9 +131,12 @@ describe('GWT-6 — INV-6: scanGateVerdicts 纯函数, 不读盘, 逐条一致',
   });
 });
 
-describe('GWT-7 — INV-7: 12 条原文以整串仍在 engine.ts 里 (保证只插不改)', () => {
+describe('GWT-7 — INV-7: 13 条原文以整串仍在 entry.file 里 (保证只插不改)', () => {
   // 逐条钉死 — 不用扫描结果当期望值, 而是拿实扫结果作为「整串」
-  // 反向断言: 这个整串必须出现在 engine.ts 源码里 (即扫描器没自己编)
+  // 反向断言: 这个整串必须出现在 entry.file 指向的源码里 (即扫描器没自己编)。
+  // Prefix 优先用 entry.prefix (post-impl 字段), 缺省 = VERDICT_PREFIX。
+  // 第 13 行 (o6-vacuous-verify) 故意只用前缀切片, 避开 ` 字符在 TS 字面量里的转义噪音
+  // —— 这条只验前缀 + 起步文案确实落在 run-goal.ts 源码里, 全文仍由 GWT-1 / GWT-4 实扫覆盖。
   test.each([
     ['artifact-empty', '产物校验失败 → 节点 failed (拒绝 empty-done)'],
     ['artifact-verdict', '产物闸判定 (declaredArtifact 节点; entry = 进闸条数)'],
@@ -139,9 +150,15 @@ describe('GWT-7 — INV-7: 12 条原文以整串仍在 engine.ts 里 (保证只�
     ['oracle-exit-scope', 'expect_exit 只对 executor:command 生效 → 本节点忽略 (D-K)'],
     ['writescope-drop', '产物闸写域外路径剔除 (不参与判死, 仅记账; s1 Step C)'],
     ['false-completion', 'D-4 谎报完成闸: 声称完成而验收命令实败 → 判未收敛'],
-  ] as const)('id=%s 整串仍在 engine.ts', (id, verdict) => {
-    const needle = `${VERDICT_PREFIX}[${id}] ${verdict}`;
-    expect(ENGINE_SRC.includes(needle)).toBe(true);
+    ['o6-vacuous-verify', '切片 ${s.id} 的 verify 实装前已绿'],
+  ] as const)('id=%s 整串仍在 entry.file', (id, verdict) => {
+    const entry = GATE_REGISTRY.find((e) => e.id === id);
+    expect(entry).toBeDefined();
+    const src = SOURCE_BY_FILE[entry!.file];
+    expect(src).toBeDefined();
+    const prefix = (entry as GateEntry & { prefix?: string }).prefix ?? VERDICT_PREFIX;
+    const needle = `${prefix}[${id}] ${verdict}`;
+    expect(src!.includes(needle)).toBe(true);
   });
 });
 
