@@ -19,6 +19,7 @@ import {
 	type Channel,
 	type DeclaredPlan,
 	discoverChannels,
+	modelFamily,
 	orderByAmortization,
 } from "./channels";
 import { type ModelRating, lookupRating } from "./model-ratings";
@@ -344,7 +345,12 @@ export function autoAssign(input: AutoAssignInput): AssignmentMap {
 	// INV-3 跨家族校验闸: 校验座位与大脑座位落到同一个 provider 家族 = **判和证共享盲点**,
 	// 跨模型对抗名存实亡。可达家族只剩一个时这是不可避免的 (2026-07-29 的 deepseek-only 就是),
 	// 但**不可避免不等于可以静默** —— 这里明说一句, 否则一条不变量会在没人注意时死掉。
-	const famOf = (c?: string): string | undefined => c?.split(":")[0];
+	// ⚠ **家族判定走 `modelFamily`, 不用 `coord.split(":")[0]`** (2026-08-23 修):
+	//   裸前缀会把 `minimax-cn` 与 `minimax-us` 判成**异族** —— 实测 `modelFamily` 两者都是
+	//   `minimax`(它剥 `-cn/-us/-go/-coding/-platform` 后缀并做品牌归一)。裸前缀下一次同族
+	//   自审会从这道闸底下**静默溜过去**, 而这道闸存在的全部理由就是不让它静默。
+	//   同一判据在 `model/seat-conformance.ts` 用的也是 `modelFamily` —— 两处必须同口径。
+	const famOf = (c?: string): string | undefined => (c ? modelFamily(c) : undefined);
 	const verifyFam = famOf(result.verifier?.coord);
 	const brainFams = new Set(
 		[result.conductor?.coord, result.judge?.coord, result.leaf?.coord].map(famOf).filter(Boolean) as string[],

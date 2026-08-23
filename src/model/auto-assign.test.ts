@@ -9,7 +9,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync, readFileSync } from "node:fs";
-import type { DeclaredPlan } from "./channels";
+import { modelFamily, type DeclaredPlan } from "./channels";
 import { logger } from "../logger";
 import { autoAssign, runAutoAssign } from "./auto-assign";
 import { ALL_SEATS } from "./role-models";
@@ -255,6 +255,26 @@ describe("autoAssign", () => {
 		} finally {
 			spy.mockRestore();
 		}
+	});
+
+	// ── 2026-08-23: INV-3 的家族判定换成 modelFamily ────────────────────────────
+	//
+	// 旧写法 `c?.split(":")[0]` 拿的是**裸 provider 前缀**, 会把 `minimax-cn` 与 `minimax-us`
+	// 判成异族 —— 于是一次真同族自审从这道闸底下**静默溜过去**, 而这道闸存在的全部理由
+	// 就是不让它静默。
+	//
+	// ★ 证伪方式 (当场验过): 把 auto-assign.ts 的 famOf 改回 `c?.split(":")[0]` → 本条红。
+	test("★ INV-3 家族判定走 modelFamily: minimax-cn 与 minimax-us 是**同族**", () => {
+		// 语义面: 这是判据本身要的性质。
+		expect(modelFamily("minimax-cn:MiniMax-M3")).toBe(modelFamily("minimax-us:MiniMax-M3"));
+		// 裸前缀拿不到这条 —— 记下差距, 免得有人"顺手简化"回去。
+		expect("minimax-cn:MiniMax-M3".split(":")[0]).not.toBe("minimax-us:MiniMax-M3".split(":")[0]);
+
+		// 接线面: INV-3 那处**确实**用的是 modelFamily, 不是裸前缀 (同
+		// agent-leaf-shellruns-wiring.test.ts 的接线钉法 —— 判据在源码里, 就在源码上钉)。
+		const src = readFileSync(join(import.meta.dir, "auto-assign.ts"), "utf8");
+		expect(src).toContain("const famOf = (c?: string): string | undefined => (c ? modelFamily(c) : undefined);");
+		expect(src).not.toContain('const famOf = (c?: string): string | undefined => c?.split(":")[0];');
 	});
 
 	test("INV-3 降级可见: 只有一个家族可达 → 判与证同族, autoAssign 必须打 warn 而非静默", () => {
