@@ -3738,6 +3738,10 @@ async function executePlan(
         // ⚠ 判据是 `declaredArtifact` 而**不是** `producesFiles` —— 见上面那段注: 后者宽在路由上
         //   没代价, 宽在这里的代价是判一个只读节点失败 (盘上 6/21)。
         if (declaredArtifact) {
+          // 产物闸进闸态 (SDD C-1 INV-3, 2026-08-23): 必须在任何写集核实 / 救援改写
+          // `filesTouched` **之前**取这一位的 length —— 救援①②③ 救回来后那个数叫「出闸条数」,
+          // 不是分母; 分母 = 进闸那一刻 `filesTouched` 的 length。两条都进 payload (INV-4)。
+          const entryFilesTouched = filesTouched.length;
           const root = artifactRoot ?? continuity?.repoRoot ?? process.cwd();
           // 「主干根」用于 INV-2 锚回 (SDD 2026-08-22): leaf 报主干绝对路径时,
           // 剥这个前缀再拼 root 才能命中 worktree。**不**等于 `root` (非 branch 时相等,
@@ -3921,6 +3925,13 @@ async function executePlan(
                   })
                   .join(', ')}`;
             logger.warn({ node: id, filesTouched, missing }, '[omd/executor-dag] 产物校验失败 → 节点 failed (拒绝 empty-done)');
+            // 产物闸判定 (判死出口, SDD C-1 INV-1/2): 无论判死判活都打这一行
+            // (entry 取自进闸态, exit = 此刻 filesTouched.length, 救援/核实重赋值之后
+            // —— 出闸态 —— 的真值)。与同出口的 `产物校验失败` 判词**并存**,非二选一。
+            logger.info(
+              { node: id, entry: entryFilesTouched, exit: filesTouched.length, verdict: 'dead' },
+              '[omd/executor-dag] 产物闸判定 (declaredArtifact 节点; entry = 进闸条数)',
+            );
             return {
               id, status: 'failed', failureKind: 'empty-artifact', kind: 'agent', model,
               output: `[产物校验失败: ${why}] 原输出: ${text.slice(0, 400)}`,
@@ -3960,6 +3971,12 @@ async function executePlan(
               { node: id, files: parseFailures.map((f) => f.path) },
               '[omd/executor-dag] 写后即验: 节点写完之后文件语法解析不过 → 节点 failed (部分写入损坏)',
             );
+            // 产物闸判定 (判死出口, SDD C-1 INV-1/2): 第二个判死出口 (broken-artifact)
+            // 同样打这一行 —— payload 形状与 empty-artifact 出口**逐字相同** (D-3)。
+            logger.info(
+              { node: id, entry: entryFilesTouched, exit: filesTouched.length, verdict: 'dead' },
+              '[omd/executor-dag] 产物闸判定 (declaredArtifact 节点; entry = 进闸条数)',
+            );
             return {
               id, status: 'failed', failureKind: 'broken-artifact', kind: 'agent', model,
               output: `[${why}] 原输出: ${text.slice(0, 400)}`,
@@ -3967,6 +3984,13 @@ async function executePlan(
               ...observabilityTail(),
             };
           }
+          // 产物闸判定 (判活出口, SDD C-1 INV-1): 两道闸 (empty-artifact + parseFailures)
+          // 都放行 ⇒ declaredArtifact 节点跑完产物闸。payload 形状与两个判死出口**逐字相同** (D-3):
+          // 不让两条出口各自微调文案, 漂移的代价从来不只在这一次。
+          logger.info(
+            { node: id, entry: entryFilesTouched, exit: filesTouched.length, verdict: 'live' },
+            '[omd/executor-dag] 产物闸判定 (declaredArtifact 节点; entry = 进闸条数)',
+          );
         }
       } else {
         // inproc leaf 带共享冻结前缀 (system) → 暖发后跨 leaf 命中 prompt-cache。
