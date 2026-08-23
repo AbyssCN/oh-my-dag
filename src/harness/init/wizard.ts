@@ -350,7 +350,7 @@ export interface WizardIO {
   note(message: string): void;
 }
 
-/** preset 落盘的写入口 (注入便于测试; 默认真实现)。 */
+/** preset 写盘的入口 (注入便于测试; 默认真实现)。 */
 export interface PresetPersistDeps {
   /** 自定 provider → ~/.pi/agent/models.json (统一-registry 单一真源)。 */
   upsertProvider: (input: { id: string; baseUrl: string; keyEnv: string }) => void;
@@ -514,7 +514,7 @@ export const TUNABLE_CONFIG_ROLES: readonly { role: ModelRole; label: string }[]
 /**
  * 逐角色微调步 (④): 配了多 provider/网关 (opencode-go 一把 key 多家族 · pi OAuth 多后端) 时,
  * 各节点角色可挂不同模型。select 循环 (选角色 → 填坐标 → 重复, '完成'退出) — 不逐项轰炸。
- * env 角色写 updates (随 env 落盘); config 角色走 persistRoleModel。坐标格式校验 (COORD_RE),
+ * env 角色写 updates (随 env 写盘); config 角色走 persistRoleModel。坐标格式校验 (COORD_RE),
  * 'kimi-k3' 这类缺 provider 前缀的输入被拒并提示。导出便于测试直驱。
  */
 export async function runRoleTuneStep(
@@ -550,7 +550,7 @@ export async function runRoleTuneStep(
   }
 }
 
-// ── grill 评论区通道 token 收口 (GitHub issue 里 @claude → 云端 grill) ─────────────────
+// ── grill 评论区通道 token 收尾 (GitHub issue 里 @claude → 云端 grill) ─────────────────
 //
 // grounding: pathfinder init 的 GRILL_KEY = CLAUDE_CODE_OAUTH_TOKEN (setupGrillChannel 铺 repo
 // secret 用它); claude-token-auto.py 的 TOKEN_RE = sk-ant-oat01-[A-Za-z0-9_-]{40,}。两处同名同形,
@@ -621,12 +621,12 @@ async function runGrillPasteFlow(io: WizardIO, updates: Record<string, string>):
 }
 
 /**
- * grill 评论区通道 token 收口步 (provider key 之后, 可选件): GitHub issue 里 @claude 触发云端 grill,
+ * grill 评论区通道 token 收尾步 (provider key 之后, 可选件): GitHub issue 里 @claude 触发云端 grill,
  * 需 CLAUDE_CODE_OAUTH_TOKEN。整步**可选** — 任何失败/跳过都不阻断向导 (与 pathfinder init 可选件语义一致)。
  *   - env (或本次前面步骤 updates) 已有 token → 打码显示 + 跳过 (不重问)。
  *   - 未配 → 三选一: ① paste 手贴 (形状闸, 不符重问一次) ② auto 跑 python 配方 (交互 stdio 继承 → 回读确认;
  *     python 缺失/脚本失败 → 回落 paste) ③ skip (只损失评论区通道, 研究主链不受影响)。
- * 写入: paste 走 updates (随批 upsertEnv 落盘); auto 由 python 直写 envPath, 向导尾部 re-read 自动纳入,
+ * 写入: paste 走 updates (随批 upsertEnv 写盘); auto 由 python 直写 envPath, 向导尾部 re-read 自动纳入,
  * 并同步进 env 供本次 boot 立即可用。导出便于测试直驱。永不抛。
  */
 export async function runGrillChannelStep(
@@ -782,7 +782,7 @@ export async function runInitWizard(deps: InitWizardDeps): Promise<InitWizardRes
     );
   }
 
-  // ②′ grill 评论区通道 token 收口 (provider key 之后, 可选件): 缺 token 只损失评论区通道, 不阻断向导。
+  // ②′ grill 评论区通道 token 收尾 (provider key 之后, 可选件): 缺 token 只损失评论区通道, 不阻断向导。
   await runGrillChannelStep(io, updates, env, envPath, deps.grill ?? {});
 
   // ③ web 搜索 (可选)

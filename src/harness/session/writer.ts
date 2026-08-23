@@ -6,11 +6,11 @@
  * 管线:transcript 增量(distillOffset 起)+ 旧 checkpoint + ledger 尾
  *   → continuity 角色便宜模型蒸馏 9 段 checkpoint.md(段预算,总 ≤6k tok)
  *   → 零-LLM 验真闸(结构 + 文件路径存在 + commit hash ∈ git + noun-gate 容差 3)fail→回喂重写 1 次→机械降级
- *   → 落盘 contDir/checkpoint.md + latest.json 指针;--final 时 splice _NEXT.md 的 AUTO 标记区
+ *   → 写入磁盘 contDir/checkpoint.md + latest.json 指针;--final 时 splice _NEXT.md 的 AUTO 标记区
  *   → sinkCheckpoint 镜像进 omd SQLite(fail-open,markdown 是真理源)。
  * fail-open:模型/验真全挂也产出机械降级版,永不让调用方(hook 链)报错。
  *
- * 落盘位置 = resolveProject(cwd).dataPath('session')(OMD_DATA_HOME 感知,per-repo);
+ * 存储位置 = resolveProject(cwd).dataPath('session')(OMD_DATA_HOME 感知,per-repo);
  * **刻意避开** DAG-run 续跑的 .omd/continuity/(g3 命名分离裁决)。
  *
  * @module
@@ -100,7 +100,7 @@ export interface WriterResult {
    *
    * ## 它治的那个病(有现场)
    *
-   * session `50f0173c` :writer 于 20:35:17 蒸馏出 5,821 字符落盘并镜像进 SQLite,
+   * session `50f0173c` :writer 于 20:35:17 蒸馏出 5,821 字符并写入磁盘,镜像进 SQLite,
    * **20 秒后**一次进程外的 Write 把 `checkpoint.md` 换成了另一份 2,902 字符的手写版。
    * 事后能看见的只有 `writer.log` 里那个对不上的 `chars=5821` —— 而对不对得上,
    * 得先有人去数盘上那份有多少字符,没人会去数。**漂了不留痕。**
@@ -113,7 +113,7 @@ export interface WriterResult {
    * ```
    * sha256sum <checkpointPath> | cut -c1-12   # 与 writer.log 的 sha= 比
    * ```
-   * 不等 = 落盘之后有人改过它。**不等不代表出错** —— 只代表 SQLite 那面镜像的是旧内容。
+   * 不等 = 写入磁盘之后有人改过它。**不等不代表出错** —— 只代表 SQLite 那面镜像的是旧内容。
    *
    * ⚠ 三条返回路径都要有值,且都必须是**盘上那份**的哈希,不是"本次蒸馏出的那份":
    * `skipped` 与「降级不覆盖」两条路都不写盘,它们的哈希是**旧** checkpoint 的。
@@ -326,7 +326,7 @@ async function distill(
 // ─── main ─────────────────────────────────────────────────────────────────────
 
 /**
- * 跑一次 checkpoint 蒸馏 + 落盘 + 镜像。全程 fail-open:任何环节挂了都产出机械降级版并返回,
+ * 跑一次 checkpoint 蒸馏 + 写入磁盘 + 镜像。全程 fail-open:任何环节挂了都产出机械降级版并返回,
  * 绝不抛给调用方(hook 链)。
  */
 export async function runWriter(opts: WriterOptions): Promise<WriterResult> {
@@ -408,7 +408,7 @@ export async function runWriter(opts: WriterOptions): Promise<WriterResult> {
   // 判据方向:**陈旧但真**优于**新鲜但空**。旧那份至少还写着上一程干了什么;
   // 降级版一个字都没有,留着它等于交接断档。
   //
-  // 降级版本身仍然落盘 —— 落到 sidecar,因为「蒸馏为什么失败」是修 writer 的唯一线索,
+  // 降级版本身仍然写入磁盘 —— 落到 sidecar,因为「蒸馏为什么失败」是修 writer 的唯一线索,
   // 直接丢掉就又犯一次吞证据。
   if (degraded && prevCheckpoint && !prevCheckpoint.startsWith('<!-- DEGRADED')) {
     try {

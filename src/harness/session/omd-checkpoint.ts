@@ -2,7 +2,7 @@
  * src/harness/session/omd-checkpoint —— omd **自己的**会话什么时候存一次交接档(#211)。
  *
  * Claude Code 那头我们只能等它发 `Stop` / `PreCompact`;omd 的循环是自己的代码,
- * 该存档的那两个时刻**本来就在跑**(轮尾落盘、压缩),缺的只是一个出口。本模块就是那个出口。
+ * 该存档的那两个时刻**本来就在跑**(轮尾写入磁盘、压缩),缺的只是一个出口。本模块就是那个出口。
  *
  * 档距口径与 CC 那条共用 `bucket.ts` —— 同一个人在两个 harness 下不该拿到两种存档节奏。
  *
@@ -66,7 +66,7 @@ export function decideOmdCheckpoint(opts: {
 
 /**
  * 交接镜像层实例。**窄闸**(只 continuity 一格)与 `scripts/session-writer.ts` 同款 ——
- * 写入面不该因为要写一条交接就放宽。开不出来返 `null`:markdown 仍会落盘,少的只是镜像。
+ * 写入面不该因为要写一条交接就放宽。开不出来返 `null`:markdown 仍会写入磁盘,少的只是镜像。
  */
 function openContinuityMemory(cwd: string, env: NodeJS.ProcessEnv): OmdMemory | null {
   try {

@@ -200,7 +200,7 @@ function badAnchorVerify() {
 
 test('挂点 runReview: 产出出口带 anchorCheck, 违规锚 → red + 报告含降级记账段', async () => {
   // 证伪方式: 若挂点没接 (产出出口裸放 verified), 幻觉锚以 P0 原档流出且报告无降级段;
-  // 断言 res.anchorCheck.red=true + 落盘 doc 含「降级记账」即证伪。
+  // 断言 res.anchorCheck.red=true + 写盘 doc 含「降级记账」即证伪。
   const cwd = makeCwd(100);
   const opts: RunReviewOpts = {
     diff: 'diff --git a/x.ts b/x.ts\n+const x = 1;',

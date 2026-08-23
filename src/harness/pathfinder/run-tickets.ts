@@ -12,7 +12,7 @@
  *
  * ## 三条出口 (D-2)
  *
- * ① **契约段未决** —— spec 落盘文件的 `## 未决 (Open)` 段条目 → grill 票。
+ * ① **契约段未决** —— spec 写盘文件的 `## 未决 (Open)` 段条目 → grill 票。
  * ② **execute 发现物** —— 词表**复用** {@link extractGoalDiscoveries} (S-1 D-G1.5 的唯一定义处)。
  *    本模块只决定**喂哪几行**给它, 不重写一份判据: 两处各算一份词表必漂, 本仓已为这条付过账。
  * ③ **终态面** (blocked / 预算停 / 同因熔断) —— 原因 + blame 摘要 + resume 把手 (G-2)。
@@ -62,7 +62,7 @@ export interface RunTicketSink {
 export interface RunTicketContext {
   /** 票身 runId 锚 (INV-S1-2 `suggestedBy`)。空串 = 调用方缺陷, applySuggestions 会整批拒。 */
   runId: string;
-  /** 契约段落盘 spec 全文。省略 = ① 出口缺席 (读不到 ≠ 零未决)。 */
+  /** 契约段写盘 spec 全文。省略 = ① 出口缺席 (读不到 ≠ 零未决)。 */
   specText?: string;
   /** exec 图的 verifier 面 (`ExecutorDagResult.verification` 子集; 缺席 = 没配 verifier)。 */
   verification?: { pass: boolean; reason: string; circuitBroken?: boolean };

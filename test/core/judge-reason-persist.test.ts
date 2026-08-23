@@ -1,5 +1,5 @@
 /**
- * **内环 judge 判词落盘 + No-silent-caps**(片 1, #227, 2026-08-23)。
+ * **内环 judge 判词写入磁盘 + No-silent-caps**(片 1, #227, 2026-08-23)。
  *
  * ## 它治的是什么
  *
@@ -7,7 +7,7 @@
  * 但**没说它们说了什么话** —— 判词原文只在内存里, 跑完即丢。resume 读不回来,
  * verifier 与读数板只能看到"那一轮 judge 说没成", 看不到理由。
  *
- * 补完之后, journal 这一档也按 No-silent-caps 守: 判词超长 → 全文落盘 + 指针,
+ * 补完之后, journal 这一档也按 No-silent-caps 守: 判词超长 → 全文写入磁盘 + 指针,
  * 与 `capFanin` / `renderHandoff`(#226)同形。
  *
  * ## GWT(从 SDD 直接搬)

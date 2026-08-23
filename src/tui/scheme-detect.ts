@@ -40,7 +40,7 @@ export function detectTerminalScheme(timeoutMs = 200): Promise<ColorScheme | nul
     const onData = (d: Buffer): void => {
       buf += d.toString('latin1');
       // 响应没到齐时 parse 返 undefined → 继续攒; 到齐解得出就收。到齐但解不出的
-      // 垃圾串走不到 done —— 由 timeout 收口成 null (等 200ms, 不误判)。
+      // 垃圾串走不到 done —— 由 timeout 收尾成 null (等 200ms, 不误判)。
       const rgb = parseOsc11BackgroundColor(buf);
       if (rgb) done(schemeFromBackground(rgb));
     };

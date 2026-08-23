@@ -3,7 +3,7 @@
  *
  * 不变量 (逐字):
  * - INV-5: 台账有界 ≤64 条; 溢出**丢最老**, 且**必留一行证据** (丢了几条、何时) ——
- *   证据落盘进 `overflows` 数组 + logger.warn 双写, 不许静默 DELETE。
+ *   证据写盘进 `overflows` 数组 + logger.warn 双写, 不许静默 DELETE。
  * - G-5 前半: 指纹去重 —— 已有指纹 F 再来同指纹 finding → deduped+1, 不重报。
  *
  * 指纹: sha256(where + 归一化 evidence 类别)。归一化 = 小写 + 去空白/标点, 类别稳定,

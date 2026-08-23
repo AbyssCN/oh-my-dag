@@ -66,7 +66,7 @@ export interface NewTicket {
   /**
    * D-3 票语义类 (切片 6): 出生即标类。**域是 `DispatchableClass`** —— 这个口开不出裁决票
    * (裁决票是人裁出来的, 不是机器 addTicket 出来的; 想开裁决票就得先有人)。
-   * 省略 = 不标 (存量语义: NULL≠0, 「没标」≠「标了 task」)。gh 后端忽略 (md 落盘字段)。
+   * 省略 = 不标 (存量语义: NULL≠0, 「没标」≠「标了 task」)。gh 后端忽略 (md 写盘字段)。
    */
   ticketClass?: DispatchableClass;
   /**
@@ -103,7 +103,7 @@ export interface PathBackend {
   /** D-G1.4 (可选, gh 片 e 才实装): goal 票 solve 报 blocked → 票翻 escalated (需人)。 */
   escalate?(cwd: string, slug: string, ticketId: string): void;
   /**
-   * D-5/G-5 (切片 6 接线, 可选): 扫本图超时的"等人裁"票 → 标 stale + 写 waitingLog, 落盘。
+   * D-5/G-5 (切片 6 接线, 可选): 扫本图超时的"等人裁"票 → 标 stale + 写 waitingLog, 写入磁盘。
    * 判据纯核在 `frontier.sweepWaitingHuman` (只升级 `waiting` 一档), 本端口只负责读改写。
    * 缺 = 该后端**没有超时升级** (gh 今天就是这一格) —— 不是"扫过没超时", 别把两者读成一件事。
    */
@@ -127,7 +127,7 @@ export interface PathBackend {
   ): void;
   /**
    * 收本图待折入的 research 结果 (S3 回流入料; 折入编排见 afk-hook.reflowResearchResults, 后端无关)。
-   * - md: 未裁 research 票的落盘结果文件 (.omd/pathfinder/results/<slug>/<id>.md)。
+   * - md: 未裁 research 票的写盘结果文件 (.omd/pathfinder/results/<slug>/<id>.md)。
    * - gh: 带 `research-done` label 的票, body = 该票评论里最后一条含结果形状 (`## 终稿`) 的正文;
    *   有 label 但无结果评论 → body 空串 (编排据此标警告, 不 ack, 留待下轮)。
    */
@@ -224,7 +224,7 @@ function createMdBackend(): PathBackend {
           status: 'open',
           ...(nt.executorKind ? { executorKind: nt.executorKind } : {}),
           ...(nt.suggestedBy ? { suggestedBy: nt.suggestedBy } : {}),
-          // 判别键**不在** `Ticket` 上 (types.ts 讲了为什么), 落盘/读回由 map-store 的 StoredTicket 管。
+          // 判别键**不在** `Ticket` 上 (types.ts 讲了为什么), 写盘/读回由 map-store 的 StoredTicket 管。
           ...(nt.ticketClass ? ({ ticketClass: nt.ticketClass } as { ticketClass: DispatchableClass }) : {}),
         };
         map.tickets.push(t);
@@ -267,7 +267,7 @@ function createMdBackend(): PathBackend {
         if (!tk) return false;
         tk.status = 'ruled';
         tk.ruling = ruling;
-        // D-5 三戳之二: 判词落盘的时刻。它与 waitingSince 的**先后**是「裁了没记」的唯一判据
+        // D-5 三戳之二: 判词写入磁盘的时刻。它与 waitingSince 的**先后**是「裁了没记」的唯一判据
         // (票可被裁过又重新升人 —— 看 ruling 文本有无必误判, 见 types.ts 那段注)。
         tk.ruledAt = new Date().toISOString();
         if (!map.decisionsLog.some((d) => d.ticketId === ticketId)) {
@@ -278,13 +278,13 @@ function createMdBackend(): PathBackend {
       if (!mutated) throw new Error(`找不到地图 "${slug}"`);
       if (!mutated.result) throw new Error(`地图里没有票 "${ticketId}"`);
     },
-    // D-5/G-5: 纯核算 (sweepWaitingHuman 就地改 map), 这里只负责经 mutateMap 落盘。
+    // D-5/G-5: 纯核算 (sweepWaitingHuman 就地改 map), 这里只负责经 mutateMap 写盘。
     // 图不存在 → [] (读路径上顺手扫的东西不该因为图没了而炸掉整个 path_tickets)。
     //
     // ⚠ **零 stale 零写** (2026-08-11 事故修): 它挂在 path_tickets **读路径**上, 无条件
     // mutateMap 会让"看一眼图"就 parse→render 重写真相文件 —— 手写的 parser 外字段
     // (`- delivered:` commit 锚) 被静默丢弃, 实测在 omd-mcp-server.md 上真丢过 6 行。
-    // 所以先纯读判定, 真有票要标 stale 才落盘; 常态路径对文件零字节触碰。
+    // 所以先纯读判定, 真有票要标 stale 才写盘; 常态路径对文件零字节触碰。
     sweepWaiting: (cwd, slug, opts) => {
       const probe = loadMap(cwd, slug);
       if (!probe) return [];
@@ -318,7 +318,7 @@ function createMdBackend(): PathBackend {
         }
       });
     },
-    // 收未裁 research 票的落盘结果 (afk-hook 轮询的同一批文件, 现经端口出料): 只收 open research 票
+    // 收未裁 research 票的写盘结果 (afk-hook 轮询的同一批文件, 现经端口出料): 只收 open research 票
     // (ruled/escalated/delivered 已定, 迟到结果不覆写)。文件不存在 → 跳过 (未就绪, 下轮再收)。
     collectResearchResults: (cwd, slug) => {
       const map = loadMap(cwd, slug);

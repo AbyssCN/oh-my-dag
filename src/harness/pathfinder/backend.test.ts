@@ -515,7 +515,7 @@ describe('D-C.2 门控: config.capabilities.nativeDependencies 选策略', () =>
  * 生产代码往票上打这些戳** —— 于是每张等人票的读数恒为 `waiting-unknown-since`, 超时永不触发。
  * 这不是"闸不灵", 是闸的输入恒为 NULL: 一个在任何干预下都不动的数, 量的是尺子。
  *
- * md 后端负责两戳 (escalate 的进入戳 / rule 的裁决戳) + sweepWaiting 落盘口;
+ * md 后端负责两戳 (escalate 的进入戳 / rule 的裁决戳) + sweepWaiting 写盘口;
  * 第三处 (suggested 出生戳) 在 `suggest.applySuggestions`, 网在 suggested.test.ts。
  * ⚠ gh 后端**不打戳** (backend-gh 不在本切片写集) —— 那格是留账, 不是"打了没记上"。
  */
@@ -573,7 +573,7 @@ describe('D-5 三戳生产者 (md 后端, G-5)', () => {
     }
   });
 
-  test('sweepWaiting: 超时票标 stale + 台账**落盘** (纯核算, 端口只管写)', () => {
+  test('sweepWaiting: 超时票标 stale + 台账**写盘** (纯核算, 端口只管写)', () => {
     const dir = tmp();
     try {
       const long = new Date(Date.now() - 100 * 3_600_000).toISOString();
@@ -581,8 +581,8 @@ describe('D-5 三戳生产者 (md 后端, G-5)', () => {
       const b = resolveBackend(dir, { env: { OMD_PATH_BACKEND: 'md' } });
       const fired = b.sweepWaiting!(dir, 'ship-x', { now: new Date().toISOString() });
       expect(fired.map((e) => e.ticketId)).toEqual(['g1']);
-      // 证伪: 把 sweepWaiting 实装成"算了不落盘"(不走 mutateMap) → 下面两条红, 而返回值仍是绿的
-      // —— 这正是要单独钉落盘那一位的理由。
+      // 证伪: 把 sweepWaiting 实装成"算了不写盘"(不走 mutateMap) → 下面两条红, 而返回值仍是绿的
+      // —— 这正是要单独钉写盘那一位的理由。
       const after = b.readMap(dir, 'ship-x')!;
       expect(after.tickets[0]!.staleAt).toBeTruthy();
       expect(after.waitingLog).toHaveLength(1);

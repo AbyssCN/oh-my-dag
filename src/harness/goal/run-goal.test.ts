@@ -961,14 +961,14 @@ describe('runGoal — D-2 声明写集面 (S-2, run 级 runtime 面)', () => {
 
 // ── D-2 散雾出口 (SDD 2026-08-11-control-plane-unification 切片 1) ────────────────
 //
-// 这一组走**真 md 后端 + 真 map 落盘 + 真 frontier**: 判据本身在 pathfinder/run-tickets.test.ts,
+// 这一组走**真 md 后端 + 真 map 写入磁盘 + 真 frontier**: 判据本身在 pathfinder/run-tickets.test.ts,
 // 这里钉的是「接线真的通了」—— 而"接线在不在"恰恰是 S-1 此前那条缝的全部内容
 // (机制在、pathfinder 派发线生效、直接 run 零命中)。
 import { resolveBackend } from '../pathfinder/backend';
 import { loadMap } from '../pathfinder/map-store';
 import { computeFrontier } from '../pathfinder/frontier';
 
-/** 一份带未决段的 spec 正文 (经 `_readSpec` 注入, 不真落盘)。 */
+/** 一份带未决段的 spec 正文 (经 `_readSpec` 注入, 不真正写入磁盘)。 */
 const SPEC_WITH_OPEN = [
   '# 某 SDD',
   '',
@@ -1218,7 +1218,7 @@ describe('runGoal — S4 run 生命周期接线 (board: claimed → terminal)', 
     });
     const r1 = await runGoal('目标甲', mk());
     expect(r1.outcome).toBe('success');
-    // 终态与落盘真源都在 —— 板只是协调介质上的指针
+    // 终态与写入磁盘的真源都在 —— 板只是协调介质上的指针
     expect(readBoard(cwd).some((e) => e.runId === runId && e.event === 'terminal')).toBe(true);
     const statePath = join(cwd, '.omd', 'continuity', runId, 'goal-state.json');
     expect(existsSync(statePath)).toBe(true);
@@ -1228,7 +1228,7 @@ describe('runGoal — S4 run 生命周期接线 (board: claimed → terminal)', 
     // 权威 run 历史不依赖板: 返回面 (RunGoalResult) 的终态结论一字未变
     expect(r1.converged).toBe(true);
     expect(r1.stages.find((s) => s.stage === 'execute')!.outcome).toBe('success');
-    // 落盘 goal-state 才是续跑真源: 同 goal 同 runId 二跑 → 契约段复用 (闸 C 锚在盘上 state, 不在板)
+    // 写入磁盘的 goal-state 才是续跑真源: 同 goal 同 runId 二跑 → 契约段复用 (闸 C 锚在盘上 state, 不在板)
     const contractBefore = counters.contract;
     const r2 = await runGoal('目标甲', mk());
     expect(counters.contract).toBe(contractBefore); // 0 次重跑 → 删板没抹掉可续跑的历史

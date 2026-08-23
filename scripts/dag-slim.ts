@@ -14,7 +14,7 @@
  *                               [--global-model M] [--no-global|--no-local] [--verify] [--out p]
  *
  * 出口: 一条 finding 一行 `<kind>: <file:line> — cut <what>, replace with <what>`, Global 组在前;
- * 全文落盘 /tmp/omd-slim-<ts>.md (--out 覆盖), stdout 只出单行清单。空 diff → exit 2。
+ * 全文写入磁盘 /tmp/omd-slim-<ts>.md (--out 覆盖), stdout 只出单行清单。空 diff → exit 2。
  * --verify = 复用 review/verify 证伪收敛层 (REFUTED 留档, 出口只放 CONFIRMED/UNVERIFIED)。
  * 模型: 局部 --model > OMD_SLIM_MODEL > OMD_LEAF_MODEL > ds-flash;
  *       全局 --global-model > OMD_SLIM_GLOBAL_MODEL > OMD_REVIEW_FIND_MODEL > ds-pro (更强槽)。
@@ -141,7 +141,7 @@ if (flags.verify && (globalLines.length > 0 || localLines.length > 0)) {
   verified = await verifyFindings(dimTexts, { model: globalModel });
 }
 
-// ---- 落盘 (零丢失) + terse stdout ----
+// ---- 写入磁盘 (零丢失) + terse stdout ----
 const sections = [
   ...(wantGlobal ? [{ title: `Global (系统视野, ${GLOBAL_KINDS.map((k) => k.kind).join('/')})`, lines: globalLines }] : []),
   ...(wantLocal ? [{ title: `Local (per-hunk, ${LOCAL_KINDS.map((k) => k.kind).join('/')})`, lines: localLines }] : []),

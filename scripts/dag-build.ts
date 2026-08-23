@@ -94,7 +94,7 @@ const leafModel = flags['leaf-model'] ?? process.env.OMD_LEAF_MODEL ?? 'deepseek
 process.stderr.write(`[dag-build] conductor=${conductorModel}\n`);
 
 // agent leaf thinking 档 (--agent-thinking, 默认不传 = agent-leaf 内部默认 'xhigh')。
-// 实测: 有的 agent 模型思考开会把 thinkingBudget 打到接近无界, 吃光 leaf 预算超时零落盘 —— 那类模型传 'off';
+// 实测: 有的 agent 模型思考开会把 thinkingBudget 打到接近无界, 吃光 leaf 预算超时零写入 —— 那类模型传 'off';
 // 靠思考的 agent 模型 (deepseek 系) 不传此 flag 保持默认。校验枚举, 非法值 fail-fast。
 const AGENT_THINKING_LEVELS = new Set(['off', 'low', 'medium', 'high', 'xhigh']);
 const agentThinking = flags['agent-thinking'];
@@ -120,7 +120,7 @@ const preBuildDirty = new Set(
     .filter(Boolean),
 );
 
-// W2 continuity (SDD C4): 节点 checkpoint 落盘; --resume <runId> 跳已绿节点。
+// W2 continuity (SDD C4): 节点 checkpoint 写入磁盘; --resume <runId> 跳已绿节点。
 const repoRoot = targetCwd;
 const continuityManager = new CheckpointManager(repoRoot);
 const continuityRunId = flags.resume || `build-${dispatchId}`;

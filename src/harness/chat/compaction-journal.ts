@@ -5,7 +5,7 @@
  *
  * 轮前压缩的完整周期是四步:`start`(决定压)→ `summary`(模型调一次生成摘要)→ `replace`
  * (摘要落成一条 compaction 条目, 投影据此截断旧消息)→ `end`(干净收尾)。这四步里只有
- * `replace` 落盘、`summary` 花钱, 而它们之间隔着**一次模型调用 + 一次 JSONL append** ——
+ * `replace` 写盘、`summary` 花钱, 而它们之间隔着**一次模型调用 + 一次 JSONL append** ——
  * 进程在这里死掉, 盘上没有任何痕迹能说清「停在哪一步」:
  *
  *   - 摘要已经生成但 `replace` 没落 → 下次重跑会**再花一次钱**把同一段话重新摘要一遍;
@@ -27,7 +27,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { dirname } from 'node:path';
 import { logger } from '../../logger';
 
-/** 事务四步(与 DSH 对齐;`end` 不落盘 —— 干净收尾直接删 sidecar)。 */
+/** 事务四步(与 DSH 对齐;`end` 不写盘 —— 干净收尾直接删 sidecar)。 */
 export type CompactionStep = 'start' | 'summary' | 'replace' | 'end';
 
 const STEPS: readonly CompactionStep[] = ['start', 'summary', 'replace', 'end'];
@@ -135,7 +135,7 @@ export function recoverCompaction(
         : { status: 'replace-lost', summary: j.summary ?? '', entryId };
     }
     default:
-      // readCompactionJournal 已拦非法 step, 这里只兜类型收口。
+      // readCompactionJournal 已拦非法 step, 这里只兜类型收尾。
       return { status: 'clean' };
   }
 }

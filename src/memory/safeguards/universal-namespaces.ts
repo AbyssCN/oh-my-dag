@@ -4,7 +4,7 @@
  * 跟 a sibling project domain pack (会计) 平行, 但这套**任何 omd instance 都自带** (开源打开即有):
  *   - `user.*` (6 facet): 记住**用户**的方方面面 (喜欢/在意/关注/会什么/是谁/要什么)。克制的 facet
  *     类型 + category/value 半结构字段 → 覆盖广而不堆 namespace ("太多数据"是失败模式, the owner 锁)。
- *   - `omd.*` (3 facet): omd 记住**自己** (擅长什么/什么打法管用/受什么限) —— 自我进化的底座。
+ *   - `omd.*` (3 facet): omd 记住**自己** (擅长什么/什么做法管用/受什么限) —— 自我进化的底座。
  *     刻意**不**镜像 live 工具/skill 注册表 (那能自省, memorize 冗余); 只记靠经验才知道的自评胜任度。
  *
  * 每条 fact 仍走 kernel 机制 (source anchor + 3 级 confidence + supersede + dream curate)。
@@ -92,7 +92,7 @@ const OMD_BRANCHES = [
     ...sourceAnchor,
     ...confidenceField,
   }),
-  // 什么打法在什么情况管用/失败 (程序性学习, 自我进化核心燃料)。
+  // 什么做法在什么情况管用/失败 (程序性学习, 自我进化核心燃料)。
   // scope = 受控判别字段 (dream SDD 终审裁决 5): situation/approach 是自由文本,
   // 同一教训换措辞就是新 identity, 复现永远攒不够 3 —— 受控枚举把 identity 空间切回可比。
   // optional: pathfinder 裁决写入 (pathfinder.ts) 等既有写手不带它; Zod 剥未声明键,

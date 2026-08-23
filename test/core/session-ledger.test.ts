@@ -75,7 +75,7 @@ const FIXED_NOW = () => 1_752_000_000_000;
 const FIXED_TS = new Date(FIXED_NOW()).toISOString();
 
 /**
- * 与 writer.ts:351,367 对齐的期望落盘路径。
+ * 与 writer.ts:351,367 对齐的期望存盘路径。
  * 注意 resolve 语义(writer.ts:351 同款): dataPath 已是绝对路径, resolve 下后者胜出。
  */
 function expectedLedgerPath(sessionId: string): string {

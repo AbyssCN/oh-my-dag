@@ -38,7 +38,7 @@ let dir: string;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'omd-budget-'));
-  // C-7 增量 memo 是模块级;测试里 writeFileSync **重写**账本(生产只 append + 压实缩小),
+  // C-7 增量 memo 是模块级;测试里 writeFileSync **重写**账本(生产只 append + 合并缩小),
   // 不 reset 的话「同尺寸重写」会让偏移语义静默失真。
   resetBudgetLedgerMemoForTest();
 });
@@ -190,7 +190,7 @@ describe('C-7 增量读 —— 与全量重算逐分等价 (禁 TTL)', () => {
   test('★ 压实护栏: 文件缩小 (尺寸 < 偏移) → memo 作废整本重读, 不吐陈旧和', () => {
     writeLedger([{ costUsd: 10 }, { costUsd: 20 }, { costUsd: 30 }]);
     expect(incremental().costUsd).toBe(60);
-    writeLedger([{ costUsd: 1 }]); // 模拟压实: 重写成更小的文件
+    writeLedger([{ costUsd: 1 }]); // 模拟合并: 重写成更小的文件
     expect(incremental()).toEqual(fullReference());
     expect(incremental().costUsd).toBe(1);
   });

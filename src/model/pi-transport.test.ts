@@ -92,7 +92,7 @@ function authFile(content: unknown): string {
   return p;
 }
 
-// 周期档 (402/403) 落盘重定向 —— 本文件的 402 熔断测试不重定向会写真仓 .omd/seat-health.json。
+// 周期档 (402/403) 写入磁盘路径重定向 —— 本文件的 402 熔断测试不重定向会写真仓 .omd/seat-health.json。
 let phDir: string;
 let phSavedEnv: string | undefined;
 beforeEach(() => {
@@ -338,7 +338,7 @@ describe('pi 通道 · 错误分类与认证', () => {
    */
   test('402 余额不足 → 熔断跳 (而 400 请求错不跳: 换 provider 也不解决)', async () => {
     resetProviderCooldowns();
-    (require('node:fs') as typeof import('node:fs')).rmSync(process.env.OMD_SEAT_HEALTH_PATH!, { force: true }); // S-B2: 周期档臂已落盘, 臂间全清含盘
+    (require('node:fs') as typeof import('node:fs')).rmSync(process.env.OMD_SEAT_HEALTH_PATH!, { force: true }); // S-B2: 周期档臂已写入磁盘, 臂间全清含盘
     const run = async (emsg: string): Promise<void> => {
       const { deps } = fakeDeps({
         completeSimple: async () => assistantMsg({ stopReason: 'error', errorMessage: emsg }),
@@ -359,22 +359,22 @@ describe('pi 通道 · 错误分类与认证', () => {
     // 「认证通过但不给服务」= 换一个能成 → 该熔断。⚠ 401(没认证上)刻意仍不熔断: 悄悄绕过去
     // 会把一个该让人去修的 key 配置错误藏起来。
     resetProviderCooldowns();
-    (require('node:fs') as typeof import('node:fs')).rmSync(process.env.OMD_SEAT_HEALTH_PATH!, { force: true }); // S-B2: 周期档臂已落盘, 臂间全清含盘
+    (require('node:fs') as typeof import('node:fs')).rmSync(process.env.OMD_SEAT_HEALTH_PATH!, { force: true }); // S-B2: 周期档臂已写入磁盘, 臂间全清含盘
     await run('403 {"type":"RegionError","message":"only available hosted in China"}');
     expect(inCooldown('kimi-coding:k3')).toBe(true);
 
     resetProviderCooldowns();
-    (require('node:fs') as typeof import('node:fs')).rmSync(process.env.OMD_SEAT_HEALTH_PATH!, { force: true }); // S-B2: 周期档臂已落盘, 臂间全清含盘
+    (require('node:fs') as typeof import('node:fs')).rmSync(process.env.OMD_SEAT_HEALTH_PATH!, { force: true }); // S-B2: 周期档臂已写入磁盘, 臂间全清含盘
     await run('401 unauthorized');
     expect(inCooldown('kimi-coding:k3')).toBe(false); // key 坏了该响, 不该被兜底盖住
 
     // 对照: 400 是**请求**错, 换后端也不解决 —— 熔断只针对"这个后端此刻不健康"。
     resetProviderCooldowns();
-    (require('node:fs') as typeof import('node:fs')).rmSync(process.env.OMD_SEAT_HEALTH_PATH!, { force: true }); // S-B2: 周期档臂已落盘, 臂间全清含盘
+    (require('node:fs') as typeof import('node:fs')).rmSync(process.env.OMD_SEAT_HEALTH_PATH!, { force: true }); // S-B2: 周期档臂已写入磁盘, 臂间全清含盘
     await run('400 bad request');
     expect(inCooldown('kimi-coding:k3')).toBe(false);
     resetProviderCooldowns();
-    (require('node:fs') as typeof import('node:fs')).rmSync(process.env.OMD_SEAT_HEALTH_PATH!, { force: true }); // S-B2: 周期档臂已落盘, 臂间全清含盘
+    (require('node:fs') as typeof import('node:fs')).rmSync(process.env.OMD_SEAT_HEALTH_PATH!, { force: true }); // S-B2: 周期档臂已写入磁盘, 臂间全清含盘
   });
 
   test('auth.json oauth access 未过期 → 直接用 (kimi-coding 无内置刷新件语义)', async () => {

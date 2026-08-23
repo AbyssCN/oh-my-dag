@@ -2,7 +2,7 @@
  * src/harness/continuity/checkpoint-manager.ts — W2 session continuity checkpoint 持久化管理器 (SDD §2 C2).
  *
  * 职责:
- *   - DAG checkpoint 落盘到 `<repoRoot>/.omd/continuity/<runId>/`
+ *   - DAG checkpoint 写入磁盘到 `<repoRoot>/.omd/continuity/<runId>/`
  *   - 原子写 (tmp+rename) 避免损坏
  *   - `shouldSkip` 验证产物一致性 (sha256 前 16 hex 匹配)
  *   - `findLatestRun` 按 mtime 查最新 run
@@ -71,7 +71,7 @@ export class CheckpointManager {
    * 理由写在 {@link DagMetadata.runtimeNodes} 上: 那四样是 resume 的一致性锚, 把运行期长出来的点
    * 并进去等于下次 resume 算出的代数与盘上每份 checkpoint 都对不上 → 整图作废重跑。
    *
-   * 同 id 覆盖、新 id 追加 (重展开拿到同一个内容寻址 id = 同一个点)。`_dag.json` 还没落盘 (无 meta)
+   * 同 id 覆盖、新 id 追加 (重展开拿到同一个内容寻址 id = 同一个点)。`_dag.json` 还没写入磁盘 (无 meta)
    * → 静默跳过: 这是纯观察记录, 不值得为它造一份半截元数据。全程 fail-open。
    */
   appendRuntimeNodes(runId: string, nodes: readonly NonNullable<DagMetadata['runtimeNodes']>[number][]): void {
@@ -306,7 +306,7 @@ export class CheckpointManager {
    * 是不同的事(交接给下一轮的输入 vs 留给自己回看的判词); 同前缀会让两者互相覆盖,
    * 而事后复盘要问的恰恰是「当时那一轮的判词原文是什么」(resume / verifier 旁路 / 读数板都靠它)。
    *
-   * 写失败 → null (fail-open: 告示里说"全文未落盘", 退回今天的"只有告示无指针")。
+   * 写失败 → null (fail-open: 告示里说"全文未写入磁盘", 退回今天的"只有告示无指针")。
    */
   saveReasonFull(runId: string, nodeId: string, round: number, text: string): string | null {
     return this.saveTextArtifact(runId, 'reason-', `${nodeId}-r${round}`, text);

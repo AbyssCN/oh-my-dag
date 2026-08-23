@@ -46,7 +46,7 @@ export interface GoalToolDeps {
       researchRounds?: number;
       tier?: GoalTier;
       onClassified?: (classified: GoalClassification) => void;
-      /** #209 spec 落盘记账钩子: 契约段收尾恰好一次 (worktree 还在的时候), 见 RunGoalConfig.onContract。 */
+      /** #209 spec 存盘记账钩子: 契约段收尾恰好一次 (worktree 还在的时候), 见 RunGoalConfig.onContract。 */
       onContract?: (specWrite: SpecWrite) => void;
       /** D-2 散雾出口的注入面 (切片 6 接线; 无 map 的仓不传 = 闸缺席, 行为逐字节照旧)。 */
       tickets?: RunGoalConfig['tickets'];
@@ -265,7 +265,7 @@ function openRunTicket(
     if (existing) return existing.id;
     // 已结晶 SDD 直通档 (sddPath 给了): 把分解表里**整张 SDD 的写集并集 + sddPath 本体**一并带上
     // —— gh 后端走 `Write-set:` / `Sdd-path:` 锚往返 (切片 6 后置, ticket-writeset-anchor.test 是证);
-    // md 后端走 StoredTicket 落盘 (同 map-store 写面)。同一份合同, 两条落盘路径, 此处只管 NewTicket。
+    // md 后端走 StoredTicket 写入磁盘 (同 map-store 写面)。同一份合同, 两条存盘路径, 此处只管 NewTicket。
     const sddFields = sddPath ? ticketFieldsFromSdd(sddPath) : undefined;
     const t = target.backend.addTicket(cwd, target.slug, {
       type: 'task',
@@ -345,7 +345,7 @@ function settleRunTicket(
     }
     if (isDeliveredOutcome(r.outcome)) {
       // #201: 有红节点时判词里点名 —— 票翻 delivered 之后没人会再回来看图, 这行字是红节点
-      // 唯一的落盘提醒 (run-outcome 表的 nextAction 逐字: 「人审**红节点**, 别整轮重跑」)。
+      // 唯一的存盘提醒 (run-outcome 表的 nextAction 逐字: 「人审**红节点**, 别整轮重跑」)。
       const red = r.outcome === 'delivered-with-red' ? ' · **图内有节点红, 待人审** (交付达标, 别整轮重跑)' : '';
       backend.rule(cwd, slug, ticketId, `[run 收敛] ${r.rounds} 轮 · 验收 ${r.acceptance.kind}${r.specPath ? ` · spec ${r.specPath}` : ''}${red}`);
       backend.markDelivered(cwd, slug, [ticketId]);
@@ -719,7 +719,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
       });
       // ⚠ **隔离档必须重建 leaf runner** (2026-07-31 live 实测揪出): 上面那次 `buildConfig()` 是
       // 起跑自检, 拿到的 runner 把**装配期**的 cwd 烤死了; 而 `runGoal` 的 `cwd` 参数只管 spec
-      // 落盘目录。第一版就漏了这一步 —— worktree 建起来了、回话说"隔离成功"、**产物全落在主树**。
+      // 存盘目录。第一版就漏了这一步 —— worktree 建起来了、回话说"隔离成功"、**产物全落在主树**。
       // 声明面动了执行面没跟上, 而读数上看起来是成功的。
       if (worktree.strategy === 'branch') dag = deps.buildConfig(worktree.cwd);
 
@@ -826,13 +826,13 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           // R2: 隔离档下这里就是那棵 worktree; head 档下它逐字等于 deps.cwd (零回归)。
           cwd: worktree.cwd,
           dag: dagWithContinuity,
-          // 分类裁决早于第一张图落盘 → 探针从这里进 goalMeta (recordDagRun 的 closure 在 record
+          // 分类裁决早于第一张图存盘 → 探针从这里进 goalMeta (recordDagRun 的 closure 在 record
           // 时才读 meta.acceptanceProbe, 于是两段图的记录都带上同一份)。
           onClassified: (classified) => {
             goalMeta.acceptanceProbe = classified.acceptanceProbe;
           },
-          // #209: 契约段收尾那一刻记 spec 落没落盘 —— **worktree 还在的时候**, 不是事后扫盘。
-          // 两处写: ① goalMeta 供执行段那张图落盘时带上; ② 回填契约段那张图 (它已经落盘了,
+          // #209: 契约段收尾那一刻记 spec 存没存盘 —— **worktree 还在的时候**, 不是事后扫盘。
+          // 两处写: ① goalMeta 供执行段那张图存盘时带上; ② 回填契约段那张图 (它已经存盘了,
           // 只走 ① 会让那一行恒 NULL, 而这张表里 NULL = 没记)。
           onContract: (specWrite) => {
             goalMeta.specWrite = specWrite;
@@ -861,7 +861,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         })
         .then((r) => {
           // N9 判据轴: 两条判据回填到这个 runId 的全部记录。**在这里而不是随 record 一起写** ——
-          // 冻结判据的结论要整趟收尾才有, 而 record 是每张图跑完就落的 (执行段落盘时验收还没判)。
+          // 冻结判据的结论要整趟收尾才有, 而 record 是每张图跑完就落的 (执行段存盘时验收还没判)。
           if (r.criteria) deps.recorder?.updateCriteria(runId, r.criteria);
           // #165② 收编闸: 隔离档 ∧ 机器判据绿 (success / delivered-with-red) → worktree 内自动
           // commit (留 run 锚)。判据红不 commit (shouldAutoCommit 单点判, 反向自检在 run-worktree
@@ -911,7 +911,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
               logger.warn({ runId, err: (e as Error).message }, '[dag_goal] BLOCKED fork 铸造失败 (run 已终态, 岔口丢给了日志)');
             }
           }
-          // D-G1.3: 结果落盘 (pathfinder goal 票回流源)。首行 outcome 头 = RUN_OUTCOME_INFO 键,
+          // D-G1.3: 结果存盘 (pathfinder goal 票回流源)。首行 outcome 头 = RUN_OUTCOME_INFO 键,
           // afk-hook 按它三态映射。写失败只警告 —— 结果文件是回流增益, run 本身已终态落库。
           if (resultOut) {
             try {

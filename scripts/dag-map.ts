@@ -413,7 +413,7 @@ if (flags.council) {
 
 if (exhaustiveCoverage) meta += ` · ${exhaustiveCoverage}`;
 
-// ---- 输出: map 进 stdout (调用方要的); 上下文语料附录落盘 (零丢失) ----
+// ---- 输出: map 进 stdout (调用方要的); 上下文语料附录存盘 (零丢失) ----
 const doc = [`# 代码 map: ${question}`, '', `> ${meta}`, '', '## Map', '', mapText, '', '---', '', '## codegraph 上下文附录 (合成依据)', '', corpus].join('\n');
 const slug = question.toLowerCase().replace(/[^a-z0-9一-鿿]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'map';
 const out = flags.out || `/tmp/dag-map-${slug}-${Date.now()}.md`;

@@ -25,7 +25,7 @@
  * ② **每一格的判据是它自己的直接证据**,不许拿别的状态的补集凑。
  * ③ **「不知道」独立成格**:{@link RunOutcomeKind} 的 `unclassified`,以及 `resumable: null`。
  * ④ **两格的 `nextAction` 一样 → 它们该合并**。stage 级的「跑了但空手而归」就是这么并出来的:
- *    勘察空输出 / research 零来源 / spec 未落盘,在节点级是三格(P1 分得开),在 stage 级
+ *    勘察空输出 / research 零来源 / spec 未写盘,在节点级是三格(P1 分得开),在 stage 级
  *    下一步是同一句「重跑这一步」→ 合成 `empty-result` 一格。
  *
  * ## 与 P1 词表的分工(别把两份表混着读)
@@ -80,7 +80,7 @@ export type RunOutcomeKind =
    */
   | 'not-needed'
   /**
-   * **跑了但空手而归**:勘察步空输出 / research 零来源 / spec 未落盘。
+   * **跑了但空手而归**:勘察步空输出 / research 零来源 / spec 未写盘。
    *
    * 它与 `not-needed` 在旧的 `skipped|failed` 二选一里最容易被并掉,而两者的下一步相反:
    * 「不需要勘察」什么都不用做,「勘察跑了却什么都没找到」需要人看一眼。

@@ -8,7 +8,7 @@
  *   - 每节点一个 `<nodeId>.json` checkpoint;`createdAt` 是**结束**时刻,
  *     `start = createdAt − durationMs` 是重建值,不是引擎记录的真起跑。
  *   - durationMs 可能只覆盖最后一次尝试(L0 重试时),重建 start 会整体后移。
- *   - map 父节点 durationMs 恒 0(checkpoint 落盘时写死),start==end,不占并发。
+ *   - map 父节点 durationMs 恒 0(checkpoint 写入磁盘时写死),start==end,不占并发。
  */
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';

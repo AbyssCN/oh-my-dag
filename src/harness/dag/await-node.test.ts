@@ -1,9 +1,9 @@
 /**
- * await-node 契约测试 (TDD 红: 冻结接口路径 `src/harness/dag/await-node.ts` 未落盘, import 即红)。
+ * await-node 契约测试 (TDD 红: 冻结接口路径 `src/harness/dag/await-node.ts` 未写入磁盘, import 即红)。
  *
  * 判据 (SDD `docs/plan/2026-08-11-run-board-跨run协调-sdd.md`, S3 切片; 判卷载体 =
  * `src/harness/dag/run-board.test.ts` 的 G-2/G-3 数据层冻结 —— 本文件把 await 契约钉在
- * **真实 API** 层, 载体里的 `waitForRunOnBoard` 脚手架落盘后即由本文件取代, 断言口径不变):
+ * **真实 API** 层, 载体里的 `waitForRunOnBoard` 脚手架写入磁盘后即由本文件取代, 断言口径不变):
  * - G-2  board 追加 `published{artifact,commit}` → 一个 poll 周期内 unpark、先确定性合入 commit
  *        (D-7: 合入后 unparked 才返回)、该节点模型调用数 = 0 (INV-3)。
  * - G-3  fromRun terminal 而无 published → 立即 STALLED (不等 timeoutMs, D-6 中止条件) 且产 suggested 票。
@@ -165,7 +165,7 @@ describe('#205 awaiting 落板 —— 「谁在等」这件事要被记下来', 
     //   而红的方式正是它防的那件事 —— 观察面永远看不见有人在等。
     expect(aw).toHaveLength(1);
     expect(aw[0]!).toMatchObject({ runId: 'r-await', artifact: 'X', timeoutMs: 120 });
-    // 此刻 run 还没 terminal、也没人 published ⇒ 判定认它是「未收口的等待」。
+    // 此刻 run 还没 terminal、也没人 published ⇒ 判定认它是「未收尾的等待」。
     expect(awaitingRuns(entries).map((a) => a.artifact)).toEqual(['X']);
   });
 

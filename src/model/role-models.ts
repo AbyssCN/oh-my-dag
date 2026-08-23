@@ -10,7 +10,7 @@
  *     → in-memory override (CLI/test, 非持久)
  *       → config.models[seat] (持久 + 跨进程, TUI /config·/setup·omd_set_role 写它)
  *         → env: OMD_<SEAT>_MODEL, 其后历史别名 OMD_ITER_* / OMD_CG_*
- *           → config.autoAssigned[seat] (omd models auto 按渠道经济学落盘)
+ *           → config.autoAssigned[seat] (omd models auto 按渠道经济学写入磁盘)
  *             → **单一可配** config.defaultModel / OMD_DEFAULT_MODEL / OMD_RUNTIME_*
  *               → 抛 SeatUnresolvedError (INV-MODEL-5: 无出厂坐标, 计划期响亮失败)
  *
@@ -158,10 +158,10 @@ interface ConfigFile {
    * 两件事, 分开配。
    */
   pools?: Partial<Record<string, string[]>>;
-  /** auto-assign 落盘的 node → coord (D-17 一次性填, 可读可改)。resolveRoleModelConfigured 的 auto 层读它。 */
+  /** auto-assign 写入磁盘的 node → coord (D-17 一次性填, 可读可改)。resolveRoleModelConfigured 的 auto 层读它。 */
   autoAssigned?: Record<string, string>;
   /**
-   * S-T: auto-assign 落盘的 node → 推理档 (与 autoAssigned 同键)。**独立一段而非把 autoAssigned
+   * S-T: auto-assign 写入磁盘的 node → 推理档 (与 autoAssigned 同键)。**独立一段而非把 autoAssigned
    * 的值改成对象**: 后者要每个读者都做归一化, 且毁掉「手改 config 时一行一个坐标」的可读性;
    * 独立段是纯增量 —— 老 config 没有这段 = 座位档缺席 = 执行期回落原有默认 (向后兼容)。
    */
@@ -341,7 +341,7 @@ const SEAT_ENV_ALIASES: Partial<Record<OmdSeat, readonly string[]>> = {
   agent: ['OMD_ITER_AGENT_MODEL', 'OMD_CG_AGENT_MODEL'],
   // 2026-07-28 空旋钮全仓扫: `escalation` 座此前是**纯装饰** —— auto-assign 给它派模型、起跑自检查
   // 它的凭证, 而引擎读的是 OMD_CONDUCTOR_ESCALATION_MODEL, 谁都没解析过这个座。config 说 X 引擎用
-  // env 的 Y, 正是 INV-MODEL-1 要杀的形态, 在这一个座位上活了下来 (P0 收口时漏的)。
+  // env 的 Y, 正是 INV-MODEL-1 要杀的形态, 在这一个座位上活了下来 (P0 收尾时漏的)。
   // 收法与其它座位一致: 老 env 名降为本座别名, config.models 压过它。
   escalation: ['OMD_CONDUCTOR_ESCALATION_MODEL'],
   // `review-spec` 同上, 只是它的正名 env key 恰好就是历史名 (seatEnvKey → OMD_REVIEW_SPEC_MODEL),
@@ -458,7 +458,7 @@ export function tryResolveSeatModel(
     const v = env[key]?.trim();
     if (v) return { model: v, source: 'env', via: key };
   }
-  // 5. auto-assign (D-19): `omd models auto` 按渠道经济学落盘的 node→coord
+  // 5. auto-assign (D-19): `omd models auto` 按渠道经济学写入磁盘的 node→coord
   const fromAuto = (autoAssignMap ?? fileAutoAssigned(cfgPath))[seat]?.trim();
   if (fromAuto) return { model: fromAuto, source: 'auto', via: 'config.autoAssigned' };
   // 6. 单一可配兜底 (INV-MODEL-2: 全库仅此一处"没配时用谁", 且无出厂值)
@@ -484,7 +484,7 @@ function fileAutoAssigned(path = configPath()): Record<string, string> {
 }
 
 /**
- * 落盘 auto-assign 结果 (node→coord) 到 .omd/config.json autoAssigned 段 (D-17 一次性填, 可读可改)。
+ * 写入磁盘 auto-assign 结果 (node→coord) 到 .omd/config.json autoAssigned 段 (D-17 一次性填, 可读可改)。
  * 整段替换 (保留 models/multimodalPool 等其它段)。跨进程: daemon 下次 resolve 时 mtime 重读即捡到。
  * thinking 给了则同时整段替换 autoAssignedThinking (S-T 座位档随座位成对下发)。
  */
@@ -517,7 +517,7 @@ function fileAutoAssignedThinking(path = configPath()): Record<string, ThinkingL
 }
 
 /**
- * S-T: 模型坐标 → 座位推理档。座位档按 node 名落盘, 而执行期只认坐标 (stamp pass 把座位坐标
+ * S-T: 模型坐标 → 座位推理档。座位档按 node 名写入磁盘, 而执行期只认坐标 (stamp pass 把座位坐标
  * 铺到 plan 节点上), 故按坐标反查。
  *
  * **多座位共用一个坐标时取最高档** (如 worker 与 verify 都落在同一模型上): 宁可多花推理 token,

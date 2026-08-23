@@ -2,7 +2,7 @@
  * run-tickets 纯核契约测试 (D-2 散雾出口三条, SDD 2026-08-11-control-plane-unification 切片 1)。
  * fixture 手搓 RunGoalResult 字面量, 零 IO 零 live。
  *
- * 端到端的 G-1/G-2 (真 md 后端 + 真 map 落盘 + 前沿) 在 `src/harness/goal/run-goal.test.ts`
+ * 端到端的 G-1/G-2 (真 md 后端 + 真 map 写盘 + 前沿) 在 `src/harness/goal/run-goal.test.ts`
  * ——那里才有 runGoal 的接线; 本文件钉的是判据本身。
  */
 import { describe, expect, test } from 'bun:test';

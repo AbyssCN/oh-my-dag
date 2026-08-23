@@ -44,7 +44,7 @@ export function parseBunTest(output: string): BunTestResult {
   return { pass, fail, total, fraction };
 }
 
-/** 一次 run 的 4 量 (+ 原始明细供落盘复盘)。 */
+/** 一次 run 的 4 量 (+ 原始明细供存盘后复盘)。 */
 export interface RunMetrics {
   /** heal 前第一次过测比例 (0..1) —— ①分解质量信号。 */
   firstShotPass: number;

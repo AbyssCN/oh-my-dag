@@ -141,7 +141,7 @@ const PREFERRED_COORD: Record<NodeClass, string> = {
  *      **省不出来的东西就别配** —— 配了只会拿质量换零收益。换到档位真有成本差的模型时再调这张表。
  *
  * 现档表: 全座位 'high'。它当前与硬默认同值 = 行为不变, 但机制在位:
- *   坐标 → 座位 → 档 的通路打通了, 换模型/换池时这里是唯一要改的地方。
+ *   坐标 → 座位 → 档 的通路连接起来了, 换模型/换池时这里是唯一要改的地方。
  *
  * ⚠ **agent leaf 是 worker 类里的例外, 不吃座位档**: agent-leaf.ts 的 xhigh 默认是 owner 早前锁的
  * (改文件 + 工具循环, 数量远少于 inproc 扇出, 质量优先)。座位档只下发到 inproc leaf 与 conductor。
@@ -367,13 +367,13 @@ export function autoAssign(input: AutoAssignInput): AssignmentMap {
 }
 
 /**
- * 端到端接线 (D-17): 从真实持仓 auto-assign 并**一次性落盘** .omd/config.json 的 autoAssigned 段。
- *   持仓发现 (config-discovery: env/auth.json/models.json/Go) → DeclaredPlan[] → autoAssign → 落盘。
- * 落盘后 resolveRoleModelConfigured 的 auto 层即读到 → 全引擎 node 路由生效 (无需运行时动态)。
+ * 端到端接线 (D-17): 从真实持仓 auto-assign 并**一次性写入磁盘** .omd/config.json 的 autoAssigned 段。
+ *   持仓发现 (config-discovery: env/auth.json/models.json/Go) → DeclaredPlan[] → autoAssign → 写入磁盘。
+ * 写入磁盘后 resolveRoleModelConfigured 的 auto 层即读到 → 全引擎 node 路由生效 (无需运行时动态)。
  * 由 setup / `omd models auto` 显式触发 (非每 boot), 保"可读可改一次性填"语义。
  *
  * @param env  持仓探测的环境 (默认 process.env)。
- * @param opts.configPath  落盘目标 (测试注入; 默认 .omd/config.json)。
+ * @param opts.configPath  写入目标 (测试注入; 默认 .omd/config.json)。
  * @param opts.ratingsPath AA 快照路径 (默认 model-ratings.json)。
  * @returns 完整 AssignmentMap (含渠道 + intelligence, 供调用方展示)。
  */
@@ -381,7 +381,7 @@ export function runAutoAssign(
 	env: Record<string, string | undefined> = process.env,
 	opts: { configPath?: string; ratingsPath?: string } = {},
 ): AssignmentMap {
-	// configPath 同时喂发现 (读 declaredPlans) 与落盘 (写 autoAssigned) —— 读写同一目标, 否则声明持仓
+	// configPath 同时喂发现 (读 declaredPlans) 与写入磁盘 (写 autoAssigned) —— 读写同一目标, 否则声明持仓
 	// 从默认 config 读、结果往 opts.configPath 写 = 错位 (测试/非默认路径会踩)。
 	const { declarations } = discoverHoldings(
 		env,

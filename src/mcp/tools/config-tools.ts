@@ -2,7 +2,7 @@
  * src/mcp/tools/config-tools — omd 配置工具族 (omd init 的 MCP 面, D-config-mcp)。
  *
  * omd 跑在 Claude 里时"掌舵"= Opus, 配置不再走独立 TUI wizard; 这组工具让 Opus/​slash 直接
- * 改引擎配置 (key/角色/preset/HUD) 且**当前 MCP 子进程即时生效** (headless-config 双写: 落盘 +
+ * 改引擎配置 (key/角色/preset/HUD) 且**当前 MCP 子进程即时生效** (headless-config 双写: 写入磁盘 +
  * 活注入)。5 工具:
  *   omd_set_key       —— 落 provider key → auth.json(pi)/ .env(native) + re-register
  *   omd_apply_preset  —— 套角色矩阵预设 (cn-trio 等) → .env + config.json

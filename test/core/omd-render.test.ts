@@ -3,7 +3,7 @@
  *  ① parseRenderArgs 纯函数层 (零 IO, 无条件跑);
  *  ② RND-3 跨切片接缝回归: 产物路径命名规则必须被 leaf-media 的真实 extractMediaRefs 原样命中 (禁复制正则);
  *  ③ resolveChromiumPath 注入探测层 (假 env / 假 fileExists / 假目录列表, 不碰真文件系统);
- *  ④ 集成层: 真 chromium 渲临时 HTML fixture, 断言 PNG 真实落盘 + hover 前后像素不同;
+ *  ④ 集成层: 真 chromium 渲临时 HTML fixture, 断言 PNG 真实写入磁盘 + hover 前后像素不同;
  *     浏览器解析不到时 skipIf 跳过并向 stderr 说明。
  */
 import { afterAll, describe, expect, test } from "bun:test";

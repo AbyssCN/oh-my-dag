@@ -189,8 +189,8 @@ describe('session writer — round-trip (写→读→验)', () => {
     expect(brief.md.startsWith('<!-- DEGRADED')).toBe(true);
     // §1 必有 writer 蒸馏失败说明 (而非编造文本)
     expect(brief.s1).toContain('机械降级');
-    expect(brief.s1).not.toContain('ZorglubQuux'); // 编造名词不进落盘
-    expect(brief.s1).not.toContain('src/totally/fabricated/zzz.ts'); // 编造路径不进落盘
+    expect(brief.s1).not.toContain('ZorglubQuux'); // 编造名词不进存盘
+    expect(brief.s1).not.toContain('src/totally/fabricated/zzz.ts'); // 编造路径不进存盘
   });
 
   test('④ fail-open: 无 memory sink → result.sink = {ok:false} 且 writer 永不抛', async () => {
@@ -216,7 +216,7 @@ describe('session writer — round-trip (写→读→验)', () => {
     expect(typeof r.sink!.error).toBe('string');
     expect(r.sink!.error!.length).toBeGreaterThan(0);
 
-    // 落盘仍成功 (markdown 是真理源, sink 失败不阻断)
+    // 写入磁盘仍成功 (markdown 是真理源, sink 失败不阻断)
     const brief = readResumeBrief(r.checkpointPath);
     expect(brief.hasAllHeaders).toBe(true);
   });

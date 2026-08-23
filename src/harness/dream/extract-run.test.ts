@@ -935,7 +935,7 @@ describe('live (OMD_DREAM_LIVE=1) — S5 真座位验收', () => {
           anchorWritten++;
         }
       }
-      // ── 读数先落盘, 断言后行 (断言炸也留证据; 原始逐字读数走文件+console) ──
+      // ── 读数先写盘, 断言后行 (断言炸也留证据; 原始逐字读数走文件+console) ──
       const st = ledger.state();
       const rejected = verdicts.filter((v) => v.verdict === 'rejected');
       const groups: Record<string, number> = {};

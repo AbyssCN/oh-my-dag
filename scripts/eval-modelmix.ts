@@ -11,7 +11,7 @@
  *     --skip C1,C5       跳过 label 含这些子串的格 (如缺凭证的 C1 opus)
  *     --conductor <coord> --leaf <coord>   只跑这一个 ad-hoc 格 (覆盖网格; 用于单点复核)
  *     --fixture medium|large   任务规模 (默认 medium 3 模块; large 12 模块难度梯度, 高分辨率)
- *     --out <path>       报告落盘路径 (默认 /tmp/eval-modelmix-<ts>.md)
+ *     --out <path>       报告存盘路径 (默认 /tmp/eval-modelmix-<ts>.md)
  *
  * 消费: stdout = leaderboard 表 (score=finalPass 质量排序键; detail 有 firstShot/heal/cost/unpriced/nodeCount);
  *   全文同步落 --out。stderr = 逐格进度。

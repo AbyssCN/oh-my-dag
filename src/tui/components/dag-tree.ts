@@ -225,7 +225,7 @@ export class DagTree implements Component {
       // 走两条路画出两棵不一样的树。
       if (s.model !== undefined) n.model = s.model;
       // snap.failureKind 是 string, TreeNode 是 NodeFailureKind 联合 —— 运行期同形态 (生产端
-      // 由 `withFailureKind` 收口, 见 harness/dag/types.ts:643), 此处直接断言。
+      // 由 `withFailureKind` 收尾, 见 harness/dag/types.ts:643), 此处直接断言。
       if (s.failureKind !== undefined) n.failureKind = s.failureKind as NodeFailureKind;
     }
 

@@ -2,7 +2,7 @@
 //   ① 真实并发曲线 (max / 时间加权 avg) —— 复核 r2 的「实测 ~4」;
 //   ② ready→start 延迟: 依赖全绿到实际起跑的空档 —— 大 = 引擎调度串行化, 小 = 图本身窄;
 //   ③ conductor 腿自耗: 腿长 − 子叶区间并集 (任务 #5 同源数据顺手出)。
-// 区间口径: end = checkpoint.createdAt (落盘≈终态), start = end − durationMs。重试片各算各的。
+// 区间口径: end = checkpoint.createdAt (写入磁盘≈终态), start = end − durationMs。重试片各算各的。
 // 用法: bun scripts/probes/l5-concurrency-timeline.ts <runId-prefix> [...]
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';

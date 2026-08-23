@@ -159,7 +159,7 @@ describe('★ INV-HUD-3 HUD_SCHEMA 没被 bump (老读者不被当场瞎)', () =
 
 describe('★ INV-HUD-4 加宽字段缺席时, 镜像不带默认值 (留 undefined, 不编 0 / 不编 unclassified)', () => {
   // 边界: 老发射点不会给 deps / durationMs / usage / failureKind。
-  // mirror 写时这些字段就是 undefined, 落盘后 JSON 不该出现 (undefined 序列化为缺省)。
+  // mirror 写时这些字段就是 undefined, 写入磁盘后 JSON 不该出现 (undefined 序列化为缺省)。
   // 这是契约面, 真正的"画 —"是切片 3 (render) 的事; 这里只保"账本不编"。
   test('settled 无 startedAt / durationMs / usage / failureKind → 盘上也不出现这些键', () => {
     const root = mkdtempSync(join(tmpdir(), 'omd-hud-noextras-'));

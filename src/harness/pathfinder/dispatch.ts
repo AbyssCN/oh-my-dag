@@ -32,7 +32,7 @@ import type { DispatchableTicket, PathMap, Ticket } from './types';
 
 // ── 路径 helper ────────────────────────────────────────────────────────────────
 
-/** research 结果落盘路径 (AFK 子进程 --out 目标 + afk-hook 轮询源): <cwd>/.omd/pathfinder/results/<slug>/<ticketId>.md。 */
+/** research 结果写盘路径 (AFK 子进程 --out 目标 + afk-hook 轮询源): <cwd>/.omd/pathfinder/results/<slug>/<ticketId>.md。 */
 export function researchResultPath(cwd: string, slug: string, ticketId: string): string {
   return join(cwd, '.omd', 'pathfinder', 'results', slug, `${ticketId}.md`);
 }

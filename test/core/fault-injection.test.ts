@@ -210,7 +210,7 @@ describe('F2 崩在轮间 —— 外层轮次与毒集跨进程存活', () => {
       converged: boolean;
     };
     expect(journal.completedRounds).toBe(1);
-    expect(journal.poisoned).toHaveLength(1); // D-4 铸票落盘了
+    expect(journal.poisoned).toHaveLength(1); // D-4 铸票存盘了
     expect(journal.converged).toBe(false);
 
     const r = await runChild(['--max-rounds', '3', '--verdicts', 'converge', '--resume']);

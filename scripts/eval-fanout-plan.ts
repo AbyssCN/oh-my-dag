@@ -166,14 +166,14 @@ async function planOnce(task: string): Promise<{ plan: ConductorPlan | null; raw
 
 /**
  * 断点续跑 —— **一发 conductor 实测 ~7 分钟**(gpt-5.6-sol · thinking high), 20 题一批跑半小时。
- * 中途挂掉就整批重来的代价太高, 而每题的原始 plan 本来就逐题落盘了。
+ * 中途挂掉就整批重来的代价太高, 而每题的原始 plan 本来就逐题存盘了。
  *
  * ⚠ **缓存必须带座位**: 复用一份别的座位画的 plan, 报告上却写着当前座位, 那就是本仓
  * 「读数量在一个生产上不存在的座位上」那条老账的自动化版。座位不符 → 当没有缓存, 重打。
  * `--fresh` 强制全部重打。
  */
 /**
- * 一次采样的落盘名。**重复 #0 沿用不带后缀的老名字** —— 交接 22 那 20 份 plan 就落在那里,
+ * 一次采样的存盘名。**重复 #0 沿用不带后缀的老名字** —— 交接 22 那 20 份 plan 就落在那里,
  * 于是重复采样的第一片直接命中缓存, 只有 #1 起才真花时间。
  */
 const sampleFile = (id: string, repeat: number): string => `${OUT}/${id}${repeat === 0 ? '' : `-r${repeat}`}.json`;

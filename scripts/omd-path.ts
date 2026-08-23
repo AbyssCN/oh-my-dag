@@ -19,7 +19,7 @@ export const OMD_PATH_USAGE = m({
 });
 
 export interface OmdPathOpts {
-  /** repo 根 (地图扫描/落盘基准)。测试注入临时 cwd。 */
+  /** repo 根 (地图扫描/存盘基准)。测试注入临时 cwd。 */
   cwd: string;
   /** 输出汇 (默认 console.log)。测试注入收集器。 */
   out?: (line: string) => void;

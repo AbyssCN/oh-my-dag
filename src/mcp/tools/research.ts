@@ -3,7 +3,7 @@
  *
  * S2 进程化 (SDD 2026-08-10 §2) 后是**两段式**:
  *   - 母进程 (server) handler: 校验 → spawn detached 子进程 (scripts/dag-exec.ts) → 立即返回 runId。
- *     不再等 researchFanout —— 客户端拿 runId 轮询 dag_status, 报告落盘后 dag_result 取 reportPath
+ *     不再等 researchFanout —— 客户端拿 runId 轮询 dag_status, 报告写入磁盘后 dag_result 取 reportPath
  *     (此前"长跑 1800s 被客户端判死"的洞随等待一起消失)。
  *   - 子进程 (dag-exec, env OMD_DAG_EXEC_CHILD=1): executeDagResearchInProc —— 登记 run (属主=子进程)
  *     → researchFanout (runId 透传, 报告文件名与 registry runId 同源) → succeed/fail 写穿 runs.db。

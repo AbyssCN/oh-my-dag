@@ -1,6 +1,6 @@
 /**
  * runChatTurn 契约测试(loopFn 测试接缝替换真循环;模型坐标用 pi-ai 内置目录离线可解的真坐标)。
- * 钉四条:持久化拼接语义 / 历史随轮携带 / 失败不落盘 / provider 错误响亮。
+ * 钉四条:持久化拼接语义 / 历史随轮携带 / 失败不写盘 / provider 错误响亮。
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';

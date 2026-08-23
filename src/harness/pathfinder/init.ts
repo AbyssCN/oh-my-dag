@@ -407,7 +407,7 @@ export function probeNativeDependencies(gh: GhRunner): boolean {
   }
 }
 
-// ── 配置落盘 ─────────────────────────────────────────────────────────────────────
+// ── 配置写盘 ─────────────────────────────────────────────────────────────────────
 
 /** .omd/pathfinder/config.json 形状 (resolveBackend 只读 .backend; 其余是 init 记的能力/金丝雀档案)。 */
 export interface PathfinderConfig {
@@ -504,7 +504,7 @@ export function runInit(params: InitParams, deps: InitDeps): InitOutcome {
   }
 }
 
-/** md 后端 init: 建本地图 (复用 createMap) + config 落盘, 零 gh 依赖。 */
+/** md 后端 init: 建本地图 (复用 createMap) + config 写盘, 零 gh 依赖。 */
 function initMd(destination: string, deps: InitDeps): InitOutcome {
   const backend = deps.mdBackend ?? resolveBackend(deps.cwd, { env: { OMD_PATH_BACKEND: 'md' } });
   const map = backend.createMap(deps.cwd, destination, slugifyDestination(destination));
@@ -522,7 +522,7 @@ function initMd(destination: string, deps: InitDeps): InitOutcome {
 
 /**
  * gh 后端 init 执行序 (SDD §5): 预检 (fail-loud) → labels → map issue → [cloudAfk: caller + secrets +
- * canary + 原生依赖探] → config 落盘。cloudAfk 关时只建 labels + map + config (issue 后端本地可用, 无云)。
+ * canary + 原生依赖探] → config 写盘。cloudAfk 关时只建 labels + map + config (issue 后端本地可用, 无云)。
  */
 function initGh(destination: string, cloudAfk: boolean | undefined, deps: InitDeps): InitOutcome {
   const ladder = runProbeLadder(deps.probes);
@@ -599,7 +599,7 @@ function initGh(destination: string, cloudAfk: boolean | undefined, deps: InitDe
     }
   }
 
-  // 4. config 落盘 (backend + capabilities + canary)。
+  // 4. config 写盘 (backend + capabilities + canary)。
   const cfg: PathfinderConfig = {
     backend: 'gh',
     cloudAfk: wantCloud,

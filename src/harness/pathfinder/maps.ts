@@ -64,7 +64,7 @@ export function summarizeOpenMaps(cwd: string): OpenMapSummary[] {
   return out;
 }
 
-/** 开/建一张地图: slug 已存在 → resume (created=false); 否则建空图并落盘 (created=true)。 */
+/** 开/建一张地图: slug 已存在 → resume (created=false); 否则建空图并写盘 (created=true)。 */
 export function createOrResumeMap(cwd: string, destination: string): { map: PathMap; created: boolean } {
   const slug = slugifyDestination(destination);
   const existing = loadMap(cwd, slug);

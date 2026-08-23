@@ -8,7 +8,7 @@
  *
  * 闸的两层:
  *  ① 运行时探针: 真源函数 createDefaultMemory 解析出的路径 = env.OMD_MEMORY_PATH ?? '.omd/memory.db'
- *     —— 不看源码看盘面: 库文件落盘位置 + 同 env 两实例互见 / 异 env 互不可见。
+ *     —— 不看源码看盘面: 库文件存盘位置 + 同 env 两实例互见 / 异 env 互不可见。
  *  ② 结构性断言: cli.ts 的对话位不自己开第二份库 —— 旧接线 `createOmdMemory()` **不存在**;
  *     2026-08-18 起对话位干脆不接记忆 (owner 裁: 召回按需调, 不每轮注入), 故该断言改成
  *     条件式: 一处 `memory:` 都不许有; 哪天接回来也只能是 assemble.ts 那一份。

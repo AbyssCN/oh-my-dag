@@ -293,7 +293,7 @@ async function main(): Promise<number> {
     }
   }
 
-  // 映射表落盘: 新 id 是 issue number, 旧语义 id 只活在这份表和 issue 正文的 Origin-id 锚里。
+  // 映射表存盘: 新 id 是 issue number, 旧语义 id 只活在这份表和 issue 正文的 Origin-id 锚里。
   const mapFile = join(cwd, '.omd', 'pathfinder', `migration-${slug}-${Date.now()}.json`);
   writeFileSync(mapFile, JSON.stringify({ originSlug: slug, newSlug, at: new Date().toISOString(), idMap: Object.fromEntries(idMap) }, null, 2), 'utf8');
   console.log(`  ✓ id 映射表 → ${mapFile}`);

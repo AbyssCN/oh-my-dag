@@ -79,7 +79,7 @@ export interface DagRunNode {
    * leavesIn/Out/CacheHit) 分开: 那一位是**全图聚合**, 这一组是**每节点原值**。
    *
    * 存在理由是**事后还原不回来**: 节点级数据只能当场从 `LeafResult.usage` 摘; 它不进入
-   * 全图聚合 (那是 sum), 而 sum 一旦落盘就拆不回"哪几个节点贡献了大头" —— 而这正是
+   * 全图聚合 (那是 sum), 而 sum 一旦写入磁盘就拆不回"哪几个节点贡献了大头" —— 而这正是
    * 留痕层该有的颗粒度 (N9 同族: 存原值, 派生的事读数板现算)。
    *
    * 五列同源同义, 共享一条**三态纪律** (INV-1):
@@ -371,7 +371,7 @@ export interface DagRunRecord {
   /**
    * **这次 goal 的验收探针结论**(entry:'solve' 专列, 历史行为 'dag_goal';词表在 `goal/acceptance.ts` 的
    * `AcceptanceProbe`, 这里不重写)。存的是它的**逐字 JSON** —— 五条分支怎么判出来的、
-   * 降级/跳过时的原话 `why` 全部原样落盘, 读数板按它算 G4 分母与各分支占比。
+   * 降级/跳过时的原话 `why` 全部原样写入磁盘, 读数板按它算 G4 分母与各分支占比。
    *
    * 取值矩阵 (entry × 列值) —— 两格 NULL 语义**不同**, 读数板按 entry 念, 不猜值:
    *   `dag_goal` + 有效 JSON = 那次 goal 的探针逐字 JSON (分类证据, 进 G4 分母)。
@@ -421,15 +421,15 @@ export interface DagRecorder {
    * 回填**两条判据**到该 runId 的全部记录 (N9)。
    *
    * 为什么是回填而不是随 `record` 一起写: 冻结判据的结论在**整趟 goal 收尾时**才有,
-   * 而 `record` 是每张图跑完就落的 —— 执行段那张图落盘时, 验收命令还没判。
+   * 而 `record` 是每张图跑完就落的 —— 执行段那张图写入磁盘时, 验收命令还没判。
    * 一次 goal 的两条记录都写同一份 (读数板按 runId 去重, 不按行数)。
    */
   updateCriteria(runId: string, criteria: { judge: boolean; oracle: boolean }): void;
   /**
-   * 回填 spec 落盘裁决到该 runId 的**已有**记录 (#209)。
+   * 回填 spec 写入磁盘裁决到该 runId 的**已有**记录 (#209)。
    *
    * 为什么既回填又随 `record` 走: 一次 solve 落两条记录 (契约段图 + 执行段图), 而这一位在
-   * **契约段那张图已经落盘之后**才算得出来 —— 只走 record 的话契约段那行恒 NULL, 而 NULL 在
+   * **契约段那张图已经写入磁盘之后**才算得出来 —— 只走 record 的话契约段那行恒 NULL, 而 NULL 在
    * 这张表里是"没记", 会被读数板念成缺数。回填补前一行, `record` 的 meta 管后一行, 两行同值。
    */
   updateSpecWrite(runId: string, specWrite: SpecWrite): void;
@@ -579,7 +579,7 @@ export function recordDagRun(
       ...(meta.question ? { question: meta.question } : {}),
       // t7 词表迁移 (2026-08-04): goal 入口现写 'solve'; 'dag_goal' 只存在于历史行 (读侧归一), 写侧不再产生。
       ...(meta.entry === 'solve' && meta.acceptanceProbe ? { acceptanceProbe: meta.acceptanceProbe } : {}),
-      // #209: 同 acceptanceProbe 一样走可变 meta —— 契约段收尾时填进去, 执行段那张图落盘时带上。
+      // #209: 同 acceptanceProbe 一样走可变 meta —— 契约段收尾时填进去, 执行段那张图写入磁盘时带上。
       ...(meta.entry === 'solve' && meta.specWrite ? { specWrite: meta.specWrite } : {}),
     });
   };
@@ -658,7 +658,7 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
   // 同上 (goal 验收探针): 之前建的表没这一列, 老行留 NULL (= 没记, 不是 'unknown')。
   // 只由 entry='solve' (历史行 'dag_goal') 的 recordDagRun 写入 —— 见 DagRunRecord.acceptanceProbe 的取值矩阵。
   if (!cols.includes('acceptance_probe')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN acceptance_probe TEXT`);
-  // 同上 (#209, 2026-08-19): spec 落盘裁决。老行留 NULL (= 没记, 不是"没落盘")——
+  // 同上 (#209, 2026-08-19): spec 写入磁盘裁决。老行留 NULL (= 没记, 不是"没写入磁盘")——
   // 那两件事被混为一谈正是这一列存在的理由。只由 entry='solve' 的 recordDagRun 写入。
   if (!cols.includes('spec_write')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN spec_write TEXT`);
   // C-1 节点级五位列 (2026-08-19): 与 run 级 `usage` 聚合分开的每节点原值, 见 DagRunNode 的注。
@@ -801,7 +801,7 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
         // 缺席 → NULL, 不编 'unknown'; 存一份紧凑 JSON, 绝不双编码。
         // t7 词表: 'solve' (写侧新词; 'dag_goal' 只在历史行, 写侧不再产生)。
         meta.entry === 'solve' && meta.acceptanceProbe !== undefined ? JSON.stringify(meta.acceptanceProbe) : null,
-        // #209 spec 落盘裁决: 同上, 只持久化 entry='solve'; 其它入口误传必须留 NULL
+        // #209 spec 写入磁盘裁决: 同上, 只持久化 entry='solve'; 其它入口误传必须留 NULL
         // (那一格的语义是"契约段对这个入口不适用", 不是"没记")。
         meta.entry === 'solve' && meta.specWrite !== undefined ? JSON.stringify(meta.specWrite) : null,
         // C-1 节点级五位列 (2026-08-19): 表列**只作 schema 兼容**(老库 ALTER 通道), 真值在

@@ -92,7 +92,7 @@ gap 大 = 靠运气(有时对但路径不稳);gap 小 = 决策路径稳定收敛
 ## 用法
 
 ```bash
-bun run bench:extract      # 扫历史挑候选, 逐个证合约, **合格的才落盘**
+bun run bench:extract      # 扫历史挑候选, 逐个证合约, **合格的才写入磁盘**
 bun run bench -- list      # 列题库
 bun run bench:validate     # 题库体检(合约重证), 红了非 0 退出 → 可当闸
 bun run bench:selftest     # **证明防作弊闸真的会红**(端到端, 不烧模型)

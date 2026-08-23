@@ -196,7 +196,7 @@ describe('reflowGoalResults 三态映射 (D-G1.4, GWT-G1-2)', () => {
     writeResult(cwd, 'm1', 'g9', 'delivered-with-red');
     const out = reflowGoalResults(mdBackend(cwd), cwd, 'm1');
     // ★ 反向自检 (已实测): 把 run-outcome.ts 的 isDeliveredOutcome 改回只认 'success'
-    //   → disposition 变 'resumable'、票停 ruled、续跑锚落盘, 下面四条同时红。
+    //   → disposition 变 'resumable'、票停 ruled、续跑锚写盘, 下面四条同时红。
     expect(out[0]!.disposition).toBe('delivered');
     expect(mdBackend(cwd).readMap(cwd, 'm1')!.tickets[0]!.status).toBe('delivered');
     // **不落续跑锚** —— 这一条才是省掉那次重跑的判据 (锚在 = 下次 deliver 会再派)。

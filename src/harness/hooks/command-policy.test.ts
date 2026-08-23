@@ -94,7 +94,7 @@ describe('loadSandboxConfig —— 逐仓配置', () => {
 });
 
 // ── sql-truncate 收紧 (2026-08-14, 夜跑实测 3 次误拦搜索命令后修; 写这份测试时
-//    fusang 同源 hook 又拦了一次 heredoc —— 第 4 次活体复现, 本组测试只能经 Edit 工具落盘) ──
+//    fusang 同源 hook 又拦了一次 heredoc —— 第 4 次活体复现, 本组测试只能经 Edit 工具写盘) ──
 // 反向自检: 把 dangerous-cmd.ts 的 sql-truncate 改回旧宽模式 → 「搜索命令放行」当场红。
 // 判据是夜跑读数里**预先写死**的那两条 (事后编判据等于没判据)。
 const TR = 'TRUNCATE'; // 拼出来, 免得本文件自己被同源 shell hook 扫中 (它扫的是命令文本, 但别赌)

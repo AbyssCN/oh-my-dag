@@ -38,7 +38,7 @@ export interface PlanValidityResult {
   lines: string[];
 }
 
-/** error 次的 value 形状 (承 repeatSegment 的 INV-2 落盘形状) —— 测试用它做类型守卫。 */
+/** error 次的 value 形状 (承 repeatSegment 的 INV-2 写入磁盘形状) —— 测试用它做类型守卫。 */
 type ErrorValue = { error: string };
 
 function isError(v: unknown): v is ErrorValue {
@@ -58,7 +58,7 @@ export async function measurePlanValidity(opts: {
   n: number;
   /** 一次 plan 生成, 返 raw text。注入: 测试给 stub, CLI 接生产 send。 */
   generate: (task: string) => Promise<string>;
-  /** 透传给 repeatSegment (逐次落盘); 缺省走 repeat.ts 默认 sink。 */
+  /** 透传给 repeatSegment (逐次写入磁盘); 缺省走 repeat.ts 默认 sink。 */
   sink?: (line: string) => void;
 }): Promise<PlanValidityResult> {
   const recordsByTask = new Map<string, RepeatRecord<boolean | ErrorValue>[]>();

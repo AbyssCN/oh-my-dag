@@ -25,7 +25,7 @@
  *   --council  = 检索后让 conductor (authorFanoutSpec) 按语料自动分解 lens, 替代默认 3 视角
  *                (= 检索 + dag-council 的合体: 自动抓料 + 自动拆镜头 + fanout 综合判优)
  *   --lens-count N / --conductor-model M = council 旋钮
- *   产物: 终稿 + lens 冠军 + 成本 + **全文语料附录** 落盘; stdout 打印终稿 (这才是要的答案)。
+ *   产物: 终稿 + lens 冠军 + 成本 + **全文语料附录** 写入磁盘; stdout 打印终稿 (这才是要的答案)。
  *
  * lens 三档: 默认通用 3 视角(证据/批判/实践) / --council conductor 自动分解 / 代码内传 lenses 显式指定。
  * 模型默认全 flash (reason 覆盖: --reason-model / OMD_REASON_MODEL)。
@@ -141,7 +141,7 @@ for (const d of r.distilled) {
   process.stderr.write(`  [distill] ${d.url} — 原文 ${d.origLen} → extract ${d.extractLen} chars (lens 语料精简; 原文全文进附录)\n`);
 }
 
-// ---- 落盘: 终稿 + 冠军 + 成本 + 全文语料附录 (零丢失) ----
+// ---- 写入磁盘: 终稿 + 冠军 + 成本 + 全文语料附录 (零丢失) ----
 const doc: string[] = [];
 doc.push(`# 研究: ${question}`, '');
 doc.push(`> ${f.leafCount} leaves · ${f.roundsRun} 轮 · $${f.costStats.totalUsd.toFixed(4)} · 检索命中 ${r.sources.length} · 抓取 ${r.sources.filter((s) => s.body).length}`, '');
@@ -162,7 +162,7 @@ for (const sr of res.seedRetrievals ?? []) doc.push('', `## 种子检索附录: 
 if (res.secondPassCorpus) doc.push('', '## 二轮补抓语料附录 (research-second-pass probe)', '', res.secondPassCorpus);
 const slug = question.toLowerCase().replace(/[^a-z0-9一-鿿]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'research';
 const out = flags.out || `/tmp/dag-research-${slug}-${Date.now()}.md`;
-// 原子落盘 (tmp+rename, result-format 共享契约): pathfinder afk-hook 以文件存在为就绪信号,
+// 原子写入 (tmp+rename, result-format 共享契约): pathfinder afk-hook 以文件存在为就绪信号,
 // 直写最终路径会被 4s 轮询读到半截并把票永久定格成截断裁决。
 writeResultAtomic(out, doc.join('\n'));
 

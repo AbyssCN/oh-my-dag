@@ -6,7 +6,7 @@
  *   · D-1 工具面:手只读(read/ls/grep),write/edit/bash 不许出现 —— 反向自检;
  *   · 新会话建档 + 回执头带 sessionId(续接的把手);
  *   · runIds 从 run/solve 回执收集,[TOOL ERROR] 回执不收;
- *   · 判据 3:轮子抛错 → isError 且一个字节不落盘(空会话不建文件);
+ *   · 判据 3:轮子抛错 → isError 且一个字节不写入磁盘(空会话不建文件);
  *   · 判据 2:双进程写同一会话 → 后到者锁拒,判词带持有者 pid,原会话仍可读(seq 未坏);
  *   · 装配点:assembleOmdMcpTools 产物里真有 conductor_chat 且 wiring 走得通
  *     (交接 37 坑 #7:装配点没闸 = 完全没接)。

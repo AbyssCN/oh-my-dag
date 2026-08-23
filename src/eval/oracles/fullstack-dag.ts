@@ -12,7 +12,7 @@
  *
  * 量什么 (客观优先, 每一项都不靠 LLM 裁判):
  *   pass          三份契约测试 + whole-project tsc 全绿 (0/1)
- *   shots         真落盘且非空的 PNG 数 —— **UI 证据链有没有真的走通**, 而不是"有个节点自称截了图"
+ *   shots         真写入磁盘且非空的 PNG 数 —— **UI 证据链有没有真的走通**, 而不是"有个节点自称截了图"
  *   mediaNodes    attach_media 节点数; mediaUpgraded = 其中吃到强档多模态池的数
  *   parallelWidth 图的最大层宽 —— 前后端到底并没并起来 (串成一条线也能过闸, 但那是画错了)
  *   depth/orphans 图形状 (同 scorer 的三量)

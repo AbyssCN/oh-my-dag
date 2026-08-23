@@ -34,7 +34,7 @@ export interface DriftDetectorConfig {
   /**
    * **从 spinning 恢复**时回调 (复利自学习 producer #5 = `hard_problem` 的正解, clean_completion/
    * hard_problem 的高价值版本)。卡在 stuckSig 后, agent 做了 ≥ recoveryThreshold 个**不同**的新动作
-   * (打破循环 = 真换了打法继续推进) → 发"难题已解开"信号, payload 带 {卡在什么, 怎么逃出}。
+   * (打破循环 = 真换了做法继续推进) → 发"难题已解开"信号, payload 带 {卡在什么, 怎么逃出}。
    * dream 学成 omd.pattern {situation:卡在X, approach:换成Y, outcome:worked} —— 正向 worked 食材喂 miner。
    * **精度优先** (≥2 distinct 而非 1): 宁可漏掉些恢复, 不把"探一下又卡回去"误判成恢复。每个 spin 回合至多发一次。
    */

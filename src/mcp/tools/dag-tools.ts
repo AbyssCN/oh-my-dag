@@ -742,7 +742,7 @@ function executeDagRunInProc(
     },
     // 并发手闸: 参数 > defaultConfig (装配层 provider 池) > 引擎全宽。
     ...(maxFanout ? { maxFanout } : {}),
-    // D-3 断点续跑: checkpoint 恒落盘; resume 时命中已绿节点跳过 (429 打断不再整图重跑)。
+    // D-3 断点续跑: checkpoint 恒写入磁盘; resume 时命中已绿节点跳过 (429 打断不再整图重跑)。
     ...(continuity
       ? {
           continuity: {

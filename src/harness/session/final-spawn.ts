@@ -1,5 +1,5 @@
 /**
- * src/harness/session/final-spawn —— omd 会话**收口存档**的派发(#212)。
+ * src/harness/session/final-spawn —— omd 会话**收尾存档**的派发(#212)。
  *
  * 退出是一条会话最后一次存档机会,错过就只剩上一次跨档那份。难点是时机:
  *   - 同步等 → 退出要卡几秒(蒸馏要打一次模型),不能接受;
@@ -43,7 +43,7 @@ export function finalWriterArgv(sessionId: string, cwd: string, env: NodeJS.Proc
 }
 
 /**
- * 派一次收口蒸馏。**全程 fail-open**:派不出去只记一行 warn —— 退出路径上抛异常
+ * 派一次收尾蒸馏。**全程 fail-open**:派不出去只记一行 warn —— 退出路径上抛异常
  * 会把"退不出去"变成用户可见的故障,而少一份交接只是少一份交接。
  */
 export function spawnFinalCheckpoint(sessionId: string, cwd: string, env: NodeJS.ProcessEnv = process.env): boolean {

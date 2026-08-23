@@ -193,7 +193,7 @@ describe('fan-in 定向摘要 (executor-dag 接缝)', () => {
         conductorModel: '', leafModel: LEAF, generate: wrapped, faninSummary: { minChars: 50 },
         continuity: { manager: new CheckpointManager(root), runId: 'run1', repoRoot: root },
       });
-      // 落盘文件存在且含全文 (OMD_DATA_HOME 未设 → repoRoot/.omd/continuity/<runId>/)
+      // 存盘文件存在且含全文 (OMD_DATA_HOME 未设 → repoRoot/.omd/continuity/<runId>/)
       const full = join(root, '.omd', 'continuity', 'run1', 'fanin-a.txt');
       expect(existsSync(full)).toBe(true);
       expect(readFileSync(full, 'utf-8')).toContain(PAD);

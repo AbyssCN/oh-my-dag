@@ -5,7 +5,7 @@
  *   · `recordIntervention` 写出来的板条 = `intervene.ts:74-81` 原本那串字段 (除 ts),
  *     用来钉 MCP 侧换成共享件后的 parity (本片只测共享件自己; MCP ↔ 共享件的逐字段相等
  *     由 `run-control-parity.test.ts` 在片 2 钉)。
- *   · `recordIntervention` 在非法 cause / 空 runId 上 fail-loud, 不落盘。
+ *   · `recordIntervention` 在非法 cause / 空 runId 上 fail-loud, 不写盘。
  *   · `cancelDetachedRun` 的 `CancelOutcome` 四种结局 (`signalled` / `no-owner-pid` /
  *     `pid-dead` / `signal-failed`) 分得开 —— INV-RC-4 那条 "不许画一句『已请求取消』"
  *     的判据。

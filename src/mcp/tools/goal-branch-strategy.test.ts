@@ -41,7 +41,7 @@ const emptyResult = (goal: string): RunGoalResult => ({
  *   `buildCwds`   —— buildConfig 被传的 cwd(`undefined` = 没传)
  *
  * ⚠ 为什么必须有第二个: 2026-07-31 live 实测抓到 —— 第一版只钉了 `cwds`, 它绿着, 而**产物
- * 全落在主树**。leaf runner 的 cwd 是**装配期**烤死的, `runGoal` 的 `cwd` 参数只管 spec 落盘目录。
+ * 全落在主树**。leaf runner 的 cwd 是**装配期**烤死的, `runGoal` 的 `cwd` 参数只管 spec 存盘目录。
  * 也就是说那条网验的是"我改的那个旋钮", 不是"真正要紧的性质(文件落在哪)"。
  * `buildConfig(cwd)` 是重建 runner 的唯一入口, 所以它就是那条性质在装配层的代理。
  */

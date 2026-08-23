@@ -1090,7 +1090,7 @@ async function executePlan(
       deps,
       createdAt: new Date().toISOString(),
       generation: dagGeneration,
-      // plan-memory 缺口①: 全量 plan + 任务原文落盘 (此前只存骨架, 图的"肉"随进程丢弃)。
+      // plan-memory 缺口①: 全量 plan + 任务原文写入磁盘 (此前只存骨架, 图的"肉"随进程丢弃)。
       plan: { name: plan.name, ...(plan.description ? { description: plan.description } : {}), nodes: plan.nodes },
       taskText: task,
     });
@@ -1237,7 +1237,7 @@ async function executePlan(
    *
    * ## 它治的两条 (读数在 #226 的评论里)
    *
-   * ① **静默头切**: 原实装是裸 `prevReason.slice(0, 1500)` —— 没有告示、没有指针、不落盘。
+   * ① **静默头切**: 原实装是裸 `prevReason.slice(0, 1500)` —— 没有告示、没有指针、不写入磁盘。
    *    账本 542 跑实测: 模型判词单项长度 p90 = 1337 · p95 = 1854,**单它就 ≥1500 的占 7.8%**,
    *    而交接 = 判词 + 观察者块(后者 p90 再加 561)。切掉的是判词**尾部** ——
    *    判词尾部通常正是「所以下一步该做什么」,也就是这一轮唯一真正要传下去的东西。
@@ -1278,7 +1278,7 @@ async function executePlan(
     const tail = mustReach.length ? `\n${mustReach.join('\n')}` : '';
     if (body.length <= HANDOFF_CAP_CHARS) return `\n\n<上一轮未通过>\n${body}\n</上一轮未通过>${tail}\n`;
     // 落**全文原文** (含必达块), 不落摘出去之后的 body —— 事后复盘要问的是"当时整份交接长什么样"。
-    // #228: `nextSteps` 走独立参数进来 (不在 `reason` 串里), 所以要在这里补回去, 否则落盘的
+    // #228: `nextSteps` 走独立参数进来 (不在 `reason` 串里), 所以要在这里补回去, 否则写入磁盘的
     // "全文"会缺掉这一块 —— 那就成了另一种静默丢证据。
     const fullText = nextSteps ? `${reason}\n${NEXT_STEPS_PREFIX}${nextSteps}` : reason;
     const fullPath = continuity ? continuity.manager.saveHandoffFull(continuity.runId, nodeId, round, fullText) : null;
@@ -1315,7 +1315,7 @@ async function executePlan(
   };
 
   /**
-   * **成功节点 checkpoint 落盘** (D-O 统一出口, fail-open)。此前只有 inproc/agent 分支写,
+   * **成功节点 checkpoint 写入磁盘** (D-O 统一出口, fail-open)。此前只有 inproc/agent 分支写,
    * command / research 节点根本没有绿 checkpoint。
    *
    * 三件事一起做: ① 输出全文落制品 (`out-<id>.txt`) —— summary 自此只给人看 ② 记输入面指纹
@@ -1383,7 +1383,7 @@ async function executePlan(
         if (h) artifactHashes[rp] = h;
       }
       const summary = opts.text.slice(0, 800);
-      // 通道⑤-b: 落盘时把语义指纹一并存下 —— resume 预载判毒时**不用重算**, 于是运行时展开的
+      // 通道⑤-b: 写入磁盘时把语义指纹一并存下 —— resume 预载判毒时**不用重算**, 于是运行时展开的
       // 子节点 (预载那刻还不在图里) 也判得了。指纹只依赖祖先, 而祖先此刻已定死 → 与轮末 judge
       // 算的值一致。fail-open: 算不出来就不存, 退回原语义。
       let fingerprint: string | undefined;
@@ -2319,7 +2319,7 @@ async function executePlan(
     }
     const poisoned = new Set(journal?.poisoned ?? []);
     let prevReason = journal?.prevReason ?? '';
-    // #228: 「下一步」不另开 journal 字段 —— 它已经随 `RoundVerdict` 落盘 (见 types.ts),
+    // #228: 「下一步」不另开 journal 字段 —— 它已经随 `RoundVerdict` 写入磁盘 (见 types.ts),
     // resume 时从**最后一条 verdict** 还原即可。同一件事两处声明就是漂移源 (S-39, 与上面
     // `restoredJudge` 同一条纪律)。缺席 = 那一轮 judge 没被问过 / 没答 → 下一轮不挂这一块。
     let prevNextSteps: string | undefined = journal?.verdicts?.at(-1)?.nextSteps;
@@ -2410,7 +2410,7 @@ async function executePlan(
     };
 
     /**
-     * 节点级环 journal 落盘 —— **每轮判完就写**, 不是节点结束时写 (崩在这之后 resume 接得回来)。
+     * 节点级环 journal 写入磁盘 —— **每轮判完就写**, 不是节点结束时写 (崩在这之后 resume 接得回来)。
      * 三个调用点共用: 正常轮末 / 检测者 BLOCKED / 空转 BLOCKED。三处各写一份就会漂。
      */
     /**
@@ -3672,7 +3672,7 @@ async function executePlan(
           ...(touchRunId ? { touchSession: `${touchRunId}:${id}` } : {}),
           ...(mcpAllow.length ? { mcpAllow } : {}),
           ...(writeAllow.length ? { writeAllow } : {}),
-          // #178: 产物意图下发 —— produces-files 节点让叶知道"必须落盘 + 落到哪",
+          // #178: 产物意图下发 —— produces-files 节点让叶知道"必须写入磁盘 + 落到哪",
           // agent-leaf 据此启用 produce-by 软推 (勘探超预算零写 → 催产)。非产物节点不传, 叶行为零变化。
           ...(producesFiles ? { expectsArtifactPath: node.output_path ?? '(路径见 goal)' } : {}),
           onEvent: leafProgress,
@@ -3761,7 +3761,7 @@ async function executePlan(
           };
         }
         // 空转熔断 (2026-08-14): fuse 硬停的 leaf 判 failed + spin-fused 败因 (retryable:false ——
-        // 原样重试大概率原地再烧一遍, 见 node-failure 的注)。已落盘产物在 filesTouched 里保留。
+        // 原样重试大概率原地再烧一遍, 见 node-failure 的注)。已写入磁盘的产物在 filesTouched 里保留。
         if (r.spinFused) {
           logger.warn({ node: id, model, reason: r.spinFused }, '[omd/executor-dag][fuse-spin] agent leaf 空转熔断 → 节点 failed');
           return {
@@ -4265,7 +4265,7 @@ async function executePlan(
 
   // ── fan-in 定向摘要 (扇出≥2 触发) ─────────────────────────────────────────────
   // producer settle 前 (dependents 释放前) 判定并生成: 输出被 ≥2 consumer 消费 ∧ 够长 → 跑 1 发
-  // 定向摘要 (按下游目标提炼) + 全文落盘留指针, 存 faninView[id]; 下游 fan-in 注入摘要而非全文。
+  // 定向摘要 (按下游目标提炼) + 全文写入磁盘留指针, 存 faninView[id]; 下游 fan-in 注入摘要而非全文。
   // 调用点在调度器 .then 内 (running 保持占位跨此 await → 收敛判据不会在摘要在飞时误触发, 见 pump)。
   // 全程 fail-open: 任何失败 → view=null → 下游回退全文注入。usage 折进 producer 的 r.usage (账本一致)。
   // `consumersOverride`: conductor 局部子图内的运行时子节点从未进过顶层 `sched` (它在
@@ -4304,7 +4304,7 @@ async function executePlan(
         schema,
       });
       if (!summaryJson) return { r, view: null }; // 解析失败 → 全文兜底
-      // 全文指针: continuity 在则落盘留 path (agent consumer 可自 Read); 否则仅摘要 (artifacts 字段保产物锚)。
+      // 全文指针: continuity 在则写入磁盘并留 path (agent consumer 可自 Read); 否则仅摘要 (artifacts 字段保产物锚)。
       const fullPath = continuity ? continuity.manager.saveFaninFull(continuity.runId, id, output) : null;
       // 混合视图 (2026-08-07): 散文交给 LLM, **产物锚交给程序**。
       // 依据是同一批真实语料的实测 —— LLM 摘要保锚 31.8%(双峰: 4/9 不丢, 2/9 丢光), 而

@@ -449,7 +449,7 @@ async function main(): Promise<void> {
           (row.error ? `  ERR ${row.error}` : '') +
           (cls ? `  [${cls}]` : ''),
       );
-      // 增量落盘, 跑挂了下次能从 rows.json 接 (仓规 §空跑可恢复)
+      // 增量存盘, 跑挂了下次能从 rows.json 接 (仓规 §空跑可恢复)
       writeFileSync(`${OUT}/rows.json`, JSON.stringify(rows, null, 2));
 
       // (4) 关闸: 任一行被判 infra → 非零退出, 不汇总

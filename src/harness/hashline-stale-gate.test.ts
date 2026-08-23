@@ -196,7 +196,7 @@ describe('s2 hashline stale 闸 — GWT-6 (多文件 patch 整拒)', () => {
   });
 
   test('多文件 patch 中非 stale path 不会出现在 blockedPaths (只列在集的)', async () => {
-    // GWT-6 收口: blockedPaths 只列触发闸的 path, 别的正常 path 不进文本, 不让模型误判 B 也坏了。
+    // GWT-6 收尾: blockedPaths 只列触发闸的 path, 别的正常 path 不进文本, 不让模型误判 B 也坏了。
     const { readTool, editTool, fs } = toolsWith({ '/a.ts': 'A1\n', '/b.ts': 'B1\n' });
     const ra = await readTool.execute('ra', { path: '/a.ts' });
     const rb = await readTool.execute('rb', { path: '/b.ts' });

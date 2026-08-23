@@ -84,7 +84,7 @@ const result = await runDebug({
   _runDag: runExecutorDagWithPlan,
 });
 
-// ---- 报告落盘 + terse stdout ----
+// ---- 报告存盘 + terse stdout ----
 const tmpDir = (process.env.TMPDIR ?? '').trim().replace(/\/+$/, '') || '/tmp';
 const outPath = flags.out || `${tmpDir}/omd-debug-${process.pid}.md`;
 await Bun.write(outPath, result.reportMarkdown);

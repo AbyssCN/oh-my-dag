@@ -388,7 +388,7 @@ describe("runAutoAssign — 端到端 (发现→分配→落盘; configPath 读�
 		expect(map.judge?.coord).toBe("deepseek:deepseek-v4-pro");
 		// ⚠ INV-3 在此配置下**不成立**: 判与证同族 (deepseek-only 的代价), 由 autoAssign 打降级告警。
 		expect(map.verifier?.coord.split(":")[0]).toBe("deepseek");
-		// 落盘可读回 (configPath 读写同目标)
+		// 写入磁盘后可读回 (configPath 读写同目标)
 		const persisted = JSON.parse(readFileSync(configPath, "utf8")).autoAssigned;
 		expect(persisted.conductor).toBe("deepseek:deepseek-v4-flash");
 	});

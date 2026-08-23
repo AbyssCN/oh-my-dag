@@ -7,7 +7,7 @@
  *
  * ★ 写这份时抓到一个**真漏**: 三条 BLOCKED 出口里的「空转」那条**压根不写 journal** ——
  *   而 `writeLoopJournal` 的文档注释白纸黑字写着"三个调用点共用: 正常轮末 / 检测者 BLOCKED /
- *   **空转 BLOCKED**"。三缺一。所以下面那条用例钉的不是新字段, 是**那条出口现在真的落盘了**。
+ *   **空转 BLOCKED**"。三缺一。所以下面那条用例钉的不是新字段, 是**那条出口现在真的写入磁盘了**。
  */
 import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';

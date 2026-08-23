@@ -114,7 +114,7 @@ describe('C-1 卷面正文头尾双保', () => {
     const numMatch = body.match(/省略 (\d+) 字节/);
     expect(numMatch).not.toBeNull();
     expect(Number(numMatch![1])).toBeGreaterThan(0);
-    // 算术闭环: head + tail + omitted = output.length (在数量级上, 标记本身的换行不计入)。
+    // 算术配平: head + tail + omitted = output.length (在数量级上, 标记本身的换行不计入)。
     const headLen = Math.floor(1200 * 0.3); // 360, 实现侧钉的初值
     const tailLen = 1200 - headLen;
     const omitted = Number(numMatch![1]);

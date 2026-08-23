@@ -66,7 +66,7 @@ const fakeLoop =
     return [...prompts, reply];
   };
 
-/** 轮尾存档是 `void` 派出去的 —— 等它落盘或超时(超时即判失败,不"再等等")。 */
+/** 轮尾存档是 `void` 派出去的 —— 等它写盘或超时(超时即判失败,不"再等等")。 */
 async function waitForFile(path: string, timeoutMs = 15_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {

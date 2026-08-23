@@ -2,8 +2,8 @@
  * pathfinder 漏洞回归测试 (2026-07-19 code-review 修复批):
  *  1. 手改未知 status 的票**永不**在 render 往返中丢失 (真相文件人可编)。
  *  2. distill 取 `## 终稿` 内容, 不再把成本统计 blockquote 当裁决。
- *  3. writeResultAtomic: 落盘后无 .tmp 残留, 内容完整。
- *  4. watcher 每 tick reloadMap: 不把 tick 间落盘的 /rule 裁决回滚。
+ *  3. writeResultAtomic: 写盘后无 .tmp 残留, 内容完整。
+ *  4. watcher 每 tick reloadMap: 不把 tick 间写盘的 /rule 裁决回滚。
  *  5. watcher 不碰 escalated 票 (人工升级不被迟到结果覆写)。
  *  6. dispatch 去重: 结果已在 / 在途进程活着 → 不重复 spawn; 进程死了 → 重派。
  */

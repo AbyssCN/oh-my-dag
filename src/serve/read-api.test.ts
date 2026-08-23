@@ -184,7 +184,7 @@ describe('T-4: readSeats 只读 —— .omd/ 下文件调用前后逐字节一�
       expect(buf2, `文件被删: ${p}`).toBeDefined();
       expect(buf2!.equals(buf), `文件内容变了: ${p}`).toBe(true);
     }
-    // 怎么让它红: 在 readSeats 里加任何 fs 写(如仿 readReadout 的落盘缓存) → 多文件/内容变 → 红。
+    // 怎么让它红: 在 readSeats 里加任何 fs 写(如仿 readReadout 的写入磁盘缓存) → 多文件/内容变 → 红。
     // 当前实现零 fs 调用(编译期常量 + 内存态 budgetStats), 这条闸是防未来回潮, 不是冗余。
   });
 });

@@ -1,7 +1,7 @@
 /**
  * src/harness/chat/history-recall-e2e.test.ts —— S4 端到端验收(compact→recall 全链)。
  *
- * 三片全真、零 mock:真 store(JsonlSessionRepo 落盘,mkdtemp 临时目录)、真 footer
+ * 三片全真、零 mock:真 store(JsonlSessionRepo 写盘,mkdtemp 临时目录)、真 footer
  * (appendCompaction 内拼,C-3)、真工具(createHistoryTools 生产装配,**不注入 recall 测试接缝**
  * → handler 动态 import S1 真模块)。唯一不参与的是"模型":回捞工具由测试直调 handler,
  * 与生产装配同参同形(SDD C-4 的 G1「When history_search("X")」即此口径)。
@@ -123,7 +123,7 @@ describe('S4 端到端:compact → recall 全链(真 store / 真 footer / 真工
     expect(((await call(readTool, { compactionEntryId: comps[0]!.id })) as { text: string }).text).toContain(X);
   });
 
-  test('G2 重放确定性:同一份 jsonl 两次独立落盘读取,listShadowedSpans / renderShadowedTranscript 各跑两次 byte 相同', async () => {
+  test('G2 重放确定性:同一份 jsonl 两次独立读盘,listShadowedSpans / renderShadowedTranscript 各跑两次 byte 相同', async () => {
     // 证伪(实测红):把 renderShadowedTranscript 的 text 拼接混入 `Date.now()` → 本闸红。
     // ⚠ 证红时发现裸连跑两次会落在同一毫秒(Date.now() 同值)→ 闸形同虚设 ——
     // 所以两次 run 之间隔 5ms 墙钟:任何时钟/随机混入必现 byte 不等。
@@ -135,7 +135,7 @@ describe('S4 端到端:compact → recall 全链(真 store / 真 footer / 真工
     await sess.appendCompaction({ summary: '摘要', tokensBefore: 1, retainedTail: [msg('user', '丙')] });
     const compId = (await sess.entries()).find((e) => e.type === 'compaction')!.id;
 
-    // 同一份 jsonl 读两次(两次独立落盘读取,不是同一数组复用)。
+    // 同一份 jsonl 读两次(两次独立读盘,不是同一数组复用)。
     const a = (await sess.entries()) as BranchEntries;
     const b = (await (await store.open(sid))!.entries()) as BranchEntries;
     const run = (e: BranchEntries): string =>
@@ -144,7 +144,7 @@ describe('S4 端到端:compact → recall 全链(真 store / 真 footer / 真工
     await new Promise((resolve) => setTimeout(resolve, 5)); // 跨毫秒:时钟依赖无处藏
     expect(run(a)).toBe(first);
     expect(run(b)).toBe(first);
-    expect(JSON.stringify(a)).toBe(JSON.stringify(b)); // 两次落盘读取的条目序列也 byte 相同
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b)); // 两次读盘的条目序列也 byte 相同
   });
 
   test('G3 向后兼容:旧会话 compaction 无 footer,history_read 现算范围正常渲染不抛', async () => {
@@ -249,7 +249,7 @@ describe('S4 端到端:compact → recall 全链(真 store / 真 footer / 真工
     // 回捞内容进的是工具回执(= loop 落 tool/result 的正文),不碰此前序列。
     expect(read.text).toContain(X);
     expect(found.snippets[0]!.snippet).toContain(X);
-    expect(jsonlBytes()).toBe(before); // 工具只读:落盘 byte 一个不动
+    expect(jsonlBytes()).toBe(before); // 工具只读:磁盘字节一个不动
     expect(JSON.stringify(await sess.messages())).toBe(projBefore); // 投影也不动
     // 反向自检 (原先内联在正断言路径上, 于是这条闸恒红): 真写一条, 比较器必须嗅得到 ——
     // 证明上面两条不是恒真式。**顺序重要**: 干扰写必须在"工具只读"判完之后。

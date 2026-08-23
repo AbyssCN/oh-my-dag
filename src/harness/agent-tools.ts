@@ -441,7 +441,7 @@ const BASH_SCHEMA = Type.Object({
 
 /**
  * bash 截断全文的旁路累积硬顶。10 MiB 约为当前 50 KiB 正文窗的 200 倍，足够分页检索
- * 常见 build/test transcript，同时把每条失控命令额外占用的内存和落盘量锁在单个数量级内。
+ * 常见 build/test transcript，同时把每条失控命令额外占用的内存和磁盘写入量锁在单个数量级内。
  */
 const BASH_SPILL_MAX_BYTES = 10 * 1024 * 1024;
 

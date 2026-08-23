@@ -724,7 +724,7 @@ export function createGhBackend(gh: GhRunner, nativeDeps = false, notify: Waitin
       return entry;
     },
 
-    // D-5 裁决戳 (`ruledAt`) **不在这里写**: 下面这条判词评论自带 `createdAt` 就是"判词落盘的时刻",
+    // D-5 裁决戳 (`ruledAt`) **不在这里写**: 下面这条判词评论自带 `createdAt` 就是"判词写盘的时刻",
     // readMap 直接读它 (还顺带补齐了历史票)。多发一条 `**ruled-at**` 评论只是给手机上的人多推一条噪声,
     // 且判词评论的字节形状是既有闸钉死的 (backend.test.ts「rule: comment **ruling** + close」)。
     rule: (_cwd, _slug, ticketId, ruling) => {

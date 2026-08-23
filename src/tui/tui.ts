@@ -1464,7 +1464,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       return;
     }
     exiting = true;
-    // 交接收口(#212): 退出是这条会话**最后一次**存档机会, 错过就只剩上一次跨档那份。
+    // 交接收尾(#212): 退出是这条会话**最后一次**存档机会, 错过就只剩上一次跨档那份。
     // detached 派子进程, 不在这里等 —— 蒸馏要打一次模型(秒级), 而"退出要等几秒"
     // 是不能接受的; 进程内 fire-and-forget 又活不过 exit。全程 fail-open。
     spawnFinalCheckpoint(sessionId, opts.cwd ?? process.cwd());
@@ -1565,7 +1565,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       if (!abortRequested) chatLog.appendNotice(CHROME.failed(humanizeProviderError(reason)));
     }
     // 打断回执画在收尾处 (唯一出口): 正常返回 (pi 把 stopReason:'aborted' 的部分消息照常
-    // 返回并落盘) 与抛错 (压缩中被掐) 两条路都汇到这里, 只画一次。
+    // 返回并写入磁盘) 与抛错 (压缩中被掐) 两条路都汇到这里, 只画一次。
     if (abortRequested) chatLog.appendNotice(CHROME.interrupted());
     // 无论成败都收尾: 抛错那条路上 `session` 事件不会来, 不收尾的话下一轮会续进这条气泡。
     // ⚠ 等待态只在这里关(**`finally` 语义**)—— 指示器活满整轮, 不在 delta 分支收。
@@ -1680,7 +1680,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       tui.requestRender();
     }
   };
-  // 启动即画一次: git 段立刻可见, 5h 窗口读的是账本落盘的历史 (跨重启存活正是它的意义)。
+  // 启动即画一次: git 段立刻可见, 5h 窗口读的是账本写入磁盘的历史 (跨重启存活正是它的意义)。
   updateStatusBar();
 
   /**
@@ -2622,7 +2622,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   }
 
   /**
-   * `/compact` —— 手动压缩当前会话上下文(真 model call + 落盘,副作用)。
+   * `/compact` —— 手动压缩当前会话上下文(真 model call + 写入磁盘,副作用)。
    *
    * 复用 backend 的 `compact`(内部走 chat 既有 compaction 管线),回执带压缩前后
    * 两个 token 估读数。压缩后**清屏重放** —— 屏上必须是人/模型同一份历史

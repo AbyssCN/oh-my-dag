@@ -119,7 +119,7 @@ export interface SweepWaitingHumanOptions {
 }
 
 /**
- * 扫一遍地图, 把超时的等人票标 stale 并写台账 (就地改 map, 由调用方经 `mutateMap` 落盘)。
+ * 扫一遍地图, 把超时的等人票标 stale 并写台账 (就地改 map, 由调用方经 `mutateMap` 写盘)。
  *
  * 只升级 `waiting` 一档 (G-5 的 NULL≠0):
  *  - `waiting-unknown-since` 不升级 —— 不知道等了多久就不假装知道。

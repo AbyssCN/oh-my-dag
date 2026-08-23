@@ -28,7 +28,7 @@ const opt = (n: string): string | undefined => {
   return i >= 0 ? argv[i + 1] : undefined;
 };
 const SRC = opt('src') ?? '/tmp/tb21';
-/** 落盘文件名 —— Terminal-Bench 与它的继任 Frontier-Bench 用同一套 Harbor 布局, 同一个抽取器。 */
+/** 存盘文件名 —— Terminal-Bench 与它的继任 Frontier-Bench 用同一套 Harbor 布局, 同一个抽取器。 */
 const OUT_NAME = opt('name') ?? 'tasks.json';
 const OUT = join(import.meta.dir, '..', 'src', 'eval', 'tasks', 'terminal-bench', 'data');
 
@@ -57,7 +57,7 @@ for (const dir of readdirSync(tasksDir).sort()) {
   }
   const t = readFileSync(toml, 'utf8');
   // 两代 benchmark 的估时字段**单位不同**: Terminal-Bench 记分钟, Frontier-Bench 记小时。
-  // 统一归到分钟再落盘 —— 混着存必然有人某天拿 4(小时) 当 4(分钟) 比。
+  // 统一归到分钟再存盘 —— 混着存必然有人某天拿 4(小时) 当 4(分钟) 比。
   const expMin = num(t, 'expert_time_estimate_min');
   const expHr = num(t, 'expert_time_estimate_hours');
   const expert = Number.isFinite(expMin) ? expMin : Number.isFinite(expHr) ? expHr * 60 : null;

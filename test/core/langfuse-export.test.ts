@@ -337,7 +337,7 @@ describe('⑦ 父子结构 + prompt 版本身份', () => {
 });
 
 /**
- * **观测层永不带走执行层** (2026-08-01, 一次 574KB diff 审查当场引爆)。
+ * **观测层永不带走执行层** (2026-08-01, 一次 574KB diff 审查当场触发)。
  *
  * `clipDeep` 老写法是 `JSON.parse(clip(JSON.stringify(v)))` —— 先序列化、**截断**、再 parse
  * 那截断过的串。截断过的 JSON 几乎必然非法, 于是它对任何超过 MAX_FIELD_CHARS 的输入

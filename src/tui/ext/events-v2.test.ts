@@ -78,7 +78,7 @@ describe('D1 · observe 语义', () => {
     expect(await until(() => existsSync(join(cwd, 'observed-after_node.json')))).toBe(true);
     const seen = JSON.parse(readFileSync(join(cwd, 'observed-after_node.json'), 'utf8'));
     expect(seen.id).toBe('n1');
-    // 未订阅事件确实没到过子进程 (没有它的落盘物; 且崩溃后子进程仍活着刚送达了 after_node)
+    // 未订阅事件确实没到过子进程 (没有它的写入磁盘物; 且崩溃后子进程仍活着刚送达了 after_node)
     expect(existsSync(join(cwd, 'observed-on_escalation.json'))).toBe(false);
   });
 
