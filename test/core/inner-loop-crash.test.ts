@@ -30,7 +30,7 @@ import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { awaitDeath, readAllBounded } from '../../src/harness/proc/await-exit';
+import { awaitDeath, awaitWhileAlive, readAllBounded } from '../../src/harness/proc/await-exit';
 
 const CHILD = join(import.meta.dir, 'inner-loop-crash-child.ts');
 const REPO = join(import.meta.dir, '..', '..');
@@ -92,19 +92,82 @@ async function crashAt(hangNode: string, args: string[]): Promise<void> {
     stdout: 'pipe',
     stderr: 'pipe',
   });
+  // ⚠ **管道必须有人读**(2026-08-23 从 `fault-injection.test.ts` 搬过来的两条):
+  //   上面开了 `stdout/stderr: 'pipe'` 而等待期间从头到尾不读, 子进程日志量一旦超过管道
+  //   缓冲就**阻塞在写上**, 永远到不了哨兵 —— 那时超时是**结果不是原因**, 而判词却说
+  //   「夹具没进崩溃点」, 把人带向错误方向。边读边丢, 只留尾巴作诊断。
+  let sawBytes = 0;
+  let tail = '';
+  const drain = async (stream: ReadableStream<Uint8Array> | null): Promise<void> => {
+    if (!stream) return;
+    const dec = new TextDecoder();
+    for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
+      sawBytes += chunk.byteLength;
+      tail = (tail + dec.decode(chunk, { stream: true })).slice(-600);
+    }
+  };
+  const draining = Promise.all([drain(proc.stdout), drain(proc.stderr)]).catch(() => {});
+
   const sentinel = join(root, `READY-${hangNode}`);
-  const deadline = Date.now() + 60_000;
+  // ⚠ **按「有没有进展」判, 不按墙钟判**: 上面那句注释说得对 —— 定时会在慢机器上杀早,
+  //   而原来的兜底仍是 60s 墙钟, 于是机器一忙就复现同一个病(2026-08-23 在姊妹文件上实测:
+  //   一夜红三次, 每次都恰好 60.2s, 单跑该文件全绿)。
+  //   ⚠ 但无进展判**也必须有总上界**: 只按进展判, 子进程只要还在断续吐字节就永远转下去,
+  //   撞的会是 runner 的单测上限, 那时下面这段可诊断判词一句都打不出来(姊妹文件实测过一次
+  //   240s 的 `this test timed out`)。上界要低于本文件的单测预算(全是 180s)并给 resume
+  //   那一跳留余量; 合法耗时实测 ~1s, 120s 远在其上。
+  //   ⚠ 它分不出「慢但本来能成」和「真挂了」—— 所以判词把用时和字节数都念出来, 让下一个
+  //   读的人自己判, 别替他下结论。
+  const NO_PROGRESS_MS = 30_000;
+  const TOTAL_CAP_MS = 120_000;
+  const startedAt = Date.now();
+  let lastBytes = -1;
+  let lastProgressAt = Date.now();
   while (!existsSync(sentinel)) {
-    if (Date.now() > deadline) {
+    if (sawBytes !== lastBytes) {
+      lastBytes = sawBytes;
+      lastProgressAt = Date.now();
+    }
+    const idleMs = Date.now() - lastProgressAt;
+    const totalMs = Date.now() - startedAt;
+    if (idleMs > NO_PROGRESS_MS || totalMs > TOTAL_CAP_MS) {
       proc.kill('SIGKILL');
-      const stderr = await new Response(proc.stderr).text();
-      throw new Error(`子进程 60s 内没跑到 ${hangNode} —— 夹具没进崩溃点, 本次读数无效。stderr:\n${stderr.slice(-2000)}`);
+      await drained(proc, hangNode, draining);
+      // 两条兜底各自报出自己是哪一条: 卡死(一个字节都没有)与空转(一直在吐但到不了)
+      // 要查的是不同的东西, 压成一句就等于回到「查不动」。
+      const why =
+        idleMs > NO_PROGRESS_MS
+          ? `子进程 ${NO_PROGRESS_MS / 1000}s 内一个字节都没产出`
+          : `子进程一直在产出字节, 但 ${TOTAL_CAP_MS / 1000}s 内到不了哨兵`;
+      const files = existsSync(root) ? readdirSync(root).slice(0, 12).join(', ') : '(root 不在)';
+      throw new Error(
+        `${why}且没跑到 ${hangNode} —— 累计收到 ${sawBytes} 字节; 用时 ${Math.round(totalMs / 1000)}s; ` +
+          `root 里有: ${files}; 输出尾: ${tail.slice(-300) || '(空)'}`,
+      );
     }
     await Bun.sleep(50);
   }
+  // ⚠ **不许在 kill 之前 await draining**: 子进程此刻正挂在崩溃点上, stdout 永远不关,
+  //   drain 永远不 resolve ⇒ 整条用例死挂(姊妹文件 2026-08-23 第一版就是这么写的)。
+  //   先杀, 流随之关闭, drain 自然收尾。
   proc.kill('SIGKILL');
   await awaitDeath(proc, `crashAt(${hangNode}) 的 SIGKILL 之后`);
+  await drained(proc, hangNode, draining);
 }
+
+/**
+ * 等 drain 收尾 —— **但这一等必须有界**(2026-08-23, 现场就是这条用例)。
+ *
+ * 「先杀, 流随之关闭, drain 自然收尾」是个**假设**。实测证伪: 本文件的
+ * 「SIGKILL 之后 runDir 里每一个 .json 都完整可解析」在一趟全量里挂满 180s 撞 runner 上限,
+ * 判词一句没有 —— 而 crashAt 里当时只剩这一处没有界(哨兵循环有总上界, `awaitDeath`
+ * 自带 60s + 宽限并会抛判词)。bun 1.3.14 那族记账缺陷的另一张脸正是**管道到不了 EOF**。
+ *
+ * 界不用编数: `awaitWhileAlive` 的判据是 `processGone(pid)` 的直接观测 ——
+ * 进程还在就一秒不催, 进程没了而 EOF 还不来才判「记账丢了」。
+ */
+const drained = (proc: { pid: number }, hangNode: string, draining: Promise<unknown>): Promise<unknown> =>
+  awaitWhileAlive(draining, proc.pid, `crashAt(${hangNode}) 等 stdout/stderr 收尾`);
 
 describe('G2/F1 真杀 —— 内环崩在轮中, 已批准制品不丢、已绿子节点不重跑', () => {
   test('第 1 轮跑完(判未收敛并点名 b), 崩在第 2 轮的 b 上 → resume 只补跑 b', async () => {

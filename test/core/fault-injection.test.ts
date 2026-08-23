@@ -18,7 +18,7 @@ import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { awaitDeath, awaitExitBounded, readAllBounded } from '../../src/harness/proc/await-exit';
+import { awaitDeath, awaitExitBounded, awaitWhileAlive, readAllBounded } from '../../src/harness/proc/await-exit';
 
 const CHILD = join(import.meta.dir, 'fault-injection-child.ts');
 const RUN_ID = 'crash-run';
@@ -127,7 +127,7 @@ async function crashAt(hangNode: string, args: string[]): Promise<void> {
     const totalMs = Date.now() - startedAt;
     if (idleMs > NO_PROGRESS_MS || totalMs > TOTAL_CAP_MS) {
       proc.kill('SIGKILL');
-      await draining;
+      await drained(proc, hangNode, draining);
       // ⚠ 判词要**可诊断**: 原来只说「没跑到, 本次读数无效」—— 那句话是诚实的, 但它把
       //   「机器慢」「子进程死了」「管道堵了」三件事压成一句, 查不动。
       //   两条兜底各自报出自己是哪一条: 卡死 (一个字节都没有) 与空转 (一直在吐但到不了)
@@ -149,8 +149,22 @@ async function crashAt(hangNode: string, args: string[]): Promise<void> {
   //   先杀, 流随之关闭, drain 自然收尾。
   proc.kill('SIGKILL');
   await awaitDeath(proc, `crashAt(${hangNode}) 的 SIGKILL 之后`);
-  await draining;
+  await drained(proc, hangNode, draining);
 }
+
+/**
+ * 等 drain 收尾 —— **但这一等必须有界**(2026-08-23)。
+ *
+ * 「先杀, 流随之关闭, drain 自然收尾」是个**假设**, 而 bun 1.3.14 的子进程记账缺陷
+ * 正好能证伪它(同一族的另一张脸就是管道到不了 EOF)。裸 `await draining` 不设界 ⇒
+ * 流不关就挂到 runner 的单测上限, 报告里只剩 `this test timed out`, 一句判词都没有 ——
+ * 与「哨兵循环没有总上界」是**同一个病的两处**, 上一片只治了其中一处。
+ *
+ * 界不用编数: `awaitWhileAlive` 的判据是 `processGone(pid)` 的直接观测 ——
+ * 进程还在就一秒不催, 进程没了而 EOF 还不来才判「记账丢了」。
+ */
+const drained = (proc: { pid: number }, hangNode: string, draining: Promise<unknown>): Promise<unknown> =>
+  awaitWhileAlive(draining, proc.pid, `crashAt(${hangNode}) 等 stdout/stderr 收尾`);
 
 describe('F1 崩在一轮中途 —— 轮内已绿节点不重跑, 制品不丢', () => {
   test('a/b 已绿时杀进程 → resume 只补跑 c, a/b 各仍只执行过 1 次', async () => {
