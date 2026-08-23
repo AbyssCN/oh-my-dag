@@ -42,8 +42,12 @@ describe('禁词扫描器', () => {
     expect(hits.every((h) => h.kind === 'comment')).toBe(true);
   });
 
-  test('禁词表自身所在的文件必须在排除名单里(算进来 = 这条闸永远红)', () => {
+  test('把禁词当**数据**用的文件必须在排除名单里(算进来 = 这条闸永远红)', () => {
     expect(EXCLUDE_FILES).toContain('scripts/jargon-scan.ts');
     expect(EXCLUDE_FILES).toContain('src/harness/harness-prompts.ts');
+    // ⚠ 这一条是拿真事故换来的(2026-08-24): 清扫按散文规矩把谎报完成闸正则里的
+    //   「搞定」换成了「完成」, 闸从此认不出「全部搞定」。判据是「散文还是数据」,
+    //   不是「文件重不重要」。
+    expect(EXCLUDE_FILES).toContain('src/harness/plan/false-completion.ts');
   });
 });

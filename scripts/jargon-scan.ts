@@ -68,11 +68,20 @@ export const JARGON: Readonly<Record<string, string>> = {
 /** 仓库副本 + 依赖,一律不进 —— 同一份代码算 7 遍(2026-08-24 实测栽过)。 */
 const SKIP_DIRS = new Set(['node_modules', '.git', '.omd', '.claude', 'dist', 'coverage']);
 
-/** 必须逐字引用禁词的文件(禁词表本身 / 写作规范 / 本脚本)。算进来 = 这条闸永远红。 */
+/**
+ * 必须逐字引用禁词的文件。算进来 = 这条闸永远红。
+ *
+ * ⚠ 判据是「**这些字是散文还是数据**」, 不是「这个文件重不重要」:
+ * `false-completion.ts` 的正则里有「搞定」, 因为那是**被检测的目标词** —— 谎报完成的人
+ * 会写「全部搞定」。2026-08-24 的清扫真的把它换成了「完成」, 于是那道闸从此认不出这一整类;
+ * `D-4 谎报完成闸 > 词形变体也命中` 当场红才拦住(已还原)。同理 `harness-prompts.ts`
+ * 是发给模型的提示词原文。
+ */
 export const EXCLUDE_FILES = [
   'scripts/jargon-scan.ts',
   'scripts/jargon-scan.test.ts',
   'src/harness/harness-prompts.ts',
+  'src/harness/plan/false-completion.ts',
 ];
 
 export interface JargonHit {
