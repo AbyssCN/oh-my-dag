@@ -105,6 +105,17 @@ async function crashAt(hangNode: string, args: string[]): Promise<void> {
   //   这一族红过三次, 每次都恰好 60.2s, 单跑该文件 11 pass/0 fail)。
   //   改成: 只要子进程还在**产出字节**就不算卡住; 连续 NO_PROGRESS_MS 一个字节没有才判死。
   const NO_PROGRESS_MS = 30_000;
+  // ⚠ **无进展判也必须有总上界** (2026-08-23 实测, 这一族 flaky 的第四种表现):
+  //   只按「有没有进展」判, 子进程只要还在断续吐字节就**永远转下去** —— 那一趟撞的是
+  //   bun 的 240s 单测上限, 于是上面这段精心写的可诊断判词一句都没打出来, 报告里只剩
+  //   `this test timed out after 240000ms`。总上界不是为了掐性能 (正常 ~1s),
+  //   是为了保证**判词由这里出, 不由 runner 出**: 留出余量给同一条用例的 resume 那一跳。
+  //   ⚠ 它分不出「慢但本来能成」和「真挂了」—— 所以判词把用时和字节数都念出来, 让下一个
+  //   读的人自己判, 别替他下结论。
+  //   ⚠ 取值判据: 必须低于**本文件最小的那个**单测预算 (F1 是 180s, 其余 240s), 且要给
+  //   同一条用例的 resume 那一跳留出余地 —— 卡在这里把 runner 的预算吃光, 判词照样出不来。
+  const TOTAL_CAP_MS = 120_000;
+  const startedAt = Date.now();
   let lastBytes = -1;
   let lastProgressAt = Date.now();
   while (!existsSync(sentinel)) {
@@ -112,15 +123,23 @@ async function crashAt(hangNode: string, args: string[]): Promise<void> {
       lastBytes = sawBytes;
       lastProgressAt = Date.now();
     }
-    if (Date.now() - lastProgressAt > NO_PROGRESS_MS) {
+    const idleMs = Date.now() - lastProgressAt;
+    const totalMs = Date.now() - startedAt;
+    if (idleMs > NO_PROGRESS_MS || totalMs > TOTAL_CAP_MS) {
       proc.kill('SIGKILL');
       await draining;
       // ⚠ 判词要**可诊断**: 原来只说「没跑到, 本次读数无效」—— 那句话是诚实的, 但它把
       //   「机器慢」「子进程死了」「管道堵了」三件事压成一句, 查不动。
+      //   两条兜底各自报出自己是哪一条: 卡死 (一个字节都没有) 与空转 (一直在吐但到不了)
+      //   要查的是不同的东西, 压成一句就等于又回到「查不动」。
+      const why =
+        idleMs > NO_PROGRESS_MS
+          ? `子进程 ${NO_PROGRESS_MS / 1000}s 内一个字节都没产出`
+          : `子进程一直在产出字节, 但 ${TOTAL_CAP_MS / 1000}s 内到不了哨兵`;
       const files = existsSync(root) ? readdirSync(root).slice(0, 12).join(', ') : '(root 不在)';
       throw new Error(
-        `子进程 ${NO_PROGRESS_MS / 1000}s 内一个字节都没产出且没跑到 ${hangNode} —— ` +
-          `累计收到 ${sawBytes} 字节; root 里有: ${files}; 输出尾: ${tail.slice(-300) || '(空)'}`,
+        `${why}且没跑到 ${hangNode} —— 累计收到 ${sawBytes} 字节; 用时 ${Math.round(totalMs / 1000)}s; ` +
+          `root 里有: ${files}; 输出尾: ${tail.slice(-300) || '(空)'}`,
       );
     }
     await Bun.sleep(50);
