@@ -123,12 +123,14 @@ console.log("nodes:", Object.keys(compileBreakdown(b, { acceptCommand: "bun test
 ### 还有一条,抓的是**另一半**
 
 ```bash
-bun run plan-doc-check <文档>
+bun run plan-doc-check <文档>     # 含分解段解析闸 (见 plan-doc-gaps 的 sdd-breakdown 项)
 ```
 
 它查的是**文档形态**:切片列编号是不是裸数字、波形行有没有独占一行、有没有未决段,
 以及**不变量与 GWT 配没配上**。上面那条 `bun -e` 查的是**跑起来会不会挂**。
-**两条抓的不是同一批错,都要跑。**
+**两条抓的不是同一批错,都要跑。成本一秒,不验的代价是一次夜批空跑。**
+
+⚠ **两次实测都靠它拦下**:第一次是 `S1` 切片列(点火当场拒),第二次是波形行被静默丢掉。
 
 ### ⚠ INV / GWT 必须写成它读得懂的形状,否则它数出 0 条(而它是对的)
 

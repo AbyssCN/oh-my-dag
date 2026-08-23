@@ -89,6 +89,53 @@ export function scanGateVerdicts(source: string): Map<string, string> {
   return verdicts;
 }
 
+/**
+ * **覆盖欠账**（片 5c，2026-08-23）—— 还没有「它真的开火过」用例的闸。
+ *
+ * 判据是 {@link gateCoverage}：一道闸算被覆盖，当且仅当**某个测试文件里出现
+ * `[omd/executor-dag][<id>]` 这个整串**。它只可能来自捕获到的判词，所以这是
+ * **运行时**证据，不是「测试里提过这个词」——`expect_exit` 这种词在 35 个测试文件里
+ * 出现过，co-occurrence 证明不了任何事（实测，2026-08-23）。
+ *
+ * ⚠ **这些闸不是没测过**：它们在**行为面**都有用例（断言 `failureKind` / 节点状态）。
+ * 缺的是「**这个测试覆盖的是哪道闸**」这条链**不可机读** —— 于是一道闸被改到走不到时，
+ * 没有任何东西会红。
+ *
+ * ⚠ **值 = 为什么还没覆盖**（照 `reachability.test.ts` 的 `DYNAMIC_ENTRIES` 规矩：
+ * 写不出这句话 = 它不该待在名单里）。**名单只许缩不许涨** —— 由
+ * `gate-registry.test.ts` 的绊线钉住。
+ */
+export const COVERAGE_DEBT: Readonly<Record<string, string>> = {
+  'artifact-broken': '写后即验只在 leaf 写出语法不合法的文件时触发；现有用例走的是 oracle-red 路径，没捕判词。',
+  heartbeat: '心跳闸要一个真停摆的 leaf；现有 17 个文件断言的是 watchdog 字段与节点状态，不是判词。',
+  'fuse-action': '动作级熔断要在环里重复同一动作到阈值；`repeated-action.test.ts` 测的是纯件判据，不起引擎。',
+  'fuse-judge': '闸级熔断要连撞 judge 失败到阈值；现有用例在 conductor 环层，没捕引擎判词。',
+  'fuse-spin': '空转熔断要 leaf 在工具循环里空转到阈值；现有用例断言 `spinFused` 字段。',
+  'fuse-samecause': 'D-6 同因熔断要连撞同一根因两轮；现有用例断言的是重规划结果，不是判词。',
+  'oracle-exit-miss': 'command 节点未命中 expect_exit —— 35 个文件提到 expect_exit，但没有一个捕判词。',
+  'oracle-exit-scope': '这一条是 fail-open 提示（非 command 节点忽略 expect_exit），今天连行为面用例都没有。',
+  'writescope-drop': '写域外剔除只在 leaf 报写域外绝对路径时触发；`artifact-scope.test.ts` 断言的是 `outOfScope` 字段。',
+  'false-completion': 'D-4 谎报完成闸要「声称完成 ∧ 校验命令实败」同时成立；9 个文件提到它，没有一个捕判词。',
+};
+
+/**
+ * 覆盖对账：哪些登记的闸**有**「真开火过」的用例，哪些没有。
+ *
+ * @param testSources 测试文件全文（调用方读盘；本函数**纯**，于是判别力可注入验）。
+ */
+export function gateCoverage(testSources: readonly string[]): {
+  covered: string[];
+  uncovered: string[];
+} {
+  const covered: string[] = [];
+  const uncovered: string[] = [];
+  for (const entry of GATE_REGISTRY) {
+    const marker = `${VERDICT_PREFIX}[${entry.id}]`;
+    (testSources.some((src) => src.includes(marker)) ? covered : uncovered).push(entry.id);
+  }
+  return { covered, uncovered };
+}
+
 /** 对账登记 id 与源码 id；不读盘，也不把重复出现次数当成漂移。 */
 export function reconcileGateIds(source: string): {
   missing: string[];

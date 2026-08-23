@@ -15,12 +15,15 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  COVERAGE_DEBT,
   GATE_REGISTRY,
   VERDICT_PREFIX,
+  gateCoverage,
   scanGateVerdicts,
   reconcileGateIds,
   type GateEntry,
 } from './gate-registry';
+import { readdirSync, statSync } from 'node:fs';
 
 // 与 seam-catalog.test.ts 同构造: 从 src/harness/gates/ 上溯三层到仓根
 const ROOT = join(import.meta.dir, '../../..');
@@ -139,5 +142,72 @@ describe('GWT-7 — INV-7: 12 条原文以整串仍在 engine.ts 里 (保证只�
   ] as const)('id=%s 整串仍在 engine.ts', (id, verdict) => {
     const needle = `${VERDICT_PREFIX}[${id}] ${verdict}`;
     expect(ENGINE_SRC.includes(needle)).toBe(true);
+  });
+});
+
+// ── 片 5c: 覆盖对账 —— 每道闸有没有「它真的开火过」的用例 ────────────────────
+//
+// 判据刻意是**整串** `[omd/executor-dag][<id>]`: 它只可能来自捕获到的判词。
+// ⚠ 不用关键词共现 —— 实测 `expect_exit` 在 35 个测试文件里出现过, 证明不了任何事。
+const collectTestSources = (): string[] => {
+  const out: string[] = [];
+  const walk = (dir: string): void => {
+    for (const name of readdirSync(dir)) {
+      if (name === 'node_modules' || name === '.git' || name.startsWith('.omd')) continue;
+      const full = join(dir, name);
+      if (statSync(full).isDirectory()) walk(full);
+      else if (name.endsWith('.test.ts') && !full.endsWith('gate-registry.test.ts')) {
+        out.push(readFileSync(full, 'utf8'));
+      }
+    }
+  };
+  walk(join(ROOT, 'src'));
+  walk(join(ROOT, 'test'));
+  return out;
+};
+
+describe('片 5c — 覆盖对账: 每道闸有没有「真开火过」的用例', () => {
+  test('★ 判别力: 注入一份含 marker 的假测试 ⇒ 该 id 算被覆盖, 别的不算', () => {
+    const fake = [`expect(lines).toContain('${VERDICT_PREFIX}[heartbeat] 随便什么');`];
+    const { covered, uncovered } = gateCoverage(fake);
+    expect(covered).toEqual(['heartbeat']);
+    expect(uncovered).toContain('artifact-empty');
+    // 反向: 只提 id 这个词、不带整串 ⇒ 不算覆盖 (co-occurrence 不是证据)
+    expect(gateCoverage(['测试里提到了 heartbeat 这个词']).covered).toEqual([]);
+  });
+
+  test('★ 未覆盖的闸必须逐条登记在 COVERAGE_DEBT 里 (不许有隐形欠账)', () => {
+    const { uncovered } = gateCoverage(collectTestSources());
+    const unlisted = uncovered.filter((id) => !(id in COVERAGE_DEBT));
+    expect(
+      unlisted,
+      `这些闸没有「真开火过」的用例, 也没登记进 COVERAGE_DEBT: ${unlisted.join(', ')}\n` +
+        '修法二选一: ① 在覆盖它的测试里捕判词并断言整串 `' +
+        VERDICT_PREFIX +
+        '[<id>] …`; ② 登记进 COVERAGE_DEBT 并写明**为什么还没覆盖**。',
+    ).toEqual([]);
+  });
+
+  test('★ 绊线: COVERAGE_DEBT 只许缩不许涨 (今天 10 条)', () => {
+    // 刻意写死字面量 —— 派生成 length 就成恒真式 (同 seam-catalog 的 8/50 先例)。
+    // 补上一条覆盖 ⇒ 从名单里删掉它 ⇒ 这个数跟着降。**它只许降。**
+    expect(Object.keys(COVERAGE_DEBT).length).toBeLessThanOrEqual(10);
+  });
+
+  test('★ 欠账登记不许收留已经覆盖的闸 (防名单变垃圾桶)', () => {
+    const { covered } = gateCoverage(collectTestSources());
+    const needless = covered.filter((id) => id in COVERAGE_DEBT);
+    expect(needless, `这些闸已经有真开火用例, 该从 COVERAGE_DEBT 里删掉: ${needless.join(', ')}`).toEqual([]);
+  });
+
+  test('每条欠账都写了理由 (写不出「为什么还没覆盖」= 它不该在名单里)', () => {
+    const empty = Object.entries(COVERAGE_DEBT).filter(([, why]) => why.trim().length < 20).map(([id]) => id);
+    expect(empty, `这些欠账没写理由: ${empty.join(', ')}`).toEqual([]);
+  });
+
+  test('欠账名单不含表外的 id (删了闸要同步删登记)', () => {
+    const ids = new Set(GATE_REGISTRY.map((e) => e.id));
+    const stale = Object.keys(COVERAGE_DEBT).filter((id) => !ids.has(id));
+    expect(stale, `COVERAGE_DEBT 登记了表里没有的 id: ${stale.join(', ')}`).toEqual([]);
   });
 });
