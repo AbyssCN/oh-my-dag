@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RunRegistry } from '../run-registry';
 import { createRunStore } from '../run-store';
+import { CheckpointManager } from '../../harness/continuity/checkpoint-manager';
 import { createDagTools, type DagEngine } from './dag-tools';
 import { createDagResearchTool, type ResearchFanout } from './research';
 import { createRunsTools } from './runs';
@@ -50,6 +51,12 @@ function fakeSpawn(rec: SpawnRecord) {
   };
 }
 
+/** 临时 continuity 根 —— 起跑会往 `<repoRoot>/.omd/continuity/<runId>/` 写点火档案。 */
+const tmpContinuity = () => {
+  const root = mkdtempSync(join(tmpdir(), 'omd-dexec-cont-'));
+  return { manager: new CheckpointManager(root), repoRoot: root };
+};
+
 const call = (tool: OmdMcpTool, args: Record<string, unknown>) =>
   (tool.handler as (a: Record<string, unknown>, e?: unknown) => unknown)(args, {}) as Promise<{
     content: { type: string; text: string }[];
@@ -63,6 +70,9 @@ describe('dag_run 母进程 spawn 契约 (S2)', () => {
       engine: neverEngine,
       runRegistry: new RunRegistry(),
       defaultConfig: { conductorModel: 'c:m', leafModel: 'l:m' },
+      // continuity 给个临时根: 起跑要在 `<cwd>/.omd/continuity/<runId>/` 留点火档案
+      // (run-ignition-wiring.test.ts 钉的那根线), 不给就落进本仓真的 .omd/ 里。
+      continuity: tmpContinuity(),
       spawnDagExec: fakeSpawn(rec),
     });
     const out = await call(tools.find((t) => t.name === 'dag_run')!, {
@@ -140,6 +150,7 @@ describe('dag_run 母进程 spawn 契约 (S2)', () => {
       engine: neverEngine,
       runRegistry: reg,
       defaultConfig: { conductorModel: 'c:m', leafModel: 'l:m' },
+      continuity: tmpContinuity(), // 同上: 点火档案落临时根, 不脏本仓
       spawnDagExec: fakeSpawn(rec),
     });
     await call(tools.find((t) => t.name === 'dag_run')!, { task: 'x' });

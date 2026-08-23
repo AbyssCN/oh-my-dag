@@ -30,6 +30,7 @@ import { envSummaryLine } from '../../model/bootstrap.js';
 import { listProviders } from '../../model/providers.js';
 import { defaultIsAlive } from '../run-store.js';
 import { cancelDetachedRun } from '../../harness/run-control.js';
+import { loadIgnitionArgs, RECOVERABLE, resolveResumeArgs, saveIgnitionArgs } from '../../harness/run-ignition.js';
 import {
   describeRunWorktree,
   prepareRunWorktree,
@@ -872,6 +873,30 @@ function makeDagRun(deps: DagToolDeps): OmdMcpTool {
           };
         }
       }
+      // ── 续跑恢复入参 (2026-08-23, 接 `goal.ts` 同款; 恢复集见 run-ignition.ts) ──────
+      // `resume` 只带 runId, 其余入参由**本次调用**给 —— 漏传一个就按缺省跑, 而缺省未必是
+      // 首跑那次的值。dag_run 的恢复集是 conductorModel/leafModel/maxFanout: 换掉执行它的
+      // 那两个模型, 续的就不是同一个 run 了。
+      // **只在母进程做**: 子进程 (OMD_DAG_EXEC_CHILD) 照 spec 跑, 而 spec 里已是解析后的值 ——
+      // 两处各解析一次会漂 (run-ignition.ts 对 branchStrategy 写的是同一条判据)。
+      // branchStrategy 不在这套里: 它由 prepareRunWorktree 按**盘上有没有那棵树**判。
+      const cwd = deps.continuity?.repoRoot ?? process.cwd();
+      const savedIgnition = resume ? loadIgnitionArgs(cwd, resume) : null;
+      const { merged, recovered } = resolveResumeArgs('dag_run', { conductorModel, leafModel, maxFanout }, savedIgnition);
+      const runArgs = merged as { conductorModel?: string; leafModel?: string; maxFanout?: number };
+      if (resume && recovered.length > 0) {
+        logger.info(
+          { runId, recovered },
+          '[omd/dag-tools] 续跑从点火档案恢复入参 (本次调用没给这几位; 本次给了的一律以本次为准)',
+        );
+      } else if (resume && !savedIgnition && RECOVERABLE.dag_run.every((k) => runArgs[k as keyof typeof runArgs] === undefined)) {
+        // ⚠ 只在**真丢了东西**时警告: 没档案 **且** 本次也一位没给 (仓规 §静默坑 1: 「没档案」
+        //   与「档案里首跑就没传」是两件事)。本模块之前的老 run 盘上没有档案, 会走到这里。
+        logger.warn(
+          { runId: resume },
+          '[omd/dag-tools] 续跑没找到点火档案且本次也没给这几位 → 按缺省跑 (本模块之前的老 run 会这样)',
+        );
+      }
       // 座位自检 (INV-MODEL-5) 在母进程做: 缺座不 spawn, 当场亮错 —— 省一个注定失败的
       // 进程 + 一个注定 failed 的 run 记录。判据与执行体完全同源 (required 检查同一对字段)。
       let defaultConfig: Partial<ExecutorDagConfig> | undefined;
@@ -880,26 +905,25 @@ function makeDagRun(deps: DagToolDeps): OmdMcpTool {
       } catch (e) {
         return { content: [{ type: 'text' as const, text: `runId: ${runId}\nerror: ${(e as Error).message}` }], isError: true };
       }
-      if (!(conductorModel ?? defaultConfig?.conductorModel)) {
+      if (!(runArgs.conductorModel ?? defaultConfig?.conductorModel)) {
         return { content: [{ type: 'text' as const, text: `runId: ${runId}\nerror: conductorModel required` }], isError: true };
       }
-      if (!(leafModel ?? defaultConfig?.leafModel)) {
+      if (!(runArgs.leafModel ?? defaultConfig?.leafModel)) {
         return { content: [{ type: 'text' as const, text: `runId: ${runId}\nerror: leafModel required` }], isError: true };
       }
       // 母进程**不登记 run** (goal-worker 同款, goal.ts 注释逐字适用): 登记由子进程做,
       // 它才是属主 (pid 判活要认它)。母进程抢先登记会让盘上留下一个属主是母进程的
       // running 记录, 而母进程随时会走 —— 下一个 session hydrate 就把一个正在跑的
       // run 判成"被打断"。代价是毫秒级窗口: 子进程起来之前 dag_status 查无此 run。
-      const cwd = deps.continuity?.repoRoot ?? process.cwd();
       const spawned = (deps.spawnDagExec ?? defaultSpawnDagExec)({
         tool: 'dag_run',
         runId,
         cwd,
         args: {
           task,
-          ...(conductorModel ? { conductorModel } : {}),
-          ...(leafModel ? { leafModel } : {}),
-          ...(maxFanout ? { maxFanout } : {}),
+          ...(runArgs.conductorModel ? { conductorModel: runArgs.conductorModel } : {}),
+          ...(runArgs.leafModel ? { leafModel: runArgs.leafModel } : {}),
+          ...(runArgs.maxFanout ? { maxFanout: runArgs.maxFanout } : {}),
           ...(resume ? { resume } : {}),
           // 隔离档随 spec 过河 —— worktree 由**子进程**建 (它才是属主, 也是要在那棵树里跑的人)。
           ...(branchStrategy ? { branchStrategy } : {}),
@@ -912,6 +936,12 @@ function makeDagRun(deps: DagToolDeps): OmdMcpTool {
           isError: true,
         };
       }
+      // ── 点火留档 (排在 spawn **之后**: 起不来的 run 不留档, 免得盘上攒一堆没人会续的 uuid) ──
+      // **首写者赢** (`ifAbsent`): 真续跑不许把首跑的值改掉 —— 本次给了什么由上面的解析决定,
+      // 档案只管「首跑那次是什么」。写在 spec.json 隔壁 (同一个 continuity/<runId>/ 目录,
+      // 那个目录本来就每次 dag_run 都会多这些未跟踪文件, 本行不新增暴露面)。
+      // fail-open: 写不进去不挡这次跑 (helper 内部留一行证据)。
+      saveIgnitionArgs(cwd, runId, 'dag_run', runArgs, { ifAbsent: true });
       // 板上还有谁在跑 (2026-08-12)。读面在母进程、写面在子进程 —— 于是这里天然只报**别人**,
       // 不必排除自己。为什么值得占回执两行: 2026-08-12 一天里两次重复派工都跑到实施期才被
       // 人眼发现, 而「在跑的是什么」这一条信息当时就在盘上, 没有任何出口把它印出来。
@@ -927,6 +957,9 @@ function makeDagRun(deps: DagToolDeps): OmdMcpTool {
           text:
             `runId: ${runId}\nstatus: running\n` +
             `(子进程 pid ${spawned.pid ?? '?'}, 日志 ${spawned.logPath})\n` +
+            // 恢复了必须**在派工的人正在读的字里**说 —— 只写进 logger 就是又一处
+            // 「机制在、生产读不出来」(本仓反复付账的形态)。
+            (recovered.length > 0 ? `续跑恢复自点火档案: ${recovered.join(', ')} (本次给了的以本次为准)\n` : '') +
             `env: ${envLine}\n` +
             `它不随本会话结束而死。查进度 dag_status runId=${runId} (若刚起跑查无此 run, 等几秒)。` +
             (liveNotice.length ? `\n\n${liveNotice.join('\n')}` : ''),
