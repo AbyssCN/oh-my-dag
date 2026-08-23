@@ -265,8 +265,28 @@ export function prepareRunWorktree(
   deps: RunWorktreeDeps = {},
 ): RunWorktree {
   const { cwd, runId } = opts;
-  const strategy = opts.strategy ?? 'head';
   const noop = { cwd, strategy: 'head' as const, dispose: () => {} };
+  // ⚠ **续跑不许换树** (2026-08-23, owner 现场报): 盘上已有该 runId 的隔离树 ⇒ 首跑是隔离档,
+  // 这次调用没传 `branchStrategy` 只说明**调用方漏传了**, 不说明该写主树。落回 head 会把
+  // 半成品与 checkpoint 留在那棵树上、却把这一轮的写打进主工作树 —— **静默换树, 比不隔离更坏**。
+  //
+  // ⚠ 判据必须在 `strategy === 'head'` 短路**之前** —— 下面那条 `existsSync(dir)` 复用路
+  // (2026-08-14 写的) 注释里早就描述了这个危险, 但它在短路之后, 于是**在它要防的那个场景里
+  // 恰好不可达**: resume 不传 strategy ⇒ 默认 head ⇒ 函数第三行就返回了。
+  //
+  // ⚠ 为什么收在这里而不是各调用方: `dag-tools.ts` 的 `resolveRunWorktree` 已经算过同一件事,
+  // 而 `goal.ts:670` 没有 —— **一处写了一处漏了, 漏的那处是夜批默认路径 `solve`**。
+  // 同一条判据两处各写一份就是本仓反复付账的形态; 收一处, 两个入口都漏不掉。
+  //
+  // runId 是 UUID ⇒ 那个目录存在只可能因为**同一个 run 之前隔离跑过**, 不存在误判。
+  const resumedIsolated = opts.strategy !== 'branch' && existsSync(runWorktreeDir(cwd, runId));
+  if (resumedIsolated) {
+    logger.warn(
+      { runId, dir: runWorktreeDir(cwd, runId), requested: opts.strategy ?? '(缺席)' },
+      '[omd/run-worktree] 续跑不许换树: 盘上已有该 runId 的隔离树, 但本次调用没要 branch → **强制 branch** (落回 head 会静默把这一轮的写打进主工作树)',
+    );
+  }
+  const strategy: BranchStrategy = resumedIsolated ? 'branch' : (opts.strategy ?? 'head');
   if (strategy === 'head') return noop;
 
   const isGitRepo = deps.isGitRepo ?? defaultIsGitRepo;

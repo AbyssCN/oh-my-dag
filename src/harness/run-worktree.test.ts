@@ -390,6 +390,58 @@ describe('ensureNodeModulesLinks (#174: web/ 等一级子包自己的 node_modul
   });
 });
 
+// ── 续跑不许换树 (2026-08-23, owner 现场报) ──────────────────────────────────
+//
+// 现场: 首跑传了 branchStrategy:'branch', resume 只传 resume/sddPath/detached/maxRounds
+// ⇒ strategy 落回 head ⇒ 这一轮的写打进**主工作树**, 而另一个 session 正在同一棵树上提交。
+// 没造成损失, 但那是运气不是设计。
+//
+// 根因不是「resume 不继承参数」, 是**同一条判据两处各写一份而漏了一处**:
+// `dag-tools.ts` 的 run 工具早就算过「resume ∧ 盘上有树 → 强制 branch」, 而 `goal.ts` 的
+// solve 没有 —— 漏的那处恰好是夜批默认路径。判据已收进 prepareRunWorktree 一处。
+describe('续跑不许换树: 盘上已有该 runId 的隔离树 ⇒ 强制 branch (不论本次传没传)', () => {
+  const { mkdtempSync: mkTmp, mkdirSync: mkDir } = require('node:fs') as typeof import('node:fs');
+  const { tmpdir: osTmp } = require('node:os') as typeof import('node:os');
+
+  const worldWithTree = () => {
+    const cwd = mkTmp(join(osTmp(), 'omd-resume-strategy-'));
+    mkDir(runWorktreeDir(cwd, 'r1'), { recursive: true });
+    return { cwd, noLink: (() => []) as unknown as RunWorktreeDeps['ensureLink'] };
+  };
+
+  test('★ 修前必红: strategy **缺席** + 盘上有树 ⇒ 仍是 branch, cwd 指隔离树', () => {
+    const { cwd, noLink } = worldWithTree();
+    const { deps } = fakeGit();
+    // 逐字复现现场: resume 那次调用**没传** branchStrategy。
+    const w = prepareRunWorktree({ cwd, runId: 'r1' }, { ...deps, ensureLink: noLink });
+    expect(w.strategy).toBe('branch');
+    expect(w.cwd).toBe(runWorktreeDir(cwd, 'r1'));
+  });
+
+  test("★ 修前必红: 显式传 'head' + 盘上有树 ⇒ 仍是 branch (写主树比不隔离更坏)", () => {
+    const { cwd, noLink } = worldWithTree();
+    const { deps } = fakeGit();
+    const w = prepareRunWorktree({ cwd, runId: 'r1', strategy: 'head' }, { ...deps, ensureLink: noLink });
+    expect(w.strategy).toBe('branch');
+    expect(w.cwd).toBe(runWorktreeDir(cwd, 'r1'));
+  });
+
+  test('★ 判别力: 盘上**没有**树 + strategy 缺席 ⇒ 老老实实 head (这条不许被上面两条带跑)', () => {
+    const cwd = mkTmp(join(osTmp(), 'omd-resume-strategy-none-'));
+    const { deps } = fakeGit();
+    const w = prepareRunWorktree({ cwd, runId: 'r2' }, deps);
+    expect(w.strategy).toBe('head');
+    expect(w.cwd).toBe(cwd);
+  });
+
+  test('★ 判别力: 盘上没有树 + 显式 head ⇒ head (零回归)', () => {
+    const cwd = mkTmp(join(osTmp(), 'omd-resume-strategy-none2-'));
+    const { deps } = fakeGit();
+    const w = prepareRunWorktree({ cwd, runId: 'r3', strategy: 'head' }, deps);
+    expect(w.strategy).toBe('head');
+  });
+});
+
 // ── #168 候选① resume 落后检测 (run 20984d68 现场: 主树修补对续跑不可见) ────────
 describe('behindWarning (#168): resume 复用且分支落后 HEAD → 响亮报, 其余一律沉默', () => {
   const { mkdtempSync: mkTmp, mkdirSync: mkDir } = require('node:fs') as typeof import('node:fs');

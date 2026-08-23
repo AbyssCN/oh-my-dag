@@ -33,10 +33,8 @@ import { cancelDetachedRun } from '../../harness/run-control.js';
 import {
   describeRunWorktree,
   prepareRunWorktree,
-  runWorktreeDir,
   type BranchStrategy,
 } from '../../harness/run-worktree.js';
-import { existsSync } from 'node:fs';
 
 // renderProgressAscii 已抽到 ./dag-ascii (纯函数, statusline 复用); 此处保留 re-export 兼容既有 importer。
 export { renderProgressAscii };
@@ -667,9 +665,14 @@ function resolveRunWorktree(
   deps: DagToolDeps,
 ): ReturnType<typeof prepareRunWorktree> {
   const root = deps.continuity?.repoRoot ?? process.cwd();
-  const strategy: BranchStrategy =
-    requested ?? (resume && existsSync(runWorktreeDir(root, runId)) ? 'branch' : 'head');
-  return prepareRunWorktree({ cwd: root, runId, strategy });
+  // ⚠ 2026-08-23: 「resume 时盘上已有隔离树 → 强制 branch」这条判据**已收进
+  // `prepareRunWorktree` 一处** —— 此前只有这里算过, 而 `goal.ts` 的 `solve` 没有,
+  // 于是 solve 的 resume 会静默换树写主工作树(owner 现场撞到)。同一条判据两处各写一份
+  // 就是那个洞的成因, 所以这里**不再自己算**, 原样把调用方要的传下去。
+  // `resume` 参数留着不用: 它现在只作签名上的可读性(判据在 helper 里按盘上有没有树判, 更准 ——
+  // 非 resume 的调用不可能撞上同 UUID 的树)。
+  void resume;
+  return prepareRunWorktree({ cwd: root, runId, ...(requested ? { strategy: requested } : {}) });
 }
 
 /**
