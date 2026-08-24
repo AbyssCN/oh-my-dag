@@ -1382,6 +1382,18 @@ async function executePlan(
         outputPaths.push(rp);
         const h = hashArtifact(abs);
         if (h) artifactHashes[rp] = h;
+        else {
+          // S-50 后半 (2026-08-24): 根因 (三处实现) 已由 `resolveArtifactPath` 收拢, 但**失败仍然静默** ——
+          // `hashArtifact` 对「文件真不在」与「在但读不了」都返回 null 且不抛不记 (坑①: 两种成因塌成一格)。
+          // 不记的后果不是这一跑坏掉, 是 **resume 的判毒/复用依据缺一块而没人知道**:
+          // 少一个 hash ⇒ 该节点下次被当成"输入变了"重跑, 或反过来被当成没变而复用一个错的产物。
+          // 这里只留证据不改行为 (告知层 fail-open), 但两种成因分开写 —— 合成一句"hash 失败"
+          // 事后就再也分不出该去修路径还是修权限。
+          logger.warn(
+            { node: opts.id, declared: p, resolved: abs, root, repoRoot, cause: existsSync(abs) ? 'unreadable' : 'absent' },
+            '[omd/executor-dag] S-50: 产物 hash 取不到 → checkpoint 少一条, resume 的判毒/复用依据缺一块 (只报不拦)',
+          );
+        }
       }
       const summary = opts.text.slice(0, 800);
       // 通道⑤-b: 写入磁盘时把语义指纹一并存下 —— resume 预载判毒时**不用重算**, 于是运行时展开的
