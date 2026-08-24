@@ -21,6 +21,13 @@
  */
 import { classifyCommand } from './hooks/dangerous-cmd';
 import { awaitDeath, awaitExitBounded, readAllBounded, spawnWithPipes } from './proc/await-exit';
+import {
+  installSignalCleanup,
+  killProcessGroup,
+  makeCmdHead,
+  registerChild,
+  unregisterChild,
+} from './proc/live-children';
 import { logger } from '../logger';
 import type { ModelUsage } from '../model/types';
 
@@ -287,11 +294,18 @@ export async function disposeCommandLeafChild(
 ): Promise<void> {
   const what = `停稳命令叶子子进程 (${reason})`;
   try {
+    // 先走 child 自带的 kill (bun 走 signalfd/process.kill(pid) 杀子进程, 注入替身用它来记录信号 +
+    // 推进 exited)。之后再补 `killProcessGroup(-pid)` 收孙进程 (INV-1): 真进程组被 SIGTERM,
+    // 假注入 (pid 无效) 走 EPERM/ESRCH 兜底, 不抛。
     child.kill(opts.signal ?? 'SIGTERM');
   } catch {
     // 已经死了 / 句柄失效 —— 下面按 pid 实测判, 不靠这一刀的返回值。
     logger.debug({ pid: child.pid, reason }, '[omd/command-leaf] kill 抛了 (多半已退出), 转按 pid 实测');
   }
+  // **best-effort 组杀**: 不抛, 不挡下面 awaitDeath 的等。
+  //   真子进程: 同信号再发一次无害, 但孙进程 (e.g. `bash -c "sleep 30 & ..."`) 才真收到。
+  //   假注入 (pid 0x7fff_fffe): 抛 ESRCH, 兜底单 PID 也抛 ESRCH, 被 defaultKillPid 吞。
+  killProcessGroup(child.pid, opts.signal ?? 'SIGTERM');
   // ⚠ 等退出事件的窗口**要短**: `awaitDeath` 是先等事件、超时之后才按 pid 实测。给它 60s 的话,
   // 「pid 早就没了但退出事件永不来」这张脸会让停稳整整卡一分钟 —— 而那件事一秒就能问清楚。
   await awaitDeath(child, what, opts.waitMs ?? 1_000, opts.graceMs ?? 3_000);
@@ -305,6 +319,8 @@ const POST_KILL_DRAIN_MS = 500;
 
 const defaultSpawn = async (command: string, cwd: string, timeoutMs = 60_000, spawnRaw?: () => BoundedProc) => {
   const what = `跑命令 \`${command.slice(0, 60)}\``;
+  // ⚠ **detached: true** (D-1, INV-1): bun 在 POSIX 上调 setsid() 让子进程成为新进程组组长,
+  // 这样组杀 (kill(-pid)) 能一并带走 sh 派生出来的孙进程。Windows 上语义不同但本仓生产仅 POSIX。
   const proc = spawnWithPipes(
     spawnRaw ??
       // ⚠ **必须显式传 env**: bun 1.3.14 实测「不传 env = 子进程 env 为空」(不是继承父进程)。
@@ -314,10 +330,25 @@ const defaultSpawn = async (command: string, cwd: string, timeoutMs = 60_000, sp
           cwd,
           stdout: 'pipe',
           stderr: 'pipe',
+          detached: true,
           env: scrubCredentialEnv(process.env) as Record<string, string>,
         }) as BoundedProc),
     ['stdout', 'stderr'],
     what,
+  );
+  // **登记台账 (INV-4)**: spawn 成功立刻写, 退出/回收时销账。fail-open (writeLedger 内部已 warn)。
+  // cmdHead = spawn argv 前两段 = `sh -c`, 回收器用它核对 PID 是否被复用 (D-4)。
+  registerChild({
+    pid: proc.pid,
+    cmdHead: makeCmdHead(['sh', '-c']),
+    startedAt: Date.now(),
+  });
+  // **销账钩子**: 无论正常退还是超时杀, proc.exited 落定就摘。复用 race 里的同一份 exitP 不行
+  // (它已被超时改造过 —— `code` 优先折自 runtime), 这里直接 hook 原 `proc.exited`。
+  // 失败不抛 (unregisterChild 内部 warn) —— 不挡正常路径。
+  proc.exited.then(
+    () => unregisterChild(proc.pid),
+    () => unregisterChild(proc.pid),
   );
   // 两条等待各自留够宽限 (超时那条路要在 kill 之后还能把残余读完), 超时判据由下面的 race 出。
   let pipesErr: unknown;
@@ -644,3 +675,8 @@ export function createCommandLeafRunner(opts: CommandLeafRunnerOpts): CommandLea
     return { text: outParts.join('\n'), usage: { in: 0, out: 0 }, exitCode, timedOut, signal };
   };
 }
+
+// **模块加载时装 SIGINT/SIGTERM 收尾 (D-2, INV-3)**: `installSignalCleanup` 自身幂等,
+// 多次 import 不重复挂 handler。Engine 主进程与 command leaf 在同一个 import 树里, 装一次即可。
+// 注意: agent leaf / SDK 通道**不走**这条 —— 它们的子进程管理是 Claude Agent SDK 的属地, 见 SDD 非目标。
+installSignalCleanup();

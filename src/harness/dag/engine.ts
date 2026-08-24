@@ -178,6 +178,9 @@ import {
 import { parseDetectorVerdict, DETECTOR_PROTOCOL } from '../plan/detector';
 import { repeatedActionBlock, type ActionAttempt } from '../plan/repeated-action';
 import { makeLlmConvergenceJudge } from '../plan/llm-judge';
+// D-6 启动期孤儿回收 (SDD 2026-08-24): 引擎硬崩溃 (OOM/SIGKILL) 后下次启动回收上个生命周期的
+// 孤儿子进程。reapOrphansOnce 一次性闸, run + solve 经引擎入口只触发一次。INV-5/6/7 已由模块自身保证。
+import { reapOrphansOnce } from '../proc/orphan-reap';
 import { send } from '../../model/gateway';
 // D-14v2 多模态媒体管道 (S4): attach_media 执行期从直接前驱输出解析图片 → ContentPart 注入。
 import { collectDepMedia } from '../leaf-media';
@@ -5043,6 +5046,9 @@ async function runDagInternalCore(
 ): Promise<ExecutorDagResult> {
   /** #158 预算时间轴的本函数级锚 (config._budgetAnchor 缺席时的回落; 升级重规划闸读它)。 */
   const runStartedAt = Date.now();
+  // **D-6 启动期孤儿回收**: 进程级一次性闸, run + solve 经引擎入口只触发一次。reapOrphansOnce
+  // 内部已 fail-open (INV-6/7), 这里不包 try —— 模块保证不抛, 抛了也只 warn 后吞掉。
+  reapOrphansOnce();
   // sessionId: 本次 run 的 conductor+leaf 全部经 send → 同一 Langfuse session (B2)。
   // 可注入 (config.sessionId): 调用方传则跨平面关联 (派活飞轮 dispatchId ↔ Langfuse session)。
   //
