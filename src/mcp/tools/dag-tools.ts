@@ -1034,6 +1034,15 @@ function makeDagStatus(deps: DagToolDeps): OmdMcpTool {
         return { content: [{ type: 'text' as const, text: `unknown run ${runId}` }], isError: true };
       }
       const summary = runRegistry.getSummary(runId, rec);
+      // S3 / C-3 / #250 / INV-11 终态分词 —— done 且 meta.doneKind 在时**追加**一行。
+      // 走消费面补一行而不是改 `getSummary` (run-registry.ts 不在本节点写集; 写集契约
+      // 不破 = 那是另一节点的活)。三值纪律: meta.doneKind 缺席 = 不适用, 不编 'unknown'。
+      if (rec.status === 'done' && rec.meta.doneKind) {
+        summary.content.push({
+          type: 'text' as const,
+          text: `doneKind: ${rec.meta.doneKind}`,
+        });
+      }
       // S2 孤儿检测 (SDD §2 T2 另一半): running 而属主 pid 不活 ∧ 5min 无 checkpoint 写入
       // → 标 stalled 并写明判定依据。**只标不写**: server 从此不写子进程 run 的状态
       // (写者唯一 = 子进程); 重启后 hydrate 会按打断落 failed, 那才是写侧的事。

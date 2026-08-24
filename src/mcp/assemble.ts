@@ -736,6 +736,9 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       recorder,
       // S3: owner 指令通道 —— 每轮取一次未消费指令, 逐字渲染, 取完记账 (防每轮重放)。
       inbox,
+      // #251 (C-3 INV-9): 点火判据自证的实跑通道 —— 不传则该闸缺席 (接线点缺失, 非 fail-open)。
+      // 复用装配期同一个白名单 runner (cwd 已烤死), 与引擎 commandRunner 单一实现。
+      commandRunner,
     }),
     ...createMemoryTools({ memory }),
     // pathfinder 六件套 (TUI-less 决策地图: map/add/tickets/rule/deliver/prefetch, pull 式回流)。

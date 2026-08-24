@@ -347,13 +347,31 @@ export class RunRegistry {
     this.transition(runId, 'running');
   }
 
-  succeed(runId: string, result: unknown): void {
+  /**
+   * 终态 done。C-2 (#250 终态分词) 加可选 `opts.doneKind` —— 探索型验收的 run 机器没判,
+   * 落 `exploratory-unverified`; executable-converged 落 `verified`。status 词表不动
+   * (`=== 'done'` 消费者零感知是兑现先例), 分词走 meta 通道 (零 schema 迁移)。
+   *
+   * **三值纪律 (NULL ≠ 0 ≠ 不适用)**: 不传 opts.doneKind → meta 无该键, 字节不变 (存量
+   * 调用零改动即绿); 非 goal 入口 (dag_run / dag_fleet 等无验收轴) 也走这条 —— meta
+   * 无该键 = 不适用, 不编 `unknown`。重开 (reopenForResume) 不清洗该键 —— meta 本就不
+   * 在它的清洗范围, 不变。
+   *
+   * @param opts.doneKind 'verified' (executable 验收通过) | 'exploratory-unverified'
+   *   (探索型验收 converged, 机器没判 —— 含 #242 vacuous→G4 降级那条路)。
+   */
+  succeed(
+    runId: string,
+    result: unknown,
+    opts?: { doneKind?: 'verified' | 'exploratory-unverified' },
+  ): void {
     const rec = this.runs.get(runId);
     if (!rec) throw new Error(`unknown run ${runId}`);
     this.transition(runId, 'done');
     rec.result = result;
+    if (opts?.doneKind !== undefined) rec.meta.doneKind = opts.doneKind;
     // S2 进程化: 结果必须写穿 —— 子进程 run 的结果是 parent `dag_result` 唯一出口
-    // (parent 内存里没有这条)。transition 已写过一次但 result 是它之后才落的。
+    // (parent 内存里没有这条)。transition 已写过一次但 result/meta.doneKind 是它之后才落的。
     this.persist(runId);
   }
 

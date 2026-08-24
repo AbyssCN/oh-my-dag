@@ -99,7 +99,16 @@ if (import.meta.main) {
   // **为什么首次跑也走 `resume` 这个参数名**: 它是工具面上唯一能"用调用方给的 runId 起一个 run"
   // 的口子, 而 detached 的 runId 必须由母进程先生成 (它要立刻回给调用方)。对**未知** runId,
   // `reopenForResume` 的语义正是 register + start —— 也就是我们要的那件事, 且属主 pid 记的是
-  // **本进程**。附带的 `continuity.resume=true` 对一个没有任何 checkpoint 的新 run 是 no-op。
+  // **本进程**。
+  //
+  // ⚠ **S3 / C-3 / D-1 (2026-08-25, #251) 改正**: 旧注释 ("附带的 `continuity.resume=true` 对新
+  // run 是 no-op") 是错的 —— run-goal.ts:912 的 `resuming = config.dag.continuity?.resume === true`
+  // 在**没有任何 checkpoint 的新 run**上不是 no-op: 它会让 #242 已绿切片降级 + O-6 vacuous 探针
+  // 在首跑上误触, 预绿切片被判「活已干完」降为 command 重验, O-6 探针被绕过 → 零改动假 done
+  // (站票 run 85a18995: 4 分钟零改动假 done; run bca0a0c7: bun test 多 filter 静默忽略, 二次假 done)。
+  // 修法不在 worker, 在 handler (goal.ts): 真 resume = 盘上证据 (registry 有该 runId 记录 ∨
+  // `_fixpoint.json` 在场), 两证据都缺 = 借道首跑, `continuity.resume` 不注入。worker 这条路只
+  // 走借道首跑, 所以永远不注入 (handler 内已判完)。
   // (不为此新增一个参数: 一个已有语义能表达的事不该有两个入口。)
   const res = (await goalTool.handler(
     buildHandlerArgs(argv) as never,
@@ -153,7 +162,12 @@ if (import.meta.main) {
       // (2026-08-03 实测那次修复报 `disk I/O error` 时, 本进程这条还开着)。
       registry.close();
       const verdict = verifyTerminalPersisted(join(cwd, '.omd', 'runs.db'), runId, st);
-      console.error(`goal-worker: runId=${runId} 终态 ${st} (写穿核验: ${verdict})`);
+      // S3 / C-3 / #250 / INV-11 终态分词 —— done 且 meta.doneKind 在场 (三值纪律: 缺席=不适用,
+      // 非 goal 入口不在) 时一并念出, 让本进程 stdout 与 dag_status 同口径: 「机器判过」
+      // 与「没人判」是两种状态, 不许素面记 done。
+      const dk = st === 'done' ? registry.getRecord(runId)?.meta.doneKind : undefined;
+      const dkLine = dk ? ` doneKind=${dk}` : '';
+      console.error(`goal-worker: runId=${runId} 终态 ${st}${dkLine} (写穿核验: ${verdict})`);
       process.exit(verdict === 'unrecoverable' ? 3 : st === 'done' ? 0 : 1);
     }
     await Bun.sleep(2000);

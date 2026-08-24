@@ -32,17 +32,18 @@ const emptyResult = (goal: string): RunGoalResult => ({
 const make = (withContinuity = true) => {
   const seen: { dag?: ExecutorDagConfig }[] = [];
   const root = mkdtempSync(join(tmpdir(), 'omd-goal-'));
+  const registry = new RunRegistry();
   const tool = createGoalTool({
     runGoal: async (goal, cfg) => {
       seen.push({ dag: cfg.dag });
       return emptyResult(goal);
     },
-    runRegistry: new RunRegistry(),
+    runRegistry: registry,
     cwd: root,
     buildConfig: () => ({ conductorModel: 'c:m', leafModel: 'l:m' }),
     ...(withContinuity ? { continuity: { manager: new CheckpointManager(root), repoRoot: root } } : {}),
   });
-  return { tool, seen };
+  return { tool, seen, registry };
 };
 
 const call = (tool: ReturnType<typeof createGoalTool>, args: Record<string, unknown>) =>
@@ -63,7 +64,12 @@ describe('dag_goal 外层 journal 接线', () => {
   });
 
   test('resume=<runId>: 复用同一个 runId 并开 resume (换 id 等于从零开始)', async () => {
-    const { tool, seen } = make();
+    const { tool, seen, registry } = make();
+    // #250 (2026-08-25): 真 resume 需盘上证据 —— registry 已有该 runId 记录 (或环 journal)。
+    // 无证据的 resume=<未知id> 是 worker 首跑借道, 不再注入 continuity.resume。
+    registry.register('run-abc', { goal: '接着干' });
+    registry.start('run-abc');
+    registry.fail('run-abc', '第一趟没跑完');
     const out = await call(tool, { goal: '接着干', resume: 'run-abc' });
     await Bun.sleep(1);
     expect(out.content[0]!.text).toContain('run-abc');

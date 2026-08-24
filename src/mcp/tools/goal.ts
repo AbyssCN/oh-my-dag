@@ -18,6 +18,8 @@ import { ignitionPreflight } from '../../harness/goal/ignition-preflight';
 import { readIgnitionBandwidth, renderIgnitionForecast } from '../../harness/goal/ignition-forecast';
 import { renderNumericClaimNotice } from '../../harness/goal/numeric-claims';
 import { loadSddContract, parseBreakdown, ticketFieldsFromSdd } from '../../harness/goal/sdd-direct';
+import { checkIgnitionCriteria, type IgnitionRunCommand } from '../../harness/goal/ignition-criteria-check';
+import type { CommandLeafRunner } from '../../harness/leaf-runners';
 import { resolveBackend as realResolveBackend, type PathBackend } from '../../harness/pathfinder/backend';
 import type { DagNodeEvent, ExecutorDagConfig } from '../../harness/dag/types';
 import type { CheckpointManager } from '../../harness/continuity/checkpoint-manager';
@@ -101,6 +103,14 @@ export interface GoalToolDeps {
    * 与 pathfinder `dispatch.ts` 的 AFK research 同一个 idiom。测试注入替身, **永不起真进程**。
    */
   spawnDetached?: (cmd: string[], opts: { cwd: string; logPath: string }) => number | undefined;
+  /**
+   * 命令跑手 (S3 / C-3 / #251 接线) —— 给点火判据自证 (`checkIgnitionCriteria`) 适配成
+   * `IgnitionRunCommand` 后实跑每片 verify。**预绑 cwd=deps.cwd 主树**:
+   * 同装配层 commandRunner (assemble.ts 调 createGoalTool 时一并传入);测试注入替身,
+   * **永不起真进程**。省略 = `checkIgnitionCriteria` 不跑 (预检闸退化为写集相交那一道,
+   * 仍能拒预绿之外的真相交, 但预绿那一类拒不到 —— 这是接线点缺席, 不是 fail-open)。
+   */
+  commandRunner?: CommandLeafRunner;
   /**
    * S3 owner 收件箱。给了则每轮把**未消费**的 owner 指令逐字注入下一轮 conductor prompt,
    * 并记账消费轮次 (防同一条指令每轮重放 —— 重放会让 conductor 以为 owner 在反复强调)。
@@ -659,17 +669,36 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
       }
       const runId = resume || randomUUID();
 
+      // ── 真 resume 判定 (D-1 / C-3 INV-8) ─────────────────────────────────
+      // 工具面上 `--run-id` 把"调用方给的 runId 起一个 run"做成 `resume` 参数,
+      // 而 worker 首跑也走它 (goal-worker.ts 的 buildHandlerArgs: `resume: opt('run-id') ?? ''`)。
+      // 于是**`resume` 字段本身**分不出真续跑与借道首跑 —— 判真续跑要看**盘上证据**:
+      //   ① registry 已有该 runId 记录 (failed/cancelled 可续, 与 resume 分支同判);
+      //   ② 环 journal 已落 (`_fixpoint.json`, owner 续跑一个 runs.db 丢失的老 run 的合法路径)。
+      // 两证据是 ∨ 不是 ∧ (D-1 末段): runs.db 丢失后只剩 journal 也要判真 resume。
+      // 两者都缺 = 借道首跑: 预检 + criteria-check 照走 (worker 路径不再是静默跳过),
+      // 而 `continuity.resume=true` **不**注入 (D-1: 这正是 #242 降级在首跑上误触的根因)。
+      let trueResume = false;
+      if (resume) {
+        const rec = deps.runRegistry.getRecord(runId);
+        const journalPresent =
+          !!deps.continuity && deps.continuity.manager.loadFixpointJournal(runId) !== null;
+        trueResume = !!rec || journalPresent;
+      }
+
       // ── S2 点火预检 (INV-5): 已结晶 SDD 点火前查板上活 run 写集相交 ─────────────
       // 只对 sddPath 直通 (点火路径) 生效 —— 非 sddPath run 点火时没有写集可查, 闸缺席,
-      // 行为逐字节照旧 (INV-1)。resume 是续跑不是点火, 不再过闸 (它首跑已过)。
-      // 预检放在 register/start 之前: 被拒的 run 不许进 registry, 也不建 worktree (无 debris)。
+      // 行为逐字节照旧 (INV-1)。resume 是续跑不是点火, 不再过闸 (它首跑已过) —— 但
+      // `!resume` 是**参数面的语义**, 借道首跑 (worker `--run-id` 路径) 那里恒为 `false`
+      // 而**实质是首跑**; 真续跑判定看 `trueResume` (D-1)。预检放在 register/start 之前:
+      // 被拒的 run 不许进 registry, 也不建 worktree (无 debris)。
       // detached 路径由 worker 内同一个 handler 走同一段代码 (--sdd-path 已转发), 不在这里重复。
       // force=true 是 owner 的显式越闸声明: **账由预检自己记** (ignitionPreflight 内部把越闸行落
       // board note, INV-5 后半) —— 这里只把声明传过去, 不另造第二本账, 越闸与留账不脱钩。
       // advisories (D-1/D-10: 已结晶未点火 SDD 相交) 只进报告、永不阻塞 —— 预检 verdict 不受其影响,
       // 这里把整份 advisory 列表留到回执里念出来 (blocked 分支也念, 让调用方一次看全)。
       let preflightAdvisories: string[] = [];
-      if (sddPath && !resume) {
+      if (sddPath && !trueResume) {
         const preflight = ignitionPreflight(
           deps.cwd,
           [...new Set(parseBreakdown(loadSddContract(sddPath).text).slices.flatMap((s) => s.writeSet))],
@@ -690,10 +719,42 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           };
         }
       }
+
+      // ── S3 / C-3 / #251 点火判据自证 (INV-9): 预检过 → 逐片 lint+实跑 ──────────
+      // sddPath ∧ !trueResume 才是点火, 预检过只是**板上没冲突** —— 预绿 (判据虚) 那一类
+      // 预检查不到, 只有 `checkIgnitionCriteria` 真跑 verify 才能抓 (run 85a18995: 零改动 4 分钟
+      // 假 done; run bca0a0c7: bun test 多 filter 静默忽略缺失)。commandRunner 注入面缺席
+      // (= 接线点无 runner) ⇒ 这一闸缺席, 行为退化为老预检, 这是**接线点缺失不是 fail-open**:
+      // 测试注入替身、生产注入同装配层 runner, 两条路都没有 noop 兜底。
+      if (sddPath && !trueResume && deps.commandRunner) {
+        const slices = parseBreakdown(loadSddContract(sddPath).text).slices;
+        const ignRunner: IgnitionRunCommand = async ({ command, cwd }) => {
+          const r = await deps.commandRunner!({ command });
+          void cwd; // cwd 已在装配层烤死, runner 自管 cwd
+          return { exitCode: r.exitCode };
+        };
+        const criteria = await checkIgnitionCriteria(deps.cwd, slices, ignRunner);
+        if (criteria.verdict === 'rejected') {
+          const detail = criteria.findings
+            .map((f) => `  · slice ${f.sliceId} [${f.kind}]: ${f.detail}`)
+            .join('\n');
+          return {
+            content: [{
+              type: 'text' as const,
+              text:
+                `dag_goal 点火判据自证拒绝 (#251): SDD 写集上 verify 列预绿或判据虚 ——\n${detail}\n` +
+                `判据虚或活已干完 (run 85a18995 / bca0a0c7 同形), 改 SDD 收窄判据 / 换 verify, 不要再点火。`,
+            }],
+            isError: true,
+          };
+        }
+      }
       if (resume) {
         // 同一个 runId 重开: `register` 会因重复 id 抛 (server 还记得这个 run 时), 于是续跑一个
         // **本进程里跑失败/被叫停过**的 goal 原本会当场炸 —— 走 reopenForResume (failed/cancelled/未知
         // 三种都接得住), 与 dag_run/dag_run_plan 的 resume 同一条路。
+        // **注意**: 这里仍按**参数面** `resume` 判 —— `trueResume` 是预检/降级的语义,
+        // 而 register 的去重与拒收是工具面契约 (resume 分支语义逐字节照旧, INV-12)。
         const rec = deps.runRegistry.getRecord(runId);
         if (rec && rec.status !== 'failed' && rec.status !== 'cancelled') {
           return {
@@ -792,7 +853,12 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
                 // 这个 runId 自己, 所以"还原到 HEAD"按构造不会误伤 owner 的活。head 档那棵树上
                 // 有 owner 自己的未提交改动 —— 一律不给, 保持老行为。
                 ...(worktree.strategy === 'branch' ? { execRoot: worktree.cwd, rollbackBaseline: 'HEAD' } : {}),
-                ...(resume ? { resume: true } : {}),
+                // 真续跑才注入 (D-1): 借道首跑 (worker `--run-id` 路径) `resume` 字段非空但
+                // **实质是首跑** —— 注入 `continuity.resume=true` 会让 run-goal.ts:912 的
+                // `resuming=true` 路径 (=#242 已绿切片降级) 在首跑上误触, 预绿切片被判
+                // 「活已干完」降为 command 重验, O-6 vacuous 探针被绕过 → 零改动假 done
+                // (站票 run 85a18995)。**只 `trueResume` 时注入**, 借道首跑走的是首跑路径。
+                ...(trueResume ? { resume: true } : {}),
               },
             }
           : {}),
@@ -883,7 +949,14 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           // 调用方据此决定要不要人接手。
           // D-P 例外: 被叫停的记 cancelled —— 它没失败, 只是没跑完, 而这两者的下一步不一样
           // (查为什么挂了 vs 直接 resume)。blocked 仍记 failed: 它确实没达成, 只是原因是"要人"。
-          if (r.converged) deps.runRegistry.succeed(runId, summarizeGoal(r));
+          // S3 / C-3 / #250 (INV-10): converged 必带 doneKind —— executable 验收 = `verified`
+          // (机器判过), exploratory = `exploratory-unverified` (机器没判; 含 #242 vacuous→G4
+          // 降级那条路)。三值纪律: 非 goal 入口 (dag_run 等无验收轴) 不传 → meta 无该键。
+          if (r.converged) {
+            const doneKind: 'verified' | 'exploratory-unverified' | undefined =
+              r.acceptance.kind === 'executable' ? 'verified' : 'exploratory-unverified';
+            deps.runRegistry.succeed(runId, summarizeGoal(r), doneKind ? { doneKind } : {});
+          }
           else if (r.cancelled) deps.runRegistry.cancel(runId, r.cancelled, summarizeGoal(r));
           else deps.runRegistry.fail(runId, summarizeGoalFailure(r));
           // ③ 终态如实翻票 (D-6③)。开票失败过 (runTicketId 缺席) 就没有可翻的 —— 不重开一张:
