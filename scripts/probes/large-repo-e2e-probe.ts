@@ -39,8 +39,8 @@ const TASK =
  * ```
  */
 const ORACLE: Record<string, { path: string; lines: number }> = {
-  '/home/nick/repos/oh-my-dag': { path: 'src/harness/dag/engine.ts', lines: 3349 },
-  '/home/nick/repos/talous-v2': { path: 'src/types/supabase.ts', lines: 12421 },
+  '/home/dev/repos/oh-my-dag': { path: 'src/harness/dag/engine.ts', lines: 3349 },
+  '/home/dev/repos/talous-v2': { path: 'src/types/supabase.ts', lines: 12421 },
 };
 
 interface Reading {

@@ -24,7 +24,7 @@ describe('excerpt U: 行前缀过滤 (GWT-H1)', () => {
   });
 
   test('string 分支: skill 前导开头的 user 文本不进 U: 行', () => {
-    const src = jsonl([userLine('Base directory for this skill: /home/nick/repos/oh-my-dag')]);
+    const src = jsonl([userLine('Base directory for this skill: /home/dev/repos/oh-my-dag')]);
     expect(excerpt(src)).not.toContain('U: ');
   });
 

@@ -13,7 +13,7 @@
       "fileLine": "src/harness/dag/types.ts:171 + src/harness/dag/engine.ts:2578",
       "resumeFlag": true,
       "smokeASkipped": true,
-      "smokeWorktreeRoot": "/home/nick/.cache/tmp/omd-nrr-smoke-s2-LYzbkC"
+      "smokeWorktreeRoot": "/home/dev/.cache/tmp/omd-nrr-smoke-s2-LYzbkC"
     }
   },
   "arms": [
@@ -25,7 +25,7 @@
         "rerun": "control: 读 data/values.txt 报行数与数字和。",
         "identical": true
       },
-      "cwd": "/home/nick/.cache/tmp/omd-nrr-control-0-s2-Nmq75b",
+      "cwd": "/home/dev/.cache/tmp/omd-nrr-control-0-s2-Nmq75b",
       "cacheReadInputTokens": {
         "value": 148,
         "fromNodeId": "b",
@@ -50,7 +50,7 @@
         "rerun": "control: 读 data/values.txt 报行数与数字和。",
         "identical": true
       },
-      "cwd": "/home/nick/.cache/tmp/omd-nrr-control-1-s2-GH1JAg",
+      "cwd": "/home/dev/.cache/tmp/omd-nrr-control-1-s2-GH1JAg",
       "cacheReadInputTokens": {
         "value": 148,
         "fromNodeId": "b",
@@ -75,7 +75,7 @@
         "rerun": "control: 读 data/values.txt 报行数与数字和。",
         "identical": true
       },
-      "cwd": "/home/nick/.cache/tmp/omd-nrr-control-2-s2-SHKXY4",
+      "cwd": "/home/dev/.cache/tmp/omd-nrr-control-2-s2-SHKXY4",
       "cacheReadInputTokens": {
         "value": 148,
         "fromNodeId": "b",
@@ -100,7 +100,7 @@
         "rerun": "treatment v2: 报行数、和与积。",
         "identical": false
       },
-      "cwd": "/home/nick/.cache/tmp/omd-nrr-treatment-0-s2-Sno6pY",
+      "cwd": "/home/dev/.cache/tmp/omd-nrr-treatment-0-s2-Sno6pY",
       "cacheReadInputTokens": {
         "value": 472,
         "fromNodeId": "a",
@@ -125,7 +125,7 @@
         "rerun": "treatment v2: 报行数、和与积。",
         "identical": false
       },
-      "cwd": "/home/nick/.cache/tmp/omd-nrr-treatment-1-s2-EPzm1l",
+      "cwd": "/home/dev/.cache/tmp/omd-nrr-treatment-1-s2-EPzm1l",
       "cacheReadInputTokens": {
         "value": 472,
         "fromNodeId": "a",
@@ -150,7 +150,7 @@
         "rerun": "treatment v2: 报行数、和与积。",
         "identical": false
       },
-      "cwd": "/home/nick/.cache/tmp/omd-nrr-treatment-2-s2-TJLE60",
+      "cwd": "/home/dev/.cache/tmp/omd-nrr-treatment-2-s2-TJLE60",
       "cacheReadInputTokens": {
         "value": 472,
         "fromNodeId": "a",

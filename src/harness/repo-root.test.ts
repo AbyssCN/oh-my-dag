@@ -4,7 +4,7 @@
  * GWT: 从**任何 cwd** 发的 omd 跑 → 记录落**同一份** dag-runs.db (= omd 自己仓根那份)。
  *
  * 本次修改前是 `join(cwd, '.omd', 'dag-runs.db')`, 三个调用点各写一份。于是从别的 repo 的
- * session 发的跑, 记录进的是**那个 repo** 的库 —— 实测 `/home/nick/repos/bluebell` 底下真有
+ * session 发的跑, 记录进的是**那个 repo** 的库 —— 实测 `/home/dev/repos/other-repo` 底下真有
  * 一份, 而且是老 schema 连 `claim_check` 列都没有。读数板只读其中一份, 缺的数**长得像
  * "引擎没记"**, 而不是"记在别处了"。
  *

@@ -7,7 +7,7 @@
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-const ROOT = '/home/nick/repos/oh-my-dag/.omd/continuity';
+const ROOT = '/home/dev/repos/oh-my-dag/.omd/continuity';
 
 interface Piece {
   file: string;

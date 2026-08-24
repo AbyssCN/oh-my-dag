@@ -130,7 +130,7 @@ describe('resolveMissingArtifacts —— 产物闸「绝对路径判定」纯提
     //   当前 Step A 没有 INV-2 ⇒ 3 条主干绝对路径落 missing ⇒ RED。
     //
     // 9 条入参 (与 SDD 2026-08-22 §「现场」逐字相同, worktree 前缀替换为本次临时根):
-    //   - 3 主干绝对: 仅在 worktree 新建 (本次 sed 走临时根, 不是字面 `/home/nick/...`).
+    //   - 3 主干绝对: 仅在 worktree 新建 (本次 sed 走临时根, 不是字面 `/home/dev/...`).
     //   - 1 worktree 绝对: 临时根下方, 走 `${root}${rel}` 命中。
     //   - 5 相对: `${root}/${p}` 命中 (我们在 worktree 全建过)。
     const wt = makeWorktreeWith([
@@ -144,7 +144,7 @@ describe('resolveMissingArtifacts —— 产物闸「绝对路径判定」纯提
       'src/tui/tools/chat-seat.ts',
     ]);
     try {
-      const mainRoot = '/home/nick/repos/oh-my-dag'; // 模拟 leaf 报的前缀
+      const mainRoot = '/home/dev/repos/oh-my-dag'; // 模拟 leaf 报的前缀
       const filesTouched = [
         `${mainRoot}/src/harness/session/sessions-cli.ts`,
         `${mainRoot}/src/mcp/tools/session.ts`,

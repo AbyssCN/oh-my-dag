@@ -38,7 +38,7 @@ export function mainRepoRootOfWorktree(gitPath: string): string | null {
  * **omd 自己的仓根** —— 从本模块的磁盘位置往上找 `package.json`,与 cwd 无关。
  *
  * 为什么不用 cwd:omd 经 MCP 可以从**任何** repo 的 session 发跑(实测:一个 cwd 在
- * `/home/nick/repos/bluebell` 的 daemon 正在跑 omd)。凡是"引擎自己的东西"(读数留痕库)
+ * `/home/dev/repos/other-repo` 的 daemon 正在跑 omd)。凡是"引擎自己的东西"(读数留痕库)
  * 若按 cwd 写盘,就会碎成一堆互相看不见的库 —— 而那种缺数**长得像"引擎没记"**。
  *
  * linked worktree 同 config 发现层的口径:worktree 是同一个仓 → 回主仓(否则 `.omd/` 是

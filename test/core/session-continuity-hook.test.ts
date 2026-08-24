@@ -309,7 +309,7 @@ describe('lastUserAsk 对 W2 决策不透明 (D-5 · 唯一触发仍是 token bu
       ledgerFrom(...crossed, userRaw('git commit 226451 — 最后真实 ask')), // found (D-1 string candidate)
       ledgerFrom(...crossed, userToolResult()), // empty (tool_result 无 candidate, D-1)
       // skill 前导 skip+continue → 穿透到更早真实 ask (硬化后; 镜像 A:161 遮 A:157)。
-      ledgerFrom(...crossed, userRaw('先进行 /grill 然后再/omd-sdd'), userLine('Base directory for this skill: /home/nick/skills/foo')),
+      ledgerFrom(...crossed, userRaw('先进行 /grill 然后再/omd-sdd'), userLine('Base directory for this skill: /home/dev/skills/foo')),
     ];
     // user 记录不产生 entries → 三份 ledger entries 逐字相同, 差异只在 lastUserAsk。
     expect(ledgers[1]!.entries).toEqual(ledgers[0]!.entries);
@@ -330,7 +330,7 @@ describe('lastUserAsk 对 W2 决策不透明 (D-5 · 唯一触发仍是 token bu
       ledgerFrom(...idle, userRaw('HEAD 指向 226451 · git log 最新')),
       ledgerFrom(...idle, userToolResult()),
       // skill 前导 skip+continue → 穿透到更早真实 ask (硬化后)。
-      ledgerFrom(...idle, userRaw('未跨档真实 ask'), userLine('Base directory for this skill: /home/nick/skills/bar')),
+      ledgerFrom(...idle, userRaw('未跨档真实 ask'), userLine('Base directory for this skill: /home/dev/skills/bar')),
     ];
     expect(ledgers[0]!.lastUserAsk).toEqual({ status: 'found', value: 'HEAD 指向 226451 · git log 最新', sourceLine: 3 });
     expect(ledgers[1]!.lastUserAsk).toEqual({ status: 'empty', value: null, sourceLine: null });

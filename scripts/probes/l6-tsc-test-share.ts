@@ -4,7 +4,7 @@
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-const ROOT = '/home/nick/repos/oh-my-dag/.omd/continuity';
+const ROOT = '/home/dev/repos/oh-my-dag/.omd/continuity';
 
 function classify(cmd: string): string | null {
   if (/\btsc\b/.test(cmd) && /bun test|\bvitest\b/.test(cmd)) return 'tsc+test';

@@ -770,7 +770,7 @@ describe('live (OMD_DREAM_LIVE=1) — S5 真座位验收', () => {
   // reused=7 (7 修复轮, fail-*.txt 两轮反馈齐全), usage 数字密集 (in/out/cacheHit/成本/时长)。
   // 排除 50607a26 (s4-extract-chat): reused=0 无修复轮, outcome=infra-error (基建故障, 语料薄)。
   // 只读主仓三库 + 临时 EdgeStore; 不碰真实 memory.db。
-  const MAIN_REPO = '/home/nick/repos/oh-my-dag';
+  const MAIN_REPO = '/home/dev/repos/oh-my-dag';
   const RUN_ID = '61a0a2b1-c0a0-47a9-8c97-a2eb95b8b40f';
   const CONTINUITY_DIR = `${MAIN_REPO}/.omd/continuity/${RUN_ID}`;
   /** 单节点输出进 prompt 的截窗字符数 (完整原文在主仓 continuity/)。 */

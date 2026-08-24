@@ -27,8 +27,8 @@ import { join } from 'node:path';
 import { attributeBlame } from '../../src/harness/dag/blame-attribution';
 import type { LeafResult } from '../../src/harness/dag/types';
 
-const CONTINUITY = process.argv[2] ?? '/home/nick/repos/plana/.omd/continuity';
-const REPO_ROOT = process.argv[3] ?? '/home/nick/repos/plana';
+const CONTINUITY = process.argv[2] ?? '/home/dev/repos/other-repo/.omd/continuity';
+const REPO_ROOT = process.argv[3] ?? '/home/dev/repos/other-repo';
 
 interface Checkpoint {
   nodeId?: string;

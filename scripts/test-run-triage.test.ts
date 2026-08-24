@@ -42,8 +42,8 @@ test/core/inner-loop-crash.test.ts:
 const SAMPLE_RUNTIME_ACCOUNTING = `
 test/core/fault-injection.test.ts:
 error: runChild(resume 子进程): proc.exited 抛了 (Error: EBADF: bad file descriptor, epoll_ctl), 而子进程 (pid 3168938) **已经不在**。 这是运行时的子进程回收缺陷 (bun 1.3.14: 退出事件丢了), 不是被测对象的问题 —— 本次读数无效, 重跑。 同源的另一面是 EBADF/epoll_ctl。详见 src/harness/proc/await-exit.ts 的模块注。
-      at awaitExitBounded (/home/nick/repos/oh-my-dag/src/harness/proc/await-exit.ts:226:15)
-      at async runChild (/home/nick/repos/oh-my-dag/test/core/fault-injection.test.ts:62:9)
+      at awaitExitBounded (/home/dev/repos/oh-my-dag/src/harness/proc/await-exit.ts:226:15)
+      at async runChild (/home/dev/repos/oh-my-dag/test/core/fault-injection.test.ts:62:9)
 (fail) F3 坏盘 —— 撕裂/残留/损坏不得把恢复路径炸掉 > _fixpoint.json 被截断 → 不炸, 退回第 1 轮 (fail-open), 但毒集确实丢了 [421.55ms]
 
  6776 pass

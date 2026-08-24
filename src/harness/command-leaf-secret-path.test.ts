@@ -19,7 +19,7 @@ describe('凭证文件拒 — 放行 cat 不等于放行 cat .env', () => {
   });
 
   test('凭证落点与 pi/claude 的凭证文件同样拒 (判据是 basename, 不是写法)', () => {
-    expect(blocked('cat /home/nick/.config/omd/secrets.json')).toContain('blocked secret-file');
+    expect(blocked('cat /home/dev/.config/omd/secrets.json')).toContain('blocked secret-file');
     expect(blocked('jq . ~/.pi/agent/auth.json')).toContain('blocked secret-file');
     expect(blocked('cat ../../.claude/.credentials.json')).toContain('blocked secret-file');
   });

@@ -103,7 +103,7 @@ describe('computeSig 的 hashline 目标锚 (2026-08-10 尺子修)', () => {
 
 describe('computeSig 的 bash cd 前缀 (2026-08-11 run 7d50fda2 尺子修)', () => {
   // 真样本形状: 隔离 worktree 的 run root, 光 cd 段就 76 字符 > 50 字符签名窗口。
-  const jail = '/home/nick/repos/oh-my-dag/.omd/runs/7d50fda2-c9b0-4a33-afb7-37207e724e90';
+  const jail = '/home/dev/repos/oh-my-dag/.omd/runs/7d50fda2-c9b0-4a33-afb7-37207e724e90';
   const inJail = (cmd: string): string => `cd ${jail} && ${cmd}`;
 
   // 反向自检: 把 computeSig 里的 stripCdPrefix 调用去掉 → 本条当场红 (三条命令签名全等,
@@ -208,11 +208,11 @@ describe('熔断闸 fuseTripped (2026-08-14; 阈值依据 2026-08-13 夜 + 2026-
  */
 describe('computeSig 的路径前缀 (2026-08-18 run dbfe0c66 尺子修)', () => {
   // 真样本: 隔离 worktree 的 run root 本身就 73 字符 > 60 字符签名窗口。
-  const jail = '/home/nick/repos/oh-my-dag/.omd/runs/dbfe0c66-681c-42cb-89f7-a67e3f569b99';
+  const jail = '/home/dev/repos/oh-my-dag/.omd/runs/dbfe0c66-681c-42cb-89f7-a67e3f569b99';
   const files = ['/src/harness/chat/history-recall.ts', '/src/mcp/tools/history.ts', '/src/serve/chat-tools.ts'];
 
   // 反向自检: 把 computeSig 里的 pathSig 换回 `path.slice(0, 60)` → 本条当场红 (三个签名全等),
-  // 读到的正是实盘那个错值 `hashline_edit:/home/nick/repos/oh-my-dag/.omd/runs/dbfe0c66-681c-42cb-89f7`。
+  // 读到的正是实盘那个错值 `hashline_edit:/home/dev/repos/oh-my-dag/.omd/runs/dbfe0c66-681c-42cb-89f7`。
   test('★ 同一 jail 下三个不同文件 → 三个不同签名, 不触发 spinning', () => {
     const sigs = files.map((f) => computeSig('read', { file_path: jail + f }));
     expect(new Set(sigs).size).toBe(3);

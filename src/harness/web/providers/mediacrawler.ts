@@ -32,7 +32,7 @@ import {
 export type SocialPlatform = 'zhihu' | 'xhs' | 'dy' | 'ks' | 'bili' | 'wb' | 'tieba';
 
 export interface MediaCrawlerOpts {
-  /** 采集服务地址, 如 http://192.168.50.154:8090。 */
+  /** 采集服务地址, 如 http://10.0.0.5:8090。 */
   baseUrl: string;
   /** 登录态 cookie 串 (`k=v; k=v`)。**凭证** —— 只从 env 进, 不写盘不进日志。 */
   cookies?: string;

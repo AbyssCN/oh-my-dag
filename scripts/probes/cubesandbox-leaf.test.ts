@@ -43,7 +43,7 @@ const D9_KEYS = [
 describe('INV-1 · manifest 单变量可审计', () => {
   const base = {
     repoHead: 'b7f46554923537fb4348e3a0924190eb047af48',
-    worktree: '/home/nick/repos/oh-my-dag',
+    worktree: '/home/dev/repos/oh-my-dag',
     planHash: 'sha256:deadbeef',
     planPath: 'docs/plan/2026-08-11-四要素定稿-owner-2026-08-11-加第-4-条信号-假设-cubesandbox-能.md',
     seat: 'claude-code:sonnet',

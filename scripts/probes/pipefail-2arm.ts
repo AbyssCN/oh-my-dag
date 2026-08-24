@@ -9,7 +9,7 @@ import { readdirSync, appendFileSync, mkdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { withPipefail } from '../../src/harness/agent-tools';
 
-const ROOT = '/home/nick/repos/oh-my-dag';
+const ROOT = '/home/dev/repos/oh-my-dag';
 const OUT = `${ROOT}/.omd/eval/pipefail-2arm.jsonl`;
 const arg = (k: string, d: number) => {
   const i = process.argv.indexOf(`--${k}`);

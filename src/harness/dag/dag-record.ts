@@ -590,7 +590,7 @@ export function recordDagRun(
  *
  * 2026-08-05 之前是 `join(cwd, '.omd', 'dag-runs.db')`(三个调用点各写一份)。那条口径的洞:
  * omd 经 MCP 可以从**任何** repo 的 session 发跑, 于是从别的 repo 发的跑, 记录进的是**那个
- * repo** 的 `.omd/dag-runs.db`。实测: `/home/nick/repos/bluebell` 底下真有一份, 而且是老
+ * repo** 的 `.omd/dag-runs.db`。实测: `/home/dev/repos/other-repo` 底下真有一份, 而且是老
  * schema、**连 `claim_check` 列都没有** —— 想靠"日常使用被动攒样本"时, 攒到的是一堆互相看
  * 不见的碎库, 而读数板只读其中一份。**那种缺数长得像"引擎没记"**, 是本仓最贵的一类静默失效。
  *

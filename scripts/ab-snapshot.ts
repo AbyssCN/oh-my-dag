@@ -18,14 +18,14 @@
  *   B(direct / TUI 六只手):会话 id == 'tui'(2026-08-09 前写死的 TUI 默认 id)或 `s-<秒>-<pid>`
  *   C(判不了):其余(人手命名的 id —— TUI 的 `/session new X` 与 `omd serve`(零只手)都可能产生)
  *
- * 用法:bun /tmp/ab-snapshot.ts [repoRoot]   (默认 /home/nick/repos/oh-my-dag)
+ * 用法:bun /tmp/ab-snapshot.ts [repoRoot]   (默认 /home/dev/repos/oh-my-dag)
  */
 import { Database } from 'bun:sqlite';
 import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-const REPO = process.argv[2] ?? '/home/nick/repos/oh-my-dag';
+const REPO = process.argv[2] ?? '/home/dev/repos/oh-my-dag';
 const OMD = join(REPO, '.omd');
 /** 本仓纪律:算不出来的格子写「无数据」,不编 0(NULL ≠ 0 ≠ 不适用)。 */
 const NA = '无数据';

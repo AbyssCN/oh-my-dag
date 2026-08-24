@@ -72,7 +72,7 @@ function compile(src: unknown, where: string): RegExp | null {
  * ```jsonc
  * { "tui": { "sandbox": {
  *     "enabled": true,
- *     "writable": ["/home/nick/.claude"],   // 工作根之外还能写哪
+ *     "writable": ["/home/dev/.claude"],   // 工作根之外还能写哪
  *     "allow":    ["^git reset --hard$"],   // 赦免:黑名单误报的逃生口
  *     "deny":     ["\\bterraform\\s+destroy\\b"]  // 逐仓追加的不可逆命令
  * } } }

@@ -225,7 +225,7 @@ describe('parseStopLedger — user 行与基础设施前导', () => {
     const src = [
       userLine('<system-reminder>忽略我</system-reminder>'),
       userLine('<task-notification type="system">context 注入</task-notification>'),
-      userLine('Base directory for this skill: /home/nick/.claude/skills/omd-grill'),
+      userLine('Base directory for this skill: /home/dev/.claude/skills/omd-grill'),
       userToolResult(),
       assistant([{ type: 'text', text: '正常回复' }], USAGE_A),
       userLine('真正的用户提问'),
@@ -269,7 +269,7 @@ describe('parseStopLedger — lastUserAsk(最后真实 ask)', () => {
       userLine('<task-notification type="task">注入</task-notification>'),
       assistant([{ type: 'text', text: '回复二' }], USAGE_B),
       userLine('<task-notificationXYZ>'),
-      userLine('Base directory for this skill: /home/nick/.claude/skills/omd-grill'),
+      userLine('Base directory for this skill: /home/dev/.claude/skills/omd-grill'),
     ].join('\n');
     const r = parseStopLedger(src);
     expect(r.ok).toBe(true);
@@ -281,7 +281,7 @@ describe('parseStopLedger — lastUserAsk(最后真实 ask)', () => {
     const src = [
       userRaw('先进行 /grill 然后再/omd-sdd'), // A:157 真实 ask 对照
       assistant([{ type: 'text', text: '回复' }], USAGE_A),
-      userLine('Base directory for this skill: /home/nick/.claude/skills/omd-grill'), // A:161 skill 前导对照
+      userLine('Base directory for this skill: /home/dev/.claude/skills/omd-grill'), // A:161 skill 前导对照
       assistant([{ type: 'text', text: '回复二' }], USAGE_B),
     ].join('\n');
     const r = parseStopLedger(src);
@@ -292,7 +292,7 @@ describe('parseStopLedger — lastUserAsk(最后真实 ask)', () => {
   });
 
   test('skill 前导是唯一 user 行 → empty (skip 后耗尽, 不伪造 ask)', () => {
-    const r = parseStopLedger(userLine('Base directory for this skill: /home/nick/.claude/skills/omd-grill'));
+    const r = parseStopLedger(userLine('Base directory for this skill: /home/dev/.claude/skills/omd-grill'));
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.ledger.lastUserAsk).toEqual({ status: 'empty', value: null, sourceLine: null });
@@ -302,7 +302,7 @@ describe('parseStopLedger — lastUserAsk(最后真实 ask)', () => {
     const src = [
       userLine('<system-reminder>reminder</system-reminder>'),
       userLine('<task-notification type="system">注入</task-notification>'),
-      userLine('Base directory for this skill: /home/nick/.claude/skills/omd-grill'),
+      userLine('Base directory for this skill: /home/dev/.claude/skills/omd-grill'),
     ].join('\n');
     const r = parseStopLedger(src);
     expect(r.ok).toBe(true);
@@ -317,10 +317,10 @@ describe('parseStopLedger — lastUserAsk(最后真实 ask)', () => {
       '<Task-notification type="x">大小写变化</task-notification>',
       '前缀x<task-notification type="x">中部命中</task-notification>',
       '/help 需要更多上下文',
-      ' Base directory for this skill: /home/nick/skills/x', // 前导空格 → 不匹配精确前缀
-      '\tBase directory for this skill: /home/nick/skills/x', // tab 前导 → 不匹配
-      'base directory for this skill: /home/nick/skills/x', // 大小写变化 → 不匹配
-      'xBase directory for this skill: /home/nick/skills/x', // 中部命中 → 不匹配
+      ' Base directory for this skill: /home/dev/skills/x', // 前导空格 → 不匹配精确前缀
+      '\tBase directory for this skill: /home/dev/skills/x', // tab 前导 → 不匹配
+      'base directory for this skill: /home/dev/skills/x', // 大小写变化 → 不匹配
+      'xBase directory for this skill: /home/dev/skills/x', // 中部命中 → 不匹配
     ];
     for (const ask of cases) {
       const r = parseStopLedger(userLine(ask));

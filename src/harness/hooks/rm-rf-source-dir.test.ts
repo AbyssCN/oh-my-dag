@@ -40,7 +40,7 @@ describe('rm-rf-source-dir —— 拦住的那一侧', () => {
     expect(label(`${RM} src`)).toBe('rm-rf-source-dir');
     expect(label(`${RM} ./src`)).toBe('rm-rf-source-dir');
     expect(label(`${RM} src/harness`)).toBe('rm-rf-source-dir');
-    expect(label(`${RM} /home/nick/repos/oh-my-dag/src`)).toBe('rm-rf-source-dir');
+    expect(label(`${RM} /home/dev/repos/oh-my-dag/src`)).toBe('rm-rf-source-dir');
   });
 
   test('★ flag 任意序 / 长 flag 串照样拦(与 rm-rf-root 同一手法)', () => {

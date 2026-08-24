@@ -48,9 +48,9 @@ describe('N3 · ① 任意代码执行 (RCE)', () => {
 describe('N3 · ② 数据外泄', () => {
   test('读取面: 凭证文件按 basename 被拒 (2026-07-31 补的那条闸), 但**这只挡手滑**', () => {
     // 待办已了结: 密钥搬出仓树 (`~/.config/omd/secrets.json`) + 闸上按 basename 拒。
-    expect(gate('cat /home/nick/.ssh/id_ed25519')).toContain('secret-file');
+    expect(gate('cat /home/dev/.ssh/id_ed25519')).toContain('secret-file');
     expect(gate('cat .env')).toContain('secret-file');
-    expect(gate('cat /home/nick/.config/omd/secrets.json')).toContain('secret-file');
+    expect(gate('cat /home/dev/.config/omd/secrets.json')).toContain('secret-file');
     // omd 自己的配置面照旧放行 —— 它现在**不再装密钥**了, 拒它只会挡住正当的自检。
     expect(allowed('cat .omd/config.json')).toBe(true);
     // ★ 而这条闸的边界要说清楚: 它按**文件名**拒, 不按**内容**拒。
@@ -89,7 +89,7 @@ describe('N3 · 半径通到 NAS 的 root (2026-07-31 实测那条链)', () => {
     // 链条: node -e 过闸 → cat ~/.ssh/id_ed25519 过闸 → 那把钥匙在 NAS 上被授权 →
     //       那个账号 sudo 免密 → 39 个容器的 root (bluebell / supabase / talous / Langfuse 自己)。
     // 白名单确实拒了**直接**走这条路的写法:
-    expect(gate('ssh Nick@192.168.50.154 uptime')).toContain('not-allowed');
+    expect(gate('ssh user@10.0.0.5 uptime')).toContain('not-allowed');
     expect(gate('scp x host:/y')).toContain('not-allowed');
     // 但 ① 一旦成立, `node -e` 里 spawn('ssh', …) 不经过任何白名单 ——
     // 这一对断言摆在一起, 就是"挡的是写法不是能力"最干净的一份证据。

@@ -44,7 +44,7 @@ describe('diagnoseJailFailure —— 认挂载面, 不认模型好坏', () => {
 
   test('★ `bwrap:` 开头的错误排在最前 —— 它一响, 后面所有症状都是它的下游', () => {
     // 怎么让它红: 把 bwrap 那条规则挪到 node_modules 之后 → 这条会判成"缺 node_modules", 红。
-    const stderr = 'bwrap: Can\'t find source path /home/nick/.ssh: No such file or directory\nerror: Cannot find module "x"\n';
+    const stderr = 'bwrap: Can\'t find source path /home/dev/.ssh: No such file or directory\nerror: Cannot find module "x"\n';
     const d = diagnoseJailFailure(stderr, ROOT, hostHasAll);
     expect(d?.missing).toContain('bwrap');
   });

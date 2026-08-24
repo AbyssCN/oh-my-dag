@@ -65,7 +65,7 @@ const DEFAULT_FUSE_MAX_SAME = 12;
  * 剥掉命令前导的 `cd <路径> &&` 链 —— **cd 段不是"这次在干什么", 是"在哪儿干"**。
  *
  * 2026-08-11 run 7d50fda2: 隔离 worktree 里叶子每条 bash 都写成
- * `cd /home/nick/repos/oh-my-dag/.omd/runs/<uuid> && <真命令>`, 而光 cd 段就 76 字符 >
+ * `cd /home/dev/repos/oh-my-dag/.omd/runs/<uuid> && <真命令>`, 而光 cd 段就 76 字符 >
  * 下面那个 50 字符窗口 → **全部 bash 命令并成同一个签名**, 12 条不同命令被报成空转 ×12。
  * 与 hashline_edit 那条 (2026-08-10, 落键名兜底把所有 patch 并成一个签名) 是同一种病:
  * 签名窗口落在了对所有调用都相同的那一段上。

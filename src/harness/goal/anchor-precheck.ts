@@ -1,7 +1,7 @@
 /**
  * #147 点火锚预检 (2026-08-17) —— goal 文本里的别仓路径**不改执行锚**。
  *
- * B0 实测 (runId `f5984f2b`): goal 写明 `/home/nick/repos/plana`, 而 MCP solve 的锚是 server
+ * B0 实测 (runId `f5984f2b`): goal 写明 `/home/dev/repos/other-repo`, 而 MCP solve 的锚是 server
  * 自己的 cwd (oh-my-dag) —— branch worktree / 验收命令 / continuity 全落锚仓, 目标仓的
  * `packages/engine` 在锚仓里不存在, 两轮必红, 烧完 1.11M in 才看得见; 且症状与"活没干成"
  * 同形 (验收 grep 红), 点火到烧完没有任何一处提示锚不匹配。

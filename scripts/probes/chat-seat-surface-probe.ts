@@ -7,7 +7,7 @@ import { createOmdAgentTools } from '../../src/harness/agent-tools';
 import { createCodegraphTools } from '../../src/tui/tools/codegraph';
 import { createSkillTools } from '../../src/tui/tools/skill-tool';
 
-for (const cwd of ['/home/nick/repos/oh-my-dag', '/home/nick/repos/talous-v2']) {
+for (const cwd of ['/home/dev/repos/oh-my-dag', '/home/dev/repos/talous-v2']) {
   const hands = createOmdAgentTools({ cwd }).map((t) => t.name);
   const cg = createCodegraphTools({ cwd }).map((t) => t.name);
   const sk = createSkillTools().map((t) => t.name);

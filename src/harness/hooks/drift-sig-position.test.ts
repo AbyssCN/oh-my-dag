@@ -33,7 +33,7 @@ describe('C-1 · INV-1 edit 且能取到 oldText ⇒ 签名为 edit:<pathSig>#<h
   });
 
   test('长路径 edit + oldText → 仍 #<hash8>, path 段用取尾形式', () => {
-    const longPath = '/home/nick/repos/oh-my-dag/.omd/runs/abc/src/some/file.ts'.padEnd(120, 'x');
+    const longPath = '/home/dev/repos/oh-my-dag/.omd/runs/abc/src/some/file.ts'.padEnd(120, 'x');
     const sig = computeSig('edit', { path: longPath, oldText: 'foo', newText: 'bar' });
     expect(sig).toMatch(/^edit:…[^\s]+#[0-9a-f]{8}$/);
     // 不带 # 后会失败
@@ -95,7 +95,7 @@ describe('C-1 · INV-5 write / read / grep / ls / bash 签名逐字不变', () =
     expect(computeSig('write', { path: 'src/a.ts', content: 'x' })).toBe('write:src/a.ts');
   });
   test('write 长路径 → 仍是 write:…<尾 60>', () => {
-    const longPath = `/home/nick/repos/oh-my-dag/.omd/runs/abc/${'x'.repeat(80)}.ts`;
+    const longPath = `/home/dev/repos/oh-my-dag/.omd/runs/abc/${'x'.repeat(80)}.ts`;
     expect(computeSig('write', { path: longPath, content: 'x' })).toBe(`write:…${longPath.slice(-60)}`);
   });
   test('read 仍是 read:<pathSig>', () => {
