@@ -89,9 +89,13 @@ function extractPathTokens(verify: string): string[] {
     // 且**不以** `/` 开头 (排除 `/usr/local/foo.ts` 这种机内绝对路径, 那是另一回事)。
     if (!tok.includes('/')) continue;
     if (tok.startsWith('/')) continue;
-    if (seen.has(tok)) continue;
-    seen.add(tok);
-    out.push(tok);
+    // `./` 前缀归一化 (2026-08-25 活体误杀): bun 路径 filter 惯用 `./src/x.test.ts`,
+    // 写集条目无前缀 —— 不剥掉就对不上写集, missing-path/mixed 双误杀 (run 8810fd65)。
+    const norm = tok.startsWith('./') ? tok.slice(2) : tok;
+    if (!norm.includes('/')) continue;
+    if (seen.has(norm)) continue;
+    seen.add(norm);
+    out.push(norm);
   }
   return out;
 }

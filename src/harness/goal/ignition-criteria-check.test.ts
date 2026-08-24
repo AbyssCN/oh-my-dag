@@ -280,3 +280,20 @@ describe('checkIgnitionCriteria — 闸面边缘 / INV-4 反向自检', () => {
     expect(findFor(r.findings, 25, 'pre-green')).toBeUndefined();
   });
 });
+// ── 回归: `./` 前缀归一化 (2026-08-25 活体误杀, run 8810fd65 首点火被拒) ────────
+// bun 官方建议路径 filter 写 `./src/x.test.ts` (裸 filter 会被当测试名过滤), 而写集条目
+// 是 `src/x.test.ts` —— 比对前不剥 `./` 就是 missing-path + mixed-first-segment 双误杀。
+describe('path token `./` 前缀归一化 (真实契约的 verify 惯用法)', () => {
+  test('★ 新建文件以 `./` 引用 + 写集无前缀 → 零 findings, verdict ok', async () => {
+    const root = freshRoot();
+    touchFile(root, 'src/guard.test.ts'); // 既有守护测试
+    const s = slice(
+      1,
+      ['src/x.ts', 'src/x.test.ts'],
+      'bun test ./src/x.test.ts && bun test src/guard.test.ts',
+    );
+    const report = await checkIgnitionCriteria(root, [s], runnerBy({ 'bun test': 1 }));
+    expect(report.findings).toEqual([]);
+    expect(report.verdict).toBe('ok');
+  });
+});
