@@ -89,7 +89,7 @@ describe('dag_goal 的运行留痕接线', () => {
     recorder.close();
   });
 
-  test('#209 spec 落盘接线: 契约段那行靠回填, 执行段那行靠 meta —— 两行同值, 谁都不留 NULL', async () => {
+  test('#209 spec 存盘接线: 契约段那行靠回填, 执行段那行靠 meta —— 两行同值, 谁都不留 NULL', async () => {
     const recorder = createDagRecorder({ path: ':memory:' });
     const root = mkdtempSync(join(tmpdir(), 'omd-rec-'));
     const sw = { kind: 'wrote', source: 'contract', path: '/repo/docs/plan/2026-08-19-x.md' } as const;

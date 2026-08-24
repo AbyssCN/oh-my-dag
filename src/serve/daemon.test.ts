@@ -170,7 +170,7 @@ describe('命令面 (装配层桥)', () => {
 });
 
 describe('chat (SSE)', () => {
-  test('★ 一轮对话: SSE 有 result 帧, 会话落盘', async () => {
+  test('★ 一轮对话: SSE 有 result 帧, 会话写入磁盘', async () => {
     const res = await post('/api/chat/web1/messages', { message: '你好' });
     expect(res.headers.get('content-type')).toContain('text/event-stream');
     const body = await res.text();

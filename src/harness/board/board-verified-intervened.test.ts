@@ -44,7 +44,7 @@ const writeBoard = (root: string, lines: string[]): void => {
 };
 
 
-describe('GWT-1: verified 事件落盘 + 回读字段无损', () => {
+describe('GWT-1: verified 事件写盘 + 回读字段无损', () => {
   test('verified + verdict + note 逐字段回读一致', () => {
     const root = freshRoot();
     const e: BoardEntry = entry('r1', 'verified', { verdict: 'fail', note: '判词指纹…abc123' });
@@ -120,7 +120,7 @@ describe('GWT-2: intervened 合法值往返 + 非法 verdict/cause fail-loud 不
 
 
 describe('GWT-3: 单行 ≤1KB(INV-1) + note 超 500B 截断对新事件成立', () => {
-  test('verified + 2KB note → 落盘行字节数 ≤ 1024 且回读 note 是截断后的前缀', () => {
+  test('verified + 2KB note → 写盘行字节数 ≤ 1024 且回读 note 是截断后的前缀', () => {
     const root = freshRoot();
     const longNote = 'X'.repeat(2 * 1024); // 2KB
     appendBoard(root, entry('r1', 'verified', { verdict: 'fail', note: longNote }));

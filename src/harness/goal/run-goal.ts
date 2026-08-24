@@ -722,7 +722,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
         summary: `复用续跑前契约段 (闸 C): ${repoContext ? `${repoContext.split('\n').length} 行仓内事实` : '首跑无勘察输出'}`,
       });
       stages.push({ stage: 'research', status: 'skipped', outcome: 'not-needed', summary: '复用续跑前契约段 (闸 C): 不重新调研' });
-      stages.push({ stage: 'spec', status: 'done', outcome: 'success', summary: specPath ?? '复用首跑契约正文 (spec 未落盘那次, 正文当契约)' });
+      stages.push({ stage: 'spec', status: 'done', outcome: 'success', summary: specPath ?? '复用首跑契约正文 (spec 未写入磁盘那次, 正文当契约)' });
     } else if (config.dag.agentRunner) {
       specSource = 'contract';
       const dir = config.specDir ?? join(config.cwd, 'docs', 'plan');
@@ -850,7 +850,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   try {
     config.onContract?.(specWrite);
   } catch (err) {
-    logger.warn({ specWrite, err: String(err) }, '[run-goal] #209 spec 落盘记账回调抛错 → 该跑这一列留 NULL (不影响执行)');
+    logger.warn({ specWrite, err: String(err) }, '[run-goal] #209 spec 写入磁盘记账回调抛错 → 该跑这一列留 NULL (不影响执行)');
   }
 
   // ── S5-S8 Execute + Verify + 1 轮修复: 内层 DAG 的外层 fixpoint。
@@ -865,7 +865,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
         // 把它当仓根 → 绝对路径写出隔离树 (bwrap 里自检还"成功", 产物闸才拦住)。
         // 改念执行根, 契约全文内联 —— leaf 的世界里只有 worktree。
         `按下面这份 SDD 契约实施 (执行根: ${config.cwd} —— 一切相对路径以它为准, 禁止写到执行根之外):\n\n${evidence}`
-      : `按下面这份 SDD 契约实施 (契约全文已落盘 ${specPath}):\n\n${evidence}`
+      : `按下面这份 SDD 契约实施 (契约全文已写入磁盘 ${specPath}):\n\n${evidence}`
     : evidence
       ? `${goal}\n\n参考材料:\n${evidence}`
       : goal;

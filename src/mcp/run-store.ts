@@ -182,7 +182,7 @@ export function createRunStore(opts: { path?: string; db?: Database } = {}): Run
         // 吞掉异常仍然对 (不炸真跑), 吞掉**证据**不对。
         logger.warn(
           { runId: rec.runId, status: rec.status, err: (e as Error).message },
-          '[omd/run-store] run 状态落盘失败 —— 内存与盘上从此不一致 (fail-open 继续跑)',
+          '[omd/run-store] run 状态存盘失败 —— 内存与盘上从此不一致 (fail-open 继续跑)',
         );
       }
     },

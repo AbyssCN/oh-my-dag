@@ -187,7 +187,7 @@ describe('C-7 增量读 —— 与全量重算逐分等价 (禁 TTL)', () => {
     expect(incremental()).toEqual(fullReference()); // 追加只读新增字节, 结果仍逐分相等
   });
 
-  test('★ 压实护栏: 文件缩小 (尺寸 < 偏移) → memo 作废整本重读, 不吐陈旧和', () => {
+  test('★ 落实护栏: 文件缩小 (尺寸 < 偏移) → memo 作废整本重读, 不吐陈旧和', () => {
     writeLedger([{ costUsd: 10 }, { costUsd: 20 }, { costUsd: 30 }]);
     expect(incremental().costUsd).toBe(60);
     writeLedger([{ costUsd: 1 }]); // 模拟合并: 重写成更小的文件

@@ -191,7 +191,7 @@ describe('fail-open: 台账写失败不许扰动调用方', () => {
   });
 });
 
-describe('锚定: 相对路径解析 + 落盘位置', () => {
+describe('锚定: 相对路径解析 + 存盘位置', () => {
   test('相对路径对 root 解析成绝对再落库', () => {
     const root = mkdtempSync(join(tmpdir(), 'omd-touch-ledger-'));
     const db = new Database(':memory:');

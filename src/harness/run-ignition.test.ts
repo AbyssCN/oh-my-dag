@@ -79,7 +79,7 @@ describe('resolveResumeArgs — 纯函数, 本次优先、档案兜底', () => {
   });
 });
 
-describe('saveIgnitionArgs / loadIgnitionArgs — 落盘一侧', () => {
+describe('saveIgnitionArgs / loadIgnitionArgs — 写盘一侧', () => {
   test('存了再读回, 只留可恢复集里那几位 (别的不写进档案)', () => {
     const cwd = world();
     saveIgnitionArgs(cwd, 'r1', 'dag_goal', {
@@ -131,7 +131,7 @@ describe('saveIgnitionArgs / loadIgnitionArgs — 落盘一侧', () => {
     expect(recovered.sort()).toEqual(['sddPath', 'tier']);
   });
 
-  test('落盘权限 0600 (档案里有契约路径, 不给同机其他用户读)', () => {
+  test('写盘权限 0600 (档案里有契约路径, 不给同机其他用户读)', () => {
     const cwd = world();
     saveIgnitionArgs(cwd, 'r1', 'dag_goal', { sddPath: 'a.md' });
     const p = join(cwd, '.omd', 'continuity', 'r1', 'ignition.json');

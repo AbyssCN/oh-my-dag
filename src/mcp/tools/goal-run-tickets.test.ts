@@ -181,7 +181,7 @@ describe('★ 切片6③ run 天然挂票 —— 起跑开任务票, 终态如�
     }
   });
 
-  test('★ 收敛 → 票翻 delivered (且判词落盘 + ruledAt 戳上)', async () => {
+  test('★ 收敛 → 票翻 delivered (且判词存盘 + ruledAt 戳上)', async () => {
     const { tool, root, readMap } = make(['ship-x']);
     try {
       const r = await call(tool, { goal: '会成的活' });

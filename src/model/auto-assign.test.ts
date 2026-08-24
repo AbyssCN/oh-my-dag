@@ -359,8 +359,8 @@ describe("autoAssign", () => {
 	});
 });
 
-describe("runAutoAssign — 端到端 (发现→分配→落盘; configPath 读写同目标)", () => {
-	test("声明 kimi-coding → 大脑簇落 kimi-coding:k3, 落盘可读回, INV-3 跨家族", () => {
+describe("runAutoAssign — 端到端 (发现→分配→写入磁盘; configPath 读写同目标)", () => {
+	test("声明 kimi-coding → 大脑簇落 kimi-coding:k3, 写入磁盘可读回, INV-3 跨家族", () => {
 		const home = mkdtempSync(join(tmpdir(), "omd-run-aa-"));
 		mkdirSync(join(home, ".omd"), { recursive: true });
 		const configPath = join(home, ".omd", "config.json");

@@ -97,7 +97,7 @@ describe('迁移 · 老库就地补 acceptance_probe 列', () => {
   });
 });
 
-describe('dag_goal · 探针经生产 recordDagRun 落盘, 逐字读回 (正向)', () => {
+describe('dag_goal · 探针经生产 recordDagRun 存盘, 逐字读回 (正向)', () => {
   test('五条 kind (含 why 有/无) 全部 round-trip: TS 读回 = 原对象, SQL 列 = 紧凑 JSON, 无双编码', async () => {
     const db = new Database(':memory:');
     const rec = createDagRecorder({ db });

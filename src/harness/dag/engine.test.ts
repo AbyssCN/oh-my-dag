@@ -1127,7 +1127,7 @@ describe('内环跑完才发现超预算 (只报不拦, S1 埋点)', () => {
   /** conductor 单轮就展开出的极简子图: 一个默认执行器 (leaf) 的叶子。 */
   const SUB_QUICK = JSON.stringify({
     name: 'sub',
-    nodes: { step: { goal: '一步搞定' } },
+    nodes: { step: { goal: '一步完成' } },
   });
 
   test('★ 单轮本身跑穿 ms 预算 → journal 记一条 budget-exhausted, 证据文案区分「跑完才发现」', async () => {
@@ -1172,7 +1172,7 @@ describe('内环跑完才发现超预算 (只报不拦, S1 埋点)', () => {
 // 反向自检: 把 engine.ts 里 `if (r.spinFused)` 那块删掉 → 第一条当场红 (熔断的 leaf 会被当
 // 正常完成放行, 半截输出进下游 —— 正是 2026-08-13 夜 execute(conductor) 空转 1h51 的形状)。
 describe('空转熔断 (drift fuse → 节点 spin-fused)', () => {
-  test('★ agentRunner 报 spinFused → 节点 failed + failureKind spin-fused, 已落盘产物保留在 filesTouched', async () => {
+  test('★ agentRunner 报 spinFused → 节点 failed + failureKind spin-fused, 已存盘产物保留在 filesTouched', async () => {
     const { generate } = makeGenerate();
     const r = await runExecutorDagWithPlan(
       plan({ W: { goal: '改文件', executor: 'agent' } }),

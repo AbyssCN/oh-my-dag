@@ -120,7 +120,7 @@ describe('runWriter —— 降级不许覆盖好 checkpoint', () => {
     expect(readFileSync(checkpointPath, 'utf-8')).not.toBe(first); // 真的更新了
   });
 
-  test('★ 没有旧 checkpoint 时降级照写(首次落盘不该被这条挡住)', async () => {
+  test('★ 没有旧 checkpoint 时降级照写(首次存盘不该被这条挡住)', async () => {
     const f = fixture();
     const r = await runWriter({ transcript: f.transcript, sessionId: f.sessionId, cwd: f.cwd, mechanical: true });
     expect(r.degraded).toBe(true);

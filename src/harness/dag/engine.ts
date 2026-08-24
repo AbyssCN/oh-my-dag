@@ -1205,7 +1205,7 @@ async function executePlan(
     // 收敛 (二次之后 quoteBlock 与 pointer 都不会再变 —— 长度差仅来自数字位)。
     const buildPointer = (narrBudget: number): string =>
       `\n…[fan-in 硬上限: 上游 ${d} 输出 ${body.length} 字符, 此处只含前 ${narrBudget};` +
-      (fullPath ? ` 全文在 ${fullPath} —— 有 read 工具就按需分页读它]` : ' 全文未落盘 (无 continuity), 需要时让上游改写进文件]');
+      (fullPath ? ` 全文在 ${fullPath} —— 有 read 工具就按需分页读它]` : ' 全文未写入磁盘 (无 continuity), 需要时让上游改写进文件]');
     let narrative = '';
     let qb = '';
     let pointer = '';
@@ -1287,7 +1287,7 @@ async function executePlan(
       `\n…[交接硬上限: 上一轮判词 ${body.length} 字符, 此处只含前 ${kept.length};` +
       (fullPath
         ? ` 全文在 ${fullPath} —— 有 read 工具就按需分页读它]`
-        : ' 全文未落盘 (无 continuity), 判词尾部已丢 —— 需要时让上一轮把结论写进文件]');
+        : ' 全文未写入磁盘 (无 continuity), 判词尾部已丢 —— 需要时让上一轮把结论写进文件]');
     logger.warn(
       { node: nodeId, round, len: body.length, cap: HANDOFF_CAP_CHARS, persisted: !!fullPath, mustReach: mustReach.length },
       '[omd/executor-dag] 轮间交接硬上限截断 —— 必达块不参与预算, 已单独成块',
@@ -2651,10 +2651,10 @@ async function executePlan(
         const kept = rawReason.slice(0, REASON_CAP_CHARS);
         reasonField = kept + (fullPath
           ? `\n[判词已截断 (cap=${REASON_CAP_CHARS}, 原文 ${rawReason.length} 字符); 全文在 ${fullPath} —— 有 read 工具就按需分页读它]`
-          : `\n[判词已截断 (cap=${REASON_CAP_CHARS}, 原文 ${rawReason.length} 字符); 全文未落盘 (无 continuity), 判词尾部已丢]`);
+          : `\n[判词已截断 (cap=${REASON_CAP_CHARS}, 原文 ${rawReason.length} 字符); 全文未写入磁盘 (无 continuity), 判词尾部已丢]`);
         logger.warn(
           { node: id, round, len: rawReason.length, cap: REASON_CAP_CHARS, persisted: !!fullPath },
-          '[omd/executor-dag] 内环判词超 cap → 全文落盘 + journal 存指针',
+          '[omd/executor-dag] 内环判词超 cap → 全文写入磁盘 + journal 存指针',
         );
       }
       // 两道闸各说了什么, 逐轮记一条。**只记不判** —— 下面的收敛判定一个字没改。
@@ -4527,7 +4527,7 @@ async function executePlan(
           schemaVersion: 1,
         });
       } catch (err) {
-        logger.warn({ node: id, err }, '[omd/executor-dag] 失败 checkpoint 落盘失败 (fail-open)');
+        logger.warn({ node: id, err }, '[omd/executor-dag] 失败 checkpoint 写入磁盘失败 (fail-open)');
       }
     }
     sched.advance(id); // 拓扑推进: 释放 dependents, indeg 归零者已由调度器入 ready
@@ -4747,7 +4747,7 @@ async function executePlan(
       observe([{
         kind: 'empty-write-set',
         nodes: emptyNodes,
-        message: `声明了 write_set 却没有产物落盘 (绿节点配空盘): [${emptyNodes.join(', ')}] 全部 done, 写集里一个文件都不在盘上 — 通常是回滚把产物擦掉了 / 写错了根 / worktree 被外力清理。`,
+        message: `声明了 write_set 却没有产物写入磁盘 (绿节点配空盘): [${emptyNodes.join(', ')}] 全部 done, 写集里一个文件都不在盘上 — 通常是回滚把产物擦掉了 / 写错了根 / worktree 被外力清理。`,
       }]);
     }
   }

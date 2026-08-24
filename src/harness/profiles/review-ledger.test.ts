@@ -100,8 +100,8 @@ describe('空 / 不存在 ledgerPath', () => {
   });
 });
 
-describe('落盘往返', () => {
-  test('appendFindings 建文件并落盘, loadLedger 读回同序', () => {
+describe('写盘往返', () => {
+  test('appendFindings 建文件并写盘, loadLedger 读回同序', () => {
     const p = tmpLedger();
     appendFindings(p, [finding('a', 'e1'), finding('b', 'e2')]);
     const back = loadLedger(p);

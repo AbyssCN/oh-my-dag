@@ -118,7 +118,7 @@ describe('serializer(I-5): tokenBucket → ctxTokens 映射只发生在这里', 
 });
 
 describe('appendLedger: append / offset / lock / owner / path 五项契约', () => {
-  test('首次写: 落盘路径与 writer.ts:351,367 尾读逐字对齐, 内容 = serializer 行', () => {
+  test('首次写: 存盘路径与 writer.ts:351,367 尾读逐字对齐, 内容 = serializer 行', () => {
     const sessionId = nextSession();
     const ledger = ledgerOf(
       assistantLine('轮1', usageTokens(226451)),

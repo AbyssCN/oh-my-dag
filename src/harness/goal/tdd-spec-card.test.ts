@@ -240,7 +240,7 @@ describe('D-G′ 方案 A — 契约段合成 conductor 节点, 判据留在环�
     expect(g).toContain('两轮');
   });
 
-  test('落盘路径在 goal 里钉死 (起草步照它写, runGoal 据它认产物)', async () => {
+  test('存盘路径在 goal 里钉死 (起草步照它写, runGoal 据它认产物)', async () => {
     const g = String((await runWith()).goal);
     expect(g).toContain('2026-07-29-做一件复杂的事.md');
     expect(g).toContain('output_path');

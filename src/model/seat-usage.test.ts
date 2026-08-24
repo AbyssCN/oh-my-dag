@@ -96,7 +96,7 @@ describe('seatOfTrace —— 派生的那一列', () => {
   });
 });
 
-describe('落盘 / 读回 / 聚合', () => {
+describe('写入磁盘 / 读回 / 聚合', () => {
   test('一发一行, 读回等值', () => {
     const p = tmpLedger();
     recordSeatUsage(entry({ traceName: 'leaf:a' }));

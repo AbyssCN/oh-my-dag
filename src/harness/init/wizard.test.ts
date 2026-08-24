@@ -307,7 +307,7 @@ describe('pi OAuth 步骤 (⑤′)', () => {
     expect(notes.some((n) => n.includes('pi OAuth 已就绪') && n.includes('kimi-coding'))).toBe(true);
   });
 
-  test('内联登录: device code 经 note 展示, 凭证经 saveCredential 落盘', async () => {
+  test('内联登录: device code 经 note 展示, 凭证经 saveCredential 写盘', async () => {
     const saved: Array<[string, Record<string, unknown>]> = [];
     const { io, notes } = scriptedIO({ selects: ['github-copilot'], asks: [], confirms: [true] });
     await runPiOAuthStep(io, {

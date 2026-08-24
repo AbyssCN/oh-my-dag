@@ -65,7 +65,7 @@ describe("INV-MODEL-2 — 零硬编码兜底 (没配 = 没有坐标)", () => {
 		}
 	});
 
-	test("config.defaultModel 落盘后全座位读到 (跨进程面)", () => {
+	test("config.defaultModel 写入磁盘后全座位读到 (跨进程面)", () => {
 		const p = tmpConfig();
 		persistDefaultModel("acme:from-file", p);
 		resetConfigCache();
@@ -211,7 +211,7 @@ describe("INV-MODEL-1 — 单一解析权威 (一条链)", () => {
 });
 
 describe("config.json autoAssigned 层 — D-17 端到端接线", () => {
-	test("persistAutoAssigned 落盘 → auto 层读到", () => {
+	test("persistAutoAssigned 写入磁盘 → auto 层读到", () => {
 		const p = tmpConfig();
 		persistAutoAssigned({ conductor: "kimi-coding:kimi-k3", leaf: "mimo:mimo-v2.5-pro" }, p);
 		resetConfigCache();
@@ -220,7 +220,7 @@ describe("config.json autoAssigned 层 — D-17 端到端接线", () => {
 		expect(c.source).toBe("auto");
 	});
 
-	test("env 覆盖 auto 层; 未落盘的座位 → 无兜底即抛", () => {
+	test("env 覆盖 auto 层; 未写入磁盘的座位 → 无兜底即抛", () => {
 		const p = tmpConfig();
 		persistAutoAssigned({ conductor: "kimi-coding:kimi-k3" }, p);
 		resetConfigCache();

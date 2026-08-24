@@ -37,7 +37,7 @@ export const DEFAULT_PLAN_LENSES: readonly PlanLens[] = [
   {
     id: 'mvp',
     persona: '代入务实的交付型工程主管',
-    angle: 'MVP-first: 最小可行切口, 最快验证闭环, 砍掉一切非核心, 先能跑再加',
+    angle: 'MVP-first: 最小可行切口, 最快形成验证回路, 砍掉一切非核心, 先能跑再加',
     temperature: 0.4,
     topP: 0.85,
   },
@@ -203,7 +203,7 @@ export const DEFAULT_COUNCIL_DEEP_LENSES: readonly ResearchLens[] = [
     key: 'mvp',
     persona: '代入务实的交付型工程主管',
     subAngles: [
-      'MVP-first: 最小可行切口, 最快验证闭环, 砍非核心',
+      'MVP-first: 最小可行切口, 最快形成验证回路, 砍非核心',
       '交付风险: 哪步最易拖延/返工, 如何前置消除',
     ],
   },

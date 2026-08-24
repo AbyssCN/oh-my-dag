@@ -233,7 +233,7 @@ describe('D-4 观察面 (onProgress 汇, SDD C-5)', () => {
     expect(events.filter((e) => e.type === 'settle' && e.status === 'done')).toHaveLength(1); // correctness 照常 done
   });
 
-  test('子进程汇 OMD_REVIEW_EVENT_FILE: NDJSON 落盘与回调同序列 (env 断 → 零落盘, 反向自检)', async () => {
+  test('子进程汇 OMD_REVIEW_EVENT_FILE: NDJSON 写盘与回调同序列 (env 断 → 零写盘, 反向自检)', async () => {
     // 正检: 设 env → run.ts 把每条事件 NDJSON 逐行追加到事件文件 (fleet 轮询面)。
     const dir = mkdtempSync(join(tmpdir(), 'omd-review-evfile-'));
     const file = join(dir, 'events.ndjson');

@@ -120,7 +120,7 @@ describe('maybeRunDesignReview — INV-3 审核失败不影响收敛', () => {
 });
 
 describe('maybeRunDesignReview — 注入式 runner', () => {
-  test('注入 runReview → 走注入路径, findings 经 ledger 落盘', async () => {
+  test('注入 runReview → 走注入路径, findings 经 ledger 存盘', async () => {
     const fp1 = fingerprintOf('src/App.tsx', 'bad spacing');
     const r = await maybeRunDesignReview({
       cwd,

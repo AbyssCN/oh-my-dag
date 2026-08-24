@@ -151,7 +151,7 @@ describe('触发口径 — decideOmdCheckpoint', () => {
 // ─── A1 写入 ────────────────────────────────────────────────────────────────
 
 describe('A1 写入 — omd 会话真产 checkpoint 与 facts 行', () => {
-  test('runWriter 走 omd source → checkpoint.md 落盘, facts 出行且 id = omd session id', async () => {
+  test('runWriter 走 omd source → checkpoint.md 存盘, facts 出行且 id = omd session id', async () => {
     const root = mkRoot('omd-211-write-');
     const db = join(root, '.omd', 'memory.db');
     const memory = createDefaultMemory({ OMD_MEMORY_PATH: db } as NodeJS.ProcessEnv);

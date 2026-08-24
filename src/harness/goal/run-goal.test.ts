@@ -1193,7 +1193,7 @@ describe('runGoal — S4 run 生命周期接线 (board: claimed → terminal)', 
     expect(term?.note).toBe('infra-error');
   });
 
-  test('删板不抹历史: board 是协调介质不是真源, RunGoalResult + 落盘 goal-state 才是', async () => {
+  test('删板不抹历史: board 是协调介质不是真源, RunGoalResult + 写入磁盘 goal-state 才是', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-goal-s4-'));
     const runId = 'sess-s4-del';
     const counters = { classify: 0, contract: 0, exec: 0 };

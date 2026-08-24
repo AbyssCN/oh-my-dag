@@ -180,7 +180,7 @@ describe("renderTargets 集成 (真 chromium)", () => {
 	});
 
 	test.skipIf(!HAS_CHROMIUM)(
-		"--hover: PNG 真实落盘非空, 路径全绝对且被 extractMediaRefs 命中, 基线与 hover 字节不同",
+		"--hover: PNG 真实存盘非空, 路径全绝对且被 extractMediaRefs 命中, 基线与 hover 字节不同",
 		async () => {
 			const produced = await renderTargets({
 				target: htmlPath,

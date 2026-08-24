@@ -120,7 +120,7 @@ describe('G4 · 探针的 fail-open 边界 (加固不是前置条件)', () => {
     expect((boom as { why: string }).why).toContain('EBADF');
   });
 
-  test('真落盘一次 (不注入 runner 时探针自带 runner, 且临时目录用完就删)', async () => {
+  test('真实存盘一次 (不注入 runner 时探针自带 runner, 且临时目录用完就删)', async () => {
     // 这条不注入 runIn —— 走的是生产那条路 (自带 command runner + 真临时目录 + 真 grep)。
     // 没有它, 上面每一条测的都只是判据逻辑, 而"探针在生产上跑不跑得起来"没人验过。
     const why = await acceptanceDiscriminationReason('grep -q "相同" out.md', {
