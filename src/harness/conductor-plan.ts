@@ -18,9 +18,26 @@ import { findGraphCycle } from './plan/graph-cycle';
 import { DEFAULT_COMMAND_ALLOWLIST, GIT_READONLY_SUBCOMMANDS } from './command-leaf';
 import { renderShapesForPrompt } from './shapes';
 import { TRUST_FENCE_RULE } from './prompt-fence';
+import {
+  DECISION_EDUCATION_CANONICAL,
+  lintDecisionEducation,
+} from './prompt-lint';
 
 /** Frozen-prefix boundary (SDD §2 __SYSTEM_PROMPT_DYNAMIC_BOUNDARY__ analogue). */
 export const PLAN_BOUNDARY = '\n\n===== TASK (dynamic, below the frozen boundary) =====\n\n';
+
+// ── L2 教化段编译期闸 (INV-8 / D8) ──
+//
+// 模块顶层二次校验 (prompt-lint.ts 内部已 throw 一次, 这是调用方的红线复用): 装配点 (本文件)
+// 把它送进 prompt 前, 还要过一道 lintDecisionEducation —— 任何让它膨胀的改动到这里一定被拒。
+// 双重防御: prompt-lint.ts 的模块顶层 throw 抓 canonical 自身超限; 这里抓「本文件用了别的字符串
+// 假装 canonical」这种语义漂移。两道闸都要绿才能让 conductor prompt 装上。
+const _decisionLint = lintDecisionEducation(DECISION_EDUCATION_CANONICAL);
+if (!_decisionLint.ok) {
+  throw new Error(
+    `[conductor-plan] DECISION_EDUCATION_CANONICAL rejected at assembly: ${_decisionLint.reason}`,
+  );
+}
 
 // ── plan schema (WorkflowYaml-shaped subset · PLAN-3) ─────────────────────────
 
@@ -279,6 +296,25 @@ const PlanNode = z
         expect_exit: z.number().int().min(0).max(255).default(0),
       })
       .optional(),
+    // ── 片 2 schema 增量 (INV-6 全 optional · 存量 plan parse 行为逐字节不变) ──
+    // 必填性由 plan-critic 判 (诊断码), 绝不由 zod 判。zod 只管类型与枚举, 不替 critic 做诊断。
+    /** PP-O01 / PP-I02 消费: oracle 选型 (cheap|render|judge|none|self_built)。 */
+    oracleKind: z.enum(['cheap', 'render', 'judge', 'none', 'self_built']).optional(),
+    /** PP-T01/T02/T03 消费: 节点引用的工具列表 (与 capability 一起解析)。 */
+    toolRefs: z.array(z.string()).optional(),
+    /** PP-I01 消费: 不扇出本节点的说明。null = 「无理由」(与字段缺省 = 「未表态」语义不同)。 */
+    whyNoFanout: z.string().nullable().optional(),
+    /** 节点级预算声明: calls · tokens · 美元上限 · 估算法。 */
+    budgetBasis: z
+      .object({
+        calls: z.number().int().nonnegative(),
+        tokensIn: z.number().int().nonnegative(),
+        tokensOut: z.number().int().nonnegative(),
+        costUsdCeiling: z.number().nonnegative(),
+        estimatedBy: z.string(),
+      })
+      .passthrough()
+      .optional(),
   })
   .passthrough()
   // U1 map 节点交叉校验: map spec ⇔ executor:'map' 互为 required + INV-U5 禁嵌套 map。
@@ -324,6 +360,12 @@ export const PlanSchema = z
      * 引用的 id 必须存在于 nodes(superRefine 闸,防剪错图)。
      */
     outputs: z.array(z.string().min(1)).optional(),
+    // ── 片 2 schema 增量 (S1 契约 · INV-6 全 optional) ──
+    /** PP-* 诊断码的抑制声明 (元素 = 诊断码字符串, 如 'PP-T01')。INV-S1-3: PP-S02 不可抑制,
+     *  该闸由 plan-critic 跑 (不是 zod), 这层只接形状。可选 · 缺省 = 不抑制。 */
+    suppressions: z.array(z.string()).optional(),
+    /** plan schema 版本号 (PP-V01 消费)。可选 · 缺省视作 '1.0' (由 isSupportedSchemaVersion 调用方补)。 */
+    schema_version: z.string().optional(),
   })
   .passthrough()
   .superRefine((plan, ctx) => {
@@ -353,6 +395,24 @@ export const PlanSchema = z
   });
 
 export type ConductorPlan = z.infer<typeof PlanSchema>;
+
+// ── 片 2 schema 增量 (INV-7): schema_version 支持集 + fail-fast 判定函数 ────────
+
+/** 支持的 schema_version 字符串全集 (单一真源, 改这里一处所有消费者跟上)。
+ *  顺序: 含 '1.0' (用户任务的「默认视作」字面值) 与 '1.0.0' (S1 契约原值), PP-V01 与
+ *  conductor 提示词的版本声明都从这里查。 */
+export const SUPPORTED_SCHEMA_VERSIONS: readonly string[] = ['1.0', '1.0.0'];
+
+/** 当前 plan 写出的 schema_version 字面值 (S1 契约 §1.3 的 `SCHEMA_VERSION='1.0.0'` 占位;
+ *  用户任务「默认视作 '1.0'」取短名版)。 */
+export const SCHEMA_VERSION = '1.0';
+
+/** PP-V01 消费: 给定 schema_version 是否在支持集中。**fail-fast** — 不在即拒整 plan (PP-V01
+ *  诊断码的源头)。调用方负责把 plan.schema_version 缺省补成 '1.0', 这层不做。
+ *  (签名照 S1 契约: `isSupportedSchemaVersion(v:string):boolean`。) */
+export function isSupportedSchemaVersion(v: string): boolean {
+  return (SUPPORTED_SCHEMA_VERSIONS as readonly string[]).includes(v);
+}
 
 // ── system prompt (SDD §3.1 coordinator identity · build, not port) ───────────
 
@@ -597,6 +657,15 @@ export function conductorSystemPrompt(
     '  from the levels above it, LIFT it up to run in parallel. Keep the graph WIDE (many siblings) and SHALLOW.',
     '',
         ]),
+    // ── L2 组合判定教化段 (INV-8 / D8) ──
+    // 两档 (full / lean, 含 -kb) 都带, bare 不带 (零附加内容基线, 见 bareConductorSystemPrompt)。
+    // canonical 文本由 prompt-lint.ts 编译期守 ≤350 Unicode 字符闸 (模块顶层 throw), 这里用前再过
+    // 一道 lintDecisionEducation 防本文件漂移。改 canonical 必须同时改 prompt-lint.ts 的常量与
+    // bare/lean/full 三档快照 (byte-level 锁在 conductor-prompt-snapshot.test.ts)。
+    [
+      DECISION_EDUCATION_CANONICAL,
+      '',
+    ],
     // #171 处理臂: '-kb' 档在此单点插入知识边界段; 基档 (full/lean) 走空数组, 字节零变化。
     ...(kb ? PLAN_KB_SECTION : []),
     ...(lean

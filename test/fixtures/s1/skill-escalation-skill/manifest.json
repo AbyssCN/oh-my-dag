@@ -1,0 +1,10 @@
+{
+  "skill_id": "escalation-skill",
+  "skill_version": "1.0.0",
+  "description": "Fixture skill requesting one tool outside plan natural pool.",
+  "body_ref": "SKILL.md",
+  "checks": [],
+  "red_lines": [],
+  "allowed_tools": ["read", "write"],
+  "schema_version": "1.0"
+}

@@ -158,5 +158,29 @@ export const REGISTRY: Record<string, FieldEntry> = {
     declared: true,
     note: 'P1 D-3 (2026-08-21): 节点级确定性判据, 自修环(bounded)让「确定性判据没过」从整图重画降到同节点多转一轮; 缺席 = 旁路 (INV-1-2, 与落地前逐字节相同); 恒真判据在规划期被闸拒/丢弃, 拒绝路径不许判节点红 (INV-1-3 诚实边界: 探针是 fail-open, fail-open 必须留 why)。明示是**被迫的**: 输出产物节点 (output_path 存在) 自动附 self_check 比让 conductor 手写一条更易腐烂; 但本字段的取舍开不开归 caller, 故仍走明示。',
   },
+  // ── S1 conductor 自主编排增量 (SDD 2026-08-24, 契约片 2; 必填性由 plan-critic 诊断码判, zod 全 optional) ──
+  oracleKind: {
+    consumer: 'plan-critic.criticizePlan (PP-O01 视觉产出无 oracle / PP-I02 字段缺失)',
+    fingerprint: 'fields',
+    declared: false,
+    note: 'S1 组合判定四分支的 oracle 选型声明。选型不同 = 验收接线不同 = 不同的执行 → 入键。邀请走 L2 教化段散文 (canonical 文本点名四字段); shape 明示的 declaredFields 正则只认 [a-z_]+, camelCase 物理不可见 → 登 false。',
+  },
+  toolRefs: {
+    consumer: 'plan-critic.criticizePlan (PP-T01/T02/T03: resolve 到 inventory working-set)',
+    fingerprint: 'fields',
+    declared: false,
+    note: 'S1 可查询机能清单的引用面。工具面不同 = 不同的执行 → 入键 (与 mcp 同形态)。',
+  },
+  whyNoFanout: {
+    consumer: 'plan-critic.criticizePlan (PP-I01: executor 单叶时必填非空, 可抑制)',
+    fingerprint: false,
+    declared: false,
+    note: '规划期意图申告, 不改变节点执行内容 —— 两节点只差申告文本 = 同一件活, 入键会打空 D-21 跨轮复用 (与 content_bytes 同形态)。',
+  },
+  budgetBasis: {
+    consumer: 'plan-critic.criticizePlan (S1 只判字段存在性; 预算判定闸是 S3, 到时再议入键)',
+    fingerprint: false,
+    declared: false,
+    note: '成本预估申告 (体量提示同族): 预估抖动不该打空判重; S3 预算闸上线若让它改变调度语义, 归属须重议。',
+  },
 };
-

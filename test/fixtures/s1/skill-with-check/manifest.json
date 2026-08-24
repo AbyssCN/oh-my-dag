@@ -1,0 +1,17 @@
+{
+  "skill_id": "skill-with-check",
+  "skill_version": "1.0.0",
+  "description": "Fixture skill with one required post-leaf check.",
+  "body_ref": "SKILL.md",
+  "checks": [
+    {
+      "name": "check_prose.py",
+      "type": "script",
+      "pass_rule": "exit_code==0",
+      "timeout_sec": 30
+    }
+  ],
+  "red_lines": [],
+  "allowed_tools": ["bash", "read"],
+  "schema_version": "1.0"
+}

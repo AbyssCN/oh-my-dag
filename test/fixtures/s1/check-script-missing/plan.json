@@ -1,0 +1,26 @@
+{
+  "_intent": "F19 — manifest declares check_missing.py but the script is intentionally absent on disk, so the PostLeafGate attached to this node must surface verdict=UNVERIFIED + reason=script_missing + oracleFaults>=1 in run-summary.json. Command layer is trivial echo (exits 0) so the UNVERIFIED is sourced solely by the gate, not by command failure.",
+  "name": "check-script-missing",
+  "description": "F19 fixture: command leaf trivial echo + auto-attached PostLeafGate for the missing check_missing.py script.",
+  "schema_version": "1.0",
+  "suppressions": [],
+  "outputs": ["gate_check"],
+  "nodes": {
+    "gate_check": {
+      "executor": "command",
+      "command": "echo check_missing.py",
+      "expect_exit": 0,
+      "output_type": "structured",
+      "toolRefs": ["bash"],
+      "oracleKind": "cheap",
+      "whyNoFanout": "single deterministic echo step; gate script intentionally absent (F19 invariant).",
+      "budgetBasis": {
+        "calls": 1,
+        "tokensIn": 0,
+        "tokensOut": 0,
+        "costUsdCeiling": 0.01,
+        "estimatedBy": "conductor:estimate:cheap-command"
+      }
+    }
+  }
+}

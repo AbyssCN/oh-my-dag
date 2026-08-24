@@ -153,7 +153,9 @@ describe("dedupPass (D-20)", () => {
 		// 零消费者字段入键 = 纯噪声打空跨轮复用 (与 agent 同一形态)。要重新入键, 先给它一个消费者。
 		// content_bytes (g1, 2026-08-04) = 体量**提示** (消费者是规划期的 leaf-tier-gate, 不是执行):
 		// 两节点只差体量预估 = 同一件活, 判重合并正确; 入键反而让预估抖动打空 D-21 (同 agent 教训)。
-		const EXCLUDED = new Set(["map", "agent", "postcondition", "leaf", "content_bytes"]);
+		const EXCLUDED = new Set(["map", "agent", "postcondition", "leaf", "content_bytes",
+			// S1 (2026-08-24): 规划期申告字段 (plan-critic 消费), 不改变执行内容 — 入键会打空 D-21 跨轮复用。
+			"whyNoFanout", "budgetBasis"]);
 		// 每字段一对「仅此字段不同」的取值 (B 可为 undefined = 字段省略)。
 		const pairs: Record<string, [unknown, unknown]> = {
 			skill: ["s1", "s2"],
@@ -183,6 +185,9 @@ describe("dedupPass (D-20)", () => {
 			model: ["m1", "m2"],
 			max_retry: [1, 2],
 			requires: ["all", 1],
+			// S1 (2026-08-24): oracle 选型与工具引用面是执行语义 → 入键。
+			oracleKind: ["cheap", "render"],
+			toolRefs: [["builtin:write@1.0.0"], ["builtin:read@1.0.0"]],
 			cluster: ["fe", "be"],
 			tier: ["strong", "cheap"],
 			attach_media: [true, false],

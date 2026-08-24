@@ -150,7 +150,7 @@ describe('#148 判词溯源: 合成票 ≠ judge 票 (B0 run 6251afc4 的形状)
     expect(judgeCalls).toBe(0); // D-4 确定性先行, judge 一发没烧
     // 「没投票」≠「投了反对票」: 合成票不进 judgeConverged, journal 里与真 judge 票分词记。
     expect(judgeConverged).toBeUndefined();
-    expect(verdicts).toEqual([{ round: 1, criterion: 'green', judge: 'gate-rejected', reason: '[D-4 谎报完成] 以下节点声称完成, 而引擎记录里**验收命令实败** —— 声称与证据矛盾, 本轮判未收敛:\n  - P::15mult7iiexy4 · 声称: 「[failed] 全部完成, 测试全部通过」(output) · 「[failed] 全部完成, 测试全部通过」(output)\n      ↳ 引擎记录: 节点状态: failed (引擎判定没成)' }]);
+    expect(verdicts).toEqual([{ round: 1, criterion: 'green', judge: 'gate-rejected', reason: '[D-4 谎报完成] 以下节点声称完成, 而引擎记录里**验收命令实败** —— 声称与证据矛盾, 本轮判未收敛:\n  - P::3ur0n1ww1fi4h · 声称: 「[failed] 全部完成, 测试全部通过」(output) · 「[failed] 全部完成, 测试全部通过」(output)\n      ↳ 引擎记录: 节点状态: failed (引擎判定没成)' }]);
     // 证伪: engine 的 criterion-green return 去掉 `verdict.synthetic` 守卫 → judgeConverged=false
     //   回来, 第三条断言红; roundVerdicts 不分 synthetic → 第四条断言红 (judge:'rejected')。
     rmSync(root, { recursive: true, force: true });

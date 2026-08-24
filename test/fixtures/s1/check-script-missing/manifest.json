@@ -1,0 +1,17 @@
+{
+  "skill_id": "check-script-missing",
+  "skill_version": "1.0.0",
+  "description": "F19 fixture: declares a check script that does not exist on disk, so PostLeafGate execution must surface UNVERIFIED + oracle-fault +1 + recorded exception stack.",
+  "body_ref": "SKILL.md",
+  "checks": [
+    {
+      "name": "check_missing.py",
+      "type": "script",
+      "pass_rule": "exit_code==0",
+      "timeout_sec": 30
+    }
+  ],
+  "red_lines": [],
+  "allowed_tools": [],
+  "schema_version": "1.0"
+}
