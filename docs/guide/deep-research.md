@@ -3,7 +3,7 @@
 Fan out a research question across cheap concurrent models, keep every source on disk with zero
 loss, synthesize through multiple lenses, and let a judge panel pick the winner — one command.
 This page is the concrete side: the pipeline, which model runs which seat, how to run it, and the
-head-to-head benchmark behind the [README's featured numbers](../../README.md#deep-research-benchmarked).
+head-to-head benchmark behind the [README's featured numbers](../../README.md#measured-not-asserted).
 
 The marketing-free claim: a $2.19 run on a cheap-model stack reproduced **13 of 15** independently
 verified facts that an all-frontier, 106-agent workflow produced — because the retrieval floor is
@@ -39,7 +39,7 @@ bun run scripts/dag-research.ts "<your question>" --deep
 flowchart TB
   Q(["Research question"])
 
-  subgraph GATHER["1 · GATHER — deterministic, zero LLM"]
+  subgraph GATHER["1 · GATHER — one model call, then deterministic"]
     direction TB
     SEED["seed-authoring<br/>model splits into 3-4 complementary angles"]
     WEB["omd_web · search + fetch<br/>full text to disk, only an index returns"]

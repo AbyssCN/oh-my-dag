@@ -1,6 +1,6 @@
 # Why omd exists
 
-[← README](../README.md) · [getting started](guide/getting-started.md) ·
+[← README](../README.md) · [中文](why-omd.zh-CN.md) · [getting started](guide/getting-started.md) ·
 [architecture](architecture/overview.md)
 
 This is the long version of the claim on the front page. It is about **which layer omd occupies**

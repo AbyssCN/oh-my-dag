@@ -14,7 +14,7 @@
 [![Runtime: Bun ≥ 1.3](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.3-b3382a?style=flat-square&labelColor=140f0a)](https://bun.sh)
 [![License: MIT](https://img.shields.io/badge/license-MIT-c9a227?style=flat-square&labelColor=140f0a)](LICENSE)
 
-[English](README.md) · **中文** · **[为什么有 omd →](docs/why-omd.md)** · **[这份丢给你的 agent 读 →](docs/driving-omd.md)**
+[English](README.md) · **中文** · **[为什么有 omd →](docs/why-omd.zh-CN.md)** · **[这份丢给你的 agent 读 →](docs/driving-omd.md)**
 
 </div>
 
@@ -52,7 +52,7 @@ omd 跨出去了。工作单位是一个**节点**。判词来自**代码**。
 - **不是 eval 框架。** 你不用给它送 trace。
 - **不是厂商产品。** MIT、Bun 上的 TypeScript,任何 OpenAI 兼容模型。
 
-**→ [长文版](docs/why-omd.md)**
+**→ [长文版](docs/why-omd.zh-CN.md)**
 
 ## 装
 
@@ -176,7 +176,7 @@ cd <你的项目> && claude mcp add omd -- omd mcp
 | | | |
 |---|---|---|
 | **给你的 agent** | [driving omd](docs/driving-omd.md) | 什么活派哪个工具、派发契约、它会撞上哪些闸 |
-| **为什么** | [为什么有 omd](docs/why-omd.md) | 分层这件事,以及会话层 harness 结构上做不到什么 |
+| **为什么** | [为什么有 omd](docs/why-omd.zh-CN.md) | 分层这件事,以及会话层 harness 结构上做不到什么 |
 | **怎么用** | [上手](docs/guide/getting-started.md) · [工作流](docs/guide/workflow.md) · [MCP 工具](docs/guide/mcp-tools.md) · [模型配置](docs/guide/model-config.md) · [技能](docs/guide/skills.md) · [深度调研](docs/guide/deep-research.md) · [TUI](docs/guide/tui.md) | 装、接,以及参考面 |
 | **为什么是这个形状** | [架构](docs/architecture/overview.md) · [DAG 引擎](docs/architecture/dag-engine.md) · [目标环](docs/architecture/goal-loop.md) · [模型层](docs/architecture/model-layer.md) · [原语](docs/architecture/primitives.md) · [开放生态](docs/architecture/open-ecosystem.md) | 节点七种、四道纯函数 pass、调度、隔离、座位 |
 | **以前错在哪** | [静默失效图鉴](docs/silent-failures.md) | 这台引擎真出过、且当时没有任何红灯的每一类缺陷 |
