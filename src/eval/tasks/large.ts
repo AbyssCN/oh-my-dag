@@ -94,7 +94,7 @@ const SPEC = `# Large reuse-own 任务: 重建 11 个模块 (难度梯度)
 
 11. src/harness/pathfinder/map-store.ts — renderMapMarkdown / parseMapMarkdown (纯, roundtrip: parse(render(m))≡m) + saveMapDb / loadMapDb / rebuildDbFromMarkdown (bun:sqlite) + loadMap / saveMap / mutateMap + 路径 helper
     markdown ↔ PathMap ↔ SQLite 三态互转。markdown=真相源 (byte-stable 行式 kv, render∘parse 幂等), db=可重建索引。
-    纯 render/parse 与落盘分离便于无盘单测。import pathfinder/types。
+    纯 render/parse 与写入磁盘分离便于无盘单测。import pathfinder/types。
 
 oracle = 这 11 个测试文件全绿 (过测比例) + whole-project tsc 无错。`;
 

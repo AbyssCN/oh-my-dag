@@ -29,7 +29,7 @@ const call = (t: ReturnType<typeof tool>, a: unknown) =>
   (t.handler as never as (x: unknown) => Promise<{ isError?: boolean; content: { text: string }[] }>)(a);
 
 describe('omd_web', () => {
-  test('全文落盘, stdout 只回索引 (context 零污染)', async () => {
+  test('全文存盘, stdout 只回索引 (context 零污染)', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-web-'));
     const r = await call(tool(cwd, 'omd_web'), { query: '测试 查询' });
     const path = /全文语料 \(零丢失, 按需 Read\): (\S+)/.exec(r.content[0]!.text)![1]!;

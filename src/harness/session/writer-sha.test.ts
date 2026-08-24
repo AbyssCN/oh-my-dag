@@ -60,7 +60,7 @@ const GOOD = [
 ].join('\n\n');
 
 describe('runWriter —— sha 锚在盘上那份', () => {
-  test('★ 正常落盘:sha = 盘上文件的 sha256 前 12 位', async () => {
+  test('★ 正常存盘:sha = 盘上文件的 sha256 前 12 位', async () => {
     // 怎么让它红: 把 `sha: sha12(md)` 改成任意常量 / 改成 hash 别的串 → 这条红。
     const f = fixture();
     const r = await runWriter({ transcript: f.transcript, sessionId: f.sessionId, cwd: f.cwd, mechanical: true });
@@ -93,7 +93,7 @@ describe('runWriter —— sha 锚在盘上那份', () => {
     expect(r.sha).not.toBe(expectSha(readFileSync(`${first.checkpointPath}.degraded`, 'utf-8')));
   });
 
-  test('★ 落盘后被进程外改掉 → sha 与盘上不再相等(这就是它要抓的那个漂)', async () => {
+  test('★ 存盘后被进程外改掉 → sha 与盘上不再相等(这就是它要抓的那个漂)', async () => {
     // 这条不是反向自检, 是**正面演示**: 复现 50f0173c 那次现场的最小形态。
     // 怎么让它红: 让 writer 每次返回时现读盘算哈希(而不是记它写下去的那份)——
     // 那样漂就被抹平, 字段失去意义, 这条红。

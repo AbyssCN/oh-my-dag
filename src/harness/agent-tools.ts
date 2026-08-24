@@ -950,14 +950,14 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
         } catch (err) {
           logger.warn(
             { path: candidate, bytes: rawOutputBytes, err: err instanceof Error ? err.message : String(err) },
-            '[omd/agent-tools] bash 截断全文落盘失败 (fail-open, 返回尾部)',
+            '[omd/agent-tools] bash 截断全文写盘失败 (fail-open, 返回尾部)',
           );
         }
         truncationNotice = fullOutputPath
           ? rawOutputCapped
             ? `[输出已截断, 只保留尾部; 完整输出被截断, 仅留前 ${rawOutputBytes} 字节; 完整输出: ${fullOutputPath} —— 有 read 工具就按需分页读它]`
             : `[输出已截断, 只保留尾部; 完整输出: ${fullOutputPath} —— 有 read 工具就按需分页读它]`
-          : '[输出已截断, 只保留尾部; 全文未落盘]';
+          : '[输出已截断, 只保留尾部; 全文未写盘]';
       }
       const tail = [
         cancelled ? '[命令被中止]' : '',

@@ -127,13 +127,13 @@ describe('派了什么 — finalWriterArgv', () => {
 
 describe('端到端 — 退出那一刻真存下来', () => {
   test(
-    '真 omd 会话 → 派收口 → checkpoint.md 落盘且是 final 档',
+    '真 omd 会话 → 派收尾 → checkpoint.md 存盘且是 final 档',
     async () => {
       const store = createOmdSessionStore(root);
-      const session = await store.create('final-e2e', '收口冒烟');
+      const session = await store.create('final-e2e', '收尾冒烟');
       await session.append({
         role: 'user',
-        content: [{ type: 'text', text: '这一段在做 #212 的收口存档' }],
+        content: [{ type: 'text', text: '这一段在做 #212 的收尾存档' }],
         timestamp: 1,
       } as unknown as AgentMessage);
       await session.append({

@@ -86,7 +86,7 @@ describe('INV-RC-1 · recordIntervention 写板形状 (与 intervene.ts:74-81 �
   });
 });
 
-describe('INV-RC-1 · recordIntervention fail-loud (不落盘)', () => {
+describe('INV-RC-1 · recordIntervention fail-loud (不写盘)', () => {
   test('cause 不在词表 → 抛, 板空', () => {
     expect(() => recordIntervention(root, 'run-bad', 'not-a-real-kind' as never)).toThrow(
       /FAILURE_KIND_ORDER/,

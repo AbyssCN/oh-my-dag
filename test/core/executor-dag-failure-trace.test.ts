@@ -86,7 +86,7 @@ describe('失败留痕加厚 —— 盘上真有那一位吗 (2026-08-06)', () =
       continuity: { manager, runId, repoRoot: root, resume: false },
     });
 
-  test('失败全文落盘且可读回 —— 不再只有 800 字的头', async () => {
+  test('失败全文存盘且可读回 —— 不再只有 800 字的头', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'dag-fail-full-'));
     const manager = new CheckpointManager(dir);
     // 盘上真实形状: 前面成功刷屏占满 800 字预算, 失败判词在**尾巴**上。

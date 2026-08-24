@@ -82,7 +82,7 @@ describe('GWT-4 · C-4 · INV-10/11/12: .omd/config.json 写锁闸', () => {
   // 重跑本测试 → 两子进程的迭代大概率互相覆盖, 最终 conductor 与 leaf
   // 至少有一个停在远早于 N-1 的旧值, expect 链即红。
   // ──────────────────────────────────────────────────────────────────────
-  test('GWT-4a: 两子进程并发改不同段, 两改动均落盘 (反向闸: 无锁必丢一笔)', async () => {
+  test('GWT-4a: 两子进程并发改不同段, 两改动均写盘 (反向闸: 无锁必丢一笔)', async () => {
     const dir = tmp();
     const configPath = seedConfig(dir);
 

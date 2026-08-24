@@ -86,7 +86,7 @@ describe('分派路由', () => {
 });
 
 describe('持久化 + 账本 + 会话映射', () => {
-  test('★ 首轮:落盘 user+assistant,标题取首条输入,映射写 SDK session_id,usage 逐条入账', async () => {
+  test('★ 首轮:写盘 user+assistant,标题取首条输入,映射写 SDK session_id,usage 逐条入账', async () => {
     const emits: { u: ModelUsage; model: string; origin: string }[] = [];
     const un = observeModelUsage((u, model, origin) => emits.push({ u, model, origin }));
     try {
@@ -173,7 +173,7 @@ describe('失败语义(半轮不入库 —— 本闸的反向自检:两条都先
     }
   });
 
-  test('★ 流断了没 result → 响亮抛,不落盘', async () => {
+  test('★ 流断了没 result → 响亮抛,不写盘', async () => {
     await expect(
       runChatTurnSdk({
         store, sessionId: 's1', prompt: 'x', model: MODEL, cwd: root,

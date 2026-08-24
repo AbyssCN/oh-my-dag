@@ -161,7 +161,7 @@ describe('map-store × ticketClass (INV-2 的持久化那一半)', () => {
   const ruling = tc({ id: 'r1', type: 'grill', title: '边界谁定?', status: 'escalated', ticketClass: 'ruling' });
   const mapWith = (t0: Ticket): PathMap => ({ destination: 'D', slug: 'd', tickets: [t0], decisionsLog: [] });
 
-  test('标 ruling 的票落盘 (md) 再读回, isRulingTicket 仍真', () => {
+  test('标 ruling 的票写盘 (md) 再读回, isRulingTicket 仍真', () => {
     // 实跑证伪: 注掉 renderTicket 的 ticketClass 行 (或 parse 的那支) → 本例转红。
     const back = parseMapMarkdown(renderMapMarkdown(mapWith(ruling))).tickets[0]!;
     expect(isRulingTicket(back)).toBe(true);

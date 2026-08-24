@@ -105,7 +105,7 @@ describe('G-1: ignitionPreflight (blocked + overlap + force 留账)', () => {
     expect(rep2.conflicts).toEqual([{ runId: 'r1', overlap: ['src/a.ts'] }]);
   });
 
-  test('G-1→G-2 闭环: 冲突 run 落 terminal → 冲突消失, 预检转 ok', () => {
+  test('G-1→G-2 形成回路: 冲突 run 落 terminal → 冲突消失, 预检转 ok', () => {
     const root = freshRoot();
     appendBoard(root, entry('r1', 'claimed', { writeSet: ['src/a.ts'] }));
     expect(ignitionPreflight(root, ['src/a.ts']).verdict).toBe('blocked');

@@ -132,14 +132,14 @@ describe('S-B2 周期档跨进程持久化 (.omd/seat-health.json)', () => {
 
   // 证伪方式 (当场验过): reportProviderFailure 里删掉 persistPeriodCooldown 调用
   // → 本测试红 (reset 后 inCooldown false); 恢复后绿。
-  test('★ 周期档 (403) 落盘, 「新进程」(reset 模拟) 继承 —— spawn 的 worker 不再撞死座', () => {
+  test('★ 周期档 (403) 写入磁盘, 「新进程」(reset 模拟) 继承 —— spawn 的 worker 不再撞死座', () => {
     reportProviderFailure('kimi-coding:k3', cooldownMsFor(403));
     resetProviderCooldowns(); // 模拟新 spawn 的 goal-worker (内存全空)
     expect(inCooldown('kimi-coding:k3')).toBe(true); // 从 seat-health.json 继承
     expect(livePin('kimi-coding:k3')).toBeUndefined(); // dispatch 存活闸同样看得见
   });
 
-  test('瞬时档 (429) 不落盘 —— 新进程不继承 (30s 陈旧只有害处)', () => {
+  test('瞬时档 (429) 不写入磁盘 —— 新进程不继承 (30s 陈旧只有害处)', () => {
     reportProviderFailure('mimo:m2', cooldownMsFor(429));
     expect(inCooldown('mimo:m2')).toBe(true); // 本进程内存里在
     resetProviderCooldowns();

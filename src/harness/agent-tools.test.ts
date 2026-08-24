@@ -215,7 +215,7 @@ describe('读写改的基本语义', () => {
     expect(sliced).not.toContain('const a');
   });
 
-  it('write 建父目录, 内容逐字落盘', async () => {
+  it('write 建父目录, 内容逐字写盘', async () => {
     const root = fixture();
     const { write } = toolset(root);
     await run(write!, { path: 'a/b/c.txt', content: 'hi\n' });

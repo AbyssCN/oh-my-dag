@@ -133,7 +133,7 @@ export function createDagResearchTool(researchFanout: ResearchFanout, deps: DagR
           text:
             `runId: ${runId}\nstatus: running\n` +
             `(子进程 pid ${spawned.pid ?? '?'}, 日志 ${spawned.logPath})\n` +
-            '它不随本会话结束而死。研究完报告落盘 — 轮询 dag_status runId=... (刚起跑查无此 run, 等几秒), done 后 dag_result 取 reportPath。',
+            '它不随本会话结束而死。研究完报告存盘 — 轮询 dag_status runId=... (刚起跑查无此 run, 等几秒), done 后 dag_result 取 reportPath。',
         }],
       };
     },

@@ -32,7 +32,7 @@ describe('compaction-journal 恢复态 (#185 封闭失败集)', () => {
     expect(recoverCompaction(journal, () => false)).toEqual({ status: 'clean' });
   });
 
-  test('干净收尾 (clear) → clean (end 不落盘, 删 sidecar)', () => {
+  test('干净收尾 (clear) → clean (end 不写盘, 删 sidecar)', () => {
     writeCompactionJournal(journal, { ...base, step: 'replace', entryId: 'e1', at });
     clearCompactionJournal(journal);
     expect(readCompactionJournal(journal)).toBeNull();

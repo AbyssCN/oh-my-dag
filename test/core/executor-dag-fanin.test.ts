@@ -178,7 +178,7 @@ describe('fan-in 定向摘要 (executor-dag 接缝)', () => {
     expect(faninCalls.length).toBe(0);
   });
 
-  test('全文指针: continuity 在 → 全文落盘 + 视图带 path', async () => {
+  test('全文指针: continuity 在 → 全文存盘 + 视图带 path', async () => {
     const root = mkdtempSync(join(tmpdir(), 'omd-fanin-'));
     try {
       const { gen } = makeFake();

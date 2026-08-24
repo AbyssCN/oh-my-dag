@@ -225,7 +225,7 @@ const rawSpec = (db: Database, id: string): string | null =>
   (db.query(`SELECT spec_write FROM omd_dag_runs WHERE id = ?`).get(id) as { spec_write: string | null }).spec_write;
 
 describe('账本 spec_write 列', () => {
-  test('迁移: 老库无此列 → createDagRecorder 就地补, 老行读回「没记」(不是"没落盘")', () => {
+  test('迁移: 老库无此列 → createDagRecorder 就地补, 老行读回「没记」(不是"没写入磁盘")', () => {
     const db = new Database(':memory:');
     db.run(`CREATE TABLE omd_dag_runs (
       id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, plan_name TEXT NOT NULL, node_count INTEGER NOT NULL,
@@ -240,7 +240,7 @@ describe('账本 spec_write 列', () => {
     rec.close();
   });
 
-  test('正向: entry=solve 经生产 recordDagRun 落盘, 三种 kind 逐字 round-trip, 紧凑 JSON 无双编码', async () => {
+  test('正向: entry=solve 经生产 recordDagRun 存盘, 三种 kind 逐字 round-trip, 紧凑 JSON 无双编码', async () => {
     const db = new Database(':memory:');
     const rec = createDagRecorder({ db });
     const all: SpecWrite[] = [
@@ -257,7 +257,7 @@ describe('账本 spec_write 列', () => {
     rec.close();
   });
 
-  test('★ 反向: 非 solve 入口即使误传也**不许**落盘 (那一格是"不适用", 不是"没记")', async () => {
+  test('★ 反向: 非 solve 入口即使误传也**不许**写入磁盘 (那一格是"不适用", 不是"没记")', async () => {
     const db = new Database(':memory:');
     const rec = createDagRecorder({ db });
     await recordDagRun(rec, { runId: 'r-run', entry: 'run', specWrite: { kind: 'wrote', source: 'contract', path: '/x.md' } })(fakeResult('p'));

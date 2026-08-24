@@ -57,7 +57,7 @@ export function createWebTools(deps: Omit<WebToolDeps, 'distill'>): OmdMcpTool[]
     {
       name: 'omd_web',
       // D-11: ≤120 字符。
-      description: '搜+抓网页, 零 LLM。全文落盘, 只回索引 + 已抓 URL 集。要综合答案用 dag_research。',
+      description: '搜+抓网页, 零 LLM。全文存盘, 只回索引 + 已抓 URL 集。要综合答案用 dag_research。',
       inputSchema: {
         query: z.string().min(1).describe('检索词'),
         k: z.number().int().min(1).max(30).optional().describe('检索取 N 条 (默认 8)'),
@@ -115,7 +115,7 @@ export function createDistillTools(deps: Pick<WebToolDeps, 'distill'>): OmdMcpTo
       name: 'omd_distill',
       description: '吃已有原文蒸馏洞察, 不抓网。expert=忠实抽机制, challenger=高温挖长尾 (未言明前提/冲突/迁移)。',
       inputSchema: {
-        text: z.string().min(1).describe('原文 (从 omd_web 落盘的语料里读一段贴进来)'),
+        text: z.string().min(1).describe('原文 (从 omd_web 存盘的语料里读一段贴进来)'),
         question: z.string().optional().describe('关注点 —— 决定蒸馏往哪个方向收敛'),
         lens: z.enum(['expert', 'challenger', 'both']).optional().describe('镜头; 默认 both (对偶才有增益)'),
         url: z.string().optional().describe('溯源 URL (进 prompt, 让蒸馏保留可引用锚)'),

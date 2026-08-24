@@ -138,7 +138,7 @@ describe('INV-RC-1 · 介入写侧对位 (MCP dag_intervene ↔ recordInterventi
     expectBoardsEqualExceptTs(entries[0] as unknown as Record<string, unknown>, entries[1] as unknown as Record<string, unknown>);
   });
 
-  test('GWT-PARITY-4: 非法 cause (绕过 MCP schema 直接调 handler) → MCP 拒 + 共享件拒, 两路都不落盘', async () => {
+  test('GWT-PARITY-4: 非法 cause (绕过 MCP schema 直接调 handler) → MCP 拒 + 共享件拒, 两路都不写入磁盘', async () => {
     const cwd = mkCwd();
     const h = byName(cwd, 'dag_intervene').handler;
 
@@ -155,7 +155,7 @@ describe('INV-RC-1 · 介入写侧对位 (MCP dag_intervene ↔ recordInterventi
     expect(readBoard(cwd)).toEqual([]);
   });
 
-  test('GWT-PARITY-5: 缺 runId (绕过 MCP schema) → MCP 拒 + 共享件拒, 两路都不落盘', async () => {
+  test('GWT-PARITY-5: 缺 runId (绕过 MCP schema) → MCP 拒 + 共享件拒, 两路都不写入磁盘', async () => {
     const cwd = mkCwd();
     const h = byName(cwd, 'dag_intervene').handler;
 

@@ -91,7 +91,7 @@ function renderRedEvidence(opts: DebugPlanOptions): string {
     // fail-open: 退到裸截断 + 告示里写明未写盘; catch 留一行证据
     // (silent-failures 坑 2: fail-open 可以吞异常, 不许吞证据)。
     console.warn(
-      '[omd/debug-plan] redEvidence 全文落盘失败 (saveRedFull throw) — 退回裸截断',
+      '[omd/debug-plan] redEvidence 全文写盘失败 (saveRedFull throw) — 退回裸截断',
       { err: err instanceof Error ? err.message : String(err), fullLen: raw.length },
     );
     fullPath = null;
@@ -101,7 +101,7 @@ function renderRedEvidence(opts: DebugPlanOptions): string {
     `\n…[redEvidence 已截断: 全文 ${raw.length} 字符, 此处只含前 ${slice.length}; ` +
     (fullPath
       ? `全文在 ${fullPath} —— 有 read 工具就按需分页读它]`
-      : '全文未落盘 (saveRedFull 不可用/失败), 原文尾部已丢 —— 需要时让上游把全文写进文件]');
+      : '全文未写盘 (saveRedFull 不可用/失败), 原文尾部已丢 —— 需要时让上游把全文写进文件]');
   return `\n复现拿到的确定失败证据(red):\n\`\`\`\n${slice}\n\`\`\`${notice}\n`;
 }
 

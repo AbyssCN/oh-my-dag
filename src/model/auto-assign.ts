@@ -400,7 +400,7 @@ export function runAutoAssign(
 	persistAutoAssigned(coords, opts.configPath, thinking);
 	logger.info(
 		{ nodes: Object.keys(coords).length, declarations: declarations.length },
-		"auto-assign: 已落盘 .omd/config.json autoAssigned 段",
+		"auto-assign: 已写入磁盘 .omd/config.json autoAssigned 段",
 	);
 	return map;
 }

@@ -72,7 +72,7 @@ describe('omd-hud 写链路 E2E', () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
-  test('dag_run_plan → dag.json 落盘 (终态 done, 2 节点 settled, levels 由 topo 出)', async () => {
+  test('dag_run_plan → dag.json 存盘 (终态 done, 2 节点 settled, levels 由 topo 出)', async () => {
     const reg = new RunRegistry();
     const tools = createDagTools({
       engine: emittingEngine(),

@@ -95,7 +95,7 @@ describe('#96 renderRunBoard —— 纯读零写的活 run 观察面', () => {
     const waiting = (o: Partial<BoardEntry> = {}) =>
       e({ runId: 'r-wait', event: 'awaiting', artifact: 'sdd.md', timeoutMs: 3_600_000, ...o });
 
-    test('未收口的等待 → 画 ⏳ 行 + 已等时长; 表头计数跟上', () => {
+    test('未收尾的等待 → 画 ⏳ 行 + 已等时长; 表头计数跟上', () => {
       const out = renderRunBoard([waiting()], NOW);
       expect(out[0]).toBe('run board · 0 live · 0 published · 1 awaiting');
       expect(out[1]).toBe(`${RUN_MARK.awaiting} sdd.md · waiting 10m`);
@@ -117,7 +117,7 @@ describe('#96 renderRunBoard —— 纯读零写的活 run 观察面', () => {
       expect(out.some((l) => l.startsWith(RUN_MARK.awaiting))).toBe(false);
     });
 
-    test('fromRun 限定时, 别人发的同名 artifact 不算收口 (等的是那一份)', () => {
+    test('fromRun 限定时, 别人发的同名 artifact 不算收尾 (等的是那一份)', () => {
       const out = renderRunBoard(
         [waiting({ fromRun: 'r-src' }), e({ runId: 'r-other', event: 'published', artifact: 'sdd.md' })],
         NOW,

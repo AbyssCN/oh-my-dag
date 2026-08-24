@@ -176,7 +176,7 @@ function makeModelsAuto(): OmdMcpTool {
           );
         }
         const lines = [
-          `✓ auto-assign 已落盘 ${entries.length} node → .omd/config.json autoAssigned (即时生效)`,
+          `✓ auto-assign 已存盘 ${entries.length} node → .omd/config.json autoAssigned (即时生效)`,
           ...entries.map(
             ([node, a]) => `  ${node} → ${a.coord} [${a.channelId}] (intel ${a.intelligence})`,
           ),

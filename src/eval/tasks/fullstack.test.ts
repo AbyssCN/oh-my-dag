@@ -65,7 +65,7 @@ describe('故意做坏的参考页', () => {
     expect(fx.spec).toContain('template: "ui-reviewer"');
   });
 
-  test('SPEC 指向的参考页路径与真实落盘路径一致', () => {
+  test('SPEC 指向的参考页路径与真实存盘路径一致', () => {
     expect(fx.spec).toContain('eval-app/fixtures/broken-board.html');
   });
 });

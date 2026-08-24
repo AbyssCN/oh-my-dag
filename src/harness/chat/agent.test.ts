@@ -78,7 +78,7 @@ describe('★ W5 片1: 图片附件进开轮消息', () => {
 });
 
 describe('持久化拼接语义', () => {
-  test('★ 首轮:会话新建 + 标题取自首条输入 + 落盘 = user+assistant 两条', async () => {
+  test('★ 首轮:会话新建 + 标题取自首条输入 + 写盘 = user+assistant 两条', async () => {
     const r = await runChatTurn({
       store, sessionId: 's1', prompt: '给我看看 DAG 引擎的进度', model: MODEL, cwd: root,
       loopFn: fakeLoop('好的,当前有 2 个 run。'),

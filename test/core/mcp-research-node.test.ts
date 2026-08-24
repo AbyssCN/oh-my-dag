@@ -70,7 +70,7 @@ describe("executor:'research' 生产执行器 (D-6)", () => {
     expect(r.usage).toEqual({ in: 900, out: 300 });
   });
 
-  test('报告落盘且带来源段 (宽出: 节点输出只带终稿)', async () => {
+  test('报告存盘且带来源段 (宽出: 节点输出只带终稿)', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-rnode-'));
     const runner = createDefaultResearchRunner({
       cwd,

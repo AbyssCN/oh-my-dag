@@ -67,7 +67,7 @@ export function spawnFinalCheckpoint(sessionId: string, cwd: string, env: NodeJS
   } catch (err) {
     logger.warn(
       { sessionId, err: err instanceof Error ? err.message : String(err) },
-      '[session-continuity] 收口存档派发失败 (已吞, 不影响退出)',
+      '[session-continuity] 收尾存档派发失败 (已吞, 不影响退出)',
     );
     return false;
   }

@@ -490,7 +490,7 @@ export const PRODUCE_BY_WALL_MS = 180_000;
 /** produce-by 注入指令 (pi 通道经 pendingGrindAdvice 缓冲下发; SDK 通道同 grind 边界只记不注)。 */
 export const produceByInstruction = (path: string): string =>
   `[produce-by] 你已勘探较久但**还没有写任何文件**。停止继续勘探 —— 以现有理解**现在就写**产物到 ${path}。` +
-  `先落盘第一版, 再用剩余预算补勘探/修正。零产物结束 = 本节点作废 (empty-artifact), 勘探成果全部白费。`;
+  `先写第一版到磁盘, 再用剩余预算补勘探/修正。零产物结束 = 本节点作废 (empty-artifact), 勘探成果全部白费。`;
 
 /**
  * produce-by 纯谓词 (可测缝, 同 nextGrindAction 纪律)。触发条件四与: 产物叶 ∧ 尚未触发过 ∧
@@ -1699,7 +1699,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // 用 ≤2 个工具调用收尾: 把当前已完成部分写盘/汇报, 说明未完成项与原因, 然后结束」。
     const GRIND_WRAPUP_INSTRUCTION =
       '「强制收尾指令」: 你已研磨超过一级 advisor + 二级 wrap-up 阈值仍未推进。立即停止继续尝试, ' +
-      '用 ≤2 个工具调用收尾: 把当前已完成部分落盘/汇报, 说明未完成项与原因, 然后结束。' +
+      '用 ≤2 个工具调用收尾: 把当前已完成部分写盘/汇报, 说明未完成项与原因, 然后结束。' +
       '不要继续尝试新的修改路径 —— 直接交还不完整结果。';
     const askAdvisor = opts.deps?.askAdvisor ?? (async (ctx: GrindAdvisorContext): Promise<string> => {
       const seat = resolveRoleModelConfigured('escalation');

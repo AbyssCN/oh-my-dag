@@ -112,7 +112,7 @@ export function appendFindings(ledgerPath: string, fs2: ReviewFinding[]): { adde
     overflows = [...overflows, { dropped, at }];
     logger.warn(
       { path: ledgerPath, dropped, at, 依据: `台账 ${LEDGER_CAP} 条上限 (INV-5), 丢最老` },
-      '[omd/review-ledger] 台账溢出, 丢最老 N 条 (INV-5 证据已落盘)',
+      '[omd/review-ledger] 台账溢出, 丢最老 N 条 (INV-5 证据已写盘)',
     );
   }
 

@@ -131,7 +131,7 @@ describe('runGoal production designReview 装配', () => {
     expect(result.designReview?.escalated).toEqual([]);
   });
 
-  test('有 screenshotCommand 但生产 agentRunner 缺席 → 响亮留证后 advisory 收口, 不冒充 diff-only', async () => {
+  test('有 screenshotCommand 但生产 agentRunner 缺席 → 响亮留证后 advisory 收尾, 不冒充 diff-only', async () => {
     const result = await runGoal('review ui', config(undefined, { screenshotCommand }));
 
     expect(result.converged).toBe(true);

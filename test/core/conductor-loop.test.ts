@@ -179,7 +179,7 @@ describe('D-A 环 — 逐轮**重展开**, 这是补调研的机制', () => {
 });
 
 describe('D-A 毒集的新家 — 节点级 journal, 每轮判完就写', () => {
-  test('journal 落盘且带轮次/毒集/上轮原因', async () => {
+  test('journal 存盘且带轮次/毒集/上轮原因', async () => {
     const f = fake([P1, P1], [{ converged: false, failureReason: '产出是编的', rejectedNodes: [] }, { converged: true }]);
     await runExecutorDagWithPlan(node({ max_rounds: 3 }), cfg(f.generate, false, true, f.judgeSend));
     const j = JSON.parse(readFileSync(join(runDir(), '_loop-C.json'), 'utf-8')) as NodeLoopJournal;
@@ -367,7 +367,7 @@ describe('D-F — 终轮必判 (judge_final): 撤外层之后裁决的唯一出�
   });
 });
 
-describe('D-F — 审计 checkpoint: 落盘但**永不**用于 resume-skip', () => {
+describe('D-F — 审计 checkpoint: 存盘但**永不**用于 resume-skip', () => {
   test('conductor 节点落一份绿 checkpoint (子树干了什么, 崩了之后还查得到)', async () => {
     const f = fake([P1], [{ converged: true }]);
     await runExecutorDagWithPlan(node(), cfg(f.generate, false, true, f.judgeSend));

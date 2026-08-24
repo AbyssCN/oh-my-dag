@@ -61,7 +61,7 @@ describe('regression 2 — distill 契约对齐 dag-research 真实输出', () =
 });
 
 describe('regression 3 — writeResultAtomic', () => {
-  test('落盘完整且无 .tmp 残留', () => {
+  test('写盘完整且无 .tmp 残留', () => {
     const dir = mkdtempSync(join(tmpdir(), 'pf-rf-'));
     try {
       const p = join(dir, 'deep', 'r1.md');
@@ -74,7 +74,7 @@ describe('regression 3 — writeResultAtomic', () => {
   });
 });
 
-describe('regression 4 — watcher 不回滚 tick 间落盘的裁决', () => {
+describe('regression 4 — watcher 不回滚 tick 间写盘的裁决', () => {
   test('reloadMap 注入后, 结果回流保留磁盘真相里的新裁决', () => {
     const stale = map([
       tk({ id: 'r1', type: 'research', title: 'research it' }),

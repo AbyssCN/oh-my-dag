@@ -516,7 +516,7 @@ describe('★ 切片6④ path_tickets 顺手扫等人超时 (D-5/G-5)', () => {
   const H = 3_600_000;
   const ago = (h: number): string => new Date(Date.now() - h * H).toISOString();
 
-  test('★ 等了 73h 的 escalated 票 → 标 stale + 台账落盘 + 回话念出来', async () => {
+  test('★ 等了 73h 的 escalated 票 → 标 stale + 台账存盘 + 回话念出来', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'pf-sweep-'));
     try {
       const t: Ticket = { id: 'g1', type: 'grill', title: '等人裁的问题', blockedBy: [], status: 'escalated', waitingSince: ago(73) };

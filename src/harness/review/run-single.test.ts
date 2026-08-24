@@ -18,7 +18,7 @@ const fakeVerify = async (dimTexts: { dimension: string; text: string }[]): Prom
 const BASE = { diff: 'diff\n+const y=1;', scope: 'x.ts', gate: 'G2' as const, outPath: OUT, model: 'fake:review' };
 
 describe('runReviewSingle 契约映射', () => {
-  test('单 agent 输出 → findings + verifyFindings → verified + 落盘', async () => {
+  test('单 agent 输出 → findings + verifyFindings → verified + 写盘', async () => {
     let gotPrompt = '';
     const r = await runReviewSingle({
       ...BASE,

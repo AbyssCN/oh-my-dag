@@ -101,7 +101,7 @@ const baseCfg = (over: Partial<ExecutorDagConfig>): ExecutorDagConfig => ({
   ...over,
 } as unknown as ExecutorDagConfig);
 
-describe('片 1: 内环 judge 判词落盘 (No-silent-caps 在 journal 这一档)', () => {
+describe('片 1: 内环 judge 判词存盘 (No-silent-caps 在 journal 这一档)', () => {
   test('★ 多轮内环, 每轮 reason 逐字 = judge 判词 (不许再"判了但没记话")', async () => {
     const REASONS = [
       '【轮 1】先把这个做完 —— 步骤 A, 步骤 B, 收尾验证',

@@ -258,7 +258,7 @@ describe('reflowGoalResults 三态映射 (D-G1.4, GWT-G1-2)', () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
-  test('not-converged → 票留 ruled + 续跑锚落盘 + 结果归档 .attempt (不重复折入)', () => {
+  test('not-converged → 票留 ruled + 续跑锚写盘 + 结果归档 .attempt (不重复折入)', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'goal-rf-'));
     goalMapOn(cwd);
     writeResult(cwd, 'm1', 'g9', 'not-converged');

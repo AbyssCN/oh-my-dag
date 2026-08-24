@@ -193,7 +193,7 @@ function reflowMapResponse(comments: Array<{ body: string }>): string {
 }
 
 describe('reflowResearchResults — md 后端 (行为等价)', () => {
-  test('落盘结果 → 母票 ruled + distill ruling + decisionsLog + 子票挂母票; 再收幂等空', () => {
+  test('写盘结果 → 母票 ruled + distill ruling + decisionsLog + 子票挂母票; 再收幂等空', () => {
     const dir = mkdtempSync(join(tmpdir(), 'pf-reflow-md-'));
     try {
       saveMap(

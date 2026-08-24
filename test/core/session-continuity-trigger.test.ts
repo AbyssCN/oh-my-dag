@@ -198,7 +198,7 @@ describe('A3 触发 policy — decideContinuityTrigger', () => {
     });
   });
 
-  test('SessionEnd 恒触发且 mode=final(收口那一次错过就没有了)', () => {
+  test('SessionEnd 恒触发且 mode=final(收尾那一次错过就没有了)', () => {
     expect(decideContinuityTrigger({ hook_event_name: 'SessionEnd' }, ledgerOf(10), { env })).toEqual({
       fire: true,
       mode: 'final',
@@ -289,7 +289,7 @@ describe('A3 触发 policy — decideContinuityTrigger', () => {
     expect(d).toEqual({ fire: true, mode: 'rolling', bucket: 2 });
   });
 
-  test('存过之后状态落盘 → 同档不再重复(读写往返, 不是只测内存)', () => {
+  test('存过之后状态存盘 → 同档不再重复(读写往返, 不是只测内存)', () => {
     const root = mkdtempSync(join(tmpdir(), 'omd-hook-state-'));
     expect(readLastFiredBucket('st-1', root)).toBe(0); // 没有状态文件 → 0, 不是崩
     writeLastFiredBucket('st-1', 2, root);
@@ -306,7 +306,7 @@ describe('A3 触发 policy — decideContinuityTrigger', () => {
 // ─── A4 路径同源 ────────────────────────────────────────────────────────────
 
 describe('A4 路径三处同源 — hook / ledger / writer 必须指同一个 session 目录', () => {
-  test('sessionDirOf === appendLedger 落盘目录(漂了 writer 就永远读不到 ledger)', () => {
+  test('sessionDirOf === appendLedger 存盘目录(漂了 writer 就永远读不到 ledger)', () => {
     const world = mkWorld('omd-hook-path-');
     const sessionId = 'path-001';
     const r = appendLedger({ ledger: ledgerOf(1, 2), sessionId, cwd: world.repo });

@@ -35,7 +35,7 @@ const fakeResult = (
 describe('dag-record 节点级五位列', () => {
   // 证伪方式: 把 record() 里 `durationMs: typeof (r as { durationMs? }).durationMs === 'number' ? ... : null`
   // 改成 `?? 0` → durationMs 一律变 0 → 这条红 (节点没传 durationMs 时)。
-  test('GWT-1a: 含 agent 节点读数的记录落盘 + 读回, tokensIn/Out/durationMs 均非 null 且 > 0', () => {
+  test('GWT-1a: 含 agent 节点读数的记录存盘 + 读回, tokensIn/Out/durationMs 均非 null 且 > 0', () => {
     const rec = createDagRecorder({ path: ':memory:' });
     const id = rec.record(fakeResult(), { runId: 'gwt-1a' });
     const node = rec.get(id)!.nodes.find((n) => n.id === 'a')!;

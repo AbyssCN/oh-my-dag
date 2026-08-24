@@ -613,7 +613,7 @@ export class RunRegistry {
       const failedVerdicts = p.verdicts?.filter((v) => v.verdict !== 'pass') ?? [];
       if (failedVerdicts.length) {
         const last = failedVerdicts[failedVerdicts.length - 1]!;
-        const head = (last.reason ?? '(判词未落盘)').replace(/\s+/g, ' ').slice(0, 160);
+        const head = (last.reason ?? '(判词未存盘)').replace(/\s+/g, ' ').slice(0, 160);
         parts.push(`闸未过: ${last.gate} ×${failedVerdicts.length} (轮 ${last.round}) — ${head}`);
       }
       // 在跑节点名只在 running 态有意义 (终态没有"在跑")。

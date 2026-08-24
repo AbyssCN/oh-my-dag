@@ -427,7 +427,7 @@ describe('continuity 接线 + resume', () => {
     return { engine, captured };
   }
 
-  test('新 run: continuity 恒落盘 (runId 一致, resume=false)', async () => {
+  test('新 run: continuity 恒存盘 (runId 一致, resume=false)', async () => {
     const { engine, captured } = capturingEngine('ok');
     const tools = createDagTools({
       engine,
