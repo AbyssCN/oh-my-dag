@@ -900,27 +900,56 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
       // 就逐片探一枪 (acceptance.ts 的 vacuous 纪律推广到切片级): 已绿 = 判据虚 **或** 活已干完,
       // 两种机械分不开, 都不该进平铺 —— 抛给回落 (v1 的冻结判据对"已完成"那半收敛最快)。
       // 没 runner = 闸缺席 (fail-open, 测试/无命令能力档), 行为同今天。
+      //
+      // #242 (run 7f9c511a 复盘): 「已绿 = 判据虚」这条推理**只属于首次编图**。resume 是
+      // 「活干到一半接着跑」, 切片 verify 当前绿在这条路上就是活已干完 —— 含「owner 人工修绿
+      // verify 后 resume」这条合法路径。修前这里必抛 → 整图静默回落 conductor → 回落图叶子
+      // 重写已完成实装 (23 节点把 live-children.ts 整套换 API 覆盖)。修后: resume 时已绿切片
+      // 视为已达成, 实装节点降为 command 重验 (见下方节点映射) —— 不给 agent 任何重写机会;
+      // verify 仍红的切片照常进图重跑 (settled=done 而判据在当前树上不成立 = 本来就该重做)。
+      const resuming = config.dag.continuity?.resume === true;
+      /** #242: resume 时 verify 已绿的切片 (实装节点降为 command 重验, 不判 vacuous)。 */
+      const achievedSlices = new Set<number>();
       if (config.dag.commandRunner) {
         for (const s of breakdown.slices) {
           const probe = await config.dag.commandRunner({ command: s.verify });
-          if (probe.exitCode === 0) {
-            throw new Error(
-              `[run-goal][o6-vacuous-verify] 切片 ${s.id} 的 verify 实装前已绿 (\`${s.verify}\` → 0): RED 无法成立 —— ` +
-                '判据虚 (换实装前天然红的命令, 如产物 grep) 或活已干完 (O-6 vacuous 探针)',
-            );
+          if (probe.exitCode !== 0) continue;
+          if (resuming) {
+            achievedSlices.add(s.id);
+            continue;
           }
+          throw new Error(
+            `[run-goal][o6-vacuous-verify] 切片 ${s.id} 的 verify 实装前已绿 (\`${s.verify}\` → 0): RED 无法成立 —— ` +
+              '判据虚 (换实装前天然红的命令, 如产物 grep) 或活已干完 (O-6 vacuous 探针)',
+          );
         }
       }
       // 编译器刻意不内联 SDD 全文 (token 注入由接线方裁, 见 sdd-compile 头注): 这里给每个
       // **切片实装节点**前置与 conductor 路径同源的契约上下文 (G-6 教训: 内联全文, 不引用
       // 基座路径); RED/GREEN/accept 是 command 节点, 不读文本, 不背这份 token。
+      //
+      // #242: resume 已达成切片的实装节点降为 command 重验 —— id/deps 一字不动 (代数签名只含
+      // goal+nodeIds+deps, 绿节点复用不作废), 但 executor 从 agent 换成跑同一条 verify 的确定性
+      // 节点: 即使 checkpoint 因 owner 人工改文件而 hash 失配, 重跑的也是一条只读命令, 不是一只
+      // 会重写写集的 agent。
+      const sliceByNodeId = new Map<string, SddSlice>(breakdown.slices.map((s) => [`s${s.id}`, s]));
       flatPlan = {
         ...compiled,
         nodes: Object.fromEntries(
-          Object.entries(compiled.nodes).map(([id, n]) => [
-            id,
-            n.executor === 'agent' ? { ...n, goal: `${body}\n\n${n.goal}` } : n,
-          ]),
+          Object.entries(compiled.nodes).map(([id, n]) => {
+            const s = sliceByNodeId.get(id);
+            if (s && achievedSlices.has(s.id)) {
+              return [id, {
+                executor: 'command',
+                command: s.verify,
+                expect_exit: 0,
+                depends_on: n.depends_on ?? [],
+                output_type: 'none',
+                goal: `切片 ${s.id} resume 复用: verify 当前已绿 → 重验确认, 不重做实装 (#242)`,
+              }];
+            }
+            return [id, n.executor === 'agent' ? { ...n, goal: `${body}\n\n${n.goal}` } : n];
+          }),
         ),
       } as ConductorPlan;
       // 并行性 advisory (owner 2026-08-11): 只报不拒 —— 假串行点名给结晶期审问, 假并行归乱序闸。
