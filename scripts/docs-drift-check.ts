@@ -4,7 +4,7 @@
  *
  *   bun run scripts/docs-drift-check.ts          # 全绿 exit 0 (打印各项计数), 任一项失败 exit 1
  *
- * ## 它守哪六件事
+ * ## 它守哪七件事
  *
  *   ① 锚点存在   反引号内引用的 `src/...` / `scripts/...` 路径, 逐一验证盘上真有
  *                (`路径:行号` 只取路径部分; 含 `*` 的 glob 跳过 —— 那是模式不是锚点)
@@ -581,6 +581,93 @@ export function countCoverageChecks(docs: DocFile[]): number {
   return n;
 }
 
+// ── ⑦ 表格完整 ──────────────────────────────────────────────────────────
+//
+// 2026-08-24 实账: 一条没锚定的 `perl -pi -e` 把 docs/README.md 整张表每行都加了前缀,
+// 公开仓上渲染成一大坨重复文字。①~⑥ **全绿** —— 链接还在、锚点还在、图片还在,
+// 坏的只有表格结构。于是这一类只能靠人眼在 GitHub 上看见, 而那时它已经上线了。
+//
+// 判据: 一个表块内每行的列数必须一致 (以分隔行 |---|---| 为准)。
+// 反向自检: 往任意文档的表里加一行少一列的, 必红。见 test 同名 describe。
+
+/** 一行是不是表格行 (去掉首尾空白后以 | 开头且以 | 结尾)。 */
+function isTableRow(line: string): boolean {
+  const t = line.trim();
+  return t.startsWith('|') && t.endsWith('|') && t.length > 1;
+}
+
+/** 表格行的列数 —— 首尾竖线之间被未转义的 | 切成几段。 */
+export function columnCount(line: string): number {
+  const t = line.trim();
+  // 去掉首尾那对竖线, 再按未转义的 | 切
+  const inner = t.slice(1, -1);
+  return inner.split(/(?<!\\)\|/).length;
+}
+
+/** 分隔行: 每格只有 - : 和空白。 */
+function isDelimiterRow(line: string): boolean {
+  const t = line.trim();
+  if (!isTableRow(t)) return false;
+  return t
+    .slice(1, -1)
+    .split(/(?<!\\)\|/)
+    .every((c) => /^\s*:?-+:?\s*$/.test(c));
+}
+
+/**
+ * ⑦ 每个表块内列数一致。围栏内跳过 (代码示例里的 | 不是表)。
+ *
+ * 只在**见到分隔行**之后才判 —— 没有分隔行的连续 | 行不是 markdown 表, 是别的东西
+ * (如 ASCII 图), 拿表格判据去套会假阳性。
+ */
+export function checkTables(doc: DocFile): Finding[] {
+  const out: Finding[] = [];
+  const lines = doc.text.split('\n');
+  const inFence = fenceMask(lines);
+  let expect = -1; // -1 = 不在表内
+  let headerLine = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (inFence[i] || !isTableRow(line)) {
+      expect = -1;
+      continue;
+    }
+    if (isDelimiterRow(line)) {
+      // 分隔行定下这张表的列数; 表头就在上一行
+      expect = columnCount(line);
+      headerLine = i; // 1-based 在下面加
+      continue;
+    }
+    if (expect < 0) continue; // 还没见到分隔行 —— 不当表判
+    const got = columnCount(line);
+    if (got === expect) continue;
+    out.push({
+      file: doc.path,
+      line: i + 1,
+      what: `表格列数不一致: 本行 ${got} 列, 该表(分隔行在第 ${headerLine + 1} 行)是 ${expect} 列`,
+      fix: `补齐或删掉多出来的 \`|\` —— 列数对不上时 GitHub 会把整张表渲染成一坨, 而链接闸看不出来。`,
+    });
+  }
+  return out;
+}
+
+/** ⑦ 一共判了几行表格行 (含通过的)。 */
+export function countTableRows(docs: DocFile[]): number {
+  let n = 0;
+  for (const doc of docs) {
+    const lines = doc.text.split('\n');
+    const inFence = fenceMask(lines);
+    let inTable = false;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]!;
+      if (inFence[i] || !isTableRow(line)) { inTable = false; continue; }
+      if (isDelimiterRow(line)) { inTable = true; continue; }
+      if (inTable) n++;
+    }
+  }
+  return n;
+}
+
 // ── 编排层: 唯一碰磁盘的地方 ──────────────────────────────────────────────
 
 /**
@@ -635,6 +722,7 @@ function main(): number {
   const whitelistPath = join(ROOT, '.dev', 'public-paths.txt');
   const whitelist = existsSync(whitelistPath) ? parseWhitelist(readFileSync(whitelistPath, 'utf8')) : null;
   const coverageFindings = checkPublicCoverage(docs, whitelist);
+  const tableFindings = docs.flatMap(checkTables);
 
   const groups = [
     { label: `① 锚点存在 (扫到 ${countAnchors(docs)} 处 src/ · scripts/ 引用)`, findings: anchorFindings },
@@ -655,6 +743,7 @@ function main(): number {
           : `⑥ 公开面覆盖 (${countCoverageChecks(docs)} 条: 文档自身 + 指出去的仓内引用)`,
       findings: coverageFindings,
     },
+    { label: `⑦ 表格完整 (${countTableRows(docs)} 行表格行, 列数逐表比对)`, findings: tableFindings },
   ];
 
   console.log(`docs-drift-check —— 扫描 ${docs.length} 份面向读者的文档 (docs/plan · docs/handoff 等台账区不扫)\n`);
