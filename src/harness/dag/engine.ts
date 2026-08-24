@@ -89,6 +89,9 @@ import { leafCostReward } from '../model-router';
 import { logger } from '../logger';
 import { type AnchorVerdict, captureTreeAnchor, compareTreeAnchor, describeAnchorVerdict } from '../goal/criterion-anchor';
 import { NOVELTY_COLLAPSE_LINE, pushNoveltyRound } from '../pathfinder/proximity';
+// #245: 失败明细的 `(fail)` 解析 — 复用 goal/accept-delta 的 extractFailSet, 不写第二份 (INV-8)。
+// 跨层 import 是必要的: engine.ts 拿到了 fc 闭包内的 cr.text, 而接 parse 的活归 accept-delta 单点。
+import { extractFailSet } from '../goal/accept-delta';
 // ── T2#5 按簇拆出的兄弟文件 (引擎消费) ──
 import type { GenerateFn, ExecutorDagConfig, LeafResult, ExecutorDagResult, DagObservation, BlameRetryLedger, DagNodeEvent } from './types';
 // C 无效否决闸 (2026-08-21): 判词可不可证伪 —— 纯函数, 判据与用例都在那边。
@@ -1305,7 +1308,13 @@ async function executePlan(
    * 现有那条用逐字常量比对正是为了躲开这个)。
    */
   const NEXT_STEPS_PREFIX = '上一轮 judge 给的下一步 (机制级动作, 逐字):\n';
-  const renderHandoff = (nodeId: string, round: number, reason: string, nextSteps?: string): string => {
+  /**
+   * #245 的必达块前缀 (第三种必达块)。冻结判据红时把**结构化失败明细** (命令+退出码+(fail) 名集)
+   * 作为必达块进下一轮 prompt —— 它的唯一通道也是 prompt, 所以同款纪律: 独立参数 + 逐字前缀 +
+   * 不参与 HANDOFF_CAP_CHARS 预算。闸拒 (exitCode<0) / 绿 / 赦免 → 缺席, 一个字不挂 (INV-5)。
+   */
+  const FREEZE_FAIL_PREFIX = '上一轮冻结判据红的失败明细 (逐字, 不参与交接硬上限):\n';
+  const renderHandoff = (nodeId: string, round: number, reason: string, nextSteps?: string, criterionFailDetail?: string): string => {
     // 必达块先摘出去。用逐字常量比对而不是正则: 这几个块的文本是常量,正则只会带来误伤面。
     const mustReach: string[] = [];
     let body = reason;
@@ -1316,12 +1325,19 @@ async function executePlan(
     // #228: 「下一步」与 NOVELTY_COLLAPSE_LINE 同判据 —— 唯一通道就是 prompt, 所以不参与预算。
     // 缺席 → **一个字都不写**: 不挂空标题、不写占位。judge 没答就是没答 (仓规坑①)。
     if (nextSteps) mustReach.push(`${NEXT_STEPS_PREFIX}${nextSteps}`);
+    // #245: 第三种必达块, 同款纪律 —— 缺席时一个字不挂, 给了就逐字成块、不进预算。
+    if (criterionFailDetail) mustReach.push(`${FREEZE_FAIL_PREFIX}${criterionFailDetail}`);
     const tail = mustReach.length ? `\n${mustReach.join('\n')}` : '';
     if (body.length <= HANDOFF_CAP_CHARS) return `\n\n<上一轮未通过>\n${body}\n</上一轮未通过>${tail}\n`;
     // 落**全文原文** (含必达块), 不落摘出去之后的 body —— 事后复盘要问的是"当时整份交接长什么样"。
     // #228: `nextSteps` 走独立参数进来 (不在 `reason` 串里), 所以要在这里补回去, 否则写入磁盘的
     // "全文"会缺掉这一块 —— 那就成了另一种静默丢证据。
-    const fullText = nextSteps ? `${reason}\n${NEXT_STEPS_PREFIX}${nextSteps}` : reason;
+    // #245: criterionFailDetail 同款: 走独立参数, 写入磁盘时也要补回去, 否则"当时整份交接"缺角。
+    const tailForFull = [
+      nextSteps ? `${NEXT_STEPS_PREFIX}${nextSteps}` : null,
+      criterionFailDetail ? `${FREEZE_FAIL_PREFIX}${criterionFailDetail}` : null,
+    ].filter((x): x is string => x !== null).join('\n');
+    const fullText = tailForFull ? `${reason}\n${tailForFull}` : reason;
     const fullPath = continuity ? continuity.manager.saveHandoffFull(continuity.runId, nodeId, round, fullText) : null;
     const kept = body.slice(0, HANDOFF_CAP_CHARS);
     const pointer =
@@ -1678,6 +1694,11 @@ async function executePlan(
      * 缺席 (judge 没被问过 / 没答) → undefined, `renderHandoff` 据此不挂这一块。
      */
     prevNextSteps: string | undefined,
+    /**
+     * #245: 上一轮冻结判据红的失败明细 —— 与 `prevNextSteps` 同款 (独立参数 / 不并串 / 缺席
+     * 时 `renderHandoff` 不挂这一块 / 一轮一鲜)。判据绿 / 闸拒 / 赦免 / 未配 → undefined。
+     */
+    prevCriterionFailDetail: string | undefined,
     poisoned: ReadonlySet<string>,
     /** 上一轮的子节点结果 (D-21 内环版: 跨轮复用的匹配源, 键 = 内容寻址 id)。 */
     prevResults: ReadonlyMap<string, LeafResult>,
@@ -1721,7 +1742,7 @@ async function executePlan(
     // **环的信息通道**: 上一轮的失败原因回灌给 conductor, 让它**重新画**而不是重跑同一张图。
     // 这是 D-A 环的全部价值 —— 重跑只能把同样的活再干一遍, 重画才补得出上一轮压根没有的步骤
     // (D-G′ 说的「补调研」正是这个形状: 不需要回边, 每一轮都是一张全新的无环子图)。
-    const retryCtx = prevReason ? `${renderHandoff(id, round, prevReason, prevNextSteps)}\n${RETRY_INSTRUCTION}` : '';
+    const retryCtx = prevReason ? `${renderHandoff(id, round, prevReason, prevNextSteps, prevCriterionFailDetail)}\n${RETRY_INSTRUCTION}` : '';
     // **owner 指令** (S3 / D-S): 与失败原因同一条管道、**独立的块**、**逐字**。
     // 排在失败原因**之前** —— 人的指令优先级高于机器的观察, 顺序上也该先看见。
     // ⚠ 一个字都不许加工: 观测者在这条链上只是信使, 它改写了, 失真的地方 owner 自己看不见。
@@ -2376,6 +2397,10 @@ async function executePlan(
     // resume 时从**最后一条 verdict** 还原即可。同一件事两处声明就是漂移源 (S-39, 与上面
     // `restoredJudge` 同一条纪律)。缺席 = 那一轮 judge 没被问过 / 没答 → 下一轮不挂这一块。
     let prevNextSteps: string | undefined = journal?.verdicts?.at(-1)?.nextSteps;
+    // #245 (INV-9): 冻结判据失败明细 = **瞬态**单轮线程, 不入 journal —— 一轮一鲜, 不粘滞。
+    // 跨 resume 复用 = 上轮 freeze 红的明细混进新一轮 prompt = 错误的现场。第 N+1 轮 freeze 绿
+    // → 第 N+2 轮自然缺席 (闭包里重新计算, 不持久)。
+    let prevCriterionFailDetail: string | undefined;
     // r1 片3/4 (INV-R1-4 + C2): 各轮发现文本→累计簇数; resume 接回旧序列 (journal 持久)。
     const noveltyTexts: string[] = journal?.noveltyTexts ? [...journal.noveltyTexts] : [];
     const noveltySeq: number[] = journal?.noveltySeq ? [...journal.noveltySeq] : [];
@@ -2581,7 +2606,7 @@ async function executePlan(
       // ms 取值从这里起算, judge 时间落在轮结束与下一条轮开始之间, 由内环收尾的 loopMs 兜住。
       const roundStartedAt = Date.now();
       logger.info({ node: id, round, at: roundStampNow() }, '[omd/executor-dag] 轮开始');
-      const r = await runConductorRound(id, round, prevReason, prevNextSteps, poisoned, prevResults);
+      const r = await runConductorRound(id, round, prevReason, prevNextSteps, prevCriterionFailDetail, poisoned, prevResults);
       // 切片 1 (C-1 INV-2): 轮结束 —— runConductorRound 返回后立刻 (D-3: ms 只覆盖展开+执行,
       // 不含轮末 judge, 三段时间加起来无主)。r.results 是 Map, 子图节点数 = .size。
       logger.info(
@@ -2660,6 +2685,11 @@ async function executePlan(
       // 赦免证据原文 (S-37 下沉): freezeGreen 走 waived 路径时, evidence 字段带它进 journal
       // —— 否则 verifier/judge 看到的是 "silent green", 那正是本契约要杀的形状 (INV-3)。
       let freezeWaivedNote: string | undefined;
+      // #245 (INV-5): 红时构造失败明细 (构造块在闭包**内**, cr.text / cr.exitCode 只在这里拿得到)。
+      // 闸拒 / 赦免 / 绿 → 缺席, 一个字不挂 —— 闸拒 ≠ 跑出红, 不混这两态。`extractFailSet`
+      // 复用 accept-delta 的那一份 (INV-8)。failSet 空 → 只带命令与退出码, **不带原文** (原文
+      // 有制品/journal 通道, 必达块按构造有界 —— 不让一块无限长塞进 prompt)。
+      let freezeFailDetail: string | undefined;
       const freezeGreen = await (async (): Promise<boolean | null> => {
         const fc = config.freezeCriterion;
         if (!fc || !config.commandRunner) return null; // 没配 = 旧行为, 判据只在环外跑
@@ -2668,12 +2698,22 @@ async function executePlan(
           // `null` (死于信号) 不是闸拒: 闸拒 = 命令没执行, 死于信号 = 执行了没跑完 —— 两者下一步相反。
           const blocked = cr.exitCode !== null && cr.exitCode < 0; // 闸拒 ≠ 跑出红, 不赦免 (D-4 同款纪律)
           let ok = !blocked && cr.exitCode === (fc.expectExit ?? 0);
+          let waivedHere = false;
           if (!ok && !blocked && fc.waiveRed) {
             const waived = fc.waiveRed(cr.text);
             if (waived !== null) {
               ok = true;
               freezeWaivedNote = waived;
+              waivedHere = true;
             }
+          }
+          // #245 INV-5: 红 ∧ 未闸拒 ∧ 未赦免 → 构造失败明细。绿 / 闸拒 / 赦免 / 未配 → 不构造。
+          if (!ok && !blocked && !waivedHere) {
+            const failSet = extractFailSet(cr.text);
+            const head = `冻结判据红 (${fc.command} → exit ${cr.exitCode})`;
+            freezeFailDetail = failSet.length
+              ? `${head}\n· 失败 ${failSet.length} 条: ${failSet.join(', ')}`
+              : head;
           }
           logger.info({ node: id, round, command: fc.command, exitCode: cr.exitCode, ok, waived: !!freezeWaivedNote }, '[omd/executor-dag] 冻结判据 (环内)');
           return ok;
@@ -2837,6 +2877,9 @@ async function executePlan(
       // 缺席 (judge 没被问过 / 没答) 时置回 undefined, 不留上一轮的残值: 挂一条**上上轮**的
       // 下一步比不挂更坏 —— 读者无从知道它已经过期了。
       prevNextSteps = verdict.nextSteps;
+      // #245: 冻结判据失败明细同款线程 —— 单轮一鲜, 不留残值。本轮 freeze 绿 / 闸拒 / 赦免 / 未配
+      // → freezeFailDetail === undefined → 下一轮 prompt 不挂这一块 (缺席零字节, INV-6)。
+      prevCriterionFailDetail = freezeFailDetail;
       prevReason = roundObs.length
         ? `${verdict.reason}\n\n[图外观察者]\n${roundObs.map((o) => `- ${o.message}`).join('\n')}`
         : verdict.reason;
