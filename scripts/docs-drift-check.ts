@@ -4,7 +4,7 @@
  *
  *   bun run scripts/docs-drift-check.ts          # 全绿 exit 0 (打印各项计数), 任一项失败 exit 1
  *
- * ## 它守哪五件事
+ * ## 它守哪六件事
  *
  *   ① 锚点存在   反引号内引用的 `src/...` / `scripts/...` 路径, 逐一验证盘上真有
  *                (`路径:行号` 只取路径部分; 含 `*` 的 glob 跳过 —— 那是模式不是锚点)
@@ -15,6 +15,9 @@
  *   ⑤ 引用可达   `![](path)` / `<img src=path>` 的图片, 以及 `[x](path.md)` 的仓内 md 链接,
  *                按**所在文档的目录**解析后验证盘上存在 (`#片段` 只验文件部分;
  *                http(s)/mailto/ 站点绝对路径 `/x` 跳过)。死链与坏图就是漂移。
+ *   ⑥ 公开面覆盖 面向读者的文档自身、以及它们指出去的仓内引用, 必须都在
+ *                `.dev/public-paths.txt` 白名单内。⑤ 验的是**本地盘**, 这条验的是
+ *                **公开镜像** —— 本地在、名单里没有 ⇒ 公开仓 404 而 ⑤ 全绿。
  *
  * ## 扫描面: 只扫"写给读者看的", 不扫台账
  *
@@ -42,7 +45,8 @@
  * 会养出一条永远红的闸, 同样没用。
  *
  * 手工证伪: ① 往 docs/README.md 里加一行 `` `src/nope/gone.ts` ``;
- * ⑤ 往同一份里加一行 `![x](../assets/diagrams/nope.svg)` 或 `[x](nope.md)`。
+ * ⑤ 往同一份里加一行 `![x](../assets/diagrams/nope.svg)` 或 `[x](nope.md)`;
+ * ⑥ 从 `.dev/public-paths.txt` 删掉 `docs/guide` 那行 —— 必须报出 guide/ 下每一份文档。
  * 重跑本脚本, 都应当 exit 1 并指名那一行。改不红 = 闸坏了。
  *
  * ## 分层
@@ -494,6 +498,87 @@ export function countRefs(docs: DocFile[], kind: DocRef['kind']): number {
   return n;
 }
 
+// ── ⑥ 公开面覆盖 (白名单 vs 面向读者文档) ────────────────────────────────
+//
+// 为什么 ⑤ 抓不到这一类: ⑤ 验的是**本地盘**上有没有。公开镜像是按
+// `.dev/public-paths.txt` 白名单**过滤整条历史**重写出来的 —— 一份文件本地在、
+// 名单里没有 ⇒ 公开仓里不存在 ⇒ 公开 README 上那条链接 404, 而 ⑤ 全绿。
+//
+// 实账两次, 同一形状:
+//   2026-08-11  docs 分层重组, 名单里还是旧的 9 条平铺路径 → 整套 guide/architecture 被滤掉。
+//   2026-08-24  加 docs/why-omd.md 与 docs/driving-omd.md 时没动名单 → 公开首页两个链接 404。
+//
+// 反向自检 (证伪方式): 从 `.dev/public-paths.txt` 删掉 `docs/guide` 那行再跑本闸,
+// 必须报出 guide/ 下每一份文档 + 每一条指向它们的链接。见 docs-drift-check.test.ts 同名 describe。
+
+/**
+ * 住在 docs/ 顶层、但**不是用户面**的台账 —— 它们本地在、公开仓没有, 这是对的。
+ * ⑥ 只豁免「这份文档自身要不要公开」那一半; 公开文档**指向**它们的链接照样算 404,
+ * 因为读者点得到那条链接。
+ */
+export const LEDGER_DOCS = new Set(['docs/docs-map.md', 'docs/worktrees-archive.md']);
+
+/** 白名单一行 = 一个仓根相对路径, 文件或目录。`#` 开头与空行是注释。 */
+export function parseWhitelist(text: string): string[] {
+  return text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !l.startsWith('#'));
+}
+
+/** 路径被名单覆盖 = 逐字命中某条, 或落在某条目录条目之下。 */
+export function coveredByWhitelist(path: string, entries: string[]): boolean {
+  return entries.some((e) => path === e || path.startsWith(`${e}/`));
+}
+
+/**
+ * ⑥ 面向读者的文档**自身**, 以及它们指出去的仓内引用, 必须都在公开白名单内。
+ *
+ * `entries` 为 null = 名单文件缺席 (公开镜像只在私有真源里配) → 返回空, 由调用方
+ * 把标签写成「跳过」而不是「通过」—— 0 失败和 0 扫到是两件事 (仓规坑①)。
+ */
+export function checkPublicCoverage(docs: DocFile[], entries: string[] | null): Finding[] {
+  if (entries === null) return [];
+  const out: Finding[] = [];
+  for (const doc of docs) {
+    if (!LEDGER_DOCS.has(doc.path) && !coveredByWhitelist(doc.path, entries)) {
+      out.push({
+        file: doc.path,
+        line: 0,
+        what: `这份文档不在公开白名单内 —— 公开仓里根本没有它, 而它是面向读者的`,
+        fix: `把这条路径加进 .dev/public-paths.txt (加完重跑 .dev/sync-public.sh), 或者把它挪进台账区不再当用户面。`,
+      });
+    }
+    for (const ref of extractRefs(doc)) {
+      const resolved = resolveRef(doc.path, ref.target);
+      if (resolved === null || !refWorthChecking(ref, resolved)) continue;
+      if (ref.kind === 'link' && ANCHOR_EXEMPT.has(doc.path)) continue;
+      if (coveredByWhitelist(resolved, entries)) continue;
+      out.push({
+        file: doc.path,
+        line: ref.line,
+        what: `引用的 ${resolved} 不在公开白名单内 —— 本地能点开, 公开仓上是 404`,
+        fix: `目标该公开就加进 .dev/public-paths.txt; 该私有就把这条链接从公开文档里删掉 (别留一条只有你点得开的链接)。`,
+      });
+    }
+  }
+  return out;
+}
+
+/** ⑥ 实际验了几条 (文档自身 + 够格的引用) —— 同 countRefs, 让「0 失败」与「0 扫到」分得开。 */
+export function countCoverageChecks(docs: DocFile[]): number {
+  let n = docs.filter((d) => !LEDGER_DOCS.has(d.path)).length;
+  for (const doc of docs) {
+    for (const ref of extractRefs(doc)) {
+      const resolved = resolveRef(doc.path, ref.target);
+      if (resolved === null || !refWorthChecking(ref, resolved)) continue;
+      if (ref.kind === 'link' && ANCHOR_EXEMPT.has(doc.path)) continue;
+      n++;
+    }
+  }
+  return n;
+}
+
 // ── 编排层: 唯一碰磁盘的地方 ──────────────────────────────────────────────
 
 /**
@@ -544,6 +629,11 @@ function main(): number {
   const toolFindings = en ? checkToolCount(en, registered) : [];
   const bilingualFindings = en && zh ? checkBilingualHeadings(en, zh) : [];
 
+  // 名单只住在私有真源里; 公开仓 clone 出来跑本闸时它不存在 → null = 跳过, 不是通过。
+  const whitelistPath = join(ROOT, '.dev', 'public-paths.txt');
+  const whitelist = existsSync(whitelistPath) ? parseWhitelist(readFileSync(whitelistPath, 'utf8')) : null;
+  const coverageFindings = checkPublicCoverage(docs, whitelist);
+
   const groups = [
     { label: `① 锚点存在 (扫到 ${countAnchors(docs)} 处 src/ · scripts/ 引用)`, findings: anchorFindings },
     { label: `② 工具数一致 (src/mcp/ 实际注册 ${registered} 个)`, findings: toolFindings },
@@ -555,6 +645,13 @@ function main(): number {
     {
       label: `⑤ 引用可达 (${countRefs(docs, 'image')} 张仓内图片 + ${countRefs(docs, 'link')} 条仓内 md 链接)`,
       findings: refFindings,
+    },
+    {
+      label:
+        whitelist === null
+          ? `⑥ 公开面覆盖 —— 跳过 (.dev/public-paths.txt 缺席; 这是私有真源才有的名单)`
+          : `⑥ 公开面覆盖 (${countCoverageChecks(docs)} 条: 文档自身 + 指出去的仓内引用)`,
+      findings: coverageFindings,
     },
   ];
 

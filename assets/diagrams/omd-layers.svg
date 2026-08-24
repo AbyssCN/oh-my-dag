@@ -1,51 +1,119 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 440" width="1000" height="440" role="img" aria-labelledby="layers-title layers-desc">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 620" width="1000" height="620" role="img" aria-labelledby="layers-title layers-desc">
   <title id="layers-title">Where omd sits</title>
-  <desc id="layers-desc">A four-layer stack: the coding agent you talk to sits on top, omd's orchestration layer sits under it behind an MCP boundary, with persistent memory and a pool of models beneath.</desc>
+  <desc id="layers-desc">The coding agent you talk to sits on top and reports its own success. Underneath, reached over MCP, omd turns the work into a typed graph, runs it a node at a time, and takes the verdict from deterministic checks rather than from the model. Memory and a pool of models sit below that.</desc>
+  <defs>
+    <marker id="ly-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#6f6558"/>
+    </marker>
+  </defs>
 
-  <rect width="1000" height="440" fill="#faf8f5"/>
+  <rect width="1000" height="620" fill="#faf8f5"/>
 
-  <!-- L1 SESSION -->
-  <rect x="60" y="56" width="880" height="72" rx="6" fill="#ffffff" stroke="rgba(20,15,10,0.3)" stroke-width="1"/>
-  <text x="80" y="88" fill="#918878" font-size="8" font-weight="500" letter-spacing="0.18em"
-        font-family="'Geist Mono', ui-monospace, monospace">L1</text>
-  <text x="156" y="88" fill="#140f0a" font-size="16" font-weight="600"
-        font-family="'Geist', system-ui, sans-serif">Session</text>
-  <text x="156" y="112" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Claude Code · Codex · gemini-cli · opencode — and omd&#8217;s own conductor_chat</text>
-  <text x="920" y="88" fill="#6f6558" font-size="9" text-anchor="end"
-        font-family="'Geist Mono', ui-monospace, monospace">unit of work: a turn</text>
+  <!-- ═══ SESSION LAYER ═══ -->
+  <rect x="48" y="32" width="904" height="92" rx="6" fill="none" stroke="rgba(20,15,10,0.3)" stroke-width="1" stroke-dasharray="6,3"/>
+  <text x="64" y="56" fill="#918878" font-size="8" font-weight="500" letter-spacing="0.18em"
+        font-family="'Geist Mono', ui-monospace, monospace">SESSION LAYER · UNIT OF WORK: A TURN</text>
+  <text x="936" y="56" fill="#918878" font-size="9" text-anchor="end"
+        font-family="'Geist Mono', ui-monospace, monospace">correctness is whatever the model reports</text>
 
-  <!-- MCP boundary -->
-  <text x="500" y="148" fill="#918878" font-size="8" font-weight="500" letter-spacing="0.18em"
-        text-anchor="middle" font-family="'Geist Mono', ui-monospace, monospace">MCP · 50 TOOLS</text>
+  <rect x="64"  y="68" width="164" height="40" rx="6" fill="#ffffff" stroke="rgba(20,15,10,0.3)" stroke-width="1"/>
+  <text x="146" y="93" fill="#140f0a" font-size="12" font-weight="600" text-anchor="middle" font-family="'Geist', system-ui, sans-serif">Claude Code</text>
+  <rect x="240" y="68" width="164" height="40" rx="6" fill="#ffffff" stroke="rgba(20,15,10,0.3)" stroke-width="1"/>
+  <text x="322" y="93" fill="#140f0a" font-size="12" font-weight="600" text-anchor="middle" font-family="'Geist', system-ui, sans-serif">Codex</text>
+  <rect x="416" y="68" width="164" height="40" rx="6" fill="#ffffff" stroke="rgba(20,15,10,0.3)" stroke-width="1"/>
+  <text x="498" y="93" fill="#140f0a" font-size="12" font-weight="600" text-anchor="middle" font-family="'Geist', system-ui, sans-serif">gemini-cli</text>
+  <rect x="592" y="68" width="164" height="40" rx="6" fill="#ffffff" stroke="rgba(20,15,10,0.3)" stroke-width="1"/>
+  <text x="674" y="93" fill="#140f0a" font-size="12" font-weight="600" text-anchor="middle" font-family="'Geist', system-ui, sans-serif">opencode</text>
+  <rect x="768" y="68" width="164" height="40" rx="6" fill="rgba(20,15,10,0.03)" stroke="rgba(20,15,10,0.3)" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="850" y="93" fill="#6f6558" font-size="12" font-weight="600" text-anchor="middle" font-family="'Geist', system-ui, sans-serif">any MCP client</text>
 
-  <!-- L2 ORCHESTRATION — focal -->
-  <rect x="60" y="160" width="880" height="88" rx="6" fill="rgba(179,56,42,0.08)" stroke="#b3382a" stroke-width="1.2"/>
-  <text x="80" y="196" fill="#b3382a" font-size="8" font-weight="500" letter-spacing="0.18em"
-        font-family="'Geist Mono', ui-monospace, monospace">L2</text>
-  <text x="156" y="196" fill="#140f0a" font-size="16" font-weight="600"
-        font-family="'Geist', system-ui, sans-serif">Orchestration · omd</text>
-  <text x="156" y="220" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">a typed graph · gates with no model in them · one model per node</text>
-  <text x="156" y="236" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">the graph comes from a conductor, an SDD contract, a decision map, or your hand</text>
-  <text x="920" y="196" fill="#b3382a" font-size="9" text-anchor="end"
-        font-family="'Geist Mono', ui-monospace, monospace">unit of work: a node</text>
+  <!-- ═══ MCP boundary ═══ -->
+  <line x1="500" y1="124" x2="500" y2="140" stroke="#6f6558" stroke-width="1" marker-end="url(#ly-arrow)"/>
+  <rect x="356" y="144" width="288" height="36" rx="6" fill="#ffffff" stroke="#140f0a" stroke-width="1"/>
+  <text x="500" y="167" fill="#140f0a" font-size="13" font-weight="600" text-anchor="middle" font-family="'Geist', system-ui, sans-serif">MCP · 50 tools</text>
+  <text x="64" y="158" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">three entry layers, each holding the next:</text>
+  <text x="64" y="174" fill="#140f0a" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">map_*  ⊃  solve  ⊃  run</text>
+  <text x="936" y="158" fill="#6f6558" font-size="9" text-anchor="end" font-family="'Geist Mono', ui-monospace, monospace">also: conductor_chat (a seat at the engine)</text>
+  <text x="936" y="174" fill="#6f6558" font-size="9" text-anchor="end" font-family="'Geist Mono', ui-monospace, monospace">omd tui (omd&#8217;s own client, in dev)</text>
+  <line x1="500" y1="180" x2="500" y2="196" stroke="#6f6558" stroke-width="1" marker-end="url(#ly-arrow)"/>
 
-  <!-- L3 MEMORY -->
-  <rect x="60" y="256" width="880" height="72" rx="6" fill="rgba(20,15,10,0.05)" stroke="#6f6558" stroke-width="1"/>
-  <text x="80" y="288" fill="#918878" font-size="8" font-weight="500" letter-spacing="0.18em"
-        font-family="'Geist Mono', ui-monospace, monospace">L3</text>
-  <text x="156" y="288" fill="#140f0a" font-size="16" font-weight="600"
-        font-family="'Geist', system-ui, sans-serif">Memory</text>
-  <text x="156" y="312" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">a decision map of typed tickets in git · per-node checkpoints · a fact store</text>
-  <text x="920" y="288" fill="#6f6558" font-size="9" text-anchor="end"
-        font-family="'Geist Mono', ui-monospace, monospace">outlives the run</text>
+  <!-- ═══ ORCHESTRATION ═══ -->
+  <rect x="48" y="198" width="904" height="242" rx="6" fill="none" stroke="#140f0a" stroke-width="1.2"/>
+  <text x="64" y="222" fill="#918878" font-size="8" font-weight="500" letter-spacing="0.18em"
+        font-family="'Geist Mono', ui-monospace, monospace">ORCHESTRATION · omd · UNIT OF WORK: A NODE</text>
+  <text x="936" y="222" fill="#b3382a" font-size="9" text-anchor="end" font-weight="600"
+        font-family="'Geist Mono', ui-monospace, monospace">correctness is decided by code</text>
 
-  <!-- L4 MODELS -->
-  <rect x="60" y="336" width="880" height="72" rx="6" fill="rgba(20,15,10,0.03)" stroke="rgba(20,15,10,0.3)" stroke-width="1"/>
-  <text x="80" y="368" fill="#918878" font-size="8" font-weight="500" letter-spacing="0.18em"
-        font-family="'Geist Mono', ui-monospace, monospace">L4</text>
-  <text x="156" y="368" fill="#140f0a" font-size="16" font-weight="600"
-        font-family="'Geist', system-ui, sans-serif">Models</text>
-  <text x="156" y="392" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">18 seats · a model you pin by hand is never overwritten</text>
-  <text x="920" y="368" fill="#6f6558" font-size="9" text-anchor="end"
-        font-family="'Geist Mono', ui-monospace, monospace">bring your own</text>
+  <!-- 1 PLAN -->
+  <rect x="64" y="236" width="206" height="188" rx="6" fill="#ffffff" stroke="rgba(20,15,10,0.3)" stroke-width="1"/>
+  <text x="76" y="262" fill="#140f0a" font-size="13" font-weight="600" font-family="'Geist', system-ui, sans-serif">1 · Plan</text>
+  <line x1="76" y1="274" x2="258" y2="274" stroke="rgba(20,15,10,0.12)" stroke-width="0.8"/>
+  <text x="76" y="294" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">a conductor draws it</text>
+  <text x="76" y="312" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">an SDD contract compiles it</text>
+  <text x="76" y="330" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">a decision map compiles it</text>
+  <text x="76" y="348" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">or you write it by hand</text>
+  <text x="76" y="376" fill="#140f0a" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">{ nodes[], outputs[] }</text>
+  <text x="76" y="404" fill="#918878" font-size="8" letter-spacing="0.14em" font-family="'Geist Mono', ui-monospace, monospace">ZOD-VALIDATED · THE SEAM</text>
+
+  <!-- 2 PASSES -->
+  <rect x="286" y="236" width="206" height="188" rx="6" fill="#ffffff" stroke="rgba(20,15,10,0.3)" stroke-width="1"/>
+  <text x="298" y="262" fill="#140f0a" font-size="13" font-weight="600" font-family="'Geist', system-ui, sans-serif">2 · Passes</text>
+  <line x1="298" y1="274" x2="480" y2="274" stroke="rgba(20,15,10,0.12)" stroke-width="0.8"/>
+  <text x="298" y="294" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">prune — drop dead nodes</text>
+  <text x="298" y="312" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">dedup — by semantic key</text>
+  <text x="298" y="330" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">evidence — claims need a source</text>
+  <text x="298" y="348" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">stamp — a model onto each node</text>
+  <text x="298" y="376" fill="#140f0a" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">four pure functions</text>
+  <text x="298" y="404" fill="#918878" font-size="8" letter-spacing="0.14em" font-family="'Geist Mono', ui-monospace, monospace">ZERO IO · ZERO RANDOMNESS</text>
+
+  <!-- 3 EXECUTE -->
+  <rect x="508" y="236" width="206" height="188" rx="6" fill="#ffffff" stroke="rgba(20,15,10,0.3)" stroke-width="1"/>
+  <text x="520" y="262" fill="#140f0a" font-size="13" font-weight="600" font-family="'Geist', system-ui, sans-serif">3 · Execute</text>
+  <line x1="520" y1="274" x2="702" y2="274" stroke="rgba(20,15,10,0.12)" stroke-width="0.8"/>
+  <text x="520" y="294" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">ready-set fan-out</text>
+  <text x="520" y="312" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">agent leaf — really writes files</text>
+  <text x="520" y="330" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">command leaf — zero LLM</text>
+  <text x="520" y="348" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">map node — worklist at runtime</text>
+  <text x="520" y="376" fill="#140f0a" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">13 primitives own the loop</text>
+  <text x="520" y="404" fill="#918878" font-size="8" letter-spacing="0.14em" font-family="'Geist Mono', ui-monospace, monospace">CHECKPOINT AFTER EVERY NODE</text>
+
+  <!-- 4 VERDICT — focal -->
+  <rect x="730" y="236" width="206" height="188" rx="6" fill="rgba(179,56,42,0.08)" stroke="#b3382a" stroke-width="1.2"/>
+  <text x="742" y="262" fill="#140f0a" font-size="13" font-weight="600" font-family="'Geist', system-ui, sans-serif">4 · Verdict</text>
+  <line x1="742" y1="274" x2="924" y2="274" stroke="rgba(179,56,42,0.35)" stroke-width="0.8"/>
+  <text x="742" y="294" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">exit code == expect_exit</text>
+  <text x="742" y="312" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">write-set reconciled to disk</text>
+  <text x="742" y="330" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">then a cross-family verifier</text>
+  <text x="742" y="348" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">then a human. no skipping.</text>
+  <text x="742" y="376" fill="#b3382a" font-size="9" font-weight="600" font-family="'Geist Mono', ui-monospace, monospace">nothing to talk into passing</text>
+  <text x="742" y="404" fill="#918878" font-size="8" letter-spacing="0.14em" font-family="'Geist Mono', ui-monospace, monospace">FAIL → RE-PLAN, RERUN THE BAD</text>
+
+  <line x1="270" y1="330" x2="284" y2="330" stroke="#6f6558" stroke-width="1" marker-end="url(#ly-arrow)"/>
+  <line x1="492" y1="330" x2="506" y2="330" stroke="#6f6558" stroke-width="1" marker-end="url(#ly-arrow)"/>
+  <line x1="714" y1="330" x2="728" y2="330" stroke="#6f6558" stroke-width="1" marker-end="url(#ly-arrow)"/>
+
+  <!-- ═══ MEMORY + MODELS ═══ -->
+  <rect x="48" y="456" width="444" height="104" rx="6" fill="rgba(20,15,10,0.05)" stroke="#6f6558" stroke-width="1"/>
+  <text x="64" y="480" fill="#918878" font-size="8" font-weight="500" letter-spacing="0.18em"
+        font-family="'Geist Mono', ui-monospace, monospace">MEMORY · OUTLIVES THE RUN</text>
+  <text x="64" y="504" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">a decision map of typed tickets, in git</text>
+  <text x="64" y="522" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">per-node checkpoints — resume re-bills only what changed</text>
+  <text x="64" y="540" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">a fact store with two zero-model recall legs</text>
+
+  <rect x="508" y="456" width="444" height="104" rx="6" fill="rgba(20,15,10,0.03)" stroke="rgba(20,15,10,0.3)" stroke-width="1"/>
+  <text x="524" y="480" fill="#918878" font-size="8" font-weight="500" letter-spacing="0.18em"
+        font-family="'Geist Mono', ui-monospace, monospace">MODELS · BRING YOUR OWN</text>
+  <text x="524" y="504" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">18 seats — a seat picks a model, not a role</text>
+  <text x="524" y="522" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">node.model &gt; template.model &gt; auto-assign</text>
+  <text x="524" y="540" fill="#140f0a" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">a model you pin by hand is never overwritten</text>
+
+  <line x1="48" y1="584" x2="952" y2="584" stroke="rgba(20,15,10,0.12)" stroke-width="0.8"/>
+  <text x="48" y="604" fill="#918878" font-size="8" font-weight="500" letter-spacing="0.14em"
+        font-family="'Geist Mono', ui-monospace, monospace">LEGEND</text>
+  <rect x="148" y="594" width="16" height="12" rx="3" fill="#ffffff" stroke="rgba(20,15,10,0.3)" stroke-width="1"/>
+  <text x="172" y="604" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">a stage the engine runs</text>
+  <rect x="380" y="594" width="16" height="12" rx="3" fill="rgba(179,56,42,0.08)" stroke="#b3382a" stroke-width="1"/>
+  <text x="404" y="604" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">where the verdict is made</text>
+  <rect x="628" y="594" width="16" height="12" rx="3" fill="none" stroke="rgba(20,15,10,0.3)" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="652" y="604" fill="#6f6558" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">not part of omd — you already have it</text>
 </svg>

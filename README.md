@@ -80,13 +80,15 @@ Then tell your agent:
 <img src="assets/diagrams/omd-pipeline-contract.svg" alt="The contract pipeline: grill, contract, a zero-LLM compile, execute, verdict" width="960">
 </div>
 
-A model asked to judge its own work can stop running entirely without anything turning red. So rung ① has no model in it. A `command` node runs `tsc`, the suite, or your script; the exit code must equal `expect_exit`. Beside it: write-set reconciliation — did it write what it claims — and artifact gates — is the file on disk. A node that reports a file it never wrote fails.
+**Three checks, in that order, and none of them may be skipped.**
+
+A model asked to judge its own work can stop running entirely without anything turning red. So the first check has no model in it at all: a `command` node runs `tsc`, the suite, or your script; the exit code must equal `expect_exit`. Beside it: write-set reconciliation — did it write what it claims — and artifact gates — is the file on disk. A node that reports a file it never wrote fails.
 
 **The criterion sits an exam before it is trusted.** This is the part worth reading twice. The engine runs the proposed acceptance command twice in a throwaway world: once **before any work exists** — still green means it has nothing to do with this task — and once against a **deliberately wrong artifact** the classifier had to supply alongside it — still green means it can't tell right from wrong. Either way the goal is demoted to exploratory instead of collecting a fake pass. Both probes are fail-open: a probe that can't run marks the criterion unproven rather than blocking the run. `src/harness/goal/acceptance-gate.ts`.
 
-When no oracle can judge semantics, rung ② is a verifier from a **different model family**. Same family, same blind spots. Its job is to attack the result, not stamp it. Fail escalates: stronger conductor, re-plan, only the rejected nodes re-run. `src/harness/verifier.ts`.
+When no exit code can settle it — is this summary faithful? does this design meet the contract? — the second check is a verifier from a **different model family**. Same family, same blind spots. Its job is to attack the result, not stamp it. Fail escalates: stronger conductor, re-plan, only the rejected nodes re-run. `src/harness/verifier.ts`.
 
-⚠ **Oracle-green is not semantically right.** This engine once shipped `tsc` clean and the full suite passing, with a status mapping labelled backwards and the test freezing the mistake in place. A test and its implementation from the same change can be wrong together and endorse each other. Rung ① cannot catch that. Rung ③ is a human.
+⚠ **Oracle-green is not semantically right.** This engine once shipped `tsc` clean and the full suite passing, with a status mapping labelled backwards and the test freezing the mistake in place. A test and its implementation from the same change can be wrong together and endorse each other. The first check cannot catch that, which is why the second one is not optional. The third check is a human — and escalating is neither deferring nor deciding alone.
 
 > **Reliability comes from outside the model. Creativity comes from inside it.**
 > Gates judge — deterministic, zero-model, fail-closed. Models generate — what to do, how, what's missing. Inside the gates, don't replace that with rules.

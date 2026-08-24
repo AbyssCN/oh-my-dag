@@ -16,6 +16,9 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import {
   checkAnchors,
   checkBilingualHeadings,
+  checkPublicCoverage,
+  coveredByWhitelist,
+  parseWhitelist,
   checkMermaid,
   checkRefs,
   checkToolCount,
@@ -387,5 +390,60 @@ describe('扫描面 (scanTargets)', () => {
   test('非 .md 与子目录本身不进扫描面', () => {
     const root = fakeRepo(['README.md', 'docs/guide/tui.md', 'docs/guide/screenshot.png', 'docs/guide/deep/nested.md']);
     expect(scanTargets(root)).toEqual(['README.md', 'docs/guide/tui.md']);
+  });
+});
+
+// ── ⑥ 公开面覆盖 ─────────────────────────────────────────────────────────
+//
+// 这条闸的存在理由是两次实账: 2026-08-11 docs 分层重组后名单还是旧路径, 整套
+// guide/architecture 被滤出公开镜像; 2026-08-24 加 why-omd / driving-omd 时没动名单。
+// 两次 ⑤ 都全绿 —— 因为 ⑤ 查本地盘, 而公开仓是按名单重写出来的另一棵树。
+describe('⑥ 公开面覆盖', () => {
+  const WL = ['README.md', 'docs/guide', 'docs/architecture', 'assets/diagrams'];
+
+  test('名单命中: 逐字条目与目录前缀都算覆盖', () => {
+    expect(coveredByWhitelist('README.md', WL)).toBe(true);
+    expect(coveredByWhitelist('docs/guide/tui.md', WL)).toBe(true);
+    expect(coveredByWhitelist('docs/why-omd.md', WL)).toBe(false);
+    // 前缀不能只比字符串 —— docs/guides/ 不是 docs/guide/ 底下的
+    expect(coveredByWhitelist('docs/guidebook.md', WL)).toBe(false);
+  });
+
+  test('解析名单: 跳过注释与空行', () => {
+    expect(parseWhitelist('# c\n\nREADME.md\n  docs/guide  \n\n# tail\n')).toEqual(['README.md', 'docs/guide']);
+  });
+
+  test('会红: 文档自身不在名单 → 报它, 且指向它的链接也各报一条', () => {
+    const docs = [
+      { path: 'README.md', text: '看 [长文](docs/why-omd.md)。' },
+      { path: 'docs/why-omd.md', text: '# 长文' },
+    ];
+    const f = checkPublicCoverage(docs, WL);
+    // 一条 = README 那个链接指向名单外; 一条 = why-omd.md 自身不在名单
+    expect(f).toHaveLength(2);
+    expect(f.some((x) => x.file === 'README.md' && x.line === 1)).toBe(true);
+    expect(f.some((x) => x.file === 'docs/why-omd.md' && x.line === 0)).toBe(true);
+  });
+
+  test('该绿时不红: 同形状但名单covered → 零 finding', () => {
+    const docs = [
+      { path: 'README.md', text: '看 [指南](docs/guide/tui.md) 与 ![图](assets/diagrams/x.svg)。' },
+      { path: 'docs/guide/tui.md', text: '# 指南' },
+    ];
+    expect(checkPublicCoverage(docs, WL)).toEqual([]);
+  });
+
+  test('台账豁免只免"自身要不要公开", 不免指向它的链接', () => {
+    const docs = [
+      { path: 'docs/worktrees-archive.md', text: '# 台账' },
+      { path: 'README.md', text: '见 [台账](docs/worktrees-archive.md)。' },
+    ];
+    const f = checkPublicCoverage(docs, WL);
+    expect(f).toHaveLength(1);
+    expect(f[0]!.file).toBe('README.md');
+  });
+
+  test('名单缺席 → 零 finding (跳过, 不是通过 —— 标签由调用方区分)', () => {
+    expect(checkPublicCoverage([{ path: 'docs/nope.md', text: '' }], null)).toEqual([]);
   });
 });
