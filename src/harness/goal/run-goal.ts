@@ -887,6 +887,8 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   let flatParallelism: string | undefined;
   /** S-46 缺片闸的判据面 —— 只在直通v2真编译成功时有值 (回落 conductor 铺图时切片不是执行单位)。 */
   let flatSlices: readonly SddSlice[] | undefined;
+  /** #242 resume 复用的片号 (O-6 探针裁的「verify 当前已绿」那批) —— S-46 判缺片时豁免。 */
+  let flatReusedSlices: ReadonlySet<number> | undefined;
   if (sdd && acceptance.kind === 'executable') {
     try {
       const breakdown = parseBreakdown(sdd.text);
@@ -957,6 +959,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
       // 赋值放在编译成功**之后**: 编译不过就回落 conductor 铺图, 那时切片只是给人读的,
       // 拿它去判缺片会对每一次回落都造一片假红。
       flatSlices = breakdown.slices;
+      flatReusedSlices = achievedSlices;
     } catch (err) {
       flatFallback = String(err instanceof Error ? err.message : err).slice(0, 160);
       logger.warn(
@@ -1170,8 +1173,8 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
         ? config.writeSet._collectChangedFiles()
         : collectChangedFiles(config.cwd);
       // S-46 缺片闸: 与上面两轴共用**同一份 diffFiles** (各收各的 = 两个判词能互相矛盾)。
-      // 只在直通v2真用上时判 —— flatUsed 之外切片不是执行单位。
-      if (flatUsed && flatSlices) sliceCoverage = coverSlices(flatSlices, diffFiles);
+      // 只在直通v2真用上时判 —— flatUsed 之外切片不是执行单位。#242 复用片豁免 (零 diff 合法)。
+      if (flatUsed && flatSlices) sliceCoverage = coverSlices(flatSlices, diffFiles, flatReusedSlices);
       // S-2 run 级声明写集面 (与节点级阶梯正交: 阶梯裁「谁写的」, 声明面裁「该不该写」)。
       // forbidden = 撞并发 run 的写面 (红, 非零退出码语义); outside = 声明面外 (INV-3 读数,
       // 声明缺席 ≠ 违规, 不红)。缺省面 = write-set.ts 的 SDD_DECLARED_WRITE_SET (本 SDD run);

@@ -85,4 +85,39 @@ describe('S-46 缺片闸 (coverSlices)', () => {
     expect(r.red).toBe(true);
     expect(r.missing).toEqual([1, 2]);
   });
+
+  // ── #242 复用片豁免 (反向自检: 把 kind 判定里 reused?.has 那条删掉 ⇒ 下面三条全红) ──
+
+  test('#242 resume 复用片零 diff 不判缺(「没产出因为复用」≠「没产出因为漏做」)', () => {
+    const r = coverSlices([slice(1, ['a/x.ts'])], [], new Set([1]));
+    expect(r.red).toBe(false);
+    expect(r.missing).toEqual([]);
+    expect(r.reused).toEqual([1]);
+    expect(r.slices[0]!.kind).toBe('reused');
+    // 复用必须印出来 —— 抹掉它就与「全做完了」在读数上不可分 (同 partial 那条纪律)
+    expect(describeSliceCoverage(r)).toBe('0/1 片有产出 · 复用 1 [片 1]');
+  });
+
+  test('#242 复用片不赦免别的片: 复用 + 真缺并存时红旗照升、只点名真缺的', () => {
+    const r = coverSlices([slice(1, ['a/x.ts']), slice(2, ['b/y.ts'])], [], new Set([1]));
+    expect(r.red).toBe(true);
+    expect(r.missing).toEqual([2]);
+    expect(r.reused).toEqual([1]);
+    expect(describeSliceCoverage(r)).toBe('缺片 1/2 [片 2] · 复用 1 [片 1]');
+  });
+
+  test('#242 复用片带 diff 命中仍判 reused(命中来自图外人工改动, hit 原样留证据)', () => {
+    // 复现场景: owner 人工修绿测试文件 → 该片写集有 diff, 但本轮实装零重做
+    const r = coverSlices([slice(1, ['a/x.ts', 'a/x.test.ts'])], ['a/x.test.ts'], new Set([1]));
+    expect(r.slices[0]!.kind).toBe('reused');
+    expect(r.slices[0]!.hit).toEqual(['a/x.test.ts']);
+    expect(r.partial).toEqual([]); // 不再挤进 partial —— 那一格是给本轮实装量的
+  });
+
+  test('#242 省略 reused 参数 = 空集, 行为逐字节不变 (INV-1)', () => {
+    const withNone = coverSlices([slice(1, ['a/x.ts'])], []);
+    const withEmpty = coverSlices([slice(1, ['a/x.ts'])], [], new Set());
+    expect(withEmpty).toEqual(withNone);
+    expect(withNone.missing).toEqual([1]);
+  });
 });

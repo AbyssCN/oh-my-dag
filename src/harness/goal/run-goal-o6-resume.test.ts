@@ -118,13 +118,15 @@ function makeConfig(opts: { sliceVerifyExit: number; resume: boolean; sink: Cond
     _classify: cls,
     _runDag: makeCapturingRunDag(opts.sink),
     sddPath: tmpSdd(),
+    // S-46 接线面: 注入空 diff (复用路径零新写是常态) —— 修前它会把复用片判「缺片」造假红。
+    writeSet: { _collectChangedFiles: () => [] },
   };
 }
 
 describe('#242 resume × O-6: 已绿切片续跑不判 vacuous、不回落、不重做实装', () => {
   test('①② resume + verify 已绿 ⇒ 平铺图照编 (零回落零 execute 节点), 实装节点降为 command 重验', async () => {
     const sink: ConductorPlan[] = [];
-    await runGoal('o6 resume regress', makeConfig({ sliceVerifyExit: 0, resume: true, sink }));
+    const result = await runGoal('o6 resume regress', makeConfig({ sliceVerifyExit: 0, resume: true, sink }));
 
     // ① 不回落: 引擎吃到的是平铺图, 不是 conductor 包装图 —— 回落图才有 `execute` conductor
     // 节点 (execute::* 子节点的唯一来源)。
@@ -142,6 +144,12 @@ describe('#242 resume × O-6: 已绿切片续跑不判 vacuous、不回落、不
     expect(impl.write_set).toBeUndefined();
     // 整图零 agent 节点 (单切片全绿) ⇒ 没有任何节点有资格重写写集文件。
     expect(Object.values(plan.nodes).every((n) => n.executor !== 'agent')).toBe(true);
+
+    // S-46 接线: 复用片零 diff 判 reused 不判缺片 —— 反向自检: 把 run-goal 里
+    // coverSlices 的第三参 (flatReusedSlices) 拿掉 ⇒ 这里 red=true / missing=[1] 转红。
+    expect(result.sliceCoverage?.red).toBe(false);
+    expect(result.sliceCoverage?.reused).toEqual([1]);
+    expect(result.sliceCoverage?.missing).toEqual([]);
   });
 
   test('③ resume + verify 仍红 ⇒ 切片照常保留 agent 实装节点 (该重做的还得重做)', async () => {
