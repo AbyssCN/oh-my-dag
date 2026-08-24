@@ -535,7 +535,7 @@ async function main(): Promise<void> {
 
   writeFileSync(`${OUT}/report.md`, md);
   writeFileSync(`${OUT}/rows.json`, JSON.stringify(rows, null, 2));
-  log(`\n→ 落盘 ${OUT}/ (${rows.length} 行, ${ARMS.length} 臂 × ${REPS} reps)`);
+  log(`\n→ 存盘 ${OUT}/ (${rows.length} 行, ${ARMS.length} 臂 × ${REPS} reps)`);
   log(md);
 }
 

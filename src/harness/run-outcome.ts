@@ -225,7 +225,7 @@ export const RUN_OUTCOME_INFO: Record<RunOutcomeKind, RunOutcomeInfo> = {
   'empty-result': {
     spendBucket: 'delivery',
     loopState: 'STALLED',
-    evidence: '这一步跑了,但产出为空(勘察空输出 / research 零来源 / spec 未落盘)',
+    evidence: '这一步跑了,但产出为空(勘察空输出 / research 零来源 / spec 未写入磁盘)',
     nextAction: '重跑这一步 / 换检索式 —— **它跑了却什么都没找到, 与「不需要」不是一回事**',
     resumable: true,
   },

@@ -149,7 +149,7 @@ describe('claude-code leaf 分支', () => {
     }
   });
 
-  test('★ 0-token empty-done:空文本 + 零落盘 + 非停摆非超时 → 仍然响亮失败', async () => {
+  test('★ 0-token empty-done:空文本 + 零写盘 + 非停摆非超时 → 仍然响亮失败', async () => {
     const empty = {
       type: 'assistant',
       session_id: 's',

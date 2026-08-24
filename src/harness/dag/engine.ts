@@ -87,6 +87,7 @@ export function setNounGate(fn: NounGateFn | null): void { _nounGate = fn; }
 import { cavemanRule, leafCavemanLevel } from '../caveman';
 import { leafCostReward } from '../model-router';
 import { logger } from '../logger';
+import { type AnchorVerdict, captureTreeAnchor, compareTreeAnchor, describeAnchorVerdict } from '../goal/criterion-anchor';
 import { NOVELTY_COLLAPSE_LINE, pushNoveltyRound } from '../pathfinder/proximity';
 // ── T2#5 按簇拆出的兄弟文件 (引擎消费) ──
 import type { GenerateFn, ExecutorDagConfig, LeafResult, ExecutorDagResult, DagObservation, BlameRetryLedger, DagNodeEvent } from './types';
@@ -2687,11 +2688,15 @@ async function executePlan(
           evidence: `冻结判据绿 (${config.freezeCriterion!.command})${oneGate}${waiverTag}`,
           atRound: round,
         });
+        // S-44 时效锚: 在**判据刚绿的这一刻**取一次工作树快照。外层拿它比对收尾时的树,
+        // 不一致 = 这条绿说的是另一棵树。取不到锚返回 undefined → 下游判 unknown, 不判 changed。
+        const freezeAnchor = captureTreeAnchor(continuity?.execRoot ?? continuity?.repoRoot ?? process.cwd()) ?? undefined;
         return {
           ...settle(last, round, true),
           // C (2026-08-21): 这一位往外带, 外层 verifier 才知道"这一轮拿到过机器绿"。
           // 不带的话, 外层只能看见一堆 done 节点, 而"done"与"判据绿"是两个问题。
           freezeGreen: true,
+          ...(freezeAnchor ? { freezeAnchor } : {}),
           // judge 自己那一票**单独带出去**: `converged` 现在是判据说的, 不再等于 judge 说的。
           // 混在一起会让判据轴把"判据绿"误记成"judge 也说绿" —— 那正是它要量的那一格。
           // synthetic (确定性闸合成的判词) 同 unreachable 一样**不写这一位** (#148):
@@ -5212,7 +5217,32 @@ async function runDagInternalCore(
       // ⚠ 只在**这一轮拿到过冻结判据绿**时才拦: 没拿到机器绿的否决本来就该放行 (活确实没干完)。
       // ⚠ 基础设施故障判词 (`[verifier-error]`) 不归本闸管, 那条路自己 fail-closed。
       const freezeGreenThisRound = Object.values(exec.results).some((r) => r.freezeGreen === true);
-      if (freezeGreenThisRound && !isInfraVerdict(verdict.reason)) {
+      // ── S-44 时效锚: 这条绿说的还是这棵树吗 ──────────────────────────────────
+      // 判据绿之后引擎还有写权。拿判据那一刻的锚比对现在的树, 变了 = 这条绿属于**另一棵树**,
+      // 不许再拿它去挡 verifier 的否决 (否则就是「用 T1 的绿保护 T2 的树」, S-44 的原形)。
+      // 三态: same → 照旧拦; changed → 不拦, 出声; unknown → **照旧拦**并出声 ——
+      // 取不到锚是我们没量到, 不是它变了, fail-open 到"不改变既有行为"是这一格的正确方向。
+      const freezeAnchorVerdict = ((): AnchorVerdict => {
+        if (!freezeGreenThisRound) return 'unknown';
+        const before = Object.values(exec.results).find((r) => r.freezeGreen === true)?.freezeAnchor ?? null;
+        const after = captureTreeAnchor(config.continuity?.execRoot ?? config.continuity?.repoRoot ?? process.cwd());
+        return compareTreeAnchor(before, after);
+      })();
+      if (freezeGreenThisRound && freezeAnchorVerdict === 'changed') {
+        logger.warn(
+          { round: escCount, why: describeAnchorVerdict('changed') },
+          '[omd/executor-dag] S-44 时效锚: 判据绿之后工作树又被改过 → 这条绿**不再**保护本轮, 否决照常放行',
+        );
+        exec.observations.push({
+          kind: 'blame-attribution',
+          nodes: [],
+          message: `S-44 时效锚: 冻结判据绿之后工作树发生改动 —— 那条绿说的是另一棵树, 本轮不再据它拦截 verifier 否决。收编前请在目标 commit 上复跑判据。`,
+        });
+      }
+      if (freezeGreenThisRound && freezeAnchorVerdict !== 'changed' && !isInfraVerdict(verdict.reason)) {
+        if (freezeAnchorVerdict === 'unknown') {
+          logger.warn({ round: escCount }, '[omd/executor-dag] S-44 时效锚: 取不到工作树锚 → 判据时效**未经核对** (照旧按绿处理, 但这一格没量到)');
+        }
         const veto = classifyVeto(verdict.reason, Object.keys(exec.plan.nodes));
         if (!veto.falsifiable) {
           logger.warn(

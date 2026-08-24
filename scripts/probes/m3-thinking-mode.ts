@@ -173,4 +173,4 @@ if (errs.length) md += `\n调用出错 ${errs.length} 次: ${[...new Set(errs.ma
 writeFileSync(`${OUT}/report.md`, md);
 writeFileSync(`${OUT}/trials.json`, JSON.stringify(trials, null, 2));
 log('\n' + md);
-log(`→ 落盘 ${OUT}/`);
+log(`→ 存盘 ${OUT}/`);

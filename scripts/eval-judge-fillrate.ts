@@ -231,4 +231,4 @@ process.stdout.write(report + '\n');
 mkdirSync(OUT, { recursive: true });
 writeFileSync(`${OUT}/report.md`, report);
 writeFileSync(`${OUT}/trials.json`, JSON.stringify(trials, null, 2));
-log(`  → 落盘 ${OUT}/`);
+log(`  → 存盘 ${OUT}/`);

@@ -589,6 +589,6 @@ function readSiblingDistances(arm: 'control'): (number | null)[] {
 }
 
 main().catch((e) => {
-  console.error(`exec-fork-runner 顶层异常 (runId 见上文日志, 状态未必已落盘): ${(e as Error).message}`);
+  console.error(`exec-fork-runner 顶层异常 (runId 见上文日志, 状态未必已写盘): ${(e as Error).message}`);
   process.exitCode = 1;
 });

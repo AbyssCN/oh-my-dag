@@ -112,4 +112,4 @@ const out = [
 process.stdout.write(out + '\n');
 writeFileSync(`${OUT}/${task.id}/report.md`, out);
 writeFileSync(`${OUT}/${task.id}/rows.json`, JSON.stringify(rows, null, 2));
-log(`  → 落盘 ${OUT}/${task.id}/`);
+log(`  → 存盘 ${OUT}/${task.id}/`);

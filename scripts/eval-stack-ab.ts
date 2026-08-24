@@ -197,4 +197,4 @@ const report = lines.join('\n');
 process.stdout.write(report + '\n');
 writeFileSync(`${OUT}/report.md`, report);
 writeFileSync(`${OUT}/rows.json`, JSON.stringify(rows, null, 2));
-log(`  → 落盘 ${OUT}/`);
+log(`  → 存盘 ${OUT}/`);

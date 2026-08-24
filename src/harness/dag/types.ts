@@ -1010,6 +1010,18 @@ export interface LeafResult {
    * 缺席 = 没走环内冻结判据那条路(**不是**"判据红")。判据红的节点 `status` 自己会说。
    */
   freezeGreen?: boolean;
+  /**
+   * **判据的时效锚** (S-44, 2026-08-24) —— `freezeGreen` 为真那一刻的工作树快照。
+   *
+   * 立它的理由: `freezeGreen` 不只是记录位, 它在外层**拦着 verifier 的否决**。而判据跑完之后
+   * 引擎还有写权 (实账 run 83d9dfb6: 判据 21:29 真绿 `5927 pass / 0 fail`, 21:55 收编,
+   * 中间 26 分钟第二批节点继续改盘; 在收编那棵树上复跑同一条判据 `exit 1 / 4 fail`)。
+   * 没有这个锚, 那道闸就在**用 T1 的绿保护 T2 的树**。
+   *
+   * 缺席 = 没拿到锚 (非 git 仓 / git 不可用)。**`null` 与"没变"是两件事** ——
+   * 下游按 `unknown` 处理, 不许当成 `same` (仓规坑①: 三态不压平)。
+   */
+  freezeAnchor?: import('../goal/criterion-anchor').TreeAnchor;
 }
 
 /**

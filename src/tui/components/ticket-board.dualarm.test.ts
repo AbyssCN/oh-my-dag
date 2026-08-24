@@ -253,7 +253,7 @@ describe('C-7 ④ 双端同数: 同一张真源图, 两臂渲染逐行一致', (
 });
 
 describe('C-7 ⑤ 渲染零写闸 (真相文件逐字节一致)', () => {
-  test('渲染前后 md 真相文件逐字节一致 (readMap → renderTicketBoard 零落盘)', () => {
+  test('渲染前后 md 真相文件逐字节一致 (readMap → renderTicketBoard 零写盘)', () => {
     const dir = tmp();
     try {
       saveMapForStamp(truthMap(), dir);

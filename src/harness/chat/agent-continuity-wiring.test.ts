@@ -145,7 +145,7 @@ describe('★ #211 接线 — 交接读回进 system prompt', () => {
 });
 
 describe('★ #211 接线 — 轮尾真的派存档', () => {
-  test('跨档 → checkpoint.md 落盘(id = omd 的 sessionId)', async () => {
+  test('跨档 → checkpoint.md 写盘(id = omd 的 sessionId)', async () => {
     process.env.OMD_SESSION_BUCKET = '1'; // 任何一轮都跨档
     process.env.OMD_CONTINUITY_MECHANICAL = '1'; // 跳过蒸馏那一发模型调用
 

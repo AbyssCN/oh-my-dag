@@ -27,7 +27,7 @@ const rows = readSeatUsage(path);
 
 if (rows.length === 0) {
   console.log(`(空账本: ${path})`);
-  console.log('还没有经 gateway.send 的调用落盘 —— 跑一次 dag_run 再来读。');
+  console.log('还没有经 gateway.send 的调用写进账本 —— 跑一次 dag_run 再来读。');
   process.exit(0);
 }
 

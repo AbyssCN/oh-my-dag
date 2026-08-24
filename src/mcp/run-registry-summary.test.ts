@@ -258,7 +258,7 @@ describe('★ INV-11: 闸判词留痕 (#144 提议 5)', () => {
     reg.applyNodeEvent('rv1', { type: 'planned', nodes: [{ id: 'a', kind: 'leaf' }] } as DagNodeEvent);
     reg.applyNodeEvent('rv1', {
       type: 'verdict', id: 'goal-contract', gate: 'verifier', verdict: 'fail', round: 1,
-      reason: '共享文件被拆给 wire_i18n 与 wire_routes 两个节点, 不符合唯一收口节点约束',
+      reason: '共享文件被拆给 wire_i18n 与 wire_routes 两个节点, 不符合唯一汇聚节点约束',
     } as DagNodeEvent);
     reg.fail('rv1', 'boom');
 
@@ -266,7 +266,7 @@ describe('★ INV-11: 闸判词留痕 (#144 提议 5)', () => {
     // 怎么让它红: 删掉 applyNodeEvent 里的 `case 'verdict'` → 事件回到被静默丢弃, 这三条全红。
     expect(t).toContain('闸未过: verifier ×1');
     expect(t).toContain('轮 1');
-    expect(t).toContain('唯一收口节点约束');
+    expect(t).toContain('唯一汇聚节点约束');
   });
 
   test('★ 反向自检: 判词落进 progress 而不只是摘要文本 —— 跨进程读盘的人也要看得到', () => {

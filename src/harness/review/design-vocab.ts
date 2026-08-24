@@ -15,7 +15,7 @@ export const DESIGN_VOCAB = `<design-vocab authority="single-source: 与 skills/
 - **interface**: 调用方正确使用所需知道的一切 — 类型签名之外还含不变量/顺序约束/错误模式/
   必需配置/性能特征。
 - **implementation**: 模块内部的代码体。
-- **depth**: 接口处的杠杆 — 调用方每学一单位接口能撬动多少行为。
+- **depth**: 接口处的杠杆 — 调用方每学一单位接口能带动多少行为。
   **deep** = 小接口藏大行为; **shallow** = 接口几乎和实现一样复杂 (避免)。
 - **seam** (Feathers): 不改某处代码即可改变该处行为的位置 = 接口所在之处。seam 放哪是独立
   设计决策。

@@ -53,7 +53,7 @@ describe("auto-assign 下发座位档", () => {
 });
 
 describe("resolveSeatThinking 坐标反查", () => {
-	test("GWT①: 落盘分配含座位档 → 按坐标查得该档", () => {
+	test("GWT①: 存盘的分配含座位档 → 按坐标查得该档", () => {
 		persistAutoAssigned({ leaf: "mimo:pro", judge: "sol:gpt" }, path, {
 			leaf: "low",
 			judge: "xhigh",

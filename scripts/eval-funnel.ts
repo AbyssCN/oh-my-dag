@@ -163,4 +163,4 @@ const out = [
 ].join('\n');
 process.stdout.write(out + '\n');
 writeFileSync(`${OUT}/${task.id}/report.md`, out);
-log(`  → 落盘 ${OUT}/${task.id}/`);
+log(`  → 存盘 ${OUT}/${task.id}/`);

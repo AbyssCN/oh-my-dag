@@ -72,5 +72,5 @@ const body = [
   ),
 ].join('\n');
 writeFileSync(outPath, body + '\n');
-console.log(`📄 落盘: ${outPath}\n`);
+console.log(`📄 存盘: ${outPath}\n`);
 console.log(body);

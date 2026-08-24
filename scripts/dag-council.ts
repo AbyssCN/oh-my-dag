@@ -109,5 +109,5 @@ writeFileSync(
 );
 
 // ── Step 4: stdout (首行=路径; marker 段落格式勿改 — 下游 split 依赖) ──
-console.log(`📄 全文落盘: ${artifactPath}`);
+console.log(`📄 全文写入磁盘: ${artifactPath}`);
 console.log(sections);

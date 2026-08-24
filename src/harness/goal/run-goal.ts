@@ -818,7 +818,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
           // 没真写盘 = 只吐了文本 —— 记 failed 但不断流程 (下游拿正文当契约仍能跑)。
           status: wrote ? 'done' : 'failed',
           outcome: wrote ? 'success' : 'empty-result',
-          summary: (wrote ? path : 'spec 未落盘 (契约段没产出文件), 下游改用其正文当契约') + (experimentFlags.contractFaninDistill ? ' · 实验臂: contract-distill' : ''),
+          summary: (wrote ? path : 'spec 未写入磁盘 (契约段没产出文件), 下游改用其正文当契约') + (experimentFlags.contractFaninDistill ? ' · 实验臂: contract-distill' : ''),
         });
         // 闸 C: 有东西可复用才落状态 —— 全空的契约段 (evidence 空且没写入磁盘) 下次续跑照常重跑。
         if (evidence || specPath) {

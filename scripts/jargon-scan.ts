@@ -82,6 +82,10 @@ export const EXCLUDE_FILES = [
   'scripts/jargon-scan.test.ts',
   'src/harness/harness-prompts.ts',
   'src/harness/plan/false-completion.ts',
+  // 上一条的**测试侧**: `distill.test.ts:315` 那一行 `['大功告成', '全部搞定', …]` 是喂给
+  // `detectCompletionClaims` 的夹具词。实装侧排除了而测试侧没排, 下一次清扫照样会把它改掉,
+  // 那时闸仍然绿(测试自己的输入变了), **比上次更难发现**。两侧要一起排。
+  'src/harness/review/distill.test.ts',
 ];
 
 export interface JargonHit {

@@ -275,7 +275,7 @@ async function runTask(task: EvalTask): Promise<void> {
   );
   writeFileSync(`${OUT}/${task.id}/report.md`, report);
   for (const c of cells) if (c.ok) writeFileSync(`${OUT}/${task.id}/gen-${c.persona}-${c.family}.md`, c.text);
-  log(`  → 落盘 ${OUT}/${task.id}/`);
+  log(`  → 存盘 ${OUT}/${task.id}/`);
 }
 
 bootstrapModelRuntime();

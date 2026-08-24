@@ -127,7 +127,7 @@ describe('★ #211 接线(sdk 通道)— 交接读回进 systemPrompt', () => {
 });
 
 describe('★ #211 接线(sdk 通道)— 轮尾真的派存档', () => {
-  test('跨档 → checkpoint.md 落盘', async () => {
+  test('跨档 → checkpoint.md 写盘', async () => {
     process.env.OMD_SESSION_BUCKET = '1';
     process.env.OMD_CONTINUITY_MECHANICAL = '1';
     await runChatTurnSdk({

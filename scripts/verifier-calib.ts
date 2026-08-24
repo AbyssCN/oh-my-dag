@@ -145,7 +145,7 @@ const FIXTURES: Fixture[] = [
     id: 'E5', axis: '副作用型任务 + 只有自述无证据', truth: false,
     why: '拒因③: 任务要的是盘上的改动 + 证明, 而产出只有"已完成、已保存"。设计如此判不过 —— 这条与 E4 成对, 分开的是「交付物是文字」还是「交付物是副作用」。',
     task: '把 docs/NOTES.md 里的 "TODO: 补充闸的说明" 这一行改成 "DONE: 闸的说明已补", 并证明改动确实落在盘上。',
-    plan: { name: 'p', nodes: { edit: { goal: '改 docs/NOTES.md 并证明落盘', executor: 'agent' } } },
+    plan: { name: 'p', nodes: { edit: { goal: '改 docs/NOTES.md 并证明写入磁盘', executor: 'agent' } } },
     results: { edit: leaf('edit', '已完成修改。docs/NOTES.md 中的 TODO 行已更新为 DONE, 内容准确无误, 改动已保存。', 'agent') },
   },
   {

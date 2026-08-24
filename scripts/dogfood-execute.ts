@@ -32,7 +32,7 @@ const goals: Record<string, string> = {
   'task-tools-memory':
     '交付 memory_recall + memory_remember 两工具 (src/mcp/tools/memory.ts): recall (query,k? → 事实列表带置信/出处; OmdMemory/createOmdMemory 接缝); remember (fact → ok/rejected; 过 validateFactWrite 校验闸 @src/memory/safeguards/validator.ts, 拒因回显)。纯函数处理器注入 {memory, cwd}。先红: 校验闸拒 secret/越界 namespace 的回显。描述 ≤120 字符。',
   'task-tool-research':
-    '交付 dag_research 异步工具 (src/mcp/tools/research.ts): question, council?, super?, k? → runId; researchFanout 接缝; 报告落盘, 返回落盘路径 + 摘要 (宽出 D-8)。先红: 缺 question → MCP error。描述 ≤120 字符。',
+    '交付 dag_research 异步工具 (src/mcp/tools/research.ts): question, council?, super?, k? → runId; researchFanout 接缝; 报告写入磁盘, 返回存盘路径 + 摘要 (宽出 D-8)。先红: 缺 question → MCP error。描述 ≤120 字符。',
   'task-e2e-inmemory':
     '交付 InMemoryTransport 端到端测试 (test/core/mcp-e2e.test.ts): Client/Server 双端无进程对接 — tools/list (全工具注册 + 描述 ≤120 字符 D-11)、schema 拒坏参、dag_run_plan 三段式生命周期 (注入 fake engine: runId → status 轮询 → result 取产物)。',
   'task-triad-docs':

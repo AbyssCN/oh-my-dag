@@ -281,7 +281,7 @@ async function main(): Promise<void> {
       writeFileSync(join(out, `${stamp}.json`), JSON.stringify({ task: t.id, arm, profile: opt('profile') ?? null, seatPinned: opt('seat') ?? null, hashlineEdit: !argv.includes('--no-hashline'), hinted: !argv.includes('--no-hint'), verdict, run, touched, regressionGreen, cost }, null, 1));
       console.log(`${verdict.verdict === 'pass' ? '✅' : verdict.verdict === 'invalid' ? '⚠' : '✘'} ${t.id} [臂 ${arm}] ${verdict.verdict}`);
       console.log(`   ${verdict.reason}`);
-      console.log(`   墙钟 ${(cost.wallMs / 1000).toFixed(0)}s · 判分命令 exit ${run.exitCode} · 落盘 ${join(out, `${stamp}.json`)}`);
+      console.log(`   墙钟 ${(cost.wallMs / 1000).toFixed(0)}s · 判分命令 exit ${run.exitCode} · 存盘 ${join(out, `${stamp}.json`)}`);
     } finally {
       dropWorld(dir);
     }
