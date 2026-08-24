@@ -74,32 +74,14 @@ describe('MCP 工具表完整性', () => {
     ).toBe('');
   });
 
-  test('两份 README 的工具数徽章 == 真实注册数', () => {
-    const names = new Set<string>();
-    for (const f of tsFiles(join(ROOT, 'src', 'mcp'))) {
-      for (const m of readFileSync(f, 'utf8').matchAll(/name:\s*'((?:dag|omd|path|map|memory|dream|conductor)_[a-z_]+)'/g)) {
-        names.add(m[1]!);
-      }
-    }
-    const registered = registeredNames(names);
-
-    // 徽章里数字出现**两次**: alt 文字 `MCP server: N tools` 与 URL 里的 `MCP%20server-N%20tools`。
-    // 两处都查 —— 只改一处会得到一个"文字对、图片错"的徽章, 比全错还难发现。
-    const wrong: string[] = [];
-    for (const file of ['README.md', 'README.zh-CN.md']) {
-      const src = readFileSync(join(ROOT, file), 'utf8');
-      const alt = [...src.matchAll(/MCP server: (\d+) tools/g)].map((m) => Number(m[1]));
-      const url = [...src.matchAll(/MCP%20server-(\d+)%20tools/g)].map((m) => Number(m[1]));
-      if (!alt.length || !url.length) {
-        wrong.push(`${file}: 找不到工具数徽章 (改版式了? 一并改这条闸)`);
-        continue;
-      }
-      for (const [where, got] of [['alt 文字', alt], ['徽章 URL', url]] as const) {
-        for (const g of got) if (g !== registered.size) wrong.push(`${file} 的${where}写 ${g}, 实际注册 ${registered.size}`);
-      }
-    }
-    expect(
-      wrong.length === 0 ? '' : `README 工具数徽章对不上:\n  ${wrong.join('\n  ')}\n改法: 两份 README 各两处 (alt 文字 + URL) 都要改。`,
-    ).toBe('');
-  });
+  // ── 徽章数闸已退役 (2026-08-24, owner 裁) ───────────────────────────────────
+  // 它守的是两份 README 顶部 `MCP server: N tools` 徽章里的数字。`7deb88c4` 把 README
+  // 按 opencode / pi 的写法重写之后, **那个徽章不存在了** —— 闸于是每趟都报
+  // 「找不到工具数徽章」, 而它要盯的东西已经没了。
+  //
+  // 退役而不是修复的理由: 那个数字是**读者见到的第一个数, 也是最容易过期的一个**,
+  // 而新 README 是给人读的定位文档, 不是接口清单。真要盯注册面, 上面那条
+  // 「每个注册的工具名都在 docs/guide/mcp-tools.md 里出现」还在守, 且
+  // `src/mcp/capability-matrix.test.ts` 直接拿 TS AST 对账真实 inputSchema ——
+  // 比数一个手写数字强。**这一条被删掉之后没有覆盖缺口。**
 });
