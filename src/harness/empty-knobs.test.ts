@@ -58,18 +58,36 @@ const DECLARED_CONSUMERS: Record<string, string> = {
   kind: 'executor-dag.runPrimitiveNode',
   primitive: 'primitive-registry (compile + run)',
   params: 'primitive-registry (paramsSchema 深校验)',
+  // ── S1 自主编排增量 (#248, 2026-08-24): 消费者 = plan-critic.criticizePlan, 详见 §C-1 INV-3 ──
+  oracleKind: 'plan-critic.criticizePlan (PP-O01 视觉产出无 oracle / PP-I02 字段缺失)',
+  toolRefs: 'plan-critic.criticizePlan (PP-T01/T02/T03: resolve 到 inventory working-set)',
+  whyNoFanout: 'plan-critic.criticizePlan (PP-I01: executor 单叶时必填非空, 可抑制)',
+  budgetBasis: 'plan-critic.criticizePlan (S1 只判字段存在性; 预算判定闸是 S3)',
 };
 
-/** 从明示的 JSON 形状里抠出 `"key"?:` / `"key":` 形态的字段名。 */
+/** 从明示的 JSON 形状里抠出 `"key"?:` / `"key":` 形态的字段名。
+ *  #248 改: 正则收 camelCase ([a-zA-Z_]+), 否则 S1 四字段 (oracleKind/toolRefs/
+ *  whyNoFanout/budgetBasis) shape 段出现却无法入闸 = 闸空转。
+ *  仅排除**纯嵌套 spec 内键** (top-level 字段即便同名也不排除, 否则 #248 改 declared:true
+ *  后又把它从 declaredFields 里抠掉 = 自打脸)。 */
 function declaredNodeFields(prompt: string): Set<string> {
   const shapeStart = prompt.indexOf('"nodes"');
   expect(shapeStart).toBeGreaterThan(-1); // 明示形状还在, 否则本闸空转
   const shape = prompt.slice(shapeStart);
   const out = new Set<string>();
-  for (const m of shape.matchAll(/"([a-z_]+)"\??\s*:/g)) {
+  for (const m of shape.matchAll(/"([a-zA-Z_]+)"\??\s*:/g)) {
     const k = m[1]!;
-    // 形状骨架自身的键 + map spec 的内部键 (它们不是 node 字段)
-    if (['nodes', 'name', 'description', 'outputs', 'lister', 'over', 'itemvar', 'keyby', 'maxitems'].includes(k)) continue;
+    if (
+      [
+        'nodes', 'name', 'description', 'outputs',
+        'lister', 'over', 'itemvar', 'keyby', 'maxitems',
+        'itemVar', 'keyBy', 'maxItems', 'concurrency',
+        'k', 'rounds',
+        'artifact', 'fromRun', 'timeoutMs',
+        'calls', 'tokensIn', 'tokensOut', 'costUsdCeiling', 'estimatedBy',
+      ].includes(k)
+    )
+      continue;
     out.add(k);
   }
   return out;

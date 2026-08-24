@@ -314,6 +314,14 @@ export interface DagLeafShapingSeam {
    */
   leafTierThresholdBytes?: number;
   /**
+   * **plan-critic 静态闸进活规划环** (#247, 2026-08-24, 片 2): parsePlan 成功后跑一次 `critique()`,
+   * 只 enforce 无外部输入子集 `{PP-I01, PP-I02, PP-O01, PP-V01, INV-12}` (字段存在性/枚举/形状
+   * —— 零外部状态); tool/skill 码 (PP-T01..T03 · PP-S01..S03) 不 enforce (inventory/skill 装配进活环是 S2 债)。
+   * 有界拒回 ≤2 → 拒回计数 + 诊断带 remediation 重问;预算尽 → fail-open 放行 + `logger.warn` 留证。
+   * 缺省关 (引擎中立); 生产装配层 (mcp/assemble) 开。
+   */
+  planCriticGate?: boolean;
+  /**
    * fan-in **定向摘要** (引擎接缝, 2026-07-21): 一个 producer 的输出被 ≥2 个下游 consumer 消费时,
    * 不再把全文复制 ≥2 份灌进各 consumer, 而是跑 1 发定向摘要 (按下游目标提炼) + 全文写入磁盘留指针,
    * 各 consumer 的 fan-in 上下文注入摘要而非全文 (省 token + 护 prompt-cache; 强制 conductor-plan

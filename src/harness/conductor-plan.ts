@@ -898,6 +898,14 @@ export function conductorSystemPrompt(
     // 刻意不用 `//` 注释: 这份形状里一条注释都没有, 引进注释语法等于邀请它在输出的 JSON 里也写
     // 注释 (那会直接解析失败)。用括号补语, 与 "requires"?: "all"|"any"|number 同一个 register。
     '    "max_nodes"?: number, "detector"?: boolean (MUST be true on any node that cross-checks ≥2 siblings),',
+    // #248 (2026-08-24): S1 四字段进 shape (former declaredFields 正则只认 [a-z_]+, 物理不可见
+    // camelCase —— D-5 改正则)。oracleKind 枚举措辞与 PlanSchema zod 一致;budgetBasis 字段名
+    // 全用 zod 的字面 (不带引号的外键也算 shape 的形状契约)。每字段一行 when/whenNot 短注,
+    // 照 detector / self_check 字段先例的 (parens) register。
+    '    "oracleKind"?: "cheap"|"render"|"judge"|"none"|"self_built" (REQUIRED; UI output MUST NOT be "none" — see PP-O01),',
+    '    "toolRefs"?: ["<source>:<name>@<ver>"] (REQUIRED; entries not in working-set rejected at critique — PP-T01),',
+    '    "whyNoFanout"?: string|null (REQUIRED non-null when executor is single-leaf; null = "no reason given"),',
+    '    "budgetBasis"?: { "calls": number, "tokensIn": number, "tokensOut": number, "costUsdCeiling": number, "estimatedBy": string } (per-node cost estimate; critique only checks presence — values not gated),',
     // P1 D-3 (2026-08-21): self_check = 节点级确定性判据, 让 leaf 在内环将停时跑一条命令验自己;
     // 退出码不合则同节点再转一轮 (有界)。**只对** output_path 存在的产物节点写: 这一类节点才会
     // 「交付物长什么样」可被外部命令判; 抽象节点 (analysis / research / drafting) 写它 = 逼模型

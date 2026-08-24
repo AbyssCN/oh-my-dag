@@ -647,6 +647,9 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       // goal/上游注入/输出余量。OMD_LEAF_TIER_GATE=0 关; OMD_LEAF_TIER_THRESHOLD_BYTES 覆盖阈值。
       leafTierGate: env.OMD_LEAF_TIER_GATE !== '0',
       leafTierThresholdBytes: intEnv(env.OMD_LEAF_TIER_THRESHOLD_BYTES) ?? 1_500_000,
+      // #247 (2026-08-24, 片 2): plan-critic 静态闸进活环 —— 缺省开; OMD_PLAN_CRITIC_GATE=0 关。
+      // 引擎默认关 (零回归); 生产装配层开, 消费方同 (dag_run/dag_goal/goal-worker)。
+      planCriticGate: env.OMD_PLAN_CRITIC_GATE !== '0',
       kindFanout,
       // R2: 隔离档下这两个是**为那棵树重建的**; 无 override 时逐字等于装配期那一对 (零回归)。
       agentRunner: agentRunnerForRun,

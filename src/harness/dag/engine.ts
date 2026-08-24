@@ -158,6 +158,7 @@ import { attributeBlame, renderAttribution } from './blame-attribution';
 import { captureRollbackAnchor } from '../writeset/rollback-anchor';
 import { serializeWriteRaces, staticLintPlan } from '../plan/static-lint';
 import { autoRewriteLeafTier } from '../plan/leaf-tier-gate';
+import { critique, type Diagnostic, type DiagnosticCode } from '../plan-critic';
 import { scheduledArtifactFindings } from '../plan/invocation-facts';
 // D-Q 图外只读观察者的两个确定性 producer (零模型调用): 制品边 lint + 环空转检测。
 import {
@@ -458,8 +459,16 @@ async function planAndExecute(
   // (仓规: fail-open 可以吞异常, 不许吞证据)。patch 重规划轮 (tryPatchReplan) 不过闸:
   // 补丁只改局部字段, 首轮整图已闸过。
   const LEAF_TIER_MAX_REJECTS = 2;
+  // #247 (2026-08-24, 片 2): plan-critic 进活环, 只收「无外部输入」子集 —— 字段存在性/枚举/形状 (零外部状态)。
+  // PP-T*/PP-S* 需 inventory/skill 装配 (S2 债), 空 working-set 下 enforce = 教模型删 toolRefs, 反教化。
+  // 具名常数让 S2 扩集只改一处。
+  const INLOOP_ENFORCED_CODES: ReadonlySet<DiagnosticCode> = new Set([
+    'PP-I01', 'PP-I02', 'PP-O01', 'PP-V01', 'INV-12',
+  ]);
+  const PLAN_CRITIC_MAX_REJECTS = 2;
   let parseFails = 0;
   let gateRejects = 0;
+  let planCriticRejects = 0;
   // D-21 复用闸 (2026-08-14): 整图重规划 (patch 模式 fail-open 落到这) 把上轮节点全部重写 →
   // 语义指纹 0 命中 → 已绿工作整体重烧。实测 f2af8514 execute 相位: 上轮 37 done, 重画后
   // reused 0, 33.1M leaves-in 只换来 7 done。判据必须在**执行前** —— 执行后再看 reusedNodes
@@ -533,6 +542,37 @@ async function planAndExecute(
         logger.warn(
           { rejects: gateRejects, findings: findings.map((f) => f.message) },
           '[omd/executor-dag] leaf 档位闸重问预算用尽仍违规 → fail-open 放行 (证据在此, g1)',
+        );
+      }
+    }
+    // #247 (2026-08-24, 片 2): plan-critic 静态闸进活规划环。位置: parsePlan 成功后 · leafTierGate
+    // 之后 · D-21 复用闸之前 (与 leaf-tier-gate 同形)。判定 = critique() + 过滤到 INLOOP_ENFORCED_CODES;
+    // 有界拒回 = `PLAN_CRITIC_MAX_REJECTS` 次 (与 parseFails/gateRejects/reuseRejects **各记各的账**)。
+    // 预算尽 → fail-open 放行 + logger.warn (留证 + 残余码进 gate_hit_distribution 供 SDD §10 消费),
+    // 不 escalate 不停 run (D-3, 采纳期;硬闸化以 S2 读数为闸,见 debt_ledger:plan_critic_inloop_fail_open)。
+    if (config.planCriticGate) {
+      const allDiags: readonly Diagnostic[] = critique({
+        plan: candidate,
+        round: parseFails + gateRejects + reuseRejects + planCriticRejects + 1,
+        workingSet: [],
+        skills: [],
+        runId: config.sessionId ?? config.continuity?.runId ?? 'unknown',
+      });
+      const inloop = allDiags.filter((d) => INLOOP_ENFORCED_CODES.has(d.code));
+      if (inloop.length > 0) {
+        if (planCriticRejects < PLAN_CRITIC_MAX_REJECTS) {
+          planCriticRejects++;
+          logger.info(
+            { rejects: planCriticRejects, codes: inloop.map((d) => d.code), nodes: [...new Set(inloop.map((d) => d.node_id))] },
+            '[omd/executor-dag] plan-critic 闸拒回 plan → 带 remediation 重问 (#247)',
+          );
+          correction = `\n\n上一版 plan 被 plan-critic 闸拒回 (可修, 不是格式问题):\n${inloop.map((d) => `- ${d.code} ${d.node_id}: ${d.remediation}`).join('\n')}\n按建议改写后只回完整 plan JSON 对象, 别的不要。`;
+          continue;
+        }
+        // 预算尽 → fail-open 放行 (D-3)。**留证** (仓规: 可以吞, 不许吞证据) + 入 gate_hit_distribution。
+        logger.warn(
+          { rejects: planCriticRejects, residual: inloop.map((d) => ({ code: d.code, node_id: d.node_id, evidence: d.evidence, remediation: d.remediation })) },
+          '[omd/executor-dag] plan-critic 闸重问预算用尽仍违规 → fail-open 放行 (#247; debt:plan_critic_inloop_fail_open)',
         );
       }
     }
