@@ -26,6 +26,8 @@
  *   逐字引用禁词才能禁它们。把它们算进来 = 让这条闸永远红。
  * - 仓库副本(`.claude/worktrees/` `.omd/`):同一份代码算 7 遍(2026-08-24 实测,
  *   第一次量就栽在这上面: 落盘"3005 处"其实是 613 处 × 副本)。
+ * - **决定了不扫的那几处**(台账 / 已发表文章 / 滚动交接稿):见 {@link SKIP_PREFIXES},
+ *   理由逐条写在那里。⚠ 「不扫」≠「合规」—— 那是"为什么不值得扫", 不是"这些词是对的"。
  *
  * ## 跑法
  *
@@ -67,6 +69,31 @@ export const JARGON: Readonly<Record<string, string>> = {
 
 /** 仓库副本 + 依赖,一律不进 —— 同一份代码算 7 遍(2026-08-24 实测栽过)。 */
 const SKIP_DIRS = new Set(['node_modules', '.git', '.omd', '.claude', 'dist', 'coverage']);
+
+/**
+ * **决定了不扫的范围**(owner 裁,2026-08-24)。理由逐条写在这里,不写在调用行上 ——
+ * 写在调用行上,下一个人跑裸命令会看见一堆命中,把「已决定不扫」读成「还没扫的欠账」。
+ *
+ * ⚠ 「不扫」不等于「合规」。这里记的是**为什么不值得扫**,不是「这些用词是对的」。
+ */
+export const SKIP_PREFIXES: ReadonlyArray<{ prefix: string; why: string }> = [
+  {
+    prefix: 'docs/plan/',
+    why: '带日期的台账, 里面逐字引用了 commit message —— 而 commit 改不了。改文档只会让两边漂, 且它是历史记录不是活文档。该做的是以后写的用对词, 不是回头改旧账。',
+  },
+  {
+    prefix: 'docs/articles/',
+    why: '已发表的文章。改了就和外面流传的版本对不上, 而其中一处还是系列标题。',
+  },
+];
+
+/** 单个文件的同类决定(不成前缀的)。 */
+const SKIP_FILES: ReadonlyArray<{ file: string; why: string }> = [
+  {
+    file: 'docs/session/_NEXT.md',
+    why: '滚动交接文件, 每次 session 收尾都重写 —— 扫它等于扫一份马上会被覆盖的稿子。',
+  },
+];
 
 /**
  * 必须逐字引用禁词的文件。算进来 = 这条闸永远红。
@@ -148,7 +175,11 @@ export function collectFiles(roots: readonly string[]): string[] {
     }
   };
   for (const r of roots) walk(r);
-  return out.filter((f) => !EXCLUDE_FILES.includes(f)).sort();
+  return out
+    .filter((f) => !EXCLUDE_FILES.includes(f))
+    .filter((f) => !SKIP_PREFIXES.some((s) => f.startsWith(s.prefix)))
+    .filter((f) => !SKIP_FILES.some((s) => s.file === f))
+    .sort();
 }
 
 export function scanTree(roots: readonly string[]): JargonHit[] {

@@ -11,7 +11,7 @@
  * - 把 `JARGON` 里的 `落盘` 删掉 ⇒ ★① 红。
  */
 import { describe, expect, test } from 'bun:test';
-import { EXCLUDE_FILES, JARGON, scanJargon } from './jargon-scan';
+import { EXCLUDE_FILES, JARGON, SKIP_PREFIXES, scanJargon, scanTree } from './jargon-scan';
 
 /** 三种位置各一处:注释 · 字符串字面量 · 标识符(标识符**不该**被当成命中来改)。 */
 const SAMPLE = [
@@ -49,5 +49,21 @@ describe('禁词扫描器', () => {
     //   「搞定」换成了「完成」, 闸从此认不出「全部搞定」。判据是「散文还是数据」,
     //   不是「文件重不重要」。
     expect(EXCLUDE_FILES).toContain('src/harness/plan/false-completion.ts');
+  });
+
+  test('★ 决定了不扫的范围, 每条必须写明为什么(照 COVERAGE_DEBT 的规矩)', () => {
+    const thin = SKIP_PREFIXES.filter((s) => !s.why || s.why.trim().length < 25);
+    expect(thin.map((s) => s.prefix)).toEqual([]);
+    // 绊线: 不扫的范围**只许缩不许涨**。加一条 skip 是消音最省事的办法, 所以它要有代价。
+    expect(SKIP_PREFIXES.length).toBeLessThanOrEqual(2);
+  });
+
+  test('★ 清扫完成态: 在扫范围内, 禁词已经归零(涨回去当场红)', () => {
+    // 2026-08-24 两趟清扫(注释档 525 处 + 字符串档 134 处)之后的状态。
+    // ⚠ 这条同时是**分辨力锚**: 扫描器坏成"永远扫不到"时, 下面的分母断言会红。
+    const hits = scanTree(['src', 'scripts', 'test', 'docs']);
+    expect(hits).toEqual([]);
+    // 分母: 扫描器真的在读文件(不是把整棵树都跳过了)。
+    expect(scanJargon('把结果落盘。', 'probe.md')).toHaveLength(1);
   });
 });
