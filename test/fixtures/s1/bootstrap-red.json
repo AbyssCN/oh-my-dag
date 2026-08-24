@@ -1,0 +1,60 @@
+{
+  "_intent": "PP-T03 driver — bootstrap leaf with red test_gate referenced by later build-time edge; also triggers INV-12 permission_red_tests_write (F3 audit: bootstrap leaf declares a write to red_tests/, which the dry-run rejects).",
+  "name": "bootstrap-red",
+  "description": "Single bootstrap node 'preflight' exposes outputs.tool_path + test_gate(tool_id, oracle[], allow_non_deterministic=false, timeout_sec, cost_ceiling) + 11-field provenance. oracles all pass:false → test_gate evaluates to 'red'. The followup leaf 'use_probe' depends_on preflight and lists preflight's tool_id in toolRefs, so the build-time edge references a non-green tool → PP-T03 tool_not_green. The bootstrap node additionally declares write_set=['red_tests/bootstrap_probe.py'] to drive the F3 audit (bootstrap leaf 写 red_tests/ 被拒). Followup node stays strictly within natural_pool (built-in read) so no PP-T01/T02 fires. No skills attached → no PP-S01/S02/S03. oracleKind, whyNoFanout, budgetBasis populated on the followup leaf.",
+  "schema_version": "1.0",
+  "suppressions": [],
+  "outputs": ["preflight", "use_probe"],
+  "nodes": {
+    "preflight": {
+      "type": "bootstrap",
+      "outputs": {
+        "tool_path": "src/tools/probe.ts"
+      },
+      "test_gate": {
+        "tool_id": "builtin:read@1.0.0",
+        "oracle": [
+          {
+            "kind": "command",
+            "gateScriptRef": "scripts/probe_oracle.sh",
+            "deterministic": true,
+            "pass": false
+          }
+        ],
+        "allow_non_deterministic": false,
+        "timeout_sec": 30,
+        "cost_ceiling": 0.05
+      },
+      "provenance": {
+        "registered_at": "2026-01-01T00:00:00Z",
+        "registered_by": "fixture:bootstrap-red",
+        "source_repo": "oh-my-dag",
+        "source_path": "src/tools/probe.ts",
+        "commit_sha": "0000000000000000000000000000000000000000",
+        "import_method": "fixture",
+        "imported_at": "2026-01-01T00:00:00Z",
+        "imported_by": "fixture:bootstrap-red",
+        "upstream_version": "0.0.0",
+        "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "schema_version": "1.0"
+      },
+      "write_set": ["red_tests/bootstrap_probe.py"]
+    },
+    "use_probe": {
+      "executor": "leaf",
+      "goal": "consume the probe bootstrap's tool_path downstream of preflight",
+      "depends_on": ["preflight"],
+      "output_type": "structured",
+      "toolRefs": ["builtin:read@1.0.0"],
+      "oracleKind": "cheap",
+      "whyNoFanout": "single terminal consumer of the preflight bootstrap — no peer to parallelize with",
+      "budgetBasis": {
+        "calls": 1,
+        "tokensIn": 0,
+        "tokensOut": 0,
+        "costUsdCeiling": 0.01,
+        "estimatedBy": "conductor:estimate:cheap-leaf"
+      }
+    }
+  }
+}

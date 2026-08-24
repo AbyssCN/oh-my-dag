@@ -46,3 +46,4 @@ web/node_modules/
 # best-of-N 文案候选 (过程产物, 不进公开仓)
 docs/notes/readme-candidates/
 .claude/skills/diagram-design/
+test/fixtures/s1/check-script-missing/run-summary.json

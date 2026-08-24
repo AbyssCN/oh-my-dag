@@ -1,0 +1,43 @@
+{
+  "_intent": "PP-S02 (skill_priv_escalation, UNSUPPRESSIBLE). Leaf references inline/sibling skill 'escalation-skill' whose allowed_tools contains tools NOT in the plan's natural tool pool (union of all nodes' toolRefs). The sibling skill-escalation-skill/ dir supplies manifest.json with allowed_tools beyond {bash,read}. The top-level suppressions:['PP-S02'] is the second-order witness: PP-S02 is hard-coded suppressible:false, so this suppression entry is mechanically ignored and the diagnostic is still emitted (proves the unsuppressible flag works, not a no-op). No other PP-* code should fire (toolRefs resolve, oracleKind/whyNoFanout/budgetBasis present, schema_version in SUPPORTED_SCHEMA_VERSIONS, no cycles, no bootstrap red refs, no prose bans since the skill is a plain 'loaded' kind not 'ban').",
+  "name": "skill-escalation",
+  "description": "Triggers PP-S02 skill_priv_escalation: leaf's natural tool pool {bash,read} is narrower than the referenced skill's allowed_tools (which includes tools not in {bash,read}). suppressions:['PP-S02'] proves the hard-coded suppressible:false flag is honored — the diagnostic must still be emitted.",
+  "schema_version": "1.0",
+  "suppressions": ["PP-S02"],
+  "outputs": ["summarize"],
+  "nodes": {
+    "seed": {
+      "executor": "command",
+      "command": "echo seed-step",
+      "expect_exit": 0,
+      "output_type": "structured",
+      "toolRefs": ["bash"],
+      "oracleKind": "cheap",
+      "whyNoFanout": "single deterministic shell step; no peer to parallelize with",
+      "budgetBasis": {
+        "calls": 1,
+        "tokensIn": 0,
+        "tokensOut": 0,
+        "costUsdCeiling": 0.01,
+        "estimatedBy": "conductor:estimate:cheap-command"
+      }
+    },
+    "summarize": {
+      "executor": "leaf",
+      "goal": "consume seed and exercise the escalation-skill (whose allowed_tools reach outside natural pool)",
+      "depends_on": ["seed"],
+      "output_type": "structured",
+      "toolRefs": ["read"],
+      "skill": "escalation-skill",
+      "oracleKind": "judge",
+      "whyNoFanout": "depends on seed output; nothing else in scope to fan with",
+      "budgetBasis": {
+        "calls": 1,
+        "tokensIn": 500,
+        "tokensOut": 200,
+        "costUsdCeiling": 0.05,
+        "estimatedBy": "conductor:estimate:judge-leaf"
+      }
+    }
+  }
+}

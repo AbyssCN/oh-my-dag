@@ -1,0 +1,58 @@
+{
+  "_intent": "GREEN PATH — all gates must pass: toolRefs resolve, oracleKind/whyNoFanout/budgetBasis present, schema_version supported, no cycles, no escalations.",
+  "name": "valid-plan",
+  "description": "Reference green-path fixture for `omd plan --dry-run`. All toolRefs exist in the natural pool, every node carries oracleKind + whyNoFanout + budgetBasis, schema_version is in SUPPORTED_SCHEMA_VERSIONS.",
+  "schema_version": "1.0",
+  "suppressions": [],
+  "outputs": ["final_report"],
+  "nodes": {
+    "fetch": {
+      "executor": "command",
+      "command": "echo fetch-step",
+      "expect_exit": 0,
+      "output_type": "structured",
+      "toolRefs": ["bash"],
+      "oracleKind": "cheap",
+      "whyNoFanout": "single deterministic shell step; no peer to parallelize with",
+      "budgetBasis": {
+        "calls": 1,
+        "tokensIn": 0,
+        "tokensOut": 0,
+        "costUsdCeiling": 0.01,
+        "estimatedBy": "conductor:estimate:cheap-command"
+      }
+    },
+    "summarize": {
+      "executor": "leaf",
+      "goal": "summarize the fetched material",
+      "depends_on": ["fetch"],
+      "output_type": "structured",
+      "toolRefs": ["read"],
+      "oracleKind": "judge",
+      "whyNoFanout": "depends on fetch output; nothing else in scope to fan with",
+      "budgetBasis": {
+        "calls": 1,
+        "tokensIn": 500,
+        "tokensOut": 200,
+        "costUsdCeiling": 0.05,
+        "estimatedBy": "conductor:estimate:judge-leaf"
+      }
+    },
+    "final_report": {
+      "executor": "leaf",
+      "goal": "synthesize the final report from summarize + fetch",
+      "depends_on": ["fetch", "summarize"],
+      "output_type": "structured",
+      "toolRefs": ["read"],
+      "oracleKind": "judge",
+      "whyNoFanout": "terminal synthesis node — single consumer of fan-in",
+      "budgetBasis": {
+        "calls": 1,
+        "tokensIn": 800,
+        "tokensOut": 400,
+        "costUsdCeiling": 0.08,
+        "estimatedBy": "conductor:estimate:synthesis-leaf"
+      }
+    }
+  }
+}

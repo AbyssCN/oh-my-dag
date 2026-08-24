@@ -31,7 +31,7 @@ setCoreLogger(logger);
 
 const userArgs = process.argv.slice(2);
 
-const USAGE = `omd —— DAG 执行引擎 (纯 MCP + web 控制台)
+const USAGE = `omd —— DAG 执行引擎 (纯 MCP + web 控制面 + S1 静态闸)
 
   omd tui     交互式 conductor 前端 (自建 TUI)
   omd mcp     stdio MCP server (给 Claude Code 等 MCP 客户端 spawn)
@@ -40,6 +40,9 @@ const USAGE = `omd —— DAG 执行引擎 (纯 MCP + web 控制台)
   omd touch <path> --op read|write [--hash <h>] --session <id>   碰撞台账写面 (SDD S3 只记不拦; 锚 cwd 的 git toplevel/.omd/touch.db)
   omd touches [--pairs|--findings]   碰撞台账查询面 (pairs 与 findings 分开读)
   omd config dump   打印本仓生效配置全叠加结果 (座位/渠道/池/MCP/ext, 每值标来源层 + 结构化 issues)
+  omd config verify-seats   座位家族校验闸 (I-14): verifier/judge/review/review-spec 须与被审座位异族; 异族 exit 0, 同族 exit 1 (违规行逐字 stderr)
+  omd plan --dry-run [--fixture <plan.json>] [--skill <dir>]   静态闸编译流水 (S1): plan JSON 从 stdin 或 --fixture 收; 诊断按 <code> <name>: <evidence> 逐行写 stderr; 全绿 stdout 单行 JSON exit 0; PP-INV exit 2, PP-INT exit 3
+  omd run --fixture <dir>   fixture 装载 + PostLeafGate 三态 (S1, D-C): 只含 command leaf, 零模型调用; 节点终态 VERIFIED/FAILED/UNVERIFIED + run 摘要 (<dir>/run-summary.json); UNVERIFIED 逐行 stdout node=<id> state=UNVERIFIED ...
   omd pack add <本地目录|git URL> | remove <name> | list   数据插件包 (agents/playbooks/skills; 装包过质量闸, 账在 .omd/packs.json)
 
 终端对话前端: 原 pi TUI 2026-08-01 撤除, 2026-08-07 以自建 TUI 回归。
@@ -64,7 +67,10 @@ if (userArgs[0] === 'mcp') {
     const { installClientSkills, formatInstallSummary } = await import('./client-skills-install');
     const line = formatInstallSummary(installClientSkills());
     if (line) logger.warn(line);
-  } catch { /* 自装是锦上添花, 失败绝不阻断 MCP server */ }
+  } catch (e) {
+    // fail-open 不吞证据: 客户端技能自装失败不影响 MCP server 启动, 但失败原因要落 stderr。
+    logger.warn({ err: e instanceof Error ? e.message : String(e) }, '[omd/mcp] installClientSkills failed (non-fatal)');
+  }
   // S1 判据 1 (SDD 2026-08-09 远程指挥接缝): MCP 路的调用也要进账本。emitModelUsage 是观察者
   // 钩子, 无订阅者 = 逐条通知进真空 —— 此前只有 tui 分支订阅, mcp 分支零订阅, 于是这条生产
   // 路径上「账本有本轮 usage」结构性不可能 (「机制在、生产零生效」形态, seat-wiring 同族)。
@@ -275,6 +281,25 @@ if (userArgs[0] === 'serve') {
   const { renderConfigDump } = await import('./config-dump');
   process.stdout.write(`${renderConfigDump({ cwd: process.cwd() })}\n`);
   process.exit(0);
+} else if (userArgs[0] === 'config' && userArgs[1] === 'verify-seats') {
+  // S1 I-14: 座位家族校验闸 (CLI 端 = 启动期 fail-fast 闸的同款断言)。
+  // 异族 → 每对一行 stdout (seat=... generator=... ... match=false) 并 exit 0;
+  // 同族 → 同款 stdout + stderr 逐字回显违规行 (match=true) 并 exit 1; PP-INT 异常 exit 3。
+  await runVerifySeats();
+} else if (userArgs[0] === 'plan' && userArgs[1] === '--dry-run') {
+  // stdout 是单行 JSON 协议通道 (INV-21) —— 引擎日志一律改道 stderr, 同 mcp 分支的纪律。
+  setLoggerDestination(2);
+  // S1 C-5 / INV-21: plan --dry-run。stdin 或 --fixture <path> 收 plan JSON, --skill <dir> 挂 skill。
+  // 诊断按 <code> <name>: <evidence> 逐行写 stderr (每行末尾换行); 全绿 stdout 单行 JSON exit 0, 任一 error/escalate exit 1。
+  // PP-INV (input_missing) → exit 2; PP-INT (未捕获 harness 异常) → exit 3。
+  await runPlanDryRunCLI(userArgs.slice(2));
+} else if (userArgs[0] === 'run') {
+  // run --fixture 的 stdout 是逐行状态协议 (INV-22) —— 日志同样改道 stderr。
+  setLoggerDestination(2);
+  // S1 C-5 / INV-22 / D-C: run --fixture <dir>。fixture plan 只含 command leaf (零模型调用),
+  // 真跑命令 + PostLeafGate 三态 (VERIFIED/FAILED/UNVERIFIED) 落到节点终态 + run 摘要 (<dir>/run-summary.json),
+  // UNVERIFIED 逐行 stdout `node=<id> state=UNVERIFIED ...`; 运行完成 exit 0, 中途 (plan 读不到 / 写盘失败) exit 1。
+  await runWithFixture(userArgs.slice(1));
 } else if (userArgs[0] === 'init') {
   await runInit();
 } else {
@@ -378,4 +403,439 @@ async function runTouches(args: string[]): Promise<void> {
       '[omd/touches] 台账读取失败 (fail-open: 不崩, 证据留 warn)',
     );
   }
+}
+
+// ─── S1 命令面 (plan --dry-run / run --fixture / config verify-seats) ────────────
+//
+// 三条分支对应的判据 (S1 接口契约 §1.10 + docs/plan/2026-08-24-conductor-s1-五闸与清单-执行契约.md C-5):
+//   · plan --dry-run (INV-21)         — 静态编译, 零运行时, 全绿 exit 0
+//   · run --fixture (INV-22 / D-C)    — fixture 真跑 + PostLeafGate 三态落摘要
+//   · config verify-seats (INV-23 / I-14) — 同族即 throw, 异族打印并 exit 0
+//
+// 它们共享的纪律:
+//   1. **不改既有子命令一个字节** —— 上面 4 条 if/else-if 都新增, 不动原 if 块体。
+//   2. **诊断格式 = INV-21 字面**: `<code> <check>: <evidence>`, 末尾 \n, 全部走 stderr。
+//   3. **fail-open 不吞证据**: 读 fixture 失败 / 写 summary 失败都进 stderr + 退码标记,
+//      但 stderr 一行错误不阻断其它节点的执行 (一个节点挂不掉整图)。
+//   4. **零模型调用**: command leaf 经 Bun.spawn 直跑命令; verify-seats 走 modelFamily
+//      比 coord, 不发任何 API; plan dry-run 调既有 runPlanDryRun (它本身零 LLM)。
+
+/**
+ * 取 stdin 全文 (用于 plan --dry-run 无 --fixture 时)。readFileSync(0) 在 pipe 关闭时
+ * 自然终止; 无 pipe (TTY) → readFileSync 立刻抛, 这里 catch 转用法错误。
+ */
+async function readStdinText(): Promise<string> {
+  const { readFileSync } = await import('node:fs');
+  try {
+    return readFileSync(0, 'utf8');
+  } catch (e) {
+    throw new Error(`stdin 读取失败: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/**
+ * S1 C-5 / INV-21: `omd plan --dry-run` CLI 入口。
+ *
+ * 调用形态 (S1 接口契约 §1.10, 验收测试 spawn 照它对):
+ *   omd plan --dry-run [--fixture <path>] [--skill <dir>]
+ *     · --fixture <path> : plan JSON 从文件读
+ *     · --skill <dir>    : 挂 skill 目录 (单数, 可选)
+ *     · 都不给           : plan JSON 从 stdin 读
+ *
+ * 行为契约: 调 runPlanDryRun(opts={emit:true}) → runPlanDryRun 自身在 emit=true 时把单行
+ * JSON (schema_version / verdict / diagnostics / resolvedToolRefs / toolPoolByNode / criticRounds)
+ * 写 stdout → CLI 不二次包装。stderrLines 逐行透传 stderr (INV-21: `<code> <name>: <evidence>`)。
+ *
+ * 退出码: 0 = 全绿, 1 = 任一 error/escalate (runPlanDryRun.exitCode 原样透传)。
+ * PP-INV input_missing (缺 --fixture 且 stdin 空 / 读不到) → exit 2。
+ * PP-INT unhandled (runPlanDryRun 抛未捕获 harness 异常) → exit 3。
+ * stderr 与诊断行原样透传, 不二次包装 human-friendly 文本 (诊断行可能被脚本断言)。
+ */
+async function runPlanDryRunCLI(args: string[]): Promise<void> {
+  const fixturePath = flagValue(args, '--fixture');
+  const skillDir = flagValue(args, '--skill');
+  const { runPlanDryRun } = await import('./plan-dry-run');
+
+  let input: import('./plan-dry-run').RunPlanDryRunInput;
+  try {
+    if (fixturePath) {
+      input = { kind: 'fixture', fixturePath };
+    } else {
+      const planText = await readStdinText();
+      if (!planText.trim()) {
+        // PP-INV input_missing — S1 退出码契约: 用法/输入错 = exit 2。诊断行逐字 (不二次包装)。
+        process.stderr.write('PP-INV input_missing: --fixture <path> or stdin JSON required\n');
+        process.exit(2);
+        return;
+      }
+      input = { kind: 'text', planText };
+    }
+  } catch {
+    // stdin 读不到 (无 pipe / 立即 EOF / OS 错) 等价于 input_missing, 同一出口 (不暴露技术细节)。
+    process.stderr.write('PP-INV input_missing: --fixture <path> or stdin JSON required\n');
+    process.exit(2);
+    return;
+  }
+
+  // emit:true → runPlanDryRun 内部在 emit=true 时写 stdout 单行 JSON (S1 I/O 契约);
+  // CLI 不二次包装也不拦截 —— 子过程的 stdout 原样流出。
+  const opts: import('./plan-dry-run').RunPlanDryRunOpts = {
+    emit: true,
+    ...(skillDir ? { skillDir } : {}),
+  };
+  let r: import('./plan-dry-run').RunPlanDryRunResult;
+  try {
+    r = await runPlanDryRun(input, opts);
+  } catch (e) {
+    // PP-INT unhandled — S1 退出码契约: 未捕获 harness 异常 = exit 3。
+    process.stderr.write(`PP-INT unhandled: ${e instanceof Error ? e.message : String(e)}\n`);
+    process.exit(3);
+    return;
+  }
+
+  // 诊断逐行写 stderr (INV-21: <code> <name>: <evidence>) —— 透传, 不二次包装。
+  for (const line of r.stderrLines) {
+    process.stderr.write(`${line}\n`);
+  }
+  // 退出码透传: 0=全绿, 1=任一 error/escalate。runPlanDryRun 内部已完成 exitCode 决策。
+  process.exit(r.exitCode);
+}
+
+/**
+ * S1 C-5 / INV-23 / I-14: `omd config verify-seats` CLI 入口。
+ *
+ * 调用形态:
+ *   omd config verify-seats
+ *
+ * 行为契约 (S1 I/O 契约 §1.10 + I-14):
+ *   · 调 verifySeats (纯函数版, 不读盘不打印) 拿到 checks 列表
+ *   · 每对 (verifier vs generator) stdout 写一行:
+ *       seat=<verifierId> generator=<genId> generator.family=<family> verifier.family=<family> match=<true|false>
+ *     match=false = 异族 (好); match=true = 同族 (坏, 判与证共享盲点)
+ *   · 全部 match=false → exit 0
+ *   · 任一 match=true  → exit 1, 同款行 (match=true) 逐字 stderr 回显 (违规可脚本抓)
+ *   · PP-INT (未捕获 harness 异常) → exit 3
+ *
+ * 没配的 tier='verify' 座位由 verify-seats.ts 自身跳过 ("没配" ≠ "配错了"),
+ * 与 seat-conformance 同源判据; 此处 tryResolveSeatModel 把未配留 undefined。
+ */
+async function runVerifySeats(): Promise<void> {
+  const { tryResolveSeatModel } = await import('../model/role-models');
+  const { ALL_SEAT_IDS } = await import('../model/seats');
+  const { verifySeats } = await import('./verify-seats');
+
+  // 用未配座位跳过同源判据: tryResolveSeatModel (未配 → undefined), 不抛 (verify-seats.ts:87-89)。
+  const coords: Record<string, string | undefined> = {};
+  for (const seat of ALL_SEAT_IDS) {
+    const r = tryResolveSeatModel(seat, { env: process.env });
+    if (r) coords[seat] = r.model;
+  }
+
+  let result: import('./verify-seats').VerifySeatsResult;
+  try {
+    result = verifySeats(coords);
+  } catch (e) {
+    process.stderr.write(`PP-INT unhandled: ${e instanceof Error ? e.message : String(e)}\n`);
+    process.exit(3);
+    return;
+  }
+
+  // 每对 stdout 一行 (S1 契约); 行内顺序固定 = seat → generator → gen.family → ver.family → match。
+  for (const c of result.checks) {
+    const match = c.ok ? 'false' : 'true';
+    process.stdout.write(
+      `seat=${c.verifier.seatId} generator=${c.generator.seatId} ` +
+      `generator.family=${c.generator.family} verifier.family=${c.verifier.family} ` +
+      `match=${match}\n`,
+    );
+  }
+  if (!result.ok) {
+    // 任一同族: exit 1, stderr 逐字回显违规行 (S1 stderr 原样透传纪律 —— 与 stdout 同款行, 不二次包装)。
+    for (const c of result.checks) {
+      if (!c.ok) {
+        process.stderr.write(
+          `seat=${c.verifier.seatId} generator=${c.generator.seatId} ` +
+          `generator.family=${c.generator.family} verifier.family=${c.verifier.family} ` +
+          `match=true\n`,
+        );
+      }
+    }
+    process.exit(1);
+    return;
+  }
+  process.exit(0);
+}
+
+/**
+ * S1 C-5 / INV-22 / D-C: `omd run --fixture <dir>` CLI 入口。
+ *
+ * 调用形态 (验收测试 spawn 照它):
+ *   omd run --fixture <dir>
+ *
+ * 行为契约 (F19 + I-9, 终态枚举逐字):
+ *   · 读 <dir>/plan.json (内含 nodes; 只 executor:'command' 的节点真跑, 零模型)
+ *   · 对每个 command leaf:
+ *       - 真跑命令 (Bun.spawn, 零 LLM)
+ *       - 找对应 gate 脚本: <dir>/checks/<nodeId>.sh (约定), 或 plan 节点上 `gate_script` 字段显式指
+ *       - 调 evaluatePostLeaf: 拿到 OK/FAIL/UNVERIFIED + 异常栈 + oracleFaults
+ *   · 节点终态 (state 字段, 逐字): VERIFIED | FAILED | UNVERIFIED | SKIPPED
+ *       VERIFIED  = commandExitCode === expectExit && gate.verdict === 'OK'
+ *       FAILED    = commandExitCode !== expectExit || gate.verdict === 'FAIL'
+ *       UNVERIFIED = gate.verdict === 'UNVERIFIED'  (oracle 自己拿不准; F19 钉这条)
+ *       SKIPPED   = 非 command executor (D-C: 不在 fixture 范围内, 留记号给外部断言)
+ *   · 装成 run-summary.json 落 <dir>/ (审计与断点续跑真源), 同时单行紧凑 JSON 写 stdout
+ *   · UNVERIFIED 节点逐行 stdout (S1 契约): `node=<id> state=UNVERIFIED gate=post_leaf reason=<r> evidence=<e>`, 无 stderr
+ *   · 退出码: 运行完成 (含 UNVERIFIED, 含 SKIPPED) → exit 0; 中途中止 (plan 读不到 / 写盘失败) → exit 1;
+ *     PP-INV (缺 --fixture / 缺 plan.json / plan 坏 JSON) → exit 2; PP-INT (未捕获 harness 异常) → exit 3。
+ *     D-K accept: command leaf 的 expect_exit=非 0 是正常的"反向 oracle", 不算节点 FAILED, 整体仍可 exit 0。
+ *
+ * fail-open 不吞证据: 节点内 spawn 抛 / evaluatePostLeaf 抛都进 oracleStacks (不进 stderr, 全部证据落 summary)。
+ */
+async function runWithFixture(args: string[]): Promise<void> {
+  const dir = flagValue(args, '--fixture');
+  if (!dir) {
+    process.stderr.write('PP-INV input_missing: --fixture <dir> required\n');
+    process.exit(2);
+    return;
+  }
+  const { readFile, writeFile } = await import('node:fs/promises');
+  const { join: joinPath } = await import('node:path');
+  const planPath = joinPath(dir, 'plan.json');
+  const summaryPath = joinPath(dir, 'run-summary.json');
+
+  const { evaluatePostLeaf } = await import('./post-leaf-gate');
+  type GateResult = import('./post-leaf-gate').GateResult;
+  type GateVerdict = import('./post-leaf-gate').GateVerdict;
+  type NodeState = 'VERIFIED' | 'FAILED' | 'UNVERIFIED' | 'SKIPPED';
+
+  let plan: {
+    name?: string;
+    description?: string;
+    nodes: Record<string, {
+      executor?: string;
+      command?: string;
+      expect_exit?: number;
+      gate_script?: string;
+      output_path?: string;
+      [k: string]: unknown;
+    }>;
+  };
+  try {
+    const text = await readFile(planPath, 'utf8');
+    plan = JSON.parse(text);
+  } catch (e) {
+    process.stderr.write(`PP-INV input_missing: read ${planPath} failed: ${e instanceof Error ? e.message : String(e)}\n`);
+    process.exit(2);
+    return;
+  }
+
+  const startedAt = new Date().toISOString();
+  // 节点摘要形状: 命令层结果 (commandExitCode / commandStdout / 命令级 state) + PostLeafGate 三态
+  // (verdict / reason / evidence / oracleFaults) 合一, 验收测试可一次性读到全部字段。
+  interface NodeSummary {
+    id: string;
+    executor: string;
+    /** 节点终态 (S1 契约 §逐字): VERIFIED | FAILED | UNVERIFIED | SKIPPED。 */
+    state: NodeState;
+    command?: string;
+    commandExitCode?: number | null;
+    commandStdout?: string;
+    commandStderr?: string;
+    verdict: GateVerdict;
+    reason?: string;
+    evidence?: string;
+    oracleFaults: number;
+    evaluatedAt: string;
+  }
+  const nodesOut: Record<string, NodeSummary> = {};
+  let oracleFaultsTotal = 0;
+  const oracleStacks: string[] = [];
+
+  // 凭证 env 摘取只借一次 (scrubCredentialEnv 是 sync 函数, 不需 await;
+  // require 在 Bun 静态 ESM 模块下也走得通 —— 不过为统一仓内"动态 await import"风格, 这里 lazy 缓存)。
+  const scrub = await getScrubber();
+
+  for (const [nodeId, n] of Object.entries(plan.nodes ?? {})) {
+    if (n.executor !== 'command') {
+      // D-C: 只含 command leaf; 其它 executor (leaf / research / await) 不在 fixture 范围内
+      // — 标 'SKIPPED' 进 summary, 留给外部断言看见"这张 fixture 漏了非 command 节点"。
+      nodesOut[nodeId] = {
+        id: nodeId,
+        executor: n.executor ?? '<none>',
+        state: 'SKIPPED',
+        verdict: 'OK',
+        reason: 'skipped_non_command',
+        oracleFaults: 0,
+        evaluatedAt: new Date().toISOString(),
+      };
+      continue;
+    }
+
+    // 真跑命令 (Bun.spawn 直跑, 零 LLM)。零模型 = 不调任何 provider, 不进 leaf routing。
+    const cmdText = String(n.command ?? '');
+    const expectExit = typeof n.expect_exit === 'number' ? n.expect_exit : 0;
+    let commandExitCode: number | null = null;
+    let commandStdout = '';
+    let commandStderr = '';
+    try {
+      const proc = Bun.spawn(['sh', '-c', cmdText], {
+        cwd: process.cwd(),
+        env: scrub(process.env),
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+      commandExitCode = await proc.exited;
+      commandStdout = out;
+      commandStderr = err;
+    } catch (e) {
+      // spawn 自己抛 = oracle-fault 之外的事 (命令链本身无法起进程); 仍走 PostLeafGate 让它判
+      // UNVERIFIED, evidence = spawn 异常栈。
+      const stack = e instanceof Error ? (e.stack ?? e.message) : String(e);
+      console.error(`[omd/run-fixture] spawn threw: node=${nodeId} ${stack}`);
+      oracleFaultsTotal += 1;
+      oracleStacks.push(`[${nodeId}] spawn threw: ${stack}`);
+    }
+
+    // gate 脚本约定: <dir>/checks/<nodeId>.sh, 或 plan 节点上的 gate_script 字段绝对路径。
+    const gateScript =
+      typeof n.gate_script === 'string'
+        ? n.gate_script
+        : joinPath(dir, 'checks', `${nodeId}.sh`);
+    const checksRoot = joinPath(dir, 'checks');
+
+    // PostLeafGate 三态。spawn 注入走 command-leaf 的 Bun.spawn + 截 stdout/stderr 同款,
+    // 真跑 shell 命令, 跟 command-leaf 跑法分叉但语义同 — 命令本身已跑, 这里再跑 oracle 判它。
+    const gate: GateResult = await evaluatePostLeaf({
+      artifact: { nodeId, output: commandStdout, toolCalls: [] },
+      scriptPath: gateScript,
+      checksRoot,
+      cwd: process.cwd(),
+      timeoutMs: 30_000,
+      spawn: async (command, cwd, timeoutMs) => {
+        // command 是 evaluatePostLeaf 内部构造的 `sh -c '<script>'`, 这里解出脚本本体跑。
+        const inner = command.replace(/^sh -c /, '');
+        const proc = Bun.spawn(['sh', '-c', inner], {
+          cwd,
+          env: scrub(process.env),
+          stdout: 'pipe',
+          stderr: 'pipe',
+        });
+        // 超时闸 (Bun 自身有, 这里叠一层 setTimeout 兜底, 与 agent-leaf 那条路的纪律一致)。
+        let timedOut = false;
+        const killer = setTimeout(() => {
+          timedOut = true;
+          try { proc.kill(); } catch (e) {
+            // kill 失败 (进程已退出 / 权限不够) 不阻断外层: 超时仍按 timedOut=true 走收尾分支。
+            logger.warn({ err: e instanceof Error ? e.message : String(e) }, '[omd/run] proc.kill failed during timeout');
+          }
+        }, timeoutMs ?? 30_000);
+        const [out, err, code] = await Promise.all([
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+          proc.exited,
+        ]);
+        clearTimeout(killer);
+        return { stdout: out, stderr: err, exitCode: code, timedOut };
+      },
+    });
+
+    oracleFaultsTotal += gate.oracleFaults;
+    if (gate.oracleFaults > 0 && gate.evidence) {
+      oracleStacks.push(`[${nodeId}] ${gate.reason ?? '?'}: ${gate.evidence}`);
+    }
+
+    // 节点终态映射 (S1 契约逐字):
+    //   · expect_exit miss (commandExitCode !== expectExit): D-K oracle fail → 节点 FAILED,
+    //     gate 不再叠加 (artifact 不可信, oracle 在不可信产物上判什么都白搭)。
+    //   · expect_exit hit + gate OK         → VERIFIED
+    //   · expect_exit hit + gate FAIL       → FAILED (oracle 拒了)
+    //   · expect_exit hit + gate UNVERIFIED → UNVERIFIED (oracle 自己拿不准; F19 钉这条)
+    let state: 'VERIFIED' | 'FAILED' | 'UNVERIFIED';
+    if (commandExitCode !== expectExit) {
+      state = 'FAILED';
+    } else if (gate.verdict === 'UNVERIFIED') {
+      state = 'UNVERIFIED';
+    } else if (gate.verdict === 'FAIL') {
+      state = 'FAILED';
+    } else {
+      state = 'VERIFIED';
+    }
+
+    const summary: NodeSummary = {
+      id: nodeId,
+      executor: 'command',
+      command: cmdText,
+      commandExitCode,
+      commandStdout: commandStdout.slice(0, 4096),
+      commandStderr: commandStderr.slice(0, 4096),
+      state,
+      verdict: gate.verdict,
+      oracleFaults: gate.oracleFaults,
+      evaluatedAt: gate.evaluatedAt,
+    };
+    if (gate.reason !== undefined) summary.reason = gate.reason;
+    if (gate.evidence !== undefined) summary.evidence = gate.evidence;
+    nodesOut[nodeId] = summary;
+  }
+
+  // 总体 verdict: 任一 UNVERIFIED → 总体 UNVERIFIED; 否则任一 FAILED → 总体 FAIL; 全 VERIFIED/SKIPPED → OK。
+  const stateList = Object.values(nodesOut).map((x) => x.state);
+  const overall: 'OK' | 'FAIL' | 'UNVERIFIED' = stateList.includes('UNVERIFIED')
+    ? 'UNVERIFIED'
+    : stateList.includes('FAILED')
+      ? 'FAIL'
+      : 'OK';
+
+  const finishedAt = new Date().toISOString();
+  const summary = {
+    runId: `fixture-${startedAt}`,
+    startedAt,
+    finishedAt,
+    planName: plan.name ?? '<unnamed>',
+    planDescription: plan.description,
+    fixtureDir: dir,
+    overall,
+    oracleFaults: oracleFaultsTotal,
+    oracleStacks,
+    nodes: nodesOut,
+  };
+
+  // 摘要写入磁盘 (审计与断点续跑真源)。失败 → PP-INT exit 3。
+  try {
+    await writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, 'utf8');
+  } catch (e) {
+    process.stderr.write(`PP-INT unhandled: write ${summaryPath} failed: ${e instanceof Error ? e.message : String(e)}\n`);
+    process.exit(3);
+    return;
+  }
+
+  // UNVERIFIED 节点逐行 stdout (S1 契约逐字: `node=<id> state=UNVERIFIED gate=post_leaf
+  // reason=<reason> evidence=<evidence>`, 无 stderr —— 诊断行已被 summary 写入磁盘, 不二次写 stderr)。
+  // reason=<reason> evidence=<evidence>`, 无 stderr —— 诊断行已被 summary 写入磁盘, 不二次写 stderr)。
+  for (const n of Object.values(nodesOut)) {
+    if (n.state === 'UNVERIFIED') {
+      process.stdout.write(
+        `node=${n.id} state=UNVERIFIED gate=post_leaf ` +
+        `reason=${n.reason ?? ''} evidence=${n.evidence ?? ''}\n`,
+      );
+    }
+  }
+
+  // 摘要单行紧凑 JSON 写 stdout (子过程 runWithFixture 自身产生, 不二次包装);
+  // 消费方可 JSON.parse 取末行。
+  process.stdout.write(`${JSON.stringify(summary)}\n`);
+
+  // 退出码: 运行完成 (含 UNVERIFIED / 含 SKIPPED / 任一 FAILED) → 0 (S1 契约);
+  // 中途 (plan 读不到 / 写盘失败) 已在前面 exit(2|3) 早退, 落不到这里。
+  process.exit(0);
+}
+
+/**
+ * 拿 command-leaf 的凭证摘取函数 (sync), 借一次后缓存 — 不与 command-leaf.ts 重复 regex (H5-3)。
+ * 模块动态 import 与既有 cli.ts 的"分入口按需装"风格一致; runWithFixture 才用到, 其它入口零开销。
+ */
+async function getScrubber(): Promise<(env: NodeJS.ProcessEnv) => Record<string, string | undefined>> {
+  const mod = await import('./command-leaf');
+  return (env) => mod.scrubCredentialEnv(env as Record<string, string | undefined>);
 }

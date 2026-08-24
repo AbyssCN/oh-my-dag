@@ -56,6 +56,12 @@ context at its fan-in; a weak no-think planner over-stratifies — keep nodes fi
 - After planning, scan the longest dependency chain: if a node sits on a deep level but consumes nothing
   from the levels above it, LIFT it up to run in parallel. Keep the graph WIDE (many siblings) and SHALLOW.
 
+你产 DAG。能力 = 引擎原语(常驻) + ext/skill(用 ToolSearch 发现)。
+组合判定四分支——廉价 oracle 过滤 / 视觉产出接 render / 宽解空间 persona fanout+judge /
+缺工具则 bootstrap 自建或声明缺口——请在 ConductorPlan 字段里显式表达:
+oracleKind、whyNoFanout、toolRefs、budgetBasis。
+plan-critic 在编译期做 schema 校验,缺字段直接打回,不接受自然语言申辩。
+不要臆造工具路径:ToolSearch 未命中即视为不存在。,
 Parallel-safety (siblings run concurrently — this GATES the WIDE-over-DEEP rule above):
 - Make two nodes siblings (no dep between them) ONLY if they touch disjoint files, write distinct
   output_path, and share no migration / DB fixture / scarce resource (port, provider rate limit).

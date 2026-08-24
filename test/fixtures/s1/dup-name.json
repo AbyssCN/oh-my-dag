@@ -1,0 +1,111 @@
+{
+  "_intent": "RED — fires PP-T02 tool_ambiguous only. Two bootstrap nodes (green) register `capture` from different sources (A:capture@1.0.0, B:capture@2.0.0) into the working-set; the leaf `use_capture` then toolRefs:[\"capture\"] (bare name) → resolve() returns state=ambiguous with both fully-qualified ids in evidence. No PP-T01, no PP-T03 (bootstraps green), no skill, no escalation, no visual+none.",
+  "name": "dup-name",
+  "description": "Fixture exercising PP-T02 tool_ambiguous: a leaf references a tool by bare name `capture`; the inventory working-set has two distinct fully-qualified entries sharing that name (different sources), so resolve() refuses to pick and enumerates both candidates.",
+  "schema_version": "1.0",
+  "suppressions": [],
+  "outputs": ["captured"],
+  "nodes": {
+    "boot_capture_a": {
+      "type": "bootstrap",
+      "outputs": {
+        "tool_path": "src/tools/capture_a.ts"
+      },
+      "test_gate": {
+        "tool_id": "A:capture@1.0.0",
+        "status": "green",
+        "oracle": [
+          {
+            "kind": "command",
+            "gateScriptRef": "src/tools/capture_a.test.sh",
+            "deterministic": true,
+            "pass": true
+          }
+        ],
+        "allow_non_deterministic": false,
+        "timeout_sec": 30,
+        "cost_ceiling": 0.05
+      },
+      "provenance": {
+        "registered_at": "2026-01-01T00:00:00Z",
+        "registered_by": "fixture",
+        "source_repo": "alpha",
+        "source_path": "src/tools/capture_a.ts",
+        "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "import_method": "manual",
+        "imported_at": "2026-01-01T00:00:00Z",
+        "imported_by": "fixture",
+        "upstream_version": "1.0.0",
+        "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "schema_version": "1.0"
+      }
+    },
+    "boot_capture_b": {
+      "type": "bootstrap",
+      "outputs": {
+        "tool_path": "src/tools/capture_b.ts"
+      },
+      "test_gate": {
+        "tool_id": "B:capture@2.0.0",
+        "status": "green",
+        "oracle": [
+          {
+            "kind": "command",
+            "gateScriptRef": "src/tools/capture_b.test.sh",
+            "deterministic": true,
+            "pass": true
+          }
+        ],
+        "allow_non_deterministic": false,
+        "timeout_sec": 30,
+        "cost_ceiling": 0.05
+      },
+      "provenance": {
+        "registered_at": "2026-01-01T00:00:00Z",
+        "registered_by": "fixture",
+        "source_repo": "beta",
+        "source_path": "src/tools/capture_b.ts",
+        "commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "import_method": "manual",
+        "imported_at": "2026-01-01T00:00:00Z",
+        "imported_by": "fixture",
+        "upstream_version": "2.0.0",
+        "content_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "schema_version": "1.0"
+      }
+    },
+    "use_capture": {
+      "executor": "leaf",
+      "goal": "invoke the capture tool by bare name — collides with two registered sources",
+      "depends_on": ["boot_capture_a", "boot_capture_b"],
+      "output_type": "structured",
+      "toolRefs": ["capture"],
+      "oracleKind": "judge",
+      "whyNoFanout": "single capture call; nothing else in scope to fan with",
+      "budgetBasis": {
+        "calls": 1,
+        "tokensIn": 500,
+        "tokensOut": 200,
+        "costUsdCeiling": 0.05,
+        "estimatedBy": "conductor:estimate:judge-leaf"
+      }
+    },
+    "captured": {
+      "executor": "command",
+      "command": "echo captured",
+      "expect_exit": 0,
+      "output_type": "structured",
+      "depends_on": ["use_capture"],
+      "toolRefs": ["bash"],
+      "oracleKind": "cheap",
+      "whyNoFanout": "terminal deterministic echo of capture output",
+      "budgetBasis": {
+        "calls": 1,
+        "tokensIn": 0,
+        "tokensOut": 0,
+        "costUsdCeiling": 0.01,
+        "estimatedBy": "conductor:estimate:cheap-command"
+      }
+    }
+  }
+}

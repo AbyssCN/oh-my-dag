@@ -1,0 +1,11 @@
+{
+  "_intent": "INV-15 branch b fixture: SKILL.md prose contains hard ban phrases but manifest.checks=[] and manifest.red_lines=[] → no enforcement. Drives PP-S03 (conservative default; tool_pool MUST NOT expand byte-equal between runs with/without --skill).",
+  "skill_id": "skill-prose-bans",
+  "skill_version": "1.0.0",
+  "description": "Fixture skill whose body contains hard ban phrases ('绝对禁止', '严禁', 'never', 'must not') but declares no checks[] and no red_lines[]. Used to assert that prose bans alone never grant enforcement or expand the tool pool.",
+  "body_ref": "SKILL.md",
+  "checks": [],
+  "red_lines": [],
+  "allowed_tools": ["bash", "read"],
+  "schema_version": "1.0"
+}

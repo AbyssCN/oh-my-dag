@@ -1,0 +1,93 @@
+{
+  "_intent": "PP-M02 (critic_oscillation) — round 1 打回后任何合理修改都会引入新码, 第 2 轮立即升级, critic 调用计数恰好 2, 不进第 3 轮。本 fixture 把两条互斥闸显式写到节点结构里, 让 critic 静态判词暴露不可解性。",
+  "_gates": {
+    "A_visual_oracle_required": "任何节点声明 output_path 指向 image/png OR contentType='image/png' 视为视觉产出; 视觉产出必须挂 oracle (oracleKind ∈ {cheap, render, judge, self_built}); 挂 none 即 PP-O01。",
+    "B_none_oracle_must_not_be_visual": "oracleKind:'none' 的节点不得声明视觉产出字段 (output_path / contentType / attach_media), 否则语义等于 '让 LLM 看图' — 与 none 的零验证语义互斥。",
+    "mutex_proof": "A 要求 visual 节点必有 oracle; B 要求 none 节点必非 visual。任一节点同时命中 '视觉产出字段' + 'oracleKind:none' 即同时违 A 与 B — 改 oracleKind 解 A → 触发 B 在另一节点复发; 改 output_path 解 B → 触发 A 在原节点复发; 两边一起改 → schema 形状漂移触发 PP-I02。"
+  },
+  "name": "mutually-exclusive-gates",
+  "description": "Fixture 故意构造 (visual_render 节点: oracleKind='none' AND output_path 指向 image/png) 同时命中 PP-O01; 同一 fixture 同时声明第二个节点 (visual_review) 受 manifest.checks 约束要求 '视觉产出必须挂 judge oracle', 任何一处修改必然破坏另一处。期望: critic round 1 = [PP-O01, ...], round 2 = 引入新码 → 立即 PP-M02 escalate, 总 calls=2, escalated=true。",
+  "schema_version": "1.0",
+  "suppressions": [],
+  "outputs": ["visual_render"],
+  "skills": [
+    {
+      "skill_id": "skill-visual-guard",
+      "skill_version": "1.0",
+      "description": "Soft contract: declares that any visual-output node MUST carry a judge oracle (red_line), and any node carrying oracleKind:'none' MUST NOT be a visual producer. These two rules are mutually exclusive at single-node granularity.",
+      "body_ref": "skills/skill-visual-guard/SKILL.md",
+      "checks": [
+        {
+          "name": "check_visual_oracle",
+          "script": "check_visual_oracle.py",
+          "type": "python",
+          "pass_rule": "exit_code==0",
+          "timeout_sec": 30
+        }
+      ],
+      "red_lines": [
+        "visual_output_requires_judge_oracle",
+        "none_oracle_excludes_visual_output"
+      ],
+      "allowed_tools": ["bash", "read"],
+      "schema_version": "1.0"
+    }
+  ],
+  "nodes": {
+    "visual_render": {
+      "executor": "leaf",
+      "goal": "Render an image/png artifact from the upstream structured payload.",
+      "depends_on": [],
+      "output_path": "out/visual_artifact.png",
+      "contentType": "image/png",
+      "toolRefs": ["bash"],
+      "oracleKind": "none",
+      "whyNoFanout": "Single visual producer; no peer of the same kind to parallelize with.",
+      "skill": "skill-visual-guard",
+      "_mutex_marker_A": "oracleKind=none + output_path=image/png → triggers PP-O01 (oracle_missing).",
+      "_mutex_marker_B": "Per skill 'skill-visual-guard' red_line 'none_oracle_excludes_visual_output', this node simultaneously violates red_line. Fix attempts: (1) flip oracleKind to 'judge' → violates A's complement in visual_review below; (2) drop output_path → violates the plan-level outputs declaration. Either fix introduces a NEW critic code in round 2 → oscillation.",
+      "budgetBasis": {
+        "calls": 1,
+        "tokensIn": 0,
+        "tokensOut": 0,
+        "costUsdCeiling": 0.02,
+        "estimatedBy": "conductor:estimate:visual-leaf"
+      }
+    },
+    "visual_review": {
+      "executor": "leaf",
+      "goal": "Judge the visual artifact against acceptance rubric; must emit a structured verdict.",
+      "depends_on": ["visual_render"],
+      "output_type": "structured",
+      "toolRefs": ["read"],
+      "oracleKind": "judge",
+      "whyNoFanout": "Terminal judge over a single visual artifact; no peer to fan with.",
+      "skill": "skill-visual-guard",
+      "_mutex_marker_C": "This node is the 'fix target' for PP-O01 on visual_render — but flipping visual_render's oracleKind to 'judge' creates a SECOND judge (visual_review) over the SAME artifact with the SAME red_line set → tool-pool escalation + duplicate-judge semantics triggers PP-S02 (allowed_tools_exceeded: read) when skill's allowed_tools is tightened to ⊆ natural pool. Conversely removing visual_review does not fix the underlying contradiction — it just hides it.",
+      "budgetBasis": {
+        "calls": 1,
+        "tokensIn": 600,
+        "tokensOut": 300,
+        "costUsdCeiling": 0.07,
+        "estimatedBy": "conductor:estimate:visual-judge"
+      }
+    },
+    "post_leaf_check_visual": {
+      "executor": "command",
+      "command": "python3 check_visual_oracle.py",
+      "expect_exit": 0,
+      "depends_on": ["visual_review"],
+      "output_type": "structured",
+      "toolRefs": ["bash"],
+      "oracleKind": "cheap",
+      "whyNoFanout": "Required PostLeafGate for skill-visual-guard.checks[0] (check_visual_oracle); 1:1 mapping.",
+      "budgetBasis": {
+        "calls": 1,
+        "tokensIn": 0,
+        "tokensOut": 0,
+        "costUsdCeiling": 0.01,
+        "estimatedBy": "conductor:estimate:cheap-command"
+      }
+    }
+  }
+}
