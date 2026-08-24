@@ -105,26 +105,68 @@ function assertDisjointWriteSets(slices: readonly SddSlice[]): void {
   }
 }
 
-const SEAM_TYPES = 'src/harness/dag/types.ts';
-const SEAM_DOC = 'docs/architecture/seams.md';
-const SEAM_GUARD = 'src/harness/dag/seam-catalog.test.ts';
+/**
+ * 登记面泛化闸 (#243, 写于 SDD `2026-08-25-243-245`): 写集含任一 trigger 时,
+ * 全部切片写集并集必须包含其全部 faces。治的是修复轮被写集闸瘫痪 (S1 run e63f47ea):
+ * 修复轮想动绊线, 写集闸说「这片没权」, 绊线永远修不了。
+ *
+ * 真源核过 (evidence ② / ③):
+ *   ① types.ts ↔ seams.md + seam-catalog.test.ts (旧 assertSeamWriteSet 行为字节不变地迁移)
+ *   ② conductor-plan.ts ↔ schema 字段表三件套 (247/248 契约片 1 写集自证)
+ *   ③ schema-field-registry.ts ↔ 人读表 + 它自己的 test (生成器产物 + 结构绊线)
+ *
+ * 闸语义 = face **在并集里** (修的权限), 不要求真被修改 —— 治的是「无权碰绊线」,
+ * 不是「强迫每次都动登记面」。「dedup 指纹键」表行盘上找不到可指认的真源 → NULL≠0 纪律,
+ * 不编造行, 结论回流票 #243。
+ */
+const REGISTRATION_FACES: readonly {
+  readonly trigger: string;
+  readonly faces: readonly { readonly file: string; readonly reason: string }[];
+}[] = [
+  {
+    trigger: 'src/harness/dag/types.ts',
+    faces: [
+      { file: 'docs/architecture/seams.md', reason: '生成器产物' },
+      { file: 'src/harness/dag/seam-catalog.test.ts', reason: '刻意写死的结构绊线' },
+    ],
+  },
+  {
+    trigger: 'src/harness/conductor-plan.ts',
+    faces: [
+      { file: 'src/harness/schema-field-registry.ts', reason: 'schema 字段表真源 (PlanSchema 字段增减必须同步)' },
+      { file: 'src/harness/schema-field-registry.test.ts', reason: 'schema 字段表结构绊线 (REGISTRY 列被确定性 oracle 盯死)' },
+      { file: 'docs/plan/2026-07-30-schema-field-registry.md', reason: 'schema 字段表人读版 (生成器产物, scripts/gen-schema-registry-doc.ts)' },
+    ],
+  },
+  {
+    trigger: 'src/harness/schema-field-registry.ts',
+    faces: [
+      { file: 'docs/plan/2026-07-30-schema-field-registry.md', reason: 'schema 字段表人读版 (REGISTRY 改了必须重生成)' },
+      { file: 'src/harness/schema-field-registry.test.ts', reason: 'schema 字段表结构绊线' },
+    ],
+  },
+];
 
 /**
- * seam 类型真源不能单独进入写集: 目录是生成器产物, 测试是刻意写死的结构绊线。
- * 只在写集含 types.ts 时触发, 不含它的契约沿用原编译路径。
+ * 登记面泛化闸 (#243): 任一 trigger 命中时, 全切片写集并集必须含其全部 faces。
+ * 函数保名 `assertSeamWriteSet` 是为了让既有调用方零改动 (compileBreakdown 第 378 行),
+ * types.ts 行的错误文本与今天逐字相同 (INV-2: 既有 sdd-compile / falsify-compile 测试零改动即绿)。
+ * 不含任何 trigger 的契约走原路 (零行为差, INV-3)。
  */
 function assertSeamWriteSet(slices: readonly SddSlice[]): void {
-  if (!slices.some((s) => s.writeSet.includes(SEAM_TYPES))) return;
-  const union = new Set(slices.flatMap((s) => s.writeSet));
-  const missing: Array<{ file: string; reason: string }> = [];
-  if (!union.has(SEAM_DOC)) missing.push({ file: SEAM_DOC, reason: '生成器产物' });
-  if (!union.has(SEAM_GUARD)) missing.push({ file: SEAM_GUARD, reason: '刻意写死的结构绊线' });
-  if (missing.length) {
-    const missingText = missing.map(({ file, reason }) => `${file} (${reason})`).join('、');
-    throw new Error(
-      `写集含 ${SEAM_TYPES} 时, 全部切片写集并集还必须包含 ${missingText}；` +
-        `缺的是 ${missing.map(({ file }) => file).join('、')}。`,
-    );
+  let union: Set<string> | undefined;
+  for (const { trigger, faces } of REGISTRATION_FACES) {
+    if (!slices.some((s) => s.writeSet.includes(trigger))) continue;
+    union ??= new Set(slices.flatMap((s) => s.writeSet));
+    const missing: Array<{ file: string; reason: string }> = [];
+    for (const f of faces) if (!union.has(f.file)) missing.push(f);
+    if (missing.length) {
+      const missingText = missing.map(({ file, reason }) => `${file} (${reason})`).join('、');
+      throw new Error(
+        `写集含 ${trigger} 时, 全部切片写集并集还必须包含 ${missingText}；` +
+          `缺的是 ${missing.map(({ file }) => file).join('、')}。`,
+      );
+    }
   }
 }
 
