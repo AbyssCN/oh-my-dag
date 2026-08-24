@@ -99,7 +99,7 @@ describe('① 锚点存在', () => {
 
 describe('② 工具数一致', () => {
   const badge = (n: number) =>
-    `[![MCP server: ${n} tools](https://img.shields.io/badge/MCP%20server-${n}%20tools-c9a227)](docs/mcp-tools.md)`;
+    `[![${n} MCP tools](https://img.shields.io/badge/MCP%20tools-${n}-c9a227)](docs/mcp-tools.md)`;
 
   test('数字不符 → alt 文字与 URL 各报一条 (只改一处会得到"文字对、图片错")', () => {
     const f = checkToolCount(doc('README.md', ['# t', badge(33)].join('\n')), 49);
@@ -113,7 +113,7 @@ describe('② 工具数一致', () => {
   });
 
   test('只改了 alt 文字、URL 还是旧数 → 仍然红 (这才是这条闸的存在理由)', () => {
-    const half = '[![MCP server: 49 tools](https://img.shields.io/badge/MCP%20server-33%20tools-c9a227)](docs/mcp-tools.md)';
+    const half = '[![49 MCP tools](https://img.shields.io/badge/MCP%20tools-33-c9a227)](docs/mcp-tools.md)';
     const f = checkToolCount(doc('README.md', half), 49);
     expect(f).toHaveLength(1);
     expect(f[0]!.what).toContain('徽章 URL');
@@ -235,12 +235,12 @@ describe('⑤ 引用可达 —— 图片', () => {
   });
 
   test('http(s) 图片跳过 —— 徽章不归本闸管', () => {
-    const badge = '[![MCP server: 49 tools](https://img.shields.io/badge/x-49-c9a227)](docs/README.md)';
+    const badge = '[![49 MCP tools](https://img.shields.io/badge/x-49-c9a227)](docs/README.md)';
     expect(checkRefs([doc('README.md', badge)], exists)).toEqual([]);
   });
 
   test('嵌套徽章里外层链接照样验 —— 不抹掉图片那层就会漏掉它', () => {
-    const badge = '[![MCP server: 49 tools](https://img.shields.io/badge/x-49-c9a227)](docs/nope.md)';
+    const badge = '[![49 MCP tools](https://img.shields.io/badge/x-49-c9a227)](docs/nope.md)';
     const f = checkRefs([doc('README.md', badge)], exists);
     expect(f).toHaveLength(1);
     expect(f[0]!.what).toContain('docs/nope.md');

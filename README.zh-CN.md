@@ -1,120 +1,98 @@
-<div align="center">
+<p align="center">
+  <img src="assets/diagrams/omd-layers.svg" alt="omd 的位置:你的编码 agent 在上, omd 隔着 MCP 在下, 再下面是记忆与模型" width="920">
+</p>
 
-# oh-my-dag
+<p align="center">
+  <strong>你的编码 agent 底下那一层:编排层。</strong>
+</p>
 
-### 你的编码 agent 底下那一层:编排层。
+<p align="center">
+  <a href="docs/guide/mcp-tools.md"><img src="https://img.shields.io/badge/MCP%20tools-50-c9a227?style=flat&colorA=140f0a" alt="50 MCP tools"></a>
+  <a href="docs/architecture/model-layer.md"><img src="https://img.shields.io/badge/seats-18-6f9488?style=flat&colorA=140f0a" alt="18 seats"></a>
+  <a href="docs/guide/skills.md"><img src="https://img.shields.io/badge/skills-22-6f9488?style=flat&colorA=140f0a" alt="22 skills"></a>
+  <a href="https://bun.sh"><img src="https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.3-b3382a?style=flat&colorA=140f0a" alt="Bun"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-c9a227?style=flat&colorA=140f0a" alt="MIT"></a>
+</p>
 
-*agent 说「做完了」,omd 不问它 —— 它把活跑成一张有类型的图,逐节点点名模型,判词取自模型之外。*
+<p align="center">
+  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="docs/why-omd.zh-CN.md">为什么有 omd</a> · <a href="docs/driving-omd.md">这份丢给你的 agent</a>
+</p>
 
-<img src="assets/diagrams/omd-layers.svg" alt="omd 的位置:会话层在上, omd 隔着 MCP 在下, 再下面是记忆与模型" width="920">
+你的 agent 说它做完了。omd 不信它这句话。
 
-[![MCP server: 50 tools](https://img.shields.io/badge/MCP%20server-50%20tools-c9a227?style=flat-square&labelColor=140f0a)](docs/guide/mcp-tools.md)
-[![Clients: Claude Code · Codex · any MCP](https://img.shields.io/badge/clients-Claude%20Code%20%C2%B7%20Codex%20%C2%B7%20any%20MCP-6f9488?style=flat-square&labelColor=140f0a)](client-skills/)
-[![Models: bring your own](https://img.shields.io/badge/models-bring%20your%20own-b3382a?style=flat-square&labelColor=140f0a)](docs/architecture/model-layer.md)
-[![Runtime: Bun ≥ 1.3](https://img.shields.io/badge/runtime-Bun%20%E2%89%A5%201.3-b3382a?style=flat-square&labelColor=140f0a)](https://bun.sh)
-[![License: MIT](https://img.shields.io/badge/license-MIT-c9a227?style=flat-square&labelColor=140f0a)](LICENSE)
-
-[English](README.md) · **中文** · **[为什么有 omd →](docs/why-omd.zh-CN.md)** · **[这份丢给你的 agent 读 →](docs/driving-omd.md)**
-
-</div>
-
-你关掉标签页。模型说*改动已全部应用*。`git diff` 说那个文件一个字没动。
-
-omd 从不读那句话。它读退出码。
-
-Claude Code、Codex、gemini-cli、opencode 你照用。**一件活大过一次对话时,它们经 MCP 调 omd。**
-
-## omd 在哪一层
-
-2026 年的开源编码 harness —— codex、gemini-cli、qwen-code、opencode、kimi-code、deepseek-harness、oh-my-pi —— 全是**会话层**工具。工作单位是一个回合。主循环是 ReAct:采样、跑工具、结果回灌。它们比上下文压缩、比沙箱纵深、比事件溯源,而且比得都不错。
-
-它们也共享一个前提:**做没做对,由模型自己报告。**
-
-它们做不到别的。干活的那一次前向传播,和评活的那一次,是同一次 —— 同一个上下文,同一套信念。不跨出会话,判词没有别的地方可来。
-
-omd 跨出去了。工作单位是一个**节点**。判词来自**代码**。
-
-|  | 会话层 harness | workflow 引擎<br>(LangGraph, Temporal) | eval / 闸框架<br>(Inspect, promptfoo) | **omd** |
-|---|---|---|---|---|
-| **工作单位** | 一个回合 | 你写的一步 | 一次打分 | **类型化图里的一个节点** |
-| **图从哪来** | 没有图 —— 一个 ReAct 循环 | 你写 | 没有图 | **conductor 画、SDD 契约编译、决策地图编译,或者你亲手写** |
-| **谁判对错** | 模型 | 你写的断言 | 你写的评分表 | **oracle → 跨家族 verifier → 人。按这个顺序** |
-| **哪个模型在跑** | 你启动的那个 | 你配置的那个 | 不适用 | **一个节点一个,而且你手钉的模型永不被覆盖** |
-| **跑一半断了** | 会话结束,重新提问 | 按你的策略重试 | 打完分就结束 | **每节点 checkpoint;续跑只对变过的重新计费** |
-| **怎么调它** | 你跟它聊天 | 你嵌进代码 | 你从 CI 调 | **`claude mcp add omd -- omd mcp`** |
-
-**重叠是真的。** LangGraph 和 Temporal 也跑图,eval 框架也设闸,都不是新发明。在这一台引擎里合到一起的是:类型化 plan 当交换格式、闸跑在产出这件产物的那一趟里而不是事后在 trace 上、verifier 取自另一个模型家族、每节点续跑,以及一层 MCP 接口 —— 任何 harness 都能驱动上面全部。
-
-**omd 不是什么:**
-
-- **不是编码 CLI。** 你手上那个 harness 照用。
-- **不是聊天 agent。** 它的单位是节点,不是对话。
-- **不是 eval 框架。** 你不用给它送 trace。
-- **不是厂商产品。** MIT、Bun 上的 TypeScript,任何 OpenAI 兼容模型。
-
-**→ [长文版](docs/why-omd.zh-CN.md)**
+**50** 个 MCP 工具 · **13** 个控制流原语 · **18** 个模型座位 · **22** 条出厂管线 · **6,818** 个测试。
 
 ## 装
 
-```bash
+```sh
 git clone https://github.com/AbyssCN/oh-my-dag.git && cd oh-my-dag
-bun install && bun link      # 把 `omd` 放进 PATH(需 Bun ≥ 1.3)
-omd init                     # 向导:密钥、模型预设、可达性探测 → 写 .env
+bun install && bun link
+omd init
 ```
 
-```bash
+然后把你的 agent 指过来:
+
+```sh
 cd <你的项目> && claude mcp add omd -- omd mcp
 ```
 
-还没发到 npm,所以 clone 就是安装。server 的工作目录**就是**它作用的那个仓库。首次启动把 22 个技能幂等铺进 `~/.claude/skills/`,**从不覆盖你改过的那一个**(`OMD_INSTALL_SKILLS=0` 关掉)。
+`omd init` 问密钥、给三套预设座位表、逐个探测 provider 通不通,然后写 `.env`。server 首次启动把 22 个技能铺进 `~/.claude/skills/` —— 幂等,而且从不覆盖你改过的那一个。还没发 npm,所以 clone 就是安装。
 
-然后跟你的 agent 说:
+然后跟你的 agent 说:*读 `docs/driving-omd.md`,然后用 omd 去……* —— 那份是操作指南,写给 agent 看的,不是写给你看的。
 
-> 读 `docs/driving-omd.md`,然后用 omd 去……
+## omd 在哪一层
 
-**[docs/driving-omd.md](docs/driving-omd.md)** 是写给 agent 看的,不是写给你看的 —— 什么活派哪个工具、为什么绝不能卡在 `runId` 上等、任务怎么写才会长出一道闸、以及它会撞上哪些失败形态。**[给人看的完整上手](docs/guide/getting-started.md)**。
+今天在跑的编码 harness,拥有的都是**回合**。采样模型、跑它要的工具、结果回灌、再来一轮,模型说完事了就停。它们比上下文压缩、比沙箱纵深,而且比得都不错 —— 但**写这段代码的那一次前向传播,和给它打分的是同一次**。不离开会话,判词就没有别的地方可来。
 
-## 判词来自模型之外
+omd 离开了。工作单位是类型化图里的一个**节点**,而这张图就是一个文件:`{ nodes[], outputs[] }`,zod 校验过。节点有声明过的输入,所以它能被调度、能存档、能续跑、能单独计价、能单独判。回合这些一样都没有。
 
-<div align="center">
-<img src="assets/diagrams/omd-pipeline-contract.svg" alt="契约管线:审问 → 契约 → 零 LLM 编译 → 执行 → 判词" width="960">
-</div>
+你手上那个 agent 照用。**活大过一次对话的时候,它调 omd。**
 
-**三道检查,按这个顺序,一道都不许跳。**
+## 它干什么
 
-让模型判自己做没做成,它可以整个不跑,而没有任何东西变红。所以第一道检查里根本没有模型:一个 `command` 节点跑 `tsc`、跑测试、或跑你的脚本,退出码必须等于 `expect_exit`。旁边是写集对账 —— 它是不是真写了它声称写的 —— 和产物闸 —— 文件在盘上到底有没有。报告了自己从未写过的文件的节点,判败。
+### 01 · 终点线是一个退出码
 
-**判据在被信任之前,先过一场考试。** 这一段值得读两遍。引擎把这条验收命令放进临时世界跑两遍:一遍在**什么活都还没干的时候**(还绿 = 它跟这个任务无关),一遍打在一个**故意做错的产物**上(分类器必须连命令一起交出这个错样本;还绿 = 它分不出对错)。两种都让目标降级成 exploratory,而不是收下一个假通过。两条探针都是 fail-open:探针跑不起来时,判据被标成未经证明,而不是把整趟挡下来。`src/harness/goal/acceptance-gate.ts`。
+多数 harness 在模型写下「done」的时候结束一个任务。omd 在一个 `command` 节点吐出 plan 里声明的那个退出码时才结束 —— `tsc`、你的测试、你的脚本。那个节点里零模型,所以没有任何东西能被说服。旁边还有两道不用你开口就跑的检查:**写集对账**把节点*声称*写过的文件和它真正碰过的比对,**产物闸**去盘上找它点名的那个文件。一个报告了自己从未创建过的文件的节点,在这里判败。
 
-没有退出码能定的事 —— 这份摘要忠不忠于原文?这个设计满不满足契约? —— 交给**第二道检查**:一个来自**另一个模型家族**的 verifier。同家族,同盲点。它的职责是攻击结果,不是盖章。判 fail 就升级:换更强的 conductor、重画,只有被点名的节点重跑。`src/harness/verifier.ts`。
+### 02 · 判据自己要先过一场考试
 
-⚠ **oracle 绿 ≠ 语义对。** 这台引擎真出过:`tsc` 干净、整套测试全绿,而一处状态映射的标签是反的,配套测试还把这个错固定了下来。测试和实装由同一次改动一起产出时,会一起错并且互相背书。**第一道检查抓不到这个**,所以第二道不是可选的。第三道检查是人 —— 升给人既不是拖延,也不是替人拍板。
+一条对着什么都能过的测试,和一条因为对的理由才过的测试,从外面看一模一样 —— 除非你去查。所以一条验收命令在被相信之前,引擎把它放进仓库的一份临时副本里跑两遍:一遍在**什么活都还没干的时候**,一遍打在一个**故意做错的产物**上(这个错样本是分类器必须连命令一起交出来的)。任何一遍是绿的,目标就降级成 exploratory,而不是把一个假通过收进账。
 
-> **可靠性来自模型之外。创造力来自模型之内。**
-> 闸负责判 —— 确定性、零模型、fail-closed。模型负责生成 —— 做什么、怎么做、还缺什么。闸之内,别把这件事换成规则。
+**这道闸就是这样查出自己坏了的。** 它在 69 次跑里红过 0 次 —— 而一个从不动的数,通常量的是尺子,不是被测物。那个「做错的世界」当时是个空临时目录,而在空目录里 `bun test` 放什么进去都会挂。现在它是仓库的真副本。
 
-## 图从哪来
+### 03 · 每个节点可以是不同的模型
 
-四个来源。引擎只校验这份 plan 合不合法。
+`node.model` 压过 `template.model`,`template.model` 压过自动分派,而**你显式钉的模型永不被覆盖** —— [`stamp-pass.ts:66`](src/harness/plan-passes/stamp-pass.ts)。量大又有 oracle 兜底的地方上便宜模型,判错代价高的地方上强的,需要第二意见的地方换**另一个家族**。auto-assign 按渠道经济学把 18 个座位填满;你钉死任何一个,全库每一处解析都读那一个值。
 
-| 来源 | 代价 |
+### 04 · 第二意见来自另一个模型家族
+
+没有退出码能定的事 —— 这份摘要忠于原文吗?这个设计满足契约吗? —— 交给一个 verifier,它对着原始要求读结果。它**故意**跑在与作者不同的模型家族上:同家族就是同盲点,它写出来的坏计划它自己看不见。它的职责被写成攻击结果,不是祝福结果。判 fail 就升级:换更强的 conductor 重画,而且只有被点名的节点重跑。
+
+### 05 · 断掉的活是续跑,不是重来
+
+每个跑完的节点原子地写进磁盘。`dag_resume` 从那份 checkpoint 重载 plan、重算每个节点输入的哈希,**没变的节点保持绿 —— 并且不重复计费**,只有剩下的重跑。`solve --detached` 把环交给一个活得比你会话长的 worker 进程:关掉客户端,图照跑。
+
+### 06 · 检索里没有模型
+
+`omd_web` 的搜索与抓取**零 LLM 在环**。全文写进磁盘,回你上下文的只有一份索引。缺口靠**重抓那个缺席的信源**补上,绝不靠模型凭记忆填。同一个问题上,一次便宜座位的跑花了 **$2.19**,复现了一个 106 agent 前沿档工作流核验过的 15 条事实里的 **13 条** —— 因为覆盖率是检索决定的,而检索是没有模型的那一段。
+
+## 管线是图,不是 prompt
+
+<p align="center">
+  <img src="assets/diagrams/omd-pipeline-research.svg" alt="深度调研管线:四个阶段、四个模型,抓取那一步没有模型" width="920">
+</p>
+
+你 harness 里的一个技能是一段 prompt —— 它只能要求**眼前这一个模型**换个行为。一条管线可以每个阶段挑一个模型,并且在末端挂一条确定性命令。
+
+| | |
 |---|---|
-| **conductor 画** | 一次 LLM 调用。`run` 和 `solve` 走这条 |
-| **SDD 契约编译成图** | **零 LLM。** 平铺图,不走调研,不重画 |
-| **决策地图编译成图** | **零 LLM。** 裁决过的票加上边,本来就是一张图 |
-| **你亲手写** | 零 LLM,完全控制 |
+| `/omd-research-deep` | 种子抓取 → 多镜头扇出 → judge panel → 缺口补挖。四个阶段,四个模型 |
+| `/omd-grill` → `/omd-contract` | 把设计吵清楚,然后写成引擎要执行的那份规格 |
+| `/omd-review` | 多维度 diff 审查,每条 finding 跨模型证伪 |
+| `/omd-debug` | 复现 → scope lock → 并行假设 → 验证 |
+| `/omd-path` · `/omd-rule` · `/omd-deliver` | git 里的决策地图,你来裁决,你拉闸才交付 |
 
-**契约那条道最值得学。** `/omd-grill` 把设计审问到把待决问题一个个点名,`/omd-contract` 把它写成规格,然后 `solve(sddPath: …)` 把规格直接编译成平铺图 —— 验收命令成为唯一的停机规则。规格不是 prompt:它自带分解、自带闸、自带 verify 列,引擎没有留给它猜的余地。
-
-一条前提,并且是真的:规格的 verify 列必须指向**今天天然就红**的东西。测试本来就绿的规格,会让整趟跑变成一次昂贵的空转。
-
-**地图那条道**给活得比会话长的活。歧义变成 git 里有类型的票,你裁决它们,散尽雾的区域编译并执行。**`map_deliver` 是你亲手拉的闸。** 自动化可以自己调研、抓取、规划、争论。它不能自己决定开始写文件。
-
-## 自己搭管线
-
-每个节点都能点名自己的模型,而且**手钉的模型永不被覆盖**。优先级是 `node.model` > `template.model` > 自动分派(`src/harness/plan-passes/stamp-pass.ts:66`)。
-
-所以你可以直接把自己写的图丢给 `dag_run_plan`:
+自己搭一条也一样 —— 把图丢给 `dag_run_plan`,逐节点点名模型:
 
 ```jsonc
 {
@@ -130,58 +108,21 @@ cd <你的项目> && claude mcp add omd -- omd mcp
 }
 ```
 
-这就是一条跨家族 best-of-N,末端挂一道确定性闸,而且每一个座位都是你挑的。`omd_primitive` 单点一个形状时,同样直接带 `model`。
+跨家族 best-of-N,末端一道硬闸,而且每一个座位都是你挑的。
 
-**这就是出厂管线凭什么强过一个技能。** 技能是 prompt:它只能要求**你眼前这一个模型**换个行为。管线可以让便宜模型铺量、让另一个家族做批判(于是它不继承作者的盲点)、让零 LLM 的命令下最终判词。prompt 做不到这件事。
+## omd 唯一不会替你做的事
 
-## 随包出厂的东西
-
-<div align="center">
-<img src="assets/diagrams/omd-pipeline-research.svg" alt="深度调研管线:四个阶段、四个模型,抓取那一步没有模型" width="960">
-</div>
-
-22 个方法论技能,**每一个都是一张图,不是一段 prompt**。首次启动铺进 `~/.claude/skills/`。图**内部**的 `agent` 叶子经同一个工具拿到同一套技能,所以你写一次的方法,在扇出四十层深的地方照样成立。
-
-| | |
-|---|---|
-| `/omd-grill` → `/omd-contract` | 把设计吵清楚,然后写成引擎要执行的那份契约 |
-| `/omd-research-deep` | 种子多角度抓取 → council 分解 → 多轮缺口补挖 |
-| `/omd-council` | 多人格审议 + judge panel 择优 |
-| `/omd-review` | 多维度 diff 审查,每条 finding 跨模型证伪 |
-| `/omd-debug` | 复现 → scope lock → 并行假设 → 验证 |
-| `/omd-path` · `/omd-rule` · `/omd-deliver` | 决策地图那条环 |
-
-**控制流属于运行时,永远不属于模型。** 你挑形状 —— `parallel`、`pipeline`、`loop-until`、`verify`、`judge`、`discovery`、`iterate`、`tournament`、`router`、`race`、`escalation`、`saga` —— 循环、分支、终止、打分的逻辑留在代码里。第十三个 `escape-hatch` 默认关,除非你设 `OMD_ESCAPE_HATCH=1`。
-
-活被路由到 **18 个座位**。座位是**模型选择轴,不是角色轴**,所以互不相干的调用可以共用一个座。auto-assign 按渠道经济学填:判错代价高又稀少的地方上强的,量大且有 oracle 兜底的地方上便宜的。`src/model/seats.ts`。
-
-**→ [全部 50 个工具](docs/guide/mcp-tools.md)** · [技能全表](docs/guide/skills.md)
-
-## 有读数,不是有主张
-
-同一个问题 —— 一份 2026 年中的 MCP 生态综述 —— 两套我们自己的配置:
-
-| | **omd `--deep`,便宜座位** | **106 个 agent 的前沿档工作流** |
-|---|---|---|
-| 现金成本 | **$2.19** | 订阅额度 · 376 万 token |
-| 结果 | 13.2 万字报告 · 32 个信源 | 23 条断言,3-of-3 核验 |
-| 跑完了吗 | 干净跑到底 | 在 verify 中途撞上额度上限 |
-
-便宜那一档复现了前沿档核验过的 15 条事实里的 **13 条**。不是因为小模型偷偷有前沿水平。是因为**事实覆盖率由检索决定,而检索是没有模型的那一段**。`omd_web` 的搜索与抓取**零模型在环**:全文写入磁盘,回上下文的只有索引;缺口靠重抓那个缺席的信源,不靠模型凭记忆填。
-
-引擎自己那套测试:**6812 通过 / 0 失败,590 个文件**(`bun test`)。
-
-**→ [完整 A/B](docs/guide/deep-research.md)** · [样例产出](docs/examples/deep-research-mcp-2026.md)
+`map_deliver` 是**你**拉的那道闸。自动化自己调研、抓取、规划、争论;它不会自己决定开始写文件。任何无人值守的活、任何要碰公网的活,传 `branchStrategy: 'branch'`,这趟跑就有自己的 git worktree 和一层牢笼。引擎从不把那个分支合回来。**你读 diff,你决定。**
 
 ## 文档
 
-| | | |
-|---|---|---|
-| **给你的 agent** | [driving omd](docs/driving-omd.md) | 什么活派哪个工具、派发契约、它会撞上哪些闸 |
-| **为什么** | [为什么有 omd](docs/why-omd.zh-CN.md) | 分层这件事,以及会话层 harness 结构上做不到什么 |
-| **怎么用** | [上手](docs/guide/getting-started.md) · [工作流](docs/guide/workflow.md) · [MCP 工具](docs/guide/mcp-tools.md) · [模型配置](docs/guide/model-config.md) · [技能](docs/guide/skills.md) · [深度调研](docs/guide/deep-research.md) · [TUI](docs/guide/tui.md) | 装、接,以及参考面 |
-| **为什么是这个形状** | [架构](docs/architecture/overview.md) · [DAG 引擎](docs/architecture/dag-engine.md) · [目标环](docs/architecture/goal-loop.md) · [模型层](docs/architecture/model-layer.md) · [原语](docs/architecture/primitives.md) · [开放生态](docs/architecture/open-ecosystem.md) | 节点七种、四道纯函数 pass、调度、隔离、座位 |
-| **以前错在哪** | [静默失效图鉴](docs/silent-failures.md) | 这台引擎真出过、且当时没有任何红灯的每一类缺陷 |
+| | |
+|---|---|
+| [Driving omd](docs/driving-omd.md) | 操作指南 —— 丢给你的 agent 读 |
+| [为什么有 omd](docs/why-omd.zh-CN.md) | 长文:在哪一层,以及谁有资格判对错 |
+| [上手](docs/guide/getting-started.md) · [MCP 工具](docs/guide/mcp-tools.md) · [模型配置](docs/guide/model-config.md) · [技能](docs/guide/skills.md) · [深度调研](docs/guide/deep-research.md) | 装、工具面、座位 |
+| [架构](docs/architecture/overview.md) · [DAG 引擎](docs/architecture/dag-engine.md) · [目标环](docs/architecture/goal-loop.md) · [原语](docs/architecture/primitives.md) | 节点七种、四道纯函数 pass、调度、隔离 |
+| [静默失效图鉴](docs/silent-failures.md) | 这台引擎真出过、且当时没有任何红灯的每一类缺陷 |
 
 ## 许可
 

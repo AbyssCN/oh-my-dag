@@ -203,7 +203,9 @@ export function countRegisteredTools(sources: string[]): number {
 /**
  * ② README 徽章的工具数 == 真实注册数。
  *
- * 数字在徽章里出现**两次**: alt 文字 `MCP server: N tools` 与 URL 里的 `MCP%20server-N%20tools`。
+ * 数字在徽章里出现**两次**: alt 文字 `N MCP tools` 与 URL 里的 `MCP%20tools-N-`。
+ * (2026-08-24 随 README 改版更新: 旧形状是 `MCP server: N tools` / `MCP%20server-N%20tools`。
+ *  这条闸当场红了 —— 它就是这么用的: 改版式必须同时改判据, 不然数字会静默失配。)
  * 两处都查 —— 只改一处会得到一个"文字对、图片错"的徽章, 比两处全错还难发现。
  */
 export function checkToolCount(doc: DocFile, registered: number): Finding[] {
@@ -213,8 +215,8 @@ export function checkToolCount(doc: DocFile, registered: number): Finding[] {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
     for (const [where, re] of [
-      ['徽章 alt 文字', /MCP server: (\d+) tools/g],
-      ['徽章 URL', /MCP%20server-(\d+)%20tools/g],
+      ['徽章 alt 文字', /(\d+) MCP tools/g],
+      ['徽章 URL', /MCP%20tools-(\d+)-/g],
     ] as const) {
       for (const m of line.matchAll(re)) {
         seen++;
