@@ -101,6 +101,9 @@ import { extractFailSet } from './goal/accept-delta';
 import { createSandboxedLeafRunner } from './hooks/sandboxed-leaf';
 import { loadSandboxConfig } from './hooks/command-policy';
 import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from './command-leaf';
+import { formatRepoChecksFailure, runRepoChecks } from './repo-checks';
+import type { RepoCheck } from './repo-checks';
+import type { GateSpawn } from './post-leaf-gate';
 import { logger } from '../logger';
 import { callModel } from '../model';
 import { resolvePiApiKey, resolvePiModel } from '../model/pi-transport';
@@ -438,6 +441,31 @@ export interface AgentLeafRunnerOpts {
    */
   sandboxGit?: boolean;
   /**
+   * **leaf 级仓规检查清单** (D2 切片 2, #266 修补节点): 模型返回成功后, 对该 leaf
+   * 的写集跑清单里每条 check (jargon-scan / catch-evidence-net-add 等)。
+   *
+   * 引擎侧**只认这个形状**, 一个仓库规则都不硬编码 (INV-D2-1); 实际清单由装配层
+   * (`src/mcp/assemble.ts`) 注入。省略 / 空数组 = 与今天行为逐字节相同 (零回归)。
+   *
+   * 失败处理: FAIL → 抛带 evidence 的 Error (engine L0 重试接住, 进 causeNote);
+   * UNVERIFIED → log warn + 继续 (INV-D2-4 fail-open, 不让 oracle 自己崩了挡主流程)。
+   *
+   * 接线点: 见 `runOnce` 末段, 在 stalled/timedOut/spinFused 警告之后、return 之前 ——
+   * 那些路径已经是 leaf 自身失败 (非「leaf 干完但仓规红」), 不再跑检查。
+   */
+  repoChecks?: RepoCheck[];
+  /**
+   * 检查命令的子进程跑法 (同 `GateSpawn`)。**测试注入** —— 生产默认走
+   * `defaultRepoChecksSpawn` (Bun.spawn + 超时闸), 仓库侧无需自配。空 `repoChecks`
+   * 时**不会**被调用 (INV-D2-4: 无清单 = 不拦主流程)。
+   */
+  repoChecksSpawn?: GateSpawn;
+  /**
+   * 单条仓规 check 的超时 ms。默认 30_000 (同 `post-leaf-gate.ts` 的 DEFAULT_TIMEOUT_MS)。
+   * 0 = 不超时 (不建议 —— 一个挂死的 oracle 会让 leaf 整条线跟着卡)。
+   */
+  repoChecksTimeoutMs?: number;
+  /**
    * debug 事件汇 (2026-07-23): 设则把循环**全部**事件转发给它 (tool_call 参数 / 工具结果 / 消息),
    * 用于捕获 leaf transcript 挖 empty-done 根因。省略 = 不转发 (零开销)。仅排障用, 非生产热路径。
    */
@@ -457,6 +485,52 @@ export const GRIND_STALL_MS = 300_000;
  */
 export const GRIND_WRAPUP_MS = 300_000;
 export const GRIND_ABORT_MS = 600_000;
+/**
+ * D2 切片 2 (#266): 仓规检查子进程的默认跑法 — `bun -e '<cmd>'` + 超时闸。
+ *
+ * 与 `post-leaf-gate.ts` 的 GateSpawn 形态一致 (返 stdout/stderr/exitCode/timedOut);
+ * 这里走 Bun.spawn 真起进程, 因为仓规命令形如 `bun run scripts/jargon-scan.ts --files ...`
+ * —— 需要 shell 解析 + 进程隔离 + 真退出码。
+ *
+ * 仓库侧无需自配; 测试用例注入 `repoChecksSpawn` 替身 (见 repo-checks.test.ts)。
+ * 空 `repoChecks` 时**不**被调用 (INV-D2-4: 无清单 = 不拦主流程)。
+ */
+export const REPO_CHECKS_DEFAULT_TIMEOUT_MS = 30_000;
+export const defaultRepoChecksSpawn: GateSpawn = (cmd, cwd, timeoutMs) =>
+  new Promise((resolve) => {
+    const effectiveTimeoutMs = timeoutMs ?? REPO_CHECKS_DEFAULT_TIMEOUT_MS;
+    const child = Bun.spawn(['sh', '-c', cmd], {
+      cwd,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        child.kill();
+      } catch (e) {
+        logger.warn({ cmd, err: String(e) }, '[agent-leaf] repo-check 超时 kill 失败 (进程可能已退出)');
+      }
+    }, effectiveTimeoutMs);
+    void Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]).then(
+      async ([stdout, stderr]) => {
+        const exitCode = await child.exited;
+        clearTimeout(timer);
+        resolve({
+          stdout,
+          stderr,
+          exitCode: timedOut ? null : exitCode,
+          timedOut,
+        });
+      },
+      (err) => {
+        clearTimeout(timer);
+        resolve({ stdout: '', stderr: '', exitCode: null, timedOut: false });
+        void err;
+      },
+    );
+  });
 
 /** shouldFireGrindAdvisor / nextGrindAction 的输入快照 (纯数据; 同形于 runOnce 里同作用域的状态)。 */
 export interface GrindAdvisorSnapshot {
@@ -2287,6 +2361,40 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       logger.warn({ timeoutMs, outLen: streamedChars }, '[agent-leaf] leaf 超时中止 (有界停, 返已累积输出)');
     } else if (spinFused !== null) {
       logger.warn({ toolCalls, outLen: streamedChars, spinFused }, '[agent-leaf] leaf 空转熔断中止 (返已累积输出)');
+    }
+    // **D2 切片 2 (#266) 仓规检查接线点** (INV-D2-5 scope): 只在 leaf 正常完成时跑 ——
+    // stalled / timedOut / spinFused / contextExhausted 都是 leaf 自身失败 (非「leaf 干完但仓规
+    // 红」), 引擎会按各自语义判 failed, 检查无意义。零清单 (opts.repoChecks 缺席或空) → 整段
+    // 跳过, 行为与切片前逐字节相同 (INV-D2-4 fail-open)。
+    //
+    // FAIL → 抛带 evidence 的 Error, engine.ts 的 L0 重试 (`causeOf` 把 `err.message` 拼进
+    // prompt) 接住, leaf 上下文还热, 当场自修。UNVERIFIED → runRepoChecks 内部已 log warn,
+    // 这里不抛, 不拦主流程 (oracle 自己崩了不是代码的错)。
+    const repoChecks = opts.repoChecks;
+    if (
+      repoChecks &&
+      repoChecks.length > 0 &&
+      !stalled &&
+      !timedOut &&
+      spinFused === null &&
+      !contextExhausted
+    ) {
+      const checksResult = await runRepoChecks({
+        checks: repoChecks,
+        files: [...touched],
+        cwd,
+        spawn: opts.repoChecksSpawn ?? defaultRepoChecksSpawn,
+        ...(opts.repoChecksTimeoutMs !== undefined ? { timeoutMs: opts.repoChecksTimeoutMs } : {}),
+        runId: input.touchSession?.split(':')[0],
+        nodeId: input.touchSession?.split(':')[1],
+      });
+      if (checksResult.verdict === 'FAIL') {
+        // 抛出的 message 经 engine.ts:4296 `causeOf` 拼进 causeNote (截 600 字),
+        // 因此保留仓规 evidence 原文 (file:line + 命中内容) 比压成短码更重要。
+        throw new Error(
+          `[agent-leaf] ${formatRepoChecksFailure(checksResult)}`,
+        );
+      }
     }
     // spin 只在真卡过时带出去 —— 全 0 的字段进 JSON 只是噪声 (同 observations「缺席 ≠ 0」的口径)。
     const spinSummary = drift?.summary();

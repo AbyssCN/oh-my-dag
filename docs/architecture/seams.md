@@ -7,7 +7,7 @@
 **有哪些接缝 · 每个字段谁在消费 · 换实现该去哪换**。消费方是 token 级扫描的上界,
 列出命中最多的前 3 个文件。
 
-> 8 个 seam · 51 个字段 · 扫描范围 src/**/*.ts (排除测试)
+> 8 个 seam · 52 个字段 · 扫描范围 src/**/*.ts (排除测试)
 
 ## DagSeatsSeam
 
@@ -44,6 +44,7 @@
 | `researchRunner` |  | `ResearchLeafRunner` | research-kind leaf 的执行器 (真 web 检索 + 有界内环, D-6)。 | `src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/node-failure.ts` (5 文件) |
 | `judgeSend` |  | `typeof Gateway.send` | 注入式 judge 调用 (测试)。 | `src/harness/dag/engine.ts` (1 文件) |
 | `router` |  | `LeafModelRouter` | executor leaf 模型选型路由器 (B-2 bandit, 见 model-router.ts)。 | `src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/model-router.ts` (17 文件) |
+| `repoChecks` |  | `RepoCheck[]` | **leaf 级仓规检查清单** (D2 切片 2, #266 修补节点): 引擎对每个 agent leaf 跑完 之后、终态写入之前, 对该 leaf 的写集跑清单里每条 check。 | `src/harness/agent-leaf.ts`<br>`src/mcp/assemble.ts` (2 文件) |
 
 ## DagPlanningSeam
 
@@ -56,7 +57,7 @@
 | `agentTemplates` |  | `ReadonlyMap<string, AgentTemplate>` | Agent 模板注册表 (name → 角色卡, 见 agent-templates.ts)。 | `src/harness/dag/engine.ts` (1 文件) |
 | `conductorPromptProfile` |  | `'full' \| 'lean' \| 'full-kb' \| 'lean-kb' \| 'bare'` | conductor system prompt 档位 (SDD v2, 2026-07-25): 'full' (默认, 弱 conductor 教练全量) \| 'lean' (只留环境事实, 顶级 conductor 如 k3 用 … | `src/eval/oracles/conductor-modelmix.ts`<br>`src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts` (4 文件) |
 | `oracleCmd` |  | `string` | oracle 命令 (如 "bun run typecheck && bun test"): plan 中 command 与之等价的节点 在执行前被确定性过滤 (空白规范化后精确匹配, 最小无害边重连)。 | `src/mcp/tools/fleet.ts`<br>`src/eval/tasks/oracle-plan-filter.ts`<br>`src/eval/oracles/agent-leaf-prompt.ts` (11 文件) |
-| `planFilters` |  | `Array<(plan: ConductorPlan) => ConductorPlan>` | SDD v2 pass 管线 (plan-passes/): oracle 过滤之后、执行之前依序应用的确定性 plan 变换 (接线层组装 prune → dedup → stamp; INV-8 pass 纯函数, 配置由接线层闭… | `src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts`<br>`src/mcp/tools/compose.ts` (4 文件) |
+| `planFilters` |  | `Array<(plan: ConductorPlan) => ConductorPlan>` | SDD v2 pass 管线 (plan-passes/): oracle 过滤之后、执行之前依序应用的确定性 plan 变换 (接线层组装 prune → dedup → stamp; INV-8 pass 纯函数, 配置由接线层闭… | `src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts`<br>`src/mcp/tools/compose.ts` (5 文件) |
 | `primitiveCandidates` |  | `string[]` | primitive 候选模型池 (SDD v2 D-8v2, INV-7): judge/parallel/tournament 原语的 N 路 attempts 按此池轮转分配 (跨家族多样性; 接线层从 stamp pools 注入)。 | `src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts` (2 文件) |
 
 ## DagSchedulingSeam
@@ -99,11 +100,11 @@ leaf prompt 整形 seam: 注入 leaf 上下文/前缀/压缩级与档位闸 (省
 | `_budgetAnchor` |  | `number` | #158 预算时间轴的**锚时刻** (epoch ms)。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/goal.ts` (2 文件) |
 | `repeatedActionThreshold` |  | `number` | **§8.4 动作级熔断**的阈值 (缺省 2)。 | `src/harness/dag/engine.ts` (1 文件) |
 | `judgeFailureThreshold` |  | `number` | **闸级熔断**的阈值 (缺省 2, 2026-08-16)。 | `src/harness/dag/engine.ts` (1 文件) |
-| `verifier` |  | `VerifierFn` | 跨模型校验器 (model-agnostic skeptic, 见 verifier.ts)。 | `src/harness/verifier.ts`<br>`src/harness/dag/engine.ts`<br>`src/eval/tasks/judge-artifact-cases.ts` (71 文件) |
+| `verifier` |  | `VerifierFn` | 跨模型校验器 (model-agnostic skeptic, 见 verifier.ts)。 | `src/harness/verifier.ts`<br>`src/harness/dag/engine.ts`<br>`src/eval/tasks/judge-artifact-cases.ts` (73 文件) |
 | `escalateAfterRound` |  | `number` | 从第几轮起用 `conductorEscalationModel` 重画 (默认 2 = 第 1 轮弱 conductor, 后续升级)。 | `src/harness/plan/iterate.ts`<br>`src/harness/dag/engine.ts` (2 文件) |
 | `maxEscalations` |  | `number` | verifier-fail → 升级重规划的最大次数 (默认 1)。 | `src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/verifier.ts` (4 文件) |
-| `frozenNodes` |  | `readonly string[]` | **冻结判据节点**(SDD 2026-08-22 「冻结判据在重规划轮里并不冻结」)。 | `src/harness/dag/engine.ts`<br>`src/harness/goal/run-goal.ts` (2 文件) |
-| `deterministicReplan` |  | `() => ConductorPlan \| undefined` | **平铺图确定性重规划** (SDD 2026-08-22 「升级重规划成事件」续 / 平铺图 v2)。 | `src/harness/goal/run-goal.ts`<br>`src/harness/dag/engine.ts` (2 文件) |
+| `frozenNodes` |  | `readonly string[]` | **冻结判据节点**(SDD 2026-08-22 「冻结判据在重规划轮里并不冻结」)。 | `src/harness/dag/replan-spin.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/goal/run-goal.ts` (3 文件) |
+| `deterministicReplan` |  | `() => ConductorPlan \| undefined` | **平铺图确定性重规划** (SDD 2026-08-22 「升级重规划成事件」续 / 平铺图 v2)。 | `src/harness/goal/run-goal.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/dag/replan-spin.ts` (3 文件) |
 
 ## DagObservabilitySeam
 

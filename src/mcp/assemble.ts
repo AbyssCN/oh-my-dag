@@ -389,6 +389,10 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       ...(agentAdvisor ? { advisor: agentAdvisor } : {}),
       // S4 ext (D-1): 调用方按 run cwd 预加载注入。空数组 → 不传 customTools 键 = 工具面零变化 (D-4)。
       ...(extTools.length ? { customTools: extTools } : {}),
+      // D2 切片 2 (#266): 仓规检查清单默认空数组, 行为与切片前逐字节相同 (INV-D2-4)。
+      // 仓库侧提供实际清单 (jargon-scan / catch-evidence-net-add 等) 的方式 = config.repoChecks
+      // (DagRunnersSeam.repoChecks), 见 buildDefaultConfig 的解析点。
+      repoChecks: [],
     });
   const commandRunner =
     deps.commandRunner ??
@@ -480,6 +484,8 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
             // 的 refs/objects 仍被拒; eval oracle 那条路 (eval/oracles/*) 不设此位, 行为不变。
             ...(jailRoot ? { sandboxRoot: jailRoot, sandboxGit: true } : {}),
             ...(extToolsForRun && extToolsForRun.length ? { customTools: extToolsForRun } : {}),
+            // D2 切片 2 (#266): 隔离档下仓规检查仍走 (写集 = worktree 内文件); 默认空 = 无清单。
+            repoChecks: [],
           })
         : agentRunner;
     const commandRunnerForRun =
@@ -657,6 +663,10 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       commandRunner: commandRunnerForRun,
       ...(researchRunner ? { researchRunner } : {}),
       router,
+      // D2 切片 2 (#266): 仓规检查清单 (DagRunnersSeam.repoChecks) — 默认空数组,
+      // 行为与切片前逐字节相同 (INV-D2-4)。宿主可通过 configOverrides.repoChecks 注入
+      // 仓库实际清单 (jargon-scan / catch-evidence-net-add 等)。
+      repoChecks: [],
       planFilters,
       // D-8v2: judge/parallel/tournament 的 attempts 候选池 = mid 执行主力池 (跨家族轮转)。
       ...(stampPools.mid.length >= 2 ? { primitiveCandidates: stampPools.mid } : {}),

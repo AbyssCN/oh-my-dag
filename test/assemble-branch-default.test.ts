@@ -14,8 +14,8 @@
  *       工厂层 createDagTools(deps) 完全省略 defaultBranchStrategy → spec.args.branchStrategy
  *       缺席 (=== undefined) → 透到 run-worktree.ts:289 引擎层缺省 'head', O-1 锚点零字符改动。
  *   A5 (映 O-2 「写意图工具 = createDagTools + createGoalTool (其余无)」):
- *       静态: src/mcp/assemble.ts 中 defaultBranchStrategy 的注入点恰好 2 处 (变量定义在 :725,
- *       注入位 :731 createDagTools · :758 createGoalTool), 无第三处。无新写意图工具被发现。
+ *       静态: src/mcp/assemble.ts 中 defaultBranchStrategy 的注入点恰好 2 处 (变量定义在 :735,
+ *       注入位 :741 createDagTools · :768 createGoalTool), 无第三处。无新写意图工具被发现。
  *
  * ## 硬约束 (契约 §6 · 本节点只读不写)
  *
@@ -213,17 +213,17 @@ describe('#253-CRYSTAL v1: 装配层 branchStrategy 缺省契约 (A1..A5)', () =
 
   test('A5 — 写意图工具恰为 createDagTools + createGoalTool 两个, 无第三处注入 defaultBranchStrategy', () => {
     // 静态读源: src/mcp/assemble.ts 中 defaultBranchStrategy 变量定义 + 注入位分布。
-    // 行 725 = `const defaultBranchStrategy: BranchStrategy = ...` (变量定义/赋值);
-    // 行 731 = createDagTools({ ..., defaultBranchStrategy }) (注入位 #1);
-    // 行 758 = createGoalTool({ ..., defaultBranchStrategy }) (注入位 #2)。
+    // 行 735 = `const defaultBranchStrategy: BranchStrategy = ...` (变量定义/赋值);
+    // 行 741 = createDagTools({ ..., defaultBranchStrategy }) (注入位 #1);
+    // 行 768 = createGoalTool({ ..., defaultBranchStrategy }) (注入位 #2)。(D2 #266 assemble +10 行后重钉)
     // 契约锚点: O-2 说「写意图工具 = createDagTools + createGoalTool」—— 任何第三处注入都是契约漂移。
     const out = execFileSync('grep', ['-n', 'defaultBranchStrategy', 'src/mcp/assemble.ts']).toString().trim().split('\n');
     expect(out.length).toBe(3); // 定义 + 注入×2, 与事实表 (d) 一致
-    // 抽出注入位 (非变量定义的那行), 必须恰好是 :731 (createDagTools) 与 :758 (createGoalTool)。
-    const injectionSites = out.filter((line) => !/^725:.*const defaultBranchStrategy:/.test(line));
+    // 抽出注入位 (非变量定义的那行), 必须恰好是 :741 (createDagTools) 与 :768 (createGoalTool)。
+    const injectionSites = out.filter((line) => !/^735:.*const defaultBranchStrategy:/.test(line));
     expect(injectionSites.length).toBe(2);
-    expect(injectionSites.some((line) => line.startsWith('731:'))).toBe(true);
-    expect(injectionSites.some((line) => line.startsWith('758:'))).toBe(true);
+    expect(injectionSites.some((line) => line.startsWith('741:'))).toBe(true);
+    expect(injectionSites.some((line) => line.startsWith('768:'))).toBe(true);
     // 反向 (negative): 研究 / 记忆 / pathfinder / fleet 这一组非写意图工具**未**被注入。
     // 装配层相关函数声明扫描: 它们都不该出现 defaultBranchStrategy。
     const allTools = execFileSync('grep', ['-n', 'createDagResearchTool\\|createMemoryTools\\|createPathfinderTools\\|createFleetTools\\|createTriageTools\\|createInterveneTools\\|createConfigTools\\|createDistillTools', 'src/mcp/assemble.ts'])

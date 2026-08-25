@@ -18,6 +18,13 @@
  *
  * 依赖: 只用 `node:fs` 做存在性 / 大小检查; 子进程跑法由调用方注入 (`spawn`),
  * 这样测试能换替身, 真接线由 `agent-leaf` 那条路负责 (那条路已经有白名单 + 超时闸)。
+ *
+ * ## 与 `repo-checks.ts` 的关系 (D2 切片 2, #266)
+ *
+ * 本件导出 `GateVerdict` / `GateSpawn` 类型; `repo-checks.ts` 复用这两条做
+ * leaf 级仓规检查的语义真源 (INV-D2-3: 同一份三态语义, 不另立词表)。不**调用**
+ * `evaluatePostLeaf` (后者跑脚本路径, `repo-checks` 跑命令串 — 形态不同, 入口各
+ * 异; 共用一份语义真源, 不共用入口, 见 `command-leaf-cache-scope.test.ts` 反向自检)。
  */
 import { existsSync as nodeExistsSync, statSync as nodeStatSync } from 'node:fs';
 import { logger } from '../logger';

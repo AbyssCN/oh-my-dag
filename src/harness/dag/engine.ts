@@ -94,6 +94,7 @@ import { NOVELTY_COLLAPSE_LINE, pushNoveltyRound } from '../pathfinder/proximity
 import { extractFailSet } from '../goal/accept-delta';
 // ── T2#5 按簇拆出的兄弟文件 (引擎消费) ──
 import type { GenerateFn, ExecutorDagConfig, LeafResult, ExecutorDagResult, DagObservation, BlameRetryLedger, DagNodeEvent } from './types';
+import { trySpinRepair } from './replan-spin';
 // C 无效否决闸 (2026-08-21): 判词可不可证伪 —— 纯函数, 判据与用例都在那边。
 import { classifyVeto, isInfraVerdict } from './veto-guard';
 import { makeDefaultGenerate, LEAF_SYSTEM_PREFIX, PONYTAIL_LEAF_DISPOSITION } from './defaults';
@@ -5480,7 +5481,46 @@ async function runDagInternalCore(
       let deterministicUsage: ModelUsage = { in: 0, out: 0 };
       if (deterministicPlan) {
         replanMode = 'deterministic';
-        exec = await executePlan(applyPlanFilters(deterministicPlan, config), escTask, config, generate, { in: 0, out: 0 }, templates, priorExec, blameAnchor, warnedUnknownProfiles);
+        // D2 切片 3 —— 确定性重规划空转检测 → 修补节点。
+        // 实测现场 (run e7e360f6): accept 红 + 平铺图 compileBreakdown 产物逐字相同 → 闭包内
+        // 节点全部 D-21 复用 → 72 秒零修复空转。本片让引擎**当场**判空转, 改合一个修补节点:
+        // task = verifier 失败原文 + 「只修这些」; 写集 = 本轮 leaf 写集并集; verify = 同条
+        // accept 命令。BlameRetryLedger.replanMode 仍记 'deterministic' (修 union 越出本片写
+        // 集 — 真要单独记 replanMode=repair-spin 走 follow-up 切片); 空转命中的可见信号改放
+        // 判词日志 + plan.name 含 `__repair_spin_` 前缀 (图谱命名空间, 与 iterate 的 __iterate_*
+        // 同源, 单测可一眼锚定)。
+        const spinResult = trySpinRepair({
+          closure,
+          deterministicPlan,
+          priorPlan: exec.plan,
+          priorPoisoned: priorExec.poisoned ?? new Set<string>(),
+          frozenNodes: config.frozenNodes ?? [],
+          priorResults: exec.results,
+          verdictReason: verdict.reason,
+          escCount,
+        });
+        let planToRun = deterministicPlan;
+        if (spinResult.kind === 'spin') {
+          planToRun = spinResult.plan;
+          logger.info(
+            {
+              round: escCount,
+              replaced: deterministicPlan.name,
+              repair: spinResult.plan.name,
+              closureSize: closure?.size ?? 0,
+              reusedPriorFps: priorExec.poisoned?.size ?? 0,
+            },
+            '[omd/executor-dag] 重规划空转命中 (D2 切片 3) → 合成修补节点, 不跑原确定性计划',
+          );
+        } else if (spinResult.kind === 'fallback') {
+          // 罕见的「无 command 类 verify 节点」情形 — 修补计划合成不出来, 退回原计划继续跑
+          // (INV-D2-4 fail-open 不吞证据: 记一条 warn, 仍执行原 plan)。
+          logger.warn(
+            { round: escCount, planName: deterministicPlan.name },
+            '[omd/executor-dag] 重规划空转命中但合成修补节点失败 (无 command 类 verify) → 退回原计划 (fail-open)',
+          );
+        }
+        exec = await executePlan(applyPlanFilters(planToRun, config), escTask, config, generate, { in: 0, out: 0 }, templates, priorExec, blameAnchor, warnedUnknownProfiles);
       } else {
         patched = await tryPatchReplan(escTask, verdict.reason, priorExec, config, conductorModel, generate, maxPlanRetries, templates, blameAnchor, closure, warnedUnknownProfiles);
         // D-3 (SDD 2026-08-11-l2-diff-replan): replanMode 记这一轮走的是补丁差量还是回落整图,

@@ -34,6 +34,7 @@
  *   bun run scripts/jargon-scan.ts              # 全表, 人读
  *   bun run scripts/jargon-scan.ts --json       # 机读(派工分片用)
  *   bun run scripts/jargon-scan.ts --kind string  # 只看字符串字面量那一档
+ *   bun run scripts/jargon-scan.ts --files a.ts b.ts  # 只扫写集文件(leaf 检查用)
  *
  * 退出码: 0 = 零命中 · 1 = 有命中。
  */
@@ -107,6 +108,8 @@ const SKIP_FILES: ReadonlyArray<{ file: string; why: string }> = [
 export const EXCLUDE_FILES = [
   'scripts/jargon-scan.ts',
   'scripts/jargon-scan.test.ts',
+  // SDD s1 切片 1: --files 入口的测试, 落盘/抓手/收口 都是夹具字面量, 同 `jargon-scan.test.ts` 口径。
+  'scripts/jargon-scan.files.test.ts',
   'src/harness/harness-prompts.ts',
   'src/harness/plan/false-completion.ts',
   // 上一条的**测试侧**: `distill.test.ts:315` 那一行 `['大功告成', '全部搞定', …]` 是喂给
@@ -186,16 +189,40 @@ export function scanTree(roots: readonly string[]): JargonHit[] {
   return collectFiles(roots).flatMap((f) => scanJargon(readFileSync(f, 'utf8'), f));
 }
 
+/**
+ * 只扫给定的若干文件 —— 给 leaf 检查用(写集局部入口)。**不**应用 `EXCLUDE_FILES`
+ * 与 `SKIP_PREFIXES`:调用方是引擎,文件由它自己挑;若引擎把禁词表自身喂进来,
+ * 那是引擎的 bug,不该用静默吞的方式掩盖。
+ */
+export function scanFiles(files: readonly string[]): JargonHit[] {
+  return files.flatMap((f) => scanJargon(readFileSync(f, 'utf8'), f));
+}
+
 if (import.meta.main) {
-  const kindArg = process.argv.includes('--kind') ? process.argv[process.argv.indexOf('--kind') + 1] : undefined;
+  const argv = process.argv;
+  const kindArg = argv.includes('--kind') ? argv[argv.indexOf('--kind') + 1] : undefined;
   // `--skip <前缀>`(可重复)—— 给「这一趟不扫台账」这类分批用。
   // ⚠ 它只改**这次看哪些**, 不改判据: 跳过的那些没被判合规, 只是没被问。
-  const skips = process.argv.flatMap((a, i) => (a === '--skip' ? [process.argv[i + 1] ?? ''] : []));
-  const roots = ['src', 'scripts', 'test', 'docs'];
-  let hits = scanTree(roots);
+  const skips = argv.flatMap((a, i) => (a === '--skip' ? [argv[i + 1] ?? ''] : []));
+  // `--files <f1> <f2> ...`: 只扫这些文件,给 leaf 检查用(写集局部入口)。
+  // 它**不**应用 EXCLUDE_FILES 与 SKIP_PREFIXES —— 调用方是引擎,文件由它挑。
+  // 文件列表到下一个 `--` flag 即止。
+  const filesArgIdx = argv.indexOf('--files');
+  const afterFiles = filesArgIdx >= 0 ? argv.slice(filesArgIdx + 1) : [];
+  const fileArgs: string[] = [];
+  for (const a of afterFiles) {
+    if (a.startsWith('--')) break;
+    fileArgs.push(a);
+  }
+  let hits: JargonHit[];
+  if (fileArgs.length > 0) hits = scanFiles(fileArgs);
+  else {
+    const roots = ['src', 'scripts', 'test', 'docs'];
+    hits = scanTree(roots);
+  }
   if (kindArg) hits = hits.filter((h) => h.kind === kindArg);
   if (skips.length > 0) hits = hits.filter((h) => !skips.some((s) => s && h.file.startsWith(s)));
-  if (process.argv.includes('--json')) {
+  if (argv.includes('--json')) {
     console.log(JSON.stringify(hits, null, 1));
   } else {
     const byWord = new Map<string, number>();

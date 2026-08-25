@@ -180,6 +180,30 @@ export interface DagRunnersSeam {
    * pool 未配 → router no-op = 静态 (ship 安全)。node.model 显式给时仍最高优先 (绕过 router)。
    */
   router?: LeafModelRouter;
+  /**
+   * **leaf 级仓规检查清单** (D2 切片 2, #266 修补节点): 引擎对每个 agent leaf 跑完
+   * 之后、终态写入之前, 对该 leaf 的写集跑清单里每条 check。引擎侧**只认这个形状**,
+   * 一个仓库规则都不许硬编码 (INV-D2-1); 禁词表 / catch 证据纪律由仓库侧提供。
+   * 省略 / 空数组 = 无清单, 行为与切片前逐字节相同 (零回归)。
+   *
+   * 接线点: `agent-leaf.ts` 的 `runOnce` 末段, 模型返回成功后。FAIL → 抛带 evidence
+   * 的 Error, 引擎 L0 重试机制接住, 输出进 causeNote (leaf 上下文还热, 当场自修)。
+   * UNVERIFIED → log warn + 继续 (INV-D2-4 fail-open)。三态语义沿用 `GateVerdict`。
+   */
+  repoChecks?: RepoCheck[];
+}
+
+/**
+ * 一条仓规检查 (D2 切片 2, #266)。引擎侧只认这个形状; 实际命令内容由仓库侧
+ * 装配 (本仓在 `src/mcp/assemble.ts` 通过 env / config 注入)。
+ *
+ * - `id`: 仓规侧负责取唯一 (跨 run 可比, 账本可加)。
+ * - `command`: shell 命令串, 可含 `{files}` 占位符 (替换为 shell-quoted 写集列表)。
+ *   引擎**不**校验 / 不**修改**命令内容 — 那是仓库自己的事, 引擎只跑 + 判三态。
+ */
+export interface RepoCheck {
+  id: string;
+  command: string;
 }
 
 /** 规划管线 seam: conductor 的输入约束 (roster/模板) 与 plan 的确定性变换/过滤。 */

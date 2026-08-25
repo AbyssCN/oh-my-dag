@@ -27,10 +27,12 @@
  *
  *   bun run scripts/catch-evidence-scan.ts            # 扫 src/,印读数
  *   bun run scripts/catch-evidence-scan.ts --list     # 连位置一起印(还账时用)
+ *   bun run scripts/catch-evidence-scan.ts --files a.ts b.ts --base HEAD  # 写集 vs base, 净增 > 0 即 exit 1
  */
 import ts from 'typescript';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { isAbsolute, join, resolve } from 'node:path';
 
 export interface CatchSite {
   file: string;
@@ -90,12 +92,98 @@ export function scanTree(root: string): CatchScan {
   return { total, sites };
 }
 
+/**
+ * 行号级别的「净增」比较 —— base 里同一行已有 silent/empty ⇒ 不算净增;
+ * 文件在 base 缺席 (`baseSites === null`) ⇒ 当前所有站点全算净增。
+ *
+ * 严格按行号比对而不是按行文本: catch 块可能内容微调但仍是 silent, 我们关心的是
+ * **位置层面**是否引入新沉默 —— 同一行被改成合规就是合规, 新行才付代价。
+ */
+export function netIncreaseVsBase(
+  currentSites: CatchSite[],
+  baseSites: CatchSite[] | null,
+): { netIncrease: number; newSites: CatchSite[] } {
+  if (baseSites === null) return { netIncrease: currentSites.length, newSites: currentSites };
+  const baseLines = new Set(baseSites.map((s) => s.line));
+  const newSites = currentSites.filter((s) => !baseLines.has(s.line));
+  return { netIncrease: newSites.length, newSites };
+}
+
+/**
+ * 取 base ref 处某文件的源码 —— 文件在 base 缺席返 null。封装 git show,
+ * 调用方是 CLI(给 leaf 检查用),不打算被脚本之间复用。
+ * `cwd` 给测试用(临时 git 树),CLI 走默认 `process.cwd()`。
+ */
+export function fetchBaseSource(file: string, baseRef: string, cwd?: string): string | null {
+  const r = spawnSync('git', ['show', `${baseRef}:${file}`], { encoding: 'utf8', cwd });
+  if (r.status !== 0) return null;
+  return r.stdout;
+}
+
+/**
+ * 把任意形式的 `file` 解析成 `cwd` 下的绝对路径 + repo-相对路径。
+ * `git show <ref>:<path>` 要求 repo-相对, 而 `readFileSync` 吃绝对 —— 同一调用两套口径。
+ *
+ * 路径不在 `cwd` 子树内时, `git show` 会拒,调用方此时已用错 cwd —— 不在这里兜底掩盖。
+ */
+function resolvePaths(file: string, cwd: string): { abs: string; rel: string } {
+  const abs = isAbsolute(file) ? file : resolve(cwd, file);
+  const rel = isAbsolute(file) && abs.startsWith(cwd + '/') ? abs.slice(cwd.length + 1) : file;
+  return { abs, rel };
+}
+
+/**
+ * 对给定文件逐个跑当前扫描 + 与 base 比对 —— 给 leaf 检查用(写集局部入口)。
+ * 返回每个文件的「净增」明细,合计一处。
+ */
+export interface FileNetIncrease {
+  file: string;
+  netIncrease: number;
+  newSites: CatchSite[];
+}
+export function scanFilesVsBase(files: readonly string[], baseRef: string, cwd: string = process.cwd()): FileNetIncrease[] {
+  return files.map((f) => {
+    const { abs, rel } = resolvePaths(f, cwd);
+    const cur = scanCatchEvidence(readFileSync(abs, 'utf8'), f);
+    const baseSrc = fetchBaseSource(rel, baseRef, cwd);
+    const base = baseSrc === null ? null : scanCatchEvidence(baseSrc, f).sites;
+    const { netIncrease, newSites } = netIncreaseVsBase(cur.sites, base);
+    return { file: f, netIncrease, newSites };
+  });
+}
+
 if (import.meta.main) {
+  const argv = process.argv;
+  const filesIdx = argv.indexOf('--files');
+  const baseIdx = argv.indexOf('--base');
+  // 文件列表到下一个 `--` flag 即止 —— 避免吃掉 `--base` 的取值等。
+  const afterFiles = filesIdx >= 0 ? argv.slice(filesIdx + 1) : [];
+  const fileArgs: string[] = [];
+  for (const a of afterFiles) {
+    if (a.startsWith('--')) break;
+    fileArgs.push(a);
+  }
+  const baseRef = baseIdx >= 0 ? argv[baseIdx + 1] : undefined;
+  if (fileArgs.length > 0) {
+    if (!baseRef) {
+      console.error('--files 必须配 --base <git-ref>');
+      process.exit(2);
+    }
+    const diffs = scanFilesVsBase(fileArgs, baseRef);
+    const totalNet = diffs.reduce((n, d) => n + d.netIncrease, 0);
+    for (const d of diffs) {
+      for (const s of d.newSites) {
+        console.log(`${s.file}:${s.line} ${s.kind === 'empty' ? '空' : '无证据'} (+${d.netIncrease})`);
+      }
+    }
+    console.error(`净增 ${totalNet} 处 / ${fileArgs.length} 文件`);
+    process.exit(totalNet > 0 ? 1 : 0);
+  }
   const r = scanTree('src');
   const empty = r.sites.filter((s) => s.kind === 'empty');
   const silent = r.sites.filter((s) => s.kind === 'silent');
   console.log(`catch 总数=${r.total} 空=${empty.length} 有体但无证据=${silent.length}`);
-  if (process.argv.includes('--list')) {
+  if (argv.includes('--list')) {
     for (const s of r.sites) console.log(`${s.file}:${s.line} ${s.kind === 'empty' ? '空' : '无证据'}`);
   }
 }
