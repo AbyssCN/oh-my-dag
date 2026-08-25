@@ -123,10 +123,25 @@ if (import.meta.main) {
     process.exit(1);
   }
   const port = Number(process.env.OMD_BRIDGE_PORT ?? 4519);
-  const { callModel } = await import('../src/model/index');
-  const { bootstrapModelRuntime } = await import('../src/model/bootstrap').catch(() => ({ bootstrapModelRuntime: null as null | (() => Promise<void>) }));
-  if (bootstrapModelRuntime) bootstrapModelRuntime();
-  const deps: BridgeDeps = { call: callModel, mapModel: (id) => map.get(id) };
+  // 一次性子进程调用 (见 scripts/bench-call.ts 头注): 长驻进程内直调 claude-code 通道对大
+  // prompt 9/9 退化为角色扮演, 一次性进程 5/5 干净 —— 机理待查, 先按被证明干净的形状隔离。
+  const callViaSubprocess = async (req: ModelRequest): Promise<ModelResponse> => {
+    const proc = Bun.spawn(['bun', new URL('./bench-call.ts', import.meta.url).pathname], {
+      stdin: 'pipe',
+      stdout: 'pipe',
+      stderr: 'inherit',
+    });
+    proc.stdin.write(JSON.stringify({ coord: req.model, messages: req.messages, maxTokens: req.maxTokens, temperature: req.temperature, topP: req.topP }));
+    proc.stdin.end();
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    const j = JSON.parse(out || '{"ok":false,"error":"empty subprocess output"}') as
+      | { ok: true; text: string; usage?: { in: number; out: number } }
+      | { ok: false; error: string };
+    if (!j.ok) throw new Error(j.error);
+    return { text: j.text, usage: j.usage } as ModelResponse;
+  };
+  const deps: BridgeDeps = { call: callViaSubprocess, mapModel: (id) => map.get(id) };
   Bun.serve({
     port,
     hostname: '0.0.0.0',
