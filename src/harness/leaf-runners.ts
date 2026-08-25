@@ -391,8 +391,14 @@ export interface ResearchLeafInput {
   question: string;
   /** 上游节点输出当事实锚 (防幻觉); 省略 = 只有问题本身。 */
   groundTruth?: string;
-  /** 镜头数上限 (广度旋钮)。 */
+  /** 检索召回条数上限 (k, 候选 URL 池大小)。 */
   k?: number;
+  /**
+   * 镜头数 (广度旋钮, A1): 1..6。透传给 `researchWebFanout` 的 `opts.lensCount` → `authorFanoutSpec`。
+   * 与 `k` 分开: k = 召回面, lensCount = 综合面 (council 拆多少个视角)。
+   * 省略 = conductor 自定 (现行为, 零回归)。
+   */
+  lensCount?: number;
   /** second-pass 轮数上限 (**有界内环** — INV-GOAL-4: 节点内环必须有界)。 */
   rounds?: number;
   /** 镜头分解: 缺省/true = conductor 按问题自适应出镜头; false = 固定档 (省一次分解调用)。 */

@@ -234,6 +234,9 @@ export function createDefaultResearchRunner(deps: {
       // "这个在我们仓里怎么实现的"唯一能落地的地方。
       repoCwd: cwd,
       ...(input.k ? { k: input.k } : {}),
+      // A1: lensCount = 镜头数/广度 (与 k = 召回条数分开) → authorFanoutSpec 透传。
+      // 省略 = conductor 自定, 零回归 (WebFanoutOpts.lensCount 缺省 undefined 同原行为)。
+      ...(input.lensCount !== undefined ? { lensCount: input.lensCount } : {}),
       ...(input.groundTruth ? { anchors: [{ label: '上游节点产出', text: input.groundTruth }] } : {}),
       onWarn: (m: string) => logger.warn({ warn: m }, '[omd/research-node]'),
     });

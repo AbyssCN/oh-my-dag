@@ -184,11 +184,16 @@ const PlanNode = z
      */
     expect_exit: z.number().int().min(0).max(255).optional(),
     /**
-     * executor='research' 的旋钮 (D-6)。**rounds 是节点内环的界** (INV-GOAL-4: 环封节点内且必须有界) ——
+     * executor='research' 的旋钮 (D-6 + A1 修法)。**rounds 是节点内环的界** (INV-GOAL-4: 环封节点内且必须有界) ——
      * schema 层就钳到 1..4, 不给"跑到满意为止"留口子。
+     *
+     * A1 (2026-08-25): `k` 与 `lensCount` 是两件事 —— `k` = 检索召回条数上限, `lensCount` = 镜头数/广度旋钮
+     * (council 分解时透传给 authorFanoutSpec)。前者影响搜索候选池, 后者影响研究的多视角合成面 —— 改 `k`
+     * 接线会静默改变存量 plan 行为, 所以只改描述 + 新增旋钮, 不动 `k` 接线。
      */
     research: z.object({
-      k: z.number().int().min(1).max(12).optional().describe('镜头数上限 (广度)'),
+      k: z.number().int().min(1).max(12).optional().describe('检索命中条数上限 (召回)'),
+      lensCount: z.number().int().min(1).max(6).optional().describe('镜头数 (广度, council 分解时建议拆几个视角)'),
       rounds: z.number().int().min(1).max(4).optional().describe('second-pass 轮数上限 (内环的界)'),
     }).optional(),
     /** executor='map' 时的动态扇出规格 (与 executor:'map' 互为 required, superRefine 校验)。 */
@@ -532,7 +537,7 @@ export function bareConductorSystemPrompt(): string {
     '    "primitive"?: "parallel"|"pipeline"|"loop-until"|"verify"|"judge"|"discovery"|"iterate"|"tournament"|"router"|"race"|"escalation"|"saga"|"escape-hatch",',
     '    "params"?: object,',
     '    "map"?: { "lister": object, "over": string, "itemVar": string, "keyBy"?: string, "template": object, "maxItems"?: number, "concurrency"?: number },',
-    '    "research"?: { "k"?: number, "rounds"?: number },',
+    '    "research"?: { "k"?: number, "lensCount"?: number, "rounds"?: number },',
     '    "await"?: { "artifact": string, "fromRun"?: string, "timeoutMs"?: number } } } }',
   ].join('\n');
 }
@@ -698,9 +703,14 @@ export function conductorSystemPrompt(
     '- "leaf"  = a single-shot model call, NO tools. Use for generation / judgement / drafting from what',
     '            you already have. A leaf has NO web access — it answers from model memory.',
     '- "research" = real WEB research (search → fetch → distill → multi-lens synthesis), bounded by',
-    '            field "research".rounds (1..4, default 1). Use whenever the node needs CURRENT external',
-    '            facts (docs, APIs, prior art, "what do people do about X"). A node that fails to fetch a',
-    '            single real page FAILS — so never use it for questions answerable from the repo alone.',
+    '            field "research".rounds (1..4, default 1). Two knobs shape the depth:',
+    '              - "lensCount" (1..6, optional) = how many expert lenses to author/cover; wide = more angles,',
+    '                narrow = one tight frame. Default = conductor self-decides.',
+    '              - "k" (1..12, optional) = retrieval recall cap (how many candidate URLs the search layer pulls).',
+    '                Distinct from lensCount: k widens the candidate pool, lensCount widens the synthesis.',
+    '            Use whenever the node needs CURRENT external facts (docs, APIs, prior art, "what do people do',
+    '            about X"). A node that fails to fetch a single real page FAILS — so never use it for questions',
+    '            answerable from the repo alone.',
     '- "agent" = a tool-using sub-agent (read / edit / write / bash). Use ONLY for nodes that must touch',
     '            files or run commands; scope each agent node to ONE atomic artifact (e.g. a single file).',
     '- "command" = run a deterministic CLI (field "command", e.g. "codegraph trace A B") with NO model.',

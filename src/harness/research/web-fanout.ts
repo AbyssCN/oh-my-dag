@@ -123,6 +123,13 @@ export interface WebFanoutOpts extends RetrieveOpts {
   /** probe 每轮补抓 URL 上限 (默认 5 —— 轮间抓取成本天花板)。 */
   probeCrawl?: number;
   /**
+   * probe 每轮回搜 query 数上限 (默认 2 = B1 工程缺省): 取缺口点名的 `webQueries` 去重 + 截前 N 条,
+   * 各跑一轮 `retrieveWeb(stack, q, { crawl: 2, signal })`。与 probeCrawl 同量级成本天花板。
+   * 缺省 2 是按每轮 ≤2 搜 ≤4 抓估算的; owner 可经 opts 调。本参数是被调方接口,
+   * 反向传播 (conductor → runner → opts) 由上游装配层处理, 本函数只消费给定值。
+   */
+  probeSearch?: number;
+  /**
    * 仓内腿的检索根。给则轮间 probe 除了抓 web, 还把 gap.repoQueries 交确定性检索
    * (研究 leaf 是 inproc 看不见仓库 —— 这是"我们仓里怎么实现的"那类缺口唯一的入口)。
    */
@@ -229,6 +236,12 @@ export function buildSecondPassProbe(
   alreadyFetched: Iterable<string>,
   opts: {
     probeCrawl?: number;
+    /**
+     * 每轮回搜 query 数上限 (默认 2): 缺口点名的 `webQueries` 去重 → 减去跨轮已搜过的
+     * (trim+小写归一持久) → 截前 N 条, 各跑一轮 `retrieveWeb(stack, q, { crawl: 2, signal })`
+     * —— 不挂 query 扩展器 (D-3: 缺口 question 本身已是模型精化过的查询意图)。
+     */
+    probeSearch?: number;
     minChars?: number;
     /** 每源进语料的字符上限 (默认 12k, 超出截断带标记)。实测不截: 一个论坛长帖 +35 万 chars,
      *  后续每个 stage 都拖着它 —— 语料增长必须有成本闸, 与 retrieveWeb 巨源蒸馏同一门纪律。 */
@@ -239,11 +252,19 @@ export function buildSecondPassProbe(
      * 省略 = 只有 web 腿 —— "这个在我们仓里怎么实现的"那类缺口就悬着 (原行为)。
      */
     repoCwd?: string;
+    /**
+     * 已回搜过的 query (跨轮持久, 与 fetchedSet 同款生命周期): 同一 query (trim+小写归一)
+     * 跨轮不重搜 —— 回搜的检索意图不会从一轮到下一轮忽然多出新信息。
+     */
+    alreadySearched?: Iterable<string>;
     onStage?: (s: string, d: string) => void;
   } = {},
 ): NonNullable<ResearchFanoutConfig['probe']> {
   const fetchedSet = new Set([...alreadyFetched].map(normalizeUrl));
+  // 回搜跨轮去重集: trim + 小写归一, 与 fetchedSet 同款生命周期 (调用方管持久化)。
+  const searchedSet = new Set([...(opts.alreadySearched ?? [])].map((q) => q.trim().toLowerCase()));
   const cap = opts.probeCrawl ?? 5;
+  const searchCap = opts.probeSearch ?? 2;
   const maxChars = opts.maxCharsPerSource ?? 12_000;
   return async ({ round, digest, gaps }): Promise<ProbeYield> => {
     // ── 仓内腿: 模型点名要查的字面串/符号 → 确定性检索 (不过 shell, 命中双封顶)。
@@ -260,39 +281,110 @@ export function buildSecondPassProbe(
         `r${round + 1}: 仓内检索 ${repoQueries.length} 条 query → ${res.hits.length} 命中 + ${res.files.length} 个文件整读`,
       );
     }
-    const candidates = [...extractCitedUrls(digest), ...gaps.flatMap((g) => g.urls ?? [])];
+    // ── 直抓腿 (原 web 腿): 引用 + 缺口点名的 URL → 直抓缺料。
+    const urlCandidates = [...extractCitedUrls(digest), ...gaps.flatMap((g) => g.urls ?? [])];
     const missing: string[] = [];
-    for (const u of candidates) {
+    for (const u of urlCandidates) {
       if (missing.length >= cap) break;
       const key = normalizeUrl(u);
       if (fetchedSet.has(key)) continue;
       fetchedSet.add(key);
       missing.push(u);
     }
-    // web 腿无缺料但仓内腿有货 → 仍是"有新增" (别让一条腿的空手把另一条腿的收获也扔了)。
-    if (missing.length === 0) {
-      return repoSection ? { newCorpus: repoSection, repoHits } : {};
+    // ── 回搜腿 (B1 第三腿): 模型点名需要新检索的 query, 各跑一轮 retrieveWeb (crawl=2, 无扩展器)。
+    //   - 去重 + 跨轮已搜过滤 → 截前 searchCap 条;
+    //   - 每条独立 try/catch: 单一 query 抛错跳过留痕, 不断其他腿 (INV-2 fail-open, 对齐种子检索先例);
+    //   - 命中的 bodied URL 一并进 fetchedSet + fetchedUrls (INV-GOAL-2 证据面, 防直抓腿重复抓)。
+    const allWebQueries = gaps.flatMap((g) => g.webQueries ?? []);
+    const uniqueWebQueries = [...new Set(allWebQueries.map((q) => q.trim()).filter(Boolean))];
+    const pendingQueries: string[] = [];
+    for (const q of uniqueWebQueries) {
+      if (pendingQueries.length >= searchCap) break;
+      const key = q.toLowerCase();
+      if (searchedSet.has(key)) continue;
+      searchedSet.add(key);
+      pendingQueries.push(q);
     }
+    const searchedQueries: string[] = [...pendingQueries];
+    // ── 三腿并行执行, 末尾汇总。直抓腿 + 回搜腿 + 仓内腿。
     const provs = stack.fetchProviders.map((fp) => new CleaningFetchProvider(fp, stack.cleaner));
-    const settled = await Promise.allSettled(
-      missing.map((u) => fetchRacing(provs, u, { minChars: opts.minChars ?? 200, signal: opts.signal })),
-    );
-    const sections: string[] = [];
+    const [fetchSettled, searchSettled] = await Promise.all([
+      missing.length > 0
+        ? Promise.all(
+            missing.map((u) =>
+              fetchRacing(provs, u, { minChars: opts.minChars ?? 200, signal: opts.signal }).catch((e: Error) => ({
+                kind: 'rej' as const,
+                err: e,
+              })),
+            ),
+          )
+        : Promise.resolve<Array<PromiseFulfilledResult<Awaited<ReturnType<typeof fetchRacing>>> | { kind: 'rej'; err: Error }>>([]),
+      pendingQueries.length > 0
+        ? Promise.all(
+            pendingQueries.map((q) =>
+              retrieveWeb(stack, q, { crawl: 2, signal: opts.signal })
+                .then((r) => ({ kind: 'ok' as const, retrieval: r, q }))
+                .catch((e: Error) => ({ kind: 'rej' as const, q, err: e })),
+            ),
+          )
+        : Promise.resolve<Array<{ kind: 'ok'; retrieval: Awaited<ReturnType<typeof retrieveWeb>>; q: string } | { kind: 'rej'; q: string; err: Error }>>([]),
+    ]);
+    // 直抓腿汇总。
+    const fetchSections: string[] = [];
     const fetchedUrls: string[] = [];
-    settled.forEach((s, i) => {
-      if (s.status !== 'fulfilled') return;
-      const body = s.value.result.text.trim();
+    fetchSettled.forEach((s, i) => {
+      if ('kind' in s && s.kind === 'rej') {
+        opts.onStage?.('probe', `r${round + 1}: 直抓 ${missing[i]} 失败 → 跳过 (${s.err.message})`);
+        return;
+      }
+      const r = s as Awaited<ReturnType<typeof fetchRacing>>;
+      const body = r.result.text.trim();
       if (!body) return;
       fetchedUrls.push(missing[i]!);
-      // 截断带显式标记 (不静默丢): 全文要看的话源 URL 就在节头, 消费方自己 Read。
       const clipped =
         body.length > maxChars ? `${body.slice(0, maxChars)}\n…[probe 截断: 原文 ${body.length} chars, 全文见源 URL]` : body;
-      sections.push(`## ${missing[i]}\n\n${clipped}`);
+      fetchSections.push(`## ${missing[i]}\n\n${clipped}`);
     });
     opts.onStage?.('probe', `r${round + 1}: 补抓 ${fetchedUrls.length}/${missing.length} 缺料 URL`);
-    if (sections.length === 0 && !repoSection) return {};
-    const corpus = [repoSection, ...sections].filter(Boolean).join('\n\n');
-    return { newCorpus: corpus, fetchedUrls, ...(repoHits.length ? { repoHits } : {}) };
+    // 回搜腿汇总。
+    const searchSections: string[] = [];
+    const searchFetchedUrls: string[] = [];
+    searchSettled.forEach((s) => {
+      if (s.kind === 'rej') {
+        opts.onStage?.('probe', `r${round + 1}: 回搜 "${s.q}" 失败 → 跳过 (${s.err.message})`);
+        return;
+      }
+      const r = s.retrieval;
+      // 把回搜命中的 bodied URL 计入 fetchedSet 防直抓腿后续重复抓 (本轮直抓已在 fetchedSet)。
+      const bodied = r.sources.filter((src) => src.body);
+      if (bodied.length === 0) {
+        opts.onStage?.('probe', `r${round + 1}: 回搜 "${s.q}" 命中 0 条带正文`);
+        return;
+      }
+      for (const src of bodied) {
+        const key = normalizeUrl(src.url);
+        fetchedSet.add(key); // 本轮的直抓腿后面已不再 fetch (await 已结束), 这里是为跨轮持久
+        searchFetchedUrls.push(src.url);
+        const text = src.body!.trim();
+        const clipped =
+          text.length > maxChars ? `${text.slice(0, maxChars)}\n…[回搜截断: 原文 ${text.length} chars, 全文见源 URL]` : text;
+        searchSections.push(`## ${src.url}\n\n${clipped}`);
+      }
+      opts.onStage?.('probe', `r${round + 1}: 回搜 "${s.q}" 命中 ${bodied.length} bodied URL`);
+    });
+    // ── 汇总三腿产出 (仓内腿 + 直抓腿 + 回搜腿)。任意一条空手, 别让"空手腿"把"有货腿"扔了。
+    const allFetched = [...fetchedUrls, ...searchFetchedUrls];
+    const newCorpus = [repoSection, ...fetchSections, ...searchSections].filter(Boolean).join('\n\n');
+    if (!newCorpus) {
+      // 三腿全部空手, 但回搜腿的 searchedQueries 仍要留痕 (透明: 调用方看到我们"试过了")。
+      return searchedQueries.length ? { searchedQueries } : {};
+    }
+    return {
+      newCorpus,
+      fetchedUrls: allFetched,
+      ...(repoHits.length ? { repoHits } : {}),
+      ...(searchedQueries.length ? { searchedQueries } : {}),
+    };
   };
 }
 
@@ -419,6 +511,7 @@ export async function researchWebFanout(
       [retrieval, ...seedRetrievals].flatMap((r) => r.sources.filter((s) => s.body).map((s) => s.url)),
       {
         probeCrawl: opts.probeCrawl,
+        probeSearch: opts.probeSearch, // B1: 回搜 query 上限透传
         signal: opts.signal,
         // 仓内腿 (给了根才开): 缺口点名的 repoQueries 走确定性检索并进下一轮语料。
         ...(opts.repoCwd ? { repoCwd: opts.repoCwd } : {}),

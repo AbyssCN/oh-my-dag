@@ -3476,6 +3476,8 @@ async function executePlan(
           question: node.goal ?? id,
           ...(groundTruth ? { groundTruth } : {}),
           ...(node.research?.k ? { k: node.research.k } : {}),
+          // A1: lensCount = 镜头数/广度 (与 k = 召回分开), 缺省 undefined 走原行为。
+          ...(node.research?.lensCount !== undefined ? { lensCount: node.research.lensCount } : {}),
           // 内环有界 (INV-GOAL-4): 缺省 1 轮, 上限由 schema 钳到 4。
           rounds: node.research?.rounds ?? 1,
         });

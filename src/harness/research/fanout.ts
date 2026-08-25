@@ -39,7 +39,7 @@ const GAP_SCHEMA = z.object({
       /** 下一轮要挖的具体问题 (增量, 不是原题重述)。 */
       question: z.string(),
       why: z.string(),
-      /** 该缺口点名要读的 URL (被引用未抓取 / 该查证的出处) —— 喂确定性 probe 的 web 腿。 */
+      /** 该缺口点名要读的 URL (被引用未抓取 / 该查证的出处) —— 喂确定性 probe 的 web 腿 (直抓)。 */
       urls: z.array(z.string()).optional(),
       /**
        * 该缺口点名要**在本仓查**的字面串/符号名 —— 喂确定性 probe 的**仓内腿**。
@@ -49,6 +49,16 @@ const GAP_SCHEMA = z.object({
        * (模型说缺什么) 与下限 (确定性检索去取) 才在两个方向上都对称。
        */
       repoQueries: z.array(z.string()).optional(),
+      /**
+       * 该缺口需要**新检索**才能查证的查询串 —— 喂确定性 probe 的**回搜腿** (search + crawl)。
+       *
+       * 收窄语义 (B1): **仅当** ① 语料与已引 URL 都给不出出处 ② 不是仓内可查证的问题 时才填。
+       *   · 能给出 URL 的填 `urls` —— 直抓已知目标, 比再搜一次便宜得多;
+       *   · 仓内可查证的填 `repoQueries` —— 确定性检索, 零搜索调用;
+       *   · 都不属于 (需要发散新检索找答案) 才填 `webQueries` —— 每条要烧 search + crawl 预算。
+       * 否则缺口分析会把所有缺口都变成回搜, 烧穿 probeSearch / crawl 的成本天花板。
+       */
+      webQueries: z.array(z.string()).optional(),
     }),
   ),
 });
@@ -68,6 +78,11 @@ export interface ProbeYield {
    * **与 fetchedUrls 分开**: 后者是 INV-GOAL-2 的"真 web 抓取痕迹"证据面, 掺进本地路径就废了。
    */
   repoHits?: string[];
+  /**
+   * 本轮真发出的回搜 query (B1: 缺口点名 webQueries 中去除重复后真调过 search 的部分)。
+   * 留痕进 secondPass, 与 fetchedUrls 配对证明"这次补抓是模型点的哪些 query 触发的"。
+   */
+  searchedQueries?: string[];
 }
 
 /** 一个研究镜头 = 一个专家视角 + 它内部的 V 个不同 sub-angle 变体。 */
@@ -203,7 +218,7 @@ export interface ResearchFanoutResult {
   /** 实际跑的轮数 (rounds>1 时可能因"无新增"早停; 单轮 = 1)。 */
   roundsRun: number;
   /** 轮间留痕: 每个后续轮的缺口清单 + probe 补抓到正文的 URL (单轮 = [])。 */
-  secondPass: { round: number; gaps: ResearchGap[]; probedUrls: string[]; repoHits?: string[] }[];
+  secondPass: { round: number; gaps: ResearchGap[]; probedUrls: string[]; repoHits?: string[]; searchedQueries?: string[] }[];
   /** 整轮 token/缓存/成本遥测 (M6: 测量缓存命中而非靠账单猜)。 */
   costStats: FanoutCostStats;
 }
@@ -358,13 +373,13 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
   let corpus = head;
   let roundLenses: readonly ResearchLens[] = cfg.lenses;
   const lensChampions: { key: string; text: string }[] = [];
-  const secondPass: { round: number; gaps: ResearchGap[]; probedUrls: string[]; repoHits?: string[] }[] = [];
+  const secondPass: { round: number; gaps: ResearchGap[]; probedUrls: string[]; repoHits?: string[]; searchedQueries?: string[] }[] = [];
   let roundsRun = 0;
 
   /** 模型上限半边: 通读冠军全文提缺口。fail-open: 解析/调用失败 → 空缺口 (增益不是链路)。 */
   const analyzeGaps = async (round: number, digest: string): Promise<ResearchGap[]> => {
     leafCount += 1;
-    const prompt = `${corpus}\n\n各镜头冠军 (截至第 ${round} 轮):\n${digest}\n\n你是 research-second-pass 的缺口分析器。通读以上全部, 提出下一轮**只做增量**该挖什么: 没有出处的关键断言、被引用/被点名却没读过的来源 (urls 给完整链接)、有料没挖透的角度。\n\n缺口有两个方向, 分开填:\n- urls: 该读的**外部**来源 (完整链接);\n- repoQueries: 该在**本仓**查证的字面串/符号名 (函数名/类型名/常量/配置键/错误文案)。凡是"我们仓里是怎么做的 / 有没有现成的"这类缺口都填这里 —— 会有确定性检索去取, 你不要凭印象回答。\n\n已答好的部分不要重复提。没有值得挖的就返回空 gaps —— 不要硬凑。只输出 JSON: {"gaps":[{"key":"...","question":"...","why":"...","urls":["..."],"repoQueries":["..."]}]}`;
+    const prompt = `${corpus}\n\n各镜头冠军 (截至第 ${round} 轮):\n${digest}\n\n你是 research-second-pass 的缺口分析器。通读以上全部, 提出下一轮**只做增量**该挖什么: 没有出处的关键断言、被引用/被点名却没读过的来源 (urls 给完整链接)、有料没挖透的角度。\n\n缺口有三个方向, **按下面顺序**选最便宜的填:\n1. urls: 该读的**外部**来源 (完整链接) —— 已有出处, 直抓即可;\n2. repoQueries: 该在**本仓**查证的字面串/符号名 (函数名/类型名/常量/配置键/错误文案) —— 凡是"我们仓里是怎么做的 / 有没有现成的"这类缺口都填这里, 会有确定性检索去取, 你不要凭印象回答;\n3. webQueries: 只有在**前两者都接不住** —— 语料与已引 URL 都给不出出处、且不是仓内可查证 —— 才填**新检索 query**。每条 query 要烧 search + crawl 预算, 不要把能填 urls / repoQueries 的缺口也挪到这里。\n\n已答好的部分不要重复提。没有值得挖的就返回空 gaps —— 不要硬凑。只输出 JSON: {"gaps":[{"key":"...","question":"...","why":"...","urls":["..."],"repoQueries":["..."],"webQueries":["..."]}]}`;
     try {
       const res = await call({ model: cfg.reasonModel, messages: msg(prompt), responseSchema: GAP_SCHEMA, stage: 'gap' });
       usageLog.push({ model: cfg.reasonModel, usage: res.usage ?? { in: 0, out: 0 } });
@@ -445,7 +460,13 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
       stage('second-pass', `r${round}: 无新增 (0 缺口, 0 新语料) → 停`);
       break;
     }
-    secondPass.push({ round: round + 1, gaps, probedUrls: probeYield.fetchedUrls ?? [], ...(probeYield.repoHits?.length ? { repoHits: probeYield.repoHits } : {}) });
+    secondPass.push({
+      round: round + 1,
+      gaps,
+      probedUrls: probeYield.fetchedUrls ?? [],
+      ...(probeYield.repoHits?.length ? { repoHits: probeYield.repoHits } : {}),
+      ...(probeYield.searchedQueries?.length ? { searchedQueries: probeYield.searchedQueries } : {}),
+    });
     if (newCorpus) corpus += `\n\n<second-pass-corpus round="${round + 1}">\n${newCorpus}\n</second-pass-corpus>`;
     roundLenses = [secondPassLens(round + 1, gaps)];
     stage('second-pass', `r${round + 1}: ${gaps.length} 缺口, +${newCorpus.length} chars 补抓语料`);
