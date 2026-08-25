@@ -11,6 +11,7 @@
 import type { ModelUsage } from '../../model/gateway';
 import type { LeafTelemetry } from '../leaf-runners';
 import type { NodeFailureKind } from '../node-failure';
+import type { SpinLadderReport } from '../dag/spin-rung2';
 
 /**
  * NodeCheckpoint 上属于叶遥测的字段子集 — 经 Pick 引用 {@link LeafTelemetry},
@@ -198,6 +199,18 @@ export interface NodeCheckpoint {
   toolSteps?: NodeCheckpointLeafTelemetry['toolSteps'];
   /** 序列被截掉的步数。缺席/0 = 没截;有值时 `toolSteps` 头尾拼接,中间不连续。 */
   toolStepsDropped?: NodeCheckpointLeafTelemetry['toolStepsDropped'];
+  /**
+   * **节点级空转档 2 阶梯报告** (SDD S2, 2026-08-25, 片 4 持久化):
+   * 档 1 + 档 2 两条 reading 的结构化字段 (INV-7: 四字段齐备, 缺档/缺字段均判失败)。
+   *
+   * 缺席 = 节点未走 ladder (无 spin 史 / ladder 未启用) —— 不是"走完且两档齐绿"。
+   * (NULL≠0: 「没走」与「走完都失败」分得开, 读数板必须按字面念。)
+   *
+   * 落地三处: 失败 LeafResult → NodeCheckpoint(此处) → RunNodeView.checkpoint; 报告形状在
+   * `../dag/spin-rung2.ts` 冻结 (片 1), 引擎接线在 `../dag/engine.ts` (片 3), 本片只管
+   * persist+read。两个出口读到的必须是同一份报告 — 测试钉在 `spin-rung2-report.test.ts`。
+   */
+  spinLadderReport?: SpinLadderReport;
   /** 当前版本 = 1。迁移用。 */
   schemaVersion: 1;
 }

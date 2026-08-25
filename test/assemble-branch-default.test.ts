@@ -213,18 +213,18 @@ describe('#253-CRYSTAL v1: 装配层 branchStrategy 缺省契约 (A1..A5)', () =
 
   test('A5 — 写意图工具恰为 createDagTools + createGoalTool 两个, 无第三处注入 defaultBranchStrategy', () => {
     // 静态读源: src/mcp/assemble.ts 中 defaultBranchStrategy 变量定义 + 注入位分布。
-    // 行 744 = `const defaultBranchStrategy: BranchStrategy = ...` (变量定义/赋值);
-    // 行 750 = createDagTools({ ..., defaultBranchStrategy }) (注入位 #1);
-    // 行 777 = createGoalTool({ ..., defaultBranchStrategy }) (注入位 #2)。
-    //   (D2 #266 +10 行重钉 → D4 #271 +6 行重钉 → 74c5cf10 研究单 assemble +3 行再重钉)
+    // 行 763 = `const defaultBranchStrategy: BranchStrategy = ...` (变量定义/赋值);
+    // 行 769 = createDagTools({ ..., defaultBranchStrategy }) (注入位 #1);
+    // 行 796 = createGoalTool({ ..., defaultBranchStrategy }) (注入位 #2)。
+    //   (D2 #266 +10 行重钉 → D4 #271 +6 行重钉 → 74c5cf10 研究单 assemble +3 行再重钉 → 阶梯 S2 片2 +19 行第四次重钉)
     // 契约锚点: O-2 说「写意图工具 = createDagTools + createGoalTool」—— 任何第三处注入都是契约漂移。
     const out = execFileSync('grep', ['-n', 'defaultBranchStrategy', 'src/mcp/assemble.ts']).toString().trim().split('\n');
     expect(out.length).toBe(3); // 定义 + 注入×2, 与事实表 (d) 一致
     // 抽出注入位 (非变量定义的那行), 必须恰好是 :750 (createDagTools) 与 :777 (createGoalTool)。
-    const injectionSites = out.filter((line) => !/^744:.*const defaultBranchStrategy:/.test(line));
+    const injectionSites = out.filter((line) => !/^763:.*const defaultBranchStrategy:/.test(line));
     expect(injectionSites.length).toBe(2);
-    expect(injectionSites.some((line) => line.startsWith('750:'))).toBe(true);
-    expect(injectionSites.some((line) => line.startsWith('777:'))).toBe(true);
+    expect(injectionSites.some((line) => line.startsWith('769:'))).toBe(true);
+    expect(injectionSites.some((line) => line.startsWith('796:'))).toBe(true);
     // 反向 (negative): 研究 / 记忆 / pathfinder / fleet 这一组非写意图工具**未**被注入。
     // 装配层相关函数声明扫描: 它们都不该出现 defaultBranchStrategy。
     const allTools = execFileSync('grep', ['-n', 'createDagResearchTool\\|createMemoryTools\\|createPathfinderTools\\|createFleetTools\\|createTriageTools\\|createInterveneTools\\|createConfigTools\\|createDistillTools', 'src/mcp/assemble.ts'])

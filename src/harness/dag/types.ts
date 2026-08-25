@@ -11,6 +11,7 @@ import type { ArtifactBudget } from '../plan/judge-artifacts';
 import type { NodeFailureKind } from '../node-failure';
 import type { RollbackAnchor } from '../writeset/rollback-anchor';
 import type { BlameEntry, BlameResolution } from './blame';
+import type { SpinRung2StampPools, SpinLadderReport } from './spin-rung2';
 
 /**
  * Falsify 节点 mutation 规约 (SDD `sN-falsify` 2026-08-22, C-3 / INV-8)。
@@ -191,6 +192,21 @@ export interface DagRunnersSeam {
    * UNVERIFIED → log warn + 继续 (INV-D2-4 fail-open)。三态语义沿用 `GateVerdict`。
    */
   repoChecks?: RepoCheck[];
+  /**
+   * **节点级空转档 2 阶梯配置** (SDD S2, 2026-08-25, 片 3 engine 接线)。
+   *
+   * - `threshold`: 档 2 选择 fresh-context 的累积 input token 阈值 (SDD 待决 #a, owner 数值未声明,
+   *   仓内不宣称; 接线层注入)。`undefined` = ladder 不启用, 节点走既有 max_retry 路径
+   *   (INV-8 存量语义不变)。
+   * - `pools`: 装配层派生的 cheap/mid/strong 座位池, 升档选择器 (`pickHigherTierSeat`) 的入参。
+   *   `undefined` = ladder 启用但换脑维度无候选 (试尽如实, 不会回退原模型并伪称换脑, INV-3)。
+   *
+   * 缺省 = 整条 ladder 不启用, 行为与切片前逐字节相同。
+   */
+  spinRung2?: {
+    threshold?: number;
+    pools?: SpinRung2StampPools;
+  };
 }
 
 /**
@@ -1054,6 +1070,17 @@ export interface LeafResult {
    * 下游按 `unknown` 处理, 不许当成 `same` (仓规坑①: 三态不压平)。
    */
   freezeAnchor?: import('../goal/criterion-anchor').TreeAnchor;
+  /**
+   * **节点级空转档 2 阶梯报告** (SDD S2, 2026-08-25, 片 3 / 片 4 持久化):
+   * 档 1 + 档 2 两条 reading 的结构化字段 (INV-7: 四字段齐备, 缺档/缺字段均判失败)。
+   *
+   * 缺席 = 节点未走 ladder (无 spin 史 / ladder 未启用) —— **不是**"走完且两档齐绿"。
+   * (NULL≠0: 「没走」与「走完都失败」分得开, 读数板必须按字面念。)
+   *
+   * 落地三处: 失败 LeafResult / NodeCheckpoint / RunNodeView.checkpoint; 报告形状在
+   * `./spin-rung2.ts` 冻结 (片 1), 写读面在片 4, 引擎接线在本片。
+   */
+  spinLadderReport?: SpinLadderReport;
 }
 
 /**

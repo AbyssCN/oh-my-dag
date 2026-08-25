@@ -71,6 +71,15 @@ export const GATE_REGISTRY: readonly GateEntry[] = [
     file: 'src/harness/dag/engine.ts',
   },
   {
+    // S2 (2026-08-25, 片 3): 节点级空转档 2 阶梯终止 —— 档 1 与档 2 均命中空转口径,
+    // 越过剩余 max_retry 预算, 节点直接判 failed + spinLadderReport 进 LeafResult。
+    // 与 fuse-spin 同源 (同 spin-fused 信号), 但分两条登记: 闸面是不同动作 —
+    // fuse-spin = 单次 attempt 熔断; spin-rung2-ladder = 阶梯用尽终止, 节点级收尾。
+    id: 'spin-rung2-ladder',
+    family: '空转熔断',
+    file: 'src/harness/dag/engine.ts',
+  },
+  {
     id: 'oracle-exit-miss',
     family: 'expect_exit',
     file: 'src/harness/dag/engine.ts',

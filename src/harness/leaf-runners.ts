@@ -8,6 +8,7 @@
 import type { ContentPart, ModelUsage } from '../model/gateway';
 import type { AgentEvent } from '@earendil-works/pi-agent-core';
 import type { LeafProfile } from './profiles/profile';
+import type { CriteriaDiff } from './dag/spin-rung2';
 
 // ── agent leaf(带工具的 pi session,能改文件)────────────────────────
 export interface AgentLeafInput {
@@ -68,6 +69,32 @@ export interface AgentLeafInput {
    * prompt 文本里附图片路径清单与「用 view_image 查看」指令,工具面兜底让 agent 真看到像素)。
    */
   promptImages?: ContentPart[];
+  /**
+   * S2 (2026-08-25, 片 2) — rung 2 fresh-context 派发标记 (D-6): 显式、可审计。
+   * 出现 = 本次调用是 rung 2 fresh-context 重派, 同模型 + 丢消息历史。
+   * 缺省 (undefined) = 普通调用, 行为与切片前逐字节相同。
+   * production runner 现状每次调用起新会话 (943), 本字段为可审计标记。
+   */
+  freshContext?: boolean;
+  /**
+   * S2 (2026-08-25, 片 2) — rung 2 seat-upgrade 目标座位 (D-3): 覆盖本调用的 model。
+   * 出现 = 引擎决定升 leaf 座位, runner 应使用本字段而非 input.model。
+   * 缺省 = 不升级, 沿用 input.model (普通调用形状不变)。
+   */
+  targetSeatCoord?: string;
+  /**
+   * S2 (2026-08-25, 片 2) — rung 2 证据携带 (D-4): 档 1 注入包的摘要 + 失败原因 + 判据 diff +
+   * 卡点签名。fresh-context 丢消息历史不得丢这些显式证据。
+   *
+   * 缺省 = 普通调用, runner 不注入证据。`criterionDiff` 类型 = `CriteriaDiff`
+   * (与 `SpinLadderReading.criterionDiff` 同源, 片 1 冻结)。
+   */
+  rung2Evidence?: {
+    packHash: string;
+    failureReason: string;
+    criterionDiff: CriteriaDiff;
+    blockerSignature: string;
+  };
   /**
    * **节点级确定性判据** (P1 C-2, 2026-08-21): agent leaf 在内环将停时跑这条命令, 退出码
    * `=== expect_exit` → 该节点收敛; 不等 → 引擎**借 pi 的 `getFollowUpMessages` 钩子**把
