@@ -20,6 +20,7 @@ import { renderNumericClaimNotice } from '../../harness/goal/numeric-claims';
 import { loadSddContract, parseBreakdown, ticketFieldsFromSdd } from '../../harness/goal/sdd-direct';
 import { checkIgnitionCriteria, type IgnitionRunCommand } from '../../harness/goal/ignition-criteria-check';
 import { dryRunSddIgnition } from '../../harness/goal/sdd-ignition-check';
+import { checkCoords } from '../../harness/goal/coord-check';
 import type { CommandLeafRunner } from '../../harness/leaf-runners';
 import { resolveBackend as realResolveBackend, type PathBackend } from '../../harness/pathfinder/backend';
 import type { DagNodeEvent, ExecutorDagConfig } from '../../harness/dag/types';
@@ -451,6 +452,45 @@ function sddIgnitionDryRunGate(
   };
 }
 
+/**
+ * #241 坐标机械校验闸 (W2-241 S2) —— 与 D3 空跑闸同门, detached 与非 detached 两接线点同一函数。
+ * 校验对象 = solve 的 goal 文本 + (有 sddPath 时) SDD 全文; 判定走 `checkCoords` 白名单三形状
+ * (INV-W241-1, 判不了的散文碎片一律不验)。实账 0f67293b: 派工文本编造符号名 → 执行体照抄进
+ * `rg -e ...` → 无匹配退 1 → 下游 7 节点全 skipped, 一整跑白烧 —— 这道闸把死亡提前到点火同步回执。
+ *
+ *   · 零命中     → undefined (INV-W241-4 零涟漪)
+ *   · 有违规     → 同步拒, 逐条列「原文 · 判据 · 缺在哪」
+ *   · force=true → 越闸放行, logger.warn 留账 (沿 INV-5 惯例, 不另造账本)
+ */
+function coordIgnitionGate(
+  texts: readonly { label: string; text: string }[],
+  root: string,
+  force: boolean | undefined,
+  runId: string,
+): { content: { type: 'text'; text: string }[]; isError: true } | undefined {
+  const findings = texts.flatMap(({ label, text }) =>
+    checkCoords(text, { root }).map((f) => `[${label}] ${f.message}`),
+  );
+  if (findings.length === 0) return undefined;
+  if (force) {
+    logger.warn(
+      { runId, findings },
+      '[dag_goal] #241: 坐标校验违规越闸 (owner force=true · 沿 INV-5 旧惯例)',
+    );
+    return undefined;
+  }
+  return {
+    content: [{
+      type: 'text' as const,
+      text:
+        `dag_goal 点火拒绝 (#241 坐标机械校验): 派工文本里的坐标与仓不符 —— 编造的符号/路径会被执行体照抄进命令 (实账 0f67293b 烧掉整跑)。\n` +
+        findings.map((m) => `- ${m}`).join('\n') +
+        `\n改正坐标 (确属新建物时在同句写明「新建」), 或 force=true 越闸 (留账)。`,
+    }],
+    isError: true,
+  };
+}
+
 function ignitionForecastLine(dag: Partial<ExecutorDagConfig>, sddPath: string | undefined): string {
   try {
     const coords: { label: string; coord: string }[] = [];
@@ -693,13 +733,20 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         // ── D3 sddPath 点火空跑闸 (INV-D3-2 · detached 接线点): spawn 之前过 ─────
         // 与非 detached 同一函数 (sddIgnitionDryRunGate), 判定同源 dryRunSddIgnition。借道首跑
         // 语义 (worker --run-id 路径): resume 字段非空但实质首跑 → trueResume=false → 走闸。
-        if (sddPath) {
+        {
           const rec = resume ? deps.runRegistry.getRecord(runId) : undefined;
           const journalPresent = !!resume && !!deps.continuity && deps.continuity.manager.loadFixpointJournal(runId) !== null;
           const isTrueResume = !!rec || journalPresent;
-          if (!isTrueResume) {
+          if (sddPath && !isTrueResume) {
             const blocked = sddIgnitionDryRunGate(sddPath, force, runId);
             if (blocked) return blocked;
+          }
+          // ── #241 坐标机械校验 (detached 接线点): goal 文本 + SDD 全文, spawn 之前过 ──
+          if (!isTrueResume) {
+            const texts: { label: string; text: string }[] = [{ label: 'goal', text: goal }];
+            if (sddPath) texts.push({ label: 'sdd', text: loadSddContract(sddPath).text });
+            const coordBlocked = coordIgnitionGate(texts, runAnchor, force, runId);
+            if (coordBlocked) return coordBlocked;
           }
         }
         let pid: number | undefined;
@@ -780,6 +827,15 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
       // board note, INV-5 后半) —— 这里只把声明传过去, 不另造第二本账, 越闸与留账不脱钩。
       // advisories (D-1/D-10: 已结晶未点火 SDD 相交) 只进报告、永不阻塞 —— 预检 verdict 不受其影响,
       // 这里把整份 advisory 列表留到回执里念出来 (blocked 分支也念, 让调用方一次看全)。
+      // ── #241 坐标机械校验 (非 detached 接线点): goal 文本 + SDD 全文, ignitionPreflight 之前过 ──
+      // 与 detached 同函数 (coordIgnitionGate)。非 sddPath 调用也过 (INV-W241-3: solve goal 文本
+      // 同样会被执行体照抄进命令); 零命中零涟漪 (INV-W241-4)。
+      if (!trueResume) {
+        const coordTexts: { label: string; text: string }[] = [{ label: 'goal', text: goal }];
+        if (sddPath) coordTexts.push({ label: 'sdd', text: loadSddContract(sddPath).text });
+        const coordBlocked = coordIgnitionGate(coordTexts, deps.cwd, force, runId);
+        if (coordBlocked) return coordBlocked;
+      }
       let preflightAdvisories: string[] = [];
       if (sddPath && !trueResume) {
         // ── D3 sddPath 点火空跑闸 (INV-D3-2 · 非 detached 接线点): ignitionPreflight 之前过 ─
