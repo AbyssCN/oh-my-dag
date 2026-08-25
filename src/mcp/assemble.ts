@@ -76,6 +76,7 @@ import {
   type ThinkingLevel,
 } from '../model/role-models';
 import { createAgentLeafRunner } from '../harness/agent-leaf';
+import { loadRepoChecksManifest } from '../harness/repo-checks-manifest';
 import type { AnyOmdTool } from '../harness/agent-tools';
 import { resolveVerification } from '../harness/verifier';
 import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../harness/command-leaf';
@@ -314,6 +315,10 @@ function renderResearchReport(question: string, runId: string, result: ResearchF
 export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[] {
   const env = deps.env ?? process.env;
   const cwd = deps.cwd ?? process.cwd();
+  // D4 (#271): 仓规检查清单一次加载 (INV-D4-3) —— 三处装配点 (assembly-time agent runner /
+  // buildDefaultConfig 隔离档 agent runner / buildDefaultConfig config.repoChecks) 共用同一份,
+  // 不各读各的 (三份必漂)。文件不存在 → [] (零回归锚点); 格式坏 → throw (fail-loud, INV-D4-2)。
+  const repoChecks = loadRepoChecksManifest(cwd);
   const extTools = deps.extTools ?? [];
   const engine = deps.engine ?? PROD_ENGINE;
   // S2: registry 带上身份持久面 —— MCP server 是 stdio + 客户端消失即自杀, 「重启」是每次会话
@@ -392,7 +397,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       // D2 切片 2 (#266): 仓规检查清单默认空数组, 行为与切片前逐字节相同 (INV-D2-4)。
       // 仓库侧提供实际清单 (jargon-scan / catch-evidence-net-add 等) 的方式 = config.repoChecks
       // (DagRunnersSeam.repoChecks), 见 buildDefaultConfig 的解析点。
-      repoChecks: [],
+      repoChecks,
     });
   const commandRunner =
     deps.commandRunner ??
@@ -485,7 +490,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
             ...(jailRoot ? { sandboxRoot: jailRoot, sandboxGit: true } : {}),
             ...(extToolsForRun && extToolsForRun.length ? { customTools: extToolsForRun } : {}),
             // D2 切片 2 (#266): 隔离档下仓规检查仍走 (写集 = worktree 内文件); 默认空 = 无清单。
-            repoChecks: [],
+            repoChecks,
           })
         : agentRunner;
     const commandRunnerForRun =
@@ -665,8 +670,9 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       router,
       // D2 切片 2 (#266): 仓规检查清单 (DagRunnersSeam.repoChecks) — 默认空数组,
       // 行为与切片前逐字节相同 (INV-D2-4)。宿主可通过 configOverrides.repoChecks 注入
-      // 仓库实际清单 (jargon-scan / catch-evidence-net-add 等)。
-      repoChecks: [],
+      // 仓库实际清单 (jargon-scan / catch-evidence-net-add 等)。D4 (#271) 配 INV-D4-3 共用
+      // 装配期那一份 loadRepoChecksManifest(cwd), configOverrides.repoChecks 仍按原展开序覆盖。
+      repoChecks,
       planFilters,
       // D-8v2: judge/parallel/tournament 的 attempts 候选池 = mid 执行主力池 (跨家族轮转)。
       ...(stampPools.mid.length >= 2 ? { primitiveCandidates: stampPools.mid } : {}),
