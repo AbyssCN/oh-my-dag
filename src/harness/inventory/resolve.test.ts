@@ -50,8 +50,8 @@ function makeEntry(over: {
     defer_mode: 'eager',
     signature: { inputs: [], outputs: [] },
     oracle: { kind: 'command', gateScriptRef: 'check.sh' },
-    probe_state: 'untested',
-    applicability: 'always',
+    probe_state: 'UNPROBED',
+    applicability: 'APPLICABLE',
     ...(over.failure_reason !== undefined ? { failure_reason: over.failure_reason } : {}),
     idle_days: 0,
     provenance: {

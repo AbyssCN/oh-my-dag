@@ -65,8 +65,8 @@ function builtinEntry(name: string): InventoryEntry {
     defer_mode: 'sync',
     signature: {},
     oracle: { kind: 'command', gateScriptRef: 'builtin' },
-    probe_state: 'green',
-    applicability: 'builtin',
+    probe_state: 'PROBED_OK',
+    applicability: 'APPLICABLE',
     idle_days: 0,
     provenance: {
       registered_at: INVENTORY_EPOCH,
@@ -886,8 +886,8 @@ function makeEntry(boot: BootstrapNode, nodeId: string): InventoryEntry {
     defer_mode: 'sync',
     signature: {},
     oracle: { kind: 'command', gateScriptRef: 'bootstrap' },
-    probe_state: 'green',
-    applicability: 'bootstrap',
+    probe_state: 'PROBED_OK',
+    applicability: 'APPLICABLE',
     idle_days: 0,
     provenance: {
       registered_at: INVENTORY_EPOCH,

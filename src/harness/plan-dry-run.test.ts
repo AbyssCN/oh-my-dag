@@ -65,8 +65,8 @@ function entry(name: string, id = `tool:${name}@1.0.0`): InventoryEntry {
     defer_mode: 'never',
     signature: {},
     oracle: { kind: 'command', gateScriptRef: 'gate.sh' },
-    probe_state: 'live',
-    applicability: 'always',
+    probe_state: 'PROBED_OK',
+    applicability: 'APPLICABLE',
     idle_days: 0,
     provenance: {
       registered_at: '2026-01-01T00:00:00Z',
