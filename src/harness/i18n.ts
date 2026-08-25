@@ -22,7 +22,7 @@
  */
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { configPath } from '../model/role-models';
+import { configPath, readConfigPath } from '../model/role-models';
 import { withConfigLock } from './config-lock';
 
 export type Lang = 'en' | 'zh';
@@ -57,7 +57,7 @@ let langCache: Lang | null = null;
 let overrideLang: Lang | null = null;
 
 /** Read the `lang` field from .omd/config.json (silent on any failure, like role-models). */
-function configLang(path = configPath()): Lang | null {
+function configLang(path = readConfigPath()): Lang | null {
   try {
     statSync(path); // fast existence check; avoid throwing read on missing file
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as { lang?: string };

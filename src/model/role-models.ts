@@ -24,6 +24,7 @@
  * INV: 永不返硬编码 URL — 只返 'provider' / 'provider:modelId' 坐标, callModel 经注册 provider 解析。
  */
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, parse, resolve } from 'node:path';
 // worktree → 主仓的识别与留痕库锚点同源 (src/harness/repo-root), 两处各算一份必漂。
 import { mainRepoRootOfWorktree } from '../harness/repo-root';
@@ -129,6 +130,47 @@ function discoverConfigPath(cwd: string, envPath: string | undefined): string {
   return join(cwd, DEFAULT_CONFIG_REL);
 }
 
+/** 家目录 config (读回落用): `OMD_DATA_HOME ?? ~/.omd` 下的 config.json — 与 script-bootstrap 同锚点。 */
+function homeConfigPath(): string {
+  const dataHome = process.env.OMD_DATA_HOME?.trim() || join(homedir(), '.omd');
+  return join(dataHome, 'config.json');
+}
+
+/** 已就该 (own→home) 对告警过 — 每进程每对只响一次, resetConfigCache 清。 */
+let homeFallbackWarned: string | null = null;
+
+/**
+ * **读**路径 (2026-08-25 owner 裁 "找不到就回退")。与 {@link configPath} (写路径) 刻意分开。
+ *
+ * 病灶: 座位逐仓配, 而 configPath() 走到 `.git` 就停 (见其注释里那条"不越过 repo 边界")。
+ * 于是任何还没 `omd models auto` 过的仓, config 指向一个**不存在的文件** → 座位全未配 →
+ * conductor 解不到模型 → omd MCP server 在该仓**启动即抛** SeatUnresolvedError。
+ *
+ * 回落只动读:
+ *   · 本仓那份存在 → 用本仓的 (家目录那份**不许劫持**, 原反向钉的语义原样保住);
+ *   · `OMD_CONFIG_PATH` 显式 → 即权威, 不回落 (哪怕指向不存在的文件);
+ *   · 本仓那份不存在 且 家目录那份存在 → 用家目录的, 并 `logger.warn` 记明来源。
+ *
+ * 那行 warn 是这条回落成立的前提 (INV-7 不静默降级): configPath() 当初拒绝回落的理由是
+ * "配置从哪来的最难查", 而写路径不变 + 每次回落都报出两个绝对路径, 正是对那条理由的回答。
+ */
+export function readConfigPath(): string {
+  const own = configPath();
+  if (existsSync(own)) return own;
+  if (process.env.OMD_CONFIG_PATH?.trim()) return own; // 显式即权威
+  const home = homeConfigPath();
+  if (home === own || !existsSync(home)) return own;
+  const key = `${own} -> ${home}`;
+  if (homeFallbackWarned !== key) {
+    homeFallbackWarned = key;
+    logger.warn(
+      { missing: own, using: home },
+      `[omd/config] 本仓无 ${DEFAULT_CONFIG_REL}, 座位读**家目录**那份: ${home} (写仍落 ${own}; 跑 \`omd models auto\` 可在本仓落一份自己的)`,
+    );
+  }
+  return home;
+}
+
 interface ConfigFile {
   version?: number;
   /** role → 'provider:modelId' coordinate. Absent role = fall to env / default. */
@@ -182,7 +224,7 @@ interface ConfigFile {
 let fileCache: { path: string; mtimeMs: number; config: ConfigFile } | null = null;
 
 /** Read the whole config, mtime-cached. Missing / unreadable / malformed → {} (silent, never throws). */
-function fileConfig(path = configPath()): ConfigFile {
+function fileConfig(path = readConfigPath()): ConfigFile {
   let mtimeMs: number;
   try {
     mtimeMs = statSync(path).mtimeMs;
@@ -205,13 +247,13 @@ function fileConfig(path = configPath()): ConfigFile {
 }
 
 /** Models section of the config (mtime-cached, derived from fileConfig). */
-function fileModels(path = configPath()): Record<string, string> {
+function fileModels(path = readConfigPath()): Record<string, string> {
   const m = fileConfig(path).models;
   return m && typeof m === 'object' ? m : {};
 }
 
 /** Seats 覆盖段 (C4, mtime-cached; 消费方 src/model/seat-overrides.ts)。 */
-export function fileSeats(path = configPath()): Record<string, unknown> {
+export function fileSeats(path = readConfigPath()): Record<string, unknown> {
   const s = fileConfig(path).seats;
   return s && typeof s === 'object' && !Array.isArray(s) ? (s as Record<string, unknown>) : {};
 }
@@ -220,6 +262,7 @@ export function fileSeats(path = configPath()): Record<string, unknown> {
 export function resetConfigCache(): void {
   fileCache = null;
   configPathCache = null;
+  homeFallbackWarned = null;
 }
 
 /**
@@ -412,7 +455,7 @@ export function resolveDefaultModel(
   opts: { env?: Record<string, string | undefined>; configPath?: string } = {},
 ): string | undefined {
   const env = opts.env ?? process.env;
-  const fromFile = fileConfig(opts.configPath ?? configPath()).defaultModel?.trim();
+  const fromFile = fileConfig(opts.configPath ?? readConfigPath()).defaultModel?.trim();
   if (fromFile) return fromFile;
   const fromEnv = env.OMD_DEFAULT_MODEL?.trim();
   if (fromEnv) return fromEnv;
@@ -478,7 +521,7 @@ export function resolveSeatModel(seat: OmdSeat, opts: SeatResolveOpts = {}): Sea
 }
 
 /** 读 .omd/config.json 的 autoAssigned 段 (node→coord)。无/坏 → {} (mtime-cached, 静默)。 */
-function fileAutoAssigned(path = configPath()): Record<string, string> {
+function fileAutoAssigned(path = readConfigPath()): Record<string, string> {
   const a = fileConfig(path).autoAssigned;
   return a && typeof a === 'object' && !Array.isArray(a) ? a : {};
 }
@@ -506,7 +549,7 @@ const THINKING_LEVELS: readonly ThinkingLevel[] = ['off', 'low', 'medium', 'high
 const thinkingRank = (t: ThinkingLevel): number => THINKING_LEVELS.indexOf(t);
 
 /** 读 .omd/config.json 的 autoAssignedThinking 段 (node→档)。无/坏值 → 丢弃该条 (fail-open)。 */
-function fileAutoAssignedThinking(path = configPath()): Record<string, ThinkingLevel> {
+function fileAutoAssignedThinking(path = readConfigPath()): Record<string, ThinkingLevel> {
   const raw = fileConfig(path).autoAssignedThinking;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
   const out: Record<string, ThinkingLevel> = {};
@@ -582,7 +625,7 @@ export function resolveSeatAdvisor(
   const env = opts.env ?? process.env;
   const fromEnv = env[`OMD_${seat.toUpperCase()}_ADVISOR`];
   if (fromEnv?.trim()) return fromEnv.trim();
-  const fromConfig = fileConfig(opts.path ?? configPath()).advisors?.[seat];
+  const fromConfig = fileConfig(opts.path ?? readConfigPath()).advisors?.[seat];
   if (typeof fromConfig === 'string' && fromConfig.trim()) return fromConfig.trim();
   return seatSpecOf(seat)?.advisor;
 }
@@ -605,7 +648,7 @@ export function persistSeatAdvisor(seat: string, coord: string | null, path = co
 // ---------------------------------------------------------------------------
 
 /** 解析多模态 leaf 候选池 (config.multimodalPool)。无 → []。 */
-export function resolveMultimodalPool(path = configPath()): string[] {
+export function resolveMultimodalPool(path = readConfigPath()): string[] {
   const pool = fileConfig(path).multimodalPool;
   return Array.isArray(pool)
     ? pool.filter((c): c is string => typeof c === 'string' && c.trim().length > 0)
@@ -621,7 +664,7 @@ export function persistMultimodalPool(coords: string[], path = configPath()): vo
 }
 
 /** 解析多模态**贵层**池 (config.multimodalPoolPremium) — 便宜层分析置信不足/显式深读时升级。无 → []。 */
-export function resolveMultimodalPoolPremium(path = configPath()): string[] {
+export function resolveMultimodalPoolPremium(path = readConfigPath()): string[] {
   const pool = (fileConfig(path) as { multimodalPoolPremium?: unknown }).multimodalPoolPremium;
   return Array.isArray(pool)
     ? pool.filter((c): c is string => typeof c === 'string' && c.trim().length > 0)
@@ -684,7 +727,7 @@ export function poolEnvKey(tier: PoolTier): string {
  * 只能靠 grep 全仓才答得上来。读数板要能一眼答,这一层就得先答得上来。
  */
 export function describeConfiguredPools(
-  path = configPath(),
+  path = readConfigPath(),
   env: Record<string, string | undefined> = process.env,
 ): Partial<Record<PoolTier, { coords: string[]; source: 'env' | 'config' }>> {
   const raw = fileConfig(path).pools;
@@ -734,14 +777,14 @@ function cleanProviderList(v: unknown): string[] | undefined {
  * 不靠这张表 —— 别在这里塞默认值把两件事混起来。
  */
 export function resolveSubscriptionProviders(
-  path = configPath(),
+  path = readConfigPath(),
   env: Record<string, string | undefined> = process.env,
 ): string[] {
   return cleanProviderList(env.OMD_SUBSCRIPTION_PROVIDERS) ?? cleanProviderList(fileConfig(path).subscriptionProviders) ?? [];
 }
 
 export function resolveConfiguredPools(
-  path = configPath(),
+  path = readConfigPath(),
   env: Record<string, string | undefined> = process.env,
 ): Partial<Record<PoolTier, string[]>> {
   const raw = fileConfig(path).pools;

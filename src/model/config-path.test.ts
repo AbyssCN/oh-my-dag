@@ -10,15 +10,18 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { realpathSync } from "node:fs";
-import { configPath, resetConfigCache } from "./role-models";
+import { configPath, readConfigPath, resetConfigCache } from "./role-models";
 
 const origCwd = process.cwd();
 const origEnv = process.env.OMD_CONFIG_PATH;
+const origDataHome = process.env.OMD_DATA_HOME;
 
 afterEach(() => {
 	process.chdir(origCwd);
 	if (origEnv === undefined) delete process.env.OMD_CONFIG_PATH;
 	else process.env.OMD_CONFIG_PATH = origEnv;
+	if (origDataHome === undefined) delete process.env.OMD_DATA_HOME;
+	else process.env.OMD_DATA_HOME = origDataHome;
 	resetConfigCache();
 });
 
@@ -166,5 +169,78 @@ describe("configPath — linked worktree 回主仓", () => {
 	test("普通仓 (`.git` 是目录) 行为不变", () => {
 		const { main } = worktreeTree();
 		expect(pathFrom(main)).toBe(join(main, ".omd", "config.json"));
+	});
+});
+
+// ── 读路径回落家目录 (2026-08-25 owner 裁: "找不到就回退") ──────────────────────
+//
+// 病灶: 座位是**逐仓**配的, 而 configPath() 走到 `.git` 就停 (上面那条"不越过 repo 边界"的
+// 反向钉)。于是任何还没 `omd models auto` 过的仓, config 指向一个不存在的文件 → 18 个座位
+// 全未配 → conductor 解不到模型 → **omd MCP server 在该仓启动即抛 SeatUnresolvedError**。
+// 实测 (talous-v2): `claude mcp list` 显示 omd `✘ Failed to connect — Connection closed`。
+//
+// 修法**只动读, 不动写** —— 这是与那条反向钉共存的关键:
+//   · configPath() (写路径) 逐字节不变 → `omd models auto` / init 仍写进本仓, 不会去改家目录那份;
+//   · readConfigPath() (读路径) 在本仓那份**不存在**时回落 `~/.omd/config.json`, 并 logger.warn
+//     记明回落来源 (INV-7 不静默降级) —— 原注释担心的"配置从哪来的最难查", 由那行 warn 答。
+// 所以"劫持"只发生在本来就会崩的场合, 且响一声。
+
+/** 造「家目录 config」+「一个没有自己 config 的仓」。 */
+function homeFallbackTree(opts: { repoHasOwnConfig?: boolean; homeHasConfig?: boolean } = {}): {
+	home: string;
+	repo: string;
+} {
+	const base = realpathSync(mkdtempSync(join(tmpdir(), "omd-homefb-")));
+	const home = join(base, "home", ".omd");
+	if (opts.homeHasConfig !== false) {
+		mkdirSync(home, { recursive: true });
+		writeFileSync(join(home, "config.json"), '{"version":2,"models":{"conductor":"home:cfg"}}\n');
+	}
+	const repo = join(base, "repo");
+	mkdirSync(join(repo, ".git"), { recursive: true });
+	if (opts.repoHasOwnConfig) {
+		mkdirSync(join(repo, ".omd"), { recursive: true });
+		writeFileSync(join(repo, ".omd", "config.json"), '{"version":2,"models":{"conductor":"repo:own"}}\n');
+	}
+	return { home, repo };
+}
+
+const readFrom = (dir: string, dataHome: string): string => {
+	delete process.env.OMD_CONFIG_PATH;
+	process.env.OMD_DATA_HOME = dataHome;
+	process.chdir(dir);
+	resetConfigCache();
+	return readConfigPath();
+};
+
+describe("readConfigPath — 本仓无 config 时回落家目录", () => {
+	test("★ 仓里没有 .omd/config.json + 家目录有 → 读家目录那份", () => {
+		const { home, repo } = homeFallbackTree();
+		expect(readFrom(repo, home)).toBe(join(home, "config.json"));
+	});
+
+	test("★ 写路径**不**跟着回落 (omd models auto 仍写进本仓, 不改家目录那份)", () => {
+		const { home, repo } = homeFallbackTree();
+		readFrom(repo, home);
+		expect(configPath()).toBe(join(repo, ".omd", "config.json"));
+	});
+
+	test("★ 仓里**有**自己的 config → 用自己的, 家目录那份不许劫持", () => {
+		const { home, repo } = homeFallbackTree({ repoHasOwnConfig: true });
+		expect(readFrom(repo, home)).toBe(join(repo, ".omd", "config.json"));
+	});
+
+	test("★ 家目录也没有 → 回落原行为 (仍指本仓, 让座位响亮失败)", () => {
+		const { home, repo } = homeFallbackTree({ homeHasConfig: false });
+		expect(readFrom(repo, home)).toBe(join(repo, ".omd", "config.json"));
+	});
+
+	test("★ OMD_CONFIG_PATH 显式即权威 → 不回落 (哪怕它指向不存在的文件)", () => {
+		const { home, repo } = homeFallbackTree();
+		process.env.OMD_DATA_HOME = home;
+		process.chdir(repo);
+		process.env.OMD_CONFIG_PATH = join(repo, "nope.json");
+		resetConfigCache();
+		expect(readConfigPath()).toBe(join(repo, "nope.json"));
 	});
 });

@@ -16,7 +16,7 @@
 import '../env-alias';
 import { registerProvidersFromEnv, registerProvidersFromModelsJson } from './providers';
 import { warnUnregisteredRoles } from './role-fallback';
-import { configPath } from './role-models';
+import { readConfigPath } from './role-models';
 
 /**
  * 引导短命进程的模型运行时: 内置 provider 注册 + models.json 自定 provider 叠加。
@@ -71,7 +71,9 @@ export function envSummaryLine(providers: readonly string[]): string {
   const list = providers.length ? providers.join(',') : '⚠空-检查 .env/--env-file';
   let cfg: string;
   try {
-    cfg = configPath();
+    // ⚠ 必须是**读**路径 (readConfigPath): 2026-08-25 加了"本仓无 config 就读家目录"的回落之后,
+    //   印写路径会重演上面那段误判 —— 打印的文件与座位实际生效的文件是两个。
+    cfg = readConfigPath();
   } catch (e) {
     // 解析不出来本身就是要说的事; 编一个默认路径会让人去看错的文件。
     cfg = `⚠解析失败(${e instanceof Error ? e.message : String(e)})`;
