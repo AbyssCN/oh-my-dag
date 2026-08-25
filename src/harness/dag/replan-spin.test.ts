@@ -1,18 +1,16 @@
 /**
  * src/harness/dag/replan-spin.test.ts —— D2 切片 3 的判别力测试。
  *
- * GWT 表 (SDD §契约):
- *   G-1  accept 红 + 平铺图 deterministicReplan 返同一张图 (e7e360f6 同形)
- *        ⇒ detectReplanSpin → true; 引擎走 repair-spin 路径, 产出 plan.name 含 __repair_spin_
- *        且 nodes 含 __repair_spin_<escCount> 与原 accept 节点, accept 字段逐字保留。
- *   G-2  accept 红 + 闭包内有非冻结非复用执行节点 (语义红, 不会空转)
- *        ⇒ detectReplanSpin → false; 引擎跑原 deterministicPlan, 节点图谱不变。
- *   G-3  accept 红 + 闭包 fingerprint 全部不在 priorPoisoned (一张全新图)
- *        ⇒ detectReplanSpin → false (不是空转 — 全新节点会真跑)。
- *   G-4  closure = null (blame 解析失败) → detect 必返 false, fail-open 走整轮。
- *   G-5  closure.size = 0 → detect 必返 false (空闭包不是空转)。
+ * GWT 表 (2026-08-25 判据同源版, 修 #272 漏报 + #273 误报; 旧 G-4/G-5 语义已废):
+ *   #272 closure 空/null + 全图除冻结门外全在 reusedIds ⇒ true (b5b7a214 活体形状; 旧守卫漏报)。
+ *   #273 任一节点不在 reusedIds (含 failed/skipped 切片) ⇒ false (b13545da 活体形状; 旧指纹近似误报)。
+ *   G-1  accept 红 (仓规红无 blame) + deterministicReplan 返同一张图 ⇒ 引擎走 repair-spin 路径,
+ *        plan.name 含 __repair_spin_, accept 字段逐字保留。
+ *   G-2  真变更节点不在 reusedIds (语义红) ⇒ false; 引擎跑原 deterministicPlan。
+ *   G-3  全新图无一在 reusedIds ⇒ false。
  *   G-6  buildRepairPlan: 找得到 command 节点 → 返 plan 含修补节点 + verify; 找不到 → 返 null。
- *   G-7  修补节点的 goal 含 verifier 失败原文 + 「只修这些失败,不动其他」; write_set = 本轮并集。
+ *   G-7  修补节点的 goal 含 verifier 失败原文 + 「只修这些失败,不动其他」; write_set = 本轮并集
+ *        (closure 空 → 并集退 priorPlan 全图)。
  *
  * 反向自检 (本片手做, 与 deterministic-replan.test.ts 同源):
  *   1. 把 `const spinResult = trySpinRepair(...)` 替成 `const spinResult = { kind: 'no-spin' as const };`
@@ -31,7 +29,6 @@ import type { GenerateFn, LeafResult } from './types';
 
 // 禁词样例拼接构造 —— jargon-scan 扫的是源码字面串, 夹具要在运行期拼出来, 否则「清扫完成态」当场红。
 const JARGON_SAMPLE = ['落', '盘'].join('');
-import { merkleFingerprints } from '../plan-passes/semantic-key';
 import { detectReplanSpin, buildRepairPlan, trySpinRepair, repairNodeId } from './replan-spin';
 
 // ── 测试夹具 (沿用 deterministic-replan.test.ts 的形状) ──────────────────────────
@@ -96,6 +93,14 @@ const fakeLeaf = (kind: 'command' | 'agent' = 'command'): LeafResult => ({
   filesTouched: ['src/foo.ts'],
 });
 
+/**
+ * 假 commandRunner: 让 command 节点真"跑成" (exit 0)。2026-08-25 教训: 旧集成测试没配它,
+ * command 节点全程 missing-capability failed, 而反向语义的 detect 把 failed 也当复用 ——
+ * 测试绿在一个节点从没跑成的世界里。判据同源版必须站在 done 的地基上。
+ */
+const okCommandRunner = async ({ command }: { command: string }) =>
+  ({ text: `ran:${command}`, usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 0 });
+
 /** 假 generate: 重规划段不该调 — 用 sentinel 拦 (与 deterministic-replan.test.ts G-1 同款)。 */
 const deterministicGenerate = (): { generate: GenerateFn; calls: string[] } => {
   const calls: string[] = [];
@@ -108,6 +113,21 @@ const deterministicGenerate = (): { generate: GenerateFn; calls: string[] } => {
     return { text: 'out:leaf', usage: { in: 1, out: 1 } };
   };
   return { generate, calls };
+};
+
+/**
+ * verifier: 首轮 fail **不带 blame 围栏** (仓规红常态: 判词无路径, blame 挂不上 → closure null),
+ * 次轮 pass。这是 #272 (run b5b7a214) 的活体形状 —— 空转修补的主战场。
+ */
+const blamelessTwoRoundVerifier = (): ReturnType<typeof twoRoundVerifier> => {
+  let n = 0;
+  return (async () => {
+    n++;
+    if (n === 1) {
+      return { pass: false, reason: `${JARGON_SAMPLE} + 沉默 catch 净增 (无 blame 围栏)`, usage: { in: 1, out: 1 } };
+    }
+    return { pass: true, reason: 'ok', usage: { in: 1, out: 1 } };
+  }) as unknown as ReturnType<typeof twoRoundVerifier>;
 };
 
 /** verifier: 首轮 fail (带 blame 围栏点名 s1), 次轮 pass — blameAnchor 才能挂上, closure 才能算。 */
@@ -128,92 +148,77 @@ const twoRoundVerifier = (): NonNullable<Parameters<typeof runExecutorDagWithPla
 
 // ── 纯函数测试 (脱离引擎跑, O-6 实装前天然红的判别力来源) ─────────────────────────
 
-describe('detectReplanSpin — 纯函数 (O-6 判别力)', () => {
-  const baseArgs = () => {
-    const deterministicPlan = round1Plan();
-    const priorPlan = round1Plan();
-    const priorFp = merkleFingerprints(priorPlan);
-    return {
-      deterministicPlan,
-      priorPlan,
-      // priorPoisoned = prior 全部节点的指纹 (上一轮全部节点被点名, 全部进毒集)
-      priorPoisoned: new Set<string>(priorFp.values()),
-      frozenNodes: ['accept'] as const,
+describe('detectReplanSpin — 纯函数 (O-6 判别力; 2026-08-25 判据同源版, #272/#273)', () => {
+  // reusedIds = 引擎 computeReuse 预览会复用的节点 id 集 (done+非毒+依赖链可复用)。
+  // 判据同源: 测试直接给 id 集, 不再用指纹近似 (近似即 #273 的病)。
+  const baseArgs = () => ({
+    deterministicPlan: round1Plan(),
+    priorPlan: round1Plan(),
+    reusedIds: new Set(['s1']),
+    frozenNodes: ['accept'] as const,
+    closure: null as ReadonlySet<string> | null,
+  });
+
+  // #272 漏报形状 (run b5b7a214): 仓规红判词无路径 → closure 空/null, 但全图除门外全复用 → spin。
+  // 证伪: 把 detect 改回「closure 空 → false」的旧守卫 → 本条当场红。
+  test('#272: closure=null + s1 复用 + accept 冻结门 → true (b5b7a214 活体形状)', () => {
+    expect(detectReplanSpin({ ...baseArgs(), closure: null })).toBe(true);
+  });
+
+  test('#272: closure 空集合同判 → true (closure 只是范围提示, 不是判定前置)', () => {
+    expect(detectReplanSpin({ ...baseArgs(), closure: new Set<string>() })).toBe(true);
+  });
+
+  // G-1: e7e360f6 同形 (closure 非空不改变判定 —— detect 只看全图执行集)
+  test('G-1: 全图除冻结门外全复用 → true (e7e360f6 同形)', () => {
+    expect(detectReplanSpin({ ...baseArgs(), closure: new Set(['s1', 'accept']) })).toBe(true);
+  });
+
+  // G-2: 语义红 —— s1 不在 reusedIds (真变更/指纹变) → 会真跑 → false
+  test('G-2: s1 不在 reusedIds (真变更) → false (语义红会真跑)', () => {
+    expect(
+      detectReplanSpin({ ...baseArgs(), deterministicPlan: realChangePlan(), reusedIds: new Set<string>() }),
+    ).toBe(false);
+  });
+
+  // #273 误报形状 (run b13545da): s1 failed → computeReuse 不收 (只认 done) → reusedIds 缺 s1
+  // → s1 会真跑 → 必须 false。证伪: 把 detect 改回「fp ∈ poisoned 判复用」的指纹近似 → 本条当场红。
+  test('#273: s1 failed 未入复用池 (reusedIds 空) → false (失败切片必须真重跑, 不许被修补劫持)', () => {
+    expect(detectReplanSpin({ ...baseArgs(), reusedIds: new Set<string>() })).toBe(false);
+  });
+
+  test('#273 多切片: 部分复用 (s1 复用, s2 未复用) → false', () => {
+    const plan: ConductorPlan = {
+      name: 'goal-execute-flat',
+      nodes: {
+        s1: { executor: 'agent', goal: 's1', depends_on: [] },
+        s2: { executor: 'agent', goal: 's2', depends_on: [] },
+        accept: { executor: 'command', command: 'echo A', expect_exit: 0, depends_on: ['s1', 's2'], goal: 'verify' },
+      },
     };
-  };
-
-  // G-4 ────────────────────────────────────────────────────────────────────────
-  test('G-4: closure=null (blame 解析失败) → false (fail-open 走整轮, 不是空转)', () => {
-    const args = { ...baseArgs(), closure: null };
-    expect(detectReplanSpin(args)).toBe(false);
+    expect(
+      detectReplanSpin({ ...baseArgs(), deterministicPlan: plan, reusedIds: new Set(['s1']) }),
+    ).toBe(false);
   });
 
-  // G-5 ────────────────────────────────────────────────────────────────────────
-  test('G-5: closure 空集合 → false (空闭包不是空转)', () => {
-    const args = { ...baseArgs(), closure: new Set<string>() };
-    expect(detectReplanSpin(args)).toBe(false);
+  // G-3: 全新图, 无一复用 → false
+  test('G-3: 全新 plan 无一在 reusedIds → false (全新节点会真跑)', () => {
+    expect(
+      detectReplanSpin({ ...baseArgs(), deterministicPlan: freshPlan(), reusedIds: new Set<string>() }),
+    ).toBe(false);
   });
 
-  // G-1 (纯函数部分): 闭包只含冻结命令节点 → 全部 (a) 类 → spin ────────────────
-  test('G-1: 闭包只含冻结 accept 节点 → true (整张图的修复走冻结门, 不写文件)', () => {
-    const args = { ...baseArgs(), closure: new Set(['accept']) };
-    expect(detectReplanSpin(args)).toBe(true);
-  });
-
-  // G-1 (纯函数部分): 闭包含冻结 + 全部 D-21 复用节点 → 全部 (a) ∪ (b) → spin ──
-  test('G-1: 闭包含冻结 accept + s1 (s1 指纹命中 priorPoisoned) → true (e7e360f6 同形)', () => {
-    const args = { ...baseArgs(), closure: new Set(['s1', 'accept']) };
-    expect(detectReplanSpin(args)).toBe(true);
-  });
-
-  // G-2 (纯函数部分): 闭包有非冻结非复用执行节点 → false ──────────────────────
-  test('G-2: 闭包含 s1 + accept, 但 s1 当前指纹不在 priorPoisoned → false (语义红会真跑)', () => {
-    const args = {
-      ...baseArgs(),
-      // 改 deterministicPlan 的 s1.command 让指纹变
-      deterministicPlan: realChangePlan(),
-      closure: new Set(['s1', 'accept']),
-    };
-    expect(detectReplanSpin(args)).toBe(false);
-  });
-
-  // G-3: 全新图, 闭包内指纹不在 priorPoisoned → false ────────────────────────
-  test('G-3: 全新 plan 闭包内节点指纹完全不在 priorPoisoned → false (全新节点会真跑)', () => {
-    const args = {
-      ...baseArgs(),
-      deterministicPlan: freshPlan(),
-      closure: new Set(['s1', 'accept']),
-    };
-    expect(detectReplanSpin(args)).toBe(false);
-  });
-
-  // 边界: 冻结节点但 executor 非 command (语义漂移) → 不算 (a) 类 → false
-  test('边界: 冻结 id 但 executor 非 command → 不算 accept 类 → 必复用或非空转才放过', () => {
+  // 边界: 冻结节点但 executor 非 command (语义漂移) → 不算门 → 未复用即真跑 → false
+  test('边界: 冻结 id 但 executor 非 command → 不算门 → 未复用即非空转', () => {
     const agentOnlyPlan: ConductorPlan = {
       name: 'test',
       nodes: {
-        // frozenNodes 里点名了一个 agent 节点 —— 它会真跑, 不是空转
         x: { executor: 'agent', goal: 'x', depends_on: [] },
       },
     };
-    const args = {
-      ...baseArgs(),
-      deterministicPlan: agentOnlyPlan,
-      frozenNodes: ['x'],
-      // prior 里没有 x → 它的指纹不在 priorPoisoned → 必真跑
-      priorPoisoned: new Set<string>(),
-      closure: new Set(['x']),
-    };
-    expect(detectReplanSpin(args)).toBe(false);
-  });
-
-  // 边界: 幽灵 id (在 closure 里但不在 plan 里) → fail-open 当作不 spin
-  test('边界: closure 含不在 plan.nodes 里的幽灵 id → 不据此判空转 (不抛错)', () => {
-    const args = {
-      ...baseArgs(),
-      closure: new Set(['ghost']),
-    };
-    expect(detectReplanSpin(args)).toBe(true); // 闭包只有幽灵, 没东西会真跑 → spin
+    expect(
+      detectReplanSpin({ ...baseArgs(), deterministicPlan: agentOnlyPlan, frozenNodes: ['x'], reusedIds: new Set<string>() }),
+    ).toBe(false);
   });
 });
 
@@ -228,7 +233,7 @@ describe('buildRepairPlan — 纯函数', () => {
       closure: new Set(['s1', 'accept']),
       deterministicPlan: det,
       priorPlan: prior,
-      priorPoisoned: new Set<string>(merkleFingerprints(prior).values()),
+      reusedIds: new Set(['s1']),
       frozenNodes: ['accept'],
       priorResults: { s1: fakeLeaf(), accept: { ...fakeLeaf(), id: 'accept' } },
       verdictReason: `${JARGON_SAMPLE} + 沉默 catch 净增`,
@@ -261,7 +266,7 @@ describe('buildRepairPlan — 纯函数', () => {
       closure: new Set(['a']),
       deterministicPlan: noCommandPlan,
       priorPlan: noCommandPlan,
-      priorPoisoned: new Set<string>(),
+      reusedIds: new Set<string>(),
       frozenNodes: [],
       priorResults: { a: fakeLeaf('agent') },
       verdictReason: 'failed',
@@ -279,7 +284,7 @@ describe('buildRepairPlan — 纯函数', () => {
       closure: new Set(['s1', 'accept']),
       deterministicPlan: det,
       priorPlan: prior,
-      priorPoisoned: new Set<string>(merkleFingerprints(prior).values()),
+      reusedIds: new Set(['s1']),
       frozenNodes: ['accept'],
       priorResults: {
         s1: fakeLeaf(),
@@ -313,7 +318,7 @@ describe('buildRepairPlan — 纯函数', () => {
       closure: new Set(['a', 'accept']),
       deterministicPlan: noWsPlan,
       priorPlan: noWsPlan,
-      priorPoisoned: new Set<string>(merkleFingerprints(noWsPlan).values()),
+      reusedIds: new Set(['a']),
       frozenNodes: ['accept'],
       priorResults: {
         a: { id: 'a', status: 'done', kind: 'command', output: 'ok', deps: [], usage: { in: 0, out: 0 } },
@@ -327,6 +332,26 @@ describe('buildRepairPlan — 纯函数', () => {
     const repairNode = repair!.nodes[repairId] as Record<string, unknown>;
     expect(repairNode.write_set).toBeUndefined();
   });
+
+  // #272: 仓规红常态 closure 空 → 写集并集退到全图 (残缺可能落在任何一片里)
+  test('#272: closure 空 → write_set 并集取 priorPlan 全图 (b5b7a214 形状的修补范围)', () => {
+    const det = round1Plan();
+    const prior = round1Plan();
+    const repair = buildRepairPlan({
+      closure: new Set<string>(),
+      deterministicPlan: det,
+      priorPlan: prior,
+      reusedIds: new Set(['s1']),
+      frozenNodes: ['accept'],
+      priorResults: { s1: fakeLeaf(), accept: { ...fakeLeaf(), id: 'accept' } },
+      verdictReason: 'failed',
+      escCount: 1,
+    });
+    expect(repair).not.toBeNull();
+    const repairNode = repair!.nodes[repairNodeId(1)] as Record<string, unknown>;
+    // 全图并集 = s1.write_set ∪ 各 results.filesTouched → 含 src/foo.ts
+    expect(repairNode.write_set).toEqual(['src/foo.ts']);
+  });
 });
 
 // ── 引擎集成测试 (走完整 runExecutorDagWithPlan) ────────────────────────────────
@@ -339,10 +364,12 @@ describe('引擎集成: D2 切片 3 — 修补节点走通 (e7e360f6 同形)', (
   afterEach(() => { setCoreLogger(dumpLogger()); });
 
   // G-1 集成 ──────────────────────────────────────────────────────────────────
-  test('G-1 集成: e7e360f6 同形 → 引擎空转命中, plan.name 含 __repair_spin_, nodes 含修补节点 + accept', async () => {
+  // 2026-08-25 判据同源版: 用**无 blame** verifier (仓规红常态, closure null) —— 这才是空转
+  // 修补的主形状 (#272)。blame 点名成功的形状下被点名切片会带锚真重跑, 不是空转 (见 G-2 集成)。
+  test('G-1 集成: 仓规红无 blame (b5b7a214 形状) → 引擎空转命中, plan.name 含 __repair_spin_', async () => {
     const { generate } = deterministicGenerate();
-    const verifier = twoRoundVerifier();
-    const det = sameDeterministicPlan(); // 与 round-1 逐字相同 → 闭包全复用
+    const verifier = blamelessTwoRoundVerifier();
+    const det = sameDeterministicPlan(); // 与 round-1 逐字相同 → computeReuse 全复用
     let detCalls = 0;
     const detReplan = () => { detCalls++; return det; };
 
@@ -357,6 +384,7 @@ describe('引擎集成: D2 切片 3 — 修补节点走通 (e7e360f6 同形)', (
         verifier,
         conductorEscalationModel: 'spn:strong',
         frozenNodes: ['accept'],
+        commandRunner: okCommandRunner as never,
       },
     );
     expect(r.verification!.pass).toBe(true);
@@ -404,6 +432,7 @@ describe('引擎集成: D2 切片 3 — 修补节点走通 (e7e360f6 同形)', (
         verifier,
         conductorEscalationModel: 'spn:strong',
         frozenNodes: ['accept'],
+        commandRunner: okCommandRunner as never,
       },
     );
     expect(r.verification!.pass).toBe(true);
@@ -451,8 +480,8 @@ describe('trySpinRepair — 工厂入口', () => {
       closure: new Set(['s1', 'accept']),
       deterministicPlan: det,
       priorPlan: prior,
-      priorPoisoned: new Set<string>(),
-      // 注: s1 指纹不在 priorPoisoned → 不空转
+      reusedIds: new Set<string>(),
+      // 注: s1 不在 reusedIds → 会真跑 → 不空转
       frozenNodes: ['accept'],
       priorResults: { s1: fakeLeaf(), accept: { ...fakeLeaf(), id: 'accept' } },
       verdictReason: 'failed',
@@ -468,7 +497,7 @@ describe('trySpinRepair — 工厂入口', () => {
       closure: new Set(['s1', 'accept']),
       deterministicPlan: det,
       priorPlan: prior,
-      priorPoisoned: new Set<string>(merkleFingerprints(prior).values()),
+      reusedIds: new Set(['s1']),
       frozenNodes: ['accept'],
       priorResults: { s1: fakeLeaf(), accept: { ...fakeLeaf(), id: 'accept' } },
       verdictReason: 'failed',
@@ -489,13 +518,12 @@ describe('trySpinRepair — 工厂入口', () => {
         a: { executor: 'agent', goal: 'a', depends_on: [] },
       },
     };
-    // 同一张 plan 当 prior → prior fp 全在 poisoned → 闭包内 'a' 走 (b) 复用路径 → spin
-    const priorFp = merkleFingerprints(det);
+    // 'a' 在 reusedIds → 全图无一会真跑 → detect true; 但没有 command 节点可当 verify → fallback
     const res = trySpinRepair({
       closure: new Set(['a']),
       deterministicPlan: det,
       priorPlan: det,
-      priorPoisoned: new Set<string>(priorFp.values()),
+      reusedIds: new Set(['a']),
       frozenNodes: [],  // 不点名 frozen → 没有任何 command 节点可当 verify
       priorResults: { a: fakeLeaf('agent') },
       verdictReason: 'failed',

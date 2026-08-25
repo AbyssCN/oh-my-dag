@@ -5500,7 +5500,12 @@ async function runDagInternalCore(
           closure,
           deterministicPlan,
           priorPlan: exec.plan,
-          priorPoisoned: priorExec.poisoned ?? new Set<string>(),
+          // #273 判据同源: 「谁会被复用」只有 computeReuse 说了算 (done+非毒+依赖链可复用) ——
+          // 指纹近似把 failed 切片当「会复用」, 修补计划替换了本要真重跑的计划 (run b13545da)。
+          // 预览与 executePlan 内那次 computeReuse 同 plan 同 prior 同毒集, 结果必然一致。
+          reusedIds: new Set(
+            computeReuse(applyPlanFilters(deterministicPlan, config), priorExec, priorExec.poisoned).keys(),
+          ),
           frozenNodes: config.frozenNodes ?? [],
           priorResults: exec.results,
           verdictReason: verdict.reason,

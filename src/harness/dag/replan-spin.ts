@@ -6,9 +6,15 @@
  * 产物, 见 types.ts:486), D-21 语义指纹 6/7 节点命中 → reuseHits=6; accept 那一条原本就是被点名
  * 节点 (frozen), 即使跑出来也不会改变判据结果。整轮**必空转**: 72 秒零修复产物。
  *
- * **本片的判据 (机械,零启发式)**:
- *   - accept 红 (verdict.pass === false) ∧ 确定性重规划产物里, 毒集前向闭包内
- *     **没有会写文件的执行节点** (即除 accept 类冻结命令节点外全部走 D-21 复用)
+ * **本片的判据 (机械,零启发式;2026-08-25 修 #272/#273 后与 D-21 判据同源)**:
+ *   - accept 红 (verdict.pass === false) ∧ 确定性重规划产物里**没有任何会真跑的非门节点**
+ *     —— 「会不会真跑」不再用指纹近似, 直接吃引擎 `computeReuse` 的预览结果 (`reusedIds`):
+ *     节点会真跑 = 非(冻结命令门 ∨ id ∈ reusedIds)。
+ *   ⚠ 两个活体反例钉死了为什么不能自己近似:
+ *     #272 (run b5b7a214): 仓规红判词 100% 无路径 → closure 恒空 → 旧守卫漏报, 修补缺席;
+ *     #273 (run b13545da/8a95ce84): failed 节点指纹被旧逻辑当「会复用」→ 误报, 修补计划
+ *     替换了本要真重跑的计划, 切片 dep-skip 到死。computeReuse 只认 done+非毒+依赖链全可复用,
+ *     两个形状天然都判对 —— 判据抄一份必漂, 这里改成引用引擎那一份 (同 INV-D3-1 教训)。
  *   ⇒ 命中空转, 不执行该计划, 改合成**一个**修补节点:
  *     - task  = accept 失败输出原文 + 「只修这些失败,不动其他」;
  *     - 写集  = 本轮各 leaf 写集 (write_set ∪ filesTouched) 的并集;
@@ -26,8 +32,7 @@
  * 单测可以脱离引擎跑 (O-6 实装前天然红的判别力来源)。引擎只在 deterministic 分支调用。
  */
 import type { ConductorPlan } from '../conductor-plan';
-import { merkleFingerprints } from '../plan-passes/semantic-key';
-import type { LeafResult, PriorExec } from './types';
+import type { LeafResult } from './types';
 
 // ── 公共类型 ────────────────────────────────────────────────────────────────
 
@@ -37,18 +42,24 @@ import type { LeafResult, PriorExec } from './types';
  */
 export interface ReplanSpinArgs {
   /**
-   * 毒集前向闭包 (blame ∪ downstream)。`null` = blame 解析失败 → fail-open 整轮,
-   * 不是空转 (整轮是有可能真修出东西的), 不应触发本片。
+   * 毒集前向闭包 (blame ∪ downstream)。**只用于修补节点的写集并集范围提示**
+   * (空/null → 并集退到 priorPlan 全图), 不再参与空转判定 (#272: 仓规红判词无路径时
+   * closure 恒空, 拿它当判定前置会漏掉最主流的空转形状)。
    */
   closure: ReadonlySet<string> | null;
   /**
-   * 确定性重规划产物 — 本轮要跑的那张图。Spin 检测看的是它「在闭包内还会不会真写文件」。
+   * 确定性重规划产物 — 本轮要跑的那张图。Spin 检测看的是它「还会不会真跑非门节点」。
    */
   deterministicPlan: ConductorPlan;
-  /** 上一轮的 plan (用于 D-21 指纹匹配: deterministicPlan 的指纹若不在 prior.poisoned 里就真跑)。 */
+  /** 上一轮的 plan (修补节点写集并集的来源图)。 */
   priorPlan: ConductorPlan;
-  /** 上一轮的指纹毒集 (D-4 跨轮传播)。闭包指纹全集, 命中者被 D-21 复用。 */
-  priorPoisoned: ReadonlySet<string>;
+  /**
+   * 引擎 `computeReuse` 对 deterministicPlan 的预览结果 (会被 D-21 复用的节点 id 集)。
+   * **判据同源 (#273)**: 只有 done + 非毒 + 依赖链全可复用的节点才在这里 —— failed/skipped
+   * 节点天然缺席, 空转判定因此不会把「必须重跑的失败切片」误当成「会复用」。
+   * 调用方必须传引擎真算的那一份, 禁止用指纹自己近似 (近似即 #273 的病)。
+   */
+  reusedIds: ReadonlySet<string>;
   /** 调用方在 `config.frozenNodes` 里点名的冻结节点 (run-goal 平铺图 = `['accept']`)。 */
   frozenNodes: readonly string[];
 }
@@ -66,38 +77,30 @@ export interface BuildRepairPlanArgs extends ReplanSpinArgs {
 // ── 空转检测 (纯函数) ────────────────────────────────────────────────────────
 
 /**
- * 机械空转判据 (SDD D2 切片 3, INV-D2-1/-2/-3):
- *   accept 红 ∧ 闭包内**每个节点**都满足下列任一:
- *     (a) accept 类冻结命令节点 (id ∈ frozenNodes ∧ executor === 'command') — 这些是判据门,
- *         故意不被 D-21 复用 (它们就是被打回的那几位)。
- *     (b) D-21 语义指纹命中 priorPoisoned — 这些节点跑出来也不会真跑, 结果从上一轮原样复用。
- *   ⇒ 没有任何节点会真跑 + 写文件 ⇒ spin。
+ * 机械空转判据 (2026-08-25 判据同源版, 修 #272 漏报 + #273 误报):
+ *   扫 deterministicPlan **全图** (不再以 closure 为前置 —— #272 的守卫排除了主流形状),
+ *   每个节点满足下列任一即「不会真跑」:
+ *     (a) 冻结命令门 (id ∈ frozenNodes ∧ executor === 'command') — 判据门, 跑了也不改产物;
+ *     (b) id ∈ reusedIds — 引擎 computeReuse 预览判它 D-21 复用 (done+非毒+依赖链可复用)。
+ *   全图无一会真跑的非门节点 ⇒ spin。存在任何会真跑的非门节点 (含 failed/skipped 切片的重跑,
+ *   #273 的形状) ⇒ 不是空转, 让确定性计划正常执行。
  *
- * `closure === null` (blame 解析失败) → 返回 false (fail-open, 走整轮重规划 — 那条路**有可能**修对,
- * 不能用「整轮没用」提前判死)。
- *
- * `closure.size === 0` → 返回 false (空闭包 = 没点名任何节点, 不是空转)。
+ * 证伪方式: 把 (b) 改回指纹近似 (fp ∈ poisoned 判复用) → replan-spin.test.ts 的
+ * 「#273 误报形状」用例当场红; 把全图扫描改回 closure 前置 → 「#272 漏报形状」用例当场红。
  */
 export function detectReplanSpin(args: ReplanSpinArgs): boolean {
-  const { closure, deterministicPlan, priorPoisoned, frozenNodes } = args;
-  if (!closure || closure.size === 0) return false;
-
+  const { deterministicPlan, reusedIds, frozenNodes } = args;
   const frozenSet = new Set(frozenNodes);
-  const currentFps = merkleFingerprints(deterministicPlan);
 
-  for (const id of closure) {
-    const node = deterministicPlan.nodes[id];
-    if (!node) continue; // 幽灵 id (不在图里) — 调用方预滤过则不会到这里; 真到这里 fail-open 当作不 spin。
-
-    // (a) accept 类冻结命令节点: 判据门, 故意跑出来也不会让 reuse 命中。
+  for (const [id, node] of Object.entries(deterministicPlan.nodes)) {
+    // (a) 冻结命令门: 判据门, 故意不被复用 (它们就是被打回的那几位)。
     // 鉴权靠 frozenNodes (调用方显式点名) — 命名启发式 (id === 'accept') 故意不用, INV-D2-1。
-    if (frozenSet.has(id) && node.executor === 'command') continue;
+    if (frozenSet.has(id) && (node as { executor?: string }).executor === 'command') continue;
 
-    // (b) D-21 复用: 当前指纹 ∈ priorPoisoned → 节点结果从上一轮拿, 不真跑。
-    const fp = currentFps.get(id);
-    if (fp !== undefined && priorPoisoned.has(fp)) continue;
+    // (b) 引擎预览判复用 → 不真跑。
+    if (reusedIds.has(id)) continue;
 
-    // 既不是冻结门, 也不会被复用 → 真跑, 可能写文件 → 不是空转。
+    // 会真跑的非门节点 (含 failed/skipped 后的强制重跑) → 不是空转。
     return false;
   }
   return true;
@@ -188,10 +191,14 @@ export function buildRepairPlan(args: BuildRepairPlanArgs & { escCount: number }
   if (!verify) return null;
 
   const repairId = repairNodeId(args.escCount);
+  // #272: 仓规红常态是 closure 空 (判词无路径, blame 挂不上) —— 那时写集并集退到全图,
+  // 修补 leaf 拿到的是本轮所有 leaf 碰过的面 (仓规残缺可能落在任何一片里)。
+  const unionScope =
+    args.closure && args.closure.size > 0 ? args.closure : new Set(Object.keys(args.priorPlan.nodes));
   const writeSet = collectUnionWriteSet({
     plan: args.priorPlan,
     results: args.priorResults,
-    closure: args.closure ?? new Set<string>(),
+    closure: unionScope,
   });
 
   // 任务文本体 = verifier 失败原文 + 「只修这些失败」红线 (避免模型顺手改其它东西)。
@@ -238,7 +245,7 @@ export function buildRepairPlan(args: BuildRepairPlanArgs & { escCount: number }
 /**
  * 引擎在确定性重规划分支 (engine.ts:5477) 的入口 — 把当时手头的事实打包, 一行调用:
  *
- *   const spin = detectReplanSpin({ closure, deterministicPlan, priorPlan, priorPoisoned, frozenNodes });
+ *   const spin = detectReplanSpin({ closure, deterministicPlan, priorPlan, reusedIds, frozenNodes });
  *   if (spin) {
  *     const repair = buildRepairPlan({ ..., priorResults, verdictReason, escCount });
  *     if (repair) deterministicPlan = repair;  // fail-open: buildRepairPlan 返 null 保留原 plan

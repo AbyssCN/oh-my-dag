@@ -230,6 +230,11 @@ if (import.meta.main) {
     for (const h of hits) console.log(`${h.file}:${h.line} [${h.kind}] ${h.word} → ${JARGON[h.word]}\n    ${h.text}`);
     console.log(`\n合计 ${hits.length} 处 / ${new Set(hits.map((h) => h.file)).size} 文件`);
     console.log([...byWord].sort((a, b) => b[1] - a[1]).map(([w, n]) => `${w}=${n}`).join(' '));
+    // 命中里有测试文件时给修法提示 —— 两次生产击杀 (run 1bd174a7 / 8a95ce84) 都是 leaf 给
+    // 扫描器/引擎写测试夹具时用了禁词字面。惯例只写在注释里 leaf 看不见, 写进失败输出才看得见。
+    if (hits.some((h) => /\.test\.tsx?$/.test(h.file))) {
+      console.log(`提示: 测试夹具需要禁词字面时用拼接构造 (如 const W = ['落','盘'].join('')), 静态扫描只认源码字面串。`);
+    }
   }
   process.exit(hits.length > 0 ? 1 : 0);
 }
