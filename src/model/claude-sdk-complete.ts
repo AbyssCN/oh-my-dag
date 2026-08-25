@@ -64,7 +64,32 @@ function serialize(messages: ModelMessage[]): { systemPrompt: string | undefined
   return { systemPrompt: system.length ? system.join('\n\n') : undefined, prompt };
 }
 
+/**
+ * 通道级互斥 (2026-08-26 实测): 并发 spawn CLI 时响应**通道级损坏** —— 3 路同发同一
+ * JSON-only 请求, 3/3 退化为 CC 角色扮演/多语混杂/伪 invoke 轨迹 (含真实 CLI 启动噪声窜入
+ * 文本流); 同请求串行重放 2/2 干净 JSON。生产夜批未塌只因 conductor 调用天然近串行
+ * (warm-then-fanout), 本文件 maxTurns 注释里「同形复现两次未塌但生产塌了」即其旧影。
+ * 订阅通道本有速率限制, 串行排队不损正确性; 机制细因 (共享 ~/.claude 会话/锁) 待另查,
+ * 互斥先止血。逃生阀: OMD_CLAUDE_SDK_PARALLEL=1 关互斥 (复现实验用)。
+ */
+let sdkQueueTail: Promise<unknown> = Promise.resolve();
+
 export async function sdkCompleteRaw(modelId: string, messages: ModelMessage[], req: ModelRequest): Promise<SdkRawResult> {
+  if (process.env.OMD_CLAUDE_SDK_PARALLEL !== '1') {
+    const prev = sdkQueueTail;
+    let release!: () => void;
+    sdkQueueTail = new Promise<void>((r) => (release = r));
+    await prev.catch(() => {});
+    try {
+      return await sdkCompleteRawInner(modelId, messages, req);
+    } finally {
+      release();
+    }
+  }
+  return sdkCompleteRawInner(modelId, messages, req);
+}
+
+async function sdkCompleteRawInner(modelId: string, messages: ModelMessage[], req: ModelRequest): Promise<SdkRawResult> {
   if (req.temperature !== undefined || req.topP !== undefined || req.maxTokens !== undefined) {
     logger.warn(
       { model: `${CLAUDE_SDK_PROVIDER}:${modelId}`, temperature: req.temperature, topP: req.topP, maxTokens: req.maxTokens },
