@@ -43,6 +43,7 @@ import { classifySpecWrite, type SpecWrite, type SpecWriteSource } from './spec-
 import { summarizeDelta, type DeltaReport, type VerifyStepStatus } from './delta-compare';
 import { parseBreakdown, type SddContract, type SddSlice } from './sdd-direct';
 import { acceptCommandFromBreakdown, compileBreakdown, describeParallelism, parallelismReadout } from './sdd-compile';
+import { dryRunSddIgnition } from './sdd-ignition-check';
 import { coverSlices, describeSliceCoverage, type SliceCoverageReport } from './slice-coverage';
 import { attributeWriteSet, classifyWriteScope, describeWriteSet, SDD_DECLARED_WRITE_SET, type DeclaredWriteSet, type WriteScopeKind, type WriteSetDeclaration, type WriteSetReport } from '../writeset/write-set';
 import { collectRunTickets, type RunTicketSink } from '../pathfinder/run-tickets';
@@ -879,9 +880,20 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   // ── 内环 v2 切片 5 (SDD 2026-08-11-inner-loop-v2 D-1): 直通 v2 —— 分解表可编译时零 conductor ──
   // 平铺图 = 切片×(RED/实装/GREEN) + accept (D-4 定向 TDD); accept 命令 = 冻结判据同一条命令,
   // D-3 停止规则合一。仅执行型验收可平铺: 探索型没有确定性停机判据, 平铺图会跑完即止无人判。
-  // 编译不过 → **响亮回落** v1 conductor 铺图 (warn + 摘要注记, 不静默): 直通 v1 的存量输入
-  // (分解段无表 / verify 列是验收点引用而非命令) 今天都不可编译, 拒跑是无谓回归;
-  // G-7 读数靠 plan 名分辨 (goal-execute-flat vs goal-execute)。
+  //
+  // D3 / INV-D3-1 接线: 平铺图编译块的 fatal/fallback 判定**走 dryRunSddIgnition**
+  // (与 goal.ts 的 `sddIgnitionDryRunGate` 同源 —— 抄一份必漂, 漂的后果是「点火闸放行、
+  // worker 里照样回落」恰是本契约要消灭的病)。**判定同源, 实装执行各管各的**:
+  //   · dryRunSddIgnition(纯函数, 毫秒级, 零 IO) → 判 fatal/fallback/ok
+  //   · run-goal 在 ok 之后才 parseBreakdown/compileBreakdown **第二次** (拿 slices/nodes 用),
+  //     O-6 探针是另一回事 (要跑真命令, 属 run-goal 领地; INV-D3-5「空跑就是空跑」)
+  //
+  // D3 / INV-D3-4 sddPath 禁回落: 平铺图编译块 (`if (sdd && ...)`) 内部任何**回落条件**
+  // 命中 (parseBreakdown 抛 / compileBreakdown 抛 / O-6 探针判虚), 一律 fail-fast 终态 + 原
+  // 因原文进回执, 不再落 v1 conductor 铺图 (owner 2026-08-25 裁: 「v1 回落是要避免的结局,
+  // 不是要预告的结局」; 回落 v1 会让叶子重写已完成的实装, 静默失效的真凶之一)。
+  // 非 sddPath 入口: 本块整体不进 (外层 `if (sdd && ...)` 守门), 行为逐字节照旧 —— 这是
+  // 「非 sddPath 入口本就没承诺平铺图」的逻辑必然, 不算回归。
   let flatPlan: ConductorPlan | undefined;
   let flatFallback: string | undefined;
   let flatParallelism: string | undefined;
@@ -890,6 +902,21 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   /** #242 resume 复用的片号 (O-6 探针裁的「verify 当前已绿」那批) —— S-46 判缺片时豁免。 */
   let flatReusedSlices: ReadonlySet<number> | undefined;
   if (sdd && acceptance.kind === 'executable') {
+    // INV-D3-1: 同一份判定 —— fatal / fallback 与 goal.ts `sddIgnitionDryRunGate` 共用。
+    const ignition = dryRunSddIgnition(sdd.text);
+    if (ignition.kind !== 'ok') {
+      // INV-D3-4: sddPath 触发任何回落条件 → fail-fast 终态, 不落 v1。原因原文进回执与
+      // 日志, owner 拿它改契约或换 verify 后可重跑 (force 越闸也救不了 worker 内的回落 —
+      // force 只在 goal.ts 闸那一层放过, 进了 worker 就是执行体自身的责任)。
+      const reason = ignition.kind === 'fatal' ? ignition.err : ignition.reason;
+      const tagged = `[INV-D3-4 fail-fast] ${ignition.kind}: ${reason}`.slice(0, 240);
+      logger.warn(
+        { sdd: sdd.path, kind: ignition.kind, reason },
+        '[run-goal] INV-D3-4: sddPath 平铺图点火闸判定非 ok → fail-fast 终态 (不回落 v1)',
+      );
+      return bail(`sddPath 平铺图点火闸判定非 ok (${ignition.kind}): ${reason.slice(0, 200)}`, 'not-converged');
+    }
+    // ignition.kind === 'ok' —— 编译必定过; 剩下 O-6 探针是另一个**回落条件** (INV-D3-4 例)。
     try {
       const breakdown = parseBreakdown(sdd.text);
       const compiled = compileBreakdown(breakdown, {
@@ -900,7 +927,7 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
       // O-6 (2026-08-11 二发教训): RED 的前提是切片 verify 在**实装前是红的** —— 引用既有绿
       // 测试文件时结构性不成立 (旧测试全绿, RED 期望 1 得 0, 整图白跑一轮才发现)。有 commandRunner
       // 就逐片探一枪 (acceptance.ts 的 vacuous 纪律推广到切片级): 已绿 = 判据虚 **或** 活已干完,
-      // 两种机械分不开, 都不该进平铺 —— 抛给回落 (v1 的冻结判据对"已完成"那半收敛最快)。
+      // 两种机械分不开, 都不该进平铺 —— 抛给 fail-fast (INV-D3-4: sddPath 不落 v1)。
       // 没 runner = 闸缺席 (fail-open, 测试/无命令能力档), 行为同今天。
       //
       // #242 (run 7f9c511a 复盘): 「已绿 = 判据虚」这条推理**只属于首次编图**。resume 是
@@ -961,11 +988,15 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
       flatSlices = breakdown.slices;
       flatReusedSlices = achievedSlices;
     } catch (err) {
-      flatFallback = String(err instanceof Error ? err.message : err).slice(0, 160);
+      // O-6 vacuous-verify 抛 / compileBreakdown 重算时异常 (理论上不会发生 — ignition 已过 —
+      // 但保留兜底) —— 任何回落条件命中 = sddPath fail-fast (INV-D3-4)。
+      const msg = String(err instanceof Error ? err.message : err).slice(0, 240);
+      flatFallback = `[INV-D3-4 fail-fast] ${msg}`;
       logger.warn(
-        { sdd: sdd.path, err: flatFallback },
-        '[run-goal] 直通v2: 分解表编译不过 → 回落 conductor 铺图 (v1, 不静默)',
+        { sdd: sdd.path, err: msg },
+        '[run-goal] INV-D3-4: sddPath worker 触发回落条件 (O-6 vacuous-verify 等) → fail-fast, 不落 v1',
       );
+      return bail(`sddPath worker 触发回落条件 (O-6 vacuous-verify 等): ${msg}`, 'not-converged');
     }
   }
   const execPlan: ConductorPlan = flatPlan ?? {
