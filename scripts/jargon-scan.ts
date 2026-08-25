@@ -178,11 +178,30 @@ export function collectFiles(roots: readonly string[]): string[] {
     }
   };
   for (const r of roots) walk(r);
-  return out
-    .filter((f) => !EXCLUDE_FILES.includes(f))
-    .filter((f) => !SKIP_PREFIXES.some((s) => f.startsWith(s.prefix)))
-    .filter((f) => !SKIP_FILES.some((s) => s.file === f))
-    .sort();
+  return out.filter((f) => !isJargonExempt(f)).sort();
+}
+
+/**
+ * 这份文件该不该被禁用词闸问。
+ *
+ * **单一实现**: 全树扫(`collectFiles`)与**写入那一刻**的边界闸
+ * (`agent-tools.ts` 的 `requireNoJargon`)共用它。分两处各写一遍的话,
+ * 豁免语义会各长各的 —— 那正是本仓要杀的形态。
+ *
+ * 判据是三张已裁的表, 一张都不新增:
+ *   - `EXCLUDE_FILES`: 必须逐字引用禁用词的文件(禁用词表自身、谎报完成闸的目标词表)
+ *   - `SKIP_PREFIXES`: 台账与已发表文章(逐字引用了改不了的 commit message)
+ *   - `SKIP_FILES`: 滚动交接稿
+ *
+ * ⚠ 与 `scanFiles` 的分野: 那个入口**刻意不应用**豁免(调用方是引擎, 文件由它自己挑,
+ * 喂错了该响亮地红而不是被静默吞掉)。这里是「自己走文件树 / 自己判要不要拦」的场合。
+ */
+export function isJargonExempt(file: string): boolean {
+  return (
+    EXCLUDE_FILES.includes(file) ||
+    SKIP_PREFIXES.some((s) => file.startsWith(s.prefix)) ||
+    SKIP_FILES.some((s) => s.file === file)
+  );
 }
 
 export function scanTree(roots: readonly string[]): JargonHit[] {
