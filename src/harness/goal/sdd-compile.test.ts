@@ -327,7 +327,8 @@ describe('parallelismReadout — 并行性 advisory (只报不拒)', () => {
 });
 
 describe('acceptCommandFromBreakdown — 验收命令从 verify 列推 (2026-08-11 run 7d50fda2 修)', () => {
-  /** run 7d50fda2 的真表 (SDD-1 分解段四片, 逐字)。 */
+  /** run 7d50fda2 的真表 (SDD-1 分解段四片; 切片 4 写集在 #254 后补了 gate-registry 两面 —
+   *  run-goal.ts 成为 trigger, 历史表原样会被登记面闸拒; verify 列与命令推导逐字未动)。 */
   const SDD1 = parseBreakdown(
     [
       '## 分解 (Breakdown)',
@@ -336,7 +337,7 @@ describe('acceptCommandFromBreakdown — 验收命令从 verify 列推 (2026-08-
       '| 1 board 模块 | `src/harness/board/run-board.ts` + test | 无 | `bun test src/harness/board/run-board.test.ts` |',
       '| 2 点火预检 | `src/harness/goal/ignition-preflight.ts` + test | 1 | `bun test src/harness/goal/ignition-preflight.test.ts` |',
       '| 3 await 节点 | `src/harness/dag/await-node.ts` + test | 1 | `bun test src/harness/dag/await-node.test.ts` |',
-      '| 4 生命周期接线 | `src/harness/goal/run-goal.ts` + test | 1 | `bun test src/harness/goal/run-goal.test.ts` |',
+      '| 4 生命周期接线 | `src/harness/goal/run-goal.ts` + test · `src/harness/gates/gate-registry.ts` · `src/harness/gates/gate-registry.test.ts` | 1 | `bun test src/harness/goal/run-goal.test.ts` |',
       '并行波形:{1} → {2,3,4}',
     ].join('\n'),
   );

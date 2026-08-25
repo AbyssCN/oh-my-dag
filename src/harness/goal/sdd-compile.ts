@@ -114,6 +114,8 @@ function assertDisjointWriteSets(slices: readonly SddSlice[]): void {
  *   ① types.ts ↔ seams.md + seam-catalog.test.ts (旧 assertSeamWriteSet 行为字节不变地迁移)
  *   ② conductor-plan.ts ↔ schema 字段表三件套 (247/248 契约片 1 写集自证)
  *   ③ schema-field-registry.ts ↔ 人读表 + 它自己的 test (生成器产物 + 结构绊线)
+ *   ④⑤ engine.ts / run-goal.ts ↔ gate-registry 两件套 (#254: B1 run 8888b93b 新闸
+ *      [fuse-paralysis] 因表外无权改 gate-registry 而 accept 红, owner 手补 13→14)
  *
  * 闸语义 = face **在并集里** (修的权限), 不要求真被修改 —— 治的是「无权碰绊线」,
  * 不是「强迫每次都动登记面」。「dedup 指纹键」表行盘上找不到可指认的真源 → NULL≠0 纪律,
@@ -143,6 +145,22 @@ const REGISTRATION_FACES: readonly {
     faces: [
       { file: 'docs/plan/2026-07-30-schema-field-registry.md', reason: 'schema 字段表人读版 (REGISTRY 改了必须重生成)' },
       { file: 'src/harness/schema-field-registry.test.ts', reason: 'schema 字段表结构绊线' },
+    ],
+  },
+  // #254: 新闸大多长在 engine.ts / run-goal.ts, 而闸必须登记进 gate-registry (+其结构绊线)。
+  // B1 run 8888b93b 实测: 新闸 [fuse-paralysis] 因写集无权改 gate-registry 而 accept 红。
+  {
+    trigger: 'src/harness/dag/engine.ts',
+    faces: [
+      { file: 'src/harness/gates/gate-registry.ts', reason: '闸登记表真源 (新闸/改闸必须同步登记, #254)' },
+      { file: 'src/harness/gates/gate-registry.test.ts', reason: '闸登记表结构绊线 (计数与字面被 oracle 盯死)' },
+    ],
+  },
+  {
+    trigger: 'src/harness/goal/run-goal.ts',
+    faces: [
+      { file: 'src/harness/gates/gate-registry.ts', reason: '闸登记表真源 (新闸/改闸必须同步登记, #254)' },
+      { file: 'src/harness/gates/gate-registry.test.ts', reason: '闸登记表结构绊线 (计数与字面被 oracle 盯死)' },
     ],
   },
 ];

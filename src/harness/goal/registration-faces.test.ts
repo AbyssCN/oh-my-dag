@@ -205,3 +205,36 @@ describe('assertSeamWriteSet — 无 trigger 命中 (INV-3 零行为差)', () =>
     expect(() => compile(ok)).not.toThrow();
   });
 });
+
+// ── #254: engine.ts / run-goal.ts ↔ gate-registry 两件套 ──
+// 现场: B1 run 8888b93b 新闸 [fuse-paralysis] 长在 engine.ts, 写集无权改 gate-registry →
+// accept 红, owner 手补 (13→14)。本对表行让「动闸宿主文件」的契约天生带上登记面权限。
+
+describe('assertSeamWriteSet — engine.ts / run-goal.ts 的 gate-registry 面 (#254)', () => {
+  const GATE_FACES = ['src/harness/gates/gate-registry.ts', 'src/harness/gates/gate-registry.test.ts'];
+
+  test('写集含 engine.ts 缺 gate-registry 两件套 → 拒, 判词点名缺的面', () => {
+    // 证伪: 把 REGISTRATION_FACES 的 engine.ts 行注释掉 → 本 test 由绿转红。
+    const bad = bd([slice(1, ['src/harness/dag/engine.ts'], [])]);
+    let err: unknown;
+    try {
+      compile(bad);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(Error);
+    const msg = (err as Error).message;
+    expect(msg).toContain('写集含 src/harness/dag/engine.ts 时');
+    expect(msg).toContain('src/harness/gates/gate-registry.ts');
+    expect(msg).toContain('src/harness/gates/gate-registry.test.ts');
+  });
+
+  test('写集含 run-goal.ts 缺两件套 → 拒; 并集补齐两面 → 编译过 (合法样本, 闸不是恒红)', () => {
+    // 证伪: 把 run-goal.ts 行注释掉 → 前半由绿转红。
+    expect(() => compile(bd([slice(1, ['src/harness/goal/run-goal.ts'], [])]))).toThrow(/gate-registry/);
+    const ok = bd([slice(1, ['src/harness/goal/run-goal.ts', ...GATE_FACES], [])]);
+    expect(() => compile(ok)).not.toThrow();
+    const okEngine = bd([slice(1, ['src/harness/dag/engine.ts', ...GATE_FACES], [])]);
+    expect(() => compile(okEngine)).not.toThrow();
+  });
+});
