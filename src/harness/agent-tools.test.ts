@@ -173,7 +173,7 @@ describe('★ bash 出口清洗 (2026-08-14, RED —— src/harness/agent-tools.
     expect(out).toContain('\n');
     expect(out).toContain('\t');
     // 被过滤的字符不许漏进正文: NUL / ESC / U+FFF9。
-    expect(out).not.toContain(' ');
+    expect(out).not.toContain('\x00');
     expect(out).not.toContain('');
     expect(out).not.toContain('￹');
     // 固定提示必须出现, 且与 [exit N] 提示同时存在、互不吞没 —— 证明清洗只作用于原始

@@ -329,7 +329,7 @@ export const JUDGE_ARTIFACT_CASES: readonly JudgeArtifactCase[] = [
       {
         id: 'exec::g8shot',
         output: '已渲染首页并保存截图。',
-        files: { 'shots/home.png': 'PNG\r\n\n   \rIHDR   ' },
+        files: { 'shots/home.png': 'PNG\r\n\n\x00\x00\x00\rIHDR\x00\x00\x00' },
         claims: ['shots/home.png'],
       },
     ],

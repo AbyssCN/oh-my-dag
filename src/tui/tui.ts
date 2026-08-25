@@ -1890,7 +1890,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
   const ADVISOR_SEATS = ['conductor', 'leaf'] as const;
 
   /** advisor 子层"清掉"项的哨兵。NUL 开头与 MANUAL_COORD 同理 —— 真坐标里不会有 NUL。 */
-  const ADVISOR_NONE = ' none';
+  const ADVISOR_NONE = '\x00none';
 
   /** 读两个消费座的 advisor 现值。缺席 = 没配 (undefined), 不编 none。 */
   function readAdvisors(): Record<string, string | undefined> {
@@ -2504,7 +2504,7 @@ export async function runOmdTui(opts: RunOmdTuiOpts): Promise<void> {
       let provider = t.split(/\s+/)[1] ?? '';
       if (!provider) {
         const rows = listProviderRows();
-        const MANUAL = ' manual';
+        const MANUAL = '\x00manual';
         const configured = rows.filter((r) => r.status !== 'unconfigured').length;
         const picked = await dialogSelect(dialogs, theme, {
           title: `Configure which provider? (${configured}/${rows.length} configured)`,
