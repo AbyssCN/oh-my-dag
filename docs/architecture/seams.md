@@ -43,7 +43,7 @@
 | `commandRunner` |  | `CommandLeafRunner` | command-kind leaf 的执行器 (确定性 CLI, 零 LLM, 方案 A)。 | `src/harness/goal/run-goal.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts` (14 文件) |
 | `researchRunner` |  | `ResearchLeafRunner` | research-kind leaf 的执行器 (真 web 检索 + 有界内环, D-6)。 | `src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/node-failure.ts` (5 文件) |
 | `judgeSend` |  | `typeof Gateway.send` | 注入式 judge 调用 (测试)。 | `src/harness/dag/engine.ts` (1 文件) |
-| `router` |  | `LeafModelRouter` | executor leaf 模型选型路由器 (B-2 bandit, 见 model-router.ts)。 | `src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/model-router.ts` (16 文件) |
+| `router` |  | `LeafModelRouter` | executor leaf 模型选型路由器 (B-2 bandit, 见 model-router.ts)。 | `src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/model-router.ts` (17 文件) |
 | `repoChecks` |  | `RepoCheck[]` | **leaf 级仓规检查清单** (D2 切片 2, #266 修补节点): 引擎对每个 agent leaf 跑完 之后、终态写入之前, 对该 leaf 的写集跑清单里每条 check。 | `src/mcp/assemble.ts`<br>`src/harness/agent-leaf.ts`<br>`src/harness/repo-checks-manifest.ts` (3 文件) |
 | `spinRung2` |  | `{ threshold?: number; pools?: SpinRung2StampPools; }` | **节点级空转档 2 阶梯配置** (SDD S2, 2026-08-25, 片 3 engine 接线)。 | `src/harness/dag/engine.ts` (1 文件) |
 
@@ -101,7 +101,7 @@ leaf prompt 整形 seam: 注入 leaf 上下文/前缀/压缩级与档位闸 (省
 | `_budgetAnchor` |  | `number` | #158 预算时间轴的**锚时刻** (epoch ms)。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/goal.ts` (2 文件) |
 | `repeatedActionThreshold` |  | `number` | **§8.4 动作级熔断**的阈值 (缺省 2)。 | `src/harness/dag/engine.ts` (1 文件) |
 | `judgeFailureThreshold` |  | `number` | **闸级熔断**的阈值 (缺省 2, 2026-08-16)。 | `src/harness/dag/engine.ts` (1 文件) |
-| `verifier` |  | `VerifierFn` | 跨模型校验器 (model-agnostic skeptic, 见 verifier.ts)。 | `src/harness/verifier.ts`<br>`src/harness/dag/engine.ts`<br>`src/eval/tasks/judge-artifact-cases.ts` (73 文件) |
+| `verifier` |  | `VerifierFn` | 跨模型校验器 (model-agnostic skeptic, 见 verifier.ts)。 | `src/harness/verifier.ts`<br>`src/harness/dag/engine.ts`<br>`src/eval/tasks/judge-artifact-cases.ts` (74 文件) |
 | `escalateAfterRound` |  | `number` | 从第几轮起用 `conductorEscalationModel` 重画 (默认 2 = 第 1 轮弱 conductor, 后续升级)。 | `src/harness/plan/iterate.ts`<br>`src/harness/dag/engine.ts` (2 文件) |
 | `maxEscalations` |  | `number` | verifier-fail → 升级重规划的最大次数 (默认 1)。 | `src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/verifier.ts` (4 文件) |
 | `frozenNodes` |  | `readonly string[]` | **冻结判据节点**(SDD 2026-08-22 「冻结判据在重规划轮里并不冻结」)。 | `src/harness/dag/replan-spin.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/goal/run-goal.ts` (3 文件) |

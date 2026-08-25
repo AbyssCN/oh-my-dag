@@ -58,51 +58,68 @@ function commitAll(msg: string): string {
 // ── ① 纯函数 ────────────────────────────────────────────────────────────────
 
 describe('净增比对 (纯函数)', () => {
+  // 2026-08-26: 判据从**行号锚**改成**内容指纹的多重集**, 本组用例随之重写。
+  // 改判据的理由不是「测试难写」, 是判据本身错: 行号锚下, 在文件前部插入 N 行会让
+  // 后面每个既有 catch 的行号 +N、整批被算成新增 —— run 5bcfa2b2 因此被误杀
+  // (engine.ts 只改 47 行, 报净增 9 处, 点名的还是既有的 artifactReader fail-open)。
+  // 修后同一份写集的净增从 20 处落到 2 处, 而那 2 处是真的。
+  // `line` 字段保留(报告要用它定位), 但**不再参与判定**。
+  const site = (line: number, kind: 'silent' | 'empty', sig: string): CatchSite =>
+    ({ file: 'a.ts', line, kind, sig });
+
   test('正例: base 缺席 (null) ⇒ 当前所有 sites 全算净增', () => {
-    const cur: CatchSite[] = [
-      { file: 'a.ts', line: 5, kind: 'silent' },
-      { file: 'a.ts', line: 9, kind: 'empty' },
-    ];
+    const cur: CatchSite[] = [site(5, 'silent', 'catch{returnnull;}'), site(9, 'empty', 'catch{}')];
     const r = netIncreaseVsBase(cur, null);
     expect(r.netIncrease).toBe(2);
     expect(r.newSites).toEqual(cur);
   });
 
-  test('正例: base 有同位置 ⇒ 同位置不算净增; 新行号算', () => {
+  test('正例: base 有同款指纹 ⇒ 不算净增; 指纹没见过的算', () => {
     const cur: CatchSite[] = [
-      { file: 'a.ts', line: 5, kind: 'silent' }, // 同 base
-      { file: 'a.ts', line: 7, kind: 'silent' }, // 新行
-      { file: 'a.ts', line: 9, kind: 'empty' },  // 新行
+      site(5, 'silent', 'catch{returnnull;}'), // base 里有同款
+      site(7, 'silent', 'catch{returnundefined;}'), // 没见过
+      site(9, 'empty', 'catch{}'), // 没见过
     ];
     const base: CatchSite[] = [
-      { file: 'a.ts', line: 5, kind: 'silent' },
-      { file: 'a.ts', line: 6, kind: 'silent' }, // base 独有, 不影响净增
+      site(5, 'silent', 'catch{returnnull;}'),
+      site(6, 'silent', 'catch{swallow();}'), // base 独有, 不影响净增
     ];
     const r = netIncreaseVsBase(cur, base);
     expect(r.netIncrease).toBe(2);
-    expect(r.newSites.map((s) => s.line).sort()).toEqual([7, 9]);
+    expect(r.newSites.map((x) => x.line).sort()).toEqual([7, 9]);
   });
 
-  test('反例: base 含 current 的所有行 ⇒ 净增 0, newSites 空', () => {
+  test('★ 行号整体平移但指纹不变 ⇒ 净增 0 (run 5bcfa2b2 被误杀的那个形态)', () => {
+    const base: CatchSite[] = [site(3, 'silent', 'catch{returnnull;}'), site(7, 'empty', 'catch{}')];
+    // 同样两处 catch, 因为文件前部插了 40 行而各自后移 —— 一个字都没改。
+    const cur: CatchSite[] = [site(43, 'silent', 'catch{returnnull;}'), site(47, 'empty', 'catch{}')];
+    const r = netIncreaseVsBase(cur, base);
+    expect(r.netIncrease).toBe(0);
+    expect(r.newSites).toEqual([]);
+  });
+
+  test('★ 真多出一个与既有内容完全相同的 catch ⇒ 净增 1 (多重集, 不许被去重吃掉)', () => {
+    const base: CatchSite[] = [site(3, 'silent', 'catch{returnnull;}')];
     const cur: CatchSite[] = [
-      { file: 'a.ts', line: 3, kind: 'silent' },
-      { file: 'a.ts', line: 7, kind: 'empty' },
+      site(3, 'silent', 'catch{returnnull;}'),
+      site(11, 'silent', 'catch{returnnull;}'), // 同款写法, 但是新多出来的一个
     ];
-    const base: CatchSite[] = [
-      { file: 'a.ts', line: 3, kind: 'silent' },
-      { file: 'a.ts', line: 7, kind: 'empty' },
-    ];
+    const r = netIncreaseVsBase(cur, base);
+    expect(r.netIncrease).toBe(1);
+    expect(r.newSites.map((x) => x.line)).toEqual([11]);
+  });
+
+  test('反例: base 含 current 的全部指纹 ⇒ 净增 0, newSites 空', () => {
+    const cur: CatchSite[] = [site(3, 'silent', 'catch{returnnull;}'), site(7, 'empty', 'catch{}')];
+    const base: CatchSite[] = [site(3, 'silent', 'catch{returnnull;}'), site(7, 'empty', 'catch{}')];
     const r = netIncreaseVsBase(cur, base);
     expect(r.netIncrease).toBe(0);
     expect(r.newSites).toEqual([]);
   });
 
   test('反例: current 比 base 少 (还账) ⇒ 净增 0', () => {
-    const cur: CatchSite[] = [{ file: 'a.ts', line: 3, kind: 'silent' }];
-    const base: CatchSite[] = [
-      { file: 'a.ts', line: 3, kind: 'silent' },
-      { file: 'a.ts', line: 7, kind: 'empty' },
-    ];
+    const cur: CatchSite[] = [site(3, 'silent', 'catch{returnnull;}')];
+    const base: CatchSite[] = [site(3, 'silent', 'catch{returnnull;}'), site(7, 'empty', 'catch{}')];
     const r = netIncreaseVsBase(cur, base);
     expect(r.netIncrease).toBe(0);
     expect(r.newSites).toEqual([]);
@@ -283,7 +300,7 @@ test('scanCatchEvidence 注入净增源 (跨纯函数与 CLI 的判别力锚)', 
     ['export function f(): void {', '  try { f(); } catch (e) { return; }', '}', ''].join('\n'),
     'src/x.ts',
   );
-  expect(r.sites).toEqual([{ file: 'src/x.ts', line: 2, kind: 'silent' }]);
+  expect(r.sites).toEqual([{ file: 'src/x.ts', line: 2, kind: 'silent', sig: 'catch(e){return;}' }]);
 });
 
 afterEach(() => rmSync(TMP, { recursive: true, force: true }));

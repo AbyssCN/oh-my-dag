@@ -121,6 +121,12 @@ export interface RunPlanDryRunOpts {
   escalateFn?: Parameters<typeof runCriticLoop>[2];
   /** CLI 模式: 全绿时把 verdict JSON 写 stdout (字段见 StdoutJson)。缺省 = false (单测不污染 stdout)。 */
   emit?: boolean;
+  /**
+   * B5 per-worktree 写会话锁的命名空间 (规范化绝对路径)。由 caller 注入真实 worktree,
+   * 不允许 process.cwd() 猜测 —— 该 opt 目前尚未被本件消费 (流水不直接调 runBootstrapGate),
+   * 仅为 S2+ 后续接入保留接缝, 见 src/harness/bootstrap-gate.ts:BootstrapGateInput.worktree。
+   */
+  worktree?: string;
 }
 
 /** S1 I/O 契约 (上游 §stdout JSON fields): 全绿单行 JSON 的稳定形状。 */

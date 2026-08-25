@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { createOmdMemory, type OmdMemory } from '../memory';
 import type { WriteFactResult } from '../memory/types';
 import { dreamFactInput, type DreamCandidate } from './validate';
+import { rejectIfProbe, PROBE_SOURCE } from '../dag/credit';
 
 // 契约类型(DreamCandidate/DreamNamespace)的唯一真源在 validate.ts —— 这里只 re-export,
 // 不复制(验收改判 2026-08-09:两实现节点各自定义过一份,注释写着「共用」代码各写各的,坑 #3 形态)。
@@ -57,6 +58,13 @@ export async function mergeDreamCandidates(
   candidates: Array<{ leafId: string; candidate: DreamCandidate }>,
   opts: MergeDreamOpts,
 ): Promise<MergeReport> {
+  // S2 后半 (C-2 / INV-10, I-11): dream merge 入口拒收 probe 记录。
+  // 即便上游 extract-run/extract-chat 已拒, 此处仍兜底: 万一漏过, 也不进 fact 库。
+  rejectIfProbe(opts as unknown as { source?: string });
+  if ((opts as unknown as { usage?: { probe?: unknown } }).usage?.probe !== undefined) {
+    throw new Error(`I-11: ${PROBE_SOURCE} 记录禁止进入 dream merge (mergeDreamCandidates)`);
+  }
+
   const report: MergeReport = {
     ok: true,
     added: 0,

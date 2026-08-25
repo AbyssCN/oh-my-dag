@@ -17,10 +17,11 @@
  * 加字段 = 升 SCHEMA_VERSION。本片 SCHEMA_VERSION 留给 conductor-plan.ts 顶层
  * 共同裁决 (任务说明未给本片独占的字面)。
  */
-import { openSync, closeSync, mkdirSync, existsSync } from 'node:fs';
+import { openSync, closeSync, mkdirSync, existsSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { APPLICABILITIES, PROBE_STATES } from './health';
+import { logger } from '../logger';
 
 // ─── 共享文本 ─────────────────────────────────────────────────────────────────
 /** 主键字面: `<source>:<name>@<semver>`。source 段允许字母数字下划线点横线冒号,
@@ -228,8 +229,17 @@ export class SingleWriterViolation extends Error {
   }
 }
 
-/** 抢锁: 成功即返回 lockPath + close 句柄, 失败抛 SingleWriterViolation。 */
-export function assertSingleWriter(worktree: string): { lockPath: string; close: () => void } {
+/** 抢锁成功后的持有句柄。close = 释放 fd (旧契约, 锁文件残留); release = 关 fd 并删锁文件 (B5 持有者主动释放)。 */
+export interface SingleWriterHandle {
+  readonly lockPath: string;
+  /** 关 fd 不删文件 —— 旧契约, 锁生命周期 = 持有者生命周期, 进程崩溃后由外部恢复。 */
+  close: () => void;
+  /** 关 fd + 删文件 —— B5 会话终止路径的明示释放; 后续同 worktree 写者可再抢锁。 */
+  release: () => void;
+}
+
+/** 抢锁: 成功即返回 lockPath + handle, 失败抛 SingleWriterViolation。 */
+export function assertSingleWriter(worktree: string): SingleWriterHandle {
   const lockPath = join(worktree, '.omd', SINGLE_WRITER_LOCK_NAME);
   mkdirSync(dirname(lockPath), { recursive: true });
   let fd: number;
@@ -243,8 +253,24 @@ export function assertSingleWriter(worktree: string): { lockPath: string; close:
     close: () => {
       try {
         closeSync(fd);
-      } catch {
-        /** 关 fd 是 fd 本地资源, 业务无可观察后果; 不留证据遵循 fail-open 最小例。 */
+      } catch (err) {
+        // fail-open 可以吞异常, 不许吞证据 (§静默坑 2): 关 fd 失败确实没有业务后果,
+        // 但「没后果」与「没发生过」是两件事 —— 留一行 debug, 别让它从盘上消失。
+        logger.debug({ lockPath, err: String(err) }, '[omd/inventory] 关 lock fd 失败 (无业务后果, 记录备查)');
+      }
+    },
+    release: () => {
+      try {
+        closeSync(fd);
+      } catch (err) {
+        logger.debug({ lockPath, err: String(err) }, '[omd/inventory] release 时关 fd 失败 (不影响 unlink, 记录备查)');
+      }
+      try {
+        unlinkSync(lockPath);
+      } catch (err) {
+        // 锁文件已被外部移除 (崩溃后手动恢复过) → release 退化成 no-op。这不是错,
+        // 但它说明有人在引擎之外动过锁 —— 那正是下次单写者判断出岔子时要查的第一条线索。
+        logger.debug({ lockPath, err: String(err) }, '[omd/inventory] 锁文件已不在 (外部移除?), release 退化 no-op');
       }
     },
   };

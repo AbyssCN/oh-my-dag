@@ -38,6 +38,15 @@ export interface CatchSite {
   file: string;
   line: number;
   kind: 'empty' | 'silent';
+  /**
+   * 整条 catch 子句的归一化文本(去掉所有空白)。**净增比较的锚**。
+   *
+   * 2026-08-26 加: 此前按 `line` 做差集, 于是在文件前部插入 N 行会让后面每一个既有
+   * catch 的行号 +N、整批被算成新增 —— run 5bcfa2b2 因此被误杀 (engine.ts 只改 47 行,
+   * 却报净增 9 处, 点名的还是既有的 artifactReader fail-open)。行号从来不是这条判据
+   * 要认的东西, 内容才是。
+   */
+  sig: string;
 }
 
 export interface CatchScan {
@@ -56,8 +65,9 @@ export function scanCatchEvidence(source: string, fileName: string): CatchScan {
     if (ts.isCatchClause(n)) {
       total += 1;
       const line = src.getLineAndCharacterOfPosition(n.getStart()).line + 1;
-      if (n.block.statements.length === 0) sites.push({ file: fileName, line, kind: 'empty' });
-      else if (!EVIDENCE.test(n.block.getText())) sites.push({ file: fileName, line, kind: 'silent' });
+      const sig = n.getText().replace(/\s+/g, '');
+      if (n.block.statements.length === 0) sites.push({ file: fileName, line, kind: 'empty', sig });
+      else if (!EVIDENCE.test(n.block.getText())) sites.push({ file: fileName, line, kind: 'silent', sig });
     }
     ts.forEachChild(n, walk);
   };
@@ -93,19 +103,42 @@ export function scanTree(root: string): CatchScan {
 }
 
 /**
- * 行号级别的「净增」比较 —— base 里同一行已有 silent/empty ⇒ 不算净增;
+ * 「净增」比较 —— 按 catch 子句的**内容指纹**做**多重集**差, 不按行号。
  * 文件在 base 缺席 (`baseSites === null`) ⇒ 当前所有站点全算净增。
  *
- * 严格按行号比对而不是按行文本: catch 块可能内容微调但仍是 silent, 我们关心的是
- * **位置层面**是否引入新沉默 —— 同一行被改成合规就是合规, 新行才付代价。
+ * ## 为什么不按行号(2026-08-26 改)
+ *
+ * 原实现是 `new Set(baseSites.map((s) => s.line))` 的差集, 理由写的是「关心位置层面
+ * 是否引入新沉默」。实际后果: 在文件前部插入 N 行, 后面每一个既有 catch 的行号都 +N、
+ * 全部落在 baseLines 之外, **整批被算成新增**。
+ *
+ * 真账: run 5bcfa2b2 (conductor S2 后半) 的 s2 节点因此判红 —— `engine.ts` 那一发
+ * 只改了 47 行 (+46/-1), 闸却报净增 9 处, 点名的 `engine.ts:1098` 是既有的
+ * `artifactReader` fail-open。s2 failed → s2-green/s3/s3-green 级联 skipped,
+ * 片 2 与片 3 的交付全丢。engine.ts 是 5000+ 行的高频改动文件, 这个误报是系统性的。
+ *
+ * ## 为什么是多重集而不是 Set 去重
+ *
+ * 朴素去重会让「真新增一个与既有 catch 内容完全相同的块」漏报 —— 而
+ * `catch { return null; }` 这种恰恰是最常见的写法。按指纹计数, 净增 =
+ * Σ max(0, 当前该指纹条数 − base 该指纹条数)。
+ *
+ * 代价(明写, 不当成强保证): 把一个既有 silent catch 原样搬到别处、同时在原位置补上证据,
+ * 净增算 0。位置变了但沉默总数没变 —— 与本闸「只许降不许涨」的口径一致, 不追位置。
  */
 export function netIncreaseVsBase(
   currentSites: CatchSite[],
   baseSites: CatchSite[] | null,
 ): { netIncrease: number; newSites: CatchSite[] } {
   if (baseSites === null) return { netIncrease: currentSites.length, newSites: currentSites };
-  const baseLines = new Set(baseSites.map((s) => s.line));
-  const newSites = currentSites.filter((s) => !baseLines.has(s.line));
+  const budget = new Map<string, number>();
+  for (const s of baseSites) budget.set(s.sig, (budget.get(s.sig) ?? 0) + 1);
+  const newSites: CatchSite[] = [];
+  for (const s of currentSites) {
+    const left = budget.get(s.sig) ?? 0;
+    if (left > 0) budget.set(s.sig, left - 1); // base 里还有额度 → 这一个是既有的
+    else newSites.push(s); // 额度用尽 → 真多出来的一个
+  }
   return { netIncrease: newSites.length, newSites };
 }
 

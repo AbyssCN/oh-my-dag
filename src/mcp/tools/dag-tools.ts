@@ -371,6 +371,9 @@ function summarizeResult(result: ExecutorDagResult): Record<string, unknown> {
       leavesOut: result.usage.leavesOut,
       leavesCacheHit: result.usage.leavesCacheHit,
       ...(result.usage.verifier ? { verifier: result.usage.verifier } : {}),
+      // S2 后半 (C-2 / INV-9): 探测消耗段独立持久化, 普通 leaf cost 不读 (I-11 隔离)。
+      // ⚠ 缺席 = 未采集 (I-11 三态第一态), 与 calls:0 ≠ costUsd:null (后两态) 不混。
+      ...(result.usage.probe ? { probe: result.usage.probe } : {}),
     },
     outputs: Object.keys(outputs).length > 0 ? outputs : undefined,
   };

@@ -630,7 +630,14 @@ export type DagNodeEvent =
   // (assemble.ts:728 的 onNodeEventComposed) → ownerNotifySink 翻成 budget-half payload。
   // 轮边界读数; 每轴每内环实例至多一发 (per-axis 幂等, 不跨进程去重 —— 见 emitBudgetHalfIfHalf)。
   // 未知 type 消费者必须静默忽略 (C-1); 既有 DagNodeEvent 消费者零回归 (INV-10)。
-  | { type: 'budget'; axis: 'tokens' | 'ms'; spent: number; cap: number };
+  | { type: 'budget'; axis: 'tokens' | 'ms'; spent: number; cap: number }
+  // SDD §7 use_event (S2 后半, 2026-08-25, C-2 / INV-5, INV-6): 完成 leaf 带真 tool_id
+  // 时由 settle 闭包发出一次, 字段来源全部钉位 (tool_id / leaf_id / success / cost /
+  // oracle_pass / ts)。无 tool_id 时不写占位; 同一 (tool_id, leaf_id) 至多一条
+  // (dedupe 在 credit.dedupeUseEvents 兜底, 发射点不重复触发)。
+  // 未知 type 消费者必须静默忽略 (C-1); 既有 DagNodeEvent 消费者零回归。
+  | { type: 'use_event'; tool_id: string; leaf_id: string; success: boolean;
+      cost: number; oracle_pass: boolean; ts: string };
 
 /**
  * **图外只读观察者**的一条产出 (P3 D-Q)。
@@ -789,6 +796,13 @@ export interface LeafResult {
   kind: 'inproc' | 'agent' | 'command' | 'map' | 'primitive' | 'research' | 'conductor' | 'await';
   /** 实际所用模型坐标 (inproc/agent leaf; command 无模型 → undefined)。bandit reward 归因 + 审计用。 */
   model?: string;
+  /**
+   * **真工具引用** (S2 后半, C-2 / INV-5, INV-6): 节点 toolRefs[0] (解析后) 或
+   * bootstrap.test_gate.tool_id。引擎 settle 时若有值 → 沿 `use_event` 事件面发出
+   * 一条六字段记录; 无值不写占位。**与 `verification.pass` 解耦** —— oracle_pass
+   * 来自工具契约 (bootstrap-gate 三态) 而非 verifier。
+   */
+  tool_id?: string;
   output: string;
   deps: string[];
   usage: ModelUsage;
@@ -1171,6 +1185,21 @@ export interface ExecutorDagResult {
     leavesCacheHit: number;
     /** 校验器用量 (跨所有 verify 轮累加)。仅 config.verifier 存在时有值。 */
     verifier?: ModelUsage;
+    /**
+     * **探测消耗** (S2 后半, I-11, 2026-08-25, C-2 / INV-9): 装配期探针 (probeShellSandbox
+     * 等) 的独立 usage 段, 与 conductor/leaves 并列。**`computeCost` / `leafCostReward` /
+     * `DreamCandidate` / `dreamFactInput` 一律不读** (I-11 隔离) ——
+     * `recordReward(bucket, model, reward)` / dream extract·merge 路径在源头以 `rejectIfProbe`
+     * 拒收。三态不可压平: 字段缺席 = 未采集, `calls:0` = 探了但无外部调用, `costUsd:null`
+     * = 有调用但价格未知 (unpriced 模型)。
+     */
+    probe?: {
+      calls: number;
+      tokensIn: number;
+      tokensOut: number;
+      cacheHitTokens: number;
+      costUsd: number | null;
+    };
   };
   /**
    * D-21 跨轮语义复用命中的节点 id (本轮零 LLM 直接注入上轮输出)。空 = 无复用 (首轮 / 全变了)。
