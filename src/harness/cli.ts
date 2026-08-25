@@ -329,7 +329,14 @@ if (userArgs[0] === 'serve') {
   const { runSolveCLI } = await import('./cli-solve');
   process.exit(await runSolveCLI(userArgs.slice(1)));
 } else {
-  // 其余一律打用法 (含裸 `omd`): 没有交互模式可落了。(mcp 分支在上方早退, 到不了这里)
+  // 显式求助 (--help/-h/help) 是成功路径: usage 走 stdout + exit 0 (CLI 惯例;
+  // 2026-08-26 实测 bench adapter 用 `omd --help` 探活, exit 1 会把好挂载判成坏)。
+  // 其余未知参照旧: usage 走 stderr + exit 1 (错误路径);裸 `omd` 打用法 exit 0。
+  const help = userArgs[0] === '--help' || userArgs[0] === '-h' || userArgs[0] === 'help';
+  if (help) {
+    process.stdout.write(USAGE);
+    process.exit(0);
+  }
   process.stderr.write(USAGE);
   process.exit(userArgs.length === 0 ? 0 : 1);
 }
