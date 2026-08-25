@@ -145,6 +145,13 @@ export interface RunNodeView {
     summary?: string;
     durationMs?: number;
     createdAt?: string;
+    /**
+     * **节点级空转档 2 阶梯报告** (SDD S2 片 4, 2026-08-25; INV-7)。
+     * 缺席 = 节点未走 ladder (无 spin 史 / ladder 未启用), **不是**"走完两档齐绿"。
+     * 深传透 — 与 `NodeCheckpoint.spinLadderReport` / 失败 LeafResult 三处读到的必须是同一份报告
+     * (test: spin-rung2-report.test.ts GWT-7c)。
+     */
+    spinLadderReport?: unknown;
   } | null;
   hasOutput: boolean;
 }
@@ -184,6 +191,9 @@ export function readRun(cwd: string, runId: string): RunDetail | null {
         ...(cp.summary ? { summary: String(cp.summary).slice(0, 500) } : {}),
         ...(typeof cp.durationMs === 'number' ? { durationMs: cp.durationMs } : {}),
         ...(cp.createdAt ? { createdAt: String(cp.createdAt) } : {}),
+        // SDD S2 片 4 (INV-7): 把报告完整透传给读取面 — 字段缺席时透传缺席 (NULL≠0);
+        // 条件拆成 `'spinLadderReport' in cp` 是关键: 把「未走 ladder」与「报告对象=null/{}」严格分开。
+        ...('spinLadderReport' in cp ? { spinLadderReport: cp.spinLadderReport } : {}),
       };
     } catch {
       /* 无 checkpoint = 未 settle (pending/in-flight), 不是错误 */

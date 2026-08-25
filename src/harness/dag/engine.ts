@@ -124,6 +124,14 @@ import { extractFailSet } from '../goal/accept-delta';
 // ── T2#5 按簇拆出的兄弟文件 (引擎消费) ──
 import type { GenerateFn, ExecutorDagConfig, LeafResult, ExecutorDagResult, DagObservation, BlameRetryLedger, DagNodeEvent } from './types';
 import { trySpinRepair } from './replan-spin';
+import {
+  buildSpinLadderReport,
+  buildSpinRung2Decision,
+  chooseSpinRung2Dimension,
+  SPIN_LADDER_RUNG1_DIMENSION,
+  type SpinLadderReading,
+  type SpinRung2Decision,
+} from './spin-rung2';
 // C 无效否决闸 (2026-08-21): 判词可不可证伪 —— 纯函数, 判据与用例都在那边。
 import { classifyVeto, isInfraVerdict } from './veto-guard';
 import { makeDefaultGenerate, LEAF_SYSTEM_PREFIX, PONYTAIL_LEAF_DISPOSITION } from './defaults';
@@ -3284,6 +3292,11 @@ async function executePlan(
 
   // 节点起跑时刻 (issue #4: 失败 checkpoint 的 durationMs 用; settle 在 runNode 各早退分支之外, 需独立捕获)。
   const nodeStartedAt = new Map<string, number>();
+  // S2 (2026-08-25, 片 3): rung 2 派发闭包状态。runNode 在档 1 spin-fused 时写入,
+  // runLeafNode 的 agentRunner 调用处读取后清空 ——
+  // **单节点临时**, 跨节点不共享。键 = 节点 id。
+  // undefined = 节点当前 attempt 不是 rung 2 重派 (普通 retry / 首次 / ladder 已终止)。
+  const rung2DispatchByNode = new Map<string, SpinRung2Decision | undefined>();
   // ── SDD 2026-08-11 (D-1/D-5/D-10): settle 观测字段 + progress 节流 ───────────────
   // settle 三新字段全 optional (additive, 老发射点不补也合法); durationMs 真源 = 引擎侧墙钟
   // (nodeStartedAt), 不是 TUI 的事件到达间隔 (D-5); failReason = 失败原文首行 ≤160 (全文在 run 记录)。
@@ -3594,6 +3607,11 @@ async function executePlan(
 
   // leaf 家族 (agent/inproc 双模): 模板卡/profile/caveman/prompt 组装 + 产物闸全在这里。
   const runLeafNode = async ({ id, node, deps }: NodeExecCtx): Promise<LeafResult> => {
+      // S2 (2026-08-25, 片 3): rung 2 派发闭包读取。runNode 在档 1 spin-fused 时写入
+      // (同一节点 id), agentRunner 调用后由 runNode 清空。本 attempt 是 rung 2 → 三字段
+      // (freshContext / targetSeatCoord / rung2Evidence) 透传到 runner 入参面; 非 rung 2
+      // → undefined → spread 后零字段 (INV-8 存量语义不变)。
+      const rung2Dispatch = rung2DispatchByNode.get(id);
       // agent 模板卡解析: 命中注册表 → body 注入 prompt 前缀 (buildLeafPrompt 前置放)。
       // 未知名 = 预构造 plan 绕过了规划层校验 → TPL-2 执行层兜底: warn + 忽略, 不崩节点。
       const tpl = node.template ? templates.get(node.template) : undefined;
@@ -3870,6 +3888,25 @@ async function executePlan(
           // D2: attach_media:true 的 agent 节点由本 runner 接 promptImages。引擎侧零成本透传
           // (image_url.data URI 已在 collectDepMedia 里读盘 + base64 编好), agent-leaf 层按通道分派。
           ...(useAgent && mediaParts.length > 0 ? { promptImages: mediaParts } : {}),
+          // S2 (2026-08-25, 片 3): rung 2 派发闭包 → agentRunner 入参。fresh-context 同座位 +
+          // 丢消息历史 (D-6), seat-upgrade 真实换脑 (INV-3), 四件证据字段必带 (D-4)。
+          // 三字段互斥: 同 attempt 不会同时是 fresh-context 又换脑 (片 1 决策函数保证)。
+          ...(rung2Dispatch && rung2Dispatch.kind === 'fresh-context'
+            ? { freshContext: true as const }
+            : {}),
+          ...(rung2Dispatch && rung2Dispatch.kind === 'seat-upgrade' && rung2Dispatch.to !== undefined
+            ? { targetSeatCoord: rung2Dispatch.to }
+            : {}),
+          ...(rung2Dispatch
+            ? {
+                rung2Evidence: {
+                  packHash: rung2Dispatch.evidencePackHash ?? `rung2:${id}`,
+                  failureReason: 'spin-fused',
+                  criterionDiff: { kind: 'no-history' as const, literal: '本节点无 self_check,无判据可 diff' },
+                  blockerSignature: 'spin-fused',
+                },
+              }
+            : {}),
           onEvent: leafProgress,
         });
         recordGeneration({
@@ -4394,7 +4431,55 @@ async function executePlan(
     const spent: ModelUsage[] = []; // 被丢弃的尝试的 usage — 也真花了钱, 不记账就是账本对不上
     let leaf: LeafResult | undefined;
     let thrown: unknown;
+    // S2 (2026-08-25, 片 3): 节点级档 2 阶梯状态 (D-1, D-7, INV-6)。
+    //   - rung1Reading: 档 1 (普通 attempt) 命中空转口径时填一次 (空 → 待 ladder 启用后再填)
+    //   - rung2Dispatched: 档 2 已派发一次, 不允许档 3 (INV-6)
+    //   - rung2Decision: 档 2 决策 (片 1 纯函数产物), 进 LeafResult.spinLadderReport
+    //   - rung2Disabled: ladder 显式不可用 (config 未配 / 阈值未注入) → 走既有 max_retry 路径
+    //     (INV-8: 无 spin 史 / 未启用 ladder 节点行为逐字节不变)
+    const rung1Reading: SpinLadderReading | null = null;
+    let rung2Dispatched = false;
+    let rung2Decision: SpinRung2Decision | null = null;
+    const rung2Threshold = config.spinRung2?.threshold;
+    const rung2Pools = config.spinRung2?.pools;
+    const rung2Enabled = rung2Threshold !== undefined;
+    rung2DispatchByNode.set(id, undefined); // 起始清零
+    try {
     for (let attempt = 0; ; attempt++) {
+      // S2: 派发前检查上一 attempt 是否 spin-fused → 档 2 决策 (INV-1, D-2)
+      if (leaf?.failureKind === 'spin-fused' && !rung2Dispatched && rung2Enabled && leaf !== undefined) {
+        // 契约 D-5: 座位坐标取不到 = 该维度不可用, 按**试尽**处理。不许编占位坐标 ——
+        // 假坐标查池必然落空, 却会被下游读成一次真的换脑 (§静默坑 1: 别拿 unknown 抹平
+        // 「没有」「查不到」「不适用」三种情形)。原实现给 currentCoord 兜了一个
+        // `provider:model` 形态的占位串 (此处刻意不写出那个字面值 —— 写出来
+        // src/eval/seat-coordinate-gate.test.ts 的字面坐标闸会连注释一起判红, 而它报得对)。
+        if (leaf.model === undefined) {
+          rung2Dispatched = true;
+          logger.warn(
+            { node: id, reason: 'leaf-coord-missing' },
+            '[omd/executor-dag][spin-rung2-ladder] leaf 座位坐标缺失 → 档 2 维度不可用, 记试尽 (契约 D-5)',
+          );
+        } else {
+          const accumUsageIn = spent.reduce((a, b) => a + b.in, 0) + (leaf.usage?.in ?? 0);
+          const dim = chooseSpinRung2Dimension({ accumUsageIn, threshold: rung2Threshold! });
+          rung2Decision = buildSpinRung2Decision({
+            dimension: dim,
+            currentCoord: leaf.model,
+            pools: rung2Pools ?? { cheap: [], mid: [], strong: [] },
+            accumulatedUsageIn: accumUsageIn,
+          });
+          rung2Dispatched = true;
+          rung2DispatchByNode.set(id, rung2Decision); // runLeafNode 读这里
+          logger.info(
+            { node: id, rung2Kind: rung2Decision.kind, accumUsageIn, from: rung2Decision.from, to: rung2Decision.to },
+            '[omd/executor-dag][spin-rung2-ladder] 档 1 命中空转 → 派发档 2 重试',
+          );
+        }
+      } else if (leaf?.failureKind === 'spin-fused' && !rung2Dispatched && !rung2Enabled) {
+        // ladder 未启用 (config 没注入阈值) → 走既有 max_retry 路径,
+        // 不静默给节点升档 (INV-8 存量语义不变)
+        logger.debug({ node: id }, '[omd/executor-dag][spin-rung2-ladder] spin-fused 但 ladder 未启用 → 走既有 max_retry 路径');
+      }
       if (attempt > 0) logger.info({ node: id, attempt, budget }, '[omd/executor-dag] L0 节点级重试 (带上次失败原因)');
       const causeNote = attempt === 0 ? undefined : causeOf(leaf, thrown);
       try {
@@ -4404,13 +4489,39 @@ async function executePlan(
         thrown = err;
         leaf = undefined;
       }
+      // S2: 档 2 也命中空转口径 → 阶梯终止 (D-7, INV-6), 越过剩余 max_retry 预算
+      if (leaf?.failureKind === 'spin-fused' && rung2Dispatched && rung2Decision !== null) {
+        const r2Reading: SpinLadderReading = {
+          dimension: rung2Decision.kind,
+          criterionDiff: { kind: 'no-history', literal: '本节点无 self_check,无判据可 diff' },
+          blockerSignature: leaf.output?.slice(0, 200) ?? 'spin-fused',
+          outcome: 'fail',
+        };
+        const r1Reading: SpinLadderReading = rung1Reading ?? {
+          dimension: SPIN_LADDER_RUNG1_DIMENSION,
+          criterionDiff: { kind: 'no-history', literal: '本节点无 self_check,无判据可 diff' },
+          blockerSignature: leaf.output?.slice(0, 200) ?? 'spin-fused',
+          outcome: 'fail',
+        };
+        const report = buildSpinLadderReport({ rung1: r1Reading, rung2: r2Reading });
+        logger.warn(
+          { node: id, rung2Kind: rung2Decision.kind, accumUsageIn: spent.reduce((a, b) => a + b.in, 0) + (leaf.usage?.in ?? 0) },
+          '[omd/executor-dag][spin-rung2-ladder] 档 2 再次空转 → 节点终止 (越过 max_retry 预算)',
+        );
+        leaf = { ...leaf, spinLadderReport: report };
+        break;
+      }
       if (leaf && leaf.status !== 'failed') break; // done / skipped — 重试无意义
       if (attempt >= budget) break; // 预算用尽
       if (leaf) spent.push(leaf.usage);
     }
+    } finally {
+      // 清闭包, 防止下次同 id 节点起跑时残留 (节点不会复用, 但守卫成本为零)
+      rung2DispatchByNode.set(id, undefined);
+    }
     // 最后一次是抛错 → 原样抛回, 维持既有 failedFromThrow 隔离路径 (败因不丢, INV-6 不连坐)。
     if (!leaf) throw thrown;
-    if (leaf.status === 'failed' && budget > 0) {
+    if (leaf.status === 'failed' && budget > 0 && !rung2Dispatched) {
       logger.warn({ node: id, budget }, '[omd/executor-dag] L0 重试预算用尽仍 failed → 交上层 (verifier 升级 / 外层 fixpoint)');
     }
     return spent.length ? { ...leaf, usage: spent.reduce((a, b) => addUsage(a, b), leaf.usage) } : leaf;

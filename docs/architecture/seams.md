@@ -7,7 +7,7 @@
 **有哪些接缝 · 每个字段谁在消费 · 换实现该去哪换**。消费方是 token 级扫描的上界,
 列出命中最多的前 3 个文件。
 
-> 8 个 seam · 52 个字段 · 扫描范围 src/**/*.ts (排除测试)
+> 8 个 seam · 53 个字段 · 扫描范围 src/**/*.ts (排除测试)
 
 ## DagSeatsSeam
 
@@ -43,8 +43,9 @@
 | `commandRunner` |  | `CommandLeafRunner` | command-kind leaf 的执行器 (确定性 CLI, 零 LLM, 方案 A)。 | `src/harness/goal/run-goal.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts` (14 文件) |
 | `researchRunner` |  | `ResearchLeafRunner` | research-kind leaf 的执行器 (真 web 检索 + 有界内环, D-6)。 | `src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/node-failure.ts` (5 文件) |
 | `judgeSend` |  | `typeof Gateway.send` | 注入式 judge 调用 (测试)。 | `src/harness/dag/engine.ts` (1 文件) |
-| `router` |  | `LeafModelRouter` | executor leaf 模型选型路由器 (B-2 bandit, 见 model-router.ts)。 | `src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/model-router.ts` (17 文件) |
+| `router` |  | `LeafModelRouter` | executor leaf 模型选型路由器 (B-2 bandit, 见 model-router.ts)。 | `src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/model-router.ts` (16 文件) |
 | `repoChecks` |  | `RepoCheck[]` | **leaf 级仓规检查清单** (D2 切片 2, #266 修补节点): 引擎对每个 agent leaf 跑完 之后、终态写入之前, 对该 leaf 的写集跑清单里每条 check。 | `src/mcp/assemble.ts`<br>`src/harness/agent-leaf.ts`<br>`src/harness/repo-checks-manifest.ts` (3 文件) |
+| `spinRung2` |  | `{ threshold?: number; pools?: SpinRung2StampPools; }` | **节点级空转档 2 阶梯配置** (SDD S2, 2026-08-25, 片 3 engine 接线)。 | `src/harness/dag/engine.ts` (1 文件) |
 
 ## DagPlanningSeam
 

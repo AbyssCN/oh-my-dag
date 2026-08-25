@@ -27,7 +27,7 @@
  * - 不动 src/ 下任何文件; 不修改既有测试 (branch-default-wiring / branch-default 等逐字不变)。
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -213,19 +213,31 @@ describe('#253-CRYSTAL v1: 装配层 branchStrategy 缺省契约 (A1..A5)', () =
 
   test('A5 — 写意图工具恰为 createDagTools + createGoalTool 两个, 无第三处注入 defaultBranchStrategy', () => {
     // 静态读源: src/mcp/assemble.ts 中 defaultBranchStrategy 变量定义 + 注入位分布。
-    // 行 808 = `const defaultBranchStrategy: BranchStrategy = ...` (变量定义/赋值);
-    // 行 814 = createDagTools({ ..., defaultBranchStrategy }) (注入位 #1);
-    // 行 841 = createGoalTool({ ..., defaultBranchStrategy }) (注入位 #2)。
-    //   (D2 #266 +10 行重钉 → D4 #271 +6 行重钉 → 74c5cf10 研究单 assemble +3 行再重钉
-    //    → F1 推式桥 ownerNotifySink 装配 +64 行再重钉)
+    //
+    // ⚠ 2026-08-26 改为**结构锚**, 不再钉行号 —— 这是修根因, 不是第五次重钉。
+    //   原实现把「定义行 / 注入位」写成硬编码行号, 于是任何人在 assemble.ts 上游插几行
+    //   就误报一次: D2 #266 (+10 行) → D4 #271 (+6 行) → 74c5cf10 研究单 (+3 行)
+    //   → F1 推式桥 ownerNotifySink 装配 (+64 行), 已重钉四次。
+    //   第五次是在一次 merge 里撞出来的: F1 (+64 行) 与阶梯 S2 片 2 (+19 行) 各自钉了一套,
+    //   加上 base 那套, **三方行号互不相同, 合并后哪一套都不对**。
+    //   行号从来不是这条契约要验的东西。要验的是语义:
+    //     「恰三处出现 = 一处定义 + 两处注入, 且两处注入分别落在 createDagTools 与
+    //      createGoalTool 的调用里」。下面按这个验, 对上游插行免疫。
+    //   反向自检 (实跑过): 把 assemble.ts 里 createGoalTool 那处的 defaultBranchStrategy 删掉
+    //   ⇒ 第 3 条断言红; 再加一处第三方注入 ⇒ 第 1 条 (out.length === 3) 红。
     // 契约锚点: O-2 说「写意图工具 = createDagTools + createGoalTool」—— 任何第三处注入都是契约漂移。
+    const src = readFileSync('src/mcp/assemble.ts', 'utf8');
     const out = execFileSync('grep', ['-n', 'defaultBranchStrategy', 'src/mcp/assemble.ts']).toString().trim().split('\n');
     expect(out.length).toBe(3); // 定义 + 注入×2, 与事实表 (d) 一致
-    // 抽出注入位 (非变量定义的那行), 必须恰好是 :814 (createDagTools) 与 :841 (createGoalTool)。
-    const injectionSites = out.filter((line) => !/^808:.*const defaultBranchStrategy:/.test(line));
+    // 定义恰一处 (按内容认, 不按行号)。
+    expect(out.filter((line) => /const defaultBranchStrategy:/.test(line)).length).toBe(1);
+    // 其余两行 = 注入位。
+    const injectionSites = out.filter((line) => !/const defaultBranchStrategy:/.test(line));
     expect(injectionSites.length).toBe(2);
-    expect(injectionSites.some((line) => line.startsWith('814:'))).toBe(true);
-    expect(injectionSites.some((line) => line.startsWith('841:'))).toBe(true);
+    // 注入位 #1 落在 createDagTools 的调用里 (同一行传参, 按行内容认)。
+    expect(injectionSites.some((line) => line.includes('createDagTools'))).toBe(true);
+    // 注入位 #2 落在 createGoalTool 的调用块里 (跨行 —— 按文本窗口认, 仍然不碰行号)。
+    expect(/createGoalTool\(\{[\s\S]{0,2000}?defaultBranchStrategy/.test(src)).toBe(true);
     // 反向 (negative): 研究 / 记忆 / pathfinder / fleet 这一组非写意图工具**未**被注入。
     // 装配层相关函数声明扫描: 它们都不该出现 defaultBranchStrategy。
     const allTools = execFileSync('grep', ['-n', 'createDagResearchTool\\|createMemoryTools\\|createPathfinderTools\\|createFleetTools\\|createTriageTools\\|createInterveneTools\\|createConfigTools\\|createDistillTools', 'src/mcp/assemble.ts'])

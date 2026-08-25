@@ -76,6 +76,7 @@ import {
   type ThinkingLevel,
 } from '../model/role-models';
 import { createAgentLeafRunner } from '../harness/agent-leaf';
+import type { SpinRung2StampPools } from '../harness/dag/spin-rung2';
 import { loadRepoChecksManifest } from '../harness/repo-checks-manifest';
 import type { AnyOmdTool } from '../harness/agent-tools';
 import { resolveVerification } from '../harness/verifier';
@@ -152,6 +153,24 @@ export function ownerNotifySink(cwd: string, deps?: NotifyDeps): (runId: string,
       // notifyOwner 自己 fail-open; 这一层兜底是防 notify.ts 之外的错 (例如构造 payload 抛)。
       logger.debug({ err: String(err) }, '[omd/assemble] ownerNotifySink 抛错 (已吞, 不扰动 run)');
     }
+  };
+}
+
+/**
+ * S2 (2026-08-25, 片 2) — rung 2 单节点选择器的池源: 装配层导出的同一份 stampPools。
+ *
+ * engine 侧 runNode 在 rung 2 派发前调 `pickHigherTierSeat` 需要这份池 (SDD D-5); 而
+ * 池的座位推导与 stamp pass 共享一份 `roleCoord` 解析, 必须在装配层导出才能避免
+ * engine 重新解一遍出第二个答案 (INV-MODEL-1 同款纪律)。函数纯化 (只读 env, 不读 IO)
+ * 是片 2 的最小注入接口。
+ */
+export function resolveSpinRung2StampPools(env: NodeJS.ProcessEnv): SpinRung2StampPools {
+  const roleCoord = (n: OmdNode): string => resolveRoleModelConfigured(n, { env }).model;
+  const uniqCoords = (xs: string[]): string[] => [...new Set(xs.filter((x) => x.includes(':')))];
+  return {
+    strong: uniqCoords([roleCoord('judge'), roleCoord('reason'), roleCoord('verifier')]),
+    mid: uniqCoords([roleCoord('leaf'), roleCoord('agent'), roleCoord('overflow')]),
+    cheap: uniqCoords([roleCoord('lens'), roleCoord('expand'), roleCoord('distill')]),
   };
 }
 

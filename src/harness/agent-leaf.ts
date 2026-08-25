@@ -1536,10 +1536,20 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // 2026-08-11-leaf-profile库 D-3): 引擎侧每节点各自 resolveProfile, 不能烤进 runner 装配期。
     // opts.profile 仍是兼容回退 (未经 input 传时的旧调用形状)。
     const leafProfile = input.profile ?? opts.profile;
-    // profile.seat 当节点无显式模型时的回退 (引擎侧未 pin model 且无 router → 传空串)。
-    const model = inputModel || leafProfile?.seat || '';
+    // S2 (2026-08-25, 片 2): rung 2 seat-upgrade 派发 —— 引擎侧 `targetSeatCoord` 优先级最高
+    // (D-3), 它表示"本调用换脑到这一档"; profile.seat 仍当节点无显式模型时的回退。无 targetSeatCoord
+    // 时 → 普通 retry 形状不变 (INV-8)。
+    const model = input.targetSeatCoord ?? (inputModel || leafProfile?.seat || '');
     if (!model) {
       throw new Error('[agent-leaf] 无模型: input.model 空且 profile.seat 未设');
+    }
+    // S2 rung 2 fresh-context 派发审计标记 (D-6): production runner 现状每次调用起新会话
+    // (943 行注), 本标记让它在日志里可观测 — 真复用旧消息的 runner 必须在实现侧挡死。
+    if (input.freshContext) {
+      logger.info(
+        { cwd, model, packHash: input.rung2Evidence?.packHash ?? '(no evidence)' },
+        '[omd/agent-leaf] rung 2 fresh-context dispatch (同模型 + 新会话 + 证据带全, D-6)',
+      );
     }
     const { provider, modelId } = parseModelRef(model);
     // 座位级极简工具面 (owner 2026-08-18)。显式的 profile.tools / opts.tools 永远胜过它 ——
@@ -1584,12 +1594,32 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       harnessCore: opts.harnessCore ?? false,
     });
     const disciplined = scaffold ? `${scaffold}\n\n${prompt}` : prompt;
+    // S2 (2026-08-25, 片 2) rung 2 证据注入 (D-4): fresh-context 丢消息历史不得丢这些显式证据,
+    // seat-upgrade 也带一份 (高一档模型没看过档 1 上下文, 缺它就只能凭空白 prompt 干)。缺省 = 普通
+    // 调用, 零变化 (INV-8)。
+    const withRung2Evidence = input.rung2Evidence
+      ? (() => {
+          const ev = input.rung2Evidence;
+          const diff =
+            ev.criterionDiff.kind === 'no-history'
+              ? ev.criterionDiff.literal
+              : `added=[${ev.criterionDiff.added.join(',')}] removed=[${ev.criterionDiff.removed.join(',')}]`;
+          return `${disciplined}\n\n` +
+            `[rung 2 证据包 (S2)]\n` +
+            `packHash: ${ev.packHash}\n` +
+            `failureReason: ${ev.failureReason}\n` +
+            `criterionDiff: ${diff}\n` +
+            `blockerSignature: ${ev.blockerSignature}\n` +
+            `---\n` +
+            `请基于上述败因继续修复你的产物。再次结束时不要重复上次同样的做法。`;
+        })()
+      : disciplined;
     // persona 刻意**不进** promptVersion: 它是每个节点自己的角色设定, 属于"这一发在干什么"
     // 而不是"引擎这一版怎么包装" —— 混进来会让版本逐节点漂, 也就分不了组。
     // profile.persona 与 profile skills 同此边界: 不进 promptVersion, 不建并行 prompt 构建路径。
     const promptVersion = promptVersionOfText(scaffold);
     const combinedPersona = [opts.persona, leafProfile?.persona].filter(Boolean).join('\n\n');
-    const routedPrompt = combinedPersona ? `<persona>\n${combinedPersona}\n</persona>\n\n${disciplined}` : disciplined;
+    const routedPrompt = combinedPersona ? `<persona>\n${combinedPersona}\n</persona>\n\n${withRung2Evidence}` : withRung2Evidence;
 
     // advisor(NOTES 2026-08-10):pi 座内部升档 —— 本次运行注入无参 advisor 工具,prompt 面按
     // 本次工具面重建(创建期缓存的 systemPrompt 不含它)。claude-code 座走官方(settings.advisorModel
