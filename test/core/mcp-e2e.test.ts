@@ -138,7 +138,17 @@ async function wire(overrides: Partial<AssembleOmdMcpDeps> = {}) {
     exitCode: 0,
   });
   const deps: AssembleOmdMcpDeps = {
-    env: { OMD_ITER_LEAF_MODEL: 'test:leaf', OMD_ITER_CONDUCTOR_MODEL: 'test:conductor' },
+    env: {
+      OMD_ITER_LEAF_MODEL: 'test:leaf',
+      OMD_ITER_CONDUCTOR_MODEL: 'test:conductor',
+      // ⚠ #263 根因 (2026-08-25 实测): 本文件用 `cwd: process.cwd()` 装配 —— 那是**真仓根**
+      //   (它要的是"生产装配收到什么", 不是临时目录)。#253 之后写型 run 默认落隔离 worktree,
+      //   于是每跑一次这个文件就在本仓真建 1 棵 `omd/run/*` worktree + 1 个分支, 而测试全绿 ——
+      //   污染只在 `git worktree list` 里看得见, 且**打脸本文件头那句「零网络零磁盘」**。
+      //   实测: 单跑一次 +1, 修后 +0。与 seat-wiring.test.ts 同一条修法同一个理由。
+      //   ⚠ 别改成传 `branchStrategy: 'head'` —— 那会让这里测的不再是"缺省路径"。
+      OMD_RUN_BRANCH_DEFAULT: '0',
+    },
     cwd: process.cwd(),
     engine,
     runRegistry: new RunRegistry(),
