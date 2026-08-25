@@ -377,6 +377,11 @@ async function runTouch(args: string[]): Promise<void> {
 /**
  * 查询面: `omd touches [--pairs|--findings]`。pairs 与 findings 分开读、分开打印;
  * 无 flag = 两个都打 (长期 0 也是读数, SDD §1-S3)。
+ *
+ * ⚠ **恒先印一行库级自述** (#253 收尾): 写型 run 默认落隔离 worktree 之后, 主树这本库的
+ *   pairs/findings 会长期是 0 —— 而「没撞」与「台账没接上」在 0 上长得一样。那一行给的是
+ *   分辨它俩的判据 (库里有没有近期行), 所以它**不受 --pairs/--findings 影响**: 只看碰撞数
+ *   而不知道库是不是活的, 正是这个出口此前读不出成因的原因。
  */
 async function runTouches(args: string[]): Promise<void> {
   const wantPairs = args.includes('--pairs');
@@ -387,6 +392,21 @@ async function runTouches(args: string[]): Promise<void> {
   try {
   const { openTouchLedger } = await import('./writeset/touch-ledger');
   const ledger = openTouchLedger({ root });
+  const st = ledger.stats();
+  // 档位不靠猜: 隔离树恒在 `<主仓>/.omd/runs/<runId>` (runWorktreeDir 的约定), 路径即判据。
+  // 判不出来的 (别人手建的 worktree / 跨仓) 就说"主树或未知", 不编一个确定的答案。
+  const { sep } = await import('node:path');
+  const treeKind = root.includes(`${sep}.omd${sep}runs${sep}`) ? '隔离 worktree' : '主工作树(或未知)';
+  process.stdout.write(
+    `ledger: root=${root} (${treeKind}) · rows=${st.rows} · sessions=${st.sessions} · ` +
+      `write=${st.writeRows}/read=${st.readRows} · source strict=${st.bySource.strict}/inferred=${st.bySource.inferred}/cli=${st.bySource.cli} · ` +
+      `last=${st.lastTs === undefined ? '(缺席: 这本库一条都没记)' : new Date(st.lastTs).toISOString()}\n`,
+  );
+  if (st.rows === 0) {
+    process.stdout.write(
+      '  ⚠ 库里零行 → 下面的 0 **不是"零碰撞"**, 是"这本库没在记"。先查接线, 别当健康读数。\n',
+    );
+  }
   if (showPairs) {
     const pairs = ledger.crossSessionPairs();
     process.stdout.write(`pairs (${pairs.length}):\n`);

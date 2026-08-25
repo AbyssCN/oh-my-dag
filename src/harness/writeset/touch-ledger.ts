@@ -14,6 +14,29 @@
  *
  * NULL≠0 纪律: `hash` 没算 = NULL, 与空串 hash 是两回事 —— 空串表示「算过, 是空内容的 hash」,
  * NULL 表示「没算」。查询侧区分两者, 不许把 NULL 落成 ''。
+ *
+ * ## #253 之后怎么读这本库 (2026-08-25)
+ *
+ * 写型 run 默认落隔离 worktree 之后, **主树这本库的碰撞数会趋近零**, 覆盖面缩到: 人手改 ·
+ * `head` 档 opt-in 的 run · 非 git 仓 / 建树失败退回 head 的 run。**这是设计结果不是故障。**
+ *
+ * ⚠ 所以「`findings()` 空」这一条**不再自证健康** —— 空可能是没撞, 也可能是台账压根没接上,
+ *   两者在结果上一模一样。分辨用 `stats()`: 空 findings ∧ `rows > 0` = 真没撞;
+ *   `rows === 0` = 这本库这段时间一条都没记, 去查接线, 别读成"零碰撞"。
+ *
+ * 🔴 **`stats()` 第一次真跑就抓到一个静默缺口** (2026-08-25, 本仓主树库实测):
+ *   `rows=2924 · sessions=63 · source strict=0 / inferred=0 / cli=2924` ——
+ *   **agent 工具面一条都没记进来**, 这本库 100% 来自 `omd touch` CLI (hook 链路)。
+ *   成因是接线缺失而非 fail-open: `assemble.ts` 两处 `createAgentLeafRunner({...})` 都**没传
+ *   `touch`**, 于是 `agent-tools.ts` 里 `touchLedger` 恒 null, `touchWrite` 每次直接 return。
+ *   它一直不可见, 是因为 `findings()` 有 140 条 (全是 cli 档) —— 看起来台账很健康。
+ *   ⚠ 这条**没修** (超出 #253 收尾范围, 单开票)。留在这里是因为: 证据档位分列的全部价值就是
+ *   让这种"一档满、另两档空"看得见, 而合并成一个数就永远抓不到。
+ *
+ * ⚠ 还有一整类事故这本库**天生看不见**: `git stash` / `checkout` / `reset` 这些**不经工具面的
+ *   树级操作**。2026-08-25 实测到一次 —— 并发写者一条 `git stash` 把另一个写者的未提交改动
+ *   整片卷走, 台账零记录 (它记的是 read/write 触碰, 不是 git 操作)。别拿这本库当"主树安全"的
+ *   证明: 它只覆盖经 `write`/`edit`/bash 写嗅探的那一路。
  */
 import { Database } from 'bun:sqlite';
 import { mkdirSync } from 'node:fs';
@@ -67,9 +90,36 @@ export interface TouchFinding {
   lastTs: number;
 }
 
+/**
+ * **这本库本身还活着吗** (#253 收尾, 2026-08-25)。
+ *
+ * 为什么需要它: 写型 run 默认落隔离 worktree 之后, 主树这本库的 `findings()` 会趋近空 ——
+ * 而**「没撞」与「台账没接上」在空结果上长得一模一样**。分辨靠的不是碰撞数, 是**库里有没有
+ * 近期行**: `findings()` 空 ∧ `rows > 0` = 真的没撞; `rows === 0` = 这本库这段时间一条都没记,
+ * 该去查接线, 别把它读成"零碰撞"。
+ *
+ * ⚠ NULL≠0 纪律在这里有两种形态, 别压平: 计数列空表时是**真 0**(没有那类行),
+ *   而 `firstTs`/`lastTs` 空表时是**缺席**(不存在"最近一次"), 所以它们可选而不是 0。
+ */
+export interface TouchLedgerStats {
+  /** 库里现存触碰行数 (TTL 清理之后的活行)。 */
+  rows: number;
+  /** 不同 session 数 (含只读的)。 */
+  sessions: number;
+  writeRows: number;
+  readRows: number;
+  /** 证据档位分列, **不合并** (与 pairs 的 strict/inferred 同一条纪律)。 */
+  bySource: { strict: number; inferred: number; cli: number };
+  /** 最早/最近一次触碰 (ms epoch)。**空库缺席, 不是 0**。 */
+  firstTs?: number;
+  lastTs?: number;
+}
+
 export interface TouchLedger {
   /** 记一笔触碰。相对路径对 root 解析成绝对。fail-open: 写失败 warn 留痕, 不抛。 */
   recordTouch(input: RecordTouchInput): void;
+  /** 库级自述 (见 TouchLedgerStats): 让「零碰撞」与「没接上」分得开。 */
+  stats(): TouchLedgerStats;
   /** 碰撞 pair: 同 abs_path、≥2 个不同 session、至少一侧 op='write'; strict/inferred 分两列。 */
   crossSessionPairs(): CrossSessionPair[];
   /** write 参与的碰撞发现 (按 abs_path 聚合), 与 pairs 分开读。 */
@@ -149,6 +199,46 @@ export function findings(db: Database): TouchFinding[] {
     strictWrites: r.strict_writes, inferredWrites: r.inferred_writes,
     firstTs: r.first_ts, lastTs: r.last_ts,
   }));
+}
+
+/**
+ * 库级自述 (见 `TouchLedgerStats`)。一发聚合, 不按 abs_path 分组 —— 它回答的是
+ * 「这本库还在记吗」, 不是「谁撞了谁」。
+ *
+ * ⚠ 两种空值分开处理, 这正是本函数存在的理由: `sum(...)` 在空表上回 NULL 而语义是**真 0**
+ *   (没有那类行) → `?? 0`; `min/max(ts)` 在空表上回 NULL 而语义是**缺席**
+ *   (不存在"最近一次") → 保持 undefined, **绝不 `?? 0`** (那会造出一个 1970 年的时间戳,
+ *   把"从没记过"读成"很久以前记过")。
+ */
+export function stats(db: Database): TouchLedgerStats {
+  const r = db
+    .query(
+      `SELECT count(*) AS rows_n,
+              count(DISTINCT session) AS sessions,
+              sum(CASE WHEN op = 'write' THEN 1 ELSE 0 END) AS write_rows,
+              sum(CASE WHEN op = 'read' THEN 1 ELSE 0 END) AS read_rows,
+              sum(CASE WHEN source = 'strict' THEN 1 ELSE 0 END) AS strict_n,
+              sum(CASE WHEN source = 'inferred' THEN 1 ELSE 0 END) AS inferred_n,
+              sum(CASE WHEN source = 'cli' THEN 1 ELSE 0 END) AS cli_n,
+              min(ts) AS first_ts,
+              max(ts) AS last_ts
+       FROM touches`,
+    )
+    .get() as {
+    rows_n: number; sessions: number;
+    write_rows: number | null; read_rows: number | null;
+    strict_n: number | null; inferred_n: number | null; cli_n: number | null;
+    first_ts: number | null; last_ts: number | null;
+  };
+  return {
+    rows: r.rows_n,
+    sessions: r.sessions,
+    writeRows: r.write_rows ?? 0,
+    readRows: r.read_rows ?? 0,
+    bySource: { strict: r.strict_n ?? 0, inferred: r.inferred_n ?? 0, cli: r.cli_n ?? 0 },
+    ...(r.first_ts === null ? {} : { firstTs: r.first_ts }),
+    ...(r.last_ts === null ? {} : { lastTs: r.last_ts }),
+  };
 }
 
 /** TTL 默认 7 天 (tentative —— SDD §1-S3 没给数值, 先钉 7 天, 按碰撞检测实际召回率再调)。 */
@@ -242,6 +332,9 @@ export function openTouchLedger(opts: OpenTouchLedgerOpts = {}): TouchLedger {
     },
     findings() {
       return findings(db);
+    },
+    stats() {
+      return stats(db);
     },
     pruneExpired(inner) {
       return pruneExpired({ db, ...inner });

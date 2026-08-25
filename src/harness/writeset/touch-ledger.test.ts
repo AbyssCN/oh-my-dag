@@ -230,3 +230,58 @@ describe('findings —— 与 pairs 分开读的写碰撞聚合', () => {
     l.close();
   });
 });
+
+describe('stats —— 让「零碰撞」与「台账没接上」分得开 (#253 收尾)', () => {
+  test('★ 空库: rows/计数全 0, 而 lastTs/firstTs **缺席不是 0** (0 会读成 1970 年记过一次)', () => {
+    const l = mem();
+    const st = l.stats();
+    expect(st.rows).toBe(0);
+    expect(st.sessions).toBe(0);
+    expect(st.writeRows).toBe(0);
+    expect(st.readRows).toBe(0);
+    expect(st.bySource).toEqual({ strict: 0, inferred: 0, cli: 0 });
+    // 证伪方式: 把 stats() 里 `r.last_ts === null ? {} : {...}` 改成 `?? 0` → 这两条当场红。
+    // 那正是本条闸要守的那行 —— 计数列的 NULL 是真 0, 时间列的 NULL 是缺席, 两者不许同款处理。
+    expect(st.lastTs).toBeUndefined();
+    expect(st.firstTs).toBeUndefined();
+    l.close();
+  });
+
+  test('★ findings 空但 rows>0 = 真的没撞 (这正是 #253 之后主树库的常态, 不是故障)', () => {
+    const l = mem();
+    // 单 session 写两个文件: 撞不起来, 但库是活的。
+    l.recordTouch({ path: '/a.md', session: 'run-A', op: 'write', source: 'strict', hash: 'h' });
+    l.recordTouch({ path: '/b.md', session: 'run-A', op: 'read', source: 'strict' });
+    expect(l.findings()).toHaveLength(0);
+    const st = l.stats();
+    expect(st.rows).toBe(2);
+    expect(st.sessions).toBe(1);
+    expect(st.writeRows).toBe(1);
+    expect(st.readRows).toBe(1);
+    expect(st.lastTs).toBeGreaterThan(0); // 库在记 → 上面那个 0 findings 可以按"没撞"读
+    l.close();
+  });
+
+  test('证据档位分三列不合并 (与 pairs 的 strict/inferred 同一条纪律)', () => {
+    const l = mem();
+    l.recordTouch({ path: '/a.md', session: 'A', op: 'write', source: 'strict', hash: 'h' });
+    l.recordTouch({ path: '/a.md', session: 'B', op: 'write', source: 'inferred' });
+    l.recordTouch({ path: '/a.md', session: 'C', op: 'write', source: 'cli' });
+    const st = l.stats();
+    expect(st.bySource).toEqual({ strict: 1, inferred: 1, cli: 1 });
+    expect(st.sessions).toBe(3);
+    l.close();
+  });
+
+  test('pruneExpired 之后 stats 只数活行 (清理过的不许还算在"库是活的"里)', () => {
+    const l = mem();
+    l.recordTouch({ path: '/old.md', session: 'A', op: 'write', source: 'strict', hash: 'h' });
+    expect(l.stats().rows).toBe(1);
+    // ttl=0 + now 取未来 → 现存行全部过期。
+    l.pruneExpired({ ttlMs: 0, now: Date.now() + 1000 });
+    const st = l.stats();
+    expect(st.rows).toBe(0);
+    expect(st.lastTs).toBeUndefined(); // 清空后回到"缺席", 不是停在旧时间戳
+    l.close();
+  });
+});
