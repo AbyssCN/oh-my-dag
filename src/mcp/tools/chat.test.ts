@@ -32,7 +32,7 @@ import {
 import { SOLVE_BUDGET_TOKENS, SOLVE_BUDGET_MINUTES } from '../../serve/chat-tools';
 import { CONDUCTOR_HARNESS_CORE } from '../../harness/harness-prompts';
 import { assembleOmdMcpTools, type AssembleOmdMcpDeps } from '../assemble';
-import { WEEKLY_BUDGET_ENV, type WeeklyBudgetStatus } from '../budget';
+import { resetBudgetLedgerMemoForTest, WEEKLY_BUDGET_ENV, type WeeklyBudgetStatus } from '../budget';
 import { RunRegistry } from '../run-registry';
 import { createOmdMemory } from '../../harness/memory';
 import { UNIVERSAL_SAFEGUARD } from '../../memory/safeguards/namespaces';
@@ -82,13 +82,37 @@ const fakeLoop =
 let root: string;
 let store: OmdSessionStore;
 
+/** 文件级 env 卫生(SDD D6 INV-D6-1):跨 describe 统一清洗全局态。
+ *  既清 chat.ts 现读的账本目录,也清生产代码另几处现读的全局 env;
+ *  chat.test.ts 自己就是 OMD_DATA_HOME 的下游污染者(设了不还原),必须 save/restore。
+ *  既有 describe 级清洗保留(叠加无害)。 */
+const HYGIENE_ENV_KEYS = [
+  'OMD_TUI_USAGE_DIR',
+  'OMD_WEEKLY_BUDGET_USD',
+  'OMD_CHAT_ROOT',
+  'MEMORY_HUB_DATA',
+  'OMD_CONDUCTOR_ADVISOR',
+  'OMD_DATA_HOME',
+] as const;
+const savedEnv: Record<string, string | undefined> = {};
+
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'omd-conductor-chat-'));
   resetSessionCacheForTest();
+  resetBudgetLedgerMemoForTest(); // budget memo 按账本路径缓存,跨用例不串味
+  for (const k of HYGIENE_ENV_KEYS) {
+    savedEnv[k] = process.env[k];
+    delete process.env[k];
+  }
   store = createOmdSessionStore(root);
-  delete process.env.OMD_DATA_HOME;
 });
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(() => {
+  rmSync(root, { recursive: true, force: true });
+  for (const [k, v] of Object.entries(savedEnv)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+});
 
 const makeTool = (
   opts: { store?: OmdSessionStore; loop?: ReturnType<typeof fakeLoop>; budget?: () => WeeklyBudgetStatus } = {},

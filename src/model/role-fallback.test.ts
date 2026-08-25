@@ -116,6 +116,9 @@ describe('claude-code 订阅通道凭证判据 (issue #6 根因修, 2026-08-10)'
     clearProviders();
     resetProviderCooldowns();
   });
+  afterAll(() => {
+    setPiTransportDepsForTest(); // 复位, 不污染其它测试文件 (D6 INV-D6-3)
+  });
 
   // 反向自检: 把 credentialed 的 CLAUDE_SDK_PROVIDER 分支删掉 → 这条当场红 (回到恒 false 的旧缺陷:
   // 探测面不认订阅通道, 叶座位在所有进程静默降档 kimi, 见 role-fallback.ts claudeSdkCredentialed 头注)。
