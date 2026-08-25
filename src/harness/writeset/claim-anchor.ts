@@ -48,6 +48,15 @@ import { isAbsolute, resolve } from 'node:path';
 /** L3 攒够这么多样本必须回来结案(升闸 or 删掉)。别再让它变成第二笔无人认领的账。 */
 export const L3_REVIEW_AFTER = 30;
 
+/**
+ * L3 字面白名单(INV-W265-1)。
+ * 命中任一负向条件即**不进 L3 验证集** —— 散文碎片 / 表格单元 / 纯标点 /
+ * 长度 < 3 / 含空白或换行, 都不是机械可证伪的字面, 验证即误报。
+ * 通过:标识符、`#hex`、短路径等可在文件里 grep -F 验证的字面。
+ */
+const isMechanicalLiteral = (s: string): boolean =>
+  s.length >= 3 && !/\s/.test(s) && /[A-Za-z0-9_$]/.test(s);
+
 export type ClaimLevel = 'L1-path' | 'L2-line' | 'L3-literal';
 
 export interface ClaimViolation {
@@ -136,7 +145,14 @@ export function checkClaimAnchors(text: string, opts: ClaimAnchorOpts): ClaimVio
       continue;
     }
     // L3: 声称的字面量在不在。**只报不判** —— 简报可能在描述"改之前"或"应当避免的写法"。
-    if (literal && !content.includes(literal)) {
+    // INV-W265-1(#265):白名单制, 只验**可机械证伪**(可 grep -F)的字面;其余一律不进验证集。
+    //   负向条件 —— 命中任一即跳过 L3: 含空白/换行(散文碎片·表格单元·测试读数) ·
+    //   长度 < 3(单字符标点·短短语) · 不含 alnum/underscore/$(纯标点)。
+    //   通过条件: 标识符、`#hex`、裸短路径(`bar.ts`)等可 grep -F 的字面仍走 L3。
+    //   (为什么不写严格 `^[A-Za-z_$][A-Za-z0-9_$]{2,}$`: 既有红样本
+    //    `src/VoiceCommandScreen.tsx:2 ... #1d3a72` 是 hex —— 负向集等价地表达同一边界,
+    //    且覆盖更广。)
+    if (literal && isMechanicalLiteral(literal) && !content.includes(literal)) {
       out.push({
         level: 'L3-literal',
         path,
