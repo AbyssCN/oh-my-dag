@@ -43,6 +43,7 @@ const USAGE = `omd —— DAG 执行引擎 (纯 MCP + web 控制面 + S1 静态�
   omd config verify-seats   座位家族校验闸 (I-14): verifier/judge/review/review-spec 须与被审座位异族; 异族 exit 0, 同族 exit 1 (违规行逐字 stderr)
   omd plan --dry-run [--fixture <plan.json>] [--skill <dir>]   静态闸编译流水 (S1): plan JSON 从 stdin 或 --fixture 收; 诊断按 <code> <name>: <evidence> 逐行写 stderr; 全绿 stdout 单行 JSON exit 0; PP-INV exit 2, PP-INT exit 3
   omd run --fixture <dir>   fixture 装载 + PostLeafGate 三态 (S1, D-C): 只含 command leaf, 零模型调用; 节点终态 VERIFIED/FAILED/UNVERIFIED + run 摘要 (<dir>/run-summary.json); UNVERIFIED 逐行 stdout node=<id> state=UNVERIFIED ...
+  omd solve "<goal>" [flags]   headless autonomous run (bench/CI 入口面, E1a);spawn scripts/goal-worker.ts 后台跑,退出码按 resultOut 首部 outcome 机械映射 (delivered=0, 其它=2, 缺失=3)
   omd pack add <本地目录|git URL> | remove <name> | list   数据插件包 (agents/playbooks/skills; 装包过质量闸, 账在 .omd/packs.json)
 
 终端对话前端: 原 pi TUI 2026-08-01 撤除, 2026-08-07 以自建 TUI 回归。
@@ -322,6 +323,11 @@ if (userArgs[0] === 'serve') {
   await runWithFixture(userArgs.slice(1));
 } else if (userArgs[0] === 'init') {
   await runInit();
+} else if (userArgs[0] === 'solve') {
+  // E1a (bench 容器入口面):headless CLI 子命令,编排在 cli-solve.ts —— 零第二套语义,
+  // 唯一执行通路 = spawn scripts/goal-worker.ts。退出码按 resultOut 首部 outcome 机械映射。
+  const { runSolveCLI } = await import('./cli-solve');
+  process.exit(await runSolveCLI(userArgs.slice(1)));
 } else {
   // 其余一律打用法 (含裸 `omd`): 没有交互模式可落了。(mcp 分支在上方早退, 到不了这里)
   process.stderr.write(USAGE);
