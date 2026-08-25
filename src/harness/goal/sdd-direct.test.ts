@@ -67,6 +67,18 @@ describe('loadSddContract (fail-loud, G-2)', () => {
 describe('runGoal 直通接线 (G-1 零转录)', () => {
   const ACC: AcceptanceSpec = { kind: 'executable', command: 'bun test', expectExit: 0 };
   const classify = async (): Promise<GoalClassification> => ({ tier: 'complex', acceptance: ACC });
+  // D3 / INV-D3-4 (owner 2026-08-25): sddPath 无表 SDD 不再回落 v1, G-1 接线断言改在
+  // **可编译**的平铺 SDD 上验 —— 零转录契约本身没变 (SDD 全文 + 执行根进节点文本)。
+  const SDD_G1_FLAT = [
+    '# 测试契约',
+    '## 契约 (Contracts)',
+    '- G-1 Given/When/Then。',
+    '## 分解 (Breakdown)',
+    '| 切片 | 写集 | 依赖 | verify |',
+    '|---|---|---|---|',
+    '| 1 解析器 | src/a.ts + test | — | `bun test src/a.test.ts` |',
+    '并行波形:{1}',
+  ].join('\n');
 
   const execOk = (): ExecutorDagResult =>
     ({
@@ -96,14 +108,14 @@ describe('runGoal 直通接线 (G-1 零转录)', () => {
     return { r, seenPlans, seenTexts };
   };
 
-  test('只展开 goal-execute —— 契约段子图零展开 (G-1 台账无 goal-contract)', async () => {
-    const { seenPlans } = await run(tmpSdd(SDD_OK));
+  test('只展开一张图 —— 契约段子图零展开 (G-1 台账无 goal-contract)', async () => {
+    const { seenPlans } = await run(tmpSdd(SDD_G1_FLAT));
     expect(seenPlans.length).toBe(1);
-    expect(seenPlans[0]!.name).toBe('goal-execute');
+    expect(seenPlans[0]!.name).toBe('goal-execute-flat');
   });
 
-  test('specPath = sddPath, SDD 全文 (含波形) 进 execute 任务文本', async () => {
-    const p = tmpSdd(SDD_OK);
+  test('specPath = sddPath, SDD 全文 (含波形) 进节点任务文本', async () => {
+    const p = tmpSdd(SDD_G1_FLAT);
     const { r, seenTexts } = await run(p);
     expect(r.specPath).toBe(p);
     expect(seenTexts[0]).toContain('并行波形');
@@ -463,14 +475,13 @@ describe('runGoal 直通 v2 (切片 5: 分解表可编译 → 零 conductor 平�
     expect(absent.r.converged).toBe(false); // 没跑到 accept = 没被证明过 = 不算成 (fail-closed)
   });
 
-  test('编译不过 (分解段无表) → 响亮回落 conductor (v1): plan 名照旧 + 摘要带回落注记, 不拒跑不静默', async () => {
+  test('编译不过 (分解段无表) → INV-D3-4 fail-fast: 零图展开 + not-converged + 原因原文进摘要 (owner 2026-08-25: 不落 v1)', async () => {
     const noTable = '# t\n## 契约 (Contracts)\n- G-1\n## 分解 (Breakdown)\n并行波形:{1}';
     const { r, seenPlans } = await run(noTable);
-    expect(seenPlans.length).toBe(1);
-    expect(seenPlans[0]!.name).toBe('goal-execute');
-    expect(seenPlans[0]!.nodes.execute!.executor).toBe('conductor');
-    expect(r.converged).toBe(true); // v1 路径行为照旧 (judge ∧ oracle)
-    expect(r.stages.some((s) => s.summary.includes('直通v2回落'))).toBe(true);
+    expect(seenPlans.length).toBe(0); // 一张图都不展开 —— v1 慢铺图对 sddPath 已是禁地
+    expect(r.converged).toBe(false);
+    expect(r.outcome).toBe('not-converged');
+    expect(r.stages.some((s) => s.summary.includes('平铺图点火闸判定非 ok'))).toBe(true);
   });
 });
 
@@ -551,11 +562,11 @@ describe('runGoal 直通档: 验收命令取自 SDD verify 列, 不用分类器�
     expect(r.acceptance).toEqual({ kind: 'executable', command: HALLUCINATED, expectExit: 0 });
   });
 
-  test('分解段无表 (存量直通 SDD) → 回落分类器那条, 行为不变 (fail-open)', async () => {
+  test('分解段无表 (存量直通 SDD) → INV-D3-4 fail-fast: 不再回落分类器执行 (旧 fail-open 已废, owner 2026-08-25)', async () => {
     const { r, seen } = await runWith(tmpSdd(SDD_OK));
-    expect(r.acceptance).toEqual({ kind: 'executable', command: HALLUCINATED, expectExit: 0 });
-    expect(seen[0]!.plan.nodes['accept']!.command).toBe(HALLUCINATED);
-    expect(r.stages.some((s) => s.summary.includes('判据取自 SDD verify 列'))).toBe(false);
+    expect(seen.length).toBe(0); // 零图展开 —— 分类器编的判据不再有机会跑
+    expect(r.converged).toBe(false);
+    expect(r.outcome).toBe('not-converged');
   });
 });
 
@@ -609,10 +620,11 @@ describe('runGoal 直通 v2 — O-6 vacuous 探针 (切片 verify 实装前已�
     return { r, seenPlans, probed };
   };
 
-  test('切片 verify 实装前已绿 (探针得 0) → 响亮回落 v1, 注记含「实装前已绿」', async () => {
+  test('切片 verify 实装前已绿 (探针得 0) → INV-D3-4 fail-fast, 注记含「实装前已绿」(不落 v1)', async () => {
     const { r, seenPlans, probed } = await run(0);
     expect(probed).toContain('bun test src/a.test.ts'); // 真探过
-    expect(seenPlans[0]!.name).toBe('goal-execute'); // 没进平铺
+    expect(seenPlans.length).toBe(0); // 不落 v1, 零图展开
+    expect(r.converged).toBe(false);
     expect(r.stages.some((s) => s.summary.includes('实装前已绿'))).toBe(true);
   });
 

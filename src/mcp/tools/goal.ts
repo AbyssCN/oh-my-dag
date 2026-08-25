@@ -19,6 +19,7 @@ import { readIgnitionBandwidth, renderIgnitionForecast } from '../../harness/goa
 import { renderNumericClaimNotice } from '../../harness/goal/numeric-claims';
 import { loadSddContract, parseBreakdown, ticketFieldsFromSdd } from '../../harness/goal/sdd-direct';
 import { checkIgnitionCriteria, type IgnitionRunCommand } from '../../harness/goal/ignition-criteria-check';
+import { dryRunSddIgnition } from '../../harness/goal/sdd-ignition-check';
 import type { CommandLeafRunner } from '../../harness/leaf-runners';
 import { resolveBackend as realResolveBackend, type PathBackend } from '../../harness/pathfinder/backend';
 import type { DagNodeEvent, ExecutorDagConfig } from '../../harness/dag/types';
@@ -401,6 +402,55 @@ function numericClaimLine(goalText: string): string {
   }
 }
 
+/**
+ * sddPath 点火空跑闸 (D3 / INV-D3-1 · INV-D3-2) —— 单一函数, detached 与非 detached 两个接线点
+ * 共用。判定走 `dryRunSddIgnition` (与 run-goal 的平铺图编译块同源 —— 抄一份必漂, 漂的后果
+ * 是「点火闸放行、worker 里照样回落」恰是本契约要消灭的病)。
+ *
+ * 出口语义 (INV-D3-2):
+ *   · fatal    → 同步拒, 错误原文进回执 (强制跑 = 让 worker 死也不知道为什么, **不允许 force 越闸**)
+ *   · fallback + force → 越闸放行, logger.warn 留账 (沿 INV-5 force 旧惯例, 不另造第二本账)
+ *   · fallback + !force → 同步拒, 原因原文进回执
+ *   · ok       → 返回 undefined (调用方继续)
+ *
+ * 拒了的 run: 零 worker 进程、零 worktree、零 registry 记录 (与 ignitionPreflight blocked 同档)。
+ */
+function sddIgnitionDryRunGate(
+  sddPath: string,
+  force: boolean | undefined,
+  runId: string,
+): { content: { type: 'text'; text: string }[]; isError: true } | undefined {
+  const sddText = loadSddContract(sddPath).text;
+  const dry = dryRunSddIgnition(sddText);
+  if (dry.kind === 'ok') return undefined;
+  if (dry.kind === 'fatal') {
+    return {
+      content: [{
+        type: 'text' as const,
+        text: `dag_goal sddPath 点火拒绝 (D3 fatal · parseBreakdown 抛): ${dry.err}`,
+      }],
+      isError: true,
+    };
+  }
+  // fallback —— force=true 是 owner 显式越闸 (沿 INV-5), 留账不另造账本
+  if (force) {
+    logger.warn(
+      { sddPath, runId, reason: dry.reason },
+      '[dag_goal] INV-D3-2: sddPath 点火 fallback 越闸 (owner force=true · 沿 INV-5 旧惯例)',
+    );
+    return undefined;
+  }
+  return {
+    content: [{
+      type: 'text' as const,
+      text:
+        `dag_goal sddPath 点火拒绝 (D3 fallback · compileBreakdown/verify 列问题): ${dry.reason}\n` +
+        `改 SDD 收窄判据 / 补写集 / 改 verify 列为命令串, 或 force=true 越闸 (留账)。`,
+    }],
+    isError: true,
+  };
+}
+
 function ignitionForecastLine(dag: Partial<ExecutorDagConfig>, sddPath: string | undefined): string {
   try {
     const coords: { label: string; coord: string }[] = [];
@@ -640,6 +690,18 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           // 否则 owner 以为越闸已生效, 而 worker 侧会在写集相交时硬闸拒绝。
           logger.info({ force, runId }, '[dag_goal] INV-5: detached 路径不转发 force (worker 无 --force 参数) — 写集与活 run 相交时 worker 侧将硬闸拒绝');
         }
+        // ── D3 sddPath 点火空跑闸 (INV-D3-2 · detached 接线点): spawn 之前过 ─────
+        // 与非 detached 同一函数 (sddIgnitionDryRunGate), 判定同源 dryRunSddIgnition。借道首跑
+        // 语义 (worker --run-id 路径): resume 字段非空但实质首跑 → trueResume=false → 走闸。
+        if (sddPath) {
+          const rec = resume ? deps.runRegistry.getRecord(runId) : undefined;
+          const journalPresent = !!resume && !!deps.continuity && deps.continuity.manager.loadFixpointJournal(runId) !== null;
+          const isTrueResume = !!rec || journalPresent;
+          if (!isTrueResume) {
+            const blocked = sddIgnitionDryRunGate(sddPath, force, runId);
+            if (blocked) return blocked;
+          }
+        }
         let pid: number | undefined;
         try {
           pid = spawn(cmd, { cwd: runAnchor, logPath });
@@ -720,6 +782,11 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
       // 这里把整份 advisory 列表留到回执里念出来 (blocked 分支也念, 让调用方一次看全)。
       let preflightAdvisories: string[] = [];
       if (sddPath && !trueResume) {
+        // ── D3 sddPath 点火空跑闸 (INV-D3-2 · 非 detached 接线点): ignitionPreflight 之前过 ─
+        // 与 detached 同函数 (sddIgnitionDryRunGate), 判定同源 dryRunSddIgnition。拒了零 registry
+        // 记录、零 worktree (IGNITION 拒后 ignitionPreflight 不会跑, 不造第二份 debris)。
+        const dryBlocked = sddIgnitionDryRunGate(sddPath, force, runId);
+        if (dryBlocked) return dryBlocked;
         const preflight = ignitionPreflight(
           deps.cwd,
           [...new Set(parseBreakdown(loadSddContract(sddPath).text).slices.flatMap((s) => s.writeSet))],

@@ -130,11 +130,12 @@ describe('o6-vacuous-verify 闸 (run-goal O-6 切片级 vacuous 探针)', () => 
       return { text: '', usage: { in: 0, out: 0 }, exitCode: 0, timedOut: false, signal: null };
     };
 
-    // runGoal 自己不抛 (file 891 的 try/catch 把 O-6 throw 折成 v1 回落), 但 logger.warn
-    // 会以 `err: flatFallback` 字段把那条 message 外泄 —— 本用例就是这条外泄路径的钉子。
+    // runGoal 自己不抛 (平铺块的 try/catch 把 O-6 throw 折成 INV-D3-4 fail-fast 终态,
+    // owner 2026-08-25: sddPath 不落 v1), 但 logger.warn 会以 `err` 字段把那条 message
+    // 外泄 —— 本用例就是这条外泄路径的钉子。
     await runGoal('o6 probe', config);
 
-    const flatFallbackEntries = captured.filter((c) => c.msg.includes('直通v2'));
+    const flatFallbackEntries = captured.filter((c) => c.msg.includes('INV-D3-4'));
     expect(flatFallbackEntries.length).toBeGreaterThan(0);
     const flatBlobs = flatFallbackEntries
       .map((c) => JSON.stringify(c.fields))
