@@ -19,10 +19,17 @@
  *
  * 判据**自己立不立得住**由 `./acceptance-gate` 管(空世界自检 + 判别力探针), 本文件只调它、不实现它。
  */
-import { DEFAULT_COMMAND_ALLOWLIST } from '../command-leaf';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  DEFAULT_COMMAND_ALLOWLIST,
+  LANGUAGE_PACKS,
+  allowlistForRoot,
+} from '../command-leaf';
 import { logger } from '../logger';
 import type { GenerateFn } from '../dag/types';
 import {
+  type AcceptanceCommandBlockOpts,
   type AcceptanceProbe,
   type NegativeSample,
   type ProbeVacuityVerdict,
@@ -97,14 +104,17 @@ interface RawClassification {
  *
  * - tier 落 `complex`: 多做一遍接地, 代价是钱; 误判成 simple 的代价是一份没有证据的契约被执行。
  * - acceptance 落 `exploratory`: 假装机器可判而实际无人判, 比明说"这次判不了"坏得多。
+ *
+ * 给 `opts.root` → 闸走 `allowlistForRoot(root)` + 语言一致闸(与 acceptance 闸同源),
+ * Python 仓写 `bun test` 在此拒; 不给 → 退回 base 白名单(既有调用零改动即绿, INV-6 / INV-11)。
  */
-export function normalizeClassification(raw: RawClassification): GoalClassification {
+export function normalizeClassification(raw: RawClassification, opts?: AcceptanceCommandBlockOpts): GoalClassification {
   const tier: GoalTier = String(raw.tier ?? '').toLowerCase().includes('simple') ? 'simple' : 'complex';
   const kind = String(raw.acceptance_kind ?? '').toLowerCase();
 
   if (kind.includes('exec')) {
     const command = typeof raw.command === 'string' ? raw.command.trim() : '';
-    const blocked = acceptanceCommandBlockReason(command);
+    const blocked = acceptanceCommandBlockReason(command, opts);
     if (blocked) {
       logger.warn({ command, blocked }, '[omd/goal] 判执行型但验收命令跑不起来 → 降级探索型 (D-I)');
       return {
@@ -150,8 +160,79 @@ export function normalizeClassification(raw: RawClassification): GoalClassificat
 
 }
 
+/**
+ * 教学面的 probe 参数 (D-4, 2026-08-26) —— 给 `classifyPrompt` 用的仓语言证据入口。
+ *
+ * 给了 `repoRoot` → 派生 prompt 在该根下探 marker / per-root 白名单 / 条件化示例;
+ * 不给 → 退 base 白名单, 无仓语言证据段(与改前字节相同, INV-9)。
+ *
+ * 设计要点:
+ *  · 不直接传白名单: prompt 这层只接 "给我仓根", 探仓细节(`existsSync` / marker 名单)
+ *    封在 `probeRepo` 里, 教学面不暴露实现面。
+ *  · 仓库根上若有 `.git` 之类, 不会被识别为语言 marker —— 只有 `LANGUAGE_PACKS` 里的才是。
+ *  · 与 `acceptanceCommandBlockReason` 走的是同一份包表(单源纪律, 不抄第二份)。
+ */
+export interface ClassifyPromptProbe {
+  /** 仓根 —— 给了则在该根下探 marker + per-root 白名单 + 条件化示例。 */
+  repoRoot?: string;
+}
+
+/**
+ * probe 结果 (给 classifyPrompt 与 classifyGoal 共用) —— 检出 marker 列表 + per-root 白名单 +
+ * 是否启用 python / js 包(给示例条件化用)。
+ */
+interface ProbeResult {
+  markers: string[];
+  allowlist: string[];
+  hasPython: boolean;
+  hasJs: boolean;
+}
+
+/** 在 root 下探语言包 marker, 给 prompt 用。零解析零网络, 与 `allowlistForRoot` 同源。 */
+function probeRepo(root: string): ProbeResult {
+  const markers: string[] = [];
+  let hasPython = false;
+  let hasJs = false;
+  for (const pack of LANGUAGE_PACKS) {
+    if (existsSync(join(root, pack.marker))) {
+      markers.push(pack.marker);
+      if (pack.bins.includes('pytest')) hasPython = true;
+      if (pack.bins.includes('bun')) hasJs = true;
+    }
+  }
+  return { markers, allowlist: allowlistForRoot(root), hasPython, hasJs };
+}
+
 /** 分类 prompt。白名单**拼进 prompt** —— 承 conductor prompt 的同一条教训: 不给表就只能猜, 猜错即假红。 */
-export function classifyPrompt(goal: string): string {
+export function classifyPrompt(goal: string, probe?: ClassifyPromptProbe): string {
+  const p = probe?.repoRoot ? probeRepo(probe.repoRoot) : null;
+  const allowlist = p?.allowlist ?? DEFAULT_COMMAND_ALLOWLIST;
+  // 例示条件化 (D-4):
+  //   · 检出 python 包 → pytest 形状
+  //   · 否则检出 js 包 → bun test / tsc --noEmit 形状
+  //   · 都无(无 marker, 或 probe 但没检出任何包) → 退回今天形状 (INV-11 「无 marker 仓派生行为与今天一致」)。
+  // 注: js bins 全在 base, allowlist 集合与改前相同 (INV-1), 但**示例**按检出条件化,
+  // 因为 D-4 钉死的是"教检出证据支持的工具", 不是"教白名单里有什么"。
+  // 边界: 无 marker 仓 = 没证据 ≠ 反证据 (INV-11), 不借机改成"删掉示例", 那会变成
+  // "看到空仓就什么都别测" 的反例; 今天教什么今天继续教, 不因加了 probe 就收紧教学面。
+  const testExampleLine = p?.hasPython
+    ? '  · 代码还编不编得过 / 测试绿不绿 → `pytest -q`'
+    : '  · 代码还编不编得过 / 测试绿不绿 → `bun test` · `tsc --noEmit`';
+  // 上面那行「互相独立」教学句的例示 bin —— 也按检出条件化, 让 Python 仓 prompt 不出现
+  // `bun test` 字面(否则 INV-8 "示例 0 行" 不能用纯子串断言)。
+  const independentAxisExample = p?.hasPython ? 'pytest -q' : 'bun test';
+  // 仓语言证据段(只 probe 给时出现)—— 让模型分得清这是事实不是建议, 纠错环也能逐字引回
+  // (D-4 单源: 这份事实与运行期 `languageConsistencyBlockReason` 走的同一份 LANGUAGE_PACKS)。
+  const evidenceSection = p
+    ? [
+        '',
+        `仓语言证据 (探测自 \`${probe!.repoRoot}\`):`,
+        `  · 检出的 marker: ${p.markers.length > 0 ? p.markers.map((m) => `\`${m}\``).join(', ') : '(无)'}`,
+        `  · 启用的语言包: ${[p.hasPython ? 'python' : null, p.hasJs ? 'js' : null].filter(Boolean).join(' + ') || '(都无)'}`,
+        '验收命令首词必须属于「当前白名单 ∩ 该仓启用的语言包」的并集 —— 拿不准就在白名单里选 base 词',
+        '(grep / cat / git …), 不要硬造一条不属于该仓语言的判据。',
+      ].join('\n')
+    : '';
   return [
     '你在给一个自主执行环做**开跑前的两个判断**。只回一个 JSON 对象, 不要别的字。',
     '',
@@ -164,13 +245,13 @@ export function classifyPrompt(goal: string): string {
     '  "exploratory" = 成败机器判不了 (摸清一个领域 / 选型 / 找出有哪些坑)。给 `learning_goal`',
     '                  (学到什么才算没白跑) 与 `affordable_loss` (愿意为它花掉多少)。',
     '',
-    '⚠ 判据轴与成本轴**互相独立**: 一个做法未定的目标, 验收照样可能是机器可判的 (先查清楚怎么做,',
-    '  但做完跑 `bun test` 就知道成没成)。别因为 tier=complex 就往 exploratory 上靠。',
+    `⚠ 判据轴与成本轴**互相独立**: 一个做法未定的目标, 验收照样可能是机器可判的 (先查清楚怎么做,`,
+    `  但做完跑 \`${independentAxisExample}\` 就知道成没成)。别因为 tier=complex 就往 exploratory 上靠。`,
     '⚠ 拿不准就选 "exploratory"。给一条**判不了真假**的命令比承认判不了坏得多 —— 它会让整个环',
     '  以为自己有验收, 而实际上没有。',
     '',
     `\`command\` 的首个词必须是这些之一, 否则命令会被安全闸拒绝执行 (看起来像测试失败, 实则没跑):`,
-    `  ${DEFAULT_COMMAND_ALLOWLIST.join(' ')}`,
+    `  ${allowlist.join(' ')}`,
     '可以用 && 串联 (每环独立过闸); 其它 shell 运算符 **一律拒绝**: 管道 `|` · 重定向 `> <` ·',
     '`;` · `$(...)` · 反引号 · **圆括号 `( )`** · 花括号 `{ }` · 反斜杠 · 换行。**没有 shell**, 只有一串独立的命令。',
     // 2026-07-31 live 冒烟: 分类器写出 `grep -qx "支持格式: CSV, JSON, Excel (.xlsx)" docs/from-api.md`
@@ -186,7 +267,9 @@ export function classifyPrompt(goal: string): string {
     '  · 文件内容对不对 → `grep -qx "期望的那整行" 路径/文件`  (`-x` = 整行匹配, 匹配不上退出码非 0)',
     '  · 只看包含某段  → `grep -q "期望的片段" 路径/文件`',
     '  · 文件在不在     → `cat 路径/文件`',
-    '  · 代码还编不编得过 / 测试绿不绿 → `bun test` · `tsc --noEmit`',
+    // 第四行按探测到的语言包条件化 (D-4): 见 testExampleLine 的三分支;
+    // null = "都无", 该行整段不出现 (只留 grep / cat 形状)。
+    ...(testExampleLine ? [testExampleLine] : []),
     // 2026-07-30 第二次 live 冒烟: 模型照上面的形状写了 `grep -q '^hello omd$' notes/hello.md` ——
     // 形状没错, 锚点里的 `$` 撞了元字符闸。一条 `$` 的连锁是: 命令被拒 → 降级探索型 → 任务文本
     // 写上"没有机器判据·别伪造" → judge 把**真做完**的活读成捏造执行确认 → 整个 goal 报 failed。
@@ -217,6 +300,8 @@ export function classifyPrompt(goal: string): string {
     '形状: {"tier":"simple"|"complex","acceptance_kind":"executable"|"exploratory",',
     '       "command"?:string,"negative_sample_path"?:string,"negative_sample_content"?:string,',
     '       "learning_goal"?:string,"affordable_loss"?:string}',
+    '',
+    evidenceSection,
     '',
     `目标: ${goal}`,
   ].join('\n');
@@ -264,12 +349,18 @@ export async function classifyGoal(
     };
   }
 
+  // 教学面 probe (D-4, 2026-08-26) —— 给 `classifyPrompt` 仓根, 让白名单与示例按检出条件化;
+  // 闸拒路径 (D-5) 走既有 correction 通道, normalize 同时接 per-root opts, 让 Python 仓写
+  // `bun test` 走 lang-mismatch 闸拒并降级。两者都不新增第二问 / 第二拒通道。
+  const probe: ClassifyPromptProbe | undefined = repoRoot ? { repoRoot } : undefined;
+  const blockOpts: AcceptanceCommandBlockOpts = repoRoot ? { root: repoRoot } : {};
+
   const ask = async (correction: string): Promise<GoalClassification> => {
     const { text } = await generate({
       model,
       // 判据轴是防作弊的地基, 它那一发尤其该看得见 (D-I / G4 两条闸都压在这个 prompt 上)。
       traceName: 'classify:acceptance',
-      messages: [{ role: 'user', content: `${classifyPrompt(goal)}${correction}` }],
+      messages: [{ role: 'user', content: `${classifyPrompt(goal, probe)}${correction}` }],
       // 400 会被推理族的 reasoning 吃光 → 正文截断 → JSON.parse 抛 → 全保守档 (complex + 探索型)。
       // 2026-07-31 S3 live 实测撞到: `deepseek-v4-pro 输出撞到上限 out=400 cap=400 — 正文被截断`,
       // 后果是**验收分型在这条路上基本判不出执行型**, D-I 又一次形同虚设 —— 与 `$` 锚点链是同一个
@@ -285,7 +376,7 @@ export async function classifyGoal(
       // 抬 cap 不花钱。
       maxTokens: 32_768,
     });
-    return normalizeClassification(JSON.parse(extractJsonObject(text)) as RawClassification);
+    return normalizeClassification(JSON.parse(extractJsonObject(text)) as RawClassification, blockOpts);
   };
   /** 过了闸的执行型再过**两道**探针; 任一响 → 降级探索型(理由原样带走)。 */
   const vet = async (c: GoalClassification): Promise<GoalClassification> => {

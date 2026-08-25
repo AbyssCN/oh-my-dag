@@ -91,6 +91,12 @@ export const LANGUAGE_PACKS: readonly LanguagePack[] = [
   { marker: 'go.mod', bins: ['go', 'gofmt'] },
   // rust —— Cargo.toml 是事实标准
   { marker: 'Cargo.toml', bins: ['cargo'] },
+  // js —— 三 marker 任一即开包 (D-1); bins 全部已在 base (bun/bunx/tsc/npx/node),
+  //   集合逐根与改前相同 (INV-1), 此处只是把「语言 bin ↔ 仓证据」的声明固化到本表,
+  //   不另抄第二份给语言一致闸读 (D-2 / 单源纪律)。
+  { marker: 'package.json', bins: ['bun', 'bunx', 'tsc', 'npx', 'node'] },
+  { marker: 'tsconfig.json', bins: ['bun', 'bunx', 'tsc', 'npx', 'node'] },
+  { marker: 'bun.lock', bins: ['bun', 'bunx', 'tsc', 'npx', 'node'] },
 ];
 
 /**
@@ -115,6 +121,54 @@ export function allowlistForRoot(root: string): string[] {
     }
   }
   return out;
+}
+
+/**
+ * **语言一致判定** (D-2, 2026-08-26) —— 冻结时刻的机械拒, 拒绝「证据与判据轴不一致」。
+ *
+ * 判据:
+ *  · 命令首词属于某语言包的 bins (即存在 pack.p.bins.includes(bin)) **且**
+ *    含该 bin 的**全部** pack 的 marker 在 root 下皆缺席 ⇒ 拒因非 null
+ *    (拒因含该 bin 所需的 marker 名 + root 下实检出的 marker 列表, 供纠错环逐字引回)。
+ *  · 命令首词不在任何包的 bins 中 (grep / cat / git … 这类 base-only 词) ⇒ 不判, null。
+ *
+ * 设计要点:
+ *  · **不直接挂到运行期 `commandBlockReason`** (单源纪律, 不抄第二份闸; 见 D-2 + 文件头 18-20 行
+ *    的诚实边界说明) —— 调用方 (acceptance 闸, 片 2) 自组合 `allowlistForRoot` 与本判定。
+ *  · 「含该 bin 的全部 pack 的 marker 缺席」 的语义是**任一存在即可放行**: 三 python pack 同 bins,
+ *    `pyproject.toml` / `uv.lock` / `requirements.txt` 任一命中即视为该语言在仓中存在 —— 单仓多 marker
+ *    时按并集, 与 `allowlistForRoot` 同源。
+ *  · 首词解析与 `commandBlockReason` 用**同一份** `commandBin` (basename 取, 路径名规范),
+ *    两路闸对同一条命令的首词理解**逐字相同**。
+ *  · **不动 base 词表的语义**: `bun`/`tsc` 等即便在 js 包里, 仍可能是合法的 base bin (e.g. 非 JS 仓
+ *    也可能装一个 bun 测别的); 本判定只说「**这个仓**没有 js 证据, 别用 js 形状的判据」, 不说
+ *    「这个 bin 永远禁用」 —— 真正的禁用由 `allowlistForRoot` + `commandBlockReason` 决定。
+ *
+ * 拒因格式: 一行 `[blocked lang-mismatch: ...]`, 与运行期闸的拒因前缀同款 (`commandBlockReason` 同
+ * 约定), 方便将来 acceptance 闸串到同一份日志/告警通道。
+ */
+export function languageConsistencyBlockReason(command: string, root: string): string | null {
+  const bin = commandBin(command);
+  if (!bin) return null;
+
+  // 1) 找出所有包含此 bin 的语言包; 0 个 ⇒ 该词是 base-only, 不判
+  const containingPacks: readonly LanguagePack[] = LANGUAGE_PACKS.filter((p) => p.bins.includes(bin));
+  if (containingPacks.length === 0) return null;
+
+  // 2) 检查 root 下是否有任一这些包的 marker (任一命中即视为该语言在仓中存在)
+  const presentMarkers: string[] = [];
+  const missingMarkers: string[] = [];
+  for (const pack of containingPacks) {
+    if (existsSync(join(root, pack.marker))) presentMarkers.push(pack.marker);
+    else missingMarkers.push(pack.marker);
+  }
+  if (presentMarkers.length > 0) return null;
+
+  // 3) 全部缺席 ⇒ 拒; 拒因含「该词所需 marker」与「root 下实检出的 marker」(可能空) 两份事实,
+  //    让纠错环能写出有依据的改写, 而非「试试别的方法」。
+  const needList = missingMarkers.join('/');
+  const gotList = presentMarkers.length > 0 ? presentMarkers.join('/') : '(无)';
+  return `[blocked lang-mismatch: 命令首词 '${bin}' 属语言包 (需要 marker: ${needList}), 仓根 ${root} 下检出的 marker: ${gotList}]`;
 }
 
 /**
