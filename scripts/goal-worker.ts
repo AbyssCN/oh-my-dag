@@ -36,7 +36,27 @@ import { assembleOmdMcpTools } from '../src/mcp/assemble';
 import { RunRegistry } from '../src/mcp/run-registry';
 import { createRunStore } from '../src/mcp/run-store';
 import { verifyTerminalPersisted } from '../src/mcp/terminal-verify';
+import { createTuiUsageLedger } from '../src/tui/usage/ledger';
+import { observeModelUsage } from '../src/model/accounting';
 import { join } from 'node:path';
+
+/**
+ * 把模型用量记进 `<cwd>/.omd/tui-usage.jsonl` —— **与 `omd mcp` 分支同一份账本同一条钩子**
+ * (`src/harness/cli.ts:80-84`)。返回 detach。
+ *
+ * ⚠ **这一格漏了会静默**(G-1, 2026-08-25 活体):`emitModelUsage` 是观察者钩子,
+ * 无订阅者 = 逐条通知进真空,没有任何报错。整夜四个 detached run 一条用量都没进账,
+ * 账本零增长,而夜间 goal §3 恰恰要求从这本账增量读三个数。形态与 `cli.ts:74-79`
+ * 注释里那条「机制在、生产零生效」逐字同族 —— 当时补了 mcp 分支,本进程漏了。
+ *
+ * 账本复用 tui 那份:**一个仓一本账**,两本账才分不清。`source` 由 emit 侧第三参带,
+ * 订阅侧照抄,不自己编恒定标签(那样 chat 轮与引擎调用在账上分不开)。
+ */
+export function attachUsageLedger(cwd: string): () => void {
+  // OMD_TUI_USAGE_DIR: 测试接缝 —— fixture 记账不许污染真仓的 5h 窗口。
+  const ledger = createTuiUsageLedger({ dir: process.env.OMD_TUI_USAGE_DIR || join(cwd, '.omd') });
+  return observeModelUsage((u, model, origin) => ledger.record(u, model, origin));
+}
 
 /** argv → dag_goal handler 参数 (纯函数, 供 goal-detached.test.ts 直接钉转发矩阵)。
  *  转发矩阵必须与母进程 spawn cmd 一一对应 —— 漏一格 = 参数矩阵空格 (P0 2026-08-10 branch 同形)。
@@ -82,6 +102,8 @@ if (import.meta.main) {
   }
 
   bootstrapModelRuntime();
+  // G-1: 订阅必须在任何模型调用之前 —— 钩子是**只通知不回放**的, 起跑后再订阅就漏掉前面那些。
+  attachUsageLedger(cwd);
 
   // 与母进程**同一份** runs.db —— 这是"脱离会话"的全部要害: 母进程写 pending, 本进程接手改 running
   // 并把属主 pid 换成自己, 后来的 session 才看得到一个"活着的 run"而不是一个孤儿。
