@@ -123,6 +123,17 @@ if (import.meta.main) {
     process.exit(1);
   }
   const port = Number(process.env.OMD_BRIDGE_PORT ?? 4519);
+  // 独立部署雷 (见 src/model/claude-sdk-complete.ts 头注): 脱离会话链的 CLI 会加载用户全局
+  // CLAUDE.md 并压过 systemPrompt。桥自备只含凭证的隔离配置目录, 传给全部子调用。
+  if (!process.env.CLAUDE_CONFIG_DIR) {
+    const { mkdirSync, copyFileSync, existsSync } = await import('node:fs');
+    const iso = `${process.env.HOME}/.omd/bridge-claude-home`;
+    mkdirSync(iso, { recursive: true });
+    const cred = `${process.env.HOME}/.claude/.credentials.json`;
+    if (existsSync(cred)) copyFileSync(cred, `${iso}/.credentials.json`);
+    process.env.CLAUDE_CONFIG_DIR = iso;
+    process.stderr.write(`[bench-bridge] CLAUDE_CONFIG_DIR → ${iso} (隔离, 防用户全局 harness 注入)\n`);
+  }
   // 一次性子进程调用 (见 scripts/bench-call.ts 头注): 长驻进程内直调 claude-code 通道对大
   // prompt 9/9 退化为角色扮演, 一次性进程 5/5 干净 —— 机理待查, 先按被证明干净的形状隔离。
   const callViaSubprocess = async (req: ModelRequest): Promise<ModelResponse> => {

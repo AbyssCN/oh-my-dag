@@ -65,31 +65,18 @@ function serialize(messages: ModelMessage[]): { systemPrompt: string | undefined
 }
 
 /**
- * 通道级互斥 (2026-08-26 实测): 并发 spawn CLI 时响应**通道级损坏** —— 3 路同发同一
- * JSON-only 请求, 3/3 退化为 CC 角色扮演/多语混杂/伪 invoke 轨迹 (含真实 CLI 启动噪声窜入
- * 文本流); 同请求串行重放 2/2 干净 JSON。生产夜批未塌只因 conductor 调用天然近串行
- * (warm-then-fanout), 本文件 maxTurns 注释里「同形复现两次未塌但生产塌了」即其旧影。
- * 订阅通道本有速率限制, 串行排队不损正确性; 机制细因 (共享 ~/.claude 会话/锁) 待另查,
- * 互斥先止血。逃生阀: OMD_CLAUDE_SDK_PARALLEL=1 关互斥 (复现实验用)。
+ * ⚠ 独立部署雷 (2026-08-26, n=16 单变量链定案): 本通道 spawn 的 CLI 会加载**用户全局
+ * `~/.claude/CLAUDE.md` 与项目层配置** —— 当进程脱离活跃 Claude Code 会话链
+ * (env 无 CLAUDE_CODE_OAUTH_TOKEN / BRIDGE_SESSION_ID, ENTRYPOINT=sdk-ts 独立模式) 时,
+ * 用户 harness 的行为纪律会**压过本通道传入的 systemPrompt**: 大 prompt 请求 12/12 退化为
+ * "先核仓库现状"式角色扮演 (形态与用户 CLAUDE.md 条款逐句对应), 而同请求在会话链内 6/6 干净;
+ * 设 `CLAUDE_CONFIG_DIR` 指向只含凭证的隔离目录后 1/1 立即干净。
+ * 中途曾按"并发损坏"误归因加过通道互斥, 单变量证伪后撤销 (并发非因子)。
+ * ⇒ **脱离会话链跑本通道 (bench 桥/cron/CI/别人的机器) 必须设隔离 CLAUDE_CONFIG_DIR**,
+ *    部署面样板见 scripts/bench-bridge.ts 启动段。引擎侧自动化 (检测独立模式自备隔离目录)
+ *    含凭证拷贝的安全面, 留票另议。
  */
-let sdkQueueTail: Promise<unknown> = Promise.resolve();
-
 export async function sdkCompleteRaw(modelId: string, messages: ModelMessage[], req: ModelRequest): Promise<SdkRawResult> {
-  if (process.env.OMD_CLAUDE_SDK_PARALLEL !== '1') {
-    const prev = sdkQueueTail;
-    let release!: () => void;
-    sdkQueueTail = new Promise<void>((r) => (release = r));
-    await prev.catch(() => {});
-    try {
-      return await sdkCompleteRawInner(modelId, messages, req);
-    } finally {
-      release();
-    }
-  }
-  return sdkCompleteRawInner(modelId, messages, req);
-}
-
-async function sdkCompleteRawInner(modelId: string, messages: ModelMessage[], req: ModelRequest): Promise<SdkRawResult> {
   if (req.temperature !== undefined || req.topP !== undefined || req.maxTokens !== undefined) {
     logger.warn(
       { model: `${CLAUDE_SDK_PROVIDER}:${modelId}`, temperature: req.temperature, topP: req.topP, maxTokens: req.maxTokens },
