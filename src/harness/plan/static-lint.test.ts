@@ -152,6 +152,84 @@ describe('缺命令目标', () => {
     expect(f[0]!.message).toContain('改法');
   });
 
+  // ── G-2 / #248 后半 (2026-08-25): bunx/npx 拉未声明的包 ─────────────────────
+  //
+  // 起因 (活体, conductor 能力探针 v2 臂 A): conductor 画了
+  //   `bunx playwright screenshot --viewport-size=1440,900 hero.html hero-desktop.png`
+  // 命令与参数**上游真实存在**, 不是臆造。但本仓 package.json 里只有 `playwright-core`,
+  // 没有 `playwright` 全包 —— 真跑要 bunx 现拉一个未声明的依赖 (离线即死, 且绕过依赖审计)。
+  // 而 `plan --dry-run` 当时判 **GREEN**: 分派器把 `bunx` 落进「裸 bin → 不确定 → 不猜」那一支,
+  // 于是整条命令被静默跳过。
+  //
+  // 纪律照本模块既有那条: **只报能确定性判死的**。所以只在
+  //   ① package.json 读得到 ∧ ② 包名不在 dependencies/devDependencies/optional/peer 里
+  // 两条同时成立时才报; 读不到 package.json 一律不报 (缺席 ≠ 不存在)。
+
+  test('★ bunx 拉未在 package.json 声明的包 → 报, 含节点 id、包名与改法', () => {
+    const cwd = tmpFixture({ 'package.json': JSON.stringify({ dependencies: { 'playwright-core': '^1.62.0' } }) });
+    const f = staticLintPlan(plan({ shot: cmdNode('bunx playwright screenshot hero.html out.png', cwd) }));
+    expect(f).toHaveLength(1);
+    expect(f[0]!.kind as string).toBe('missing-command-target');
+    expect(f[0]!.nodes).toEqual(['shot']);
+    expect(f[0]!.message).toContain('playwright');
+    expect(f[0]!.message).toContain('改法');
+  });
+
+  test('bunx 拉已声明的包 → 不报 (对照臂: 证明报的是"未声明"而不是"用了 bunx")', () => {
+    const cwd = tmpFixture({ 'package.json': JSON.stringify({ devDependencies: { playwright: '^1.62.0' } }) });
+    expect(staticLintPlan(plan({ a: cmdNode('bunx playwright screenshot a.html b.png', cwd) }))).toHaveLength(0);
+  });
+
+  test('npx 同一条判据 (npx/pnpm dlx 与 bunx 是同一个形状, 不许只堵一个)', () => {
+    const cwd = tmpFixture({ 'package.json': JSON.stringify({ dependencies: {} }) });
+    expect(staticLintPlan(plan({ a: cmdNode('npx cowsay hi', cwd) }))).toHaveLength(1);
+    expect(staticLintPlan(plan({ b: cmdNode('pnpm dlx cowsay hi', cwd) }))).toHaveLength(1);
+  });
+
+  test('作用域包与钉版本: @scope/pkg@1.2.3 按 @scope/pkg 比对', () => {
+    const declared = tmpFixture({ 'package.json': JSON.stringify({ dependencies: { '@scope/pkg': '1.0.0' } }) });
+    expect(staticLintPlan(plan({ a: cmdNode('bunx @scope/pkg@1.2.3 run', declared) }))).toHaveLength(0);
+    const absent = tmpFixture({ 'package.json': JSON.stringify({ dependencies: {} }) });
+    const f = staticLintPlan(plan({ a: cmdNode('bunx @scope/pkg@1.2.3 run', absent) }));
+    expect(f).toHaveLength(1);
+    expect(f[0]!.message).toContain('@scope/pkg');
+  });
+
+  test('bunx 前的旗标不当成包名 (`bunx --bun foo`)', () => {
+    const cwd = tmpFixture({ 'package.json': JSON.stringify({ dependencies: { foo: '1.0.0' } }) });
+    expect(staticLintPlan(plan({ a: cmdNode('bunx --bun foo build', cwd) }))).toHaveLength(0);
+  });
+
+  test('★★ `&&` 链里的 bunx 也要抓 —— 这是唯一的真样本形状, 判据挂错位置就报不出来', () => {
+    // 活体原文 (conductor 探针 v2 臂 A, n_render_desktop):
+    //   bunx playwright screenshot --viewport-size=1440,900 hero.html shot.png && realpath shot.png
+    // 第一版把判据挂在分派器上, 而分派器在 `hasShellSyntax` 整条 bail **之后** ——
+    // fixture 全绿, 拿真图跑却是 0 finding。本用例把「按段判」钉死。
+    const cwd = tmpFixture({ 'package.json': JSON.stringify({ dependencies: { 'playwright-core': '^1.62.0' } }) });
+    const f = staticLintPlan(plan({
+      shot: cmdNode('bunx playwright screenshot --viewport-size=1440,900 hero.html shot.png && realpath shot.png', cwd),
+    }));
+    expect(f).toHaveLength(1);
+    expect(f[0]!.kind as string).toBe('missing-command-target');
+    expect(f[0]!.message).toContain('playwright');
+  });
+
+  test('段内还有别的 shell 语法 (管道/变量) → 那一段不猜', () => {
+    const cwd = tmpFixture({ 'package.json': JSON.stringify({ dependencies: {} }) });
+    expect(staticLintPlan(plan({ a: cmdNode('bunx $TOOL go && true', cwd) }))).toHaveLength(0);
+    expect(staticLintPlan(plan({ b: cmdNode('bunx foo | head && true', cwd) }))).toHaveLength(0);
+  });
+
+  test('★ 反向自检: 读不到 package.json → 一条都不报 (缺席 ≠ 不存在, 不猜)', () => {
+    const cwd = tmpFixture({}); // 没有 package.json
+    expect(staticLintPlan(plan({ a: cmdNode('bunx whatever-package go', cwd) }))).toHaveLength(0);
+  });
+
+  test('★ 反向自检: package.json 非法 JSON → 一条都不报', () => {
+    const cwd = tmpFixture({ 'package.json': '{ 坏' });
+    expect(staticLintPlan(plan({ a: cmdNode('bunx whatever-package go', cwd) }))).toHaveLength(0);
+  });
+
   test('npm run 未定义的 package script → 报 (契约 2b 的 npm 半边)', () => {
     const cwd = tmpFixture({ 'package.json': JSON.stringify({ scripts: { other: 'true' } }) });
     const f = staticLintPlan(plan({ a: cmdNode('npm run nosuchscript', cwd) }));

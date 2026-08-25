@@ -176,14 +176,72 @@ function checkDirectScript(cwd: string, ref: string, id: string, out: StaticFind
   });
 }
 
-/** 读 package.json 的 scripts 表 (缺失/不可读/JSON 非法/scripts 非对象 → undefined, 不猜)。 */
-function packageScripts(cwd: string): Record<string, unknown> | undefined {
-  let scripts: unknown;
+/**
+ * 读一次 cwd 的 package.json。缺失/不可读/JSON 非法 → undefined, **不猜**。
+ *
+ * scripts 表与依赖表**共用这一个读取点**: 两个消费者各写一遍 try/catch 就是两个沉默 catch,
+ * 而仓规 §静默坑 2 的绊线 (scripts/catch-evidence-scan.test.ts) 对新写的沉默 catch 当场收费。
+ * 这里不打日志是刻意的 —— 任意 cwd 没有 package.json 是**常态不是异常**, 逐节点打一行是噪声;
+ * 判据的语义就是「读不到 = 不判」, 异常本身不携带信息。
+ */
+function readPackageJson(cwd: string): { scripts?: unknown } & Record<string, unknown> | undefined {
   try {
-    scripts = (JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8')) as { scripts?: unknown }).scripts;
+    return JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8')) as Record<string, unknown>;
   } catch {
     return undefined; // 缺失/不可读/JSON 非法 → 不猜
   }
+}
+
+/**
+ * 读 package.json 声明的**全部**依赖名 (dependencies / devDependencies / optional / peer 四张表
+ * 的并集)。缺失/不可读/JSON 非法 → undefined, **不猜** —— 与 packageScripts 同一条纪律:
+ * 读不到 package.json 时报"包没声明"就是把探不到当成不存在, 那是误报不是发现。
+ */
+function packageDeps(cwd: string): Set<string> | undefined {
+  const pkg = readPackageJson(cwd);
+  if (pkg === undefined) return undefined;
+  const names = new Set<string>();
+  for (const field of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
+    const table = pkg[field];
+    if (typeof table !== 'object' || table === null || Array.isArray(table)) continue;
+    for (const name of Object.keys(table)) names.add(name);
+  }
+  return names;
+}
+
+/**
+ * `<runner> [flags...] <pkg>[@version] [args...]` 里的 `<pkg>` 是否在 package.json 里声明过。
+ *
+ * **只在能确定性判死时才报** (本模块总纪律):
+ * - package.json 读不到 → 不报;
+ * - 旗标 (`--bun` 之类) 之后才是包名; 全是旗标 → 没有包名可判, 不报;
+ * - 包名形状不合 npm 规范 (含路径分隔符/不像包名) → 不报 —— 那可能是别的用法, 猜了就是误报。
+ *
+ * 版本后缀按 npm 规范剥掉: `pkg@1.2.3` → `pkg`; 作用域包的首字符 `@` 不是版本分隔符, 从第 2 位起找。
+ */
+function checkDlxPackage(cwd: string, rest: readonly string[], runner: string, id: string, out: StaticFinding[]): void {
+  const raw = rest.find((t) => !t.startsWith('-'));
+  if (raw === undefined) return;                              // 全是旗标 → 没包名可判
+  const at = raw.indexOf('@', raw.startsWith('@') ? 1 : 0);
+  const name = at > 0 ? raw.slice(0, at) : raw;
+  if (!/^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i.test(name)) return; // 不像包名 → 不猜
+  const deps = packageDeps(cwd);
+  if (deps === undefined) return;                             // 读不到 → 不猜
+  if (deps.has(name)) return;                                 // 已声明
+  out.push({
+    kind: 'missing-command-target',
+    nodes: [id],
+    message:
+      `命令引用缺失: 节点 "${id}" 用 \`${runner}\` 拉包 "${name}", 但它不在 ` +
+      `${join(cwd, 'package.json')} 的 dependencies/devDependencies 里 —— 真跑要现从网上拉一个` +
+      `未声明的依赖 (离线即失败, 且绕过依赖审计)。` +
+      `改法: **改用仓里已声明的等价包**, 或者**先把 "${name}" 加进 package.json 再用**。`,
+  });
+}
+
+/** 读 package.json 的 scripts 表 (缺失/不可读/JSON 非法/scripts 非对象 → undefined, 不猜)。 */
+function packageScripts(cwd: string): Record<string, unknown> | undefined {
+  const scripts = readPackageJson(cwd)?.scripts;
   if (typeof scripts !== 'object' || scripts === null || Array.isArray(scripts)) return undefined;
   return scripts as Record<string, unknown>;
 }
@@ -291,10 +349,34 @@ export function staticLintPlan(
     if (n.executor !== 'command') continue;                   // 唯一真实判定 = executor (schema 无 type; 非 command 节点带 command 字段也忽略)
     const command = (n as { command?: unknown }).command;
     if (typeof command !== 'string' || command.trim() === '') continue;
-    if (hasShellSyntax(command)) continue;
-    const tokens = command.trim().split(/\s+/);
     const rawCwd = (n as { cwd?: unknown }).cwd;
     const cwd = typeof rawCwd === 'string' && rawCwd !== '' ? rawCwd : '.';
+
+    // G-2 / #248 后半 —— `bunx` / `npx` / `pnpm dlx` 拉一个 **package.json 里没声明**的包。
+    //
+    // ⚠ 这一条**必须先于**下面那句整条 bail 跑, 而且按 `&&`/`||`/`;` **切段**判。理由是活体读数:
+    // conductor 探针 v2 臂 A 画的是
+    //   `bunx playwright screenshot --viewport-size=1440,900 hero.html shot.png && realpath shot.png`
+    // 带 `&&` → `hasShellSyntax` 真 → 整条跳过。第一版把判据挂在分派器上, 对这个**唯一的真样本
+    // 一条都报不出来**(拿真图跑 staticLintPlan 得 0 finding 才发现)。判据挂错位置和判据不存在,
+    // 在读数上是同一件事。
+    //
+    // 切段是安全的: `&&`/`||`/`;` 之间每段仍是一条简单命令, 而我们只看段首那个词。段内**还有**
+    // 别的 shell 语法 (管道/变量/引号/重定向/glob) 的, 那一段照旧不猜。
+    for (const seg of command.split(/&&|\|\||;/)) {
+      const segTokens = seg.trim().split(/\s+/).filter(Boolean);
+      if (segTokens.length === 0) continue;
+      if (hasShellSyntax(seg)) continue;                      // 段内仍有别的 shell 语法 → 不猜
+      const [s0, s1] = segTokens;
+      const dlxRest =
+        s0 === 'bunx' || s0 === 'npx' ? segTokens.slice(1)
+        : (s0 === 'pnpm' || s0 === 'yarn') && s1 === 'dlx' ? segTokens.slice(2)
+        : undefined;
+      if (dlxRest !== undefined) checkDlxPackage(cwd, dlxRest, s0!, id, out);
+    }
+
+    if (hasShellSyntax(command)) continue;
+    const tokens = command.trim().split(/\s+/);
 
     const [t0, t1, t2] = tokens;
     let directRef: string | undefined;
@@ -343,7 +425,7 @@ export function staticLintPlan(
       // 判据是"只报能确定性判死的", 无害的不报。
       if (d in plan.nodes) continue;
       if (opts.knownExternal?.has(d)) continue;               // 图外真节点 (子图引用外层上游)
-      const key = `${id} ${d}`;
+      const key = `${id}\u0000${d}`;  // 裸 NUL 会让 file(1) 判本文件为 binary → grep 静默返回空; 用转义写同一个字符
       if (seenExternal.has(key)) continue;
       seenExternal.add(key);
       if (opts.truncatedIds?.has(d)) {
