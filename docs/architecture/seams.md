@@ -44,7 +44,7 @@
 | `researchRunner` |  | `ResearchLeafRunner` | research-kind leaf 的执行器 (真 web 检索 + 有界内环, D-6)。 | `src/mcp/assemble.ts`<br>`src/harness/dag/engine.ts`<br>`src/harness/node-failure.ts` (5 文件) |
 | `judgeSend` |  | `typeof Gateway.send` | 注入式 judge 调用 (测试)。 | `src/harness/dag/engine.ts` (1 文件) |
 | `router` |  | `LeafModelRouter` | executor leaf 模型选型路由器 (B-2 bandit, 见 model-router.ts)。 | `src/harness/dag/engine.ts`<br>`src/mcp/assemble.ts`<br>`src/harness/model-router.ts` (17 文件) |
-| `repoChecks` |  | `RepoCheck[]` | **leaf 级仓规检查清单** (D2 切片 2, #266 修补节点): 引擎对每个 agent leaf 跑完 之后、终态写入之前, 对该 leaf 的写集跑清单里每条 check。 | `src/harness/agent-leaf.ts`<br>`src/mcp/assemble.ts` (2 文件) |
+| `repoChecks` |  | `RepoCheck[]` | **leaf 级仓规检查清单** (D2 切片 2, #266 修补节点): 引擎对每个 agent leaf 跑完 之后、终态写入之前, 对该 leaf 的写集跑清单里每条 check。 | `src/mcp/assemble.ts`<br>`src/harness/agent-leaf.ts`<br>`src/harness/repo-checks-manifest.ts` (3 文件) |
 
 ## DagPlanningSeam
 
