@@ -410,7 +410,7 @@ export function awaitingRuns(entries: BoardEntry[]): AwaitingEntry[] {
     if (terminal.has(e.runId)) continue; // 等待方已终态 = 不等了
     const got = published.some((p) => p.artifact === e.artifact && (!e.fromRun || p.runId === e.fromRun));
     if (got) continue; // 等到了
-    open.set(`${e.runId} ${e.artifact}`, {
+    open.set(`${e.runId}\x00${e.artifact}`, {
       runId: e.runId,
       artifact: e.artifact,
       since: e.ts,
