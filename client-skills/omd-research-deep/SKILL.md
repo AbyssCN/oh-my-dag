@@ -21,7 +21,7 @@ description: 终极档深度调研:种子作者化多角度抓取 + council 分�
 dag_research(question: "<研究问题>", super: true, rounds: 3)
 ```
 
-- **同步返回**(不是三段式,别去 `dag_status` 轮询):回 `{runId, reportPath, summary}`。
+- **异步返回**(spawn detached 子进程):立即回 `runId`,用 `dag_status` 轮询到完成再取报告(真源 `src/mcp/tools/research.ts` 的 detached 分支)。
 - `summary` 进对话;**全文在 `reportPath`**(lens 冠军 + 逐轮缺口留痕 + 全部语料附录零丢失)。
   关键决策**必须 `Read` 那个文件**,别只看 summary。
 - 转述纪律:结论 + 来源 URL + 哪轮缺口补出了什么;「语料未覆盖」的部分**如实说**。
