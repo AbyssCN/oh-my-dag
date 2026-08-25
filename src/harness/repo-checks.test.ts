@@ -126,6 +126,62 @@ describe('runRepoChecks / 三态聚合 + 占位符替换', () => {
     expect(r.oracleFaults).toBe(0);
   });
 
+  // ── severity 分级 (2026-08-26) ────────────────────────────────────────────
+  //
+  // 起因: run 5bcfa2b2 的 s2 被 catch-evidence 判红「净增 17 处」→ 节点 failed →
+  // 下游 requires:'all' 全部级联 skipped → 片 2 与片 3 的交付全丢。实核 18/20 是误报
+  // (该闸当时按行号做差集)。根因不在那一个判据, 在**层级错配**: 启发式判据装在
+  // fail-closed 的位置。三态里 UNVERIFIED 只覆盖「闸自己崩了」, 没有一态表示「闸判错了」。
+  //
+  // 降级的是**处置**不是**判定** —— 下面第二条专门钉这点: advisory 红了仍如实记 FAIL。
+  //
+  // 证伪: 把 repo-checks.ts 里 `if ((check.severity ?? 'blocking') === 'blocking') anyFail = true;`
+  // 改回无条件 `anyFail = true` ⇒ 第一条红; 把 advisory 的 outcome 改成不记 FAIL ⇒ 第二条红。
+  test('★ advisory 的 FAIL 不进整体 verdict —— 误报不再杀节点', async () => {
+    const r = await runRepoChecks({
+      checks: [{ id: 'jargon', command: 'bun scan', severity: 'advisory' }],
+      files: [],
+      cwd: '/tmp',
+      spawn: makeSpawn(async () => ({ stdout: '', stderr: 'src/x.ts:1: 命中', exitCode: 1 })),
+    });
+    expect(r.verdict, 'advisory 红不该把整体判成 FAIL(节点因此不被杀)').toBe('OK');
+  });
+
+  test('★ 但 advisory 仍如实记成 FAIL —— 降级的是处置, 判据一个字没放松', async () => {
+    const r = await runRepoChecks({
+      checks: [{ id: 'jargon', command: 'bun scan', severity: 'advisory' }],
+      files: [],
+      cwd: '/tmp',
+      spawn: makeSpawn(async () => ({ stdout: '', stderr: 'src/x.ts:1: 命中', exitCode: 1 })),
+    });
+    expect(r.perCheck[0]!.verdict).toBe('FAIL');
+    expect(r.perCheck[0]!.evidence).toBe('src/x.ts:1: 命中');
+  });
+
+  test('★ severity 缺席 = blocking(零回归: 既有 manifest 没这个键, 行为不变)', async () => {
+    const r = await runRepoChecks({
+      checks: [{ id: 'x', command: 'bun scan' }],
+      files: [],
+      cwd: '/tmp',
+      spawn: makeSpawn(async () => ({ stdout: '', stderr: 'boom', exitCode: 1 })),
+    });
+    expect(r.verdict).toBe('FAIL');
+  });
+
+  test('★ 混合: blocking 红 + advisory 红 → 整体 FAIL(blocking 说了算)', async () => {
+    const r = await runRepoChecks({
+      checks: [
+        { id: 'adv', command: 'bun a', severity: 'advisory' },
+        { id: 'blk', command: 'bun b', severity: 'blocking' },
+      ],
+      files: [],
+      cwd: '/tmp',
+      spawn: makeSpawn(async () => ({ stdout: '', stderr: 'boom', exitCode: 1 })),
+    });
+    expect(r.verdict).toBe('FAIL');
+    expect(r.perCheck.map((c) => c.verdict)).toEqual(['FAIL', 'FAIL']);
+  });
+
   test('exit null (被信号杀) → FAIL (reason=exit_null, 同 post-leaf-gate 口径)', async () => {
     const r = await runRepoChecks({
       checks: [{ id: 'a', command: 'cmd' }],

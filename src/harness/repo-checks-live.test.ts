@@ -99,10 +99,15 @@ describe('仓规清单活体自证 (./.omd-repo-checks.json 真 spawn)', () => {
       spawn: realSpawn,
       timeoutMs: 60_000,
     });
-    expect(result.verdict).toBe('FAIL');
+    // ⚠ 2026-08-26: 清单里 jargon-scan 已标 severity:'advisory'(它在 accept 的全量里
+    // 另有防线 —— jargon-scan.test.ts 的 scanTree 扫全树)。于是**整体 verdict 是 OK**:
+    // 降级的是「要不要杀节点」这个处置, 不是判定。判定仍如实是 FAIL, 见下面 perCheck 的断言。
+    // 这个区分是本条用例的重点 —— 如果哪天有人把 advisory 实现成「连 FAIL 都不记」,
+    // 下面三条会当场红。
+    expect(result.verdict, 'advisory 红不该把整体判成 FAIL(节点因此不被杀)').toBe('OK');
     const outcome = result.perCheck[0];
     expect(outcome).toBeDefined();
-    expect(outcome!.verdict).toBe('FAIL');
+    expect(outcome!.verdict, '判定仍是 FAIL —— 判据一个字没放松').toBe('FAIL');
     expect(outcome!.reason).toBe('exit_1');
     // jargon-scan 输出形如 `<abs-path>:<line> [<kind>] <word> → ...`, evidence 取 stdout
     expect(outcome!.evidence ?? '').toMatch(/dirty-sample\.ts:\d+/);

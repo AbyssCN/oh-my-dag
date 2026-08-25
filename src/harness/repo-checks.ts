@@ -51,6 +51,32 @@ import type { GateSpawn, GateVerdict } from './post-leaf-gate';
 export interface RepoCheck {
   id: string;
   command: string;
+  /**
+   * 这条检查红了要不要**杀节点**。缺省 `'blocking'`(零回归: 既有 manifest 没有这个键)。
+   *
+   * ## 为什么需要这一格(2026-08-26)
+   *
+   * run 5bcfa2b2 的 s2 被 catch-evidence 判红「净增 17 处」→ 节点 failed →
+   * 下游 `requires:'all'` 全部级联 skipped → 片 2 与片 3 的交付全丢。实核: 其中 18 处是
+   * **误报**(该闸当时按行号做差集, 文件前部插入 46 行就让后面的既有 catch 整批"变新"),
+   * 真问题只有 2 处、五行能修。
+   *
+   * 根因不在那一个判据, 在**层级错配**: 仓规检查的判据是启发式的(行号 / 词表 / 正则),
+   * 却被装在 fail-closed 的位置。本仓四层理念里, 只有①边界配 fail-closed, 而它的判据
+   * 必须是确定的; 启发式判据属于③验收, 该阶梯降级。
+   *
+   * 三态 `OK / FAIL / UNVERIFIED` 里, UNVERIFIED 只覆盖「闸自己崩了」(spawn 抛 / 超时) ——
+   * **没有一态表示「闸判错了」**。设计者想到了闸会崩溃, 没想到闸会冤枉人。
+   *
+   * ## 怎么选
+   *
+   * - `'advisory'`: 这条检查在 **accept 的全量里另有防线**, leaf 收尾这道只是「早拦」。
+   *   红了记 warn + 进结果, **不杀节点**。真问题照样在 accept 全量里红, 只是晚一点被发现;
+   *   而误报再也杀不掉整条依赖链。本仓的 jargon-scan(`scanTree` 扫全树)与
+   *   catch-evidence(`scanTree('src')` 绊线)都属此类。
+   * - `'blocking'`(缺省): 没有全量侧防线的检查, 红了就杀 —— 放过去就真溜了。
+   */
+  severity?: 'blocking' | 'advisory';
 }
 
 /** `runRepoChecks` 的入参。`checks` / `files` 之外都是接线参数。 */
@@ -179,7 +205,9 @@ export async function runRepoChecks(input: RepoChecksInput): Promise<RepoChecksR
           evaluatedAt: now().toISOString(),
         };
       } else if (result.exitCode !== 0) {
-        anyFail = true;
+        // advisory 的红**不进** anyFail —— 整体 verdict 不因它变 FAIL, 于是节点不被杀。
+        // 它仍如实记成 FAIL 进 perCheck: 降级的是**处置**, 不是判定 (判据一个字没放松)。
+        if ((check.severity ?? 'blocking') === 'blocking') anyFail = true;
         outcome = {
           id: check.id,
           verdict: 'FAIL',

@@ -94,7 +94,19 @@ export function loadRepoChecksManifest(repoRoot: string): RepoCheck[] {
         `[repo-checks-manifest] ${manifestPath}[${i}] (id=${obj.id}) command 必须含 {files} 占位符`,
       );
     }
-    checks.push({ id: obj.id, command: obj.command });
+    // severity 缺席 → 'blocking'(零回归: 既有 manifest 没有这个键, 行为逐字节不变)。
+    // 值非法 → 响亮拒, 不静默当 blocking: 把 'advisroy' 这种拼写错当成 blocking, 会让人
+    // 以为已经降级了、实际仍在杀节点 —— 那正是本仓要杀的静默形态。
+    if (obj.severity !== undefined && obj.severity !== 'blocking' && obj.severity !== 'advisory') {
+      throw new Error(
+        `[repo-checks-manifest] ${manifestPath}[${i}] (id=${obj.id}) severity 只能是 'blocking' | 'advisory' (当前: ${JSON.stringify(obj.severity)})`,
+      );
+    }
+    checks.push({
+      id: obj.id,
+      command: obj.command,
+      ...(obj.severity !== undefined ? { severity: obj.severity as 'blocking' | 'advisory' } : {}),
+    });
   }
   return checks;
 }

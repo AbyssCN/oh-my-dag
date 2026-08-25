@@ -239,6 +239,42 @@ describe('loadRepoChecksManifest / ③ 格式坏 → throw (path 必现)', () =>
     }
   });
 
+  test('★ severity 缺席 → 不带该键 (零回归锚: 既有 manifest 行为逐字节不变)', async () => {
+    const tmp = await newTmp();
+    await writeFile(
+      join(tmp, REPO_CHECKS_MANIFEST_FILENAME),
+      JSON.stringify([{ id: 'a', command: 'scan {files}' }]),
+    );
+    const checks = loadRepoChecksManifest(tmp);
+    expect(checks[0]!.severity).toBeUndefined();
+  });
+
+  test('★ severity 合法值原样带出', async () => {
+    const tmp = await newTmp();
+    await writeFile(
+      join(tmp, REPO_CHECKS_MANIFEST_FILENAME),
+      JSON.stringify([{ id: 'a', command: 'scan {files}', severity: 'advisory' }]),
+    );
+    expect(loadRepoChecksManifest(tmp)[0]!.severity).toBe('advisory');
+  });
+
+  test('★ severity 拼错 → 响亮拒, 不静默当 blocking', async () => {
+    // 静默当 blocking 会让人以为已经降级了、实际仍在杀节点 —— 那正是本仓要杀的形态。
+    const tmp = await newTmp();
+    const manifestPath = join(tmp, REPO_CHECKS_MANIFEST_FILENAME);
+    await writeFile(
+      manifestPath,
+      JSON.stringify([{ id: 'a', command: 'scan {files}', severity: 'advisroy' }]),
+    );
+    try {
+      loadRepoChecksManifest(tmp);
+      throw new Error('unreachable: should have thrown');
+    } catch (e) {
+      expect((e as Error).message).toContain('severity');
+      expect((e as Error).message).toContain('advisroy');
+    }
+  });
+
   test('条目本身非对象 (数组) → throw, message 含路径 + 下标', async () => {
     const tmp = await newTmp();
     const manifestPath = join(tmp, REPO_CHECKS_MANIFEST_FILENAME);

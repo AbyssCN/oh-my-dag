@@ -2492,8 +2492,22 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       if (checksResult.verdict === 'FAIL') {
         // 抛出的 message 经 engine.ts:4296 `causeOf` 拼进 causeNote (截 600 字),
         // 因此保留仓规 evidence 原文 (file:line + 命中内容) 比压成短码更重要。
+        // ⚠ 只有 severity:'blocking' 的检查会把整体 verdict 变成 FAIL 走到这里 ——
+        // advisory 的红在下面记 warn, 不杀节点 (见 repo-checks.ts 的 RepoCheck.severity 长注释)。
         throw new Error(
           `[agent-leaf] ${formatRepoChecksFailure(checksResult)}`,
+        );
+      }
+      // advisory 红: 不杀节点, 但**必须留证据** —— fail-open 可以吞异常, 不许吞证据 (§静默坑 2)。
+      // 不留的话就成了「闸悄悄不响」, 比闸误杀更坏: 误杀至少看得见。
+      const advisoryFails = checksResult.perCheck.filter((c) => c.verdict === 'FAIL');
+      if (advisoryFails.length > 0) {
+        logger.warn(
+          {
+            checks: advisoryFails.map((c) => ({ id: c.id, reason: c.reason, evidence: c.evidence })),
+            files: [...touched],
+          },
+          '[agent-leaf] 仓规检查红 (advisory) —— 不杀节点; 真问题由 accept 的全量兜住, 误报不再级联',
         );
       }
     }
