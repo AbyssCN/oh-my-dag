@@ -142,28 +142,32 @@ if (import.meta.main) {
     process.env.CLAUDE_CONFIG_DIR = iso;
     process.stderr.write(`[bench-bridge] CLAUDE_CONFIG_DIR → ${iso} (隔离, 防用户全局 harness 注入)\n`);
   }
-  // 一次性子进程 + 文件传参 + **顶层 worker 循环** (2026-08-26 排除法终形):
-  // 直调形状 8/8 干净、桥内(含 in-process 与 stdin 子进程两代)15/15 角色扮演退化;
-  // env/cwd/tty/CLAUDE_CONFIG_DIR 单变量逐一排除后, 仅剩结构差 = 调用发生在 Bun.serve
-  // fetch handler 的异步上下文内。此处把执行挪到顶层队列 worker (handler 只入队),
-  // 参数经临时文件传 (消除 stdin 大包疑点), 复刻被证明干净的形状。
-  type Job = { req: ModelRequest; resolve: (r: ModelResponse) => void; reject: (e: Error) => void };
+  // 一次性子进程 + 文件传参 + **有界并发 worker 池** (2026-08-26 二改):
+  // 初版顶层**串行**队列是「异步上下文退化」疑点下的排除法产物; 该疑点后被终局根因
+  // (filter 静默丢 developer role, 所有形状共用同一坏 filter, 形状实验整组被污染) 取代。
+  // 串行队列在 8 容器并发下是独木桥: 队列深度 × 单发分钟级延迟 = E2 首批观测的 30 分钟
+  // 尾延迟, spec 段超时 7/10 的直接机理。单发形状 (一次性子进程 + 文件传参) 一字不动,
+  // 只把「一次一个」改成「至多 N 个同时」; 每发写一行延迟证据 (排队 ms + 执行 ms)。
+  type Job = { req: ModelRequest; resolve: (r: ModelResponse) => void; reject: (e: Error) => void; enqueuedAt: number };
   const queue: Job[] = [];
-  let wake: (() => void) | null = null;
+  // 唤醒队列而非单槽: N 个 worker 同时空闲时各挂一个 resolver, 单槽会互相覆写,
+  // 被覆写的 worker 永远醒不来 (并发池的经典饿死形态)。入队唤一个, 醒来抢不到活再睡。
+  const sleepers: Array<() => void> = [];
   const callViaQueue = (req: ModelRequest): Promise<ModelResponse> =>
     new Promise((resolve, reject) => {
-      queue.push({ req, resolve, reject });
-      wake?.();
+      queue.push({ req, resolve, reject, enqueuedAt: Date.now() });
+      sleepers.shift()?.();
     });
-  (async () => {
+  const concurrency = Math.max(1, Number(process.env.OMD_BRIDGE_CONCURRENCY ?? 4) || 4);
+  const runWorker = async (workerId: number): Promise<void> => {
     const { writeFileSync, rmSync } = await import('node:fs');
     for (;;) {
       const job = queue.shift();
       if (!job) {
-        await new Promise<void>((r) => (wake = r));
-        wake = null;
+        await new Promise<void>((r) => sleepers.push(r));
         continue;
       }
+      const startedAt = Date.now();
       try {
         const tmp = `/tmp/bench-call-${Date.now()}-${Math.random().toString(36).slice(2)}.json`;
         writeFileSync(tmp, JSON.stringify({ coord: job.req.model, messages: job.req.messages, maxTokens: job.req.maxTokens, temperature: job.req.temperature, topP: job.req.topP }));
@@ -178,9 +182,15 @@ if (import.meta.main) {
         job.resolve({ text: j.text, usage: j.usage } as ModelResponse);
       } catch (e) {
         job.reject(e as Error);
+      } finally {
+        // 延迟证据行 (E2 首批量不到单发延迟的补尺): 排队多久 + 跑多久 + 当下队列深度。
+        process.stderr.write(
+          `[bench-bridge] w${workerId} ${job.req.model} queued=${startedAt - job.enqueuedAt}ms exec=${Date.now() - startedAt}ms depth=${queue.length}\n`,
+        );
       }
     }
-  })();
+  };
+  for (let w = 0; w < concurrency; w++) void runWorker(w);
   const deps: BridgeDeps = { call: callViaQueue, mapModel: (id) => map.get(id) };
   Bun.serve({
     port,
