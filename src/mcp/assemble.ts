@@ -79,7 +79,7 @@ import { createAgentLeafRunner } from '../harness/agent-leaf';
 import { loadRepoChecksManifest } from '../harness/repo-checks-manifest';
 import type { AnyOmdTool } from '../harness/agent-tools';
 import { resolveVerification } from '../harness/verifier';
-import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../harness/command-leaf';
+import { allowlistForRoot, createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from '../harness/command-leaf';
 import type { AgentLeafRunner, CommandLeafRunner } from '../harness/leaf-runners';
 import { createOmdMemory, type OmdMemory } from '../harness/memory';
 import { resolveMemoryDbPath } from '../harness/memory/db-path';
@@ -404,7 +404,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     });
   const commandRunner =
     deps.commandRunner ??
-    createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], cwd, timeoutMs: 180_000 });
+    createCommandLeafRunner({ allowlist: allowlistForRoot(cwd), cwd, timeoutMs: 180_000 });
   // research 节点执行器 (D-6): web stack 带配额状态 → 装配期建一次复用 (同 router)。
   // 无 search provider → undefined = 不挂 → research 节点响亮失败 (见 createDefaultResearchRunner)。
   const researchRunner = deps.researchRunner ?? createDefaultResearchRunner({ cwd, env });
@@ -498,7 +498,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
         : agentRunner;
     const commandRunnerForRun =
       overrideCwd && !deps.commandRunner
-        ? createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], cwd: root, timeoutMs: 180_000 })
+        ? createCommandLeafRunner({ allowlist: allowlistForRoot(root), cwd: root, timeoutMs: 180_000 })
         : commandRunner;
     // engine config = 座位三件套 (conductor/leaf/agent, 单一 resolver) + 真改文件 runner 对。
     const models = resolveEngineModels(env);

@@ -52,7 +52,7 @@
  * 依赖成环 / 全量回归下沉到切片 —— 逐条 throw 且判词指名切片与问题所在。每条闸在
  * sdd-compile.test.ts 里配了已知违规样本 (证伪方式写在各 test 注释)。
  */
-import { DEFAULT_COMMAND_ALLOWLIST } from '../command-leaf';
+import { DEFAULT_COMMAND_ALLOWLIST, LANGUAGE_PACKS } from '../command-leaf';
 import { PlanSchema, type ConductorPlan } from '../conductor-plan';
 import type { SddBreakdown, SddFalsify, SddSlice } from './sdd-direct';
 
@@ -70,7 +70,20 @@ const redId = (id: number): string => `s${id}-red`;
 const greenId = (id: number): string => `s${id}-green`;
 const falsifyId = (id: number, i: number): string => `s${id}-falsify-${i}`;
 
-/** 命令首词须在引擎白名单里 —— 不在 = 起跑即被命令闸拒(退出码 -1), 读数上是**假红**。 */
+/**
+ * 编译期允许的首词表 (D-3, D5a) —— base ∪ 全部语言包的 bins (与 `LANGUAGE_PACKS` 共用同一份
+ * 真源, 不在编译期另抄一份)。宽容面只到「已注册包的 bins」, 不是放开任意词。
+ *
+ * 为什么不严: SDD 编译常发生在锚仓之外 (goal 文本里夹 verify 列, 而锚仓是 Python/Go/Rust),
+ * 编译期拒 `pytest` 会把 Python 仓的合法 verify 挡在点火前 —— 真执法在运行期 command 闸
+ * (按探测, 严格: 无 marker 的仓跑 `pytest` 仍被拒)。
+ */
+const COMPILE_ALLOWLIST: ReadonlySet<string> = new Set([
+  ...DEFAULT_COMMAND_ALLOWLIST,
+  ...LANGUAGE_PACKS.flatMap((p) => p.bins),
+]);
+
+/** 命令首词须在编译期允许表里 —— 不在 = 起跑即被命令闸拒(退出码 -1), 读数上是**假红**。 */
 function assertRunnable(command: string, where: string): void {
   const first = command.trim().split(/\s+/)[0] ?? '';
   if (first === 'npx')
@@ -78,7 +91,7 @@ function assertRunnable(command: string, where: string): void {
       `${where} 不可运行: "${command}" — 执行体沙箱中的 npx 会退出 127；` +
         '请改用 `./node_modules/.bin/<bin>`，把 npx 后的 bin 放进去。',
     );
-  if (!DEFAULT_COMMAND_ALLOWLIST.includes(first))
+  if (!COMPILE_ALLOWLIST.has(first))
     throw new Error(
       `${where} 不是可跑命令: "${command}" — 首词 "${first}" 不在命令白名单里。` +
         'verify 列要给切片级测试命令 (如 `bun test src/x.test.ts`), 不是验收点引用 (G-1/G-6 这种)。',

@@ -19,6 +19,8 @@
  * 一旦在表内就等价于任意代码执行 (验证叶跑 `bun test` 是本职, 拿不掉)。command leaf 的真实边界是
  * cwd 锚 + 超时 + 危险模式表; 需要强隔离的是 agent leaf (那边有 bwrap jail)。
  */
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { classifyCommand } from './hooks/dangerous-cmd';
 import { awaitDeath, awaitExitBounded, readAllBounded, spawnWithPipes } from './proc/await-exit';
 import { logger } from '../logger';
@@ -58,6 +60,62 @@ export const DEFAULT_COMMAND_ALLOWLIST: readonly string[] = [
   // ⑦ 回显 (探针 / 占位输出)
   'echo',
 ];
+
+/**
+ * **语言包** (D5a, 2026-08-25) —— 给 `allowlistForRoot` 用的扩展表。
+ *
+ * 加包 = 加 marker 文件 + bins 两条成对加; 加 marker 单独加 bins 不算开包, 改包表必须改在**这里**,
+ * 不在别处再抄第二份 (D-3: 编译期闸与运行期闸共用本表的 union, 二表分离必漂)。
+ *
+ * **探测** = 锚仓根下 `existsSync(marker)`, **零解析、零网络**: monorepo 子目录不在本表视线内
+ * (D5a 未决, 待 E2 实测); 同仓多 marker 自动去重并集 (e.g. `pyproject.toml` + `uv.lock` 同在,
+ * 不会让 `pytest` 进两次)。
+ *
+ * **边界**(D-4): 只收验证/构建类只读向 bin —— pip / cargo-install / npm i 这类改环境的命令**不在
+ * 本表**, 要装依赖走 agent bash 的黑名单闸那条路, 那里本就允许。危险模式表 / git 只读子命令闸
+ * / shell 元字符拦逐字不动, 语言包扩展不松动既有闸。
+ */
+export type LanguagePack = {
+  /** 根下存在的 marker 文件名 —— 命中即启用本包。 */
+  readonly marker: string;
+  /** 验证/构建类只读向 bin。 */
+  readonly bins: readonly string[];
+};
+
+export const LANGUAGE_PACKS: readonly LanguagePack[] = [
+  // python —— 三 marker 任一即开包 (pyproject.toml 是现代, uv.lock 是 uv 系, requirements.txt 是经典 pip)
+  { marker: 'pyproject.toml', bins: ['python3', 'python', 'uv', 'pytest'] },
+  { marker: 'uv.lock', bins: ['python3', 'python', 'uv', 'pytest'] },
+  { marker: 'requirements.txt', bins: ['python3', 'python', 'uv', 'pytest'] },
+  // go —— go.mod 是事实标准; gofmt 与 go 配对
+  { marker: 'go.mod', bins: ['go', 'gofmt'] },
+  // rust —— Cargo.toml 是事实标准
+  { marker: 'Cargo.toml', bins: ['cargo'] },
+];
+
+/**
+ * **base ∪ 已启用包** —— 给定执行根, 返回该仓的命令白名单 (含 base 全部成员, 顺序与 base 一致;
+ * 启用包的 bins 按包声明顺序追加)。
+ *
+ * 无 marker → 返回 base 的副本 (顺序不变), 与 `DEFAULT_COMMAND_ALLOWLIST` 集合相等 (INV-2,
+ * JS 仓逐字节同基线)。每次调用都**新造一份数组** (与 command leaf 那条「无 memo 缓存」同源 ——
+ * MCP 长驻, 缓存会跨 run)。返回值可直接交 `createCommandLeafRunner({ allowlist })`, 无需再 `[...arr]`。
+ *
+ * `root` 与 spawn 时的 `cwd` **必须**一致: 装配期接线见 D-2 (src/mcp/assemble.ts 两处 +
+ * src/harness/agent-leaf.ts:2182 的 `createCommandLeafRunner` 调用), 由各调用点把各自的 cwd/root
+ * 传进来, 这里不替它猜。
+ */
+export function allowlistForRoot(root: string): string[] {
+  const out: string[] = [...DEFAULT_COMMAND_ALLOWLIST];
+  for (const pack of LANGUAGE_PACKS) {
+    if (existsSync(join(root, pack.marker))) {
+      for (const bin of pack.bins) {
+        if (!out.includes(bin)) out.push(bin);
+      }
+    }
+  }
+  return out;
+}
 
 /**
  * 允许的 git 子命令 (只读)。放行 bin 'git' 不等于放行改仓库状态 ——

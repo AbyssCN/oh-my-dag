@@ -100,7 +100,7 @@ import { createParseFeedback } from './writeset/write-parse-gate';
 import { extractFailSet } from './goal/accept-delta';
 import { createSandboxedLeafRunner } from './hooks/sandboxed-leaf';
 import { loadSandboxConfig } from './hooks/command-policy';
-import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from './command-leaf';
+import { allowlistForRoot, createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from './command-leaf';
 import { formatRepoChecksFailure, runRepoChecks } from './repo-checks';
 import type { RepoCheck } from './repo-checks';
 import type { GateSpawn } from './post-leaf-gate';
@@ -2179,7 +2179,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       ? buildSelfCheckFollowUp({
           spec: selfCheck,
           cwd,
-          allowlist: DEFAULT_COMMAND_ALLOWLIST,
+          allowlist: allowlistForRoot(cwd),
           getTouchedSize: () => touched.size,
           enabled: true,
           maxSelfRepair,
