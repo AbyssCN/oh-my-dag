@@ -84,9 +84,16 @@ async function configSeenByEngine(env: NodeJS.ProcessEnv): Promise<Partial<Execu
  * 看起来像"verifier 没接上", 实际是压根没跑到。第一版就踩了这个, 记在这里。
  * 用 `seatEnvKey(座位)` 生成而不是手抄一张表: 加座位时这里自动跟上。
  */
-const FAKE_ENV: NodeJS.ProcessEnv = Object.fromEntries(
-  ALL_SEATS.map((seat) => [seatEnvKey(seat), `faux:${seat}`]),
-);
+const FAKE_ENV: NodeJS.ProcessEnv = {
+  ...Object.fromEntries(ALL_SEATS.map((seat) => [seatEnvKey(seat), `faux:${seat}`])),
+  // ⚠ **本文件用 `cwd: process.cwd()` 装配 —— 那是真仓根** (它要的是"生产装配收到什么",
+  //   不是一个临时目录)。#253 之后写型 run 默认落隔离 worktree, 于是每跑一次这个文件就在
+  //   **本仓里真建 5 棵 `omd/run/*` worktree + 5 个分支**, 且测试全绿 —— 污染只在
+  //   `git worktree list` 里看得见 (实测: 单跑一次 +5, 全量一次 +6)。
+  //   关掉档位缺省即可: 本文件的判据是「引擎收到的 config」, 与写落在哪无关。
+  //   ⚠ 别改成 `branchStrategy: 'head'` 传参 —— 那会让这里测的不再是"缺省路径"。
+  OMD_RUN_BRANCH_DEFAULT: '0',
+};
 
 function withFakeProvider(): void {
   registerProvider('faux', { baseUrl: 'http://127.0.0.1:1', apiKey: 'k', api: 'openai-compatible', defaultModel: 'm' });
