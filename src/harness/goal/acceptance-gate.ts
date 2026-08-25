@@ -23,7 +23,13 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
-import { DEFAULT_COMMAND_ALLOWLIST, commandBlockReason, createCommandLeafRunner } from '../command-leaf';
+import {
+  DEFAULT_COMMAND_ALLOWLIST,
+  allowlistForRoot,
+  commandBlockReason,
+  createCommandLeafRunner,
+  languageConsistencyBlockReason,
+} from '../command-leaf';
 import { logger } from '../logger';
 import { ensureNodeModulesLink } from '../run-worktree';
 
@@ -62,16 +68,46 @@ export type AcceptanceProbe =
   | { kind: 'exploratory' };
 
 /**
+ * acceptance 闸的 root-aware 选项 (片 2, D-3, 2026-08-26)。
+ *
+ * 给 `root` → 启用 per-root 包 + 语言一致闸 (与运行期 `commandBlockReason` 走的
+ * `allowlistForRoot` / `languageConsistencyBlockReason` 同一份); 不给 → 与改前字节相同
+ * (既有单参调用零改动即绿, INV-6)。
+ *
+ * 设计要点:
+ *  · **不挂到运行期 `commandBlockReason`** (单源纪律, 不抄第二份闸; 见 D-2 / command-leaf.ts
+ *    18-20 行的诚实边界说明) —— 这里只是组装「per-root 词表 + 一致闸」给分类期用。
+ *  · 语言一致闸**先**于 allowlist 闸: 一致闸的拒因更具体 (含所需 marker 名 + 实检出 marker),
+ *    而 allowlist 闸对「证据与词不一致」这条病说不出那么细 —— 直接放行 js 仓的 `pytest` 不行,
+ *    但拒因若只剩 `'pytest' ∉ allowlist` 就丢了"为什么"那条链。
+ *  · 空字符串 root 视为无 root (fail-open) —— 区分"未给"和"显式给空"在 TS 里要再加一个 union,
+ *    而那个 union 没有任何真消费者。
+ */
+export interface AcceptanceCommandBlockOpts {
+  /** 仓根 —— 给则 per-root 白名单 + 语言一致闸; 缺省 = 今天行为 (byte-compatible)。 */
+  root?: string;
+}
+
+/**
  * 一条验收命令是否**真跑得起来** = 过 command-leaf 的 fail-closed 闸 (白名单 / 元字符 / git 只读 /
  * 危险命令)。判据借的是执行期那一份 (`commandBlockReason`), 不是这里另抄一份 —— 抄一份早晚先漂,
  * 而漂的后果恰是「假红」。
  *
+ * 给了 `opts.root` → 闸走 `allowlistForRoot(root)` + 语言一致闸 (`D-2`)。Python 仓写 `bun test`
+ * 在此拒, JS 仓写 `pytest` 在此拒; 证据与词一致 → null。给空 / 不给 → 与改前逐字相同 (INV-6)。
+ *
  * @returns null = 可跑; 否则一行拒因。
  */
-export function acceptanceCommandBlockReason(command: string): string | null {
+export function acceptanceCommandBlockReason(command: string, opts: AcceptanceCommandBlockOpts = {}): string | null {
   const c = command.trim();
   if (!c) return '[blocked empty: 验收命令为空]';
-  return commandBlockReason(c, DEFAULT_COMMAND_ALLOWLIST);
+  const root = opts.root;
+  if (!root) return commandBlockReason(c, DEFAULT_COMMAND_ALLOWLIST);
+  // 顺序: 语言一致闸先, allowlist 闸后。一致闸拒因带「所需 marker」, 信息量大于 allowlist 的
+  // `'pytest' ∉ allowlist` —— 后者也能拒, 但纠错环读到 "lang-mismatch" 才知道要去补 marker。
+  const langBlock = languageConsistencyBlockReason(c, root);
+  if (langBlock) return langBlock;
+  return commandBlockReason(c, allowlistForRoot(root));
 }
 
 /** 便捷谓词。 */
@@ -385,11 +421,17 @@ async function weakSegments(
 }
 
 /**
- * 探针默认 runner:同一份白名单、**根在临时目录**。
+ * 探针默认 runner:**per-root 白名单**(D-3, 片 2) + **根在临时目录**。
  *
- * 刻意**不复用**调用方注入的那个 runner:那一个的 cwd 在装配期就烤进去了(= 真工作树),
- * 而探针的全部意义就是换一个世界跑。也刻意不为此给 `CommandLeafInput` 加一个 `cwd` 口 ——
- * 那是给节点执行面开一个由模型填的根路径,为一道自检开这种口子不划算。
+ * · 白名单走 `allowlistForRoot(cwd)` —— 反面世界 = 真仓副本 (有 marker) 时, python 仓的探针
+ *   跑 `pytest` 不再被闸拒 (`DISCRIM_BLOCKED`), 见 INV-7。无 marker 的空目录退回 base,
+ *   与改前一致 (默认词表不变, 探针真仓副本才变)。
+ * · 刻意**不复用**调用方注入的那个 runner:那一个的 cwd 在装配期就烤进去了(= 真工作树),
+ *   而探针的全部意义就是换一个世界跑。也刻意不为此给 `CommandLeafInput` 加一个 `cwd` 口 ——
+ *   那是给节点执行面开一个由模型填的根路径,为一道自检开这种口子不划算。
+ *
+ * `allowlistForRoot` 每次新造一份数组 (与 `commandBlockReason` 那条「无 memo 缓存」同源),
+ * 探针每条执行型判据都要跑一次, 缓存跨 run 是危险源, 这里不替它埋。
  */
 const defaultProbeRunner = async ({ command, cwd }: { command: string; cwd: string }): Promise<{ exitCode: number | null }> =>
-  createCommandLeafRunner({ allowlist: [...DEFAULT_COMMAND_ALLOWLIST], cwd, timeoutMs: 30_000 })({ command });
+  createCommandLeafRunner({ allowlist: allowlistForRoot(cwd), cwd, timeoutMs: 30_000 })({ command });

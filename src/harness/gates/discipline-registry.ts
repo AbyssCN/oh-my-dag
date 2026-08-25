@@ -56,6 +56,24 @@ export const DISCIPLINE_REGISTRY: readonly Discipline[] = [
     enforcement: { kind: 'gate', ref: 'src/harness/goal/acceptance-gate.ts' },
   },
   {
+    id: 'language-consistency-gate',
+    source: 'C-1 / D-2 (执行契约 验收派生前探仓 + 语言一致闸)',
+    rule: '分类期语言一致闸: 命令首词属语言包且该包 marker 全缺席 → 拒因带所需 marker 名 + 实检出 marker, 纠错环逐字引回',
+    enforcement: { kind: 'gate', ref: 'src/harness/command-leaf.ts' },
+  },
+  {
+    id: 'acceptance-root-aware',
+    source: 'C-2 / D-3 (执行契约 验收派生前探仓 + 语言一致闸)',
+    rule: 'acceptance 闸 root-aware: 给 root 则 per-root 白名单 + 语言一致闸; 缺 root 则与今天字节兼容',
+    enforcement: { kind: 'gate', ref: 'src/harness/goal/acceptance-gate.ts' },
+  },
+  {
+    id: 'classify-prompt-probe',
+    source: 'C-3 / D-4 (执行契约 验收派生前探仓 + 语言一致闸)',
+    rule: '分类 prompt 反映仓语言证据: per-root 白名单 + 示例条件化, 无 probe 退 base',
+    enforcement: { kind: 'gate', ref: 'src/harness/goal/classify-probe.test.ts' },
+  },
+  {
     id: 'write-set-reconcile',
     source: '§引擎理念 ③验收 1',
     rule: '写集对账 —— 越界的写当场拒',
