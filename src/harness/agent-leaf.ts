@@ -112,6 +112,7 @@ import { officialAdvisorModelId, runSdkAgentLoop } from './claude-sdk-loop';
 import { createAdvisorTool, createTranscriptRecorder } from './advisor-tool';
 import { promptVersionOfText } from '../model/langfuse';
 import type { ModelUsage } from '../model/types';
+import { emitModelUsage } from '../model/accounting';
 import { resolveRoleModelConfigured, type ThinkingLevel } from '../model/role-models';
 import { isStrongCoord } from '../model/model-ratings';
 
@@ -320,6 +321,11 @@ export interface AgentLeafRunnerOpts {
    * 测试接缝:claude-code 订阅通道的 SDK query 替身(真 SDK 要真订阅 + claude CLI)。生产不传。
    */
   sdkQueryFn?: import('./claude-sdk-loop').SdkQueryFn;
+  /**
+   * 测试接缝:pi 通道循环替身(真循环要真模型)。生产不传。沿用 chat/agent.ts 的 loopFn 模式,
+   * 让 agent-leaf-tui-usage.test.ts 不发真模型请求就能验证 D5 切片 2 的 emit 闸。
+   */
+  loopFn?: typeof runAgentLoop;
   /**
    * 碰撞台账写入面 (SDD S3, 只记不拦)。给了才记; **缺省零行为变化**。
    * `session` 是 runner 级兜底; 引擎侧 runId 只在调用期可知 (runner 跨 run 复用) →
@@ -2303,7 +2309,8 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
         // D2 (owner 验收): 逐消息 usage 折算 out 严重低估 —— totalUsage 取自 result.modelUsage 真源。
         sdkUsage = out.totalUsage;
       } else {
-        messages = await runAgentLoop(
+        const loop = opts.loopFn ?? runAgentLoop;
+        messages = await loop(
           [{ role: 'user', content: routedPrompt, timestamp: Date.now() }],
           context,
           config,
@@ -2330,6 +2337,12 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       totals.cacheRead += u.cacheRead ?? 0;
     }
     const usage = sdkUsage ?? mapSessionUsage(totals);
+    // D5 切片 2 (#268): pi 通道的用量此前一个字都没进 tui 账 —— SDK 通道在 runSdkAgentLoop 内
+    // 已经按行 emit 过 (claude-sdk-loop.ts:347-355, ledger: { model, origin: 'engine' }), 这里
+    // 再 emit 一次就双记。gate `!isSdkChannel` 守的是 INV-D5-2 「同一 leaf 的量在 tui 账里只出现一次」。
+    if (!isSdkChannel) {
+      emitModelUsage(usage, model, 'engine');
+    }
 
     // **响亮失败** (承 C-5b): 低层循环对 provider 错误不抛 —— 它把 `stopReason:'error'` 连同
     // errorMessage 放进最后一条 assistant 消息就返回了 (agent-loop.js 的 error 分支)。
