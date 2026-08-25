@@ -19,6 +19,8 @@
  */
 import type { GenerateFn } from './dag/types';
 import type { ModelUsage } from '../model/gateway';
+// D-2 摘要保引文: 唯一引文判据源 = observers.extractQuotedSpans (INV-1 同源, 禁写第二个抽取器)。
+import { extractQuotedSpans } from './plan/observers';
 
 export interface FaninSummaryConfig {
   /** 开关。省略 = true (引擎内默认 ON, 同 caveman 的行为旋钮惯例; 经 config 可关)。 */
@@ -187,18 +189,100 @@ export function parseFaninSummary(text: string): Record<string, unknown> | null 
   }
 }
 
-/** 组装注入视图: 定向摘要 (紧凑 JSON, `<fan-in-summary>` 标记) + 全文指针 (写盘则附)。 */
+/** 组装注入视图: 定向摘要 (紧凑 JSON, `<fan-in-summary>` 标记) + 全文指针 (写盘则附) + 逐字引文段附录 (D-2)。 */
 export function composeFaninView(
   summary: Record<string, unknown>,
   fullPath: string | null,
   fullLen: number,
   anchors?: readonly string[],
+  /** producer 原始输出 —— 传入则在视图层附「逐字引文段」附录 (INV-1)。省略 = 不附, 与旧视图逐字一致。 */
+  output?: string,
+  /** 附录预算覆盖 (传 `output` 时生效)。省略 = FANIN_VERBATIM_APPENDIX_MAX_CHARS。 */
+  verbatimOpts?: FaninVerbatimAppendixOpts,
 ): string {
   const body = JSON.stringify(summary);
   const pointer = fullPath
     ? `\n[full output ${fullLen} chars → ${fullPath} — Read it if you need detail beyond this summary]`
     : '';
-  return `<fan-in-summary>\n${body}${composeAnchorBlock(body, anchors)}${pointer}\n</fan-in-summary>`;
+  // D-2 摘要在视图层保逐字引文 (INV-1): 抽自 producer 原始 output, 不经 LLM 摘要保真。
+  // 零引文 → 零附录 (GWT-3); 预算内全部列出; 超预算显式截断 —— 全部细节归 composeVerbatimAppendix。
+  const verbatim = output ? composeVerbatimAppendix(output, verbatimOpts) : '';
+  return `<fan-in-summary>\n${body}${composeAnchorBlock(body, anchors)}${pointer}${verbatim}\n</fan-in-summary>`;
+}
+
+/**
+ * **逐字引文段附录预算** (#153 契约 D-2, 2026-08-25)。
+ *
+ * 4000 字符 ≈ 1K token: 在常见上下文预算里几乎不占, 而对 ≥24 字符的引文段能装下几十段。
+ * **不是闸**, 是工程缺省: 读数板按「截断命中率」决定要不要调 (留待 D6 后续)。
+ */
+export const FANIN_VERBATIM_APPENDIX_MAX_CHARS = 4000;
+
+export interface FaninVerbatimAppendixOpts {
+  /** 附录总字符上限 (含 header/footer/截断标记)。省略 = FANIN_VERBATIM_APPENDIX_MAX_CHARS。 */
+  maxChars?: number;
+}
+
+/**
+ * **逐字引文段附录** (#153 契约 D-2 / INV-1, 2026-08-25) —— 摘要视图末尾追加,
+ * 把 producer 原始输出里的逐字引文段原样列出, 让 verbatim-drop 观察者拿视图判时
+ * 看见的是节点**真实所见**而不是被引擎自己先脱掉的那一层 (治病根)。
+ *
+ * ## 三条纪律
+ *
+ * ① **零引文 → 零附录**: 抽取器空结果直接返空串。`composeFaninView(...) + ''` 与
+ *    `composeFaninView(...)` 逐字节相同 (INV-1 GWT-3)。
+ * ② **预算内全部列出**: 每段一行 `"<inner>"`, 原样保留引号 —— 「原样」=与 producer
+ *    输出里**逐字节**相同的引文段;不做改写、不做去引号。
+ * ③ **超预算显式截断**: 不许静默砍。保留头部若干行 + 一行明确标记 (数字说话, 不写修辞)。
+ *
+ * ## 抽取器来源
+ *
+ * **复用** `extractQuotedSpans` (`src/harness/plan/observers.ts`) —— INV-1 全仓唯一
+ * 引文判据源, 与 `detectVerbatimDrop` 同 matcher, 派生自 `extractQuoteSegments`。
+ * 本文件**不**写第二份 regex。
+ *
+ * ## 为什么是「追加到视图」而不是「塞进摘要正文」
+ *
+ * 摘要正文由 LLM 生成 —— 让模型负责「保留原文」是把保真这件事交给了一个被实测验证
+ * 不可靠的执行者 (LLM 摘要保产物锚实测仅 31.8%, 引文保真只会更差, 不是更好)。
+ * 追加段由程序生成, 100% 保真; 与 `composeAnchorBlock` 同源 (散文给 LLM, 锚给程序)。
+ */
+export function composeVerbatimAppendix(
+  output: string,
+  opts: FaninVerbatimAppendixOpts = {},
+): string {
+  const maxChars = opts.maxChars ?? FANIN_VERBATIM_APPENDIX_MAX_CHARS;
+  const spans = extractQuotedSpans(output); // INV-1: 同 matcher, 禁写第二份
+  if (spans.length === 0) return ''; // 纪律①: 零引文 → 零附录 (GWT-3)
+  const unique = [...new Set(spans)]; // 去重保确定性; 同文多段 (位置不同) 合并为一段 —— 视图里段号无意义
+  const header = '\n\n<fan-in 逐字引文段>\n';
+  const footer = '\n</fan-in 逐字引文段>\n';
+  // 纪律②: 段原样列出, 外侧加回引号 (extractQuotedSpans 返回的是 trim 后的 inner text,
+  //          视图里要恢复「这是一段引文」的视觉标记 —— 消费者按外侧引号定位与 verbatim-drop 同形)。
+  const lines = unique.map((s) => `"${s}"`);
+  const full = header + lines.join('\n') + footer;
+  if (full.length <= maxChars) return full;
+  // 纪律③: 超预算显式截断 —— 保留头部若干行, 数字说话 (不写「等」「若干」)。
+  const makeNote = (kept: number): string =>
+    `\n…[逐字引文段截断: 共 ${unique.length} 段, 仅前 ${kept} 段; 余见 full output 指针]\n`;
+  let body = '';
+  let kept = 0;
+  for (const line of lines) {
+    const candidate = kept === 0 ? line : body + '\n' + line;
+    // 估一次 note 长度: 注里 unique.length 是固定的, kept 是变量 ——
+    // 取最大可能长度 (unique.length 的位数) 估, 保证估算结果 ≥ 实际 note, 不超预算。
+    const noteEst = makeNote(Math.max(kept + 1, unique.length));
+    const tentative = header + candidate + noteEst;
+    if (tentative.length > maxChars) break;
+    body = candidate;
+    kept++;
+  }
+  if (kept === 0) {
+    // 单段就顶到上限: 仍然响亮报「共 N 段, 0 段可列」—— 不许静默砍 (No-silent-caps 与 composeAnchorBlock 同源)。
+    return header + makeNote(0);
+  }
+  return header + body + makeNote(kept);
 }
 
 /**

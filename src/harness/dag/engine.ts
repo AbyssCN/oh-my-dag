@@ -222,6 +222,40 @@ export { PONYTAIL_LEAF_DISPOSITION } from './defaults';
 export { parseBlameVerdict, invalidationClosure } from './blame';
 
 /**
+ * seenUpstreamOutputs —— D-3 (verbatim-drop 修结构性错位, 2026-08-25)
+ *
+ * 给 `detectVerbatimDrop` 喂的上游输入 = 节点**真实消费**的视图 (详见 src/harness/plan/observers.ts)。
+ * 而非原始 `depOutputs[d]` —— 后者是 producer 的全文, 节点没看过; 大扇入时被摘要视图
+ * (见 `upstreamText` / `capFanin`) 截断的引文, 节点根本没机会逐字留。
+ *
+ * 行为:
+ * - 逐 `d ∈ plan.nodes[nodeId].depends_on` 取上游, 跳过非 string 与空 (与原行字节等价)。
+ * - 优先 `faninView[d]` —— 节点在 prompt 里实际看到的"摘要视图+逐字引文附录" (slice 1 修);
+ * - fallback `depOutputs[d]` —— 未触发摘要时与原行为逐字一致 (零回归通道)。
+ * - 全部经 `capFanin` 走一遍: 节点看到的上游 = 同一份 capFanin 截过的 body, 观察者判的也是同一份。
+ *   调用方传**与节点同一份**的 `capFanin` (executeDag 内就是同一个闭包常量) → 两边逐字相等。
+ *
+ * 模块级 + 纯 = 单测可直接喂最小 fixture, 不跑整张图。
+ */
+export function seenUpstreamOutputs(
+  nodeId: string,
+  plan: Pick<ConductorPlan, 'nodes'>,
+  depOutputs: Readonly<Record<string, string>>,
+  faninView: Readonly<Record<string, string>>,
+  capFanin: (depId: string, body: string) => string,
+): string[] {
+  const deps = plan.nodes[nodeId]?.depends_on ?? [];
+  const out: string[] = [];
+  for (const d of deps) {
+    const raw = depOutputs[d];
+    if (typeof raw !== 'string' || raw.length === 0) continue;
+    const body = capFanin(d, faninView[d] ?? raw);
+    if (body.length > 0) out.push(body); // INV-3: 喂观察者时空 body 不污染「真有多少上游」的分母
+  }
+  return out;
+}
+
+/**
  * 产物路径解析 (SDD 2026-08-22 · S50 根治切片 1)。
  *
  * 把「绝对路径怎么解析到 run 的产物根」收成一处 —— 之前散落在 `:217 / :825 / :837 / :1121`
@@ -2103,10 +2137,12 @@ async function executePlan(
               // #153 D-7: 子节点绕过外层 settle → 逐字保真探针在这里同样点一次 (同一个
               // detectVerbatimDrop 调用, 不是第二判据)。观察条目两条路都照常进账本 (INV-6),
               // 差别只在升闸谓词命中时把 id 收进 verbatimReds → 判前并进本轮毒集。
+              //
+              // D-3 (2026-08-25): 上游输入 = 节点在 prompt 里真实看到的视图 (`seenUpstreamOutputs`),
+              // 不是原始 `depOutputs[d]` —— 摘要脱引文后, 节点从未见过的原文不再被冤枉。
+              // 切片 1 (D-2) 让 faninView 自带逐字引文附录, 本切片让观察者判真实所见。
               if (settledR.status === 'done') {
-                const upsCid = (plan!.nodes[cid]?.depends_on ?? [])
-                  .map((d) => depOutputs[d])
-                  .filter((t): t is string => typeof t === 'string' && t.length > 0);
+                const upsCid = seenUpstreamOutputs(cid, plan!, depOutputs, faninView, capFanin);
                 const vdCid = detectVerbatimDrop(cid, upsCid, settledR.output ?? '');
                 if (vdCid) {
                   observe([vdCid]);
@@ -4533,10 +4569,11 @@ async function executePlan(
       // #13 逐字保真探针 (只报不拦, 与制品 lint 同一出口)。判在 settle 里是因为这一刻**同时**
       // 拿得到本节点输出与全部上游输出 —— 换个地方就得再存一份。零模型调用、纯子串比对。
       // 只对 done 的多入节点判; 判据本身在 detectVerbatimDrop 里(拿不准一律不报)。
+      //
+      // D-3 (2026-08-25): 上游输入 = 节点在 prompt 里真实看到的视图 (`seenUpstreamOutputs`),
+      // 不是原始 `depOutputs[d]` —— 大扇入摘要把引文先脱掉, 节点从未见过的原文不再被冤枉。
       if (r.status === 'done') {
-        const ups = (plan!.nodes[id]?.depends_on ?? [])
-          .map((d) => depOutputs[d])
-          .filter((t): t is string => typeof t === 'string' && t.length > 0);
+        const ups = seenUpstreamOutputs(id, plan!, depOutputs, faninView, capFanin);
         const vd = detectVerbatimDrop(id, ups, r.output ?? '');
         if (vd) {
           observe([vd]);
