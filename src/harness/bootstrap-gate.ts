@@ -21,7 +21,7 @@
  *
  * 模块只依赖 zod + inventory 模块 (`./inventory`, 只 import 不改) + node 内置。
  */
-import { registerInFlight, type InFlightTestGate } from './inventory/inventory';
+import { registerInFlight, assertSingleWriter, type InFlightTestGate } from './inventory/inventory';
 import { z } from 'zod';
 
 // ─── 共享文本 ─────────────────────────────────────────────────────────────────
@@ -179,6 +179,13 @@ export interface BootstrapGateInput {
   oracleResults: readonly OracleResult[];
   /** 注入 inventory in-flight API; 缺省链到 inventory 真实现。 */
   inv?: InventoryInFlightAdapter;
+  /**
+   * B5 写会话 worktree 命名空间 (规范化绝对路径); 提供时在会话入口抢单写者锁,
+   * evaluateTestGate + registerInFlight 完成后在 finally 显式 release。
+   * 缺省 = 不抢锁 (单元测试与 caller 自行托管锁的场景)。契约 D-2: 来源不得用 process.cwd() 猜测,
+   * 必须由 caller 注入真实 worktree。
+   */
+  worktree?: string;
 }
 
 /**
@@ -197,20 +204,29 @@ export interface BootstrapGateInput {
  * 「不向 conductor 透露该工具曾存在」。
  */
 export function runBootstrapGate(input: BootstrapGateInput): BootstrapGateVerdict {
-  const state = evaluateTestGate(input.oracleResults);
-  if (state === 'green') {
-    const adapter = input.inv ?? defaultAdapter;
-    const verdict = adapter.registerInFlight(input.node.test_gate.tool_id, {
-      status: 'green',
-      gate: 'bootstrap',
-    });
-    if (verdict.ok) return { kind: 'green' };
-    // 注册失败 (NOT_IN_WORKING_SET / ALREADY_IN_FLIGHT / not_green) → 升级到 yellow
-    // —— 该工具此时**已**被本图 build-time 边引用, conductor 必须看到 PP-T03 信号。
-    return { kind: 'yellow' };
+  // B5 writer liveness (D-1 / INV-1): worktree 提供时在入口抢单写者锁;
+  // 失败直接抛 SingleWriterViolation (此时 handle 仍为 null, finally 不会误调 release)。
+  const handle = input.worktree ? assertSingleWriter(input.worktree) : null;
+  try {
+    const state = evaluateTestGate(input.oracleResults);
+    if (state === 'green') {
+      const adapter = input.inv ?? defaultAdapter;
+      const verdict = adapter.registerInFlight(input.node.test_gate.tool_id, {
+        status: 'green',
+        gate: 'bootstrap',
+      });
+      if (verdict.ok) return { kind: 'green' };
+      // 注册失败 (NOT_IN_WORKING_SET / ALREADY_IN_FLIGHT / not_green) → 升级到 yellow
+      // —— 该工具此时**已**被本图 build-time 边引用, conductor 必须看到 PP-T03 信号。
+      return { kind: 'yellow' };
+    }
+    if (state === 'yellow') return { kind: 'yellow' };
+    return { kind: 'red' };
+  } finally {
+    // D-2: 释放必须在会话终止路径执行 (正常返回 + 异常退出都覆盖);
+    // 锁文件不依赖租约超时自动让出 —— 崩溃遗留锁由外部恢复动作处理。
+    if (handle) handle.release();
   }
-  if (state === 'yellow') return { kind: 'yellow' };
-  return { kind: 'red' };
 }
 
 // ─── INV-19: 写权闸 ──────────────────────────────────────────────────────────

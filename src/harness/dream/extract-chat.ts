@@ -22,6 +22,7 @@ import { computeCost } from '../../model/cost-ledger';
 import { type DreamCandidate, type DreamNamespace } from './validate';
 import { K_leaf } from './merge';
 import { ALLOWED_NAMESPACES } from '../../memory/safeguards/namespaces';
+import { rejectIfProbe, PROBE_SOURCE } from '../dag/credit';
 
 // ---------------------------------------------------------------------------
 // 预算常量 (S6 用; 本片不接 S6, 只导出)
@@ -257,6 +258,14 @@ export async function extractChatSession(
   input: ExtractChatSessionInput,
   opts: ExtractChatSessionOpts = {},
 ): Promise<ExtractChatReport> {
+  // S2 后半 (C-2 / INV-10, I-11): dream extract-chat 同 extractRunRecord —— probe
+  // 记录统一在入口拒收, 不得固化进 dream memory。
+  rejectIfProbe(opts as unknown as { source?: string });
+  rejectIfProbe(input as unknown as { source?: string });
+  if ((opts as unknown as { usage?: { probe?: unknown } }).usage?.probe !== undefined) {
+    throw new Error(`I-11: ${PROBE_SOURCE} 记录禁止进入 dream extract (extractChatSession)`);
+  }
+
   const { sessionId, entries } = input;
   const report: ExtractChatReport = {
     ok: true,

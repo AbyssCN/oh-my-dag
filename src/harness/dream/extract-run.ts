@@ -27,6 +27,7 @@ import { type DreamCandidate, type DreamNamespace } from './validate';
 import { K_leaf } from './merge';
 import { ALLOWED_NAMESPACES } from '../../memory/safeguards/namespaces';
 import type { EdgeStore, TemporalEdge } from '../memory/types';
+import { rejectIfProbe, PROBE_SOURCE } from '../dag/credit';
 
 // ---------------------------------------------------------------------------
 // 类型
@@ -271,6 +272,16 @@ export async function extractRunRecord(
   input: ExtractRunInput,
   opts: ExtractRunOpts = {},
 ): Promise<ExtractRunReport> {
+  // S2 后半 (C-2 / INV-10, I-11): dream extract 不读 probe usage —— 探测消耗独立计量,
+  // 不得固化进 dream memory (否则 omd.pattern 会拿 probe 段的 0-cost 探针调用学成
+  // 「便宜模式」)。`rejectIfProbe` 在源头拒收, fail-open 之外的硬拒 (probe 不能进
+  // dream 升档路径)。opts 与 input 均不应携带 source='probe' 的子字段。
+  rejectIfProbe(opts as unknown as { source?: string });
+  rejectIfProbe(input as unknown as { source?: string });
+  if ((opts as unknown as { usage?: { probe?: unknown } }).usage?.probe !== undefined) {
+    throw new Error(`I-11: ${PROBE_SOURCE} 记录禁止进入 dream extract (extractRunRecord)`);
+  }
+
   const report: ExtractRunReport = {
     ok: true,
     candidates: [],

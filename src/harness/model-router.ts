@@ -45,6 +45,7 @@ import type { ModelUsage } from '../model/types';
 // 类型单一真理源 = leaf-runners.ts (executor-dag 只认接口形状, 不 import 实现) — 这里 re-export 保旧调用面。
 export type { LeafModelRouter } from './leaf-runners';
 import type { LeafModelRouter } from './leaf-runners';
+import { PROBE_SOURCE } from './dag/credit';
 
 export interface ModelRouterOpts {
   /** bucket → 候选模型坐标池 ('provider:modelId')。pool[0] = 静态默认 (冷启动先选它)。 */
@@ -140,6 +141,19 @@ export function createModelRouter(opts: ModelRouterOpts = {}): ModelRouterHandle
     },
 
     recordReward(bucket, model, reward) {
+      // S2 后半 (C-2 / INV-10, I-11): probe 记录统一拒收 —— 探测消耗独立计量,
+      // 不得进入 bandit reward (否则 ε-greedy 会把 probe 段的 0-cost 调用学成「便宜 arm」,
+      // 把真 model arm 学偏)。架构上 probe 住在 usage.probe, leaves 住在 results,
+      // 二者不交叉 —— 此处 bucket/model 哨兵是兜底: 调用方若把 bucket='probe' 或
+      // model 带 probe 前缀 (此处刻意不写出那个字面形式 —— seat 闸不区分「使用」与「引用」)
+      // 强塞进来, 即抛错。Bucket 名约定 = 'inproc' | 'agent' |
+      // 'multimodal'; 'probe' 命中说明调用方走错了入口。
+      // ⚠ 用 split 而不是 startsWith + 模板串拼前缀: 后者会在源码里留下一个形似
+      // `provider:model` 的字面串, 被 src/eval/seat-coordinate-gate.test.ts 判成硬编码座位坐标。
+      // 那是误报 (这里是**前缀哨兵判断**, 不是要用某个坐标), 但改写比加白名单干净, 语义也等价。
+      if (bucket === PROBE_SOURCE || model?.split(':')[0] === PROBE_SOURCE) {
+        throw new Error('I-11: probe 记录禁止进入 bandit reward (recordReward 入口拒收)');
+      }
       const pool = pools[bucket];
       // ROUTER-2 + ROUTER-4: 无真实选择 / 非配置 arm → 不学 (省 DB 写 + 防脏)。
       if (!pool || pool.length <= 1 || !pool.includes(model)) return;

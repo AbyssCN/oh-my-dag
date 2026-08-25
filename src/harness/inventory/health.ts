@@ -15,6 +15,17 @@
  */
 import { appendFileSync, readFileSync, existsSync } from 'node:fs';
 
+// ─── I-11 probe 源标签 (S2 后半, C-2 / INV-10) ───────────────────────────────
+//
+// 探测记录 = probe usage 段的来源。所有信用写入面 (`applyToolCredit` /
+// `applyPlanCredit` / `applyLeafCredit` / `recordReward` / dream extract·merge) 以
+// `rejectIfProbe` 在源头拒收。本模块不 import `../dag/credit` —— INV-5 (I-11 隔离) 要求
+// health 模块零依赖 bandit / dream / model-router; probe source 字面量在本件内**复刻**,
+// 不引入新耦合。⚠ 字面量漂移会让拒收静默失效 (probe 记录改名为其他字串 → 闸空转) ——
+// 由 `credit-isolation.test.ts` 的「rejectIfProbe 字面量与 health 注释一致」检查钉死。
+export const PROBE_SOURCE_TAG = 'probe' as const;
+export type ProbeSourceTagLocal = typeof PROBE_SOURCE_TAG;
+
 // ─── 枚举常数 (INV-2) ─────────────────────────────────────────────────────────
 
 /** 探测状态 (D-3):

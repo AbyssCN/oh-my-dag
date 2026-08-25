@@ -115,6 +115,12 @@ export function emitBudgetHalfIfHalf(
 }
 import { cavemanRule, leafCavemanLevel } from '../caveman';
 import { leafCostReward } from '../model-router';
+import {
+  collectUseEvent,
+  leafCreditFromResult,
+  rejectIfProbe,
+  type UseEvent,
+} from './credit';
 import { logger } from '../logger';
 import { type AnchorVerdict, captureTreeAnchor, compareTreeAnchor, describeAnchorVerdict } from '../goal/criterion-anchor';
 import { NOVELTY_COLLAPSE_LINE, pushNoveltyRound } from '../pathfinder/proximity';
@@ -3292,6 +3298,10 @@ async function executePlan(
 
   // 节点起跑时刻 (issue #4: 失败 checkpoint 的 durationMs 用; settle 在 runNode 各早退分支之外, 需独立捕获)。
   const nodeStartedAt = new Map<string, number>();
+  // S2 后半 (C-2 / INV-5): use_event 发射去重 —— settle 重入路径可能多次经过同一个
+  // (tool_id, leaf_id), 键 = `${tool_id}\\0${leaf_id}`。不靠 credit.dedupeUseEvents 在
+  // 末端兜底, 而是在发射点就拦下重复 —— 事件面消费者不需要再过一道 filter。
+  const useEventsEmitted = new Set<string>();
   // S2 (2026-08-25, 片 3): rung 2 派发闭包状态。runNode 在档 1 spin-fused 时写入,
   // runLeafNode 的 agentRunner 调用处读取后清空 ——
   // **单节点临时**, 跨节点不共享。键 = 节点 id。
@@ -4673,7 +4683,12 @@ async function executePlan(
     } else {
       // P1 归一化闸: 任何没过的节点都必须带 failureKind, 漏标的显式记 'unclassified'
       // (缺席读起来 = "老记录", 与"引擎里有条没交代的失败路径"结论相反 — 见 node-failure.ts)。
-      results[id] = withFailureKind(r);
+      const normalized = withFailureKind(r);
+      // S2 后半 (C-2 / INV-6): tool_id 来自节点 toolRefs[0] (resolved 后)。若 leaf 自身已带
+      // tool_id (bootstrap 路径由 bootstrap-gate 注入) → 优先保留, 否则从 plan 派生。
+      // 无 toolRefs → 无 tool_id → 不发 use_event (INV-6: 不写占位)。
+      const refToolId = (normalized.tool_id ?? plan!.nodes[id]?.toolRefs?.[0]) || undefined;
+      results[id] = refToolId ? { ...normalized, tool_id: refToolId } : normalized;
       depOutputs[id] = r.output;
       // #240 观测绊线 (grill 2026-08-25 推荐 C · 层④告知 fail-open): failed 节点带大宗产出 =
       // 「字白取了」形态。基率 2/297 且成因已被 #241 点火坐标校验正面覆盖 —— 本行只是复发探测器,
@@ -4786,6 +4801,36 @@ async function executePlan(
       ...(settled.failureKind ? { failureKind: settled.failureKind } : {}),
     });
     emitNodeEvent(settleEvent(id, settled));
+    // S2 后半 (C-2 / INV-5, INV-6): use_event 复用 settle 出口的 emitNodeEvent 链,
+    // 不新增独立事件文件/表/writer (D-3)。真 tool_id 存在时发一次, (tool_id, leaf_id)
+    // 在 useEventsEmitted 集合里幂等 —— settle 重入路径不重复触发。oracle_pass 的来源
+    // 是**工具契约** (bootstrap-gate 三态 / plan-critic.toolRefs gate), 与 verification.pass
+    // 解耦 (INV-7: tool 更新不接受 verification 输入; INV-8: verifier 红 + oracle_pass:true
+    // → use_event 字节不变)。
+    const settledForEvent = results[id] as LeafResult | undefined;
+    if (settledForEvent?.tool_id) {
+      const dedupeKey = `${settledForEvent.tool_id}\0${settledForEvent.id}`;
+      if (!useEventsEmitted.has(dedupeKey)) {
+        useEventsEmitted.add(dedupeKey);
+        // 工具契约 oracle_pass: settled leaf done = 绿; failed 也仍记一条 (失败归因)。
+        // 注: tool 契约红 (`oracle_pass:false`) 的源头是 bootstrap-gate / plan-critic 的
+        // toolRefs gate, 在 node 解析期判死, settle 时已能拿到。MVP: 用 leaf.status 作
+        // oracle_pass 代理 (INV-8 字节不变性由 oracle_pass 字段独立存, 与 verifier.pass 解耦)。
+        const oraclePass = settledForEvent.status === 'done';
+        const useEv: UseEvent = {
+          tool_id: settledForEvent.tool_id,
+          leaf_id: settledForEvent.id,
+          success: settledForEvent.status === 'done',
+          cost: 0, // 价格表未接 (S2 后半只建立信用边界, 不接 S5 tool-bandit)
+          oracle_pass: oraclePass,
+          ts: new Date().toISOString(),
+        };
+        // probe 不可能落到这里 (settledForEvent 是 leaf, 不是 probe usage 段; rejectIfProbe
+        // 仍是兜底, 防御 type-forgery 把 source 塞进 leaf)。
+        rejectIfProbe(useEv as unknown as { source?: string });
+        emitNodeEvent(useEv as unknown as DagNodeEvent);
+      }
+    }
     // issue #4: 失败节点留痕。成功节点由 runNode 内成功分支落 checkpoint; failed/抛错节点此前**零记录**
     // (stdout 被 caveman 压掉、dag-runs.db 未启用、continuity 只存绿节点 → judge 截停后无法诊断)。
     // 这里补一条结构化败因 checkpoint (节点 id/executor/model/败因分类/错误消息截断)。全程 fail-open,
