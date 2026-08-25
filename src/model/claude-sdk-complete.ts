@@ -65,16 +65,16 @@ function serialize(messages: ModelMessage[]): { systemPrompt: string | undefined
 }
 
 /**
- * ⚠ 独立部署雷 (2026-08-26, n=16 单变量链定案): 本通道 spawn 的 CLI 会加载**用户全局
- * `~/.claude/CLAUDE.md` 与项目层配置** —— 当进程脱离活跃 Claude Code 会话链
- * (env 无 CLAUDE_CODE_OAUTH_TOKEN / BRIDGE_SESSION_ID, ENTRYPOINT=sdk-ts 独立模式) 时,
- * 用户 harness 的行为纪律会**压过本通道传入的 systemPrompt**: 大 prompt 请求 12/12 退化为
- * "先核仓库现状"式角色扮演 (形态与用户 CLAUDE.md 条款逐句对应), 而同请求在会话链内 6/6 干净;
- * 设 `CLAUDE_CONFIG_DIR` 指向只含凭证的隔离目录后 1/1 立即干净。
- * 中途曾按"并发损坏"误归因加过通道互斥, 单变量证伪后撤销 (并发非因子)。
- * ⇒ **脱离会话链跑本通道 (bench 桥/cron/CI/别人的机器) 必须设隔离 CLAUDE_CONFIG_DIR**,
- *    部署面样板见 scripts/bench-bridge.ts 启动段。引擎侧自动化 (检测独立模式自备隔离目录)
- *    含凭证拷贝的安全面, 留票另议。
+ * ⚠ 2026-08-26 调查记录 (n=26, 两次误归因后终局定案, 全过程见当日 bench 接入会话):
+ * 症状 = 大 prompt 经 bench 桥 18/18 退化为 CC 角色扮演, 直调 8/8 干净。
+ * **真根因在桥不在本通道**: 桥的消息过滤器把 pi openai 客户端发的 `developer` role
+ * (OpenAI 新式 system) 静默丢弃, conductor 系统面整条蒸发, 模型在真空里退回 CC 默认
+ * 行为 + 用户全局 `~/.claude/CLAUDE.md` 填充 (角色扮演的形态与用户 harness 条款逐句对应)。
+ * 两次误归因均已撤销: ①"并发损坏"→加互斥 (证伪: 串行同脏); ②"独立部署加载用户 harness
+ * 压过 systemPrompt"→隔离 CLAUDE_CONFIG_DIR (对照臂不纯: 那次"净"的其实是直调形状)。
+ * **留存的真教训**: 系统面一旦缺席, 独立 CLI 的默认面 (CC harness + 用户 CLAUDE.md) 会
+ * 填充真空 —— 隔离 CLAUDE_CONFIG_DIR 仍是脱离会话链部署的**卫生措施** (见
+ * scripts/bench-bridge.ts 启动段), 但它不是本案修法; 修法 = 桥侧 role 归一。
  */
 export async function sdkCompleteRaw(modelId: string, messages: ModelMessage[], req: ModelRequest): Promise<SdkRawResult> {
   if (req.temperature !== undefined || req.topP !== undefined || req.maxTokens !== undefined) {

@@ -22,6 +22,18 @@ describe('bench-bridge (E1c 宿主桥)', () => {
     expect(j.usage).toEqual({ prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 });
   });
 
+  test('★ developer role 归一为 system (2026-08-26 根因回归钉: 丢它 = 系统面蒸发)', async () => {
+    const cap: ModelRequest[] = [];
+    const r = await handleChatCompletions(
+      { model: 'm', messages: [{ role: 'developer', content: 'SYS-RULES' }, { role: 'user', content: 'x' }] },
+      { call: fakeCall(cap), mapModel: () => 'a:b' },
+    );
+    expect(r.status).toBe(200);
+    expect(cap[0]!.messages.length).toBe(2);
+    expect(cap[0]!.messages[0]!.role).toBe('system');
+    expect(String(cap[0]!.messages[0]!.content)).toBe('SYS-RULES');
+  });
+
   test('★ 不在白名单 → 404 (不透传任意 coord)', async () => {
     const r = await handleChatCompletions(
       { model: 'evil:coord', messages: [{ role: 'user', content: 'x' }] },

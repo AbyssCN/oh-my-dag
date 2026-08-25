@@ -56,10 +56,18 @@ export async function handleChatCompletions(
   if (!id) return { status: 400, json: { error: { message: 'model required' } } };
   const coord = deps.mapModel(id);
   if (!coord) return { status: 404, json: { error: { message: `model '${id}' 不在桥映射白名单 (OMD_BRIDGE_MAP)` } } };
-  const messages = (body.messages ?? []).filter(
-    (m): m is { role: 'system' | 'user' | 'assistant'; content: unknown } =>
-      m.role === 'system' || m.role === 'user' || m.role === 'assistant',
-  ) as unknown as ModelMessage[];
+  // ⚠ role 归一 (2026-08-26 终局根因, n=26): pi 的 openai 客户端把 system 以 OpenAI 新式
+  // `developer` role 发出; 初版 filter 只认三 role, 把 24K 的 conductor 系统面**整条静默丢弃**,
+  // 模型在真空里退回 CC 默认行为 + 用户全局 harness 填充 → 18/18 角色扮演, 而绕开 filter 的
+  // 直调 8/8 干净 (serialize 把未知 role 当普通段拼入, 指令仍在)。静默 filter = 自家「fail-open
+  // 吞证据」禁条的教科书违例; 现 developer→system 归一, 其余未知 role 保留并打警告。
+  const messages = (body.messages ?? [])
+    .map((m) => (m.role === 'developer' ? { ...m, role: 'system' } : m))
+    .filter((m) => {
+      const ok = m.role === 'system' || m.role === 'user' || m.role === 'assistant';
+      if (!ok) process.stderr.write(`[bench-bridge] 未知 role '${String(m.role)}' 的消息被弃 (内容前 60: ${JSON.stringify(String(m.content).slice(0, 60))})\n`);
+      return ok;
+    }) as unknown as ModelMessage[];
   if (messages.length === 0) return { status: 400, json: { error: { message: 'messages required' } } };
   let res: ModelResponse;
   try {
@@ -134,25 +142,46 @@ if (import.meta.main) {
     process.env.CLAUDE_CONFIG_DIR = iso;
     process.stderr.write(`[bench-bridge] CLAUDE_CONFIG_DIR → ${iso} (隔离, 防用户全局 harness 注入)\n`);
   }
-  // 一次性子进程调用 (见 scripts/bench-call.ts 头注): 长驻进程内直调 claude-code 通道对大
-  // prompt 9/9 退化为角色扮演, 一次性进程 5/5 干净 —— 机理待查, 先按被证明干净的形状隔离。
-  const callViaSubprocess = async (req: ModelRequest): Promise<ModelResponse> => {
-    const proc = Bun.spawn(['bun', new URL('./bench-call.ts', import.meta.url).pathname], {
-      stdin: 'pipe',
-      stdout: 'pipe',
-      stderr: 'inherit',
+  // 一次性子进程 + 文件传参 + **顶层 worker 循环** (2026-08-26 排除法终形):
+  // 直调形状 8/8 干净、桥内(含 in-process 与 stdin 子进程两代)15/15 角色扮演退化;
+  // env/cwd/tty/CLAUDE_CONFIG_DIR 单变量逐一排除后, 仅剩结构差 = 调用发生在 Bun.serve
+  // fetch handler 的异步上下文内。此处把执行挪到顶层队列 worker (handler 只入队),
+  // 参数经临时文件传 (消除 stdin 大包疑点), 复刻被证明干净的形状。
+  type Job = { req: ModelRequest; resolve: (r: ModelResponse) => void; reject: (e: Error) => void };
+  const queue: Job[] = [];
+  let wake: (() => void) | null = null;
+  const callViaQueue = (req: ModelRequest): Promise<ModelResponse> =>
+    new Promise((resolve, reject) => {
+      queue.push({ req, resolve, reject });
+      wake?.();
     });
-    proc.stdin.write(JSON.stringify({ coord: req.model, messages: req.messages, maxTokens: req.maxTokens, temperature: req.temperature, topP: req.topP }));
-    proc.stdin.end();
-    const out = await new Response(proc.stdout).text();
-    await proc.exited;
-    const j = JSON.parse(out || '{"ok":false,"error":"empty subprocess output"}') as
-      | { ok: true; text: string; usage?: { in: number; out: number } }
-      | { ok: false; error: string };
-    if (!j.ok) throw new Error(j.error);
-    return { text: j.text, usage: j.usage } as ModelResponse;
-  };
-  const deps: BridgeDeps = { call: callViaSubprocess, mapModel: (id) => map.get(id) };
+  (async () => {
+    const { writeFileSync, rmSync } = await import('node:fs');
+    for (;;) {
+      const job = queue.shift();
+      if (!job) {
+        await new Promise<void>((r) => (wake = r));
+        wake = null;
+        continue;
+      }
+      try {
+        const tmp = `/tmp/bench-call-${Date.now()}-${Math.random().toString(36).slice(2)}.json`;
+        writeFileSync(tmp, JSON.stringify({ coord: job.req.model, messages: job.req.messages, maxTokens: job.req.maxTokens, temperature: job.req.temperature, topP: job.req.topP }));
+        const proc = Bun.spawn(['bun', new URL('./bench-call.ts', import.meta.url).pathname, tmp], { stdout: 'pipe', stderr: 'inherit' });
+        const out = await new Response(proc.stdout).text();
+        await proc.exited;
+        rmSync(tmp, { force: true });
+        const j = JSON.parse(out || '{"ok":false,"error":"empty subprocess output"}') as
+          | { ok: true; text: string; usage?: { in: number; out: number } }
+          | { ok: false; error: string };
+        if (!j.ok) throw new Error(j.error);
+        job.resolve({ text: j.text, usage: j.usage } as ModelResponse);
+      } catch (e) {
+        job.reject(e as Error);
+      }
+    }
+  })();
+  const deps: BridgeDeps = { call: callViaQueue, mapModel: (id) => map.get(id) };
   Bun.serve({
     port,
     hostname: '0.0.0.0',
