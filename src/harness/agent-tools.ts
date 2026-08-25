@@ -91,13 +91,16 @@ function sha256Hex(text: string): string {
  * 由 agent-leaf 的 AsyncLocalStorage 按调用喂 (getter 返 undefined = 本次不记)。
  */
 function touchWrite(
-  ledger: TouchLedger | null,
+  openLedger: () => TouchLedger | null,
   touch: OmdAgentToolsOpts['touch'],
   input: { path: string; op: TouchOp; hash?: string | null; source?: TouchSource },
 ): void {
-  if (!ledger || !touch) return;
+  if (!touch) return;
   const session = typeof touch.session === 'function' ? touch.session() : touch.session;
+  // ⚠ #262: **先判 session 再开库** —— 顺序反了懒开就白做 (每个 cwd 照样长一个空 touch.db)。
   if (!session) return;
+  const ledger = openLedger();
+  if (!ledger) return;
   ledger.recordTouch({ path: input.path, session, op: input.op, hash: input.hash, source: input.source });
 }
 
@@ -547,18 +550,26 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
   };
   const walkLimit = opts.grepWalkLimit ?? GREP_WALK_LIMIT;
   const env = new NodeExecutionEnv({ cwd });
-  // SDD S3 碰撞台账 (只记不拦): 给了 touch 才开库, 库锚在 cwd (触碰发生的工作根) 的 `.omd/touch.db`。
+  // SDD S3 碰撞台账 (只记不拦): 库锚在 cwd (触碰发生的工作根) 的 `.omd/touch.db`。
   // **开库失败 → warn 留痕 + 本次不记 (fail-open)** —— 台账是观测件, 绝不让工具调用因此失败。
-  const touchLedger: TouchLedger | null = opts.touch
-    ? (() => {
-        try {
-          return openTouchLedger({ root: cwd });
-        } catch (err) {
-          logger.warn({ err: (err as Error).message, root: cwd }, '[omd/agent-tools] touch 台账开库失败 → 本次不记 (fail-open)');
-          return null;
-        }
-      })()
-    : null;
+  //
+  // #262: 改**懒开** —— 第一次真要记 (有 session) 才建库。此前是「给了 opts.touch 就急开」,
+  // 而 opts.touch 现在由 agent-leaf 无条件装 (getter 可能一直返 undefined), 急开会给每一个
+  // leaf cwd 撒一个空 `.omd/touch.db`。懒开让「没 session」这条路**连文件都不产生** ——
+  // 「库不存在」与「库是空的」是两种状态, 别用一个空库把它们抹平 (仓规: NULL ≠ 0 ≠ 不适用)。
+  // 开库失败只 warn 一次: 每次工具调用都喊一遍会把真信号淹掉。
+  let touchLedger: TouchLedger | null = null;
+  let touchLedgerFailed = false;
+  const touchLedgerLazy = (): TouchLedger | null => {
+    if (touchLedger || touchLedgerFailed) return touchLedger;
+    try {
+      touchLedger = openTouchLedger({ root: cwd });
+    } catch (err) {
+      touchLedgerFailed = true;
+      logger.warn({ err: (err as Error).message, root: cwd }, '[omd/agent-tools] touch 台账开库失败 → 本次不记 (fail-open)');
+    }
+    return touchLedger;
+  };
 
   const read: OmdTool<{ path: string; lines: number; truncated: boolean }> = {
     name: 'read',
@@ -612,7 +623,7 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
       const r = await env.writeFile(full, content);
       if (!r.ok) throw new Error(`write 失败: ${display(cwd, full)}: ${r.error.message}`);
       // SDD S3 strict 档 (事实): 受控写工具知道写了什么 → hash = sha256(写入内容), 非 NULL。
-      touchWrite(touchLedger, opts.touch, { path: full, op: 'write', hash: sha256Hex(content), source: 'strict' });
+      touchWrite(touchLedgerLazy, opts.touch, { path: full, op: 'write', hash: sha256Hex(content), source: 'strict' });
       return textResult(`✓ 写入 ${display(cwd, full)} (${content.length} 字节)`, {
         path: display(cwd, full),
         bytes: content.length,
@@ -648,7 +659,7 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
       const w = await env.writeFile(full, next);
       if (!w.ok) throw new Error(`edit 失败 (写回): ${display(cwd, full)}: ${w.error.message}`);
       // SDD S3 strict 档 (事实): edit 写回的是整份新内容 (next), hash 对它算。
-      touchWrite(touchLedger, opts.touch, { path: full, op: 'write', hash: sha256Hex(next), source: 'strict' });
+      touchWrite(touchLedgerLazy, opts.touch, { path: full, op: 'write', hash: sha256Hex(next), source: 'strict' });
       return textResult(`✓ 已替换 ${display(cwd, full)} 中 1 处`, { path: display(cwd, full), replaced: true });
     },
   };
@@ -936,7 +947,7 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
       // 判据不抄第二份; 与 strict 档分列不合并 (台账按 source 落)。
       if (exitCode === 0 && !cancelled) {
         for (const hit of verifiedShellWriteTargets([command], { root: cwd, startedAt })) {
-          touchWrite(touchLedger, opts.touch, { path: hit, op: 'write', source: 'inferred' });
+          touchWrite(touchLedgerLazy, opts.touch, { path: hit, op: 'write', source: 'inferred' });
         }
       }
       let truncationNotice = '';

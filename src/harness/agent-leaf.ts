@@ -1367,7 +1367,14 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // 烤进装配期就会拿上一个节点的写集去判这一个 (同 mcpAllow / touchSession 那条纪律)。
     // 返回 undefined = 闸缺席放行 (没声明 write_set 的 plan); [] = 声明了"什么都不许写"。
     writeAllow: () => touchSessionStore.getStore()?.writeAllow ?? opts.writeAllow,
-    ...(touchOpt ? { touch: { session: () => touchSessionStore.getStore()?.session ?? touchOpt.session } } : {}),
+    // #262: 这里**无条件**装 getter, 不再按 `opts.touch` 在不在开门。
+    // 原来写的是 `...(touchOpt ? { touch: … } : {})` —— 把一个**按调用**的特性锁在了**装配期**
+    // 选项后面。而生产装配 (src/mcp/assemble.ts 两处 createAgentLeafRunner) 从不传 opts.touch,
+    // 于是引擎按调用发的 `<runId>:<nodeId>` (dag/engine.ts:3777, lister 在 :3031) 无处可落 ——
+    // 实测主树库 rows=2924 而 **strict=0 / inferred=0**, agent 工具面一条没进来。
+    // getter 返 undefined 时 touchWrite 本来就早返回, 且库是**懒开**的 (agent-tools.ts),
+    // 所以无条件装 getter 对「没有 session」那条路零行为变化、零文件产生。
+    touch: { session: () => touchSessionStore.getStore()?.session ?? touchOpt?.session },
   });
   const hashlineTools = opts.hashlineEdit ? createHashlineCustomTools({ cwd }) : [];
   // 外部 MCP 双 meta-tool (SDD D-8): 零注册 → [] (meta-tools.ts:72-73) → 工具面与 prompt 前缀
