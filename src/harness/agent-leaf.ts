@@ -83,7 +83,21 @@ import type { McpPoolDeps } from '../mcp/client/pool';
 import type { McpCallLedger } from '../mcp/client/call-ledger';
 import { createHashlineCustomTools, hashlinePatchPaths } from './hashline';
 import { createDriftTracker, type DriftDetectorConfig } from './hooks/drift-detector';
+import {
+  RUNG_1,
+  SPIN_ROUTE_OBSERVATION_KIND,
+  SPIN_ROUTE_SDK_SKIP_LOG,
+  buildSpinEvidencePack,
+  judgeRungOutcome,
+  samePack,
+  spinRouteEnvEnabled,
+  type AdvisorLines,
+  type SpinEvidenceInput,
+  type SpinEvidencePack,
+  type SpinRouteEventOutcome,
+} from './spin-route';
 import { createParseFeedback } from './writeset/write-parse-gate';
+import { extractFailSet } from './goal/accept-delta';
 import { createSandboxedLeafRunner } from './hooks/sandboxed-leaf';
 import { loadSandboxConfig } from './hooks/command-policy';
 import { createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from './command-leaf';
@@ -361,6 +375,27 @@ export interface AgentLeafRunnerOpts {
    */
   driftDetector?: DriftDetectorConfig | false;
   /**
+   * S1 spin-route 档 1 (2026-08-25 空转路由, 片 2 接线): 命中空转口径时注入一次**证据包**。
+   * 沿用现尺不新造 — 触发 = drift 的 `onSpinning` 边沿事件 (现 drift 检测在用同一把尺)。
+   *
+   * - `false` ⇒ 关掉整条路由 (与 `OMD_SPIN_ROUTE=0` 任一关都旁路, INV-3-3 同款);
+   * - 缺省 (undefined) ⇒ 走 env `OMD_SPIN_ROUTE=0` 的默认值 (= 开)。
+   *
+   * **仅 pi 通道注入**: SDK 通道没有 `transformContext` 钩子, 命中时打 `SPIN_ROUTE_SDK_SKIP_LOG`
+   * 一次 + 记账 `sdk-bypass` (I-6, 与 self_check 在 SDK 的纪律同款)。
+   *
+   * **每叶至多 1 次** (D-1): 二次命中在 S1 里记 `exhausted-s1`, 不重派 (档 2 是 S2 的活)。
+   */
+  spinRoute?: false | {
+    enabled?: boolean;
+    /**
+     * 测试观察面 —— 生产 opts.spinRoute 缺省无该字段, 走 drift 的 onSpinning 真边沿。
+     * 同步触发后**仍**走 handleSpinRouteTrigger 真逻辑(同 observer 而非 override);
+     * 用途: 测试在不调 drift.note() 的前提下, 捕获 spin-route 触发瞬间。
+     */
+    trigger?: (info: { sig: string; sameCount: number }) => void;
+  };
+  /**
    * 上下文预算线 (GP-8): 估算上下文占到模型窗口的这个比例时触发**压缩**。默认 0.85。
    * 压缩不成才优雅停。设 1 以上 = 既不压也不停 (不建议 —— 撞窗口是整轮硬失败)。
    */
@@ -560,6 +595,11 @@ export interface SelfRepairLedger {
   oracleExit: number[];
   /** 第几轮转绿 (0 = 首轮就绿); 始终没绿 = null。INV-4-3: ⟺ oracleExit 末项 === expect_exit。 */
   convergedAt: number | null;
+  /**
+   * S1 spin-route 档 1 路由入账 (D-5 additive, INV-6): 路径启用但未触发 = 空数组; 缺席 = 路径未启用
+   * (opts.spinRoute === false 或 env 关)。既有消费者读 `rounds/oracleExit/convergedAt` 不受影响。
+   */
+  spinRoute?: { rung: 1; packHash: string; outcome: SpinRouteEventOutcome; at: number }[];
 }
 
 /**
@@ -677,8 +717,16 @@ export function buildSelfCheckFollowUp(opts: {
   truncate?: (s: string, maxBytes: number) => string;
   /** 探测跑法 (默认 = `runSelfCheckProbe`)。测试可注入。 */
   probe?: (input: { command: string; cwd: string; allowlist: readonly string[] }) => Promise<SelfCheckOutcome>;
-  /** 注入观测 (按 outcome 记一笔账本)。测试可观察, 生产 = console logger。 */
-  observe?: (info: { kind: 'blocked' | 'exited' | 'no-progress' | 'round-cap' | 'converged' | 'disabled'; exitCode?: number | null; rounds: number }) => void;
+  /** 注入观测 (按 outcome 记一笔账本)。测试可观察, 生产 = console logger。
+   * `stdout`/`stderr` 仅在 `kind === 'exited'` 时存在 —— 自修环外不再多花成本解析,
+   * 也避免空跑被误读成"看了一通";`spin-route` 档 1 用它取 self_check 输出的 (fail) 名字集。 */
+  observe?: (info: {
+    kind: 'blocked' | 'exited' | 'no-progress' | 'round-cap' | 'converged' | 'disabled';
+    exitCode?: number | null;
+    rounds: number;
+    stdout?: string;
+    stderr?: string;
+  }) => void;
 }): { followUp: () => Promise<AgentMessage[]>; ledger: SelfRepairLedger } {
   const ledger: SelfRepairLedger = { rounds: 0, oracleExit: [], convergedAt: null };
   let lastTouched = opts.getTouchedSize();
@@ -713,7 +761,13 @@ export function buildSelfCheckFollowUp(opts: {
     // exitCode 可能是 null (信号死) —— 落账时折成 -1, 与 commandRunner 的闸拒/被信号杀
     // 同款 (H5-1: 三字段互不推断, 异常路径统一进 -1 槽, 不留 null 让下游类型失稳)。
     ledger.oracleExit.push(out.exitCode ?? -1);
-    opts.observe?.({ kind: 'exited', exitCode: out.exitCode, rounds: ledger.rounds });
+    opts.observe?.({
+      kind: 'exited',
+      exitCode: out.exitCode,
+      rounds: ledger.rounds,
+      stdout: out.stdout,
+      stderr: out.stderr,
+    });
     if (out.exitCode === opts.spec.expect_exit) {
       ledger.convergedAt = ledger.rounds; // 首轮就绿 ⇒ 0; 后续 ⇒ 对应轮次
       converged = true;
@@ -1481,7 +1535,23 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     const drift =
       opts.driftDetector === false
         ? null
-        : createDriftTracker(typeof opts.driftDetector === 'object' ? opts.driftDetector : {});
+        : createDriftTracker(
+            typeof opts.driftDetector === 'object'
+              ? opts.driftDetector
+              : {
+                  // S1 spin-route 档 1 触发点: drift 的 onSpinning 边沿事件 (与现 drift 注入的
+                  // spin-checklist 同一把尺 —— 沿用现尺不新造)。handler 内: 构证据包 →
+                  // 同包拒注 (I-2) / SDK 旁路 (I-6) / pi 注入。opts.spinRoute.trigger 是
+                  // 测试观察面 —— 同步触发后**仍**走 handleSpinRouteTrigger 真逻辑;生产不传。
+                  onSpinning: (info: { sig: string; sameCount: number }) => {
+                    if (!spinRouteEnabled) return;
+                    if (opts.spinRoute !== false) {
+                      opts.spinRoute?.trigger?.(info);
+                    }
+                    handleSpinRouteTrigger(info);
+                  },
+                },
+          );
     // L0 写后即验 (2026-08-16): **每个 leaf 一份**, 理由同 drift —— 跨 leaf 复用会把别人写坏的
     // 文件算到自己头上。只提醒不判定, 节点末那道硬闸一个字没动 (见 write-parse-gate 文件头)。
     //
@@ -1656,6 +1726,164 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     let pendingGrindAdvice: string | undefined;
     // #178 produce-by 状态: null = 没触发 (量过且没发生, 恒写口径同 advisorFiredAt); 至多 1 次。
     let produceByFiredAt: number | null = null;
+    // S1 spin-route 档 1 (2026-08-25, 片 2): 命中空转口径 → 注入一次证据包
+    // (D-1: 每叶至多一次; D-2/3: 四件套叠加 + 具名判据; D-5: 入账 additive 数组)。
+    //
+    // 触发 = drift 的 `onSpinning` 边沿事件 (与现 drift 注入的 spin-checklist 同一把尺, **不新造**)。
+    // 关停: `opts.spinRoute === false` 或 env `OMD_SPIN_ROUTE=0` 任一关即旁路 (INV-3-3 同款)。
+    // 注入面: pi 通道走 `pendingGrindAdvice` 同款缓冲 (一次性, takeGrindAdvice 消费);
+    //         SDK 通道无 transformContext → 命中时打 `SPIN_ROUTE_SDK_SKIP_LOG` 一次, 不注入, 现状行为不变。
+    const spinRouteEnabled =
+      opts.spinRoute !== false &&
+      spinRouteEnvEnabled() &&
+      (opts.spinRoute === undefined || opts.spinRoute.enabled !== false);
+    let spinRouteInjected = false; // 是否真注了一次 (与「记了 sdk-bypass」严格分开)
+    let spinRouteFiredAt: number | null = null; // 注入瞬间 (now() 时刻)
+    let lastSpinPackHash: string | null = null; // 拒注判据: 同包再触 = 不注 (I-2)
+    let spinRouteTouchedAtTrigger = 0; // 注入瞬间的 touched 大小 (供 judgeRungOutcome 判增长)
+    let spinRouteFailSetAtTrigger: readonly string[] | null = null; // 注入瞬间的 (fail) 集
+    let currentFailSet: readonly string[] | null = null; // 滚动 (fail) 集, self_check 退出时填充
+    const spinRouteEntries: { rung: 1; packHash: string; outcome: SpinRouteEventOutcome; at: number }[] = [];
+    let spinRouteBypassLogged = false; // SDK 通道每叶只打一次 skip log (不打 N 次)
+    // 注入面: pi 通道走一次性缓冲 (takeSpinRouteAdvice 消费, transformContext 出口)。与
+    // pendingGrindAdvice 同款形态 —— 都是"检出 → 注一次", 都不写回 context。
+    let pendingSpinRouteAdvice: string | undefined;
+    const takeSpinRouteAdvice = (): string | undefined => {
+      const advice = pendingSpinRouteAdvice;
+      pendingSpinRouteAdvice = undefined;
+      return advice;
+    };
+    /** 把档 1 证据包格式化成 follow-up user 消息 (与 formatSelfCheckFollowUp 同形: 不写回 context, 仅这一发)。 */
+    function formatSpinEvidencePackMessage(pack: SpinEvidencePack): string {
+      const diff =
+        pack.criteriaDiff.kind === 'no-history'
+          ? pack.criteriaDiff.literal
+          : `added=[${pack.criteriaDiff.added.join(',')}] removed=[${pack.criteriaDiff.removed.join(',')}]`;
+      return (
+        `[spin-route 档 1 证据包 (注入面, pi 通道)]\n` +
+        `packHash: ${pack.packHash}\n` +
+        `failSig: ${pack.failSig}\n` +
+        `sameCount: ${pack.sameCount ?? '(未提供)'}\n` +
+        `criteriaDiff: ${diff}\n` +
+        `watchdogFinding: ${pack.watchdogFinding}\n` +
+        `---\n` +
+        `诊断: ${pack.advisorLines[0]}\n` +
+        `下一步: ${pack.advisorLines[1]}\n` +
+        `---\n` +
+        `请基于上述败因继续修复你的产物。再次结束时不要重复上次同样的做法。`
+      );
+    }
+    /** 路由事件入账 + observation 出 (D-5): opts.onEvent 开放类型 `{type:string; ...}` 与 grind/produce-by logger.warn 同路,
+     * 引擎按 `type` 字段分发; 测试可直接 observe 注入面。nodeId 取自 input.touchSession (AgentLeafInput
+     * 唯一的 runId+节点维度稳定 id, leaf-runners.ts:19 注释: 引擎侧传 `${runId}:${nodeId}`)。*/
+    const recordSpinRouteEvent = (
+      outcome: SpinRouteEventOutcome,
+      packHash: string,
+    ): void => {
+      const atMs = now() - startedAt;
+      spinRouteEntries.push({ rung: 1, packHash, outcome, at: atMs });
+      try {
+        opts.onEvent?.({
+          type: SPIN_ROUTE_OBSERVATION_KIND,
+          rung: 1,
+          outcome,
+          packHash,
+          at: atMs,
+          nodeId: input.touchSession ?? 'unknown',
+        });
+      } catch (err) {
+        logger.warn(
+          { err: (err as Error).message },
+          '[agent-leaf] spin-route observation 回调抛错 (已吞, 不打断循环)',
+        );
+      }
+    };
+    /**
+     * S1 spin-route 档 1 触发处理器 (D-1/D-2/D-3/D-5 一站式):
+     *   ① 已注过一次 → judgeRungOutcome 判成/败 + 记录 + observation, 不二次注入 (D-1);
+     *   ② 未注 + 与上包逐字同 → 拒注 + 记 fail + observation, 字节不进 buffer (I-2);
+     *   ③ 未注 + SDK 通道 → 打 SPIN_ROUTE_SDK_SKIP_LOG 一次 + 记 sdk-bypass + observation, 零注入 (I-6);
+     *   ④ 未注 + pi 通道 → 构包 → pendingSpinRouteAdvice 一次性缓冲 + 记 injected + observation, leaf 原地继续。
+     * advisor 两行诊断: 由调用面提供 (caller = agent-leaf 内同闭包, builder 不调模型); 若 advisorAdvice
+     * 尚未到位 (drift 触发在 tool_execution_start, advisor 一般在 end-of-turn) → 占位两行 (I-7 字面从严)。
+     */
+    const handleSpinRouteTrigger = (info: { sig: string; sameCount: number }): void => {
+      // advisor 两行诊断: 若现成 advisorAdvice 已分两行, 透传; 否则占位字面 (advisor 待发)。
+      const advisorLines: AdvisorLines = advisorAdvice
+        ? (() => {
+            const parts = advisorAdvice.split('\n').map((s) => s.trim()).filter(Boolean);
+            if (parts.length >= 2) return [parts[0]!, parts[1]!] as AdvisorLines;
+            if (parts.length === 1) return [parts[0]!, '(无下一步)'] as AdvisorLines;
+            return ['(advisor 待发)', '(待发)'] as AdvisorLines;
+          })()
+        : (['(advisor 待发)', '(参见 grind 看门狗记录)'] as AdvisorLines);
+      const watchdogFinding = `[omd/drift] spinning detected sig=${info.sig} sameCount=${info.sameCount}`;
+      const pack = buildSpinEvidencePack({
+        failSig: info.sig,
+        sameCount: info.sameCount,
+        failSetBefore: spinRouteInjected ? spinRouteFailSetAtTrigger : currentFailSet,
+        failSetNow: currentFailSet,
+        watchdogFinding,
+        advisorLines,
+      });
+      // ① 已注过一次 → 判成/败, 不再注入 (D-1: 每叶至多一次)
+      if (spinRouteInjected) {
+        const verdict = judgeRungOutcome({
+          touchedBefore: spinRouteTouchedAtTrigger,
+          touchedNow: touched.size,
+          failSetBefore: spinRouteFailSetAtTrigger,
+          failSetNow: currentFailSet,
+        });
+        recordSpinRouteEvent(verdict, pack.packHash);
+        logger.info(
+          {
+            cwd,
+            verdict,
+            touchedDelta: touched.size - spinRouteTouchedAtTrigger,
+            packHash: pack.packHash,
+          },
+          '[agent-leaf] spin-route 档 1 二次命中 → 判成/判败, 不二次注入 (S1 边界, 后续走现状熔断 / S2 档 2)',
+        );
+        return;
+      }
+      // ② 与上包逐字同 → 拒注 (I-2), 字节不进 buffer
+      if (lastSpinPackHash !== null && samePack({ packHash: lastSpinPackHash }, pack)) {
+        recordSpinRouteEvent('fail', pack.packHash);
+        logger.warn(
+          { cwd, packHash: pack.packHash },
+          '[agent-leaf] spin-route 档 1 拒注: 与上次证据包逐字相同 (I-2 重复注入 = 白烧)',
+        );
+        return;
+      }
+      // ③ SDK 通道 → 响亮旁路, 不注入
+      if (isSdkChannel) {
+        if (!spinRouteBypassLogged) {
+          logger.warn({ cwd, sig: info.sig, sameCount: info.sameCount }, SPIN_ROUTE_SDK_SKIP_LOG);
+          spinRouteBypassLogged = true;
+        }
+        recordSpinRouteEvent('sdk-bypass', '');
+        return;
+      }
+      // ④ pi 通道 → 真注入一次 (D-1 至多一次)
+      spinRouteInjected = true;
+      spinRouteFiredAt = now();
+      spinRouteTouchedAtTrigger = touched.size;
+      spinRouteFailSetAtTrigger = currentFailSet;
+      lastSpinPackHash = pack.packHash;
+      pendingSpinRouteAdvice = formatSpinEvidencePackMessage(pack);
+      recordSpinRouteEvent('injected', pack.packHash);
+      logger.info(
+        {
+          cwd,
+          sig: info.sig,
+          sameCount: info.sameCount,
+          packHash: pack.packHash,
+        },
+        '[agent-leaf] spin-route 档 1 触发 → 证据包注入 (transformContext 出口消费)',
+      );
+    };
+    /** opts.spinRoute.trigger 测试注入面 —— 生产 opts.spinRoute 缺省无该字段, 走真 drift.onSpinning 边沿。 */
+    const spinRouteTrigger = (info: { sig: string; sameCount: number }): void => handleSpinRouteTrigger(info);
     // grind 三档阶梯状态 (2026-08-17, #146): wrapupFiredAt 恒写 (null = 没触发, 同
     // advisorFiredAt 那条「量过且没发生」口径); abortedByGrind 恒写 boolean (false = 量过且没发生,
     // 同 stalled/timedOut 口径 —— INV-5)。
@@ -1833,11 +2061,20 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           getTouchedSize: () => touched.size,
           enabled: true,
           maxSelfRepair,
-          observe: (info) =>
+          observe: (info) => {
+            // S1 spin-route 档 1 (D-2 判据 diff 槽): self_check 退出时滚动 (fail) 集, 供
+            // judgeRungOutcome 比对 before/now 严格缩小。失败 (kind='blocked' 或 'exited' 非空
+            // but failed) 同样按 (fail) 字面提取, 不用 cmd 退出码做判据 —— 「没拿到主动退出码」与
+            // 「拿到但不等」在用户语义上是同一类信号。提取失败 → currentFailSet 保持上一轮值。
+            if (info.kind === 'exited' && typeof info.stdout === 'string') {
+              const parsed = extractFailSet(info.stdout);
+              if (parsed !== null) currentFailSet = parsed;
+            }
             logger.info(
               { cwd, command: selfCheck.command, expect_exit: selfCheck.expect_exit, ...info },
               '[agent-leaf] self_check 自修环观察点 (C-3 落账)',
-            ),
+            );
+          },
         })
       : null;
     const selfCheckFollowUp = selfCheckBundle?.followUp ?? null;
@@ -1861,11 +2098,14 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       // drift 注入走 transformContext: 它只改**这一次请求**看到的消息, 不写回 context ——
       // 于是"检出 spin → 注一次"是天然的边沿行为, 不会在 transcript 里堆成 N 份 checklist。
       transformContext: async (messages: AgentMessage[]) => {
-        // 三条注入共用这一个边沿出口 (都是"检出 → 注一次", 都不写回 context)。
+        // 四条注入共用这一个边沿出口 (都是"检出 → 注一次", 都不写回 context)。
         // 分开取、合并发: 同一轮里多件事都触发时发多条 user 消息, 模型更容易只回应最后一条。
-        const parts = [drift?.takeInjection(), parseFeedback?.takeInjection(), takeGrindAdvice()].filter(
-          (t): t is string => typeof t === 'string' && t.length > 0,
-        );
+        const parts = [
+          drift?.takeInjection(),
+          parseFeedback?.takeInjection(),
+          takeGrindAdvice(),
+          takeSpinRouteAdvice(),
+        ].filter((t): t is string => typeof t === 'string' && t.length > 0);
         if (parts.length === 0) return messages;
         logger.debug({ parts: parts.length }, '[omd/agent-leaf] 软注入 via transformContext (drift / 写后即验 / grind advisor)');
         return [...messages, { role: 'user' as const, content: parts.join('\n\n'), timestamp: Date.now() }];
@@ -2099,6 +2339,11 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           ? null
           : (selfCheckFollowUp ? selfRepairLedger : { rounds: 0, oracleExit: [], convergedAt: null })
         : null,
+      // S1 spin-route 档 1 落账 (D-5 additive, INV-6): 路径启用但未触发 = []; 路径未启用 = 字段缺席
+      // (opts.spinRoute === false 或 env OMD_SPIN_ROUTE=0 关)。既有消费者读 selfRepair 不受影响。
+      ...(spinRouteEnabled && spinRouteEntries.length > 0
+        ? { spinRoute: spinRouteEntries }
+        : {}),
     };
   };
   // 上下文** —— 并发调用各一个上下文互不串。⚠ 不用 enterWith: 它在同步前缀里改的是**调用方
