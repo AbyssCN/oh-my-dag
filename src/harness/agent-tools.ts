@@ -21,7 +21,7 @@ import type { Dirent } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import { NodeExecutionEnv } from '@earendil-works/pi-agent-core/node';
 import {
@@ -441,6 +441,30 @@ const BASH_SCHEMA = Type.Object({
   command: Type.String({ description: 'Shell command to run in the working root.' }),
   timeout: Type.Optional(Type.Number({ description: 'Timeout in seconds. Default 120.' })),
 });
+const VIEW_IMAGE_SCHEMA = Type.Object({
+  path: Type.String({ description: 'Image file path (relative to the working root, or absolute).' }),
+});
+
+/**
+ * 图片扩展名 → mime (D-1 单源真相从 `src/harness/leaf-media.ts` 借词表,
+ * 改一边另一边会静默漂, 这里挂注释作交叉钉; 验收时双向核)。
+ */
+const IMAGE_EXT_MIME: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+};
+
+/** 单图字节上限 —— 与 `leaf-media.ts` 的 `DEFAULT_MAX_BYTES` 同口径 (D-1, 2026-08-25)。 */
+const VIEW_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
+
+/** 命中图片扩展名 → 返回 mime; 否则 null (供 read 用以早拒、view_image 用以早报)。 */
+function imageMimeFor(path: string): string | null {
+  return IMAGE_EXT_MIME[extname(path).toLowerCase()] ?? null;
+}
 
 /**
  * bash 截断全文的旁路累积硬顶。10 MiB 约为当前 50 KiB 正文窗的 200 倍，足够分页检索
@@ -585,6 +609,13 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
       const { path, offset, limit } = params as Static<typeof READ_SCHEMA>;
       if (secretBasenameOf(path)) warnSecret(path);
       const full = abs(cwd, path);
+      // ★ D-2: 图片走 UTF-8 解码会得到一坨替换字符乱码喂给模型; 早拒, 指引改用 view_image。
+      if (imageMimeFor(full)) {
+        throw new Error(
+          `read 拒图: ${display(cwd, full)} 是图片文件 (扩展名命中图片表)。` +
+            '读字节对模型没意义 — 改用 view_image(path) 工具把像素送进上下文。',
+        );
+      }
       let raw: string;
       try {
         raw = await readFile(full, 'utf-8');
@@ -606,6 +637,65 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
         ? `\n[truncated: 只给了前 ${t.outputLines} 行, 共 ${all.length} 行 — 用 offset 继续读]`
         : '';
       return textResult(`${t.content}${note}`, { path: display(cwd, full), lines: all.length, truncated: t.truncated });
+    },
+  };
+
+  /**
+   * ★ **view_image** — D-1 新建工具:把图文件编码成 image content 块送进模型上下文。
+   *
+   * ## 为啥不靠 read
+   *
+   * `read` 走 UTF-8, PNG 进去出来是替换字符乱码喂给模型 —— 模型看不见图。SDK 桥与 pi
+   * 循环的工具结果面**已经支持** image 块(`AgentToolResult.content` 的 `TextContent | ImageContent`，
+   * `claude-sdk-loop.ts:74-80` 已在把 image 块原样投给 SDK), 缺的就是一个「读盘 + base64
+   * + 装进 image 块」的工具入口。补这个最小解锁, 不动传输层。
+   *
+   * ## 边界
+   *
+   *  · 路径解析与 read 同款 (相对 cwd, 绝对照过), 不在这里另写一份边界
+   *    —— 两条路漂了会让 read/view_image 对同一文件给出不同结论。
+   *  · 扩展名不在词表 → 早报「不是图片」, 不去试读 (避免把 5MB 文本按 base64 喷回去)。
+   *  · 单图 > 20MB → 早报; 词表与上限均与 `src/harness/leaf-media.ts:18` 一致。
+   */
+  const viewImage: OmdTool<{ path: string; bytes: number }> = {
+    name: 'view_image',
+    label: 'view_image',
+    description:
+      'Read an image file and return it as an image content block (pixel-level input). ' +
+      `Supports ${Object.keys(IMAGE_EXT_MIME).join(', ')}. Single-image cap ${Math.round(VIEW_IMAGE_MAX_BYTES / 1024 / 1024)}MB.`,
+    promptSnippet: 'view_image(path) — 把图文件当 image 块喂给模型 (支持 png/jpg/jpeg/gif/webp/bmp; 单图 ≤20MB)。',
+    parameters: VIEW_IMAGE_SCHEMA,
+    executionMode: 'parallel',
+    async execute(_id, params) {
+      const { path } = params as Static<typeof VIEW_IMAGE_SCHEMA>;
+      const full = abs(cwd, path);
+      const mime = imageMimeFor(full);
+      // 扩展名先判 — 不读盘就拒, 不让 5MB 文本以 base64 形态喷回正文。
+      if (!mime) {
+        throw new Error(
+          `view_image 拒: ${display(cwd, full)} 不是图片文件 (扩展名必须在 ` +
+            `${Object.keys(IMAGE_EXT_MIME).join(', ')} 之内)`,
+        );
+      }
+      const info = await stat(full).catch(() => null);
+      if (!info) throw new Error(`view_image 失败: 路径不存在 ${display(cwd, full)}`);
+      if (!info.isFile()) throw new Error(`view_image 失败: 不是文件 ${display(cwd, full)}`);
+      if (info.size > VIEW_IMAGE_MAX_BYTES) {
+        throw new Error(
+          `view_image 拒: ${display(cwd, full)} 大小 ${info.size} 字节超过上限 ${VIEW_IMAGE_MAX_BYTES} 字节`,
+        );
+      }
+      let buf: Buffer;
+      try {
+        buf = await readFile(full);
+      } catch (err) {
+        throw new Error(`view_image 失败: ${display(cwd, full)}: ${(err as Error).message}`);
+      }
+      // 与 SDK 桥对得起来的那一面 (claude-sdk-loop.ts:74-80 的 image 分支已经会这么投)。
+      const content: AgentToolResult<{ path: string; bytes: number }>['content'] = [
+        { type: 'image', data: buf.toString('base64'), mimeType: mime },
+      ];
+      return { content, details: { path: display(cwd, full), bytes: info.size } };
     },
   };
 
@@ -992,7 +1082,7 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
     return render ? { ...t, render } : t;
   };
 
-  return [read, write, edit, ls, grep, bash].map(withRender);
+  return [read, viewImage, write, edit, ls, grep, bash].map(withRender);
 }
 
 /**

@@ -451,11 +451,11 @@ describe('I-1 零配置叶子: tools 数组与 system prompt 与接线前字节�
     const run = createAgentLeafRunner({ cwd: root, sdkQueryFn: fakeQuery([asst('改完了'), success()], seen), skillDeps: { roots: [] } });
     await run({ prompt: 'x', model: MODEL });
     // 桥的 allowedTools = runner tools 数组逐件映射 (buildOmdSdkMcpBridge) —— 断言**恰好**
-    // 七件 (S2 六手 + A2 omd_inspect 恒挂载, 2026-08-17 有意识抬基线): 多挂 read_skill
+    // 八件 (S2 六手 + D2 view_image + A2 omd_inspect 恒挂载, 2026-08-25 D2 有意识抬基线): 多挂 read_skill
     // 或任何 mcp_* 件即红。omd_inspect 是无条件静态件 (恒定 schema, 跨仓字节稳定),
     // 与"零注册不挂"的条件件不同族, 允许进基线。
     expect(seen.options?.allowedTools).toEqual([
-      'mcp__omd__read', 'mcp__omd__write', 'mcp__omd__edit', 'mcp__omd__ls', 'mcp__omd__grep', 'mcp__omd__bash',
+      'mcp__omd__read', 'mcp__omd__view_image', 'mcp__omd__write', 'mcp__omd__edit', 'mcp__omd__ls', 'mcp__omd__grep', 'mcp__omd__bash',
       'mcp__omd__omd_inspect',
     ]);
     // 完整 system prompt 逐字节相等 (= S2 基线 + inspect, 与原 I-1 同口径): 零 skill 注入下

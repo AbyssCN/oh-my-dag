@@ -3649,10 +3649,13 @@ async function executePlan(
           };
         }
         if (useAgent) {
-          // agent leaf 走工具子进程 (prompt 是纯文本接缝): 不注入 parts — 路径已在 prompt 文本里,
-          // 多模态注入仅 inproc leaf (D-14v2 收窄; agent 自有 Read 工具可看文件)。
-          logger.warn({ node: id }, '[omd/executor-dag] attach_media 于 agent 节点 → 忽略注入 (仅 inproc 支持, 路径在 prompt 文本)');
-          mediaParts = [];
+          // D2: agent 节点不再静默扔图 — 把 media.parts 透传到 runner 的 promptImages。
+          // pi 通道在 agent-leaf 内转 pi ImageContent 拼首条 user 消息 parts;SDK 通道因 prompt:string
+          // 字段限制走响亮旁路 (具名常量日志 + prompt 文本附路径清单 + view_image 指令, 工具面兜底)。
+          // 失败兜底: 上一版这里降级成 warn + 清空, 把"agent 看图节点"变成了假装跑过的无图节点,
+          // 与 empty-done 同一种温床 —— 此后不该再退化, 即使旁路也比静默丢强。
+          logger.info({ node: id, attached: media.attached }, '[omd/executor-dag] attach_media 注入到 agent runner (D2: pi 腿转 parts / SDK 腿响亮旁路)');
+          mediaParts = media.parts;
         } else {
           logger.info({ node: id, attached: media.attached }, '[omd/executor-dag] attach_media 注入媒体 parts (D-14v2)');
           mediaParts = media.parts;
@@ -3784,6 +3787,9 @@ async function executePlan(
           // #178: 产物意图下发 —— produces-files 节点让叶知道"必须写入磁盘 + 落到哪",
           // agent-leaf 据此启用 produce-by 软推 (勘探超预算零写 → 催产)。非产物节点不传, 叶行为零变化。
           ...(producesFiles ? { expectsArtifactPath: node.output_path ?? '(路径见 goal)' } : {}),
+          // D2: attach_media:true 的 agent 节点由本 runner 接 promptImages。引擎侧零成本透传
+          // (image_url.data URI 已在 collectDepMedia 里读盘 + base64 编好), agent-leaf 层按通道分派。
+          ...(useAgent && mediaParts.length > 0 ? { promptImages: mediaParts } : {}),
           onEvent: leafProgress,
         });
         recordGeneration({

@@ -111,7 +111,7 @@ import { CLAUDE_SDK_PROVIDER, effortOf } from '../model/claude-sdk-complete';
 import { officialAdvisorModelId, runSdkAgentLoop } from './claude-sdk-loop';
 import { createAdvisorTool, createTranscriptRecorder } from './advisor-tool';
 import { promptVersionOfText } from '../model/langfuse';
-import type { ModelUsage } from '../model/types';
+import type { ContentPart, ModelUsage } from '../model/types';
 import { emitModelUsage } from '../model/accounting';
 import { resolveRoleModelConfigured, type ThinkingLevel } from '../model/role-models';
 import { isStrongCoord } from '../model/model-ratings';
@@ -658,6 +658,41 @@ export const SELF_CHECK_OUTPUT_MAX_BYTES = 8_000;
 export const SELF_CHECK_SDK_SKIP_LOG =
   '[agent-leaf] self_check 在 SDK 通道不启用 (INV-2-1: claude-sdk-loop 无 getFollowUpMessages 钩子) —— ' +
   '本节点按旁路走, 判据**不被听见**。重写为 command 节点或换 pi 通道方可自修。';
+
+/** D2 (attach_media agent 注入, SDK 腿响亮旁路): 图片数 + 节点 id 一次性打在日志里,
+ *  与 SELF_CHECK_SDK_SKIP_LOG 同形 —— 旁路但响亮, 让 SDK 通道 + 有图这条形态在读数上分得开。 */
+export const AGENT_MEDIA_SDK_BYPASS_LOG =
+  '[agent-leaf] attach_media 在 SDK 通道走旁路 (claude-sdk-loop prompt:string 不吃 image) —— ' +
+  'agent 仍可经 view_image 工具读像素, 路径清单附 prompt 文本末尾';
+
+/** D2: attach_media 的 ContentPart(image_url.data URI) → pi-agent-core ImageContent。
+ *  只接 `data:<mime>;base64,<...>` 这一形 —— `collectDepMedia` 本地文件就编成这样;
+ *  http(s) URL 在 pi 这层需要先 fetch → 不在本层职责内, 落到 input.promptImages 里的 http URL
+ *  解析不动, 一律当缺图 (返回空, 上一节 attach_media fail-closed 那条会接住)。
+ *
+ *  返回 `{ parts, refs }`: parts 给循环拼首条 user 消息用; refs 是原始引用清单, 给 SDK 腿
+ *  旁路日志 + prompt 文本附路径清单用。文本 part 不进 parts (拼首条消息时由调用方自己接 text)。 */
+export function splitContentPartsForPi(
+  parts: ContentPart[] | undefined,
+): { parts: Array<{ type: 'image'; data: string; mimeType: string }>; refs: string[] } {
+  const out: Array<{ type: 'image'; data: string; mimeType: string }> = [];
+  const refs: string[] = [];
+  if (!parts) return { parts: out, refs };
+  for (const p of parts) {
+    if (p.type !== 'image_url') continue;
+    const url = p.image_url.url;
+    const m = /^data:([^;,]+);base64,(.+)$/.exec(url);
+    if (!m) {
+      // http(s) URL 在 pi 层解不了 (这层没有 fetcher) → refs 仍记, parts 不收。
+      // SDK 腿旁路日志 + prompt 附路径清单会带它, agent 经 view_image 真读盘/真看图。
+      refs.push(url);
+      continue;
+    }
+    out.push({ type: 'image', mimeType: m[1]!, data: m[2]! });
+    refs.push(url);
+  }
+  return { parts: out, refs };
+}
 
 /** env `OMD_SELF_CHECK=0` ⇒ 整条自修环关掉 (INV-3-3 开关)。其他值(含未设)= 默认开。 */
 export function selfCheckEnvEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -2275,6 +2310,22 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       },
     };
 
+    // D2 (attach_media agent 注入): 把 ContentPart[] 拆成 pi-native ImageContent[] + 引用清单,
+    // 两腿共用 refs(SDK 旁路日志 / prompt 文本附路径清单)。**只在 input.promptImages 真给时工作**:
+    // 缺省 = 整段旁路, 两条腿的 prompt 与首条 user 消息构造与现状逐字节相同 (INV-6 零回归)。
+    const { parts: piImageParts, refs: imageRefs } = splitContentPartsForPi(input.promptImages);
+    let sdkPrompt = routedPrompt;
+    if (imageRefs.length > 0) {
+      // SDK 腿响亮旁路 (INV-4): 具名常量日志一次, prompt 文本附图片路径清单 + view_image 指令,
+      // agent 仍能经工具面看到像素 (claude-sdk-loop.ts:40 prompt:string 不吃 image, 本侧 SDD 不放宽)。
+      logger.warn(
+        { node: model, imageCount: imageRefs.length, paths: imageRefs },
+        AGENT_MEDIA_SDK_BYPASS_LOG,
+      );
+      sdkPrompt = `${routedPrompt}\n\n[Attached images (${imageRefs.length})] ${imageRefs.join(', ')}\n` +
+        'Each image is on disk. Use view_image(path) to see its pixels.';
+    }
+
     let messages: AgentMessage[];
     let sdkUsage: ModelUsage | null = null;
     try {
@@ -2287,7 +2338,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
         const effort = effortOf(sdkThinkingLevel);
         const advisorModel = officialAdvisorModelId(opts.advisor, model);
         const out = await runSdkAgentLoop({
-          prompt: routedPrompt,
+          prompt: sdkPrompt,
           systemPrompt: perCallSystemPrompt,
           tools: perCallTools,
           modelId,
@@ -2305,13 +2356,20 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           // 有 usage 回传链; SDK 失败路直接 throw, 不在这记就是订阅额度账外)。
           ledger: { model, origin: 'engine' },
         });
-        messages = [{ role: 'user', content: routedPrompt, timestamp: Date.now() } as AgentMessage, ...out.generated];
+        messages = [{ role: 'user', content: sdkPrompt, timestamp: Date.now() } as AgentMessage, ...out.generated];
         // D2 (owner 验收): 逐消息 usage 折算 out 严重低估 —— totalUsage 取自 result.modelUsage 真源。
         sdkUsage = out.totalUsage;
       } else {
+        // pi 腿: 有图时首条 user 消息 content 升格 parts (text + ImageContent, 照 chat/agent.ts:378-379
+        // 同构 —— 文本逐字保留, 图块追加)。零图时 content 仍是 string, 与现状逐字相同。
+        // 类型不显式标: AgentMessage 的 content 是 string | (TextContent | ImageContent)[] 的 union,
+        // 两路分别赋值时 TS 自动从字面量 narrow。ImageContent/TextContent 类型字面取自 @earendil-works/pi-ai,
+        // 与 chat/agent.ts 同源 (那条不在本仓 import 列表内, 不引坐标)。
+        const firstUserContent =
+          piImageParts.length > 0 ? [{ type: 'text' as const, text: routedPrompt }, ...piImageParts] : routedPrompt;
         const loop = opts.loopFn ?? runAgentLoop;
         messages = await loop(
-          [{ role: 'user', content: routedPrompt, timestamp: Date.now() }],
+          [{ role: 'user', content: firstUserContent, timestamp: Date.now() }] as AgentMessage[],
           context,
           config,
           emit,

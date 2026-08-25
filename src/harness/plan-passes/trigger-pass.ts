@@ -18,6 +18,12 @@
  * **管线位置**: 与 evidence-pass 同规, 排在 **stamp 之前** (D-11)。本 pass 会**新增节点**,
  * 排在 stamp 后补挂的节点拿不到档位模型 → 补了等于白补 (evidence-pass 那条回流修正买来的规则, 推广之)。
  *
+ * **D4 (2026-08-25) 设计审核卡 `design-review` 补挂带 attach_media**: 卡 body 明写「输入 = 截图 + diff」,
+ * 没有 attach_media 就是「看不到图的 UI 裁判」(补了等于白补, 双盲)。补上后由 D-3 的 agent 注入落地,
+ * 真拿到像素;无图时走既有 fail-closed 分支 (engine.ts:3641) 判 failed, 而非静默文本化 —— 与空完成
+ * 节点同一种假绿温床, fail-closed 是显式拒绝。其它有 trigger 的卡 (今日注册表仅 design-review) 按各
+ * 自 body 决定是否需要图;本卡清单见 {@link MEDIA_REVIEW_CARDS}。
+ *
  * 纯函数: 零 IO / 零 logger / 不变异输入 (日志在接线层, 同 INV-8)。glob 匹配走 `Bun.Glob` (纯匹配, 不碰盘)。
  *
  * Invariants:
@@ -25,11 +31,24 @@
  *  TRG-2 幂等: 补挂后的 plan 再过一次本 pass = 恒等 (图上已有该卡的节点 → 不重复补)。
  *  TRG-3 不越界: 未命中的节点一个字段都不碰 (只新增节点, 从不改既有节点)。
  *  TRG-4 确定性: 卡按 name 字典序处理, depends_on 按 id 字典序 —— 同输入必得同输出 (指纹可比)。
+ *  TRG-5 attach_media 仅对需要看像素的审核卡开启 (白名单, 不放大到所有卡;其它卡走 fail-closed 形态反而是假阴性)。
  */
 import type { AgentTemplate } from '../agent-templates';
 import type { ConductorPlan } from '../conductor-plan';
 
 type PlanNode = ConductorPlan['nodes'][string];
+
+/**
+ * D4 (2026-08-25): 触发补挂时**需要看像素**的审核卡白名单。
+ * 只有 body 明写依赖截图/像素的卡才加 `attach_media: true` —— 其它卡命中无图会进 engine.ts:3641 的
+ * fail-closed 失败路, 是假阴性 (e.g. 后端 review 卡被前端 diff 命中时本就不该触发, 那是写集口径的活,
+ * 不该让 attach_media 替它背锅)。
+ *
+ * 真源不在 `agent-templates.ts` 的字段里 —— 加字段会扩散到加载器 / 内置卡 / 注册表描述三处, 而本 SDD
+ * 写集仅含本文件, 把"需要图"这条信息按卡名硬编死在这里, 是当下唯一的最小改动。需要扩卡时 (rule-of-three:
+ * 第二个像素依赖卡出现前不动此集合), 直接在 Set 里加名字, 单点修改, 测试同步加断言钉死。
+ */
+const MEDIA_REVIEW_CARDS: ReadonlySet<string> = new Set(['design-review']);
 
 export interface TriggerPassResult {
 	plan: ConductorPlan;
@@ -79,6 +98,12 @@ export function triggerPass(
 				`advisory:只报不拦, 无人依赖本节点)。`,
 			executor: 'agent',
 			template: card.name,
+			// D4 (2026-08-25): 像素依赖卡 (design-review) 补挂必须带 attach_media:true —— 否则
+			// 「看不到图的 UI 裁判」白补, 与 evidence-pass 那条回流修正买来的原则同源 (改图的 pass
+			// 不在 stamp 后)。语义落地经 D-3 (agent-media-injection): pi 腿转 ImageContent parts,
+			// SDK 腿走响亮旁路 + view_image 工具面兜底。无图时由 engine.ts:3641 fail-closed 判 failed。
+			// 白名单而非全开: 其它有 trigger 的卡 (今日注册表仅 design-review) 按各自 body 决定是否需图。
+			...(MEDIA_REVIEW_CARDS.has(card.name) ? { attach_media: true as const } : {}),
 			// D-12 一卡一档: 卡给判据骨架 (进前缀), **同名 profile 给装配位** (seat / tools /
 			// outputSchema / ledgerPath —— 都不进前缀)。只挂卡不挂档的话, 这个节点会拿 agent 座位
 			// 的通用模型跑设计审核, 而 design-review 档特意配的是能看图的座位 —— 那正是"补了个半拉子"。
