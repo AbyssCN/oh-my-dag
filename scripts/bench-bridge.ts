@@ -125,7 +125,7 @@ if (import.meta.main) {
   const port = Number(process.env.OMD_BRIDGE_PORT ?? 4519);
   const { callModel } = await import('../src/model/index');
   const { bootstrapModelRuntime } = await import('../src/model/bootstrap').catch(() => ({ bootstrapModelRuntime: null as null | (() => Promise<void>) }));
-  if (bootstrapModelRuntime) await bootstrapModelRuntime();
+  if (bootstrapModelRuntime) bootstrapModelRuntime();
   const deps: BridgeDeps = { call: callModel, mapModel: (id) => map.get(id) };
   Bun.serve({
     port,
