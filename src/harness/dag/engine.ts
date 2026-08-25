@@ -833,13 +833,14 @@ async function executePlan(
   task: string,
   config: ExecutorDagConfig,
   generate: GenerateFn,
-  conductorUsage: ModelUsage,
+  initialConductorUsage: ModelUsage,
   templates: ReadonlyMap<string, AgentTemplate>,
   prior?: PriorExec,
   /** D-3 反馈锚定: 闭包节点 id → goal 追加后缀。执行前落 (computeReuse 在其后, 指纹吃 append 后的 plan)。 */
   blameAnchor?: ReadonlyMap<string, string>,
   warnedUnknownProfiles: Set<string> = new Set(),
 ): Promise<ExecOnce> {
+  let conductorUsage = initialConductorUsage;
   // C-1 (2026-08-19): 引擎外层轮 ++。每次 executePlan 入口 = 新一轮; planAndExecute 走主路径,
   // tryPatchReplan 走补丁路径 (两者最终都进 executePlan, 单点 ++ 即可覆盖), 预构造入口也走这里。
   // 跨 run 不重置 —— 不同 run 在 db 靠 runId 区分。
@@ -4475,9 +4476,13 @@ async function executePlan(
       // (缺席读起来 = "老记录", 与"引擎里有条没交代的失败路径"结论相反 — 见 node-failure.ts)。
       results[id] = withFailureKind(r);
       depOutputs[id] = r.output;
-      leavesIn += r.usage.in;
-      leavesOut += r.usage.out;
-      leavesCacheHit += r.usage.cacheHit ?? 0;
+      if (r.kind === 'conductor') {
+        conductorUsage = addUsage(conductorUsage, r.usage);
+      } else {
+        leavesIn += r.usage.in;
+        leavesOut += r.usage.out;
+        leavesCacheHit += r.usage.cacheHit ?? 0;
+      }
       // #144 洞 1: agent leaf 走 pi-agent-core 自己的循环, **不经 gateway.send** → 在
       // seat-usage.jsonl 里 `agent` 座一行都没有, 而 run C 的 110.9M input token 全是它烧的。
       //
