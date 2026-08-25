@@ -5,7 +5,7 @@
  * 实现方:宿主注入 pi-agent runner;或生产侧注入
  * omd-pi provider runner(随 provider slice)。测试注入 fake。
  */
-import type { ModelUsage } from '../model/gateway';
+import type { ContentPart, ModelUsage } from '../model/gateway';
 import type { AgentEvent } from '@earendil-works/pi-agent-core';
 import type { LeafProfile } from './profiles/profile';
 
@@ -57,6 +57,17 @@ export interface AgentLeafInput {
    * 缺席 = 非产物叶, produce-by 恒不触发 —— 非 produces-files 节点零行为变化 (#178 硬约束)。
    */
   expectsArtifactPath?: string;
+  /**
+   * D2: attach_media:true 的 agent 节点把直接前驱输出里解析出的图片附到本轮 prompt。
+   * 元素形状 = mimo-leaf 的 ContentPart(image_url 形 data URI / http URL,引擎侧
+   * `collectDepMedia` 的产物,逐字透传,runner 不再做二次解析)。
+   *
+   * 缺省 = 无图,首条 user 消息照旧纯文本,**逐字节等同现状**(INV-6)。
+   * pi 通道: runner 把 image_url parts 转 pi `ImageContent` 后拼到首条 user 消息 parts。
+   * SDK 通道: SDK 的 `prompt: string` 字段不接受 image — 走响亮旁路 (具名常量日志 + 在
+   * prompt 文本里附图片路径清单与「用 view_image 查看」指令,工具面兜底让 agent 真看到像素)。
+   */
+  promptImages?: ContentPart[];
   /**
    * **节点级确定性判据** (P1 C-2, 2026-08-21): agent leaf 在内环将停时跑这条命令, 退出码
    * `=== expect_exit` → 该节点收敛; 不等 → 引擎**借 pi 的 `getFollowUpMessages` 钩子**把

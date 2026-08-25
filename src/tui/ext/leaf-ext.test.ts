@@ -152,7 +152,7 @@ describe('② I-1: 零 extensions.json → 工具面字节零变化 (冻结基�
       });
       expect(seen.options?.systemPrompt).toBe(baseline);
       expect(seen.options?.allowedTools).toEqual([
-        'mcp__omd__read', 'mcp__omd__write', 'mcp__omd__edit', 'mcp__omd__ls', 'mcp__omd__grep', 'mcp__omd__bash',
+        'mcp__omd__read', 'mcp__omd__view_image', 'mcp__omd__write', 'mcp__omd__edit', 'mcp__omd__ls', 'mcp__omd__grep', 'mcp__omd__bash',
         'mcp__omd__omd_inspect',
       ]);
     } finally {

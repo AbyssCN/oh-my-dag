@@ -52,7 +52,7 @@ import { createSkillTools } from './skill-tool';
  * 这个清单是 `chat-seat.test.ts` 的判据来源 —— 少一只,交付闸 G-A/G-B 就不成立
  * (不能写 = 改不了代码;不能跑命令 = 验不了自己改的东西)。
  */
-export const HAND_TOOLS: readonly string[] = ['read', 'write', 'edit', 'ls', 'grep', 'bash'];
+export const HAND_TOOLS: readonly string[] = ['read', 'view_image', 'write', 'edit', 'ls', 'grep', 'bash'];
 
 export interface ChatSeatToolsOpts {
   /** 工作根。手全部 scope 到它。 */

@@ -121,8 +121,11 @@ describe("trigger-pass 机械补挂 (C-5)", () => {
 		};
 
 		// 正序 (生产接线) trigger → stamp: 节点在 stamp 之前就存在 → 被盖上模型。
+		// D2 (2026-08-25): 补挂节点带 attach_media:true, stamp 对 attach_media 节点走 multimodal 池
+		// (视觉裁判拿视觉座位, tier 档被能力约束盖掉) —— 本闸量的仍是「stamp 看得见节点」,
+		// 信号从 tier 档模型变为池档模型。
 		const right = stampPass(tiered(triggerPass(p, { templates }).plan), stampOpts).plan;
-		expect(right.nodes["design-review-triggered"]!.model).toBe("s:cheap");
+		expect(right.nodes["design-review-triggered"]!.model).toBe("s:mm");
 
 		// 错序 stamp → trigger: 补挂发生在 stamp 之后 → stamp 从没见过它 → 无模型。
 		// 这一半自己就是反向自检: 它成立即证明"错序会坏", 不必再去手改一次生产接线。
