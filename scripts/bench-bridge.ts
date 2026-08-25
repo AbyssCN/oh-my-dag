@@ -197,7 +197,7 @@ if (import.meta.main) {
       if (req.method === 'POST' && url.pathname === '/v1/chat/completions') {
         const body = (await req.json().catch(() => ({}))) as OpenAiChatBody;
         const r = await handleChatCompletions(body, deps);
-        // 调试观测位 (env 开): 每笔请求/响应原文落盘 —— 桥是唯一能看见"容器侧模型到底
+        // 调试观测位 (env 开): 每笔请求/响应原文写入磁盘 —— 桥是唯一能看见"容器侧模型到底
         // 说了什么"的位置 (任务容器随 trial 回收, 容器内 .omd 现场拿不回来)。
         const logDir = process.env.OMD_BRIDGE_LOG_DIR?.trim();
         if (logDir) {
@@ -206,7 +206,7 @@ if (import.meta.main) {
             mkdirSync(logDir, { recursive: true });
             writeFileSync(`${logDir}/${Date.now()}-${body.model ?? 'x'}.json`, JSON.stringify({ req: body, status: r.status, res: r.json }, null, 1));
           } catch (e) {
-            process.stderr.write(`[bench-bridge] 观测落盘失败 (不影响转发): ${(e as Error).message}\n`);
+            process.stderr.write(`[bench-bridge] 观测写入磁盘失败 (不影响转发): ${(e as Error).message}\n`);
           }
         }
         if (r.status === 200 && body.stream) {
