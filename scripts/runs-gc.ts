@@ -104,34 +104,38 @@ export interface GcOptions {
  * 一个刚起跑还没来得及记账的 run,长得就像残渣。
  */
 export function classify(runId: string, dir: string, deps: SurveyDeps, opts: GcOptions = {}): GcPlanItem {
-  const minAgeMs = (opts.minAgeDays ?? 2) * 86_400_000;
-  const freshMs = (opts.freshMinutes ?? 10) * 60_000;
-  const rec = deps.lookupRun(runId);
-  const cont = deps.hasContinuity(runId);
-  const dirtyFiles = deps.dirtyCount(dir);
-  const aheadCommits = deps.aheadCount(dir);
-  const hasLedgerEntry = rec !== undefined || cont;
-  const base = { runId, dirtyFiles, aheadCommits, hasLedgerEntry };
+  try {
+    const minAgeMs = (opts.minAgeDays ?? 2) * 86_400_000;
+    const freshMs = (opts.freshMinutes ?? 10) * 60_000;
+    const rec = deps.lookupRun(runId);
+    const cont = deps.hasContinuity(runId);
+    const dirtyFiles = deps.dirtyCount(dir);
+    const aheadCommits = deps.aheadCount(dir);
+    const hasLedgerEntry = rec !== undefined || cont;
+    const base = { runId, dirtyFiles, aheadCommits, hasLedgerEntry };
 
-  if (rec?.status === 'running' || (rec?.ownerPid !== undefined && deps.pidAlive(rec.ownerPid))) {
-    return { ...base, category: 'live', action: '跳过 — run 在飞(status=running 或属主活着)' };
+    if (rec?.status === 'running' || (rec?.ownerPid !== undefined && deps.pidAlive(rec.ownerPid))) {
+      return { ...base, category: 'live', action: '跳过 — run 在飞(status=running 或属主活着)' };
+    }
+    if (deps.now() - deps.createdAt(dir) < freshMs) {
+      return { ...base, category: 'too-fresh', action: `跳过 — 树建出来不到 ${opts.freshMinutes ?? 10} 分钟,可能有人正在写` };
+    }
+    if (!hasLedgerEntry) {
+      return { ...base, category: 'debris', action: '删树删支 — 无 runs.db 账且无 continuity = 测试残渣,不是 run' };
+    }
+    if (rec?.updatedAt !== undefined && deps.now() - rec.updatedAt < minAgeMs) {
+      return { ...base, category: 'too-young', action: `跳过 — 终态不足 ${opts.minAgeDays ?? 2} 天,验收窗口内` };
+    }
+    if (dirtyFiles > 0) {
+      return { ...base, category: 'dirty', action: `先 salvage(${dirtyFiles} 个未提交文件 → commit + tag archive/run/${runId})再删树` };
+    }
+    if (aheadCommits > 0 && !deps.isMerged(runId)) {
+      return { ...base, category: 'unmerged', action: `tag archive/run/${runId}(领先 main ${aheadCommits} 个 commit)后删树删支` };
+    }
+    return { ...base, category: 'merged-clean', action: '删树删支 — 干净且已并入 main' };
+  } catch (e) {
+    return { runId, category: 'debris', dirtyFiles: 0, aheadCommits: 0, hasLedgerEntry: false, action: 'unknown: ' + (e as Error).message };
   }
-  if (deps.now() - deps.createdAt(dir) < freshMs) {
-    return { ...base, category: 'too-fresh', action: `跳过 — 树建出来不到 ${opts.freshMinutes ?? 10} 分钟,可能有人正在写` };
-  }
-  if (!hasLedgerEntry) {
-    return { ...base, category: 'debris', action: '删树删支 — 无 runs.db 账且无 continuity = 测试残渣,不是 run' };
-  }
-  if (rec?.updatedAt !== undefined && deps.now() - rec.updatedAt < minAgeMs) {
-    return { ...base, category: 'too-young', action: `跳过 — 终态不足 ${opts.minAgeDays ?? 2} 天,验收窗口内` };
-  }
-  if (dirtyFiles > 0) {
-    return { ...base, category: 'dirty', action: `先 salvage(${dirtyFiles} 个未提交文件 → commit + tag archive/run/${runId})再删树` };
-  }
-  if (aheadCommits > 0 && !deps.isMerged(runId)) {
-    return { ...base, category: 'unmerged', action: `tag archive/run/${runId}(领先 main ${aheadCommits} 个 commit)后删树删支` };
-  }
-  return { ...base, category: 'merged-clean', action: '删树删支 — 干净且已并入 main' };
 }
 
 /** 真源 deps(打真 git / 真 sqlite / 真 fs)。 */
