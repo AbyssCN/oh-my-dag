@@ -258,6 +258,26 @@ if (userArgs[0] === 'serve') {
 } else if (userArgs[0] === 'touches') {
   await runTouches(userArgs.slice(1));
   process.exit(process.exitCode ?? 0);
+} else if (userArgs[0] === 'runs' && userArgs[1] === 'gc') {
+  // #252 run worktree 生命周期回收。**缺省 dry-run** —— 要真删必须显式 --apply。
+  // 实装在 scripts/ 而不是 src/: 它只在人手里跑, 且放 src/ 会让 seam 目录的「触及文件数」漂
+  // (scanConsumers 扫整个 src/), 白白给每个契约添一笔登记面账。
+  const { survey, realDeps, apply: applyGc } = await import('../../scripts/runs-gc');
+  const root = process.cwd();
+  const plan = survey(root, realDeps(root));
+  const doApply = userArgs.includes('--apply');
+  for (const it of plan) {
+    if (!doApply) {
+      console.log(`${it.runId.slice(0, 8)} [${it.category}] ${it.action}`);
+      continue;
+    }
+    const r = applyGc(root, it);
+    if (it.category !== 'live' && it.category !== 'too-fresh' && it.category !== 'too-young') {
+      console.log(`${it.runId.slice(0, 8)} [${it.category}] ${r.ok ? '✓' : '✗'} ${r.note}`);
+    }
+  }
+  if (!doApply) console.log('\n(dry-run。要真干: omd runs gc --apply)');
+  process.exit(0);
 } else if (userArgs[0] === 'pack') {
   // A3 数据插件包: 装/卸/列。质量闸在 addPack 内 (staging 世界全校验, 拒绝零残留)。
   const { addPack, removePack, listPacks } = await import('./pack/pack');
