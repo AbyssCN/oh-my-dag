@@ -368,6 +368,37 @@ export function describeParallelism(r: ParallelismReadout): string {
 // verify, 于是 G-2 (accept ≠ 切片 verify) 由构造成立。跨生态通用 (`pytest tests/x.py` →
 // 末环 `pytest`), 不写死 bun。
 
+/**
+ * 检视/搜索族首词 (D-1, SDD 2026-08-25 A3) — 这族命令去掉路径参数后必然读 stdin,
+ * 永远不是「run all」自足形 (实测 run 74c5cf10: 两条 ugrep 裸形被判 not-converged)；
+ * 一律不进 fullRegression 蒸馏。成员取自 DEFAULT_COMMAND_ALLOWLIST ②③④ 组的检视/搜索
+ * 语义。与引号守卫 (`!/["']/`) 互补: 引号残参是「模式参在而文件参没了」, 族排除是
+ * 「首词本身就注定读 stdin」。
+ */
+const NON_REGRESSION_HEADS: readonly string[] = [
+  'grep',
+  'rg',
+  'ugrep',
+  'find',
+  'bfs',
+  'fd',
+  'cat',
+  'head',
+  'tail',
+  'wc',
+  'stat',
+  'file',
+  'du',
+  'diff',
+  'jq',
+  'realpath',
+  'basename',
+  'dirname',
+  'pwd',
+  'echo',
+  'ls',
+];
+
 /** 一段命令 (`&&` 分隔的一环) 的"去路径限定"版: 取到第一个含 `/` 的参数为止。 */
 function dropPathArgs(segment: string): string {
   const tokens = segment.trim().split(/\s+/).filter(Boolean);
@@ -398,7 +429,19 @@ export function acceptCommandFromBreakdown(breakdown: SddBreakdown): string | un
       // 标记 grep 被蒸成无文件 ugrep, 实装全对的 run 被判 not-converged (冤案)。
       // 全量环只收"去路径后仍自足"的形 (`bun test src/x.test.ts` → `bun test`; `pytest tests/x.py`
       // → `pytest`), 判据 = 裸形无引号残参 —— 跨生态通用, 仍不写死 bun。
-      if (head && !/["']/.test(head) && !fullRegression.includes(head)) fullRegression.push(head);
+      // 第二道守卫 (NON_REGRESSION_HEADS): 首词属于检视/搜索族 (`ugrep` / `cat` / `ls` …)
+      // 的段一律不进蒸馏 —— 这族命令去路径后必然读 stdin, 裸形本质不是「run all」。
+      // 实测样本 run 74c5cf10: 两条 verify 蒸馏出无文件 `ugrep -q lensCount` /
+      // `ugrep -q webQueries`, 实装全对的 run 被判 not-converged (冤案)。两道守卫互补:
+      // 引号残参 = 模式参在而文件参没了; 族排除 = 首词本身就注定读 stdin。
+      const headFirst = head.trim().split(/\s+/)[0] ?? '';
+      if (
+        head &&
+        !/["']/.test(head) &&
+        !NON_REGRESSION_HEADS.includes(headFirst) &&
+        !fullRegression.includes(head)
+      )
+        fullRegression.push(head);
     }
   }
   if (!links.length) return undefined;

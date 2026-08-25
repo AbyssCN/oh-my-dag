@@ -13,6 +13,8 @@
  *   - 不执行 JS: SPA / 需要渲染的页面拿到的是骨架。要真渲染走 firecrawl/jina/scrapling。
  *   - 不过反爬: 403/429/Cloudflare 一律照抛, 由 pool 降级到下一个 provider。
  *   - 不做搜索: 它只认 URL。零 key 的**搜索**路径是 searxng (自托管)。
+ *   - 不解二进制: PDF / 图片 / 视频等非文本类响应直接返空 text + 留 contentType, racing
+ *     的 minChars 闸判缺料、让位给能远端解 PDF 的 provider (C2 兜底, 2026-08-25)。
  */
 import { ProviderError, type FetchImpl, type FetchProvider, type FetchResult } from '../types';
 import { stripHtmlToText } from '../clean';
@@ -23,6 +25,31 @@ const UA =
 
 /** 单页硬顶 (MEDIA-3 同族): 超大页截断而不是撑爆下游 context。 */
 const MAX_BYTES = 2_000_000;
+
+/**
+ * 文本类 content-type 判别 (C2 兜底, 契约钉名 → O-6 锚):
+ *   - `text/*` 一律视为文本;
+ *   - 主 mime 不是 text/ 但显式含 html / xml / json / markdown / javascript 关键字的类型
+ *     (application/json, application/xml, application/xhtml+xml, image/svg+xml,
+ *     application/atom+xml, application/ld+json, text/markdown, application/javascript 等)
+ *     视为文本 —— 主体仍是结构化文本, plain 直接吃;
+ *   - **空 content-type 视为文本**(缺头不误伤: 常见 HTML 页服务端忘了设头时仍应拿正文);
+ *   - 其余 (application/pdf, application/octet-stream, image/*, video/*, audio/*,
+ *     application/zip 等) 视为非文本, plain 短路返空 text 让 racing 的 minChars 闸判
+ *     缺料、让位给能远端解的 provider。
+ */
+export function isTextLikeContentType(ct: string): boolean {
+  if (!ct) return true;
+  const s = ct.toLowerCase();
+  if (s.startsWith('text/')) return true;
+  return (
+    s.includes('html') ||
+    s.includes('xml') ||
+    s.includes('json') ||
+    s.includes('markdown') ||
+    s.includes('javascript')
+  );
+}
 
 export class PlainFetchProvider implements FetchProvider {
   readonly name = 'plain';
@@ -45,6 +72,11 @@ export class PlainFetchProvider implements FetchProvider {
         throw new ProviderError('plain', res.status, `plain fetch ${res.status} ${url}`);
       }
       const contentType = res.headers.get('content-type') ?? '';
+      // 非文本 (PDF / 图片 / 视频 / 二进制) 短路: 不读 body (避免乱码撑内存), 返空 text +
+      // 留 contentType 痕迹, racing 的 minChars 闸自然判缺料让位 (C2 兜底, D-5)。
+      if (!isTextLikeContentType(contentType)) {
+        return { url, text: '', ...(contentType ? { contentType } : {}) };
+      }
       const raw = await res.text();
       const body = raw.length > MAX_BYTES ? raw.slice(0, MAX_BYTES) : raw;
       // raw=true → 原样回 (调用方要自己清洗); 否则 HTML 去标签成正文。

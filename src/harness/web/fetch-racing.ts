@@ -8,6 +8,7 @@
  * WFC-INV-1 (minChars 保真), WFC-INV-2 (race 无成本泄漏), WFC-INV-3 (赢即止血)。
  */
 import type { FetchProvider, FetchResult } from './types';
+import { assertPublicUrl, type AssertPublicUrlOpts } from './url-guard';
 
 /* ─── helpers ─────────────────────────────────────── */
 
@@ -81,10 +82,16 @@ export async function fetchRacing(
     minChars?: number;
     /** provider → tier 映射 (默认 defaultTier)。 */
     tierOf?: (name: string) => FetchTier;
+    /** SSRF 闸 resolver 注入 — 默认走 node:dns, 测试可密封。 */
+    resolver?: AssertPublicUrlOpts['resolver'];
   } = {},
 ): Promise<{ result: FetchResult; provider: string }> {
   const min = opts.minChars ?? 0;
   const tierOf = opts.tierOf ?? defaultTier;
+
+  // SSRF 入口闸 (C1): 私网/环回/链路本地/CGNAT 拒, fail-closed + 响亮抛错 (文案含 `SSRF`)。
+  // 上游 probe/retrieve 走既有 fetch 失败留痕路径消化, 不断链 (INV-2 / INV-3)。
+  await assertPublicUrl(url, opts.resolver ? { resolver: opts.resolver } : undefined);
 
   const race: FetchProvider[] = [];
   const tail: FetchProvider[] = [];

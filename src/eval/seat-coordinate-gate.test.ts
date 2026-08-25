@@ -161,6 +161,8 @@ const ALLOWLIST: readonly { file: string; coord: string; reason: string }[] = [
   { file: 'src/model/role-fallback.ts', coord: 'deepseek:x', reason: '注释示例 (providerOf 说明), 非运行值' },
   { file: 'src/model/types.ts', coord: 'mimo:deepseek-v4-flash', reason: 'JSDoc 示例 (ModelRequest.model 字段说明), 非运行值' },
   { file: 'src/model/minimax-native.ts', coord: 'minimax-cn:MiniMax-M3', reason: '文件头注释里的实测样例 (展示走 pi 通道时 text 粘着 <think> 的原样输出), 非运行值; 路由判定读的是 piModel.provider 不是这个字面串' },
+  { file: 'src/harness/web/url-guard.ts', coord: 'fc00::/7', reason: 'IPv6 CIDR 字面量 (SSRF 闸 PRIVATE_RANGES 网段表, run 960c5107 C1), 坐标正则误匹配, 非模型坐标' },
+  { file: 'src/harness/web/url-guard.ts', coord: 'fe80::/10', reason: '同上 — IPv6 link-local CIDR, 非模型坐标' },
 ];
 
 const allowlistKey = (h: { file: string; coord: string }): string => `${h.file}\t${h.coord}`;
