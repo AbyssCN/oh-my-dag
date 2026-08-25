@@ -43,9 +43,14 @@ Executor kind per node (field "executor"):
 - "leaf"  = a single-shot model call, NO tools. Use for generation / judgement / drafting from what
             you already have. A leaf has NO web access — it answers from model memory.
 - "research" = real WEB research (search → fetch → distill → multi-lens synthesis), bounded by
-            field "research".rounds (1..4, default 1). Use whenever the node needs CURRENT external
-            facts (docs, APIs, prior art, "what do people do about X"). A node that fails to fetch a
-            single real page FAILS — so never use it for questions answerable from the repo alone.
+            field "research".rounds (1..4, default 1). Two knobs shape the depth:
+              - "lensCount" (1..6, optional) = how many expert lenses to author/cover; wide = more angles,
+                narrow = one tight frame. Default = conductor self-decides.
+              - "k" (1..12, optional) = retrieval recall cap (how many candidate URLs the search layer pulls).
+                Distinct from lensCount: k widens the candidate pool, lensCount widens the synthesis.
+            Use whenever the node needs CURRENT external facts (docs, APIs, prior art, "what do people do
+            about X"). A node that fails to fetch a single real page FAILS — so never use it for questions
+            answerable from the repo alone.
 - "agent" = a tool-using sub-agent (read / edit / write / bash). Use ONLY for nodes that must touch
             files or run commands; scope each agent node to ONE atomic artifact (e.g. a single file).
 - "command" = run a deterministic CLI (field "command", e.g. "codegraph trace A B") with NO model.

@@ -18,5 +18,5 @@ Output STRICTLY one JSON object, no prose, matching:
     "primitive"?: "parallel"|"pipeline"|"loop-until"|"verify"|"judge"|"discovery"|"iterate"|"tournament"|"router"|"race"|"escalation"|"saga"|"escape-hatch",
     "params"?: object,
     "map"?: { "lister": object, "over": string, "itemVar": string, "keyBy"?: string, "template": object, "maxItems"?: number, "concurrency"?: number },
-    "research"?: { "k"?: number, "rounds"?: number },
+    "research"?: { "k"?: number, "lensCount"?: number, "rounds"?: number },
     "await"?: { "artifact": string, "fromRun"?: string, "timeoutMs"?: number } } } }
