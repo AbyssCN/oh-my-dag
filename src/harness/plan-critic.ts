@@ -5,8 +5,10 @@
  *
  * 设计要点:
  * - 纯 STATIC (零 LLM, 集合成员 + 字段存在性, 误拒率按定义为 0)。
- * - 12 诊断码 (PP-T01/T02/T03 · PP-O01 · PP-S01/S02/S03 · PP-V01 · PP-I01/I02 ·
+ * - 13 诊断码 (PP-T01/T02/T03 · PP-O01/O02 · PP-S01/S02/S03 · PP-V01 · PP-I01/I02 ·
  *   PP-M01/M02) + 1 不变量闸 (INV-12 bypass/skipGate 一律拒)。
+ * - PP-O02 (#244 契约 C-1): 写文件节点而全图无 command 验证步且节点本身 oracleKind 缺
+ *   或声明 'none' → error。逐写节点诊断, 'none' 不是逃生门 (无判据)。
  * - 输入 = ConductorPlan + inventory working-set + skill manifests(+ prose ban 信息)
  *   + node 的 natural 工具池 + runId;输出 = Diagnostic[]。
  * - 抑制走 plan.suppressions[];suppressible:false 的码抑制无效 (PP-S02 hard-coded
@@ -33,15 +35,15 @@ import {
 
 // ─── 诊断形状 (S1 契约 §3.3) ─────────────────────────────────────────────────
 
-/** 12 PP-* 诊断码的字面联合 (字面量锁定, 改一处核所有消费者)。 */
+/** 13 PP-* 诊断码的字面联合 (字面量锁定, 改一处核所有消费者)。 */
 export type DiagnosticCode =
   | 'PP-T01' | 'PP-T02' | 'PP-T03'
-  | 'PP-O01'
+  | 'PP-O01' | 'PP-O02'
   | 'PP-S01' | 'PP-S02' | 'PP-S03'
   | 'PP-V01'
   | 'PP-I01' | 'PP-I02'
   | 'PP-M01' | 'PP-M02'
-  /** INV-12: plan 携带 bypass/skipGate 一律拒 (不属 12 码, 独立闸)。 */
+  /** INV-12: plan 携带 bypass/skipGate 一律拒 (不属 13 码, 独立闸)。 */
   | 'INV-12';
 
 /** 严重度: 12 码全部为 hard error (打回/停 plan/escalate);没有 warning。 */
@@ -189,6 +191,24 @@ function isVisualOutput(node: PlanNodeShape): boolean {
   return false;
 }
 
+/** 节点是否为「写文件节点」(会向磁盘/git 落产物): output_type ∈ {file, git} 或
+ *  output_path 非空 (#244 契约 D-3 字面)。非合成器节点 (executor='command') 也算写节点
+ *  —— 它可能写脚本/配置文件;但本闸只看字段, 区分由 oracleKind 决定。 */
+function isWriteNode(node: PlanNodeShape): boolean {
+  const ot = node.output_type;
+  if (ot === 'file' || ot === 'git') return true;
+  if (typeof node.output_path === 'string' && node.output_path.length > 0) return true;
+  return false;
+}
+
+/** 全图是否存在任意 executor:'command' 验证节点 (#244 契约 D-3 PP-O02 的图级前提)。 */
+function hasCommandVerifier(nodes: Record<string, PlanNodeShape>): boolean {
+  for (const n of Object.values(nodes)) {
+    if (n.executor === 'command') return true;
+  }
+  return false;
+}
+
 /** 节点是否为「bootstrap 节点」(本片不替 zod 立 type='bootstrap',passthrough 已允许,
  *  这里按字段出现识别;test_gate 缺失即视为非 bootstrap,不参与 PP-T03)。 */
 function asBootstrapNode(node: PlanNodeShape): { toolId: string; status: string } | null {
@@ -330,6 +350,32 @@ export function critique(input: CriticInput): Diagnostic[] {
           `visual-output=${node.output_path ?? node.contentType ?? 'attach_media'}`,
         ],
         remediation: '视觉产出必须挂 oracle (cheap/render/judge/self_built);不要把视觉验证塞进自然语言判断。',
+        round,
+        suppressible: false,
+      });
+    }
+  }
+
+  // ── PP-O02: 写文件节点 + 全图无 command 验证 + 节点 oracleKind 缺或 'none'
+  //  (#244 契约 C-1 / D-3; 活环有界拒回, 不许 'none' 当逃生门)
+  if (!hasCommandVerifier(nodes)) {
+    for (const [nid, node] of Object.entries(nodes)) {
+      if (!isWriteNode(node)) continue;
+      const ok = node.oracleKind !== undefined && node.oracleKind !== 'none';
+      if (ok) continue;
+      out.push({
+        code: 'PP-O02',
+        severity: 'error',
+        check: 'writes_without_gate',
+        node_id: nid,
+        evidence: [
+          `output_type=${node.output_type ?? '<unset>'}`,
+          `output_path=${node.output_path ?? '<unset>'}`,
+          `oracleKind=${node.oracleKind ?? '<unset>'}`,
+          `command_verifier=none`,
+        ],
+        remediation:
+          '加一个 executor:"command" 验证节点, 或给该节点声明 oracleKind ∈ {cheap, render, judge, self_built} (文档类交付用 judge); oracleKind:"none" 不是逃生门。',
         round,
         suppressible: false,
       });

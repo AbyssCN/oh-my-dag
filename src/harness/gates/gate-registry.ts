@@ -65,6 +65,12 @@ export const GATE_REGISTRY: readonly GateEntry[] = [
     file: 'src/harness/dag/engine.ts',
   },
   {
+    // #249 (2026-08-25): 败因类别瘫痪绊线 —— 全员越权写/空产出时不开重规划轮。
+    id: 'fuse-paralysis',
+    family: '空转熔断',
+    file: 'src/harness/dag/engine.ts',
+  },
+  {
     id: 'oracle-exit-miss',
     family: 'expect_exit',
     file: 'src/harness/dag/engine.ts',

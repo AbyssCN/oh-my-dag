@@ -191,7 +191,7 @@ import { parseWrittenFiles, renderParseFailures } from '../writeset/write-parse-
 import { checkClaimAnchors } from '../writeset/claim-anchor';
 import { applyPoisonRollback, planPoisonRollback } from '../writeset/poison-rollback';
 import { ModelError, isTransientModelFault } from '../../model';
-import { classifyCommandExit, withFailureKind, upstreamFailureNotice } from '../node-failure';
+import { classifyCommandExit, withFailureKind, upstreamFailureNotice, type NodeFailureKind } from '../node-failure';
 import { collectRepairGuidance, loadRepairFingerprints } from './repair-guidance';
 import { livePin } from '../../model/provider-health';
 import { makeRunNonce, fenceUntrusted, trustHeader } from '../prompt-fence';
@@ -466,7 +466,7 @@ async function planAndExecute(
   // PP-T*/PP-S* 需 inventory/skill 装配 (S2 债), 空 working-set 下 enforce = 教模型删 toolRefs, 反教化。
   // 具名常数让 S2 扩集只改一处。
   const INLOOP_ENFORCED_CODES: ReadonlySet<DiagnosticCode> = new Set([
-    'PP-I01', 'PP-I02', 'PP-O01', 'PP-V01', 'INV-12',
+    'PP-I01', 'PP-I02', 'PP-O01', 'PP-O02', 'PP-V01', 'INV-12',
   ]);
   const PLAN_CRITIC_MAX_REJECTS = 2;
   let parseFails = 0;
@@ -5257,6 +5257,15 @@ async function runDagInternalCore(
     let lastBlameKey: string | undefined;
     let sameCauseStreak = 0;
     let circuitBroken = false;
+    // #249 (2026-08-25, 片 2): 外环瘫痪绊线 —— 一轮红节点**全部**死于"越权写/空产出"类
+    // 败因 (重画不能扩权, 重画就该拒), 立即停轮交人。三条同时成立才触发:
+    //   ① ≥PARALYSIS_MIN_RED 个红节点
+    //   ② 全员 failureKind ∈ PARALYSIS_KINDS (gate-rejected / empty-artifact)
+    //   ③ 无 assert-failed 等可修类 (混因 = 模型可能修得动别的, 这一规则不该挡它)
+    // 出口 = D-6 同形 (circuitBroken + break + STALLED), 零新机制;observation 点名节点 + 败因 +
+    // 「重画不能扩权, 该改的是契约写集/判据」(owner 拿到 STALLED 后下一步该动什么的指针)。
+    const PARALYSIS_MIN_RED = 3;
+    const PARALYSIS_KINDS: ReadonlySet<NodeFailureKind> = new Set<NodeFailureKind>(['gate-rejected', 'empty-artifact']);
     // D-P 取消接缝④: 不开新的升级重规划轮 (那是一整轮重规划 + 重跑, 最贵的一种"新活")。
     // #158 预算接缝: 同一句话对预算也成立 —— 环收敛/结束后, 预算已尽还开重规划轮, 正是
     // d39b559e 「134min 收敛后又跑 30min」那段的来源。判据与 executePlan 的派发闸同源
@@ -5300,6 +5309,36 @@ async function runDagInternalCore(
       } else {
         sameCauseStreak = 0;
         lastBlameKey = blameKey;
+      }
+      // ── #249 外环瘫痪绊线 (#249 SDD 2026-08-25, D-1/D-2) ─────────────────────
+      // 与 D-6 同因熔断并排, 位置在 blameKey 熔断之后、C 无效否决闸之前
+      // (确定性的先问, 零 LLM, 只读 exec.results)。三类**同时**成立才熔断:
+      //   ① 红节点数 ≥ PARALYSIS_MIN_RED (=3, e63f47ea 样本 8/21 取保守下界)
+      //   ② 全员 failureKind ∈ PARALYSIS_KINDS (gate-rejected / empty-artifact)
+      //   ③ 任意红节点 failureKind 在 PARALYSIS_KINDS 外 (assert-failed 等) → 不触发:
+      //      那条线模型可能修得动别的, 重画不能扩权这一规则不该挡它。
+      // 出口 = D-6 同形 (circuitBroken + break + STALLED), 零新机制。observation
+      // 点名节点 id + 各自败因 + 「重画不能扩权, 该改的是契约写集/判据」——
+      // 那一句是 owner 拿到 STALLED 后下一步该动什么的指针, 不能省。
+      // ⚠ 证伪方式: 删掉 PARALYSIS_MIN_RED 那行 → GWT-1 必红 (2 红也能熔断);
+      //              把 `every(...)` 改成 `some(...)` → GWT-2 必红 (1 红就熔断)。
+      const paralysisReds = Object.values(exec.results).filter((r) => r.status !== 'done');
+      if (
+        paralysisReds.length >= PARALYSIS_MIN_RED &&
+        paralysisReds.every((r) => r.failureKind !== undefined && PARALYSIS_KINDS.has(r.failureKind))
+      ) {
+        circuitBroken = true;
+        const summary = paralysisReds.map((r) => `${r.id}=${r.failureKind}`).join(', ');
+        logger.warn(
+          { red: paralysisReds.length, kinds: [...new Set(paralysisReds.map((r) => r.failureKind))] },
+          '[omd/executor-dag][fuse-paralysis] #249 外环瘫痪: 全员越权写/空产出 → 重画不能扩权, STALLED 交人 (修契约写集/判据, 别加轮数)',
+        );
+        exec.observations.push({
+          kind: 'blame-attribution',
+          nodes: paralysisReds.map((r) => r.id),
+          message: `#249 外环瘫痪绊线: 本轮 ${paralysisReds.length} 个红节点全部因 ${[...new Set(paralysisReds.map((r) => r.failureKind))].join('/')} 失败, 重画不能扩权 → STALLED 交人 (修契约写集/判据, 别加轮数)。节点: ${summary}`,
+        });
+        break;
       }
       // ── C (2026-08-21, run 58df6b9e 复盘): 否决**已拿到机器绿**的一轮, 判词必须可证伪 ──
       //

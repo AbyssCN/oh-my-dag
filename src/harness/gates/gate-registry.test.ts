@@ -43,7 +43,7 @@ const REAL_VERDICTS = scanGateVerdicts(SOURCE_BY_FILE);
 describe('GWT-1 — INV-1: 扫真源 (engine.ts + run-goal.ts) 的 id 集合 ⊇ 表里全部 13 个 id', () => {
   test('登记的 13 个 id 都被实扫命中', () => {
     const registryIds = GATE_REGISTRY.map((e) => e.id);
-    expect(registryIds).toHaveLength(13);
+    expect(registryIds).toHaveLength(14); // 2026-08-25 #249 fuse-paralysis 入表 (13→14)
     for (const id of registryIds) {
       expect(REAL_VERDICTS.has(id)).toBe(true);
     }
