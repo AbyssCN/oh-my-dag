@@ -4478,6 +4478,16 @@ async function executePlan(
       // (缺席读起来 = "老记录", 与"引擎里有条没交代的失败路径"结论相反 — 见 node-failure.ts)。
       results[id] = withFailureKind(r);
       depOutputs[id] = r.output;
+      // #240 观测绊线 (grill 2026-08-25 推荐 C · 层④告知 fail-open): failed 节点带大宗产出 =
+      // 「字白取了」形态。基率 2/297 且成因已被 #241 点火坐标校验正面覆盖 —— 本行只是复发探测器,
+      // goal-logs 里 grep '[#240]' 月频 > 0 才值得建 partial-live+salvage 通道 (方案 B, 见
+      // docs/plan/2026-08-25-grill-240-failed-output-channel.md; 方案 A「直通下游」已永久否决)。
+      if (results[id]!.status === 'failed' && r.output.length > 10_000) {
+        logger.warn(
+          { node: id, outputChars: r.output.length, failureKind: results[id]!.failureKind },
+          '[omd/executor-dag][#240] failed 节点带大宗产出 (>10K 字) — 输出在 checkpoint, 未入下游',
+        );
+      }
       if (r.kind === 'conductor') {
         conductorUsage = addUsage(conductorUsage, r.usage);
       } else {
