@@ -84,6 +84,35 @@ import type { NodeCheckpoint, NodeLoopJournal, RoundVerdict } from '../continuit
 type NounGateFn = (args: { text: string; material: string; repoRoot: string; annotate: boolean }) => { novelNouns: string[] };
 let _nounGate: NounGateFn | null = null;
 export function setNounGate(fn: NounGateFn | null): void { _nounGate = fn; }
+
+/**
+ * 预算过半接缝 (SDD F1 片 2, INV-8) —— 引擎轮边界读 `spent / cap`, 任一轴**首次**
+ * `spent >= cap / 2` 调一次 `emit(event)`, 同轴再过轮边界不重发。**未配该轴 cap**
+ * 由调用方在调用前自行短路 (此函数不读 config)。
+ *
+ * 纯函数 + 注入 emit —— 可独立测 (notify-wiring.test.ts 直接调, 零 IO)。
+ * `fired` 是内环局部标志, 不跨进程去重: resume 新进程可再发一次 (D-6 接受的重复)。
+ * 等值 `cap / 2` 判为已过半 (`>=`)。`cap=0` 时 `cap/2=0`, `spent=0` 也判为过半。
+ *
+ * ⚠ 这条只读「本次内环累计」的钱 (token) / 时间 (ms), 不读运行锚那半 —— 运行锚在
+ * `dispatchBudgetHit` 那一段另行判 (D-6 词表外)。
+ */
+export function emitBudgetHalfIfHalf(
+  spent: number,
+  cap: number,
+  fired: { tokens: boolean; ms: boolean },
+  axis: 'tokens' | 'ms',
+  emit: (e: DagNodeEvent) => void,
+): DagNodeEvent | null {
+  if (fired[axis]) return null;
+  if (spent < cap / 2) return null;
+  fired[axis] = true;
+  const event: DagNodeEvent = { type: 'budget', axis, spent, cap };
+  // emit 接入 emitRunEvent 时, 那一层自带 try/catch + fail-open (观察者不扰动被观察者)。
+  // 这里**不再包一层**: 多套一层只会多一个静默 catch (§静默坑 2), 而 fail-open 的语义没变。
+  emit(event);
+  return event;
+}
 import { cavemanRule, leafCavemanLevel } from '../caveman';
 import { leafCostReward } from '../model-router';
 import { logger } from '../logger';
@@ -2408,6 +2437,11 @@ async function executePlan(
     const judgeFinal = node.judge_final === true;
     const cm = continuity?.manager;
 
+    // F1 (片 2, INV-8): 内环节点级事件发射器 —— emitRunEvent 在 runDagInternal 闭包里,
+    // runConductorNode 拿不到 (跨函数闭包); 这里直接调 config.onNodeEvent, 它的消费方
+    // (dag-tools.ts:430) 已自带 try/catch + fail-open (观察者不许扰动被观察者)。
+    const emitRunEventLocal = (e: DagNodeEvent): void => { config.onNodeEvent?.(e); };
+
     // resume: 接回上次的轮次/毒集/上轮原因 (INV-P2-6 同款, 只是键降到了节点级)。
     const journal = cm && continuity?.resume ? cm.loadNodeLoopJournal(continuity.runId, id) : null;
     if (journal?.converged) {
@@ -2581,6 +2615,8 @@ async function executePlan(
     const loopStartedAt = Date.now();
     /** 环因预算停下的原因 (未超 = undefined)。 */
     let budgetStopped: string | undefined;
+    /** #F1 片 2 / INV-8: 预算过半通知的 per-axis 幂等标志 —— 本内环实例局部, 不跨进程去重。 */
+    const budgetHalfFired: { tokens: boolean; ms: boolean } = { tokens: false, ms: false };
     /**
      * §8.4 动作级熔断的累积面: 本内环里**失败过的 command 节点** (跨轮累积)。
      * 轮级空转判据看的是"整轮原地踏步"; 这一条看的是"整轮在变, 但**某一条命令**始终以逐字
@@ -2619,6 +2655,14 @@ async function executePlan(
         const spentMs = Date.now() - loopStartedAt;
         const tokenCap = config.loopBudget?.tokens;
         const msCap = config.loopBudget?.ms;
+        // #F1 (片 2, INV-8): 预算过半通知 —— additive 事件, 不挡在飞的轮, 装在已有边界读数里。
+        // 只在配了该轴 cap 时判; per-axis 幂等标志为本内环局部 (D-6 不跨进程去重)。
+        if (tokenCap !== undefined) {
+          emitBudgetHalfIfHalf(spentTokens, tokenCap, budgetHalfFired, 'tokens', emitRunEventLocal);
+        }
+        if (msCap !== undefined) {
+          emitBudgetHalfIfHalf(spentMs, msCap, budgetHalfFired, 'ms', emitRunEventLocal);
+        }
         if (tokenCap !== undefined && spentTokens >= tokenCap) {
           budgetStopped = `token 预算用尽: 已花 ${spentTokens} / 上限 ${tokenCap} (第 ${round - 1} 轮后)`;
         } else if (msCap !== undefined && spentMs >= msCap) {

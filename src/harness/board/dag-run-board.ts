@@ -33,7 +33,11 @@
  *
  * @module
  */
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { appendBoard, readBoard, type BoardEntry } from './run-board';
+import { notifyOwner } from '../notify';
+import { logger } from '../logger';
 
 /** 一个板上活着的 run 在**本模块**眼里的样子(比 liveRuns 多一位:写集到底声明没)。 */
 export interface LiveRunView {
@@ -71,6 +75,36 @@ export function claimDagRun(root: string, runId: string, goal: string): void {
 /** 终态登记。不写这一行,这个 run 会在板上**永远活着**,把后来的每一次起跑都报成冲突。 */
 export function terminalDagRun(root: string, runId: string, outcome: string): void {
   appendBoard(root, { v: 1, ts: new Date().toISOString(), runId, event: 'terminal', outcome });
+  // F1 (片 2, INV-6 / INV-9): 终态发生 → 推一次 owner 通知。**在板写之后** (板是事实层,
+  // 通知是告知层)。wrap try/catch 在这一层兜底 (notifyOwner 自身只吞 spawn 同步抛错, 上层
+  // payload 构造 / reader 抛错它管不着 —— 我们也不让它管, INV-9: 接线位不伤主流程)。
+  // 证据行: notifyOwner 已为 spawn 异常留一行 warn; 这里的兜底 catch 是双保险, debug 而非 warn
+  // (生产里这一层基本不会触发, 不刷屏)。
+  try {
+    notifyOwner(
+      { event: 'terminal', runId, at: new Date().toISOString(), outcome, headline: outcome },
+      { readConfigText: () => readNotifyConfigText(root) },
+    );
+  } catch (err) {
+    console.error(`[dag-run-board] terminal 通知抛错 (不影响 run): ${String(err)}`);
+  }
+}
+
+/**
+ * F1 (片 2, 接线位): notify 配置的本地读法 —— `<root>/.omd/config.json`, 缺席 / IO 错 → null
+ * (notify.ts readNotifyConfig 把它转成静默 no-op, INV-1)。与 run-goal.ts 同名函数**逐字节一致**:
+ * 两通道共用同一份 owner 意图 (主仓层面的 .omd/config.json)。
+ */
+function readNotifyConfigText(root: string): string | null {
+  try {
+    const p = join(root, '.omd', 'config.json');
+    if (!existsSync(p)) return null;
+    return readFileSync(p, 'utf8');
+  } catch (err) {
+    // exists 过了 read 还抛 = 竞态/权限/IO; 吞掉就再也分不清「真缺席」与「读挂了」(§静默坑 2)。
+    logger.warn({ err: String(err) }, '[dag-run-board] 读 notify config 失败 → 按未配处理');
+    return null;
+  }
 }
 
 /**

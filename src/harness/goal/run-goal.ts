@@ -49,6 +49,7 @@ import { attributeWriteSet, classifyWriteScope, describeWriteSet, SDD_DECLARED_W
 import { collectRunTickets, type RunTicketSink } from '../pathfinder/run-tickets';
 import { logger } from '../logger';
 import { appendBoard, type BoardEntry } from '../board/run-board';
+import { notifyOwner } from '../notify';
 import { resolveProfile, type LeafProfile } from '../profiles/profile';
 import { fingerprintOf, type ReviewFinding } from '../profiles/review-ledger';
 import { maybeRunDesignReview, type DesignReviewResult } from './design-review';
@@ -588,6 +589,20 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   // 板落那里 = 主仓 (生产侧 + ignition 预检 + readout 全读者) 看不到这张 run; 钉到
   // continuity.repoRoot → 主仓。head 档 (repoRoot 缺席或 = cwd) 行为逐字节不变 (INV-1)。
   const boardRoot = config.dag.continuity?.repoRoot ?? config.cwd;
+  // F1 (片 2, 接线位): notify 配置的读法 —— `<root>/.omd/config.json`, 缺席返 null
+  // (notify.ts 内部把 null 转成静默 no-op, INV-1)。与 assemble.ts 的 ownerNotifySink 内
+  // 默认读法**逐字节一致** —— 两通道共用 .omd/config.json (主仓层面的 owner 意图)。
+  const readConfigTextFromRoot = (root: string): string | null => {
+    try {
+      const p = join(root, '.omd', 'config.json');
+      if (!existsSync(p)) return null;
+      return readFileSync(p, 'utf8');
+    } catch (err) {
+      // exists 过了 read 还抛 = 竞态/权限/IO; 吞掉就再也分不清「真缺席」与「读挂了」(§静默坑 2)。
+      logger.warn({ err: String(err) }, '[run-goal] 读 notify config 失败 → 按未配处理');
+      return null;
+    }
+  };
   const emitBoard = (event: 'claimed' | 'terminal', outcome?: RunOutcomeKind): void => {
     try {
       const entry: BoardEntry =
@@ -595,6 +610,15 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
           ? { v: 1, ts: new Date().toISOString(), runId: boardRunId, event, writeSet: [...boardDeclared.allowed] }
           : boardTerminalEntry(boardRunId, outcome!);
       appendBoard(boardRoot, entry);
+      // F1 (片 2, INV-6 / INV-9): 终态发生 → 推一次 owner 通知。**在板写之后** (板是事实层, 通知
+      // 是告知层, 后者依赖前者的真值)。fail-open: notifyOwner 自身吞异常留证据, 这里 try 不替它
+      // 再包一层 (避免把证据覆盖掉)。未配置 notify → 全程 no-op, 行为与 s1 冻结的 INV-1 一致。
+      if (event === 'terminal') {
+        notifyOwner(
+          { event: 'terminal', runId: boardRunId, at: new Date().toISOString(), outcome: outcome!, headline: outcome! },
+          { readConfigText: () => readConfigTextFromRoot(boardRoot) },
+        );
+      }
     } catch (e) {
       // 板不是承重墙: 写板失败不掀桌, 留日志, run 照跑 (与 saveState 同款纪律)。
       console.error(`[run-goal] board ${event} 写失败 (不影响 run): ${String(e)}`);

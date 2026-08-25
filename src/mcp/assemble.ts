@@ -20,7 +20,7 @@
  * 可测: 全部 deps 可选覆盖 (测试传 fake 引擎/内存记忆/fake research, 零网络零磁盘)。
  */
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import type { OmdMcpTool } from './server';
 import { RunRegistry } from './run-registry';
@@ -90,9 +90,70 @@ import { applyToolRenames } from './tool-renames';
 import { createConductorChatTool, type ConductorChatDeps } from './tools/chat';
 import { checkWeeklyBudget, usageLedgerDir } from './budget';
 import { createOmdSessionStore, type OmdSessionStore } from '../harness/chat/session-store';
+import { notifyOwner, type NotifyDeps } from '../harness/notify';
 
 /** 生产引擎接缝 (真 DAG 引擎)。 */
 const PROD_ENGINE: DagEngine = { runExecutorDag, runExecutorDagWithPlan };
+
+/**
+ * owner 推式桥接缝 (SDD F1 片 2) —— 引擎事件 → ownerNotifyEvent 翻译器。
+ * 与 `extNodeEventSink` (ext-tools.ts:126) 同型: 单回调形状, 组合进
+ * `onNodeEventComposed` 不替换, fail-open (观察者不扰动被观察者)。
+ *
+ * 翻译表 (D-2 / D-5):
+ *   - `replan`   → escalation (round, poisoned 计数)
+ *   - `budget`   → budget-half (axis, spent, cap)
+ *   - 其余 type (planned/start/settle/verdict/...) → 静默忽略 (INV-10 additive)
+ *
+ * 词表冻结于 notify.ts 的 NOTIFY_EVENTS; 加新事件型时**改这里与片 1 同处同步**。
+ * 测试: 注入 `deps` (含 readConfigText / spawn) —— 零 fs 零真子进程。
+ */
+export function ownerNotifySink(cwd: string, deps?: NotifyDeps): (runId: string, e: DagNodeEvent) => void {
+  const notifyDeps: NotifyDeps = {
+    readConfigText: deps?.readConfigText ?? (() => {
+      // 生产默认读 <cwd>/.omd/config.json (与 config-discovery.omdConfigPath 同形态)。
+      // 缺席 / IO 错 → null (notify.ts readNotifyConfig 内部把它转成静默 no-op, INV-1)。
+      try {
+      const p = join(cwd, '.omd', 'config.json');
+      if (!existsSync(p)) return null;
+      return readFileSync(p, 'utf8');
+    } catch (err) {
+      // 通知配置读不到 = 视同未配 (notify.ts 内部还会再判一次, 双保险); 证据留一行
+      // 不然 owner 跑了看不见通知还以为 hook 没接 (§静默坑 2)。
+      logger.debug({ err: String(err) }, '[omd/assemble] owner notify config 读不到 (按未配处理)');
+      return null;
+    }
+    }),
+    ...(deps?.spawn ? { spawn: deps.spawn } : {}),
+    ...(deps?.now ? { now: deps.now } : {}),
+  };
+  return (runId, e) => {
+    try {
+      if (e.type === 'replan') {
+        notifyOwner({
+          event: 'escalation',
+          runId,
+          at: new Date().toISOString(),
+          round: e.round,
+          poisoned: e.poisoned.length,
+        }, notifyDeps);
+      } else if (e.type === 'budget') {
+        notifyOwner({
+          event: 'budget-half',
+          runId,
+          at: new Date().toISOString(),
+          axis: e.axis,
+          spent: e.spent,
+          cap: e.cap,
+        }, notifyDeps);
+      }
+      // 其余事件型 → 静默 (INV-10 additive 兼容)。
+    } catch (err) {
+      // notifyOwner 自己 fail-open; 这一层兜底是防 notify.ts 之外的错 (例如构造 payload 抛)。
+      logger.debug({ err: String(err) }, '[omd/assemble] ownerNotifySink 抛错 (已吞, 不扰动 run)');
+    }
+  };
+}
 
 /** assemble 的可选依赖覆盖 —— 省略任何一项 = 该项用生产默认。 */
 export interface AssembleOmdMcpDeps {
@@ -725,9 +786,12 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   // D1 (ext 词表 v2): 节点事件桥进 ext observe 通知 —— **组合**进既有 onNodeEvent 不替换
   // (单回调形状不变, 不引监听者集合)。桥全程 fail-open, 观察者不许扰动被观察者。
   const extSink = extNodeEventSink(cwd);
+  // F1 (片 2): owner 推式桥 —— replan → escalation, budget → budget-half。其余静默。
+  const notifySink = ownerNotifySink(cwd);
   const onNodeEventComposed = (runId: string, e: DagNodeEvent): void => {
     deps.onNodeEvent?.(runId, e);
     extSink(e);
+    notifySink(runId, e);
   };
 
   // ── #253 (2026-08-25): 写型 run 的档位缺省 —— 生产两个真实入口默认落隔离 worktree ──────
