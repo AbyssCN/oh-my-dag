@@ -16,6 +16,22 @@ describe('bench-bootstrap (E1b 容器配置引导)', () => {
     expect(() => benchSeatModels({})).toThrow(/OMD_BENCH_MODEL/);
   });
 
+  test('★ 三角色模式 (owner E2 选型): 指挥/审核/worker 按组分派', () => {
+    const m = benchSeatModels({
+      OMD_BENCH_CONDUCTOR_MODEL: 'claude-opus-5',
+      OMD_BENCH_WORKER_MODEL: 'MiniMax-M3',
+      OMD_BENCH_VERIFIER_MODEL: 'gpt-5.6-sol',
+    });
+    expect(Object.keys(m).length).toBe(SEATS.length);
+    for (const id of ['conductor', 'escalation', 'fusion', 'graft']) expect(m[id]).toBe('bench:claude-opus-5');
+    for (const id of ['verifier', 'review', 'review-spec']) expect(m[id]).toBe('bench:gpt-5.6-sol');
+    for (const id of ['leaf', 'agent', 'judge', 'gate', 'lens']) expect(m[id]).toBe('bench:MiniMax-M3');
+  });
+
+  test('★ 三角色缺任一 → throw (不写半套)', () => {
+    expect(() => benchSeatModels({ OMD_BENCH_CONDUCTOR_MODEL: 'a', OMD_BENCH_WORKER_MODEL: 'b' })).toThrow(/齐给/);
+  });
+
   test('writeBenchConfig 保留既有其它键, models 整段覆盖', () => {
     const root = mkdtempSync(join(tmpdir(), 'bench-boot-'));
     try {

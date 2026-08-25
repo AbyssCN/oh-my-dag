@@ -23,10 +23,34 @@ import { join } from 'node:path';
 import { upsertProvider } from '../src/model/models-json';
 import { SEATS } from '../src/model/seats';
 
-/** 纯函数: 由 env 算出 config.json 的 models 段 (18 座全钉)。缺必填 → throw (响亮)。 */
+/** 三角色座位分组 (镜像生产 config: claude-code 组=指挥, openai-codex 组=审核, 其余=worker)。 */
+const CONDUCTOR_SEATS = new Set(['conductor', 'escalation', 'fusion', 'graft']);
+const VERIFIER_SEATS = new Set(['verifier', 'review', 'review-spec']);
+
+/**
+ * 纯函数: 由 env 算出 config.json 的 models 段 (18 座全钉)。
+ * 两种模式, fail-closed 不写半套:
+ *  - 三角色 (owner E2 选型): OMD_BENCH_CONDUCTOR_MODEL + OMD_BENCH_WORKER_MODEL +
+ *    OMD_BENCH_VERIFIER_MODEL 三者**齐**给 (缺任一 throw), 座位按组分派;
+ *  - 单模型回退: 只给 OMD_BENCH_MODEL → 18 座全钉一个坐标。
+ */
 export function benchSeatModels(env: Record<string, string | undefined>): Record<string, string> {
+  const c = env.OMD_BENCH_CONDUCTOR_MODEL?.trim();
+  const w = env.OMD_BENCH_WORKER_MODEL?.trim();
+  const v = env.OMD_BENCH_VERIFIER_MODEL?.trim();
+  const anyRole = Boolean(c || w || v);
+  if (anyRole) {
+    if (!(c && w && v))
+      throw new Error('bench-bootstrap: 三角色模式要求 CONDUCTOR/WORKER/VERIFIER 三个 OMD_BENCH_*_MODEL 齐给 (fail-closed, 不写半套配置)');
+    return Object.fromEntries(
+      SEATS.map((s) => [
+        s.id,
+        `bench:${CONDUCTOR_SEATS.has(s.id) ? c : VERIFIER_SEATS.has(s.id) ? v : w}`,
+      ]),
+    );
+  }
   const model = env.OMD_BENCH_MODEL?.trim();
-  if (!model) throw new Error('bench-bootstrap: OMD_BENCH_MODEL 缺失 (fail-closed, 不写半套配置)');
+  if (!model) throw new Error('bench-bootstrap: OMD_BENCH_MODEL (或三角色三件套) 缺失 (fail-closed, 不写半套配置)');
   const coord = `bench:${model}`;
   return Object.fromEntries(SEATS.map((s) => [s.id, coord]));
 }
@@ -64,8 +88,9 @@ if (import.meta.main) {
     process.stderr.write(`${(e as Error).message}\n`);
     process.exit(1);
   }
-  const modelId = process.env.OMD_BENCH_MODEL!.trim();
-  upsertProvider({ id: 'bench', baseUrl, keyEnv: 'OMD_BENCH_API_KEY', api, models: [{ id: modelId }] });
+  // provider 的 model 条目 = 座位映射里出现过的全部裸 id (单模型 1 个, 三角色 ≤3 个)。
+  const ids = [...new Set(Object.values(models).map((c) => c.slice('bench:'.length)))];
+  upsertProvider({ id: 'bench', baseUrl, keyEnv: 'OMD_BENCH_API_KEY', api, models: ids.map((id) => ({ id })) });
   const path = writeBenchConfig(process.cwd(), models);
-  process.stderr.write(`[bench-bootstrap] provider 'bench' → models.json · ${Object.keys(models).length} 座 → bench:${modelId} · ${path}\n`);
+  process.stderr.write(`[bench-bootstrap] provider 'bench' → models.json · ${Object.keys(models).length} 座 → {${ids.join(', ')}} · ${path}\n`);
 }
