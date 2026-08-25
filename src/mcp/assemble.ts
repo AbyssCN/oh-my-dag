@@ -29,6 +29,7 @@ import { CheckpointManager } from '../harness/continuity/checkpoint-manager';
 import { probeShellSandbox } from '../harness/hooks/shell-sandbox';
 import { HudMirror } from '../hud/mirror';
 import { createDagTools, type DagEngine } from './tools/dag-tools';
+import type { BranchStrategy } from '../harness/run-worktree';
 import { createMemoryTools } from './tools/memory';
 import { createPathfinderTools, type PathfinderToolDeps } from './tools/pathfinder';
 import { createDagResearchTool, type ResearchFanout } from './tools/research';
@@ -710,11 +711,24 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
     extSink(e);
   };
 
+  // ── #253 (2026-08-25): 写型 run 的档位缺省 —— 生产两个真实入口默认落隔离 worktree ──────
+  // 分层照 planCriticGate 先例 (`:652`): 引擎/工厂层缺省不动 (`prepareRunWorktree` 仍是 'head',
+  // 直调工厂的测试与外部调用零回归), **只在这一层翻** —— 这里才是 owner 真正点火的那条路。
+  //
+  // 为什么翻: head 档下的三笔账都是实付的 —— 共享树上多写者 commit 互相覆盖 (#165) ·
+  // 脏树起跑没有回滚对象 (rollback-anchor 的 dirty-tracked 态) · 收编闸只能排除 head 档。
+  // 当年 head 当默认的三条理由今天都失效了: merge 税有验收环在付 (#165② 判据绿自动收编) ·
+  // 磁盘有 #252 GC · 「隔离树看不见未提交的活」从代价变成纪律收益 (逼点火前先 commit)。
+  //
+  // OMD_RUN_BRANCH_DEFAULT=0 退回老默认。留这个逃生阀是因为**非 git 目录 / 不想要 worktree 的仓**
+  // 也在跑 omd —— 那里退回 head 是本来就有的降级路 (prepareRunWorktree 建不起来自己会退, 响亮)。
+  const defaultBranchStrategy: BranchStrategy = env.OMD_RUN_BRANCH_DEFAULT === '0' ? 'head' : 'branch';
+
   // 三层改名 (owner 2026-08-04, t7): 表内工具挂新名 map_*/solve/run, 旧名留 deprecated alias。
   // 真源 = tool-renames.ts 一张表; 文档/徽章两条闸 import 同表, 注册面与闸不可能漂移。
   const assembled = applyToolRenames([
     // continuity 恒开 (D-3): checkpoint 落 <cwd>/.omd/continuity/<runId>/, dag_run_plan resume 可续。
-    ...createDagTools({ engine, runRegistry, defaultConfig: buildDefaultConfig, continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd }, hudMirror, ledger, recorder, onNodeEvent: onNodeEventComposed }),
+    ...createDagTools({ engine, runRegistry, defaultConfig: buildDefaultConfig, continuity: { manager: new CheckpointManager(cwd), repoRoot: cwd }, hudMirror, ledger, recorder, onNodeEvent: onNodeEventComposed, defaultBranchStrategy }),
     createDagResearchTool(researchFanout, { runRegistry }),
     // 自主 goal 环 (P1 / INV-GOAL-1): buildDefaultConfig 传 thunk = 每次调用重解座位 (INV-MODEL-3)。
     // continuity 同 dag_run 恒开: 内层节点 checkpoint + **外层轮 journal** (INV-P2-6),
@@ -739,6 +753,9 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       // #251 (C-3 INV-9): 点火判据自证的实跑通道 —— 不传则该闸缺席 (接线点缺失, 非 fail-open)。
       // 复用装配期同一个白名单 runner (cwd 已烤死), 与引擎 commandRunner 单一实现。
       commandRunner,
+      // #253: 与 run 同一个缺省 —— 两个写型入口不许各有各的默认 (那正是 owner 撞到的
+      // 「以为隔离了其实在写主树」的对偶形态)。
+      defaultBranchStrategy,
     }),
     ...createMemoryTools({ memory }),
     // pathfinder 六件套 (TUI-less 决策地图: map/add/tickets/rule/deliver/prefetch, pull 式回流)。

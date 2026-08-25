@@ -240,6 +240,20 @@ export interface DagToolDeps {
   isAlive?: (pid: number) => boolean;
   /** dag_cancel 的 SIGTERM 接缝 (默认 process.kill(pid,'SIGTERM'); 测试注入 spy —— 真 kill 会杀测试进程)。 */
   killPid?: (pid: number) => void;
+  /**
+   * **写型 run 的档位缺省** (#253, 2026-08-25) —— 调用方没给 `branchStrategy` 时用它。
+   *
+   * 分层照 plan-critic 静态闸的先例 (引擎默认关 · 装配层开): 纯函数层 (`prepareRunWorktree`)
+   * 的缺省仍是 `head`, 直接调
+   * 引擎/工厂的测试与外部调用零回归; **翻默认只发生在装配层** (`assemble.ts` 注入 `'branch'`),
+   * 那才是 owner 真正点火的那条路。省略 = 保持 `head` 缺省。
+   *
+   * 当年 head 当默认的三条理由今天都已失效: merge 税有验收环在付 (#165② 判据绿自动收编) ·
+   * 磁盘有 #252 GC · 「隔离树看不见未提交的活」从代价变成纪律收益 (逼点火前先 commit)。
+   * 留下的是三笔实付账: 共享树上多写者 commit 互相覆盖 · 脏树起跑没有回滚对象 (rollback-anchor
+   * 的 `dirty-tracked` 态) · 收编只能排除 head 档。
+   */
+  defaultBranchStrategy?: BranchStrategy;
 }
 
 /**
@@ -390,7 +404,8 @@ function launchPlanRun(
     runRegistry.register(runId, { goal, meta: { tool: toolName } });
     runRegistry.start(runId);
   }
-  // 隔离档 (方案 A, 2026-08-14): 'branch' → 本 run 落隔离 worktree; 缺省 'head' 零回归。
+  // 隔离档 (方案 A, 2026-08-14): 'branch' → 本 run 落隔离 worktree。缺省由装配层给 (#253: 生产 =
+  // 'branch'); 工厂直调不注入时仍是 'head', 零回归。
   // 必须在 resolveDefaults 之前 —— 隔离档要用 worktree cwd 重建 leaf runner。
   const worktree = resolveRunWorktree(runId, opts.branchStrategy, resume, deps);
   let defaultConfig: Partial<ExecutorDagConfig> | undefined;
@@ -655,8 +670,10 @@ function resolveDefaults(
  *
  * 背景: 2026-08-13 夜 plana 9 个 run 全在同一棵主树上跑 (dag_run 此前没有隔离参数),
  * 零事故靠的是文件集恰好不相交; 次日 oh-my-dag 主树被并行 session 的 stash 实测竞走一次。
- * 语义与 dag_goal 的 branchStrategy 逐字一致 ('head' 缺省零回归; 'branch' 隔离 worktree,
- * 引擎永不自动合回)。resume 时盘上已有该 runId 的隔离树 → **强制 branch** —— 首跑在隔离树、
+ * 语义与 solve 的 branchStrategy 逐字一致 ('branch' 隔离 worktree, 引擎永不自动合回; 'head' 写主树)。
+ * #253 (2026-08-25) 起**缺省由装配层给** —— 生产两个入口都默认 'branch', head 变显式 opt-in;
+ * 这里与 `prepareRunWorktree` 的纯函数缺省仍是 'head' (工厂直调零回归)。
+ * resume 时盘上已有该 runId 的隔离树 → **强制 branch** —— 首跑在隔离树、
  * resume 却写主树是静默换树, 比不隔离更坏 (checkpoint 与半成品全在那棵树上)。
  */
 function resolveRunWorktree(
@@ -670,10 +687,15 @@ function resolveRunWorktree(
   // `prepareRunWorktree` 一处** —— 此前只有这里算过, 而 `goal.ts` 的 `solve` 没有,
   // 于是 solve 的 resume 会静默换树写主工作树(owner 现场撞到)。同一条判据两处各写一份
   // 就是那个洞的成因, 所以这里**不再自己算**, 原样把调用方要的传下去。
-  // `resume` 参数留着不用: 它现在只作签名上的可读性(判据在 helper 里按盘上有没有树判, 更准 ——
-  // 非 resume 的调用不可能撞上同 UUID 的树)。
-  void resume;
-  return prepareRunWorktree({ cwd: root, runId, ...(requested ? { strategy: requested } : {}) });
+  // #253: 调用方没给档位 → 用装配层的缺省 (生产 = `branch`)。两者都缺席才落到纯函数层的 `head`。
+  //
+  // ⚠ **缺省只对首跑生效, 续跑不套** —— 反过来会造出「静默换树」的**对偶形态**: 首跑落 head
+  // (老 run, 或显式 head), 半成品就在主工作树里未提交; 续跑若按新缺省建隔离树, 那棵树是 HEAD 的
+  // 干净 checkout, **看不见那些半成品**, 于是 agent 从零重做一遍。既有的反向保护 (盘上已有该
+  // runId 的隔离树 → 强制 branch) 只挡了 branch→head 那个方向, 挡不住这个方向。
+  // 续跑时把档位交回 `prepareRunWorktree` 按**盘上有没有那棵树**判 —— 那才是这个 run 首跑的真身。
+  const strategy = requested ?? (resume ? undefined : deps.defaultBranchStrategy);
+  return prepareRunWorktree({ cwd: root, runId, ...(strategy ? { strategy } : {}) });
 }
 
 /**
@@ -830,9 +852,10 @@ function makeDagRun(deps: DagToolDeps): OmdMcpTool {
         .enum(['head', 'branch'])
         .optional()
         .describe(
-          "'head' (default) = run writes the current working tree; " +
-            "'branch' = isolated git worktree on branch omd/run/<runId>; the engine never merges back — you do. " +
-            'Use branch whenever another session/run may be writing the same tree.',
+          "Where this run's writes land. 'branch' (DEFAULT) = isolated git worktree on branch " +
+            'omd/run/<runId>; the engine never merges back — you do. ' +
+            "'head' = write the current working tree; opt in only when you want the writes in front of you " +
+            'and no other session/run touches this tree.',
         ),
     },
     handler: async (args) => {
@@ -880,6 +903,11 @@ function makeDagRun(deps: DagToolDeps): OmdMcpTool {
       // **只在母进程做**: 子进程 (OMD_DAG_EXEC_CHILD) 照 spec 跑, 而 spec 里已是解析后的值 ——
       // 两处各解析一次会漂 (run-ignition.ts 对 branchStrategy 写的是同一条判据)。
       // branchStrategy 不在这套里: 它由 prepareRunWorktree 按**盘上有没有那棵树**判。
+      // #253: 档位在**母进程**定死后随 spec 过河 —— 子进程照 spec 跑, 不再自己解析一次
+      //   (上面那条「两处各解析一次会漂」逐字适用)。生产缺省来自装配层 = `branch`。
+      //   **续跑不套缺省** (理由见 resolveRunWorktree: 首跑 head 的半成品在主树里, 续跑建隔离树
+      //   等于让 agent 从零重做) —— 不转发, 子进程按盘上有没有那棵树判。
+      const effectiveStrategy = branchStrategy ?? (resume ? undefined : deps.defaultBranchStrategy);
       const cwd = deps.continuity?.repoRoot ?? process.cwd();
       const savedIgnition = resume ? loadIgnitionArgs(cwd, resume) : null;
       const { merged, recovered } = resolveResumeArgs('dag_run', { conductorModel, leafModel, maxFanout }, savedIgnition);
@@ -926,7 +954,7 @@ function makeDagRun(deps: DagToolDeps): OmdMcpTool {
           ...(runArgs.maxFanout ? { maxFanout: runArgs.maxFanout } : {}),
           ...(resume ? { resume } : {}),
           // 隔离档随 spec 过河 —— worktree 由**子进程**建 (它才是属主, 也是要在那棵树里跑的人)。
-          ...(branchStrategy ? { branchStrategy } : {}),
+          ...(effectiveStrategy ? { branchStrategy: effectiveStrategy } : {}),
         },
       });
       if (!spawned.ok) {
@@ -957,6 +985,13 @@ function makeDagRun(deps: DagToolDeps): OmdMcpTool {
           text:
             `runId: ${runId}\nstatus: running\n` +
             `(子进程 pid ${spawned.pid ?? '?'}, 日志 ${spawned.logPath})\n` +
+            // #253: 写落在哪必须**在派工的人正在读的字里**。默认翻成 branch 之后尤其 ——
+            // 以为写主树而实际写隔离树, 与反过来一样坏 (人回主树看不到活, 判成"白跑了")。
+            (effectiveStrategy
+              ? effectiveStrategy === 'branch'
+                ? `写入落点: 隔离 worktree (分支 omd/run/${runId}) — 引擎永不自动合回; 判据绿会在树内自动收编成 commit, 合进 main 由你扣扳机。建树失败会退回 head 并在子进程日志标注 degraded。\n`
+                : `写入落点: 当前工作树 (head 档, 显式指定) — 这次跑的写与你未提交的改动混在同一片 diff 里。\n`
+              : '') +
             // 恢复了必须**在派工的人正在读的字里**说 —— 只写进 logger 就是又一处
             // 「机制在、生产读不出来」(本仓反复付账的形态)。
             (recovered.length > 0 ? `续跑恢复自点火档案: ${recovered.join(', ')} (本次给了的以本次为准)\n` : '') +
@@ -986,7 +1021,7 @@ function makeDagRunPlan(deps: DagToolDeps): OmdMcpTool {
       branchStrategy: z
         .enum(['head', 'branch'])
         .optional()
-        .describe("'head' (default) = write current tree; 'branch' = isolated git worktree omd/run/<runId> (never auto-merged back)"),
+        .describe("'branch' (DEFAULT) = isolated git worktree omd/run/<runId>, never auto-merged back; 'head' = write the current tree (explicit opt-in)"),
     },
     handler: async (args) => {
       const { plan: planJson, task, leafModel, resume, maxFanout, branchStrategy } = args as {

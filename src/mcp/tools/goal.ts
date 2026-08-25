@@ -57,6 +57,12 @@ export interface GoalToolDeps {
   runRegistry: RunRegistry;
   cwd: string;
   /**
+   * **写型 run 的档位缺省** (#253, 2026-08-25) —— 调用方没给 `branchStrategy` 时用它。
+   * 与 `DagToolDeps.defaultBranchStrategy` 同一条判据、同一层 (装配层注入 'branch',
+   * 纯函数层 `prepareRunWorktree` 的缺省仍是 'head' → 工厂直调零回归)。理由见彼处。
+   */
+  defaultBranchStrategy?: BranchStrategy;
+  /**
    * 决策地图后端解析器 (D-6①③ 的注入接缝; 省略 = `resolveBackend(cwd)` —— env OMD_PATH_BACKEND >
    * 仓库配置 > md)。测试注入替身。**解析抛错 = 挂票缺席不是 run 失败**: gh 探测失败不该让
    * 一次 solve 起不来 (票是控制面, run 是执行面 —— 控制面缺件时执行面照跑, 只是这趟对图不可见)。
@@ -462,8 +468,10 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         .enum(['head', 'branch'])
         .optional()
         .describe(
-          "Where this run's writes land. 'head' (default) = current working tree, today's behavior. " +
-            "'branch' = isolated git worktree on branch omd/run/<runId>; the engine never merges back — you do.",
+          "Where this run's writes land. 'branch' (DEFAULT) = isolated git worktree on branch " +
+            'omd/run/<runId>; the engine never merges back — you do (a green acceptance auto-commits inside that tree). ' +
+            "'head' = the current working tree; opt in only when you want the writes in front of you and nothing " +
+            'else writes this tree. NOTE: an isolated tree is a clean checkout of HEAD — commit first or the run cannot see your uncommitted work.',
         ),
       cwd: z
         .string()
@@ -521,6 +529,15 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
       if (!goal?.trim()) {
         return { content: [{ type: 'text' as const, text: 'dag_goal: goal 必填' }], isError: true };
       }
+      // #253 (2026-08-25): 档位缺省来自装配层 —— 生产 solve 默认落隔离 worktree, head 变显式 opt-in。
+      // **在这里定死一次**, 三处消费者 (detached 转发 · 回执 · prepareRunWorktree) 读同一个值:
+      // detached 那条路把它显式写进 `--branch-strategy`, worker 侧不再自己解析一次 (两处各解析
+      // 一次会漂 —— 母进程回执说 branch 而 worker 落 head 是最坏的那种漂)。
+      //
+      // ⚠ **缺省只对首跑生效**: 续跑不套 (dag-tools.ts `resolveRunWorktree` 写了同一条判据的全文 ——
+      // 首跑 head 的半成品在主工作树里未提交, 续跑按新缺省建隔离树就看不见它们)。续跑时交回
+      // `prepareRunWorktree` 按盘上有没有那棵树判。
+      const effectiveStrategy = branchStrategy ?? (resume ? undefined : deps.defaultBranchStrategy);
       // ── #147 点火锚预检: goal 文本里的别仓路径**不改执行锚** ─────────────────────
       // B0 实测 (f5984f2b): 锚错的 solve 烧完 1.11M in 才看得见, 症状与"活没干成"同形。
       // resume 是续跑不是点火, 首跑已裁过锚 (worker 面走 resume 语义, 其 --cwd 即锚决定) → 不再过。
@@ -608,7 +625,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           // 三个并发 branch run 全落主树。worker 内是同一个 dag_goal handler, 转发即隔离
           // (prepareRunWorktree 全仓唯一实现; 状态锚随 --cwd 留主仓, 执行锚由 handler 内
           // buildConfig(worktree.cwd) 转向 —— 双 cwd 分离在既有进程内路径上本就成立)。
-          ...(branchStrategy ? ['--branch-strategy', branchStrategy] : []),
+          ...(effectiveStrategy ? ['--branch-strategy', effectiveStrategy] : []),
           ...(sddPath ? ['--sdd-path', sddPath] : []),
           // 双端转发 (SDD goal-worker --slug, 2026-08-11): 显式 slug 直通 worker —— 与 --sdd-path
           // 同款条件转发; 不带 slug 时逐字节不展开 (INV-1), 无死参数。
@@ -640,7 +657,11 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
               `runId: ${runId}\nstatus: detached${pid ? ` (pid ${pid})` : ''}\n` +
               // 隔离模式要念出来 —— 调用方以为隔离而实际主树, 比不隔离更坏 (worker 内建树失败
               // 退 head 的 degradedReason 落回执与日志, 这里先把"申请了什么"说清)。
-              (branchStrategy === 'branch' ? `branchStrategy: branch — worker 将建隔离 worktree (omd/run/${runId}); 建树失败会退回 head 并在日志/回执标注 degraded。\n` : '') +
+              (effectiveStrategy === 'branch'
+                ? `branchStrategy: branch${branchStrategy ? '' : ' (缺省)'} — worker 将建隔离 worktree (omd/run/${runId}); 建树失败会退回 head 并在日志/回执标注 degraded。\n`
+                : effectiveStrategy === 'head'
+                  ? 'branchStrategy: head (显式) — 写落在当前工作树, 与你未提交的改动混在同一片 diff 里。\n'
+                  : '') +
               `日志: ${logPath}\n` +
               ignitionForecastLine(dag, sddPath) +
               numericClaimLine(goal) +
@@ -769,14 +790,15 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
       }
 
       // ── R2 branch strategy (D-Y① / D-AB): 这次跑的写落在哪 ──────────────────────
-      // 缺省 `head` = 今天的行为, 零回归。`branch` 才建隔离 worktree, 而且**引擎永不自动合回**
-      // (那是写主干, 按 D-AB 属"需批准"那一档; 同 `path_deliver`, 扳机归 owner)。
+      // #253 起缺省 `branch` (装配层给, 见 GoalToolDeps.defaultBranchStrategy); `head` 显式 opt-in。
+      // `branch` 建隔离 worktree, 而且**引擎永不自动合回** (那是写主干, 按 D-AB 属"需批准"那一档;
+      // 同 `path_deliver`, 扳机归 owner)。
       // ⚠ 建不起来会**退回 head 并带 degradedReason** —— 那一格必须念进回话, 否则调用方以为
       // 写在隔离树里而实际写的是主树, 比不隔离坏得多。
       const worktree = prepareRunWorktree({
         cwd: deps.cwd,
         runId,
-        ...(branchStrategy ? { strategy: branchStrategy } : {}),
+        ...(effectiveStrategy ? { strategy: effectiveStrategy } : {}),
       });
       // ⚠ **隔离档必须重建 leaf runner** (2026-07-31 live 实测揪出): 上面那次 `buildConfig()` 是
       // 起跑自检, 拿到的 runner 把**装配期**的 cwd 烤死了; 而 `runGoal` 的 `cwd` 参数只管 spec
