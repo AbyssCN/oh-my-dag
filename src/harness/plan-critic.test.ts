@@ -39,8 +39,8 @@ function mkEntry(over: Partial<InventoryEntry> & Pick<InventoryEntry, 'id' | 'na
     defer_mode: over.defer_mode ?? 'sync',
     signature: over.signature ?? { any: 'object' },
     oracle: over.oracle ?? { kind: 'none', gateScriptRef: 'none' },
-    probe_state: over.probe_state ?? 'ok',
-    applicability: over.applicability ?? 'always',
+    probe_state: over.probe_state ?? 'PROBED_OK',
+    applicability: over.applicability ?? 'APPLICABLE',
     idle_days: over.idle_days ?? 0,
     provenance: over.provenance ?? {
       registered_at: '2026-01-01T00:00:00Z',

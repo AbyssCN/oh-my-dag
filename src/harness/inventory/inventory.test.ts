@@ -64,8 +64,8 @@ function validEntry(overrides: Record<string, unknown> = {}): InventoryEntry {
     defer_mode: 'eager',
     signature: { inputs: [], outputs: [] },
     oracle: { kind: 'command', gateScriptRef: 'test/fixtures/ok.sh' },
-    probe_state: 'untested',
-    applicability: 'always',
+    probe_state: 'UNPROBED',
+    applicability: 'APPLICABLE',
     idle_days: 0,
     provenance: {
       registered_at: '2026-01-01T00:00:00Z',

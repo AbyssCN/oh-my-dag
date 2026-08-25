@@ -20,6 +20,7 @@
 import { openSync, closeSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
+import { APPLICABILITIES, PROBE_STATES } from './health';
 
 // ─── 共享文本 ─────────────────────────────────────────────────────────────────
 /** 主键字面: `<source>:<name>@<semver>`。source 段允许字母数字下划线点横线冒号,
@@ -57,11 +58,13 @@ const signatureShape = z
   })
   .strict();
 
-/** 健康组: S1 只立字段 (探针实装属 S2)。 */
+/** 健康组: 枚举与断言共用 health.ts 同一份 (C-2 / INV-6 + D-3)。
+ *  S1 立字段 + z.string().min(1) 是空旋钮 (C-2 现场 ②: 全仓 fixture 五种拼法),
+ *  本片收成 enum;非法值 → zod issue 字面含字段名 (path.join('.') + 字段值)。 */
 const healthShape = z
   .object({
-    probe_state: z.string().min(1),
-    applicability: z.string().min(1),
+    probe_state: z.enum(PROBE_STATES),
+    applicability: z.enum(APPLICABILITIES),
     failure_reason: z.string().optional(),
     idle_days: z.number().int().nonnegative(),
   })
