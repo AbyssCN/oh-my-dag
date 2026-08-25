@@ -609,10 +609,33 @@ export function ledgerPath(): string {
 }
 
 /**
+ * 中央台账不可写时的回退路径 (2026-08-26, bench 容器实测):
+ * omd 以**只读挂载**分发时 (workbuddy-bench split-mount → /opt/omd/pkg), `mkdir <仓根>/.omd`
+ * EROFS —— 而记账属四层理念的**告知层**, fail-open 不许挡主流程; 此前这里直接抛, 把整个
+ * goal-worker 砸死在第一行, 是违反自家 ④ 层契约的实测样本。
+ * 回退序: OMD_DATA_HOME → cwd/.omd (回到 2026-08-05 前的 per-cwd 口径, 代价 = 该跑不进中央
+ * 读数板, 证据行必打)。
+ */
+export function ledgerPathWritable(): string {
+  const central = ledgerPath();
+  try {
+    mkdirSync(dirname(central), { recursive: true });
+    return central;
+  } catch (e) {
+    const fallbackRoot = process.env.OMD_DATA_HOME?.trim() || join(process.cwd(), '.omd');
+    // fail-open 但留证据: 这一行是"为什么中央读数板缺了这跑"唯一的解释。
+    process.stderr.write(
+      `[omd/dag-record] 中央台账不可写 (${(e as Error).message}) → 回退 ${fallbackRoot}/dag-runs.db (该跑不进中央读数板)\n`,
+    );
+    return join(fallbackRoot, 'dag-runs.db');
+  }
+}
+
+/**
  * 造一个运行留痕器。path 默认 `ledgerPath()` (持久); ':memory:' 或注入 db = 瞬时/测试。
  */
 export function createDagRecorder(opts: { path?: string; db?: Database } = {}): DagRecorder {
-  const path = opts.path ?? ledgerPath();
+  const path = opts.path ?? ledgerPathWritable();
   if (!opts.db && path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
   const db = opts.db ?? new Database(path);
   // C-1 独占 (2026-08-19): 20s busy timeout, 让并发读卡到锁释放而不是立刻 SQLITE_BUSY。
