@@ -107,7 +107,8 @@ import type { RepoCheck } from './repo-checks';
 import type { GateSpawn } from './post-leaf-gate';
 import { logger } from '../logger';
 import { callModel } from '../model';
-import { resolvePiApiKey, resolvePiModel } from '../model/pi-transport';
+import { piModelFromProviderConfig, resolvePiApiKey, resolvePiModel, type PiModel } from '../model/pi-transport';
+import { getProvider } from '../model/providers';
 import { CLAUDE_SDK_PROVIDER, effortOf } from '../model/claude-sdk-complete';
 import { officialAdvisorModelId, runSdkAgentLoop } from './claude-sdk-loop';
 import { createAdvisorTool, createTranscriptRecorder } from './advisor-tool';
@@ -130,6 +131,28 @@ import { isStrongCoord } from '../model/model-ratings';
  * 档位判据原样保留(TR-INV-5 / 强模型档):强模型只吃 house-rules,弱模型吃全量脚手架,
  * 两个开关仍是硬关(纯命令叶可全关)。**拼法保持字节稳定**——改这里 = 全 leaf cache 失效。
  */
+/**
+ * leaf 模型解析 —— 与 `callModel` 同两级序 (src/model/index.ts:129 同款): **自有 registry 先、
+ * pi 目录后**。registry 命中时端点/凭证以 registry 为准 (baseUrl 意图不许被目录覆盖),
+ * 目录命中时凭证走既有 `resolvePiApiKey` 链 (apiKey 缺席)。两级皆 miss → undefined。
+ *
+ * 为什么要有它 (2026-08-26 bench 终局根因): 此前 leaf 只查 pi 目录, models.json /
+ * registerProvider 注册的自定 provider (bench 等) 在 leaf 通道恒解析失败 —— 同一坐标
+ * callModel 一路通、agent leaf 一路断, 所有写文件节点 infra-error 零产出。
+ * 反向自检: 删掉 registry 分支 → agent-leaf-registry-resolve.test.ts 前两条当场红。
+ */
+export function resolveLeafModel(
+  provider: string,
+  modelId: string,
+): { piModel: PiModel; apiKey?: string } | undefined {
+  const cfg = getProvider(provider);
+  if (cfg) {
+    return { piModel: piModelFromProviderConfig(provider, modelId, cfg), apiKey: cfg.apiKey };
+  }
+  const catalog = resolvePiModel(provider, modelId);
+  return catalog ? { piModel: catalog } : undefined;
+}
+
 export function agentScaffold(opts: {
   profile: 'auto' | 'weak' | 'strong' | 'off';
   model: string;
@@ -1524,9 +1547,11 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // ⚠ sandboxRoot 模式下 claude CLI 的凭证目录 (~/.claude) 不在 bwrap 视图里 —— 订阅座位
     // 暂不支持沙箱叶, 要用得先把凭证挂载进视图 (二期, 见 NOTES)。
     const isSdkChannel = provider === CLAUDE_SDK_PROVIDER;
-    // 坐标解析与单发通道 (`callModel`) 走**同一个** resolver —— 两栈各解析一次正是"座位在这条路上
-    // 能解出来、在那条路上解不出来"的来源。
-    const piModel = isSdkChannel ? null : resolvePiModel(provider, modelId);
+    // 坐标解析与单发通道 (`callModel`) 同两级序: **自有 registry 先、pi 目录后** (index.ts:129 同款)。
+    // 2026-08-26 bench 终局根因: 此前这里只查 pi 目录, models.json/registerProvider 注册的自定
+    // provider (如 bench) 在 leaf 通道恒解析失败 → 所有写文件节点 infra-error 零产出, 四批 patch 全 0。
+    const leafResolved = isSdkChannel ? undefined : resolveLeafModel(provider, modelId);
+    const piModel = leafResolved?.piModel ?? null;
     if (!piModel && !isSdkChannel) {
       throw new Error(
         `[agent-leaf] 坐标 '${model}' 解析不出模型: provider '${provider}' 既不在自有 registry 也不在 pi-ai 目录。`,
@@ -2195,8 +2220,9 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       // 由 pi 按模型 thinkingLevelMap 再夹一次 (它比我们更清楚自家目录里哪档存在)。
       ...(thinkingLevel !== 'off' ? { reasoning: thinkingLevel } : {}),
       // 凭证**每轮现取** (auth.json → env, 与单发通道同一条解析): OAuth token 会在长工具阶段中途过期,
-      // 起跑时取一次的写法到那时就是 401。
-      getApiKey: (p: string) => resolvePiApiKey(p),
+      // 起跑时取一次的写法到那时就是 401。registry 解析出的 provider (bench 等) 凭证在 registry
+      // 条目里, auth.json/env 链查不到 —— 先取 registry 的 key (与 callModel 传 cfg.apiKey 同源)。
+      getApiKey: async (p: string) => leafResolved?.apiKey ?? (await resolvePiApiKey(p)),
       // drift 注入走 transformContext: 它只改**这一次请求**看到的消息, 不写回 context ——
       // 于是"检出 spin → 注一次"是天然的边沿行为, 不会在 transcript 里堆成 N 份 checklist。
       transformContext: async (messages: AgentMessage[]) => {
