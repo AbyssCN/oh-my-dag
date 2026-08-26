@@ -34,6 +34,7 @@
  *
  * @module
  */
+import { gateAllowReason } from '../gates/gate-allow';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { logger } from '../logger';
@@ -194,6 +195,18 @@ function lineText(text: string, lineNo: number): string {
  *  ③ 把 `lineText` 那条豁免删掉 → `\`x.ts\` (新建)` 被误判 path-missing (本片未干);
  *  ④ 把 `extractBackticks` 的「跨行吞」删掉 → 围栏里的整张表当一行 spans 跑, 误报炸。
  */
+/**
+ * 这一行对 coord-check 豁免吗。
+ *
+ * 两个出口:
+ *   - `新建` —— 既有约定: 「这个路径将要新建」, 盘上不在是正常的。
+ *   - `gate-allow(coord-check): <理由>` —— 引用语境: 这一行在**说明**某个坐标/符号,
+ *     而不是在用它。本闸只看字面, 不加这条就只能靠改述绕开, 反面教材随之磨掉。
+ */
+function isCoordExempt(line: string): boolean {
+  return line.includes('新建') || gateAllowReason(line, 'coord-check') !== null;
+}
+
 export function checkCoords(text: string, opts: CoordCheckOpts): CoordFinding[] {
   const read = opts.readFile ?? defaultRead;
   const tokens = extractBackticks(text);
@@ -208,7 +221,7 @@ export function checkCoords(text: string, opts: CoordCheckOpts): CoordFinding[] 
       const path = m1.groups!.path!;
       const lineNo = Number(m1.groups!.line);
       const key = `path-line:${path}:${lineNo}`;
-      if (!seen.has(key) && !lineText(text, tok.line).includes('新建')) {
+      if (!seen.has(key) && !isCoordExempt(lineText(text, tok.line))) {
         seen.add(key);
         const content = read(resolve(opts.root, path));
         if (content === null) {
@@ -245,7 +258,7 @@ export function checkCoords(text: string, opts: CoordCheckOpts): CoordFinding[] 
     if (m2 && tok.content.includes('/')) {
       const path = m2.groups!.path!;
       const key = `path:${path}`;
-      if (!seen.has(key) && !lineText(text, tok.line).includes('新建')) {
+      if (!seen.has(key) && !isCoordExempt(lineText(text, tok.line))) {
         seen.add(key);
         const content = read(resolve(opts.root, path));
         if (content === null) {
@@ -277,6 +290,10 @@ export function checkCoords(text: string, opts: CoordCheckOpts): CoordFinding[] 
         // 路径本身不存在 → 由形状 ①② 那边报, 这里跳过避免「两条 finding 同句」
         if (content === null) continue;
         if (content.includes(tok.content)) continue;
+        // 引用语境豁免 (2026-08-26): 同行带 `gate-allow(coord-check): <理由>` 即放行。
+        // 本闸按「同句符号 × 坐标」笛卡尔配对, 说明「某个符号是编造的 / 已被删掉」这类
+        // 更正句必然把它写出来 —— 五次实撞里有三次是这个形态。
+        if (isCoordExempt(lineText(text, tok.line))) continue;
         const key = `id:${path}:${tok.content}`;
         if (seen.has(key)) continue;
         seen.add(key);

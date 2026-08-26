@@ -48,6 +48,7 @@ import { describe, expect, test } from 'bun:test';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
+import { gateAllowReason } from '../harness/gates/gate-allow';
 import { COORD_RE } from '../harness/init/headless-config';
 
 const SRC_ROOT = join(import.meta.dir, '..', '..', 'src');
@@ -130,6 +131,7 @@ export function scanLiteralCoords(srcRoot: string): CoordHit[] {
     const rel = relative(process.cwd(), f).replace(/\\/g, '/');
     if (isExcluded(rel)) continue;
     const src = readFileSync(f, 'utf8');
+    const srcLines = src.split('\n');
     LITERAL_COORD.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = LITERAL_COORD.exec(src)) !== null) {
@@ -137,6 +139,10 @@ export function scanLiteralCoords(srcRoot: string): CoordHit[] {
     if (!COORD_RE.test(coord)) continue; // 双闸: URL / 逗号列表等不是坐标。
     if (NOISE_PROVIDERS.has(coord.slice(0, coord.indexOf(':')))) continue; // 非模型命名空间。
     const line = src.slice(0, m.index).split('\n').length;
+    // 引用语境豁免 (2026-08-26): 同行带 `gate-allow(seat-coordinate): <理由>` 即放行。
+    // 解释「某个坐标写法不该出现」的注释必须把它写出来, 而本闸只看字面 —— 五次实撞,
+    // 每次都只能靠改述绕开, 代价是反面教材被磨掉。理由必须非空, 空标记不生效。
+    if (gateAllowReason(srcLines[line - 1] ?? '', 'seat-coordinate') !== null) continue;
     hits.push({ file: rel, line, coord });
     }
   }

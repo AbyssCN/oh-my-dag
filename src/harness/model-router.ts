@@ -145,8 +145,7 @@ export function createModelRouter(opts: ModelRouterOpts = {}): ModelRouterHandle
       // 不得进入 bandit reward (否则 ε-greedy 会把 probe 段的 0-cost 调用学成「便宜 arm」,
       // 把真 model arm 学偏)。架构上 probe 住在 usage.probe, leaves 住在 results,
       // 二者不交叉 —— 此处 bucket/model 哨兵是兜底: 调用方若把 bucket='probe' 或
-      // model 带 probe 前缀 (此处刻意不写出那个字面形式 —— seat 闸不区分「使用」与「引用」)
-      // 强塞进来, 即抛错。Bucket 名约定 = 'inproc' | 'agent' |
+      // model='probe:...' 强塞进来, 即抛错。 gate-allow(seat-coordinate): 这是被本函数**拒绝**的输入形态, 不是要用的坐标Bucket 名约定 = 'inproc' | 'agent' |
       // 'multimodal'; 'probe' 命中说明调用方走错了入口。
       // ⚠ 用 split 而不是 startsWith + 模板串拼前缀: 后者会在源码里留下一个形似
       // `provider:model` 的字面串, 被 src/eval/seat-coordinate-gate.test.ts 判成硬编码座位坐标。
