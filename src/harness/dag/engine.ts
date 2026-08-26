@@ -4426,7 +4426,46 @@ async function executePlan(
     const node = plan!.nodes[id]!;
     nodeStartedAt.set(id, Date.now());
     emitNodeEvent({ type: 'start', id, kind: nodeKind(node) });
-    const budget = node.max_retry ?? 0;
+    /**
+     * 这一次失败还给不给重试。
+     *
+     * ## 为什么不是常量 (2026-08-26)
+     *
+     * 原来是 `node.max_retry ?? 0` —— 与**失败的性质**无关的一个常数。后果:
+     * conductor 画图时不写 max_retry(它几乎从不写), 于是任何失败都零重试。
+     * repo-checks.ts 的文件头注释明写「FAIL → 引擎按既有 L0 重试机制」, 而那条通道
+     * 从设计之日起就没通过电: 两发实装 run 的完整日志里「L0 节点级重试」出现 0 次。
+     *
+     * 判据本仓早就有了, 只是没人接: `FAILURE_KIND_INFO[kind].retryable` 是**三态**
+     * (true / false / null), node-failure.ts 的注释还专门写了「把『不知道』记成 false
+     * 会让 heal 回路白白放弃一个本可重试的节点」。这里把它接上。
+     *
+     * ## 两条规则(2026-08-26 二改,收窄)
+     *
+     * 1. **显式 max_retry 压过一切** —— conductor 写了就听它的, 包括写 0。
+     * 2. **抛错 → 给 1 次**, 其余一律 0。`node-failure.ts:10` 已经写明: 最典型的可重试失败
+     *    (429 / 网络) 是 generate 抛出来的, 不是 status='failed' —— 只看 status 的重试恰好
+     *    漏掉最该重试的那类。抛错这条路径**没有 failureKind 可查**, 引擎不补就永远没人补。
+     *
+     * ## 为什么**不**拿 FAILURE_KIND_INFO.retryable 做自动重试
+     *
+     * 初版这么写过, 全量当场 11 红 (G-3 引擎接缝 / G-4 quorum fail-skip / 产物闸 等,
+     * 它们断言的正是「失败后零 generate 调用、零执行零 token」)。
+     *
+     * 根因是我把**知识**当成了**策略**: `retryable` 回答的是「原样重试有没有可能成功」,
+     * 而 `stall` 这一格的 nextAction 写得很清楚 —— 「换池 / 重试, 是 **provider 侧**的事」。
+     * 那是给上层 (heal 回路 / conductor 重画 / owner) 的判断依据, 不是「引擎当场再跑一遍」
+     * 的授权。照它自动重试, 超时类失败会原地翻倍等待, 而这一轮几乎必然同样超时。
+     *
+     * 三态表仍然有用, 只是**消费者不是这里** —— 它服务的是失败之后由谁、以什么方式再来一次。
+     *
+     * 上限就是 1: 这是「让通道通电」, 不是「多试几次碰运气」。要更多轮 conductor 显式写。
+     */
+    const budgetFor = (prevErr: unknown): number => {
+      if (node.max_retry !== undefined) return node.max_retry;
+      return prevErr !== undefined ? 1 : 0;
+    };
+    const budget = node.max_retry ?? 0; // 只给日志用 —— 真判定走 budgetFor
     // 上一次的败因 → 下一次的 prompt。**抛错也算一次失败**: 最典型的可重试失败 (429 / 网络抖动)
     // 是 generate 抛出来的, 不是 status='failed' —— 只看 status 的重试恰好漏掉最该重试的那类。
     const causeOf = (prevLeaf: LeafResult | undefined, prevErr: unknown): string => {
@@ -4522,7 +4561,7 @@ async function executePlan(
         break;
       }
       if (leaf && leaf.status !== 'failed') break; // done / skipped — 重试无意义
-      if (attempt >= budget) break; // 预算用尽
+      if (attempt >= budgetFor(thrown)) break; // 预算用尽 (缺省只对抛错补一次, 见 budgetFor)
       if (leaf) spent.push(leaf.usage);
     }
     } finally {

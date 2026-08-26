@@ -60,6 +60,35 @@ describe('L0 节点级重试 (INV-P2-2)', () => {
     expect(r.results.a?.output).toContain('boom-3');
   });
 
+  // ── 缺省预算按失败性质定 (2026-08-26) ──────────────────────────────────────
+  //
+  // 原来 budget 是 `node.max_retry ?? 0` —— 与失败性质无关的常数。conductor 几乎从不写
+  // max_retry, 于是任何失败都零重试, 而 repo-checks.ts 头注写明的「FAIL → L0 重试」
+  // 从设计之日起没通过电 (两发实装 run 的日志里「L0 节点级重试」出现 0 次)。
+  // 现在缺省时查 FAILURE_KIND_INFO[kind].retryable —— 那张三态表本仓早就有, 只是没人接。
+  //
+  // 证伪: 把 budgetFor 改回 `node.max_retry ?? 0` ⇒ 下面第一、二条红。
+  test('★ 不设 max_retry + 抛错一次 → 自动给 1 次重试 (抛错是最典型的可重试失败)', async () => {
+    const prompts: string[] = [];
+    const r = await runExecutorDagWithPlan(planWith(), cfg(flakyGenerate(1, prompts)));
+    expect(prompts).toHaveLength(2);
+    expect(r.results.a?.status).toBe('done');
+  });
+
+  test('★ 不设 max_retry + 一直抛错 → 恰好 2 次后停 (自动补的是 1 次, 不是无限)', async () => {
+    const prompts: string[] = [];
+    const r = await runExecutorDagWithPlan(planWith(), cfg(flakyGenerate(99, prompts)));
+    expect(prompts).toHaveLength(2);
+    expect(r.results.a?.status).toBe('failed');
+  });
+
+  test('★ 显式 max_retry=0 + 抛错 → 只跑一次 (人的显式决定压过自动补)', async () => {
+    const prompts: string[] = [];
+    const r = await runExecutorDagWithPlan(planWith(0), cfg(flakyGenerate(99, prompts)));
+    expect(prompts, '写了 0 就是 0 —— 自动重试不许覆盖显式旋钮').toHaveLength(1);
+    expect(r.results.a?.status).toBe('failed');
+  });
+
   test('带因重试: 第 2 次的 prompt 含第 1 次的失败原因, 不是原样重放', async () => {
     const prompts: string[] = [];
     await runExecutorDagWithPlan(planWith(1), cfg(flakyGenerate(1, prompts)));

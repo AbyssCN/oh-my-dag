@@ -115,7 +115,15 @@ describe('G-4 quorum fail-skip (D-7v2)', () => {
     expect(r.results.C!.status).toBe('skipped');
     expect(r.results.B!.output).toContain('quorum');
     expect(r.results.B!.usage).toEqual({ in: 0, out: 0 });
-    expect(calls).toEqual(['A']); // B/C 从未调模型
+    // ⚠ 2026-08-26: 断言从「calls 恰为 ['A']」改成「B/C 不在 calls 里」。
+    // 本条要验的是**级联 skip**(注释原话: B/C 从未调模型), A 被调几次不是它的射程;
+    // 而 engine 的缺省重试预算现在会给**抛错**补一次 (budgetFor —— 429/网络那类是
+    // generate 抛出来的, 见 node-failure.ts:10), 于是 A 出现两次。
+    // 代价说明白: 原断言顺带也锁住了「A 只跑一次」, 改后不再锁 —— 那一格由
+    // node-retry.test.ts 的三条专用用例覆盖, 不靠这里兼职。
+    expect(calls).not.toContain('B');
+    expect(calls).not.toContain('C');
+    expect(calls.every((c) => c === 'A'), '除 A 外不该有任何节点被调').toBe(true);
     // skipped 节点不发 start, 只发 settle(status:'skipped')
     expect(events.filter((e) => e.type === 'start').map((e) => (e as { id: string }).id)).toEqual(['A']);
     const settles = events.filter((e) => e.type === 'settle') as Array<{ id: string; status: string }>;
@@ -152,7 +160,9 @@ describe('G-4 quorum fail-skip (D-7v2)', () => {
       makeConfig(generate),
     );
     expect(r.results.synth!.status).toBe('skipped');
-    expect(calls.sort()).toEqual(['s1', 's2']);
+    // 同上: 只锁「synth 从未被调」, 不锁 s1/s2 各跑几次 (抛错补一次重试)。
+    expect(calls).not.toContain('synth');
+    expect(new Set(calls)).toEqual(new Set(['s1', 's2']));
   });
 
   test('requires:K — done 依赖不足 K → skipped; 达到 K → 跑', async () => {
