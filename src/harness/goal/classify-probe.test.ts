@@ -173,3 +173,59 @@ describe('E-T1: 测试套仓强偏执行型 (bench 批7/8 docs-only 病的上游
     expect(classifyPrompt('目标')).not.toContain('强烈偏向 "executable"');
   });
 });
+
+describe('E-T1b: marker 仓探索型机械追问一次 (散文偏置批9实证不够, 做成会红的闸)', () => {
+  // 反向自检: 删掉 classifyGoal 里的 marker-仓探索型追问分支 → 第一条当场红 (calls=1)。
+  const exploratoryJson = JSON.stringify({ tier: 'simple', acceptance_kind: 'exploratory', learning_goal: '摸清结构', affordable_loss: '1轮' });
+  const executableJson = JSON.stringify({ tier: 'simple', acceptance_kind: 'executable', command: 'pytest -q', expected_exit: 0 });
+
+  test('marker 仓首答探索型 → 恰好追问 1 次, 追问文含测试套自证要求, 二答照收', async () => {
+    const root = freshRoot();
+    writeFileSync(join(root, 'pyproject.toml'), '[tool.pytest]');
+    const calls: string[] = [];
+    const generate: GenerateFn = async (req) => {
+      calls.push(String((req.messages[0] as { content: string }).content));
+      return { text: exploratoryJson } as never;
+    };
+    const c = await classifyGoal('修一个 bug', { generate, model: 'faux:clf', repoRoot: root });
+    expect(calls.length).toBe(2);
+    expect(calls[1]).toContain('测试套');
+    expect(c.acceptance.kind).toBe('exploratory');
+  });
+
+  test('marker 仓首答执行型 → 不追问 (calls=1)', async () => {
+    const root = freshRoot();
+    // pyproject + pytest 判据: 语言一致 (js 仓给 pytest 会被 lang-mismatch 闸拦, 那是另一条闸的活)
+    writeFileSync(join(root, 'pyproject.toml'), '[tool.pytest]');
+    const calls: string[] = [];
+    const generate: GenerateFn = async (req) => {
+      calls.push(String((req.messages[0] as { content: string }).content));
+      return { text: executableJson } as never;
+    };
+    const c = await classifyGoal('修一个 bug', { generate, model: 'faux:clf', repoRoot: root });
+    expect(calls.length).toBe(1);
+    expect(c.acceptance.kind).toBe('executable');
+  });
+
+  test('无 marker 仓首答探索型 → 不追问 (存量语义, calls=1)', async () => {
+    const root = freshRoot();
+    const calls: string[] = [];
+    const generate: GenerateFn = async () => { calls.push('x'); return { text: exploratoryJson } as never; };
+    const c = await classifyGoal('摸清一个领域', { generate, model: 'faux:clf', repoRoot: root });
+    expect(calls.length).toBe(1);
+    expect(c.acceptance.kind).toBe('exploratory');
+  });
+
+  test('二答转执行型 → 收执行型 (追问真的能翻案)', async () => {
+    const root = freshRoot();
+    writeFileSync(join(root, 'pyproject.toml'), '[tool.pytest]');
+    let n = 0;
+    const generate: GenerateFn = async () => {
+      n++;
+      return { text: n === 1 ? exploratoryJson : executableJson } as never;
+    };
+    const c = await classifyGoal('修一个 bug', { generate, model: 'faux:clf', repoRoot: root });
+    expect(n).toBe(2);
+    expect(c.acceptance.kind).toBe('executable');
+  });
+});

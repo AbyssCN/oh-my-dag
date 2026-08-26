@@ -446,10 +446,27 @@ export async function classifyGoal(
 
   try {
     const first = await ask('');
-    // 只在"本来想判执行型、却因命令跑不起来被降级"这一种情况下重试 (fallbackExploratory 的
-    // 原因串是那次降级的唯一凭据)。模型自己老实选的探索型不重试 —— 那是它的判断, 不是失误。
+    // 重试只有两种情况: ① "想判执行型却因命令跑不起来被降级" (闸拒, 原因串是唯一凭据);
+    // ② E-T1b (2026-08-26): **marker 仓老实选探索型** —— bench 批 9 实证散文偏置扳不动分类器
+    // (探索型 5/10, 其均值 0.124 vs 执行型 0.457), 按仓规做成机械追问: 有测试基建的仓选探索型
+    // 要么自证要么改判, 追问恰一次, 二答照收 (有界, 不锁死模型的最终判断)。
+    // 其余情况的探索型不重试 —— 那是它的判断, 不是失误。
     const blockedReason = firstBlockedReason(first);
-    if (!blockedReason) return vet(first);
+    if (!blockedReason) {
+      const markers = repoRoot && first.acceptance.kind === 'exploratory' ? probeRepo(repoRoot).markers : [];
+      if (markers.length > 0) {
+        logger.info({ markers }, '[omd/goal] marker 仓首判探索型 → 机械追问一次 (E-T1b: 自证或改判)');
+        return vet(
+          await ask(
+            `\n\n⚠ 复核: 这个仓检出了测试基建 marker (${markers.join(', ')}) —— 改代码的目标几乎总能用` +
+              '「一条会红的测试变绿」来判。请二选一:\n' +
+              '  a) 改判 "executable": 在测试套里找锚 (相邻测试文件 / 新建最小测试), 给出可跑 command;\n' +
+              '  b) 坚持 "exploratory": 但 learning_goal 首句必须写明**为什么这个仓的测试套锚不住这次改动**。',
+          ),
+        );
+      }
+      return vet(first);
+    }
     logger.info({ blockedReason }, '[omd/goal] 验收命令被闸拒 → 带上闸的原话重问一次 (D-I)');
     let second = await ask(
       `\n\n⚠ 你上一次给的验收命令**被安全闸拒了**, 原话是:\n  ${blockedReason}\n` +
