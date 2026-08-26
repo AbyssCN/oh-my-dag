@@ -47,6 +47,37 @@ interface OpenAiChatBody {
   stream?: boolean;
 }
 
+/**
+ * minimax 透传道 (2026-08-26, 批 6 终局根因修): callModel 是**纯文本单发**, 桥的 translate 模式
+ * 静默丢 `tools` 字段 → 容器内 agent 环的工具调用面整条蒸发 (MiniMax 只能文本假装调工具,
+ * 零真实写入)。工具座必须走**字节级透传**: body 原样 (model 换真 id) 直达 minimax 原生
+ * OpenAI-形状端点, `tools`/`tool_calls` 原生往返。文本座 (Opus/GPT, 单发结构化输出) 留 translate。
+ */
+export interface PassthroughRoute {
+  url: string;
+  apiKey: string;
+  modelId: string;
+}
+
+export async function handlePassthrough(
+  body: OpenAiChatBody & Record<string, unknown>,
+  route: PassthroughRoute,
+): Promise<{ status: number; json: unknown }> {
+  const upstreamBody = { ...body, model: route.modelId, stream: false };
+  let res: Response;
+  try {
+    res = await fetch(route.url, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${route.apiKey}`, 'content-type': 'application/json' },
+      body: JSON.stringify(upstreamBody),
+    });
+  } catch (e) {
+    return { status: 502, json: { error: { message: `bridge passthrough: ${(e as Error).message}` } } };
+  }
+  const json = await res.json().catch(() => ({ error: { message: 'passthrough: 上游响应不是 JSON' } }));
+  return { status: res.status, json };
+}
+
 /** 纯处理器: OpenAI body → callModel → OpenAI 响应体 (或错误 {status,error})。 */
 export async function handleChatCompletions(
   body: OpenAiChatBody,
@@ -103,14 +134,26 @@ export async function handleChatCompletions(
   };
 }
 
-/** 单块 SSE 包装 (stream 兼容捷径)。 */
+/** 单块 SSE 包装 (stream 兼容捷径)。tool_calls 原样进 delta —— 丢了 = agent 环工具面蒸发。 */
 export function toSingleChunkSse(completion: unknown): string {
-  const c = completion as { id: string; model: string; choices: Array<{ message: { content: string } }> };
+  const c = completion as {
+    id?: string; model?: string;
+    choices?: Array<{ message?: { content?: string | null; tool_calls?: unknown }; finish_reason?: string }>;
+  };
+  const msg = c.choices?.[0]?.message ?? {};
   const chunk = {
-    id: c.id,
+    id: c.id ?? `omdbridge-${Date.now()}`,
     object: 'chat.completion.chunk',
-    model: c.model,
-    choices: [{ index: 0, delta: { role: 'assistant', content: c.choices[0]?.message.content ?? '' }, finish_reason: 'stop' }],
+    model: c.model ?? '',
+    choices: [{
+      index: 0,
+      delta: {
+        role: 'assistant',
+        content: msg.content ?? '',
+        ...(msg.tool_calls ? { tool_calls: msg.tool_calls } : {}),
+      },
+      finish_reason: c.choices?.[0]?.finish_reason ?? 'stop',
+    }],
   };
   return `data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`;
 }
@@ -192,6 +235,14 @@ if (import.meta.main) {
   };
   for (let w = 0; w < concurrency; w++) void runWorker(w);
   const deps: BridgeDeps = { call: callViaQueue, mapModel: (id) => map.get(id) };
+  // 透传道凭证 (启动期一次解析, env → auth.json 同引擎链)。缺 = 透传不可用, 响亮打一行,
+  // minimax 路由退回 translate (工具面蒸发, 但不静默 —— 这一行就是证据)。
+  const { minimaxApiKey } = await import('../src/model/minimax-native');
+  const { resolvePiApiKey } = await import('../src/model/pi-transport');
+  const passthroughKey = minimaxApiKey() ?? (await resolvePiApiKey('minimax-cn'));
+  if (!passthroughKey) {
+    process.stderr.write('[bench-bridge] ⚠ minimax 凭证缺失 → 透传道不可用, minimax 路由退回 translate (agent 工具面将蒸发)\n');
+  }
   Bun.serve({
     port,
     hostname: '0.0.0.0',
@@ -205,8 +256,16 @@ if (import.meta.main) {
         return Response.json({ object: 'list', data: [...map.keys()].map((id) => ({ id, object: 'model' })) });
       }
       if (req.method === 'POST' && url.pathname === '/v1/chat/completions') {
-        const body = (await req.json().catch(() => ({}))) as OpenAiChatBody;
-        const r = await handleChatCompletions(body, deps);
+        const body = (await req.json().catch(() => ({}))) as OpenAiChatBody & Record<string, unknown>;
+        // 工具座路由: minimax 坐标走字节级透传 (tools/tool_calls 原生往返); 其余走 translate。
+        const coordForRoute = body.model ? map.get(body.model.trim()) : undefined;
+        const r = coordForRoute?.startsWith('minimax-cn:') && passthroughKey
+          ? await handlePassthrough(body, {
+              url: `${(process.env.MINIMAX_BASE_URL?.replace(/\/$/, '') ?? 'https://api.minimaxi.com/v1')}/text/chatcompletion_v2`,
+              apiKey: passthroughKey,
+              modelId: coordForRoute.slice('minimax-cn:'.length),
+            })
+          : await handleChatCompletions(body, deps);
         // 调试观测位 (env 开): 每笔请求/响应原文写入磁盘 —— 桥是唯一能看见"容器侧模型到底
         // 说了什么"的位置 (任务容器随 trial 回收, 容器内 .omd 现场拿不回来)。
         const logDir = process.env.OMD_BRIDGE_LOG_DIR?.trim();
