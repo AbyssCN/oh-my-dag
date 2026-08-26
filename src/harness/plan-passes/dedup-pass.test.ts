@@ -169,6 +169,8 @@ describe("dedupPass (D-20)", () => {
 			executor: ["leaf", "agent"],
 			command: ["c1", "c2"],
 			expect_exit: [0, 1],
+			// 换了期望输出 = 换了判据: 空匹配与真绿在退出码上同形, 只有输出分得开。
+			expect_output: ["12 pass", "13 pass"],
 			max_nodes: [4, 8],
 			max_rounds: [1, 3],
 			judge_final: [true, false],

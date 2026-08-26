@@ -38,10 +38,15 @@ describe('promptVersion 必须可分组 —— 否则它就是个废字段', () 
   });
 
   test('auto 档按模型强弱分派 —— 强模型走 house-rules, 弱模型走全量', () => {
+    // 强弱分派的差别 = 要不要教**怎么选工具**: 强模型自己判得了, 弱模型要表。
+    // 承重纪律 (共享层 + 执行核) 与模型强弱无关, 两档都拼。
     const auto = (model: string) => agentScaffold({ ...WEAK, profile: 'auto', model });
-    expect(auto('deepseek:deepseek-v4-flash')).toContain('<discipline');
-    expect(auto('openai-codex:gpt-5.6-sol')).toContain('<house-rules>');
-    expect(auto('openai-codex:gpt-5.6-sol')).not.toContain('<discipline');
+    expect(auto('deepseek:deepseek-v4-flash')).toContain('<tool-routing>');
+    expect(auto('openai-codex:gpt-5.6-sol')).not.toContain('<tool-routing>');
+    for (const m of ['deepseek:deepseek-v4-flash', 'openai-codex:gpt-5.6-sol']) {
+      expect(auto(m)).toContain('<core-discipline>');
+      expect(auto(m)).toContain('<leaf-execution>');
+    }
   });
 
   test("off 档 = 裸 prompt 基线: 脚手架为空串, 版本仍是个确定值 (不是 undefined)", () => {
@@ -52,10 +57,13 @@ describe('promptVersion 必须可分组 —— 否则它就是个废字段', () 
   test('拼法字节稳定 —— 脚手架与 prompt 之间恒是一个空行, 关掉的块不留空段', () => {
     // 改拼法 = 全 leaf 的 prompt-cache 失效 (实测宽扇出命中 84~98%, 这是真钱)。
     // 关掉 discipline 时不许留下一个空的 "\n\n" 头 —— 那会让前缀与别档不同而白丢缓存。
-    expect(agentScaffold({ ...WEAK, disciplineCore: false }).startsWith('\n')).toBe(false);
-    expect(agentScaffold({ ...WEAK, toolRouting: false }).endsWith('\n')).toBe(false);
-    expect(agentScaffold(WEAK)).toBe(
-      `${agentScaffold({ ...WEAK, toolRouting: false })}\n\n${agentScaffold({ ...WEAK, disciplineCore: false })}`,
-    );
+    // 关掉任一块都不许留空段: 空的 "\n\n" 会让前缀与别档不同而白丢缓存。
+    // 完整拼装形状由 harness-prompts.test.ts 钉 (SSOT: 一处钉, 这里不复述)。
+    for (const cfg of [WEAK, { ...WEAK, disciplineCore: false }, { ...WEAK, toolRouting: false }]) {
+      const out = agentScaffold(cfg);
+      expect(out.startsWith('\n')).toBe(false);
+      expect(out.endsWith('\n')).toBe(false);
+      expect(out).not.toContain('\n\n\n');
+    }
   });
 });

@@ -30,7 +30,7 @@ import {
   parseRouteLine,
 } from './chat';
 import { SOLVE_BUDGET_TOKENS, SOLVE_BUDGET_MINUTES } from '../../serve/chat-tools';
-import { CONDUCTOR_HARNESS_CORE } from '../../harness/harness-prompts';
+import { SHARED_ENGINEERING_CORE, CONDUCTOR_HARNESS_CORE } from '../../harness/harness-prompts';
 import { assembleOmdMcpTools, type AssembleOmdMcpDeps } from '../assemble';
 import { resetBudgetLedgerMemoForTest, WEEKLY_BUDGET_ENV, type WeeklyBudgetStatus } from '../budget';
 import { RunRegistry } from '../run-registry';
@@ -256,7 +256,7 @@ describe('S2:? 阀(prompt 接线 + 回执解析)', () => {
      * 抄字面串的闸只会在**改文案**时红,在**改顺序**时未必红 —— 方向正好反了。
      * 锚常量本身则两件事都守得住:前缀被挪到中间、或被别的东西挤掉,它才红。
      */
-    expect(seenPrompt.startsWith(CONDUCTOR_HARNESS_CORE)).toBe(true);
+    expect(seenPrompt.startsWith(`${SHARED_ENGINEERING_CORE}\n\n${CONDUCTOR_HARNESS_CORE}`)).toBe(true);
   });
 
   test('★ reply 带 owner 级阀块 → 回执头点名 lane 且禁代答;无块不冒行(反向自检)', async () => {

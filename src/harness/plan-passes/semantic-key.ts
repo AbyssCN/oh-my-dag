@@ -42,6 +42,8 @@ export function nodeFieldsKey(node: PlanNode): string {
 		// D-K: expect_exit 是语义 —— 同一条命令期望绿 (0) 与期望红 (1) 是**相反**的验收,
 		// 不入键会让 verify-red 与 verify-green 两个节点判重 / 跨轮复用串味。
 		node.expect_exit ?? NONE,
+		// 同上: 换了期望输出 = 换了判据。空匹配与真绿在退出码上同形, 只有它能分开两者。
+		node.expect_output ?? NONE,
 		node.skill ?? NONE,
 		node.output_path ?? NONE,
 		// D-2 (cairness-distill 2026-08-10): write_set 是语义 —— 声明的写集不同 = 越界判定面不同

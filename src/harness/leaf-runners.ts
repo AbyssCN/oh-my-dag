@@ -6,6 +6,7 @@
  * omd-pi provider runner(随 provider slice)。测试注入 fake。
  */
 import type { ContentPart, ModelUsage } from '../model/gateway';
+import type { SelfCheckSpec } from './conductor-plan';
 import type { AgentEvent } from '@earendil-works/pi-agent-core';
 import type { LeafProfile } from './profiles/profile';
 import type { CriteriaDiff } from './dag/spin-rung2';
@@ -106,7 +107,7 @@ export interface AgentLeafInput {
    * self_check 存在且走 SDK 时 WARN 日志一条说明。**借用的诚实边界**: pi 的 followUp 原设计是
    * 交互式 steering, headless 当自动喂料通道是借用 (D-6), 借完要明写。
    */
-  self_check?: { command: string; expect_exit: number };
+  self_check?: SelfCheckSpec;
 }
 
 /**

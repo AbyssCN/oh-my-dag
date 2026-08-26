@@ -253,15 +253,27 @@ describe('subgraphLintView — 键与边同一个体系', () => {
    * 截断对象从 ['a'] 移到 ['b']; 该变化仅反映 fingerprint hash 的输出序列,
    * 分类闸的行为仍一致。)
    */
+  /**
+   * 手工构造「一个子节点被截断、保留者仍依赖它」的状态。
+   *
+   * 此前这里跑 `expandConductorNode(..., { maxNodes: 2 })` 再断言截断对象是哪一个 ——
+   * 而截断对象由**指纹序**决定, 指纹序又随 `nodeFieldsKey` 的字段集变。于是每加一个 schema 字段
+   * 这条用例就红一次: 加 `self_check` 那次截断对象从 a 移到 b, 加 `expect_output` 这次移到 c,
+   * 而移到 c 之后链尾被截、根本不再产生悬空引用 —— 用例悄悄退化成什么都没测。
+   *
+   * 本用例的不变量只有一条: **自报名字的截断引用被分类成 truncated 而不是 dangling**。
+   * 那与「谁被截断」无关, 所以这里直接构造状态, 不再借 expand 的指纹序。
+   * expand 真的会截断, 由本文件另一条用例负责。
+   */
   const truncatedChain = () => {
-    const exp = expandConductorNode('P', plan({
-      a: { goal: 'A' },
-      b: { goal: 'B', depends_on: ['a'] },
-      c: { goal: 'C', depends_on: ['b'] },
-    }), { maxNodes: 2 });
-    // 前置断言: 指纹序若哪天变了, 本用例要**当场红**, 而不是悄悄退化成"什么都没测到"。
-    expect(exp.truncatedNames).toEqual(['b']);
-    return exp;
+    const child = (name: string, deps: string[] = []) => ({
+      id: `P::${name}`,
+      originalId: name,
+      fingerprint: name,
+      node: { goal: name.toUpperCase(), ...(deps.length ? { depends_on: deps } : {}) },
+    });
+    // 保留 a、b;b 依赖已被截断的 c —— 无论指纹序如何,这个形状恒定。
+    return { children: [child('a'), child('b', ['P::c'])], truncatedNames: ['P::c'] };
   };
 
   test('★ 截断产生的悬空引用: 生产者自报名字 → lint 报成 truncated 而非 dangling', () => {

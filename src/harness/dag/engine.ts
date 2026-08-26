@@ -2794,6 +2794,8 @@ async function executePlan(
           // `null` (死于信号) 不是闸拒: 闸拒 = 命令没执行, 死于信号 = 执行了没跑完 —— 两者下一步相反。
           const blocked = cr.exitCode !== null && cr.exitCode < 0; // 闸拒 ≠ 跑出红, 不赦免 (D-4 同款纪律)
           let ok = !blocked && cr.exitCode === (fc.expectExit ?? 0);
+          // 与节点级 expect_output 同语义: 退出码判「怎么结束的」, 这一格判「跑到了什么」。
+          if (ok && fc.expectOutput !== undefined && !(cr.text ?? '').includes(fc.expectOutput)) ok = false;
           let waivedHere = false;
           if (!ok && !blocked && fc.waiveRed) {
             const waived = fc.waiveRed(cr.text);
@@ -3494,6 +3496,12 @@ async function executePlan(
           ok = !blocked && r.exitCode !== 0;
         } else {
           ok = !blocked && r.exitCode === want;
+        }
+        // expect_output: 与退出码取**交**。退出码判「命令怎么结束的」, 这一格判「它到底跑到了什么」——
+        // 空匹配 (`bun test <路径写错>`) 两件事上恰好是: 正常结束 + 什么都没跑。缺省不检查。
+        const wantOutput = node.expect_output;
+        if (ok && wantOutput !== undefined && !(r.text ?? '').includes(wantOutput)) {
+          ok = false;
         }
         // S-37 下沉 (2026-08-17): D-K 红 → 先过 freezeCriterion.waiveRed 闭包。
         //   节点命令 = 判据命令 (同串判据构造, INV-4) ∧ 非闸拒 (D-4) ∧ 闭包返非 null

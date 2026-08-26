@@ -1,4 +1,5 @@
 import type { ConductorPlan } from '../conductor-plan';
+import type { SelfCheckInput } from '../conductor-plan';
 import type { ModelUsage } from '../../model/gateway';
 import {
   type ProbeDiscriminationVerdict,
@@ -140,7 +141,7 @@ export interface SelfCheckVetResult {
  *   用的仓根 (缺省 → 空目录形态, fail-open)。
  */
 export async function vetSelfCheck(
-  selfCheck: { command: string; expect_exit?: number } | undefined,
+  selfCheck: SelfCheckInput | undefined,
   deps: {
     sample?: NegativeSample;
     runIn?: (input: { command: string; cwd: string }) => Promise<{ exitCode: number | null }>;

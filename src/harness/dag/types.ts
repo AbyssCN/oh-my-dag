@@ -405,7 +405,13 @@ export interface DagLoopControlSeam {
    * 由 run-goal 用 baselineSide.failSet 构造 (D-1/D-3), 引擎 (dag 层) 不 import goal —— 依赖方向
    * 不倒灌。缺席 → 两点行为逐字节不变 (INV-1)。
    */
-  freezeCriterion?: { command: string; expectExit?: number; waiveRed?: (outputText: string) => string | null };
+  freezeCriterion?: {
+    command: string;
+    expectExit?: number;
+    /** 期望输出子串。与 expectExit 取交 —— 语义同节点级 `expect_output`:退出码分不开「跑了且过了」与「根本没跑」。 */
+    expectOutput?: string;
+    waiveRed?: (outputText: string) => string | null;
+  };
   /**
    * **产物内容进 judge 视图** (S1, 2026-08-03)。省略/`true` = 默认预算 (**缺省开**);
    * 给对象 = 自定预算; `false` = 关。

@@ -361,12 +361,51 @@ describe('INV-3-3 — env 开关 selfCheckEnvEnabled', () => {
 describe('leaf-runners.ts — self_check / selfRepair 字段形状', () => {
   test('AgentLeafInput 含 self_check?: { command; expect_exit }', () => {
     const src = readFileSync(RUNNERS_SRC, 'utf8');
-    expect(src).toMatch(/self_check\?:\s*\{\s*command:\s*string;\s*expect_exit:\s*number\s*\}/);
+    expect(src).toMatch(/self_check\?:\s*SelfCheckSpec/);
   });
 
   test('AgentLeafResult 含 selfRepair?: { rounds; oracleExit; convergedAt } | null', () => {
     const src = readFileSync(RUNNERS_SRC, 'utf8');
     // 真形状: selfRepair?: { rounds: number; oracleExit: number[]; convergedAt: number | null } | null
     expect(src).toMatch(/selfRepair\?:\s*\{\s*rounds:\s*number;\s*oracleExit:\s*number\[\];\s*convergedAt:\s*number\s*\|\s*null\s*\}\s*\|\s*null/);
+  });
+});
+
+describe('判据输出指纹:两轮一模一样 = 这一轮什么都没改到', () => {
+  /** 按调用次序给结果的 probe —— fakeRun 是按命令串查表的, 表达不了「同一条命令两轮输出不同」。 */
+  const seq = (outs: readonly SelfCheckOutcome[]) => {
+    let i = 0;
+    return async (): Promise<SelfCheckOutcome> => outs[Math.min(i++, outs.length - 1)]!;
+  };
+  const red = (stdout: string): SelfCheckOutcome => ({ kind: 'exited', exitCode: 1, stdout, stderr: '' });
+
+  const loop = (outs: readonly SelfCheckOutcome[]) => {
+    let touched = 3;
+    return buildSelfCheckFollowUp({
+      spec: { command: 'bun test x.test.ts', expect_exit: 0 },
+      cwd: '/x',
+      allowlist: ALLOWLIST,
+      getTouchedSize: () => (touched += 2),
+      enabled: true,
+      maxSelfRepair: 3,
+      truncate: passthroughTruncate,
+      probe: seq(outs),
+      observe: () => {},
+    });
+  };
+
+  test('★ 连续两轮输出逐字节相同 → follow-up 明说判据看不见你的改动', async () => {
+    const { followUp } = loop([red('1 fail\n'), red('1 fail\n')]);
+    const first = await followUp();
+    const second = await followUp();
+    expect(String((first[0] as { content?: unknown })?.content)).not.toContain('逐字节相同');
+    expect(String((second[0] as { content?: unknown })?.content), '第二轮才知道「和上一轮一样」').toContain('逐字节相同');
+  });
+
+  test('★ 输出变了 → 不加那句(它只在真的原地踏步时出现)', async () => {
+    const { followUp } = loop([red('1 fail\n'), red('2 fail\n')]);
+    await followUp();
+    const second = await followUp();
+    expect(String((second[0] as { content?: unknown })?.content)).not.toContain('逐字节相同');
   });
 });

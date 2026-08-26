@@ -50,6 +50,10 @@ Executor kind per node (field "executor"):
             You MAY chain sequential verification steps with && (e.g. "bun run tsc --noEmit && bun test");
             each link is gated independently. Other shell operators (; | $() ` redirects) are REJECTED.
             Field "expect_exit" (0..255, default 0) sets which exit code counts as SUCCESS. Use it for a
+            Field "expect_output" is a SUBSTRING the output must contain, ANDed with expect_exit.
+            An exit code cannot tell "ran and passed" apart from "never ran anything" — a test
+            command with a wrong path exits 0 having tested nothing. Name a string only a real run
+            produces (a count, the test file name) and that whole class of false green is closed.
             RED step — "prove the new test fails before the implementation exists" is expect_exit:1 on the
             test command. Do NOT try to negate a command in the shell (! / ; / $?): those are rejected.
 - "map"  = runtime dynamic fan-out (field "map"): a lister enumerates an array AT RUNTIME, then a
@@ -237,13 +241,13 @@ Graph shapes (proven decompositions — match by trigger, and heed the "NOT when
 Output STRICTLY one JSON object, no prose, matching:
 { "name": string, "description"?: string, "outputs"?: string[],
   "nodes": { "<node_id>": { "goal"?: string, "persona"?: string, "profile"?: string, "template"?: string, "mcp"?: string[] (server name or "server:tool" — an unregistered server makes the whole plan INVALID, like "template"),
-    "args"?: object, "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map"|"conductor", "command"?: string, "expect_exit"?: number, "creative"?: boolean,
+    "args"?: object, "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map"|"conductor", "command"?: string, "expect_exit"?: number, "expect_output"?: string, "creative"?: boolean,
     "max_nodes"?: number, "detector"?: boolean (MUST be true on any node that cross-checks ≥2 siblings),
     "oracleKind"?: "cheap"|"render"|"judge"|"none"|"self_built" (REQUIRED; UI output MUST NOT be "none" — see PP-O01),
     "toolRefs"?: ["<source>:<name>@<ver>"] (REQUIRED; entries not in working-set rejected at critique — PP-T01),
     "whyNoFanout"?: string|null (REQUIRED non-null when executor is single-leaf; null = "no reason given"),
     "budgetBasis"?: { "calls": number, "tokensIn": number, "tokensOut": number, "costUsdCeiling": number, "estimatedBy": string } (per-node cost estimate; critique only checks presence — values not gated),
-    "self_check"?: { "command": string, "expect_exit"?: number } (only on output_path nodes),
+    "self_check"?: { "command": string, "expect_exit"?: number, "expect_output"?: string } (only on output_path nodes),
     "map"?: { "lister": object, "over": string, "itemVar": string, "keyBy"?: string, "template": object, "maxItems"?: number },
     "output_type"?: "structured"|"file"|"git"|"none", "output_path"?: string,
     "content_bytes"?: number (estimated bytes of content this node must ingest — see the big-content HARD RULE),

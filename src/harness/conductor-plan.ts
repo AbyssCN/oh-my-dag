@@ -75,6 +75,26 @@ const MapSpec = z
   })
   .passthrough();
 
+/**
+ * 节点级确定性判据的**单一类型源**。此前 `{ command, expect_exit }` 在四处手写
+ * (agent-leaf / leaf-runners / dag/planner / goal/sdd-compile), 其中一处的 `expect_exit`
+ * 还是可选而另外两处必填 —— 加一个字段要改四遍, 漏掉一处不会有任何提示。
+ *
+ * 两个视角刻意都导出:
+ *   - `SelfCheckInput` = zod **输入**侧 (default 未应用): 手写 plan 与编译产物用它。
+ *   - `SelfCheckSpec`  = zod **输出**侧 (default 已应用, expect_exit 必有值): 执行期用它。
+ */
+export const SelfCheckSchema = z.object({
+  /** 跑在 leaf 工作根内的命令。须过 `command-leaf` 的白名单/危险命令闸 (INV-2-2)。 */
+  command: z.string().min(1),
+  /** 期望退出码。缺省 0。0..255, 与 `expect_exit` 字段同源 (POSIX 域)。 */
+  expect_exit: z.number().int().min(0).max(255).default(0),
+  /** 期望输出子串。与 `expect_exit` 取交 —— 语义同节点级 `expect_output`。 */
+  expect_output: z.string().min(1).optional(),
+});
+export type SelfCheckInput = z.input<typeof SelfCheckSchema>;
+export type SelfCheckSpec = z.output<typeof SelfCheckSchema>;
+
 const PlanNode = z
   .object({
     // 'agent' = 宿主宏观引擎 roster 概念 (dispatch 用); omd 本体 executor-dag 按 executor/model 分流, 不用它。
@@ -183,6 +203,20 @@ const PlanNode = z
      * (blocked/危险命令), 绝不能被一个 expect_exit 翻译成 done (执行器另有硬闸, 见 executor-dag)。
      */
     expect_exit: z.number().int().min(0).max(255).optional(),
+    /**
+     * 期望输出**子串**。与 `expect_exit` 取**交**:退出码对且输出含它,才判 done。
+     *
+     * 补的是 `expect_exit` 单独判不了的那一格:「命令根本没跑到该跑的东西」与「跑了且过了」
+     * 退出码一模一样。实测形态是 `bun test <路径写错>` 空匹配 exit 0 —— 一条什么都没测的
+     * 命令拿到绿灯。挡它此前靠契约把 verify 写成 `ugrep -q '<锚>' … && bun test …` 两段式,
+     * 而那是一条没有闸的散文纪律。
+     *
+     * 取子串不取正则:子串写不错;写错的正则恰好是恒真那种 (`.*`), 会把判据变成永绿。
+     * 要模式匹配就在命令里用 grep, 让退出码去说话。
+     *
+     * 缺省 = 不检查输出 (存量 plan 行为逐字节不变)。
+     */
+    expect_output: z.string().min(1).optional(),
     /**
      * executor='research' 的旋钮 (D-6 + A1 修法)。**rounds 是节点内环的界** (INV-GOAL-4: 环封节点内且必须有界) ——
      * schema 层就钳到 1..4, 不给"跑到满意为止"留口子。
@@ -293,14 +327,7 @@ const PlanNode = z
      * **悄悄丢弃**(节点退回无 `self_check` 的旁路, 不判节点红 —— 那会逼真红为虚红)。
      * 缺席 = 旁路 (INV-1-2): 执行路径与无 `self_check` 逐字节相同。
      */
-    self_check: z
-      .object({
-        /** 跑在 leaf 工作根内的命令。须过 `command-leaf` 的白名单/危险命令闸 (INV-2-2)。 */
-        command: z.string().min(1),
-        /** 期望退出码。缺省 0。0..255, 与 `expect_exit` 字段同源 (POSIX 域)。 */
-        expect_exit: z.number().int().min(0).max(255).default(0),
-      })
-      .optional(),
+    self_check: SelfCheckSchema.optional(),
     // ── 片 2 schema 增量 (INV-6 全 optional · 存量 plan parse 行为逐字节不变) ──
     // 必填性由 plan-critic 判 (诊断码), 绝不由 zod 判。zod 只管类型与枚举, 不替 critic 做诊断。
     /** PP-O01 / PP-I02 消费: oracle 选型 (cheap|render|judge|none|self_built)。 */
@@ -525,14 +552,14 @@ export function bareConductorSystemPrompt(): string {
     '  "nodes": { "<node_id>": {',
     '    "goal"?: string, "depends_on"?: string[],',
     '    "executor"?: "leaf"|"agent"|"command"|"map"|"research"|"conductor"|"await",',
-    '    "command"?: string, "expect_exit"?: number,',
+    '    "command"?: string, "expect_exit"?: number, "expect_output"?: string,',
     '    "output_type"?: "structured"|"file"|"git"|"none", "output_path"?: string,',
     '    "content_bytes"?: number, "requires"?: "all"|"any"|number, "cluster"?: string,',
     '    "tier"?: "strong"|"mid"|"cheap", "attach_media"?: boolean, "creative"?: boolean,',
     '    "persona"?: string, "profile"?: string, "template"?: string, "mcp"?: string[],',
     '    "max_nodes"?: number, "max_rounds"?: number, "max_retry"?: number,',
     '    "detector"?: boolean, "judge_final"?: boolean,',
-    '    "self_check"?: { "command": string, "expect_exit"?: number },',
+    '    "self_check"?: { "command": string, "expect_exit"?: number, "expect_output"?: string },',
     '    "kind"?: "primitive",',
     '    "primitive"?: "parallel"|"pipeline"|"loop-until"|"verify"|"judge"|"discovery"|"iterate"|"tournament"|"router"|"race"|"escalation"|"saga"|"escape-hatch",',
     '    "params"?: object,',
@@ -718,6 +745,10 @@ export function conductorSystemPrompt(
     '            You MAY chain sequential verification steps with && (e.g. "bun run tsc --noEmit && bun test");',
     '            each link is gated independently. Other shell operators (; | $() ` redirects) are REJECTED.',
     '            Field "expect_exit" (0..255, default 0) sets which exit code counts as SUCCESS. Use it for a',
+    '            Field "expect_output" is a SUBSTRING the output must contain, ANDed with expect_exit.',
+    '            An exit code cannot tell "ran and passed" apart from "never ran anything" — a test',
+    '            command with a wrong path exits 0 having tested nothing. Name a string only a real run',
+    '            produces (a count, the test file name) and that whole class of false green is closed.',
     '            RED step — "prove the new test fails before the implementation exists" is expect_exit:1 on the',
     '            test command. Do NOT try to negate a command in the shell (! / ; / $?): those are rejected.',
     '- "map"  = runtime dynamic fan-out (field "map"): a lister enumerates an array AT RUNTIME, then a',
@@ -898,7 +929,7 @@ export function conductorSystemPrompt(
     // executor/model; 而 conductor 每轮重掷这个字段, 反而系统性打空 D-21 跨轮语义复用
     // (semantic-key 为此把它排除在指纹外)。zod 层仍容忍旧 plan。
  '  "nodes": { "<node_id>": { "goal"?: string, "persona"?: string, "profile"?: string, "template"?: string, "mcp"?: string[] (server name or "server:tool" — an unregistered server makes the whole plan INVALID, like "template"),',
-    '    "args"?: object, "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map"|"conductor", "command"?: string, "expect_exit"?: number, "creative"?: boolean,',
+    '    "args"?: object, "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map"|"conductor", "command"?: string, "expect_exit"?: number, "expect_output"?: string, "creative"?: boolean,',
     // detector 进形状 (2026-07-30): 散文里提一嘴不算明示 —— 「明示即承诺」的闸判的就是这份
     // **conductor 照抄的形状**, 而不在形状里的字段它基本不会写。放在 max_nodes 旁边是因为两者
     // 同属"子图那一层"的东西 (顶层图上设 detector 引擎会 WARN 并忽略)。
@@ -921,7 +952,7 @@ export function conductorSystemPrompt(
     // 「交付物长什么样」可被外部命令判; 抽象节点 (analysis / research / drafting) 写它 = 逼模型
     // 给自己的观点想一条退出码, 那是本仓 P2 空旋钮的全貌。命令承接 `command` 节点的同一道闸
     // (白名单/元字符); expect_exit 缺省 0, 0..255。
-    '    "self_check"?: { "command": string, "expect_exit"?: number } (only on output_path nodes),',
+    '    "self_check"?: { "command": string, "expect_exit"?: number, "expect_output"?: string } (only on output_path nodes),',
     '    "map"?: { "lister": object, "over": string, "itemVar": string, "keyBy"?: string, "template": object, "maxItems"?: number },',
     // "postcondition" 2026-07-28 从明示 schema 撤下 (同 skill/agent 的理由, 空旋钮全仓扫): 全仓零消费者,
     // 引擎从不检查它。明示它比明示 skill 更坏 —— 那是在请 conductor 给"正确性敏感的节点"写验证条件,

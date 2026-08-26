@@ -80,7 +80,7 @@ function textResult<T>(text: string, details: T): AgentToolResult<T> {
 }
 
 /** sha256 hex —— strict 档的 hash 列 (NULL≠0 纪律: 算过就是算过, 空内容也有 hash)。 */
-function sha256Hex(text: string): string {
+export function sha256Hex(text: string): string {
   return createHash('sha256').update(text).digest('hex');
 }
 

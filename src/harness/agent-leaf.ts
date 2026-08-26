@@ -72,8 +72,9 @@ export function leafMcpPolicy(mcpAllow?: string[]): { sideEffects: { allow: stri
   return mcpAllow && mcpAllow.length > 0 ? { sideEffects: { allow: mcpAllow } } : { sideEffects: 'deny' };
 }
 
-import { LEAF_HARNESS_CORE } from './harness-prompts';
-import { createOmdAgentTools, type AnyOmdTool } from './agent-tools';
+import { SHARED_ENGINEERING_CORE, LEAF_EXECUTION_CORE, LEAF_TOOL_ROUTING } from './harness-prompts';
+import type { SelfCheckSpec } from './conductor-plan';
+import { createOmdAgentTools, type AnyOmdTool, sha256Hex } from './agent-tools';
 import { createInspectTool } from './inspect-tool';
 import { createSkillTools, type SkillToolDeps } from './skills/skill-tool';
 import type { LeafProfile } from './profiles/profile';
@@ -116,56 +117,8 @@ import { emitModelUsage } from '../model/accounting';
 import { resolveRoleModelConfigured, type ThinkingLevel } from '../model/role-models';
 import { isStrongCoord } from '../model/model-ratings';
 
-/**
- * Tool-routing guideline (TR-INV-5, docs/plan/omd-tool-routing-contract.md) —— 治弱模型 matching:
- * 重叠区 (查代码 read/bash/codegraph · 改文件 write/edit/hashline) 选错 = 烧 token + 易幻觉。
- * 双段 (用于X / 不要用于Y) + 两步法。字节稳定 (prepend prompt, cache 友好)。
- */
-const TOOL_ROUTING_GUIDELINE = `<tool-routing weak-model="true">
-选工具前先一句话说"用 X 因为 Y"(两步法)。重叠区按下表选, 选错=烧 token+易幻觉:
-- 查符号定义/调用链/谁引用/impact/跨文件结构 → codegraph (bash: \`codegraph query|context|callers|impact <sym>\`, 结构化抗幻觉, 比 grep 准)
-- 查字面字符串/配置值/任意文本 → bash ugrep (不要用 codegraph: 它只懂符号不懂任意文本)
-- 理解一段逻辑 → read 按行号段 (不要整文件读进 context: 烧 token)
-- 新建文件 → write; 改已存在文件 → hashline_edit(若有)/edit (不要用 write 覆写已存在文件: 最高腐烂风险)
-</tool-routing>
-<evidence-grounding weak-model="true">
-R6 铁律 (写代码前的事实核验, 与 omd 同纪律): 任何 repo-specific identifier —— 模型坐标 (provider:model) /
-表名·列名 / 函数·类·类型名 / env 变量 / 枚举·常量值 —— 写进代码前**必须**先用 codegraph / ugrep
-对**本仓**核实"确实存在 + 拼写准确", 禁止凭"看起来合理"猜。即便你以为知道也要查: 你的训练记忆 ≠ 这个仓库的
-真实命名。猜错 identifier 会**编译通过但运行时静默失效** (如价表用错模型坐标 → 永远 unpriced)。
-</evidence-grounding>`;
 
-/**
- * leaf 承重纪律核 (omd 方法论下放 leaf, GP-8 token 预算: 紧凑非全 220 行)。
- * 默认注入所有 agent-leaf —— 治"裸跑执行器无纪律"(dogfood 暴露 leaf 只有 tool-routing 时易出
- * identifier 猜测/糊代码)。字节稳定 (cache 友好)。R6 在 TOOL_ROUTING 的 evidence-grounding 块, 此处引不重复。
- */
-const DISCIPLINE_CORE = `<discipline weak-model="true">
-你是 omd 的执行叶子 —— 有纪律的工程师, 不糊代码。承重铁律:
-- 验证>信任 (GP-1/2): 改完必让 tsc/lint/test 绿才算完; 任一 gate 红 → 停, 修好再走, 不绕过不假装完成。
-- 无根因不修 (GP-4): bug 先复现→定根因→改, 不靠加 try/catch 挡; 同一处试 3 次没成 → 停 (那是 drift, 别猜着重试)。
-- 证据核验 (R6): 见上 evidence-grounding —— repo identifier 写前必查, 禁猜。
-- think-in-code: 答案是一个数/一张 <20 行小表 → 写脚本 print, 不把 N 个文件读进 context 烧 token。
-- 反 slop: 不套三方模板 / 不照抄热门范式 / 不"先跑起来再说"妥协 / 不为测试写测试; 只做真问题的正解。
-- 北欧 taste: 命名·结构·注释密度跟周围代码一致, 不留"这里先这样凑合"。
-- 卡住自检 (3 次失败触发): ①真复现了吗 ②抓的是根因还是症状 ③同类先例查了吗 (recall/codegraph) ④换个认知 mode。仍卡 → 输出"卡在哪 + 已试什么", 别空转烧 token。
-</discipline>`;
 
-/**
- * **强模型档** (2026-07-26, 同 conductor S-P 的判据): 上面两块都标了 weak-model="true" —— 它们是给
- * mimo 档执行体写的脚手架。而卡级路由已经能把 agent leaf 钉到 SOTA 上 (frontend-impl → k3),
- * 那些叶子在吃「选工具前先说用 X 因为 Y」这种对它冗余的叮嘱。
- *
- * 这一档只留强模型**推导不出来的**两类:① 本仓环境事实 (codegraph 存在 / hashline 强制 / 工具分工);
- * ② 房规红线 (验证>信任、无根因不修、identifier 必查、反 slop) —— 模型再强也不自带我们的红线。
- * 砍掉的是: 两步法自述、逐条工具对照表、卡住自检四步、think-in-code 提醒。
- */
-const STRONG_MODEL_CORE = `<house-rules>
-本仓环境: 查符号/调用链用 codegraph (bash), 查任意文本用 ugrep; 改已存在文件走 hashline_edit (内置 edit 已禁用), 新建用 write。
-红线: ① 改完 tsc/test 必须绿才算完, 红了就停下修, 不绕过不假装完成。② bug 先定根因再改, 不加 try/catch 挡症状。
-③ 任何 repo identifier (模型坐标/表名/函数名/env 名) 写进代码前先在**本仓**核实存在与拼写 —— 猜错会编译通过但静默失效。
-④ 不套模板不照抄范式, 命名与注释密度跟周围代码一致。
-</house-rules>`;
 
 /**
  * **本次调用拼在节点 prompt 之前的那一段**(节点无关的脚手架)。抽成纯函数有两个用处:
@@ -182,25 +135,16 @@ export function agentScaffold(opts: {
   model: string;
   toolRouting: boolean;
   disciplineCore: boolean;
-  /**
-   * harness 补焊块 (LEAF_HARNESS_CORE: 三层真源/绿≠对/脏场景枚举/? 阀)。默认 **false** ——
-   * 开它 = 换尺子 (全 leaf cache 失效 + eval 读数不可比), 上线必须走 A/B, 不默认漂。
-   * 'off' 档不受此开关影响 (裸基线保持纯净, A/B 的对照臂不能被染指)。
-   */
-  harnessCore?: boolean;
 }): string {
   const { profile, model, toolRouting, disciplineCore } = opts;
-  const harness = opts.harnessCore ?? false;
   if (profile === 'off') return '';
-  if (
-    profile === 'strong' ||
-    (profile === 'auto' && isStrongCoord(model) && (toolRouting || disciplineCore || harness))
-  ) {
-    // 强模型档: 补焊块的四条全是「模型再强也不自带」类 (同 house-rules 的入选判据), 开则跟在房规后。
-    return harness ? `${STRONG_MODEL_CORE}\n\n${LEAF_HARNESS_CORE}` : STRONG_MODEL_CORE;
-  }
-  // 承重纪律核走 tool-routing 之前 (元规则 → 补焊 → 工具细则 → 任务)。
-  return [disciplineCore ? DISCIPLINE_CORE : '', harness ? LEAF_HARNESS_CORE : '', toolRouting ? TOOL_ROUTING_GUIDELINE : '']
+  const strong =
+    profile === 'strong' || (profile === 'auto' && isStrongCoord(model) && (toolRouting || disciplineCore));
+  return [
+    SHARED_ENGINEERING_CORE,
+    disciplineCore ? LEAF_EXECUTION_CORE : '',
+    !strong && toolRouting ? LEAF_TOOL_ROUTING : '',
+  ]
     .filter(Boolean)
     .join('\n\n');
 }
@@ -231,23 +175,17 @@ export interface AgentLeafRunnerOpts {
    */
   toolRouting?: boolean;
   /**
-   * 注入 leaf 承重纪律核 (GP-1/2/4 + 反 slop + taste + think-in-code + 卡住自检, DISCIPLINE_CORE)。
-   * 默认 true (治裸跑执行器无纪律)。纯命令执行 leaf 可关 (省 token)。
+   * 注入 leaf 执行核 (`LEAF_EXECUTION_CORE`: 写集边界 / 仓规检查 / 运行期证据 / 测试值导入 /
+   * 判据冻结 / 空转 / 手术刀 / think-in-code / 卡住自检)。默认 true。纯命令执行 leaf 可关。
+   * ⚠ 共享层 (`SHARED_ENGINEERING_CORE`) **不受此开关控制** —— 承重纪律要全关走 profile 'off'。
    */
   disciplineCore?: boolean;
   /**
-   * 注入 harness 补焊块 (LEAF_HARNESS_CORE: 三层真源/绿≠对/脏场景枚举/? 阀 —— fleet-playbook
-   * ✅ 表里 DISCIPLINE_CORE 未覆盖的四条)。默认 **false**: 开它 = 换 leaf prompt 尺子
-   * (cache 面全失效 + eval 读数不可比), 默认接线前必须走 A/B 读数。
-   */
-  harnessCore?: boolean;
-  /**
-   * prompt 档强制覆盖 (eval 用)。缺省 `'auto'` = 按本次 leaf 的模型档自选 (强模型走
-   * STRONG_MODEL_CORE, 其余走全量脚手架)。**A/B 必须能把档位固定住**, 否则换模型时档位跟着变,
-   * 量到的差是"模型 × 档位"的混合效应, 分不清是哪一半 —— 这正是 conductor 那轮 A/B 的教训。
-   *   'weak'   = 恒发 TOOL_ROUTING + DISCIPLINE_CORE
-   *   'strong' = 恒发 STRONG_MODEL_CORE
-   *   'off'    = 两块都不发 (裸 prompt 基线)
+   * prompt 档强制覆盖 (eval 用)。缺省 `'auto'` = 按本次 leaf 的模型档自选。
+   * **A/B 必须能把档位固定住**, 否则换模型时档位跟着变, 量到的差是"模型 × 档位"的混合效应。
+   *   'weak'   = 共享层 + 执行核 + 工具路由
+   *   'strong' = 共享层 + 执行核 (强模型自己会选工具, 不发路由表)
+   *   'off'    = 一个字节都不发 (裸 prompt 基线)
    */
   promptProfile?: 'auto' | 'weak' | 'strong' | 'off';
   /**
@@ -819,7 +757,7 @@ async function defaultSpawn(
  *   ⑥ 退出码 === expect_exit → 收敛。
  */
 export function buildSelfCheckFollowUp(opts: {
-  spec: { command: string; expect_exit: number };
+  spec: SelfCheckSpec;
   cwd: string;
   allowlist: readonly string[];
   /** 该闭包**每次**被调时取的「本节点当前 touched 大小」。 */
@@ -848,6 +786,7 @@ export function buildSelfCheckFollowUp(opts: {
   let converged = false;
   const probe = opts.probe ?? ((p) => runSelfCheckProbe({ ...p, timeoutMs: 60_000 }));
   const truncate = opts.truncate ?? ((s, n) => (s.length <= n ? s : truncateTail(s, { maxBytes: n }).content));
+  let lastOutputDigest: string | null = null;
   const followUp = async (): Promise<AgentMessage[]> => {
     if (!opts.enabled || opts.maxSelfRepair <= 0) {
       opts.observe?.({ kind: 'disabled', rounds: ledger.rounds });
@@ -883,7 +822,9 @@ export function buildSelfCheckFollowUp(opts: {
       stdout: out.stdout,
       stderr: out.stderr,
     });
-    if (out.exitCode === opts.spec.expect_exit) {
+    const outputOk =
+      opts.spec.expect_output === undefined || `${out.stdout}${out.stderr}`.includes(opts.spec.expect_output);
+    if (out.exitCode === opts.spec.expect_exit && outputOk) {
       ledger.convergedAt = ledger.rounds; // 首轮就绿 ⇒ 0; 后续 ⇒ 对应轮次
       converged = true;
       opts.observe?.({ kind: 'converged', exitCode: out.exitCode, rounds: ledger.rounds });
@@ -891,9 +832,19 @@ export function buildSelfCheckFollowUp(opts: {
     }
     // 不等: 构造 follow-up。轮数 +1。
     ledger.rounds += 1;
+    // 判据输出的内容指纹: 与上一轮逐字节相同 = 这一轮的改动**没有触及判据看得见的任何东西**。
+    // 光看退出码分不出「改了但还没改对」与「什么都没改到」, 而后者再来一轮也只是重烧同一局。
+    const digest = sha256Hex(`${out.exitCode ?? 'sig'}\u0000${out.stdout}\u0000${out.stderr}`);
+    const unchanged = digest === lastOutputDigest;
+    lastOutputDigest = digest;
     const userMsg: AgentMessage = {
       role: 'user',
-      content: formatSelfCheckFollowUp(opts.spec, out, truncate),
+      content:
+        formatSelfCheckFollowUp(opts.spec, out, truncate) +
+        (unchanged
+          ? '\n\n[判据输出与上一轮逐字节相同 —— 你这一轮改的东西判据看不见。' +
+            '换一处改, 或先确认判据跑的到底是不是你改的那份产物。]'
+          : ''),
       timestamp: Date.now(),
     } as AgentMessage;
     return [userMsg];
@@ -903,7 +854,7 @@ export function buildSelfCheckFollowUp(opts: {
 
 /** 把一次 self_check 失败的输出格式化成 follow-up user 消息。 */
 function formatSelfCheckFollowUp(
-  spec: { command: string; expect_exit: number },
+  spec: SelfCheckSpec,
   out: { exitCode: number | null; stdout: string; stderr: string },
   truncate: (s: string, maxBytes: number) => string,
 ): string {
@@ -1591,7 +1542,6 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       model,
       toolRouting: wantRouting,
       disciplineCore: wantDiscipline,
-      harnessCore: opts.harnessCore ?? false,
     });
     const disciplined = scaffold ? `${scaffold}\n\n${prompt}` : prompt;
     // S2 (2026-08-25, 片 2) rung 2 证据注入 (D-4): fresh-context 丢消息历史不得丢这些显式证据,
@@ -2199,7 +2149,7 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     const inputSelfCheck = input.self_check;
     const selfCheckEnabled = selfCheckEnvEnabled();
     const maxSelfRepair = opts.maxSelfRepair ?? 2;
-    const selfCheck: { command: string; expect_exit: number } | undefined =
+    const selfCheck: SelfCheckSpec | undefined =
       inputSelfCheck && selfCheckEnabled && maxSelfRepair > 0 ? inputSelfCheck : undefined;
     // 自修环的 follow-up 闭包 (pi 通道专属, SDK 走不到这里)。getTouchedSize 读最新值
     // (闭包里再 getSize, 不是快照, 否则 INV-3-2「无新增停」的判据全是过期的)。

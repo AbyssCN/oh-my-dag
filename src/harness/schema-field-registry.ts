@@ -113,6 +113,7 @@ export const REGISTRY: Record<string, FieldEntry> = {
   },
   command: { consumer: 'executor-dag.runNodeOnce (commandRunner)', fingerprint: 'fields', declared: true, note: '' },
   expect_exit: { consumer: 'executor-dag.runNodeOnce (command 分支判 done 的期望退出码)', fingerprint: 'fields', declared: true, note: 'D-K: 期望绿 (0) 与期望红 (1) 是**相反**的验收, 不入键会让 verify-red / verify-green 判重串味。' },
+  expect_output: { consumer: 'executor-dag.runNodeOnce (command 分支) + agent-leaf.runSelfCheckLoop (self_check 分支)', fingerprint: 'fields', declared: true, note: '退出码判「命令怎么结束的」, 这一格判「它到底跑到了什么」—— 空匹配 (bun test 路径写错) 在退出码上与真绿完全同形, 只有输出能把两者分开。与 expect_exit 取交, 缺省不检查。' },
   research: { consumer: 'executor-dag.runNodeOnce (researchRunner 的 k / rounds)', fingerprint: 'fields', declared: false, note: 'D-6: 同问题跑 1 轮 vs 4 轮 = 不同深度。明示面是 `executor:"research"`, 旋钮本身不明示。' },
   map: {
     consumer: 'executor-dag.runMapNode → plan/map-expand',
