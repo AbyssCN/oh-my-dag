@@ -1,15 +1,14 @@
 /**
  * src/harness/repo-checks-live —— 仓规清单「活体自证」(D4 切片 3, #271)。
  *
- * 读**真实**的 `./.omd-repo-checks.json`, 对 mkdtemp 里含禁词样例的文件真 spawn
- * 跑清单第 1 条 → exit 1 且 evidence 含 file:line; 干净文件 → exit 0。这条测试同时
- * 钉住「清单文件在 / 格式对 / 命令真能跑」三件事 —— 清单被误删或改坏时它当场红。
+ * 读**真实**的 `./.omd-repo-checks.json`, 钉住「清单文件在 / 格式对 / 每条命令含
+ * `{files}` 占位符」—— 清单被误删或改坏时它当场红。
  *
- * 反向自检 (与 repo-checks.test.ts 同款):
- *   - 禁词样例**不出现**在测试字面量里 —— 需要样词时运行期拼接 (JARGON_SAMPLE)。
- *   - mkdtemp 隔振, 不污染仓根。
- *   - 真 spawn (node:child_process + sh -c), 不替身 —— 这条测试的唯一价值就是
- *     「清单里的命令在真实 shell 里能跑」。
+ * ⚠ 2026-08-26 缩到只剩这一条: 原先还有两条按**清单第 1 条**(当时是 jargon-scan)真 spawn
+ * 的用例, 禁用词不再是闸之后随之移除。教训是那两条**绑了具体检查项的序号** ——
+ * 清单一改就得跟着改。现在这条只验清单的形状, 加减检查项都不用动它。
+ *
+ * 真 spawn 的基础设施 (realSpawn) 保留: 下一条需要活体自证的检查项接上就能用。
  */
 import { afterAll, describe, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
@@ -27,9 +26,6 @@ import type { GateSpawn } from './post-leaf-gate';
 // accept 闸硬约束: 测试在仓根跑。写死绝对路径会随主机变, 用 cwd 更稳。
 const REPO_ROOT = process.cwd();
 const MANIFEST_PATH = join(REPO_ROOT, REPO_CHECKS_MANIFEST_FILENAME);
-
-// 拼接构造禁词样例 —— 静态扫不到, 运行期拼出 (与 repo-checks.test.ts 同款)。
-const JARGON_SAMPLE = ['落', '盘'].join('');
 
 // ── 真 spawn (node:child_process + sh -c) ────────────────────────────────────
 // runRepoChecks 要的 GateSpawn = (cmd, cwd, timeoutMs?) => Promise<{stdout, stderr, exitCode, timedOut?, signal?}>。
@@ -81,70 +77,10 @@ describe('仓规清单活体自证 (./.omd-repo-checks.json 真 spawn)', () => {
     }
   });
 
-  test('jargon-scan (清单第 1 条) 对含禁词的 .ts → exit 1 且 evidence 含 file:line', async () => {
-    const checks = loadRepoChecksManifest(REPO_ROOT);
-    expect(checks[0]).toBeDefined();
-    const firstCheck = checks[0]!;
-    // sanity: 第 1 条应是 jargon-scan(由 INV-D4-5 钉)
-    expect(firstCheck.command).toContain('jargon-scan');
-
-    const dirtyFile = join(getTmp(), 'dirty-sample.ts');
-    // 运行期拼出禁词, 静态扫不到这一行; 实际写到盘上的是含 JARGON_SAMPLE 字面串。
-    writeFileSync(dirtyFile, `// 这行含禁词: ${JARGON_SAMPLE}\nexport const x = 1;\n`);
-
-    const result = await runRepoChecks({
-      checks: [firstCheck],
-      files: [dirtyFile],
-      cwd: REPO_ROOT,
-      spawn: realSpawn,
-      timeoutMs: 60_000,
-    });
-    // ⚠ 2026-08-26: 清单里 jargon-scan 已标 severity:'advisory'(它在 accept 的全量里
-    // 另有防线 —— jargon-scan.test.ts 的 scanTree 扫全树)。于是**整体 verdict 是 OK**:
-    // 降级的是「要不要杀节点」这个处置, 不是判定。判定仍如实是 FAIL, 见下面 perCheck 的断言。
-    // 这个区分是本条用例的重点 —— 如果哪天有人把 advisory 实现成「连 FAIL 都不记」,
-    // 下面三条会当场红。
-    expect(result.verdict, 'advisory 红不该把整体判成 FAIL(节点因此不被杀)').toBe('OK');
-    const outcome = result.perCheck[0];
-    expect(outcome).toBeDefined();
-    expect(outcome!.verdict, '判定仍是 FAIL —— 判据一个字没放松').toBe('FAIL');
-    expect(outcome!.reason).toBe('exit_1');
-    // jargon-scan 输出形如 `<abs-path>:<line> [<kind>] <word> → ...`, evidence 取 stdout
-    expect(outcome!.evidence ?? '').toMatch(/dirty-sample\.ts:\d+/);
-  });
-
-  test('jargon-scan (清单第 1 条) 对干净 .ts → exit 0 (verdict OK)', async () => {
-    const checks = loadRepoChecksManifest(REPO_ROOT);
-    expect(checks[0]).toBeDefined();
-    const firstCheck = checks[0]!;
-
-    const cleanFile = join(getTmp(), 'clean-sample.ts');
-    writeFileSync(cleanFile, '// 干净的注释, 没有禁词\nexport const x = 1;\n');
-
-    const result = await runRepoChecks({
-      checks: [firstCheck],
-      files: [cleanFile],
-      cwd: REPO_ROOT,
-      spawn: realSpawn,
-      timeoutMs: 60_000,
-    });
-    expect(result.verdict).toBe('OK');
-    const outcome = result.perCheck[0];
-    expect(outcome).toBeDefined();
-    expect(outcome!.verdict).toBe('OK');
-    expect(outcome!.reason).toBe('ok');
-  });
-});
-
-// ── cleanup ──────────────────────────────────────────────────────────────────
-
-afterAll(() => {
-  if (tmpRoot) {
-    try {
-      rmSync(tmpRoot, { recursive: true, force: true });
-    } catch {
-      /* best-effort */
-    }
-    tmpRoot = null;
-  }
+  // ⚠ 2026-08-26: 原来这里有两条「jargon-scan (清单第 1 条)」的活体自证。
+  // 禁用词已由 owner 裁定**不再是闸**(维护成本压过收益, 见 scripts/jargon-scan.test.ts 顶部),
+  // 清单里也不再有它, 所以这两条随之移除 —— 留着会验一条不存在的清单项, 那是假绿的温床。
+  //
+  // 上面第一条 (清单解析 + 全含 {files}) 仍是活体自证的核心: 它验的是「清单本身能被引擎吃下」,
+  // 与具体有哪几条无关, 加减检查项都不用改它。
 });

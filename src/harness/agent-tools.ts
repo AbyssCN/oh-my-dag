@@ -37,7 +37,6 @@ import { type Static, type TSchema, Type } from 'typebox';
 import { classifyCommand } from './hooks/dangerous-cmd';
 // 写域闸 (写前, 与沙箱边界正交): 节点只准写自己声明的写集。
 import { checkWriteAllowed, describeWriteDenied } from './writeset/write-allow';
-import { scanJargon, isJargonExempt, JARGON } from '../../scripts/jargon-scan';
 import { type CommandPolicy, DEFAULT_SANDBOX_CONFIG, judgeCommand } from './hooks/command-policy';
 import { sandboxCommand } from './hooks/shell-sandbox';
 import { gitWriteBlockReason, secretPathInCommand, SECRET_BASENAMES, SECRET_BASENAME_EXEMPT } from './command-leaf';
@@ -573,40 +572,6 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
         '要写到工作根外面, 把路径加进 .omd/config.json 的 tui.sandbox.writable。',
     );
   };
-  /**
-   * 禁用词边界闸(2026-08-26)—— 写入那一刻拒, 与 `requireWritable` 同层但**正交**:
-   * 那个判「路径在不在边界内」, 这个判「内容合不合仓规」。
-   *
-   * 为什么从验收层挪到这里: 三发实装 run 连续死在禁用词上, 死法一样 —— leaf 写了词、
-   * 收尾仓规检查判红、节点 failed、下游级联 skipped。根因是 leaf 的 prompt 里根本
-   * **没有**禁用词表(`harness-prompts.ts:127-137` 的 `LEAF_HARNESS_CORE` 零禁用词,
-   * 完整表在同文件 `:231` 的 output-style 段, 属 conductor 的拼装), 而收尾那道闸
-   * 一击致命、又因 `max_retry` 默认 0 而拿不到重试。讲道理拦不住 → 做成会红的闸。
-   *
-   * 三条设计判据:
-   *   ① **只查这次写入的文本**, 不查整份文件 —— 文件里原有的词不是这次动作造成的
-   *      (2026-08-25 主干上就躺着别人提交的禁用词; 连坐会让 leaf 改任何既有脏文件都
-   *      寸步难行)。`edit` 因此只查 `newText`。
-   *   ② 错误里带**替换建议**, 不是只说"错了" —— 否则模型只能猜, 猜错再来一轮。
-   *   ③ 豁免复用 `isJargonExempt`(单一实现), 不推翻 owner 已裁的三张表。
-   *
-   * 证伪: `src/harness/agent-tools-jargon-gate.test.ts` —— 删掉本函数的调用 ⇒ (a)(b)(c) 红;
-   * 改成扫整份文件 ⇒ (d) 红; 去掉豁免判断 ⇒ (f) 红。
-   */
-  const requireNoJargon = (target: string, text: string, tool: string): void => {
-    const rel = display(cwd, target);
-    if (isJargonExempt(rel)) return;
-    const hits = scanJargon(text, rel);
-    if (hits.length === 0) return;
-    const seen = new Map<string, string>();
-    for (const h of hits) if (!seen.has(h.word)) seen.set(h.word, JARGON[h.word] ?? '');
-    const advice = [...seen].map(([w, to]) => `${w} → ${to}`).join(' · ');
-    throw new Error(
-      `BLOCKED 禁用词: ${tool} 要写入 ${rel} 的内容含 ${hits.length} 处仓规禁用词。` +
-        `换本义词后重写: ${advice}。` +
-        '(本仓写作铁律, 无场景例外; 测试夹具确需禁用词字面时用拼接构造, 静态扫描只认字面串。)',
-    );
-  };
   const walkLimit = opts.grepWalkLimit ?? GREP_WALK_LIMIT;
   const env = new NodeExecutionEnv({ cwd });
   // SDD S3 碰撞台账 (只记不拦): 库锚在 cwd (触碰发生的工作根) 的 `.omd/touch.db`。
@@ -745,7 +710,6 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
       const { path, content } = params as Static<typeof WRITE_SCHEMA>;
       const full = abs(cwd, path);
       requireWritable(full, 'write');
-      requireNoJargon(full, content, 'write');
       const r = await env.writeFile(full, content);
       if (!r.ok) throw new Error(`write 失败: ${display(cwd, full)}: ${r.error.message}`);
       // SDD S3 strict 档 (事实): 受控写工具知道写了什么 → hash = sha256(写入内容), 非 NULL。
@@ -770,8 +734,6 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
       const { path, oldText, newText } = params as Static<typeof EDIT_SCHEMA>;
       const full = abs(cwd, path);
       requireWritable(full, 'edit');
-      // ① 只查这次新写入的文本 —— 文件里原有的禁用词不是这次动作造成的, 不连坐。
-      requireNoJargon(full, newText, 'edit');
       let raw: string;
       try {
         raw = await readFile(full, 'utf-8');

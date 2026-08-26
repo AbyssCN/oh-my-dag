@@ -58,12 +58,15 @@ describe('禁词扫描器', () => {
     expect(SKIP_PREFIXES.length).toBeLessThanOrEqual(2);
   });
 
-  test('★ 清扫完成态: 在扫范围内, 禁词已经归零(涨回去当场红)', () => {
-    // 2026-08-24 两趟清扫(注释档 525 处 + 字符串档 134 处)之后的状态。
-    // ⚠ 这条同时是**分辨力锚**: 扫描器坏成"永远扫不到"时, 下面的分母断言会红。
-    const hits = scanTree(['src', 'scripts', 'test', 'docs']);
-    expect(hits).toEqual([]);
-    // 分母: 扫描器真的在读文件(不是把整棵树都跳过了)。
-    expect(scanJargon('把结果落盘。', 'probe.md')).toHaveLength(1);
-  });
+  // ⚠ 2026-08-26: 「清扫完成态」绊线(全树 scanTree 恒空)**已移除**, 禁用词不再是闸。
+  //
+  // owner 裁: 维护成本压过收益。实账 —— leaf 三发实装 run 全死在它手上(它写的词
+  // 从来不在 leaf 的 prompt 里, 见 harness-prompts.ts:127-137 的 LEAF_HARNESS_CORE);
+  // owner 与 leaf 各自又撞了「解释一个禁止项就必须引用它、而闸只看字面」这个形态数次;
+  // 隔壁窗口提交进 main 的两处禁用词, 还让本轨两发勘察 run 的每个 leaf 收尾全红。
+  //
+  // 保留的是**工具**不是闸: `bun scripts/jargon-scan.ts` 仍可手动跑, 下面的判别力用例
+  // 继续钉它的分辨力。写作纪律留在 CLAUDE.md 的散文层 —— 那是给人和 conductor 的要求,
+  // 不再机械强制到每一次写文件。
+
 });
