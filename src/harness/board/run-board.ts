@@ -365,14 +365,53 @@ export function readBoard(root: string): BoardEntry[] {
 }
 
 /**
- * D-9: claimed 且**无对应 terminal** 的 runId → writeSet 映射。
+ * **板上还活着的 runId** —— 活判据的**唯一真源**(2026-08-26 从两处合并而来)。
+ *
+ * 判据 = 该 run 最后一次 `claimed` 排在最后一次 `terminal` **之后**。
+ *
+ * ## 为什么不是「有 terminal 就算死」(旧判法)
+ *
+ * 旧判法两处各写一份 `new Set(…filter(event==='terminal')…)`,**顺序盲**。
+ * 于是 `claimed → terminal → claimed`(= 一次 resume 续跑)被判成"不活" ——
+ * 一个**正在跑**的 run 在板上隐形,而板存在的全部理由就是让并发 run 看见彼此。
+ *
+ * 这个方向比反向更危险:反向(死 run 判成活)只是噪声,人看得见;
+ * 正向(活 run 判成死)是**静默漏报**,撞车发生时板上什么都没有。
+ * 2026-08-26 实测确认: 当时正在跑的 `6f97a21e`(第一轮 terminal 后 resume)恰好落在这个洞里。
+ *
+ * ## 为什么按下标不按时间戳
+ *
+ * 板是 append-only,文件顺序即事件顺序;而 `ts` 是 ISO 毫秒,同毫秒内两条事件排不出先后。
+ * 下标没有这个问题,也不依赖写入方的时钟。
+ *
+ * ⚠ 顺序前提:调用方必须传**读回来的原始顺序**(`readBoard` 即是)。排过序的数组会读出错的答案。
+ */
+export function liveRunIds(entries: readonly BoardEntry[]): Set<string> {
+  const lastClaim = new Map<string, number>();
+  const lastTerminal = new Map<string, number>();
+  entries.forEach((e, i) => {
+    if (e.event === 'claimed') lastClaim.set(e.runId, i);
+    else if (e.event === 'terminal') lastTerminal.set(e.runId, i);
+  });
+  const live = new Set<string>();
+  for (const [id, claimAt] of lastClaim) {
+    if (claimAt > (lastTerminal.get(id) ?? -1)) live.add(id);
+  }
+  return live;
+}
+
+/**
+ * D-9: 还活着的 runId → writeSet 映射。活判据经 {@link liveRunIds}(单一真源)。
  * 同一 run 多次 claimed → 最后一次的 writeSet 胜出(后写者覆盖先写者)。
+ *
+ * ⚠ 这里的 `?? []` 把「未声明」压成「空集」——**上层若要三态, 别用这个函数**,
+ * 读原始 entry(dag-run-board.ts 的 `otherLiveRuns` 就是为此存在的)。
  */
 export function liveRuns(entries: BoardEntry[]): Map<string, string[]> {
-  const terminal = new Set(entries.filter((e) => e.event === 'terminal').map((e) => e.runId));
+  const live = liveRunIds(entries);
   const out = new Map<string, string[]>();
   for (const e of entries) {
-    if (e.event !== 'claimed' || terminal.has(e.runId)) continue;
+    if (e.event !== 'claimed' || !live.has(e.runId)) continue;
     out.set(e.runId, e.writeSet ?? []);
   }
   return out;

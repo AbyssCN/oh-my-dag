@@ -169,8 +169,15 @@ export interface RunGoalConfig {
    * 缺省 git status --porcelain (照 rollback-anchor 的 git 惯例; 失败 → 闸缺席 fail-open, warn
    * 留痕, INV-1 不吞证据)。`globalExempt` / `intentional` 是阶梯 ②/④ 的清单。整 run 无节点声明
    * → verdict 'undeclared' (INV-3: 声明缺席 ≠ 违规, NULL≠0 —— 那正是 O-1 的声明覆盖率读数)。
-   * `declared` = run 级声明写集面 (S-2, 裁「该不该写」, 与节点级阶梯正交): 缺省 write-set.ts 的
-   * SDD_DECLARED_WRITE_SET (本 SDD run 的声明); 并发 run (写面互异) / 测试注入自己的面。
+   * `declared` = run 级声明写集面 (S-2, 裁「该不该写」, 与节点级阶梯正交): 并发 run (写面互异) /
+   * 测试注入自己的面。
+   *
+   * ⚠ 两个消费者对「缺席」的处置**刻意不同**, 别以为是漏改一处:
+   *   - **写集对账** (下方 `declared ?? SDD_DECLARED_WRITE_SET`): 缺席时兜底常量。对账是本 SDD
+   *     run 自己的闸, 兜底的是"我这一趟该写哪儿", 与常量同物。
+   *   - **board claim 行**: 缺席就是**字段缺席**, 不兜底。板是给**别的 run** 读的协调介质,
+   *     在那里拿一份无关的常量冒充本 run 的写集, 会让每一条撞车告警都说同一句假话
+   *     (2026-08-26 实账: 12 条僵尸 claim 写集逐字节相同)。
    */
   writeSet?: {
     _collectChangedFiles?: () => string[];
@@ -564,7 +571,67 @@ export function makeBaselineWaiver(baselineFailSet: readonly string[]): (text: s
   };
 }
 
+/**
+ * board 结算的**跨栈帧信物**(2026-08-26)。`runGoal` 的外壳靠它判断「claim 写了但 terminal 没写」。
+ *
+ * 为什么不是布尔:结算要写的两个坐标 (板根 / runId) 在 `runGoalInner` 里才算得出来,
+ * 而 `finally` 在外壳。三个字段一起放进来,外壳就不需要重算任何东西 —— 重算一遍就是
+ * 第二份判据,两份迟早漂 (本仓 S-7)。
+ */
+interface BoardSettleBox {
+  /** 板根。`undefined` = claim 那一步还没走到 (那时无账可结)。 */
+  root?: string;
+  runId?: string;
+  /** terminal 已经**尝试过**写 (成功与否都算)。见 emitBoard 里的赋值点注释。 */
+  settled: boolean;
+}
+
+/**
+ * `runGoal` 外壳 —— 只做一件事:**保证 claim 过的 run 一定有 terminal 收尾**。
+ *
+ * ## 这里推翻了一条既有决定,理由写在这儿
+ *
+ * 原注(本文件旧版 584-585 行)写着:「异常抛不写 terminal:那不是 run 的终态,留下的
+ * claimed 由 liveRuns 当活 run 显形 —— 板的工作是把它显出来,不是替引擎撒谎。」
+ *
+ * 那个意图是对的,**落法是错的**。悬空的 `claimed` 显出来的不是「引擎抛了」,是「还在跑」——
+ * 判据只有 `claimed ∧ ¬terminal` 一条(dag-run-board.ts:122),没有心跳也没有年龄上限。
+ * 两种状态被压成一个,正是本仓 §NULL ≠ 0 ≠ 不适用 要防的那件事。
+ *
+ * 实账(2026-08-26 清点):板上 12 条判为"在跑",最早 8.3 天,`ps` 里零个对应进程;
+ * 而它们让此后**每一次**点火回执都打印一段假的撞车告警。异常不但没被显出来,还把
+ * 真正的撞车检测淹掉了。
+ *
+ * 新落法:异常路照样写 terminal,但 outcome 是 `infra-error` 且带 `note` 标明是异常收尾 ——
+ * 引擎 bug **比以前更显眼**(一行明确的判词, 而不是一条含义要靠猜的悬空 claim)。
+ *
+ * ## 它盖不住什么(诚实标注)
+ *
+ * `finally` 只覆盖**本进程还能跑代码**的退出:抛错、reject、正常返回。
+ * `SIGKILL` / 断电 / 容器被回收 一律盖不住 —— 那几种仍会留下悬空 claim。
+ * 要盖住它们得给 claim 行带 PID 或心跳,那是另一件事(跨容器时 PID 还没意义)。
+ */
 export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunGoalResult> {
+  const box: BoardSettleBox = { settled: false };
+  try {
+    return await runGoalInner(goal, config, box);
+  } finally {
+    if (box.root !== undefined && box.runId !== undefined && !box.settled) {
+      try {
+        appendBoard(box.root, {
+          ...boardTerminalEntry(box.runId, 'infra-error'),
+          note: 'uncaught: runGoal 抛出/被拒, 由外壳兜底结算 (不是 run 自己判的终态)',
+        });
+      } catch (e) {
+        // 板不是承重墙(与 emitBoard 同款纪律)。但**不许吞证据**:兜底都写不进去,
+        // 说明板本身坏了, 那比这一条 run 更要紧。
+        console.error(`[run-goal] board 兜底 terminal 写失败: ${String(e)}`);
+      }
+    }
+  }
+}
+
+async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettleBox): Promise<RunGoalResult> {
   const stages: GoalStage[] = [];
   const sources: string[] = [];
   // 直通装载放在**一切之前** (G-2): 坏契约要在烧任何 token 之前被拒。
@@ -581,10 +648,24 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
   // runId 锚与 D-2 散雾出口同一条解析序 (tickets → continuity → sessionId); 全缺 → 本跑
   // 自产一个 (claimed/terminal 仍配对, 只是没有外部回执锚)。写集与终态在别处都有真源
   // (SDD 声明 / RunGoalResult), 板只记指针 —— 不把历史唯一信息只写 board。
-  // 异常抛 (classify/onClassified 这类引擎 bug) 不写 terminal: 那不是 run 的终态, 留下的
-  // claimed 由 liveRuns 当活 run 显形 —— 板的工作是把它显出来, 不是替引擎撒谎。
+  // 异常抛 (classify/onClassified 这类引擎 bug) **也写 terminal**, 但走 `infra-error` +
+  // `note: uncaught` —— 由 `runGoal` 外壳的 finally 兜底。改这条的理由与它盖不住的边界
+  // (SIGKILL / 断电) 见 runGoal 的文档注。
   const boardRunId = config.tickets?.runId ?? config.dag.continuity?.runId ?? config.dag.sessionId ?? randomUUID();
-  const boardDeclared = config.writeSet?.declared ?? SDD_DECLARED_WRITE_SET;
+  /**
+   * claim 行的写集。**未注入就是缺席, 不兜底常量**(2026-08-26)。
+   *
+   * 旧版是 `config.writeSet?.declared ?? SDD_DECLARED_WRITE_SET` —— 那个常量
+   * (`write-set.ts:139`) 是 **2026-08-10 那一份 SDD 自己的写集**, 与本 run 毫无关系。
+   * 后果是每一条没注入写集的 claim 都声称自己要写
+   * `src/harness/** + docs/silent-failures.md + docs/plan/2026-08-10-cairness-distill-report.md`;
+   * 实账里 12 条僵尸 claim 的写集**逐字节相同**, 于是撞车告警每次都说同一句话, 信息量是零。
+   *
+   * `dag-run-board.ts` 头注 19-27 行早就立了这条纪律 (dag_run 路 claim 时刻意不写 writeSet
+   * 字段而不是写 `[]`, 因为「没声明」与「声明了空集」是两件事)。goal 路当时违反了它,
+   * 而且更糟 —— 不是写空集, 是写**别人的**集合。
+   */
+  const boardDeclared = config.writeSet?.declared;
   // #160 D-1 (s1): 板根钉主仓状态锚。branch 档 run 的 config.cwd 是 worktree (产物树),
   // 板落那里 = 主仓 (生产侧 + ignition 预检 + readout 全读者) 看不到这张 run; 钉到
   // continuity.repoRoot → 主仓。head 档 (repoRoot 缺席或 = cwd) 行为逐字节不变 (INV-1)。
@@ -604,10 +685,21 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
     }
   };
   const emitBoard = (event: 'claimed' | 'terminal', outcome?: RunOutcomeKind): void => {
+    // **写之前**就记账: appendBoard 抛错时 emitBoard 自己吞掉 (板不是承重墙), 那时外壳的
+    // finally 再补一发也只会同样失败, 而且会把同一条 run 的 terminal 写成两行。
+    // 「尝试过」才是 box 要记的语义, 不是「写成功了」。
+    if (event === 'terminal') box.settled = true;
     try {
       const entry: BoardEntry =
         event === 'claimed'
-          ? { v: 1, ts: new Date().toISOString(), runId: boardRunId, event, writeSet: [...boardDeclared.allowed] }
+          ? {
+              v: 1,
+              ts: new Date().toISOString(),
+              runId: boardRunId,
+              event,
+              // 三态: 注入了 → 真写集; 未注入 → **字段缺席** (判不了交集), 见 boardDeclared 的注。
+              ...(boardDeclared ? { writeSet: [...boardDeclared.allowed] } : {}),
+            }
           : boardTerminalEntry(boardRunId, outcome!);
       appendBoard(boardRoot, entry);
       // F1 (片 2, INV-6 / INV-9): 终态发生 → 推一次 owner 通知。**在板写之后** (板是事实层, 通知
@@ -624,6 +716,9 @@ export async function runGoal(goal: string, config: RunGoalConfig): Promise<RunG
       console.error(`[run-goal] board ${event} 写失败 (不影响 run): ${String(e)}`);
     }
   };
+  // 信物先装, claim 后发 —— 反过来的话, claim 写成功而装信物之前抛, 外壳就兜不住那一条。
+  box.root = boardRoot;
+  box.runId = boardRunId;
   emitBoard('claimed');
 
   // ── 闸 C: 续跑状态读写 (无 continuity = 无 runId 可锚 → 闸不启用, 行为与从前逐字一致) ──

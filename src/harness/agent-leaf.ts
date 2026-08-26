@@ -111,6 +111,7 @@ import { piModelFromProviderConfig, resolvePiApiKey, resolvePiModel, type PiMode
 import { getProvider } from '../model/providers';
 import { CLAUDE_SDK_PROVIDER, effortOf } from '../model/claude-sdk-complete';
 import { officialAdvisorModelId, runSdkAgentLoop } from './claude-sdk-loop';
+import { withToolCallSalvage, type SalvageEvent } from './leaf-salvage-stream';
 import { createAdvisorTool, createTranscriptRecorder } from './advisor-tool';
 import { promptVersionOfText } from '../model/langfuse';
 import type { ContentPart, ModelUsage } from '../model/types';
@@ -783,8 +784,26 @@ export function buildSelfCheckFollowUp(opts: {
   spec: SelfCheckSpec;
   cwd: string;
   allowlist: readonly string[];
-  /** 该闭包**每次**被调时取的「本节点当前 touched 大小」。 */
+  /** 该闭包**每次**被调时取的「本节点当前 touched 大小」。{@link getWorkspaceDigest} 缺席时的兜底判据。 */
   getTouchedSize: () => number;
+  /**
+   * 「工作区自上次尝试以来变没变」的**内容级**判据 (2026-08-26)。返回当前写集的内容指纹。
+   *
+   * ## 为什么要它 —— `getTouchedSize` 是一把会漏的尺子
+   *
+   * `touched` 是**路径集合**, `size` 是路径**个数**。于是最常见的那种自修 —— 同一个文件再改一刀
+   * —— 计数一个字都不动, 判据当场判「零新增 → 停」。后果不是少跑一轮, 是**自修环在第 1 轮就
+   * 被静默截断**, 而账本上它长得和"改不动了主动停"一模一样。
+   *
+   * 反方向同样漏: 模型写了个与判据无关的新文件, 计数涨了, 于是判据判「有进展」, 白跑一次探测。
+   *
+   * 内容指纹两个方向都对: 同文件二次编辑 → 指纹变 → 继续; 什么都没改 → 指纹不变 → 停。
+   * 这是 iceCoder 那条「工作区自上次尝试以来没变就不重复跑同一个失败 gate」的同一条判据,
+   * 而且比它更早一步生效 —— 我们连探测的子进程都不 spawn。
+   *
+   * 缺席 (测试注入 / 取不到) → 退回 `getTouchedSize` 的计数判据, 与本改动前逐字同行为。
+   */
+  getWorkspaceDigest?: () => string | null;
   /** 是否启用 (env / opts.maxSelfRepair / 全局旁路 三路取与)。 */
   enabled: boolean;
   /** 自修轮数上限。<= 0 = 不注任何 follow-up。 */
@@ -806,6 +825,7 @@ export function buildSelfCheckFollowUp(opts: {
 }): { followUp: () => Promise<AgentMessage[]>; ledger: SelfRepairLedger } {
   const ledger: SelfRepairLedger = { rounds: 0, oracleExit: [], convergedAt: null };
   let lastTouched = opts.getTouchedSize();
+  let lastWorkspace = opts.getWorkspaceDigest?.() ?? null;
   let converged = false;
   const probe = opts.probe ?? ((p) => runSelfCheckProbe({ ...p, timeoutMs: 60_000 }));
   const truncate = opts.truncate ?? ((s, n) => (s.length <= n ? s : truncateTail(s, { maxBytes: n }).content));
@@ -821,12 +841,19 @@ export function buildSelfCheckFollowUp(opts: {
       return [];
     }
     const curTouched = opts.getTouchedSize();
-    if (ledger.rounds > 0 && curTouched === lastTouched) {
-      // INV-3-2: 自修一轮后零新增 → 不再开下一轮 (避免注空 follow-up 烧 token)。
+    const curWorkspace = opts.getWorkspaceDigest?.() ?? null;
+    // INV-3-2: 自修一轮后**工作区一个字节都没变** → 不再开下一轮。
+    // 判据优先级: 内容指纹 > 路径计数。两者都取不到指纹时才退回计数 (见 getWorkspaceDigest 的注)。
+    // ⚠ 判据在 probe 之前 —— 这一条的全部价值就是连子进程都不 spawn: 工作区没变时,
+    //   同一条命令的退出码按定义与上一轮相同, 跑它是纯粹的墙钟浪费。
+    const stalled =
+      curWorkspace !== null && lastWorkspace !== null ? curWorkspace === lastWorkspace : curTouched === lastTouched;
+    if (ledger.rounds > 0 && stalled) {
       opts.observe?.({ kind: 'no-progress', rounds: ledger.rounds });
       return [];
     }
     lastTouched = curTouched;
+    lastWorkspace = curWorkspace;
     const out = await probe({ command: opts.spec.command, cwd: opts.cwd, allowlist: opts.allowlist });
     if (out.kind === 'blocked') {
       // 闸拒: 退出码折成 -1 落账, 不注 follow-up (再跑一样被拒, 不是收敛机会)。
@@ -2164,6 +2191,13 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     }
     armIdle();
 
+    /**
+     * 本次 leaf 的抢救读数 (2026-08-26)。**空数组 ≠ 没接** —— 接线恒在 (pi 腿), 空 = 这一次
+     * 模型全程走的原生 tool_calls 通道, 那正是期望态。SDK 腿走不到这里 (它自己的循环核不经
+     * streamFn), 所以 SDK 腿上这个数组恒空, 不代表 SDK 腿没有这个问题。
+     */
+    const salvageEvents: SalvageEvent[] = [];
+
     // P1 self_check 自修环 (C-2/C-3): 在闭包里把状态机装好, 让上面的 config 块直接拿现成的
     // getFollowUpMessages 句柄 (这样 config 块本身只关心接线, 不读懂状态机)。
     //
@@ -2186,6 +2220,9 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           cwd,
           allowlist: allowlistForRoot(cwd),
           getTouchedSize: () => touched.size,
+          // 内容级判据 (2026-08-26): 同一文件二次编辑时计数不动而指纹动 —— 计数那把尺子
+          // 会把它误判成"零新增"并当场停掉自修环。两个方向的证伪都在 leaf-self-check.test.ts。
+          getWorkspaceDigest: () => workspaceDigest(cwd, touched),
           enabled: true,
           maxSelfRepair,
           observe: (info) => {
@@ -2374,13 +2411,23 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
         const firstUserContent =
           piImageParts.length > 0 ? [{ type: 'text' as const, text: routedPrompt }, ...piImageParts] : routedPrompt;
         const loop = opts.loopFn ?? runAgentLoop;
+        // 正文内嵌工具调用的抢救层 (2026-08-26)。`known` 取**两副工具面的并集** —— 工具面升级
+        // (withToolFaceEscalation) 会在第二轮把 runTools 换成 escalatedTools, 只登记首轮那副
+        // 就会在升级之后把合法调用判成"工具名未注册"。装配一次、跨轮不变, 与 streamFn 的生命周期一致。
         messages = await loop(
           [{ role: 'user', content: firstUserContent, timestamp: Date.now() }] as AgentMessage[],
           context,
           config,
           emit,
           controller.signal,
-          streamSimple,
+          withToolCallSalvage(streamSimple, {
+            known: new Set([...runTools, ...escalatedTools].map((t) => t.name)),
+            onSalvage: (e) => {
+              salvageEvents.push(e);
+              // 抢救成功 = 这一轮本来会零产出 —— 算"有动静", 看门狗该续窗。
+              if (e.calls > 0) noteProgress();
+            },
+          }),
         );
       }
     } finally {
@@ -2486,6 +2533,23 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           '[agent-leaf] 仓规检查红 (advisory) —— 不杀节点; 真问题由 accept 的全量兜住, 误报不再级联',
         );
       }
+    }
+    // 抢救读数收尾 (2026-08-26)。**触发过才打** —— 没触发是期望态, 每个 leaf 打一行 "0 次"
+    // 只会把日志冲淡。触发过就必须看得见: 它意味着这个座位在**不走原生 tool_calls 通道**,
+    // 那是要进座位登记表的模型行为, 不是一次性事故。
+    if (salvageEvents.length > 0) {
+      const salvagedCalls = salvageEvents.reduce((n, e) => n + e.calls, 0);
+      logger.warn(
+        {
+          model,
+          rounds: salvageEvents.length,
+          salvagedCalls,
+          names: [...new Set(salvageEvents.flatMap((e) => e.names))],
+          unknown: [...new Set(salvageEvents.flatMap((e) => e.unknownNames))],
+          truncated: salvageEvents.some((e) => e.truncated),
+        },
+        '[agent-leaf] 本次 leaf 用到了正文抢救 —— 该座位没走原生 tool_calls 通道',
+      );
     }
     // spin 只在真卡过时带出去 —— 全 0 的字段进 JSON 只是噪声 (同 observations「缺席 ≠ 0」的口径)。
     const spinSummary = drift?.summary();
@@ -2668,6 +2732,26 @@ export function diffWriteEffect(path: string, before: FileSnapshot, after: FileS
     // 新建空文件 lines 都是 0 但 exists 从 false 变 true, 也不是 noop。
     noop: before.exists === after.exists && before.hash === after.hash,
   };
+}
+
+/**
+ * 写集的**内容级**指纹 —— `buildSelfCheckFollowUp` 的 `getWorkspaceDigest` 实装 (2026-08-26)。
+ *
+ * 逐文件取 {@link snapshotFile} 的 hash, 按路径排序后拼一串再 sha1。三件事刻意这么做:
+ *
+ * ① **路径进指纹**, 不只是内容 —— 否则「把 a.ts 的内容整体挪进 b.ts」会被判成没变。
+ * ② **文件不存在写成 `∅` 而不是跳过** (§NULL ≠ 0 ≠ 不适用): 「这一轮把文件删了」与
+ *    「这一轮压根没碰它」必须给出不同的指纹, 否则一次删除会被判成"零进展"而停掉自修环。
+ * ③ **空写集有确定值** (`sha1("")` 的那个常量), 不是 null —— 「一个文件都没写」是一个
+ *    合法且稳定的状态, 两轮都没写就该判停。返 null 会让判据退回计数, 那是另一把尺子。
+ */
+export function workspaceDigest(cwd: string, paths: Iterable<string>): string {
+  const h = createHash('sha1');
+  for (const p of [...paths].sort()) {
+    const snap = snapshotFile(cwd, p);
+    h.update(p).update('\u0000').update(snap.hash ?? '∅').update('\u0000');
+  }
+  return h.digest('hex');
 }
 
 export function snapshotFile(cwd: string, path: string): FileSnapshot {

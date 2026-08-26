@@ -181,9 +181,38 @@ export async function runRepoChecks(input: RepoChecksInput): Promise<RepoChecksR
   for (const check of input.checks) {
     // `{files}` 占位符替换: 命令里没有这个 token → 命令对文件范围不敏感 (例如全仓扫描),
     // 不强制; 但 `input.files` 仍按调用方的清单传 (INV-D2-5: 调用方负责决定要不要用)。
-    const cmd = check.command.includes('{files}')
-      ? check.command.split('{files}').join(filesArg)
-      : check.command;
+    const fileScoped = check.command.includes('{files}');
+    // ── 零写集 × file-scoped 检查 = **不适用**, 不是失败 (2026-08-26) ───────────────
+    //
+    // 占位符在空清单上展开成空串, 于是 `--files {files}` 变成一个光秃秃的 `--files`,
+    // 脚本打印用法并 `exit 2` —— 而 `exit != 0` 这一支把它记成 FAIL。后果不是"多一条红":
+    // **零写集的节点被一条压根不适用于它的检查判死, 而且永远过不了。**
+    //
+    // 实账 (run 6f97a21e, 连死两轮): 研究图的 `map_faces` 是个 lister —— 它产数组、
+    // 一个文件都不写。`test-touches-impl` 没写 severity ⇒ 默认 blocking ⇒ 杀节点 ⇒
+    // 8 个分片全没 ⇒ 下游毒集级联。两轮同一个死法, 而模型侧一点问题都没有。
+    //
+    // 判成 `UNVERIFIED` 而不是 `OK`: 「这条检查没跑」与「跑了并且过了」是两件事
+    // (§NULL ≠ 0 ≠ 不适用)。这一档本来就在 `GateVerdict` 里, 只是此前没人往里放。
+    // 判成 UNVERIFIED 也就自然不进 `anyFail` —— 节点不被杀, 而账上留着"没验过"。
+    if (fileScoped && input.files.length === 0) {
+      anyUnverified = true;
+      logger.info(
+        { runId: input.runId, nodeId: input.nodeId, checkId: check.id },
+        '[repo-checks] 零写集 × file-scoped 检查 → UNVERIFIED (不适用, 不是失败)',
+      );
+      perCheck.push({
+        id: check.id,
+        verdict: 'UNVERIFIED',
+        reason: 'no_files_in_scope',
+        // 证据要能直接回答"为什么这条没跑" —— 把命令原文带上, 免得下一个人去猜是不是脚本坏了。
+        evidence: `本节点写集为空, 而该检查命令含 {files} 占位符 → 无可检对象: ${check.command}`,
+        oracleFaults: 0,
+        evaluatedAt: now().toISOString(),
+      });
+      continue;
+    }
+    const cmd = fileScoped ? check.command.split('{files}').join(filesArg) : check.command;
 
     let outcome: RepoCheckOutcome;
     try {

@@ -341,9 +341,24 @@ describe('runRepoChecks / {files} 占位符替换', () => {
     expect(calls[0]).toBe('global-scan');
   });
 
-  test('files 为空数组 → {files} 替换为空串 (不报错, 由 oracle 决定怎么处理)', async () => {
+  /**
+   * ⚠ **断言在 2026-08-26 翻过面。** 原文是「files 为空数组 → `{files}` 替换为空串
+   * (不报错, **由 oracle 决定怎么处理**)」—— 括号里那个假设正是缺陷本身。
+   *
+   * 空清单展开成空串后, `--files {files}` 变成一个光秃秃的 `--files`;脚本打印用法
+   * 并 `exit 2`,而 `exit != 0` 那一支把它记成 FAIL。于是**零写集的节点被一条压根
+   * 不适用于它的检查判死,并且永远过不了**。
+   *
+   * 实账 (run 6f97a21e,连死两轮): 研究图的 `map_faces` 是 lister —— 产数组、不写文件。
+   * `.omd-repo-checks.json` 里 `test-touches-impl` 没写 severity ⇒ 默认 blocking ⇒
+   * 杀节点 ⇒ 8 个分片全没 ⇒ 下游毒集级联。两轮同一个死法,模型侧零问题。
+   *
+   * 新契约: file-scoped 检查在空写集上**根本不 spawn**,判 `UNVERIFIED`(不适用)。
+   * 不判 `OK` —— 「没跑」与「跑了且过了」是两件事 (§NULL ≠ 0 ≠ 不适用)。
+   */
+  test('files 为空 × 含 {files} → **不 spawn**, 判 UNVERIFIED (不适用 ≠ 失败, 也 ≠ 通过)', async () => {
     const calls: string[] = [];
-    await runRepoChecks({
+    const r = await runRepoChecks({
       checks: [{ id: 'a', command: 'scan --files {files}' }],
       files: [],
       cwd: '/tmp',
@@ -352,7 +367,54 @@ describe('runRepoChecks / {files} 占位符替换', () => {
         return { stdout: '', stderr: '', exitCode: 0 };
       }),
     });
-    expect(calls[0]).toBe('scan --files ');
+    expect(calls).toEqual([]); // 连跑都没跑 —— 这才是"不适用"
+    expect(r.verdict).toBe('UNVERIFIED');
+    expect(r.perCheck[0]!.verdict).toBe('UNVERIFIED');
+    expect(r.perCheck[0]!.reason).toBe('no_files_in_scope');
+    // 证据要能直接回答"为什么这条没跑", 而不是让下一个人去猜脚本坏没坏。
+    expect(r.perCheck[0]!.evidence).toContain('scan --files {files}');
+  });
+
+  /**
+   * 反向自检: 缺陷的**真实形态**必须能被这道闸挡住 —— 否则上面那条只是换了个断言。
+   * 这里复刻 run 6f97a21e 的原局: 零写集 + blocking 的 file-scoped 检查 + 脚本 exit 2。
+   */
+  test('★ 反向 (复刻 run 6f97a21e): 零写集 + blocking file-scoped 检查 → 节点**不再**被杀', async () => {
+    const r = await runRepoChecks({
+      checks: [
+        { id: 'test-touches-impl', command: 'bun run scripts/test-touches-impl.ts --files {files}' }, // 无 severity = blocking
+      ],
+      files: [], // map lister: 产数组, 一个文件都不写
+      cwd: '/tmp',
+      // 真脚本在空参下就是这个行为: 打用法 + exit 2
+      spawn: makeSpawn(async () => ({ stdout: '用法: bun run scripts/test-touches-impl.ts --files <f1> <f2> …', stderr: '', exitCode: 2 })),
+    });
+    expect(r.verdict).not.toBe('FAIL'); // 改动前这里是 FAIL, 节点当场死
+    expect(r.verdict).toBe('UNVERIFIED');
+  });
+
+  test('反向: 有写集时 file-scoped 检查照跑照判 (上一条不是把闸关了)', async () => {
+    const r = await runRepoChecks({
+      checks: [{ id: 'a', command: 'scan --files {files}' }],
+      files: ['src/a.ts'],
+      cwd: '/tmp',
+      spawn: makeSpawn(async () => ({ stdout: '', stderr: 'boom', exitCode: 2 })),
+    });
+    expect(r.verdict).toBe('FAIL');
+  });
+
+  test('反向: 无占位符的全仓检查, 空写集也照跑 (它对文件范围不敏感)', async () => {
+    const calls: string[] = [];
+    await runRepoChecks({
+      checks: [{ id: 'a', command: 'global-scan' }],
+      files: [],
+      cwd: '/tmp',
+      spawn: makeSpawn(async (cmd) => {
+        calls.push(cmd);
+        return { stdout: '', stderr: '', exitCode: 0 };
+      }),
+    });
+    expect(calls).toEqual(['global-scan']);
   });
 
   test('{files} 出现多次 → 全部替换', async () => {

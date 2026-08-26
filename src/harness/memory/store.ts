@@ -147,6 +147,20 @@ export class OmdMemory {
         deleted_at   INTEGER
       )
     `);
+    // ── 墓碑的两列证据 (2026-08-26) ──────────────────────────────────────────
+    // 此前 `tombstoneByIdentity(ns, key, _reason)` 的 reason **带下划线前缀丢掉了** ——
+    // 盘上只剩一个 `deleted_at`。于是「被 evolve 顶掉」「被 replace 顶掉」「被 shrink 剪掉」
+    // 「被人 retract」四种死法长得一模一样, 而且**没有指向继任者的链**, 一次自我进化写坏了
+    // 也回不去。这正是本仓 §静默坑 1 (NULL ≠ 0 ≠ 不适用) 的形状: 分辨靠另一列, 不靠猜。
+    //
+    // 老库要能原地升: `ALTER TABLE ADD COLUMN` 只在缺列时跑 (SQLite 没有 IF NOT EXISTS)。
+    // 升级前写的行两列都是 NULL —— 那是**第三种值**「本次升级之前就死了, 死因无记录」,
+    // 与「死于 evolve」和「还活着」都不同, 读面不许把它折成前两者之一。
+    const cols = new Set(
+      (this.db.query(`PRAGMA table_info(facts)`).all() as { name: string }[]).map((c) => c.name),
+    );
+    if (!cols.has('deleted_reason')) this.db.run(`ALTER TABLE facts ADD COLUMN deleted_reason TEXT`);
+    if (!cols.has('superseded_by')) this.db.run(`ALTER TABLE facts ADD COLUMN superseded_by TEXT`);
     this.db.run(
       `CREATE INDEX IF NOT EXISTS facts_ns_identity ON facts (namespace, identity_key)`,
     );
@@ -213,15 +227,18 @@ export class OmdMemory {
     }
 
     // 3. Supersede the predecessor (evolve/replace) then store the incoming.
+    //    id **先生成再顶替**: 墓碑要写 `superseded_by = 继任者 id`, 而顺序反过来的话那一列
+    //    只能事后补写 —— 补写就意味着中途崩溃会留下一个没有继任者的墓碑, 那正是回滚要用的链。
+    const id = crypto.randomUUID();
     if ((evolve.action === 'evolve' || evolve.action === 'replace') && existing) {
-      this.tombstoneByIdentity(fact.namespace, identityKey, `superseded:${evolve.action}`);
+      this.tombstoneByIdentity(fact.namespace, identityKey, `superseded:${evolve.action}`, id);
     }
-    const id = await this.insertFact(fact, identityKey);
+    await this.insertFact(fact, identityKey, id);
     return { status: 'written', id, action: evolve.action };
   }
 
-  private async insertFact(fact: ValidatedFact, identityKey: string): Promise<string> {
-    const id = crypto.randomUUID();
+  private async insertFact(fact: ValidatedFact, identityKey: string, presetId?: string): Promise<string> {
+    const id = presetId ?? crypto.randomUUID();
     const text = factToText(fact);
     const embedding = vecToBlob(await this.embed(text));
     const createdAt = Date.now();
@@ -238,8 +255,18 @@ export class OmdMemory {
     return id;
   }
 
-  /** Tombstone all live facts of a (namespace, IDENTITY) — SHRINK-INV-3 soft. */
-  private tombstoneByIdentity(namespace: string, identityKey: string, _reason: string): void {
+  /**
+   * Tombstone all live facts of a (namespace, IDENTITY) — SHRINK-INV-3 soft.
+   *
+   * `reason` / `supersededBy` **落盘** (2026-08-26)。此前 reason 是个 `_` 前缀的形参、
+   * 一个字都没写出去 —— 见构造函数里那两列的注。
+   */
+  private tombstoneByIdentity(
+    namespace: string,
+    identityKey: string,
+    reason: string,
+    supersededBy?: string,
+  ): void {
     const rows = this.db
       .query(
         `SELECT id FROM facts WHERE namespace = ? AND identity_key = ? AND deleted_at IS NULL`,
@@ -248,11 +275,72 @@ export class OmdMemory {
     const now = Date.now();
     const tx = this.db.transaction(() => {
       for (const r of rows) {
-        this.db.run(`UPDATE facts SET deleted_at = ? WHERE id = ?`, [now, r.id]);
+        this.db.run(`UPDATE facts SET deleted_at = ?, deleted_reason = ?, superseded_by = ? WHERE id = ?`, [
+          now,
+          reason,
+          supersededBy ?? null,
+          r.id,
+        ]);
         this.db.run(`DELETE FROM facts_fts WHERE fact_id = ?`, [r.id]);
       }
     });
     tx();
+  }
+
+  /**
+   * 一条已死事实的墓志铭 (2026-08-26)。**三种返回值互不折叠**:
+   *   - `null`                                → 这个 id 不存在, 或它还活着
+   *   - `{reason: null, supersededBy: null}`  → 死于本次升级之前, 死因无记录 (老行)
+   *   - `{reason: '…', supersededBy?}`        → 有据可查的死
+   *
+   * 第二种存在的唯一理由是不许把"没记"伪装成"没原因"。
+   */
+  epitaph(id: string): { deletedAt: number; reason: string | null; supersededBy: string | null } | null {
+    const row = this.db
+      .query(`SELECT deleted_at, deleted_reason, superseded_by FROM facts WHERE id = ?`)
+      .get(id) as { deleted_at: number | null; deleted_reason: string | null; superseded_by: string | null } | null;
+    if (!row || row.deleted_at === null) return null;
+    return { deletedAt: row.deleted_at, reason: row.deleted_reason, supersededBy: row.superseded_by };
+  }
+
+  /**
+   * **按 id 回滚一次自我进化** —— 把墓碑翻回 live 并把它的继任者顶掉 (2026-08-26)。
+   *
+   * 为什么需要它: 一条基于偶然成功写下的事实, 和一条真教训, 在库里长得一模一样, 而且都会影响
+   * 后面每一轮。回滚机制的存在**不是**说进化不该发生, 是承认它会写错 —— 写错了要有路走回去。
+   *
+   * 返回 false 的两种情形 (调用方要分开处置, 别都当"没这条"):
+   *   - id 不存在 / 它还活着            → 无事可做
+   *   - 它的继任者已经又被别人顶掉了     → 链断了, 这时强行复活会同时出现两条 live 同 identity,
+   *                                       破坏 supersession 不变量。**拒绝**, 交给人看。
+   */
+  revertSupersession(id: string): boolean {
+    // INV-8: check-then-write **整段**进 `tx.immediate()` —— 读(找继任者/判链断没断)与写(翻墓碑)
+    // 之间若插进另一个进程的一次 supersede, 我们就会拿着过期的链去复活, 结果是同 identity 两条 live。
+    // 读在事务外的版本不是"慢一点", 是不变量本身失效。
+    let done = false;
+    const tx = this.db.transaction(() => {
+      const row = this.db
+        .query(`SELECT namespace, identity_key, superseded_by, text FROM facts WHERE id = ? AND deleted_at IS NOT NULL`)
+        .get(id) as { namespace: string; identity_key: string; superseded_by: string | null; text: string } | null;
+      if (!row || !row.superseded_by) return;
+      const heir = this.db
+        .query(`SELECT deleted_at FROM facts WHERE id = ?`)
+        .get(row.superseded_by) as { deleted_at: number | null } | null;
+      if (!heir || heir.deleted_at !== null) return; // 链断了 —— 见上注
+      this.db.run(`UPDATE facts SET deleted_at = ?, deleted_reason = ?, superseded_by = ? WHERE id = ?`, [
+        Date.now(),
+        `reverted-to:${id}`,
+        id,
+        row.superseded_by,
+      ]);
+      this.db.run(`DELETE FROM facts_fts WHERE fact_id = ?`, [row.superseded_by]);
+      this.db.run(`UPDATE facts SET deleted_at = NULL, deleted_reason = NULL, superseded_by = NULL WHERE id = ?`, [id]);
+      this.db.run(`INSERT INTO facts_fts (fact_id, text) VALUES (?, ?)`, [id, row.text]);
+      done = true;
+    });
+    tx.immediate();
+    return done;
   }
 
   /** Soft-delete a single fact by id (idempotent). */

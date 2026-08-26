@@ -25,7 +25,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { appendBoard, readBoard, liveRuns, type BoardEntry } from './run-board';
+import { appendBoard, readBoard, liveRuns, liveRunIds, type BoardEntry, type BoardEvent } from './run-board';
 
 const dirs: string[] = [];
 const freshRoot = (): string => {
@@ -295,5 +295,55 @@ describe('compact / G-4', () => {
     appendBoard(root, entry('r-extra-2', 'claimed', { writeSet: ['z2.ts'] }));
     const notes = readBoard(root).filter((e) => e.note?.startsWith('run-board > 1MB after compact'));
     expect(notes.length).toBe(1);
+  });
+});
+
+/**
+ * 活判据的顺序敏感性 (2026-08-26) —— `liveRunIds` 是活判据的**唯一真源**。
+ *
+ * ## 起因 (实账)
+ *
+ * 旧判法在 `liveRuns` 与 `otherLiveRuns` 各写一份 `new Set(…event==='terminal'…)`,顺序盲。
+ * 于是 `claimed → terminal → claimed`(resume 续跑)被判成"不活" —— 一个**正在跑**的 run
+ * 在板上隐形。2026-08-26 清点时实测确认: 当时正在跑的 `6f97a21e` 恰好落在这个洞里。
+ *
+ * 反向(死 run 判成活)那一侧同样要钉: 同一次清点里 12 条 claim 悬空最久 8.3 天。
+ *
+ * ## 反向自检
+ *
+ * 把 `liveRunIds` 换回 `new Set(entries.filter(e=>e.event==='terminal').map(e=>e.runId))`
+ * ⇒ 「resume 续跑仍算活」当场红。
+ */
+describe('★ liveRunIds — 活判据按顺序, 不按"有没有出现过 terminal"', () => {
+  const at = (runId: string, event: BoardEvent): BoardEntry => ({ v: 1, ts: '2026-08-26T00:00:00.000Z', runId, event });
+
+  test('claimed → terminal → claimed (resume 续跑) = **活着**', () => {
+    const live = liveRunIds([at('r', 'claimed'), at('r', 'terminal'), at('r', 'claimed')]);
+    expect([...live]).toEqual(['r']);
+  });
+
+  test('反向: claimed → terminal = 死了', () => {
+    expect([...liveRunIds([at('r', 'claimed'), at('r', 'terminal')])]).toEqual([]);
+  });
+
+  test('反向: 只有 claimed = 活着 (这条是僵尸 claim 唯一能被看见的形态)', () => {
+    expect([...liveRunIds([at('r', 'claimed')])]).toEqual(['r']);
+  });
+
+  test('多 run 互不串: 甲续跑、乙已收尾', () => {
+    const live = liveRunIds([
+      at('a', 'claimed'), at('b', 'claimed'), at('a', 'terminal'), at('b', 'terminal'), at('a', 'claimed'),
+    ]);
+    expect([...live].sort()).toEqual(['a']);
+  });
+
+  test('liveRuns 与 liveRunIds 判据一致 (它是同一个真源的两个视图)', () => {
+    const entries: BoardEntry[] = [
+      { v: 1, ts: 't', runId: 'r', event: 'claimed', writeSet: ['src/**'] },
+      at('r', 'terminal'),
+      { v: 1, ts: 't', runId: 'r', event: 'claimed', writeSet: ['docs/**'] },
+    ];
+    expect([...liveRuns(entries).keys()]).toEqual(['r']);
+    expect(liveRuns(entries).get('r')).toEqual(['docs/**']); // 后写者胜
   });
 });

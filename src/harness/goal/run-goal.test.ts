@@ -1117,7 +1117,21 @@ describe('runGoal — S4 run 生命周期接线 (board: claimed → terminal)', 
     expect(after.some((e) => e.runId === 'sess-s4-1' && e.event === 'terminal')).toBe(true);
   });
 
-  test('缺省声明写集 = SDD_DECLARED_WRITE_SET.allowed', async () => {
+  /**
+   * ⚠ **断言在 2026-08-26 翻过面** —— 原文是
+   * `expect(claimedDuring?.writeSet).toEqual(SDD_DECLARED_WRITE_SET.allowed)`,
+   * 即「未注入写集时 claim 行兜底那个模块级常量」。那条断言**把缺陷固化住了**
+   * (本仓 §静默坑 3: 测试与实装一起产出时会一起错并互相背书)。
+   *
+   * `SDD_DECLARED_WRITE_SET` (write-set.ts:139) 是 2026-08-10 那一份 SDD 自己的写集,
+   * 与任意一个后来的 run 都没有关系。实账: 板上 12 条僵尸 claim 的 writeSet 逐字节相同,
+   * 于是每一次点火回执都打印同一句假撞车告警。
+   *
+   * 新契约 = 与 `dag_run` 路一致 (dag-run-board.ts 头注 19-27): **未声明就是字段缺席**,
+   * 因为「没声明」(判不了交集) 与「声明了空集」(可断言无冲突) 是两件事。
+   * 写集对账那一侧仍兜底常量 —— 两个消费者处置不同, 见 RunGoalConfig.writeSet 的注。
+   */
+  test('未注入声明写集 → claim 行**不带** writeSet 字段 (不兜底常量)', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omd-goal-s4-'));
     let claimedDuring: BoardEntry | undefined;
     await runGoal('做一个事', cfg({}, {
@@ -1125,7 +1139,10 @@ describe('runGoal — S4 run 生命周期接线 (board: claimed → terminal)', 
       _classify: cls('simple'),
       onClassified: () => { claimedDuring = readBoard(cwd).find((e) => e.event === 'claimed'); },
     }));
-    expect(claimedDuring?.writeSet).toEqual(SDD_DECLARED_WRITE_SET.allowed);
+    expect(claimedDuring).toBeDefined();
+    expect(claimedDuring?.writeSet).toBeUndefined();
+    // 只断言 undefined 的话, 实装换成 `[]` 也能过 —— 而 `[]` 恰好是本仓明令禁止的那种压平。
+    expect(JSON.stringify(claimedDuring)).not.toContain(SDD_DECLARED_WRITE_SET.allowed[0]!);
   });
 
   test('终态 entry 内容: outcome 四值投影 + note 留细粒度 (纯函数面, compact 后读不到原行)', () => {

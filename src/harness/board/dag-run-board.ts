@@ -35,7 +35,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { appendBoard, readBoard, type BoardEntry } from './run-board';
+import { appendBoard, liveRunIds, readBoard, type BoardEntry } from './run-board';
 import { notifyOwner } from '../notify';
 import { logger } from '../logger';
 
@@ -108,18 +108,19 @@ function readNotifyConfigText(root: string): string | null {
 }
 
 /**
- * 板上除 `selfRunId` 之外还活着的 run。**读原始 entry**,保住「未声明 vs 空集」那一位。
+ * 板上除 `selfRunId` 之外还活着的 run。**读原始 entry**,保住「未声明 vs 空集」那一位
+ * (`liveRuns()` 在 `?? []` 那一步会把三态压成两态,而这一位正是本模块存在的理由)。
  *
- * 与 `liveRuns()` 同一条判据(claimed 且无对应 terminal),刻意不复用它 ——
- * 复用就会在 `?? []` 那一步把三态压成两态,而这一位正是本模块存在的理由。
- * 判据本身**不重写第二份**:两处都是「claimed ∧ ¬terminal」,改判据要两处同步,
- * 这条同步义务写在这里(本仓 S-7:同一条规则散在多处,漏掉第三处)。
+ * **活判据本身经 {@link liveRunIds} —— 单一真源**(2026-08-26)。
+ * 此前这里手写了第二份 `claimed ∧ ¬terminal`,并在注释里立了一条「改判据要两处同步」的
+ * 人肉义务。那条义务当场就没还上:两份都是顺序盲的,resume 续跑的 run 在**两处**同时隐形。
+ * 判据只该有一处,复用它比同步它便宜 —— 视图差异(三态 vs 两态)留在各自的取值那一步。
  */
 export function otherLiveRuns(entries: readonly BoardEntry[], selfRunId: string): LiveRunView[] {
-  const terminal = new Set(entries.filter((e) => e.event === 'terminal').map((e) => e.runId));
+  const live = liveRunIds(entries);
   const byId = new Map<string, LiveRunView>();
   for (const e of entries) {
-    if (e.event !== 'claimed' || terminal.has(e.runId) || e.runId === selfRunId) continue;
+    if (e.event !== 'claimed' || !live.has(e.runId) || e.runId === selfRunId) continue;
     // 后写者覆盖先写者 —— 与 liveRuns 同惯例
     byId.set(e.runId, {
       runId: e.runId,

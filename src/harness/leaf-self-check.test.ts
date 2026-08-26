@@ -28,13 +28,15 @@
  *    「零新增仍开下一轮」红, 那是把 grind 已经实测过 25:1 误杀那条闸废掉。
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   SELF_CHECK_SDK_SKIP_LOG,
   buildSelfCheckFollowUp,
   runSelfCheckProbe,
   selfCheckEnvEnabled,
+  workspaceDigest,
   type SelfCheckOutcome,
 } from './agent-leaf';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
@@ -407,5 +409,102 @@ describe('判据输出指纹:两轮一模一样 = 这一轮什么都没改到', 
     await followUp();
     const second = await followUp();
     expect(String((second[0] as { content?: unknown })?.content)).not.toContain('逐字节相同');
+  });
+});
+
+/**
+ * 工作区判据 (2026-08-26) —— 「自上次尝试以来变没变」从**路径计数**换成**内容指纹**。
+ *
+ * 两个方向都要证伪, 因为老判据两个方向都漏:
+ *   ① 同一文件二次编辑: 计数不动 → 老判据当场判"零新增"停掉自修环 (**假停**);
+ *   ② 什么都没改:       指纹不动 → 新判据照样停 (这条不许因为换尺子而丢)。
+ */
+describe('★ 工作区内容指纹 —— 取代「touched 路径个数」这把会漏的尺子', () => {
+  const red = (stdout: string): SelfCheckOutcome => ({ kind: 'exited', exitCode: 1, stdout, stderr: '' });
+  const alwaysRed = async (): Promise<SelfCheckOutcome> => red('1 fail\n');
+
+  /** 计数恒定 (= 模型每轮都在改**同一个文件**), 指纹按 digests 逐轮给。 */
+  const loopWithDigest = (digests: readonly string[]) => {
+    let i = 0;
+    return buildSelfCheckFollowUp({
+      spec: { command: 'bun test x.test.ts', expect_exit: 0 },
+      cwd: '/x',
+      allowlist: ALLOWLIST,
+      getTouchedSize: () => 1, // 恒 1 —— 老判据在这里必判"零新增"
+      getWorkspaceDigest: () => digests[Math.min(i++, digests.length - 1)]!,
+      enabled: true,
+      maxSelfRepair: 3,
+      truncate: passthroughTruncate,
+      probe: alwaysRed,
+      observe: () => {},
+    });
+  };
+
+  test('同一文件二次编辑 (计数恒定, 内容变) → 自修环**继续**, 不被假停', async () => {
+    const { followUp, ledger } = loopWithDigest(['d0', 'd1', 'd2']);
+    expect(await followUp()).toHaveLength(1); // 第 1 轮
+    expect(await followUp()).toHaveLength(1); // 第 2 轮 —— 老判据在这里会返 []
+    expect(ledger.rounds).toBe(2);
+  });
+
+  test('反向: 工作区一个字节没变 → 照旧停 (换尺子没把停的能力丢掉)', async () => {
+    const observed: string[] = [];
+    let i = 0;
+    const digests = ['d0', 'd1', 'd1']; // 第 2 轮之后再没动过
+    const { followUp } = buildSelfCheckFollowUp({
+      spec: { command: 'bun test x.test.ts', expect_exit: 0 },
+      cwd: '/x',
+      allowlist: ALLOWLIST,
+      getTouchedSize: () => 999, // 计数狂涨 —— 老判据在这里会一直放行
+      getWorkspaceDigest: () => digests[Math.min(i++, digests.length - 1)]!,
+      enabled: true,
+      maxSelfRepair: 3,
+      truncate: passthroughTruncate,
+      probe: alwaysRed,
+      observe: (info) => observed.push(info.kind),
+    });
+    expect(await followUp()).toHaveLength(1);
+    expect(await followUp()).toEqual([]);
+    expect(observed).toContain('no-progress');
+  });
+
+  test('getWorkspaceDigest 缺席 → 退回计数判据 (与本改动前逐字同行为)', async () => {
+    const { followUp } = buildSelfCheckFollowUp({
+      spec: { command: 'bun test x.test.ts', expect_exit: 0 },
+      cwd: '/x',
+      allowlist: ALLOWLIST,
+      getTouchedSize: () => 1, // 恒定 → 计数判据判停
+      enabled: true,
+      maxSelfRepair: 3,
+      truncate: passthroughTruncate,
+      probe: alwaysRed,
+      observe: () => {},
+    });
+    expect(await followUp()).toHaveLength(1);
+    expect(await followUp()).toEqual([]);
+  });
+});
+
+describe('★ workspaceDigest —— 三条口径 (路径入指纹 / 缺席写 ∅ / 空集有确定值)', () => {
+  test('内容相同但路径不同 → 指纹不同 (挪文件不算"没变")', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omd-wsdigest-'));
+    writeFileSync(join(dir, 'a.ts'), 'x');
+    writeFileSync(join(dir, 'b.ts'), 'x');
+    expect(workspaceDigest(dir, ['a.ts'])).not.toBe(workspaceDigest(dir, ['b.ts']));
+  });
+
+  test('文件被删 ≠ 从来没碰过它 (§NULL ≠ 0 ≠ 不适用)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omd-wsdigest-'));
+    writeFileSync(join(dir, 'a.ts'), 'x');
+    const withFile = workspaceDigest(dir, ['a.ts']);
+    rmSync(join(dir, 'a.ts'));
+    const deleted = workspaceDigest(dir, ['a.ts']); // 路径仍在写集里, 文件没了 → ∅
+    const never = workspaceDigest(dir, []); // 压根没碰过
+    expect(deleted).not.toBe(withFile);
+    expect(deleted).not.toBe(never);
+  });
+
+  test('空写集有确定值 (不是 null —— 那会让判据退回计数那把尺子)', () => {
+    expect(workspaceDigest('/nonexistent', [])).toBe(workspaceDigest('/other', []));
   });
 });

@@ -88,13 +88,25 @@ describe('ignitionPreflight (S2 / INV-5)', () => {
     expect(rep.verdict).toBe('ok');
     expect(rep.conflicts).toEqual([]);
   });
-  test('claimed 条目出现在 terminal 之后 → 仍不算活 (终态判定按 runId, 不按板上先后次序)', () => {
+  /**
+   * ⚠ **断言在 2026-08-26 翻过面。** 原文是「claimed 条目出现在 terminal 之后 → 仍不算活
+   * (终态判定按 runId, 不按板上先后次序)」——那条只钉住了当时的实现, 没写为什么该这样。
+   *
+   * 而它构造的场景 (`terminal` 之后又 `claimed`) 恰恰就是**一次 resume 续跑**。按旧判法,
+   * 一个正在续跑的 run 不占自己的写面, 于是并发点火拿到 `ok` 然后两边同改一批文件 ——
+   * 那正是 `dag-run-board.ts` 头注里列的那次「真写集撞车」实账。
+   *
+   * 新判据: 最后一次 `claimed` 排在最后一次 `terminal` 之后 = 活着 (见 `liveRunIds`)。
+   * 这一改让闸**更严**, 而更严的那一侧是对的 —— 续跑的 run 确实在写。
+   * 误伤面 (续跑完又死掉、terminal 没落盘) 与僵尸 claim 同一族, 由 `force:true` 与定期清点兜。
+   */
+  test('claimed 出现在 terminal 之后 (= resume 续跑) → **算活**, 占住写面', () => {
     const root = freshRoot();
-    appendBoard(root, entry('r-done', 'terminal', { outcome: 'ok' }));
-    appendBoard(root, entry('r-done', 'claimed', { writeSet: ['src/a.ts'] }));
+    appendBoard(root, entry('r-resumed', 'terminal', { outcome: 'ok' }));
+    appendBoard(root, entry('r-resumed', 'claimed', { writeSet: ['src/a.ts'] }));
     const rep = ignitionPreflight(root, ['src/a.ts']);
-    expect(rep.verdict).toBe('ok');
-    expect(rep.conflicts).toEqual([]);
+    expect(rep.verdict).not.toBe('ok');
+    expect(rep.conflicts).toEqual([{ runId: 'r-resumed', overlap: ['src/a.ts'] }]);
   });
 
   test('写集不相交 → ok, 无冲突', () => {
