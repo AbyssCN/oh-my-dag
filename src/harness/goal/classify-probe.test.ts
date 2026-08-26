@@ -148,3 +148,28 @@ describe('INV-11: 存量不回退', () => {
     expect(prompt.split('\n').some((l) => l.includes('tsc --noEmit'))).toBe(true);
   });
 });
+
+describe('E-T1: 测试套仓强偏执行型 (bench 批7/8 docs-only 病的上游修)', () => {
+  // 反向自检: 删掉 classifyPrompt 里的强偏段 → 前两条当场红。
+  test('检出语言包的仓 → prompt 含强偏执行型段, 且「拿不准选 exploratory」被条件反转', () => {
+    const root = freshRoot();
+    writeFileSync(join(root, 'pyproject.toml'), '[tool.pytest]');
+    const prompt = classifyPrompt('修一个 bug', { repoRoot: root });
+    expect(prompt).toContain('强烈偏向 "executable"');
+    // 反转句: 有测试套证据时不再教"拿不准就选 exploratory"
+    expect(prompt).toContain('先在测试套里找锚');
+  });
+
+  test('js 仓同样强偏 (证据 = 任一语言包 marker)', () => {
+    const root = freshRoot();
+    writeFileSync(join(root, 'package.json'), '{}');
+    const prompt = classifyPrompt('修一个 bug', { repoRoot: root });
+    expect(prompt).toContain('强烈偏向 "executable"');
+  });
+
+  test('无 marker 仓 / 无 probe → 强偏段 0 处 (存量教学面不变)', () => {
+    const root = freshRoot();
+    expect(classifyPrompt('目标', { repoRoot: root })).not.toContain('强烈偏向 "executable"');
+    expect(classifyPrompt('目标')).not.toContain('强烈偏向 "executable"');
+  });
+});

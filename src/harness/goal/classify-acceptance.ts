@@ -247,8 +247,21 @@ export function classifyPrompt(goal: string, probe?: ClassifyPromptProbe): strin
     '',
     `⚠ 判据轴与成本轴**互相独立**: 一个做法未定的目标, 验收照样可能是机器可判的 (先查清楚怎么做,`,
     `  但做完跑 \`${independentAxisExample}\` 就知道成没成)。别因为 tier=complex 就往 exploratory 上靠。`,
-    '⚠ 拿不准就选 "exploratory"。给一条**判不了真假**的命令比承认判不了坏得多 —— 它会让整个环',
-    '  以为自己有验收, 而实际上没有。',
+    // E-T1 (2026-08-26, bench 批 7/8 实证): 有语言包 marker = 仓里有测试基建, 「拿不准选
+    // exploratory」在这类仓是反向教学 —— 探索型 = 无机器判据 = 引擎不被逼着改代码, 实测
+    // 长出 docs-only 病 (24.9KB patch 全是规划文档零源码, reward 0)。证据仓反转教学句;
+    // 无 marker 仓保持今天原句 (没证据 ≠ 反证据, INV-11)。
+    ...(p && (p.hasPython || p.hasJs)
+      ? [
+          '⚠ 这个仓检出了语言包 marker = 它有测试基建。判据轴**强烈偏向 "executable"**:',
+          '  改代码的目标几乎总能用「一条会红的测试变绿」来判 —— 拿不准就**先在测试套里找锚**',
+          '  (已有的相邻测试文件 / 新建一个最小测试), 而不是退到 exploratory。',
+          '  选 "exploratory" 必须在 learning_goal 里说清: 为什么这个仓的测试套锚不住这次改动。',
+        ]
+      : [
+          '⚠ 拿不准就选 "exploratory"。给一条**判不了真假**的命令比承认判不了坏得多 —— 它会让整个环',
+          '  以为自己有验收, 而实际上没有。',
+        ]),
     '',
     `\`command\` 的首个词必须是这些之一, 否则命令会被安全闸拒绝执行 (看起来像测试失败, 实则没跑):`,
     `  ${allowlist.join(' ')}`,
