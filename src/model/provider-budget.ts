@@ -67,12 +67,44 @@ async function waitRpmToken(): Promise<void> {
   rpmTokens -= 1;
 }
 
-function is429(e: unknown): boolean {
+/**
+ * 宽口径: 这是不是 429 家族。用于「**要不要溢出到备用模型**」——
+ * 硬配额耗尽时溢出是对的 (换个模型确实能继续), 所以这里刻意不排除耗尽。
+ */
+export function is429(e: unknown): boolean {
   if (e == null) return false;
   const status = (e as { status?: number; statusCode?: number }).status ?? (e as { statusCode?: number }).statusCode;
   if (status === 429) return true;
   const msg = String((e as { message?: string }).message ?? e);
-  return /\b429\b|too many requests|rate.?limit|rate.?limited/i.test(msg);
+  // 中文限流文案 (`速率限制` / `请求过于频繁`) 是 2026-08-27 补的: MiniMax 的 2062 原文
+  // 通篇中文, 既无 `429` 也无 `rate limit`。生产里靠 pi 把 HTTP 码写进 message
+  // (形如 `pi: 429: …`) 才碰巧匹配上 —— 哪条路径丢了状态码, 这条限流就漏判成普通错误。
+  return /\b429\b|too many requests|rate.?limit|rate.?limited|速率限制|请求过于频繁/i.test(msg);
+}
+
+/**
+ * 硬配额耗尽 (≠ 瞬时速率限制): 退避对它毫无意义, 只是把失败拖慢。
+ * 判据是**错误文案里的耗尽/余额标记**, 不是 HTTP 码 —— 两者共用 429。
+ */
+function isQuotaExhausted(e: unknown): boolean {
+  if (e == null) return false;
+  const msg = String((e as { message?: string }).message ?? e);
+  return /quota exhausted|exhausted your|insufficient (balance|credit|quota)|余额不足|配额\s*(耗尽|用尽)|payment required|\b402\b/i.test(
+    msg,
+  );
+}
+
+/**
+ * 窄口径: 值得**重试同一个模型**的限流 = 429 家族且不是硬配额耗尽。
+ *
+ * ⚠ 2026-08-27 实证起票, 两侧都有语料:
+ * · 该退避的 —— MiniMax `2062 已达到 Token Plan 速率限制`: **随并发变化**
+ *   (8 并发零命中 / 40 并发 1156 次), 退一下就过去了。
+ * · 不该退避的 —— `429 weekly quota exhausted` (见 `research/fanout.test.ts` 那条):
+ *   周配额耗尽, 退 4 次只是把失败拖慢十几秒, 一次都不会成功。
+ */
+export function isRetryableRateLimit(e: unknown): boolean {
+  return is429(e) && !isQuotaExhausted(e);
 }
 
 /** 测试/运维 钩子。 */
@@ -134,7 +166,8 @@ async function callWith429Backoff<R>(fn: () => Promise<R>): Promise<R> {
     try {
       return await fn();
     } catch (e) {
-      if (!is429(e) || attempt >= backoffMaxAttempts) throw e;
+      // 窄口径: 硬配额耗尽不退避 (退了也不会成功, 只把失败拖慢)。
+      if (!isRetryableRateLimit(e) || attempt >= backoffMaxAttempts) throw e;
       await sleep(delay + Math.random() * delay * 0.3);
       delay *= 2;
     }
@@ -151,7 +184,12 @@ async function callWith429Backoff<R>(fn: () => Promise<R>): Promise<R> {
  */
 export function makeBudgetedCall<Req extends { model?: string }, R>(rawCall: (req: Req) => Promise<R>) {
   return async function budgetedCall(req: Req, overflowModel?: string): Promise<R> {
-    if (!isMimoModel(req.model)) return rawCall(req);
+    // 非 mimo: 不进并发槽 / 不占 RPM 牌 (那两样是 mimo 配额模型专属), 但**仍要吃退避**。
+    // ⚠ 2026-08-27 缺口: 原先这里裸 return rawCall(req) —— mimo 之外的 provider 撞限流即抛、
+    // 零重试。座位切成 18/18 MiniMax 后这成了主干道: bench 一批 40 并发撞了 1156 次限流,
+    // 每次都把 conductor 打成「未产出有效 plan」→ 整个 run crash, 该批 72% trial 报废。
+    // 退避是纯增益: 不撞限流时零开销 (第一次就返回); 硬配额耗尽也不退 (见 isRetryableRateLimit)。
+    if (!isMimoModel(req.model)) return callWith429Backoff(() => rawCall(req));
 
     if (overflowModel) {
       // overflow 角色 (executor leaf): 不排队 —— 并发满 / 无 RPM 牌 → 溢出。
