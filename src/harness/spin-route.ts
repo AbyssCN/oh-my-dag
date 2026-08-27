@@ -27,6 +27,7 @@
  * - 关闭开关走 env(`OMD_SPIN_ROUTE=0`): 与 `OMD_SELF_CHECK` 同模式(对照臂)。
  */
 import { createHash } from 'node:crypto';
+import { compareCriteriaFailures } from './self-repair-round';
 
 // ── 常数 ──────────────────────────────────────────────────────────────────
 
@@ -140,17 +141,10 @@ function hashPackPayload(payload: {
 export function buildSpinEvidencePack(input: SpinEvidenceInput): SpinEvidencePack {
   const criteriaDiff: CriteriaDiff =
     input.failSetBefore !== null && input.failSetNow !== null
-      ? (() => {
-          const before = input.failSetBefore as readonly string[];
-          const now = input.failSetNow as readonly string[];
-          const beforeSet = new Set(before);
-          const nowSet = new Set(now);
-          return {
-            kind: 'diff',
-            added: [...nowSet].filter((n) => !beforeSet.has(n)).sort(),
-            removed: [...beforeSet].filter((n) => !nowSet.has(n)).sort(),
-          };
-        })()
+      ? {
+          kind: 'diff',
+          ...compareCriteriaFailures(input.failSetBefore, input.failSetNow),
+        }
       : { kind: 'no-history', literal: '本节点无 self_check,无判据可 diff' };
 
   const payload = {
@@ -200,12 +194,10 @@ export function judgeRungOutcome(input: {
 }): SpinJudgeOutcome {
   if (input.touchedNow > input.touchedBefore) return 'success';
   // touched 未增长 → 看 failSet 严格缩小
+  // S3 (D-3): 集合比对提成 self-repair-round.compareCriteriaFailures, 本片不复刻第二份。
+  // 严格缩小:now 是 before 的真子集 —— 既要 removed 非空,又要 added 空(否则没缩小,反而新增了)。
   if (input.failSetBefore !== null && input.failSetNow !== null) {
-    const before = new Set(input.failSetBefore);
-    const now = new Set(input.failSetNow);
-    // 严格缩小:now 是 before 的真子集 —— 既要 removed 非空,又要 added 空(否则没缩小,反而新增了)。
-    const removed = [...before].filter((n) => !now.has(n));
-    const added = [...now].filter((n) => !before.has(n));
+    const { added, removed } = compareCriteriaFailures(input.failSetBefore, input.failSetNow);
     if (removed.length > 0 && added.length === 0) return 'success';
   }
   return 'fail';
