@@ -33,7 +33,14 @@ import { makeDefaultGenerate } from '../dag/defaults';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagResult } from '../dag/types';
 import { classifyGoal, renderAcceptance, type AcceptanceSpec, type GoalClassification, type GoalTier } from './classify-acceptance';
-import { acceptanceCommandBlockReason } from './acceptance-gate';
+import { acceptanceCommandBlockReason, checklistDiscriminationReason, type ProbeItemOutcome } from './acceptance-gate';
+import {
+  settleRubric as settleRubricDefault,
+  verifyFrozen,
+  type RubricItem,
+  type RubricItemTrace,
+  type RubricVerdict,
+} from './rubric-spec';
 import type { RunOutcomeKind } from '../run-outcome';
 import { loadSddContract } from './sdd-direct';
 import type { ExecutorDagConfig } from '../dag/types';
@@ -221,6 +228,32 @@ export interface RunGoalConfig {
     /** D-7 修复已尝试标志: true → 同指纹熔断/转票, 不再落账新 findings。 */
     repairAttempted?: boolean;
   };
+  /**
+   * F2 片 4: rubric 验收步的注入面。**只对 `kind: 'rubric'` 起作用** —— 其它分型给也无视
+   * (INV-1: 两格是护栏不是判据, 接线不污染)。
+   *
+   * 生产路径上谁去生成这三个字段 (presented / degraded / traces) 不归本片: 母契约 D-4 是配置面约束,
+   * 跨族劣化样本的生成实装仍在别处。本片只保证**接口收得下**, 并按母契约 §INV-3 / §INV-4
+   * 串好冻检查 → 劣化自证 → 逐条判 → settle 这条流水线。
+   *
+   * 不给 = 闸缺席 (fail-open 不拦, 但留证据行进 summary, 不假装判过) —— 与
+   * `acceptanceCommandBlockReason` 缺席的纪律同源。
+   */
+  rubricVerdictInputs?: {
+    /** 验收期呈上来的 checklist —— 与冻结时那份逐字节比对 (rubric-spec.verifyFrozen)。 */
+    presented: readonly RubricItem[];
+    /** 判别力探针的劣化样本逐条判结果; 缺席 (undefined) = 没样本, 探针跳过 (fail-open)。 */
+    degraded?: readonly ProbeItemOutcome[];
+    /** 真实产物的逐条判结果 —— 仅在 frozen+probe 都通过时进入 settleRubric。 */
+    traces: readonly RubricItemTrace[];
+    /** 「几条不过算整体不过」注入值 (母契约未决第 1 条: 0 = 全过才算过)。本片不写 owner 数值。 */
+    maxFailures: number;
+    /**
+     * 测试注入的 `settleRubric` —— 走这一条时 wiring 调用它而非默认实装, 量 "漂了/探针打不红时
+     * settle 真的没被调"。生产**不传**, 走默认; ESM 下模块导出是 readonly binding, 没法 monkey-patch。
+     */
+    _settleRubric?: typeof settleRubricDefault;
+  };
  }
 
 export interface RunGoalResult {
@@ -313,6 +346,18 @@ export interface RunGoalResult {
   sliceCoverage?: SliceCoverageReport;
   /** P4 设计审核结果 (advisory, 不参与收敛判定)。缺席 = 未启用设计审核。 */
   designReview?: DesignReviewResult;
+  /**
+   * **F2 片 4: rubric 验收步的结果**(INV-1/3/4/5)。**只对 `kind: 'rubric'` 起作用**:
+   *   · `verdict` 设了 = 冻检查 + 劣化自证 + 逐条判三关都过了 (含 fail-open 跳过探针那一路),
+   *     `verdict.pass` 是 settleRubric 的整体裁决; `verdict.traces` 是逐条痕迹 (永不全压成 N/M,
+   *     仓规坑 ①)。
+   *   · `rejection` 设了 = 冻检查判漂 (`source: 'frozen-drift'`) 或劣化自证判虚 (`source: 'probe'`),
+   *     此时 `verdict` **必为 undefined** —— 漂了照判是失败模式 (INV-3)。
+   *   · 两都 undefined = 验收步缺席 (`config.rubricVerdictInputs` 没给, fail-open 不拦但留痕)。
+   * 非 rubric 的 run 这两个字段**永远 undefined** —— 接线不污染另两格。
+   */
+  rubricVerdict?: RubricVerdict;
+  rubricRejection?: { source: 'frozen-drift' | 'probe'; reason: string };
 }
 export interface WriteScopeReport {
   /** 逐文件裁决 (allowed / forbidden / outside)。 */
@@ -1260,7 +1305,43 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     }
   }
   // stale 时以复验为准; 复验没跑成 → 陈旧的绿**不作数** (fail-closed: 没在最终这棵树上证明过就不算成)。
-  const oracleOk = acceptStale ? oracleRecheckRan && oracleRecheckGreen : acceptCheckpointGreen;
+  // ── F2 片 4: rubric 验收步 (INV-1/3/4/5) ─────────────────────────────────────
+  //
+  // 不建执行型 accept 叶 (上方的 `acceptCheckpointGreen` 已在 rubric 上恒 true);
+  // 走自己这条流水线: 冻检查 → 劣化自证 → 逐条判 → settle。**任一关拒就不到 settle**,
+  // 让 `rubricRejection` 取代 `rubricVerdict` —— 这正是 INV-3 "漂了照判" 与
+  // INV-4 "探针在判真产物之前" 的机械落点。
+  //
+  // 不给 `rubricVerdictInputs` = 闸缺席 (fail-open 不吞证据: summary 里说"缺席", 不冒充零判)。
+  // 非 rubric 走默认值 true, 后面 OR 算式把它当 NO-OP —— 接线不污染另两格 (INV-1 护栏不是判据)。
+  let rubricVerdict: RubricVerdict | undefined;
+  let rubricRejection: RunGoalResult['rubricRejection'] | undefined;
+  let rubricOracleOk = true;
+  if (acceptance.kind === 'rubric') {
+    const inputs = config.rubricVerdictInputs;
+    if (inputs) {
+      // 1) 冻检查 (INV-3: 漂了就拒, 调用方**不进入**逐条判定 —— settleRubric 一次都不该被调)
+      const frozen = verifyFrozen(acceptance.checklist, inputs.presented);
+      if (!frozen.ok) {
+        rubricRejection = { source: 'frozen-drift', reason: frozen.detail };
+        rubricOracleOk = false;
+      } else {
+        // 2) 劣化自证 (INV-4: fail-open; 拿不到样本 = 探针跳过, 不拦)
+        const probeReject = checklistDiscriminationReason(inputs.degraded);
+        if (probeReject) {
+          rubricRejection = { source: 'probe', reason: probeReject };
+          rubricOracleOk = false;
+        } else {
+          // 3) 逐条判 → settle (INV-5: traces 永不全压成 N/M, 走 settleRubric 默认形)
+          const settleFn = inputs._settleRubric ?? settleRubricDefault;
+          rubricVerdict = settleFn(inputs.traces, { maxFailures: inputs.maxFailures });
+          rubricOracleOk = rubricVerdict.pass;
+        }
+      }
+    }
+  }
+  const baseOracleOk = acceptStale ? oracleRecheckRan && oracleRecheckGreen : acceptCheckpointGreen;
+  const oracleOk = acceptance.kind === 'rubric' ? rubricOracleOk : baseOracleOk;
   if (acceptStale && !oracleOk) {
     logger.warn(
       { command: acceptance.command, recheckRan: oracleRecheckRan },
@@ -1414,11 +1495,17 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // 判词与 oracle **分开报**: 两者不一致时那句话本身就是结论 —— judge 说成了而冻结判据没过,
   // 正是 D-I 要抓的"作弊达标"; 反过来则是"任务里还有命令覆盖不到的明确要求"。
   const oracleNote =
-    acceptance.kind !== 'executable'
-      ? ''
-      : oracleOk
+    acceptance.kind === 'executable'
+      ? oracleOk
         ? ' · 冻结判据 ✅'
-        : ` · **冻结判据没过** (\`${acceptance.command}\` → ${acceptLeaf?.status ?? '没跑'})`;
+        : ` · **冻结判据没过** (\`${acceptance.command}\` → ${acceptLeaf?.status ?? '没跑'})`
+      : acceptance.kind === 'rubric'
+        ? rubricRejection
+          ? ` · **rubric 拒** (${rubricRejection.source}: ${rubricRejection.reason.slice(0, 80)})`
+          : rubricVerdict
+            ? ` · rubric ✅ (${rubricVerdict.traces.length} 条逐查, ${rubricVerdict.failedIds.length} 不过)`
+            : ' · rubric 验收步缺席 (fail-open, 没注入 rubricVerdictInputs)'
+        : '';
   // ── N5: 终止原因**判一次, 两个消费者读同一份** ────────────────────────────────
   //
   // 此前这道阶梯只活在下面那句摘要文本里 —— 于是 `status` 那一位不得不用 `converged ? done : failed`
@@ -1510,6 +1597,8 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     ...(writeScope ? { writeScope } : {}),
     ...(sliceCoverage ? { sliceCoverage } : {}),
     ...(designReview ? { designReview } : {}),
+    ...(rubricVerdict ? { rubricVerdict } : {}),
+    ...(rubricRejection ? { rubricRejection } : {}),
    };
   // D-2 散雾出口 (切片 1): 拿到 map 句柄才开票; 没配 = 这一行直接返回, 行为逐字节不变 (INV-1)。
   // 放在 result 成形之后: 票身要的原因/未决/发现物全从终态读, 不从中途状态猜。
