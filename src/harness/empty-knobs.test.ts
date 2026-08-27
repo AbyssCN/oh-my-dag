@@ -63,7 +63,7 @@ const DECLARED_CONSUMERS: Record<string, string> = {
   oracleKind: 'plan-critic.criticizePlan (PP-O01 视觉产出无 oracle / PP-I02 字段缺失)',
   toolRefs: 'plan-critic.criticizePlan (PP-T01/T02/T03: resolve 到 inventory working-set)',
   whyNoFanout: 'plan-critic.criticizePlan (PP-I01: executor 单叶时必填非空, 可抑制)',
-  budgetBasis: 'plan-critic.criticizePlan (S1 只判字段存在性; 预算判定闸是 S3)',
+  budgetBasis: 'plan-critic.critique (PP-B01 字段存在性 / PP-B02 estimatedBy 非空 / PP-B03 Σ costUsdCeiling ≤ 注入 run 级上限;S3 §D-8)',
 };
 
 /** 从明示的 JSON 形状里抠出 `"key"?:` / `"key":` 形态的字段名。

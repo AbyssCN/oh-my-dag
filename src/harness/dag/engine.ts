@@ -168,6 +168,13 @@ import { writeSetChangedSinceBaseline } from './writeset-evidence';
 import type { ShellRun } from '../leaf-runners';
 import type { CommandLeafResult } from '../leaf-runners';
 import type { FalsifyMutate, FalsifyNodeExtras } from './types';
+// S3 片 5 (D-1/D-2/D-3, INV-1/2/3/4/5/6): retry 域判定 + verdict 幂等账本 + 部分失败 join 的
+// observation 在本片里**真正接上 engine** —— 上面只 import 是空, 把判定逻辑就地展开就
+// 等于「读源码复制粘贴」, 仓规 S-39 那条记忆写过这是同一件事声明第二遍。 wiring 见
+// budgetFor (runNode 内) · runVerifier 包装 (verify 段) · partial-quorum-failure 发射点
+// (executePlan 的 pump 循环)。
+import { classifyRetryDomain, retryBudgetFor } from './retry-domain';
+import { append, emptyLedger, infraObserved, terminal, type VerdictEntry, type VerdictKind, type VerdictLedger } from './verdict-ledger';
 import {
   appendClaimEvidence,
   checkableFromJudgeView,
@@ -4469,9 +4476,15 @@ async function executePlan(
      *
      * 上限就是 1: 这是「让通道通电」, 不是「多试几次碰运气」。要更多轮 conductor 显式写。
      */
-    const budgetFor = (prevErr: unknown): number => {
-      if (node.max_retry !== undefined) return node.max_retry;
-      return prevErr !== undefined ? 1 : 0;
+    const budgetFor = (prevErr: unknown, leafForDomain: LeafResult | undefined): number => {
+      // S3 片 5 (D-1/D-2, INV-1/2/3): 域判定与判词合成**同源** (retry-domain.ts 的 classifyRetryDomain
+      // 与 oracle-red.ts 的 findRedOracles 逐字一致) —— 确定性 oracle 说「不」是判词不是故障,
+      // 把 max_retry 当常数会让 retry-masking 把红洗成绿 (止损行点名的不变量重设计)。
+      // 「没能说话」(timed-out / 抛错 / 非 command 的失败) 走 generation 域, 现行语义逐字节不变。
+      const domain = leafForDomain
+        ? classifyRetryDomain(leafForDomain.kind, leafForDomain.failureKind)
+        : 'generation';
+      return retryBudgetFor(domain, node.max_retry, prevErr !== undefined);
     };
     const budget = node.max_retry ?? 0; // 只给日志用 —— 真判定走 budgetFor
     // 上一次的败因 → 下一次的 prompt。**抛错也算一次失败**: 最典型的可重试失败 (429 / 网络抖动)
@@ -4569,7 +4582,16 @@ async function executePlan(
         break;
       }
       if (leaf && leaf.status !== 'failed') break; // done / skipped — 重试无意义
-      if (attempt >= budgetFor(thrown)) break; // 预算用尽 (缺省只对抛错补一次, 见 budgetFor)
+      if (attempt >= budgetFor(thrown, leaf)) break; // 预算用尽 (oracle 域判否越过 max_retry; 抛错补一次, 见 budgetFor)
+      // S3 片 5 / INV-2 闸登记面: oracle 域判否越过 max_retry 这一动作的判词。同一 id 在多个出口
+      // 不重复登记 (gate-registry.ts 的 GATE_REGISTRY 单条), 但只要这条闸**真的**拦下过 retry,
+      // 这行日志就是它的活体证据 (gate-coverage 闸扫整串)。
+      if (leaf && classifyRetryDomain(leaf.kind, leaf.failureKind) === 'oracle') {
+        logger.warn(
+          { node: id, attempt, maxRetry: node.max_retry },
+          '[omd/executor-dag][retry-domain-mask] oracle 域判否 → 越过 max_retry, 节点终止 (D-2 / INV-2)',
+        );
+      }
       if (leaf) spent.push(leaf.usage);
     }
     } finally {
@@ -5024,6 +5046,32 @@ async function executePlan(
         // (非严格 FIFO: 被闸挡住的节点让位, 保持吞吐)。null = 满闸/ready 空 → 等 settle 释放。
         const id = sched.takeRunnable();
         if (id == null) return;
+        // S3 片 5 / D-7 (INV-9): 达标但部分依赖没 done → 结构化观察 (DagObservation),
+        // 只报不拦 (fail-open 一层) —— 不进 upstreamText 散文, 散文进 prompt 之后就只有模型读得到。
+        // 触发条件: requires 显式 'any' 或整数 K (即 dag-scheduler.ts 的 quorumVerdict 在
+        // doneCount >= K 时返 null 放行), 但 deps 里有非 done 的兄弟 —— 这就是「达标但部分失败」。
+        const nodeForQuorum = plan!.nodes[id];
+        if (nodeForQuorum) {
+          const requires = nodeForQuorum.requires as 'all' | 'any' | number | undefined;
+          const deps = nodeForQuorum.depends_on ?? [];
+          if (requires === 'any' || typeof requires === 'number') {
+            // 读 engine 的 `results` 而非 `sched.statusOf` —— 状态真源在 results 里,
+            // statusOf 是 opts 回调只对 scheduler 可见; 这里取的是 LeafResult.status。
+            const unmet = deps
+              .map((d) => ({ d, r: results[d] }))
+              .filter(({ r }) => r !== undefined && r.status !== 'done')
+              .map(({ d, r }) => `${d}(${r!.status}${r!.failureKind ? `:${r!.failureKind}` : ''})`);
+            if (unmet.length > 0) {
+              const unmetIds = deps.filter((d) => results[d]?.status !== 'done');
+              const message = `节点 ${id} 因 requires='${requires}' 跑过, 但 ${unmet.length}/${deps.length} 依赖未 done: ${unmet.join(', ')}`;
+              logger.warn(
+                { node: id, requires, unmet: unmet.length, deps: deps.length },
+                '[omd/executor-dag][partial-quorum-failure] 部分失败 join 留结构化观察 (D-7 / INV-9, 只报不拦)',
+              );
+              observations.push({ kind: 'partial-quorum-failure', nodes: [id, ...unmetIds], message });
+            }
+          }
+        }
         // 运行时写竞争的机会面: 起跑这一刻还在飞的每一个节点, 都与本节点的窗口重叠过。
         for (const y of liveNow) {
           const [p1, p2] = [id, y].sort() as [string, string];
@@ -5562,6 +5610,39 @@ async function runDagInternalCore(
     let verdict = await runVerifier();
     verifierUsage = addUsage(verifierUsage, verdict.usage);
     emitRunEvent({ type: 'verdict', id: exec.plan.name, gate: 'verifier', verdict: verdict.pass ? 'pass' : 'fail', round: attempts, ...(verdict.reason ? { reason: verdict.reason } : {}) });
+    // S3 片 5 / D-4/D-5 (INV-4/5/6): verdict 幂等账本。append-only, 同 (round, kind) 幂等, 异内容同键拒。
+    // runVerifier 的两个出口 (oracle-red 短路 + 真投票) 都产 substantive; catch (verifier 调不通)
+    // 那个出口已经返回 `[verifier-error]` 前缀的判词 + 设 verifierDown, 性质是 infra, 走另一列。
+    // 终值只从 substantive 记录里取最后一条, infra 永不进终值 (仓规坑 1: NULL ≠ 0)。
+    let ledger: VerdictLedger = emptyLedger();
+    const recordVerdict = (v: VerifierVerdict, kind: VerdictKind): void => {
+      const entry: VerdictEntry = {
+        round: attempts,
+        kind,
+        pass: v.pass,
+        reason: v.reason,
+        at: new Date().toISOString(),
+      };
+      const res = append(ledger, entry);
+      if (res.ok) {
+        ledger = res.ledger;
+        // S3 片 5 / INV-11 闸登记面: ledger 真的接上 (append 成功) 的判词, 与 retry-domain-mask 同档。
+        if (res.appended) {
+          logger.info(
+            { round: attempts, kind, pass: v.pass },
+            `[omd/executor-dag][verifier-ledger] verdict 账本追加 (round=${attempts}, kind=${kind})`,
+          );
+        }
+      } else {
+        // 异内容同键 = 同 (round, kind) 但 pass/reason 不同, 账本拒绝并保留既有 —— 闸面暴露
+        // 拒因, 不在 ledger 里留假影子。
+        logger.warn(
+          { round: attempts, kind, pass: v.pass, reason: res.reason },
+          `[omd/executor-dag][verifier-ledger] verdict 账本拒: ${res.reason}`,
+        );
+      }
+    };
+    recordVerdict(verdict, isInfraVerdict(verdict.reason) ? 'infra' : 'substantive');
 
     let escCount = 0;
     // D-6 同因熔断 (SDD 2026-08-11-inner-loop-v2, O-2 聚类定 P0): 上一轮打回原因的归一化指纹。
@@ -5885,6 +5966,9 @@ async function runDagInternalCore(
       verdict = await runVerifier();
       verifierUsage = addUsage(verifierUsage, verdict.usage);
       emitRunEvent({ type: 'verdict', id: exec.plan.name, gate: 'verifier', verdict: verdict.pass ? 'pass' : 'fail', round: attempts, ...(verdict.reason ? { reason: verdict.reason } : {}) });
+      // S3 片 5: 升级重规划轮末尾的 verifier 同样进账本 —— 同一 (round, kind) 重复追加是幂等空操作;
+      // `[verifier-error]` 前缀的判词记 infra, 不抢 substantive 终值的位 (INV-4/5/6)。
+      recordVerdict(verdict, isInfraVerdict(verdict.reason) ? 'infra' : 'substantive');
     }
 
     // 配了升级模型但 provider 未注册 (没配 API key) → 显式记: 维持弱模型 (Nick: 没配 SOTA 就不升级)。
@@ -5894,7 +5978,28 @@ async function runDagInternalCore(
         '[omd/executor-dag] verifier 未过, 但升级模型 provider 未注册 → 维持弱模型 (不升级)',
       );
     }
-    verification = { pass: verdict.pass, reason: verdict.reason, attempts, escalated, conductorModel, ...(circuitBroken ? { circuitBroken: true } : {}) };
+    // S3 片 5 / INV-5/6: 终值由账本选 (substantive 的最后一条), infra 另出独立标志位
+    // —— 判词轴与引擎故障轴结构层分开, 一条 substantive 都没有时是「未判卷」而不是伪造 pass:false。
+    const ledgerTerminal = terminal(ledger);
+    const infraFlag = infraObserved(ledger);
+    const finalReason = ledgerTerminal.kind === 'judged' ? ledgerTerminal.reason : (verdict.reason ?? '');
+    const finalPass = ledgerTerminal.kind === 'judged' ? ledgerTerminal.pass : false;
+    verification = {
+      pass: finalPass,
+      reason: finalReason,
+      attempts,
+      escalated,
+      conductorModel,
+      ...(circuitBroken ? { circuitBroken: true } : {}),
+      ...(infraFlag ? { infraObserved: true } : {}),
+    };
+    // 闸登记面: 终值选取的判词 (INV-5 第二条 GWT: ledger 全 infra 时是「未判卷」, 不许伪造 fail)。
+    if (ledgerTerminal.kind === 'unjudged') {
+      logger.warn(
+        { attempts, infraFlag },
+        '[omd/executor-dag][verifier-ledger] 终值 = 未判卷 (账本里一条 substantive 都没有), 不伪造 pass:false (INV-5)',
+      );
+    }
   }
 
   // ── 4. bandit reward 回更 (config.router 给则): 最终轮每 leaf 的 (bucket, model) 按

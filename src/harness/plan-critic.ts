@@ -2,15 +2,19 @@
  * src/harness/plan-critic —— ConductorPlan 编译期静态闸 (S1 / 片 3 主体)。
  *
  * 契约源: docs/plan/2026-08-24-conductor-s1-五闸与清单-执行契约.md C-3 + 同名 SDD §5/§6。
+ *          片 4 增量: docs/plan/2026-08-27-conductorS3-retry域与verdict幂等-执行契约.md §D-8。
  *
  * 设计要点:
  * - 纯 STATIC (零 LLM, 集合成员 + 字段存在性, 误拒率按定义为 0)。
- * - 13 诊断码 (PP-T01/T02/T03 · PP-O01/O02 · PP-S01/S02/S03 · PP-V01 · PP-I01/I02 ·
- *   PP-M01/M02) + 1 不变量闸 (INV-12 bypass/skipGate 一律拒)。
+ * - 16 诊断码 (PP-T01/T02/T03 · PP-O01/O02 · PP-S01/S02/S03 · PP-V01 · PP-I01/I02 ·
+ *   PP-M01/M02 · PP-B01/B02/B03) + 1 不变量闸 (INV-12 bypass/skipGate 一律拒)。
  * - PP-O02 (#244 契约 C-1): 写文件节点而全图无 command 验证步且节点本身 oracleKind 缺
  *   或声明 'none' → error。逐写节点诊断, 'none' 不是逃生门 (无判据)。
+ * - PP-B01/B02/B03 (片 4, S3 §D-8): 预算判定闸三码互不代偿 —— 节点缺 budgetBasis /
+ *   estimatedBy 空串 / Σ costUsdCeiling > 注入 run 级上限。PP-B03 仅在调用方注入了
+ *   runCeilingUsd 时才判, 未注入 = 零回归 (与 S1「critique 只判字段存在性」一致)。
  * - 输入 = ConductorPlan + inventory working-set + skill manifests(+ prose ban 信息)
- *   + node 的 natural 工具池 + runId;输出 = Diagnostic[]。
+ *   + node 的 natural 工具池 + runId + 可选 runCeilingUsd(片 4 PP-B03 注入上限);输出 = Diagnostic[]。
  * - 抑制走 plan.suppressions[];suppressible:false 的码抑制无效 (PP-S02 hard-coded
  *   suppressible:false; PP-I01 hard-coded suppressible:true; 其余默认 false)。
  * - 轮回路: runCriticLoop 自管 ≤2 轮, 收敛 = 诊断集缩小;新码 = PP-M02;耗尽 = PP-M01;
@@ -35,7 +39,8 @@ import {
 
 // ─── 诊断形状 (S1 契约 §3.3) ─────────────────────────────────────────────────
 
-/** 13 PP-* 诊断码的字面联合 (字面量锁定, 改一处核所有消费者)。 */
+/** 16 PP-* 诊断码的字面联合 (字面量锁定, 改一处核所有消费者)。
+ *  片 4 增量: PP-B01 · PP-B02 · PP-B03 —— 预算判定闸三码 (S3 §D-8)。 */
 export type DiagnosticCode =
   | 'PP-T01' | 'PP-T02' | 'PP-T03'
   | 'PP-O01' | 'PP-O02'
@@ -43,7 +48,8 @@ export type DiagnosticCode =
   | 'PP-V01'
   | 'PP-I01' | 'PP-I02'
   | 'PP-M01' | 'PP-M02'
-  /** INV-12: plan 携带 bypass/skipGate 一律拒 (不属 13 码, 独立闸)。 */
+  | 'PP-B01' | 'PP-B02' | 'PP-B03'
+  /** INV-12: plan 携带 bypass/skipGate 一律拒 (不属 16 码, 独立闸)。 */
   | 'INV-12';
 
 /** 严重度: 12 码全部为 hard error (打回/停 plan/escalate);没有 warning。 */
@@ -93,6 +99,8 @@ export interface SkillWithLoadInfo {
  *  - skills: 已装载的 skill 列表 + 装载分支 (PP-S01/S02/S03 全部消费)。
  *  - naturalPool: leaf 的 natural 工具池 (PP-S02 提权判定的对照集;省略 = 跳过 PP-S02)。
  *  - runId: 升级时写 owner-inbox 用的 run 身份 (escalate 阶段使用)。
+ *  - runCeilingUsd: 片 4 PP-B03 注入 —— run 级 costUsdCeiling 上限;省略 = 不判 PP-B03
+ *    (零回归;单位由 SDD §11 owner 待决 #15 在调用方一侧定死, 此闸本身不认识单位)。
  */
 export interface CriticInput {
   readonly plan: ConductorPlan;
@@ -102,6 +110,7 @@ export interface CriticInput {
   readonly skills: ReadonlyArray<SkillWithLoadInfo>;
   readonly naturalPool?: readonly string[];
   readonly runId: string;
+  readonly runCeilingUsd?: number;
 }
 
 // ─── 升级通路 ────────────────────────────────────────────────────────────────
@@ -164,6 +173,14 @@ interface PlanNodeShape {
   skill?: string;
   bypass?: unknown;
   skipGate?: unknown;
+  /** 片 4 PP-B01/B02 消费: 节点级预算声明 (zod 形状见 conductor-plan.ts:341)。 */
+  budgetBasis?: {
+    calls?: number;
+    tokensIn?: number;
+    tokensOut?: number;
+    costUsdCeiling?: number;
+    estimatedBy?: string;
+  };
 }
 
 /** 诊断抑制: 仅当 plan.suppressions 包含该 code 且 diagnostic.suppressible=true 时过滤。 */
@@ -490,6 +507,87 @@ export function critique(input: CriticInput): Diagnostic[] {
         node_id: nid,
         evidence: ['oracleKind undefined'],
         remediation: '填 oracleKind ∈ {cheap, render, judge, none, self_built};视觉产出不能用 none (见 PP-O01)。',
+        round,
+        suppressible: false,
+      });
+    }
+  }
+
+  // ── PP-B01: 预算声明**一致性** (S3 §D-8a)
+  //
+  // 不是「每个节点都必须声明预算」的强制闸 —— 那个写法第 1 跑实测打回:
+  // 仓内既有 plan 夹具没有一份声明 budgetBasis, 于是「0 诊断」「全绿 plan → exitCode 0」
+  // 这类断言成批塌 (plan-dry-run 4 条 + runCriticLoop 2 条)。
+  //
+  // 改成一致性闸: **图里只要有任一节点声明了预算, 就要求每个节点都声明**;
+  // 全图零声明 = 这份 plan 不上预算轴, 不判 (零回归)。
+  // 它比强制闸更该存在 —— PP-B03 要对 Σ costUsdCeiling 求和, 而**部分声明的预算和是没有意义的数**,
+  // 一致性正是让那个求和可信的前提。
+  //
+  // 反向自检: 把下面这行改成 `const anyDeclared = true`, plan-dry-run 与 runCriticLoop
+  // 合计 6 条当场红 (即第 1 跑那 6 条)。
+  const anyDeclared = Object.values(nodes).some((n) => n.budgetBasis !== undefined);
+  for (const [nid, node] of Object.entries(nodes)) {
+    if (!anyDeclared) break; // 全图零声明 → 不上预算轴, 一条不判
+    if (node.budgetBasis === undefined) {
+      out.push({
+        code: 'PP-B01',
+        severity: 'error',
+        check: 'budget_basis_missing',
+        node_id: nid,
+        evidence: ['budgetBasis undefined (同图内已有别的节点声明了预算)'],
+        remediation:
+          '填 budgetBasis = { calls:int, tokensIn:int, tokensOut:int, costUsdCeiling:number, estimatedBy:string } (节点级预算声明, 见 schema)。' +
+          '本图已有节点声明预算, 就要全部声明 —— 部分声明会让 PP-B03 的 Σ costUsdCeiling 变成没有意义的数。' +
+          '若这份 plan 本就不上预算轴, 把已声明的那些一并去掉即可。',
+        round,
+        suppressible: false,
+      });
+    }
+  }
+
+  // ── PP-B02: estimatedBy 空串 (S3 §D-8 — 估算法没登记 = 这份预算不可核)
+  for (const [nid, node] of Object.entries(nodes)) {
+    const bb = node.budgetBasis;
+    // 缺 budgetBasis 的节点归 PP-B01, 这里不重复判 (空串 vs 缺席, 仓规坑 1)
+    if (bb === undefined) continue;
+    if (bb.estimatedBy === '') {
+      out.push({
+        code: 'PP-B02',
+        severity: 'error',
+        check: 'budget_estimated_by_empty',
+        node_id: nid,
+        evidence: ['estimatedBy=""', 'estimatedBy unset → estimator not registered'],
+        remediation: '填 estimatedBy 为非空字符串 (登记估算法标识;例 "owner-vouched" / "stub" / "tier-default")。',
+        round,
+        suppressible: false,
+      });
+    }
+  }
+
+  // ── PP-B03: Σ costUsdCeiling 超注入 run 级上限 (S3 §D-8 — 仅在调用方注入了 runCeilingUsd 才判)
+  if (input.runCeilingUsd !== undefined) {
+    let sum = 0;
+    const participants: string[] = [];
+    for (const [nid, node] of Object.entries(nodes)) {
+      const ceil = node.budgetBasis?.costUsdCeiling;
+      if (typeof ceil !== 'number' || !Number.isFinite(ceil)) continue; // 缺 / 非数 不参与 (PP-B01 另报)
+      sum += ceil;
+      participants.push(`${nid}:${ceil}`);
+    }
+    if (sum > input.runCeilingUsd) {
+      out.push({
+        code: 'PP-B03',
+        severity: 'error',
+        check: 'budget_run_ceiling_exceeded',
+        node_id: '<plan>',
+        evidence: [
+          `sum=${sum}`,
+          `ceiling=${input.runCeilingUsd}`,
+          `participants=${participants.join(',')}`,
+        ],
+        remediation:
+          'Σ costUsdCeiling 超过注入 run 级上限;减节点预算 / 删节点 / 升 owner 调上限 (单位由调用方定, 此闸不识单位)。',
         round,
         suppressible: false,
       });

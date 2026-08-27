@@ -80,6 +80,32 @@ export const GATE_REGISTRY: readonly GateEntry[] = [
     file: 'src/harness/dag/engine.ts',
   },
   {
+    // S3 (2026-08-27, 片 5): oracle 域判否 → 越过 max_retry, 节点终止。retry 域分离 (D-1/D-2)
+    // 的引擎侧闸: 同一 (round, kind) 上确定性 oracle 已说「不」, 再派同一条命令是 retry-masking。
+    // 与 spin-rung2-ladder 同形 (都把 L0 循环收掉), 但 kind 不同 —— 这条是「判词终止」, 那条是
+    // 「空转终止」。
+    id: 'retry-domain-mask',
+    family: 'retry 域分离',
+    file: 'src/harness/dag/engine.ts',
+  },
+  {
+    // S3 (2026-08-27, 片 5): verdict 幂等账本 (D-4/D-5, INV-4/5/6) 的引擎侧闸 —— 每次 runVerifier
+    // 末尾追加, 同 (round, kind) 重复为幂等空操作, 异内容同键拒; 终值只从 substantive 记录里取,
+    // infra 单独进 infraObserved 标志位。闸登记这一条对账 INV-11 (闸面与引擎侧判词同片对账)。
+    id: 'verifier-ledger',
+    family: 'verdict 幂等账本',
+    file: 'src/harness/dag/engine.ts',
+  },
+  {
+    // S3 (2026-08-27, 片 5): 部分失败 join 的结构化观察 (D-7, INV-9) 引擎侧闸 —— 节点因
+    // `requires: any/K` 放行但有依赖未 done 时发 observation, 只报不拦 (fail-open 一层)。
+    // 与 `impossible-quorum` (plan/static-lint.ts:467 跑前判死) 互斥: 那条节点**没**跑,
+    // 这条节点**跑了** —— 显式 requires 是合法配置, 合一个 kind 必漂。
+    id: 'partial-quorum-failure',
+    family: '部分失败 join',
+    file: 'src/harness/dag/engine.ts',
+  },
+  {
     id: 'oracle-exit-miss',
     family: 'expect_exit',
     file: 'src/harness/dag/engine.ts',

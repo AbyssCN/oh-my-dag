@@ -43,7 +43,7 @@ const REAL_VERDICTS = scanGateVerdicts(SOURCE_BY_FILE);
 describe('GWT-1 — INV-1: 扫真源 (engine.ts + run-goal.ts) 的 id 集合 ⊇ 表里全部 13 个 id', () => {
   test('登记的 13 个 id 都被实扫命中', () => {
     const registryIds = GATE_REGISTRY.map((e) => e.id);
-    expect(registryIds).toHaveLength(15); // 2026-08-25 #249 fuse-paralysis 入表 (13→14); S2 片 3 spin-rung2-ladder 入表 (14→15)
+    expect(registryIds).toHaveLength(18); // 2026-08-25 #249 fuse-paralysis 入表 (13→14); S2 片 3 spin-rung2-ladder 入表 (14→15); S3 片 5 retry-domain-mask + verifier-ledger + partial-quorum-failure 入表 (15→18)
     for (const id of registryIds) {
       expect(REAL_VERDICTS.has(id)).toBe(true);
     }
@@ -151,6 +151,9 @@ describe('GWT-7 — INV-7: 13 条原文以整串仍在 entry.file 里 (保证只
     ['writescope-drop', '产物闸写域外路径剔除 (不参与判死, 仅记账; s1 Step C)'],
     ['false-completion', 'D-4 谎报完成闸: 声称完成而验收命令实败 → 判未收敛'],
     ['spin-rung2-ladder', '档 2 再次空转 → 节点终止 (越过 max_retry 预算)'],
+    ['retry-domain-mask', 'oracle 域判否 → 越过 max_retry, 节点终止 (D-2 / INV-2)'],
+    ['verifier-ledger', 'verdict 账本追加 (round=${attempts}, kind=${kind})'],
+    ['partial-quorum-failure', '部分失败 join 留结构化观察 (D-7 / INV-9, 只报不拦)'],
     ['o6-vacuous-verify', '切片 ${s.id} 的 verify 实装前已绿'],
   ] as const)('id=%s 整串仍在 entry.file', (id, verdict) => {
     const entry = GATE_REGISTRY.find((e) => e.id === id);

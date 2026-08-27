@@ -768,7 +768,22 @@ export interface DagObservation {
      *
      * ⚠ **升成拦要先有基率读数**: 这条闸真跑起来一年报几次、几次是真的, 今天答不上来。
      */
-    | 'empty-write-set';
+    | 'empty-write-set'
+    /**
+     * `partial-quorum-failure` (2026-08-27, S3 片 5 / D-7 / INV-9) = 节点因 `requires: 'any'` 或
+     * 整数 K 显式放行, 但跑时仍有部分依赖未 done —— 跑前/跑中判不出, 跑后才看到的
+     * 「达标但部分失败」这一格。
+     *
+     * 与 `impossible-quorum` (跑前确定性判死, plan/static-lint.ts:467) **互斥**: 那一格节点**没**跑,
+     * 这一格节点**跑了** —— 显式 `requires: any/K` 是合法配置, 它的失败兄弟与本节点同框也是合法形状。
+     * 把两者合成一个 kind 必漂: 一次跑前判死的误伤会让活体基率读数永远看不出「达标路径」的真命中频次。
+     *
+     * `nodes` = [本节点 id, ... 未 done 依赖 id 列表]; `message` 逐条点名未 done 依赖及其状态。
+     *
+     * **只报不拦**(同 `loop-no-artifact-change` 那几条): 升成拦截要先拿到活体基率
+     * —— 与 `dangling-dependency` 那条引用的教训同源 (`types.ts:670` 那段注)。
+     */
+    | 'partial-quorum-failure';
   /** 涉及的节点 id (lint = [reader, writer]; 空转 = 被反复拒绝的那批)。 */
   nodes: string[];
   /** 人与模型都读的一句话 (进 prompt 的就是它)。 */
@@ -1320,6 +1335,12 @@ export interface ExecutorDagResult {
     conductorModel: string;
     /** D-6 同因熔断 (SDD 2026-08-11-inner-loop-v2, O-2): 连续两轮同一根因 → 停止重试标 STALLED。缺席/false = 未熔断。 */
     circuitBroken?: boolean;
+    /**
+     * S3 片 5 (D-5, INV-5/6): verdict 账本里出现过 infra 记录 (verifier 调不通等)
+     * —— 与 `pass` 解耦, 仅作观测面。**缺席 = 未观察到** (≠ false)。原因 (仓规坑 1):
+     * 「账本里没记」与「记了 false」是两件事, 合并会让 infra 触发时自动伪造一次失败。
+     */
+    infraObserved?: boolean;
   };
   /** D-4 打回读数 (SDD 2026-08-10-blame-scoped-node-retry, 契约 f 单对象): 最近一次 verifier 打回。缺席 = 没打回。 */
   blameRetry?: BlameRetryLedger;

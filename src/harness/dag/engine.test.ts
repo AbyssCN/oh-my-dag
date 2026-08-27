@@ -131,8 +131,10 @@ describe('G-4 quorum fail-skip (D-7v2)', () => {
     expect(settles.find((e) => e.id === 'C')?.status).toBe('skipped');
   });
 
-  test("多依赖 fan-in 缺省 'any': 1/3 sibling 失败, synth 照跑且见失败占位", async () => {
-    const { generate, prompts } = makeGenerate();
+  test("多依赖 fan-in 缺省 'all' [S3 片 3 / D-6, JOIN_ALL_DONE_DEFAULT]: 1/3 sibling 失败, synth 摘成 skipped", async () => {
+    // S3 片 3 / D-6 / INV-7 第一条 GWT (引擎端到端镜像): 缺省翻 'all' 之后,
+    // 多依赖里挂一个 → synth 直接被摘, runner 不被调 (与 dag-scheduler.test.ts:248 同形)。
+    const { generate, calls } = makeGenerate();
     const r = await runExecutorDagWithPlan(
       plan({
         s1: { goal: '甲' },
@@ -143,7 +145,27 @@ describe('G-4 quorum fail-skip (D-7v2)', () => {
       makeConfig(generate),
     );
     expect(r.results.s2!.status).toBe('failed');
+    expect(r.results.synth!.status).toBe('skipped');
+    // synth 零执行零 token (与 G-4 第一条用例如出一辙: 缺 A 的输入 = 拿 [failed] 文本当正文纯浪费)
+    expect(calls).not.toContain('synth');
+  });
+
+  test("显式 requires:'any' 仍走老路 (逃生门) [S3 片 3 / INV-7 第二条 GWT 引擎端到端]", async () => {
+    // 翻缺省不毁逃生门: 显式 'any' 下 synth 仍照跑, 看见 s2 的失败占位 (注入失败) —
+    // 这是 best-of-N 那种「允许带失败兄弟继续跑」场景的合法出口。
+    const { generate, prompts, calls } = makeGenerate();
+    const r = await runExecutorDagWithPlan(
+      plan({
+        s1: { goal: '甲' },
+        s2: { goal: '乙 FAIL' },
+        s3: { goal: '丙' },
+        synth: { goal: '合成', depends_on: ['s1', 's2', 's3'], requires: 'any' },
+      }),
+      makeConfig(generate),
+    );
+    expect(r.results.s2!.status).toBe('failed');
     expect(r.results.synth!.status).toBe('done');
+    expect(calls).toContain('synth');
     expect(prompts.synth).toContain('out:s1');
     expect(prompts.synth).toContain('out:s3');
     expect(prompts.synth).toContain('注入失败'); // s2 失败占位注入, 非静默
