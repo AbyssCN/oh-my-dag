@@ -75,6 +75,26 @@ export async function handlePassthrough(
     return { status: 502, json: { error: { message: `bridge passthrough: ${(e as Error).message}` } } };
   }
   const json = await res.json().catch(() => ({ error: { message: 'passthrough: 上游响应不是 JSON' } }));
+  // ⚠ 2026-08-27 实测根因: minimax 把**软错误塞进 HTTP 200** —— body 形如
+  //   {"choices": null, "base_resp": {"status_code": 2062, "status_msg": "已达到 Token Plan 速率限制…"}}
+  // 字节透传原样转发时, 引擎看见 200 当成功, 却拿不到 choices → conductor
+  // 「未产出有效 plan: not JSON: Unexpected EOF」→ 整个 run 崩成 infra-error。
+  // 一次 40 并发的批里命中 1156 次, 该批 72% trial 报废。
+  // 这正是本仓「fail-open 可以吞异常, 不许吞证据」的反面: 200 把限流伪装成成功,
+  // 引擎连重试的机会都没有。故在此把上游的软错误翻成真错误码, 让重试路径通电。
+  // 2062 = 速率限制 → 429 (可重试); 其余非零 status_code → 502 (上游异常)。
+  const baseResp = (json as { base_resp?: { status_code?: number; status_msg?: string } })?.base_resp;
+  const upstreamCode = baseResp?.status_code;
+  if (typeof upstreamCode === 'number' && upstreamCode !== 0) {
+    const mapped = upstreamCode === 2062 ? 429 : 502;
+    process.stderr.write(
+      `[bench-bridge] 上游软错误 base_resp.status_code=${upstreamCode} → 翻成 ${mapped}: ${baseResp?.status_msg ?? ''}\n`,
+    );
+    return {
+      status: mapped,
+      json: { error: { message: `minimax base_resp ${upstreamCode}: ${baseResp?.status_msg ?? ''}` } },
+    };
+  }
   return { status: res.status, json };
 }
 
