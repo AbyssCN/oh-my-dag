@@ -45,6 +45,7 @@ import type { RunOutcomeKind } from '../run-outcome';
 import { loadSddContract } from './sdd-direct';
 import type { ExecutorDagConfig } from '../dag/types';
 import { TEST_STEP_PREFIX, acceptSideOf, buildAcceptDelta, extractFailSet, stableFailSet, unstableFailSet, type AcceptSide } from './accept-delta';
+import { baselineCommandOf } from './accept-baseline';
 import { readExperimentFlags } from './experiment-flags';
 import { classifySpecWrite, type SpecWrite, type SpecWriteSource } from './spec-write';
 import { summarizeDelta, type DeltaReport, type VerifyStepStatus } from './delta-compare';
@@ -1214,10 +1215,19 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   let baselineSide: AcceptSide | undefined;
   if (acceptance.kind === 'executable' && config.dag.commandRunner) {
     try {
-      const bl = await config.dag.commandRunner({ command: acceptance.command });
+      // SDD 片 2 (D-1): 基线只跑末环 —— 直通档验收命令按 sdd-compile.ts:373-380 规定为
+      // 「各片 verify 串联 && 末环全量」, 批前跑整条必停在第一环 ugrep 的反作弊条款上,
+      // 基线失败集空 ⇒ makeBaselineWaiver fail-closed 返 null ⇒ 赦免恒失效。
+      // 末环按构造是去掉路径的全量回归, 跑它量到的就是仓当下真实的存量红。
+      const bl = await config.dag.commandRunner({ command: baselineCommandOf(acceptance.command) });
       baselineSide = acceptSideOf(bl.exitCode === (acceptance.expectExit ?? 0) ? 'pass' : 'fail', bl.text);
     } catch (err) {
-      logger.warn({ command: acceptance.command, err: String(err) }, '[run-goal] D-1 基线跑不起来 → 闸缺席 (fail-open)');
+      // 记**真跑的那条** (末环), 不是验收命令原串 —— fail-open 可以吞异常, 不许吞证据:
+      // 记错命令会让排查的人拿一条根本没跑过的命令去复现。
+      logger.warn(
+        { command: baselineCommandOf(acceptance.command), acceptCommand: acceptance.command, err: String(err) },
+        '[run-goal] D-1 基线跑不起来 → 闸缺席 (fail-open)',
+      );
     }
   }
   let exec: ExecutorDagResult;
