@@ -91,10 +91,11 @@ HARD RULE — big content enters via PROMPT (billed once), never via an agent to
   source attribution 0/8). Never bundle when the deliverable must attribute facts to sources.
 
 Scheduling / allocation fields (all optional; the engine enforces them — set only where the default is wrong):
-- "requires": how many done dependencies a node needs to run: "all" (default for ≤1 dep — any failed dep
-  SKIPS this node), "any" (default for ≥2 deps — survives sibling failures), or an integer K (run only
-  when ≥K deps succeeded, e.g. a judge needing 3 candidates). Set "all" explicitly on a synthesis that
-  MUST see every input; leave the defaults elsewhere.
+- "requires": how many done dependencies a node needs to run: "all" (DEFAULT — any failed dep
+  SKIPS this node), "any" (only when you INTENTIONALLY want a node to run with at least one sibling
+  failed, e.g. a best-of-N fallback collecting partial work), or an integer K (run only when ≥K
+  deps succeeded, e.g. a judge needing 3 candidates). The default "all" protects synthesis nodes —
+  every input must be present; if you want sibling-failure tolerance, you must write "any" or K explicitly.
 - "cluster": short workstream label ("research"/"backend"/"frontend"/...) on nodes forming one strand.
   It groups progress display and keeps one model along a same-cluster chain (prompt-cache affinity).
   Label honestly — do not force unrelated nodes into one cluster.

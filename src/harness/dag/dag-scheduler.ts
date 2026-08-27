@@ -189,15 +189,16 @@ export class DagScheduler {
 
   /**
    * quorum 判定: 达标 → null (照跑); 不达标 → 判词。
-   * requires 缺省启发: 单依赖 'all' (依赖失败还跑 = 拿 [failed] 文本当正文, 纯浪费 + 静默假成功),
-   * 多依赖 fan-in 'any' (宽扇出单叶 429 不陪葬 synth)。零依赖 → 恒不 skip。
+   * requires 缺省 = 'all' (S3 片 3 / D-6): 合成节点必须看见全部输入, 把「宽扇出」的偏好塞进
+   * 缺省会让所有 synth 静默吞失败。宽扇出单叶 429 不陪葬 synth 的诉求由显式 `requires: 'any'`
+   * 或整数 K 表达, 不再是缺省。零依赖 → 恒不 skip。
    */
   private quorumVerdict(id: string): QuorumVerdict | null {
     const node = this.plan.nodes[id]!;
     const deps = (node.depends_on ?? []).filter((d) => this.idSet.has(d));
     if (deps.length === 0) return null;
     const doneCount = deps.filter((d) => this.opts.statusOf(d) === 'done').length;
-    const req = (node.requires ?? (deps.length <= 1 ? 'all' : 'any')) as 'all' | 'any' | number;
+    const req = (node.requires ?? 'all') as 'all' | 'any' | number;
     const ok = req === 'all' ? doneCount === deps.length : req === 'any' ? doneCount >= 1 : doneCount >= req;
     if (ok) return null;
     const bad = deps.filter((d) => this.opts.statusOf(d) !== 'done').map((d) => `${d}(${this.opts.statusOf(d) ?? '?'})`);

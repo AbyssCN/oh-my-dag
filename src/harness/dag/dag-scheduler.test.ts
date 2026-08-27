@@ -245,16 +245,38 @@ describe('DagScheduler quorum 判定 (D-7v2)', () => {
     expect(sched.readyCount).toBe(0); // 已从 ready 摘掉
   });
 
-  test("缺省启发: 多依赖 = 'any' (一个 done 就够)", () => {
+  test("缺省启发: 多依赖 = 'all' (全部 done 才放行) [S3 片 3 / D-6, JOIN_ALL_DONE_DEFAULT]", () => {
+    // S3 片 3 / D-6: 多依赖 join 缺省从 'any' 翻成 'all'。翻转前这条断言 takeSkippable === null,
+    // 翻转后 sink 在 1 done / 1 failed 下被摘出, verdict.requires = 'all'。
     const { sched, status } = mk({ a: {}, b: {}, sink: { depends_on: ['a', 'b'] } });
     status['a'] = 'done';
     status['b'] = 'failed';
     sched.advance('a');
     sched.advance('b');
-    expect(sched.takeSkippable()).toBeNull(); // any 达标
+    const sk = sched.takeSkippable();
+    expect(sk).not.toBeNull();
+    expect(sk?.id).toBe('sink');
+    expect(sk?.verdict.requires).toBe('all');
+    expect(sk?.verdict.done).toBe(1);
+    expect(sk?.verdict.bad).toEqual(['b(failed)']);
   });
 
-  test("'any' 全挂 → skip, bad 列出每个依赖的状态", () => {
+  test("显式 requires:'any' 仍走老路 (逃生门) [S3 片 3 / INV-7 第二条 GWT]", () => {
+    // 翻缺省不毁逃生门: 显式 'any' 仍允许 1 done / 1 failed 时跑
+    const { sched, status } = mk({
+      a: {},
+      b: {},
+      sink: { depends_on: ['a', 'b'], requires: 'any' },
+    });
+    status['a'] = 'done';
+    status['b'] = 'failed';
+    sched.advance('a');
+    sched.advance('b');
+    expect(sched.takeSkippable()).toBeNull(); // 显式 any 下 1 done 达标
+  });
+
+  test("缺省 'all' 全挂 → skip, bad 列出每个依赖的状态 [S3 片 3, 缺省从 any 翻成 all]", () => {
+    // 原 "any 全挂" 用例: 不写 requires 时缺省已翻成 'all', verdict.requires 跟着翻
     const { sched, status } = mk({ a: {}, b: {}, sink: { depends_on: ['a', 'b'] } });
     status['a'] = 'failed';
     status['b'] = 'skipped';
@@ -262,7 +284,7 @@ describe('DagScheduler quorum 判定 (D-7v2)', () => {
     sched.advance('b');
     const sk = sched.takeSkippable();
     expect(sk?.id).toBe('sink');
-    expect(sk?.verdict).toEqual({ requires: 'any', done: 0, deps: ['a', 'b'], bad: ['a(failed)', 'b(skipped)'] });
+    expect(sk?.verdict).toEqual({ requires: 'all', done: 0, deps: ['a', 'b'], bad: ['a(failed)', 'b(skipped)'] });
   });
 
   test("显式 'all': 多依赖里挂一个就 skip", () => {

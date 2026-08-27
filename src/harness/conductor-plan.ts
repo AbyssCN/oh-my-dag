@@ -296,7 +296,8 @@ const PlanNode = z
     /**
      * D-7v2 quorum: 依赖失败时本节点的执行判据。'all' = 任一依赖 failed/skipped → 本节点级联
      * skipped(不执行零 token);'any' = ≥1 依赖 done 即执行(fan-in 韧性);K(整数)= done 依赖
-     * ≥K 才执行(best-of-N 至少 K 候选)。缺省启发:deps≤1 → 'all',≥2 → 'any'(判定在执行器)。
+     * ≥K 才执行(best-of-N 至少 K 候选)。缺省 = 'all' (S3 片 3 / D-6: 合成节点必须看见全部输入,
+     * 宽扇出单叶 429 不陪葬 synth 的诉求改由显式 'any' / K 表达)。
      */
     requires: z.union([z.enum(['all', 'any']), z.number().int().min(1)]).optional(),
     /** D-12v2 cluster 标签:HUD/报告分组 + stamp pass 链亲和(D-22)的边界信号。纯元数据,不进调度。 */
@@ -790,10 +791,11 @@ export function conductorSystemPrompt(
     '  source attribution 0/8). Never bundle when the deliverable must attribute facts to sources.',
     '',
     'Scheduling / allocation fields (all optional; the engine enforces them — set only where the default is wrong):',
-    '- "requires": how many done dependencies a node needs to run: "all" (default for ≤1 dep — any failed dep',
-    '  SKIPS this node), "any" (default for ≥2 deps — survives sibling failures), or an integer K (run only',
-    '  when ≥K deps succeeded, e.g. a judge needing 3 candidates). Set "all" explicitly on a synthesis that',
-    '  MUST see every input; leave the defaults elsewhere.',
+    '- "requires": how many done dependencies a node needs to run: "all" (DEFAULT — any failed dep',
+    '  SKIPS this node), "any" (only when you INTENTIONALLY want a node to run with at least one sibling',
+    '  failed, e.g. a best-of-N fallback collecting partial work), or an integer K (run only when ≥K',
+    '  deps succeeded, e.g. a judge needing 3 candidates). The default "all" protects synthesis nodes —',
+    '  every input must be present; if you want sibling-failure tolerance, you must write "any" or K explicitly.',
     '- "cluster": short workstream label ("research"/"backend"/"frontend"/...) on nodes forming one strand.',
     '  It groups progress display and keeps one model along a same-cluster chain (prompt-cache affinity).',
     '  Label honestly — do not force unrelated nodes into one cluster.',
