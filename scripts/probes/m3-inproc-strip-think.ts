@@ -33,7 +33,7 @@ import { send } from '../../src/model/gateway';
 import { LEAF_SYSTEM_PREFIX } from '../../src/harness/dag/defaults';
 import { WORKER_TASKS, type WorkerGrade } from '../../src/eval/tasks/worker-quality';
 // ⚠ 纯函数留在独立模块里 —— 本文件顶层就在跑 A/B, 谁 import 它谁就点火 (2026-08-14 实测烧了 100 次调用)。
-import { stripThink } from './strip-think';
+import { stripThink } from '../../src/model/strip-think';
 
 const argv = process.argv.slice(2);
 const opt = (n: string): string | undefined => {

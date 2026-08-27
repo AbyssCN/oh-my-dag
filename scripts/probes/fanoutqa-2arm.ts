@@ -46,7 +46,7 @@ import { join } from 'node:path';
 import { bootstrapModelRuntime } from '../../src/model/bootstrap';
 import { send } from '../../src/model/gateway';
 import { fanoutTaskText } from '../../src/eval/tasks/fanoutqa/task-text';
-import { stripThink } from './strip-think';
+import { stripThink } from '../../src/model/strip-think';
 
 const argv = process.argv.slice(2);
 const opt = (n: string): string | undefined => {

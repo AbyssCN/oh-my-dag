@@ -33,7 +33,7 @@ import '../../src/harness/script-bootstrap';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { LEAF_SYSTEM_PREFIX } from '../../src/harness/dag/defaults';
 import { WORKER_TASKS, type WorkerGrade } from '../../src/eval/tasks/worker-quality';
-import { stripThink } from './strip-think';
+import { stripThink } from '../../src/model/strip-think';
 
 const argv = process.argv.slice(2);
 const opt = (n: string): string | undefined => {
