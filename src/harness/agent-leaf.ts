@@ -99,6 +99,12 @@ import {
 } from './spin-route';
 import { createParseFeedback } from './writeset/write-parse-gate';
 import { extractFailSet } from './goal/accept-delta';
+import {
+  buildCriteriaDiff,
+  buildRepairFollowUp,
+  strategyForRound,
+  type CriteriaDiff as RepairCriteriaDiff,
+} from './self-repair-round';
 import { createSandboxedLeafRunner } from './hooks/sandboxed-leaf';
 import { loadSandboxConfig } from './hooks/command-policy';
 import { allowlistForRoot, createCommandLeafRunner, DEFAULT_COMMAND_ALLOWLIST } from './command-leaf';
@@ -677,6 +683,12 @@ export interface SelfRepairLedger {
    * (opts.spinRoute === false 或 env 关)。既有消费者读 `rounds/oracleExit/convergedAt` 不受影响。
    */
   spinRoute?: { rung: 1; packHash: string; outcome: SpinRouteEventOutcome; at: number }[];
+  /**
+   * S3 自修环 follow-up 哈希入账 (D-6 additive, INV-7): 缺席 = 该节点无 self_check; 空数组 = 启用但零轮;
+   * 有值 = 每轮一条。I-2 「第 n+1 轮必须含第 n 轮没有的信息」由此变成可机械判 —— 两轮哈希相等即违约。
+   * 复用 `agent-tools.sha256Hex`, 不新造第二个。
+   */
+  followUpHashes?: string[];
 }
 
 /**
@@ -810,6 +822,12 @@ export function buildSelfCheckFollowUp(opts: {
   maxSelfRepair: number;
   /** truncator: 给定 stdout/stderr, 返回 trunc 后文本。测试可注入, 生产走 pi `truncateTail`。 */
   truncate?: (s: string, maxBytes: number) => string;
+  /**
+   * S3 (D-2/D-5) 接线: 读 outer 闭包持有的当前轮 (fail) 集, 用于本轮 follow-up 的判据 diff 槽。
+   * observe 回调负责写入 (走 `currentFailSet = ...`), 接线层持 getter 以让本闭包在构造 body 时读到。
+   * 缺席 (测试未注入) ⇒ 视为恒 null (即每轮都是 first-round, 不影响其他闸)。
+   */
+  getCurrentFailSet?: () => readonly string[] | null;
   /** 探测跑法 (默认 = `runSelfCheckProbe`)。测试可注入。 */
   probe?: (input: { command: string; cwd: string; allowlist: readonly string[] }) => Promise<SelfCheckOutcome>;
   /** 注入观测 (按 outcome 记一笔账本)。测试可观察, 生产 = console logger。
@@ -823,10 +841,16 @@ export function buildSelfCheckFollowUp(opts: {
     stderr?: string;
   }) => void;
 }): { followUp: () => Promise<AgentMessage[]>; ledger: SelfRepairLedger } {
-  const ledger: SelfRepairLedger = { rounds: 0, oracleExit: [], convergedAt: null };
+  const ledger: SelfRepairLedger = { rounds: 0, oracleExit: [], convergedAt: null, followUpHashes: [] };
   let lastTouched = opts.getTouchedSize();
   let lastWorkspace = opts.getWorkspaceDigest?.() ?? null;
   let converged = false;
+  // S3 (D-2/D-6): 上一轮滚动保存的 (fail) 集, 用于构造本轮 follow-up 的判据 diff 三态。
+  // 首轮为 null ⇒ buildCriteriaDiff 返 first-round; 判红 + 提取空数组 ⇒ unparsable (不冒充稳定)。
+  let prevFailSet: readonly string[] | null = null;
+  // 「有没有上一轮」必须与「上一轮的红集是不是 null」分开记 (静默坑 1): 判据是 tsc 这类
+  // 从不产 (fail) 行的命令时, 每轮红集都是 null —— 只看 prevFailSet 的话第 2 轮会谎称首轮。
+  let sawPreviousRound = false;
   const probe = opts.probe ?? ((p) => runSelfCheckProbe({ ...p, timeoutMs: 60_000 }));
   const truncate = opts.truncate ?? ((s, n) => (s.length <= n ? s : truncateTail(s, { maxBytes: n }).content));
   let lastOutputDigest: string | null = null;
@@ -887,14 +911,38 @@ export function buildSelfCheckFollowUp(opts: {
     const digest = sha256Hex(`${out.exitCode ?? 'sig'}\u0000${out.stdout}\u0000${out.stderr}`);
     const unchanged = digest === lastOutputDigest;
     lastOutputDigest = digest;
+    // S3 (D-2/D-5/D-6): 判据现场 = 原 formatSelfCheckFollowUp 输出; 三个新槽追加其后。
+    // 判据 diff 槽走三态, 上一轮红集 = 本轮开探针前的 prevFailSet, 本轮红集 = currentFailSet
+    // (observe 已在上面更新)。当前轮 follow-up 注入完后, prevFailSet 滚动到 currentFailSet,
+    // 下一轮的 diff 才看得到本轮的 (fail) 集。
+    const criteriaScene =
+      formatSelfCheckFollowUp(opts.spec, out, truncate) +
+      (unchanged
+        ? '\n\n[判据输出与上一轮逐字节相同 —— 你这一轮改的东西判据看不见。' +
+          '换一处改, 或先确认判据跑的到底是不是你改的那份产物。]'
+        : '');
+    const diff: RepairCriteriaDiff = buildCriteriaDiff(
+      prevFailSet,
+      opts.getCurrentFailSet?.() ?? null,
+      sawPreviousRound,
+    );
+    const slots = {
+      criteriaScene,
+      criteriaDiff: diff,
+      previousAttempt: !sawPreviousRound
+        ? '(无 —— 首轮)'
+        : prevFailSet === null
+          ? '(上一轮跑过, 但它的输出里没有可解析的 (fail) 行)'
+          : `(上一轮 (fail) 集: [${[...prevFailSet].join(', ')}])`,
+      strategy: strategyForRound(ledger.rounds),
+    };
+    const body = buildRepairFollowUp(slots);
+    ledger.followUpHashes!.push(sha256Hex(body));
+    prevFailSet = opts.getCurrentFailSet?.() ?? null;
+    sawPreviousRound = true;
     const userMsg: AgentMessage = {
       role: 'user',
-      content:
-        formatSelfCheckFollowUp(opts.spec, out, truncate) +
-        (unchanged
-          ? '\n\n[判据输出与上一轮逐字节相同 —— 你这一轮改的东西判据看不见。' +
-            '换一处改, 或先确认判据跑的到底是不是你改的那份产物。]'
-          : ''),
+      content: body,
       timestamp: Date.now(),
     } as AgentMessage;
     return [userMsg];
@@ -2225,14 +2273,22 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
           getWorkspaceDigest: () => workspaceDigest(cwd, touched),
           enabled: true,
           maxSelfRepair,
+          // S3 (D-5) 接线: 把 outer 的 currentFailSet 喂给闭包, 闭包用它构判据 diff 三态。
+          getCurrentFailSet: () => currentFailSet,
           observe: (info) => {
             // S1 spin-route 档 1 (D-2 判据 diff 槽): self_check 退出时滚动 (fail) 集, 供
             // judgeRungOutcome 比对 before/now 严格缩小。失败 (kind='blocked' 或 'exited' 非空
             // but failed) 同样按 (fail) 字面提取, 不用 cmd 退出码做判据 —— 「没拿到主动退出码」与
-            // 「拿到但不等」在用户语义上是同一类信号。提取失败 → currentFailSet 保持上一轮值。
+            // 「拿到但不等」在用户语义上是同一类信号。
+            // S3 (D-2 接线): `extractFailSet` 永不返 null, 旧代码恒真判别导致空数组冒充稳定。
+            // 改为: 判红且提取空数组 ⇒ 传 null (unparsable 字面); 判绿不动 currentFailSet
+            // (绿了那轮无 follow-up, 不污染下一轮 diff 的 prevFailSet)。
             if (info.kind === 'exited' && typeof info.stdout === 'string') {
-              const parsed = extractFailSet(info.stdout);
-              if (parsed !== null) currentFailSet = parsed;
+              const red = info.exitCode !== selfCheck.expect_exit;
+              if (red) {
+                const parsed = extractFailSet(info.stdout);
+                currentFailSet = parsed.length === 0 ? null : parsed;
+              }
             }
             logger.info(
               { cwd, command: selfCheck.command, expect_exit: selfCheck.expect_exit, ...info },
