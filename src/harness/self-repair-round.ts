@@ -90,7 +90,7 @@ export function buildRepairFollowUp(slots: RepairFollowUpSlots): string {
 
 /** R1–R4 策略槽冻结表；超出范围夹到 R4，不回绕。 */
 export const REPAIR_STRATEGIES = [
-  'M7：先做闭环修复，再运行同一判据验证；只根据本次失败输出调整产物。',
+  'M7：先把它修到位，再用同一条判据跑一遍验证；只根据本次失败输出调整产物。',
   'M1：先写清上轮为什么红，定位根因后再动手；不要跳过 RCA。',
   'M4：先查仓内相关实现与引用，带证据再修；不要凭猜测改判据外路径。',
   'M3：缩 scope，只修最后一处红；不扩大相关改动，不回退已修部分。',
