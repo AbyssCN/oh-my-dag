@@ -2,7 +2,7 @@
  * debug-plan No-silent-caps (C-3) —— redEvidence 超 2000 字符时补告示 + 全文指针;
  * 未超界路径与今天 hypothesisListerGoal 逐字节相同 (零回归)。
  *
- * 对应 docs/plan/2026-08-23-判词写盘与两个No-silent-caps缺口-执行契约.md §C-3 · D-6。
+ * 对应 docs/plan/2026-08-23-判词落盘与两个No-silent-caps缺口-执行契约.md §C-3 · D-6。
  * 与 §片 2 (agent-tools spill) 同源同形, 参照物 = `capFanin` / `renderHandoff` 的
  * 「告示 + 全文路径」写法。
  *

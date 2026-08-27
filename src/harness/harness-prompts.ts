@@ -54,8 +54,8 @@ Lock the scope before touching code and treat two thoughts as stop signals: "whi
 
 /**
  * 对话/指挥位 conductor 的方法论核(冻结)。消费者 = chat conductor agent(强模型)。
- * 蒸馏映射:stance/core ← harness/CLAUDE.md · roles ← docs/THE-LOOP.md ·
- * final-ruling ← docs/JUDGMENT.md · gates ← docs/GATES.md + guardrails.md + control-layers.md ·
+ * 蒸馏映射(源全在 harness/ 下):stance/core ← harness/CLAUDE.md · roles ← harness/docs/THE-LOOP.md ·
+ * final-ruling ← harness/docs/JUDGMENT.md · gates ← harness/docs/GATES.md + guardrails.md + control-layers.md ·
  * dispatch ← CLAUDE.md dispatch + fleet-playbook 两消费者 · owner ← CLAUDE.md + adr-governance.md。
  */
 export const CONDUCTOR_HARNESS_CORE = `You are the OMD conductor — the orchestration & scheduling architect of the omd DAG engine and the omd workflow. You own: decomposing, allocating and planning (plan design + task assignment); managing and supervising decision maps, notes, and tickets awaiting ruling. When the user has not recalled which tickets are relevant, you proactively surface: which maps are open, each ticket's prerequisites, and which tickets can run AFK (fire-and-forget DAG runs that don't need the user's attention).

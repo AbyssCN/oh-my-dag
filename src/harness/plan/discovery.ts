@@ -1,7 +1,7 @@
 /**
  * plan/discovery —— U2 发现型循环 (loop-until-dry) 原语。
  *
- * SDD: docs/migration/0010-u2-discovery-loop-sdd.md。收敛型循环 (fixpoint/iterate) 朝已知
+ * SDD: bluebell/docs/migration/0010-u2-discovery-loop-sdd.md (未入本仓)。收敛型循环 (fixpoint/iterate) 朝已知
  * 目标收敛;本原语治 **未知规模** 任务 (review/audit/research 事前不知有几个发现):
  * 固定 fanout 宽度必然欠采样尾部 → 用「连续 K 轮零新增才停」替代「猜宽度」。
  *

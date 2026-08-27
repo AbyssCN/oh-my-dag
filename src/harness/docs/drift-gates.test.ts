@@ -198,3 +198,127 @@ describe("D-2 闸③ 工具面反向闸(窄)", () => {
     expect(checkToolSchemaCoverage(["id"], docText)).toEqual([{ key: "id" }]);
   });
 });
+
+// ── 闸④ 注释引用反向(代码 → 文档) ───────────────────────────────────────────
+// 闸①②③ 走的都是「文档 → 代码」;本闸补反向的一半: 代码注释里引用的本仓文档, 盘上必须存在。
+// 腐烂的引用比没有引用更贵 —— 既照收 token, 又把读者支去一个不存在的地方(2026-08-27 实测抓到
+// 4 条真断链, 其中 2 条是文档改名后注释没跟上: fanin 契约改中文名 · docs-drift SDD 加 -tracking 后缀)。
+//
+// 三条窄口(取舍同闸③: 宁可漏红, 不做噪声闸), 每条都有实测支撑:
+//  · 只判**注释行** —— 字符串字面量里的路径是数据不是引用;
+//  · 只判**带引用标记**的(见/详见/对应/契约/SDD/Contract/←) —— 裸扫命中的 31 条"死引用"里有 18 条
+//    是散文举例(如复述 live 抓到的原命令 `grep -q "相同" docs/from-api.md`), 无标记的闸信噪比 4:6;
+//  · 只判**本仓文档根**(`docs/` 与 `harness/docs/`)的裸引用 —— 外仓文档按约定写仓前缀
+//    (`$FUSANG_HOME/docs/…` · `bluebell/docs/…`), 前置字符是 `/`, 天然出局。
+//
+// 刻意不判 `.ts` 路径引用: 实测 187 处里 41 处指向盘上没有的文件, 而**全部** 41 处都是测试的合成
+// fixture 名(`src/a.ts` · `src/foo.ts` · `src/keep30.ts`), 真信号 0; 带行号的子集(9 处)同样 3/3
+// 是合成名。那正是闸③非目标里点名拒绝的噪声形状, 不接。
+
+interface CommentDocRefViolation {
+  file: string;
+  line: number;
+  target: string;
+}
+
+/** 逐行提取注释行(跟踪块注释), 返回 1-based 行号 + 该行原文。 */
+function commentLinesOf(source: string): Array<{ line: number; text: string }> {
+  const out: Array<{ line: number; text: string }> = [];
+  let inBlock = false;
+  source.split("\n").forEach((raw, i) => {
+    const t = raw.trim();
+    if (!t) return;
+    let isComment = false;
+    if (inBlock) {
+      isComment = true;
+      if (t.includes("*/")) inBlock = false;
+    } else if (t.startsWith("/*")) {
+      isComment = true;
+      if (!t.includes("*/")) inBlock = true;
+    } else if (t.startsWith("//")) isComment = true;
+    if (isComment) out.push({ line: i + 1, text: t });
+  });
+  return out;
+}
+
+/** 本仓文档根的裸引用; 前置字符类排除引号/括号/`/`/`$`, 即散文里的举例路径与外仓前缀引用。 */
+const DOC_REF = /(?:^|[^\w/'"`(<.$-])((?:harness\/)?docs\/[^\s)）,,;;:："'`]*\.md)/g;
+/** 引用标记必须紧贴在路径左边(≤12 字符窗口内), 否则算散文提及而非引用。 */
+const CITATION_MARKER = /(?:详见|参见|见|对应|契约|出处|SDD|Contract|←)[::]?\s*$/;
+
+/** 闸④: 注释行里带引用标记的本仓文档路径, 逐条核对盘上存在(INV-1: 点名文件+行号+目标)。 */
+function checkCommentDocRefs(
+  files: Array<{ file: string; source: string }>,
+  root: string,
+): CommentDocRefViolation[] {
+  const violations: CommentDocRefViolation[] = [];
+  for (const { file, source } of files) {
+    for (const { line, text } of commentLinesOf(source)) {
+      for (const m of text.matchAll(DOC_REF)) {
+        const target = m[1]!;
+        if (target.includes("*")) continue; // glob 通配是模式不是路径
+        const at = m.index! + (m[0].length - target.length);
+        if (!CITATION_MARKER.test(text.slice(Math.max(0, at - 12), at))) continue;
+        if (!existsSync(join(root, target))) violations.push({ file, line, target });
+      }
+    }
+  }
+  return violations;
+}
+
+describe("D-2 闸④ 注释引用反向(代码 → 文档)", () => {
+  test("反向自检(G-4): 注释引用的文档被改名 → 红且点名文件+行号+目标", () => {
+    // 真实腐烂形状: 契约文档改成中文名, 注释里的旧英文名没跟上(2026-08-27 抓到的原样本)。
+    const source = [
+      "/**",
+      " * #153 fan-in 摘要视图保引文。",
+      " * 契约: docs/plan/2026-08-25-fanin-verbatim-contract.md",
+      " */",
+    ].join("\n");
+    expect(checkCommentDocRefs([{ file: "src/fake.ts", source }], REPO_ROOT)).toEqual([
+      { file: "src/fake.ts", line: 3, target: "docs/plan/2026-08-25-fanin-verbatim-contract.md" },
+    ]);
+  });
+
+  test("正例: 引用的文档存在 → 不违规", () => {
+    const source = "// 见 docs/plan/2026-08-11-docs-drift-tracking-sdd.md 的 D-1。";
+    expect(checkCommentDocRefs([{ file: "src/fake.ts", source }], REPO_ROOT)).toEqual([]);
+  });
+
+  test("窄口①: 只判注释, 代码里的字符串字面量路径是数据不是引用", () => {
+    const source = `const p = "docs/plan/从来没有过的文件.md"; // 见 上面那个常量`;
+    expect(checkCommentDocRefs([{ file: "src/fake.ts", source }], REPO_ROOT)).toEqual([]);
+  });
+
+  test("窄口②: 无引用标记的散文举例不判(复述 live 命令原文 = 别人世界里的文件)", () => {
+    // 原样本 src/harness/goal/acceptance-gate.ts: 冻结的命令是 `grep -q "相同" docs/from-api.md`,
+    // 那个路径属于当年那个任务的临时世界, 判它就是判错人。
+    const source = `// 那次冻结的命令是 grep -q "相同" docs/from-api.md —— 它匹配得上「不相同」。`;
+    expect(checkCommentDocRefs([{ file: "src/fake.ts", source }], REPO_ROOT)).toEqual([]);
+  });
+
+  test("窄口③: 外仓引用带仓前缀 → 出局(本闸只对本仓盘负责)", () => {
+    const source = [
+      "// Contract: $FUSANG_HOME/docs/plan/mimo-leaf-execution-contract.md (未入本仓)。",
+      "// SDD: bluebell/docs/migration/0010-u2-discovery-loop-sdd.md (未入本仓)。",
+    ].join("\n");
+    expect(checkCommentDocRefs([{ file: "src/fake.ts", source }], REPO_ROOT)).toEqual([]);
+  });
+
+  test("glob 通配是模式不是路径, 不判(docs/plan/*.md 这类)", () => {
+    const source = "// 见 docs/plan/*.md 里最新的那份。";
+    expect(checkCommentDocRefs([{ file: "src/fake.ts", source }], REPO_ROOT)).toEqual([]);
+  });
+
+  test("真实 src/**/*.ts: 逐条核对, 零违规", () => {
+    // 施工时本闸在真盘抓到 4 条真断链 + 5 条前缀写错(harness/docs/ 写成 docs/ · 外仓文档写成
+    // 本仓路径), 已在同一次改动里修完(2026-08-27)。现状零违规是**修出来的**, 不是闸哑 ——
+    // 红的可证性由上方 G-4 合成样本钉着。
+    const glob = new Glob("src/**/*.ts");
+    const files = [...glob.scanSync({ cwd: REPO_ROOT })].map((file) => ({
+      file,
+      source: readFileSync(join(REPO_ROOT, file), "utf8"),
+    }));
+    expect(checkCommentDocRefs(files, REPO_ROOT)).toEqual([]);
+  });
+});

@@ -5,7 +5,7 @@
  * provider+kind, and orders by amortization priority. All functions are pure;
  * no side effects, no I/O.
  *
- * Contract: docs/plan/mimo-leaf-execution-contract.md (候选 D65) §channel.
+ * Contract: $FUSANG_HOME/docs/plan/mimo-leaf-execution-contract.md (候选 D65, 未入本仓) §channel.
  * Invariants:
  *  - CH-1 · discovery output is deduplicated by (provider, kind) — last-write-wins.
  *  - CH-2 · orderByAmortization is immutable — returns new array, never mutates input.

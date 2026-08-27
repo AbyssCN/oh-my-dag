@@ -1,7 +1,7 @@
 /**
  * callModel types — provider-agnostic single-shot model adapter.
  *
- * Contract: docs/plan/mimo-leaf-execution-contract.md (候选 D65) §3.
+ * Contract: $FUSANG_HOME/docs/plan/mimo-leaf-execution-contract.md (候选 D65, 未入本仓) §3.
  *  - INV-1 single request/response only (no tool loop, no multi-turn).
  *  - INV-2 provider registered, not hard-coded (mimo / DeepSeek / vLLM by config).
  *  - INV-3 structured reply is JSON-parsed + Zod-validated with bounded retry;

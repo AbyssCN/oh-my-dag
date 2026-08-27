@@ -1,7 +1,7 @@
 /**
  * #153 fan-in 摘要视图保引文 —— 反向自检 a/b/c (T1, 切片 1 / D-2)。
  *
- * 契约: docs/plan/2026-08-25-fanin-verbatim-contract.md
+ * 契约: docs/plan/2026-08-25-fanin引文保真-执行契约.md
  *   - D-2 摘要视图在摘要正文后追加「逐字引文段」附录, 抽取器复用 `extractQuotedSpans`
  *     (INV-1 同源, 禁写第二个抽取器);
  *   - 附录预算默认 ≤4000 字符 (FANIN_VERBATIM_APPENDIX_MAX_CHARS), 超预算显式截断标记;

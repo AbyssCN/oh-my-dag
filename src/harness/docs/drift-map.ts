@@ -1,6 +1,6 @@
 // docs-map 解析器 —— docs/docs-map.md 是人读的真源, 本文件把它同源解析成结构化行,
 // 供 D-2 确定性闸(drift-gates.test.ts)与 D-3 审计构造器(drift-audit.ts)消费。
-// 见 docs/plan/2026-08-11-docs-drift.md 的 D-1。
+// 见 docs/plan/2026-08-11-docs-drift-tracking-sdd.md 的 D-1。
 
 export interface DocsMapRow {
   /** 用户面文档路径, 相对仓根, 如 `docs/guide/mcp-tools.md` */

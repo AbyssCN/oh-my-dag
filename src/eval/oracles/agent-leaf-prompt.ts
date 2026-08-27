@@ -30,7 +30,7 @@
  *   ② **R=3 的噪声地板 ≈ 20~40%** —— 同配置重复格的 token 中位差 19% (mimo) / 39% (k3)。
  *      所以那轮**不足以支持** "STRONG_MODEL_CORE 更省" 的结论, 也不足以否定它。要读出 20-30%
  *      的效应, R 得到 8~10, 或换更长的任务把单次相对方差压下去。
- * 详见 docs/eval-findings.md。
+ * 详见 docs/plan/eval-findings.md。
  */
 import { $ } from 'bun';
 // ⚠ 必须先注册 provider: inproc leaf 走 callModel, 而 callModel 的 registry 要 bootstrap 才有

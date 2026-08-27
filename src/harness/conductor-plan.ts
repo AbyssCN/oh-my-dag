@@ -44,7 +44,7 @@ if (!_decisionLint.ok) {
 /**
  * MapSpec (U1 动态扇出) —— executor:'map' 节点的运行时展开规格。
  * lister 跑出运行时数组 → per-element 模板展开成 N 个 applicative 子节点 (STUDY Q3)。
- * SDD: docs/plan/SDD-2026-07-11-omd-dynamic-fanout-map-node.md。
+ * SDD: $FUSANG_HOME/docs/plan/SDD-2026-07-11-xihe-dynamic-fanout-map-node.md (未入本仓)。
  * template 用宽松 record (同 PlanNode passthrough 的弱模型容忍哲学): 深校验在插入期 (P1);
  * 此处只钉 INV-U5 (禁嵌套 map, superRefine 于 PlanNode) + 结构必填字段。
  */
