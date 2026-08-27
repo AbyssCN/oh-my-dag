@@ -85,7 +85,9 @@ for (const { tag, goal } of goals) {
     } else {
       // `fallbackExploratory` 把降级原因原样写进学习目标 —— 那是分辨"老实选的探索型"与
       // "想判执行型却被闸拒"的唯一凭据 (同 `firstBlockedReason` 的判据)。
-      const m = /执行型但命令不可跑 — (\[blocked[^\]]*\])/.exec(c.acceptance.learningGoal);
+      // F2: 加第三格之后 else 支不再恒等于探索型 —— rubric 没有 learningGoal。
+      const lg = c.acceptance.kind === 'exploratory' ? c.acceptance.learningGoal : '';
+      const m = /执行型但命令不可跑 — (\[blocked[^\]]*\])/.exec(lg);
       if (m) {
         blocked++;
         console.log(`  ${tag.padEnd(18)} **执行型但被闸拒 ✗** ${m[1]}`);

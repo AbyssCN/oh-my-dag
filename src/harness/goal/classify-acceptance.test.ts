@@ -279,3 +279,81 @@ describe('冻结的判卷标准 —— 一份文本, 两处消费', () => {
     expect(t).toContain('不要伪造');
   });
 });
+
+// ──────────────────────────────────────────────────────────────────────────────
+// F2 片 3 —— ACCEPTANCE_KIND_RUBRIC:判别联合的第三格
+//
+// 契约:docs/plan/2026-08-27-F2-rubric验收分型-执行契约.md §INV-1。
+// 两格旧行为是**护栏**(上面所有既有用例一条未改);本段只加第三格。
+//
+// 反向自检(每条真跑过一次):
+// · 把 checklist 改成可选(`checklist?`)→「必填」那条当场红(类型层 + 运行期两侧)。
+// · 把 rubric 分支删掉、让它落进探索型 →「rubric 型不被读成探索型」当场红。
+// · 把条目 id 去重检查拿掉 →「id 重复 → 降级」当场红。
+// ──────────────────────────────────────────────────────────────────────────────
+describe('classify-acceptance — ACCEPTANCE_KIND_RUBRIC 第三格', () => {
+  const goodChecklist = [
+    { id: 'r1', requirement: '报告点名了数据来源' },
+    { id: 'r2', requirement: '每条结论带一条可复跑命令' },
+  ];
+
+  test('★ acceptance_kind=rubric + 合法 checklist → 第三格, checklist 必填且带内容哈希', () => {
+    const c = normalizeClassification({ tier: 'simple', acceptance_kind: 'rubric', checklist: goodChecklist });
+    expect(c.acceptance.kind).toBe('rubric');
+    if (c.acceptance.kind === 'rubric') {
+      // 必填: 不是 `checklist?`。改成可选后这里会是 undefined → 当场红。
+      expect(c.acceptance.checklist.items).toHaveLength(2);
+      expect(c.acceptance.checklist.contentHash.length).toBeGreaterThan(0);
+      expect(c.acceptance.checklist.items[0]?.id).toBe('r1');
+    }
+  });
+
+  test('★ rubric 型不被读成探索型 (第三格真的存在, 不是别名)', () => {
+    const c = normalizeClassification({ tier: 'simple', acceptance_kind: 'rubric', checklist: goodChecklist });
+    expect(c.acceptance.kind).not.toBe('exploratory');
+    expect(c.acceptance.kind).not.toBe('executable');
+  });
+
+  test('★ checklist 缺席 / 空数组 → 降级探索型并留原话 (不许留一个判不了的 rubric)', () => {
+    for (const raw of [
+      { tier: 'simple', acceptance_kind: 'rubric' },
+      { tier: 'simple', acceptance_kind: 'rubric', checklist: [] },
+    ]) {
+      const c = normalizeClassification(raw);
+      expect(c.acceptance.kind).toBe('exploratory');
+      expect(c.acceptanceProbe?.kind).toBe('demoted');
+    }
+  });
+
+  test('★ 条目 id 重复 / 缺字段 → 降级探索型 (冻不出一份判不了的 rubric)', () => {
+    const dup = [{ id: 'x', requirement: 'a' }, { id: 'x', requirement: 'b' }];
+    expect(normalizeClassification({ tier: 'simple', acceptance_kind: 'rubric', checklist: dup }).acceptance.kind)
+      .toBe('exploratory');
+    const missing = [{ id: 'x' }, { requirement: 'b' }];
+    expect(normalizeClassification({ tier: 'simple', acceptance_kind: 'rubric', checklist: missing }).acceptance.kind)
+      .toBe('exploratory');
+  });
+
+  test('★ 两格旧行为逐字不变 (护栏): executable / exploratory 各走各的老路', () => {
+    const e = normalizeClassification({ tier: 'simple', acceptance_kind: 'executable', command: 'bun test' });
+    expect(e.acceptance.kind).toBe('executable');
+    const x = normalizeClassification({
+      tier: 'simple', acceptance_kind: 'exploratory', learning_goal: '摸清 X', affordable_loss: '两轮',
+    });
+    expect(x.acceptance.kind).toBe('exploratory');
+  });
+
+  test('★ renderAcceptance 认第三格: 逐条列出要求 + 明说判卷标准已冻结', () => {
+    const spec = normalizeClassification({
+      tier: 'simple', acceptance_kind: 'rubric', checklist: goodChecklist,
+    }).acceptance;
+    const t = renderAcceptance(spec);
+    expect(t).toContain('r1');
+    expect(t).toContain('报告点名了数据来源');
+    expect(t).toContain('冻结');
+  });
+
+  test('★ 分类器 prompt 里出现第三格 (声明面与消费面同步, 否则模型永远选不到它)', () => {
+    expect(classifyPrompt('随便一个目标')).toContain('rubric');
+  });
+});

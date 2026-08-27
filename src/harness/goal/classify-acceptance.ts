@@ -38,6 +38,7 @@ import {
   probeDiscrimination,
   probeVacuity,
 } from './acceptance-gate';
+import { freezeRubric, type RubricItem, type RubricSpec } from './rubric-spec';
 
 /** D-5 轻重路由 (成本轴): simple = 直接 Execute→Verify; complex = 全 research→spec→execute。 */
 export type GoalTier = 'simple' | 'complex';
@@ -60,6 +61,23 @@ export type AcceptanceSpec =
       learningGoal: string;
       /** 愿意为它花掉多少 (轮数 / 时间 / token)。探索型唯一的硬边界。 */
       affordableLoss: string;
+    }
+  | {
+      /**
+       * 第三格 (F2, 无 oracle 验收阶梯的第 ③ 级):没有可跑命令, 但产物好坏能被人逐条说清。
+       *
+       * 它填的是执行型与探索型之间那道缝 —— 此前这类目标只能被迫落进探索型
+       * (只判「有没有学到」) 或被硬凑成一条虚的命令。
+       */
+      kind: 'rubric';
+      /**
+       * 结晶期冻下的 checklist, **必填**。
+       *
+       * 必填不是可选 —— 可选字段版会长成又一个空旋钮 (同本联合上面那段注释)。
+       * 冻结含内容哈希: rubric 唯一的可信来源就是「写它的时候还不知道产物长什么样」,
+       * 验收期改一个字即拒 (F2 §INV-3, 判定在 `rubric-spec.verifyFrozen`)。
+       */
+      checklist: RubricSpec;
     };
 
 export interface GoalClassification {
@@ -91,6 +109,8 @@ interface RawClassification {
   tier?: unknown;
   acceptance_kind?: unknown;
   command?: unknown;
+  /** F2 第三格:分类器给的 checklist 原样 —— 形状校验在 normalizeClassification 里做。 */
+  checklist?: unknown;
   learning_goal?: unknown;
   affordable_loss?: unknown;
   /** G4 反面样本(扁平两格 —— 弱模型对嵌套对象的成功率明显低于扁平字段)。 */
@@ -139,6 +159,27 @@ export function normalizeClassification(raw: RawClassification, opts?: Acceptanc
       acceptance: { kind: 'executable', command, expectExit: 0 },
       ...(nPath && nBody.trim() ? { negativeSample: { path: nPath, content: nBody } } : {}),
     };
+  }
+
+  // ── F2 第三格 rubric:结晶期冻下的 checklist,先于产物 ──────────────────────
+  //
+  // 降级口径与执行型那一支同族:凑不出一份**判得了**的 rubric 就退回探索型并留原话,
+  // 不留一个判不了的第三格在那里 —— 那等于既没有机器判据也没有人判据 (仓规坑 ①)。
+  if (kind.includes('rubric')) {
+    const items = parseChecklist(raw.checklist);
+    if (items === null || items.length === 0) {
+      const why = 'rubric 型但 checklist 缺席或形状不合法 (每条要有 id 与 requirement)';
+      logger.warn({ kind }, `[omd/goal] ${why} → 降级探索型 (F2)`);
+      return { tier, acceptance: fallbackExploratory(why), acceptanceProbe: { kind: 'demoted', why } };
+    }
+    try {
+      return { tier, acceptance: { kind: 'rubric', checklist: freezeRubric(items) } };
+    } catch (err) {
+      // freezeRubric 只在「id 重复 / 空 id / 零条目」时抛 —— 全是冻不出一份可判 rubric 的情形。
+      const why = `rubric 冻结失败 — ${String((err as { message?: string }).message ?? err)}`;
+      logger.warn({ kind }, `[omd/goal] ${why} → 降级探索型 (F2)`);
+      return { tier, acceptance: fallbackExploratory(why), acceptanceProbe: { kind: 'demoted', why } };
+    }
   }
 
   const learningGoal = typeof raw.learning_goal === 'string' ? raw.learning_goal.trim() : '';
@@ -242,8 +283,12 @@ export function classifyPrompt(goal: string, probe?: ClassifyPromptProbe): strin
     '',
     '判断二 `acceptance_kind` (判据轴 — **成没成怎么判**):',
     '  "executable"  = 成败机器可判。**必须**同时给 `command`: 一条别人来跑、退出码 0 即算达成的命令。',
-    '  "exploratory" = 成败机器判不了 (摸清一个领域 / 选型 / 找出有哪些坑)。给 `learning_goal`',
-    '                  (学到什么才算没白跑) 与 `affordable_loss` (愿意为它花掉多少)。',
+    '  "rubric"      = 没有可跑的命令, 但产物好坏**能被人逐条说清** (报告 / 设计 / 文档 / 调研)。',
+    '                  给 `checklist`: 一个数组, 每条 {"id":稳定短 id, "requirement":一句可判 yes/no 的要求}。',
+    '                  ⚠ 它在你动手之前就冻结, 之后改一个字都会被拒 —— 所以现在就要写得判得动。',
+    '                  写不出「可判 yes/no」的条目, 说明这个目标该走 exploratory, 别硬凑。',
+    '  "exploratory" = 成败机器判不了, **也逐条说不清** (摸清一个领域 / 选型 / 找出有哪些坑)。',
+    '                  给 `learning_goal` (学到什么才算没白跑) 与 `affordable_loss` (愿意为它花掉多少)。',
     '',
     `⚠ 判据轴与成本轴**互相独立**: 一个做法未定的目标, 验收照样可能是机器可判的 (先查清楚怎么做,`,
     `  但做完跑 \`${independentAxisExample}\` 就知道成没成)。别因为 tier=complex 就往 exploratory 上靠。`,
@@ -310,8 +355,9 @@ export function classifyPrompt(goal: string, probe?: ClassifyPromptProbe): strin
     '  例: 命令 `grep -q "100" docs/from-api.md` → 反面样本 path=`docs/from-api.md`,',
     '      content=`本文档汇总了接口支持的格式与限制。` (没有那个数 → 命令失败 → 这条判据是判别的)',
     '',
-    '形状: {"tier":"simple"|"complex","acceptance_kind":"executable"|"exploratory",',
+    '形状: {"tier":"simple"|"complex","acceptance_kind":"executable"|"rubric"|"exploratory",',
     '       "command"?:string,"negative_sample_path"?:string,"negative_sample_content"?:string,',
+    '       "checklist"?:[{"id":string,"requirement":string}],',
     '       "learning_goal"?:string,"affordable_loss"?:string}',
     '',
     evidenceSection,
@@ -497,8 +543,29 @@ export async function classifyGoal(
   }
 }
 
+/**
+ * 把分类器给的 `checklist` 原样解析成条目数组。**弱模型不可信原则**:形状不对就返 `null`,
+ * 由调用方降级探索型并留原话 —— 不在这里"尽量凑出几条", 凑出来的 rubric 判不了卷。
+ *
+ * `null` 与 `[]` 是两件事:前者是形状不合法, 后者是给了个空清单。两者调用方都降级,
+ * 但降级原话里分得开(仓规坑 ①)。
+ */
+function parseChecklist(raw: unknown): RubricItem[] | null {
+  if (!Array.isArray(raw)) return null;
+  const out: RubricItem[] = [];
+  for (const el of raw) {
+    if (typeof el !== 'object' || el === null) return null;
+    const { id, requirement } = el as { id?: unknown; requirement?: unknown };
+    if (typeof id !== 'string' || typeof requirement !== 'string') return null;
+    if (id.trim() === '' || requirement.trim() === '') return null;
+    out.push({ id: id.trim(), requirement: requirement.trim() });
+  }
+  return out;
+}
+
 /** 这次分类是不是"想判执行型却被闸拒"→ 返闸的原话; 其它情况 → null (不重试)。 */
 function firstBlockedReason(c: GoalClassification): string | null {
+  // F2: 加了第三格之后 `!== 'exploratory'` 不再等于「执行型」, 改成正判那一格。
   if (c.acceptance.kind !== 'exploratory') return null;
   const m = /执行型但命令不可跑 — (\[blocked[^\]]*\])/.exec(c.acceptance.learningGoal);
   return m?.[1] ?? null;
@@ -528,6 +595,19 @@ export function renderAcceptance(a: AcceptanceSpec): string {
       '',
       '这条命令与它所断言的东西在实施开始前即已冻结。实施过程中**不许**改动它, 也不许改动它所',
       '依赖的断言 —— 需要改判据说明判据错了, 那是要回来重新定的事, 不是实施途中顺手做的事。',
+    ].join('\n');
+  }
+  if (a.kind === 'rubric') {
+    return [
+      '## 判卷标准 (冻结 — rubric 逐条判)',
+      '本目标没有可跑的验收命令, 判据是下面这份 checklist。它在你动手**之前**就已经冻结,',
+      '由另一方写下, 验收时逐条判 yes/no 并逐条留下理由:',
+      '',
+      ...a.checklist.items.map((it, i) => `${i + 1}. [${it.id}] ${it.requirement}`),
+      '',
+      '这份 checklist 连同它的内容哈希一并冻结。**改动其中任何一个字都会被当场拒**, 并且拒了就不判 ——',
+      '判卷标准冻在环外正是为了防「实施途中把球门挪到自己够得着的地方」。',
+      '要改判据说明判据错了, 那是回来重新定的事, 不是实施途中顺手做的事。',
     ].join('\n');
   }
   return [

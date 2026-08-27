@@ -252,6 +252,69 @@ export async function acceptanceDiscriminationReason(
 }
 
 /**
+ * 逐条判的**中性**入参 (F2 片 2)。一条判得出 yes/no 的东西, 加它的 id。
+ *
+ * ⚠ 中性是硬约束: 本文件不认识分型 (见文件头「分型 → 本文件; 本文件不认识分型」),
+ * 所以这里**不 import 任何分型侧的类型**, 也不出现分型的 kind 字面量。
+ * 把一份 checklist 拆成这个形状是**调用方**的活。
+ */
+export interface ProbeItemOutcome {
+  readonly id: string;
+  readonly pass: boolean;
+}
+
+/** 逐条判版判别力探针的裁决。三态与命令版同族 (`ok` / `ring` / `fail_open`)。 */
+export type ProbeChecklistVerdict =
+  | { status: 'ok' }
+  | { status: 'ring'; why: string }
+  | { status: 'fail_open'; why: string };
+
+/**
+ * **逐条判版的判别力探针** (F2 片 2, INV-4)。与上面命令版的判别力探针**同一件事**:
+ * 拿一份明显劣化的产物过一遍判据, 照样全过 = 对的答案和错的答案都满足它。
+ * 差别只在「跑一条命令」换成「逐条判 yes/no」—— 语义、fail-open 口径、裁决三态全部照抄。
+ *
+ * 判据: 劣化产物上**一条都没被打红** → `ring` (这份 checklist 是虚的)。
+ * 有任意一条被打红 → `ok`。⚠ **全红也算 ok** —— 探针只问「分不分得出」, 不问「分得多准」。
+ *
+ * fail-open (与命令版同): 拿不到劣化样本 / 一条都没判成 → `fail_open`, **不拦**。
+ * 探针是加固不是前置条件; 但按仓规「fail-open 可以吞异常, 不许吞证据」, `why` 必留。
+ *
+ * 反向自检: 改成恒返 `{status:'ok'}` → `rubric-discrimination.test.ts` 的
+ * 「一条都没打红 → ring」当场红; 把 fail-open 那一支改成 `ring` → 「样本缺席不拦」当场红。
+ */
+export function checklistDiscriminationVerdict(
+  outcomes: readonly ProbeItemOutcome[] | undefined,
+): ProbeChecklistVerdict {
+  if (outcomes === undefined) {
+    return { status: 'fail_open', why: '拿不到劣化样本的逐条判定结果 — 探针跳过, 不拦' };
+  }
+  if (outcomes.length === 0) {
+    return { status: 'fail_open', why: '劣化样本上一条都没判成 (零条目) — 探针跳过, 不拦' };
+  }
+  if (outcomes.some((x) => !x.pass)) return { status: 'ok' };
+  return {
+    status: 'ring',
+    why:
+      `劣化样本上 ${outcomes.length} 条判据**一条都没被打红** — ` +
+      '这份 checklist 对与错都满足, 拿它判卷等于没判。',
+  };
+}
+
+/**
+ * {@link checklistDiscriminationVerdict} 的 `string | null` 包装 —— 与
+ * {@link acceptanceDiscriminationReason} 同形, 方便调用方两种判据走同一套处置。
+ *
+ * @returns null = 过了探针 (含 fail-open 不拦那一支); 否则一行拒因。
+ */
+export function checklistDiscriminationReason(
+  outcomes: readonly ProbeItemOutcome[] | undefined,
+): string | null {
+  const v = checklistDiscriminationVerdict(outcomes);
+  return v.status === 'ring' ? v.why : null;
+}
+
+/**
  * 反面样本探针的**裁决** (给 vet 记 acceptanceProbe 用)。判定与 fail-open 语义与 `string | null`
  * 版逐字相同 —— 只是把"为什么"一起带出来, 不加不减任何决策。
  */

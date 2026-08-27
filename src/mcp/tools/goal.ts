@@ -175,9 +175,13 @@ export function summarizeGoal(r: RunGoalResult): string {
     `tier: ${r.tier} · ${r.converged ? '收敛' : '未收敛'} · ${r.rounds} 轮`,
     // D-I: 判卷标准进摘要 —— 调用方第一眼就该看见"这次是拿什么判的", 尤其是探索型
     // (它明说没有机器判据, 于是"收敛"这两个字该被读作 judge 的意见而不是 oracle 的结论)。
+    // F2: 第三格 rubric —— 它既不是「机器判据」也不是「没有判据」, 摘要上必须分得出来,
+    // 否则读的人会把一次逐条判读成探索型的自说自话。
     r.acceptance.kind === 'executable'
       ? `验收: 执行型 · \`${r.acceptance.command}\` (期望退出码 ${r.acceptance.expectExit})`
-      : `验收: 探索型 (无机器判据) · 学习目标: ${r.acceptance.learningGoal}`,
+      : r.acceptance.kind === 'rubric'
+        ? `验收: rubric 逐条判 · ${r.acceptance.checklist.items.length} 条 (结晶期冻结, 验收期改一个字即拒)`
+        : `验收: 探索型 (无机器判据) · 学习目标: ${r.acceptance.learningGoal}`,
     // ── N5 (2026-07-31): 这一行印的是 **outcome 而不是 status** ────────────────────
     //
     // 上一跑 live 里它印的是 `[failed] execute — 2 轮阻塞: …` —— 一次**判定正确**的 BLOCKED

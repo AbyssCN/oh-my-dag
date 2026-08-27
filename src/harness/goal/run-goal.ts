@@ -794,9 +794,13 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     // 只是换了一型。记成"空手而归"会让读数板把一次正常的探索型分类数成缺陷。
     outcome: 'success',
     summary:
+      // F2: 三格各印各的。此前是 `executable ? A : B` 的**二值**分支, B 恒等于探索型 ——
+      // 加第三格之后那个恒等式破了, 而 `.learningGoal` 在 rubric 上不存在, tsc 当场点名。
       (acceptance.kind === 'executable'
         ? `tier=${tier} · 验收=执行型 \`${acceptance.command}\` (期望退出码 ${acceptance.expectExit})`
-        : `tier=${tier} · 验收=探索型 · 学习目标: ${acceptance.learningGoal.slice(0, 120)}`) +
+        : acceptance.kind === 'rubric'
+          ? `tier=${tier} · 验收=rubric 逐条判 · ${acceptance.checklist.items.length} 条 (判卷标准已冻结)`
+          : `tier=${tier} · 验收=探索型 · 学习目标: ${acceptance.learningGoal.slice(0, 120)}`) +
       // 判据换了来源要在摘要上看得见: 分类器编的那条与 SDD verify 列的差距, 正是 7d50fda2
       // 那次幻觉路径唯一能被人一眼看出的地方 (它当时只活在图里, 摘要上什么都没写)。
       (acceptance === sddAcceptance ? ' · 判据取自 SDD verify 列 (非分类器)' : '') +
