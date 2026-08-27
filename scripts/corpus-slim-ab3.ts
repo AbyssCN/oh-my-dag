@@ -195,8 +195,11 @@ async function main(): Promise<void> {
       perCall: slimP.map(({ text, ...r }) => r),
     },
   };
+  // 重复跑靠 argv 分文件 —— 单跑方差实测很大 (裸索引臂两跑 35% → 16%, 编造 8 → 14),
+  // 0.7 那条线在 n=1 上判不了。`bun run scripts/corpus-slim-ab3.ts r2` 落 …-r2.json。
+  const tag = process.argv[2] ? `-${process.argv[2]}` : '';
   mkdirSync(join(ROOT, 'runs'), { recursive: true });
-  writeFileSync(join(ROOT, 'runs/corpus-slim-ab3.json'), JSON.stringify(out, null, 2));
+  writeFileSync(join(ROOT, `runs/corpus-slim-ab3${tag}.json`), JSON.stringify(out, null, 2));
   writeFileSync(join(ROOT, 'runs/corpus-slim-ab2-full.md'), fullFinal);
   writeFileSync(join(ROOT, 'runs/corpus-slim-ab2-slim.md'), slimFinal);
   writeFileSync(join(ROOT, 'runs/corpus-slim-ab3-slimpaths.md'), slimPFinal);
