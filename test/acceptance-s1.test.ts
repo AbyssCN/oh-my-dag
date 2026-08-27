@@ -388,7 +388,29 @@ describe('12. I-14 — 席位家族断言 (config verify-seats 异族 exit 0, �
   // 契约源: cli.ts:281-285, 515-560 + verify-seats.ts:80-107。
   // stdout 行格式 (S1 契约逐字): `seat=<verifierId> generator=<genId>
   //   generator.family=<family> verifier.family=<family> match=<true|false>`。
-  test('exit 0 且 stdout 含 generator.family 与 verifier.family 且两者不同', async () => {
+  // ⚠⚠ 2026-08-27 owner 裁定的**已知例外**, 到期条件写在下面 —— 不是这条闸坏了。
+  //
+  // 现状: `.omd/config.json` 18 个座位**全部** minimax-cn:MiniMax-M3 (owner 因 Claude/GPT
+  // 额度紧张裁定)。于是 `config verify-seats` 逐条打 `match=true` 并 **exit 1** ——
+  // **闸在正确工作**: 它拒绝放行同族自审。本条测试的前提 (环境允许异族) 当下不成立。
+  //
+  // 为什么 skip 而不是改断言: 改断言等于把 I-14 这条不变量改写成"同族也行", 而它没被推翻,
+  // 只是被 owner 临时豁免。压掉信号比留着红更危险 —— 下一个人会以为异族验收还在生效。
+  //
+  // 同时正在跑的实验 (checkpoint §20): 对照 6 批 verifier 缺席 (0.330±0.099) vs 治疗 5 批
+  // verifier=M3 同族。判据 |Δ| > 0.12。**这条闸和那个实验现在是矛盾的** —— 闸说同族等于没验,
+  // 实验正在测这句话对不对。
+  //
+  // 到期条件 (三选一, 出结论即 un-skip):
+  //   · Δ ≈ 0 → 铁律被证实 → 恢复异族 verifier (至少 verifier 座位), 本条自然转绿;
+  //   · Δ > 0.12 → 铁律被证伪 → 改 I-14 的口径与本条断言, 并在闸的注释里写明实证;
+  //   · 实验作废 → 回到第一条。
+  //
+  // 手工复核 (不依赖本测试):
+  //   OMD_VERIFIER_MODEL=minimax-cn:MiniMax-M2 OMD_CONDUCTOR_MODEL=anthropic:claude-sonnet-4-5 \
+  //     bun src/harness/cli.ts config verify-seats; echo $?
+  //   座位恢复异族后应 exit 0 且 stdout 出现 match=false。
+  test.skip('exit 0 且 stdout 含 generator.family 与 verifier.family 且两者不同', async () => {
     // 注入一组异族坐标保证真有 stdout 输出 (没配座位时 verifySeats 返空).
     // modelFamily 把 minimax-cn / anthropic 判成异族 (channels.ts 的 modelFamily 不按前缀字面拆)。
     const r = await runCli(['config', 'verify-seats'], {
