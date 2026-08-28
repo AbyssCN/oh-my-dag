@@ -223,7 +223,33 @@ async function main(): Promise<void> {
     }),
   );
 
-  const blind = await callModel({
+  // ⚠ 2026-08-28 修: 机械读数**先落盘**。第一版把盲评放在写盘之前, 结果 24 发全跑完之后
+  // 倒在最后一发的 schema 校验上, 前面的证据一条都没留下 —— 贵的那部分不许被便宜的那一发毁掉。
+  const tagEarly = process.argv[2] ? `-${process.argv[2]}` : '';
+  mkdirSync(join(ROOT, 'runs'), { recursive: true });
+  for (const arm of Object.keys(heads) as Arm[]) {
+    writeFileSync(join(ROOT, `runs/corpus-slim-ab4${tagEarly}-${arm}.md`), results[arm]!.final);
+  }
+  const verdictOfEarly = (a: Arm): Record<string, boolean> => ({
+    realPathsKept: arms[a]!.realPathRatio >= VERDICT.minRealPathRatio,
+    fabricationNotWorse: arms[a]!.fabricationTotal <= (mBase.repoFake + mBase.urlFake),
+    costCutEnough: arms[a]!.promptTokenCut >= VERDICT.minPromptTokenCut,
+  });
+  const partial = {
+    at: new Date().toISOString(), experiment: 'E-3', blindJudge: null as unknown,
+    seats: { spine: REASON_SEAT, blindJudge: BLIND_JUDGE_SEAT },
+    corpus: { chars: corpus.length, externalChars: groundTruth.length, repoBlockChars: repoBlock.length, repoHits: probe.hits.length, repoFiles: probe.files.length },
+    verdictThresholds: VERDICT, arms,
+    verdicts: Object.fromEntries((Object.keys(heads) as Arm[]).map((a) => [a, verdictOfEarly(a)])),
+  };
+  writeFileSync(join(ROOT, `runs/corpus-slim-ab4${tagEarly}.json`), JSON.stringify(partial, null, 2));
+  console.error('机械读数已落盘 (盲评之前) —— 盲评失败也不会丢。');
+
+  // 盲评 fail-open: 挂了就记一行原文错误, 不断链 (它是增益不是链路)。
+  // schema 放宽: 第一版把 plan 钉成 enum ABCD, 模型回「方案 A」直接三次校验失败。
+  let blind: { parsed?: unknown; text?: string } = {};
+  try {
+    blind = await callModel({
     model: BLIND_JUDGE_SEAT,
     messages: [{
       role: 'user',
@@ -233,11 +259,15 @@ async function main(): Promise<void> {
         `\n\n逐份数,不要总评:每份里 ① 有语料依据的具体断言几条 ② 无依据/看起来编造的几条 ③ 最后给一个从好到坏的排序。`,
     }],
     responseSchema: z.object({
-      counts: z.array(z.object({ plan: z.enum(['A', 'B', 'C', 'D']), grounded: z.number(), fabricated: z.number() })),
-      ranking: z.array(z.enum(['A', 'B', 'C', 'D'])),
+      counts: z.array(z.object({ plan: z.string(), grounded: z.coerce.number(), fabricated: z.coerce.number() })),
+      ranking: z.array(z.string()),
       why: z.string(),
     }),
-  });
+    });
+  } catch (err) {
+    console.error(`  ⚠ 盲评失败 (fail-open, 机械读数已落盘): ${String(err).slice(0, 200)}`);
+    blind = { parsed: { error: String(err).slice(0, 400) } };
+  }
 
   const verdictOf = (a: Arm): Record<string, boolean> => ({
     realPathsKept: arms[a]!.realPathRatio >= VERDICT.minRealPathRatio,
@@ -245,20 +275,15 @@ async function main(): Promise<void> {
     costCutEnough: arms[a]!.promptTokenCut >= VERDICT.minPromptTokenCut,
   });
 
-  const tag = process.argv[2] ? `-${process.argv[2]}` : '';
   const out = {
     at: new Date().toISOString(), experiment: 'E-3',
     seats: { spine: REASON_SEAT, blindJudge: BLIND_JUDGE_SEAT },
     corpus: { chars: corpus.length, externalChars: groundTruth.length, repoBlockChars: repoBlock.length, repoHits: probe.hits.length, repoFiles: probe.files.length },
     verdictThresholds: VERDICT, arms,
     verdicts: Object.fromEntries((Object.keys(heads) as Arm[]).map((a) => [a, verdictOf(a)])),
-    blindJudge: blind.parsed,
+    blindJudge: blind.parsed ?? blind.text ?? null,
   };
-  mkdirSync(join(ROOT, 'runs'), { recursive: true });
-  writeFileSync(join(ROOT, `runs/corpus-slim-ab4${tag}.json`), JSON.stringify(out, null, 2));
-  for (const arm of Object.keys(heads) as Arm[]) {
-    writeFileSync(join(ROOT, `runs/corpus-slim-ab4${tag}-${arm}.md`), results[arm]!.final);
-  }
+  writeFileSync(join(ROOT, `runs/corpus-slim-ab4${tagEarly}.json`), JSON.stringify(out, null, 2));
   console.error('\n读数:');
   for (const arm of Object.keys(heads) as Arm[]) {
     const a = arms[arm]!;
@@ -268,7 +293,7 @@ async function main(): Promise<void> {
         `真URL ${a.measure.urlReal} 假URL ${a.measure.urlFake} · 判据 ${JSON.stringify(verdictOf(arm))}`,
     );
   }
-  console.error(`  盲评排序: ${(blind.parsed as { ranking?: string[] })?.ranking?.join(' > ')}`);
+  console.error(`  盲评排序: ${(blind.parsed as { ranking?: string[] } | undefined)?.ranking?.join(' > ') ?? '(盲评未产出)'}`);
 }
 
 await main();
