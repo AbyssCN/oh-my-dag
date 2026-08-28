@@ -1132,7 +1132,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
       // 实账 2026-08-28: F2 的片 1-3 由人做完提交后拿母契约点火, `resuming === false`,
       // 逃生门不适用 → 整图被拒, 而活确确实实干完了。
       //
-      // 补一条 git 可查的证据 (`goal/slice-delivery.ts`): 契约落盘之后本片写集被动过没有。
+      // 补一条 git 可查的证据 (`goal/slice-delivery.ts`): 契约入库之后本片写集被动过没有。
       // ⚠ 它是**并列**的第二条证据源, 不是替代: `resuming` 照旧先判 —— #242 那份回归用例
       // 跑在临时目录里拿不到 git 证据, 换掉 resume 会让它当场回落 (实测红过一次)。
       // 三格不压平: 动过 = 已交付(跳过); 没动过 = 判据虚(拒); 取不到证据 = 没能去看(也拒,

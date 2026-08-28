@@ -17,7 +17,7 @@
  *
  * ## 换成 git 可查的证据
  *
- * 判据换成:**契约落盘之后,本片写集里的文件被动过没有**。
+ * 判据换成:**契约入库之后,本片写集里的文件被动过没有**。
  *
  * | 证据 | 判定 | 调用方该做什么 |
  * |---|---|---|
@@ -58,11 +58,11 @@ export interface SliceGitEvidence {
    */
   readonly resuming: boolean;
   /**
-   * 证据取到了没有。`false` = 非 git 仓 / git 调用失败 / 查不到契约的落盘点。
+   * 证据取到了没有。`false` = 非 git 仓 / git 调用失败 / 查不到契约的入库点。
    * ⚠ 为假时**不许读**下面两个计数 —— 那等于把「没测量」当成「测量结果是 0」。
    */
   readonly available: boolean;
-  /** 契约落盘之后,有几个提交动过本片写集里的文件。 */
+  /** 契约入库之后,有几个提交动过本片写集里的文件。 */
   readonly commitsTouchingWriteSet: number;
   /** 工作树里本片写集有几个文件有未提交改动(含新建)。 */
   readonly dirtyWriteSetFiles: number;
@@ -91,7 +91,7 @@ export function explainGreenVerify(ev: SliceGitEvidence): GreenVerifyVerdict {
     return {
       kind: 'undetermined',
       why:
-        '取不到 git 证据 (非 git 仓 / git 调用失败 / 查不到契约落盘点) — ' +
+        '取不到 git 证据 (非 git 仓 / git 调用失败 / 查不到契约入库点) — ' +
         '分辨不了「判据虚」与「活已干完」, 保守按拒处理。这不是「测出来是虚的」, 是「没能去看」。',
     };
   }
@@ -100,14 +100,14 @@ export function explainGreenVerify(ev: SliceGitEvidence): GreenVerifyVerdict {
     return {
       kind: 'already-delivered',
       why:
-        `契约落盘后本片写集被动过 (${ev.commitsTouchingWriteSet} 个提交 + ` +
+        `契约入库后本片写集被动过 (${ev.commitsTouchingWriteSet} 个提交 + ` +
         `${ev.dirtyWriteSetFiles} 个未提交改动) — 活已干完, 该片标已达成, 实装节点降 command 重验。`,
     };
   }
   return {
     kind: 'vacuous-criterion',
     why:
-      '契约落盘后本片写集一次没被动过, 而 verify 已经绿 — 这条判据在任何代码下都绿, ' +
+      '契约入库后本片写集一次没被动过, 而 verify 已经绿 — 这条判据在任何代码下都绿, ' +
       '换一条实装前天然红的命令 (如对产物 grep)。',
   };
 }
@@ -120,11 +120,11 @@ export type ExecGit = (args: readonly string[]) => { stdout: string; exitCode: n
 /**
  * 取一片的 git 证据。**两跳,失败即 `available:false`**,不编残值。
  *
- * 1. 契约的落盘点 —— `log --diff-filter=A --format=%H -- <契约>` 的**最后一行**(最早那次新增);
+ * 1. 契约的入库点 —— `log --diff-filter=A --format=%H -- <契约>` 的**最后一行**(最早那次新增);
  * 2. 该点之后有几个提交动过写集 + 工作树里写集有几个文件脏。
  *
  * ⚠ **诚实边界,两条**:
- * · **契约还没提交**时第 1 跳查不到落盘点。此时不判 `available:false` —— 那会把
+ * · **契约还没提交**时第 1 跳查不到入库点。此时不判 `available:false` —— 那会把
  *   「刚写完契约就开工」这个最常见的场景一律打成 undetermined。改为只用第 2 跳(脏文件数),
  *   并在这种情形下把提交数记 0。代价:此时分辨不了「写集的脏改动是不是本片干的」。
  * · 写集为空 → `available:false`。空写集没有可查的证据面,而空写集本身该由别的闸拒。

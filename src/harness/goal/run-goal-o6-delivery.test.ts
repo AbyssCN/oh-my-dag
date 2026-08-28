@@ -77,7 +77,7 @@ function makeCapturingRunDag(sink: ConductorPlan[]): NonNullable<RunGoalConfig['
   }) as never;
 }
 
-/** git 替身:两次 `log` 按调用序(查落盘点 / 数之后的提交),再一次 `status`。 */
+/** git 替身:两次 `log` 按调用序(查入库点 / 数之后的提交),再一次 `status`。 */
 const fakeGit = (t: {
   birth?: { stdout: string; exitCode: number };
   since?: { stdout: string; exitCode: number };

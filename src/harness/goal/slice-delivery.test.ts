@@ -13,7 +13,7 @@
  *
  * ## 本模块只做那一次分辨
  *
- * 判据换成 **git 可查的证据**:契约落盘之后,本片写集里的文件被动过没有。
+ * 判据换成 **git 可查的证据**:契约入库之后,本片写集里的文件被动过没有。
  * · 动过 → 活已干完(交付过);
  * · 没动过 → 判据是虚的(它在任何代码下都绿);
  * · 证据取不到 → **不许当成任何一种**(仓规坑 ①:`NULL` ≠ 0 ≠ 不适用)。
@@ -45,7 +45,7 @@ const ev = (p: Partial<SliceGitEvidence>): SliceGitEvidence => ({
 });
 
 describe('GREEN_VERIFY_DISAMBIGUATED:活已干完 vs 判据虚', () => {
-  test('★ 契约落盘后有提交动过写集 → 活已干完', () => {
+  test('★ 契约入库后有提交动过写集 → 活已干完', () => {
     const v = explainGreenVerify(ev({ commitsTouchingWriteSet: 2 }));
     expect(v.kind).toBe('already-delivered');
     expect(v.why).toContain('2');
@@ -110,8 +110,8 @@ describe('GREEN_VERIFY_DISAMBIGUATED:调用方该怎么处置这三格', () => {
 // 取证据那一半 —— 注入式 exec,造得出真仓造不出来的格
 // ──────────────────────────────────────────────────────────────────────────────
 /**
- * git 替身。**两次 `log` 按调用序给不同输出** —— 第 1 次是查契约落盘点,第 2 次是数
- * 落盘点之后动过写集的提交。给同一份输出的话,这组测试就分不出两跳被写反了
+ * git 替身。**两次 `log` 按调用序给不同输出** —— 第 1 次是查契约入库点,第 2 次是数
+ * 入库点之后动过写集的提交。给同一份输出的话,这组测试就分不出两跳被写反了
  * (那正是它该有的判别力:替身分不出的东西,测试也判不出)。
  */
 const fakeGit = (t: {
@@ -131,9 +131,9 @@ const fakeGit = (t: {
 describe('GREEN_VERIFY_DISAMBIGUATED:取证据(注入式)', () => {
   const WS = ['src/a.ts', 'src/a.test.ts'];
 
-  test('★ 落盘点之后有提交动过写集 → 计数带出来', () => {
+  test('★ 入库点之后有提交动过写集 → 计数带出来', () => {
     const ev = collectSliceGitEvidence('docs/plan/x.md', WS, fakeGit({
-      birth: { stdout: 'shaNEW\nshaOLD\n', exitCode: 0 },      // 落盘点 = 最后一行 shaOLD
+      birth: { stdout: 'shaNEW\nshaOLD\n', exitCode: 0 },      // 入库点 = 最后一行 shaOLD
       since: { stdout: 'c1\nc2\nc3\n', exitCode: 0 },          // 之后 3 个提交动过写集
       status: { stdout: ' M src/a.ts\n', exitCode: 0 },
     }));
@@ -143,7 +143,7 @@ describe('GREEN_VERIFY_DISAMBIGUATED:取证据(注入式)', () => {
     expect(explainGreenVerify(ev).kind).toBe('already-delivered');
   });
 
-  test('★ 契约还没提交 (查不到落盘点) → 仍可用, 只靠脏文件数判', () => {
+  test('★ 契约还没提交 (查不到入库点) → 仍可用, 只靠脏文件数判', () => {
     const ev = collectSliceGitEvidence('docs/plan/x.md', WS, fakeGit({
       birth: { stdout: '', exitCode: 0 },
       status: { stdout: '?? src/a.ts\n M src/a.test.ts\n', exitCode: 0 },
