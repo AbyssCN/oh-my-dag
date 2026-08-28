@@ -22,15 +22,16 @@ const SAMPLES: Record<string, { good: string; bad: string }> = {
     good: '{"action":"add_max_rounds","resumeSameRunId":true}',
     bad: '{"action":"inspect_slice_nodes","resumeSameRunId":true}',
   },
-  'a3-spec-contract-on-disk': {
-    good: '{"nodes":{"spec":{"output_type":"file","goal":"写契约"},"execute":{"depends_on":["spec"],"goal":"实现"}}}',
-    bad: '{"nodes":{"spec":{"output_type":"text","goal":"写契约"},"execute":{"depends_on":["spec"],"goal":"照上游正文实现"}}}',
+  'a3-spec-not-on-disk-fix': {
+    good: '{"fix":"spec_writes_file"}',
+    bad: '{"fix":"execute_reads_upstream_text"}', // 库里记着这条正是失败现场
   },
-  // 真值都用脚本先算过(工作日 32 / 十二进制 24353),不是我心算的 —— 真值写错的话
-  // cold 臂会恒 0%,读起来像"召回把答案带偏了",而其实是我算错了。
-  'c1-workdays-between': { good: '{"workdays":32}', bad: '{"workdays":35}' },
-  'c2-base-convert': { good: '{"base12":"24353"}', bad: '{"base12":"BEEF"}' },
-  'c3-regex-boundary': { good: '{"re":"a\\\\d{1,3}b"}', bad: '{"re":"a\\\\d+b"}' },
+  // ⚠ 真值全部**用脚本算过**。首版我心算了三个, 两个是错的(r 计数 18→20, 模链 96→191)。
+  // 真值写错的后果不是"这题没意义", 是 cold 臂恒 0% —— 读起来像"召回把答案带偏了"。
+  'c1-char-count': { good: '{"count":20}', bad: '{"count":18}' },
+  'c2-modular-chain': { good: '{"x12":191}', bad: '{"x12":96}' },
+  'c3-bracket-depth': { good: '{"depth":4}', bad: '{"depth":5}' },
+  't1-stalled-runbook': { good: '{"action":"inspect_slice_nodes"}', bad: '{"action":"add_max_rounds"}' },
 };
 
 describe('A/B 语料 — oracle 判别力(协议 §3 必做)', () => {
@@ -137,5 +138,36 @@ describe('反偏置 — a1/a2 必须成对', () => {
     expect(a1.oracle(addRounds)).toBe(false);
     expect(a2.oracle(addRounds)).toBe(true);
     // ⇒ 想两道都绿, 必须真的按图形态分叉 —— 那才是库里那条 fact 的内容
+  });
+});
+
+describe('cold 真值自证 —— 常量必须与现算的一致', () => {
+  test('★ 三个 cold 真值当场算一遍(心算过两次错两次, 所以钉死)', () => {
+    const s = 'strawberry-raspberry-rhubarb-ररr-rrarrbrr-berry-rrr';
+    expect([...s].filter((c) => c === 'r').length).toBe(20);
+
+    let x = 7;
+    for (let i = 0; i < 12; i++) x = (x * 31 + 17) % 1000;
+    expect(x).toBe(191);
+
+    const t = '(a[b(c{d(e)f}g)h]i(j(k(l)m)n)o)';
+    let d = 0;
+    let m = 0;
+    for (const ch of t) {
+      if (ch === '(') m = Math.max(m, ++d);
+      else if (ch === ')') d--;
+    }
+    expect(m).toBe(4);
+  });
+});
+
+describe('带工具的任务类别', () => {
+  test('★ 有 search 钩子的题才走循环 —— 且钩子对相关 query 真的返资料', () => {
+    const t1 = CORPUS.find((x) => x.id === 't1-stalled-runbook')!;
+    expect(typeof t1.search).toBe('function');
+    expect(t1.search!('平铺图 stalled')).toContain('加 maxRounds 无意义');
+    expect(t1.search!('毫不相干的词')).toContain('无匹配');
+    // 单发题不许带钩子(带了会静默改变它的计费口径)
+    for (const t of CORPUS.filter((x) => x.id.startsWith('c'))) expect(t.search).toBeUndefined();
   });
 });

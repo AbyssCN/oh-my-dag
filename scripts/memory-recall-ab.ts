@@ -114,12 +114,31 @@ export interface AbTask {
    * 答不上来 = 这道题测不出东西,别放进语料。
    */
   oracle: (output: string) => boolean;
+  /**
+   * **带工具的任务**(2026-08-28 补)。给了这个钩子, 本题就走多轮搜索循环而不是单发。
+   *
+   * ## 为什么非有不可
+   *
+   * 前两跑的成本读数结构上**只量得到"召回花多少", 量不到"召回省多少"** —— 单发调用里
+   * 根本没有工具调用可省, 而"省下的搜索够不够付召回的钱"才是真问题。这一格补的就是它:
+   * A 臂不知道答案 → 必须搜 → 每一轮搜索**把累积对话重发一遍**;B 臂事实已在上下文里 →
+   * 可能一轮直接答。省不省在这里才第一次有可能出现。
+   *
+   * 不是原生 tool-calling(`ModelRequest` 没有 tools 字段), 是文本协议循环。承重性质相同:
+   * 多一轮就多重发一次累积对话 —— 与本仓「大内容进 prompt 不进工具环」那条读数同一个机制。
+   */
+  search?: (query: string) => string;
 }
 
 /**
  * 两臂共用的输出契约。**刻意要求 JSON** —— 这样 oracle 是**字段检查**而不是中文正则。
  * 正则判中文散文太脆:换个说法就误判,而误判会被读成"召回没用"。
  */
+/** cold 真值 —— 全部用脚本算过(见同名 test 里的自证), 不是心算的。 */
+const COLD_R_COUNT = 20;
+const COLD_MOD_CHAIN = 191;
+const COLD_BRACKET_DEPTH = 4;
+
 const JSON_TAIL = '\n\n只输出一个 JSON 对象,不要任何解释文字、不要 markdown 代码围栏。';
 
 /** 从模型输出里抠出第一个 JSON 对象;抠不出 = 这一发不算命中(不是判据放宽的理由)。 */
@@ -182,67 +201,89 @@ export const CORPUS: AbTask[] = [
     oracle: (out) => parseJson(out)?.action === 'add_max_rounds',
   },
   {
-    // 靠 5fc7a046「spec 契约未写入磁盘, 下游用正文当契约」= failed
-    // 与 d09151d0「上游 spec 契约未落盘时 execute 未能收敛」= failed
-    id: 'a3-spec-contract-on-disk',
+    // 靠 5fc7a046 / d09151d0「spec 契约未落盘 → 下游 execute 拿不到、未能收敛」= failed
+    //
+    // ⚠ 首版问法是「设计一个 plan, 给出 output_type」—— 两臂都 0.00。查了召回内容:
+    // **前四条全是对的 fact**, 所以不是没召到, 是召到了也没改变答案。fact 说的是
+    // 「没落盘会失败」, 没直说「该填 output_type: file」, 中间那一跳要模型自己接。
+    // 改成直接问 fact 记着的那件事本身:上游没落盘、下游拿不到, 该怎么修。
+    id: 'a3-spec-not-on-disk-fix',
     klass: 'anchored',
-    recallQuery: 'spec 节点 契约 写入磁盘 下游 execute 收敛',
+    recallQuery: 'spec 契约 未落盘 下游 execute 拿不到 spec 文件 未收敛',
     prompt:
-      '设计一个两段式 DAG plan:`spec` 节点产出实现契约,`execute` 节点照契约实现。' +
-      '用 JSON 描述,形如 {"nodes":{"spec":{"output_type":"...","goal":"..."},' +
-      '"execute":{"depends_on":["spec"],"goal":"..."}}}。' +
-      'output_type 可取 "text" | "file" | "git"。' + JSON_TAIL,
-    oracle: (out) => {
-      const j = parseJson(out);
-      const spec = (j?.nodes as Record<string, { output_type?: unknown }> | undefined)?.spec;
-      return spec?.output_type === 'file';
-    },
+      '一个两段 plan:`spec` 节点产出了实现契约,但**只写在节点正文里、没有落成文件**;' +
+      '下游 `execute` 拿不到 spec 文件,跑成 not-converged。该怎么修?\n' +
+      '用 JSON: {"fix":"spec_writes_file"|"execute_reads_upstream_text"|"merge_into_one_node"}。' +
+      JSON_TAIL,
+    // 命中 = 让 spec 真的写文件。另两个选项分别是"下游兜底读正文"(库里记着这条正是失败现场)
+    // 与"合成一个节点"(绕开问题)。
+    oracle: (out) => parseJson(out)?.fix === 'spec_writes_file',
   },
+
 
   // ── cold(与库里内容无关)────────────────────────────────────────────────
   //
-  // ⚠ 首版三题(罗马数字 / 星期几 / GROUP BY)实测对照臂 **A=1.00** —— 协议 §4 判「任务校准
-  // 失败」, 读数不得当结论用。换成下面三题:难度够(有多步算术/边界), oracle 仍是结构检查,
-  // 且与库里那 145 条 plan-family / oracle 教训**毫无关系**。
+  // ⚠ 前两版 cold 题(罗马数字 / 星期几 / GROUP BY / 工作日 / 进制 / 正则)**两次**都是
+  // A=1.00, 协议 §4 判「任务校准失败」。换成 LLM 的结构性弱项:逐字符计数、长串多步累积。
+  // 这类题难不在知识, 在**逐位不出错**, 所以模型强也不会到顶 —— 而它与库里那 406 条
+  // plan-family / oracle 教训**毫无关系**, cold 的身份不变。
   {
-    id: 'c1-workdays-between',
+    id: 'c1-char-count',
     klass: 'cold',
-    recallQuery: '工作日 天数 计算 节假日',
+    recallQuery: '字符 计数 统计 出现次数',
     prompt:
-      '算 2026-03-02(含)到 2026-04-17(含)之间的工作日天数:周一至周五算工作日, ' +
-      '但要扣掉这三天假期 2026-04-03、2026-04-06、2026-03-30(它们都落在工作日上)。' +
-      '用 JSON: {"workdays": <整数>}。' + JSON_TAIL,
-    // 真值 35:2026-03-02 是周一, 到 04-17 周五共 7 整周 = 35 个工作日, 扣 3 天假 = 32。
-    oracle: (out) => parseJson(out)?.workdays === 32,
+      '数下面这串字符里字母 r 出现了多少次(区分大小写, 只数小写 r):\n' +
+      'strawberry-raspberry-rhubarb-ररr-rrarrbrr-berry-rrr\n' +
+      '用 JSON: {"count": <整数>}。' + JSON_TAIL,
+    oracle: (out) => parseJson(out)?.count === COLD_R_COUNT,
   },
   {
-    id: 'c2-base-convert',
+    id: 'c2-modular-chain',
     klass: 'cold',
-    recallQuery: '进制 转换 十二进制',
-    prompt: '把十进制 48879 转成**十二进制**(用 0-9 与 A、B 两个字母)。用 JSON: {"base12":"..."}。' + JSON_TAIL,
-    // 48879 = 2*12^4 + 4*12^3 + 3*12^2 + 5*12 + 3 → "24353"
-    oracle: (out) => String(parseJson(out)?.base12 ?? '').toUpperCase() === '24353',
+    recallQuery: '取模 累积 计算 链式',
+    prompt:
+      '令 x0 = 7。对 i = 1..12 迭代 xi = (xi-1 * 31 + 17) mod 1000。给出 x12。' +
+      '用 JSON: {"x12": <整数>}。' + JSON_TAIL,
+    oracle: (out) => parseJson(out)?.x12 === COLD_MOD_CHAIN,
   },
   {
-    id: 'c3-regex-boundary',
+    id: 'c3-bracket-depth',
     klass: 'cold',
-    recallQuery: '正则 匹配 边界',
+    recallQuery: '括号 嵌套 深度 匹配',
     prompt:
-      '写一个 JavaScript 正则(不带 / /,只给正则体),要求:匹配 "a1b" "a12b" "a123b",' +
-      '但**不**匹配 "ab" "a1234b" "x1b" "a1bc"。用 JSON: {"re":"..."}。' + JSON_TAIL,
-    // 机械判:真的把它编译出来跑一遍七个样本。不判它长什么样, 只判它的行为。
-    oracle: (out) => {
-      const src = String(parseJson(out)?.re ?? '');
-      if (!src) return false;
-      try {
-        const re = new RegExp(src.startsWith('^') ? src : `^${src}$`);
-        const yes = ['a1b', 'a12b', 'a123b'];
-        const no = ['ab', 'a1234b', 'x1b', 'a1bc'];
-        return yes.every((t) => re.test(t)) && no.every((t) => !re.test(t));
-      } catch {
-        return false;
+      '下面这串括号的**最大嵌套深度**是多少(只算圆括号, 方括号与花括号一律忽略)?\n' +
+      '(a[b(c{d(e)f}g)h]i(j(k(l)m)n)o)\n' +
+      '用 JSON: {"depth": <整数>}。' + JSON_TAIL,
+    oracle: (out) => parseJson(out)?.depth === COLD_BRACKET_DEPTH,
+  },
+
+  // ── tool(带工具:唯一可能量到"召回省了一次搜索"的一格)────────────────
+  //
+  // A 臂不知道答案 ⇒ 必须 SEARCH ⇒ 每多一轮就把累积对话重发一遍;
+  // B 臂事实已在上下文 ⇒ 可能一轮直接 ANSWER。**省不省在这里才第一次有可能出现。**
+  {
+    // 靠库里那对互斥分支(1585f735 / bd7d2e1b)—— 与 a1/a2 同一条 fact, 但这次
+    // A 臂有路可走(能搜到 runbook), 所以量的是"搜一趟 vs 已经知道"的差价。
+    id: 't1-stalled-runbook',
+    klass: 'anchored',
+    recallQuery: '平铺图 直通v2 STALLED 加 maxRounds 无效 切片节点 resume',
+    prompt:
+      '一个 omd plan 跑成 not-converged (STALLED), rounds=0, 冻结判据没过, ' +
+      '图是**平铺图(直通v2), 没有内环轮**。下一步该做什么?' +
+      '最终答案用 JSON: {"action":"add_max_rounds"|"inspect_slice_nodes"}。',
+    search: (q) => {
+      const k = q.toLowerCase();
+      if (k.includes('平铺') || k.includes('flat') || k.includes('直通') || k.includes('内环') || k.includes('stalled')) {
+        return (
+          'docs/runbook/stalled.md:\n' +
+          '- 图有内环轮 → 加 maxRounds 后 resume, 再给几轮。\n' +
+          '- 平铺图(直通v2)没有内环轮 → **加 maxRounds 无意义**。\n' +
+          '  改为看摘要里哪个切片节点红了 (RED/GREEN/accept), 修 SDD 或实装后同 runId resume。'
+        );
       }
+      return '(无匹配结果)';
     },
+    oracle: (out) => parseJson(out)?.action === 'inspect_slice_nodes',
   },
 ];
 
@@ -260,6 +301,8 @@ interface ArmResult {
   wallMs: number;
   /** 中位数前缀缓存命中 token。 */
   cacheHit: number;
+  /** 带工具的题:中位搜索轮数。单发题 = null(不适用 ≠ 1)。 */
+  rounds: number | null;
   /** B 臂召回到几条(A 臂恒 0)。**0 与"没召回"要分得开** —— A 臂记 null。 */
   hits: number | null;
 }
@@ -270,15 +313,63 @@ function median(xs: number[]): number {
   return s.length % 2 ? s[m]! : (s[m - 1]! + s[m]!) / 2;
 }
 
+/** 搜索循环的轮数上限。到顶还没答 = 这一发不算命中(不是判据放宽的理由)。 */
+const MAX_SEARCH_ROUNDS = 4;
+
+/** 文本协议:模型每轮要么 `SEARCH: <query>`, 要么 `ANSWER: <json>`。 */
+const TOOL_PROTOCOL =
+  '\n\n你可以搜索仓库。每一轮**只输出一行**, 二选一:\n' +
+  '  SEARCH: <关键词>   ← 想查资料时\n' +
+  '  ANSWER: <JSON>     ← 已经能答了\n' +
+  '别输出别的。';
+
+/** 跑一发带搜索的多轮循环, 返回 {文本, 累计 token, 累计 cacheHit, 轮数}。 */
+async function runSearchLoop(
+  task: AbTask,
+  seat: string,
+  firstPrompt: string,
+): Promise<{ text: string; tokens: number; cacheHit: number; rounds: number }> {
+  let convo = firstPrompt + TOOL_PROTOCOL;
+  let tokens = 0;
+  let cacheHit = 0;
+  for (let round = 1; round <= MAX_SEARCH_ROUNDS; round++) {
+    const res = await callModel({ model: seat, messages: [{ role: 'user', content: convo }], temperature: 0 });
+    const u = res.usage as { in?: number; out?: number; cacheHit?: number } | undefined;
+    if (typeof u?.in !== 'number' || typeof u?.out !== 'number') {
+      throw new Error(`usage 形状不认得: ${JSON.stringify(u)}`);
+    }
+    tokens += u.in + u.out;
+    cacheHit += u.cacheHit ?? 0;
+    const line = String(res.text ?? '').trim();
+    const ans = line.match(/ANSWER:\s*([\s\S]*)/);
+    if (ans) return { text: ans[1]!, tokens, cacheHit, rounds: round };
+    const q = line.match(/SEARCH:\s*(.+)/);
+    if (!q) return { text: line, tokens, cacheHit, rounds: round }; // 不守协议 → 交给 oracle 判(多半红)
+    // 搜索结果**追加进同一段对话** —— 下一轮把整段重发, 这就是工具环的成本所在。
+    convo += `\n\n[你上一轮] SEARCH: ${q[1]}\n[搜索结果]\n${task.search!(q[1]!.trim())}`;
+  }
+  return { text: '', tokens, cacheHit, rounds: MAX_SEARCH_ROUNDS }; // 到顶没答 = 不算命中
+}
+
 async function runArm(task: AbTask, arm: ArmResult['arm'], seat: string, recallBlock: string | null): Promise<ArmResult> {
   const tokens: number[] = [];
   const walls: number[] = [];
   /** 前缀缓存命中 token —— 成本问题的另一半(缓存读价远低于新发)。 */
   const cacheHits: number[] = [];
   let hitCount = 0;
+  const roundCounts: number[] = [];
   for (let i = 0; i < N_REPEAT; i++) {
     const prompt = recallBlock ? `${recallBlock}\n\n${task.prompt}` : task.prompt;
     const t0 = Date.now();
+    if (task.search) {
+      const r = await runSearchLoop(task, seat, prompt);
+      walls.push(Date.now() - t0);
+      tokens.push(r.tokens);
+      cacheHits.push(r.cacheHit);
+      roundCounts.push(r.rounds);
+      if (task.oracle(r.text)) hitCount++;
+      continue;
+    }
     // 字段名是 `model` 不是 `coord`(`ModelRequest.model` = 'provider:modelId')。
     // temperature 钉死:两臂唯一的差别必须是召回块在不在, 采样随机性会把小的 lift 淹掉。
     const res = await callModel({
@@ -307,6 +398,8 @@ async function runArm(task: AbTask, arm: ArmResult['arm'], seat: string, recallB
     oracleRate: hitCount / N_REPEAT,
     wallMs: median(walls),
     cacheHit: median(cacheHits),
+    // 带工具的题才有轮数;单发题记 null(**不是 1** —— "不适用"与"一轮"是两件事)。
+    rounds: roundCounts.length > 0 ? median(roundCounts) : null,
     hits: recallBlock === null ? null : RECALL_K,
   };
 }
