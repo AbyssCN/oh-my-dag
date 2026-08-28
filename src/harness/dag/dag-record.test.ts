@@ -596,3 +596,67 @@ describe('★ 运行时写竞争: 与静态那条同名不同义, 所以分开�
     rec.close();
   });
 });
+
+/**
+ * 外环重修半径进留痕 (2026-08-28)。
+ *
+ * ## 它治的是「算了不落盘 = 没算」
+ *
+ * `BlameRetryLedger` 2026-08-10 就造好了 (`engine.ts` 的 `blameRetry = {…}`), 五位数全算出来:
+ * blameSize / closureSize / reuseHits / rerunWallMs / replanMode。**但它只活在返回值里** ——
+ * 三个 run 记录库 (`~/.omd/dag-runs.db` · `runs.db` · `.wright/dag-runs.db`) 全是 0 行,
+ * 日志里 grep 到的「重规划轮开始」全是源码回声。于是「verifier 打回的重修半径到底多大」
+ * 这个决定外环投资方向的问题, 至今**一条读数都没有**。
+ *
+ * ## 反向自检 (这条闸怎么证伪)
+ *
+ * 把 dag-record.ts 里那句 `result.blameRetry ? JSON.stringify(result.blameRetry) : null`
+ * 改成裸 `null`, 第一条当场红。把 NULL 那条的判据从「字段不存在」改成 `blameSize === 0`,
+ * 第三条当场红 —— 那正是本列最容易被写错的一格 (仓规坑①: NULL ≠ 0)。
+ */
+describe('外环重修半径 (blameRetry) 进留痕', () => {
+  const led = (blameSize: number, closureSize: number, mode: 'patch' | 'full' | 'deterministic' = 'patch') => ({
+    blameSize,
+    closureSize,
+    reuseHits: 3,
+    rerunWallMs: 12_000,
+    replanMode: mode,
+    replanTokens: { in: 111, out: 222 },
+  });
+  const withBlame = (l?: ReturnType<typeof led>): ExecutorDagResult =>
+    ({ ...fakeResult('goal-execute'), ...(l ? { blameRetry: l } : {}) }) as unknown as ExecutorDagResult;
+
+  test('打回过 → 五位逐字进账本 (闭包放大倍数由此可算)', () => {
+    const rec = createDagRecorder({ path: ':memory:' });
+    const got = rec.get(rec.record(withBlame(led(5, 20)), { runId: 'br-1' }))!.blameRetry!;
+    expect(got).toEqual(led(5, 20));
+    // 这一列存在的**全部理由**: 这个比值今天读不到, 而它决定外环该往哪投。
+    expect(got.closureSize / got.blameSize).toBe(4);
+    rec.close();
+  });
+
+  test('★ blameSize:0 = 打回了但围栏没解析出来 (走整轮) —— 记得下来, 不许当成没打回', () => {
+    const rec = createDagRecorder({ path: ':memory:' });
+    const got = rec.get(rec.record(withBlame(led(0, 0, 'full')), { runId: 'br-0' }))!.blameRetry!;
+    expect(got.blameSize).toBe(0);
+    expect(got.replanMode).toBe('full');
+    rec.close();
+  });
+
+  test('★ 没被打回过 → 字段**缺席**, 与 blameSize:0 分得开 (NULL ≠ 0)', () => {
+    const rec = createDagRecorder({ path: ':memory:' });
+    const row = rec.get(rec.record(withBlame(), { runId: 'br-none' }))!;
+    expect('blameRetry' in row).toBe(false);
+    rec.close();
+  });
+
+  test('老库 (无该列) 就地补列不炸', () => {
+    const db = new Database(':memory:');
+    db.run(`CREATE TABLE omd_dag_runs (
+      id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, plan_name TEXT NOT NULL,
+      node_count INTEGER NOT NULL, question TEXT, levels TEXT NOT NULL, nodes TEXT NOT NULL, usage TEXT NOT NULL)`);
+    const rec = createDagRecorder({ db });
+    expect(rec.get(rec.record(withBlame(led(2, 9)), { runId: 'br-old' }))!.blameRetry).toEqual(led(2, 9));
+    rec.close();
+  });
+});

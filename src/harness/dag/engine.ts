@@ -1454,8 +1454,10 @@ async function executePlan(
    *    账本 542 跑实测: 模型判词单项长度 p90 = 1337 · p95 = 1854,**单它就 ≥1500 的占 7.8%**,
    *    而交接 = 判词 + 观察者块(后者 p90 再加 561)。切掉的是判词**尾部** ——
    *    判词尾部通常正是「所以下一步该做什么」,也就是这一轮唯一真正要传下去的东西。
-   *    (⚠ 那 7.8% 量的是 `verification.reason`,拿 verifier 判词当内环 judge 判词的**代理**;
-   *     内环 judge 判词盘上没有任何一处持久化 —— 这条本身还欠着。)
+   *    (⚠ 那 7.8% 量的是 `verification.reason`,拿 verifier 判词当内环 judge 判词的**代理**。
+   *     ⚠ 2026-08-28 订正: 「内环 judge 判词盘上没有任何一处持久化」这句**已经过期** ——
+   *     `RoundVerdict[]` 自 #227 起随 journal 写入磁盘 (`continuity/types.ts`)。缺的从来不是
+   *     「存」,是「喂」: 见下面 {@link renderPriorRounds}。)
    *
    * ② **必达块正好排在被切掉的那一侧**: `NOVELTY_COLLAPSE_LINE` 是在 prevReason
    *    **末尾**追加的,而截断从**头部**切 ⇒ 一旦超界就 100% 丢。而它「只进 prompt 不进控制流」,
@@ -1483,6 +1485,75 @@ async function executePlan(
    * 不参与 HANDOFF_CAP_CHARS 预算。闸拒 (exitCode<0) / 绿 / 赦免 → 缺席, 一个字不挂 (INV-5)。
    */
   const FREEZE_FAIL_PREFIX = '上一轮冻结判据红的失败明细 (逐字, 不参与交接硬上限):\n';
+  /**
+   * **更早几轮的判词摘要** (G1, 2026-08-28) —— 环终于看得见自己走过的路。
+   *
+   * ## 它治的
+   *
+   * 到今天为止, 第 N 轮的 conductor **只看得见第 N-1 轮**的判词 (`prevReason` 是标量, 每轮覆写)。
+   * 第 1 轮为什么被拒, 第 3 轮的它不知道 —— 于是它可以完全合法地把第 1 轮那条死路**再走一遍**。
+   * 毒集拦得住**节点指纹**复用, 拦不住**同一条思路**被重画出来: 换个 id、换个措辞, 指纹就变了。
+   *
+   * 这正是 `noveltySeq` (判词词袋聚类, 簇数连续不增 = 空转) 一直在**测量**的那个现象的成因。
+   * 尺子造好很久了, 治法没有 —— 因为数据一直在盘上躺着 (`RoundVerdict[]` 进 journal), 只是
+   * `at(-1)` 之外的都没人读。**算了不喂 = 没算。**
+   *
+   * ## 预算纪律 (与必达块相反的方向)
+   *
+   * 必达块的纪律是「唯一通道是 prompt ⇒ 不参与截断预算」。这一块**不是**必达块: 它是可折叠的
+   * 历史, 全文本来就在 journal 里。所以它走**自己的独立预算** ({@link PRIOR_ROUNDS_CAP_CHARS}),
+   * 既不吃 `HANDOFF_CAP_CHARS` (那是上一轮判词的额度, 单一变量: 本片不动它一个字符),
+   * 也不许无界增长 —— 一个 20 轮的环, 无界就是给每轮的 conductor 调用挂一份线性增长的成本。
+   *
+   * 超预算时**丢最老的**, 不丢最近的 (最近的轮次对"别再走这条路"的判断更有用), 并出告示
+   * (No-silent-caps, D-2): 丢了几轮、去哪读全文, 都写在明面上。
+   *
+   * ## 缺席 = 一个字都不写
+   *
+   * 第 1 轮 (没有更早轮) 与第 2 轮 (更早轮就是上一轮, 已在 `<上一轮未通过>` 里) 都返空串。
+   * 不挂空标题、不写「(无)」—— 仓规坑①: 「没有」与「有但是空」在读者那里是两件事。
+   */
+  const PRIOR_ROUNDS_CAP_CHARS = 1200;
+  /**
+   * ask 出口的触发轮数 (2026-08-28): **连续**几轮契约 unknown 才停轮问人。
+   *
+   * 2 而不是 1: 第 1 轮材料本来就少, unknown 很常见, 探索一轮多半就清楚了。
+   * 2 而不是 3: 默认 `max_rounds` 是 1–2, 定 3 就是一条永远够不着的闸 (仓规: 永远绿的闸不是闸)。
+   */
+  const ASK_UNKNOWN_STREAK = 2;
+  /** 单轮摘要里判词部分的额度 —— 一轮吃满整块预算会把其余轮全挤掉。 */
+  const PRIOR_ROUND_REASON_CAP = 240;
+  const renderPriorRounds = (verdicts: readonly RoundVerdict[], currentRound: number): string => {
+    // 只渲染**更早**的轮: 上一轮 (currentRound - 1) 已经整段在 `<上一轮未通过>` 里, 重复挂一遍
+    // 既费预算又制造"同一件事说两遍"的噪声。
+    const earlier = verdicts.filter((v) => v.round < currentRound - 1);
+    if (earlier.length === 0) return '';
+    const line = (v: RoundVerdict): string => {
+      const head = v.reason.split('\n').find((s) => s.trim().length > 0)?.trim() ?? '';
+      const body = head.length <= PRIOR_ROUND_REASON_CAP ? head : `${head.slice(0, PRIOR_ROUND_REASON_CAP)}…`;
+      // 四态逐字带出去: 「闸替 judge 说的」与「judge 真投了反对票」在读者那里的下一步不同
+      // (前者要看闸, 后者要看方案), 压成一句"没过"就把这一格抹平了 (RoundVerdict 的注同款)。
+      const next = v.nextSteps ? ` → 当时给的下一步: ${v.nextSteps.split('\n')[0]!.trim()}` : '';
+      return `- 第 ${v.round} 轮 [判据 ${v.criterion} · judge ${v.judge}] ${body}${next}`;
+    };
+    const rendered: string[] = [];
+    let used = 0;
+    let dropped = 0;
+    // 从**最近**往回填, 填不下就停 —— 丢的是最老的那几轮。
+    for (let i = earlier.length - 1; i >= 0; i--) {
+      const s = line(earlier[i]!);
+      if (used + s.length > PRIOR_ROUNDS_CAP_CHARS && rendered.length > 0) {
+        dropped = i + 1;
+        break;
+      }
+      rendered.unshift(s);
+      used += s.length + 1;
+    }
+    const notice = dropped > 0
+      ? `\n…[更早的 ${dropped} 轮已略去 (本块额度 ${PRIOR_ROUNDS_CAP_CHARS} 字符); 全轮判词全文在本节点的内环 journal 里]`
+      : '';
+    return `\n\n<更早几轮的判词摘要>\n这些路**已经走过并且没成**。不要重画一条与它们等价的图 —— 换个 id 或换套措辞不算新方案。\n${rendered.join('\n')}${notice}\n</更早几轮的判词摘要>`;
+  };
   const renderHandoff = (nodeId: string, round: number, reason: string, nextSteps?: string, criterionFailDetail?: string): string => {
     // 必达块先摘出去。用逐字常量比对而不是正则: 这几个块的文本是常量,正则只会带来误伤面。
     const mustReach: string[] = [];
@@ -1722,6 +1793,14 @@ async function executePlan(
      */
     synthetic?: 'round-failed' | 'false-completion';
     /**
+     * G2: judge 顺手判的契约结论。缺席 = **没被问过** (闸合成 / 调不通 / 模型没答), 不是 aligned。
+     */
+    contractVerdict?: 'aligned' | 'unknown' | 'needs_revision' | 'invalid';
+    /** G2: `contractVerdict !== 'aligned'` 时, 原题的哪一条被写歪了 (逐字)。 */
+    contractIssue?: string;
+    /** ask 出口: `contractVerdict='unknown'` 时 judge 说该问人的那一个问题 (只是内容, 不是触发器)。 */
+    askOwner?: string;
+    /**
      * judge 给的**下一步** (#228, 2026-08-23) —— 只有 LLM judge 真答了才有值。
      *
      * 与 `synthetic` / `unreachable` 互斥: 那两条出口 judge 没被问过, 合成一条"下一步"
@@ -1769,6 +1848,11 @@ async function executePlan(
       const judge = makeLlmConvergenceJudge<null>({
         judgeModel: judgeCoord,
         task: goal,
+        // G2 (2026-08-28): 原题原文。`task` 是**这个节点的 goal**, 而 goal 是从原题派生的 ——
+        // 派生这一跳没有任何人回头查过。给了它, judge 才判得了「goal 相对原题写歪没有」。
+        // 不新加一层验收环 (那条早被拒过, 理由是回边破坏无环): 同一个判官多答一位控制头,
+        // 零额外调用、控制流形状不变。
+        rootTask: task,
         // judge 看的是**专门渲染的视图**, 不是节点对下游的 output —— 后者带"N/M 成功"的开场白
         // (对 judge 是"都好着呢"的暗示) 且只有可读名没有可点名的 id。
         // 确定性差集当**显式证据**接在视图后面 (2026-08-05)。judge 对"产物断言了一件引擎没做过
@@ -1808,7 +1892,19 @@ async function executePlan(
       // #228: `nextSteps` 只在 judge 真答了这条路径上带出去。上面 false-completion 的 synthetic
       // 出口与下面 catch 的 unreachable 出口都**不带** —— 那两处 judge 没被问过, 合成一条
       // "下一步"就是拿闸的回声冒充 judge 的动作建议 (与 `judgeConverged` 同一条纪律)。
-      return { converged: v.converged, reason: v.failureReason ?? '', nextSteps: v.nextSteps, rejected, usage, unreachable: null as string | null, faultKey: null as string | null };
+      // G2: 契约结论只在 judge 真被问过这条路上带出去 —— 同 `nextSteps` 的纪律。
+      return {
+        converged: v.converged,
+        reason: v.failureReason ?? '',
+        nextSteps: v.nextSteps,
+        rejected,
+        usage,
+        unreachable: null as string | null,
+        faultKey: null as string | null,
+        ...(v.contractVerdict ? { contractVerdict: v.contractVerdict } : {}),
+        ...(v.contractIssue ? { contractIssue: v.contractIssue } : {}),
+        ...(v.askOwner ? { askOwner: v.askOwner } : {}),
+      };
     } catch (err) {
       // fail-closed: 判不出来就当没达成。judge 挂掉不该变成"那就算过了吧"。
       logger.warn({ node: id, round, err: String(err) }, '[omd/executor-dag] 内环 judge 无结论 → 判未收敛 (fail-closed)');
@@ -1865,6 +1961,12 @@ async function executePlan(
      * 时 `renderHandoff` 不挂这一块 / 一轮一鲜)。判据绿 / 闸拒 / 赦免 / 未配 → undefined。
      */
     prevCriterionFailDetail: string | undefined,
+    /**
+     * G1 (2026-08-28): **本节点到目前为止每一轮的判词**(`RoundVerdict[]`, resume 时含跨进程的
+     * 那几轮)。`renderPriorRounds` 只渲染 `round < 当前轮 - 1` 的那些 —— 上一轮已由 `prevReason`
+     * 整段带出去。空数组 / 只有上一轮 → 渲染出空串, 一个字不挂 (INV: 缺席零字节)。
+     */
+    priorVerdicts: readonly RoundVerdict[],
     poisoned: ReadonlySet<string>,
     /** 上一轮的子节点结果 (D-21 内环版: 跨轮复用的匹配源, 键 = 内容寻址 id)。 */
     prevResults: ReadonlyMap<string, LeafResult>,
@@ -1908,7 +2010,12 @@ async function executePlan(
     // **环的信息通道**: 上一轮的失败原因回灌给 conductor, 让它**重新画**而不是重跑同一张图。
     // 这是 D-A 环的全部价值 —— 重跑只能把同样的活再干一遍, 重画才补得出上一轮压根没有的步骤
     // (D-G′ 说的「补调研」正是这个形状: 不需要回边, 每一轮都是一张全新的无环子图)。
-    const retryCtx = prevReason ? `${renderHandoff(id, round, prevReason, prevNextSteps, prevCriterionFailDetail)}\n${RETRY_INSTRUCTION}` : '';
+    // G1: 更早几轮的判词摘要排在 `<上一轮未通过>` **之前** —— 时序自然 (老→新), 而且最近那一轮
+    // 离 `RETRY_INSTRUCTION` 最近。它走独立预算, 不吃 `HANDOFF_CAP_CHARS` (单一变量: 上一轮判词
+    // 的额度本片一个字符没动)。首轮 / 只有一轮历史 → 空串, 整块缺席。
+    const retryCtx = prevReason
+      ? `${renderPriorRounds(priorVerdicts, round)}${renderHandoff(id, round, prevReason, prevNextSteps, prevCriterionFailDetail)}\n${RETRY_INSTRUCTION}`
+      : '';
     // **owner 指令** (S3 / D-S): 与失败原因同一条管道、**独立的块**、**逐字**。
     // 排在失败原因**之前** —— 人的指令优先级高于机器的观察, 顺序上也该先看见。
     // ⚠ 一个字都不许加工: 观测者在这条链上只是信使, 它改写了, 失真的地方 owner 自己看不见。
@@ -2797,7 +2904,9 @@ async function executePlan(
       // ms 取值从这里起算, judge 时间落在轮结束与下一条轮开始之间, 由内环收尾的 loopMs 兜住。
       const roundStartedAt = Date.now();
       logger.info({ node: id, round, at: roundStampNow() }, '[omd/executor-dag] 轮开始');
-      const r = await runConductorRound(id, round, prevReason, prevNextSteps, prevCriterionFailDetail, poisoned, prevResults);
+      // G1: `roundVerdicts` 此刻含第 1..round-1 轮 (本轮的那条在轮末才 push) —— 正是
+      // `renderPriorRounds` 要的输入。resume 时它已从 journal 接回, 所以跨进程的历史一样看得见。
+      const r = await runConductorRound(id, round, prevReason, prevNextSteps, prevCriterionFailDetail, roundVerdicts, poisoned, prevResults);
       // 切片 1 (C-1 INV-2): 轮结束 —— runConductorRound 返回后立刻 (D-3: ms 只覆盖展开+执行,
       // 不含轮末 judge, 三段时间加起来无主)。r.results 是 Map, 子图节点数 = .size。
       logger.info(
@@ -2953,7 +3062,83 @@ async function executePlan(
         // #228: judge 真答了才有这一列。缺席 = 不写键 (不是空串) —— 事后要能分出
         // 「judge 没被问过」与「judge 答了一句空话」(仓规坑①)。
         ...(verdict.nextSteps ? { nextSteps: verdict.nextSteps } : {}),
+        // G2: 契约结论同款纪律 —— judge 真答了才有这一列, 缺席 ≠ aligned。
+        ...(verdict.contractVerdict ? { contract: verdict.contractVerdict } : {}),
       });
+      // ── G2 契约闸 (2026-08-28) ──────────────────────────────────────────────
+      // judge 说这个节点的 goal 相对**原题**写歪了 (漏了硬约束 / 换成了另一个目标)。
+      //
+      // **这里不重跑, 也不自己改 goal。** 仓规: impl 暴露 contract 错 → **回流改 contract**,
+      // 不是 silent override。再转一轮只会照着同一份歪契约再干一遍 —— 加轮数是这一格最没用的动作,
+      // 所以 stop kind 取 `blocked` (N5 词表: "要人给外部输入, 加轮数没用"), 不取 not-converged。
+      //
+      // ⚠ 只拦 `needs_revision` / `invalid` 两态。`unknown` = 判不了, 那与 judge 拿不准同性质,
+      //   照常继续转 (拿 unknown 停轮 = 把"我不知道"读成"它错了", 会把一次犹豫变成一次误停)。
+      // ⚠ 与 `converged` **正交**: 收敛了也拦 —— `converged=true ∧ contract='invalid'` 正是最坏那格
+      //   (活干完了, 干的是另一件事), 放过去就是拿一份写歪的契约给出一个"成功"。
+      if (verdict.contractVerdict === 'needs_revision' || verdict.contractVerdict === 'invalid') {
+        const issue = verdict.contractIssue?.trim() || '(judge 判契约不 aligned 但没写清哪一条 —— 按原题逐条自查)';
+        const evidence = `G2 契约闸: judge 判本节点 goal 相对原题 ${verdict.contractVerdict} —— ${issue}`;
+        logger.warn(
+          { node: id, round, contract: verdict.contractVerdict, converged: verdict.converged },
+          '[omd/executor-dag][contract-gate] G2: goal 相对原题写歪 → 停轮交人改契约 (加轮数没用)',
+        );
+        observe([{ kind: 'contract-misaligned', nodes: [id], message: evidence }]);
+        writeLoopJournal(round, poisoned, prevReason, false, last.output, {
+          kind: 'blocked',
+          evidence,
+          atRound: round,
+        });
+        // ⚠ 不写 `failureKind`: 那张表 (`node-failure.ts`) 每一条都带逐条处置指引, 扩它是另一片的活。
+        // 这一格的处置已经在 journal 的 `stop.kind='blocked'` + observation 里说清了 (无第二套)。
+        return settle(last, round, false);
+      }
+      // ── ask 出口 (2026-08-28) ───────────────────────────────────────────────
+      // 连续两轮判官都说「材料不足以判断这活对不对」= 这个歧义**不会靠再转一轮自己消掉**,
+      // 它要的是人回答一句话。LH-Harness 把这条做成 manager 的一等路由 (`Next: ask`):
+      // 暂停 → 抛问题 → 答案作权威用户输入进下一轮。omd 这边的等价物是「停轮 + 把问题记下来」,
+      // 答案经 resume 时的 `ownerDirectives` 逐字进下一轮 prompt (那条通道早就在, 不新造)。
+      //
+      // ## 为什么触发权在引擎不在模型
+      //
+      // judge 只提供**问题内容** (`askOwner`), **停不停由这里的确定性判据说了算**。
+      // 反过来做 (模型想停就停) 等于给它一个按钮 —— 一个爱提问的座位能把每一跑都停在第 1 轮,
+      // 而这一格没有任何机械证据能反驳它。可靠性来自模型之外: 触发是数出来的, 不是求来的。
+      //
+      // ## 判据为什么是「连续两轮」而不是「一轮」
+      //
+      // 一轮 unknown 很常见 (第 1 轮材料本来就少, 探索一轮就清楚了)。**连续两轮**才是
+      // 「转了一圈回来还是不知道」。streak 直接从 `roundVerdicts` 数 —— 不另开计数器,
+      // 那份数组本来就随 journal 写入磁盘, resume 之后接得回来 (同一件事两处声明就是漂移源, S-39)。
+      //
+      // ⚠ 与上面 G2 那道闸互斥 (contract 四态各归各的出口), 排在它后面只是让契约轴的两个出口挨着。
+      const unknownStreak = (() => {
+        let n = 0;
+        for (let i = roundVerdicts.length - 1; i >= 0; i--) {
+          if (roundVerdicts[i]!.contract === 'unknown') n++;
+          else break;
+        }
+        return n;
+      })();
+      if (unknownStreak >= ASK_UNKNOWN_STREAK) {
+        // 缺席不编: judge 说不出要问什么, 就照实写它说不出 —— 编一个问题比没有问题更坏
+        // (人会去回答一个引擎虚构的问题, 而真正卡住的地方一个字没被记下来)。
+        const question = verdict.askOwner?.trim();
+        const evidence = question
+          ? `ask 出口: 连续 ${unknownStreak} 轮判官都说不准这活对不对 → 停轮问 owner: ${question}`
+          : `ask 出口: 连续 ${unknownStreak} 轮判官都说不准这活对不对, 但它**没写出要问什么** → 停轮交人 (请自己对着原题看这个节点的 goal 该怎么定)`;
+        logger.warn(
+          { node: id, round, streak: unknownStreak, hasQuestion: !!question },
+          '[omd/executor-dag][ask-owner] 连续两轮契约 unknown → 停轮问 owner (再转一轮消不掉这个歧义)',
+        );
+        observe([{ kind: 'owner-question', nodes: [id], message: evidence }]);
+        writeLoopJournal(round, poisoned, prevReason, false, last.output, {
+          kind: 'blocked',
+          evidence,
+          atRound: round,
+        });
+        return settle(last, round, false);
+      }
       // judge **调不通** → 立刻退环, 不把剩下的轮数烧在一个确定性故障上 (2026-07-31)。
       // 与 §8.4 熔断同一个出口形状, 但 kind 是 `infra-error` 不是 `blocked`: N5 词表里这两格的
       // 下一步相反 —— blocked 是"要人给外部输入", infra-error 是"引擎自己出事, 该修的是引擎"。

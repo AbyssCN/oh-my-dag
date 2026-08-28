@@ -134,6 +134,20 @@ export const GATE_REGISTRY: readonly GateEntry[] = [
     file: 'src/harness/goal/run-goal.ts',
     prefix: '[run-goal]',
   },
+  {
+    // G2 契约闸 (2026-08-28): judge 顺手拿**原题**回查这个节点的 goal, 判 needs_revision/invalid
+    // → 停轮交人改契约 (不重跑: 再转一轮只会照同一份歪契约再干一遍)。
+    id: 'contract-gate',
+    family: '契约反查',
+    file: 'src/harness/dag/engine.ts',
+  },
+  {
+    // ask 出口 (2026-08-28): 连续两轮判官说不准这活对不对 → 停轮问 owner。
+    // 触发权在引擎 (数 streak), judge 只提供问题内容 —— 模型没有"我想停就停"的按钮。
+    id: 'ask-owner',
+    family: '契约反查',
+    file: 'src/harness/dag/engine.ts',
+  },
 ];
 
 /** 转义正则元字符 —— 仅用于把动态 prefix 内容注入字面量正则文本。 */

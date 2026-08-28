@@ -43,6 +43,24 @@ export interface FixpointVerdict {
    * 错点名的代价是多跑一次 (钱), 漏点名的代价是坏产出被当已批准制品复用 (信任)。
    */
   rejectedNodes?: string[];
+  /**
+   * **G2 契约反查结论** (2026-08-28): 这一轮的 goal 相对**原始任务**站不站得住。
+   *
+   * 与 `converged` 判的是两层: `converged` = 「照 goal 做到了没有」, 这一位 = 「goal 本身对不对」。
+   * 两者可以任意组合, 最危险的一格正是 `converged=true ∧ contractVerdict='invalid'` ——
+   * 活干完了, 干的是另一件事。
+   *
+   * ⚠ 缺席 = **没问过**(调用方没给原题 / 模型没答), 不是 `aligned`。绑定层不许补默认值。
+   */
+  contractVerdict?: 'aligned' | 'unknown' | 'needs_revision' | 'invalid';
+  /** `contractVerdict !== 'aligned'` 时: 原题的哪一条被写歪了 (逐字引原题)。 */
+  contractIssue?: string;
+  /**
+   * ask 出口 (2026-08-28): `contractVerdict='unknown'` 时, judge 说该问人的那**一个**问题。
+   *
+   * ⚠ 它只是**内容**, 不是触发器 —— 停不停由绑定层的确定性判据说了算。
+   */
+  askOwner?: string;
 }
 
 /** 一轮快照 (审计 + 单调 context 溯源)。 */

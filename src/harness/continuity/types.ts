@@ -363,6 +363,16 @@ export interface RoundVerdict {
    * (仓规坑①)。分辨靠字段在不在, 不靠猜内容。
    */
   nextSteps?: string;
+  /**
+   * **G2 契约反查结论** (2026-08-28): 这一轮 judge 顺手判的「goal 相对原题站不站得住」。
+   *
+   * 与 `judge` 那一列判的是两层: `judge` = 「照 goal 做到了没有」, 这一列 = 「goal 本身对不对」。
+   * 存下来才答得了那个此前**根本问不出口**的问题: 「有多少次收敛, 其实是照着一份写歪的契约收敛的」。
+   *
+   * ⚠ 缺席 = **judge 没被问过这一位**(没给原题 / 闸合成判词 / 调不通), 不是 `aligned`。
+   *   与 `nextSteps` 同款纪律: 分辨靠字段在不在, 不靠猜内容 (仓规坑①)。
+   */
+  contract?: 'aligned' | 'unknown' | 'needs_revision' | 'invalid';
 }
 
 export interface NodeLoopJournal {

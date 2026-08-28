@@ -21,6 +21,7 @@ import { deriveRunOutcome, type RunOutcomeKind } from '../run-outcome';
 import type { AcceptanceProbe } from '../goal/acceptance-gate';
 import { isSpecWrite, type SpecWrite } from '../goal/spec-write';
 import type { RollbackAnchor } from '../writeset/rollback-anchor';
+import type { BlameRetryLedger } from './types';
 
 export interface DagRunNode {
   id: string;
@@ -361,6 +362,22 @@ export interface DagRunRecord {
    */
   reused?: number;
   /**
+   * **这次 verifier 打回时,重修半径到底有多大**(2026-08-28)。
+   *
+   * 逐字来源 `ExecutorDagResult.blameRetry`(`engine.ts` 的 `blameRetry = {…}` 是唯一写点)。
+   * 它是**为一个具体决定造的读数**,不是通用留痕:外环今天该往「节点处验收」(缩小白烧)还是
+   * 「内容寻址的下游失效」(缩小重修半径)投,取决于两个数 ——
+   *   · `closureSize / blameSize` = 闭包放大倍数。≈1 说明重修半径本来就小,再优化它没有收益;
+   *   · `blameSize === 0` 的占比 = blame 围栏解析失败率(fail-open 到整轮重跑的频率)。
+   * 这两个数**在这一列存在之前一个都读不到**:`BlameRetryLedger` 早就算出来了,只活在返回值里,
+   * run 记录库三个全空,日志里也只有源码回声。算了不落盘 = 没算。
+   *
+   * ⚠ 缺席 = **这一跑没被 verifier 打回过**(或没配 verifier / 老行),不是「打回了但半径是 0」。
+   *   `blameSize: 0` 才是「打回了且围栏没解析出来 ⇒ 走整轮」—— 两者的下一步相反
+   *   (前者什么都不用做,后者要去修围栏协议),不许合并。
+   */
+  blameRetry?: BlameRetryLedger;
+  /**
    * **两条判据各自说了什么**(N9;`RunGoalResult.criteria` 的两位,按 runId 回填)。
    *
    * 与 {@link outcome} 的分工是本条存在的**全部**理由:`outcome` 在 `judge` 为假时一律落
@@ -460,6 +477,7 @@ interface Row {
   write_race: string | null;
   rollback: string | null;
   reused: number | null;
+  blame_retry: string | null;
   criteria: string | null;
   acceptance_probe: string | null;
   spec_write: string | null;
@@ -544,6 +562,9 @@ function rowToRecord(row: Row): DagRunRecord {
     ...(row.rollback ? { rollback: JSON.parse(row.rollback) } : {}),
     // `reused: 0` 是"记了且一个没复用", NULL 是"没记" —— 两者不许合并。
     ...(row.reused !== null ? { reused: row.reused } : {}),
+    // NULL = 这一跑没被打回过 (不适用); 有值 = 打回过, 里面的 `blameSize: 0` 才是「围栏没解析出来」。
+    // 两格语义不同, 与 `reused` 那条同款纪律 —— 见 DagRunRecord.blameRetry 的注。
+    ...(row.blame_retry ? { blameRetry: JSON.parse(row.blame_retry) } : {}),
     ...(row.criteria ? { criteria: JSON.parse(row.criteria) } : {}),
     // 取值矩阵见 DagRunRecord.acceptanceProbe 的注: NULL = 没记 (非 goal / 探针没跑 / 老行); 坏 JSON 已按 NULL 读。
     ...(probe ? { acceptanceProbe: probe } : {}),
@@ -680,6 +701,8 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
   // D1 (2026-08-06): 起跑时「回得去吗」。老行留 NULL = **没记**, 不是 'clean'。
   if (!cols.includes('rollback')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN rollback TEXT`);
   if (!cols.includes('reused')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN reused INTEGER`);
+  // 2026-08-28: 外环重修半径。老行留 NULL (= 没记 / 没被打回过, 不是 blameSize:0)。
+  if (!cols.includes('blame_retry')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN blame_retry TEXT`);
   if (!cols.includes('criteria')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN criteria TEXT`);
   // 入口轴 (2026-08-02): 2026-08-02 之前建的表没这一列, 老行留 NULL (= 没记, 不是 'unknown')。
   if (!cols.includes('entry')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN entry TEXT`);
@@ -698,8 +721,8 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
   if (!cols.includes('turns')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN turns INTEGER`);
   db.run(`CREATE INDEX IF NOT EXISTS omd_dag_runs_run_id ON omd_dag_runs (run_id)`);
   const ins = db.query(
-    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage, observations, claim_check, artifact_move, write_race, rollback, outcome, verification, reused, criteria, acceptance_probe, spec_write, tokens_in, tokens_out, cache_hit_tokens, duration_ms, turns)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage, observations, claim_check, artifact_move, write_race, rollback, outcome, verification, reused, blame_retry, criteria, acceptance_probe, spec_write, tokens_in, tokens_out, cache_hit_tokens, duration_ms, turns)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const byId = db.query(`SELECT * FROM omd_dag_runs WHERE id = ?`);
   const recent = db.query(`SELECT * FROM omd_dag_runs ORDER BY created_at DESC LIMIT ?`);
@@ -823,6 +846,9 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
         result.verification ? JSON.stringify({ pass: result.verification.pass, reason: result.verification.reason }) : null,
         // N9 效率轴: 跨轮复用了几个节点。`reusedNodes` 缺席 = 这条链没报 → NULL 而不是 0。
         result.reusedNodes ? result.reusedNodes.length : null,
+        // 外环重修半径 (2026-08-28): 缺席 = 这一跑没被 verifier 打回过 → NULL, 不编一个
+        // `blameSize:0` (那是「打回了但围栏没解析出来」, 下一步完全不同)。
+        result.blameRetry ? JSON.stringify(result.blameRetry) : null,
         // criteria 在整趟 goal 收尾时才有 → 这里恒 NULL, 由 updateCriteria 回填。
         null,
         // goal 验收探针 (契约): 只持久化 entry='dag_goal'; 其它入口即使误传也必须留 NULL。
