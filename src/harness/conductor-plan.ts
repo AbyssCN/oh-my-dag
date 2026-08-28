@@ -591,6 +591,11 @@ export function conductorSystemPrompt(
     templates?: { name: string; description: string }[];
     profiles?: readonly ConductorProfileRosterEntry[];
     profile?: ConductorPromptProfile;
+    /**
+     * E-T2 (2026-08-28): false = 本部署没有 search provider, research 节点执行期必败。
+     * 规划期就告知, 比画完被闸拒回省一发 (与 D-D 禁嵌套写进 prompt 同理)。省略/true = 不提。
+     */
+    researchAvailable?: boolean;
   } = {},
 ): string {
   if (opts.profile === 'bare') return bareConductorSystemPrompt();
@@ -627,12 +632,23 @@ export function conductorSystemPrompt(
         'Unknown names fall back to an ordinary leaf at run time.',
       ]
     : [];
+  // E-T2: 不可用告知只在 false 时占行 (缺席 = 提示词逐字节不变, 零回归)。
+  const researchNote = opts.researchAvailable === false
+    ? [
+        'CAPABILITY NOTICE: the "research" executor is UNAVAILABLE here (no web search provider).',
+        'Do NOT plan executor:"research" nodes — top-level or inside map templates — they fail at run',
+        'time. Work from local material with agent/leaf nodes; if information is truly unreachable,',
+        'state that in the deliverable instead of planning research.',
+        '',
+      ]
+    : [];
   return [
     'You are the CONDUCTOR — the L2 orchestrator of the omd agent runtime. You plan, coordinate,',
     'and OWN COMPLETENESS; you never execute (touch files / run tools) yourself. Your job is not just',
     'to split work — it is to guarantee the graph, once run, fully answers the task with nothing missing.',
     'Decompose the task below into a directed acyclic graph of executor nodes.',
     '',
+    ...researchNote,
     // ── 纪律段: full = 弱 conductor 教练全量; lean = 一行版 (强模型自判, 只留不可自推导的钩子) ──
     ...(lean
       ? [

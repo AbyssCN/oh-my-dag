@@ -309,4 +309,13 @@ if (import.meta.main) {
     },
   });
   process.stderr.write(`[bench-bridge] 0.0.0.0:${port} · ${map.size} 模型白名单 · token 已启用\n`);
+  // pidfile: 重启一律走 scripts/bench-bridge-restart.sh 按 pid 杀。
+  // 2026-08-27 实账: `pkill -f 'bench-bridge.ts'` 与重启写在同一条命令行, pkill 自匹配到
+  // 发起它的 shell, 桥死而重启没跑, 三个 code80-m3 批整批作废 (results/.../VOID.md)。
+  try {
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(`${process.env.HOME}/.omd/bench-bridge.pid`, String(process.pid));
+  } catch (e) {
+    process.stderr.write(`[bench-bridge] pidfile 写入失败 (桥照常服务, 但重启脚本会退回 pgrep): ${(e as Error).message}\n`);
+  }
 }

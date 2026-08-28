@@ -160,6 +160,7 @@ import {
 } from '../fanin-summary';
 // D-21 escalation 跨轮复用: 语义 Merkle 指纹 + 前驱闭包匹配 (semantic-key 单一真源)。
 import { computeReuse, merkleFingerprints } from '../plan-passes/semantic-key';
+import { researchNodesWithoutRunner, researchUnavailableRemediation } from '../plan/research-availability-gate';
 import { mergeCommandChains } from '../plan-passes/merge-command-chain';
 import { expandConductorNode, subgraphLintView, subgraphWarnings } from '../plan/conductor-expand';
 import { renderRoundForJudge, splitNamedIds, type JudgeChildView } from '../plan/conductor-judge';
@@ -545,6 +546,7 @@ async function planAndExecute(
     templates: templateRoster(templates),
     profiles: profileRoster(config),
     profile: promptProfile,
+    researchAvailable: Boolean(config.researchRunner),
   });
   let plan: ConductorPlan | null = null;
   let conductorUsage: ModelUsage = { in: 0, out: 0 };
@@ -555,6 +557,8 @@ async function planAndExecute(
   // (仓规: fail-open 可以吞异常, 不许吞证据)。patch 重规划轮 (tryPatchReplan) 不过闸:
   // 补丁只改局部字段, 首轮整图已闸过。
   const LEAF_TIER_MAX_REJECTS = 2;
+  // E-T2 research 可用性闸: 与 leaf 档位闸同形 (有界拒回 → fail-open 留证), 各记各的账。
+  const RESEARCH_GATE_MAX_REJECTS = 2;
   // #247 (2026-08-24, 片 2): plan-critic 进活环, 只收「无外部输入」子集 —— 字段存在性/枚举/形状 (零外部状态)。
   // PP-T*/PP-S* 需 inventory/skill 装配 (S2 债), 空 working-set 下 enforce = 教模型删 toolRefs, 反教化。
   // 具名常数让 S2 扩集只改一处。
@@ -565,6 +569,7 @@ async function planAndExecute(
   let parseFails = 0;
   let gateRejects = 0;
   let planCriticRejects = 0;
+  let researchGateRejects = 0;
   // D-21 复用闸 (2026-08-14): 整图重规划 (patch 模式 fail-open 落到这) 把上轮节点全部重写 →
   // 语义指纹 0 命中 → 已绿工作整体重烧。实测 f2af8514 execute 相位: 上轮 37 done, 重画后
   // reused 0, 33.1M leaves-in 只换来 7 done。判据必须在**执行前** —— 执行后再看 reusedNodes
@@ -608,6 +613,27 @@ async function planAndExecute(
     // 本轮候选图。g1 闸可能**程序化改写**它 (下面), 之后的 D-21 预览与最终 plan 都以它为准 ——
     // 拿改写前的图去预览复用, 预览的就不是真要执行的那张图。
     let candidate = parsed.plan;
+    // E-T2 (2026-08-28) research 可用性闸: researchRunner 缺席时 research 节点执行期必败
+    // (missing-capability) 占位耗轮 (bench 单批实测 124 次) —— 规划期确定性拒回重画。
+    // 有界; 预算尽 fail-open 放行 + 响亮留证, 执行期硬闸 (executor:research 分支) 兜底。
+    if (!config.researchRunner) {
+      const researchHits = researchNodesWithoutRunner(candidate, false);
+      if (researchHits.length > 0 && researchGateRejects < RESEARCH_GATE_MAX_REJECTS) {
+        researchGateRejects++;
+        logger.info(
+          { nodes: researchHits, rejects: researchGateRejects },
+          '[omd/executor-dag] research 可用性闸拒回 plan → 带 remediation 重问 (E-T2)',
+        );
+        correction = `\n\n上一版 plan 被 research 可用性闸拒回 (可修, 不是格式问题):\n- ${researchUnavailableRemediation(researchHits)}\n改完只回完整 plan JSON 对象, 别的不要。`;
+        continue;
+      }
+      if (researchHits.length > 0) {
+        logger.warn(
+          { nodes: researchHits },
+          '[omd/executor-dag] research 可用性闸重问预算用尽仍有 research 节点 → fail-open 放行 (执行期 missing-capability 兜底)',
+        );
+      }
+    }
     if (config.leafTierGate) {
       // #144 提议 3 / #145 提议 3: 闸自己动手。判据命中且改写是确定性的 (静态节点 + 塞得下) →
       // 引擎直接把 `agent` 换成 `command`+`leaf` 对, **零规划发**; 改不动的残余才拒回问模型。
@@ -1911,6 +1937,7 @@ async function executePlan(
         templates: templateRoster(templates),
         profiles: profileRoster(config),
         profile: config.conductorPromptProfile ?? conductorPromptProfileFromEnv(),
+        researchAvailable: Boolean(config.researchRunner),
       });
       const userMsg =
         // A8: token 声明必须排在**任何**不可信内容之前 —— 读者先拿到判据, 再看材料。
@@ -1960,8 +1987,15 @@ async function executePlan(
 
     // ── 2. 纯展开: D-B 内容寻址 id + D-D 禁嵌套 + 环检测 + 硬顶 ──
     // 执行段的附加禁单 (research) 按调用传 —— 契约段不传, 它的 research 子节点是正当的。
-    const forbidExecutors =
+    // E-T2: researchRunner 缺席时契约段也禁 —— 这不是政策收紧, 是能力缺席 (子节点执行期必败)。
+    const forbidBase =
       plan!.name === EXECUTE_SEGMENT_PLAN_NAME ? EXECUTE_SEGMENT_FORBIDDEN_EXECUTORS : undefined;
+    const forbidExecutors = config.researchRunner
+      ? forbidBase
+      : new Map<string, string>([
+          ...(forbidBase ?? []),
+          ['research', '本部署无 search provider — research 子节点执行期必败 (E-T2), 用本地材料的 agent/leaf 完成'],
+        ]);
     const expand = expandConductorNode(id, sub, {
       ...(node.max_nodes ? { maxNodes: node.max_nodes } : {}),
       ...(forbidExecutors ? { forbidExecutors } : {}),
