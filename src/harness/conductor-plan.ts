@@ -798,6 +798,16 @@ export function conductorSystemPrompt(
     '  (set output_path too). A "leaf" CANNOT touch the filesystem — a leaf told to write a file silently',
     '  produces NOTHING (returns text, node reports done, no artifact). NEVER use "leaf" for an',
     '  implementation/build node. "Default to leaf" applies only to text-deliverable nodes (analysis/design/research).',
+    // B1 (2026-08-29, 放量路线 §3): 写集教学。此前 write_set 只在 schema 里, conductor 自画图
+    // 路径零声明 (bench 审计 50 节点 0 使用) ⇒ 写域闸/写集核实正判据/全空闸三个消费者全部空转。
+    // 执法端全在引擎 (engine.ts 写域闸 4140 · 写集核实 4319 · 全空闸 5463), 这里只管画图端。
+    'WRITE-SET CONTRACT — a file-producing node SHOULD also declare "write_set": [relative paths it will',
+    '  create or modify]. The engine turns the list into hard evidence, all three directions: declared',
+    '  files present on disk count as done-evidence; a write OUTSIDE the set is refused at the tool gate',
+    '  the moment it happens; a done node whose whole write_set is absent raises an observation.',
+    '  output_path names the single deliverable; write_set covers EVERY file the node touches. Two',
+    '  parallel nodes must not list the same path — that is a write race, split or serialize them.',
+    '  Omit write_set only when the touched files are genuinely unknowable at plan time.',
     // 2026-08-09 补 (S2 图 reachability-entry 实测: 验证节点被标成产文件 → 产物闸 filesTouched
     // 空误杀, 级联砍下游)。执法端 = 引擎 empty-artifact 判词已带同款自纠指引, 这里管画图端。
     'MIRROR RULE — verification/check nodes MUST NOT declare artifacts: if a node only VERIFIES/inspects',

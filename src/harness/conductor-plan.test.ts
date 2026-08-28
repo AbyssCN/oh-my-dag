@@ -93,6 +93,18 @@ describe("'-kb' 档 (#171): 基档字节 + 单点插入知识边界段", () => {
   });
 });
 
+// ── B1 (2026-08-29, 放量路线 §3): write_set 教学在位 ─────────────────────────
+// bench 审计 (N1 批 50 节点) write_set 使用 = 0, 根因是 prompt 零教学 —— 写域闸/
+// 写集核实正判据/全空闸三个消费者 (engine.ts 4140/4319/5463) 在 conductor 路径上全部空转。
+// 证伪方式 (当场验过): 删 conductorSystemPrompt 里 WRITE-SET CONTRACT 段 → 本条红; 恢复后绿。
+describe('B1: write_set 教学进 full 档', () => {
+  test('full 档教 write_set 三向执法 (声明=证据 · 越集拒写 · 全空出观察)', () => {
+    const full = conductorSystemPrompt();
+    expect(full).toContain('WRITE-SET CONTRACT');
+    expect(full).toContain('"write_set"');
+  });
+});
+
 // ── SDD v2 S5: conductor prompt motif (G-9) ──────────────────────────────────
 
 describe('S5 conductor prompt: SDD v2 字段 + 前端 motif (G-9)', () => {
