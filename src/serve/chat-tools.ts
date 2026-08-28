@@ -74,7 +74,7 @@ const COVERED_MCP_NAMES: ReadonlySet<string> = new Set([
   'dag_research', 'dag_review', 'dag_slim', 'dag_deepen', 'dag_debug',
   'dag_triage', 'dag_rule', 'dag_intervene', 'dag_resume', 'dag_result',
   'map_init', 'map_open', 'map_add', 'map_rule', 'map_deliver', 'map_prefetch', 'map_confirm',
-  'memory_remember', 'omd_web', 'omd_distill',
+  'memory_remember', 'memory_fact', 'omd_web', 'omd_distill',
   'omd_set_key', 'omd_apply_preset', 'omd_set_role', 'omd_models_auto', 'omd_register_provider',
   'omd_set_model', 'omd_config_status', 'omd_toggle_hud', 'omd_primitive', 'omd_shapes',
 ]);
@@ -170,6 +170,9 @@ const EXTRA_CONDUCTOR_TOOLS: ReadonlyArray<{
   { chatName: 'omd_map_prefetch', mcpName: 'map_prefetch', promptSnippet: 'omd_map_prefetch(slug?) — 预取地图上下文' },
   { chatName: 'omd_map_confirm', mcpName: 'map_confirm', promptSnippet: 'omd_map_confirm(...) — 确认/拒绝 suggested 票' },
   { chatName: 'omd_remember', mcpName: 'memory_remember', promptSnippet: 'omd_remember(fact) — 写一条记忆 (只写已验证事实/裁决; append 不覆盖)' },
+  // recall 的 L2 出口 (2026-08-28): recall 只给 1500 字符的头部, 全文走这里。
+  // 没有它, 截断就是内容永久不可达 —— 而库里 omd.pattern 最长 4518 字符。
+  { chatName: 'omd_fact', mcpName: 'memory_fact', promptSnippet: 'omd_fact(id) — 按 id 取一条记忆全文 + 代码锚是否已变 (recall 截断后的出口)' },
   { chatName: 'omd_web', mcpName: 'omd_web', promptSnippet: 'omd_web(query, k?, crawl?, mode?) — 搜+抓网页, 零 LLM, 全文存盘 (无 provider 不挂)' },
   { chatName: 'omd_distill', mcpName: 'omd_distill', promptSnippet: 'omd_distill(text, question?, lens?, url?, title?) — 吃已有原文蒸馏洞察' },
   { chatName: 'omd_set_key', mcpName: 'omd_set_key', confirmRequired: true, promptSnippet: 'omd_set_key(provider, key, target?) — 写 API key (凭证写, 每次 ask_user 确认)' },

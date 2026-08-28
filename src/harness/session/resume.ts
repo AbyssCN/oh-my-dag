@@ -21,6 +21,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { resolveProject } from '../project-scope';
 import { section } from './writer';
+import { readCheckpointAnchors, renderAnchorDrift, type AnchorDrift } from './checkpoint-anchors';
 
 export interface ResumeBrief {
   /** 产出这份 checkpoint 的**上一个** session id。 */
@@ -35,6 +36,12 @@ export interface ResumeBrief {
   readonly degraded: boolean;
   /** latest.json 的 updatedAt(ms);缺 = null(不伪造时间)。 */
   readonly updatedAt: number | null;
+  /**
+   * L3 交接锚的漂移读数(2026-08-28)。`null` = **这一格没有读数**
+   * (sidecar 不存在 / 读不动 —— 交接写于本机制之前),**不是**"没有漂移"。
+   * 渲染面据此保持沉默,而不是说"全部未变"。
+   */
+  readonly drift: AnchorDrift | null;
 }
 
 /**
@@ -78,6 +85,8 @@ export function readResumeBrief(opts: { cwd?: string }): ResumeBrief | null {
       next,
       degraded: md.startsWith('<!-- DEGRADED'),
       updatedAt: typeof latest.updatedAt === 'number' ? latest.updatedAt : null,
+      // 零 LLM、零 token:重算几个 sha 而已。读不出 → null(见 ResumeBrief.drift 的注)。
+      drift: readCheckpointAnchors(checkpointPath, scope.rootPath),
     };
   } catch {
     return null; // 读回面挂了不该让新会话开不了口
@@ -102,6 +111,9 @@ export function renderResumeBrief(b: ResumeBrief): string {
   ];
   if (b.intent) lines.push(`**在做什么**:${b.intent}`, '');
   if (b.next) lines.push(`**下一步**:${b.next}`, '');
+  // L3:把「可能已过时」这句免责声明换成一条读数。没有读数就不说 —— 沉默 ≠ "没变"。
+  const drift = renderAnchorDrift(b.drift);
+  if (drift) lines.push(`> ${drift}`, '');
   lines.push(`全文:\`${b.checkpointPath}\``);
   return lines.join('\n');
 }

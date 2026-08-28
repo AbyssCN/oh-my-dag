@@ -53,8 +53,9 @@ discipline (when to escalate, how to accept, who holds the trigger).
 
 | Tool | What it does |
 |---|---|
-| `memory_recall` | hybrid semantic + lexical search over the fact store; ranked hits with confidence and source |
-| `memory_remember` | store a fact, gated by namespace safeguards (rejects secrets / banned / out-of-namespace) |
+| `memory_recall` | hybrid semantic + lexical search over the fact store; ranked hits with confidence, source, and code-anchor staleness. Long facts are head-truncated at 1500 chars and the whole response is capped at 8000 — what got dropped is stated, never silently cut |
+| `memory_fact` | fetch one fact in full by id, with a per-anchor staleness breakdown. This is the exit for a truncated `memory_recall` hit — without it, truncation would make content permanently unreachable |
+| `memory_remember` | store a fact, gated by namespace safeguards (rejects secrets / banned / out-of-namespace). `omd.pattern` / `omd.limit` may carry `evidence: [{path, sha}]` — repo-relative paths plus a sha256-prefix fingerprint, checked on every recall with zero LLM calls |
 
 **Config** — model roster, keys, presets, all over MCP:
 

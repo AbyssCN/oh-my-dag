@@ -19,7 +19,7 @@ import { resolve } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { logger } from '../logger';
 import { createOmdMemory } from '../memory';
-import { resolveMemoryDbPath } from '../memory/db-path';
+import { resolveHandoffDbPath } from '../memory/db-path';
 import { CONTINUITY_SAFEGUARD } from '../../memory/safeguards/continuity-namespace';
 import { bucketIndex, bucketThreshold } from './bucket';
 import { omdSessionSource, type OmdEntryLike } from './source';
@@ -67,10 +67,12 @@ export function decideOmdCheckpoint(opts: {
 /**
  * 交接镜像层实例。**窄闸**(只 continuity 一格)与 `scripts/session-writer.ts` 同款 ——
  * 写入面不该因为要写一条交接就放宽。开不出来返 `null`:markdown 仍会写入磁盘,少的只是镜像。
+ *
+ * 库是 `resolveHandoffDbPath` 那个**独立**文件, 不是 memory.db(2026-08-28, 理由见 db-path.ts)。
  */
 function openContinuityMemory(cwd: string, env: NodeJS.ProcessEnv): OmdMemory | null {
   try {
-    const path = resolve(cwd, resolveMemoryDbPath(env));
+    const path = resolve(cwd, resolveHandoffDbPath(env));
     mkdirSync(resolve(path, '..'), { recursive: true });
     return createOmdMemory({ path, safeguard: CONTINUITY_SAFEGUARD });
   } catch (err) {
@@ -134,7 +136,7 @@ export async function maybeCheckpointOmdSession(deps: OmdCheckpointDeps): Promis
     firedBuckets.set(deps.sessionId, Math.max(lastFiredBucket, decision.bucket));
 
     // 镜像层:调用方没给就自己开一个窄闸实例(只 continuity 一格),用完就关。
-    // 库位置与该 repo 的 MCP 读面同一条解析(`resolveMemoryDbPath`),对 `deps.cwd` 取绝对 ——
+    // 库位置走 `resolveHandoffDbPath`(交接专库,不是 memory.db),对 `deps.cwd` 取绝对 ——
     // 相对路径按 `process.cwd()` 解会在长驻进程里指到别处去。
     const owned = deps.memory ? null : openContinuityMemory(deps.cwd, deps.env ?? process.env);
     const memory = deps.memory ?? owned;

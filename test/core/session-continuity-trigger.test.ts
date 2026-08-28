@@ -88,6 +88,8 @@ interface World {
   dataHome: string;
   transcript: string;
   memoryDb: string;
+  /** 交接镜像的**专**库(2026-08-28 分库)—— detached writer 落的是这个,不是 memoryDb。 */
+  handoffDb: string;
 }
 
 function mkWorld(prefix: string, ...buckets: number[]): World {
@@ -105,6 +107,7 @@ function mkWorld(prefix: string, ...buckets: number[]): World {
     dataHome,
     transcript,
     memoryDb: join(repo, '.omd', 'memory.db'),
+    handoffDb: join(repo, '.omd', 'handoff.db'),
   };
 }
 
@@ -121,7 +124,11 @@ interface HookRun {
  */
 function hookBaseEnv(): NodeJS.ProcessEnv {
   const { CLAUDE_AGENT_SDK_VERSION: _drop, ...rest } = process.env;
-  return { ...rest, CLAUDE_CODE_ENTRYPOINT: 'cli' };
+  // `OMD_DREAM_AUTO` 同样必须**显式钉死**(2026-08-28, 与上面 ENTRYPOINT 同一条理由):
+  // 开发者本机开了自动固化的话, `...process.env` 会把它漏进 hook 子进程, 于是 hook 顺带跑一次
+  // gather —— 而 gather 会建出 watermark 库(= memory.db), 让本组「memory.db 不该出现」的断言
+  // 变成"看谁跑"的假红。本组测的是**交接**, 不是 dream。
+  return { ...rest, CLAUDE_CODE_ENTRYPOINT: 'cli', OMD_DREAM_AUTO: '0' };
 }
 
 function runHook(world: World, input: unknown, envOver: Record<string, string> = {}): HookRun {
@@ -148,7 +155,10 @@ async function waitForCheckpoint(
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     if (existsSync(dbPath)) {
-      // 读面 = MCP 生产装配那一份, 不是测试自捏的 —— 捏一份就又变成"假如注册了会怎样"。
+      // 读面用 HOST_SAFEGUARD(createDefaultMemory 那一份), 不是测试自捏的 schema ——
+      // 捏一份就又变成"假如注册了会怎样"(#206 的病灶)。
+      // ⚠ 分库之后这里传的 dbPath 是 **handoff.db**;`OMD_MEMORY_PATH` 在这只当"开哪个文件"用,
+      //   不代表生产的 MCP 读面会去读它 —— 今天没有任何生产调用点读 handoff 库(L3 才接)。
       const memory = createDefaultMemory({ OMD_MEMORY_PATH: dbPath } as NodeJS.ProcessEnv);
       try {
         const rows = await listCheckpoints({ sessionId }, { memory });
@@ -363,7 +373,9 @@ describe('A5 fail-open — 坏输入永不阻断 session', () => {
     });
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe('{}');
+    // 两个库都不许出现 —— 分库之后"零写入"是两个文件的事,只查一个会漏掉另一边。
     expect(existsSync(world.memoryDb)).toBe(false);
+    expect(existsSync(world.handoffDb)).toBe(false);
     expect(r.stderr).toContain('[continuity-hook]');
   });
 
@@ -454,8 +466,12 @@ describe('A1 端到端 — 喂一次 hook, 库里真出 continuity 行', () => {
       expect(existsSync(join(contDir, 'writer.log'))).toBe(true);
       expect(existsSync(join(contDir, 'ledger.jsonl'))).toBe(true);
 
-      const rows = await waitForCheckpoint(world.memoryDb, sessionId);
+      // 分库后 detached writer 落 handoff.db。**同时**钉住共享库没被写脏 —— 反向自检:
+      // 把 `scripts/session-writer.ts` 的 `resolveHandoffDbPath` 改回 `resolveMemoryDbPath`
+      // → 上一行超时、下一行同时红。
+      const rows = await waitForCheckpoint(world.handoffDb, sessionId);
       expect(rows.length).toBeGreaterThan(0);
+      expect(existsSync(world.memoryDb)).toBe(false);
 
       const row = rows[0]!;
       expect(row.sessionId).toBe(sessionId);
@@ -477,6 +493,7 @@ describe('SessionStart 注入 — persona 与交接两块各自独立', () => {
     next: '摘腿',
     degraded: false,
     updatedAt: null,
+    drift: null, // 这份 stub 没有 sidecar ⇒ 这一格没有读数(不是"没漂移")
   };
 
   test('两块都在 → 都注, 中间有分隔', () => {

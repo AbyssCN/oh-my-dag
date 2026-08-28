@@ -28,6 +28,7 @@ import type { OmdMemory } from '../memory';
 import { logger } from '../logger';
 import { checkNouns } from './noun-gate';
 import { sinkCheckpoint, type CheckpointSinkResult } from './sink';
+import { extractRepoPaths, writeCheckpointAnchors } from './checkpoint-anchors';
 import { ccTranscriptSource, excerpt, type SessionSource } from './source';
 
 // `excerpt` 的实装 2026-08-19 (#211) 搬进 `session/source.ts` —— 它是「认 Claude Code 记录
@@ -153,10 +154,10 @@ function validate(md: string, material: string, projectRoot: string): string[] {
     errors.push(`超长: ${md.length} chars > ${MAX_CHECKPOINT_CHARS}(压缩到段预算内: ${SECTION_BUDGET_HINT})`);
 
   // grounding ①: 相对路径 ∈ repo ∪ 源材料
-  const pathRe = /(?:src|docs|scripts|test|frontend|sql|supabase)\/[\w\-./[\]]+/g;
-  const paths = [...new Set(md.match(pathRe) || [])].map((p) =>
-    p.replace(/[.,;:)\]]+$/, '').replace(/:\d+.*$/, ''),
-  );
+  // ⚠ 提取器是 `checkpoint-anchors.extractRepoPaths` 那**一份**(2026-08-28):写时闸(这里)
+  // 与读时的新鲜度闸必须看见同一批路径。各留一份正则 = 两边慢慢漂,而漂的症状是
+  // 「读侧对一个写侧从没验过的路径告警」,查起来极贵。
+  const paths = extractRepoPaths(md);
   const fabricated = paths.filter((p) => !existsSync(join(projectRoot, p)) && !material.includes(p));
   if (fabricated.length > 0)
     errors.push(
@@ -424,6 +425,12 @@ export async function runWriter(opts: WriterOptions): Promise<WriterResult> {
     return { ok: true, checkpointPath, degraded: true, chars: prevCheckpoint.length, skipped: false, sha: sha12(prevCheckpoint) };
   }
   writeFileSync(checkpointPath, md);
+  // L3 代码锚(2026-08-28):记下这份交接引用的仓内文件**此刻**的指纹, 供下一段开场判新鲜度。
+  // 告知层 fail-open —— `-1` = 写锚挂了(与 `0` = 没引用任何仓内文件不是一回事), 留一行证据就走。
+  const anchored = writeCheckpointAnchors(checkpointPath, md, projectRoot, now());
+  if (anchored < 0) {
+    logger.warn({ sessionId, checkpointPath }, '[session-writer] 交接代码锚写入失败 (交接本身已落, 不阻断)');
+  }
   writeFileSync(
     statePath,
     JSON.stringify({ ...state, distillOffset: newOffset, lastDistillAt: now(), mode, source: source.kind }),

@@ -133,8 +133,73 @@ function buildExtractRunInput(
     status: run.status,
     goal: run.goal,
     error: run.error,
+    transcript: buildRunTranscript(run),
     planLedger: planLedgerInfo,
   };
+}
+
+/** 单个节点 output 的截取上限。节点产出常是 grep/读盘倾泻, 全量进 prompt 是拿钱买噪声。 */
+const NODE_OUTPUT_HEAD = 800;
+/** 整段 transcript 的上限。超了先丢 done 节点(教训在坏掉的那些里, 不在跑通的那些里)。 */
+const TRANSCRIPT_MAX = 6000;
+
+/**
+ * 从一条 run 记录拼出给 extract 读的 transcript(2026-08-28,票 #10)。
+ *
+ * ## 补的是什么
+ *
+ * `ExtractRunInput` 上的 `transcript` 字段一直存在、`renderTrustedRunInput` 一直会渲染它 ——
+ * 但**没有任何地方填**。于是 extract-run 拿一句 `goal` 就被要求抽出「plan-family 教训 /
+ * oracle 教训 / 座位教训 / 时序边」。实测产率 **0.25 条 fact / 次模型调用**(2026-08-28
+ * drain:246 次调用 → 61 条)。不是模型不行,是没给它材料。
+ *
+ * ## 材料本来就在盘上
+ *
+ * - `result.verification.reason` —— verifier 写的复盘散文(「哪个节点失败、导致哪些 skip」)。
+ *   **信噪比最高的一段**, 所以排第一。它是引擎自己的读数, 不是模型自由发挥的产物。
+ * - `nodeDetails[id] = {status, output, error}` —— 逐节点。
+ *
+ * ## 三条取舍
+ *
+ * ① **失败/跳过的节点给细节, done 的只给一行。** 教训在坏掉的那些里;跑通的节点的 output
+ *    多是搜索结果倾泻, 进 prompt 只是花钱买噪声。
+ * ② **两级预算**(单节点 `NODE_OUTPUT_HEAD` / 整段 `TRANSCRIPT_MAX`), 截断处**明写截了多少**——
+ *    悄悄截断会让下游把"看不见"读成"没有"。
+ * ③ **拼不出就返 `undefined`, 不返空串。** 空串会让 `renderTrustedRunInput` 渲出一个空的
+ *    `## Transcript` 段, 那是在告诉模型"这段是空的"而不是"这段不适用"(仓规坑①)。
+ */
+export function buildRunTranscript(run: PersistedRun): string | undefined {
+  const parts: string[] = [];
+
+  const verification = (run.result as { verification?: { pass?: unknown; reason?: unknown } } | undefined)?.verification;
+  if (typeof verification?.reason === 'string' && verification.reason.trim()) {
+    parts.push(`### verifier 判词 (pass=${String(verification.pass)})`, verification.reason.trim());
+  }
+
+  const nodes = run.nodeDetails;
+  if (nodes) {
+    const entries = Object.entries(nodes);
+    // 坏掉的排前面 —— 预算不够时先保住它们。
+    const bad = entries.filter(([, n]) => n.status !== 'done');
+    const good = entries.filter(([, n]) => n.status === 'done');
+    if (bad.length > 0) {
+      parts.push('', '### 未跑通的节点');
+      for (const [id, n] of bad) {
+        const head = (n.error ?? n.output ?? '').slice(0, NODE_OUTPUT_HEAD);
+        const cut = (n.error ?? n.output ?? '').length - head.length;
+        parts.push(`- **${id}** (${n.status}): ${head}${cut > 0 ? `\n  …[截断 ${cut} 字符]` : ''}`);
+      }
+    }
+    if (good.length > 0) {
+      parts.push('', `### 跑通的节点: ${good.map(([id]) => id).join(', ')}`);
+    }
+  }
+
+  if (parts.length === 0) return undefined; // 拼不出 ⇒ 不适用, 不是"空的"
+  const text = parts.join('\n');
+  return text.length > TRANSCRIPT_MAX
+    ? `${text.slice(0, TRANSCRIPT_MAX)}\n…[整段截断, 原长 ${text.length} 字符]`
+    : text;
 }
 
 // ---------------------------------------------------------------------------

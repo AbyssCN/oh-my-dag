@@ -97,6 +97,9 @@ const NON_TEXT_FIELDS = new Set([
   'source_event_id',
   'source_doc_id',
   'confidence',
+  // 代码锚是 provenance 不是 value (2026-08-28)。放进来会把 16 位 hex 指纹塞进 FTS 与 embedding,
+  // 那是纯噪声; 而且 text 是召回预算与截断的计量对象, 让它被证据撑长等于挤掉真正的内容。
+  'evidence',
 ]);
 function factToText(fact: ValidatedFact): string {
   const rec = fact as unknown as Record<string, unknown>;

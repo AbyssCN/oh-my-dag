@@ -36,6 +36,102 @@ import {
   writerArgv,
   type ContinuityHookInput,
 } from '../src/harness/session/continuity-hook';
+import { engineRoot, isSdkChildSession } from '../src/harness/session/continuity-hook';
+import { gather } from '../src/harness/dream/gather';
+import {
+  AUTO_BATCH,
+  acquireDreamLock,
+  decideDreamTrigger,
+  readDreamAttempt,
+  writeDreamAttempt,
+} from '../src/harness/dream/trigger';
+import { createRunStore } from '../src/mcp/run-store';
+
+/** dream 尝试记录的位置 —— 与 memory.db 并排(同一个仓一份)。 */
+function dreamStatePath(cwd: string): string {
+  return join(cwd, '.omd', 'dream-attempt.json');
+}
+
+/** 互斥锁位置 —— 与 attempt 记录并排, 一个仓一把。 */
+function dreamLockPath(cwd: string): string {
+  return join(cwd, '.omd', 'dream.lock');
+}
+
+/**
+ * 判 + 派 dream(全程 fail-open,返回要贴给用户的 marker 或空串)。
+ *
+ * ## 为什么先跑 gather 再判
+ *
+ * 水位判据("脏了多少")只有 gather 才知道,而 gather 是**零 LLM** 的(纯读 runs.db /
+ * ChatStore + 比 watermark)。所以判定这一步一分钱不花 —— 花钱的是判定为真之后 detached
+ * 派出去那一批。
+ *
+ * ## 为什么 detached spawn 而不是 in-process await
+ *
+ * hook 是 CC 的同步阻塞点。dream 一批要打最多 12 次模型,秒到分钟级。在这里 await
+ * 等于把用户的 Stop 卡住 —— 与交接 writer 同一条理由,同一个做法。
+ */
+async function maybeFireDream(cwd: string): Promise<string> {
+  const statePath = dreamStatePath(cwd);
+  // 判定前先看开关与自喂闸:两者都不需要开库、不需要 gather。
+  const pre = decideDreamTrigger({
+    dirtyTotal: 0,
+    dirtySources: 0,
+    attempt: readDreamAttempt(statePath),
+    nowMs: Date.now(),
+    isSdkChild: isSdkChildSession(),
+  });
+  if (!pre.fire && (pre.why.startsWith('OMD_DREAM_AUTO') || pre.why.startsWith('自喂闸'))) return '';
+
+  // gather 与 CLI 的 `phaseGather` 同款装配(单一真源:同一个函数、同一个 runStore 路径)。
+  const runStore = createRunStore({ path: join(cwd, '.omd', 'runs.db') });
+  let dirtyTotal = 0;
+  let dirtySources = 0;
+  try {
+    const report = await gather({ cwd, runStore });
+    dirtyTotal = report.dirtyTotal;
+    dirtySources = report.sources.filter((s) => s.state === 'dirty').length;
+  } finally {
+    runStore.close();
+  }
+
+  const trigger = decideDreamTrigger({
+    dirtyTotal,
+    dirtySources,
+    attempt: readDreamAttempt(statePath),
+    nowMs: Date.now(),
+    isSdkChild: isSdkChildSession(),
+  });
+  if (!trigger.fire) {
+    console.error(`[dream-trigger] 不点火: ${trigger.why}`);
+    return '';
+  }
+
+  // 互斥:已经有一个 dream 在跑就不点(2026-08-28 实测撞过 —— hook 派的批与手起的 drain
+  // 同时跑,同一批语料被抽两遍、水位互相覆盖)。锁由**被派出去的那个进程**负责放,
+  // 所以这里只拿不放;它崩了由 STALE_LOCK_MS 兜底。
+  if (!acquireDreamLock(dreamLockPath(cwd))) {
+    console.error('[dream-trigger] 不点火: 已有一个 dream 在跑(锁被占)');
+    return '';
+  }
+
+  // ⚠ 冷却在**掏钱之前**开始计时(见 trigger.ts 护栏②):先写 attempt,再 spawn。
+  // 反过来的话进程中途被杀 = 没记过 = 下一次 Stop 立刻又烧一批。
+  writeDreamAttempt(statePath, { lastAttemptAt: Date.now(), lastOutcome: null });
+
+  const logDir = join(cwd, '.omd');
+  mkdirSync(logDir, { recursive: true });
+  const fd = openSync(join(logDir, 'dream.log'), 'a');
+  spawn('bun', ['run', join(engineRoot(), 'scripts', 'omd-dream.ts'), 'all', '--cwd', cwd, '--batch', String(AUTO_BATCH)], {
+    cwd,
+    detached: true,
+    stdio: ['ignore', fd, fd],
+  }).unref();
+
+  const m = `🌙 dream 固化 · ${dirtySources} 个脏源 / 本批 ≤${AUTO_BATCH} · [固化 pending]`;
+  console.error(`[dream-trigger] ${m} — ${trigger.why}`);
+  return m;
+}
 
 let marker = '';
 let eventName = 'Stop';
@@ -89,6 +185,16 @@ try {
     const trig = trigger.mode === 'rolling' ? `${trigger.bucket} 档` : trigger.mode;
     marker = `💾 continuity checkpoint · 触发=${trig} · [distill pending]`;
     console.error(`[continuity-hook] ${marker}`);
+  }
+
+  // ── dream 自动固化(2026-08-28)──────────────────────────────────────────
+  // 与上面的交接**完全独立**:交接失败不该拦住固化,固化失败更不该拦住交接。所以另一个
+  // try,而不是并进上面那条链。默认关(`OMD_DREAM_AUTO=1` 才开)—— 它要打真模型。
+  try {
+    const dreamMarker = await maybeFireDream(cwd);
+    if (dreamMarker) marker = marker ? `${marker}\n${dreamMarker}` : dreamMarker;
+  } catch (e) {
+    console.error(`[dream-trigger] 跳过 (fail-open): ${e instanceof Error ? e.message : String(e)}`);
   }
 } catch (e) {
   // fail-open 吞异常,但**不吞证据**(仓规坑②):留一行原文。

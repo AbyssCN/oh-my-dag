@@ -29,6 +29,7 @@ import { validateDreamCandidate, dreamFactInput } from '../src/harness/dream/val
 import { mergeDreamCandidates } from '../src/harness/dream/merge';
 import { promoteDreamFacts } from '../src/harness/dream/promote';
 import { createRunStore } from '../src/mcp/run-store';
+import { acquireDreamLock, releaseDreamLock } from '../src/harness/dream/trigger';
 import { callModel } from '../src/model';
 import type { DreamCandidate } from '../src/harness/dream/validate';
 
@@ -46,6 +47,7 @@ function usage(): never {
   console.error('  promote    S3 晋升 + prune (零 LLM)');
   console.error('  report     打印上次统计数据');
   console.error('  all        一键整跑 (全图)');
+  console.error('  drain      一直分批跑到脏源清空 (存量消化; 三条停机判据见 phaseDrain 注)');
   console.error('');
   console.error('选项:');
   console.error('  --run <id>     run id (省略 = 自动生成)');
@@ -54,6 +56,7 @@ function usage(): never {
   console.error('  --json         JSON 输出 (默认人读)');
   console.error('  --dry-run      只读不写 (all 模式)');
   console.error('  --batch <n>    分批消费: 本跑只吃 ≤n 个 dirty 源, 水位逐段推进 (存量首跑用)');
+  console.error('  --max-usd <n>  drain 的总预算 (默认 5.00) — 单跑 $0.10 的上限拦不住 26 跑');
   process.exit(1);
 }
 
@@ -65,6 +68,8 @@ interface ParsedArgs {
   json: boolean;
   dryRun: boolean;
   batch?: number;
+  /** drain 的**总**预算(单跑的 COST_MAX_USD 拦不住 26 跑)。 */
+  maxUsd?: number;
 }
 
 function parseArgs(raw: string[]): ParsedArgs {
@@ -84,6 +89,7 @@ function parseArgs(raw: string[]): ParsedArgs {
     else if (a === '--json') { args.json = true; }
     else if (a === '--dry-run') { args.dryRun = true; }
     else if (a === '--batch' && raw[i + 1]) { args.batch = Number(raw[++i]!); }
+    else if (a === '--max-usd' && raw[i + 1]) { args.maxUsd = Number(raw[++i]!); }
     else if (!a.startsWith('--')) {
       if (!args.phase) args.phase = a;
       else { console.error(`未知参数: ${a}`); usage(); }
@@ -198,6 +204,28 @@ async function phaseReport(_args: ParsedArgs): Promise<void> {
   }
 }
 
+/** 锁位置 —— 与 hook 侧 `dreamLockPath` 同一个文件(一个仓一把, 手起的与 hook 派的共用)。 */
+function lockPathOf(cwd: string): string {
+  return join(cwd, '.omd', 'dream.lock');
+}
+
+/**
+ * 持锁跑一段。**手起的 CLI 也必须占位** —— 2026-08-28 实测:开关打开后第一次 Stop,
+ * hook 派的批与手起的 drain 同时对着一个 memory.db 跑,同一批语料被抽两遍、水位互相覆盖。
+ * 只给 hook 侧加锁挡不住这个方向。
+ */
+async function withDreamLock(cwd: string, fn: () => Promise<void>): Promise<void> {
+  if (!acquireDreamLock(lockPathOf(cwd))) {
+    console.error('[dream] 已有一个 dream 在跑(锁被占)—— 不重复跑。陈锁 30 分钟自动过期。');
+    process.exit(1);
+  }
+  try {
+    await fn();
+  } finally {
+    releaseDreamLock(lockPathOf(cwd));
+  }
+}
+
 async function phaseAll(args: ParsedArgs): Promise<void> {
   // 整跑: 调用 assembly
   const report = await runDreamAssembly({
@@ -219,6 +247,103 @@ async function phaseAll(args: ParsedArgs): Promise<void> {
   if (!report.ok) process.exit(1);
 }
 
+/**
+ * **drain —— 一直分批跑到脏源清空**(2026-08-28,存量消化用)。
+ *
+ * ## 为什么不是"把上限调大跑一次"
+ *
+ * `assembly` 的 `L_MAX=12`(模型叶)与 `COST_MAX_USD=0.10`(每跑)是**预检不是截断**:
+ * 超了整跑失败、**零写入**(`merge.ts` 的第一版是"写完再置 ok:false",比截断更糟 ——
+ * 副作用全落了而失败只是装饰,那次改判就是为了这个)。所以把 303 个源塞进一跑
+ * 不会"跑得久一点",是**一条都写不进去**。drain 只能是**重复的小批**。
+ *
+ * ## 三条停机判据(缺一会变成烧钱的死循环)
+ *
+ * ① **清空**:gather 报 `dirtyTotal === 0` —— 正常出口。
+ * ② **游标无进展**:一批下来脏源个数没减少 → 停(源消化不掉,反复烧同一批)。
+ * ②b **产出无进展**:连续 `ZERO_YIELD_STREAK` 批 `added+evolved+promoted === 0` → 停。
+ *    ⚠ 这一条是 2026-08-28 实跑补的:首版只有②,而②量的是**语料被吃掉了多少**,
+ *    不是**产出了多少**。于是一个"只消耗语料、零产出"的 drain 在判据下看起来完全健康 ——
+ *    而它每批照烧 12 次模型调用,并且把水位推进了(**那批语料再也采不回来**)。
+ *    量错了对象的闸比没有闸更危险,因为它给人一个"在看着"的错觉。
+ * ③ **总预算**:`--max-usd`(默认 5.00)。每跑 $0.10 的上限是**单跑**的,
+ *    26 跑就是 26 倍 —— 单跑上限拦不住 drain,必须另有一个总额。
+ */
+/** 连续几批零产出就停。3 = 容得下正常的稀疏(有些批确实没教训), 又拦得住系统性空转。 */
+const ZERO_YIELD_STREAK = 3;
+
+async function phaseDrain(args: ParsedArgs): Promise<void> {
+  const batch = args.batch !== undefined && args.batch > 0 ? Math.floor(args.batch) : 12;
+  const maxUsd = args.maxUsd ?? 5.0;
+  let spent = 0;
+  let pass = 0;
+  let prevDirty = Number.POSITIVE_INFINITY;
+  let zeroYield = 0;
+
+  for (;;) {
+    const runStore = createRunStore({ path: join(args.cwd, '.omd', 'runs.db') });
+    let dirtySources: number;
+    let dirtyTotal: number;
+    try {
+      const g = await gather({ cwd: args.cwd, runStore });
+      dirtyTotal = g.dirtyTotal;
+      dirtySources = g.sources.filter((s) => s.state === 'dirty').length;
+    } finally {
+      runStore.close();
+    }
+
+    if (dirtySources === 0) {
+      console.log(`[drain] 清空 — 共 ${pass} 批, 花费 ~$${spent.toFixed(3)}`);
+      return;
+    }
+    if (dirtySources >= prevDirty) {
+      // ② 无进展:上一批没减少任何脏源。再跑一次只会再烧一次同样的钱。
+      console.error(
+        `[drain] **停:无进展** — 脏源 ${prevDirty} → ${dirtySources}, 第 ${pass} 批之后没减少。` +
+          ' 这批源大概率是消化不掉的(extract 恒失败 / 语料坏)—— 单独看 dream.log 那几条, 别继续烧。',
+      );
+      process.exit(1);
+    }
+    if (spent >= maxUsd) {
+      console.error(`[drain] **停:总预算用尽** — 花了 ~$${spent.toFixed(3)} ≥ $${maxUsd}, 还剩 ${dirtySources} 个脏源。加 --max-usd 才继续。`);
+      process.exit(1);
+    }
+
+    prevDirty = dirtySources;
+    pass++;
+    console.log(`[drain] 第 ${pass} 批 — 脏源 ${dirtySources} / 脏条目 ${dirtyTotal} / 本批 ≤${batch} / 已花 ~$${spent.toFixed(3)}`);
+
+    const report = await runDreamAssembly({
+      cwd: args.cwd,
+      // 每批一个新 runId —— 用同一个的话报告与账本会把 26 批叠成一批, 事后分不开哪批出的哪条。
+      runId: `${args.runId}-p${pass}`,
+      callModel: args.dryRun ? undefined : callModel,
+      model: args.model,
+      batchLeaves: batch,
+    });
+    spent += report.costUsd ?? 0;
+    console.log(formatDreamReport(report));
+
+    // ②b 产出判据。**注意 costUsd 在订阅制座位上恒 0** —— 所以 `--max-usd` 那条闸对这类
+    // 座位是**不动的**(一个在任何干预下都不动的数,量的是尺子不是被测物)。产出判据是这里
+    // 唯一真正会动的那条,别把它也删了。
+    const yielded = (report.added ?? 0) + (report.evolved ?? 0) + (report.promoted ?? 0);
+    zeroYield = yielded === 0 ? zeroYield + 1 : 0;
+    if (zeroYield >= ZERO_YIELD_STREAK) {
+      console.error(
+        `[drain] **停:连续 ${ZERO_YIELD_STREAK} 批零产出** — 语料在被消耗、水位在推进、事实一条没多。` +
+          ' 先查 extract 拿到的输入够不够(assembly.buildExtractRunInput 目前不喂 transcript),别继续烧。',
+      );
+      process.exit(1);
+    }
+    if (!report.ok) {
+      // 一批失败**不立刻退出**:失败的那批不推进水位, 下一轮 gather 会再看见它 ——
+      // 于是判据②(无进展)会在下一圈接住它。这里退出的话, 一条坏语料就能挡住其余全部。
+      console.error(`[drain] 第 ${pass} 批失败(水位未推进, 下一圈由"无进展"判据接住)`);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -229,7 +354,8 @@ const PHASES: Record<string, (args: ParsedArgs) => Promise<void>> = {
   merge: phaseMerge,
   promote: phasePromote,
   report: phaseReport,
-  all: phaseAll,
+  all: (a: ParsedArgs) => withDreamLock(a.cwd, () => phaseAll(a)),
+  drain: (a: ParsedArgs) => withDreamLock(a.cwd, () => phaseDrain(a)),
 };
 
 try {

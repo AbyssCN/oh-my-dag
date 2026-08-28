@@ -186,3 +186,45 @@ describe('listCheckpoints — 只读时间线 (read-only)', () => {
     expect(rows).toEqual([]);
   });
 });
+
+// ─── TTL 回收(2026-08-28 分库回归修复)──────────────────────────────────────
+
+/**
+ * continuity 分库之后 `handoff.db` **一个 prune 调用者都没有** —— 三个既有调用点
+ * (mcp/assemble.ts 的 6 小时清扫 · dream promote · chat/memory-inject)开的全是 memory.db。
+ * 这条钉住"写入侧顺手收"这一支还在。
+ *
+ * 反向自检(实跑):把 `sinkCheckpoint` 里的 `pruneHandoffStore(deps.memory)` 删掉 ⇒ 本条红。
+ */
+describe('★ 交接库 TTL 回收 —— 分库之后写入侧是唯一的清扫者', () => {
+  test('写一条交接会顺手 prune 掉已过期的旧快照', async () => {
+    const { createOmdMemory } = await import('../../src/harness/memory');
+    const { CONTINUITY_SAFEGUARD } = await import('../../src/memory/safeguards/continuity-namespace');
+    const memory = createOmdMemory({ path: ':memory:', safeguard: CONTINUITY_SAFEGUARD });
+
+    // 一条 40 天前写的旧快照(agent_tentative 闲置 30 天过期)。
+    const old = new Date(Date.now() - 40 * 24 * 3600 * 1000);
+    await memory.writeFact({
+      namespace: 'continuity',
+      id: 'stale-session',
+      mode: 'final',
+      intent: '一段很久以前的交接',
+      ctxTokens: null,
+      degraded: false,
+      source_event_id: 'session-checkpoint:stale-session',
+      confidence: { level: 'agent_tentative', source_event_ids: ['session-checkpoint:stale-session'], created_at: old },
+    });
+    expect(memory.count()).toBe(1);
+
+    // 写新的一条 → 触发回收。新旧两条 identity 不同,所以少掉的那条只能是被 prune 的。
+    const res = await sinkCheckpoint(
+      { sessionId: 'fresh-session', mode: 'final', md: '# cp', intent: '新的一段' },
+      { memory },
+    );
+    expect(res.ok).toBe(true);
+    expect(memory.liveFactsByNamespace('continuity').map((r) => r.fact as { id?: string }).map((f) => f.id)).toEqual([
+      'fresh-session',
+    ]);
+    memory.close();
+  });
+});

@@ -20,6 +20,7 @@
  *
  * @module
  */
+import { logger } from '../logger';
 import type { OmdMemory } from '../memory';
 import type { ValidatedFact } from '../../memory/safeguards/namespaces';
 
@@ -97,6 +98,37 @@ function rowOf(fact: ValidatedFact): CheckpointRow {
 }
 
 /**
+ * 写完一条就顺手回收一次过期的(2026-08-28)。
+ *
+ * ## 为什么在这里, 而且为什么非有不可
+ *
+ * `OmdMemory.prune()` 的三个调用点(`mcp/assemble.ts:420` 的 6 小时清扫 · dream 的 promote ·
+ * `chat/memory-inject.ts`)开的**全都是 `memory.db`**。continuity 分库之后 `handoff.db`
+ * **一个清扫者都没有** —— 也就是说分库这一步顺手把它的回收路径切断了。这是那次改动的回归,
+ * 不是新需求。
+ *
+ * 挂在写入侧的理由:让**把它撑大的那条路**同时负责收 —— 不新起定时器(定时器要管生命周期,
+ * 而 hook 派出去的 writer 是个短命进程,挂上去也没机会跑第二次)。
+ *
+ * 回收判据仍是 fact 自己的 TTL(`agent_tentative` 闲置 30 天)。**没有另加条数上限**:
+ * 上限是给"会被扫描的库"用的, 而今天没有任何生产路径读 handoff.db(`listCheckpoints` 零生产
+ * 调用方, L3 读的是 sidecar 文件不是这个库)。它涨大只费磁盘, 不再拖慢任何召回 —— 那正是分库
+ * 要解决的东西。**改变这个判断的条件**: 哪天有生产读面开始扫它, 那时再谈上限。
+ */
+function pruneHandoffStore(memory: OmdMemory): void {
+  try {
+    const n = memory.prune();
+    if (n > 0) logger.info({ pruned: n }, '[session-sink] 交接库 TTL 回收');
+  } catch (err) {
+    // fail-open 吞异常, 不吞证据(仓规坑②): 交接已经写成了, 回收失败不该让它变成失败。
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      '[session-sink] 交接库 TTL 回收失败 (交接本身已写成, 不影响返回值)',
+    );
+  }
+}
+
+/**
  * checkpoint → omd SQLite 镜像(fail-open)。
  * 无 memory 注入 → 静默跳过(markdown 已落,不报错)。
  * 有 memory → `writeFact({ namespace:'continuity', id:sessionId, ... })`:同 session 多写
@@ -133,6 +165,7 @@ export async function sinkCheckpoint(
       },
     });
     if (res.status === 'written') {
+      pruneHandoffStore(deps.memory);
       return { ok: true, factStatus: res.action === 'insert' ? 'created' : 'updated' };
     }
     return { ok: false, factStatus: 'rejected', error: `fact rejected: ${res.reason}` };

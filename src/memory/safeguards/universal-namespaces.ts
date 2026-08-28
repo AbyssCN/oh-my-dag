@@ -20,6 +20,52 @@ import {
 } from './namespace-kernel';
 
 // ---------------------------------------------------------------------------
+// 代码锚 —— 一条 omd.* 主张挂在哪几个文件的哪个版本上 (L2, 2026-08-28)。
+// ---------------------------------------------------------------------------
+
+/**
+ * 一条主张的**物理证据**:仓相对路径 + 该文件当时的内容指纹。
+ *
+ * ## 为什么是内容指纹, 不是 git commit
+ *
+ * OpenWiki 用 commit hash 是因为它要 diff 行区间; omd 只需要回答"变了没有"。内容 sha 严格更强:
+ * 未提交的改动也算 (commit hash 看不见), 不依赖 git (worktree / 非 git 目录也能判)。
+ * 口径与 `continuity/checkpoint-manager.ts:610` 的 `hashArtifact` 一致 —— sha256 前 16 hex。
+ *
+ * ## 为什么路径必须是仓相对
+ *
+ * 绝对路径把事实钉死在一台机器的一个目录上。omd 的记忆库要能跟着仓走 (worktree / 换机 / 换 checkout),
+ * 存 `/home/nick/repos/...` 等于第一次换目录就全体变成 `missing`。**闸在这里, 不在读侧**:
+ * 读侧只能猜, 写侧知道自己在哪。
+ *
+ * ## 上限 5
+ *
+ * 一条主张挂 20 个文件等于没挂 —— 那种"证据"里总有一个会变, 于是它永远 stale, 读侧只好无视这一列。
+ * 挂不到 5 个以内说明这条主张太大, 该拆。
+ */
+export const EvidenceAnchorSchema = z.object({
+  /** 仓相对路径 (绝对路径拒收 —— 见上注)。 */
+  path: z
+    .string()
+    .min(1)
+    .refine((p) => !p.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(p), {
+      message: 'evidence.path 必须是仓相对路径 (绝对路径不可移植)',
+    }),
+  /** 写入当时该文件的 sha256 前 16 hex。 */
+  sha: z.string().regex(/^[0-9a-f]{16}$/, 'evidence.sha 必须是 sha256 前 16 hex'),
+});
+export type EvidenceAnchor = z.infer<typeof EvidenceAnchorSchema>;
+
+/**
+ * 可选的代码锚列表。**optional 而不是必填**:81 条既有 omd.pattern 一条锚都没有,
+ * 必填会把它们全部变成不可重写的历史包袱。缺席 = `unanchored`,读侧当第四种状态处理,
+ * **不折成 fresh** (见 `harness/memory/staleness.ts`)。
+ */
+export const evidenceField = {
+  evidence: z.array(EvidenceAnchorSchema).min(1).max(5).optional(),
+} as const;
+
+// ---------------------------------------------------------------------------
 // user.* —— 记住用户 (6 facet)。第一级 facet 类型克制, 第二级 category/value 内容开放。
 // ---------------------------------------------------------------------------
 
@@ -104,6 +150,7 @@ const OMD_BRANCHES = [
     outcome: z.enum(['worked', 'failed']),
     scope: z.enum(OMD_PATTERN_SCOPES).optional(),
     ...sourceAnchor,
+    ...evidenceField,
     ...confidenceField,
   }),
   // 我的硬约束/边界/盲区 (预算/不可做/已知弱点)。
@@ -112,6 +159,7 @@ const OMD_BRANCHES = [
     kind: z.enum(['budget', 'boundary', 'blindspot']),
     statement: z.string().min(1),
     ...sourceAnchor,
+    ...evidenceField,
     ...confidenceField,
   }),
 ];

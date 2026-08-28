@@ -859,7 +859,8 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       // 「以为隔离了其实在写主树」的对偶形态)。
       defaultBranchStrategy,
     }),
-    ...createMemoryTools({ memory }),
+    // root = 代码锚判陈旧的基准 (evidence[].path 是仓相对的)。与其余工具同一个 cwd。
+    ...createMemoryTools({ memory, root: cwd }),
     // pathfinder 六件套 (TUI-less 决策地图: map/add/tickets/rule/deliver/prefetch, pull 式回流)。
     ...createPathfinderTools({
       cwd,
