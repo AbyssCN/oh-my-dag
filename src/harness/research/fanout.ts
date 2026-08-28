@@ -67,6 +67,31 @@ export type ResearchGap = z.infer<typeof GAP_SCHEMA>['gaps'][number];
 /** 每轮缺口上限 —— 超过就不是"增量"而是重开题 (引擎钳制, 不与模型商量)。 */
 const MAX_GAPS = 6;
 
+/**
+ * 脊柱语料瘦身 (owner 2026-07-27 裁决 · E-6 实测确认): 语料索引 = 结构骨架 (标题行 +
+ * 去重来源 URL + 规模), 供 post-reduce 脊柱 stage (synth/judge/fusion/graft) 替代全文 ——
+ * 它们消费的是冠军/候选 digest, **全文在那里只剩延迟与账单**。
+ * gen 仍持全文 (它是语料的第一次读, 没有上游替它消化过)。
+ *
+ * 读数 (docs/research/2026-08-28-脊柱语料瘦身-AB读数.md §4.11, 真 champions, n=3 中位数):
+ * 脊柱 token 削 69.3% · 假路径 1 (基线 4) · faithfulness 0.81 (= 基线) —— 三条判据全过。
+ */
+export function buildCorpusIndex(corpus: string, maxChars = 8_000): string {
+  const heads: string[] = [];
+  for (const raw of corpus.split('\n')) {
+    const t = raw.trim();
+    if (/^#{1,4} /.test(t) || /^<\/?second-pass-corpus/.test(t)) heads.push(t);
+  }
+  const urls = [
+    ...new Set((corpus.match(/https?:\/\/[^\s<>()[\]{}"'`,;）)]+/g) ?? []).map((u) => u.replace(/[.,;:!?]+$/, ''))),
+  ];
+  const body =
+    `<corpus-index chars="${corpus.length}">\n` +
+    `(脊柱瘦身: 全文语料已被镜头冠军/候选消化, 此处只留骨架; 事实与引用以冠军/候选内嵌者为准)\n` +
+    `${heads.join('\n')}\n\n来源 URL (${urls.length}):\n${urls.join('\n')}\n</corpus-index>`;
+  return body.length > maxChars ? `${body.slice(0, maxChars)}\n…[索引截断]\n</corpus-index>` : body;
+}
+
 /** 确定性探测器 (下限半边) 的产出。全空 = 这半边无新增。 */
 export interface ProbeYield {
   /** 缺料抓回来的增量语料 (append 进下一轮 groundTruth, 零丢失由调用方留档)。 */
@@ -474,6 +499,9 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
 
   const championsDigest = lensChampions.map((c) => `## 镜头冠军[${c.key}]\n${c.text}`).join('\n\n');
 
+  // 脊柱瘦身 (E-6): post-reduce 四发共用 [stablePrefix + 语料索引] 前缀 —— 互相之间仍缓存对齐, 且小一个量级。
+  const spineHead = cfg.stablePrefix ? `${cfg.stablePrefix}\n\n${buildCorpusIndex(corpus)}` : buildCorpusIndex(corpus);
+
   // ── Stage 3: M framing 综合候选 (pro, 并行)。synth 是 M 路发散 (不同立场各出一版) → 跨家族。
   // synthPool 与 lens 解耦: 省略则回落 divergePool (共池); 设则 synth 独立发散 (如 lens 廉价单族 + synth 多族)。
   const synthPool = cfg.synthPool ?? cfg.divergePool;
@@ -482,7 +510,7 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
     : null;
   const synthJobs = cfg.synthesisFramings.map((fr, mi) => async () => {
     const sm = synthModels?.[mi] ?? cfg.reasonModel;
-    const prompt = `${corpus}\n\n各镜头冠军:\n${championsDigest}\n\n<framing>${fr.framing}</framing>\n\n按此 framing 综合成一份完整方案 (具体到模块/文件/接点, 用真实模块名)。`;
+    const prompt = `${spineHead}\n\n各镜头冠军:\n${championsDigest}\n\n<framing>${fr.framing}</framing>\n\n按此 framing 综合成一份完整方案 (具体到模块/文件/接点, 用真实模块名)。`;
     const text = await track(sm, call({ model: sm, messages: msg(prompt), stage: 'synth' }));
     return { key: fr.key, text };
   });
@@ -499,7 +527,7 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
     : null;
   const judgeJobs = cfg.judgeCriteria.map((j, ki) => async () => {
     const jm = j.model ?? judgePanelModels?.[ki] ?? judgeModel; // 显式 model > judgePool 轮转 > 全局 judgeModel
-    const prompt = `${corpus}\n\n${candDigest}\n\n你是评判维度【${j.criterion}】的 judge。按此维度评 ${synthCandidates.length} 个候选: 各自强弱 + 哪个最优 + 该嫁接谁的哪段。只从你这个维度评。`;
+    const prompt = `${spineHead}\n\n${candDigest}\n\n你是评判维度【${j.criterion}】的 judge。按此维度评 ${synthCandidates.length} 个候选: 各自强弱 + 哪个最优 + 该嫁接谁的哪段。只从你这个维度评。`;
     const text = await track(jm, call({ model: jm, messages: msg(prompt), stage: 'judge' }));
     return { key: j.key, text };
   });
@@ -521,14 +549,14 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
   // 落在别的通道上 (出厂推荐 = claude-code, 而该通道对 user 消息里的 corpus 零缓存) —— 那时字节
   // 对齐仍然成立、缓存命中不成立, 每发多付一次全额 head。1 发的量, 是有意接受的代价 (见 seats.ts)。
   const fusionModel = cfg.fusionModel ?? resolveRoleModelConfigured('fusion').model; // 收敛单发, 不发散
-  const fusionPrompt = `${corpus}\n\n${candDigest}\n\nK-judge panel 多维评判:\n${critDigest}\n\n${buildFusionAnalysisPrompt()}`;
+  const fusionPrompt = `${spineHead}\n\n${candDigest}\n\nK-judge panel 多维评判:\n${critDigest}\n\n${buildFusionAnalysisPrompt()}`;
   const fusionAnalysis = await track(fusionModel, call({ model: fusionModel, messages: msg(fusionPrompt), stage: 'fusion' }));
   stage('fusion', 'fusion 融合分析 (5-tuple)');
 
   // ── Stage 5: 终审 graft (pro, 1 发) → 据 panel 评判 + fusion 5-tuple 合成最终方案。
   leafCount += 1;
   // 前缀与 fusion 字节对齐 (`head\n\n${candDigest}`) → 复用 judge/fusion 已暖的 head+candDigest 缓存。
-  const finalPrompt = `${corpus}\n\n${candDigest}\n\nK-judge panel 多维评判:\n${critDigest}\n\nFusion 融合分析 (结构化):\n${fusionAnalysis}\n\n你是首席架构师。据 panel 多维评判 + fusion 融合分析**合成唯一最终方案**: 选最强骨架, 嫁接共识与独特洞察, 显式消解矛盾点、补齐覆盖缺口与盲点。直接给最终方案, 不要元评论。`;
+  const finalPrompt = `${spineHead}\n\n${candDigest}\n\nK-judge panel 多维评判:\n${critDigest}\n\nFusion 融合分析 (结构化):\n${fusionAnalysis}\n\n你是首席架构师。据 panel 多维评判 + fusion 融合分析**合成唯一最终方案**: 选最强骨架, 嫁接共识与独特洞察, 显式消解矛盾点、补齐覆盖缺口与盲点。直接给最终方案, 不要元评论。`;
   // 座位化 (owner 2026-08-15): 此前内层默认 = reasonModel、而 web-fanout 又覆盖成 judge 座 ——
   // **同一发在两个调用方拿到两个不同默认**, 正是该拆座位的信号。
   const graftModel = cfg.graftModel ?? resolveRoleModelConfigured('graft').model; // 收敛终笔, 单一强连贯模型
