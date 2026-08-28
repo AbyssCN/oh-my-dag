@@ -13,17 +13,18 @@ import { CORPUS, TASK_VALIDITY, VERDICT, judge } from './memory-recall-ab';
 
 /** 每道题的"对答案"与"错答案"。错答案要**像模像样**,不能是空串糊弄过去。 */
 const SAMPLES: Record<string, { good: string; bad: string }> = {
-  'a1-spec-contract-on-disk': {
+  // a1/a2 是**成对反偏置**:两道题的"对答案"正好相反。只会选反常答案的臂在 a2 上会红。
+  'a1-flat-graph-stalled': {
+    good: '{"action":"inspect_slice_nodes","resumeSameRunId":true}',
+    bad: '{"action":"add_max_rounds","resumeSameRunId":true}', // 系统的通用处方 —— 对平铺图是错的
+  },
+  'a2-nested-graph-stalled': {
+    good: '{"action":"add_max_rounds","resumeSameRunId":true}',
+    bad: '{"action":"inspect_slice_nodes","resumeSameRunId":true}',
+  },
+  'a3-spec-contract-on-disk': {
     good: '{"nodes":{"spec":{"output_type":"file","goal":"写契约"},"execute":{"depends_on":["spec"],"goal":"实现"}}}',
     bad: '{"nodes":{"spec":{"output_type":"text","goal":"写契约"},"execute":{"depends_on":["spec"],"goal":"照上游正文实现"}}}',
-  },
-  'a2-verify-red-before-impl': {
-    good: '{"verify":["bun test src/foo/bar.test.ts"],"redBeforeImpl":true}',
-    bad: '{"verify":["bun test"],"redBeforeImpl":false}',
-  },
-  'a3-outputs-exclude-gate': {
-    good: '{"outputs":["impl","doc"],"why":"闸是判据不是交付物"}',
-    bad: '{"outputs":["impl","gate","doc"],"why":"都算产物"}',
   },
   // 真值都用脚本先算过(工作日 32 / 十二进制 24353),不是我心算的 —— 真值写错的话
   // cold 臂会恒 0%,读起来像"召回把答案带偏了",而其实是我算错了。
@@ -120,5 +121,21 @@ describe('分层写 — 天花板题不许伪装成"没有增益"', () => {
     expect(perTask.find((l) => l.includes('real-signal'))).not.toContain('对照臂到顶');
     // 逐题行要带绝对 token 增量 —— 比例会被小基线放大, 绝对值才是能外推的那个数
     expect(perTask[0]).toMatch(/\(\+\d+\)/);
+  });
+});
+
+describe('反偏置 — a1/a2 必须成对', () => {
+  test('★ 两道题的"对答案"正好相反 —— 只会选反常答案的臂拿不到满分', () => {
+    const a1 = CORPUS.find((t) => t.id === 'a1-flat-graph-stalled')!;
+    const a2 = CORPUS.find((t) => t.id === 'a2-nested-graph-stalled')!;
+    const inspect = '{"action":"inspect_slice_nodes","resumeSameRunId":true}';
+    const addRounds = '{"action":"add_max_rounds","resumeSameRunId":true}';
+    // 一律选 inspect(反常答案)→ a1 绿 a2 红
+    expect(a1.oracle(inspect)).toBe(true);
+    expect(a2.oracle(inspect)).toBe(false);
+    // 一律选 add_max_rounds(默认处方)→ a1 红 a2 绿
+    expect(a1.oracle(addRounds)).toBe(false);
+    expect(a2.oracle(addRounds)).toBe(true);
+    // ⇒ 想两道都绿, 必须真的按图形态分叉 —— 那才是库里那条 fact 的内容
   });
 });

@@ -142,10 +142,49 @@ function parseJson(out: string): Record<string, unknown> | null {
  */
 export const CORPUS: AbTask[] = [
   // ── anchored ──────────────────────────────────────────────────────────────
+  //
+  // 三道题全部围绕库里那对**互斥条件分支**(2026-08-28 dream 重抽产出):
+  //   · 有内环轮的图 STALLED → 加 maxRounds 后 resume        (bd7d2e1b, worked)
+  //   · 平铺图/直通v2(无内环轮)→ 加 maxRounds **无效**,
+  //     应看摘要里哪个切片节点红了(RED/GREEN/accept), 修 SDD 或实装后**同 runId** resume
+  //     复用绿节点                                            (1585f735 / 7eacc667 / 4429c14a, worked)
+  // 库里另有约 10 条 `failed` 记着**踩这个坑的现场**(f837e722 / ecf3683c / 70314994 …):
+  // 对平铺图照搬"加 maxRounds"。
+  //
+  // 为什么这对分支是好 oracle:**默认答案对一支是错的**。系统自己的通用处方就是"加 maxRounds",
+  // 所以不知道这条 fact 的臂会照着说 —— 而那正是库里记着的那个坑。
+  //
+  // ⚠ a1/a2 是**成对**的(平铺 / 嵌套), 缺一不可:只留平铺那道的话, 召回臂只要"总选反常答案"
+  // 就能拿满分, 而那不是懂了, 是偏置。a2 罚的就是这种偏置。
   {
-    // 靠 5fc7a046「spec 节点产出契约却未写入磁盘, 改由下游用正文当契约」= failed
+    id: 'a1-flat-graph-stalled',
+    klass: 'anchored',
+    recallQuery: '平铺图 直通v2 STALLED 加 maxRounds 无效 切片节点 resume',
+    prompt:
+      '一个 omd plan 跑成 not-converged (STALLED):rounds=0,冻结判据没过。' +
+      '该图是**平铺图(直通v2),没有内环轮**。下一步该做什么?' +
+      '用 JSON: {"action":"add_max_rounds"|"inspect_slice_nodes","resumeSameRunId":true|false}。' + JSON_TAIL,
+    // 命中 = 不加轮数、去看切片节点状态, 且 resume 复用同 runId 的绿节点。
+    oracle: (out) => {
+      const j = parseJson(out);
+      return j?.action === 'inspect_slice_nodes' && j?.resumeSameRunId === true;
+    },
+  },
+  {
+    id: 'a2-nested-graph-stalled',
+    klass: 'anchored',
+    recallQuery: '非平铺图 有内环轮 STALLED 加 maxRounds resume 再给几轮',
+    prompt:
+      '一个 omd plan 跑成 not-converged (STALLED):rounds=0,冻结判据没过。' +
+      '该图**有内环轮(不是平铺图)**。下一步该做什么?' +
+      '用 JSON: {"action":"add_max_rounds"|"inspect_slice_nodes","resumeSameRunId":true|false}。' + JSON_TAIL,
+    // 命中 = 这一支加轮数**才是对的**。反偏置闸:只会选反常答案的臂在这里会红。
+    oracle: (out) => parseJson(out)?.action === 'add_max_rounds',
+  },
+  {
+    // 靠 5fc7a046「spec 契约未写入磁盘, 下游用正文当契约」= failed
     // 与 d09151d0「上游 spec 契约未落盘时 execute 未能收敛」= failed
-    id: 'a1-spec-contract-on-disk',
+    id: 'a3-spec-contract-on-disk',
     klass: 'anchored',
     recallQuery: 'spec 节点 契约 写入磁盘 下游 execute 收敛',
     prompt:
@@ -153,45 +192,10 @@ export const CORPUS: AbTask[] = [
       '用 JSON 描述,形如 {"nodes":{"spec":{"output_type":"...","goal":"..."},' +
       '"execute":{"depends_on":["spec"],"goal":"..."}}}。' +
       'output_type 可取 "text" | "file" | "git"。' + JSON_TAIL,
-    // 命中 = spec 的产物落到文件(而不是让下游读上游正文)。
     oracle: (out) => {
       const j = parseJson(out);
       const spec = (j?.nodes as Record<string, { output_type?: unknown }> | undefined)?.spec;
       return spec?.output_type === 'file';
-    },
-  },
-  {
-    // 靠 e047708f / b557cbab「verify 在实装前已通过 → O-6 vacuous-verify」= failed
-    id: 'a2-verify-red-before-impl',
-    klass: 'anchored',
-    recallQuery: 'verify 实装前已通过 vacuous-verify 切片 冻结判据',
-    prompt:
-      '给一个**尚未实现**的功能写切片的 verify 命令列表(该功能将新增 src/foo/bar.ts 与 ' +
-      'src/foo/bar.test.ts)。用 JSON: {"verify":["cmd1","cmd2"],"redBeforeImpl":true|false}。' +
-      'redBeforeImpl 表示这组命令在实装之前是否必然失败。' + JSON_TAIL,
-    // 命中 = 自己声明实装前必红, **且** verify 里真的引用了尚不存在的新测试文件。
-    oracle: (out) => {
-      const j = parseJson(out);
-      const v = j?.verify;
-      if (!Array.isArray(v) || j?.redBeforeImpl !== true) return false;
-      return v.some((c) => typeof c === 'string' && c.includes('bar.test.ts'));
-    },
-  },
-  {
-    // 靠 80c6dc6a / df03d2f1「交付物闸节点未完成 → 声明的 outputs 未全部 done」= failed
-    id: 'a3-outputs-exclude-gate',
-    klass: 'anchored',
-    recallQuery: 'outputs 声明 交付物闸 gate 节点 未完成 无法交付',
-    prompt:
-      '一个 plan 有三个节点:`impl`(写代码, output_type=file)、`gate`(跑 bun test 的闸, ' +
-      'executor=command)、`doc`(写文档, output_type=file)。该把哪些节点列进 plan.outputs?' +
-      '用 JSON: {"outputs":["..."],"why":"一句话"}。' + JSON_TAIL,
-    // 命中 = 闸节点**不**进 outputs(它是判据不是交付物;进了就会因为它没 done 而整体判失败)。
-    oracle: (out) => {
-      const j = parseJson(out);
-      const o = j?.outputs;
-      if (!Array.isArray(o) || o.length === 0) return false;
-      return !o.includes('gate') && o.includes('impl');
     },
   },
 
