@@ -76,6 +76,19 @@ const MAX_GAPS = 6;
  * 读数 (docs/research/2026-08-28-脊柱语料瘦身-AB读数.md §4.11, 真 champions, n=3 中位数):
  * 脊柱 token 削 69.3% · 假路径 1 (基线 4) · faithfulness 0.81 (= 基线) —— 三条判据全过。
  */
+/**
+ * reduce 阶段吃索引还是吃全文的开关(**默认关**,`OMD_REDUCE_SLIM=1` 才开)。
+ *
+ * 形态照仓内既有先例:`src/harness/spin-route.ts` 的 `spinRouteEnvEnabled`
+ * 与 agent-leaf 的 `selfCheckEnvEnabled` —— 具名导出 + 收 env 对象,测试不依赖进程环境。
+ *
+ * ⚠ 与那两个先例**方向相反**:它们是「除非显式关否则开」,本开关是「除非显式开否则关」。
+ * 理由是证据强度不同 —— 那两个上线时质量侧有判据,本片**没有**(见 reduce 那一处的注释)。
+ */
+export function reduceSlimEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env['OMD_REDUCE_SLIM'] === '1';
+}
+
 export function buildCorpusIndex(corpus: string, maxChars = 8_000): string {
   const heads: string[] = [];
   for (const raw of corpus.split('\n')) {
@@ -455,7 +468,15 @@ export async function researchFanout(cfg: ResearchFanoutConfig): Promise<Researc
     const reduceJobs = roundLenses.map((lens) => async () => {
       const variants = genResults.filter((g) => g.lens === lens.key).sort((a, b) => a.angleIdx - b.angleIdx);
       const body = variants.map((v, i) => `### sub-angle ${i + 1}\n${v.text}`).join('\n\n');
-      const prompt = `${corpus}\n\n镜头[${lens.key}] 的 ${variants.length} 个 sub-angle 产出:\n${body}\n\n你是该镜头的首席 judge。合成这镜头的**冠军答案**: 取最强骨架 + 嫁接各 sub-angle 的最佳碎片, 去冗余去弱点。直接给冠军答案。`;
+      // reduce 瘦身 (默认关, `OMD_REDUCE_SLIM=1` 开): 变体是**吃着全文产出的**, 已经替 reduce
+      // 读过一遍 —— 再塞一份全文是重复付费。论证与脊柱那一半逐字同构。
+      // ⚠ 默认关的理由: 成本收益是硬的 (E-7 实测 lens 段 422,923 → 292,518 token, 削 30.8%),
+      //   **质量侧没有一把站得住的尺子量过** —— E-7 原本的第二条判据 faithfulness 已被证伪
+      //   (同对象同 prompt 两判 0.81 / 0.53, 跨度 0.28, 而各臂差异只有 0.11)。
+      //   只剩一个弱代理: 冠军字符 30,152 > 基线 24,673 (更长, 不是变浅)。
+      //   开关不是骑墙 —— 是把取样搬到生产上。读数见 docs/research/2026-08-28-脊柱语料瘦身-AB读数.md
+      const reduceHead = reduceSlimEnabled() ? buildCorpusIndex(corpus) : corpus;
+      const prompt = `${reduceHead}\n\n镜头[${lens.key}] 的 ${variants.length} 个 sub-angle 产出:\n${body}\n\n你是该镜头的首席 judge。合成这镜头的**冠军答案**: 取最强骨架 + 嫁接各 sub-angle 的最佳碎片, 去冗余去弱点。直接给冠军答案。`;
       const text = await track(reduceModel, call({ model: reduceModel, messages: msg(prompt), stage: 'reduce' }));
       return { key: lens.key, text };
     });
