@@ -585,7 +585,7 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
     name: 'dag_goal',
     description: 'Autonomous goal: research → spec → execute → verify → 1 repair round. Returns runId.',
     inputSchema: {
-      goal: z.string().describe('The goal to pursue autonomously (required)'),
+      goal: z.string().describe('The goal to pursue autonomously (required). 可选分区: 「## 提示」区 = 建议不构成验收判据; 「## 硬约束」区 = 逐条硬判 (verifier 按此裁)'),
       tier: z.enum(['simple', 'complex']).optional().describe('Force routing; omit = auto-classify'),
       // 上界 4 = PlanNode.max_rounds 的 schema 上界 (环封在 conductor 节点内, D-F) —— 两处必须同数,
       // 不然这里放进来的 5 会在下游被静默钳掉, 又是一个"配了但不生效"的旋钮。

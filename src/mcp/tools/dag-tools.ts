@@ -846,7 +846,7 @@ function makeDagRun(deps: DagToolDeps): OmdMcpTool {
     name: 'dag_run',
      description: 'Execute a task via conductor DAG planning + leaf fan-out (S2: detached child). resume=<runId> skips green nodes.',
     inputSchema: {
-      task: z.string().describe('Task description for the conductor to plan and execute'),
+      task: z.string().describe('Task description for the conductor to plan and execute. 可选分区: 「## 提示」区 = 建议不构成验收判据; 「## 硬约束」区 = 逐条硬判 (verifier 按此裁)'),
       conductorModel: z.string().optional().describe('Conductor model (provider:modelId)'),
       leafModel: z.string().optional().describe('Leaf model (provider:modelId)'),
       resume: z.string().optional().describe('Prior runId to resume — done nodes with valid checkpoints are skipped'),
