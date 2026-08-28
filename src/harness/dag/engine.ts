@@ -1174,6 +1174,31 @@ async function executePlan(
     }
   };
 
+  /**
+   * 一个节点**此刻**的语义 Merkle 指纹 —— checkpoint 写入侧与 resume 复用侧的**唯一取值口**。
+   *
+   * 两个消费者:
+   *  · 写入侧 (通道⑤-b): 存进 `NodeCheckpoint.fingerprint`, 给 resume 预载判毒用;
+   *  · 读回侧 (T-1a 规格守卫, S-51): `shouldSkip` 拿它与盘上那份比 —— 节点自身的语义
+   *    (goal / command / write_set / self_check / expect_exit …) 变了就不许当绿跳过。
+   *
+   * **必须是同一个口**。写一个值、读另一个值, 那道守卫就会恒判不匹配, 每次 resume 全图重跑。
+   *
+   * 不缓存是刻意的: `plan` 在运行时展开后会长出新节点, 缓存一份就会让展开出来的子节点
+   * 永远拿不到指纹。代价是 O(节点数) 的重算, 而 `Bun.hash` 在这个量级上可以忽略。
+   * 算不出 (环等) → `undefined` → 两侧都退回原语义 (fail-open), **缺席不是不匹配**。
+   */
+  const currentFingerprint = (nodeId: string): string | undefined => {
+    try {
+      return merkleFingerprints(plan).get(nodeId);
+    } catch (err) {
+      // fail-open 可以吞异常, 不许吞证据 (仓规静默坑 ②): 指纹算不出来时,
+      // 写入侧少存一个字段、读回侧少一道守卫 —— 两件事都无声, 这一行是唯一的痕迹。
+      logger.warn({ node: nodeId, err: String(err) }, '[omd/executor-dag] 语义指纹算不出 → 规格守卫与 checkpoint 指纹双双缺席 (fail-open)');
+      return undefined;
+    }
+  };
+
   // ── D-21 escalation 跨轮复用: 语义 Merkle 指纹 + 前驱闭包匹配上轮 done 节点 → 零 LLM 注入。
   // 重规划最烧 token 的形态 = 80% 节点语义没变却整图重跑; 指纹按语义不按 id, 重命名不破匹配。
   // D-4 (P1.5): prior.poisoned = 上轮被 judge 点名拒绝的节点指纹, 一律不复用 (前向闭包免费, 见 computeReuse)。
@@ -1544,12 +1569,9 @@ async function executePlan(
       // 通道⑤-b: 写入磁盘时把语义指纹一并存下 —— resume 预载判毒时**不用重算**, 于是运行时展开的
       // 子节点 (预载那刻还不在图里) 也判得了。指纹只依赖祖先, 而祖先此刻已定死 → 与轮末 judge
       // 算的值一致。fail-open: 算不出来就不存, 退回原语义。
-      let fingerprint: string | undefined;
-      try {
-        fingerprint = merkleFingerprints(plan!).get(opts.id);
-      } catch {
-        /* 指纹算不出 (环等) 不该阻断 checkpoint */
-      }
+      // ⚠ 与 T-1a 规格守卫读的是**同一个函数** (currentFingerprint) —— 写一个值、读另一个值,
+      //   那道守卫就会恒判不匹配, 每次 resume 全图重跑。两侧同源是它成立的前提。
+      const fingerprint = currentFingerprint(opts.id);
       // D-O: 全文落制品。写失败 → null → 字段缺席, resume 退回 summary (fail-open, 有留痕)。
       const outputText = continuity.manager.saveNodeOutput(continuity.runId, opts.id, opts.text);
       const inputHashes: Record<string, string> = {};
@@ -4398,8 +4420,12 @@ async function executePlan(
         continuity?.resume &&
         resumeGreens.has(id) &&
         // S-43 第二张脸: expect_exit 非 0 = 基线测量型, resume 只量一次 (判据在 shouldSkip 里)。
+        // T-1a 规格守卫 (S-51): 把**这一次**的语义指纹一并递进去 —— checkpoint 早就存了写入
+        // 那一刻的值, 缺的只是拿当前值比一次。算不出 (环等) → 不传 → 闸缺席 (fail-open),
+        // 与 checkpoint 写入侧那半 (通道⑤-b) 同一条纪律。
         continuity.manager.shouldSkip(continuity.runId, id, dagGeneration, inputsOf(deps), {
           baselineGate: (node.expect_exit ?? 0) !== 0,
+          ...(currentFingerprint(id) !== undefined ? { fingerprint: currentFingerprint(id)! } : {}),
         })
       ) {
         const cp = resumeGreens.get(id)!;

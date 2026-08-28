@@ -429,11 +429,46 @@ export class CheckpointManager {
     /**
      * `baselineGate` = 这个节点是**基线测量型**(`expect_exit` 非 0)。调用方给, 因为
      * checkpoint 里没有 expect_exit 而 plan 里有 —— 与其为一个判据加一列账, 不如让知道的人说。
+     *
+     * `fingerprint` (T-1a, 2026-08-28) = 这个节点**这一次**的语义指纹
+     * (`merkleFingerprints(plan).get(nodeId)`)。同样由调用方给: 指纹要整张 plan 才算得出,
+     * 而本类只认得 checkpoint。
      */
-    opts?: { baselineGate?: boolean },
+    opts?: { baselineGate?: boolean; fingerprint?: string },
   ): boolean {
     const cp = this.loadCheckpoint(runId, nodeId);
     if (!cp || cp.status !== 'done') return false;
+
+    // ── T-1a 规格守卫 (2026-08-28): 这**还是不是同一个节点** ──────────────────────────
+    //
+    // 本函数的输入面此前**不含节点自身的内容**。`generation` 只签图的**形态**
+    // (task 前 400 字 + nodeIds + deps, 见 computeDagGeneration) —— 节点的
+    // write_set / self_check / command / model / persona 全变了它也一无所知
+    // (`goal` 是个例外: 预构造 plan 那条路上它会经 `deriveTaskFromPlan` 漏进 task 前缀里,
+    //  所以此前**碰巧**抓得到一部分 —— 碰巧不是判据)。
+    //
+    // ⚠ **诚实边界: 这不是 S-51 的修法。** S-51 那一格是「契约改了片外的规格, 而编译出来的
+    // 节点逐字节不变」—— 节点没变, 指纹按定义就不该变。要抓它得让「该片规格的内容哈希」
+    // 先进到节点里去 (T-1b), 那是另一票。这里只钉「节点自己变了 ⇒ 不许复用」这一半。
+    //
+    // 而这些字段**早就被签过**: `merkleFingerprints` 的 `nodeFieldsKey` 逐个列了它们
+    // (`plan-passes/semantic-key.ts`), 引擎写 checkpoint 时也早就把值存进了 `cp.fingerprint`
+    // (`dag/engine.ts` 通道⑤-b)。缺的只是**在这里比一次**。
+    //
+    // 排在 baselineGate 之前是刻意的: 「这还是不是同一个节点」比「这个节点该不该重量」更靠前。
+    // S-43 那条豁免说的是「同一道闸重量没意义」, 它对一道**换了内容的闸**不成立。
+    //
+    // ⚠ 两侧任一缺席 → 退回原语义 (fail-open, 向后兼容旧 checkpoint; 运行时展开的子节点在
+    //   预载那一刻还不在图里, 调用方算不出当前指纹, 那一格也走这里)。缺席**不是**不匹配。
+    // ⚠ 偏差方向是安全的那边: 指纹函数换实现 / 跨 Bun 版本漂 → 一律判不匹配 → 重跑。
+    //   多花钱, 不会拿旧产物冒充新规格。
+    if (opts?.fingerprint !== undefined && cp.fingerprint !== undefined && cp.fingerprint !== opts.fingerprint) {
+      logger.info(
+        { runId, nodeId, was: cp.fingerprint, now: opts.fingerprint },
+        'checkpoint: 节点语义指纹已变 → 不跳过, 重执行 (T-1a 规格守卫)',
+      );
+      return false;
+    }
 
     // ── S-43 第二张脸 (2026-08-18, run dbfe0c66): #167 那条「command 恒不跳」的**例外** ──
     // `expect_exit` 非 0 的闸验的是「**实装前**这条测试会不会红」, 而"实装前"在一个 run 里
