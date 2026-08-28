@@ -63,6 +63,14 @@ export interface SddCompileOptions {
   readonly acceptExpectExit?: number;
   /** plan 名 (缺省 'sdd-flat')。 */
   readonly name?: string;
+  /**
+   * T-1b (S-51): 契约**共享规格段**的内容锚 (`goal/spec-anchor.ts` 的 `specAnchor`)。
+   *
+   * 编译器只负责盖章, 不负责算 —— 算它要契约**全文**, 而本函数只吃 `SddBreakdown`
+   * (那是分解表解析出来的结构, 决策段与契约不变量根本不在里面)。给了才盖;
+   * 不给 = 闸缺席, 编出来的图与今天逐字节相同 (手写 plan 与既有测试不受影响)。
+   */
+  readonly specAnchor?: string;
 }
 
 const nodeId = (id: number): string => `s${id}`;
@@ -517,6 +525,10 @@ export function compileBreakdown(
         `实施切片 ${s.id}: ${s.name}\n` +
         `写集 (只许动这些文件): ${s.writeSet.join('、')}\n` +
         `完成判据: \`${s.verify}\` 退出码 0`,
+      // T-1b (S-51): 只盖在**实施节点**上。GREEN 与 falsify 都是 command 节点, 而
+      // `shouldSkip` 对 command 恒不跳 (#167) —— 给它们盖章不改变任何判定, 只是噪声。
+      // 被 resume 当绿跳过的正是这些 agent 节点, 锚要盖在会被跳的那一个上。
+      ...(opts.specAnchor !== undefined ? { spec_anchor: opts.specAnchor } : {}),
       write_set: [...s.writeSet],
       output_type: 'file',
       self_check: { command: s.verify, expect_exit: 0 },

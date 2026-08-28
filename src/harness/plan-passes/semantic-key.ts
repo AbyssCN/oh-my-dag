@@ -96,6 +96,11 @@ export function nodeFieldsKey(node: PlanNode): string {
 		node.oracleKind ?? NONE,
 		node.toolRefs ? node.toolRefs.join(',') : NONE,
 		node.self_check ? JSON.stringify(node.self_check) : NONE,
+		// T-1b (2026-08-28): 契约共享规格段的内容锚 —— 是语义, 而且是**唯一**一个把
+		// 「契约里没进节点的话」带进指纹的字段 (S-51: 改决策段而节点逐字节不变 ⇒ 整片被
+		// resume 当绿跳过)。缺席归一 NONE: 没有契约可锚的图 (conductor 铺图 / 手写 plan)
+		// 与今天逐字节相同。
+		node.spec_anchor ?? NONE,
 	]);
 }
 

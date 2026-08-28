@@ -129,6 +129,21 @@ const PlanNode = z
      */
     write_set: z.array(z.string()).optional(),
     /**
+     * T-1b (2026-08-28): **契约里那些不进节点的话**的内容锚(`goal/spec-anchor.ts`)。
+     *
+     * 直通档编译器(`goal/sdd-compile`)给每片的实施节点盖上它。治的是 S-51:契约改了片外的
+     * 规格(决策段 / 契约不变量),而编译出来的节点逐字节不变 ⇒ 语义指纹不动 ⇒ resume 把
+     * 整片当绿跳过,修订一行代码都没进。
+     *
+     * **入指纹**(`nodeFieldsKey`):锚变了 = 管着这个节点的规格变了 = 上一跑那份绿证明的是
+     * 另一件事。同一份契约里所有片拿到同一个锚值 —— 每片之间的差别由 goal / write_set /
+     * self_check 那些字段分开,共享段本来就是全片共享的规格。
+     *
+     * 只在 sddPath 直通路径上有值;conductor 铺的图与手写 plan 没有契约可锚,缺席即闸缺席。
+     * **刻意不进 conductor prompt**:它是编译器盖的机器值,不是规划者该写的东西。
+     */
+    spec_anchor: z.string().optional(),
+    /**
      * g1 (图 #9): 本节点须摄入的内容总字节预估 (goal 里路径不可 stat 时的体量声明, lister 侧信息可给)。
      * 消费者 = plan/leaf-tier-gate (选「单 cat+leaf」还是「conductor 展开 per-item 对」的路)。
      * 体量提示不改节点语义 → 不入指纹。

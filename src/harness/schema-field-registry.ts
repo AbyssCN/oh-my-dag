@@ -85,6 +85,12 @@ export const REGISTRY: Record<string, FieldEntry> = {
     declared: false,
     note: 'D-2 (SDD cairness-distill): ex-ante 写集声明, 可选字段声明了才对账 (O-1 收声明覆盖率读数)。声明集不同 = 越界判定面不同 → 语义, 入键。不明示: O-1 未裁默认开之前只收手写 plan 的声明 (不进 conductor prompt)。',
   },
+  spec_anchor: {
+    consumer: 'goal/sdd-compile (直通档编译器盖章) + plan-passes/semantic-key.nodeFieldsKey (入指纹) → continuity/checkpoint-manager.shouldSkip 的 T-1a 规格守卫',
+    fingerprint: 'fields',
+    declared: false,
+    note: 'T-1b (S-51): 契约里**没进节点**的那些话 (决策段 / 契约不变量 / 反作弊条款) 的内容锚。它是唯一一个把「契约文本」带进语义指纹的字段 —— 没有它, 改决策段而节点逐字节不变, resume 就把整片当绿跳过, 修订一行代码都没进 (实账 run ded15ab4)。叙述段 (现场 / 未决) 刻意排除, 认不出的段一律当规格 (fail-closed, 见 goal/spec-anchor.ts)。**不明示**: 编译器盖的机器值, 不是规划者该写的东西。',
+  },
   content_bytes: {
     consumer: 'plan/leaf-tier-gate.leafTierGateFindings (g1 图#9: 体量声明帮闸在「单 cat+leaf」与「conductor 展开 per-item 对」间选路)',
     fingerprint: false,

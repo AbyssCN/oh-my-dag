@@ -59,6 +59,7 @@ import {
   type ExecGit,
   type SliceProbe,
 } from './slice-delivery';
+import { specAnchor } from './spec-anchor';
 import { dryRunSddIgnition } from './sdd-ignition-check';
 import { coverSlices, describeSliceCoverage, type SliceCoverageReport } from './slice-coverage';
 import { attributeWriteSet, classifyWriteScope, describeWriteSet, SDD_DECLARED_WRITE_SET, type DeclaredWriteSet, type WriteScopeKind, type WriteSetDeclaration, type WriteSetReport } from '../writeset/write-set';
@@ -1118,6 +1119,11 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
         acceptCommand: runnable.command,
         ...(runnable.expectExit !== undefined ? { acceptExpectExit: runnable.expectExit } : {}),
         name: 'goal-execute-flat',
+        // T-1b (S-51): 这里是**唯一**同时拿得到契约全文与编译器的地方 —— 编译器只吃
+        // `SddBreakdown` (分解表的结构), 决策段与契约不变量根本不在它的入参里。
+        // 锚进节点 → 进 `nodeFieldsKey` → 进语义指纹 → T-1a 的规格守卫在 resume 时比得着:
+        // 改了决策段而节点逐字节不变的那一格 (S-51), 到这里才第一次有东西看得见。
+        specAnchor: specAnchor(sdd.text),
       });
       // O-6 (2026-08-11 二发教训): RED 的前提是切片 verify 在**实装前是红的** —— 引用既有绿
       // 测试文件时结构性不成立 (旧测试全绿, RED 期望 1 得 0, 整图白跑一轮才发现)。有 commandRunner

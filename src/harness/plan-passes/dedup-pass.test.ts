@@ -171,6 +171,9 @@ describe("dedupPass (D-20)", () => {
 			expect_exit: [0, 1],
 			// 换了期望输出 = 换了判据: 空匹配与真绿在退出码上同形, 只有输出分得开。
 			expect_output: ["12 pass", "13 pass"],
+			// T-1b: 契约共享规格段的内容锚。锚不同 = 管着这两个节点的规格不同 = 不是同一件活,
+			// 判重把它们合成一个 = 吞掉某一方的契约 (同 write_set 形态)。
+			spec_anchor: ["anchor-a", "anchor-b"],
 			max_nodes: [4, 8],
 			max_rounds: [1, 3],
 			judge_final: [true, false],
