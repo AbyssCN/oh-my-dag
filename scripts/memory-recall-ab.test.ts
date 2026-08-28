@@ -82,9 +82,13 @@ describe('判词函数 — 三种结局都说得出口', () => {
   });
 
   test('★ cold 类命中率**降** → 有害(这一条单独成立就足以否掉常开召回)', () => {
+    // T-D (2026-08-28): tooEasy 只拦**正向**结论 —— 天花板不影响下降的可测性。
+    // 旧断言把 A=0.9→B=0.5 (−0.4) 判成「校准失败」, 正是上一跑吞掉 cold −0.22 的那道闸。
     const v = agg([row('cold', 'A-no-recall', 0.9, 100), row('cold', 'B-recall', 0.5, 105)]);
-    // cold 的 A=0.9 ≥ tooEasy ⇒ 先被校准闸拦下, 这正是协议要的顺序。
-    expect(v[1]).toContain('任务校准失败');
+    expect(v[1]).toContain('**有害**');
+    // 到顶且**没降** → 仍是校准失败 (增益量不出来), 闸的本职不变。
+    const vCeil = agg([row('cold', 'A-no-recall', 0.9, 100), row('cold', 'B-recall', 0.9, 105)]);
+    expect(vCeil[1]).toContain('任务校准失败');
     const v2 = agg([row('cold', 'A-no-recall', 0.5, 100), row('cold', 'B-recall', 0.1, 105)]);
     expect(v2[1]).toContain('**有害**');
   });

@@ -93,8 +93,10 @@ export const VERDICT = {
  */
 export const TASK_VALIDITY = { discriminating: 0.6, tooEasy: 0.8 } as const;
 
-/** 每臂每题重复次数;取中位数(与本仓既有 ab 协议同口径)。 */
-export const N_REPEAT = 3;
+/** 每臂每题重复次数;取中位数(与本仓既有 ab 协议同口径)。
+ *  T-A (2026-08-28): 成本判据在 n=3 落在噪声里 (cold 两臂逐字相同仍报 +468), 压噪走 n ——
+ *  OMD_AB_N=8 提 n, 缺省 3 = 协议口径不变。 */
+export const N_REPEAT = Math.max(1, Number(process.env.OMD_AB_N ?? 3) || 3);
 /** 召回条数。**不是本次的变量** —— 动它要另开一跑。 */
 export const RECALL_K = 5;
 
@@ -441,8 +443,14 @@ export function judge(rows: ArmResult[]): string[] {
     const head = `${klass}: oracle A=${aRate.toFixed(2)} B=${bRate.toFixed(2)} (lift ${lift >= 0 ? '+' : ''}${lift.toFixed(2)}) · token ${aTok}→${bTok} (${ratio.toFixed(2)}×)`;
 
     // 任务有效性先判 —— 任务太易的话下面那些判词一条都不成立(EVAL-PROTOCOL §4)。
+    // T-D (2026-08-28): 天花板不影响**下降**的可测性 —— 从 1.00 掉下来看得见得很。
+    // 这道闸只拦正向结论 (增益量不出), 负向照收; 上一跑 cold −0.22 正是被首版整个吞掉的。
     if (aRate >= TASK_VALIDITY.tooEasy) {
-      out.push(`${head} → **任务校准失败**(对照臂 ${aRate.toFixed(2)} ≥ ${TASK_VALIDITY.tooEasy}, 题太易)—— 本轮不得当能力结论用`);
+      if (lift < -VERDICT.NO_LIFT_BAND) {
+        out.push(`${head} → **有害**(对照臂到顶仍量得出下降 — 无关召回把答案带偏了)`);
+      } else {
+        out.push(`${head} → **任务校准失败**(对照臂 ${aRate.toFixed(2)} ≥ ${TASK_VALIDITY.tooEasy}, 题太易)—— 本轮正向结论不得当能力结论用`);
+      }
       continue;
     }
     const dim = aRate > TASK_VALIDITY.discriminating ? '(灰带, 结论仅方向性) ' : '';
