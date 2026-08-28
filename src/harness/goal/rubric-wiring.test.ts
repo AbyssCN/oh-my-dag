@@ -142,6 +142,27 @@ describe('RUBRIC_TWELVE_BRANCHES_TYPED — rubric 验收步在 run-goal 里的�
     expect(result.rubricRejection).toBeUndefined();
   });
 
+  // ── 2026-08-28 后续修:没拿到证明 = 不算成 (fail-closed) ────────────────────
+  //
+  // 片 4 交付时 `rubricOracleOk` 初值是无脑 `true`, 于是 `rubricVerdictInputs` **缺席**
+  // (今天的生产常态 —— 还没有人注入) 时一个 rubric 目标会被判**已达成**。
+  // 那是「加第三格时那条静默错路」换了个地方复现: 片 4 把它从 acceptCheckpointGreen
+  // 挪到了这里, 没有消灭它。初值改由 `unprovenMeansFail(acceptance)` 定 ——
+  // rubric **有**判据 (那份冻结的 checklist), 所以没被证明过就不算成, 与执行型同路。
+  //
+  // 反向自检:把初值改回 `true` → 本条当场红。
+  test('★ rubric 但没有判词输入 → 判未达成 (fail-closed, 不是「没证明也算绿」)', async () => {
+    const r = await runGoal('写一份报告', rubricCfg(undefined as never));
+    const result = r as unknown as {
+      rubricVerdict?: RubricVerdict;
+      rubricRejection?: { source: string; reason: string };
+      converged?: boolean;
+    };
+    // 没有输入 ⇒ 既没有判词也没有拒因 —— 但**不许**因此算成。
+    expect(result.rubricVerdict).toBeUndefined();
+    expect(result.converged).not.toBe(true);
+  });
+
   test('INV-3 ★: checklist 漂了就不判 —— settleRubric 调用次数恰为 0', async () => {
     const drifted = items.map((it, i) => (i === 0 ? { ...it, requirement: `${it.requirement}。` } : it));
     let settleCalls = 0;

@@ -51,6 +51,7 @@ import { classifySpecWrite, type SpecWrite, type SpecWriteSource } from './spec-
 import { summarizeDelta, type DeltaReport, type VerifyStepStatus } from './delta-compare';
 import { parseBreakdown, type SddContract, type SddSlice } from './sdd-direct';
 import { acceptCommandFromBreakdown, compileBreakdown, describeParallelism, parallelismReadout } from './sdd-compile';
+import { describeAcceptance, unprovenMeansFail } from './acceptance-shape';
 import {
   decideO6,
   collectSliceGitEvidence,
@@ -862,11 +863,9 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     summary:
       // F2: 三格各印各的。此前是 `executable ? A : B` 的**二值**分支, B 恒等于探索型 ——
       // 加第三格之后那个恒等式破了, 而 `.learningGoal` 在 rubric 上不存在, tsc 当场点名。
-      (acceptance.kind === 'executable'
-        ? `tier=${tier} · 验收=执行型 \`${acceptance.command}\` (期望退出码 ${acceptance.expectExit})`
-        : acceptance.kind === 'rubric'
-          ? `tier=${tier} · 验收=rubric 逐条判 · ${acceptance.checklist.items.length} 条 (判卷标准已冻结)`
-          : `tier=${tier} · 验收=探索型 · 学习目标: ${acceptance.learningGoal.slice(0, 120)}`) +
+      // 三格各印各的 → 收敛进 describeAcceptance 一处 (判卷标准分两处写, 两处就会漂,
+      // 而摘要正是人第一眼看「这次拿什么判的」)。
+      `tier=${tier} · 验收=${describeAcceptance(acceptance)}` +
       // 判据换了来源要在摘要上看得见: 分类器编的那条与 SDD verify 列的差距, 正是 7d50fda2
       // 那次幻觉路径唯一能被人一眼看出的地方 (它当时只活在图里, 摘要上什么都没写)。
       (acceptance === sddAcceptance ? ' · 判据取自 SDD verify 列 (非分类器)' : '') +
@@ -1344,7 +1343,11 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   //
   // ⚠ `status === 'skipped'` (quorum 级联压死) 与 `skipped === true` (resume 复用) 是两个正交概念
   //   (见 LeafResult 那两个字段的注), 这里问的是后者。
-  const acceptCheckpointGreen = acceptance.kind !== 'executable' ? true : acceptLeaf?.status === 'done';
+  // F2 后续修 (2026-08-28): 原写法是 `kind !== 'executable' ? true : …` —— 二值,
+  // 「不是执行型 ⇒ 没拿到证明也算绿」。加第三格之前没错 (不是执行型就只剩探索型, 而探索型
+  // 本来就没有机器判据); 加了 rubric 之后错了。判定收敛进 `unprovenMeansFail` 一处表态,
+  // 新增分型时那个 switch 漏表态即编译错误 (goal/acceptance-shape.ts + harness/exhaustive.ts)。
+  const acceptCheckpointGreen = !unprovenMeansFail(acceptance) ? true : acceptLeaf?.status === 'done';
   const replanned = exec.verification?.escalated === true || (exec.verification?.attempts ?? 1) > 1;
   const acceptStale = acceptance.kind === 'executable' && acceptCheckpointGreen && acceptLeaf?.skipped === true && replanned;
   // 复验一次。**两个触发条件合并在这一处** —— 分两处写就是两处会漂 (而这条闸的病正是"触发
@@ -1385,7 +1388,12 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // 非 rubric 走默认值 true, 后面 OR 算式把它当 NO-OP —— 接线不污染另两格 (INV-1 护栏不是判据)。
   let rubricVerdict: RubricVerdict | undefined;
   let rubricRejection: RunGoalResult['rubricRejection'] | undefined;
-  let rubricOracleOk = true;
+  // ⚠ 初值按 `unprovenMeansFail` 定, 不是无脑 true:
+  // rubric **有**判据 (那份冻结的 checklist), 所以「没拿到证明」= 不算成 (fail-closed),
+  // 与执行型同路。原来初值恒 true, 于是 `rubricVerdictInputs` 缺席 (今天的生产常态 ——
+  // 还没有人注入) 时一个 rubric 目标会被判**已达成**, 那正是加第三格时那条静默错路
+  // 换了个地方复现: 片 4 把它从 acceptCheckpointGreen 挪到了这里, 没有消灭它。
+  let rubricOracleOk = !unprovenMeansFail(acceptance);
   if (acceptance.kind === 'rubric') {
     const inputs = config.rubricVerdictInputs;
     if (inputs) {
