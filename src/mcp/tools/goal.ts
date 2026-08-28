@@ -18,6 +18,9 @@ import { ignitionPreflight } from '../../harness/goal/ignition-preflight';
 import { readIgnitionBandwidth, renderIgnitionForecast } from '../../harness/goal/ignition-forecast';
 import { renderNumericClaimNotice } from '../../harness/goal/numeric-claims';
 import { loadSddContract, parseBreakdown, ticketFieldsFromSdd } from '../../harness/goal/sdd-direct';
+// T-3 契约入库闸与 O-6 切片交付判定共用同一份 git 执行面 —— 造第二个就会漂 (点火闸放行而
+// 判定层照样取不到证据, 正是这道闸要消灭的那种「两处判定不同源」)。
+import { defaultGitExec } from '../../harness/goal/slice-delivery';
 import { checkIgnitionCriteria, type IgnitionRunCommand } from '../../harness/goal/ignition-criteria-check';
 import { dryRunSddIgnition } from '../../harness/goal/sdd-ignition-check';
 import { checkCoords } from '../../harness/goal/coord-check';
@@ -457,6 +460,71 @@ function sddIgnitionDryRunGate(
 }
 
 /**
+ * T-3 契约入库闸 (owner 2026-08-28 裁) —— sddPath 点火前, 契约本身必须已经在 git 里。
+ *
+ * ## 它治的病
+ *
+ * O-6 的切片交付判定要回答「这一片的活是不是已经干完了」, 证据是「契约入库之后本片写集
+ * 被动过没有」。契约还没提交时**查不到入库点**, 于是没有起点, 剩下唯一能问的是
+ * 「写集脏不脏」—— 而脏不脏答不了**是谁弄脏的**: 同一棵树上另一个窗口在同名文件上的
+ * 在途改动同样让它脏。而 `already-delivered` 是 O-6 里**唯一放行**的那一格, 假阳性的
+ * 后果是整片被跳过、契约修订一行代码都不进 (S-51 同族)。
+ *
+ * 2026-08-28 那棵树上同时有三个窗口在写, 所以这不是理论风险。
+ *
+ * ## 为什么做成点火前的闸, 不做成判定里的降级路径
+ *
+ * 仓规: 能做成会红的闸就别写成散文。判定层那半 (`slice-delivery.ts` 查不到入库点即
+ * `available:false`) 是纵深, 它只会让整跑更晚才死; 这道闸让它**在点火那一刻**死,
+ * 回执直接说该敲哪条命令。代价明写: 「刚写完契约就开工」要先 `git commit` 契约 ——
+ * 而执行契约本来就是写给没有对话上下文的执行器看的真源, 入库是它的正常归宿。
+ *
+ * 出口语义 (照 D3 空跑闸与 #241 坐标闸同一形状, 不另造第二本账):
+ *   · 不是 git 仓 / `git log` 答不了 / 契约在仓外 → **闸缺席** (fail-open, 留一行证据)。
+ *     ⚠ 这里必须 fail-open: O-6 只在「切片 verify 已绿」时才问那一问, 而 verify 全红
+ *     的图完全健康 —— 拿 git 取不到证据去挡它们是误伤一整类本来能跑的图。
+ *   · 查得到入库点 → 放行。
+ *   · 查不到入库点 + force → 越闸放行, logger.warn 留账 (沿 INV-5 惯例)。
+ *   · 查不到入库点 + !force → 同步拒, 回执带该敲的命令。
+ */
+function contractCommittedGate(
+  sddPath: string,
+  cwd: string,
+  force: boolean | undefined,
+  runId: string,
+): { content: { type: 'text'; text: string }[]; isError: true } | undefined {
+  const exec = defaultGitExec(cwd);
+  const birth = exec(['log', '--diff-filter=A', '--format=%H', '--', sddPath]);
+  if (birth.exitCode !== 0) {
+    // fail-open 可以吞异常, 不许吞证据: 记下是哪条路径、在哪个 cwd 上问不出来。
+    logger.info(
+      { sddPath, cwd, runId, exitCode: birth.exitCode },
+      '[dag_goal] T-3 契约入库闸缺席 (非 git 仓 / 契约在仓外 / git 答不了) — 点火照常',
+    );
+    return undefined;
+  }
+  if (birth.stdout.split('\n').some((x: string) => x.trim().length > 0)) return undefined;
+  if (force) {
+    logger.warn(
+      { sddPath, runId },
+      '[dag_goal] T-3: 契约未入库越闸 (owner force=true · 沿 INV-5 旧惯例) — O-6 切片交付判定将恒判 undetermined',
+    );
+    return undefined;
+  }
+  return {
+    content: [{
+      type: 'text' as const,
+      text:
+        `dag_goal sddPath 点火拒绝 (T-3 · 契约还没提交): ${sddPath} 在 git 里查不到入库点。\n` +
+        `O-6 的切片交付判定要拿「契约入库之后写集被动过没有」当证据; 没有入库点就没有起点, ` +
+        `同树另一个窗口的在途改动会被读成「本片已交付」而整片被跳过。\n` +
+        `先 \`git add ${sddPath} && git commit\` 再点火, 或 force=true 越闸 (留账, 越闸后 O-6 恒判 undetermined)。`,
+    }],
+    isError: true,
+  };
+}
+
+/**
  * #241 坐标机械校验闸 (W2-241 S2) —— 与 D3 空跑闸同门, detached 与非 detached 两接线点同一函数。
  * 校验对象 = solve 的 goal 文本 + (有 sddPath 时) SDD 全文; 判定走 `checkCoords` 白名单三形状
  * (INV-W241-1, 判不了的散文碎片一律不验)。实账 0f67293b: 派工文本编造符号名 → 执行体照抄进
@@ -744,6 +812,10 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           if (sddPath && !isTrueResume) {
             const blocked = sddIgnitionDryRunGate(sddPath, force, runId);
             if (blocked) return blocked;
+            // ── T-3 契约入库闸 (detached 接线点): 空跑闸之后、spawn 之前 ──────────
+            // 排在空跑闸之后是刻意的: 「这份契约根本编译不了」比「它还没提交」更值得先说。
+            const uncommitted = contractCommittedGate(sddPath, runAnchor, force, runId);
+            if (uncommitted) return uncommitted;
           }
           // ── #241 坐标机械校验 (detached 接线点): goal 文本 + SDD 全文, spawn 之前过 ──
           if (!isTrueResume) {
@@ -847,6 +919,10 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
         // 记录、零 worktree (IGNITION 拒后 ignitionPreflight 不会跑, 不造第二份 debris)。
         const dryBlocked = sddIgnitionDryRunGate(sddPath, force, runId);
         if (dryBlocked) return dryBlocked;
+        // ── T-3 契约入库闸 (非 detached 接线点): 与 detached 同一函数, ignitionPreflight 之前过 ─
+        // 拒了零 registry 记录、零 worktree (与 D3 空跑闸同档)。
+        const uncommittedBlocked = contractCommittedGate(sddPath, deps.cwd, force, runId);
+        if (uncommittedBlocked) return uncommittedBlocked;
         const preflight = ignitionPreflight(
           deps.cwd,
           [...new Set(parseBreakdown(loadSddContract(sddPath).text).slices.flatMap((s) => s.writeSet))],

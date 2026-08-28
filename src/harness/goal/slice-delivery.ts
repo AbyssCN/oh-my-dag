@@ -124,9 +124,12 @@ export type ExecGit = (args: readonly string[]) => { stdout: string; exitCode: n
  * 2. 该点之后有几个提交动过写集 + 工作树里写集有几个文件脏。
  *
  * ⚠ **诚实边界,两条**:
- * · **契约还没提交**时第 1 跳查不到入库点。此时不判 `available:false` —— 那会把
- *   「刚写完契约就开工」这个最常见的场景一律打成 undetermined。改为只用第 2 跳(脏文件数),
- *   并在这种情形下把提交数记 0。代价:此时分辨不了「写集的脏改动是不是本片干的」。
+ * · **契约还没提交**时第 1 跳查不到入库点 → `available:false`(owner 2026-08-28 裁,T-3)。
+ *   原实装在这一格降级成「只看脏文件数」,而那正是同树多窗口下的假放行入口:另一个窗口
+ *   在同名文件上的在途改动会被读成「本片已交付」,而 `already-delivered` 是**唯一放行**
+ *   的那一格。没有入库点就没有确定的起点,「谁干的」这一问机械答不了 —— 老实说不知道。
+ *   配套是点火层那道前置闸(`mcp/tools/goal.ts` 的 `contractCommittedGate`):契约先提交
+ *   再点火,于是这一格在生产上根本不该出现;这里保留它是纵深,不是主路。
  * · 写集为空 → `available:false`。空写集没有可查的证据面,而空写集本身该由别的闸拒。
  */
 export function collectSliceGitEvidence(
@@ -142,13 +145,14 @@ export function collectSliceGitEvidence(
   if (birth.exitCode !== 0) return none;
   const lines = birth.stdout.split('\n').map((x) => x.trim()).filter(Boolean);
   const birthSha = lines.at(-1);
+  // T-3 (owner 2026-08-28 裁): 查不到入库点 = 契约还没提交 = **没有确定的起点**。
+  // 此时唯一还能问的是「写集脏不脏」, 而脏不脏答不了「是谁弄脏的」—— 同树另一个窗口的
+  // 在途改动同样会让它脏。拿它放行等于把别人的活记在本片头上。老实判「没能去看」。
+  if (!birthSha) return none;
 
-  let commits = 0;
-  if (birthSha) {
-    const since = exec(['log', '--format=%H', `${birthSha}..HEAD`, '--', ...writeSet]);
-    if (since.exitCode !== 0) return none;
-    commits = since.stdout.split('\n').filter((x) => x.trim().length > 0).length;
-  }
+  const since = exec(['log', '--format=%H', `${birthSha}..HEAD`, '--', ...writeSet]);
+  if (since.exitCode !== 0) return none;
+  const commits = since.stdout.split('\n').filter((x) => x.trim().length > 0).length;
 
   const dirty = exec(['status', '--porcelain', '--', ...writeSet]);
   if (dirty.exitCode !== 0) return none;

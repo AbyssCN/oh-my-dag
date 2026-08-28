@@ -25,6 +25,8 @@
  * · 把「证据取不到」那一格改成返回 `already-delivered` → 「取不到时不许当成交付」当场红。
  * · 把「没动过」那一格也返回 `already-delivered` → 「判据虚仍要拒」当场红(闸整个失效)。
  * · 把未提交改动那一路去掉(只看提交)→ 「人刚做完还没提交也算交付」当场红。
+ * · 把 T-3 那句 `if (!birthSha) return none` 去掉 → 「契约还没提交 → available:false」当场红
+ *   (它会退回 available:true / dirty=2,也就是拿另一个窗口的在途改动当本片的交付证据)。
  */
 import { describe, expect, test } from 'bun:test';
 import {
@@ -143,14 +145,20 @@ describe('GREEN_VERIFY_DISAMBIGUATED:取证据(注入式)', () => {
     expect(explainGreenVerify(ev).kind).toBe('already-delivered');
   });
 
-  test('★ 契约还没提交 (查不到入库点) → 仍可用, 只靠脏文件数判', () => {
+  // T-3 (owner 2026-08-28 裁): 原实装在这一格降级成「只看脏文件数」, 于是同树另一个窗口
+  // 在同名文件上的在途改动会被读成「本片已交付」—— 而 already-delivered 是唯一放行的那一格。
+  // 现在老实判「没能去看」。**脏文件数摆得足够多**(2 个)正是这条测试的判别力所在:
+  // 把 `if (!birthSha) return none` 去掉, 它会变回 available:true / dirty=2, 当场红。
+  test('★ 契约还没提交 (查不到入库点) → available:false, 不拿脏文件数凑合 (T-3)', () => {
     const ev = collectSliceGitEvidence('docs/plan/x.md', WS, fakeGit({
       birth: { stdout: '', exitCode: 0 },
       status: { stdout: '?? src/a.ts\n M src/a.test.ts\n', exitCode: 0 },
     }));
-    expect(ev.available).toBe(true);
+    expect(ev.available).toBe(false);
+    // NULL ≠ 0: 取不到证据时那两个计数一律不编 (仓规坑 ①)。
     expect(ev.commitsTouchingWriteSet).toBe(0);
-    expect(ev.dirtyWriteSetFiles).toBe(2);
+    expect(ev.dirtyWriteSetFiles).toBe(0);
+    expect(explainGreenVerify(ev).kind).toBe('undetermined');
   });
 
   test('★ git 调用失败 (非 git 仓) → available:false, 计数不编 (NULL ≠ 0)', () => {
@@ -165,9 +173,11 @@ describe('GREEN_VERIFY_DISAMBIGUATED:取证据(注入式)', () => {
     })).available).toBe(false);
   });
 
-  test('★ 干净且无新提交 → 判据虚 (端到端走通两半)', () => {
+  test('★ 契约已入库 + 干净且无新提交 → 判据虚 (端到端走通两半)', () => {
     const ev = collectSliceGitEvidence('docs/plan/x.md', WS, fakeGit({
-      birth: { stdout: '', exitCode: 0 },
+      // T-3 之后「判据虚」只在**有入库点**时判得出来 —— 没有起点连虚不虚都答不了。
+      birth: { stdout: 'shaBIRTH\n', exitCode: 0 },
+      since: { stdout: '', exitCode: 0 },
       status: { stdout: '', exitCode: 0 },
     }));
     expect(explainGreenVerify(ev).kind).toBe('vacuous-criterion');
