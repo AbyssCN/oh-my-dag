@@ -31,10 +31,13 @@ import {
   explainGreenVerify,
   collectSliceGitEvidence,
   type SliceGitEvidence,
+  decideO6,
   type ExecGit,
+  type SliceProbe,
 } from './slice-delivery';
 
 const ev = (p: Partial<SliceGitEvidence>): SliceGitEvidence => ({
+  resuming: false,
   available: true,
   commitsTouchingWriteSet: 0,
   dirtyWriteSetFiles: 0,
@@ -168,5 +171,95 @@ describe('GREEN_VERIFY_DISAMBIGUATED:取证据(注入式)', () => {
       status: { stdout: '', exitCode: 0 },
     }));
     expect(explainGreenVerify(ev).kind).toBe('vacuous-criterion');
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// decideO6 —— 取代 run-goal.ts 里那句 `if (resuming)` 的具名决定
+// ──────────────────────────────────────────────────────────────────────────────
+const sl = (id: number, verifyGreen: boolean): SliceProbe =>
+  ({ id, verify: `bun test s${id}.test.ts`, writeSet: [`src/s${id}.ts`], verifyGreen });
+
+describe('GREEN_VERIFY_DISAMBIGUATED:decideO6 —— 整图放行还是点名拒', () => {
+  const delivered = ev({ commitsTouchingWriteSet: 1 });
+  const vacuous = ev({});
+  const unknown = ev({ available: false });
+
+  test('★ 全部天然红 → 放行, 一片都不跳过 (O-6 前提成立的正常路径)', () => {
+    const d = decideO6([sl(1, false), sl(2, false)], () => vacuous);
+    expect(d.kind).toBe('proceed');
+    if (d.kind === 'proceed') {
+      expect(d.achieved.size).toBe(0);
+      expect(d.notes).toHaveLength(0);
+      // 天然红的片**不该去查 git** —— 那一格没有可争的。用 vacuous 当证据仍放行即证明没查。
+    }
+  });
+
+  test('★ 已绿且写集动过 → 放行并把该片标已达成, 且留一条痕', () => {
+    const d = decideO6([sl(1, true), sl(2, false)], () => delivered);
+    expect(d.kind).toBe('proceed');
+    if (d.kind === 'proceed') {
+      expect([...d.achieved]).toEqual([1]);
+      expect(d.notes).toHaveLength(1);
+      expect(d.notes[0]).toContain('切片 1');
+    }
+  });
+
+  test('★ 已绿而写集没动过 → 点名拒, 判词带上那条 verify 与原因', () => {
+    const d = decideO6([sl(1, true)], () => vacuous);
+    expect(d.kind).toBe('reject');
+    if (d.kind === 'reject') {
+      expect(d.sliceId).toBe(1);
+      // ⚠ 判词标记 `[run-goal][o6-vacuous-verify]` 由**抛出方**前置, 不在这里 ——
+      // 有条源码扫描绊线钉着那个字面量必须出现在 run-goal.ts 里 (gates/o6-vacuous-verify.gate.test.ts)。
+      // 把它挪进本模块会让那条绊线红, 那是它该红 (它守的是「闸的判词认得出来自哪」)。
+      expect(d.message).not.toContain('o6-vacuous-verify');
+      expect(d.message).toContain('bun test s1.test.ts');
+      expect(d.message).toContain('一次没被动过');
+    }
+  });
+
+  test('★ 证据取不到 → 同样拒, 但判词说的是「没能去看」不是「判据虚」', () => {
+    const d = decideO6([sl(1, true)], () => unknown);
+    expect(d.kind).toBe('reject');
+    if (d.kind === 'reject') expect(d.message).toContain('没能去看');
+  });
+
+  test('★ fail-fast:第一片判拒就整体拒, 不接着看后面的 (与今天语义逐字相同)', () => {
+    const seen: number[] = [];
+    const d = decideO6([sl(1, true), sl(2, true)], (s) => {
+      seen.push(s.id);
+      return vacuous;
+    });
+    expect(d.kind).toBe('reject');
+    expect(seen).toEqual([1]); // 看了第 2 片即说明不是 fail-fast
+  });
+
+  test('★ 混合:一片已交付一片天然红 → 放行, 只跳过交付那片', () => {
+    const d = decideO6([sl(1, true), sl(2, false)], (s) => (s.id === 1 ? delivered : vacuous));
+    expect(d.kind).toBe('proceed');
+    if (d.kind === 'proceed') expect([...d.achieved]).toEqual([1]);
+  });
+});
+
+describe('GREEN_VERIFY_DISAMBIGUATED:resuming 是并列的第二条证据源, 不是被取代的代理', () => {
+  test('★ 续跑 + verify 已绿 → 已交付, 且**不依赖 git** (#242 的原路径逐字保留)', () => {
+    // 非 git 仓 (available:false) 下仍判已交付 —— #242 那份回归用例正是跑在临时目录里。
+    const v = explainGreenVerify(ev({ resuming: true, available: false }));
+    expect(v.kind).toBe('already-delivered');
+    expect(v.why).toContain('#242');
+  });
+
+  test('★ resuming 先于 available 判 —— 顺序反了就把 #242 修回病态', () => {
+    // 2026-08-28 实测: 我一度把 resuming 整个删掉换成 git 证据, run-goal-o6-resume 当场红
+    // (Expected 1, Received 0 —— 平铺图没编出来, 回落了)。测试是对的, 改动不完整。
+    expect(explainGreenVerify(ev({ resuming: true, available: false })).kind)
+      .not.toBe('undetermined');
+  });
+
+  test('★ 非续跑时 resuming 不掺和, 三格照旧由 git 证据定', () => {
+    expect(explainGreenVerify(ev({ resuming: false, commitsTouchingWriteSet: 1 })).kind).toBe('already-delivered');
+    expect(explainGreenVerify(ev({ resuming: false })).kind).toBe('vacuous-criterion');
+    expect(explainGreenVerify(ev({ resuming: false, available: false })).kind).toBe('undetermined');
   });
 });

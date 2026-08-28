@@ -49,6 +49,15 @@
 /** git 侧的证据。**三个字段一起读**:`available` 为假时另两个没有意义。 */
 export interface SliceGitEvidence {
   /**
+   * 这一跑是不是 resume。**续跑本身就是「活干到一半」的证据**(#242 的原推理,成立且保留)——
+   * 它不是被 git 证据取代的,是与之**并列**的另一条证据源。
+   *
+   * ⚠ 2026-08-28 我一度把它当代理「退役」掉,结果 #242 的回归用例当场红:
+   * 那份用例跑在临时目录里,拿不到 git 证据 → undetermined → 拒 → 回落,正是 #242 修掉的病。
+   * **测试是对的,我的改动不完整。** 代理选窄了要**加**证据源,不是**换**掉它。
+   */
+  readonly resuming: boolean;
+  /**
    * 证据取到了没有。`false` = 非 git 仓 / git 调用失败 / 查不到契约的落盘点。
    * ⚠ 为假时**不许读**下面两个计数 —— 那等于把「没测量」当成「测量结果是 0」。
    */
@@ -73,6 +82,11 @@ export type GreenVerifyVerdict =
  * ⚠ **只有 `already-delivered` 允许跳过该片**,另两格一律照旧拒。
  */
 export function explainGreenVerify(ev: SliceGitEvidence): GreenVerifyVerdict {
+  if (ev.resuming) {
+    // #242: 续跑时切片 verify 当前绿 = 活已干完 (含「owner 人工修绿 verify 后 resume」这条
+    // 合法路径)。这一格先判, 因为它不依赖 git —— 非 git 仓里 resume 照样该走逃生门。
+    return { kind: 'already-delivered', why: '续跑 (resume) 且该片 verify 当前已绿 — 活干到一半接着跑 (#242)。' };
+  }
   if (!ev.available) {
     return {
       kind: 'undetermined',
@@ -119,8 +133,9 @@ export function collectSliceGitEvidence(
   contractPath: string,
   writeSet: readonly string[],
   exec: ExecGit,
+  resuming = false,
 ): SliceGitEvidence {
-  const none: SliceGitEvidence = { available: false, commitsTouchingWriteSet: 0, dirtyWriteSetFiles: 0 };
+  const none: SliceGitEvidence = { resuming, available: false, commitsTouchingWriteSet: 0, dirtyWriteSetFiles: 0 };
   if (writeSet.length === 0) return none;
 
   const birth = exec(['log', '--diff-filter=A', '--format=%H', '--', contractPath]);
@@ -139,5 +154,79 @@ export function collectSliceGitEvidence(
   if (dirty.exitCode !== 0) return none;
   const dirtyCount = dirty.stdout.split('\n').filter((x) => x.trim().length > 0).length;
 
-  return { available: true, commitsTouchingWriteSet: commits, dirtyWriteSetFiles: dirtyCount };
+  return { resuming, available: true, commitsTouchingWriteSet: commits, dirtyWriteSetFiles: dirtyCount };
+}
+
+/**
+ * 生产用的 git 执行面 —— 同步 spawn,失败一律当「取不到」。
+ * 形状照 `criterion-anchor.ts` 的 `defaultAnchorRunner`(同族先例:那条对**树**做时效锚,
+ * 这条对**契约与写集**做交付判定)。动态 require 是为了让本模块的判据部分能在没有
+ * `node:child_process` 的环境里被 import 测试。
+ */
+export function defaultGitExec(cwd: string): ExecGit {
+  return (args) => {
+    try {
+      const { spawnSync } = require('node:child_process') as typeof import('node:child_process');
+      const r = spawnSync('git', [...args], { cwd, encoding: 'utf8', windowsHide: true });
+      if (r.error) return { stdout: '', exitCode: 128 };
+      return { stdout: r.stdout ?? '', exitCode: r.status ?? 128 };
+    } catch {
+      // 非零退出 / spawn 失败是**正常路径** (不是 git 仓 / git 不在), 不刷日志;
+      // 判定那一侧会把它读成 undetermined 并在判词里说清「没能去看」。
+      return { stdout: '', exitCode: 128 };
+    }
+  };
+}
+
+// ── O-6 的那个决定(具名纯函数,接线方只负责喂证据与执行结论)──────────────────
+
+/** 一片在 O-6 探针眼里的样子。 */
+export interface SliceProbe {
+  readonly id: number;
+  readonly verify: string;
+  readonly writeSet: readonly string[];
+  /** 实装前先跑一枪 verify 的结果。false = 天然红, 这一片没有可争的。 */
+  readonly verifyGreen: boolean;
+}
+
+/** O-6 的结论:要么整图放行(带上可跳过的片),要么点名一片拒。 */
+export type O6Decision =
+  | { readonly kind: 'proceed'; readonly achieved: ReadonlySet<number>; readonly notes: readonly string[] }
+  | { readonly kind: 'reject'; readonly sliceId: number; readonly message: string };
+
+/**
+ * 逐片判 O-6:**verify 已绿**的片是活已干完还是判据虚。
+ *
+ * 今天这个决定由 `run-goal.ts` 里一句 `if (resuming)` 做 —— 本函数取代它,判据换成
+ * git 可查的证据(见 {@link explainGreenVerify})。**第一片判拒就整体拒**,与今天的
+ * fail-fast 语义逐字相同(INV-D3-4:sddPath 不落 v1)。
+ *
+ * `notes` 收「哪几片被判已交付、为什么」—— 放行也要留痕,否则「跳过了 3 片」这件事
+ * 只活在没人读的分支里(仓规:fail-open 可以吞异常,不许吞证据)。
+ */
+export function decideO6(
+  slices: readonly SliceProbe[],
+  evidenceOf: (s: SliceProbe) => SliceGitEvidence,
+): O6Decision {
+  const achieved = new Set<number>();
+  const notes: string[] = [];
+  for (const s of slices) {
+    if (!s.verifyGreen) continue; // 天然红 = O-6 前提成立, 照常进图
+    const v = explainGreenVerify(evidenceOf(s));
+    if (v.kind === 'already-delivered') {
+      achieved.add(s.id);
+      notes.push(`切片 ${s.id}: ${v.why}`);
+      continue;
+    }
+    return {
+      kind: 'reject',
+      sliceId: s.id,
+      message:
+        // ⚠ 判词标记 `[run-goal][o6-vacuous-verify]` **刻意不在这里拼** —— 有条源码扫描绊线
+        // (`gates/o6-vacuous-verify.gate.test.ts`) 钉着那个字面量必须出现在 run-goal.ts 里。
+        // 由抛出方前置, 本函数只给「哪一片、为什么」。
+        `切片 ${s.id} 的 verify 实装前已绿 (\`${s.verify}\` → 0): RED 无法成立 —— ${v.why}`,
+    };
+  }
+  return { kind: 'proceed', achieved, notes };
 }

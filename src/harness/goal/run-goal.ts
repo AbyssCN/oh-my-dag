@@ -51,6 +51,13 @@ import { classifySpecWrite, type SpecWrite, type SpecWriteSource } from './spec-
 import { summarizeDelta, type DeltaReport, type VerifyStepStatus } from './delta-compare';
 import { parseBreakdown, type SddContract, type SddSlice } from './sdd-direct';
 import { acceptCommandFromBreakdown, compileBreakdown, describeParallelism, parallelismReadout } from './sdd-compile';
+import {
+  decideO6,
+  collectSliceGitEvidence,
+  defaultGitExec,
+  type ExecGit,
+  type SliceProbe,
+} from './slice-delivery';
 import { dryRunSddIgnition } from './sdd-ignition-check';
 import { coverSlices, describeSliceCoverage, type SliceCoverageReport } from './slice-coverage';
 import { attributeWriteSet, classifyWriteScope, describeWriteSet, SDD_DECLARED_WRITE_SET, type DeclaredWriteSet, type WriteScopeKind, type WriteSetDeclaration, type WriteSetReport } from '../writeset/write-set';
@@ -117,6 +124,19 @@ export interface GoalStage {
 }
 
 export interface RunGoalConfig {
+  /**
+   * O-6 切片交付判定用的 git 执行面(注入点,2026-08-28)。
+   *
+   * 省略 = 用 `defaultGitExec(config.cwd)` 跑真 git。给替身是为了让接线测试造得出
+   * 「非 git 仓」「git 调用失败」这些拿真仓造不出来的格 —— 判定本身在
+   * `goal/slice-delivery.ts`,是零 IO 纯函数。
+   *
+   * ⚠ 放在这里而不是 `ExecutorDagConfig`:后者在 `dag/types.ts`,而那个文件是登记面
+   * 泛化闸的 trigger(碰它就要连 `seams.md` 与结构绊线一起改)。这个注入点只服务 run-goal
+   * 一处,没有必要付那份代价。
+   */
+  gitExec?: ExecGit;
+
   cwd: string;
   /** 引擎 config 基座 (座位 + agent/command/research runner)。execute 阶段直接用它。 */
   dag: ExecutorDagConfig;
@@ -1105,22 +1125,61 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
       // 重写已完成实装 (23 节点把 live-children.ts 整套换 API 覆盖)。修后: resume 时已绿切片
       // 视为已达成, 实装节点降为 command 重验 (见下方节点映射) —— 不给 agent 任何重写机会;
       // verify 仍红的切片照常进图重跑 (settled=done 而判据在当前树上不成立 = 本来就该重做)。
-      const resuming = config.dag.continuity?.resume === true;
-      /** #242: resume 时 verify 已绿的切片 (实装节点降为 command 重验, 不判 vacuous)。 */
-      const achievedSlices = new Set<number>();
+      //
+      // ── 2026-08-28 修:`resuming` 这个代理退役 ────────────────────────────────
+      //
+      // #242 拿 `continuity.resume === true` 当「这活可能已经干过」的代理, 而**代理选窄了**:
+      // 活干完的原因还有人手做的、另一个窗口做的、上一跑用别的 runId 做的。
+      // 实账 2026-08-28: F2 的片 1-3 由人做完提交后拿母契约点火, `resuming === false`,
+      // 逃生门不适用 → 整图被拒, 而活确确实实干完了。
+      //
+      // 补一条 git 可查的证据 (`goal/slice-delivery.ts`): 契约落盘之后本片写集被动过没有。
+      // ⚠ 它是**并列**的第二条证据源, 不是替代: `resuming` 照旧先判 —— #242 那份回归用例
+      // 跑在临时目录里拿不到 git 证据, 换掉 resume 会让它当场回落 (实测红过一次)。
+      // 三格不压平: 动过 = 已交付(跳过); 没动过 = 判据虚(拒); 取不到证据 = 没能去看(也拒,
+      // 但判词分得开)。判定与取证都是具名件, 这里只负责喂与执行结论。
+      /** verify 已绿且有交付证据的切片 (实装节点降为 command 重验, 不判 vacuous)。 */
+      let achievedSlices = new Set<number>();
       if (config.dag.commandRunner) {
+        const probes: SliceProbe[] = [];
         for (const s of breakdown.slices) {
           const probe = await config.dag.commandRunner({ command: s.verify });
-          if (probe.exitCode !== 0) continue;
-          if (resuming) {
-            achievedSlices.add(s.id);
-            continue;
-          }
+          probes.push({
+            id: s.id,
+            verify: s.verify,
+            writeSet: s.writeSet,
+            verifyGreen: probe.exitCode === 0,
+          });
+        }
+        const gitExec = config.gitExec ?? defaultGitExec(config.cwd);
+        const resuming = config.dag.continuity?.resume === true;
+        const decision = decideO6(probes, (sp) =>
+          collectSliceGitEvidence(config.sddPath ?? '', sp.writeSet, gitExec, resuming),
+        );
+        if (decision.kind === 'reject') {
+          // ⚠ 判词首段**必须是静态字面量**且与闸登记表逐字一致 —— gate-registry 扫的是
+          // run-goal.ts 源码里那一整串 (INV-1/4/7: id 找得到、原文非空无换行、整串仍在本文件)。
+          // 2026-08-28 实测: 把整句搬进 slice-delivery.ts 只留插值, 对账闸 4 条当场红。
+          // 动态的那半 (哪一片、凭什么判) 追加在后面, 不动首段。
+          // ⚠ 这一整串**必须与闸登记表逐字一致且连续** (gate-registry.test.ts 的 INV-7:
+          //    `[run-goal][o6-vacuous-verify] 切片 ${s.id} 的 verify 实装前已绿` 要能在本文件
+          //    里被 `includes` 原样找到)。所以这里回头取真切片、变量仍叫 `s` ——
+          //    2026-08-28 实测: 我把它拆成拼接字面量并改了变量名, 那条绊线当场红。
+          //    它是在正确地拦我: 改闸的判词形状而不同步登记面, 正是它守的那件事。
+          const s = breakdown.slices.find((x) => x.id === decision.sliceId);
           throw new Error(
-            `[run-goal][o6-vacuous-verify] 切片 ${s.id} 的 verify 实装前已绿 (\`${s.verify}\` → 0): RED 无法成立 —— ` +
-              '判据虚 (换实装前天然红的命令, 如产物 grep) 或活已干完 (O-6 vacuous 探针)',
+            `[run-goal][o6-vacuous-verify] 切片 ${s?.id ?? decision.sliceId} 的 verify 实装前已绿: RED 无法成立 —— ${decision.message}`,
           );
         }
+        achievedSlices = new Set(decision.achieved);
+        // 放行也要留痕: 「跳过了哪几片、凭什么」不留下来, 事后没人分得清
+        // 「引擎判它已交付」与「引擎压根没跑到它」。
+        // ⚠ 前缀**不许写成双段方括号形状** (即 run-goal 后面再跟一个方括号 id) ——
+        //    闸登记对账扫的正是那个形状; 连这条注释都不能把它写成字面量, 否则注释自己被扫成
+        //    一个未登记的新闸 (2026-08-28 实测: 我写了个 xxx 举例, 对账当场多出一个 id)。一行普通日志
+        // 会被当成一个未登记的新闸 id (2026-08-28 实测: 扫出 19 个 id 而表里 18 个, 3 条对账红)。
+        // 这不是闸的判词, 是放行时的留痕, 所以写成单段前缀。
+        for (const n of decision.notes) logger.info({ runId: continuityRunId }, `[run-goal] O-6 交付判定: ${n}`);
       }
       // 编译器刻意不内联 SDD 全文 (token 注入由接线方裁, 见 sdd-compile 头注): 这里给每个
       // **切片实装节点**前置与 conductor 路径同源的契约上下文 (G-6 教训: 内联全文, 不引用
