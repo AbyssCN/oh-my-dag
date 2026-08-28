@@ -96,6 +96,20 @@ const NOISE_PROVIDERS: ReadonlySet<string> = new Set([
   'escalation', 'gate', 'review', 'best-of-n',
 ]);
 
+/**
+ * ISO-8601 时间戳 —— **不是模型坐标**, 是被冒号骗进来的假阳性 (2026-08-28)。
+ *
+ * `'2026-01-01T00:00:00Z'` 被 `LITERAL_COORD` 读成 provider=`2026-01-01T00` / model=`00:00Z`,
+ * 而 provider 段随日期变, 塞不进 `NOISE_PROVIDERS` 那张固定表 (表里的 `HH` 只挡得住
+ * `HH:MM:ss.l` 这种**格式串**, 挡不住真实日期)。所以这一格按**形状**判, 不按 provider 名判。
+ *
+ * ⚠ 这是**假阳性修复**, 不是放宽: 真坐标的 provider 段不可能长成 `YYYY-MM-DDTHH`。
+ * 仓规「假阳性不许升」约束的正是这种 —— 一条恒红且红得没道理的闸, 会让人对红脱敏。
+ * ⚠ 走**噪声滤**不走白名单是刻意的: 白名单要求「与当前命中集合双向精确匹配」,
+ * 拿它挡一个会随日期变的字面量, 下次改冻结时间就多一条死条目。
+ */
+const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$/;
+
 /** 扫描排除面 (与 D-4 冻结一致) —— 相对 repo 根的路径判定。 */
 function isExcluded(rel: string): boolean {
   if (rel === 'src/model/seats.ts') return true;
@@ -137,6 +151,7 @@ export function scanLiteralCoords(srcRoot: string): CoordHit[] {
     while ((m = LITERAL_COORD.exec(src)) !== null) {
     const coord = m[2]!;
     if (!COORD_RE.test(coord)) continue; // 双闸: URL / 逗号列表等不是坐标。
+    if (ISO_TIMESTAMP.test(coord)) continue; // 被冒号骗进来的时间戳, 不是坐标。
     if (NOISE_PROVIDERS.has(coord.slice(0, coord.indexOf(':')))) continue; // 非模型命名空间。
     const line = src.slice(0, m.index).split('\n').length;
     // 引用语境豁免 (2026-08-26): 同行带 `gate-allow(seat-coordinate): <理由>` 即放行。
@@ -187,6 +202,10 @@ describe('seat 真源防回潮闸', () => {
       "import x from 'node:fs';",
       "const a = 'server:tool';",
       "const b = 'conductor:plan';",
+      // 2026-08-28: 时间戳那一格。**真坐标与它同处一份样本**是这条用例的判别力所在 ——
+      // 只放时间戳的话, 一个「什么都不报」的坏滤器也能让它绿。
+      "const t = '2026-01-01T00:00:00Z';",
+      "const t2 = '2026-08-28 14:03';",
       "const c = 'fakeprovider:fake-model';",
     ].join('\n');
     const found: string[] = [];
@@ -195,6 +214,7 @@ describe('seat 真源防回潮闸', () => {
     while ((m = LITERAL_COORD.exec(src)) !== null) {
     const coord = m[2]!;
     if (!COORD_RE.test(coord)) continue;
+    if (ISO_TIMESTAMP.test(coord)) continue;
     if (NOISE_PROVIDERS.has(coord.slice(0, coord.indexOf(':')))) continue;
     found.push(coord);
     }

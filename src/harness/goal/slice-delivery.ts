@@ -174,9 +174,15 @@ export function defaultGitExec(cwd: string): ExecGit {
       const r = spawnSync('git', [...args], { cwd, encoding: 'utf8', windowsHide: true });
       if (r.error) return { stdout: '', exitCode: 128 };
       return { stdout: r.stdout ?? '', exitCode: r.status ?? 128 };
-    } catch {
-      // 非零退出 / spawn 失败是**正常路径** (不是 git 仓 / git 不在), 不刷日志;
-      // 判定那一侧会把它读成 undetermined 并在判词里说清「没能去看」。
+    } catch (err) {
+      // ⚠ 这里**不是**「非 git 仓 / git 不在」那条路 —— 那两种 `spawnSync` 不抛:
+      //   前者退 128 落 `r.status`, 后者落 `r.error`, 上面两行已经各自接住了。
+      //   能到这个 catch 的只有真意外 (`node:child_process` 拿不到之类), 所以留证据不会刷屏。
+      // fail-open 可以吞异常, 不许吞证据 (仓规静默坑 ②): 不留这一行的话, 判定那侧只会
+      //   说「没能去看」, 而**为什么没能看**在盘上一个字都没有。
+      // 用 `console.error` 不用 `logger`: 本模块刻意零重依赖 (判据那一半要能在任何环境
+      //   被 import 测试), 而 `harness/logger` 拉 pino + fs + env。
+      console.error(`[slice-delivery] git 执行面抛错 (fail-open, 判定按「取不到证据」走): ${String(err)}`);
       return { stdout: '', exitCode: 128 };
     }
   };
