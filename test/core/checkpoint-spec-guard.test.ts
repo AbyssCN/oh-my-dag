@@ -29,6 +29,8 @@
  * ## 反向自检 (真跑过)
  * · 摘掉 `shouldSkip` 里那段指纹比对 → ★① 红 (b 被当绿跳过, generate 不再被调)。
  * · 把接线点的 `fingerprint` 不传 (闸缺席) → ★① 红。
+ * · 把 `specChangedNodes` 的透传守卫从 `!== undefined` 改成 `.length` → ★⑥ 红
+ *   (「resume 了但没变」被压成缺席, 与「不是 resume」再也分不开 —— 仓规坑 ①)。
  * · 把「两侧任一缺席 → 退回原语义」改成「缺席即不匹配」→ ★⑤ 红。
  *   ⚠ 这一条起初写的是「★② 红」, 实测**不红** —— 引擎那条路两侧恒有指纹, 根本走不到
  *   fail-open 那一格。★⑤ 才是真覆盖它的那条 (直接问 `shouldSkip`)。
@@ -142,6 +144,25 @@ describe('T-1a 规格守卫 · resume 复用要问「还是不是同一个节点
     expect(manager.shouldSkip(RUN, 'b', undefined, undefined, {})).toBe(true);
     // 给一个对不上的 → 不跳 (这条同时证明上面那个 true 不是因为整段判定失效)
     expect(manager.shouldSkip(RUN, 'b', undefined, undefined, { fingerprint: '对不上的指纹' })).toBe(false);
+  });
+
+  test('★⑥ 摘要读数出声 (S-51 抓法 ③): 三格分明 —— 缺席 / 0 / 非空', async () => {
+    // S-51 那次的病灶不是「闸没拦住」, 是「拦住了没人知道」: run 摘要只说「复用 6 节点」。
+    // 这一条钉的是**读数存在且分得开三格**, 不是钉摘要的措辞。
+    const first = fake();
+    const r0 = await runExecutorDagWithPlan(planWith(['src/old.ts']), cfg(first.generate, false));
+    // 格一: 不是 resume ⇒ 字段**缺席**。这不是「0 个失效」, 是「这一问不适用」。
+    expect(r0.specChangedNodes).toBeUndefined();
+
+    const second = fake();
+    const r1 = await runExecutorDagWithPlan(planWith(['src/old.ts']), cfg(second.generate, true));
+    // 格二: resume 了, 而一片都没失效 ⇒ **空数组**, 不是缺席。
+    expect(r1.specChangedNodes).toEqual([]);
+
+    const third = fake();
+    const r2 = await runExecutorDagWithPlan(planWith(['src/new.ts']), cfg(third.generate, true));
+    // 格三: b 的规格变了 ⇒ 点名 b。a 没变, 不该混进来。
+    expect(r2.specChangedNodes).toEqual(['b']);
   });
 
   test('★④ 上游没变时不受下游牵连 (每片一份哈希, 不是整份文档一份)', async () => {

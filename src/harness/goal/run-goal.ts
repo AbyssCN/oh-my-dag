@@ -1654,6 +1654,12 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
       }${oracleNote}${judgeDissent ? ' · ⚠ judge 异议: 判据绿收敛而 judge 判没成 —— 判据轴「judge 太紧/判据覆盖不够」样本, 判词见 continuity _loop-execute.json' : ''}` +
       `${flatUsed ? ` · 直通v2平铺 (并行读数: ${flatParallelism})` : ''}${flatFallback ? ` · 直通v2回落: ${flatFallback}` : ''}` +
       `${reusedNodes.length ? ` · 复用 ${reusedNodes.length} 节点` : ''}` +
+      // S-51 抓法 ③: 「因契约变更而失效的片」必须印在**同一行**。S-51 那次的摘要只说
+      // 「复用 6 节点」, 而「改的那件事有没有做」一个字都没有 —— 人第一眼看的正是这一行。
+      // ⚠ **0 也印**: 判据是 `!== undefined` 不是 `.length`。缺席 = 这跑不是 resume (不适用),
+      //   空 = resume 了而一片都没失效 —— 压成同一个「不印」, 事后再也分不开 (仓规坑 ①,
+      //   与 S-46 缺片那一行同一条纪律)。
+      `${exec.specChangedNodes !== undefined ? ` · 规格变更失效 ${exec.specChangedNodes.length} 节点${exec.specChangedNodes.length ? ` [${exec.specChangedNodes.slice(0, 6).join(', ')}]` : ''}` : ''}` +
       `${exec.observations?.length ? ` · 图外观察 ${exec.observations.length} 条` : ''}` +
       `${verifyDelta ? ` · D-1 delta: ${summarizeDelta(verifyDelta)}` : ''}` +
       // S-37: 抖动**要写出来**。不写 = 「复跑一次就绿了所以放行」这件事在盘上没有痕迹,

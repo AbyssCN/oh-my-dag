@@ -451,6 +451,11 @@ interface ExecOnce {
   results: Record<string, LeafResult>;
   /** 本轮 D-21 复用命中的节点 id (结果面 reusedNodes 的来源)。 */
   reusedNodes: string[];
+  /**
+   * resume 时因规格变更而被丢弃的绿节点 id (S-51 抓法 ③; 结果面 specChangedNodes 的来源)。
+   * ⚠ **必须 optional 且缺席有意义**: 缺席 = 不是 resume(不适用), 空数组 = resume 了但没变。
+   */
+  specChangedNodes?: string[];
   /** D-Q 图外只读观察者本轮的产出 (制品边 lint / 环空转)。 */
   observations: DagObservation[];
   /** 「声称 vs 引擎记录」两道扫描各自查了多少、检出多少 (见 ExecutorDagResult.claimCheck)。 */
@@ -1235,6 +1240,11 @@ async function executePlan(
   const resumeGreens = new Map<string, NodeCheckpoint>();
   // W4 SHADOW-3: 本 run 的 DAG 代数签名 (落 metadata + checkpoint; resume 时校验防过期切点乱截)。
   let dagGeneration: string | undefined;
+  /**
+   * S-51 抓法 ③ 的读数。**只在 resume 那条路上赋值** —— 非 resume 时保持 `undefined`,
+   * 那不是「0 个失效」而是「这一问不适用」(仓规坑 ①,判据写在 `ExecutorDagResult` 上)。
+   */
+  let specChangedNodes: string[] | undefined;
   if (continuity) {
     const goal = task.slice(0, 400);
     const nodeIds = Object.keys(plan.nodes);
@@ -1254,6 +1264,25 @@ async function executePlan(
     });
     if (continuity.resume) {
       for (const cp of continuity.manager.loadAllGreen(continuity.runId)) resumeGreens.set(cp.nodeId, cp);
+      // ── S-51 抓法 ③: 「因规格变更而失效的片」要出声 ────────────────────────────
+      // T-1a/T-1b 那两道守卫**会**丢弃这些绿, 但丢得静悄悄 —— 只有 shouldSkip 里一行 info。
+      // 而 S-51 那次的病灶正是「run 摘要只说复用 N 节点」: 人第一眼看的是摘要, 不是日志。
+      // 这里把它算出来抬到结果面, 由 run-goal 印进摘要 (**0 也印** —— 见 specChangedNodes 的
+      // 三格纪律: 缺席 = 不是 resume, 空 = resume 了但没变, 两者不许压成同一个 undefined)。
+      // 判据与 shouldSkip 里那道**同源**: 都是「盘上那份指纹 vs 此刻这份」。两侧任一缺席不算变。
+      specChangedNodes = [...resumeGreens.entries()]
+        .filter(([id, cp]) => {
+          const now = currentFingerprint(id);
+          return cp.fingerprint !== undefined && now !== undefined && cp.fingerprint !== now;
+        })
+        .map(([id]) => id)
+        .sort();
+      if (specChangedNodes.length > 0) {
+        logger.info(
+          { nodes: specChangedNodes, count: specChangedNodes.length },
+          '[omd/executor-dag] 规格守卫: 这些绿节点的语义指纹与盘上不一致 → 本轮不复用, 真重跑 (S-51)',
+        );
+      }
       // ⚠ 回滚根用**执行锚**, 不是状态锚 (2026-08-21, run 58df6b9e 复盘)。隔离档下 checkpoint
       // 落主仓而文件写在 worktree 里 —— 拿 repoRoot 当回滚根 = 对着一棵没有那些产物的树做回滚。
       const rolledBackIds: readonly string[] = dropPoisonedGreens(
@@ -5248,6 +5277,8 @@ async function executePlan(
     levels,
     results,
     reusedNodes: [...reuse.keys(), ...innerReused],
+    // S-51 抓法 ③: 缺席 = 不是 resume (不适用); 空数组 = resume 了但一片都没失效。两者不许压平。
+    ...(specChangedNodes !== undefined ? { specChangedNodes } : {}),
     observations,
     // 两道分开记 (宽度不同, 合并即错): conductor = output+facts+产物内容; flat = output+facts。
     // 两个分母**不重叠** (内环检过的子节点被平铺那道跳过)。缺席 = 早于本次改动的记录。
@@ -5480,6 +5511,9 @@ async function runDagInternal(
         levels: exec.levels,
         results: exec.results,
         reusedNodes: exec.reusedNodes,
+        // S-51 抓法 ③ —— 守卫用 `!== undefined` 而**不是** `.length`: 后者会把
+        // 「resume 了但一片都没失效」(空数组) 压成缺席, 与「不是 resume」再也分不开 (仓规坑 ①)。
+        ...(exec.specChangedNodes !== undefined ? { specChangedNodes: exec.specChangedNodes } : {}),
         ...(exec.observations.length ? { observations: exec.observations } : {}),
         claimCheck: exec.claimCheck,
         artifactMove: exec.artifactMove,
@@ -6051,6 +6085,9 @@ async function runDagInternalCore(
     levels: exec.levels,
     results: exec.results,
     reusedNodes: exec.reusedNodes,
+    // S-51 抓法 ③ —— 同下面那条警告: 算出来不透传 = 等于没有, 而症状全静默。
+    // 守卫是 `!== undefined` 不是 `.length` (空数组 = resume 了但没变, 是有信息的读数)。
+    ...(exec.specChangedNodes !== undefined ? { specChangedNodes: exec.specChangedNodes } : {}),
     ...(exec.observations.length ? { observations: exec.observations } : {}),
     // ⚠ 这一行是**逐字重建**的又一格: executePlan 算出来了, 外层不透传就等于没有 ——
     //   而症状是沉默的 (账本里那一列恒 NULL, 读上去像"早于该改动")。写这道扫描时当场被闸抓到。
