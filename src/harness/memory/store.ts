@@ -36,6 +36,11 @@ import type { EmbedFn, MemoryHit, StoredFact, WriteFactResult } from './types';
 
 // RRF + retrieval-pool constants (ported from hybrid.ts).
 const RRF_K = 60;
+/**
+ * 合流准入阈值:两条检索腿都要把它排进前 N 才收。实测 3–15 整段完美分离, 取中段。
+ * 见 {@link OmdMemory.retrieve} 的方法头注(含分离度表与"真语义 embedder 时要放宽"的前提)。
+ */
+export const AGREEMENT_TOP_N = 10;
 const VEC_POOL = 50;
 const BM_POOL = 50;
 
@@ -447,7 +452,7 @@ export class OmdMemory {
   // Hybrid retrieval — vector ⊕ BM25 fused by RRF.
   // -------------------------------------------------------------------------
 
-  private bmLeg(query: string): Array<{ id: string }> {
+  private bmLeg(query: string): Array<{ id: string; score: number }> {
     const expr = ftsMatchExpr(query);
     if (!expr) return [];
     const rows = this.db
@@ -472,13 +477,41 @@ export class OmdMemory {
   /**
    * Hybrid recall: top-`k` facts by RRF over the vector + BM25 legs. A query
    * matching neither leg returns []. Tombstoned facts are never returned.
+   *
+   * ## 准入与排序是两件事(2026-08-28)
+   *
+   * **RRF 分数不能拿来判相关性。** 它只编码名次:任何查询的第一名恒是 `1/(60+1)=0.0164`,
+   * 不管库里有没有一条真相关的。实测(A/B 装置的 7 条查询):cold 查询("括号 嵌套 深度")
+   * 照样返 5 条,其中一条 `vecSim=0.481` 比 anchored 查询的尾巴还高 —— 因为默认
+   * `hashEmbed` 是哈希词袋,「深度」「匹配」这种常用词到处都撞。**所以单一分数下限也切不干净。**
+   *
+   * 真正分得开的是**两条腿的合流**:两条独立检索腿都把同一条排进前 N = 真信号;
+   * 只有一条腿捞到 = 那条腿自己的噪声。实测分离度(anchored 3 查询 / cold 5 查询,各取 20):
+   *
+   * | N | anchored 保留 | cold 保留 |
+   * |---|---|---|
+   * | 3 | 4 | **0** |
+   * | 10 | 21 | **0** |
+   * | 15 | 36 | **0** |
+   * | 20 | 49 | 1 |
+   * | 30 | 60 | 2 |
+   *
+   * N 在 3–15 之间**整段**都是完美分离(不是刀刃上的点), 取中段 10。
+   *
+   * ⚠ **这条判据假定两条腿"独立但相关"。** 今天默认 `hashEmbed` 是词法代理, 所以合流其实是
+   * "用两种方式各自词法命中"。哪天注入**真语义** embedder, 一条纯语义命中(零词法重合)会被
+   * 这道闸滤掉 —— 那时要把 `agreementTopN` 放宽或关掉(传 `null`)。这不是缺陷, 是前提变了。
+   *
+   * @param opts.agreementTopN 合流准入:两条腿都要进前 N 才收。`null` = 关闭(旧行为)。
    */
-  async retrieve(query: string, k = 10): Promise<MemoryHit[]> {
+  async retrieve(query: string, k = 10, opts: { agreementTopN?: number | null } = {}): Promise<MemoryHit[]> {
     const [vec, bm] = await Promise.all([this.vecLeg(query), Promise.resolve(this.bmLeg(query))]);
 
     const fused = new Map<
       string,
-      { rrf: number; vecRank?: number; bmRank?: number; vecSim?: number }
+      // `bmScore` 一直在 `MemoryHit` 类型里但从没被填过(2026-08-28 接上)——
+      // 读侧要判相关性就得看得见原始腿分, 而不是只看名次融合后的 rrf。
+      { rrf: number; vecRank?: number; bmRank?: number; vecSim?: number; bmScore?: number }
     >();
     vec.forEach((h, i) => {
       fused.set(h.id, { rrf: 1 / (RRF_K + i + 1), vecRank: i + 1, vecSim: h.sim });
@@ -489,12 +522,22 @@ export class OmdMemory {
       if (cur) {
         cur.rrf += contribution;
         cur.bmRank = i + 1;
+        cur.bmScore = h.score;
       } else {
-        fused.set(h.id, { rrf: contribution, bmRank: i + 1 });
+        fused.set(h.id, { rrf: contribution, bmRank: i + 1, bmScore: h.score });
       }
     });
 
-    const ranked = [...fused.entries()].sort((a, b) => b[1].rrf - a[1].rrf).slice(0, k);
+    // ── 准入:两条腿的合流(见方法头注)。排序仍归 RRF —— 两件事分开。 ──
+    const topN = opts.agreementTopN === undefined ? AGREEMENT_TOP_N : opts.agreementTopN;
+    const admitted =
+      topN === null
+        ? [...fused.entries()]
+        : [...fused.entries()].filter(
+            ([, m]) => m.vecRank !== undefined && m.bmRank !== undefined && m.vecRank <= topN && m.bmRank <= topN,
+          );
+
+    const ranked = admitted.sort((a, b) => b[1].rrf - a[1].rrf).slice(0, k);
     if (ranked.length === 0) return [];
 
     // Fetch only the winners' full rows (parse cost paid for top-k, not the pool).
@@ -517,6 +560,7 @@ export class OmdMemory {
         vecRank: m.vecRank,
         bmRank: m.bmRank,
         vecSim: m.vecSim,
+        bmScore: m.bmScore,
       });
     }
     return hits;
