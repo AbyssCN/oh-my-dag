@@ -51,7 +51,7 @@ import { classifySpecWrite, type SpecWrite, type SpecWriteSource } from './spec-
 import { summarizeDelta, type DeltaReport, type VerifyStepStatus } from './delta-compare';
 import { parseBreakdown, type SddContract, type SddSlice } from './sdd-direct';
 import { acceptCommandFromBreakdown, compileBreakdown, describeParallelism, parallelismReadout } from './sdd-compile';
-import { describeAcceptance, unprovenMeansFail } from './acceptance-shape';
+import { acceptanceCommand, describeAcceptance, unprovenMeansFail } from './acceptance-shape';
 import {
   decideO6,
   collectSliceGitEvidence,
@@ -852,6 +852,13 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // 判据就该从那儿来。显式 config.acceptance 仍压过一切 (调用方比 SDD 更知道自己在干嘛)。
   const sddAcceptance = sdd ? sddDerivedAcceptance(sdd) : undefined;
   const acceptance = config.acceptance ?? sddAcceptance ?? classified.acceptance;
+  // T-2 (F2 收尾): 「有没有一条别人来跑的命令」在下面被问 10 次。此前每处各写一遍
+  // `acceptance.kind === 'executable'` —— 那是**守卫式 `if` 没有 else**, `assertNever`
+  // 那道闸够不着 (诚实边界写在 harness/exhaustive.ts 文件头), 于是加第四格时这 10 处
+  // 一个都不会编译红。问一次、下面全读这一个绑定:新增分型只需在 `acceptanceCommand`
+  // 那个穷尽 switch 里表态一次, 漏表态即编译错误。
+  // ⚠ `null` 不是「跑不起来」, 是「这一型本来就不靠命令判」(见 acceptance-shape.ts)。
+  const runnable = acceptanceCommand(acceptance);
   stages.push({
     stage: 'classify',
     // 判成执行型却拿不到可跑命令时, 分类器已降级成探索型 (acceptance.ts 的 fallbackExploratory)
@@ -1089,7 +1096,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   let flatSlices: readonly SddSlice[] | undefined;
   /** #242 resume 复用的片号 (O-6 探针裁的「verify 当前已绿」那批) —— S-46 判缺片时豁免。 */
   let flatReusedSlices: ReadonlySet<number> | undefined;
-  if (sdd && acceptance.kind === 'executable') {
+  if (sdd && runnable) {
     // INV-D3-1: 同一份判定 —— fatal / fallback 与 goal.ts `sddIgnitionDryRunGate` 共用。
     const ignition = dryRunSddIgnition(sdd.text);
     if (ignition.kind !== 'ok') {
@@ -1108,8 +1115,8 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     try {
       const breakdown = parseBreakdown(sdd.text);
       const compiled = compileBreakdown(breakdown, {
-        acceptCommand: acceptance.command,
-        ...(acceptance.expectExit !== undefined ? { acceptExpectExit: acceptance.expectExit } : {}),
+        acceptCommand: runnable.command,
+        ...(runnable.expectExit !== undefined ? { acceptExpectExit: runnable.expectExit } : {}),
         name: 'goal-execute-flat',
       });
       // O-6 (2026-08-11 二发教训): RED 的前提是切片 verify 在**实装前是红的** —— 引用既有绿
@@ -1251,12 +1258,12 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
       // 语义是**必要非充分**: 收敛 = 内环 judge 说成了 **且** 这条命令退出码对。judge 说成了而命令
       // 没过 = 正是 D-I 要抓的那种"作弊达标"; 命令过了而 judge 说没成 = 任务里还有命令覆盖不到的
       // 明确要求。两侧都 fail-closed。
-      ...(acceptance.kind === 'executable'
+      ...(runnable
         ? {
             accept: {
               executor: 'command',
-              command: acceptance.command,
-              expect_exit: acceptance.expectExit,
+              command: runnable.command,
+              expect_exit: runnable.expectExit,
               depends_on: ['execute'],
               goal: '冻结判据 (环外确定性闸)',
             },
@@ -1271,19 +1278,19 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // ⚠ S-37: 基线**只存退出码那一格是不够的** —— 基线红在本仓是常态, 而 fail→fail 判
   //   unchanged-failure 会把真回归一起赦免。所以同时存 `(fail)` 名字集, 判据降到一条测试。
   let baselineSide: AcceptSide | undefined;
-  if (acceptance.kind === 'executable' && config.dag.commandRunner) {
+  if (runnable && config.dag.commandRunner) {
     try {
       // SDD 片 2 (D-1): 基线只跑末环 —— 直通档验收命令按 sdd-compile.ts:373-380 规定为
       // 「各片 verify 串联 && 末环全量」, 批前跑整条必停在第一环 ugrep 的反作弊条款上,
       // 基线失败集空 ⇒ makeBaselineWaiver fail-closed 返 null ⇒ 赦免恒失效。
       // 末环按构造是去掉路径的全量回归, 跑它量到的就是仓当下真实的存量红。
-      const bl = await config.dag.commandRunner({ command: baselineCommandOf(acceptance.command) });
-      baselineSide = acceptSideOf(bl.exitCode === (acceptance.expectExit ?? 0) ? 'pass' : 'fail', bl.text);
+      const bl = await config.dag.commandRunner({ command: baselineCommandOf(runnable.command) });
+      baselineSide = acceptSideOf(bl.exitCode === (runnable.expectExit ?? 0) ? 'pass' : 'fail', bl.text);
     } catch (err) {
       // 记**真跑的那条** (末环), 不是验收命令原串 —— fail-open 可以吞异常, 不许吞证据:
       // 记错命令会让排查的人拿一条根本没跑过的命令去复现。
       logger.warn(
-        { command: baselineCommandOf(acceptance.command), acceptCommand: acceptance.command, err: String(err) },
+        { command: baselineCommandOf(runnable.command), acceptCommand: runnable.command, err: String(err) },
         '[run-goal] D-1 基线跑不起来 → 闸缺席 (fail-open)',
       );
     }
@@ -1297,10 +1304,10 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     //   引擎在红点 (D-K 节点命令判红 / 环内冻结判据) 调用。缺席 → 闸缺席, 行为逐字节不变 (INV-1)。
     const waiveRed = baselineSide !== undefined ? makeBaselineWaiver(baselineSide.failSet) : undefined;
     const execCfg =
-      acceptance.kind === 'executable'
+      runnable
         ? {
             ...config.dag,
-            freezeCriterion: { command: acceptance.command, ...(acceptance.expectExit !== undefined ? { expectExit: acceptance.expectExit } : {}), ...(waiveRed ? { waiveRed } : {}) },
+            freezeCriterion: { command: runnable.command, ...(runnable.expectExit !== undefined ? { expectExit: runnable.expectExit } : {}), ...(waiveRed ? { waiveRed } : {}) },
             // SDD 2026-08-22 「冻结判据在重规划轮里并不冻结」, C-3/INV-6:
             // 只在 flatPlan 编译成功**之后**挂上 `accept` 钉点 — 回落 conductor 铺图
             // 那条路上 accept 由 run-goal 自己构造在环外 (今天的 v1 行为, 不动)。
@@ -1323,7 +1330,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   if (!execLeaf && !flatUsed) return bail('execute 节点无结果 (引擎没跑到它)', 'infra-error');
   // D-I 环外闸: 执行型才有这个节点。它**没跑**(引擎没走到 / 被 quorum 级联跳过)也算没过 ——
   // 冻结判据的意义就是"没被证明过就不算成", fail-closed 与 converged 缺席同一条纪律。
-  const acceptLeaf = acceptance.kind === 'executable' ? exec.results.accept : undefined;
+  const acceptLeaf = runnable ? exec.results.accept : undefined;
   // ── 判据的绿有「它是哪一轮量的」这个属性 (2026-08-21, run 58df6b9e 复盘) ──────────────
   //
   // P2 那跑的形状, 逐跳全部有盘上证据:
@@ -1349,24 +1356,24 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // 新增分型时那个 switch 漏表态即编译错误 (goal/acceptance-shape.ts + harness/exhaustive.ts)。
   const acceptCheckpointGreen = !unprovenMeansFail(acceptance) ? true : acceptLeaf?.status === 'done';
   const replanned = exec.verification?.escalated === true || (exec.verification?.attempts ?? 1) > 1;
-  const acceptStale = acceptance.kind === 'executable' && acceptCheckpointGreen && acceptLeaf?.skipped === true && replanned;
+  const acceptStale = runnable !== null && acceptCheckpointGreen && acceptLeaf?.skipped === true && replanned;
   // 复验一次。**两个触发条件合并在这一处** —— 分两处写就是两处会漂 (而这条闸的病正是"触发
   // 条件被另一个变量关掉"): ① 原 #165①: accept 压根没跑 (缺席 / 被级联压死), 复验绿只换终态词;
   // ② 新: 绿是陈旧的, 复验结果**直接顶替** oracleOk (它才是最终这棵树上的答案)。
   let oracleRecheckGreen = false;
   let oracleRecheckRan = false;
   if (
-    acceptance.kind === 'executable' &&
+    runnable &&
     (!acceptCheckpointGreen || acceptStale) &&
     acceptLeaf?.status !== 'failed' &&
     config.dag.commandRunner
   ) {
     try {
-      const rc = await config.dag.commandRunner({ command: acceptance.command });
-      oracleRecheckGreen = rc.exitCode === (acceptance.expectExit ?? 0);
+      const rc = await config.dag.commandRunner({ command: runnable.command });
+      oracleRecheckGreen = rc.exitCode === (runnable.expectExit ?? 0);
       oracleRecheckRan = true;
       logger.info(
-        { command: acceptance.command, exitCode: rc.exitCode, green: oracleRecheckGreen, why: acceptStale ? 'stale-green' : 'accept-没跑' },
+        { command: runnable.command, exitCode: rc.exitCode, green: oracleRecheckGreen, why: acceptStale ? 'stale-green' : 'accept-没跑' },
         acceptStale
           ? '[run-goal] 判据陈旧闸: accept 的绿是 resume 复用来的, 而本 run 重规划过 → 在最终这棵树上重量一次'
           : '[run-goal] #165① accept 没跑 (级联压死) → 冻结判据收尾复验',
@@ -1421,7 +1428,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   const oracleOk = acceptance.kind === 'rubric' ? rubricOracleOk : baseOracleOk;
   if (acceptStale && !oracleOk) {
     logger.warn(
-      { command: acceptance.command, recheckRan: oracleRecheckRan },
+      { command: runnable?.command, recheckRan: oracleRecheckRan },
       '[run-goal] 判据陈旧闸: 复用的绿在最终这棵树上**不成立** → 判据判红 (原实装会拿它发 delivered 终态)',
     );
   }
@@ -1443,7 +1450,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   let verifyDelta: DeltaReport | undefined;
   /** S-37 第 2 半:第一次读到、复跑没复现的失败(抖动证据,进判词不进判红)。 */
   let flakyFailures: string[] = [];
-  if (baselineSide !== undefined && acceptance.kind === 'executable') {
+  if (baselineSide !== undefined && runnable) {
     const acceptStatus = exec.results.accept?.status;
     const afterStatus: VerifyStepStatus | undefined =
       acceptStatus === 'done' ? 'pass' : acceptStatus === 'failed' ? 'fail' : undefined;
@@ -1455,11 +1462,11 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     const needsConfirm = verifyDelta.red && verifyDelta.newFailures.some((id) => id.startsWith(TEST_STEP_PREFIX));
     if (needsConfirm && config.dag.commandRunner) {
       try {
-        const again = await config.dag.commandRunner({ command: acceptance.command });
+        const again = await config.dag.commandRunner({ command: runnable.command });
         const againSet = acceptSideOf('fail', again.text).failSet;
         flakyFailures = unstableFailSet(afterSide.failSet, againSet);
         if (flakyFailures.length > 0) {
-          logger.warn({ flaky: flakyFailures, command: acceptance.command }, '[run-goal] D-1 复跑未复现 → 不判红, 记抖动 (S-37)');
+          logger.warn({ flaky: flakyFailures, command: runnable.command }, '[run-goal] D-1 复跑未复现 → 不判红, 记抖动 (S-37)');
           afterSide = { status: afterSide.status, failSet: stableFailSet(afterSide.failSet, againSet) };
           verifyDelta = buildAcceptDelta(baselineSide, afterSide);
         }
@@ -1636,7 +1643,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
         // 去查一个不存在的级联。判据 = converged (复验路恒 false, 见上面 oracleRecheckGreen 分支)。
         : outcome === 'delivered-with-red' ? (converged
             ? `交付达标但有节点红 (#165①: 冻结判据 ✅ 而图内 ≥1 子节点红 — 人审红节点, 别整轮重跑)`
-            : `交付达标但有节点红 (#165①: accept 被级联压死没跑, 冻结判据收尾复验绿 \`${acceptance.kind === 'executable' ? acceptance.command : ''}\` — 人审红节点, 别整轮重跑)`)
+            : `交付达标但有节点红 (#165①: accept 被级联压死没跑, 冻结判据收尾复验绿 \`${runnable?.command ?? ''}\` — 人审红节点, 别整轮重跑)`)
         : `未收敛 (${execLeaf?.status ?? '平铺图未过冻结判据'})`
       }${oracleNote}${judgeDissent ? ' · ⚠ judge 异议: 判据绿收敛而 judge 判没成 —— 判据轴「judge 太紧/判据覆盖不够」样本, 判词见 continuity _loop-execute.json' : ''}` +
       `${flatUsed ? ` · 直通v2平铺 (并行读数: ${flatParallelism})` : ''}${flatFallback ? ` · 直通v2回落: ${flatFallback}` : ''}` +
@@ -1684,7 +1691,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // 只在 executable 验收时发 (非可执行没机器结论, 不编)。同一 fail-open 性格: 写板失败不掀桌,
   // run 照跑。verdict = oracleOk ∨ oracleRecheckGreen (#165①: 判据被级联压死没跑时, 复验绿也算 pass)，
   // note = 验收命令 + accept 节点 status 指纹 (板层 serializeEntry 自截 500B)。
-  if (acceptance.kind === 'executable') {
+  if (runnable) {
     try {
       const verdict: 'pass' | 'fail' = oracleOk || oracleRecheckGreen ? 'pass' : 'fail';
       appendBoard(boardRoot, {
@@ -1693,7 +1700,7 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
         runId: boardRunId,
         event: 'verified',
         verdict,
-        note: `${acceptance.command} → ${acceptLeaf?.status ?? '没跑'}`,
+        note: `${runnable.command} → ${acceptLeaf?.status ?? '没跑'}`,
       });
     } catch (e) {
       console.error(`[run-goal] board verified 写失败 (不影响 run): ${String(e)}`);

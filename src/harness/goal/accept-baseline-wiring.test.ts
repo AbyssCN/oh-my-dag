@@ -7,7 +7,10 @@
  *
  * 三组断言:
  *  - INV-4 接线 · 源码面: `runGoal` 里那条基线 commandRunner 调用, 命令参数走的是
- *    `baselineCommandOf(acceptance.command)`, 不是 `acceptance.command` 原样。
+ *    `baselineCommandOf(runnable.command)`, 不是验收命令原样。
+ *    ⚠ 2026-08-28 (T-2): 源码面的那个取值名从 `acceptance.command` 换成了 `runnable.command`
+ *    (`runnable = acceptanceCommand(acceptance)`, 执行型那一格返的就是 `a.command`, 取值逐字节
+ *    相同)。本文件的三条正则跟着换过一次 —— **它们钉的是不变量, 不是拼写**。
  *    改了源码 (例如回退到 `acceptance.command`) ⇒ 本断言红;源码侧 INV-7 由
  *    `git diff --stat -- <本测试路径>` 在 RED/IMPL 边界钉, 不重复。
  *  - INV-5 赦免语义一字不动: `makeBaselineWaiver` 对四组输入给出四组结论。
@@ -16,7 +19,7 @@
  *    改成 fail-closed (基线缺席就 bail) ⇒ 本断言红。
  *
  * 反向自检 (必须真跑一次, 红了才算闸活着):
- *  - ① 把 `runGoal` 里那次 commandRunner 调用的命令改回 `acceptance.command` ⇒ 「INV-4 接线」红。
+ *  - ① 把 `runGoal` 里那次 commandRunner 调用的命令改回 `runnable.command` 原样 ⇒ 「INV-4 接线」红。
  *  - ② 把 `makeBaselineWaiver` 的子集判据改成「任意 in baseline」 ⇒ 「INV-5 ②」红 (c 是新红)。
  *  - ③ 把 `makeBaselineWaiver` 的非空判据删掉 (空集也返注记) ⇒ 「INV-5 ④」红。
  */
@@ -46,12 +49,18 @@ describe('INV-4 接线 · 源码面: 基线 commandRunner 调用走 baselineComm
     expect(src).toMatch(/commandRunner\(\s*\{\s*command:\s*baselineCommandOf\(/);
   });
 
-  test('基线失败集是空集时仍走 makeBaselineWaiver (非空 → 子集判据不变), 验收命令本身仍是 acceptance.command', () => {
-    // 钉住 INV-7 零回归: 验收命令本身的推法不动 (冻结判据仍吃 acceptance.command),
+  test('基线失败集是空集时仍走 makeBaselineWaiver (非空 → 子集判据不变), 验收命令本身仍是验收那条原值', () => {
+    // 钉住 INV-7 零回归: 验收命令本身的推法不动 (冻结判据仍吃验收那条命令原值),
     //   基线命令的推法才换 (走 baselineCommandOf)。
-    // 形如: freezeCriterion: { command: acceptance.command, ... }
+    // 形如: freezeCriterion: { command: runnable.command, ... }
+    // 2026-08-28 (T-2): 拼写从 `acceptance.command` 换成 `runnable.command` ——
+    //   `runnable = acceptanceCommand(acceptance)`, 执行型那一格返的就是 `a.command`,
+    //   取值逐字节相同。**这条断言钉的是不变量不是拼写**, 所以跟着换。
     const src = readFileSync(RUN_GOAL_SRC, 'utf8');
-    expect(src).toMatch(/freezeCriterion:\s*\{\s*command:\s*acceptance\.command/);
+    expect(src).toMatch(/freezeCriterion:\s*\{\s*command:\s*runnable\.command/);
+    // ★ 真正的判别力在这条: 冻结判据**不许**吃末环 (那是基线专用的降级命令) ——
+    //   把 freezeCriterion 改成 baselineCommandOf(...) ⇒ 本断言红。
+    expect(src).not.toMatch(/freezeCriterion:\s*\{\s*command:\s*baselineCommandOf\(/);
     // 兜底: makeBaselineWaiver 仍被调用
     expect(src).toMatch(/makeBaselineWaiver\(/);
   });
@@ -127,20 +136,24 @@ describe('INV-6 存量不回退 · 非直通档走同一份 commandRunner, 失�
   test('run-goal.ts: 非直通档的验收命令不含 && ⇒ baselineCommandOf 原样返回 ⇒ 与修法前同源', () => {
     // 取末环函数对不含 && 的输入原样返回 (INV-2)。这条已经由片 1 的 accept-baseline.test.ts 钉;
     // 这里只验证接线点的兜底分支 (commandRunner 缺席 / 抛错) 行为不变:
-    // 仍是 `if (acceptance.kind === 'executable' && config.dag.commandRunner)`, 不是把它改成
+    // 仍是 `if (runnable && config.dag.commandRunner)`, 不是把它改成
     // fail-closed `if (!baselineSide) bail(...)`。
+    // 2026-08-28 (T-2): 拼写从 `acceptance.kind === 'executable'` 换成 `runnable` ——
+    //   同一个问题 (「有没有一条别人来跑的命令」) 收敛进 `acceptanceCommand` 一处表态。
+    //   钉的是「守卫式 if 仍在、没换成 fail-closed」, 不是钉那串字面比较。
     const src = readFileSync(RUN_GOAL_SRC, 'utf8');
-    expect(src).toMatch(/acceptance\.kind\s*===\s*['"]executable['"]\s*&&\s*config\.dag\.commandRunner/);
+    expect(src).toMatch(/if\s*\(runnable\s*&&\s*config\.dag\.commandRunner\)/);
     // 基线缺席时 waiveRed 仍是 undefined, 不是 bail
     expect(src).toMatch(/waiveRed\s*=\s*baselineSide\s*!==\s*undefined/);
   });
 
-  test('run-goal.ts: 验收命令本身的推法不动 (freezeCriterion.command 仍取 acceptance.command)', () => {
+  test('run-goal.ts: 验收命令本身的推法不动 (freezeCriterion.command 仍取验收那条原值)', () => {
     // 这条是 INV-7 零回归的一半: 验收命令走 `acceptCommandFromBreakdown` 出来的原值,
     //   修法只换「批前量基线的那一次 commandRunner 调用」。
+    // T-2 之后取值面叫 `runnable.command` (= `acceptanceCommand(acceptance)` 的执行型那一格)。
     const src = readFileSync(RUN_GOAL_SRC, 'utf8');
-    // 形状: `command: acceptance.command` 在 freezeCriterion 上
-    expect(src).toMatch(/freezeCriterion:\s*\{\s*command:\s*acceptance\.command/);
+    // 形状: `command: runnable.command` 在 freezeCriterion 上
+    expect(src).toMatch(/freezeCriterion:\s*\{\s*command:\s*runnable\.command/);
   });
 
   test('run-goal.ts: catch 里仍走 logger.warn (D-4 fail-open 不吞证据), 没改成 bail/throw', () => {
