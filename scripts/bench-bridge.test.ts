@@ -106,3 +106,50 @@ describe('SSE usage 块 (2026-08-29: bench token 账全是 0 的根因)', () => 
     expect(blocks).toHaveLength(1);
   });
 });
+
+describe('JSON 模式 (2026-08-29: 静默丢 response_format 的代价是判官全体 Error)', () => {
+  // 反向自检: 把 wantsJson 那一支删掉 → 前两条当场红。
+  const call = (text: string) => async () => ({ text, usage: { in: 1, out: 1 } }) as ModelResponse;
+  const deps = (text: string) => ({ call: call(text), mapModel: () => 'x:y' });
+
+  test('请求 json_object → 追加一句系统指令 (让模型知道要裸 JSON)', async () => {
+    let seen: Array<{ role: string; content: string }> = [];
+    const d = {
+      call: async (req: { messages: Array<{ role: string; content: string }> }) => {
+        seen = req.messages;
+        return { text: '{"a":1}', usage: { in: 1, out: 1 } } as ModelResponse;
+      },
+      mapModel: () => 'x:y',
+    };
+    await handleChatCompletions(
+      { model: 'm', messages: [{ role: 'user', content: 'hi' }], response_format: { type: 'json_object' } } as never,
+      d as never,
+    );
+    expect(seen.some((m) => m.role === 'system' && m.content.includes('raw JSON object'))).toBe(true);
+  });
+
+  test('★ 回程剥围栏: ```json 包裹的正文 → 客户端拿到可直接 JSON.parse 的裸对象', async () => {
+    const r = await handleChatCompletions(
+      { model: 'm', messages: [{ role: 'user', content: 'hi' }], response_format: { type: 'json_object' } } as never,
+      deps('这是判词:\n```json\n{"verdict":"Satisfied","score":1}\n```\n以上。') as never,
+    );
+    const content = (r.json as { choices: Array<{ message: { content: string } }> }).choices[0]!.message.content;
+    expect(() => JSON.parse(content)).not.toThrow();
+    expect(JSON.parse(content)).toEqual({ verdict: 'Satisfied', score: 1 });
+  });
+
+  test('不要 json 模式 → 正文逐字不动 (存量路径零影响)', async () => {
+    const raw = '这是一段散文, 里面碰巧有 {不是JSON} 的花括号。';
+    const r = await handleChatCompletions({ model: 'm', messages: [{ role: 'user', content: 'hi' }] } as never, deps(raw) as never);
+    expect((r.json as { choices: Array<{ message: { content: string } }> }).choices[0]!.message.content).toBe(raw);
+  });
+
+  test('⚠ 抠不出 JSON → 原样返回, 不编一个 {} (让 parse 抛在客户端那层, 拿到真原文)', async () => {
+    const raw = 'I cannot comply with that request.';
+    const r = await handleChatCompletions(
+      { model: 'm', messages: [{ role: 'user', content: 'hi' }], response_format: { type: 'json_object' } } as never,
+      deps(raw) as never,
+    );
+    expect((r.json as { choices: Array<{ message: { content: string } }> }).choices[0]!.message.content).toBe(raw);
+  });
+});

@@ -120,6 +120,18 @@ export async function handleChatCompletions(
       return ok;
     }) as unknown as ModelMessage[];
   if (messages.length === 0) return { status: 400, json: { error: { message: 'messages required' } } };
+  // JSON 模式 (2026-08-29): OpenAI 的 `response_format:{type:'json_object'}` 是一条**承诺** ——
+  // 客户端据此直接 `JSON.parse(text)`, 不做围栏剥离。此前本桥把这个字段**静默丢掉**:
+  // 客户端要了保证、什么也没得到、也没收到任何错误信号。
+  // 实测代价 (ResearchRubrics 判官接桥): 20 条 rubric 里大半 `JSON decode error`,
+  // 判词全成 Error/score=0 —— 看起来像"报告一条都没达标", 实则判官根本没判成。
+  // 那正是本仓禁的静默降级形状 (与 role 归一那次同族)。
+  // 修法: 上游没有通用 JSON 模式旋钮 (omd 走的是 responseSchema/Zod, 需要 schema),
+  // 所以这里做两件**看得见**的事: ① 追加一句系统指令; ② 回程剥围栏取首个 JSON 对象。
+  const wantsJson = (body as { response_format?: { type?: string } }).response_format?.type === 'json_object';
+  if (wantsJson) {
+    messages.push({ role: 'system', content: 'Reply with a single raw JSON object and nothing else. No prose, no markdown code fences.' } as unknown as ModelMessage);
+  }
   let res: ModelResponse;
   try {
     res = await deps.call({
@@ -143,7 +155,7 @@ export async function handleChatCompletions(
       created: Math.floor(Date.now() / 1000),
       model: id,
       choices: [
-        { index: 0, message: { role: 'assistant', content: res.text ?? '' }, finish_reason: 'stop' },
+        { index: 0, message: { role: 'assistant', content: wantsJson ? extractJsonText(res.text ?? '') : (res.text ?? '') }, finish_reason: 'stop' },
       ],
       usage: {
         prompt_tokens: res.usage?.in ?? 0,
@@ -199,6 +211,27 @@ export function toSingleChunkSse(completion: unknown): string {
       })}\n\n`
     : '';
   return `data: ${JSON.stringify(chunk)}\n\n${usageChunk}data: [DONE]\n\n`;
+}
+
+/**
+ * JSON 模式的回程处理: 从模型正文里抠出**第一个完整 JSON 对象**(容忍 ```json 围栏与前后散文)。
+ *
+ * 抠不出来就**原样返回** —— 让客户端自己的 JSON.parse 抛在它自己那一层, 拿到真正的原文;
+ * 桥在这里替它编一个 `{}` 会把"模型没照做"抹成"模型说了空对象"(仓规坑 ①)。
+ */
+export function extractJsonText(text: string): string {
+  const t = text.trim();
+  const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(t)?.[1]?.trim();
+  for (const cand of [fenced, t]) {
+    if (!cand) continue;
+    const a = cand.indexOf('{');
+    const b = cand.lastIndexOf('}');
+    if (a >= 0 && b > a) {
+      const slice = cand.slice(a, b + 1);
+      try { JSON.parse(slice); return slice; } catch { /* 下一个候选 */ }
+    }
+  }
+  return text;
 }
 
 export function checkAuth(header: string | null, token: string): boolean {
