@@ -154,10 +154,25 @@ export async function handleChatCompletions(
   };
 }
 
-/** 单块 SSE 包装 (stream 兼容捷径)。tool_calls 原样进 delta —— 丢了 = agent 环工具面蒸发。 */
+/**
+ * 单块 SSE 包装 (stream 兼容捷径)。tool_calls 原样进 delta —— 丢了 = agent 环工具面蒸发。
+ *
+ * **usage 必须单独再发一块** (2026-08-29 实测修): 客户端 (pi 的 openai-completions 路) 发的是
+ * `stream:true` + `stream_options:{include_usage:true}`, 按 OpenAI 约定, 服务端应在末尾多发一块
+ * `choices:[]` + `usage:{...}`。此前本函数只从 `choices` 造块, **usage 整个丢掉**, 于是:
+ *
+ *   容器里 `.omd/tui-usage.jsonl` 每一行 in=0/out=0, 每个节点的 `tokenUsage` 也是 0
+ *   → **整个 bench 的 token 账是空的**: 协调税占比、座位成本、budgetTokens 全部量不了。
+ *
+ * ⚠ 定位过程记一笔 (差点归错因): 先怀疑「omd 对 openai 兼容 provider 不解析 usage」。
+ * 用一个假 OpenAI 服务器直接量了一次 —— pi 确实发了 `include_usage:true`, 服务端给 usage 块时
+ * omd 记到 `{in:123,out:45}`, **引擎侧本来就是对的**。错只在这座桥。
+ * (照本仓 P-2: 一条命令就能看到的事别用推的。)
+ */
 export function toSingleChunkSse(completion: unknown): string {
   const c = completion as {
     id?: string; model?: string;
+    usage?: unknown;
     choices?: Array<{ message?: { content?: string | null; tool_calls?: unknown }; finish_reason?: string }>;
   };
   const msg = c.choices?.[0]?.message ?? {};
@@ -175,7 +190,15 @@ export function toSingleChunkSse(completion: unknown): string {
       finish_reason: c.choices?.[0]?.finish_reason ?? 'stop',
     }],
   };
-  return `data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`;
+  // usage 块: OpenAI 的 include_usage 约定是**末尾一块 choices 为空、只带 usage**。
+  // 无 usage 时不发这一块 (缺席 ≠ 0: 发一个全零的 usage 会把"没量到"写成"量到了 0",
+  // 正是本仓坑 ① 要防的那种抹平)。
+  const usageChunk = c.usage
+    ? `data: ${JSON.stringify({
+        id: chunk.id, object: 'chat.completion.chunk', model: chunk.model, choices: [], usage: c.usage,
+      })}\n\n`
+    : '';
+  return `data: ${JSON.stringify(chunk)}\n\n${usageChunk}data: [DONE]\n\n`;
 }
 
 export function checkAuth(header: string | null, token: string): boolean {

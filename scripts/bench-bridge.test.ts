@@ -76,3 +76,33 @@ describe('bench-bridge (E1c 宿主桥)', () => {
     expect(s.trim().endsWith('data: [DONE]')).toBe(true);
   });
 });
+
+describe('SSE usage 块 (2026-08-29: bench token 账全是 0 的根因)', () => {
+  // 反向自检: 把 toSingleChunkSse 里的 usageChunk 那一段删掉 → 前两条当场红。
+  test('completion 带 usage → 末尾多一块 choices 空、只带 usage 的 chunk', () => {
+    const s = toSingleChunkSse({
+      id: 'i', model: 'm',
+      choices: [{ message: { content: 'body' } }],
+      usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
+    });
+    const blocks = s.split('\n\n').filter((b) => b.startsWith('data: ') && !b.includes('[DONE]'));
+    expect(blocks).toHaveLength(2);
+    const last = JSON.parse(blocks[1]!.slice('data: '.length)) as { choices: unknown[]; usage: { prompt_tokens: number } };
+    expect(last.choices).toEqual([]);
+    expect(last.usage.prompt_tokens).toBe(7);
+    expect(s.trim().endsWith('data: [DONE]')).toBe(true);
+  });
+
+  test('内容块仍在前, 且顺序是 内容 → usage → [DONE]', () => {
+    const s = toSingleChunkSse({ id: 'i', model: 'm', choices: [{ message: { content: 'body' } }], usage: { prompt_tokens: 1 } });
+    expect(s.indexOf('body')).toBeLessThan(s.indexOf('usage'));
+    expect(s.indexOf('usage')).toBeLessThan(s.indexOf('[DONE]'));
+  });
+
+  test('⚠ 无 usage → **不发**空块 (缺席 ≠ 0, 别把"没量到"写成"量到了 0")', () => {
+    const s = toSingleChunkSse({ id: 'i', model: 'm', choices: [{ message: { content: 'body' } }] });
+    expect(s).not.toContain('usage');
+    const blocks = s.split('\n\n').filter((b) => b.startsWith('data: ') && !b.includes('[DONE]'));
+    expect(blocks).toHaveLength(1);
+  });
+});
