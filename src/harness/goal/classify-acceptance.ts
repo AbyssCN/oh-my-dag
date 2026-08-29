@@ -27,6 +27,7 @@ import {
   allowlistForRoot,
 } from '../command-leaf';
 import { logger } from '../logger';
+import { type EnvFacts, probeEnvFacts, renderEnvFacts } from '../env-facts';
 import type { GenerateFn } from '../dag/types';
 import {
   type AcceptanceCommandBlockOpts,
@@ -216,6 +217,14 @@ export function normalizeClassification(raw: RawClassification, opts?: Acceptanc
 export interface ClassifyPromptProbe {
   /** 仓根 —— 给了则在该根下探 marker + per-root 白名单 + 条件化示例。 */
   repoRoot?: string;
+  /**
+   * 仓环境**真探测**结果 (2026-08-29)。给了就用它,不再只看 marker。
+   *
+   * 差别不是"多一份数据":marker 表在 80 个真实 python 仓里只认出 50 个,真探测认出 79 个。
+   * 差的 29 个根下什么打包文件都没有 —— 对它们,旧路径会走到「拿不准就选 exploratory」
+   * 那条**反向**教学句上去。
+   */
+  envFacts?: EnvFacts;
 }
 
 /**
@@ -246,7 +255,25 @@ function probeRepo(root: string): ProbeResult {
 
 /** 分类 prompt。白名单**拼进 prompt** —— 承 conductor prompt 的同一条教训: 不给表就只能猜, 猜错即假红。 */
 export function classifyPrompt(goal: string, probe?: ClassifyPromptProbe): string {
-  const p = probe?.repoRoot ? probeRepo(probe.repoRoot) : null;
+  // 真探测优先 (2026-08-29): 有 envFacts 就用实测的语言证据推导教学面, marker 表退居兜底。
+  // 两条路产出同一组变量 (allowlist / hasPython / hasJs / 证据段), 下游逐字不变。
+  const facts = probe?.envFacts;
+  const p = facts
+    ? {
+        markers: facts.languages.flatMap((l) => l.markers),
+        allowlist: [...DEFAULT_COMMAND_ALLOWLIST, ...facts.enabledBins.filter((b) => !DEFAULT_COMMAND_ALLOWLIST.includes(b))],
+        hasPython: facts.languages.some((l) => l.language === 'python' && l.enabled),
+        hasJs: facts.languages.some((l) => l.language === 'js' && l.enabled),
+      }
+    : probe?.repoRoot
+      ? probeRepo(probe.repoRoot)
+      : null;
+  // E-T1 强偏段的触发条件 (2026-08-29 起): 真探测下 = **有任何一门语言被实测启用**,
+  // 而不是"根下有 marker"。这一改把 29 个只有 .py 和 tests/ 的仓从反向教学里捞出来。
+  // ⚠ 兜底那支**逐字保留旧语义** (`hasPython || hasJs`, 不是 `markers.length > 0`):
+  // 旧代码对 go/rust 仓不发强偏段。那大概率是个漏, 但改它属于第二个变量 ——
+  // 真探测这条路按新规则 (任一语言实测启用), 兜底路一个字不动, 既有调用零改动即绿。
+  const hasTestInfra = facts ? facts.languages.some((l) => l.enabled) : Boolean(p && (p.hasPython || p.hasJs));
   const allowlist = p?.allowlist ?? DEFAULT_COMMAND_ALLOWLIST;
   // 例示条件化 (D-4):
   //   · 检出 python 包 → pytest 形状
@@ -266,16 +293,25 @@ export function classifyPrompt(goal: string, probe?: ClassifyPromptProbe): strin
   const independentAxisExample = p?.hasPython ? 'pytest -q' : 'bun test';
   // 仓语言证据段(只 probe 给时出现)—— 让模型分得清这是事实不是建议, 纠错环也能逐字引回
   // (D-4 单源: 这份事实与运行期 `languageConsistencyBlockReason` 走的同一份 LANGUAGE_PACKS)。
-  const evidenceSection = p
+  // 证据段: 有真探测就把**实测事实**原样摆出来 (含每门语言为什么启用/为什么不启用 +
+  // 验收命令候选)。模型据此选命令, 而不是猜这个仓长什么样。
+  const evidenceSection = facts
     ? [
         '',
-        `仓语言证据 (探测自 \`${probe!.repoRoot}\`):`,
-        `  · 检出的 marker: ${p.markers.length > 0 ? p.markers.map((m) => `\`${m}\``).join(', ') : '(无)'}`,
-        `  · 启用的语言包: ${[p.hasPython ? 'python' : null, p.hasJs ? 'js' : null].filter(Boolean).join(' + ') || '(都无)'}`,
-        '验收命令首词必须属于「当前白名单 ∩ 该仓启用的语言包」的并集 —— 拿不准就在白名单里选 base 词',
-        '(grep / cat / git …), 不要硬造一条不属于该仓语言的判据。',
+        renderEnvFacts(facts),
+        '验收命令的首词必须是**上面实测存在**的那些 —— 一条 bin 不在这台机器上的命令是恒红的,',
+        '活干对了也过不了 (引擎会当场拒)。拿不准就在白名单里选 base 词 (grep / cat / git …)。',
       ].join('\n')
-    : '';
+    : p
+      ? [
+          '',
+          `仓语言证据 (探测自 \`${probe!.repoRoot}\`):`,
+          `  · 检出的 marker: ${p.markers.length > 0 ? p.markers.map((m: string) => `\`${m}\``).join(', ') : '(无)'}`,
+          `  · 启用的语言包: ${[p.hasPython ? 'python' : null, p.hasJs ? 'js' : null].filter(Boolean).join(' + ') || '(都无)'}`,
+          '验收命令首词必须属于「当前白名单 ∩ 该仓启用的语言包」的并集 —— 拿不准就在白名单里选 base 词',
+          '(grep / cat / git …), 不要硬造一条不属于该仓语言的判据。',
+        ].join('\n')
+      : '';
   return [
     '你在给一个自主执行环做**开跑前的两个判断**。只回一个 JSON 对象, 不要别的字。',
     '',
@@ -298,9 +334,12 @@ export function classifyPrompt(goal: string, probe?: ClassifyPromptProbe): strin
     // exploratory」在这类仓是反向教学 —— 探索型 = 无机器判据 = 引擎不被逼着改代码, 实测
     // 长出 docs-only 病 (24.9KB patch 全是规划文档零源码, reward 0)。证据仓反转教学句;
     // 无 marker 仓保持今天原句 (没证据 ≠ 反证据, INV-11)。
-    ...(p && (p.hasPython || p.hasJs)
+    // 2026-08-29: 触发条件从「有 marker」换成「真探测判**任何一门语言启用**」——
+    // marker 版在 80 个真实 python 仓里只认出 50 个, 剩下 29 个只有 .py 和 tests/,
+    // 它们此前吃的是下面那条**反向**教学句。
+    ...(hasTestInfra
       ? [
-          '⚠ 这个仓检出了语言包 marker = 它有测试基建。判据轴**强烈偏向 "executable"**:',
+          '⚠ 这个仓实测有测试基建 (语言证据见上)。判据轴**强烈偏向 "executable"**:',
           '  改代码的目标几乎总能用「一条会红的测试变绿」来判 —— 拿不准就**先在测试套里找锚**',
           '  (已有的相邻测试文件 / 新建一个最小测试), 而不是退到 exploratory。',
           '  选 "exploratory" 必须在 learning_goal 里说清: 为什么这个仓的测试套锚不住这次改动。',
@@ -413,8 +452,18 @@ export async function classifyGoal(
   // 教学面 probe (D-4, 2026-08-26) —— 给 `classifyPrompt` 仓根, 让白名单与示例按检出条件化;
   // 闸拒路径 (D-5) 走既有 correction 通道, normalize 同时接 per-root opts, 让 Python 仓写
   // `bun test` 走 lang-mismatch 闸拒并降级。两者都不新增第二问 / 第二拒通道。
-  const probe: ClassifyPromptProbe | undefined = repoRoot ? { repoRoot } : undefined;
-  const blockOpts: AcceptanceCommandBlockOpts = repoRoot ? { root: repoRoot } : {};
+  // 真探测**一次**, 两处消费 (prompt 教学面 + 命令闸)。放在这里而不是各自探:
+  // 探测走文件系统遍历 (有界, 但不是零成本), 而 `allowlistForRoot` 那种每次调用都重算的位置
+  // 受不起它 —— 所以只在每个 goal 的入口探一次, 然后一路传下去。
+  const envFacts = repoRoot ? probeEnvFacts(repoRoot) : undefined;
+  if (envFacts) {
+    logger.info(
+      { root: repoRoot, langs: envFacts.languages.filter((l) => l.enabled).map((l) => l.language), candidates: envFacts.testCommandCandidates },
+      '[omd/goal] 仓环境真探测 (语言证据 + PATH 上的 runner)',
+    );
+  }
+  const probe: ClassifyPromptProbe | undefined = repoRoot ? { repoRoot, ...(envFacts ? { envFacts } : {}) } : undefined;
+  const blockOpts: AcceptanceCommandBlockOpts = repoRoot ? { root: repoRoot, ...(envFacts ? { envFacts } : {}) } : {};
 
   const ask = async (correction: string): Promise<GoalClassification> => {
     const { text } = await generate({
@@ -501,12 +550,19 @@ export async function classifyGoal(
     // 其余情况的探索型不重试 —— 那是它的判断, 不是失误。
     const blockedReason = firstBlockedReason(first);
     if (!blockedReason) {
-      const markers = repoRoot && first.acceptance.kind === 'exploratory' ? probeRepo(repoRoot).markers : [];
-      if (markers.length > 0) {
-        logger.info({ markers }, '[omd/goal] marker 仓首判探索型 → 机械追问一次 (E-T1b: 自证或改判)');
+      // 追问的触发证据 (2026-08-29): 真探测在场就用它 —— 「哪门语言实测启用」比「根下有没有
+      // 打包文件」强得多, 而追问只在**首判探索型**时才发, 触发面变宽不会多花任何一发。
+      // 实测:marker 版在 code80 上全批只响 2 次, 而 29 个仓压根不在它的视线里。
+      const evidence = repoRoot && first.acceptance.kind === 'exploratory'
+        ? (envFacts
+            ? envFacts.languages.filter((l) => l.enabled).map((l) => `${l.language}(${l.markers[0] ?? `${l.sourceFiles} 个源文件`})`)
+            : probeRepo(repoRoot).markers)
+        : [];
+      if (evidence.length > 0) {
+        logger.info({ evidence }, '[omd/goal] 有测试基建的仓首判探索型 → 机械追问一次 (E-T1b: 自证或改判)');
         return vet(
           await ask(
-            `\n\n⚠ 复核: 这个仓检出了测试基建 marker (${markers.join(', ')}) —— 改代码的目标几乎总能用` +
+            `\n\n⚠ 复核: 这个仓实测有测试基建 (${evidence.join(', ')}) —— 改代码的目标几乎总能用` +
               '「一条会红的测试变绿」来判。请二选一:\n' +
               '  a) 改判 "executable": 在测试套里找锚 (相邻测试文件 / 新建最小测试), 给出可跑 command;\n' +
               '  b) 坚持 "exploratory": 但 learning_goal 首句必须写明**为什么这个仓的测试套锚不住这次改动**。',

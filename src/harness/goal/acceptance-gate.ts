@@ -32,6 +32,7 @@ import {
   missingBinaryBlockReason,
 } from '../command-leaf';
 import { logger } from '../logger';
+import { languageConsistencyFromFacts } from '../env-facts';
 import { ensureNodeModulesLink } from '../run-worktree';
 
 /**
@@ -93,6 +94,17 @@ export interface AcceptanceCommandBlockOpts {
    * 确定性测试, 而不确定的测试正是本仓 §加尺子那条要避的 (量的会变成尺子)。
    */
   env?: Record<string, string | undefined>;
+  /**
+   * 仓环境真探测结果 (2026-08-29)。给了则白名单 = base ∪ **实测启用**的语言 bin,
+   * 语言一致闸也改问它 —— 而不是只问"根下有没有那个打包文件"。
+   *
+   * 为什么必须能走这条: 实测 80 个真实 python 仓, marker 表 (含补的 4 个) 只认出 50 个,
+   * 真探测认出 79 个。差的那 29 个根下什么打包文件都没有, 只有 `.py` 和 `tests/` ——
+   * 表填不到它们, 于是引擎对模型说"这仓没测试基建", 然后照着这句谎话规划。
+   *
+   * 缺省 = 不给 → 逐字退回 marker 表那条路 (既有调用零改动即绿)。
+   */
+  envFacts?: import('../env-facts').EnvFacts;
 }
 
 /**
@@ -110,6 +122,21 @@ export function acceptanceCommandBlockReason(command: string, opts: AcceptanceCo
   if (!c) return '[blocked empty: 验收命令为空]';
   const root = opts.root;
   if (!root) return commandBlockReason(c, DEFAULT_COMMAND_ALLOWLIST);
+  // 给了真探测结果 → 三道全走, 只是**语言一致那道换了证据源**: 从"根下有没有那个打包文件"
+  // 换成"实测哪门语言启用"。marker 版会把「有 137 个 .py 但没有 pyproject.toml」的仓判成
+  // 没有 python —— 那正是这次要修的病。
+  //
+  // ⚠ 第一版在这里**把语言一致整道省掉**了, 被既有测试当场抓住: python 仓写 `bun test` 一路放行,
+  // 因为 `bun` 本来就在 base 白名单里, allowlist 那道拦不住它。换证据可以, 拿掉不行。
+  if (opts.envFacts) {
+    // 顺序与 marker 版同款: 语言一致先 (拒因信息量大), allowlist 后, bin 可达性最后。
+    const langBlock = languageConsistencyFromFacts(c, opts.envFacts);
+    if (langBlock) return langBlock;
+    const allow = [...DEFAULT_COMMAND_ALLOWLIST, ...opts.envFacts.enabledBins.filter((b) => !DEFAULT_COMMAND_ALLOWLIST.includes(b))];
+    const blocked = commandBlockReason(c, allow);
+    if (blocked) return blocked;
+    return opts.env ? missingBinaryBlockReason(c, opts.env) : missingBinaryBlockReason(c);
+  }
   // 顺序: 语言一致闸先, allowlist 闸后。一致闸拒因带「所需 marker」, 信息量大于 allowlist 的
   // `'pytest' ∉ allowlist` —— 后者也能拒, 但纠错环读到 "lang-mismatch" 才知道要去补 marker。
   const langBlock = languageConsistencyBlockReason(c, root);
