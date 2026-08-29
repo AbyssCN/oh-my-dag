@@ -77,6 +77,7 @@ import {
 } from '../model/role-models';
 import { createAgentLeafRunner } from '../harness/agent-leaf';
 import { createLeafTranscriptSink } from '../harness/leaf-transcript';
+import { probeEnvFacts } from '../harness/env-facts';
 import type { SpinRung2StampPools } from '../harness/dag/spin-rung2';
 import { loadRepoChecksManifest } from '../harness/repo-checks-manifest';
 import type { AnyOmdTool } from '../harness/agent-tools';
@@ -494,9 +495,20 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       // 病因还是伴随现象要看叶子当时在调什么 —— 那份 transcript 此前一个字节都没留。
       ...(leafTranscriptPath ? { onEvent: createLeafTranscriptSink({ path: leafTranscriptPath }) } : {}),
     });
+  // 运行期白名单 = marker 表 ∪ **真探测**实测启用的 bin (2026-08-29)。
+  //
+  // ⚠ 这一处必须与分类期同源, 否则就是本仓最怕的那种「假红」: classify 用真探测判这个仓能跑
+  // pytest, 于是冻了一条 `pytest -q`; 而命令 leaf 若还用 marker 表, 执行时把它拒掉 ——
+  // 看起来像"测试没过", 实际上根本没跑。两处口径必须同时换。
+  const runAllowlist = (root: string): string[] => {
+    const base = allowlistForRoot(root);
+    const extra = probeEnvFacts(root, env).enabledBins.filter((b) => !base.includes(b));
+    if (extra.length > 0) logger.info({ root, extra }, '[omd/mcp] 命令白名单按仓环境真探测扩充');
+    return [...base, ...extra];
+  };
   const commandRunner =
     deps.commandRunner ??
-    createCommandLeafRunner({ allowlist: allowlistForRoot(cwd), cwd, timeoutMs: 180_000 });
+    createCommandLeafRunner({ allowlist: runAllowlist(cwd), cwd, timeoutMs: 180_000 });
   // research 节点执行器 (D-6): web stack 带配额状态 → 装配期建一次复用 (同 router)。
   // 无 search provider → undefined = 不挂 → research 节点响亮失败 (见 createDefaultResearchRunner)。
   const researchRunner = deps.researchRunner ?? createDefaultResearchRunner({ cwd, env });
@@ -590,7 +602,7 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
         : agentRunner;
     const commandRunnerForRun =
       overrideCwd && !deps.commandRunner
-        ? createCommandLeafRunner({ allowlist: allowlistForRoot(root), cwd: root, timeoutMs: 180_000 })
+        ? createCommandLeafRunner({ allowlist: runAllowlist(root), cwd: root, timeoutMs: 180_000 })
         : commandRunner;
     // engine config = 座位三件套 (conductor/leaf/agent, 单一 resolver) + 真改文件 runner 对。
     const models = resolveEngineModels(env);
