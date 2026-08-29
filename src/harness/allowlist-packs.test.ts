@@ -19,6 +19,7 @@ import {
   LANGUAGE_PACKS,
   allowlistForRoot,
   languageConsistencyBlockReason,
+  missingBinaryBlockReason,
   type LanguagePack,
 } from './command-leaf';
 
@@ -123,6 +124,51 @@ describe('setuptools/pytest 时代的 python marker (2026-08-29 code80 批实测
     expect(out).toContain('pytest');
     expect(out).not.toContain('cargo');
     expect(out).not.toContain('go');
+  });
+});
+
+describe('missingBinaryBlockReason —— 判据的 bin 在不在 PATH 上 (2026-08-29)', () => {
+  // 反向自检: 删掉 missingBinaryBlockReason 里的 `dirs.some(...)` 那一支 → 前三条当场红。
+  // 为什么需要这道: 两道既有探针 (空世界自检 / 判别力) 问的都是「它会不会误绿」,
+  // 没有一道问「它有没有可能绿」。bin 不存在的命令**恒红**, 活干对了也过不了。
+  const withBin = (dir: string) => ({ PATH: dir });
+
+  test('bin 不在 PATH → 拒, 且拒因里带那个词', () => {
+    const root = freshRoot();
+    const why = missingBinaryBlockReason('pytest -q', withBin(root));
+    expect(why).toContain('missing-bin');
+    expect(why).toContain('pytest');
+  });
+
+  test('bin 在 PATH → 放行', () => {
+    const root = freshRoot();
+    touch('pytest');
+    expect(missingBinaryBlockReason('pytest -q', withBin(root))).toBeNull();
+  });
+
+  test('&& 链逐环判: 头环在、尾环不在 → 拒尾环 (与 commandBlockReason 同款全链先过闸)', () => {
+    const root = freshRoot();
+    touch('grep');
+    const why = missingBinaryBlockReason('grep -q x f.txt && pytest -q', withBin(root));
+    expect(why).toContain('pytest');
+  });
+
+  test('首词带路径 → 看该路径在不在, 不扫 PATH', () => {
+    const root = freshRoot();
+    expect(missingBinaryBlockReason(`${join(tmpRoot, 'nope')} --version`, withBin(root))).toContain('路径不存在');
+    touch('real.sh');
+    expect(missingBinaryBlockReason(`${join(tmpRoot, 'real.sh')} --version`, withBin(root))).toBeNull();
+  });
+
+  test('PATH 缺席 → 不判 (fail-open: 那时坏的是探测本身, 不是命令)', () => {
+    expect(missingBinaryBlockReason('pytest -q', {})).toBeNull();
+  });
+
+  test('⚠ 不许用退出码判: 一条好判据在动手前本来就该红', () => {
+    // `grep` 装着但断言必然失败 —— 这是**正确**的 TDD 判据形状, 本闸必须放行。
+    const root = freshRoot();
+    touch('grep');
+    expect(missingBinaryBlockReason('grep -q "还没写的内容" 还不存在的文件.md', withBin(root))).toBeNull();
   });
 });
 

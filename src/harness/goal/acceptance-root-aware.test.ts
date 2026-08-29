@@ -52,8 +52,12 @@ describe('INV-5: 有 root 启用包 + 一致闸', () => {
   test('pyproject.toml 仓 + pytest -q → null (python 包启用, 一致闸放行)', () => {
     const root = freshRoot();
     writeFileSync(join(root, 'pyproject.toml'), '');
+    // 2026-08-29: 加了 missing-bin 那道之后, 这条必须**注入 PATH** —— 否则它量的是
+    // 「跑测试这台机器装没装 pytest」(本机就没装), 而它要量的是语言一致闸。
+    // 一个随机器变的断言不是断言 (本仓 §加尺子: 量的会变成尺子)。
+    writeFileSync(join(root, 'pytest'), '');
 
-    const block = acceptanceCommandBlockReason('pytest -q', { root });
+    const block = acceptanceCommandBlockReason('pytest -q', { root, env: { PATH: root } });
 
     expect(block).toBeNull();
   });
@@ -167,5 +171,38 @@ describe('INV-7: 探针世界 per-root (defaultProbeRunner 用 allowlistForRoot(
     await probeDiscrimination('pytest -q', { path: 'placeholder.txt', content: 'broken' }, 0, { runIn: spy, repoRoot });
     expect(seenCwdNonEmpty).toBe(true);
     expect(seenHasPyproject).toBe(true);
+  });
+});
+
+describe('INV-8: 判据的 bin 必须真的存在 (2026-08-29, code80 逼出来的第三道)', () => {
+  // 反向自检: 把 acceptanceCommandBlockReason 末尾那行 missingBinaryBlockReason 删掉 → 前两条当场红。
+  //
+  // 为什么挂在这一层: 空世界自检问「它会不会误绿」, 判别力探针问「错答案骗不骗得过它」,
+  // 两道都不问「它有没有可能绿」。bin 不存在 = 恒红 = 活干对了也过不了。
+  // 实测触发面: 本次补 marker 让 25 个 bench 仓拿到 pytest, 其中 21 个镜像根本没装 pytest。
+  test('marker 仓 + pytest, 但 PATH 上没有 pytest → 拒 (missing-bin)', () => {
+    const root = freshRoot();
+    writeFileSync(join(root, 'pyproject.toml'), '[tool.pytest]');
+    const why = acceptanceCommandBlockReason('pytest -q', { root, env: { PATH: root } });
+    expect(why).toContain('missing-bin');
+    expect(why).toContain('pytest');
+  });
+
+  test('同一条命令, PATH 上有 pytest → 放行 (拒的是缺席, 不是这个词)', () => {
+    const root = freshRoot();
+    writeFileSync(join(root, 'pyproject.toml'), '[tool.pytest]');
+    writeFileSync(join(root, 'pytest'), '');
+    expect(acceptanceCommandBlockReason('pytest -q', { root, env: { PATH: root } })).toBeNull();
+  });
+
+  test('拒因顺序: 缺 marker 时先报 lang-mismatch (信息量更大), 不被 missing-bin 盖掉', () => {
+    const root = freshRoot(); // 无任何 marker
+    const why = acceptanceCommandBlockReason('pytest -q', { root, env: { PATH: root } });
+    expect(why).toContain('lang-mismatch');
+  });
+
+  test('INV-6 不受影响: 不给 root 的单参调用不做 PATH 判定', () => {
+    // 无 root 那支是纯语法闸 —— 逐字兼容是它的构造保证, 环境事实不该混进来。
+    expect(acceptanceCommandBlockReason('bun test')).toBeNull();
   });
 });

@@ -29,6 +29,7 @@ import {
   commandBlockReason,
   createCommandLeafRunner,
   languageConsistencyBlockReason,
+  missingBinaryBlockReason,
 } from '../command-leaf';
 import { logger } from '../logger';
 import { ensureNodeModulesLink } from '../run-worktree';
@@ -86,6 +87,12 @@ export type AcceptanceProbe =
 export interface AcceptanceCommandBlockOpts {
   /** 仓根 —— 给则 per-root 白名单 + 语言一致闸; 缺省 = 今天行为 (byte-compatible)。 */
   root?: string;
+  /**
+   * PATH 探测用的环境 (2026-08-29)。缺省 = `process.env` —— 必须与 `createCommandLeafRunner`
+   * spawn 时看到的那一份同源。**只为可测性存在**: 「这台机器装没装 pytest」不注入就写不出
+   * 确定性测试, 而不确定的测试正是本仓 §加尺子那条要避的 (量的会变成尺子)。
+   */
+  env?: Record<string, string | undefined>;
 }
 
 /**
@@ -107,7 +114,12 @@ export function acceptanceCommandBlockReason(command: string, opts: AcceptanceCo
   // `'pytest' ∉ allowlist` —— 后者也能拒, 但纠错环读到 "lang-mismatch" 才知道要去补 marker。
   const langBlock = languageConsistencyBlockReason(c, root);
   if (langBlock) return langBlock;
-  return commandBlockReason(c, allowlistForRoot(root));
+  const allowBlock = commandBlockReason(c, allowlistForRoot(root));
+  if (allowBlock) return allowBlock;
+  // 最后一道: bin 在不在 PATH 上 (2026-08-29)。**只挂 root-aware 这条路** —— 无 root 那支是纯语法闸
+  // (INV-6 逐字兼容), 而"装没装这个命令"是环境事实, 属于 root-aware 这一层。
+  // 顺序放最后: 前两道的拒因信息量更大 (缺哪个 marker / 不在白名单), 别被"找不到 bin"盖掉。
+  return opts.env ? missingBinaryBlockReason(c, opts.env) : missingBinaryBlockReason(c);
 }
 
 /** 便捷谓词。 */

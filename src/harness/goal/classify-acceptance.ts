@@ -258,7 +258,9 @@ export function classifyPrompt(goal: string, probe?: ClassifyPromptProbe): strin
   // "看到空仓就什么都别测" 的反例; 今天教什么今天继续教, 不因加了 probe 就收紧教学面。
   const testExampleLine = p?.hasPython
     ? '  · 代码还编不编得过 / 测试绿不绿 → `pytest -q`'
-    : '  · 代码还编不编得过 / 测试绿不绿 → `bun test` · `tsc --noEmit`';
+    // `bunx tsc` 不是 `tsc`: 裸 tsc 通常只在 node_modules/.bin 里, 不在 PATH ——
+    // 教一条 missingBinaryBlockReason 会拒的形状等于教它踩闸 (2026-08-29)。
+    : '  · 代码还编不编得过 / 测试绿不绿 → `bun test` · `bunx tsc --noEmit`';
   // 上面那行「互相独立」教学句的例示 bin —— 也按检出条件化, 让 Python 仓 prompt 不出现
   // `bun test` 字面(否则 INV-8 "示例 0 行" 不能用纯子串断言)。
   const independentAxisExample = p?.hasPython ? 'pytest -q' : 'bun test';

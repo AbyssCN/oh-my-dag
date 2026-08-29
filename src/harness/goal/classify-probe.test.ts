@@ -191,7 +191,11 @@ describe('E-T1: 测试套仓强偏执行型 (bench 批7/8 docs-only 病的上游
 describe('E-T1b: marker 仓探索型机械追问一次 (散文偏置批9实证不够, 做成会红的闸)', () => {
   // 反向自检: 删掉 classifyGoal 里的 marker-仓探索型追问分支 → 第一条当场红 (calls=1)。
   const exploratoryJson = JSON.stringify({ tier: 'simple', acceptance_kind: 'exploratory', learning_goal: '摸清结构', affordable_loss: '1轮' });
-  const executableJson = JSON.stringify({ tier: 'simple', acceptance_kind: 'executable', command: 'pytest -q', expected_exit: 0 });
+  // 2026-08-29: 判据改用 `python3 -m pytest -q` 而不是裸 `pytest` —— 加了 missing-bin 那道之后,
+  // 裸 pytest 在**没装 pytest 的机器上**会被拒, 于是这两条测的就变成"本机装没装 pytest"了。
+  // python3 在 PATH 上是稳定事实, 断言因此回到它本来要测的东西 (追问分支)。
+  // ⚠ 诚实边界: 这条命令里的 `pytest` **模块**在不在, missing-bin 那道管不到 (它只看首词)。
+  const executableJson = JSON.stringify({ tier: 'simple', acceptance_kind: 'executable', command: 'python3 -m pytest -q', expected_exit: 0 });
 
   test('marker 仓首答探索型 → 恰好追问 1 次, 追问文含测试套自证要求, 二答照收', async () => {
     const root = freshRoot();

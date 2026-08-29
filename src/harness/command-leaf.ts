@@ -188,6 +188,63 @@ export function languageConsistencyBlockReason(command: string, root: string): s
 }
 
 /**
+ * **这条命令的 bin 在这台机器上真的存在吗** (2026-08-29, code80 批逼出来的)。
+ *
+ * ## 它补的是判据自证的第二个盲区
+ *
+ * `probeVacuity` 问「活还没干它就绿了吗」(判据恒真); 判别力探针问「错答案骗得过它吗」。
+ * 两道都不问**「它有没有可能绿」** —— 而一条 bin 不存在的命令**恒红**:
+ * 活干得再对也过不了。恒红的判据与恒真的判据是同一种病的两面, 只是这一面此前没人管。
+ *
+ * ⚠ **不能靠「现在是红的」来判**: 一条好的 TDD 判据在动手之前本来就该红 (D-I 的 verify-green
+ * 明确要求)。所以这里判的不是退出码, 是**首词在 PATH 上找不找得到** —— 那是环境事实,
+ * 与"活干没干"正交。
+ *
+ * ## 实测两例 (都不是假想)
+ *
+ * · bench code80: 25 个仓因本次补 marker 而拿到 `pytest`, 其中 **21 个的任务镜像根本没装 pytest**
+ *   (直接进容器核过: `shutil.which('pytest')` → None)。冻一条 `pytest -q` 给它们 = 冻一条恒红。
+ * · 本仓自己: `tsc` **不在 PATH** (只在 node_modules/.bin), 而 classifyPrompt 至今把
+ *   `tsc --noEmit` 当推荐形状教。
+ *
+ * ## 边界
+ *
+ * · 只判 PATH 可达性, 不判"跑起来会不会成功" —— 后者正是判据该回答的问题, 这里不抢。
+ * · 首词带 `/` (相对或绝对路径) → 直接看该路径在不在, 不扫 PATH。
+ * · `&&` 链逐环判 (与 `commandBlockReason` 同款: 全链先过闸)。
+ * · PATH 缺席 / 为空 → **不判** (返 null, fail-open): 那时量的是环境探测本身坏了, 不是命令坏了。
+ * · **只看首词**: `python3 -m pytest -q` 里 python3 在、pytest 模块不在, 这道拦不住。
+ *   拦得住的是"连解释器都没有"那一层。别把它当"判据一定跑得动"的证明。
+ *
+ * @param env 注入点 (测试用)。默认 `process.env` —— 判定必须与 `createCommandLeafRunner`
+ *   spawn 时看到的 PATH 是同一份, 否则规划期说能跑、执行期找不到, 又是一次「假红」。
+ */
+export function missingBinaryBlockReason(
+  command: string,
+  env: Record<string, string | undefined> = process.env,
+): string | null {
+  const path = env.PATH;
+  if (!path) return null; // 探不到 PATH → 不判 (fail-open, 见上「边界」第四条)
+  const dirs = path.split(':').filter(Boolean);
+  for (const link of command.split('&&').map((s) => s.trim())) {
+    const first = link.split(/\s+/)[0] ?? '';
+    if (!first) continue;
+    if (first.includes('/')) {
+      if (!existsSync(first)) return `[blocked missing-bin: 验收命令的 '${first}' 这个路径不存在]`;
+      continue;
+    }
+    if (!dirs.some((d) => existsSync(join(d, first)))) {
+      return (
+        `[blocked missing-bin: 验收命令的首词 '${first}' 在 PATH 上找不到 —— ` +
+        `这条命令在这台机器上恒红, 活干对了也过不了。换一条这里真装了的命令 ` +
+        `(python3 / node / grep 这类), 或改判探索型。]`
+      );
+    }
+  }
+  return null;
+}
+
+/**
  * 允许的 git 子命令 (只读)。放行 bin 'git' 不等于放行改仓库状态 ——
  * `git checkout .` 抹掉 DAG 刚写的文件、`git commit`/`git add` 越权代 owner 提交, 一律拒。
  */
