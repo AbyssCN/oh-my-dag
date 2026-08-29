@@ -17,7 +17,13 @@ import { describe, expect, test } from 'bun:test';
 import { scanCatchEvidence, scanTree, netIncreaseVsBase } from './catch-evidence-scan';
 
 /** 2026-08-23 首次量得的基线。**只许降。** 降了就把这里改小, 别放回去。 */
-const CEILING = { empty: 76, silent: 286 };
+// 2026-08-29 **收紧**重设 (286 → 158, 76 → 75)。两处口径变了, 所以是重设不是抬:
+//   ① 判据补了一格: 错误经**返回值/调用参数/赋值**交出去也算证据 (不只 logger) ——
+//      实测 134 处此前被误判成"沉默", 其中就有 `memory/staleness.ts` 那种把 err.message
+//      交给调用方的写法 (比只写日志更强)。
+//   ② 扫描面改成**已跟踪文件** —— 未提交的 WIP 不该把绊线拉红 (与可达性闸同一条理由)。
+// ⚠ 方向只许往下。要往上抬, 先说明是哪条口径变了 —— 抬天花板正是这条绊线要抓的作弊。
+const CEILING = { empty: 75, silent: 158 };
 
 const SAMPLE = `
 export function f(): number | null {
@@ -32,6 +38,23 @@ describe('catch 证据扫描', () => {
     const r = scanCatchEvidence(SAMPLE, 'sample.ts');
     expect(r.total).toBe(3);
     expect(r.sites.map((s) => s.kind)).toEqual(['empty', 'silent']); // ③ 不在名单里
+  });
+
+  test('★ 证据也可以经返回值交出去 (不只 logger)', () => {
+    const src = `
+export function f(): unknown {
+  try { return 1; } catch (err) { return { why: (err as Error).message }; }
+}`;
+    expect(scanCatchEvidence(src, 'x.ts').sites).toEqual([]); // 错误流出去了 = 有证据
+  });
+
+  test('★ 只拿错误走控制流、把原文丢了 → 仍算沉默 (口子没开大)', () => {
+    const src = `
+export function f(): number | null {
+  try { return 1; } catch (e) { if (e instanceof TypeError) return 0; return null; }
+}`;
+    const sites = scanCatchEvidence(src, 'x.ts').sites;
+    expect(sites.map((s) => s.kind)).toEqual(['silent']);
   });
 
   test('★② 绊线: src/ 的沉默 catch 只许降不许涨', () => {

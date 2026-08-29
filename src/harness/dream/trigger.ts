@@ -30,6 +30,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { logger } from '../logger';
 import { M, W_HOURS, W_SESSIONS } from './gather';
 
 /** 上次点火尝试的记录。**attempt 不是 success** —— 见模块头注护栏②。 */
@@ -121,7 +122,8 @@ export function acquireDreamLock(lockPath: string, nowMs: number = Date.now()): 
       // 'wx' = O_CREAT|O_EXCL —— 已存在就抛,这一步的原子性就是互斥本身。
       writeFileSync(lockPath, `${JSON.stringify({ pid: process.pid, at: nowMs })}\n`, { flag: 'wx' });
       return true;
-    } catch {
+    } catch (err) {
+      logger.debug({ lockPath, err: (err as Error).message }, '[dream] 锁已存在 → 转判陈锁');
       // 已有锁 → 判它是不是陈的。**陈锁必须能过期**:dream 被 kill 掉不留清理机会,
       // 没有过期判据的话一次崩溃就永久关掉了自动固化(而且是静默的)。
       const raw = JSON.parse(readFileSync(lockPath, 'utf-8')) as { at?: unknown };
@@ -130,8 +132,11 @@ export function acquireDreamLock(lockPath: string, nowMs: number = Date.now()): 
       writeFileSync(lockPath, `${JSON.stringify({ pid: process.pid, at: nowMs })}\n`);
       return true;
     }
-  } catch {
+  } catch (err) {
     // 锁机制自己坏了 → **不点火**。方向取安全那边:宁可少固化一批,不可两个进程对着烧。
+    // ⚠ 但**必须留一行**: 不留的话"dream 再也不自动固化了"在盘上没有任何痕迹,
+    // 而这正是 fail-open 吞证据那条禁令的原形 (2026-08-29 绊线补)。
+    logger.warn({ err: (err as Error).message }, '[dream] 锁机制自身失败 → 本轮不点火');
     return false;
   }
 }
@@ -156,7 +161,9 @@ export function readDreamAttempt(statePath: string): DreamAttemptState | null {
       lastAttemptAt: raw.lastAttemptAt,
       lastOutcome: outcome === 'ok' || outcome === 'failed' ? outcome : null,
     };
-  } catch {
+  } catch (err) {
+    // 读不出上次尝试记录 = 冷却窗口失忆 → 下一次 Stop 会立刻再点一批。留一行, 别让它无声发生。
+    logger.debug({ statePath, err: (err as Error).message }, '[dream] 上次尝试记录读不出 → 当作没记过');
     return null;
   }
 }
@@ -171,7 +178,9 @@ export function writeDreamAttempt(statePath: string, state: DreamAttemptState): 
     mkdirSync(dirname(statePath), { recursive: true });
     writeFileSync(statePath, `${JSON.stringify(state)}\n`);
     return true;
-  } catch {
+  } catch (err) {
+    // 写不进去 = 冷却计时没开始 (见上面那段注释: 计时必须在掏钱之前开始)。
+    logger.warn({ statePath, err: (err as Error).message }, '[dream] 尝试记录写入失败 → 冷却计时未开始');
     return false;
   }
 }

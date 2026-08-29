@@ -99,10 +99,54 @@ describe('可达性 — 每个非测试 .ts 都从生产入口 import 得到', (
     expect(reachableFrom(PROD_ROOTS)).toContain(join(ROOT, 'src/harness/script-bootstrap.ts'));
   });
 
+  /**
+   * 已提交的那一面 (2026-08-29)。**未跟踪文件不参与判红** ——
+   *
+   * 未跟踪 = 还没进仓 = 对任何人都不存在, 让它把闸拉红是**假警报**: 那天本闸因为别人
+   * 一个未提交的 `src/cli/runs-gc.ts` 一直红, 而红的原因和谁提交过的东西都无关。
+   * 一条经常因无关原因发红的闸, 教会人的是忽略它。
+   *
+   * 但**早反馈的价值要留住**: 未跟踪的孤儿照样打印出来 (下一条 test 里), 只是不判红。
+   * `git ls-files` 挂了 → 返 null → 退回"全都算" (fail-closed: 宁可多判也不漏判)。
+   */
+  /**
+   * **第二格豁免: 消费方是在录的票, 还没落地** (2026-08-29)。
+   *
+   * 为什么不塞进 `DYNAMIC_ENTRIES`: 那一格的语义是「有生产入口, 但入口不走静态 import」,
+   * 值要写清"谁在哪按什么路径拉它"。把一个**还没有消费方**的件写进去就是**说假话** ——
+   * 而这条闸的全部价值就是逼出一次诚实的决定。
+   *
+   * 所以分成两格。进这一格的条件比 DYNAMIC_ENTRIES **更严**:
+   *   · `ticket` 必须指向 `docs/plan/` 下**真实存在**的文件 (下面那条 test 机械校验);
+   *   · 票没了 / 文档改名 → 本条当场红 → 逼你重新决定 (删掉, 还是接上)。
+   *
+   * ⚠ 它不是"缓刑名单"。一个件在这里待着, 意思是「有人承诺了消费方, 且承诺写在盘上」。
+   */
+  const PENDING_CONSUMERS: Record<string, { ticket: string; why: string }> = {
+    'src/harness/inventory/scale-fixture.ts': {
+      ticket: 'docs/plan/2026-08-24-247-248-活环闭合-执行契约.md',
+      why:
+        'S2 债 (inventory 装配进活环) 的输入面: 规模实验 20/50/100/200 条要求"只改条目数、其余冻结", ' +
+        '而"冻结"只有确定性发生器做得到。消费方 = S2 的实验脚本, 尚未落地。' +
+        'S2 若被裁掉, 本条与该文件一起删。',
+    },
+  };
+
+  const tracked = (): Set<string> | null => {
+    const r = Bun.spawnSync(['git', 'ls-files', '--', 'src'], { cwd: ROOT, stdout: 'pipe', stderr: 'pipe' });
+    if (r.exitCode !== 0) return null;
+    return new Set(r.stdout.toString().split('\n').filter(Boolean));
+  };
+
   test('★ 没有孤儿 (豁免件同时当根, 其下游闭包算可达)', () => {
     const exemptRoots = Object.keys(DYNAMIC_ENTRIES).map((p) => join(ROOT, p));
     const reachable = reachableFrom([...PROD_ROOTS, ...exemptRoots]);
-    const orphans = ALL_FILES.filter((f) => !reachable.has(f)).map(rel).sort();
+    const t = tracked();
+    const orphans = ALL_FILES.filter((f) => !reachable.has(f))
+      .map(rel)
+      .filter((f) => t === null || t.has(f))
+      .filter((f) => !(f in PENDING_CONSUMERS))
+      .sort();
 
     expect(
       orphans.length === 0
@@ -112,6 +156,33 @@ describe('可达性 — 每个非测试 .ts 都从生产入口 import 得到', (
           '③ 若它由**路径字符串**动态拉起, 登记进 DYNAMIC_ENTRIES 并写明"谁在哪按什么路径拉它"。\n' +
           '⚠ "它有测试啊" 不是理由 —— 测试刻意不算根, 见本文件头注。',
     ).toBe('');
+  });
+
+  test('未跟踪的孤儿: 打印出来但不判红 (早反馈留住, 假警报去掉)', () => {
+    const exemptRoots = Object.keys(DYNAMIC_ENTRIES).map((p) => join(ROOT, p));
+    const reachable = reachableFrom([...PROD_ROOTS, ...exemptRoots]);
+    const t = tracked();
+    const untrackedOrphans = t === null ? [] : ALL_FILES.filter((f) => !reachable.has(f)).map(rel).filter((f) => !t.has(f)).sort();
+    if (untrackedOrphans.length > 0) {
+      // 不 expect —— 这一条**故意不判红**: 它是提醒, 不是闸。
+      console.warn(`[reachability] 未跟踪的孤儿 ${untrackedOrphans.length} 个 (未提交, 不判红): ${untrackedOrphans.join(', ')}`);
+    }
+    expect(true).toBe(true);
+  });
+
+  test('★ PENDING_CONSUMERS 的票必须真的在盘上 (票没了 = 承诺没了 = 该重新决定)', () => {
+    const missing = Object.entries(PENDING_CONSUMERS)
+      .filter(([, v]) => !existsSync(join(ROOT, v.ticket)))
+      .map(([f, v]) => `${f} → ${v.ticket}`);
+    expect(
+      missing,
+      `这些条目引用的票文件不存在, 承诺已经没有依据了: ${missing.join(', ')}`,
+    ).toEqual([]);
+  });
+
+  test('PENDING_CONSUMERS 与 DYNAMIC_ENTRIES 不许重叠 (一个件只能有一种理由)', () => {
+    const dup = Object.keys(PENDING_CONSUMERS).filter((k) => k in DYNAMIC_ENTRIES);
+    expect(dup).toEqual([]);
   });
 
   test('豁免名单不许收留真的可达件 (防名单变垃圾桶)', () => {

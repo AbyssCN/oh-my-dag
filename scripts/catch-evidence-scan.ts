@@ -56,6 +56,56 @@ export interface CatchScan {
 
 const EVIDENCE = /logger\.|console\.|throw |process\.stderr|reject\(/;
 
+/**
+ * **证据也可以经返回值交出去** (2026-08-29 补的判别力缺口)。
+ *
+ * 原判据只认 logger/console/throw/stderr/reject —— 于是这种写法被误判成"沉默":
+ *
+ * ```ts
+ * catch (err) { return { sha: null, why: err instanceof Error ? err.message : String(err) }; }
+ * ```
+ *
+ * 它把错误原文**交给了调用方**, 比只写进日志更强 (调用方能据此分支, 日志只能被人读)。
+ * 判据: 绑了错误变量 **且** 在 catch 体里引用了它。
+ * `catch (e) { return null; }` 绑了但没引用 → 仍算沉默 (口子没开大)。
+ *
+ * 实测样本: `src/harness/memory/staleness.ts` 的 `fingerprintFile`。
+ */
+function bindsAndUsesError(n: ts.CatchClause): boolean {
+  const name = n.variableDeclaration?.name;
+  if (!name || !ts.isIdentifier(name)) return false;
+  const id = name.text;
+  let escapes = false;
+  /**
+   * ⚠ **只"用到"不算**: `catch (e) { if (e instanceof X) return a; return b; }` 拿 e 走了控制流,
+   * 却把错误原文丢了 —— 那仍然是吞证据。所以判的是**错误有没有流出去**:
+   * 进 return / 进调用参数 / 进对象字面量的值 / 进赋值右边 / 进模板串。
+   * 只出现在 if 条件里 → 不算。
+   */
+  const mentions = (x: ts.Node): boolean => {
+    let hit = false;
+    const scan = (y: ts.Node): void => {
+      if (hit) return;
+      if (ts.isIdentifier(y) && y.text === id && y !== name) { hit = true; return; }
+      ts.forEachChild(y, scan);
+    };
+    scan(x);
+    return hit;
+  };
+  const visit = (x: ts.Node): void => {
+    if (escapes) return;
+    if (ts.isReturnStatement(x) && x.expression && mentions(x.expression)) { escapes = true; return; }
+    if (ts.isCallExpression(x) && x.arguments.some(mentions)) { escapes = true; return; }
+    if (ts.isPropertyAssignment(x) && mentions(x.initializer)) { escapes = true; return; }
+    if (ts.isVariableDeclaration(x) && x.initializer && mentions(x.initializer)) { escapes = true; return; }
+    if (ts.isBinaryExpression(x) && x.operatorToken.kind === ts.SyntaxKind.EqualsToken && mentions(x.right)) { escapes = true; return; }
+    if (ts.isTemplateExpression(x) && mentions(x)) { escapes = true; return; }
+    ts.forEachChild(x, visit);
+  };
+  ts.forEachChild(n.block, visit);
+  return escapes;
+}
+
 /** 扫一份源码。**纯函数** —— 判别力可以拿手写样本注入验。 */
 export function scanCatchEvidence(source: string, fileName: string): CatchScan {
   const src = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
@@ -67,7 +117,7 @@ export function scanCatchEvidence(source: string, fileName: string): CatchScan {
       const line = src.getLineAndCharacterOfPosition(n.getStart()).line + 1;
       const sig = n.getText().replace(/\s+/g, '');
       if (n.block.statements.length === 0) sites.push({ file: fileName, line, kind: 'empty', sig });
-      else if (!EVIDENCE.test(n.block.getText())) sites.push({ file: fileName, line, kind: 'silent', sig });
+      else if (!EVIDENCE.test(n.block.getText()) && !bindsAndUsesError(n)) sites.push({ file: fileName, line, kind: 'silent', sig });
     }
     ts.forEachChild(n, walk);
   };
@@ -76,14 +126,26 @@ export function scanCatchEvidence(source: string, fileName: string): CatchScan {
 }
 
 /** 递归收 `.ts`,跳过 `.test.ts` 与 `node_modules`(见头注的口径)。 */
+/**
+ * 已跟踪文件集 (2026-08-29)。**未跟踪文件不进扫描** —— 与可达性闸同一条理由:
+ * 未提交 = 对任何人都不存在, 让它把绊线拉红是假警报 (那天一个别人未提交的
+ * `src/cli/runs-gc.ts` 就贡献了一条)。`git ls-files` 挂了 → 返 null → 全都算 (fail-closed)。
+ */
+function trackedSet(root: string): Set<string> | null {
+  const r = Bun.spawnSync(['git', 'ls-files', '--', root], { stdout: 'pipe', stderr: 'pipe' });
+  if (r.exitCode !== 0) return null;
+  return new Set(r.stdout.toString().split('\n').filter(Boolean));
+}
+
 export function collectSourceFiles(root: string): string[] {
+  const tracked = trackedSet(root);
   const out: string[] = [];
   const walk = (dir: string): void => {
     for (const name of readdirSync(dir)) {
       if (name === 'node_modules' || name.startsWith('.')) continue;
       const p = join(dir, name);
       if (statSync(p).isDirectory()) walk(p);
-      else if (name.endsWith('.ts') && !name.endsWith('.test.ts')) out.push(p);
+      else if (name.endsWith('.ts') && !name.endsWith('.test.ts') && (tracked === null || tracked.has(p))) out.push(p);
     }
   };
   walk(root);

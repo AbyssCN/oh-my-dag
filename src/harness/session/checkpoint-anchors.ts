@@ -32,6 +32,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { logger } from '../logger';
 import { fingerprintFile } from '../memory/staleness';
 
 /** sidecar 文件名 —— 与 `checkpoint.md` 并排。 */
@@ -88,8 +89,11 @@ export function writeCheckpointAnchors(
     const payload: CheckpointAnchorFile = { writtenAt: nowMs, anchors };
     writeFileSync(join(dirname(checkpointPath), ANCHORS_FILENAME), `${JSON.stringify(payload, null, 2)}\n`);
     return anchors.length;
-  } catch {
-    return -1; // -1 = 写锚这一步挂了 (0 = 写成功但一个路径都没提到) —— 两者不许折叠
+  } catch (err) {
+    // -1 = 写锚这一步挂了 (0 = 写成功但一个路径都没提到) —— 两者不许折叠。
+    // 但光有 -1 说不出**为什么**挂: 那一位分得开两种结局, 分不开两种原因。
+    logger.warn({ err: (err as Error).message }, '[checkpoint-anchors] 写锚失败 → 返 -1');
+    return -1;
   }
 }
 
@@ -126,7 +130,8 @@ export function readCheckpointAnchors(checkpointPath: string, projectRoot: strin
       else if (sha !== a.sha) changed.push(a.path);
     }
     return { writtenAt: raw.writtenAt, total: raw.anchors.length, changed, gone };
-  } catch {
+  } catch (err) {
+    logger.debug({ err: (err as Error).message }, '[checkpoint-anchors] 锚文件读不出/形状不对 → 当作没有锚');
     return null;
   }
 }
