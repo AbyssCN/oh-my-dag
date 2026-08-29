@@ -167,6 +167,20 @@ describe('E-T1: 测试套仓强偏执行型 (bench 批7/8 docs-only 病的上游
     expect(prompt).toContain('强烈偏向 "executable"');
   });
 
+  // 2026-08-29 code80 批: 80 个仓里 54 个检不出 marker, 于是 67% 的题吃的是**反向**教学句
+  // (「拿不准就选 exploratory」)。其中 25 个仓有 setup.py/setup.cfg/tox.ini/pytest.ini ——
+  // 它们全是 python 测试基建的证据, 只是没写进包表。
+  for (const marker of ['setup.py', 'setup.cfg', 'tox.ini', 'pytest.ini']) {
+    test(`setuptools 时代的 marker (${marker}) 同样触发强偏, 且示例改教 pytest`, () => {
+      const root = freshRoot();
+      writeFileSync(join(root, marker), '');
+      const prompt = classifyPrompt('修一个 bug', { repoRoot: root });
+      expect(prompt).toContain('强烈偏向 "executable"');
+      expect(prompt).not.toContain('拿不准就选 "exploratory"');
+      expect(prompt).toContain('pytest -q');
+    });
+  }
+
   test('无 marker 仓 / 无 probe → 强偏段 0 处 (存量教学面不变)', () => {
     const root = freshRoot();
     expect(classifyPrompt('目标', { repoRoot: root })).not.toContain('强烈偏向 "executable"');

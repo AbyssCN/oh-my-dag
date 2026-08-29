@@ -90,10 +90,19 @@ export type LanguagePack = {
 };
 
 export const LANGUAGE_PACKS: readonly LanguagePack[] = [
-  // python —— 三 marker 任一即开包 (pyproject.toml 是现代, uv.lock 是 uv 系, requirements.txt 是经典 pip)
+  // python —— 任一 marker 即开包 (pyproject.toml 是现代, uv.lock 是 uv 系, requirements.txt 是经典 pip;
+  // 下面四个是 setuptools/pytest 时代的仓, 2026-08-29 code80 批实测补齐: 80 个真实 python 仓里
+  // 只有 26 个带前三种 marker, 另有 25 个仅有 setup.py/setup.cfg/tox.ini/pytest.ini。
+  // 漏检的代价不是"少一个 bin" —— classify prompt 的 E-T1 教学句以 marker 为条件, 检不出 marker
+  // 就走**反向**分支 (「拿不准就选 exploratory」), 同时 pytest 被语言一致闸拒 → 验收降级探索型
+  // → 引擎不被逼着改代码。一个漏掉的 marker 名换来的是整条链的静默反转。)
   { marker: 'pyproject.toml', bins: ['python3', 'python', 'uv', 'pytest'] },
   { marker: 'uv.lock', bins: ['python3', 'python', 'uv', 'pytest'] },
   { marker: 'requirements.txt', bins: ['python3', 'python', 'uv', 'pytest'] },
+  { marker: 'setup.py', bins: ['python3', 'python', 'uv', 'pytest'] },
+  { marker: 'setup.cfg', bins: ['python3', 'python', 'uv', 'pytest'] },
+  { marker: 'tox.ini', bins: ['python3', 'python', 'uv', 'pytest'] },
+  { marker: 'pytest.ini', bins: ['python3', 'python', 'uv', 'pytest'] },
   // go —— go.mod 是事实标准; gofmt 与 go 配对
   { marker: 'go.mod', bins: ['go', 'gofmt'] },
   // rust —— Cargo.toml 是事实标准

@@ -18,6 +18,7 @@ import {
   DEFAULT_COMMAND_ALLOWLIST,
   LANGUAGE_PACKS,
   allowlistForRoot,
+  languageConsistencyBlockReason,
   type LanguagePack,
 } from './command-leaf';
 
@@ -96,6 +97,32 @@ describe('allowlistForRoot × 语言包探测 (D5a)', () => {
     a.push('FORGED_BIN');
     const b = allowlistForRoot(root);
     expect(b).not.toContain('FORGED_BIN');
+  });
+});
+
+describe('setuptools/pytest 时代的 python marker (2026-08-29 code80 批实测补齐)', () => {
+  // 反向自检: 从 LANGUAGE_PACKS 删掉这四行任一 → 对应那条当场红。
+  // 为什么值一条测试: 这四个 marker 漏检时, 链条不是"少一个 bin", 而是 classify prompt 走
+  // 反向教学分支 + pytest 被语言一致闸拒 → 验收降级探索型。80 仓里 25 个只有这四种 marker。
+  for (const marker of ['setup.py', 'setup.cfg', 'tox.ini', 'pytest.ini']) {
+    test(`只有 ${marker} 的仓 → pytest 进白名单, 且 pytest 判据不被语言一致闸拒`, () => {
+      const root = freshRoot();
+      touch(marker);
+
+      expect(allowlistForRoot(root)).toContain('pytest');
+      expect(languageConsistencyBlockReason('pytest -q', root)).toBeNull();
+    });
+  }
+
+  test('这四个 marker 只开 python 包, 不顺带开 js/go/rust', () => {
+    const root = freshRoot();
+    touch('setup.py');
+
+    const out = allowlistForRoot(root);
+
+    expect(out).toContain('pytest');
+    expect(out).not.toContain('cargo');
+    expect(out).not.toContain('go');
   });
 });
 

@@ -71,6 +71,13 @@ HARD RULE — file producers MUST be "agent": if a node CREATES or MODIFIES any 
   (set output_path too). A "leaf" CANNOT touch the filesystem — a leaf told to write a file silently
   produces NOTHING (returns text, node reports done, no artifact). NEVER use "leaf" for an
   implementation/build node. "Default to leaf" applies only to text-deliverable nodes (analysis/design/research).
+WRITE-SET CONTRACT — a file-producing node SHOULD also declare "write_set": [relative paths it will
+  create or modify]. The engine turns the list into hard evidence, all three directions: declared
+  files present on disk count as done-evidence; a write OUTSIDE the set is refused at the tool gate
+  the moment it happens; a done node whose whole write_set is absent raises an observation.
+  output_path names the single deliverable; write_set covers EVERY file the node touches. Two
+  parallel nodes must not list the same path — that is a write race, split or serialize them.
+  Omit write_set only when the touched files are genuinely unknowable at plan time.
 MIRROR RULE — verification/check nodes MUST NOT declare artifacts: if a node only VERIFIES/inspects
   (runs tests, greps, compares, audits) and is not expected to write any file, set output_type:"none"
   (no output_path). Declaring output_type:"file" on a no-write node makes the artifact gate fail it
