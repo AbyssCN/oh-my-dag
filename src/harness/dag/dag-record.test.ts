@@ -290,6 +290,169 @@ describe('留痕的派生面 — 命令原文 + 效果指标计数', () => {
     expect(n.maxRounds).toBeUndefined();
     rec.close();
   });
+
+  /**
+   * quorum 声明 (`requires`) 进节点投影 (2026-08-30) —— **这是一把此前根本不存在的尺子**。
+   *
+   * 它跟上面 `maxRounds` 那四条**刻意相反**: 那里 plan 没写就记缺省 1 (量的是引擎真跑的上限),
+   * 这里 plan 没写就**缺席** (量的是 conductor 的声明率)。补一个 `?? 'all'` 会让「conductor
+   * 没想过 quorum」与「conductor 声明了全量」在账本里长得一模一样, 而这一位存在的全部理由
+   * 就是把这两件事分开数。
+   *
+   * ⚠ 证伪方式 (仓规: 一条永远绿的闸不是闸; 下面三条**每条都实跑变异验过, 括号里是真实读数**):
+   *   · `parseRequires` 的 `return undefined` 改成 `return 'all'` (补缺省) → 42 pass / **2 fail**:
+   *     「没声明 → 缺席」与「词表外按缺席读」同时红 (补缺省把两种缺席都填成了 'all');
+   *   · `...(req !== undefined ? …)` 换成真值判断 `...(req ? …)` → 43 pass / **1 fail**:
+   *     `requires: 0` 那条红 (0 被抹成缺席);
+   *   · `parseRequires` 去掉词表校验 (直接 `return raw as …`) → 43 pass / **1 fail**: 词表外那条红。
+   */
+  test('quorum 声明 requires 原样进留痕: all/any/K 各自可辨', () => {
+    const rec = createDagRecorder({ path: ':memory:' });
+    const id = rec.record(
+      withNodes(
+        {
+          a: { goal: 'A' },
+          b: { goal: 'B' },
+          any: { goal: '宽扇出合成', depends_on: ['a', 'b'], requires: 'any' },
+          all: { goal: '严合成', depends_on: ['a', 'b'], requires: 'all' },
+          k: { goal: '判', depends_on: ['a', 'b'], requires: 2 },
+        },
+        {
+          a: { id: 'a', kind: 'agent', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 } },
+          b: { id: 'b', kind: 'agent', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 } },
+          any: { id: 'any', kind: 'agent', status: 'done', deps: ['a', 'b'], output: '', usage: { in: 0, out: 0 } },
+          all: { id: 'all', kind: 'agent', status: 'done', deps: ['a', 'b'], output: '', usage: { in: 0, out: 0 } },
+          k: { id: 'k', kind: 'agent', status: 'done', deps: ['a', 'b'], output: '', usage: { in: 0, out: 0 } },
+        },
+      ),
+      { runId: 'run-quorum' },
+    );
+    const nodes = rec.get(id)!.nodes;
+    expect(nodes.find((n) => n.id === 'any')!.requires).toBe('any');
+    expect(nodes.find((n) => n.id === 'all')!.requires).toBe('all');
+    expect(nodes.find((n) => n.id === 'k')!.requires).toBe(2);
+    rec.close();
+  });
+
+  test('★ plan 没声明 requires → **缺席**, 不是 `all` (调度器的判定缺省不许进历史记录)', () => {
+    const rec = createDagRecorder({ path: ':memory:' });
+    const id = rec.record(
+      withNodes(
+        // sink 有多个依赖但没写 requires —— 调度器判定时按 'all' 走, 而账本上这一格是"没声明"
+        { a: { goal: 'A' }, b: { goal: 'B' }, sink: { goal: '合成', depends_on: ['a', 'b'] } },
+        {
+          a: { id: 'a', kind: 'agent', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 } },
+          b: { id: 'b', kind: 'agent', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 } },
+          sink: { id: 'sink', kind: 'agent', status: 'done', deps: ['a', 'b'], output: '', usage: { in: 0, out: 0 } },
+          // map 动态扇出: plan 里没有这个 id → 缺席 = 真不知道 (同 command/template/maxRounds 口径)
+          'sink#1': { id: 'sink#1', kind: 'agent', status: 'done', deps: ['sink'], output: '', usage: { in: 0, out: 0 } },
+        },
+      ),
+      { runId: 'run-quorum-absent' },
+    );
+    const nodes = rec.get(id)!.nodes;
+    // ★ 本用例的全部意义: 这两条若被补成 'all', 「quorum 声明率」这个数就永远是 100%,
+    //   与它此前恒为 0 一样没有信息量 —— 一个在任何干预下都不动的数量的是尺子, 不是计划。
+    expect(nodes.find((n) => n.id === 'sink')!.requires).toBeUndefined();
+    expect(nodes.find((n) => n.id === 'a')!.requires).toBeUndefined();
+    expect(nodes.find((n) => n.id === 'sink#1')!.requires).toBeUndefined();
+    rec.close();
+  });
+
+  /**
+   * ⚠ `requires: 0` 在 **PlanSchema 里是非法的** (`conductor-plan.ts:317` 的 `.int().min(1)`),
+   *   所以经校验的 plan 里不该出现。这条用例钉的**不是**"0 合法", 而是: 真绕过校验冒出来一个 0
+   *   (plan-patch / map 扇出 / checkpoint 重载), 账本必须**把它记下来**而不是抹成"没声明" ——
+   *   前者是"某条路绕过了校验"的证据, 后者把证据变成了缺席。
+   */
+  test('★ requires: 0 (schema 外的异常值) 必须活着穿过来 —— 真值判断会把证据抹成缺席', () => {
+    const rec = createDagRecorder({ path: ':memory:' });
+    const id = rec.record(
+      withNodes(
+        { a: { goal: 'A' }, z: { goal: '零配额', depends_on: ['a'], requires: 0 } },
+        {
+          a: { id: 'a', kind: 'agent', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 } },
+          z: { id: 'z', kind: 'agent', status: 'done', deps: ['a'], output: '', usage: { in: 0, out: 0 } },
+        },
+      ),
+      { runId: 'run-quorum-zero' },
+    );
+    const n = rec.get(id)!.nodes.find((x) => x.id === 'z')!;
+    expect(n.requires).toBe(0);
+    expect(n.requires).not.toBeUndefined(); // 0 ≠ 缺席 (仓规: NULL ≠ 0 ≠ 不适用)
+    rec.close();
+  });
+
+  test('★ 词表外的 requires (LLM 编的 `most` / 小数) 按**缺席**读, 不编一个 kind', () => {
+    const rec = createDagRecorder({ path: ':memory:' });
+    const id = rec.record(
+      withNodes(
+        {
+          m: { goal: '编的', depends_on: ['a'], requires: 'most' },
+          f: { goal: '小数', depends_on: ['a'], requires: 1.5 },
+          a: { goal: 'A' },
+        },
+        {
+          m: { id: 'm', kind: 'agent', status: 'done', deps: ['a'], output: '', usage: { in: 0, out: 0 } },
+          f: { id: 'f', kind: 'agent', status: 'done', deps: ['a'], output: '', usage: { in: 0, out: 0 } },
+          a: { id: 'a', kind: 'agent', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 } },
+        },
+      ),
+      { runId: 'run-quorum-junk' },
+    );
+    const nodes = rec.get(id)!.nodes;
+    expect(nodes.find((n) => n.id === 'm')!.requires).toBeUndefined();
+    expect(nodes.find((n) => n.id === 'f')!.requires).toBeUndefined();
+    rec.close();
+  });
+
+  /**
+   * 旧库兼容: `requires` 骑在 `nodes` 那一列的 JSON 里, **不是新增表列** —— 所以没有 ALTER 通道,
+   * 也不需要一个。老行的 JSON 里压根没有这个键, 读回来就是 `undefined` = 「没记」。
+   *
+   * ⚠ 「老行没记」与「新行没声明」在这一位上**读起来一样**, 靠 `created_at` 分 (< 2026-08-30 的
+   *   行一律是前者) —— 与 `template` 那一位同一条纪律, 见 DagRunNode.requires 的注。
+   */
+  test('老库/老行 (nodes JSON 无该键) 读回来是缺席态, 不是假的 `all`', () => {
+    const db = new Database(':memory:');
+    db.run(`
+      CREATE TABLE omd_dag_runs (
+        id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, plan_name TEXT NOT NULL,
+        node_count INTEGER NOT NULL, question TEXT, levels TEXT NOT NULL,
+        nodes TEXT NOT NULL, usage TEXT NOT NULL
+      )
+    `);
+    // 逐字重现 2026-08-30 之前的节点投影: {id,kind,status,deps,command,template,detector,outputHash}
+    const oldNodes = JSON.stringify([
+      { id: 'a', kind: 'agent', status: 'done', deps: [] },
+      { id: 'sink', kind: 'agent', status: 'done', deps: ['a'] },
+    ]);
+    db.run(
+      `INSERT INTO omd_dag_runs VALUES ('old-q', 1, '老图', 2, null, '[["a"],["sink"]]', ?, '{"conductorIn":0,"conductorOut":0,"leavesIn":0,"leavesOut":0,"leavesCacheHit":0}')`,
+      [oldNodes],
+    );
+
+    const rec = createDagRecorder({ db });
+    const old = rec.get('old-q')!;
+    expect(old.nodes).toHaveLength(2);
+    for (const n of old.nodes) expect(n.requires).toBeUndefined(); // 「没记」, 不是 'all'
+    // 新行照常写, 老库不炸 —— 这一位不需要 ALTER (骑在 nodes JSON 里)。
+    const fresh = rec.record(
+      {
+        plan: { name: '新图', nodes: { s: { goal: 'x', depends_on: ['a'], requires: 'any' }, a: { goal: 'A' } } },
+        levels: [['a'], ['s']],
+        results: {
+          a: { id: 'a', kind: 'agent', status: 'done', deps: [], output: '', usage: { in: 0, out: 0 } },
+          s: { id: 's', kind: 'agent', status: 'done', deps: ['a'], output: '', usage: { in: 0, out: 0 } },
+        },
+        reusedNodes: [],
+        usage: { conductor: { in: 0, out: 0 }, leavesIn: 0, leavesOut: 0, leavesCacheHit: 0 },
+      } as unknown as ExecutorDagResult,
+      { runId: 'run-quorum-old-db' },
+    );
+    expect(rec.get(fresh)!.nodes.find((n) => n.id === 's')!.requires).toBe('any');
+    rec.close();
+  });
 });
 
 describe('recordDagRun (onComplete 钩子工厂)', () => {

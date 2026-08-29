@@ -19,7 +19,7 @@
 | `leafModel` | **是** | `string` | inproc leaf 模型 'provider:modelId' (生成/判断单发)。 | `src/mcp/tools/dag-tools.ts`<br>`src/harness/dag/engine.ts`<br>`src/eval/oracles/conductor-modelmix.ts` (20 文件) |
 | `agentLeafModel` |  | `string` | agent leaf 模型 (带工具改文件)。 | `src/harness/dag/engine.ts`<br>`src/mcp/tools/pathfinder.ts`<br>`src/harness/execute-slice.ts` (11 文件) |
 | `judgeModel` |  | `string` | 收敛 judge 的模型坐标。 | `src/harness/research/fanout.ts`<br>`src/harness/plan/best-of-n.ts`<br>`src/harness/research/web-fanout.ts` (9 文件) |
-| `conductorEscalationModel` |  | `string` | conductor 升级模型 'provider:modelId' (verifier fail 时用更强模型重规划重跑)。 | `src/harness/dag/engine.ts`<br>`src/harness/plan/iterate.ts`<br>`src/harness/execute-slice.ts` (8 文件) |
+| `conductorEscalationModel` |  | `string` | conductor 升级模型 'provider:modelId' (verifier fail 时用更强模型重规划重跑)。 | `src/harness/dag/engine.ts`<br>`src/harness/plan/iterate.ts`<br>`src/harness/execute-slice.ts` (9 文件) |
 
 ## DagThinkingSeam
 

@@ -792,6 +792,12 @@ export function conductorSystemPrompt(
     '            layer of indirection — if you can name the steps NOW, name them now instead. Not for',
     '            "the same thing N times" (that is "map"). Its children may NOT be map/conductor.',
     '            See the runtime-decomposition shape below for when NOT to use it.',
+    // #2 (2026-08-30): await 此前在默认三档里一个字都没有 (词表 0 + 散文 0) —— 整个产出面缺席。
+    // spec 与 executor:'await' **互为 required** (superRefine, :376), 所以词表明示了就必须同时
+    // 给出 spec 的形状, 否则模型写出的 await 节点整张 plan 判 INVALID。
+    '- "await" = park until ANOTHER run publishes that artifact to the run-board, then git-merge its',
+    '            commit (field "await": {"artifact", "fromRun"?, "timeoutMs"?} — REQUIRED with it). Use',
+    '            ONLY when a separate run owns the artifact; nothing in THIS graph can unpark it.',
     'Default to "leaf" unless the node needs tools/CLI/web. Only "map"/"conductor" spawn DAG sub-nodes.',
     'HARD RULE — file producers MUST be "agent": if a node CREATES or MODIFIES any file (its job is to',
     '  implement/write/生成 a path like src/x.ts), it MUST set executor:"agent" AND output_type:"file"',
@@ -972,7 +978,11 @@ export function conductorSystemPrompt(
     // executor/model; 而 conductor 每轮重掷这个字段, 反而系统性打空 D-21 跨轮语义复用
     // (semantic-key 为此把它排除在指纹外)。zod 层仍容忍旧 plan。
  '  "nodes": { "<node_id>": { "goal"?: string, "persona"?: string, "profile"?: string, "template"?: string, "mcp"?: string[] (server name or "server:tool" — an unregistered server makes the whole plan INVALID, like "template"),',
-    '    "args"?: object, "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map"|"conductor", "command"?: string, "expect_exit"?: number, "expect_output"?: string, "creative"?: boolean,',
+    // #1/#2 (2026-08-30 未接线盘点): executor 词表补 "research"|"await" —— 与 bare 档 (:570) 的
+    // zod 全量枚举对齐。此前默认三档 (full/lean/lean-kb) 的这一行漏了这两个值, 而散文段教了
+    // research 13 处、await 0 处 ⇒ 两个 100% 建成的执行器 (engine runResearch / runAwaitNode)
+    // 在 114 份存档 plan 里产出 0 次。只补词表, zod 值域 (:156) 本来就收这两个值, 未动。
+    '    "args"?: object, "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map"|"research"|"conductor"|"await", "command"?: string, "expect_exit"?: number, "expect_output"?: string, "creative"?: boolean,',
     // detector 进形状 (2026-07-30): 散文里提一嘴不算明示 —— 「明示即承诺」的闸判的就是这份
     // **conductor 照抄的形状**, 而不在形状里的字段它基本不会写。放在 max_nodes 旁边是因为两者
     // 同属"子图那一层"的东西 (顶层图上设 detector 引擎会 WARN 并忽略)。

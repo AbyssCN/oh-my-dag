@@ -76,6 +76,34 @@ export interface DagRunNode {
    */
   detector?: true;
   /**
+   * 这个节点在 plan 上**显式声明**的 quorum 配额 (`requires`, 2026-08-30)。
+   * 词表与判定在 `dag-scheduler.ts` 的 `quorumVerdict`: `'all'` / `'any'` / 整数 K。
+   *
+   * 记它是为了让「quorum 用没用」变成**这个账本量得出来的数**。此前节点投影只落
+   * `{id,kind,status,deps,command,template,detector,outputHash}` —— `requires` 一个字都不入账,
+   * 于是从这张表量出的是 `0/N`, 而那个 0 是**尺子的 0**, 不是计划的 0
+   * (同期 114 份存档 plan 里 77 份带 `requires`)。假读数已产生过一次, 见
+   * `docs/plan/2026-08-30-unwired-inventory.md` §2。
+   *
+   * ⚠ **缺席 ≠ `'all'`**: 调度器在 plan 没写时按 `'all'` 判 (`node.requires ?? 'all'`),
+   *   但那是**判定期的缺省**, 不是声明。把缺省写进历史记录 = 把「conductor 没想过 quorum」
+   *   伪装成「conductor 声明了全量」, 而这一位存在的全部理由正是数前者。
+   *   (与 `maxRounds` 那一位刻意相反: 那里存缺省 1 是因为要量**引擎真跑的轮数上限**;
+   *   这里要量的是**声明率**, 所以只存声明。两位问的不是同一个问题。)
+   *
+   * 三态: 缺席 = plan 没声明 / plan 里没有这个 id (map 动态扇出) / 早于 2026-08-30 的历史行
+   * (三者靠 `created_at` 与 `deps` 分, 同 `template` 那条纪律) · `'all'|'any'` = 显式配额 ·
+   * 整数 K = 显式达标数。词表外的值 (LLM 写了 `'most'` 之类) 按缺席读 —— 不编一个 kind,
+   * 同 `parseAcceptanceProbe`。
+   *
+   * ⚠ 关于 `0` 与负数: `PlanSchema` 今天**拒**它们 (`conductor-plan.ts:317` 的
+   *   `z.number().int().min(1)`), 所以经校验的 plan 里不该出现。但本层**照记不误**, 不做
+   *   `>= 1` 过滤 —— 留痕层存原料: 真出现了 K=0, 那是"某条路绕过了 plan 校验"的证据
+   *   (plan-patch / map 扇出 / checkpoint 重载), 把它抹成"没声明"就等于把这个异常藏了。
+   *   判死的活归 `static-lint.ts` 的 `impossible-quorum`, 不归账本。
+   */
+  requires?: 'all' | 'any' | number;
+  /**
    * 节点级 token 账五位列 (C-1, 2026-08-19)。与 run 级 `usage` 聚合 (conductorIn/Out +
    * leavesIn/Out/CacheHit) 分开: 那一位是**全图聚合**, 这一组是**每节点原值**。
    *
@@ -530,6 +558,22 @@ function parseSpecWrite(raw: string): SpecWrite | undefined {
   }
 }
 
+/**
+ * plan 节点上的 `requires` → 留痕值。只认调度器的三个合法形状 (`'all'` / `'any'` / 有限整数);
+ * 缺席 / 词表外 (`'most'` / 小数 / null / 对象) → `undefined` = **缺席**。
+ *
+ * ⚠ **绝不** `?? 'all'`: 调度器的 `node.requires ?? 'all'` 是判定期缺省, 这里是留痕期声明。
+ *   补上缺省 = 把"没声明"读成"声明了全量", 而这一位存在的全部理由是数前者 (见 DagRunNode.requires)。
+ * ⚠ `0` / 负数**不过滤**: PlanSchema 拒它们 (`conductor-plan.ts:317` `.int().min(1)`), 所以出现
+ *   即异常 —— 而留痕层的活是把异常**记下来**, 不是替写方遮掉。真值判断 (`req ? …`) 会把 0
+ *   抹成"没声明", 那正是把证据变成缺席的那一步。判死归 static-lint, 不归账本。
+ */
+function parseRequires(raw: unknown): 'all' | 'any' | number | undefined {
+  if (raw === 'all' || raw === 'any') return raw;
+  if (typeof raw === 'number' && Number.isInteger(raw)) return raw;
+  return undefined;
+}
+
 function rowToRecord(row: Row): DagRunRecord {
   // 探针列按**五条终局的确切形状**校验后读: 坏 JSON / 词表外 kind / 形状不对 / JSON null → undefined
   // (= 未记录) —— 一条写坏的记录不许让整张读数板崩, 也不许读出一个编造的分支。
@@ -738,7 +782,7 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
       // 而 plan 是这次跑的那张图的原文。plan 里没有对应 id (map 动态扇出的子节点) → undefined, 不编。
       const planNodes = result.plan.nodes as Record<
         string,
-        { command?: string; detector?: unknown; max_rounds?: unknown; template?: string } | undefined
+        { command?: string; detector?: unknown; max_rounds?: unknown; template?: string; requires?: unknown } | undefined
       >;
       // 这一跑复用了哪些节点 —— 引擎给的是 id 列表, 留痕层此前只存了它的**长度**。
       const reusedIds = new Set(result.reusedNodes ?? []);
@@ -748,6 +792,8 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
         // `maxRounds` 从 **plan** 取 (同 command 那条): result 里没有它, 而缺省 1 是引擎真跑的值。
         // plan 里没有这个 id (map 动态扇出) → 两位都缺席, 那才是真不知道。
         const planNode = planNodes[r.id];
+        // quorum 声明 (2026-08-30): 三个合法形状之外 (含 undefined) 一律 undefined = 缺席。
+        const req = parseRequires(planNode?.requires);
         const loopShape =
           r.kind === 'conductor'
             ? {
@@ -769,6 +815,11 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
           // R0: 派卡从 plan 取; 缺席 = 没派 (map 动态子节点无 plan 行 → 缺席 = 真不知道, 同 loopShape)。
           ...(typeof planNode?.template === 'string' && planNode.template.trim() ? { template: planNode.template } : {}),
           ...(planNodes[r.id]?.detector === true ? { detector: true as const } : {}),
+          // quorum 声明 (2026-08-30): 从 **plan** 取 (同 command/template/max_rounds 那条 —— result
+          // 只记执行面)。**只落显式声明**: `planNode.requires` 缺席 → 这一位缺席, **绝不**补一个
+          // `?? 'all'` —— 那是调度器判定期的缺省, 把它写进历史记录就把"没声明"变成"声明了全量",
+          // 而这一位量的正是声明率。词表外的值按缺席读 (不编 kind)。
+          ...(req !== undefined ? { requires: req } : {}),
           ...(outHash ? { outputHash: outHash } : {}),
           ...(typeof r.exitCode === 'number' ? { exitCode: r.exitCode } : {}),
           ...(r.failureKind ? { failureKind: r.failureKind } : {}),

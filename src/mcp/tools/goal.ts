@@ -57,6 +57,10 @@ export interface GoalToolDeps {
       onContract?: (specWrite: SpecWrite) => void;
       /** D-2 散雾出口的注入面 (切片 6 接线; 无 map 的仓不传 = 闸缺席, 行为逐字节照旧)。 */
       tickets?: RunGoalConfig['tickets'];
+      /** D-2 写集对账的注入面 (盘点表 #3 接线; 无 SDD 写集不传 = 闸缺席)。见 `sddWriteSetFace`。 */
+      writeSet?: RunGoalConfig['writeSet'];
+      /** P4 设计审核的注入面 (盘点表 #4 接线; 恒注入, 由前端 glob 自闸)。 */
+      designReview?: RunGoalConfig['designReview'];
     },
   ) => Promise<RunGoalResult>;
   runRegistry: RunRegistry;
@@ -307,6 +311,45 @@ function openRunTicket(
     return t.id;
   } catch (e) {
     logger.warn({ slug: target.slug, runId, err: (e as Error).message }, '[dag_goal] D-6③ 开票失败 → 这趟对图不可见 (run 照跑)');
+    return undefined;
+  }
+}
+
+/**
+ * **D-2 写集对账的生产注入面** (盘点表 `docs/plan/2026-08-30-unwired-inventory.md` 主表 #3)。
+ *
+ * 闸体与纯核早就建成 (`run-goal.ts:1946-1983` + `harness/writeset/write-set.ts`), 缺的只是这一跳:
+ * 唯一生产 `runGoal` 调用点从不给 `writeSet` → `if (config.writeSet)` 恒假 → 归属阶梯 +
+ * `writeScope` + `sliceCoverage` **三个读数一起缺席**, 而项目 CLAUDE.md §③ 把写集对账列为
+ * 第 1 层机械 oracle。
+ *
+ * 声明面的来源 = **SDD 分解表写集并集**, 与开票那条 (`ticketFieldsFromSdd`) 同一个函数同一份合同 ——
+ * 两处若各解析各的, 板上写集与对账写集能不一致而没人看得出来。
+ *
+ * ## 两条不许错的边
+ *
+ * ① **没 SDD 就不注入** (返 undefined ⇒ 调用点整个字段不传)。`goal` 无 SDD 时没有任何声明面,
+ *    硬造一个等于凭空发明判据。闸缺席是合法态 (`write-set.ts` 的 `verdict:'undeclared'` 讲的
+ *    正是「声明缺席 ≠ 违规」), 且与接线前逐字节相同。
+ *
+ * ② **永远显式给 `declared`, 一次都不落到缺省常量上**。`run-goal.ts:1958` 对 `declared` 缺席的
+ *    兜底是 `SDD_DECLARED_WRITE_SET` —— 那是 2026-08-10 那一趟 SDD run **自己**的写面
+ *    (allowed `src/harness/**`, forbidden `src/model/**`)。拿它当任意一趟 solve 的声明面, 会让
+ *    每个动 `src/model/**` 的活凭空判「撞禁写面」红, 而理由指向一个跟本次运行毫无关系的常量。
+ *
+ * `forbidden` 留空: 分解表只有「写集」一列 (该写哪儿), 没有「禁写哪儿」—— 没有的东西不硬造。
+ * 面外文件由 `classifyWriteScope` 判 `outside` (INV-3 读数, 不红), 这正是它存在的那一格。
+ */
+function sddWriteSetFace(sddPath: string | undefined, runId: string): RunGoalConfig['writeSet'] | undefined {
+  if (!sddPath) return undefined; // ① 无 SDD = 无声明面 = 闸缺席
+  try {
+    return { declared: { allowed: ticketFieldsFromSdd(sddPath).writeSet, forbidden: [] } };
+  } catch (e) {
+    // fail-open 可以吞异常, 不许吞证据 (仓规静默坑 2): 记 runId + sddPath + 错误原文。
+    logger.warn(
+      { runId, sddPath, err: (e as Error).message },
+      '[dag_goal] #3 写集对账: SDD 分解表读不出写集 → 声明面缺席 (fail-open, run 照跑)',
+    );
     return undefined;
   }
 }
@@ -1111,6 +1154,9 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           : {}),
       } as ExecutorDagConfig;
 
+      // 盘点表 #3: 这趟的 run 级声明写集面 (无 SDD → undefined ⇒ 下面整个字段不传, 闸缺席)。
+      const writeSetFace = sddWriteSetFace(sddPath, runId);
+
       // fire-and-forget: 自主环是长活 (research + spec + 多轮执行), 三段式取结果。
       deps
         .runGoal(goal, {
@@ -1133,6 +1179,28 @@ export function createGoalTool(deps: GoalToolDeps): OmdMcpTool {
           ...(researchRounds ? { researchRounds } : {}),
           ...(tier ? { tier } : {}),
           ...(sddPath ? { sddPath } : {}),
+          // ── 盘点表 #3: D-2 写集对账的生产注入面 ─────────────────────────────────
+          // 判据全在 `sddWriteSetFace` 的注里 (为什么只在有 SDD 时注、为什么必须显式给 declared)。
+          // 注入这一个字段同时点亮三个读数: 归属阶梯 (谁写的) · writeScope (该不该写) ·
+          // sliceCoverage (声明了没改)。diff 面不注入 `_collectChangedFiles` ⇒ 走 run-goal 缺省
+          // `git status --porcelain`, 且它取的是 `config.cwd` = 隔离档下那棵 worktree (对的那棵)。
+          ...(writeSetFace ? { writeSet: writeSetFace } : {}),
+          // ── 盘点表 #4: P4 设计审核的生产注入面 (advisory, 不上关键路径) ──────────
+          // **恒注入**, 因为这道闸自己会关: `maybeRunDesignReview` 先拿改动文件与前端 glob 求交,
+          // 不相交 → `scheduled:false` 当场返回, 零模型调用 (INV-6/G-4)。写型 run 该不该审,
+          // 判据是"这趟碰没碰前端", 不是"点火时有没有人记得开开关"。
+          //
+          // 空对象是**有意的保守缺省**, 逐字段说明:
+          //  · `screenshotCommand` 不给 —— 本仓/任意目标仓都没有截图命令的约定面 (全仓仅
+          //    run-goal/design-review 两处提到它, 零配置来源)。不给 ⇒ 生产 runner
+          //    (`productionDesignReviewRunner`) 返 undefined ⇒ 走 D-10 diff-only 文本审。
+          //    ⚠ 反过来更糟: 给了截图命令却没有 runner, design-review.ts:176 会**响亮抛**
+          //    (它拒绝拿 diff-only 冒充"看过截图")。宁可审得浅, 不许审得假。
+          //  · `escalationSeat` 不给 ⇒ 回落 `dag.conductorEscalationModel` (类型定义写明的缺省)。
+          //  · `repairAttempted` 不给 ⇒ 首轮语义。这个调用点没有"修复后再审"那一跳 (D-7 的
+          //    熔断/转票要外层驱动), 传 `false` 会假装我们判过"这是第几轮"。
+          //  · `profile` 不给 ⇒ 'design-review' (profiles/builtin/design-review.json)。
+          designReview: {},
           // ① D-2 散雾出口 (切片 1 的纯核 + 注入面, 到这里才有生产调用方): 这趟的未决/发现物/终态
           // → 图上的 suggested 票。**sink 把 cwd 钉死在主仓** —— run-goal 用 `config.cwd` 调 suggest,
           // 而隔离档 (branchStrategy=branch) 下那是 worktree; 不钉的话票会落进一棵随时会被删的树里

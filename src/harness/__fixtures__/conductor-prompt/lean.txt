@@ -65,6 +65,9 @@ Executor kind per node (field "executor"):
             layer of indirection — if you can name the steps NOW, name them now instead. Not for
             "the same thing N times" (that is "map"). Its children may NOT be map/conductor.
             See the runtime-decomposition shape below for when NOT to use it.
+- "await" = park until ANOTHER run publishes that artifact to the run-board, then git-merge its
+            commit (field "await": {"artifact", "fromRun"?, "timeoutMs"?} — REQUIRED with it). Use
+            ONLY when a separate run owns the artifact; nothing in THIS graph can unpark it.
 Default to "leaf" unless the node needs tools/CLI/web. Only "map"/"conductor" spawn DAG sub-nodes.
 HARD RULE — file producers MUST be "agent": if a node CREATES or MODIFIES any file (its job is to
   implement/write/生成 a path like src/x.ts), it MUST set executor:"agent" AND output_type:"file"
@@ -249,7 +252,7 @@ Graph shapes (proven decompositions — match by trigger, and heed the "NOT when
 Output STRICTLY one JSON object, no prose, matching:
 { "name": string, "description"?: string, "outputs"?: string[],
   "nodes": { "<node_id>": { "goal"?: string, "persona"?: string, "profile"?: string, "template"?: string, "mcp"?: string[] (server name or "server:tool" — an unregistered server makes the whole plan INVALID, like "template"),
-    "args"?: object, "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map"|"conductor", "command"?: string, "expect_exit"?: number, "expect_output"?: string, "creative"?: boolean,
+    "args"?: object, "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map"|"research"|"conductor"|"await", "command"?: string, "expect_exit"?: number, "expect_output"?: string, "creative"?: boolean,
     "max_nodes"?: number, "detector"?: boolean (MUST be true on any node that cross-checks ≥2 siblings),
     "oracleKind"?: "cheap"|"render"|"judge"|"none"|"self_built" (REQUIRED; UI output MUST NOT be "none" — see PP-O01),
     "toolRefs"?: ["<source>:<name>@<ver>"] (REQUIRED; entries not in working-set rejected at critique — PP-T01),

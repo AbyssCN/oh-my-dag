@@ -157,7 +157,7 @@ export const REGISTRY: Record<string, FieldEntry> = {
     consumer: 'executor-dag.runNodeOnce (runAwaitNode: 等 run-board 匹配条目 → git 合入其 commit)',
     fingerprint: 'fields',
     declared: false,
-    note: 'D-8: 等待目标不同 (artifact/fromRun/timeoutMs) = 匹配面与成本不同 = 不同的执行 → 入键。不明示: 同 research, executor 词表由 schema 兜, 旋钮由接线层/手写 plan 给 (等什么、等多久是调用方的成本决策)。',
+    note: 'D-8: 等待目标不同 (artifact/fromRun/timeoutMs) = 匹配面与成本不同 = 不同的执行 → 入键。declared:false 只指**形状段没有它** —— 2026-08-30 前这句写的是「同 research, executor 词表由 schema 兜」, 而那对 full/lean/lean-kb 三个默认档是**错的**: 那三档的 executor 枚举里连 "await" 都没有 (只有 bare 档全量), 散文里也 0 字 ⇒ 产出面整个缺席 (0/114 存档 plan)。现四档词表已补齐; 且与 research **不同** —— await spec 与 executor:"await" 互为 required (superRefine), 词表明示了就不能把旋钮留给接线层, 故 spec 的形状由散文 executor 教学段逐字给出 (仍不进形状段)。',
   },
   self_check: {
     consumer: 'executor-dag.runNodeOnce (P1 D-3/C-2 INV-2-3: 内环将停时跑命令, 退出码不合则造 follow-up 让同一节点再转一轮) + plan/vetSelfCheck (规划期判据自证: 跑 probeDiscrimination/probeVacuity, 恒真 = 悄悄丢弃, 退回旁路)',
