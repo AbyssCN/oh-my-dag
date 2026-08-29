@@ -76,6 +76,7 @@ import {
   type ThinkingLevel,
 } from '../model/role-models';
 import { createAgentLeafRunner } from '../harness/agent-leaf';
+import { createLeafTranscriptSink } from '../harness/leaf-transcript';
 import type { SpinRung2StampPools } from '../harness/dag/spin-rung2';
 import { loadRepoChecksManifest } from '../harness/repo-checks-manifest';
 import type { AnyOmdTool } from '../harness/agent-tools';
@@ -464,6 +465,12 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   // agent 座位 advisor: 装配期解一次 (runner 生命周期同 MCP 进程; 热改 config 后重启生效 —— 与
   // leafTimeoutMs 同精神)。未配 = 无 (不自动选)。
   const agentAdvisor = resolveSeatAdvisor('agent', { env });
+  // 叶子留痕开关 (见下方接线处的注释)。`1`/`true`/`on` → 默认路径; 其它非空值当路径用。
+  const leafTranscriptPath = ((): string | null => {
+    const v = env.OMD_LEAF_TRANSCRIPT?.trim();
+    if (!v) return null;
+    return /^(1|true|on)$/i.test(v) ? join(cwd, '.omd', 'leaf-transcript.jsonl') : v;
+  })();
   const agentRunner =
     deps.agentRunner ??
     createAgentLeafRunner({
@@ -481,6 +488,11 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
       // 仓库侧提供实际清单 (jargon-scan / catch-evidence-net-add 等) 的方式 = config.repoChecks
       // (DagRunnersSeam.repoChecks), 见 buildDefaultConfig 的解析点。
       repoChecks,
+      // 叶子逐事件留痕 (2026-08-29, 默认关): `OMD_LEAF_TRANSCRIPT` 给路径就用它, 给 `1`/`true`
+      // 落 `<cwd>/.omd/leaf-transcript.jsonl`。不设 = **不传这个键**, 热路径逐字节同改前。
+      // 为什么需要: leaf 空转是本仓目前最强的一条负相关 (reward 0.453 → 0.238), 而判它是
+      // 病因还是伴随现象要看叶子当时在调什么 —— 那份 transcript 此前一个字节都没留。
+      ...(leafTranscriptPath ? { onEvent: createLeafTranscriptSink({ path: leafTranscriptPath }) } : {}),
     });
   const commandRunner =
     deps.commandRunner ??
