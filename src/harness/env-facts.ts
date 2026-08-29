@@ -33,6 +33,7 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { LANGUAGE_PACKS } from './command-leaf';
+import { logger } from './logger';
 
 export type LanguageId = 'python' | 'js' | 'go' | 'rust';
 
@@ -62,8 +63,12 @@ export interface EnvFacts {
   enabledBins: string[];
   /** 按证据推的验收命令候选, 强证据在前。空 = 探不出, 消费者别硬凑。 */
   testCommandCandidates: string[];
-  /** 扫描统计 —— 截断了要照实说, 否则"没扫到"会被读成"没有"。 */
-  scanned: { files: number; dirs: number; truncated: boolean };
+  /**
+   * 扫描统计 —— 截断/读不动了要照实说, 否则"没扫到"会被读成"没有"。
+   * `unreadable` = 打不开的目录 (权限/竞态), 每条带原文: 少扫一个目录会让语言证据偏低,
+   * 而"偏低"和"这仓真没有"在读数上长得一样。
+   */
+  scanned: { files: number; dirs: number; truncated: boolean; unreadable: string[] };
 }
 
 interface LangSpec {
@@ -153,19 +158,26 @@ function onPath(bin: string, env: Record<string, string | undefined>): boolean {
 }
 
 /** 有界扫描: 返回 ext → 计数 与 测试文件计数。深度/文件数任一到顶即停并标 truncated。 */
-function scanTree(root: string): { byExt: Map<string, number>; testsByExt: Map<string, number>; files: number; dirs: number; truncated: boolean } {
+function scanTree(root: string): { byExt: Map<string, number>; testsByExt: Map<string, number>; files: number; dirs: number; truncated: boolean; unreadable: string[] } {
   const byExt = new Map<string, number>();
   const testsByExt = new Map<string, number>();
   let files = 0;
   let dirs = 0;
   let truncated = false;
+  const unreadable: string[] = [];
   const walk = (dir: string, rel: string, depth: number): void => {
     if (truncated || depth > MAX_DEPTH) return;
     let entries: import('node:fs').Dirent[];
     try {
       entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return; // 读不了的目录跳过 (权限/竞态) —— 不是证据, 也不该炸
+    } catch (err) {
+      // fail-open 可以吞异常, **不许吞证据** (仓规坑 ②): 读不了的目录跳过, 但留下是哪一个、
+      // 为什么 —— 少扫一个目录会让语言证据偏低, 而"偏低"和"这仓真没有"在读数上长得一样。
+      // 两处都留: 结构化那份进 `scanned.unreadable` (omd_env 会印出来给用户看),
+      // 日志那份让排障的人不必先去读返回值。
+      unreadable.push(`${dir}: ${(err as Error).message}`);
+      logger.debug({ dir, err: (err as Error).message }, '[env-facts] 目录读不了 → 跳过 (证据已记进 scanned.unreadable)');
+      return;
     }
     dirs += 1;
     for (const e of entries) {
@@ -195,7 +207,7 @@ function scanTree(root: string): { byExt: Map<string, number>; testsByExt: Map<s
     }
   };
   walk(root, '', 0);
-  return { byExt, testsByExt, files, dirs, truncated };
+  return { byExt, testsByExt, files, dirs, truncated, unreadable };
 }
 
 /**
@@ -235,7 +247,7 @@ export function probeEnvFacts(root: string, env: Record<string, string | undefin
     languages,
     enabledBins,
     testCommandCandidates: [...new Set(testCommandCandidates)],
-    scanned: { files: scan.files, dirs: scan.dirs, truncated: scan.truncated },
+    scanned: { files: scan.files, dirs: scan.dirs, truncated: scan.truncated, unreadable: scan.unreadable },
   };
 }
 

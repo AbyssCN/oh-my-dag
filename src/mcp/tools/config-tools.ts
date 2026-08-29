@@ -8,6 +8,7 @@
  *   omd_apply_preset  —— 套角色矩阵预设 (cn-trio 等) → .env + config.json
  *   omd_set_role      —— 单角色 (conductor/leaf/verifier/dream) → config.json
  *   omd_config_status —— 当前角色→模型 + 每 provider 凭证状态 + 无凭证告警
+ *   omd_env           —— 引擎眼里这个仓长什么样 (语言证据 / PATH 上的 runner / 验收命令候选)
  *   omd_toggle_hud    —— 装/卸 DAG/pathfinder 实时底栏 HUD
  *
  * Pure-fn factory: createConfigTools({cwd}) → OmdMcpTool[]。密钥只落 auth.json/.env, 永不碰 .mcp.json。
@@ -35,6 +36,8 @@ import {
   upsertProvider,
   type ModelPatch,
 } from '../../model/models-json';
+import { probeEnvFacts, renderEnvFacts } from '../../harness/env-facts';
+import { logger } from '../../harness/logger';
 
 export interface ConfigToolDeps {
   /** repo 根 (写 .env / config.json / .claude 的基准)。 */
@@ -62,8 +65,61 @@ export function createConfigTools(deps: ConfigToolDeps): OmdMcpTool[] {
     makeRegisterProvider(),
     makeSetModel(),
     makeConfigStatus(deps.router),
+    makeEnvProbe(cwd),
     makeToggleHud(cwd),
   ];
+}
+
+/**
+ * `omd_env` —— **引擎眼里的这个仓长什么样**(2026-08-29)。
+ *
+ * 为什么值一个工具位:环境判断此前是引擎肚子里的一步,判错了外面**看不见** ——
+ * 实测 80 个真实 python 仓里有 29 个被判成"没有测试基建",于是引擎对模型说
+ * 「拿不准选探索型」,最后交一份方案文档而不是代码,而没有任何一处会告诉用户这件事发生了。
+ *
+ * 把它摆到 MCP 面上,用户在点火**之前**就能看见引擎对自己仓的判断,判错了当场就能发现。
+ * 只读、零 LLM、零网络。
+ */
+function makeEnvProbe(defaultCwd: string): OmdMcpTool {
+  return {
+    name: 'omd_env',
+    description:
+      // D-11: 本行 ≤120 字符 (细节留给 inputSchema 的 describe 与工具输出本身)。
+      'What the engine detects about a repo: languages, test runners on PATH, acceptance-command candidates.',
+    inputSchema: {
+      cwd: z.string().optional().describe('Repo root to probe (default: the MCP server cwd)'),
+    },
+    handler: async ({ cwd: given }) => {
+      const root = typeof given === 'string' && given.trim() ? given.trim() : defaultCwd;
+      try {
+        const facts = probeEnvFacts(root);
+        const lines = [renderEnvFacts(facts), ''];
+        // 未启用的语言也逐条印 —— "有证据但 runner 没装" 是用户最该看见的一格,
+        // 它意味着"引擎不会给你机器判据", 而那件事在读数上长得像"引擎不行"。
+        const blocked = facts.languages.filter((l) => !l.enabled);
+        if (blocked.length > 0) {
+          lines.push('⚠ 有证据但没启用的语言 (判据写了也跑不起来):');
+          for (const l of blocked) lines.push(`  · ${l.language}: ${l.why}`);
+          lines.push('  → 装上对应 runner, 或接受这个仓只能走 rubric/探索型验收。');
+        }
+        lines.push('', `白名单增量 (base 之外): ${facts.enabledBins.join(' ') || '(无)'}`);
+        if (facts.scanned.truncated) {
+          lines.push('⚠ 扫描被上限截断 —— 上面的文件计数是下界, 不是全量。');
+        }
+        if (facts.scanned.unreadable.length > 0) {
+          // 读不了的目录会让语言证据偏低, 而"偏低"和"这仓真没有"在读数上长得一样 —— 必须印出来。
+          lines.push(`⚠ ${facts.scanned.unreadable.length} 个目录读不了 (计数偏低): ${facts.scanned.unreadable.slice(0, 3).join(' · ')}`);
+        }
+        return ok(lines.join('\n'));
+      } catch (e) {
+        // 本文件其余 handler 的惯例是"只 return err" —— 那份错误确实到得了用户手上, 但
+        // `catch 证据扫描` 的绊线认不出 `err(`, 于是整族都被计成沉默 catch。新加的这个不跟着欠账:
+        // 服务端也留一行 (排障的人未必看得到 MCP 那一侧的返回)。
+        logger.warn({ root, err: e instanceof Error ? e.message : String(e) }, '[omd_env] 仓环境探测失败');
+        return err(`omd_env 失败 (${root}): ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

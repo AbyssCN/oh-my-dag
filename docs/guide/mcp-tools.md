@@ -62,6 +62,7 @@ discipline (when to escalate, how to accept, who holds the trigger).
 | Tool | What it does |
 |---|---|
 | `omd_config_status` · `omd_plans` | show the model roster / role assignments / which keys are set · list saved plans |
+| `omd_env` | what the engine detects about a repo — languages by real file distribution (not just packaging files), which test runners are actually on PATH, and the acceptance-command candidates that follow. Read-only, no LLM. Call it before a run when the engine's verdict on your repo looks wrong |
 | `omd_register_provider` | register an OpenAI-compatible provider (baseUrl + key-env + models) into the shared model registry |
 | `omd_set_key` · `omd_set_model` · `omd_set_role` | set a provider key · a model's attributes · a role→model assignment |
 | `omd_apply_preset` · `omd_toggle_hud` | apply a wizard preset (base-opencode-go / cn-standard / cn-ultimate) · toggle the statusline HUD |

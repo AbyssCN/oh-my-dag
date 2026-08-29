@@ -70,13 +70,13 @@ const COVERED_MCP_NAMES: ReadonlySet<string> = new Set([
   // 既有 12 (createConductorChatTools 手写 textTool)。
   'run', 'solve', 'dag_run_plan', 'dag_status', 'dag_runs', 'dag_node_output',
   'dag_cancel', 'map_tickets', 'omd_plans', 'memory_recall', 'history_read', 'history_search',
-  // 扩展 30 (下方 EXTRA_CONDUCTOR_TOOLS 经 wrapMcpTool 装配)。
+  // 扩展 31 (下方 EXTRA_CONDUCTOR_TOOLS 经 wrapMcpTool 装配)。
   'dag_research', 'dag_review', 'dag_slim', 'dag_deepen', 'dag_debug',
   'dag_triage', 'dag_rule', 'dag_intervene', 'dag_resume', 'dag_result',
   'map_init', 'map_open', 'map_add', 'map_rule', 'map_deliver', 'map_prefetch', 'map_confirm',
   'memory_remember', 'memory_fact', 'omd_web', 'omd_distill',
   'omd_set_key', 'omd_apply_preset', 'omd_set_role', 'omd_models_auto', 'omd_register_provider',
-  'omd_set_model', 'omd_config_status', 'omd_toggle_hud', 'omd_primitive', 'omd_shapes',
+  'omd_set_model', 'omd_config_status', 'omd_env', 'omd_toggle_hud', 'omd_primitive', 'omd_shapes',
 ]);
 
 function assertSurfaceComplete(tools: readonly OmdMcpTool[]): void {
@@ -182,6 +182,8 @@ const EXTRA_CONDUCTOR_TOOLS: ReadonlyArray<{
   { chatName: 'omd_register_provider', mcpName: 'omd_register_provider', confirmRequired: true, promptSnippet: 'omd_register_provider(id, baseUrl, keyEnv, api?, models?) — 登记 provider (凭证写, 每次确认)' },
   { chatName: 'omd_set_model', mcpName: 'omd_set_model', promptSnippet: 'omd_set_model(coord, maxTokens?, contextWindow?) — 更新模型参数' },
   { chatName: 'omd_config_status', mcpName: 'omd_config_status', promptSnippet: 'omd_config_status() — 查引擎角色→模型绑定 + 凭证状态 + 全座位自检 (只读)' },
+  // 分解之前该先知道脚下是什么仓: 哪门语言、哪个 runner 真装了、验收命令能写成什么形状。
+  { chatName: 'omd_env', mcpName: 'omd_env', promptSnippet: 'omd_env(cwd?) — 引擎眼里这个仓长什么样: 语言证据 / PATH 上的 runner / 验收命令候选 (只读, 零 LLM)' },
   { chatName: 'omd_toggle_hud', mcpName: 'omd_toggle_hud', promptSnippet: 'omd_toggle_hud(on) — 装/卸 HUD 状态行' },
   { chatName: 'omd_primitive', mcpName: 'omd_primitive', promptSnippet: 'omd_primitive(primitive, params, model?) — 直接跑一个控制流原语' },
   { chatName: 'omd_shapes', mcpName: 'omd_shapes', promptSnippet: 'omd_shapes(id?) — 取图式 (触发条件/什么时候别用/步骤)' },
