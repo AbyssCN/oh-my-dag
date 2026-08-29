@@ -55,7 +55,12 @@ function truncateDeep(v: unknown, depth = 0): unknown {
  *
  * 反向自检: 把 `maxEvents` 设成 1 → 第二条事件之后只多出一行 `__truncated__`, 不再增长。
  */
-export function createLeafTranscriptSink(opts: LeafTranscriptSinkOpts): (event: { type: string; [k: string]: unknown }) => void {
+export type LeafTranscriptSink = ((event: { type: string; [k: string]: unknown }) => void) & {
+  /** 把攒着的立刻落盘。测试与"跑完收尾"用; 平时不必调 (满 64 条 / 64KB / 进程退出自动落)。 */
+  flush: () => void;
+};
+
+export function createLeafTranscriptSink(opts: LeafTranscriptSinkOpts): LeafTranscriptSink {
   const maxEvents = opts.maxEvents ?? 20_000;
   const maxBytes = opts.maxBytes ?? 32 * 1024 * 1024;
   let events = 0;
@@ -64,22 +69,53 @@ export function createLeafTranscriptSink(opts: LeafTranscriptSinkOpts): (event: 
   let warned = false;
   let dirReady = false;
 
-  return (event) => {
+  // ⚠ **攒批再写** (2026-08-29 当晚修): 首版每个事件一次 `appendFileSync` —— 一次工具调用几十个
+  // 事件, 一个叶子几百次同步写。批 2 (开了留痕) 与批 1 (同配置、没开) 逐题配对, 内环墙钟
+  // **+21%** (总 1186→1430 min, p90 24.9→29.8), not-converged 2→6。
+  // 因果没坐实 (同期我自己在同一台机器上跑全量测试/docker 构建, 主机争用是另一条候选),
+  // 但"每事件一次同步写"本身就是缺陷, 不该等因果坐实再修。
+  // 攒到 64 条或 64KB 再落盘; 进程退出前 flush (见下面的 exit 钩)。
+  const buf: string[] = [];
+  let bufBytes = 0;
+  const flush = (): void => {
+    if (buf.length === 0) return;
+    const chunk = buf.join('');
+    buf.length = 0;
+    bufBytes = 0;
+    appendFileSync(opts.path, chunk);
+  };
+  // 进程被杀时把攒着的写出去 —— 不然"叶子最后干了什么"恰好是最想看的那一段, 却总是丢的那一段。
+  let hooked = false;
+  const hookExit = (): void => {
+    if (hooked) return;
+    hooked = true;
+    for (const sig of ['exit', 'SIGINT', 'SIGTERM'] as const) {
+      process.once(sig, () => {
+        try { flush(); } catch { /* 退出路径上没有第二次机会, 也没人读得到日志 */ }
+      });
+    }
+  };
+
+  const sink = ((event: { type: string; [k: string]: unknown }) => {
     if (stopped) return;
     try {
       if (!dirReady) {
         mkdirSync(dirname(opts.path), { recursive: true });
         dirReady = true;
+        hookExit();
       }
       if (events >= maxEvents || bytes >= maxBytes) {
         stopped = true;
-        appendFileSync(opts.path, `${JSON.stringify({ ts: Date.now(), type: '__truncated__', events, bytes, maxEvents, maxBytes })}\n`);
+        buf.push(`${JSON.stringify({ ts: Date.now(), type: '__truncated__', events, bytes, maxEvents, maxBytes })}\n`);
+        flush();
         return;
       }
       const line = `${JSON.stringify({ ts: Date.now(), ...(truncateDeep(event) as Record<string, unknown>) })}\n`;
-      appendFileSync(opts.path, line);
+      buf.push(line);
+      bufBytes += line.length;
       events += 1;
       bytes += line.length;
+      if (buf.length >= 64 || bufBytes >= 64 * 1024) flush();
     } catch (err) {
       // fail-open 可以吞异常, 不许吞证据 (仓规坑 ②): 记一次原文, 之后转静默免刷屏。
       if (!warned) {
@@ -88,5 +124,9 @@ export function createLeafTranscriptSink(opts: LeafTranscriptSinkOpts): (event: 
       }
       stopped = true;
     }
+  }) as LeafTranscriptSink;
+  sink.flush = () => {
+    try { flush(); } catch { /* 与写路径同款 fail-open; 原文已在首次失败时记过 */ }
   };
+  return sink;
 }

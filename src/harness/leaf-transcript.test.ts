@@ -25,6 +25,7 @@ describe('createLeafTranscriptSink', () => {
       const sink = createLeafTranscriptSink({ path: p });
       sink({ type: 'tool_execution_start', toolName: 'bash', input: { command: 'ls -la' } });
       sink({ type: 'tool_execution_end', toolName: 'bash', ok: true });
+      sink.flush();
       const lines = readFileSync(p, 'utf8').trim().split('\n');
       expect(lines).toHaveLength(2);
       const a = JSON.parse(lines[0]!) as { type: string; input: { command: string }; ts: number };
@@ -42,6 +43,7 @@ describe('createLeafTranscriptSink', () => {
       const p = join(dir, 'x.jsonl');
       const sink = createLeafTranscriptSink({ path: p, maxEvents: 2 });
       for (let i = 0; i < 10; i++) sink({ type: 'e', i });
+      sink.flush();
       const lines = readFileSync(p, 'utf8').trim().split('\n');
       expect(lines).toHaveLength(3); // 2 条正文 + 1 条截断标记
       const last = JSON.parse(lines[2]!) as { type: string; events: number; maxEvents: number };
@@ -58,6 +60,7 @@ describe('createLeafTranscriptSink', () => {
       const p = join(dir, 'x.jsonl');
       const sink = createLeafTranscriptSink({ path: p });
       sink({ type: 'tool_execution_end', output: 'x'.repeat(10_000) });
+      sink.flush();
       const rec = JSON.parse(readFileSync(p, 'utf8').trim()) as { output: string };
       expect(rec.output.length).toBeLessThan(10_000);
       expect(rec.output).toContain('[+6000]');
@@ -73,6 +76,35 @@ describe('createLeafTranscriptSink', () => {
       const sink = createLeafTranscriptSink({ path: dir }); // 直接写一个目录
       expect(() => sink({ type: 'e' })).not.toThrow();
       expect(existsSync(dir)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('攒批写 (2026-08-29 当晚: 每事件一次同步写是缺陷)', () => {
+  test('★ 不满一批时不落盘, flush 后才落 (证明确实攒着, 没有每条一次同步写)', () => {
+    const dir = fresh();
+    try {
+      const p = join(dir, 'x.jsonl');
+      const sink = createLeafTranscriptSink({ path: p });
+      sink({ type: 'e', i: 1 });
+      sink({ type: 'e', i: 2 });
+      expect(existsSync(p)).toBe(false); // 还在缓冲里
+      sink.flush();
+      expect(readFileSync(p, 'utf8').trim().split('\n')).toHaveLength(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('满 64 条自动落盘 (不靠调用方记得 flush)', () => {
+    const dir = fresh();
+    try {
+      const p = join(dir, 'x.jsonl');
+      const sink = createLeafTranscriptSink({ path: p });
+      for (let i = 0; i < 64; i++) sink({ type: 'e', i });
+      expect(readFileSync(p, 'utf8').trim().split('\n')).toHaveLength(64);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
