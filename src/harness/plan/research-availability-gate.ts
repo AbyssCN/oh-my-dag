@@ -3,7 +3,9 @@
  *
  * 现场: bench 容器无 search key → researchRunner 缺席, 契约段照样画 research 节点 →
  * 执行期必败 (engine: missing-capability) 占位耗轮。workbuddy code80-m3 单批实测
- * 「research 不可用」信号 124 次。
+ * 真失败 (`缺 researchRunner → failed`) 22 次 (2026-08-29 更正: 首版此处写 124,
+ * 那是把装配期告知行「无 search provider」一并数进去了 —— 那行每 trial 恒 2 条, 量的是
+ * 环境不是缺陷)。修后同规模批: 0 次。
  *
  * 三层修法 (本模块是纯函数半, 接线在 executor-dag):
  *   ① 教学 — conductorSystemPrompt({researchAvailable:false}) 注入不可用告知 (便宜, 但只是散文);
