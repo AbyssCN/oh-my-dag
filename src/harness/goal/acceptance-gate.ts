@@ -22,7 +22,7 @@
  */
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
   DEFAULT_COMMAND_ALLOWLIST,
   allowlistForRoot,
@@ -105,6 +105,116 @@ export interface AcceptanceCommandBlockOpts {
    * 缺省 = 不给 → 逐字退回 marker 表那条路 (既有调用零改动即绿)。
    */
   envFacts?: import('../env-facts').EnvFacts;
+  /**
+   * **计划声明的产物集** (2026-08-29, INV-6 第四道)。判据命令里指向"还不存在的路径"的 token,
+   * 只要它在这个集合里 (将由某个节点产出) 就放行。
+   *
+   * ⚠ **缺席 ≠ 空集** (本仓坑①: NULL ≠ 0 ≠ 不适用): 不给 = 拿不到"谁会产出什么"这份事实,
+   * 于是「不在产物集里」这个条件**判不了** → 整道门不跑 (既有调用零改动即绿)。
+   * 给 `[]` = 显式声明"这次没有任何节点产出新文件", 那时不存在的路径就是恒红判据。
+   */
+  declaredArtifacts?: readonly string[] | ReadonlySet<string>;
+}
+
+/**
+ * 判据命令里的**路径参数**形状 (2026-08-29, INV-6)。只认这一套字符 —— 引号、`=`、`:`、`*`、`?`、
+ * `$`、`~` 等一律出局, 于是 URL / glob / grep pattern / `--cov=x` 全部自动落在门外。
+ * 这不是"识别路径的正确办法", 是**最保守的那个**: 认漏一堆真路径, 但几乎不会把非路径认成路径。
+ */
+const PATH_ARG_SHAPE = /^[A-Za-z0-9_./-]+$/;
+
+/** "带扩展名就够像路径了"的那一档 —— 源码/测试文件。文档与数据 (.md/.json/.txt) 刻意不在表内:
+ * 它们常常正是**本次要产出**的东西, 而产物集未必列全, 拦下去就是误拦。含 `/` 的 token 另有一条路。 */
+const SOURCE_LIKE_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|rb|php|cs|kt|swift|scala|c|h|cc|cpp|hpp|sh|sql)$/i;
+
+/**
+ * 这个 token 值不值得判"存不存在"。看不准一律 false —— 门的家族纪律是只拒恒红判据。
+ *
+ * 三条就够, 不是三条最全。第一版还写了「纯数字跳过 / 绝对路径跳过 / 含 `..` 跳过」,
+ * 逐条拿掉跑测试**一条都不会红** —— 前者被下面的 path-like 那行盖住 (纯数字既无 `/` 也无源码
+ * 扩展名), 后两者被调用处的「解析后仍在 root 内」那行盖住。三条留着就是三条永远绿的闸。
+ */
+function looksLikePathArg(token: string): boolean {
+  // flag 先跳: `-Isrc/include` 这种**粘着路径**的 flag 形状上完全像路径, 只有这一行拦得住
+  // (实测: 拿掉它, 「flag 跳过」那条用例当场红)。
+  if (!token || token.startsWith('-')) return false;
+  // 引号 / glob (`*` `?`) / URL (`:`) / `--cov=x` (`=`) / 任何 shell 元字符 —— 全不在字符集里。
+  if (!PATH_ARG_SHAPE.test(token)) return false;
+  // 不像路径就不判: 子命令 (`test` / `run`)、断言词、纯数字 (超时值 / 端口) 全落在这里。
+  return token.includes('/') || SOURCE_LIKE_EXT.test(token);
+}
+
+/**
+ * **判据里的路径参数在仓里真的存在吗** (2026-08-29, INV-6 / GWT-6, 契约
+ * `docs/plan/2026-08-29-veto-feedback-revision-edges.md` D-6)。
+ *
+ * ## 它补的是判据自证的第三个盲区
+ *
+ * 前三道各问一件事: 空世界自检问「它会不会误绿」, 判别力探针问「错答案骗不骗得过它」,
+ * missing-bin 问「这台机器上有没有这个命令」。**没有一道问「它指的那个文件在不在」** ——
+ * 而路径写错的判据与 bin 缺席的判据是同一种病: **恒红**, 活干对了也过不了。
+ *
+ * ## 为什么是它而不是昨天那道
+ *
+ * 昨天加的 bin-in-PATH 闸打偏了: 12 例 executable 真红逐例归因里**无一例**是 bin 缺失,
+ * 而 A 桶 5 例红在路径参数上 —— 判据命令指向仓里根本不存在的测试文件或错目录:
+ *   · `pytest -q tests/test_tz.py`, 真身在 `dateutil/test/` 下
+ *   · `grep -q "ERROR_REASONS" tokens.py`, 真身在 `itsdangerous_like/tokens.py`
+ * leaf 多数把活干对了, 判据却没人能改, 只能烧满修复轮挂掉。
+ *
+ * ## 保守判定: 宁放勿误拦
+ *
+ * 只拒「明确像文件路径 + 解析后仍在 root 内 + 确定不存在 + 没被声明产出」四条全中的 token。
+ * 模糊一律放行 (见 {@link looksLikePathArg} 与下面的 root 外跳过) —— 误拦一条好判据会把整个 run
+ * 停在冻结前, 而漏掉一条坏判据后面还有修复轮。这道门的强度上限也因此不高, 它是筛子不是证明。
+ *
+ * ## 边界
+ *
+ * · **每一环的首词不判** —— 那是 bin, 归 `missingBinaryBlockReason` 管 (单源纪律, 不抄第二份)。
+ * · `&&` 链逐环判 (与 `commandBlockReason` 同款: 全链先过闸)。
+ * · root 为空 → 不判 (fail-open): 没有仓根就没有"解析到 root 内"这回事。
+ * · 判的是**存在性**, 不判"内容对不对" —— 后者正是判据该回答的问题, 这里不抢。
+ *
+ * @param declaredArtifacts 计划声明的产物集 —— 在集内 = 将由某节点产出, 现在不存在是正常的。
+ *   调用方拿不到这份事实时**别调本函数** (缺席 ≠ 空集, 见 {@link AcceptanceCommandBlockOpts.declaredArtifacts})。
+ * @returns null = 没有恒红的路径参数; 否则一行拒因 (含「路径参数不存在」)。
+ */
+export function missingPathArgBlockReason(
+  command: string,
+  root: string,
+  declaredArtifacts: readonly string[] | ReadonlySet<string>,
+): string | null {
+  if (!root) return null;
+  // 产物集两侧都归一到「相对 root 的路径」再比 —— 计划里写 `./x.ts` / 绝对路径 / `x.ts` 是同一个东西,
+  // 而字面比会把它们读成三个, 于是声明了也照拒 (那就是一次误拦)。
+  const declared = new Set<string>();
+  for (const a of declaredArtifacts) {
+    const t = a.trim();
+    if (!t) continue;
+    declared.add(t);
+    declared.add(relative(root, resolve(root, t)));
+  }
+  for (const link of command.split('&&').map((s) => s.trim())) {
+    // slice(1): 首词是 bin。
+    for (const token of link.split(/\s+/).slice(1)) {
+      if (!looksLikePathArg(token)) continue;
+      const abs = resolve(root, token);
+      const rel = relative(root, abs);
+      // 解析后跑出 root (或就是 root 自己) → 不判。前者管不着, 后者恒存在。
+      // **绝对路径与含 `..` 的 token 也是在这一行落地的** —— 它们 resolve 完必然落在 root 外,
+      // 不需要在 looksLikePathArg 里另写两条 (写了就是两条永远绿的闸)。
+      if (!rel || rel.startsWith('..') || isAbsolute(rel)) continue;
+      if (existsSync(abs)) continue;
+      if (declared.has(rel) || declared.has(token)) continue;
+      return (
+        `[blocked missing-path-arg: 验收命令里的路径参数不存在 —— '${token}' 在仓根 ${root} 下找不到, ` +
+        `也不在计划声明的产物集里 (没有节点会产出它)。这条判据恒红, 活干对了也过不了。` +
+        `先在仓里核实真身在哪 (常见成因: 测试文件在别的目录下), 换成真实路径; ` +
+        `或让某个节点显式声明产出这个文件。]`
+      );
+    }
+  }
+  return null;
 }
 
 /**
@@ -135,7 +245,9 @@ export function acceptanceCommandBlockReason(command: string, opts: AcceptanceCo
     const allow = [...DEFAULT_COMMAND_ALLOWLIST, ...opts.envFacts.enabledBins.filter((b) => !DEFAULT_COMMAND_ALLOWLIST.includes(b))];
     const blocked = commandBlockReason(c, allow);
     if (blocked) return blocked;
-    return opts.env ? missingBinaryBlockReason(c, opts.env) : missingBinaryBlockReason(c);
+    const missingBin = opts.env ? missingBinaryBlockReason(c, opts.env) : missingBinaryBlockReason(c);
+    if (missingBin) return missingBin;
+    return pathArgBlock(c, root, opts);
   }
   // 顺序: 语言一致闸先, allowlist 闸后。一致闸拒因带「所需 marker」, 信息量大于 allowlist 的
   // `'pytest' ∉ allowlist` —— 后者也能拒, 但纠错环读到 "lang-mismatch" 才知道要去补 marker。
@@ -143,10 +255,22 @@ export function acceptanceCommandBlockReason(command: string, opts: AcceptanceCo
   if (langBlock) return langBlock;
   const allowBlock = commandBlockReason(c, allowlistForRoot(root));
   if (allowBlock) return allowBlock;
-  // 最后一道: bin 在不在 PATH 上 (2026-08-29)。**只挂 root-aware 这条路** —— 无 root 那支是纯语法闸
+  // 第三道: bin 在不在 PATH 上 (2026-08-29)。**只挂 root-aware 这条路** —— 无 root 那支是纯语法闸
   // (INV-6 逐字兼容), 而"装没装这个命令"是环境事实, 属于 root-aware 这一层。
-  // 顺序放最后: 前两道的拒因信息量更大 (缺哪个 marker / 不在白名单), 别被"找不到 bin"盖掉。
-  return opts.env ? missingBinaryBlockReason(c, opts.env) : missingBinaryBlockReason(c);
+  // 顺序放它俩之后: 前两道的拒因信息量更大 (缺哪个 marker / 不在白名单), 别被"找不到 bin"盖掉。
+  const missingBin = opts.env ? missingBinaryBlockReason(c, opts.env) : missingBinaryBlockReason(c);
+  if (missingBin) return missingBin;
+  return pathArgBlock(c, root, opts);
+}
+
+/**
+ * 第四道 (INV-6): 路径参数自证。同样只挂 root-aware 这条路 —— "文件在不在仓里"是仓事实, 无 root 判不了。
+ *
+ * 排在 missing-bin 之后: bin 缺席比路径写错更根上 (连命令都起不来时先说那个)。
+ * **拿不到产物集就整道不跑** —— 见 {@link AcceptanceCommandBlockOpts.declaredArtifacts} 的 NULL ≠ 空集。
+ */
+function pathArgBlock(c: string, root: string, opts: AcceptanceCommandBlockOpts): string | null {
+  return opts.declaredArtifacts === undefined ? null : missingPathArgBlockReason(c, root, opts.declaredArtifacts);
 }
 
 /** 便捷谓词。 */

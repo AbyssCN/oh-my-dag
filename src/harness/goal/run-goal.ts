@@ -26,14 +26,14 @@
  * 就是"判卷标准是执行体动不了的东西")。
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative } from 'node:path';
 import { runExecutorDagWithPlan } from '../dag/engine';
 import { makeDefaultGenerate } from '../dag/defaults';
 import type { ConductorPlan } from '../conductor-plan';
-import type { ExecutorDagResult } from '../dag/types';
+import type { ExecutorDagResult, LeafResult } from '../dag/types';
 import { classifyGoal, renderAcceptance, type AcceptanceSpec, type GoalClassification, type GoalTier } from './classify-acceptance';
-import { acceptanceCommandBlockReason, checklistDiscriminationReason, type ProbeItemOutcome } from './acceptance-gate';
+import { acceptanceCommandBlockReason, acceptanceVacuityReason, checklistDiscriminationReason, type ProbeItemOutcome } from './acceptance-gate';
 import {
   settleRubric as settleRubricDefault,
   verifyFrozen,
@@ -70,7 +70,7 @@ import { notifyOwner } from '../notify';
 import { resolveProfile, type LeafProfile } from '../profiles/profile';
 import { fingerprintOf, type ReviewFinding } from '../profiles/review-ledger';
 import { maybeRunDesignReview, type DesignReviewResult } from './design-review';
-import { escalationProviderReady } from '../verifier';
+import { escalationProviderReady, type VerdictTarget, type VerifierFn } from '../verifier';
 
 // D-I: 两条轴的类型与分类器都归 ./acceptance (那里是判据轴的单一真源); 此处 re-export 保旧调用面。
 export type { AcceptanceSpec, GoalClassification, GoalTier } from './classify-acceptance';
@@ -277,6 +277,23 @@ export interface RunGoalConfig {
      */
     _settleRubric?: typeof settleRubricDefault;
   };
+  /**
+   * **判据重建者** (INV-4, 2026-08-29 否决边契约 D-4)。触发条件成立时被调**至多一次**,
+   * 返回一条候选判据命令 (返回 `null` = 提不出来, 照实记, 不编)。
+   *
+   * 不给 = 走生产默认: 一张单 agent 节点的图, 座位跟 conductor 走 (契约 Open 段:
+   * 「重建者座位待实测, 首版随 conductor 座」)。**连 `agentRunner` 都没有 = 重建者缺席** ——
+   * 触发照记, 但不假装重建过 (fail-open 不吞证据)。
+   */
+  _rebuildCriterion?: (input: {
+    goal: string;
+    /** 当前那条冻结判据 (被判"量不出差别"的那条)。 */
+    current: string;
+    /** 为什么触发重建 (shouldRebuildCriterion 的判词原文)。 */
+    trigger: string;
+    /** 计划声明的产物集 —— 重建者据它知道"谁会产出什么"。 */
+    declaredArtifacts: readonly string[];
+  }) => Promise<{ command: string; expectExit?: number; negativeSample?: string } | null>;
  }
 
 export interface RunGoalResult {
@@ -381,6 +398,39 @@ export interface RunGoalResult {
    */
   rubricVerdict?: RubricVerdict;
   rubricRejection?: { source: 'frozen-drift' | 'probe'; reason: string };
+  /**
+   * **终态字面** (INV-5, 2026-08-29 否决边契约)。默认逐字等于 {@link outcome};
+   * 只有一格例外 —— rubric 分型而验收步缺席时它是 {@link TERMINAL_RUBRIC_UNWIRED},
+   * 因为那一格既不是"判据判红"也不是"环没收敛", 而是**这条判据压根没被接上**。
+   *
+   * 为什么不新开一个 `RunOutcomeKind`: 那张词表有 9 个消费面 + db schema, 而这一位要答的
+   * 问题是"归因时该把它算在哪一格", 不是"下一步做什么" (下一步与 not-converged 同: 别加轮数)。
+   */
+  terminalLabel?: string;
+  /**
+   * **判据判红时的红因** (INV-2)。含 `rolled-back` = 本 run 曾转绿而终态低于那次绿
+   * (去看回滚/毒集那条链); 含 `never-green` = 一次都没转过绿 (去看修复轮)。
+   * 缺席 = 判据没判红 / 非可执行判据 (不是"红因不明")。
+   */
+  criterionRedCause?: string;
+  /**
+   * **终态棘轮读数** (INV-1)。缺席 = 本 run 判据一次都没机械转绿 (棘轮没有地板可守),
+   * 不是"棘轮没跑"。`action` 四态见 {@link BestGreenAction}; `restoredFiles` 只在真还原时有值。
+   */
+  bestGreenFloor?: { action: BestGreenAction; label: string; snapshotFiles: number; restoredFiles?: number };
+  /**
+   * **verifier 否决原文** (INV-1: 否决从"物理销毁"降为"信息动作" —— 那条信息得到得了人手上)。
+   * 缺席 = 没配 verifier / 判过了 (pass)。
+   */
+  verifierDissent?: string;
+  /**
+   * **判据重建边的留痕** (INV-4)。缺席 = 未触发重建。
+   * `proposed` 缺席 = 触发了但重建者缺席/提不出 (与"提了没过门"分开: 后者 `proposed` 在场而 `admitted` 假)。
+   *
+   * ⚠ **诚实边界**: 重建出的判据**不参与本 run 的终态判定** —— 让执行体家族提的判据当场
+   *   决定自己的成败正是 D-J 要杀的形态。这一位是留给 owner 与下一次点火的。
+   */
+  criterionRebuild?: { trigger: string; proposed?: string; expectExit?: number; admitted: boolean; why: string };
 }
 export interface WriteScopeReport {
   /** 逐文件裁决 (allowed / forbidden / outside)。 */
@@ -450,6 +500,52 @@ function collectChangedFiles(cwd: string): string[] {
     .filter((p) => !p.startsWith('!!'));
 }
 
+/**
+ * 一轮里 leaf **报过写**的文件 (INV-1 绿快照的收集面, 2026-08-29)。
+ *
+ * 用 `filesTouched` 而不是 git diff: 前者是受控写工具的**事实**且按轮切分, 后者是整棵树相对
+ * HEAD 的累积 —— 拿累积面去照"这一轮的绿"会把别人的在途改动一起照进来, 还原时就是误伤。
+ * 相对路径按 leaf 自己的 `artifactRoot` 解析 (那一位存在的全部理由), 缺席才回落 cwd。
+ * 越出 cwd 的、以及 `.omd/` 下的 (引擎自己的留痕库) 一律不收 —— 还原是破坏性动作, 面要窄。
+ */
+function collectTouchedPaths(results: Record<string, LeafResult>, cwd: string): string[] {
+  const out = new Set<string>();
+  for (const r of Object.values(results)) {
+    for (const f of r.filesTouched ?? []) {
+      const abs = isAbsolute(f) ? f : join(r.artifactRoot ?? cwd, f);
+      const rel = relative(cwd, abs);
+      if (!rel || rel.startsWith('..') || isAbsolute(rel)) continue;
+      if (rel.split(/[\\/]/)[0] === '.omd') continue;
+      out.add(abs);
+    }
+  }
+  return [...out];
+}
+
+/** 单个产物照快照的大小上限。超过它就判"收不全" —— 绿快照住在内存里, 不做分块存储。 */
+const SNAPSHOT_FILE_LIMIT = 512 * 1024;
+
+/**
+ * 把绿那一刻的产物内容照下来。**收不全就返 null** (fail-closed):
+ * 半份还原会把树变成两轮的混合体, 那比不还原更坏, 也更难被人看出来。
+ * 盘上已不存在的路径不算收不全 (leaf 删过它, 那本来就是绿的一部分)。
+ */
+function readSnapshotFiles(paths: readonly string[]): { path: string; content: string }[] | null {
+  const files: { path: string; content: string }[] = [];
+  for (const p of paths) {
+    if (!existsSync(p)) continue;
+    try {
+      if (statSync(p).size > SNAPSHOT_FILE_LIMIT) return null;
+      files.push({ path: p, content: readFileSync(p, 'utf8') });
+    } catch (err) {
+      // 读不了 (二进制/权限/竞态删除) = 这一份照不下来 ⇒ 整张快照不算数, 但留证据。
+      logger.warn({ path: p, err: String(err) }, '[run-goal] INV-1 绿快照: 这份产物读不下来 → 整张快照作废 (fail-closed)');
+      return null;
+    }
+  }
+  return files.length > 0 ? files : null;
+}
+
 type DesignReviewRunner = (
   diff: string,
   cwd: string,
@@ -513,6 +609,36 @@ function screenshotReviewPrompt(
  * 生产截图审核装配。无 screenshotCommand 故意不造 runner → maybeRunDesignReview 的 diff-only 路径;
  * 有命令才调 profile agent。初审无 P0/P1 时不碰升档座, provider 不可达也不冒充已升档。
  */
+/**
+ * INV-4 的生产端重建者 —— **座位跟 conductor 走** (契约 Open 段: 首版随 conductor 座, 待实测)。
+ *
+ * 没有 `agentRunner` = 返 undefined = 重建者缺席 (触发照记, 不假装重建过)。
+ * 只要一条命令: 它的产出还要过全部自证门才准冻结, 所以这一发不需要结构化输出的仪式。
+ */
+function productionCriterionRebuilder(config: RunGoalConfig): RunGoalConfig['_rebuildCriterion'] | undefined {
+  const agentRunner = config.dag.agentRunner;
+  if (!agentRunner) return undefined;
+  return async ({ goal, current, trigger, declaredArtifacts }) => {
+    const r = await agentRunner({
+      model: config.dag.conductorModel,
+      prompt: [
+        '这次运行的**验收判据本身**很可能是坏的 —— 它量不出"做完了"与"还没做"的差别。',
+        `触发证据: ${trigger}`,
+        '',
+        `## 目标\n${goal}`,
+        `## 现在这条判据 (坏的那条)\n\`${current}\``,
+        `## 执行根 (一切相对路径以它为准)\n${config.cwd}`,
+        `## 计划声明会产出的东西\n${declaredArtifacts.length ? declaredArtifacts.join('\n') : '(计划没声明任何产物)'}`,
+        '',
+        '重写**一条**判据命令: 指向仓里真实存在 (或上面声明会被产出) 的路径, 且在活没干完时必然红。',
+        '只输出那一条命令本身, 不要解释、不要代码块、不要前缀。',
+      ].join('\n'),
+    });
+    const command = r.text.trim().split('\n').map((l) => l.trim()).filter(Boolean).at(-1) ?? '';
+    return command ? { command } : null;
+  };
+}
+
 function productionDesignReviewRunner(
   config: RunGoalConfig,
   screenshotCommand: string | undefined,
@@ -637,6 +763,165 @@ export function makeBaselineWaiver(baselineFailSet: readonly string[]): (text: s
     for (const n of after) if (!baselineSet.has(n)) return null;
     return `存量红赦免 (S-37 下沉): ${after.length} 条失败全在基线 — ${after.join(', ')}`;
   };
+}
+
+// ── 否决边 / 反馈边 / 目标修订边 (契约 docs/plan/2026-08-29-veto-feedback-revision-edges.md) ──
+//
+// 四条不变量全落在本文件的**内环终态区**, 而那一段是单文件热区 —— 所以判定逐条抽成纯函数
+// 摆在这里: 判据能被单测直接打, 接线处只剩"喂参数 + 执行结论"。
+
+/** INV-5: rubric 分型且验收步缺席时的终态字面 (契约 GWT-5 逐字)。 */
+export const TERMINAL_RUBRIC_UNWIRED = 'rubric-unwired';
+
+/**
+ * INV-5 的判据: **这一格是"没接线", 不是"判红"**。
+ *
+ * `rubricVerdictInputs` 今天无人注入 (生产常态), 于是 rubric 分型恒非 success, 而终态被
+ * 折进 `oracle-failed` —— 三批 240 trial 里这一格占 13~20 个/批, 其 reward 均值**高于**整批:
+ * 标签与成败零相关。判词与拒因**任一在场**就说明判过了 (判红是判据的正常结论, 不是缺席)。
+ */
+export function rubricAcceptanceUnwired(input: {
+  kind: AcceptanceSpec['kind'];
+  verdictPresent: boolean;
+  rejectionPresent: boolean;
+}): boolean {
+  return input.kind === 'rubric' && !input.verdictPresent && !input.rejectionPresent;
+}
+
+/** INV-2 的两个红因字面 —— 下一步不同, 所以不许压成一个词。 */
+export type CriterionRedCause = 'rolled-back' | 'never-green';
+
+/**
+ * INV-2: 冻结判据判红时**红因分道**。
+ *
+ * 分的是「树曾经到过绿、现在低于它」与「一次都没到过绿」——
+ * 前者要去看回滚/毒集那条链 (交付被销毁了), 后者是活没干成 (该看修复轮)。
+ * 判据是 `everGreen` 一位: **口径是「低于绿快照」, 不是「谁回滚的」** —— 回滚只是今天已知
+ * 唯一的成因, 把判据写成"重规划过"就会漏掉别的掉绿路径, 而漏掉的那格会被念成"从未达标"。
+ * `replanned` / `recheckRan` 只进 detail (证据, 不是判据)。
+ */
+export function classifyCriterionRed(input: {
+  everGreen: boolean;
+  replanned: boolean;
+  recheckRan: boolean;
+}): { cause: CriterionRedCause; detail: string } {
+  const evidence = `重规划=${input.replanned ? '是' : '否'} · 收尾复验=${input.recheckRan ? '跑了' : '没跑成'}`;
+  return input.everGreen
+    ? {
+        cause: 'rolled-back',
+        detail: `判据红因 rolled-back: 本 run 内冻结判据曾机械转绿, 终态树低于那次绿 (${evidence})`,
+      }
+    : {
+        cause: 'never-green',
+        detail: `判据红因 never-green: 本 run 内冻结判据一次都没转过绿 (从未达标; ${evidence})`,
+      };
+}
+
+/** INV-1 终态棘轮的留痕锚串 (摘要与 result 都带它, 契约 GWT-1 `.includes('best-green')`)。 */
+export const BEST_GREEN_LABEL = 'best-green';
+
+/** INV-1 棘轮的四个动作 —— 「不必动」「动不了」「真动了」不许压平。 */
+export type BestGreenAction = 'none' | 'already-green' | 'restore' | 'unrestorable';
+
+/**
+ * INV-1: 终态交付**不得低于本 run 曾达到的那次绿**。
+ *
+ * 归因样本 4/12 死在这里: 第 1 轮判据真绿 → verifier 否决 → 重规划 → 毒集丢绿 + 半回滚 →
+ * 后续修复轮全挂 → 终态 patch 0 字节。**已达标的交付被销毁**, 而回执上看不出它曾经绿过。
+ *
+ * 契约的达标条件是**与**不是或:「当前树判据绿」**且**「终态产物 diff 非空」——
+ * 判据绿而 diff 空是"绿得很可疑"的那一格 (判据恒真 / 活根本没落盘), 同样要还原。
+ *
+ * ⚠ `terminalDiffFiles: undefined` = **取不到** (非 git 仓 / git status 抛), 不是 0。
+ *   取不到时不许拿"diff 空"当理由去动盘 —— 还原是破坏性动作, 证据不足就不动。
+ */
+export function decideBestGreenFloor(input: {
+  everGreen: boolean;
+  currentGreen: boolean;
+  terminalDiffFiles: number | undefined;
+  snapshotFiles: number;
+}): { action: BestGreenAction; label: string } {
+  if (!input.everGreen) return { action: 'none', label: '' };
+  const diffNonEmpty = input.terminalDiffFiles === undefined ? true : input.terminalDiffFiles > 0;
+  // 没有绿快照 = **没有可比的地板**。这时判据仍绿就别喊狼: "判据绿而 diff 空"还有一条合法
+  // 成因 (活已提交, diff 面量的是未提交改动), 而拿它去报"终态低于那次绿"是一次纯误报。
+  // 判据真红那一侧照喊 —— 那时"低于绿"是事实, 只是还原不了。
+  if (input.snapshotFiles === 0) {
+    return input.currentGreen
+      ? { action: 'already-green', label: `${BEST_GREEN_LABEL}: 终态树判据绿 — 棘轮不必动 (无绿快照可比)` }
+      : {
+          action: 'unrestorable',
+          label: `${BEST_GREEN_LABEL}: 判据曾转绿而终态低于那次绿, 绿快照收不全 → **还原不了** (不假装交付达标)`,
+        };
+  }
+  if (input.currentGreen && diffNonEmpty) {
+    return { action: 'already-green', label: `${BEST_GREEN_LABEL}: 终态树判据绿且产物 diff 非空 — 棘轮不必动` };
+  }
+  return {
+    action: 'restore',
+    label: `${BEST_GREEN_LABEL}: 终态低于本 run 曾达到的绿 → 还原绿快照 (${input.snapshotFiles} 文件)`,
+  };
+}
+
+/** INV-4 判据重建的留痕锚串 (契约 GWT-4 `.includes('criterion-rebuild')`)。 */
+export const CRITERION_REBUILD_LABEL = 'criterion-rebuild';
+
+/**
+ * INV-4: 什么时候该去**改判据**而不是再烧一轮修复。
+ *
+ * 两条触发路 (或):
+ *  ① 否决分型指向判据 (verifier 说的是「判据错了/可被游戏」, 见 verifier.ts 的 VER-4);
+ *  ② 判据读数**纹丝不动**而 leaf 在产出 —— 连续 2 轮 exitCode 逐字相同, 且这两轮 leaf
+ *    都写了东西。少了后半条就会把「执行侧压根没动」误读成「判据瞎了」(#4 那格的反面)。
+ *
+ * ⚠ exitCode 缺席 (`null` / `undefined`) **不算"逐字相同"**: 没记与记了 0 是两件事,
+ *   拿两个 NULL 相等去开重建轮, 等于让"没观测到"变成一条证据 (仓规坑 ①)。
+ *
+ * 每 run 至多 1 次 —— 重建判据本身是**执行体家族**在提判据, 次数不封顶就成了移球门。
+ */
+export function shouldRebuildCriterion(input: {
+  verdictTarget?: VerdictTarget;
+  rounds: readonly { exitCode: number | null | undefined; touched: number }[];
+  alreadyRebuilt: boolean;
+}): { rebuild: boolean; reason: string } {
+  if (input.alreadyRebuilt) return { rebuild: false, reason: '本 run 已重建过一次判据 (上限 1, 不再重建)' };
+  if (input.verdictTarget === 'criterion') {
+    return { rebuild: true, reason: 'verifier 否决分型 target=criterion (判据错了/可被游戏), 烧修复轮治不了' };
+  }
+  const [a, b] = input.rounds.slice(-2);
+  if (
+    input.rounds.length >= 2 &&
+    a !== undefined &&
+    b !== undefined &&
+    a.exitCode !== null && a.exitCode !== undefined &&
+    b.exitCode !== null && b.exitCode !== undefined &&
+    a.exitCode === b.exitCode &&
+    a.touched > 0 &&
+    b.touched > 0
+  ) {
+    return {
+      rebuild: true,
+      reason: `连续 2 轮判据 exitCode 逐字相同 (${a.exitCode}) 而两轮 leaf 都有非空 diff (${a.touched}/${b.touched} 文件) — 判据量不出差别`,
+    };
+  }
+  return { rebuild: false, reason: '未触发: 否决分型非 criterion, 且判据读数不是"两轮纹丝不动 + leaf 在产出"' };
+}
+
+/**
+ * INV-4 后半: 重建出的判据**过了全部自证门才准冻结**。
+ *
+ * fail-**closed**: 一道门"没跑成"(`ran: false`) 与"跑了被拒"一样不准入。
+ * 理由是这条判据的出身 —— 它是执行体家族提的, 而判卷标准必须是执行体动不了的东西;
+ * 拿不到证明就照收, 等于给移球门开了一条合法通道 (与 classify 那侧探针的 fail-open
+ * **刻意相反**: 那边审的是分类器给的判据, 这边审的是环内产出的判据)。
+ */
+export function criterionRebuildAdmission(
+  gates: readonly { name: string; ran: boolean; reason: string | null }[],
+): { admitted: boolean; why: string } {
+  if (gates.length === 0) return { admitted: false, why: '一道自证门都没跑 — 空集不算"全过" (fail-closed)' };
+  const notes = gates.map((g) => (!g.ran ? `${g.name}: 没跑成` : g.reason ? `${g.name}: ${g.reason}` : `${g.name}: 过`));
+  const admitted = gates.every((g) => g.ran && g.reason === null);
+  return { admitted, why: notes.join(' · ') };
 }
 
 /**
@@ -1301,6 +1586,37 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
       );
     }
   }
+  // ── INV-1 / INV-4 的观察面: 判卷官那一刻的树 (2026-08-29 否决边契约) ────────────────
+  //
+  // 内环封在 conductor 节点里, 跑完只剩最后一轮的结果面 —— 而 INV-1 (终态不得低于曾达到的绿)
+  // 与 INV-4 (连续两轮判据纹丝不动) 问的都是**中间那一轮**。引擎每轮跑完调一次 verifier,
+  // 那一刻树还是那一轮的样子: 这是 run-goal 唯一够得着中间轮的钩子。
+  //
+  // 只观察不改判 —— 原 verdict 原样返回, verifier 缺席 = 整段缺席 (行为逐字节不变)。
+  // 观察本身抛错也不许掀桌 (fail-open), 但每个 catch 留一行证据 (仓规静默坑 ②)。
+  const roundObs: { exitCode: number | null | undefined; touched: number; green: boolean }[] = [];
+  let lastVerdict: { pass: boolean; reason: string; target: VerdictTarget } | undefined;
+  let greenSnapshot: { round: number; files: { path: string; content: string }[] } | undefined;
+  const tapVerifier = (inner: VerifierFn): VerifierFn => async (req) => {
+    const verdict = await inner(req);
+    try {
+      const acc = req.results.accept;
+      const green = acc?.status === 'done';
+      const touchedPaths = collectTouchedPaths(req.results, config.cwd);
+      roundObs.push({ exitCode: acc?.exitCode, touched: touchedPaths.length, green });
+      // 分型缺席 ⇒ 按 'implementation' 读 (切片 2 的 VER-4 fail-open, 逐字同 verifier.ts)。
+      lastVerdict = { pass: verdict.pass, reason: verdict.reason, target: verdict.target ?? 'implementation' };
+      if (green) {
+        const files = readSnapshotFiles(touchedPaths);
+        // 收不全 = 不留快照 (半份还原比不还原更坏: 树会变成两轮的混合体)。
+        if (files) greenSnapshot = { round: roundObs.length, files };
+        else logger.warn({ round: roundObs.length, paths: touchedPaths.length }, '[run-goal] INV-1 绿快照收不全 → 这一轮不留快照 (半份还原比不还原更坏)');
+      }
+    } catch (err) {
+      logger.warn({ err: String(err), round: roundObs.length }, '[run-goal] INV-1/INV-4 轮观察抛错 → 这一轮没观测 (fail-open, 不吞证据)');
+    }
+    return verdict;
+  };
   let exec: ExecutorDagResult;
   try {
     // 护栏③: **只有可执行判据**才进环。非可执行判据的 `oracleOk` 恒 true, 给了它就等于第一轮必停。
@@ -1327,7 +1643,9 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
             ...(flatPlan !== undefined ? { deterministicReplan: () => flatPlan } : {}),
           }
         : config.dag;
-    exec = await (config._runDag ?? runExecutorDagWithPlan)(execPlan, execCfg);
+    // 包一层判卷官 (只观察不改判); 没配 verifier = 一个字段都不加, 同一份 execCfg 原样进。
+    const tappedCfg = config.dag.verifier ? { ...execCfg, verifier: tapVerifier(config.dag.verifier) } : execCfg;
+    exec = await (config._runDag ?? runExecutorDagWithPlan)(execPlan, tappedCfg);
   } catch (err) {
     return bail(`execute 抛错: ${String(err).slice(0, 200)}`, 'infra-error');
   }
@@ -1437,6 +1755,139 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
       { command: runnable?.command, recheckRan: oracleRecheckRan },
       '[run-goal] 判据陈旧闸: 复用的绿在最终这棵树上**不成立** → 判据判红 (原实装会拿它发 delivered 终态)',
     );
+  }
+  // ── INV-2 红因分道 (2026-08-29 否决边契约 D-2 / GWT-2) ──────────────────────────
+  //
+  // 判据判红时「曾到过绿又掉下来」与「一次都没到过绿」的**下一步相反**:
+  // 前者去看回滚/毒集那条链 (已达标的交付被销毁了), 后者去看修复轮 (活没干成)。
+  // 此前两者共用一句"冻结判据没过", 于是 4 例被销毁的交付在回执上与 6 例没干成的活长得一样。
+  //
+  // 「曾转绿」的证据源有二, 取并: ① accept 的 checkpoint 是绿的 (那份绿是更早某轮量的);
+  // ② 轮观察里有一轮 accept 绿 (verifier tap 看见的中间轮)。少任一个都会漏掉半张现场。
+  const everGreenObserved = acceptCheckpointGreen || roundObs.some((o) => o.green) || greenSnapshot !== undefined;
+  const criterionRed =
+    runnable !== null && !oracleOk
+      ? classifyCriterionRed({ everGreen: everGreenObserved, replanned, recheckRan: oracleRecheckRan })
+      : undefined;
+  // ── INV-1 终态棘轮 (D-1 / GWT-1) ────────────────────────────────────────────────
+  //
+  // 冻结判据曾机械转绿的 run, 终态交付不得低于那次绿。棘轮**只加在终态** —— 中轮毒集回滚
+  // 语义一字不动 (D-2, 理由在 poison-rollback.ts 文件头: 它治的是反向的病)。
+  //
+  // 放在写集对账**之前**: 还原之后那份 diff 才是真正交付出去的那棵树, 对账要看的是它。
+  let bestGreenFloor: RunGoalResult['bestGreenFloor'];
+  if (everGreenObserved) {
+    let terminalDiffFiles: number | undefined;
+    try {
+      terminalDiffFiles = (config.writeSet?._collectChangedFiles ?? (() => collectChangedFiles(config.cwd)))().length;
+    } catch (err) {
+      // 取不到 ≠ 0 (仓规坑 ①): 非 git 仓 / git 起不来时**不许**拿"diff 空"当动盘的理由。
+      logger.warn({ err: String(err) }, '[run-goal] INV-1 终态 diff 取不到 → 棘轮按「不知道」走 (不因此动盘)');
+    }
+    const decision = decideBestGreenFloor({
+      everGreen: true,
+      currentGreen: oracleOk || oracleRecheckGreen,
+      terminalDiffFiles,
+      snapshotFiles: greenSnapshot?.files.length ?? 0,
+    });
+    let restoredFiles: number | undefined;
+    if (decision.action === 'restore' && greenSnapshot) {
+      try {
+        for (const f of greenSnapshot.files) {
+          mkdirSync(dirname(f.path), { recursive: true });
+          writeFileSync(f.path, f.content);
+        }
+        restoredFiles = greenSnapshot.files.length;
+        logger.warn(
+          { round: greenSnapshot.round, files: restoredFiles },
+          '[run-goal] INV-1 终态棘轮: 终态低于本 run 曾达到的绿 → 已把绿快照写回工作树 (否决是信息动作, 不是物理销毁)',
+        );
+      } catch (err) {
+        // 还原失败**不许静默**: 那一刻交付真的丢了, 而回执是唯一还能说出这件事的地方。
+        logger.warn({ err: String(err) }, '[run-goal] INV-1 终态棘轮: 绿快照写回失败 → 终态仍低于那次绿 (不吞证据)');
+      }
+    }
+    bestGreenFloor = {
+      action: decision.action,
+      label: decision.label,
+      snapshotFiles: greenSnapshot?.files.length ?? 0,
+      ...(restoredFiles !== undefined ? { restoredFiles } : {}),
+    };
+  }
+  // ── INV-4 判据重建边 (D-4 / GWT-4) ──────────────────────────────────────────────
+  //
+  // 触发 = 否决分型指向判据, 或判据读数纹丝不动而 leaf 在产出。判据在 shouldRebuildCriterion;
+  // 这里只负责喂参数、叫重建者、把重建出来的那条**过全部自证门**、留痕。
+  //
+  // ⚠ 诚实边界: 重建出的判据**不进本 run 的终态判定** (见 RunGoalResult.criterionRebuild 的注)。
+  let criterionRebuild: RunGoalResult['criterionRebuild'];
+  const rebuildTrigger = runnable
+    ? shouldRebuildCriterion({
+        ...(lastVerdict ? { verdictTarget: lastVerdict.target } : {}),
+        rounds: roundObs.map((o) => ({ exitCode: o.exitCode, touched: o.touched })),
+        alreadyRebuilt: false,
+      })
+    : { rebuild: false, reason: '非可执行判据 — 没有"命令量不出差别"这回事' };
+  if (runnable && rebuildTrigger.rebuild) {
+    // 声明产物集 = 图里节点声明会产出的东西。**给得出来就要给** —— 切片 1 那道门在拿不到
+    // 这份事实时整道不跑 (缺席 ≠ 空集), 而重建判据恰恰最容易指向"还没被产出的文件"。
+    const declaredArtifacts = [
+      ...new Set(
+        Object.values(exec.plan.nodes).flatMap((n) => [
+          ...(n.output_path ? [n.output_path] : []),
+          ...(Array.isArray(n.write_set) ? n.write_set : []),
+        ]),
+      ),
+    ];
+    const rebuilder = config._rebuildCriterion ?? productionCriterionRebuilder(config);
+    let proposal: { command: string; expectExit?: number; negativeSample?: string } | null = null;
+    if (rebuilder) {
+      try {
+        proposal = await rebuilder({ goal, current: runnable.command, trigger: rebuildTrigger.reason, declaredArtifacts });
+      } catch (err) {
+        logger.warn({ err: String(err) }, '[run-goal] INV-4 判据重建者抛错 → 这一次不重建 (触发照记, 不吞证据)');
+      }
+    }
+    if (!proposal) {
+      criterionRebuild = {
+        trigger: rebuildTrigger.reason,
+        admitted: false,
+        why: rebuilder ? '重建者提不出候选判据 (返 null)' : '重建者缺席 (没注入 _rebuildCriterion, 也没有 agentRunner)',
+      };
+    } else {
+      // 全部自证门。命令闸那道**带上产物集**走的就是切片 1 新加的路径参数门 (INV-6)。
+      const expectExit = proposal.expectExit ?? 0;
+      const gates: { name: string; ran: boolean; reason: string | null }[] = [
+        {
+          name: '命令闸 (含路径参数门)',
+          ran: true,
+          reason: acceptanceCommandBlockReason(proposal.command, { root: config.cwd, declaredArtifacts }),
+        },
+      ];
+      if (config.dag.commandRunner) {
+        gates.push({
+          name: '空世界自检',
+          ran: true,
+          reason: await acceptanceVacuityReason(proposal.command, config.dag.commandRunner, expectExit),
+        });
+      } else {
+        // fail-closed: 重建出的判据是**环内产出的**, 拿不到证明就不准冻结 (与 classify 那侧
+        // 审分类器判据的 fail-open 刻意相反 —— 出身不同, 纪律不同)。
+        gates.push({ name: '空世界自检', ran: false, reason: null });
+      }
+      const admission = criterionRebuildAdmission(gates);
+      criterionRebuild = {
+        trigger: rebuildTrigger.reason,
+        proposed: proposal.command,
+        ...(proposal.expectExit !== undefined ? { expectExit: proposal.expectExit } : {}),
+        admitted: admission.admitted,
+        why: admission.why,
+      };
+      logger.info(
+        { proposed: proposal.command, admitted: admission.admitted, why: admission.why },
+        '[run-goal] INV-4 判据重建: 候选判据已过自证门 (采纳与否见 admitted; 本 run 终态不用它)',
+      );
+    }
   }
   // `converged` 缺席 = 没人判过 → 一律**不算成** (judge_final 已保证它在, 缺席意味着引擎跑歪了)。
   // **裁决位 = 环自己的结论** (#148, 2026-08-17): 判据停时它是判据说的 (D-I 以判据为准),
@@ -1611,6 +2062,19 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // converged 真分支问 (converged=false 分支一字不动: 交付没达标优先, INV-3, 且保留既有
   // oracleRecheckGreen → delivered-with-red 复验分支)。
   const hasRedLeaf = Object.values(exec.results).some((n) => n.status === 'failed');
+  // ── INV-5: 「rubric 没接线」不许再借 oracle-failed 的壳 (2026-08-29 否决边契约 D-5) ────
+  //
+  // 判据是**同一个**条件, 只算一次: 落在 oracle-failed 那一格 (环收敛而判据没绿) 且
+  // 这一格的成因是"这条判据压根没被接上"。两处各判一遍就是两处会漂 —— 而这条闸治的
+  // 正是"标签与成败零相关"。fail-closed 初值 (`rubricOracleOk`) 一字未动: success 仍不可达。
+  const rubricUnwiredTerminal =
+    loopOk &&
+    !oracleOk &&
+    rubricAcceptanceUnwired({
+      kind: acceptance.kind,
+      verdictPresent: rubricVerdict !== undefined,
+      rejectionPresent: rubricRejection !== undefined,
+    });
   const outcome: RunOutcomeKind = converged
     ? hasRedLeaf
       ? 'delivered-with-red'
@@ -1628,8 +2092,12 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
           : oracleRecheckGreen
             ? 'delivered-with-red'
           : loopOk && !oracleOk
-            ? 'oracle-failed'
+            // INV-5: 这一格的下一步与 not-converged 同 (**别加轮数** —— 加多少轮都不会有人注入
+            // rubricVerdictInputs), 所以复用那个 outcome; 「它其实是哪一格」由 terminalLabel 说。
+            ? (rubricUnwiredTerminal ? 'not-converged' : 'oracle-failed')
             : 'not-converged';
+  /** INV-5 终态字面: 默认逐字等于 outcome, 只有"rubric 没接线"那一格独立成词。 */
+  const terminalLabel = rubricUnwiredTerminal ? TERMINAL_RUBRIC_UNWIRED : outcome;
   stages.push({
     stage: 'execute',
     // ⚠ `status` 保持原样 (三态一字未动, 全仓 `=== 'done'` 的消费者行为不变) ——
@@ -1650,6 +2118,9 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
         : outcome === 'delivered-with-red' ? (converged
             ? `交付达标但有节点红 (#165①: 冻结判据 ✅ 而图内 ≥1 子节点红 — 人审红节点, 别整轮重跑)`
             : `交付达标但有节点红 (#165①: accept 被级联压死没跑, 冻结判据收尾复验绿 \`${runnable?.command ?? ''}\` — 人审红节点, 别整轮重跑)`)
+        // INV-5: 这一格此前被折进 oracle-failed —— 而它既不是"判据判红"也不是"环没收敛",
+        // 是**这条判据压根没被接上**。归因时它该单独站一格 (三批 240 trial 里 13~20 个/批)。
+        : rubricUnwiredTerminal ? `${TERMINAL_RUBRIC_UNWIRED}: rubric 分型而验收步缺席 (没人注入 rubricVerdictInputs) — 判据没被判过, 不是判红; **别加轮数**`
         : `未收敛 (${execLeaf?.status ?? '平铺图未过冻结判据'})`
       }${oracleNote}${judgeDissent ? ' · ⚠ judge 异议: 判据绿收敛而 judge 判没成 —— 判据轴「judge 太紧/判据覆盖不够」样本, 判词见 continuity _loop-execute.json' : ''}` +
       `${flatUsed ? ` · 直通v2平铺 (并行读数: ${flatParallelism})` : ''}${flatFallback ? ` · 直通v2回落: ${flatFallback}` : ''}` +
@@ -1669,7 +2140,14 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
       `${writeScope ? ` · D-2 声明面: ${describeWriteScope(writeScope)}` : ''}` +
       // S-46: 缺片必须**印在同一行**。P2 那跑判词齐全而「只做了 1/4」一个字都看不出来,
       // 就是因为没有任何一处印过「声明了几片、落了几片」。
-      `${sliceCoverage ? ` · S-46 缺片: ${describeSliceCoverage(sliceCoverage)}` : ''}`,
+      `${sliceCoverage ? ` · S-46 缺片: ${describeSliceCoverage(sliceCoverage)}` : ''}` +
+      // INV-2 / INV-1 / INV-4 三条都印在**同一行**: 人第一眼看的是这一行, 而这三件事
+      // (红因是哪一种 · 交付有没有被销毁 · 判据是不是该重建) 恰恰决定下一步该做什么。
+      `${criterionRed ? ` · ${criterionRed.detail}` : ''}` +
+      // 只印**有事发生**的那两格 (还原了 / 还原不了)。`already-green` 是"棘轮检查过、不必动",
+      // 印它等于给每一条绿 run 的摘要挂一段恒定文本 —— 读数不丢, 它在 result.bestGreenFloor 里。
+      `${bestGreenFloor && (bestGreenFloor.action === 'restore' || bestGreenFloor.action === 'unrestorable') ? ` · ${bestGreenFloor.label}${bestGreenFloor.restoredFiles !== undefined ? ` — 已写回 ${bestGreenFloor.restoredFiles} 文件` : ''}` : ''}` +
+      `${criterionRebuild ? ` · ${CRITERION_REBUILD_LABEL}: ${criterionRebuild.admitted ? `候选判据过了全部自证门 \`${criterionRebuild.proposed}\`` : `未采纳 (${criterionRebuild.why.slice(0, 160)})`}` : ''}`,
   });
 
   const result: RunGoalResult = {
@@ -1695,6 +2173,13 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
     ...(designReview ? { designReview } : {}),
     ...(rubricVerdict ? { rubricVerdict } : {}),
     ...(rubricRejection ? { rubricRejection } : {}),
+    // 2026-08-29 否决边契约: 四位读数各自缺席即"不适用", 不兜底 (仓规坑 ①)。
+    terminalLabel,
+    ...(criterionRed ? { criterionRedCause: criterionRed.detail } : {}),
+    ...(bestGreenFloor ? { bestGreenFloor } : {}),
+    // INV-1: 否决从"物理销毁"降为"信息动作" —— 那条信息必须到得了人手上, 不能只活在引擎日志里。
+    ...(lastVerdict && !lastVerdict.pass ? { verifierDissent: lastVerdict.reason } : {}),
+    ...(criterionRebuild ? { criterionRebuild } : {}),
    };
   // D-2 散雾出口 (切片 1): 拿到 map 句柄才开票; 没配 = 这一行直接返回, 行为逐字节不变 (INV-1)。
   // 放在 result 成形之后: 票身要的原因/未决/发现物全从终态读, 不从中途状态猜。

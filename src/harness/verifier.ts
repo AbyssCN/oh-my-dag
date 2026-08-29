@@ -19,6 +19,8 @@
  *  VER-2 全 leaf 失败 → 不调模型直接 fail (省一次调用, 显然无产出)。
  *  VER-2b 零节点产出 (results 空) → 同样直接 fail: **0 有效样本 ≠ 通过**, 且与 VER-2 分开报判词。
  *  VER-3 信 verifier 的 pass 布尔 (任务要求逐条对照已进 prompt); reason 必带 (fail 时点名缺啥)。
+ *  VER-4 否决**分型**: fail 时裁决自带打击对象 (`target`) —— 'implementation' 打产出 / 'criterion' 打判据。
+ *        缺席或非法值 ⇒ 'implementation' (fail-open, 现行为逐字节不变: 老判卷官只回 pass+reason, 照旧走修实装路)。
  */
 import { existsSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
@@ -46,11 +48,27 @@ import type { BlameEntry } from './dag/blame';
  */
 const ENGINE_FACT_SHELL_CAP = 6;
 
+/**
+ * VER-4 否决的**打击对象** (INV-3, SDD `docs/plan/2026-08-29-veto-feedback-revision-edges.md`):
+ * 同样是判 fail, 「产出没满足判据」与「判据本身量不出」的下一步相反 —— 前者再开一轮修实装,
+ * 后者该去重建判据。归因样本里 verifier 否决得对的两例 (leaf 写 shim 骗绿 · leaf 写恒绿测试)
+ * 就死在这个区分不存在: 判据是虚的, 却拿修复轮去修实装, 烧满预算也不可能转绿。
+ * ⚠ 与 `dag/verdict-ledger.ts` 的 `VerdictKind` ('substantive' | 'infra') 是两回事:
+ * 那个分的是「判词算不算数」, 这个分的是「算数的否决打的是谁」。
+ */
+export type VerdictTarget = 'implementation' | 'criterion';
+
 export interface VerifierVerdict {
   /** 结果是否满足任务的全部明确要求 (true = 放行)。 */
   pass: boolean;
   /** fail 时点名缺哪条要求 / 哪里捏造 + 该怎么改 (机制级)。pass 时可空。 */
   reason: string;
+  /**
+   * VER-4 打击对象。**可选**是刻意的: 引擎侧还有几处自己合成裁决的出口 (闸红短路 / verifier 调不通),
+   * 它们没经过判卷官, 编一个分型出来就是无中生有 —— 缺席 ⇒ 消费侧按 'implementation' 读 (fail-open)。
+   * `createDefaultVerifier` 的**每条**返回路径都带值 (含三条 fast-path), 见本文件下方。
+   */
+  target?: VerdictTarget;
   /** 校验调用的 token 用量 (fast-path 时 {in:0,out:0})。 */
   usage: ModelUsage;
 }
@@ -86,9 +104,17 @@ export interface VerificationConfig {
   status: VerifierStatus;
 }
 
+/**
+ * VER-4 (GWT-3): `target` 用 `.catch` 而不是 `.optional()` —— 三件事一次说清:
+ *  · 字段缺席 (今天生产上跑着的判卷官全是这样) ⇒ 'implementation', 老输出零改造照旧;
+ *  · 字段是乱值 ('判据' / 大小写不符 / null / 数字) ⇒ 同样 'implementation', **且不让整份裁决解析失败**
+ *    (拒解析 = 触发模型层纠错重试, 最后落进 VER-1 保守 fail —— 拿一个分型字段掀掉一份本可用的判词, 不划算);
+ *  · 显式 'criterion' 原样保留, 否则这个字段就是个恒等于默认值的摆设。
+ */
 export const VERIFIER_VERDICT_SCHEMA = z.object({
   pass: z.coerce.boolean(),
   reason: z.coerce.string(),
+  target: z.enum(['implementation', 'criterion']).catch('implementation'),
 });
 
 /**
@@ -312,9 +338,15 @@ ${task}
 ${summary}
 ---
 
-输出 JSON 两字段:
+打击对象 (pass=false 时**必须**声明): 同样是判不过, 「产出没做到」和「判据本身量不出」的下一步是相反的 —— 前者再开一轮修产出, 后者要去重建判据, 判错了就是烧空轮。
+- target="criterion" (判据错了 / 判据可被游戏): 判据是**恒绿**的 (不论产出成什么样都过)、能被 shim / 桩 / 空断言这类假实现骗绿、或判据命令指向不存在的路径 / 错的目录。一句话: **实装再对, 这条判据也量不出对错**。
+- target="implementation" (实装错了): 判据合理且真能量出差别, 是产出没满足它。
+- **拿不准就写 implementation** —— "判据不够好"是最容易被当成万能借口的一句话, 而它一旦被滥用, 真正没做到的产出就被放过去了。
+
+输出 JSON 三字段:
 - pass (bool): 结果是否满足任务全部明确要求且无捏造。这是裁决。
 - reason (string): pass=false 时**必填** —— 缺哪条要求 / 哪里捏造或不可信 + 重新规划时该怎么修 (机制级, 不是"不够好")。pass=true 时一句话说明已覆盖。
+- target (string): "implementation" 或 "criterion", 见上面「打击对象」。pass=true 时写 "implementation" 即可 (不读)。
 
 责备集 (可选输出, 只在你能**确定**失败具体出在哪个节点/产物时用):
 - 「执行结果」里每段以 \`### <id> [状态]\` 开头 —— 那个 <id> 就是 DAG 节点 id, 与计划节点一一对应。
@@ -358,12 +390,14 @@ export function createDefaultVerifier(opts: DefaultVerifierOpts): VerifierFn {
     // 于是 verifier 拿着一份 `plan: X · 0 nodes` 的空摘要去问模型, 而模型对着空摘要照样可能判 pass。
     // 0 有效样本 ≠ 通过: 什么都没量到的跑不许是绿的 (`run-outcome.ts` 的「空图不编 success」是同一条判据
     // 的另一半, 那边早就这么写了)。与全 failed **分开报** —— 「没跑」和「跑了全挂」是两件事 (NULL ≠ 0)。
+    // VER-4: 三条 fast-path 的打击对象一律 'implementation' —— 判卷官没被调到, 没有任何人说过判据有问题;
+    // 「没跑 / 全挂」是执行侧的事, 拿它去重建判据是把一次执行事故读成判据事故。
     if (leaves.length === 0) {
-      return { pass: false, reason: '零节点产出 — 一个 leaf 都没跑完, 0 有效样本 ≠ 通过', usage: { in: 0, out: 0 } };
+      return { pass: false, reason: '零节点产出 — 一个 leaf 都没跑完, 0 有效样本 ≠ 通过', target: 'implementation', usage: { in: 0, out: 0 } };
     }
     // VER-2: 全失败 → 显然无产出, 省一次调用。
     if (leaves.every((l) => l.status === 'failed')) {
-      return { pass: false, reason: '所有 leaf 执行失败 — 计划无产出', usage: { in: 0, out: 0 } };
+      return { pass: false, reason: '所有 leaf 执行失败 — 计划无产出', target: 'implementation', usage: { in: 0, out: 0 } };
     }
     const summary = summarizeResults(plan, results, artifactRoot);
     // A② GO fallback: verifierModel 走 opencode-go 端点溢出 → 回退 ds-v4-pro 官方 (跨模型校验不能因 GO 抖动整轮失败)。
@@ -387,11 +421,15 @@ export function createDefaultVerifier(opts: DefaultVerifierOpts): VerifierFn {
         responseSchema: VERIFIER_VERDICT_SCHEMA,
       }),
     );
-    const v = r.parsed as { pass: boolean; reason: string } | undefined;
-    // VER-1: 未结构化输出 → 保守 fail (不静默放行)。
-    if (!v) return { pass: false, reason: 'verifier 未结构化输出 → 保守判不通过', usage: r.usage };
+    const v = r.parsed as { pass: boolean; reason: string; target?: unknown } | undefined;
+    // VER-1: 未结构化输出 → 保守 fail (不静默放行)。判卷官没说话, 分型同样只能是默认值。
+    if (!v) return { pass: false, reason: 'verifier 未结构化输出 → 保守判不通过', target: 'implementation', usage: r.usage };
     const pass = v.pass === true;
-    return { pass, reason: pass ? v.reason ?? '已覆盖任务要求' : v.reason ?? '未满足任务要求', usage: r.usage };
+    // VER-4 fail-open 的第二道 (schema 的 `.catch` 是第一道): 这里也归一化, 因为**注入式 callModelFn**
+    // (测试 / 别处包一层的调用方) 的 parsed 不过 VERIFIER_VERDICT_SCHEMA —— 只有一道时, 分型会从
+    // 那条路径漏成 undefined 或原样乱值, 而消费侧读到的是"判卷官的判定", 那就成了 NULL 冒充读数。
+    const target: VerdictTarget = v.target === 'criterion' ? 'criterion' : 'implementation';
+    return { pass, reason: pass ? v.reason ?? '已覆盖任务要求' : v.reason ?? '未满足任务要求', target, usage: r.usage };
   };
 }
 
