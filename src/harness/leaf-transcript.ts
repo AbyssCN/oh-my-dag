@@ -91,7 +91,12 @@ export function createLeafTranscriptSink(opts: LeafTranscriptSinkOpts): LeafTran
     hooked = true;
     for (const sig of ['exit', 'SIGINT', 'SIGTERM'] as const) {
       process.once(sig, () => {
-        try { flush(); } catch { /* 退出路径上没有第二次机会, 也没人读得到日志 */ }
+        try {
+          flush();
+        } catch (err) {
+          // 退出路径上 logger 未必还活着, 但**不许什么都不留**: 直写 stderr 是这一刻唯一还成立的通道。
+          process.stderr.write(`[leaf-transcript] 退出前 flush 失败, 末尾 ${buf.length} 条丢失: ${(err as Error).message}\n`);
+        }
       });
     }
   };
@@ -126,7 +131,17 @@ export function createLeafTranscriptSink(opts: LeafTranscriptSinkOpts): LeafTran
     }
   }) as LeafTranscriptSink;
   sink.flush = () => {
-    try { flush(); } catch { /* 与写路径同款 fail-open; 原文已在首次失败时记过 */ }
+    try {
+      flush();
+    } catch (err) {
+      // 与写路径同款 fail-open, 但证据各记各的: 外部调用方可能在主写路径**从没失败过**的时候
+      // 调到这里 (例如跑完收尾), 那时"首次失败已记过"这个假设不成立。
+      if (!warned) {
+        warned = true;
+        logger.warn({ path: opts.path, err: (err as Error).message }, '[leaf-transcript] flush 失败, 缓冲内容丢失');
+      }
+      stopped = true;
+    }
   };
   return sink;
 }
