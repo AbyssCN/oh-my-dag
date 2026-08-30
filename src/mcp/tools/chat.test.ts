@@ -38,6 +38,7 @@ import { createOmdMemory } from '../../harness/memory';
 import { UNIVERSAL_SAFEGUARD } from '../../memory/safeguards/namespaces';
 import { createPlanLedger } from '../../harness/plan/plan-ledger';
 import { createDagRecorder } from '../../harness/dag/dag-record';
+import { createModelRouterFromEnv } from '../../harness/model-router';
 import { createOwnerInbox } from '../owner-inbox';
 import { registerProvider, clearProviders } from '../../model/providers';
 import { ALL_SEATS, resetConfigCache, seatEnvKey } from '../../model/role-models';
@@ -431,6 +432,7 @@ describe('装配点(坑 #7:装配点没闸 = 完全没接)', () => {
       commandRunner: noopCommand,
       ledger: createPlanLedger({ db: new Database(':memory:') }),
       recorder: createDagRecorder({ db: new Database(':memory:') }),
+      router: createModelRouterFromEnv(process.env, { db: new Database(':memory:') }),
       inbox: createOwnerInbox({ db: new Database(':memory:') }),
       chatStore: store,
       // 装配路径的座位是 faux:conductor(pi-ai 目录解不出)—— 这条测的是 wiring 不是模型,

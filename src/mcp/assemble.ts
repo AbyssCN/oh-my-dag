@@ -43,7 +43,7 @@ import { createConfigTools } from './tools/config-tools';
 import { createComposeTools } from './tools/compose';
 import { createWebTools, createDistillTools } from './tools/web';
 import { createPlansTool } from './tools/plans';
-import { createModelRouterFromEnv } from '../harness/model-router';
+import { createModelRouterFromEnv, type ModelRouterHandle } from '../harness/model-router';
 import { createModelQueryExpander, createWebStackFromEnv, retrieveWeb } from '../harness/web';
 import { researchWebFanout } from '../harness/research/web-fanout';
 import type { ResearchLeafRunner } from '../harness/leaf-runners';
@@ -213,6 +213,21 @@ export interface AssembleOmdMcpDeps {
   ledger?: PlanLedger;
   /** DAG 运行留痕接缝 (测试注入 :memory:; 默认 .omd/dag-runs.db)。 */
   recorder?: DagRecorder;
+  /**
+   * B-2 bandit 选型路由接缝 (测试注入 `:memory:`; 默认 `createModelRouterFromEnv` → `.omd/model-router.db`)。
+   *
+   * 与 `recorder` **同一族缺陷的第五例**, 2026-08-30 实测补上: 默认路径是 `.omd/model-router.db`
+   * 这个**进程 cwd 相对**的串 (model-router.ts:90), 于是任何调 `assembleOmdMcpTools` 的测试
+   * 都会去开**真仓那一个库**。宿主上只要还有一个活的 omd 进程握着它 (实测: bench 模型桥
+   * `scripts/bench-bridge.ts`), 就并发出 `SQLiteError: disk I/O error` 的**假红** ——
+   * 红的是测试基建, 不是被测代码。
+   *
+   * `chat-seat.test.ts:18` 的注早把这个坑写清楚了, 但只堵了 `recorder` 那一个口:
+   * 同一次 `assembleOmdMcpTools` 里 router 也开库, 而它当时**没有注入口**, 堵不了。
+   * 症状是间歇的 (取决于外部进程有没有正在写), 所以它以"全量偶尔 1 fail、单跑必绿"的形态
+   * 存在了一段时间 —— 见 `docs/plan/2026-08-30-next-session.md` §1 那条未定位的红。
+   */
+  router?: ModelRouterHandle;
   /** owner 收件箱接缝 (S3; 测试注入 :memory:; 默认与 runs.db 同库)。 */
   inbox?: OwnerInbox;
   /** 会话持久层接缝 (S1 conductor_chat; 测试注入临时目录 store, 默认 createOmdSessionStore(cwd))。 */
@@ -535,7 +550,8 @@ export function assembleOmdMcpTools(deps: AssembleOmdMcpDeps = {}): OmdMcpTool[]
   // B-2 bandit 选型路由 (2026-07-21 MCP 接线 — 此前只 TUI 有, MCP 路径 dag_run 恒静态):
   // env pool (OMD_ROUTER_POOL_*) / config.multimodalPool ≥2 才真学; 未配 → no-op = 静态 (零回归)。
   // reward = leafCostReward (成本主信号, 质量走 verifier 闸) — 见 model-router ROUTER-5。
-  const router = createModelRouterFromEnv(env);
+  // 注入优先 (测试给 :memory: 的那一个); 缺席才按 env 造 —— 见 AssembleOmdMcpDeps.router 的注。
+  const router = deps.router ?? createModelRouterFromEnv(env);
   /**
    * engine config 基座 —— **每个 run 重算** (INV-MODEL-3 无 boot 冻结)。
    *

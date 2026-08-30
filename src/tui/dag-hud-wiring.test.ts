@@ -23,6 +23,9 @@ import { createOmdSessionStore } from '../harness/chat/session-store';
 import type { ConductorPlan } from '../harness/conductor-plan';
 import type { DagNodeEvent, ExecutorDagConfig, ExecutorDagResult } from '../harness/dag/types';
 import { assembleOmdMcpTools } from '../mcp/assemble';
+import { createModelRouterFromEnv } from '../harness/model-router';
+import { createDagRecorder } from '../harness/dag/dag-record';
+import { Database } from 'bun:sqlite';
 import { createEmbeddedBackend } from './backend-embedded';
 import { DagHud } from './components/dag-hud';
 import { createTheme } from './theme';
@@ -50,6 +53,11 @@ function wireEverything() {
   let sink: { pushDagEvent(runId: string, e: unknown): void } | null = null;
   const tools = assembleOmdMcpTools({
     cwd,
+    // router 注入 :memory: —— 缺陷②同族第五例 (2026-08-30): 默认 `.omd/model-router.db` 是
+    // 进程 cwd 相对, 宿主有活的 omd 进程时并发出 `SQLiteError: disk I/O error` 假红。
+    router: createModelRouterFromEnv(process.env, { db: new Database(':memory:') }),
+    // recorder 同理 —— 本文件此前只漏了这一个 (由 assemble-db-injection 闸当场抓出)。
+    recorder: createDagRecorder({ db: new Database(':memory:') }),
     // 假引擎:立刻发一串节点事件再返回。除它之外这条链上全是真的。
     engine: {
       runExecutorDag: (async (_t: string, c: ExecutorDagConfig) => {

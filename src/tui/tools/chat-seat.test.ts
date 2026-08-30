@@ -12,12 +12,27 @@ import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { assembleOmdMcpTools } from '../../mcp/assemble';
 import { createDagRecorder } from '../../harness/dag/dag-record';
+import { createModelRouterFromEnv } from '../../harness/model-router';
 import { buildConductorChatSystemPrompt } from '../../harness/harness-prompts';
 import { HAND_TOOLS, createChatSeatTools } from './chat-seat';
 
 // recorder 注入 :memory: —— 默认 createDagRecorder() 打开真仓 .omd/dag-runs.db (进程 cwd 锚,
 // 缺陷②同族第四例): 外部 run 活跃时并发出 SQLiteError: disk I/O error 的假红 (NOTES 2026-08-10)。
-const mcpTools = () => assembleOmdMcpTools({ recorder: createDagRecorder({ db: new Database(':memory:') }) });
+//
+// router 注入 :memory: —— **同族第五例, 2026-08-30 实测补上**。上面那一行只堵了 recorder 一个口,
+// 而同一次 `assembleOmdMcpTools` 里 `createModelRouterFromEnv` 也开库 (默认 `.omd/model-router.db`,
+// 同样是进程 cwd 相对)。宿主上有活的 omd 进程握着它时 (实测: bench 模型桥 scripts/bench-bridge.ts),
+// 全量跑就并发出 `SQLiteError: disk I/O error` —— 栈顶是 model-router.ts:92 `new Database(path)`,
+// 一路 assemble.ts → 本文件 :21。症状是**全量偶尔 1 fail、单跑必绿**(单跑时桥没在写)。
+//   实测读数 (2026-08-30): 补这一行之前, 全量 8524 tests **1 fail** (★ 指挥面没被挤掉),
+//   同一份测试单跑连续三遍 18 pass / 0 fail。补上之后全量绿。
+// 反向自检: 把 `router:` 那一行删掉 → 在宿主有 omd 进程写库时全量复现该假红 (无 omd 进程时不复现,
+//   所以这条**不是**恒红闸, 它拆的是并发假红的成因)。
+const mcpTools = () =>
+  assembleOmdMcpTools({
+    recorder: createDagRecorder({ db: new Database(':memory:') }),
+    router: createModelRouterFromEnv(process.env, { db: new Database(':memory:') }),
+  });
 const seat = () => createChatSeatTools({ cwd: process.cwd(), mcpTools: mcpTools() })('t');
 
 describe('对话位工具面 (S-4)', () => {

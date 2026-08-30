@@ -28,6 +28,7 @@ import { createOmdMemory } from '../harness/memory';
 import { UNIVERSAL_SAFEGUARD } from '../memory/safeguards/namespaces';
 import { createPlanLedger } from '../harness/plan/plan-ledger';
 import { createDagRecorder } from '../harness/dag/dag-record';
+import { createModelRouterFromEnv } from '../harness/model-router';
 import { createOwnerInbox } from './owner-inbox';
 import { registerProvider, clearProviders } from '../model/providers';
 import { ALL_SEATS, resetConfigCache, seatEnvKey } from '../model/role-models';
@@ -68,6 +69,7 @@ async function configSeenByEngine(env: NodeJS.ProcessEnv): Promise<Partial<Execu
     commandRunner: noopCommand,
     ledger: createPlanLedger({ db: new Database(':memory:') }),
     recorder: createDagRecorder({ db: new Database(':memory:') }),
+    router: createModelRouterFromEnv(process.env, { db: new Database(':memory:') }),
     inbox: createOwnerInbox({ db: new Database(':memory:') }),
   };
   const tools = assembleOmdMcpTools(deps);
@@ -161,6 +163,7 @@ describe('verify 闸挂在 MCP 装配上', () => {
       commandRunner: async () => ({ text: '', usage: { in: 0, out: 0 }, timedOut: false, signal: null, exitCode: 0 }),
       ledger: createPlanLedger({ db: new Database(':memory:') }),
       recorder: createDagRecorder({ db: new Database(':memory:') }),
+      router: createModelRouterFromEnv(process.env, { db: new Database(':memory:') }),
       inbox: createOwnerInbox({ db: new Database(':memory:') }),
       configOverrides: { verifier: mine as never },
     });
