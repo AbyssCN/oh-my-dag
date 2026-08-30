@@ -51,8 +51,12 @@ LOG_SIGNALS = [
      "run-goal.ts:867 CRITERION_REBUILD_LABEL —— 目标修订边首次通电"),
     ("路径参数拒因", "missing-path-arg",
      "acceptance-gate.ts:210 —— A 桶 5/6 的病根(判据指错地)"),
-    ("self_check SDK 静音", "SDK 通道不启用",
-     "agent-leaf.ts SELF_CHECK_SDK_SKIP_LOG —— S-1 后 self_check 需求面第一次可观测"),
+    # ⚠ 这一条恒 0, 而原因是**不适用**不是"没出现" —— 实配里没有任何 leaf 在 SDK 通道上
+    # (agent 座 = minimax-cn:MiniMax-M3; bench 批 claude-code: 坐标 0/77 trial)。
+    # 留着是因为 agent 座**将来**换到 claude-code: 时它就变成真信号; 但**别把它当效果信号读**,
+    # 它的 0 不是 0→N 的那个 0。这是 §静默坑 1 的自己人版本 (我第一版就把它列错了)。
+    ("self_check SDK 静音 [不适用]", "SDK 通道不启用",
+     "恒 0 = 没有 leaf 走 SDK 通道 (不适用), **不是**「self_check 没生效」"),
     ("self_check 自证闸拒", "self_check 判据自证闸拒",
      "engine.ts S-1 —— 判据在干活前就绿 ⇒ 不是判据 ⇒ 退回旁路"),
     ("writeScope 在场", "writeScope",
