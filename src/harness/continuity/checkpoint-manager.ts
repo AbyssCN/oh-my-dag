@@ -601,10 +601,19 @@ export class CheckpointManager {
       try {
         // 绝对路径原样用 (path.join 会错误拼接绝对路径); 相对路径锚到 repoRoot。
         const fullPath = isAbsolute(path) ? path : join(this.repoRoot, path);
-        if (!existsSync(fullPath)) return false;
+        // 刀⑤ (2026-08-30 闸门三角结): 判不跳过必留 {path, was, now} —— 「不跳过」= 重跑 = 花钱,
+        // 此前三条出口全静默, 多花的钱查不到原因 (formatter 漂移一个字节 = 整节点重算, 无痕)。
+        if (!existsSync(fullPath)) {
+          logger.info({ runId, nodeId, path, was: expectedHash, now: null }, 'checkpoint: 产物不在盘上 → 不跳过, 重执行 (刀⑤ 漂移证据)');
+          return false;
+        }
         const actualHash = fileSha256Hex(fullPath).slice(0, 16);
-        if (actualHash !== expectedHash) return false;
-      } catch {
+        if (actualHash !== expectedHash) {
+          logger.info({ runId, nodeId, path, was: expectedHash, now: actualHash }, 'checkpoint: 产物哈希与 checkpoint 不同 → 不跳过, 重执行 (刀⑤ 漂移证据)');
+          return false;
+        }
+      } catch (err) {
+        logger.info({ runId, nodeId, path, was: expectedHash, err: (err as Error).message }, 'checkpoint: 产物读不了 → 不跳过, 重执行 (刀⑤ 漂移证据)');
         return false;
       }
     }

@@ -4095,7 +4095,12 @@ async function executePlan(
        */
       const declaredArtifact = node.output_type === 'file' || node.output_type === 'git' || !!node.output_path;
       // 写文件节点但无 agentRunner → 根本无法产物 → 标失败 (拒绝 inproc 静默假成功; oracle/heal 才看得到)。
-      if (producesFiles && !config.agentRunner) {
+      // 刀⑤ (2026-08-30 闸门三角结): 判死谓词从宽 `producesFiles` 收窄为 A3 同款 `declaredArtifact` ——
+      // producesFiles 的 goal 正则是**路由**判据 (故意宽, 宽在路由上没有代价), 拿它判死会把
+      // 「只读检查」类节点冤杀 (上面 A3 那段注的 21 份实测里 6 份正是这形态)。同一宽谓词的
+      // 两个消费者此前只修过 A3 一个, 这里补齐。goal 正则命中而未显式声明产物的节点自此走
+      // inproc —— 它没有产物合同, 产物闸也不会进 (declaredArtifact 同一判据), 语义自洽。
+      if (declaredArtifact && !config.agentRunner) {
         logger.warn({ node: id, output_type: node.output_type }, '[omd/executor-dag] 写文件节点但无 agentRunner → 失败 (拒绝 inproc 静默假成功)');
         return { id, status: 'failed', failureKind: 'missing-capability', kind: 'inproc', output: '[写文件节点无 agentRunner, 无法产物]', deps: node.depends_on ?? [], usage: { in: 0, out: 0 } };
       }
