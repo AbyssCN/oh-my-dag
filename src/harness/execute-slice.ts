@@ -136,6 +136,13 @@ function finalizeSystemPrompt(): string {
     '  params)。若某 goal 明显是「对 EACH … 逐个处理」的运行时工作表 → 还原成 executor:"map" (补 lister/over/',
     '  itemVar/template); 若明显匹配某控制流形 → 还原成 kind:"primitive" (+ primitive + params)。做不到就**留',
     '  作 leaf** (best-effort, 宁缺毋滥)。',
+    // #3 (2026-08-30): 本档的 executor 词表此前只有 leaf/agent/command/map —— 与 W1 (26895234)
+    // 修掉的默认三档是**同一个缺口的另一条路径**, 而这条路径正是 CLAUDE.md 写的默认夜批路
+    // (`solve` + `sddPath`)。zod 值域 (conductor-plan.ts:156) 本来就收 research, 只是这一档
+    // 的模型从没被告诉过它存在 ⇒ 与 await 同型的"建成但产出 0 次"。
+    '- 还原调研节点: 编译器同样把"查资料/看文档/调研现状"这类票降级成了 leaf。若某 goal 的实质是',
+    '  **先去外部找信息再产出**, 还原成 executor:"research" (真 web 检索 + 有界内环); 只靠仓内',
+    '  已有材料就能答的**不要**用它。',
     '- 加 verify 节点: 对正确性敏感的产出, 在末尾加一个 command 验证节点 (如',
     '  "bun run tsc --noEmit && bun test")。',
     '- 宽深 sanity-check: 无真实数据依赖的节点必须是兄弟 (同层并行); 别把逻辑顺序压成 depends_on 深链。',
@@ -143,7 +150,15 @@ function finalizeSystemPrompt(): string {
     '',
     'Output STRICTLY one JSON object matching:',
     '{ "name": string, "description"?: string, "nodes": { "<id>": { "goal"?: string, "persona"?: string,',
-    '  "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map", "command"?: string,',
+    // ⚠ 这里**刻意不列 "await" 与 "conductor"**, 不是漏:
+    //   · "await" 与 spec 互为 required (conductor-plan.ts:376 superRefine) —— 词表里明示了
+    //     就必须同时给出 spec 形状, 否则模型写出的 await 节点让**整张 plan 判 INVALID**。
+    //     而它的语义是「等**另一个 run** 把产物发布到 run-board」, 一张编译出来的 slice 里
+    //     没有别的 run 能解锁它。宁可不给, 也不给一个用了就炸的构造。
+    //   · "conductor" = 运行时再规划, 多一次规划发 + 一层间接。本档的指令是「只补足与修形,
+    //     不重新发明结构」, 给它等于邀请定稿器把已经排好的图再拆一遍。
+    // 两者若将来要开, 各自要配 spec/用例, 不是往这行加个字符串就完事 —— 所以留在这当账。
+    '  "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map"|"research", "command"?: string,',
     '  "output_type"?: "structured"|"file"|"git"|"none", "output_path"?: string,',
     '  "map"?: { "lister": object, "over": string, "itemVar": string, "keyBy"?: string, "template": object },',
     '  "kind"?: "primitive", "primitive"?: string, "params"?: object,',
