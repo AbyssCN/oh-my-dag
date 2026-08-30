@@ -11,7 +11,9 @@
  * 安全 (GP-5 fail-closed, 因命令串来自 conductor 模型, 不可信):
  *  ① classifyCommand 拦危险命令 (rm -rf / git force / find -delete / DROP …, 复用 V2-HOOK 闸)。
  *  ② allowlist 命令首 token 白名单 (空白名单 = 全拒, 必须显式给如 ['codegraph'])。
- *  ②.5 shell 元字符拦 (防 `;` `|` `$()` 注入)。
+ *  ②.5 shell 元字符拦 (防 `;` `$()` 反引号注入)。刀④ (2026-08-30 闸门三角结) 收窄: 引号感知,
+ *     `|` 放行 (每个管道段独立过全部闸)、`2>&1` 放行、`>` 放行到**节点写集内**路径;
+ *     `$( )` 反引号 `;` `<` `&` 保持拒, fail-closed 骨架 (先拆链再逐环过闸) 不动。
  *  ②.6 git 子命令只读闸 (放行 bin 'git' 不等于放行 `git checkout .` / `git commit`)。
  *  ③ 超时 kill。
  *
@@ -20,8 +22,9 @@
  * cwd 锚 + 超时 + 危险模式表; 需要强隔离的是 agent leaf (那边有 bwrap jail)。
  */
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { classifyCommand } from './hooks/dangerous-cmd';
+import { checkWriteAllowed } from './writeset/write-allow';
 import { awaitDeath, awaitExitBounded, readAllBounded, spawnWithPipes } from './proc/await-exit';
 import {
   installSignalCleanup,
@@ -733,54 +736,162 @@ function commandBin(command: string): string {
  * 含 `&&` 链拆分 (2026-07-20 修: 兑现 conductor prompt 契约 "可 && 链验证步, 每环独立过闸")。
  * **全链先过闸再执行**是 fail-closed 的要点: 防"合法头环已执行、恶意尾环才被拒"的部分执行。
  */
-export function commandBlockReason(command: string, allowlist: readonly string[]): string | null {
+/**
+ * **②.5 的收窄版解析** (刀④, 2026-08-30 闸门三角结) —— 引号感知地把一环 (&&-链的一段)
+ * 判元字符并拆成管道段, 每段随后独立过 ②/②.4/②.6/③ 各闸。
+ *
+ * 放行的三样 (契约点名, 一样不多):
+ *   · `|` —— 管道。每个管道段独立过白名单等全部闸 (「每一环都过白名单」从 && 链细化到管道段)。
+ *   · `2>&1` —— 只是把 stderr 并进 stdout, 无写面 (verifier 要看失败详情, 而 bun test 把
+ *     汇总写 stderr —— 这正是最常见的假红形态)。
+ *   · `>` / `>>` —— 目标必须在**节点写集内** (checkWriteAllowed 同一份判据) 且在 root 内;
+ *     未声明写集 → 拒 (fail-closed: 命令叶本不该写, 要写先立契约)。
+ * 保持拒: `$( )` 反引号 `;` `<` 单 `&` `||` `( ) { }` 换行 反斜杠 · 双引号内的 `$` 反引号
+ * 反斜杠 (sh 在双引号里照样展开) · 未闭合引号 · 带引号的重定向目标。
+ * 单引号内容全字面 —— `grep -E "a|b"` 一类被旧闸整拒的合法用法是本刀要回收的假红。
+ *
+ * 证伪方式 (command-metachar-narrow.test 反向自检): 把双引号态的 `$` 放行 → 「双引号内
+ * $(...) 仍拒」用例当场红; 把写集判据摘掉 → 「> 到写集外」用例当场红。
+ */
+function parseShellLink(
+  link: string,
+  opts?: { writeSet?: readonly string[]; root?: string },
+): { blocked: string | null; segments: string[] } {
+  const reject = (why: string): { blocked: string; segments: string[] } => ({ blocked: why, segments: [] });
+  // 1. 引号感知掩码 (等长, 引号与其内容 → 'Q'): 之后所有结构判断只看掩码, 位置映射回原文。
+  let masked = '';
+  let state: 'plain' | 'single' | 'double' = 'plain';
+  for (const ch of link) {
+    if (state === 'plain') {
+      if (ch === "'") { state = 'single'; masked += 'Q'; continue; }
+      if (ch === '"') { state = 'double'; masked += 'Q'; continue; }
+      masked += ch;
+    } else if (state === 'single') {
+      if (ch === "'") state = 'plain';
+      masked += 'Q';
+    } else {
+      if (ch === '"') { state = 'plain'; masked += 'Q'; continue; }
+      if (ch === '$' || ch === '`' || ch === '\\') return reject(`[blocked shell-metachar: 双引号内 ${ch} 仍会被 sh 展开, 不放行]`);
+      masked += 'Q';
+    }
+  }
+  if (state !== 'plain') return reject('[blocked shell-metachar: 引号未闭合]');
+  // 2. `2>&1` 先摘 (等长换空格, 掩码/原文同步 —— 掩码上找即只认未加引号的那批)。
+  let orig = link;
+  for (let i = masked.indexOf('2>&1'); i !== -1; i = masked.indexOf('2>&1')) {
+    masked = `${masked.slice(0, i)}    ${masked.slice(i + 4)}`;
+    orig = `${orig.slice(0, i)}    ${orig.slice(i + 4)}`;
+  }
+  // 3. 硬拒集 —— 与旧闸同一张表, 只摘走 `|` `>` 与 2>&1 的 `&`。
+  const hard = /[;`$<(){}\n\r\\]/.exec(masked);
+  if (hard) return reject(`[blocked shell-metachar: ${JSON.stringify(hard[0])} not allowed]`);
+  if (masked.includes('||')) return reject('[blocked shell-metachar: || not allowed]');
+  if (masked.includes('&')) return reject('[blocked shell-metachar: & (背景执行) not allowed]');
+  // 4. 按未加引号的 `|` 拆管道段。
+  const rawSegs: Array<{ o: string; m: string }> = [];
+  let segStart = 0;
+  for (let i = 0; i <= masked.length; i++) {
+    if (i === masked.length || masked[i] === '|') {
+      rawSegs.push({ o: orig.slice(segStart, i), m: masked.slice(segStart, i) });
+      segStart = i + 1;
+    }
+  }
+  // 5. 每段剥重定向并验目标。
+  const segments: string[] = [];
+  for (const seg of rawSegs) {
+    let m = seg.m;
+    let o = seg.o;
+    for (let i = m.indexOf('>'); i !== -1; i = m.indexOf('>')) {
+      let s = i;
+      // fd 数字是独立 token 时并入操作符 (`2> f` / `1>> f`); 粘在词尾的数字 (`foo2>`) 归前词。
+      if (s > 0 && /[12]/.test(m[s - 1]!) && (s === 1 || /\s/.test(m[s - 2]!))) s -= 1;
+      let e = i + 1;
+      if (m[e] === '>') e += 1; // `>>` 追加 —— 同一个写面, 同一份判据
+      while (e < m.length && /\s/.test(m[e]!)) e += 1;
+      let t = e;
+      while (t < m.length && !/[\s>|]/.test(m[t]!)) t += 1;
+      if (t === e) return reject('[blocked shell-redirect: > 缺目标]');
+      if (m.slice(e, t).includes('Q')) return reject('[blocked shell-redirect: 重定向目标带引号, 不放行 (fail-closed)]');
+      const target = o.slice(e, t);
+      if (!opts?.writeSet) {
+        return reject(`[blocked shell-redirect: '>' 目标 ${target} 需在节点写集内, 而本节点未声明 write_set —— 要写文件先在分解表立写集]`);
+      }
+      const root = opts.root ?? process.cwd();
+      const rel = relative(root, isAbsolute(target) ? target : resolve(root, target));
+      // 根外一律拒: checkWriteAllowed 对根外目标刻意放行 (那是 agent 侧沙箱闸的地盘),
+      // 而命令叶没有第二道沙箱 —— 这里就是最后一道, fail-closed。
+      if (rel.startsWith('..') || isAbsolute(rel)) {
+        return reject(`[blocked shell-redirect: '>' 目标 ${target} 在执行根之外]`);
+      }
+      const v = checkWriteAllowed(target, opts.writeSet, root);
+      if (!v.allowed) {
+        return reject(`[blocked shell-redirect: '>' 目标 ${target} 不在本节点写集内 (只许写: ${opts.writeSet.join(' · ') || '(空)'})]`);
+      }
+      m = `${m.slice(0, s)}${' '.repeat(t - s)}${m.slice(t)}`;
+      o = `${o.slice(0, s)}${' '.repeat(t - s)}${o.slice(t)}`;
+    }
+    const text = o.trim();
+    if (!text) return reject('[blocked shell-metachar: 空管道段]');
+    segments.push(text);
+  }
+  return { blocked: null, segments };
+}
+
+export function commandBlockReason(
+  command: string,
+  allowlist: readonly string[],
+  /** 刀④: `>` 重定向目标的判据面。缺席 = 重定向一律拒 (老调用方零行为变化那一侧取 fail-closed)。 */
+  opts?: { writeSet?: readonly string[]; root?: string },
+): string | null {
   const links = command.split('&&').map((s) => s.trim());
   if (links.some((l) => !l)) return '[blocked empty link in && chain]';
   for (const link of links) {
-    // ① fail-closed: 危险命令拦 (复用 V2-HOOK 闸)。
+    // ① fail-closed: 危险命令拦 (复用 V2-HOOK 闸)。整环扫 (先于元字符/白名单 —— 拒因给最要紧的
+    // 那条), 引号里/管道里的危险模式一样命中。
     const verdict = classifyCommand(link);
     if (verdict.dangerous) {
       logger.warn({ command: link, label: verdict.label }, '[omd/command-leaf] 危险命令拦截 (fail-closed)');
       return `[blocked dangerous: ${verdict.reason ?? verdict.label}]`;
     }
-    // ② 白名单 (GP-5): 首 token 必须在 allowlist。
-    const bin = commandBin(link);
-    if (!allowlist.includes(bin)) {
-      logger.warn({ command: link, bin, allowlist }, '[omd/command-leaf] 命令不在白名单, 拒绝');
-      return `[blocked not-allowed: '${bin}' ∉ allowlist]`;
+    // ②.5 元字符闸 (刀④ 收窄版, 判据与判词见 parseShellLink): 拆出管道段, 之后逐段过闸。
+    const parsed = parseShellLink(link, opts);
+    if (parsed.blocked) {
+      logger.warn({ command: link, why: parsed.blocked }, '[omd/command-leaf] 命令含不放行的 shell 形态, 拒绝 (防注入)');
+      return parsed.blocked;
     }
-    // ②.4 `bun [--cwd D] x …` 死形态拒得可教 (2026-08-09, S2 图 oracle-tsc 实测):
-    //    带 --cwd 时 bun 不解析 x 别名, 把 x 当 script 名报 `Script not found "x"` ——
-    //    tsc 根本没跑, 节点红却长得像类型错。判词给出改写, 让修复轮能自纠而不是瞎猜。
-    if (bin === 'bun') {
-      const toks = link.trim().split(/\s+/);
-      const xAt = toks[1] === 'x' ? 1 : toks[1] === '--cwd' && toks[3] === 'x' ? 3 : -1;
-      if (xAt > 0) {
-        logger.warn({ command: link }, '[omd/command-leaf] `bun x` 形态拒绝 (--cwd 下 x 不解析) → 提示改写 bunx');
-        return `[blocked bun-x-form: \`bun${xAt === 3 ? ' --cwd …' : ''} x\` 在本引擎不可用 (--cwd 下 bun 把 x 当 script 名) —— 改写为 \`bunx <tool> …\`(bunx 在白名单), 目录定位用工具自带参数 (如 tsc -p <dir>)]`;
+    for (const segment of parsed.segments) {
+      // ② 白名单 (GP-5): **每个管道段**的首 token 都必须在 allowlist (刀④: 环细化到段)。
+      const bin = commandBin(segment);
+      if (!allowlist.includes(bin)) {
+        logger.warn({ command: segment, bin, allowlist }, '[omd/command-leaf] 命令不在白名单, 拒绝');
+        return `[blocked not-allowed: '${bin}' ∉ allowlist]`;
       }
-    }
-    // ②.5 shell 元字符拦 (sec-audit 揪出的 CRITICAL): 白名单只查首 token, 整串喂 sh -c → 经
-    // ; | & $() ` 换行 < > () 可在合法 bin 后注入任意命令。拒绝这些元字符 (引号/空格/路径字符仍允许)。
-    // && 已在上方拆链 → 环内残留的单 & 仍在此被拒 (背景执行/注入不放行)。
-    if (/[;&|`$<>(){}\n\r\\]/.test(link)) {
-      logger.warn({ command: link }, '[omd/command-leaf] 命令含 shell 元字符, 拒绝 (防注入)');
-      return '[blocked shell-metachar: ; & | ` $ < > ( ) \\ newline not allowed]';
-    }
-    // ②.6 git 子命令只读闸: bin 在白名单只说明「可以调 git」, 改仓库状态的子命令仍拒。
-    // 判据与判词都在 `gitWriteBlockReasonForLink` 里 —— agent leaf 的 bash 调的是同一个导出
-    // (#239: 此前那条路走的是黑名单, 认识 `reset --hard` 却不认识 `checkout`/`restore`)。
-    const gitBlocked = gitWriteBlockReasonForLink(link);
-    if (gitBlocked) {
-      logger.warn({ command: link, sub: gitSubcommand(link) }, '[omd/command-leaf] git 子命令非只读, 拒绝');
-      return gitBlocked;
-    }
-    // ③ 凭证文件拒 (见 SECRET_BASENAMES): 白名单管「哪个 bin」, 这条管「读的是什么」。
-    //    放行 `cat` 不等于放行 `cat .env` —— 后者与被刻意排除的 `printenv` 是同一件事。
-    const secret = secretPathInCommand(link);
-    if (secret) {
-      logger.warn({ command: link, path: secret }, '[omd/command-leaf] 命令读凭证文件, 拒绝');
-      return `[blocked secret-file: '${secret}' 是凭证文件, 读出来会进模型上下文]`;
+      // ②.4 `bun [--cwd D] x …` 死形态拒得可教 (2026-08-09, S2 图 oracle-tsc 实测):
+      //    带 --cwd 时 bun 不解析 x 别名, 把 x 当 script 名报 `Script not found "x"` ——
+      //    tsc 根本没跑, 节点红却长得像类型错。判词给出改写, 让修复轮能自纠而不是瞎猜。
+      if (bin === 'bun') {
+        const toks = segment.trim().split(/\s+/);
+        const xAt = toks[1] === 'x' ? 1 : toks[1] === '--cwd' && toks[3] === 'x' ? 3 : -1;
+        if (xAt > 0) {
+          logger.warn({ command: segment }, '[omd/command-leaf] `bun x` 形态拒绝 (--cwd 下 x 不解析) → 提示改写 bunx');
+          return `[blocked bun-x-form: \`bun${xAt === 3 ? ' --cwd …' : ''} x\` 在本引擎不可用 (--cwd 下 bun 把 x 当 script 名) —— 改写为 \`bunx <tool> …\`(bunx 在白名单), 目录定位用工具自带参数 (如 tsc -p <dir>)]`;
+        }
+      }
+      // ②.6 git 子命令只读闸: bin 在白名单只说明「可以调 git」, 改仓库状态的子命令仍拒。
+      // 判据与判词都在 `gitWriteBlockReasonForLink` 里 —— agent leaf 的 bash 调的是同一个导出
+      // (#239: 此前那条路走的是黑名单, 认识 `reset --hard` 却不认识 `checkout`/`restore`)。
+      const gitBlocked = gitWriteBlockReasonForLink(segment);
+      if (gitBlocked) {
+        logger.warn({ command: segment, sub: gitSubcommand(segment) }, '[omd/command-leaf] git 子命令非只读, 拒绝');
+        return gitBlocked;
+      }
+      // ③ 凭证文件拒 (见 SECRET_BASENAMES): 白名单管「哪个 bin」, 这条管「读的是什么」。
+      //    放行 `cat` 不等于放行 `cat .env` —— 后者与被刻意排除的 `printenv` 是同一件事。
+      const secret = secretPathInCommand(segment);
+      if (secret) {
+        logger.warn({ command: segment, path: secret }, '[omd/command-leaf] 命令读凭证文件, 拒绝');
+        return `[blocked secret-file: '${secret}' 是凭证文件, 读出来会进模型上下文]`;
+      }
     }
   }
   return null;
@@ -796,9 +907,9 @@ export function createCommandLeafRunner(opts: CommandLeafRunnerOpts): CommandLea
   const spawn = opts.spawn ?? ((c: string, d: string, t?: number) => defaultSpawn(c, d, t, opts.spawnRaw));
 
   // **每次调用都真跑** —— 不缓存的判据见上方 CommandLeafRunnerOpts 下的那段注。
-  return async ({ command }) => {
-    // 先拆后闸: 每环独立 spawn, 无 sh 级注入面 (判据见 commandBlockReason)。
-    const blocked = commandBlockReason(command, allowlist);
+  return async ({ command, writeSet }) => {
+    // 先拆后闸: 每环独立 spawn (sh -c), 管道/重定向经 ②.5 逐段判过才到这里 (刀④)。
+    const blocked = commandBlockReason(command, allowlist, { ...(writeSet ? { writeSet } : {}), root: cwd });
     // 闸拒: 三字段都是"量过且没发生" —— 没起过进程, 所以没超时也没有信号。
     if (blocked) return { text: blocked, usage: { in: 0, out: 0 }, exitCode: -1, timedOut: false, signal: null };
     const links = command.split('&&').map((s) => s.trim());

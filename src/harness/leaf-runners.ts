@@ -404,6 +404,11 @@ export type AgentLeafRunner = (input: AgentLeafInput) => Promise<AgentLeafResult
 export interface CommandLeafInput {
   /** 要跑的 CLI 命令串(conductor 产出,经闸+白名单校验)。 */
   command: string;
+  /**
+   * 节点声明的写集 (刀④, 2026-08-30 闸门三角结): `>` 重定向目标的判据面。
+   * 缺席 = 没立写集合同 → 重定向一律拒 (fail-closed), 与「空数组 = 什么都不许写」同判。
+   */
+  writeSet?: readonly string[];
 }
 export interface CommandLeafResult {
   text: string;

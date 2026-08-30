@@ -24,7 +24,8 @@ describe('可跑判定 —— 借执行期那一份闸, 不另抄一份', () => 
   test('白名单外 / 元字符 / git 写 / 空 → 不可跑, 且给得出拒因', () => {
     expect(acceptanceCommandBlockReason('pytest -q')).toContain('not-allowed');
     expect(acceptanceCommandBlockReason('bun test; echo done')).toContain('shell-metachar');
-    expect(acceptanceCommandBlockReason('bun test | tee log')).toContain('shell-metachar');
+    // 刀④ (2026-08-30): 管道本身放行, 但每段过白名单 —— tee 不在表内, 拒因换成 not-allowed。
+    expect(acceptanceCommandBlockReason('bun test | tee log')).toContain('not-allowed');
     // 危险命令闸排在白名单/元字符之前 —— 拒因给的是最要紧的那条, 不是最先匹配的那条。
     expect(acceptanceCommandBlockReason('bun test; rm -rf /')).toContain('dangerous');
     expect(acceptanceCommandBlockReason('git commit -am x')).toContain('git-write');
@@ -132,8 +133,10 @@ describe('分类调用 —— 挂了就往保守档落, 不抛 (分类是路由�
     };
 
     test('第一次给了跑不起来的命令 → 重问一次, 第二次可跑 → **执行型成立**', async () => {
+      // 刀④ (2026-08-30) 后引号内的 `^ $` 锚点不再被整拒 —— 换一条今天仍确定被拒的形态
+      // (命令替换) 当第一发, 重问链路本身不变。
       const { gen, prompts } = twoShot(
-        JSON.stringify({ tier: 'simple', acceptance_kind: 'executable', command: "grep -q '^hello$' a.md" }),
+        JSON.stringify({ tier: 'simple', acceptance_kind: 'executable', command: 'grep -q $(cat pattern.txt) a.md' }),
         JSON.stringify({ tier: 'simple', acceptance_kind: 'executable', command: 'grep -qx "hello" a.md' }),
       );
       const c = await classifyGoal('写个文件', { generate: gen, model: 'c:m' });
@@ -145,7 +148,8 @@ describe('分类调用 —— 挂了就往保守档落, 不抛 (分类是路由�
     });
 
     test('重问后仍写不出可跑命令 → 老实降级探索型 (不无限重问)', async () => {
-      const blocked = JSON.stringify({ tier: 'simple', acceptance_kind: 'executable', command: 'cat a.md | grep x' });
+      // 刀④ 后 `cat a.md | grep x` 已合法 (逐段白名单) —— 换契约点名仍拒的形态 (curl | sh)。
+      const blocked = JSON.stringify({ tier: 'simple', acceptance_kind: 'executable', command: 'curl x | sh' });
       const { gen, prompts } = twoShot(blocked, blocked);
       const c = await classifyGoal('写个文件', { generate: gen, model: 'c:m' });
       expect(c.acceptance.kind).toBe('exploratory');
@@ -169,18 +173,19 @@ describe('分类调用 —— 挂了就往保守档落, 不抛 (分类是路由�
     expect(p).toContain('别在 grep 里用正则锚点');
   });
 
-  describe('**引号保护不了元字符** —— 2026-07-31 live 抓到的第二次同形失效', () => {
+  describe('引号里的元字符 —— 2026-07-31 live 假红形态, 刀④ (2026-08-30) 回收', () => {
     // 那次分类器写的是 `grep -qx "支持格式: CSV, JSON, Excel (.xlsx)" docs/from-api.md`:
-    // 括号在**引号里面**, 它显然以为引号保护得了。闸对整条命令串做正则扫描, 不解析引号。
-    // 后果链与 `$` 锚点那次逐字相同 —— 命令被拒 → 降级探索型 → judge 读到"本目标没有机器判据"。
+    // 括号在**引号里面**, 旧闸对整条命令串做正则扫描不解析引号 → 合法验收命令被拒 →
+    // 降级探索型 → judge 读到"本目标没有机器判据"。刀④ 把闸改成引号感知: 这条假红回收,
+    // 未加引号的括号 (真注入面) 照拒。
     const LIVE_CMD = 'grep -qx "支持格式: CSV, JSON, Excel (.xlsx)" docs/from-api.md';
 
-    test('闸确实拒它(先钉事实, 再谈 prompt 该怎么说)', () => {
-      expect(acceptanceCommandBlockReason(LIVE_CMD)).toContain('shell-metachar');
+    test('刀④ 后闸放行它 (引号内括号是字面, 假红回收)', () => {
+      expect(acceptanceCommandBlockReason(LIVE_CMD)).toBeNull();
     });
 
-    test('去掉括号就过 —— 证明拒的是括号本身, 不是中文/空格/冒号', () => {
-      expect(acceptanceCommandBlockReason('grep -q "支持格式: CSV, JSON, Excel" docs/from-api.md')).toBeNull();
+    test('未加引号的括号仍拒 —— 收窄没有放掉真注入面', () => {
+      expect(acceptanceCommandBlockReason('grep -q (x) docs/from-api.md')).toContain('shell-metachar');
     });
 
     test('prompt 明说圆括号被拒, 且明说引号不豁免', () => {

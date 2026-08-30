@@ -22,9 +22,10 @@ const allowed = (cmd: string): boolean => gate(cmd) === null;
 
 describe('N3 · ① 任意代码执行 (RCE)', () => {
   test('★ `node -e <code>` **放行** —— 挡住的是写法不是能力', () => {
-    // 这一条是整份清单的要害。live 那两次「闸拒」拒的是括号:
-    expect(gate('bun -e "fetch(1)"')).toContain('shell-metachar');
-    // 同一个能力, 换一条不含元字符的写法:
+    // 这一条是整份清单的要害。刀④ (2026-08-30) 元字符闸引号感知之后, live 那两次被拒的
+    // 「括号写法」也放行了 —— RCE 面从「换个写法就过」变成「直接过」, 台账如实更新:
+    expect(allowed('bun -e "fetch(1)"')).toBe(true);
+    // 同一个能力, 不含元字符的写法从来就过:
     expect(allowed('node -e "1"')).toBe(true);
     // ⇒ 「执行面已被白名单挡住」这句话不成立。A8 防御的地基假设因此要重读。
   });
@@ -102,10 +103,14 @@ describe('N3 · 真正挡住的那几格 (别把清单读成"全裸")', () => {
     expect(gate(`rm${' -rf /'}`)).toContain('dangerous');
   });
 
-  test('shell 元字符一律拒 —— 挡住了"命令拼接"这一整类', () => {
-    for (const c of ['echo a | tee b', 'echo a > b', 'echo `id`', 'echo a; echo b']) {
-      expect(gate(c)).toContain('shell-metachar');
-    }
+  test('命令拼接类: 刀④ 后按形态分而治之 (管道逐段白名单 · 重定向凭写集 · 替换/串接仍整拒)', () => {
+    // 管道本身放行, 但每段过白名单 —— tee 不在表内, 照拒。
+    expect(gate('echo a | tee b')).toContain('not-allowed');
+    // `>` 重定向: 无写集声明 → 拒 (要写先立契约, fail-closed)。
+    expect(gate('echo a > b')).toContain('shell-redirect');
+    // 命令替换与 `;` 串接: 保持整拒 —— 这一类才是"注入", 没有收窄。
+    expect(gate('echo `id`')).toContain('shell-metachar');
+    expect(gate('echo a; echo b')).toContain('shell-metachar');
   });
 
   test('不在名单里的可执行文件一律拒 (默认拒, 不是默认放)', () => {

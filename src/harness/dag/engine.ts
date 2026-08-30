@@ -3819,7 +3819,8 @@ async function executePlan(
           // 运行命令 + finally 还原 (INV-10): 任何出口 (成功 / 抛错 / 超时 / 进程被杀) 都把原文写回。
           // finally 内再抛会盖掉原异常, 故 catch 写盘错误只 WARN 不重抛, 防止把"命令结果"也吞掉。
           try {
-            r = await config.commandRunner({ command: node.command });
+            // 刀④: 写集随命令进闸 —— `>` 重定向目标按节点写集判 (缺席 = 重定向拒, fail-closed)。
+            r = await config.commandRunner({ command: node.command, ...(node.write_set ? { writeSet: node.write_set } : {}) });
           } finally {
             if (mutateApplied && mutatePath && mutateOriginal !== undefined) {
               try {
