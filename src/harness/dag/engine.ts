@@ -167,6 +167,12 @@ import { expandConductorNode, subgraphLintView, subgraphWarnings } from '../plan
 import { renderRoundForJudge, splitNamedIds, type JudgeChildView } from '../plan/conductor-judge';
 import { collectJudgeArtifacts, DEFAULT_ARTIFACT_BUDGET, type ArtifactBudget } from '../plan/judge-artifacts';
 import { writeSetChangedSinceBaseline } from './writeset-evidence';
+import {
+  captureHeadBaseline,
+  changedSinceHeadBaseline,
+  headBaselineUnsupported,
+  type HeadWriteSetBaseline,
+} from '../writeset/head-baseline';
 import type { ShellRun } from '../leaf-runners';
 import type { CommandLeafResult } from '../leaf-runners';
 import type { FalsifyMutate, FalsifyNodeExtras } from './types';
@@ -1318,6 +1324,19 @@ async function executePlan(
         prior?.poisoned,
         continuity?.execRoot ?? continuity?.repoRoot,
         continuity?.rollbackBaseline,
+        {
+          // 刀①-1 毒集关闸: 盘上 checkpoint 一并归档 (含 `${id}::` 运行期子节点), 第二支才真关上。
+          archive: (nid) => void continuity.manager.archiveCheckpointFamily(continuity.runId, nid),
+          // 刀①-3 (裁决 B): 物理回滚只保留危险态。broken-artifact = 盘写坏 (写后即验没过);
+          // 写集越界那半今天在工具面 fail-closed (write/edit 落不了盘), bash 通道越界只有
+          // write-race 观察面 (只报不拦, 无 per-node 判据) —— 那半等 write-race 升闸再接,
+          // 缺证据时方向取「不回滚」(可挽回, 与整个模块的保守方向一致)。
+          dangerous: new Set(
+            Object.values(prior?.results ?? {})
+              .filter((r) => r.failureKind === 'broken-artifact')
+              .map((r) => r.id),
+          ),
+        },
       );
       // SDD 2026-08-22 C-2: 回滚集 ∩ 复用集 = ∅。两处都按指纹算、按理应当一致, 实测不一致
       // (根因未查) —— 先按 id 对账兜住整族。回滚是破坏性 (产物已回 HEAD), 复用只是省钱优化,
@@ -1336,6 +1355,67 @@ async function executePlan(
             { nodes: intersection, count: intersection.length },
             '[omd/executor-dag] 回滚集∩复用集非空: 产出已被回滚, 复用会让绿节点配一张空盘 (SDD C-2 × INV-4)',
           );
+        }
+      }
+    }
+  }
+
+  // ── 刀① (2026-08-30 闸门三角结): 毒集节点集 + 毒集关闸 + head 档轮基线 ──────────
+  //
+  // poisonedIds = 当前 plan 上指纹命中毒集的节点 ∪ 其前向闭包 (吃了被拒输出的下游同样不作数;
+  // 闭包判据与 dropPoisonedGreens 同构 —— 那边管 resume 预载的绿, 这边管产物闸第二支与救援③)。
+  const poisonedIds: ReadonlySet<string> = (() => {
+    if (!prior?.poisoned?.size) return new Set<string>();
+    const s = new Set<string>();
+    for (const [nid, fp] of merkleFingerprints(plan)) if (prior.poisoned.has(fp)) s.add(nid);
+    for (let moved = s.size > 0; moved; ) {
+      moved = false;
+      for (const [nid, n] of Object.entries(plan.nodes)) {
+        if (s.has(nid)) continue;
+        if ((n.depends_on ?? []).some((d) => s.has(d))) {
+          s.add(nid);
+          moved = true;
+        }
+      }
+    }
+    return s;
+  })();
+  // **毒集关闸不加标志位** (刀①-1): 被否决 = 丢弃 (归档) 该节点的 per-node checkpoint。
+  // 产物闸第二支只认 loadCheckpoint 能读到的未归档份 → 归档即天然关闭 = 强制重做语义。
+  // 归档而非删除: 被否决的产出是证据, 吞了它「否决对不对」就再也查不了 (E 桶 4/12 真红
+  // 正是否决错杀 —— 证据必须留)。运行期展开的子节点按 `${id}::` 前缀一起归档。
+  const archivePoisoned = (ids: Iterable<string>): void => {
+    if (!continuity) return;
+    for (const nid of ids) {
+      const n = continuity.manager.archiveCheckpointFamily(continuity.runId, nid);
+      if (n > 0) {
+        logger.info({ node: nid, archived: n }, '[omd/executor-dag] 毒集关闸: checkpoint 已归档 → 产物闸第二支对该节点关闭, 强制重做 (刀①)');
+      }
+    }
+  };
+  archivePoisoned(poisonedIds);
+  // **head 档 run 基线 = 写集哈希快照** (刀①-2): 隔离档有 run 基线 (`rollbackBaseline:'HEAD'`),
+  // head 档没有也不该有 (在人的工作树上打 commit 会把人的未提交改动一起收进去)。
+  // 首轮开跑前把全图写集照一次相 (哈希 + symlink realpath + mode 位) 记进 run 目录;
+  // 后续轮**读回沿用** —— 每轮重照会把上一轮的写抹成「没变」, 救援③又救不了「上一轮已干完」。
+  // 重画新增的写集路径不在基线里 → 那条判不了 (fail-closed, changedSinceHeadBaseline 留证)。
+  // submodule/LFS/sparse-checkout 显式不支持 → 留证据行, 降级现状 (无基线, 救援③不启用)。
+  let headBaseline: HeadWriteSetBaseline | null = null;
+  if (continuity && !continuity.rollbackBaseline) {
+    const headRoot = continuity.execRoot ?? continuity.repoRoot ?? process.cwd();
+    const unsupported = headBaselineUnsupported(headRoot);
+    if (unsupported) {
+      logger.warn({ root: headRoot, why: unsupported }, '[omd/executor-dag] head 档写集基线不支持这棵树 → 降级现状 (救援③不启用; 刀①-2)');
+    } else {
+      const prev = continuity.manager.loadHeadBaseline(continuity.runId) as HeadWriteSetBaseline | null;
+      if (prev && prev.entries && typeof prev.entries === 'object') {
+        headBaseline = prev;
+      } else {
+        const wsUnion = new Set<string>();
+        for (const n of Object.values(plan.nodes)) for (const p of n.write_set ?? []) wsUnion.add(p);
+        if (wsUnion.size > 0) {
+          headBaseline = captureHeadBaseline(headRoot, wsUnion);
+          continuity.manager.writeHeadBaseline(continuity.runId, headBaseline);
         }
       }
     }
@@ -2192,6 +2272,8 @@ async function executePlan(
     for (const child of expand.children) {
       if (poisoned.has(child.id) && resumeGreens.delete(child.id)) {
         logger.info({ node: id, child: child.id }, '[omd/executor-dag] 内环毒集命中 → 该子节点强制重跑 (D-A)');
+        // 刀①-1: 盘上那份也归档, 否则产物闸第二支照样读得到被否决的子节点 checkpoint。
+        archivePoisoned([child.id]);
       }
     }
 
@@ -2955,6 +3037,8 @@ async function executePlan(
       // 顺序上**先于** judge: 检测者常是确定性 oracle (command 节点), 它说"这段不作数"比
       // 一次 LLM 判定更硬; 而两者点到同一个 id 时 Set 天然合并, 不需要谁压过谁。
       for (const cid of r.detector.rejected) poisoned.add(cid);
+      // 刀①-1 毒集关闸: 被点名子节点的盘上 checkpoint 立即归档 —— 下一轮重跑时第二支才是关的。
+      archivePoisoned(r.detector.rejected);
       if (r.detector.blocked !== undefined) {
         // BLOCKED 异步出口: 图没坏、节点没挂, 是"没有外部输入推不动" —— 剩下的轮数是纯烧钱。
         // 恒 converged=false (fail-closed: 阻塞更不该被读成成功)。
@@ -3216,6 +3300,8 @@ async function executePlan(
 
       // D-4 同款铸票: judge 点名的子节点 → **id** 入毒集 (键取 id 的理由见 NodeLoopJournal 的注)。
       for (const cid of verdict.rejected) poisoned.add(cid);
+      // 刀①-1 毒集关闸: judge 点名的子节点盘上 checkpoint 立即归档 (同 detector 那处)。
+      archivePoisoned(verdict.rejected);
       // 检测者与 judge 点的名并在一起当"这一轮谁坏了"; 空转判据看的就是这个合集。
       const rejectedNow = [...new Set([...verdict.rejected, ...r.detector.rejected])];
       // 制品 lint 的发现**接在失败原因后面**进下一轮的重展开 prompt —— 环的信息通道只有这一条,
@@ -4465,7 +4551,13 @@ async function executePlan(
           //   一字节都不生效。`writeSetChangedSinceBaseline` 自己**不**做这个短路,
           //   写在这里让闸的可读性高于 helper 自带判断 —— helper 一处复用更容易测,
           //   闸里这一行让"什么时候救"和"怎么救"都看 engine.ts 一眼就明白。
-          if (filesTouched.length === 0 && continuity?.rollbackBaseline) {
+          // ⚠ 刀①-4 (2026-08-30 闸门三角结): **毒集节点重跑不吃跨轮救援**。毒集重跑的过闸判据是
+          //   `done = 有**新增**写入 ∧ (否决理由可机械化时其 check 通过 ∨ 不可机械化时 verifier 复审通过)`,
+          //   拒绝「有新增写入即 done」—— 而救援③量的是「本 run 动过写集」, 对被否决节点它恰好把
+          //   「上一轮那份被否决的写入」当成证据, 等于白拿。∧ 右半由现有机器承担 (机械败因的
+          //   self_check/expect 本轮照跑; 语义否决由下一轮 judge/verifier 复审), 有界性由
+          //   retry 1 → replan → STALLED 的现有闸承担, 这里不新增机制。
+          if (filesTouched.length === 0 && continuity?.rollbackBaseline && !poisonedIds.has(id)) {
             const writeSetEvidence = writeSetChangedSinceBaseline({
               // 执行锚 (隔离档 = execRoot) 是 leaf 真写文件的那棵树; git 必须在这里跑。
               // 见 types.ts:493-500 的 execRoot 注。省略 = `repoRoot`, 与上面的 `root` 解析一致。
@@ -4487,6 +4579,7 @@ async function executePlan(
           // run 1c9a4566 就是这么查不动的: 五个失败节点的 checkpoint 字段里没有 watchdog,
           // 最后只能靠 `exec.log` 里 drift 观察者顺手打印的采样倒推。
           // 与 verifier 判词那个坑同形: **最需要证据的那条路径, 恰好是把证据扔掉的那条。**
+          // (定义挪到刀①-1 第二支之前 —— 它的 infra 隔离出口也要带这条尾巴。)
           const observabilityTail = (): Partial<LeafResult> => ({
             ...(toolCalls !== undefined ? { toolCalls } : {}),
             ...(shellRuns ? { shellRuns } : {}),
@@ -4495,6 +4588,87 @@ async function executePlan(
             ...(toolSteps ? { toolSteps } : {}),
             ...(toolStepsDropped ? { toolStepsDropped } : {}),
           });
+          // ── 刀①-1 产物闸第二支 (grill+council 45c9068d 修订形状) ────────────────────
+          // done 必要条件扩为: 本轮跑前跑后哈希变了 (现状, 上面各救援) ∨ (本 run 内存在本节点
+          // 自己的**未归档** checkpoint ∧ 其 artifactHashes 与盘上现值逐字相同)。第二支救的是
+          // 「上一轮真做出产物、本轮被重跑」—— 裁决 B: 否决不抹盘, 产出保全。三道守卫:
+          //   · 毒集: 否决时 checkpoint 已归档 (archiveCheckpointFamily) → loadCheckpoint 读不到
+          //     → 第二支天然关闭, 不加标志位; `poisonedIds` 再兜一层 (归档 fail-open 失败时)。
+          //   · 语义指纹: 两侧都有且不等 → 不放行 (S-51 同款: 规格变了不许拿旧产物顶)。
+          //   · **字节漂移零容差** (刀①-5): hash 一字节不同即不放行 → 节点重跑 (formatter/lint
+          //     漂移多花钱不假绿; 不开 canonical-ization 不开 N 字节容差 —— 任何容差 = 等量
+          //     padding 作弊面)。漂移证据行必打 ({path, was, now}), 多花的钱查得到原因。
+          // 证伪方式 (artifact-second-branch.test 反向自检): archiveCheckpointFamily 改 no-op →
+          // 「毒集节点拿旧产物顶」用例红; 下面的 hash 判等改恒 true → 漂移用例红。
+          if (filesTouched.length === 0 && continuity && !poisonedIds.has(id)) {
+            const cpEcho = continuity.manager.loadCheckpoint(continuity.runId, id);
+            const fpNow = currentFingerprint(id);
+            const echoHashes = Object.entries(cpEcho?.artifactHashes ?? {});
+            if (
+              cpEcho?.status === 'done' &&
+              echoHashes.length > 0 &&
+              !(cpEcho.fingerprint !== undefined && fpNow !== undefined && cpEcho.fingerprint !== fpNow)
+            ) {
+              const drift: Array<{ path: string; was: string; now: string | null; pre: string | null }> = [];
+              for (const [p, was] of echoHashes) {
+                const absEcho = p.startsWith('/') ? p : `${root}/${p}`;
+                const now = hashArtifact(absEcho);
+                if (now !== was) drift.push({ path: p, was, now, pre: headBaseline?.entries[p]?.hash ?? null });
+              }
+              if (drift.length === 0) {
+                logger.info(
+                  { node: id, paths: cpEcho.outputPaths },
+                  '[omd/executor-dag][artifact-echo] 第二支放行: 本 run 未归档 checkpoint 的 artifactHashes 与盘上逐字相同 → 上一轮的真产出仍作数 (刀①, 裁决 B)',
+                );
+                filesTouched = [...(cpEcho.outputPaths ?? [])];
+              } else {
+                for (const d of drift) {
+                  logger.warn(
+                    { node: id, path: d.path, was: d.was, now: d.now },
+                    '[omd/executor-dag][artifact-drift] 第二支不放行: 盘上内容与 checkpoint 记录不同 (字节漂移零容差 → 节点重跑; 刀①-5)',
+                  );
+                }
+                // 刀①-6 外部干扰分辨: 盘上哈希既 ≠ 跑前值 (head 轮基线) 也 ≠ 节点记录值 → 第三方
+                // 改写 → 记 infra 类隔离, 不记 empty-artifact —— 不烧节点的重试预算。
+                // 只在两个参照都在手时判 (head 基线缺席 → pre=null → 不判, 走现状死法)。
+                const foreign = drift.filter((d) => d.pre !== null && d.now !== null && d.now !== d.pre && d.now !== d.was);
+                if (foreign.length > 0) {
+                  logger.warn(
+                    { node: id, foreign: foreign.map((d) => ({ path: d.path, pre: d.pre, was: d.was, now: d.now })) },
+                    '[omd/executor-dag][artifact-foreign] 外部干扰: 盘上哈希既非跑前值也非节点记录值 → infra 隔离 (不记 empty-artifact; 刀①-6)',
+                  );
+                  logger.info(
+                    { node: id, entry: entryFilesTouched, exit: filesTouched.length, verdict: 'dead' },
+                    '[omd/executor-dag][artifact-verdict] 产物闸判定 (declaredArtifact 节点; entry = 进闸条数)',
+                  );
+                  return {
+                    id, status: 'failed', failureKind: 'infra-error', kind: 'agent', model,
+                    output: `[外部干扰隔离: 写集路径被第三方改写 (${foreign.map((d) => d.path).join(', ')}) — 盘上内容既不是本轮跑前的值, 也不是本节点上次写完的值。不计入本节点败因。] 原输出: ${text.slice(0, 400)}`,
+                    deps: node.depends_on ?? [], usage, filesTouched, ...(filesRead.length ? { filesRead } : {}),
+                    ...observabilityTail(),
+                  };
+                }
+              }
+            }
+          }
+          // **救援③ 的 head 档半** (刀①-2): 隔离档走 git run 基线 (上面救援③), head 档走
+          // 写集哈希快照 (run 基线, 见 executePlan 开头)。刻意排在第二支**之后**: 第二支能用
+          // 节点记录值把「第三方改写」分辨出来 (刀①-6), 本支只有跑前值一个参照, 先跑会把
+          // 第三方的写冒领成本节点的。毒集节点同样不吃 (刀①-4, 同上)。
+          if (filesTouched.length === 0 && continuity && !continuity.rollbackBaseline && headBaseline && !poisonedIds.has(id)) {
+            const ev = changedSinceHeadBaseline({
+              root: continuity.execRoot ?? continuity.repoRoot ?? process.cwd(),
+              writeSet: node.write_set ?? [],
+              baseline: headBaseline,
+            });
+            if (ev.changed.length > 0) {
+              logger.warn(
+                { node: id, changed: ev.changed },
+                '[omd/executor-dag] filesTouched 空但写集相对 head run 基线 (哈希快照) 有改动 → 判真写入, 补进 filesTouched (刀①-2)',
+              );
+              filesTouched = [...ev.changed];
+            }
+          }
           // 产物闸「绝对路径锚回」(SDD 2026-08-22 · s1 Step B): 判词据 `probed`
           // 自动补 INV-6 「两基准都查过」叙述 —— 锚回试过仍不中时写清路径基准,
           // 否则还是逐字 `声称产物不存在: <路径>`。`filesTouched` 为空那条分支
@@ -5694,6 +5868,19 @@ function dropPoisonedGreens(
   // D-4/C-1 (SDD 2026-08-22): 返回**本次真回滚过**(checkpoint 被丢) 的节点 id 列表。
   // 判定逻辑**逐字不变**;返回值是新增的观察面 (C-1/INV-1) —— 调用方据此把"已回滚"节点
   // 从跨轮复用集里踢出去 (C-2/INV-3)。回滚是破坏性的, 已发生;复用只是省钱优化, 冲突时让路。
+  opts?: {
+    /**
+     * 刀①-1 毒集关闸: 每个被丢 id 的**盘上** checkpoint 也要归档 (第二支只认未归档份)。
+     * 内存 map 只是本轮视图, 光删它, 产物闸 loadCheckpoint 照样读得到被否决那份。
+     */
+    archive?: (nodeId: string) => void;
+    /**
+     * 刀①-3 (裁决 B, 2026-08-30): 物理回滚只保留**危险态**节点 (写集越界 / broken-artifact);
+     * 普通否决 = 状态降级 + 判词 + 失去复用资格, **磁盘一字节不动** (可挽回 —— E 桶实测
+     * 4/12 真红是否决错杀)。缺席/空集 = 一律不回滚。
+     */
+    dangerous?: ReadonlySet<string>;
+  },
 ): readonly string[] {
   if (!poisoned?.size || greens.size === 0) return [];
   const blocked = new Set<string>();
@@ -5734,15 +5921,30 @@ function dropPoisonedGreens(
   const dropped = [...blocked].filter((id) => greens.delete(id));
   if (dropped.length) {
     logger.warn({ dropped }, '[omd/executor-dag] resume: 毒集命中 → 丢弃这些节点的已绿 checkpoint, 强制重跑 (D-4 × W2)');
+    // 刀①-1: 盘上那份也归档 —— 内存 map 只是本轮视图, 不归档的话产物闸第二支照样读得到被否决份。
+    for (const id of dropped) opts?.archive?.(id);
   }
   if (!rollbackRoot || droppedCps.length === 0) return dropped;
   // A (#145 评论① 复盘): 丢 checkpoint 而不动盘 = 让"重跑"名不副实 —— 重跑的 leaf 看见活已经
   // 干完, 只读不写, 然后被产物闸判 empty-artifact。run 1c9a4566 五个真交付就是这么没的。
   // 存活 green 的产物一律不许碰 (与门④), 所以先把它们收出来。
+  //
+  // 刀①-3 (裁决 B, 2026-08-30): 上面那条死循环改由产物闸第二支 + head 档基线解 (不抹盘也能过闸),
+  // 物理回滚收窄到危险态节点 —— 普通否决的丢 checkpoint 照旧, 回滚候选只剩 dangerous 命中的。
+  const rollbackCps = droppedCps.filter(([id]) => opts?.dangerous?.has(id));
+  if (rollbackCps.length === 0) {
+    if (droppedCps.length > 0) {
+      logger.info(
+        { dropped: droppedCps.map(([id]) => id) },
+        '[omd/executor-dag] 毒集回滚: 普通否决不抹盘 (裁决 B) — 只丢/归档 checkpoint, 磁盘一字节不动',
+      );
+    }
+    return dropped;
+  }
   const keepPaths = new Set<string>();
   for (const cp of greens.values()) for (const p of cp.outputPaths ?? []) keepPaths.add(p);
   const plan2 = planPoisonRollback(
-    droppedCps.map(([node, cp]) => ({
+    rollbackCps.map(([node, cp]) => ({
       node,
       outputPaths: cp!.outputPaths ?? [],
       artifactHashes: cp!.artifactHashes ?? {},

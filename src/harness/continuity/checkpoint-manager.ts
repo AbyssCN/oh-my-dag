@@ -87,13 +87,14 @@ export class CheckpointManager {
     }
   }
 
-  /** 读 `_dag.json`。不存在/损坏/parse 失败 → null。 */
+  /** 读 `_dag.json`。不存在 → null;损坏/parse 失败 → null + 留痕 (「没有」与「读坏了」是两件事)。 */
   loadDagMetadata(runId: string): DagMetadata | null {
     try {
       const path = join(this.runDir(runId), '_dag.json');
       if (!existsSync(path)) return null;
       return JSON.parse(readFileSync(path, 'utf-8')) as DagMetadata;
-    } catch {
+    } catch (err) {
+      logger.warn({ err, runId }, 'checkpoint: loadDagMetadata 读坏 → 按无元数据处理 (fail-open 留证)');
       return null;
     }
   }
@@ -201,6 +202,45 @@ export class CheckpointManager {
     }
   }
 
+  // ── head 档写集哈希快照 (刀①-2, 2026-08-30 闸门三角结) ────────────────────
+
+  /**
+   * 落 `_writeset-baseline.json`(head 档的 **run 基线** sidecar;**不打 git commit**)。
+   * 首轮开跑前照一次相写进来;后续轮**读回沿用**({@link loadHeadBaseline})—— 与隔离档
+   * `rollbackBaseline:'HEAD'` 同一口径(run 级基线):每轮重照会把上一轮的写抹成「没变」,
+   * 救援③就又救不了「上一轮已干完」的形状。同名先归档 `__r<K>`(证据不覆写)。
+   * 失败 → WARN(fail-open)—— 基线写不进盘只丢跨轮/事后可查性,本轮判据在引擎闭包里照常。
+   */
+  writeHeadBaseline(runId: string, baseline: unknown): void {
+    try {
+      const dir = this.runDir(runId);
+      this.ensureDir(dir);
+      const target = join(dir, '_writeset-baseline.json');
+      if (existsSync(target)) {
+        let k = 1;
+        while (existsSync(join(dir, `_writeset-baseline.__r${k}.json`))) k++;
+        renameSync(target, join(dir, `_writeset-baseline.__r${k}.json`));
+      }
+      const tmp = join(dir, '_writeset-baseline.tmp');
+      writeFileSync(tmp, JSON.stringify(baseline, null, 2), 'utf-8');
+      renameSync(tmp, target);
+    } catch (err) {
+      logger.warn({ err, runId }, 'checkpoint: writeHeadBaseline failed (fail-open, 本轮判据在内存不受影响)');
+    }
+  }
+
+  /** 读回 run 基线快照。不存在 → null(引擎按「首轮」处理:现照一份);损坏 → null + 留痕。 */
+  loadHeadBaseline(runId: string): unknown | null {
+    try {
+      const path = join(this.runDir(runId), '_writeset-baseline.json');
+      if (!existsSync(path)) return null;
+      return JSON.parse(readFileSync(path, 'utf-8'));
+    } catch (err) {
+      logger.warn({ err, runId }, 'checkpoint: loadHeadBaseline 读坏 → 按首轮重照 (fail-open 留证)');
+      return null;
+    }
+  }
+
   // ── goal 前置阶段 journal (2026-07-29) ───────────────────────────────────
 
   /** 落 `_goal.json` (原子写)。失败 → WARN (fail-open, 与 _dag/_fixpoint 同纪律)。 */
@@ -253,6 +293,56 @@ export class CheckpointManager {
     } catch (err) {
       logger.warn({ err, runId, nodeId: cp.nodeId }, 'checkpoint: saveCheckpoint failed (fail-open)');
     }
+  }
+
+  /**
+   * **毒集归档** (刀①, 2026-08-30 闸门三角结): 把 `<nodeId>.json` 改名为 `<nodeId>.__r<K>.json`。
+   *
+   * 消费者是产物闸的第二支 (engine.ts): 第二支只认 {@link loadCheckpoint} 能读到的**未归档**
+   * checkpoint —— 毒集处理调这里归档, 第二支即天然关闭, 不加标志位。**归档而非删除**:
+   * 被否决的产出是证据 (谁在第几轮交了什么), 吞掉它之后「否决对不对」就再也查不了。
+   *
+   * 证伪方式 (写进 artifact-second-branch.test): 把这里改成 no-op → 「毒集节点拿旧产物顶」
+   * 用例必红 (第二支照样放行被否决的产出)。
+   *
+   * @returns true = 真归档了一份; false = 盘上本来就没有 (或归档失败, 已留证)。
+   */
+  archiveCheckpoint(runId: string, nodeId: string): boolean {
+    try {
+      const dir = this.runDir(runId);
+      const target = join(dir, `${nodeId}.json`);
+      if (!existsSync(target)) return false;
+      let k = 1;
+      while (existsSync(join(dir, `${nodeId}.__r${k}.json`))) k++;
+      renameSync(target, join(dir, `${nodeId}.__r${k}.json`));
+      return true;
+    } catch (err) {
+      // fail-open 可以吞异常, 不许吞证据: 归档失败 = 第二支对这个节点**没关上**, 读日志的人得知道。
+      logger.warn({ err, runId, nodeId }, 'checkpoint: 毒集归档失败 → 该节点的产物闸第二支未关闭 (fail-open)');
+      return false;
+    }
+  }
+
+  /**
+   * 归档一个节点**连同它运行期展开的子节点** (`<nodeId>::*`) 的 checkpoint (刀①)。
+   * 前缀纪律与 dropPoisonedGreens 相同: 子节点 id 由 INV-U2/D-B 构造保证是 `${parentId}::` 形。
+   * @returns 真归档的份数 (0 = 盘上本来就没有)。
+   */
+  archiveCheckpointFamily(runId: string, nodeId: string): number {
+    let n = this.archiveCheckpoint(runId, nodeId) ? 1 : 0;
+    try {
+      const dir = this.runDir(runId);
+      if (!existsSync(dir)) return n;
+      const prefix = `${nodeId}::`;
+      for (const entry of readdirSync(dir)) {
+        if (!entry.endsWith('.json') || entry.endsWith('.tmp') || /\.__r\d+\.json$/.test(entry)) continue;
+        const child = entry.slice(0, -5);
+        if (child.startsWith(prefix) && this.archiveCheckpoint(runId, child)) n++;
+      }
+    } catch (err) {
+      logger.warn({ err, runId, nodeId }, 'checkpoint: 毒集子节点归档扫描失败 (fail-open, 已归档的份数照返)');
+    }
+    return n;
   }
 
   /**

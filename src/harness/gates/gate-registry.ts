@@ -40,6 +40,25 @@ export const GATE_REGISTRY: readonly GateEntry[] = [
     file: 'src/harness/dag/engine.ts',
   },
   {
+    // 刀①-1 (2026-08-30 闸门三角结): 产物闸第二支放行 —— 本 run 未归档 checkpoint 的
+    // artifactHashes 与盘上逐字相同 → 上一轮的真产出仍作数 (裁决 B: 否决不抹盘)。
+    id: 'artifact-echo',
+    family: '产物闸',
+    file: 'src/harness/dag/engine.ts',
+  },
+  {
+    // 刀①-5: 第二支字节漂移零容差 —— hash 一字节不同即不放行, 证据行 {path, was, now}。
+    id: 'artifact-drift',
+    family: '产物闸',
+    file: 'src/harness/dag/engine.ts',
+  },
+  {
+    // 刀①-6: 外部干扰分辨 —— 盘上哈希既非跑前值也非节点记录值 → infra 隔离, 不烧重试预算。
+    id: 'artifact-foreign',
+    family: '产物闸',
+    file: 'src/harness/dag/engine.ts',
+  },
+  {
     id: 'heartbeat',
     family: '心跳闸',
     file: 'src/harness/dag/engine.ts',

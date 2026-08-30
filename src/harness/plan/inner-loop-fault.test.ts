@@ -278,7 +278,7 @@ describe('F3 — journal 撕裂 / 残留 / 整个目录没了, 一律不炸', ()
     rmSync(root, { recursive: true, force: true });
   });
 
-  test('⚠ 撕裂是**降级不是恢复**: 毒集确实丢了(记账, 别把上面那条绿灯读成"撕裂无害")', async () => {
+  test('撕裂后毒集经**归档 checkpoint** 存活: 被拒子节点仍强制重跑, 其余照旧跳过 (刀①-1)', async () => {
     const root = freshRoot();
     const first = makeGenerate();
     await runExecutorDagWithPlan(loopPlan(2), cfg(first.generate, root, { reject: ['write-a'] }));
@@ -287,9 +287,11 @@ describe('F3 — journal 撕裂 / 残留 / 整个目录没了, 一律不炸', ()
 
     const second = makeGenerate();
     await runExecutorDagWithPlan(loopPlan(3), cfg(second.generate, root, { resume: true }));
-    // 毒集没了 → 被拒的 write-a 也被 checkpoint 当绿跳过。这条断言记的是**已知降级**,
-    // 不是期望的行为。原子写(tmp+rename)让这一格概率很低, 但它不是零。
-    expect(second.leafGoals).toEqual([]);
+    // 2026-08-30 之前这里钉的是**已知降级**: journal 撕裂 → 毒集丢 → 被拒的 write-a 被
+    // checkpoint 当绿跳过 (断言 `[]`)。刀①-1 (闸门三角结) 把否决落成**归档盘上 checkpoint**,
+    // 毒这件事从此有两份记录 —— journal 撕了, 归档还在, loadCheckpoint 读不到被拒份 →
+    // write-a 仍强制重跑。**只有被拒的那一个重跑**, 没被拒的绿照旧跳过 (降级面收窄到零)。
+    expect(second.leafGoals).toEqual(['写 A 部分']);
     rmSync(root, { recursive: true, force: true });
   });
 
