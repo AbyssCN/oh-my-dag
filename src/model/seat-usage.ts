@@ -182,6 +182,52 @@ export function seatUsagePath(): string {
   return process.env.OMD_SEAT_USAGE_PATH || join(omdRepoRoot(), '.omd', SEAT_USAGE_FILE);
 }
 
+// 解析结果按**中央路径**做键缓存, 不做进程级单例: `OMD_SEAT_USAGE_PATH` 是逐测试改的
+// (seat-usage.test.ts:35), 进程级 memo 会让第二个用例读到第一个的解析。键变了就重解析。
+let _writableFor: string | undefined;
+let _writableTo: string | undefined;
+
+/**
+ * 账本路径,**带只读回退**(2026-08-30, bench 容器实测)。
+ *
+ * omd 以只读挂载分发时 (workbuddy-bench split-mount → `/opt/omd/pkg`), `mkdir <仓根>/.omd`
+ * 抛 EROFS。兄弟账本 `dag-record` 早就有回退 (`dag-record.ts:684` `ledgerPathWritable`),
+ * 这一本没有 —— 只 warn 一句就把整发丢掉。实测后果: `2026-08-29__21-54-51` 批
+ * **75/77 trial 的 seat-usage 每一发都写失败**, 于是「协调税」的分子
+ * (verifier / judge / classify / map lister —— 这些都**不是 DAG 节点**, token 只落这一本)
+ * 在容器里结构上取不到数, 而 `tui-usage.jsonl` 那一本按它自己的注 (本文件 §6) 「看不见角色」,
+ * 补不上。偏差是**单向的**: 分子少算 ⇒ 协调税被系统性低估。
+ *
+ * 回退序与 `ledgerPathWritable` 逐字同款: `OMD_DATA_HOME` → `cwd/.omd`。
+ * 代价同款 = 该跑不进中央账本, 所以证据行必打。
+ *
+ * ⚠ 证据行**每个解析键只打一次**, 不是每发一行 —— 本函数在每一次模型调用上被调,
+ * 而 `ledgerPathWritable` 是每个留痕器构造时调一次。照抄那边的写法会让容器里刷出
+ * 几百行同样的话, 把日志淹掉(那批日志里 `[omd/seat-usage] 台账写入失败` 已经是这个形态)。
+ *
+ * 反向自检 (当场验过, 见 seat-usage-fallback.test.ts):
+ *   · 把 `catch` 整段删掉、改成直接 `return central` → 「中央不可写时仍写得进」那条红;
+ *   · 把 `OMD_DATA_HOME` 那一项删掉 → 「显式数据根优先于 cwd」那条红;
+ *   · 把键缓存改成进程级单例 → 「换一个中央路径要重解析」那条红。
+ */
+export function seatUsagePathWritable(): string {
+  const central = seatUsagePath();
+  if (_writableFor === central && _writableTo !== undefined) return _writableTo;
+  _writableFor = central;
+  try {
+    mkdirSync(dirname(central), { recursive: true });
+    _writableTo = central;
+  } catch (e) {
+    const fallbackRoot = process.env.OMD_DATA_HOME?.trim() || join(process.cwd(), '.omd');
+    // fail-open 但留证据 (§3 第 2 条): 这一行是"为什么中央账本缺了这跑"唯一的解释。
+    process.stderr.write(
+      `[omd/seat-usage] 中央台账不可写 (${(e as Error).message}) → 回退 ${fallbackRoot}/${SEAT_USAGE_FILE} (该跑不进中央读数板)\n`,
+    );
+    _writableTo = join(fallbackRoot, SEAT_USAGE_FILE);
+  }
+  return _writableTo;
+}
+
 /**
  * 真 provider 前缀。**判「这条是不是真调用」的一半**(另一半是 usage 量级, 见下)。
  *
@@ -249,7 +295,9 @@ function currentRepo(): string | null {
  */
 export function recordSeatUsage(entry: SeatUsageEntry): void {
   if (process.env.OMD_SEAT_USAGE === 'off') return;
-  const path = seatUsagePath();
+  // 只读挂载下回退到可写根 (见 seatUsagePathWritable 的注): 此前这里用 `seatUsagePath()`,
+  // 容器里每一发都 EROFS, 整本账在 bench 上恒空。
+  const path = seatUsagePathWritable();
   try {
     mkdirSync(dirname(path), { recursive: true });
     appendFileSync(path, `${JSON.stringify({ ...entry, repo: entry.repo ?? currentRepo() })}\n`);
