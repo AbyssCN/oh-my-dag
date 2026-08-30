@@ -10,8 +10,17 @@
  * ## 边界 (诚实标注, 别把它读成"判据已经会自己修好了")
  *
  * 重建出来的判据**不参与本 run 的终态判定** —— 让执行体家族提的判据当场决定自己的成败,
- * 正是 D-J 整套防作弊要杀的形态。本片做的是: 触发 → 重建 → 过全部自证门 → **留痕**,
- * 交给 owner / 下一次点火采纳。「重建判据当场冻结进下一轮」要等内环把重建轮接进来。
+ * 正是 D-J 整套防作弊要杀的形态。这一条**至今成立, 且是下面回写那一组的承重断言**。
+ *
+ * ## 2026-08-30 (owner 裁): 回写接上了 —— 采纳的候选**冻进下一轮**
+ *
+ * 头注原来写「『重建判据当场冻结进下一轮』要等内环把重建轮接进来」。现在接了, 但**不是**
+ * 接进内环: 采纳的候选写进 `goal-state.json` 的 `classified.acceptance`, 于是**同一个 goal
+ * 的下一次跑/续跑**(按 goalHash 匹配那条 prior 路径)才用新判据。本轮终态一个字节不受影响。
+ *
+ * 三重护栏(见 run-goal.ts 回写处的注): ① 只写 `admitted`(两道自证门都真跑过且都过,
+ * 含空世界自检判红)· ② 只对 `executable` 分型 · ③ **审计轨 `criterionHistory` 必写**
+ * —— 球门动了而看不出来 = 静默降分。
  *
  * ## 反向自检 (每条新分支当场证伪过一次)
  *
@@ -21,7 +30,7 @@
  *  · 接线里去掉留痕串 ⇒ 「摘要含 criterion-rebuild」当场红。
  */
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -163,6 +172,18 @@ const leaf = (over: Record<string, unknown>): Record<string, unknown> => ({
 const rebuildRun = async (over: Partial<RunGoalConfig> = {}): Promise<Awaited<ReturnType<typeof runGoal>>> => {
   const cwd = mkdtempSync(join(tmpdir(), 'omd-criterion-rebuild-'));
   writeFileSync(join(cwd, 'out.txt'), 'OK\n');
+  return rebuildRunIn(cwd, undefined, over);
+};
+
+/**
+ * 同 `rebuildRun`, 但由调用方给 cwd 与 continuity runId ——
+ * 回写那一组要读 `goal-state.json`, 而没有 runId 时 statePath 是 undefined、saveState 空转。
+ */
+const rebuildRunIn = async (
+  cwd: string,
+  continuityRunId: string | undefined,
+  over: Partial<RunGoalConfig> = {},
+): Promise<Awaited<ReturnType<typeof runGoal>>> => {
   const verifier = (async (): Promise<VerifierVerdict> => ({
     pass: false,
     reason: '判据命令指向仓里不存在的目录',
@@ -178,6 +199,7 @@ const rebuildRun = async (over: Partial<RunGoalConfig> = {}): Promise<Awaited<Re
       // 空世界自检要跑得起来才可能准入 —— 这条 runner 在"活还没干"的世界里判红 (exit 1),
       // 于是重建出的判据不是恒绿的。
       commandRunner: (async () => ({ exitCode: 1, text: '' })) as never,
+      ...(continuityRunId ? { continuity: { runId: continuityRunId } } : {}),
     } as ExecutorDagConfig,
     _today: () => '2026-08-29',
     _classify: (async (): Promise<GoalClassification> => ({
@@ -280,5 +302,76 @@ describe('INV-4 接线 (GWT-4): 两轮同 exitCode + 两轮非空 diff ⇒ 走�
     });
     expect(r.criterionRebuild).toBeUndefined();
     expect(r.stages.at(-1)!.summary).not.toContain(CRITERION_REBUILD_LABEL);
+  });
+});
+
+// ── INV-4 回写 (2026-08-30): 采纳的候选冻进下一轮 ───────────────────────────────
+//
+// 反向自检 (逐条当场实跑过):
+//  · 去掉 run-goal 回写那整段 ⇒ W-1 / W-2 红 (盘上判据没换、审计轨为空);
+//  · 把 `admission.admitted &&` 去掉 ⇒ W-3 红 (没过门的候选也被写进去了);
+//  · 把 `classified.acceptance.kind === 'executable'` 去掉 ⇒ W-4 红;
+//  · 把合并底从 `lastSaved ?? prior` 改回 `prior` ⇒ W-5 红 (契约段存的 contract 被冲掉)。
+describe('INV-4 回写: 采纳的判据冻进下一轮 (本轮终态不动)', () => {
+  const stateOf = (cwd: string, runId: string): Record<string, unknown> =>
+    JSON.parse(readFileSync(join(cwd, '.omd', 'continuity', runId, 'goal-state.json'), 'utf8')) as Record<string, unknown>;
+
+  /** 带 continuity.runId 的一次 rebuildRun —— 没有它 statePath 是 undefined, saveState 空转。 */
+  const runWithState = async (over: Partial<RunGoalConfig> = {}) => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omd-criterion-writeback-'));
+    writeFileSync(join(cwd, 'out.txt'), 'OK\n');
+    const runId = 'wb-run';
+    const r = await rebuildRunIn(cwd, runId, over);
+    return { cwd, runId, r };
+  };
+
+  test('★ W-1: 采纳 ⇒ 盘上的 acceptance.command 换成新判据, 且审计轨记下 from/to/trigger', async () => {
+    const { cwd, runId, r } = await runWithState();
+    expect(r.criterionRebuild!.admitted).toBe(true);
+    const st = stateOf(cwd, runId) as { classified: { acceptance: { command: string } }; criterionHistory: { from: string; to: string; trigger: string }[] };
+    expect(st.classified.acceptance.command).toBe('grep -q OK out.txt');
+    expect(st.criterionHistory).toHaveLength(1);
+    expect(st.criterionHistory[0]!.from).toBe('grep -q OK missing-dir/out.txt');
+    expect(st.criterionHistory[0]!.to).toBe('grep -q OK out.txt');
+    expect(st.criterionHistory[0]!.trigger).toContain('exitCode');
+  });
+
+  test('★ W-2 (承重): **本轮终态不受影响** —— 换判据不许把这一轮判绿', async () => {
+    const { r } = await runWithState();
+    // 这一轮本来就是没收敛的 (verifier 判 fail, accept 节点 exitCode 4)。
+    // 回写若泄进本轮判定, 这里会翻绿 —— 那正是"环内产出的判据给环内产出的东西打分"。
+    expect(r.converged).toBe(false);
+  });
+
+  test('★ W-3: 没过自证门的候选 ⇒ 一个字都不写回 (审计轨也不动)', async () => {
+    const { cwd, runId, r } = await runWithState({
+      _rebuildCriterion: (async () => ({ command: 'grep -q OK nowhere/out.ts', expectExit: 0 })) as RunGoalConfig['_rebuildCriterion'],
+    });
+    expect(r.criterionRebuild!.admitted).toBe(false);
+    const st = stateOf(cwd, runId) as { classified: { acceptance: { command: string } }; criterionHistory?: unknown[] };
+    expect(st.classified.acceptance.command).toBe('grep -q OK missing-dir/out.txt'); // 原样
+    expect(st.criterionHistory ?? []).toHaveLength(0);
+  });
+
+  // ⚠ W-4 的**诚实版**。第一版写成「非 executable 分型 ⇒ 不回写」并声称它守着代码里那个
+  // `classified.acceptance.kind === 'executable'` 守卫 —— **证伪时发现它是恒绿的**:
+  // 把那个守卫整个去掉, 本条照样绿(20 pass / 0 fail)。
+  //
+  // 真正的原因是: 非 executable 分型下**重建触发根本不会发生**(没有 `runnable.command`,
+  // 整个重建块进不去), 所以走不走那个守卫都一样。
+  // ⇒ 代码里那个 `executable` 守卫是**纵深防御**, 今天的测试证伪不了它;
+  //   照实说, 不假装它被守着(仓规: 一条永远绿的闸不是闸)。
+  // 本条改成钉那个**真的机制**: 非 executable ⇒ 连 criterionRebuild 都不产生。
+  test('★ W-4: 非 executable 分型 ⇒ 重建块整个进不去 (连 criterionRebuild 都没有) ⇒ 自然无回写', async () => {
+    const { cwd, runId, r } = await runWithState({
+      _classify: (async (): Promise<GoalClassification> => ({
+        tier: 'simple',
+        acceptance: { kind: 'exploratory', learningGoal: '看看能不能做', affordableLoss: '一轮' },
+      })) as unknown as RunGoalConfig['_classify'],
+    });
+    expect(r.criterionRebuild, '非 executable 不该走到重建').toBeUndefined();
+    const st = stateOf(cwd, runId) as { classified: { acceptance: { kind: string } }; criterionHistory?: unknown[] };
+    expect(st.classified.acceptance.kind).toBe('exploratory');
+    expect(st.criterionHistory ?? []).toHaveLength(0);
   });
 });

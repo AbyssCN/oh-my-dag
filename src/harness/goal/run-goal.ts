@@ -737,6 +737,18 @@ interface GoalPhaseState {
   goalHash: string;
   classified: GoalClassification;
   contract?: { specPath?: string; evidence: string; repoContext: string; sources: string[] };
+  /**
+   * **判据重建的审计轨**(INV-4 回写, 2026-08-30)。追加, 不覆盖。
+   *
+   * 这一列存在的全部理由是**「移球门必须留痕」**: 引擎换掉自己的验收判据是本仓风险最高的
+   * 一个动作, 换了而看不出来就是静默降分。所以每换一次都记 `from`/`to`/`trigger`/`at`,
+   * 人一眼能看出球门动过几次、从什么动到什么。
+   *
+   * ⚠ 只记**被采纳的**那些(`criterionRebuildAdmission` 判 `admitted:true`, 即两道自证门
+   * 都真跑过且都过 —— 含**空世界自检判红**, 证明新判据不是恒真)。提了没被采纳的候选
+   * 不进这里(它们进当次回执的 `criterionRebuild`, 那是另一件事)。
+   */
+  criterionHistory?: { at: number; from: string; to: string; expectExit?: number; trigger: string }[];
 }
 
 /**
@@ -1088,11 +1100,15 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
       console.error(`[run-goal] goal-state 读失败 (照常重跑契约段): ${String(e)}`);
     }
   }
+  // 最后一次写盘的内容。判据回写 (INV-4) 要以它为底做**合并**, 不能拿 run 开头读到的
+  // `prior` 当底 —— 契约段收尾时 (:1307) 又存过一次, 拿 prior 当底会把那次的 contract 冲掉。
+  let lastSaved: GoalPhaseState | undefined;
   const saveState = (s: GoalPhaseState): void => {
     if (!statePath) return;
     try {
       mkdirSync(dirname(statePath), { recursive: true });
       writeFileSync(statePath, JSON.stringify(s));
+      lastSaved = s;
     } catch (e) {
       console.error(`[run-goal] goal-state 写失败 (下次续跑将重跑契约段): ${String(e)}`);
     }
@@ -1887,6 +1903,51 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
         { proposed: proposal.command, admitted: admission.admitted, why: admission.why },
         '[run-goal] INV-4 判据重建: 候选判据已过自证门 (采纳与否见 admitted; 本 run 终态不用它)',
       );
+      // ── INV-4 回写 (2026-08-30, owner 裁): 采纳的候选**冻进下一轮**, 不进这一轮 ──────
+      //
+      // 「不进这一轮」是承重的: 拿刚重建的判据去判**本轮**的产物, 就是字面意义的移球门
+      // (环内产出的判据给环内产出的东西打分)。所以这里只写盘, 本 run 的 `oracleOk` /
+      // 终态一个字节都不受影响 —— 上面那行日志的「本 run 终态不用它」仍然成立。
+      //
+      // 下一轮从 `goal-state.json` 读回 (:1084 那条 prior 路径, 按 goalHash 匹配),
+      // 于是**同一个 goal 的下一次跑/续跑**才用新判据。
+      //
+      // 三重护栏, 少一道都不写:
+      //   ① `admitted` —— 两道自证门都真跑过且都过, 含**空世界自检判红**(证明新判据不恒真);
+      //      `criterionRebuildAdmission` 是 fail-closed 的: 门没跑成 (`ran:false`) 即不采纳。
+      //   ② 只对 `executable` 分型回写 —— rubric/exploratory 的"判据"不是一条命令, 形状不同,
+      //      硬塞会把分型抹平 (§静默坑 1)。
+      //   ③ **审计轨必写** (`criterionHistory` 追加) —— 球门动了而看不出来 = 静默降分。
+      if (admission.admitted && classified.acceptance.kind === 'executable') {
+        const from = classified.acceptance.command;
+        const next: GoalClassification = {
+          ...classified,
+          acceptance: {
+            ...classified.acceptance,
+            command: proposal.command,
+            ...(proposal.expectExit !== undefined ? { expectExit: proposal.expectExit } : {}),
+          },
+        };
+        saveState({
+          goalHash,
+          classified: next,
+          ...((lastSaved ?? prior)?.contract ? { contract: (lastSaved ?? prior)!.contract } : {}),
+          criterionHistory: [
+            ...((lastSaved ?? prior)?.criterionHistory ?? []),
+            {
+              at: Date.now(),
+              from,
+              to: proposal.command,
+              ...(proposal.expectExit !== undefined ? { expectExit: proposal.expectExit } : {}),
+              trigger: rebuildTrigger.reason,
+            },
+          ],
+        });
+        logger.warn(
+          { from, to: proposal.command, trigger: rebuildTrigger.reason },
+          '[run-goal] INV-4 回写: 验收判据已换, **下一轮生效** (本轮不用) — 球门动过, 审计轨见 goal-state.criterionHistory',
+        );
+      }
     }
   }
   // `converged` 缺席 = 没人判过 → 一律**不算成** (judge_final 已保证它在, 缺席意味着引擎跑歪了)。
