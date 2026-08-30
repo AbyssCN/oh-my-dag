@@ -32,6 +32,7 @@ import { runExecutorDagWithPlan } from '../dag/engine';
 import { makeDefaultGenerate } from '../dag/defaults';
 import type { ConductorPlan } from '../conductor-plan';
 import type { ExecutorDagResult, LeafResult } from '../dag/types';
+import { judgeRubric, DEFAULT_RUBRIC_MAX_FAILURES } from './rubric-judge';
 import { classifyGoal, renderAcceptance, type AcceptanceSpec, type GoalClassification, type GoalTier } from './classify-acceptance';
 import { acceptanceCommandBlockReason, acceptanceVacuityReason, checklistDiscriminationReason, type ProbeItemOutcome } from './acceptance-gate';
 import {
@@ -1742,7 +1743,39 @@ async function runGoalInner(goal: string, config: RunGoalConfig, box: BoardSettl
   // 换了个地方复现: 片 4 把它从 acceptCheckpointGreen 挪到了这里, 没有消灭它。
   let rubricOracleOk = !unprovenMeansFail(acceptance);
   if (acceptance.kind === 'rubric') {
-    const inputs = config.rubricVerdictInputs;
+    // R-2 (2026-08-30, owner 裁形状 C): **生产在这里现算**, 注入口只留给测试。
+    //
+    // 此前这一格只读 `config.rubricVerdictInputs` —— 而那个字段挂在开跑前的 config 上,
+    // 要装的 `traces` 却是「对**真实产物**逐条判的结果」, 产物跑完才存在 ⇒ 时序上谁也填不了。
+    // 归因实测的后果: rubric 类 success 数 = 0 (240 trial), 该分型**结构上不可能 success**。
+    //
+    // 注入优先: 给了就原样用 (测试控判词), 不给才真跑判官。与同字段里 `_settleRubric`
+    // 「仅供测试的注入点 —— 生产不传, 走默认实装」逐字同源。
+    //
+    // 证据面 = 执行叶的产出正文。判官只能依据它判 —— 看不出来的一律判不成立 (prompt 里写死),
+    // 所以证据越薄判得越严, 那个方向是安全的 (不会把没做的判成做了)。
+    let inputs = config.rubricVerdictInputs;
+    if (!inputs) {
+      const judged = await judgeRubric(acceptance.checklist, execLeaf?.output ?? '', {
+        generate: config.dag.generate ?? makeDefaultGenerate(config.dag.sessionId ?? randomUUID()),
+        model: config.dag.conductorModel,
+      });
+      if (judged) {
+        inputs = {
+          presented: judged.presented,
+          traces: judged.traces,
+          // owner 未定 ⇒ 取最保守端 (全过才算过)。放宽是 owner 的决定, 不由默认值代劳。
+          maxFailures: DEFAULT_RUBRIC_MAX_FAILURES,
+          // `degraded` 刻意缺席: 劣化样本这一层本片不做, 而 `checklistDiscriminationReason`
+          // 对 undefined 是 fail-open (探针跳过, 不拦)。缺席 ≠ 判过且没问题。
+        };
+      } else {
+        logger.warn(
+          { goal: goal.slice(0, 80) },
+          '[run-goal] R-2 rubric 判官没产出可用判词 → 验收步仍缺席 (fail-open, 不冒充零判)',
+        );
+      }
+    }
     if (inputs) {
       // 1) 冻检查 (INV-3: 漂了就拒, 调用方**不进入**逐条判定 —— settleRubric 一次都不该被调)
       const frozen = verifyFrozen(acceptance.checklist, inputs.presented);

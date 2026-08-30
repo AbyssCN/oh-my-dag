@@ -80,6 +80,11 @@ const NOISE_PROVIDERS: ReadonlySet<string> = new Set([
   // 同族再一条 (#203, 2026-08-19): `markDispatch:open` / `markDispatch:settle` ——
   // gh 派发锚的两阶段操作标签, 不是模型坐标。
   'markDispatch',
+  // R-2 (2026-08-30): rubric 逐条判官的**角色标签** `judge:rubric`(goal/rubric-judge.ts)——
+  // 与上面 `gate:convergence` / `web:distill-*` 同族: 是 seat-usage 台账的 meta.role,
+  // 不是模型坐标。真坐标由调用点的 `config.dag.conductorModel` 经座位链给, 一个字没绕过。
+  // ⚠ `classify` 早就在上面那行里了 —— 同样是 traceName 前缀, 只是当时没连 `judge` 一起加。
+  'judge',
   // per-seat 台账的**角色标签**命名空间 (`web:expand` / `web:distill-source` / `web:distill-challenger`,
   // 2026-08-14) —— 与 `conductor:plan` 同族: 它们是观测面的 meta.role, 不是模型坐标。
   // 真坐标仍由这三处各自的 resolveSeatModel('expand'/'distill') 解析, 一个字都没绕过座位链。
