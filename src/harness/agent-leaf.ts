@@ -2299,6 +2299,19 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
       : null;
     const selfCheckFollowUp = selfCheckBundle?.followUp ?? null;
     const selfRepairLedger = selfCheckBundle?.ledger ?? { rounds: 0, oracleExit: [], convergedAt: null };
+    // INV-2-1 「不许静默降级」的那条 WARN —— **真 emit** (S-1, 2026-08-30)。
+    // 此前 `SELF_CHECK_SDK_SKIP_LOG` 全仓零 emit 点: 常量在、注释说"SDK 分支会说一句"、
+    // 而那一句从来没被打出来过, 守它的测试拿常量自己的子串断言常量自己 (恒绿)。
+    // 同形的 `AGENT_MEDIA_SDK_BYPASS_LOG` (:2422) / `SPIN_ROUTE_SDK_SKIP_LOG` (:2063) 都是真
+    // emit 的 —— 三条同形纪律里断的恰好是这一条, 这里补齐。
+    // 触发面 = 判据在场 (已过 env / maxSelfRepair 两道闸) ∧ SDK 通道: 那两道闸关掉是"实验对照臂"
+    // 而不是"通道听不见", 下一步不同, 所以不共用这一句。
+    if (selfCheck && isSdkChannel) {
+      logger.warn(
+        { model, command: selfCheck.command, expect_exit: selfCheck.expect_exit, sdkSelfCheckSkipped: true },
+        SELF_CHECK_SDK_SKIP_LOG,
+      );
+    }
 
     const context: AgentContext = {
       systemPrompt: runSystemPrompt,

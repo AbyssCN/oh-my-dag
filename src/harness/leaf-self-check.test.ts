@@ -8,7 +8,7 @@
  * | GWT-2a | 借 pi followUp: 首轮判红 → 造 follow-up → 同节点再转 → 转绿 | 单元 (buildSelfCheckFollowUp 闭包) |
  * | GWT-2b | **反向**: 摘掉 `getFollowUpMessages` 接线 → 自修环未启用 | 源码面 (agent-leaf.ts 含 getFollowUpMessages) |
  * | GWT-2c | 危险命令 → 闸拒, exitCode=-1, 不注 follow-up, 不执行 | 单元 (runSelfCheckProbe + 闸拒落账) |
- * | GWT-2d | SDK 通道 + self_check 在场 → 自修环未启用, 且有日志 | 源码面 (SDK 分支不含 getFollowUpMessages) + 旁路闸 |
+ * | GWT-2d | SDK 通道 + self_check 在场 → 自修环未启用, 且有日志 | 源码面 (SDK 分支不含 getFollowUpMessages) + **行为面** (真跑一次 leaf, 读日志汇, S-1 改写) |
  *
  * | INV    | 钉的是什么 | 形态 |
  * |--------|---|---|---|
@@ -22,24 +22,33 @@
  *    ★B ★D 都红 (字符串消失)。
  *  - GWT-2c 反向: 把 `runSelfCheckProbe` 里的 `commandBlockReason(opts.command, opts.allowlist)` 那行
  *    注掉 → 危险命令 `rm -rf /` 落到 spawn → exitCode 0 → 闸**未红** → 红。
- *  - GWT-2d 反向: 把 SDK 分支那条 warn (SELF_CHECK_SDK_SKIP_LOG) 注掉 → INV-2-1 「不许静默降级」
- *    失守 → 该测试红。
+ *  - GWT-2d 反向 (S-1, 2026-08-30 换成真判据): 把 `agent-leaf.ts` 里
+ *    `if (selfCheck && isSdkChannel) { logger.warn(..., SELF_CHECK_SDK_SKIP_LOG) }` 整段注掉
+ *    → ★D1a 红 (日志汇里找不到那一行)。
+ *    ⚠ 旧写法 (`expect(SELF_CHECK_SDK_SKIP_LOG).toContain('SDK 通道不启用')`) **恒绿** ——
+ *    它拿常量自己的子串断言常量自己, 而那条 WARN 当时全仓零 emit 点。换真的读数与做法见
+ *    ★D1 那段块注 + `docs/plan/2026-08-30-sdk-selfcheck-recon.md` §0.1。
+ *    实装前读数 (HEAD c531dd56 的干净 worktree, 同一份测试): `28 tests · 27 pass · 1 fail`,
+ *    红的正是 ★D1a; ★D1b/★D1c 是负向臂 (证伪方向 = 那条 WARN 变成无条件打)。
  *  - INV-3-2 反向: 把闭包里 `curTouched === lastTouched` 那条短路改回无条件注 follow-up →
  *    「零新增仍开下一轮」红, 那是把 grind 已经实测过 25:1 误杀那条闸废掉。
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   SELF_CHECK_SDK_SKIP_LOG,
   buildSelfCheckFollowUp,
+  createAgentLeafRunner,
   runSelfCheckProbe,
   selfCheckEnvEnabled,
   workspaceDigest,
   type SelfCheckOutcome,
 } from './agent-leaf';
+import { setLoggerDestination } from '../logger';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
+import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 
 const SRC = join(import.meta.dir, 'agent-leaf.ts');
 const RUNNERS_SRC = join(import.meta.dir, 'leaf-runners.ts');
@@ -325,10 +334,75 @@ describe('GWT-2b (反向, 必须能红) — getFollowUpMessages 接线存在', (
 // GWT-2d (反向) — SDK 通道不含 getFollowUpMessages, 且有日志 (INV-2-1)
 // ─────────────────────────────────────────────────────────────────────────
 describe('GWT-2d (反向, 必须能红) — SDK 通道不含 getFollowUpMessages + 有日志', () => {
-  test('★D1: SELF_CHECK_SDK_SKIP_LOG 文案存在 (删 → 红 — INV-2-1 「不许静默降级」失守)', () => {
-    // 文案是「必须在日志里说出来」那条 INV-2-1 的载体, 删除即丢证据。
-    expect(SELF_CHECK_SDK_SKIP_LOG).toContain('SDK 通道不启用');
-    expect(SELF_CHECK_SDK_SKIP_LOG).toContain('INV-2-1');
+  // ── ★D1 (S-1 改写, 2026-08-30): 从「常量断言常量自己」换成行为面 ────────────────
+  //
+  // 旧 ★D1 写的是 `expect(SELF_CHECK_SDK_SKIP_LOG).toContain('SDK 通道不启用')` ——
+  // 拿常量自己的子串断言常量自己, **无论那条 WARN 有没有 emit 点都绿**。侦察实测: 该常量
+  // 当时全仓零 emit (`ugrep -rn 'SELF_CHECK_SDK_SKIP_LOG' src/` 只有定义行 + 注释 + 本 import),
+  // 也就是说 INV-2-1 要求的那条 WARN 根本不存在, 而这道闸一次都没红过 —— 仓规「一条永远绿的
+  // 闸不是闸」。同形的 `AGENT_MEDIA_SDK_BYPASS_LOG` 早就是按下面这个做法测的
+  // (agent-media-injection.test.ts:252 — 改日志汇到临时文件, 跑真 runner, 读回常量行),
+  // 这里照抄那一套。
+  //
+  // 反向自检 (当场验过): 把 agent-leaf.ts 里 `if (selfCheck && isSdkChannel) { logger.warn(...) }`
+  // 整段注掉 → ★D1a 红 (日志里找不到那一行)。
+
+  /** 跑一次真 leaf, 把 pino 汇改到临时文件, 返回日志全文。 */
+  const runAndCaptureLog = async (opts: {
+    model: string;
+    selfCheck?: { command: string; expect_exit: number };
+  }): Promise<string> => {
+    const dir = mkdtempSync(join(tmpdir(), 'omd-selfcheck-log-'));
+    const logPath = join(dir, 'capture.log');
+    const fd = openSync(logPath, 'w');
+    setLoggerDestination(fd);
+    try {
+      // SDK 腿: 假 query 生成器 (与 agent-media-injection.test.ts 同源的两条消息)。
+      const fakeQuery = (_props: { prompt: string; options: Options }) =>
+        (async function* () {
+          yield { type: 'assistant', session_id: 's', message: { content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 1, output_tokens: 1 }, stop_reason: 'end_turn' } } as unknown as SDKMessage;
+          yield { type: 'result', subtype: 'success', result: 'done', session_id: 's', usage: {} } as unknown as SDKMessage;
+        })();
+      // pi 腿: 假 loop (不真起传输)。
+      const fakeLoop = async (msgs: AgentMessage[]) => [
+        ...msgs,
+        { role: 'assistant', content: [{ type: 'text', text: 'ok' }], timestamp: 1, stopReason: 'stop' } as unknown as AgentMessage,
+      ];
+      const run = createAgentLeafRunner({ cwd: dir, sdkQueryFn: fakeQuery, loopFn: fakeLoop as never });
+      await run({
+        prompt: '干活',
+        model: opts.model,
+        ...(opts.selfCheck ? { self_check: opts.selfCheck } : {}),
+      });
+      return readFileSync(logPath, 'utf8');
+    } finally {
+      setLoggerDestination(1);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  test('★D1a: SDK 通道 + self_check 在场 → 日志真的出现 SELF_CHECK_SDK_SKIP_LOG (INV-2-1 不许静默降级)', async () => {
+    const log = await runAndCaptureLog({
+      model: 'claude-code:claude-sonnet-5',
+      selfCheck: { command: 'bun test x.test.ts', expect_exit: 0 },
+    });
+    expect(log).toContain(SELF_CHECK_SDK_SKIP_LOG);
+    // 结构化那一位也得在 —— 只有文案没有判据坐标, 事后分不清是哪条判据被静音了。
+    expect(log).toContain('"command":"bun test x.test.ts"');
+    expect(log).toContain('"sdkSelfCheckSkipped":true');
+  });
+
+  test('★D1b: SDK 通道 + **无** self_check → 不打这条 (它说的是「有判据但听不见」, 不是无条件噪音)', async () => {
+    const log = await runAndCaptureLog({ model: 'claude-code:claude-sonnet-5' });
+    expect(log).not.toContain(SELF_CHECK_SDK_SKIP_LOG);
+  });
+
+  test('★D1c: pi 通道 + self_check 在场 → 不打这条 (pi 听得见, 打了就是假旁路读数)', async () => {
+    const log = await runAndCaptureLog({
+      model: 'deepseek:deepseek-v4-flash',
+      selfCheck: { command: 'bun test x.test.ts', expect_exit: 0 },
+    });
+    expect(log).not.toContain(SELF_CHECK_SDK_SKIP_LOG);
   });
 
   test('★D2: SDK 分支 (runSdkAgentLoop 块) 内不含 `getFollowUpMessages` 字样 (那就是把 SDK 接进了 pi 钩子, 通道混了)', () => {

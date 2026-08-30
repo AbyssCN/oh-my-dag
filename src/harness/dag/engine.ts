@@ -70,6 +70,7 @@ import {
   conductorPromptProfileFromEnv,
   type ConductorPlan,
   type ConductorProfileRosterEntry,
+  type SelfCheckSpec,
 } from '../conductor-plan';
 // SDD 2026-08-11-leaf-profile库 D-3: 节点 profile 字段经此解析成 LeafProfile, 复用既有注入口
 // (agent-leaf.ts AgentLeafRunnerOpts.profile 同型), 不建平行管道。loadProfiles 只投影有界 conductor 名册。
@@ -141,7 +142,7 @@ import {
 // C 无效否决闸 (2026-08-21): 判词可不可证伪 —— 纯函数, 判据与用例都在那边。
 import { classifyVeto, isInfraVerdict } from './veto-guard';
 import { makeDefaultGenerate, LEAF_SYSTEM_PREFIX, PONYTAIL_LEAF_DISPOSITION } from './defaults';
-import { topoLevels, buildLeafPrompt, addUsage, filterOracleCommandNodes } from './planner';
+import { topoLevels, buildLeafPrompt, addUsage, filterOracleCommandNodes, vetSelfCheck } from './planner';
 // ready-set 调度器 (拓扑推进 + 三层并发闸 + quorum 判定; 纯同步零 IO, 见 dag-scheduler.ts)。
 import { DagScheduler, type SchedKind, type QuorumVerdict } from './dag-scheduler';
 import { nodeExecKind, type NodeExecKind } from './node-kind';
@@ -4119,6 +4120,15 @@ async function executePlan(
       let writeCounts: [number, number] | undefined;
       // S1 埋点: agent leaf watchdog 采集, 只透传不判定。undefined = 该 runner 不统计 (inproc/旧 runner)。
       let watchdog: NodeCheckpoint['watchdog'];
+      // S-1 (2026-08-30) 节点级 self_check 自修环的**引擎侧落账**。此前引擎全文 0 处 `selfRepair`,
+      // leaf 报的这一格从没被读回 —— 于是 `LeafResult.selfRepair` 那份三态契约 (types.ts:1050-1069)
+      // 在生产里恒缺席, 三态分不出来。三态严格 (INV-4-1, 不许压平):
+      //   · 键缺席 = 本节点**没派** self_check (旁路, INV-1-2) —「这条路不适用」;
+      //   · `null`  = 派了但 leaf 没听见 (SDK 通道截断, INV-2-1) —「路在但截断」;
+      //   · 对象     = 判据真跑了 (`{rounds, oracleExit, convergedAt}`)。
+      // 「派了却没报」(旧 runner / 测试替身) 走缺席 + 一条 WARN, **不编 null** —— null 那一格
+      // 是留给「截断」的, 拿它顶「没记」正是仓规 §静默坑 1 要挡的抹平。
+      let selfRepair: LeafResult['selfRepair'];
       // prompt 观测面 (同 conductor 那处: 默认 logger 的 debug 是空函数, 生产零成本)。
       // leaf 这一份尤其值钱 —— 上游材料、围栏、失败前驱的告示全落在它里面。
       logger.debug({ node: id, phase: useAgent ? 'agent-leaf' : 'inproc-leaf', model, prompt }, '[omd/prompt] leaf');
@@ -4173,9 +4183,47 @@ async function executePlan(
             elapsedMs: now - (nodeStartedAt.get(id) ?? now),
           });
         };
+        // ── S-1 (2026-08-30): 节点级 self_check 派发给 leaf ────────────────────────────
+        // 这里此前**没有** `self_check` 这一项 —— 而这是全仓唯一的 agent 派发点。于是
+        // `AgentLeafInput.self_check` 在生产里恒 `undefined`, agent-leaf 那台自修环状态机
+        // (agent-leaf.ts:2249-2301) 与 `vetSelfCheck` 一起**恒旁路**, 与通道无关。
+        // 侦察逐跳证据: docs/plan/2026-08-30-sdk-selfcheck-recon.md §0。
+        //
+        // 派发前过判据自证 (INV-1-3, `vetSelfCheck` 存在的全部理由):
+        //   · 有 `commandRunner` → 用它当探针 runner 真跑一次「活还没干之前它红不红」;
+        //     ring (干活前就已经绿) ⇒ 这不是一条判据 ⇒ 退回旁路 (不判红, INV-1-2), 原话进日志;
+        //   · 没 `commandRunner` → **不 vet, 原样派发**。探针在 acceptance-gate 是 fail-open
+        //     (planner.ts:123「跑不起来 → 不拦」); 而 `vetSelfCheck` 缺 `runIn` 时会自己编一个
+        //     `exitCode: 0` (planner.ts:177) → 空世界自检必 ring → 把每一条判据都误杀。
+        //     那是 fail-closed, 与这道闸的设计意图相反, 所以宁可不跑。
+        let dispatchSelfCheck: SelfCheckSpec | undefined;
+        if (node.self_check) {
+          if (config.commandRunner) {
+            const vet = await vetSelfCheck(node.self_check, {
+              runIn: async ({ command }) => ({ exitCode: (await config.commandRunner!({ command })).exitCode }),
+            });
+            // `kept` 只带 command/expect_exit —— `expect_output` 由原 spec 补回:
+            // agent-leaf.ts:900 真消费它, 经 vet 丢掉 = 悄悄把判据放松一档。
+            if (vet.kept) dispatchSelfCheck = { ...node.self_check, ...vet.kept };
+            else
+              logger.warn(
+                { node: id, command: node.self_check.command, why: vet.droppedWhy ?? '(闸没给原话)' },
+                '[omd/executor-dag] self_check 判据自证闸拒 → 本节点退回旁路 (INV-1-2, 不判红)',
+              );
+          } else {
+            dispatchSelfCheck = node.self_check;
+            logger.debug(
+              { node: id, command: node.self_check.command },
+              '[omd/executor-dag] 无 commandRunner → self_check 判据自证跳过 (fail-open), 判据原样派发',
+            );
+          }
+        }
         const r = await config.agentRunner!({
           prompt,
           model,
+          // S-1: 判据下发。缺席 = 该节点没判据 (旁路) 或判据被自证闸拒 —— 两者在 leaf 侧行为相同,
+          // 分辨靠上面那条 WARN, 不靠 leaf 猜。
+          ...(dispatchSelfCheck ? { self_check: dispatchSelfCheck } : {}),
           ...(leafProfile ? { profile: leafProfile } : {}),
           ...(touchRunId ? { touchSession: `${touchRunId}:${id}` } : {}),
           ...(mcpAllow.length ? { mcpAllow } : {}),
@@ -4256,6 +4304,18 @@ async function executePlan(
         // **完全不存在** —— 于是「产物声称的引擎校验动作 ⊆ 引擎记录的动作」这个谓词的记录集
         // 缺了主要合法元素, 诚实节点与顺手编一句的节点在 facts 上长得一模一样。
         shellRuns = r.shellRuns;
+        // S-1 读回: leaf 报的自修环账本 → `LeafResult.selfRepair` (下游 dag-record.ts:859 已经
+        // 在等这一格, 靠 `!== undefined` 守三态)。只在**真派了判据**时写键 —— 没派就该缺席,
+        // 而 agent-leaf.ts:2663 在没派时也返 `null` (它那侧 null = 「没 self_check」),
+        // 无条件搬运会把「不适用」搬成引擎侧的「截断」, 两格语义正好错开一位。
+        if (dispatchSelfCheck) {
+          if (r.selfRepair !== undefined) selfRepair = r.selfRepair;
+          else
+            logger.warn(
+              { node: id, model },
+              '[omd/executor-dag] 派了 self_check 但 leaf 没报 selfRepair → 落账保持缺席 (不编 null: 那一格是「SDK 截断」)',
+            );
+        }
         // 工具序列 (2026-08-16): 既有三本账都答不了「它按什么顺序做了什么」, 而 hashline stale
         // 那条闸与 §8.5 攒了一年的分布, 判据都写在顺序上。见 ToolStep 的注。
         toolSteps = r.toolSteps;
@@ -4593,7 +4653,11 @@ async function executePlan(
         : [];
       // `artifactRoot` 跟着 `filesTouched` 一起出图: 一组相对路径离开它的根就没有意义,
       // 而 R2 隔离档下这个根与引擎进程的 cwd 不是同一个 (见 LeafResult.artifactRoot 的注)。
-      const leaf: LeafResult = { id, status: 'done', kind: useAgent ? 'agent' : 'inproc', model, output: text, deps: node.depends_on ?? [], usage, filesTouched, ...(artifactRoot ? { artifactRoot } : {}), ...(filesRead.length ? { filesRead } : {}), ...(toolCalls !== undefined ? { toolCalls } : {}), ...(shellRuns ? { shellRuns } : {}), ...(writeCounts ? { writeCounts } : {}), ...(toolSteps ? { toolSteps } : {}), ...(toolStepsDropped ? { toolStepsDropped } : {}), ...(writeCandidates.length ? { writeCandidates } : {}), // C-1 (2026-08-19): 注入文本 token。inproc 路径可观察 → 写真值或 0 (无上游);
+      const leaf: LeafResult = { id, status: 'done', kind: useAgent ? 'agent' : 'inproc', model, output: text, deps: node.depends_on ?? [], usage, filesTouched, ...(artifactRoot ? { artifactRoot } : {}), ...(filesRead.length ? { filesRead } : {}), ...(toolCalls !== undefined ? { toolCalls } : {}), ...(shellRuns ? { shellRuns } : {}), ...(writeCounts ? { writeCounts } : {}), ...(toolSteps ? { toolSteps } : {}), ...(toolStepsDropped ? { toolStepsDropped } : {}), ...(writeCandidates.length ? { writeCandidates } : {}),
+        // S-1 (2026-08-30): 自修环三态落账。`!== undefined` 是三态的守门条件 —— 与
+        // dag-record.ts:859 的读侧逐字同款; 任何 `?? null` 都会把「不适用」抹成「截断」。
+        ...(selfRepair !== undefined ? { selfRepair } : {}),
+        // C-1 (2026-08-19): 注入文本 token。inproc 路径可观察 → 写真值或 0 (无上游);
         // agent 路径 SDK 自管 prompt → **不传 0** 一律 null (INV-1: 「拿不到」≠「零」)。
         // 通过条件 spread 落, 接住 A 片 `typeof === 'number'` 的读侧断言。
         ...(useAgent ? {} : { injectedTokens }), };
