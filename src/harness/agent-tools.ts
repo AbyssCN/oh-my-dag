@@ -483,6 +483,12 @@ export interface OmdAgentToolsOpts {
    * 返回 `[]` = 声明了"什么都不许写", 与缺席是两件事 (NULL≠0≠不适用)。
    */
   writeAllow?: () => readonly string[] | undefined;
+  /**
+   * 写域闸拒发生时的观察回调 (刀②, 2026-08-30 闸门三角结): 参数 = 被拒目标 (display 归一,
+   * 与判词里那个同一形状)。只报不拦 —— 判拒本身照旧 throw。缺省 = 零行为变化。
+   * 消费者是 agent-leaf 的按调用计数 → 引擎按「同路径 ≥2 次」上抛 write-wall observation。
+   */
+  onWriteDenied?: (target: string) => void;
   /** 工作根。相对路径对它解析, bash 在它里面跑。 */
   cwd: string;
   /** bash 不可逆命令 fail-closed 闸。默认 true (安全侧); false = 逃生关闸。 */
@@ -564,7 +570,15 @@ export function createOmdAgentTools(opts: OmdAgentToolsOpts): AnyOmdTool[] {
     const allow = opts.writeAllow?.();
     if (allow !== undefined) {
       const v = checkWriteAllowed(target, allow, cwd);
-      if (!v.allowed) throw new Error(describeWriteDenied(display(cwd, target), allow, tool));
+      if (!v.allowed) {
+        // 刀②: 拒之前把目标报给观察回调 (fail-open, 回调炸了不许影响判拒本身)。
+        try {
+          opts.onWriteDenied?.(display(cwd, target));
+        } catch (err) {
+          logger.warn({ target, err: (err as Error).message }, '[omd/agent-tools] onWriteDenied 回调抛错 (已吞, 判拒照常)');
+        }
+        throw new Error(describeWriteDenied(display(cwd, target), allow, tool));
+      }
     }
     if (writable(target)) return;
     throw new Error(

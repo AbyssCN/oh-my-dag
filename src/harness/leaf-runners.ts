@@ -172,6 +172,12 @@ export interface AgentLeafResult {
   /** 本次 leaf 经 write/edit 族工具触碰的文件(continuity 接缝;去重)。**相对路径的根见 cwd。** */
   filesTouched?: string[];
   /**
+   * 写域闸撞墙计数 (刀②, 2026-08-30 闸门三角结): 被拒目标路径 → 本次调用内被拒次数。
+   * 只在**有过撞闸**时出现 —— 缺席 = 没撞过 (闸缺席的调用也缺席, 与「撞 0 次」在引擎侧
+   * 同处置, 不必分)。引擎按「同路径 ≥2」上抛 write-wall observation 进外环重画输入面。
+   */
+  writeDenials?: Record<string, number>;
+  /**
    * 本次 leaf 经 **read 族工具**读过的文件(D-12,与 filesTouched 同形、同一个 cwd 根)。
    *
    * 为什么要它: `filesTouched` 只记**写**,于是"B 读了 A 写的文件但图上没有 A→B 这条边"这类

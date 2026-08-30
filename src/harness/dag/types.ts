@@ -783,7 +783,14 @@ export interface DagObservation {
      * **只报不拦**(同 `loop-no-artifact-change` 那几条): 升成拦截要先拿到活体基率
      * —— 与 `dangling-dependency` 那条引用的教训同源 (`types.ts:670` 那段注)。
      */
-    | 'partial-quorum-failure';
+    | 'partial-quorum-failure'
+    /**
+     * `write-wall` (2026-08-30, 闸门三角结刀②) = **leaf 对同一路径撞写域闸 ≥2 次** —— 写集疑似
+     * 写漏那条路径。一次可能是手滑, 两次是执行体坚持认为该写那里; 而它拿到的判词已经说了
+     * 「那是契约的问题, 不要绕开它」(write-allow.ts) —— 能修契约的只有外环重画。此前这个信号
+     * 只活在 spin 签名里, 外环读不到 (write-allow.ts 自承)。阈值 ≥2 防噪: 不同路径各撞一次不出。
+     */
+    | 'write-wall';
   /** 涉及的节点 id (lint = [reader, writer]; 空转 = 被反复拒绝的那批)。 */
   nodes: string[];
   /** 人与模型都读的一句话 (进 prompt 的就是它)。 */

@@ -1518,7 +1518,9 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
   // (下方 wrapper 用 run() 开, 不用 enterWith —— enterWith 会改到调用方的共享上下文, 并发节点互踩)。
   // per-call 状态 (碰撞台账 session + MCP 授权清单) 落**同一个** ALS: 装配期闭包只挂 getter,
   // 调用期由下方 wrapper 的 run() 写入 —— 并发调用各一个上下文互不串 (enterWith 会串, 见下)。
-  const touchSessionStore = new AsyncLocalStorage<{ session?: string; mcpAllow?: string[]; writeAllow?: string[] } | undefined>();
+  const touchSessionStore = new AsyncLocalStorage<
+    { session?: string; mcpAllow?: string[]; writeAllow?: string[]; writeDenials?: Map<string, number> } | undefined
+  >();
   const touchOpt = opts.touch; // const 让闭包里的收窄成立 (getter 里引用 touchOpt.session)
   const baseTools = createOmdAgentTools({
     cwd,
@@ -1531,6 +1533,12 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     // 烤进装配期就会拿上一个节点的写集去判这一个 (同 mcpAllow / touchSession 那条纪律)。
     // 返回 undefined = 闸缺席放行 (没声明 write_set 的 plan); [] = 声明了"什么都不许写"。
     writeAllow: () => touchSessionStore.getStore()?.writeAllow ?? opts.writeAllow,
+    // 刀② 撞墙计数 (2026-08-30 闸门三角结): 按调用落进 ALS 的 Map (wrapper 每次调用建一份) ——
+    // 与 writeAllow 同一条「thunk 不是值」纪律, 计数烤进装配期会跨节点串账。
+    onWriteDenied: (target) => {
+      const m = touchSessionStore.getStore()?.writeDenials;
+      if (m) m.set(target, (m.get(target) ?? 0) + 1);
+    },
     // #262: 这里**无条件**装 getter, 不再按 `opts.touch` 在不在开门。
     // 原来写的是 `...(touchOpt ? { touch: … } : {})` —— 把一个**按调用**的特性锁在了**装配期**
     // 选项后面。而生产装配 (src/mcp/assemble.ts 两处 createAgentLeafRunner) 从不传 opts.touch,
@@ -2622,8 +2630,12 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
     }
     // spin 只在真卡过时带出去 —— 全 0 的字段进 JSON 只是噪声 (同 observations「缺席 ≠ 0」的口径)。
     const spinSummary = drift?.summary();
+    // 刀② (2026-08-30): 撞墙计数随结果出 leaf (数据不是回调, 同 spinFused 那条边界纪律)。
+    // 只在真撞过时出现 —— 全 0 的字段进 JSON 只是噪声 (缺席 ≠ 0 的口径同上)。
+    const denials = touchSessionStore.getStore()?.writeDenials;
     return {
       text, usage, promptVersion, filesTouched: [...touched], filesRead: [...readPaths], cwd, toolCalls, stalled, writeEffects,
+      ...(denials && denials.size > 0 ? { writeDenials: Object.fromEntries(denials) } : {}),
       // #178 produce-by: 仅触发时出现 (同 spin 惯例); 恒 ≤1 (谓词 firedAt 非空短路)。
       ...(produceByFiredAt !== null ? { produceByNudges: 1 } : {}),
       // 工具序列 (2026-08-16)。截头尾而不是截尾: 开头是它怎么起手, 结尾是它卡在哪, 中段最不值钱。
@@ -2689,13 +2701,13 @@ export function createAgentLeafRunner(opts: AgentLeafRunnerOpts = {}): AgentLeaf
   // (引擎) 的共享上下文**, 并发节点会互相覆盖 (withScope 文档明说的坑); run() 的上下文随调用
   // 结束自动回收, 无需 exit。
   return async (input) => {
-    if (opts.touch || input.mcpAllow !== undefined || input.writeAllow !== undefined) {
-      return touchSessionStore.run(
-        { session: input.touchSession, mcpAllow: input.mcpAllow, writeAllow: input.writeAllow },
-        () => runOnce(input),
-      );
-    }
-    return runOnce(input);
+    // 刀② (2026-08-30): 恒入 ALS —— 撞墙计数的 Map 要按调用新建, 而写域闸可能只由装配期
+    // opts.writeAllow 启用 (那条路此前不进 store)。getter 都是 `store?.x ?? opts.x` 形,
+    // 恒入对「没 session / 没 per-call 清单」的调用零行为变化。
+    return touchSessionStore.run(
+      { session: input.touchSession, mcpAllow: input.mcpAllow, writeAllow: input.writeAllow, writeDenials: new Map() },
+      () => runOnce(input),
+    );
   };
 }
 

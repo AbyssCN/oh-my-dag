@@ -4372,6 +4372,23 @@ async function executePlan(
         // runner 没报 writeEffects (旧 runner / 测试替身) → 保持 undefined, 不编一个 [0,0] 出来:
         // 那会把「没记」伪装成「跑了但没写」, 正是本轮反复在治的那种静默失真。
         if (r.writeEffects) writeCounts = [effects.length, noops.length];
+        // ── 刀② (2026-08-30 闸门三角结): 写域闸撞墙信号上抛 ─────────────────────────
+        // 同一路径撞写域闸 ≥2 次 = 写集疑似写漏那条路径 (一次可能是手滑, 两次是执行体坚持
+        // 认为该写那里)。判词本身不改 (write-allow 列清单那半是对的); 此前这个信号只活在
+        // spin 签名里, 外环读不到。observation 经 escTask 的 write-wall 段进重画输入面 ——
+        // 能修契约写集列的只有外环。阈值 ≥2 防噪: 不同路径各撞一次不出 (verify 反向用例)。
+        if (r.writeDenials) {
+          const walls = Object.entries(r.writeDenials).filter(([, n]) => n >= 2);
+          if (walls.length > 0) {
+            observe(
+              walls.map(([path, n]) => ({
+                kind: 'write-wall' as const,
+                nodes: [id],
+                message: `写集疑似写漏 \`${path}\` (节点 ${id} 撞写域闸 ${n} 次) — 重画时把它补进该节点的 write_set, 或在 goal 里说明为什么不该写它`,
+              })),
+            );
+          }
+        }
         if (effects.length > 0 && noops.length === effects.length) {
           logger.warn(
             { node: id, model, writes: effects.length, paths: noops.map((e) => e.path) },
@@ -6358,6 +6375,9 @@ async function runDagInternalCore(
         verdict.reason,
         loadRepairFingerprints({ root: config.continuity?.repoRoot }),
       );
+      // 刀② (2026-08-30 闸门三角结): 写域闸撞墙 observation 进重画输入面。「写集疑似写漏」
+      // 只有重画能修 (改分解表的写集列) —— 留在结果面外环读不到, 信号等于没发。
+      const wallLines = exec.observations.filter((o) => o.kind === 'write-wall').map((o) => `[写域闸撞墙] ${o.message}`);
       const escTask = [
         task,
         '',
@@ -6365,6 +6385,7 @@ async function runDagInternalCore(
         planOutline(exec.plan),
         '',
         `[上一轮校验未通过] ${verdict.reason}`,
+        ...wallLines,
         ...repairGuidance,
         '请基于上述分解重新规划: 只修被点名有问题的节点; 未点名节点**逐字保留**其 id/goal/字段/依赖边',
         '(引擎按语义指纹复用未变节点的上轮结果 — 任何措辞变化都会浪费一次重算)。',
