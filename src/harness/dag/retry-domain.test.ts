@@ -146,10 +146,35 @@ describe('retryBudgetFor · 预算裁决纯函数 (INV-2 / INV-3)', () => {
     expect(retryBudgetFor('generation', 0, true)).toBe(0); // 含 0 也压过 (这条很关键)
   });
 
-  // ─────────── GWT8 · generation 域: 抛错补 1 次, 否则 0 · 逐字节同 engine.ts:4473-4474 ───────────
-  test('GWT8 generation 域: 未声明 max_retry, 抛错补 1, 否则 0 (INV-3 逐字节不变)', () => {
+  // ─────────── GWT8 · generation 域: 抛错补 1 次 ───────────
+  test('GWT8 generation 域: 未声明 max_retry, 抛错补 1', () => {
     expect(retryBudgetFor('generation', undefined, true)).toBe(1);
-    expect(retryBudgetFor('generation', undefined, false)).toBe(0);
+  });
+
+  // ─────────── GWT8b · R-1 (2026-08-30): 「交了东西但东西不对」也补 1 次 ───────────
+  //
+  // 反向自检: 把 retryBudgetFor 的最后一行改回 `return 0` ⇒ 本条前两个断言红。
+  // 把 REPAIRABLE_BY_CAUSE 扩成"全给" ⇒ 后面那组 (超时/stall/闸拒…) 全红 ——
+  // 那正是 2026-08-30 第一版切太宽时全量 dag 片 6 红的形式化。
+  test('GWT8b R-1: 没抛错时按失败分型分 —— 有产出可注的补 1, 没能说话的仍 0', () => {
+    // 有东西可注 (leaf 交了东西但东西不对) → 1
+    expect(retryBudgetFor('generation', undefined, false, 'empty-artifact')).toBe(1);
+    expect(retryBudgetFor('generation', undefined, false, 'broken-artifact')).toBe(1);
+    // 没能说话 / 闸拒 / 缺能力 / 控制流终态 → 仍 0 (重试只会原地翻倍等待)
+    for (const k of ['timed-out', 'stall', 'gate-rejected', 'missing-capability',
+                     'dep-skip', 'spin-fused', 'rounds-exhausted', 'infra-error'] as const) {
+      expect(retryBudgetFor('generation', undefined, false, k), `${k} 不该拿到预算`).toBe(0);
+    }
+    // 「不知道」不是「可以」—— retryable=null 的两格与缺席一律 0
+    expect(retryBudgetFor('generation', undefined, false, 'subgraph-failed')).toBe(0);
+    expect(retryBudgetFor('generation', undefined, false, 'unclassified')).toBe(0);
+    expect(retryBudgetFor('generation', undefined, false)).toBe(0); // failureKind 缺席
+  });
+
+  // ─────────── GWT8c · oracle 域不受 R-1 影响 (retry-masking 仍然挡住) ───────────
+  test('GWT8c oracle 域: 即便分型在白名单里也一律 0 (判词不是故障)', () => {
+    expect(retryBudgetFor('oracle', undefined, false, 'empty-artifact')).toBe(0);
+    expect(retryBudgetFor('oracle', 3, false, 'broken-artifact')).toBe(0);
   });
 
   // ─────────── GWT9 · 「timed-out 与抛错」分两轴的恒等式 · INV-3 第二条 GWT ───────────

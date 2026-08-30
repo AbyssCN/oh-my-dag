@@ -77,6 +77,32 @@ export function classifyRetryDomain(
 }
 
 /**
+ * **「交了东西但东西不对」的失败分型** —— 只有这几格, 把「哪里不对」注回去再来一次才有意义。
+ *
+ * 判据是**有没有可注的东西**, 不是 `FAILURE_KIND_INFO[k].retryable`:
+ * 后者回答的是「原样重试有没有可能成功」(知识), 不是「引擎该不该当场再跑一遍」(策略) ——
+ * 本文件 2026-08-26 那条注已经为这个区分付过一次代价 (拿 retryable 做自动重试, 全量 11 红)。
+ * 实证: `timed-out` / `stall` 的 `retryable` 都是 `true`, 而它们**没有产出可注** ——
+ * 重试只会原地翻倍等待。2026-08-30 第一版把 generation 域一律给 1, 当场 6 红,
+ * 其中三条 (`await` 超时 · 内环超预算 · G-3 stall) 正是原注释预言的那个害处。**测试抓得对。**
+ *
+ * 反过来这两格是有产出可注的:
+ *   · `empty-artifact`  —— leaf 报了 done 却一个字节没写。注「你说做完了但没有产物」是具体的。
+ *   · `broken-artifact` —— 产出了但形状坏。注「坏在哪」是具体的。
+ *
+ * ⚠ 其余一律不进: `gate-rejected` 是闸拒 (仓规: 拒了不许重试, 换合法做法或升 owner);
+ * `missing-capability` 要先补东西; `dep-skip` / `spin-fused` / `rounds-exhausted` 是控制流终态;
+ * `subgraph-failed` / `unclassified` 的 `retryable` 是 `null` —— **「不知道」不是「可以」**。
+ *
+ * 加一格之前先问: 这一格失败时, leaf 手上有没有一段**具体的、能指出哪里不对**的东西?
+ * 没有就别加 —— 那就退化成「多试几次碰运气」。
+ */
+const REPAIRABLE_BY_CAUSE: ReadonlySet<NodeFailureKind> = new Set<NodeFailureKind>([
+  'empty-artifact',
+  'broken-artifact',
+]);
+
+/**
  * 预算裁决纯函数 —— 给 (域, 显式 `max_retry`, 上一次是否抛错), 回答这一轮允许的重试次数.
  *
  * ## 两条规则 (D-2 / D-3, INV-2, INV-3)
@@ -86,27 +112,53 @@ export function classifyRetryDomain(
  *    无论声明的 `max_retry` 是几, 0 次重试, 不再衰减 —— 已有 spin 阶梯终止
  *    (engine.ts:4572 上方那一段) 是同形出口, 这里照它写.
  *
- * 2. **generation 域 = 现行语义, 逐字节不变**.
- *    `timed-out` / `gate-rejected` / `missing-capability` / `infra-error` / agent stall 等
- *    都是「没说话」或「非确定性失败」, 走:
+ * 2. **generation 域 = 带败因的一次重修**.
  *      · 显式 `max_retry` 压过一切 (含写 0)
- *      · 上一次抛错 (thrown !== undefined) → 给 1 次
- *      · 其余一律 0
- *    这条语义就是 engine.ts:4473-4474 的 `budgetFor` 的**逐字节抄写**,
- *    S3 的 IMPL 期把那个 `budgetFor` 的 body 换成对本函数的调用 —— 这里
- *    把语义冻结在一处, 便于测试直接攻击函数边界.
+ *      · 上一次抛错 → 1 (与 2026-08-30 前逐字节相同)
+ *      · 没抛错但**交了东西而东西不对** (`failureKind` ∈ {@link REPAIRABLE_BY_CAUSE}) → **1** (新)
+ *      · 其余 (超时 / stall / 闸拒 / 缺能力 / 控制流终态 / 分不出来) → 0, 不变
+ *
+ * ## 为什么 2026-08-30 给「交了东西但东西不对」补上这 1 次 (R-1, owner 裁)
+ *
+ * 旧语义下, 「leaf 跑完了、产出被判 failed、但没抛错」这一格拿到的预算是 **0** ——
+ * 而 conductor 几乎从不写 `max_retry`, 所以这是**生产上最常见的失败形态**。
+ * 后果: 一个 agent leaf 干得不对, **零节点级重修**, 直接把整张图顶到外环重画
+ * (一次 conductor 规划发 + 整图重跑), 而外环拿到的信息并不比那个节点自己手上的多。
+ *
+ * ⚠ 关键: 这**不是**「原样再试一次碰运气」。`engine.ts` 的 `causeOf` 会把**上一次的失败
+ * 输出**注入下一发的 prompt(那段机制早就建成了, 只是预算恒 0 时一次都没被用到)。
+ * 所以这一次重修拿到的 context 严格多于第一次 —— 与本文件反对的 retry-masking 是两回事:
+ * retry-masking 说的是**同一条确定性命令**被再派一次(那仍然是 oracle 域, 仍然 0)。
+ *
+ * 归因依据 (`docs/plan/2026-08-30-next-session.md` §4, 12 例 executable 真红逐例翻开):
+ * 「leaf 能力不行」已被证伪 —— 红的大头是判据自己错(A=6)与否决太强(E=4)。
+ * 但 B/C 两格(真·实现不动 / 修复环空转)正是这条通道该接的, 而它当时是断的。
+ *
+ * ⚠ **第一版切太宽了, 照实记**: 一开始写成 generation 域一律给 1, 全量 dag 片当场 **6 红**,
+ * 其中三条 (`await` 超时 · 内环跑穿预算 · G-3 stall) 正是本文件 2026-08-26 那条注预言的
+ * 「超时类失败会原地翻倍等待」。**测试抓得对**, 于是收窄成 {@link REPAIRABLE_BY_CAUSE} 白名单。
+ *
+ * **上限仍然是 1, 不是 3。** owner 提过「3 次不成 = 分解或信息问题」——
+ * 那是**外环**该有的诊断规则(N 轮不成就换分解), 不是把内环预算直接调到 3。
+ * 先让通道通电、量一次读数, 再谈调大: 没有读数就调到 3 属于「多试几次碰运气」,
+ * 正是本文件原来那条注在防的东西。
  *
  * @param domain  RetryDomain (classifyRetryDomain 的产物)
  * @param maxRetry 节点声明的 max_retry (undefined = 未声明; 显式数值压过一切)
  * @param thrown 上一次是否抛错 (true = runNodeOnce 抛了; false = 走完了, status='failed')
+ * @param failureKind 上一次的失败分型 (仅 `thrown=false` 时有意义; 缺席 = 分不出来 ⇒ 不给预算)
  * @returns 这一轮允许的额外尝试次数 (0 表示不再重试, 跳出 L0 内环)
  */
 export function retryBudgetFor(
   domain: RetryDomain,
   maxRetry: number | undefined,
   thrown: boolean,
+  failureKind?: NodeFailureKind,
 ): number {
   if (domain === 'oracle') return 0; // INV-2 · 越过 max_retry
   if (maxRetry !== undefined) return maxRetry; // 显式声明压过一切
-  return thrown ? 1 : 0; // 与 engine.ts:4473-4474 逐字节相同
+  if (thrown) return 1; // 抛错: 与 2026-08-30 前逐字节相同
+  // R-1 (2026-08-30, owner 裁): 「交了东西但东西不对」也给一次**带败因**的重修。
+  // 白名单而不是全给 —— 理由见 REPAIRABLE_BY_CAUSE 与上方 §R-1。
+  return failureKind !== undefined && REPAIRABLE_BY_CAUSE.has(failureKind) ? 1 : 0;
 }

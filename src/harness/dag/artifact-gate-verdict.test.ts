@@ -179,19 +179,28 @@ describe('GWT-2 leaf 什么都没写 ⇒ 产物校验失败**之外**另有一�
         cwd: execTree,
       }),
     });
+    // 终态不变 —— R-1 改的是**尝试次数**, 不是判定。
     expect(result.results.W!.status).toBe('failed');
     expect(result.results.W!.failureKind).toBe('empty-artifact');
-    // INV-2: 两条并存, 非二选一
+    // INV-2: 两条并存, 非二选一。
+    //
+    // ⚠ R-1 (2026-08-30) 之后这里是**每次尝试各一条**, 不再是全程各一条:
+    // `empty-artifact` 进了 `REPAIRABLE_BY_CAUSE` 白名单 (retry-domain.ts) ⇒ 该节点拿到
+    // 一次**带败因**的重修。本用例的假 runner 恒返 `filesTouched: []`, 所以两次都判死。
+    // 原来写死 `toHaveLength(1)` 是把「判词恰好一条」与「只跑一次」耦在了一起 ——
+    // 前者是本片真正要守的不变量 (INV-1「进闸的每一个节点打恰好一行」), 后者是重试策略,
+    // 不该由产物闸这一片来钉。所以判据改成**两者条数相等且逐条判死**, 不是放宽成 ">=1"。
     const failMsgs = pickMsg(cap.lines, '[omd/executor-dag][artifact-empty] 产物校验失败 → 节点 failed (拒绝 empty-done)');
-    expect(failMsgs).toHaveLength(1);
     const verdicts = pickVerdict(cap.lines);
-    expect(verdicts).toHaveLength(1);
-    // 判死的 payload
-    const p = verdicts[0]!;
-    expect(p.node).toBe('W');
-    expect(p.entry).toBe(0);
-    expect(p.exit).toBe(0);
-    expect(p.verdict).toBe('dead');
+    expect(verdicts.length).toBe(failMsgs.length); // 每一次进闸: 校验失败一条 ⇔ 判定一条
+    expect(verdicts).toHaveLength(2); // 首发 + R-1 的那一次带败因重修
+    // 判死的 payload —— **每一条**都要齐, 不是只看第一条 (只看第一条会漏掉重修那次的漂移)
+    for (const p of verdicts) {
+      expect(p.node).toBe('W');
+      expect(p.entry).toBe(0);
+      expect(p.exit).toBe(0);
+      expect(p.verdict).toBe('dead');
+    }
   });
 });
 

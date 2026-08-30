@@ -4825,7 +4825,10 @@ async function executePlan(
       const domain = leafForDomain
         ? classifyRetryDomain(leafForDomain.kind, leafForDomain.failureKind)
         : 'generation';
-      return retryBudgetFor(domain, node.max_retry, prevErr !== undefined);
+      // R-1 (2026-08-30): 第四位 = 上一次的失败分型。没抛错时靠它分辨「交了东西但东西不对」
+      // (给一次带败因的重修) 与「没能说话」(超时/stall — 重试只会原地翻倍等待, 仍 0)。
+      // 抛错路径没有 failureKind 可查, 由 `thrown` 那一支接住, 与改动前逐字节相同。
+      return retryBudgetFor(domain, node.max_retry, prevErr !== undefined, leafForDomain?.failureKind);
     };
     const budget = node.max_retry ?? 0; // 只给日志用 —— 真判定走 budgetFor
     // 上一次的败因 → 下一次的 prompt。**抛错也算一次失败**: 最典型的可重试失败 (429 / 网络抖动)

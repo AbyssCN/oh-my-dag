@@ -243,7 +243,7 @@ describe('S3_RETRY_DOMAIN_WIRED · 反向自检 · engine.ts 真的接上了片 
     expect(classifyRetryDomain('agent', 'assert-failed')).toBe<RetryDomain>('generation');
   });
 
-  test('retryBudgetFor(generation, undefined, true) === 1 (现行语义逐字节不变)', () => {
+  test('retryBudgetFor(generation, undefined, true) === 1 (抛错那一支, R-1 后仍逐字节不变)', () => {
     expect(retryBudgetFor('generation', undefined, true)).toBe(1);
     expect(retryBudgetFor('generation', undefined, false)).toBe(0);
     expect(retryBudgetFor('generation', 5, false)).toBe(5);
