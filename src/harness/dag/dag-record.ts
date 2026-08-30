@@ -488,6 +488,8 @@ export interface DagRecorder {
 
 interface Row {
   id: string;
+  /** SH-1: conductor 声明的图式卡 id。NULL = 没记 (老行 / 该跑没声明)。 */
+  shape_id?: string | null;
   created_at: number;
   plan_name: string;
   node_count: number;
@@ -584,6 +586,9 @@ function rowToRecord(row: Row): DagRunRecord {
     id: row.id,
     createdAt: row.created_at,
     planName: row.plan_name,
+    // SH-1: 原样返回。`undefined`(列不存在/老行) 与 `null`(有列但没声明) 都读成缺席,
+    // 「是不是已知卡」由消费面 isKnownShapeId 判, 不在这里替它编。
+    ...(row.shape_id ? { shapeId: row.shape_id } : {}),
     nodeCount: row.node_count,
     question: row.question,
     runId: row.run_id ?? null,
@@ -761,12 +766,16 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
   if (!cols.includes('tokens_in')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN tokens_in INTEGER`);
   if (!cols.includes('tokens_out')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN tokens_out INTEGER`);
   if (!cols.includes('cache_hit_tokens')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN cache_hit_tokens INTEGER`);
+  // SH-1 图式卡 id (2026-08-30): conductor 声明它跟的是哪张卡。老行留 NULL ——
+  // NULL = **没记**(这一列还不存在时建的行), 与「跑了但没跟卡」(那时写空/缺席) 不是一回事。
+  // 值原样落盘, 不在写侧校验是不是已知卡 (见 ConductorPlan.shape 的注; 读侧用 isKnownShapeId 分)。
+  if (!cols.includes('shape_id')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN shape_id TEXT`);
   if (!cols.includes('duration_ms')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN duration_ms INTEGER`);
   if (!cols.includes('turns')) db.run(`ALTER TABLE omd_dag_runs ADD COLUMN turns INTEGER`);
   db.run(`CREATE INDEX IF NOT EXISTS omd_dag_runs_run_id ON omd_dag_runs (run_id)`);
   const ins = db.query(
-    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage, observations, claim_check, artifact_move, write_race, rollback, outcome, verification, reused, blame_retry, criteria, acceptance_probe, spec_write, tokens_in, tokens_out, cache_hit_tokens, duration_ms, turns)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO omd_dag_runs (id, created_at, plan_name, node_count, question, run_id, entry, levels, nodes, usage, observations, claim_check, artifact_move, write_race, rollback, outcome, verification, reused, blame_retry, criteria, acceptance_probe, spec_write, shape_id, tokens_in, tokens_out, cache_hit_tokens, duration_ms, turns)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const byId = db.query(`SELECT * FROM omd_dag_runs WHERE id = ?`);
   const recent = db.query(`SELECT * FROM omd_dag_runs ORDER BY created_at DESC LIMIT ?`);
@@ -909,6 +918,11 @@ export function createDagRecorder(opts: { path?: string; db?: Database } = {}): 
         // #209 spec 写入磁盘裁决: 同上, 只持久化 entry='solve'; 其它入口误传必须留 NULL
         // (那一格的语义是"契约段对这个入口不适用", 不是"没记")。
         meta.entry === 'solve' && meta.specWrite !== undefined ? JSON.stringify(meta.specWrite) : null,
+        // SH-1 图式卡 id (2026-08-30): 直接读 `result.plan.shape` —— 不让调用方传, 同
+        // `deriveRunOutcome` 那条理由: 两个调用面各传一遍就是两处会漂的独立判断。
+        // 缺席 → NULL(这一跑没跟卡, 合法状态); **不校验是不是已知卡**, 原样落盘,
+        // 「已知/未知/缺席」三态由消费面 `isKnownShapeId` 分(见 ConductorPlan.shape 的注)。
+        result.plan.shape ?? null,
         // C-1 节点级五位列 (2026-08-19): 表列**只作 schema 兼容**(老库 ALTER 通道), 真值在
         // `nodes` JSON 里(per-node)。**严禁求和压平** —— 把 NULL/0/不适用抹成一格的正是 INV-1 禁的,
         // 真要走"一跑用了多少 token"该读 `usage.conductor/leaves` (run 级聚合 = 那两位的活), 或

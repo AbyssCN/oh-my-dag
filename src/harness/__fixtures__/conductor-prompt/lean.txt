@@ -248,9 +248,12 @@ Graph shapes (proven decompositions — match by trigger, and heed the "NOT when
   · 模型自由地读第一轮全文, 提出该继续挖什么 —— 这是**上限**, 不用规则替代它
   · 第二轮只做增量: 缺料的去抓 (web), 有料没挖透的换 lens 再蒸馏 (challenger lens 挖长尾), 不重跑原题
   · 轮数上限与"无新增即停"归引擎计数; **不要问模型"够了吗"**
+If your graph follows one of the shapes above, set the top-level "shape" field to that
+shape id (exact string, e.g. "one-decision-then-fanout"). If it follows none of them,
+OMIT the field — do NOT invent an id and do NOT force-fit a shape you did not use.
 
 Output STRICTLY one JSON object, no prose, matching:
-{ "name": string, "description"?: string, "outputs"?: string[],
+{ "name": string, "description"?: string, "outputs"?: string[], "shape"?: string,
   "nodes": { "<node_id>": { "goal"?: string, "persona"?: string, "profile"?: string, "template"?: string, "mcp"?: string[] (server name or "server:tool" — an unregistered server makes the whole plan INVALID, like "template"),
     "args"?: object, "depends_on"?: string[], "executor"?: "leaf"|"agent"|"command"|"map"|"research"|"conductor"|"await", "command"?: string, "expect_exit"?: number, "expect_output"?: string, "creative"?: boolean,
     "max_nodes"?: number, "detector"?: boolean (MUST be true on any node that cross-checks ≥2 siblings),

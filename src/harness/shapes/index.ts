@@ -189,5 +189,31 @@ export function renderShapesForPrompt(profile: 'full' | 'lean' = 'full'): string
     if (profile === 'full') out.push(`  WHY: ${s.why}`);
     if (s.enforced) out.push(`  ENFORCED: ${s.enforced}`);
   }
+  // SH-1 (2026-08-30): 光在输出 schema 里列一个 "shape"?: string 是不够的 —— W1 (26895234)
+  // 的教训是词表与散文缺任一个, 那一格的产出率就是 0。这里给出**指令**那一半。
+  // 刻意允许缺席: 逼模型硬填一张卡会让它去凑, 而"没跟卡"本身是合法且有信息量的读数。
+  out.push(
+    'If your graph follows one of the shapes above, set the top-level "shape" field to that',
+    'shape id (exact string, e.g. "one-decision-then-fanout"). If it follows none of them,',
+    'OMIT the field — do NOT invent an id and do NOT force-fit a shape you did not use.',
+  );
   return out;
+}
+
+/**
+ * 这个 id 是不是已知图式卡 —— **消费面**的分类器(SH-1, 2026-08-30)。
+ *
+ * `ConductorPlan.shape` 的值域是 `string` 而不是枚举:一个拼错的 id 不该让整张 plan
+ * 判 INVALID。所以「合法性」不在写侧拦,在读侧分 —— 与 `seat-usage.ts` 的
+ * `seatOfTrace` / `traceIsClassified` 同一条纪律:原始观测原样写入磁盘,归类留给消费面,
+ * 映射表将来发现错了历史行还能重算。
+ *
+ * ⚠ 读账的人**必须**把三种情形分开,别压平(仓规 §静默坑 1):
+ *   · 缺席      = conductor 没跟任何一张卡(自由发挥)—— 合法状态;
+ *   · 已知 id   = 跟了某张卡;
+ *   · 未知 id   = 声明了但不在卡表里(拼错 / 卡表改名 / 模型编了一个)。
+ * 把后两者混成「有 shape」会让「哪张卡好」的统计混进一堆不存在的卡。
+ */
+export function isKnownShapeId(id: string | undefined): boolean {
+  return id !== undefined && GRAPH_SHAPES.some((s) => s.id === id);
 }

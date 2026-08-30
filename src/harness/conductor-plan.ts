@@ -408,6 +408,27 @@ export const PlanSchema = z
      * 引用的 id 必须存在于 nodes(superRefine 闸,防剪错图)。
      */
     outputs: z.array(z.string().min(1)).optional(),
+    /**
+     * **这张图跟的是哪张图式卡**(SH-1, 2026-08-30, owner 裁)。取 `GRAPH_SHAPES` 的 `id`
+     * (`src/harness/shapes/index.ts` 的 8 张卡), 没跟任何一张就**缺席**。
+     *
+     * ## 为什么必须是 conductor 自己声明, 派生不出来
+     *
+     * 仓里已有一个**结构指纹** `shapeOf()`(`plan-passes/evidence-pass.ts:203`,
+     * 形如 `n3/e3/agent=2,leaf=1`), 但它答的是**这张图长什么样**, 不是**跟的哪张卡**:
+     * 同一张卡能画出不同结构, 不同卡也能撞出同一个结构指纹。两者不能互相替代。
+     * 没有这一列, 「哪个图式好」这个问题**永远答不了** —— conductor 优化就无从谈起
+     * (owner 2026-08-30 的原话: 没有它就无法回溯之后哪些是好的)。
+     *
+     * ## 为什么**不**校验成枚举
+     *
+     * 值域故意是 `string` 而不是 `z.enum([...8 个 id])`: 卡表会长, 而一个拼错的 id
+     * **不该让整张 plan 判 INVALID**(同 `executor:'await'` 那条教训 —— 词表明示了却让
+     * 用了就炸)。原始观测**原样写入磁盘**, 「是不是已知卡」留给消费面判
+     * ({@link isKnownShapeId}) —— 与 `seat-usage.ts` 的 `traceName`/`seatOfTrace` 同一条纪律:
+     * 映射表将来发现错了, 历史行还能重算。
+     */
+    shape: z.string().min(1).optional(),
     // ── 片 2 schema 增量 (S1 契约 · INV-6 全 optional) ──
     /** PP-* 诊断码的抑制声明 (元素 = 诊断码字符串, 如 'PP-T01')。INV-S1-3: PP-S02 不可抑制,
      *  该闸由 plan-critic 跑 (不是 zod), 这层只接形状。可选 · 缺省 = 不抑制。 */
@@ -564,6 +585,9 @@ export function bareConductorSystemPrompt(): string {
     'directed acyclic graph of executor nodes.',
     '',
     'Output STRICTLY one JSON object, no prose, matching:',
+    // SH-1 刻意**不进 bare 档**: bare 是「零 harness 基线」(供 conductor-modelmix --profiles bare
+    // 量 harness 增值多少), 加字段既污染那个基线, 又只给了词表没给卡表 —— 而卡表由
+    // renderShapesForPrompt 渲染, bare 不渲染它。词表在而卡表不在 = 邀请模型编一个 id。
     '{ "name": string, "description"?: string, "outputs"?: string[],',
     '  "nodes": { "<node_id>": {',
     '    "goal"?: string, "depends_on"?: string[],',
@@ -971,7 +995,10 @@ export function conductorSystemPrompt(
     ...renderShapesForPrompt(lean ? 'lean' : 'full'),
     '',
     'Output STRICTLY one JSON object, no prose, matching:',
-    '{ "name": string, "description"?: string, "outputs"?: string[],',
+    // SH-1 (2026-08-30): 声明跟的是哪张图式卡。没有它「哪个图式好」永远答不了 ——
+    // 结构指纹 (shapeOf) 答的是"图长什么样", 不是"跟的哪张卡", 替代不了。
+    // 值域故意宽 (拼错不判 INVALID), 合法性由消费面 isKnownShapeId 分。
+    '{ "name": string, "description"?: string, "outputs"?: string[], "shape"?: string,',
     // "skill" 从明示 schema 撤下 (2026-07-25 ponytail): 执行层无 skill 加载器, 该字段只会渲染成一行
     // 无载荷文字 — 别邀请 conductor 相信一个不存在的通道。zod 层保留容忍 (daemon 遗产/旧 plan 兼容)。
     // "agent" 2026-07-26 从明示 schema 撤下 (同 skill 的理由): executor-dag 零消费者 —— 分流只看
