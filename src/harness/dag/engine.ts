@@ -6225,12 +6225,18 @@ async function runDagInternalCore(
     // #249 (2026-08-25, 片 2): 外环瘫痪绊线 —— 一轮红节点**全部**死于"越权写/空产出"类
     // 败因 (重画不能扩权, 重画就该拒), 立即停轮交人。三条同时成立才触发:
     //   ① ≥PARALYSIS_MIN_RED 个红节点
-    //   ② 全员 failureKind ∈ PARALYSIS_KINDS (gate-rejected / empty-artifact)
+    //   ② 全员 failureKind ∈ PARALYSIS_KINDS (gate-rejected / empty-artifact / dep-skip)
     //   ③ 无 assert-failed 等可修类 (混因 = 模型可能修得动别的, 这一规则不该挡它)
     // 出口 = D-6 同形 (circuitBroken + break + STALLED), 零新机制;observation 点名节点 + 败因 +
     // 「重画不能扩权, 该改的是契约写集/判据」(owner 拿到 STALLED 后下一步该动什么的指针)。
+    //
+    // 刀③ (2026-08-30 闸门三角结): `dep-skip` 入集。dep-skip 是瘫痪的**放大器**不是独立死因
+    // (实测 78 份 dep-skip 里 28 份上游是 empty-artifact), 原集把它排除等于「级联 skip 越多
+    // 这道闸越不可能触发」—— 与它要治的现场恰好相反 (2 个 empty-artifact 拖死 3 个下游时,
+    // `every` 被 dep-skip 打破, 闸装死)。混因保护 (③) 不受影响: 根因里有 assert-failed
+    // 之类可修类, `every` 照样不成立。
     const PARALYSIS_MIN_RED = 3;
-    const PARALYSIS_KINDS: ReadonlySet<NodeFailureKind> = new Set<NodeFailureKind>(['gate-rejected', 'empty-artifact']);
+    const PARALYSIS_KINDS: ReadonlySet<NodeFailureKind> = new Set<NodeFailureKind>(['gate-rejected', 'empty-artifact', 'dep-skip']);
     // D-P 取消接缝④: 不开新的升级重规划轮 (那是一整轮重规划 + 重跑, 最贵的一种"新活")。
     // #158 预算接缝: 同一句话对预算也成立 —— 环收敛/结束后, 预算已尽还开重规划轮, 正是
     // d39b559e 「134min 收敛后又跑 30min」那段的来源。判据与 executePlan 的派发闸同源
@@ -6279,7 +6285,7 @@ async function runDagInternalCore(
       // 与 D-6 同因熔断并排, 位置在 blameKey 熔断之后、C 无效否决闸之前
       // (确定性的先问, 零 LLM, 只读 exec.results)。三类**同时**成立才熔断:
       //   ① 红节点数 ≥ PARALYSIS_MIN_RED (=3, e63f47ea 样本 8/21 取保守下界)
-      //   ② 全员 failureKind ∈ PARALYSIS_KINDS (gate-rejected / empty-artifact)
+      //   ② 全员 failureKind ∈ PARALYSIS_KINDS (gate-rejected / empty-artifact / dep-skip, 刀③)
       //   ③ 任意红节点 failureKind 在 PARALYSIS_KINDS 外 (assert-failed 等) → 不触发:
       //      那条线模型可能修得动别的, 重画不能扩权这一规则不该挡它。
       // 出口 = D-6 同形 (circuitBroken + break + STALLED), 零新机制。observation

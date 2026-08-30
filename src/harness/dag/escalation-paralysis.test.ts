@@ -12,6 +12,9 @@
  *   4. 规划环 PP-O02 (planCriticGate=true): stub 首发「写节点无 oracleKind 无 command」
  *      图、二发补 `oracleKind:'judge'` → generate 恰调 2 次, 终 plan 是二发
  *      (验 INLOOP_ENFORCED_CODES 扩集 — INV-8 一处改)。
+ *   5. 刀③ (2026-08-30 闸门三角结): 2 empty-artifact + 3 dep-skip → 触发。改前这张图**不**触发
+ *      (dep-skip 不在 PARALYSIS_KINDS, `every` 被打破 —— 级联 skip 越多闸越装死, bug 复现),
+ *      dep-skip 入集后触发。反向自检: 从 PARALYSIS_KINDS 删掉 'dep-skip' → 本用例当场红。
  *
  * 全程 stub generate / verifier / commandRunner, 零模型调用, 零 IO, 零真实文件系统。
  */
@@ -257,6 +260,51 @@ describe('#249 外环瘫痪绊线 + #244 活环扩集 (片 2)', () => {
         // ④ log **不**含 [fuse-paralysis]
         const fuse = captured.find((c) => c.msg.includes('[omd/executor-dag][fuse-paralysis]')); // 整串前缀 = 片5c 覆盖对账的捕判词判据
         expect(fuse).toBeUndefined();
+      });
+    } finally {
+      restoreConsoleLogger();
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // GWT-5 (刀③, 2026-08-30): 2 empty-artifact + 3 dep-skip → 触发 (dep-skip 计入瘫痪判据)
+  // ─────────────────────────────────────────────────────────────────────────
+  test('GWT-5: 2 个 empty-artifact 拖死 3 个下游 dep-skip → fuse 触发 (级联 skip 不再让闸装死)', async () => {
+    try {
+      await withCapturedLogger(async (captured) => {
+        const stub = makeStub({
+          planSequence: [
+            {
+              name: 'first',
+              nodes: {
+                a: { goal: '写 A', executor: 'agent', output_path: 'a.ts' },
+                b: { goal: '写 B', executor: 'agent', output_path: 'b.ts' },
+                c: { goal: '下游 c', depends_on: ['a'] },
+                d: { goal: '下游 d', depends_on: ['b'] },
+                e: { goal: '下游 e', depends_on: ['a', 'b'] },
+              },
+            },
+          ],
+        });
+        const r = await runExecutorDag(
+          'task',
+          baseConfig(stub.generate, {
+            // 只读不写的 agent leaf → a/b 判 empty-artifact; c/d/e 因上游失败 dep-skip。
+            agentRunner: async () => ({ text: '看了一眼。', usage: { in: 1, out: 1 }, filesTouched: [], cwd: '/tmp/omd-paralysis-nonexistent' }),
+            verifier: async () => ({ pass: false, reason: 'verifier rejects', usage: { in: 1, out: 1 } }),
+            conductorEscalationModel: 'escx:strong',
+            maxEscalations: 3,
+          }),
+        );
+        // ① 败因分布 = 契约 verify 那张图: 2 empty-artifact + 3 dep-skip
+        expect((r.results.a as LeafResult).failureKind).toBe('empty-artifact');
+        expect((r.results.b as LeafResult).failureKind).toBe('empty-artifact');
+        for (const id of ['c', 'd', 'e']) expect((r.results[id] as LeafResult).failureKind).toBe('dep-skip');
+        // ② fuse 触发: 升级环不开 (conductor 恰调 1 次), STALLED 出口
+        expect(stub.conductorCalls()).toBe(1);
+        expect(r.verification!.circuitBroken).toBe(true);
+        // ③ log 含整串判词前缀 (片5c 覆盖对账的捕判词判据)
+        expect(captured.find((c) => c.msg.includes('[omd/executor-dag][fuse-paralysis]'))).toBeDefined();
       });
     } finally {
       restoreConsoleLogger();
