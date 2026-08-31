@@ -435,6 +435,19 @@ export const PlanSchema = z
     suppressions: z.array(z.string()).optional(),
     /** plan schema 版本号 (PP-V01 消费)。可选 · 缺省视作 '1.0' (由 isSupportedSchemaVersion 调用方补)。 */
     schema_version: z.string().optional(),
+    // ── L1 平铺契约 (2026-08-31, 片 2 · INV-2) ──
+    /**
+     * **plan 拓扑来源** — L1 平铺编译器写 `flat`, 既有重仪式 conductor 写 `full` (省略
+     * 等价于 full, 零回归)。枚举故意只两个: D-2「路由权在 config, 不在模型」—— 让
+     * conductor 在 prompt 里**看不见**这个字段, 重仪式路径不会主动声明, 也就没有
+     * 「写错第三个值」的面。
+     *
+     * 缺席语义 = full: GWT-3 (INV-2) 要求「不含 complexity 字段的既有 plan JSON
+     * 解析通过且行为与今天逐字节相同」。PlanSchema 顶层仍 `.passthrough()`, 故省略
+     * 即可, 与显式 `'full'` 行为一致。值域错 (如 `'deep'`) → zod 拒绝, 与 `executor`
+     * 枚举的失败语义同源。
+     */
+    complexity: z.enum(['flat', 'full']).optional(),
   })
   .passthrough()
   .superRefine((plan, ctx) => {
