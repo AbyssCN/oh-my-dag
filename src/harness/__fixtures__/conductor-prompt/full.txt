@@ -258,6 +258,12 @@ Graph shapes (proven decompositions — match by trigger, and heed the "NOT when
   · 一个 leaf 节点 OUTPUT 那个决策 (接口文本 / schema / 命名表), 给 tier:"strong"
   · N 个执行节点全部 depends_on 它, 彼此之间不连边
   WHY: 不这么排就是 N 个兄弟各自发明一份, 得到 N 份互不兼容的答案和一次没人负责的合并。这也是整张图里最值得花强模型的一个点 —— 它下面的 worker 是在**转录**一个决策, 不是在做决策, 所以可以廉价。
+  EXAMPLE (real green run 49e1bfcf): 契约勘察段 —— 一次探明全部落点, 18 个调查兄弟并行消费同一份基准
+  probe_landmarks [command] ← —          (输出勘察基准: 全部落点一次探明, 供所有兄弟消费)
+  survey_handoff [agent] ← probe_landmarks
+  survey_failure_detail::a [command] ← probe_landmarks
+  survey_failure_detail::b [command] ← probe_landmarks
+  … 共 18 个调查兄弟, 彼此零连边, 全部只依赖 probe_landmarks
 - ui-evidence — UI 交付物后面挂 [渲染 → 确定性截图闸]
   WHEN: 任何节点的交付物是用户可见的 UI (HTML/CSS、组件、页面、动效)
   NOT when: TUI / 纯文本输出 —— 它们的证据是 ANSI 文本, 走普通审查, 不转图不占多模态池
@@ -289,6 +295,11 @@ Graph shapes (proven decompositions — match by trigger, and heed the "NOT when
   · lister 子步在**运行时**跑出数组 (优先 executor:"command" 复用已有索引设施, 别让模型猜)
   · template 按元素展开成子节点; keyBy 给稳定身份 → resume 只重跑变化的元素
   WHY: 不这么做就会编一个"既枚举又处理"的假命令 (那个工具并不存在), 或者凭空写死一份猜测的清单。
+  EXAMPLE (real green run 0f53b6fe): 读 10 篇论文回答 8 个问题 —— 清单在规划期已存在于盘上但不该手抄
+  paper_corpus [map] — lister 子步用 command 在运行时列出 10 篇论文路径
+  paper_corpus::<论文> [command] ×10 — 模板按元素展开, keyBy 给稳定身份
+  load_checklist [command] ← —
+  (下游综合节点 fan-in paper_corpus 与 load_checklist)
 - runtime-decomposition — 一步在规划期**分不出来**, 留一个 executor:"conductor" 节点, 到它跑的时候现场画子图
   WHEN: 这一步该怎么拆, 取决于上游跑出来的东西 —— "看完调研再决定分几路" / "按契约定下来的接口面拆实装"。规划期硬拆只能瞎猜, 猜错的那张图会被照着执行。
   NOT when: ① 现在就拆得出来 —— 那就直接把节点写出来, conductor 节点是多一次模型调用 + 多一层间接, 白花的。② 要扇的是**同一件事的 N 份** (每个模块审一遍 / 每个镜头查一遍) —— 那是 runtime-work-list (map), 它有模板和 keyBy, 比让 conductor 手写 N 个几乎一样的节点稳且便宜。conductor 节点是给**异构**步骤用的 (各有各的 goal/executor/依赖)。
@@ -299,6 +310,11 @@ Graph shapes (proven decompositions — match by trigger, and heed the "NOT when
   WHY: 把"分不出来的一步"硬拆成静态节点, 得到的是一张**看起来完整但建立在猜测上**的图 —— 而图一旦画出来就会被照着执行, 没有任何环节会因为"当初拆错了"变红。留成 conductor 节点是把这个决定推迟到**信息真的到齐**的时刻。
 代价要认: conductor 的规划质量成了一个新的单点 (原本静态图至少是人审过的)。所以子图过与外层同一条 pass 管线 (prune→dedup→evidence→stamp), 且禁嵌套 —— 展开只许一层。
   ENFORCED: 展开闸: 子节点禁再用 conductor/map (D-D); 子图有环 / 空 / 不是合法 plan → 整份拒, 一个子节点都不跑; 子节点 id 内容寻址 (D-B), conductor 改名不改内容则 resume 照旧命中
+  EXAMPLE (real green run 5d0853b6): 执行段怎么拆取决于契约内容 —— 规划期留 conductor 节点, 跑到时现场分解
+  execute [conductor] ← —    goal 只写「要达成什么」, 不写分几步
+  execute::impl [agent] → execute::gate [command] → execute::fix [agent] → …
+    (运行时展开: agent/command 混排 9 节点, 各有各的依赖边, 含 red→impl→verify 链)
+  accept [command] ← execute   (外层验收不进子图)
 - research-lens — 多专家镜头并行 → 逐镜头收敛 → 综合 → 裁判 → 嫁接
   WHEN: 需要从多个角度把一个问题查透, 且**角度可以现场拟定**
   NOT when: 通用探索式 deep research —— 连"该问什么"都还不知道时, 固定管线是错配 (LangChain《3 years of graph engineering》原话: 这类任务应该让规划在 harness 里涌现, 而不是钉进图里)。那种情况让组合者自己 loop + 调原语。
@@ -307,6 +323,12 @@ Graph shapes (proven decompositions — match by trigger, and heed the "NOT when
   · framing 综合
   · judge panel 多维评判 + 嫁接亚军亮点
   WHY: 镜头之间必须**跨模型家族**分散 —— 同家族三个镜头产出三份同源盲点, fan-in 出来的"共识"是假的。lens 集本身由模型现场编写 (管线固定, 内容全是变量), 别把它读成"形状写死"。
+  EXAMPLE (real green run 56fd4aa3): README 首屏文案 —— 4 个 persona 竞稿, panel 评判, 嫁接融合
+  draft_1_category_definer / draft_2_pain_narrative / draft_3_terse_engineer / draft_4_honest_skeptic [agent] ×4 互不依赖 (四个 persona 镜头)
+  collect_drafts [command] ← 四稿
+  judge_panel [agent] ← collect_drafts        (多维评判)
+  fusion_winner [agent] ← judge_panel, collect_drafts   (嫁接亚军亮点)
+  verify_artifacts [command] ← (落盘核验)
 - research-second-pass — 第一轮之后再挖一轮 —— 但只挖**新的东西**
   WHEN: 第一轮出了答案, 而你需要的是深度不是覆盖面; 或第一轮暴露了没读的料 / 没出处的断言
   NOT when: 第一轮已经回答了问题 —— 再来一轮只会得到同一批角度的重述。**重复的不是信息, 是噪声。**

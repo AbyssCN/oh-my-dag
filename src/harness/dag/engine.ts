@@ -23,6 +23,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 
 /**
  * C-1 (2026-08-19, 引擎采集片独占):
@@ -43,6 +44,24 @@ const _nodeLastSettled = new Map<string, LeafResult>();
 // 节点**不并发** (INV-1/3), 不同 key (不同 worktree) 互不排队 (INV-5)。返回 release 函数 ——
 // 调用方在 finally 内无条件调 (D-4, 任何出口都释放)。
 const mutationLocks = new Map<string, Promise<void>>();
+
+/**
+ * 修补节点 (replan-spin) 的默认 git diff 取数函数 —— 隔离档下真跑 `git diff <baseline> -- <paths>`。
+ *
+ * **写在这里** (引擎侧) 而非 replan-spin.ts: 本片写集只许动 engine.ts (片 1 写集锁), 不能回头
+ * 改 replan-spin.ts 的签名面。出口函数必须引擎侧实装, 走 spawnSync 直接拉 stdout。
+ *
+ * 失败抛错 → 走 fail-open (trySpinRepair / renderDiffSegment 的 catch), 不阻断合成 (D-7)。
+ * cwd 由 caller 传 (隔离档 = execRoot, head 档不调本函数)。
+ */
+export const defaultGitDiff: GitDiffFn = ({ baseline, paths, cwd }) => {
+  const r = spawnSync('git', ['diff', baseline, '--', ...paths], { cwd, encoding: 'utf-8' });
+  if (r.status !== 0) {
+    const detail = (r.stderr?.toString() || r.stdout?.toString() || `exit=${r.status}`).trim();
+    throw new Error(`git diff 退出码 ${r.status}: ${detail || '(空输出)'}`);
+  }
+  return typeof r.stdout === 'string' ? r.stdout : '';
+};
 function acquireMutationLock(key: string): Promise<() => void> {
   // 证伪方式: 把下一行换成 `const prev = Promise.resolve();` (后到者不等前一个 = 关掉互斥)
   // ⇒ `falsify-mutex.test.ts` 的 GWT-1/GWT-2 当场红 (2026-08-22 实跑过, 红在"看见了别人的
@@ -130,7 +149,7 @@ import { NOVELTY_COLLAPSE_LINE, pushNoveltyRound } from '../pathfinder/proximity
 import { extractFailSet } from '../goal/accept-delta';
 // ── T2#5 按簇拆出的兄弟文件 (引擎消费) ──
 import type { GenerateFn, ExecutorDagConfig, LeafResult, ExecutorDagResult, DagObservation, BlameRetryLedger, DagNodeEvent } from './types';
-import { trySpinRepair } from './replan-spin';
+import { trySpinRepair, type GitDiffFn } from './replan-spin';
 // THINKER (SDD 2026-08-31, 片 2): 重画前置批评步接线。开关关 → 零调用 (INV-5), 开关开 → escTask 拼装前
 // 一次独立 generate 调用, 失败 fail-open (INV-3 / D-5)。开关在 config.critiqueStep ?? env OMD_THINKER_CRITIQUE=1。
 import { runCritiqueStep } from './thinker';
@@ -6548,6 +6567,25 @@ async function runDagInternalCore(
           priorResults: exec.results,
           verdictReason: verdict.reason,
           escCount,
+          // SDD 2026-08-31 修补节点补上下文 (片 2 接线) — 七段构造的注入面 (片 1 已就绪, 本片传值):
+          //   task          = 同作用域原任务 (D-2: 与 escTask 用同一个变量, 拼装不漂)
+          //   baseline      = 隔离档 commit (D-3 两档分辨判别依据; 缺席 = head 档, 走 headSnapshot 路径)
+          //   gitCwd        = 隔离档 execRoot, head 档 repoRoot (D-3 / D-6, 两侧同一个锚)
+          //   headSnapshot  = head 档才读, 隔离档不读 (D-3 两档分辨); 走既有 manager 接口, fail-open
+          //   gitDiff       = 真跑 `git diff <baseline> -- <paths>`, 失败抛错 (D-7 fail-open 留证)
+          //   logEvidence   = 走既有 logger.warn (INV-D2-4), 修一处全局可见
+          // ⚠ marker「REPAIR_CONTEXT_WIRED」= 片 2 接线存在的字符串锚, wiring 测试扫它。
+          task,
+          baseline: config.continuity?.rollbackBaseline,
+          gitCwd: config.continuity?.execRoot ?? config.continuity?.repoRoot ?? process.cwd(),
+          headSnapshot:
+            config.continuity && !config.continuity.rollbackBaseline
+              ? (config.continuity.manager.loadHeadBaseline(config.continuity.runId) as
+                  | HeadWriteSetBaseline
+                  | null) ?? undefined
+              : undefined,
+          gitDiff: defaultGitDiff,
+          logEvidence: (msg, payload) => logger.warn({ ...payload, round: escCount }, msg),
         });
         let planToRun = deterministicPlan;
         if (spinResult.kind === 'spin') {

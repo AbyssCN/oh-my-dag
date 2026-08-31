@@ -1,5 +1,5 @@
 /**
- * src/harness/dag/replan-spin —— 平铺图确定性重规划的空转检测与修补节点合成 (SDD D2 切片 3)。
+ * src/harness/dag/replan-spin —— 平铺图确定性重规划的空转检测与修补节点合成 (SDD D2 切片 3 + 修补上下文补刀 2026-08-31)。
  *
  * **为什么这块存在 (背景)** —— run e7e360f6 (2026-08-25) 实证: accept 闸在仓规绊线 (禁词 / 沉默 catch
  * 净增) 上红了, 第 1 轮修复轮 deterministicReplan 重新铺了**同一张平铺图** (compileBreakdown 的确定
@@ -23,16 +23,65 @@
  * **零启发式**: 不分析 verifier reason 是不是「机械红 / 语义红」——闭包内是否还有会真跑的节点
  * 就是全部判据。语义红 (闭包内有实装节点被重跑) 不走此路, 照旧重规划。
  *
+ * **修补节点 goal 七段构造 (SDD 2026-08-31, owner 裁「先补上下文不升座」)**:
+ *   修补节点之前只拿到判词, 看不见「自己上一轮改了什么 / 本来要干什么 / 哪个切片红了」。
+ *   本片 (切片 1) 给它拼七段, 顺序按注意力位阶 (D-5):
+ *     原任务 → 逐节点结果 → diff (或缺席说明) → 判词 → 红线 → 写集约束 → verify 说明
+ *   - 原任务 / 逐节点结果 / diff 三段 = 事实 (调用点已在手, 不新增采集, D-2);
+ *   - 判词 / 红线 / 写集约束 / verify 说明 = 旧任务文本体, 段序按近因区重排。
+ *   diff 两档分辨 (D-3): 隔离档 (给了 rollbackBaseline) → 注入 diff **正文**;
+ *                        head 档 (无 baseline) → 「写集内变了哪些」清单 + 「本档无 diff 正文」。
+ *   diff 限定写集内 (D-4) — 越界路径不许塞进 prompt。
+ *   diff 6KB 截断带「已截断 N 字节」+ 自取命令 (D-6, No-silent-caps);
+ *   git 跑挂 → 段缺席 + 证据行, 不阻断合成 (D-7, fail-open 不吞证据)。
+ *
  * **INV**:
  *   - INV-D2-1 引擎侧一个仓库规则都不许硬编码 — 本片零规则, 纯结构判据。
  *   - INV-D2-3 三态语义 — 本片只判结构 (boolean), 不铸 FAIL/UNVERIFIED 票。
  *   - INV-D2-4 fail-open 不吞证据 — 修补节点构造失败 (try/catch) 日志留 runId + 错误原文 + fallback 路径。
+ *   - 修补上下文切片 1 (2026-08-31): 七段位置固定 (INV-1), diff 两档分辨 (INV-2),
+ *     diff 路径 ⊆ 写集 (INV-3), 截断响亮 (INV-4), git 失败 → 段缺席 + 证据 (INV-5),
+ *     既有行为零回归 (INV-6)。
  *
  * **可移植性**: `detectReplanSpin` 与 `buildRepairPlan` 都是**纯函数** —— 输入输出无副作用,
  * 单测可以脱离引擎跑 (O-6 实装前天然红的判别力来源)。引擎只在 deterministic 分支调用。
  */
 import type { ConductorPlan } from '../conductor-plan';
 import type { LeafResult } from './types';
+import {
+  changedSinceHeadBaseline,
+  type HeadWriteSetBaseline,
+} from '../writeset/head-baseline';
+
+// ── 段标题锚 (SDD 2026-08-31 切片 1, INV-1 / 测试用「REPAIR_CONTEXT」字面锚定) ──
+
+/**
+ * 修补节点 goal 的七段固定标题锚。测试通过这些字面串断言段位与段序, 散在测试里抄字面量
+ * = 漂移点 (刀①的实测教训), 一律走这个常量。
+ */
+export const REPAIR_CONTEXT = {
+  TASK: '==== 原任务 (用户目标) ====',
+  PRIOR_RESULTS: '==== 上一轮逐节点结果 ====',
+  DIFF: '==== 本轮写入 vs 基线 (diff) ====',
+  VERDICT: '==== 上一轮 verifier 失败原文 (accept 闸红) ====',
+  RED_LINE: '==== 红线: 只修上面点名的失败 ====',
+  WRITE_SET: '==== 写集约束 ====',
+  VERIFY_NOTE: '==== verify 说明 ====',
+} as const;
+
+/** 段标题锚定用顺序数组 (INV-1 钉死的近因区位阶)。测试可遍历它做段位断言。 */
+export const REPAIR_CONTEXT_ORDER: readonly string[] = [
+  REPAIR_CONTEXT.TASK,
+  REPAIR_CONTEXT.PRIOR_RESULTS,
+  REPAIR_CONTEXT.DIFF,
+  REPAIR_CONTEXT.VERDICT,
+  REPAIR_CONTEXT.RED_LINE,
+  REPAIR_CONTEXT.WRITE_SET,
+  REPAIR_CONTEXT.VERIFY_NOTE,
+];
+
+/** diff 段上限 (D-6): 6KB 已超 LLM 真用注意力窗口, 越界必须响亮截断。 */
+export const REPAIR_DIFF_MAX_BYTES = 6 * 1024;
 
 // ── 公共类型 ────────────────────────────────────────────────────────────────
 
@@ -65,13 +114,53 @@ export interface ReplanSpinArgs {
 }
 
 /**
- * `buildRepairPlan` 的输入包 = `ReplanSpinArgs` + 这一轮的 verifier 失败原文 + 上一轮 results。
+ * 修补节点 diff 段的取数函数 (测试可注入, 默认实现在本文件外 — 调用方 (engine) 在隔离档下
+ * 调 `git diff <baseline> -- <paths>`; 签名一致, 行为同 `writeset-evidence.defaultRunGit` 但
+ * 产出 diff 正文而非 porcelain 状态行)。
+ */
+export type GitDiffFn = (args: { baseline: string; paths: readonly string[]; cwd: string }) => string;
+
+/**
+ * 修补节点上下文补刀 (SDD 2026-08-31 切片 1) — 注入面三件:
+ *   - `task`: 原任务字符串 (engine.ts 拼 escTask 用的同一个变量, 同作用域; D-2)
+ *   - `baseline`: 隔离档 commit (缺席 = head 档; D-3 两档分辨的判别依据)
+ *   - `headSnapshot`: head 档的写集哈希快照 (缺席 = 不给清单, 走「本档无 diff 正文」)
+ *   - `gitCwd`: git 跑哪 (隔离档 = execRoot, head 档 = repoRoot; 调用方给)
+ *   - `gitDiff`: 取数函数 (测试可注入, 默认在调用方一侧实装; 本片签名先行)
+ *   - `logEvidence`: 证据回调 — fail-open 留证 (INV-D2-4 / D-7)
  */
 export interface BuildRepairPlanArgs extends ReplanSpinArgs {
   /** 上一轮 results —— 写集 (write_set ∪ filesTouched) 从这里取, 不再重跑产物门。 */
   priorResults: Record<string, LeafResult>;
   /** 上一轮 verifier 的失败原文 (从输出里截掉轮次记号等机械前缀)。 */
   verdictReason: string;
+  /**
+   * 原任务字符串 (用户目标)。七段之第 1 段, 不传则降级到空串 — 老调用点 (切片 3 的 G-6/G-7)
+   * 仍能跑, 但 goal 缺原任务段 (留空白首段以保段序, 不偷偷抹掉位阶)。
+   */
+  task?: string;
+  /**
+   * 隔离档的回滚基线 commit (有 → 隔离档, 走 git diff 取 diff 正文; 缺席 → head 档)。
+   * D-3 两档分辨的唯一判别依据; 两档混 = 静默把 head 档降级成「没改动」, NULL≠0≠不适用。
+   */
+  baseline?: string;
+  /**
+   * head 档的写集哈希快照 (隔离档不入这条 — 隔离档有 baseline 拿正文)。
+   * 给则产出「写集内变了哪些」清单 + 「本档无 diff 正文」; 不给 → 仅「本档无 diff 正文」。
+   */
+  headSnapshot?: HeadWriteSetBaseline;
+  /**
+   * git 跑哪 (隔离档 = continuity.execRoot, head 档 = continuity.repoRoot; 调用方给)。
+   * 缺省 = `process.cwd()` (纯函数语境; 引擎接线处必传, 避免修路径漂移)。
+   */
+  gitCwd?: string;
+  /** diff 取数函数。测试注入; 默认由调用方实装 (切片 2 接线处补真实 git)。 */
+  gitDiff?: GitDiffFn;
+  /**
+   * 证据回调 — fail-open 不吞证据的承载点 (INV-D2-4 / D-7)。
+   * 不传 = `() => {}` (纯函数语境); 引擎接线走既有 logger.warn / logger.info。
+   */
+  logEvidence?: (msg: string, payload?: Record<string, unknown>) => void;
 }
 
 // ── 空转检测 (纯函数) ────────────────────────────────────────────────────────
@@ -173,9 +262,149 @@ export function repairNodeId(escCount: number): string {
   return `__repair_spin_${escCount}`;
 }
 
+// ── 七段构造纯函数 (SDD 2026-08-31 切片 1) ──────────────────────────────────
+
 /**
- * 合成一个**修补节点** — 单 agent 节点, 带着 verifier 失败原文 + 写集约束, 让模型只修这些,
- * 不动其他。
+ * 逐节点结果段 (段 2) —— 把上一轮各 leaf 的事实压一行:
+ *   `<id> [<status>/<kind>] filesTouched=<N> · <summary 截 160 字>`
+ * summary 单行化 (换行 → 空格) 防破坏段结构; 截 160 字保 prompt 不被单一长输出吹爆。
+ */
+export function renderPriorResults(results: Record<string, LeafResult>): string {
+  const lines: string[] = [];
+  for (const [id, r] of Object.entries(results)) {
+    const status = (r && typeof r.status === 'string') ? r.status : '?';
+    const kind = (r && typeof r.kind === 'string') ? r.kind : '?';
+    const touched = Array.isArray(r?.filesTouched) ? r.filesTouched.length : 0;
+    const rawSummary = typeof r?.output === 'string' ? r.output : '';
+    const summary = rawSummary.slice(0, 160).replace(/\s+/g, ' ');
+    lines.push(`${id} [${status}/${kind}] filesTouched=${touched} · ${summary}`);
+  }
+  return lines.length > 0 ? lines.join('\n') : '(无逐节点结果)';
+}
+
+/**
+ * 截断响亮化 (D-6 / No-silent-caps) —— diff 正文超 6KB 时, 截断 + 「已截断 N 字节」+
+ * 自取命令 (让人工 / 模型知道这不是全文, 真要全的自己去跑 git diff)。
+ */
+export function truncateDiff(raw: string, baseline: string): string {
+  if (raw.length <= REPAIR_DIFF_MAX_BYTES) return raw;
+  const dropped = raw.length - REPAIR_DIFF_MAX_BYTES;
+  return [
+    raw.slice(0, REPAIR_DIFF_MAX_BYTES),
+    '',
+    `[已截断 ${dropped} 字节, 完整 diff 自取 git diff ${baseline} -- <paths>]`,
+  ].join('\n');
+}
+
+/**
+ * diff 段三态:
+ *   - `{ kind: 'skip' }`           写集空 → 整段缺席 (GWT-3);
+ *   - `{ kind: 'body', text }`     隔离档 git 跑成功 → diff 正文 (可能已被 truncateDiff 截断);
+ *   - `{ kind: 'absent', reason, changed? }`
+ *       head 档 / git 跑挂 / 无基线 → 「无 diff 正文」说明 (head 档带「写集内变了哪些」清单)。
+ *
+ * D-3 两档分辨在 baseline 字段上判; D-4 限定路径 ⊆ writeSet; D-6 截断带提示;
+ * D-7 git 抛错 → logEvidence 一次 + 段缺席 (不阻断合成)。
+ */
+export function renderDiffSegment(args: {
+  writeSet: readonly string[];
+  baseline?: string;
+  headSnapshot?: HeadWriteSetBaseline;
+  gitCwd?: string;
+  gitDiff?: GitDiffFn;
+  logEvidence?: (msg: string, payload?: Record<string, unknown>) => void;
+}): { kind: 'skip' } | { kind: 'body'; text: string } | { kind: 'absent'; reason: string; changed?: string[] } {
+  // GWT-3: 写集空 → 整段缺席, git runner 零调用。
+  if (args.writeSet.length === 0) return { kind: 'skip' };
+
+  // 隔离档 (baseline 非空) → 走 gitDiff 取正文。throw/fail-open: logEvidence + 段缺席。
+  if (args.baseline) {
+    if (!args.gitDiff) {
+      // 调用方在隔离档下没给 gitDiff — 视为段缺席, 但仍记证据 (缺取数函数 = 装配错)。
+      args.logEvidence?.('[omd/repair-spin] 隔离档给了 baseline 但未提供 gitDiff → 段缺席', { baseline: args.baseline });
+      return { kind: 'absent', reason: `本档无 diff 正文 (隔离档未注入 gitDiff); 自取 git diff ${args.baseline} -- <paths>` };
+    }
+    const cwd = args.gitCwd ?? process.cwd();
+    try {
+      const raw = args.gitDiff({ baseline: args.baseline, paths: [...args.writeSet], cwd });
+      return { kind: 'body', text: truncateDiff(raw, args.baseline) };
+    } catch (err) {
+      // D-7: git 跑挂 → 段缺席 + 证据行, 不阻断合成。
+      // ⚠ 错误原文只走 logEvidence —— 不漏进 goal prompt (raw git 错误对模型是噪声,
+      // 调试靠日志而非 prompt; 这也是 No-silent-caps 的镜像原则: prompt 侧给的是「有这么回事」,
+      // 证据侧给的是「实际是什么事」)。
+      args.logEvidence?.('[omd/repair-spin] diff 取数失败 → 段缺席 (fail-open 留证)', {
+        baseline: args.baseline,
+        pathCount: args.writeSet.length,
+        err: (err as Error).message ?? String(err),
+      });
+      return { kind: 'absent', reason: `diff 取数失败 (git runner 抛错, 详见日志证据); 自取 git diff ${args.baseline} -- <paths>` };
+    }
+  }
+
+  // head 档 (baseline 缺席) → 「写集内变了哪些」清单 (若有 headSnapshot) + 「本档无 diff 正文」。
+  if (args.headSnapshot) {
+    const cwd = args.gitCwd ?? process.cwd();
+    const ev = changedSinceHeadBaseline({ root: cwd, writeSet: args.writeSet, baseline: args.headSnapshot });
+    return {
+      kind: 'absent',
+      reason: '本档无 diff 正文 (head 档基线是哈希快照, 非文本)',
+      changed: ev.changed,
+    };
+  }
+
+  // baseline + snapshot 都缺席 → 仅无 diff 正文说明 (GWT-2 zero-git-call 形状)。
+  return { kind: 'absent', reason: '本档无 diff 正文 (无基线提供)' };
+}
+
+/**
+ * 七段合成 —— 段序固定 (D-5: 注意力首因区放任务定义/事实, 近因区放本轮反馈/最新失败)。
+ * 段标题用 `REPAIR_CONTEXT` 常量, 段间空行隔开。
+ *
+ * 任一段缺席 (含 diff skip) 时, 跳过那一行 (段序不变, 段位不补) —— 这样既保住了
+ * 「线不动」也让缺席段对读的人来说「缺这一格」是肉眼可见的, 不是把整段静默抹掉
+ * (NULL≠0≠不适用, 仓规 §1)。
+ */
+export function renderRepairGoal(args: {
+  task?: string;
+  priorResults: Record<string, LeafResult>;
+  diffSegment: ReturnType<typeof renderDiffSegment>;
+  verdict: string;
+  writeSet: readonly string[];
+}): string {
+  const taskText = typeof args.task === 'string' ? args.task : '';
+  const diffText =
+    args.diffSegment.kind === 'body'
+      ? args.diffSegment.text
+      : args.diffSegment.kind === 'absent'
+        ? [
+            ...(args.diffSegment.changed && args.diffSegment.changed.length > 0
+              ? ['变更清单 (写集内相对基线改变的文件):', ...args.diffSegment.changed.map((p) => `  - ${p}`)]
+              : []),
+            `[${args.diffSegment.reason}]`,
+          ].join('\n')
+        : null;
+
+  const segments: Array<[string, string | null]> = [
+    [REPAIR_CONTEXT.TASK, taskText],
+    [REPAIR_CONTEXT.PRIOR_RESULTS, renderPriorResults(args.priorResults)],
+    [REPAIR_CONTEXT.DIFF, diffText],
+    [REPAIR_CONTEXT.VERDICT, args.verdict],
+    [REPAIR_CONTEXT.RED_LINE, '**只修上面点名的失败**;不动其他文件、不重构、不补无关测试。'],
+    [REPAIR_CONTEXT.WRITE_SET,
+      args.writeSet.length > 0 ? args.writeSet.map((p) => `  - ${p}`).join('\n') : '  (无 — 本轮没有任何 leaf 写过文件)'],
+    [REPAIR_CONTEXT.VERIFY_NOTE, 'verify 闸 = 同一道 accept 命令, 跑完再判一次。'],
+  ];
+
+  return segments
+    .filter(([, body]) => body !== null)
+    .map(([title, body]) => `${title}\n${body}`)
+    .join('\n\n');
+}
+
+/**
+ * 合成一个**修补节点** — 单 agent 节点, 带着七段上下文 (SDD 2026-08-31 切片 1) + 写集约束,
+ * 让模型只修这些, 不动其他。
  *
  * **结构契约**:
  *   - 返回的 plan 形如 `{ name: '<原 plan 名>__repair_spin_<escCount>', nodes: { '__repair_spin_*', '<verifyId>' } }`
@@ -201,21 +430,30 @@ export function buildRepairPlan(args: BuildRepairPlanArgs & { escCount: number }
     closure: unionScope,
   });
 
-  // 任务文本体 = verifier 失败原文 + 「只修这些失败」红线 (避免模型顺手改其它东西)。
-  //  截断长度防 prompt 膨胀: 8KB 已远超 LLM 真用的注意力窗口 (实测 ~4KB 后就漂)。
+  // 任务文本体 = 七段 (D-5 段序):
+  //   原任务 → 逐节点结果 → diff → 判词 → 红线 → 写集约束 → verify 说明。
+  // 判词截 8KB 防 prompt 膨胀 (旧上限保留, 超 8KB 的判词照旧截 — 那是 verifier 侧的 prompt 策略)。
   const reason = (args.verdictReason ?? '').slice(0, 8192);
-  const taskBody = [
-    '==== 上一轮 verifier 失败原文 (accept 闸红) ====',
-    reason,
-    '',
-    '**只修上面点名的失败**;不动其他文件、不重构、不补无关测试。',
-    '**写集约束** (写入路径必须落在下列集合内, 写了集合外的路径 = 越权 = 节点判红):',
-    writeSet.length > 0 ? writeSet.map((p) => `  - ${p}`).join('\n') : '  (无 — 本轮没有任何 leaf 写过文件)',
-    '',
-    'verify 闸 = 同一道 accept 命令, 跑完再判一次。',
-  ].join('\n');
 
-  // 修补节点: agent leaf (吃 verifier 失败原文 + 写集约束 + 模型能力)。
+  // diff 段 (D-3 / D-4 / D-6 / D-7): 三态 (skip / body / absent), 路径 ⊆ writeSet 已由 renderDiffSegment 守。
+  const diffSegment = renderDiffSegment({
+    writeSet,
+    baseline: args.baseline,
+    headSnapshot: args.headSnapshot,
+    gitCwd: args.gitCwd,
+    gitDiff: args.gitDiff,
+    logEvidence: args.logEvidence,
+  });
+
+  const taskBody = renderRepairGoal({
+    task: args.task,
+    priorResults: args.priorResults,
+    diffSegment,
+    verdict: reason,
+    writeSet,
+  });
+
+  // 修补节点: agent leaf (吃七段上下文 + 写集约束 + 模型能力)。
   // executor 默认 'agent' —— 调用方可在 planFilters / post-process 改, 这里刻意不替 conductor 决定。
   const repairNode: Record<string, unknown> = {
     goal: taskBody,

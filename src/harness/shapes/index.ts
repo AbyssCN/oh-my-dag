@@ -19,6 +19,18 @@
  * 它总是第一个被省掉的 (LangChain《3 years of graph engineering》整篇的落点就是 "when not to use")。
  */
 
+/** 图式 few-shot 样例 (SHAPE_EXAMPLES, 2026-08-31)。来源真实 dag-runs 账本绿跑;
+ *  编造样例 = 把先验伪装成证据 (仓规)。无源卡 example 字段缺席 —— 缺席合法 ≠ 0。
+ *  与 §静默坑 1 同源: 把「没样例」读成「权重为 0」会把未来后补通道堵死。 */
+export interface ShapeExample {
+  /** 真实绿跑 runId (8 位) —— 锚串逐字来自附录, GWT-1 用此 grep。 */
+  source: string;
+  /** 一行:为什么这条图跑这个形状 (人话, 给模型"这个形状触发什么"的锚)。 */
+  goalHint: string;
+  /** 蒸馏后的图结构逐行 (代码块风格; keyBy/probe 节点全保留, 兄弟省略号照写)。 */
+  graph: string[];
+}
+
 export interface GraphShape {
   /** 稳定 id (工具输出与 prompt 渲染共用)。 */
   id: string;
@@ -34,6 +46,8 @@ export interface GraphShape {
   why: string;
   /** 引擎是否**强制**它 (硬闸), 还是只是建议。 */
   enforced?: string;
+  /** 真实绿跑样例 —— **有才填, 没有就 undefined** (D-2 缺席合法)。 */
+  example?: ShapeExample;
 }
 
 export const GRAPH_SHAPES: readonly GraphShape[] = [
@@ -49,6 +63,19 @@ export const GRAPH_SHAPES: readonly GraphShape[] = [
     why:
       '不这么排就是 N 个兄弟各自发明一份, 得到 N 份互不兼容的答案和一次没人负责的合并。' +
       '这也是整张图里最值得花强模型的一个点 —— 它下面的 worker 是在**转录**一个决策, 不是在做决策, 所以可以廉价。',
+    // A1 ← run 49e1bfcf 「goal-contract-冻结判据失败明细必达块」(21 节点, 扇出 18, 宽图)
+    example: {
+      source: '49e1bfcf',
+      goalHint:
+        '契约勘察段 —— 一次探明全部落点, 18 个调查兄弟并行消费同一份基准',
+      graph: [
+        'probe_landmarks [command] ← —          (输出勘察基准: 全部落点一次探明, 供所有兄弟消费)',
+        'survey_handoff [agent] ← probe_landmarks',
+        'survey_failure_detail::a [command] ← probe_landmarks',
+        'survey_failure_detail::b [command] ← probe_landmarks',
+        '… 共 18 个调查兄弟, 彼此零连边, 全部只依赖 probe_landmarks',
+      ],
+    },
   },
   {
     id: 'ui-evidence',
@@ -103,6 +130,18 @@ export const GRAPH_SHAPES: readonly GraphShape[] = [
       'template 按元素展开成子节点; keyBy 给稳定身份 → resume 只重跑变化的元素',
     ],
     why: '不这么做就会编一个"既枚举又处理"的假命令 (那个工具并不存在), 或者凭空写死一份猜测的清单。',
+    // A2 ← run 0f53b6fe 「f2-cross-source-fact-synthesis」(26 节点, map 展开 10 份)
+    example: {
+      source: '0f53b6fe',
+      goalHint:
+        '读 10 篇论文回答 8 个问题 —— 清单在规划期已存在于盘上但不该手抄',
+      graph: [
+        'paper_corpus [map] — lister 子步用 command 在运行时列出 10 篇论文路径',
+        'paper_corpus::<论文> [command] ×10 — 模板按元素展开, keyBy 给稳定身份',
+        'load_checklist [command] ← —',
+        '(下游综合节点 fan-in paper_corpus 与 load_checklist)',
+      ],
+    },
   },
   {
     id: 'runtime-decomposition',
@@ -129,6 +168,18 @@ export const GRAPH_SHAPES: readonly GraphShape[] = [
     enforced:
       '展开闸: 子节点禁再用 conductor/map (D-D); 子图有环 / 空 / 不是合法 plan → 整份拒, 一个子节点都不跑; ' +
       '子节点 id 内容寻址 (D-B), conductor 改名不改内容则 resume 照旧命中',
+    // A3 ← run 5d0853b6 「goal-execute」(11 节点, conductor 现场画 9 节点异构子图)
+    example: {
+      source: '5d0853b6',
+      goalHint:
+        '执行段怎么拆取决于契约内容 —— 规划期留 conductor 节点, 跑到时现场分解',
+      graph: [
+        'execute [conductor] ← —    goal 只写「要达成什么」, 不写分几步',
+        'execute::impl [agent] → execute::gate [command] → execute::fix [agent] → …',
+        '  (运行时展开: agent/command 混排 9 节点, 各有各的依赖边, 含 red→impl→verify 链)',
+        'accept [command] ← execute   (外层验收不进子图)',
+      ],
+    },
   },
   {
     id: 'research-lens',
@@ -147,6 +198,19 @@ export const GRAPH_SHAPES: readonly GraphShape[] = [
     why:
       '镜头之间必须**跨模型家族**分散 —— 同家族三个镜头产出三份同源盲点, fan-in 出来的"共识"是假的。' +
       'lens 集本身由模型现场编写 (管线固定, 内容全是变量), 别把它读成"形状写死"。',
+    // A4 ← run 56fd4aa3 「omd README first-screen copy: 4 voices → judge panel → fused winner」(9 节点)
+    example: {
+      source: '56fd4aa3',
+      goalHint:
+        'README 首屏文案 —— 4 个 persona 竞稿, panel 评判, 嫁接融合',
+      graph: [
+        'draft_1_category_definer / draft_2_pain_narrative / draft_3_terse_engineer / draft_4_honest_skeptic [agent] ×4 互不依赖 (四个 persona 镜头)',
+        'collect_drafts [command] ← 四稿',
+        'judge_panel [agent] ← collect_drafts        (多维评判)',
+        'fusion_winner [agent] ← judge_panel, collect_drafts   (嫁接亚军亮点)',
+        'verify_artifacts [command] ← (落盘核验)',
+      ],
+    },
   },
   {
     id: 'research-second-pass',
@@ -176,6 +240,7 @@ export function shapeById(id: string): GraphShape | undefined {
 /**
  * 渲染成 conductor prompt 的行 (图模式消费面)。
  * lean 档只出 what/when/whenNot/steps —— 强模型自己推得出 why; 弱模型才需要理由压住偏置。
+ * 样例是**证据不是理由** (D-3), 两档同渲染 —— 与 lean 档「省 why」正交; 无源卡零样例行。
  */
 export function renderShapesForPrompt(profile: 'full' | 'lean' = 'full'): string[] {
   const out: string[] = [
@@ -188,6 +253,17 @@ export function renderShapesForPrompt(profile: 'full' | 'lean' = 'full'): string
     for (const step of s.steps) out.push(`  · ${step}`);
     if (profile === 'full') out.push(`  WHY: ${s.why}`);
     if (s.enforced) out.push(`  ENFORCED: ${s.enforced}`);
+    // SHAPE_EXAMPLES (2026-08-31): 仅当 example 真存在才渲染; 无源卡严守 D-2 缺席合法。
+    // lean 档渲染**拓扑短形**(剥行尾括号注释, 整行注释跳过)—— 两档都见样例与节点 id
+    // (防空旋钮, 契约 D-3), 同时不吃掉 strong-coord.test.ts 的 lean 省 >20% prompt 预算不变量
+    // (首跑 accept 红的实测: 两档同渲染全注把差压到 19.3%)。
+    if (s.example) {
+      out.push(`  EXAMPLE (real green run ${s.example.source}): ${s.example.goalHint}`);
+      for (const line of s.example.graph) {
+        const rendered = profile === 'full' ? line : line.replace(/[((][^))]*[))]\s*$/u, '').trimEnd();
+        if (rendered) out.push(`  ${rendered}`);
+      }
+    }
   }
   // SH-1 (2026-08-30): 光在输出 schema 里列一个 "shape"?: string 是不够的 —— W1 (26895234)
   // 的教训是词表与散文缺任一个, 那一格的产出率就是 0。这里给出**指令**那一半。
